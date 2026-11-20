@@ -383,7 +383,11 @@ func waitForPR(c *StepCtx, what string) error {
 		// The rest of the time counts from when the first wait began, however
 		// long the run took to come back.
 		left := timeout - first
-		if d := c.WaitDeadline(0); d != 0 {
+		d, derr := c.WaitDeadline(0)
+		if derr != nil {
+			return derr
+		}
+		if d != 0 {
 			left = time.Duration(d+(timeout-first).Milliseconds()-c.S.nowMS()) * time.Millisecond
 		}
 		if left > 0 {

@@ -255,9 +255,9 @@ func (s *Service) labelPRUrgent(ctx context.Context, actor *Actor, pr *PullReque
 	lb, _ := json.Marshal(labels)
 	projectID, rerr := s.prAuthority(ctx, actor, pr, RoleViewer)
 	if rerr != nil {
-		if readFault(rerr) && !missingOrDenied(rerr) {
-			s.log.WarnContext(ctx, "pr authority failed", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "err", rerr)
-		}
+		// mayMerge already vouched for the actor; this only finds the project to
+		// record the change under, so a failure records it unscoped, and is said.
+		s.log.WarnContext(ctx, "pr authority failed", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "err", rerr)
 	}
 	return s.write(ctx, actor, func(t *tx) error {
 		if _, err := t.ExecContext(ctx, `UPDATE pull_requests SET labels = ? WHERE id = ?`, string(lb), pr.ID); err != nil {

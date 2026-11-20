@@ -673,18 +673,17 @@ func (c *StepCtx) Wait(kind, key, match string, timeout time.Duration) (ev *Even
 // slotSeq numbers a slot's wait among the step's waits.
 func (c *StepCtx) slotSeq(slot int) int { return 100_000 + c.Attempt*100 + slot }
 
-// WaitDeadline is when a slot's wait ends if nothing comes (0: it isn't stored yet).
-func (c *StepCtx) WaitDeadline(slot int) int64 {
-	w, rerr := c.S.stepWait(c.Ctx, c.Run.ID, c.ID, c.Iteration, c.slotSeq(slot))
-	if rerr != nil {
-		if readFault(rerr) {
-			c.S.log.WarnContext(c.Ctx, "step wait failed", "run", c.Run.ID, "c", c.ID, "err", rerr)
-		}
+// WaitDeadline is when a slot's wait ends if nothing comes (0: it isn't stored
+// yet). A failed read is an error, not 0: the caller must not start the wait over.
+func (c *StepCtx) WaitDeadline(slot int) (int64, error) {
+	w, err := c.S.stepWait(c.Ctx, c.Run.ID, c.ID, c.Iteration, c.slotSeq(slot))
+	if err != nil {
+		return 0, err
 	}
 	if w == nil {
-		return 0
+		return 0, nil
 	}
-	return w.timeoutAt
+	return w.timeoutAt, nil
 }
 
 // WaitSlot is Wait for a step that waits more than once (a chain of models, a
