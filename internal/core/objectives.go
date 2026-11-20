@@ -1307,13 +1307,13 @@ func (s *Service) objSet(ctx context.Context, t *tx, issueID int64, kv ...any) e
 		return fmt.Errorf("objSet: %d arguments is not pairs of a column and a value", len(kv))
 	}
 	sets, args := []string{"updated_at = ?"}, []any{s.nowMS()}
-	for n := 0; n < len(kv); n += 2 {
-		name, _ := kv[n].(string)
+	for n := 1; n < len(kv); n += 2 {
+		name, _ := kv[n-1].(string)
 		col, ok := objectiveColumns[name]
 		if !ok {
-			return fmt.Errorf("objSet: %v is not a column of an objective", kv[n])
+			return fmt.Errorf("objSet: %v is not a column of an objective", kv[n-1])
 		}
-		sets, args = append(sets, col+" = ?"), append(args, kv[n+1])
+		sets, args = append(sets, col+" = ?"), append(args, kv[n])
 	}
 	// #nosec G202 -- the columns are objectiveColumns' own names; values are bound
 	_, err := t.ExecContext(ctx, `UPDATE objectives SET `+strings.Join(sets, ", ")+` WHERE issue_id = ?`, append(args, issueID)...)
