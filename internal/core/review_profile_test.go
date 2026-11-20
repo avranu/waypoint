@@ -115,6 +115,51 @@ func TestReviewProfileSettings(t *testing.T) {
 	if _, err := a.s.ReviewModelOptions(a.ctx, a.ag); err != nil {
 		t.Fatalf("an agent reads the options: %v", err)
 	}
+	// Who changed how reviews run, and to what, is in the audit log: the
+	// brief by its length and hash, never its text.
+	page, err := a.s.ListAudit(a.ctx, a.admin, AuditQuery{Category: AuditControl})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var said []string
+	for _, e := range page.Entries {
+		if strings.HasPrefix(e.Action, "autopilot.") {
+			said = append(said, e.Target)
+		}
+	}
+	slices.Reverse(said) // oldest first
+	want := []string{"autopilot defaults, reviewer: claude/sonnet, was inherited, reviewer's instructions: custom (9 characters, ", "autopilot in " + a.p.Key + ", reviewer: session, was inherited"}
+	if len(said) < 2 || !strings.HasPrefix(said[len(said)-2], want[0]) || said[len(said)-1] != want[1] || strings.Contains(strings.Join(said, "\n"), "My brief") {
+		t.Errorf("the audit log says %q, want the last two %q", said, want)
+	}
+}
+
+// What a save changed about the reviews, as the audit log's line has it.
+func TestReviewProfileChange(t *testing.T) {
+	on, off := true, false
+	for _, tc := range []struct {
+		name     string
+		old, now AutopilotLimits
+		want     string
+	}{
+		{"nothing", AutopilotLimits{ReviewText: ptrOf("a")}, AutopilotLimits{ReviewText: ptrOf("a")}, ""},
+		{"other settings only", AutopilotLimits{}, AutopilotLimits{GraceSeconds: ptrOf(3)}, ""},
+		{"turned off", AutopilotLimits{Review: &on}, AutopilotLimits{Review: &off}, ", review before the pull request: off, was on"},
+		{"skip", AutopilotLimits{}, AutopilotLimits{ReviewSkip: ptrOf("off")}, ", skipping a review: off, was inherited"},
+		{"back to the built-in", AutopilotLimits{ReviewText: ptrOf("Find nothing.")}, AutopilotLimits{ReviewText: ptrOf("")},
+			", reviewer's instructions: the built-in, was custom (13 characters, "},
+		{"reset", AutopilotLimits{ReviewModel: ptrOf("session"), ReviewPrompt: ptrOf("Look.")}, AutopilotLimits{},
+			", reviewer: inherited, was session, the session's review prompt: inherited, was custom (5 characters, "},
+	} {
+		got := reviewProfileChange(tc.old, tc.now)
+		if (tc.want == "") != (got == "") || !strings.HasPrefix(got, tc.want) {
+			t.Errorf("%s: %q, want %q", tc.name, got, tc.want)
+		}
+	}
+	a, b := reviewProfileChange(AutopilotLimits{}, AutopilotLimits{ReviewText: ptrOf("One wording.")}), reviewProfileChange(AutopilotLimits{}, AutopilotLimits{ReviewText: ptrOf("Two wording.")})
+	if a == b {
+		t.Errorf("two wordings of the same length read the same: %q", a)
+	}
 }
 
 // review_model "session": the round asks no other model; the session
@@ -183,5 +228,25 @@ func TestReviewModelNamed(t *testing.T) {
 	}
 	if want := auditModelNames(e.s.defaultAuditChain(e.ctx)); !slices.Equal(next.Models, want) {
 		t.Fatalf("fallback models %v, want %v", next.Models, want)
+	}
+}
+
+// A project's review_text of "" is the "use the built-in" override: laid
+// over a person's custom default it brings back the built-in brief, while a
+// project that sets nothing keeps the person's.
+func TestEffectiveBriefProjectEmptyOverride(t *testing.T) {
+	user := AutopilotLimits{ReviewText: ptrOf("Only look for races.")}
+	base := waypointAutopilotDefaults().over(user)
+	if got := base.reviewText(); got != "Only look for races." {
+		t.Fatalf("the person's default = %q", got)
+	}
+	if got := base.over(AutopilotLimits{}).reviewText(); got != "Only look for races." {
+		t.Errorf("a project that sets nothing: %q", got)
+	}
+	if got := base.over(AutopilotLimits{ReviewText: ptrOf("")}).reviewText(); got != DefaultReviewText {
+		t.Errorf("the empty override under a custom default = %q, want the built-in brief", got)
+	}
+	if p := ownReviewBrief("Review it.", base.over(AutopilotLimits{ReviewText: ptrOf("")})); !strings.Contains(p, briefText(promptText(DefaultReviewText))) || strings.Contains(p, "races") {
+		t.Errorf("the session's own review brief = %q", p)
 	}
 }

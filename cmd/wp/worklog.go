@@ -19,8 +19,9 @@ var worklogCmd = &command{
 an issue found, fixed or rejected. KEY defaults to your current task.
 --review attaches the report of an adversarial review you ran yourself
 (-f FILE, - for stdin, or -m): Waypoint counts its findings and wp ship
-takes it as the task's review. An adversarial-review subagent's report
-is attached on its own when it finishes.
+takes it as the task's review round, asking you for its findings (wp
+audit report) before the pull request opens. An adversarial-review
+subagent's report is attached on its own when it finishes.
 stats sums review rounds over the last --days (30), for -p or all
 projects. stakes sorts them by stakes tier (high, elevated, normal):
 what their audits and Claude reviews did, cost and found (--days 14).`,
@@ -88,7 +89,7 @@ func cmdWorklog(c *cli, args []string) error {
 		}
 		if *review {
 			return c.emit(raw, func() string {
-				return "Attached the review to " + key + "'s work log; Waypoint counts its findings, and wp ship takes it as the task's review"
+				return "Attached the review to " + key + "'s work log. wp ship takes it as the task's review round once you report what it found: wp audit report " + key + " -f FILE (or --none -m \"what it covered\")"
 			})
 		}
 		return c.emit(raw, func() string { return "Added a note to " + key + "'s work log" })

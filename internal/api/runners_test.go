@@ -194,7 +194,25 @@ func TestRunnerAPI(t *testing.T) {
 	if len(work.Cancel) != 1 || work.Cancel[0] != j2.ID {
 		t.Errorf("cancel list = %v", work.Cancel)
 	}
-	jc.json("POST", "/api/v1/runner/jobs/"+rid(j2.ID)+"/finish", map[string]any{"state": "failed"}, nil)
+	// A result is up to core.RunnerResultMax (an audit's holds its helpers'
+	// runs): over it the answer says it is too large, and the job stays
+	// running for the runner to send less; below it, 1.5 MB is kept whole.
+	huge := map[string]any{"state": "done", "result": map[string]any{"pad": strings.Repeat("x", core.RunnerResultMax+10)}}
+	if code, b := jc.do("POST", "/api/v1/runner/jobs/"+rid(j2.ID)+"/finish", huge); code != 400 || !strings.Contains(string(b), core.RunnerResultTooLarge) {
+		t.Errorf("a result over the most: %d %s", code, b)
+	}
+	big := strings.Repeat("y", 1536<<10)
+	if code := jc.json("POST", "/api/v1/runner/jobs/"+rid(j2.ID)+"/finish", map[string]any{"state": "done", "result": map[string]any{"pad": big}}, nil); code != 200 {
+		t.Fatalf("a 1.5 MB result: %d", code)
+	}
+	var stored struct {
+		State  string
+		Result map[string]any
+	}
+	jc.json("GET", "/api/v1/runner-jobs/"+rid(j2.ID), nil, &stored)
+	if pad, _ := stored.Result["pad"].(string); stored.State != "done" || pad != big {
+		t.Errorf("the stored result is %d bytes (%s), want %d", len(pad), stored.State, len(big))
+	}
 
 	// A held poll is woken by a new job over HTTP.
 	got := make(chan int64, 1)

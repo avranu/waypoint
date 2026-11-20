@@ -41,7 +41,7 @@ const (
 	// gatewayResends is how often a task is sent again after the gateway
 	// restarted under it (its kind "interrupted": safe to send again).
 	gatewayResends = 2
-	// A job's result is 256 KB at most: the answer's text (Waypoint keeps
+	// A job's result is held to what the server takes (core.RunnerResultMax, 2 MB, and the helpers' runs share it): the answer's text (Waypoint keeps
 	// 60 KB of it) and its findings as JSON.
 	gatewayAnswerMax = 60 << 10
 	gatewayJSONMax   = 180 << 10

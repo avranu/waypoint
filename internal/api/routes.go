@@ -354,6 +354,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/issues/{key}/time", a(s.issueTime))
 	mux.HandleFunc("GET /api/v1/issues/{key}/worklog", a(s.getWorkLog))
 	mux.HandleFunc("POST /api/v1/issues/{key}/worklog", a(s.addWorkNote))
+	mux.HandleFunc("POST /api/v1/issues/{key}/review-report", a(s.reportReview))
 	mux.HandleFunc("GET /api/v1/worklog/stats", a(s.workLogStats))
 	mux.HandleFunc("GET /api/v1/worklog/triage", a(s.reviewTriageStats))
 	mux.HandleFunc("GET /api/v1/worklog/stakes", a(s.reviewStakesStats))

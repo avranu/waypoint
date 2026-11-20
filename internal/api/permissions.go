@@ -177,6 +177,7 @@ var routePermissions = map[string]core.Permission{
 	"POST /api/v1/issues/{key}/links/refresh":               core.PermIssuesEdit,
 	"POST /api/v1/issues/{key}/comments":                    core.PermIssuesComment,
 	"POST /api/v1/issues/{key}/worklog":                     core.PermIssuesComment,
+	"POST /api/v1/issues/{key}/review-report":               core.PermIssuesComment, // ReportReview: the task's own session only
 	"POST /api/v1/projects/{key}/test-evidence":             core.PermIssuesComment,
 	"PATCH /api/v1/comments/{id}":                           core.PermIssuesComment,
 	"DELETE /api/v1/comments/{id}":                          core.PermIssuesComment,

@@ -264,6 +264,11 @@ type AuditHelpers struct {
 	Verify  bool         `json:"verify,omitempty"`
 	CLI     string       `json:"cli"`
 	Model   string       `json:"model"`
+	// Prior are done panel runs of this round's audit, from an attempt
+	// that failed, with the range each read (Row: its record). The runner
+	// takes a run whose range is its own as it is and runs the other
+	// checks (review_helpers.go's priorPanel). Never kept on the audit.
+	Prior []AuditHelperRun `json:"prior,omitempty"`
 }
 
 // PanelCheck is one of the panel's checks: its name and what it asks.

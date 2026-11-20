@@ -408,7 +408,7 @@ let recentID;
   await p.getByText("Done", { exact: true }).first().waitFor({ timeout: 15000 });
   await p.locator('li[id^="finding-"]').first().waitFor();
   ok((await p.locator('li[id^="finding-"]').count()) === 1, "only the high finding is kept");
-  ok(await p.getByText(/2 more findings, below what was asked for, left out/).isVisible(), "the summary says two were left out");
+  ok(await p.getByText(/2 of the answer's 3 findings were below the audit's lowest severity, high, and are left out/).isVisible(), "the summary says two were left out");
   for (const t of ["the last 14 days", "Hardest at", "Security", "Concurrency", "Leaving out", "ledger/export.go", "High or worse, at most 5 findings", "3 commits", "beef001234..c0ffee1234"])
     ok(await p.getByText(t, { exact: false }).first().isVisible(), `the page shows “${t}”`);
   await p.screenshot({ path: `${out}/recent-audit-1280.png`, fullPage: true });

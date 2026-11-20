@@ -3,7 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -98,7 +103,7 @@ func TestCLIAudit(t *testing.T) {
 	if !strings.Contains(out, "Audit #2 of robin/waypoint main, the last 2 weeks (internal) asked of") {
 		t.Errorf("wp audit --since:\n%s", out)
 	}
-	if out := e.wp("audit", "show", "2"); !strings.Contains(out, "Criteria: focus security, data; only internal; not *_test.go; high and worse; at most 5 findings") {
+	if out := e.wp("audit", "show", "2"); !strings.Contains(out, "Criteria: focus security, data; only internal; not *_test.go; high and worse; asked for at most 5 findings") {
 		t.Errorf("wp audit show 2:\n%s", out)
 	}
 	if out := e.wp("audit", "recent", "release"); !strings.Contains(out, "robin/waypoint release, the last 7 days") {
@@ -155,5 +160,126 @@ func TestAuditJobText(t *testing.T) {
 	}
 	if got := (&auditJobView{State: "done"}).text(started); got != "" {
 		t.Errorf("done: %q", got)
+	}
+}
+
+// wp audit report (WP-1320): the session's own review, reported as its
+// round's findings. The CLI reads the file and says what the server made
+// of it; what it can tell is wrong without asking, it says as usage.
+func TestCLIAuditReport(t *testing.T) {
+	var faked atomic.Bool
+	var got atomic.Value // the body the faked route was sent
+	e := newEnvServing(t, nil, func(h http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if faked.Load() && r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/review-report") {
+				raw, _ := io.ReadAll(r.Body)
+				got.Store(r.URL.Path + " " + string(raw))
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"audit": {"id": 7, "findings": [{"id": "7.1", "severity": "high", "state": "fixed", "title": "Merge loses an update"}]},
+					"round": 3, "replaced": true, "dropped": 2, "next": "Run ` + "`wp ship --pr`" + `."}`))
+				return
+			}
+			h.ServeHTTP(w, r)
+		})
+	})
+	me := e.login()
+	ctx := context.Background()
+	p, err := e.svc.CreateProject(ctx, me, core.ProjectInput{Name: ptr("Waypoint")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	i, err := e.svc.CreateIssue(ctx, me, core.IssueInput{Project: p.Key, Title: "First"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	t.Chdir(dir) // outside any git repo: the task is named
+	file := filepath.Join(dir, "review.json")
+	report := `{"findings": [{"title": "Merge loses an update", "severity": "high", "problem": "p", "outcome": "fixed", "note": "locked"}]}`
+	if err := os.WriteFile(file, []byte(report), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	empty := filepath.Join(dir, "empty.json")
+	if err := os.WriteFile(empty, []byte(" \n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{i.Key}, "give the findings as JSON"},
+		{[]string{i.Key, "--none"}, "say what the review covered"},
+		{[]string{i.Key, "--none", "-m", "x", "-f", file}, "not both"},
+		{[]string{i.Key, "extra", "-f", file}, `unexpected "extra"`},
+		{[]string{i.Key, "-f", empty}, "is empty"},
+	} {
+		if out, code := e.run(append([]string{"audit", "report"}, tc.args...)...); code != 2 || !strings.Contains(out, tc.want) {
+			t.Errorf("wp audit report %v: %d %s (want %q)", tc.args, code, out, tc.want)
+		}
+	}
+	// The server's word reaches the agent: here, that no session asked.
+	if out, code := e.run("audit", "report", i.Key, "--none", "-m", "Read the diff."); code == 0 || !strings.Contains(out, "run it in that session") {
+		t.Errorf("outside a session: %d %s", code, out)
+	}
+	faked.Store(true)
+	out := e.wp("audit", "report", i.Key, "-f", file)
+	for _, want := range []string{"Replaced your review of " + i.Key + " as audit #7: 1 finding.", "2 more, the least severe, were left out", "7.1  high     fixed    Merge loses an update", "Run `wp ship --pr`."} {
+		if !strings.Contains(out, want) {
+			t.Errorf("wp audit report lacks %q:\n%s", want, out)
+		}
+	}
+	sent, _ := got.Load().(string)
+	path, raw, _ := strings.Cut(sent, " ")
+	var body struct {
+		None    bool   `json:"none"`
+		Summary string `json:"summary"`
+		Report  string `json:"report"`
+	}
+	if err := json.Unmarshal([]byte(raw), &body); err != nil || path != "/api/v1/issues/"+i.Key+"/review-report" || body.None || body.Report != report {
+		t.Errorf("sent %q: %+v, %v", sent, body, err)
+	}
+	e.wp("audit", "report", i.Key, "--none", "-m", "The subagent read the diff; nothing stood.")
+	sent, _ = got.Load().(string)
+	_, raw, _ = strings.Cut(sent, " ")
+	body.Report = ""
+	if err := json.Unmarshal([]byte(raw), &body); err != nil || !body.None || body.Summary != "The subagent read the diff; nothing stood." || body.Report != "" {
+		t.Errorf("sent %q: %+v, %v", sent, body, err)
+	}
+}
+
+// wp audit show of an audit that did not end done lists what the Haiku
+// checks confirmed (the reviewing model's answer is missing); a done audit,
+// a check that didn't end done and a problem the second read refuted are not
+// listed (WP-1320).
+func TestAuditShowListsThePanelOfAnAuditThatDidNotEndDone(t *testing.T) {
+	runs := []core.AuditHelperRun{
+		{Check: "goals", State: "done", Leads: []core.PanelLead{
+			{ID: "goals.1", Title: "Check's title", Severity: "low", Path: "a.go", Line: 1, Problem: "check's problem", Confirmed: true,
+				ReadTitle: "Read title", ReadPath: "b.go", ReadLine: 9, ReadSeverity: "high", ReadProblem: "read problem", Evidence: "b.go:9 shows it"},
+			{ID: "goals.2", Title: "Refuted one", Severity: "low", Problem: "nope"}}},
+		{Check: "tests", State: "failed", Leads: []core.PanelLead{{ID: "tests.1", Title: "From a failed check", Confirmed: true}}},
+	}
+	for _, status := range []string{"failed", "cancelled", "limited"} {
+		a := auditView{Status: status, HelperRuns: runs}
+		out := a.unansweredPanel()
+		for _, want := range []string{"The reviewing model did not answer", "[goals] high", "b.go:9: Read title", "read problem", "Evidence: b.go:9 shows it"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("%s audit: output lacks %q:\n%s", status, want, out)
+			}
+		}
+		for _, not := range []string{"Refuted one", "From a failed check", "Check's title"} {
+			if strings.Contains(out, not) {
+				t.Errorf("%s audit: output has %q:\n%s", status, not, out)
+			}
+		}
+		if text := a.text(); !strings.Contains(text, "Read title") {
+			t.Errorf("%s audit: wp audit show lacks the section:\n%s", status, text)
+		}
+	}
+	if out := (&auditView{Status: "done", HelperRuns: runs}).unansweredPanel(); out != "" {
+		t.Errorf("a done audit listed %q", out)
+	}
+	if out := (&auditView{Status: "failed"}).unansweredPanel(); out != "" {
+		t.Errorf("an audit with no runs listed %q", out)
 	}
 }

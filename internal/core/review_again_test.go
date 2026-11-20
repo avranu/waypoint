@@ -53,7 +53,11 @@ func TestReviewAgainBeforePR(t *testing.T) {
 		{name: "a runner's short name", issues: "critical", fixes: "complete", arm: AgainReview, model: "claude/sonnet"},
 		{name: "every finding rejected", issues: "critical", fixes: "risky", arm: AgainRejected, model: trusted, allRejected: true},
 		{name: "untrusted reviewer", issues: "critical", fixes: "partial", arm: AgainUntrusted, model: untrusted, belowFloor: true},
-		{name: "the reviewer's record unreadable", issues: "critical", fixes: "partial", arm: AgainNoRecord, model: untrusted, belowFloor: true, trustFails: true},
+		// A record the rule needs and can't read refuses the ship: nothing
+		// is decided, and no pull request opens on a rule not applied.
+		{name: "the reviewer's record unreadable", issues: "critical", fixes: "partial", model: untrusted, belowFloor: true, trustFails: true},
+		// One it doesn't need (a signal calls the round) stops nothing.
+		{name: "the reviewer's record unreadable, a signal", issues: "critical", fixes: "complete", arm: AgainReview, model: untrusted, trustFails: true},
 		{name: "untrusted reviewer, risky fixes", issues: "minor", fixes: "risky", arm: AgainReview, model: untrusted},
 		{name: "a seed whose findings didn't hold", issues: "critical", fixes: "partial", arm: AgainUntrusted, model: trusted, record: record{n: 20, state: "rejected"}, belowFloor: true},
 		{name: "a model whose findings held", issues: "critical", fixes: "complete", arm: AgainReview, model: untrusted, record: record{n: 20, state: "fixed"}},
@@ -234,6 +238,25 @@ func TestReviewAgainBeforePR(t *testing.T) {
 			}
 			// The session's rejections are checked first, and found right.
 			res, err := a.shipChecked(box, first.Key)
+			if tc.trustFails && tc.arm == "" {
+				var n int
+				if qerr := a.s.db.R.QueryRow(`SELECT count(*) FROM review_again_decisions`).Scan(&n); qerr != nil {
+					t.Fatal(qerr)
+				}
+				if !errors.Is(err, errAgainRead) || !strings.Contains(err.Error(), "database is locked") || !strings.Contains(err.Error(), "--skip-review") || len(g.created) != 0 || n != 0 {
+					t.Fatalf("record unreadable: %+v, %v (opened %d, %d decisions)", res, err, len(g.created), n)
+				}
+				// Read again once the record can be, the round is decided.
+				a.s.againTrustFault = nil
+				if res, err = a.ship(first.Key, ShipPR); err != nil || res.Pull == nil {
+					t.Fatalf("after the record could be read: %+v, %v", res, err)
+				}
+				var arm string
+				if err := a.s.db.R.QueryRow(`SELECT arm FROM review_again_decisions WHERE round_id = ?`, round).Scan(&arm); err != nil || arm != AgainUntrusted {
+					t.Fatalf("decision %q, %v", arm, err)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
