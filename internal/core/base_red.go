@@ -129,8 +129,10 @@ func (s *Service) fixFirst(ctx context.Context, pr *PullRequest) {
 	}
 	claim := fmt.Sprintf("first:%d/%s/%s@%s", pr.ForgeID, strings.ToLower(pr.Repo), pr.BaseRef, tip)
 	if v, ok := s.baseRed.Load(claim); ok && v.(int64) != pr.ID {
-		if other, err := s.prByID(ctx, s.db.R, v.(int64)); err == nil && s.inQueue(ctx, other) {
-			return // another one fixes it and went first
+		if other, err := s.prByID(ctx, s.db.R, v.(int64)); err == nil {
+			if queued, qerr := s.inQueue(ctx, other); qerr != nil || queued {
+				return // another one fixes it and went first, or can't tell: leave it for the next look
+			}
 		}
 	}
 	if !s.fixesBase(ctx, pr, tip, failing) {

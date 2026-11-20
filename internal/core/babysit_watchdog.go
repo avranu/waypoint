@@ -209,9 +209,16 @@ func (s *Service) handoffStall(ctx context.Context, pr *PullRequest, wait string
 	var key string
 	var id, claimedUntil int64
 	var cat, claimedBy string
-	err := s.db.R.QueryRowContext(ctx, `SELECT p.key || '-' || i.number, i.id, st.category, i.claimed_by, coalesce(i.claimed_until, 0) FROM issues i JOIN projects p ON p.id = i.project_id
+	projectID, err := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo)
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read the project of a stalled handoff", "repo", pr.Repo, "number", pr.Number, "err", err)
+		}
+		return "Its task can't be read, so nothing is known to be doing it.", false
+	}
+	err = s.db.R.QueryRowContext(ctx, `SELECT p.key || '-' || i.number, i.id, st.category, i.claimed_by, coalesce(i.claimed_until, 0) FROM issues i JOIN projects p ON p.id = i.project_id
 		JOIN statuses st ON st.id = i.status_id WHERE i.project_id = ? AND i.title = ? ORDER BY i.id DESC LIMIT 1`,
-		s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo), title).Scan(&key, &id, &cat, &claimedBy, &claimedUntil)
+		projectID, title).Scan(&key, &id, &cat, &claimedBy, &claimedUntil)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return "No task was filed for a session to do it (the repository is in no project, or its owner can't sign in), so nothing will pick it up: push the change from a session.", false
@@ -298,11 +305,14 @@ func (s *Service) askAboutPersonComments(ctx context.Context, b *Babysit, pr *Pu
 		"To settle it, open %s and press Dismiss beside the comment. If you do nothing, the pull request stays as it is.",
 		pr.Repo, pr.Number, pr.Title, quoteComments(held), s.BaseURL()+"/agents?tab=pulls&pr="+strconv.FormatInt(pr.ID, 10))
 	in := RequestInput{Kind: RequestAction, Title: fmt.Sprintf("%s#%d needs your call on a review comment", pr.Repo, pr.Number), Body: body, ToolUseID: key, Followup: "never"}
-	if p := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo); p != 0 {
-		if proj, err := s.projectByID(ctx, s.db.R, p); err == nil {
-			in.Project = proj.Key
+	projectKey, err := s.attachedProjectKey(ctx, pr.ForgeID, pr.Repo)
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read the project to ask about held review comments", "repo", pr.Repo, "number", pr.Number, "err", err)
 		}
+		return
 	}
+	in.Project = projectKey
 	if _, _, err := s.CreateRequest(ctx, &Actor{User: u, Agent: "waypoint/babysit"}, in); err != nil {
 		s.log.WarnContext(ctx, "ask about review comments", "repo", pr.Repo, "number", pr.Number, "err", err)
 	}

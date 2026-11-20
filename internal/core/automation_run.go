@@ -694,7 +694,12 @@ func (s *Service) waitMaySee(ctx context.Context, automationID int64, e *Event) 
 		if err != nil {
 			return false
 		}
-		r, _ := s.projectRole(ctx, s.db.R, &Actor{User: u}, e.ProjectID)
+		r, rerr := s.projectRole(ctx, s.db.R, &Actor{User: u}, e.ProjectID)
+		if rerr != nil {
+			if readFault(rerr) && !missingOrDenied(rerr) {
+				s.log.WarnContext(ctx, "project role failed", "projectid", e.ProjectID, "err", rerr)
+			}
+		}
 		return r > RoleNone
 	}
 	return !e.AdminOnly && e.IssueID == 0

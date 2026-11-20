@@ -502,8 +502,18 @@ func (h *Hub) Publish(e *Event) {
 // StartHub wires the hub's visibility check to the database.
 func (s *Service) StartHub() {
 	s.Hub.admin = func(userID int64) bool {
-		u, err := s.userByID(context.Background(), s.db.R, userID)
-		return err == nil && u.IsAdmin && !u.Disabled
+		ctx := context.Background()
+		u, err := s.userByID(ctx, s.db.R, userID)
+		if err != nil {
+			// Not an admin to the hub: a user that can't be read sees what any other does not.
+			if !errors.Is(err, ErrNotFound) {
+				if readFault(err) {
+					s.log.WarnContext(ctx, "read a user for the hub's admin check", "user", userID, "err", err)
+				}
+			}
+			return false
+		}
+		return u.IsAdmin && !u.Disabled
 	}
 	s.Hub.visible = func(userID, projectID, issueID int64) bool {
 		ctx := context.Background()
@@ -512,11 +522,22 @@ func (s *Service) StartHub() {
 			return false
 		}
 		a := &Actor{User: u}
-		if r, _ := s.projectRole(ctx, s.db.R, a, projectID); r > RoleNone {
+		r, rerr := s.projectRole(ctx, s.db.R, a, projectID)
+		if rerr != nil {
+			if readFault(rerr) {
+				s.log.WarnContext(ctx, "project role failed", "projectid", projectID, "err", rerr)
+			}
+		}
+		if r > RoleNone {
 			return true
 		}
 		if issueID != 0 {
-			r, _ := s.shareRole(ctx, s.db.R, userID, issueID)
+			r, rerr := s.shareRole(ctx, s.db.R, userID, issueID)
+			if rerr != nil {
+				if readFault(rerr) {
+					s.log.WarnContext(ctx, "share role failed", "userid", userID, "issueid", issueID, "err", rerr)
+				}
+			}
 			return r > RoleNone
 		}
 		return false

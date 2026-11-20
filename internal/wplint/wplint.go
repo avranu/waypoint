@@ -40,6 +40,7 @@ var Analyzers = []*analysis.Analyzer{
 	TestEnv,
 	Clock,
 	LogCtx,
+	BlankErr,
 	LogMsg,
 }
 

@@ -83,7 +83,7 @@ func TestWorkLogReviewRound(t *testing.T) {
 		t.Fatalf("round = %+v", r)
 	}
 	pr := &PullRequest{URL: "https://git.example/acme/app/pulls/7", Repo: "acme/app", Number: 7}
-	if why, until := a.s.reviewHold(a.ctx, pr); !strings.Contains(why, first.Key) || until == nil {
+	if why, until, _ := a.s.reviewHold(a.ctx, pr); !strings.Contains(why, first.Key) || until == nil {
 		t.Errorf("a pending round doesn't hold the merge: %q", why)
 	}
 
@@ -132,7 +132,7 @@ func TestWorkLogReviewRound(t *testing.T) {
 	if len(a.jobs) != 1 {
 		t.Fatal("moved on during the review")
 	}
-	if why, _ := a.s.reviewHold(a.ctx, pr); why == "" {
+	if why, _, _ := a.s.reviewHold(a.ctx, pr); why == "" {
 		t.Error("a running round doesn't hold the merge")
 	}
 
@@ -146,7 +146,7 @@ func TestWorkLogReviewRound(t *testing.T) {
 	if r.state != RoundDone || r.body != report || r.readState != readPending {
 		t.Fatalf("after the report: %+v", r)
 	}
-	if why, _ := a.s.reviewHold(a.ctx, pr); why != "" {
+	if why, _, _ := a.s.reviewHold(a.ctx, pr); why != "" {
 		t.Errorf("a finished round still holds the merge: %q", why)
 	}
 	var summary string

@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -86,7 +88,11 @@ func (s *Server) openPull(w http.ResponseWriter, r *http.Request) (any, error) {
 	res.ShipReply = s.svc.ShipReplyTemplate(r.Context(), actorFrom(r))
 	if in.Issue != "" {
 		// Best effort: a task that can't be skimmed just shows nothing.
-		res.PutOff, _ = s.svc.PutOffSteps(r.Context(), actorFrom(r), in.Issue)
+		var rerr error
+		res.PutOff, rerr = s.svc.PutOffSteps(r.Context(), actorFrom(r), in.Issue)
+		if rerr != nil && !errors.Is(rerr, context.Canceled) && !errors.Is(rerr, core.ErrNotFound) && !errors.Is(rerr, core.ErrForbidden) { // not seen: nothing shown
+			s.log.WarnContext(r.Context(), "read the steps put off in a task", "issue", in.Issue, "err", rerr)
+		}
 	}
 	return res, nil
 }

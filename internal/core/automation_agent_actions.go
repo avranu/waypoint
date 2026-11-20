@@ -398,24 +398,28 @@ type agentOutcome struct {
 
 // jobProject is the project an agent step's job works for: the repo's, or
 // the automation's when no project has the repo.
-func (c *StepCtx) jobProject(r *stepRepo) int64 {
+func (c *StepCtx) jobProject(r *stepRepo) (int64, error) {
 	if r != nil && r.Forge != nil {
 		// The step's own project, when it has the repository.
 		if pid := c.stepProject(); c.Automation != nil && pid != 0 {
 			var n int
 			_ = c.S.db.R.QueryRowContext(c.Ctx, `SELECT COUNT(*) FROM project_repos WHERE project_id = ? AND forge_id = ? AND repo = ? COLLATE NOCASE`, pid, r.Forge.ID, r.Repo).Scan(&n)
 			if n > 0 {
-				return pid
+				return pid, nil
 			}
 		}
-		if id := c.S.attachedProject(c.Ctx, c.S.db.R, r.Forge.ID, r.Repo); id != 0 {
-			return id
+		id, err := c.S.attachedProject(c.Ctx, c.S.db.R, r.Forge.ID, r.Repo)
+		if err != nil {
+			return 0, err // not the automation's project: that would file the job under the wrong one
+		}
+		if id != 0 {
+			return id, nil
 		}
 	}
 	if c.Automation != nil {
-		return c.Automation.ProjectID
+		return c.Automation.ProjectID, nil
 	}
-	return 0
+	return 0, nil
 }
 
 // RunAgent runs the spec on a runner, trying each model of the chain until
@@ -426,7 +430,11 @@ func (c *StepCtx) RunAgent(spec agentSpec) (*agentOutcome, error) {
 		in := AgentJob{CLI: m.CLI, Model: m.Model, Prompt: spec.Prompt, Repo: spec.Repo.cloneURL(), Base: spec.Base, Branch: spec.Branch,
 			Push: spec.Push, Permission: spec.Permission, CommitMessage: spec.Message, ProtectPaths: spec.Protect}
 		raw, _ := json.Marshal(in)
-		job, err := c.RunnerJob(i, RunnerJobInput{Kind: JobAgent, Label: spec.Label, Input: raw, Timeout: int(spec.Timeout.Seconds()), ProjectID: c.jobProject(spec.Repo)})
+		projectID, err := c.jobProject(spec.Repo)
+		if err != nil {
+			return nil, err
+		}
+		job, err := c.RunnerJob(i, RunnerJobInput{Kind: JobAgent, Label: spec.Label, Input: raw, Timeout: int(spec.Timeout.Seconds()), ProjectID: projectID})
 		if err != nil {
 			return nil, err
 		}

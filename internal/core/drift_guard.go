@@ -128,7 +128,12 @@ func (s *Service) prIntent(ctx context.Context, actor *Actor, pr *PullRequest) *
 		in.Tasks = append(in.Tasks, t)
 	}
 	if scope == nil {
-		if pid := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo); pid != 0 {
+		pid, err := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo)
+		if err != nil {
+			if readFault(err) {
+				s.log.WarnContext(ctx, "read the project to scope a pull request's intent", "repo", pr.Repo, "number", pr.Number, "err", err)
+			}
+		} else if pid != 0 {
 			scope = &pid
 		}
 	}
@@ -167,7 +172,12 @@ func (s *Service) prIntent(ctx context.Context, actor *Actor, pr *PullRequest) *
 // prBodyNow is the pull request's description as the forge has it now, as
 // a person approved it when its author is from outside ("" when unknown).
 func (s *Service) prBodyNow(ctx context.Context, pr *PullRequest) string {
-	body, _ := s.prBodyRead(ctx, pr)
+	body, rerr := s.prBodyRead(ctx, pr)
+	if rerr != nil {
+		if readFault(rerr) {
+			s.log.WarnContext(ctx, "pr body read failed", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "err", rerr)
+		}
+	}
 	return body
 }
 
@@ -258,10 +268,12 @@ func (s *Service) fileDeferred(ctx context.Context, actor *Actor, pr *PullReques
 	var project, linked string
 	if len(tasks) > 0 {
 		project, linked = tasks[0].projectKey, tasks[0].Key
-	} else if pid := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo); pid != 0 {
-		if p, err := s.projectByID(ctx, s.db.R, pid); err == nil {
-			project = p.Key
+	} else {
+		key, err := s.attachedProjectKey(ctx, pr.ForgeID, pr.Repo)
+		if err != nil {
+			return "", err
 		}
+		project = key
 	}
 	if project == "" {
 		return "", invalid("%s isn't attached to a project, so there is nowhere to file the follow-up task: --reject or --needs-person instead", pr.Repo)
@@ -487,16 +499,17 @@ func (s *Service) footprintNow(ctx context.Context, b *Babysit, pr *PullRequest)
 }
 
 // footprintDue: a readiness reason while the check is owed and not asked
-// for yet ("" when none).
-func (s *Service) footprintDue(ctx context.Context, pr *PullRequest) string {
+// for yet ("" when none). A babysit that can't be read is an error, not
+// "nothing due".
+func (s *Service) footprintDue(ctx context.Context, pr *PullRequest) (string, error) {
 	b, err := s.activeBabysit(ctx, s.db.R, pr.ID)
 	if err != nil || b == nil {
-		return ""
+		return "", err
 	}
 	if _, why, due := s.footprintNow(ctx, b, pr); due {
-		return "footprint check due: its fix-up rounds grew it since it shipped (" + why + ")"
+		return "footprint check due: its fix-up rounds grew it since it shipped (" + why + ")", nil
 	}
-	return ""
+	return "", nil
 }
 
 // footprintStep asks for the footprint check the head needs, if any, and

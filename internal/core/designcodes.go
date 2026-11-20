@@ -217,7 +217,16 @@ func (s *Service) designByCode(ctx context.Context, actor *Actor, c DesignCode, 
 	}
 	readable := func(id int64) bool {
 		_, _, err := s.designFor(ctx, s.db.R, actor, id, RoleViewer)
-		return err == nil
+		if err != nil {
+			// Not found or not allowed is "can't read it"; anything else is a failed read.
+			if !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrForbidden) {
+				if readFault(err) {
+					s.log.WarnContext(ctx, "read whether a design note is readable", "note", id, "err", err)
+				}
+			}
+			return false
+		}
+		return true
 	}
 	if project != "" {
 		var chain []int64
@@ -318,7 +327,13 @@ func (s *Service) designByCodeIn(ctx context.Context, q queryer, c DesignCode, s
 		chain = []int64{p.ID}
 	default:
 		if scope != nil {
-			chain, _ = s.projectChainIDs(ctx, q, *scope)
+			var rerr error
+			chain, rerr = s.projectChainIDs(ctx, q, *scope)
+			if rerr != nil {
+				if readFault(rerr) {
+					s.log.WarnContext(ctx, "project chain ids failed", "err", rerr)
+				}
+			}
 		}
 		chain = append(chain, 0)
 	}

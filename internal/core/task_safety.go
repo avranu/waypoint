@@ -496,7 +496,13 @@ func (s *Service) screenAhead(ctx context.Context, issueID int64) bool {
 	var ok bool
 	err := s.db.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM issues i JOIN statuses st ON st.id = i.status_id WHERE i.id = ? AND `+sqlScreenAhead+`)`,
 		issueID, s.nowMS()).Scan(&ok)
-	return err == nil && ok
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read screen ahead", "issueID", issueID, "err", err)
+		}
+		return false
+	}
+	return ok
 }
 
 // runScreen screens an issue's text as it is now and stores the verdict.
