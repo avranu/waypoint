@@ -331,6 +331,9 @@ function ExtLink({ href, icon, children }: { href: string; icon: ReactNode; chil
 
 type Show = 'open' | 'all'
 
+/** How many findings an audit lists at a time when it sets no number. */
+const DEFAULT_SHOWN = 15
+
 function Findings({ audit: a }: { audit: CodeAudit }) {
   const findings = useMemo(
     () =>
@@ -341,8 +344,14 @@ function Findings({ audit: a }: { audit: CodeAudit }) {
   )
   const open = findings.filter((f) => f.state === 'open' || f.state === 'confirmed')
   const [show, setShow] = useState<Show>('open')
+  const [all, setAll] = useState(false)
   if (a.status !== 'done') return null
   const list = show === 'open' ? open : findings
+  // max_findings is how many are listed at a time; the rest are one click
+  // away and counted (WP-1421).
+  const atATime = a.max_findings || DEFAULT_SHOWN
+  const listed = all ? list : list.slice(0, atATime)
+  const more = list.length - listed.length
   return (
     <Section
       title={`Findings${findings.length ? ` (${findings.length})` : ''}`}
@@ -374,10 +383,17 @@ function Findings({ audit: a }: { audit: CodeAudit }) {
         </Empty>
       ) : (
         <ul className="divide-y divide-line">
-          {list.map((f) => (
+          {listed.map((f) => (
             <FindingItem key={f.id} finding={f} audit={a} />
           ))}
         </ul>
+      )}
+      {more > 0 && (
+        <div className="border-t border-line px-4 py-3">
+          <Button size="sm" onClick={() => setAll(true)}>
+            Show {more} more
+          </Button>
+        </div>
       )}
     </Section>
   )
@@ -648,7 +664,7 @@ function Asked({ audit: a }: { audit: CodeAudit }) {
               {[
                 a.min_severity &&
                   MIN_SEVERITY.find((x) => x.value === a.min_severity)?.label.toLowerCase(),
-                a.max_findings && `at most ${plural(a.max_findings, 'finding')}`,
+                a.max_findings && `showing ${plural(a.max_findings, 'finding')} at a time`,
               ]
                 .filter(Boolean)
                 .join(', ')

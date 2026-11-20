@@ -386,7 +386,7 @@ let recentID;
   await dlg.getByLabel("Leave out").fill("ledger/export.go");
   await dlg.getByRole("combobox", { name: "Report", exact: true }).click();
   await p.getByRole("option", { name: "High or worse", exact: true }).click();
-  await dlg.getByLabel("At most").fill("5");
+  await dlg.getByLabel("Show at a time").fill("5");
   await p.screenshot({ path: `${out}/recent-dialog-1280.png` });
   refusing = true;
   await dlg.getByRole("button", { name: "Start audit" }).click();
@@ -402,14 +402,14 @@ let recentID;
   ok(Math.abs(input.diff_since - (asked - 14 * 86400)) < 300 && !input.diff_from, `the job reads from two weeks back (${input.diff_since})`);
   ok(JSON.stringify(input.diff_paths) === '["ledger"]' && input.diff_exclude?.includes("ledger/export.go"), `with the paths: ${JSON.stringify([input.diff_paths, input.diff_exclude])}`);
   const schema = typeof input.json_schema === "string" ? input.json_schema : JSON.stringify(input.json_schema);
-  ok(schema?.includes('"maxItems":5'), "the schema caps the findings at 5");
+  ok(schema && !schema.includes('maxItems'), "the schema carries no number");
   for (const t of ["Look hardest at", "Security:", "Concurrency:", "Audit only these parts", "Leave these out", "Report only findings of high severity or worse"])
     ok(input.prompt.includes(t), `the prompt says “${t}”`);
   await p.getByText("Done", { exact: true }).first().waitFor({ timeout: 15000 });
   await p.locator('li[id^="finding-"]').first().waitFor();
   ok((await p.locator('li[id^="finding-"]').count()) === 1, "only the high finding is kept");
   ok(await p.getByText(/2 of the answer's 3 findings were below the audit's lowest severity, high, and are left out/).isVisible(), "the summary says two were left out");
-  for (const t of ["the last 14 days", "Hardest at", "Security", "Concurrency", "Leaving out", "ledger/export.go", "High or worse, at most 5 findings", "3 commits", "beef001234..c0ffee1234"])
+  for (const t of ["the last 14 days", "Hardest at", "Security", "Concurrency", "Leaving out", "ledger/export.go", "High or worse, showing 5 findings at a time", "3 commits", "beef001234..c0ffee1234"])
     ok(await p.getByText(t, { exact: false }).first().isVisible(), `the page shows “${t}”`);
   await p.screenshot({ path: `${out}/recent-audit-1280.png`, fullPage: true });
 
@@ -419,7 +419,7 @@ let recentID;
   await again.getByRole("radio", { name: "Last 2 weeks" }).waitFor();
   ok((await again.getByRole("radio", { name: "Last 2 weeks" }).getAttribute("aria-checked")) === "true", "the copy keeps the period");
   ok((await again.getByRole("button", { name: "Security" }).getAttribute("aria-pressed")) === "true", "and the focus areas");
-  ok((await again.getByLabel("Only these paths").inputValue()) === "ledger" && (await again.getByLabel("At most").inputValue()) === "5", "and the paths and cap");
+  ok((await again.getByLabel("Only these paths").inputValue()) === "ledger" && (await again.getByLabel("Show at a time").inputValue()) === "5", "and the paths and cap");
   await again.getByRole("radio", { name: "Since a date…" }).click();
   await again.getByRole("textbox", { name: "Span" }).fill("3d");
   await again.getByRole("button", { name: "Start audit" }).click();
@@ -430,6 +430,37 @@ let recentID;
   ok(await p.getByText("Nothing landed on main in the last 3 days.").isVisible(), "a period with nothing in it says so");
   const a2 = await api("GET", `/audits/${second}`);
   ok(a2.since === "3d" && a2.focus?.includes("security") && a2.max_findings === 5 && !a2.model, `the copy is its own ask, and no model ran: ${JSON.stringify({ since: a2.since, focus: a2.focus, max: a2.max_findings, model: a2.model })}`);
+
+  // Show at a time (WP-1421): asked to show 5, a model that reports 12 keeps 12.
+  const twelve = Array.from({ length: 12 }, (_, n) => ({
+    title: `Nit number ${n + 1}`,
+    path: "ledger/nit.go",
+    line: n + 1,
+    severity: "low",
+    problem: "A small thing.",
+    confirm: "Read the line.",
+  }));
+  const more = await api("POST", "/audits", { target: "branch", project: KEY, repo: REPO, ref: "round-once", max_findings: 5 });
+  ok(more?.id > 0, `an audit asked to show 5 starts (${JSON.stringify(more)?.slice(0, 120)})`);
+  const sent = await answer(twelve, "A dozen small things.");
+  const sentSchema = typeof sent.json_schema === "string" ? sent.json_schema : JSON.stringify(sent.json_schema);
+  ok(!sentSchema.includes("maxItems") && !/\b(5|12)\b findings/.test(sent.prompt), "the model is told no number");
+  await p.goto(`${base}/audits/${more.id}`);
+  await p.locator('li[id^="finding-"]').first().waitFor();
+  ok((await p.locator('li[id^="finding-"]').count()) === 5, "the page lists 5 findings");
+  const showMore = p.getByRole("button", { name: "Show 7 more" });
+  ok(await showMore.isVisible(), "and offers Show 7 more");
+  await p.screenshot({ path: `${out}/show-5-of-12-${(p.viewportSize() || {}).width}.png`, fullPage: true });
+  await showMore.click();
+  ok((await p.locator('li[id^="finding-"]').count()) === 12, "which shows all 12");
+  ok(((await api("GET", `/audits/${more.id}`)).findings || []).length === 12, "and the API holds all 12");
+  await p.setViewportSize({ width: 390, height: 900 });
+  await p.goto(`${base}/audits/${more.id}`);
+  await p.locator('li[id^="finding-"]').first().waitFor();
+  ok(await p.getByRole("button", { name: "Show 7 more" }).isVisible(), "at 390px too");
+  ok(!(await p.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)), "no sideways scroll at 390px");
+  await p.screenshot({ path: `${out}/show-5-of-12-390.png`, fullPage: true });
+  await p.setViewportSize({ width: 1280, height: 900 });
 }
 
 // ---- the recent audit and its dialog at each width ----
