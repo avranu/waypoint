@@ -44,8 +44,9 @@ type siteHit struct {
 // reads the SITE_NAMES secret; locally SITE_NAMES in the environment or in
 // deploy/site.mk (gitignored, exported by the Makefile) wins, else the
 // site-names file in Waypoint's per-user config dir, which every checkout and
-// worktree on the machine shares (WP-1432). In the file a line starting with
-// # is a comment. from says where the list came from, for messages.
+// worktree on the machine shares (WP-1432). In the file # starts a comment
+// that runs to the end of the line. from says where the list came from, for
+// messages.
 func siteNames() (names map[string]bool, from string) {
 	names = map[string]bool{}
 	text, from := os.Getenv("SITE_NAMES"), "SITE_NAMES"
@@ -57,9 +58,8 @@ func siteNames() (names map[string]bool, from string) {
 				fmt.Fprintf(os.Stderr, "site names: cannot read %s: %v\n", from, err)
 			}
 			for _, line := range strings.Split(string(b), "\n") {
-				if !strings.HasPrefix(strings.TrimSpace(line), "#") {
-					text += line + "\n"
-				}
+				line, _, _ = strings.Cut(line, "#")
+				text += line + "\n"
 			}
 		}
 	}
@@ -346,7 +346,7 @@ func TestSiteNamesFile(t *testing.T) {
 		t.Errorf("no file: names %q", got)
 	}
 	file := filepath.Join(dir, "site-names")
-	if err := os.WriteFile(file, []byte("# a comment naming skipme\nAlpha, beta\n  gamma\n"), 0o600); err != nil {
+	if err := os.WriteFile(file, []byte("# a comment naming skipme\nAlpha, beta # and skipme too\n  gamma\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if got := keys(); got != "alpha,beta,gamma" {
