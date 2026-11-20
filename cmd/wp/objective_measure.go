@@ -202,7 +202,10 @@ func measureCheck(ctx context.Context, spec measureSpec, sides []measureSide, sa
 			case err != nil:
 				return nil, nil, false, stopped(ctx, "setup in "+s.Label, err)
 			case run.TimedOut:
-				return nil, nil, false, stopf("the setup (%s) ran longer than %s in %s and was stopped", excerpt(spec.Setup, 80), spec.Timeout.Round(time.Second), s.Label)
+				if i == 0 {
+					return nil, nil, false, stopf("the setup (%s) ran longer than %s in %s and was stopped", excerpt(spec.Setup, 80), spec.Timeout.Round(time.Second), s.Label)
+				}
+				fail(i, run, fmt.Sprintf("its setup (%s) ran longer than %s and was stopped. ", excerpt(spec.Setup, 80), spec.Timeout.Round(time.Second)))
 			case run.Code != 0:
 				if i == 0 {
 					return nil, nil, false, stopf("the setup (%s) failed in %s with exit %d: %s", excerpt(spec.Setup, 80), s.Label, run.Code, excerpt(strings.TrimSpace(trimOutput(run.All, 1<<30)), 400))
@@ -225,6 +228,12 @@ func measureCheck(ctx context.Context, spec measureSpec, sides []measureSide, sa
 		switch {
 		case err != nil:
 			return run, false, stopped(ctx, "the check in "+sides[i].Label, err)
+		case run.TimedOut && i > 0:
+			// Only the head must read: another side that is too slow to
+			// read is an answer about that side, and the head's stands.
+			fail(i, run, fmt.Sprintf("the check ran longer than %s and was stopped. ", spec.Timeout.Round(time.Second)))
+			r.Runs = max(r.Runs, 1)
+			return run, false, nil
 		case run.TimedOut:
 			more := ""
 			if spec.Measure == "time" {

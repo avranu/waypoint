@@ -417,3 +417,26 @@ func TestRunCheckKeepsBothStreams(t *testing.T) {
 		t.Error("stderr reached what stdout is read from")
 	}
 }
+
+// A side other than the head that runs past the timeout reads as failed,
+// and the head's reading stands: a round that made a hung check finish is
+// exactly the round to read.
+func TestMeasureCheckLaterSideTimingOutIsAnAnswer(t *testing.T) {
+	head, base := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(head, "d"), []byte("0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "d"), []byte("300\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, measure := range []string{"pass", "time"} {
+		spec := measureSpec{Check: "sleep $(cat d)", Measure: measure, Timeout: time.Second, Budget: 20 * time.Second, MaxRuns: 3, Env: os.Environ()}
+		reads, _, _, err := measureCheck(context.Background(), spec, []measureSide{{"the head", head}, {"the base", base}}, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", measure, err)
+		}
+		if !reads[0].OK || reads[1].OK || !strings.Contains(reads[1].Output, "longer than") {
+			t.Errorf("%s: head %+v, base %+v", measure, reads[0], reads[1])
+		}
+	}
+}
