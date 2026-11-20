@@ -52,7 +52,10 @@ func siteNames() (names map[string]bool, from string) {
 	if strings.TrimSpace(text) == "" {
 		text, from = "", siteNamesFile()
 		if from != "" {
-			b, _ := os.ReadFile(from) // #nosec G304 -- our own per-user config file; missing means no names
+			b, err := os.ReadFile(from) // #nosec G304 -- our own per-user config file
+			if err != nil && !os.IsNotExist(err) {
+				fmt.Fprintf(os.Stderr, "site names: cannot read %s: %v\n", from, err)
+			}
 			for _, line := range strings.Split(string(b), "\n") {
 				if !strings.HasPrefix(strings.TrimSpace(line), "#") {
 					text += line + "\n"
@@ -226,7 +229,11 @@ func allDigits(parts []string) bool {
 func TestNoSiteNames(t *testing.T) {
 	names, from := siteNames()
 	if len(names) == 0 {
-		t.Skipf("no site names to look for: set SITE_NAMES or list them in %s", siteNamesFile())
+		where := siteNamesFile()
+		if where == "" {
+			where = "the site-names file in Waypoint's per-user config dir (none found: set WAYPOINT_CONFIG_DIR)"
+		}
+		t.Skipf("no site names to look for: set SITE_NAMES or list them in %s", where)
 	}
 	root, err := filepath.Abs("../..")
 	if err != nil {
