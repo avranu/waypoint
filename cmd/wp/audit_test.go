@@ -103,7 +103,7 @@ func TestCLIAudit(t *testing.T) {
 	if !strings.Contains(out, "Audit #2 of robin/waypoint main, the last 2 weeks (internal) asked of") {
 		t.Errorf("wp audit --since:\n%s", out)
 	}
-	if out := e.wp("audit", "show", "2"); !strings.Contains(out, "Criteria: focus security, data; only internal; not *_test.go; high and worse; asked for at most 5 findings") {
+	if out := e.wp("audit", "show", "2"); !strings.Contains(out, "Criteria: focus security, data; only internal; not *_test.go; high and worse; shows 5 findings at a time") {
 		t.Errorf("wp audit show 2:\n%s", out)
 	}
 	if out := e.wp("audit", "recent", "release"); !strings.Contains(out, "robin/waypoint release, the last 7 days") {

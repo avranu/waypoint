@@ -187,15 +187,15 @@ func TestParseReviewReport(t *testing.T) {
 		t.Errorf("second = %+v", l)
 	}
 	var many []string
-	for i := range auditMaxFindings + 3 {
+	for i := range 30 + 3 {
 		sev := "low"
-		if i >= auditMaxFindings {
+		if i >= 30 {
 			sev = "critical"
 		}
 		many = append(many, fmt.Sprintf(`{"title": "F%d", "severity": %q, "problem": "P"}`, i, sev))
 	}
 	_, got, dropped, err = parseReviewReport("[" + strings.Join(many, ",") + "]")
-	if err != nil || len(got) != auditMaxFindings+3 || dropped != 0 || got[0].Severity != "critical" || got[2].Severity != "critical" || got[3].Severity != "low" {
+	if err != nil || len(got) != 30+3 || dropped != 0 || got[0].Severity != "critical" || got[2].Severity != "critical" || got[3].Severity != "low" {
 		t.Fatalf("%d kept, %d dropped, %v", len(got), dropped, err)
 	}
 	// A report keeps up to the guard (findingsGuard), the worst first; the

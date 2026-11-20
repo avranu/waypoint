@@ -765,7 +765,8 @@ person changes or clears one in effect.
         "skip_heads":[],"paths":["web/**"] (touches one),"skip_paths":["docs/**"] (every file
         matches one: left out),"min_changed_lines","max_changed_lines" (additions + deletions),
         "repos":["owner/*"]}. Actions: review {"models":[{"provider_id","model"}],"focus",
-        "max_findings","min_severity":"P0|P1|P2|P3","skip_files":[globs],"force"}; when steps
+        "max_findings" (how many are posted, worst first, 1-100, default 8; the rest are kept and
+        counted in the review),"min_severity":"P0|P1|P2|P3","skip_files":[globs],"force"}; when steps
         follow a review the run waits for it and the step leaves Findings, Posted, Worst
         ("P0".."P3", "" for none), P0..P3 (counts), Reviewed, Status, Summary, URL, RunID, e.g.
         "only_if":"{{or .Steps.review.P0 .Steps.review.P1}}". pr_comment {"message"}, react
@@ -999,7 +1000,8 @@ Cursor on a Waypoint with no LLM gateway. It never changes anything; findings ar
 someone checks them. Not the audit log above.
 
     POST /audits {target: repo|branch|commit|range|pr, repo, project, ref, base, pr, pr_id,
-                 instructions, models: ["cursor/grok-4.7-high", …], comment, fix, blocking}
+                 instructions, models: ["cursor/grok-4.7-high", …], comment, fix, blocking,
+                 max_findings}
                                      ask for one (editors with audits.run): target empty means pr when pr or
                                      pr_id is set, range when ref has "..", else repo. branch: ref against
                                      base (default branch); commit: ref against its parent; range: "A..B";
@@ -1007,7 +1009,12 @@ someone checks them. Not the audit log above.
                                      or out of quota (default: the chain from GET /audits/defaults); a chain
                                      that is only busy is retried up to 3 times. comment (default yes) posts
                                      a pull request's findings on it; fix makes a task for Claude to check
-                                     and fix them. The asking session is told when it ends
+                                     and fix them. max_findings (0: 15; 1-100) is how many findings are shown
+                                     at a time (wp audit show, the audit's page, the pull request's comment: the
+                                     rest are counted and one step away); it is not a limit. The model is told no
+                                     number and every finding it reports is kept (the guard is 100: past it the
+                                     summary says how many were cut). GET returns all of them.
+                                     The asking session is told when it ends
     GET /audits?project=KEY&pr_id=N&status=queued|running|done|failed|limited|cancelled|active&limit=50
                                      newest first, each with counts {total, open, critical, high, medium, low}
     GET /audits/defaults             {instructions, models, targets, severities, states, clis}

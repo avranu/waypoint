@@ -375,13 +375,12 @@ func TestAuditSchemaForLead(t *testing.T) {
 		name     string
 		a        *CodeAudit
 		wantLead bool
-		maxItems int
 	}{
-		{"no helpers", &CodeAudit{}, false, auditDefaultFindings},
-		{"verify only", &CodeAudit{Helpers: &AuditHelpers{Verify: true}}, false, auditDefaultFindings},
-		{"a panel", &CodeAudit{Helpers: panel}, false, auditDefaultFindings},
-		{"a panel and a cap", &CodeAudit{Helpers: panel, MaxFindings: 22}, false, 22},
-		{"a cap, no panel", &CodeAudit{MaxFindings: 7}, false, 7},
+		{"no helpers", &CodeAudit{}, false},
+		{"verify only", &CodeAudit{Helpers: &AuditHelpers{Verify: true}}, false},
+		{"a panel", &CodeAudit{Helpers: panel}, false},
+		{"a panel and a cap", &CodeAudit{Helpers: panel, MaxFindings: 22}, false},
+		{"a cap, no panel", &CodeAudit{MaxFindings: 7}, false},
 	} {
 		s := auditSchemaFor(tc.a)
 		if !json.Valid([]byte(s)) {
@@ -407,8 +406,8 @@ func TestAuditSchemaForLead(t *testing.T) {
 		if hasProp != tc.wantLead || slices.Contains(items.Required, "lead") != tc.wantLead {
 			t.Errorf("%s: lead property %v, required %v; want %v", tc.name, hasProp, slices.Contains(items.Required, "lead"), tc.wantLead)
 		}
-		if parsed.Properties.Findings.MaxItems != tc.maxItems {
-			t.Errorf("%s: maxItems = %d, want %d", tc.name, parsed.Properties.Findings.MaxItems, tc.maxItems)
+		if parsed.Properties.Findings.MaxItems != 0 {
+			t.Errorf("%s: maxItems = %d: the model is told no number", tc.name, parsed.Properties.Findings.MaxItems)
 		}
 		// What was there stays required.
 		for _, k := range []string{"title", "path", "line", "severity", "problem", "confirm"} {
