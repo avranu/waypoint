@@ -28,8 +28,9 @@ type TriageTotals struct {
 	WouldSkip int `json:"would_skip"`
 	Skipped   int `json:"skipped"`    // no review ran
 	AgentSkip int `json:"agent_skip"` // of those, wp ship --skip-review
-	OwnReview int `json:"own_review"` // of those, the session reviewed it itself (WP-1089)
+	OwnReview int `json:"own_review"` // of those, rounds from before WP-1320 skipped because the session reviewed it itself (WP-1089); no new round is counted here
 	Reviewed  int `json:"reviewed"`
+	OwnRound  int `json:"own_round"`   // of those, rounds the session reviewed itself: its report is the round (WP-1320; a round since then is reviewed, not skipped)
 	Holdout   int `json:"holdout"`     // reviewed though an active rule would skip
 	ShadowRun int `json:"shadow_runs"` // reviewed; a shadow rule or mode would skip
 
@@ -254,6 +255,9 @@ func (t *TriageTotals) add(e *TriageExport, first bool) {
 		}
 	} else {
 		t.Reviewed++
+		if e.Why == triageWhyOwnReview {
+			t.OwnRound++
+		}
 	}
 	switch e.Why {
 	case triageWhyHoldout:
@@ -322,7 +326,8 @@ func (s *Service) triageEvidence(ctx context.Context, issueID int64, repo, head 
 
 // triageAvoided estimates what the skips saved, from how long these
 // projects' reviews took and how often one had a Grok audit. Only rule
-// skips count: an agent's --skip-review or own review wasn't triage's doing.
+// skips count: an agent's --skip-review wasn't triage's doing, nor was a round
+// skipped for the session's own review (only rounds from before WP-1320).
 func (s *Service) triageAvoided(ctx context.Context, projects []int64, since int64, out *ReviewTriageStats) error {
 	out.Avoided.Rounds = out.Total.Skipped - out.Total.AgentSkip - out.Total.OwnReview
 	if len(projects) == 0 {

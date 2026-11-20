@@ -87,6 +87,13 @@ stateless, same bearer token).
                                   fell back to its own prompt), notes, agent runs, pull
                                   requests, review findings and review-comment verdicts, oldest first
     POST  /issues/{key}/worklog {"body", "tag": "found|fixed|rejected|"}   add a note (who may comment)
+    POST  /issues/{key}/review-report {"report": JSON text | "none": true, "summary"}   from the task's own agent
+                                  session: what the adversarial review it ran itself found, as the findings of its
+                                  review round before the pull request (WP-1320). report is {"summary", "findings":
+                                  [{title, path, line, severity: critical|high|medium|low, problem, outcome:
+                                  fixed|rejected|open, note}]}; none with a summary says it raised nothing. Returns
+                                  {audit, round, replaced, dropped, next}: the audit holds the findings (mark them
+                                  with POST /audits/findings), and the round is then checked and scored at wp ship
     GET   /worklog/stats?project=KEY&days=30   what adversarial reviews found, per project and in total
     GET   /worklog/triage?project=KEY&days=30&rows=1   review triage (WP-692): per rule, what it decided and how it
                                   turned out; what skipping avoided; rows=1 adds each assessment with its
@@ -682,33 +689,56 @@ control. Reading needs ai.manage; starting and stopping, a person who is an admi
                                     task) {key, arms:{experiment:{arm,run,params}}}: the arms of the
                                     experiments wp carries out; empty for a person or a read-only token
 
-## Objectives (WP-927, WP-ADR111)
+## Objectives (WP-927, WP-ADR111, WP-ADR142)
 
-A task with an objective is worked in rounds. A round ends where the task would close (wp done, or
-the merge of its pull request): the task closes when the round's last check met a fixed target or
-its rounds ran out, and otherwise goes back to To Do for the next round. A person closing it
-themselves always closes it. Three shapes: until a fixed target ("< 1s", ">= 80%", "pass"); an
-amount every round against the round's base commit ("2x", "-10%", "+5%"), never met for good; a
-loop with no check. The check is a shell command agents' machines run, so an agent's objective is
-a proposal (state proposed: shown, not run, not looping) until a person confirms it, and only a
-person changes or clears one in effect.
+A task with an objective is worked in rounds. A round's work ends where the task would close (wp
+done, or the merge of its pull request). Waypoint then reads the round itself: it runs the check
+and the commands that must keep passing in fresh checkouts on a runner of the person who confirmed the objective, and has a
+model that didn't do the work judge it when the objective has a judge. That reading alone decides:
+the task closes when it met the target, and otherwise opens for the next round (out of rounds
+unmet, it waits for a person). What the worker's own wp objective check reports is kept as a working reading and decides
+nothing. A person closing the task themselves always closes it. Four shapes: until a fixed target
+("< 1s", ">= 80%", "pass"); until a judge finds nothing at or above a severity; an amount every
+round against the commit the round started from ("2x", "-10%", "+5%"), never met for good; a loop
+with no check. The commands run on people's machines, so an agent's objective is a proposal (state
+proposed: shown, not run, not looping) until a person confirms it, and only a person changes,
+steers or clears one in effect.
 
     GET    /objectives?project=KEY&all=1   those in effect or proposed (all: met and ended too)
-    GET    /issues/{key}/objective  {kind until|each|loop, check, dir, setup, measure time|value|pass,
-                                    until, pace queue|spare, every (seconds), max_rounds, round,
-                                    stalled, next_at, state proposed|active|met|ended, summary, rev, text,
-                                    last, checks[], rounds[]}; also "objective" on GET /issues/{key}
+    GET    /issues/{key}/objective  {kind until|each|judged|loop, check, dir, setup, measure
+                                    time|value|pass, until, repo, branch, keep_passing[], judge, judge_bar
+                                    critical|high|medium|low, judge_models[], pace queue|spare, every
+                                    (seconds), max_rounds, round, stalled, next_at, state
+                                    proposed|active|met|ended, phase ""|baseline|verdict|blocked,
+                                    phase_why, phase_note, health proposed|working|ready|waiting|
+                                    reading|blocked|stuck|met|ended, health_note, stuck_since,
+                                    stuck_why, base_sha, ended_why, summary, rev, text, last (newest
+                                    reading of any source), verdict (newest of Waypoint's own),
+                                    checks[] (each with source agent|runner|judge|baseline),
+                                    rounds[] (outcome reading|met|progress|worked|none|empty|
+                                    unmeasured|loop), findings[]}; also "objective" on GET /issues/{key}
     PUT    /issues/{key}/objective {"check","dir","setup","until","measure","better":"lower|higher",
-                                    "pace","every":"24h","max_rounds":0}   set or change; a field
-                                    left out keeps its value. pace spare: handed out only while the
-                                    week's-end plan wants more work (WP-ADR106). every: least time
-                                    between rounds (default 24h for each and loop, 0 for until)
+                                    "repo":"owner/name","branch","keep_passing":[cmd],"judge","judge_bar",
+                                    "judge_models":[model],"pace","every":"24h","max_rounds":0,"rev"}
+                                    set or change; a field left out keeps its value. keep_passing:
+                                    commands a round mustn't break. judge: what done means, in words. pace
+                                    spare: handed out only while the week's-end plan wants more work
+                                    (WP-ADR106). every: least time between rounds (default 24h for
+                                    each and loop, 0 for until and judged). rev: the agent's proposal
+                                    a person's change builds on
     POST   /issues/{key}/objective/confirm {"rev"}   a person puts an agent's proposal in effect; rev
                                     is the one they read, refused if it was rewritten since
-    DELETE /issues/{key}/objective  takes it off, rounds and checks with it
+    POST   /issues/{key}/objective/go {"action":"retry|next|accept|end"}   a person steers one in
+                                    effect: retry a reading that couldn't be taken; next: hand the
+                                    round out now, or leave an unread round behind; accept a reading
+                                    that waits because the round changed what the check runs; end it (the
+                                    task stays, an ordinary task)
+    DELETE /issues/{key}/objective  takes it off, rounds and readings with it; the task's history says
+                                    what it had reached
     POST   /issues/{key}/objective/checks {"ok","value","base_ok","base_value","base_sha","tree",
                                     "commit","runs","low","high","p","moved"}   what wp objective
-                                    check measured (time in seconds) → {check, met, message}
+                                    check measured on the worker's machine (time in seconds): a
+                                    working reading → {check, met, message}
 
 ## CLI
 

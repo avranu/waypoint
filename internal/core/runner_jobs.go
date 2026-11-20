@@ -35,7 +35,7 @@ const (
 var runnerJobSources = []string{"request_apply", "request_cell", "request_decision", "automation_step", "bot_run", "babysit", "session_message", "session_batch", "manual", "kit_rollout", "autopilot", autopilotReviewSource, "audit", cacheWarmSource, reviewCompactSource, prepAgentSource, babysitHeldSource}
 
 // default timeouts, seconds
-var runnerTimeouts = map[string]int{JobCommand: 600, JobApply: 300, JobAgent: 1800, JobReview: 900, JobSession: 120, JobMessage: 60, JobAutopilot: 900, JobAutopilotStart: 900, JobAudit: 2700}
+var runnerTimeouts = map[string]int{JobCommand: 600, JobApply: 300, JobAgent: 1800, JobReview: 900, JobSession: 120, JobMessage: 60, JobAutopilot: 900, JobAutopilotStart: 900, JobAudit: 2700, JobObjective: objectiveJobTimeout}
 
 var (
 	envKeyRE = lazyre.New(`^[A-Za-z_][A-Za-z0-9_]{0,99}$`)
@@ -928,6 +928,21 @@ type RunnerFinish struct {
 	Error    string          `json:"error"`
 }
 
+const (
+	// RunnerResultMax is the most a job's result may be (bytes). An audit's
+	// holds its findings and every helper run with its leads, cut leads and
+	// evidence (WP-1320): live results passed 256 KB, which the runner took
+	// as fatal and lost the work. The API reads a finish body up to this and
+	// a margin (RunnerFinishBodyMax); a proxy needs a body limit above it.
+	RunnerResultMax = 2 << 20
+	// RunnerFinishBodyMax is the most a finish request's body may be: the
+	// result and what else it carries (the state, the error).
+	RunnerFinishBodyMax = RunnerResultMax + 64<<10
+	// RunnerResultTooLarge starts the error for a result over the most; the
+	// runner reads it to send the result again with less in it.
+	RunnerResultTooLarge = "the result is too large"
+)
+
 // FinishRunnerJob records how a job ended. A job that already ended
 // (cancelled, expired) stays as it is; the answer says what it is.
 func (s *Service) FinishRunnerJob(ctx context.Context, actor *Actor, id int64, in RunnerFinish) (string, error) {
@@ -937,8 +952,11 @@ func (s *Service) FinishRunnerJob(ctx context.Context, actor *Actor, id int64, i
 	if !slices.Contains([]string{"done", "failed", "cancelled"}, in.State) {
 		return "", invalid("state must be done, failed or cancelled")
 	}
-	if len(in.Result) > 256<<10 || (len(in.Result) > 0 && !json.Valid(in.Result)) {
-		return "", invalid("result must be JSON, up to 256 KB")
+	if len(in.Result) > RunnerResultMax {
+		return "", invalid("%s: %d bytes, the most is %d (2 MB)", RunnerResultTooLarge, len(in.Result), RunnerResultMax)
+	}
+	if len(in.Result) > 0 && !json.Valid(in.Result) {
+		return "", invalid("result must be JSON")
 	}
 	state := in.State
 	err := s.write(ctx, actor, func(t *tx) error {

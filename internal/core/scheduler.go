@@ -177,6 +177,7 @@ func (s *Service) schedule() []scheduled {
 		scheduled{name: "armed merges", every: minute, run: s.CheckArmedMerges},          // reviews settled, quiet over (WP-133)
 		scheduled{name: "babysits", every: minute, run: s.CheckBabysits},                 // WP-134
 		scheduled{name: "audits", every: minute, run: s.CheckAudits},                     // WP-348
+		scheduled{name: "objectives", every: minute, run: s.CheckObjectives},             // after the audits that judge them (WP-ADR111, WP-ADR142)
 		scheduled{name: "request conditions", every: minute, run: s.CheckRequestWatches}, // WP-126
 		scheduled{name: "hold conditions", every: minute, run: s.CheckHoldConditions},    // WP-ADR75
 		scheduled{name: "safety screens", every: minute, run: s.sweepScreens},            // WP-ADR10

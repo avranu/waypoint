@@ -105,6 +105,49 @@ async function run(width, scheme, n) {
   await shot("autopilot-review");
   await overflow("autopilot review limits");
 
+  // ---- under a custom default brief, a project can go back to Waypoint's built-in one (WP-1320) ----
+  const briefIs = (want) =>
+    page.waitForFunction(async ([b, k, w]) => {
+      const o = await (await fetch(b + "/api/v1/autopilot")).json();
+      const p = o.projects.find((x) => x.project_key === k);
+      return p && (w === null ? p.limits.review_text === undefined : p.limits.review_text === w);
+    }, [base, KEY, want]);
+  const mine = (await api("GET", "/autopilot")).defaults;
+  const house = "House brief 🔥🔥: attack the migrations first.";
+  await api("PUT", "/autopilot", { limits: { review_text: house }, merge: true });
+  await page.reload();
+  await page.getByTestId(`autopilot-${KEY}`).getByRole("button", { name: `Limits for ${KEY}` }).click();
+  await dlg.waitFor();
+  await brief.fill(house + "!");
+  // an emoji is one character here as on the server, not the two a string's length counts
+  await dlg.getByText(`${[...house].length + 1} of 12,000 characters`).waitFor();
+  ok(true, `${tag} the brief's length is counted in characters, as the server counts it`);
+  await brief.fill("");
+  await brief.blur();
+  await briefIs(null);
+  ok((await brief.getAttribute("placeholder")) === house, `${tag} an empty brief inherits the custom default, shown in grey`);
+  await dlg.getByRole("button", { name: "Use the built-in" }).click();
+  await briefIs("");
+  await dlg.getByText("Set to Waypoint’s built-in brief, shown in grey.").waitFor();
+  ok(
+    ((await brief.getAttribute("placeholder")) || "").includes("Burden of proof"),
+    `${tag} Use the built-in sets the project back to Waypoint's brief under a custom default`,
+  );
+  await shot("autopilot-builtin-brief");
+  await overflow("the built-in brief chosen");
+  await page.reload();
+  await page.getByTestId(`autopilot-${KEY}`).getByRole("button", { name: `Limits for ${KEY}` }).click();
+  await dlg.getByText("Set to Waypoint’s built-in brief, shown in grey.").waitFor();
+  ok(true, `${tag} the choice is still shown after a reload`);
+  await dlg.getByRole("button", { name: "Inherit instead" }).click();
+  await briefIs(null);
+  ok((await brief.getAttribute("placeholder")) === house, `${tag} Inherit instead goes back to the default's brief`);
+  // as it was, for the rest of this suite and the ones after it
+  await api("PUT", "/autopilot", { limits: mine });
+  await brief.fill("Attack the parser. Name the input that breaks it.");
+  await brief.blur();
+  await briefIs("Attack the parser. Name the input that breaks it.");
+
   // ---- a task with a counted round ----
   const issue = await api("POST", "/issues", { project: KEY, title: `Parser of ${KEY}` });
   const empty = await api("GET", `/issues/${issue.key}/worklog`);

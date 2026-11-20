@@ -52,8 +52,9 @@ var (
 // removed. The runner records each file by its whole name and applies what it
 // hasn't recorded, so an edit never reaches a database that ran the file and
 // a rename runs it twice. Two files sharing a number are fine for the same
-// reason (main has 16 such numbers, from 0082 to 0167), so this doesn't ask for
-// renumbering, which is what the six renumber commits before it did.
+// reason (main has had such numbers since 0082: `ls internal/db/migrations |
+// cut -c1-4 | uniq -d` lists them), so this doesn't ask for renumbering, which
+// is what the six renumber commits before it did.
 //
 // e2e-wait (5 fixed-wait flake tasks): no new page.waitForTimeout in e2e. The
 // waits already there are compared with Base by file and by text, so editing

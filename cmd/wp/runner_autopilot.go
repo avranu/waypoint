@@ -423,8 +423,10 @@ func kickoffPrompt(k kickoff, answer string, nextErr error) string {
 // promptInput finds Claude Code's input box on a captured screen (with
 // escapes, capture-pane -e) and returns what is typed into it, without the
 // dimmed placeholder. The box is the last line that starts with ❯ right
-// under a rule (──), so a ❯ in a status line or the transcript isn't taken
-// for it. found is false when no input box is on the screen.
+// under the box's top border, so a ❯ in a status line or the transcript isn't
+// taken for it. The top border is a rule (──) that may carry a label at its
+// right end (a named session shows "── WP-1320 - Title ─"); the bottom border
+// is always a plain rule. found is false when no input box is on the screen.
 func promptInput(screen string) (text string, found bool) {
 	lines := strings.Split(strings.ReplaceAll(screen, "\r", ""), "\n")
 	plain := make([]string, len(lines))
@@ -433,7 +435,7 @@ func promptInput(screen string) (text string, found bool) {
 	}
 	at := -1
 	for i := len(lines) - 1; i > 0; i-- {
-		if strings.HasPrefix(plain[i], "❯") && isRule(plain[i-1]) {
+		if strings.HasPrefix(plain[i], "❯") && isTopBorder(plain[i-1]) {
 			at = i
 			break
 		}
@@ -463,7 +465,14 @@ func promptInput(screen string) (text string, found bool) {
 	return text, true
 }
 
-// isRule: a line of box-drawing dashes.
+// isTopBorder: a rule, or a rule with a label in it: it starts with ── and
+// ends with ─ (Claude Code writes the session's name into the right end).
+func isTopBorder(s string) bool {
+	return isRule(s) || (strings.HasPrefix(s, "──") && strings.HasSuffix(s, "─"))
+}
+
+// isRule: a line of box-drawing dashes, with nothing in it (the box's
+// bottom edge).
 func isRule(s string) bool {
 	return strings.HasPrefix(s, "──") && strings.Trim(s, "─ ") == ""
 }

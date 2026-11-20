@@ -88,6 +88,7 @@ func TestHeldReviewSurvivesThePause(t *testing.T) {
 	var in AutopilotJob
 	_ = json.Unmarshal(a.jobs[0].Input, &in)
 	a.prompt(in.Review)
+	a.reported(first.Key) // its own review: what it found, on the record (WP-1320)
 	res, err := a.ship(first.Key, ShipPR)
 	if err != nil || res.Pull == nil || res.Held != "" {
 		t.Fatalf("ship --pr = %+v, %v", res, err)
@@ -212,6 +213,7 @@ func TestHeldShipKeepsUrgent(t *testing.T) {
 		t.Fatalf("jobs = %+v", a.jobs)
 	}
 	a.prompt(job.Review)
+	a.reported(first.Key) // its own review: what it found, on the record (WP-1320)
 	res, err := a.ship(first.Key, ShipPR)
 	if err != nil {
 		t.Fatal(err)
@@ -238,6 +240,7 @@ func TestHeldShipNotUrgent(t *testing.T) {
 		t.Fatalf("jobs = %+v", a.jobs)
 	}
 	a.prompt(job.Review)
+	a.reported(first.Key) // its own review: what it found, on the record (WP-1320)
 	res, err := a.ship(first.Key, ShipPR)
 	created, _, _, _ := g.snapshot()
 	if err != nil || res.UrgentHeld || res.Pull == nil || res.Pull.Urgent || len(created) != 1 || len(created[0].Labels) != 0 {
@@ -378,8 +381,8 @@ func TestHeldReviewBusyScreen(t *testing.T) {
 	a.setClock(a.clockNow().Add(heldScreenWait))
 	a.tick(2 * time.Minute)
 	a.jobDone(2, AutopilotJobResult{Outcome: "held", Detail: "a draft is on the screen"})
-	if r := a.round(id); r.state != RoundFailed {
-		t.Fatalf("round = %+v", r)
+	if r := a.round(id); r.state != RoundFailed || !strings.Contains(a.reason(id), "so it couldn't be started: a draft is on the screen") {
+		t.Fatalf("round = %+v, reason %q", r, a.reason(id))
 	}
 	a.tick(time.Second)
 	if created, _, _, _ := g.snapshot(); len(created) != 1 {
@@ -421,6 +424,7 @@ func TestHeldReviewAutopilotOff(t *testing.T) {
 	_ = json.Unmarshal(a.jobs[0].Input, &in)
 	a.jobDone(1, AutopilotJobResult{Outcome: "reviewing"})
 	a.prompt(in.Review)
+	a.reported(first.Key) // its own review: what it found, on the record (WP-1320)
 	if res, err := a.ship(first.Key, ShipPR); err != nil || res.Pull == nil {
 		t.Fatalf("ship --pr = %+v, %v", res, err)
 	}
@@ -542,6 +546,42 @@ func TestHeldReviewWaitsCountFromTheTrouble(t *testing.T) {
 	})
 	// Nor is the round's wait for an audit it outwaited: the screen's wait
 	// counts from when the round stopped waiting.
+	// A review that ended, whose findings the busy screen never took, is not
+	// reported as one that couldn't be started: the reason names the audit
+	// that ended, and the task's comment says the findings weren't given.
+	t.Run("a busy screen after the review ended", func(t *testing.T) {
+		a, box, g := firstEnv(t)
+		first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude"})
+		if _, err := a.s.AgentTake(a.ctx, a.ag, first.Key, ""); err != nil {
+			t.Fatal(err)
+		}
+		if res, err := a.ship(first.Key, ShipAuto, func(in *OpenPRInput) { in.Body = "What changed." }); err != nil || res.Held == "" {
+			t.Fatalf("ship = %+v, %v", res, err)
+		}
+		a.stopWith("Waiting for the review.")
+		id := a.heldRound()
+		a.tick(61 * time.Second)
+		_, _ = a.s.db.W.Exec(`UPDATE runners SET last_seen_at = ?`, a.clockNow().UnixMilli())
+		a.endAudit(box, "done", "Merge reads a nil map")
+		a.tick(time.Second)
+		a.setClock(a.clockNow().Add(heldScreenWait + time.Minute))
+		a.jobDone(1, AutopilotJobResult{Outcome: "held", Detail: "a draft is on the screen"})
+		r := a.round(id)
+		reason := a.reason(id)
+		if r.state != RoundFailed || !strings.HasPrefix(reason, heldReviewEnded) || !strings.Contains(reason, "1 finding") ||
+			!strings.Contains(reason, "what it found couldn't be given to it: a draft is on the screen") || strings.Contains(reason, "couldn't be started") {
+			t.Fatalf("round = %+v, reason %q", r, reason)
+		}
+		a.tick(time.Second)
+		if created, _, _, _ := g.snapshot(); len(created) != 1 {
+			t.Fatalf("opened %+v", created)
+		}
+		var comment string
+		if err := a.s.db.R.QueryRow(`SELECT body FROM comments WHERE issue_id = (SELECT issue_id FROM work_log WHERE id = ?) AND body LIKE '%before this pull request%' ORDER BY id DESC LIMIT 1`, id).Scan(&comment); err != nil ||
+			!strings.HasPrefix(comment, "The adversarial review's findings weren't given to the session before this pull request: ") {
+			t.Errorf("comment = %q, %v", comment, err)
+		}
+	})
 	t.Run("a busy screen after outwaiting the audit", func(t *testing.T) {
 		a, box, _ := firstEnv(t)
 		first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude"})
@@ -736,6 +776,7 @@ func TestHeldReviewSurvivesALapsedClaim(t *testing.T) {
 		t.Fatalf("coming back ended the held run (%s)", outcome)
 	}
 	a.gateOpen(first.Key)
+	a.reported(first.Key) // its own review: what it found, on the record (WP-1320)
 	res, err := a.ship(first.Key, ShipPR)
 	if err != nil || res.Pull == nil || res.Held != "" {
 		t.Fatalf("ship --pr = %+v, %v", res, err)
@@ -774,6 +815,7 @@ func TestHeldReviewDoneThenResumedShips(t *testing.T) {
 		t.Fatalf("runs = %d: the test wants a new run", runs)
 	}
 	a.gateOpen(first.Key)
+	a.reported(first.Key) // its own review: what it found, on the record (WP-1320)
 	res, err := a.ship(first.Key, ShipPR)
 	if err != nil || res.Pull == nil || res.Held != "" {
 		t.Fatalf("ship --pr = %+v, %v", res, err)
@@ -1003,5 +1045,46 @@ func TestReviewRunningAutopilotOffSubagentStop(t *testing.T) {
 	}
 	if st := a.step(); st.state != StepStopped || st.reason != "off" {
 		t.Fatalf("step = %+v", st)
+	}
+}
+
+// A pull request Waypoint opens with no review says how many problems the
+// round's Haiku checks confirmed before the reviewing model failed, and the
+// audit that holds them: in the pull request's body and in the task's
+// comment (WP-1320).
+func TestHeldShipSaysWhatThePanelConfirmed(t *testing.T) {
+	a, g, first := heldEnv(t)
+	a.exec(`PRAGMA foreign_keys = OFF`)
+	a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "Second", Agent: "claude"})
+	a.stopWith("Waiting for the review.")
+	id := a.heldRound()
+	a.tick(61 * time.Second)
+	if len(a.jobs) != 1 {
+		t.Fatalf("jobs = %+v", a.jobs)
+	}
+	a.failJob(1, "failed", "tmux went away")
+	lead := func(n string) PanelLead {
+		return PanelLead{ID: "goals." + n, Title: "t" + n, Severity: "high", Problem: "p", Confirmed: true}
+	}
+	res, err := a.s.db.W.Exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, owner_id, created_at, request_key, status) VALUES (0, 0, '', 'repo', 0, 1, ?, 'running')`, fmt.Sprintf("review-round:%d:sonnet", id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	audit, _ := res.LastInsertId()
+	a.s.requeueAudit(a.ctx, &CodeAudit{ID: audit, Status: AuditRunning, HelperRuns: []AuditHelperRun{
+		{Check: "goals", State: "done", From: "aaaaaaaa", To: "bbbbbbbb", Leads: []PanelLead{lead("1"), lead("2")}}}}, 1, 0, nil)
+	a.tick(2 * time.Minute)
+	created, _, _, _ := g.snapshot()
+	want := fmt.Sprintf("Haiku checks confirmed 2 problems against the code; audit #%d holds them (`wp audit show %d`)", audit, audit)
+	if len(created) != 1 || !strings.Contains(created[0].Body, want) {
+		t.Fatalf("the pull request's body lacks %q: %+v", want, created)
+	}
+	var comment string
+	_ = a.s.db.R.QueryRow(`SELECT body FROM comments WHERE issue_id = ? AND body LIKE 'No adversarial review ran%'`, first.ID).Scan(&comment)
+	if !strings.Contains(comment, want) {
+		t.Errorf("the task's comment lacks %q: %q", want, comment)
+	}
+	if n := a.lastNotice(); !strings.Contains(n, want) {
+		t.Errorf("the notice lacks %q: %q", want, n)
 	}
 }

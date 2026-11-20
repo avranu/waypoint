@@ -131,7 +131,8 @@ func TestReviewBeforePR(t *testing.T) {
 // A session that reads its round's finished audit itself, while the round
 // waits to type it (a background task woke the session; WP-919): wp ship
 // --pr names the findings still to decide, and once they are decided the
-// ship is the round's report and the pull request opens. The job queued to
+// ship is the round's report, decided as any round's is: its marks are
+// checked, and its findings say whether another round comes. The job queued to
 // type the round's prompt stands down.
 func TestReviewBeforePRAuditTakenBySession(t *testing.T) {
 	a, box, g := firstEnv(t)
@@ -176,8 +177,11 @@ func TestReviewBeforePRAuditTakenBySession(t *testing.T) {
 	if _, err := a.s.MarkAuditFindings(a.ctx, a.ag, MarkFindings{IDs: []string{id2}, State: "fixed", Note: "added"}); err != nil {
 		t.Fatal(err)
 	}
+	// Every finding decided: the ship is the round's report. The round ends
+	// there, and is decided as any round is (WP-1320): the marks are
+	// checked against the code before the pull request opens.
 	res, err = a.ship(first.Key, ShipPR)
-	if err != nil || res.Pull == nil || len(g.created) != 1 || !strings.Contains(res.Notice, "nothing in it is left to decide") {
+	if err != nil || res.Pull != nil || len(g.created) != 0 || !strings.Contains(res.Held, "checking your marks") {
 		t.Fatalf("all decided = %+v, %v (opened %d)", res, err, len(g.created))
 	}
 	r := a.round(roundID)
@@ -194,6 +198,19 @@ func TestReviewBeforePRAuditTakenBySession(t *testing.T) {
 	ok, err := a.s.AutopilotStepWanted(a.ctx, a.admin, a.step().id, a.step().jobID.Int64)
 	if err != nil || ok {
 		t.Fatalf("review job still wanted: %v %v", ok, err)
+	}
+	// The check agrees with the marks. A fixed finding of that severity
+	// is followed up: round 2 comes before the pull request.
+	a.stopWith("Waiting for the check of my marks.")
+	a.endCheck(box, "done")
+	a.deliverNews()
+	res, err = a.ship(first.Key, ShipPR)
+	if err != nil || res.Pull != nil || len(g.created) != 0 || !strings.Contains(res.Held, "adversarial review round 2") {
+		t.Fatalf("after the check = %+v, %v (opened %d)", res, err, len(g.created))
+	}
+	var arm string
+	if err := a.s.db.R.QueryRow(`SELECT arm FROM review_again_decisions WHERE round_id = ?`, roundID).Scan(&arm); err != nil || arm != AgainReview {
+		t.Fatalf("decision = %q, %v", arm, err)
 	}
 }
 
@@ -228,7 +245,7 @@ func TestReviewBeforePRNotShipped(t *testing.T) {
 	}
 	var in AutopilotJob
 	_ = json.Unmarshal(a.jobs[0].Input, &in)
-	if !strings.HasSuffix(in.Review, ownReviewBrief(DefaultReviewPrompt, AutopilotLimits{})) {
+	if !strings.HasSuffix(in.Review, ownReviewBrief(DefaultReviewPrompt, AutopilotLimits{})+ownReportAsk) {
 		t.Fatalf("review = %q", in.Review)
 	}
 	a.prompt(in.Review)
@@ -273,7 +290,13 @@ func TestReviewBeforePRInterrupted(t *testing.T) {
 		var in AutopilotJob
 		_ = json.Unmarshal(a.jobs[before].Input, &in)
 		a.prompt(in.Review)
-		a.prompt("wait, look at the migration first")
+		// The session leaves the review for another task: a person's prompt
+		// alone doesn't end it any more (WP-1320).
+		if err := a.s.write(a.ctx, SystemActor(), func(t *tx) error {
+			return a.s.stopStep(a.ctx, t, a.session, "working", "it took another task itself")
+		}); err != nil {
+			a.t.Fatal(err)
+		}
 		if got := a.rounds(); !strings.HasPrefix(got[len(got)-1], RoundInterrupted) {
 			a.t.Fatalf("rounds = %v", got)
 		}
@@ -409,6 +432,13 @@ func TestReviewBeforePRAtStop(t *testing.T) {
 		}
 		a.jobDone(1, AutopilotJobResult{Outcome: "reviewing"})
 		a.prompt(in.Review)
+		// The review was the session's to run: its report comes first.
+		if res, err := a.ship(first.Key, ShipPR); err != nil || res.Pull != nil || !strings.Contains(res.Held, "wp audit report "+first.Key) {
+			t.Fatalf("ship --pr with no report = %+v, %v", res, err)
+		}
+		if _, err := a.reportNone(first.Key, "The adversarial-review agent read the diff; nothing stood."); err != nil {
+			t.Fatal(err)
+		}
 		if res, err := a.ship(first.Key, ShipPR); err != nil || res.Pull == nil || len(g.created) != 1 {
 			t.Fatalf("ship --pr = %+v, %v", res, err)
 		}
@@ -774,6 +804,7 @@ func TestShipIntents(t *testing.T) {
 		ended := a.clockNow().UnixMilli()
 		a.setNewestRound(RoundDone, ended)
 		before := func(in *OpenPRInput) { in.HeadTime = ended/1000 - 60 }
+		a.reported(key) // its own review: what it found, on the record (WP-1320)
 		res, err := a.ship(key, ShipReview, before)
 		if err != nil || res.Pull == nil || !strings.Contains(res.Notice, "nothing was committed since") || !strings.Contains(res.Notice, "--force") || len(g.created) != 1 {
 			t.Fatalf("nothing new = %+v, %v", res, err)
@@ -814,6 +845,7 @@ func TestHeldShipUrgentOnOpenPR(t *testing.T) {
 	}
 	ended := a.clockNow().UnixMilli()
 	a.setNewestRound(RoundDone, ended)
+	a.reported(key) // its own review: what it found, on the record (WP-1320)
 	opened, err := a.ship(key, ShipPR)
 	if err != nil || opened.Pull == nil || opened.Pull.Urgent {
 		t.Fatalf("opened = %+v, %v", opened, err)
@@ -959,7 +991,7 @@ func TestReviewBeforePRAfterTheRunEnded(t *testing.T) {
 		if err := a.s.expireRuns(a.ctx); err != nil {
 			t.Fatal(err)
 		}
-		if run, _ := a.s.openRunIn(a.ctx, a.ag.Session, a.issueID(key)); run != 0 {
+		if run, _ := a.s.openRunIn(a.ctx, a.s.db.R, a.ag.Session, a.issueID(key)); run != 0 {
 			t.Fatal("the run is still open: this tests nothing")
 		}
 		held(t, a, g, key)
@@ -1037,7 +1069,7 @@ func TestReviewBeforePRSaysWhyNot(t *testing.T) {
 			t.Fatalf("ship = %+v, %v", out, err)
 		}
 		// The other session keeps its run.
-		if run, _ := a.s.openRunIn(a.ctx, a.ag.Session, a.issueID(key)); run == 0 {
+		if run, _ := a.s.openRunIn(a.ctx, a.s.db.R, a.ag.Session, a.issueID(key)); run == 0 {
 			t.Fatal("the run left its session")
 		}
 		if got := notes(a); len(got) != 1 {

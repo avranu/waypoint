@@ -79,8 +79,34 @@ func TestAuditAnswerKeep(t *testing.T) {
 	if n := f.keep(&CodeAudit{MinSeverity: "high"}); n != 2 || len(f.Findings) != 2 {
 		t.Errorf("high floor: dropped %d, kept %+v", n, f.Findings)
 	}
-	if n := f.keep(&CodeAudit{MaxFindings: 1}); n != 1 || f.Findings[0].Severity != "critical" {
-		t.Errorf("cap 1: dropped %d, kept %+v", n, f.Findings)
+	// max_findings is what the model is asked for, not a cut: all are kept.
+	if n := f.keep(&CodeAudit{MaxFindings: 1}); n != 0 || len(f.Findings) != 2 || f.Findings[0].Severity != "critical" {
+		t.Errorf("asked for 1: dropped %d, kept %+v", n, f.Findings)
+	}
+	// An ordinary audit with max_findings 5 whose answer holds 8 keeps 8 and says so.
+	var eight []CodeAuditFinding
+	for range 8 {
+		eight = append(eight, CodeAuditFinding{Severity: "low"})
+	}
+	g := &auditAnswer{Findings: eight}
+	ca := &CodeAudit{MaxFindings: 5}
+	if n := g.keep(ca); n != 0 || len(g.Findings) != 8 {
+		t.Errorf("5 asked, 8 held: dropped %d, kept %d", n, len(g.Findings))
+	}
+	if note := g.keepNote(ca, 8); !strings.Contains(note, "Asked for at most 5") || !strings.Contains(note, "answer held 8") || !strings.Contains(note, "all are kept") {
+		t.Errorf("note = %q", note)
+	}
+	// Past the guard the worst are kept and the note says how many were cut.
+	var lots []CodeAuditFinding
+	for range findingsGuard + 3 {
+		lots = append(lots, CodeAuditFinding{Severity: "low"})
+	}
+	h := &auditAnswer{Findings: lots}
+	if n := h.keep(ca); n != 3 || len(h.Findings) != findingsGuard {
+		t.Errorf("past the guard: dropped %d, kept %d", n, len(h.Findings))
+	}
+	if note := h.keepNote(ca, findingsGuard+3); !strings.Contains(note, "3") {
+		t.Errorf("guard note = %q", note)
 	}
 	if s := auditSchemaFor(&CodeAudit{MaxFindings: 4}); !strings.Contains(s, `"maxItems":4,`) {
 		t.Errorf("schema: %s", s)
@@ -129,8 +155,12 @@ func TestAuditOfRecentChangesWithCriteria(t *testing.T) {
 	res["base"], res["diff_from"], res["change_commits"] = "bbbbbbbbbbbb", "aaaaaaaaaaaa", float64(12)
 	ae.finish(claim.ID, "done", res, "")
 	got := ae.audit(a.ID)
-	if got.Status != AuditDone || got.Counts.Total != 2 || got.FromSHA != "aaaaaaaaaaaa" || got.ToSHA != "bbbbbbbbbbbb" || got.CommitCount == nil || *got.CommitCount != 12 ||
-		!strings.Contains(got.Summary, "2 more findings") {
+	// max_findings (2) is what the model was asked for, not a cut (E5): the
+	// three at or over the floor are kept, and the summary says both what the
+	// floor left out and that more than asked for are kept.
+	if got.Status != AuditDone || got.Counts.Total != 3 || got.FromSHA != "aaaaaaaaaaaa" || got.ToSHA != "bbbbbbbbbbbb" || got.CommitCount == nil || *got.CommitCount != 12 ||
+		!strings.Contains(got.Summary, "(1 of the answer's 4 findings were below the audit's lowest severity, high, and are left out.)") ||
+		!strings.Contains(got.Summary, "(Asked for at most 2; 3 remain, and all are kept.)") {
 		t.Fatalf("done = %s %+v from %s to %s commits %v %q (%s)", got.Status, got.Counts, got.FromSHA, got.ToSHA, got.CommitCount, got.Summary, got.Error)
 	}
 
