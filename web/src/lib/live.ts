@@ -191,6 +191,10 @@ export function startLive(qc: QueryClient): () => void {
     mark(['search'], ['projects'], ['agents', 'queue'], ['agents', 'activity'], OVERVIEW, [
       'changes',
     ])
+    // An objective moved (a person's or Waypoint's own act: a reading taken,
+    // a round ended, a block raised): its banner, and the list of them (WP-927).
+    // Events of field 'objective' arrive as issue.updated.
+    if (e.field === 'objective' || kind === 'issue.status_changed') mark(['objectives'])
     if (e.issue_key) {
       mark(['issue', e.issue_key], ['history', e.issue_key], ['links', 'issue', e.issue_key])
       if (kind === 'issue.commented' || kind === 'project.updated')

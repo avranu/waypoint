@@ -116,6 +116,15 @@ const inboxRoute = createRoute({
   component: InboxPage,
 })
 
+const objectivesRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/objectives',
+  loader: ({ context }) => {
+    context.qc.prefetchQuery(q.objectives())
+  },
+  component: lazyRouteComponent(() => import('@/pages/Objectives'), 'ObjectivesPage'),
+})
+
 const inboxRequestRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/requests/$code',
@@ -619,6 +628,7 @@ const routeTree = rootRoute.addChildren([
   appRoute.addChildren([
     homeRoute,
     inboxRoute,
+    objectivesRoute,
     inboxRequestRoute,
     searchRoute,
     graphRoute,

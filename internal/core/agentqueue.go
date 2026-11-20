@@ -212,8 +212,10 @@ func (s *Service) agentWorkAuto(ctx context.Context, actor *Actor, ids []string,
 			qi.reason, qi.detail = WaitHold, "On hold "+holdSpan(i.Hold, s.actorLocation(actor))+"."
 		case released[i.ID] != 0:
 			qi.reason, qi.detail = WaitReleased, "An agent gave it back; it goes out again at "+s.clock(msTime(released[i.ID]))+". Only a person can end the wait, with a comment or wp hold "+i.Key+" --off; wp next "+i.Key+" takes it by name."
-		case i.Status.Category == CatTodo && hasWait(rounds, i.ID):
-			qi.reason, qi.detail = WaitObjective, rounds[i.ID].detail(i.Key)
+		case hasWait(rounds, i.ID):
+			// Whatever status the task is in: a project with no To Do
+			// status leaves it where its round ended.
+			qi.reason, qi.detail = WaitObjective, rounds[i.ID].detail()
 		case shipped[i.ID] != nil:
 			pr := shipped[i.ID]
 			if pr.State == "merged" {
