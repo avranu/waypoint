@@ -292,8 +292,13 @@ const (
 	reviewChunkChars = 35_000 // what free models answer within a few minutes
 	reviewMaxChunks  = 4
 	reviewMaxChunk   = 60_000 // one file bigger than a chunk is cut to this
-	reviewMaxFinding = 8
+	reviewMaxFinding = 8      // how many a review posts when its rule sets no number (the model is told none)
 )
+
+// placementLater is the placement of a finding kept but not posted: it is
+// past how many the review shows (max_findings), and the review's body says
+// how many (WP-1421).
+const placementLater = "later"
 
 type reviewChunk struct {
 	files []fileDiff
@@ -419,7 +424,7 @@ func reviewPrompt(pr *ForgePR, rules, focus, conversation, intent, history strin
 	if history != "" {
 		fmt.Fprintf(&b, promptHistory, history)
 	}
-	fmt.Fprintf(&b, promptLimit, reviewMaxFinding)
+	b.WriteString(promptLimit)
 	if parts > 1 {
 		fmt.Fprintf(&b, promptPart, part, parts)
 	}
@@ -587,7 +592,7 @@ func claimWords(s string) map[string]bool {
 // placedFinding is a finding with where it will appear.
 type placedFinding struct {
 	Finding
-	placement string // inline, body, withheld
+	placement string // inline, body, withheld, later
 	note      string // e.g. " (line 40)" when moved to the first changed line
 	marker    string // what names the run and place of its comment, so syncing finds it again
 }
@@ -693,6 +698,8 @@ type reviewOutcome struct {
 	dropped  []string // files not reviewed (too large, out of time, every model failed)
 	cut      bool
 	noise    int
+	later    int    // findings kept but past how many the review posts
+	guardCut int    // findings past the guard (findingsGuard), not kept
 	belowMin int    // findings under the rule's minimum severity, not posted
 	minSev   string // that minimum
 	private  globSet
@@ -753,6 +760,7 @@ func reviewBody(sha string, o reviewOutcome) string {
 			inline++
 		case "body":
 			loose = append(loose, p)
+		case placementLater:
 		default:
 			withheld++
 		}
@@ -796,6 +804,12 @@ func reviewBody(sha string, o reviewOutcome) string {
 			}
 		}
 		notes = append(notes, s)
+	}
+	if n := o.later; n > 0 {
+		notes = append(notes, fmt.Sprintf("%d more finding%s, the least severe, kept in Waypoint and not posted here: open the pull request there to read them", n, plural(n)))
+	}
+	if n := o.guardCut; n > 0 {
+		notes = append(notes, fmt.Sprintf("%d finding%s past the guard of %d against a runaway answer not kept", n, plural(n), findingsGuard))
 	}
 	if o.cut {
 		notes = append(notes, "part of the diff was cut to fit the model")

@@ -48,9 +48,9 @@ const (
 	auditRetryStep         = 15 * time.Minute
 	auditInstructionsMax   = 2000
 	// auditMaxFindings is the top of the max_findings option a person sets
-	// on an ordinary audit (audit_criteria.go): what the model is asked for,
-	// not what is kept (findingsGuard).
-	auditMaxFindings = 30
+	// (audit_criteria.go): how many are shown at a time, the guard's number
+	// (findingsGuard), not what the model is asked for or what is kept.
+	auditMaxFindings = findingsGuard
 	auditMaxModels   = 6
 	// findingsGuard is the most findings any audit keeps (WP-1320,
 	// WP-ADR141): a guard against a runaway answer, not a number anyone is
@@ -262,7 +262,8 @@ type AuditInput struct {
 	Exclude []string `json:"exclude"`
 	// MinSeverity: report nothing below it (empty: everything).
 	MinSeverity string `json:"min_severity"`
-	// MaxFindings: at most this many (0: 15; up to 30).
+	// MaxFindings: how many findings are shown at a time (0: 15; 1 to 100).
+	// The model is told no number and every finding is kept (to the guard).
 	MaxFindings int `json:"max_findings"`
 	// Base: what a branch is compared with (empty: the default branch).
 	Base         string   `json:"base"`
@@ -783,7 +784,7 @@ func oldAuditRunnerWhy(runners []*Runner, cli string) string {
 // auditSchema is the answer every model is asked for.
 const auditSchema = `{"type":"object","additionalProperties":false,"required":["summary","findings"],"properties":{` +
 	`"summary":{"type":"string","description":"Two or three sentences: what you read and what you found."},` +
-	`"findings":{"type":"array","maxItems":15,"items":{"type":"object","additionalProperties":false,"required":["title","path","line","severity","problem","confirm"],"properties":{` +
+	`"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["title","path","line","severity","problem","confirm"],"properties":{` +
 	`"title":{"type":"string","description":"One line: the defect."},` +
 	`"path":{"type":"string","description":"The file, relative to the repository's root."},` +
 	`"line":{"type":"integer","description":"The line the defect is on (0 if it has none)."},` +
@@ -835,11 +836,8 @@ func codeAuditPrompt(a *CodeAudit, prContext string) string {
 		b.WriteString("What to look for: " + a.Instructions + " Report other serious problems you come across too.\n\n")
 	}
 	b.WriteString(auditCriteriaPrompt(a))
-	// A review round's reviewer is told no number (findingsGuard).
-	count := fmt.Sprintf("At most %d findings, worst first.", auditFindingsCap(a))
-	if auditUncapped(a) {
-		count = "Report every problem you find, worst first."
-	}
+	// No audit's model is told a number (WP-1421): min_severity asks for less.
+	count := "Report every problem you find, worst first."
 	fmt.Fprintf(&b, `Rules:
 - Report only problems you can point to in the code: the file (relative to the repository's root) and line, what goes wrong, and when.
 - No style nits, no "consider adding", nothing you did not check against the code.
@@ -1565,12 +1563,15 @@ func auditComment(a *CodeAudit, base string) string {
 	}
 	if n > 0 {
 		b.WriteString("\n\n| # | Severity | Where | Finding |\n|---|---|---|---|\n")
-		for _, f := range a.Findings {
+		for _, f := range a.Findings[:min(n, AuditShown(a))] {
 			where := ""
 			if f.Path != "" {
 				where = "`" + strings.ReplaceAll(f.Path, "`", "") + lineSuffix(f.Line) + "`"
 			}
 			fmt.Fprintf(&b, "| %d | %s | %s | %s |\n", f.Ordinal, f.Severity, where, forgeSafe(f.Title, true))
+		}
+		if more := n - AuditShown(a); more > 0 {
+			fmt.Fprintf(&b, "\n%d more finding%s: %s/audits/%d (or `wp audit show %d --all`)\n", more, plural(more), base, a.ID, a.ID)
 		}
 	}
 	fmt.Fprintf(&b, "\nThe details, how to confirm each and their verdicts: %s/audits/%d\n\n", base, a.ID)

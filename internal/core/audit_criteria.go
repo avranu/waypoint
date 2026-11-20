@@ -18,6 +18,10 @@ import (
 // them into the prompt; the runner finds the period's first commit and
 // limits the diff to the paths (WP-ADR40).
 
+// AuditDefaultShown is how many findings are shown at a time when an audit
+// sets no number.
+const AuditDefaultShown = auditDefaultFindings
+
 const (
 	auditDefaultFindings = 15
 	auditMaxPaths        = 20
@@ -96,12 +100,12 @@ func cleanAuditCriteria(in AuditInput) (auditCriteria, error) {
 	// checkLeftOutMax), which can pass what a person may ask for.
 	most := auditMaxFindings
 	if in.purpose == AuditCheck {
-		most = checkClaimsMax + checkLeftOutMax
+		most = max(most, checkClaimsMax+checkLeftOutMax)
 	}
 	switch n := in.MaxFindings; {
 	case n == 0:
 	case n < 1 || n > most:
-		return c, invalid("an audit reports between 1 and %d findings", most)
+		return c, invalid("an audit shows between 1 and %d findings at a time", most)
 	default:
 		c.maxFindings = n
 	}
@@ -232,31 +236,21 @@ func auditCriteriaPrompt(a *CodeAudit) string {
 	return b.String()
 }
 
-// auditUncapped: the audit is a review round's, whose reviewer is told no
-// number of findings to stay under (findingsGuard is only a guard).
-func auditUncapped(a *CodeAudit) bool { return a.Purpose == AuditReview }
-
-// auditFindingsCap is how many findings an audit keeps at most: what a
-// person set (max_findings), or for a review round the guard.
-func auditFindingsCap(a *CodeAudit) int {
-	switch {
-	case auditUncapped(a):
-		return findingsGuard
-	case a.MaxFindings > 0:
+// AuditShown is how many of an audit's findings are shown or delivered at
+// a time: what a person set (max_findings, which names the field as it was
+// stored and as the API has always called it), else the default. It never
+// limits what is asked of the model or what is kept (findingsGuard): the
+// rest are one step away (WP-1421).
+func AuditShown(a *CodeAudit) int {
+	if a.MaxFindings > 0 {
 		return a.MaxFindings
 	}
 	return auditDefaultFindings
 }
 
-// auditSchemaFor is auditSchema with the audit's cap on findings; a review
-// round's has none, and none of the Haiku panel's leads: the panel runs
-// beside the reviewer and never tells it anything (WP-1320, WP-ADR141).
-func auditSchemaFor(a *CodeAudit) string {
-	if auditUncapped(a) {
-		return strings.Replace(auditSchema, `"maxItems":15,`, "", 1)
-	}
-	return strings.Replace(auditSchema, `"maxItems":15`, fmt.Sprintf(`"maxItems":%d`, auditFindingsCap(a)), 1)
-}
+// auditSchemaFor is auditSchema as every model is asked for it: no number
+// of findings, worst first (WP-1421; min_severity asks for less).
+func auditSchemaFor(a *CodeAudit) string { return auditSchema }
 
 // auditGuard is the most findings any audit keeps: a guard against a
 // runaway answer, not the limit a person asked for (WP-1320). A check of a
@@ -270,8 +264,8 @@ func auditGuard(a *CodeAudit) int {
 
 // keep drops the findings an audit's criteria rule out (a model may report
 // them anyway), and any past the guard (auditGuard), and says how many went.
-// No audit drops findings past the number it asked for (max_findings): it
-// keeps them all, worst first, and says so (keepNote).
+// max_findings is how many are shown at a time (AuditShown), not how many
+// are kept: it keeps them all up to the guard, worst first.
 func (f *auditAnswer) keep(a *CodeAudit) int {
 	before := len(f.Findings)
 	if a.MinSeverity != "" {
@@ -284,9 +278,8 @@ func (f *auditAnswer) keep(a *CodeAudit) int {
 	return before - len(f.Findings)
 }
 
-// keepNote is what the summary says when keep left findings out, or kept
-// more than the audit asked for: how many the answer held and how many are
-// kept, so no finding goes unseen. raised is how many the answer held.
+// keepNote is what the summary says when keep left findings out: how many
+// the answer held and how many are kept, so no finding goes unseen. raised is how many the answer held.
 func (f *auditAnswer) keepNote(a *CodeAudit, raised int) string {
 	var b strings.Builder
 	if f.floorCut > 0 {
@@ -295,13 +288,6 @@ func (f *auditAnswer) keepNote(a *CodeAudit, raised int) string {
 	if f.guardCut > 0 {
 		fmt.Fprintf(&b, " (The answer held %d findings; %d are kept, the worst first, at the guard of %d against a runaway answer; %d were cut, and the answer as it came is kept in the audit.)",
 			raised, len(f.Findings), auditGuard(a), f.guardCut)
-	} else if !auditUncapped(a) && a.Purpose != AuditCheck && len(f.Findings) > auditFindingsCap(a) {
-		if f.floorCut > 0 {
-			// After the severity note: the number is what is left of it.
-			fmt.Fprintf(&b, " (Asked for at most %d; %d remain, and all are kept.)", auditFindingsCap(a), len(f.Findings))
-		} else {
-			fmt.Fprintf(&b, " (Asked for at most %d; the answer held %d; all are kept.)", auditFindingsCap(a), len(f.Findings))
-		}
 	}
 	return b.String()
 }

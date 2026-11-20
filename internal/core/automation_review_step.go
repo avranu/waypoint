@@ -123,7 +123,7 @@ func (c *StepCtx) setReviewOutputs(id int64) error {
 		rank := severityRank(sev)
 		counts[rank]++
 		found++
-		if placement != "withheld" {
+		if placement != "withheld" && placement != placementLater {
 			posted++
 		}
 		worst = min(worst, rank)

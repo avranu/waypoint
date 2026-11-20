@@ -1391,9 +1391,12 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 	hf := newHeadFiles(ctx, cl, f, pr.Repo, fp.HeadSHA)
 	budget := s.reviewFileBudget(ctx).Chars
 	var noEvidence []droppedFinding
-	max := opts.MaxFindings
-	if max <= 0 || max > 20 {
-		max = reviewMaxFinding
+	// opts.MaxFindings is how many findings are posted (WP-1421): the rest
+	// are kept, counted in the review and read in Waypoint. Only the guard
+	// limits what is kept.
+	show := opts.MaxFindings
+	if show <= 0 || show > findingsGuard {
+		show = reviewMaxFinding
 	}
 	// Every reviewer reviews each part; a part no reviewer could review is
 	// listed as not reviewed.
@@ -1430,7 +1433,7 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 			if len(a.findings) == 0 && a.requestID != "" {
 				o.emptyRequests = append(o.emptyRequests, a.requestID) // reported as no_findings (WP-1230)
 			}
-			for _, fnd := range normalizeFindings(a.findings, max+max/2) { // room for what the verifier drops
+			for _, fnd := range normalizeFindings(a.findings, findingsGuard) {
 				fnd.Model = a.model
 				fnd.Strategy, fnd.PromptVersion = arms[i].strategy.name, arms[i].strategy.promptVersion()
 				if a.requestID != "" {
@@ -1472,10 +1475,10 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 	if answered == 0 {
 		return res, errAllModelsFailed
 	}
-	// Room for what the verifier drops, then the limit.
 	o.minSev, _ = parseSeverity(opts.MinSeverity)
 	found, below := atLeast(normalizeFindings(mergeReviewers(byReviewer), 0), o.minSev)
-	found = normalizeFindings(found, max+max/2)
+	o.guardCut = max(0, len(found)-findingsGuard)
+	found = normalizeFindings(found, findingsGuard)
 	found, o.repeated, err = s.dropRepeated(ctx, pr.ID, found, sr.threads)
 	if err != nil {
 		return res, err
@@ -1515,9 +1518,15 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 	var lowered int
 	found, lowered = atLeast(found, o.minSev)
 	o.belowMin = below + lowered
-	found = normalizeFindings(found, max)
+	found = normalizeFindings(found, findingsGuard)
 	o.trusted = countVerify(found, VerifyTrusted)
 	o.placed = placeFindings(found, files, private)
+	// The first show, worst first, go on the pull request; the rest are
+	// stored and counted in the review's body (placementLater).
+	for n := show; n < len(o.placed); n++ {
+		o.placed[n].placement = placementLater
+		o.later++
+	}
 	o.note = s.reviewNote(ctx)
 
 	var comments []LineComment
@@ -1562,7 +1571,7 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 	}
 	shown := 0
 	for _, p := range o.placed {
-		if p.placement != "withheld" {
+		if p.placement != "withheld" && p.placement != placementLater {
 			shown++
 		}
 	}
@@ -1576,6 +1585,9 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 		res.summary = "Nothing found in what was reviewed" // posted, since part was left out
 	} else {
 		res.summary = fmt.Sprintf("%d finding%s", shown, plural(shown))
+		if o.later > 0 {
+			res.summary += fmt.Sprintf(" and %d more kept, not posted", o.later)
+		}
 	}
 	res.summary += " by " + strings.Join(o.models, ", ")
 	if len(o.verifiers) > 0 {
