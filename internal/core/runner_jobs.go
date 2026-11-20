@@ -35,7 +35,7 @@ const (
 var runnerJobSources = []string{"request_apply", "request_cell", "request_decision", "automation_step", "bot_run", "babysit", "session_message", "session_batch", "manual", "kit_rollout", "autopilot", autopilotReviewSource, "audit", cacheWarmSource, reviewCompactSource, prepAgentSource, babysitHeldSource}
 
 // default timeouts, seconds
-var runnerTimeouts = map[string]int{JobCommand: 600, JobApply: 300, JobAgent: 1800, JobReview: 900, JobSession: 120, JobMessage: 60, JobAutopilot: 900, JobAutopilotStart: 900, JobAudit: 2700}
+var runnerTimeouts = map[string]int{JobCommand: 600, JobApply: 300, JobAgent: 1800, JobReview: 900, JobSession: 120, JobMessage: 60, JobAutopilot: 900, JobAutopilotStart: 900, JobAudit: 2700, JobObjective: objectiveJobTimeout}
 
 var (
 	envKeyRE = lazyre.New(`^[A-Za-z_][A-Za-z0-9_]{0,99}$`)
