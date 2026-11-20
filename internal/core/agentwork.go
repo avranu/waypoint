@@ -660,6 +660,13 @@ func (s *Service) claimIssueTx(ctx context.Context, t *tx, actor *Actor, issueID
 			return invalid("%s isn't cleared for agents yet: %s", i.Key, d)
 		}
 	}
+	// An objective's round is taken only when it is due, checked here under
+	// the write lock (WP-ADR111). Whoever holds the round keeps it.
+	if held := i.ClaimedBy == id && i.ClaimedUntil != nil && i.ClaimedUntil.UnixMilli() > now; !held {
+		if err := s.objectiveTakeRefusal(ctx, t, actor, i, explicit); err != nil {
+			return err
+		}
+	}
 	if explicit && !s.stillDelegated(ctx, i, id) {
 		// Taking a task assigns it to the agent: delegated to it from now
 		// on (recorded in its history like any other change).
