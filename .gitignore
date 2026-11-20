@@ -1,0 +1,38 @@
+# Build output
+/bin/
+/waypoint
+/wp
+/cmd/wp/wp
+*.test
+coverage.out
+web/node_modules/
+web/dist/*
+!web/dist/.gitkeep
+web/.vite/
+
+# Local data and backups (hold password hashes and tokens)
+/data/
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+
+# Secrets and per-host settings
+.env
+.env.*
+deploy/.env
+deploy/site.mk
+*.pem
+*.key
+
+# Editors, OS, tooling
+.DS_Store
+*.log
+__pycache__/
+*.pyc
+.venv*/
+.idea/
+.vscode/
+e2e/node_modules/
+e2e/out/
+

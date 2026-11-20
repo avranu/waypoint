@@ -1,0 +1,12 @@
+# Dependency versions allowed in before they are 7 days old (WP-844).
+#
+# cmd/dep-age (CI's lint job, the pre-push hook) fails a change that adds a
+# version published in the last 7 days to go.sum, a package-lock.json or a
+# pin renovate.json tracks: a hijacked release is usually caught by others
+# within days. A security fix that can't wait goes in here, one line per
+# version, with the reason:
+#
+#   go golang.org/x/net v0.60.0 GO-2026-1234: request smuggling in http2, reachable from the API
+#   npm dompurify 3.4.17 GHSA-xxxx-xxxx-xxxx: XSS in sanitize, used on every comment
+#
+# Once the version is 7 days old, dep-age says its line can go.

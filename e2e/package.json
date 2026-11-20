@@ -1,0 +1,12 @@
+{
+  "name": "waypoint-e2e",
+  "private": true,
+  "type": "module",
+  "description": "Browser checks for Waypoint (Playwright). Run with `make e2e`.",
+  "scripts": {
+    "test": "./run.sh"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
+  }
+}

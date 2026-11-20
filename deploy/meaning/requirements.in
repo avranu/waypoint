@@ -1,0 +1,2 @@
+torch==2.15.0+cpu
+sentence-transformers==6.3.0

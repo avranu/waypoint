@@ -1,0 +1,20 @@
+//go:build windows
+
+package main
+
+import (
+	"errors"
+	"os"
+)
+
+func slotTryLock(*os.File) (bool, error) {
+	return false, errors.New("host slots need flock, which Windows lacks; run the command directly")
+}
+
+// fileLock has no flock to take on Windows; callers go on unlocked.
+func fileLock(*os.File) (func(), error) {
+	return nil, errors.New("no flock on Windows")
+}
+
+// slotPidAlive is never reached on Windows: no slot is ever held there.
+func slotPidAlive(int) bool { return false }

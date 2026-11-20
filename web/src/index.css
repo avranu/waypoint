@@ -1,0 +1,385 @@
+@import 'tailwindcss';
+@import '@fontsource-variable/inter';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans:
+    'Inter Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
+
+  --color-bg: var(--wp-bg);
+  --color-panel: var(--wp-panel);
+  --color-raised: var(--wp-raised);
+  --color-sunken: var(--wp-sunken);
+  --color-line: var(--wp-line);
+  --color-line-strong: var(--wp-line-strong);
+  --color-fg: var(--wp-fg);
+  --color-muted: var(--wp-muted);
+  --color-subtle: var(--wp-subtle);
+  --color-hover: var(--wp-hover);
+  --color-accent: var(--wp-accent);
+  --color-accent-soft: var(--wp-accent-soft);
+  --color-accent-fg: var(--wp-accent-fg);
+  --color-danger: var(--wp-danger);
+  --color-warn: var(--wp-warn);
+  --color-ok: var(--wp-ok);
+  --color-info: var(--wp-info);
+  --color-info-fg: var(--wp-info-fg);
+  --color-side-fixed: var(--wp-side-fixed);
+  --color-side-scroll: var(--wp-side-scroll);
+}
+
+:root {
+  --wp-bg: #f6f6f7;
+  --wp-panel: #ffffff;
+  --wp-raised: #ffffff;
+  --wp-sunken: #efeff1;
+  --wp-line: #e4e4e7;
+  --wp-line-strong: #d4d4d8;
+  --wp-fg: #18181b;
+  --wp-muted: #52525b;
+  --wp-subtle: #8b8b94;
+  --wp-hover: rgb(0 0 0 / 0.045);
+  --wp-accent: #6366f1;
+  --wp-accent-soft: color-mix(in oklab, var(--wp-accent) 12%, transparent);
+  --wp-accent-fg: #ffffff;
+  --wp-danger: #dc2626;
+  --wp-warn: #d97706;
+  --wp-ok: #16a34a;
+  --wp-info: #2563eb;
+  --wp-info-fg: #ffffff;
+  /* sidebar: the fixed top and bottom blocks vs the scrolling project list */
+  --wp-side-fixed: #ffffff;
+  --wp-side-scroll: #dfdfe5;
+  --wp-shadow: 0 1px 2px rgb(0 0 0 / 0.06), 0 1px 1px rgb(0 0 0 / 0.03);
+  --wp-shadow-lg: 0 10px 30px -8px rgb(0 0 0 / 0.18), 0 2px 6px rgb(0 0 0 / 0.06);
+  color-scheme: light;
+}
+
+.dark {
+  --wp-bg: #0d0e11;
+  --wp-panel: #15171b;
+  --wp-raised: #1b1d22;
+  --wp-sunken: #0a0b0d;
+  --wp-line: #262930;
+  --wp-line-strong: #343842;
+  --wp-fg: #ececef;
+  --wp-muted: #a1a1aa;
+  --wp-subtle: #71717a;
+  --wp-hover: rgb(255 255 255 / 0.05);
+  --wp-accent-soft: color-mix(in oklab, var(--wp-accent) 22%, transparent);
+  --wp-danger: #f87171;
+  --wp-warn: #fbbf24;
+  --wp-ok: #4ade80;
+  --wp-info: #60a5fa;
+  --wp-info-fg: #0b1220;
+  --wp-side-fixed: #2b2f36;
+  --wp-side-scroll: #0f1013;
+  --wp-shadow: 0 1px 2px rgb(0 0 0 / 0.5);
+  --wp-shadow-lg: 0 16px 40px -8px rgb(0 0 0 / 0.7), 0 2px 8px rgb(0 0 0 / 0.4);
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--wp-bg);
+  color: var(--wp-fg);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+  font-feature-settings: 'cv11', 'ss01';
+}
+
+/* Inputs draw their own focus ring; everything else gets an outline. */
+:where(button, a, [role='button'], [role='switch'], [tabindex]):focus-visible {
+  outline: 2px solid var(--wp-accent);
+  outline-offset: 1px;
+}
+:where(input, textarea, select):focus-visible {
+  outline: none;
+}
+
+/* Over a project background (image or gradient), content sits on near-opaque
+   panels so text stays legible however busy the background is. */
+[data-bg] .wp-surface {
+  background: color-mix(in oklab, var(--wp-panel) 94%, transparent);
+}
+[data-bg] .wp-pad {
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.75rem;
+}
+[data-bg] .wp-pad-lg {
+  padding: 1rem;
+  border-radius: 1rem;
+}
+[data-bg] .wp-surface-blur {
+  background: color-mix(in oklab, var(--wp-panel) 88%, transparent);
+  backdrop-filter: blur(14px) saturate(1.1);
+}
+
+::selection {
+  background: color-mix(in oklab, var(--wp-accent) 30%, transparent);
+}
+
+.shadow-card {
+  box-shadow: var(--wp-shadow);
+}
+.shadow-pop {
+  box-shadow: var(--wp-shadow-lg);
+}
+
+/* Thin, unobtrusive scrollbars. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--wp-line-strong) transparent;
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Rendered markdown. */
+.prose-wp {
+  overflow-wrap: anywhere;
+}
+.prose-wp > * + * {
+  margin-top: 0.6em;
+}
+.prose-wp h1,
+.prose-wp h2,
+.prose-wp h3 {
+  font-weight: 600;
+  margin-top: 1em;
+}
+.prose-wp h1 {
+  font-size: 1.25em;
+}
+.prose-wp h2 {
+  font-size: 1.12em;
+}
+.prose-wp a {
+  color: var(--wp-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.prose-wp ul {
+  list-style: disc;
+  padding-left: 1.4em;
+}
+.prose-wp ol {
+  list-style: decimal;
+  padding-left: 1.4em;
+}
+.prose-wp code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  background: var(--wp-sunken);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
+.prose-wp pre {
+  background: var(--wp-sunken);
+  padding: 0.75em 1em;
+  border-radius: 8px;
+  overflow-x: auto;
+}
+.prose-wp pre code {
+  background: none;
+  padding: 0;
+}
+/* A fenced block's Copy button (added after sanitising, see lib/markdown.ts):
+   shown on hover or focus where there is one, always on touch screens. */
+.prose-wp .code-block {
+  position: relative;
+}
+.prose-wp .code-copy {
+  position: absolute;
+  top: 0.375rem;
+  right: 0.375rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  min-width: 1.75rem;
+  height: 1.75rem;
+  padding: 0 0.4rem;
+  border: 1px solid var(--wp-line);
+  border-radius: 6px;
+  background: var(--wp-raised);
+  color: var(--wp-muted);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 0.12s,
+    color 0.12s;
+}
+.prose-wp .code-copy:hover {
+  color: var(--wp-fg);
+}
+.prose-wp .code-copy svg {
+  width: 0.9rem;
+  height: 0.9rem;
+  flex: none;
+}
+.prose-wp .code-copy .code-copy-label:empty {
+  display: none;
+}
+.prose-wp .code-block:hover .code-copy,
+.prose-wp .code-block:focus-within .code-copy,
+.prose-wp .code-copy[data-state] {
+  opacity: 1;
+}
+.prose-wp .code-copy[data-state='copied'] {
+  color: var(--wp-ok);
+}
+@media (hover: none) {
+  .prose-wp .code-copy {
+    opacity: 1;
+  }
+}
+@media (pointer: coarse) {
+  .prose-wp .code-copy {
+    min-width: 2.25rem;
+    height: 2.25rem;
+  }
+}
+.prose-wp video {
+  display: block;
+  max-width: 100%;
+  max-height: 24rem;
+  border-radius: 6px;
+  background: #000;
+}
+.prose-wp blockquote {
+  border-left: 3px solid var(--wp-line-strong);
+  padding-left: 0.8em;
+  color: var(--wp-muted);
+}
+.prose-wp input[type='checkbox'] {
+  margin-right: 0.4em;
+  accent-color: var(--wp-accent);
+}
+.prose-wp li:has(> input[type='checkbox']) {
+  list-style: none;
+  margin-left: -1.2em;
+}
+.prose-wp table {
+  border-collapse: collapse;
+}
+.prose-wp th,
+.prose-wp td {
+  border: 1px solid var(--wp-line);
+  padding: 0.3em 0.6em;
+}
+/* [[Wikilinks]]: in-app references, told apart from web links. */
+.prose-wp a.wikilink {
+  text-decoration-style: dotted;
+}
+mark {
+  background: color-mix(in oklab, var(--wp-warn) 28%, transparent);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+.prose-wp .mention {
+  display: inline-block;
+  padding: 0 0.45em;
+  border-radius: 9999px;
+  background: color-mix(in oklab, var(--wp-accent) 14%, transparent);
+  color: var(--wp-accent);
+  font-weight: 500;
+  font-size: 0.92em;
+  line-height: 1.5;
+}
+.prose-wp img {
+  max-width: 100%;
+  border-radius: 6px;
+}
+
+@keyframes wp-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.animate-pop {
+  animation: wp-fade-in 120ms ease-out;
+}
+@keyframes wp-slide-in {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+.animate-sheet {
+  animation: wp-slide-in 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+@keyframes wp-slide-up {
+  from {
+    transform: translateY(16px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+.animate-up {
+  animation: wp-slide-up 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* A folded explainer's (?) arriving where the details shrank to. */
+@keyframes wp-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+  to {
+    transform: none;
+  }
+}
+.wp-pop-in {
+  animation: wp-pop-in 220ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-pop,
+  .animate-sheet,
+  .animate-up,
+  .wp-pop-in {
+    animation: none;
+  }
+}
+
+/* Safe areas for installed mobile app. */
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.pt-safe {
+  padding-top: env(safe-area-inset-top);
+}

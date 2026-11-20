@@ -1,0 +1,306 @@
+package core
+
+import (
+	"strings"
+	"testing"
+	"time"
+)
+
+// ownReviewDone is the SubagentStop of an adversarial-review subagent the
+// session ran, as the hook sends it.
+func (a *apEnv) ownReviewDone(report string) {
+	a.t.Helper()
+	a.ownReviewAsked("Attack the diff.", report)
+}
+
+func (a *apEnv) ownReviewAsked(prompt, report string) {
+	a.t.Helper()
+	a.setClock(a.clockNow().Add(10 * time.Second))
+	if _, err := a.s.SessionHook(a.ctx, a.ag, []HookEvent{hook("box", a.cli, "SubagentStop", func(h *HookEvent) {
+		h.AgentID, h.AgentType, h.AgentModel = "a1", "adversarial-review", "claude-sonnet-5-5"
+		h.AgentDescription, h.AgentPrompt, h.AgentReport = "Adversarial review of the diff", prompt, report
+	})}); err != nil {
+		a.t.Fatal(err)
+	}
+}
+
+// ownReviews are the session's own reviews kept: run, reason, prompt, body.
+func (a *apEnv) ownReviews() []string {
+	a.t.Helper()
+	rows, err := a.s.db.R.Query(`SELECT coalesce(run_id, 0) != 0, reason, prompt, body, read_state FROM work_log WHERE kind = ? ORDER BY id`, WorkOwnReview)
+	if err != nil {
+		a.t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var run bool
+		var reason, prompt, body, read string
+		if err := rows.Scan(&run, &reason, &prompt, &body, &read); err != nil {
+			a.t.Fatal(err)
+		}
+		r := "no run"
+		if run {
+			r = "run"
+		}
+		out = append(out, strings.Join([]string{r, reason, prompt, body, read}, " | "))
+	}
+	return out
+}
+
+func TestOwnReviewRecorded(t *testing.T) {
+	a, _, key := introEnv(t)
+	// a subagent of another kind sends no report: nothing kept
+	if _, err := a.s.SessionHook(a.ctx, a.ag, []HookEvent{hook("box", a.cli, "SubagentStop", func(h *HookEvent) { h.AgentType = "Explore" })}); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.ownReviews(); len(got) != 0 {
+		t.Fatalf("explore kept %q", got)
+	}
+	a.ownReviewDone("1. x.go:12 Save writes to a nil map.")
+	got := a.ownReviews()
+	if len(got) != 1 || got[0] != "run | adversarial-review (claude-sonnet-5-5): Adversarial review of the diff | Attack the diff. | 1. x.go:12 Save writes to a nil map. | pending" {
+		t.Fatalf("own reviews = %q", got)
+	}
+	wl, err := a.s.GetWorkLog(a.ctx, a.admin, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var e *WorkLogEntry
+	for _, x := range wl.Entries {
+		if x.Kind == WorkOwnReview {
+			e = x
+		}
+	}
+	if e == nil || e.Title != "Own review" || e.Body != "1. x.go:12 Save writes to a nil map." || wl.Summary.OwnReviews != 1 {
+		t.Fatalf("work log = %+v, %+v", wl.Summary, e)
+	}
+	// counted like a round's report
+	if _, err := a.s.db.W.Exec(`UPDATE work_log SET read_state = 'done', found = 1, fixed = 0, rejected = 0 WHERE kind = ?`, WorkOwnReview); err != nil {
+		t.Fatal(err)
+	}
+	wl, _ = a.s.GetWorkLog(a.ctx, a.admin, key)
+	if wl.Summary.OwnFound != 1 {
+		t.Fatalf("summary = %+v", wl.Summary)
+	}
+
+	// attached by hand, on another task too
+	other := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "Other"})
+	if _, err := a.s.AddWorkNote(a.ctx, a.ag, other.Key, WorkNoteInput{Body: "x", Tag: TagFound, Review: true}); !IsInvalid(err) {
+		t.Fatalf("tagged review: %v", err)
+	}
+	if _, err := a.s.AddWorkNote(a.ctx, a.ag, other.Key, WorkNoteInput{Body: " ", Review: true}); !IsInvalid(err) {
+		t.Fatalf("empty review: %v", err)
+	}
+	long := strings.Repeat("a", maxWorkNote+1)
+	if _, err := a.s.AddWorkNote(a.ctx, a.ag, other.Key, WorkNoteInput{Body: long}); !IsInvalid(err) {
+		t.Fatalf("long note: %v", err)
+	}
+	e, err = a.s.AddWorkNote(a.ctx, a.ag, other.Key, WorkNoteInput{Body: long, Review: true})
+	if err != nil || e.Kind != WorkOwnReview || e.Reason != ownReviewAttached {
+		t.Fatalf("attached = %+v, %v", e, err)
+	}
+	if got := a.ownReviews(); len(got) != 2 || !strings.HasPrefix(got[1], "no run | "+ownReviewAttached) {
+		t.Fatalf("own reviews = %q", got)
+	}
+}
+
+// With no task under way in the session, a review is attached to nothing.
+func TestOwnReviewNoTask(t *testing.T) {
+	a, _, _ := firstEnv(t)
+	a.stopWith("hello") // the session exists, with no run
+	a.ownReviewDone("Found nothing.")
+	if got := a.ownReviews(); len(got) != 0 {
+		t.Fatalf("own reviews = %q", got)
+	}
+}
+
+// The session's own review stands for the task's round: wp ship and --pr
+// open the pull request, and a round still pending is skipped for it;
+// --review still asks for one.
+func TestShipWithOwnReview(t *testing.T) {
+	t.Run("pr opens", func(t *testing.T) {
+		a, g, key := introEnv(t)
+		a.ownReviewDone("No issues found.")
+		res, err := a.ship(key, ShipPR)
+		if err != nil || res.Pull == nil || res.Held != "" || len(g.created) != 1 {
+			t.Fatalf("pr = %+v, %v", res, err)
+		}
+		if got := a.rounds(); len(got) != 1 || got[0] != "skipped "+ownReviewWhy(key) {
+			t.Fatalf("rounds = %q", got)
+		}
+		if rows := a.triageRows(); len(rows) != 1 || rows[0].action != triageSkip || rows[0].why != triageWhyOwnReview {
+			t.Fatalf("triage = %+v", rows)
+		}
+	})
+	t.Run("pending round skipped", func(t *testing.T) {
+		a, g, key := introEnv(t)
+		if res, err := a.ship(key, ShipAuto); err != nil || res.Held == "" || len(g.created) != 0 {
+			t.Fatalf("auto = %+v, %v", res, err)
+		}
+		a.ownReviewDone("1. a bug")
+		res, err := a.ship(key, ShipAuto)
+		if err != nil || res.Pull == nil || len(g.created) != 1 {
+			t.Fatalf("auto after own = %+v, %v", res, err)
+		}
+		if got := a.rounds(); len(got) != 1 || got[0] != "skipped "+ownReviewWhy(key) {
+			t.Fatalf("rounds = %q", got)
+		}
+	})
+	t.Run("review still asks", func(t *testing.T) {
+		a, g, key := introEnv(t)
+		a.ownReviewDone("No issues found.")
+		res, err := a.ship(key, ShipReview)
+		if err != nil || !strings.Contains(res.Held, "End your turn") || len(g.created) != 0 {
+			t.Fatalf("review = %+v, %v", res, err)
+		}
+		// the round asked for after it is what the session waits for
+		if res, err := a.ship(key, ShipPR); err != nil || res.Held == "" || len(g.created) != 0 {
+			t.Fatalf("pr after review = %+v, %v", res, err)
+		}
+		if got := a.rounds(); len(got) != 1 || got[0] != RoundPending {
+			t.Fatalf("rounds = %q", got)
+		}
+	})
+}
+
+// A session holding two tasks: a review goes to the one its text names,
+// and to neither when it names none, so no task ships on a review of
+// another (and the other still asks for its round).
+func TestOwnReviewTwoTasks(t *testing.T) {
+	a, g, first := introEnv(t)
+	second := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "Second", Agent: "claude"})
+	if _, err := a.s.AgentTake(a.ctx, a.ag, second.Key, ""); err != nil {
+		t.Fatal(err)
+	}
+	a.ownReviewAsked("Attack the diff.", "No issues found.")
+	if got := a.ownReviews(); len(got) != 0 {
+		t.Fatalf("unnamed review kept: %q", got)
+	}
+	a.ownReviewAsked("Attack "+second.Key+"'s change.", "No issues found.")
+	var on int64
+	if err := a.s.db.R.QueryRow(`SELECT issue_id FROM work_log WHERE kind = ?`, WorkOwnReview).Scan(&on); err != nil || on != second.ID {
+		t.Fatalf("on %d (%v), want %d", on, err, second.ID)
+	}
+	if res, err := a.ship(first, ShipPR); err != nil || res.Pull != nil || res.Held == "" || len(g.created) != 0 {
+		t.Fatalf("first shipped on the second's review: %+v, %v", res, err)
+	}
+	// a key that only starts the same, or both keys: neither
+	a.ownReviewAsked("Attack "+first+"0 and "+first+"-x", "ok")
+	a.ownReviewAsked("Attack "+first+" and "+second.Key, "ok")
+	if got := a.ownReviews(); len(got) != 1 {
+		t.Fatalf("own reviews = %q", got)
+	}
+	a.ownReviewAsked("Review "+first+".", "No issues found.")
+	if res, err := a.ship(first, ShipPR); err != nil || res.Pull == nil {
+		t.Fatalf("first with its review: %+v, %v", res, err)
+	}
+}
+
+// An own review covers what was committed before it, and what came after
+// a review that found issues (its fixes); commits after one that found
+// nothing are a change it never saw, so a round reviews them.
+func TestOwnReviewCommitsSince(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		found  string // the count read out of the report: "" not yet
+		after  bool   // a commit since the review ended
+		stands bool
+	}{
+		{"clean, nothing since", "0", false, true},
+		{"clean, commits since", "0", true, false},
+		{"found, commits since", "2", true, true},
+		{"not counted yet, commits since", "", true, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			a, g, key := introEnv(t)
+			a.ownReviewDone("No issues found.")
+			if c.found != "" {
+				if _, err := a.s.db.W.Exec(`UPDATE work_log SET read_state = 'done', found = ? WHERE kind = ?`, c.found, WorkOwnReview); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var ended int64
+			if err := a.s.db.R.QueryRow(`SELECT ended_at FROM work_log WHERE kind = ?`, WorkOwnReview).Scan(&ended); err != nil {
+				t.Fatal(err)
+			}
+			head := ended/1000 - 5
+			if c.after {
+				head = ended/1000 + 5
+			}
+			res, err := a.ship(key, ShipPR, func(in *OpenPRInput) { in.HeadTime = head })
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c.stands {
+				if res.Pull == nil || len(g.created) != 1 {
+					t.Fatalf("own review didn't stand: %+v", res)
+				}
+				return
+			}
+			if res.Pull != nil || res.Held == "" || len(g.created) != 0 || !strings.Contains(res.Notice, "committed since") {
+				t.Fatalf("stale own review stood: %+v", res)
+			}
+			if got := a.rounds(); len(got) != 1 || got[0] != RoundPending {
+				t.Fatalf("rounds = %q", got)
+			}
+		})
+	}
+}
+
+// A report the agent attached by hand stands for the round as the agent's
+// own skip, which it is: the round and triage say so.
+func TestShipWithAttachedReview(t *testing.T) {
+	a, g, key := introEnv(t)
+	if _, err := a.s.AddWorkNote(a.ctx, a.ag, key, WorkNoteInput{Body: "ok", Review: true}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.ship(key, ShipPR)
+	if err != nil || res.Pull == nil || len(g.created) != 1 {
+		t.Fatalf("pr = %+v, %v", res, err)
+	}
+	if got := a.rounds(); len(got) != 1 || got[0] != "skipped "+ownReviewAttachedWhy(key) {
+		t.Fatalf("rounds = %q", got)
+	}
+	if rows := a.triageRows(); len(rows) != 1 || rows[0].why != triageWhyAgentSkip {
+		t.Fatalf("triage = %+v", rows)
+	}
+}
+
+// The hook's outbox replays an event whose POST failed: the same review
+// is kept once.
+func TestOwnReviewReplayed(t *testing.T) {
+	a, _, _ := introEnv(t)
+	at := a.clockNow().UnixMilli()
+	ev := hook("box", a.cli, "SubagentStop", func(h *HookEvent) {
+		h.At, h.AgentID, h.AgentType, h.AgentReport = at, "a1", "adversarial-review", "No issues found."
+	})
+	for range 2 {
+		if _, err := a.s.SessionHook(a.ctx, a.ag, []HookEvent{ev}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := a.ownReviews(); len(got) != 1 {
+		t.Fatalf("own reviews = %q", got)
+	}
+}
+
+// With no run open, a review goes to the task whose run ended last only
+// when it names that task or no task at all.
+func TestOwnReviewEndedRun(t *testing.T) {
+	a, _, key := introEnv(t)
+	other := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "Other"})
+	a.setClock(a.clockNow().Add(time.Minute))
+	if _, err := a.s.db.W.Exec(`UPDATE agent_runs SET ended_at = ?`, a.clockNow().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	a.ownReviewAsked("Attack "+other.Key+"'s change.", "No issues found.")
+	if got := a.ownReviews(); len(got) != 0 {
+		t.Fatalf("review of %s kept on %s: %q", other.Key, key, got)
+	}
+	a.ownReviewAsked("Attack the diff.", "No issues found.")
+	a.ownReviewAsked("Attack "+key+".", "Found nothing.")
+	if got := a.ownReviews(); len(got) != 2 {
+		t.Fatalf("own reviews = %q", got)
+	}
+}

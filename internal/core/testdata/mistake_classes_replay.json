@@ -1,0 +1,638 @@
+{
+ "items": [
+  {
+   "project": "HARB",
+   "cls": "HARB-41",
+   "source": "finding",
+   "id": "HARB-41/0",
+   "unit": "pr:10",
+   "at": 1794251416773,
+   "file": "tools/harbor/cmd/harbor/main.go",
+   "title": "`route add` with a NAME that already exists silently replaces that route's entry, including its mirror hash, priority and relay settings. The old mirror stops working and no error or confirmation is g"
+  },
+  {
+   "project": "HARB",
+   "cls": "HARB-41",
+   "source": "finding",
+   "id": "HARB-41/1",
+   "unit": "pr:10",
+   "at": 1794251416773,
+   "file": "tools/harbor/cmd/harbor/main.go",
+   "title": "`route add` silently drops `-relay-token-file` when `-relay-url` is not also given, so a mirror is registered without the relay token the operator asked for and no error is reported."
+  },
+  {
+   "project": "HARB",
+   "cls": "HARB-41",
+   "source": "finding",
+   "id": "HARB-41/2",
+   "unit": "pr:10",
+   "at": 1794251416773,
+   "file": "tools/harbor/cmd/harbor/main.go",
+   "title": "With -replace, `route add` overwrites the whole entry, so a mirror re-added without -relay-url silently loses its existing relay_url and relay_token. Juno or Robin then stops receiving sync notices, a"
+  },
+  {
+   "project": "HARB",
+   "cls": "HARB-41",
+   "source": "audit",
+   "id": "206.1",
+   "unit": "pr:10",
+   "at": 1794251416773,
+   "file": "tools/harbor/cmd/harbor/main.go",
+   "title": "With -replace, `route add` overwrites the whole entry, so a mirror re-added without -relay-url silently loses its exist…",
+   "problem": "With -replace, `route add` overwrites the whole entry, so a mirror re-added without -relay-url silently loses its existing relay_url and relay_token. Juno or Robin then stops receiving sync notices, and nothing reports it."
+  },
+  {
+   "project": "HARB",
+   "cls": "HARB-41",
+   "source": "audit",
+   "id": "206.2",
+   "unit": "pr:10",
+   "at": 1794251416773,
+   "file": "tools/harbor/cmd/harbor/main.go",
+   "title": "`route add` silently drops `-relay-token-file` when `-relay-url` is not also given, so a mirror is registered without t…",
+   "problem": "`route add` silently drops `-relay-token-file` when `-relay-url` is not also given, so a mirror is registered without the relay token the operator asked for and no error is reported."
+  },
+  {
+   "project": "HARB",
+   "cls": "HARB-41",
+   "source": "audit",
+   "id": "314.4",
+   "unit": "audit:314",
+   "at": 1794251416773,
+   "file": "tools/harbor/cmd/harbor/main.go",
+   "title": "Replacing a route as mirror turns on a stored relay",
+   "problem": "Relay URL and bearer are written for every kind whenever hookURL is non-empty (lines 421-422), including kind plain. They are unused while the kind is plain, because NewRelay only walks Mirrors. On a later route add NAME mirror -replace with no relay flags, lines 405-406 copy whatever relay_url and relay_token are already on that entry into the new mirror record. After restart, sync events are POSTed to that URL with that bearer even though the replace command never mentioned relays."
+  },
+  {
+   "project": "HARB",
+   "cls": "HARB-41",
+   "source": "audit",
+   "id": "314.5",
+   "unit": "audit:314",
+   "at": 1794251416773,
+   "file": "tools/harbor/cmd/harbor/main.go",
+   "title": "An empty --relay-url leaves the old relay and bearer in place",
+   "problem": "The flag's zero value and an explicit empty --relay-url are both \"\". The update runs only when the flag is non-empty, so route add NAME mirror -replace -relay-url= succeeds, prints a new route id, and leaves the previous relay_url and relay_token on the mirror. After restart harbor keeps POSTing sync events and the bearer to that endpoint. Demoting the kind to plain is the path that actually removes the fields, and that also deletes the bearer and changes who the route belongs to."
+  },
+  {
+   "project": "HARB",
+   "cls": "HARB-42",
+   "source": "finding",
+   "id": "HARB-42/7",
+   "unit": "pr:25",
+   "at": 1794251416810,
+   "file": "tools/harbor/internal/spool/spool.go",
+   "title": "The skip count is only reported when a later line reaches pumpTail. If the tail skips lines and then receives nothing more (or the last skips happen just before Close), the count is never printed, so"
+  },
+  {
+   "project": "HARB",
+   "cls": "HARB-42",
+   "source": "audit",
+   "id": "283.2",
+   "unit": "pr:25",
+   "at": 1794251416810,
+   "file": "tools/harbor/internal/spool/spool.go",
+   "title": "The skip count is only reported when a later line reaches pumpTail. If the tail skips lines and then receives nothing m…",
+   "problem": "The skip count is only reported when a later line reaches pumpTail. If the tail skips lines and then receives nothing more (or the last skips happen just before Close), the count is never printed, so the operator is not told the tail lost lines. Close doesn't report the remaining count either."
+  },
+  {
+   "project": "HARB",
+   "cls": "HARB-42",
+   "source": "audit",
+   "id": "337.6",
+   "unit": "audit:337",
+   "at": 1794251416810,
+   "file": "tools/harbor/internal/spool/spool.go",
+   "title": "The pump's final skip report can hold Close for the full tail drain",
+   "problem": "Skips since the last 30s tick are still in the counter at shutdown. pumpTail calls reportSkipped after the channel drains and before it closes tailDone. That write goes to stderr on the tail goroutine. Close waits on tailDone for up to tailDrain (2s) before the separate warnWait path. A stuck stderr therefore delays Close by about 2s even though every tail write has already finished. TestAStuckStderrHoldsUpNoFlushAndNoClose also sticks the tail and allows 3*tailDrain, so it still passes."
+  },
+  {
+   "project": "HARB",
+   "cls": "HARB-42",
+   "source": "finding",
+   "id": "HARB-42/10",
+   "unit": "pr:35",
+   "at": 1794251416810,
+   "file": "tools/harbor/internal/spool/spool.go",
+   "title": "After Close times out waiting for the tail, pumpTail keeps running, but stopReports is already closed and the reporter has done its final report. Any later tail write failure increments skipped, and n"
+  },
+  {
+   "project": "DOCK",
+   "cls": "DOCK-71",
+   "source": "finding",
+   "id": "DOCK-71/11",
+   "unit": "pr:163",
+   "at": 1794251415818,
+   "file": "backend/dockside/api.py",
+   "title": "A tag that is removed from the list but whose typed counts are stored under a differently worded key (for example \"Granite\" with a count, while the list entry was \"Granite slab\") is re-added in the sa"
+  },
+  {
+   "project": "DOCK",
+   "cls": "DOCK-71",
+   "source": "audit",
+   "id": "200.1",
+   "unit": "pr:163",
+   "at": 1794251415818,
+   "file": "backend/dockside/api.py",
+   "title": "A tag that is removed from the list but whose typed counts are stored under a differently worded key (for example \"Gran…",
+   "problem": "A tag that is removed from the list but whose typed counts are stored under a differently worded key (for example \"Granite\" with a count, while the list entry was \"Granite slab\") is re-added in the same save. The counts are kept because their key doesn't match the removed name, and tags_from_counts then appends the key back, so the removal is reverted."
+  },
+  {
+   "project": "DOCK",
+   "cls": "DOCK-71",
+   "source": "audit",
+   "id": "234.1",
+   "unit": "pr:177",
+   "at": 1794251415818,
+   "file": "backend/dockside/api.py",
+   "title": "Removing one wording deletes counts another remaining tag still uses",
+   "problem": "An unchanged counts entry is dropped whenever its folded key is in `gone`, and `names_in(k, now)` is never checked in that case. If the list still has another entry that names the same tag, `tags_from_counts` will not add the removed string back, but the typed number is already gone. `counts_with` treats variants as the same tag, so the remaining chip's total changes too. Saving tags [\"Granite\", \"Granite slab\"] with tag_counts {\"Granite\": 14} and then saving tags [\"Granite slab\"] yields tag_counts {}. The same happens for [\"Slate\", \"Slate 8\"] with counts under \"Slate\", or [\"Basalt\", \"Basalt 3.2\"] with counts under \"Basalt\": the variant chip stays and the typed counts do not."
+  },
+  {
+   "project": "DOCK",
+   "cls": "DOCK-71",
+   "source": "audit",
+   "id": "234.2",
+   "unit": "pr:177",
+   "at": 1794251415818,
+   "file": "backend/dockside/api.py",
+   "title": "Dropping null or zero counts makes reports state a different number",
+   "problem": "The new clause also drops an unchanged entry when the old list names it and the new list does not, including null and 0. tags_from_counts only appends a tag when the value is greater than 0, so neither null nor 0 can bring the tag back. counts_with treats a stored null as \"don't say\" and a stored 0 as the typed answer; with the key gone it uses counts worked out from shipments that still name the tag, or the counts of a tag that implies it (slab counts for Granite). Taking \"Granite slab\" off the list while tag_counts is {\"Granite\": null} or {\"Granite\": 20} therefore changes a later \"how many Granite?\" answer from silence or 20 to that other number. The summary line does the same: a stored null is what keeps the shipments' counts out of tag_counts_line."
+  },
+  {
+   "project": "DOCK",
+   "cls": "DOCK-71",
+   "source": "audit",
+   "id": "234.3",
+   "unit": "pr:177",
+   "at": 1794251415818,
+   "file": "backend/dockside/api.py",
+   "title": "Two counts that fold together can put a removed tag back",
+   "problem": "`before` keeps one value per folded key, and a later entry overwrites an earlier one. If tag_counts has both \"Granite\": 10 and \"GRANITE\": 12, before[\"granite\"] is 12, so the unchanged 10 compares as edited. The \"changed in this save\" arm then keeps \"Granite\" even though every tag that names it was removed, and tags_from_counts appends \"Granite\" again."
+  },
+  {
+   "project": "DOCK",
+   "cls": "DOCK-72",
+   "source": "bug",
+   "id": "DOCK-233",
+   "unit": "pr:185",
+   "at": 1794251415852,
+   "file": "backend/dockside/inbox.py",
+   "title": "Template replies aren't sent back when they ignore a harbourmaster's draught question"
+  },
+  {
+   "project": "DOCK",
+   "cls": "DOCK-72",
+   "source": "audit",
+   "id": "287.4",
+   "unit": "audit:287",
+   "at": 1794251415852,
+   "file": "backend/dockside/inbox.py",
+   "title": "A declined, failed, or other-thread reply counts as the draught already being discussed",
+   "problem": "The \"earlier reply of ours\" query loads every outbound row for the booking with in_reply_to set. It does not require delivery to be sent (NULL or sent). send_reply stores awaiting_approval, queued, declined, and failed rows with the same body. A depth question the sender declined or failed to send still makes _draught_covered true, so later arrival replies on that booking skip the question and can auto-send. The query is also not this thread: a reply to a different person on the same booking counts. The comment on line 888 says \"this thread\", and the booking request is excluded only by in_reply_to being NULL."
+  },
+  {
+   "project": "DOCK",
+   "cls": "DOCK-72",
+   "source": "finding",
+   "id": "DOCK-72/18",
+   "unit": "pr:183",
+   "at": 1794251415852,
+   "file": "backend/dockside/inbox.py",
+   "title": "`_draught_covered` counts outgoing replies with delivery 'queued' as if they had reached the harbourmaster. The description says only a reply that went out counts. A queued reply that later fails or i"
+  },
+  {
+   "project": "DOCK",
+   "cls": "DOCK-72",
+   "source": "audit",
+   "id": "299.6",
+   "unit": "audit:299",
+   "at": 1794251415852,
+   "file": "backend/dockside/inbox.py",
+   "title": "A wrapped berth-draught question is not required in an auto-sent reply",
+   "problem": "draught_question uses the same split as asks_route and demands that one fragment both match the draught regex and be a question. A hard wrap inside the phrase breaks that. 'What is the maximum\ndraught?' and 'Could you confirm the depth under the\nkeel in metres?' return ''. unseen_problems then sets answer_draught false, so an arrival reply can be auto-sent without answering. mentions_draught on the whole 'maximum\ndraught' body is still true, because that pattern allows any whitespace, so the two checks disagree."
+  },
+  {
+   "project": "DOCK",
+   "cls": "DOCK-72",
+   "source": "finding",
+   "id": "DOCK-72/20",
+   "unit": "pr:185",
+   "at": 1794251415852,
+   "file": "backend/dockside/inbox.py",
+   "title": "In unseen_problems, the answer-draught check only requires that the draft mention the draught anywhere, so a draft that merely asks the question again, or says something vague like 'happy to discuss i"
+  },
+  {
+   "project": "QRY",
+   "cls": "QRY-31",
+   "source": "bug",
+   "id": "QRY-40",
+   "unit": "pr:63",
+   "at": 1794251410247,
+   "file": "internal/meter/lanes.go",
+   "title": "A metered lane learns its capacity in jobs from running out"
+  },
+  {
+   "project": "QRY",
+   "cls": "QRY-31",
+   "source": "finding",
+   "id": "QRY-31/22",
+   "unit": "pr:172",
+   "at": 1794251410247,
+   "file": "internal/meter/lanes.go",
+   "title": "laneChanged persists each change in its own goroutine (go f(lane, n)). Two quick changes to the same lane key (for example a set followed by a merge that deletes it) can be stored out of order, so the"
+  },
+  {
+   "project": "QRY",
+   "cls": "QRY-31",
+   "source": "finding",
+   "id": "QRY-31/23",
+   "unit": "pr:172",
+   "at": 1794251410247,
+   "file": "internal/meter/lanes.go",
+   "title": "When an exhausted error names the requested queue, spendIn only deletes its spentIn key. It does not move the use already counted in the shared lane back to the queue's own lane. The lane then starts"
+  },
+  {
+   "project": "QRY",
+   "cls": "QRY-31",
+   "source": "bug",
+   "id": "QRY-166",
+   "unit": "pr:191",
+   "at": 1794251410247,
+   "file": "internal/meter/lanes.go",
+   "title": "Lane counts past its reported capacity (batch-b 27 of 20)"
+  },
+  {
+   "project": "QRY",
+   "cls": "QRY-31",
+   "source": "finding",
+   "id": "QRY-31/25",
+   "unit": "pr:191",
+   "at": 1794251410247,
+   "file": "internal/meter/lanes.go",
+   "title": "Settle clears the stated capacity whenever a settling job with tokens pushes total past it, including jobs admitted before the 429 that stated the capacity. Those in-flight results are not evidence th"
+  },
+  {
+   "project": "QRY",
+   "cls": "QRY-31",
+   "source": "audit",
+   "id": "153.3",
+   "unit": "pr:172",
+   "at": 1794251410247,
+   "file": "internal/meter/lanes.go",
+   "title": "When an exhausted error names the requested queue, spendIn only deletes its spentIn key. It does not move the use alrea…",
+   "problem": "When an exhausted error names the requested queue, spendIn only deletes its spentIn key. It does not move the use already counted in the shared lane back to the queue's own lane. After the merge, the queue's lane starts at zero for the day, although the broker already counted those jobs for it. The broker therefore undercounts that queue until the next reset, and can route more work to it than its own budget allows."
+  },
+  {
+   "project": "QRY",
+   "cls": "QRY-31",
+   "source": "audit",
+   "id": "240.2",
+   "unit": "audit:240",
+   "at": 1794251410247,
+   "file": "internal/meter/lanes.go",
+   "title": "Folding one queue’s lane into another drops its tokens",
+   "problem": "When an upstream starts counting one queue name in another’s lane, spendIn moves jobs (total, used), refusals, history, and pacing counts onto the destination, but never ln.tokens. The source’s tokenLimit is cleared at line 422 and not copied either. Settle had already added those tokens (10 per job in tests; prompt+completion in production) on the source lane. The new footnote (and, if a limit had been stated, the token bar and strain) therefore omit that queue’s tokens for the rest of the period. A restart rebuilds the total from the usage log via SeedPeriod; until then the page is short."
+  },
+  {
+   "project": "JUNO",
+   "cls": "JUNO-61",
+   "source": "finding",
+   "id": "JUNO-61/28",
+   "unit": "pr:130",
+   "at": 1794251407328,
+   "file": "juno/internal/api/resolver_model_cloned_album.go",
+   "title": "The Album.clonedAlbums resolver returns every cloned copy of the album to anyone who can see the owner, with no check that the viewer can see the copy itself. A copy cloned from another person's priva"
+  },
+  {
+   "project": "JUNO",
+   "cls": "JUNO-61",
+   "source": "bug",
+   "id": "JUNO-359",
+   "unit": "pr:151",
+   "at": 1794251407328,
+   "file": "juno/internal/api/resolver_model_cloned_album.go",
+   "title": "Cloned albums: limit Data to who could see the source at clone time"
+  },
+  {
+   "project": "JUNO",
+   "cls": "JUNO-61",
+   "source": "bug",
+   "id": "JUNO-382",
+   "unit": "pr:162",
+   "at": 1794251407328,
+   "file": "juno/internal/api/resolver_model_cloned_album.go",
+   "title": "Fix older cloned albums shown to pinned item viewers"
+  },
+  {
+   "project": "ORCH",
+   "cls": "ORCH-21",
+   "source": "finding",
+   "id": "ORCH-21/31",
+   "unit": "pr:33",
+   "at": 1794251412591,
+   "file": "backend/orchard/match.py",
+   "title": "When either listing lacks coordinates, same-district stalls match at NEAR_KM without the spec's 1% crate-weight check and without the under-20,000-population / shared-centroid rule. Those checks apply"
+  },
+  {
+   "project": "ORCH",
+   "cls": "ORCH-21",
+   "source": "audit",
+   "id": "168.2",
+   "unit": "pr:33",
+   "at": 1794251412591,
+   "file": "backend/orchard/match.py",
+   "title": "When either listing lacks coordinates, same-district stalls match at NEAR_KM without the spec's 1% crate-weight check a…",
+   "problem": "When either listing lacks coordinates, same-district stalls match at NEAR_KM without the spec's 1% crate-weight check and without the under-20,000-population / shared-centroid rule. Those checks apply only to the coordinate branch, so large-town stalls with the same weight can merge."
+  },
+  {
+   "project": "ORCH",
+   "cls": "ORCH-21",
+   "source": "audit",
+   "id": "265.1",
+   "unit": "audit:265",
+   "at": 1794251412591,
+   "file": "backend/orchard/match.py",
+   "title": "A listing with no coordinates is joined to the wrong stall in the same town",
+   "problem": "If either listing has no latitude, `_same_stall` returns a match whenever the district codes are equal and the crate weights pass `_close_kg(..., 0.01)`. The population check at lines 269–272 never runs, so this happens in a city of 100,000 as well as a village. Every such pair is ranked `NEAR_KM` (10), and `sorted(matches)` at line 338 then keeps the pair whose indexes come first. In `market_results` the item list follows sorted listing ids, so the earliest id wins, not the true duplicate. A third market is then unioned in by `join` (lines 310–314) even when the two geocoded listings are kilometres apart and lines 269–272 would have refused them. Roadside cards usually have no coordinates (`backend/orchard/providers/_roadside.py` lines 7–8), so in one city search a cheaper, different stall with the same weight is attached and line 499 shows that lower price on the other stall. Variety counts are not read here; lines 285–287 reject a variety mismatch only for same-site twins."
+  },
+  {
+   "project": "ORCH",
+   "cls": "ORCH-21",
+   "source": "audit",
+   "id": "265.2",
+   "unit": "audit:265",
+   "at": 1794251412591,
+   "file": "backend/orchard/match.py",
+   "title": "Pins within 2 km still merge different stalls, including pairs the new price scan just started comparing",
+   "problem": "When both pins exist and the distance is at most `SAME_KM` (2 km), `_same_stall` returns that distance and skips the 1% crate-weight rule and the big-town guard. Line 257 ignores weight unless both listings have one, so a stall with no `crate_kg` matches any similarly priced stall on the same pin, whatever the other weight is. Markets often drop many listings on one town or district centroid (the comment at lines 33–34 and 39–42; the Fieldpost feed's approximate points are the town centre), which makes the distance about 0. That rank is joined first, so a centroid collision takes a provider's only slot before a real pair a kilometre or two away. The new loop at line 329 now compares prices the old €5,000 buckets never paired. 204900 and 210500 are buckets 40 and 42 (more than one step apart) but within 3% of 210500 (6315). Those two stalls now merge at the same pin when the weights are 100 kg and 108 kg (`_close_kg(100, 108, 0.1)` is true) or when one weight is missing."
+  },
+  {
+   "project": "ORCH",
+   "cls": "ORCH-22",
+   "source": "bug",
+   "id": "ORCH-19",
+   "unit": "pr:16",
+   "at": 1794251412616,
+   "file": "backend/orchard/prices.py",
+   "title": "\"Best\" price mixes crate sizes: 5 kg, bulk and split boxes stand in for the exact crate"
+  },
+  {
+   "project": "ORCH",
+   "cls": "ORCH-22",
+   "source": "bug",
+   "id": "ORCH-24",
+   "unit": "pr:19",
+   "at": 1794251412616,
+   "file": "backend/orchard/prices.py",
+   "title": "No price sanity checks: boxes of pears at €0.01/kg, Fieldpost outliers up to 17x"
+  },
+  {
+   "project": "ORCH",
+   "cls": "ORCH-22",
+   "source": "bug",
+   "id": "ORCH-38",
+   "unit": "pr:43",
+   "at": 1794251412616,
+   "file": "backend/orchard/prices.py",
+   "title": "/saved and search summaries take the minimum price across searches, crate counts and crate sizes"
+  },
+  {
+   "project": "WP",
+   "cls": "WP-792",
+   "source": "bug",
+   "id": "WP-265",
+   "unit": "pr:268",
+   "at": 1794251404513,
+   "file": "internal/core/pr_open.go",
+   "title": "wp ship / wp pr open say only \"wp: internal error\" when the forge times out"
+  },
+  {
+   "project": "WP",
+   "cls": "WP-792",
+   "source": "audit",
+   "id": "248.1",
+   "unit": "audit:248",
+   "at": 1794251404513,
+   "file": "internal/core/pr_open.go",
+   "title": "Merging a stack parent deletes the branch its children merge into, and those children stay armed",
+   "problem": "stackBase sets the new pull request's base to the nearest ancestor branch that still has an open pull request. Merging that parent uses the default delete-branch option (internal/core/merge.go:715) and the forge client deletes the head (internal/core/forge_merge.go:92 for GitHub, :108 for Forgejo/Gitea). Nothing searches for open pull requests whose base_ref is that head, retargets them, or clears armed_at, ready_at, or the green gate. The branch sweep would have kept the branch (internal/core/branch_sweep.go:107 records it as a base), but the merge path never looks. On Forgejo the child's base is gone and the armed merge fails, so the child cannot land. On GitHub, deleting a merged head retargets open pull requests that used it as their base onto the parent's base; this code leaves the child armed on the same head SHA, and the next babysit pass can merge that diff into the default branch. After a squash, the diff still contains the parent's commits. Parents are usually armed and reviewed first, so they merge while children are still open."
+  },
+  {
+   "project": "WP",
+   "cls": "WP-792",
+   "source": "audit",
+   "id": "248.3",
+   "unit": "audit:248",
+   "at": 1794251404513,
+   "file": "internal/core/pr_open.go",
+   "title": "A fork pull request with the same branch name becomes the stack base",
+   "problem": "openFrom picks the newest pull request in the repo with that head_ref still recorded open, and stackBase then uses that name as the new pull request's base. The query does not look at head_repo. Fork pull requests are stored against the base repo with the fork's head branch name (internal/core/forge_pulls.go:216 sets HeadRepo from the fork). If origin has an ancestor branch of the same name, the child is opened into that origin branch and the notice cites the fork pull request's number. The fork's commits are not on that origin branch, so the child merges onto a different line than the pull request the notice names. A newer fork pull request also hides an older same-repo pull request from the same head name, because the scan stops at the first row stillOpen accepts."
+  },
+  {
+   "project": "WP",
+   "cls": "WP-792",
+   "source": "audit",
+   "id": "248.4",
+   "unit": "audit:248",
+   "at": 1794251404513,
+   "file": "internal/core/pr_open.go",
+   "title": "--review on an open pull request returns before --base retargets it",
+   "problem": "When a pull request is already open and the review intent is review, reviewFirst can return open=false and OpenPullRequest returns Held immediately. The retarget at line 240 never runs, and the notice does not say the base was left unchanged. The held text tells the agent to run wp ship --pr afterward. That follow-up sends review intent pr and no base, so the move is skipped again (want is empty). wp ship --base main --review, the documented way to ship a whole stack after a review, therefore leaves the pull request merging into the stacked branch."
+  },
+  {
+   "project": "WP",
+   "cls": "WP-792",
+   "source": "audit",
+   "id": "248.6",
+   "unit": "audit:248",
+   "at": 1794251404513,
+   "file": "internal/core/pr_open.go",
+   "title": "Stack checks run outside the open budget and can outlast the CLI",
+   "problem": "The CLI HTTP client gives up after 60 seconds (cmd/wp/client.go:20) and does not retry a client timeout (only HTTP 502, 503, and 504). OpenPullRequest's forge work is supposed to stay inside openPRBudget (50s). openFrom for the head runs before that budget (line 119), and stackBase is called with the request context, not the budget context. Each stillOpen adds its own 10s timeout (line 298). A reopen plus one stacked parent is an extra forge read outside the 50s, and each further ancestor with an open pull request adds another. When those reads are slow, the handler is still in DefaultBranch or CreatePR when the CLI hits 60s. The command fails; the server can still finish the create."
+  },
+  {
+   "project": "WP",
+   "cls": "WP-792",
+   "source": "audit",
+   "id": "313.1",
+   "unit": "audit:313",
+   "at": 1794251404513,
+   "file": "internal/core/pr_open.go",
+   "title": "--urgent is dropped when a review holds the pull request",
+   "problem": "With autopilot reviews on, wp ship --urgent or wp pr open --urgent stores Urgent on the round and returns Held here, before the label is applied at lines 177 and 207. The CLI prints that held text and never the new cost note (cmd/wp/pr_open.go lines 117 and 225). The review is then told to run wp ship --pr (internal/core/review_audit.go line 88), which opens the pull request with Urgent false. The saved flag is read only if Waypoint itself opens the pull request because the review could not run (internal/core/review_held.go line 113), and that path shows no cost warning either. A review that finishes and ships leaves the pull request off the urgent lane."
+  },
+  {
+   "project": "WP",
+   "cls": "WP-792",
+   "source": "audit",
+   "id": "346.7",
+   "unit": "pr:341",
+   "at": 1794251404513,
+   "file": "internal/core/pr_open.go",
+   "title": "Review-held ship of an existing pull request never claims it",
+   "problem": "The CLI pushes the branch before OpenPullRequest. For an already-open pull request, ShipReview or ShipSkip runs reviewFirst first, and a held review returns at this line with no call to claimPR (that call is only at the bottom of OpenPullRequest). Both sessions can push the same open pull request for review and neither is recorded or warned. Default wp ship (review auto) on an existing pull request does fall through and claim."
+  },
+  {
+   "project": "WP",
+   "cls": "WP-793",
+   "source": "bug",
+   "id": "WP-566",
+   "unit": "pr:261",
+   "at": 1794251404561,
+   "file": "internal/core/agentwork.go",
+   "title": "wp next hands a paused task to another session of the same agent"
+  },
+  {
+   "project": "WP",
+   "cls": "WP-793",
+   "source": "bug",
+   "id": "WP-567",
+   "unit": "pr:264",
+   "at": 1794251404561,
+   "file": "internal/core/agentwork.go",
+   "title": "Prevent stranded uncommitted work after mid-task session clear"
+  },
+  {
+   "project": "WP",
+   "cls": "WP-793",
+   "source": "finding",
+   "id": "WP-793/47",
+   "unit": "pr:261",
+   "at": 1794251404561,
+   "file": "internal/core/agentwork.go",
+   "title": "AgentResume re-binds a paused run to the calling session without checking heldElsewhere. When another live session of the same agent holds the paused task, a resume from a different session (`wp resu"
+  },
+  {
+   "project": "WP",
+   "cls": "WP-793",
+   "source": "bug",
+   "id": "WP-580",
+   "unit": "pr:282",
+   "at": 1794251404561,
+   "file": "internal/core/agentwork.go",
+   "title": "wp next said 'You already hold this task' for a task another live session holds"
+  },
+  {
+   "project": "WP",
+   "cls": "WP-793",
+   "source": "bug",
+   "id": "WP-720",
+   "unit": "pr:322",
+   "at": 1794251404561,
+   "file": "internal/core/agentwork.go",
+   "title": "Autopilot stalls when a prompt resumes another session's task in the same directory"
+  },
+  {
+   "project": "WP",
+   "cls": "WP-793",
+   "source": "finding",
+   "id": "WP-793/50",
+   "unit": "pr:322",
+   "at": 1794251404561,
+   "file": "internal/core/agentwork.go",
+   "title": "AgentResumeOwn skips its only-own check entirely when the actor has no session (Session == 0) and falls through to an unconditional AgentResume. A session-less request can then resume another session"
+  }
+ ],
+ "flakes": [
+  {
+   "project": "JUNO",
+   "key": "JUNO-223",
+   "title": "Flaky in CI: CI / deploy and CI / juno-browser",
+   "at": 1793670306340,
+   "closed": 1793822077328,
+   "description": "**CI / deploy (pull_request)** (/Robin/Juno/actions/runs/777/jobs/9)\n\n**CI / juno-browser (pull_request)** (/Robin/Juno/actions/runs/777/jobs/2)\n\n````text\nFAIL Shift+Enter adds a caption; a new album is created\n````\n",
+   "race": false
+  },
+  {
+   "project": "JUNO",
+   "key": "JUNO-241",
+   "title": "Flaky in CI: CI / deploy, CI / juno-backend and CI / juno-ui-next",
+   "at": 1793754462874,
+   "closed": 1793822077472,
+   "description": "**CI / deploy (pull_request)** (/Robin/Juno/actions/runs/940/jobs/9)\n\n**CI / juno-backend (pull_request)** (/Robin/Juno/actions/runs/940/jobs/4)\n\n````text\ncmd/juno/main.go:16:2: could not import git.example.net/robin/juno/internal/api (-: /opt/hostedtoolcache/go/1.27.3/x64/pkg/tool/linux_amd64/compile: signal: killed) (typecheck)\n````\n\n**CI / juno-ui-next (pull_request)** (/Robin/Juno/actions/runs/940/jobs/7)\n\n````text\n[runner]: context canceled\n````\n",
+   "race": false
+  },
+  {
+   "project": "QRY",
+   "key": "QRY-62",
+   "title": "Flaky in CI: ci / web",
+   "at": 1793759640480,
+   "closed": 1793823640655,
+   "description": "**ci / web (pull_request)** (/Robin/Quarry/actions/runs/457/jobs/1)\n\n````text\n FAIL  src/pages/Lanes.test.tsx > LanesPage > sends the default capacity and aliases, and shows save warnings\n````\n",
+   "race": false
+  },
+  {
+   "project": "JUNO",
+   "key": "JUNO-242",
+   "title": "Flaky in CI: CI / deploy, CI / juno-backend and CI / juno-browser",
+   "at": 1793762917690,
+   "closed": 1793822077513,
+   "description": "**CI / deploy (pull_request)** (/Robin/Juno/actions/runs/975/jobs/9)\n\n**CI / juno-backend (pull_request)** (/Robin/Juno/actions/runs/975/jobs/4)\n\n````text\ncmd/juno/main.go:16:2: could not import git.example.net/robin/juno/internal/api (-: /opt/hostedtoolcache/go/1.27.3/x64/pkg/tool/linux_amd64/compile: signal: killed) (typecheck)\n````\n\n**CI / juno-browser (pull_request)** (/Robin/Juno/actions/runs/975/jobs/2)\n\n````text\n[runner]: context canceled\n````\n",
+   "race": false
+  },
+  {
+   "project": "JUNO",
+   "key": "JUNO-244",
+   "title": "Flaky in CI: CI / deploy, CI / images, CI / juno-backend and 3 more",
+   "at": 1793799725009,
+   "closed": 1793822077555,
+   "description": "**CI / deploy (pull_request)** (/Robin/Juno/actions/runs/1053/jobs/9)\n\n**CI / images (pull_request)** (/Robin/Juno/actions/runs/1053/jobs/5)\n\n````text\n[runner]: context canceled\n````\n\n**CI / juno-backend (pull_request)** (/Robin/Juno/actions/runs/1053/jobs/4)\n\n````text\ncmd/juno/main.go:16:2: could not import git.example.net/robin/juno/internal/api (-: /opt/hostedtoolcache/go/1.27.3/x64/pkg/tool/linux_amd64/compile: signal: killed) (typecheck)\n````\n\n**CI / juno-browser (pull_request)** (/Robin/Juno/actions/runs/1053/jobs/2)\n\n````text\n[runner]: context canceled\n````\n\n**CI / juno-e2e (pull_request)** (/Robin/Juno/actions/runs/1053/jobs/3)\n\n````text\n[runner]: context canceled\n````\n\n**CI / juno-ui-next (pull_request)** (/Robin/Juno/actions/runs/1053/jobs/7)\n\n````text\n[runner]: context canceled\n````\n",
+   "race": false
+  },
+  {
+   "project": "JUNO",
+   "key": "JUNO-245",
+   "title": "Flaky in CI: CI / deploy and CI / juno-backend",
+   "at": 1793799761112,
+   "closed": 1793822077623,
+   "description": "**CI / deploy (pull_request)** (/Robin/Juno/actions/runs/1051/jobs/9)\n\n**CI / juno-backend (pull_request)** (/Robin/Juno/actions/runs/1051/jobs/4)\n\n````text\ncmd/juno/main.go:16:2: could not import git.example.net/robin/juno/internal/api (-: /opt/hostedtoolcache/go/1.27.3/x64/pkg/tool/linux_amd64/compile: signal: killed) (typecheck)\n````\n",
+   "race": false
+  },
+  {
+   "project": "QRY",
+   "key": "QRY-67",
+   "title": "Flaky in CI: ci / go",
+   "at": 1793826124295,
+   "closed": 1793830721549,
+   "description": "**ci / go (pull_request)** (/Robin/Quarry/actions/runs/494/jobs/0)\n\n````text\n/home/runner/go/pkg/mod/example.net/lintkit@v2.15.0/pkg/linters/ifacecheck/ifacecheck.go:4:2: example.net/ifacecheck@v1.1.0: Get \"https://proxy.example.net/example.net/ifacecheck/@v/v1.1.0.mod\": read tcp 10.9.0.2:41746->10.9.0.9:\nmake: *** [Makefile:67: tools] Error 1\n\n\n````\n",
+   "race": false
+  },
+  {
+   "project": "QRY",
+   "key": "QRY-69",
+   "title": "Flaky in CI: ci / docker",
+   "at": 1793842615132,
+   "closed": 1793922514714,
+   "description": "**ci / docker (pull_request)** (/Robin/Quarry/actions/runs/507/jobs/3)\n\n````text\n--------------------\nERROR: failed to build: failed to solve: process \"/bin/sh -c mkdir -p /opt/tool-seed /opt/tool-config /tmp/warm  && cd /tmp/warm  && export HOME=/opt/tool-seed XDG_CACHE_HOME=/opt/tool-seed/.cache XDG_CONFIG_HOME=/opt/tool-config     TOOL_DISABLE_PROJECT_CONFIG=true TOOL_\n````\n",
+   "race": false
+  },
+  {
+   "project": "JUNO",
+   "key": "JUNO-247",
+   "title": "Flaky in CI: CI / curator, CI / deploy, CI / juno-backend and 2 more",
+   "at": 1793847323234,
+   "closed": 1793961922541,
+   "description": "**CI / curator (pull_request)** (/Robin/Juno/actions/runs/1169/jobs/8)\n\n````text\n ✓ ui/test/caption-rows.test.ts  (3 tests) 19ms\n ✓ ui/test/labels.test.ts  (4 tests) 18ms\n ✓ ui/test/tags.test.ts  (4 tests) 22ms\n ✓ ui/test/time.test.ts  (3 tests) 13ms\n ✓ ui/test/keymap.test.ts  (2 tests) 17ms\n ✓ ui/test/thumbs.test.ts  (1 test) 18ms\n ✓ ui/test/ordering.test.ts  (1 test) 10ms\n\n````\n\n**CI / deploy (pull_request)** (/Robin/Juno/actions/runs/1169/jobs/9)\n\n**CI / juno-backend (pull_request)** (/Robin/Juno/actions/runs/1169/jobs/4)\n\n````text\n[runner]: context canceled\n````\n\n**CI / juno-ui (pull_request)** (/Robin/Juno/actions/runs/1169/jobs/6)\n\n````text\n[runner]: context canceled\n````\n\n**CI / juno-ui-next (pull_request)** (/Robin/Juno/actions/runs/1169/jobs/7)\n\n````text\n[runner]: context canceled\n````\n",
+   "race": false
+  },
+  {
+   "project": "JUNO",
+   "key": "JUNO-249",
+   "title": "Flaky in CI: CI / deploy, CI / juno-backend, CI / juno-browser and 6 more",
+   "at": 1793867659229,
+   "closed": 1793963366177,
+   "description": "**CI / deploy (pull_request)** (/Robin/Juno/actions/runs/1195/jobs/13)\n\n**CI / juno-backend (pull_request)** (/Robin/Juno/actions/runs/1195/jobs/8)\n\n````text\n[runner]: context canceled\n````\n\n**CI / juno-browser (pull_request)** (/Robin/Juno/actions/runs/1195/jobs/6)\n\n**CI / juno-browser-shard (1) (pull_request)** (/Robin/Juno/actions/runs/1195/jobs/2)\n\n````text\n[runner]: context canceled\n````\n\n**CI / juno-browser-shard (2) (pull_request)** (/Robin/Juno/actions/runs/1195/jobs/3)\n\n````text\nFAIL classic: the first tab now shows the caption\n````\n\n**CI / juno-browser-shard (3) (pull_request)** (/Robin/Juno/actions/runs/1195/jobs/4)\n\n````text\n[runner]: context canceled\n````\n\n**CI / juno-browser-shard (4) (pull_request)** (/Robin/Juno/actions/runs/1195/jobs/5)\n\n````text\n[runner]: context canceled\n````\n\n**CI / juno-e2e (pull_request)** (/Robin/Juno/actions/runs/1195/jobs/7)\n\n````text\n[runner]: context canceled\n````\n\n**CI / juno-ui-next (pull_request)** (/Robin/Juno/actions/runs/1195/jobs/11)\n\n````text\n[runner]: context canceled\n````\n",
+   "race": false
+  },
+  {
+   "project": "JUNO",
+   "key": "JUNO-290",
+   "title": "Flaky in CI: CI / curator, CI / deploy, CI / juno-backend and 8 more",
+   "at": 1794162590120,
+   "closed": 1794179094981,
+   "description": "**CI / curator (pull_request)** (/Robin/Juno/actions/runs/1575/jobs/15)\n\n**CI / deploy (pull_request)** (/Robin/Juno/actions/runs/1575/jobs/16)\n\n**CI / juno-backend (pull_request)** (/Robin/Juno/actions/runs/1575/jobs/11)\n\n**CI / juno-backend-lint (pull_request)** (/Robin/Juno/actions/runs/1575/jobs/9)\n\n````text\n[runner]: context canceled\n````\n\n**CI / juno-backend-test (pull_request)** (/Robin/Juno/actions/runs/1575/jobs/10)\n\n````text\n[runner]: context canceled\n````\n\n**CI / juno-browser (pull_request)** (/Robin/Juno/actions/runs/1575/jobs/7)\n\n**CI / juno-browser-shard (3) (pull_request)** (/Robin/Juno/actions/runs/1575/jobs/5)\n\n````text\ntimings: {\"album-grid.mjs\":42,\"album-setup.mjs\":36,\"sharing.mjs\":30,\"viewer.mjs\":26,\"album-page.mjs\":21,\"album-ops.mjs\":19,\"lookup.mjs\":18,\"feed.mjs\":12,\"album-settings.mjs\":7}\nFAILED: tests/browser/album-setup.mjs\n````\n\n**CI / juno-browser-shard (4) (pull_request)** (/Robin/Juno/actions/runs/1575/jobs/6)\n\n````text\n[runner]: context canceled\n````\n\n**CI / juno-e2e (pull_request)** (/Robin/Juno/actions/runs/1575/jobs/8)\n\n````text\n[runner]: context canceled\n````\n\n**CI / juno-ui (pull_request)** (/Robin/Juno/actions/runs/1575/jobs/13)\n\n````text\n[runner]: context canceled\n````\n\n**CI / juno-ui-next (pull_request)** (/Robin/Juno/actions/runs/1575/jobs/14)\n\n````text\n[runner]: context canceled\n````\n",
+   "race": false
+  }
+ ]
+}

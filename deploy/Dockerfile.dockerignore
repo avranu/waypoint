@@ -1,0 +1,22 @@
+# Used by BuildKit for deploy/Dockerfile (context is the repo root).
+# The build needs only go.mod/go.sum, cmd/, internal/ and web/ sources.
+.git
+.claude
+.forgejo
+bin
+data
+docs
+deploy
+web/node_modules
+web/dist
+web/.vite
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/*.log
+**/__pycache__
+/waypoint

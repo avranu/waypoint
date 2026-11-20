@@ -1,0 +1,299 @@
+package core
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"slices"
+	"strings"
+)
+
+// What a queued job waits for (WP-503): a person who ran a command from a
+// request sees which runner holds it up, what that runner is busy with and
+// why it takes no more now, and how many jobs are ahead of theirs, instead of
+// a bare "Waiting for a runner".
+
+// RequestLaneSlots, MessageLaneSlots and GatewayLaneSlots are how many jobs
+// of LaneRequest, LaneMessage and LaneGateway a runner runs at once, each
+// beside its other jobs (the runner's requestSlots, messageSlots and
+// gatewaySlots). One runner may run as many audits through the gateway as
+// the gateway takes from all of them.
+const (
+	RequestLaneSlots = 2
+	MessageLaneSlots = 8
+	GatewayLaneSlots = GatewayTasksInFlight
+)
+
+// sideLane: a lane with slots of its own, whose jobs wait only for each other.
+func sideLane(l string) bool { return l == LaneRequest || l == LaneMessage || l == LaneGateway }
+
+// sideLaneSlots is how many jobs side lane l runs at once.
+func sideLaneSlots(l string) int {
+	switch l {
+	case LaneRequest:
+		return RequestLaneSlots
+	case LaneMessage:
+		return MessageLaneSlots
+	case LaneGateway:
+		return GatewayLaneSlots
+	}
+	return 0
+}
+
+// jobWaiting is what job id waits for while it is queued; "" otherwise.
+func (s *Service) jobWaiting(ctx context.Context, id int64) string {
+	j, err := scanJob(s.db.R.QueryRowContext(ctx, `SELECT `+jobCols+` FROM runner_jobs j LEFT JOIN users cu ON cu.id = j.created_by WHERE j.id = ?`, id))
+	if err != nil || j.State != "queued" {
+		return ""
+	}
+	return s.queuedWhy(ctx, j)
+}
+
+// queuedWhy says what a queued job is waiting for.
+func (s *Service) queuedWhy(ctx context.Context, j *RunnerJobInfo) string {
+	all, err := s.ownerRunners(ctx, j.OwnerID)
+	if err != nil {
+		return ""
+	}
+	var mine, online []*Runner
+	for _, r := range all {
+		if (j.TargetRunnerID == nil || *j.TargetRunnerID == r.ID) && runnerCanTake(r, j.needs) {
+			mine = append(mine, r)
+			if r.Online {
+				online = append(online, r)
+			}
+		}
+	}
+	switch {
+	case len(mine) == 0:
+		return "No runner can take this job."
+	case len(online) == 0:
+		if len(mine) == 1 {
+			return "Waiting for " + mine[0].Name + " to come online."
+		}
+		return "Waiting for one of your runners to come online."
+	}
+	if j.needs.cli == GatewayCLI {
+		n, err := s.gatewayRunning(ctx)
+		switch {
+		case err != nil:
+		case n >= GatewayTasksInFlight:
+			return fmt.Sprintf("The gateway runs %d of Waypoint's audits at once and %d are running; a runner takes this one when one ends.", GatewayTasksInFlight, n)
+		case j.needs.source == prepAgentSource && n >= GatewayTasksInFlight-prepAgentReserve:
+			return fmt.Sprintf("A prep trial leaves the gateway's last %d task places to audits and %d audits are running; a runner takes it when one ends.", prepAgentReserve, n)
+		}
+	}
+	var busy []string
+	for _, r := range online {
+		why, err := s.runnerBusyWith(ctx, r, j)
+		if err != nil {
+			return "Waiting for a free runner."
+		}
+		busy = append(busy, why)
+	}
+	out := strings.Join(busy, " ")
+	switch ahead, err := s.jobsAhead(ctx, j, online); {
+	case err != nil:
+	case ahead == 0:
+		out += " This job is next."
+	case ahead == 1:
+		out += " One job is ahead of this one."
+	default:
+		out += fmt.Sprintf(" %d jobs are ahead of this one.", ahead)
+	}
+	return out
+}
+
+// runnerBusyWith says what keeps r from taking j now: the jobs it runs in
+// j's lane, and the limit they reach (its load governor's, from its last
+// capacity report, or --max-jobs).
+func (s *Service) runnerBusyWith(ctx context.Context, r *Runner, j *RunnerJobInfo) (string, error) {
+	rows, err := s.db.R.QueryContext(ctx, `SELECT kind, source, cli FROM runner_jobs WHERE runner_id = ? AND state = 'running' ORDER BY started_at, id`, r.ID)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	lane := laneOn(r, j.needs)
+	var doing []string
+	all, inLane := 0, 0
+	for rows.Next() {
+		var kind, source, cli string
+		if err := rows.Scan(&kind, &source, &cli); err != nil {
+			return "", err
+		}
+		l := laneOn(r, jobNeeds{kind: kind, source: source, cli: cli})
+		if l == lane {
+			inLane++
+		}
+		if !sideLane(l) {
+			all++
+		}
+		// A job of a side lane waits only for the other jobs of its lane;
+		// every other job only for the jobs outside the side lanes.
+		if l == lane || !sideLane(lane) && !sideLane(l) {
+			doing = append(doing, jobNoun(kind, source))
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	if len(doing) == 0 || (sideLane(lane) && inLane < sideLaneSlots(lane)) {
+		return r.Name + " is online and should take it within seconds.", nil
+	}
+	running := "it is running " + listJobs(doing) + "."
+	c := s.capacityOf(r.ID)
+	switch {
+	case lane == LaneRequest:
+		return fmt.Sprintf("%s runs %d approved commands, changes or session messages at once beside its other jobs; %s", r.Name, RequestLaneSlots, running), nil
+	case lane == LaneMessage:
+		return fmt.Sprintf("%s types %d session messages or review prompts at once beside its other jobs; %s", r.Name, MessageLaneSlots, running), nil
+	case lane == LaneGateway:
+		return fmt.Sprintf("%s runs %d audits through the gateway at once beside its other jobs; %s", r.Name, GatewayLaneSlots, running), nil
+	case c != nil && c.Level == "overloaded":
+		return fmt.Sprintf("%s is overloaded (%s), so it runs one job at a time; %s", r.Name, c.Reason, running), nil
+	case c != nil && c.Level != "" && inLane >= c.Limit && c.Limit < c.Max:
+		why := ""
+		if c.Reason != "" {
+			why = " (" + c.Reason + ")"
+		}
+		state := "for now"
+		if c.Level == "busy" {
+			state = "while it is busy"
+		}
+		return fmt.Sprintf("%s takes %d %s job%s at once %s%s; %s", r.Name, c.Limit, lane, plural(c.Limit), state, why, running), nil
+	}
+	m := r.MaxJobs
+	if c != nil && c.Max > 0 {
+		m = c.Max
+	}
+	if m > 0 && all >= m {
+		return fmt.Sprintf("%s runs up to %d job%s at once; %s", r.Name, m, plural(m), running), nil
+	}
+	return r.Name + " is online and no configured limit is reached; " + running, nil
+}
+
+// jobNoun names a running job for a person: what started it.
+func jobNoun(kind, source string) string {
+	switch source {
+	case babysitSource:
+		return "babysit round"
+	case autopilotSource:
+		return "autopilot step"
+	case autopilotReviewSource:
+		return "adversarial review prompt"
+	case auditSource:
+		return "audit"
+	case "request_cell":
+		return "approved command"
+	case "request_apply":
+		return "approved change"
+	case "automation_step":
+		return "automation step"
+	case "bot_run":
+		return "review bot run"
+	case "kit_rollout":
+		return "kit rollout"
+	case cacheWarmSource:
+		return "keep-warm ping"
+	case reviewCompactSource:
+		return "review compaction"
+	case prepAgentSource:
+		return "prep trial"
+	case sessionMessageSource, sessionBatchSource:
+		return "session message"
+	}
+	switch kind {
+	case JobSession:
+		return "session start"
+	case JobReview:
+		return "review"
+	case JobAgent:
+		return "agent job"
+	case JobAudit:
+		return "audit"
+	case JobApply:
+		return "change"
+	}
+	return kind + " job"
+}
+
+// listJobs says how many of each, in the order they started: "a babysit
+// round and 2 audits".
+func listJobs(nouns []string) string {
+	var order []string
+	n := map[string]int{}
+	for _, x := range nouns {
+		if n[x] == 0 {
+			order = append(order, x)
+		}
+		n[x]++
+	}
+	var p []string
+	for _, x := range order {
+		switch {
+		case n[x] > 1:
+			p = append(p, fmt.Sprintf("%d %ss", n[x], x))
+		case strings.ContainsRune("aeiou", rune(x[0])):
+			p = append(p, "an "+x)
+		default:
+			p = append(p, "a "+x)
+		}
+	}
+	if len(p) > 3 {
+		rest := 0
+		for _, x := range order[2:] {
+			rest += n[x]
+		}
+		p = append(p[:2:2], fmt.Sprintf("%d other jobs", rest))
+	}
+	if len(p) == 1 {
+		return p[0]
+	}
+	return strings.Join(p[:len(p)-1], ", ") + " and " + p[len(p)-1]
+}
+
+// jobsAhead counts the queued jobs a runner of online takes before j: in
+// j's lane, urgent pull requests' rounds first, every other kind before
+// audits, oldest first (claimOrder; the audits of pull requests before
+// other audits is left out).
+func (s *Service) jobsAhead(ctx context.Context, j *RunnerJobInfo, online []*Runner) (int, error) {
+	var urgent bool
+	// #nosec G202 -- a fixed SQL fragment; values are bound
+	if err := s.db.R.QueryRowContext(ctx, `SELECT `+urgentRoundJob+` FROM runner_jobs WHERE id = ?`, j.ID).Scan(&urgent); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return 0, err
+	}
+	// #nosec G202 -- a fixed SQL fragment; values are bound
+	rows, err := s.db.R.QueryContext(ctx, `SELECT id, kind, source, label, dir, cli, target_runner_id, `+urgentRoundJob+` FROM runner_jobs
+		WHERE owner_id = ? AND state = 'queued' AND id != ? ORDER BY id LIMIT 1000`, j.OwnerID, j.ID)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	ahead := 0
+	for rows.Next() {
+		var id int64
+		var n jobNeeds
+		var target sql.NullInt64
+		var u bool
+		if err := rows.Scan(&id, &n.kind, &n.source, &n.label, &n.dir, &n.cli, &target, &u); err != nil {
+			return 0, err
+		}
+		before := id < j.ID
+		switch {
+		case (n.kind == JobAudit) != (j.Kind == JobAudit):
+			before = j.Kind == JobAudit
+		case u != urgent:
+			before = u
+		}
+		if !before {
+			continue
+		}
+		if slices.ContainsFunc(online, func(r *Runner) bool {
+			return (!target.Valid || target.Int64 == r.ID) && runnerCanTake(r, n) && laneOn(r, n) == laneOn(r, j.needs)
+		}) {
+			ahead++
+		}
+	}
+	return ahead, rows.Err()
+}

@@ -1,0 +1,12 @@
+# Runs waypoint-deployer.service two minutes after it last finished (WP-406).
+[Unit]
+Description=Waypoint deployer: look for a new release every two minutes
+
+[Timer]
+OnActiveSec=30s
+OnBootSec=2min
+OnUnitInactiveSec=2min
+RandomizedDelaySec=15s
+
+[Install]
+WantedBy=timers.target
