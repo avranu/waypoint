@@ -66,7 +66,9 @@ func TestReviewBeforePR(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(res.Held, "End your turn") || res.Notice != "" || res.Pull != nil || len(g.created) != 0 {
+	// The audit started with the first ship (WP-1325), so the second one
+	// says it is under way.
+	if !strings.Contains(res.Held, "End your turn") || !strings.Contains(res.Notice, "still under way") || res.Pull != nil || len(g.created) != 0 {
 		t.Fatalf("held = %+v (opened %d)", res, len(g.created))
 	}
 	var roundID int64
@@ -232,13 +234,14 @@ func TestReviewBeforePRNotShipped(t *testing.T) {
 	if _, err := a.s.AgentTake(a.ctx, a.ag, first.Key, ""); err != nil {
 		t.Fatal(err)
 	}
+	// No Cursor: the round's own prompt, which ends with wp ship. (The
+	// reviewer starts at the ship now, so there is none before it.)
+	_, _ = a.s.db.W.Exec(`DELETE FROM runners WHERE name = 'auditbox'`)
 	if _, err := a.ship(first.Key, ShipAuto); err != nil {
 		t.Fatal(err)
 	}
 	a.stopWith("Waiting for the review.")
 	roundID := a.step().reviewID.Int64
-	// No Cursor: the round's own prompt, which ends with wp ship.
-	_, _ = a.s.db.W.Exec(`DELETE FROM runners WHERE name = 'auditbox'`)
 	a.tick(61 * time.Second)
 	if len(a.jobs) != 1 {
 		t.Fatalf("jobs = %+v", a.jobs)

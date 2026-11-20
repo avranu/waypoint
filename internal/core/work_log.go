@@ -475,9 +475,10 @@ func (s *Service) sweepRounds(ctx context.Context) {
 	now := s.nowMS()
 	rows, err := s.db.R.QueryContext(ctx, `SELECT w.id, w.state, coalesce(x.ended_at, 0), coalesce(w.started_at, w.created_at),
 		EXISTS (SELECT 1 FROM autopilot_steps st WHERE st.review_id = w.id AND st.state IN ('due', 'waiting', 'starting'))
-		OR (w.before_pr != '' AND x.ended_at IS NULL AND EXISTS (SELECT 1 FROM agent_runs r WHERE r.id = w.run_id AND r.ended_at IS NULL))
+		OR (w.before_pr != '' AND x.ended_at IS NULL AND EXISTS (SELECT 1 FROM agent_runs r WHERE r.id = w.run_id AND r.ended_at IS NULL)
+			AND NOT EXISTS (SELECT 1 FROM agent_runs o WHERE o.session_id = w.session_id AND o.id > w.run_id AND o.issue_id != w.issue_id AND o.started_at < ?))
 		FROM work_log w LEFT JOIN agent_sessions x ON x.id = w.session_id
-		WHERE w.kind = 'review' AND w.state IN ('pending', 'running') LIMIT 200`)
+		WHERE w.kind = 'review' AND w.state IN ('pending', 'running') LIMIT 200`, now-heldStopLost.Milliseconds())
 	if err != nil {
 		return
 	}
@@ -508,6 +509,7 @@ func (s *Service) sweepRounds(ctx context.Context) {
 	for _, e := range ends {
 		s.setRoundNow(ctx, e.id, []string{e.from}, e.to, e.why)
 	}
+	s.openStrandedRounds(ctx)
 	s.cancelOrphanReviewAudits(ctx)
 	s.handOverRoundAudits(ctx)
 }

@@ -51,6 +51,12 @@ type beforePR struct {
 	Draft  bool   `json:"draft,omitempty"`
 	Ready  bool   `json:"ready,omitempty"`
 	Urgent bool   `json:"urgent,omitempty"`
+	// HeadTime is the head's commit time (unix seconds; 0: unknown) at the
+	// ship the round's review reads: the one that scheduled it, or a later
+	// one that came before its audit was asked (noteRoundHead). A ship
+	// whose head has another time has more than the audit read
+	// (roundBehind, WP-1325).
+	HeadTime int64 `json:"head_time,omitempty"`
 }
 
 // roundBeforePR is the round's branch when it runs before its pull
@@ -100,13 +106,16 @@ const (
 // reviewGate is the task's run that autopilot reviews before its pull
 // request, or why it can't (no).
 type reviewGate struct {
-	x            *AgentSession
-	run, issueID int64
-	pid          int64 // the session's project, for its autopilot settings
-	taskPID      int64 // the task's own, for what's recorded about the task
-	key          string
-	lim          AutopilotLimits
-	no           string
+	// reviewStarted: the round scheduled in this ship has its audit under
+	// way already (startRoundReview, WP-1325).
+	reviewStarted bool
+	x             *AgentSession
+	run, issueID  int64
+	pid           int64 // the session's project, for its autopilot settings
+	taskPID       int64 // the task's own, for what's recorded about the task
+	key           string
+	lim           AutopilotLimits
+	no            string
 	// wanted: autopilot reviews before pull requests in this session, so a
 	// no is a review it wanted and didn't get (WP-803).
 	wanted bool
@@ -330,6 +339,17 @@ func (s *Service) retakeForReview(ctx context.Context, actor *Actor, g *reviewGa
 	return "", nil
 }
 
+// reviewHandback ends what wp ship tells the session when a review is
+// before the pull request: started says another model's review of the
+// branch is under way already (WP-1325); otherwise it begins as the
+// session ends its turn.
+func reviewHandback(started bool) string {
+	if started {
+		return "the review is under way, and Waypoint gives you its findings here once your turn has ended."
+	}
+	return "the review starts after it, and Waypoint gives you its findings here."
+}
+
 // ReviewsFirst says whether wp ship can schedule the task's adversarial
 // review in this session, before its pull request (WP-770).
 func (s *Service) ReviewsFirst(ctx context.Context, actor *Actor, task string) bool {
@@ -399,10 +419,20 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return false, "", "", err
 	}
-	bp := beforePR{Project: p.Key, Repo: repo, Branch: head, Base: base, Title: in.Title, Body: in.Body, Draft: in.Draft, Ready: in.Ready, Urgent: in.Urgent && !existing}
-	wait := fmt.Sprintf("Pushed %s; its pull request opens after %s's adversarial review. End your turn now: the review starts after it, and Waypoint gives you its findings here.", head, g.key)
-	if existing {
-		wait = fmt.Sprintf("Pushed %s; %s's adversarial review comes next, and its open pull request doesn't merge before the review ends. End your turn now: the review starts after it, and Waypoint gives you its findings here.", head, g.key)
+	bp := beforePR{Project: p.Key, Repo: repo, Branch: head, Base: base, Title: in.Title, Body: in.Body, Draft: in.Draft, Ready: in.Ready, Urgent: in.Urgent && !existing, HeadTime: in.HeadTime}
+	// wait is what the session is told when the round is before its pull
+	// request. It is built when a return needs it, after the scheduling it
+	// describes, as scheduling the round starts its reviewer (WP-1325).
+	wait := func() string {
+		underway := g.reviewStarted
+		if !underway && state == RoundPending {
+			ra, err := s.roundAuditOf(ctx, id)
+			underway = err == nil && ra.id != 0
+		}
+		if existing {
+			return fmt.Sprintf("Pushed %s; %s's adversarial review comes next, and its open pull request doesn't merge before the review ends. End your turn now: %s", head, g.key, reviewHandback(underway))
+		}
+		return fmt.Sprintf("Pushed %s; its pull request opens after %s's adversarial review. End your turn now: %s", head, g.key, reviewHandback(underway))
 	}
 	// Every round scheduled below is assessed and recorded (WP-692).
 	var assessed *triageRow
@@ -412,8 +442,33 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 		}
 		return assessed
 	}
+	scheduled := false // this ship scheduled the round it waits on
 	schedule := func(replace int64, skip string) error {
-		return s.scheduleRound(ctx, actor, g, bp, seen, replace, skip, assess())
+		err := s.scheduleRound(ctx, actor, g, bp, seen, replace, skip, assess())
+		scheduled = scheduled || err == nil
+		return err
+	}
+	// ensureStarted asks for the reviewer of a round that was already
+	// pending when this ship looked: one re-asked after an interruption, one
+	// whose start failed or was refused before, or one scheduled before the
+	// reviewer started at the ship (WP-1325). It finds the audit if there is
+	// one, so it asks at most once.
+	ensureStarted := func() {
+		if !scheduled && state == RoundPending {
+			// Its audit, asked now, reads this ship's head.
+			s.noteRoundHead(ctx, id, in.HeadTime)
+			s.startRoundReview(ctx, g, id)
+		}
+	}
+	// startOver replaces a pending round whose audit was asked before the
+	// head was committed, when that audit has nothing for the session: the
+	// review starts again on what is pushed now (WP-1325).
+	startOver := func() (string, error) {
+		if err := schedule(id, ""); err != nil {
+			return "", err
+		}
+		state = "" // the round waited on is the new one
+		return "More was committed since " + g.key + "'s adversarial review was asked for, so it starts over on what is pushed now.", nil
 	}
 	const cancel = " To cancel it: `wp ship --skip-review \"WHY\"`."
 	// skipRound records the review skipped (why; triageWhy for its triage
@@ -558,6 +613,17 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 		}
 		var auditNotice string
 		if state == RoundPending {
+			if behind, err := s.roundBehind(ctx, id, in.HeadTime); err != nil {
+				return false, "", "", err
+			} else if behind {
+				n, err := startOver()
+				if err != nil {
+					return false, "", "", err
+				}
+				return false, wait(), n + cancel, nil
+			}
+		}
+		if state == RoundPending {
 			// The session may have read the round's audit itself (WP-919).
 			done, n, err := s.shipAudited(ctx, actor, g, id)
 			if err != nil {
@@ -595,17 +661,28 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 		} else if intent == ShipPR {
 			notice = "The task's adversarial review comes before its pull request, so the pull request waits for it. To skip the review: `wp ship --skip-review \"WHY\"`."
 		}
-		return false, wait, notice, nil
+		ensureStarted()
+		return false, wait(), notice, nil
 	}
 	// ShipReview.
 	switch {
 	case state == RoundPending:
-		return false, wait, "", nil
+		if behind, err := s.roundBehind(ctx, id, in.HeadTime); err != nil {
+			return false, "", "", err
+		} else if behind {
+			n, err := startOver()
+			if err != nil {
+				return false, "", "", err
+			}
+			return false, wait(), n + cancel, nil
+		}
+		ensureStarted()
+		return false, wait(), "", nil
 	case state == RoundRunning && !in.Force:
 		return false, fmt.Sprintf("Pushed %s. %s's adversarial review is this one, under way: when it's done, run `wp ship --pr`.", head, g.key),
-			"A review of this change is already under way. To start another after this turn anyway: `wp ship --review --force`.", nil
+			"A review of this change is already under way. To ask for another anyway: `wp ship --review --force`.", nil
 	case state == RoundRunning:
-		notice = "The review under way is replaced: another starts after this turn." + cancel
+		notice = "The review under way is replaced: another is asked for in its place." + cancel
 		err = schedule(id, "")
 	case state == RoundDone && !in.Force && in.HeadTime > 0 && (in.HeadTime+1)*1000 <= ended:
 		// (Commit times are whole seconds: one in the round's last second
@@ -631,7 +708,7 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 	if err != nil {
 		return false, "", "", err
 	}
-	return false, wait, notice, nil
+	return false, wait(), notice, nil
 }
 
 // shipAudited is wp ship --pr (or a plain wp ship) of a task whose round is
@@ -833,14 +910,15 @@ func (s *Service) roundBeforeResume(ctx context.Context, q queryer, session, iss
 // scheduleRound records the run's round before its pull request: pending,
 // so the session's next Stop makes it due, or, with skip, skipped for that
 // reason (so no round runs after the pull request either). replace is a
-// round under way that the new one replaces. seen is the run's newest
+// round, pending or under way, that the new one replaces. seen is the run's newest
 // round when the ship looked (0: none): if another ship recorded one since,
 // nothing is, so two at once don't schedule two reviews. tr is the round's
 // triage (WP-692), recorded with it.
 func (s *Service) scheduleRound(ctx context.Context, actor *Actor, g *reviewGate, bp beforePR, seen, replace int64, skip string, tr *triageRow) error {
 	raw, _ := json.Marshal(bp)
 	at := s.nowMS()
-	return s.write(ctx, actor, func(t *tx) error {
+	var round int64
+	err := s.write(ctx, actor, func(t *tx) error {
 		var latest int64
 		if err := t.QueryRowContext(ctx, `SELECT coalesce(max(id), 0) FROM work_log WHERE kind = 'review' AND run_id = ?`, g.run).Scan(&latest); err != nil {
 			return err
@@ -848,13 +926,20 @@ func (s *Service) scheduleRound(ctx context.Context, actor *Actor, g *reviewGate
 		if latest != seen {
 			return fmt.Errorf("another wp ship changed %s's adversarial review just now; run wp ship again to see where it stands: %w", g.key, ErrConflict)
 		}
-		if _, err := s.setRound(ctx, t, replace, []string{RoundRunning}, RoundInterrupted, roundReplaced); err != nil {
+		moved, err := s.setRound(ctx, t, replace, []string{RoundPending, RoundRunning}, RoundInterrupted, roundReplaced)
+		if err != nil {
 			return err
+		}
+		if moved {
+			if err := s.stopRoundStep(ctx, t, g.x.ID, replace, "its review starts over"); err != nil {
+				return err
+			}
 		}
 		id, err := s.newReviewRound(ctx, t, g.x, g.run, g.issueID, g.lim.reviewPrompt(), at)
 		if err != nil {
 			return err
 		}
+		round = id
 		if _, err := t.ExecContext(ctx, `UPDATE work_log SET before_pr = ? WHERE id = ?`, string(raw), id); err != nil {
 			return err
 		}
@@ -871,6 +956,15 @@ func (s *Service) scheduleRound(ctx context.Context, actor *Actor, g *reviewGate
 		}
 		return err
 	})
+	if err == nil && replace != 0 {
+		s.cancelRoundAudits(ctx, replace)
+	}
+	if err == nil && skip == "" {
+		// The reviewer reads the pushed branch, not the session: it starts
+		// now rather than after the session's turn (WP-1325).
+		s.startRoundReview(ctx, g, round)
+	}
+	return err
 }
 
 // roundAuditReady says whether a pending round's audit ended with

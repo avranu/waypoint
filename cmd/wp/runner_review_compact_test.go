@@ -144,6 +144,9 @@ func TestAutopilotReviewTrustsCleanTranscript(t *testing.T) {
 // held as before.
 func TestAutopilotReviewWaitsForIdle(t *testing.T) {
 	f, file, _ := reviewJobEnv(t, "busy")
+	// A turn in progress on the screen: a busy registry beside an empty
+	// prompt is read as idle (WP-1325).
+	f.screen = screenWorking
 	old := autopilotIdleWait
 	t.Cleanup(func() { autopilotIdleWait = old })
 	dir := t.TempDir()
