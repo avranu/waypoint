@@ -165,7 +165,7 @@ func (s *Service) roundHelpers(ctx context.Context, review *roundRow, roundConte
 	h := &AuditHelpers{Verify: true, CLI: helperCLI, Model: helperModel}
 	for _, c := range panelChecks {
 		if c.every || !once {
-			h.Panel = append(h.Panel, PanelCheck{Name: c.name, Ask: c.ask + panelRules})
+			h.Panel = append(h.Panel, PanelCheck{Name: c.name, Ask: c.ask + s.foundLeads(ctx, c.name, review.issueID) + panelRules})
 		}
 	}
 	h.Panel = s.panelOrder(ctx, h.Panel, review.id)
@@ -178,6 +178,19 @@ func (s *Service) roundHelpers(ctx context.Context, review *roundRow, roundConte
 // were handed to the reviewer and none was confirmed or not, so the record
 // before it says nothing of how often a check's problems hold.
 var panelReadsFrom = time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC).UnixMilli()
+
+// foundLeads are the leads Waypoint hands a check from what it knows
+// already (WP-1370): the rewrites of earlier work to the check of work
+// undone, and the task's put-off steps to the completeness check.
+func (s *Service) foundLeads(ctx context.Context, check string, issueID int64) string {
+	switch check {
+	case "regressions":
+		return leadBlock(s.rewriteLeads(ctx, issueID))
+	case "complete":
+		return leadBlock(s.putOffLeads(ctx, issueID))
+	}
+	return ""
+}
 
 // panelOrder puts the panel's checks in the order of a draw from each
 // one's record of problems a second read confirmed, Beta(1+confirmed,

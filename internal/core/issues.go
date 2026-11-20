@@ -217,6 +217,9 @@ type Relation struct {
 	// mostly the same files, "after" someone related it to the other, done
 	// before it was filed (WP-1003); "" someone chose it.
 	Found string `json:"found,omitempty"`
+	// Note is what Waypoint saw when it made the relation itself (found
+	// "rewrite", WP-1370).
+	Note string `json:"note,omitempty"`
 	// Basis is who stands behind it, as for links (WP-ADR50): person,
 	// agent, automation or inferred (Waypoint found it); "" made before
 	// Waypoint recorded that. Score is how sure Waypoint was, where it
@@ -2603,7 +2606,8 @@ func (s *Service) ShareIssue(ctx context.Context, actor *Actor, ref, userRef, ro
 
 func (s *Service) relations(ctx context.Context, q queryer, actor *Actor, issueID int64) ([]Relation, error) {
 	const cols = `r.id, r.kind, o.id, o.project_id, p.key || '-' || o.number, o.title, o.type, st.category, st.name, o.resolved_at, r.named_in IS NOT NULL, coalesce(r.found, ''),
-		r.subkind, r.basis, r.created_by, r.created_agent, r.score, r.created_at`
+		r.subkind, r.basis, r.created_by, r.created_agent, r.score, r.created_at,
+		coalesce((SELECT e.note FROM rewrite_evidence e WHERE r.found = 'rewrite' AND ((e.issue_id = r.source_id AND e.other_id = r.target_id) OR (e.issue_id = r.target_id AND e.other_id = r.source_id)) LIMIT 1), '')`
 	rows, err := q.QueryContext(ctx, `
 		SELECT `+cols+`, 0
 		FROM issue_relations r JOIN issues o ON o.id = r.target_id JOIN projects p ON p.id = o.project_id JOIN statuses st ON st.id = o.status_id
@@ -2626,7 +2630,7 @@ func (s *Service) relations(ctx context.Context, q queryer, actor *Actor, issueI
 		var basis sql.NullString
 		var score sql.NullFloat64
 		if err := rows.Scan(&r.ID, &r.Kind, &r.Issue.ID, &pid, &r.Issue.Key, &r.Issue.Title, &r.Issue.Type, &r.State, &r.Status, &resolved, &r.Named, &r.Found,
-			&r.Subkind, &basis, &by, &r.CreatedAgent, &score, &created, &inverse); err != nil {
+			&r.Subkind, &basis, &by, &r.CreatedAgent, &score, &created, &r.Note, &inverse); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -2873,7 +2877,7 @@ func (s *Service) relate(ctx context.Context, t *tx, actor *Actor, a, b *Issue, 
 // one (WP-999); a draft's key stays out of the published issue's history
 // (WP-42), so then the removal is recorded on the draft.
 func (s *Service) replaceRelations(ctx context.Context, t *tx, a, b *Issue, found, replacement string) error {
-	rows, err := t.QueryContext(ctx, `SELECT id FROM issue_relations WHERE (named_in IS NOT NULL OR ? != '') AND kind = 'relates'
+	rows, err := t.QueryContext(ctx, `SELECT id FROM issue_relations WHERE (named_in IS NOT NULL OR found = 'rewrite' OR ? != '') AND kind = 'relates'
 		AND ((source_id = ? AND target_id = ?) OR (source_id = ? AND target_id = ?))`, found, a.ID, b.ID, b.ID, a.ID)
 	if err != nil {
 		return err
@@ -2897,6 +2901,9 @@ func (s *Service) replaceRelations(ctx context.Context, t *tx, a, b *Issue, foun
 	for _, id := range ids {
 		old, data, err := s.relationGone(ctx, t, holder, id, "", "replaced by "+replacement)
 		if err != nil {
+			return err
+		}
+		if err := dismissRewrite(ctx, t, id); err != nil {
 			return err
 		}
 		if _, err := t.ExecContext(ctx, `DELETE FROM issue_relations WHERE id = ?`, id); err != nil {
@@ -2929,6 +2936,9 @@ func (s *Service) RemoveRelation(ctx context.Context, actor *Actor, ref string, 
 		if errors.Is(err, sql.ErrNoRows) {
 			return notFound("relation")
 		} else if err != nil {
+			return err
+		}
+		if err := dismissRewrite(ctx, t, relationID); err != nil {
 			return err
 		}
 		if _, err := t.ExecContext(ctx, `DELETE FROM issue_relations WHERE id = ?`, relationID); err != nil {

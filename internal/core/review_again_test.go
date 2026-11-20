@@ -429,4 +429,3 @@ func (a *apEnv) deliverNews() {
 	}
 	a.t.Fatalf("no message job in %d jobs", len(a.jobs))
 }
-

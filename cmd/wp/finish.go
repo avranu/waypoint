@@ -156,16 +156,7 @@ func cmdFinish(c *cli, args []string) error {
 		c.objectiveShipNote(k) // WP-927: Waypoint reads a round's end itself; nothing is measured here
 	}
 	if shipping {
-		s := c.rewritesNotice(shipKey(keys), *f.base)
-		// Recorded even when empty, so tasks that return after a ship that
-		// named nobody are news again.
-		seen := rewritesSeen(shipKey(keys), s)
-		if s != "" {
-			_, _ = fmt.Fprintln(c.err, "Notice: "+s) // stderr: --json keeps stdout for the response
-			if so.before == "" && !seen {
-				so.before = "the change replaces other tasks' recent work" // WP-782
-			}
-		}
+		c.noteRewrites(shipKey(keys), *f.base) // information only (WP-1370): it keeps no turn open
 	}
 	if len(shots) > 0 {
 		if len(keys) != 1 {

@@ -91,6 +91,10 @@ type OpenPRResult struct {
 	// NoticeNeedsAgent: Notice is something to act on, not only news. A
 	// ship whose Held and Notice need nothing ends the turn (WP-1370).
 	NoticeNeedsAgent bool `json:"notice_needs_agent"`
+	// Reviewed: the pull request opened after the task's review round for
+	// this branch ran (WP-1370): the round's completeness check was given
+	// the task's put-off notes, so wp ship doesn't ask the agent again.
+	Reviewed bool `json:"reviewed,omitempty"`
 	// Notice goes before the rest: what wp ship did that its intent didn't
 	// say, and how to override it.
 	Notice string `json:"notice,omitempty"`
@@ -237,6 +241,10 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 			return &OpenPRResult{Held: held, Notice: notice, HeldNeedsAgent: in.facts.heldAsks(held), NoticeNeedsAgent: in.facts.noticeAsksAgent(notice)}, nil
 		}
 		res.Notice = notice
+		if id, err := s.resolveIssueID(ctx, s.db.R, cmp(in.For, in.Issue)); err == nil && in.Review != ShipSkip && actor.Session != 0 {
+			run, _ := s.openRunIn(ctx, s.db.R, actor.Session, id)
+			res.Reviewed = s.reviewedRound(ctx, id, run, in.Head)
+		}
 		// After the review: a held ship reads the tag when it really opens.
 		if task := cmp(in.For, in.Issue); !in.Urgent && s.taskUrgent(ctx, actor, task) {
 			in.Urgent, tagged = true, task
@@ -383,4 +391,59 @@ func (s *Service) reviewFirstOnce(ctx context.Context, actor *Actor, p *Project,
 		open, held, notice, err = s.reviewFirst(ctx, actor, p, in, repo, head, base, existing)
 	}
 	return open, held, notice, err
+}
+
+// reviewedRound says whether the pull request opens after a review round of
+// this ship's own run (run, the session's open run of the task: a round of an
+// earlier run says nothing of this change) whose audit ran (it ended done),
+// and whose completeness check was asked about every note the task puts off
+// as the notes stand now. The round's panel is fixed when its audit is
+// requested, so notes written after that, or a round made before the notes
+// were handed over, leave this false and the open shows them itself
+// (WP-1370). A run that resumed an earlier run's round counts as unreviewed:
+// the block is shown again, which is the safe side.
+func (s *Service) reviewedRound(ctx context.Context, issueID, run int64, branch string) bool {
+	if run == 0 {
+		return false
+	}
+	rows, err := s.db.R.QueryContext(ctx, `SELECT id FROM work_log WHERE kind = 'review' AND issue_id = ? AND run_id = ? AND before_pr != ''
+		AND json_extract(before_pr, '$.branch') = ? AND state IN ('running', 'done') ORDER BY id DESC`, issueID, run, branch)
+	if err != nil {
+		return false
+	}
+	var rounds []int64
+	for rows.Next() {
+		var id int64
+		if rows.Scan(&id) == nil {
+			rounds = append(rounds, id)
+		}
+	}
+	_ = rows.Close()
+	leads := s.putOffLeads(ctx, issueID)
+	for _, id := range rounds {
+		ra, err := s.roundAuditOf(ctx, id)
+		if err != nil || ra.id == 0 {
+			continue
+		}
+		au, err := s.auditRow(ctx, ra.id)
+		if err != nil || au.Status != AuditDone {
+			continue
+		}
+		ask := ""
+		if au.Helpers != nil {
+			for _, c := range au.Helpers.Panel {
+				if c.Name == "complete" {
+					ask = c.Ask
+				}
+			}
+		}
+		asked := true
+		for _, l := range leads {
+			asked = asked && strings.Contains(ask, l)
+		}
+		if asked {
+			return true
+		}
+	}
+	return false
 }

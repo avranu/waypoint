@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -92,10 +93,25 @@ func (s *Server) openPull(w http.ResponseWriter, r *http.Request) (any, error) {
 	}
 	res.ShipReply = s.svc.ShipReplyTemplate(r.Context(), actorFrom(r))
 	if in.Issue != "" {
-		// Best effort: a task that can't be skimmed just shows nothing.
-		res.PutOff, _ = s.svc.PutOffSteps(r.Context(), actorFrom(r), in.Issue)
+		res.PutOff = s.putOffAfterOpen(r.Context(), actorFrom(r), in.Issue, res.Reviewed)
 	}
 	return res, nil
+}
+
+// putOffAfterOpen is what the open says about the task's put-off steps. After
+// a reviewed round the completeness check had the notes as leads (WP-1370),
+// so only the open subtasks, which no check reads, stay; a direct open keeps
+// both. Best effort: a task that can't be skimmed just shows nothing.
+func (s *Server) putOffAfterOpen(ctx context.Context, actor *core.Actor, issue string, reviewed bool) *core.PutOffSteps {
+	p, _ := s.svc.PutOffSteps(ctx, actor, issue)
+	if p == nil || !reviewed {
+		return p
+	}
+	p.Notes, p.More = nil, 0
+	if len(p.Open) == 0 {
+		return nil
+	}
+	return p
 }
 
 func (s *Server) checkPull(w http.ResponseWriter, r *http.Request) (any, error) {

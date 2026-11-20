@@ -1,54 +1,70 @@
 package main
 
 import (
+	"bytes"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestRewritesText(t *testing.T) {
-	now := time.Date(2026, 11, 16, 18, 0, 0, 0, time.UTC)
-	if s := rewritesText("WP-232", nil, now); s != "" {
+	if s := rewritesText("WP-232", nil); s != "" {
 		t.Fatalf("nothing found = %q", s)
 	}
 	got := rewritesText("WP-232", []rewrittenTask{
-		{Key: "WP-233", Title: "When an agent hits an auto mode classifier, then they manually file a request to allow", PR: 463, Lines: 80, Share: 0.49, At: now.Add(-time.Hour).UnixMilli()},
-		{Key: "WP-301", Title: "wp next fetches", PR: 249, PRs: 2, Lines: 20, Share: 0.25, At: now.Add(-50 * time.Hour).UnixMilli()},
-	}, now)
-	for _, want := range []string{
-		"replaces recent work of other tasks, which nothing relates to WP-232:",
-		"WP-233 \"When an agent hits an auto mode classifier, then they manually file a…\": 80 lines from PR 463, merged today (49% of the lines this replaces)",
-		"WP-301 \"wp next fetches\": 20 lines from PR 249 and 1 more, merged 2 days ago",
-		"wp relate WP-232 supersedes WP-233 WP-301",
-		"wp relate WP-232 tension WP-233 WP-301",
-		"wp relate WP-232 follows WP-233 WP-301",
-		"Leave out of each command the tasks it isn't true of.",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("missing %q in:\n%s", want, got)
-		}
+		{Key: "WP-233", Title: "When an agent hits an auto mode classifier, then they manually file a request to allow", PR: 463, Lines: 80, Share: 0.49},
+		{Key: "WP-301", Title: "wp next fetches", PR: 249, PRs: 2, Lines: 20, Share: 0.25},
+	})
+	want := "Related WP-232 to WP-233 (When an agent hits an auto mode classifier, then they manually file a…): this change replaces 80 lines from PR 463. If it replaces that work on purpose or carries it further, say which: `wp relate WP-232 supersedes WP-233` or `wp relate WP-232 follows WP-233`.\n" +
+		"Related WP-232 to WP-301 (wp next fetches): this change replaces 20 lines from PR 249 and 1 more. If it replaces that work on purpose or carries it further, say which: `wp relate WP-232 supersedes WP-301` or `wp relate WP-232 follows WP-301`."
+	if got != want {
+		t.Errorf("text:\n%s\nwant:\n%s", got, want)
 	}
-	if one := rewritesText("WP-1", []rewrittenTask{{Key: "WP-2", PR: 3, Lines: 15, Share: 0.3, At: now.Add(-25 * time.Hour).UnixMilli()}}, now); !strings.Contains(one, "of another task") || !strings.Contains(one, "yesterday") || strings.Contains(one, "Leave out") {
-		t.Errorf("one task: %s", one)
+	// Information, not a chore: nothing in it asks for the old choice.
+	for _, bad := range []string{"Notice", "tension", "Leave out", "nothing relates"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("text still says %q", bad)
+		}
 	}
 }
 
-// A repeat of the same notice doesn't keep the turn open again; a new task
-// in it does, and so does its return after a ship that named nobody.
-func TestRewritesSeen(t *testing.T) {
+func rewriteStub(t *testing.T, got [][]rewrittenTask) {
+	t.Helper()
+	old := rewrittenTasksFn
+	t.Cleanup(func() { rewrittenTasksFn = old })
+	i := 0
+	rewrittenTasksFn = func(*cli, string, string) []rewrittenTask {
+		i++
+		return got[i-1]
+	}
+}
+
+// The line is printed once per pair in a checkout, to stderr only, and a
+// new pair or a pair returning after a ship that named nobody is news again.
+func TestNoteRewritesPrintsOncePerPair(t *testing.T) {
 	gitRepo(t, "https://git.example/o/r.git")
-	now := time.Now()
-	a := rewritesText("WP-1", []rewrittenTask{{Key: "WP-2", PR: 3, Lines: 20, Share: 0.5, At: now.UnixMilli()}}, now)
-	b := rewritesText("WP-1", []rewrittenTask{{Key: "WP-2", PR: 3, Lines: 20, Share: 0.5, At: now.UnixMilli()}, {Key: "WP-9", PR: 4, Lines: 70, Share: 0.2, At: now.UnixMilli()}}, now)
-	for i, c := range []struct {
-		notice string
-		want   bool
-	}{{a, false}, {a, true}, {b, false}, {b, true}, {"", false}, {b, false}} {
-		if got := rewritesSeen("wp-1", c.notice); got != c.want {
-			t.Errorf("%d: seen = %v, want %v", i, got, c.want)
+	a := rewrittenTask{Key: "WP-2", Title: "Earlier", PR: 3, Lines: 20, Share: 0.5}
+	b := rewrittenTask{Key: "WP-9", Title: "Another", PR: 4, Lines: 70, Share: 0.2}
+	rewriteStub(t, [][]rewrittenTask{{a}, {a}, {a, b}, {a, b}, nil, {a, b}})
+	var out, errb bytes.Buffer
+	c := &cli{out: &out, err: &errb}
+	// A new pair prints it; the same pair again doesn't; a ship that named
+	// nobody makes the pair news again.
+	for i, want := range []int{1, 0, 2, 0, 0, 2} {
+		errb.Reset()
+		c.noteRewrites("WP-1", "")
+		if n := strings.Count(errb.String(), "Related WP-1 to"); n != want {
+			t.Errorf("ship %d printed %d lines, want %d: %q", i, n, want, errb.String())
 		}
 	}
-	if rewritesSeen("WP-5", a) {
-		t.Error("another task's ship saw WP-1's notice")
+	if out.Len() != 0 {
+		t.Errorf("stdout got %q", out.String())
+	}
+}
+
+// The line holds nothing open: a held ship that a summary came with still
+// ends the turn by hook, which shipNeedsAgent saying nothing allows.
+func TestRewritesLineKeepsNoTurnOpen(t *testing.T) {
+	if got := shipNeedsAgent(&openedPR{Held: "review is running"}, "", nil, "", false); got != "" {
+		t.Errorf("held ship needs the agent: %q", got)
 	}
 }

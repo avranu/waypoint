@@ -264,3 +264,38 @@ func TestOpenPullShipWordsDecode(t *testing.T) {
 		t.Errorf("a key nobody knows should still be refused: %d %s", code, raw)
 	}
 }
+
+// After a reviewed round the completeness check had the put-off notes as
+// leads, so the open doesn't print them again; the open subtasks no check
+// reads stay, and a direct open keeps everything (WP-1370).
+func TestPutOffAfterOpenSkipsNotesAfterAReviewedRound(t *testing.T) {
+	_, svc := setup(t)
+	ctx := context.Background()
+	admin, err := svc.CreateUser(ctx, core.SystemActor(), core.CreateUserInput{Username: "robin", Email: "robin@example.com", Password: "correct-horse-battery", IsAdmin: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &core.Actor{User: admin}
+	name := "App"
+	p, err := svc.CreateProject(ctx, a, core.ProjectInput{Name: &name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent, err := svc.CreateIssue(ctx, a, core.IssueInput{Project: p.Key, Title: "Speed up the parser", Description: "Step 2 only if the first pass is still slow."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CreateIssue(ctx, a, core.IssueInput{Parent: parent.Key, Type: "subtask", Title: "Measure it"}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{svc: svc}
+
+	direct := s.putOffAfterOpen(ctx, a, parent.Key, false)
+	if direct == nil || len(direct.Notes) == 0 || len(direct.Open) != 1 {
+		t.Fatalf("a direct open should show the notes and the open subtask: %+v", direct)
+	}
+	reviewed := s.putOffAfterOpen(ctx, a, parent.Key, true)
+	if reviewed == nil || len(reviewed.Notes) != 0 || reviewed.More != 0 || len(reviewed.Open) != 1 {
+		t.Fatalf("after a reviewed round only the open subtask should stay: %+v", reviewed)
+	}
+}

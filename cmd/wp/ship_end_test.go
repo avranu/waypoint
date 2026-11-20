@@ -293,8 +293,18 @@ func shipEndsTurn(t *testing.T, e *env, me *core.Actor, key string) {
 			}
 		}
 	}
-	// Nothing needs the agent: the turn ends with the summary, filled in.
+	// Nothing needs the agent: the turn ends with the summary, filled in,
+	// even when Waypoint tells it which tasks' recent work the change
+	// replaces (WP-1370: information, not a reason to go on).
+	oldFn := rewrittenTasksFn
+	rewrittenTasksFn = func(*cli, string, string) []rewrittenTask {
+		return []rewrittenTask{{Key: "WP-2", Title: "Earlier", PR: 3, Lines: 20, Share: 0.5}}
+	}
 	out = e.wp("ship", "--check", "true", "--summary", "{task} is in PR #{pr}. Tests: true.")
+	rewrittenTasksFn = oldFn
+	if !strings.Contains(out, "WP-2") || !strings.Contains(out, "Earlier") {
+		t.Errorf("the rewrite line wasn't printed:\n%s", out)
+	}
 	if !strings.Contains(out, "Check: true already passed on this tree; not run again.") || !strings.Contains(out, "Waypoint ends the turn here") ||
 		strings.Contains(out, "Done: ") || strings.Contains(out, "Reply template") {
 		t.Errorf("ship that ends the turn: %q", out)
