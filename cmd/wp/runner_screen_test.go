@@ -92,9 +92,9 @@ type screenTmux struct {
 }
 
 func (s *screenTmux) run(ctx context.Context, socket string, stdin []byte, args ...string) (string, error) {
-	if args[0] == "send-keys" && args[len(args)-1] == "Enter" && s.fakeTmux.pasted != "" {
-		s.fakeTmux.typed = append(s.fakeTmux.typed, "Enter")
-		s.fakeTmux.screen = s.afterEnter
+	if args[0] == "send-keys" && args[len(args)-1] == "Enter" && s.pasted != "" {
+		s.typed = append(s.typed, "Enter")
+		s.screen = s.afterEnter
 		return "", nil
 	}
 	return s.fakeTmux.run(ctx, socket, stdin, args...)

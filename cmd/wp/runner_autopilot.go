@@ -605,14 +605,6 @@ func atPrompt(status string) bool {
 	return status == "idle" || status == "shell"
 }
 
-// waitIdle waits until the session process pid waits at its prompt.
-func waitIdle(ctx context.Context, dir string, pid int, limit time.Duration) bool {
-	return waitUntil(ctx, limit, func() bool {
-		s, err := readCCSession(dir, pid)
-		return err == nil && atPrompt(s.Status)
-	})
-}
-
 // waitBusy waits for the session to start working on the prompt.
 func waitBusy(ctx context.Context, dir string, pid int, limit time.Duration) bool {
 	end := time.Now().Add(limit)
