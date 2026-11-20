@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -105,6 +106,32 @@ func TestCLIAudit(t *testing.T) {
 	}
 	if out := e.wp("audit", "show", "2"); !strings.Contains(out, "Criteria: focus security, data; only internal; not *_test.go; high and worse; shows 5 findings at a time") {
 		t.Errorf("wp audit show 2:\n%s", out)
+	}
+
+	// Shown at a time (WP-1421): asked to show 5, a model that reports 12 keeps 12.
+	e.svc.Wait()
+	if w, err := e.svc.RunnerPoll(ctx, me, core.RunnerPoll{Runner: box.ID, Wait: &zero}); err != nil || w.Job == nil {
+		t.Fatalf("poll for audit 2: %v %+v", err, w)
+	} else {
+		var twelve []any
+		for i := 1; i <= 12; i++ {
+			twelve = append(twelve, map[string]any{"title": fmt.Sprintf("Hole %d", i), "path": "internal/a.go", "line": i, "severity": "high", "problem": "x", "confirm": "y"})
+		}
+		res, _ := json.Marshal(map[string]any{"answer": "(structured)", "structured": map[string]any{"summary": "A dozen.", "findings": twelve}})
+		if _, err := e.svc.FinishRunnerJob(ctx, me, w.Job.ID, core.RunnerFinish{State: "done", Result: res}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.svc.Wait()
+	e.svc.Wait()
+	if out := e.wp("audit", "show", "2"); !strings.Contains(out, "Hole 5") || strings.Contains(out, "Hole 6") || !strings.Contains(out, "7 more: wp audit show 2 --all") {
+		t.Errorf("wp audit show 2 (5 of 12):\n%s", out)
+	}
+	if out := e.wp("audit", "show", "2", "--all"); !strings.Contains(out, "Hole 12") || strings.Contains(out, "more: wp audit show") {
+		t.Errorf("wp audit show 2 --all:\n%s", out)
+	}
+	if out := e.wp("audit", "show", "2", "--json"); strings.Count(out, "Hole ") != 12 {
+		t.Errorf("wp audit show 2 --json holds %d findings", strings.Count(out, "Hole "))
 	}
 	if out := e.wp("audit", "recent", "release"); !strings.Contains(out, "robin/waypoint release, the last 7 days") {
 		t.Errorf("wp audit recent release:\n%s", out)

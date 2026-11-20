@@ -40,7 +40,7 @@ func TestAuditShownAtATime(t *testing.T) {
 		t.Fatalf("audit = %s %d findings, %q", got.Status, len(got.Findings), got.Summary)
 	}
 	c := auditComment(got, "https://wp.example")
-	if rows := strings.Count(c, "\n| "); rows != 7 { // the header, the rule and 5 findings
+	if rows := strings.Count(c, "\n| "); rows != 6 { // the header and 5 findings
 		t.Errorf("rows = %d:\n%s", rows, c)
 	}
 	if !strings.Contains(c, "| 5 | low") || strings.Contains(c, "| 6 | low") || !strings.Contains(c, "7 more findings: https://wp.example/audits/") || !strings.Contains(c, "### Audit: 12 findings") {
