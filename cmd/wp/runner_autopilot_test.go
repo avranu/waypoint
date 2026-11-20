@@ -26,14 +26,18 @@ func TestPromptInput(t *testing.T) {
 		screen, want string
 		found        bool
 	}{
-		"empty":           {screenEmpty, "", true},
-		"placeholder":     {screenPlaceholder, "", true},
-		"draft":           {screenDraft, "my draft second line", true},
-		"no box":          {"Do you want to proceed?\n 1. Yes\n", "", false},
-		"truecolor draft": {"────\n\u276f\u00a0\x1b[38;2;177;185;249m@src/main.go\x1b[39m\n────\n", "@src/main.go", true},
-		"256-color draft": {"────\n\u276f\u00a0\x1b[38;5;2m/deploy now\x1b[39m\n────\n", "/deploy now", true},
-		"status line ❯":   {"────\n\u276f\u00a0half typed\n────\n  ~/proj main \u276f\n", "half typed", true},
-		"no bottom edge":  {"────\n\u276f\u00a0\n", "", false},
+		"empty":                {screenEmpty, "", true},
+		"placeholder":          {screenPlaceholder, "", true},
+		"draft":                {screenDraft, "my draft second line", true},
+		"no box":               {"Do you want to proceed?\n 1. Yes\n", "", false},
+		"truecolor draft":      {"────\n\u276f\u00a0\x1b[38;2;177;185;249m@src/main.go\x1b[39m\n────\n", "@src/main.go", true},
+		"256-color draft":      {"────\n\u276f\u00a0\x1b[38;5;2m/deploy now\x1b[39m\n────\n", "/deploy now", true},
+		"status line ❯":        {"────\n\u276f\u00a0half typed\n────\n  ~/proj main \u276f\n", "half typed", true},
+		"labelled top, empty":  {"────── WP-1320 - CI Code Quality ─\n\x1b[39m❯ \n\x1b[39m──────\n", "", true},
+		"labelled top, draft":  {"────── WP-1320 - CI Code Quality ─\n\x1b[39m❯ my draft\n\x1b[39m──────\n", "my draft", true},
+		"labelled, no ❯ below": {"────── WP-1320 - CI Code Quality ─\nhello\n──────\n", "", false},
+		"label not closed":     {"────── WP-1320 - CI Code Quality\n❯ \n──────\n", "", false},
+		"no bottom edge":       {"────\n\u276f\u00a0\n", "", false},
 	} {
 		got, found := promptInput(c.screen)
 		if got != c.want || found != c.found {

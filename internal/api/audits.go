@@ -97,6 +97,16 @@ func (s *Server) markAuditFindings(w http.ResponseWriter, r *http.Request) (any,
 	return s.svc.MarkAuditFindings(r.Context(), actorFrom(r), in)
 }
 
+// reportReview is wp audit report: what the review a session ran itself
+// found, recorded as its round's findings (WP-1320).
+func (s *Server) reportReview(w http.ResponseWriter, r *http.Request) (any, error) {
+	var in core.ReviewReportInput
+	if err := decode(r, &in); err != nil {
+		return nil, err
+	}
+	return s.svc.ReportReview(r.Context(), actorFrom(r), r.PathValue("key"), in)
+}
+
 func cmpVia(v string) string {
 	switch v {
 	case "web", "cli", "api":

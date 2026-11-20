@@ -117,7 +117,8 @@ func (s *Server) runnerJobFinish(w http.ResponseWriter, r *http.Request) (any, e
 		return nil, err
 	}
 	var in core.RunnerFinish
-	if err := decode(r, &in); err != nil {
+	// An audit's result holds its helpers' runs: up to core.RunnerResultMax.
+	if err := decodeBodyLarge(r, &in, core.RunnerFinishBodyMax, core.RunnerResultTooLarge); err != nil {
 		return nil, err
 	}
 	state, err := s.svc.FinishRunnerJob(r.Context(), actorFrom(r), id, in)

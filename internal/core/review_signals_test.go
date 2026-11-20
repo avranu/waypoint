@@ -174,14 +174,27 @@ func TestCountUnchecked(t *testing.T) {
 		{"unsupported still counts", 5, []againFinding{f(round, "rejected", "high", func(x *againFinding) { x.verdict = VerdictUnsupported })}, 1},
 		{"a repeat of an earlier round's", 5, []againFinding{f(round, "rejected", "high", repeat)}, 0},
 		{"fixed and open are not rejections", 5, []againFinding{f(round, "fixed", "high", nil), f(round, "open", "high", nil)}, 0},
-		{"another audit's rejection", 5, []againFinding{f(check, "rejected", "high", nil)}, 0},
+		// The check found a mark wrong and the session rejected that too:
+		// two readers against the author's word, whether or not the check
+		// of the rest was passed over.
+		{"the check's finding, rejected in turn", 5, []againFinding{f(check, "rejected", "high", nil)}, 1},
+		{"the check's finding under the floor", 8, []againFinding{f(check, "rejected", "medium", nil)}, 0},
+		{"the check's finding, a repeat", 5, []againFinding{f(check, "rejected", "high", repeat)}, 0},
+		{"the check's finding, fixed", 5, []againFinding{f(check, "fixed", "high", nil)}, 0},
 		{"an unlabelled rejection is medium", 5, []againFinding{f(round, "rejected", "", nil)}, 1},
 	} {
 		d := &againDecision{audit: round, unchecked: 99}
-		d.countUnchecked(tc.findings, tc.floor)
+		d.countUnchecked(tc.findings, tc.floor, true)
 		if d.unchecked != tc.want {
 			t.Errorf("%s: unchecked %d, want %d", tc.name, d.unchecked, tc.want)
 		}
+	}
+	// With the check answered, the round's own rejections were checked;
+	// only what the check found and the session rejected again counts.
+	d := &againDecision{audit: round}
+	d.countUnchecked([]againFinding{f(round, "rejected", "critical", nil), f(check, "rejected", "high", nil), f(check, "fixed", "high", nil)}, 5, false)
+	if d.unchecked != 1 {
+		t.Errorf("the check answered: unchecked %d, want 1", d.unchecked)
 	}
 }
 
@@ -302,9 +315,10 @@ func TestCheckClaims(t *testing.T) {
 
 	// Past the cap: the worst checkClaimsMax, all rejected lows go last.
 	big := fx.audit("review-round:3")
-	for n := 1; n <= 40; n++ {
+	total := checkClaimsMax + 10
+	for n := 1; n <= total; n++ {
 		sev := "low"
-		if n > 35 {
+		if n > total-5 {
 			sev = "critical"
 		}
 		fx.finding(big, n, sev, "rejected", "")
@@ -317,18 +331,18 @@ func TestCheckClaims(t *testing.T) {
 		t.Fatalf("%d claims, want the cap %d", len(ids), checkClaimsMax)
 	}
 	b := fmt.Sprint(big)
-	for n := 36; n <= 40; n++ {
+	for n := total - 4; n <= total; n++ {
 		if !slices.Contains(ids, fmt.Sprintf("%s.%d", b, n)) {
 			t.Errorf("critical finding %d fell off the cap: %v", n, ids)
 		}
 	}
-	for _, n := range []int{1, 25} {
+	for _, n := range []int{1, checkClaimsMax - 5} {
 		if !slices.Contains(ids, fmt.Sprintf("%s.%d", b, n)) {
 			t.Errorf("low finding %d (an early ordinal) fell off the cap: %v", n, ids)
 		}
 	}
-	if slices.Contains(ids, b+".26") {
-		t.Errorf("finding 26 is past the 30 the cap keeps: %v", ids)
+	if slices.Contains(ids, fmt.Sprintf("%s.%d", b, checkClaimsMax-4)) {
+		t.Errorf("finding %d is past the cap: %v", checkClaimsMax-4, ids)
 	}
 }
 

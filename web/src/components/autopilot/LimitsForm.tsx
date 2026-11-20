@@ -45,6 +45,12 @@ interface LimitsDraft {
   review_prompt: string
   review_skip: '' | ReviewSkip
   review_text: string
+  /**
+   * 'on': the brief is set to Waypoint's built-in one (saved as an empty
+   * brief, which overrides a custom one inherited), where review_text is
+   * empty. '' inherits.
+   */
+  review_builtin: '' | 'on'
   /** '' inherits */
   review_model: string
   /** '' inherits; 'any' sets no minimum */
@@ -90,6 +96,7 @@ const draftOf = (l: AutopilotLimits): LimitsDraft => ({
   review_prompt: l.review_prompt ?? '',
   review_skip: l.review_skip ?? '',
   review_text: l.review_text ?? '',
+  review_builtin: l.review_text === '' ? 'on' : '',
   review_model: l.review_model ?? '',
   min_priority: l.min_priority === undefined ? '' : l.min_priority || 'any',
   due_within_days: l.due_within_days?.toString() ?? '',
@@ -105,6 +112,16 @@ const draftOf = (l: AutopilotLimits): LimitsDraft => ({
   hours: l.hours === undefined ? '' : l.hours || 'any',
   days: l.days === undefined ? '' : l.days || 'all',
 })
+
+/**
+ * How long a text is as the server counts it: in characters (code points),
+ * where .length counts an emoji or a rare CJK character as two.
+ */
+const chars = (s: string) => {
+  let n = 0
+  for (const _ of s) n++
+  return n
+}
 
 /** The limits a draft sets, or the first thing wrong with it. */
 function limitsOf(d: LimitsDraft): { limits: AutopilotLimits; error?: string } {
@@ -142,6 +159,8 @@ function limitsOf(d: LimitsDraft): { limits: AutopilotLimits; error?: string } {
   if (prompt) limits.review_prompt = prompt
   const brief = d.review_text.trim()
   if (brief) limits.review_text = brief
+  // Set but empty: the built-in brief, over a custom one inherited.
+  else if (d.review_builtin) limits.review_text = ''
   const query = d.query.trim()
   if (query) limits.query = query
   const hours = d.hours.trim()
@@ -149,9 +168,9 @@ function limitsOf(d: LimitsDraft): { limits: AutopilotLimits; error?: string } {
   const days = d.days.trim()
   if (days) limits.days = days
   const textError =
-    prompt.length > MAX_REVIEW_PROMPT
+    chars(prompt) > MAX_REVIEW_PROMPT
       ? `The review prompt must be at most ${MAX_REVIEW_PROMPT} characters`
-      : brief.length > MAX_REVIEW_TEXT
+      : chars(brief) > MAX_REVIEW_TEXT
         ? `The reviewer’s brief must be at most ${MAX_REVIEW_TEXT} characters`
         : query.length > MAX_CRITERIA_QUERY
           ? `The query must be at most ${MAX_CRITERIA_QUERY} characters`
@@ -251,6 +270,10 @@ export function LimitsForm({
     },
   )
   const reviewers = useQuery(q.reviewModels()).data
+  // The brief is set to the built-in one, and the one an empty field stands
+  // for (shown in grey): the built-in, or the one inherited.
+  const builtin = draft.review_builtin === 'on'
+  const shownBrief = (!builtin && inherit.review_text) || reviewers?.default_text || ''
   const set = (k: keyof LimitsDraft) => (e: { target: { value: string } }) => {
     instant.current = e.target instanceof HTMLSelectElement
     setDraft((d) => ({ ...d, [k]: e.target.value }))
@@ -410,7 +433,7 @@ export function LimitsForm({
           </Field>
           <Field
             label="Reviewer"
-            hint="Who reviews each round. Automatic: the LLM gateway’s audit model, held to a bar by the change’s stakes. The same session: it reviews its own change with an adversarial-review subagent, in one round, since its review has no findings to score for another. A model: that model reviews; if it fails, the round falls back to automatic. Any other cli/model: wp autopilot set --review-model."
+            hint="Who reviews each round. Automatic: the LLM gateway’s audit model, held to a bar by the change’s stakes. The same session: it reviews its own change with an adversarial-review subagent and reports what that found to Waypoint, which checks and scores the findings and asks for another round like any other reviewer’s. A model: that model reviews; if it fails, the round falls back to automatic. Any other cli/model: wp autopilot set --review-model."
           >
             <Select
               id={`${idPrefix}-review_model`}
@@ -450,21 +473,53 @@ export function LimitsForm({
           <Field
             label="Reviewer’s brief"
             hint="How every round’s reviewer is told to review, like a skill: it goes ahead of the fixed rules and output form. Empty inherits the one shown in grey."
+            error={
+              chars(draft.review_text.trim()) > MAX_REVIEW_TEXT
+                ? `${chars(draft.review_text.trim()).toLocaleString()} characters: the most is ${MAX_REVIEW_TEXT.toLocaleString()}.`
+                : undefined
+            }
             note={
-              !draft.review_text && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() =>
-                    setDraft((d) => ({
-                      ...d,
-                      review_text: inherit.review_text || reviewers?.default_text || '',
-                    }))
-                  }
-                  disabled={!inherit.review_text && !reviewers}
-                >
-                  Start from it
-                </Button>
+              draft.review_text ? (
+                <span className="tabular-nums">
+                  {`${chars(draft.review_text.trim()).toLocaleString()} of ${MAX_REVIEW_TEXT.toLocaleString()} characters`}
+                </span>
+              ) : (
+                <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  {builtin && <span>Set to Waypoint’s built-in brief, shown in grey.</span>}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setDraft((d) => ({ ...d, review_text: shownBrief }))}
+                    disabled={!shownBrief}
+                  >
+                    Start from it
+                  </Button>
+                  {builtin ? (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => {
+                        instant.current = true
+                        setDraft((d) => ({ ...d, review_builtin: '' }))
+                      }}
+                    >
+                      Inherit instead
+                    </Button>
+                  ) : (
+                    !!inherit.review_text && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                          instant.current = true
+                          setDraft((d) => ({ ...d, review_builtin: 'on' }))
+                        }}
+                      >
+                        Use the built-in
+                      </Button>
+                    )
+                  )}
+                </span>
               )
             }
           >
@@ -472,9 +527,12 @@ export function LimitsForm({
               id={`${idPrefix}-review_text`}
               rows={8}
               autoGrow
-              maxLength={MAX_REVIEW_TEXT + 100}
+              // Past the limit by enough that a paste over it is seen and
+              // said, not cut off silently; twice it, since the browser
+              // counts an emoji as two and the limit as one.
+              maxLength={2 * MAX_REVIEW_TEXT + 100}
               value={draft.review_text}
-              placeholder={inherit.review_text || reviewers?.default_text || ''}
+              placeholder={shownBrief}
               onChange={set('review_text')}
               className="text-xs"
             />
