@@ -20,6 +20,10 @@ import (
 var siteBaseline = map[string]int{
 	// This instance's working rules: an example of a decision's approval.
 	"AGENTS.md": 1,
+	// Names the job pool's own image repo in a comment; editing the file
+	// changes CI's image tag (build.sh hashes it), so it waits for the next
+	// image change.
+	".forgejo/ci-image/Dockerfile": 1,
 }
 
 var siteWordRE = regexp.MustCompile(`[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*`)
@@ -36,16 +40,45 @@ type siteHit struct {
 // (APP-): it matches only in a code (APP-12, APP#12, APP-PL13, APP:R-3), so
 // a key that is also a word (MAP-) doesn't flag every "map" (WP-1184). A
 // word with a hyphen inside (tumble-weed) matches as that phrase. They are a
-// site's settings, so like its other settings they come from the
-// environment and are never committed: in CI the SITE_NAMES secret, locally
-// the environment or deploy/site.mk (gitignored), which the Makefile exports.
-func siteNames() map[string]bool {
-	names := map[string]bool{}
+// site's settings, so like its other settings they are never committed: CI
+// reads the SITE_NAMES secret; locally SITE_NAMES in the environment or in
+// deploy/site.mk (gitignored, exported by the Makefile) wins, else the
+// site-names file in Waypoint's per-user config dir, which every checkout and
+// worktree on the machine shares (WP-1432). In the file a line starting with
+// # is a comment. from says where the list came from, for messages.
+func siteNames() (names map[string]bool, from string) {
+	names = map[string]bool{}
+	text, from := os.Getenv("SITE_NAMES"), "SITE_NAMES"
+	if strings.TrimSpace(text) == "" {
+		text, from = "", siteNamesFile()
+		if from != "" {
+			b, _ := os.ReadFile(from) // #nosec G304 -- our own per-user config file; missing means no names
+			for _, line := range strings.Split(string(b), "\n") {
+				if !strings.HasPrefix(strings.TrimSpace(line), "#") {
+					text += line + "\n"
+				}
+			}
+		}
+	}
 	sep := func(r rune) bool { return r == ',' || unicode.IsSpace(r) }
-	for _, w := range strings.FieldsFunc(os.Getenv("SITE_NAMES"), sep) {
+	for _, w := range strings.FieldsFunc(text, sep) {
 		names[strings.ToLower(w)] = true
 	}
-	return names
+	return names, from
+}
+
+// siteNamesFile is the site-names file in the per-user config dir wp uses
+// (configDir in cmd/wp/config.go), or "" when there is no such dir.
+func siteNamesFile() string {
+	d := os.Getenv("WAYPOINT_CONFIG_DIR")
+	if d == "" {
+		c, err := os.UserConfigDir()
+		if err != nil {
+			return ""
+		}
+		d = filepath.Join(c, "waypoint")
+	}
+	return filepath.Join(d, "site-names")
 }
 
 // siteChecker finds names, given in lower case, in text.
@@ -186,14 +219,14 @@ func allDigits(parts []string) bool {
 }
 
 // TestNoSiteNames keeps the tree free of the names of the site Waypoint runs
-// on (WP-459), as SITE_NAMES lists them; without SITE_NAMES it has nothing to
-// check. A file over its count in siteBaseline fails with each line that
-// names one. Migrations are read too: the runner keys them by file name, so
+// on (WP-459), as siteNames lists them (SITE_NAMES, else the per-user
+// site-names file, WP-1432); without either it skips. A file over its count
+// in siteBaseline fails with each line that names one. Migrations are read too: the runner keys them by file name, so
 // a comment in one can change after it ran.
 func TestNoSiteNames(t *testing.T) {
-	names := siteNames()
+	names, from := siteNames()
 	if len(names) == 0 {
-		t.Skip("SITE_NAMES is not set: no site names to look for")
+		t.Skipf("no site names to look for: set SITE_NAMES or list them in %s", siteNamesFile())
 	}
 	root, err := filepath.Abs("../..")
 	if err != nil {
@@ -246,15 +279,16 @@ func TestNoSiteNames(t *testing.T) {
 	}
 	if len(problems) > 0 {
 		t.Errorf("these files name the site Waypoint runs on: the maintainer, their domain, hosts, "+
-			"other projects or home network, as SITE_NAMES lists them (WP-459). Use a stand-in (Robin, git.example.net, prodhost, "+
+			"other projects or home network, as %s lists them (WP-459). Use a stand-in (Robin, git.example.net, prodhost, "+
 			"runner1, 10.9.0.0/24) or a setting instead. A file that must keep one gets a count and a "+
-			"reason in siteBaseline (internal/repocheck/site_names_test.go).\n%s", strings.Join(problems, "\n"))
+			"reason in siteBaseline (internal/repocheck/site_names_test.go).\n%s", from, strings.Join(problems, "\n"))
 	}
 }
 
 func TestSiteWord(t *testing.T) {
 	t.Setenv("SITE_NAMES", "Tumbleweed, example.org\n10.77.0")
-	c := newSiteChecker(siteNames())
+	names, _ := siteNames()
+	c := newSiteChecker(names)
 	for w, want := range map[string]bool{
 		"tumbleweed":               true,
 		"git.example.net":          false,
@@ -287,11 +321,45 @@ func TestSiteWord(t *testing.T) {
 	}
 }
 
+// The per-user site-names file is read when SITE_NAMES is empty (WP-1432).
+func TestSiteNamesFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SITE_NAMES", "")
+	t.Setenv("WAYPOINT_CONFIG_DIR", dir)
+	keys := func() string {
+		names, _ := siteNames()
+		var got []string
+		for n := range names {
+			got = append(got, n)
+		}
+		sort.Strings(got)
+		return strings.Join(got, ",")
+	}
+	if got := keys(); got != "" {
+		t.Errorf("no file: names %q", got)
+	}
+	file := filepath.Join(dir, "site-names")
+	if err := os.WriteFile(file, []byte("# a comment naming skipme\nAlpha, beta\n  gamma\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := keys(); got != "alpha,beta,gamma" {
+		t.Errorf("file: names %q", got)
+	}
+	if _, from := siteNames(); from != file {
+		t.Errorf("from = %q, want %q", from, file)
+	}
+	t.Setenv("SITE_NAMES", "delta")
+	if got := keys(); got != "delta" {
+		t.Errorf("env: names %q", got)
+	}
+}
+
 // A project's key flags its task codes, not the word; a hyphenated name
 // flags as a phrase (WP-1184).
 func TestSiteKeysAndPhrases(t *testing.T) {
 	t.Setenv("SITE_NAMES", "MAP-, ab- tumble-weed my-app- -zz")
-	c := newSiteChecker(siteNames())
+	names, _ := siteNames()
+	c := newSiteChecker(names)
 	for text, want := range map[string]string{
 		"see MAP-153.":             "MAP-153",
 		"(map-12)":                 "map-12",

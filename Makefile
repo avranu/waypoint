@@ -171,7 +171,9 @@ deploy: ## rebuild and (re)start the compose deployment
 # ships it. DEPLOY_HOST is the production host's ssh name: set it in the
 # environment or in deploy/site.mk (gitignored; `DEPLOY_HOST = prod`).
 # SITE_NAMES, there or in the environment, lists the names the tests keep
-# out of the tree (internal/repocheck; CI reads the SITE_NAMES secret).
+# out of the tree (internal/repocheck). CI reads the SITE_NAMES secret;
+# locally SITE_NAMES wins, else the site-names file in the per-user config
+# dir (~/.config/waypoint), which every checkout and worktree shares (WP-1432).
 -include deploy/site.mk
 export SITE_NAMES
 DEPLOY_HOST ?=
