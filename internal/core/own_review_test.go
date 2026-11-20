@@ -181,7 +181,7 @@ func TestShipWithOwnReview(t *testing.T) {
 		a, g, key := introEnv(t)
 		a.ownReviewDone("No issues found.")
 		res, err := a.ship(key, ShipReview)
-		if err != nil || !strings.Contains(res.Held, "End your turn") || len(g.created) != 0 {
+		if err != nil || !strings.Contains(res.Held, "end your turn") || len(g.created) != 0 {
 			t.Fatalf("review = %+v, %v", res, err)
 		}
 		// the round asked for after it is what the session waits for

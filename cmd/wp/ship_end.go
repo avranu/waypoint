@@ -198,7 +198,7 @@ func fillSummary(text, key string, d *prDetail) string {
 // the turn: the summary, with the pull request still to come.
 func heldSummary(text string) string {
 	s := strings.NewReplacer("{pr}", "(after the review)", "{url}", "(after the review)", "{task}", "this task").Replace(strings.TrimSpace(text))
-	return s + "\n\n(The pull request opens after the adversarial review; its findings come back to this session.)"
+	return s + "\n\n(The pull request opens after the adversarial review, by Waypoint when the review leaves nothing for the session to do; findings that need the session come back to it.)"
 }
 
 // endTurnAfterShip marks this session's turn as one the hooks may end, with
@@ -487,10 +487,4 @@ func (c *cli) runShipCheck(cmd string) error {
 	}
 	_, _ = fmt.Fprintf(c.out, "Check failed: %s exited %d after %s; last lines:\n%s\n", cmd, code, took, lastLines(buf.Bytes(), 30))
 	return fmt.Errorf("the check failed, so nothing was committed or shipped: fix it and run wp ship again")
-}
-
-// summaryKeptNote says, on a ship the turn goes on after, why the summary
-// didn't end it and that it is kept.
-func summaryKeptNote(why string) string {
-	return "Your --summary was kept, not shown (" + why + "): the next wp ship of the task uses it unless you give a new one (--summary \"\" drops it)."
 }

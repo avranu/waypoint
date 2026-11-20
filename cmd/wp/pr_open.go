@@ -38,12 +38,14 @@ Running it again prints the open pull request.
 When your autopilot settings review before pull requests (whether
 autopilot is on or off), say what you want: --review pushes and schedules
 the task's adversarial review (the pull request opens after it; --review
-asks for one even with reviews off), --pr opens the pull request once the
-review ran, --skip-review WHY opens it without one. With none, it does
-whichever fits: the review if none ran yet, else the pull request. Where
+asks for one even with reviews off), --skip-review WHY opens it without
+one. With neither, it does whichever fits: the review if none ran yet, else
+the pull request (--pr says the same, and is kept for older prompts). Where
 that can't be done, it does the next step and a notice says how to
 override it: a review that can't be scheduled opens the pull request
-without it (WP-688, WP-1007).`
+without it (WP-688, WP-1007). Run it once: Waypoint carries the rest of the
+review on, and opens the pull request itself when the review leaves nothing
+for you to do (WP-1370).`
 
 var prOpenCmd = &command{
 	name: "open", aliases: []string{"create", "new"}, args: "[--draft] [--urgent] [--title T] [-f FILE]",
@@ -61,6 +63,7 @@ type prOpenFlags struct {
 	skipGiven                                   *bool  // --skip-review was given, even empty
 	finishing                                   string // the task wp ship finishes, when held (not a flag)
 	summary                                     string // wp ship's -m, checked for claims (not a flag)
+	shipSummary                                 string // wp ship's --summary, kept by the server with a held ship (not a flag)
 }
 
 func addPROpenFlags(fs *flag.FlagSet) prOpenFlags {
@@ -81,7 +84,7 @@ func addPROpenFlags(fs *flag.FlagSet) prOpenFlags {
 		noPush:     fs.Bool("no-push", false, "don't push the branch first"),
 		urgent:     fs.Bool("urgent", false, "skip the CI line, which slows every repo's CI on that machine: almost never; for cases like a fix to stuck CI, not an issue's priority"),
 		review:     fs.Bool("review", false, "push and schedule the task's adversarial review; the pull request opens after it"),
-		pr:         fs.Bool("pr", false, "open the pull request: the task's review ran (or is scheduled first)"),
+		pr:         fs.Bool("pr", false, "same as plain wp ship (kept for older prompts)"),
 		force:      fs.Bool("force", false, "with --review: review again, even with nothing committed since the last review"),
 		skipReview: skip,
 		skipGiven:  skipGiven,
@@ -104,6 +107,9 @@ type openedPR struct {
 	// done that wasn't asked for, and how to override it.
 	Held   string `json:"held"`
 	Notice string `json:"notice"`
+	// HeldNeedsAgent: Held asks the agent to act, so a --summary doesn't end
+	// its turn (WP-1370).
+	HeldNeedsAgent bool `json:"held_needs_agent"`
 	// UrgentHeld: the wp ship --urgent its review held asked for the lane.
 	UrgentHeld bool `json:"urgent_held"`
 	// UrgentPR: the open pull request a held wp ship --urgent put on the
@@ -198,22 +204,20 @@ func noticed(notice, s string) string {
 // reviewIntent is what the flags say about the task's review before its
 // pull request (core.ShipAuto and the rest).
 func (f prOpenFlags) reviewIntent() (string, error) {
-	n := 0
+	// --pr is plain wp ship, kept for older prompts (WP-1370): beside
+	// --skip-review the skip wins, beside --review the review does.
 	intent := "auto"
 	if *f.review {
-		n, intent = n+1, "review"
-	}
-	if *f.pr {
-		n, intent = n+1, "pr"
+		intent = "review"
 	}
 	if *f.skipGiven {
-		n, intent = n+1, "skip"
+		intent = "skip"
 	}
 	switch {
 	case *f.skipGiven && strings.TrimSpace(*f.skipReview) == "":
 		return "", errors.New(`--skip-review says why: --skip-review "WHY"`)
-	case n > 1:
-		return "", errors.New("--review, --pr and --skip-review each say what to do: give one")
+	case *f.review && *f.skipGiven:
+		return "", errors.New("--review and --skip-review say opposite things: give one")
 	case *f.force && intent != "review":
 		return "", errors.New("--force goes with --review: review again")
 	}
@@ -275,6 +279,9 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 		}
 	}
 	f.summary = msg
+	if so.summaryGiven {
+		f.shipSummary = *so.summary
+	}
 	if (*f.body != "" || *f.file != "") && c.agentHeader() != "" && !c.asJSON {
 		// Writing it costs tokens Waypoint saves (WP-55): say so, use it.
 		c.println("Notice: Waypoint writes the description from -m, the commits, the task and the recorded tests; your -f/--body replaces it. Next time leave it out.")
@@ -308,9 +315,6 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 		if summary != "" && keptWhy == "" {
 			// Only once the output is written: a failed emit must not end the turn.
 			c.endTurnAfterShip(cmpStr(key, o.key), heldSummary(summary)) // its notice says when it can't
-		}
-		if keptWhy != "" && c.agentHeader() != "" && !c.asJSON {
-			c.println(summaryKeptNote(keptWhy))
 		}
 		return false, nil
 	}
@@ -433,9 +437,6 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 				c.println("Waypoint ends the turn here and shows the person your --summary as the reply (should the turn go on, end it with that summary).")
 				return false, nil
 			}
-			if why != "" {
-				c.println(summaryKeptNote(why))
-			}
 		}
 		c.println(shipReply(o.ShipReply, o.key, d, dirty != ""))
 	} else if summary != "" {
@@ -454,6 +455,8 @@ func shipNeedsAgent(o *openedPR, before string, wrong []string, putOff string, d
 		return before
 	case o.Notice != "":
 		return "there is a notice"
+	case o.HeldNeedsAgent:
+		return "the review waits on your marks"
 	case len(wrong) > 0 || o.ClaimWarning != "" || o.Warning != "":
 		return "there is a warning"
 	case o.UrgentPR != 0:
@@ -670,7 +673,10 @@ func (c *cli) openPR(f prOpenFlags) (*openedPR, []byte, error) {
 		}
 	}
 	req := map[string]any{"head": branch, "base": *f.base, "title": text, "body": body, "draft": *f.draft, "ready": *f.ready, "issue": key, "for": f.finishing, "repo": repo, "urgent": *f.urgent,
-		"review": intent, "reason": strings.TrimSpace(*f.skipReview), "force": *f.force}
+		"review": intent, "reason": strings.TrimSpace(*f.skipReview), "force": *f.force,
+		// What a pull request Waypoint opens for a held ship carries: the
+		// newest ship's words win (WP-1370).
+		"message": strings.TrimSpace(f.summary), "summary": strings.TrimSpace(f.shipSummary)}
 	if ct, err := localGit("log", "-1", "--format=%ct", "HEAD"); err == nil {
 		if t, err := strconv.ParseInt(strings.TrimSpace(ct), 10, 64); err == nil {
 			req["head_time"] = t

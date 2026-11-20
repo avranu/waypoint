@@ -250,6 +250,11 @@ type Service struct {
 	stopWaits stopWaits
 	// babysitLocks: one babysit step at a time per pull request (WP-134).
 	babysitLocks keyedLocks
+	// shipLocks: one server-side ship at a time per review round (WP-1370).
+	shipLocks keyedLocks
+	// branchLocks: one open of a pull request per branch at a time, so the
+	// session's ship and Waypoint's own can't both open one (WP-1370).
+	branchLocks namedLocks
 	// objectiveLocks: one step of an objective's reading at a time
 	// (WP-ADR111); objectiveWatched: when objectiveWatch last looked.
 	objectiveLocks   keyedLocks

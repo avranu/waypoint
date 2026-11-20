@@ -3,6 +3,7 @@ package core
 import (
 	"encoding/json"
 	"errors"
+	"time"
 )
 
 // Shared names for WP-D16 to WP-D21, so the parts built in parallel agree.
@@ -289,6 +290,8 @@ type RunnerJob struct {
 	Error    string          `json:"error,omitempty"`
 	Source   string          `json:"source,omitempty"`
 	SourceID int64           `json:"source_id,omitempty"`
+	// StartedAt is when a runner claimed it (nil: still queued).
+	StartedAt *time.Time `json:"started_at,omitempty"`
 }
 
 // ErrNoRunner: no runner of the right owner (and label) is registered.

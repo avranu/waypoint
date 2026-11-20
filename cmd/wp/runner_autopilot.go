@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core"
 )
 
 // Autopilot jobs (WP-ADR9): the session finished its task, so start the next
@@ -119,13 +121,13 @@ var (
 	autopilotReadyWait = 90 * time.Second
 	// autopilotCompactWait is how long /compact has before a review's
 	// prompt: compacting a full context takes minutes.
-	autopilotCompactWait = 6 * time.Minute
+	autopilotCompactWait = core.ReviewCompactWait
 	// autopilotCompactStart is how long /compact has to show as busy.
-	autopilotCompactStart = 10 * time.Second
+	autopilotCompactStart = core.ReviewCompactStart
 	// autopilotIdleWait is how long a review job waits for a busy session to
 	// go idle before it is held. With autopilotCompactWait it stays under
 	// the server's reviewJobTimeout (10 minutes).
-	autopilotIdleWait = 3 * time.Minute
+	autopilotIdleWait = core.ReviewIdleWait
 )
 
 var errNoTmux = errors.New("tmux isn't installed on this machine")
@@ -225,9 +227,7 @@ func (p *runnerProc) execAutopilot(ctx context.Context, run *jobRun, in autopilo
 // reviewPasteSettle is how long to let the session take in a pasted review
 // prompt before Enter: a prompt carries an audit's every finding (WP-769),
 // so it can be far longer than the 2 KB this was 400 ms for.
-func reviewPasteSettle(n int) time.Duration {
-	return 400*time.Millisecond + time.Duration(n/1024)*10*time.Millisecond
-}
+func reviewPasteSettle(n int) time.Duration { return core.ReviewPasteSettle(n) }
 
 // reviewSession (WP-285): the session finished in.ReviewOf; compact it
 // (unless its transcript shows that was done while Grok audited it, and
@@ -283,8 +283,8 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 		return outcome{State: "done", Result: autopilotResult{Outcome: "reviewing", Warning: "the review prompt was pasted and not sent (press Enter there): " + err.Error()}}
 	}
 	res := autopilotResult{Outcome: "reviewing"}
-	if !waitBusy(ctx, ccDir, pid, 15*time.Second) {
-		res.Warning = "the session didn't start the review within 15 s; check it"
+	if !waitBusy(ctx, ccDir, pid, core.ReviewBusyWait) {
+		res.Warning = fmt.Sprintf("the session didn't start the review within %d s; check it", int(core.ReviewBusyWait.Seconds()))
 	}
 	say("asked session %s for the adversarial review of %s", in.CLIID, in.ReviewOf)
 	return outcome{State: "done", Result: res}

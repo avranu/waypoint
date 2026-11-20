@@ -39,8 +39,10 @@ With --review on, a session is first asked for an adversarial review of its
 change (wp worklog KEY), a minute after it stops; on and off only decide
 whether the next task starts, so reviews run either way. In your own agent sessions
 the review comes before the pull request: wp ship pushes the branch and says
-to end the turn; the review's prompt asks for wp ship --pr, which opens the
-pull request (wp ship -h: --review, --pr, --skip-review). A pull request already open waits for its review before
+to end the turn; the review's prompt asks for wp ship, which opens the
+pull request (wp ship -h: --review, --skip-review). Where the review
+leaves nothing for the session to do, Waypoint opens the pull request
+itself. A pull request already open waits for its review before
 merging. If the review can't run (no runner, a failed job), Waypoint opens the pull
 request without it and says so. A round's reviewer works from your brief
 (--review-text-file; wp autopilot reviewer --brief prints the default) and is

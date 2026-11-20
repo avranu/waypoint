@@ -508,7 +508,7 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 			// The round's review is still going, whatever audit_note says:
 			// its findings come to the session when it ends, and this ship
 			// asked before they did (WP-1320).
-			return fmt.Sprintf("audit #%d, %s's adversarial review round, is still going: end your turn, and its findings come to you; then run `wp ship --pr` again.", audit, g.key), "", nil
+			return fmt.Sprintf("audit #%d, %s's adversarial review round, is still going: end your turn, and Waypoint carries the round on when it ends: it opens the pull request itself, or gives you what it found. Nothing more to run.", audit, g.key), "", nil
 		case a.Status != AuditDone || a.readNothing():
 			// One that ended any other way (failed, cancelled, over its
 			// limit) gave no findings, as one that read nothing: the
@@ -528,18 +528,18 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 		// findings are then marked, checked and scored like any round's.
 		// Before, the pull request opened here on the session's word,
 		// which is how most rounds ended (WP-1320's audit).
-		return reportHold(g.key, index, bp.Base), "To open the pull request without it: `wp ship --skip-review \"WHY\"`.", nil
+		return reportHold(g.key, index, bp.Base), "", nil
 	}
 	// A finding still to do (open, or confirmed and not yet fixed) holds
 	// this ship as it holds one whose round came back before the session's
 	// turn ended (shipAudited's roundTodo): the round asked for a verdict on
 	// each, and nothing past here would take one left open (WP-1320).
-	if todo, err := s.againTodo(ctx, audit); err != nil || len(todo) > 0 {
+	if todo, lines, err := s.againTodoLines(ctx, audit); err != nil || len(todo) > 0 {
 		if err != nil {
 			return "", "", err
 		}
-		return fmt.Sprintf("%s's adversarial review round is audit #%d, with %s still to decide: %s. Mark each (`wp audit mark %s fixed -m \"what you did\"`, `wp audit mark %s fixed --issue KEY` for one a task will fix, or `wp audit mark %s rejected -m \"why\"`), then run `wp ship --pr` again.",
-			g.key, audit, plural1(len(todo), "finding"), strings.Join(todo, ", "), todo[0], todo[0], todo[0]), "", nil
+		return fmt.Sprintf("%s's adversarial review round is audit #%d, with %s still to decide:\n%s\nMark each (`wp audit mark %s fixed -m \"what you did\"`, `wp audit mark %s fixed --issue KEY` for one a task will fix, or `wp audit mark %s rejected -m \"why\"`), then run `wp ship`.",
+			g.key, audit, plural1(len(todo), "finding"), lines, todo[0], todo[0], todo[0]), "", nil
 	}
 	// The session's marks are checked before they count: an all-rejected
 	// round would otherwise end the loop with no model asked, and a fix
@@ -683,7 +683,7 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 	d.model = model
 	probe, err := p.settle(&d, findings, earlier, ans, err == nil && len(findings) > 0, noModel, facts)
 	if err != nil {
-		return "", "", fmt.Errorf("%s's adversarial review round can't be decided now, so its pull request isn't opened; run wp ship again (`wp ship --skip-review \"WHY\"` opens it without the decision): %w", g.key, err)
+		return "", "", fmt.Errorf("%s's adversarial review round can't be decided now, so its pull request isn't opened; run wp ship again: %w", g.key, err)
 	}
 	if d.arm != "" {
 		return "", "", record()
@@ -711,7 +711,7 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 			return err
 		}
 		if latest != seen {
-			return fmt.Errorf("another wp ship changed %s's adversarial review just now; run wp ship again to see where it stands: %w", g.key, ErrConflict)
+			return fmt.Errorf("another ship or Waypoint changed %s's adversarial review just now: %w", g.key, ErrConflict)
 		}
 		var state string
 		if err := t.QueryRowContext(ctx, `SELECT state FROM work_log WHERE id = ?`, round).Scan(&state); err != nil {
@@ -728,7 +728,7 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 				return err
 			}
 			if n, _ := res.RowsAffected(); n == 0 {
-				return fmt.Errorf("%s's adversarial review changed just now; run wp ship again: %w", g.key, ErrConflict)
+				return fmt.Errorf("%s's adversarial review changed just now: %w", g.key, ErrConflict)
 			}
 			s.emitWorkLog(ctx, t, g.issueID, round, RoundDone)
 		case RoundDone:
@@ -741,7 +741,7 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 				}
 			}
 		default:
-			return fmt.Errorf("%s's adversarial review changed just now; run wp ship again: %w", g.key, ErrConflict)
+			return fmt.Errorf("%s's adversarial review changed just now: %w", g.key, ErrConflict)
 		}
 		next, err := s.newReviewRound(ctx, t, g.x, g.run, g.issueID, g.lim.reviewPrompt(), at)
 		if err != nil {
@@ -753,17 +753,20 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 		d.next = next
 		return d.insertOnce(ctx, t, at)
 	})
-	if errors.Is(err, errRoundDecided) {
-		// Both ships made a decision; this is the one that lost, and the
-		// stored one stands: run again to see where it leads.
-		return "", "", fmt.Errorf("another wp ship decided %s's adversarial review round just now; run wp ship again to see where it stands: %w", g.key, ErrConflict)
+	if errors.Is(err, ErrConflict) || errors.Is(err, errRoundDecided) {
+		// The round moved under this ship: Waypoint's own (the sweep carried it
+		// on, a check's patience ran out) or another ship's. The agent isn't
+		// told to run the same command again: where the round stands is what
+		// it needs, and nothing is left to run.
+		s.log.InfoContext(ctx, "ship raced a server-side change of its round", "round", round, "task", g.key, "err", err)
+		return fmt.Sprintf("Pushed %s. Waypoint moved %s's adversarial review on while this ship ran, and carries it from where it stands: it opens the pull request itself, or tells this session what is left. Nothing more to run: end your turn.", head, g.key), "", nil
 	}
 	if err != nil {
 		return "", "", err
 	}
-	held = fmt.Sprintf("Pushed %s; no pull request yet. %s, so adversarial review round %d of %s comes first; it looks for what this one missed. End your turn now: it starts after it, and Waypoint gives you its findings here.",
+	held = fmt.Sprintf("Pushed %s. %s, so review round %d of %s runs before the pull request. Waypoint opens the pull request itself if it finds nothing; its findings come to this session. Nothing more to run: end your turn.",
 		head, upperFirst(why), index+1, g.key)
-	return held, "To open the pull request without it: `wp ship --skip-review \"WHY\"`.", nil
+	return held, "", nil
 }
 
 // roundReported makes a round given up after its prompt went in ("no report
@@ -801,7 +804,7 @@ func reportHold(key string, index int, base string) string {
 	}
 	return fmt.Sprintf("No pull request yet: adversarial review round %d of %s was yours to run, and what it found isn't recorded, so nothing can be checked or scored. "+
 		"Record every issue the review raised, the ones you rejected too, with what you did about each: `wp audit report %s -f FILE` (- for stdin), FILE being JSON as %s. "+
-		"If it raised nothing: `wp audit report %s --none -m \"who reviewed what, and how\"`. Then run `wp ship --pr` again. "+
+		"If it raised nothing: `wp audit report %s --none -m \"who reviewed what, and how\"`. Then run `wp ship --pr`. "+
 		"If no review ran, run one first: an adversarial-review subagent on the branch's whole change against %s, by the brief the round gave you. "+
 		"(A wp that doesn't know `wp audit report` is older than this server: `wp update` first.)",
 		index, key, key, reviewReportForm, key, against)
@@ -1613,6 +1616,28 @@ func (s *Service) againTodo(ctx context.Context, audit int64) ([]string, error) 
 	return out, rows.Err()
 }
 
+// againTodoLines is againTodo with a line for each finding: its ID, severity,
+// place and title, so a session sees what to decide without another command.
+func (s *Service) againTodoLines(ctx context.Context, audit int64) (ids []string, lines string, err error) {
+	rows, err := s.db.R.QueryContext(ctx, `SELECT ordinal, severity, path, line, title FROM code_audit_findings WHERE audit_id = ? AND state IN ('open', 'confirmed') ORDER BY ordinal`, audit)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+	var b strings.Builder
+	for rows.Next() {
+		var n, line int
+		var sev, path, title string
+		if err := rows.Scan(&n, &sev, &path, &line, &title); err != nil {
+			return nil, "", err
+		}
+		id := fmt.Sprintf("%d.%d", audit, n)
+		ids = append(ids, id)
+		fmt.Fprintf(&b, "- %s\n", findingLine(id, sev, path, line, title))
+	}
+	return ids, strings.TrimRight(b.String(), "\n"), rows.Err()
+}
+
 // The check of a round's marks (WP-1320): the session's own "rejected"
 // otherwise ended the loop unexamined, and its own "fixed" counted as done
 // on its word; on WP-1320's live review a reviewer told it could fan out
@@ -1739,19 +1764,14 @@ func (s *Service) checkMarks(ctx context.Context, actor *Actor, g *reviewGate, b
 			s.log.WarnContext(ctx, "couldn't check a round's marks; they stand unchecked", "round", round, "err", err)
 			return 0, "", true, due, nil
 		}
-		of := ""
-		if len(ids) > 0 {
-			of = ": " + strings.Join(ids, ", ")
-		}
-		return 0, fmt.Sprintf("Waypoint is checking %s of %s's adversarial review round (audit #%d%s) against the code (audit #%d) before the round is scored: end your turn, and what it finds comes to you. Then mark each finding it reports as you did the round's, and run `wp ship --pr` again.",
-			what, g.key, audit, of, a.ID), false, false, nil
+		return 0, checkingText(bp.Branch, g.key, what, a.ID), false, false, nil
 	}
 	if err != nil {
 		return 0, "", false, false, err
 	}
 	switch status {
 	case AuditDone:
-		todo, err := s.againTodo(ctx, check)
+		todo, lines, err := s.againTodoLines(ctx, check)
 		if err != nil {
 			return 0, "", false, false, err
 		}
@@ -1760,13 +1780,19 @@ func (s *Service) checkMarks(ctx context.Context, actor *Actor, g *reviewGate, b
 			if own {
 				kinds += ", or what your review raised that your report of it left out or made milder"
 			}
-			return 0, fmt.Sprintf("The check of your marks on %s's adversarial review round (audit #%d) found %s still to decide, %s: %s. Mark each (`wp audit mark %s fixed -m \"what you did\"`, or `wp audit mark %s rejected -m \"why your mark stands\"`), then run `wp ship --pr` again.",
-				g.key, check, plural1(len(todo), "finding"), kinds, strings.Join(todo, ", "), todo[0], todo[0]), false, false, nil
+			return 0, fmt.Sprintf("The check of your marks on %s's adversarial review round (audit #%d) found %s still to decide, %s:\n%s\nMark each (`wp audit mark %s fixed -m \"what you did\"`, or `wp audit mark %s rejected -m \"why your mark stands\"`), then run `wp ship`.",
+				g.key, check, plural1(len(todo), "finding"), kinds, lines, todo[0], todo[0]), false, false, nil
 		}
 		return check, "", false, false, nil
 	case AuditQueued, AuditRunning:
 		if s.now().Sub(time.UnixMilli(created)) < checkPatience {
-			return 0, fmt.Sprintf("Audit #%d, the check of your marks on %s's adversarial review round, is still going: end your turn, and what it finds comes to you. Then run `wp ship --pr` again.", check, g.key), false, false, nil
+			n, err := s.checkClaimCount(ctx, audit)
+			if err != nil {
+				// The text is told without the count; it isn't a reason to fail.
+				s.log.WarnContext(ctx, "couldn't count the marks a round's check reads", "round", round, "audit", audit, "err", err)
+			}
+			what := "your marks on " + plural1(n, "finding")
+			return 0, checkingText(bp.Branch, g.key, what, check), false, false, nil
 		}
 		s.log.WarnContext(ctx, "a round's check of its marks is past its patience; they stand unchecked", "round", round, "audit", check)
 		// Left queued, it would still take the runner's next slot, ahead of
@@ -1783,6 +1809,21 @@ func (s *Service) checkMarks(ctx context.Context, actor *Actor, g *reviewGate, b
 	return 0, "", true, own && strings.Contains(asked, checkLeftOut), nil
 }
 
+// checkingText is what a ship is told while its marks are checked, whether
+// the check just started or still goes: nothing is left to run, since
+// Waypoint carries the round on when the check ends (WP-1370).
+func checkingText(branch, key, what string, check int64) string {
+	return fmt.Sprintf("Pushed %s. Waypoint is checking %s of %s's adversarial review round against the code (audit #%d). If the check agrees, Waypoint opens the pull request itself, or starts another review round when the findings call for one; marks it disagrees with come to this session. Nothing more to run: end your turn.",
+		branch, what, key, check)
+}
+
+// checkClaimCount is how many marks a round's audit has that a check reads.
+func (s *Service) checkClaimCount(ctx context.Context, audit int64) (int, error) {
+	var n int
+	err := s.db.R.QueryRowContext(ctx, `SELECT min(count(*), ?) FROM code_audit_findings WHERE audit_id = ? AND state IN ('rejected', 'fixed')`, checkClaimsMax, audit).Scan(&n)
+	return n, err
+}
+
 // checkGoing says whether a round's check of its marks is queued or
 // running, within checkPatience of being asked at at: a Stop then doesn't
 // end the round (reviewFirstAtStop), since the check's end, or
@@ -1795,8 +1836,8 @@ func (s *Service) checkGoing(ctx context.Context, t *tx, round, at int64) (bool,
 }
 
 // expireChecks cancels the checks of rounds' marks past checkPatience
-// (RunAutopilot): the session waiting on one is told it ended (tellAudit)
-// and ships again, which passes it over. Without it, a check stuck in a
+// (RunAutopilot): its round goes on without it (continueAfterCheck): the marks stand
+// unchecked. Without it, a check stuck in a
 // runner's queue held its session idle until the audit itself gave up.
 func (s *Service) expireChecks(ctx context.Context) {
 	rows, err := s.db.R.QueryContext(ctx, `SELECT id FROM code_audits WHERE purpose = ? AND status IN (?, ?) AND created_at <= ? LIMIT 50`,
@@ -1818,6 +1859,9 @@ func (s *Service) expireChecks(ctx context.Context) {
 			s.log.WarnContext(ctx, "cancel a round's check past its patience", "audit", id, "err", err)
 		}
 	}
+	// Cancelled, each is settled (continueAfterCheck carries its round on);
+	// a round whose first try failed gets another (WP-1370).
+	s.shipSettledRounds(ctx)
 }
 
 // checkClaims is what a check of an audit's marks reads: the findings of

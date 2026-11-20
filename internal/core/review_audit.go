@@ -137,10 +137,10 @@ func (s *Service) roundAuditOf(ctx context.Context, roundID int64) (roundAudit, 
 func (s *Service) planReview(ctx context.Context, st *stepRow, review *roundRow, now int64) (reviewPlan, error) {
 	own := reviewPlan{prompt: ownReviewPrompt(review.prompt)}
 	// A round before its pull request reviews the task's branch, and the
-	// pull request opens at the session's wp ship --pr (WP-688).
+	// pull request opens at the session's wp ship (WP-688).
 	first := roundBeforePR(ctx, s.db.R, review.id)
 	if first != nil && !strings.Contains(own.prompt, "wp ship") {
-		own.prompt += " When you're done, run `wp ship --pr --summary \"what you fixed, filed and rejected\"` to open the pull request; the summary is your reply."
+		own.prompt += " When you're done, run `wp ship --summary \"what you fixed, filed and rejected\"` to open the pull request; the summary is your reply."
 	}
 	ra, err := s.roundAuditOf(ctx, review.id)
 	if err != nil {
@@ -404,8 +404,8 @@ func (s *Service) planReview(ctx context.Context, st *stepRow, review *roundRow,
 
 // planFromFindings is the plan of a round whose audit a (the round's, or
 // its Sonnet reviewer's) ended with findings: they are its prompt, or, with
-// nothing left to do, the round ends (or asks only for the session's wp
-// ship before its pull request).
+// nothing left to do, the round ends (and Waypoint opens its pull request,
+// when it waits for one).
 func (s *Service) planFromFindings(ctx context.Context, review *roundRow, a *CodeAudit, first *beforePR, now int64) (reviewPlan, error) {
 	todo := s.roundTodo(ctx, a)
 	var prompt string
@@ -416,11 +416,10 @@ func (s *Service) planFromFindings(ctx context.Context, review *roundRow, a *Cod
 			// The task's delegation arm holds in its rounds too (WP-1262).
 			prompt = promptText(prompt + "\n\n" + line)
 		}
-	case first != nil:
-		// Nothing to fix, but the pull request still waits for the
-		// session's wp ship.
-		prompt = grokShipPrompt(a)
 	default:
+		// Nothing to fix: the round ends without the session, and when the
+		// pull request still waits for it, Waypoint opens it (shipReviewed,
+		// WP-1370).
 		return reviewPlan{done: true}, s.endRoundNothing(ctx, review, a, now)
 	}
 	_, err := s.db.W.ExecContext(ctx, `UPDATE work_log SET prompt = ?, updated_at = ? WHERE id = ?`, prompt, s.nowMS(), review.id)
@@ -1148,6 +1147,27 @@ func (s *Service) endRoundNothing(ctx context.Context, review *roundRow, a *Code
 	})
 }
 
+// findingLine is one line about a finding: ID, severity, place, title.
+func findingLine(id, severity, path string, line int, title string) string {
+	at := path
+	if path != "" && line > 0 {
+		at = fmt.Sprintf("%s:%d", path, line)
+	}
+	if at != "" {
+		at = " at " + at
+	}
+	return fmt.Sprintf("%s [%s]%s: %s", id, severity, at, clipText(strings.TrimSpace(title), 200))
+}
+
+// findingLines lists findings one to a line (findingLine).
+func findingLines(list []CodeAuditFinding) string {
+	var b strings.Builder
+	for _, f := range list {
+		fmt.Fprintf(&b, "- %s\n", findingLine(f.ID, f.Severity, f.Path, f.Line, f.Title))
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
 // grokReviewPrompt is the round's prompt when the audit has findings to
 // check: the round's instructions (WP-689) with every finding in full, since
 // a session told to look the rest up always does, at the price of a turn on
@@ -1160,20 +1180,9 @@ func grokReviewPrompt(a *CodeAudit, todo []CodeAuditFinding) string {
 		"Follow TDD to write tests for any failures before you produce a fix, so we ensure no future regressions. "+
 		"If there are any findings, comments, data, or unrelated issues you don't fix here, file them in waypoint so they aren't lost when the session is over (`wp new task \"description\"`, `wp comment \"message\"`, etc). "+
 		"Record each verdict: `wp audit mark %s fixed -m \"what you did\"` or `wp audit mark %s rejected -m \"why\"`. "+
-		"When you're done, run `wp ship --pr --summary \"what you fixed, filed and rejected, and why\"`: the summary is your reply to the user.\n\n", id, id)
+		"When you're done, run `wp ship --summary \"what you fixed, filed and rejected, and why\"`: the summary is your reply to the user.\n\n", id, id)
 	writeAuditFindings(&b, todo)
 	return promptText(b.String())
-}
-
-// grokShipPrompt is the prompt of a round before its pull request when
-// the audit left nothing to fix: the pull request still waits for the
-// session's wp ship.
-func grokShipPrompt(a *CodeAudit) string {
-	what := "found nothing to fix"
-	if n := len(a.Findings); n > 0 {
-		what = fmt.Sprintf("had %d finding%s, all decided already", n, plural(n))
-	}
-	return promptText(fmt.Sprintf("Audit #%d (adversarial review by %s) %s. Run `wp ship --pr`, then tell the user so.", a.ID, auditModelLabel(a.Model), what))
 }
 
 // auditModelLabel names the audit's model for a round's prompt.
@@ -1234,7 +1243,7 @@ const ownReportAsk = "\n\nBefore `wp ship --pr`, record what the review found, s
 // where a round made before WP-689 with the old default gets the new one.
 func ownReviewPrompt(p string) string {
 	p = strings.TrimSpace(p)
-	if p == legacyReviewPrompt || p == wp689ReviewPrompt {
+	if p == legacyReviewPrompt || p == wp689ReviewPrompt || p == wp688ReviewPrompt {
 		return DefaultReviewPrompt
 	}
 	return cmp(p, DefaultReviewPrompt)

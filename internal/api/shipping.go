@@ -67,6 +67,8 @@ func (s *Server) openPull(w http.ResponseWriter, r *http.Request) (any, error) {
 		Reason   string            `json:"reason"`
 		Force    bool              `json:"force"`
 		HeadTime int64             `json:"head_time"`
+		Message  string            `json:"message"`
+		Summary  string            `json:"summary"`
 		Change   *core.ChangeFacts `json:"change"`
 		// BodyInputs: what wp ship rendered the description from (WP-55).
 		BodyInputs *core.PRBodyInputs `json:"body_inputs"`
@@ -76,7 +78,7 @@ func (s *Server) openPull(w http.ResponseWriter, r *http.Request) (any, error) {
 	}
 	res, err := s.svc.OpenPullRequest(r.Context(), actorFrom(r), core.OpenPRInput{Project: r.PathValue("key"), Repo: in.Repo, Head: in.Head,
 		Base: in.Base, Title: in.Title, Body: in.Body, Draft: in.Draft, Ready: in.Ready, Issue: in.Issue, For: in.For, Urgent: in.Urgent,
-		Review: in.Review, Reason: in.Reason, Force: in.Force, HeadTime: in.HeadTime, Change: in.Change, BodyInputs: in.BodyInputs})
+		Review: in.Review, Reason: in.Reason, Force: in.Force, HeadTime: in.HeadTime, Message: in.Message, Summary: in.Summary, Change: in.Change, BodyInputs: in.BodyInputs})
 	if err != nil {
 		return nil, err
 	}

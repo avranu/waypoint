@@ -907,6 +907,9 @@ func (s *Service) claimRunnerJob(ctx context.Context, actor *Actor, r *Runner, l
 				return err
 			}
 			c.Input = json.RawMessage(input)
+			if source == autopilotReviewSource || source == auditSource {
+				s.log.InfoContext(ctx, "runner claimed a review job", "job", c.ID, "kind", c.Kind, "source", source, "source_id", sid, "runner", r.Name)
+			}
 			c.Lane, _ = claimLane(r, jobNeeds{kind: c.Kind, source: source, cli: cli}, lanes)
 			if agent, ok := jobTokenAgent(c.Kind, c.Input); ok {
 				if c.Token, err = t.mintJobToken(ctx, c.ID, r.Owner.ID, agent, c.Timeout); err != nil {

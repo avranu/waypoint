@@ -257,18 +257,44 @@ func (s *Service) newestOf(ctx context.Context, prID int64, purpose string) (int
 	return id, status
 }
 
+// carriedAudits are the finished audits a review round's release carried to
+// the pull request: the round's own and its check of the session's marks.
+// They hold its merge and show in its work packet beside the newest audit,
+// which would otherwise shadow them (WP-1370).
+func (s *Service) carriedAudits(ctx context.Context, prID int64) []int64 {
+	rows, err := s.db.R.QueryContext(ctx, `SELECT id FROM code_audits WHERE pr_id = ? AND purpose = '' AND status = ? AND request_key LIKE 'review-round:%' ORDER BY id`, prID, AuditDone)
+	if err != nil {
+		return nil
+	}
+	ids, err := scanIDs(rows)
+	if err != nil {
+		return nil
+	}
+	return ids
+}
+
 // auditTodo is the findings still to do (open or confirmed), worst first,
 // of the pull request's newest finished audit and newest footprint check
 // (WP-440), each when it is done.
 func (s *Service) auditTodo(ctx context.Context, prID int64) []TodoFinding {
 	var out []TodoFinding
+	seen := map[int64]bool{}
 	for _, purpose := range []string{"", AuditFootprint} {
 		id, status := s.newestOf(ctx, prID, purpose)
 		if id == 0 || status != AuditDone {
 			continue
 		}
+		seen[id] = true
 		for _, f := range s.findingsToDo(ctx, id) {
 			out = append(out, TodoFinding{CodeAuditFinding: f, Audit: id, Footprint: purpose == AuditFootprint})
+		}
+	}
+	for _, id := range s.carriedAudits(ctx, prID) {
+		if seen[id] {
+			continue
+		}
+		for _, f := range s.findingsToDo(ctx, id) {
+			out = append(out, TodoFinding{CodeAuditFinding: f, Audit: id})
 		}
 	}
 	return out
@@ -333,24 +359,51 @@ func (s *Service) auditHolds(ctx context.Context, prID, going int64) ([]string, 
 				id, len(ids), plural(len(ids)), strings.Join(ids, ", ")))
 		}
 	}
+	// What a review round's release carried to the pull request holds it as
+	// its own audit's findings do, whichever audit finished last (WP-1370).
 	id, status := s.newestAudit(ctx, prID)
-	switch {
-	case id == 0:
-		return reasons, ""
-	case status != AuditDone:
-		return reasons, fmt.Sprintf("audit #%d ended %s: not holding the merge", id, status)
-	}
-	var ids []string
-	for _, f := range s.findingsToDo(ctx, id) {
-		if auditHoldsMerge(f.Severity) {
-			ids = append(ids, f.ID)
+	var held []string
+	if id != 0 && status == AuditDone {
+		var ids []string
+		for _, f := range s.findingsToDo(ctx, id) {
+			if auditHoldsMerge(f.Severity) {
+				ids = append(ids, f.ID)
+			}
+		}
+		if len(ids) > 0 {
+			held = append(held, fmt.Sprintf("audit #%d has %d critical or high finding%s still to do (%s): fix, or close with wp audit mark ID fixed|rejected -m WHY",
+				id, len(ids), plural(len(ids)), strings.Join(ids, ", ")))
 		}
 	}
-	if len(ids) == 0 {
-		return reasons, ""
+	for _, cid := range s.carriedAudits(ctx, prID) {
+		if cid == id {
+			continue
+		}
+		var ids []string
+		for _, f := range s.findingsToDo(ctx, cid) {
+			if auditHoldsMerge(f.Severity) || s.isCheckAudit(ctx, cid) {
+				ids = append(ids, f.ID)
+			}
+		}
+		if len(ids) > 0 {
+			held = append(held, fmt.Sprintf("audit #%d, carried from the review before the pull request opened, has %d finding%s nobody decided (%s): fix, or close with wp audit mark ID fixed|rejected -m WHY",
+				cid, len(ids), plural(len(ids)), strings.Join(ids, ", ")))
+		}
 	}
-	return append([]string{fmt.Sprintf("audit #%d has %d critical or high finding%s still to do (%s): fix, or close with wp audit mark ID fixed|rejected -m WHY",
-		id, len(ids), plural(len(ids)), strings.Join(ids, ", "))}, reasons...), ""
+	switch {
+	case len(held) > 0:
+		return append(held, reasons...), ""
+	case id != 0 && status != AuditDone:
+		return reasons, fmt.Sprintf("audit #%d ended %s: not holding the merge", id, status)
+	}
+	return reasons, ""
+}
+
+// isCheckAudit: the audit is a review round's check of the session's marks
+// (its findings are marks the check disagrees with, whatever their severity).
+func (s *Service) isCheckAudit(ctx context.Context, id int64) bool {
+	var n int
+	return s.db.R.QueryRowContext(ctx, `SELECT 1 FROM code_audits WHERE id = ? AND request_key LIKE 'review-round:%:check'`, id).Scan(&n) == nil
 }
 
 // auditHoldReason: a readiness reason an audit gave (only a fix or a verdict

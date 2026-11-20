@@ -1464,6 +1464,9 @@ func (s *Service) codeAuditEvent(ctx context.Context, e *Event) {
 	if id == 0 {
 		return
 	}
+	if e.Old != e.New && e.Field != "fix" {
+		s.log.InfoContext(ctx, "audit changed state", "audit", id, "from", e.Old, "to", e.New)
+	}
 	switch {
 	case e.Field == "fix":
 		// Asked for after the fact: made now, so the caller gets its key.
@@ -1715,17 +1718,19 @@ func writeAuditFinding(b *strings.Builder, f CodeAuditFinding) {
 // asked (at its next stop), else the person, by a notification. An
 // automation's owner hears only of what needs them.
 func (s *Service) tellAudit(ctx context.Context, a *CodeAudit) {
+	if a.Purpose == AuditCheck {
+		// A round's check of its marks is the round's: its findings go to
+		// the session in one message, and a check that found nothing lets
+		// Waypoint carry the round on (WP-1370).
+		s.tellCheck(ctx, a)
+		return
+	}
 	text := auditNews(a, s.BaseURL())
 	if a.sessionID != 0 {
-		m, err := s.storeMessage(ctx, a.sessionID, text, fmt.Sprintf("audit:%d:%s", a.ID, a.Status), messageFrom{}, false)
-		if err != nil {
-			s.log.WarnContext(ctx, "tell a session about its audit", "audit", a.ID, "err", err)
-		} else if m.State == MessageQueued {
-			s.batchOrTell(ctx, a.sessionID, 0, a.blocking, func(until int64) error {
-				_, err := s.db.W.ExecContext(ctx, `UPDATE session_messages SET batch_until = ?, blocking = ? WHERE id = ? AND state = 'queued'`, until, a.blocking, m.ID)
-				return err
-			})
+		if a.Status == AuditDone && a.Counts.Total == 0 {
+			return // nothing to act on: the session isn't woken for it (WP-1370)
 		}
+		s.messageSession(ctx, a, text, fmt.Sprintf("audit:%d:%s", a.ID, a.Status))
 		return
 	}
 	if a.Status == AuditCancelled {
@@ -1743,6 +1748,23 @@ func (s *Service) tellAudit(ctx context.Context, a *CodeAudit) {
 		return
 	}
 	s.notifyURL(ctx, who, nil, NotifyAudit, auditHeadline(a), text, fmt.Sprintf("/audits/%d", a.ID))
+}
+
+// messageSession queues text for the session that asked for an audit, once
+// per key, and has it typed in (waiting for the session when the audit is
+// blocking).
+func (s *Service) messageSession(ctx context.Context, a *CodeAudit, text, key string) {
+	m, err := s.storeMessage(ctx, a.sessionID, text, key, messageFrom{}, false)
+	if err != nil {
+		s.log.WarnContext(ctx, "tell a session about its audit", "audit", a.ID, "err", err)
+		return
+	}
+	if m.State == MessageQueued {
+		s.batchOrTell(ctx, a.sessionID, 0, a.blocking, func(until int64) error {
+			_, err := s.db.W.ExecContext(ctx, `UPDATE session_messages SET batch_until = ?, blocking = ? WHERE id = ? AND state = 'queued'`, until, a.blocking, m.ID)
+			return err
+		})
+	}
 }
 
 func auditHeadline(a *CodeAudit) string {
@@ -1779,6 +1801,11 @@ func auditNews(a *CodeAudit, base string) string {
 			b.WriteString(" (" + strings.Join(parts, ", ") + ")")
 		}
 		b.WriteString(", by " + a.Model + ".")
+		if len(a.Findings) > 0 {
+			// Each one, so the reader needn't open the audit to know what is
+			// at stake (WP-1370).
+			b.WriteString("\n" + findingLines(a.Findings))
+		}
 		if a.FixIssue != "" {
 			b.WriteString(" Claude's task to check and fix them: " + a.FixIssue + ".")
 		}

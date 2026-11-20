@@ -338,7 +338,7 @@ func TestReviewRoundStakes(t *testing.T) {
 	})
 
 	t.Run("before the pull request the session opens it", func(t *testing.T) {
-		if p := handOverPrompt(12); !strings.Contains(p, "Run `wp ship --pr`") || !strings.Contains(p, "Audit #12") {
+		if p := handOverPrompt(12); !strings.Contains(p, "Run `wp ship`") || !strings.Contains(p, "Audit #12") {
 			t.Errorf("prompt = %q", p)
 		}
 	})

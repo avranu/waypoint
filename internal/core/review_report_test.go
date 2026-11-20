@@ -1040,7 +1040,7 @@ func TestReportRoundTakes(t *testing.T) {
 	}
 }
 
-// A report lands on the round the ship will decide (shipRound), with rounds
+// A report lands on the round the ship will decide (roundOfShip), with rounds
 // on two branches of one task: the current run's own newest round; for a run
 // that only took over from an earlier one, the newest round of the branch
 // the session's newest round is on, never a round of the other branch; and a

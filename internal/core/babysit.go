@@ -491,6 +491,27 @@ func (k *keyedLocks) lock(id int64) func() {
 	return l.Unlock
 }
 
+// namedLocks is keyedLocks for string keys.
+type namedLocks struct {
+	mu sync.Mutex
+	m  map[string]*sync.Mutex
+}
+
+func (k *namedLocks) lock(name string) func() {
+	k.mu.Lock()
+	if k.m == nil {
+		k.m = map[string]*sync.Mutex{}
+	}
+	l := k.m[name]
+	if l == nil {
+		l = &sync.Mutex{}
+		k.m[name] = l
+	}
+	k.mu.Unlock()
+	l.Lock()
+	return l.Unlock
+}
+
 // eventPRID is the pull request an event is about (0 when none).
 func eventPRID(e *Event) int64 {
 	for _, k := range []string{"pr_id", "pr"} {

@@ -324,7 +324,7 @@ func (s *Service) planHandedOver(ctx context.Context, review *roundRow, auditID 
 // slow audit goes on as the pull request's.
 func handOverPrompt(auditID int64) string {
 	return promptText(fmt.Sprintf("Audit #%d (adversarial review by another model) hasn't ended, and this change's stakes don't call for a Claude review in its place. "+
-		"Run `wp ship --pr`, then tell the user so: the audit goes on as the pull request's and holds its merge until it ends.", auditID))
+		"Run `wp ship`, then tell the user so: the audit goes on as the pull request's and holds its merge until it ends.", auditID))
 }
 
 // ---- the stakes report (wp worklog stakes) ----

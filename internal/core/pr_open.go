@@ -6,6 +6,8 @@ package core
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -34,8 +36,8 @@ type OpenPRInput struct {
 	// A new pull request for a task tagged ci-urgent gets it anyway (WP-697).
 	Urgent bool
 	// Review is wp ship's intent about the task's adversarial review before
-	// its pull request (WP-688): ShipAuto, ShipReview, ShipPR or ShipSkip
-	// (Reason says why). "" is a CLI from before intents: a held pull
+	// its pull request (WP-688): ShipAuto, ShipReview, ShipPR (the same as
+	// ShipAuto) or ShipSkip (Reason says why). "" is a CLI from before intents: a held pull
 	// request is its error. Force reviews again a change already reviewed.
 	Review string
 	Reason string
@@ -46,6 +48,11 @@ type OpenPRInput struct {
 	// HeadTime is the branch head's commit time (unix seconds; 0: unknown),
 	// to tell whether anything was committed since a review finished.
 	HeadTime int64
+	// Message (-m) and Summary (--summary, the reply to the person with
+	// {task} {pr} {url} unfilled) are kept with a held ship, so a pull
+	// request Waypoint opens for it carries them (WP-1370).
+	Message string
+	Summary string
 	// Change is what the checkout says about the change, for review
 	// triage (WP-692); nil from an older wp, which keeps the review.
 	Change *ChangeFacts
@@ -75,6 +82,9 @@ type OpenPRResult struct {
 	// task's adversarial review comes first (WP-688); what to tell the
 	// agent. Pull is nil then.
 	Held string `json:"held,omitempty"`
+	// HeldNeedsAgent: Held asks the agent to act (marks to make, then wp
+	// ship), so --summary doesn't end its turn (WP-1370).
+	HeldNeedsAgent bool `json:"held_needs_agent,omitempty"`
 	// Notice goes before the rest: what wp ship did that its intent didn't
 	// say, and how to override it.
 	Notice string `json:"notice,omitempty"`
@@ -128,9 +138,12 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 	default:
 		return nil, invalid("%s has several repositories; say which with --repo", p.Key)
 	}
+	defer s.branchLocks.lock(fmt.Sprintf("%d/%s/%s", pick.ForgeID, strings.ToLower(pick.Repo), in.Head))()
 	var existing int64
-	_ = s.db.R.QueryRowContext(ctx, `SELECT id FROM pull_requests WHERE forge_id = ? AND repo = ? COLLATE NOCASE AND head_ref = ? AND state IN ('open','draft') ORDER BY id DESC LIMIT 1`,
-		pick.ForgeID, pick.Repo, in.Head).Scan(&existing)
+	if err := s.db.R.QueryRowContext(ctx, `SELECT id FROM pull_requests WHERE forge_id = ? AND repo = ? COLLATE NOCASE AND head_ref = ? AND state IN ('open','draft') ORDER BY id DESC LIMIT 1`,
+		pick.ForgeID, pick.Repo, in.Head).Scan(&existing); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
 	res := &OpenPRResult{}
 	tagged := "" // the task whose ci-urgent tag made a new pull request urgent
 	if existing == 0 && in.Title == "" {
@@ -149,7 +162,7 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 			}
 			if !open {
 				// The push has happened: held or not, this session is on it (WP-117).
-				hr := &OpenPRResult{Existing: true, Held: held, Notice: notice}
+				hr := &OpenPRResult{Existing: true, Held: held, Notice: notice, HeldNeedsAgent: heldNeedsAgent(held)}
 				if in.Urgent {
 					// The pull request is open, so --urgent applies now: the
 					// ship after the review needn't say it again, and its
@@ -204,7 +217,7 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 			if in.Review == "" {
 				return nil, invalid("%s", strings.TrimSpace(notice+" "+held))
 			}
-			return &OpenPRResult{Held: held, Notice: notice}, nil
+			return &OpenPRResult{Held: held, Notice: notice, HeldNeedsAgent: heldNeedsAgent(held)}, nil
 		}
 		res.Notice = notice
 		// After the review: a held ship reads the tag when it really opens.
@@ -340,4 +353,11 @@ func (s *Service) recordOpened(ctx context.Context, actor *Actor, projectID int6
 	}
 	s.afterPRRecorded(ctx, f, pr)
 	return pr.ID, nil
+}
+
+// heldNeedsAgent says whether a held text asks the agent to do something
+// (the texts that end "then run `wp ship`."), where the rest say there is
+// nothing to run: those are the ones a --summary may end the turn after.
+func heldNeedsAgent(held string) bool {
+	return strings.HasSuffix(strings.TrimSpace(held), "then run `wp ship`.")
 }

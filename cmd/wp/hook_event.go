@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -150,6 +151,83 @@ type cwdSession struct {
 	Session string    `json:"session"`
 	Machine string    `json:"machine"`
 	At      time.Time `json:"at"`
+	// Pid and PidStart name the harness process that started the session
+	// (PidStart is its start time, so a reused pid isn't taken for it): the
+	// session is alive while that process is. Entries from before they were
+	// kept have neither, and are held to their age alone.
+	Pid      int    `json:"pid,omitempty"`
+	PidStart string `json:"pid_start,omitempty"`
+}
+
+// alive says whether the session's harness process still runs (true when
+// the entry doesn't say, or the system can't tell).
+func (cs *cwdSession) alive() bool {
+	if cs.Pid == 0 || cs.PidStart == "" {
+		return true
+	}
+	start := procStart(cs.Pid)
+	if start == "" {
+		return !procFSExists() // no such process, or no /proc to ask
+	}
+	return start == cs.PidStart
+}
+
+// procFSExists: this system has /proc to ask about processes.
+func procFSExists() bool {
+	_, err := os.Stat("/proc/self/stat")
+	return err == nil
+}
+
+// procStart is the start time (in clock ticks since boot) of process pid, as
+// /proc says; "" when there is no such process or no /proc.
+func procStart(pid int) string {
+	b, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat")) // #nosec G304 -- /proc
+	if err != nil {
+		return ""
+	}
+	// The command's name is in parentheses and may hold spaces: fields count
+	// from after the last ")".
+	i := bytes.LastIndexByte(b, ')')
+	if i < 0 {
+		return ""
+	}
+	f := strings.Fields(string(b[i+1:]))
+	if len(f) < 20 {
+		return ""
+	}
+	return f[19] // field 22 of the line: starttime
+}
+
+// harnessPid is the process the hook runs under that Claude Code started: the
+// nearest ancestor that isn't a shell, else the parent.
+func harnessPid() int {
+	parent := os.Getppid()
+	pid := parent
+	for range 6 {
+		b, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat")) // #nosec G304 -- /proc
+		if err != nil {
+			return parent
+		}
+		i, j := bytes.IndexByte(b, '('), bytes.LastIndexByte(b, ')')
+		if i < 0 || j < i {
+			return parent
+		}
+		switch comm := string(b[i+1 : j]); comm {
+		case "sh", "bash", "zsh", "dash", "fish":
+			f := strings.Fields(string(b[j+1:]))
+			if len(f) < 2 {
+				return parent
+			}
+			next, err := strconv.Atoi(f[1])
+			if err != nil || next <= 1 {
+				return parent
+			}
+			pid = next
+		default:
+			return pid
+		}
+	}
+	return parent
 }
 
 // machineName is what Waypoint calls this computer: WAYPOINT_MACHINE, else
@@ -208,12 +286,19 @@ func (c *cli) addSessionHeaders(req *http.Request) {
 	req.Header.Set("X-Waypoint-Machine", cmpStr(os.Getenv("WAYPOINT_MACHINE"), machineName()))
 }
 
-// sessionIn is the session that started in dir or a directory above it
-// (within a day).
+// sessionIn is the session a command run in dir belongs to: the one that
+// started in the nearest directory at or above dir that any session started
+// in (within a day), if it is still alive. It never goes on past that
+// directory to an ancestor's session, which is another session's, and when no
+// live session qualifies it is "": the CLI then sends no session header, so
+// the call is recorded with no session rather than another's (WP-1370).
 func (s *State) sessionIn(dir string) string {
 	for d := filepath.Clean(dir); ; d = filepath.Dir(d) {
 		if cs := s.Cwds[d]; cs != nil && time.Since(cs.At) < 24*time.Hour {
-			return cs.Session
+			if cs.alive() {
+				return cs.Session
+			}
+			return "" // the nearest one is gone: its ancestors' are others'
 		}
 		if p := filepath.Dir(d); p == d {
 			return ""
@@ -621,7 +706,13 @@ func rememberSession(c *cli, in hookEventInput) {
 			if s.Cwds == nil {
 				s.Cwds = map[string]*cwdSession{}
 			}
-			s.Cwds[filepath.Clean(in.Cwd)] = &cwdSession{Session: in.SessionID, Machine: machineName(), At: time.Now()}
+			cs := &cwdSession{Session: in.SessionID, Machine: machineName(), At: time.Now()}
+			if pid := harnessPid(); pid > 1 {
+				if start := procStart(pid); start != "" {
+					cs.Pid, cs.PidStart = pid, start
+				}
+			}
+			s.Cwds[filepath.Clean(in.Cwd)] = cs
 			for d, cs := range s.Cwds { // forget old ones
 				if time.Since(cs.At) > 7*24*time.Hour {
 					delete(s.Cwds, d)

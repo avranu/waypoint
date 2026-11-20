@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -138,7 +139,7 @@ func TestCLIPROpenAndShip(t *testing.T) {
 	// Intents (WP-688): one at a time, --force only with --review; a
 	// review that can't be had here opens the pull request and says why
 	// (WP-1007).
-	for _, args := range [][]string{{"--review", "--pr"}, {"--pr", "--skip-review", "why"}, {"--force"}, {"--skip-review", " "}} {
+	for _, args := range [][]string{{"--review", "--skip-review", "why"}, {"--force"}, {"--skip-review", " "}} {
 		if out, code := e.run(append([]string{"pr", "open"}, args...)...); code != 2 {
 			t.Errorf("pr open %q: %d %s", args, code, out)
 		}
@@ -824,6 +825,37 @@ func TestSummarize(t *testing.T) {
 	} {
 		if got := summarize(c.commits, c.msg); got != c.want {
 			t.Errorf("summarize(%d commits, %q) = %q, want %q", len(c.commits), c.msg, got, c.want)
+		}
+	}
+}
+
+// --pr is plain wp ship, kept for older prompts (WP-1370): beside
+// --skip-review the skip wins, beside --review the review does; only
+// --review with --skip-review is an error.
+func TestReviewIntentPR(t *testing.T) {
+	for _, tc := range []struct {
+		args   []string
+		intent string
+		fail   bool
+	}{
+		{args: nil, intent: "auto"},
+		{args: []string{"--pr"}, intent: "auto"},
+		{args: []string{"--pr", "--skip-review", "why"}, intent: "skip"},
+		{args: []string{"--skip-review", "why", "--pr"}, intent: "skip"},
+		{args: []string{"--pr", "--review"}, intent: "review"},
+		{args: []string{"--review", "--pr"}, intent: "review"},
+		{args: []string{"--review", "--skip-review", "x"}, fail: true},
+		{args: []string{"--pr", "--skip-review", " "}, fail: true},
+	} {
+		c, _ := newCLI(new(bytes.Buffer), new(bytes.Buffer))
+		fs := c.flags()
+		f := addPROpenFlags(fs)
+		if err := fs.Parse(tc.args); err != nil {
+			t.Fatalf("%v: %v", tc.args, err)
+		}
+		got, err := f.reviewIntent()
+		if tc.fail != (err != nil) || got != tc.intent {
+			t.Errorf("wp ship %v: intent %q, err %v; want %q, fail %v", tc.args, got, err, tc.intent, tc.fail)
 		}
 	}
 }

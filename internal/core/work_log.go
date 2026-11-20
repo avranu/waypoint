@@ -472,13 +472,22 @@ func askAgainAfterInterrupt(ctx context.Context, q queryer, sessionID, issueID i
 // that has run longer than autopilot waits for it.
 func (s *Service) sweepRounds(ctx context.Context) {
 	s.reviveHeldRounds(ctx)
+	s.shipSettledRounds(ctx) // a ship of Waypoint's that failed or was lost (WP-1370)
+	s.repostQueuedNews(ctx)
+	s.expireOrphanNews(ctx)
 	now := s.nowMS()
+	// A running round whose check has been asked for waits on Waypoint (the
+	// check, then the ship), not on the session: the session ending, or the
+	// hours its review took, don't end it (shipSettledRounds carries it on).
 	rows, err := s.db.R.QueryContext(ctx, `SELECT w.id, w.state, coalesce(x.ended_at, 0), coalesce(w.started_at, w.created_at),
 		EXISTS (SELECT 1 FROM autopilot_steps st WHERE st.review_id = w.id AND st.state IN ('due', 'waiting', 'starting'))
-		OR (w.before_pr != '' AND x.ended_at IS NULL AND EXISTS (SELECT 1 FROM agent_runs r WHERE r.id = w.run_id AND r.ended_at IS NULL))
+		OR (w.before_pr != '' AND x.ended_at IS NULL AND EXISTS (SELECT 1 FROM agent_runs r WHERE r.id = w.run_id AND r.ended_at IS NULL)),
+		w.before_pr != '' AND EXISTS (SELECT 1 FROM code_audits c WHERE c.request_key = 'review-round:' || w.id || ':check')
+			AND EXISTS (SELECT 1 FROM agent_runs r WHERE r.id = w.run_id AND r.ended_at IS NULL)
 		FROM work_log w LEFT JOIN agent_sessions x ON x.id = w.session_id
 		WHERE w.kind = 'review' AND w.state IN ('pending', 'running') LIMIT 200`)
 	if err != nil {
+		s.log.WarnContext(ctx, "review rounds to end", "err", err)
 		return
 	}
 	type end struct {
@@ -491,11 +500,15 @@ func (s *Service) sweepRounds(ctx context.Context) {
 	for rows.Next() {
 		var id, ended, since int64
 		var state string
-		var live bool
-		if rows.Scan(&id, &state, &ended, &since, &live) != nil {
-			continue
+		var live, awaitsShip bool
+		if err := rows.Scan(&id, &state, &ended, &since, &live, &awaitsShip); err != nil {
+			_ = rows.Close()
+			s.log.WarnContext(ctx, "review rounds to end: read one", "err", err) // read every row, or none
+			return
 		}
 		switch {
+		case awaitsShip && state == RoundRunning:
+			// Waypoint's own check or ship is what it waits on.
 		case state == RoundPending && !live:
 			ends = append(ends, end{id: id, from: state, to: RoundSkipped, why: "autopilot moved on without it"})
 		case state == RoundRunning && ended > 0:
@@ -504,7 +517,12 @@ func (s *Service) sweepRounds(ctx context.Context) {
 			ends = append(ends, end{id: id, from: state, to: RoundFailed, why: fmt.Sprintf("no report came back within %d hours", int(reviewRunMax.Hours()))})
 		}
 	}
+	err = rows.Err()
 	_ = rows.Close()
+	if err != nil {
+		s.log.WarnContext(ctx, "review rounds to end: read them", "err", err)
+		return
+	}
 	for _, e := range ends {
 		s.setRoundNow(ctx, e.id, []string{e.from}, e.to, e.why)
 	}

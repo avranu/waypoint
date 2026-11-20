@@ -275,7 +275,8 @@ func shipEndsTurn(t *testing.T, e *env, me *core.Actor, key string) {
 	c.shipSession("sess-ship", func(e *shipEnd) { e.Ready, e.Text = time.Now(), "A subagent's." })
 	out = e.wp("ship", "--check", "true")
 	if !strings.Contains(out, "Check passed: true") || !strings.Contains(out, "Using the --summary you gave this task's last wp ship") ||
-		!strings.Contains(out, "Your --summary was kept, not shown (the task has notes put off)") || !strings.Contains(out, "Done: "+key) {
+		strings.Contains(out, "kept, not shown") || !strings.Contains(out, "Done: "+key) {
+		// (WP-1370: the line saying the summary was kept is gone.)
 		t.Errorf("ship with a reason to go on:\n%s", out)
 	}
 	if s := state(); s.Summaries[key] == nil || s.ShipEnds["sess-ship"] != nil {

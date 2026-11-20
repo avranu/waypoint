@@ -96,6 +96,15 @@ func TestReviewAgainBeforePR(t *testing.T) {
 				a.tick(61 * time.Second)
 				a.endAudit(box, "done", titles...)
 				a.tick(time.Second)
+				if len(titles) == 0 {
+					// Nothing found: no prompt is typed, the round is done and
+					// Waypoint opens the pull request itself (heldUnshipped).
+					a.s.Wait()
+					if r := a.round(round); r.state != RoundDone {
+						t.Fatalf("clean round %d: %+v", round, r)
+					}
+					return round
+				}
 				if len(a.jobs) == 0 {
 					t.Fatal("no review job")
 				}
@@ -308,7 +317,10 @@ func TestReviewAgainBeforePR(t *testing.T) {
 				}
 				return
 			}
-			if !strings.Contains(res.Held, "adversarial review round 2") || !strings.Contains(res.Notice, "--skip-review") || res.Pull != nil || len(g.created) != 0 {
+			// Waypoint scheduled round 2 itself when the check agreed
+			// (shipReviewed), so the session's ship only finds the round
+			// pending: no pull request, and no skip-review advert.
+			if res.Held == "" || strings.Contains(res.Held+res.Notice, "--skip-review") || res.Pull != nil || len(g.created) != 0 {
 				t.Fatalf("held = %+v (opened %d)", res, len(g.created))
 			}
 			if arm != AgainReview || !next.Valid {
@@ -351,9 +363,10 @@ func TestReviewAgainBeforePR(t *testing.T) {
 	}
 }
 
-// shipChecked is wp ship --pr, with the check of the round's marks
+// shipChecked is wp ship, with the check of the round's marks
 // (checkMarks), when one is asked, run on box and finding every mark
-// right.
+// right. Waypoint carries on from the check's end itself (shipReviewed),
+// so the helper's last ship only reads where the run has got to.
 func (a *apEnv) shipChecked(box *Runner, key string) (*OpenPRResult, error) {
 	a.t.Helper()
 	res, err := a.ship(key, ShipPR)
@@ -362,7 +375,7 @@ func (a *apEnv) shipChecked(box *Runner, key string) (*OpenPRResult, error) {
 	}
 	a.stopWith("Waiting for the check of my marks.")
 	a.endCheck(box, "done")
-	a.deliverNews()
+	a.s.Wait()
 	return a.ship(key, ShipPR)
 }
 

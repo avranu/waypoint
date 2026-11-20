@@ -389,6 +389,7 @@ func (s *Service) dispatch(ctx context.Context, actor *Actor, events []*Event) {
 		s.crossFiledEvent(ctx, e)   // a task filed from another repo ended (WP-378)
 		s.onLeftoverEvent(ctx, e)   // what a review left open at merge (WP-367)
 		s.onWorkLogEvent(ctx, e)    // an adversarial review ended: its hold on the merge goes (WP-285)
+		s.onCheckSettled(ctx, e)    // a round's check of its marks settled: the round goes on (WP-1370)
 		s.onReviewAudit(ctx, e)     // another model's audit a review round waits for settled (WP-687)
 		s.onFanoutEvent(ctx, e)     // a fan-out's packages end; its ask is answered (WP-148)
 		s.onGoalDriftEvent(ctx, e)  // a drift flag raised or answered (WP-559)

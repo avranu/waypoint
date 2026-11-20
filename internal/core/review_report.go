@@ -504,7 +504,7 @@ func (s *Service) ownReportCounts(ctx context.Context, q queryer, round int64) (
 }
 
 // reportRoundOf is the round a report lands on: the one wp ship --pr in the
-// session's run of the task decides (shipRound), so a report can't land on
+// session's run of the task decides (roundOfShip), so a report can't land on
 // a round of another branch or another session that the ship won't decide.
 func (s *Service) reportRoundOf(ctx context.Context, q queryer, session, issueID int64) (*reportRound, error) {
 	run, err := s.openRunIn(ctx, q, session, issueID)
@@ -514,7 +514,7 @@ func (s *Service) reportRoundOf(ctx context.Context, q queryer, session, issueID
 	if run == 0 {
 		return &reportRound{}, nil
 	}
-	id, _, _, _, err := s.shipRound(ctx, q, session, issueID, run, "")
+	id, _, _, _, err := s.roundOfShip(ctx, q, session, issueID, run, "")
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && id == 0) {
 		return &reportRound{}, nil
 	}

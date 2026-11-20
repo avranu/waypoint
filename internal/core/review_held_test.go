@@ -79,7 +79,7 @@ func TestHeldReviewSurvivesThePause(t *testing.T) {
 	if r := a.round(id); r.state != RoundPending {
 		t.Fatalf("swept: %+v", r)
 	}
-	// Its wp ship --pr, in the same run, opens it instead of asking for
+	// Its wp ship, in the same run, opens it instead of asking for
 	// another review.
 	a.tick(61 * time.Second)
 	if len(a.jobs) != 1 {
@@ -91,7 +91,7 @@ func TestHeldReviewSurvivesThePause(t *testing.T) {
 	a.reported(first.Key) // its own review: what it found, on the record (WP-1320)
 	res, err := a.ship(first.Key, ShipPR)
 	if err != nil || res.Pull == nil || res.Held != "" {
-		t.Fatalf("ship --pr = %+v, %v", res, err)
+		t.Fatalf("ship = %+v, %v", res, err)
 	}
 }
 
@@ -140,10 +140,12 @@ func TestHeldReviewWatchdogLeavesAWorkingSession(t *testing.T) {
 	a.prompt("one more thing")
 	a.setClock(a.clockNow().Add(heldStopLost + time.Minute))
 	a.s.sweepRounds(a.ctx)
-	var n int
-	_ = a.s.db.R.QueryRow(`SELECT count(*) FROM autopilot_steps WHERE session_id = ?`, a.session).Scan(&n)
-	if n != 0 {
-		t.Fatalf("revived a working session: %d", n)
+	// The step is made at ship (WP-1370), so one exists; the watchdog must
+	// not make a second or start the review under a working session.
+	var n, started int
+	_ = a.s.db.R.QueryRow(`SELECT count(*), count(CASE WHEN state IN ('starting','started') THEN 1 END) FROM autopilot_steps WHERE session_id = ?`, a.session).Scan(&n, &started)
+	if n != 1 || started != 0 {
+		t.Fatalf("steps = %d, started = %d: revived a working session", n, started)
 	}
 }
 
@@ -426,7 +428,7 @@ func TestHeldReviewAutopilotOff(t *testing.T) {
 	a.prompt(in.Review)
 	a.reported(first.Key) // its own review: what it found, on the record (WP-1320)
 	if res, err := a.ship(first.Key, ShipPR); err != nil || res.Pull == nil {
-		t.Fatalf("ship --pr = %+v, %v", res, err)
+		t.Fatalf("ship = %+v, %v", res, err)
 	}
 	if _, err := a.s.AgentDone(a.ctx, a.ag, first.Key, AgentDoneInput{Comment: "done"}); err != nil {
 		t.Fatal(err)
@@ -760,7 +762,7 @@ func (a *apEnv) gateOpen(key string) {
 }
 
 // A review that outlives the claim's lease: the session coming back to it
-// keeps its run, and its wp ship --pr opens the pull request instead of
+// keeps its run, and its wp ship opens the pull request instead of
 // asking for the review again (WP-877).
 func TestHeldReviewSurvivesALapsedClaim(t *testing.T) {
 	a, _, first := heldEnv(t)
@@ -779,7 +781,7 @@ func TestHeldReviewSurvivesALapsedClaim(t *testing.T) {
 	a.reported(first.Key) // its own review: what it found, on the record (WP-1320)
 	res, err := a.ship(first.Key, ShipPR)
 	if err != nil || res.Pull == nil || res.Held != "" {
-		t.Fatalf("ship --pr = %+v, %v", res, err)
+		t.Fatalf("ship = %+v, %v", res, err)
 	}
 	if got := a.rounds(); len(got) != 1 {
 		t.Fatalf("rounds = %v", got)
@@ -790,7 +792,7 @@ func TestHeldReviewSurvivesALapsedClaim(t *testing.T) {
 }
 
 // The review ran and the session stopped without shipping; the next turn
-// is a new run. Its wp ship --pr opens the pull request: the review it
+// is a new run. Its wp ship opens the pull request: the review it
 // already did counts (WP-877).
 func TestHeldReviewDoneThenResumedShips(t *testing.T) {
 	a, _, first := heldEnv(t)
@@ -818,7 +820,7 @@ func TestHeldReviewDoneThenResumedShips(t *testing.T) {
 	a.reported(first.Key) // its own review: what it found, on the record (WP-1320)
 	res, err := a.ship(first.Key, ShipPR)
 	if err != nil || res.Pull == nil || res.Held != "" {
-		t.Fatalf("ship --pr = %+v, %v", res, err)
+		t.Fatalf("ship = %+v, %v", res, err)
 	}
 	if got := a.rounds(); len(got) != 1 {
 		t.Fatalf("rounds = %v", got)
@@ -840,7 +842,7 @@ func TestHeldReviewResumedOtherBranchReviews(t *testing.T) {
 	a.gateOpen(first.Key)
 	res, err := a.ship(first.Key, ShipPR, func(in *OpenPRInput) { in.Head = "wp-1-other" })
 	if err != nil || res.Pull != nil || res.Held == "" {
-		t.Fatalf("ship --pr = %+v, %v", res, err)
+		t.Fatalf("ship = %+v, %v", res, err)
 	}
 	if got := a.rounds(); len(got) != 2 {
 		t.Fatalf("rounds = %v", got)

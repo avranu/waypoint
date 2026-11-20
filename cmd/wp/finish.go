@@ -31,10 +31,11 @@ ship are refused: stage the task's, or --no-ship finishes without them.
 KEY defaults to the task you hold; with nothing to ship, several KEYs share
 one -m. Safe to run again.
 Where your autopilot reviews before pull requests, the task's adversarial
-review comes first: say which you want with --review (schedule it), --pr
-(open the pull request after it) or --skip-review WHY. With none it does
-whichever fits; a notice says when it did something else and how to
-override it.
+review comes first: say which you want with --review (schedule it) or
+--skip-review WHY. With neither it does whichever fits, and Waypoint carries
+the review on and opens the pull request itself when the review leaves
+nothing for you to do, so run it once (--pr is the same, kept for older
+prompts); a notice says when it did something else and how to override it.
 --summary is your final reply to the person, written before you know the
 outcome: when the ship goes as expected (the pull request armed or babysat,
 or held for its review, with no notice or warning), Waypoint ends your turn
@@ -109,7 +110,7 @@ func cmdFinish(c *cli, args []string) error {
 	} else if !shipping && intent == "review" {
 		_, _ = fmt.Fprintln(c.err, "Notice: there is no code here to ship, so no adversarial review; finishing the task.")
 	} else if !shipping && intent != "auto" {
-		return c.usage("there is no code here to ship, so no review or pull request either (wp ship without --review, --pr or --skip-review finishes the task)")
+		return c.usage("there is no code here to ship, so no review or pull request either (wp ship without --review or --skip-review finishes the task)")
 	}
 	if !shipping && !*noShip {
 		what, err := c.unshippedWork(keys)
