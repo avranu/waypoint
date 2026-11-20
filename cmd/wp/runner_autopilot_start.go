@@ -166,6 +166,7 @@ func (p *runnerProc) execAutopilotStart(ctx context.Context, run *jobRun, in aut
 		return held("no_worktree", "no worktree for this session: every name for %s is taken", in.Key)
 	}
 	worktree := filepath.Join(rl.root, autopilotWorktrees, name)
+	freeStaleLocks(ctx, rl.root, in.Key, say)
 	base := autopilotResult{Via: "start", Kept: p.sweepWorktrees(ctx, run, in, rl, worktree)}
 	if !p.stepWanted(ctx, in.Step, run.id) {
 		say("the step no longer wants this job: nothing started")

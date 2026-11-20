@@ -57,6 +57,22 @@ func checkoutHolds(top, key, base string, main bool) string {
 	if main {
 		return "this is the main checkout, which stays its person's (WP-ADR57)"
 	}
+	held := heldWork(top, base)
+	if len(held) == 0 {
+		return ""
+	}
+	whose := "other work"
+	if m := branchKeyRE.FindStringSubmatch(branch); m != nil {
+		whose = strings.ToUpper(m[1]) + "'s work"
+	} else if branch == "" {
+		whose = "other work on a detached HEAD"
+	}
+	return "this checkout holds " + whose + " (" + strings.Join(held, ", ") + ")"
+}
+
+// heldWork lists what the checkout at top holds that isn't on base:
+// uncommitted files, commits not on base (not on any remote, with no base).
+func heldWork(top, base string) []string {
 	var held []string
 	if st, err := gitOutput(top, "status", "--porcelain"); err == nil && strings.TrimSpace(st) != "" {
 		n := len(strings.Split(strings.TrimRight(st, "\n"), "\n"))
@@ -72,16 +88,7 @@ func checkoutHolds(top, key, base string, main bool) string {
 			held = append(held, fmt.Sprintf("%d commit%s not on %s", n, plural(n), onWhat))
 		}
 	}
-	if len(held) == 0 {
-		return ""
-	}
-	whose := "other work"
-	if m := branchKeyRE.FindStringSubmatch(branch); m != nil {
-		whose = strings.ToUpper(m[1]) + "'s work"
-	} else if branch == "" {
-		whose = "other work on a detached HEAD"
-	}
-	return "this checkout holds " + whose + " (" + strings.Join(held, ", ") + ")"
+	return held
 }
 
 // ownWorktree is where an agent works on task key taken in dir: a worktree
@@ -109,12 +116,20 @@ func (c *cli) ownWorktree(dir, key string) (at string) {
 	}
 	slug := worktreeSlug(key)
 	target := filepath.Join(repo.home(), slug)
+	// A worktree of the task left locked by an agent that is gone is taken
+	// over; one whose owner is alive (or can't be shown gone) is not, and the
+	// task goes on a branch cut from its work (WP-1370).
+	repo, held := reclaimTask(ctx, repo, key, top)
 	existing := ""
 	for _, w := range repo.wts {
 		if !w.main && !w.prunable && !w.locked && w.branch != "" && branchCarries(w.branch, []string{key}) {
 			existing, target = w.path, w.path
 			break
 		}
+	}
+	var cont continuation
+	if existing == "" && held.revive == "" && held.blocked != nil {
+		cont = continueFrom(ctx, repo, held.blocked, held.why, slug)
 	}
 	folder := sessionFolder()
 	if folder == "" {
@@ -125,6 +140,8 @@ func (c *cli) ownWorktree(dir, key string) (at string) {
 		cmd := "wp worktree " + key
 		if existing != "" {
 			cmd = "cd " + existing
+		} else if cont.branch != "" {
+			cmd = cont.command()
 		}
 		c.println(fmt.Sprintf("Worktree: %s; %s's own would be outside this session's folder (%s), where every read asks first, so wp left it: `%s` if you want it.", why, key, folder, cmd))
 		return dir
@@ -132,16 +149,41 @@ func (c *cli) ownWorktree(dir, key string) (at string) {
 	var made madeWorktree
 	if existing == "" {
 		// wp next fetched a moment ago (or the remote didn't answer): no second fetch.
-		if made, err = makeWorktree(ctx, repo, slug, "", "", false, c.note); err != nil {
+		switch {
+		case held.revive != "": // its folder was gone: the task's own branch again
+			made, err = makeWorktree(ctx, repo, slug, held.revive, "", false, c.note)
+		case cont.branch != "":
+			made, err = makeWorktree(ctx, repo, cont.slug, cont.branch, cont.from, false, c.note)
+		default:
+			made, err = makeWorktree(ctx, repo, slug, "", "", false, c.note)
+		}
+		if err != nil {
+			// Another agent starting the same task a moment ago may have made it.
+			if again, e2 := worktreeRepoAt(ctx, top); e2 == nil {
+				for _, w := range again.wts {
+					if !w.main && !w.prunable && !w.locked && w.branch != "" && branchCarries(w.branch, []string{key}) {
+						existing, target, err = w.path, w.path, nil
+						break
+					}
+				}
+			}
+		}
+		if err != nil {
 			c.println(fmt.Sprintf("Worktree: %s, but making %s's own failed (%v); working here.", why, key, err))
+			if cont.branch != "" {
+				c.println("  " + cont.command())
+			}
 			return dir
 		}
-		target = made.path
+		if existing == "" {
+			target = made.path
+		}
 	}
 	if existing == "" && made.made == "" && !made.branchOut {
 		// A worktree already at the path: ours only if it carries the task or holds nothing.
 		if w := repo.find(made.path); w != nil && (w.locked || checkoutHolds(made.path, key, checkoutBase(made.path, fetchRemote(made.path)), false) != "") {
 			c.println(fmt.Sprintf("Worktree: %s, but %s is another's (locked, or holds other work); working here.", why, made.path))
+			c.println(fmt.Sprintf("  Make the task's own on a branch named for it: wp worktree %s-2 --branch %s-2 (any branch name holding %s maps to the task)", slug, strings.ToLower(key), key))
 			return dir
 		}
 	}
@@ -151,14 +193,23 @@ func (c *cli) ownWorktree(dir, key string) (at string) {
 	}
 	claimErr := c.moveClaim(dir, target, keys)
 	c.println("Worktree of its own: " + why + ".")
+	for _, t := range append(slices.Clone(held.taken), made.took...) {
+		c.println("  Took over " + t + ": the agent that locked it is gone, so the lock was stale.")
+	}
 	if claimErr != nil {
 		c.println(fmt.Sprintf("  Couldn't record the task for that folder (%v): wp ship there won't find it; pass the key.", claimErr))
 	}
 	switch {
 	case existing != "":
 		c.println("  " + key + " already has one: " + existing)
+		if n := heldWork(existing, checkoutBase(existing, fetchRemote(existing))); len(n) > 0 {
+			c.println("  It holds " + strings.Join(n, ", ") + ": the task's own work, left in place.")
+		}
 	case made.made != "":
 		c.println("  Made " + made.path + " on " + made.made)
+		if cont.branch != "" {
+			c.println("  " + cont.explain())
+		}
 	default:
 		c.println("  " + made.path + " is already a worktree (" + made.what + ")")
 	}

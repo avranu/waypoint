@@ -79,20 +79,21 @@ Only reads until --apply: it fetches --prune, removes removable worktrees
 
 // tidyRow is one worktree or branch with its verdict.
 type tidyRow struct {
-	Kind     string   `json:"kind"` // worktree or branch
-	Branch   string   `json:"branch,omitempty"`
-	Path     string   `json:"path,omitempty"`
-	Tip      string   `json:"tip,omitempty"`
-	Verdict  string   `json:"verdict"`
-	Reason   string   `json:"reason"`
-	MergedBy string   `json:"merged_by,omitempty"` // "origin/main" or "PR #12"
-	Checks   []string `json:"checks,omitempty"`    // every rule, for --explain
-	Action   string   `json:"action,omitempty"`    // after --apply
-	idle     time.Duration
-	prunable bool   // a worktree whose directory is gone
-	stays    string // why a kept worktree is worth telling a person: uncommitted, unpushed, in use, held
-	dirty    string // what is uncommitted, whatever the verdict
-	unpushed int    // commits on no remote; only counted when not merged
+	Kind      string   `json:"kind"` // worktree or branch
+	Branch    string   `json:"branch,omitempty"`
+	Path      string   `json:"path,omitempty"`
+	Tip       string   `json:"tip,omitempty"`
+	Verdict   string   `json:"verdict"`
+	Reason    string   `json:"reason"`
+	MergedBy  string   `json:"merged_by,omitempty"` // "origin/main" or "PR #12"
+	Checks    []string `json:"checks,omitempty"`    // every rule, for --explain
+	Action    string   `json:"action,omitempty"`    // after --apply
+	idle      time.Duration
+	prunable  bool   // a worktree whose directory is gone
+	staleLock string // the lock reason of a worktree whose lock's owner is gone (WP-1370): unlocked first when removed
+	stays     string // why a kept worktree is worth telling a person: uncommitted, unpushed, in use, held
+	dirty     string // what is uncommitted, whatever the verdict
+	unpushed  int    // commits on no remote; only counted when not merged
 }
 
 func (r *tidyRow) name() string {
@@ -173,6 +174,7 @@ func tidyGitEnv(ctx context.Context, dir string, env []string, args ...string) (
 type tidyWorktree struct {
 	path, head, branch string
 	locked, prunable   bool
+	lockReason         string // what git worktree lock --reason recorded, "" if nothing
 	bare, main         bool
 }
 
@@ -191,6 +193,7 @@ func parseWorktrees(porcelain string) []tidyWorktree {
 			cur.branch = strings.TrimPrefix(val, "refs/heads/")
 		case "locked":
 			cur.locked = true
+			cur.lockReason = strings.TrimSpace(val)
 		case "prunable":
 			cur.prunable = true
 		case "bare":
@@ -250,6 +253,7 @@ func tidyScan(ctx context.Context, dir string, merged []tidyPR, o tidyOpts) (*ti
 		return nil, err
 	}
 	wts := parseWorktrees(wtOut)
+	common, _ := g("rev-parse", "--path-format=absolute", "--git-common-dir")
 	byBranch := map[string]*tidyWorktree{}
 	for i := range wts {
 		if wts[i].branch != "" && !wts[i].prunable {
@@ -393,7 +397,16 @@ func tidyScan(ctx context.Context, dir string, merged []tidyPR, o tidyOpts) (*ti
 				continue
 			}
 			row := &tidyRow{Kind: "worktree", Path: w.path, Branch: w.branch, Tip: w.head}
-			f := facts{branch: w.branch, tip: w.head, locked: w.locked, ended: o.ended != "" && tidyReal(w.path) == o.ended}
+			// A lock whose owner is provably gone doesn't keep a worktree (WP-1370).
+			staleWhy := ""
+			if w.locked {
+				if gone, why := lockJudge(common, w); gone {
+					staleWhy = why
+					row.staleLock = w.lockReason
+				}
+			}
+			locked := w.locked && staleWhy == ""
+			f := facts{branch: w.branch, tip: w.head, locked: locked, ended: o.ended != "" && tidyReal(w.path) == o.ended}
 			if bi, ok := branches[w.branch]; ok {
 				f.idle = bi.idle
 			}
@@ -403,13 +416,16 @@ func tidyScan(ctx context.Context, dir string, merged []tidyPR, o tidyOpts) (*ti
 			if tidyReal(w.path) == top {
 				f.inUse = "the worktree you are in"
 			}
-			if w.prunable {
+			if w.prunable || (w.locked && !dirExists(w.path)) { // git doesn't call a locked one prunable
 				row.prunable = true
 				row.Verdict, row.Reason = tidyRemovable, "the directory is gone (git worktree prune)"
 				row.Checks = []string{"directory: missing, nothing to lose"}
-				row.Branch = "" // its branch is judged as a branch below
-				if w.locked {
+				// Its branch is judged as a branch too (it has no worktree row of its own
+				// there), but the row names it, so --explain BRANCH finds the worktree.
+				if locked {
 					row.Verdict, row.Reason = tidyKeep, "worktree is locked"
+				} else if staleWhy != "" {
+					row.Checks = append(row.Checks, "lock: owner gone ("+staleWhy+")")
 				}
 				rep.Rows = append(rep.Rows, row)
 				continue
@@ -429,13 +445,16 @@ func tidyScan(ctx context.Context, dir string, merged []tidyPR, o tidyOpts) (*ti
 				f.unpushedN = unpushed(w.head)
 				f.detachedUnmerged = w.branch == ""
 				if !f.ended && !o.quick && o.sessionEnded != nil && f.unpushedN == 0 && f.dirty == "" && w.branch != "" &&
-					!w.locked && f.inUse == "" && protectedName(w.branch) == "" && o.sessionEnded(w.path, w.branch) {
+					!f.locked && f.inUse == "" && protectedName(w.branch) == "" && o.sessionEnded(w.path, w.branch) {
 					f.ended = true
 					f.checks = append(f.checks, "sessions: every one that worked here has ended, and no process is in it")
 				}
 			}
 			f.checks = append(f.checks, fmt.Sprintf("unpushed: %d commits on no remote", f.unpushedN),
-				fmt.Sprintf("locked: %v", w.locked), "in use: "+cmpStr(f.inUse, "no"))
+				fmt.Sprintf("locked: %v", f.locked), "in use: "+cmpStr(f.inUse, "no"))
+			if staleWhy != "" {
+				f.checks = append(f.checks, "lock: owner gone ("+staleWhy+")")
+			}
 			row.Verdict, row.Reason = decide(f)
 			row.MergedBy, row.Checks, row.idle = f.by, f.checks, f.idle
 			row.dirty, row.unpushed = f.dirty, f.unpushedN
@@ -613,9 +632,25 @@ func tidyApply(ctx context.Context, dir string, rep *tidyReport, o tidyOpts) {
 			if o.noPrune {
 				continue
 			}
+			if r.staleLock != "" { // git worktree prune skips a locked one
+				if _, err := unlockStale(ctx, dir, r.Path); err != nil {
+					r.Action = "kept: " + err.Error()
+					continue
+				}
+			}
 			r.Action = "pruned"
 		case r.Kind == "worktree":
+			if r.staleLock != "" {
+				// Looks at the lock again: an owner is shown gone only once.
+				if _, err := unlockStale(ctx, dir, r.Path); err != nil {
+					r.Action = "kept: " + err.Error()
+					continue
+				}
+			}
 			if _, err := g("worktree", "remove", r.Path); err != nil {
+				if r.staleLock != "" {
+					relock(ctx, dir, r.Path, r.staleLock)
+				}
 				r.Action = "failed: " + err.Error()
 				continue
 			}

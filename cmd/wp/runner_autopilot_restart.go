@@ -266,6 +266,7 @@ func (p *runnerProc) restartSession(ctx context.Context, run *jobRun, in autopil
 			return ended("no worktree for this session: every name for %s is taken", in.Key)
 		} else {
 			worktree = filepath.Join(rl.root, autopilotWorktrees, name)
+			freeStaleLocks(ctx, rl.root, in.Key, say)
 			rl.args = append([]string{"--worktree", name}, rl.args...)
 		}
 	}
