@@ -319,15 +319,16 @@ func TestCombineLossless(t *testing.T) {
 		froms   []string
 		cutWhy  map[string]string
 		runWant string
+		failed  bool // the combine run ends "failed"
 	}{
 		{name: "merged, one left out, an unknown id and a repeat ignored, tests.2 the same as R1",
 			answer: answer(`{"findings":[{"title":"Both","path":"a.go","line":3,"severity":"low","problem":"both","from":["goals.1","goals.2","goals.1","nope.1"]},{"title":"Nothing left","problem":"x","from":["goals.1"]}],"same":[{"lead":"tests.2","finding":"R1"},{"lead":"tests.2","finding":"R2"},{"lead":"goals.1","finding":"R9"}]}`),
 			titles: []string{"Both", "t tests.1"}, sevs: []string{"high", "medium"}, froms: []string{"goals.1,goals.2", "tests.1"},
 			cutWhy: map[string]string{"tests.2": "confirmed, the same defect as the reviewer's finding R1 (Mine)"}},
-		{name: "an answer that is not JSON falls back", err: errors.New("down"),
+		{name: "a failed combine falls back", err: errors.New("down"), failed: true,
 			titles: []string{"t goals.1", "t goals.2", "t tests.1"}, sevs: []string{"high", "low", "medium"}, froms: []string{"goals.1", "goals.2", "tests.1"},
 			cutWhy: map[string]string{"tests.2": "confirmed, at the same place as the reviewer's finding R1 (Mine)"}},
-		{name: "unreadable", answer: answer(`not json`),
+		{name: "unreadable", answer: answer(`not json`), failed: true,
 			titles: []string{"t goals.1", "t goals.2", "t tests.1"}, sevs: []string{"high", "low", "medium"}, froms: []string{"goals.1", "goals.2", "tests.1"},
 			cutWhy: map[string]string{"tests.2": "confirmed, at the same place as the reviewer's finding R1 (Mine)"}},
 	} {
@@ -363,7 +364,7 @@ func TestCombineLossless(t *testing.T) {
 				t.Errorf("tests = %+v", e.runs[1])
 			}
 			last := e.runs[len(e.runs)-1]
-			if last.Check != helperCombineName || (tc.err != nil && last.State != "failed") || (tc.err == nil && tc.answer != nil && string(tc.answer) == "not json" && last.State != "failed") {
+			if last.Check != helperCombineName || (last.State == "failed") != tc.failed {
 				t.Errorf("combine run = %+v", last)
 			}
 		})
@@ -908,8 +909,10 @@ func TestHelperBudget(t *testing.T) {
 	// much before it.
 	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Second)
 	defer cancel()
-	if got := budget(ctx, helperPanelBudget, helperVerifyBudget+helperCombineBudget); got < 719*time.Second || got > 720*time.Second {
-		t.Errorf("panel with room after = %s", got)
+	after := helperVerifyBudget + helperCombineBudget
+	want := 1500*time.Second - 30*time.Second - after
+	if got := budget(ctx, helperPanelBudget, after); got > want || got < want-time.Second || got >= helperPanelBudget {
+		t.Errorf("panel with room after = %s, want just under %s (the room left for the check and the combine)", got, want)
 	}
 	if got := budget(ctx, helperVerifyBudget, helperCombineBudget); got != helperVerifyBudget {
 		t.Errorf("verify = %s", got)
