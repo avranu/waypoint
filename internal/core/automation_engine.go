@@ -300,9 +300,10 @@ func (x *execution) step(ctx context.Context, st Action, id string, iter, pos in
 		// wait carries on with the same one.
 		w, rerr := x.s.stepWait(ctx, x.run.ID, id, iter, retrySeq(row.Attempts))
 		if rerr != nil {
-			if readFault(rerr) {
-				x.s.log.WarnContext(ctx, "step wait failed", "run", x.run.ID, "id", id, "err", rerr)
-			}
+			// Unread, it can't tell a retry's pause from the step's own
+			// wait, and carrying on would run the step before its pause
+			// was over (WP-1406).
+			return fail(fmt.Errorf("read what the step was waiting for: %w", rerr))
 		}
 		if w != nil {
 			if w.resolvedAt == nil {

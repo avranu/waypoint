@@ -1169,3 +1169,73 @@ func TestHighStakes(t *testing.T) {
 		}
 	}
 }
+
+// No reviewing model answered, but the round's Haiku checks confirmed
+// problems before the reviewer failed: the session's own-review prompt
+// lists them, the work log holds them once as the session's own review (so
+// a report of nothing is refused), and the audit keeps them (WP-1320).
+func TestReviewRoundPanelWithoutReviewer(t *testing.T) {
+	a, box := auditAPEnv(t)
+	first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude", Priority: "urgent"})
+	a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "Second", Agent: "claude"})
+	a.finish(first.Key)
+	a.grokPR(first.ID, 7, "aaa")
+	a.stopWith("Shipped as #7.")
+	id := a.step().reviewID.Int64
+	a.tick(61 * time.Second)
+	a.s.Wait()
+	w := a.poll(a.admin, box, RunnerPoll{})
+	if w.Job == nil || w.Job.Kind != JobAudit {
+		t.Fatalf("no audit job: %+v", w.Job)
+	}
+	if _, err := a.s.FinishRunnerJob(a.ctx, a.admin, w.Job.ID, RunnerFinish{State: "failed", Error: "502 Bad Gateway"}); err != nil {
+		t.Fatal(err)
+	}
+	a.s.Wait()
+	a.s.Wait()
+	a.tick(time.Second)
+	// The Sonnet reviewer fails with its panel's two confirmed problems.
+	a.s.Wait()
+	w = a.poll(a.admin, box, RunnerPoll{})
+	if w.Job == nil || w.Job.Kind != JobAudit {
+		t.Fatalf("no reviewer job: %+v", w.Job)
+	}
+	result := map[string]any{"helpers": []any{map[string]any{"check": "goals", "state": "done", "from": "aaaaaaaa", "to": "bbbbbbbb", "leads": []any{
+		map[string]any{"id": "goals.1", "title": "First", "severity": "high", "problem": "p1", "confirmed": true, "read_title": "Reads a nil map", "read_path": "a.go", "read_line": 4, "read_severity": "high", "read_problem": "nil map write", "evidence": "a.go:4 writes m[k]"},
+		map[string]any{"id": "goals.2", "title": "Second", "severity": "low", "problem": "p2", "confirmed": true, "read_path": "b.go", "read_line": 8, "evidence": "b.go:8"},
+	}}}}
+	if _, err := a.s.FinishRunnerJob(a.ctx, a.admin, w.Job.ID, RunnerFinish{State: "failed", Error: "claude exited with status 1", Result: []byte(mustJSON(result))}); err != nil {
+		t.Fatal(err)
+	}
+	a.s.Wait()
+	a.s.Wait()
+	a.tick(time.Second)
+	a.tick(time.Second)
+	var in AutopilotJob
+	if len(a.jobs) != 1 || json.Unmarshal(a.jobs[0].Input, &in) != nil {
+		t.Fatalf("the session wasn't asked for its own review: %+v", a.jobs)
+	}
+	for _, want := range []string{"No reviewing model answered. Before it failed, Waypoint's Haiku checks confirmed these problems", "Reads a nil map (a.go:4, high)", "a.go:4 writes m[k]", "b.go:8"} {
+		if !strings.Contains(in.Review, want) {
+			t.Errorf("the session's prompt lacks %q: %q", want, in.Review)
+		}
+	}
+	r := a.round(id)
+	reviews, raised, err := a.s.ownReviewRaised(a.ctx, r.sessionID.Int64, r.issueID, id)
+	if err != nil || reviews != 1 || raised != 2 {
+		t.Errorf("the work log's own reviews = %d raising %d, %v; want 1 raising 2", reviews, raised, err)
+	}
+	// Planned again, it is written once.
+	if _, err := a.s.planReview(a.ctx, a.step(), a.round(id), a.clockNow().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	_ = a.s.db.R.QueryRow(`SELECT count(*) FROM work_log WHERE kind = ? AND reason = ?`, WorkOwnReview, ownReviewPanel).Scan(&n)
+	if n != 1 {
+		t.Errorf("the panel's problems were written %d times", n)
+	}
+	said, _, _ := a.s.ownReviewSaid(a.ctx, r.sessionID.Int64, r.issueID, id)
+	if !strings.Contains(said, "Reads a nil map") {
+		t.Errorf("the check of the session's report wouldn't read them: %q", said)
+	}
+}

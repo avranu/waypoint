@@ -129,7 +129,14 @@ func (s *Service) fixFirst(ctx context.Context, pr *PullRequest) {
 	}
 	claim := fmt.Sprintf("first:%d/%s/%s@%s", pr.ForgeID, strings.ToLower(pr.Repo), pr.BaseRef, tip)
 	if v, ok := s.baseRed.Load(claim); ok && v.(int64) != pr.ID {
-		if other, err := s.prByID(ctx, s.db.R, v.(int64)); err == nil {
+		other, err := s.prByID(ctx, s.db.R, v.(int64))
+		if err != nil && !missingOrDenied(err) {
+			if readFault(err) {
+				s.log.WarnContext(ctx, "read the pull request that claimed a red base's fix", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "claimed_by", v.(int64), "err", err)
+			}
+			return // can't tell whether the claimant still fixes it: leave it for the next look
+		}
+		if err == nil {
 			if queued, qerr := s.inQueue(ctx, other); qerr != nil || queued {
 				return // another one fixes it and went first, or can't tell: leave it for the next look
 			}

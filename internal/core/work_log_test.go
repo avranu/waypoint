@@ -257,11 +257,11 @@ func TestWorkLogReviewOldRunner(t *testing.T) {
 	}
 }
 
-// A person's prompt mid-review interrupts the round and keeps the session;
-// keep before it starts skips it; a job that fails before typing fails
+// A person's prompt mid-review stops the step but leaves the round running
+// to the session's Stop (WP-1320); keep before it starts skips it; a job that fails before typing fails
 // open (the next task matters more).
 func TestWorkLogReviewEnds(t *testing.T) {
-	t.Run("interrupted", func(t *testing.T) {
+	t.Run("prompted", func(t *testing.T) {
 		a := reviewAPEnv(t)
 		first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude"})
 		a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "Second", Agent: "claude"})
@@ -272,11 +272,15 @@ func TestWorkLogReviewEnds(t *testing.T) {
 		a.tick(61 * time.Second)
 		a.prompt(AutopilotReviewMark + first.Key + ": " + DefaultReviewPrompt)
 		a.prompt("Stop, I'll take it from here")
-		if r := a.round(id); r.state != RoundInterrupted {
-			t.Fatalf("round = %+v", r)
+		if r := a.round(id); r.state != RoundRunning {
+			t.Fatalf("a person's prompt took the round: %+v", r)
 		}
 		if st := a.step(); st.state != StepStopped || st.reason != "prompted" {
 			t.Fatalf("step = %+v", st)
+		}
+		a.stopWith("Reviewed: nothing to fix.")
+		if r := a.round(id); r.state != RoundDone {
+			t.Fatalf("the session's Stop didn't end the round: %+v", r)
 		}
 	})
 	t.Run("kept", func(t *testing.T) {
@@ -495,6 +499,16 @@ func TestWorkLogOneRoundPerTask(t *testing.T) {
 		}
 		return a, first, second, id
 	}
+	// interrupt takes the session from the running round, as going on to
+	// another task does (a person's prompt doesn't, WP-1320).
+	interrupt := func(a *apEnv) {
+		a.t.Helper()
+		if err := a.s.write(a.ctx, SystemActor(), func(t *tx) error {
+			return a.s.stopStep(a.ctx, t, a.session, "working", "it took another task itself")
+		}); err != nil {
+			a.t.Fatal(err)
+		}
+	}
 	shipFixes := func(a *apEnv, key string) {
 		a.t.Helper()
 		a.setClock(a.clockNow().Add(time.Minute))
@@ -588,11 +602,16 @@ func TestWorkLogOneRoundPerTask(t *testing.T) {
 		})
 	}
 
-	t.Run("a person's prompt still interrupts", func(t *testing.T) {
+	// A person's prompt stops the step, not the review it is running: the
+	// round goes on to the session's Stop (WP-1320).
+	t.Run("a person's prompt leaves the round running", func(t *testing.T) {
 		a, _, _, id := start(t)
 		a.prompt("wait, look at the migration first")
-		if r := a.round(id); r.state != RoundInterrupted || a.reason(id) != "you prompted the session" {
+		if r := a.round(id); r.state != RoundRunning {
 			t.Fatalf("round = %+v, why %q", r, a.reason(id))
+		}
+		if st := a.step(); st.state != StepStopped || st.reason != "prompted" {
+			t.Fatalf("step = %+v", st)
 		}
 	})
 
@@ -609,7 +628,7 @@ func TestWorkLogOneRoundPerTask(t *testing.T) {
 
 	t.Run("interrupted", func(t *testing.T) {
 		a, first, _, id := start(t)
-		a.prompt("Stop, I'll take it from here")
+		interrupt(a)
 		if r := a.round(id); r.state != RoundInterrupted {
 			t.Fatalf("round = %+v", r)
 		}
@@ -625,7 +644,7 @@ func TestWorkLogOneRoundPerTask(t *testing.T) {
 	t.Run("interrupted, same run", func(t *testing.T) {
 		a, first, second, id := start(t)
 		for n := 1; n <= reviewInterruptsMax; n++ {
-			a.prompt("Stop, look at the migration first")
+			interrupt(a)
 			if r := a.round(id); r.state != RoundInterrupted {
 				t.Fatalf("interrupt %d: round = %+v", n, r)
 			}
@@ -649,6 +668,7 @@ func TestWorkLogOneRoundPerTask(t *testing.T) {
 		}
 		// The person typed in it, so it's theirs: nothing starts there after
 		// the review (WP-1319).
+		a.prompt("I'll take it from here")
 		a.tick(autopilotIdleHold + time.Minute)
 		if n := a.restarts(); n != 0 {
 			t.Fatalf("started %s in the person's session: %+v", second.Key, a.jobs)

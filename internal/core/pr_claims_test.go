@@ -194,6 +194,7 @@ func TestPRClaimOnHeldShip(t *testing.T) {
 	}
 	ended := a.clockNow().UnixMilli()
 	a.setNewestRound(RoundDone, ended)
+	a.reported(key) // its own review: what it found, on the record (WP-1320)
 	if opened, err := a.ship(key, ShipReview, func(in *OpenPRInput) { in.HeadTime = ended/1000 - 60 }); err != nil || opened.Pull == nil {
 		t.Fatalf("opened = %+v, %v", opened, err)
 	}

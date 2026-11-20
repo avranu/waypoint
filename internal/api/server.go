@@ -4,6 +4,7 @@
 package api
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -592,7 +593,30 @@ func decodeOptional(r *http.Request, v any) error {
 }
 
 func decodeBody(r *http.Request, v any) (empty bool, err error) {
-	dec := json.NewDecoder(io.LimitReader(r.Body, 2<<20))
+	return decodeBodyMax(r, v, 2<<20)
+}
+
+// decodeBodyLarge is decode for a route whose body may be larger than the
+// usual 2 MB (a runner's job result): over max it says so, instead of
+// reading the cut-off body as broken JSON.
+func decodeBodyLarge(r *http.Request, v any, max int64, tooLarge string) error {
+	b, err := io.ReadAll(io.LimitReader(r.Body, max+1))
+	if err != nil {
+		return fmt.Errorf("%w: %v", errBadRequest, err)
+	}
+	if int64(len(b)) > max {
+		return fmt.Errorf("%w: %s (the body may be %d bytes)", errBadRequest, tooLarge, max)
+	}
+	r.Body = io.NopCloser(bytes.NewReader(b))
+	empty, err := decodeBodyMax(r, v, max+1)
+	if empty {
+		return fmt.Errorf("%w: request body is empty", errBadRequest)
+	}
+	return err
+}
+
+func decodeBodyMax(r *http.Request, v any, max int64) (empty bool, err error) {
+	dec := json.NewDecoder(io.LimitReader(r.Body, max))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		if errors.Is(err, io.EOF) {

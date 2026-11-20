@@ -239,6 +239,9 @@ func (s *Service) runAction(c *StepCtx) error {
 		if e.Kind == EvExternalPROpened {
 			patch.ViaLink = e.New // the link remembers it moved the issue (WP-162)
 		}
+		if e.Kind == EvExternalPRMerged {
+			patch.mergedLink = e.New // an objective has read this merge already (WP-ADR111)
+		}
 		_, err := s.UpdateIssue(ctx, actor, itoa64(issue.ID), patch)
 		return err
 	case "set_parent_status", "reopen_parent":

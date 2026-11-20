@@ -999,11 +999,17 @@ func releaseStepTask(ctx context.Context, q *tx, issueID int64, agent string) er
 	return err
 }
 
-// roundTaken: the session was taken from a running round (a person's
-// prompt, another task, its end); kept, stopped or turned off, the round
-// goes on to its Stop.
+// roundTaken: the session was taken from a running round: it went on to
+// another task, or ended. The round was cut short and is interrupted. A
+// person's prompt is not that (WP-1320): the person typing into a session
+// doesn't end the review that session is running, and the round goes on to
+// the session's Stop, where its report is read and wp ship decides it
+// (kept, stopped or turned off are the same: the round isn't theirs to
+// end). A person's prompt while the round is still to come (pending) is
+// held by reviewWaitsForPerson, and a pending round whose step stops is
+// skipped whatever the reason (endStepRound).
 func roundTaken(reason string) bool {
-	return reason == "prompted" || reason == "working" || reason == "ended" || reason == StopCleared
+	return reason == "working" || reason == "ended" || reason == StopCleared
 }
 
 // roundEndWhy is why a step's round ended with the step.
@@ -1029,7 +1035,9 @@ func (s *Service) AutopilotStepWanted(ctx context.Context, a *Actor, id, job int
 
 // autopilotOnPrompt: a person's prompt takes the session back, except from
 // an adversarial review still to come, which waits for them instead
-// (reviewWaitsForPerson); autopilot's own pasted prompt doesn't, nor does a
+// (reviewWaitsForPerson); it stops the step but not a round already running:
+// that goes on to the session's Stop, which is its report (roundTaken).
+// Autopilot's own pasted prompt doesn't take it back, nor does a
 // background task reporting back. That
 // one is the session's own turn: a round that delegated its review runs on
 // to the Stop that reports, and a review job waits for the turn to end. Only
@@ -1876,8 +1884,14 @@ func (s *Service) reviewJobFinished(ctx context.Context, st *stepRow, job *Runne
 			return
 		} else if now-max(st.createdAt, s.roundAuditEnded(ctx, review.id)) > heldScreenWait.Milliseconds() && roundBeforePR(ctx, s.db.R, review.id) != nil {
 			// A task unshipped behind a screen that won't come free (WP-752).
-			s.setRoundNow(ctx, review.id, []string{RoundPending}, RoundFailed,
-				fmt.Sprintf("the session stayed busy for %d hours, so it couldn't be started: %s", int(heldScreenWait.Hours()), res.Detail))
+			why := fmt.Sprintf("the session stayed busy for %d hours, so it couldn't be started: %s", int(heldScreenWait.Hours()), res.Detail)
+			if audit, n := s.roundEndedAudit(ctx, review.id); audit != 0 {
+				// The review was done; it was the session that couldn't
+				// be given what it found.
+				why = fmt.Sprintf("%s%d, %s), but the session stayed busy for %d hours, so what it found couldn't be given to it: %s",
+					heldReviewEnded, audit, plural1(n, "finding"), int(heldScreenWait.Hours()), res.Detail)
+			}
+			s.setRoundNow(ctx, review.id, []string{RoundPending}, RoundFailed, why)
 			if err := s.stepUpdate(ctx, st.id, StepDue, "", "", now); err != nil {
 				if readFault(err) {
 					s.log.WarnContext(ctx, "step update failed", "step", st.id, "err", err)

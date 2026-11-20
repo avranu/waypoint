@@ -51,8 +51,10 @@ const (
 )
 
 // reviewHealthIssues reads a project's record against the reopen
-// conditions. Every rule needs a minimum record, so a few rounds can't
-// trip one.
+// conditions. A rule about a rate needs a minimum record, so a few rounds
+// can't trip it; a run that reached the round cap and a check whose leads
+// the prompt's size guard cut are said at the first one, since one is
+// already exceptional.
 func reviewHealthIssues(byRound []AgainRoundStat, agree *AgainAgreement, helpers []AgainHelperStat) []reviewHealthIssue {
 	var out []reviewHealthIssue
 	add := func(title, format string, a ...any) {
@@ -135,26 +137,21 @@ func reviewHealthIssues(byRound []AgainRoundStat, agree *AgainAgreement, helpers
 					h.Confirmed, reviewHealthDays, h.ConfirmedRejected, pct(h.ConfirmedRejected, h.Confirmed))
 			}
 		}
-		if h.Guarded > 0 {
-			add("Review loop: Haiku check "+h.Check+"'s leads were cut by the prompt's size guard",
-				"In the last %d days, %d of the %s check's leads were cut past the size guard on the leads a reviewer's prompt takes (panelLeadsBytes, cmd/wp/runner_helpers.go), unread, not for anything they said (audit_helper_runs.cut, why \"past the …\"). The check returns far more than it should, or the guard is too low for what it finds.",
-				reviewHealthDays, h.Guarded, h.Check)
-		}
 		// Runs stopped with their job (cancelled) say nothing of the check.
 		if ran := h.Runs - h.Stopped; ran >= healthMinRuns && (h.Failed+h.Skipped+h.Partial)*2 > ran {
 			add("Review loop: Haiku check "+h.Check+" mostly doesn't run",
 				"Of %d runs of the %s check in the last %d days that weren't stopped with their job, %d failed, %d failed in part and %d were skipped. Skipped runs are runners without a signed-in claude (a gateway audit's runner needs it too); failed ones say why in audit_helper_runs.error.",
 				ran, h.Check, reviewHealthDays, h.Failed, h.Partial, h.Skipped)
 		}
-		if h.Check != helperVerify && h.Answered >= healthMinRuns && h.Leads >= healthMinLeads && h.TakenUp*20 < h.Leads {
-			add("Review loop: Haiku check "+h.Check+"'s leads are rarely taken up",
-				"The %s check handed reviewers %d leads in %d runs over the last %d days, and %d findings came from them (%.0f%%; the condition is under 5%%). It costs $%.2f there: its question or its pruning needs changing, or it should go.",
-				h.Check, h.Leads, h.Answered, reviewHealthDays, h.TakenUp, pct(h.TakenUp, h.Leads), h.CostUSD)
+		if h.Check != helperVerify && h.Check != helperCombine && h.Answered >= healthMinRuns && h.Raised >= healthMinLeads && h.Confirmed*20 < h.Raised {
+			add("Review loop: Haiku check "+h.Check+"'s problems are rarely confirmed",
+				"The %s check raised %d problems in %d runs over the last %d days, and a second read confirmed %d (%.0f%%; the condition is under 5%%). It costs $%.2f there: its question or its pruning needs changing, or it should go.",
+				h.Check, h.Raised, h.Answered, reviewHealthDays, h.Confirmed, pct(h.Confirmed, h.Raised), h.CostUSD)
 		}
-		if h.Check != helperVerify && h.TakenUp >= healthMinVerdicts && h.Held*4 < h.TakenUp {
-			add("Review loop: findings from Haiku check "+h.Check+" rarely hold",
-				"Of %d findings reviewers took from the %s check's leads in the last %d days, sessions fixed or confirmed %d (%.0f%%; the condition is under 25%%). The reviewer passes its leads on without checking them.",
-				h.TakenUp, h.Check, reviewHealthDays, h.Held, pct(h.Held, h.TakenUp))
+		if h.Check != helperVerify && h.Check != helperCombine && h.Fixed+h.Rejected >= healthMinVerdicts && h.Fixed*4 < h.Fixed+h.Rejected {
+			add("Review loop: findings from Haiku check "+h.Check+" are mostly rejected by sessions",
+				"Of %d findings from the %s check's problems that sessions marked in the last %d days, they fixed or confirmed %d (%.0f%%; the condition is under 25%%) and rejected %d. The second read passes what a session then finds doesn't hold.",
+				h.Fixed+h.Rejected, h.Check, reviewHealthDays, h.Fixed, pct(h.Fixed, h.Fixed+h.Rejected), h.Rejected)
 		}
 	}
 	return out

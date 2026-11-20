@@ -393,6 +393,7 @@ func (s *Service) dispatch(ctx context.Context, actor *Actor, events []*Event) {
 		s.onFanoutEvent(ctx, e)     // a fan-out's packages end; its ask is answered (WP-148)
 		s.onGoalDriftEvent(ctx, e)  // a drift flag raised or answered (WP-559)
 		s.onMergeOrderEvent(ctx, e) // a task change may end or start a merge wait (WP-912)
+		s.onObjectiveEvent(ctx, e)  // an objective's reading moves on; a merge is read (WP-ADR111)
 	}
 	s.afterDispatch(ctx, actor, events) // agent sessions and requests (WP-D16)
 	depth := 0

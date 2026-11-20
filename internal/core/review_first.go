@@ -181,7 +181,7 @@ func (s *Service) gateFor(ctx context.Context, actor *Actor, task string, take, 
 		g.no = "no runner online on this machine types reviews"
 		return g, nil
 	}
-	if g.run, err = s.openRunIn(ctx, x.ID, g.issueID); err != nil || g.run != 0 {
+	if g.run, err = s.openRunIn(ctx, s.db.R, x.ID, g.issueID); err != nil || g.run != 0 {
 		return g, err
 	}
 	if !take {
@@ -191,7 +191,7 @@ func (s *Service) gateFor(ctx context.Context, actor *Actor, task string, take, 
 	if g.no, err = s.retakeForReview(ctx, actor, g); err != nil || g.no != "" {
 		return g, err
 	}
-	if g.run, err = s.openRunIn(ctx, x.ID, g.issueID); err == nil && g.run == 0 {
+	if g.run, err = s.openRunIn(ctx, s.db.R, x.ID, g.issueID); err == nil && g.run == 0 {
 		g.no = g.key + " isn't under way in this session (wp next takes it)"
 	}
 	return g, err
@@ -293,9 +293,9 @@ func (s *Service) recordAgentSkip(ctx context.Context, t *tx, issueID, round int
 }
 
 // openRunIn is the task's run open in the session (0: none).
-func (s *Service) openRunIn(ctx context.Context, session, issueID int64) (int64, error) {
+func (s *Service) openRunIn(ctx context.Context, q queryer, session, issueID int64) (int64, error) {
 	var run int64
-	err := s.db.R.QueryRowContext(ctx, `SELECT id FROM agent_runs WHERE session_id = ? AND issue_id = ? AND ended_at IS NULL ORDER BY id DESC LIMIT 1`,
+	err := q.QueryRowContext(ctx, `SELECT id FROM agent_runs WHERE session_id = ? AND issue_id = ? AND ended_at IS NULL ORDER BY id DESC LIMIT 1`,
 		session, issueID).Scan(&run)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, nil
@@ -399,10 +399,13 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 	}
 	var id, ended int64
 	var state string
-	err = s.db.R.QueryRowContext(ctx, `SELECT id, state, coalesce(ended_at, 0) FROM work_log WHERE kind = 'review' AND run_id = ? ORDER BY id DESC LIMIT 1`, g.run).Scan(&id, &state, &ended)
-	seen := id // the run's own newest round, for scheduleRound
-	if errors.Is(err, sql.ErrNoRows) {
-		id, state, ended, err = s.roundBeforeResume(ctx, g, head)
+	var started bool // its prompt went in
+	id, state, ended, started, err = s.shipRound(ctx, s.db.R, g.x.ID, g.issueID, g.run, head)
+	// seen is the run's own newest round, for scheduleRound (0: none; the
+	// round found may be an earlier run's the session took up again)
+	var seen int64
+	if e := s.db.R.QueryRowContext(ctx, `SELECT coalesce(max(id), 0) FROM work_log WHERE kind = 'review' AND run_id = ?`, g.run).Scan(&seen); e != nil {
+		return false, "", "", e
 	}
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return false, "", "", err
@@ -434,13 +437,17 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 			tr := *assess()
 			tr.decision.Action, tr.decision.Why = triageSkip, triageWhy
 			return "", s.scheduleRound(ctx, actor, g, bp, seen, 0, why, &tr)
-		case RoundPending:
+		case RoundPending, RoundRunning:
+			// One under way is skipped on the record as well: the agent
+			// opens the pull request past it, and until WP-1320's audit
+			// nothing said so (the round stayed running, and its triage
+			// row said it was reviewed).
 			var moved bool
 			err := s.write(ctx, actor, func(t *tx) error {
 				var err error
-				moved, err = s.setRound(ctx, t, id, []string{RoundPending}, RoundSkipped, why)
+				moved, err = s.setRound(ctx, t, id, []string{RoundPending, RoundRunning}, RoundSkipped, why)
 				if err != nil || !moved {
-					return err // (not moved: it started just now, and the review is running)
+					return err // (not moved: it ended just now)
 				}
 				if err := s.stopRoundStep(ctx, t, g.x.ID, id, stepWhy); err != nil {
 					return err
@@ -468,6 +475,11 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 	switch intent {
 	case ShipSkip:
 		notice, err = skipRound("the agent skipped it: "+strings.TrimSpace(in.Reason), triageWhyAgentSkip, skipReviewStep)
+		if err == nil && roundDecidable(state, started) && state != RoundRunning {
+			// The round ran and ended; what the agent passes over is its
+			// scoring. That is on the record too, when nothing decided it.
+			s.noteUnscored(ctx, actor, g, id, in.Reason)
+		}
 		if err == nil && !in.noSweep {
 			notice = strings.TrimSpace(notice + " " + s.skipRoundsElsewhere(ctx, actor, g.issueID, id, g.key, in.Reason))
 		}
@@ -486,11 +498,18 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 				state = ""
 			}
 		}
-		if state == RoundRunning {
+		if roundDecidable(state, started) {
 			// This is its ship: new findings that score serious, or fixes
 			// that look partial, get another round first, round after
-			// round while they keep coming (WP-695, WP-1320).
-			held, notice, err := s.reviewAgain(ctx, actor, g, bp, id, head)
+			// round while they keep coming (WP-695, WP-1320). A round that
+			// ended before its ship (the session stopped after it and
+			// ships now) is decided the same: the decision is the ship's,
+			// not the round's state's, and passed over there, stopping
+			// once before wp ship opened the pull request on findings
+			// nothing had scored. So is one given up after its prompt
+			// went in ("no report came back"): this ship is that report,
+			// late. One decided already answers at once.
+			held, notice, err := s.reviewAgain(ctx, actor, g, bp, id, seen, head)
 			if err != nil || held != "" {
 				return false, held, notice, err
 			}
@@ -512,28 +531,58 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 			return true, "", "", nil // under way (this is its ship), or over
 		}
 		// The session reviewed the change itself since its last round
-		// (WP-1089): that review stands for the round, and the pull request
-		// opens, unless it found nothing and more was committed since. A
-		// report attached by hand is the agent's word: its skip.
+		// (WP-1089): that review is the change's round, whether the hook
+		// recorded its reviewer's report or the agent attached one. It is
+		// held to what any round is (reviewAgain): the session reports
+		// what the review found, its marks are checked against the code,
+		// and the findings are scored and may call for another round.
+		// Until WP-1320's audit it stood for the round on the session's
+		// word and the round was recorded as skipped. Not when the rules
+		// skip the change anyway, when the round's audit already has
+		// findings for the session (those are the round's: shipAudited),
+		// or when the review found nothing and more was committed since.
 		own, err := s.ownReviewFor(ctx, g)
 		if err != nil {
 			return false, "", "", err
 		}
 		ownStale := own.id != 0 && !own.covers(in.HeadTime)
-		if own.id != 0 && !ownStale {
-			why, triageWhy := ownReviewWhy(g.key), triageWhyOwnReview
-			if own.attached {
-				why, triageWhy = ownReviewAttachedWhy(g.key), triageWhyAgentSkip
+		if own.id != 0 && !ownStale && (state == RoundPending || assess().decision.Action != triageSkip) {
+			ready, err := s.roundAuditReady(ctx, id)
+			if err != nil {
+				return false, "", "", err
 			}
-			notice, err := skipRound(why, triageWhy, "the session ran its own adversarial review")
-			return err == nil, "", notice, err
+			if !ready {
+				var pending int64 // (id may be a round that is over)
+				if state == RoundPending {
+					pending = id
+				}
+				round, err := s.ownReviewRound(ctx, actor, g, bp, seen, pending, own, assess())
+				if err != nil {
+					return false, "", "", err
+				}
+				held, notice, err := s.reviewAgain(ctx, actor, g, bp, round, round, head)
+				if err != nil || held != "" {
+					return false, held, notice, err
+				}
+				return true, "", "", nil
+			}
 		}
 		var auditNotice string
 		if state == RoundPending {
 			// The session may have read the round's audit itself (WP-919).
 			done, n, err := s.shipAudited(ctx, actor, g, id)
-			if err != nil || done {
-				return done, "", n, err
+			if err != nil {
+				return false, "", "", err
+			}
+			if done {
+				// The round ended with this ship, so this ship is the one
+				// that decides it: the session's marks are checked and its
+				// findings scored as any round's (reviewAgain).
+				held, notice, err := s.reviewAgain(ctx, actor, g, bp, id, seen, head)
+				if err != nil || held != "" {
+					return false, held, notice, err
+				}
+				return true, "", n, nil
 			}
 			auditNotice = n
 		}
@@ -575,6 +624,10 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 		notice = "A review already finished on this change and nothing was committed since, so the pull request opens now. To review it again anyway: `wp ship --review --force`."
 		if existing {
 			notice = "A review already finished on this change and nothing was committed since; its pull request is open. To review it again anyway: `wp ship --review --force`."
+		} else if held, n, err := s.reviewAgain(ctx, actor, g, bp, id, seen, head); err != nil || held != "" {
+			// The finished round's findings decide whether another comes,
+			// as at any ship that would open the pull request.
+			return false, held, n, err
 		}
 		return true, "", notice, nil
 	case state == RoundDone && in.Force:
@@ -679,7 +732,7 @@ func (s *Service) shipAudited(ctx context.Context, actor *Actor, g *reviewGate, 
 	if err != nil || !ended {
 		return false, "", err
 	}
-	return true, fmt.Sprintf("%s's adversarial review was audit #%d, and nothing in it is left to decide, so the pull request opens.", g.key, a.ID), nil
+	return true, fmt.Sprintf("%s's adversarial review was audit #%d, and nothing in it is left to decide.", g.key, a.ID), nil
 }
 
 // stopRoundStep stops the session's autopilot step when it is about the
@@ -701,7 +754,33 @@ func (s *Service) stopRoundStep(ctx context.Context, t *tx, sessionID, roundID i
 // once. A record that fails doesn't hold the pull request back.
 func (s *Service) noteUnreviewed(ctx context.Context, actor *Actor, g *reviewGate) string {
 	body := fmt.Sprintf("wp ship went on to the pull request without the adversarial review first: %s.", g.no)
-	err := s.write(ctx, actor, func(t *tx) error {
+	if err := s.gateNote(ctx, actor, g, body); err != nil {
+		s.log.WarnContext(ctx, "unreviewed pull request not recorded", "task", g.key, "err", err)
+	}
+	return fmt.Sprintf("%s's pull request opens without its adversarial review first: %s.", g.key, g.no)
+}
+
+// noteUnscored records in the task's work log that the agent opened the
+// pull request past a finished round nothing had decided (wp ship
+// --skip-review at the hold for its findings or their scoring): the round
+// reads done, and without the note nothing says its findings were never
+// scored. Not when the round was decided: then the skip passed over
+// nothing.
+func (s *Service) noteUnscored(ctx context.Context, actor *Actor, g *reviewGate, round int64, why string) {
+	var decided int
+	if err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM review_again_decisions WHERE round_id = ?`, round).Scan(&decided); err != nil || decided > 0 {
+		return
+	}
+	body := fmt.Sprintf("wp ship --skip-review opened the pull request before the adversarial review round's findings were scored (work log entry %d), so nothing decided whether another round was due. The agent's reason: %s", round, strings.TrimSpace(why))
+	if err := s.gateNote(ctx, actor, g, body); err != nil {
+		s.log.WarnContext(ctx, "unscored review round not recorded", "task", g.key, "round", round, "err", err)
+	}
+}
+
+// gateNote adds a note to the gate's task's work log, once per session
+// and text.
+func (s *Service) gateNote(ctx context.Context, actor *Actor, g *reviewGate, body string) error {
+	return s.write(ctx, actor, func(t *tx) error {
 		var seen bool
 		if err := t.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM work_log WHERE issue_id = ? AND kind = 'note' AND session_id = ? AND body = ?)`,
 			g.issueID, g.x.ID, body).Scan(&seen); err != nil || seen {
@@ -721,10 +800,28 @@ func (s *Service) noteUnreviewed(ctx context.Context, actor *Actor, g *reviewGat
 		t.emit(&Event{Kind: EvIssueWorkLog, ProjectID: g.taskPID, IssueID: g.issueID, IssueKey: g.key, New: WorkNote, Data: map[string]any{"entry": id, "state": WorkNote}})
 		return nil
 	})
-	if err != nil {
-		s.log.WarnContext(ctx, "unreviewed pull request not recorded", "task", g.key, "err", err)
+}
+
+// shipRound is the adversarial review round a ship of the branch decides,
+// and a report of the review (reportRoundOf) lands on: the newest of the
+// run's own, else the round of the same change from the task's run before
+// this one in the session (roundBeforeResume). One locator, so a report
+// can't land on a round the ship won't decide (WP-1320). Rounds of
+// another session never count. branch "" is the branch of the session's
+// newest round before a pull request of the task, for a caller that isn't
+// told one (a report); id 0 (and sql.ErrNoRows) when there is none.
+func (s *Service) shipRound(ctx context.Context, q queryer, session, issueID, run int64, branch string) (id int64, state string, ended int64, started bool, err error) {
+	err = q.QueryRowContext(ctx, `SELECT id, state, coalesce(ended_at, 0), started_at IS NOT NULL FROM work_log WHERE kind = 'review' AND run_id = ? ORDER BY id DESC LIMIT 1`, run).Scan(&id, &state, &ended, &started)
+	if !errors.Is(err, sql.ErrNoRows) {
+		return id, state, ended, started, err
 	}
-	return fmt.Sprintf("%s's pull request opens without its adversarial review first: %s.", g.key, g.no)
+	if branch == "" {
+		if err := q.QueryRowContext(ctx, `SELECT coalesce(`+roundBranchSQL("w")+`, '') FROM work_log w WHERE w.kind = 'review' AND w.session_id = ? AND w.issue_id = ? AND w.before_pr != '' ORDER BY w.id DESC LIMIT 1`,
+			session, issueID).Scan(&branch); err != nil {
+			return 0, "", 0, false, err
+		}
+	}
+	return s.roundBeforeResume(ctx, q, session, issueID, run, branch)
 }
 
 // roundBeforeResume is the round of the same change from the task's run
@@ -734,14 +831,14 @@ func (s *Service) noteUnreviewed(ctx context.Context, actor *Actor, g *reviewGat
 // another. Only a run that stopped short of an end of its own counts (no
 // run ended done or released in between), only a round of the same branch,
 // and not one still pending: that one runs in no run, so a new one does.
-func (s *Service) roundBeforeResume(ctx context.Context, g *reviewGate, branch string) (id int64, state string, ended int64, err error) {
-	err = s.db.R.QueryRowContext(ctx, `SELECT w.id, w.state, coalesce(w.ended_at, 0) FROM work_log w
+func (s *Service) roundBeforeResume(ctx context.Context, q queryer, session, issueID, run int64, branch string) (id int64, state string, ended int64, started bool, err error) {
+	err = q.QueryRowContext(ctx, `SELECT w.id, w.state, coalesce(w.ended_at, 0), w.started_at IS NOT NULL FROM work_log w
 		WHERE w.kind = 'review' AND w.session_id = ? AND w.issue_id = ? AND w.run_id < ? AND w.state != 'pending'
-			AND w.before_pr != '' AND json_extract(w.before_pr, '$.branch') = ?
+			AND w.before_pr != '' AND `+roundBranchSQL("w")+` = ?
 			AND NOT EXISTS (SELECT 1 FROM agent_runs r WHERE r.issue_id = w.issue_id AND r.id >= w.run_id AND r.id < ?
 				AND (r.ended_at IS NULL OR r.outcome NOT IN ('paused', 'expired', 'timeout')))
-		ORDER BY w.id DESC LIMIT 1`, g.x.ID, g.issueID, g.run, branch, g.run).Scan(&id, &state, &ended)
-	return id, state, ended, err
+		ORDER BY w.id DESC LIMIT 1`, session, issueID, run, branch, run).Scan(&id, &state, &ended, &started)
+	return id, state, ended, started, err
 }
 
 // scheduleRound records the run's round before its pull request: pending,
@@ -785,6 +882,105 @@ func (s *Service) scheduleRound(ctx context.Context, actor *Actor, g *reviewGate
 		}
 		return err
 	})
+}
+
+// roundAuditReady says whether a pending round's audit ended with
+// findings the session hasn't been given yet: they are the round's.
+func (s *Service) roundAuditReady(ctx context.Context, round int64) (bool, error) {
+	if round == 0 {
+		return false, nil
+	}
+	var ready bool
+	err := s.db.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM work_log w JOIN code_audits a ON a.id = w.audit_id JOIN code_audit_findings f ON f.audit_id = a.id
+		WHERE w.id = ? AND w.state = 'pending' AND w.audit_note = '' AND a.status = ?)`, round, AuditDone).Scan(&ready)
+	return ready, err
+}
+
+// ownReviewNote is the audit note of a round the session's own review
+// stands as (ownReviewRound): no other model's findings are the round's.
+const ownReviewNote = "the session ran its own adversarial review before the round started"
+
+// ownReviewRound records the session's own review as the change's round
+// before its pull request: a round that ran (done), new, or the pending
+// one (its step stands down), with the triage that says the session
+// reviewed it. An audit the pending round had asked for goes on as the
+// pull request's (roundAuditOutlives), as when a round's reviewer ends
+// before its audit. The round has no findings until the session reports
+// them (ReportReview), and wp ship holds for that. seen is as for
+// scheduleRound.
+func (s *Service) ownReviewRound(ctx context.Context, actor *Actor, g *reviewGate, bp beforePR, seen, pending int64, own ownReview, tr *triageRow) (int64, error) {
+	raw, _ := json.Marshal(bp)
+	at := s.nowMS()
+	how := "its reviewer's report is in the work log"
+	if own.attached {
+		how = "the agent attached its report by hand"
+	}
+	body := fmt.Sprintf("The session ran its own adversarial review of the change (%s: wp worklog %s), which stands as this round. Its findings are the session's to report (wp audit report), and are checked and scored from there.", how, g.key)
+	id := pending
+	err := s.write(ctx, actor, func(t *tx) error {
+		var latest int64
+		if err := t.QueryRowContext(ctx, `SELECT coalesce(max(id), 0) FROM work_log WHERE kind = 'review' AND run_id = ?`, g.run).Scan(&latest); err != nil {
+			return err
+		}
+		if latest != seen {
+			return fmt.Errorf("another wp ship changed %s's adversarial review just now; run wp ship again to see where it stands: %w", g.key, ErrConflict)
+		}
+		note := ownReviewNote
+		if id == 0 {
+			var err error
+			if id, err = s.newReviewRound(ctx, t, g.x, g.run, g.issueID, g.lim.reviewPrompt(), at); err != nil {
+				return err
+			}
+			if _, err := t.ExecContext(ctx, `UPDATE work_log SET before_pr = ? WHERE id = ?`, string(raw), id); err != nil {
+				return err
+			}
+		} else {
+			var audit sql.NullInt64
+			if err := t.QueryRowContext(ctx, `SELECT w.audit_id FROM work_log w JOIN code_audits a ON a.id = w.audit_id
+				WHERE w.id = ? AND w.audit_note = '' AND a.status IN (?, ?)`, id, AuditQueued, AuditRunning).Scan(&audit); err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+			if audit.Valid {
+				note = fmt.Sprintf("%saudit #%d was still going when the session's own review ended first; the audit goes on as the pull request's", roundAuditOutwaited, audit.Int64)
+			}
+		}
+		res, err := t.ExecContext(ctx, `UPDATE work_log SET state = 'done', body = ?, started_at = coalesce(started_at, ?), ended_at = ?,
+			audit_note = CASE WHEN audit_note = '' THEN ? ELSE audit_note END, read_state = ?, read_by = ?, read_at = ?, updated_at = ?
+			WHERE id = ? AND kind = 'review' AND state = 'pending'`, body, at, at, note, readDone, readByRules, at, at, id)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return fmt.Errorf("%s's adversarial review started just now; run wp ship again: %w", g.key, ErrConflict)
+		}
+		s.emitWorkLog(ctx, t, g.issueID, id, RoundDone)
+		if err := s.stopRoundStep(ctx, t, g.x.ID, id, "the session ran its own adversarial review"); err != nil {
+			return err
+		}
+		// Reviewed, and by whom: the round's triage says so, unless it
+		// already says why the change was reviewed (a holdout, a shadow
+		// rule: what the rules' record is built from).
+		var assessed bool
+		if err := t.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM review_triage WHERE round_id = ?)`, id).Scan(&assessed); err != nil {
+			return err
+		}
+		if assessed {
+			_, err := t.ExecContext(ctx, `UPDATE review_triage SET why = ? WHERE round_id = ? AND action = ? AND why = ''`, triageWhyOwnReview, id, triageReview)
+			return err
+		}
+		if tr == nil {
+			return nil
+		}
+		row := *tr
+		if row.decision.Action != triageReview || row.decision.Why == "" {
+			row.decision.Action, row.decision.Why = triageReview, triageWhyOwnReview
+		}
+		if err := row.supersede(ctx, t, seen); err != nil {
+			return err
+		}
+		return row.insert(ctx, t, id)
+	})
+	return id, err
 }
 
 // heldUnshipped says why the step's task, held for its review before the

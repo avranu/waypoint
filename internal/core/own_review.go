@@ -16,8 +16,12 @@ import (
 // spends no turn recording it; wp worklog --review attaches one that ran
 // some other way. Its report is counted like a round's (found, and the
 // items the free model reads out of it), and wp ship takes it as the task's
-// review: a plain wp ship or --pr opens the pull request instead of
-// scheduling a round, and a round still pending is skipped for it.
+// review round: a plain wp ship or --pr records a round as run by it
+// instead of scheduling one (ownReviewRound), and holds the pull request
+// until the session reports what the review found (wp audit report,
+// review_report.go), which is then checked and scored like any round's.
+// Before WP-1320's audit it stood for the round on the session's word: the
+// round was recorded skipped and the pull request opened unscored.
 
 // WorkOwnReview is a session's own adversarial review (stored).
 const WorkOwnReview = "own_review"
@@ -305,15 +309,4 @@ func ownReviewTitle(found sql.NullInt64) string {
 		return "Own review: found no issues"
 	}
 	return fmt.Sprintf("Own review: found %d issue%s", found.Int64, plural(int(found.Int64)))
-}
-
-// ownReviewWhy is the skipped round's reason when an own review stands for it.
-func ownReviewWhy(key string) string {
-	return "the session ran its own adversarial review (wp worklog " + key + ")"
-}
-
-// ownReviewAttachedWhy is the skipped round's reason when a report the agent
-// attached by hand stands for it: the agent's word, so its skip.
-func ownReviewAttachedWhy(key string) string {
-	return "the agent attached a review report by hand (wp worklog " + key + ")"
 }
