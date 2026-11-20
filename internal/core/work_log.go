@@ -385,11 +385,25 @@ func (s *Service) roundAtStop(ctx context.Context, t *tx, x *AgentSession, issue
 	if body == "" {
 		read, reason = readFailed, "the session stopped without a report"
 	}
+	// A round the session reviewed and reported (ReportReview) is counted
+	// from that report, whatever this Stop's message says or leaves out.
+	own, total, fixed, rejected, err := s.ownReportCounts(ctx, t, r.id)
+	if err != nil {
+		return false, err
+	}
+	if own != 0 {
+		reason = ""
+	}
 	if _, err := t.ExecContext(ctx, `UPDATE work_log SET state = 'done', body = ?, reason = ?, ended_at = ?, read_state = ?, read_at = ?, updated_at = ? WHERE id = ? AND state = 'running'`,
 		body, reason, at, read, at+reviewReadDelay.Milliseconds(), s.nowMS(), r.id); err != nil {
 		return false, err
 	}
 	s.emitWorkLog(ctx, t, issueID, r.id, RoundDone)
+	if own != 0 {
+		if err := s.countOwnRound(ctx, t, issueID, r.id, total, fixed, rejected, at); err != nil {
+			return false, err
+		}
+	}
 	key := ""
 	_ = t.QueryRowContext(ctx, `SELECT p.key || '-' || i.number FROM issues i JOIN projects p ON p.id = i.project_id WHERE i.id = ?`, issueID).Scan(&key)
 	_ = s.sessionTimeline(ctx, t, x.ID, at, "autopilot", "", 0, "reviewed", "", "Finished the adversarial review of "+key, x.projectID, map[string]any{"round": r.id})
@@ -412,8 +426,10 @@ func subagentsSince(seen map[string]int64, since, now int64) bool {
 
 // endStepRound ends what is left of a step's round when the step stops:
 // one not yet started never will (skipped); one running goes on to its
-// Stop unless the session was taken from it (interrupt: a person's prompt,
-// another task, the session's end).
+// Stop unless the session was taken from it (interrupt: another task, the
+// session's end; not a person's prompt, which leaves the review running,
+// roundTaken). A round left running ends at the session's Stop, or
+// sweepRounds ends it (the session ended, or no report came in time).
 func (s *Service) endStepRound(ctx context.Context, t *tx, roundID int64, why string, interrupt bool) error {
 	if roundID == 0 {
 		return nil
@@ -431,8 +447,9 @@ func (s *Service) endStepRound(ctx context.Context, t *tx, roundID int64, why st
 // reviewInterruptsMax is how many of a task's rounds in one session may be
 // interrupted before its review stops being asked for again (WP-823). A
 // round cut short before it reported runs again, but whatever keeps taking
-// the session from it (a person who doesn't want it, or a prompt Waypoint
-// misreads as a person's) mustn't have it asked for without end.
+// the session from it (another task, the session's end) mustn't have it
+// asked for without end. A person's prompt doesn't interrupt a round now
+// (WP-1320), so it doesn't count.
 const reviewInterruptsMax = 3
 
 // roundReplaced is why a running round the agent replaced with a new one

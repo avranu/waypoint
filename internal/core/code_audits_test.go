@@ -1,6 +1,8 @@
 package core
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -255,10 +257,41 @@ func TestRequestAuditRefusals(t *testing.T) {
 }
 
 func TestParseAuditAnswer(t *testing.T) {
-	if a, err := parseAuditAnswer(map[string]any{"answer": "NO FINDINGS"}); err != nil || len(a.Findings) != 0 {
-		t.Errorf("no findings = %+v %v", a, err)
+	for _, text := range []string{"NO FINDINGS", "**No findings.**\n", `{"summary": "Read it all.", "findings": []}`} {
+		if a, err := parseAuditAnswer(map[string]any{"answer": text}); err != nil || len(a.Findings) != 0 || a.raised != 0 {
+			t.Errorf("%q = %+v %v", text, a, err)
+		}
 	}
-	a, err := parseAuditAnswer(map[string]any{"answer": "```json\n{\"summary\":\"\",\"findings\":[{\"title\":\"\",\"problem\":\"Leaks a file handle\\nmore\",\"path\":\"a/x.go:17\",\"severity\":\"Major\"},{\"title\":\"\",\"problem\":\"\"},{\"title\":\"Climbs out\",\"path\":\"../../etc\",\"severity\":\"P0\"}]}\n```"})
+	// An answer that says nothing about the change is no answer: an object
+	// with no findings list, words around "no findings", nothing at all.
+	// Read as "found nothing" it ended a review round clean (WP-1320).
+	for _, text := range []string{`{}`, `{"summary": "I can't review this."}`, `{"findings": null}`, "", "I found no findings in a.go, but b.go has a nil deref.",
+		"There were NO FINDINGS because the diff could not be read."} {
+		a, err := parseAuditAnswer(map[string]any{"answer": text})
+		if err == nil {
+			t.Errorf("%q read as an answer: %+v", text, a)
+		}
+	}
+	if _, err := parseAuditAnswer(map[string]any{"answer": `{}`}); !errors.Is(err, errNoFindingsList) {
+		t.Errorf("{} = %v", err)
+	}
+	// The words reviewers write for "barely matters" are low, not the
+	// medium an unknown label gets; the worst are kept when there are more
+	// than the cap, wherever the model wrote them.
+	var many []string
+	for i := range auditMaxFindings + 5 {
+		many = append(many, fmt.Sprintf(`{"title": "Nit %d", "problem": "A small thing.", "severity": "trivial"}`, i))
+	}
+	many = append(many, `{"title": "Loses data", "problem": "The write is dropped.", "severity": "Severe"}`, `{"title": "Odd", "problem": "Hm.", "severity": "weird"}`)
+	a, err := parseAuditAnswer(map[string]any{"answer": `{"summary": "", "findings": [` + strings.Join(many, ",") + `]}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(a.Findings) != auditMaxFindings+7 || a.raised != auditMaxFindings+7 || a.Findings[0].Title != "Loses data" || a.Findings[0].Severity != "critical" ||
+		a.Findings[1].Title != "Odd" || a.Findings[1].Severity != "medium" || a.Findings[2].Title != "Nit 0" || a.Findings[2].Severity != "low" {
+		t.Errorf("many = %d findings, raised %d, first %+v", len(a.Findings), a.raised, a.Findings[:min(3, len(a.Findings))])
+	}
+	a, err = parseAuditAnswer(map[string]any{"answer": "```json\n{\"summary\":\"\",\"findings\":[{\"title\":\"\",\"problem\":\"Leaks a file handle\\nmore\",\"path\":\"a/x.go:17\",\"severity\":\"Major\"},{\"title\":\"\",\"problem\":\"\"},{\"title\":\"Climbs out\",\"path\":\"../../etc\",\"severity\":\"P0\"}]}\n```"})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -742,3 +742,29 @@ func TestRunnerJobFirstCancelReasonStays(t *testing.T) {
 		t.Fatalf("error = %q", got.Error)
 	}
 }
+
+// A job's result is kept up to RunnerResultMax and refused over it with the
+// words the runner reads to send less (WP-1320): an audit's result holds its
+// helpers' runs, which passed the old 256 KB.
+func TestFinishRunnerJobResultLimit(t *testing.T) {
+	e := newEnv(t)
+	r := e.runner(e.admin, "mine", nil)
+	j := e.enqueue(e.admin, RunnerJobInput{Kind: JobCommand, Input: cmdInput("make", "/work")})
+	e.poll(e.admin, r, RunnerPoll{})
+	over := json.RawMessage(`{"pad":"` + strings.Repeat("x", RunnerResultMax) + `"}`)
+	_, err := e.s.FinishRunnerJob(e.ctx, e.admin, j.ID, RunnerFinish{State: "done", Result: over})
+	if !IsInvalid(err) || !strings.Contains(err.Error(), RunnerResultTooLarge) {
+		t.Fatalf("a result over the most: %v", err)
+	}
+	if _, err := e.s.FinishRunnerJob(e.ctx, e.admin, j.ID, RunnerFinish{State: "done", Result: json.RawMessage(`{"pad": `)}); !IsInvalid(err) || !strings.Contains(err.Error(), "JSON") {
+		t.Fatalf("a result that isn't JSON: %v", err)
+	}
+	mid := json.RawMessage(`{"pad":"` + strings.Repeat("x", 1<<20) + `"}`)
+	if st, err := e.s.FinishRunnerJob(e.ctx, e.admin, j.ID, RunnerFinish{State: "done", Result: mid}); err != nil || st != "done" {
+		t.Fatalf("a 1 MB result: %q %v", st, err)
+	}
+	got, err := e.s.GetRunnerJob(e.ctx, e.admin, j.ID, 0)
+	if err != nil || len(got.Result) != len(mid) {
+		t.Errorf("stored %d bytes, want %d (%v)", len(got.Result), len(mid), err)
+	}
+}

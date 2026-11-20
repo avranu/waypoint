@@ -3,6 +3,7 @@ package core
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -143,5 +144,58 @@ func TestSafetyScreenAsksTheDecisionModelFirst(t *testing.T) {
 	ts = screen("Rename a helper", "Rename fooBar to foo.")
 	if ts == nil || ts.Verdict != SafetyClear || ts.Model == "LLM gateway · jev-1.14.0" || g.screens() != 3 {
 		t.Fatalf("refused: %+v, chat screens %d", ts, g.screens())
+	}
+}
+
+// A probability the decision model gives out of range fails the ask: every
+// caller weighs by them, so a 5 where 0.5 was meant would outvote the
+// other asks of a sample (WP-1320's audit).
+func TestCheckProbabilities(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		ans  jevAnswer
+		ok   bool
+	}{
+		{"a yes", jevAnswer{Type: "noul", Noul: 0.98, Confidence: 1}, true},
+		{"a choice", jevAnswer{Type: "choice", Choice: "high", Confidence: 0.6, Probabilities: map[string]float64{"high": 0.6, "low": 0.4}}, true},
+		{"rounding at one", jevAnswer{Probabilities: map[string]float64{"high": 1.0000000001}}, true},
+		{"nothing given", jevAnswer{}, true},
+		{"a percentage", jevAnswer{Type: "noul", Noul: 98}, false},
+		{"a negative confidence", jevAnswer{Confidence: -0.1}, false},
+		{"a choice over one", jevAnswer{Probabilities: map[string]float64{"high": 5, "low": 0.4}}, false},
+		{"not a number", jevAnswer{Probabilities: map[string]float64{"high": math.NaN()}}, false},
+		{"infinite", jevAnswer{Noul: math.Inf(1)}, false},
+	} {
+		if err := checkProbabilities(map[string]jevAnswer{"q": c.ans}); (err == nil) != c.ok {
+			t.Errorf("%s: %v", c.name, err)
+		}
+	}
+}
+
+// decide fails the ask when the decision model's probability isn't one: a
+// percentage (98) or a number past 1 would outvote the other asks of a
+// sample, so no caller sees it (WP-1320).
+func TestDecideRefusesOutOfRangeProbability(t *testing.T) {
+	e := newEnv(t)
+	j := &fakeJev{chat: &fakeGateway{}}
+	gw := httptest.NewServer(j)
+	defer gw.Close()
+	e.s.LLM = gatewayClient()
+	if err := e.s.EnsureLLMGateway(e.ctx, GatewaySetup{BaseURL: gw.URL, APIKey: "olm_test", Extensions: GatewayExtensions}); err != nil {
+		t.Fatal(err)
+	}
+	qs := map[string]jevQuestion{"refund": {Type: "noul", Instructions: "Does the customer ask for a refund?"}}
+	for _, c := range []struct {
+		yes float64
+		ok  bool
+	}{{0.98, true}, {98, false}, {1.5, false}, {-0.2, false}} {
+		j.yes = map[string]float64{"refund": c.yes}
+		ans, _, err := e.s.decide(e.ctx, "test", "I was charged twice.", qs)
+		if (err == nil) != c.ok || (err == nil && ans["refund"].Noul != c.yes) {
+			t.Errorf("a probability of %v: answers %+v, err %v; ok want %v", c.yes, ans, err, c.ok)
+		}
+		if c.ok != (err == nil) || (!c.ok && ans != nil) {
+			t.Errorf("a probability of %v still returned answers: %+v", c.yes, ans)
+		}
 	}
 }

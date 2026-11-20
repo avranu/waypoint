@@ -624,17 +624,16 @@ type helperStat struct {
 	Partial           int     `json:"partial"`
 	Stopped           int     `json:"stopped"`
 	Answered          int     `json:"answered"`
-	Leads             int     `json:"leads"`
-	Dropped           int     `json:"dropped"`
-	TakenUp           int     `json:"taken_up"`
-	Held              int     `json:"held"`
+	Raised            int     `json:"raised"`
+	Added             int     `json:"added"`
+	Fixed             int     `json:"fixed"`
+	Rejected          int     `json:"rejected"`
 	CostUSD           float64 `json:"cost_usd"`
 	Confirmed         int     `json:"confirmed"`
 	Refuted           int     `json:"refuted"`
 	Unsupported       int     `json:"unsupported"`
 	RefutedHeld       int     `json:"refuted_held"`
 	ConfirmedRejected int     `json:"confirmed_rejected"`
-	Guarded           int     `json:"guarded"`
 	Reasked           int     `json:"reasked"`
 	Overturned        int     `json:"overturned"`
 }
@@ -648,24 +647,25 @@ func helperStatsText(hs []helperStat) string {
 	}
 	var b strings.Builder
 	b.WriteString("\nHaiku helpers around the rounds' audits (WP-1320):\n")
-	fmt.Fprintf(&b, "%-12s %5s %5s %6s %7s %6s %7s %7s %5s %8s\n", "CHECK", "RUNS", "DONE", "FAILED", "SKIPPED", "LEADS", "DROPPED", "TAKENUP", "HELD", "COST")
+	fmt.Fprintf(&b, "%-12s %5s %5s %6s %7s %6s %9s %5s %5s %8s %8s\n", "CHECK", "RUNS", "DONE", "FAILED", "SKIPPED", "RAISED", "CONFIRMED", "ADDED", "FIXED", "REJECTED", "COST")
 	var verify *helperStat
 	for i, h := range hs {
 		if h.Check == "verify" {
 			verify = &hs[i]
+			continue
 		}
-		fmt.Fprintf(&b, "%-12s %5d %5d %6d %7d %6d %7d %7d %5d %8s\n", h.Check, h.Runs, h.Done, h.Failed, h.Skipped, h.Leads, h.Dropped, h.TakenUp, h.Held, fmt.Sprintf("$%.2f", h.CostUSD))
+		fmt.Fprintf(&b, "%-12s %5d %5d %6d %7d %6d %9d %5d %5d %8d %8s\n", h.Check, h.Runs, h.Done, h.Failed, h.Skipped, h.Raised, h.Confirmed, h.Added, h.Fixed, h.Rejected, fmt.Sprintf("$%.2f", h.CostUSD))
 	}
-	b.WriteString("LEADS: handed to the reviewer after pruning. DROPPED: cut (no title or problem, outside the checkout, a repeat, or past the prompt's size guard; each kept with why). TAKENUP: findings the reviewer said came from them. HELD: of those, fixed or confirmed by the session.\n")
+	if verify != nil {
+		fmt.Fprintf(&b, "%-12s %5d %5d %6d %7d %6s %9s %5s %5s %8s %8s\n", verify.Check, verify.Runs, verify.Done, verify.Failed, verify.Skipped, "", "", "", "", "", fmt.Sprintf("$%.2f", verify.CostUSD))
+	}
+	b.WriteString("RAISED: every problem a check raised after pruning. CONFIRMED: of them, by a second Haiku read of the code. ADDED: findings the runner added to the audit from the check's confirmed problems (since 2026-11-20; before it reviewers were handed the leads, and what they took up is not counted here). FIXED, REJECTED: how sessions marked those findings.\n")
 	for _, h := range hs {
-		if h.Guarded > 0 {
-			fmt.Fprintf(&b, "%s: %d leads cut past the prompt's size guard, unread.\n", h.Check, h.Guarded)
-		}
 		if h.Partial+h.Stopped > 0 {
 			fmt.Fprintf(&b, "%s: %d runs failed in part, %d stopped with their job (counted in RUNS, not DONE or FAILED).\n", h.Check, h.Partial, h.Stopped)
 		}
 		if h.Check != "verify" && h.Done > h.Answered {
-			fmt.Fprintf(&b, "%s: %d done runs went with a reviewer that didn't answer; LEADS counts only the %d whose reviewer did.\n", h.Check, h.Done-h.Answered, h.Answered)
+			fmt.Fprintf(&b, "%s: %d done runs went with a reviewer that didn't answer; RAISED counts only the %d whose reviewer did.\n", h.Check, h.Done-h.Answered, h.Answered)
 		}
 	}
 	if v := verify; v != nil && v.Confirmed+v.Refuted+v.Unsupported > 0 {

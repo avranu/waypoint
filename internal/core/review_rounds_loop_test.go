@@ -359,9 +359,11 @@ func TestReviewRoundsProbe(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// Only a critical finding is a signal: the high one is left to
-			// the scores, and so to the probe.
+			// the scores, which put it under the bar (the model calls it
+			// cosmetic: 4.5 of the 5.5 a change of unknown stakes needs),
+			// and so to the probe.
 			withFloor(t, 9)
-			e := newLoopEnv(t, map[string]string{"": "minor", "fixes": "complete"})
+			e := newLoopEnv(t, map[string]string{"": "cosmetic", "fixes": "complete"})
 			r1 := e.review("Merge loses an update")
 			e.mark(r1, tc.state)
 			seed(e, r1, tc.next)
@@ -412,7 +414,7 @@ func TestReviewRoundsProbe(t *testing.T) {
 			// The probe's round scores under the bar too, with a new finding
 			// fixed: the run has had its probe, so the pull request opens.
 			e.setClock(e.clockNow().Add(time.Minute))
-			e.j.choice = map[string]string{"": "minor", "fixes": "complete", "r1": "new"}
+			e.j.choice = map[string]string{"": "cosmetic", "fixes": "complete", "r1": "new"}
 			r2 := e.review("The cache key leaves out the tenant")
 			e.mark(r2, "fixed")
 			if p, _, err := e.s.againYield(e.ctx, AgainProbe, 2, r2); err != nil || p < againYieldFloor {
@@ -440,8 +442,9 @@ func TestReviewAgainPick(t *testing.T) {
 		worst, worstAll, fixesMean float64
 		want                       string
 	}{
-		{"high stakes, a medium-high finding", StakesHigh, 1, 1, 0, 6.5, 6.5, 1, ""},
-		{"normal stakes, the same", StakesNormal, 1, 1, 0, 6.5, 6.5, 1, AgainEnough},
+		{"high stakes, a medium-high finding", StakesHigh, 1, 1, 0, 6, 6, 1, ""},
+		{"normal stakes, the same", StakesNormal, 1, 1, 0, 6, 6, 1, AgainEnough},
+		{"normal stakes, a medium the model calls serious", StakesNormal, 1, 1, 0, 6.5, 6.5, 1, ""},
 		{"normal stakes, a critical one", StakesNormal, 1, 1, 0, 9, 9, 1, ""},
 		{"unknown stakes, partial fixes", StakesUnknown, 1, 1, 0, 3, 3, 6, ""},
 		{"normal stakes, partial fixes", StakesNormal, 1, 1, 0, 3, 3, 6, AgainEnough},
@@ -640,7 +643,10 @@ func TestReviewRoundsCheckMarks(t *testing.T) {
 		{"every rejection right", []string{"rejected", "rejected"}, "done", nil, "", AgainRejected, [3]int{2, 0, 2}},
 		{"the only finding overturned", []string{"rejected"}, "done", []string{"[x.1] Merge loses an update"}, "fixed", AgainReview, [3]int{2, 1, 1}},
 		{"a fix that doesn't fix", []string{"fixed"}, "done", []string{"[x.1] The merge still loses an update"}, "fixed", AgainReview, [3]int{2, 2, 0}},
-		{"the session stands by its rejection", []string{"rejected"}, "done", []string{"[x.1] Merge loses an update"}, "rejected", AgainRejected, [3]int{2, 0, 2}},
+		// The check found the rejection wrong and the session rejected the
+		// check's finding too: its word against the check's, with nothing
+		// that upheld it, so another reviewer reads the change.
+		{"the session stands by its rejection", []string{"rejected"}, "done", []string{"[x.1] Merge loses an update"}, "rejected", AgainReview, [3]int{2, 0, 2}},
 		{"the check failed", []string{"fixed", "rejected"}, "failed", nil, "", AgainReview, [3]int{2, 1, 1}},
 		{"the check is slow", []string{"fixed", "rejected"}, "slow", nil, "", AgainReview, [3]int{2, 1, 1}},
 		{"out of form, then right", []string{"rejected", "rejected"}, "unreadable once", nil, "", AgainRejected, [3]int{2, 0, 2}},
@@ -688,6 +694,7 @@ func TestReviewRoundsCheckMarks(t *testing.T) {
 			switch tc.check {
 			case "slow":
 				e.tick(checkPatience + time.Minute) // the runner keeps polling
+				e.s.Wait()                          // the cancel's news is typed in after the tick returns
 				// The sweep cancels it, and that wakes the session to ship.
 				var told int
 				if err := e.s.db.R.QueryRow(`SELECT count(*) FROM session_messages WHERE session_id = ? AND step_key = ?`, e.ag.Session, fmt.Sprintf("audit:%d:%s", check, AuditCancelled)).Scan(&told); err != nil || told != 1 {
@@ -753,6 +760,8 @@ func TestReviewRoundsCheckMarks(t *testing.T) {
 			wantChecked, wantUnchecked := checkScored, 0
 			if tc.check != "done" && tc.check != "unreadable once" {
 				wantChecked, wantUnchecked = checkPassed, tc.counts[2]
+			} else if tc.mark == "rejected" {
+				wantUnchecked = 1 // the check's own finding, rejected in turn
 			}
 			if checked != wantChecked || unchecked != wantUnchecked {
 				t.Errorf("checked %d unchecked %d, want %d %d", checked, unchecked, wantChecked, wantUnchecked)

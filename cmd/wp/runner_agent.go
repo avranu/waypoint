@@ -370,9 +370,12 @@ func (p *runnerProc) execAgent(ctx context.Context, run *jobRun, kind string, in
 			ch.commits, map[bool]string{true: "", false: "s"}[ch.commits == 1], len(change))
 	}
 	if in.Helpers != nil {
-		// The panel reads the change before the model, which gets its leads.
+		// The panel reads the change beside the model, which is told nothing
+		// of it (runner_helpers.go): finish waits for it and takes its runs on every
+		// return from here, before attach puts its runs in the result.
 		hx = p.newHelpers(run, in.Helpers, work)
-		in.Prompt += hx.panel(ctx, change, changeRange)
+		hx.startPanel(ctx, change, changeRange)
+		defer hx.finish()
 	}
 	if gateway {
 		result := map[string]any{"cli": in.CLI, "base": baseSHA, "commits": []string{}}
@@ -384,7 +387,9 @@ func (p *runnerProc) execAgent(ctx context.Context, run *jobRun, kind string, in
 		}
 		out := p.execGatewayAudit(ctx, run, in, work, result)
 		if hx != nil && out.State == "done" {
-			hx.verify(ctx, result)
+			hx.join(ctx, result)
+		} else if hx != nil {
+			hx.reviewerFailed()
 		}
 		return out
 	}
@@ -439,6 +444,9 @@ func (p *runnerProc) execAgent(ctx context.Context, run *jobRun, kind string, in
 	}
 	answer, structured, tokens, ferr := drv.finish(stdout.Bytes())
 	if ferr != nil {
+		if hx != nil {
+			hx.reviewerFailed()
+		}
 		msg := ferr.Error()
 		if runErr != nil && stderrTail.String() != "" {
 			msg += " (" + excerpt(stderrTail.String(), 300) + ")"
@@ -446,6 +454,9 @@ func (p *runnerProc) execAgent(ctx context.Context, run *jobRun, kind string, in
 		return outcome{State: "failed", Error: msg, Result: map[string]any{"answer": answer, "tokens": tokens}}
 	}
 	if runErr != nil && answer == "" {
+		if hx != nil {
+			hx.reviewerFailed()
+		}
 		return failed("%s exited with an error: %v. %s", bin, runErr, excerpt(stderrTail.String(), 300))
 	}
 
@@ -460,7 +471,7 @@ func (p *runnerProc) execAgent(ctx context.Context, run *jobRun, kind string, in
 		result["structured"] = structured
 	}
 	if hx != nil {
-		hx.verify(ctx, result)
+		hx.join(ctx, result)
 	}
 	if !in.ReadOnly {
 		if status, _ := p.git(ctx, work, "status", "--porcelain"); status != "" {
