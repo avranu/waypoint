@@ -133,7 +133,7 @@ const FeatureGatewayLane = "gateway_lane"
 // (SessionJob.Kickoff, WP-1037).
 const FeatureTaskKickoff = "task_kickoff"
 
-var runnerFeatures = []string{FeatureConfine, FeatureAutopilot, FeatureAutopilotStart, FeatureAudit, FeatureAutopilotReview, FeatureRequestLane, FeatureMessageLane, FeatureGatewayAudit, FeatureGatewayLane, FeatureSandboxDrill, FeatureTaskKickoff}
+var runnerFeatures = []string{FeatureConfine, FeatureAutopilot, FeatureAutopilotStart, FeatureAudit, FeatureAutopilotReview, FeatureRequestLane, FeatureMessageLane, FeatureGatewayAudit, FeatureGatewayLane, FeatureSandboxDrill, FeatureTaskKickoff, FeatureObjective}
 
 // runnerState is the Service's in-memory part of runners: a broadcast that
 // wakes held polls, and when each job's last live update went out.
@@ -772,6 +772,9 @@ func runnerCanTake(r *Runner, n jobNeeds) bool {
 	}
 	if n.kind == JobAudit && !slices.Contains(r.Features, FeatureAudit) {
 		return false
+	}
+	if n.kind == JobObjective && !slices.Contains(r.Features, FeatureObjective) {
+		return false // its wp predates objective readings (WP-ADR142)
 	}
 	if n.kind == JobSandboxDrill && !slices.Contains(r.Features, FeatureSandboxDrill) {
 		return false

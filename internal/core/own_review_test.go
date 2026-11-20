@@ -115,36 +115,66 @@ func TestOwnReviewNoTask(t *testing.T) {
 	}
 }
 
-// The session's own review stands for the task's round: wp ship and --pr
-// open the pull request, and a round still pending is skipped for it;
-// --review still asks for one.
+// The session's own review is the task's round: wp ship and --pr record a
+// round as run by it, a round still pending becomes it, and the pull
+// request waits for the session's report of what the review found
+// (WP-1320); --review still asks for a round of its own.
 func TestShipWithOwnReview(t *testing.T) {
-	t.Run("pr opens", func(t *testing.T) {
+	t.Run("the round, held for its report", func(t *testing.T) {
 		a, g, key := introEnv(t)
 		a.ownReviewDone("No issues found.")
-		res, err := a.ship(key, ShipPR)
-		if err != nil || res.Pull == nil || res.Held != "" || len(g.created) != 1 {
-			t.Fatalf("pr = %+v, %v", res, err)
+		for range 2 { // and again: the same answer, one round
+			res, err := a.ship(key, ShipPR)
+			if err != nil || res.Pull != nil || !strings.Contains(res.Held, "wp audit report "+key) || !strings.Contains(res.Notice, "--skip-review") || len(g.created) != 0 {
+				t.Fatalf("pr = %+v, %v", res, err)
+			}
 		}
-		if got := a.rounds(); len(got) != 1 || got[0] != "skipped "+ownReviewWhy(key) {
+		if got := a.rounds(); len(got) != 1 || got[0] != RoundDone {
 			t.Fatalf("rounds = %q", got)
 		}
-		if rows := a.triageRows(); len(rows) != 1 || rows[0].action != triageSkip || rows[0].why != triageWhyOwnReview {
+		id := a.newestRoundID()
+		if note := a.roundNote(id); note != ownReviewNote {
+			t.Fatalf("audit note = %q", note)
+		}
+		if body := a.body(id); !strings.Contains(body, "its reviewer's report is in the work log") {
+			t.Fatalf("body = %q", body)
+		}
+		if rows := a.triageRows(); len(rows) != 1 || rows[0].action != triageReview || rows[0].why != triageWhyOwnReview {
 			t.Fatalf("triage = %+v", rows)
 		}
+		rep, err := a.reportNone(key, "The adversarial-review agent read the whole diff against main; nothing stood.")
+		if err != nil || rep.Round != id || len(rep.Audit.Findings) != 0 {
+			t.Fatalf("report = %+v, %v", rep, err)
+		}
+		// The work log counted the reviewer's words as raising nothing,
+		// as the report says: no check is asked to read them again.
+		if _, err := a.s.db.W.Exec(`UPDATE work_log SET read_state = 'done', found = 0, fixed = 0, rejected = 0 WHERE kind = ?`, WorkOwnReview); err != nil {
+			t.Fatal(err)
+		}
+		res, err := a.ship(key, ShipPR)
+		if err != nil || res.Pull == nil || res.Held != "" || len(g.created) != 1 {
+			t.Fatalf("pr after the report = %+v, %v", res, err)
+		}
+		if got := a.roundCounts(id); got != "0/0/0" {
+			t.Fatalf("round counts = %s", got)
+		}
 	})
-	t.Run("pending round skipped", func(t *testing.T) {
+	t.Run("a pending round becomes it", func(t *testing.T) {
 		a, g, key := introEnv(t)
 		if res, err := a.ship(key, ShipAuto); err != nil || res.Held == "" || len(g.created) != 0 {
 			t.Fatalf("auto = %+v, %v", res, err)
 		}
+		pending := a.newestRoundID()
 		a.ownReviewDone("1. a bug")
 		res, err := a.ship(key, ShipAuto)
-		if err != nil || res.Pull == nil || len(g.created) != 1 {
+		if err != nil || res.Pull != nil || !strings.Contains(res.Held, "wp audit report") || len(g.created) != 0 {
 			t.Fatalf("auto after own = %+v, %v", res, err)
 		}
-		if got := a.rounds(); len(got) != 1 || got[0] != "skipped "+ownReviewWhy(key) {
+		if got := a.rounds(); len(got) != 1 || got[0] != RoundDone || a.newestRoundID() != pending {
 			t.Fatalf("rounds = %q", got)
+		}
+		if note := a.roundNote(pending); note != ownReviewNote {
+			t.Fatalf("audit note = %q", note)
 		}
 	})
 	t.Run("review still asks", func(t *testing.T) {
@@ -192,8 +222,12 @@ func TestOwnReviewTwoTasks(t *testing.T) {
 		t.Fatalf("own reviews = %q", got)
 	}
 	a.ownReviewAsked("Review "+first+".", "No issues found.")
-	if res, err := a.ship(first, ShipPR); err != nil || res.Pull == nil {
+	if res, err := a.ship(first, ShipPR); err != nil || !strings.Contains(res.Held, "wp audit report "+first) {
 		t.Fatalf("first with its review: %+v, %v", res, err)
+	}
+	// (the round its first ship scheduled is the one the review became)
+	if got := a.rounds(); len(got) != 1 || got[0] != RoundDone {
+		t.Fatalf("rounds = %q", got)
 	}
 }
 
@@ -233,8 +267,12 @@ func TestOwnReviewCommitsSince(t *testing.T) {
 				t.Fatal(err)
 			}
 			if c.stands {
-				if res.Pull == nil || len(g.created) != 1 {
+				// (as the change's round, held for its report)
+				if res.Pull != nil || !strings.Contains(res.Held, "wp audit report") || len(g.created) != 0 {
 					t.Fatalf("own review didn't stand: %+v", res)
+				}
+				if got := a.rounds(); len(got) != 1 || got[0] != RoundDone {
+					t.Fatalf("rounds = %q", got)
 				}
 				return
 			}
@@ -248,21 +286,25 @@ func TestOwnReviewCommitsSince(t *testing.T) {
 	}
 }
 
-// A report the agent attached by hand stands for the round as the agent's
-// own skip, which it is: the round and triage say so.
+// A report the agent attached by hand is the change's round as the
+// hook's is: the round says how it came, and the pull request waits for
+// the findings all the same.
 func TestShipWithAttachedReview(t *testing.T) {
 	a, g, key := introEnv(t)
 	if _, err := a.s.AddWorkNote(a.ctx, a.ag, key, WorkNoteInput{Body: "ok", Review: true}); err != nil {
 		t.Fatal(err)
 	}
 	res, err := a.ship(key, ShipPR)
-	if err != nil || res.Pull == nil || len(g.created) != 1 {
+	if err != nil || res.Pull != nil || !strings.Contains(res.Held, "wp audit report") || len(g.created) != 0 {
 		t.Fatalf("pr = %+v, %v", res, err)
 	}
-	if got := a.rounds(); len(got) != 1 || got[0] != "skipped "+ownReviewAttachedWhy(key) {
+	if got := a.rounds(); len(got) != 1 || got[0] != RoundDone {
 		t.Fatalf("rounds = %q", got)
 	}
-	if rows := a.triageRows(); len(rows) != 1 || rows[0].why != triageWhyAgentSkip {
+	if body := a.body(a.newestRoundID()); !strings.Contains(body, "the agent attached its report by hand") {
+		t.Fatalf("body = %q", body)
+	}
+	if rows := a.triageRows(); len(rows) != 1 || rows[0].action != triageReview || rows[0].why != triageWhyOwnReview {
 		t.Fatalf("triage = %+v", rows)
 	}
 }

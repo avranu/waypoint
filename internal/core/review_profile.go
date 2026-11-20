@@ -28,6 +28,7 @@ package core
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"slices"
 	"strings"
@@ -120,6 +121,51 @@ func (l *AutopilotLimits) normalizeReviewProfile() {
 	}
 }
 
+// reviewProfileChange is what a save changed about the reviews before a
+// pull request, for the audit log's line (SetAutopilot): whether they run,
+// whether the agent may skip one, who reviews, and the reviewer's brief and
+// the session's own prompt. What a review is worth rests on these, so who
+// changed them, when and to what is kept: a brief by its length and the
+// start of its SHA-256, which tells one wording from another without the
+// log holding the text. "" when none changed.
+func reviewProfileChange(old, now AutopilotLimits) string {
+	said := func(p *string, text bool) string {
+		switch {
+		case p == nil:
+			return "inherited"
+		case !text:
+			return *p
+		case *p == "":
+			return "the built-in"
+		}
+		sum := sha256.Sum256([]byte(*p))
+		return fmt.Sprintf("custom (%d characters, %x)", utf8.RuneCountInString(*p), sum[:4])
+	}
+	onOff := func(p *bool) *string {
+		if p == nil {
+			return nil
+		}
+		return ptrOf(map[bool]string{true: "on", false: "off"}[*p])
+	}
+	var out strings.Builder
+	for _, c := range []struct {
+		what     string
+		old, now *string
+		text     bool
+	}{
+		{"review before the pull request", onOff(old.Review), onOff(now.Review), false},
+		{"skipping a review", old.ReviewSkip, now.ReviewSkip, false},
+		{"reviewer", old.ReviewModel, now.ReviewModel, false},
+		{"reviewer's instructions", old.ReviewText, now.ReviewText, true},
+		{"the session's review prompt", old.ReviewPrompt, now.ReviewPrompt, true},
+	} {
+		if o, n := said(c.old, c.text), said(c.now, c.text); o != n {
+			fmt.Fprintf(&out, ", %s: %s, was %s", c.what, n, o)
+		}
+	}
+	return out.String()
+}
+
 // validateReviewProfile checks the brief and the model.
 func (l AutopilotLimits) validateReviewProfile() error {
 	if l.ReviewText != nil {
@@ -178,7 +224,7 @@ func (s *Service) ReviewModelOptions(ctx context.Context, a *Actor) (*ReviewMode
 	out := &ReviewModelOptions{DefaultText: DefaultReviewText, MaxText: maxReviewText,
 		Modes: []ReviewModelOption{
 			{Value: ReviewModelAuto, Label: "Automatic", Note: "the LLM gateway's audit model, held to a bar by the change's stakes; a Sonnet review when that can't be had"},
-			{Value: ReviewModelSession, Label: "The same session", Note: "the session reviews its own change with an adversarial-review subagent, on its own quota; its rounds don't loop, as its review has no findings to score"},
+			{Value: ReviewModelSession, Label: "The same session", Note: "the session reviews its own change with an adversarial-review subagent, on its own quota, and reports what it found; Waypoint checks and scores that as it does any reviewer's findings"},
 		},
 		Gateway: []ReviewModelOption{}, Runners: []ReviewModelOption{}}
 	if _, _, why := s.gatewayTasksLLM(ctx); why == "" {
@@ -228,7 +274,7 @@ func (s *Service) ReviewModelOptions(ctx context.Context, a *Actor) (*ReviewMode
 }
 
 // roundContext is what a round audit reads besides the change: the task
-// it was made for, and what earlier rounds of the same run raised. Both
+// it was made for, and what earlier rounds of the same change raised. Both
 // are data: the task's text may be anyone's, and the findings are another
 // model's.
 func (s *Service) roundContext(ctx context.Context, review *roundRow) string {
@@ -242,13 +288,23 @@ func (s *Service) roundContext(ctx context.Context, review *roundRow) string {
 	if !review.runID.Valid {
 		return b.String()
 	}
-	// The findings each round handed the session: its Claude reviewer's,
-	// when that brought them (againAuditSQL), not the audit it replaced;
-	// the newest rounds' first, as the repeat judge reads them
-	// (againEarlier), so past the cap both see the same ones.
+	// The findings each earlier round of the change handed the session
+	// (againLoopOf: the change's rounds, through a run that stopped short
+	// and was taken up again): its Claude reviewer's, when that brought
+	// them (againAuditSQL), not the audit it replaced; the newest rounds'
+	// first.
+	loop, err := s.againLoopOf(ctx, review.id, review.runID.Int64)
+	if err != nil || loop == nil {
+		if err != nil {
+			s.log.WarnContext(ctx, "review round: its earlier rounds couldn't be read, so its reviewer isn't told what they raised", "round", review.id, "err", err)
+		}
+		return b.String()
+	}
+	// #nosec G202 -- loop.in is a list of row IDs read from the database
 	rows, err := s.db.R.QueryContext(ctx, `SELECT f.path, f.line, f.title, f.severity, f.state, f.note FROM work_log w JOIN code_audit_findings f ON f.audit_id IN `+againAuditsSQL+`
-		WHERE w.kind = 'review' AND w.run_id = ? AND w.id < ? AND w.before_pr != '' ORDER BY w.id DESC, f.audit_id, f.ordinal LIMIT ?`, review.runID.Int64, review.id, roundEarlierMax)
+		WHERE w.id IN `+loop.in+` ORDER BY w.id DESC, f.audit_id, f.ordinal LIMIT ?`, roundEarlierMax)
 	if err != nil {
+		s.log.WarnContext(ctx, "review round: its earlier rounds' findings couldn't be read, so its reviewer isn't told what they raised", "round", review.id, "err", err)
 		return b.String()
 	}
 	defer func() { _ = rows.Close() }()

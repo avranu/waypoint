@@ -862,14 +862,14 @@ func TestScheduleIsSound(t *testing.T) {
 		"quota guard", "quota guard baselines", "CI pruning", "merged branches", "CI history backfill", "CI history re-tier",
 		"instruction history backfill", "backup", "timed automations", "review feedback", "prep trials", "runners", "auto question notices",
 		"forge rechecks", "pull requests", "resume babysits", "forge sync", "armed heads", "CI history", "CI health", "review gates",
-		"pending checks", "system resources", "armed merges", "babysits", "audits", "request conditions", "hold conditions", "safety screens",
+		"pending checks", "system resources", "armed merges", "babysits", "audits", "objectives", "request conditions", "hold conditions", "safety screens",
 		"quota guard watch", "autopilot", "warm caches", "work logs", "PR descriptions", "fan-outs", "log secrets",
 	} {
 		if _, ok := at[name]; !ok {
 			t.Errorf("no job %q", name)
 		}
 	}
-	if len(at) != 63 {
+	if len(at) != 64 {
 		t.Errorf("%d jobs: one was added or removed; name it above", len(at))
 	}
 	// The watchdog is started by RunScheduler on its own, not by the loop it
@@ -883,6 +883,7 @@ func TestScheduleIsSound(t *testing.T) {
 	for _, order := range [][2]string{
 		{"quota guard watch", "autopilot"}, // the guard holds before autopilot starts (WP-932)
 		{"quota guard", "quota guard baselines"},
+		{"audits", "objectives"}, // a judge's audit is moved on before the objective that reads it (WP-ADR142)
 		{"forge sync", "armed heads"},
 		{"backup", "timed automations"},
 		{"timed automations", "runners"},

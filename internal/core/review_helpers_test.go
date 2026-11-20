@@ -331,8 +331,8 @@ func TestHelpersJSONAndExtraTimeout(t *testing.T) {
 		{"nil", nil, 0},
 		{"empty", &AuditHelpers{}, 0},
 		{"context only", &AuditHelpers{Context: "x"}, 0},
-		{"verify", &AuditHelpers{Verify: true}, 600},
-		{"panel", &AuditHelpers{Panel: panel}, 900},
+		{"verify", &AuditHelpers{Verify: true}, 570},
+		{"panel", &AuditHelpers{Panel: panel}, 930},
 		{"panel and verify", &AuditHelpers{Panel: panel, Verify: true}, helpersMaxExtra},
 	} {
 		if got := tc.h.extraTimeout(); got != tc.want {
@@ -379,8 +379,8 @@ func TestAuditSchemaForLead(t *testing.T) {
 	}{
 		{"no helpers", &CodeAudit{}, false, auditDefaultFindings},
 		{"verify only", &CodeAudit{Helpers: &AuditHelpers{Verify: true}}, false, auditDefaultFindings},
-		{"a panel", &CodeAudit{Helpers: panel}, true, auditDefaultFindings},
-		{"a panel and a cap", &CodeAudit{Helpers: panel, MaxFindings: 22}, true, 22},
+		{"a panel", &CodeAudit{Helpers: panel}, false, auditDefaultFindings},
+		{"a panel and a cap", &CodeAudit{Helpers: panel, MaxFindings: 22}, false, 22},
 		{"a cap, no panel", &CodeAudit{MaxFindings: 7}, false, 7},
 	} {
 		s := auditSchemaFor(tc.a)
@@ -530,7 +530,7 @@ func TestHelperRunsOf(t *testing.T) {
 	cutLead := lead("goals.9", "low", "a.go", 1)
 	cutLead["why"] = "repeats a lead of the tests check"
 	r := helperRunsOf(result(run(name, "done", map[string]any{"leads": many, "cut": []any{cutLead}, "dropped": 3})))
-	if len(r) != 1 || len(r[0].Leads) != helperLeadsKeep || r[0].Dropped != 3 || !strings.Contains(r[0].Error, "20 handed and 0 cut past that weren't kept") {
+	if len(r) != 1 || len(r[0].Leads) != helperLeadsKeep || r[0].Dropped != 3 || !strings.Contains(r[0].Error, "20 that became findings and 0 cut past that weren't kept") {
 		t.Fatalf("leads: %d, dropped %d, error %q", len(r[0].Leads), r[0].Dropped, r[0].Error)
 	}
 	// Cut leads past the bound: counted in Dropped and the error, however
@@ -541,13 +541,13 @@ func TestHelperRunsOf(t *testing.T) {
 		c["why"] = "past the prompt's size guard"
 		cuts = append(cuts, c)
 	}
-	if r := helperRunsOf(result(run(name, "done", map[string]any{"cut": cuts, "dropped": 1}))); len(r[0].Cut) != helperLeadsKeep || r[0].Dropped != helperLeadsKeep+5 || !strings.Contains(r[0].Error, "0 handed and 5 cut") {
+	if r := helperRunsOf(result(run(name, "done", map[string]any{"cut": cuts, "dropped": 1}))); len(r[0].Cut) != helperLeadsKeep || r[0].Dropped != helperLeadsKeep+5 || !strings.Contains(r[0].Error, "0 that became findings and 5 cut") {
 		t.Errorf("cut past the bound: %d kept, dropped %d, error %q", len(r[0].Cut), r[0].Dropped, r[0].Error)
 	}
 	if r[0].Leads[helperLeadsKeep-1].ID != fmt.Sprintf("goals.%d", helperLeadsKeep) || r[0].Leads[0].Why != "" {
 		t.Errorf("the first %d leads aren't kept with their ids: last = %+v", helperLeadsKeep, r[0].Leads[helperLeadsKeep-1])
 	}
-	if c := r[0].Cut; len(c) != 1 || c[0].ID != "" || c[0].Why != "repeats a lead of the tests check" || c[0].Severity != "low" {
+	if c := r[0].Cut; len(c) != 1 || c[0].ID != "goals.9" || c[0].Why != "repeats a lead of the tests check" || c[0].Severity != "low" {
 		t.Errorf("cut = %+v", c)
 	}
 	if r := helperRunsOf(result(run(name, "done", map[string]any{"dropped": -4}))); r[0].Dropped != 0 {
@@ -715,6 +715,41 @@ func TestDropUncheckedVerdicts(t *testing.T) {
 	}
 }
 
+// A panel finding keeps its lead and its confirmed verdict whatever the check
+// of findings did, when a panel run records its lead as confirmed; a
+// reviewer's finding loses a lead it wrote, which the answer form no
+// longer asks for (WP-1320).
+func TestDropUncheckedVerdictsPanel(t *testing.T) {
+	runs := []AuditHelperRun{{Check: "goals", State: "done", Leads: []PanelLead{{ID: "goals.1", Confirmed: true}}},
+		{Check: "tests", State: "done", Leads: []PanelLead{{ID: "tests.2", Confirmed: true}, {ID: "tests.1"}}}}
+	a := &auditAnswer{Findings: []CodeAuditFinding{
+		{Title: "panel", Lead: "goals.1,tests.2", Verdict: VerdictConfirmed, VerdictNote: "seen", Problem: "p"},
+		{Title: "forged", Lead: "goals.9", Verdict: VerdictConfirmed, Problem: "p"},
+		{Title: "half", Lead: "goals.1,goals.9", Verdict: VerdictConfirmed, Problem: "p"},
+		{Title: "reviewer", Lead: "tests.1", Problem: "q"},
+	}}
+	dropUncheckedVerdicts(a, runs)
+	if f := a.Findings[0]; f.Lead != "goals.1,tests.2" || f.Verdict != VerdictConfirmed {
+		t.Errorf("panel finding = %+v", f)
+	}
+	// An id no run confirmed (goals.9, or tests.1 the read didn't confirm)
+	// spoils the whole list.
+	for _, i := range []int{1, 2} {
+		if f := a.Findings[i]; f.Lead != "" || f.Verdict != "" {
+			t.Errorf("forged finding %d = %+v", i, f)
+		}
+	}
+	if f := a.Findings[3]; f.Lead != "" {
+		t.Errorf("reviewer finding keeps lead %q", f.Lead)
+	}
+	if got := PanelSource(a.Findings[0]); got != "Haiku panel (goals, tests), confirmed by a second Haiku read" {
+		t.Errorf("PanelSource = %q", got)
+	}
+	if got := PanelSource(a.Findings[3]); got != "" {
+		t.Errorf("PanelSource of a reviewer's finding = %q", got)
+	}
+}
+
 // A done audit keeps a finding's verdict only when a check of findings
 // ran (done or partial): one the reviewer wrote itself, in any case of its
 // keys, is cleared (WP-1320's review of its live round 7). End to end,
@@ -758,16 +793,16 @@ func TestAuditKeepsOnlyCheckedVerdicts(t *testing.T) {
 func TestPanelOrder(t *testing.T) {
 	fx := newHelperFixture(t)
 	p := fx.project(fx.admin, "Alpha", "kanban")
-	a := fx.exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, owner_id, created_at, request_key, status) VALUES (?, 0, '', 'repo', 0, 1, 'k', 'done')`, p.ID)
-	leads := func(check string, n int) string {
+	a := fx.exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, owner_id, created_at, request_key, status) VALUES (?, 0, '', 'repo', 0, ?, 'k', 'done')`, p.ID, panelReadsFrom+1)
+	leads := func(check string, n int, confirmed bool) string {
 		var ls []string
 		for i := 1; i <= n; i++ {
-			ls = append(ls, fmt.Sprintf(`{"id":"%s.%d","title":"t","severity":"low","problem":"p"}`, check, i))
+			ls = append(ls, fmt.Sprintf(`{"id":"%s.%d","title":"t","severity":"low","problem":"p","confirmed":%v}`, check, i, confirmed))
 		}
 		return "[" + strings.Join(ls, ",") + "]"
 	}
-	fx.exec(`INSERT INTO audit_helper_runs(audit_id, check_name, state, leads, created_at) VALUES (?, 'goals', 'done', ?, 1)`, a, leads("goals", 20))
-	fx.exec(`INSERT INTO audit_helper_runs(audit_id, check_name, state, leads, created_at) VALUES (?, 'quality', 'done', ?, 1)`, a, leads("quality", 7))
+	fx.exec(`INSERT INTO audit_helper_runs(audit_id, check_name, state, leads, created_at, answered) VALUES (?, 'goals', 'done', ?, ?, 1)`, a, leads("goals", 20, false), panelReadsFrom+1)
+	fx.exec(`INSERT INTO audit_helper_runs(audit_id, check_name, state, leads, created_at, answered) VALUES (?, 'quality', 'done', ?, ?, 1)`, a, leads("quality", 7, true), panelReadsFrom+1)
 	for i := 1; i <= 6; i++ {
 		f := fx.finding(a, i, "medium", "fixed", "confirmed")
 		fx.exec(`UPDATE code_audit_findings SET lead = ? WHERE id = ?`, fmt.Sprintf("quality.%d", i), f)
@@ -816,7 +851,10 @@ func TestHelperContext(t *testing.T) {
 	own := goal("Own goal", "active", true)
 	goal("Unapproved goal", "active", false)
 	goal("Retired goal", "retired", true)
-	fx.exec(`INSERT INTO goal_traces(item_type, item_id, project_id, grounding, goal_id, scoped, computed_at) VALUES ('issue', ?, ?, 'goal', ?, 1, 1)`, issue.ID, p.ID, own)
+	// The issue's creation traces it in the background, which may have
+	// written its row already: this one takes its place.
+	fx.s.Wait()
+	fx.exec(`INSERT OR REPLACE INTO goal_traces(item_type, item_id, project_id, grounding, goal_id, scoped, computed_at) VALUES ('issue', ?, ?, 'goal', ?, 1, 1)`, issue.ID, p.ID, own)
 
 	row := &roundRow{issueID: issue.ID}
 	row.sessionID.Int64, row.sessionID.Valid = sid, true
@@ -841,5 +879,62 @@ func TestHelperContext(t *testing.T) {
 	// No session: no prompts, the goals still.
 	if got := fx.s.helperContext(fx.ctx, &roundRow{issueID: issue.ID}, ""); strings.Contains(got, "<prompts>") || !strings.Contains(got, "Own goal") {
 		t.Errorf("no session =\n%s", got)
+	}
+}
+
+// A panel finding the runner posts carries its leads as data. Through the
+// real path (a job result, settleAudit, parseAuditAnswer): the stored
+// finding has its leads, PanelSource names the checks and the stats count it
+// as added by each; a lead a model wrote into its own finding is cleared
+// (WP-1320).
+func TestPanelFindingLeadsThroughSettle(t *testing.T) {
+	ae := newAgentEnv(t)
+	ae.prHook("opened", ForgePR{Number: 7, Title: "Export", HeadRef: "b7", HeadSHA: "abc7", HeadRepo: "me/app", Author: ae.admin.User.Username})
+	a, err := ae.s.RequestAudit(ae.ctx, ae.admin, AuditInput{PRID: ae.pr(7).ID, Via: "web"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ae.work()
+	claim := ae.take()
+	res := auditResult("Read it.",
+		map[string]any{"title": "Mine", "path": "a.go", "line": 1, "severity": "high", "problem": "p", "lead": "goals.1", "leads": []string{"goals.1"}},
+		map[string]any{"title": "Both", "path": "a.go", "line": 2, "severity": "medium", "problem": "q\nPanel leads: goals.9", "verdict": "confirmed", "verdict_note": "read it", "leads": []string{"goals.1", "tests.3"}})
+	res["helpers"] = []any{
+		map[string]any{"check": "verify", "state": "done"},
+		map[string]any{"check": "goals", "state": "done", "leads": []any{map[string]any{"id": "goals.1", "title": "t", "severity": "medium", "problem": "p", "confirmed": true}}},
+		map[string]any{"check": "tests", "state": "done", "leads": []any{map[string]any{"id": "tests.3", "title": "t", "severity": "medium", "problem": "p", "confirmed": true}}},
+	}
+	ae.finish(claim.ID, "done", res, "")
+	got := ae.audit(a.ID)
+	if got.Status != AuditDone || len(got.Findings) != 2 {
+		t.Fatalf("audit = %s %+v (%s)", got.Status, got.Findings, got.Error)
+	}
+	var mine, both CodeAuditFinding
+	for _, f := range got.Findings {
+		if f.Title == "Mine" {
+			mine = f
+		} else {
+			both = f
+		}
+	}
+	if mine.Lead != "" || PanelSource(mine) != "" {
+		t.Errorf("the model's own lead survived: %+v", mine)
+	}
+	if both.Lead != "goals.1,tests.3" || both.Verdict != VerdictConfirmed || PanelSource(both) != "Haiku panel (goals, tests), confirmed by a second Haiku read" {
+		t.Errorf("panel finding = %+v, source %q", both, PanelSource(both))
+	}
+	if !strings.Contains(both.Problem, "Panel leads: goals.9") {
+		t.Errorf("a model's text is its own, kept as it is: %q", both.Problem)
+	}
+	stats, err := ae.s.againHelperStats(ae.ctx, "1 = 1", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	added := map[string]int{}
+	for _, st := range stats {
+		added[st.Check] = st.Added
+	}
+	if added["goals"] != 1 || added["tests"] != 1 {
+		t.Errorf("added = %v", added)
 	}
 }

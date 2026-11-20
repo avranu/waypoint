@@ -505,9 +505,14 @@ func cmdNew(c *cli, args []string) error {
 	draft := fs.Bool("draft", false, "a draft, hidden from agents")
 	hold := fs.String("hold", "", "hold until `WHEN` (date, or indefinitely)")
 	anyway := fs.Bool("new", false, "file even if a similar issue is open")
+	of := addObjectiveFlags(fs, false)
 	pos, err := c.parse(fs, args)
 	if err != nil {
 		return err
+	}
+	obj := of.body(fs)
+	if len(obj) > 0 && obj["check"] == nil && obj["judge"] == nil && obj["until"] == nil {
+		return c.usage("--keep-passing goes with a --check or a --judge")
 	}
 	if len(pos) >= 2 && slices.Contains(issueTypes, strings.ToLower(pos[0])) && *f.typ == "" {
 		*f.typ, pos = strings.ToLower(pos[0]), pos[1:]
@@ -552,13 +557,23 @@ func cmdNew(c *cli, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := c.confirmIssue(raw, "Created"); err != nil || c.asJSON {
+	if err := c.confirmIssue(raw, "Created"); err != nil {
 		return err
 	}
 	var made issueSummary
-	if jsonInto(raw, &made) == nil {
-		c.print(similarHints(made.Key, similar))
+	parsed := jsonInto(raw, &made) == nil
+	if len(obj) > 0 {
+		if made.Key == "" {
+			return fmt.Errorf("the task was filed, but its key wasn't read, so its objective wasn't set: wp objective set KEY …")
+		}
+		if err := c.setNewObjective(made.Key, obj); err != nil {
+			return err
+		}
 	}
+	if c.asJSON || !parsed {
+		return nil
+	}
+	c.print(similarHints(made.Key, similar))
 	return nil
 }
 

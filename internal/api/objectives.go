@@ -8,8 +8,9 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// Objectives (WP-927, WP-ADR111): a task worked in rounds until a check is
-// met, by an amount every round, or as a loop.
+// Objectives (WP-927, WP-ADR111, WP-ADR142): a task worked in rounds until a check is
+// met or a judge finds nothing left, by an amount every round, or as a loop.
+// Waypoint reads every round itself; what a worker reports never decides.
 
 func (s *Server) getObjective(w http.ResponseWriter, r *http.Request) (any, error) {
 	o, err := s.svc.GetObjective(r.Context(), actorFrom(r), r.PathValue("key"))
@@ -39,6 +40,23 @@ func (s *Server) confirmObjective(w http.ResponseWriter, r *http.Request) (any, 
 		return nil, err
 	}
 	o, err := s.svc.ConfirmObjective(r.Context(), actorFrom(r), r.PathValue("key"), in.Rev)
+	if err != nil || !wantsText(r) {
+		return o, err
+	}
+	return textResponse(o.Text), nil
+}
+
+// objectiveGo is a person steering an objective in effect: retry a reading
+// that couldn't be taken, move on to the next round, accept a reading that waits,
+// or end it.
+func (s *Server) objectiveGo(w http.ResponseWriter, r *http.Request) (any, error) {
+	var in struct {
+		Action string `json:"action"`
+	}
+	if err := decode(r, &in); err != nil {
+		return nil, err
+	}
+	o, err := s.svc.ObjectiveGo(r.Context(), actorFrom(r), r.PathValue("key"), in.Action)
 	if err != nil || !wantsText(r) {
 		return o, err
 	}
@@ -79,9 +97,18 @@ func objectivesText(l []*core.Objective) string {
 		case o.MaxRounds > 0:
 			state += fmt.Sprintf(" of %d", o.MaxRounds)
 		}
+		if o.State == core.ObjectiveActive && o.Health != "" {
+			state += ", " + o.Health
+		}
 		fmt.Fprintf(&b, "%s %q, %s: %s", o.Key, o.Title, state, o.Summary)
-		if o.Last != nil && o.State == core.ObjectiveActive {
-			b.WriteString(". Last check: " + o.Last.Line)
+		if o.State == core.ObjectiveActive {
+			// What Waypoint itself last read, not what a worker reported.
+			if o.Verdict != nil {
+				b.WriteString(". Last reading: " + o.Verdict.Line)
+			}
+			if o.HealthNote != "" {
+				b.WriteString(". " + strings.TrimRight(o.HealthNote, "."))
+			}
 		}
 		b.WriteString(".\n")
 	}

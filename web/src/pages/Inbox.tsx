@@ -11,6 +11,7 @@ import {
   ChevronDown,
   ChevronRight,
   Gauge,
+  Target,
   GitCommitHorizontal,
   GitPullRequest,
   MessageSquare,
@@ -48,6 +49,7 @@ const kindIcon: Record<string, React.ReactNode> = {
   automation: <Zap />,
   request: <MessageSquareText />,
   quota: <Gauge />,
+  objective: <Target />,
   server: <Server />,
 }
 
@@ -68,6 +70,7 @@ const kindName: Record<string, [string, string]> = {
   token: ['sign-in', 'sign-ins'],
   deploy: ['deploy notice', 'deploy notices'],
   audit: ['audit', 'audits'],
+  objective: ['objective update', 'objective updates'],
   server: ['server health notice', 'server health notices'],
 }
 const kindLabel = (k: string, n: number) => (kindName[k] ?? [k, k])[n === 1 ? 0 : 1]
