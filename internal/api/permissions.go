@@ -165,6 +165,9 @@ var routePermissions = map[string]core.Permission{
 	// Confirming an agent's proposed objective puts its command in effect:
 	// a person's own act (WP-ADR111).
 	"POST /api/v1/issues/{key}/objective/confirm": permNever,
+	// So is steering one in effect: retrying a reading, moving a round on,
+	// accepting a reading that waits, ending it.
+	"POST /api/v1/issues/{key}/objective/go": permNever,
 	// Dismissing a suggestion teaches the ranker a person's no (WP-958).
 	"POST /api/v1/issues/{key}/relations/suggested/dismiss": permNever,
 	"POST /api/v1/issues/{key}/relations":                   core.PermIssuesEdit,
@@ -174,6 +177,7 @@ var routePermissions = map[string]core.Permission{
 	"POST /api/v1/issues/{key}/links/refresh":               core.PermIssuesEdit,
 	"POST /api/v1/issues/{key}/comments":                    core.PermIssuesComment,
 	"POST /api/v1/issues/{key}/worklog":                     core.PermIssuesComment,
+	"POST /api/v1/issues/{key}/review-report":               core.PermIssuesComment, // ReportReview: the task's own session only
 	"POST /api/v1/projects/{key}/test-evidence":             core.PermIssuesComment,
 	"PATCH /api/v1/comments/{id}":                           core.PermIssuesComment,
 	"DELETE /api/v1/comments/{id}":                          core.PermIssuesComment,

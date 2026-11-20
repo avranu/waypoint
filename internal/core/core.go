@@ -250,6 +250,10 @@ type Service struct {
 	stopWaits stopWaits
 	// babysitLocks: one babysit step at a time per pull request (WP-134).
 	babysitLocks keyedLocks
+	// objectiveLocks: one step of an objective's reading at a time
+	// (WP-ADR111); objectiveWatched: when objectiveWatch last looked.
+	objectiveLocks   keyedLocks
+	objectiveWatched atomic.Int64
 	// heldChecks are the rounds whose held change is being checked now.
 	heldChecks sync.Map
 	// auditLocks: one step of an audit at a time (WP-348).

@@ -64,26 +64,25 @@ func TestReviewHealthIssues(t *testing.T) {
 		{name: "panel check mostly skipped", helpers: []AgainHelperStat{{Check: "goals", Runs: 20, Done: 9, Skipped: 11}}, want: "goals mostly doesn't run"},
 		{name: "half skipped is fine", helpers: []AgainHelperStat{{Check: "goals", Runs: 20, Done: 10, Skipped: 6, Failed: 4}}},
 		{name: "verify mostly fails", helpers: []AgainHelperStat{{Check: helperVerify, Runs: 20, Done: 5, Failed: 15}}, want: "verify mostly doesn't run"},
-		{name: "leads not taken up", helpers: []AgainHelperStat{{Check: "claims", Runs: 20, Done: 20, Answered: 20, Leads: 100, TakenUp: 4}}, want: "claims's leads are rarely taken up"},
-		{name: "leads taken up enough", helpers: []AgainHelperStat{{Check: "claims", Runs: 20, Done: 20, Answered: 20, Leads: 100, TakenUp: 5}}},
+		{name: "problems rarely confirmed", helpers: []AgainHelperStat{{Check: "claims", Runs: 20, Done: 20, Answered: 20, Raised: 100, Confirmed: 4}}, want: "claims's problems are rarely confirmed"},
+		{name: "problems confirmed enough", helpers: []AgainHelperStat{{Check: "claims", Runs: 20, Done: 20, Answered: 20, Raised: 100, Confirmed: 5}}},
 		// Runs whose reviewer didn't answer handed their leads to no one.
-		{name: "too few answered runs to judge leads", helpers: []AgainHelperStat{{Check: "claims", Runs: 30, Done: 30, Answered: 19, Leads: 100, TakenUp: 0}}},
-		{name: "taken-up leads don't hold", helpers: []AgainHelperStat{{Check: "tests", Runs: 5, Done: 5, Leads: 20, TakenUp: 12, Held: 2}}, want: "from Haiku check tests rarely hold"},
-		{name: "taken-up leads hold", helpers: []AgainHelperStat{{Check: "tests", Runs: 5, Done: 5, Leads: 20, TakenUp: 12, Held: 3}}},
+		{name: "too few answered runs to judge leads", helpers: []AgainHelperStat{{Check: "claims", Runs: 30, Done: 30, Answered: 19, Raised: 100}}},
+		{name: "findings mostly rejected by sessions", helpers: []AgainHelperStat{{Check: "tests", Runs: 5, Done: 5, Raised: 20, Confirmed: 12, Fixed: 2, Rejected: 10}}, want: "from Haiku check tests are mostly rejected by sessions"},
+		{name: "findings mostly held by sessions", helpers: []AgainHelperStat{{Check: "tests", Runs: 5, Done: 5, Raised: 20, Confirmed: 12, Fixed: 3, Rejected: 9}}},
 		{name: "refuted findings fixed", helpers: []AgainHelperStat{{Check: helperVerify, Runs: 5, Done: 5, Refuted: 10, RefutedHeld: 6}}, want: "refutes findings sessions fix"},
 		{name: "refuted findings mostly rejected", helpers: []AgainHelperStat{{Check: helperVerify, Runs: 5, Done: 5, Refuted: 10, RefutedHeld: 5}}},
 		{name: "confirmed findings rejected", helpers: []AgainHelperStat{{Check: helperVerify, Runs: 5, Done: 5, Confirmed: 10, ConfirmedRejected: 6}}, want: "confirms findings sessions reject"},
 		{name: "asks mostly unsettled", by: []AgainRoundStat{{Index: 1, Sampled: 12, Unsettled: 7, Arms: map[string]int{}}, {Index: 2, Sampled: 8, Unsettled: 4, Arms: map[string]int{}}}, want: "asks mostly don't settle the decision"},
 		{name: "unsettled half the time is fine", by: []AgainRoundStat{{Index: 1, Sampled: 20, Unsettled: 10, Arms: map[string]int{}}}},
 		{name: "too few sampled", by: []AgainRoundStat{{Index: 1, Sampled: 19, Unsettled: 19, Arms: map[string]int{}}}},
-		{name: "one lead past the size guard trips", helpers: []AgainHelperStat{{Check: "quality", Runs: 1, Done: 1, Leads: 300, Guarded: 1}}, want: "quality's leads were cut by the prompt's size guard"},
 		{name: "refutations don't repeat", helpers: []AgainHelperStat{{Check: helperVerify, Runs: 5, Done: 5, Reasked: 10, Overturned: 6}}, want: "refutations don't repeat"},
 		{name: "refutations half repeat is fine", helpers: []AgainHelperStat{{Check: helperVerify, Runs: 5, Done: 5, Reasked: 10, Overturned: 5}}},
 		{name: "too few re-asked", helpers: []AgainHelperStat{{Check: helperVerify, Runs: 5, Done: 5, Reasked: 9, Overturned: 9}}},
 		{name: "asking again never overturns", helpers: []AgainHelperStat{{Check: helperVerify, Runs: 20, Done: 20, Reasked: 50}}, want: "never overturns"},
 		{name: "asking again overturned once", helpers: []AgainHelperStat{{Check: helperVerify, Runs: 20, Done: 20, Reasked: 50, Overturned: 1}}},
 		{name: "too few re-asked to say it never overturns", helpers: []AgainHelperStat{{Check: helperVerify, Runs: 20, Done: 20, Reasked: 49}}},
-		{name: "verify has no leads condition", helpers: []AgainHelperStat{{Check: helperVerify, Runs: 20, Done: 20, Leads: 0, TakenUp: 0}}},
+		{name: "verify has no leads condition", helpers: []AgainHelperStat{{Check: helperVerify, Runs: 20, Done: 20, Raised: 0}}},
 	}
 	for _, c := range cases {
 		got := reviewHealthIssues(c.by, c.agree, c.helpers)
@@ -246,8 +245,11 @@ func TestAgainHelperStats(t *testing.T) {
 		fx.exec(`INSERT INTO code_audit_findings(audit_id, ordinal, title, path, line, severity, problem, state, verdict, lead) VALUES (?, ?, 'F', 'a.go', 1, 'high', 'x', ?, ?, ?)`, a, n, state, verdict, lead)
 	}
 	a := audit(p.ID, 100)
-	run(a, "goals", "done", `[{"id":"goals.1"},{"id":"goals.2"}]`, 3, 0.01, 100)
-	fx.exec(`UPDATE audit_helper_runs SET cut = '[{"title":"A","why":"repeats"},{"title":"B","why":"past the 256 KB of leads a prompt takes"},{"title":"C","why":"past the 256 KB of leads a prompt takes"}]' WHERE check_name = 'goals'`)
+	run(a, "goals", "done", `[{"id":"goals.1","confirmed":true},{"id":"goals.2","confirmed":true}]`, 4, 0.01, 100)
+	// Raised is every lead after pruning: the two that became findings and
+	// the three a second read or the join cut; the pruning's own cut ("repeats")
+	// isn't raised. Confirmed adds the one the join took out as the reviewer's.
+	fx.exec(`UPDATE audit_helper_runs SET cut = '[{"title":"A","why":"repeats"},{"id":"goals.3","title":"B","why":"refuted by a second read of the code: no"},{"id":"goals.4","title":"C","why":"not checked: the check ran out of time"},{"id":"goals.5","title":"D","why":"confirmed, the same defect as the reviewer''s finding R1"}]' WHERE check_name = 'goals'`)
 	run(a, "goals", "skipped", `[]`, 0, 0, 100)
 	// An attempt whose reviewer didn't answer: its run and cost count, its
 	// leads don't.
@@ -255,16 +257,26 @@ func TestAgainHelperStats(t *testing.T) {
 	fx.exec(`UPDATE audit_helper_runs SET answered = 0 WHERE id = (SELECT max(id) FROM audit_helper_runs)`)
 	run(a, "tests", "failed", `[]`, 0, 0.002, 100)
 	run(a, helperVerify, "done", `[]`, 0, 0.03, 100)
-	finding(a, 1, "fixed", "confirmed", "goals.1")
-	finding(a, 2, "rejected", "confirmed", "goals.2")
+	run(a, helperCombine, "done", `[]`, 0, 0.004, 100)
+	finding(a, 1, "fixed", "confirmed", "")
+	finding(a, 2, "rejected", "confirmed", "")
 	finding(a, 3, "fixed", "refuted", "")
-	finding(a, 4, "rejected", "refuted", "tests.1")
+	finding(a, 4, "rejected", "refuted", "")
 	finding(a, 5, "open", "unsupported", "")
 	finding(a, 6, "fixed", "", "")
 	finding(a, 7, "rejected", "refuted", "")
 	finding(a, 8, "open", "unsupported", "")
 	fx.exec(`UPDATE code_audit_findings SET verdict_note = 'Asked twice, refuted both times. no' WHERE audit_id = ? AND ordinal = 7`, a)
 	fx.exec(`UPDATE code_audit_findings SET verdict_note = 'Asked twice, the check answered refuted, then confirmed. First: no Then: yes' WHERE audit_id = ? AND ordinal = 8`, a)
+	// A finding the panel made: its lead column holds the leads' ids. It counts
+	// for each check named, and its verdict is the second read's, not the check
+	// of findings'.
+	fx.exec(`INSERT INTO code_audit_findings(audit_id, ordinal, title, path, line, severity, problem, state, verdict, lead) VALUES (?, 9, 'P', 'a.go', 1, 'high', 'x', 'fixed', 'confirmed', 'goals.3,tests.2')`, a)
+	// A panel finding is the check's own: its lead column says so, and the
+	// check of findings' counts only the reviewer's (WP-1320, G1).
+	finding(a, 10, "fixed", "confirmed", "goals.1")
+	finding(a, 11, "rejected", "confirmed", "goals.2")
+	finding(a, 12, "rejected", "confirmed", "tests.1")
 	// A second ask that failed isn't one asked again.
 	fx.exec(`UPDATE code_audit_findings SET verdict_note = 'Asked twice; the second ask failed, and one answer doesn''t refute. First: no' WHERE audit_id = ? AND ordinal = 3`, a)
 	// Another project's, and this project's before the window: neither counts.
@@ -285,14 +297,14 @@ func TestAgainHelperStats(t *testing.T) {
 		by[h.Check] = h
 		order = append(order, h.Check)
 	}
-	if strings.Join(order, ",") != "goals,tests,verify" {
+	if strings.Join(order, ",") != "goals,tests,verify,combine" {
 		t.Fatalf("checks in order = %v", order)
 	}
 	g := by["goals"]
-	if g.Runs != 3 || g.Done != 2 || g.Answered != 1 || g.Skipped != 1 || g.Leads != 2 || g.Dropped != 3 || g.TakenUp != 2 || g.Held != 1 || math.Abs(g.CostUSD-0.03) > 1e-9 || g.Guarded != 2 {
+	if g.Runs != 3 || g.Done != 2 || g.Answered != 1 || g.Skipped != 1 || g.Raised != 5 || g.Confirmed != 3 || g.Added != 3 || g.Fixed != 2 || g.Rejected != 1 || math.Abs(g.CostUSD-0.03) > 1e-9 {
 		t.Errorf("goals = %+v", g)
 	}
-	if ts := by["tests"]; ts.Runs != 1 || ts.Failed != 1 || ts.TakenUp != 1 || ts.Held != 0 {
+	if ts := by["tests"]; ts.Runs != 1 || ts.Failed != 1 || ts.Added != 2 || ts.Fixed != 1 || ts.Rejected != 1 {
 		t.Errorf("tests = %+v", ts)
 	}
 	v := by[helperVerify]

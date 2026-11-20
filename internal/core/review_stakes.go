@@ -149,11 +149,14 @@ type roundStakes struct {
 // review in a new session that starts when its free audit can't be used or
 // likely won't end by the round's patience: Sonnet for a high-stakes round
 // or one whose stakes aren't known, Haiku for the rest, the bars the owner set
-// per risk ("biggest: Sonnet or better; medium: Haiku or better"). Every
-// round gets a review from a separate agent: before WP-1306 an elevated or
-// normal round's slow audit went on as the pull request's with no review in
-// its place, and the round ended "found no issues" while the audit landed on
-// the pull request up to three hours later.
+// per risk ("biggest: Sonnet or better; medium: Haiku or better"). A round
+// whose audit is slow gets this review in its place: before WP-1306 an
+// elevated or normal round's slow audit went on as the pull request's with
+// no review in its place, and the round ended "found no issues" while the
+// audit landed on the pull request up to three hours later. A round with
+// neither (review_model "session", or no runner that can run claude) is the
+// session's own, with its adversarial-review subagent, and counts once the
+// session reported what that found (review_report.go).
 func (r roundStakes) reviewer() AgentModel {
 	if r.tier == "" || r.tier == StakesHigh {
 		return AgentModel{CLI: "claude", Model: "sonnet"}
@@ -179,7 +182,8 @@ func (r roundStakes) barFor(key string) string {
 
 // roundStakes is a round's stakes: the ones it was given (review_stakes),
 // else decided now and kept. A Waypoint without the gateway has none: no
-// bar, and the high tier's handling.
+// bar, the unknown tier's bars for another round (againBars), and Sonnet
+// as its Claude reviewer.
 func (s *Service) roundStakes(ctx context.Context, roundID int64) (roundStakes, error) {
 	if _, _, why := s.gatewayTasksLLM(ctx); why != "" {
 		return roundStakes{}, nil
@@ -199,6 +203,28 @@ func (s *Service) roundStakes(ctx context.Context, roundID int64) (roundStakes, 
 		r.tier = ""
 	}
 	return r, nil
+}
+
+// roundRisk is the stakes tier of the change a round reviews, for the
+// decision about another round (reviewAgain): the tier the round was
+// given, else decided now and kept; unknown only when nothing is known of
+// the change. It is the change's risk whoever reviews it: roundStakes,
+// which is about the gateway's audit and its bar, answers with no tier on
+// a Waypoint without the gateway, and read through it every change there
+// was decided as unknown, whatever its task's risk, its paths or its size.
+// A read that fails is the caller's to stop on.
+func (s *Service) roundRisk(ctx context.Context, roundID int64) (string, error) {
+	var tier string
+	err := s.db.R.QueryRowContext(ctx, `SELECT tier FROM review_stakes WHERE round_id = ?`, roundID).Scan(&tier)
+	if errors.Is(err, sql.ErrNoRows) {
+		var r roundStakes
+		r, err = s.decideStakes(ctx, roundID)
+		tier = r.tier
+	}
+	if err != nil {
+		return "", err
+	}
+	return cmp(tier, StakesUnknown), nil
 }
 
 // decideStakes decides a round's stakes and stores them: from the round's

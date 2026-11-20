@@ -89,6 +89,11 @@ func (s *Service) reviveHeldRounds(ctx context.Context) {
 	}
 }
 
+// heldReviewEnded begins the reason of a round whose review ended but whose
+// findings couldn't be given to the session (reviewJobFinished): the pull
+// request opens without them, not without a review.
+const heldReviewEnded = "the adversarial review ended (audit #"
+
 // shipHeld does what the session's wp ship would have done after the
 // review that couldn't run: it opens the pull request, arms and babysits
 // it, moves the task to In Review and ends the run. Opening again finds
@@ -109,7 +114,19 @@ func (s *Service) shipHeld(ctx context.Context, st *stepRow, x *AgentSession, us
 		}
 	}
 	actor := &Actor{User: user, Agent: agent, Session: x.ID}
+	// A review that ended with its findings undelivered did run.
+	given := !strings.HasPrefix(why, heldReviewEnded)
 	note := "Waypoint opened this without an adversarial review: " + why + "."
+	if !given {
+		note = "Waypoint opened this without the adversarial review's findings being given to the session: " + why + "."
+	}
+	// The Haiku checks' confirmed problems that no reviewing model's
+	// findings carry are said, with the audit that holds them.
+	var panel string
+	if n, audit := s.panelConfirmed(ctx, r.id); n > 0 {
+		panel = fmt.Sprintf(" Before the reviewing model failed, Waypoint's Haiku checks confirmed %s against the code; audit #%d holds them (`wp audit show %d`).", plural1(n, "problem"), audit, audit)
+		note += panel
+	}
 	res, err := s.OpenPullRequest(ctx, actor, OpenPRInput{
 		Project: bp.Project, Repo: bp.Repo, Head: bp.Branch, Base: bp.Base,
 		Title: title, Body: strings.TrimSpace(bp.Body + "\n\n" + note),
@@ -138,16 +155,23 @@ func (s *Service) shipHeld(ctx context.Context, st *stepRow, x *AgentSession, us
 				notes = append(notes, "couldn't babysit it: "+err.Error())
 			}
 		}
+		lead := "No adversarial review ran before this pull request"
+		if !given {
+			lead = "The adversarial review's findings weren't given to the session before this pull request"
+		}
 		status := "In Review"
 		if _, err := s.UpdateIssue(ctx, actor, r.key, IssuePatch{Status: &status, ViaLink: pr.URL,
-			Comment: fmt.Sprintf("No adversarial review ran before this pull request: %s. Waypoint opened %s so the task doesn't sit unshipped; CI and the review gate still apply.", why, pr.URL)}); err != nil {
+			Comment: fmt.Sprintf("%s: %s. Waypoint opened %s so the task doesn't sit unshipped; CI and the review gate still apply.%s", lead, why, pr.URL, panel)}); err != nil {
 			notes = append(notes, "left the task's status alone: "+err.Error())
 		}
 	}
 	if err := s.endHeldRun(ctx, actor, r.issueID, agent); err != nil {
 		return err
 	}
-	body := fmt.Sprintf("%s's adversarial review didn't run (%s), so Waypoint opened %s#%d without it. CI and the review gate still apply.", r.key, why, pr.Repo, pr.Number)
+	body := fmt.Sprintf("%s's adversarial review didn't run (%s), so Waypoint opened %s#%d without it. CI and the review gate still apply.%s", r.key, why, pr.Repo, pr.Number, panel)
+	if !given {
+		body = fmt.Sprintf("%s's adversarial review findings weren't given to the session (%s), so Waypoint opened %s#%d without them. CI and the review gate still apply.%s", r.key, why, pr.Repo, pr.Number, panel)
+	}
 	if len(notes) > 0 {
 		body += " It " + strings.Join(notes, "; ") + "."
 		s.log.WarnContext(ctx, "autopilot: after opening a held pull request", "task", r.key, "notes", notes)

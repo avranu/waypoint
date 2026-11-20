@@ -510,6 +510,7 @@ func (s *Service) SetAutopilot(ctx context.Context, a *Actor, project string, in
 			return err
 		}
 		r, existed := rows[pid]
+		before := r.limits
 		switch {
 		case in.Reset:
 			r.limits = AutopilotLimits{}
@@ -570,6 +571,7 @@ func (s *Service) SetAutopilot(ctx context.Context, a *Actor, project string, in
 		} else if quotaOff == 0 {
 			what += ", quota limits on"
 		}
+		what += reviewProfileChange(before, r.limits)
 		t.audit(AuditEntry{Action: action, Category: AuditControl, ProjectID: pid, TargetType: "project", TargetID: pid, Target: what})
 		if quotaOff > 0 {
 			// What waits on a quota limit goes on at the next tick.

@@ -47,9 +47,27 @@ const (
 	auditUnreadableRetries = 1
 	auditRetryStep         = 15 * time.Minute
 	auditInstructionsMax   = 2000
-	auditMaxFindings       = 30
-	auditMaxModels         = 6
+	// auditMaxFindings is the top of the max_findings option a person sets
+	// on an ordinary audit (audit_criteria.go): what the model is asked for,
+	// not what is kept (findingsGuard).
+	auditMaxFindings = 30
+	auditMaxModels   = 6
+	// findingsGuard is the most findings any audit keeps (WP-1320,
+	// WP-ADR141): a guard against a runaway answer, not a number anyone is
+	// asked to stay under. A review round's reviewer isn't told it, an
+	// ordinary audit's answer over its max_findings is kept whole, and the
+	// Haiku panel's findings don't compete with the reviewer's for room
+	// below it. Past it the worst are kept (the reviewer's before the
+	// panel's within a severity) and the audit's summary says how many the
+	// answer held and how many are kept; the answer as it came stays in the
+	// audit, and the panel's runs in its helper runs. (auditGuard: a check
+	// of marks has more room.)
+	findingsGuard = 100
 )
+
+// FindingsGuard is findingsGuard for the runner, whose check of
+// the reviewer's findings is sized by it.
+const FindingsGuard = findingsGuard
 
 var (
 	auditTargets       = []string{"repo", "branch", "commit", "range", "recent", "pr"}
@@ -204,8 +222,8 @@ type CodeAuditFinding struct {
 	URL      string     `json:"url,omitempty"` // the line on the forge
 	// Verdict is a Haiku check's of the finding against the code
 	// (confirmed, refuted, unsupported; "" not checked), VerdictNote its
-	// evidence, and Lead the panel lead (check.n) the model says it came
-	// from (WP-1320).
+	// evidence, and Lead the panel leads (check.n, comma separated) the runner
+	// says it was made from (WP-1320).
 	Verdict     string `json:"verdict,omitempty"`
 	VerdictNote string `json:"verdict_note,omitempty"`
 	Lead        string `json:"lead,omitempty"`
@@ -604,6 +622,11 @@ func (s *Service) RequestAudit(ctx context.Context, actor *Actor, in AuditInput)
 	}
 	a.Purpose, a.Weakest = in.purpose, in.weakest
 	a.reviewText, a.roundContext, a.claims = in.reviewText, in.roundContext, in.claims
+	if a.Purpose == AuditObjective {
+		// What Waypoint tells a judge of the task and its round
+		// (objectiveJudgeContext); it reads the repository, not a pull request.
+		prContext = in.prContext
+	}
 	a.Helpers = auditHelpersFor(in, prContext)
 	a.prompt = codeAuditPrompt(a, prContext)
 	via := strings.TrimSpace(in.Via)
@@ -776,6 +799,9 @@ const auditSchema = `{"type":"object","additionalProperties":false,"required":["
 // codeAuditPrompt is what the model is asked: the rules every audit keeps, then
 // what the requester asked for. The runner adds the change's diff.
 func codeAuditPrompt(a *CodeAudit, prContext string) string {
+	if a.Purpose == AuditObjective {
+		return objectiveJudgePrompt(a, prContext)
+	}
 	var b strings.Builder
 	switch a.Purpose {
 	case AuditFootprint:
@@ -817,13 +843,18 @@ func codeAuditPrompt(a *CodeAudit, prContext string) string {
 		b.WriteString("What to look for: " + a.Instructions + " Report other serious problems you come across too.\n\n")
 	}
 	b.WriteString(auditCriteriaPrompt(a))
+	// A review round's reviewer is told no number (findingsGuard).
+	count := fmt.Sprintf("At most %d findings, worst first.", auditFindingsCap(a))
+	if auditUncapped(a) {
+		count = "Report every problem you find, worst first."
+	}
 	fmt.Fprintf(&b, `Rules:
 - Report only problems you can point to in the code: the file (relative to the repository's root) and line, what goes wrong, and when.
 - No style nits, no "consider adding", nothing you did not check against the code.
 - Do not propose patches or plans: say what is wrong and how someone could confirm it.
 - Severity: critical (data lost or exposed, a security hole, an outage), high (wrong results people will hit), medium (wrong in some cases), low (minor).
-- At most %d findings, worst first. Change nothing: no edits, no commits, no commands that write.
-- If nothing is worth reporting, give an empty list of findings and say so in the summary.`, auditFindingsCap(a))
+- %s Change nothing: no edits, no commits, no commands that write.
+- If nothing is worth reporting, give an empty list of findings and say so in the summary.`, count)
 	if a.MinSeverity != "" {
 		fmt.Fprintf(&b, "\n- Report only findings of %s severity or worse; leave out anything less.", a.MinSeverity)
 	}
@@ -857,6 +888,12 @@ func (s *Service) advanceAudit(ctx context.Context, id int64) {
 		m := a.chain[a.Slot]
 		in := AgentJob{CLI: m.CLI, Model: m.Model, Prompt: a.prompt, Repo: repo.cloneURL(), Base: a.Ref, DiffFrom: a.Base, ReadOnly: true, Permission: AgentRead,
 			JSONSchema: auditSchemaFor(a), DiffPaths: a.Paths, DiffExclude: a.Exclude, Helpers: a.Helpers}
+		if a.Helpers != nil && len(a.Helpers.Panel) > 0 {
+			// A copy: the prior runs go to this job only, never the audit's record.
+			h := *a.Helpers
+			h.Prior = s.priorPanel(ctx, a.ID)
+			in.Helpers = &h
+		}
 		if a.SinceAt != nil {
 			in.DiffFrom, in.DiffSince = "", a.SinceAt.Unix()
 		}
@@ -943,7 +980,7 @@ func (s *Service) endAudit(ctx context.Context, a *CodeAudit, status, why string
 				}
 			}
 		}
-		if err := insertHelperRuns(ctx, t, a.ID, a.HelperRuns, found != nil, s.nowMS()); err != nil {
+		if err := s.insertHelperRuns(ctx, t, a.ID, a.HelperRuns, found != nil, s.nowMS()); err != nil {
 			return err
 		}
 		if len(a.HelperRuns) > 0 || a.Helpers != nil { // the review loop's helpers' record changed (review_health.go)
@@ -1021,9 +1058,8 @@ func (s *Service) settleAudit(ctx context.Context, id, jobID int64) {
 			raised := found.raised // as written: before blanks, the floor and the cap
 			att.Outcome = "answered"
 			a.Attempts = append(a.Attempts, att)
-			if n := found.keep(a); n > 0 {
-				found.Summary += fmt.Sprintf(" (%d more finding%s, below what was asked for, left out.)", n, plural(n))
-			}
+			found.keep(a)
+			found.Summary += found.keepNote(a, raised)
 			a.Model, a.Summary = auditModelName(m), excerpt(found.Summary, 2000)
 			if m.CLI == GatewayCLI {
 				// Which of the gateway's models answered, and that its
@@ -1075,10 +1111,12 @@ func (s *Service) settleAudit(ctx context.Context, id, jobID int64) {
 	a.Attempts = append(a.Attempts, att)
 	next := a.Slot + 1
 	switch {
-	case j.State == "expired", att.Outcome == "error" && (next >= len(a.chain) || a.Purpose != AuditReview && !s.roundsAudit(ctx, a.ID)):
+	case j.State == "expired", att.Outcome == "error" && (next >= len(a.chain) || a.Purpose != AuditReview && a.Purpose != AuditObjective && !s.roundsAudit(ctx, a.ID)):
 		// A review round's chain goes on after any failure (WP-820): an
 		// error text no list knows mustn't end it with models still to try.
-		// So does one handed from its round to the pull request (WP-1059).
+		// So does one handed from its round to the pull request (WP-1059),
+		// and an objective's judge, which decides whether a task closes
+		// (WP-ADR111).
 		s.failAudit(ctx, a, att.Error)
 		return
 	case next < len(a.chain):
@@ -1169,7 +1207,7 @@ func (s *Service) requeueAudit(ctx context.Context, a *CodeAudit, slot, retries 
 			return err
 		}
 		if n > 0 && len(a.HelperRuns) > 0 {
-			if err := insertHelperRuns(ctx, t, a.ID, a.HelperRuns, false, s.nowMS()); err != nil {
+			if err := s.insertHelperRuns(ctx, t, a.ID, a.HelperRuns, false, s.nowMS()); err != nil {
 				return err
 			}
 			t.emit(&Event{Kind: EvReviewLoopRecorded, ProjectID: a.projectID})
@@ -1230,11 +1268,13 @@ type auditAnswer struct {
 	Summary  string
 	Findings []CodeAuditFinding
 	// raised is how many findings the answer held, as written: before any
-	// was dropped as blank or past auditMaxFindings, and before a severity
-	// floor or cap (WP-1230: only an answer that raised none is reported to
-	// the gateway as having found nothing). -1 when not known: free text that
-	// says more than "no findings".
+	// was dropped as blank, and before a severity floor or the audit's
+	// limit on findings (WP-1230: only an answer that raised none is reported to
+	// the gateway as having found nothing).
 	raised int
+	// floorCut and guardCut are how many keep took out below the severity
+	// floor and past the guard.
+	floorCut, guardCut int
 }
 
 // flexInt is a number a model may write as a string ("123", "L123").
@@ -1259,14 +1299,50 @@ func (n *flexInt) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-var severityAliases = map[string]string{"p0": "critical", "blocker": "critical", "p1": "high", "major": "high", "p2": "medium", "moderate": "medium",
-	"p3": "low", "minor": "low", "info": "low", "nit": "low"}
+// severityAliases are the labels reviewers write for auditSeverities'
+// four. One no entry reads is held as medium (parseAuditAnswer), so the
+// words for "barely matters" are here: read as medium, a "trivial" finding
+// the session fixed was a signal for another round on three stakes tiers
+// of four (WP-1320's audit).
+var severityAliases = map[string]string{"p0": "critical", "blocker": "critical", "severe": "critical", "p1": "high", "major": "high", "serious": "high",
+	"important": "high", "p2": "medium", "moderate": "medium", "med": "medium", "p3": "low", "p4": "low", "minor": "low", "info": "low",
+	"informational": "low", "nit": "low", "nitpick": "low", "trivial": "low", "cosmetic": "low", "style": "low", "suggestion": "low", "note": "low"}
+
+// errNoFindingsList: an answer that parses as JSON but holds no findings
+// list. The schema asked requires one (auditSchema: an empty list says
+// nothing was found), so an answer without it ("{}", a refusal wrapped in
+// an object, a reply cut short) says nothing about the change; read as
+// "found nothing" it ended a review round clean on no review at all
+// (WP-1320's audit). The attempt is unreadable instead, and the next model
+// is asked.
+var errNoFindingsList = errors.New("its answer has no findings list")
+
+// AuditSeverity is a severity as the server keeps it: lower-case, a reviewer's
+// label read as one of auditSeverities, anything it doesn't know "medium". The
+// runner's check of findings uses it too, so it checks the findings the
+// server keeps.
+func AuditSeverity(raw string) string {
+	sev := strings.ToLower(strings.TrimSpace(raw))
+	if v, ok := severityAliases[strings.Fields(sev + " x")[0]]; ok {
+		sev = v
+	}
+	if !slices.Contains(auditSeverities, sev) {
+		sev = "medium"
+	}
+	return sev
+}
+
+// AuditSeverityRank orders severities worst first (0 is critical). parseAuditAnswer
+// sorts by it, and keep then cuts from the end.
+func AuditSeverityRank(sev string) int {
+	return slices.Index(auditSeverities, sev)
+}
 
 // parseAuditAnswer reads a job's answer into findings.
 func parseAuditAnswer(result map[string]any) (*auditAnswer, error) {
 	var out struct {
 		Summary  string `json:"summary"`
-		Findings []struct {
+		Findings *[]struct {
 			Title    string  `json:"title"`
 			Path     string  `json:"path"`
 			Line     flexInt `json:"line"`
@@ -1274,27 +1350,32 @@ func parseAuditAnswer(result map[string]any) (*auditAnswer, error) {
 			Problem  string  `json:"problem"`
 			Confirm  string  `json:"confirm"`
 			// What the runner's helpers add (WP-1320): the check's verdict
-			// and evidence, and the panel lead the model names.
+			// and evidence, and the panel leads the runner names.
 			Verdict  string `json:"verdict"`
 			Evidence string `json:"verdict_note"`
 			Lead     string `json:"lead"`
+			// Leads is the panel problems a finding the runner added
+			// stands for (goals.1): data, not text in its problem.
+			Leads []string `json:"leads"`
 		} `json:"findings"`
 	}
-	if err := decodeRunnerAnswer(result, &out); err != nil {
+	err := decodeRunnerAnswer(result, &out)
+	if err == nil && out.Findings == nil {
+		err = errNoFindingsList
+	}
+	if err != nil {
+		// A reviewer that answers in words may say just "no findings".
+		// Text that says more ("no findings in a.go, but b.go…") may name
+		// a problem or be cut short (WP-1253): it is no answer, rather
+		// than an audit that found nothing.
 		text := strings.TrimSpace(anyString(result["answer"]))
-		if up := strings.ToUpper(text); strings.Contains(up, "NO FINDINGS") && len(text) < 400 {
-			a := &auditAnswer{Summary: "No findings."}
-			// Text that says more ("no findings in a.go, but b.go…") may
-			// name a problem: not known to have raised nothing (WP-1253).
-			if strings.Trim(up, " \n.!*_`") != "NO FINDINGS" {
-				a.raised = -1
-			}
-			return a, nil
+		if strings.Trim(strings.ToUpper(text), " \n.!*_`") == "NO FINDINGS" {
+			return &auditAnswer{Summary: "No findings."}, nil
 		}
 		return nil, err
 	}
-	a := &auditAnswer{Summary: strings.TrimSpace(out.Summary), raised: len(out.Findings)}
-	for _, f := range out.Findings {
+	a := &auditAnswer{Summary: strings.TrimSpace(out.Summary), raised: len(*out.Findings)}
+	for _, f := range *out.Findings {
 		title, problem := strings.TrimSpace(f.Title), strings.TrimSpace(f.Problem)
 		if title == "" && problem == "" {
 			continue
@@ -1302,24 +1383,18 @@ func parseAuditAnswer(result map[string]any) (*auditAnswer, error) {
 		if title == "" {
 			title = excerpt(strings.SplitN(problem, "\n", 2)[0], 120)
 		}
-		sev := strings.ToLower(strings.TrimSpace(f.Severity))
-		if v, ok := severityAliases[strings.Fields(sev + " x")[0]]; ok {
-			sev = v
-		}
-		if !slices.Contains(auditSeverities, sev) {
-			sev = "medium"
-		}
+		sev := AuditSeverity(f.Severity)
 		p, line := cleanAuditPath(f.Path, int(f.Line))
 		a.Findings = append(a.Findings, CodeAuditFinding{Title: excerpt(title, 200), Path: p, Line: line, Severity: sev,
 			Problem: excerpt(problem, 4000), Confirm: excerpt(strings.TrimSpace(f.Confirm), 2000), Verdict: cleanVerdict(f.Verdict),
-			VerdictNote: excerpt(strings.TrimSpace(f.Evidence), 2000), Lead: cleanLead(f.Lead)})
-		if len(a.Findings) == auditMaxFindings {
-			break
-		}
+			VerdictNote: excerpt(strings.TrimSpace(f.Evidence), 2000), Lead: strings.Join(leadIDs(strings.Join(append([]string{f.Lead}, f.Leads...), ",")), ",")})
 	}
-	// Worst first, keeping the model's order within a severity.
+	// Worst first, keeping the answer's order within a severity (the
+	// reviewer's findings come before the panel's in it). The limit is the
+	// audit's, so keep applies it, and says so when it cuts: a limit here
+	// dropped findings with no word of it (WP-1320).
 	slices.SortStableFunc(a.Findings, func(x, y CodeAuditFinding) int {
-		return slices.Index(auditSeverities, x.Severity) - slices.Index(auditSeverities, y.Severity)
+		return AuditSeverityRank(x.Severity) - AuditSeverityRank(y.Severity)
 	})
 	if a.Summary == "" {
 		a.Summary = fmt.Sprintf("%d finding%s.", len(a.Findings), plural(len(a.Findings)))
@@ -1626,6 +1701,9 @@ func writeAuditFinding(b *strings.Builder, f CodeAuditFinding) {
 	fmt.Fprintf(b, "- What goes wrong: %s\n", untrusted(f.Problem))
 	if f.Confirm != "" {
 		fmt.Fprintf(b, "- How to confirm: %s\n", untrusted(f.Confirm))
+	}
+	if src := PanelSource(f); src != "" {
+		fmt.Fprintf(b, "- Found by: %s\n", src)
 	}
 	if f.Verdict != "" {
 		fmt.Fprintf(b, "- Checked against the code by Claude Haiku: %s%s\n", f.Verdict, noteSuffix(untrusted(f.VerdictNote)))
@@ -2063,8 +2141,11 @@ func (s *Service) roundOnAudit(ctx context.Context, job, id int64) bool {
 
 // CancelAudit stops an audit that hasn't ended.
 func (s *Service) CancelAudit(ctx context.Context, actor *Actor, id int64) (*CodeAudit, error) {
-	if _, err := s.auditToChange(ctx, actor, id); err != nil {
+	if seen, err := s.auditToChange(ctx, actor, id); err != nil {
 		return nil, err
+	} else if seen.Purpose == AuditObjective && actor.id() != 0 && !objectivePerson(actor) {
+		// The judge of a round isn't stopped by whoever worked the round.
+		return nil, forbidden("audit #%d judges an objective: a person stops it, or ends the objective (wp objective end)", id)
 	}
 	unlock := s.auditLocks.lock(id)
 	a, err := s.auditRow(ctx, id)
@@ -2075,6 +2156,13 @@ func (s *Service) CancelAudit(ctx context.Context, actor *Actor, id int64) (*Cod
 	if a.Status != AuditQueued && a.Status != AuditRunning {
 		unlock()
 		return nil, invalid("audit #%d has ended (%s)", id, a.Status)
+	}
+	// The session whose marks the check reads can't end it: a cancelled
+	// check passes the round (WP-1390). Waypoint cancels it itself when it
+	// is past its patience, and a person may.
+	if a.Purpose == AuditCheck && actor.IsAgent() {
+		unlock()
+		return nil, invalid("audit #%d is Waypoint's check of a review round's marks: it ends by itself, and only a person can cancel it", id)
 	}
 	who := cmp(actor.agentName(), "")
 	if who == "" && actor.User != nil {
@@ -2103,6 +2191,9 @@ func (s *Service) RerunAudit(ctx context.Context, actor *Actor, id int64, via st
 	a, err := s.auditToChange(ctx, actor, id)
 	if err != nil {
 		return nil, err
+	}
+	if ownReport(a) {
+		return nil, invalid("audit #%d is a session's report of its own review: there is no model to ask again. Audit the branch instead (`wp audit branch %s`)", a.ID, a.Ref)
 	}
 	comment := a.PostComment
 	in := AuditInput{Project: a.Project, Repo: a.Repo, Target: a.Target, Instructions: a.Instructions, Models: a.Models, Comment: &comment, Fix: a.Fix, Via: via,
@@ -2253,6 +2344,11 @@ func (s *Service) MarkAuditFindings(ctx context.Context, actor *Actor, in MarkFi
 	}
 	err := s.write(ctx, actor, func(t *tx) error {
 		for _, r := range refs {
+			if actor.IsAgent() {
+				if err := s.refuseMarkAfterCheck(ctx, t, r.audit, r.n, state); err != nil {
+					return err
+				}
+			}
 			res, err := t.ExecContext(ctx, `UPDATE code_audit_findings SET state = ?, note = CASE WHEN ? = '' THEN note ELSE ? END, issue_id = coalesce(?, issue_id),
 				decided_by = ?, decided_agent = ?, decided_at = ? WHERE audit_id = ? AND ordinal = ?`,
 				state, note, note, issueID, by, actor.agentName(), s.nowMS(), r.audit, r.n)
@@ -2289,6 +2385,36 @@ func (s *Service) MarkAuditFindings(ctx context.Context, actor *Actor, in MarkFi
 	}
 	slices.SortFunc(out, func(x, y CodeAuditFinding) int { return strings.Compare(x.ID, y.ID) })
 	return out, nil
+}
+
+// refuseMarkAfterCheck: once the check of a review round's marks has been
+// asked, the marks it read are what it checked. An agent may still mark a
+// finding of that round fixed (it did the work after all), but not undo a
+// mark into rejected or open: the loop would then see a round of
+// rejections whose check passed (WP-1320). What the check disputes is the
+// check's own finding, which is not held to this.
+func (s *Service) refuseMarkAfterCheck(ctx context.Context, t *tx, audit int64, n int, state string) error {
+	var key, was string
+	err := t.QueryRowContext(ctx, `SELECT a.request_key, f.state FROM code_audit_findings f JOIN code_audits a ON a.id = f.audit_id WHERE f.audit_id = ? AND f.ordinal = ?`, audit, n).Scan(&key, &was)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil // the update says it is not found
+	}
+	if err != nil {
+		return err
+	}
+	rest, ok := strings.CutPrefix(key, "review-round:")
+	num, kind, _ := strings.Cut(rest, ":")
+	round, err := strconv.ParseInt(num, 10, 64)
+	if !ok || err != nil || (kind != "" && kind != "own" && kind != "sonnet" && kind != "other") || state == was || state == "fixed" {
+		return nil
+	}
+	var check int64
+	if err := t.QueryRowContext(ctx, `SELECT id FROM code_audits WHERE request_key = ?`, fmt.Sprintf(checkAuditKey, round)).Scan(&check); errors.Is(err, sql.ErrNoRows) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	return invalid("finding %d.%d is part of a review round whose marks were checked as they stood (audit #%d): it can only be marked fixed now. What the check disputes is the check's own finding to mark", audit, n, check)
 }
 
 // readRange takes what the runner read from a job's result: the commits the

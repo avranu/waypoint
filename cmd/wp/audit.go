@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core"
 )
 
 // Audits (WP-348, WP-ADR20): a model reads a checkout from your runner and
@@ -35,7 +37,8 @@ gateway's own agent, where there is one. --focus, --path, --exclude, --min-sever
 --fix also makes a task for Claude to check and fix the real findings.
 
 Findings are claims to check; record your verdict with wp audit mark (12.3 is
-audit 12's third finding).`,
+audit 12's third finding). wp audit report records the findings of a review
+you ran yourself, for your task's review round.`,
 	examples: []string{"wp audit", "wp audit pr 12", `wp audit branch feature-x -m "Focus on the new cache's invalidation."`,
 		"wp audit recent --since 2w --focus security --path internal",
 		"wp audit show 12", "wp audit mark 12.1 12.3 confirmed", `wp audit mark 12.2 rejected -m "the lock is held by the caller"`},
@@ -60,6 +63,23 @@ func init() {
 			about: `confirmed is real but unfixed; rejected needs -m why. --issue links the
 task or bug that deals with it.`,
 			examples: []string{"wp audit mark 12.1 12.3 confirmed", "wp audit mark 12.1 fixed --issue WP-401", `wp audit mark 12.2 rejected -m "the caller holds the lock"`}, run: auditMark},
+		{name: "report", args: "[KEY] -f FILE | --none -m SUMMARY", summary: "record what the adversarial review you ran yourself found, as your task's review round",
+			about: `For an agent session whose review round was its own to run (wp ship
+says so, and holds the pull request for this). FILE (- for stdin) is JSON:
+
+  {"summary": "what was reviewed and how",
+   "findings": [{"title": "...", "path": "internal/x.go", "line": 12,
+     "severity": "critical|high|medium|low",
+     "problem": "what goes wrong, and when",
+     "outcome": "fixed|rejected|open", "note": "what you did, or why not"}]}
+
+Give every issue the review raised, the ones you rejected too (those need a
+note). --none says it raised nothing; -m then says who reviewed what, and
+how. The findings become an audit: change a verdict with wp audit mark, and
+wp ship --pr then has Waypoint check your marks against the code and score
+the findings, which decides whether another round comes. Reporting again
+replaces the report until that check starts.`,
+			examples: []string{"wp audit report -f review.json", "wp audit report WP-12 -f -", `wp audit report --none -m "adversarial-review agent read the whole diff against main; nothing stood"`}, run: auditReport},
 		{name: "fix", args: "ID...", summary: "make a task for Claude to check and fix the findings still to do (open or confirmed)", examples: []string{"wp audit fix 12"}, run: auditAct("fix")},
 		{name: "rerun", args: "ID...", summary: "run the same audit again (a PR's at its head now)", examples: []string{"wp audit rerun 12"}, run: auditAct("rerun")},
 		{name: "cancel", args: "ID...", summary: "stop an audit that hasn't ended", examples: []string{"wp audit cancel 12"}, run: auditAct("cancel")},
@@ -84,18 +104,20 @@ type auditView struct {
 	Exclude      []string `json:"exclude"`
 	MinSeverity  string   `json:"min_severity"`
 	MaxFindings  int      `json:"max_findings"`
-	FromSHA      string   `json:"from_sha"`
-	ToSHA        string   `json:"to_sha"`
-	CommitCount  *int     `json:"commit_count"`
-	Purpose      string   `json:"purpose"` // footprint: the drift guard's check (WP-440)
-	Models       []string `json:"models"`
-	Weakest      string   `json:"weakest"` // the gateway's quality bar (WP-916)
-	Fix          bool     `json:"fix"`
-	Status       string   `json:"status"`
-	Slot         int      `json:"slot"`
-	JobID        *int64   `json:"job_id"`
-	JobState     string   `json:"job_state"`
-	Attempts     []struct {
+	// HelperRuns: the Haiku checks around the model (core.AuditHelperRun).
+	HelperRuns  []core.AuditHelperRun `json:"helper_runs"`
+	FromSHA     string                `json:"from_sha"`
+	ToSHA       string                `json:"to_sha"`
+	CommitCount *int                  `json:"commit_count"`
+	Purpose     string                `json:"purpose"` // footprint: the drift guard's check (WP-440)
+	Models      []string              `json:"models"`
+	Weakest     string                `json:"weakest"` // the gateway's quality bar (WP-916)
+	Fix         bool                  `json:"fix"`
+	Status      string                `json:"status"`
+	Slot        int                   `json:"slot"`
+	JobID       *int64                `json:"job_id"`
+	JobState    string                `json:"job_state"`
+	Attempts    []struct {
 		Model   string `json:"model"`
 		Round   int    `json:"round"`
 		Outcome string `json:"outcome"`
@@ -135,6 +157,8 @@ type auditFinding struct {
 	Note     string `json:"note"`
 	Issue    string `json:"issue"`
 	By       string `json:"by"`
+	Lead     string `json:"lead"`
+	Verdict  string `json:"verdict"`
 }
 
 // what names the code an audit reads: "#12", "feature-x against main".
@@ -266,6 +290,9 @@ func (a *auditView) text() string {
 			if f.Problem != "" {
 				fmt.Fprintf(&s, "         %s\n", indentRest(f.Problem, "         "))
 			}
+			if src := core.PanelSource(core.CodeAuditFinding{Lead: f.Lead}); src != "" {
+				fmt.Fprintf(&s, "         Source: %s\n", src)
+			}
 			if f.Confirm != "" {
 				fmt.Fprintf(&s, "         To confirm: %s\n", indentRest(f.Confirm, "         "))
 			}
@@ -274,8 +301,57 @@ func (a *auditView) text() string {
 			}
 		}
 	}
+	s.WriteString(a.unansweredPanel())
 	fmt.Fprintf(&s, "\n%s", a.URL)
 	return strings.TrimRight(s.String(), "\n")
+}
+
+// unansweredPanel lists what Waypoint's Haiku checks confirmed against the
+// code in an audit whose reviewing model did not answer (it didn't end
+// done): they are kept with the audit, and no finding holds them.
+func (a *auditView) unansweredPanel() string {
+	if a.Status == "done" {
+		return ""
+	}
+	var b strings.Builder
+	n := 0
+	for _, r := range a.HelperRuns {
+		if r.State != "done" {
+			continue
+		}
+		for _, l := range r.Leads {
+			if !l.Confirmed {
+				continue
+			}
+			if n == 0 {
+				b.WriteString("\nThe reviewing model did not answer. Waypoint's Haiku checks confirmed these problems against the code (claims to check, not facts):\n")
+			}
+			n++
+			path, line := l.Path, l.Line
+			if l.ReadPath != "" {
+				path, line = l.ReadPath, l.ReadLine
+			}
+			where := path
+			if path != "" && line > 0 {
+				where = fmt.Sprintf("%s:%d", path, line)
+			}
+			title, sev, problem := l.Title, l.Severity, l.Problem
+			if l.ReadTitle != "" {
+				title = l.ReadTitle
+			}
+			if l.ReadSeverity != "" {
+				sev = l.ReadSeverity
+			}
+			if l.ReadProblem != "" {
+				problem = l.ReadProblem
+			}
+			fmt.Fprintf(&b, "  [%s] %-8s %s: %s\n         %s\n", r.Check, sev, where, title, indentRest(problem, "         "))
+			if l.Evidence != "" {
+				fmt.Fprintf(&b, "         Evidence: %s\n", indentRest(l.Evidence, "         "))
+			}
+		}
+	}
+	return b.String()
 }
 
 // criteria is what the audit was limited to, in a line.
@@ -294,7 +370,7 @@ func (a *auditView) criteria() string {
 		parts = append(parts, a.MinSeverity+" and worse")
 	}
 	if a.MaxFindings > 0 {
-		parts = append(parts, fmt.Sprintf("at most %d findings", a.MaxFindings))
+		parts = append(parts, fmt.Sprintf("asked for at most %d findings", a.MaxFindings))
 	}
 	return strings.Join(parts, "; ")
 }
@@ -670,6 +746,77 @@ func auditMark(c *cli, args []string) error {
 	}
 	return c.emit(raw, func() string {
 		return fmt.Sprintf("Marked %s %s.", strings.Join(ids, ", "), state)
+	})
+}
+
+// auditReport is wp audit report: the session's own review of its task,
+// recorded as the findings of the task's review round (WP-1320).
+func auditReport(c *cli, args []string) error {
+	fs := c.flags()
+	file := fs.String("file", "", "the findings as JSON, from `FILE` (- for stdin)")
+	short(fs, "f", "file")
+	none := fs.Bool("none", false, "the review raised nothing (say what it covered with -m)")
+	summary := fs.String("m", "", "what was reviewed and how (`SUMMARY`)")
+	pos, err := c.parse(fs, args)
+	if err != nil {
+		return err
+	}
+	key, rest, err := c.currentKey(pos)
+	if err != nil {
+		return err
+	}
+	switch {
+	case len(rest) > 0:
+		return c.usage("unexpected %q: the findings come from a file (wp audit report %s -f FILE)", joinArgs(rest), key)
+	case *none && *file != "":
+		return c.usage("give the findings (-f FILE) or say --none, not both")
+	case !*none && *file == "":
+		return c.usage("give the findings as JSON (wp audit report %s -f FILE, - for stdin; wp audit report -h shows the form), or --none -m \"what the review covered\" if it raised nothing", key)
+	case *none && strings.TrimSpace(*summary) == "":
+		return c.usage("say what the review covered: wp audit report %s --none -m \"who reviewed what, and how\"", key)
+	}
+	body := map[string]any{"none": *none, "summary": *summary}
+	if *file != "" {
+		text, err := readBody(*file)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(text) == "" {
+			return c.usage("%s is empty: give the findings as JSON (wp audit report -h shows the form)", *file)
+		}
+		body["report"] = text
+	}
+	raw, err := c.call("POST", "/api/v1/issues/"+url.PathEscape(key)+"/review-report", body)
+	if err != nil {
+		return err
+	}
+	var out struct {
+		Audit    auditView `json:"audit"`
+		Replaced bool      `json:"replaced"`
+		Dropped  int       `json:"dropped"`
+		Next     string    `json:"next"`
+	}
+	if err := jsonInto(raw, &out); err != nil {
+		return err
+	}
+	return c.emit(raw, func() string {
+		var b strings.Builder
+		what := "Recorded"
+		if out.Replaced {
+			what = "Replaced"
+		}
+		n := len(out.Audit.Findings)
+		fmt.Fprintf(&b, "%s your review of %s as audit #%d: %d finding%s.", what, key, out.Audit.ID, n, plural(n))
+		if out.Dropped > 0 {
+			fmt.Fprintf(&b, " %d more, the least severe, were left out: an audit keeps its worst %d.", out.Dropped, n)
+		}
+		for _, f := range out.Audit.Findings {
+			fmt.Fprintf(&b, "\n  %s  %-8s %-8s %s", f.ID, f.Severity, f.State, f.Title)
+		}
+		if out.Next != "" {
+			b.WriteString("\n" + out.Next)
+		}
+		return b.String()
 	})
 }
 

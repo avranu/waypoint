@@ -214,6 +214,8 @@ func jobNoun(kind, source string) string {
 		return "audit"
 	case JobApply:
 		return "change"
+	case JobObjective:
+		return "objective reading"
 	}
 	return kind + " job"
 }
