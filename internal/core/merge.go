@@ -385,7 +385,19 @@ func (s *Service) reviewHolds(ctx context.Context, pr *PullRequest, settle bool,
 	}
 	if going != 0 && settle {
 		// The hold ends by itself when the audit times out: look again then.
-		r.wake = s.auditDeadline(ctx, going)
+		at, err := s.auditDeadline(ctx, going)
+		if err != nil {
+			// The audit still holds the merge; without its deadline, look
+			// again soon instead of never (WP-1406).
+			if readFault(err) {
+				s.log.WarnContext(ctx, "read when a running audit stops holding a merge", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "audit", going, "err", err)
+			}
+			next := s.now().Add(driftRetry)
+			at = &next
+		}
+		if at != nil && (r.wake == nil || at.Before(*r.wake)) {
+			r.wake = at
+		}
 	}
 	if settle {
 		// An adversarial review of one of its tasks pushes its fixes to it

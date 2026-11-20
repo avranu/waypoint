@@ -199,28 +199,32 @@ func (s *Service) auditKind(ctx context.Context, id int64) string {
 	if s.db.R.QueryRowContext(ctx, `SELECT purpose FROM code_audits WHERE id = ?`, id).Scan(&purpose) != nil {
 		return ""
 	}
-	switch {
-	case purpose == AuditFootprint:
+	switch purpose {
+	case AuditFootprint:
 		return " (a footprint check)"
-	case purpose == AuditReview:
+	case AuditReview:
 		return " (for an adversarial review)"
-	case s.roundsAudit(ctx, id):
+	}
+	// Only a label: an unread answer (logged by roundsAudit) names no kind.
+	if rounds, err := s.roundsAudit(ctx, id); err == nil && rounds {
 		return " (from an adversarial review)"
 	}
 	return ""
 }
 
 // roundsAudit: a review round asked for the audit.
-func (s *Service) roundsAudit(ctx context.Context, id int64) bool {
+// A read that failed is an error, not "no round asked" (WP-1406); the Warn
+// is here, once.
+func (s *Service) roundsAudit(ctx context.Context, id int64) (bool, error) {
 	var ok bool
 	err := s.db.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM work_log WHERE kind = 'review' AND audit_id = ?)`, id).Scan(&ok)
 	if err != nil {
 		if readFault(err) {
-			s.log.WarnContext(ctx, "read rounds audit", "id", id, "err", err)
+			s.log.WarnContext(ctx, "read whether a review round asked for an audit", "audit", id, "err", err)
 		}
-		return false
+		return false, err
 	}
-	return ok
+	return ok, nil
 }
 
 // roundRunning: a babysitting round's job for the pull request is queued or
@@ -238,19 +242,25 @@ func (s *Service) roundRunning(ctx context.Context, prID int64) (bool, error) {
 
 // auditDeadline is when the audit auditGoing found stops holding the merge:
 // the time at which a re-read of the pull request lets it go.
-func (s *Service) auditDeadline(ctx context.Context, id int64) *time.Time {
+// An audit that is gone has no deadline (nil, nil); a read that failed is an
+// error, so the caller keeps a time to look again (WP-1406).
+func (s *Service) auditDeadline(ctx context.Context, id int64) (*time.Time, error) {
 	var created int64
 	var state string
 	var started *int64
-	if s.db.R.QueryRowContext(ctx, `SELECT a.created_at, coalesce(j.state, 'queued'), j.started_at FROM code_audits a
-		LEFT JOIN runner_jobs j ON j.id = a.job_id WHERE a.id = ?`, id).Scan(&created, &state, &started) != nil {
-		return nil
+	err := s.db.R.QueryRowContext(ctx, `SELECT a.created_at, coalesce(j.state, 'queued'), j.started_at FROM code_audits a
+		LEFT JOIN runner_jobs j ON j.id = a.job_id WHERE a.id = ?`, id).Scan(&created, &state, &started)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
 	}
 	at := time.UnixMilli(created).Add(auditQueueWait)
 	if state == "running" && started != nil {
 		at = time.UnixMilli(*started).Add(auditWaitMax)
 	}
-	return &at
+	return &at, nil
 }
 
 // newestAudit is the pull request's audit that finished last, whatever its

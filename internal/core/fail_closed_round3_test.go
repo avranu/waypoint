@@ -358,6 +358,11 @@ func TestReadHelpersUnreadable(t *testing.T) {
 			id, err := se.s.attachedProjectFor(se.ctx, SystemActor(), &PullRequest{ForgeID: se.f.ID, Repo: "me/app"})
 			return id != 0, err
 		}},
+		{"work_log", func() (bool, error) { return se.s.roundsAudit(se.ctx, 1) }},
+		{"code_audits", func() (bool, error) {
+			at, err := se.s.auditDeadline(se.ctx, 1)
+			return at != nil, err
+		}},
 		{"forges", func() (bool, error) {
 			err := se.s.postGateStatus(se.ctx, &PullRequest{ForgeID: se.f.ID, Repo: "me/app", HeadSHA: "1111111aaaa"}, GateSuccess, "ok")
 			return err == nil, err

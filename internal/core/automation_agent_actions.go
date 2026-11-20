@@ -403,7 +403,9 @@ func (c *StepCtx) jobProject(r *stepRepo) (int64, error) {
 		// The step's own project, when it has the repository.
 		if pid := c.stepProject(); c.Automation != nil && pid != 0 {
 			var n int
-			_ = c.S.db.R.QueryRowContext(c.Ctx, `SELECT COUNT(*) FROM project_repos WHERE project_id = ? AND forge_id = ? AND repo = ? COLLATE NOCASE`, pid, r.Forge.ID, r.Repo).Scan(&n)
+			if err := c.S.db.R.QueryRowContext(c.Ctx, `SELECT COUNT(*) FROM project_repos WHERE project_id = ? AND forge_id = ? AND repo = ? COLLATE NOCASE`, pid, r.Forge.ID, r.Repo).Scan(&n); err != nil {
+				return 0, err // unread is not "another project's" (WP-1406)
+			}
 			if n > 0 {
 				return pid, nil
 			}

@@ -1096,8 +1096,18 @@ func (s *Service) settleAudit(ctx context.Context, id, jobID int64) {
 	}
 	a.Attempts = append(a.Attempts, att)
 	next := a.Slot + 1
+	// Whether a round asked for it decides if an error ends the chain. Unread
+	// (logged by roundsAudit), the chain goes on: the audit isn't failed with
+	// models still to try on a guess (WP-1406).
+	rounds := a.Purpose == AuditReview
+	if !rounds && att.Outcome == "error" && next < len(a.chain) {
+		var rerr error
+		if rounds, rerr = s.roundsAudit(ctx, a.ID); rerr != nil {
+			rounds = true
+		}
+	}
 	switch {
-	case j.State == "expired", att.Outcome == "error" && (next >= len(a.chain) || a.Purpose != AuditReview && !s.roundsAudit(ctx, a.ID)):
+	case j.State == "expired", att.Outcome == "error" && (next >= len(a.chain) || !rounds):
 		// A review round's chain goes on after any failure (WP-820): an
 		// error text no list knows mustn't end it with models still to try.
 		// So does one handed from its round to the pull request (WP-1059).
