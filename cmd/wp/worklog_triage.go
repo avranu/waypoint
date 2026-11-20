@@ -50,7 +50,9 @@ type triageTotals struct {
 	WouldSkip    int `json:"would_skip"`
 	Skipped      int `json:"skipped"`
 	AgentSkip    int `json:"agent_skip"`
+	OwnReview    int `json:"own_review"`
 	Reviewed     int `json:"reviewed"`
+	OwnRound     int `json:"own_round"`
 	Holdout      int `json:"holdout"`
 	ShadowRuns   int `json:"shadow_runs"`
 	Sampled      int `json:"sampled"`
@@ -137,6 +139,7 @@ func cmdWorklogTriage(c *cli, args []string) error {
 		row("all", st.Total)
 		fmt.Fprintf(&b, "\nSAMPLED: finished reviews of changes a rule would have skipped, picked without looking at the change. MISSED: those that found something, which skipping would have missed.\n")
 		fmt.Fprintf(&b, "COUNTED, FOUND, FIXED: every finished review, including ones an agent asked for.\n")
+		fmt.Fprintf(&b, "Of the %d skipped, agents skipped %d themselves (wp ship --skip-review) and %d are rounds from before the session's own review became a round, skipped for it. Of the %d reviewed, %d were reviewed by the session itself, its report being the round.\n", st.Total.Skipped, st.Total.AgentSkip, st.Total.OwnReview, st.Total.Reviewed, st.Total.OwnRound)
 		fmt.Fprintf(&b, "On skipped changes: %d useful findings on their pull requests, %d escapes traced back.\n", st.Total.UsefulOnSkip, st.Total.EscapesSkip)
 		fmt.Fprintf(&b, "Avoided: %d reviews, about %.0f minutes and %.1f Grok audits (mean review %.0f min).\n", st.Avoided.Rounds, st.Avoided.Minutes, st.Avoided.GrokAudits, st.Avoided.MeanRoundMinutes)
 		return b.String()

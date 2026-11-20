@@ -87,6 +87,13 @@ stateless, same bearer token).
                                   fell back to its own prompt), notes, agent runs, pull
                                   requests, review findings and review-comment verdicts, oldest first
     POST  /issues/{key}/worklog {"body", "tag": "found|fixed|rejected|"}   add a note (who may comment)
+    POST  /issues/{key}/review-report {"report": JSON text | "none": true, "summary"}   from the task's own agent
+                                  session: what the adversarial review it ran itself found, as the findings of its
+                                  review round before the pull request (WP-1320). report is {"summary", "findings":
+                                  [{title, path, line, severity: critical|high|medium|low, problem, outcome:
+                                  fixed|rejected|open, note}]}; none with a summary says it raised nothing. Returns
+                                  {audit, round, replaced, dropped, next}: the audit holds the findings (mark them
+                                  with POST /audits/findings), and the round is then checked and scored at wp ship
     GET   /worklog/stats?project=KEY&days=30   what adversarial reviews found, per project and in total
     GET   /worklog/triage?project=KEY&days=30&rows=1   review triage (WP-692): per rule, what it decided and how it
                                   turned out; what skipping avoided; rows=1 adds each assessment with its

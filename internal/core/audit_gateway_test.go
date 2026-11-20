@@ -208,7 +208,9 @@ func TestAuditThroughGateway(t *testing.T) {
 	}
 	claim := ae.takeOn(box)
 	in := agentJobOf(t, claim)
-	if claim.Kind != JobAudit || claim.Timeout != gatewayAuditTimeout+600 || in.CLI != GatewayCLI || in.Model != "audit" || in.JSONSchema == "" || len(in.GatewayExclude) != 0 || !in.ReadOnly {
+	// The job's time is the gateway's four hours and more, and the
+	// helpers' own (their panel runs beside the model, in the runner).
+	if claim.Kind != JobAudit || claim.Timeout <= gatewayAuditTimeout || claim.Timeout > runnerAuditMaxTimeout || in.CLI != GatewayCLI || in.Model != "audit" || in.JSONSchema == "" || len(in.GatewayExclude) != 0 || !in.ReadOnly {
 		t.Fatalf("job = %s %ds %+v", claim.Kind, claim.Timeout, in)
 	}
 
@@ -974,7 +976,8 @@ func TestGatewayAuditNoFindings(t *testing.T) {
 		{"below the floor", "critical", []any{low}, "", false},
 		{"blank findings", "", []any{blank}, "", false},
 		// Free text that says more than "no findings" may name a problem,
-		// or be cut short: not known to have raised nothing (WP-1253).
+		// or be cut short (WP-1253): it is no answer at all, so the model
+		// is asked again rather than the audit ending clean (WP-1320).
 		{"free text", "", nil, "No findings in a.go, but b.go has a nil deref on line 4.", false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -997,7 +1000,12 @@ func TestGatewayAuditNoFindings(t *testing.T) {
 				res = map[string]any{"answer": c.text, "model": v.Model, "gateway_task": v.ID}
 			}
 			ae.finish(claim.ID, "done", res, "")
-			if got := ae.audit(a.ID); got.Status != AuditDone || len(got.Findings) != 0 {
+			got := ae.audit(a.ID)
+			if c.name == "free text" {
+				if n := len(got.Attempts); got.Status == AuditDone || n == 0 || got.Attempts[n-1].Outcome != "unreadable" {
+					t.Fatalf("audit = %s, attempts %+v", got.Status, got.Attempts)
+				}
+			} else if got.Status != AuditDone || len(got.Findings) != 0 {
 				t.Fatalf("audit = %s, %+v (%s)", got.Status, got.Findings, got.Error)
 			}
 			ae.s.ReportReviewFeedback(ae.ctx)

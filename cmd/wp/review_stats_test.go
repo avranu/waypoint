@@ -13,23 +13,23 @@ func TestHelperStatsText(t *testing.T) {
 		t.Errorf("no record = %q", got)
 	}
 	got := helperStatsText([]helperStat{
-		{Check: "goals", Runs: 4, Done: 3, Skipped: 1, Leads: 9, Dropped: 2, TakenUp: 3, Held: 2, CostUSD: 0.125},
+		{Check: "goals", Runs: 4, Done: 3, Skipped: 1, Raised: 9, Confirmed: 5, Added: 3, Fixed: 2, Rejected: 1, CostUSD: 0.125},
 		{Check: "verify", Runs: 4, Done: 4, CostUSD: 0.5},
 	})
-	for _, want := range []string{"Haiku helpers", "CHECK", "goals", "    4     3      0       1      9       2       3     2", "$0.12", "verify", "TAKENUP"} {
+	for _, want := range []string{"Haiku helpers", "CHECK", "goals", "    4     3      0       1      9         5     3     2        1", "$0.12", "verify", "CONFIRMED", "ADDED", "REJECTED", "2026-11-20"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("table lacks %q:\n%s", want, got)
 		}
 	}
-	if strings.Contains(got, "checked against the code") || strings.Contains(got, "asked about again") || strings.Contains(got, "size guard, unread") {
+	if strings.Contains(got, "checked against the code") || strings.Contains(got, "asked about again") || strings.Contains(got, "TAKENUP") || strings.Contains(got, "size guard") {
 		t.Errorf("a verdict, re-ask or guard line with none:\n%s", got)
 	}
 	got = helperStatsText([]helperStat{{Check: "verify", Runs: 1, Done: 1, Confirmed: 3, ConfirmedRejected: 1, Refuted: 2, RefutedHeld: 1, Unsupported: 4}})
 	if !strings.Contains(got, "3 confirmed (1 of them rejected by the session), 2 refuted (1 of them fixed or confirmed anyway), 4 unsupported") {
 		t.Errorf("verdict line:\n%s", got)
 	}
-	got = helperStatsText([]helperStat{{Check: "quality", Runs: 1, Done: 1, Leads: 250, Dropped: 7, Guarded: 5}, {Check: "verify", Runs: 1, Done: 1, Refuted: 3, Reasked: 3, Overturned: 1}})
-	for _, want := range []string{"quality: 5 leads cut past the prompt's size guard, unread.", "Refuted findings asked about again: 3; 1 not refuted the second time (so unsupported)."} {
+	got = helperStatsText([]helperStat{{Check: "quality", Runs: 1, Done: 1, Raised: 250, Stopped: 1}, {Check: "verify", Runs: 1, Done: 1, Refuted: 3, Reasked: 3, Overturned: 1}})
+	for _, want := range []string{"quality: 0 runs failed in part, 1 stopped with their job", "Refuted findings asked about again: 3; 1 not refuted the second time (so unsupported)."} {
 		if !strings.Contains(got, want) {
 			t.Errorf("text lacks %q:\n%s", want, got)
 		}

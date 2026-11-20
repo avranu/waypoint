@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"git.jmann.me/claude/waypoint/internal/core"
 	"git.jmann.me/claude/waypoint/internal/sandbox"
 )
 
@@ -740,6 +741,7 @@ func (p *runnerProc) runJob(ctx context.Context, aj *activeJob, job *claimedJob)
 	} else if ctx.Err() != nil && o.State == "cancelled" && o.Error == "Stopped." {
 		o.Error = "The runner was stopped." // internal/core's runnerStoppedError: such an audit goes again
 	}
+	o = fitResult(o, resultLimit, sink)
 	sink.close()
 	logs.Wait()
 	p.logf("Job %d: %s%s", job.ID, o.State, map[bool]string{true: " (" + o.Error + ")"}[o.Error != ""])
@@ -828,10 +830,24 @@ func (p *runnerProc) finish(id int64, o outcome) {
 		body["result"] = o.Result
 	}
 	delay := 2 * time.Second
+	reduced := false
 	for {
 		err := p.c.callInto(p.reportCtx, "POST", fmt.Sprintf("/api/v1/runner/jobs/%d/finish", id), body, nil)
 		if err == nil {
 			return
+		}
+		// The server says the result is too large (it measures what this
+		// estimate missed): once, the helper runs go back as their kept
+		// leads only, so the findings' work isn't lost.
+		var ae *apiError
+		if !reduced && errors.As(err, &ae) && ae.status == 400 && strings.Contains(ae.msg, core.RunnerResultTooLarge) {
+			reduced = true
+			if r, ok := reduceToKept(o); ok {
+				p.logf("Job %d: the server found the result too large (%v); sending it again with the helper runs reduced to their kept leads", id, err)
+				o = r
+				body["result"] = o.Result
+				continue
+			}
 		}
 		if p.reportCtx.Err() != nil {
 			p.logf("Job %d: couldn't report its end (%v); the server will expire it", id, err)
