@@ -48,31 +48,36 @@ func (s *Server) findPull(w http.ResponseWriter, r *http.Request) (any, error) {
 	return s.svc.GetPullRequest(r.Context(), actor, id)
 }
 
+// openPullBody is the request of wp pr open and wp ship.
+type openPullBody struct {
+	Repo   string `json:"repo"`
+	Head   string `json:"head"`
+	Base   string `json:"base"`
+	Title  string `json:"title"`
+	Body   string `json:"body"`
+	Draft  bool   `json:"draft"`
+	Ready  bool   `json:"ready"`
+	Issue  string `json:"issue"`
+	For    string `json:"for"` // the task wp ship finishes (WP-608)
+	Urgent bool   `json:"urgent"`
+	// Review: wp ship's intent about the task's review before the pull
+	// request (auto, review, pr, skip; WP-688), with what goes with it.
+	Review   string `json:"review"`
+	Reason   string `json:"reason"`
+	Force    bool   `json:"force"`
+	HeadTime int64  `json:"head_time"`
+	// Message and Summary are left out by a CLI that wasn't given them:
+	// absent keeps what the round holds, "" clears it (WP-1370).
+	Message *string           `json:"message"`
+	Summary *string           `json:"summary"`
+	Change  *core.ChangeFacts `json:"change"`
+	// BodyInputs: what wp ship rendered the description from (WP-55).
+	BodyInputs *core.PRBodyInputs `json:"body_inputs"`
+}
+
 // openPull opens a pull request from a branch already pushed (wp pr open).
 func (s *Server) openPull(w http.ResponseWriter, r *http.Request) (any, error) {
-	var in struct {
-		Repo   string `json:"repo"`
-		Head   string `json:"head"`
-		Base   string `json:"base"`
-		Title  string `json:"title"`
-		Body   string `json:"body"`
-		Draft  bool   `json:"draft"`
-		Ready  bool   `json:"ready"`
-		Issue  string `json:"issue"`
-		For    string `json:"for"` // the task wp ship finishes (WP-608)
-		Urgent bool   `json:"urgent"`
-		// Review: wp ship's intent about the task's review before the pull
-		// request (auto, review, pr, skip; WP-688), with what goes with it.
-		Review   string            `json:"review"`
-		Reason   string            `json:"reason"`
-		Force    bool              `json:"force"`
-		HeadTime int64             `json:"head_time"`
-		Message  string            `json:"message"`
-		Summary  string            `json:"summary"`
-		Change   *core.ChangeFacts `json:"change"`
-		// BodyInputs: what wp ship rendered the description from (WP-55).
-		BodyInputs *core.PRBodyInputs `json:"body_inputs"`
-	}
+	var in openPullBody
 	if err := decode(r, &in); err != nil {
 		return nil, err
 	}

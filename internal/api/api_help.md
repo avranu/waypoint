@@ -921,13 +921,19 @@ steers or clears one in effect.
     past lag_alert_m minutes); env.updated is live-only. Webhooks can subscribe to env.*.
 ## Review gate, CI and merging (WP-D21)
 
-    POST /projects/{key}/pulls {repo, head, base, title, body, draft, ready, issue, for, urgent, review, reason, force, head_time}
+    POST /projects/{key}/pulls {repo, head, base, title, body, body_inputs, draft, ready, issue, for, urgent, review, reason, force, head_time, message, summary}
                                      open a pull request from a pushed branch (wp pr open, wp ship). review is
                                      what to do about the task's adversarial review when the caller's autopilot
-                                     reviews first (WP-688): auto, review (schedule it; force: again), pr, or
-                                     skip (reason says why); head_time is the head's commit time (unix s). A
-                                     held pull request answers {held: what to tell the agent}; notice says what
-                                     was done instead of the intent. Without review, held is a 400 error.
+                                     reviews first (WP-688): auto (the default; pr is the same), review
+                                     (schedule it; force: again), or skip (reason says why); head_time is the
+                                     head's commit time (unix s). message (wp ship -m) and summary (--summary,
+                                     the reply to the person) go only when given: left out keeps what a held
+                                     round has, "" clears it, and over 50000 bytes is refused. A held pull
+                                     request answers {held: what to tell the agent, held_needs_agent}; notice
+                                     says what was done instead of the intent, notice_needs_agent whether it
+                                     needs acting on. When held_needs_agent and notice_needs_agent are false
+                                     there is nothing for the agent to run: it ends its turn and Waypoint
+                                     opens the pull request itself. Without review, held is a 400 error.
     GET /projects/{key}/pulls/{number}?repo=owner/name   a pull request by number: the detail above plus
                                      "shipping": {ci, checks[{name,state,url,description,has_log}],
                                      gate{enabled,severity,state,note,open,below}, findings[{id,path,line,
@@ -1030,7 +1036,9 @@ someone checks them. Not the audit log above.
                                      or out of quota (default: the chain from GET /audits/defaults); a chain
                                      that is only busy is retried up to 3 times. comment (default yes) posts
                                      a pull request's findings on it; fix makes a task for Claude to check
-                                     and fix them. The asking session is told when it ends
+                                     and fix them. The asking session is told the result when it ends, a clean
+                                     one too ("found nothing"); one Waypoint started itself (a review round,
+                                     a pull request's audit) tells only of findings
     GET /audits?project=KEY&pr_id=N&status=queued|running|done|failed|limited|cancelled|active&limit=50
                                      newest first, each with counts {total, open, critical, high, medium, low}
     GET /audits/defaults             {instructions, models, targets, severities, states, clis}

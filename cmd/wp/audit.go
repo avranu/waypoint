@@ -22,8 +22,8 @@ var auditCmd = &command{
 	about: `By default, where the Waypoint has an LLM gateway, the model it picks
 for audits (gateway/audit; spends no coding plan's quota), else Grok through
 Cursor on your runner, from a checkout your runner sends. Reads only; findings are recorded
-(wp audit show), posted on a pull request, and your session is told when it
-ends.
+(wp audit show), posted on a pull request, and your session is told the result
+when it ends, findings or none.
 
   wp audit                  the branch's pull request, else the branch against
                             the default branch (on it: the whole repository)
@@ -382,9 +382,9 @@ func indentRest(text, pad string) string {
 // asked is what asking for one tells the agent: when it hears back.
 func (a *auditView) asked(blocking bool) string {
 	chain := strings.Join(a.Models, ", then ")
-	when := "carry on; you'll hear when it ends."
+	when := "carry on; you'll hear when it ends, even if it finds nothing."
 	if blocking {
-		when = "you'll be woken within minutes when it ends."
+		when = "you'll be woken within minutes when it ends, even if it finds nothing."
 	}
 	return fmt.Sprintf("Audit #%d of %s asked of %s; %s\n%s", a.ID, a.what(), chain, when, a.URL)
 }

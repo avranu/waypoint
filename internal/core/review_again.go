@@ -711,7 +711,7 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 			return err
 		}
 		if latest != seen {
-			return fmt.Errorf("another ship or Waypoint changed %s's adversarial review just now: %w", g.key, ErrConflict)
+			return fmt.Errorf("another wp ship of %s was handling its adversarial review at the same moment and went first; end your turn, it carries the round on: %w", g.key, ErrConflict)
 		}
 		var state string
 		if err := t.QueryRowContext(ctx, `SELECT state FROM work_log WHERE id = ?`, round).Scan(&state); err != nil {
@@ -728,7 +728,7 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 				return err
 			}
 			if n, _ := res.RowsAffected(); n == 0 {
-				return fmt.Errorf("%s's adversarial review changed just now: %w", g.key, ErrConflict)
+				return fmt.Errorf("%s's adversarial review changed at the same moment as this ship; end your turn, Waypoint carries it on: %w", g.key, ErrConflict)
 			}
 			s.emitWorkLog(ctx, t, g.issueID, round, RoundDone)
 		case RoundDone:
@@ -741,7 +741,7 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 				}
 			}
 		default:
-			return fmt.Errorf("%s's adversarial review changed just now: %w", g.key, ErrConflict)
+			return fmt.Errorf("%s's adversarial review changed at the same moment as this ship; end your turn, Waypoint carries it on: %w", g.key, ErrConflict)
 		}
 		next, err := s.newReviewRound(ctx, t, g.x, g.run, g.issueID, g.lim.reviewPrompt(), at)
 		if err != nil {
@@ -764,6 +764,7 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 	if err != nil {
 		return "", "", err
 	}
+	bp.facts.idleHeld()
 	held = fmt.Sprintf("Pushed %s. %s, so review round %d of %s runs before the pull request. Waypoint opens the pull request itself if it finds nothing; its findings come to this session. Nothing more to run: end your turn.",
 		head, upperFirst(why), index+1, g.key)
 	return held, "", nil
@@ -1597,25 +1598,6 @@ func againRecordOf(rt reviewerTrust, model string) string {
 	return name
 }
 
-// againTodo are the IDs (12.3) of an audit's findings still to do: open,
-// or confirmed and not yet fixed (findingToDo).
-func (s *Service) againTodo(ctx context.Context, audit int64) ([]string, error) {
-	rows, err := s.db.R.QueryContext(ctx, `SELECT ordinal FROM code_audit_findings WHERE audit_id = ? AND state IN ('open', 'confirmed') ORDER BY ordinal`, audit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var n int
-		if err := rows.Scan(&n); err != nil {
-			return nil, err
-		}
-		out = append(out, fmt.Sprintf("%d.%d", audit, n))
-	}
-	return out, rows.Err()
-}
-
 // againTodoLines is againTodo with a line for each finding: its ID, severity,
 // place and title, so a session sees what to decide without another command.
 func (s *Service) againTodoLines(ctx context.Context, audit int64) (ids []string, lines string, err error) {
@@ -1635,7 +1617,7 @@ func (s *Service) againTodoLines(ctx context.Context, audit int64) (ids []string
 		ids = append(ids, id)
 		fmt.Fprintf(&b, "- %s\n", findingLine(id, sev, path, line, title))
 	}
-	return ids, strings.TrimRight(b.String(), "\n"), rows.Err()
+	return ids, untrustedBlock(strings.TrimRight(b.String(), "\n")), rows.Err()
 }
 
 // The check of a round's marks (WP-1320): the session's own "rejected"
@@ -1764,6 +1746,7 @@ func (s *Service) checkMarks(ctx context.Context, actor *Actor, g *reviewGate, b
 			s.log.WarnContext(ctx, "couldn't check a round's marks; they stand unchecked", "round", round, "err", err)
 			return 0, "", true, due, nil
 		}
+		bp.facts.idleHeld()
 		return 0, checkingText(bp.Branch, g.key, what, a.ID), false, false, nil
 	}
 	if err != nil {
@@ -1791,6 +1774,7 @@ func (s *Service) checkMarks(ctx context.Context, actor *Actor, g *reviewGate, b
 				// The text is told without the count; it isn't a reason to fail.
 				s.log.WarnContext(ctx, "couldn't count the marks a round's check reads", "round", round, "audit", audit, "err", err)
 			}
+			bp.facts.idleHeld()
 			what := "your marks on " + plural1(n, "finding")
 			return 0, checkingText(bp.Branch, g.key, what, check), false, false, nil
 		}

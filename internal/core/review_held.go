@@ -229,17 +229,9 @@ func (s *Service) shipRound(ctx context.Context, in shipRoundIn) error {
 	if in.session == 0 {
 		in.session = r.sessionID.Int64
 	}
-	if in.agent == "" && r.runID.Valid {
-		_ = s.db.R.QueryRowContext(ctx, `SELECT agent FROM agent_runs WHERE id = ?`, r.runID.Int64).Scan(&in.agent)
-	}
-	in.agent = cmp(in.agent, "anthropic/claude-code")
+	in.agent = s.shipAgent(ctx, r, in.agent, in.session)
 	if in.userID == 0 {
 		_ = s.db.R.QueryRowContext(ctx, `SELECT user_id FROM agent_sessions WHERE id = ?`, in.session).Scan(&in.userID)
-	}
-	if in.user == nil {
-		if in.user, err = s.userByID(ctx, s.db.R, in.userID); err != nil {
-			return err
-		}
 	}
 	if reviewed {
 		// The run must still be open: a ship of the session's own ends it,
@@ -258,7 +250,13 @@ func (s *Service) shipRound(ctx context.Context, in shipRoundIn) error {
 			return err
 		}
 	}
-	actor := &Actor{User: in.user, Agent: in.agent, Session: in.session}
+	actor, why, err := s.shipAuthority(ctx, r, bp, &in)
+	if err != nil {
+		return err
+	}
+	if why != "" {
+		return s.stopShip(ctx, r, in, why)
+	}
 	body := bp.Body
 	// A review that ended with its findings undelivered did run.
 	given := !strings.HasPrefix(in.why, heldReviewEnded)
@@ -273,10 +271,10 @@ func (s *Service) shipRound(ctx context.Context, in shipRoundIn) error {
 	in2 := OpenPRInput{
 		Project: bp.Project, Repo: bp.Repo, Head: bp.Branch, Base: bp.Base,
 		Title: title, Draft: bp.Draft, Ready: bp.Ready, Urgent: bp.Urgent,
-		Issue: r.key, For: r.key, noSweep: true,
+		Issue: r.key, For: r.key, noSweep: true, BodyInputs: bp.BodyInputs,
 	}
 	if reviewed {
-		in2.Review, in2.Body = ShipAuto, strings.TrimSpace(body)
+		in2.Review, in2.Body = ShipAuto, body
 		if unchecked != "" {
 			in2.Body = strings.TrimSpace(body + "\n\nWaypoint opened this: " + unchecked + ". The marks it didn't check go to the pull request's review gate.")
 		}
@@ -403,6 +401,9 @@ func (s *Service) shipRound(ctx context.Context, in shipRoundIn) error {
 	}
 	if len(notes) > 0 {
 		s.log.WarnContext(ctx, "autopilot: after opening a held pull request", "task", r.key, "notes", notes)
+	}
+	if res.Notice != "" {
+		text += " " + res.Notice // what the open did instead of what was asked
 	}
 	if bp.Urgent && pr.Urgent {
 		text += fmt.Sprintf(" Its wp ship marked it urgent, so it delays other CI runs to cut the line: `wp pr urgent %d --off` takes that off.", pr.Number)

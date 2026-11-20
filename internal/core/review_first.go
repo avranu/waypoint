@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 )
@@ -65,14 +66,49 @@ type beforePR struct {
 	ShipNext  int64  `json:"ship_next,omitempty"`
 	ShipTold  bool   `json:"ship_told,omitempty"`
 	ShipErr   string `json:"ship_err,omitempty"`
+	// BodyInputs are what a model rewords the body from (WP-55): a pull
+	// request Waypoint opens keeps them as the direct open would. They go
+	// and come with Body.
+	BodyInputs *PRBodyInputs `json:"body_inputs,omitempty"`
+	// TokenID is the API token the newest ship came with, so the pull
+	// request Waypoint opens later has the authority that token still has
+	// (none, if it was revoked): see shipAuthority (WP-1370).
+	TokenID int64 `json:"token_id,omitempty"`
+	// facts is what the ship's texts need of the agent (not stored).
+	facts *shipFacts
 }
 
-// refreshBeforePR stores a newer ship's title, body, message and summary on
-// the round's before-PR record, so the newest ship's words win when
-// Waypoint opens the pull request (WP-1370). The branch, base and flags
-// stay as the round was scheduled with them. Best effort: a failure leaves
-// the older words, which still open a pull request.
-func (s *Service) refreshBeforePR(ctx context.Context, id int64, fresh beforePR) {
+// shipFacts says what a ship's two texts need of the agent, set by the code
+// that writes each text (WP-1370): Held ends the ship with something for the
+// agent to do unless its producer says it is only to be waited out
+// (idleHeld), and a Notice is only news unless its producer sets noticeAsks
+// (none does today: every notice says what was done instead). The CLI ends the turn by hook when nothing is
+// asked, and never when something is; a producer that forgets to say gets
+// the safe answer for Held (the agent is asked) and the quiet one for a
+// Notice, which the table test over every producer pins. Nil-safe.
+type shipFacts struct{ heldIdle, noticeAsks bool }
+
+func (f *shipFacts) idleHeld() {
+	if f != nil {
+		f.heldIdle = true
+	}
+}
+
+func (f *shipFacts) heldAsks(held string) bool { return held != "" && (f == nil || !f.heldIdle) }
+
+func (f *shipFacts) noticeAsksAgent(notice string) bool {
+	return notice != "" && f != nil && f.noticeAsks
+}
+
+// refreshBeforePR stores a newer ship's words on the round's before-PR
+// record, so the newest ship's win when Waypoint opens the pull request
+// (WP-1370). The title and body are replaced when the ship has them (a new
+// body takes its body inputs with it); message and summary follow the
+// ship's flags: nil is not given and keeps what the round holds, a given
+// empty one clears it. The branch, base and flags stay as the round was
+// scheduled with them. Best effort: a failure leaves the older words, which
+// still open a pull request.
+func (s *Service) refreshBeforePR(ctx context.Context, actor *Actor, id int64, fresh beforePR, message, summary *string) {
 	old := roundBeforePR(ctx, s.db.R, id)
 	if old == nil || old.Branch != fresh.Branch {
 		return
@@ -82,22 +118,29 @@ func (s *Service) refreshBeforePR(ctx context.Context, id int64, fresh beforePR)
 		next.Title = fresh.Title
 	}
 	if strings.TrimSpace(fresh.Body) != "" {
-		next.Body = fresh.Body
+		next.Body, next.BodyInputs = fresh.Body, fresh.BodyInputs
 	}
-	if strings.TrimSpace(fresh.Message) != "" {
-		next.Message = fresh.Message
+	if fresh.TokenID != 0 {
+		next.TokenID = fresh.TokenID
 	}
-	if strings.TrimSpace(fresh.Summary) != "" {
-		next.Summary = fresh.Summary
+	if message != nil {
+		next.Message = *message
 	}
-	if next == *old {
+	if summary != nil {
+		next.Summary = *summary
+	}
+	if reflect.DeepEqual(next, *old) {
 		return
 	}
 	raw, err := json.Marshal(next)
 	if err != nil {
 		return
 	}
-	if _, err := s.db.W.ExecContext(ctx, `UPDATE work_log SET before_pr = ? WHERE id = ?`, string(raw), id); err != nil {
+	err = s.write(ctx, actor, func(t *tx) error {
+		_, err := t.ExecContext(ctx, `UPDATE work_log SET before_pr = ? WHERE id = ?`, string(raw), id)
+		return err
+	})
+	if err != nil {
 		s.log.WarnContext(ctx, "review: refresh a round's pull request words", "round", id, "err", err)
 	}
 }
@@ -451,13 +494,15 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return false, "", "", err
 	}
-	bp := beforePR{Project: p.Key, Repo: repo, Branch: head, Base: base, Title: in.Title, Body: in.Body, Message: in.Message, Summary: in.Summary, Draft: in.Draft, Ready: in.Ready, Urgent: in.Urgent && !existing}
+	bp := beforePR{Project: p.Key, Repo: repo, Branch: head, Base: base, Title: in.Title, Body: in.Body, BodyInputs: in.BodyInputs, TokenID: actor.TokenID, Message: deref(in.Message), Summary: deref(in.Summary), Draft: in.Draft, Ready: in.Ready, Urgent: in.Urgent && !existing}
 	wait := fmt.Sprintf("Pushed %s. Waypoint reviews %s before its pull request and opens the pull request itself when the review leaves nothing for you to do; findings that need you come to this session. Nothing more to run: end your turn.", head, g.key)
 	if existing {
 		wait = fmt.Sprintf("Pushed %s. Waypoint reviews %s, and its open pull request doesn't merge before the review ends; findings that need you come to this session. Nothing more to run: end your turn.", head, g.key)
 	}
 	// Every round scheduled below is assessed and recorded (WP-692).
 	var assessed *triageRow
+	bp.facts = in.facts
+	waitHeld := func() string { bp.facts.idleHeld(); return wait }
 	assess := func() *triageRow {
 		if assessed == nil {
 			assessed = s.assessChange(ctx, actor, g, p.ID, in, repo, head, base, intent)
@@ -541,7 +586,7 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 		if (state == RoundPending || state == RoundRunning) && id != 0 {
 			// The newest ship's title, body and summary are the ones a pull
 			// request Waypoint opens for the round carries (WP-1370).
-			s.refreshBeforePR(ctx, id, bp)
+			s.refreshBeforePR(ctx, actor, id, bp, in.Message, in.Summary)
 		}
 		if roundDecidable(state, started) {
 			// This is its ship: new findings that score serious, or fixes
@@ -649,14 +694,15 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 		} else if ownStale {
 			notice = "The session's own review found nothing and more was committed since, so a review of what it didn't see comes before the pull request."
 		}
-		return false, wait, notice, nil
+		return false, waitHeld(), notice, nil
 	}
 	// ShipReview.
 	switch {
 	case state == RoundPending:
-		return false, wait, "", nil
+		return false, waitHeld(), "", nil
 	case state == RoundRunning && !in.Force:
-		return false, fmt.Sprintf("Pushed %s. %s's adversarial review is this one, under way: when it's done, run `wp ship`.", head, g.key),
+		bp.facts.idleHeld()
+		return false, fmt.Sprintf("Pushed %s. %s's adversarial review is this one, under way. Nothing more to run: end your turn, and Waypoint opens the pull request itself when it leaves nothing for you to do.", head, g.key),
 			"A review of this change is already under way. To start another after this turn anyway: `wp ship --review --force`.", nil
 	case state == RoundRunning:
 		notice = "The review under way is replaced: another starts after this turn."
@@ -685,7 +731,7 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 	if err != nil {
 		return false, "", "", err
 	}
-	return false, wait, notice, nil
+	return false, waitHeld(), notice, nil
 }
 
 // shipAudited is a plain wp ship (or --pr, the same) of a task whose round is
@@ -896,7 +942,7 @@ func (s *Service) scheduleRound(ctx context.Context, actor *Actor, g *reviewGate
 			return err
 		}
 		if latest != seen {
-			return fmt.Errorf("another wp ship changed %s's adversarial review just now; run wp ship again to see where it stands: %w", g.key, ErrConflict)
+			return fmt.Errorf("another wp ship of %s was handling its adversarial review at the same moment and went first; end your turn, it carries the round on: %w", g.key, ErrConflict)
 		}
 		if _, err := s.setRound(ctx, t, replace, []string{RoundRunning}, RoundInterrupted, roundReplaced); err != nil {
 			return err

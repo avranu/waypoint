@@ -386,7 +386,7 @@ func TestReviewRoundsProbe(t *testing.T) {
 				if err := e.s.db.R.QueryRow(`SELECT count(*) FROM review_again_decisions WHERE round_id = ?`, r1).Scan(&n); err != nil || n != 0 {
 					t.Fatalf("%d decisions, %v", n, err)
 				}
-				if res.Pull != nil || !strings.Contains(res.Held, "with 1 finding still to decide") || !strings.Contains(res.Held, "then run `wp ship`") {
+				if res.Pull != nil || !strings.Contains(res.Held, "with 1 finding still to decide") || !strings.Contains(res.Held, "then run `wp ship`") || !res.HeldNeedsAgent {
 					t.Fatalf("ship = %+v", res)
 				}
 				return

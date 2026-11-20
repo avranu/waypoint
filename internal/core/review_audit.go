@@ -140,7 +140,7 @@ func (s *Service) planReview(ctx context.Context, st *stepRow, review *roundRow,
 	// pull request opens at the session's wp ship (WP-688).
 	first := roundBeforePR(ctx, s.db.R, review.id)
 	if first != nil && !strings.Contains(own.prompt, "wp ship") {
-		own.prompt += " When you're done, run `wp ship --summary \"what you fixed, filed and rejected\"` to open the pull request; the summary is your reply."
+		own.prompt += " When you're done, run `wp ship --summary \"what you fixed, filed and rejected\"`: it opens the pull request, or Waypoint does once the findings are decided; the summary is your reply."
 	}
 	ra, err := s.roundAuditOf(ctx, review.id)
 	if err != nil {
@@ -1156,7 +1156,16 @@ func findingLine(id, severity, path string, line int, title string) string {
 	if at != "" {
 		at = " at " + at
 	}
-	return fmt.Sprintf("%s [%s]%s: %s", id, severity, at, clipText(strings.TrimSpace(title), 200))
+	return fmt.Sprintf("%s [%s]%s: %s", id, severity, untrusted(at), clipText(untrusted(strings.TrimSpace(title)), 200))
+}
+
+// untrustedBlock puts model-written lines where a session reads them as
+// data: between untrusted tags the text can't close (empty stays empty).
+func untrustedBlock(lines string) string {
+	if strings.TrimSpace(lines) == "" {
+		return ""
+	}
+	return "<untrusted>\n" + untrusted(lines) + "\n</untrusted>"
 }
 
 // findingLines lists findings one to a line (findingLine).
@@ -1165,7 +1174,7 @@ func findingLines(list []CodeAuditFinding) string {
 	for _, f := range list {
 		fmt.Fprintf(&b, "- %s\n", findingLine(f.ID, f.Severity, f.Path, f.Line, f.Title))
 	}
-	return strings.TrimRight(b.String(), "\n")
+	return untrustedBlock(strings.TrimRight(b.String(), "\n"))
 }
 
 // grokReviewPrompt is the round's prompt when the audit has findings to

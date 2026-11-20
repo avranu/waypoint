@@ -44,15 +44,18 @@ type OpenPRInput struct {
 	// noSweep: Waypoint's own skip (a held review released), not the agent's,
 	// so no other round is recorded as skipped by the agent.
 	noSweep bool
-	Force   bool
+	// facts: what the texts of this ship need of the agent (see shipFacts).
+	facts *shipFacts
+	Force bool
 	// HeadTime is the branch head's commit time (unix seconds; 0: unknown),
 	// to tell whether anything was committed since a review finished.
 	HeadTime int64
 	// Message (-m) and Summary (--summary, the reply to the person with
 	// {task} {pr} {url} unfilled) are kept with a held ship, so a pull
-	// request Waypoint opens for it carries them (WP-1370).
-	Message string
-	Summary string
+	// request Waypoint opens for it carries them (WP-1370). nil is a ship
+	// that gave none (what the round holds stays); "" clears it.
+	Message *string
+	Summary *string
 	// Change is what the checkout says about the change, for review
 	// triage (WP-692); nil from an older wp, which keeps the review.
 	Change *ChangeFacts
@@ -84,7 +87,10 @@ type OpenPRResult struct {
 	Held string `json:"held,omitempty"`
 	// HeldNeedsAgent: Held asks the agent to act (marks to make, then wp
 	// ship), so --summary doesn't end its turn (WP-1370).
-	HeldNeedsAgent bool `json:"held_needs_agent,omitempty"`
+	HeldNeedsAgent bool `json:"held_needs_agent"`
+	// NoticeNeedsAgent: Notice is something to act on, not only news. A
+	// ship whose Held and Notice need nothing ends the turn (WP-1370).
+	NoticeNeedsAgent bool `json:"notice_needs_agent"`
 	// Notice goes before the rest: what wp ship did that its intent didn't
 	// say, and how to override it.
 	Notice string `json:"notice,omitempty"`
@@ -107,8 +113,19 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 		return nil, ErrUnauthorized
 	}
 	in.Head, in.Title = strings.TrimSpace(in.Head), strings.TrimSpace(in.Title)
+	in.facts = &shipFacts{}
 	if in.Head == "" {
 		return nil, invalid("say which branch to open the pull request from")
+	}
+	// The words a ship carries are kept on its round: bounded like a comment
+	// (which -m becomes), and refused rather than cut (WP-1370).
+	for _, w := range []struct {
+		name string
+		v    *string
+	}{{"message", in.Message}, {"summary", in.Summary}} {
+		if w.v != nil && len(*w.v) > maxCommentLen {
+			return nil, invalid("the %s is too long (%d bytes; at most %d)", w.name, len(*w.v), maxCommentLen)
+		}
 	}
 	p, err := s.projectByRef(ctx, s.db.R, in.Project)
 	if err != nil {
@@ -156,13 +173,13 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 			if err != nil {
 				return nil, err
 			}
-			open, held, notice, err := s.reviewFirst(ctx, actor, p, in, pick.Repo, in.Head, pr.BaseRef, true)
+			open, held, notice, err := s.reviewFirstOnce(ctx, actor, p, in, pick.Repo, in.Head, pr.BaseRef, true)
 			if err != nil {
 				return nil, err
 			}
 			if !open {
 				// The push has happened: held or not, this session is on it (WP-117).
-				hr := &OpenPRResult{Existing: true, Held: held, Notice: notice, HeldNeedsAgent: heldNeedsAgent(held)}
+				hr := &OpenPRResult{Existing: true, Held: held, Notice: notice, HeldNeedsAgent: in.facts.heldAsks(held), NoticeNeedsAgent: in.facts.noticeAsksAgent(notice)}
 				if in.Urgent {
 					// The pull request is open, so --urgent applies now: the
 					// ship after the review needn't say it again, and its
@@ -209,7 +226,7 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 		}
 		// Autopilot's adversarial review of the task, before its pull
 		// request opens (WP-688).
-		open, held, notice, err := s.reviewFirst(ctx, actor, p, in, pick.Repo, in.Head, base, false)
+		open, held, notice, err := s.reviewFirstOnce(ctx, actor, p, in, pick.Repo, in.Head, base, false)
 		if err != nil {
 			return nil, err
 		}
@@ -217,7 +234,7 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 			if in.Review == "" {
 				return nil, invalid("%s", strings.TrimSpace(notice+" "+held))
 			}
-			return &OpenPRResult{Held: held, Notice: notice, HeldNeedsAgent: heldNeedsAgent(held)}, nil
+			return &OpenPRResult{Held: held, Notice: notice, HeldNeedsAgent: in.facts.heldAsks(held), NoticeNeedsAgent: in.facts.noticeAsksAgent(notice)}, nil
 		}
 		res.Notice = notice
 		// After the review: a held ship reads the tag when it really opens.
@@ -355,9 +372,15 @@ func (s *Service) recordOpened(ctx context.Context, actor *Actor, projectID int6
 	return pr.ID, nil
 }
 
-// heldNeedsAgent says whether a held text asks the agent to do something
-// (the texts that end "then run `wp ship`."), where the rest say there is
-// nothing to run: those are the ones a --summary may end the turn after.
-func heldNeedsAgent(held string) bool {
-	return strings.HasSuffix(strings.TrimSpace(held), "then run `wp ship`.")
+// reviewFirstOnce is reviewFirst, asked once more when another ship of the
+// same task changed its round in the same moment (ErrConflict): the second
+// read sees where that one left it, so the session never has to run the
+// same command again to find out (WP-1370).
+func (s *Service) reviewFirstOnce(ctx context.Context, actor *Actor, p *Project, in OpenPRInput, repo, head, base string, existing bool) (bool, string, string, error) {
+	open, held, notice, err := s.reviewFirst(ctx, actor, p, in, repo, head, base, existing)
+	if errors.Is(err, ErrConflict) {
+		*in.facts = shipFacts{}
+		open, held, notice, err = s.reviewFirst(ctx, actor, p, in, repo, head, base, existing)
+	}
+	return open, held, notice, err
 }

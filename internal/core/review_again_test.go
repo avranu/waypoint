@@ -379,23 +379,6 @@ func (a *apEnv) shipChecked(box *Runner, key string) (*OpenPRResult, error) {
 	return a.ship(key, ShipPR)
 }
 
-// deliverNews ends the newest job that types news into the session (a
-// session message or batch) as delivered.
-func (a *apEnv) deliverNews() {
-	a.t.Helper()
-	a.s.Wait()
-	for n := len(a.jobs); n >= 1; n-- {
-		in := a.jobs[n-1]
-		if in.Kind != JobMessage || (in.Source != sessionMessageSource && in.Source != sessionBatchSource) {
-			continue
-		}
-		a.s.sessionMessageJobFinished(a.ctx, &Event{Kind: EvRunnerJobFinished, Data: map[string]any{"job": int64(n), "kind": JobMessage, "state": "done", "source": in.Source, "source_id": in.SourceID}})
-		a.s.Wait()
-		return
-	}
-	a.t.Fatalf("no message job in %d jobs", len(a.jobs))
-}
-
 // endCheck runs a round's check of its marks, a Claude Code Haiku job
 // on the box, and ends it as endAudit does.
 func (a *apEnv) endCheck(box *Runner, state string, titles ...string) {
@@ -429,3 +412,21 @@ func (a *apEnv) endCheckText(box *Runner, text string) {
 	a.s.Wait()
 	a.s.Wait()
 }
+
+// deliverNews ends the newest job that types news into the session (a
+// session message or batch) as delivered.
+func (a *apEnv) deliverNews() {
+	a.t.Helper()
+	a.s.Wait()
+	for n := len(a.jobs); n >= 1; n-- {
+		in := a.jobs[n-1]
+		if in.Kind != JobMessage || (in.Source != sessionMessageSource && in.Source != sessionBatchSource) {
+			continue
+		}
+		a.s.sessionMessageJobFinished(a.ctx, &Event{Kind: EvRunnerJobFinished, Data: map[string]any{"job": int64(n), "kind": JobMessage, "state": "done", "source": in.Source, "source_id": in.SourceID}})
+		a.s.Wait()
+		return
+	}
+	a.t.Fatalf("no message job in %d jobs", len(a.jobs))
+}
+

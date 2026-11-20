@@ -1727,10 +1727,16 @@ func (s *Service) tellAudit(ctx context.Context, a *CodeAudit) {
 	}
 	text := auditNews(a, s.BaseURL())
 	if a.sessionID != 0 {
-		if a.Status == AuditDone && a.Counts.Total == 0 {
-			return // nothing to act on: the session isn't woken for it (WP-1370)
+		if a.Status == AuditDone && a.Counts.Total == 0 && a.Via == "system" {
+			// Waypoint started it (a review round, a pull request's audit):
+			// finding nothing is not news to the session (WP-1370). One
+			// somebody asked for always answers, clean or not.
+			return
 		}
-		s.messageSession(ctx, a, text, fmt.Sprintf("audit:%d:%s", a.ID, a.Status))
+		// Only someone waiting on it is told of a failure as news; for anyone
+		// else it waits for the next prompt.
+		passive := a.Status != AuditDone && !a.blocking
+		s.messageSessionAs(ctx, a, text, fmt.Sprintf("audit:%d:%s", a.ID, a.Status), passive)
 		return
 	}
 	if a.Status == AuditCancelled {
@@ -1754,12 +1760,18 @@ func (s *Service) tellAudit(ctx context.Context, a *CodeAudit) {
 // per key, and has it typed in (waiting for the session when the audit is
 // blocking).
 func (s *Service) messageSession(ctx context.Context, a *CodeAudit, text, key string) {
-	m, err := s.storeMessage(ctx, a.sessionID, text, key, messageFrom{}, false)
+	s.messageSessionAs(ctx, a, text, key, false)
+}
+
+// messageSessionAs is messageSession, passive when it is news that waits for
+// the session's next prompt and never wakes it.
+func (s *Service) messageSessionAs(ctx context.Context, a *CodeAudit, text, key string, passive bool) {
+	m, err := s.storeMessage(ctx, a.sessionID, text, key, messageFrom{}, passive)
 	if err != nil {
 		s.log.WarnContext(ctx, "tell a session about its audit", "audit", a.ID, "err", err)
 		return
 	}
-	if m.State == MessageQueued {
+	if m.State == MessageQueued && !passive {
 		s.batchOrTell(ctx, a.sessionID, 0, a.blocking, func(until int64) error {
 			_, err := s.db.W.ExecContext(ctx, `UPDATE session_messages SET batch_until = ?, blocking = ? WHERE id = ? AND state = 'queued'`, until, a.blocking, m.ID)
 			return err
@@ -1770,8 +1782,11 @@ func (s *Service) messageSession(ctx context.Context, a *CodeAudit, text, key st
 func auditHeadline(a *CodeAudit) string {
 	switch a.Status {
 	case AuditDone:
+		if a.readNothing() {
+			return fmt.Sprintf("Audit #%d of %s read nothing", a.ID, a.Title)
+		}
 		if a.Counts.Total == 0 {
-			return "Audit of " + a.Title + ": no findings"
+			return fmt.Sprintf("Audit #%d of %s found nothing", a.ID, a.Title)
 		}
 		return fmt.Sprintf("Audit of %s: %d finding%s", a.Title, a.Counts.Total, plural(a.Counts.Total))
 	case AuditLimited:
@@ -1788,6 +1803,11 @@ func auditNews(a *CodeAudit, base string) string {
 	b.WriteString(auditHeadline(a))
 	switch a.Status {
 	case AuditDone:
+		if a.readNothing() {
+			// Not a clean audit: no model ran.
+			b.WriteString(": " + untrusted(strings.TrimRight(a.Summary, ". ")) + ". No model ran, so this says nothing about the code.")
+			break
+		}
 		if a.Counts.Total > 0 {
 			var parts []string
 			for _, x := range []struct {
@@ -1815,6 +1835,10 @@ func auditNews(a *CodeAudit, base string) string {
 	default:
 		if a.Error != "" {
 			b.WriteString(": " + a.Error)
+		}
+		if a.sessionID != 0 && a.blocking && a.Status != AuditCancelled {
+			// Someone is waiting on it: say what happened and what is left to do.
+			b.WriteString("\nThe audit you waited on has no result. Run `wp audit` again if you still need it; otherwise go on without it.")
 		}
 	}
 	fmt.Fprintf(&b, "\n%s/audits/%d · wp audit show %d", base, a.ID, a.ID)

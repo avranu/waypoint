@@ -37,7 +37,7 @@ func (e *loopEnv) shipAndCheck(round int64, marks []string, found ...string) {
 	e.t.Helper()
 	e.mark(round, marks...)
 	res, err := e.ship(e.task.Key, ShipAuto)
-	if err != nil || res.Pull != nil || !strings.Contains(res.Held, "checking your marks") {
+	if err != nil || res.Pull != nil || !strings.Contains(res.Held, "checking your marks") || res.HeldNeedsAgent {
 		e.t.Fatalf("ship = %+v, %v", res, err)
 	}
 	e.stopWith("Waiting for the check of my marks.")

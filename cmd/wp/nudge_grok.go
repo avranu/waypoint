@@ -128,7 +128,7 @@ func grokCutShort(cmd string, bg bool, toolMs float64) string {
 			continue
 		}
 		return fmt.Sprintf("Not run: Grok reviews often take over 25 minutes and Cursor prints only at the end, so this one would stop at %.0f minutes with nothing kept. "+
-			"`wp audit pr|branch|commit|range -m WHAT` runs it on your runner with a 45-minute limit, keeps the findings and tells you when it ends. "+
+			"`wp audit pr|branch|commit|range -m WHAT` runs it on your runner with a 45-minute limit, keeps the findings and tells you the result when it ends, a clean one too. "+
 			"By hand: run_in_background with `timeout 2700`. A quick check: `timeout 300` or less.", max(limit/60, 1))
 	}
 	return ""

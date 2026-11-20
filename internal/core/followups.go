@@ -713,6 +713,11 @@ func MessagesText(list []*SessionMessage) string {
 			parts = append(parts, "Waypoint, news of your task's pull request (for your information; there is nothing to run):\n\n"+m.Body)
 			continue
 		}
+		if head, ok := newsHead(m.stepKey); ok {
+			// News, not tasks (WP-1370).
+			parts = append(parts, head+":\n\n"+m.Body)
+			continue
+		}
 		head := "Waypoint: your next task, queued for when you finished"
 		if m.From != "" {
 			head = "Waypoint: " + m.From + " queued this for when you finished"
@@ -997,4 +1002,19 @@ func (s *Service) expireOrphanNews(ctx context.Context) {
 			s.log.InfoContext(ctx, "session message expired with its ended session", "message", c.id, "key", c.key, "session", c.session, "after", orphanMessageAge.String())
 		}
 	}
+}
+
+// newsHead is the head of a message that is news and not a task, by its
+// key: unpushed commits in a checkout, unfinished work an earlier session
+// left here, and a fan-out's report.
+func newsHead(key string) (string, bool) {
+	switch {
+	case strings.HasPrefix(key, "unpushed:"):
+		return "Waypoint, news from the start of this session (commits in a checkout that aren't pushed; push them if they are yours)", true
+	case strings.HasPrefix(key, "stranded:"):
+		return "Waypoint, news from the start of this session (unfinished work an earlier session left here; take it up only if it is yours to)", true
+	case strings.HasPrefix(key, "fanout:"):
+		return "Waypoint, news of the fan-out you coordinate (act on it if it needs you)", true
+	}
+	return "", false
 }

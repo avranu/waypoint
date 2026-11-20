@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -64,6 +65,7 @@ type prOpenFlags struct {
 	finishing                                   string // the task wp ship finishes, when held (not a flag)
 	summary                                     string // wp ship's -m, checked for claims (not a flag)
 	shipSummary                                 string // wp ship's --summary, kept by the server with a held ship (not a flag)
+	messageGiven, shipSummaryGiven              bool   // -m / --summary were on the command line, even empty (not flags)
 }
 
 func addPROpenFlags(fs *flag.FlagSet) prOpenFlags {
@@ -107,9 +109,12 @@ type openedPR struct {
 	// done that wasn't asked for, and how to override it.
 	Held   string `json:"held"`
 	Notice string `json:"notice"`
-	// HeldNeedsAgent: Held asks the agent to act, so a --summary doesn't end
-	// its turn (WP-1370).
-	HeldNeedsAgent bool `json:"held_needs_agent"`
+	// HeldNeedsAgent and NoticeNeedsAgent: Held or Notice asks the agent to
+	// act, so a --summary doesn't end its turn (WP-1370). The server says it
+	// where it writes the text; a server from before them says nothing, and
+	// that counts as asking.
+	HeldNeedsAgent   *bool `json:"held_needs_agent"`
+	NoticeNeedsAgent *bool `json:"notice_needs_agent"`
 	// UrgentHeld: the wp ship --urgent its review held asked for the lane.
 	UrgentHeld bool `json:"urgent_held"`
 	// UrgentPR: the open pull request a held wp ship --urgent put on the
@@ -278,9 +283,9 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 			return false, c.usage("nothing is staged but the tree has changes: git add them and run wp ship -m again, or drop -m to ship the commits as they are")
 		}
 	}
-	f.summary = msg
+	f.summary, f.messageGiven = msg, msgGiven
 	if so.summaryGiven {
-		f.shipSummary = *so.summary
+		f.shipSummary, f.shipSummaryGiven = *so.summary, true
 	}
 	if (*f.body != "" || *f.file != "") && c.agentHeader() != "" && !c.asJSON {
 		// Writing it costs tokens Waypoint saves (WP-55): say so, use it.
@@ -453,9 +458,9 @@ func shipNeedsAgent(o *openedPR, before string, wrong []string, putOff string, d
 	switch {
 	case before != "":
 		return before
-	case o.Notice != "":
+	case o.Notice != "" && factAsks(o.NoticeNeedsAgent):
 		return "there is a notice"
-	case o.HeldNeedsAgent:
+	case o.Held != "" && factAsks(o.HeldNeedsAgent):
 		return "the review waits on your marks"
 	case len(wrong) > 0 || o.ClaimWarning != "" || o.Warning != "":
 		return "there is a warning"
@@ -673,10 +678,12 @@ func (c *cli) openPR(f prOpenFlags) (*openedPR, []byte, error) {
 		}
 	}
 	req := map[string]any{"head": branch, "base": *f.base, "title": text, "body": body, "draft": *f.draft, "ready": *f.ready, "issue": key, "for": f.finishing, "repo": repo, "urgent": *f.urgent,
-		"review": intent, "reason": strings.TrimSpace(*f.skipReview), "force": *f.force,
-		// What a pull request Waypoint opens for a held ship carries: the
-		// newest ship's words win (WP-1370).
-		"message": strings.TrimSpace(f.summary), "summary": strings.TrimSpace(f.shipSummary)}
+		"review": intent, "reason": strings.TrimSpace(*f.skipReview), "force": *f.force}
+	// What a pull request Waypoint opens for a held ship carries: the newest
+	// ship's words win (WP-1370). A key is sent only when its flag was given
+	// (given empty clears; left out keeps), which also keeps a ship against a
+	// server from before them working.
+	f.addShipWords(req)
 	if ct, err := localGit("log", "-1", "--format=%ct", "HEAD"); err == nil {
 		if t, err := strconv.ParseInt(strings.TrimSpace(ct), 10, 64); err == nil {
 			req["head_time"] = t
@@ -688,18 +695,7 @@ func (c *cli) openPR(f prOpenFlags) (*openedPR, []byte, error) {
 	if bodyInputs != nil {
 		req["body_inputs"] = bodyInputs
 	}
-	// Opening is idempotent (the pull request open from the branch comes
-	// back), so a forge that didn't answer is asked again (WP-265).
-	var raw []byte
-	for i := 0; ; i++ {
-		raw, err = c.call("POST", "/api/v1/projects/"+esc(project)+"/pulls", req)
-		var ae *apiError
-		if err == nil || i >= len(prOpenRetries) || !errors.As(err, &ae) || !ae.transient() {
-			break
-		}
-		_, _ = fmt.Fprintf(c.err, "wp: %v; trying again in %s\n", err, prOpenRetries[i])
-		prOpenSleep(prOpenRetries[i])
-	}
+	raw, _, err := c.postOpen(project, req)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -712,6 +708,48 @@ func (c *cli) openPR(f prOpenFlags) (*openedPR, []byte, error) {
 	}
 	o.key, o.why, o.tested = key, why, tested
 	return &o, raw, nil
+}
+
+// addShipWords puts the ship's -m and --summary in the request, each only
+// when it was given.
+func (f prOpenFlags) addShipWords(req map[string]any) {
+	if f.messageGiven {
+		req["message"] = strings.TrimSpace(f.summary)
+	}
+	if f.shipSummaryGiven {
+		req["summary"] = strings.TrimSpace(f.shipSummary)
+	}
+}
+
+// postOpen asks the server to open the pull request. Opening is idempotent
+// (the pull request open from the branch comes back), so a forge that didn't
+// answer is asked again (WP-265). A server from before -m and --summary went
+// with the ship rejects their keys as unknown: it is asked again without
+// them, once, and the line says so; the --summary stays kept here, as it was
+// before they went to the server (WP-1370).
+func (c *cli) postOpen(project string, req map[string]any) (raw []byte, oldServer bool, err error) {
+	send := func() ([]byte, error) {
+		for i := 0; ; i++ {
+			raw, err := c.call("POST", "/api/v1/projects/"+esc(project)+"/pulls", req)
+			var ae *apiError
+			if err == nil || i >= len(prOpenRetries) || !errors.As(err, &ae) || !ae.transient() {
+				return raw, err
+			}
+			_, _ = fmt.Fprintf(c.err, "wp: %v; trying again in %s\n", err, prOpenRetries[i])
+			prOpenSleep(prOpenRetries[i])
+		}
+	}
+	raw, err = send()
+	_, m := req["message"]
+	_, sm := req["summary"]
+	if err != nil && (m || sm) && unknownShipWords(err) {
+		delete(req, "message")
+		delete(req, "summary")
+		_, _ = fmt.Fprintln(c.err, "Note: this server is older and can't keep your -m or --summary for a pull request it opens itself; your --summary stays kept here and shows when the turn ends.")
+		raw, err = send()
+		return raw, true, err
+	}
+	return raw, false, err
 }
 
 // prOpenRetries are the waits before asking again to open a pull request
@@ -1108,3 +1146,17 @@ func readAll(f *os.File) (string, error) {
 	_, err := b.ReadFrom(f)
 	return b.String(), err
 }
+
+// unknownShipWords is the old server's answer to a ship that sends -m or
+// --summary: its strict decoder doesn't know those keys (WP-1370).
+func unknownShipWords(err error) bool {
+	var ae *apiError
+	if !errors.As(err, &ae) || ae.status != http.StatusBadRequest {
+		return false
+	}
+	return strings.Contains(ae.msg, `unknown field "message"`) || strings.Contains(ae.msg, `unknown field "summary"`)
+}
+
+// factAsks reads a needs-the-agent fact from the server: unsaid (a server from
+// before the facts) is asking, the safe answer (WP-1370).
+func factAsks(b *bool) bool { return b == nil || *b }
