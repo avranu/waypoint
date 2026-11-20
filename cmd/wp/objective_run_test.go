@@ -388,3 +388,22 @@ func TestObjectiveTouchedFailsWhenTheListCantBeRead(t *testing.T) {
 		t.Fatalf("no error, list %v", got)
 	}
 }
+
+// The folder is compared as git names it, however it was written: a round
+// that changes bench/run.sh has changed the check of an objective in
+// "./bench", "bench/" or "bench//".
+func TestObjectiveTouchedCleansTheFolder(t *testing.T) {
+	r := newObjRepo(t)
+	base := r.commit(map[string]string{"bench/run.sh": "echo 1\n", "other.txt": "a"})
+	head := r.commit(map[string]string{"bench/run.sh": "echo 2\n", "other.txt": "b"})
+	p := newTestProc(t)
+	for _, dir := range []string{"bench", "./bench", "bench/", "./bench//", "bench/."} {
+		got, err := p.objectiveTouched(context.Background(), r.dir, base, head, core.ObjectiveJob{Dir: dir, Check: "sh run.sh"})
+		if err != nil || len(got) != 1 || got[0] != "bench/run.sh" {
+			t.Errorf("folder %q: %v, %v", dir, got, err)
+		}
+	}
+	if got, err := p.objectiveTouched(context.Background(), r.dir, base, head, core.ObjectiveJob{Dir: ".", Check: "cat other.txt"}); err != nil || len(got) != 1 || got[0] != "other.txt" {
+		t.Errorf("the root: %v, %v", got, err)
+	}
+}

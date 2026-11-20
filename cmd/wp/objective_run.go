@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -300,7 +301,12 @@ func (p *runnerProc) objectiveTouched(ctx context.Context, bare, base, head stri
 		return nil, err
 	}
 	cmds := strings.Join(append([]string{in.Check, in.Setup}, in.KeepPassing...), "\n")
-	dir := strings.Trim(filepath.ToSlash(in.Dir), "/")
+	// The folder as git names it: "./bench/" and "bench//" are "bench",
+	// and "." is the root.
+	dir := strings.Trim(path.Clean(filepath.ToSlash(in.Dir)), "/")
+	if dir == "." {
+		dir = ""
+	}
 	var out []string
 	for _, f := range files {
 		if commandNames(cmds, f) || dir != "" && strings.HasPrefix(f, dir+"/") && commandNames(cmds, strings.TrimPrefix(f, dir+"/")) {
