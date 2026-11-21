@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -28,9 +29,13 @@ import (
 // reused), or a zombie. Anything else (a reason in other words, no reason, a
 // process still running, no view of /proc) is not shown gone, and the lock is
 // left alone: age is no evidence, and a lock someone wrote by hand says what
-// it is for in words only a person can judge.
+// it is for in words only a person can judge. An owner in another pid
+// namespace, a pid that /proc hides (hidepid) but the kernel says exists, and a
+// host with no /proc (not Linux) are "can't tell", never gone; a pid namespace
+// on this same kernel that shows nothing of the owner can't be detected.
 
-var lockReasonRE = lazyre.New(`^claude (?:agent|session) \S+ \(pid ([0-9]+) start ([0-9]+)\)$`)
+// The start time is optional: an older Claude Code wrote only the pid.
+var lockReasonRE = lazyre.New(`^claude (?:agent|session) \S+ \(pid ([0-9]+)(?: start ([0-9]+))?\)$`)
 
 // lockProc is what /proc says of one process.
 type lockProc struct {
@@ -43,13 +48,24 @@ type lockProc struct {
 // nothing about the process. A seam for tests.
 var lockProcLookup = readLockProc
 
+// lockProcRoot and lockPidSignal are seams for tests: where /proc is, and
+// whether the kernel says a pid exists.
+var (
+	lockProcRoot  = "/proc"
+	lockPidSignal = slotPidAlive
+)
+
 func readLockProc(pid int) (e lockProc, found bool, err error) {
 	// Without a /proc of our own there is no view: a missing entry means nothing.
-	if _, err := os.Stat("/proc/self/stat"); err != nil {
+	if _, err := os.Stat(filepath.Join(lockProcRoot, "self", "stat")); err != nil {
 		return e, false, errors.New("no /proc to look in")
 	}
-	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat") // #nosec G304 -- a pid read from a lock reason, as digits
+	b, err := os.ReadFile(filepath.Join(lockProcRoot, strconv.Itoa(pid), "stat")) // #nosec G304 -- a pid read from a lock reason, as digits
 	if errors.Is(err, fs.ErrNotExist) {
+		// A pid the kernel knows but /proc hides (hidepid) is not absent.
+		if lockPidSignal(pid) {
+			return e, false, errors.New("the pid exists but /proc doesn't show it")
+		}
 		return e, false, nil
 	}
 	if err != nil {
@@ -121,25 +137,34 @@ func lockOwner(reason string, lockedAt time.Time) (gone bool, why string) {
 		return false, fmt.Sprintf("its lock says %q, which names no process wp can check", reason)
 	}
 	pid, err := strconv.Atoi(m[1])
-	start, err2 := strconv.ParseUint(m[2], 10, 64)
-	if err != nil || err2 != nil || pid <= 0 {
+	if err != nil || pid <= 0 {
 		return false, fmt.Sprintf("its lock says %q, which names no process wp can check", reason)
 	}
-	now, up, err := lockClock()
-	if err != nil {
-		return false, fmt.Sprintf("its lock names pid %d, and wp can't read this host's clock (%v)", pid, err)
-	}
-	startAfterBoot := time.Duration(start) * lockTick
-	boot := now.Add(-up)
-	switch {
-	case startAfterBoot > up+lockSlack:
-		return false, fmt.Sprintf("its lock names pid %d, started %s after a boot, later than this host has been up (%s): another host or container wrote it, so wp can't tell", pid, startAfterBoot.Round(time.Second), up.Round(time.Second))
-	case lockedAt.IsZero():
-		return false, fmt.Sprintf("its lock names pid %d, but wp can't tell when the lock was written", pid)
-	case lockedAt.Before(boot.Add(-lockSlack)):
-		return false, fmt.Sprintf("its lock names pid %d and was written before this host last booted, so wp can't tell whether that pid's owner is gone", pid)
-	case lockedAt.Before(boot.Add(startAfterBoot - lockSlack)):
-		return false, fmt.Sprintf("its lock names pid %d but was written before that process started on this host: another host or container wrote it, so wp can't tell", pid)
+	hasStart := m[2] != ""
+	var start uint64
+	if hasStart {
+		start, err = strconv.ParseUint(m[2], 10, 64)
+		if err != nil {
+			return false, fmt.Sprintf("its lock says %q, which names no process wp can check", reason)
+		}
+		now, up, err := lockClock()
+		if err != nil {
+			return false, fmt.Sprintf("its lock names pid %d, and wp can't read this host's clock (%v)", pid, err)
+		}
+		// In ticks, so a start too large for a Duration is "later than up".
+		if start > uint64((up+lockSlack)/lockTick) {
+			return false, fmt.Sprintf("its lock names pid %d, started at tick %d after a boot, later than this host has been up (%s): another host or container wrote it, or the start is no real time, so wp can't tell", pid, start, up.Round(time.Second))
+		}
+		startAfterBoot := time.Duration(start) * lockTick
+		boot := now.Add(-up)
+		switch {
+		case lockedAt.IsZero():
+			return false, fmt.Sprintf("its lock names pid %d, but wp can't tell when the lock was written", pid)
+		case lockedAt.Before(boot.Add(-lockSlack)):
+			return false, fmt.Sprintf("its lock names pid %d and was written before this host last booted, so wp can't tell whether that pid's owner is gone", pid)
+		case lockedAt.Before(boot.Add(startAfterBoot - lockSlack)):
+			return false, fmt.Sprintf("its lock names pid %d but was written before that process started on this host: another host or container wrote it, so wp can't tell", pid)
+		}
 	}
 	e, found, err := lockProcLookup(pid)
 	switch {
@@ -147,6 +172,8 @@ func lockOwner(reason string, lockedAt time.Time) (gone bool, why string) {
 		return false, fmt.Sprintf("its lock names pid %d, and wp can't tell whether that still runs (%v)", pid, err)
 	case !found:
 		return true, fmt.Sprintf("its lock names pid %d, which no longer runs", pid)
+	case !hasStart:
+		return false, fmt.Sprintf("its lock names pid %d with no start time, and a process with that pid runs, so wp can't tell whether it is the owner", pid)
 	case e.zombie:
 		return true, fmt.Sprintf("its lock names pid %d, which has exited", pid)
 	case e.start != start:
@@ -186,24 +213,65 @@ func lockJudge(common string, w tidyWorktree) (gone bool, why string) {
 	return lockOwner(w.lockReason, lockedAt(common, w.path))
 }
 
-// unlockStale unlocks the worktree at path if its lock's owner is gone. It
-// looks at the lock again under a lock of its own on the repository (two wp
-// at once take it in turn: the second finds it unlocked) and unlocks with
-// git's own command, so a lock someone made in the meantime is never undone:
-// an owner can only go from running to gone, so what was shown gone stays
-// gone. reason is the lock it removed ("" if none was left). Never force.
+// errLockTaken is what a second reclaimer of one stale lock is told: the first
+// took it.
+var errLockTaken = errors.New("another wp reclaimed its stale lock first")
+
+// holdReclaim takes wp's reclaim lock on the repository of dir: an flock on a
+// file in its common git directory, so two wp reclaim a worktree's stale lock
+// one after the other. release lets it go. Only a host without flock (Windows)
+// goes on without it. The lock binds wp only: git itself, Claude Code or a
+// person's `git worktree lock|unlock` don't take it, so a lock they write
+// between the last read under it and `git worktree unlock` can still be undone;
+// that window is a few milliseconds and can't be closed from outside git.
+func holdReclaim(ctx context.Context, dir string) (release func(), common string, err error) {
+	common, err = tidyGit(ctx, dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return nil, "", err
+	}
+	f, err := os.OpenFile(filepath.Join(common, "wp-worktree.lock"), os.O_CREATE|os.O_RDWR, 0o600) // #nosec G304 -- inside the repository's git directory
+	if err != nil {
+		return nil, "", fmt.Errorf("can't open wp's reclaim lock: %w", err)
+	}
+	unlock, err := fileLock(f)
+	if err != nil {
+		_ = f.Close()
+		if runtime.GOOS == "windows" {
+			return func() {}, common, nil
+		}
+		return nil, "", fmt.Errorf("can't take wp's reclaim lock: %w", err)
+	}
+	return func() { unlock(); _ = f.Close() }, common, nil
+}
+
+// unlockStale unlocks the worktree at path if its lock's owner is gone,
+// judging the lock under wp's reclaim lock. reason is the lock it removed ("" if
+// none was left). Never force.
 func unlockStale(ctx context.Context, dir, path string) (reason string, err error) {
-	common, err := tidyGit(ctx, dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	release, common, err := holdReclaim(ctx, dir)
 	if err != nil {
 		return "", err
 	}
-	if f, err := os.OpenFile(filepath.Join(common, "wp-worktree.lock"), os.O_CREATE|os.O_RDWR, 0o600); err == nil { // #nosec G304 -- inside the repository's git directory
-		if unlock, err := fileLock(f); err == nil {
-			defer unlock()
-		} else {
-			_ = f.Close()
-		}
+	defer release()
+	return unlockHeld(ctx, dir, common, path, nil)
+}
+
+// unlockJudged is unlockStale for a lock the caller judged gone while its reason
+// was judged: under the reclaim lock it reads the reason again and goes on
+// only if it is byte for byte that one. A lock already taken by another wp is
+// errLockTaken, so exactly one of two reclaimers wins.
+func unlockJudged(ctx context.Context, dir, path, judged string) (reason string, err error) {
+	release, common, err := holdReclaim(ctx, dir)
+	if err != nil {
+		return "", err
 	}
+	defer release()
+	return unlockHeld(ctx, dir, common, path, &judged)
+}
+
+// unlockHeld is the work of unlockStale and unlockJudged, with the reclaim lock
+// already held by the caller (which may keep it through a relock).
+func unlockHeld(ctx context.Context, dir, common, path string, judged *string) (string, error) {
 	out, err := tidyGit(ctx, dir, "worktree", "list", "--porcelain")
 	if err != nil {
 		return "", err
@@ -214,7 +282,13 @@ func unlockStale(ctx context.Context, dir, path string) (reason string, err erro
 			continue
 		}
 		if !w.locked {
+			if judged != nil {
+				return "", errLockTaken
+			}
 			return "", nil
+		}
+		if judged != nil && w.lockReason != *judged {
+			return "", errors.New("its lock changed since wp judged it, so wp left it")
 		}
 		if gone, why := lockJudge(common, w); !gone {
 			return "", errors.New(why)
@@ -228,7 +302,7 @@ func unlockStale(ctx context.Context, dir, path string) (reason string, err erro
 }
 
 // relock puts back a lock unlockStale removed, when what was to follow it
-// (removing the worktree) failed.
+// (removing the worktree) failed. The caller holds the reclaim lock.
 func relock(ctx context.Context, dir, path, reason string) {
 	args := []string{"worktree", "lock"}
 	if reason != "" {
@@ -283,7 +357,7 @@ func reclaimWhere(ctx context.Context, repo *worktreeRepo, top string, match fun
 				}
 				continue
 			}
-			if _, err := unlockStale(ctx, repo.root, w.path); err != nil {
+			if _, err := unlockJudged(ctx, repo.root, w.path, w.lockReason); err != nil {
 				if res.blocked == nil {
 					res.blocked, res.why = &repo.wts[i], "locked: "+err.Error()
 				}
