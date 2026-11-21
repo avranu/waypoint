@@ -545,3 +545,88 @@ func TestTypedPromptKeyDoesNotCarryToOtherText(t *testing.T) {
 		t.Fatalf("same key, other text = %q, want the person's", k)
 	}
 }
+
+// "Who typed it" and "did a person take over" are two answers (WP-1370). A
+// message Waypoint types for someone carries that person's words: the step
+// reads it as their turn, as it did when a typed body was told by how it
+// began. Waypoint's own review, compact, keep-warm and kickoff are not.
+func TestTypedMessageIsAPersonsTurnToTheStepAsBefore(t *testing.T) {
+	setup := func(t *testing.T) *apEnv {
+		a := newAPEnv(t)
+		first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude"})
+		a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "Second", Agent: "claude"})
+		a.finish(first.Key)
+		a.stopWith("Done.")
+		if st := a.step(); st.state != StepDue {
+			t.Fatalf("step = %+v, want due", st)
+		}
+		return a
+	}
+	t.Run("a person's relayed message takes the session as their own prompt does", func(t *testing.T) {
+		own := setup(t)
+		own.prompt("Also fix the typo")
+		want := own.step()
+
+		a := setup(t)
+		a.record(TypedMessage, "Jess says: also fix the typo")
+		a.prompt("Jess says: also fix the typo")
+		got := a.step()
+		if got.state != want.state || got.reason != want.reason || got.state != StepStopped || got.reason != "prompted" {
+			t.Fatalf("relayed message: step %+v, the person's own prompt: %+v, want both stopped as prompted", got, want)
+		}
+		if k := a.lastPromptKind(); k != TypedMessage {
+			t.Fatalf("who typed it = %q, want %q recorded", k, TypedMessage)
+		}
+	})
+	for _, c := range []struct{ kind, text string }{
+		{TypedKickoff, AutopilotPromptMark + " started this session for APP-9."},
+		{TypedKeepWarm, keepWarmBody},
+		{TypedCompact, "/compact"},
+	} {
+		t.Run("waypoint's own "+c.kind+" is not a person", func(t *testing.T) {
+			a := setup(t)
+			a.record(c.kind, c.text)
+			a.prompt(c.text)
+			if st := a.step(); st.state != StepDue {
+				t.Fatalf("%s took the session: %+v", c.kind, st)
+			}
+			var typed bool
+			if err := a.s.db.R.QueryRow(`SELECT prompt_typed FROM agent_sessions WHERE id = ?`, a.session).Scan(&typed); err != nil || typed {
+				t.Fatalf("%s counted as a person typing: %v (%v)", c.kind, typed, err)
+			}
+		})
+	}
+}
+
+func TestTypedKindsWhoTypedAndWhoseWords(t *testing.T) {
+	for _, c := range []struct {
+		kind                          string
+		auto, person, ownsQuotaPrompt bool
+	}{
+		{TypedReview, true, false, true},
+		{TypedKickoff, true, false, true},
+		{TypedCompact, false, false, true},
+		{TypedKeepWarm, false, false, true},
+		{TypedMessage, false, true, false},
+		{"", false, true, false},
+	} {
+		if got := typedAuto(c.kind); got != c.auto {
+			t.Errorf("typedAuto(%q) = %v, want %v", c.kind, got, c.auto)
+		}
+		if got := typedCarriesPerson(c.kind); got != (c.kind == TypedMessage) {
+			t.Errorf("typedCarriesPerson(%q) = %v", c.kind, got)
+		}
+		if got := ownPrompt("plain words", c.kind); got != c.ownsQuotaPrompt {
+			t.Errorf("ownPrompt(%q) = %v, want %v", c.kind, got, c.ownsQuotaPrompt)
+		}
+		auto, ok := promptOwner("plain words", c.kind)
+		switch {
+		case c.auto && !(auto && ok):
+			t.Errorf("promptOwner(%q) = %v,%v, want automation's", c.kind, auto, ok)
+		case c.person && !(!auto && ok):
+			t.Errorf("promptOwner(%q) = %v,%v, want the person's", c.kind, auto, ok)
+		case !c.auto && !c.person && ok:
+			t.Errorf("promptOwner(%q) = %v,%v, want it to keep whoever came before", c.kind, auto, ok)
+		}
+	}
+}

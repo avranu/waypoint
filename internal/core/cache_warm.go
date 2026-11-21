@@ -644,7 +644,7 @@ func (s *Service) warmPromptStarted(ctx context.Context, t *tx, x *AgentSession,
 	if err := warmUsed(ctx, t, x.ID, at); err != nil { // WP-1000
 		return err
 	}
-	typed := ev.typed == "" && !isHarnessPrompt(ev.Prompt) && x.Kind != SessionTask &&
+	typed := (ev.typed == "" || typedCarriesPerson(ev.typed)) && !isHarnessPrompt(ev.Prompt) && x.Kind != SessionTask &&
 		(!posted.Valid || at-posted.Int64 > postedEcho.Milliseconds())
 	_, err := t.ExecContext(ctx, `UPDATE agent_sessions SET stopped_at = NULL, warm_state = CASE WHEN ? AND warm_state = ? THEN warm_state ELSE '' END, prompt_typed = ?,
 		typed_at = CASE WHEN ? THEN max(coalesce(typed_at, 0), ?) ELSE typed_at END WHERE id = ?`, isHarnessPrompt(ev.Prompt), warmReview, typed, typed, at, x.ID)

@@ -288,6 +288,26 @@ func (s *Service) sweepTypedPrompts(ctx context.Context) {
 }
 
 // typedAuto: automation's prompt, which a person's turn follows (a review
-// or kickoff), as against a ping, compaction or message, which keep whoever
-// was in charge.
+// or kickoff), as against a ping or compaction, which keep whoever was in
+// charge.
 func typedAuto(kind string) bool { return kind == TypedReview || kind == TypedKickoff }
+
+// typedCarriesPerson: Waypoint typed it, but the words are a person's (a
+// message relayed for someone). Who typed it and whether a person took over
+// are separate answers (WP-1370): this kind is Waypoint's typing, and still
+// a person's turn to whatever reads the session's timeline for takeover,
+// ownership and activity, as a body typed into the pane was before records
+// told who typed it. A review, compact, keep-warm or kickoff is nobody's turn.
+func typedCarriesPerson(kind string) bool { return kind == TypedMessage }
+
+// typedByWaypointAlone: Waypoint typed it and no person's words are in it.
+func typedByWaypointAlone(kind string) bool { return kind != "" && !typedCarriesPerson(kind) }
+
+// IsKeepWarmPing: text is the whole keep-warm ping Waypoint sends, up to the
+// whitespace a terminal changes. The mark alone is not enough: a person can
+// start a prompt with it (WP-1370). The CLI's local guard uses this where it
+// must treat the ping as no person's.
+func IsKeepWarmPing(text string) bool { return PromptSum(text) == PromptSum(keepWarmBody) }
+
+// KeepWarmPing is the ping's whole text (tests of the CLI's guard type it).
+func KeepWarmPing() string { return keepWarmBody }

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"git.jmann.me/claude/waypoint/internal/core"
 	"git.jmann.me/claude/waypoint/internal/sandbox"
 )
 
@@ -72,6 +73,13 @@ func (c *cli) noteAttendance(in hookEventInput) (refusal string) {
 	p := strings.TrimSpace(in.Prompt)
 	switch {
 	case strings.HasPrefix(p, autopilotPromptMark) || c.isPastedPrompt(id, p):
+		// The mark here only ever tightens: a prompt that starts with it is
+		// treated as automation's, so a person who types it is refused when
+		// the quota guard stopped the session, and the session is marked
+		// unattended (the guard's stricter rules). It grants nothing and
+		// lifts nothing, so it is not told by the server's record (WP-1370):
+		// this runs before the event is sent, and a refused prompt is never
+		// sent.
 		if refusal = c.guardPrompt(id, true); refusal != "" {
 			return refusal
 		}
@@ -86,7 +94,11 @@ func (c *cli) noteAttendance(in hookEventInput) (refusal string) {
 				}
 			}
 		})
-	case strings.HasPrefix(p, keepWarmMark) || p == "/compact" || harnessPromptMark(p) != "":
+	case core.IsKeepWarmPing(p) || p == "/compact" || harnessPromptMark(p) != "":
+		// Only the whole ping, not the mark that starts it: a person can type
+		// the mark, and what skips the person's branch below (lifting a stop,
+		// clearing the unattended mark, the refusal in a session nobody types
+		// in) must not be something typing can fake (WP-1370).
 	default:
 		if refusal = c.guardPrompt(id, !personCanType()); refusal != "" {
 			return refusal

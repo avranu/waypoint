@@ -326,6 +326,9 @@ func (c *cli) slashAnswer(in hookEventInput, prompt, cmd, word, rest string) str
 		}
 		return "Waypoint: noted; the agent reads it with its next prompt or tool result."
 	case "exe":
+		// Keyed on the digest of the prompt the runner noted locally, not on
+		// any mark, and it only refuses: typing the mark gets a person nothing
+		// here (WP-1370).
 		if c.isPastedPrompt(in.SessionID, prompt) || unattendedEnv() {
 			return "Waypoint: /wp exe runs only what a person types, in a session a person drives; nothing ran."
 		}

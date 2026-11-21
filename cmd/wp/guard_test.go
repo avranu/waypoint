@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core"
 )
 
 // guardTestSite makes a repository with an origin on a forge, and a guard
@@ -685,7 +687,7 @@ func TestGuardAutopilotMark(t *testing.T) {
 	if guarded("s2") {
 		t.Error("another session was guarded")
 	}
-	prompt("s1", keepWarmMark+" ping")
+	prompt("s1", core.KeepWarmPing())
 	prompt("s1", "/compact")
 	if !guarded("s1") {
 		t.Error("Waypoint's own prompts cleared the mark")
@@ -695,6 +697,13 @@ func TestGuardAutopilotMark(t *testing.T) {
 	if !guarded("s1") {
 		t.Error("a background task reporting back cleared the mark")
 	}
+	// Starting a prompt with the keep-warm mark is not Waypoint's ping: a
+	// person who types it is the person (WP-1370).
+	prompt("s1", core.KeepWarmMark+" ping, but my own words")
+	if guarded("s1") {
+		t.Error("a person's prompt that starts with the keep-warm mark was read as Waypoint's ping")
+	}
+	prompt("s1", autopilotPromptMark+" started this session for APP-2, after APP-1 was done in the session before it.")
 	prompt("s1", "  thanks, now look at the docs")
 	if guarded("s1") {
 		t.Error("a person's prompt didn't clear the mark")

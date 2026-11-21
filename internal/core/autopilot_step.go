@@ -139,7 +139,9 @@ func (s *Service) promptedAfterStop(ctx context.Context, sessionID, since int64)
 // ownPrompt: Waypoint or Claude Code submitted a prompt event, not a person:
 // Waypoint typed it (typed, the kind its hook recognised: recogniseTyped), or
 // the harness did (a background task or another session reporting back).
-func ownPrompt(detail, typed string) bool { return typed != "" || isHarnessPrompt(detail) }
+func ownPrompt(detail, typed string) bool {
+	return typedByWaypointAlone(typed) || isHarnessPrompt(detail)
+}
 
 // JobAutopilot is a runner job that restarts an idle Claude Code session in
 // its tmux pane, in a worktree of its own, and gives the new one its task
@@ -1055,8 +1057,8 @@ func (s *Service) autopilotOnPrompt(ctx context.Context, t *tx, x *AgentSession,
 		}
 		_, err := s.startRound(ctx, t, review.Int64, s.hookTime(ev))
 		return err
-	case ev.typed != "":
-		return nil // autopilot's own kickoff, or a message Waypoint typed
+	case typedByWaypointAlone(ev.typed):
+		return nil // autopilot's own kickoff, or a compaction or ping Waypoint typed; a relayed message falls through to the person's turn
 	case isHarnessPrompt(ev.Prompt):
 		var review sql.NullInt64
 		err := t.QueryRowContext(ctx, `SELECT review_id FROM autopilot_steps WHERE session_id = ? AND state = ?`, x.ID, StepStarting).Scan(&review)
