@@ -53,7 +53,7 @@ func (d *dropServer) lastDrops(n int) (string, map[string]int64) {
 	return e.DropsID, e.Drops
 }
 
-func dropEnv(t *testing.T) {
+func dropEnv(t *testing.T) *sessionEnv {
 	t.Helper()
 	s := newSessionEnv(t)
 	s.asAgent()
@@ -61,6 +61,7 @@ func dropEnv(t *testing.T) {
 	old := processAge
 	processAge = func() time.Duration { return 0 }
 	t.Cleanup(func() { processAge = old })
+	return s
 }
 
 func seedDrops(t *testing.T, drops map[string]int64) {
@@ -281,5 +282,32 @@ func TestPreOutputStateWaitsAreBounded(t *testing.T) {
 	}
 	if !strings.Contains(errOut.String(), "lost") {
 		t.Errorf("a lost event was not said on stderr: %q", errOut.String())
+	}
+}
+
+// A prompt the server did not answer is posted again from the outbox: every
+// attempt carries the invocation's own key, and the next invocation has its own.
+func TestPromptHookKeyIsTheSameOnEveryAttempt(t *testing.T) {
+	s := dropEnv(t)
+	ds := &dropServer{reply: func(call int, _ []sessionEvent) int {
+		if call == 0 {
+			return http.StatusGatewayTimeout
+		}
+		return http.StatusOK
+	}}
+	ds.start(t)
+	s.hook(map[string]any{"session_id": "k1", "hook_event_name": "UserPromptSubmit", "prompt": "first", "cwd": t.TempDir()})
+	s.hook(map[string]any{"session_id": "k1", "hook_event_name": "UserPromptSubmit", "prompt": "second", "cwd": t.TempDir()})
+	ds.mu.Lock()
+	defer ds.mu.Unlock()
+	if len(ds.calls) != 2 || len(ds.calls[0]) != 1 || len(ds.calls[1]) != 2 {
+		t.Fatalf("calls = %v", ds.calls)
+	}
+	first, again, second := ds.calls[0][0], ds.calls[1][0], ds.calls[1][1]
+	if first.Key == "" || again.Key != first.Key {
+		t.Errorf("the re-post of the first prompt has key %q, the first attempt %q: want the same, not empty", again.Key, first.Key)
+	}
+	if second.Key == "" || second.Key == first.Key {
+		t.Errorf("the next invocation has key %q, the first %q: want its own", second.Key, first.Key)
 	}
 }

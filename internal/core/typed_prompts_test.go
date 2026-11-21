@@ -483,3 +483,65 @@ func TestTypedPersonQuotingTheReviewPromptDoesNotStartTheRound(t *testing.T) {
 		t.Fatalf("a person's quote of the mark started the round")
 	}
 }
+
+// recogniseKeyed is a hook invocation with an idempotency key reaching the recogniser.
+func (a *apEnv) recogniseKeyed(key, prompt string) string {
+	a.t.Helper()
+	var kind string
+	err := a.s.write(a.ctx, a.admin, func(t *tx) (err error) {
+		kind, err = a.s.recogniseTyped(a.ctx, t, a.session, &HookEvent{Prompt: prompt, Key: key, At: a.clockNow().UnixMilli()})
+		return err
+	})
+	if err != nil {
+		a.t.Fatal(err)
+	}
+	return kind
+}
+
+// A hook the CLI posts again (its first answer was lost) is the same
+// invocation: it gets the same answer and uses nothing more up (WP-1370).
+func TestTypedPromptRepostWithTheSameKeyIsAnsweredTheSame(t *testing.T) {
+	a := newAPEnv(t)
+	r := reviewPromptText("WP-1", "x")
+	a.record(TypedReview, r)
+	for i := range 3 {
+		if k := a.recogniseKeyed("inv-1", r); k != TypedReview {
+			t.Fatalf("post %d with the same key = %q, want review", i+1, k)
+		}
+	}
+	var used int
+	if err := a.s.db.R.QueryRow(`SELECT count(*) FROM typed_prompts WHERE session_id = ? AND consumed_at IS NOT NULL`, a.session).Scan(&used); err != nil || used != 1 {
+		t.Fatalf("records consumed = %d (%v), want 1", used, err)
+	}
+	// The person typing the same text afterwards, in a new invocation, is the person's.
+	if k := a.recogniseKeyed("inv-2", r); k != "" {
+		t.Fatalf("a new invocation with the same text and no record left = %q, want the person's", k)
+	}
+}
+
+// A person's repeat of Waypoint's text is a different invocation: with one
+// record, the second is the person's, whatever else matches.
+func TestTypedPromptDifferentKeysSameTextOneRecord(t *testing.T) {
+	a := newAPEnv(t)
+	r := reviewPromptText("WP-1", "x")
+	a.record(TypedReview, r)
+	if k := a.recogniseKeyed("inv-1", r); k != TypedReview {
+		t.Fatalf("first = %q", k)
+	}
+	if k := a.recogniseKeyed("inv-2", r); k != "" {
+		t.Fatalf("second, another key = %q, want the person's", k)
+	}
+}
+
+// A key from another session's invocation, or on other text, is no repeat.
+func TestTypedPromptKeyDoesNotCarryToOtherText(t *testing.T) {
+	a := newAPEnv(t)
+	r := reviewPromptText("WP-1", "x")
+	a.record(TypedReview, r)
+	if k := a.recogniseKeyed("inv-1", r); k != TypedReview {
+		t.Fatalf("first = %q", k)
+	}
+	if k := a.recogniseKeyed("inv-1", "something else entirely"); k != "" {
+		t.Fatalf("same key, other text = %q, want the person's", k)
+	}
+}

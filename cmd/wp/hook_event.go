@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -101,7 +103,11 @@ type sessionEvent struct {
 	// PromptSum: UserPromptSubmit: the digest of the whole prompt (core.PromptSum),
 	// sent whatever --no-prompts withholds of its text, for the server to
 	// tell what Waypoint typed from what a person did (WP-1370).
-	PromptSum        string           `json:"prompt_sum,omitempty"`
+	PromptSum string `json:"prompt_sum,omitempty"`
+	// Key: one id per hook invocation, made once and kept in the outbox, so
+	// every attempt to post this event carries it and the server answers a
+	// repeat as it answered the first (WP-1370).
+	Key              string           `json:"key,omitempty"`
 	Event            string           `json:"event"`
 	At               int64            `json:"at,omitempty"`
 	SessionID        string           `json:"session_id"`
@@ -554,6 +560,7 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 		// reach the core under --no-prompts, so it can tell them from typing.
 		p := strings.TrimSpace(in.Prompt)
 		ev.PromptSum = core.PromptSum(in.Prompt)
+		ev.Key = newHookKey()
 		if slash != "" {
 			ev.Prompt = strings.TrimSpace("/wp " + slash + " " + slashArg) // nothing else typed after it rides along
 			if slash == "keep" && strings.EqualFold(p, "/keep") {
@@ -1291,4 +1298,11 @@ func reviewPromptKey(p string) (string, bool) {
 	}
 	key, _, _ := strings.Cut(rest, ":")
 	return key, keyRE.MatchString(key)
+}
+
+// newHookKey is a fresh id for one hook invocation (sessionEvent.Key).
+func newHookKey() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }

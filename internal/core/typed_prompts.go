@@ -243,9 +243,22 @@ func (s *Service) recogniseTyped(ctx context.Context, t *tx, sessionID int64, ev
 		return "", nil
 	}
 	at := min(s.hookTime(ev), s.nowMS())
-	err = t.QueryRowContext(ctx, `UPDATE typed_prompts SET consumed_at = ? WHERE consumed_at IS NULL AND id = (
+	// The same invocation posted again (the CLI's outbox resends after a lost
+	// answer) is answered as the first was, from the record that invocation
+	// used up, and uses no other.
+	if ev.Key != "" {
+		err = t.QueryRowContext(ctx, `SELECT kind FROM typed_prompts WHERE session_id = ? AND hash = ? AND consumed_key = ? ORDER BY id LIMIT 1`,
+			sessionID, sum, ev.Key).Scan(&kind)
+		if err == nil {
+			return kind, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return "", err
+		}
+	}
+	err = t.QueryRowContext(ctx, `UPDATE typed_prompts SET consumed_at = ?, consumed_key = ? WHERE consumed_at IS NULL AND id = (
 		SELECT id FROM typed_prompts WHERE session_id = ? AND hash = ? AND consumed_at IS NULL AND expires_at > ? ORDER BY id LIMIT 1) RETURNING kind`,
-		s.nowMS(), sessionID, sum, at).Scan(&kind)
+		s.nowMS(), ev.Key, sessionID, sum, at).Scan(&kind)
 	if errors.Is(err, sql.ErrNoRows) {
 		if n := NormalisePrompt(ev.Prompt); strings.HasPrefix(n, AutopilotPromptMark) {
 			s.log.WarnContext(ctx, "a prompt with Waypoint's mark matches nothing Waypoint typed: read as the person's",

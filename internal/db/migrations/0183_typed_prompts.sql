@@ -11,7 +11,8 @@ CREATE TABLE typed_prompts (
     kind        TEXT    NOT NULL, -- review, compact, keep_warm, message, kickoff
     created_at  INTEGER NOT NULL,
     expires_at  INTEGER NOT NULL,
-    consumed_at INTEGER
+    consumed_at INTEGER,
+    consumed_key TEXT NOT NULL DEFAULT '' -- the hook invocation (HookEvent.Key) that consumed it
 );
 CREATE INDEX typed_prompts_lookup ON typed_prompts(session_id, hash);
 CREATE INDEX typed_prompts_expiry ON typed_prompts(expires_at);
