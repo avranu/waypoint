@@ -608,8 +608,12 @@ export function ObjectiveDialog({
       branch: verified ? branch.trim() : '',
       pace,
       max_rounds: Math.max(0, parseInt(rounds, 10) || 0),
-      diagnose_after: Math.min(20, Math.max(0, parseInt(diagnoseAfter, 10) || 0)),
     }
+    // Blank sends nothing (the server keeps the current value, or takes its
+    // default of 2 for a new objective), and a loop has no rounds to read.
+    const diagnoseN = parseInt(diagnoseAfter, 10)
+    if (verified && !Number.isNaN(diagnoseN))
+      set.diagnose_after = Math.min(20, Math.max(0, diagnoseN))
     // Blank, or left as it was, keeps the kind's own gap: a day for one
     // that never ends, none for one with a fixed target.
     if (every.trim() && !(o && every.trim() === everyText(o.every))) set.every = every.trim()
@@ -939,7 +943,7 @@ export function ObjectiveDialog({
           {verified && (
             <Field
               label="Diagnose after"
-              hint="After this many rounds in a row that come no nearer, the next round ships no code: the worker finds out why and says what to try. 0: never. At most 20."
+              hint="After this many rounds in a row that come no nearer, the next round ships no code: the worker finds out why and says what to try. 0: never. Blank: the current value (2, the default, for a new objective). At most 20."
             >
               <Input
                 type="number"

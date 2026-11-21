@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -17,7 +18,14 @@ import (
 // is its first commit, and the CLI logged in (as an agent's token).
 func objectiveEnv(t *testing.T) (*env, *core.Actor, string) {
 	t.Helper()
-	e := newEnv(t)
+	return objectiveEnvServing(t, nil)
+}
+
+// objectiveEnvServing is objectiveEnv with the server's handler wrapped, to
+// see or stub what the CLI sends.
+func objectiveEnvServing(t *testing.T, wrap func(http.Handler) http.Handler) (*env, *core.Actor, string) {
+	t.Helper()
+	e := newEnvServing(t, nil, wrap)
 	me := e.login()
 	t.Setenv("WAYPOINT_SLOT_DIR", t.TempDir())
 	ctx := context.Background()
@@ -457,7 +465,7 @@ func TestObjectiveDiagnoseCommand(t *testing.T) {
 		}
 	}
 	// No objective yet.
-	if out, code := e.run("objective", "diagnose", key, "-m", "x"); code == 0 || !strings.Contains(out, "no objective") {
+	if out, code := e.run("objective", "diagnose", key, "-m", "x"); code == 0 || !strings.Contains(out, "has no objective, so there is nothing to diagnose") {
 		t.Errorf("no objective: exit %d, %q", code, out)
 	}
 	e.setObjective(me, key, core.ObjectiveInput{Check: ptr("cat n.txt"), Until: ptr("< 10")})
@@ -467,12 +475,12 @@ func TestObjectiveDiagnoseCommand(t *testing.T) {
 		{"objective", "diagnose", key, "-m", "the check is wrong", "--ask"},
 		{"objective", "diagnose", key, "-f", "d.md"},
 	} {
-		if out, code := e.run(args...); code == 0 || !strings.Contains(out, "diagnose") {
+		if out, code := e.run(args...); code == 0 || !strings.Contains(out, "a diagnosis is for a diagnose round") {
 			t.Errorf("%v: exit %d, %q", args, code, out)
 		}
 	}
 	// What wp objective set and wp objective diagnose say in help.
-	if out := e.wp("help", "objective", "diagnose"); !strings.Contains(out, "--ask") || !strings.Contains(out, "-f FILE") {
+	if out := e.wp("help", "objective", "diagnose"); !strings.Contains(out, "KEY (-f FILE | -m TEXT) [--ask]") {
 		t.Errorf("help:\n%s", out)
 	}
 }

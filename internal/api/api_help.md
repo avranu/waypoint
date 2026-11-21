@@ -729,7 +729,8 @@ steers or clears one in effect.
                                     each and loop, 0 for until and judged). rev: the agent's proposal
                                     a person's change builds on.
                                     diagnose_after: rounds in a row that come no nearer before the next
-                                    is a diagnose round that ships no code (0: never; 2 by default)
+                                    is a diagnose round that ships no code (0: never; 2 by default, and for
+                                    objectives that existed before it; a loop has none to set)
     POST   /issues/{key}/objective/confirm {"rev"}   a person puts an agent's proposal in effect; rev
                                     is the one they read, refused if it was rewritten since
     POST   /issues/{key}/objective/go {"action":"retry|next|accept|end"}   a person steers one in

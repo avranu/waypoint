@@ -75,9 +75,12 @@ After --diagnose-after rounds in a row that came no nearer (2 by default; 0:
 never), the next round is a diagnose round: it ships no code. The worker finds
 out why (the code, the check or judge itself, noise in the reading, a target out
 of reach), says what the next round should try, and records it with wp
-objective diagnose KEY -f FILE. The same round then opens again as a work round,
-and every round after it reads the diagnosis until one makes progress. A
-diagnose round doesn't use up one of the --rounds. Where a person must act
+objective diagnose KEY -f FILE. wp done and wp ship are refused until it is
+recorded (a pull request opened on the forge directly can't be, and if it merges
+it is read as any round). The same round then opens again as a work round, the
+one to ship in, and every round after it reads the diagnosis until one makes
+progress. A diagnose round doesn't use up one of the --rounds, and a person
+can skip it with wp objective next KEY. Where a person must act
 (the check is wrong, the target can't be reached), --ask leaves the objective
 waiting for them: wp objective accept (read it, go on), next (hand the round
 out now), set (change what is measured) or end.`,
@@ -139,7 +142,7 @@ past --timeout (15m for one command), or had no number to read.
 			run:      cmdObjectiveCheck},
 		{name: "diagnose", args: "KEY (-f FILE | -m TEXT) [--ask]", summary: "record what a diagnose round found: why the rounds came no nearer, and what the next should try",
 			about: `A diagnose round follows rounds that came no nearer, and ships no code (wp
-objective show KEY says so). Find out why, sort what you find by cause (the code,
+objective show KEY says so; wp done and wp ship are refused in it). Find out why, sort what you find by cause (the code,
 the check or the judge itself, noise in the reading, a target out of reach) and
 say what the next round should try. Recording it ends the round without a
 reading, puts the task back in To Do, and opens the same round again as a work
@@ -184,7 +187,9 @@ type objective struct {
 	Round   int    `json:"round"`
 	State   string `json:"state"`
 	Phase   string `json:"phase"`
-	Rev     string `json:"rev"`
+	// RoundKind is "diagnose" while the round under way is a diagnose round.
+	RoundKind string `json:"round_kind"`
+	Rev       string `json:"rev"`
 	// BaseSHA is the commit the round under way started from.
 	BaseSHA string `json:"base_sha"`
 	Text    string `json:"text"`
@@ -692,6 +697,10 @@ func outputTail(b []byte, n int) string {
 func (c *cli) objectiveShipNote(key string) {
 	var o objective
 	if err := c.do("GET", "/api/v1/issues/"+esc(key)+"/objective", nil, &o); err != nil || o.State != "active" || c.asJSON {
+		return
+	}
+	if o.Phase == "" && o.RoundKind == "diagnose" {
+		_, _ = fmt.Fprintf(c.err, "Notice: %s's round %d is a diagnose round: it ships no code. Record what you found with wp objective diagnose %s -f FILE; the same round then opens again as a work round, and that is the one to ship in. (A pull request opened on the forge directly can't be refused: if it merges, it is read as any round.)\n", o.Key, o.Round, o.Key)
 		return
 	}
 	what := "wp objective check " + o.Key + " takes a working reading"

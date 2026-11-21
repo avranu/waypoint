@@ -143,7 +143,9 @@ const (
 	maxObjectiveDiagnose     = 20
 	// maxObjectiveDiagnosis is the most characters of a diagnosis.
 	maxObjectiveDiagnosis = 20000
-	maxObjectiveKeep      = 8
+	// objectiveBriefDiagnosis is the most of a diagnosis a worker's brief carries.
+	objectiveBriefDiagnosis = 6000
+	maxObjectiveKeep        = 8
 	// maxObjectiveJudge: what a judge reads against goes into an audit as its
 	// instructions (auditInstructionsMax).
 	maxObjectiveJudge = auditInstructionsMax
@@ -653,7 +655,13 @@ func (o *Objective) measuredRev() string { return objectiveHash(o.measured()) }
 // rounds are paced and bounded. A person confirms the proposal they read
 // and not one written over it since.
 func (o *Objective) rev() string {
-	return objectiveHash(append(o.measured(), o.Pace, strconv.FormatInt(o.everyMS, 10), strconv.Itoa(o.MaxRounds), strconv.Itoa(o.DiagnoseAfter)))
+	parts := append(o.measured(), o.Pace, strconv.FormatInt(o.everyMS, 10), strconv.Itoa(o.MaxRounds))
+	// The default adds nothing, so the rev of a proposal read before
+	// diagnose-after existed is still the one a person confirms.
+	if o.DiagnoseAfter != objectiveDiagnoseDefault {
+		parts = append(parts, strconv.Itoa(o.DiagnoseAfter))
+	}
+	return objectiveHash(parts)
 }
 
 func (o *Objective) kind() string {
@@ -1005,7 +1013,13 @@ func ObjectiveText(o *Objective, forAgent bool, now time.Time) string {
 			who += ", by " + d.By
 		}
 		fmt.Fprintf(&b, "  The latest %s, %s (it stands until a round makes progress or the objective is set again):\n", who, objectiveClock(d.At))
-		for _, line := range strings.Split(strings.TrimSpace(d.Text), "\n") {
+		text := strings.TrimSpace(d.Text)
+		if forAgent {
+			// The brief carries what the next round needs; wp objective show
+			// has all of it.
+			text = ClipText(text, objectiveBriefDiagnosis, "\n[the rest is cut: wp objective show "+o.Key+" has all of it]")
+		}
+		for _, line := range strings.Split(text, "\n") {
 			b.WriteString("    " + line + "\n")
 		}
 	}
@@ -1067,7 +1081,7 @@ func ObjectiveText(o *Objective, forAgent bool, now time.Time) string {
 			b.WriteString("  Settle each finding in the code. Where one is wrong, say why with the evidence in your closing note (wp ship -m): the next judge reads it.\n")
 		}
 		if o.Diagnosis != nil {
-			b.WriteString("  Start from the diagnosis above: it says why the rounds before it came no nearer, and what to try.\n")
+			b.WriteString("  Start from the diagnosis above, but it is the diagnosing worker's account, not something Waypoint checked: check it against the readings before you rely on it. It says why the rounds before it came no nearer, and what to try.\n")
 		} else if o.Stalled >= 2 {
 			fmt.Fprintf(&b, "  The last %s moved nothing. Before another attempt, find out why: read what they tried (this task's comments and pull requests), measure where the problem actually is, and write what you learn in your closing note so the next round builds on it.\n", plural1(o.Stalled, "round"))
 		} else {
@@ -1075,6 +1089,25 @@ func ObjectiveText(o *Objective, forAgent bool, now time.Time) string {
 		}
 	}
 	return b.String()
+}
+
+// diagnosisDue: that many rounds in a row that came no nearer make the
+// next round a diagnose round. A loop reads nothing, so never.
+func (o *Objective) diagnosisDue(noBetter int) bool {
+	return o.verified() && o.DiagnoseAfter > 0 && noBetter >= o.DiagnoseAfter
+}
+
+// diagnoseDoneError is what a worker is told when it tries to finish a
+// diagnose round, which ships no code: whoever the task is, and whichever
+// way it is finished (wp done, a close, a pull request left open). taken: the
+// round has been taken up.
+func (o *Objective) diagnoseDoneError(key string, taken bool) error {
+	if !taken {
+		return invalid("%s's round %d is a diagnose round that hasn't been taken up: take it first (wp next %s), find out why the last %s came no nearer, and record it with wp objective diagnose %s -f FILE (or -m 'TEXT')",
+			key, o.Round, key, plural1(o.NoBetter, "round"), key)
+	}
+	return invalid("%s's round %d is a diagnose round: the last %s came no nearer, so it ships no code and the task isn't finished by shipping. Find out why, and record it with wp objective diagnose %s -f FILE (or -m 'TEXT'); round %d opens again as a work round after",
+		key, o.Round, plural1(o.NoBetter, "round"), key, o.Round)
 }
 
 // diagnoseRound: the round under way is a diagnose round, and is waiting
@@ -1087,7 +1120,7 @@ func (o *Objective) diagnoseRound() bool {
 // nothing, and finds out why the rounds before it came no nearer.
 func diagnoseBrief(o *Objective) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "  THIS ROUND IS A DIAGNOSE ROUND. The last %s came no nearer, so this one ships no code: don't change the repository or open a pull request. wp done is refused until you have recorded a diagnosis. (A pull request that merges in this round is read as any round, and if it is no better a diagnosis is still owed.)\n", plural1(o.NoBetter, "round"))
+	fmt.Fprintf(&b, "  THIS ROUND IS A DIAGNOSE ROUND. The last %s came no nearer, so this one ships no code: don't change the repository or open a pull request. wp done and wp ship are refused until you have recorded a diagnosis (round %d then opens again as a work round, and that is the round to ship in; a person can skip the diagnosis with wp objective next %s). A pull request opened on the forge directly can't be refused: if one merges in this round it is read as any round, and if it is no better a diagnosis is still owed.\n", plural1(o.NoBetter, "round"), o.Round, o.Key)
 	b.WriteString("  Find out why. Read what those rounds tried (the readings above, this task's comments and pull requests) and measure where the problem actually is. Sort what you find by cause:\n")
 	b.WriteString("    - the code: what the rounds changed doesn't move what is measured (say what would)\n")
 	b.WriteString("    - the check or the judge itself: a bug in it, or it measures the wrong thing\n")
@@ -1670,6 +1703,8 @@ func (s *Service) SetObjective(ctx context.Context, actor *Actor, ref string, in
 			return invalid("an amount every round never ends, and a judged objective ends when the judge finds nothing: give the check a fixed target or pass, or leave the judge out")
 		case o.Judge == "" && o.Check == "" && len(o.KeepPassing) > 0:
 			return invalid("--keep-passing names a command that must keep passing while a check or a judge decides the rounds: give one of those (a loop has no rounds to read)")
+		case o.Judge == "" && o.Check == "" && in.DiagnoseAfter != nil:
+			return invalid("--diagnose-after counts rounds that come no nearer, read by a check or a judge: give one of those (a loop has no rounds to read)")
 		}
 		o.Measure, o.Until, o.Op, o.Target, o.Factor, o.Better, o.Unit = tg.measure, tg.until, tg.op, tg.target, tg.factor, tg.better, tg.unit
 		if in.JudgeModels != nil {
@@ -1876,20 +1911,25 @@ func (s *Service) objectiveEdited(ctx context.Context, t *tx, cur, o *Objective,
 				return err
 			}
 		}
-		return s.objectiveOpenRound(ctx, t, o, cur.Round+1, 0, 0, changed && o.verified())
+		// With no commit to start from (the check changed while it was out of
+		// rounds) the next round starts with a reading of one.
+		return s.objectiveOpenRound(ctx, t, o, cur.Round+1, 0, 0, o.verified() && (changed || o.BaseSHA == ""))
 	case !changed || outOfRounds:
 		if changed && outOfRounds {
 			// Still out of rounds, but measured another way: the count and the
 			// diagnosis belong to the old measure.
 			o.NoBetter = 0
-			if err := s.objSet(ctx, t, o.IssueID, "no_better", 0, "diagnosis_id", nil, "round_kind", ""); err != nil {
+			o.BaseSHA, o.baseOK, o.baseValue = "", nil, nil
+			if err := s.objSet(ctx, t, o.IssueID, "no_better", 0, "diagnosis_id", nil, "round_kind", "", "base_sha", "", "base_ok", nil, "base_value", nil); err != nil {
 				return err
 			}
 			return nil
 		}
 		// A diagnose round the objective no longer asks for (diagnose-after
-		// raised past its rounds, or 0) is a work round.
-		if cur.RoundKind == RoundKindDiagnose && (!o.verified() || o.DiagnoseAfter <= 0 || cur.NoBetter < o.DiagnoseAfter) && !outOfRounds {
+		// raised past its rounds, or 0) is a work round. Lowering it takes
+		// effect when the next round opens (objectiveOpenRound reads the
+		// count then): a round under way is a work round to its end.
+		if cur.RoundKind == RoundKindDiagnose && !o.diagnosisDue(cur.NoBetter) && !outOfRounds {
 			return s.objSet(ctx, t, o.IssueID, "round_kind", "")
 		}
 		return nil
@@ -2003,7 +2043,7 @@ func (s *Service) ClearObjective(ctx context.Context, actor *Actor, ref string) 
 			return err
 		}
 		var rounds int
-		if err := t.QueryRowContext(ctx, `SELECT count(*) FROM objective_rounds WHERE issue_id = ? AND outcome != ?`, i.ID, RoundReading).Scan(&rounds); err != nil {
+		if err := t.QueryRowContext(ctx, `SELECT count(*) FROM objective_rounds WHERE issue_id = ? AND outcome NOT IN (?, ?)`, i.ID, RoundReading, RoundDiagnosed).Scan(&rounds); err != nil {
 			return err
 		}
 		said := "taken off"

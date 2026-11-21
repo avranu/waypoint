@@ -379,7 +379,10 @@ async function run(width, scheme) {
   ok((await after.inputValue()) === "2", `${tag} the dialog offers Diagnose after, 2 by default`);
   await after.fill("1");
   await shot("13-diagnose-dialog", false);
+  const sentSet = page.waitForRequest((r) => r.method() === "PUT" && r.url().endsWith(`/api/v1/issues/${dkey}/objective`));
   await dd.getByRole("button", { name: "Set objective" }).click();
+  const sentBody = JSON.parse((await sentSet).postData() ?? "{}");
+  ok(sentBody.diagnose_after === 1, `${tag} the dialog sends the Diagnose after it was given (${sentBody.diagnose_after})`);
   await dd.waitFor({ state: "detached" });
   const failing = { ok: false, runs: 1, exit: 1, output: "FAIL: TestBoard" };
   await answerJob("objective", () => ({ head: HEAD1, reading: failing }));

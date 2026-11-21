@@ -7,7 +7,8 @@
 -- stalled, which also counts rounds that landed nothing.
 ALTER TABLE objectives ADD COLUMN no_better INTEGER NOT NULL DEFAULT 0;
 -- How many such rounds in a row make the next one a diagnose round (0:
--- never).
+-- never). Objectives that exist already take the default, 2, on upgrade:
+-- deliberate, so they get the diagnose round too (0 turns it off).
 ALTER TABLE objectives ADD COLUMN diagnose_after INTEGER NOT NULL DEFAULT 2;
 -- What the round under way is: '' worked as usual, diagnose.
 ALTER TABLE objectives ADD COLUMN round_kind TEXT NOT NULL DEFAULT '';

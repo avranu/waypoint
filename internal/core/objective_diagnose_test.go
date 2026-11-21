@@ -123,7 +123,7 @@ func TestObjectiveDiagnoseRoundBriefAndRecording(t *testing.T) {
 		t.Fatalf("round %d kind %q phase %q", ob.Round, ob.RoundKind, ob.Phase)
 	}
 	brief := ObjectiveText(ob, true, o.clockNow())
-	hasAll(t, "the diagnose brief", brief, "ships no code", "wp objective diagnose "+task.Key, "the check", "noise", "out of reach", "next round")
+	hasAll(t, "the diagnose brief", brief, "ships no code", "wp objective diagnose "+task.Key, "the check or the judge itself", "noise in the reading", "out of reach", "next round")
 	if people := ObjectiveText(ob, false, o.clockNow()); !strings.Contains(people, "diagnose round") {
 		t.Errorf("person's text lacks the diagnose round:\n%s", people)
 	}
@@ -366,19 +366,6 @@ func TestObjectiveDiagnoseResetAndSettingZero(t *testing.T) {
 			t.Fatalf("kind %q", ob.RoundKind)
 		}
 	})
-}
-
-func TestObjectiveDiagnoseLoopsNeverDiagnose(t *testing.T) {
-	o := newObjEnv(t)
-	task := o.task("Tidy")
-	o.set(task.Key, ObjectiveInput{Every: ptrOf("0"), DiagnoseAfter: ptrOf(1)})
-	for i := 0; i < 3; i++ {
-		o.worked(task.Key)
-		o.s.Wait()
-		if ob := o.obj(task.Key); ob.RoundKind != "" {
-			t.Fatalf("round %d of a loop is a %q round", ob.Round, ob.RoundKind)
-		}
-	}
 }
 
 func TestObjectiveDiagnoseHandBackKeepsTheRound(t *testing.T) {
@@ -706,15 +693,13 @@ func TestObjectiveRoundRowsHaveDistinctIDs(t *testing.T) {
 	}
 }
 
-// The brief doesn't say a merged pull request is refused: it is read as any round.
+// The brief says what is refused (wp done, wp ship) and what is not: a pull
+// request opened on the forge directly, which is read as any round.
 func TestObjectiveDiagnoseBriefIsTrueOfShip(t *testing.T) {
 	o := newObjEnv(t)
 	task := o.toDiagnose(2, 2, ObjectiveInput{})
 	brief := ObjectiveText(o.obj(task.Key), true, o.clockNow())
-	hasAll(t, "the diagnose brief", brief, "wp done is refused", "merges in this round is read as any round", "a diagnosis is still owed")
-	if strings.Contains(brief, "wp ship, wp done") || strings.Contains(brief, "wp ship is refused") {
-		t.Errorf("the brief says wp ship is refused:\n%s", brief)
-	}
+	hasAll(t, "the diagnose brief", brief, "wp done and wp ship are refused", "opened on the forge directly can't be refused", "read as any round", "a diagnosis is still owed", "wp objective next "+task.Key)
 }
 
 func TestObjectiveDiagnoseWordsOneRound(t *testing.T) {

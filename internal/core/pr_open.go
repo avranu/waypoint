@@ -107,6 +107,22 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 	if err := s.requireProjectRole(ctx, s.db.R, actor, p.ID, RoleEditor); err != nil {
 		return nil, err
 	}
+	// A diagnose round ships no code: its pull request would be what the
+	// round is for. The round reopens as a work round once the diagnosis
+	// is recorded (WP-1449). Whoever opens it, a person included.
+	for _, ref := range []string{in.Issue, in.For} {
+		if ref == "" {
+			continue
+		}
+		i, _, err := s.getIssueFor(ctx, s.db.R, actor, ref, RoleEditor, false)
+		if err != nil {
+			continue // not a task this can be said of; the rest of the open says so
+		}
+		if o, err := s.objectiveRow(ctx, s.db.R, i.ID); err == nil && o != nil && o.diagnoseRound() {
+			return nil, invalid("%s's round %d is a diagnose round, which ships no code: record the diagnosis first (wp objective diagnose %s -f FILE). The same round then reopens as a work round, and that is the round to ship in. A person can skip the diagnosis with wp objective next %s",
+				i.Key, o.Round, i.Key, i.Key)
+		}
+	}
 	repos, err := s.ListProjectRepos(ctx, actor, p.Key)
 	if err != nil {
 		return nil, err

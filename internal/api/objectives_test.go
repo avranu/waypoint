@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -202,5 +203,84 @@ func TestObjectiveAPIDiagnose(t *testing.T) {
 		if code != 400 || !strings.Contains(string(b), "diagnose") {
 			t.Errorf("%s, not a diagnose round: %d %s", who, code, b)
 		}
+	}
+}
+
+// A diagnosis recorded over the API: a person's as JSON, an agent's (which
+// has taken the round) as text; each opens the round again as a work round.
+func TestObjectiveAPIDiagnoseRecords(t *testing.T) {
+	ts, svc, d := setupServerDB(t, nil)
+	ctx := context.Background()
+	u, err := svc.CreateUser(ctx, core.SystemActor(), core.CreateUserInput{Username: "robin", Email: "robin@example.com", Password: "correct-horse-battery", IsAdmin: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &core.Actor{User: u}
+	kind, base := "forgejo", "https://git.example.com"
+	f, err := svc.CreateForge(ctx, a, core.ForgeInput{Kind: &kind, BaseURL: &base})
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := "App"
+	p, err := svc.CreateProject(ctx, a, core.ProjectInput{Name: &name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.AddProjectRepo(ctx, a, p.Key, f.ID, "me/app", false); err != nil {
+		t.Fatal(err)
+	}
+	task, err := svc.CreateIssue(ctx, a, core.IssueInput{Project: p.Key, Title: "Fast parse", Agent: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/v1/issues/" + task.Key + "/objective"
+	cl := func(spec core.TokenSpec) *client {
+		spec.Name = "t"
+		tok, _, err := svc.CreateToken(ctx, a, spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &client{t: t, base: ts.URL, http: http.DefaultClient, token: tok}
+	}
+	person := cl(core.TokenSpec{})
+	agent := cl(core.TokenSpec{Agent: "anthropic/claude-opus-5-5"})
+	var ob core.Objective
+	if code := person.json("PUT", path, map[string]any{"check": "./parse", "until": "< 1.5ms"}, &ob); code != 200 {
+		t.Fatalf("setting it: %d", code)
+	}
+	// The rounds before this came no nearer: the state the service reaches
+	// over several readings.
+	diagnoseRound := func() {
+		t.Helper()
+		svc.Wait() // what setting it set off has settled
+		res, err := d.W.ExecContext(ctx, `UPDATE objectives SET phase = '', round_kind = 'diagnose', no_better = 2, base_sha = ? WHERE issue_id = ?`, strings.Repeat("a", 40), task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			t.Fatalf("forcing the diagnose state touched %d rows (issue %d)", n, task.ID)
+		}
+	}
+	diagnoseRound()
+	var got core.Objective
+	if code, raw := person.do("POST", path+"/diagnose", map[string]any{"text": "The parser is fast; the check times the build."}); code != 200 {
+		t.Fatalf("a person's diagnosis: %d %s", code, raw)
+	} else if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Diagnosis == nil || got.Diagnosis.Text != "The parser is fast; the check times the build." || got.RoundKind != "" || got.NoBetter != 0 || got.Phase != core.PhaseWork {
+		t.Fatalf("after a person's diagnosis: %+v", got)
+	}
+
+	diagnoseRound()
+	if code, b := agent.do("POST", "/api/v1/agent/take/"+task.Key, map[string]any{}); code != 200 {
+		t.Fatalf("take: %d %s", code, b)
+	}
+	code, b := agent.do("POST", path+"/diagnose?format=text", map[string]any{"text": "Noise: runs vary more than a round moves them."})
+	if code != 200 || !strings.Contains(string(b), "Noise: runs vary") || !strings.Contains(string(b), "diagnosis") {
+		t.Fatalf("an agent's diagnosis as text: %d %s", code, b)
+	}
+	if code := person.json("GET", path, nil, &got); code != 200 || got.Diagnosis == nil || !strings.HasPrefix(got.Diagnosis.Text, "Noise:") || got.Diagnosis.By != "anthropic/claude-opus-5-5" {
+		t.Fatalf("the diagnosis kept: %d %+v", code, got.Diagnosis)
 	}
 }
