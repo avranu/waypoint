@@ -676,6 +676,13 @@ func (c *cli) openPR(f prOpenFlags) (*openedPR, []byte, error) {
 			req["head_time"] = t
 		}
 	}
+	// The head's commit, which tells two heads committed in the same second
+	// apart (WP-1325).
+	if sha, err := localGit("rev-parse", "HEAD"); err == nil {
+		if sha = strings.TrimSpace(sha); sha != "" {
+			req["head_sha"] = sha
+		}
+	}
 	if ch := changeFacts(*f.base); ch != nil {
 		req["change"] = ch
 	}
