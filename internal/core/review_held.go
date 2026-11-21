@@ -131,7 +131,7 @@ func (s *Service) shipHeld(ctx context.Context, st *stepRow, x *AgentSession, us
 		Project: bp.Project, Repo: bp.Repo, Head: bp.Branch, Base: bp.Base,
 		Title: title, Body: strings.TrimSpace(bp.Body + "\n\n" + note),
 		Draft: bp.Draft, Ready: bp.Ready, Urgent: bp.Urgent,
-		Issue: r.key, For: r.key, Review: ShipSkip, Reason: why, noSweep: true,
+		Issue: r.key, For: r.key, Review: ShipSkip, Reason: why, noSweep: true, byWaypoint: true,
 	})
 	if err != nil {
 		return err
@@ -407,17 +407,44 @@ func (s *Service) liveStepRound(ctx context.Context, q queryer, sessionID int64)
 	return roundLive(ctx, q, round)
 }
 
-// strandedShipWindow is how long after a round ended Waypoint keeps trying
-// to open the pull request it left unopened.
+// strandedShipWindow is how long after a round ended, or after its run or
+// session ended or moved on if that was later, Waypoint keeps trying to open
+// the pull request it left unopened.
 const strandedShipWindow = 24 * time.Hour
 
 // strandedBackoff is how long a round whose pull request couldn't be opened
-// (the branch is gone, the forge refuses) waits before the next try, and
-// strandedBatch how many rounds one sweep tries.
-const strandedBackoff = 10 * time.Minute
+// (the branch is gone, the forge refuses) waits before the next try; each
+// further failure doubles it, up to strandedBackoffMax.
+const (
+	strandedBackoff    = 10 * time.Minute
+	strandedBackoffMax = 6 * time.Hour
+)
 
-// strandedBatch is a variable so a test can make the batch small.
-var strandedBatch = 20
+// strandedBatch is how many rounds one sweep tries: it opens pull requests
+// inline on the minute tick, so a backlog (after a deploy) is opened
+// gradually. A variable so a test can make the batch smaller.
+var strandedBatch = 5
+
+// strandedTry is what strandedRetry holds for a round: when it may be tried
+// next and how many tries in a row failed.
+type strandedTry struct {
+	next  int64
+	tries int
+}
+
+// strandedFailed records a failed try of round and logs why.
+func (s *Service) strandedFailed(ctx context.Context, round, now int64, what string, err error) {
+	tries := 1
+	if prev, ok := s.strandedRetry.Load(round); ok {
+		tries = prev.(strandedTry).tries + 1
+	}
+	wait := strandedBackoffMax
+	if tries <= 16 {
+		wait = min(strandedBackoff<<(tries-1), strandedBackoffMax)
+	}
+	s.strandedRetry.Store(round, strandedTry{next: now + wait.Milliseconds(), tries: tries})
+	s.log.WarnContext(ctx, "review round: a stranded round was not opened", "what", what, "round", round, "tries", tries, "err", err)
+}
 
 // openStrandedRounds opens the pull request of a task whose review before it
 // never ran, when no autopilot step is left to do it (WP-1325). A step opens
@@ -431,28 +458,39 @@ var strandedBatch = 20
 // over, and opens the pull request as shipHeld does (the round recorded as
 // not reviewed; the round's audit, if it lives, goes on as the pull
 // request's, handOverRoundAudits). Not one a person cancelled (theirs), not
-// one a newer round replaced, not a task that has a pull request already
-// (the session shipped it, or this ran before) or is resolved. Opening is
-// idempotent: the pull request it opens is linked to the task, which this
-// reads, and one that already exists is found by the open. A task another
-// session holds an open run on since is left alone (shipHeld ends the
-// agent's open runs on the task). A round whose pull request can't be
-// opened is tried again after strandedBackoff, and the batch is chosen from
-// the rounds not backing off, so failing ones don't starve the rest.
+// one a newer round replaced or restarted, not a task that has a pull
+// request already (the session shipped it, or this ran before) or is
+// resolved. Opening is idempotent: the pull request it opens is linked to
+// the task, which this reads, and one that already exists is found by the
+// open. A task another session holds an open run on since is left alone
+// (shipHeld ends the agent's open runs on the task).
+//
+// The window (strandedShipWindow) runs from the latest of the round's end,
+// its run's end, its session's end and the start of the session's next run
+// on another task, so a round that ended long before its session did is
+// still opened. A round whose pull request can't be opened, or whose
+// session or user can't be read, waits strandedBackoff, doubling with each
+// failure; the batch is chosen from the rounds not backing off, so failing
+// ones don't starve the rest. The back-off of a round the query no longer
+// returns (opened, resolved, aged out) is forgotten, so the map holds no
+// more than the rounds in the window.
 func (s *Service) openStrandedRounds(ctx context.Context) {
 	now := s.nowMS()
 	rows, err := s.db.R.QueryContext(ctx, `SELECT w.id, w.session_id, w.run_id, w.state, w.reason, r.agent, coalesce(x.project_id, i.project_id)
 		FROM work_log w JOIN agent_runs r ON r.id = w.run_id JOIN agent_sessions x ON x.id = w.session_id JOIN issues i ON i.id = w.issue_id
 		WHERE w.kind = 'review' AND w.before_pr != '' AND w.state IN (?, ?, ?)
-			AND coalesce(w.reason, '') NOT LIKE ? AND coalesce(w.reason, '') != ?
+			AND coalesce(w.reason, '') NOT LIKE ? AND coalesce(w.reason, '') NOT IN (?, ?)
 			AND (r.ended_at IS NOT NULL OR x.ended_at IS NOT NULL
-				OR EXISTS (SELECT 1 FROM agent_runs o WHERE o.session_id = w.session_id AND o.id > w.run_id AND o.issue_id != w.issue_id)) AND i.resolved_at IS NULL AND w.updated_at > ?
+				OR EXISTS (SELECT 1 FROM agent_runs o WHERE o.session_id = w.session_id AND o.id > w.run_id AND o.issue_id != w.issue_id)) AND i.resolved_at IS NULL
+			AND max(w.updated_at, coalesce(r.ended_at, 0), coalesce(x.ended_at, 0),
+				coalesce((SELECT min(o.started_at) FROM agent_runs o WHERE o.session_id = w.session_id AND o.id > w.run_id AND o.issue_id != w.issue_id), 0)) > ?
 			AND w.id = (SELECT max(m.id) FROM work_log m WHERE m.kind = 'review' AND m.issue_id = w.issue_id)
 			AND NOT EXISTS (SELECT 1 FROM external_links l WHERE l.issue_id = w.issue_id AND l.kind = 'pull')
 			AND NOT EXISTS (SELECT 1 FROM agent_runs o WHERE o.issue_id = w.issue_id AND o.id != w.run_id AND o.ended_at IS NULL)
-		ORDER BY w.id LIMIT 200`,
-		RoundSkipped, RoundFailed, RoundInterrupted, roundCancelledBy+"%", roundReplaced, now-strandedShipWindow.Milliseconds())
+		ORDER BY w.id`,
+		RoundSkipped, RoundFailed, RoundInterrupted, roundCancelledBy+"%", roundReplaced, roundRestarted, now-strandedShipWindow.Milliseconds())
 	if err != nil {
+		s.log.WarnContext(ctx, "review round: reading the rounds that never ran", "err", err)
 		return
 	}
 	type stranded struct {
@@ -460,26 +498,42 @@ func (s *Service) openStrandedRounds(ctx context.Context) {
 		state, reason, agent         string
 	}
 	var list []stranded
+	inWindow := map[int64]bool{}
 	for rows.Next() {
 		var l stranded
-		if rows.Scan(&l.round, &l.session, &l.run, &l.state, &l.reason, &l.agent, &l.project) != nil {
+		if err := rows.Scan(&l.round, &l.session, &l.run, &l.state, &l.reason, &l.agent, &l.project); err != nil {
+			s.log.WarnContext(ctx, "review round: reading a round that never ran", "err", err)
 			continue
 		}
-		if next, ok := s.strandedRetry.Load(l.round); ok && next.(int64) > now {
+		inWindow[l.round] = true
+		if next, ok := s.strandedRetry.Load(l.round); ok && next.(strandedTry).next > now {
 			continue // its last try failed a short while ago
 		}
 		if len(list) < strandedBatch {
 			list = append(list, l)
 		}
 	}
+	err = rows.Err()
 	_ = rows.Close()
+	if err != nil {
+		s.log.WarnContext(ctx, "review round: reading the rounds that never ran", "err", err)
+		return // the window is only partly known: nothing is forgotten
+	}
+	s.strandedRetry.Range(func(k, _ any) bool {
+		if !inWindow[k.(int64)] {
+			s.strandedRetry.Delete(k)
+		}
+		return true
+	})
 	for _, l := range list {
 		x, err := scanSession(s.db.R.QueryRowContext(ctx, `SELECT `+sessionCols+` FROM agent_sessions s WHERE s.id = ?`, l.session), now)
 		if err != nil {
+			s.strandedFailed(ctx, l.round, now, "read the session of a round that never ran", err)
 			continue
 		}
 		user, err := s.userByID(ctx, s.db.R, x.userID)
 		if err != nil {
+			s.strandedFailed(ctx, l.round, now, "read the user of a round that never ran", err)
 			continue
 		}
 		why := cmp(strings.TrimSpace(l.reason), "its adversarial review didn't run")
@@ -487,9 +541,11 @@ func (s *Service) openStrandedRounds(ctx context.Context) {
 			why = "its adversarial review was interrupted (" + why + ")"
 		}
 		st := &stepRow{userID: x.userID, projectID: l.project, sessionID: l.session, reviewID: sql.NullInt64{Int64: l.round, Valid: true}}
+		// Said apart from the step's own opens, on the task and in the pull
+		// request's body.
+		why += "; its session had ended or moved on by then"
 		if err := s.shipHeld(ctx, st, x, user, l.agent, why); err != nil {
-			s.strandedRetry.Store(l.round, now+strandedBackoff.Milliseconds())
-			s.log.WarnContext(ctx, "review round: open the pull request of a round that never ran", "round", l.round, "err", err)
+			s.strandedFailed(ctx, l.round, now, "open the pull request of a round that never ran", err)
 			continue
 		}
 		s.strandedRetry.Delete(l.round)

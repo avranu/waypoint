@@ -188,3 +188,88 @@ func TestStrandedRoundOfASessionThatMovedOn(t *testing.T) {
 		t.Fatalf("opened %d", n)
 	}
 }
+
+// The window runs from the latest of the round's end and its session's: a
+// round that ended long ago whose session only just ended is still opened;
+// when both are over the window it is left (WP-1325).
+func TestStrandedRoundWindow(t *testing.T) {
+	for name, tc := range map[string]struct {
+		roundAgo, runAgo time.Duration
+		want             int
+	}{
+		"round old, session just ended": {30 * time.Hour, time.Hour, 1},
+		"both over the window":          {30 * time.Hour, 26 * time.Hour, 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			a, g, id := strandedEnv(t)
+			now := a.clockNow()
+			if _, err := a.s.db.W.Exec(`UPDATE work_log SET state = ?, reason = 'no report came back', started_at = ?, ended_at = ?, updated_at = ? WHERE id = ?`,
+				RoundFailed, now.Add(-tc.roundAgo).UnixMilli(), now.Add(-tc.roundAgo).UnixMilli(), now.Add(-tc.roundAgo).UnixMilli(), id); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := a.s.db.W.Exec(`UPDATE agent_runs SET ended_at = ?`, now.Add(-tc.runAgo).UnixMilli()); err != nil {
+				t.Fatal(err)
+			}
+			a.s.sweepRounds(a.ctx)
+			if n := a.opened(g); n != tc.want {
+				t.Fatalf("opened %d, want %d", n, tc.want)
+			}
+		})
+	}
+}
+
+// A round that was restarted for more commits, like one that was replaced,
+// has a newer round that carries the review on: its pull request isn't
+// opened without one (WP-1325).
+func TestStrandedRoundLeftAloneWhenRestarted(t *testing.T) {
+	a, g, id := strandedEnv(t)
+	if _, err := a.s.db.W.Exec(`UPDATE work_log SET state = ?, reason = ?, ended_at = ? WHERE id = ?`, RoundInterrupted, roundRestarted, a.clockNow().UnixMilli(), id); err != nil {
+		t.Fatal(err)
+	}
+	a.lapse(heldStopLost + time.Minute)
+	a.s.sweepRounds(a.ctx)
+	if n := a.opened(g); n != 0 {
+		t.Fatalf("opened %d", n)
+	}
+}
+
+// A failed attempt backs off for twice as long each time, and the memory of
+// it is dropped once the round is no longer a candidate.
+func TestStrandedRoundBackoffDoublesAndIsPruned(t *testing.T) {
+	a, g, id := strandedEnv(t)
+	if _, err := a.s.db.W.Exec(`UPDATE work_log SET state = ?, reason = 'no report came back', ended_at = ?, before_pr = ? WHERE id = ?`,
+		RoundFailed, a.clockNow().UnixMilli(), `{"project":"APP","repo":"acme/missing","branch":"gone"}`, id); err != nil {
+		t.Fatal(err)
+	}
+	a.lapse(heldStopLost + time.Minute)
+	load := func() strandedTry {
+		t.Helper()
+		v, ok := a.s.strandedRetry.Load(id)
+		if !ok {
+			t.Fatal("no back-off recorded")
+		}
+		return v.(strandedTry)
+	}
+	a.s.sweepRounds(a.ctx)
+	first := load()
+	if first.tries != 1 || first.next != a.clockNow().Add(strandedBackoff).UnixMilli() {
+		t.Fatalf("first = %+v", first)
+	}
+	a.lapse(strandedBackoff + time.Minute)
+	a.s.sweepRounds(a.ctx)
+	second := load()
+	if second.tries != 2 || second.next != a.clockNow().Add(2*strandedBackoff).UnixMilli() {
+		t.Fatalf("second = %+v", second)
+	}
+	if n := a.opened(g); n != 0 {
+		t.Fatalf("opened %d", n)
+	}
+	// The round is cancelled by a person: no longer a candidate, so dropped.
+	if _, err := a.s.db.W.Exec(`UPDATE work_log SET reason = 'Cancelled by Robin.' WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	a.s.sweepRounds(a.ctx)
+	if _, ok := a.s.strandedRetry.Load(id); ok {
+		t.Error("the back-off of a round that is no longer a candidate was kept")
+	}
+}
