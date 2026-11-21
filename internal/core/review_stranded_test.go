@@ -83,6 +83,28 @@ func TestStrandedRoundLeftAlone(t *testing.T) {
 			t.Fatalf("opened %d", n)
 		}
 	})
+	// A resolved task needs no pull request, and a task with a newer review
+	// round is that round's: it is pending, or its own end decides.
+	for name, change := range map[string]string{
+		"the task is resolved": `UPDATE issues SET resolved_at = ?2 WHERE id = (SELECT issue_id FROM work_log WHERE id = ?1)`,
+		"a newer round of the task": `INSERT INTO work_log(kind, session_id, run_id, issue_id, state, prompt, created_at, updated_at)
+			SELECT 'review', session_id, run_id, issue_id, 'pending', '', ?2, ?2 FROM work_log WHERE id = ?1`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			a, g, id := strandedEnv(t)
+			now := a.clockNow().UnixMilli()
+			if _, err := a.s.db.W.Exec(`UPDATE work_log SET state = ?, reason = 'no report came back', ended_at = ? WHERE id = ?`, RoundFailed, now, id); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := a.s.db.W.Exec(change, id, now); err != nil {
+				t.Fatal(err)
+			}
+			a.s.sweepRounds(a.ctx)
+			if n := a.opened(g); n != 0 {
+				t.Fatalf("opened %d", n)
+			}
+		})
+	}
 }
 
 // Another session took the task since: its run isn't ended with the old
