@@ -88,6 +88,11 @@ func ParseGatewayExtensions(v string) ([]string, error) {
 // model that answered a route in.
 const servedModelHeader = "X-OpenLLMs-Model"
 
+// barHeader is the response header of a request that carried a minimum model
+// (routing.weakest): weakest=…;model=…;quality=…;purpose=…;from=request
+// (WP-1440). A response without a bar has none.
+const barHeader = "X-OpenLLMs-Bar"
+
 // GatewaySetup is the gateway as the environment describes it.
 type GatewaySetup struct {
 	BaseURL string // its OpenAI API, or its root (/v1 is added); "" keeps the saved one

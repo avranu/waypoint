@@ -144,6 +144,8 @@ type gatewayTask struct {
 		CompletionTokens int `json:"completion_tokens"`
 	} `json:"usage"`
 	CostUSD float64 `json:"cost_usd"`
+	// Bar is the response's X-OpenLLMs-Bar header, when it had one (WP-1440).
+	Bar string `json:"-"`
 }
 
 // gatewayTaskLLM is a gateway that runs agent tasks over an uploaded
@@ -290,12 +292,7 @@ func (c *httpLLM) taskCall(ctx context.Context, p *AIProvider, method, path, con
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		eb, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-		var env struct {
-			Error struct {
-				Message string `json:"message"`
-				Code    string `json:"code"`
-			} `json:"error"`
-		}
+		var env gatewayErrorEnvelope
 		_ = json.Unmarshal(eb, &env)
 		r := &gatewayRefusal{status: resp.StatusCode, code: gatewayWord(env.Error.Code), msg: excerpt(env.Error.Message, 300)}
 		if r.code == "" && r.msg == "" {
@@ -310,7 +307,24 @@ func (c *httpLLM) taskCall(ctx context.Context, p *AIProvider, method, path, con
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxAnswer)).Decode(&t); err != nil {
 		return nil, fmt.Errorf("read the gateway's task: %w", err)
 	}
+	t.Bar = excerpt(resp.Header.Get(barHeader), 300)
 	return &t, nil
+}
+
+// gatewayErrorEnvelope is the gateway's error body.
+type gatewayErrorEnvelope struct {
+	Error struct {
+		Message string `json:"message"`
+		Code    string `json:"code"`
+	} `json:"error"`
+}
+
+// gatewayErrorCode is the code in a gateway error body, "" when it has none:
+// the one reading of it, for tasks and chat requests alike.
+func gatewayErrorCode(body string) string {
+	var env gatewayErrorEnvelope
+	_ = json.Unmarshal([]byte(body), &env)
+	return gatewayWord(env.Error.Code)
 }
 
 // gatewayWord keeps a code or kind of the gateway's to a short word, as it
@@ -601,10 +615,13 @@ func (s *Service) StartGatewayTask(ctx context.Context, actor *Actor, jobID int6
 		return refused("server", "the gateway answered without a task id")
 	}
 	err = s.write(ctx, actor, func(tx *tx) error {
-		_, err := tx.ExecContext(ctx, `INSERT INTO gateway_tasks(task_id, audit_id, issue_id, job_id, model, served_by, created_at) VALUES (?,?,?,?,?,?,?)`,
-			t.ID, nullID(j.auditID), nullID(j.issueID), jobID, j.in.Model, gatewayModelName(t.ServedBy), s.nowMS())
+		_, err := tx.ExecContext(ctx, `INSERT INTO gateway_tasks(task_id, audit_id, issue_id, job_id, model, served_by, created_at, bar) VALUES (?,?,?,?,?,?,?,?)`,
+			t.ID, nullID(j.auditID), nullID(j.issueID), jobID, j.in.Model, gatewayModelName(t.ServedBy), s.nowMS(), t.Bar)
 		return err
 	})
+	if err == nil && t.Bar != "" {
+		s.log.Info("gateway audit: the task's bar", "job", jobID, "task", t.ID, "bar", t.Bar)
+	}
 	if err != nil {
 		// Unrecorded, it could never be read or reported on: stop it.
 		bg, stop := context.WithTimeout(context.WithoutCancel(ctx), gatewayCallTimeout)
@@ -797,7 +814,8 @@ func gatewayRefusedView(err error) *GatewayTaskView {
 		// No model at the task's quality bar can take it (WP-916). When
 		// some are only busy or resting the gateway says how long; with
 		// none at the bar at all it doesn't, and sending it again can't
-		// help, so the audit's chain ends and its round reviews itself.
+		// help, so the audit's chain ends and its round goes on by its tier: an
+		// elevated one asks again at the floor, another to its Claude reviewer.
 		v.ErrorKind = gatewayNoModelAtBar
 		if r.retryAfter > 0 {
 			v.RetryAfter = wait

@@ -179,7 +179,7 @@ func (s *Service) weakens(ctx context.Context, pr *PullRequest, h *HeldEdit) (bo
 		Weakens *bool  `json:"weakens"`
 		Reason  string `json:"reason"`
 	}
-	used, _, err := s.runChain(aiContext(ctx, "held_edit"), chain, weakeningSystem, prompt, weakeningSchema, &ans, 3*time.Minute)
+	used, _, err := s.runChain(withGatewayRouting(aiContext(ctx, "held_edit"), heldRouting(pr.ID)), chain, weakeningSystem, prompt, weakeningSchema, &ans, 3*time.Minute)
 	if err != nil {
 		return true, "no other model answered: " + excerpt(err.Error(), 200)
 	}

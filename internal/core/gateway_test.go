@@ -27,6 +27,8 @@ type fakeGateway struct {
 	retry    string // their Retry-After
 	status   int    // answer every request with this status instead
 	midError bool   // fail after the stream has started
+	bar      string // the X-OpenLLMs-Bar header on every answer (WP-1440)
+	noBar    int    // answer this many requests 503 no_model_at_bar, with Retry-After retry
 	bodies   []map[string]any
 	at       []time.Time
 	ids      []string         // each chat request's X-Request-ID
@@ -69,6 +71,15 @@ func (g *fakeGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"error":{"message":"slow down","type":"rate_limit_error","code":"rate_limit"}}`))
 		return
 	}
+	if g.noBar > 0 {
+		g.noBar--
+		if g.retry != "" {
+			w.Header().Set("Retry-After", g.retry)
+		}
+		w.WriteHeader(503)
+		w.Write([]byte(`{"error":{"message":"no model at the bar","type":"server_error","code":"no_model_at_bar"}}`))
+		return
+	}
 	if g.status != 0 {
 		w.WriteHeader(g.status)
 		w.Write([]byte(`{"error":{"message":"all 3 candidate models failed; last: upstream 500","type":"server_error","code":"server"}}`))
@@ -84,6 +95,9 @@ func (g *fakeGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set(servedModelHeader, served)
+	if g.bar != "" {
+		w.Header().Set(barHeader, g.bar)
+	}
 	fmt.Fprint(w, ": keep-alive\n\n")
 	if g.midError {
 		fmt.Fprint(w, `data: {"error":{"message":"upstream went away","type":"server_error"}}`+"\n\n")
