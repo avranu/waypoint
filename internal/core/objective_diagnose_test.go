@@ -699,7 +699,7 @@ func TestObjectiveDiagnoseBriefIsTrueOfShip(t *testing.T) {
 	o := newObjEnv(t)
 	task := o.toDiagnose(2, 2, ObjectiveInput{})
 	brief := ObjectiveText(o.obj(task.Key), true, o.clockNow())
-	hasAll(t, "the diagnose brief", brief, "wp done and wp ship are refused", "opened on the forge directly can't be refused", "read as any round", "a diagnosis is still owed", "wp objective next "+task.Key)
+	hasAll(t, "the diagnose brief", brief, "wp done, wp ship and wp pr merge of the task's pull request are refused", "opened on the forge directly can't be refused", "read as any round", "a diagnosis is still owed", "wp objective next "+task.Key)
 }
 
 func TestObjectiveDiagnoseWordsOneRound(t *testing.T) {
