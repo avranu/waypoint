@@ -568,8 +568,8 @@ func TestTypedMessageIsAPersonsTurnToTheStepAsBefore(t *testing.T) {
 		want := own.step()
 
 		a := setup(t)
-		a.record(TypedMessage, "Jess says: also fix the typo")
-		a.prompt("Jess says: also fix the typo")
+		a.record(TypedMessage, "Robin says: also fix the typo")
+		a.prompt("Robin says: also fix the typo")
 		got := a.step()
 		if got.state != want.state || got.reason != want.reason || got.state != StepStopped || got.reason != "prompted" {
 			t.Fatalf("relayed message: step %+v, the person's own prompt: %+v, want both stopped as prompted", got, want)
