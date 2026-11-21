@@ -92,3 +92,17 @@ func TestCheckRewriteSendNamesFieldAndLimit(t *testing.T) {
 		}
 	}
 }
+
+// A title is one plain line in what wp prints: no control character, so
+// another task's title can't write to the agent's terminal.
+func TestRewritesTextTitleIsOnePlainLine(t *testing.T) {
+	got := rewritesText("WP-1", []rewrittenTask{{Key: "WP-2", Title: "a\x1b[2Jb\nc\x07d e", PR: 3, Lines: 20, Share: 0.5}})
+	for _, r := range got {
+		if r < 0x20 && r != '\n' || r == 0x7f || r == 0x2028 {
+			t.Errorf("control character %q in %q", r, got)
+		}
+	}
+	if strings.Count(got, "\n") != 0 {
+		t.Errorf("more than one line: %q", got)
+	}
+}

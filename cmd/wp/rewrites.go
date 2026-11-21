@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"git.jmann.me/claude/waypoint/internal/codeindex"
 	"git.jmann.me/claude/waypoint/internal/core"
@@ -202,6 +203,14 @@ func rewritesText(key string, got []rewrittenTask) string {
 
 // excerptLine shortens s to n runes on one line.
 func excerptLine(s string, n int) string {
+	// A control character (an escape sequence) is not text: it would act on
+	// the terminal that prints another task's title.
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
+			return ' '
+		}
+		return r
+	}, s)
 	s = strings.Join(strings.Fields(s), " ")
 	if r := []rune(s); len(r) > n {
 		return strings.TrimSpace(string(r[:n-1])) + "…"
