@@ -93,6 +93,15 @@ func TestReviewPostsTheFirstAndKeepsTheRest(t *testing.T) {
 	if kept != 4 || !strings.Contains(todo.Text, "Distinct problem number 9") {
 		t.Errorf("%d of the 4 unposted findings are in the to-do:\n%s", kept, todo.Text)
 	}
+	// The pull request's finding counts are what the bots raised and kept,
+	// so the ones past the posted number are in them too (audit 1248.9).
+	sum := &PRSummary{ID: run.PR.ID, Findings: map[string]int{}}
+	if err := pe.s.fillPRs(pe.ctx, pe.admin, []*PRSummary{sum}); err != nil {
+		t.Fatal(err)
+	}
+	if sum.Findings["high"] != 5 || sum.Findings["low"] != 4 {
+		t.Errorf("the pull request's finding counts = %v, want 5 high and 4 low", sum.Findings)
+	}
 }
 
 // Past the number posted, a withheld finding stays withheld and takes no
