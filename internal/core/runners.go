@@ -877,7 +877,9 @@ func (s *Service) claimable(ctx context.Context, r *Runner, q string, lanes []st
 // reads, and a batch of them queued at once would otherwise hold the runner
 // for hours while babysit rounds, autopilot steps, sessions and the audit a
 // pull request waits for queue behind them (WP-356). Only jobs of the
-// poll's lanes, when it names some (WP-366).
+// poll's lanes, when it names some (WP-366). A round audit's job gets the
+// round's finished panel runs set in its input as it is claimed
+// (withPriorPanel), one read of the round's helper runs per such claim.
 func (s *Service) claimRunnerJob(ctx context.Context, actor *Actor, r *Runner, lanes []string) (*RunnerClaim, error) {
 	var ids []int64
 	var err error
@@ -957,9 +959,13 @@ func (s *Service) claimRunnerJob(ctx context.Context, actor *Actor, r *Runner, l
 // input is returned as it is when it has no panel, nothing finished, or it
 // can't be read.
 func (s *Service) withPriorPanel(ctx context.Context, input json.RawMessage, auditID int64) json.RawMessage {
-	var in map[string]json.RawMessage
-	if json.Unmarshal(input, &in) != nil {
+	fail := func(what string, err error) json.RawMessage {
+		s.log.WarnContext(ctx, "prior panel runs not attached; the panel may run again", "audit", auditID, "step", what, "err", err)
 		return input
+	}
+	var in map[string]json.RawMessage
+	if err := json.Unmarshal(input, &in); err != nil {
+		return fail("input", err)
 	}
 	var h map[string]json.RawMessage
 	if json.Unmarshal(in["helpers"], &h) != nil || h == nil {
@@ -969,23 +975,30 @@ func (s *Service) withPriorPanel(ctx context.Context, input json.RawMessage, aud
 	if json.Unmarshal(h["panel"], &panel) != nil || len(panel) == 0 {
 		return input
 	}
+	// The stored input keeps no prior runs; one a job queued before this
+	// change carries is dropped unless the read finds it still reusable.
 	prior := s.priorPanel(ctx, auditID)
 	if len(prior) == 0 {
-		return input
+		if _, stale := h["prior"]; !stale {
+			return input
+		}
+		delete(h, "prior")
+	} else {
+		pb, err := json.Marshal(prior)
+		if err != nil {
+			return fail("prior", err)
+		}
+		h["prior"] = pb
+		s.log.InfoContext(ctx, "prior panel runs attached at claim", "audit", auditID, "runs", len(prior))
 	}
-	pb, err := json.Marshal(prior)
-	if err != nil {
-		return input
-	}
-	h["prior"] = pb
 	hb, err := json.Marshal(h)
 	if err != nil {
-		return input
+		return fail("helpers", err)
 	}
 	in["helpers"] = hb
 	out, err := json.Marshal(in)
 	if err != nil {
-		return input
+		return fail("job", err)
 	}
 	return out
 }
