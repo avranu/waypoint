@@ -93,6 +93,10 @@ func TestPutOffLeadsAreOneUntrustedLine(t *testing.T) {
 		if ok, _ := noControl(l, 0); !ok {
 			t.Errorf("a control character survives in %q", l)
 		}
+		// The lead itself carries no tag, whatever wraps it after.
+		if untrustedTagRE.MatchString(l) {
+			t.Errorf("the lead carries a wrapper tag: %q", l)
+		}
 	}
 }
 
