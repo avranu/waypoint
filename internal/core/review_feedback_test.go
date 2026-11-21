@@ -52,12 +52,12 @@ func TestReviewFeedback(t *testing.T) {
 		a := re.llm.asks[n]
 		switch m {
 		case museModel:
-			if !strings.HasPrefix(a.requestID, "wp-review-"+itoa64(run.ID)+"-") || a.paid != "allowed" {
+			if !strings.HasPrefix(a.requestID, "wp-review-"+itoa64(run.ID)+"-") || a.paid != "allowed" || a.weakest != reviewFloorBar {
 				t.Errorf("review request carried %+v", a)
 			}
 			id = a.requestID
 		case mimoModel:
-			if a != (gatewayAsk{}) {
+			if !strings.HasPrefix(a.requestID, "wp-verify-"+itoa64(run.ID)+"-") || a.weakest != reviewFloorBar || a.paid != "" {
 				t.Errorf("verifier request carried %+v", a)
 			}
 		}

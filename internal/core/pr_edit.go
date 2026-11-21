@@ -60,7 +60,12 @@ func (s *Service) EditPullRequest(ctx context.Context, actor *Actor, prID int64,
 			return err
 		}
 	}
-	projectID, _ := s.prAuthority(ctx, actor, pr, RoleViewer)
+	projectID, rerr := s.prAuthority(ctx, actor, pr, RoleViewer)
+	if rerr != nil {
+		if readFault(rerr) && !missingOrDenied(rerr) {
+			s.log.WarnContext(ctx, "pr authority failed", "pr", prID, "err", rerr)
+		}
+	}
 	return s.write(ctx, actor, func(t *tx) error {
 		detail := "edited the description of"
 		if in.Title != nil {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"os/exec"
@@ -51,52 +52,95 @@ type hookEventInput struct {
 	AgentID         string          `json:"agent_id"`
 	AgentType       string          `json:"agent_type"`
 	AgentTranscript string          `json:"agent_transcript_path"` // SubagentStop
+	// What the session runs with (WP-1468). Observed in live 2.1.330 payloads
+	// for SessionStart, UserPromptSubmit, Stop and tool events; PostCompact,
+	// ConfigChange, InstructionsLoaded and PostModelSwitch and their fields are
+	// from the hooks reference, https://code.claude.com/docs/en/hooks.md, not
+	// yet captured live (WP-1486).
+	PermissionMode string          `json:"permission_mode"` // observed on UserPromptSubmit and Stop, not SessionStart
+	EffortRaw      json.RawMessage `json:"effort"`          // {"level": "low"}: observed on PreToolUse, PostToolUse, Stop, SubagentStop; absent on UserPromptSubmit and SessionStart
+	Trigger        string          `json:"trigger"`         // PreCompact, PostCompact: manual or auto
+	FilePath       string          `json:"file_path"`       // InstructionsLoaded, ConfigChange
+	MemoryType     string          `json:"memory_type"`     // InstructionsLoaded
+	LoadReason     string          `json:"load_reason"`     // InstructionsLoaded
+	FromModel      string          `json:"from_model"`      // PostModelSwitch
+	ToModel        string          `json:"to_model"`        // PostModelSwitch
+	RequestedModel string          `json:"requested_model"` // PostModelSwitch
 	// Stop: what can still wake the agent (WP-D22). Absent from Claude Code
 	// versions that don't say.
 	BackgroundTasks json.RawMessage `json:"background_tasks"`
 	SessionCrons    json.RawMessage `json:"session_crons"`
 }
 
+// effortLevel is the effort level of a payload: its `effort.level`, "" when
+// the payload has none or says it differently (never an error: a payload
+// this CLI can't read in one field must still be read in the rest).
+func (in hookEventInput) effortLevel() string {
+	var e struct {
+		Level string `json:"level"`
+	}
+	if json.Unmarshal(in.EffortRaw, &e) != nil {
+		return ""
+	}
+	return e.Level
+}
+
+// effortPresent: the payload has an effort field at all (not absent, not null).
+func (in hookEventInput) effortPresent() bool {
+	raw := strings.TrimSpace(string(in.EffortRaw))
+	return raw != "" && raw != "null"
+}
+
 // sessionEvent is core.HookEvent as the CLI sends it (the CLI doesn't link
 // the server's packages).
 type sessionEvent struct {
-	Event            string          `json:"event"`
-	At               int64           `json:"at,omitempty"`
-	SessionID        string          `json:"session_id"`
-	Machine          string          `json:"machine"`
-	CLI              string          `json:"cli,omitempty"`
-	Cwd              string          `json:"cwd,omitempty"`
-	Repo             string          `json:"repo,omitempty"`
-	Branch           string          `json:"branch,omitempty"`
-	Worktree         bool            `json:"worktree,omitempty"`
-	Model            string          `json:"model,omitempty"`
-	Source           string          `json:"source,omitempty"`
-	Prompt           string          `json:"prompt,omitempty"`
-	Title            string          `json:"title,omitempty"`
-	NotificationType string          `json:"notification_type,omitempty"`
-	Message          string          `json:"message,omitempty"`
-	LastMessage      string          `json:"last_message,omitempty"`
-	StopHookActive   bool            `json:"stop_hook_active,omitempty"`
-	InputTokens      int64           `json:"input_tokens,omitempty"`
-	OutputTokens     int64           `json:"output_tokens,omitempty"`
-	Tool             string          `json:"tool,omitempty"`
-	ToolUseID        string          `json:"tool_use_id,omitempty"`
-	ToolInput        json.RawMessage `json:"tool_input,omitempty"`
-	ToolResponse     json.RawMessage `json:"tool_response,omitempty"`
-	Reason           string          `json:"reason,omitempty"`
-	AgentID          string          `json:"agent_id,omitempty"`
-	AgentType        string          `json:"agent_type,omitempty"`
-	AgentDescription string          `json:"agent_description,omitempty"` // SubagentStop of an adversarial review (WP-1089)
-	AgentModel       string          `json:"agent_model,omitempty"`
-	AgentPrompt      string          `json:"agent_prompt,omitempty"`
-	AgentReport      string          `json:"agent_report,omitempty"`
-	EndReason        string          `json:"end_reason,omitempty"`
-	Pending          *hookPending    `json:"pending,omitempty"`
-	SpawnedBy        string          `json:"spawned_by,omitempty"`
-	Task             string          `json:"task,omitempty"`           // WP_TASK: the tasks a launcher bound the session to (WP-34)
-	ContextTokens    int64           `json:"context_tokens,omitempty"` // the context its last call carried
-	CacheTTL         string          `json:"cache_ttl,omitempty"`      // Stop: the prompt-cache tier its last calls wrote (WP-192)
-	Checkouts        []hookCheckout  `json:"checkouts,omitempty"`      // Stop, SessionStart: the git state of its checkouts (WP-567)
+	Event            string           `json:"event"`
+	At               int64            `json:"at,omitempty"`
+	SessionID        string           `json:"session_id"`
+	Machine          string           `json:"machine"`
+	CLI              string           `json:"cli,omitempty"`
+	Cwd              string           `json:"cwd,omitempty"`
+	Repo             string           `json:"repo,omitempty"`
+	Branch           string           `json:"branch,omitempty"`
+	Worktree         bool             `json:"worktree,omitempty"`
+	Model            string           `json:"model,omitempty"`
+	Source           string           `json:"source,omitempty"`
+	Prompt           string           `json:"prompt,omitempty"`
+	Title            string           `json:"title,omitempty"`
+	NotificationType string           `json:"notification_type,omitempty"`
+	Message          string           `json:"message,omitempty"`
+	LastMessage      string           `json:"last_message,omitempty"`
+	StopHookActive   bool             `json:"stop_hook_active,omitempty"`
+	InputTokens      int64            `json:"input_tokens,omitempty"`
+	OutputTokens     int64            `json:"output_tokens,omitempty"`
+	Tool             string           `json:"tool,omitempty"`
+	ToolUseID        string           `json:"tool_use_id,omitempty"`
+	ToolInput        json.RawMessage  `json:"tool_input,omitempty"`
+	ToolResponse     json.RawMessage  `json:"tool_response,omitempty"`
+	Reason           string           `json:"reason,omitempty"`
+	AgentID          string           `json:"agent_id,omitempty"`
+	AgentType        string           `json:"agent_type,omitempty"`
+	AgentDescription string           `json:"agent_description,omitempty"` // SubagentStop of an adversarial review (WP-1089)
+	AgentModel       string           `json:"agent_model,omitempty"`
+	AgentPrompt      string           `json:"agent_prompt,omitempty"`
+	AgentReport      string           `json:"agent_report,omitempty"`
+	EndReason        string           `json:"end_reason,omitempty"`
+	Pending          *hookPending     `json:"pending,omitempty"`
+	SpawnedBy        string           `json:"spawned_by,omitempty"`
+	Task             string           `json:"task,omitempty"`           // WP_TASK: the tasks a launcher bound the session to (WP-34)
+	ContextTokens    int64            `json:"context_tokens,omitempty"` // the context its last call carried
+	CacheTTL         string           `json:"cache_ttl,omitempty"`      // Stop: the prompt-cache tier its last calls wrote (WP-192)
+	Checkouts        []hookCheckout   `json:"checkouts,omitempty"`      // Stop, SessionStart: the git state of its checkouts (WP-567)
+	PermissionMode   string           `json:"permission_mode,omitempty"`
+	Effort           string           `json:"effort,omitempty"`
+	FromModel        string           `json:"from_model,omitempty"`
+	RequestedModel   string           `json:"requested_model,omitempty"`
+	File             string           `json:"file,omitempty"`
+	MemoryType       string           `json:"memory_type,omitempty"`
+	LoadReason       string           `json:"load_reason,omitempty"`
+	Snapshot         *hookSnapshot    `json:"snapshot,omitempty"` // SessionStart, PostCompact, ConfigChange (WP-1468)
+	Drops            map[string]int64 `json:"drops,omitempty"`    // what the outbox dropped since the last send, "reason/event"
+	DropsID          string           `json:"drops_id,omitempty"` // names that report, so the server counts it once
 }
 
 // hookPending is core.HookPending: the background tasks, crons and wakeups
@@ -221,9 +265,24 @@ func (s *State) sessionIn(dir string) string {
 	}
 }
 
+// gitFacts is what gitInfo found about the git work tree at a directory.
+type gitFacts struct {
+	Repo     string // owner/name
+	Branch   string // "" outside a work tree
+	Detached bool   // Branch is the "(detached <sha>)" form, made with rev-parse
+	Worktree bool   // a linked worktree
+	Root     string // the repository's main checkout, from the common git dir; "" when it doesn't say
+}
+
 // gitInfo is the repo (owner/name), branch and worktree flag of the git
 // work tree at dir; empty outside one.
 func gitInfo(dir string) (repo, branch string, worktree bool) {
+	g := gitFactsAt(dir)
+	return g.Repo, g.Branch, g.Worktree
+}
+
+// gitFactsAt is gitInfo and the rest of what its git calls say.
+func gitFactsAt(dir string) gitFacts {
 	git := func(args ...string) string {
 		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...) // #nosec G204 -- fixed arguments; dir is the hook's cwd
 		out, err := cmd.Output()
@@ -232,13 +291,14 @@ func gitInfo(dir string) (repo, branch string, worktree bool) {
 		}
 		return strings.TrimSpace(string(out))
 	}
+	var g gitFacts
 	if git("rev-parse", "--is-inside-work-tree") != "true" {
-		return "", "", false
+		return g
 	}
 	// symbolic-ref also names a branch that has no commit yet.
-	branch = git("symbolic-ref", "--short", "-q", "HEAD")
-	if branch == "" {
-		branch = "(detached " + git("rev-parse", "--short", "HEAD") + ")"
+	g.Branch = git("symbolic-ref", "--short", "-q", "HEAD")
+	if g.Branch == "" {
+		g.Branch, g.Detached = "(detached "+git("rev-parse", "--short", "HEAD")+")", true
 	}
 	remote := git("remote", "get-url", "origin")
 	if remote == "" {
@@ -247,12 +307,15 @@ func gitInfo(dir string) (repo, branch string, worktree bool) {
 		}
 	}
 	if r, err := repoFromRemote(remote); err == nil {
-		repo = r
+		g.Repo = r
 	}
 	// A linked worktree's git dir isn't the repo's common dir.
 	gd, cd := git("rev-parse", "--absolute-git-dir"), git("rev-parse", "--path-format=absolute", "--git-common-dir")
-	worktree = gd != "" && cd != "" && filepath.Clean(gd) != filepath.Clean(cd)
-	return repo, branch, worktree
+	g.Worktree = gd != "" && cd != "" && filepath.Clean(gd) != filepath.Clean(cd)
+	if cd != "" && filepath.Base(filepath.Clean(cd)) == ".git" {
+		g.Root = filepath.Dir(filepath.Clean(cd))
+	}
+	return g
 }
 
 // hookClaudeEvent handles one Claude Code hook event. Silent unless it
@@ -309,6 +372,9 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 			slash = "keep"
 		}
 	}
+	// The live table of agents is local, so it is kept with no server too: the
+	// Agent gate's queue and `wp agents wait` read it (WP-1443).
+	c.trackAgentsLocally(in)
 	if c.server() == "" || c.token() == "" {
 		if slash != "" {
 			_, _ = stdout.Write(promptStop("Waypoint: this machine isn't logged in (`wp login`), so /wp " + slash + " did nothing."))
@@ -317,12 +383,20 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 	}
 	ev := sessionEvent{Event: in.HookEventName, At: time.Now().UnixMilli(), SessionID: in.SessionID, Machine: machineName(), CLI: "claude", Cwd: in.Cwd,
 		Task: taskBinding()}
+	var git gitFacts
 	if filepath.IsAbs(in.Cwd) {
 		switch in.HookEventName {
-		case "SessionStart", "UserPromptSubmit", "Stop":
-			ev.Repo, ev.Branch, ev.Worktree = gitInfo(in.Cwd)
+		case "SessionStart", "UserPromptSubmit", "Stop", "PostCompact", "ConfigChange":
+			git = gitFactsAt(in.Cwd)
+			ev.Repo, ev.Branch, ev.Worktree = git.Repo, git.Branch, git.Worktree
 		}
 	}
+	// Only the events the hook sends carry these to the server: Stop,
+	// UserPromptSubmit, SubagentStop, and the tool events it sends
+	// (AskUserQuestion, a watched Bash call); most tool events are not sent.
+	// A change mid-turn is recorded at the next of them, with that event's
+	// time (WP-1468).
+	ev.PermissionMode, ev.Effort = in.PermissionMode, in.effortLevel()
 	switch in.HookEventName {
 	case "SessionStart":
 		ev.Model, ev.Source = in.Model, in.Source
@@ -332,6 +406,7 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 			// Work an earlier session left here, unfinished (WP-567).
 			ev.Checkouts = hookCheckouts(in.Cwd, nil) // its own checkout only
 		}
+		ev.Snapshot = buildSnapshot(in, git) // what it runs with, as observed (WP-1468)
 		rememberSession(c, in)
 		c.autoUpdateInBackground() // at most daily, detached: never slows the hook
 	case "UserPromptSubmit":
@@ -365,6 +440,17 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 			ev.Prompt = mark // a background task reporting back is no person's prompt; only that much is sent
 		}
 		ev.Title = in.SessionTitle
+	case "PostCompact":
+		// Only that it happened and how: the summary is the session's text.
+		ev.Source = in.Trigger
+		ev.Snapshot = buildSnapshot(in, git)
+	case "ConfigChange":
+		ev.Source, ev.File = in.Source, in.FilePath
+		ev.Snapshot = buildSnapshot(in, git)
+	case "InstructionsLoaded":
+		ev.File, ev.MemoryType, ev.LoadReason = in.FilePath, in.MemoryType, in.LoadReason
+	case "PostModelSwitch":
+		ev.Model, ev.FromModel, ev.RequestedModel, ev.Source = in.ToModel, in.FromModel, in.RequestedModel, in.Source
 	case "Notification":
 		ev.NotificationType, ev.Message = in.NotifType, in.Message
 	case "PermissionDenied":
@@ -386,6 +472,8 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 		case in.ToolName == "Read":
 			c.keepScreenshot(in) // WP-263
 			return
+		case in.ToolName == "Agent" || in.ToolName == "Task":
+			return // tracked above, locally
 		default:
 			return
 		}
@@ -396,7 +484,6 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 		// Where its work is, should the session end before it ships (WP-567).
 		ev.Checkouts = hookCheckouts(in.Cwd, c.state.sessionClaims(in.SessionID))
 	case "SubagentStart", "SubagentStop":
-		c.trackSubagent(in)
 		ev.AgentID, ev.AgentType = in.AgentID, in.AgentType
 		if in.HookEventName == "SubagentStop" {
 			ownReview(in, &ev, noPrompts) // its report goes to the task's work log (WP-1089)
@@ -415,6 +502,7 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 	if in.HookEventName == "SessionEnd" {
 		c.hookTimeout = endHTTPTimeout
 	}
+	c.hookLimit = hookLateAfter(eventHookTimeout(in.HookEventName))
 	res := c.sendSessionEvent(ev)
 	kit := ""
 	if in.HookEventName == "SessionStart" && ev.Repo != "" {
@@ -727,13 +815,23 @@ type hookReply struct {
 // Unreachable (or failing) servers queue it; one that refuses it (a revoked
 // token, a bad event) drops it. The reply is nil unless the server took it.
 func (c *cli) sendSessionEvent(ev sessionEvent) *hookReply {
+	c.expireOutbox() // counted before the counts are taken, so they go out in this call
 	queued := c.freshOutbox()
 	events := make([]sessionEvent, 0, len(queued)+1)
 	for _, q := range queued {
 		events = append(events, q.Event)
 	}
+	// What the outbox dropped rides with this event as a report with an id.
+	// It stays in the state until a send got through: the server ignores an
+	// id it has already applied, so sending it again after a timeout, a 5xx
+	// or a refusal (which rolls the batch back) is safe (WP-1468).
+	rep := c.claimDrops()
 	events = append(events, ev)
+	events[len(events)-1].Drops, events[len(events)-1].DropsID = rep.fields()
 	b, err := c.call("POST", "/api/v1/sessions/hook", map[string]any{"events": events})
+	if err == nil {
+		c.settleDrops(rep)
+	}
 	if err != nil {
 		if !serverRefused(err) {
 			c.queueEvent(ev)
@@ -744,23 +842,35 @@ func (c *cli) sendSessionEvent(ev sessionEvent) *hookReply {
 		// them one at a time: the good queued events still get through.
 		var settled []queuedEvent
 		for _, q := range queued {
-			if _, err := c.call("POST", "/api/v1/sessions/hook", map[string]any{"events": []sessionEvent{q.Event}}); err != nil && !serverRefused(err) {
-				c.dropOutbox(settled)
-				c.queueEvent(ev)
-				return nil
+			if _, err := c.call("POST", "/api/v1/sessions/hook", map[string]any{"events": []sessionEvent{q.Event}}); err != nil {
+				if !serverRefused(err) {
+					c.dropOutbox(settled)
+					c.queueEvent(ev)
+					return nil
+				}
+				c.countDrop("refused", q.Event.Event, 1)
 			}
 			settled = append(settled, q) // taken, or refused for good
 		}
 		c.dropOutbox(settled)
 		if len(queued) == 0 {
+			// Refused on its own, with nothing queued to retry: it is gone,
+			// so say so; its report stays in flight for the next send.
+			c.countDrop("refused", ev.Event, 1)
 			return nil
 		}
-		if b, err = c.call("POST", "/api/v1/sessions/hook", map[string]any{"events": []sessionEvent{ev}}); err != nil {
+		one := ev
+		rep = c.claimDrops() // the same report: nothing was settled
+		one.Drops, one.DropsID = rep.fields()
+		if b, err = c.call("POST", "/api/v1/sessions/hook", map[string]any{"events": []sessionEvent{one}}); err != nil {
 			if !serverRefused(err) {
 				c.queueEvent(ev)
+			} else {
+				c.countDrop("refused", ev.Event, 1)
 			}
 			return nil
 		}
+		c.settleDrops(rep)
 		var r hookReply
 		_ = json.Unmarshal(b, &r)
 		return &r
@@ -769,6 +879,20 @@ func (c *cli) sendSessionEvent(ev sessionEvent) *hookReply {
 	var r hookReply
 	_ = json.Unmarshal(b, &r)
 	return &r
+}
+
+// eventHookTimeout is the timeout in seconds of the hook entry that sends
+// this event (claudeHooks); the async ones have wp's default of 30.
+func eventHookTimeout(event string) int {
+	switch event {
+	case "SessionStart":
+		return hookSessionStartTimeout
+	case "UserPromptSubmit", "Stop":
+		return 20
+	case "SessionEnd":
+		return 2
+	}
+	return 30
 }
 
 // serverRefused is an answer that sending the same thing again can't change.
@@ -789,24 +913,152 @@ func (c *cli) freshOutbox() []queuedEvent {
 	return out
 }
 
-// queueEvent keeps an event for the next call (the newest outboxMax).
+// outboxMaxBytes caps the queue's encoded size: events keep whole snapshots,
+// and every hook process parses and rewrites the state file. 1 MiB is a
+// chosen limit, not a measured one (WP-1468).
+const outboxMaxBytes = 1 << 20
+
+// preOutputWait is how long a state-lock wait before the hook's output may
+// take: the time left to the hook's late point (c.hookLimit; a 30 s hook's
+// when unset), at most 5 s, at least hookLockFloor.
+func (c *cli) preOutputWait() time.Duration {
+	limit := c.hookLimit
+	if limit <= 0 {
+		limit = hookLateAfter(30)
+	}
+	return min(5*time.Second, hookLockWait(limit))
+}
+
+// queueEvent keeps an event for the next call (the newest, within outboxMax
+// events and outboxMaxBytes).
 func (c *cli) queueEvent(ev sessionEvent) {
 	if ev.Event == "PostToolUse" && ev.Tool != "AskUserQuestion" {
+		c.countDrop("unqueued", ev.Event, 1)
 		return // a command that ran matters now or not at all
 	}
 	if ev.Event == "UserPromptSubmit" && isSessionCommand(ev.Prompt) {
+		c.countDrop("unqueued", ev.Event, 1)
 		return // /wp next an hour late would surprise; the person was told it did nothing (WP-562)
 	}
-	_ = c.updateState(func(s *State) {
+	ev.Drops, ev.DropsID = nil, "" // sent from the state's counts, never from a copy
+	if err := c.updateStateWithin(c.preOutputWait(), func(s *State) {
 		s.Outbox = append(s.Outbox, queuedEvent{Event: ev})
-		if len(s.Outbox) > outboxMax {
-			s.Outbox = s.Outbox[len(s.Outbox)-outboxMax:]
+		for len(s.Outbox) > 1 && (len(s.Outbox) > outboxMax || outboxBytes(s.Outbox) > outboxMaxBytes) {
+			s.addDrop("overflow", s.Outbox[0].Event.Event, 1)
+			s.Outbox = s.Outbox[1:]
 		}
+	}); err != nil {
+		c.warnLostEvent("unqueued", ev.Event)
+	}
+}
+
+// outboxBytes is the queue's encoded size.
+func outboxBytes(q []queuedEvent) int {
+	raw, _ := json.Marshal(q)
+	return len(raw)
+}
+
+// addDrop counts hook data the outbox gave up, "reason/event" (WP-ADR145
+// point 5); the next send reports it to the server.
+func (s *State) addDrop(reason, event string, n int64) {
+	if s.Drops == nil {
+		s.Drops = map[string]int64{}
+	}
+	s.Drops[reason+"/"+event] += n
+}
+
+// countDrop counts a drop in the state file. It runs before the hook's output
+// is written, so it waits only the hook's bounded wait for the lock
+// (preOutputWait). If the lock stays held or the file can't be written, the
+// count is lost (stderr is all that remains) and the hook's output still goes
+// out on time.
+func (c *cli) countDrop(reason, event string, n int64) {
+	if err := c.updateStateWithin(c.preOutputWait(), func(s *State) { s.addDrop(reason, event, n) }); err != nil {
+		fmt.Fprintf(os.Stderr, "wp hook: lost the count of a dropped %s/%s event: %v\n", reason, event, err)
+	}
+}
+
+// warnLostEvent says on stderr that an event was lost because the state file
+// could not be written: there is nowhere to keep the event or its count.
+func (c *cli) warnLostEvent(reason, event string) {
+	fmt.Fprintf(os.Stderr, "wp hook: lost a %s %s event: the state file could not be written\n", reason, event)
+}
+
+// dropReport is the drop counts one send reports, with an id the server
+// applies at most once.
+type dropReport struct {
+	ID     string           `json:"id"`
+	Counts map[string]int64 `json:"counts"`
+}
+
+// fields are the event's drops and drops_id; nothing for no report.
+func (r *dropReport) fields() (map[string]int64, string) {
+	if r == nil || len(r.Counts) == 0 {
+		return nil, ""
+	}
+	return r.Counts, r.ID
+}
+
+// claimDrops is the report this send carries. Under the state lock: the one
+// already in flight, unchanged (another process, or an earlier send that may
+// have been applied, sent it), else a new one made of the counts so far,
+// which leave Drops. Counts added later go in the next report. Nil when there
+// is nothing to report or the lock stayed held (they wait for the next send).
+func (c *cli) claimDrops() *dropReport {
+	if c.state.DropsOut == nil && len(c.state.Drops) == 0 {
+		return nil // this process saw nothing to report at its start
+	}
+	var rep *dropReport
+	_ = c.updateStateWithin(c.preOutputWait(), func(s *State) {
+		if s.DropsOut == nil && len(s.Drops) > 0 {
+			s.DropsOut = &dropReport{ID: newNonce(), Counts: s.Drops}
+			s.Drops = nil
+		}
+		if s.DropsOut != nil && len(s.DropsOut.Counts) > 0 {
+			rep = &dropReport{ID: s.DropsOut.ID, Counts: maps.Clone(s.DropsOut.Counts)}
+		}
+	})
+	return rep
+}
+
+// settleDrops clears the in-flight report once a send got through, if it is
+// still the one that was sent. If the lock stays held it stays in flight and
+// goes again next time: the server ignores an id it has applied.
+func (c *cli) settleDrops(sent *dropReport) {
+	if sent == nil {
+		return
+	}
+	if err := c.updateStateWithin(c.preOutputWait(), func(s *State) {
+		if s.DropsOut != nil && s.DropsOut.ID == sent.ID {
+			s.DropsOut = nil
+		}
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "wp hook: couldn't clear a reported drop count (it is sent again, and counted once): %v\n", err)
+	}
+}
+
+// expireOutbox counts and forgets the queued events older than outboxMaxAge,
+// so what expired is reported by the send that finds it.
+func (c *cli) expireOutbox() {
+	cut := time.Now().Add(-outboxMaxAge).UnixMilli()
+	if !slices.ContainsFunc(c.state.Outbox, func(q queuedEvent) bool { return q.Event.At < cut }) {
+		return
+	}
+	_ = c.updateStateWithin(c.preOutputWait(), func(s *State) {
+		var keep []queuedEvent
+		for _, q := range s.Outbox {
+			if q.Event.At < cut {
+				s.addDrop("expired", q.Event.Event, 1) // too old to matter, and never sent
+				continue
+			}
+			keep = append(keep, q)
+		}
+		s.Outbox = keep
 	})
 }
 
 // dropOutbox forgets the events that were sent, and any that are too old to
-// matter. (Another hook may have queued more meanwhile: those stay.)
+// matter (expireOutbox usually got those first). (Another hook may have queued more meanwhile: those stay.)
 func (c *cli) dropOutbox(sent []queuedEvent) {
 	if len(c.state.Outbox) == 0 {
 		return
@@ -815,9 +1067,13 @@ func (c *cli) dropOutbox(sent []queuedEvent) {
 		cut := time.Now().Add(-outboxMaxAge).UnixMilli()
 		var keep []queuedEvent
 		for _, q := range s.Outbox {
-			if q.Event.At < cut || slices.ContainsFunc(sent, func(x queuedEvent) bool {
+			if slices.ContainsFunc(sent, func(x queuedEvent) bool {
 				return x.Event.At == q.Event.At && x.Event.Event == q.Event.Event && x.Event.SessionID == q.Event.SessionID
 			}) {
+				continue
+			}
+			if q.Event.At < cut {
+				s.addDrop("expired", q.Event.Event, 1) // too old to matter, and never sent
 				continue
 			}
 			keep = append(keep, q)

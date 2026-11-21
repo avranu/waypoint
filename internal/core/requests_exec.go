@@ -130,7 +130,12 @@ func (s *Service) applyChange(ctx context.Context, actor *Actor, id int64, choic
 	}
 	canPR := false
 	if r.projectID.Valid {
-		role, _ := s.projectRole(ctx, s.db.R, actor, r.projectID.Int64)
+		role, rerr := s.projectRole(ctx, s.db.R, actor, r.projectID.Int64)
+		if rerr != nil {
+			if readFault(rerr) {
+				s.log.WarnContext(ctx, "project role failed", "projectid", r.projectID.Int64, "err", rerr)
+			}
+		}
 		canPR = role >= RoleEditor
 	}
 	auto := choice == ""

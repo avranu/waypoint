@@ -1,0 +1,100 @@
+package main
+
+import (
+	"git.jmann.me/claude/waypoint/internal/lazyre"
+)
+
+// Notes at the moment they matter (WP-1443): how a subagent waits, which is
+// not how the main thread does, and not the same for every subagent.
+//
+// A subagent started in the background that has a background Bash of its own
+// running is kept open by Claude Code and woken when that exits, so it waits
+// by running the wait in the background and ending its turn. A subagent
+// started in the foreground (or one we don't know the start of) has its shells
+// reaped when it gives its final answer: for it, ending the turn ends the run
+// and stops what it started, so it waits in ONE foreground call, whose Bash
+// timeout is set to the longest there is (600000 ms). A Monitor keeps neither
+// kind open. These are notes, never refusals; the once-per-run ones are told
+// once per agent run (tellOnce).
+
+const (
+	noteAgentWait = "agent-wait" // a subagent's first background Agent start
+	noteMonitor   = "monitor"    // a subagent's first Monitor call
+
+	sleepWaitMainText = "Sleeping before a check wastes turns: run the work in the background (you're told when it exits), or wait in one call (`wp pr wait N`, Monitor with an until-loop)."
+	sleepWaitBgText   = "Sleeping before a check wastes turns: run the work with run_in_background: true and end your turn (you are woken when it exits), or run the wait itself as a background Bash (`timeout N bash -c 'until CHECK; do sleep 5; done'`) and end your turn."
+	sleepWaitFgText   = "Sleeping before a check wastes turns: wait in ONE foreground Bash call with the timeout set to 600000 (`timeout 590 bash -c 'until CHECK; do sleep 5; done'`). Ending your turn instead ends your run and stops what you started."
+
+	// The once-per-run note for a subagent that starts a background agent.
+	agentWaitBgText = "To wait for the agents you start, run `wp agents wait` with run_in_background: true, then end your turn; it wakes you when they have all finished."
+	agentWaitFgText = "To wait for the agents you start, run `wp agents wait` in the foreground with the Bash timeout set to 600000: it blocks until they have all finished, and nothing is re-read while it blocks. Ending your turn instead ends your run and stops what you started."
+
+	monitorBgText = "A Monitor does not keep a subagent's run open. To wait, run the same check as a background Bash (`timeout N bash -c 'until CHECK; do sleep 5; done'` with run_in_background: true) and end your turn; you are woken when it exits."
+	monitorFgText = "A Monitor does not keep a subagent's run open, and ending your turn ends your run. To wait, run the same check as ONE foreground Bash call with the timeout set to 600000 (`timeout 590 bash -c 'until CHECK; do sleep 5; done'`)."
+)
+
+// noteAgentWaitText is the note for a subagent's first background Agent start.
+func noteAgentWaitText(who caller) string {
+	if who == callerBg {
+		return agentWaitBgText
+	}
+	return agentWaitFgText
+}
+
+// noteMonitorText is the note for a subagent's first Monitor call.
+func noteMonitorText(who caller) string {
+	if who == callerBg {
+		return monitorBgText
+	}
+	return monitorFgText
+}
+
+var (
+	reWaitTestRun = lazyre.New(`\bwp\s+(testsum|slot\s+run)\b`)
+	reWaitRequest = lazyre.New(`\bwp\s+(request|req)\b`)
+	reWaitAgents  = lazyre.New(`\bwp\s+agents\b`)
+)
+
+// waitHint names the wp command that waits for what the command polls, ""
+// when it shows nothing we know.
+func waitHint(cmd string, who caller) string {
+	switch {
+	case reWaitTestRun.MatchString(cmd):
+		return "`wp testsum` and `wp slot run` queue for the slot themselves, so there is nothing to wait for before running them."
+	case reWaitRequest.MatchString(cmd):
+		return "`wp request wait R-N` blocks until a person decides the request."
+	case reWaitAgents.MatchString(cmd):
+		if who == callerBg {
+			return "`wp agents wait` blocks until your agents have stopped; run it with run_in_background: true and end your turn."
+		}
+		return "`wp agents wait` blocks until your agents have stopped; " + agentWaitFgHint(who)
+	case rePolled.MatchString(cmd):
+		return "`wp pr wait N` blocks on the server and prints failing logs; `wp ship` hands the wait to Waypoint."
+	}
+	return ""
+}
+
+// agentWaitFgHint ends a sentence about `wp agents wait` for a caller that
+// doesn't wait in the background: the main thread may use either.
+func agentWaitFgHint(who caller) string {
+	if who == callerMain {
+		return "run it in the background to be told when it exits."
+	}
+	return "run it in the foreground with the Bash timeout set to 600000."
+}
+
+// sleepWaitText is the note for a sleep before a check: the wp wait that
+// fits what the command polls when it shows it, else the general advice for
+// the kind of caller, which for a subagent never names Monitor.
+func sleepWaitText(cmd string, who caller) string {
+	if h := waitHint(cmd, who); h != "" {
+		return "Sleeping before a check wastes turns. " + h
+	}
+	switch who {
+	case callerBg:
+		return sleepWaitBgText
+	case callerFg:
+		return sleepWaitFgText
+	}
+	return sleepWaitMainText
+}

@@ -179,7 +179,7 @@ func (s *Service) weakens(ctx context.Context, pr *PullRequest, h *HeldEdit) (bo
 		Weakens *bool  `json:"weakens"`
 		Reason  string `json:"reason"`
 	}
-	used, _, err := s.runChain(aiContext(ctx, "held_edit"), chain, weakeningSystem, prompt, weakeningSchema, &ans, 3*time.Minute)
+	used, _, err := s.runChain(withGatewayRouting(aiContext(ctx, "held_edit"), heldRouting(pr.ID)), chain, weakeningSystem, prompt, weakeningSchema, &ans, 3*time.Minute)
 	if err != nil {
 		return true, "no other model answered: " + excerpt(err.Error(), 200)
 	}
@@ -251,7 +251,11 @@ func (s *Service) judgeHeld(ctx context.Context, prID int64) {
 		r := &b.Rounds[i]
 		r.Held.Why = why
 		if weak {
-			_ = s.askHeld(ctx, b, pr, r)
+			if err := s.askHeld(ctx, b, pr, r); err != nil {
+				if readFault(err) {
+					s.log.WarnContext(ctx, "ask held failed", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "err", err)
+				}
+			}
 		} else {
 			s.applyHeld(ctx, b, pr, r, false)
 		}
@@ -323,11 +327,14 @@ func (s *Service) askHeld(ctx context.Context, b *Babysit, pr *PullRequest, r *B
 	tail.WriteString(" If nobody answers, it stays unpushed and the pull request stays out of the merge line.\n\n" + pr.URL)
 	in := RequestInput{Kind: RequestQuestion, Title: title, Body: head.String() + tail.String(),
 		Questions: []Question{{Question: "Push this change to the pull request?", Choices: []Choice{{Label: heldPush}, {Label: heldLeave}}}}, ToolUseID: key, Followup: "never"}
-	if p := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo); p != 0 {
-		if proj, err := s.projectByID(ctx, s.db.R, p); err == nil {
-			in.Project = proj.Key
+	projectKey, err := s.attachedProjectKey(ctx, pr.ForgeID, pr.Repo)
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read the project to ask about a held change", "repo", pr.Repo, "number", pr.Number, "err", err)
 		}
+		return err
 	}
+	in.Project = projectKey
 	q, _, err := s.CreateRequest(ctx, &Actor{User: u, Agent: "waypoint/babysit"}, in)
 	if err != nil {
 		s.log.WarnContext(ctx, "ask about a held change", "repo", pr.Repo, "number", pr.Number, "err", err)
@@ -379,7 +386,11 @@ func (s *Service) applyHeld(ctx context.Context, b *Babysit, pr *PullRequest, r 
 	cant := func(why string) {
 		h.Why = why
 		if !approved {
-			_ = s.askHeld(ctx, b, pr, r)
+			if err := s.askHeld(ctx, b, pr, r); err != nil {
+				if readFault(err) {
+					s.log.WarnContext(ctx, "ask held failed", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "err", err)
+				}
+			}
 			return
 		}
 		h.State = heldFailed
@@ -394,8 +405,14 @@ func (s *Service) applyHeld(ctx context.Context, b *Babysit, pr *PullRequest, r 
 	in := AgentJob{Repo: repo.cloneURL(), Base: pr.HeadRef, Branch: pr.HeadRef, Push: true, Patch: h.Patch,
 		CommitMessage: fmt.Sprintf("Protected-file changes from babysitting round %d", r.N)}
 	raw, _ := json.Marshal(in)
+	projectID, err := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo)
+	if readFault(err) {
+		// Not a reason to fail an approved change (the approval is not asked for twice): it is pushed without a project.
+		s.log.WarnContext(ctx, "read the project to push a held change", "repo", pr.Repo, "number", pr.Number, "err", err)
+		projectID = 0
+	}
 	job, err := s.EnqueueRunnerJob(ctx, SystemActor(), RunnerJobInput{Kind: JobAgent, OwnerID: b.ownerID, Input: raw, Source: babysitHeldSource, SourceID: b.ID,
-		Timeout: 10 * 60, ProjectID: s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo)})
+		Timeout: 10 * 60, ProjectID: projectID})
 	if err != nil {
 		cant("it couldn't be pushed: " + excerpt(err.Error(), 200))
 		return

@@ -1707,7 +1707,13 @@ func (s *Service) inQueueOrMoving(ctx context.Context, pr *PullRequest) bool {
 		return false
 	}
 	b, err := s.activeBabysit(ctx, s.db.R, pr.ID)
-	return err == nil && b != nil && slices.Contains(queueStates, b.State)
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read in queue or moving", "pr", pr.ID, "err", err)
+		}
+		return false
+	}
+	return b != nil && slices.Contains(queueStates, b.State)
 }
 
 // ---- findings and the bottleneck ----

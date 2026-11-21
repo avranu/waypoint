@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -194,7 +195,12 @@ func (s *Service) mentionTargets(ctx context.Context, q queryer, projectID, issu
 	if idx, err := s.glossaryWords(ctx, q); err != nil {
 		s.log.WarnContext(ctx, "read glossary words", "err", err)
 	} else {
-		chain, _ := s.projectChainIDs(ctx, q, projectID)
+		chain, rerr := s.projectChainIDs(ctx, q, projectID)
+		if rerr != nil {
+			if readFault(rerr) {
+				s.log.WarnContext(ctx, "project chain ids failed", "projectid", projectID, "err", rerr)
+			}
+		}
 		n := 0
 		for _, h := range idx.findLongest(words, chain, s.senseGate(idx)) {
 			if n >= termLinkCap {
@@ -277,10 +283,21 @@ func (s *Service) syncIssueMentions(ctx context.Context, t *tx, actor *Actor, is
 				table = "issues"
 			}
 			// #nosec G202 -- the table name comes from knowledgeTables
-			err := t.QueryRowContext(ctx, `SELECT project_id FROM `+table+` WHERE id = ?`, e.id).Scan(&pid)
-			return err == nil && pid.Valid && pid.Int64 == projectID
+			if err := t.QueryRowContext(ctx, `SELECT project_id FROM `+table+` WHERE id = ?`, e.id).Scan(&pid); err != nil {
+				// No link is made on a read that failed; a mention without a row is just not there.
+				if !errors.Is(err, sql.ErrNoRows) {
+					if readFault(err) {
+						s.log.WarnContext(ctx, "read the project of a mentioned item", "type", e.typ, "id", e.id, "err", err)
+					}
+				}
+				return false
+			}
+			return pid.Valid && pid.Int64 == projectID
 		}
-		ok, _ := s.kitemTx(ctx, t, actor, e.typ, e.id)
+		ok, rerr := s.kitemTx(ctx, t, actor, e.typ, e.id)
+		if readFault(rerr) && !missingOrDenied(rerr) { // not seeing it is an answer: no link
+			s.log.WarnContext(ctx, "read whether the author may see a mentioned item", "type", e.typ, "id", e.id, "issue", issueID, "err", rerr)
+		}
 		return ok
 	}
 	return s.applyAutoLinks(ctx, t, KIssue, issueID, want, allow)

@@ -42,10 +42,16 @@ type OpenPRInput struct {
 	// noSweep: Waypoint's own skip (a held review released), not the agent's,
 	// so no other round is recorded as skipped by the agent.
 	noSweep bool
-	Force   bool
+	// byWaypoint: Waypoint opens it (shipHeld), not the agent's wp ship, so
+	// the notes it leaves say so (WP-1325).
+	byWaypoint bool
+	Force      bool
 	// HeadTime is the branch head's commit time (unix seconds; 0: unknown),
 	// to tell whether anything was committed since a review finished.
 	HeadTime int64
+	// HeadSHA is the head's commit (empty: an older wp), which tells two
+	// heads committed in the same second apart (roundBehind).
+	HeadSHA string
 	// Change is what the checkout says about the change, for review
 	// triage (WP-692); nil from an older wp, which keeps the review.
 	Change *ChangeFacts

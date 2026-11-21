@@ -11,6 +11,7 @@ package core
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"net/http"
@@ -104,7 +105,9 @@ func (s *Service) checkLanded(ctx context.Context, f *Forge, repo, base string) 
 			}
 			s.dropGonePR(ctx, f, repo, pr)
 		} else if err != nil {
-			s.log.WarnContext(ctx, "finish a landed pull request", "repo", repo, "number", pr.Number, "err", err)
+			if readFault(err) {
+				s.log.WarnContext(ctx, "finish a landed pull request", "repo", repo, "number", pr.Number, "err", err)
+			}
 		} else if done {
 			finished = true
 		} else {
@@ -142,7 +145,9 @@ func (s *Service) landPR(ctx context.Context, f *Forge, pr *PullRequest) (bool, 
 		return false, err
 	}
 	var seen, landed *int64
-	_ = s.db.R.QueryRowContext(ctx, `SELECT landed_seen_at, landed_at FROM pull_requests WHERE id = ?`, pr.ID).Scan(&seen, &landed)
+	if err := s.db.R.QueryRowContext(ctx, `SELECT landed_seen_at, landed_at FROM pull_requests WHERE id = ?`, pr.ID).Scan(&seen, &landed); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return false, err // unread is not "never commented": the comment would be posted again
+	}
 	if !in {
 		if seen != nil {
 			s.setLanded(ctx, pr.ID, "landed_seen_at = NULL")
@@ -170,7 +175,13 @@ func (s *Service) landPR(ctx context.Context, f *Forge, pr *PullRequest) (bool, 
 	if !sameSHA(again.HeadSHA, fp.HeadSHA) || (again.State != "open" && again.State != "draft") {
 		return false, nil // it moved since the check
 	}
-	s.disarmLanded(ctx, pr, text)
+	projectID, err := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo)
+	if err != nil {
+		return false, err // before the pull request is touched
+	}
+	if err := s.disarmLanded(ctx, pr, text); err != nil {
+		return false, err
+	}
 	if landed == nil {
 		if _, err := prc.PostPRComment(ctx, f, pr.Repo, pr.Number, text); err != nil {
 			return false, fmt.Errorf("comment: %w", err)
@@ -187,7 +198,7 @@ func (s *Service) landPR(ctx context.Context, f *Forge, pr *PullRequest) (bool, 
 	if err != nil {
 		return false, err
 	}
-	s.audit(ctx, SystemActor(), AuditEntry{Action: "pr.landed", Category: AuditControl, ProjectID: s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo), TargetType: "pr", TargetID: pr.ID,
+	s.audit(ctx, SystemActor(), AuditEntry{Action: "pr.landed", Category: AuditControl, ProjectID: projectID, TargetType: "pr", TargetID: pr.ID,
 		Target: fmt.Sprintf("%s#%d", pr.Repo, pr.Number), URL: pr.URL, Detail: how + " “" + pr.Title + "”: its work had already landed on " + fp.BaseRef, About: pr.Agent, Actor: "landed pull requests"})
 	// The forge's word, so the page, the issue link and the PR-merged rules see it now.
 	if fresh, err := prc.GetPR(ctx, f, pr.Repo, pr.Number); err == nil {
@@ -348,8 +359,7 @@ func (s *Service) landedWhere(ctx context.Context, f *Forge, cl ForgeBranches, p
 
 // disarmLanded takes merge-when-ready off a landed pull request: there is
 // nothing to merge.
-func (s *Service) disarmLanded(ctx context.Context, pr *PullRequest, why string) {
-	projectID := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo)
+func (s *Service) disarmLanded(ctx context.Context, pr *PullRequest, why string) error {
 	err := s.write(ctx, SystemActor(), func(t *tx) error {
 		res, err := t.ExecContext(ctx, `UPDATE pull_requests SET armed_at = NULL, armed_by = NULL, armed_agent = '', armed_style = '', armed_note = '', merge_wake_at = NULL
 			WHERE id = ? AND armed_at IS NOT NULL`, pr.ID)
@@ -359,14 +369,16 @@ func (s *Service) disarmLanded(ctx context.Context, pr *PullRequest, why string)
 		if n, _ := res.RowsAffected(); n == 0 {
 			return nil
 		}
+		projectID, err := s.attachedProject(ctx, t, pr.ForgeID, pr.Repo)
+		if err != nil {
+			return err
+		}
 		t.audit(AuditEntry{Action: "pr.disarm", Category: AuditControl, ProjectID: projectID, TargetType: "pr", TargetID: pr.ID,
 			Target: fmt.Sprintf("%s#%d", pr.Repo, pr.Number), URL: pr.URL, Detail: "took merge when ready off “" + pr.Title + "”: " + why, Actor: "landed pull requests"})
 		t.emit(&Event{Kind: EvPRActivity, ProjectID: projectID, New: "disarmed", Data: map[string]any{"pr_id": pr.ID}})
 		return nil
 	})
-	if err != nil {
-		s.log.WarnContext(ctx, "disarm a landed pull request", "repo", pr.Repo, "number", pr.Number, "err", err)
-	}
+	return err // landPR's caller logs it, once, with the pull request
 }
 
 // repoMissing is for a 404 from the forge about repo. It follows the repo to
