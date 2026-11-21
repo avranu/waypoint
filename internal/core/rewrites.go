@@ -504,6 +504,9 @@ func (s *Service) rewriteLeads(ctx context.Context, actor *Actor, issueID int64)
 	_ = rows.Close()
 	var out []string
 	for _, r := range got {
+		if len(out) == rewriteMaxShown {
+			break // evidence piles up over repos and ships; the prompt gets the largest few
+		}
 		o, err := s.issueByID(ctx, s.db.R, r.id, false)
 		if err != nil || !s.canSee(ctx, s.db.R, actor, o.ID, o.ProjectID) {
 			continue // a task the round's actor can't see contributes nothing

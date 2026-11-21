@@ -1,6 +1,7 @@
 package core
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -159,5 +160,28 @@ func TestRecordRewritesRechecksAccessInTheWrite(t *testing.T) {
 	}
 	if len(got) != 0 || f.relationRows(t) != 0 || f.evidenceRows(t) != 0 {
 		t.Errorf("recorded %+v, %d relations, %d evidence rows for a task lee can't see", got, f.relationRows(t), f.evidenceRows(t))
+	}
+}
+
+// Evidence piles up across repos and ships; the round's prompt gets the
+// largest few, not every row.
+func TestRewriteLeadsAreBounded(t *testing.T) {
+	f := newRewriteFixture(t)
+	for i := 0; i < rewriteMaxShown+4; i++ {
+		o := f.issue(f.admin, IssueInput{Project: f.proj.Key, Title: fmt.Sprintf("Task %d", i)})
+		if _, err := f.s.db.W.ExecContext(f.ctx, `INSERT INTO issue_relations(source_id, target_id, kind, found, created_at) VALUES (?,?,'relates','rewrite',1)`, f.b.ID, o.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.s.db.W.ExecContext(f.ctx, `INSERT INTO rewrite_evidence(issue_id, other_id, repo, pr, prs, lines, share, merged_at, head, note, created_at, updated_at)
+			VALUES (?,?,?,?,1,?,0.5,1,'h','n',1,1)`, f.b.ID, o.ID, "o/r", 100+i, 50+i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := f.s.rewriteLeads(f.ctx, f.admin, f.b.ID)
+	if len(got) != rewriteMaxShown {
+		t.Fatalf("%d leads, want %d", len(got), rewriteMaxShown)
+	}
+	if !strings.Contains(got[0], "Task 8") {
+		t.Errorf("the largest comes first: %s", got[0])
 	}
 }
