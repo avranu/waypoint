@@ -790,13 +790,10 @@ func (s *Service) roundReported(ctx context.Context, t *tx, issueID, round int64
 	return nil
 }
 
-// roundDecidable: a round in this state is decided at its ship. One under
-// way (the ship is its report), one that ended (at a Stop, or by the
-// session reading its audit), and one given up after its prompt went in
-// ("no report came back"): the session was asked, and a ship from it is
-// its answer, late. A round that never started reviewed nothing.
+// roundDecidable asks decideRound whether the session's ship is this round's
+// report (see roundIn.ShipAsks).
 func roundDecidable(state string, started bool) bool {
-	return state == RoundRunning || state == RoundDone || (state == RoundFailed && started)
+	return decideRound(roundIn{State: state, Started: started, ShipAsks: true}).Do == doReport
 }
 
 // reportHold is what a ship is told when its round was the session's own

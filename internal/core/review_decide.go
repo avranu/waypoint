@@ -9,11 +9,18 @@ import (
 	"time"
 )
 
-// One question every caller that may advance a review round asks, and one
-// answer (WP-1370): what does this round need, from what is recorded of it.
-// The agent's ship, the settled check, the step, the sweep, the Stop and the
-// session's end all ask decideRound, so none of them strands a round the
-// others would have carried on, or ships one the others would have held.
+// decideRound is the one table for what a review round needs, from what is
+// recorded of it (WP-1370). Asked by: advanceRound (the step, the sweep, the
+// settled check and the agent's ship all carry a round out through it),
+// shipSettledRounds (the sweep), decideIdle (the step's idle session), the Stop (reviewFirstAtStop and
+// roundAtStop, which ask whether the session's last message is the report),
+// sweepRounds (which rounds end), tellCheck (whether a session is waited on)
+// and, with ShipAsks, the session's own ship (roundDecidable). What does not
+// go through it: the ship's intent (skip, review, force) and the scheduling
+// of a new round (reviewFirst), a step's own bookkeeping about a round
+// (typing its prompt, a runner that is gone, the pace) and the ending of a
+// step's round when the step stops (endStepRound). Those act on a round's
+// state as mechanics and decide nothing about its fate.
 
 // Checks, as the decision sees them.
 const (
@@ -48,6 +55,9 @@ type roundIn struct {
 	Carried bool
 	// SessionEnded: the round's session has ended.
 	SessionEnded bool
+	// ShipAsks: the session's own `wp ship` is asking what it means for the
+	// round (reviewFirst, the report). Started: the round's prompt went in.
+	ShipAsks, Started bool
 	// Stopped, Subagents: the round's session just stopped (its turn ended),
 	// with background agents of the review still going.
 	Stopped, Subagents bool
@@ -146,6 +156,17 @@ const readWait = heldScreenWait
 // decideRound is the one decision. It never returns doNothing for an open
 // run whose pull request isn't open, and no wait or tell outlasts its limit.
 func decideRound(in roundIn) roundOut {
+	if in.ShipAsks {
+		// The session's ship answers a round under way (the ship is its
+		// report), one that ended (at a Stop, or by the session reading its
+		// audit) and one given up after its prompt went in ("no report came
+		// back"): the session was asked, and a ship from it is the answer,
+		// late. A round that never started reviewed nothing.
+		if in.State == RoundRunning || in.State == RoundDone || (in.State == RoundFailed && in.Started) {
+			return roundOut{Do: doReport}
+		}
+		return roundOut{Do: doNothing, Settled: "a ship from the session is no report of a round that isn't under way or never started"}
+	}
 	if in.Stopped && in.State == RoundRunning {
 		// The session stopped: its last message is the report, unless the
 		// review's own background agents or its check still go (they wake it).
