@@ -132,3 +132,46 @@ func TestTaskNewsExpires(t *testing.T) {
 		})
 	}
 }
+
+// The audit of a pull request (no round behind it) is news of the task the
+// pull request is linked to: it stays with that task's session, and goes to
+// a new session on it.
+func TestPullRequestAuditNewsFollowsItsTask(t *testing.T) {
+	prAuditNews := func(t *testing.T, a *apEnv, issueID int64) string {
+		t.Helper()
+		a.linkPR(issueID, 55, "abc")
+		res, err := a.s.db.W.Exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, owner_id, created_at, pr_id) VALUES (?, (SELECT id FROM forges LIMIT 1), 'acme/app', 'pr', ?, ?, (SELECT id FROM pull_requests WHERE number = 55))`,
+			a.p.ID, a.admin.User.ID, a.clockNow().UnixMilli())
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, _ := res.LastInsertId()
+		return "audit:" + itoa64(id) + ":done"
+	}
+	t.Run("stays with its task", func(t *testing.T) {
+		a, _, held := heldEnv(t)
+		endedSessionWithNews(t, a, prAuditNews(t, a, held.ID))
+		other := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "Another task", Agent: "claude"})
+		if got := startSessionWithTask(t, a, other.ID); len(got) != 0 {
+			t.Fatalf("another task's news was delivered: %+v", got)
+		}
+	})
+	t.Run("goes to a session on its task", func(t *testing.T) {
+		a, _, held := heldEnv(t)
+		endedSessionWithNews(t, a, prAuditNews(t, a, held.ID))
+		if got := startSessionWithTask(t, a, held.ID); len(got) != 1 {
+			t.Fatalf("delivered %+v", got)
+		}
+	})
+}
+
+// News whose task can't be told (its audit is gone) isn't handed to a session
+// on some other task either.
+func TestNewsOfAnUnknownTaskStaysPut(t *testing.T) {
+	a, _, _ := heldEnv(t)
+	endedSessionWithNews(t, a, "audit:987654:done")
+	other := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "Another task", Agent: "claude"})
+	if got := startSessionWithTask(t, a, other.ID); len(got) != 0 {
+		t.Fatalf("news of no known task was delivered: %+v", got)
+	}
+}

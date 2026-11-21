@@ -107,3 +107,45 @@ func TestNewsIsNotANextTask(t *testing.T) {
 		}
 	}
 }
+
+// With no session to tell, the person who asked hears of an audit that
+// ended, except one they cancelled; an automation's owner hears only of what
+// needs them (a failure, or findings in an audit that isn't a fix).
+func TestAuditNewsToThePerson(t *testing.T) {
+	e := newLoopEnv(t, map[string]string{"": "critical", "fixes": "complete"})
+	who := e.admin.User.ID
+	next := int64(9100)
+	told := func(mod func(*CodeAudit)) bool {
+		next++
+		a := &CodeAudit{ID: next, Title: "the branch", Model: "grok", Via: "cli", requestedBy: who, ownerID: who}
+		mod(a)
+		e.exec(`DELETE FROM notifications`)
+		e.s.tellAudit(e.ctx, a)
+		var n int
+		if err := e.s.db.R.QueryRow(`SELECT count(*) FROM notifications WHERE kind = ?`, NotifyAudit).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n > 0
+	}
+	if !told(func(a *CodeAudit) { a.Status = AuditDone }) {
+		t.Error("the person who asked wasn't told a clean audit ended")
+	}
+	if told(func(a *CodeAudit) { a.Status = AuditCancelled }) {
+		t.Error("the person was told of the audit they cancelled")
+	}
+	for _, tc := range []struct {
+		name string
+		mod  func(*CodeAudit)
+		want bool
+	}{
+		{"clean", func(a *CodeAudit) { a.Status = AuditDone }, false},
+		{"failed", func(a *CodeAudit) { a.Status = AuditFailed }, true},
+		{"findings", func(a *CodeAudit) { a.Status = AuditDone; a.Counts = AuditCounts{Total: 2} }, true},
+		{"findings of a fix", func(a *CodeAudit) { a.Status = AuditDone; a.Fix = true; a.Counts = AuditCounts{Total: 2} }, false},
+		{"cancelled", func(a *CodeAudit) { a.Status = AuditCancelled }, false},
+	} {
+		if got := told(func(a *CodeAudit) { a.automationID = 1; tc.mod(a) }); got != tc.want {
+			t.Errorf("an automation's audit, %s: told %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

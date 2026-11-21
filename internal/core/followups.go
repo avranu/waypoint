@@ -925,7 +925,7 @@ func (s *Service) moveOrphanMessages(ctx context.Context, t *tx, x *AgentSession
 		return err
 	}
 	for _, c := range list {
-		if task, bound := messageTask(ctx, t, c.key); bound && (task == 0 || !mine.Valid || task != mine.Int64) {
+		if task, bound := messageTask(ctx, t, c.key); bound && (!mine.Valid || task != mine.Int64) {
 			s.log.InfoContext(ctx, "session message stays with its task", "message", c.id, "key", c.key, "from_session", c.from, "to_session", x.ID, "its_task", task, "session_task", mine.Int64)
 			continue
 		}

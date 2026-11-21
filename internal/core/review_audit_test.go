@@ -1239,3 +1239,35 @@ func TestReviewRoundPanelWithoutReviewer(t *testing.T) {
 		t.Errorf("the check of the session's report wouldn't read them: %q", said)
 	}
 }
+
+// With autopilot off, a person's Stop while the round waits for its audit
+// keeps the step waiting, and moves the step's stop to this Stop: a prompt
+// the person typed before it is the turn this Stop ended, not a prompt after
+// it that ends the step as "prompted".
+func TestReviewAuditWaitAutopilotOffStopMovesTheStop(t *testing.T) {
+	a, _ := auditAPEnv(t)
+	first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude", Priority: "urgent"})
+	a.finish(first.Key)
+	a.grokPR(first.ID, 7, "aaa")
+	a.stopWith("Shipped as #7.")
+	a.tick(61 * time.Second)
+	if st := a.step(); st.state != StepWaiting || st.reason != WaitAudit {
+		t.Fatalf("step = %+v", st)
+	}
+	if _, err := a.s.SetAutopilot(a.ctx, a.admin, a.p.Key, AutopilotSettingInput{Enabled: ptrOf(false), Merge: true, Limits: AutopilotLimits{Review: ptrOf(true)}}); err != nil {
+		t.Fatal(err)
+	}
+	a.setClock(a.clockNow().Add(time.Second))
+	a.prompt("and the lexer?")
+	a.setClock(a.clockNow().Add(time.Second))
+	prompted := a.clockNow().UnixMilli()
+	a.stopWith("Here's what you asked.")
+	st := a.step()
+	if st.state != StepWaiting || st.reason != WaitAudit || st.stopAt <= prompted-1 {
+		t.Fatalf("step = %+v, want waiting on the audit with its stop at or after %d", st, prompted)
+	}
+	a.tick(5 * time.Second)
+	if st := a.step(); st.state != StepWaiting || st.reason != WaitAudit {
+		t.Fatalf("after a tick, step = %+v", st)
+	}
+}
