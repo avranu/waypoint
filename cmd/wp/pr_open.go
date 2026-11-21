@@ -576,6 +576,9 @@ func (c *cli) openPR(f prOpenFlags) (*openedPR, []byte, error) {
 	if err != nil {
 		return nil, nil, c.usage("%s", err)
 	}
+	if err := f.checkShipWords(); err != nil {
+		return nil, nil, c.usage("%s", err)
+	}
 	branch, err := localGit("rev-parse", "--abbrev-ref", "HEAD")
 	if err != nil || branch == "HEAD" || branch == "" {
 		return nil, nil, c.usage("not on a branch (git switch -c a-branch first)")
@@ -672,11 +675,6 @@ func (c *cli) openPR(f prOpenFlags) (*openedPR, []byte, error) {
 			bodyInputs.Tested = tested.Line
 		}
 	}
-	if !*f.noPush {
-		if _, err := localGit("push", "--set-upstream", "origin", branch); err != nil {
-			return nil, nil, err
-		}
-	}
 	req := map[string]any{"head": branch, "base": *f.base, "title": text, "body": body, "draft": *f.draft, "ready": *f.ready, "issue": key, "for": f.finishing, "repo": repo, "urgent": *f.urgent,
 		"review": intent, "reason": strings.TrimSpace(*f.skipReview), "force": *f.force}
 	// What a pull request Waypoint opens for a held ship carries: the newest
@@ -695,6 +693,15 @@ func (c *cli) openPR(f prOpenFlags) (*openedPR, []byte, error) {
 	if bodyInputs != nil {
 		req["body_inputs"] = bodyInputs
 	}
+	// What the server would refuse for size is refused before the push.
+	if b, err := json.Marshal(req); err == nil && len(b) > maxOpenRequest {
+		return nil, nil, c.usage("the pull request is too large to send (%d bytes with its description; the server takes at most %d): shorten the description or leave -f/--body out and let Waypoint write it", len(b), maxOpenRequest)
+	}
+	if !*f.noPush {
+		if _, err := localGit("push", "--set-upstream", "origin", branch); err != nil {
+			return nil, nil, err
+		}
+	}
 	raw, _, err := c.postOpen(project, req)
 	if err != nil {
 		return nil, nil, err
@@ -708,6 +715,31 @@ func (c *cli) openPR(f prOpenFlags) (*openedPR, []byte, error) {
 	}
 	o.key, o.why, o.tested = key, why, tested
 	return &o, raw, nil
+}
+
+// maxShipWordLen mirrors the server's bound on -m and --summary
+// (maxCommentLen, internal/core/issues.go; checked in OpenPullRequest,
+// internal/core/pr_open.go): a ship over it is refused, so it is refused here
+// before the branch is pushed.
+const maxShipWordLen = 50_000
+
+// maxOpenRequest mirrors the server's bound on a JSON request body
+// (decodeBody's 2<<20, internal/api/server.go), which the pull request's
+// description rides in.
+const maxOpenRequest = 2 << 20
+
+// checkShipWords refuses -m or --summary over what the server keeps.
+func (f prOpenFlags) checkShipWords() error {
+	for _, w := range []struct {
+		flag  string
+		v     string
+		given bool
+	}{{"-m", f.summary, f.messageGiven}, {"--summary", f.shipSummary, f.shipSummaryGiven}} {
+		if n := len(strings.TrimSpace(w.v)); w.given && n > maxShipWordLen {
+			return fmt.Errorf("%s is too long (%d bytes; at most %d)", w.flag, n, maxShipWordLen)
+		}
+	}
+	return nil
 }
 
 // addShipWords puts the ship's -m and --summary in the request, each only
@@ -745,11 +777,26 @@ func (c *cli) postOpen(project string, req map[string]any) (raw []byte, oldServe
 	if err != nil && (m || sm) && unknownShipWords(err) {
 		delete(req, "message")
 		delete(req, "summary")
-		_, _ = fmt.Fprintln(c.err, "Note: this server is older and can't keep your -m or --summary for a pull request it opens itself; your --summary stays kept here and shows when the turn ends.")
 		raw, err = send()
-		return raw, true, err
+		if err != nil {
+			return raw, false, err // its own failure, not news about the server
+		}
+		_, _ = fmt.Fprintln(c.err, droppedShipWordsNote(m, sm))
+		return raw, true, nil
 	}
 	return raw, false, err
+}
+
+// droppedShipWordsNote says what an older server couldn't keep: only the words
+// the ship gave.
+func droppedShipWordsNote(message, summary bool) string {
+	switch {
+	case message && summary:
+		return "Note: this server is older and can't keep your -m and --summary for a pull request it opens itself; your --summary stays kept here and shows when the turn ends."
+	case summary:
+		return "Note: this server is older and can't keep your --summary for a pull request it opens itself; it stays kept here and shows when the turn ends."
+	}
+	return "Note: this server is older and can't keep your -m for a pull request it opens itself."
 }
 
 // prOpenRetries are the waits before asking again to open a pull request
@@ -1148,13 +1195,58 @@ func readAll(f *os.File) (string, error) {
 }
 
 // unknownShipWords is the old server's answer to a ship that sends -m or
-// --summary: its strict decoder doesn't know those keys (WP-1370).
+// --summary: its strict decoder doesn't know those keys (WP-1370). It is a 400
+// or a 422 whose text, in {"error":...}, in another JSON key or as plain text,
+// says unknown field "message" or "summary". A page (HTML, a proxy's) or any
+// other field is not it.
 func unknownShipWords(err error) bool {
 	var ae *apiError
-	if !errors.As(err, &ae) || ae.status != http.StatusBadRequest {
+	if !errors.As(err, &ae) || (ae.status != http.StatusBadRequest && ae.status != http.StatusUnprocessableEntity) {
 		return false
 	}
-	return strings.Contains(ae.msg, `unknown field "message"`) || strings.Contains(ae.msg, `unknown field "summary"`)
+	texts := []string{ae.msg}
+	if body := strings.TrimSpace(ae.body); body != "" {
+		if strings.Contains(strings.ToLower(ae.ctype), "html") || strings.HasPrefix(body, "<") {
+			return ae.msg != "" && namesShipWords(ae.msg)
+		}
+		var v any
+		if json.Unmarshal([]byte(body), &v) == nil {
+			texts = append(texts, jsonStrings(v)...)
+		} else {
+			texts = append(texts, body)
+		}
+	}
+	for _, t := range texts {
+		if namesShipWords(t) {
+			return true
+		}
+	}
+	return false
+}
+
+func namesShipWords(s string) bool {
+	return strings.Contains(s, `unknown field "message"`) || strings.Contains(s, `unknown field "summary"`)
+}
+
+// jsonStrings are the string values anywhere in a decoded JSON value.
+func jsonStrings(v any) []string {
+	switch v := v.(type) {
+	case string:
+		return []string{v}
+	case []any:
+		var out []string
+		for _, x := range v {
+			out = append(out, jsonStrings(x)...)
+		}
+		return out
+	case map[string]any:
+		var out []string
+		for _, x := range v {
+			out = append(out, jsonStrings(x)...)
+		}
+		return out
+	}
+	return nil
 }
 
 // factAsks reads a needs-the-agent fact from the server: unsaid (a server from
