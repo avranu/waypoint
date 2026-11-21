@@ -256,3 +256,47 @@ func TestRecordRewritesRechecksTheRoleInTheWrite(t *testing.T) {
 		t.Errorf("a viewer recorded %+v, %d relations, %d evidence rows", got, f.relationRows(t), f.evidenceRows(t))
 	}
 }
+
+// insertRelation is the one way a row enters issue_relations: a pair that
+// already has the relation (the same way round, or for a symmetric kind the
+// other way) is "already there", not an error; Unrelated holds off for a
+// relation of any kind either way; a directional kind the other way round is
+// a different relation and goes in.
+func TestInsertRelationIsIdempotent(t *testing.T) {
+	f := newRewriteFixture(t)
+	put := func(src, dst int64, kind string, unrelated bool) (bool, error) {
+		var ins bool
+		err := f.s.write(f.ctx, f.admin, func(tx *tx) error {
+			var err error
+			ins, err = f.s.insertRelation(f.ctx, tx, newRelation{Src: src, Dst: dst, Kind: kind, Unrelated: unrelated})
+			return err
+		})
+		return ins, err
+	}
+	steps := []struct {
+		name      string
+		src, dst  int64
+		kind      string
+		unrelated bool
+		want      bool
+	}{
+		{"first relates", f.a.ID, f.b.ID, "relates", false, true},
+		{"same again", f.a.ID, f.b.ID, "relates", false, false},
+		{"relates from the other end", f.b.ID, f.a.ID, "relates", false, false},
+		{"blocks beside relates", f.a.ID, f.b.ID, "blocks", false, true},
+		{"blocks the other way is its own relation", f.b.ID, f.a.ID, "blocks", false, true},
+		{"unrelated holds off for any relation", f.b.ID, f.a.ID, "duplicates", true, false},
+	}
+	for _, st := range steps {
+		got, err := put(st.src, st.dst, st.kind, st.unrelated)
+		if err != nil || got != st.want {
+			t.Errorf("%s: inserted = %v, %v; want %v, nil", st.name, got, err, st.want)
+		}
+	}
+	if n := f.relationRows(t); n != 3 {
+		t.Errorf("%d relation rows, want 3", n)
+	}
+	if _, err := put(f.a.ID, f.a.ID, "relates", false); err == nil {
+		t.Error("an issue related to itself")
+	}
+}
