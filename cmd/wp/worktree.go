@@ -311,6 +311,11 @@ type madeWorktree struct {
 // fetch is set; setupWorktree prepares it. A worktree that already holds the
 // branch, or is at that path, is answered as it is.
 func makeWorktree(ctx context.Context, repo *worktreeRepo, slug, branch, from string, fetch bool, note func(string, ...any)) (madeWorktree, error) {
+	for _, v := range []struct{ what, ref string }{{"--branch", branch}, {"--from", from}} {
+		if err := codeindex.CheckRef(v.ref); err != nil {
+			return madeWorktree{}, fmt.Errorf("%s: %w", v.what, err)
+		}
+	}
 	// The one rule for a worktree that holds what is asked for (WP-1370): a
 	// lock whose owner is gone is taken over; a live one (or one that can't be
 	// shown gone) is left, and the work goes on a branch cut from it, named so
@@ -372,11 +377,6 @@ func makeWorktreeIn(ctx context.Context, repo *worktreeRepo, slug, branch, from 
 		cancel()
 		if err != nil {
 			note("note: fetch failed (%v); starting from the refs as they are", err)
-		}
-	}
-	for _, v := range []struct{ what, ref string }{{"--branch", branch}, {"--from", from}} {
-		if err := codeindex.CheckRef(v.ref); err != nil {
-			return madeWorktree{}, fmt.Errorf("%s: %w", v.what, err)
 		}
 	}
 	base := from

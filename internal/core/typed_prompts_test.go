@@ -694,6 +694,23 @@ func TestTypedStartIsRecordedBeforeItsSessionExists(t *testing.T) {
 	if k := a.hookPrompt("fresh-2", text+" and more words"); k != "" {
 		t.Fatalf("the text with words added = %q, want the person's", k)
 	}
+	// Another user's first prompt, the same text, is theirs.
+	if err := a.s.RecordTypedStart(a.ctx, a.admin, text); err != nil {
+		t.Fatal(err)
+	}
+	other := a.user("someone-else", false)
+	if _, err := a.s.SessionHook(a.ctx, other, []HookEvent{hook("box", "theirs-1", "SessionStart", nil)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.s.SessionHook(a.ctx, other, []HookEvent{hook("box", "theirs-1", "UserPromptSubmit", func(h *HookEvent) { h.Prompt = text })}); err != nil {
+		t.Fatal(err)
+	}
+	var kind string
+	_ = a.s.db.R.QueryRow(`SELECT e.typed_kind FROM session_events e JOIN agent_sessions x ON x.id = e.session_id
+		WHERE x.cli_id = 'theirs-1' AND e.kind = 'prompt'`).Scan(&kind)
+	if kind != "" {
+		t.Fatalf("another user's first prompt of the same text = %q, want the person's", kind)
+	}
 	// A record expires.
 	a.setClock(a.clockNow().Add(typedKickoffTTL + time.Minute))
 	a.startSession("fresh-3")

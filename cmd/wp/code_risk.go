@@ -169,6 +169,12 @@ func (c *cli) prFiles(sf scopeFlags, n int, root string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	return prFilesOf(root, n, d)
+}
+
+// prFilesOf is prFiles for a pull request already loaded: its refs are the
+// forge's, and git is given none that it would read as an option.
+func prFilesOf(root string, n int, d *prDetail) ([]string, error) {
 	tip := ""
 	for _, spec := range []string{fmt.Sprintf("refs/pull/%d/head", n), fmt.Sprintf("refs/merge-requests/%d/head", n), d.HeadRef} {
 		if spec == "" || codeindex.CheckRef(spec) != nil { // a forge's branch name is no option
