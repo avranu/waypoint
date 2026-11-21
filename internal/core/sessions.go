@@ -451,7 +451,12 @@ func (s *Service) sessionVisible(ctx context.Context, q queryer, actor *Actor, x
 	if !x.projectID.Valid {
 		return false
 	}
-	r, _ := s.projectRole(ctx, q, actor, x.projectID.Int64)
+	r, rerr := s.projectRole(ctx, q, actor, x.projectID.Int64)
+	if rerr != nil {
+		if readFault(rerr) {
+			s.log.WarnContext(ctx, "project role failed", "projectid", x.projectID.Int64, "err", rerr)
+		}
+	}
 	return r > RoleNone
 }
 
@@ -720,7 +725,12 @@ func (s *Service) GetAgentSession(ctx context.Context, actor *Actor, id int64) (
 	// person and its project's editors (WP-232).
 	refusedText := ownPrompts
 	if !refusedText && x.projectID.Valid {
-		role, _ := s.projectRole(ctx, s.db.R, actor, x.projectID.Int64)
+		role, rerr := s.projectRole(ctx, s.db.R, actor, x.projectID.Int64)
+		if rerr != nil {
+			if readFault(rerr) {
+				s.log.WarnContext(ctx, "project role failed", "projectid", x.projectID.Int64, "err", rerr)
+			}
+		}
 		refusedText = role >= RoleEditor
 	}
 	refusedText = refusedText && !actor.HidesCommandText()
@@ -976,7 +986,13 @@ func (s *Service) SessionHook(ctx context.Context, actor *Actor, evs []HookEvent
 	}
 	if advance != nil {
 		st := advance
-		s.goBG(func() { _ = s.advanceStep(context.WithoutCancel(ctx), st) })
+		s.goBG(func() {
+			if err := s.advanceStep(context.WithoutCancel(ctx), st); err != nil {
+				if readFault(err) && !missingOrDenied(err) {
+					s.log.WarnContext(ctx, "advance step failed", "session", st.sessionID, "err", err)
+				}
+			}
+		})
 	}
 	res.Text = joinText(DecisionsText(res.Deliver), MessagesText(res.Messages))
 	if evs[len(evs)-1].Event == "SessionStart" && !lastQuiet {
@@ -1189,7 +1205,13 @@ func (s *Service) projectForRepo(ctx context.Context, q queryer, actor *Actor, r
 		return 0
 	}
 	for _, id := range ids {
-		if r, _ := s.projectRole(ctx, q, actor, id); r > RoleNone {
+		r, rerr := s.projectRole(ctx, q, actor, id)
+		if rerr != nil {
+			if readFault(rerr) {
+				s.log.WarnContext(ctx, "project role failed", "id", id, "err", rerr)
+			}
+		}
+		if r > RoleNone {
 			return id
 		}
 	}

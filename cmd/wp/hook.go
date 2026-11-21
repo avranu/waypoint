@@ -25,7 +25,7 @@ const (
 	hookResume  = "hook claude-resume" // UserPromptSubmit: restart the clock
 	hookEvent   = "hook claude-event"  // everything else: sessions and requests (WP-D16)
 	hookNudge   = "hook claude-nudge"  // PreToolUse(Bash|Read): the better tool, in one line (WP-47); notes a poll of a running background task (WP-191); never refuses (WP-1411)
-	hookGate    = "hook claude-gate"   // PreToolUse(Agent): forks, depth, width, model (WP-143)
+	hookGate    = "hook claude-gate"   // PreToolUse(Agent): forks, depth, width, model (WP-143); holds a start while Claude Code's agent limit is reached (WP-1443)
 	hookBurn    = "hook claude-burn"   // PostToolUse(all): silent unless the tree burns above $100/h (WP-144)
 	hookGuard   = "hook claude-guard"  // PreToolUse(Bash|Write|Edit|web): refuses risky calls in unattended sessions (WP-270), and the nudge refusals in every session (WP-1411)
 	hookPause   = "hook claude-pause"  // PostToolUse(all), async: pulls the person's session pause to a local file (WP-146)
@@ -41,10 +41,12 @@ const hookSlashTimeout = 300
 // so it stays short; the guard and the gate are refusals, so they wait longer
 // rather than leave a gap (WP-1398). The nudge's own refusals (grok-cut-short,
 // pgrep-self, worktree-place, task-wait) are emitted by the guard for that
-// reason (WP-1411). hookLate measures a run against these.
+// reason (WP-1411). hookLate measures a run against these. The gate's is long
+// because it holds an Agent call while Claude Code's agent limit is reached:
+// the longest wait (gateQueueBound) plus a minute (WP-1443).
 const (
 	hookNudgeTimeout = 2
-	hookGateTimeout  = 10
+	hookGateTimeout  = 300
 	hookGuardTimeout = 10
 )
 
@@ -83,8 +85,8 @@ var claudeHooks = []claudeHook{
 	{event: "Notification", command: hookEvent, opts: hookOpts{async: true}},
 	{event: "PermissionDenied", command: hookEvent, opts: hookOpts{async: true}},
 	{event: "PreToolUse", command: hookEvent, opts: hookOpts{matcher: "AskUserQuestion", async: true}},
-	// + a Bash call that satisfies a request (WP-126), silent unless the session has one; + a screenshot the agent read, to its task (WP-263)
-	{event: "PostToolUse", command: hookEvent, opts: hookOpts{matcher: "AskUserQuestion|Bash|Read", async: true}},
+	// + a Bash call that satisfies a request (WP-126), silent unless the session has one; + a screenshot the agent read, to its task (WP-263); + who started a background agent (WP-1443)
+	{event: "PostToolUse", command: hookEvent, opts: hookOpts{matcher: "AskUserQuestion|Bash|Read|Agent|Task", async: true}},
 	{event: "Stop", command: hookEvent, opts: hookOpts{timeout: 20}}, // + a follow-up's message (WP-D22)
 	{event: "SubagentStart", command: hookEvent, opts: hookOpts{async: true}},
 	{event: "SubagentStop", command: hookEvent, opts: hookOpts{async: true}, prompts: true}, // + an adversarial review's report and prompt (WP-1089)
@@ -94,8 +96,8 @@ var claudeHooks = []claudeHook{
 	{event: "ConfigChange", command: hookEvent, opts: hookOpts{async: true}},
 	{event: "InstructionsLoaded", command: hookEvent, opts: hookOpts{async: true}},
 	{event: "PostModelSwitch", command: hookEvent, opts: hookOpts{async: true}},
-	{event: "PreToolUse", command: hookNudge, opts: hookOpts{matcher: "Bash|Read", timeout: hookNudgeTimeout}}, // no network; Read for big whole-file reads (WP-145) and task output (WP-191)
-	{event: "PreToolUse", command: hookGate, opts: hookOpts{matcher: "Agent|Task", timeout: hookGateTimeout}},  // local only; refuses in every session
+	{event: "PreToolUse", command: hookNudge, opts: hookOpts{matcher: "Bash|Read|Monitor", timeout: hookNudgeTimeout}}, // no network; Read for big whole-file reads (WP-145) and task output (WP-191); Monitor by name, or a Bash matcher gets it as a Bash call (WP-1443)
+	{event: "PreToolUse", command: hookGate, opts: hookOpts{matcher: "Agent|Task", timeout: hookGateTimeout}},          // local only; refuses in every session
 	// The guard: local only, no subprocess; refuses risky calls in unattended sessions (WP-270, WP-ADR10) and the nudge refusals in every session (WP-1411).
 	{event: "PreToolUse", command: hookGuard, opts: hookOpts{matcher: "Bash|Write|Edit|MultiEdit|NotebookEdit", timeout: hookGuardTimeout}},
 	// Local, incremental, under 50 ms; + the stop after a wp ship with --summary, which waits on the server like the Stop hook (WP-1093).
@@ -244,7 +246,7 @@ func hookClaude(c *cli, args []string) error {
 // usage hooks and the status line. Bump it whenever they change (the test
 // TestHookSchemaFollowsTheHooks fails until it is): hooks that an older wp
 // installed then bring themselves up to date the next time one runs.
-const hookSchema = 17
+const hookSchema = 18
 
 // hookRefreshEvery is how often a hook may try to bring the hooks up to date.
 const hookRefreshEvery = 24 * time.Hour

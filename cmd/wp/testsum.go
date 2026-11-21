@@ -24,7 +24,11 @@ var testsumCmd = &command{
 	summary: "run tests and summarize them: one line on pass, failures with file:line",
 	about: `Runs CMD in the "tests" host slot and prints a summary: one line on pass;
 on failure each failing test with file:line and its first lines, exit 1.
-The run is kept against the tree it tested, for wp ship. Flags go before
+The run is kept against the tree it tested, for wp ship. Run again with the
+same command (as typed; GOFLAGS and the like aren't compared) on a
+content-identical tree, it still runs, and the first line says nothing
+changed since the last run and how that came out; it is also printed at
+once, before waiting for the slot. --repeat and --base don't say it. Flags go before
 CMD; everything from CMD on is CMD's. CMD runs without secret-looking
 variables (*_TOKEN, *_KEY, …). FILE (an existing, non-executable file) or
 - summarizes saved output instead.`,
@@ -142,6 +146,8 @@ func cmdTestsum(c *cli, args []string) error {
 	if len(rest) > 0 {
 		var buf bytes.Buffer
 		rec := newTestRunRecorder(rest) // as typed, without the -json
+		note := rec.unchanged(time.Now())
+		sayUnchanged(c.err, note)
 		argv := goTestJSON(rest)
 		var dropped []string
 		code, err := c.runInSlotThen("tests", defaultSlots(), argv, &buf, &buf, rec.started, func(env []string) []string {
@@ -150,6 +156,9 @@ func cmdTestsum(c *cli, args []string) error {
 		})
 		if err != nil {
 			return err
+		}
+		if note != "" {
+			c.println(note)
 		}
 		_, err = c.testsumReport(buf.Bytes(), *format, code, rec)
 		if err != nil {

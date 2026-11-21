@@ -276,7 +276,13 @@ func (s *Service) termRefs(ctx context.Context, actor *Actor, text string, sc re
 	}
 	var chain []int64
 	if sc.id != 0 {
-		chain, _ = s.projectChainIDs(ctx, s.db.R, sc.id)
+		var rerr error
+		chain, rerr = s.projectChainIDs(ctx, s.db.R, sc.id)
+		if rerr != nil {
+			if readFault(rerr) {
+				s.log.WarnContext(ctx, "project chain ids failed", "sc", sc.id, "err", rerr)
+			}
+		}
 	}
 	var out []Ref
 	seen := map[int64]bool{}

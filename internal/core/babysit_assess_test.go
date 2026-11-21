@@ -95,7 +95,7 @@ func TestBabysitAssessorQuestionParks(t *testing.T) {
 	if p := be.pr(7); p.QueuedAt != nil {
 		t.Error("parked, it keeps its place at the front of the line")
 	}
-	if why := be.s.babysitParked(be.ctx, be.pr(7)); !strings.Contains(why, "the assessor says a person has to settle it") {
+	if why, _ := be.s.babysitParked(be.ctx, be.pr(7)); !strings.Contains(why, "the assessor says a person has to settle it") {
 		t.Errorf("readiness hold = %q", why)
 	}
 	// Waypoint restarting doesn't start it again: the question stands.

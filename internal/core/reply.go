@@ -125,7 +125,7 @@ func (s *Service) replyRun(ctx context.Context, r *BotRun) (botResult, error) {
 		Action string `json:"action"`
 		Reply  string `json:"reply"`
 	}
-	used, attempts, err := s.runChain(aiContext(ctx, "reply"), chain, replySystem, p.String(), replySchema, &ans, 3*time.Minute)
+	used, attempts, err := s.runChain(withGatewayRouting(aiContext(ctx, "reply"), replyRouting(r.ID)), chain, replySystem, p.String(), replySchema, &ans, 3*time.Minute)
 	res.log = attempts
 	if err != nil {
 		return res, err

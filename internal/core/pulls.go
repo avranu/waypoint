@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 	"sync"
@@ -263,7 +264,10 @@ func (s *Service) recordPR(ctx context.Context, f *Forge, repo string, fp *Forge
 	if err != nil {
 		return nil, err
 	}
-	attached := s.attachedProject(ctx, s.db.R, f.ID, repo)
+	attached, err := s.attachedProject(ctx, s.db.R, f.ID, repo)
+	if err != nil {
+		return nil, err
+	}
 	var botLogin string
 	if fire && len(fp.requested) > 0 && len(projects) > 0 {
 		botLogin = s.forgeBotLogin(ctx, f)
@@ -890,7 +894,13 @@ func (s *Service) enqueueBotRun(ctx context.Context, projectID int64, automation
 		}
 		s.kickBots()
 		if kind == "review" {
-			s.goBG(func() { _ = s.evalGate(context.WithoutCancel(ctx), pr.ID) }) // pending while it waits
+			s.goBG(func() {
+				if err := s.evalGate(context.WithoutCancel(ctx), pr.ID); err != nil {
+					if readFault(err) && !errors.Is(err, ErrNotFound) && !isStatus(err, http.StatusNotFound) {
+						s.log.WarnContext(ctx, "eval gate failed", "pr", pr.ID, "err", err)
+					}
+				}
+			}) // pending while it waits
 		}
 	}
 	return id, err
@@ -1066,10 +1076,22 @@ func (e *errSkip) Error() string { return e.why }
 
 // errProvidersDown: every model of a pass failed with a provider error, so
 // the run ends instead of walking the chain again, later.
-type errProvidersDown struct{}
+type errProvidersDown struct {
+	// noBar: the gateway said no model at the review minimum could take it
+	// (no_model_at_bar), which retrying cannot change.
+	noBar bool
+}
 
 func (e *errProvidersDown) Error() string {
+	if e.noBar {
+		return providersDownText + noBarText() + "; not retrying, ask for a review again later"
+	}
 	return providersDownText + "is unavailable (rate limited, down or timing out); not retrying, ask for a review again later"
+}
+
+// noBarText: what a run's error says when no model at the minimum answered.
+func noBarText() string {
+	return "was unavailable, and no model at the review minimum (" + reviewFloorBar + ") could take it"
 }
 
 // errAllModelsFailed: no model answered any part of the diff.
@@ -1082,6 +1104,8 @@ func runErrorText(err error, log []ModelAttempt) string {
 	var down *errProvidersDown
 	sum := attemptSummary(log)
 	switch {
+	case sum != "" && errors.As(err, &down) && down.noBar:
+		return providersDownText + noBarText() + ": " + sum + "; not retrying, ask for a review again later"
 	case sum != "" && errors.As(err, &down):
 		return providersDownText + "was unavailable: " + sum + "; not retrying, ask for a review again later"
 	case errors.As(err, &down):
@@ -1104,14 +1128,15 @@ func quotaWait(answers []reviewerAnswer) *aiWaitError {
 }
 
 // providersDown: no reviewer answered, and each attempt failed on the
-// provider's side. A bad answer or an auth error is not that: another try
-// may differ.
+// provider's side, or the gateway had no model at the review minimum
+// (no_model_at_bar: it says retrying cannot help). A bad answer or an auth
+// error is not that: another try may differ.
 func providersDown(answers []reviewerAnswer) bool {
 	n := 0
 	for _, a := range answers {
 		for _, at := range a.log {
 			switch at.Outcome {
-			case "rate_limit", "server", "unavailable", "timeout":
+			case "rate_limit", "server", "unavailable", "timeout", "no_model_at_bar":
 				n++
 			default:
 				return false
@@ -1119,6 +1144,18 @@ func providersDown(answers []reviewerAnswer) bool {
 		}
 	}
 	return n > 0
+}
+
+// anyNoBar: an attempt ended no_model_at_bar.
+func anyNoBar(answers []reviewerAnswer) bool {
+	for _, a := range answers {
+		for _, at := range a.log {
+			if at.Outcome == "no_model_at_bar" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // botResult is what a run did.
@@ -1366,7 +1403,12 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 		return res, &errSkip{"nothing reviewable in the diff"}
 	}
 	rules := s.repoReviewRules(ctx, cl, f, pr.Repo, fp.HeadSHA)
-	earlier, _ := s.prFindings(ctx, s.db.R, pr.ID) // with the verdicts just reached
+	earlier, rerr := s.prFindings(ctx, s.db.R, pr.ID) // with the verdicts just reached
+	if rerr != nil {
+		if readFault(rerr) {
+			s.log.WarnContext(ctx, "pr findings failed", "pr", pr.ID, "err", rerr)
+		}
+	}
 	conversation := reviewConversation(earlier, sr.threads)
 	paths := make([]string, len(files))
 	for i, fd := range files {
@@ -1413,7 +1455,7 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 		for i := range chains {
 			prompts[i] = reviewPrompt(fp, rules, opts.Focus, conversation, intent, history, ch, n+1, len(chunks), arms[i].strategy, hf.get, budget)
 		}
-		answers := s.reviewChunk(withGatewayRouting(ctx, reviewRouting(r.ID)), chains, prompts)
+		answers := s.reviewChunk(withGatewayRouting(aiContext(ctx, "review"), reviewRouting(r.ID)), chains, prompts)
 		reviewed := false
 		for i, a := range answers {
 			res.log = append(res.log, a.log...)
@@ -1460,7 +1502,7 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 				return res, w // the key's day is spent: queue it for the reset, not for a retry
 			}
 			if providersDown(answers) {
-				return res, &errProvidersDown{}
+				return res, &errProvidersDown{noBar: anyNoBar(answers)}
 			}
 			for _, fd := range ch.files {
 				o.dropped = append(o.dropped, fd.path)
@@ -1489,7 +1531,7 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 		// without it.
 		found = markVerify(found, VerifySkipped)
 	case len(found) > 0 && arms[0].verify:
-		v := s.verifyNewIn(ctx, vchain, hf, pr.Repo, fp.HeadSHA, found, files)
+		v := s.verifyNewIn(withGatewayRouting(aiContext(ctx, "verify_review"), verifyRouting(r.ID)), vchain, hf, pr.Repo, fp.HeadSHA, found, files)
 		res.log = append(res.log, v.log...)
 		rec.verified = len(v.models) > 0
 		if ctx.Err() != nil {

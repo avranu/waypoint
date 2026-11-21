@@ -343,6 +343,9 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 			slash = "keep"
 		}
 	}
+	// The live table of agents is local, so it is kept with no server too: the
+	// Agent gate's queue and `wp agents wait` read it (WP-1443).
+	c.trackAgentsLocally(in)
 	if c.server() == "" || c.token() == "" {
 		if slash != "" {
 			_, _ = stdout.Write(promptStop("Waypoint: this machine isn't logged in (`wp login`), so /wp " + slash + " did nothing."))
@@ -433,6 +436,8 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 		case in.ToolName == "Read":
 			c.keepScreenshot(in) // WP-263
 			return
+		case in.ToolName == "Agent" || in.ToolName == "Task":
+			return // tracked above, locally
 		default:
 			return
 		}
@@ -443,7 +448,6 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 		// Where its work is, should the session end before it ships (WP-567).
 		ev.Checkouts = hookCheckouts(in.Cwd, c.state.sessionClaims(in.SessionID))
 	case "SubagentStart", "SubagentStop":
-		c.trackSubagent(in)
 		ev.AgentID, ev.AgentType = in.AgentID, in.AgentType
 		if in.HookEventName == "SubagentStop" {
 			ownReview(in, &ev, noPrompts) // its report goes to the task's work log (WP-1089)

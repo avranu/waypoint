@@ -247,7 +247,7 @@ func TestMergeQueueStuckFrontStepsAside(t *testing.T) {
 func (be *bsEnv) driftFlagged(n int, answer string) {
 	be.t.Helper()
 	pr := be.pr(n)
-	project, err := be.s.attachedProjectRead(be.ctx, be.s.db.R, pr.ForgeID, pr.Repo)
+	project, err := be.s.attachedProject(be.ctx, be.s.db.R, pr.ForgeID, pr.Repo)
 	if err != nil {
 		be.t.Fatal(err)
 	}

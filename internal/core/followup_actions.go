@@ -166,18 +166,32 @@ func runTellAgent(c *StepCtx) error {
 		return &Event{Kind: EvSessionMessage, Data: map[string]any{"message": m.ID, "via": cur.Via}}, true
 	}
 	// 1. A Stop hook waiting right now (the follow-up just fired at a stop).
-	if m.State == MessageQueued && (c.S.hookAwaiting(x.ID) || c.WaitDeadline(0) != 0) {
-		if _, _, err := c.WaitSlot(0, EvSessionMessage, "message:"+itoa64(m.ID), "", stopAwait+5*time.Second, delivered); err != nil {
-			return err
+	if m.State == MessageQueued {
+		waiting := c.S.hookAwaiting(x.ID)
+		if !waiting {
+			d, derr := c.WaitDeadline(0)
+			if derr != nil {
+				return derr
+			}
+			waiting = d != 0
 		}
-		if m, err = c.S.messageByID(c.Ctx, m.ID); err != nil {
-			return err
+		if waiting {
+			if _, _, err := c.WaitSlot(0, EvSessionMessage, "message:"+itoa64(m.ID), "", stopAwait+5*time.Second, delivered); err != nil {
+				return err
+			}
+			if m, err = c.S.messageByID(c.Ctx, m.ID); err != nil {
+				return err
+			}
 		}
 	}
 	// 2. With the session's batch (WP-209): an idle agent's inbox socket,
 	// through its person's runner on its machine, at once or, unless the
 	// step is blocking, with the agent's next wake-up.
-	if m.State == MessageQueued && c.WaitDeadline(2) == 0 {
+	d2, derr := c.WaitDeadline(2)
+	if derr != nil {
+		return derr
+	}
+	if m.State == MessageQueued && d2 == 0 {
 		blocking := c.BoolDefault("blocking", true)
 		c.S.batchOrTell(c.Ctx, x.ID, 0, blocking, func(until int64) error {
 			_, err := c.S.db.W.ExecContext(c.Ctx, `UPDATE session_messages SET batch_until = ?, blocking = ? WHERE id = ? AND state = 'queued'`, until, blocking, m.ID)

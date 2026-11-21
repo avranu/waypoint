@@ -84,19 +84,46 @@ type ForgePersonInput struct {
 // Waypoint person's login, an empty login or a failed lookup, so that doubt
 // counts as outside), or a person's login, whose text counts as written by
 // agent (forgeLoginAgent) unless only that person writes as it.
+//
+// Showing text counts doubt as outside (it hides the text and writes
+// nothing); a caller that records the outcome uses forgeWriterErr, so a failed
+// read marks nothing.
 func (s *Service) forgeWriter(ctx context.Context, q queryer, f *Forge, login string) (outside bool, agent string) {
+	outside, agent, err := s.forgeWriterErr(ctx, q, f, login)
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read whether a forge login is a person", "forge", forgeLogID(f), "err", err)
+		}
+		return true, ""
+	}
+	return outside, agent
+}
+
+func forgeLogID(f *Forge) int64 {
+	if f == nil {
+		return 0
+	}
+	return f.ID
+}
+
+// forgeWriterErr is forgeWriter with a failed read as an error: only a login
+// that is no person's (sql.ErrNoRows) is outside.
+func (s *Service) forgeWriterErr(ctx context.Context, q queryer, f *Forge, login string) (outside bool, agent string, err error) {
 	login = strings.TrimSpace(login)
 	if f == nil || login == "" {
-		return true, ""
+		return true, "", nil
 	}
 	var only bool
 	if err := q.QueryRowContext(ctx, `SELECT person_only FROM forge_people WHERE forge_id = ? AND login = ?`, f.ID, login).Scan(&only); err != nil {
-		return true, ""
+		if errors.Is(err, sql.ErrNoRows) {
+			return true, "", nil
+		}
+		return false, "", err
 	}
 	if only {
-		return false, ""
+		return false, "", nil
 	}
-	return false, forgeLoginAgent(login)
+	return false, forgeLoginAgent(login), nil
 }
 
 // forgeLoginAgent is who text from a forge login agents may write as counts

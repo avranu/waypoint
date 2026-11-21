@@ -185,7 +185,13 @@ func (s *Service) releaseWaitOn(ctx context.Context, q queryer, issueID int64) (
 // inReleaseWait: a release keeps the task from being handed out.
 func (s *Service) inReleaseWait(ctx context.Context, issueID int64) bool {
 	until, err := s.releaseWaitOn(ctx, s.db.R, issueID)
-	return err != nil || until != 0 // unsure means it waits
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read in release wait", "issueID", issueID, "err", err)
+		}
+		return true
+	}
+	return until != 0
 }
 
 // endReleaseWait lets a task out of its wait now, for a person's wp hold

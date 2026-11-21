@@ -543,7 +543,12 @@ func (s *Server) mcpCall(ctx context.Context, actor *core.Actor, name string, ra
 		if err != nil {
 			return "", err
 		}
-		comments, _ := svc.ListComments(ctx, actor, d.Key)
+		comments, rerr := svc.ListComments(ctx, actor, d.Key)
+		if rerr != nil {
+			if !errors.Is(rerr, context.Canceled) {
+				s.log.WarnContext(ctx, "list comments failed", "key", d.Key, "err", rerr)
+			}
+		}
 		return issueText(d, comments), nil
 	case "create_issue":
 		in := core.IssueInput{Project: args.str("project"), Title: args.str("title"), Description: args.str("description"),
