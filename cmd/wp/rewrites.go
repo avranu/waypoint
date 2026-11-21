@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"git.jmann.me/claude/waypoint/internal/codeindex"
+	"git.jmann.me/claude/waypoint/internal/core"
 
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
@@ -67,6 +69,11 @@ func (c *cli) rewrittenTasks(key, baseFlag string) []rewrittenTask {
 	if key == "" {
 		return nil
 	}
+	// A --base git would read as an option is refused before git runs.
+	if err := codeindex.CheckRef(baseFlag); err != nil {
+		_, _ = fmt.Fprintf(c.err, "wp: not noting rewritten work: base: %v\n", err)
+		return nil
+	}
 	root, err := localGit("rev-parse", "--show-toplevel")
 	if err != nil {
 		return nil
@@ -116,6 +123,12 @@ func (c *cli) rewrittenTasks(key, baseFlag string) []rewrittenTask {
 			prs = append(prs, rewrittenPR{Number: in.PR, Lines: in.Lines, Share: in.Share, At: in.At})
 		}
 	}
+	// Refused here, before it is sent, with the field and limit the server
+	// would name: a repo or commit this long is not one git handed us.
+	if err := checkRewriteSend(repo, head, prs); err != nil {
+		_, _ = fmt.Fprintf(c.err, "wp: not noting rewritten work: %v\n", err)
+		return nil
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	var got []rewrittenTask
@@ -124,6 +137,16 @@ func (c *cli) rewrittenTasks(key, baseFlag string) []rewrittenTask {
 		return nil
 	}
 	return got
+}
+
+// checkRewriteSend is the server's check of the call (core.ValidateRewriteCall)
+// made before the call is sent.
+func checkRewriteSend(repo, head string, prs []rewrittenPR) error {
+	in := make([]core.RewrittenPR, len(prs))
+	for i, p := range prs {
+		in[i] = core.RewrittenPR{Number: p.Number, Lines: p.Lines, Share: p.Share, At: p.At}
+	}
+	return core.ValidateRewriteCall(repo, head, in)
 }
 
 // rewritesSeen says whether this checkout's last ship of key already named
@@ -185,6 +208,14 @@ func rewritesText(key string, got []rewrittenTask) string {
 
 // excerptLine shortens s to n runes on one line.
 func excerptLine(s string, n int) string {
+	// A control character (an escape sequence) is not text: it would act on
+	// the terminal that prints another task's title.
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
+			return ' '
+		}
+		return r
+	}, s)
 	s = strings.Join(strings.Fields(s), " ")
 	if r := []rune(s); len(r) > n {
 		return strings.TrimSpace(string(r[:n-1])) + "…"

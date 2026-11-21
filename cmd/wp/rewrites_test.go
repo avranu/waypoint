@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -67,5 +69,67 @@ func TestRewritesLineKeepsNoTurnOpen(t *testing.T) {
 	no := false
 	if got := shipNeedsAgent(&openedPR{Held: "review is running", HeldNeedsAgent: &no, NoticeNeedsAgent: &no}, "", nil, "", false); got != "" {
 		t.Errorf("held ship needs the agent: %q", got)
+	}
+}
+
+// wp refuses a call the server would, before sending it, naming the field
+// and the limit.
+func TestCheckRewriteSendNamesFieldAndLimit(t *testing.T) {
+	ok := []rewrittenPR{{Number: 3, Lines: 20, Share: 0.5, At: 1}}
+	if err := checkRewriteSend("o/r", strings.Repeat("a", 40), ok); err != nil {
+		t.Fatalf("a well-formed call: %v", err)
+	}
+	for _, c := range []struct {
+		name, repo, head string
+		prs              []rewrittenPR
+		want             string
+	}{
+		{"long repo", strings.Repeat("a", 300) + "/r", "abc1234", ok, "repo must be owner/name, at most 255 characters"},
+		{"long head", "o/r", strings.Repeat("a", 65), ok, "head must be a commit"},
+		{"flag as head", "o/r", "--output=/tmp/x", ok, "head must be a commit"},
+		{"many prs", "o/r", "abc1234", make([]rewrittenPR, 51), "prs: at most 50"},
+	} {
+		if err := checkRewriteSend(c.repo, c.head, c.prs); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v, want %q", c.name, err, c.want)
+		}
+	}
+}
+
+// A title is one plain line in what wp prints: no control character, so
+// another task's title can't write to the agent's terminal.
+func TestRewritesTextTitleIsOnePlainLine(t *testing.T) {
+	got := rewritesText("WP-1", []rewrittenTask{{Key: "WP-2", Title: "a\x1b[2Jb\nc\x07d e", PR: 3, Lines: 20, Share: 0.5}})
+	for _, r := range got {
+		if r < 0x20 && r != '\n' || r == 0x7f || r == 0x2028 {
+			t.Errorf("control character %q in %q", r, got)
+		}
+	}
+	if strings.Count(got, "\n") != 0 {
+		t.Errorf("more than one line: %q", got)
+	}
+}
+
+// A --base that starts with a dash would reach git as an option
+// (--output=FILE, --upload-pack=CMD): it is refused before git runs at all.
+func TestRewrittenTasksRefusesABaseThatIsAnOption(t *testing.T) {
+	dir := t.TempDir()
+	log := filepath.Join(dir, "ran")
+	shim := "#!/bin/sh\necho \"$@\" >> " + log + "\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(shim), 0o755); err != nil { // #nosec G306 -- a test shim must be executable
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	for _, bad := range []string{"--output=/tmp/x", "--upload-pack=touch /tmp/y", "-p", "main\nx", "ma\x1bin"} {
+		var errb bytes.Buffer
+		c := &cli{err: &errb, out: &bytes.Buffer{}}
+		if got := c.rewrittenTasks("WP-1", bad); got != nil {
+			t.Errorf("base %q: found %v", bad, got)
+		}
+		if !strings.Contains(errb.String(), "base") {
+			t.Errorf("base %q: stderr %q does not name the base", bad, errb.String())
+		}
+	}
+	if b, err := os.ReadFile(log); err == nil {
+		t.Errorf("git ran: %s", b)
 	}
 }

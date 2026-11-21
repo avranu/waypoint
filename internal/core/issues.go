@@ -1158,8 +1158,7 @@ func (s *Service) CreateIssue(ctx context.Context, actor *Actor, in IssueInput) 
 		// What an agent files while working on a task follows it (WP-255),
 		// unless it is a slice of that task.
 		if o, ok := origin[0].(int64); ok && o != id && o != parentID {
-			if _, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO issue_relations(source_id, target_id, kind, created_at, found, basis)
-				VALUES (?,?,'follows',?,'session','inferred')`, id, o, now); err != nil {
+			if _, err := s.insertRelation(ctx, t, newRelation{Src: id, Dst: o, Kind: "follows", Found: "session", Basis: "inferred"}); err != nil {
 				return err
 			}
 		}
@@ -2848,14 +2847,14 @@ func (s *Service) relate(ctx context.Context, t *tx, actor *Actor, a, b *Issue, 
 	err := t.QueryRowContext(ctx, `SELECT id, subkind FROM issue_relations WHERE kind = ? AND ((source_id = ? AND target_id = ?) OR (? = 1 AND source_id = ? AND target_id = ?))`,
 		kind, src.ID, dst.ID, symmetric, dst.ID, src.ID).Scan(&existing, &had)
 	made := &RelationMade{Kind: given, Found: found}
-	var foundCol any // NULL: someone chose the kind
-	if found != "" {
-		foundCol = found
-	}
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		_, err = t.ExecContext(ctx, `INSERT INTO issue_relations(source_id, target_id, kind, subkind, created_at, named_in, found, basis, created_by, created_agent)
-			VALUES (?,?,?,?,?,?,?,?,?,?)`, src.ID, dst.ID, kind, subkind, s.nowMS(), nullInt(namedIn), foundCol, basis, nullUser(actor.id()), actor.creditAgent())
+		var inserted bool
+		inserted, err = s.insertRelation(ctx, t, newRelation{Src: src.ID, Dst: dst.ID, Kind: kind, Subkind: subkind, NamedIn: namedIn, Found: found,
+			Basis: basis, CreatedBy: actor.id(), CreatedAgent: actor.creditAgent()})
+		if err == nil && !inserted {
+			return made, nil // already there, as said: nothing more to record
+		}
 	case err != nil:
 		return nil, err
 	case subkind == "" || subkind == had:
