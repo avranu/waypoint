@@ -108,8 +108,10 @@ const (
 // reviewGate is the task's run that autopilot reviews before its pull
 // request, or why it can't (no).
 type reviewGate struct {
-	// auditAsked: the round scheduled in this ship has its audit under
-	// way already (startRoundReview, WP-1325).
+	// auditAsked: the round this ship waits on has its audit under way
+	// already (startRoundReview, WP-1325): set for a round scheduled in this
+	// ship and for one already pending whose audit this ship asked for
+	// (ensureStarted).
 	auditAsked   bool
 	x            *AgentSession
 	run, issueID int64
@@ -455,11 +457,11 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 	schedule := func(replace int64, skip string) error {
 		return scheduleFor(roundReplaced, replace, skip)
 	}
-	// ensureStarted asks for the reviewer of a round that was already
-	// pending when this ship looked: one re-asked after an interruption, one
-	// whose start failed or was refused before, or one scheduled before the
-	// reviewer started at the ship (WP-1325). It finds the audit if there is
-	// one, so it asks at most once.
+	// ensureStarted asks for the audit of a round that was already pending
+	// when this ship looked: one re-asked after an interruption, one whose
+	// start failed or was refused before, or one scheduled before the audit
+	// started at the ship (WP-1325). It finds the audit if there is one, so
+	// it asks at most once.
 	ensureStarted := func() {
 		if !scheduled && state == RoundPending {
 			// Its audit, asked now, reads this ship's head.
@@ -467,9 +469,10 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 			s.startRoundReview(ctx, g, id)
 		}
 	}
-	// startOver replaces a pending round whose audit was asked before the
-	// head was committed, when that audit has nothing for the session: the
-	// review starts again on what is pushed now (WP-1325).
+	// startOver replaces a pending round (roundBehind: the head differs
+	// from the one the round's audit reads, and that audit, its own or its
+	// Claude reviewer's, is still going or found nothing): the review starts
+	// again on what is pushed now (WP-1325).
 	startOver := func() (string, error) {
 		if err := scheduleFor(roundRestarted, id, ""); err != nil {
 			return "", err

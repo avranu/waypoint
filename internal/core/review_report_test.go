@@ -129,9 +129,9 @@ func (e *loopEnv) sessionRoundWith(res AutopilotJobResult) (int64, string) {
 // session that didn't take it is logged (WP-1325).
 func TestReviewJobWarningKeptOnTheStep(t *testing.T) {
 	e := sessionLoopEnv(t, nil)
-	e.sessionRoundWith(AutopilotJobResult{Outcome: "reviewing", Detail: "typed while the registry said busy", Warning: "the session didn't start the review within 15s; check it"})
+	e.sessionRoundWith(AutopilotJobResult{Outcome: "reviewing", Detail: "typed while the registry said busy", Warning: "the session's screen didn't show it starting the review within 15s; check it"})
 	st := e.step()
-	if st.reason != WaitReviewing || !strings.Contains(st.detail, "(typed while the registry said busy)") || !strings.Contains(st.detail, "; the session didn't start the review") {
+	if st.reason != WaitReviewing || !strings.Contains(st.detail, "(typed while the registry said busy)") || !strings.Contains(st.detail, "; the session's screen didn't show it starting") {
 		t.Fatalf("step = %+v", st)
 	}
 }

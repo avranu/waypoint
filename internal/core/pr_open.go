@@ -51,7 +51,7 @@ type OpenPRInput struct {
 	HeadTime int64
 	// HeadSHA is the head's commit (empty: an older wp), which tells two
 	// heads committed in the same second apart (roundBehind).
-	HeadSHA string `json:"head_sha"`
+	HeadSHA string
 	// Change is what the checkout says about the change, for review
 	// triage (WP-692); nil from an older wp, which keeps the review.
 	Change *ChangeFacts

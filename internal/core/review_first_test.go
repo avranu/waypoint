@@ -264,6 +264,28 @@ func TestReviewBeforePRNotShipped(t *testing.T) {
 	}
 }
 
+// With a runner there, the unshipped round's audit starts at the ship, is
+// recorded on the round (audit_id, audit_at), and is keyed by the round.
+func TestReviewBeforePRNotShippedAuditStarts(t *testing.T) {
+	a, _, _ := firstEnv(t)
+	first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude"})
+	if _, err := a.s.AgentTake(a.ctx, a.ag, first.Key, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.ship(first.Key, ShipAuto); err != nil {
+		t.Fatal(err)
+	}
+	round := a.newestRoundID()
+	ra, au := a.roundAuditRow(round)
+	if ra.id == 0 || ra.at == 0 || au == nil {
+		t.Fatalf("audit not recorded on the round: %+v", ra)
+	}
+	var key string
+	if err := a.s.db.R.QueryRow(`SELECT request_key FROM code_audits WHERE id = ?`, ra.id).Scan(&key); err != nil || key != "review-round:"+itoa64(round) {
+		t.Fatalf("request key %q, %v", key, err)
+	}
+}
+
 // A review held before its pull request that a person's prompt cut short
 // before it reported runs again: the Stop after asks for it, and so does
 // the session's own wp ship --pr. Past reviewInterruptsMax interruptions,

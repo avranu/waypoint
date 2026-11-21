@@ -352,3 +352,150 @@ func TestCancelRoundAuditsTakesTheRoundsOwn(t *testing.T) {
 		}
 	}
 }
+
+// copyAudit adds an audit like the round's own under another request key
+// and status (the rows' other columns copied): a stand-in for the round's
+// reviewer or for another round's audit.
+func (a *apEnv) copyAudit(from int64, key, status string) int64 {
+	a.t.Helper()
+	res, err := a.s.db.W.Exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, ref, base, owner_id, created_at, purpose, request_key, status)
+		SELECT project_id, forge_id, repo, target, ref, base, owner_id, created_at, purpose, ?, ? FROM code_audits WHERE id = ?`, key, status, from)
+	if err != nil {
+		a.t.Fatal(err)
+	}
+	id, _ := res.LastInsertId()
+	return id
+}
+
+// reviewerEnv ships a head (a time and a commit) and hands the round over
+// to a reviewer in the given state: the round's audit is out of it
+// (audit_note), and the reviewer is what the round waits on. It returns the
+// round and the reviewer's audit.
+func reviewerEnv(t *testing.T, status, note string) (a *apEnv, key string, at, round, reviewer int64) {
+	t.Helper()
+	a, _, _, key = startEnv(t)
+	at = a.clockNow().Unix()
+	if _, err := a.ship(key, ShipAuto, headIs(at, "aaaa")); err != nil {
+		t.Fatal(err)
+	}
+	round = a.newestRoundID()
+	ra, _ := a.roundAuditRow(round)
+	reviewer = a.copyAudit(ra.id, "review-round:"+itoa64(round)+":sonnet", status)
+	if _, err := a.s.db.W.Exec(`UPDATE work_log SET audit_note = ? WHERE id = ?`, note, round); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.s.db.W.Exec(`UPDATE code_audits SET status = 'failed' WHERE id = ?`, ra.id); err != nil {
+		t.Fatal(err)
+	}
+	a.lapse(time.Minute)
+	return a, key, at, round, reviewer
+}
+
+// A round handed to its reviewer waits on the reviewer's audit, so it is
+// behind when that one reads less than what is pushed (WP-1325).
+func TestRoundBehindOfAReviewer(t *testing.T) {
+	const slow = roundAuditOutwaited + "audit #1 was slow"
+	t.Run("running, a newer head: starts over", func(t *testing.T) {
+		a, key, at, round, reviewer := reviewerEnv(t, AuditRunning, slow)
+		res, err := a.ship(key, ShipAuto, headIs(at+60, "bbbb"))
+		if err != nil || res.Pull != nil || !strings.Contains(res.Notice, "More was committed") {
+			t.Fatalf("ship = %+v, %v", res, err)
+		}
+		if r := a.round(round); r.state != RoundInterrupted || a.reason(round) != roundRestarted || a.newestRoundID() == round {
+			t.Fatalf("round = %+v, reason %q", r, a.reason(round))
+		}
+		if st := a.auditStatus(reviewer); st != AuditCancelled {
+			t.Errorf("the reviewer's audit is %q", st)
+		}
+	})
+	for name, tc := range map[string]struct {
+		status, note string
+		sha          string
+		toSHA        string
+	}{
+		"failed, a newer head":       {status: AuditFailed, note: slow, sha: "bbbb"},
+		"running, the same head":     {status: AuditRunning, note: slow, sha: "aaaa"},
+		"the session's own review":   {status: AuditRunning, note: reviewBySession, sha: "bbbb"},
+		"the commit the runner read": {status: AuditRunning, note: slow, sha: "bbbb", toSHA: "bbbb"},
+	} {
+		t.Run("kept: "+name, func(t *testing.T) {
+			a, key, at, round, reviewer := reviewerEnv(t, tc.status, tc.note)
+			if tc.toSHA != "" {
+				if _, err := a.s.db.W.Exec(`UPDATE code_audits SET to_sha = ? WHERE id = ?`, tc.toSHA, reviewer); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := a.ship(key, ShipAuto, headIs(at+60, tc.sha)); err != nil {
+				t.Fatal(err)
+			}
+			if a.newestRoundID() != round || a.round(round).state != RoundPending {
+				t.Fatalf("round replaced: %+v", a.round(round))
+			}
+		})
+	}
+	t.Run("kept: done with findings, a newer head", func(t *testing.T) {
+		a, key, at, round, reviewer := reviewerEnv(t, AuditDone, slow)
+		if _, err := a.s.db.W.Exec(`INSERT INTO code_audit_findings(audit_id, ordinal, title, path, line, severity, problem, state) VALUES (?, 1, 'Wrong', 'a.go', 1, 'high', 'Wrong', 'open')`, reviewer); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := a.ship(key, ShipAuto, headIs(at+60, "bbbb")); err != nil {
+			t.Fatal(err)
+		}
+		if a.newestRoundID() != round || a.round(round).state != RoundPending {
+			t.Fatalf("round replaced: %+v", a.round(round))
+		}
+	})
+}
+
+// wp ship --review with a newer head while the pending round's audit is
+// running starts over: the round is replaced (roundRestarted), a new one is
+// pending, and the old audit is cancelled (WP-1325).
+func TestShipReviewStartsOver(t *testing.T) {
+	a, _, _, key := startEnv(t)
+	at := a.clockNow().Unix()
+	if _, err := a.ship(key, ShipAuto, headIs(at, "aaaa")); err != nil {
+		t.Fatal(err)
+	}
+	first := a.newestRoundID()
+	ra, _ := a.roundAuditRow(first)
+	a.lapse(time.Minute)
+	res, err := a.ship(key, ShipReview, headIs(at+60, "bbbb"))
+	if err != nil || res.Pull != nil || !strings.Contains(res.Notice, "More was committed") {
+		t.Fatalf("ship = %+v, %v", res, err)
+	}
+	next := a.newestRoundID()
+	if r := a.round(first); r.state != RoundInterrupted || a.reason(first) != roundRestarted || next == first || a.round(next).state != RoundPending {
+		t.Fatalf("round = %+v, reason %q, newest %d", a.round(first), a.reason(first), next)
+	}
+	if st := a.auditStatus(ra.id); st != AuditCancelled {
+		t.Errorf("the old audit is %q", st)
+	}
+}
+
+// A pending round whose audit was asked keeps the head that audit reads,
+// whatever a later ship pushes (noteRoundHead only fills a round with no
+// audit).
+func TestNoteRoundHeadKeepsAnAskedAudit(t *testing.T) {
+	a, _, _, key := startEnv(t)
+	at := a.clockNow().Unix()
+	if _, err := a.ship(key, ShipAuto, headIs(at, "aaaa")); err != nil {
+		t.Fatal(err)
+	}
+	round := a.newestRoundID()
+	if ra, _ := a.roundAuditRow(round); ra.id == 0 {
+		t.Fatal("no audit asked")
+	}
+	a.s.noteRoundHead(a.ctx, round, at+60, "bbbb")
+	bp := roundBeforePR(a.ctx, a.s.db.R, round)
+	if bp == nil || bp.HeadTime != at || bp.HeadSHA != "aaaa" {
+		t.Fatalf("head = %+v", bp)
+	}
+	// Control: with no audit asked, it is filled.
+	if _, err := a.s.db.W.Exec(`UPDATE work_log SET audit_id = NULL WHERE id = ?`, round); err != nil {
+		t.Fatal(err)
+	}
+	a.s.noteRoundHead(a.ctx, round, at+60, "bbbb")
+	if bp := roundBeforePR(a.ctx, a.s.db.R, round); bp == nil || bp.HeadTime != at+60 || bp.HeadSHA != "bbbb" {
+		t.Fatalf("head = %+v", bp)
+	}
+}

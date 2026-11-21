@@ -149,7 +149,7 @@ func TestReviewNotTakenWarnsFromScreen(t *testing.T) {
 	reviewTookWait = 200 * time.Millisecond
 	t.Cleanup(func() { reviewTookWait = old })
 	o := p.execAutopilot(context.Background(), newRun(time.Minute), job)
-	if r, _ := o.Result.(autopilotResult); r.Outcome != "reviewing" || !strings.Contains(r.Warning, "didn't start") {
+	if r, _ := o.Result.(autopilotResult); r.Outcome != "reviewing" || !strings.Contains(r.Warning, "screen didn't show it starting") {
 		t.Fatalf("outcome %+v", o)
 	}
 }

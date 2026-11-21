@@ -454,10 +454,10 @@ const reviewInterruptsMax = 3
 
 // roundReplaced is why a pending or running round the agent replaced with a
 // new one (wp ship --review --force) ended interrupted, and roundRestarted
-// why a pending round started over because more was committed since its
-// review was asked for. The review went on in the new round, so neither
-// counts towards reviewInterruptsMax, and neither is opened as a round that
-// never ran (openStrandedRounds) (WP-1325).
+// why a pending round started over because the ship's head is newer than the
+// one its audit reads (roundBehind). The review went on in the new round, so
+// neither counts towards reviewInterruptsMax, and neither is opened as a
+// round that never ran (openStrandedRounds) (WP-1325).
 const (
 	roundReplaced  = "replaced by another review the agent asked for"
 	roundRestarted = "more was committed since its review was asked for"

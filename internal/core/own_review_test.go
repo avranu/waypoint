@@ -173,11 +173,12 @@ func TestShipWithOwnReview(t *testing.T) {
 		if got := a.rounds(); len(got) != 1 || got[0] != RoundDone || a.newestRoundID() != pending {
 			t.Fatalf("rounds = %q", got)
 		}
-		// The first ship asked for the round's reviewer (WP-1325), so the
+		// The first ship asked for the round's audit (WP-1325), so the
 		// session's own review ended while that audit was still going: the
-		// audit goes on as the pull request's.
-		if note := a.roundNote(pending); !strings.HasPrefix(note, roundAuditOutwaited) {
-			t.Fatalf("audit note = %q", note)
+		// audit goes on as the pull request's, and the note names it.
+		ra, _ := a.roundAuditRow(pending)
+		if note := a.roundNote(pending); ra.id == 0 || !strings.HasPrefix(note, roundAuditOutwaited) || !strings.Contains(note, "audit #"+itoa64(ra.id)) {
+			t.Fatalf("audit note = %q, audit %d", note, ra.id)
 		}
 	})
 	t.Run("a pending round whose audit ended becomes it", func(t *testing.T) {

@@ -6,8 +6,8 @@ import (
 	"time"
 )
 
-// A round that never ran still ends with its pull request, whether or not
-// the run ended (WP-1325).
+// A round that never ran still ends with its pull request, once its run or
+// session is over or the session has moved on to another task (WP-1325).
 
 // strandedEnv is a task shipped and held for its review, then left with no
 // autopilot step and its run ended, as a session's end or a person's /clear
@@ -271,5 +271,66 @@ func TestStrandedRoundBackoffDoublesAndIsPruned(t *testing.T) {
 	a.s.sweepRounds(a.ctx)
 	if _, ok := a.s.strandedRetry.Load(id); ok {
 		t.Error("the back-off of a round that is no longer a candidate was kept")
+	}
+}
+
+// A round that ended failed or interrupted, whose session moved on to another
+// task (its run not ended), has its pull request opened: a round in an end
+// state has nothing left to wait for, so no age guard applies.
+func TestStrandedEndedRoundOfASessionThatMovedOn(t *testing.T) {
+	for _, state := range []string{RoundFailed, RoundInterrupted} {
+		t.Run(state, func(t *testing.T) {
+			a, g, _ := heldEnv(t)
+			a.stopWith("Waiting for the review.")
+			if _, err := a.s.db.W.Exec(`DELETE FROM autopilot_steps`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := a.s.db.W.Exec(`UPDATE work_log SET state = ?, reason = 'the runner went away', ended_at = ? WHERE id = ?`, state, a.clockNow().UnixMilli(), a.heldRound()); err != nil {
+				t.Fatal(err)
+			}
+			second := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "Second", Agent: "claude"})
+			if _, err := a.s.AgentTake(a.ctx, a.ag, second.Key, ""); err != nil {
+				t.Fatal(err)
+			}
+			a.s.sweepRounds(a.ctx)
+			if n := a.opened(g); n != 1 {
+				t.Fatalf("opened %d", n)
+			}
+		})
+	}
+}
+
+// Rounds the agent replaced, or that started over for a newer head, don't
+// count towards reviewInterruptsMax; others interrupted do.
+func TestAskAgainAfterInterruptSkipsReplacedAndRestarted(t *testing.T) {
+	a, _, _ := heldEnv(t)
+	var session, issue int64
+	if err := a.s.db.R.QueryRow(`SELECT session_id, issue_id FROM work_log WHERE kind = 'review' ORDER BY id DESC LIMIT 1`).Scan(&session, &issue); err != nil {
+		t.Fatal(err)
+	}
+	add := func(reason string, n int) {
+		t.Helper()
+		for range n {
+			if _, err := a.s.db.W.Exec(`INSERT INTO work_log(issue_id, kind, state, body, reason, created_at, updated_at, session_id) VALUES (?, 'review', 'interrupted', '', ?, 1, 1, ?)`, issue, reason, session); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	again := func() bool {
+		t.Helper()
+		ok, err := askAgainAfterInterrupt(a.ctx, a.s.db.R, session, issue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	add(roundReplaced, reviewInterruptsMax)
+	add(roundRestarted, reviewInterruptsMax)
+	if !again() {
+		t.Fatal("replaced and restarted rounds counted as interruptions")
+	}
+	add("a person's prompt", reviewInterruptsMax)
+	if again() {
+		t.Fatal("interruptions past the max didn't stop asking")
 	}
 }
