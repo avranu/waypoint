@@ -21,21 +21,28 @@ import (
 
 // ResourceLimits are the thresholds; zero turns a check off.
 type ResourceLimits struct {
-	DiskFreeMB   int `json:"disk_free_mb"`   // free space on the data disk
-	DatabaseMB   int `json:"database_mb"`    // size of the database file
-	MemoryFreeMB int `json:"memory_free_mb"` // available memory
+	DiskFreeMB    int `json:"disk_free_mb"`   // free space on the data disk
+	DatabaseMB    int `json:"database_mb"`    // size of the database file
+	MemoryFreeMB  int `json:"memory_free_mb"` // available memory
+	TranscriptsMB int `json:"transcripts_mb"` // size of the transcript archive
 }
 
 var defaultResourceLimits = ResourceLimits{DiskFreeMB: 1024, DatabaseMB: 0, MemoryFreeMB: 256}
 
-// ResourceStatus is a reading and its limit.
+// ResourceStatus is a reading and its limit. Bytes for the transcript archive
+// is what it holds, kept as pieces are stored (transcript_totals).
 type ResourceStatus struct {
-	Resource string `json:"resource"` // disk, database, memory
+	Resource string `json:"resource"` // disk, database, memory, transcripts
 	Label    string `json:"label"`
 	Bytes    int64  `json:"bytes"`           // free (disk, memory) or used (database)
 	Total    int64  `json:"total,omitempty"` // size of the disk or memory
 	LimitMB  int    `json:"limit_mb"`
 	Low      bool   `json:"low"`
+	// The transcript archive: its pieces, the cap that refuses uploads (0: none)
+	// and the uploads refused for it.
+	Count   int64 `json:"count,omitempty"`
+	CapMB   int   `json:"cap_mb,omitempty"`
+	Refused int64 `json:"refused,omitempty"`
 }
 
 // ResourceLimits returns the limits (admins only).
@@ -63,7 +70,7 @@ func (s *Service) SetResourceLimits(ctx context.Context, actor *Actor, lim Resou
 	if err := s.requireAdminHuman(actor); err != nil {
 		return lim, err
 	}
-	for _, n := range []int{lim.DiskFreeMB, lim.DatabaseMB, lim.MemoryFreeMB} {
+	for _, n := range []int{lim.DiskFreeMB, lim.DatabaseMB, lim.MemoryFreeMB, lim.TranscriptsMB} {
 		if n < 0 || n > 100_000_000 {
 			return lim, invalid("limits are megabytes, zero to turn one off")
 		}
@@ -95,11 +102,28 @@ func (s *Service) readResources(ctx context.Context) []ResourceStatus {
 		out = append(out, ResourceStatus{Resource: "database", Label: "Database size", Bytes: fi.Size(), LimitMB: lim.DatabaseMB,
 			Low: lim.DatabaseMB > 0 && fi.Size() > int64(lim.DatabaseMB)<<20})
 	}
+	if s.cfg.TranscriptDir != "" {
+		var bytes, pieces, refused int64
+		if err := s.db.R.QueryRowContext(ctx, `SELECT stored_bytes, pieces, refused FROM transcript_totals WHERE id = 1`).Scan(&bytes, &pieces, &refused); err == nil {
+			out = append(out, ResourceStatus{Resource: "transcripts", Label: "Transcript archive size", Bytes: bytes, Count: pieces, LimitMB: lim.TranscriptsMB,
+				CapMB: s.cfg.TranscriptMaxMB, Refused: refused, Low: (lim.TranscriptsMB > 0 && bytes > int64(lim.TranscriptsMB)<<20) || nearTranscriptCap(bytes, s.cfg.TranscriptMaxMB)})
+		}
+	}
 	if free, total, ok := memoryAvailable(); ok {
 		out = append(out, ResourceStatus{Resource: "memory", Label: "Free memory", Bytes: free, Total: total, LimitMB: lim.MemoryFreeMB,
 			Low: lim.MemoryFreeMB > 0 && free < int64(lim.MemoryFreeMB)<<20})
 	}
 	return out
+}
+
+// transcriptCapWarnPercent is how full the archive is, of its cap, when the
+// resource goes low: before uploads are refused (audit 1236.6).
+const transcriptCapWarnPercent = 90
+
+// nearTranscriptCap says the archive holds at least transcriptCapWarnPercent
+// of its cap (capMB 0: no cap, never).
+func nearTranscriptCap(bytes int64, capMB int) bool {
+	return capMB > 0 && bytes*100 >= int64(capMB)<<20*transcriptCapWarnPercent
 }
 
 // memoryAvailable reads MemAvailable from /proc/meminfo, where there is one.
@@ -164,8 +188,14 @@ func (s *Service) noteResource(ctx context.Context, r ResourceStatus) {
 		return
 	}
 	text := fmt.Sprintf("%s is low: %s", r.Label, humanBytes(r.Bytes))
-	if r.Resource == "database" {
+	switch r.Resource {
+	case "database":
 		text = fmt.Sprintf("The database has grown to %s (the limit is %d MB)", humanBytes(r.Bytes), r.LimitMB)
+	case "transcripts":
+		text = fmt.Sprintf("The transcript archive has grown to %s in %d pieces (the limit is %d MB)", humanBytes(r.Bytes), r.Count, r.LimitMB)
+		if nearTranscriptCap(r.Bytes, r.CapMB) {
+			text = fmt.Sprintf("The transcript archive holds %s in %d pieces, nearly its cap of %d MB (WAYPOINT_TRANSCRIPT_MAX_MB); uploads are refused when it is full, so raise the cap", humanBytes(r.Bytes), r.Count, r.CapMB)
+		}
 	}
 	s.runGlobal(ctx, &Event{Kind: EvSystemResources, At: s.now().UTC(),
 		Data: map[string]any{"resource": r.Resource, "free": r.Bytes, "total": r.Total, "limit_mb": r.LimitMB, "text": text}})
