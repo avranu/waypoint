@@ -32,6 +32,9 @@ func TestDecideRoundNeverStrands(t *testing.T) {
 													for _, ended := range []bool{false, true} {
 														in := roundIn{Carried: carried, SessionEnded: ended, State: state, Read: read, Audit: audit, Undecided: undecided, Check: check, CheckMarks: 1,
 															Session: session, RunOpen: runOpen, PROpen: prOpen, Unshipped: unshipped, SinceStart: since, SinceChange: change}
+														if state == RoundFailed || state == RoundSkipped || state == RoundInterrupted {
+															in.Release = "the review " + state
+														}
 														out := decideRound(in)
 														n++
 														name := fmt.Sprintf("%+v -> %+v", in, out)
@@ -53,10 +56,10 @@ func TestDecideRoundNeverStrands(t *testing.T) {
 														if unshipped && !runOpen && (state == RoundPending || state == RoundRunning) && out.Do != doEnd {
 															t.Fatalf("a round of a held ship whose run ended stays %s: %s", state, name)
 														}
-														if !runOpen && over && unshipped && !prOpen && out.Do != doReleaseAfterRunEnded {
+														if !runOpen && (over || state == RoundDone) && unshipped && !prOpen && out.Do != doReleaseAfterRunEnded {
 															t.Fatalf("a round the ended run left unshipped isn't named for release: %s", name)
 														}
-														if out.Do == doReleaseAfterRunEnded && (runOpen || prOpen || !unshipped || !over) {
+														if out.Do == doReleaseAfterRunEnded && (runOpen || prOpen || !unshipped || !(over || state == RoundDone)) {
 															t.Fatalf("released after the run ended when it hadn't, or shipped: %s", name)
 														}
 														if runOpen && out.Do == doNothing {
@@ -198,4 +201,73 @@ func TestDecideRoundReleaseOrHold(t *testing.T) {
 			t.Errorf("%s: %+v", tc.name, out)
 		}
 	}
+}
+
+// A round whose run has ended is never left with nothing to say: every
+// combination of what is recorded of it either has Waypoint act (end it,
+// open its pull request) or says, in Settled, why it is left alone for good.
+// Nothing waits or tells without a named thing and a time left (WP-1370,
+// WP-1325).
+func TestDecideEndedRoundNeverStrands(t *testing.T) {
+	bools := []bool{false, true}
+	n := 0
+	for _, state := range []string{RoundPending, RoundRunning, RoundDone, RoundSkipped, RoundInterrupted, RoundFailed} {
+		for _, read := range []string{"", readPending, readDone, readFailed, "rules"} {
+			for _, audit := range []string{"", AuditQueued, AuditRunning, AuditDone, AuditFailed} {
+				for _, check := range []string{checkAbsent, checkQueued, checkRunning, checkAgreed, checkDisagreed, checkDidnt} {
+					for _, since := range []time.Duration{0, 48 * time.Hour} {
+						for _, sinceEnd := range []time.Duration{0, strandedShipWindow + time.Hour} {
+							for mask := 0; mask < 1<<11; mask++ {
+								flag := func(i int) bool { return mask&(1<<i) != 0 }
+								in := roundIn{State: state, Read: read, Audit: audit, Check: check, CheckMarks: 1, SinceStart: since, SinceChange: since, SinceEnd: sinceEnd,
+									Undecided: 1, RunOpen: false,
+									Session: flag(0), Superseded: flag(1), Carried: flag(2), PROpen: flag(3), PRGone: flag(4), Resolved: flag(5), Linked: flag(6),
+									Newer: flag(7), Taken: flag(8), Unshipped: flag(9), SessionEnded: flag(10)}
+								if state == RoundSkipped || state == RoundFailed || state == RoundInterrupted {
+									in.Release = "the review " + state
+									if flag(0) && flag(1) { // (a person's decision stands: no release)
+										in.Release = ""
+									}
+								}
+								out := decideRound(in)
+								n++
+								name := fmt.Sprintf("%+v -> %+v", in, out)
+								switch out.Do {
+								case doNothing:
+									if out.Settled == "" {
+										t.Fatalf("left alone with no reason: %s", name)
+									}
+								case doWait, doTell:
+									if out.For == "" || out.Until <= 0 {
+										t.Fatalf("waits on nothing or with no time left: %s", name)
+									}
+								case doEnd:
+									if out.To == "" || out.Why == "" {
+										t.Fatalf("an end that says nothing: %s", name)
+									}
+								case doReleaseAfterRunEnded:
+									if !in.Unshipped || in.PROpen || in.PRGone || in.Linked || in.Resolved || in.Superseded || in.Newer || in.Taken || in.SinceEnd > strandedShipWindow || out.Why == "" {
+										t.Fatalf("released a round that is left alone: %s", name)
+									}
+								}
+								// Nothing the exclusions leave a round for may be released, and
+								// a round none leaves alone is: opened (done, failed, skipped,
+								// interrupted with a reason to release) or ended in its own state.
+								free := in.Unshipped && !in.PROpen && !in.PRGone && !in.Linked && !in.Resolved && !in.Superseded && !in.Newer && !in.Taken && in.SinceEnd <= strandedShipWindow
+								over := state == RoundSkipped || state == RoundFailed || state == RoundInterrupted
+								if free && out.Do != doEnd && (state == RoundDone || (over && in.Release != "")) && out.Do != doReleaseAfterRunEnded {
+									t.Fatalf("an unshipped round of an ended run isn't released: %s", name)
+								}
+								if free && (state == RoundPending || state == RoundRunning) && out.Do != doEnd {
+									t.Fatalf("an unshipped round of an ended run keeps going: %s", name)
+								}
+								_ = bools
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	t.Logf("%d combinations", n)
 }

@@ -227,13 +227,14 @@ func TestReviewBeforePRNotShipped(t *testing.T) {
 	if _, err := a.s.AgentTake(a.ctx, a.ag, first.Key, ""); err != nil {
 		t.Fatal(err)
 	}
+	// No Cursor: the round's own prompt, which ends with wp ship. (The
+	// reviewer starts at the ship now, so there is none before it.)
+	_, _ = a.s.db.W.Exec(`DELETE FROM runners WHERE name = 'auditbox'`)
 	if _, err := a.ship(first.Key, ShipAuto); err != nil {
 		t.Fatal(err)
 	}
 	a.stopWith("Waiting for the review.")
 	roundID := a.step().reviewID.Int64
-	// No Cursor: the round's own prompt, which ends with wp ship.
-	_, _ = a.s.db.W.Exec(`DELETE FROM runners WHERE name = 'auditbox'`)
 	a.tick(61 * time.Second)
 	if len(a.jobs) != 1 {
 		t.Fatalf("jobs = %+v", a.jobs)
@@ -253,6 +254,28 @@ func TestReviewBeforePRNotShipped(t *testing.T) {
 	}
 	if len(g.created) != 0 {
 		t.Errorf("opened %d", len(g.created))
+	}
+}
+
+// With a runner there, the unshipped round's audit starts at its step's first tick, is
+// recorded on the round (audit_id, audit_at), and is keyed by the round.
+func TestReviewBeforePRNotShippedAuditStarts(t *testing.T) {
+	a, _, _ := firstEnv(t)
+	first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude"})
+	if _, err := a.s.AgentTake(a.ctx, a.ag, first.Key, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.shipStarted(first.Key, ShipAuto); err != nil {
+		t.Fatal(err)
+	}
+	round := a.newestRoundID()
+	ra, au := a.roundAuditRow(round)
+	if ra.id == 0 || ra.at == 0 || au == nil {
+		t.Fatalf("audit not recorded on the round: %+v", ra)
+	}
+	var key string
+	if err := a.s.db.R.QueryRow(`SELECT request_key FROM code_audits WHERE id = ?`, ra.id).Scan(&key); err != nil || key != "review-round:"+itoa64(round) {
+		t.Fatalf("request key %q, %v", key, err)
 	}
 }
 
@@ -943,11 +966,11 @@ func TestScheduleRoundRace(t *testing.T) {
 		t.Fatalf("gate = %+v, %v", g, err)
 	}
 	bp := beforePR{Project: a.p.Key, Repo: "acme/app", Branch: "wp-1-first", Base: "main"}
-	if err := a.s.scheduleRound(a.ctx, a.ag, g, bp, 0, 0, "", nil); err != nil {
+	if err := a.s.scheduleRound(a.ctx, a.ag, g, bp, 0, 0, "", "", nil); err != nil {
 		t.Fatal(err)
 	}
 	// The other ship read "no round yet" too.
-	if err := a.s.scheduleRound(a.ctx, a.ag, g, bp, 0, 0, "", nil); !errors.Is(err, ErrConflict) {
+	if err := a.s.scheduleRound(a.ctx, a.ag, g, bp, 0, 0, "", "", nil); !errors.Is(err, ErrConflict) {
 		t.Fatalf("second = %v", err)
 	}
 	if got := a.rounds(); len(got) != 1 || got[0] != RoundPending {

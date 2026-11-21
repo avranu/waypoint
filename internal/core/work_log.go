@@ -460,18 +460,24 @@ func (s *Service) endStepRound(ctx context.Context, t *tx, roundID int64, why st
 // (WP-1320), so it doesn't count.
 const reviewInterruptsMax = 3
 
-// roundReplaced is why a running round the agent replaced with a new one
-// (wp ship --review --force) ended interrupted. The review went on in the
-// new round, so it doesn't count towards reviewInterruptsMax.
-const roundReplaced = "replaced by another review the agent asked for"
+// roundReplaced is why a pending or running round the agent replaced with a
+// new one (wp ship --review --force) ended interrupted, and roundRestarted
+// why a pending round started over because the ship's head is newer than the
+// one its audit reads (roundBehind). The review went on in the new round, so
+// neither counts towards reviewInterruptsMax, and neither is opened as a
+// round that never ran (openStrandedRounds) (WP-1325).
+const (
+	roundReplaced  = "replaced by another review the agent asked for"
+	roundRestarted = "more was committed since its review was asked for"
+)
 
 // askAgainAfterInterrupt: the task's review, interrupted in the session
 // before it reported, is to be asked for again (fewer than
 // reviewInterruptsMax of the session's rounds of the task were).
 func askAgainAfterInterrupt(ctx context.Context, q queryer, sessionID, issueID int64) (bool, error) {
 	var n int
-	err := q.QueryRowContext(ctx, `SELECT count(*) FROM work_log WHERE kind = 'review' AND session_id = ? AND issue_id = ? AND state = 'interrupted' AND coalesce(reason, '') != ?`,
-		sessionID, issueID, roundReplaced).Scan(&n)
+	err := q.QueryRowContext(ctx, `SELECT count(*) FROM work_log WHERE kind = 'review' AND session_id = ? AND issue_id = ? AND state = 'interrupted' AND coalesce(reason, '') NOT IN (?, ?)`,
+		sessionID, issueID, roundReplaced, roundRestarted).Scan(&n)
 	return n < reviewInterruptsMax, err
 }
 
@@ -488,7 +494,10 @@ func (s *Service) sweepRounds(ctx context.Context) {
 	// shipSettledRounds, not ended here.
 	rows, err := s.db.R.QueryContext(ctx, `SELECT id FROM work_log WHERE kind = 'review' AND state IN ('pending', 'running') LIMIT 200`)
 	if err != nil {
+		// The rounds below don't depend on this read: they still run.
 		s.log.WarnContext(ctx, "review rounds to end", "err", err)
+		s.cancelOrphanReviewAudits(ctx)
+		s.handOverRoundAudits(ctx)
 		return
 	}
 	ids, err := scanIDs(rows)

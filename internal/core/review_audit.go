@@ -131,6 +131,162 @@ func (s *Service) roundAuditOf(ctx context.Context, roundID int64) (roundAudit, 
 	return ra, err
 }
 
+// noteRoundAudit records the audit asked for a round that has none, so its
+// wait counts from now. The guard on the note is right for both callers:
+// each has just read the round with no note, and a note written since (its
+// audit given up on) means this audit isn't the round's.
+func (s *Service) noteRoundAudit(ctx context.Context, roundID, auditID int64) error {
+	now := s.nowMS()
+	_, err := s.db.W.ExecContext(ctx, `UPDATE work_log SET audit_id = ?, audit_at = ?, updated_at = ? WHERE id = ? AND audit_id IS NULL AND audit_note = ''`, auditID, now, now, roundID)
+	return err
+}
+
+// roundBehind says whether the audit a pending round is waiting on reads
+// less than what a ship pushed and has nothing for the session yet: it is
+// still going, or done with no findings (WP-1325). The audit the round
+// waits on is its own, or, once that is out of it (audit_note: it failed or
+// was outwaited and the round's reviewer took over), the reviewer's. A round
+// the session reviews itself (reviewBySession), or whose slow audit went on
+// as the pull request's with no review in its place (stakesNoClaude), waits
+// on none: that review has its own check (ownReview.covers).
+//
+// The round records the head its first audit reads (beforePR.HeadSHA, the
+// commit, and HeadTime, its time), and a ship whose head is another has
+// pushed something else. Comparing the head with when the audit was asked
+// can't say this: wp ship asks within a second or two of the commit it
+// pushes, and commit times are whole seconds, so the same head can read as
+// newer than its own audit. When the audit has the commit the runner read
+// (ToSHA) and the ship sent one, the head is the same exactly when they are
+// equal. Otherwise, with a commit recorded on the round and one sent, the
+// same; with neither, the head times are compared, as an older wp sends no
+// commit. A round with no head recorded (scheduled before this, or outside
+// a ship) falls back to the comparison with the audit's time, as the
+// session's own review does (ownReview.covers): a commit in the second the
+// audit was asked counts as since. An audit with findings is the session's
+// to decide, and what it commits after reading them is its fixes. A done
+// audit that read nothing is not behind either: the planner falls back to
+// the session's own review for it. An unknown head time (0) is never
+// behind.
+//
+// Known and accepted: the recorded head is the one the round's first audit
+// read, so a reviewer asked after a ship that pushed more (possible only
+// when that audit had failed by then) can read as behind at the next ship of
+// that same head until its ToSHA is known; the round is then asked again
+// once, which costs a review and loses nothing.
+func (s *Service) roundBehind(ctx context.Context, roundID, headTime int64, headSHA string) (bool, error) {
+	if headTime <= 0 || roundID == 0 {
+		return false, nil
+	}
+	ra, err := s.roundAuditOf(ctx, roundID)
+	if err != nil {
+		return false, err
+	}
+	var a *CodeAudit
+	askedAt := ra.at
+	switch {
+	case ra.note == "":
+		if ra.id == 0 {
+			return false, nil
+		}
+		a, err = s.auditRow(ctx, ra.id)
+	case ra.note == reviewBySession || strings.Contains(ra.note, stakesNoClaude):
+		return false, nil
+	default:
+		a, err = s.roundReviewer(ctx, roundID)
+		if a != nil {
+			askedAt = a.CreatedAt.UnixMilli()
+		}
+	}
+	if errors.Is(err, ErrNotFound) || (err == nil && a == nil) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	bp := roundBeforePR(ctx, s.db.R, roundID)
+	switch {
+	case a.ToSHA != "" && headSHA != "":
+		if a.ToSHA == headSHA {
+			return false, nil
+		}
+	case bp != nil && bp.HeadSHA != "" && headSHA != "":
+		if bp.HeadSHA == headSHA {
+			return false, nil
+		}
+	case bp != nil && bp.HeadTime > 0:
+		if bp.HeadTime == headTime {
+			return false, nil
+		}
+	case (headTime+1)*1000 <= askedAt:
+		return false, nil
+	}
+	switch a.Status {
+	case AuditQueued, AuditRunning:
+		return true, nil
+	case AuditDone:
+		if err := s.loadFindings(ctx, a); err != nil {
+			return false, err
+		}
+		return !a.readNothing() && len(a.Findings) == 0, nil
+	}
+	return false, nil
+}
+
+// noteRoundHead records the head a pending round's audit will read, when a
+// ship finds the round with no audit asked yet (its start was refused or
+// failed, or it was scheduled outside a ship): the audit reads what is
+// pushed when it is asked, which is this ship's head, not the one the round
+// was scheduled at (roundBehind, WP-1325). A round with its audit asked
+// keeps the head it has.
+func (s *Service) noteRoundHead(ctx context.Context, roundID, headTime int64, headSHA string) {
+	if roundID == 0 || headTime <= 0 {
+		return
+	}
+	if _, err := s.db.W.ExecContext(ctx, `UPDATE work_log SET before_pr = json_set(before_pr, '$.head_time', ?, '$.head_sha', ?)
+		WHERE id = ? AND kind = 'review' AND state = 'pending' AND audit_id IS NULL AND before_pr != ''`, headTime, headSHA, roundID); err != nil {
+		s.log.Info("review round: recording the head its audit reads", "round", roundID, "err", err)
+	}
+}
+
+// cancelRoundAudits cancels the queued or running audits asked for a round
+// that was replaced: its audit and its reviewer's (WP-1325). The sweep would
+// cancel them in time (cancelOrphanReviewAudits); this stops them at once.
+func (s *Service) cancelRoundAudits(ctx context.Context, roundID int64) {
+	rows, err := s.db.R.QueryContext(ctx, `SELECT a.id FROM code_audits a
+		WHERE a.purpose = ? AND a.status IN ('queued', 'running')
+		AND (a.request_key = ? OR a.request_key = ? OR a.request_key = ?
+			OR a.id = (SELECT audit_id FROM work_log WHERE id = ?))`,
+		AuditReview, fmt.Sprintf(reviewAuditKey, roundID), fmt.Sprintf(reviewerAuditKey, roundID), fmt.Sprintf(reviewOtherAuditKey, roundID), roundID)
+	s.cancelAuditRows(ctx, rows, err, "cancel the audit of a replaced round", "round", roundID)
+}
+
+// cancelAuditRows cancels the audits whose ids are in rows (the select that
+// err is the error of), logging each failure as msg with the attributes
+// given: the tail cancelRoundAudits and cancelOrphanReviewAudits share
+// (WP-1325).
+func (s *Service) cancelAuditRows(ctx context.Context, rows *sql.Rows, err error, msg string, attrs ...any) {
+	if err != nil {
+		s.log.WarnContext(ctx, "review round: audits to cancel couldn't be listed", append(attrs, "what", msg, "err", err)...)
+		return
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		s.log.WarnContext(ctx, "review round: audits to cancel couldn't be read", append(attrs, "what", msg, "err", err)...)
+	}
+	_ = rows.Close()
+	for _, id := range ids {
+		if _, err := s.CancelAudit(ctx, SystemActor(), id); err != nil {
+			s.log.Info("review round: "+msg, append(attrs, "audit", id, "err", err)...)
+		}
+	}
+}
+
 // planReview decides how a pending round runs: with another model's
 // findings (its audit's, or its Sonnet reviewer's), by its own prompt, or
 // not yet (the audit or the reviewer is still going).
@@ -265,7 +421,7 @@ func (s *Service) planReview(ctx context.Context, st *stepRow, review *roundRow,
 			// the session for good.
 			return reviewPlan{}, err
 		}
-		if _, err := s.db.W.ExecContext(ctx, `UPDATE work_log SET audit_id = ?, audit_at = ?, updated_at = ? WHERE id = ? AND audit_id IS NULL`, id, now, now, review.id); err != nil {
+		if err := s.noteRoundAudit(ctx, review.id, id); err != nil {
 			return reviewPlan{}, err
 		}
 		ra.id, ra.at = id, now
@@ -1309,22 +1465,7 @@ func (s *Service) cancelOrphanReviewAudits(ctx context.Context) {
 		UNION SELECT a.id FROM code_audits a JOIN work_log w ON w.id = `+reviewerRoundSQL+`
 		WHERE a.purpose = ? AND a.status IN ('queued', 'running') AND a.request_key LIKE ? AND w.state != 'pending'
 		LIMIT 20`, AuditReview, s.nowMS()-handOverWithin.Milliseconds(), roundAuditOutwaited+"%", roundCancelledBy+"%", AuditReview, reviewerKeyLike)
-	if err != nil {
-		return
-	}
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if rows.Scan(&id) == nil {
-			ids = append(ids, id)
-		}
-	}
-	_ = rows.Close()
-	for _, id := range ids {
-		if _, err := s.CancelAudit(ctx, SystemActor(), id); err != nil {
-			s.log.Info("review round: cancel an orphaned audit", "audit", id, "err", err)
-		}
-	}
+	s.cancelAuditRows(ctx, rows, err, "cancel an orphaned audit")
 }
 
 // A round's audit outlives the round (WP-1059). A round can end before its

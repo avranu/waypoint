@@ -68,6 +68,7 @@ type openPullBody struct {
 	Reason   string `json:"reason"`
 	Force    bool   `json:"force"`
 	HeadTime int64  `json:"head_time"`
+	HeadSHA  string `json:"head_sha"`
 	// Message and Summary are left out by a CLI that wasn't given them:
 	// absent keeps what the round holds, "" clears it (WP-1370).
 	Message *string           `json:"message"`
@@ -85,7 +86,7 @@ func (s *Server) openPull(w http.ResponseWriter, r *http.Request) (any, error) {
 	}
 	res, err := s.svc.OpenPullRequest(r.Context(), actorFrom(r), core.OpenPRInput{Project: r.PathValue("key"), Repo: in.Repo, Head: in.Head,
 		Base: in.Base, Title: in.Title, Body: in.Body, Draft: in.Draft, Ready: in.Ready, Issue: in.Issue, For: in.For, Urgent: in.Urgent,
-		Review: in.Review, Reason: in.Reason, Force: in.Force, HeadTime: in.HeadTime, Message: in.Message, Summary: in.Summary, Change: in.Change, BodyInputs: in.BodyInputs})
+		Review: in.Review, Reason: in.Reason, Force: in.Force, HeadTime: in.HeadTime, HeadSHA: in.HeadSHA, Message: in.Message, Summary: in.Summary, Change: in.Change, BodyInputs: in.BodyInputs})
 	if err != nil {
 		return nil, err
 	}

@@ -46,10 +46,16 @@ type OpenPRInput struct {
 	noSweep bool
 	// facts: what the texts of this ship need of the agent (see shipFacts).
 	facts *shipFacts
-	Force bool
+	// byWaypoint: Waypoint opens it (shipHeld), not the agent's wp ship, so
+	// the notes it leaves say so (WP-1325).
+	byWaypoint bool
+	Force      bool
 	// HeadTime is the branch head's commit time (unix seconds; 0: unknown),
 	// to tell whether anything was committed since a review finished.
 	HeadTime int64
+	// HeadSHA is the head's commit (empty: an older wp), which tells two
+	// heads committed in the same second apart (roundBehind).
+	HeadSHA string
 	// Message (-m) and Summary (--summary, the reply to the person with
 	// {task} {pr} {url} unfilled) are kept with a held ship, so a pull
 	// request Waypoint opens for it carries them (WP-1370). nil is a ship

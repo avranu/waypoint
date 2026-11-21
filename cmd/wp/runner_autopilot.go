@@ -128,6 +128,9 @@ var (
 	// go idle before it is held. With autopilotCompactWait it stays under
 	// the server's reviewJobTimeout (10 minutes).
 	autopilotIdleWait = core.ReviewIdleWait
+	// reviewTookWait is how long a session has to show it took the review
+	// prompt (its status turning busy, or its screen, WP-1325).
+	reviewTookWait = core.ReviewBusyWait
 )
 
 var errNoTmux = errors.New("tmux isn't installed on this machine")
@@ -156,6 +159,18 @@ func (p *runnerProc) execAutopilot(ctx context.Context, run *jobRun, in autopilo
 		say("%v", err)
 		return outcome{State: "done", Result: autopilotResult{Outcome: "gone", Detail: err.Error()}}
 	}
+	// The tmux pane of the session, where it runs in one.
+	pane, socket := "", ""
+	if s.Tmux != "" {
+		if pn := s.Tmux[strings.LastIndex(s.Tmux, ".")+1:]; strings.HasPrefix(pn, "%") {
+			pane, socket = pn, tmuxSocketOf(s.PID)
+		}
+	}
+	// byScreen: the registry says busy and the screen shows the main thread
+	// at its prompt (background agents or tasks keep the status "busy":
+	// WP-1325), so the registry proves nothing about whether the session took
+	// what is typed, and the screen is read instead.
+	byScreen := false
 	// A task's start clears or restarts the session, which would end a shell
 	// it still runs, so only a review is typed beside one.
 	if s.Status != "idle" && (in.ReviewOf == "" || !atPrompt(s.Status)) {
@@ -171,19 +186,37 @@ func (p *runnerProc) execAutopilot(ctx context.Context, run *jobRun, in autopilo
 		if in.ReviewOf == "" && s.Status == "shell" {
 			return held("busy", "the session still runs a background shell, which starting the task would end: autopilot looks again later")
 		}
-		if in.ReviewOf == "" || !waitIdle(ctx, ccDir, s.PID, autopilotIdleWait) {
+		if in.ReviewOf == "" {
 			return held("busy", "the session is %s, not idle", cmpStr(s.Status, "in an unknown state"))
 		}
-		say("session %s is idle again: going on with the review of %s", in.CLIID, in.ReviewOf)
+		// Typing a review beside running work is as safe as at a prompt:
+		// the registry's "busy" isn't the last word when the screen shows
+		// the main thread at its prompt.
+		if !waitUntil(ctx, autopilotIdleWait, func() bool {
+			if cur, err := readCCSession(ccDir, s.PID); err == nil && atPrompt(cur.Status) {
+				return true
+			}
+			if pane == "" {
+				return false
+			}
+			_, ok := mainAtPrompt(ctx, socket, pane, autopilotSettle)
+			byScreen = ok
+			return ok
+		}) {
+			return held("busy", "the session is %s, not idle", cmpStr(s.Status, "in an unknown state"))
+		}
+		if byScreen {
+			say("session %s is %s but its main thread is at its prompt: going on with the review of %s", in.CLIID, cmpStr(s.Status, "busy"), in.ReviewOf)
+		} else {
+			say("session %s is idle again: going on with the review of %s", in.CLIID, in.ReviewOf)
+		}
 	}
 	if s.Tmux == "" {
 		return held("no_tmux", "it isn't running inside tmux, so it can't be restarted from outside: start Claude Code in tmux to use autopilot (tmux new -s NAME claude)")
 	}
-	pane := s.Tmux[strings.LastIndex(s.Tmux, ".")+1:]
-	if !strings.HasPrefix(pane, "%") {
+	if pane == "" {
 		return held("no_tmux", "Claude Code names no tmux pane for it (%q)", s.Tmux)
 	}
-	socket := tmuxSocketOf(s.PID)
 	screen, err := runTmux(ctx, socket, nil, "capture-pane", "-p", "-e", "-t", pane)
 	if errors.Is(err, errNoTmux) {
 		return held("no_tmux", "%v", err)
@@ -214,7 +247,7 @@ func (p *runnerProc) execAutopilot(ctx context.Context, run *jobRun, in autopilo
 		return outcome{State: "done", Result: autopilotResult{Outcome: "unwanted"}}
 	}
 	if in.ReviewOf != "" {
-		return p.reviewSession(ctx, run, in, socket, pane, s.PID)
+		return p.reviewSession(ctx, run, in, socket, pane, s.PID, byScreen)
 	}
 	if rl != nil {
 		return p.restartSession(ctx, run, in, dir, s, socket, pane, rl)
@@ -236,7 +269,7 @@ func reviewPasteSettle(n int) time.Duration { return core.ReviewPasteSettle(n) }
 // session keeps its id: the review is part of its work on the task.
 // Outcome reviewing once the prompt went in; held when it never got that far
 // (the step then moves on without the review).
-func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilotJob, socket, pane string, pid int) outcome {
+func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilotJob, socket, pane string, pid int, byScreen bool) outcome {
 	say := func(format string, a ...any) { fmt.Fprintf(run.out, format+"\n", a...) }
 	held := func(reason, format string, a ...any) outcome {
 		d := fmt.Sprintf(format, a...)
@@ -259,8 +292,8 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 		}
 		// Compaction shows as busy; a session too small to compact may never
 		// look busy, which is fine: ready is what counts.
-		waitBusy(ctx, ccDir, pid, autopilotCompactStart)
-		if !waitReady(ctx, ccDir, socket, pane, pid, autopilotCompactWait) {
+		waitTook(ctx, ccDir, pid, socket, pane, byScreen, autopilotCompactStart)
+		if !waitReady(ctx, ccDir, socket, pane, pid, autopilotCompactWait, byScreen) {
 			return held("screen", "it wasn't ready for the review within %s of /compact (still compacting, a dialog, or someone typing there?)", autopilotCompactWait)
 		}
 		// A person may have taken the session while it compacted.
@@ -283,8 +316,12 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 		return outcome{State: "done", Result: autopilotResult{Outcome: "reviewing", Warning: "the review prompt was pasted and not sent (press Enter there): " + err.Error()}}
 	}
 	res := autopilotResult{Outcome: "reviewing"}
-	if !waitBusy(ctx, ccDir, pid, core.ReviewBusyWait) {
-		res.Warning = fmt.Sprintf("the session didn't start the review within %d s; check it", int(core.ReviewBusyWait.Seconds()))
+	if byScreen {
+		res.Detail = "typed while the registry said busy: the screen showed the main thread at its prompt"
+	}
+	if !waitTook(ctx, ccDir, pid, socket, pane, byScreen, reviewTookWait) {
+		res.Warning = fmt.Sprintf("the session's screen didn't show it starting the review within %s; check it", reviewTookWait.Round(time.Second))
+		say("session %s: %s", in.CLIID, res.Warning)
 	}
 	say("asked session %s for the adversarial review of %s", in.CLIID, in.ReviewOf)
 	return outcome{State: "done", Result: res}
@@ -305,7 +342,7 @@ func (p *runnerProc) promptSession(ctx context.Context, run *jobRun, in autopilo
 		return outcome{State: "done", Result: r}
 	}
 	ccDir := claudeConfigDir()
-	if !waitReady(ctx, ccDir, socket, pane, pid, autopilotReadyWait) {
+	if !waitReady(ctx, ccDir, socket, pane, pid, autopilotReadyWait, false) {
 		return cleared("it wasn't ready for its prompt within %s (a dialog on its screen, or someone typing there?)", autopilotReadyWait)
 	}
 	p.waitRegistered(ctx, newID, 20*time.Second)
@@ -354,13 +391,16 @@ func (p *runnerProc) promptSession(ctx context.Context, run *jobRun, in autopilo
 // waitReady waits until the session process pid is ready for a prompt: idle,
 // with an empty input box on its screen, and still so after autopilotSettle,
 // since one that has just started may still be loading or show a dialog.
-func waitReady(ctx context.Context, dir, socket, pane string, pid int, limit time.Duration) bool {
+// With byScreen, a registry that says busy doesn't decide: a screen with no
+// turn on it does (WP-1325).
+func waitReady(ctx context.Context, dir, socket, pane string, pid int, limit time.Duration, byScreen bool) bool {
 	ready := func() bool {
-		if s, err := readCCSession(dir, pid); err != nil || !atPrompt(s.Status) {
+		s, err := readCCSession(dir, pid)
+		if err != nil {
 			return false
 		}
 		screen, err := runTmux(ctx, socket, nil, "capture-pane", "-p", "-e", "-t", pane)
-		if err != nil {
+		if err != nil || (!atPrompt(s.Status) && (!byScreen || turnShown(screen))) {
 			return false
 		}
 		draft, found := promptInput(screen)
@@ -428,33 +468,15 @@ func kickoffPrompt(k kickoff, answer string, nextErr error) string {
 // right end (a named session shows "── WP-1320 - Title ─"); the bottom border
 // is always a plain rule. found is false when no input box is on the screen.
 func promptInput(screen string) (text string, found bool) {
-	lines := strings.Split(strings.ReplaceAll(screen, "\r", ""), "\n")
-	plain := make([]string, len(lines))
-	for i, l := range lines {
-		plain[i] = strings.TrimSpace(stripEscapes(l))
-	}
-	at := -1
-	for i := len(lines) - 1; i > 0; i-- {
-		if strings.HasPrefix(plain[i], "❯") && isTopBorder(plain[i-1]) {
-			at = i
-			break
-		}
-	}
-	if at < 0 {
+	b, found := findInputBox(screen)
+	if !found || b.bottom < 0 {
 		return "", false
 	}
-	_, rest, _ := strings.Cut(lines[at], "❯")
+	raw := strings.Split(strings.ReplaceAll(screen, "\r", ""), "\n")
+	_, rest, _ := strings.Cut(raw[b.at], "❯")
 	parts := []string{undimmed(rest)}
-	closed := false
-	for i := at + 1; i < len(lines); i++ {
-		if isRule(plain[i]) || strings.HasPrefix(plain[i], "╰") {
-			closed = true // the box's bottom edge
-			break
-		}
-		parts = append(parts, strings.TrimSpace(undimmed(lines[i])))
-	}
-	if !closed {
-		return "", false
+	for i := b.at + 1; i < b.bottom; i++ {
+		parts = append(parts, strings.TrimSpace(undimmed(raw[i])))
 	}
 	text = strings.TrimSpace(strings.Map(func(r rune) rune {
 		if r == '\u00a0' {
@@ -567,14 +589,6 @@ func readCCSession(dir string, pid int) (*ccSession, error) {
 // waiter, and the review round failed after heldScreenWait.
 func atPrompt(status string) bool {
 	return status == "idle" || status == "shell"
-}
-
-// waitIdle waits until the session process pid waits at its prompt.
-func waitIdle(ctx context.Context, dir string, pid int, limit time.Duration) bool {
-	return waitUntil(ctx, limit, func() bool {
-		s, err := readCCSession(dir, pid)
-		return err == nil && atPrompt(s.Status)
-	})
 }
 
 // waitBusy waits for the session to start working on the prompt.

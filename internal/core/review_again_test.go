@@ -326,6 +326,13 @@ func TestReviewAgainBeforePR(t *testing.T) {
 			if arm != AgainReview || !next.Valid {
 				t.Fatalf("decision %s, next %v", arm, next)
 			}
+			// The next round's step is made at the session's Stop, and its tick
+			// asks the reviewer; the text says nothing more is to be run (WP-1370).
+			a.stopWith("Pushed; the review comes first.")
+			a.tick(61 * time.Second)
+			if n := a.auditsOfRound(next.Int64); n != 1 || !strings.Contains(res.Held, "Nothing more to run") {
+				t.Fatalf("next round's audits %d, held %q", n, res.Held)
+			}
 			if _, err := a.s.db.W.Exec(`DELETE FROM work_log WHERE id = ?`, pastRound); err != nil {
 				t.Fatal(err)
 			}

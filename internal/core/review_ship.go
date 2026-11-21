@@ -171,12 +171,26 @@ func scanIDs(rows *sql.Rows) ([]int64, error) {
 // its step's (advanceStep), unless the step has stopped.
 func (s *Service) shipSettledRounds(ctx context.Context) {
 	now := s.nowMS()
+	// Two kinds of round: one in an open run that nothing carries (or whose
+	// check settled), and one whose run ended (or whose session ended or moved
+	// on) with the branch unshipped, done or not. The second kind is
+	// pre-filtered the way decideRound decides it (newest round, no pull
+	// request linked, in the window) so the batch isn't spent on rounds it
+	// leaves alone; decideRound is the one that says.
 	rows, err := s.db.R.QueryContext(ctx, `SELECT w.id FROM work_log w JOIN agent_runs r ON r.id = w.run_id
-		WHERE w.kind = 'review' AND w.before_pr != '' AND r.ended_at IS NULL AND w.state IN ('pending', 'running', 'done') AND (
-			NOT EXISTS (SELECT 1 FROM autopilot_steps st WHERE st.review_id = w.id AND st.state IN ('due', 'waiting', 'starting'))
-			OR (w.state = 'running' AND EXISTS (SELECT 1 FROM code_audits c WHERE c.request_key = 'review-round:' || w.id || ':check'
-				AND c.settled_at IS NOT NULL)))
-		ORDER BY w.id LIMIT 50`)
+		JOIN agent_sessions x ON x.id = w.session_id JOIN issues i ON i.id = w.issue_id
+		WHERE w.kind = 'review' AND w.before_pr != '' AND (
+			(r.ended_at IS NULL AND w.state IN ('pending', 'running', 'done') AND (
+				NOT EXISTS (SELECT 1 FROM autopilot_steps st WHERE st.review_id = w.id AND st.state IN ('due', 'waiting', 'starting'))
+				OR (w.state = 'running' AND EXISTS (SELECT 1 FROM code_audits c WHERE c.request_key = 'review-round:' || w.id || ':check'
+					AND c.settled_at IS NOT NULL))))
+			OR (w.state IN ('skipped', 'failed', 'interrupted', 'done') AND i.resolved_at IS NULL
+				AND (r.ended_at IS NOT NULL OR x.ended_at IS NOT NULL
+					OR EXISTS (SELECT 1 FROM agent_runs o WHERE o.session_id = w.session_id AND o.id > w.run_id AND o.issue_id != w.issue_id))
+				AND w.id = (SELECT max(m.id) FROM work_log m WHERE m.kind = 'review' AND m.issue_id = w.issue_id)
+				AND NOT EXISTS (SELECT 1 FROM external_links l WHERE l.issue_id = w.issue_id AND l.kind = 'pull')
+				AND max(w.updated_at, coalesce(r.ended_at, 0), coalesce(x.ended_at, 0)) > ?))
+		ORDER BY w.id DESC LIMIT 50`, now-strandedShipWindow.Milliseconds())
 	if err != nil {
 		s.log.WarnContext(ctx, "rounds due a ship of Waypoint's", "err", err)
 		return
@@ -195,7 +209,7 @@ func (s *Service) shipSettledRounds(ctx context.Context) {
 		if err != nil {
 			continue
 		}
-		if out := decideRound(in); out.Do != doShip && out.Do != doShipCarried && out.Do != doRelease && out.Do != doFinish {
+		if out := decideRound(in); out.Do != doShip && out.Do != doShipCarried && out.Do != doRelease && out.Do != doFinish && out.Do != doReleaseAfterRunEnded && out.Do != doSettle {
 			continue
 		}
 		if !s.shipDue(ctx, id, now) {

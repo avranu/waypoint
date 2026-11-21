@@ -227,7 +227,7 @@ func (s *Service) shipRound(ctx context.Context, in shipRoundIn) error {
 	in2 := OpenPRInput{
 		Project: bp.Project, Repo: bp.Repo, Head: bp.Branch, Base: bp.Base,
 		Title: title, Draft: bp.Draft, Ready: bp.Ready, Urgent: bp.Urgent,
-		Issue: r.key, For: r.key, noSweep: true, BodyInputs: bp.BodyInputs,
+		Issue: r.key, For: r.key, noSweep: true, byWaypoint: true, BodyInputs: bp.BodyInputs,
 	}
 	if reviewed {
 		in2.Review, in2.Body = ShipAuto, body

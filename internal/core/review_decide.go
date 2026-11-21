@@ -55,6 +55,16 @@ type roundIn struct {
 	// opens the pull request without it); "" when a person's decision stands
 	// or the session is asked again.
 	Release string
+	// What leaves a round that is before a pull request alone once its run
+	// has ended (the sweep's old exclusions, WP-1325): the task is resolved
+	// or has its pull request linked, the pull request that existed when the
+	// round was scheduled was merged or closed since (PRGone: the person's
+	// decision, so no other is opened), a newer round of the task (or its
+	// decision's next round) carries the branch, or another session holds
+	// the task now. SinceEnd is how long ago the latest of the round's end,
+	// its run's, its session's and the session's move to another task was.
+	Resolved, Linked, PRGone, Newer, Taken bool
+	SinceEnd                               time.Duration
 	// Idle: the session went idle (autopilot's step saw it) and the round's Stop never came.
 	Idle bool
 	// Ages: since the round started, and since the thing it waits on last changed
@@ -74,12 +84,17 @@ const (
 	doEnd                // the round ends with a state of its own (To), Waypoint ships nothing
 	doReport             // the session's stop is the round's report
 	doHold               // a person's decision (or a new ask) stands: Waypoint ships nothing, the step stops and says why
-	// doReleaseAfterRunEnded: the run ended with the round failed, skipped or
-	// interrupted for Waypoint's own reason, and the branch has no pull request.
-	// heldUnshipped, reviveHeldRounds, reaskHeldRound and reviewFirstAtStop all
-	// need an open run, so nothing else would ever pick it up. WP-1325 writes
-	// the action; advanceRound has the one call site to connect.
+	// doReleaseAfterRunEnded: the run ended (or its session did) with the round
+	// done, failed, skipped or interrupted for Waypoint's own reason, and the
+	// branch has no pull request. heldUnshipped, reviveHeldRounds,
+	// reaskHeldRound and reviewFirstAtStop all need an open run, so nothing
+	// else would ever pick it up: advanceRound opens it (releaseEnded), inside
+	// the window and with the back-off the round's ship tries keep.
 	doReleaseAfterRunEnded
+	// doSettle: the pull request that existed when the round was scheduled was
+	// merged or closed while the run is open: nothing is opened, the round
+	// ends and the run with it.
+	doSettle
 )
 
 type roundOut struct {
@@ -88,7 +103,15 @@ type roundOut struct {
 	Until time.Duration // how much longer a wait or a tell may last
 	Why   string        // why a release, an end or a carried ship
 	To    string        // the state a doEnd ends the round in
+	// Settled says why a doNothing leaves a round alone for good: the only
+	// answer that names no one to act later. Every doNothing has one.
+	Settled string
 }
+
+// strandedShipWindow is how long after a round ended, or after its run or
+// session ended or moved on if that was later, Waypoint keeps trying to open
+// the pull request it left unopened.
+const strandedShipWindow = 24 * time.Hour
 
 // endOf: a round nothing will carry on, which ends in a state of its own
 // (what sweepRounds used to decide). One whose check Waypoint is on, in an
@@ -131,17 +154,14 @@ func decideRound(in roundIn) roundOut {
 		}
 		return roundOut{Do: doReport}
 	}
+	if in.RunOpen && in.Unshipped && in.PRGone && !in.PROpen {
+		return roundOut{Do: doSettle, Why: "its pull request was merged or closed while the review was under way"}
+	}
 	if !in.RunOpen {
 		if out, ok := endOf(in); ok {
 			return out
 		}
-		switch in.State {
-		case RoundFailed, RoundSkipped, RoundInterrupted:
-			if in.Unshipped && !in.PROpen {
-				return roundOut{Do: doReleaseAfterRunEnded, Why: "the review " + in.State + " and the run ended before its pull request opened"}
-			}
-		}
-		return roundOut{Do: doNothing}
+		return decideEnded(in)
 	}
 	if in.PROpen {
 		return roundOut{Do: doFinish}
@@ -222,6 +242,43 @@ func decideRound(in roundIn) roundOut {
 	return roundOut{Do: doRelease, Why: in.Release}
 }
 
+// decideEnded: a round whose run has ended and that no end of its own
+// applies to. Waypoint opens the pull request it left, unless something
+// leaves it alone for good (Settled says what).
+func decideEnded(in roundIn) roundOut {
+	left := func(why string) roundOut { return roundOut{Do: doNothing, Settled: why} }
+	switch {
+	case !in.Unshipped:
+		return left("the round isn't before a pull request")
+	case in.PROpen:
+		return left("its pull request is open")
+	case in.PRGone:
+		return left("its pull request was merged or closed: a person's decision")
+	case in.Linked:
+		return left("the task has its pull request")
+	case in.Resolved:
+		return left("the task is resolved")
+	case in.Superseded:
+		return left("a later round carries the branch")
+	case in.Newer:
+		return left("a newer round carries the task")
+	case in.Taken:
+		return left("another session holds the task")
+	case in.SinceEnd > strandedShipWindow:
+		return left("it ended longer ago than Waypoint keeps trying")
+	}
+	switch in.State {
+	case RoundDone:
+		return roundOut{Do: doReleaseAfterRunEnded, Why: "its adversarial review finished and the run ended before its pull request opened"}
+	case RoundFailed, RoundSkipped, RoundInterrupted:
+		if in.Release == "" {
+			return left("a person's decision, or a new ask for the review, stands")
+		}
+		return roundOut{Do: doReleaseAfterRunEnded, Why: in.Release + "; the run ended before its pull request opened"}
+	}
+	return left("the round ends in its own state first")
+}
+
 // roundInOf reads the facts decideRound needs.
 func (s *Service) roundInOf(ctx context.Context, id int64) (roundIn, error) {
 	var in roundIn
@@ -248,6 +305,16 @@ func (s *Service) roundInOf(ctx context.Context, id int64) (roundIn, error) {
 		if err := s.db.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pull_requests WHERE repo = ? COLLATE NOCASE AND head_ref = ? AND state IN ('open', 'draft'))`, bp.Repo, bp.Branch).Scan(&in.PROpen); err != nil {
 			return in, err
 		}
+		// A pull request that existed when the round was scheduled and was
+		// merged or closed since is a person's to have decided; one closed
+		// before the round is an earlier ship's, and doesn't stop this one.
+		if err := s.db.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pull_requests WHERE repo = ? COLLATE NOCASE AND head_ref = ? AND state IN ('merged', 'closed')
+			AND created_at <= ? AND updated_at >= ?)`, bp.Repo, bp.Branch, r.createdAt, r.createdAt).Scan(&in.PRGone); err != nil {
+			return in, err
+		}
+		if err := s.endedFacts(ctx, r, &in); err != nil {
+			return in, err
+		}
 	}
 	if r.sessionID.Valid && r.sessionID.Int64 != 0 {
 		var live bool
@@ -256,7 +323,7 @@ func (s *Service) roundInOf(ctx context.Context, id int64) (roundIn, error) {
 		}
 	}
 	if in.State == RoundSkipped || in.State == RoundFailed || in.State == RoundInterrupted {
-		if in.Release, err = s.releaseWhy(ctx, r); err != nil {
+		if in.Release, err = s.releaseWhy(ctx, r, !in.RunOpen); err != nil {
 			return in, err
 		}
 	}
@@ -343,6 +410,55 @@ func (s *Service) roundInOf(ctx context.Context, id int64) (roundIn, error) {
 	return in, nil
 }
 
+// endedFacts reads what leaves a round alone once its run has ended
+// (roundIn: Resolved ... SinceEnd).
+func (s *Service) endedFacts(ctx context.Context, r *roundRow, in *roundIn) error {
+	now := s.nowMS()
+	var updated, runEnd, sessEnd, moved int64
+	err := s.db.R.QueryRowContext(ctx, `SELECT w.updated_at, coalesce((SELECT ended_at FROM agent_runs WHERE id = w.run_id), 0),
+			coalesce((SELECT ended_at FROM agent_sessions WHERE id = w.session_id), 0),
+			coalesce((SELECT min(o.started_at) FROM agent_runs o WHERE o.session_id = w.session_id AND o.id > w.run_id AND o.issue_id != w.issue_id), 0),
+			i.resolved_at IS NOT NULL,
+			EXISTS (SELECT 1 FROM external_links l WHERE l.issue_id = w.issue_id AND l.kind = 'pull'),
+			w.id != (SELECT max(m.id) FROM work_log m WHERE m.kind = 'review' AND m.issue_id = w.issue_id),
+			EXISTS (SELECT 1 FROM agent_runs o WHERE o.issue_id = w.issue_id AND o.id != coalesce(w.run_id, 0) AND o.ended_at IS NULL)
+		FROM work_log w JOIN issues i ON i.id = w.issue_id WHERE w.id = ?`, r.id).Scan(&updated, &runEnd, &sessEnd, &moved, &in.Resolved, &in.Linked, &in.Newer, &in.Taken)
+	if err != nil {
+		return err
+	}
+	in.SinceEnd = time.Duration(max(now-max(updated, runEnd, sessEnd, moved), 0)) * time.Millisecond
+	// A session that went on to another task has left the round: its run is
+	// over for it. A round still pending or running is the session's own
+	// Stop's for heldStopLost first; one that has an end state has nothing
+	// left to wait for.
+	if moved > 0 && in.RunOpen {
+		ended := in.State == RoundDone || in.State == RoundSkipped || in.State == RoundFailed || in.State == RoundInterrupted
+		if ended || time.Duration(max(now-moved, 0))*time.Millisecond > heldStopLost {
+			in.RunOpen = false
+		}
+	}
+	return nil
+}
+
+// releaseEnded is the release of a round whose run ended
+// (doReleaseAfterRunEnded): the pull request opens without the review, or
+// with what it found carried to its gate, as it would have in an open run.
+func (s *Service) releaseEnded(ctx context.Context, id int64, out roundOut) error {
+	return s.shipRound(ctx, shipRoundIn{round: id, why: out.Why + "; its session had ended or moved on by then", ended: true})
+}
+
+// settleRound ends a round whose pull request was merged or closed while the
+// run was open (doSettle), and the run with it: nothing is opened.
+func (s *Service) settleRound(ctx context.Context, id int64, r *roundRow, out roundOut) error {
+	if r == nil {
+		return nil
+	}
+	if r.state == RoundPending || r.state == RoundRunning {
+		s.setRoundNow(ctx, id, []string{r.state}, RoundSkipped, out.Why)
+	}
+	return s.endHeldRun(ctx, SystemActor(), r.issueID, s.shipAgent(ctx, r, "", r.sessionID.Int64))
+}
+
 // advanceRound asks decideRound and does what it says for a round with a
 // before-PR ship: the one place a server-side ship or release is decided.
 // It returns the decision, so a caller can tell a wait from a ship.
@@ -360,10 +476,11 @@ func (s *Service) advanceRound(ctx context.Context, id int64) (roundOut, error) 
 	case doEnd:
 		s.setRoundNow(ctx, id, []string{in.State}, out.To, out.Why)
 		return out, nil
+	case doSettle:
+		err = s.settleRound(ctx, id, r, out)
+		return out, err
 	case doReleaseAfterRunEnded:
-		// WP-1325 connects its release here (at the rebase): until then the
-		// decision is made and logged, and nothing acts.
-		s.log.WarnContext(ctx, "round left unshipped after its run ended", "round", id, "why", out.Why)
+		err = s.releaseEnded(ctx, id, out)
 	case doShip, doShipCarried, doFinish:
 		// doFinish: the pull request is open and the run isn't ended yet: the
 		// ship picks up where the dead process left it (shipRound).
@@ -375,7 +492,7 @@ func (s *Service) advanceRound(ctx context.Context, id int64) (roundOut, error) 
 			_, _ = s.db.W.ExecContext(ctx, `UPDATE session_messages SET state = 'cancelled' WHERE state = 'queued' AND step_key LIKE 'check:%' AND session_id = ?`, r.sessionID.Int64)
 		}
 	}
-	if out.Do == doShip || out.Do == doShipCarried || out.Do == doRelease || out.Do == doFinish {
+	if out.Do == doShip || out.Do == doShipCarried || out.Do == doRelease || out.Do == doFinish || out.Do == doReleaseAfterRunEnded {
 		// The try is recorded on the round whoever asked, so a retry's time and
 		// the one notice to the person are the round's, not the caller's.
 		key := ""
@@ -431,21 +548,21 @@ func (s *Service) shipOwed(ctx context.Context, id int64) (roundOut, error) {
 // released, which is also what the pull request and the person are told. A
 // person's cancel is a decision, not a failure, and a round replaced or
 // asked for again isn't released; one interrupted for the last time is.
-func (s *Service) releaseWhy(ctx context.Context, r *roundRow) (string, error) {
+func (s *Service) releaseWhy(ctx context.Context, r *roundRow, runEnded bool) (string, error) {
 	var reason string
 	if err := s.db.R.QueryRowContext(ctx, `SELECT reason FROM work_log WHERE id = ?`, r.id).Scan(&reason); err != nil {
 		return "", err
 	}
 	reason = strings.TrimSpace(reason)
+	if reason == roundReplaced || reason == roundRestarted {
+		return "", nil // another round took the branch on
+	}
 	switch r.state {
 	case RoundSkipped, RoundFailed:
 		if !strings.HasPrefix(reason, roundCancelledBy) {
 			return cmp(reason, "its adversarial review didn't run"), nil
 		}
 	case RoundInterrupted:
-		if reason == roundReplaced {
-			return "", nil
-		}
 		// Interrupted for the last time, the round isn't asked for again
 		// (askAgainAfterInterrupt): the session's stop that follows is a stop
 		// with nobody left to ship, and Waypoint ships.
@@ -455,6 +572,11 @@ func (s *Service) releaseWhy(ctx context.Context, r *roundRow) (string, error) {
 		}
 		if !again {
 			return fmt.Sprintf("the session was interrupted %d times before its adversarial review reported, so it isn't asked again", reviewInterruptsMax), nil
+		}
+		if runEnded {
+			// Asked again only by a session that is there to be asked: the
+			// run is over, so nobody is, and Waypoint ships.
+			return "its adversarial review was interrupted and its run ended", nil
 		}
 	}
 	return "", nil
