@@ -38,8 +38,8 @@ type shipForge struct {
 	replyErr      error                 // ReplyToThread fails with it
 	reactErr      map[string]error      // comment id → CommentReactions fails with it
 
-	tips       map[string]string // branch → what BranchHead says; absent: it can't say
-	tipErr     error             // BranchHead fails with it
+	tips   map[string]string // branch → what BranchHead says; absent: it can't say
+	tipErr error             // BranchHead fails with it
 
 	created    []NewPR           // pull requests opened through CreatePR
 	heads      map[string]string // head branch → the sha a pull request from it starts at

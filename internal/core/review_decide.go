@@ -66,8 +66,8 @@ type roundIn struct {
 	Resolved, Linked, PRGone, Newer, Taken bool
 	// Halted: Waypoint stopped shipping the round for good and told a person
 	// (beforePR.ShipStop).
-	Halted bool
-	SinceEnd                               time.Duration
+	Halted   bool
+	SinceEnd time.Duration
 	// Idle: the session went idle (autopilot's step saw it) and the round's Stop never came.
 	Idle bool
 	// Ages: since the round started, and since the thing it waits on last changed
