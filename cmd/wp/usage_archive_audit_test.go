@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -200,8 +201,12 @@ func manyLines(prefix string, n int) []string {
 	return out
 }
 
+// randomHexSeq makes each randomHex call draw a different, reproducible stream,
+// so lines built from separate calls do not share a payload gzip could collapse.
+var randomHexSeq atomic.Uint64
+
 func randomHex(n int) string {
-	r := rand.New(rand.NewPCG(1, 2))
+	r := rand.New(rand.NewPCG(1, randomHexSeq.Add(1)))
 	b := make([]byte, n)
 	for i := range b {
 		b[i] = "0123456789abcdef"[r.IntN(16)]
