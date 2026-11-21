@@ -114,8 +114,8 @@ func TestTraceRewritesRefusesRefsThatAreOptions(t *testing.T) {
 		if _, err := TraceRewrites(r.dir, "main", bad, time.Now()); err == nil {
 			t.Errorf("head %q: no error", bad)
 		}
-		if _, err := IndexCommit(r.dir, bad); err == nil {
-			t.Errorf("IndexCommit parent %q: no error", bad)
+		if _, err := IndexCommit(r.dir, bad); err == nil || !strings.Contains(err.Error(), "not usable") {
+			t.Errorf("IndexCommit parent %q: %v, want the ref refused", bad, err)
 		}
 	}
 	if _, err := os.Stat(out); err == nil {
