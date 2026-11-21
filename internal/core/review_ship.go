@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 )
@@ -40,7 +42,11 @@ func (s *Service) onCheckSettled(ctx context.Context, e *Event) {
 	if id == 0 {
 		return
 	}
-	s.goBG(func() { s.continueAfterCheck(context.Background(), id) })
+	s.goBG(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), shipBudget)
+		defer cancel()
+		s.continueAfterCheck(ctx, id)
+	})
 }
 
 // continueAfterCheck carries a round on after its check ended with nothing
@@ -215,7 +221,10 @@ func (s *Service) shipSettledRounds(ctx context.Context) {
 		if !s.shipDue(ctx, id, now) {
 			continue
 		}
-		if _, err = s.advanceRound(ctx, id); err != nil {
+		rctx, cancel := context.WithTimeout(ctx, shipBudget)
+		_, err = s.advanceRound(rctx, id)
+		cancel()
+		if err != nil {
 			s.log.WarnContext(ctx, "autopilot: advance a settled round", "round", id, "task", r.key, "err", err)
 		}
 	}
@@ -234,6 +243,9 @@ func (s *Service) shipDue(ctx context.Context, round, now int64) bool {
 // to the person (its flag is recorded with the rest, so a restart doesn't
 // send it again).
 func (s *Service) shipTried(ctx context.Context, round int64, key string, now int64, err error) {
+	// The record of a try outlives the try's deadline: it is what says the
+	// ship ran out of time.
+	ctx = context.WithoutCancel(ctx)
 	var tries int
 	merr := s.write(ctx, SystemActor(), func(t *tx) error {
 		bp := roundBeforePR(ctx, t, round)
@@ -288,4 +300,62 @@ func (s *Service) shipTried(ctx context.Context, round int64, key string, now in
 		return
 	}
 	s.log.WarnContext(ctx, "autopilot: open a reviewed pull request", "round", round, "task", key, "try", tries, "err", err)
+}
+
+// shipBudget bounds one server ship of a round (the sweep's, and the one a
+// settled check starts): every forge call and write in it.
+var shipBudget = 5 * time.Minute
+
+// shipGiveUp is how long Waypoint keeps trying a failing ship before it ends
+// the round with the last error.
+const shipGiveUp = 24 * time.Hour
+
+// shipRefused says a failure of the ship won't pass by being tried again: the
+// forge refused the request (not authorised, not found, not valid), or what
+// the ship needs is gone.
+func shipRefused(err error) bool {
+	var ae *forgeAPIError
+	if errors.As(err, &ae) {
+		switch ae.status {
+		case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusGone, http.StatusUnprocessableEntity:
+			return true
+		}
+		return false
+	}
+	return errors.Is(err, ErrForbidden) || errors.Is(err, ErrNotFound)
+}
+
+// shipEnds ends a round whose ship failed for good (shipRefused), or has
+// failed for shipGiveUp, saying why and telling the person (stopShipWith):
+// it says whether it did. The error is the last one the ship met.
+func (s *Service) shipEnds(ctx context.Context, id int64, err error, last bool) bool {
+	ctx = context.WithoutCancel(ctx)
+	bp := roundBeforePR(ctx, s.db.R, id)
+	if bp == nil || bp.ShipStop != "" {
+		return false
+	}
+	refused := shipRefused(err)
+	spent := bp.ShipFirst != 0 && s.nowMS()-bp.ShipFirst >= shipGiveUp.Milliseconds()
+	if !refused && !spent && !last {
+		return false
+	}
+	r, rerr := roundByID(ctx, s.db.R, id)
+	if rerr != nil || r == nil {
+		return false
+	}
+	in := shipRoundIn{round: id, session: r.sessionID.Int64}
+	in.agent = s.shipAgent(ctx, r, "", in.session)
+	_ = s.db.R.QueryRowContext(ctx, `SELECT user_id FROM agent_sessions WHERE id = ?`, in.session).Scan(&in.userID)
+	why := clipText(err.Error(), 500)
+	body := "Waypoint did not open the pull request: the forge refused it: " + why + "."
+	title := "pull request not opened"
+	if !refused {
+		body = fmt.Sprintf("Waypoint gave up opening the pull request after trying for %d hours (%d tries). The last error: %s.", int(shipGiveUp.Hours()), bp.ShipTries, why)
+		title = "pull request not opened: gave up"
+	}
+	if serr := s.stopShipWith(ctx, r, in, body, title, why); serr != nil {
+		s.log.WarnContext(ctx, "autopilot: end a round whose ship failed", "round", id, "err", serr)
+		return false
+	}
+	return true
 }

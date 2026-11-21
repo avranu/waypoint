@@ -40,6 +40,8 @@ type shipForge struct {
 
 	tips   map[string]string // branch → what BranchHead says; absent: it can't say
 	tipErr error             // BranchHead fails with it
+	// tipHang: BranchHead doesn't answer until its context ends.
+	tipHang bool
 
 	created    []NewPR           // pull requests opened through CreatePR
 	heads      map[string]string // head branch → the sha a pull request from it starts at
@@ -1000,6 +1002,10 @@ func TestSeverityHelpers(t *testing.T) {
 // BranchHead is the forge's word for where a branch is: tips, or tipErr.
 // A branch with no tip set is one the forge can't say.
 func (g *shipForge) BranchHead(ctx context.Context, f *Forge, repo, branch string) (string, error) {
+	if g.tipHang {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
 	g.sm.Lock()
 	defer g.sm.Unlock()
 	if g.tipErr != nil {

@@ -469,6 +469,9 @@ func (s *Service) settleRound(ctx context.Context, id int64, r *roundRow, out ro
 // before-PR ship: the one place a server-side ship or release is decided.
 // It returns the decision, so a caller can tell a wait from a ship.
 func (s *Service) advanceRound(ctx context.Context, id int64) (roundOut, error) {
+	// No ship waits on a forge for ever, whoever asked for it.
+	ctx, cancel := context.WithTimeout(ctx, shipBudget)
+	defer cancel()
 	in, err := s.roundInOf(ctx, id)
 	if err != nil {
 		return roundOut{}, err
@@ -480,6 +483,11 @@ func (s *Service) advanceRound(ctx context.Context, id int64) (roundOut, error) 
 	}
 	switch out.Do {
 	case doEnd:
+		// A round the window ended while its ship kept failing says what the
+		// ship met, and tells the person.
+		if bp := roundBeforePR(ctx, s.db.R, id); bp != nil && bp.ShipErr != "" && bp.ShipStop == "" && s.shipEnds(ctx, id, errors.New(bp.ShipErr), true) {
+			return out, nil
+		}
 		s.setRoundNow(ctx, id, []string{in.State}, out.To, out.Why)
 		return out, nil
 	case doSettle:
@@ -506,6 +514,9 @@ func (s *Service) advanceRound(ctx context.Context, id int64) (roundOut, error) 
 			key = r.key
 		}
 		s.shipTried(ctx, id, key, s.nowMS(), err)
+		if err != nil && s.shipEnds(ctx, id, err, false) {
+			err = nil
+		}
 	}
 	return out, err
 }

@@ -959,6 +959,9 @@ func (s *Service) branchMovedSinceReview(ctx context.Context, actor *Actor, r *r
 	fctx, cancel := context.WithTimeout(forgePatient(ctx), openPRBudget)
 	defer cancel()
 	tip, err := cl.BranchHead(fctx, f, bp.Repo, bp.Branch)
+	if errors.Is(err, ErrNotFound) {
+		return false, fmt.Errorf("%s isn't on the forge any more, so Waypoint didn't open its pull request: %w", bp.Branch, err)
+	}
 	if err != nil || tip == "" {
 		return false, fmt.Errorf("the forge couldn't say the tip of %s, so Waypoint didn't open its pull request: %v", bp.Branch, cmp(errString(err), "no commit"))
 	}
