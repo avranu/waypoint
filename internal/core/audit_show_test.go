@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -161,5 +162,51 @@ func TestAuditTaskListsTheShownAndCountsTheRest(t *testing.T) {
 		if text := auditTaskText(auditWithFindings(n, 5), "https://wp.test"); strings.Contains(text, "more finding") || !strings.Contains(text, fmt.Sprintf("### 7.%d ", n)) {
 			t.Errorf("%d findings, shown 5:\n%s", n, text)
 		}
+	}
+}
+
+// Who gets what: an ordinary audit shows what a person set or the default;
+// a check of a session's marks and a review round's audit are delivered in
+// full. The audit's JSON carries the number, so no client has its own rule
+// (WP-1421, 1248.10).
+func TestAuditShownIsOneServerSideNumber(t *testing.T) {
+	if got := AuditShown(&CodeAudit{}); got != AuditDefaultShown {
+		t.Errorf("default = %d", got)
+	}
+	if got := AuditShown(&CodeAudit{MaxFindings: 40}); got != 40 {
+		t.Errorf("set = %d", got)
+	}
+	if got := AuditShown(&CodeAudit{Purpose: AuditReview, MaxFindings: 3}); got != findingsGuard {
+		t.Errorf("a review round's = %d", got)
+	}
+	if got := AuditShown(&CodeAudit{Purpose: AuditCheck, MaxFindings: 3}); got != checkClaimsMax+checkLeftOutMax {
+		t.Errorf("a check's = %d", got)
+	}
+
+	ae := newAgentEnv(t)
+	a, err := ae.s.RequestAudit(ae.ctx, ae.admin, AuditInput{Project: ae.p.Key, Instructions: "Look.", MaxFindings: 3, Via: "web"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ae.work()
+	claim := ae.take()
+	ae.finish(claim.ID, "done", auditResult("Read it.", lowFindings(5)...), "")
+	if _, err := ae.s.db.W.ExecContext(ae.ctx, `UPDATE code_audits SET purpose = ? WHERE id = ?`, AuditCheck, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	got := ae.audit(a.ID)
+	b, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		Shown       int `json:"shown"`
+		MaxFindings int `json:"max_findings"`
+	}
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Shown != checkClaimsMax+checkLeftOutMax || out.MaxFindings != 3 || len(got.Findings) != 5 {
+		t.Errorf("shown %d, max_findings %d, %d findings in %s", out.Shown, out.MaxFindings, len(got.Findings), b[:min(len(b), 200)])
 	}
 }

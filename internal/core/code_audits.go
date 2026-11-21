@@ -137,20 +137,23 @@ type CodeAudit struct {
 	// trustedAuditBar). An audit whose chain asks the gateway to choose has
 	// one at least reviewFloorBar (WP-1440); "" is a chain of models named
 	// for it, or no gateway.
-	Weakest     string             `json:"weakest,omitempty"`
-	Models      []string           `json:"models"`
-	PostComment bool               `json:"post_comment"`
-	Fix         bool               `json:"fix"`
-	Status      string             `json:"status"`
-	Slot        int                `json:"slot"`
-	JobID       *int64             `json:"job_id,omitempty"`
-	JobState    string             `json:"job_state,omitempty"`
-	Attempts    []AuditAttempt     `json:"attempts"`
-	Retries     int                `json:"retries"`
-	RetryAt     *time.Time         `json:"retry_at,omitempty"`
-	Model       string             `json:"model,omitempty"`
-	Summary     string             `json:"summary,omitempty"`
-	Answer      string             `json:"answer,omitempty"`
+	Weakest     string         `json:"weakest,omitempty"`
+	Models      []string       `json:"models"`
+	PostComment bool           `json:"post_comment"`
+	Fix         bool           `json:"fix"`
+	Status      string         `json:"status"`
+	Slot        int            `json:"slot"`
+	JobID       *int64         `json:"job_id,omitempty"`
+	JobState    string         `json:"job_state,omitempty"`
+	Attempts    []AuditAttempt `json:"attempts"`
+	Retries     int            `json:"retries"`
+	RetryAt     *time.Time     `json:"retry_at,omitempty"`
+	Model       string         `json:"model,omitempty"`
+	Summary     string         `json:"summary,omitempty"`
+	Answer      string         `json:"answer,omitempty"`
+	// Shown is how many findings are listed at a time (AuditShown), worked
+	// out when the audit is read, never stored (WP-1421).
+	Shown       int                `json:"shown"`
 	Error       string             `json:"error,omitempty"`
 	Tokens      map[string]any     `json:"tokens,omitempty"`
 	CommentURL  string             `json:"comment_url,omitempty"`
@@ -1921,6 +1924,7 @@ func scanAudit(sc interface{ Scan(...any) error }) (*CodeAudit, error) {
 		return &t
 	}
 	a.RetryAt, a.StartedAt, a.FinishedAt, a.CreatedAt = ts(retryAt), ts(started), ts(finished), msTime(created)
+	a.Shown = AuditShown(&a)
 	_ = json.Unmarshal([]byte(models), &a.chain)
 	_ = json.Unmarshal([]byte(attempts), &a.Attempts)
 	_ = json.Unmarshal([]byte(tokens), &a.Tokens)

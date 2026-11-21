@@ -331,9 +331,6 @@ function ExtLink({ href, icon, children }: { href: string; icon: ReactNode; chil
 
 type Show = 'open' | 'all'
 
-/** How many findings an audit lists at a time when it sets no number. */
-const DEFAULT_SHOWN = 15
-
 function Findings({ audit: a }: { audit: CodeAudit }) {
   const findings = useMemo(
     () =>
@@ -347,10 +344,10 @@ function Findings({ audit: a }: { audit: CodeAudit }) {
   const [all, setAll] = useState(false)
   if (a.status !== 'done') return null
   const list = show === 'open' ? open : findings
-  // max_findings is how many are listed at a time; the rest are one click
-  // away and counted (WP-1421).
-  const atATime = a.max_findings || DEFAULT_SHOWN
-  const listed = all ? list : list.slice(0, atATime)
+  // The server says how many are listed at a time (shown); the rest are one
+  // click away and counted (WP-1421). This page is served with its server,
+  // so it has no rule of its own.
+  const listed = all ? list : list.slice(0, a.shown)
   const more = list.length - listed.length
   return (
     <Section

@@ -107,7 +107,10 @@ type auditView struct {
 	Exclude      []string `json:"exclude"`
 	MinSeverity  string   `json:"min_severity"`
 	MaxFindings  int      `json:"max_findings"` // how many are shown at a time; 0 is the default
-	all          bool     // wp audit show --all
+	// Shown is how many findings are listed at a time, as the server works it
+	// out (0 from an older server: shownAtATime falls back to its old rule).
+	Shown int  `json:"shown"`
+	all   bool // wp audit show --all
 	// HelperRuns: the Haiku checks around the model (core.AuditHelperRun).
 	HelperRuns  []core.AuditHelperRun `json:"helper_runs"`
 	FromSHA     string                `json:"from_sha"`
@@ -232,6 +235,10 @@ func (a *auditView) state() string {
 }
 
 func (a *auditView) shownAtATime() int {
+	if a.Shown > 0 {
+		return a.Shown
+	}
+	// An older server sends no number: the rule it had.
 	if a.MaxFindings > 0 {
 		return a.MaxFindings
 	}
@@ -438,7 +445,7 @@ func auditRun(target string) func(c *cli, args []string) error {
 		fs.Var(&paths, "path", "audit only this `PATH` or glob (repeatable)")
 		fs.Var(&exclude, "exclude", "leave this `PATH` or glob out (repeatable)")
 		minSev := fs.String("min-severity", "", "drop findings below `SEVERITY`: medium, high, critical")
-		maxFindings := fs.Int("show", 0, "show `N` findings at a time (1 to 100; default 15); the model is told no number and every finding is kept")
+		maxFindings := fs.Int("show", 0, fmt.Sprintf("show `N` findings at a time (1 to 100; default %d); the model is told no number and every finding is kept", core.AuditDefaultShown))
 		fs.IntVar(maxFindings, "max-findings", 0, "same as --show (kept so scripts keep working)")
 		pos, err := c.parse(fs, args)
 		if err != nil {

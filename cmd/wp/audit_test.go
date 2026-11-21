@@ -100,7 +100,7 @@ func TestCLIAudit(t *testing.T) {
 	}
 
 	// Recent changes, with criteria (WP-548).
-	out = e.wp("audit", "--since", "2w", "--focus", "security,data", "--path", "internal", "--exclude", "*_test.go", "--min-severity", "high", "--max-findings", "5")
+	out = e.wp("audit", "--since", "2w", "--focus", "security,data", "--path", "internal", "--exclude", "*_test.go", "--min-severity", "high", "--show", "5")
 	if !strings.Contains(out, "Audit #2 of robin/waypoint main, the last 2 weeks (internal) asked of") {
 		t.Errorf("wp audit --since:\n%s", out)
 	}
@@ -133,6 +133,12 @@ func TestCLIAudit(t *testing.T) {
 	if out := e.wp("audit", "show", "2", "--json"); strings.Count(out, "Hole ") != 12 {
 		t.Errorf("wp audit show 2 --json holds %d findings", strings.Count(out, "Hole "))
 	}
+	// The old name of the flag still works.
+	if out := e.wp("audit", "recent", "--max-findings", "7"); !strings.Contains(out, "Audit #3 ") {
+		t.Errorf("wp audit recent --max-findings:\n%s", out)
+	} else if out := e.wp("audit", "show", "3"); !strings.Contains(out, "shows 7 findings at a time") {
+		t.Errorf("wp audit show 3:\n%s", out)
+	}
 	if out := e.wp("audit", "recent", "release"); !strings.Contains(out, "robin/waypoint release, the last 7 days") {
 		t.Errorf("wp audit recent release:\n%s", out)
 	}
@@ -141,6 +147,24 @@ func TestCLIAudit(t *testing.T) {
 	}
 	if out, code := e.run("audit", "recent", "--focus", "vibes"); code == 0 || !strings.Contains(out, "isn't a focus area") {
 		t.Errorf("a bad focus: %d %s", code, out)
+	}
+}
+
+// The server says how many findings are listed at a time (WP-1421): a check
+// of a session's marks has more than its max_findings and lists every one,
+// and an older server, which sends no number, gets the old rule.
+func TestAuditShowListsWhatTheServerSaysIsShown(t *testing.T) {
+	var fs []auditFinding
+	for i := 1; i <= 5; i++ {
+		fs = append(fs, auditFinding{ID: fmt.Sprintf("9.%d", i), Title: fmt.Sprintf("Mark %d", i), Severity: "low", State: "open"})
+	}
+	check := auditView{ID: 9, Status: "done", Purpose: "check", MaxFindings: 3, Shown: 100, Findings: fs}
+	if out := check.text(); !strings.Contains(out, "Mark 5") || strings.Contains(out, "more: wp audit show") {
+		t.Errorf("a check with max_findings 3 and 5 findings:\n%s", out)
+	}
+	older := auditView{ID: 9, Status: "done", MaxFindings: 3, Findings: fs}
+	if out := older.text(); strings.Contains(out, "Mark 4") || !strings.Contains(out, "2 more: wp audit show 9 --all") {
+		t.Errorf("an older server's audit:\n%s", out)
 	}
 }
 

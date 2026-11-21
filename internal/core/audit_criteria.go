@@ -238,11 +238,17 @@ func auditCriteriaPrompt(a *CodeAudit) string {
 }
 
 // AuditShown is how many of an audit's findings are shown or delivered at
-// a time: what a person set (max_findings, which names the field as it was
-// stored and as the API has always called it), else the default. It never
-// limits what is asked of the model or what is kept (findingsGuard): the
-// rest are one step away (WP-1421).
+// a time, and the one place the rule lives (the audit's JSON carries it as
+// shown). An ordinary audit shows what a person set (max_findings, which
+// names the field as it was stored and as the API has always called it),
+// else the default. A check of a session's marks and a review round's
+// audit are delivered in full (auditGuard): the session must mark every
+// finding, so none is hidden behind a number. It never limits what is asked
+// of the model or what is kept: the rest are one step away (WP-1421).
 func AuditShown(a *CodeAudit) int {
+	if a.Purpose == AuditCheck || a.Purpose == AuditReview {
+		return auditGuard(a)
+	}
 	if a.MaxFindings > 0 {
 		return a.MaxFindings
 	}
