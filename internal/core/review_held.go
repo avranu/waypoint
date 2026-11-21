@@ -454,9 +454,9 @@ func (s *Service) strandedFailed(ctx context.Context, round, now int64, what str
 // branch with no pull request and nothing that would ever open one.
 //
 // It takes rounds before a pull request that ended skipped, failed or
-// interrupted, whatever the reason (an agent's skip whose open failed is
-// one: a skip is not refused), and whose run or session is over or has moved
-// on to another task, and opens the pull request as shipHeld does (the round recorded as
+// interrupted (an agent's skip whose open failed is one: a skip is not
+// refused), and whose run or session is over or has moved on to another
+// task, and opens the pull request as shipHeld does (the round recorded as
 // not reviewed; the round's audit, if it lives, goes on as the pull
 // request's, handOverRoundAudits). Not one a person cancelled (theirs), not
 // one a newer round replaced or restarted, not a task that has a pull
