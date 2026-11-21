@@ -618,8 +618,12 @@ func firstLineHash(fh *os.File, size int64) (string, error) {
 	return hex.EncodeToString(sum[:8]), nil
 }
 
-// tailHash hashes the bytes just before off, which a file that grows by
-// appending leaves as they were.
+// tailHash hashes the (up to archiveTailLen = 64) bytes just before off, which
+// a file that grows by appending leaves as they were. A rewrite is noticed only
+// by the first line, the size (smaller than the offset) and these bytes: an
+// in-place edit elsewhere before the offset that keeps all three is not seen.
+// Claude Code transcripts are append-only, so hashing the whole prefix on every
+// pass for that case is not worth it (audit 1218.21).
 func tailHash(fh *os.File, off int64) (string, error) {
 	n := min(off, archiveTailLen)
 	if n <= 0 {
