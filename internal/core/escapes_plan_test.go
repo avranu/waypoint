@@ -64,9 +64,9 @@ func scansBigTable(detail string) bool {
 }
 
 // scansCollectorTable is scansBigTable plus the tables the hourly collector
-// queries read: issues and the fix tables (and prepDoneTasks's op alias).
+// queries read: issues, the fix tables (and prepDoneTasks's op alias) and usage_machines.
 func scansCollectorTable(detail string) bool {
-	return scansAny(detail, "p", "op", "el", "i", "ft", "fp", "pull_requests", "external_links", "issues", "fix_traces", "fix_proofs")
+	return scansAny(detail, "p", "op", "el", "i", "ft", "fp", "m", "pull_requests", "external_links", "issues", "fix_traces", "fix_proofs", "usage_machines")
 }
 
 func scansAny(detail string, tables ...string) bool {

@@ -109,6 +109,22 @@ export interface UsageMachine {
   parsed: number
   skipped: number
   unknown: Record<string, number>
+  /** the transcript archive this machine reported; absent: it has not */
+  transcripts?: UsageTranscripts
+}
+
+/** null: the machine has not said (never 0 or false) */
+export interface UsageTranscripts {
+  pending_bytes: number
+  pending_files: number
+  dropped: Record<string, number>
+  last_piece_at: string | null
+  reported_at: string | null
+  off: boolean | null
+  pass_ms: number | null
+  pass_max_ms: number | null
+  stop: string | null
+  cut: number | null
 }
 
 export interface UsageOverview {

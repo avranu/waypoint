@@ -14,6 +14,9 @@ import (
 
 const hookUsageSync = "usage sync --hook"
 
+// usageHookTimeout is the usage hooks' timeout in seconds.
+const usageHookTimeout = 30
+
 var usageHookEvents = []string{"Stop", "SessionEnd"}
 
 // installUsageIntegration adds (or with uninstall removes) the usage hooks
@@ -25,7 +28,7 @@ func installUsageIntegration(settings map[string]any, exe string, uninstall bool
 			ch = removeHook(settings, event, hookUsageSync)
 		} else {
 			// asynchronous: the session never waits for the upload
-			if ch, err = addHookOpts(settings, event, quoteArg(exe)+" "+hookUsageSync, hookUsageSync, hookOpts{async: true}); err != nil {
+			if ch, err = addHookOpts(settings, event, quoteArg(exe)+" "+hookUsageSync, hookUsageSync, hookOpts{async: true, timeout: usageHookTimeout}); err != nil {
 				return changed, notes, fmt.Errorf("hooks.%s: %w", event, err)
 			}
 		}

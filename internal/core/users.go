@@ -1209,8 +1209,13 @@ func (s *Service) DeleteUser(ctx context.Context, actor *Actor, id int64) error 
 		} else if err != nil {
 			return err
 		}
-		t.audit(AuditEntry{Action: "user.delete", Category: AuditAccess, TargetType: "user", TargetID: id, Target: name,
-			Detail: "deleted the account; their issues stay"})
+		detail := "deleted the account; their issues stay"
+		if s.cfg.TranscriptDir != "" {
+			// a promise of what dispatch does next; if it fails, that has its own entry
+			detail += "; their archived transcripts are removed from the disk next"
+		}
+		t.audit(AuditEntry{Action: "user.delete", Category: AuditAccess, TargetType: "user", TargetID: id, Target: name, Detail: detail})
+		t.emit(&Event{Kind: EvUserDeleted, UserID: id, AdminOnly: true, Data: map[string]any{"user": id, "name": name, "by": actor.id()}})
 		return nil
 	})
 }
