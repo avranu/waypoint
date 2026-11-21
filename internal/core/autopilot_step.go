@@ -2894,7 +2894,8 @@ func (s *Service) roundOverdue(ctx context.Context, st *stepRow, review *roundRo
 		reason = fmt.Sprintf("the session stayed busy for %d hours, so it couldn't be started: %s", int(heldScreenWait.Hours()), st.detail)
 	}
 	if ra, err := s.roundAuditOf(ctx, review.id); err == nil && ra.id != 0 {
-		if n := len(s.auditTodo(ctx, ra.id)); n > 0 {
+		if todo, _ := s.findingsToDo(ctx, ra.id); len(todo) > 0 {
+			n := len(todo)
 			reason += fmt.Sprintf("; its audit found %d things nobody decided, and they go to the pull request's review gate", n)
 		}
 	}

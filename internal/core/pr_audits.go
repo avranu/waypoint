@@ -334,6 +334,13 @@ func (s *Service) auditTodoErr(ctx context.Context, prID int64) ([]TodoFinding, 
 		for _, f := range todo {
 			out = append(out, TodoFinding{CodeAuditFinding: f, Audit: id, Footprint: purpose == AuditFootprint})
 		}
+		if purpose == "" {
+			un, err := s.uncheckedRejections(ctx, id)
+			if err != nil {
+				return out, err
+			}
+			out = append(out, un...)
+		}
 	}
 	carried, err := s.carriedAudits(ctx, prID)
 	if err != nil {
@@ -349,6 +356,28 @@ func (s *Service) auditTodoErr(ctx context.Context, prID int64) ([]TodoFinding, 
 		}
 		for _, f := range todo {
 			out = append(out, TodoFinding{CodeAuditFinding: f, Audit: id})
+		}
+		un, err := s.uncheckedRejections(ctx, id)
+		if err != nil {
+			return out, err
+		}
+		out = append(out, un...)
+	}
+	return out, nil
+}
+
+// uncheckedRejections are the findings of an audit the session rejected and
+// nothing checked that reopenUnverified left rejected (medium and low): the
+// packet lists them, and they hold nothing.
+func (s *Service) uncheckedRejections(ctx context.Context, id int64) ([]TodoFinding, error) {
+	a := &CodeAudit{ID: id}
+	if err := s.loadFindings(ctx, a); err != nil {
+		return nil, err
+	}
+	var out []TodoFinding
+	for _, f := range a.Findings {
+		if f.State == "rejected" && strings.HasPrefix(f.Note, uncheckedNote) {
+			out = append(out, TodoFinding{CodeAuditFinding: f, Audit: id, Unchecked: true})
 		}
 	}
 	return out, nil
@@ -436,13 +465,21 @@ func (s *Service) auditHolds(ctx context.Context, prID, going int64) ([]string, 
 		if err != nil {
 			return nil, "", err
 		}
+		// A check of the session's marks that is the newest audit holds on
+		// whatever it still disagrees with, of any severity: its findings
+		// are marks nobody has settled.
+		check := s.isCheckAudit(ctx, id)
 		for _, f := range todo {
-			if auditHoldsMerge(f.Severity) {
+			if auditHoldsMerge(f.Severity) || check {
 				ids = append(ids, f.ID)
 			}
 		}
 		if len(ids) > 0 {
-			held = append(held, fmt.Sprintf("audit #%d has %d critical or high finding%s still to do (%s): fix, or close with wp audit mark ID fixed|rejected -m WHY",
+			what := "critical or high finding%s still to do"
+			if check {
+				what = "finding%s of the check of the session's marks nobody decided"
+			}
+			held = append(held, fmt.Sprintf("audit #%d has %d "+what+" (%s): fix, or close with wp audit mark ID fixed|rejected -m WHY",
 				id, len(ids), plural(len(ids)), strings.Join(ids, ", ")))
 		}
 	}
@@ -496,10 +533,16 @@ type TodoFinding struct {
 	// Footprint: a footprint check named it, a change beyond the task
 	// (WP-440). Every one is work for a round, whatever its severity.
 	Footprint bool `json:"footprint,omitempty"`
+	// Unchecked: the session rejected it and the check of its marks never
+	// ran. Listed for whoever reads the packet; it holds nothing and starts
+	// no round.
+	Unchecked bool `json:"unchecked,omitempty"`
 }
 
 // startsRound: still to do, it is work for a babysitting round.
-func (f TodoFinding) startsRound() bool { return f.Footprint || auditStartsRound(f.Severity) }
+func (f TodoFinding) startsRound() bool {
+	return !f.Unchecked && (f.Footprint || auditStartsRound(f.Severity))
+}
 
 // todoFindings are the findings still to do in the pull request's newest
 // finished audit and footprint check, for its work packet.
@@ -545,7 +588,9 @@ func writeFindings(b *strings.Builder, list []TodoFinding) {
 			}
 		}
 		state := ""
-		if f.State != "open" {
+		if f.Unchecked {
+			state = " [rejected by the session, unchecked]"
+		} else if f.State != "open" {
 			state = " [" + f.State + "]"
 		}
 		fmt.Fprintf(b, "\n### %s %s%s%s\n", f.ID, f.Severity, where, state)

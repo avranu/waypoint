@@ -857,14 +857,24 @@ func (s *Service) carryAudits(ctx context.Context, round, prID int64, number int
 	s.log.InfoContext(ctx, "round's check carried to its pull request", "round", round, "audit", id, "pr", prID)
 }
 
+// uncheckedNote starts the note of a rejection nobody checked.
+const uncheckedNote = "Rejected by the session, unchecked: "
+
 // reopenUnverified opens again the critical and high findings of an audit
 // the session rejected and nothing checked, so they hold the pull request's
-// merge until a person or its session decides them (WP-1370).
+// merge until a person or its session decides them, and marks the medium and
+// low ones as unchecked, to be listed (WP-1370).
 func (s *Service) reopenUnverified(ctx context.Context, auditID int64) {
 	err := s.write(ctx, SystemActor(), func(t *tx) error {
-		_, err := t.ExecContext(ctx, `UPDATE code_audit_findings SET state = 'open',
-			note = trim('Rejected by the session, unchecked: ' || note), decided_at = NULL
-			WHERE audit_id = ? AND state = 'rejected' AND severity IN ('critical', 'high')`, auditID)
+		if _, err := t.ExecContext(ctx, `UPDATE code_audit_findings SET state = 'open',
+			note = trim(? || note), decided_at = NULL
+			WHERE audit_id = ? AND state = 'rejected' AND severity IN ('critical', 'high')`, uncheckedNote, auditID); err != nil {
+			return err
+		}
+		// A medium or low one stays rejected (it holds nothing), marked so the
+		// pull request's packet lists it as unchecked.
+		_, err := t.ExecContext(ctx, `UPDATE code_audit_findings SET note = trim(? || note)
+			WHERE audit_id = ? AND state = 'rejected' AND severity IN ('medium', 'low') AND note NOT LIKE ?`, uncheckedNote, auditID, uncheckedNote+"%")
 		return err
 	})
 	if err != nil {
