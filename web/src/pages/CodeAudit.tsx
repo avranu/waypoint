@@ -572,6 +572,9 @@ function Verdict({
 }
 
 function Asked({ audit: a }: { audit: CodeAudit }) {
+  // The number is named only when it is the one in use: a check of marks and
+  // a review round's audit list every finding whatever max_findings holds.
+  const showsSet = !!a.max_findings && (!a.shown || a.shown === a.max_findings)
   const target = TARGETS.find((t) => t.value === a.target)
   const focusAreas = useQuery({ ...auditDefaultsQuery(), enabled: !!a.focus?.length }).data?.focus
   const what =
@@ -654,14 +657,14 @@ function Asked({ audit: a }: { audit: CodeAudit }) {
             </dd>
           </>
         )}
-        {!!(a.min_severity || a.max_findings) && (
+        {!!(a.min_severity || showsSet) && (
           <>
             <dt className="text-subtle">Report</dt>
             <dd>
               {[
                 a.min_severity &&
                   MIN_SEVERITY.find((x) => x.value === a.min_severity)?.label.toLowerCase(),
-                a.max_findings && `showing ${plural(a.max_findings, 'finding')} at a time`,
+                showsSet && `showing ${plural(a.max_findings ?? 0, 'finding')} at a time`,
               ]
                 .filter(Boolean)
                 .join(', ')

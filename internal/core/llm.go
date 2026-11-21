@@ -756,9 +756,10 @@ func extractAnswerJSON(ctx context.Context, s string) (json.RawMessage, error) {
 }
 
 // salvageFindings takes an answer cut off inside its JSON, {"findings":[{…},
-// {…},{… cut, and returns valid JSON holding the findings it finished, with
-// how many. It is not ok for any other shape, and for a cut inside the
-// first finding (no findings is not a salvage). It reads strings with their
+// {…},{… cut, or cut after the array closed, and returns valid JSON holding
+// the findings it finished, with how many. It is not ok for any other
+// shape (an element that is not an object among them), and for a cut
+// inside the first finding (no findings is not a salvage). It reads strings with their
 // escapes and keeps a stack of open brackets, so a brace or quote inside a
 // string is text. Callers use it only on an answer extractJSON rejected.
 func salvageFindings(s string) (json.RawMessage, int, bool) {
@@ -788,6 +789,7 @@ func salvageFrom(s string) (json.RawMessage, int, bool) {
 		arrStart = -1
 		lastEnd  = -1
 		count    int
+		closed   bool // the findings array has closed
 	)
 	for i := 0; i < len(s); i++ {
 		c := s[i]
@@ -827,19 +829,24 @@ func salvageFrom(s string) (json.RawMessage, int, bool) {
 				return nil, 0, false
 			}
 			stack = stack[:len(stack)-1]
-			if arrStart >= 0 && len(stack) == 2 {
+			if arrStart >= 0 && !closed && len(stack) == 2 {
+				if c != '}' {
+					return nil, 0, false // a finding is an object
+				}
 				lastEnd = i + 1
 				count++
 			}
 			if arrStart >= 0 && len(stack) == 1 {
-				return nil, 0, false // the array closed: not cut inside it
+				// The array closed; if the object is cut after it, every
+				// finding in it is whole.
+				closed = true
 			}
 			if len(stack) == 0 {
 				return nil, 0, false // a complete object: not a cut answer
 			}
 		}
 	}
-	if arrStart < 0 || lastEnd < 0 || len(stack) < 2 {
+	if arrStart < 0 || lastEnd < 0 || (len(stack) < 2 && !closed) {
 		return nil, 0, false
 	}
 	// elements of the array are objects; a cut-off tail past lastEnd is dropped.

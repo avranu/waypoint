@@ -162,6 +162,30 @@ func TestAuditGuardCutIsKeptInTheAnswer(t *testing.T) {
 	}
 }
 
+// The cut note survives a long summary: the model's words give way to it
+// (1255.4). And at exactly the guard nothing is cut or added (1255.18).
+func TestAuditCutNoteSurvivesALongSummary(t *testing.T) {
+	ae := newAgentEnv(t)
+	run := func(summary string, findings []map[string]any) *CodeAudit {
+		a, err := ae.s.RequestAudit(ae.ctx, ae.admin, AuditInput{Project: ae.p.Key, Instructions: "Look.", Via: "web"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ae.work()
+		claim := ae.take()
+		ae.finish(claim.ID, "done", auditResult(summary, findings...), "")
+		return ae.audit(a.ID)
+	}
+	got := run(strings.Repeat("word ", 600), longFindings(150, 1))
+	if !strings.HasSuffix(got.Summary, "they are in the audit's answer text (the answer field of `wp audit show "+fmt.Sprint(got.ID)+" --json`))") || len([]rune(got.Summary)) > 2000 || !strings.HasPrefix(got.Summary, "word word") {
+		t.Errorf("summary (%d runes) ends %q", len([]rune(got.Summary)), got.Summary[max(0, len(got.Summary)-200):])
+	}
+	exact := run("Read it.", lowFindings(findingsGuard))
+	if len(exact.Findings) != findingsGuard || strings.Contains(exact.Summary, "cut") || strings.Contains(exact.Answer, auditCutHeading) {
+		t.Errorf("at the guard: %d findings, summary %q, heading in answer %v", len(exact.Findings), exact.Summary, strings.Contains(exact.Answer, auditCutHeading))
+	}
+}
+
 // A runaway answer's cut findings are not stored without bound, and the
 // summary says when they were cut short.
 func TestAuditGuardCutTextIsBounded(t *testing.T) {
@@ -171,7 +195,7 @@ func TestAuditGuardCutTextIsBounded(t *testing.T) {
 		f.Findings = append(f.Findings, CodeAuditFinding{Title: fmt.Sprintf("F%d", i), Severity: "low", Problem: strings.Repeat("x", auditCutMax/2)})
 	}
 	f.keep(a)
-	if f.guardCut != 3 || !f.cutShort || len([]rune(f.cutJSON)) > auditCutMax+1 {
+	if f.guardCut != 3 || !f.cutShort || len([]rune(f.cutJSON)) != auditCutMax {
 		t.Fatalf("cut %d short %v len %d", f.guardCut, f.cutShort, len(f.cutJSON))
 	}
 	if n := f.keepNote(a, findingsGuard+3); !strings.Contains(n, "cut short") {

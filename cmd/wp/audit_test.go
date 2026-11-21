@@ -169,6 +169,23 @@ func TestAuditShowListsWhatTheServerSaysIsShown(t *testing.T) {
 			t.Errorf("%d findings, shown 5:\n%s", n, out)
 		}
 	}
+	// The criteria line names the number only when it is the one in use (1255.6).
+	if out := check.text(); strings.Contains(out, "shows 3 findings at a time") {
+		t.Errorf("a check that lists every finding says it shows 3:\n%s", out)
+	}
+	set := auditView{ID: 9, Status: "done", MaxFindings: 4, Shown: 4, Findings: fs}
+	if out := set.text(); !strings.Contains(out, "shows 4 findings at a time") || !strings.Contains(out, "1 more: wp audit show 9 --all") {
+		t.Errorf("an audit set to show 4:\n%s", out)
+	}
+	// A server that sends neither number: the default (1255.22).
+	var many []auditFinding
+	for i := 1; i <= core.AuditDefaultShown+2; i++ {
+		many = append(many, auditFinding{ID: fmt.Sprintf("9.%d", i), Title: fmt.Sprintf("Mark %d", i), Severity: "low", State: "open"})
+	}
+	bare := auditView{ID: 9, Status: "done", Findings: many}
+	if out := bare.text(); !strings.Contains(out, "2 more: wp audit show 9 --all") || strings.Contains(out, "at a time") {
+		t.Errorf("an audit with no number:\n%s", out)
+	}
 	older := auditView{ID: 9, Status: "done", MaxFindings: 3, Findings: fs}
 	if out := older.text(); strings.Contains(out, "Mark 4") || !strings.Contains(out, "2 more: wp audit show 9 --all") {
 		t.Errorf("an older server's audit:\n%s", out)

@@ -59,9 +59,10 @@ const (
 	// Haiku panel's findings don't compete with the reviewer's for room
 	// below it. Past it the worst are kept (the reviewer's before the
 	// panel's within a severity) and the audit's summary says how many the
-	// answer held and how many are kept; the answer as it came stays in the
-	// audit, and the panel's runs in its helper runs. (auditGuard: a check
-	// of marks has more room.)
+	// answer held and how many are kept; the answer's text stays in the
+	// audit (its spacing flattened, to 60,000 characters), with the
+	// findings cut here after it, and the panel's runs in its helper runs.
+	// (auditGuard: a check of marks has more room.)
 	findingsGuard = 100
 )
 
@@ -1103,8 +1104,8 @@ func (s *Service) settleAudit(ctx context.Context, id, jobID int64) {
 			if found.guardCut > 0 {
 				s.log.WarnContext(ctx, "an audit's answer was cut at the guard", "audit", a.ID, "raised", raised, "kept", len(found.Findings), "cut", found.guardCut)
 			}
-			found.Summary += found.keepNote(a, raised)
-			a.Model, a.Summary = auditModelName(m), excerpt(found.Summary, 2000)
+			found.Summary = summaryWithNote(found.Summary, found.keepNote(a, raised))
+			a.Model, a.Summary = auditModelName(m), found.Summary
 			if m.CLI == GatewayCLI {
 				// Which of the gateway's models answered, and that its
 				// findings are to be reported on.

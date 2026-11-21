@@ -151,13 +151,21 @@ func TestLaterFindingsAgentComment(t *testing.T) {
 		}
 	}
 	pe.s.cfg.BaseURL = "https://wp.test"
-	if _, err := pe.s.db.W.ExecContext(pe.ctx, `UPDATE review_comments SET gone_at = 1 WHERE kind = 'finding'`); err != nil {
-		t.Fatal(err)
-	}
 	want := fmt.Sprintf("https://wp.test/agents?tab=pulls&pr=%d", run.PR.ID)
-	for _, u := range urls() {
+	got = urls()
+	if len(got) != 1 {
+		t.Fatalf("%d finding comments with an address: %v", len(got), got)
+	}
+	for _, u := range got {
 		if u != want {
 			t.Errorf("link = %q, want %q", u, want)
 		}
+	}
+	// A later finding that is no longer open leaves the to-do (1255.21).
+	if _, err := pe.s.db.W.ExecContext(pe.ctx, `UPDATE bot_findings SET state = ? WHERE run_id = ? AND placement = ?`, FindingFixed, run.ID, placementLater); err != nil {
+		t.Fatal(err)
+	}
+	if got := urls(); len(got) != 0 {
+		t.Errorf("a fixed later finding is still in the to-do: %v", got)
 	}
 }

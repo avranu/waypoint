@@ -289,7 +289,7 @@ func (f *auditAnswer) keep(a *CodeAudit) int {
 // audit's stored answer text; auditCutMax bounds them, in runes, so a
 // runaway answer is still not stored without bound (WP-1421).
 const (
-	auditCutHeading = "Findings past the guard, as they came:"
+	auditCutHeading = "Findings past the guard, as read from the answer:"
 	auditCutMax     = 400_000
 )
 
@@ -325,6 +325,18 @@ func (f *auditAnswer) cutWhere(a *CodeAudit) string {
 		return "they are in " + at + ", cut short at its size limit"
 	}
 	return "they are in " + at
+}
+
+// summaryWithNote is an audit's stored summary: the model's words, cut to
+// leave room for the note about findings left out, which is never the part
+// that is cut.
+func summaryWithNote(summary, note string) string {
+	const most = 2000
+	room := most - len([]rune(note))
+	if room < 1 {
+		return excerpt(note, most)
+	}
+	return excerpt(summary, room) + note
 }
 
 // keepNote is what the summary says when keep left findings out: how many

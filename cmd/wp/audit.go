@@ -402,7 +402,9 @@ func (a *auditView) criteria() string {
 	if a.MinSeverity != "" {
 		parts = append(parts, a.MinSeverity+" and worse")
 	}
-	if a.MaxFindings > 0 {
+	// Only when it is the number in use: a check of marks and a review
+	// round's audit list every finding whatever max_findings holds.
+	if a.MaxFindings > 0 && (a.Shown == 0 || a.Shown == a.MaxFindings) {
 		parts = append(parts, fmt.Sprintf("shows %d findings at a time", a.MaxFindings))
 	}
 	return strings.Join(parts, "; ")
