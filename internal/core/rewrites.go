@@ -240,6 +240,7 @@ func (s *Service) recordRewrites(ctx context.Context, actor *Actor, d *IssueDeta
 	var got []*RewrittenTask
 	err := s.write(ctx, actor, func(t *tx) error {
 		got = nil
+		have := map[int64]bool{} // pairs Waypoint's own relation already stands for
 		for _, r := range found {
 			id, err := s.resolveIssueID(ctx, t, r.Key)
 			if err != nil {
@@ -258,6 +259,24 @@ func (s *Service) recordRewrites(ctx context.Context, actor *Actor, d *IssueDeta
 			}
 			if !s.canSee(ctx, t, actor, o.ID, o.ProjectID) {
 				continue
+			}
+			// What the pair has now, read in this write: Waypoint's own
+			// relation is refreshed; anything else (a person's or an agent's,
+			// either way round, made since RewrittenWork read) stands alone,
+			// and nothing is recorded for the pair.
+			var kind string
+			var how sql.NullString
+			err = t.QueryRowContext(ctx, `SELECT kind, found FROM issue_relations
+				WHERE (source_id = ? AND target_id = ?) OR (source_id = ? AND target_id = ?) ORDER BY (found = ?) DESC LIMIT 1`,
+				d.ID, id, id, d.ID, rewriteFound).Scan(&kind, &how)
+			switch {
+			case errors.Is(err, sql.ErrNoRows):
+			case err != nil:
+				return err
+			case how.String != rewriteFound:
+				continue
+			default:
+				have[id] = true
 			}
 			got = append(got, r)
 		}
@@ -302,21 +321,18 @@ func (s *Service) recordRewrites(ctx context.Context, actor *Actor, d *IssueDeta
 			if err != nil {
 				return err
 			}
-			var have int64
-			err = t.QueryRowContext(ctx, `SELECT id FROM issue_relations WHERE kind = 'relates' AND found = ?
-				AND ((source_id = ? AND target_id = ?) OR (source_id = ? AND target_id = ?))`, rewriteFound, d.ID, otherID, otherID, d.ID).Scan(&have)
 			note := rewriteNote(r)
-			switch {
-			case errors.Is(err, sql.ErrNoRows):
-				if _, err := t.ExecContext(ctx, `INSERT INTO issue_relations(source_id, target_id, kind, created_at, found, basis, created_by, created_agent)
-					VALUES (?,?,'relates',?,?,?,?,?)`, d.ID, otherID, s.nowMS(), rewriteFound, linkBasisInferred, nullUser(actor.id()), actor.creditAgent()); err != nil {
+			if !have[otherID] {
+				inserted, err := s.insertRelation(ctx, t, newRelation{Src: d.ID, Dst: otherID, Kind: "relates", Found: rewriteFound, Basis: linkBasisInferred,
+					CreatedBy: actor.id(), CreatedAgent: actor.creditAgent(), Unrelated: true})
+				if err != nil {
 					return err
 				}
-				r.Recorded = true
-				t.emit(&Event{Kind: EvIssueUpdated, ProjectID: d.ProjectID, IssueID: d.ID, IssueKey: d.Key, Field: "relation", New: "relates " + r.Key,
-					Data: map[string]any{"basis": linkBasisInferred, "found": rewriteFound, "note": note, "other": r.Key, "pr": r.PR, "lines": r.Lines}})
-			case err != nil:
-				return err
+				if inserted {
+					r.Recorded = true
+					t.emit(&Event{Kind: EvIssueUpdated, ProjectID: d.ProjectID, IssueID: d.ID, IssueKey: d.Key, Field: "relation", New: "relates " + r.Key,
+						Data: map[string]any{"basis": linkBasisInferred, "found": rewriteFound, "note": note, "other": r.Key, "pr": r.PR, "lines": r.Lines}})
+				}
 			}
 			if _, err := t.ExecContext(ctx, `INSERT INTO rewrite_evidence(issue_id, other_id, repo, pr, prs, lines, share, merged_at, head, note, created_at, updated_at)
 				VALUES (?,?,?,?,?,?,?,?,?,?,?,?)

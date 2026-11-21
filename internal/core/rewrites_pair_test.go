@@ -38,3 +38,52 @@ func TestDismissalHoldsFromTheOtherSide(t *testing.T) {
 		t.Errorf("RewrittenWork read %+v, %v", read, err)
 	}
 }
+
+func (f *rewriteFixture) relationRows(t *testing.T) int {
+	t.Helper()
+	var n int
+	if err := f.s.db.R.QueryRowContext(f.ctx, `SELECT count(*) FROM issue_relations`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// A person relates the pair after the ship read the work and before it
+// recorded it, from either end: that one relation is the only one, and
+// Waypoint's inferred one isn't made beside it, nor evidence kept for it.
+func TestRecordRewritesDefersToARelationMadeSince(t *testing.T) {
+	for _, from := range []string{"the task shipped", "the other task"} {
+		f := newRewriteFixture(t)
+		d := f.get(f.admin, f.b.Key)
+		read, err := f.s.RewrittenWork(f.ctx, f.admin, f.b.Key, "o/r", f.prs)
+		if err != nil || len(read) != 1 {
+			t.Fatalf("read %+v, %v", read, err)
+		}
+		a, b := f.a.Key, f.b.Key
+		if from == "the task shipped" {
+			a, b = b, a
+		}
+		if err := f.s.AddRelation(f.ctx, f.admin, a, "relates", b); err != nil {
+			t.Fatal(err)
+		}
+		got, err := f.s.recordRewrites(f.ctx, f.admin, d, "o/r", "h", read)
+		if err != nil {
+			t.Fatalf("%s: %v", from, err)
+		}
+		if len(got) != 0 {
+			t.Errorf("%s: recorded %+v beside a person's relation", from, got)
+		}
+		if n := f.relationRows(t); n != 1 {
+			t.Errorf("%s: %d relations, want the person's alone", from, n)
+		}
+		var found string
+		if err := f.s.db.R.QueryRowContext(f.ctx, `SELECT coalesce(found, '') FROM issue_relations`).Scan(&found); err != nil || found != "" {
+			t.Errorf("%s: surviving relation found = %q (%v), want the person's", from, found, err)
+		}
+		var ev int
+		_ = f.s.db.R.QueryRowContext(f.ctx, `SELECT count(*) FROM rewrite_evidence`).Scan(&ev)
+		if ev != 0 {
+			t.Errorf("%s: %d evidence rows for a pair a person related", from, ev)
+		}
+	}
+}
