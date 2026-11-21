@@ -411,7 +411,8 @@ async function run(width, scheme) {
   const rd = banner.getByTestId("round-diagnosis").first();
   await rd.waitFor();
   ok(/diagnosed/.test(await banner.textContent()), `${tag} the round list shows the diagnosed outcome`);
-  await rd.getByText(/Diagnosis by/).click();
+  ok(/the latest, shown below/.test(await rd.textContent()), `${tag} the latest round's diagnosis is a pointer in the list`);
+  ok((await banner.getByText("flaky test hides every fix").count()) === 1, `${tag} the diagnosis text shows once, not twice`);
   await shot("15-diagnosed");
   await overflow("the recorded diagnosis");
 

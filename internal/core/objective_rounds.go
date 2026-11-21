@@ -228,8 +228,10 @@ func (s *Service) objectiveSettle(ctx context.Context, t *tx, o *Objective, e ro
 		}
 	}
 	// Rounds in a row that came no nearer: what makes a round a diagnose
-	// round. A round that landed nothing says nothing of it, and a person
-	// moving the objective on skips the diagnosis (WP-1449).
+	// round. A round that landed nothing (RoundEmpty) neither counts nor
+	// clears: nothing was tried, so it is no evidence either way, and the
+	// rounds around it are still in a row. A person moving the objective on
+	// skips the diagnosis (WP-1449).
 	switch {
 	case e.outcome == RoundMet || e.outcome == RoundProgress:
 		o.NoBetter = 0

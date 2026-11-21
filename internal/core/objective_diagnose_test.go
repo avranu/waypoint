@@ -129,7 +129,7 @@ func TestObjectiveDiagnoseRoundBriefAndRecording(t *testing.T) {
 	}
 
 	// Not taken up: an agent can't record it yet.
-	if _, err := o.diagnose(task.Key, ObjectiveDiagnoseInput{Text: "x"}); !IsInvalid(err) {
+	if _, err := o.diagnose(task.Key, ObjectiveDiagnoseInput{Text: "x"}); !IsInvalid(err) || !strings.Contains(err.Error(), "hasn't been taken up by you") {
 		t.Fatalf("not taken: %v", err)
 	}
 	o.take1(task.Key)
@@ -232,16 +232,16 @@ func TestObjectiveDiagnoseAccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := o.s.ObjectiveDiagnose(o.ctx, other, task.Key, ObjectiveDiagnoseInput{Text: "mine"}); err == nil {
-		t.Fatal("another agent recorded a diagnosis")
+	if _, err := o.s.ObjectiveDiagnose(o.ctx, other, task.Key, ObjectiveDiagnoseInput{Text: "mine"}); err == nil || !strings.Contains(err.Error(), "is claimed by anthropic/claude-opus-5-5") {
+		t.Fatalf("another agent recorded a diagnosis, or was refused for another reason: %v", err)
 	}
 	// A viewer.
 	viewer := o.user("vera", false)
 	if err := o.s.SetMember(o.ctx, o.admin, o.p.Key, "vera", "viewer"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := o.s.ObjectiveDiagnose(o.ctx, viewer, task.Key, ObjectiveDiagnoseInput{Text: "mine"}); err == nil {
-		t.Fatal("a viewer recorded a diagnosis")
+	if _, err := o.s.ObjectiveDiagnose(o.ctx, viewer, task.Key, ObjectiveDiagnoseInput{Text: "mine"}); err == nil || err.Error() != ErrForbidden.Error() {
+		t.Fatalf("a viewer's refusal: %v, want %v", err, ErrForbidden)
 	}
 	if ob := o.obj(task.Key); ob.Diagnosis != nil || ob.RoundKind != RoundKindDiagnose {
 		t.Fatalf("a refused diagnosis changed it: %+v", ob)
@@ -464,4 +464,272 @@ func TestObjectiveDiagnoseAsk(t *testing.T) {
 			t.Fatalf("phase %q why %q", ob.Phase, ob.PhaseWhy)
 		}
 	})
+}
+
+// Who may not record a diagnosis, and when no round can be diagnosed
+// (WP-1449): each refusal says why.
+
+func TestObjectiveDiagnoseRefusals(t *testing.T) {
+	refused := func(t *testing.T, o *objEnv, key, want string) {
+		t.Helper()
+		_, err := o.diagnose(key, ObjectiveDiagnoseInput{Text: "what I found"})
+		if !IsInvalid(err) || !strings.Contains(err.Error(), want) {
+			t.Fatalf("refusal = %v, want it to say %q", err, want)
+		}
+	}
+	t.Run("an agent with no claim at all", func(t *testing.T) {
+		o := newObjEnv(t)
+		task := o.toDiagnose(2, 2, ObjectiveInput{})
+		refused(t, o, task.Key, "hasn't been taken up by you")
+	})
+	t.Run("a task no one has taken refuses even a second agent", func(t *testing.T) {
+		o := newObjEnv(t)
+		task := o.toDiagnose(2, 2, ObjectiveInput{})
+		tok, _, err := o.s.CreateToken(o.ctx, o.admin, TokenSpec{Name: "other", Agent: "anthropic/claude-sonnet-5-5"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		other, err := o.s.TokenActor(o.ctx, tok)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := o.s.ObjectiveDiagnose(o.ctx, other, task.Key, ObjectiveDiagnoseInput{Text: "x"}); !IsInvalid(err) || !strings.Contains(err.Error(), "hasn't been taken up by you") {
+			t.Fatalf("second agent: %v", err)
+		}
+	})
+	t.Run("an actor from another project", func(t *testing.T) {
+		o := newObjEnv(t)
+		task := o.toDiagnose(2, 2, ObjectiveInput{})
+		o.take1(task.Key)
+		bob := o.user("bob", false)
+		o.project(bob, "Elsewhere", "")
+		_, err := o.s.ObjectiveDiagnose(o.ctx, bob, task.Key, ObjectiveDiagnoseInput{Text: "x"})
+		if !IsForbiddenOrNotFound(err) {
+			t.Fatalf("another project's actor: %v", err)
+		}
+		if ob := o.obj(task.Key); ob.Diagnosis != nil || ob.RoundKind != RoundKindDiagnose {
+			t.Fatalf("a refused diagnosis changed it: %+v", ob)
+		}
+	})
+	t.Run("blocked", func(t *testing.T) {
+		o := newObjEnv(t)
+		task := o.toDiagnose(2, 2, ObjectiveInput{})
+		o.take1(task.Key)
+		if _, err := o.diagnose(task.Key, ObjectiveDiagnoseInput{Text: "first", Ask: true}); err != nil {
+			t.Fatal(err)
+		}
+		refused(t, o, task.Key, "needs a person")
+	})
+	t.Run("in the baseline phase", func(t *testing.T) {
+		o := newObjEnv(t)
+		task := o.task("Lint clean")
+		o.set(task.Key, ObjectiveInput{Check: ptrOf("make lint"), Until: ptrOf("pass"), DiagnoseAfter: ptrOf(1)})
+		if ob := o.obj(task.Key); ob.Phase != PhaseBaseline && ob.Phase != PhaseVerdict {
+			t.Fatalf("phase %q, want a reading under way", ob.Phase)
+		}
+		refused(t, o, task.Key, "Waypoint is reading it")
+	})
+	t.Run("in the verdict phase", func(t *testing.T) {
+		o := newObjEnv(t)
+		task := o.toDiagnose(2, 1, ObjectiveInput{})
+		o.take1(task.Key)
+		o.setClock(o.clockNow().Add(time.Minute))
+		if _, err := o.s.AgentDone(o.ctx, o.ag, task.Key, AgentDoneInput{}); err != nil {
+			t.Fatal(err)
+		}
+		o.s.Wait()
+		if ob := o.obj(task.Key); ob.Phase == PhaseWork || ob.Phase == PhaseBlocked {
+			t.Fatalf("phase %q, want a reading under way", ob.Phase)
+		}
+		refused(t, o, task.Key, "Waypoint is reading it")
+	})
+	t.Run("after the objective ended", func(t *testing.T) {
+		o := newObjEnv(t)
+		task := o.toDiagnose(2, 2, ObjectiveInput{})
+		o.take1(task.Key)
+		if _, err := o.s.ObjectiveGo(o.ctx, o.admin, task.Key, ObjectiveEnd); err != nil {
+			t.Fatal(err)
+		}
+		refused(t, o, task.Key, "there is no round to diagnose")
+	})
+	t.Run("a workflow with no To Do status ends the objective", func(t *testing.T) {
+		o := newObjEnv(t)
+		task := o.toDiagnose(2, 2, ObjectiveInput{})
+		o.take1(task.Key)
+		if _, err := o.s.db.W.ExecContext(o.ctx, `UPDATE statuses SET category = 'backlog' WHERE project_id = ? AND category = 'todo'`, o.p.ID); err != nil {
+			t.Fatal(err)
+		}
+		ob, err := o.diagnose(task.Key, ObjectiveDiagnoseInput{Text: "the target is out of reach"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		last := ob.Rounds[len(ob.Rounds)-1]
+		if ob.State != ObjectiveEnded || !strings.Contains(ob.EndedWhy, "no To Do status") || last.Outcome != RoundDiagnosed || last.Diagnosis != "the target is out of reach" {
+			t.Fatalf("state %q why %q last round %+v", ob.State, ob.EndedWhy, last)
+		}
+		if d := o.get(o.admin, task.Key); !d.Closed() {
+			t.Fatalf("the task is %s, want it closed", d.Status.Name)
+		}
+	})
+}
+
+// --ask is told to the person whoever's token the agent is on, once.
+func TestObjectiveDiagnoseAskTellsThePersonOnce(t *testing.T) {
+	t.Run("by a person", func(t *testing.T) {
+		o := newObjEnv(t)
+		task := o.toDiagnose(2, 2, ObjectiveInput{})
+		before := len(o.told(NotifyObjective))
+		ob, err := o.s.ObjectiveDiagnose(o.ctx, o.admin, task.Key, ObjectiveDiagnoseInput{Text: "mine", Ask: true})
+		o.s.Wait()
+		if err != nil || ob.PhaseWhy != BlockedDiagnosis {
+			t.Fatalf("ask by a person: %+v, %v", ob, err)
+		}
+		if told := o.told(NotifyObjective); len(told) != before+1 {
+			t.Fatalf("notifications %d -> %d: %q", before, len(told), told)
+		}
+	})
+	t.Run("an agent on the person's own token", func(t *testing.T) {
+		o := newObjEnv(t)
+		task := o.toDiagnose(2, 2, ObjectiveInput{})
+		o.take1(task.Key)
+		before := len(o.told(NotifyObjective))
+		if _, err := o.diagnose(task.Key, ObjectiveDiagnoseInput{Text: "out of reach", Ask: true}); err != nil {
+			t.Fatal(err)
+		}
+		told := o.told(NotifyObjective)
+		if len(told) != before+1 || !strings.Contains(told[len(told)-1], "needs you") {
+			t.Fatalf("notifications %d -> %d: %q", before, len(told), told)
+		}
+	})
+	t.Run("an agent on a different token", func(t *testing.T) {
+		o := newObjEnv(t)
+		task := o.toDiagnose(2, 2, ObjectiveInput{})
+		eve := o.user("eve", false)
+		if err := o.s.SetMember(o.ctx, o.admin, o.p.Key, "eve", "editor"); err != nil {
+			t.Fatal(err)
+		}
+		tok, _, err := o.s.CreateToken(o.ctx, eve, TokenSpec{Name: "eves", Agent: "anthropic/claude-sonnet-5-5"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ag, err := o.s.TokenActor(o.ctx, tok)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := o.s.AgentTake(o.ctx, ag, task.Key, ""); err != nil {
+			t.Fatal(err)
+		}
+		before := len(o.told(NotifyObjective))
+		if _, err := o.s.ObjectiveDiagnose(o.ctx, ag, task.Key, ObjectiveDiagnoseInput{Text: "out of reach", Ask: true}); err != nil {
+			t.Fatal(err)
+		}
+		told := o.told(NotifyObjective)
+		if len(told) != before+1 || !strings.Contains(told[len(told)-1], "needs you") {
+			t.Fatalf("notifications %d -> %d: %q", before, len(told), told)
+		}
+	})
+}
+
+// A person's re-set that changes what is measured starts afresh even when it
+// also raises the rounds of an objective that ran out of them (WP-1449): the
+// diagnosis and the count belong to the old check.
+func TestObjectiveDiagnoseOutOfRoundsThenReSet(t *testing.T) {
+	outOfRounds := func(t *testing.T) (*objEnv, *IssueDetail) {
+		o := newObjEnv(t)
+		task := o.toDiagnose(1, 0, ObjectiveInput{MaxRounds: ptrOf(3)})
+		// Work, diagnose, work, diagnose, work: three counted rounds.
+		for i := 1; i <= 3; i++ {
+			if i > 1 {
+				o.take1(task.Key)
+				if _, err := o.diagnose(task.Key, ObjectiveDiagnoseInput{Text: fmt.Sprintf("diagnosis %d", i)}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			o.noBetter(task.Key, i)
+		}
+		// Round 1's no-better made round 2 a diagnose round, and so on; the
+		// last work round is round 3, and round 4 is over the limit.
+		ob := o.obj(task.Key)
+		if ob.PhaseWhy != BlockedRounds || ob.Diagnosis == nil || ob.NoBetter == 0 {
+			t.Fatalf("setup: phase %q why %q no_better %d diagnosis %v", ob.Phase, ob.PhaseWhy, ob.NoBetter, ob.Diagnosis)
+		}
+		return o, task
+	}
+	t.Run("a new check and more rounds opens a work round", func(t *testing.T) {
+		o, task := outOfRounds(t)
+		ob := o.set(task.Key, ObjectiveInput{Check: ptrOf("make lint-all"), MaxRounds: ptrOf(9)})
+		if ob.Round != 4 || ob.RoundKind != "" || ob.NoBetter != 0 || ob.Diagnosis != nil {
+			t.Fatalf("round %d kind %q no_better %d diagnosis %v", ob.Round, ob.RoundKind, ob.NoBetter, ob.Diagnosis)
+		}
+	})
+	t.Run("a new check alone stays out of rounds, with nothing stale", func(t *testing.T) {
+		o, task := outOfRounds(t)
+		ob := o.set(task.Key, ObjectiveInput{Check: ptrOf("make lint-all")})
+		if ob.NoBetter != 0 || ob.Diagnosis != nil || ob.RoundKind != "" {
+			t.Fatalf("no_better %d diagnosis %v kind %q", ob.NoBetter, ob.Diagnosis, ob.RoundKind)
+		}
+		ob = o.set(task.Key, ObjectiveInput{MaxRounds: ptrOf(9)})
+		if ob.RoundKind != "" {
+			t.Fatalf("raising the rounds after it opens a %q round for a check never tried", ob.RoundKind)
+		}
+	})
+	t.Run("more rounds alone keeps the history, so a diagnosis is owed", func(t *testing.T) {
+		o, task := outOfRounds(t)
+		ob := o.set(task.Key, ObjectiveInput{MaxRounds: ptrOf(9)})
+		if ob.Round != 4 || ob.RoundKind != RoundKindDiagnose || ob.Diagnosis == nil {
+			t.Fatalf("round %d kind %q diagnosis %v", ob.Round, ob.RoundKind, ob.Diagnosis)
+		}
+	})
+}
+
+// Every round's row has an id of its own: the diagnosed round and the work
+// round that reopens it share a round number, and the web keys by the id.
+func TestObjectiveRoundRowsHaveDistinctIDs(t *testing.T) {
+	o := newObjEnv(t)
+	task := o.toDiagnose(2, 2, ObjectiveInput{})
+	o.take1(task.Key)
+	if _, err := o.diagnose(task.Key, ObjectiveDiagnoseInput{Text: "found"}); err != nil {
+		t.Fatal(err)
+	}
+	o.noBetter(task.Key, 3)
+	seen := map[int64]bool{}
+	rounds := map[int]int{}
+	for _, r := range o.obj(task.Key).Rounds {
+		if r.ID == 0 || seen[r.ID] {
+			t.Fatalf("round row %d has id %d (seen: %v)", r.Round, r.ID, seen)
+		}
+		seen[r.ID] = true
+		rounds[r.Round]++
+	}
+	if rounds[3] < 2 {
+		t.Fatalf("no round number is shared by two rows: %v", rounds)
+	}
+}
+
+// The brief doesn't say a merged pull request is refused: it is read as any round.
+func TestObjectiveDiagnoseBriefIsTrueOfShip(t *testing.T) {
+	o := newObjEnv(t)
+	task := o.toDiagnose(2, 2, ObjectiveInput{})
+	brief := ObjectiveText(o.obj(task.Key), true, o.clockNow())
+	hasAll(t, "the diagnose brief", brief, "wp done is refused", "merges in this round is read as any round", "a diagnosis is still owed")
+	if strings.Contains(brief, "wp ship, wp done") || strings.Contains(brief, "wp ship is refused") {
+		t.Errorf("the brief says wp ship is refused:\n%s", brief)
+	}
+}
+
+func TestObjectiveDiagnoseWordsOneRound(t *testing.T) {
+	o := newObjEnv(t)
+	task := o.toDiagnose(1, 1, ObjectiveInput{})
+	ob := o.obj(task.Key)
+	for who, text := range map[string]string{"agent": ObjectiveText(ob, true, o.clockNow()), "person": ObjectiveText(ob, false, o.clockNow())} {
+		if strings.Contains(text, "1 rounds") || strings.Contains(text, "last 1 rounds") {
+			t.Errorf("%s text says '1 rounds':\n%s", who, text)
+		}
+		hasAll(t, who+" text", text, "last 1 round ")
+	}
+	for _, h := range o.history(task.Key) {
+		if strings.Contains(h, "1 rounds") {
+			t.Errorf("history says '1 rounds': %q", h)
+		}
+	}
 }

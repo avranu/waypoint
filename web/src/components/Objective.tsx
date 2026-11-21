@@ -33,7 +33,7 @@ import { Button, IconButton } from '@/components/ui/button'
 import { Confirm, Dialog } from '@/components/ui/dialog'
 import { Field, Input, Select, Switch, Textarea } from '@/components/ui/input'
 import { Badge } from '@/components/ui/misc'
-import { Markdown } from '@/pages/assistant/Transcript'
+import { Markdown } from '@/components/Markdown'
 import { toast, toastError } from '@/components/ui/toast'
 
 export { everyText }
@@ -98,8 +98,21 @@ function heading(o: Objective): string {
   }
 }
 
+/** "1 round", "2 rounds". */
+function roundsText(n: number) {
+  return `${n} round${n === 1 ? '' : 's'}`
+}
+
 /** A diagnosis in the round list: collapsed, since it can run long (WP-1449). */
-function DiagnosisText({ text, by }: { text: string; by?: string }) {
+function DiagnosisText({ text, by, latest }: { text: string; by?: string; latest?: boolean }) {
+  // The latest one is shown whole under "Latest diagnosis"; repeating it here
+  // would show the same text twice on the page.
+  if (latest)
+    return (
+      <span className="block text-subtle" data-testid="round-diagnosis">
+        Diagnosis{by ? ` by ${agentLabel(by)}` : ''}: the latest, shown below
+      </span>
+    )
   return (
     <details className="mt-0.5 text-muted" data-testid="round-diagnosis">
       <summary className="cursor-pointer">Diagnosis{by ? ` by ${agentLabel(by)}` : ''}</summary>
@@ -194,7 +207,7 @@ function Definition({ o }: { o: Objective }) {
     rows.push([
       'Diagnose after',
       o.diagnose_after
-        ? `${o.diagnose_after} rounds in a row that came no nearer`
+        ? `${roundsText(o.diagnose_after)} in a row that came no nearer`
         : 'never (every round is a work round)',
     ])
   return (
@@ -281,8 +294,7 @@ export function ObjectiveBanner({
               <>
                 {' '}
                 This is a diagnose round: it ships no code. The worker finds out why the last{' '}
-                {o.no_better || o.diagnose_after} round
-                {(o.no_better || o.diagnose_after) === 1 ? '' : 's'} came no nearer and records it.
+                {roundsText(o.no_better || o.diagnose_after)} came no nearer and records it.
               </>
             )}
             {active && o.pace === 'spare' && <> Runs only on quota that would go unused.</>}
@@ -347,7 +359,7 @@ export function ObjectiveBanner({
               </summary>
               <ul className="mt-1 space-y-1">
                 {o.rounds.map((r) => (
-                  <li key={r.round} className="[overflow-wrap:anywhere]">
+                  <li key={r.id} className="[overflow-wrap:anywhere]">
                     Round {r.round}: {OUTCOME[r.outcome] ?? r.outcome}
                     {r.check ? ` (${r.check.line})` : ''}
                     <span className="text-subtle" title={dateTime(r.ended_at)}>
@@ -366,7 +378,13 @@ export function ObjectiveBanner({
                       </a>
                     )}
                     {r.note && <span className="block text-subtle">{r.note}</span>}
-                    {r.diagnosis && <DiagnosisText text={r.diagnosis} by={r.diagnosis_by} />}
+                    {r.diagnosis && (
+                      <DiagnosisText
+                        text={r.diagnosis}
+                        by={r.diagnosis_by}
+                        latest={o.diagnosis?.round === r.round && o.diagnosis.text === r.diagnosis}
+                      />
+                    )}
                   </li>
                 ))}
               </ul>

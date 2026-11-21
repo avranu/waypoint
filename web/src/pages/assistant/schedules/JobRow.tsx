@@ -24,7 +24,7 @@ import { Button, IconButton, Spinner } from '@/components/ui/button'
 import { MenuList, Popover, usePopover } from '@/components/ui/popover'
 import { Skeleton } from '@/components/ui/misc'
 import { toast, toastError } from '@/components/ui/toast'
-import { Markdown } from '../Transcript'
+import { Markdown } from '@/components/Markdown'
 import { jobPath, putJob, runNow, runsQuery, type CronJob, type CronRun } from './api'
 import { storedLabel, zoneNote, type Zone } from './schedule'
 

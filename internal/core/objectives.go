@@ -329,6 +329,9 @@ type ObjectiveMeasurement struct {
 
 // ObjectiveRound is one round.
 type ObjectiveRound struct {
+	// ID is the row's own: a diagnosed round and the work round that reopens
+	// it share Round.
+	ID        int64                 `json:"id"`
 	Round     int                   `json:"round"`
 	StartedAt time.Time             `json:"started_at"`
 	EndedAt   time.Time             `json:"ended_at"`
@@ -1066,7 +1069,7 @@ func ObjectiveText(o *Objective, forAgent bool, now time.Time) string {
 		if o.Diagnosis != nil {
 			b.WriteString("  Start from the diagnosis above: it says why the rounds before it came no nearer, and what to try.\n")
 		} else if o.Stalled >= 2 {
-			fmt.Fprintf(&b, "  The last %d rounds moved nothing. Before another attempt, find out why: read what they tried (this task's comments and pull requests), measure where the problem actually is, and write what you learn in your closing note so the next round builds on it.\n", o.Stalled)
+			fmt.Fprintf(&b, "  The last %s moved nothing. Before another attempt, find out why: read what they tried (this task's comments and pull requests), measure where the problem actually is, and write what you learn in your closing note so the next round builds on it.\n", plural1(o.Stalled, "round"))
 		} else {
 			b.WriteString("  If nothing you tried helped, say what you tried in your closing note so the next round doesn't repeat it.\n")
 		}
@@ -1084,7 +1087,7 @@ func (o *Objective) diagnoseRound() bool {
 // nothing, and finds out why the rounds before it came no nearer.
 func diagnoseBrief(o *Objective) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "  THIS ROUND IS A DIAGNOSE ROUND. The last %s came no nearer, so this one ships no code: don't change the repository or open a pull request (wp ship, wp done and closing the task are refused until you have recorded a diagnosis).\n", plural1(o.NoBetter, "round"))
+	fmt.Fprintf(&b, "  THIS ROUND IS A DIAGNOSE ROUND. The last %s came no nearer, so this one ships no code: don't change the repository or open a pull request. wp done is refused until you have recorded a diagnosis. (A pull request that merges in this round is read as any round, and if it is no better a diagnosis is still owed.)\n", plural1(o.NoBetter, "round"))
 	b.WriteString("  Find out why. Read what those rounds tried (the readings above, this task's comments and pull requests) and measure where the problem actually is. Sort what you find by cause:\n")
 	b.WriteString("    - the code: what the rounds changed doesn't move what is measured (say what would)\n")
 	b.WriteString("    - the check or the judge itself: a bug in it, or it measures the wrong thing\n")
@@ -1293,6 +1296,7 @@ func (s *Service) objectiveOf(ctx context.Context, q queryer, issueID int64) (*O
 			_ = rows.Close()
 			return nil, err
 		}
+		r.ID = rid
 		r.StartedAt, r.EndedAt = msTime(started), msTime(ended)
 		if rid == diagnosisID {
 			o.Diagnosis = &ObjectiveDiagnosis{Round: r.Round, At: r.EndedAt, By: r.DiagnosisBy, Text: r.Diagnosis}
@@ -1862,9 +1866,27 @@ func (s *Service) objectiveEdited(ctx context.Context, t *tx, cur, o *Objective,
 		// More rounds: the next one starts.
 		if changed {
 			o.BaseSHA, o.baseOK, o.baseValue = "", nil, nil
+			// What the earlier rounds came to was of something else, and the
+			// diagnosis said of it no longer stands: the next round is a work
+			// round on the new measure. With more rounds alone, the rounds
+			// that came no nearer are still the history, so a diagnosis owed
+			// is owed (objectiveOpenRound reads o.NoBetter).
+			o.NoBetter = 0
+			if err := s.objSet(ctx, t, o.IssueID, "no_better", 0, "diagnosis_id", nil); err != nil {
+				return err
+			}
 		}
 		return s.objectiveOpenRound(ctx, t, o, cur.Round+1, 0, 0, changed && o.verified())
 	case !changed || outOfRounds:
+		if changed && outOfRounds {
+			// Still out of rounds, but measured another way: the count and the
+			// diagnosis belong to the old measure.
+			o.NoBetter = 0
+			if err := s.objSet(ctx, t, o.IssueID, "no_better", 0, "diagnosis_id", nil, "round_kind", ""); err != nil {
+				return err
+			}
+			return nil
+		}
 		// A diagnose round the objective no longer asks for (diagnose-after
 		// raised past its rounds, or 0) is a work round.
 		if cur.RoundKind == RoundKindDiagnose && (!o.verified() || o.DiagnoseAfter <= 0 || cur.NoBetter < o.DiagnoseAfter) && !outOfRounds {

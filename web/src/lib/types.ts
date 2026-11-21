@@ -397,6 +397,8 @@ export interface ObjectiveDiagnosis {
 
 /** A round of an objective. */
 export interface ObjectiveRound {
+  /** the row's own id: a diagnosed round and the work round that reopens it share `round` */
+  id: number
   round: number
   started_at: string
   ended_at: string
