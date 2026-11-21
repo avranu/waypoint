@@ -38,6 +38,9 @@ type shipForge struct {
 	replyErr      error                 // ReplyToThread fails with it
 	reactErr      map[string]error      // comment id → CommentReactions fails with it
 
+	tips       map[string]string // branch → what BranchHead says; absent: it can't say
+	tipErr     error             // BranchHead fails with it
+
 	created    []NewPR           // pull requests opened through CreatePR
 	heads      map[string]string // head branch → the sha a pull request from it starts at
 	labelOps   []string          // "+name" / "-name" on pull requests
@@ -992,4 +995,22 @@ func TestSeverityHelpers(t *testing.T) {
 	if got := fmt.Sprintf("%s %s %s", agentFamily("anthropic/claude-opus-5-5"), agentFamily("claude-code"), agentFamily("openai/codex")); got != "claude claude codex" {
 		t.Errorf("agentFamily = %q", got)
 	}
+}
+
+// BranchHead is the forge's word for where a branch is: tips, or tipErr.
+// A branch with no tip set is one the forge can't say.
+func (g *shipForge) BranchHead(ctx context.Context, f *Forge, repo, branch string) (string, error) {
+	g.sm.Lock()
+	defer g.sm.Unlock()
+	if g.tipErr != nil {
+		return "", g.tipErr
+	}
+	if sha, ok := g.tips[branch]; ok {
+		return sha, nil
+	}
+	return "", ErrNotFound
+}
+
+func (g *shipForge) RepoTree(ctx context.Context, f *Forge, repo, sha string) ([]string, error) {
+	return nil, ErrNotFound
 }

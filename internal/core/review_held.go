@@ -213,6 +213,20 @@ func (s *Service) shipRound(ctx context.Context, in shipRoundIn) error {
 			return s.stopShip(ctx, r, in, fmt.Sprintf("%s#%d is already open from %s and %s, not to %s, so Waypoint didn't arm or babysit it or take it over", repo, number, bp.Branch, owner, r.key))
 		}
 	}
+	if reviewed {
+		if moved, err := s.branchMovedSinceReview(ctx, actor, r, bp); err != nil {
+			return err
+		} else if moved {
+			// Not the commit the review read: nothing is opened. The round
+			// ends the way a ship that pushed more ends it (roundRestarted,
+			// which no release follows), and the next ship asks for a review
+			// of what is pushed now.
+			s.setRoundNow(ctx, r.id, []string{r.state}, RoundInterrupted, roundRestarted)
+			s.notifyURL(ctx, in.userID, nil, NotifyAutopilot, r.key+": its branch moved after its review",
+				fmt.Sprintf("%s was pushed to after %s's adversarial review read it, so Waypoint opened no pull request for what the review didn't see. Run `wp ship` again and the review starts over on what is pushed now.", bp.Branch, r.key), "/agents?tab=autopilot")
+			return nil
+		}
+	}
 	body := bp.Body
 	// A review that ended with its findings undelivered did run.
 	given := !strings.HasPrefix(in.why, heldReviewEnded)
@@ -891,4 +905,53 @@ func (s *Service) pullTaskKeys(ctx context.Context, repo string, number int) ([]
 		keys = append(keys, key)
 	}
 	return keys, rows.Err()
+}
+
+// branchMovedSinceReview says whether the forge's branch is at another
+// commit than the one the round's review read: its audit's ToSHA when it
+// reported one, else the commit the round was shipped at. A round with
+// neither, or a forge that can't read branches, is not asked. A forge that
+// can't say where the branch is leaves the answer unknown, and that is an
+// error: shipRound's caller tries again (shipTried), and nothing opens
+// meanwhile.
+func (s *Service) branchMovedSinceReview(ctx context.Context, actor *Actor, r *roundRow, bp *beforePR) (bool, error) {
+	read := bp.HeadSHA
+	if ra, err := s.roundAuditOf(ctx, r.id); err == nil && ra.id != 0 && ra.note == "" {
+		if a, err := s.auditRow(ctx, ra.id); err == nil && a != nil && a.ToSHA != "" {
+			read = a.ToSHA
+		}
+	}
+	if read == "" {
+		return false, nil
+	}
+	cl, ok := s.Forges.(ForgeKitReader)
+	if !ok {
+		return false, nil
+	}
+	repos, err := s.ListProjectRepos(ctx, actor, bp.Project)
+	if err != nil {
+		return false, err
+	}
+	i := slices.IndexFunc(repos, func(pr ProjectRepo) bool { return strings.EqualFold(pr.Repo, bp.Repo) })
+	if i < 0 {
+		return false, nil // shipRound's open says so
+	}
+	f, err := s.forgeByID(ctx, repos[i].ForgeID)
+	if err != nil {
+		return false, err
+	}
+	fctx, cancel := context.WithTimeout(forgePatient(ctx), openPRBudget)
+	defer cancel()
+	tip, err := cl.BranchHead(fctx, f, bp.Repo, bp.Branch)
+	if err != nil || tip == "" {
+		return false, fmt.Errorf("the forge couldn't say the tip of %s, so Waypoint didn't open its pull request: %v", bp.Branch, cmp(errString(err), "no commit"))
+	}
+	return !strings.EqualFold(tip, read), nil
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
