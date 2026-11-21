@@ -93,6 +93,7 @@ func TestUnknownShipWordsRecognition(t *testing.T) {
 		"422 plain text":     {422, "text/plain", "bad request: json: unknown field \"summary\"", true},
 		"html page":          {400, "text/html", `<html><body>400 Bad Request: unknown field "message"</body></html>`, false},
 		"html, no type":      {400, "", `<!doctype html><p>unknown field "message"</p>`, false},
+		"html as text":       {400, "text/plain", `<html><body>unknown field "message"</body></html>`, false},
 		"another field":      {400, "application/json", `{"error":"bad request: json: unknown field \"head_time\""}`, false},
 		"plain, other field": {400, "text/plain", `json: unknown field "change"`, false},
 		"500":                {500, "application/json", `{"error":"unknown field \"message\""}`, false},
