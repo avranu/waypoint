@@ -380,8 +380,22 @@ func (s *Service) roundAtStop(ctx context.Context, t *tx, x *AgentSession, issue
 		return false, err
 	}
 	seen := map[string]int64{}
-	_ = json.Unmarshal([]byte(raw), &seen)
-	if decideRound(roundIn{State: r.state, Stopped: true, Subagents: subagentsSince(seen, r.startedAt.Int64, at)}).Do != doReport {
+	if raw != "" {
+		if err := json.Unmarshal([]byte(raw), &seen); err != nil {
+			// What the session's background agents did can't be read: the
+			// round isn't ended on a guess; the next Stop decides.
+			s.log.WarnContext(ctx, "round at stop: unreadable background record", "x", x.ID, "round", r.id, "err", err)
+			return false, nil
+		}
+	}
+	// What the round needs comes from decideRound over what is recorded,
+	// its check included, as everywhere else.
+	in, err := s.roundInOf(ctx, r.id)
+	if err != nil {
+		return false, err
+	}
+	in.Stopped, in.Subagents = true, subagentsSince(seen, r.startedAt.Int64, at)
+	if decideRound(in).Do != doReport {
 		return false, nil
 	}
 	body := clipText(strings.TrimSpace(msg), reviewReportMax)
