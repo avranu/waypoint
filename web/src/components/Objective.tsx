@@ -33,6 +33,7 @@ import { Button, IconButton } from '@/components/ui/button'
 import { Confirm, Dialog } from '@/components/ui/dialog'
 import { Field, Input, Select, Switch, Textarea } from '@/components/ui/input'
 import { Badge } from '@/components/ui/misc'
+import { Markdown } from '@/components/Markdown'
 import { toast, toastError } from '@/components/ui/toast'
 
 export { everyText }
@@ -93,8 +94,31 @@ function heading(o: Objective): string {
     case 'ended':
       return 'Objective ended'
     default:
-      return `Objective · round ${o.round}${o.max_rounds ? ` of ${o.max_rounds}` : ''}`
+      return `Objective · round ${o.round}${o.round_kind === 'diagnose' ? ' (diagnose)' : ''}${o.max_rounds ? ` of ${o.max_rounds}` : ''}`
   }
+}
+
+/** "1 round", "2 rounds". */
+function roundsText(n: number) {
+  return `${n} round${n === 1 ? '' : 's'}`
+}
+
+/** A diagnosis in the round list: collapsed, since it can run long (WP-1449). */
+function DiagnosisText({ text, by, latest }: { text: string; by?: string; latest?: boolean }) {
+  // The latest one is shown whole under "Latest diagnosis"; repeating it here
+  // would show the same text twice on the page.
+  if (latest)
+    return (
+      <span className="block text-subtle" data-testid="round-diagnosis">
+        Diagnosis{by ? ` by ${agentLabel(by)}` : ''}: the latest, shown below
+      </span>
+    )
+  return (
+    <details className="mt-0.5 text-muted" data-testid="round-diagnosis">
+      <summary className="cursor-pointer">Diagnosis{by ? ` by ${agentLabel(by)}` : ''}</summary>
+      <Markdown text={text} className="text-[13px]" />
+    </details>
+  )
 }
 
 function Reading({ c, title }: { c: ObjectiveCheck; title: string }) {
@@ -179,6 +203,13 @@ function Definition({ o }: { o: Objective }) {
   rows.push(['Pace', o.pace === 'spare' ? 'Spare quota only' : 'In the queue'])
   rows.push(['Between rounds', o.every ? `at least ${everyText(o.every)}` : 'no wait'])
   rows.push(['Most rounds', o.max_rounds ? String(o.max_rounds) : 'no limit'])
+  if (o.kind !== 'loop')
+    rows.push([
+      'Diagnose after',
+      o.diagnose_after
+        ? `${roundsText(o.diagnose_after)} in a row that came no nearer`
+        : 'never (every round is a work round)',
+    ])
   return (
     <details className="text-muted">
       <summary className="cursor-pointer">What it runs and where</summary>
@@ -259,6 +290,13 @@ export function ObjectiveBanner({
                 off.
               </>
             ) : null}
+            {active && o.round_kind === 'diagnose' && !o.phase && (
+              <>
+                {' '}
+                This is a diagnose round: it ships no code. The worker finds out why the last{' '}
+                {roundsText(o.no_better || o.diagnose_after)} came no nearer and records it.
+              </>
+            )}
             {active && o.pace === 'spare' && <> Runs only on quota that would go unused.</>}
           </p>
           {proposed && (
@@ -321,7 +359,7 @@ export function ObjectiveBanner({
               </summary>
               <ul className="mt-1 space-y-1">
                 {o.rounds.map((r) => (
-                  <li key={r.round} className="[overflow-wrap:anywhere]">
+                  <li key={r.id} className="[overflow-wrap:anywhere]">
                     Round {r.round}: {OUTCOME[r.outcome] ?? r.outcome}
                     {r.check ? ` (${r.check.line})` : ''}
                     <span className="text-subtle" title={dateTime(r.ended_at)}>
@@ -340,10 +378,28 @@ export function ObjectiveBanner({
                       </a>
                     )}
                     {r.note && <span className="block text-subtle">{r.note}</span>}
+                    {r.diagnosis && (
+                      <DiagnosisText
+                        text={r.diagnosis}
+                        by={r.diagnosis_by}
+                        latest={o.diagnosis?.round === r.round && o.diagnosis.text === r.diagnosis}
+                      />
+                    )}
                   </li>
                 ))}
               </ul>
             </details>
+          )}
+          {o.diagnosis && (
+            <div className="space-y-1" data-testid="objective-diagnosis">
+              <p className="[overflow-wrap:anywhere]">
+                <span className="font-medium">Latest diagnosis</span> (round {o.diagnosis.round},{' '}
+                {agentLabel(o.diagnosis.by)},{' '}
+                <span title={dateTime(o.diagnosis.at)}>{relativeTime(o.diagnosis.at)}</span>), read
+                by every round until one makes progress:
+              </p>
+              <Markdown text={o.diagnosis.text} className="text-[13px]" />
+            </div>
           )}
           <Definition o={o} />
           {may && (
@@ -490,6 +546,7 @@ export function ObjectiveDialog({
   const [pace, setPace] = useState<Objective['pace']>('queue')
   const [every, setEvery] = useState('')
   const [rounds, setRounds] = useState('')
+  const [diagnoseAfter, setDiagnoseAfter] = useState('2')
   const [tried, setTried] = useState(false)
   // Filled in as the dialog opens; a refetch of the objective while it is
   // open (a reading coming in) mustn't wipe what is being typed.
@@ -515,6 +572,7 @@ export function ObjectiveDialog({
     setPace(o?.pace ?? 'queue')
     setEvery(o ? everyText(o.every) : '')
     setRounds(o?.max_rounds ? String(o.max_rounds) : '')
+    setDiagnoseAfter(String(o?.diagnose_after ?? 2))
     setTried(false)
   }, [open])
 
@@ -551,6 +609,11 @@ export function ObjectiveDialog({
       pace,
       max_rounds: Math.max(0, parseInt(rounds, 10) || 0),
     }
+    // Blank sends nothing (the server keeps the current value, or takes its
+    // default of 2 for a new objective), and a loop has no rounds to read.
+    const diagnoseN = parseInt(diagnoseAfter, 10)
+    if (verified && !Number.isNaN(diagnoseN))
+      set.diagnose_after = Math.min(20, Math.max(0, diagnoseN))
     // Blank, or left as it was, keeps the kind's own gap: a day for one
     // that never ends, none for one with a fixed target.
     if (every.trim() && !(o && every.trim() === everyText(o.every))) set.every = every.trim()
@@ -877,6 +940,20 @@ export function ObjectiveDialog({
               placeholder="No limit"
             />
           </Field>
+          {verified && (
+            <Field
+              label="Diagnose after"
+              hint="After this many rounds in a row that come no nearer, the next round ships no code: the worker finds out why and says what to try. 0: never. Blank: the current value (2, the default, for a new objective). At most 20."
+            >
+              <Input
+                type="number"
+                min={0}
+                max={20}
+                value={diagnoseAfter}
+                onChange={(e) => setDiagnoseAfter(e.target.value)}
+              />
+            </Field>
+          )}
         </div>
       </form>
     </Dialog>

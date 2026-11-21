@@ -162,6 +162,7 @@ var routePermissions = map[string]core.Permission{
 	"PUT /api/v1/issues/{key}/objective":            core.PermIssuesEdit,
 	"DELETE /api/v1/issues/{key}/objective":         core.PermIssuesEdit,
 	"POST /api/v1/issues/{key}/objective/checks":    core.PermTasksWork,
+	"POST /api/v1/issues/{key}/objective/diagnose":  core.PermTasksWork, // WP-1449
 	// Confirming an agent's proposed objective puts its command in effect:
 	// a person's own act (WP-ADR111).
 	"POST /api/v1/issues/{key}/objective/confirm": permNever,

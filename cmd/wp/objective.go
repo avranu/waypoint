@@ -22,7 +22,7 @@ import (
 // reading, kept and shown, and it decides nothing.
 
 var objectiveCmd = &command{
-	name: "objective", group: "Agent work", args: "[set|show|check|ls|confirm|clear|retry|next|accept|end …]",
+	name: "objective", group: "Agent work", args: "[set|show|check|diagnose|ls|confirm|clear|retry|next|accept|end …]",
 	summary: "work a task in rounds until Waypoint's own reading says it is done: a check, an amount, a judge, or a loop",
 	examples: []string{
 		"wp objective set WP-12 --check 'go test -count=1 ./internal/core' --until '< 1s'",
@@ -69,9 +69,23 @@ reading at the start, a round that changed the files its own check runs (its
 reading waits for you), a reading it couldn't take after retries, or no rounds
 left. A person steers it: wp objective retry KEY (read again), next (move on
 now), accept (count the reading that waits), end (an ordinary task again).
-Agents are refused.`,
+Agents are refused.
+
+After --diagnose-after rounds in a row that came no nearer (2 by default; 0:
+never), the next round is a diagnose round: it ships no code. The worker finds
+out why (the code, the check or judge itself, noise in the reading, a target out
+of reach), says what the next round should try, and records it with wp
+objective diagnose KEY -f FILE. wp done and wp ship are refused until it is
+recorded (a pull request opened on the forge directly can't be, and if it merges
+it is read as any round). The same round then opens again as a work round, the
+one to ship in, and every round after it reads the diagnosis until one makes
+progress. A diagnose round doesn't use up one of the --rounds, and a person
+can skip it with wp objective next KEY. Where a person must act
+(the check is wrong, the target can't be reached), --ask leaves the objective
+waiting for them: wp objective accept (read it, go on), next (hand the round
+out now), set (change what is measured) or end.`,
 	subs: []*command{
-		{name: "set", args: "KEY [--check 'CMD'] [--until TARGET] [--judge 'TEXT' [--bar LEVEL] [--judge-model M]] [--keep-passing 'CMD'] [--dir DIR] [--setup 'CMD'] [--measure time|value|pass] [--better lower|higher] [--repo owner/name] [--branch B] [--pace queue|spare] [--every DURATION] [--rounds N] [--rev REV]",
+		{name: "set", args: "KEY [--check 'CMD'] [--until TARGET] [--judge 'TEXT' [--bar LEVEL] [--judge-model M]] [--keep-passing 'CMD'] [--dir DIR] [--setup 'CMD'] [--measure time|value|pass] [--better lower|higher] [--repo owner/name] [--branch B] [--pace queue|spare] [--every DURATION] [--rounds N] [--diagnose-after N] [--rev REV]",
 			summary: "give a task an objective, or change it (a flag left out keeps its value)",
 			about: `The target decides what is measured: a time ("< 1s", 2x, -10%) is the
 command's median wall time over several runs, as wp bench measures it; any
@@ -126,6 +140,20 @@ past --timeout (15m for one command), or had no number to read.
 --wait (10m) bounds the wait for a free "tests" host slot.`,
 			examples: []string{"wp objective check", "wp objective check WP-12 -n 9", "wp objective check WP-12 --timeout 5m"},
 			run:      cmdObjectiveCheck},
+		{name: "diagnose", args: "KEY (-f FILE | -m TEXT) [--ask]", summary: "record what a diagnose round found: why the rounds came no nearer, and what the next should try",
+			about: `A diagnose round follows rounds that came no nearer, and ships no code (wp
+objective show KEY says so; wp done and wp ship are refused in it). Find out why, sort what you find by cause (the code,
+the check or the judge itself, noise in the reading, a target out of reach) and
+say what the next round should try. Recording it ends the round without a
+reading, puts the task back in To Do, and opens the same round again as a work
+round, whose worker reads the diagnosis. Only the agent holding the round, or a
+person who may edit the task, can record it.
+
+--ask: a person must act first (the check is wrong, the target is out of reach).
+The diagnosis is recorded the same way, and the objective waits for them: they
+are told, and wp objective accept, next, set or end moves it on.`,
+			examples: []string{"wp objective diagnose WP-12 -f diagnosis.md", "wp objective diagnose WP-12 -m 'the check times the build, not the search: --check ./bench-search' --ask"},
+			run:      cmdObjectiveDiagnose},
 		{name: "ls", args: "[--project KEY] [--all]", summary: "the objectives in effect or proposed, with Waypoint's last reading (--all: met and ended too)",
 			examples: []string{"wp objective ls", "wp objective ls --project WP --all"},
 			run:      cmdObjectiveLs},
@@ -159,7 +187,9 @@ type objective struct {
 	Round   int    `json:"round"`
 	State   string `json:"state"`
 	Phase   string `json:"phase"`
-	Rev     string `json:"rev"`
+	// RoundKind is "diagnose" while the round under way is a diagnose round.
+	RoundKind string `json:"round_kind"`
+	Rev       string `json:"rev"`
 	// BaseSHA is the commit the round under way started from.
 	BaseSHA string `json:"base_sha"`
 	Text    string `json:"text"`
@@ -203,7 +233,7 @@ type objectiveFlags struct {
 	keep, models             *cmdList
 	// set only on wp objective set
 	dir, setup, measure, better, pace, every, repo, branch, rev *string
-	rounds                                                      *int
+	rounds, diagnoseAfter                                       *int
 }
 
 func addObjectiveFlags(fs *flag.FlagSet, full bool) *objectiveFlags {
@@ -212,6 +242,7 @@ func addObjectiveFlags(fs *flag.FlagSet, full bool) *objectiveFlags {
 	f.until = fs.String("until", "", "`TARGET`: '< 1s', '>= 80%', pass, 2x, -10%, +5%")
 	f.judge = fs.String("judge", "", "what done means, in `TEXT`, for models that didn't do the work to judge by")
 	fs.Var(f.keep, "keep-passing", "`COMMAND` that must keep passing: a round that breaks it hasn't met the objective (repeatable)")
+	f.diagnoseAfter = fs.Int("diagnose-after", 2, "make the next round a diagnose round (no code) after `N` rounds in a row that came no nearer (0: never)")
 	if !full {
 		return f
 	}
@@ -245,6 +276,8 @@ func (f *objectiveFlags) body(fs *flag.FlagSet) map[string]any {
 		switch fl.Name {
 		case "rounds":
 			body["max_rounds"] = *f.rounds
+		case "diagnose-after":
+			body["diagnose_after"] = *f.diagnoseAfter
 		case "keep-passing":
 			body["keep_passing"] = cmdListBody(*f.keep)
 		case "judge-model":
@@ -300,6 +333,35 @@ func objectiveGo(action string) func(c *cli, args []string) error {
 		}
 		return c.objectiveWrite("POST", "/api/v1/issues/"+esc(normalKey(pos[0]))+"/objective/go", map[string]any{"action": action})
 	}
+}
+
+// cmdObjectiveDiagnose records what a diagnose round found (WP-1449).
+func cmdObjectiveDiagnose(c *cli, args []string) error {
+	fs := c.flags()
+	text := fs.String("message", "", "the diagnosis, in `TEXT`")
+	short(fs, "m", "message")
+	file := fs.String("file", "", "read the diagnosis from `FILE` (- for stdin)")
+	short(fs, "f", "file")
+	ask := fs.Bool("ask", false, "a person must act on it: the objective waits for them")
+	pos, err := c.parse(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return c.usage("say which task: wp objective diagnose KEY -f FILE (or -m 'TEXT')")
+	}
+	if *text != "" && *file != "" {
+		return c.usage("give the diagnosis once: -f FILE or -m TEXT")
+	}
+	if *file != "" {
+		if *text, err = readBody(*file); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(*text) == "" {
+		return c.usage("say what you found: -f FILE (- for stdin) or -m 'TEXT', by cause (the code, the check or judge, noise, a target out of reach), and what the next round should try")
+	}
+	return c.objectiveWrite("POST", "/api/v1/issues/"+esc(normalKey(pos[0]))+"/objective/diagnose", map[string]any{"text": *text, "ask": *ask, "agent": c.agent})
 }
 
 // objectiveWrite sends a change and prints the objective as it now stands.
@@ -635,6 +697,10 @@ func outputTail(b []byte, n int) string {
 func (c *cli) objectiveShipNote(key string) {
 	var o objective
 	if err := c.do("GET", "/api/v1/issues/"+esc(key)+"/objective", nil, &o); err != nil || o.State != "active" || c.asJSON {
+		return
+	}
+	if o.Phase == "" && o.RoundKind == "diagnose" {
+		_, _ = fmt.Fprintf(c.err, "Notice: %s's round %d is a diagnose round: it ships no code. Record what you found with wp objective diagnose %s -f FILE; the same round then opens again as a work round, and that is the one to ship in. (A pull request opened on the forge directly can't be refused: if it merges, it is read as any round.)\n", o.Key, o.Round, o.Key)
 		return
 	}
 	what := "wp objective check " + o.Key + " takes a working reading"

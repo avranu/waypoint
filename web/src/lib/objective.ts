@@ -69,6 +69,7 @@ export const OUTCOME: Record<ObjectiveRoundOutcome, string> = {
   empty: 'nothing landed, so it is owed again',
   unmeasured: 'moved on without a reading',
   loop: 'done',
+  diagnosed: 'diagnosed: no code, the next round reads it',
 }
 
 export const SOURCE: Record<string, string> = {
@@ -101,6 +102,8 @@ export const BLOCKED_ADVICE: Record<ObjectiveBlockedWhy, string> = {
   touched:
     'The round changed a file the check runs, so its reading isn’t trusted yet. Accept the reading, set it aside and move on, or end the objective.',
   reading: 'Read again, or move on without a reading.',
+  diagnosis:
+    'The diagnosis needs you, as the worker asked. Read it above, then go on with it (the next round reads it), change what is measured, or end the objective.',
   rounds: 'It has used all its rounds. Change it to give it more rounds, or end it.',
 }
 
@@ -121,7 +124,7 @@ export function steers(o: Objective): Steer[] {
   const reading = o.phase === 'baseline' || o.phase === 'verdict'
   const blocked = o.phase === 'blocked'
   const why = o.phase_why
-  const read = reading || (blocked && why !== 'rounds')
+  const read = reading || (blocked && why !== 'rounds' && why !== 'diagnosis')
   if (read)
     out.push({
       action: 'retry',
@@ -134,6 +137,19 @@ export function steers(o: Objective): Steer[] {
       label: 'Accept the reading',
       hint: 'Count the reading even though the round changed what the check runs',
     })
+  if (blocked && why === 'diagnosis')
+    out.push(
+      {
+        action: 'accept',
+        label: 'Go on with the diagnosis',
+        hint: 'The next round starts as a work round, and reads the diagnosis',
+      },
+      {
+        action: 'next',
+        label: 'Start the next round now',
+        hint: 'Leave the diagnosis waiting and hand the round out now',
+      },
+    )
   if (blocked && (why === 'check' || why === 'touched' || why === 'reading'))
     out.push({
       action: 'next',

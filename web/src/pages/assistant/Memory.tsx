@@ -24,7 +24,7 @@ import { Button, IconButton } from '@/components/ui/button'
 import { Confirm } from '@/components/ui/dialog'
 import { Badge, Progress, Section, Skeleton } from '@/components/ui/misc'
 import { toast, toastError } from '@/components/ui/toast'
-import { Markdown } from './Transcript'
+import { Markdown } from '@/components/Markdown'
 import {
   configQuery,
   currentProfileQuery,
