@@ -137,3 +137,29 @@ func TestAuditGuardCutTextIsBounded(t *testing.T) {
 		t.Errorf("note %q", n)
 	}
 }
+
+func auditWithFindings(n, shown int) *CodeAudit {
+	a := &CodeAudit{ID: 7, Model: "m", Title: "T", Instructions: "x", MaxFindings: shown}
+	for i := range n {
+		a.Findings = append(a.Findings, CodeAuditFinding{ID: fmt.Sprintf("7.%d", i+1), Ordinal: i + 1, Title: fmt.Sprintf("Finding %d", i+1), Severity: "low", Problem: "p", State: "open"})
+	}
+	return a
+}
+
+// The fix task of an ordinary audit lists the findings shown at a time and
+// says how many more there are and how to read them (WP-1421, 1248.5).
+func TestAuditTaskListsTheShownAndCountsTheRest(t *testing.T) {
+	text := auditTaskText(auditWithFindings(8, 5), "https://wp.test")
+	if !strings.Contains(text, "### 7.5 ") || strings.Contains(text, "### 7.6 ") {
+		t.Errorf("the task lists the wrong findings:\n%s", text)
+	}
+	if !strings.Contains(text, "3 more findings: `wp audit show 7 --all` lists them; mark them too") {
+		t.Errorf("no line for the rest:\n%s", text)
+	}
+	// Exactly what is shown, or fewer: no line for more.
+	for _, n := range []int{5, 3} {
+		if text := auditTaskText(auditWithFindings(n, 5), "https://wp.test"); strings.Contains(text, "more finding") || !strings.Contains(text, fmt.Sprintf("### 7.%d ", n)) {
+			t.Errorf("%d findings, shown 5:\n%s", n, text)
+		}
+	}
+}

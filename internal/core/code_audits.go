@@ -1754,7 +1754,13 @@ Record each verdict on the audit as you go: wp audit mark %d.1 fixed -m "what yo
 			todo = append(todo, f)
 		}
 	}
-	writeAuditFindings(&b, todo)
+	// The first findings shown at a time, worst first; the rest are counted
+	// and marked too (WP-1421).
+	shown := todo[:min(len(todo), AuditShown(a))]
+	writeAuditFindings(&b, shown)
+	if more := len(todo) - len(shown); more > 0 {
+		fmt.Fprintf(&b, "\n%d more finding%s: `wp audit show %d --all` lists them; mark them too.\n", more, plural(more), a.ID)
+	}
 	return b.String()
 }
 
