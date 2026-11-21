@@ -977,6 +977,7 @@ func (s *Service) withPriorPanel(ctx context.Context, input json.RawMessage, aud
 	}
 	// The stored input keeps no prior runs; one a job queued before this
 	// change carries is dropped unless the read finds it still reusable.
+	s.settleRoundSiblings(ctx, auditID)
 	prior := s.priorPanel(ctx, auditID)
 	if len(prior) == 0 {
 		if _, stale := h["prior"]; !stale {
