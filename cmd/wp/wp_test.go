@@ -36,6 +36,9 @@ func TestMain(m *testing.M) {
 	// A test binary lives long: with its real age every hook run would count
 	// as late and keep its once-only notes (hookLate, WP-1398).
 	processAge = func() time.Duration { return 0 }
+	// No snapshot test may depend on the real process tree (a claude may sit
+	// above the test binary); those that need one build a fake (WP-1468).
+	snapshotProc = func() (string, int) { return "", 0 }
 	for _, k := range []string{"CLAUDECODE", "CLAUDE_PID", "GEMINI_CLI", "OPENCODE", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "WAYPOINT_AGENT", noWorktreeEnv} {
 		_ = os.Unsetenv(k)
 	}
@@ -328,7 +331,7 @@ func newEnvServing(t *testing.T, configure func(cfg *api.Config, url string), wr
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = d.Close() })
-	svc := core.New(d, core.Config{BaseURL: "http://wp.test"}, nil)
+	svc := core.New(d, core.Config{BaseURL: "http://wp.test", TranscriptDir: t.TempDir()}, nil)
 	svc.StartHub()
 	ts := httptest.NewUnstartedServer(nil) // listening already, so its URL is known
 	cfg := api.Config{BaseURL: "http://wp.test", Version: "test"}

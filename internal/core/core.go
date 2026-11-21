@@ -37,6 +37,12 @@ type Config struct {
 	// BackupKeep copies are kept.
 	BackupDir  string
 	BackupKeep int
+	// TranscriptDir holds the transcript archive's compressed pieces
+	// (WAYPOINT_TRANSCRIPT_DIR, WP-1466); empty keeps no archive.
+	TranscriptDir string
+	// TranscriptMaxMB caps the archive's stored bytes (0: no cap); an upload
+	// that would pass it is refused (ErrTranscriptQuota).
+	TranscriptMaxMB int
 	// MaxAttachmentMB bounds one attached file (WAYPOINT_MAX_ATTACHMENT_MB);
 	// 0 means DefaultMaxAttachmentMB.
 	MaxAttachmentMB int
@@ -67,6 +73,22 @@ type Service struct {
 	Hub      *Hub
 
 	now func() time.Time
+
+	// afterTranscriptFile is a test hook: it runs after a transcript piece's
+	// file is on disk and before the write that records it.
+	afterTranscriptFile func()
+
+	// transcriptFilesChecked: this process has checked the transcript files
+	// once, so the next check waits its day (WP-1466).
+	transcriptFilesChecked atomic.Bool
+
+	// removeAll is a test seam for os.RemoveAll over a deleted account's
+	// transcript directory (nil: the real one).
+	removeAll func(string) error
+
+	// diskSpace is a test seam for the free-space reading the transcript
+	// archive's floor uses (nil: the real one).
+	diskSpace func(dir string) (free, total int64, err error)
 
 	// started is when New ran; jobs counts the scheduled jobs' runs and
 	// what is logged, by where (WP-375, WP-ADR139).

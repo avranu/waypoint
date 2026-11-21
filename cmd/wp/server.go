@@ -112,7 +112,7 @@ var aiCmd = &command{
 	summary:  "what the server's AI requests went on, by task, model, outcome or hour (admins)",
 	examples: []string{"wp ai usage", "wp ai usage --since 7d --by day"},
 	subs: []*command{
-		{name: "usage", args: "[--since 24h] [--until T] [--by task|model|outcome|status|hour|day|provider] [--task NAME]",
+		{name: "usage", args: "[--since 24h] [--until T] [--by task|model|outcome|status|hour|day|provider|priority|bar] [--task NAME]",
 			summary: "the server's AI requests in a window, grouped: requests, failures, rate limits, tokens, latency",
 			about: `Counts the requests Waypoint sent its AI providers (safety screens, reviews,
 replies, automations, Jev's decisions, …), kept 30 days, with the AI key's
@@ -323,7 +323,7 @@ func cmdAIUsage(c *cli, args []string) error {
 	fs := c.flags()
 	since := fs.String("since", "", "`WHEN`: from this long ago (3h, 2d) or this time (UTC); default 24h")
 	until := fs.String("until", "", "`WHEN`: up to this long ago or this time")
-	by := fs.String("by", "", "`GROUP`: task (default), model, outcome, status, hour, day, provider or priority")
+	by := fs.String("by", "", "`GROUP`: task (default), model, outcome, status, hour, day, provider, priority or bar (the model the gateway held it to)")
 	task := fs.String("task", "", "`NAME`: only this task's requests")
 	pos, err := c.parse(fs, args)
 	if err != nil {

@@ -488,7 +488,7 @@ func TestNoteRoundHeadKeepsAnAskedAudit(t *testing.T) {
 	if ra, _ := a.roundAuditRow(round); ra.id == 0 {
 		t.Fatal("no audit asked")
 	}
-	a.s.noteRoundHead(a.ctx, round, at+60, "bbbb")
+	_ = a.s.noteRoundHead(a.ctx, round, at+60, "bbbb")
 	bp := roundBeforePR(a.ctx, a.s.db.R, round)
 	if bp == nil || bp.HeadTime != at || bp.HeadSHA != "aaaa" {
 		t.Fatalf("head = %+v", bp)
@@ -497,7 +497,7 @@ func TestNoteRoundHeadKeepsAnAskedAudit(t *testing.T) {
 	if _, err := a.s.db.W.Exec(`UPDATE work_log SET audit_id = NULL WHERE id = ?`, round); err != nil {
 		t.Fatal(err)
 	}
-	a.s.noteRoundHead(a.ctx, round, at+60, "bbbb")
+	_ = a.s.noteRoundHead(a.ctx, round, at+60, "bbbb")
 	if bp := roundBeforePR(a.ctx, a.s.db.R, round); bp == nil || bp.HeadTime != at+60 || bp.HeadSHA != "bbbb" {
 		t.Fatalf("head = %+v", bp)
 	}

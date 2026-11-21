@@ -126,6 +126,11 @@ func TestSessionHooksEndToEnd(t *testing.T) {
 	s.asAgent()
 	envFile := filepath.Join(t.TempDir(), "env")
 	t.Setenv("CLAUDE_ENV_FILE", envFile)
+	// Run from a task session, the session commands answer as one (/keep
+	// "does nothing here"); this test is of a session a person started.
+	for _, k := range []string{"WP_TASK", "WAYPOINT_FOLLOWUP", "WAYPOINT_UNATTENDED"} {
+		t.Setenv(k, "")
+	}
 	git(t, s.repo, "checkout", "-q", "-b", "feat/x")
 
 	out := s.hook(in("sess-1", "SessionStart", s.repo, map[string]any{"source": "startup", "model": "claude-opus-5"}))
@@ -552,12 +557,12 @@ func TestHookInstallSet(t *testing.T) {
 		{"Notification", "claude-event", "", true, 30},
 		{"PermissionDenied", "claude-event", "", true, 30},
 		{"PreToolUse", "claude-event", "AskUserQuestion", true, 30},
-		{"PostToolUse", "claude-event", "AskUserQuestion|Bash|Read", true, 30},
+		{"PostToolUse", "claude-event", "AskUserQuestion|Bash|Read|Agent|Task", true, 30},
 		{"Stop", "claude-event", "", false, 20},
 		{"SubagentStart", "claude-event", "", true, 30},
 		{"SubagentStop", "claude-event", "", true, 30},
 		{"SessionEnd", "claude-event", "", false, 2},
-		{"PreToolUse", "claude-nudge", "Bash|Read", false, 2},
+		{"PreToolUse", "claude-nudge", "Bash|Read|Monitor", false, 2},
 	} {
 		g, h := entry(m, c.event, c.marker)
 		if h == nil {
