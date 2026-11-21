@@ -1472,8 +1472,15 @@ func (s *Service) pauseStep(ctx context.Context, st *stepRow, why string, rechec
 		// A step carrying a round before its pull request wakes once the round
 		// has waited heldScreenWait, however far the pause's own recheck is, so
 		// roundOverdue can tell the person it waits on a limit.
-		if wake := time.UnixMilli(st.createdAt).Add(heldScreenWait + time.Minute); wake.After(s.now()) && wake.Before(recheck) {
-			recheck = wake
+		// It wakes again when the round's wait on a limit is spent
+		// (roundLimitWait), so the limit never holds it for good.
+		for _, d := range []time.Duration{heldScreenWait, heldScreenWait + roundLimitWait} {
+			if wake := time.UnixMilli(st.createdAt).Add(d + time.Minute); wake.After(s.now()) {
+				if wake.Before(recheck) {
+					recheck = wake
+				}
+				break
+			}
 		}
 	}
 	if err := s.stepUpdate(ctx, st.id, StepWaiting, reason, "paused: "+why, recheck.UnixMilli()); err != nil {
@@ -2850,23 +2857,34 @@ func (s *Service) roundOverdue(ctx context.Context, st *stepRow, review *roundRo
 	if now-since <= heldScreenWait.Milliseconds() {
 		return false, nil
 	}
+	limited := ""
 	if _, lim, err := s.autopilotFor(ctx, s.db.R, st.userID, st.projectID); err == nil {
 		if m, err := s.autopilotMeter(ctx, st.userID); err == nil {
-			if why, _ := autopilotPaused(m, lim, s.now()); why != "" && pauseReason(why) != PauseWeek {
+			if why, _ := autopilotPaused(m, lim, s.now()); why != "" {
 				// No pull request opens around a usage limit (the model work
 				// it waits for would run past it), so the round waits for the
-				// pause to end: an hour's spend limit, the five-hour window,
-				// the week's last day, or a quota guard's hold. A person is
-				// told once that it has waited longer than a screen would
-				// have kept it (WP-1370).
-				s.tellOnce(ctx, st, "round-paused:"+strconv.FormatInt(review.id, 10), "A review is waiting on a usage limit",
-					fmt.Sprintf("%s's adversarial review has waited more than %d hours on a limit: %s. Waypoint holds the review rather than open the pull request around it, and goes on once the limit lifts.",
-						s.projectKeyOf(ctx, st.projectID), int(heldScreenWait.Hours()), why))
-				return false, nil
+				// pause to end, for at most roundLimitWait beyond what a
+				// screen would have kept it; the week's pace, which a review
+				// doesn't wait on, doesn't hold it at all. A person is told
+				// once, for each kind of limit, what became of it.
+				kind := pauseReason(why)
+				key := "round-paused:" + strconv.FormatInt(review.id, 10) + ":" + kind
+				if kind != PauseWeek && now-since <= (heldScreenWait+roundLimitWait).Milliseconds() {
+					s.tellOnce(ctx, st, key, "A review is waiting on a usage limit",
+						fmt.Sprintf("%s's adversarial review has waited more than %d hours on a limit: %s. Waypoint holds the review rather than open the pull request around it, and goes on once the limit lifts, or opens the pull request without the review after %d more hours.",
+							s.projectKeyOf(ctx, st.projectID), int(heldScreenWait.Hours()), why, int(roundLimitWait.Hours())))
+					return false, nil
+				}
+				limited = why
+				s.tellOnce(ctx, st, key, "A review gave up waiting on a usage limit",
+					fmt.Sprintf("%s's adversarial review isn't waiting on this limit any longer: %s. Waypoint opens the pull request without it.", s.projectKeyOf(ctx, st.projectID), why))
 			}
 		}
 	}
 	reason := fmt.Sprintf("the session wasn't free to take it for %d hours (it kept working, or its person did)", int(heldScreenWait.Hours()))
+	if limited != "" {
+		reason = fmt.Sprintf("a usage limit held it: %s", limited)
+	}
 	if st.reason == WaitScreen && st.detail != "" {
 		// What the screen showed the last time it was tried, as the
 		// held-screen failure says it (WP-752).
@@ -2881,6 +2899,10 @@ func (s *Service) roundOverdue(ctx context.Context, st *stepRow, review *roundRo
 	s.setRoundNow(ctx, review.id, []string{RoundPending}, RoundFailed, reason)
 	return true, nil
 }
+
+// roundLimitWait is how long beyond heldScreenWait a round before its pull
+// request waits on a usage limit before it is failed (and so released).
+const roundLimitWait = 24 * time.Hour
 
 // roundPROpen names the pull request open from a round's branch ("repo#N"),
 // or "" when none is (or it can't be read).
