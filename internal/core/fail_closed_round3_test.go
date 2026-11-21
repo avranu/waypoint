@@ -400,3 +400,26 @@ func TestWaitForGateUnreadableDoesNotPass(t *testing.T) {
 		t.Errorf("the gate wait passed with its setting unreadable: %s %+v", got.Status, stepByID(got, "g").Outputs)
 	}
 }
+
+// A project's ADR1 whose project chain can't be read resolves to nothing,
+// not to the global ADR1: a failed read never names the wrong note.
+func TestDesignCodeChainUnreadableNamesNothing(t *testing.T) {
+	e := newEnv(t)
+	p := e.project(e.admin, "App", "")
+	global := decision(t, e, e.admin, "", "Global first", "")
+	own := decision(t, e, e.admin, p.Key, "App first", "")
+	if global.Code != "ADR1" || own.Code != "ADR1" {
+		t.Fatalf("codes = %s %s, want ADR1 ADR1", global.Code, own.Code)
+	}
+	logs := &lockedBuf{}
+	e.s.log = slog.New(slog.NewTextHandler(logs, nil))
+	if id, ok := e.s.designByCodeLoose(e.ctx, failingQueryer{e.s.db.R}, "ADR1", &p.ID); ok {
+		t.Errorf("unreadable chain resolved ADR1 to %d (global %d, project %d); want nothing", id, global.ID, own.ID)
+	}
+	if !strings.Contains(logs.String(), "level=WARN") {
+		t.Errorf("no Warn for the failed read:\n%s", logs.String())
+	}
+	if id, ok := e.s.designByCodeLoose(e.ctx, e.s.db.R, "ADR1", &p.ID); !ok || id != own.ID {
+		t.Errorf("readable chain: ADR1 = %d, %v; want the project's %d", id, ok, own.ID)
+	}
+}

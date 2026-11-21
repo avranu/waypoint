@@ -327,18 +327,28 @@ func (s *Service) designByCodeIn(ctx context.Context, q queryer, c DesignCode, s
 		chain = []int64{p.ID}
 	default:
 		if scope != nil {
-			var rerr error
-			chain, rerr = s.projectChainIDs(ctx, q, *scope)
-			if rerr != nil {
-				if readFault(rerr) {
-					s.log.WarnContext(ctx, "project chain ids failed", "err", rerr)
+			var err error
+			if chain, err = s.projectChainIDs(ctx, q, *scope); err != nil {
+				// Without the chain a project's own ADR7 can't be told from the
+				// global one: name nothing rather than the wrong note.
+				if readFault(err) {
+					s.log.WarnContext(ctx, "read the project chain to resolve a design code", "project", *scope, "code", c.String(), "err", err)
 				}
+				return 0, false
 			}
 		}
 		chain = append(chain, 0)
 	}
 	for _, sc := range chain {
-		if id, ok, err := designCodeTaken(ctx, q, sc, c.Number); err == nil && ok && id != 0 {
+		id, ok, err := designCodeTaken(ctx, q, sc, c.Number)
+		if err != nil {
+			// A failed read of a nearer scope mustn't fall through to a farther one.
+			if readFault(err) {
+				s.log.WarnContext(ctx, "read a design code", "scope", sc, "code", c.String(), "err", err)
+			}
+			return 0, false
+		}
+		if ok && id != 0 {
 			return id, true
 		}
 	}
