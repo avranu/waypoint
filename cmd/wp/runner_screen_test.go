@@ -16,8 +16,9 @@ import (
 // running them: the turn in progress with a shell and agents, the same with
 // an agents list under the footer, the main thread at its prompt while the
 // registry said busy for over an hour (background tasks and agents), and a
-// session at rest. The last three are synthetic, for cases the captures
-// don't show.
+// session at rest. They were taken on 2026-11-20 from Claude Code 2.1.330,
+// the version installed then. All the others are synthetic, for cases the
+// captures don't show.
 const (
 	screenRule = "──────────────────────────────────────────────────\n"
 	// Real: a turn running; the footer offers to interrupt it.
@@ -75,7 +76,11 @@ func TestTurnShown(t *testing.T) {
 		// the spinner and the box, and the older spinner that carried the
 		// hint itself.
 		"spinner over a task list": {"✶ Wiring… (2m 4s · ↓ 3.1k tokens)\n  ⎿  ☒ Read the diff\n     ☐ Fix the test\n     ☐ Run the suite\n\n" + screenRule + "❯ \n" + screenRule + "  ⏵⏵ auto mode on\n", true},
-		"spinner with the hint":    {"✻ Thinking… (12s · esc to interrupt)\n\n" + screenRule + "❯ \n" + screenRule + "  ? for shortcuts\n", true},
+		// A task list longer than any fixed look-back, in a narrow pane.
+		"spinner over a long task list": {"✶ Wiring… (2m 4s · ↓ 3.1k tokens)\n  ⎿  ☒ Read the diff\n" + strings.Repeat("     ☐ Fix a test\n", 12) + "\n" + screenRule + "❯ \n" + screenRule + "  ⏵⏵ auto mode on\n", true},
+		// At rest, a person's last prompt that looks like a spinner line.
+		"person's prompt like a spinner": {"> Fixing… (it broke)\n" + screenRule + "❯ \n" + screenRule + "  ⏵⏵ auto mode on\n", false},
+		"spinner with the hint":          {"✻ Thinking… (12s · esc to interrupt)\n\n" + screenRule + "❯ \n" + screenRule + "  ? for shortcuts\n", true},
 	} {
 		if got := turnShown(c.screen); got != c.want {
 			t.Errorf("%s: %v, want %v", name, got, c.want)
@@ -177,5 +182,49 @@ func TestTaskStartStillNeedsIdleRegistry(t *testing.T) {
 	o := p.execAutopilot(context.Background(), newRun(time.Minute), job)
 	if r, _ := o.Result.(autopilotResult); r.Outcome != "held" || r.Reason != "busy" || len(st.typed) != 0 {
 		t.Errorf("%+v typed %q", o, st.typed)
+	}
+}
+
+// A session busy in the registry for its background agents, asked to
+// compact first: /compact shows as a turn on the screen, then the empty
+// prompt returns, and the review is pasted and taken, all by the screen
+// while the registry stays "busy".
+type compactScreenTmux struct {
+	*fakeTmux
+	compacted bool
+	captures  int
+}
+
+func (c *compactScreenTmux) run(ctx context.Context, socket string, stdin []byte, args ...string) (string, error) {
+	switch {
+	case args[0] == "send-keys" && args[len(args)-1] == "Enter" && c.pasted == "":
+		c.typed = append(c.typed, "Enter")
+		c.compacted, c.captures, c.screen = true, 0, screenWorking
+		return "", nil
+	case args[0] == "send-keys" && args[len(args)-1] == "Enter":
+		c.typed = append(c.typed, "Enter")
+		c.screen = screenWorking
+		return "", nil
+	case args[0] == "capture-pane" && c.compacted && c.pasted == "":
+		// The compaction runs for a few looks, then the prompt is back.
+		if c.captures++; c.captures > 4 {
+			c.screen = screenAgentsIdle
+		}
+	}
+	return c.fakeTmux.run(ctx, socket, stdin, args...)
+}
+
+func TestReviewCompactsBesideBackgroundAgents(t *testing.T) {
+	p, st, job := busyReviewEnv(t, "busy", screenAgentsIdle, screenWorking)
+	cs := &compactScreenTmux{fakeTmux: st.fakeTmux}
+	runTmux = cs.run
+	job.Compacted = false
+	o := p.execAutopilot(context.Background(), newRun(time.Minute), job)
+	r, _ := o.Result.(autopilotResult)
+	if o.State != "done" || r.Outcome != "reviewing" || r.Warning != "" || !strings.Contains(r.Detail, "registry said busy") {
+		t.Fatalf("outcome %+v %+v", o, r)
+	}
+	if strings.Join(cs.typed, " ") != "/compact Enter Enter" || cs.pasted != job.Review {
+		t.Errorf("typed %q, pasted %q", cs.typed, cs.pasted)
 	}
 }

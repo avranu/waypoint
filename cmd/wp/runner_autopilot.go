@@ -164,11 +164,11 @@ func (p *runnerProc) execAutopilot(ctx context.Context, run *jobRun, in autopilo
 			pane, socket = pn, tmuxSocketOf(s.PID)
 		}
 	}
-	// wasBusy: the registry says busy while the screen shows the main
-	// thread at its prompt (background agents or tasks keep the status
-	// "busy": WP-1325), so what the registry says after typing proves
-	// nothing about whether the session took the prompt.
-	wasBusy := false
+	// byScreen: the registry says busy and the screen shows the main thread
+	// at its prompt (background agents or tasks keep the status "busy":
+	// WP-1325), so the registry proves nothing about whether the session took
+	// what is typed, and the screen is read instead.
+	byScreen := false
 	// A task's start clears or restarts the session, which would end a shell
 	// it still runs, so only a review is typed beside one.
 	if s.Status != "idle" && (in.ReviewOf == "" || !atPrompt(s.Status)) {
@@ -198,12 +198,12 @@ func (p *runnerProc) execAutopilot(ctx context.Context, run *jobRun, in autopilo
 				return false
 			}
 			_, ok := mainAtPrompt(ctx, socket, pane, autopilotSettle)
-			wasBusy = ok
+			byScreen = ok
 			return ok
 		}) {
 			return held("busy", "the session is %s, not idle", cmpStr(s.Status, "in an unknown state"))
 		}
-		if wasBusy {
+		if byScreen {
 			say("session %s is %s but its main thread is at its prompt: going on with the review of %s", in.CLIID, cmpStr(s.Status, "busy"), in.ReviewOf)
 		} else {
 			say("session %s is idle again: going on with the review of %s", in.CLIID, in.ReviewOf)
@@ -245,7 +245,7 @@ func (p *runnerProc) execAutopilot(ctx context.Context, run *jobRun, in autopilo
 		return outcome{State: "done", Result: autopilotResult{Outcome: "unwanted"}}
 	}
 	if in.ReviewOf != "" {
-		return p.reviewSession(ctx, run, in, socket, pane, s.PID, wasBusy)
+		return p.reviewSession(ctx, run, in, socket, pane, s.PID, byScreen)
 	}
 	if rl != nil {
 		return p.restartSession(ctx, run, in, dir, s, socket, pane, rl)
@@ -269,7 +269,7 @@ func reviewPasteSettle(n int) time.Duration {
 // session keeps its id: the review is part of its work on the task.
 // Outcome reviewing once the prompt went in; held when it never got that far
 // (the step then moves on without the review).
-func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilotJob, socket, pane string, pid int, wasBusy bool) outcome {
+func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilotJob, socket, pane string, pid int, byScreen bool) outcome {
 	say := func(format string, a ...any) { fmt.Fprintf(run.out, format+"\n", a...) }
 	held := func(reason, format string, a ...any) outcome {
 		d := fmt.Sprintf(format, a...)
@@ -292,8 +292,8 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 		}
 		// Compaction shows as busy; a session too small to compact may never
 		// look busy, which is fine: ready is what counts.
-		waitTook(ctx, ccDir, pid, socket, pane, wasBusy, autopilotCompactStart)
-		if !waitReady(ctx, ccDir, socket, pane, pid, autopilotCompactWait, wasBusy) {
+		waitTook(ctx, ccDir, pid, socket, pane, byScreen, autopilotCompactStart)
+		if !waitReady(ctx, ccDir, socket, pane, pid, autopilotCompactWait, byScreen) {
 			return held("screen", "it wasn't ready for the review within %s of /compact (still compacting, a dialog, or someone typing there?)", autopilotCompactWait)
 		}
 		// A person may have taken the session while it compacted.
@@ -316,8 +316,11 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 		return outcome{State: "done", Result: autopilotResult{Outcome: "reviewing", Warning: "the review prompt was pasted and not sent (press Enter there): " + err.Error()}}
 	}
 	res := autopilotResult{Outcome: "reviewing"}
-	if !waitTook(ctx, ccDir, pid, socket, pane, wasBusy, reviewTookWait) {
-		res.Warning = "the session didn't start the review within 15 s; check it"
+	if byScreen {
+		res.Detail = "typed while the registry said busy: the screen showed the main thread at its prompt"
+	}
+	if !waitTook(ctx, ccDir, pid, socket, pane, byScreen, reviewTookWait) {
+		res.Warning = fmt.Sprintf("the session didn't start the review within %s; check it", reviewTookWait.Round(time.Second))
 	}
 	say("asked session %s for the adversarial review of %s", in.CLIID, in.ReviewOf)
 	return outcome{State: "done", Result: res}
@@ -387,16 +390,16 @@ func (p *runnerProc) promptSession(ctx context.Context, run *jobRun, in autopilo
 // waitReady waits until the session process pid is ready for a prompt: idle,
 // with an empty input box on its screen, and still so after autopilotSettle,
 // since one that has just started may still be loading or show a dialog.
-// With screenOK, a registry that says busy doesn't decide: a screen with no
+// With byScreen, a registry that says busy doesn't decide: a screen with no
 // turn on it does (WP-1325).
-func waitReady(ctx context.Context, dir, socket, pane string, pid int, limit time.Duration, screenOK bool) bool {
+func waitReady(ctx context.Context, dir, socket, pane string, pid int, limit time.Duration, byScreen bool) bool {
 	ready := func() bool {
 		s, err := readCCSession(dir, pid)
 		if err != nil {
 			return false
 		}
 		screen, err := runTmux(ctx, socket, nil, "capture-pane", "-p", "-e", "-t", pane)
-		if err != nil || (!atPrompt(s.Status) && (!screenOK || turnShown(screen))) {
+		if err != nil || (!atPrompt(s.Status) && (!byScreen || turnShown(screen))) {
 			return false
 		}
 		draft, found := promptInput(screen)
@@ -464,33 +467,15 @@ func kickoffPrompt(k kickoff, answer string, nextErr error) string {
 // right end (a named session shows "── WP-1320 - Title ─"); the bottom border
 // is always a plain rule. found is false when no input box is on the screen.
 func promptInput(screen string) (text string, found bool) {
-	lines := strings.Split(strings.ReplaceAll(screen, "\r", ""), "\n")
-	plain := make([]string, len(lines))
-	for i, l := range lines {
-		plain[i] = strings.TrimSpace(stripEscapes(l))
-	}
-	at := -1
-	for i := len(lines) - 1; i > 0; i-- {
-		if strings.HasPrefix(plain[i], "❯") && isTopBorder(plain[i-1]) {
-			at = i
-			break
-		}
-	}
-	if at < 0 {
+	b, found := findInputBox(screen)
+	if !found || b.bottom < 0 {
 		return "", false
 	}
-	_, rest, _ := strings.Cut(lines[at], "❯")
+	raw := strings.Split(strings.ReplaceAll(screen, "\r", ""), "\n")
+	_, rest, _ := strings.Cut(raw[b.at], "❯")
 	parts := []string{undimmed(rest)}
-	closed := false
-	for i := at + 1; i < len(lines); i++ {
-		if isRule(plain[i]) || strings.HasPrefix(plain[i], "╰") {
-			closed = true // the box's bottom edge
-			break
-		}
-		parts = append(parts, strings.TrimSpace(undimmed(lines[i])))
-	}
-	if !closed {
-		return "", false
+	for i := b.at + 1; i < b.bottom; i++ {
+		parts = append(parts, strings.TrimSpace(undimmed(raw[i])))
 	}
 	text = strings.TrimSpace(strings.Map(func(r rune) rune {
 		if r == '\u00a0' {

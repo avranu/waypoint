@@ -139,13 +139,14 @@ func TestAutopilotReviewTrustsCleanTranscript(t *testing.T) {
 	}
 }
 
-// A busy session holds a review job only until it goes idle, then the job
-// compacts and types the review at once (WP-816); one that stays busy is
-// held as before.
+// A busy registry holds a review job only while the screen shows a turn in
+// progress (WP-1325); once the registry says idle, the job compacts and
+// types the review at once (WP-816). The test sets a working screen, so the
+// session stays held until the registry goes idle.
 func TestAutopilotReviewWaitsForIdle(t *testing.T) {
 	f, file, _ := reviewJobEnv(t, "busy")
-	// A turn in progress on the screen: a busy registry beside an empty
-	// prompt is read as idle (WP-1325).
+	// A turn in progress on the screen, so the busy registry holds the
+	// review (an empty prompt beside a busy registry would be read as idle).
 	f.screen = screenWorking
 	old := autopilotIdleWait
 	t.Cleanup(func() { autopilotIdleWait = old })
