@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"sort"
 	"strings"
@@ -167,6 +168,19 @@ type UsageMachine struct {
 	Parsed       int64            `json:"parsed"`
 	Skipped      int64            `json:"skipped"`
 	Unknown      map[string]int64 `json:"unknown"`
+	// The transcript archive (WP-1466): what still waits to upload, the last
+	// piece stored, and every upload that failed or was refused or skipped,
+	// by reason. Nil: this machine has not reported on its archive.
+	Transcripts *UsageTranscripts `json:"transcripts,omitempty"`
+}
+
+// UsageTranscripts is a machine's archive upload health.
+type UsageTranscripts struct {
+	PendingBytes int64            `json:"pending_bytes"`
+	PendingFiles int64            `json:"pending_files"`
+	Dropped      map[string]int64 `json:"dropped"`
+	LastPieceAt  *time.Time       `json:"last_piece_at"`
+	ReportedAt   *time.Time       `json:"reported_at"`
 }
 
 // UsagePerson is someone with usage an admin may look at.
@@ -547,7 +561,8 @@ func (s *Service) usageMachines(ctx context.Context, sc *usageScope) ([]UsageMac
 	// One row per person's machine, merged by name here: a name two people
 	// share is one line, with each person's unknown-kind counts added up.
 	// #nosec G202 -- where is built from fixed conditions; values are bound
-	rows, err := s.db.R.QueryContext(ctx, `SELECT machine, last_sync_at, last_status_at, wp_version, parsed, skipped, unknown
+	rows, err := s.db.R.QueryContext(ctx, `SELECT machine, last_sync_at, last_status_at, wp_version, parsed, skipped, unknown,
+			transcript_pending_bytes, transcript_pending_files, transcript_dropped, transcript_status_at, transcript_piece_at
 		FROM usage_machines WHERE `+where+` ORDER BY machine, last_sync_at`, args...)
 	if err != nil {
 		return nil, err
@@ -559,8 +574,20 @@ func (s *Service) usageMachines(ctx context.Context, sc *usageScope) ([]UsageMac
 		var m UsageMachine
 		var sync, status sql.NullInt64
 		var unknown sql.NullString
-		if err := rows.Scan(&m.Name, &sync, &status, &m.Version, &m.Parsed, &m.Skipped, &unknown); err != nil {
+		var tr UsageTranscripts
+		var dropped string
+		var trAt, trPiece sql.NullInt64
+		if err := rows.Scan(&m.Name, &sync, &status, &m.Version, &m.Parsed, &m.Skipped, &unknown,
+			&tr.PendingBytes, &tr.PendingFiles, &dropped, &trAt, &trPiece); err != nil {
 			return nil, err
+		}
+		if trAt.Valid || trPiece.Valid {
+			tr.Dropped = map[string]int64{}
+			if err := json.Unmarshal([]byte(dropped), &tr.Dropped); err != nil {
+				return nil, fmt.Errorf("transcript drop counts of %s: %w", m.Name, err)
+			}
+			tr.LastPieceAt, tr.ReportedAt = ptrTime(trPiece), ptrTime(trAt)
+			m.Transcripts = &tr
 		}
 		m.LastSyncAt, m.LastStatusAt = ptrTime(sync), ptrTime(status)
 		m.Unknown = map[string]int64{}
@@ -583,6 +610,20 @@ func (s *Service) usageMachines(ctx context.Context, sc *usageScope) ([]UsageMac
 		}
 		if m.LastStatusAt != nil && (o.LastStatusAt == nil || m.LastStatusAt.After(*o.LastStatusAt)) {
 			o.LastStatusAt = m.LastStatusAt
+		}
+		if m.Transcripts != nil {
+			if o.Transcripts == nil {
+				o.Transcripts = m.Transcripts
+			} else {
+				o.Transcripts.PendingBytes += m.Transcripts.PendingBytes
+				o.Transcripts.PendingFiles += m.Transcripts.PendingFiles
+				for k, v := range m.Transcripts.Dropped {
+					o.Transcripts.Dropped[k] += v
+				}
+				if t := m.Transcripts.LastPieceAt; t != nil && (o.Transcripts.LastPieceAt == nil || t.After(*o.Transcripts.LastPieceAt)) {
+					o.Transcripts.LastPieceAt = t
+				}
+			}
 		}
 	}
 	return out, rows.Err()

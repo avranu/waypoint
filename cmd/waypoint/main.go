@@ -86,10 +86,11 @@ func open(ctx context.Context, log *slog.Logger, logs *core.LogRing) (*core.Serv
 	}
 	go core.WarmLogin() // the dummy login hash, off the start path (WP-1398)
 	svc := core.New(d, core.Config{
-		BaseURL:    env("WAYPOINT_BASE_URL", "http://localhost:8080"),
-		BackupDir:  backupDir(path),
-		BackupKeep: keep,
-		Egress:     core.EgressPolicy{BlockPrivate: envBool("WAYPOINT_EGRESS_BLOCK_PRIVATE")},
+		BaseURL:       env("WAYPOINT_BASE_URL", "http://localhost:8080"),
+		BackupDir:     backupDir(path),
+		BackupKeep:    keep,
+		TranscriptDir: transcriptDir(path),
+		Egress:        core.EgressPolicy{BlockPrivate: envBool("WAYPOINT_EGRESS_BLOCK_PRIVATE")},
 
 		MaxAttachmentMB: maxAttachmentMB(log),
 		Logs:            logs,
@@ -399,4 +400,18 @@ func serve(ctx context.Context, log *slog.Logger) error {
 	svc.Close()
 	svc.Wait()
 	return err
+}
+
+// transcriptDir is where the transcript archive's compressed pieces go:
+// WAYPOINT_TRANSCRIPT_DIR, or a transcripts folder next to the database.
+// "off" keeps no archive.
+func transcriptDir(dbPath string) string {
+	switch v := env("WAYPOINT_TRANSCRIPT_DIR", ""); v {
+	case "off", "none":
+		return ""
+	case "":
+		return filepath.Join(filepath.Dir(dbPath), "transcripts")
+	default:
+		return v
+	}
 }

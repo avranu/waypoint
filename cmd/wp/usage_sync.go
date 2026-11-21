@@ -32,6 +32,7 @@ type usageSyncOptions struct {
 	Dir       string        // the Claude config directory (CLAUDE_CONFIG_DIR, else ~/.claude)
 	Files     []string      // only these transcripts (and their subagents)
 	Inventory bool          // also report what is configured on this machine
+	NoArchive bool          // leave the transcript archive upload out (WP-1466)
 	Out       io.Writer     // progress lines, or nil
 }
 
@@ -61,6 +62,10 @@ type usageSyncResult struct {
 	Inventory     map[string]int   `json:"inventory,omitempty"`
 	SharedIDs     int64            `json:"messages_in_several_files,omitempty"` // dry runs: the same message in two files
 	Elapsed       string           `json:"elapsed"`
+	// Archive: the transcript archive upload (WP-1466); ArchiveError when it
+	// could not run (the counts above are unaffected).
+	Archive      *archiveResult `json:"archive,omitempty"`
+	ArchiveError string         `json:"archive_error,omitempty"`
 }
 
 const (
@@ -302,6 +307,7 @@ func (s *idSet) add(id string) {
 func usageSync(c *cli, o usageSyncOptions) (*usageSyncResult, error) {
 	started := time.Now()
 	res := &usageSyncResult{Machine: machineName(), DryRun: o.DryRun}
+	release := func() {}
 	root := claudeDir(o.Dir)
 	if root == "" {
 		return nil, errors.New("can't find Claude Code's config directory; use --dir")
@@ -315,6 +321,7 @@ func usageSync(c *cli, o usageSyncOptions) (*usageSyncResult, error) {
 			return nil, errUsageBusy
 		}
 		defer unlock()
+		release = unlock
 	}
 	files, err := discoverTranscripts(root, o.Since, o.Files)
 	if err != nil {
@@ -501,6 +508,14 @@ func usageSync(c *cli, o usageSyncOptions) (*usageSyncResult, error) {
 	if flushErr != nil && inv != nil {
 		// the inventory didn't land, so offer it again next time
 		st.InventorySum, st.InventoryAt = "", 0
+	}
+	release() // the archive has its own lock: a long backfill must not hold up the next hook's counts
+	if !o.NoArchive && archiveEnabled() {
+		ar, aerr := usageArchive(c, o, root)
+		res.Archive = ar
+		if aerr != nil {
+			res.ArchiveError = aerr.Error()
+		}
 	}
 	res.Elapsed = time.Since(started).Round(time.Millisecond).String()
 	if flushErr != nil {

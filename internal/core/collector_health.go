@@ -152,6 +152,13 @@ var collectors = []collector{
 			"op": "the same OR-join, for the task's other pull requests",
 		},
 	},
+	{
+		name:    "transcript archive",
+		about:   "each machine's wp uploads its sessions' transcripts to the archive (wp usage sync); the drops it counted are in wp usage machines",
+		waiting: `SELECT COUNT(*), MIN(m.transcript_pending_since) FROM usage_machines m WHERE m.transcript_pending_bytes > 0`,
+		args:    noArgs,
+		output:  `SELECT MAX(m.transcript_piece_at) FROM usage_machines m`,
+	},
 }
 
 // CollectorHealth is how one collector stood at the last hourly check.

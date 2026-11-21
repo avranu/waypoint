@@ -31,6 +31,7 @@ All configuration is environment variables.
 | `WAYPOINT_LOG_FORMAT` | `json` | `text` for humans |
 | `WAYPOINT_LOG_DIR` | `logs/` next to the database (Docker image: `/data/logs`) | the server log's day files, read by `wp server log` across restarts and deploys: one JSON line a record, secrets blanked, mode 0600, gzipped once the day is over, at most 512 MB in all; `off` keeps the log in memory only |
 | `WAYPOINT_LOG_DAYS` | `30` | how many days of log files to keep |
+| `WAYPOINT_TRANSCRIPT_DIR` | `transcripts/` next to the database (Docker image: `/data/transcripts`) | the transcript archive `wp usage sync` uploads (WP-1466): one gzipped file per piece, about a quarter of the raw size of the sessions on the machines that sync (about 900 MB raw a week measured on one machine); the daily DB backup does not include it; `off` keeps no archive and uploads are refused |
 | `WAYPOINT_DEV_PROXY` | none | proxy the web app to a Vite dev server |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) | none | turns on OpenTelemetry traces, sent over OTLP/HTTP (e.g. `http://tempo:4318`). The other standard variables apply: `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_SERVICE_NAME` (default `waypoint`), `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_TRACES_SAMPLER`/`_ARG` (default `parentbased_always_on`); `OTEL_SDK_DISABLED=true` turns them off again. See Observability |
 
@@ -354,6 +355,12 @@ Daily backups land in `WAYPOINT_BACKUP_DIR` as `waypoint-YYYY-MM-DD.db`
 (the first one is written at startup). They contain password hashes and
 integration tokens, so keep the directory private and copy it off the machine
 (restic, rclone, …).
+
+The transcript archive (`WAYPOINT_TRANSCRIPT_DIR`) is not in these backups: the
+database holds only an index of it. Copy that directory off the machine too,
+and treat it as private (it holds what was said in every session, redacted of
+credentials of known shapes only). Restoring a database without it leaves the
+index pointing at files that are not there; reading such a piece is an error.
 
 Restore (compose):
 

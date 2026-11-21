@@ -37,6 +37,9 @@ type Config struct {
 	// BackupKeep copies are kept.
 	BackupDir  string
 	BackupKeep int
+	// TranscriptDir holds the transcript archive's compressed pieces
+	// (WAYPOINT_TRANSCRIPT_DIR, WP-1466); empty keeps no archive.
+	TranscriptDir string
 	// MaxAttachmentMB bounds one attached file (WAYPOINT_MAX_ATTACHMENT_MB);
 	// 0 means DefaultMaxAttachmentMB.
 	MaxAttachmentMB int
