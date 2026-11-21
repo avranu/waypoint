@@ -203,7 +203,9 @@ func (c *cli) trackSubagent(in hookEventInput) {
 		// Not when it is waking from Waiting, or was made by its Agent call's
 		// PostToolUse: that is the run it already is.
 		la := liveAgent{Type: in.AgentType, Since: now}
-		if old, ok := s.Agents[in.SessionID][in.AgentID]; ok && (old.Waiting || old.Provisional) {
+		old, ok := s.Agents[in.SessionID][in.AgentID]
+		sameRun := ok && (old.Waiting || old.Provisional)
+		if sameRun {
 			la.Since, la.Mode = old.Since, old.Mode
 			if la.Type == "" {
 				la.Type = old.Type
@@ -215,12 +217,21 @@ func (c *cli) trackSubagent(in hookEventInput) {
 			p.At = now
 			s.AgentParents[in.SessionID][in.AgentID] = p
 		}
-		// The start answers the Agent call that made it: the oldest the gate
-		// let through with the same parent and type when the parent is
-		// known, else the oldest of the type. It takes from it how it was
-		// started when nothing else says.
-		if r, ok := s.takeReservation(in.SessionID, "", p.Parent, hasParent, in.AgentType); ok && la.Mode == "" {
-			la.Mode = r.Mode
+		// A first start answers the Agent call that made it, and takes that
+		// call's reservation: the oldest the gate let through with its parent
+		// (when known) and type, and from it how it was started. Not a wake, and not an agent whose
+		// reservation is already accounted for (its call's PostToolUse dropped
+		// it by id, or an earlier start of this id took one: a resume): neither
+		// is a new admitted call, and taking one would free a slot Claude
+		// Code still holds for a pending start.
+		if !sameRun && !p.Taken {
+			if r, ok := s.takeReservation(in.SessionID, "", p.Parent, hasParent, in.AgentType); ok && la.Mode == "" {
+				la.Mode = r.Mode
+			}
+			if hasParent {
+				p.Taken = true // a later start of this id is a resume
+				s.AgentParents[in.SessionID][in.AgentID] = p
+			}
 		}
 		s.Agents[in.SessionID][in.AgentID] = la
 	})

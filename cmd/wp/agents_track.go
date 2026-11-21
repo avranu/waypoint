@@ -23,6 +23,9 @@ type agentParent struct {
 	Parent string    `json:"parent,omitempty"`
 	Mode   string    `json:"mode,omitempty"` // modeBg or modeFg, from its Agent call
 	At     time.Time `json:"at"`
+	// Taken: the reservation of the Agent call that made this agent is
+	// accounted for, so a later SubagentStart of it takes none.
+	Taken bool `json:"taken,omitempty"`
 }
 
 // reservation is an Agent call the gate let through: it counts against the
@@ -300,11 +303,15 @@ func (c *cli) trackAgentParent(in hookEventInput) {
 		if s.AgentParents[in.SessionID] == nil {
 			s.AgentParents[in.SessionID] = map[string]agentParent{}
 		}
-		s.AgentParents[in.SessionID][r.AgentID] = agentParent{Parent: in.AgentID, Mode: mode, At: time.Now()}
-		// The call is over for its reservation, which is dropped by its id.
+		// The call is over for its reservation, which is dropped by its id;
+		// the agent's start then takes none (Taken).
+		ap := agentParent{Parent: in.AgentID, Mode: mode, At: time.Now(), Taken: s.AgentParents[in.SessionID][r.AgentID].Taken}
 		if in.ToolUseID != "" {
-			s.takeReservation(in.SessionID, in.ToolUseID, "", false, "")
+			if _, ok := s.takeReservation(in.SessionID, in.ToolUseID, "", false, ""); ok {
+				ap.Taken = true
+			}
 		}
+		s.AgentParents[in.SessionID][r.AgentID] = ap
 		if a, ok := s.Agents[in.SessionID][r.AgentID]; ok {
 			a.Mode = mode // the call is a better witness than the order of starts
 			s.Agents[in.SessionID][r.AgentID] = a

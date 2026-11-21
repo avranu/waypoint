@@ -213,6 +213,42 @@ func TestProvisionalAgentsAndReservations(t *testing.T) {
 			t.Errorf("reserved: %+v", l)
 		}
 	})
+	t.Run("a wake, an adopted launch and a resume take no reservation", func(t *testing.T) {
+		c := &cli{dir: t.TempDir()}
+		left := func() int { return len(c.loadState().Reserved["s"]) }
+		start := func(id string) {
+			c.trackSubagent(hookEventInput{SessionID: "s", AgentID: id, AgentType: "worker", HookEventName: "SubagentStart"})
+		}
+		// An async launch drops its own reservation; its start is not owed another's.
+		c.admitSlot("s", reservation{ID: "own", Mode: modeBg, Type: "worker"}, 20)
+		c.admitSlot("s", reservation{ID: "other", Mode: modeBg, Type: "worker"}, 20)
+		post(c, "", "w1", "own", "worker", "async_launched")
+		start("w1")
+		if left() != 1 {
+			t.Fatalf("the adopted launch's start took another call's reservation: %d left", left())
+		}
+		// It stops for good and is resumed with a message: not an Agent call.
+		c.trackSubagent(hookEventInput{SessionID: "s", AgentID: "w1", HookEventName: "SubagentStop"})
+		start("w1")
+		if left() != 1 {
+			t.Fatalf("a resume took a reservation: %d left", left())
+		}
+		// A wake from waiting is the same run.
+		_ = c.updateState(func(s *State) {
+			a := s.Agents["s"]["w1"]
+			a.Waiting = true
+			s.Agents["s"]["w1"] = a
+		})
+		start("w1")
+		if left() != 1 {
+			t.Fatalf("a wake took a reservation: %d left", left())
+		}
+		// A first start of a new agent does take it.
+		start("w2")
+		if left() != 0 {
+			t.Fatalf("a first start took none: %d left", left())
+		}
+	})
 	t.Run("a start takes the oldest reservation of its parent and type", func(t *testing.T) {
 		c := &cli{dir: t.TempDir()}
 		// the start's parent is known from its Agent call's record
