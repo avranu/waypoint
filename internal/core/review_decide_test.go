@@ -43,10 +43,10 @@ func TestDecideRoundNeverStrands(t *testing.T) {
 														if out.Do == doEnd && state == RoundRunning && runOpen && check != checkAbsent {
 															t.Fatalf("ended a round Waypoint's check is on: %s", name)
 														}
-														if state == RoundRunning && ended && !(runOpen && (check != checkAbsent || prOpen)) && out.Do != doEnd {
+														if state == RoundRunning && ended && (!runOpen || (check == checkAbsent && !prOpen)) && out.Do != doEnd {
 															t.Fatalf("a running round of an ended session isn't ended: %s", name)
 														}
-														if state == RoundPending && !carried && !(runOpen && prOpen) && out.Do != doEnd {
+														if state == RoundPending && !carried && (!runOpen || !prOpen) && out.Do != doEnd {
 															t.Fatalf("a pending round nobody carries isn't ended: %s", name)
 														}
 														_ = waypoints

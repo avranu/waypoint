@@ -242,8 +242,11 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 		}
 		res.Notice = notice
 		if id, err := s.resolveIssueID(ctx, s.db.R, cmp(in.For, in.Issue)); err == nil && in.Review != ShipSkip && actor.Session != 0 {
-			run, _ := s.openRunIn(ctx, s.db.R, actor.Session, id)
-			res.Reviewed = s.reviewedRound(ctx, id, run, in.Head)
+			if run, err := s.openRunIn(ctx, s.db.R, actor.Session, id); err != nil {
+				s.log.WarnContext(ctx, "read the session's open run", "session", actor.Session, "err", err) // Reviewed stays false: the open says nothing of a review
+			} else {
+				res.Reviewed = s.reviewedRound(ctx, id, run, in.Head)
+			}
 		}
 		// After the review: a held ship reads the tag when it really opens.
 		if task := cmp(in.For, in.Issue); !in.Urgent && s.taskUrgent(ctx, actor, task) {

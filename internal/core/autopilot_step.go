@@ -1393,7 +1393,9 @@ func (s *Service) cutStuckJob(ctx context.Context, step, userID, queuedAt int64,
 			if err == nil {
 				if n, _ := res.RowsAffected(); n > 0 {
 					s.log.InfoContext(ctx, "review job cut and asked for again", "step", step, "job", job.ID, "try", tries+1, "of", reviewJobTries, "why", why)
-					_, _ = s.cancelRunnerJob(ctx, &Actor{User: u}, job.ID, why) // its finish isn't the step's job any more
+					if _, err := s.cancelRunnerJob(ctx, &Actor{User: u}, job.ID, why); err != nil { // its finish isn't the step's job any more
+						s.log.WarnContext(ctx, "cancel the cut review job", "job", job.ID, "err", err)
+					}
 					return
 				}
 			}

@@ -706,11 +706,14 @@ func (s *Service) roundFacts(ctx context.Context, r *roundRow) (facts string, ra
 	var id int64
 	if s.db.R.QueryRowContext(ctx, `SELECT id FROM code_audits WHERE request_key = ?`, fmt.Sprintf(checkAuditKey, round)).Scan(&id) == nil {
 		if a, err := s.auditRow(ctx, id); err == nil {
-			switch todo, _ := s.checkTodo(ctx, a); {
+			todo, todoErr := s.checkTodo(ctx, a)
+			switch {
 			case a.Status == AuditQueued || a.Status == AuditRunning:
 				parts = append(parts, "the check of its marks hadn't finished")
 			case a.Status != AuditDone:
 				parts = append(parts, "the check of its marks didn't run ("+a.Status+")")
+			case todoErr != nil:
+				parts = append(parts, "the check of its marks couldn't be read")
 			case len(todo) > 0:
 				ran = true
 				parts = append(parts, fmt.Sprintf("the check of its marks disagreed with %s", plural1(len(todo), "mark")))
