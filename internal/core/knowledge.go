@@ -565,8 +565,9 @@ func (s *Service) applyAutoLinks(ctx context.Context, t *tx, srcType string, src
 		if have[e] || (allow != nil && !allow(e)) {
 			continue
 		}
-		res, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO knowledge_links(src_type, src_id, dst_type, dst_id, rel, auto, created_by, created_agent, created_at)
-			VALUES (?,?,?,?,'mentions',1,?,?,?)`, srcType, srcID, e.typ, e.id, c.by, c.agent, now)
+		sessID, sessTask := t.sessionStamp(ctx)
+		res, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO knowledge_links(src_type, src_id, dst_type, dst_id, rel, auto, created_by, created_agent, created_at, session_id, session_issue_id)
+			VALUES (?,?,?,?,'mentions',1,?,?,?,?,?)`, srcType, srcID, e.typ, e.id, c.by, c.agent, now, sessID, sessTask)
 		if err != nil {
 			return added, removed, err
 		}
@@ -825,8 +826,9 @@ func (s *Service) addLink(ctx context.Context, t *tx, actor *Actor, in LinkInput
 			}
 		}
 	}
-	res, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO knowledge_links(src_type, src_id, dst_type, dst_id, dst_ref, rel, note, created_by, created_agent, created_at, basis)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?)`, ft, fid, tt, nullID(tid), tref, rel, strings.TrimSpace(in.Note), nullUser(actor.id()), actor.creditAgent(), s.nowMS(), basis)
+	sessID, sessTask := sessionStamp(ctx, t, actor)
+	res, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO knowledge_links(src_type, src_id, dst_type, dst_id, dst_ref, rel, note, created_by, created_agent, created_at, basis, session_id, session_issue_id)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, ft, fid, tt, nullID(tid), tref, rel, strings.TrimSpace(in.Note), nullUser(actor.id()), actor.creditAgent(), s.nowMS(), basis, sessID, sessTask)
 	if err != nil {
 		return 0, src, err
 	}
@@ -847,9 +849,9 @@ func (s *Service) addLink(ctx context.Context, t *tx, actor *Actor, in LinkInput
 			// guess, whichever got there first. The guess's reason goes
 			// with it; its score stays (a restatement carries none), so
 			// what the matcher thought is still on the row (WP-999).
-			_, err = t.ExecContext(ctx, `UPDATE knowledge_links SET basis = ?, created_by = ?, created_agent = ?, created_at = ?, note = ?
+			_, err = t.ExecContext(ctx, `UPDATE knowledge_links SET basis = ?, created_by = ?, created_agent = ?, created_at = ?, note = ?, session_id = ?, session_issue_id = ?
 				WHERE id = ? AND confirmed_by IS NULL AND basis IN (?, ?)`,
-				basis, nullUser(actor.id()), actor.creditAgent(), s.nowMS(), strings.TrimSpace(in.Note), id, linkBasisInferred, linkBasisSuggested)
+				basis, nullUser(actor.id()), actor.creditAgent(), s.nowMS(), strings.TrimSpace(in.Note), sessID, sessTask, id, linkBasisInferred, linkBasisSuggested)
 		}
 		return id, src, err
 	}

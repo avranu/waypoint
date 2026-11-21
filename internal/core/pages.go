@@ -516,13 +516,14 @@ func (s *Service) CreatePage(ctx context.Context, actor *Actor, in PageInput) (*
 			pos = *in.Position
 		}
 		session, prompt, err := s.askingPrompt(ctx, t, actor)
+		_, pageTask := sessionStamp(ctx, t, actor)
 		if err != nil {
 			return err
 		}
 		res, err := t.ExecContext(ctx, `INSERT INTO pages(parent_id, project_id, owner_id, title, body, category, position, created_at, updated_at, updated_by,
-			created_agent, text_by, text_agent, draft, session_id, prompt_event)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, nullInt(parentID), nullInt(projectID), nullUser(actor.id()), title, body, cat, pos, now, now, nullUser(actor.id()),
-			actor.agentName(), nullUser(actor.id()), actor.agentName(), in.Draft, session, prompt)
+			created_agent, text_by, text_agent, draft, session_id, prompt_event, session_issue_id)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, nullInt(parentID), nullInt(projectID), nullUser(actor.id()), title, body, cat, pos, now, now, nullUser(actor.id()),
+			actor.agentName(), nullUser(actor.id()), actor.agentName(), in.Draft, session, prompt, pageTask)
 		if err != nil {
 			return err
 		}

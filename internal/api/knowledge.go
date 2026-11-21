@@ -350,3 +350,20 @@ func (s *Server) agentTakeKey(w http.ResponseWriter, r *http.Request) (any, erro
 	}
 	return textResponse(agentTaskText(t, s.taskTextFor(r, t, s.onlyClaim(r, t))) + warningText(warning)), nil
 }
+
+// noteShown records what the CLI listed to an agent unasked (wp brief); the
+// answer counts what was recorded and what named nothing.
+func (s *Server) noteShown(w http.ResponseWriter, r *http.Request) (any, error) {
+	var in struct {
+		Via   string          `json:"via"`
+		Items []core.ShownRef `json:"items"`
+	}
+	if err := decode(r, &in); err != nil {
+		return nil, err
+	}
+	rec, unknown, err := s.svc.NoteShown(r.Context(), actorFrom(r), in.Via, in.Items)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]int{"recorded": rec, "unknown": unknown}, nil
+}

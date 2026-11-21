@@ -226,6 +226,7 @@ var routePermissions = map[string]core.Permission{
 	"GET /api/v1/glossary/lookup":                  core.PermGlossaryRead,
 	"GET /api/v1/glossary/{id}":                    core.PermGlossaryRead,
 	"POST /api/v1/glossary":                        core.PermGlossaryWrite,
+	"POST /api/v1/knowledge/shown":                 core.PermGlossaryRead,
 	"PATCH /api/v1/glossary/{id}":                  core.PermGlossaryWrite,
 	"DELETE /api/v1/glossary/{id}":                 core.PermGlossaryDelete,
 	"GET /api/v1/design":                           core.PermDesignRead,
