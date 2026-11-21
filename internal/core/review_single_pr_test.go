@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,10 @@ import (
 func (g *shipForge) ListPRs(ctx context.Context, f *Forge, repo string) ([]*ForgePR, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if g.listHides > 0 {
+		g.listHides--
+		return nil, nil
+	}
 	out := append([]*ForgePR(nil), g.listed...)
 	for _, p := range g.prs {
 		cp := *p
@@ -105,5 +110,63 @@ func TestEarlierClosedPullRequestDoesNotBlockTheShip(t *testing.T) {
 	e2.s.Wait()
 	if len(e2.g.created) != 0 {
 		t.Errorf("a pull request closed since the round began left %d opened, want 0", len(e2.g.created))
+	}
+}
+
+// openedElsewhere is a pull request the forge already has open from the
+// round's branch, which no attempt of ours recorded.
+func openedElsewhere(t *testing.T) (*loopEnv, *ForgePR) {
+	t.Helper()
+	probe, _ := tipRound(t)
+	probe.g.tips = map[string]string{"wp-1-first": tipAudited}
+	probe.tick(time.Second)
+	probe.s.Wait()
+	if len(probe.g.created) != 1 {
+		t.Fatalf("the probe ship opened %d", len(probe.g.created))
+	}
+	base := probe.g.created[0].Base
+	e, _ := tipRound(t)
+	e.g.tips = map[string]string{"wp-1-first": tipAudited}
+	return e, &ForgePR{Number: 55, Title: "Already open", URL: "https://git.example.com/acme/app/pulls/55", State: "open", BaseRef: base, HeadRef: "wp-1-first", HeadSHA: tipAudited}
+}
+
+func recordedNumbers(t *testing.T, e *loopEnv) (n55, all int) {
+	t.Helper()
+	if err := e.s.db.R.QueryRow(`SELECT count(*), coalesce(sum(number = 55), 0) FROM pull_requests WHERE head_ref = 'wp-1-first' AND state IN ('open', 'draft')`).Scan(&all, &n55); err != nil {
+		t.Fatal(err)
+	}
+	return n55, all
+}
+
+// A pull request the forge has open from the branch is adopted, not opened a
+// second time, though nothing of ours recorded it: openOnForge before the
+// create (WP-1370).
+func TestShipAdoptsAPullRequestTheForgeAlreadyHasOpen(t *testing.T) {
+	e, open := openedElsewhere(t)
+	e.g.listed = []*ForgePR{open}
+	e.tick(time.Second)
+	e.s.Wait()
+	if len(e.g.created) != 0 {
+		t.Fatalf("opened %d on the forge with #55 already open from the branch", len(e.g.created))
+	}
+	if n55, all := recordedNumbers(t, e); n55 != 1 || all != 1 {
+		t.Errorf("recorded %d of #55 among %d open pull requests of the branch, want 1 of 1", n55, all)
+	}
+}
+
+// A create the forge answered too slowly or with an error, though it opened
+// the pull request: the retry's second look adopts it (WP-265).
+func TestShipAdoptsWhatACreateThatFailedOpened(t *testing.T) {
+	e, open := openedElsewhere(t)
+	e.g.listed = []*ForgePR{open}
+	e.g.listHides = 1 // the look before the create doesn't show it yet
+	e.g.createErr = errors.New("502 from the forge")
+	e.tick(time.Second)
+	e.s.Wait()
+	if len(e.g.created) != 0 {
+		t.Fatalf("a create that failed was counted: %d", len(e.g.created))
+	}
+	if n55, all := recordedNumbers(t, e); n55 != 1 || all != 1 {
+		t.Errorf("recorded %d of #55 among %d open pull requests of the branch, want 1 of 1", n55, all)
 	}
 }

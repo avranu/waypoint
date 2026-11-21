@@ -31,6 +31,7 @@ type shipForge struct {
 	mergeErr      error
 	behindErr     error                 // BehindBase fails with it
 	createErr     error                 // CreatePR fails with it
+	listHides     int                   // the first N ListPRs answer nothing (the forge not showing a pull request yet)
 	defaultBranch string                // what DefaultBranch says: "" main, "-" an error
 	reacts        map[string][]Reaction // comment id → reactions
 	fileAt        map[string]string     // sha:path → content
