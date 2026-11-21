@@ -89,6 +89,23 @@ func TestTypedPromptFullTextPlusWordsIsThePersons(t *testing.T) {
 	}
 }
 
+// The sum is of the whole text, not of a leading part of it: a long prompt
+// the person edited only at its far end is theirs.
+func TestTypedPromptEditedOnlyAtItsEndIsThePersons(t *testing.T) {
+	a := newAPEnv(t)
+	r := reviewPromptText("WP-1", strings.Repeat("a long review body, line after line. ", 400))
+	a.record(TypedReview, r)
+	if k := a.recognise(r + " plus one more word"); k != "" {
+		t.Fatalf("a long text with words appended at its end read as %q", k)
+	}
+	if k := a.recognise(r[:len(r)-3] + "xyz"); k != "" {
+		t.Fatalf("a long text changed in its last 3 bytes read as %q", k)
+	}
+	if k := a.recognise(r); k != TypedReview {
+		t.Fatalf("the exact long text = %q, want review", k)
+	}
+}
+
 func TestTypedPromptIsRecognisedOnce(t *testing.T) {
 	a := newAPEnv(t)
 	r := reviewPromptText("WP-1", "x")
