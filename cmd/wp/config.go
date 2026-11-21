@@ -36,8 +36,12 @@ type State struct {
 	// Hook events the server couldn't be reached with, sent with the next
 	// one (WP-D16); and the agent session started in each directory, for
 	// wp run from an agent's shell that didn't get WAYPOINT_SESSION.
-	Outbox []queuedEvent          `json:"outbox,omitempty"`
-	Cwds   map[string]*cwdSession `json:"cwds,omitempty"`
+	Outbox []queuedEvent `json:"outbox,omitempty"`
+	// Hook data the outbox dropped and the server hasn't been told of,
+	// "reason/event": overflow, expired, refused, unqueued (WP-1468).
+	Drops    map[string]int64       `json:"drops,omitempty"`
+	DropsOut *dropReport            `json:"drops_out,omitempty"`
+	Cwds     map[string]*cwdSession `json:"cwds,omitempty"`
 	// The Claude Code hooks installed, so a hook can bring an older set up
 	// to date; the runner service's settings, which wp setup keeps; and the
 	// last automatic look for a new wp.
@@ -356,6 +360,7 @@ type cli struct {
 	// hookTimeout, when set, bounds every request: hooks must never hold up
 	// the agent.
 	hookTimeout time.Duration
+	hookLimit   time.Duration
 	// longPoll, when set, is how long a request may take: a wait the
 	// server holds (wp pr wait).
 	longPoll time.Duration

@@ -91,6 +91,11 @@ var claudeHooks = []claudeHook{
 	{event: "SubagentStart", command: hookEvent, opts: hookOpts{async: true}},
 	{event: "SubagentStop", command: hookEvent, opts: hookOpts{async: true}, prompts: true}, // + an adversarial review's report and prompt (WP-1089)
 	{event: "SessionEnd", command: hookEvent, opts: hookOpts{timeout: 2}},
+	// What the session runs with (WP-1468): the snapshot after a compaction and after a settings change, each instruction file as it loads, a model switch.
+	{event: "PostCompact", command: hookEvent, opts: hookOpts{async: true}},
+	{event: "ConfigChange", command: hookEvent, opts: hookOpts{async: true}},
+	{event: "InstructionsLoaded", command: hookEvent, opts: hookOpts{async: true}},
+	{event: "PostModelSwitch", command: hookEvent, opts: hookOpts{async: true}},
 	{event: "PreToolUse", command: hookNudge, opts: hookOpts{matcher: "Bash|Read|Monitor", timeout: hookNudgeTimeout}}, // no network; Read for big whole-file reads (WP-145) and task output (WP-191); Monitor by name, or a Bash matcher gets it as a Bash call (WP-1443)
 	{event: "PreToolUse", command: hookGate, opts: hookOpts{matcher: "Agent|Task", timeout: hookGateTimeout}},          // local only; refuses in every session
 	// The guard: local only, no subprocess; refuses risky calls in unattended sessions (WP-270, WP-ADR10) and the nudge refusals in every session (WP-1411).
@@ -241,7 +246,7 @@ func hookClaude(c *cli, args []string) error {
 // usage hooks and the status line. Bump it whenever they change (the test
 // TestHookSchemaFollowsTheHooks fails until it is): hooks that an older wp
 // installed then bring themselves up to date the next time one runs.
-const hookSchema = 17
+const hookSchema = 18
 
 // hookRefreshEvery is how often a hook may try to bring the hooks up to date.
 const hookRefreshEvery = 24 * time.Hour

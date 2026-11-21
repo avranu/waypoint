@@ -13,6 +13,8 @@ func (s *Server) overviewRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/agents/overview", a(s.agentOverview))
 	mux.HandleFunc("GET /api/v1/changes", a(s.recentChanges))
 	mux.HandleFunc("GET /api/v1/sessions/{id}/usage", a(s.sessionUsage))
+	mux.HandleFunc("GET /api/v1/sessions/{id}/snapshots", a(s.sessionSnapshots))
+	mux.HandleFunc("GET /api/v1/sessions/{id}/observed", a(s.sessionObserved))
 }
 
 func (s *Server) agentOverview(w http.ResponseWriter, r *http.Request) (any, error) {
@@ -33,4 +35,23 @@ func (s *Server) sessionUsage(w http.ResponseWriter, r *http.Request) (any, erro
 		return nil, err
 	}
 	return s.svc.GetSessionUsage(r.Context(), actorFrom(r), id)
+}
+
+// sessionSnapshots: what the session was running with, at each snapshot.
+func (s *Server) sessionSnapshots(w http.ResponseWriter, r *http.Request) (any, error) {
+	id, err := pathID(r, "id")
+	if err != nil {
+		return nil, err
+	}
+	return s.svc.SessionSnapshots(r.Context(), actorFrom(r), id)
+}
+
+// sessionObserved: the changes the hook saw (model, effort, permission mode,
+// instruction files, config changes).
+func (s *Server) sessionObserved(w http.ResponseWriter, r *http.Request) (any, error) {
+	id, err := pathID(r, "id")
+	if err != nil {
+		return nil, err
+	}
+	return s.svc.SessionObserved(r.Context(), actorFrom(r), id)
 }

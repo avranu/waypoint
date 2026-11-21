@@ -40,7 +40,7 @@ func TestHookSchemaFollowsTheHooks(t *testing.T) {
 	}
 	sum := sha256.Sum256([]byte(b.String()))
 	got := hex.EncodeToString(sum[:8])
-	pinned := map[int]string{1: "a73d2ceaa79a8f01", 2: "038da532b966d4bd", 3: "3e9d0008ec58eba8", 4: "7b8454b5327011ba", 5: "ef507a9b170b7aa3", 6: "05bd711d08d0dd98", 7: "05a51fa134326b6b", 8: "674cd320a2292fb2", 9: "c498858a7d602aaa", 10: "32c58ea4d401f6d7", 11: "ce86eb2f2fda25d8", 12: "58e6c0e01b516fa2", 13: "9a2ec57a8529f0a5", 14: "a6079908bfc1108d", 15: "db80b000d9ce370b", 16: "d946321be14a4944", 17: "14c91a25271b28e1"}
+	pinned := map[int]string{1: "a73d2ceaa79a8f01", 2: "038da532b966d4bd", 3: "3e9d0008ec58eba8", 4: "7b8454b5327011ba", 5: "ef507a9b170b7aa3", 6: "05bd711d08d0dd98", 7: "05a51fa134326b6b", 8: "674cd320a2292fb2", 9: "c498858a7d602aaa", 10: "32c58ea4d401f6d7", 11: "ce86eb2f2fda25d8", 12: "58e6c0e01b516fa2", 13: "9a2ec57a8529f0a5", 14: "a6079908bfc1108d", 15: "db80b000d9ce370b", 16: "d946321be14a4944", 17: "14c91a25271b28e1", 18: "ea018f273918a683"}
 	if pinned[hookSchema] != got {
 		t.Errorf("the hooks changed (fingerprint %s): bump hookSchema to %d and pin %q to it here", got, hookSchema+1, got)
 	}
