@@ -229,8 +229,40 @@ func (s *Service) NoteRewrites(ctx context.Context, actor *Actor, ref, repo, hea
 	if d.Draft || s.requireProjectRole(ctx, s.db.R, actor, d.ProjectID, RoleEditor) != nil {
 		return got, nil
 	}
-	repo = strings.TrimSpace(repo)
-	err = s.write(ctx, actor, func(t *tx) error {
+	return s.recordRewrites(ctx, actor, d, strings.TrimSpace(repo), head, got)
+}
+
+// recordRewrites is NoteRewrites' write: what RewrittenWork found for d,
+// recorded. RewrittenWork read what was dismissed and what the actor can
+// see before this write; a person may have removed the relation or lost the
+// task since, so both are read again here, in the write, and a pair that
+// fails either is left out (and returned without Recorded).
+func (s *Service) recordRewrites(ctx context.Context, actor *Actor, d *IssueDetail, repo, head string, found []*RewrittenTask) ([]*RewrittenTask, error) {
+	var got []*RewrittenTask
+	err := s.write(ctx, actor, func(t *tx) error {
+		got = nil
+		for _, r := range found {
+			id, err := s.resolveIssueID(ctx, t, r.Key)
+			if err != nil {
+				return err
+			}
+			var dismissed bool
+			err = t.QueryRowContext(ctx, `SELECT dismissed FROM rewrite_evidence WHERE issue_id = ? AND other_id = ?`, d.ID, id).Scan(&dismissed)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+			if dismissed {
+				continue
+			}
+			o, err := s.issueByID(ctx, t, id, false)
+			if err != nil {
+				return err
+			}
+			if !s.canSee(ctx, t, actor, o.ID, o.ProjectID) {
+				continue
+			}
+			got = append(got, r)
+		}
 		// The round is told what the latest ship saw: evidence for a pair
 		// this ship's change no longer replaces goes (the relation stays;
 		// a dismissal is kept).

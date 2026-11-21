@@ -59,7 +59,7 @@ func TestDecideRoundNeverStrands(t *testing.T) {
 														if !runOpen && (over || state == RoundDone) && unshipped && !prOpen && out.Do != doReleaseAfterRunEnded {
 															t.Fatalf("a round the ended run left unshipped isn't named for release: %s", name)
 														}
-														if out.Do == doReleaseAfterRunEnded && (runOpen || prOpen || !unshipped || !(over || state == RoundDone)) {
+														if out.Do == doReleaseAfterRunEnded && (runOpen || prOpen || !unshipped || (!over && state != RoundDone)) {
 															t.Fatalf("released after the run ended when it hadn't, or shipped: %s", name)
 														}
 														if runOpen && out.Do == doNothing {

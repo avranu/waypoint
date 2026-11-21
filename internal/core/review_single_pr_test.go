@@ -9,10 +9,10 @@ import (
 
 // ListPRs of the fake forge says what is open on it, as a real forge does.
 func (g *shipForge) ListPRs(ctx context.Context, f *Forge, repo string) ([]*ForgePR, error) {
-	g.prForge.mu.Lock()
-	defer g.prForge.mu.Unlock()
-	out := append([]*ForgePR(nil), g.prForge.listed...)
-	for _, p := range g.prForge.prs {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	out := append([]*ForgePR(nil), g.listed...)
+	for _, p := range g.prs {
 		cp := *p
 		out = append(out, &cp)
 	}

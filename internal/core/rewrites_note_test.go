@@ -33,7 +33,7 @@ func (f *rewriteFixture) round() *roundRow {
 	if f.session == 0 {
 		res, err := f.s.db.W.ExecContext(f.ctx, `INSERT INTO agent_sessions(user_id, machine, cli_id, issue_id, started_at, last_seen_at) VALUES (?, 'box', 'c1', ?, 1, 1)`, f.admin.User.ID, f.b.ID)
 		if err != nil {
-			f.env.t.Fatal(err)
+			f.t.Fatal(err)
 		}
 		f.session, _ = res.LastInsertId()
 	}
@@ -360,5 +360,34 @@ func TestRewriteLeadsFollowTheLatestShip(t *testing.T) {
 	}
 	if rels := f.relations(t, f.b.Key); len(rels) != 1 {
 		t.Errorf("relation = %+v", rels)
+	}
+}
+
+// A person removes the inferred relation after the ship read the work and
+// before it recorded: the removal wins, the pair isn't related again.
+func TestRecordRewritesRereadsTheDismissalInTheWrite(t *testing.T) {
+	f := newRewriteFixture(t)
+	if _, err := f.s.NoteRewrites(f.ctx, f.admin, f.b.Key, "o/r", "h1", f.prs); err != nil {
+		t.Fatal(err)
+	}
+	// The second ship reads the work: the relation stands, so it names a.
+	d := f.get(f.admin, f.b.Key)
+	read, err := f.s.RewrittenWork(f.ctx, f.admin, f.b.Key, "o/r", f.prs)
+	if err != nil || len(read) != 1 {
+		t.Fatalf("read %+v, %v", read, err)
+	}
+	// The interleaving: the relation is removed between the read and the write.
+	if err := f.s.RemoveRelation(f.ctx, f.admin, f.b.Key, d.Relations[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := f.s.recordRewrites(f.ctx, f.admin, d, "o/r", "h2", read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Errorf("recorded %+v for a pair someone just removed", got)
+	}
+	if rels := f.relations(t, f.b.Key); len(rels) != 0 {
+		t.Errorf("the removed relation came back: %+v", rels)
 	}
 }
