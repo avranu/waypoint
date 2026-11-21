@@ -105,7 +105,7 @@ func TestAuditAnswerKeep(t *testing.T) {
 	if n := h.keep(ca); n != 3 || len(h.Findings) != findingsGuard {
 		t.Errorf("past the guard: dropped %d, kept %d", n, len(h.Findings))
 	}
-	if note := h.keepNote(ca, findingsGuard+3); !strings.Contains(note, "held 103") || !strings.Contains(note, "3 were cut") || !strings.Contains(note, "kept in the audit") {
+	if note := h.keepNote(ca, findingsGuard+3); !strings.Contains(note, "held 103") || !strings.Contains(note, "3 were cut") || !strings.Contains(note, "they are in the audit's answer text") {
 		t.Errorf("guard note = %q", note)
 	}
 	if strings.Contains(auditSchema, "maxItems") {
