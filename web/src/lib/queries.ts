@@ -32,6 +32,7 @@ import type {
   Comment,
   OutsideText,
   Objective,
+  ObjectiveAction,
   ObjectiveInput,
   DiscoveredRepo,
   EpicProgress,
@@ -294,6 +295,20 @@ export const q = {
       queryFn: () =>
         api.get<RemoteBranches[]>(`/branches/tidy${qs({ project: project || undefined })}`),
       staleTime: 60_000,
+    }),
+  /**
+   * Objectives a person can see (WP-927): those in effect and proposals, or
+   * with `all` the met and ended ones too; those that need a person first.
+   */
+  objectives: (opts: { project?: string; all?: boolean } = {}) =>
+    queryOptions({
+      queryKey: ['objectives', opts.project ?? '', !!opts.all],
+      queryFn: () =>
+        api.get<Objective[]>(
+          `/objectives${qs({ project: opts.project || undefined, all: opts.all ? 1 : undefined })}`,
+        ),
+      // A wait runs out and a reading is taken without an event for either.
+      refetchInterval: MIN,
     }),
   repos: (key: string) =>
     queryOptions({
@@ -785,8 +800,28 @@ export function useObjective(key: string) {
         : 'confirm' in v
           ? api.post<Objective>(path + '/confirm', { rev: v.confirm })
           : api.del<void>(path),
-    onSuccess: () => {
+    // On error too: a stale-rev confirm, or a control the server's state no longer allows, shows what is there now.
+    onSettled: () => {
       qc.invalidateQueries({ queryKey: ['issue', key] })
+      qc.invalidateQueries({ queryKey: ['objectives'] })
+      qc.invalidateQueries({ queryKey: ['agents'] })
+    },
+  })
+}
+
+/**
+ * A person steering a task's objective in effect (WP-927): read again,
+ * move on to the next round, accept a reading whose check files changed, or end it.
+ */
+export function useObjectiveGo(key: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (action: ObjectiveAction) =>
+      api.post<Objective>(`/issues/${enc(key)}/objective/go`, { action }),
+    // On error too: a stale-rev confirm, or a control the server's state no longer allows, shows what is there now.
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ['issue', key] })
+      qc.invalidateQueries({ queryKey: ['objectives'] })
       qc.invalidateQueries({ queryKey: ['agents'] })
     },
   })

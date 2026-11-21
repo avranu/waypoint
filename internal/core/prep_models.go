@@ -201,7 +201,9 @@ func (s *Service) RunPrepTrials(ctx context.Context) {
 	}
 	switch ok, err := s.aiTaskSetUp(ctx, "prep"); {
 	case err != nil:
-		s.log.WarnContext(ctx, "prep trials: could not tell whether a model is set up", "err", err)
+		if readFault(err) {
+			s.log.WarnContext(ctx, "prep trials: could not tell whether a model is set up", "err", err)
+		}
 		return
 	case !ok:
 		jobSkip(ctx, "no AI model is set up for prep")
@@ -212,7 +214,9 @@ func (s *Service) RunPrepTrials(ctx context.Context) {
 	}
 	stats, err := s.PrepModelStats(ctx)
 	if err != nil {
-		s.log.Info("prep trials: counts unreadable", "err", err)
+		if readFault(err) {
+			s.log.WarnContext(ctx, "prep trials: read the counts", "err", err)
+		}
 		return
 	}
 	// Tested models are the gateway's to rate already; one with many

@@ -402,7 +402,10 @@ func (s *Service) RequestAudit(ctx context.Context, actor *Actor, in AuditInput)
 		if known, err = s.prByID(ctx, s.db.R, in.PRID); err != nil {
 			return nil, err
 		}
-		pid := s.attachedProject(ctx, s.db.R, known.ForgeID, known.Repo)
+		pid, err := s.attachedProject(ctx, s.db.R, known.ForgeID, known.Repo)
+		if err != nil {
+			return nil, err
+		}
 		if pid == 0 {
 			return nil, invalid("%s isn't attached to a project, and an audit belongs to one", known.Repo)
 		}
@@ -538,7 +541,13 @@ func (s *Service) RequestAudit(ctx context.Context, actor *Actor, in AuditInput)
 		a.Title = fmt.Sprintf("%s#%d: %s", repo.Repo, fp.Number, excerpt(fp.Title, 160))
 		a.PostComment = in.Comment == nil || *in.Comment
 		if known == nil {
-			known, _ = s.prByNumber(ctx, s.db.R, repo.Forge.ID, repo.Repo, fp.Number)
+			var rerr error
+			known, rerr = s.prByNumber(ctx, s.db.R, repo.Forge.ID, repo.Repo, fp.Number)
+			if rerr != nil {
+				if readFault(rerr) {
+					s.log.WarnContext(ctx, "pr by number failed", "forge", repo.Forge.ID, "err", rerr)
+				}
+			}
 		}
 		if known != nil {
 			prID = known.ID
@@ -622,6 +631,11 @@ func (s *Service) RequestAudit(ctx context.Context, actor *Actor, in AuditInput)
 	}
 	a.Purpose, a.Weakest = in.purpose, in.weakest
 	a.reviewText, a.roundContext, a.claims = in.reviewText, in.roundContext, in.claims
+	if a.Purpose == AuditObjective {
+		// What Waypoint tells a judge of the task and its round
+		// (objectiveJudgeContext); it reads the repository, not a pull request.
+		prContext = in.prContext
+	}
 	a.Helpers = auditHelpersFor(in, prContext)
 	a.prompt = codeAuditPrompt(a, prContext)
 	via := strings.TrimSpace(in.Via)
@@ -710,7 +724,13 @@ func (s *Service) auditRepo(ctx context.Context, p *Project, in AuditInput, targ
 	if target == "pr" && in.PR > 0 {
 		var hits []int
 		for i := range repos {
-			if pr, _ := s.prByNumber(ctx, s.db.R, repos[i].Forge.ID, repos[i].Repo, in.PR); pr != nil {
+			pr, rerr := s.prByNumber(ctx, s.db.R, repos[i].Forge.ID, repos[i].Repo, in.PR)
+			if rerr != nil {
+				if readFault(rerr) {
+					s.log.WarnContext(ctx, "pr by number failed", "repo", repos[i].Repo, "number", in.PR, "err", rerr)
+				}
+			}
+			if pr != nil {
 				hits = append(hits, i)
 			}
 		}
@@ -794,6 +814,9 @@ const auditSchema = `{"type":"object","additionalProperties":false,"required":["
 // codeAuditPrompt is what the model is asked: the rules every audit keeps, then
 // what the requester asked for. The runner adds the change's diff.
 func codeAuditPrompt(a *CodeAudit, prContext string) string {
+	if a.Purpose == AuditObjective {
+		return objectiveJudgePrompt(a, prContext)
+	}
 	var b strings.Builder
 	switch a.Purpose {
 	case AuditFootprint:
@@ -867,8 +890,15 @@ func (s *Service) advanceAudit(ctx context.Context, id int64) {
 		return
 	}
 	f, err := s.forgeByID(ctx, a.forgeID)
-	if err != nil {
+	if errors.Is(err, ErrNotFound) {
 		s.failAudit(ctx, a, "its forge is gone")
+		return
+	}
+	if err != nil {
+		// Not a forge that is gone: the audit stays queued for the next pass.
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read an audit's forge", "audit", a.ID, "repo", a.Repo, "err", err)
+		}
 		return
 	}
 	repo := &stepRepo{Forge: f, Repo: a.Repo}
@@ -1102,11 +1132,23 @@ func (s *Service) settleAudit(ctx context.Context, id, jobID int64) {
 	}
 	a.Attempts = append(a.Attempts, att)
 	next := a.Slot + 1
+	// Whether a round asked for it decides if an error ends the chain. Unread
+	// (logged by roundsAudit), the chain goes on: the audit isn't failed with
+	// models still to try on a guess (WP-1406).
+	rounds := a.Purpose == AuditReview || a.Purpose == AuditObjective
+	if !rounds && att.Outcome == "error" && next < len(a.chain) {
+		var rerr error
+		if rounds, rerr = s.roundsAudit(ctx, a.ID); rerr != nil {
+			rounds = true
+		}
+	}
 	switch {
-	case j.State == "expired", att.Outcome == "error" && (next >= len(a.chain) || a.Purpose != AuditReview && !s.roundsAudit(ctx, a.ID)):
+	case j.State == "expired", att.Outcome == "error" && (next >= len(a.chain) || !rounds):
 		// A review round's chain goes on after any failure (WP-820): an
 		// error text no list knows mustn't end it with models still to try.
-		// So does one handed from its round to the pull request (WP-1059).
+		// So does one handed from its round to the pull request (WP-1059),
+		// and an objective's judge, which decides whether a task closes
+		// (WP-ADR111).
 		s.failAudit(ctx, a, att.Error)
 		return
 	case next < len(a.chain):
@@ -1483,12 +1525,16 @@ func (s *Service) auditEnded(ctx context.Context, id int64) {
 			if a, err = s.auditRow(ctx, id); err != nil {
 				return
 			}
-			_ = s.loadFindings(ctx, a)
+			if err := s.loadFindings(ctx, a); err != nil {
+				if readFault(err) {
+					s.log.WarnContext(ctx, "load findings failed", "audit", id, "err", err)
+				}
+			}
 		}
 	}
 	s.tellAudit(ctx, a)
 	// Settled: an automation step waiting on it reads it whole now.
-	_ = s.write(ctx, SystemActor(), func(t *tx) error {
+	if err := s.write(ctx, SystemActor(), func(t *tx) error {
 		res, err := t.ExecContext(ctx, `UPDATE code_audits SET settled_at = ? WHERE id = ? AND settled_at IS NULL`, s.nowMS(), id)
 		if err != nil {
 			return err
@@ -1497,14 +1543,24 @@ func (s *Service) auditEnded(ctx context.Context, id int64) {
 			t.emit(&Event{Kind: EvCodeAudit, ProjectID: a.projectID, Field: "settled", Old: a.Status, New: a.Status, Data: map[string]any{"audit": id}})
 		}
 		return nil
-	})
+	}); err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "mark an audit settled", "audit", id, "err", err)
+		}
+	}
 }
 
 // auditSettled: the audit ended and what its end sets off is done.
 func (s *Service) auditSettled(ctx context.Context, id int64) bool {
 	var at sql.NullInt64
 	err := s.db.R.QueryRowContext(ctx, `SELECT settled_at FROM code_audits WHERE id = ?`, id).Scan(&at)
-	return err == nil && at.Valid
+	if err != nil {
+		if readFault(err) && !errors.Is(err, sql.ErrNoRows) {
+			s.log.WarnContext(ctx, "read audit settled", "id", id, "err", err)
+		}
+		return false
+	}
+	return at.Valid
 }
 
 // postAuditComment puts a pull request's findings on it, with a link to
@@ -1525,13 +1581,17 @@ func (s *Service) postAuditComment(ctx context.Context, a *CodeAudit) {
 		return
 	}
 	a.CommentURL = c.URL
-	_ = s.write(ctx, SystemActor(), func(t *tx) error {
+	if err := s.write(ctx, SystemActor(), func(t *tx) error {
 		if _, err := t.ExecContext(ctx, `UPDATE code_audits SET comment_url = ? WHERE id = ?`, cmp(c.URL, "posted"), a.ID); err != nil {
 			return err
 		}
 		t.emit(&Event{Kind: EvCodeAudit, ProjectID: a.projectID, Field: "comment", Old: a.Status, New: a.Status, Data: map[string]any{"audit": a.ID}})
 		return nil
-	})
+	}); err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "record an audit comment", "audit", a.ID, "err", err)
+		}
+	}
 }
 
 // forgeSafe keeps a model's words from doing things on a forge: no table
@@ -1615,13 +1675,17 @@ func (s *Service) auditFixTask(ctx context.Context, id int64) {
 		_, _ = s.db.W.ExecContext(ctx, `UPDATE code_audits SET error = ? WHERE id = ?`, "Couldn't make the task for Claude: "+excerpt(PublicError(err), 200), a.ID)
 		return
 	}
-	_ = s.write(ctx, SystemActor(), func(t *tx) error {
+	if err := s.write(ctx, SystemActor(), func(t *tx) error {
 		if _, err := t.ExecContext(ctx, `UPDATE code_audits SET fix = 1, fix_issue_id = ? WHERE id = ?`, made.ID, a.ID); err != nil {
 			return err
 		}
 		t.emit(&Event{Kind: EvCodeAudit, ProjectID: a.projectID, Field: "fix_issue", Old: a.Status, New: a.Status, Data: map[string]any{"audit": a.ID, "issue": made.Key}})
 		return nil
-	})
+	}); err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "record an audit fix task", "audit", a.ID, "err", err)
+		}
+	}
 }
 
 // findingToDo says whether a finding is still to do: undecided, or
@@ -2056,7 +2120,13 @@ func (s *Service) ListAudits(ctx context.Context, actor *Actor, f AuditFilter) (
 	for _, a := range list {
 		r, ok := roles[a.projectID]
 		if !ok {
-			r, _ = s.projectRole(ctx, s.db.R, actor, a.projectID)
+			var rerr error
+			r, rerr = s.projectRole(ctx, s.db.R, actor, a.projectID)
+			if rerr != nil {
+				if readFault(rerr) {
+					s.log.WarnContext(ctx, "project role failed", "projectid", a.projectID, "err", rerr)
+				}
+			}
 			roles[a.projectID] = r
 		}
 		if r == RoleNone {
@@ -2131,8 +2201,11 @@ func (s *Service) roundOnAudit(ctx context.Context, job, id int64) bool {
 
 // CancelAudit stops an audit that hasn't ended.
 func (s *Service) CancelAudit(ctx context.Context, actor *Actor, id int64) (*CodeAudit, error) {
-	if _, err := s.auditToChange(ctx, actor, id); err != nil {
+	if seen, err := s.auditToChange(ctx, actor, id); err != nil {
 		return nil, err
+	} else if seen.Purpose == AuditObjective && actor.id() != 0 && !objectivePerson(actor) {
+		// The judge of a round isn't stopped by whoever worked the round.
+		return nil, forbidden("audit #%d judges an objective: a person stops it, or ends the objective (wp objective end)", id)
 	}
 	unlock := s.auditLocks.lock(id)
 	a, err := s.auditRow(ctx, id)

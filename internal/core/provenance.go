@@ -382,7 +382,15 @@ func (s *Service) listUnreviewed(ctx context.Context, actor *Actor, project stri
 		}
 		it.URL = s.BaseURL() + "/pages/" + itoa64(id)
 		_, _, err := s.pageFor(ctx, q, actor, id, RoleViewer, false)
-		return err == nil
+		if err != nil {
+			if !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrForbidden) {
+				if readFault(err) {
+					s.log.WarnContext(ctx, "read whether a page is readable for the review list", "page", id, "err", err)
+				}
+			}
+			return false
+		}
+		return true
 	}); err != nil {
 		return nil, err
 	}
@@ -391,7 +399,15 @@ func (s *Service) listUnreviewed(ctx context.Context, actor *Actor, project stri
 		FROM glossary g LEFT JOIN projects p ON p.id = g.project_id
 		WHERE g.updated_agent != '' AND g.reviewed_at IS NULL`+cond+` ORDER BY g.updated_at DESC`, args, func(_ *UnreviewedItem, id int64, _ sql.NullInt64) bool {
 		_, _, err := s.glossaryFor(ctx, q, actor, id, RoleViewer)
-		return err == nil
+		if err != nil {
+			if !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrForbidden) {
+				if readFault(err) {
+					s.log.WarnContext(ctx, "read whether a glossary term is readable for the review list", "term", id, "err", err)
+				}
+			}
+			return false
+		}
+		return true
 	}); err != nil {
 		return nil, err
 	}

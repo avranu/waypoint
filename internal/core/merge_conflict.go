@@ -210,9 +210,12 @@ func (s *Service) knownConflict(ctx context.Context, x *PullRequest, ahead []*Pu
 // before them. The front is never passed over.
 func (s *Service) passConflicts(ctx context.Context, ahead []*PullRequest) (on, passed []*PullRequest) {
 	for i, p := range ahead {
-		if i > 0 && p.State == "draft" && s.knownConflict(ctx, p, ahead[:i]) && !s.earlyRoundDue(ctx, p) {
-			passed = append(passed, p)
-			continue
+		if i > 0 && p.State == "draft" && s.knownConflict(ctx, p, ahead[:i]) {
+			// Unknown whether its round is due: not passed over this sweep.
+			if due, err := s.earlyRoundDue(ctx, p); err == nil && !due {
+				passed = append(passed, p)
+				continue
+			}
 		}
 		on = append(on, p)
 	}
@@ -223,9 +226,17 @@ func (s *Service) passConflicts(ctx context.Context, ahead []*PullRequest) (on, 
 // it stands (earlyConflict). The ones behind it don't go past it until then:
 // the same sweep's stacks would move it back out of the places that get one.
 // Once its round has gone they can.
-func (s *Service) earlyRoundDue(ctx context.Context, p *PullRequest) bool {
+// A babysit that can't be read is an error, not "no round due": the caller
+// doesn't go past it this sweep (WP-1406).
+func (s *Service) earlyRoundDue(ctx context.Context, p *PullRequest) (bool, error) {
 	b, err := s.activeBabysit(ctx, s.db.R, p.ID)
-	return err == nil && b != nil && s.earlyConflict(ctx, b, p, nil)
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read early round due", "repo", p.Repo, "number", p.Number, "pr", p.ID, "err", err)
+		}
+		return false, err
+	}
+	return b != nil && s.earlyConflict(ctx, b, p, nil), nil
 }
 
 // yieldTo moves the passed-over pull requests, in order, to just behind

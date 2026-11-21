@@ -344,64 +344,153 @@ export interface Share {
   role: 'editor' | 'viewer'
 }
 
-/** One run of an objective's check (WP-927). */
+/** Who took a reading: only Waypoint's own (runner, judge, baseline) decide a round. */
+export type ObjectiveSource = 'agent' | 'runner' | 'judge' | 'baseline'
+
+/** One reading of an objective's check, or a judge's audit (WP-927). */
 export interface ObjectiveCheck {
   id: number
   round: number
   at: string
   ok: boolean
   value?: number
+  base_ok?: boolean
   base_value?: number
+  base_sha?: string
+  tree?: string
+  commit?: string
+  runs?: number
+  low?: number
+  high?: number
+  p?: number
+  moved?: boolean
   met: boolean
   improved: boolean
   agent?: string
+  /** who took it */
+  source: ObjectiveSource
+  /** whether it is one of Waypoint's own, of the objective as it stands */
+  decides: boolean
+  exact?: boolean
+  /** files the round changed that the check's own commands name */
+  touched?: string[]
+  /** the keep-passing commands that no longer pass */
+  broken?: string[]
+  /** what the command last printed when it gave no reading, or the judge's summary */
+  note?: string
+  job_id?: number
+  audit_id?: number
   /** in words: "1.42s (base 2.1s, 32% better)" */
   line: string
 }
 
-/** A finished round of an objective. */
+export type ObjectiveRoundOutcome =
+  'reading' | 'met' | 'progress' | 'worked' | 'none' | 'empty' | 'unmeasured' | 'loop'
+
+/** A round of an objective. */
 export interface ObjectiveRound {
   round: number
   started_at: string
   ended_at: string
-  outcome: 'met' | 'progress' | 'none' | 'unmeasured' | 'loop'
+  outcome: ObjectiveRoundOutcome
   check?: ObjectiveCheck
   agent?: string
   pr_url?: string
+  base_sha?: string
+  head_sha?: string
+  note?: string
 }
+
+/** One thing a judge found. */
+export interface ObjectiveFinding {
+  id: string
+  severity: 'critical' | 'high' | 'medium' | 'low'
+  title: string
+  path?: string
+  line?: number
+  problem?: string
+}
+
+export type ObjectiveKind = 'until' | 'each' | 'judged' | 'loop'
+export type ObjectiveHealth =
+  'proposed' | 'working' | 'ready' | 'waiting' | 'reading' | 'blocked' | 'stuck' | 'met' | 'ended'
+/** Where one in effect stands: '' a round is worked or waited for. */
+export type ObjectivePhase = '' | 'baseline' | 'verdict' | 'blocked'
+export type ObjectiveBlockedWhy = 'repo' | 'person' | 'check' | 'touched' | 'reading' | 'rounds'
 
 /**
  * A task's objective (WP-927): worked in rounds until a check is met
- * (until), by an amount every round (each), or as a loop with no check.
+ * (until), by an amount every round (each), until a judge finds nothing
+ * (judged), or as a loop with no check. Waypoint reads every round itself.
  */
 export interface Objective {
   key: string
-  kind: 'until' | 'each' | 'loop'
+  title?: string
+  kind: ObjectiveKind
   check?: string
   dir?: string
   setup?: string
-  measure?: 'time' | 'value' | 'pass'
+  measure?: 'time' | 'value' | 'pass' | 'judge'
   until?: string
+  op?: string
+  target?: number
+  factor?: number
   better?: 'lower' | 'higher'
+  unit?: string
+  /** the repository (owner/name) it is read in, and the branch ('': its default) */
+  repo?: string
+  branch?: string
+  /** commands that must keep passing */
+  keep_passing: string[]
+  /** what done means, for a judge model */
+  judge?: string
+  /** the lowest severity of finding that keeps the task open */
+  judge_bar?: 'critical' | 'high' | 'medium' | 'low'
+  judge_models: string[]
   /** queue: handed out like any task; spare: only on quota that would go unused */
   pace: 'queue' | 'spare'
   /** least seconds from one round's end to the next's start */
   every: number
   max_rounds?: number
   round: number
+  /** rounds in a row that moved nothing */
   stalled?: number
   next_at?: string
   /** proposed: an agent's, not in effect until a person confirms it */
   state: 'proposed' | 'active' | 'met' | 'ended'
+  phase?: ObjectivePhase
+  phase_at?: string
+  phase_why?: ObjectiveBlockedWhy | ''
+  phase_note?: string
+  /** where it stands, in a word and a sentence */
+  health: ObjectiveHealth
+  health_note?: string
+  stuck_since?: string
+  stuck_why?: string
+  base_sha?: string
   /** the objective in a sentence */
   summary: string
+  /** names what a confirm confirms */
+  rev: string
+  /** the whole of it, as `wp show` prints it */
+  text: string
   set_by?: UserRef
   set_agent?: string
+  confirmed_by?: UserRef
+  confirmed_at?: string
+  ended_at?: string
+  ended_why?: string
+  updated_at: string
+  /** the newest reading of any source */
   last?: ObjectiveCheck
+  /** the newest that decides: Waypoint's own */
+  verdict?: ObjectiveCheck
+  /** the newest few, newest first, the worker's own included */
   checks: ObjectiveCheck[]
-  /** Names the command and target shown: what a confirm confirms. */
-  rev: string
+  /** the last rounds, oldest first */
   rounds: ObjectiveRound[]
+  /** what the judge last found at or above the bar */
+  findings?: ObjectiveFinding[]
 }
 
 /** What setting an objective sends; a field left out keeps what is there. */
@@ -410,11 +499,26 @@ export interface ObjectiveInput {
   dir?: string
   setup?: string
   until?: string
+  measure?: string
+  better?: string
   pace?: 'queue' | 'spare'
   /** a duration: "0", "90m", "24h", "3d" */
   every?: string
   max_rounds?: number
+  repo?: string
+  branch?: string
+  /** replaces the commands that must keep passing */
+  keep_passing?: string[]
+  /** what done means; '' takes the judge off */
+  judge?: string
+  judge_bar?: string
+  judge_models?: string[]
+  /** the proposal the person read, when their change builds on it */
+  rev?: string
 }
+
+/** What a person steers an objective in effect with. */
+export type ObjectiveAction = 'retry' | 'next' | 'accept' | 'end'
 
 export interface IssueDetail extends Issue {
   role: Role

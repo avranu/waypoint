@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -229,21 +230,33 @@ func (s *Service) savePREvents(ctx context.Context, t *tx, pr *PullRequest, rows
 }
 
 // attachedProject is the first project a repo is attached to (bots on or
-// off), which forge-reported decisions are filed under; 0 if none.
-func (s *Service) attachedProject(ctx context.Context, q queryer, forgeID int64, repo string) int64 {
-	id, _ := s.attachedProjectRead(ctx, q, forgeID, repo)
-	return id
-}
-
-// attachedProjectRead is attachedProject for a caller that must tell a repo
-// attached to nothing (0, nil) from a lookup that failed.
-func (s *Service) attachedProjectRead(ctx context.Context, q queryer, forgeID int64, repo string) (int64, error) {
+// off), which forge-reported decisions are filed under. A repo attached to
+// nothing is the answer (0, nil); a lookup that failed is an error, which a
+// caller must not read as "no project": events would go to admins only and
+// gates and filings would be skipped.
+func (s *Service) attachedProject(ctx context.Context, q queryer, forgeID int64, repo string) (int64, error) {
 	var id int64
 	err := q.QueryRowContext(ctx, `SELECT project_id FROM project_repos WHERE forge_id = ? AND repo = ? COLLATE NOCASE ORDER BY project_id LIMIT 1`, forgeID, repo).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, nil
 	}
 	return id, err
+}
+
+// attachedProjectKey is attachedProject's key ("" for a repo attached to nothing).
+func (s *Service) attachedProjectKey(ctx context.Context, forgeID int64, repo string) (string, error) {
+	id, err := s.attachedProject(ctx, s.db.R, forgeID, repo)
+	if err != nil || id == 0 {
+		return "", err
+	}
+	p, err := s.projectByID(ctx, s.db.R, id)
+	if errors.Is(err, ErrNotFound) {
+		return "", nil // gone since: attached to nothing
+	}
+	if err != nil {
+		return "", err
+	}
+	return p.Key, nil
 }
 
 // ---- reviews and comments ----
@@ -260,7 +273,13 @@ func (s *Service) onPRActivity(ctx context.Context, f *Forge, repo string, a *fo
 	if strings.Contains(a.Body, "<!-- waypoint-review") && a.kind != "commented" && ours.ours(a.Author) {
 		return
 	}
-	projectID := s.attachedProject(ctx, s.db.R, f.ID, repo)
+	projectID, err := s.attachedProject(ctx, s.db.R, f.ID, repo)
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read the project to record a pull request's review", "repo", repo, "number", a.number, "err", err)
+		}
+		return
+	}
 	if projectID == 0 {
 		return
 	}
@@ -359,6 +378,9 @@ func (s *Service) RefreshPullRequests(ctx context.Context) {
 	}
 	rows, err := s.db.R.QueryContext(ctx, `SELECT DISTINCT forge_id, repo FROM project_repos ORDER BY forge_id, repo`)
 	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "pull request refresh: find the repos", "err", err)
+		}
 		return
 	}
 	type fr struct {
@@ -368,11 +390,20 @@ func (s *Service) RefreshPullRequests(ctx context.Context) {
 	var list []fr
 	for rows.Next() {
 		var x fr
-		if rows.Scan(&x.forge, &x.repo) == nil {
-			list = append(list, x)
+		if err := rows.Scan(&x.forge, &x.repo); err != nil {
+			s.log.WarnContext(ctx, "pull request refresh: read a repo", "err", err)
+			continue
 		}
+		list = append(list, x)
 	}
-	rows.Close()
+	err = rows.Err()
+	if cerr := rows.Close(); err == nil {
+		err = cerr
+	}
+	if readFault(err) {
+		// The repos read so far are still refreshed; the rest wait for the next run.
+		s.log.WarnContext(ctx, "pull request refresh: read the repos", "err", err)
+	}
 	seen := map[string]bool{}
 	for _, x := range list {
 		if ctx.Err() != nil {
@@ -384,12 +415,25 @@ func (s *Service) RefreshPullRequests(ctx context.Context) {
 		}
 		seen[key] = true
 		f, err := s.forgeByID(ctx, x.forge)
-		if err != nil || f.token == "" {
+		if err != nil {
+			if readFault(err) {
+				s.log.WarnContext(ctx, "pull request refresh: read the forge", "repo", x.repo, "err", err)
+			}
+			continue
+		}
+		if f.token == "" {
 			continue
 		}
 		prs, err := lister.ListPRs(ctx, f, x.repo)
 		if err != nil {
-			s.log.Debug("list pull requests", "forge", f.Name, "repo", x.repo, "err", err)
+			// The repo's pull requests go unrefreshed this run: that is a
+			// problem of the job's, not a detail.
+			if isStatus(err, http.StatusNotFound) || errors.Is(err, ErrNotFound) {
+				// Moved or deleted on the forge: an answer, not a fault to warn of every tick.
+				s.log.DebugContext(ctx, "pull request refresh: the forge has no such repo", "forge", f.Name, "repo", x.repo)
+			} else if readFault(err) {
+				s.log.WarnContext(ctx, "pull request refresh: list pull requests", "forge", f.Name, "repo", x.repo, "err", err)
+			}
 			continue
 		}
 		hooked := s.hookDelivers(ctx, f.ID, x.repo)
@@ -432,7 +476,13 @@ func (s *Service) hookDelivers(ctx context.Context, forgeID int64, repo string) 
 	var n int
 	err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM project_repos WHERE forge_id = ? AND lower(repo) = lower(?)
 		AND hook_seen_at IS NOT NULL`, forgeID, repo).Scan(&n)
-	return err != nil || n > 0 // unsure: leave it to webhooks, as before
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read hook delivers", "forgeID", forgeID, "repo", repo, "err", err)
+		}
+		return true
+	}
+	return n > 0
 }
 
 // refreshPR applies a listed pull request: new ones are recorded headless,

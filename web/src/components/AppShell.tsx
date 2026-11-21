@@ -19,6 +19,7 @@ import { SortableContext, useSortable } from '@dnd-kit/sortable'
 import {
   Bell,
   BookA,
+  Target,
   Bot,
   ChevronDown,
   ChevronRight,
@@ -379,6 +380,9 @@ function Sidebar({
         </NavLink>
         <NavLink to="/glossary" secondary icon={<BookA />} collapsed={collapsed}>
           Glossary
+        </NavLink>
+        <NavLink to="/objectives" secondary icon={<Target />} collapsed={collapsed}>
+          Objectives
         </NavLink>
         {views.length > 0 && !collapsed && (
           <>
@@ -1060,6 +1064,13 @@ function MobileNav({
           className="flex h-11 items-center gap-3 rounded-lg px-2 text-sm hover:bg-hover"
         >
           <BookA className="size-5 text-muted" /> Glossary
+        </Link>
+        <Link
+          to="/objectives"
+          onClick={close}
+          className="flex h-11 items-center gap-3 rounded-lg px-2 text-sm hover:bg-hover"
+        >
+          <Target className="size-5 text-muted" /> Objectives
         </Link>
         {tree.some((n) => n.project.role === 'owner') && (
           <button

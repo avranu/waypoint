@@ -722,7 +722,12 @@ func (s *Service) parseLink(ctx context.Context, raw string) (ExternalLink, erro
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return l, invalid("not a valid http(s) URL")
 	}
-	forges, _ := s.forges(ctx)
+	forges, rerr := s.forges(ctx)
+	if rerr != nil {
+		if readFault(rerr) {
+			s.log.WarnContext(ctx, "forges failed", "err", rerr)
+		}
+	}
 	var forge *Forge
 	for _, f := range forges {
 		fu, err := url.Parse(f.BaseURL)
@@ -913,7 +918,12 @@ func (s *Service) forgeForLink(ctx context.Context, l ExternalLink) *Forge {
 	if err != nil {
 		return nil
 	}
-	forges, _ := s.forges(ctx)
+	forges, rerr := s.forges(ctx)
+	if rerr != nil {
+		if readFault(rerr) {
+			s.log.WarnContext(ctx, "forges failed", "err", rerr)
+		}
+	}
 	for _, f := range forges {
 		fu, err := url.Parse(f.BaseURL)
 		if err == nil && strings.EqualFold(fu.Host, u.Host) {
@@ -972,7 +982,13 @@ func (s *Service) repoAttached(ctx context.Context, projectID, forgeID int64, re
 	var n int
 	err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM project_repos WHERE project_id = ? AND forge_id = ? AND lower(repo) = lower(?)`,
 		projectID, forgeID, repo).Scan(&n)
-	return err == nil && n > 0
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read repo attached", "forgeID", forgeID, "repo", repo, "err", err)
+		}
+		return false
+	}
+	return n > 0
 }
 
 // applyLinkState updates every link to url with a forge item's state and

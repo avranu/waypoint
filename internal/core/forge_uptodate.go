@@ -12,6 +12,7 @@ import (
 	"crypto/sha1" // #nosec G505 -- git's object ids, not a security hash
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -83,23 +84,56 @@ func reasonBehind(base string) string {
 // tell is no reason to wait. stale: Waypoint merged into the base a moment
 // ago and the forge's read of it doesn't show that merge yet (WP-316), so
 // the tip isn't the base to update with or to test against.
+//
+// behindBase counts a failed database read as a base not known yet (stale),
+// which every caller waits out; behindBaseErr hands the error to one that can
+// say the check couldn't be read.
 func (s *Service) behindBase(ctx context.Context, pr *PullRequest) (tip string, behind, stale bool) {
+	tip, behind, stale, err := s.behindBaseErr(ctx, pr)
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read whether a pull request is behind its base", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "err", err)
+		}
+		return "", false, true
+	}
+	return tip, behind, stale
+}
+
+// behindBaseErr is behindBase with a failed read, of Waypoint's own records or
+// of the forge, as an error: only a forge, repository or base that is gone, or
+// a forge that has no token or can't say, is no reason to wait.
+func (s *Service) behindBaseErr(ctx context.Context, pr *PullRequest) (tip string, behind, stale bool, err error) {
 	cl, ok := s.Forges.(ForgeUpToDate)
 	if !ok || pr.BaseRef == "" || pr.HeadSHA == "" {
-		return "", false, false
+		return "", false, false, nil
 	}
-	if _, attached, err := s.repoMergePolicy(ctx, pr.ForgeID, pr.Repo); err != nil || !attached {
-		return "", false, false
+	_, attached, err := s.repoMergePolicy(ctx, pr.ForgeID, pr.Repo)
+	if err != nil {
+		return "", false, false, err
+	}
+	if !attached {
+		return "", false, false, nil
 	}
 	f, err := s.forgeByID(ctx, pr.ForgeID)
-	if err != nil || f.token == "" {
-		return "", false, false
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return "", false, false, nil
+		}
+		return "", false, false, err
+	}
+	if f.token == "" {
+		return "", false, false, nil
 	}
 	tip, behind, err = cl.BehindBase(ctx, f, pr.Repo, pr.BaseRef, pr.HeadSHA)
 	if err != nil {
-		return "", false, false
+		// A base or repository the forge doesn't have, or a forge that can't
+		// say, is an answer. A read that failed is not "not behind" (WP-1406).
+		if errors.Is(err, ErrNotFound) || errors.Is(err, ErrUnsupported) || isStatus(err, http.StatusNotFound) {
+			return "", false, false, nil
+		}
+		return "", false, false, err
 	}
-	return tip, behind, s.staleBaseRead(ctx, cl, f, pr, tip)
+	return tip, behind, s.staleBaseRead(ctx, cl, f, pr, tip), nil
 }
 
 // baseMerge is the last merge Waypoint made into a base: sha is "" while it

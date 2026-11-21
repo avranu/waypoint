@@ -58,7 +58,12 @@ func (s *Service) runnerFaultProjects(ctx context.Context, forgeID int64, repo s
 	if err != nil {
 		s.log.WarnContext(ctx, "read the projects that own the CI runners", "err", err)
 	}
-	if p := s.attachedProject(ctx, s.db.R, forgeID, repo); p != 0 && !slices.Contains(ids, p) {
+	p, err := s.attachedProject(ctx, s.db.R, forgeID, repo)
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read the project of a repo with a CI runner fault", "repo", repo, "err", err)
+		}
+	} else if p != 0 && !slices.Contains(ids, p) {
 		ids = append(ids, p)
 	}
 	return ids
@@ -68,7 +73,12 @@ func (s *Service) runnerFaultProjects(ctx context.Context, forgeID int64, repo s
 // it can't be looked up). Only for words, a wait naming its task: filing goes
 // through openRunnerFault, whose error stops it rather than file a duplicate.
 func (s *Service) openRunnerFaultTask(ctx context.Context, forgeID int64, f *RunnerFault) string {
-	t, _ := s.openRunnerFault(ctx, forgeID, f)
+	t, rerr := s.openRunnerFault(ctx, forgeID, f)
+	if rerr != nil {
+		if readFault(rerr) && !errors.Is(rerr, ErrNotFound) {
+			s.log.WarnContext(ctx, "open runner fault failed", "forgeid", forgeID, "err", rerr)
+		}
+	}
 	return t.key
 }
 
@@ -118,7 +128,7 @@ func (s *Service) updateRunnerFaultTask(ctx context.Context, writer *Actor, forg
 func (s *Service) reportRunnerFault(ctx context.Context, userID int64, at faultSubject, faults map[string]*RunnerFault, why string) (task string, asked bool) {
 	f := firstFault(faults)
 	task, err := s.fileRunnerFault(ctx, userID, at, faults, why)
-	if err != nil {
+	if readFault(err) {
 		s.log.WarnContext(ctx, "file a CI runner fault as a task", "at", at.name, "err", err)
 	}
 	if task == "" {

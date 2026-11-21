@@ -534,13 +534,25 @@ func (s *Service) isDraft(ctx context.Context, q queryer, id int64) bool {
 	if errors.Is(err, sql.ErrNoRows) {
 		return false // nothing there to hide
 	}
-	return err != nil || d
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read is draft", "id", id, "err", err)
+		}
+		return true
+	}
+	return d
 }
 
 // canSee reports whether the actor can open the issue.
 func (s *Service) canSee(ctx context.Context, q queryer, actor *Actor, id, projectID int64) bool {
 	r, err := s.issueRole(ctx, q, actor, &Issue{ID: id, ProjectID: projectID})
-	return err == nil && r > RoleNone
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read can see", "projectID", projectID, "err", err)
+		}
+		return false
+	}
+	return r > RoleNone
 }
 
 // hideParents drops parent references a guest can't open: a share covers
@@ -979,7 +991,13 @@ func (s *Service) CreateIssue(ctx context.Context, actor *Actor, in IssueInput) 
 			if actor.scope != nil { // a job token's reach is its project's; the owner's shares don't extend it
 				return ErrForbidden
 			}
-			if r, _ := s.shareRole(ctx, t, actor.id(), parent.ID); r < RoleEditor {
+			r, rerr := s.shareRole(ctx, t, actor.id(), parent.ID)
+			if rerr != nil {
+				if readFault(rerr) {
+					s.log.WarnContext(ctx, "share role failed", "parent", parent.ID, "err", rerr)
+				}
+			}
+			if r < RoleEditor {
 				return ErrForbidden
 			}
 		}
@@ -1460,8 +1478,12 @@ type IssuePatch struct {
 	// ViaLink is the URL of a pull request link on this issue that causes
 	// the status change: the link remembers the status it moved the issue
 	// from, so removing the link can undo it (WP-162).
-	ViaLink string  `json:"via_link"`
-	Step    *string `json:"step"` // a step of the issue's workflow; "" clears
+	ViaLink string `json:"via_link"`
+	// mergedLink is the URL of the pull request whose merge causes the
+	// change (a rule that closes tasks on merge): an objective reads a
+	// merge once, however many things act on it (WP-ADR111).
+	mergedLink string
+	Step       *string `json:"step"` // a step of the issue's workflow; "" clears
 	// Comment, when set, is added in the same transaction as the change
 	// (UpdateIssue only; BulkUpdate rejects it).
 	Comment string `json:"comment"`
@@ -1832,7 +1854,13 @@ func (s *Service) applyPatch(ctx context.Context, t *tx, actor *Actor, i *Issue,
 			if par.ProjectID != i.ProjectID {
 				return invalid("a parent must be in the same project; move the issue first")
 			}
-			if r, _ := s.issueRole(ctx, t, actor, par); r < RoleViewer {
+			r, rerr := s.issueRole(ctx, t, actor, par)
+			if rerr != nil {
+				if readFault(rerr) {
+					s.log.WarnContext(ctx, "issue role failed", "issue", i.ID, "err", rerr)
+				}
+			}
+			if r < RoleViewer {
 				return notFound("issue " + *p.Parent.Value)
 			}
 			// No cycles: the new parent must not be this issue or beneath it.
@@ -1918,7 +1946,7 @@ func (s *Service) applyPatch(ctx context.Context, t *tx, actor *Actor, i *Issue,
 		// An objective in effect decides whether the close stands or the
 		// task opens again for its next round (WP-ADR111).
 		var err error
-		if newStatus, err = s.objectiveClose(ctx, t, actor, i, newStatus, p.ViaLink); err != nil {
+		if newStatus, err = s.objectiveClose(ctx, t, actor, i, newStatus, &p); err != nil {
 			return err
 		}
 	}
@@ -2391,6 +2419,9 @@ func (s *Service) DeleteIssue(ctx context.Context, actor *Actor, ref string, cas
 			if _, err := t.ExecContext(ctx, `UPDATE issues SET parent_id = ? WHERE parent_id = ?`, nullInt(i.ParentID), i.ID); err != nil {
 				return err
 			}
+		}
+		if err := s.objectiveDeleting(ctx, t, actor, ids); err != nil {
+			return err
 		}
 		ph, args := placeholders(len(ids)), int64Args(ids)
 		if _, err := t.ExecContext(ctx, `DELETE FROM issue_search WHERE rowid IN (`+ph+`)`, args...); err != nil {
