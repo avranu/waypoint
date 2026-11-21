@@ -49,7 +49,14 @@ type OpenPRInput struct {
 	// byWaypoint: Waypoint opens it (shipHeld), not the agent's wp ship, so
 	// the notes it leaves say so (WP-1325).
 	byWaypoint bool
-	Force      bool
+	// stillMay asks, once the forge has answered, whether the one opening
+	// still may: "" yes, else why not. It is the server ship's, whose
+	// authority can go while the forge call is out. A pull request that
+	// exists on the forge is recorded either way, but a one that may not
+	// go on gets no link, claim or urgent lane, and comes back in
+	// OpenPRResult.Stopped.
+	stillMay func(context.Context) string
+	Force    bool
 	// HeadTime is the branch head's commit time (unix seconds; 0: unknown),
 	// to tell whether anything was committed since a review finished.
 	HeadTime int64
@@ -112,6 +119,9 @@ type OpenPRResult struct {
 	UrgentPR int `json:"urgent_pr,omitempty"`
 	// ClaimWarning: another session holds this pull request (WP-117).
 	ClaimWarning string `json:"claim_warning,omitempty"`
+	// Stopped: why the pull request was recorded and nothing more was done
+	// with it (the opener's authority went while the forge call was out).
+	Stopped string `json:"-"`
 }
 
 // OpenPullRequest opens a pull request from a branch already pushed to the
@@ -121,6 +131,9 @@ type OpenPRResult struct {
 func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRInput) (*OpenPRResult, error) {
 	if actor == nil || actor.User == nil {
 		return nil, ErrUnauthorized
+	}
+	if err := actor.need(PermPullsWrite); err != nil {
+		return nil, err
 	}
 	in.Head, in.Title = strings.TrimSpace(in.Head), strings.TrimSpace(in.Title)
 	in.facts = &shipFacts{}
@@ -293,6 +306,15 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 			if !res.Existing {
 				s.queuePRBody(ctx, existing, in.Issue, in.Body, in.BodyInputs)
 			}
+		}
+	}
+	if in.stillMay != nil {
+		if why := in.stillMay(ctx); why != "" {
+			res.Stopped = why
+			if res.Pull, err = s.GetPullRequest(ctx, actor, existing); err != nil {
+				return nil, err
+			}
+			return res, nil
 		}
 	}
 	if in.Urgent {

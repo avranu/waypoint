@@ -259,9 +259,24 @@ func (s *Service) shipRound(ctx context.Context, in shipRoundIn) error {
 		}
 		in2.Body = strings.TrimSpace(body + "\n\nWaypoint opened this " + lead + ": " + in.why + "." + panel)
 	}
+	// The authority is asked again once the forge has answered: it can go
+	// while the call is out, and then the pull request that exists is
+	// recorded and left alone.
+	again := in
+	in2.stillMay = func(ctx context.Context) string {
+		_, why, err := s.shipAuthority(ctx, r, bp, &again)
+		if err != nil {
+			return "its authority couldn't be read: " + err.Error()
+		}
+		return why
+	}
 	res, err := s.OpenPullRequest(ctx, actor, in2)
 	if err != nil {
 		return err
+	}
+	if res.Stopped != "" && res.Pull != nil {
+		body := fmt.Sprintf("Waypoint opened %s#%d, then stopped: %s. It is recorded, not armed and not watched; the task was left as it is.", res.Pull.Repo, res.Pull.Number, res.Stopped)
+		return s.stopShipWith(ctx, r, in, body, "pull request opened, then stopped", res.Stopped)
 	}
 	if res.Held != "" {
 		if reviewed {
@@ -303,13 +318,14 @@ func (s *Service) shipRound(ctx context.Context, in shipRoundIn) error {
 			}
 		}
 		var status string
+		var resolved bool
 		// An unread status is not "not In Review": a task that is Done must not
-		// be moved back on a failed read.
-		statusErr := s.db.R.QueryRowContext(ctx, `SELECT s.name FROM issues i JOIN statuses s ON s.id = i.status_id WHERE i.id = ?`, r.issueID).Scan(&status)
+		// be moved back on a failed read, and a closed task is never moved.
+		statusErr := s.db.R.QueryRowContext(ctx, `SELECT s.name, i.resolved_at IS NOT NULL FROM issues i JOIN statuses s ON s.id = i.status_id WHERE i.id = ?`, r.issueID).Scan(&status, &resolved)
 		if statusErr != nil {
 			notes = append(notes, "left the task's status alone: couldn't read it: "+statusErr.Error())
 		}
-		if statusErr == nil && status != "In Review" {
+		if statusErr == nil && !resolved && status != "In Review" {
 			next := "In Review"
 			comment := fmt.Sprintf("No adversarial review ran before this pull request: %s. Waypoint opened %s so the task doesn't sit unshipped; CI and the review gate still apply.%s", in.why, pr.URL, panel)
 			if ran {

@@ -66,6 +66,9 @@ type beforePR struct {
 	ShipNext  int64  `json:"ship_next,omitempty"`
 	ShipTold  bool   `json:"ship_told,omitempty"`
 	ShipErr   string `json:"ship_err,omitempty"`
+	// ShipStop: why Waypoint stopped shipping this round for good (its
+	// authority went, or the forge refused). The round is left as it ends.
+	ShipStop string `json:"ship_stop,omitempty"`
 	// BodyInputs are what a model rewords the body from (WP-55): a pull
 	// request Waypoint opens keeps them as the direct open would. They go
 	// and come with Body.

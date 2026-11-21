@@ -54,6 +54,9 @@ func (s *Service) shipAuthority(ctx context.Context, r *roundRow, bp *beforePR, 
 		t.Agent, t.Session = actor.Agent, actor.Session
 		actor = t
 	}
+	if err := actor.need(PermPullsWrite); err != nil {
+		return nil, "the token the ship came with can't open pull requests (it lacks pulls.write)", nil
+	}
 	i, err := s.issueByID(ctx, s.db.R, r.issueID, false)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
@@ -89,12 +92,17 @@ func (s *Service) shipAuthority(ctx context.Context, r *roundRow, bp *beforePR, 
 // the person it was for, or else the task's reporter (WP-1370): never only
 // a log line.
 func (s *Service) stopShip(ctx context.Context, r *roundRow, in shipRoundIn, why string) error {
+	return s.stopShipWith(ctx, r, in, "Waypoint did not open the pull request: "+why+".", "pull request not opened", why)
+}
+
+// stopShipWith is stopShip with its own words: body is what the round says
+// and the person is told, title the notice's (after the task's key).
+func (s *Service) stopShipWith(ctx context.Context, r *roundRow, in shipRoundIn, body, title, why string) error {
 	now := s.nowMS()
-	body := "Waypoint did not open the pull request: " + why + "."
 	err := s.write(ctx, SystemActor(), func(t *tx) error {
 		_, err := t.ExecContext(ctx, `UPDATE work_log SET state = 'done', body = ?, ended_at = coalesce(ended_at, ?),
-			read_state = ?, read_by = ?, read_at = ?, updated_at = ? WHERE id = ?`,
-			body, now, readDone, readByRules, now, now, r.id)
+			read_state = ?, read_by = ?, read_at = ?, updated_at = ?, before_pr = CASE WHEN before_pr = '' THEN before_pr ELSE json_set(before_pr, '$.ship_stop', ?) END WHERE id = ?`,
+			body, now, readDone, readByRules, now, now, why, r.id)
 		return err
 	})
 	if err != nil {
@@ -109,7 +117,7 @@ func (s *Service) stopShip(ctx context.Context, r *roundRow, in shipRoundIn, why
 		_ = s.db.R.QueryRowContext(ctx, `SELECT coalesce(reporter_id, 0) FROM issues WHERE id = ?`, r.issueID).Scan(&who)
 	}
 	if who != 0 {
-		s.notifyURL(ctx, who, nil, NotifyAutopilot, fmt.Sprintf("%s: pull request not opened", r.key), body, "/agents?tab=autopilot")
+		s.notifyURL(ctx, who, nil, NotifyAutopilot, fmt.Sprintf("%s: %s", r.key, title), body, "/agents?tab=autopilot")
 	}
 	// The run and the task's claim are let go: nothing is left that would try
 	// this ship again, and the task is free for a person.

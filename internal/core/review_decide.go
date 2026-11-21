@@ -64,6 +64,9 @@ type roundIn struct {
 	// the task now. SinceEnd is how long ago the latest of the round's end,
 	// its run's, its session's and the session's move to another task was.
 	Resolved, Linked, PRGone, Newer, Taken bool
+	// Halted: Waypoint stopped shipping the round for good and told a person
+	// (beforePR.ShipStop).
+	Halted bool
 	SinceEnd                               time.Duration
 	// Idle: the session went idle (autopilot's step saw it) and the round's Stop never came.
 	Idle bool
@@ -250,6 +253,8 @@ func decideEnded(in roundIn) roundOut {
 	switch {
 	case !in.Unshipped:
 		return left("the round isn't before a pull request")
+	case in.Halted:
+		return left("Waypoint stopped shipping it and told a person")
 	case in.PROpen:
 		return left("its pull request is open")
 	case in.PRGone:
@@ -302,6 +307,7 @@ func (s *Service) roundInOf(ctx context.Context, id int64) (roundIn, error) {
 	}
 	if bp := roundBeforePR(ctx, s.db.R, id); bp != nil {
 		in.Unshipped = true
+		in.Halted = bp.ShipStop != ""
 		if err := s.db.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pull_requests WHERE repo = ? COLLATE NOCASE AND head_ref = ? AND state IN ('open', 'draft'))`, bp.Repo, bp.Branch).Scan(&in.PROpen); err != nil {
 			return in, err
 		}

@@ -91,6 +91,9 @@ func TestServerShipStopsWhenAuthorityIsGone(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newLoopEnv(t, map[string]string{"": "critical", "fixes": "complete"})
 			e.reviewedUntilShip()
+			// Someone to tell when the person who shipped can't be.
+			reporter := e.user("pat", true)
+			e.exec(`UPDATE issues SET reporter_id = ? WHERE id = ?`, reporter.User.ID, e.task.ID)
 			tc.do(e)
 			e.finishShip()
 			if len(e.g.created) != 0 {
@@ -104,8 +107,9 @@ func TestServerShipStopsWhenAuthorityIsGone(t *testing.T) {
 			if strings.Contains(tc.name, "no token") && !strings.Contains(body, "deactivated") {
 				t.Errorf("the round says %q, not that the person is deactivated", body)
 			}
-			if e.noticeCount("%pull request not opened") == 0 && !strings.HasPrefix(tc.name, "the person was deactivated") {
-				t.Errorf("nobody was told")
+			e.tickAll(time.Hour)
+			if n := e.noticeCount("%pull request not opened"); n != 1 {
+				t.Errorf("told %d times, want once", n)
 			}
 		})
 	}
