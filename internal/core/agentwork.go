@@ -1072,7 +1072,11 @@ func (s *Service) AgentDone(ctx context.Context, actor *Actor, ref string, in Ag
 		// A diagnose round ships no code, so nothing finishes it but a
 		// diagnosis: not wp done, whatever it would do next (leave a pull
 		// request open, step a workflow on) (WP-1449).
-		if o, err := s.objectiveRow(ctx, t, i.ID); err == nil && o != nil && o.diagnoseRound() {
+		o, err := s.objectiveRow(ctx, t, i.ID)
+		if err != nil {
+			return err
+		}
+		if o != nil && o.diagnoseRound() {
 			return o.diagnoseDoneError(i.Key, i.ClaimedBy == id && live && i.Status.Category == CatInProgress)
 		}
 		// Out on a pull request that hasn't merged: the merge (or a person)

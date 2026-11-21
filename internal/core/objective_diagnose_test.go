@@ -291,7 +291,7 @@ func TestObjectiveDiagnoseMergedPullRequestIsANormalRound(t *testing.T) {
 	}
 	found := false
 	for _, h := range o.history(task.Key) {
-		if strings.Contains(h, "diagnose round") {
+		if strings.Contains(h, "read as any round") {
 			found = true
 		}
 	}

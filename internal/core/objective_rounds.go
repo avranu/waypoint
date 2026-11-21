@@ -550,7 +550,7 @@ func (s *Service) objectiveWorkEnded(ctx context.Context, t *tx, o *Objective, i
 			return nil, err
 		}
 		held := i.ClaimedBy != "" && i.ClaimedUntil != nil && i.ClaimedUntil.UnixMilli() > now
-		if err == nil && made < o.roundStartedAt && held {
+		if err == nil && made < o.roundStartedAt && held && o.RoundKind != RoundKindDiagnose {
 			note(fmt.Sprintf("a pull request from before round %d merged while %s works the round: it doesn't end it, and is read with the round", o.Round, i.ClaimedBy))
 			return nil, nil
 		}
@@ -641,7 +641,10 @@ func (s *Service) objectiveWorkEnded(ctx context.Context, t *tx, o *Objective, i
 	}
 	said := fmt.Sprintf("round %d's work ended: Waypoint is reading it", o.Round)
 	if o.RoundKind == RoundKindDiagnose {
-		said += fmt.Sprintf(". It was a diagnose round, but a pull request landed in it: it is read as any round, and if it is no better a diagnosis is still owed in round %d", o.Round+1)
+		said += ". It was a diagnose round, but a pull request landed in it: it is read as any round"
+		if o.MaxRounds == 0 || o.Round < o.MaxRounds {
+			said += fmt.Sprintf(", and if it is no better a diagnosis is still owed in round %d", o.Round+1)
+		}
 	}
 	t.emit(objectiveEvent(o, "verdict", old, said))
 	return todo, nil
@@ -812,6 +815,10 @@ func (s *Service) ObjectiveDiagnose(ctx context.Context, actor *Actor, ref strin
 				return err
 			}
 		}
+		// The latest diagnosis stands whichever way the round goes on.
+		if err := s.objSet(ctx, t, i.ID, "diagnosis_id", rid); err != nil {
+			return err
+		}
 		todo, err := s.objectiveTodo(ctx, t, i.ProjectID)
 		if err != nil {
 			return err
@@ -845,7 +852,7 @@ func (s *Service) ObjectiveDiagnose(ctx context.Context, actor *Actor, ref strin
 		if err := s.objectiveOpenRound(ctx, t, o, o.Round, o.Stalled, wait, false); err != nil {
 			return err
 		}
-		if err := s.objSet(ctx, t, i.ID, "no_better", 0, "diagnosis_id", rid); err != nil {
+		if err := s.objSet(ctx, t, i.ID, "no_better", 0); err != nil {
 			return err
 		}
 		said += fmt.Sprintf("; round %d is open again as a work round", o.Round)

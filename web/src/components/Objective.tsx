@@ -611,9 +611,14 @@ export function ObjectiveDialog({
     }
     // Blank sends nothing (the server keeps the current value, or takes its
     // default of 2 for a new objective), and a loop has no rounds to read.
-    const diagnoseN = parseInt(diagnoseAfter, 10)
-    if (verified && !Number.isNaN(diagnoseN))
-      set.diagnose_after = Math.min(20, Math.max(0, diagnoseN))
+    if (verified && diagnoseAfter.trim()) {
+      const diagnoseN = Number(diagnoseAfter)
+      if (!Number.isInteger(diagnoseN) || diagnoseN < 0 || diagnoseN > 20) {
+        toastError(new Error('Diagnose after is a whole number from 0 to 20.'))
+        return
+      }
+      set.diagnose_after = diagnoseN
+    }
     // Blank, or left as it was, keeps the kind's own gap: a day for one
     // that never ends, none for one with a fixed target.
     if (every.trim() && !(o && every.trim() === everyText(o.every))) set.every = every.trim()

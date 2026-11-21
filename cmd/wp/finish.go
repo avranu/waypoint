@@ -435,7 +435,10 @@ func (c *cli) refuseDiagnoseRound(keys []string) error {
 	}
 	var o objective
 	if err := c.do("GET", "/api/v1/issues/"+esc(key)+"/objective", nil, &o); err != nil {
-		return nil
+		if isNotFound(err) { // no objective on it: nothing to refuse
+			return nil
+		}
+		return err // not knowing is not leave to commit or push
 	}
 	if o.State != "active" || o.Phase != "" || o.RoundKind != "diagnose" {
 		return nil
