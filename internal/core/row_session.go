@@ -6,11 +6,6 @@ import (
 	"errors"
 )
 
-// rowQuerier is what a session lookup needs: a transaction or a pool.
-type rowQuerier interface {
-	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
-}
-
 // sessionStamp is the agent session behind an actor and the task that session
 // held when it acted, for the session_id and session_issue_id columns of a row
 // the actor writes (WP-ADR145 point 6). Both are NULL (nil) when the actor

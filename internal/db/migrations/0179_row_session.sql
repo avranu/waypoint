@@ -86,15 +86,19 @@ FROM (
     WHERE rn = 1) m
 WHERE comments.id = m.cid;
 
+-- The same age guard for issues: deleting an issue cascades to its events,
+-- but a row left from a time foreign keys were off must not hand a reused id
+-- the deleted issue's session.
 ALTER TABLE issues ADD COLUMN session_backfilled INTEGER NOT NULL DEFAULT 0;
 UPDATE issues SET session_id = m.sid, session_backfilled = 1
 FROM (
     SELECT iid, sid FROM (
-        SELECT e.issue_id AS iid, json_extract(e.data, '$.session') AS sid,
-               row_number() OVER (PARTITION BY e.issue_id ORDER BY e.id) AS rn
-        FROM events e
-        WHERE e.kind = 'issue.created' AND e.issue_id IS NOT NULL
+        SELECT i.id AS iid, json_extract(e.data, '$.session') AS sid,
+               row_number() OVER (PARTITION BY i.id ORDER BY e.id) AS rn
+        FROM issues i
+        JOIN events e ON e.issue_id = i.id AND e.kind = 'issue.created'
+        WHERE i.session_id IS NULL AND e.created_at >= i.created_at
           AND json_type(e.data, '$.session') = 'integer'
           AND EXISTS (SELECT 1 FROM agent_sessions s WHERE s.id = json_extract(e.data, '$.session')))
     WHERE rn = 1) m
-WHERE issues.id = m.iid AND issues.session_id IS NULL;
+WHERE issues.id = m.iid;
