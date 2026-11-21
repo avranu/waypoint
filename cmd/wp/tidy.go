@@ -633,27 +633,38 @@ func tidyApply(ctx context.Context, dir string, rep *tidyReport, o tidyOpts) {
 				continue
 			}
 			if r.staleLock != "" { // git worktree prune skips a locked one
-				if _, err := unlockStale(ctx, dir, r.Path); err != nil {
+				if _, err := unlockJudged(ctx, dir, r.Path, r.staleLock); err != nil {
 					r.Action = "kept: " + err.Error()
 					continue
 				}
 			}
 			r.Action = "pruned"
 		case r.Kind == "worktree":
+			// The reclaim lock is held from unlocking through a relock.
+			release := func() {}
 			if r.staleLock != "" {
-				// Looks at the lock again: an owner is shown gone only once.
-				if _, err := unlockStale(ctx, dir, r.Path); err != nil {
+				rel, common, err := holdReclaim(ctx, dir)
+				if err == nil {
+					_, err = unlockHeld(ctx, dir, common, r.Path, &r.staleLock)
+				}
+				if err != nil {
+					if rel != nil {
+						rel()
+					}
 					r.Action = "kept: " + err.Error()
 					continue
 				}
+				release = rel
 			}
 			if _, err := g("worktree", "remove", r.Path); err != nil {
 				if r.staleLock != "" {
 					relock(ctx, dir, r.Path, r.staleLock)
 				}
+				release()
 				r.Action = "failed: " + err.Error()
 				continue
 			}
+			release()
 			r.Action = "removed"
 			if r.Branch != "" && r.MergedBy != "" && (o.branches || o.worktreeBranches) {
 				r.Action += ", branch " + deleteBranch(r)

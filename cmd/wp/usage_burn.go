@@ -400,7 +400,7 @@ func (c *cli) currentTranscript(session, cwd string) (string, error) {
 		}
 	}
 	for d := filepath.Clean(cwd); ; d = filepath.Dir(d) {
-		if cs := c.state.Cwds[d]; cs != nil {
+		for _, cs := range c.state.sessionsAt(d) {
 			if p := transcriptOfSession(cs.Session); p != "" {
 				return p, nil
 			}

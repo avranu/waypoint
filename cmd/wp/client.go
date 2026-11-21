@@ -24,6 +24,9 @@ type apiError struct {
 	status       int
 	msg          string
 	method, path string
+	// body and ctype are the answer as it came (body cut at 4 KiB), for a
+	// caller that knows an older server's wording when it isn't {"error":...}.
+	body, ctype string
 }
 
 func (e *apiError) Error() string {
@@ -136,7 +139,8 @@ func (c *cli) send(ctx context.Context, method, path, contentType string, rd io.
 			Error string `json:"error"`
 		}
 		_ = json.Unmarshal(b, &e)
-		return nil, &apiError{status: resp.StatusCode, msg: e.Error, method: method, path: strings.SplitN(path, "?", 2)[0]}
+		return nil, &apiError{status: resp.StatusCode, msg: e.Error, method: method, path: strings.SplitN(path, "?", 2)[0],
+			body: string(b[:min(len(b), 4096)]), ctype: resp.Header.Get("Content-Type")}
 	}
 	return b, nil
 }

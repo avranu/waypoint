@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -157,6 +158,9 @@ type cwdSession struct {
 	// kept have neither, and are held to their age alone.
 	Pid      int    `json:"pid,omitempty"`
 	PidStart string `json:"pid_start,omitempty"`
+	// Cwd is the directory the session started in. State.Cwds is keyed by
+	// session; an entry from before that (Cwd empty) is keyed by its directory.
+	Cwd string `json:"cwd,omitempty"`
 }
 
 // alive says whether the session's harness process still runs (true when
@@ -288,22 +292,67 @@ func (c *cli) addSessionHeaders(req *http.Request) {
 
 // sessionIn is the session a command run in dir belongs to: the one that
 // started in the nearest directory at or above dir that any session started
-// in (within a day), if it is still alive. It never goes on past that
-// directory to an ancestor's session, which is another session's, and when no
-// live session qualifies it is "": the CLI then sends no session header, so
-// the call is recorded with no session rather than another's (WP-1370).
+// in. That directory decides: when no session there can be used (it ended, or
+// its entry is over a day old and its process can't be shown to be the one
+// still running), or two live ones share it so the directory can't say which,
+// the answer is "" and never a farther ancestor's session, which is another
+// session's. The CLI then sends no session header, so the call is recorded
+// with no session rather than another's (WP-1370).
 func (s *State) sessionIn(dir string) string {
 	for d := filepath.Clean(dir); ; d = filepath.Dir(d) {
-		if cs := s.Cwds[d]; cs != nil && time.Since(cs.At) < 24*time.Hour {
-			if cs.alive() {
-				return cs.Session
+		if here := s.sessionsAt(d); len(here) > 0 {
+			var usable []*cwdSession
+			for _, cs := range here {
+				if cs.usable() {
+					usable = append(usable, cs)
+				}
 			}
-			return "" // the nearest one is gone: its ancestors' are others'
+			if len(usable) == 1 {
+				return usable[0].Session
+			}
+			return ""
 		}
 		if p := filepath.Dir(d); p == d {
 			return ""
 		}
 	}
+}
+
+// sessionsAt are the entries of sessions that started in dir, newest first.
+func (s *State) sessionsAt(dir string) []*cwdSession {
+	var out []*cwdSession
+	for k, cs := range s.Cwds {
+		if cs != nil && cs.dir(k) == dir {
+			out = append(out, cs)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].At.After(out[j].At) })
+	return out
+}
+
+// dir is the directory the entry started in; key is its key in State.Cwds.
+func (cs *cwdSession) dir(key string) string {
+	if cs.Cwd != "" {
+		return filepath.Clean(cs.Cwd)
+	}
+	return filepath.Clean(key) // an entry from before sessions were the key
+}
+
+// provablyAlive: the entry names the harness process and it is still running
+// with the start time recorded (so not a reused pid).
+func (cs *cwdSession) provablyAlive() bool {
+	return cs.Pid != 0 && cs.PidStart != "" && procStart(cs.Pid) == cs.PidStart
+}
+
+// usable says whether a command may be bound to the entry's session: its
+// process is shown running, however long ago it started (a session can run for
+// days and At is written only at its start); an entry that can't be shown
+// alive or gone is used only within a day of its start.
+func (cs *cwdSession) usable() bool {
+	if cs.provablyAlive() {
+		return true
+	}
+	return time.Since(cs.At) < 24*time.Hour && cs.alive()
 }
 
 // gitInfo is the repo (owner/name), branch and worktree flag of the git
@@ -706,16 +755,26 @@ func rememberSession(c *cli, in hookEventInput) {
 			if s.Cwds == nil {
 				s.Cwds = map[string]*cwdSession{}
 			}
-			cs := &cwdSession{Session: in.SessionID, Machine: machineName(), At: time.Now()}
+			// Entries are keyed by session, so one starting in a directory
+			// doesn't take another's there. Those from before are keyed by
+			// directory: moved under their session.
+			for k, old := range s.Cwds {
+				if old != nil && old.Cwd == "" && old.Session != "" {
+					old.Cwd = filepath.Clean(k)
+					delete(s.Cwds, k)
+					s.Cwds[old.Session] = old
+				}
+			}
+			cs := &cwdSession{Session: in.SessionID, Machine: machineName(), At: time.Now(), Cwd: filepath.Clean(in.Cwd)}
 			if pid := harnessPid(); pid > 1 {
 				if start := procStart(pid); start != "" {
 					cs.Pid, cs.PidStart = pid, start
 				}
 			}
-			s.Cwds[filepath.Clean(in.Cwd)] = cs
-			for d, cs := range s.Cwds { // forget old ones
-				if time.Since(cs.At) > 7*24*time.Hour {
-					delete(s.Cwds, d)
+			s.Cwds[in.SessionID] = cs
+			for k, cs := range s.Cwds { // forget old ones, but not a session still running
+				if time.Since(cs.At) > 7*24*time.Hour && !cs.provablyAlive() {
+					delete(s.Cwds, k)
 				}
 			}
 		})
