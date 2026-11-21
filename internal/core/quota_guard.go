@@ -788,18 +788,18 @@ func (s *Service) sessionOwners(ctx context.Context, uid int64, machine, cliID s
 		return nil, 0, err
 	}
 	line := ownerLine{{at: math.MinInt64, auto: started > 0}}
-	rows, err := s.db.R.QueryContext(ctx, `SELECT detail, created_at FROM session_events WHERE session_id = ? AND kind = 'prompt' AND created_at < ? ORDER BY created_at, id`, sid, before)
+	rows, err := s.db.R.QueryContext(ctx, `SELECT detail, typed_kind, created_at FROM session_events WHERE session_id = ? AND kind = 'prompt' AND created_at < ? ORDER BY created_at, id`, sid, before)
 	if err != nil {
 		return nil, 0, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var detail string
+		var detail, typed string
 		var at int64
-		if err := rows.Scan(&detail, &at); err != nil {
+		if err := rows.Scan(&detail, &typed, &at); err != nil {
 			return nil, 0, err
 		}
-		auto, ok := promptOwner(detail)
+		auto, ok := promptOwner(detail, typed)
 		if !ok || auto == line[len(line)-1].auto {
 			continue
 		}
@@ -808,14 +808,14 @@ func (s *Service) sessionOwners(ctx context.Context, uid int64, machine, cliID s
 	return line, sid, rows.Err()
 }
 
-// promptOwner says whether a prompt is automation's (auto) or a person's;
-// ok false when it keeps whoever came before it.
-func promptOwner(prompt string) (auto, ok bool) {
-	p := unwrapPaste(prompt)
+// promptOwner says whether a prompt event is automation's (auto) or a
+// person's; ok false when it keeps whoever came before it. Who typed it is
+// what its hook recognised (typed, recogniseTyped), not how it reads.
+func promptOwner(detail, typed string) (auto, ok bool) {
 	switch {
-	case strings.HasPrefix(p, AutopilotPromptMark):
+	case typedAuto(typed):
 		return true, true
-	case isHarnessPrompt(p), isKeepWarmPing(p), p == "/compact", strings.HasPrefix(p, "/compact "):
+	case typed != "", isHarnessPrompt(detail):
 		return false, false
 	}
 	return false, true

@@ -69,18 +69,19 @@ func (s *Service) promptedAfterDone(ctx context.Context, q queryer, sessionID, r
 // promptedSince: a person prompted the session after since (0: ever), as
 // promptedAfterDone counts them.
 func (s *Service) promptedSince(ctx context.Context, q queryer, sessionID, since int64) (bool, error) {
-	rows, err := q.QueryContext(ctx, `SELECT detail FROM session_events WHERE session_id = ? AND kind = 'prompt' AND created_at > ?`, sessionID, since)
+	rows, err := q.QueryContext(ctx, `SELECT detail, typed_kind FROM session_events WHERE session_id = ? AND kind = 'prompt' AND created_at > ?`, sessionID, since)
 	if err != nil {
 		return false, err
 	}
-	var prompts []string
+	type prompt struct{ text, typed string }
+	var prompts []prompt
 	for rows.Next() {
-		var d string
-		if err := rows.Scan(&d); err != nil {
+		var d, typed string
+		if err := rows.Scan(&d, &typed); err != nil {
 			_ = rows.Close()
 			return false, err
 		}
-		prompts = append(prompts, d)
+		prompts = append(prompts, prompt{d, typed})
 	}
 	_ = rows.Close()
 	if err := rows.Err(); err != nil || len(prompts) == 0 {
@@ -103,9 +104,9 @@ func (s *Service) promptedSince(ctx context.Context, q queryer, sessionID, since
 	if err := mrows.Err(); err != nil {
 		return false, err
 	}
-	for _, p := range prompts {
-		p = strings.TrimSpace(strings.TrimSuffix(p, "…"))
-		own := isOwnPrompt(p) // autopilot's pasted prompt (WP-ADR9), or a background task's report
+	for _, pr := range prompts {
+		p := strings.TrimSpace(strings.TrimSuffix(pr.text, "…"))
+		own := ownPrompt(p, pr.typed) // autopilot's typed prompt (WP-ADR9), or a background task's report
 		for _, b := range bodies {
 			if strings.HasPrefix(b, p) {
 				own = true

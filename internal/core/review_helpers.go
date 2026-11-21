@@ -437,10 +437,10 @@ func (s *Service) helperContext(ctx context.Context, review *roundRow, roundCont
 }
 
 // personPrompts are a session's prompts after since that a person wrote
-// (not autopilot's or Claude Code's own, isOwnPrompt), oldest first, the
+// (not autopilot's or Claude Code's own, ownPrompt), oldest first, the
 // newest kept when they run past helperPromptsMax.
 func (s *Service) personPrompts(ctx context.Context, sessionID, since int64) string {
-	rows, err := s.db.R.QueryContext(ctx, `SELECT detail FROM session_events WHERE session_id = ? AND kind = 'prompt' AND created_at >= ? ORDER BY created_at DESC, id DESC`, sessionID, since)
+	rows, err := s.db.R.QueryContext(ctx, `SELECT detail, typed_kind FROM session_events WHERE session_id = ? AND kind = 'prompt' AND created_at >= ? ORDER BY created_at DESC, id DESC`, sessionID, since)
 	if err != nil {
 		return ""
 	}
@@ -448,8 +448,8 @@ func (s *Service) personPrompts(ctx context.Context, sessionID, since int64) str
 	var list []string
 	size := 0
 	for rows.Next() {
-		var d string
-		if rows.Scan(&d) != nil || isOwnPrompt(d) || strings.TrimSpace(d) == "" {
+		var d, typed string
+		if rows.Scan(&d, &typed) != nil || ownPrompt(d, typed) || strings.TrimSpace(d) == "" {
 			continue
 		}
 		item := "- " + driftEscape(clipText(strings.TrimSpace(d), 3000)) + "\n"

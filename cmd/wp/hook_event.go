@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"git.jmann.me/claude/waypoint/internal/core"
 )
 
 // The session hooks (WP-D16): Claude Code runs `wp hook claude-event` for
@@ -62,6 +64,10 @@ type hookEventInput struct {
 // sessionEvent is core.HookEvent as the CLI sends it (the CLI doesn't link
 // the server's packages).
 type sessionEvent struct {
+	// PromptSum: UserPromptSubmit: the digest of the whole prompt (core.PromptSum),
+	// sent whatever --no-prompts withholds of its text, for the server to
+	// tell what Waypoint typed from what a person did (WP-1370).
+	PromptSum        string          `json:"prompt_sum,omitempty"`
 	Event            string          `json:"event"`
 	At               int64           `json:"at,omitempty"`
 	SessionID        string          `json:"session_id"`
@@ -472,6 +478,7 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 		// Waypoint's own prompts (a keep-warm ping, a bare /compact) still
 		// reach the core under --no-prompts, so it can tell them from typing.
 		p := strings.TrimSpace(in.Prompt)
+		ev.PromptSum = core.PromptSum(in.Prompt)
 		if slash != "" {
 			ev.Prompt = strings.TrimSpace("/wp " + slash + " " + slashArg) // nothing else typed after it rides along
 			if slash == "keep" && strings.EqualFold(p, "/keep") {

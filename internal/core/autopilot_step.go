@@ -105,7 +105,7 @@ var HarnessPromptMarks = []string{"<task-notification>", "Another Claude session
 
 // isHarnessPrompt: the prompt is one of those.
 func isHarnessPrompt(prompt string) bool {
-	p := strings.TrimSpace(prompt)
+	p := NormalisePrompt(prompt)
 	for _, mark := range HarnessPromptMarks {
 		if strings.HasPrefix(p, mark) {
 			return true
@@ -117,51 +117,29 @@ func isHarnessPrompt(prompt string) bool {
 // promptedAfterStop is when the timeline's last prompt after since that
 // isn't autopilot's or Claude Code's own came (0: none).
 func (s *Service) promptedAfterStop(ctx context.Context, sessionID, since int64) (int64, error) {
-	rows, err := s.db.R.QueryContext(ctx, `SELECT detail, created_at FROM session_events WHERE session_id = ? AND kind = 'prompt' AND created_at > ?`, sessionID, since)
+	rows, err := s.db.R.QueryContext(ctx, `SELECT detail, typed_kind, created_at FROM session_events WHERE session_id = ? AND kind = 'prompt' AND created_at > ?`, sessionID, since)
 	if err != nil {
 		return 0, err
 	}
 	defer func() { _ = rows.Close() }()
 	var last int64
 	for rows.Next() {
-		var detail string
+		var detail, typed string
 		var at int64
-		if err := rows.Scan(&detail, &at); err != nil {
+		if err := rows.Scan(&detail, &typed, &at); err != nil {
 			return 0, err
 		}
-		if !isOwnPrompt(detail) {
+		if !ownPrompt(detail, typed) {
 			last = max(last, at)
 		}
 	}
 	return last, rows.Err()
 }
 
-// isOwnPrompt: Waypoint or Claude Code submitted the prompt, not a person.
-func isOwnPrompt(prompt string) bool {
-	return strings.HasPrefix(unwrapPaste(prompt), AutopilotPromptMark) || isHarnessPrompt(prompt)
-}
-
-// unwrapPaste is the prompt as Waypoint typed it, without what the harness
-// put round it: the bracketed-paste markers a terminal adds (ESC[200~ and
-// ESC[201~), the <pasted_content> wrapper Claude Code puts round text pasted
-// into its input (WP-1416), the blanks round it, and a "/compact" that
-// leads Waypoint's own text (the runner compacts and types in one go). A
-// "/compact" with words of a person's own after it is left as it came.
-func unwrapPaste(prompt string) string {
-	p := strings.NewReplacer("\x1b[200~", "", "\x1b[201~", "").Replace(prompt)
-	p = strings.TrimSpace(p)
-	if rest, ok := strings.CutPrefix(p, "/compact"); ok && rest != "" && (rest[0] == ' ' || rest[0] == '\n' || rest[0] == '\t') {
-		if r := strings.TrimSpace(rest); strings.HasPrefix(r, AutopilotPromptMark) || strings.HasPrefix(r, AutopilotReviewMark) || strings.HasPrefix(r, "<pasted_content") || strings.HasPrefix(r, "\x1b[200~") {
-			p = unwrapPaste(r)
-		}
-	}
-	if strings.HasPrefix(p, "<pasted_content") {
-		if i := strings.Index(p, ">"); i > 0 {
-			p = strings.TrimSpace(p[i+1:])
-		}
-	}
-	return p
-}
+// ownPrompt: Waypoint or Claude Code submitted a prompt event, not a person:
+// Waypoint typed it (typed, the kind its hook recognised: recogniseTyped), or
+// the harness did (a background task or another session reporting back).
+func ownPrompt(detail, typed string) bool { return typed != "" || isHarnessPrompt(detail) }
 
 // JobAutopilot is a runner job that restarts an idle Claude Code session in
 // its tmux pane, in a worktree of its own, and gives the new one its task
@@ -605,20 +583,20 @@ func autopilotOwns(ctx context.Context, q queryer, sessionID int64) (bool, error
 // autopilotStartedUntouched: autopilot's prompt started the session, and
 // nothing a person typed came after it.
 func autopilotStartedUntouched(ctx context.Context, q queryer, sessionID int64) (bool, error) {
-	rows, err := q.QueryContext(ctx, `SELECT detail FROM session_events WHERE session_id = ? AND kind = 'prompt' ORDER BY created_at DESC, id DESC`, sessionID)
+	rows, err := q.QueryContext(ctx, `SELECT detail, typed_kind FROM session_events WHERE session_id = ? AND kind = 'prompt' ORDER BY created_at DESC, id DESC`, sessionID)
 	if err != nil {
 		return false, err
 	}
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
-		var detail string
-		if err := rows.Scan(&detail); err != nil {
+		var detail, typed string
+		if err := rows.Scan(&detail, &typed); err != nil {
 			return false, err
 		}
-		if strings.HasPrefix(unwrapPaste(detail), AutopilotPromptMark) {
+		if typedAuto(typed) {
 			return true, nil
 		}
-		if !isOwnPrompt(detail) {
+		if !ownPrompt(detail, typed) {
 			return false, nil
 		}
 	}
@@ -1067,7 +1045,8 @@ func (s *Service) AutopilotStepWanted(ctx context.Context, a *Actor, id, job int
 // a job about to clear the session for its next task stands down, as the
 // session is busy again; the next Stop decides afresh.
 func (s *Service) autopilotOnPrompt(ctx context.Context, t *tx, x *AgentSession, ev *HookEvent) error {
-	if p := unwrapPaste(ev.Prompt); strings.HasPrefix(p, AutopilotReviewMark) || s.sentReviewPrompt(ctx, t, x.ID, p) {
+	switch {
+	case ev.typed == TypedReview:
 		// The adversarial review's prompt went in: its round runs.
 		var review sql.NullInt64
 		if err := t.QueryRowContext(ctx, `SELECT review_id FROM autopilot_steps WHERE session_id = ? AND state IN (?, ?, ?)`, x.ID, StepDue, StepWaiting, StepStarting).
@@ -1076,9 +1055,9 @@ func (s *Service) autopilotOnPrompt(ctx context.Context, t *tx, x *AgentSession,
 		}
 		_, err := s.startRound(ctx, t, review.Int64, s.hookTime(ev))
 		return err
-	} else if strings.HasPrefix(p, AutopilotPromptMark) {
-		return nil
-	} else if isHarnessPrompt(p) {
+	case ev.typed != "":
+		return nil // autopilot's own kickoff, or a message Waypoint typed
+	case isHarnessPrompt(ev.Prompt):
 		var review sql.NullInt64
 		err := t.QueryRowContext(ctx, `SELECT review_id FROM autopilot_steps WHERE session_id = ? AND state = ?`, x.ID, StepStarting).Scan(&review)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1110,31 +1089,6 @@ func (s *Service) autopilotOnPrompt(ctx context.Context, t *tx, x *AgentSession,
 // squeezeSpace folds every run of whitespace to one space, so a prompt the
 // harness reflowed or wrapped still reads as the text that was sent.
 func squeezeSpace(s string) string { return strings.Join(strings.Fields(s), " ") }
-
-// sentHeadLen is how much of the review prompt a step keeps to know it by.
-const sentHeadLen = 300
-
-// sentHead is the part of the review prompt a step keeps to know it by.
-func sentHead(prompt string) string {
-	h := squeezeSpace(prompt)
-	if len(h) > sentHeadLen {
-		h = strings.ToValidUTF8(h[:sentHeadLen], "")
-	}
-	return h
-}
-
-// sentReviewPrompt: whether the prompt the hook reports is the review prompt
-// Waypoint typed for the session's step, as the harness may have wrapped it
-// (unwrapPaste: a pasted-content wrapper, bracketed-paste markers, a leading
-// /compact). Identity, not timing (WP-1416): a person's own prompt is not,
-// even one that quotes it (the text has to start the prompt).
-func (s *Service) sentReviewPrompt(ctx context.Context, t *tx, sessionID int64, prompt string) bool {
-	var sent string
-	if err := t.QueryRowContext(ctx, `SELECT sent FROM autopilot_steps WHERE session_id = ? AND state IN (?, ?, ?) AND sent != ''`, sessionID, StepDue, StepWaiting, StepStarting).Scan(&sent); err != nil {
-		return false
-	}
-	return strings.HasPrefix(squeezeSpace(unwrapPaste(prompt)), sent)
-}
 
 // reviewWaitsForPerson: a person's prompt while the session's adversarial
 // review is still to come doesn't skip the review; it only mustn't interrupt
@@ -1279,6 +1233,7 @@ func (s *Service) RunAutopilot(ctx context.Context) {
 	}
 	s.unstickSteps(ctx)
 	s.expireChecks(ctx)
+	s.sweepTypedPrompts(ctx)
 	s.sweepAutopilot(ctx)
 }
 
@@ -1410,7 +1365,7 @@ func (s *Service) cutStuckJob(ctx context.Context, step, userID, queuedAt int64,
 			return
 		}
 		if tries+1 < reviewJobTries {
-			n, err := s.writeRows(ctx, `UPDATE autopilot_steps SET state = ?, reason = '', detail = ?, due_at = ?, job_id = NULL, sent = '', attempts = attempts + 1, updated_at = ? WHERE id = ? AND state = ? AND job_id = ?`,
+			n, err := s.writeRows(ctx, `UPDATE autopilot_steps SET state = ?, reason = '', detail = ?, due_at = ?, job_id = NULL, attempts = attempts + 1, updated_at = ? WHERE id = ? AND state = ? AND job_id = ?`,
 				StepDue, excerpt(fmt.Sprintf("asking again for the review job (cut: %s)", why), 300), now, now, step, StepStarting, job.ID)
 			if err != nil {
 				s.log.WarnContext(ctx, "ask again for a cut review job", "step", step, "job", job.ID, "err", err)
@@ -2017,8 +1972,8 @@ func (s *Service) startReviewJob(ctx context.Context, st *stepRow, x *AgentSessi
 	if compacted {
 		detail = "starting the adversarial review of " + review.key
 	}
-	n, err = s.writeRows(ctx, `UPDATE autopilot_steps SET state = ?, reason = '', detail = ?, next_issue = NULL, job_id = ?, sent = ?, updated_at = ? WHERE id = ? AND state = ?`,
-		StepStarting, detail, job.ID, sentHead(text), now, st.id, StepStarting)
+	n, err = s.writeRows(ctx, `UPDATE autopilot_steps SET state = ?, reason = '', detail = ?, next_issue = NULL, job_id = ?, updated_at = ? WHERE id = ? AND state = ?`,
+		StepStarting, detail, job.ID, now, st.id, StepStarting)
 	if err != nil {
 		return err
 	}

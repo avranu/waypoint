@@ -397,6 +397,7 @@ var routePermissions = map[string]core.Permission{
 	"POST /api/v1/runner/register":                  core.PermRunnersHost,
 	"POST /api/v1/runner/poll":                      core.PermRunnersHost,
 	"GET /api/v1/autopilot/steps/{id}/wanted":       core.PermRunnersHost,
+	"POST /api/v1/autopilot/steps/{id}/typed":       core.PermRunnersHost,
 	"POST /api/v1/runner/jobs/{id}/log":             core.PermRunnersHost,
 	"POST /api/v1/runner/jobs/{id}/finish":          core.PermRunnersHost,
 	"POST /api/v1/runner/jobs/{id}/cancel":          core.PermRunnersHost,

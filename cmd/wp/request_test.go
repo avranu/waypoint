@@ -159,12 +159,14 @@ func TestSessionHooksEndToEnd(t *testing.T) {
 	if x = s.sessions()[0]; strings.Contains(x.LastPrompt, "secret") {
 		t.Fatal("--no-prompts sent the prompt")
 	}
-	// Waypoint's own prompts still reach the core under --no-prompts, so a
-	// keep-warm ping stays quiet; a typed /compact with arguments does not.
-	before := s.sessions()[0].LastPrompt
-	s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": keepWarmMark + ": still here"}), "--no-prompts")
-	if x = s.sessions()[0]; x.LastPrompt != before {
-		t.Fatalf("a keep-warm ping under --no-prompts counted as typed: %q", x.LastPrompt)
+	// Under --no-prompts a keep-warm-looking prompt reaches the core as its
+	// mark alone, with the digest of the whole text (WP-1370): nothing the
+	// person wrote rides along. With no record of Waypoint typing it, it is
+	// the person's; the quiet ping with a record is core's test
+	// (TestKeepWarmPingsASessionWaitingOnWork).
+	s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": keepWarmMark + ": still here, and secret"}), "--no-prompts")
+	if x = s.sessions()[0]; x.LastPrompt != keepWarmMark || strings.Contains(x.LastPrompt, "secret") {
+		t.Fatalf("a keep-warm-looking prompt under --no-prompts: %q", x.LastPrompt)
 	}
 	// So does a background task reporting back, as its mark alone: an empty
 	// prompt would read as a person's (WP-700).

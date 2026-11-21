@@ -1,10 +1,9 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"strings"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core"
 )
 
 // Autopilot's prompt is worded by people (WP-308), so it needn't start with
@@ -25,12 +24,9 @@ type pastedPrompt struct {
 // session never sent it).
 const pastedKeep = time.Hour
 
-// promptSum digests a prompt's words, so whitespace the terminal changed
-// in the paste doesn't matter.
-func promptSum(p string) string {
-	h := sha256.Sum256([]byte(strings.Join(strings.Fields(p), " ")))
-	return hex.EncodeToString(h[:])
-}
+// promptSum digests a prompt's words (core.PromptSum, the server's own), so
+// whitespace the terminal changed in the paste doesn't matter.
+func promptSum(p string) string { return core.PromptSum(p) }
 
 // notePastedPrompt records that autopilot is about to paste prompt, for
 // task key, into session.

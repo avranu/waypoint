@@ -370,6 +370,11 @@ func (p *runnerProc) promptSession(ctx context.Context, run *jobRun, in autopilo
 	// The session's hook knows this prompt for autopilot's own, whatever its
 	// wording (WP-308), so it never counts as the person's.
 	p.c.notePastedPrompt(newID, in.Key, prompt)
+	// The server recognises it by this note, made before it is typed
+	// (WP-1370): nothing is typed that Waypoint can't tell for its own.
+	if err := p.noteTyped(ctx, in.Step, run.id, newID, prompt); err != nil {
+		return cleared("its prompt couldn't be recorded with Waypoint, so it wasn't typed: %v", err)
+	}
 	buf := fmt.Sprintf("wp-autopilot-%d", run.id) // one per job: two jobs never paste each other's
 	if _, err := runTmux(ctx, socket, []byte(prompt), "load-buffer", "-b", buf, "-"); err != nil {
 		return cleared("its prompt couldn't be loaded: %v", err)
@@ -639,6 +644,18 @@ func (p *runnerProc) stepWanted(ctx context.Context, step, job int64) bool {
 		return true
 	}
 	return r.Wanted
+}
+
+// noteTyped tells Waypoint the prompt this job made and is about to type
+// into session cliID (POST .../typed), which the server can't know: wp
+// next's answer is part of it. No step or no server (a bare cli) has none to
+// tell.
+func (p *runnerProc) noteTyped(ctx context.Context, step, job int64, cliID, prompt string) error {
+	if step == 0 || p.c.server() == "" {
+		return nil
+	}
+	return p.c.callInto(ctx, "POST", fmt.Sprintf("/api/v1/autopilot/steps/%d/typed?job=%d", step, job),
+		map[string]string{"cli_id": cliID, "text": prompt}, nil)
 }
 
 // autopilotEnv is the environment wp next runs with: the new session's,

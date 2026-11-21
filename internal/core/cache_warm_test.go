@@ -109,6 +109,18 @@ func (be *bsEnv) hookEv(ev HookEvent) *HookResult {
 	return res
 }
 
+// typed is Waypoint typing text into the session (a record), then the hook
+// for it arriving as a prompt.
+func (be *bsEnv) typed(kind, text string) *HookResult {
+	be.t.Helper()
+	if err := be.s.write(be.ctx, be.admin, func(t *tx) error {
+		return recordTyped(be.ctx, t, be.agent.Session, kind, text, be.clockNow().UnixMilli(), typedTTL)
+	}); err != nil {
+		be.t.Fatal(err)
+	}
+	return be.hookEv(HookEvent{Event: "UserPromptSubmit", Prompt: text})
+}
+
 func (be *bsEnv) stop(p *HookPending, ttl, msg string) *HookResult {
 	return be.hookEv(HookEvent{Event: "Stop", Pending: p, CacheTTL: ttl, LastMessage: msg, ContextTokens: 50_000})
 }
@@ -191,7 +203,7 @@ func TestKeepWarmPingsASessionWaitingOnWork(t *testing.T) {
 
 	// The ping's turn leaves the session as it was.
 	prompts := len(be.timeline("prompt"))
-	be.hookEv(HookEvent{Event: "UserPromptSubmit", Prompt: keepWarmBody})
+	be.typed(TypedKeepWarm, keepWarmBody)
 	if x := be.session(); x.LastPrompt == keepWarmBody || x.Pending != "a background task" {
 		t.Fatalf("the ping's prompt changed the session: %q %q", x.LastPrompt, x.Pending)
 	}
@@ -213,7 +225,7 @@ func TestKeepWarmPingsASessionWaitingOnWork(t *testing.T) {
 	if x := be.session(); x.Cache.Decision != "compacting" || x.Cache.Note != "waiting on a background task; compacted instead of a second ping" {
 		t.Fatalf("cache = %+v", x.Cache)
 	}
-	be.hookEv(HookEvent{Event: "UserPromptSubmit", Prompt: "/compact"})
+	be.typed(TypedCompact, "/compact")
 	be.hookEv(HookEvent{Event: "SessionStart", Source: "compact"})
 	be.warmSweep(55 * time.Minute)
 	if jobs := be.warmJobs(); len(jobs) != 2 {
@@ -238,7 +250,7 @@ func TestKeepWarmAutopilotSession(t *testing.T) {
 	be := newBabysitEnv(t)
 	be.runner(be.admin, "m1", nil)
 	// Autopilot's task finished, its person on the web.
-	be.hookEv(HookEvent{Event: "UserPromptSubmit", Prompt: AutopilotPromptMark + " started this session for WP-1"})
+	be.typed(TypedKickoff, AutopilotPromptMark+" started this session for WP-1")
 	if _, err := be.s.db.W.Exec(`INSERT INTO sessions(token_hash, user_id, created_at, last_seen_at, expires_at, user_agent, ip, reauth_at) VALUES ('h', ?, ?, ?, ?, '', '', 0)`,
 		be.admin.id(), be.clockNow().UnixMilli(), be.clockNow().Add(time.Hour).UnixMilli(), be.clockNow().Add(2*time.Hour).UnixMilli()); err != nil {
 		t.Fatal(err)
@@ -251,7 +263,7 @@ func TestKeepWarmAutopilotSession(t *testing.T) {
 
 	// Its own background task, at 60k: compacted, where a person's session
 	// would be pinged.
-	be.hookEv(HookEvent{Event: "UserPromptSubmit", Prompt: AutopilotPromptMark + " review of WP-1"})
+	be.typed(TypedKickoff, AutopilotPromptMark+" review of WP-1")
 	running := &HookPending{Tasks: []PendingTask{{Type: "shell", Status: "running"}}}
 	be.hookEv(HookEvent{Event: "Stop", Pending: running, CacheTTL: "1h", LastMessage: "Started the build.", ContextTokens: 60_000})
 	be.warmSweep(55 * time.Minute)
@@ -269,7 +281,7 @@ func TestKeepWarmAutopilotSession(t *testing.T) {
 
 	// Autopilot takes it again; its person keeps it: no turn, but theirs.
 	be.setClock(be.clockNow().Add(time.Minute))
-	be.hookEv(HookEvent{Event: "UserPromptSubmit", Prompt: AutopilotPromptMark + " started this session for WP-2"})
+	be.typed(TypedKickoff, AutopilotPromptMark+" started this session for WP-2")
 	if !be.s.unattendedSession(be.ctx, be.agent.Session) {
 		t.Fatal("not autopilot's after its prompt")
 	}
@@ -308,7 +320,7 @@ func TestFinishedSessionCoolsUnlessItsPersonIsWorkingWithIt(t *testing.T) {
 	be := newBabysitEnv(t)
 	be.runner(be.admin, "m1", nil)
 	// Autopilot's prompt: not the person's.
-	be.hookEv(HookEvent{Event: "UserPromptSubmit", Prompt: AutopilotPromptMark + ": next task"})
+	be.typed(TypedKickoff, AutopilotPromptMark+": next task")
 	be.stop(&HookPending{}, "1h", "Done.")
 	be.warmSweep(55 * time.Minute)
 	if x := be.session(); len(be.warmJobs()) != 0 || x.Cache.Decision != "cool" || x.Cache.Note != "autopilot runs it, and no work of its own is running" {
@@ -338,7 +350,7 @@ func TestFinishedSessionCoolsUnlessItsPersonIsWorkingWithIt(t *testing.T) {
 		t.Fatalf("person on the web: %+v", x.Cache)
 	}
 	// The ping's stop doesn't finish it again.
-	be.hookEv(HookEvent{Event: "UserPromptSubmit", Prompt: keepWarmBody})
+	be.typed(TypedKeepWarm, keepWarmBody)
 	be.stop(&HookPending{}, "1h", "ok")
 	if n := len(be.timeline("finished")); n != finished+2 {
 		t.Errorf("finished entries %d, want %d: the ping finished it again", n, finished+2)
@@ -382,7 +394,7 @@ func TestCompactBeforeCooling(t *testing.T) {
 		t.Fatalf("cache = %+v", x.Cache)
 	}
 	// Claude Code compacts and starts again from the summary.
-	be.hookEv(HookEvent{Event: "UserPromptSubmit", Prompt: "/compact"})
+	be.typed(TypedCompact, "/compact")
 	if res := be.hookEv(HookEvent{Event: "SessionStart", Source: "compact"}); res.Text != "" {
 		t.Errorf("the compaction's start said %q", res.Text)
 	}
@@ -509,7 +521,7 @@ func TestKeepWarmCompactsInsteadWhenItsPersonAsks(t *testing.T) {
 	if x := be.session(); x.Cache.Decision != "compacting" || !strings.Contains(x.Cache.Note, "as its person asks") {
 		t.Fatalf("cache = %+v", x.Cache)
 	}
-	be.hookEv(HookEvent{Event: "UserPromptSubmit", Prompt: "/compact"})
+	be.typed(TypedCompact, "/compact")
 	be.hookEv(HookEvent{Event: "Stop", Pending: running, CacheTTL: "1h", LastMessage: "", ContextTokens: 8_000})
 	be.hookEv(HookEvent{Event: "SessionStart", Source: "compact"})
 	for range 3 {

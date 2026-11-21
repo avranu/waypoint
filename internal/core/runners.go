@@ -907,6 +907,10 @@ func (s *Service) claimRunnerJob(ctx context.Context, actor *Actor, r *Runner, l
 				return err
 			}
 			c.Input = json.RawMessage(input)
+			// What the runner will type goes on record in this write (WP-1370).
+			if err := s.recordHandedOver(ctx, t, c.Kind, c.Input, source, c.Timeout, r.Owner.ID); err != nil {
+				return err
+			}
 			if source == autopilotReviewSource || source == auditSource {
 				s.log.InfoContext(ctx, "runner claimed a review job", "job", c.ID, "kind", c.Kind, "source", source, "source_id", sid, "runner", r.Name)
 			}

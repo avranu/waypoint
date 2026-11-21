@@ -270,7 +270,7 @@ func TestWorkLogReviewEnds(t *testing.T) {
 		a.stopWith("Shipped.")
 		id := a.step().reviewID.Int64
 		a.tick(61 * time.Second)
-		a.prompt(AutopilotReviewMark + first.Key + ": " + DefaultReviewPrompt)
+		a.reviewPrompt(AutopilotReviewMark + first.Key + ": " + DefaultReviewPrompt)
 		a.prompt("Stop, I'll take it from here")
 		if r := a.round(id); r.state != RoundRunning {
 			t.Fatalf("a person's prompt took the round: %+v", r)
@@ -325,7 +325,7 @@ func TestWorkLogReviewEnds(t *testing.T) {
 		a.stopWith("Shipped.")
 		id := a.step().reviewID.Int64
 		a.tick(61 * time.Second)
-		a.prompt(AutopilotReviewMark + first.Key + ": " + DefaultReviewPrompt)
+		a.reviewPrompt(AutopilotReviewMark + first.Key + ": " + DefaultReviewPrompt)
 		if _, err := a.s.db.W.Exec(`UPDATE agent_sessions SET ended_at = ? WHERE id = ?`, a.clockNow().UnixMilli(), a.session); err != nil {
 			t.Fatal(err)
 		}
@@ -492,7 +492,7 @@ func TestWorkLogOneRoundPerTask(t *testing.T) {
 		a.stopWith("Shipped as #7.")
 		id := a.step().reviewID.Int64
 		a.tick(61 * time.Second)
-		a.prompt(AutopilotReviewMark + first.Key + ": " + DefaultReviewPrompt)
+		a.reviewPrompt(AutopilotReviewMark + first.Key + ": " + DefaultReviewPrompt)
 		a.jobDone(1, AutopilotJobResult{Outcome: "reviewing"})
 		if r := a.round(id); r.state != RoundRunning {
 			t.Fatalf("round = %+v", r)
@@ -661,7 +661,7 @@ func TestWorkLogOneRoundPerTask(t *testing.T) {
 			}
 			id = st.reviewID.Int64
 			a.tick(61 * time.Second)
-			a.prompt(AutopilotReviewMark + first.Key + ": " + DefaultReviewPrompt)
+			a.reviewPrompt(AutopilotReviewMark + first.Key + ": " + DefaultReviewPrompt)
 			if r := a.round(id); r.state != RoundRunning {
 				t.Fatalf("interrupt %d: the new round = %+v", n, r)
 			}
@@ -771,7 +771,7 @@ func TestHarnessPromptLeavesTheReviewJob(t *testing.T) {
 		if !wanted(a) {
 			t.Fatal("the compaction's Stop dropped the job")
 		}
-		a.prompt(AutopilotReviewMark + first.Key + ": " + DefaultReviewPrompt)
+		a.reviewPrompt(AutopilotReviewMark + first.Key + ": " + DefaultReviewPrompt)
 		a.jobDone(1, AutopilotJobResult{Outcome: "reviewing"})
 		a.stopWith("Review: nothing found.")
 		if r := a.round(id); r.state != RoundDone || !strings.Contains(r.body, "nothing found") {
@@ -781,7 +781,7 @@ func TestHarnessPromptLeavesTheReviewJob(t *testing.T) {
 
 	t.Run("after the review prompt went in", func(t *testing.T) {
 		a, first, id := start(t)
-		a.prompt(AutopilotReviewMark + first.Key + ": " + DefaultReviewPrompt)
+		a.reviewPrompt(AutopilotReviewMark + first.Key + ": " + DefaultReviewPrompt)
 		a.prompt(note)
 		if r := a.round(id); r.state != RoundRunning || a.step().state != StepStarting {
 			t.Fatalf("round = %+v, step %+v", r, a.step())
@@ -825,7 +825,7 @@ func reviewComesAfterPerson(a *apEnv, key string, id int64) {
 	if json.Unmarshal(a.jobs[len(a.jobs)-1].Input, &in) != nil || in.ReviewOf != key {
 		a.t.Fatalf("job = %+v", in)
 	}
-	a.prompt(AutopilotReviewMark + key + ": " + DefaultReviewPrompt)
+	a.reviewPrompt(AutopilotReviewMark + key + ": " + DefaultReviewPrompt)
 	a.jobDone(len(a.jobs), AutopilotJobResult{Outcome: "reviewing"})
 	a.stopWith("Review: nothing found.")
 	if r := a.round(id); r.state != RoundDone {
