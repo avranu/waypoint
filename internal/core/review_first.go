@@ -678,8 +678,7 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 		// held to what any round is (reviewAgain): the session reports
 		// what the review found, its marks are checked against the code,
 		// and the findings are scored and may call for another round.
-		// Until WP-1320's audit it stood for the round on the session's
-		// word and the round was recorded as skipped. Not when the rules
+		// Not when the rules
 		// skip the change anyway, when the round's audit already has
 		// findings for the session (those are the round's: shipAudited),
 		// or when the review found nothing and more was committed since.

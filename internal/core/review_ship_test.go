@@ -277,16 +277,22 @@ func TestShipRacesTheSessionsOwnShip(t *testing.T) {
 	e.g.createErr = errors.New("forge unavailable")
 	e.shipAndCheck(r1, []string{"rejected"})
 	e.g.createErr = nil
-	e.g.afterCreate = func(ForgePR) error { time.Sleep(50 * time.Millisecond); return nil }
+	// The pull request isn't recorded until every contender has entered its
+	// ship, so each of them meets the others in flight.
+	var entered sync.WaitGroup
+	entered.Add(6)
+	e.g.afterCreate = func(ForgePR) error { entered.Wait(); return nil }
 	var wg sync.WaitGroup
 	for range 3 {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
+			entered.Done()
 			_ = e.s.shipReviewed(e.ctx, r1)
 		}()
 		go func() {
 			defer wg.Done()
+			entered.Done()
 			_, _ = e.ship(e.task.Key, ShipAuto)
 		}()
 	}

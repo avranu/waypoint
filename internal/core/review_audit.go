@@ -1302,6 +1302,13 @@ func (s *Service) endRoundNothing(ctx context.Context, review *roundRow, a *Code
 		body = fmt.Sprintf("%s audited the change (audit #%d: %s/audits/%d): its %d finding%s were all decided already or with the pull request's babysitter, so the session wasn't asked to review it.",
 			cmp(a.Model, "Grok"), a.ID, s.BaseURL(), a.ID, n, plural(n))
 	}
+	return s.endPendingRoundDone(ctx, review, body, now)
+}
+
+// endPendingRoundDone ends a pending round as reviewed by the rules, with
+// nothing found and nothing asked of the session, and says so on the task's
+// log; a round no longer pending is left as it is.
+func (s *Service) endPendingRoundDone(ctx context.Context, review *roundRow, body string, now int64) error {
 	return s.write(ctx, SystemActor(), func(t *tx) error {
 		res, err := t.ExecContext(ctx, `UPDATE work_log SET state = 'done', body = ?, started_at = ?, ended_at = ?, found = 0, fixed = 0, rejected = 0, items = '[]',
 			read_state = ?, read_by = ?, read_at = ?, updated_at = ? WHERE id = ? AND state = 'pending'`,

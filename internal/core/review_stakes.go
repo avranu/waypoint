@@ -308,18 +308,7 @@ func (s *Service) planHandedOver(ctx context.Context, review *roundRow, auditID 
 	}
 	body := fmt.Sprintf("Audit #%d (%s/audits/%d) was still going, and the change's stakes don't call for a Claude review in its place: it goes on as the pull request's audit, which holds the merge until it ends.",
 		auditID, s.BaseURL(), auditID)
-	return reviewPlan{done: true}, s.write(ctx, SystemActor(), func(t *tx) error {
-		res, err := t.ExecContext(ctx, `UPDATE work_log SET state = 'done', body = ?, started_at = ?, ended_at = ?, found = 0, fixed = 0, rejected = 0, items = '[]',
-			read_state = ?, read_by = ?, read_at = ?, updated_at = ? WHERE id = ? AND state = 'pending'`,
-			body, now, now, readDone, readByRules, now, now, review.id)
-		if err != nil {
-			return err
-		}
-		if n, _ := res.RowsAffected(); n > 0 {
-			s.emitWorkLog(ctx, t, review.issueID, review.id, RoundDone)
-		}
-		return nil
-	})
+	return reviewPlan{done: true}, s.endPendingRoundDone(ctx, review, body, now)
 }
 
 // handOverPrompt is the prompt of a round before its pull request whose

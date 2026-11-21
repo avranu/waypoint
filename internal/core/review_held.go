@@ -126,18 +126,70 @@ type shipRoundIn struct {
 	ended bool
 }
 
+// shipRun is what one ship of a round has read and decided as it goes, so
+// its steps share it.
+type shipRun struct {
+	r  *roundRow
+	bp *beforePR
+	in shipRoundIn
+	// reviewed: the review ran and left nothing to do (else it didn't run
+	// or wasn't settled, and in.why says why).
+	reviewed bool
+	// ran: the review did something before it ended; given: its findings
+	// reached the session; unchecked: marks no check answered; panel: the
+	// Haiku checks' confirmed problems that no model's findings carry.
+	ran, given       bool
+	unchecked, panel string
+	title            string
+	actor            *Actor
+	res              *OpenPRResult
+	notes            []string
+	armed, babysat   bool
+}
+
 // shipRound is the one server-side ship of a round's branch: a release (the
 // review couldn't run) and shipReviewed (it ran, and left nothing to do).
+// Its steps: read the round (shipRead), act as whoever may still ship it and
+// refuse what isn't Waypoint's to take (shipAuthorize), open the pull request
+// (shipOpen), arm, babysit and move the task (shipArm), record the end of the
+// round and its run (shipRecord), and tell the session and the person
+// (shipTell).
 func (s *Service) shipRound(ctx context.Context, in shipRoundIn) error {
 	defer s.shipLocks.lock(in.round)()
+	sh, err := s.shipRead(ctx, in)
+	if err != nil || sh == nil {
+		return err
+	}
+	if done, err := s.shipAuthorize(ctx, sh); err != nil || done {
+		return err
+	}
+	if done, err := s.shipOpen(ctx, sh); err != nil || done {
+		return err
+	}
+	if len(sh.res.OtherTasks) > 0 {
+		sh.notes = append(sh.notes, "that branch's pull request belongs to "+strings.Join(sh.res.OtherTasks, ", ")+", so it wasn't armed")
+	} else {
+		s.shipArm(ctx, sh)
+	}
+	if err := s.shipRecord(ctx, sh); err != nil {
+		return err
+	}
+	s.shipTell(ctx, sh)
+	return nil
+}
+
+// shipRead reads the round and what the ship is told from it; nil (and no
+// error) when there is nothing left for Waypoint to ship.
+func (s *Service) shipRead(ctx context.Context, in shipRoundIn) (*shipRun, error) {
 	r, err := roundByID(ctx, s.db.R, in.round)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	bp := roundBeforePR(ctx, s.db.R, in.round)
 	if r == nil || bp == nil {
-		return errors.New("its review round is gone")
+		return nil, errors.New("its review round is gone")
 	}
+	sh := &shipRun{r: r, bp: bp, in: in}
 	reviewed := in.why == ""
 	// A check of the marks that never gave an answer (failed, hit a limit,
 	// cancelled, or by a person) is not "nothing left to do": the PR opens,
@@ -162,38 +214,60 @@ func (s *Service) shipRound(ctx context.Context, in shipRoundIn) error {
 		if err := s.db.R.QueryRowContext(ctx, `SELECT ended_at IS NULL FROM agent_sessions WHERE id = ?`, in.session).Scan(&live); err == nil {
 			in.ended = !live
 		} else if !errors.Is(err, sql.ErrNoRows) {
-			return err // unknown is not "still live": the ship is tried again
+			return nil, err // unknown is not "still live": the ship is tried again
 		}
 	}
 	in.agent = s.shipAgent(ctx, r, in.agent, in.session)
 	if in.userID == 0 {
 		if err := s.db.R.QueryRowContext(ctx, `SELECT user_id FROM agent_sessions WHERE id = ?`, in.session).Scan(&in.userID); err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err // the ship is tried again, as whoever opens it is not known
+			return nil, err // the ship is tried again, as whoever opens it is not known
 		}
 	}
+	sh.reviewed, sh.unchecked, sh.ran = reviewed, unchecked, ran
+	sh.in = in
 	if reviewed {
 		// The run must still be open: a ship of the session's own ends it,
 		// and then there is nothing left for Waypoint to do.
 		var open bool
 		if err := s.db.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM agent_runs WHERE id = ? AND ended_at IS NULL)`, r.runID.Int64).Scan(&open); err != nil {
-			return err
+			return nil, err
 		}
 		if !open {
-			return nil
+			return nil, nil
 		}
 	}
 	title := bp.Title
 	if strings.TrimSpace(title) == "" {
 		if err := s.db.R.QueryRowContext(ctx, `SELECT title FROM issues WHERE id = ?`, r.issueID).Scan(&title); err != nil {
-			return err
+			return nil, err
 		}
 	}
+	sh.title = title
+	// A review that ended with its findings undelivered did run.
+	sh.given = !strings.HasPrefix(in.why, heldReviewEnded)
+	// The Haiku checks' confirmed problems that no reviewing model's
+	// findings carry are said, with the audit that holds them.
+	if !reviewed {
+		if n, audit := s.panelConfirmed(ctx, r.id); n > 0 {
+			sh.panel = fmt.Sprintf(" Before the reviewing model failed, Waypoint's Haiku checks confirmed %s against the code; audit #%d holds them (`wp audit show %d`).", plural1(n, "problem"), audit, audit)
+		}
+	}
+	return sh, nil
+}
+
+// shipAuthorize finds who the ship acts as and refuses what Waypoint may
+// not ship: the authority gone (the round ends with why), a pull request
+// open from the branch that isn't the task's, a branch that moved after the
+// review read it. done: nothing more is shipped.
+func (s *Service) shipAuthorize(ctx context.Context, sh *shipRun) (done bool, err error) {
+	r, bp, in, reviewed := sh.r, sh.bp, sh.in, sh.reviewed
 	actor, why, err := s.shipAuthority(ctx, r, bp, &in)
+	sh.in, sh.actor = in, actor
 	if err != nil {
-		return err
+		return true, err
 	}
 	if why != "" {
-		return s.stopShip(ctx, r, in, why)
+		return true, s.stopShip(ctx, r, in, why)
 	}
 	// A pull request already open from the branch is the task's to arm and
 	// babysit only if it is linked to the task: one linked to none or to
@@ -203,23 +277,23 @@ func (s *Service) shipRound(ctx context.Context, in shipRoundIn) error {
 		var repo string
 		var number int
 		if err := s.db.R.QueryRowContext(ctx, `SELECT repo, number FROM pull_requests WHERE id = ?`, id).Scan(&repo, &number); err != nil {
-			return err
+			return true, err
 		}
 		keys, err := s.pullTaskKeys(ctx, repo, number)
 		if err != nil {
-			return err
+			return true, err
 		}
 		if !slices.ContainsFunc(keys, func(k string) bool { return strings.EqualFold(k, r.key) }) {
 			owner := "isn't linked to any task"
 			if len(keys) > 0 {
 				owner = "is linked to " + strings.Join(keys, ", ")
 			}
-			return s.stopShip(ctx, r, in, fmt.Sprintf("%s#%d is already open from %s and %s, not to %s, so Waypoint didn't arm or babysit it or take it over", repo, number, bp.Branch, owner, r.key))
+			return true, s.stopShip(ctx, r, in, fmt.Sprintf("%s#%d is already open from %s and %s, not to %s, so Waypoint didn't arm or babysit it or take it over", repo, number, bp.Branch, owner, r.key))
 		}
 	}
 	if reviewed {
 		if moved, err := s.branchMovedSinceReview(ctx, actor, r, bp); err != nil {
-			return err
+			return true, err
 		} else if moved {
 			// Not the commit the review read: nothing is opened. The round
 			// ends the way a ship that pushed more ends it (roundRestarted,
@@ -228,20 +302,18 @@ func (s *Service) shipRound(ctx context.Context, in shipRoundIn) error {
 			s.setRoundNow(ctx, r.id, []string{r.state}, RoundInterrupted, roundRestarted)
 			s.notifyURL(ctx, in.userID, nil, NotifyAutopilot, r.key+": its branch moved after its review",
 				fmt.Sprintf("%s was pushed to after %s's adversarial review read it, so Waypoint opened no pull request for what the review didn't see. Run `wp ship` again and the review starts over on what is pushed now.", bp.Branch, r.key), "/agents?tab=autopilot")
-			return nil
+			return true, nil
 		}
 	}
+	return false, nil
+}
+
+// shipOpen opens the pull request as the ship's actor, or records that it
+// was opened and stopped, or held. done: nothing more is shipped.
+func (s *Service) shipOpen(ctx context.Context, sh *shipRun) (done bool, err error) {
+	r, bp, in, reviewed, actor := sh.r, sh.bp, sh.in, sh.reviewed, sh.actor
+	title, unchecked, given, panel, ran := sh.title, sh.unchecked, sh.given, sh.panel, sh.ran
 	body := bp.Body
-	// A review that ended with its findings undelivered did run.
-	given := !strings.HasPrefix(in.why, heldReviewEnded)
-	// The Haiku checks' confirmed problems that no reviewing model's
-	// findings carry are said, with the audit that holds them.
-	var panel string
-	if !reviewed {
-		if n, audit := s.panelConfirmed(ctx, r.id); n > 0 {
-			panel = fmt.Sprintf(" Before the reviewing model failed, Waypoint's Haiku checks confirmed %s against the code; audit #%d holds them (`wp audit show %d`).", plural1(n, "problem"), audit, audit)
-		}
-	}
 	in2 := OpenPRInput{
 		Project: bp.Project, Repo: bp.Repo, Head: bp.Branch, Base: bp.Base,
 		Title: title, Draft: bp.Draft, Ready: bp.Ready, Urgent: bp.Urgent,
@@ -276,11 +348,11 @@ func (s *Service) shipRound(ctx context.Context, in shipRoundIn) error {
 	}
 	res, err := s.OpenPullRequest(ctx, actor, in2)
 	if err != nil {
-		return err
+		return true, err
 	}
 	if res.Stopped != "" && res.Pull != nil {
 		body := fmt.Sprintf("Waypoint opened %s#%d, then stopped: %s. It is recorded, not armed and not watched; the task was left as it is.", res.Pull.Repo, res.Pull.Number, res.Stopped)
-		return s.stopShipWith(ctx, r, in, body, "pull request opened, then stopped", res.Stopped)
+		return true, s.stopShipWith(ctx, r, in, body, "pull request opened, then stopped", res.Stopped)
 	}
 	if res.Held != "" {
 		if reviewed {
@@ -288,13 +360,23 @@ func (s *Service) shipRound(ctx context.Context, in shipRoundIn) error {
 			// review round was scheduled, or marks wait on the session.
 			// Waypoint says nothing more; the round carries on.
 			s.log.Info("autopilot: a reviewed ship was held", "round", r.id, "held", clipText(res.Held, 200))
-			return nil
+			return true, nil
 		}
-		return errors.New(res.Held)
+		return true, errors.New(res.Held)
 	}
 	if res.Pull == nil {
-		return errors.New("no pull request came back")
+		return true, errors.New("no pull request came back")
 	}
+	sh.res = res
+	return false, nil
+}
+
+// shipArm arms the pull request, babysits it, posts the ship's message on
+// the task and moves it to In Review, each only where it applies; what
+// couldn't be done is kept in notes for the texts.
+func (s *Service) shipArm(ctx context.Context, sh *shipRun) {
+	r, bp, in, reviewed, actor, res := sh.r, sh.bp, sh.in, sh.reviewed, sh.actor, sh.res
+	unchecked, given, panel, ran := sh.unchecked, sh.given, sh.panel, sh.ran
 	pr := res.Pull
 	var notes []string
 	armed, babysat := false, false
@@ -352,6 +434,13 @@ func (s *Service) shipRound(ctx context.Context, in shipRoundIn) error {
 			}
 		}
 	}
+	sh.notes, sh.armed, sh.babysat = notes, armed, babysat
+}
+
+// shipRecord ends the round (when the review ran) and the held run.
+func (s *Service) shipRecord(ctx context.Context, sh *shipRun) error {
+	r, in, reviewed, actor, res := sh.r, sh.in, sh.reviewed, sh.actor, sh.res
+	unchecked := sh.unchecked
 	if reviewed {
 		if err := s.endRoundReviewed(ctx, r, unchecked, res.Existing); err != nil {
 			return err
@@ -360,6 +449,16 @@ func (s *Service) shipRound(ctx context.Context, in shipRoundIn) error {
 	if err := s.endHeldRun(ctx, actor, r.issueID, in.agent); err != nil {
 		return err
 	}
+	return nil
+}
+
+// shipTell tells the person, and the session when it is still there, what
+// was opened and what was done to it.
+func (s *Service) shipTell(ctx context.Context, sh *shipRun) {
+	r, bp, in, reviewed, res := sh.r, sh.bp, sh.in, sh.reviewed, sh.res
+	unchecked, given, panel, ran := sh.unchecked, sh.given, sh.panel, sh.ran
+	notes, armed, babysat := sh.notes, sh.armed, sh.babysat
+	pr := res.Pull
 	var text, head string
 	if reviewed {
 		head = r.key + " is in review: " + pr.Repo + "#" + strconv.Itoa(pr.Number)
@@ -406,7 +505,6 @@ func (s *Service) shipRound(ctx context.Context, in shipRoundIn) error {
 		text += " " + taggedUrgentNotice(r.key, pr.Number)
 	}
 	s.notifyURL(ctx, in.userID, nil, NotifyAutopilot, head, text, "/agents?tab=autopilot")
-	return nil
 }
 
 // shippedText is what Waypoint tells the session, and the person, after it

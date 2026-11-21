@@ -66,7 +66,7 @@ type roundIn struct {
 	// or the session is asked again.
 	Release string
 	// What leaves a round that is before a pull request alone once its run
-	// has ended (the sweep's old exclusions, WP-1325): the task is resolved
+	// has ended (WP-1325): the task is resolved
 	// or has its pull request linked, the pull request that existed when the
 	// round was scheduled was merged or closed since (PRGone: the person's
 	// decision, so no other is opened), a newer round of the task (or its
@@ -127,7 +127,7 @@ type roundOut struct {
 const strandedShipWindow = 24 * time.Hour
 
 // endOf: a round nothing will carry on, which ends in a state of its own
-// (what sweepRounds used to decide). One whose check Waypoint is on, in an
+// (sweepRounds carries it out). One whose check Waypoint is on, in an
 // open run, is Waypoint's: it ships or releases, it isn't ended here.
 func endOf(in roundIn) (roundOut, bool) {
 	switch {
