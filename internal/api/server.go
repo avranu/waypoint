@@ -519,8 +519,11 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, core.ErrTranscriptQuota):
 		// the archive is full: the client keeps the file and tries again
 		status, msg = http.StatusInsufficientStorage, core.TranscriptQuotaRefusal
+	case errors.Is(err, core.ErrTranscriptsOff):
+		// a setting, not a fault: the client reads it as "this server keeps no archive"
+		status, msg = http.StatusNotImplemented, err.Error()
 	}
-	if status >= 500 && status != http.StatusInsufficientStorage {
+	if status >= 500 && status != http.StatusInsufficientStorage && status != http.StatusNotImplemented {
 		// The middleware logs it, once, with the route and the time taken.
 		if n := noteFrom(r); n != nil {
 			n.err = err

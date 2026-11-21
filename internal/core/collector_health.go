@@ -196,7 +196,7 @@ var collectors = []collector{
 // What waits for the transcript archive, by machine: bytes the machine says
 // are pending, or an archive status that stopped (the machine reported before
 // and its usage sync still arrives more than ?1 ms after that report; the
-// client re-reports every few hours, so a healthy idle machine is not this).
+// client re-reports every 12 hours, so a healthy idle machine is not this).
 // A machine that opted out waits for nothing, nor does one last heard from (the
 // later of its usage sync and archive status) before ?2.
 const archiveWaitingWhere = `coalesce(m.transcript_off, 0) = 0 AND max(coalesce(m.last_sync_at, 0), coalesce(m.transcript_status_at, 0)) >= ?2 AND (m.transcript_pending_bytes > 0 OR ` + archiveSilent + `)`
@@ -216,8 +216,10 @@ const archiveSince = `min(coalesce(CASE WHEN m.transcript_pending_bytes > 0 THEN
 // transcriptLostReasons are the drop reasons (cmd/wp/usage_archive.go) that
 // mean data did not reach the archive whole: a line replaced by a stub.
 // The others are not losses: an upload that failed or a file the server
-// refused stays pending and goes again, and a state reset or a disagreement
-// is settled by the server's answer of where its copy ends.
+// refused stays pending and goes again (so it is not in the dropped total; such
+// a machine shows as waiting, and its pending bytes and refused count are in
+// `wp usage machines`), and a state reset or a disagreement is settled by the
+// server's answer of where its copy ends.
 const transcriptLostReasons = `('line_too_large', 'redaction_failed')`
 
 // CollectorHealth is how one collector stood at the last hourly check.

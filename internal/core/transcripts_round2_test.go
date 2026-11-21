@@ -430,3 +430,33 @@ func TestTranscriptCollectorDropsToldAfterTotalFalls(t *testing.T) {
 		t.Errorf("dropped_told = %d, %v", grew, err)
 	}
 }
+
+// A stored piece keeps the client version it came from and its compressed
+// size, and that size is what is on the disk and what the list reports
+// (audit 1233.24).
+func TestTranscriptPieceKeepsVersionAndStoredBytes(t *testing.T) {
+	e := transcriptEnv(t)
+	l := strings.Repeat(`{"n":1,"pad":"aaaaaaaaaaaaaaaaaaaa"}`+"\n", 20)
+	in := piece("s1", "main", 0, l)
+	in.Version = "wp-9.9.9"
+	in.Gzip = tgz(t, l)
+	if _, err := e.s.IngestTranscript(e.ctx, e.admin, in); err != nil {
+		t.Fatal(err)
+	}
+	var version, rel string
+	var stored int64
+	if err := e.s.db.R.QueryRow(`SELECT client_version, stored_bytes, path FROM transcript_pieces`).Scan(&version, &stored, &rel); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(filepath.Join(e.s.cfg.TranscriptDir, rel))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version != "wp-9.9.9" || stored != int64(len(in.Gzip)) || stored != fi.Size() {
+		t.Errorf("version %q stored %d, sent %d bytes, on disk %d", version, stored, len(in.Gzip), fi.Size())
+	}
+	files, err := e.s.TranscriptFiles(e.ctx, e.admin, TranscriptQuery{Session: "s1"})
+	if err != nil || len(files) != 1 || files[0].StoredBytes != stored {
+		t.Errorf("list: %+v %v", files, err)
+	}
+}

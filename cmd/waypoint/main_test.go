@@ -4,6 +4,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"git.jmann.me/claude/waypoint/internal/testnet"
@@ -20,6 +21,23 @@ func TestTranscriptMaxMB(t *testing.T) {
 		t.Setenv("WAYPOINT_TRANSCRIPT_MAX_MB", in)
 		if got := transcriptMaxMB(slog.New(slog.NewTextHandler(io.Discard, nil))); got != want {
 			t.Errorf("%q: %d, want %d", in, got, want)
+		}
+	}
+}
+
+// The archive's directory: off and none keep none, unset sits next to the
+// database, anything else is the path given (audit 1233.18).
+func TestTranscriptDir(t *testing.T) {
+	db := filepath.Join("data", "waypoint.db")
+	for in, want := range map[string]string{
+		"off":          "",
+		"none":         "",
+		"":             filepath.Join("data", "transcripts"),
+		"/srv/archive": "/srv/archive",
+	} {
+		t.Setenv("WAYPOINT_TRANSCRIPT_DIR", in)
+		if got := transcriptDir(db); got != want {
+			t.Errorf("%q: %q, want %q", in, got, want)
 		}
 	}
 }

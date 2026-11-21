@@ -303,7 +303,10 @@ func (s *idSet) add(id string) {
 }
 
 // usageSync does one sync. It is safe to run from a hook, the runner and
-// by hand at the same time: a second one finds the lock taken and returns.
+// by hand at the same time: a second one finds the usage-sync lock taken and
+// returns. The lock is let go before the archive pass, which has its own
+// (usage-archive.lock): a pass that finds that taken leaves a note, and the
+// holder looks once more before it ends.
 func usageSync(c *cli, o usageSyncOptions) (*usageSyncResult, error) {
 	started := time.Now()
 	res := &usageSyncResult{Machine: machineName(), DryRun: o.DryRun}
@@ -511,7 +514,7 @@ func usageSync(c *cli, o usageSyncOptions) (*usageSyncResult, error) {
 	}
 	release() // the archive has its own lock: a long backfill must not hold up the next hook's counts
 	if !o.NoArchive && archiveEnabled() {
-		ar, aerr := usageArchive(c, o, root)
+		ar, aerr := usageArchive(c, o, root, started)
 		res.Archive = ar
 		if aerr != nil {
 			res.ArchiveError = aerr.Error()

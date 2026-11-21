@@ -62,13 +62,18 @@ func newTranscriptAPI(t *testing.T) *transcriptAPI { return newTranscriptAPICapp
 // newTranscriptAPICapped is a server whose archive holds at most maxMB (0: no cap).
 func newTranscriptAPICapped(t *testing.T, maxMB int) *transcriptAPI {
 	t.Helper()
+	return newTranscriptAPIIn(t, t.TempDir(), maxMB)
+}
+
+// newTranscriptAPIIn is a server whose archive is dir ("": it keeps none).
+func newTranscriptAPIIn(t *testing.T, dir string, maxMB int) *transcriptAPI {
+	t.Helper()
 	ctx := context.Background()
 	d, err := db.OpenFresh(ctx, filepath.Join(t.TempDir(), "api.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { d.Close() })
-	dir := t.TempDir()
 	svc := core.New(d, core.Config{BaseURL: "http://wp.test", TranscriptDir: dir, TranscriptMaxMB: maxMB}, nil)
 	svc.StartHub()
 	ts := httptest.NewServer(New(svc, Config{BaseURL: "http://wp.test", Version: "test"}, svc.Log()).Handler())
@@ -217,5 +222,107 @@ func TestTranscriptQuotaAnswers507AndRedactionsArrive(t *testing.T) {
 	_ = resp.Body.Close()
 	if resp.StatusCode != 507 || !strings.Contains(string(body), core.TranscriptQuotaRefusal) {
 		t.Errorf("full archive: %d %s", resp.StatusCode, body)
+	}
+}
+
+// With no archive (WAYPOINT_TRANSCRIPT_DIR=off) an upload and a read answer
+// 501 with the error's own words, not a 500, and the client can tell it apart
+// (audit 1233.3).
+func TestTranscriptsOffAnswers501(t *testing.T) {
+	a := newTranscriptAPIIn(t, "", 0)
+	if code := a.put("s1", 0, `{"n":1}`+"\n"); code != http.StatusNotImplemented {
+		t.Errorf("ingest: %d, want 501", code)
+	}
+	resp, err := a.req("POST", "/api/v1/usage/transcript?"+url.Values{"machine": {"box"}, "session": {"s1"}, "file": {"main"}, "kind": {"main"}, "fp": {"h#0"}, "from": {"0"}, "to": {"1"}}.Encode(), tgz(t, "x\n"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if !strings.Contains(string(body), core.ErrTranscriptsOff.Error()) {
+		t.Errorf("ingest body: %s", body)
+	}
+	code, body := a.human.do("GET", "/api/v1/usage/transcript?session=s1&file=main", nil)
+	if code != http.StatusNotImplemented || !strings.Contains(string(body), core.ErrTranscriptsOff.Error()) {
+		t.Errorf("read: %d %s", code, body)
+	}
+}
+
+// The read routes pick what the query names, and a number that is not one is
+// a 400 (audit 1233.19).
+func TestTranscriptQueryAndNumbers(t *testing.T) {
+	a := newTranscriptAPI(t)
+	put := func(machine, session, fp string, from int64, lines string) {
+		t.Helper()
+		q := url.Values{"machine": {machine}, "session": {session}, "file": {"main"}, "kind": {"main"}, "fp": {fp},
+			"from": {itoa(int(from))}, "to": {itoa(int(from) + len(lines))}, "redacted": {"1"}, "version": {"t"}}
+		resp, err := a.req("POST", "/api/v1/usage/transcript?"+q.Encode(), tgz(t, lines), nil)
+		if err != nil || resp.StatusCode != 200 {
+			t.Fatalf("put %s %s: %v %v", machine, fp, resp, err)
+		}
+		_ = resp.Body.Close()
+	}
+	// two machines hold s1; box has two generations (a new fingerprint base starts one)
+	put("box", "s1", "h#0", 0, "gen0\n")
+	put("box", "s1", "h#1", 0, "gen1\n")
+	put("lap", "s1", "h#0", 0, "lap0\n")
+	read := func(query string) (int, string) {
+		code, b := a.human.do("GET", "/api/v1/usage/transcript?session=s1&file=main"+query, nil)
+		return code, string(b)
+	}
+	if code, b := read("&machine=lap"); code != 200 || b != "lap0\n" {
+		t.Errorf("machine=lap: %d %q", code, b)
+	}
+	if code, b := read("&machine=box&gen=0"); code != 200 || b != "gen0\n" {
+		t.Errorf("gen=0: %d %q", code, b)
+	}
+	if code, b := read("&machine=box&gen=1"); code != 200 || b != "gen1\n" {
+		t.Errorf("gen=1: %d %q", code, b)
+	}
+	if code, b := read("&machine=box"); code != 200 || b != "gen1\n" { // no gen: the newest
+		t.Errorf("newest gen: %d %q", code, b)
+	}
+	if code, b := read("&machine=box&gen=9"); code != 404 {
+		t.Errorf("gen=9: %d %q", code, b)
+	}
+	if code, b := read(""); code != 400 {
+		t.Errorf("two machines unsaid: %d %q", code, b)
+	}
+	for _, g := range []string{"abc", "-1"} {
+		if code, _ := read("&gen=" + g); code != 400 {
+			t.Errorf("gen=%s: %d, want 400", g, code)
+		}
+	}
+	// a second person's copy is picked by user=
+	other, err := a.svc.CreateUser(context.Background(), core.SystemActor(), core.CreateUserInput{Username: "sam", Email: "sam@example.com", Password: "correct-horse-battery"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, _, _ := a.svc.CreateAPIToken(context.Background(), &core.Actor{User: other}, "sam", false, 0)
+	sam := &client{t: t, base: a.ts.URL, http: http.DefaultClient, token: tok}
+	q := url.Values{"machine": {"sam-box"}, "session": {"s1"}, "file": {"main"}, "kind": {"main"}, "fp": {"h#0"}, "from": {"0"}, "to": {"5"}, "redacted": {"1"}, "version": {"t"}}
+	req, _ := http.NewRequest("POST", a.ts.URL+"/api/v1/usage/transcript?"+q.Encode(), bytes.NewReader(tgz(t, "sam0\n")))
+	req.Header.Set("Authorization", "Bearer "+sam.token)
+	if resp, err := http.DefaultClient.Do(req); err != nil || resp.StatusCode != 200 {
+		t.Fatalf("sam put: %v %v", resp, err)
+	}
+	var files []core.TranscriptFile
+	if code := a.human.json("GET", "/api/v1/usage/transcripts?session=s1&user=sam", nil, &files); code != 200 || len(files) != 1 || files[0].Machine != "sam-box" {
+		t.Errorf("user=sam: %d %+v", code, files)
+	}
+	files = nil
+	if code := a.human.json("GET", "/api/v1/usage/transcripts?session=s1&user=robin", nil, &files); code != 200 || len(files) != 2 { // box at its newest generation, and lap
+		t.Errorf("user=robin: %d %+v", code, files)
+	}
+	// ingest numbers
+	for _, bad := range []string{"from=abc&to=5", "from=0&to=abc"} {
+		resp, err := a.req("POST", "/api/v1/usage/transcript?machine=box&session=s2&file=main&kind=main&fp=h%230&redacted=1&version=t&"+bad, tgz(t, "x\n"), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != 400 {
+			t.Errorf("%s: %d, want 400", bad, resp.StatusCode)
+		}
 	}
 }

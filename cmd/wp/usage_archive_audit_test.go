@@ -36,30 +36,39 @@ func jsonLineOf(t *testing.T, s string) string {
 // narrower than redact (audit 1218.1). One row per alternative of secretRE
 // and per shape in tokenLikeRE; a new alternative goes in this table.
 func TestArchiveRedactionCoversWhatRedactDoes(t *testing.T) {
-	rows := []string{
-		"AWS_SECRET_ACCESS_KEY=abcd1234wxyz", "export DB_PASSWORD=hunter2hunter", "api-key: abcdef12345",
-		"APIKEY=abcdef12345", "private_key=abcd1234efgh", "ACCESS_KEY=abcd1234efgh", "Authorization: Basic dXNlcjpwYXNz",
-		"credential=abcd12345", "my_token = abcd1234", "secret: abcd1234",
-		"curl --token abc12345", "run --secret abcd1234", "x --password hunter22", "x --passwd hunter22",
-		"x --api-key abcd1234", "x --auth abcd1234", "x --access-key abcd1234", "Bearer abcdef123456",
-		"postgres://admin:pw1234@db/app",
-		"sk-" + strings.Repeat("a1", 12), "ghp_" + strings.Repeat("a1B2", 9), "gho_" + strings.Repeat("a1B2", 9),
-		"ghu_" + strings.Repeat("a1B2", 9), "ghs_" + strings.Repeat("a1B2", 9), "ghr_" + strings.Repeat("a1B2", 9),
-		"glpat-" + strings.Repeat("a1", 12), "xoxb-" + strings.Repeat("1", 12), "AKIA" + strings.Repeat("A1", 8),
-		"eyJhbGciOiJIUzI1.eyJzdWIiOiIxMjM0NTY3.SflKxwRJSMeKKF2QT4",
+	long := func(prefix string, n int, rep string) string { return prefix + strings.Repeat(rep, n) }
+	rows := []struct{ in, secret string }{
+		{"AWS_SECRET_ACCESS_KEY=abcd1234wxyz", "abcd1234wxyz"}, {"export DB_PASSWORD=hunter2hunter", "hunter2hunter"},
+		{"api-key: abcdef12345", "abcdef12345"}, {"APIKEY=abcdef12345", "abcdef12345"}, {"private_key=abcd1234efgh", "abcd1234efgh"},
+		{"ACCESS_KEY=abcd1234efgh", "abcd1234efgh"}, {"Authorization: Basic dXNlcjpwYXNz", "dXNlcjpwYXNz"},
+		{"credential=abcd12345", "abcd12345"}, {"my_token = abcd1234", "abcd1234"}, {"secret: abcd1234", "abcd1234"},
+		{"curl --token abc12345", "abc12345"}, {"run --secret abcd1234", "abcd1234"}, {"x --password hunter22", "hunter22"},
+		{"x --passwd hunter22", "hunter22"}, {"x --api-key abcd1234", "abcd1234"}, {"x --auth abcd1234", "abcd1234"},
+		{"x --access-key abcd1234", "abcd1234"}, {"Bearer abcdef123456", "abcdef123456"},
+		{"postgres://admin:pw1234@db/app", "pw1234"},
+		{`Authorization: Digest username="u", response="deadbeefcafe"`, "deadbeefcafe"},
+		{"-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA1234\n-----END RSA PRIVATE KEY-----", "MIIEpAIBAAKCAQEA1234"},
+		{long("sk-", 12, "a1"), long("", 12, "a1")}, {long("ghp_", 9, "a1B2"), long("", 9, "a1B2")}, {long("gho_", 9, "a1B2"), long("", 9, "a1B2")},
+		{long("ghu_", 9, "a1B2"), long("", 9, "a1B2")}, {long("ghs_", 9, "a1B2"), long("", 9, "a1B2")}, {long("ghr_", 9, "a1B2"), long("", 9, "a1B2")},
+		{long("glpat-", 12, "a1"), long("", 12, "a1")}, {"xoxb-" + strings.Repeat("1", 12), strings.Repeat("1", 12)},
+		{"AKIA" + strings.Repeat("A1", 8), strings.Repeat("A1", 8)},
+		{"eyJhbGciOiJIUzI1.eyJzdWIiOiIxMjM0NTY3.SflKxwRJSMeKKF2QT4", "SflKxwRJSMeKKF2QT4"},
 	}
-	for _, s := range rows {
-		if redact(s) == s {
-			t.Errorf("the table row %q is not something redact changes", s)
+	for _, r := range rows {
+		s := r.in
+		if got := redact(s); got == s || strings.Contains(got, r.secret) {
+			t.Errorf("redact of %q kept %q: %q", s, r.secret, got)
 			continue
 		}
 		line := jsonLineOf(t, "before "+s+" after")
 		out, ok := redactTranscriptLineWith([]byte(line), nil)
-		if !ok || string(out) == line {
+		if !ok || string(out) == line || !json.Valid(out) {
 			t.Errorf("redact hides %q in text, but the archive kept it in a JSON string: %q", s, out)
+			continue
 		}
-		if !json.Valid(out) {
-			t.Errorf("not JSON after redaction: %q", out)
+		var m map[string]string
+		if err := json.Unmarshal(out, &m); err != nil || strings.Contains(m["t"], r.secret) {
+			t.Errorf("the archive left %q of %q in %q", r.secret, s, m["t"])
 		}
 	}
 }
@@ -269,14 +278,15 @@ func TestArchiveGzipOverTheCapIsCutOrStubbed(t *testing.T) {
 
 // A refusal that will not change (a 4xx) is its own count, is not a failing
 // network, holds the file (its bytes stay waiting) and is tried again once a
-// day; a smaller piece is tried once first.
+// day; a smaller piece is tried once first. (A 413 is not this: it is likely a
+// proxy's body limit, see TestArchiveLearnsAPieceCapFrom413.)
 func TestArchivePermanentRefusalHoldsTheFile(t *testing.T) {
 	e, tap := tappedEnv(t)
 	e.login()
 	dir := emptyDir(t)
 	putTranscript(t, dir, "ref", manyLines("r", 30)...)
 	tap.onPiece = func(_ int, w http.ResponseWriter, _ *http.Request) bool {
-		answerError(w, 413, "request body too large")
+		answerError(w, 422, "unprocessable")
 		return true
 	}
 	res := archiveSync(t, e, dir)
@@ -402,7 +412,7 @@ func TestArchiveReadErrorsAreErrors(t *testing.T) {
 	if _, err := firstLineHash(fh, size); err == nil {
 		t.Error("firstLineHash hid a read error")
 	}
-	if _, _, err := readArchivePiece(fh, 0, size, nil, 0); err == nil {
+	if _, _, err := readArchivePiece(fh, 0, size, nil, 0, 0); err == nil {
 		t.Error("readArchivePiece hid a read error")
 	}
 }

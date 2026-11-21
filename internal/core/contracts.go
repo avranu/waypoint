@@ -74,7 +74,7 @@ const (
 	EvProjectCreated  = "project.created"
 	EvRepoAttached    = "project.repo_attached" // + repo, forge
 
-	// System (admin automations). Data: resource: disk, database, memory; free, total.
+	// System (admin automations). Data: resource: disk, database, memory, transcripts; free, total.
 	EvSystemResources = "system.resources_low"
 )
 

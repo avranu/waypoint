@@ -78,6 +78,10 @@ type Service struct {
 	// file is on disk and before the write that records it.
 	afterTranscriptFile func()
 
+	// removeAll is a test seam for os.RemoveAll over a deleted account's
+	// transcript directory (nil: the real one).
+	removeAll func(string) error
+
 	// started is when New ran; jobs counts the scheduled jobs' runs and
 	// what is logged, by where (WP-375, WP-ADR139).
 	started time.Time

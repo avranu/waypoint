@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -51,7 +52,9 @@ import (
 // Nothing is dropped silently: a failed upload, a refusal, a line replaced by
 // a stub (too large to send, or one redaction could not make safe) and the
 // bytes still waiting are counted, kept in usage-archive.json and reported to
-// the server after each pass (collector health shows them).
+// the server after each pass. `wp usage machines` shows every reason; the
+// server's collector health totals only line_too_large and redaction_failed,
+// because the others are retried (core.transcriptLostReasons).
 //
 // The status the server is told after a pass (collector health and
 // `wp usage machines` show it): what waits, what was dropped, how long the pass
@@ -70,27 +73,71 @@ import (
 
 const (
 	archiveStateFile = "usage-archive.json"
-	archivePieceSize = 8 << 20 // raw bytes per piece, cut at a line end
-	archiveTailLen   = 64
-	archiveBackfill  = 30 * 24 * time.Hour // transcripts older than this are archived only with --all
-	archiveRetryHeld = 24 * time.Hour      // a file the server refused is tried again this often
-	archiveMaxPieces = 1000                // pieces for one file in one pass
+	// archiveTailLen: the bytes before the offset that are hashed on every
+	// pass. Chosen, not measured: enough to tell a different ending, cheap to
+	// read for every file.
+	archiveTailLen  = 64
+	archiveBackfill = 30 * 24 * time.Hour // transcripts older than this are archived only with --all
+	// archiveRetryHeld: chosen, not measured. A refusal that will not change
+	// is not worth a request on every hook; a day finds a fixed server, and
+	// is how long a learned piece cap is kept.
+	archiveRetryHeld = 24 * time.Hour
 	archiveBusy      = "another pass is running"
-	archiveFullHold  = time.Hour // after the server said its archive is full, a hook's pass does not try again for this long
-	archiveFullStop  = "the server's transcript archive is full (its size cap); held until there is room"
+	// archiveFullHold: chosen, not measured. A full archive is a person's to
+	// fix, so a hook's pass asks again an hour later and not on every turn.
+	archiveFullHold = time.Hour
+	archiveFullStop = "the server's transcript archive is full (its size cap); held until there is room"
+	archiveNoneStop = "this server keeps no transcript archive"
+	// archiveAgain is the marker a pass that found the lock taken leaves for
+	// the holder: bytes appended after the holder listed its files are sent
+	// by one more look before it ends.
+	archiveAgain = "usage-archive.again"
+	// archiveFailStop: uploads that fail this many times in a row end the
+	// pass. Chosen, not measured: one failure can be a blip, three in a row
+	// mean the network or the server is down, and each further try costs an
+	// upload timeout.
+	archiveFailStop = 3
 )
 
 // Limits that tests lower. archiveMaxLine and archivePieceSize together stay
 // under core.TranscriptMaxPiece (a piece is cut after the line that crosses
 // archivePieceSize), and archiveGzipCap is what the server takes.
 var (
-	archiveMaxLine     = 48 << 20 // a line larger than this is replaced by a stub
-	archiveGzipCap     = core.TranscriptMaxUpload
-	archiveHookLimit   = 20 * time.Second
-	archivePassLimit   = 10 * time.Minute
-	archiveUploadFloor = 15 * time.Second // an upload may run this long past the pass's end
-	archiveRedact      = redactTranscriptLineCounted
-	archiveNow         = time.Now // tests set the clock
+	// archiveMaxLine: derived. With archivePieceSize it must stay under the
+	// server's cap on a piece's raw size, core.TranscriptMaxPiece (64 MiB); a
+	// line over it is replaced by a stub.
+	archiveMaxLine = 48 << 20
+	// archivePieceSize: raw bytes per piece, cut at a line end. Chosen, not
+	// measured: large enough that most sessions are one piece, small enough
+	// that a refused or failed piece is cheap to send again.
+	archivePieceSize = 8 << 20
+	// archiveMaxPieces: pieces for one file in one pass. Chosen, not
+	// measured: only a bound so one file cannot hold a pass for ever (about
+	// 8 GiB at archivePieceSize); the rest goes next time.
+	archiveMaxPieces = 1000
+	archiveGzipCap   = core.TranscriptMaxUpload // derived: what the server takes as a request body
+	// archiveHookLimit is how long after a hook's sync began its archive pass
+	// may start new uploads. Derived from the hook's timeout
+	// (usageHookTimeout, 30 s): this, archiveHookFloor and
+	// archiveReportHookTimeout must add up to less than it (a test holds
+	// that), or Claude Code kills the pass mid-upload.
+	archiveHookLimit = 15 * time.Second
+	// archivePassLimit is a manual pass's limit. Chosen, not measured: long
+	// enough for a large backfill to make progress, short enough to end well
+	// inside the lock's 30 minutes before it is taken as stale.
+	archivePassLimit = 10 * time.Minute
+	// archiveUploadFloor: an upload that began just before the end of a manual
+	// pass may run this long past it. Chosen, not measured.
+	archiveUploadFloor = 15 * time.Second
+	// archiveHookFloor is archiveUploadFloor for a hook's pass; derived from
+	// the hook's timeout like archiveHookLimit.
+	archiveHookFloor = 5 * time.Second
+	// archiveReportHookTimeout bounds the status post of a hook's pass (a
+	// manual pass uses archiveReportTimeout); derived like archiveHookLimit.
+	archiveReportHookTimeout = 5 * time.Second
+	archiveReportTimeout     = 30 * time.Second // chosen, not measured: the status is small
+	archiveRedact            = redactTranscriptLineCounted
+	archiveNow               = time.Now // tests set the clock
 	// archivePassDuration is how long a pass that began at start took.
 	archivePassDuration = func(start time.Time) time.Duration { return time.Since(start) }
 )
@@ -123,6 +170,14 @@ type archiveState struct {
 	// FullAt is when (ms) the server last said its archive is full; a hook's
 	// passes make no uploads for archiveFullHold after that.
 	FullAt int64 `json:"full_at,omitempty"`
+	// NoneAt is when (ms) the server last said it keeps no archive (501);
+	// a hook's passes make no uploads for archiveFullHold after that.
+	NoneAt int64 `json:"none_at,omitempty"`
+	// PieceCap is the largest piece (raw bytes) learned from a 413 (a proxy's
+	// body limit); PieceCapAt is when (ms) it last got smaller. It is
+	// forgotten after archiveRetryHeld so a raised limit is found.
+	PieceCap   int64 `json:"piece_cap,omitempty"`
+	PieceCapAt int64 `json:"piece_cap_at,omitempty"`
 	// Cut counts the passes that ended before the end, since this machine began.
 	Cut int64 `json:"cut,omitempty"`
 	// PassMax is the longest pass (ms) this machine has run.
@@ -213,7 +268,9 @@ type archiver struct {
 	known    []string // this machine's own secrets, blanked wherever they appear
 	stop     string
 	full     bool // the archive said full lately: nothing was tried this pass
-	quiet    bool // the server does not take this token's uploads: say nothing more
+	quiet    bool // the server does not take this token's uploads, or keeps none: say nothing more
+	hook     bool // a hook's pass: shorter floor and report timeout, to end inside the hook's timeout
+	pieceCap int  // a 413 taught this: the most raw bytes of a piece (0: none known)
 }
 
 func (a *archiver) drop(reason string) {
@@ -228,35 +285,92 @@ func (a *archiver) save() error {
 // usageArchive uploads what the server does not yet hold of the transcripts
 // under root (see the discovery rule above; o.Files only puts their sessions
 // first). Errors are for the caller to report; the pass itself counts what it
-// could not do.
-func usageArchive(c *cli, o usageSyncOptions, root string) (*archiveResult, error) {
+// could not do. syncStart is when the whole sync began: a hook's pass ends
+// archiveHookLimit after it, so the hour counts' upload before it is part of
+// the bound, not extra.
+func usageArchive(c *cli, o usageSyncOptions, root string, syncStart time.Time) (*archiveResult, error) {
 	started := archiveNow()
 	res := &archiveResult{Dropped: map[string]int64{}}
+	again := filepath.Join(c.dir, archiveAgain)
 	if !o.DryRun {
 		unlock, ok := tryLock(filepath.Join(c.dir, "usage-archive.lock"), 30*time.Minute)
 		if !ok {
+			// the holder listed its files before this pass's bytes were written:
+			// leave it a note to look once more before it ends
+			_ = os.WriteFile(again, nil, 0o600)
 			res.Stopped = archiveBusy // it will get this too
 			return res, nil
 		}
 		defer unlock()
+		_ = os.Remove(again) // a note from a pass that is gone: this pass lists the files now
 	}
 	st, err := loadArchiveState(c.dir) // under the lock: no other pass writes it meanwhile
 	if err != nil {
 		return res, err
 	}
-	a := &archiver{c: c, st: st, res: res, dry: o.DryRun, known: []string{c.token()}}
+	a := &archiver{c: c, st: st, res: res, dry: o.DryRun, known: []string{c.token()}, hook: o.Hook}
 	if st.reset {
 		a.drop("state_reset")
 	}
-	if o.Hook && !o.DryRun && st.FullAt > 0 && archiveNow().Sub(time.UnixMilli(st.FullAt)) < archiveFullHold {
-		// the archive said full a short while ago: the files stay pending, and this pass is not another cut
-		a.stop, a.full = archiveFullStop, true
+	if o.Hook && !o.DryRun {
+		switch {
+		case st.FullAt > 0 && archiveNow().Sub(time.UnixMilli(st.FullAt)) < archiveFullHold:
+			// the archive said full a short while ago: the files stay pending, and this pass is not another cut
+			a.stop, a.full = archiveFullStop, true
+		case st.NoneAt > 0 && archiveNow().Sub(time.UnixMilli(st.NoneAt)) < archiveFullHold:
+			a.stop, a.quiet = archiveNoneStop, true
+		}
 	}
-	limit := archivePassLimit
+	if a.st.PieceCap > 0 {
+		if archiveNow().Sub(time.UnixMilli(a.st.PieceCapAt)) < archiveRetryHeld {
+			a.pieceCap = int(min(a.st.PieceCap, int64(math.MaxInt32)))
+		} else {
+			a.st.PieceCap, a.st.PieceCapAt = 0, 0 // a proxy's limit may have been raised
+		}
+	}
+	limit, from := archivePassLimit, started
 	if o.Hook {
-		limit = archiveHookLimit
+		limit, from = archiveHookLimit, syncStart
 	}
-	a.deadline = started.Add(limit)
+	a.deadline = from.Add(limit)
+	if err := a.pass(o, root); err != nil {
+		return res, err
+	}
+	if !o.DryRun && a.stop == "" {
+		// a pass that found the lock taken left a note: bytes came after the
+		// files were listed. One more look, inside the same deadline.
+		if _, err := os.Stat(again); err == nil {
+			_ = os.Remove(again)
+			if err := a.pass(o, root); err != nil {
+				return res, err
+			}
+		}
+	}
+	res.Stopped = a.stop
+	el := archivePassDuration(started)
+	res.Elapsed, res.ElapsedMS = el.Round(time.Millisecond).String(), el.Milliseconds()
+	if o.DryRun {
+		return res, nil
+	}
+	if a.stop != "" && !a.quiet && !a.full {
+		a.st.Cut++ // a pass that ended early is counted, with the reason in the status
+	}
+	saveErr := a.save()
+	if a.quiet {
+		return res, saveErr
+	}
+	if err := a.report(c, res); err != nil {
+		return res, errors.Join(saveErr, err)
+	}
+	return res, saveErr
+}
+
+// pass lists the transcripts with their sizes now and uploads what the server
+// lacks, until the end or a stop. It sets what waits (PendingBytes and
+// PendingFiles) from this listing, so a second look replaces the first.
+func (a *archiver) pass(o usageSyncOptions, root string) error {
+	res := a.res
+	res.PendingBytes, res.PendingFiles = 0, 0
 	// the hour counts' window (7 days by default) is shorter than what is worth
 	// keeping: a transcript modified in the last 30 days is archived, and --all
 	// (no window) archives everything on the machine
@@ -268,7 +382,7 @@ func usageArchive(c *cli, o usageSyncOptions, root string) (*archiveResult, erro
 	}
 	files, err := discoverTranscripts(root, since, nil)
 	if err != nil {
-		return res, err
+		return err
 	}
 	type sized struct {
 		f     usageFile
@@ -329,23 +443,7 @@ func usageArchive(c *cli, o usageSyncOptions, root string) (*archiveResult, erro
 			res.PendingFiles++
 		}
 	}
-	res.Stopped = a.stop
-	el := archivePassDuration(started)
-	res.Elapsed, res.ElapsedMS = el.Round(time.Millisecond).String(), el.Milliseconds()
-	if o.DryRun {
-		return res, nil
-	}
-	if a.stop != "" && !a.quiet && !a.full {
-		a.st.Cut++ // a pass that ended early is counted, with the reason in the status
-	}
-	saveErr := a.save()
-	if a.quiet {
-		return res, saveErr
-	}
-	if err := a.report(c, res); err != nil {
-		return res, errors.Join(saveErr, err)
-	}
-	return res, saveErr
+	return nil
 }
 
 // report tells the server what waits, what was dropped and how the passes
@@ -367,7 +465,14 @@ func (a *archiver) report(c *cli, res *archiveResult) error {
 		return nil
 	}
 	body["pass_ms"] = res.ElapsedMS
-	if err := c.do("POST", "/api/v1/usage/transcript/status", body, nil); err != nil {
+	timeout := archiveReportTimeout
+	if a.hook {
+		timeout = archiveReportHookTimeout // the hook's timeout covers the whole pass
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	_, err = c.callCtx(ctx, "POST", "/api/v1/usage/transcript/status", body)
+	cancel()
+	if err != nil {
 		return fmt.Errorf("telling the server the archive's state: %w", err)
 	}
 	a.st.Reported, a.st.ReportedAt = string(raw), archiveNow().UnixMilli()
@@ -417,10 +522,26 @@ func refusedForGood(status int) bool {
 }
 
 // uploadContext bounds one upload by the pass's end, with a floor so a piece
-// that began just before it can still finish.
+// that began just before it can still finish. A hook's floor is short: the
+// pass, its floor and the status post must fit the hook's timeout.
 func (a *archiver) uploadContext() (context.Context, context.CancelFunc) {
-	d := max(time.Until(a.deadline), archiveUploadFloor)
+	floor := archiveUploadFloor
+	if a.hook {
+		floor = archiveHookFloor
+	}
+	d := max(time.Until(a.deadline), floor)
 	return context.WithTimeout(context.Background(), d)
+}
+
+// learnCap makes n raw bytes the most a piece holds (when that is smaller than
+// what is known), and saves it with the time, so the next files and passes
+// start from it.
+func (a *archiver) learnCap(n int) {
+	n = max(n, 1)
+	if a.pieceCap == 0 || n < a.pieceCap {
+		a.pieceCap = n
+		a.st.PieceCap, a.st.PieceCapAt = int64(n), archiveNow().UnixMilli()
+	}
 }
 
 // file uploads what the server lacks of one transcript.
@@ -485,7 +606,7 @@ func (a *archiver) file(f usageFile, size int64) {
 			a.stop = "time limit; the rest goes next time"
 			return
 		}
-		piece, _, err := readArchivePiece(fh, st.Off, size, a.known, maxLines)
+		piece, _, err := readArchivePiece(fh, st.Off, size, a.known, maxLines, a.pieceCap)
 		if err != nil {
 			a.drop("unreadable_file")
 			return
@@ -532,6 +653,23 @@ func (a *archiver) file(f usageFile, size int64) {
 				a.stop = archiveFullStop
 				a.st.FullAt = archiveNow().UnixMilli()
 				return
+			case errors.As(err, &ae) && ae.status == http.StatusNotImplemented:
+				// the server keeps no archive (WAYPOINT_TRANSCRIPT_DIR=off): not a drop
+				// and not a hold of this file; a hook's passes leave it for a while
+				a.stop, a.quiet = archiveNoneStop, true
+				a.st.NoneAt = archiveNow().UnixMilli()
+				return
+			case errors.As(err, &ae) && ae.status == http.StatusRequestEntityTooLarge:
+				// most likely a proxy's body limit, not the server's refusal of the
+				// content: learn a smaller piece size, for the rest of the pass and
+				// the passes after it. Only a single line still refused holds the file.
+				if len(piece.lines) > 1 {
+					a.learnCap(len(piece.data) / 2)
+					continue
+				}
+				a.drop("refused")
+				st.Held, st.HeldAt = ae.Error()+" (a single line was refused; likely a proxy's request body size limit, e.g. nginx client_max_body_size; see docs/DEPLOY.md)", time.Now().UnixMilli()
+				return
 			case errors.As(err, &ae) && refusedForGood(ae.status):
 				if len(piece.lines) > 1 && !shrunk {
 					shrunk, maxLines = true, (len(piece.lines)+1)/2 // a smaller piece, once
@@ -543,13 +681,13 @@ func (a *archiver) file(f usageFile, size int64) {
 			}
 			a.drop("upload_failed")
 			a.fails++
-			if a.fails >= 3 {
+			if a.fails >= archiveFailStop {
 				a.stop = "uploads are failing: " + err.Error()
 			}
 			return
 		}
 		a.fails = 0
-		a.st.FullAt = 0
+		a.st.FullAt, a.st.NoneAt = 0, 0
 		if ans.Status == "stored" {
 			a.res.Pieces++
 			a.res.RawBytes += int64(len(piece.data))
@@ -559,7 +697,7 @@ func (a *archiver) file(f usageFile, size int64) {
 					a.drop(l.reason) // counted when stored, not when read
 				}
 			}
-			st.Off, st.Last, st.Held, st.Tail, shrunk = to, time.Now().UnixMilli(), "", "", false
+			st.Off, st.Last, st.Held, st.Tail, shrunk, maxLines = to, time.Now().UnixMilli(), "", "", false, 0
 			sent = true
 			tail, err := tailHash(fh, to)
 			if err != nil {
@@ -647,11 +785,13 @@ func lineTooLargeStub(n int64) []byte {
 }
 
 // readArchivePiece reads whole lines from off until the piece is about
-// archivePieceSize, maxLines (when over 0) or the file's end, redacting each. A line over
+// archivePieceSize, maxLines or maxBytes (when over 0; a piece over maxBytes
+// is cut before the line that crosses it, though one line is always taken) or
+// the file's end, redacting each. A line over
 // archiveMaxLine becomes a stub of its own, or ends the piece when lines come
 // before it. to is the file offset after the last whole line read. A read
 // error is an error.
-func readArchivePiece(fh *os.File, off, size int64, known []string, maxLines int) (archivePiece, int64, error) {
+func readArchivePiece(fh *os.File, off, size int64, known []string, maxLines, maxBytes int) (archivePiece, int64, error) {
 	var p archivePiece
 	br := bufio.NewReaderSize(io.NewSectionReader(fh, off, size-off), 1<<20)
 	var long []byte // the start of a line longer than the buffer
@@ -693,6 +833,9 @@ func readArchivePiece(fh *os.File, off, size int64, known []string, maxLines int
 		reason := ""
 		if !ok {
 			reason = "redaction_failed"
+		}
+		if maxBytes > 0 && len(p.lines) > 0 && len(p.data)+len(out) > maxBytes {
+			break // the learned cap: the next piece starts with this line
 		}
 		p.add(out, pos+n, reason, n, rc)
 		pos += n
@@ -787,7 +930,9 @@ func archiveDropText(reason string, n int64) string {
 // where the name holds token, secret, password, api key, access key, private
 // key, authorization or credential; --password-style flags, --auth among
 // them; Bearer values; passwords in URLs; the shapes sk-, ghp_/gho_/ghu_/
-// ghs_/ghr_, glpat-, xox?-, AKIA and JWTs), the strings under a secret-named
+// ghs_/ghr_, glpat-, xox?-, AKIA and JWTs; Authorization schemes with their
+// credential, Basic, Token, Negotiate and Digest among them; PEM private
+// key blocks, body only), the strings under a secret-named
 // key, and this machine's own Waypoint token wherever it appears. A test
 // holds a row for each of redact's alternatives, so the prefilter below
 // cannot fall behind it. What it does not cover: secrets of no recognisable
@@ -967,13 +1112,22 @@ var secretKeyRE = lazyre.New(`(?i)token|secret|passw(?:or)?d|api[_-]?key|access[
 // TestArchiveRedactionCoversWhatRedactDoes holds a row for each.
 var secretHints = []string{"token", "secret", "passw", "apikey", "api_key", "api-key", "access_key", "access-key",
 	"accesskey", "private_key", "private-key", "privatekey", "authorization", "credential", "bearer", "://", "--auth",
-	"sk-", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "glpat-", "xox", "akia", "eyj"}
+	"sk-", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "glpat-", "xox", "akia", "eyj", "private key"}
 
+// mayHoldSecret says whether a string's text, still JSON-escaped, might hold a
+// secret. A literal with a backslash is decoded first: a hint written with
+// escapes (":\/\/", \u0074oken) is still a hint.
 func mayHoldSecret(lit []byte, known []string) bool {
 	if len(lit) < 4 {
 		return false
 	}
 	s := string(lit)
+	if bytes.IndexByte(lit, '\\') >= 0 {
+		var d string
+		if json.Unmarshal(append(append([]byte{'"'}, lit...), '"'), &d) == nil {
+			s = d
+		}
+	}
 	for _, k := range known {
 		if len(k) >= 8 && strings.Contains(s, k) {
 			return true

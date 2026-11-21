@@ -299,3 +299,67 @@ func collectorByName(t *testing.T, name string) collector {
 	t.Fatalf("no collector %q", name)
 	return collector{}
 }
+
+func userDeleteDetail(t *testing.T, e *env) string {
+	t.Helper()
+	var detail string
+	if err := e.s.db.R.QueryRow(`SELECT detail FROM audit_log WHERE action = 'user.delete'`).Scan(&detail); err != nil {
+		t.Fatal(err)
+	}
+	return detail
+}
+
+// The delete entry promises the removal only when a removal follows, and says
+// nothing of transcripts on a server that keeps none (audit 1233.11).
+func TestUserDeleteAuditWordingFollowsTheArchive(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		keeps   bool
+		want    string
+		notWant string
+	}{
+		{"keeps an archive", true, "their archived transcripts are removed from the disk next", ""},
+		{"keeps none", false, "", "transcript"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			if tc.keeps {
+				e.s.cfg.TranscriptDir = t.TempDir()
+			}
+			jo := e.user("jo", false)
+			if err := e.s.DeleteUser(e.ctx, e.admin, jo.User.ID); err != nil {
+				t.Fatal(err)
+			}
+			e.s.Wait()
+			d := userDeleteDetail(t, e)
+			if tc.want != "" && !strings.Contains(d, tc.want) {
+				t.Errorf("detail %q lacks %q", d, tc.want)
+			}
+			if tc.notWant != "" && strings.Contains(d, tc.notWant) {
+				t.Errorf("detail %q mentions %q", d, tc.notWant)
+			}
+		})
+	}
+}
+
+// A removal that fails leaves its own audit entry, so the trail does not say
+// files are gone that are not (audit 1233.11).
+func TestUserDeleteRemovalFailureIsAudited(t *testing.T) {
+	e := transcriptEnv(t)
+	jo := e.user("jo", false)
+	l := "{}\n"
+	e.put(jo, piece("s1", "main", 0, l), l)
+	e.s.removeAll = func(string) error { return errors.New("disk said no") }
+	if err := e.s.DeleteUser(e.ctx, e.admin, jo.User.ID); err != nil {
+		t.Fatal(err)
+	}
+	e.s.Wait()
+	var detail, target string
+	var by int64
+	if err := e.s.db.R.QueryRow(`SELECT detail, target, user_id FROM audit_log WHERE action = 'user.transcripts.remove_failed'`).Scan(&detail, &target, &by); err != nil {
+		t.Fatalf("no failure entry: %v", err)
+	}
+	if !strings.Contains(detail, "disk said no") || target != "jo" || by != e.admin.User.ID {
+		t.Errorf("entry: detail %q target %q by %d", detail, target, by)
+	}
+}

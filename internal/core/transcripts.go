@@ -432,10 +432,25 @@ func (s *Service) dropUserTranscripts(e *Event) {
 	if !ok || uid <= 0 || s.cfg.TranscriptDir == "" {
 		return
 	}
+	name, _ := e.Data["name"].(string)
+	by, _ := e.Data["by"].(int64)
 	s.goBG(func() {
-		if err := os.RemoveAll(filepath.Join(s.cfg.TranscriptDir, strconv.FormatInt(uid, 10))); err != nil {
-			s.log.Warn("removing a deleted account's transcripts", "user", uid, "err", err)
+		rm := os.RemoveAll
+		if s.removeAll != nil {
+			rm = s.removeAll
 		}
+		err := rm(filepath.Join(s.cfg.TranscriptDir, strconv.FormatInt(uid, 10)))
+		if err == nil {
+			return
+		}
+		s.log.Warn("removing a deleted account's transcripts", "user", uid, "err", err)
+		// the delete entry said removal follows: say that it did not
+		entry := AuditEntry{Action: "user.transcripts.remove_failed", Category: AuditAccess, TargetType: "user", TargetID: uid, Target: name,
+			Detail: "their archived transcripts could not be removed from the disk: " + err.Error()}
+		if by == 0 {
+			entry.Actor = "waypoint" // no person deleted it; an entry needs someone named
+		}
+		s.audit(context.Background(), &Actor{User: &User{ID: by}}, entry)
 	})
 }
 
@@ -822,6 +837,9 @@ func (s *Service) walkGroups(groups [][]transcriptPiece, fn func(TranscriptFile,
 func (s *Service) ReadTranscript(ctx context.Context, actor *Actor, q TranscriptQuery, w io.Writer) error {
 	if q.File == "" {
 		return invalid("file is required")
+	}
+	if s.cfg.TranscriptDir == "" {
+		return ErrTranscriptsOff
 	}
 	ps, err := s.transcriptPieces(ctx, actor, q)
 	if err != nil {

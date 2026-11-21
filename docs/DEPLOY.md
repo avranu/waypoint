@@ -31,7 +31,7 @@ All configuration is environment variables.
 | `WAYPOINT_LOG_FORMAT` | `json` | `text` for humans |
 | `WAYPOINT_LOG_DIR` | `logs/` next to the database (Docker image: `/data/logs`) | the server log's day files, read by `wp server log` across restarts and deploys: one JSON line a record, secrets blanked, mode 0600, gzipped once the day is over, at most 512 MB in all; `off` keeps the log in memory only |
 | `WAYPOINT_LOG_DAYS` | `30` | how many days of log files to keep |
-| `WAYPOINT_TRANSCRIPT_DIR` | `transcripts/` next to the database (Docker image: `/data/transcripts`) | the transcript archive `wp usage sync` uploads (WP-1466): one gzipped file per piece, about a quarter of the raw size of the sessions on the machines that sync (measured 2026-11-21 on one machine: 400 transcripts modified in 30 days were 935 MB raw and 254 MB gzipped, and about 900 MB raw per 7 days); the daily DB backup does not include it; `off` keeps no archive and uploads are refused |
+| `WAYPOINT_TRANSCRIPT_DIR` | `transcripts/` next to the database (Docker image: `/data/transcripts`) | the transcript archive `wp usage sync` uploads (WP-1466): one gzipped file per piece, about a third of the raw size of the sessions on the machines that sync (one busy machine on 2026-11-21, by `find ~/.claude/projects -name '*.jsonl' -mtime -30`, sub-agent files included: 3,314 files were 6.6 GB raw and 2.0 GB through `gzip -6`, and the last 7 days alone were 3.0 GB raw; that is before redaction and gzipped as one stream, so take it as a rough size, not a forecast); the daily DB backup does not include it; `off` keeps no archive: an upload and a read are answered `501` (`this server keeps no transcript archive ...`), which is a setting and not logged as a failed request, and `wp usage sync` takes it to mean this server keeps no archive (nothing is held or counted as failed) |
 | `WAYPOINT_TRANSCRIPT_MAX_MB` | none (0 or unset: no cap) | the most the transcript archive may hold, in MB. When storing a piece would pass it, the server refuses with `507` (`the transcript archive is full: ...`) and counts the refusal (`refused` in `wp usage machines` counts refused upload attempts, not files); `wp usage sync` treats that as held (the file stays pending, the pass stops quietly with that reason, nothing is dropped) and tries again next time (a machine's hook passes wait an hour after a `507` before trying again; a manual `wp usage sync` always tries). The cap refuses, it never deletes: see "Backups and restore" |
 | `WAYPOINT_DEV_PROXY` | none | proxy the web app to a Vite dev server |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) | none | turns on OpenTelemetry traces, sent over OTLP/HTTP (e.g. `http://tempo:4318`). The other standard variables apply: `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_SERVICE_NAME` (default `waypoint`), `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_TRACES_SAMPLER`/`_ARG` (default `parentbased_always_on`); `OTEL_SDK_DISABLED=true` turns them off again. See Observability |
@@ -522,10 +522,12 @@ Any proxy works. Requirements:
   its next model).
 - The transcript archive (`POST /api/v1/usage/transcript`, WP-1466) sends
   pieces of up to 8 MiB raw, and a piece may be up to 24 MiB compressed (the
-  server's cap), so give that route its own larger limit (below). A proxy
-  that refuses a piece is counted on the machine as a refused upload; `wp
-  usage sync` then retries the file with a smaller piece, and if that is
-  refused too it holds the file and tries again once a day.
+  server's cap), so give that route its own larger limit (below). When a
+  proxy answers 413 to a piece, `wp usage sync` halves its piece size and
+  goes on, keeps the smaller size for a day, and so still archives through a
+  smaller limit, in more requests. Only a single line too large for the
+  proxy holds its file (counted as a refused upload, tried again once a day,
+  and `wp usage machines` names the likely cause).
 
 nginx example:
 
