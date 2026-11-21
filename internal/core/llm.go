@@ -813,7 +813,7 @@ func salvageFrom(s string) (json.RawMessage, int, bool) {
 			keyReady = false
 		case ':':
 			// only a key at depth 1 followed by a colon counts
-			if !(keyReady && len(stack) == 1) {
+			if !keyReady || len(stack) != 1 {
 				lastKey = ""
 			}
 			keyReady = false
