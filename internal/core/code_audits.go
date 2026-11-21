@@ -134,7 +134,9 @@ type CodeAudit struct {
 	Purpose string `json:"purpose,omitempty"`
 	// Weakest is the quality bar of an audit through the LLM gateway:
 	// the weakest model it accepts, by the name the gateway rates (WP-916,
-	// trustedAuditBar). "": any model of its audit purpose.
+	// trustedAuditBar). An audit whose chain asks the gateway to choose has
+	// one at least reviewFloorBar (WP-1440); "" is a chain of models named
+	// for it, or no gateway.
 	Weakest     string             `json:"weakest,omitempty"`
 	Models      []string           `json:"models"`
 	PostComment bool               `json:"post_comment"`
@@ -288,8 +290,9 @@ type AuditInput struct {
 	prContext string
 	// authorModel: see CodeAudit.authorModel.
 	authorModel string
-	// weakest: see CodeAudit.Weakest. Only Waypoint sets one (a review
-	// round of a high-stakes change, a rerun of such an audit).
+	// weakest: see CodeAudit.Weakest. Only Waypoint sets one above the
+	// floor (a review round of a high or elevated change, a rerun of such an
+	// audit); RequestAudit gives any other gateway audit the floor.
 	weakest string
 	// reviewText and roundContext: see CodeAudit's. Only a review round's
 	// audit has them (WP-1320).
@@ -630,6 +633,17 @@ func (s *Service) RequestAudit(ctx context.Context, actor *Actor, in AuditInput)
 		}
 	}
 	a.Purpose, a.Weakest = in.purpose, in.weakest
+	// The floor is recorded only on an audit whose chain asks the gateway to
+	// choose its model (WP-1440). A chain of models a person or a tier named
+	// has none: they picked those. A floor passed in for such a chain (a
+	// round's, with no gateway set) is dropped.
+	if slices.Contains(chain, AgentModel{CLI: GatewayCLI, Model: gatewayAuditModel}) {
+		if a.Weakest == "" {
+			a.Weakest = reviewFloorBar
+		}
+	} else if a.Weakest == reviewFloorBar {
+		a.Weakest = ""
+	}
 	a.reviewText, a.roundContext, a.claims = in.reviewText, in.roundContext, in.claims
 	if a.Purpose == AuditObjective {
 		// What Waypoint tells a judge of the task and its round
@@ -929,7 +943,9 @@ func (s *Service) advanceAudit(ctx context.Context, id int64) {
 			}
 			// Never the family of the model that wrote the code.
 			in.GatewayExclude, timeout = gatewayExcludeFor(a.authorModel), gatewayAuditTimeout+a.Helpers.extraTimeout()
-			in.GatewayWeakest = a.Weakest
+			if a.Weakest != reviewFloorBar || m.Model == gatewayAuditModel {
+				in.GatewayWeakest = a.Weakest // the floor is for the audit purpose, not a model named for the audit
+			}
 		}
 		raw, _ := json.Marshal(in)
 		job, err := s.EnqueueRunnerJob(ctx, SystemActor(), RunnerJobInput{Kind: JobAudit, OwnerID: a.ownerID, Input: raw, Source: auditSource, SourceID: a.ID,
