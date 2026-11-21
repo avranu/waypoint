@@ -2945,15 +2945,29 @@ func (s *Service) RemoveRelation(ctx context.Context, actor *Actor, ref string, 
 		if err != nil {
 			return err
 		}
-		holder, err := s.relationHolder(ctx, t, a, relationID)
-		if err != nil {
-			return err
-		}
 		var src, dst int64
-		err = t.QueryRowContext(ctx, `SELECT source_id, target_id FROM issue_relations WHERE id = ?`, relationID).Scan(&src, &dst)
+		err = t.QueryRowContext(ctx, `SELECT source_id, target_id FROM issue_relations WHERE id = ? AND (source_id = ? OR target_id = ?)`, relationID, a.ID, a.ID).Scan(&src, &dst)
 		if errors.Is(err, sql.ErrNoRows) {
 			return notFound("relation")
 		} else if err != nil {
+			return err
+		}
+		// A relation to a task the actor can't open isn't theirs to remove,
+		// and says nothing but what a missing one does: GetIssue doesn't
+		// list it, and removing it would write its key into this history.
+		otherID := dst
+		if src != a.ID {
+			otherID = src
+		}
+		other, err := s.issueByID(ctx, t, otherID, false)
+		if err != nil {
+			return err
+		}
+		if !s.canSee(ctx, t, actor, other.ID, other.ProjectID) {
+			return notFound("relation")
+		}
+		holder, err := s.relationHolder(ctx, t, a, relationID)
+		if err != nil {
 			return err
 		}
 		old, data, err := s.relationGone(ctx, t, holder, relationID, "", "")
