@@ -2,7 +2,6 @@ package core
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 )
@@ -126,9 +125,12 @@ func TestRoundInterruptedForTheLastTimeIsReleased(t *testing.T) {
 	if len(g.created) != 1 {
 		t.Fatalf("opened %d pull requests; step = %+v; rounds = %v", len(g.created), a.step(), a.rounds())
 	}
-	n := a.lastNotice()
-	if !strings.Contains(n, "interrupted") || !strings.Contains(n, "3") {
-		t.Errorf("notice = %q", n)
+	var n int
+	if err := a.s.db.R.QueryRow(`SELECT count(*) FROM notifications WHERE user_id = ? AND kind = ? AND body LIKE '%interrupted%' AND body LIKE '%3%'`, a.admin.User.ID, NotifyAutopilot).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n == 0 {
+		t.Errorf("no notice says the round was interrupted 3 times; last = %q", a.lastNotice())
 	}
 }
 
