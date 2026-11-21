@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/rand/v2"
 	"net/http"
 	"os"
@@ -94,6 +95,7 @@ type archiveTap struct {
 	mu       sync.Mutex
 	pieces   int
 	statuses int
+	bodies   []string // the status bodies posted, in order
 	// onPiece, when set, answers a piece itself and returns true.
 	onPiece func(n int, w http.ResponseWriter, r *http.Request) bool
 }
@@ -120,8 +122,11 @@ func tappedEnv(t *testing.T) (*env, *archiveTap) {
 					return
 				}
 			case r.Method == "POST" && r.URL.Path == "/api/v1/usage/transcript/status":
+				body, _ := io.ReadAll(r.Body)
+				r.Body = io.NopCloser(bytes.NewReader(body))
 				tap.mu.Lock()
 				tap.statuses++
+				tap.bodies = append(tap.bodies, string(body))
 				tap.mu.Unlock()
 			}
 			h.ServeHTTP(w, r)
@@ -436,11 +441,11 @@ func TestArchiveCountsStubsWhenStored(t *testing.T) {
 	e, tap := tappedEnv(t)
 	me := e.login()
 	old := archiveRedact
-	archiveRedact = func(line []byte, known []string) ([]byte, bool) {
+	archiveRedact = func(line []byte, known []string) ([]byte, bool, redactCount) {
 		if bytes.Contains(line, []byte("BOOM")) {
-			return stubLine(), false
+			return stubLine(), false, redactCount{}
 		}
-		return redactTranscriptLineWith(line, known)
+		return redactTranscriptLineCounted(line, known)
 	}
 	t.Cleanup(func() { archiveRedact = old })
 	dir := emptyDir(t)

@@ -648,10 +648,22 @@ differences (a message written again with more tokens). Cost is API-equivalent, 
                                     its byte offsets; answers {status: stored|duplicate|behind|gap, have, gen}
                                     (behind and gap say where to resume). Needs the sessions:report permission and
                                     a person's token, not a runner job's. The redacted flag is the client's
-                                    statement that it removed secrets; the server does not check it.
-    POST /usage/transcript/status {"machine","pending_bytes","pending_files","dropped":{reason:count}}   a machine's upload health
+                                    statement that it removed secrets; the server does not check it. Optional
+                                    redactions=N&redaction_rules={"secret_key":n,"known_value":n,"pattern":n}: how
+                                    many values redaction blanked in the piece (counts only; absent is stored as
+                                    unknown). 507 "the transcript archive is full" when the server's size cap
+                                    (WAYPOINT_TRANSCRIPT_MAX_MB) would be passed: the client holds the file and
+                                    retries later; nothing is stored.
+    POST /usage/transcript/status {"machine","pending_bytes","pending_files","dropped":{reason:count},"pass_ms",
+                                    "pass_max_ms","stop","cut","off"}   a machine's upload health: the last and
+                                    longest pass (ms), why the last stopped early ("" ran to the end), passes cut
+                                    short so far, and off (WP_USAGE_ARCHIVE=off; an off report changes nothing else).
+                                    Fields left out keep what was reported before (unknown until reported)
+    GET  /usage/machines?user=       the machines that report for you (admins: anyone) with each one's archive record:
+                                    pending, dropped by reason, off, pass_ms, pass_max_ms, stop, cut, last_piece_at
     GET  /usage/transcripts?session=ID&user=&machine=&gen=   the files held for a session: pieces, byte range,
-                                    complete (no hole), sizes, whether every piece was redacted
+                                    complete (no hole), sizes, whether every piece was redacted, and redactions (values blanked,
+                                    with redaction_rules by rule; null when any piece predates the counts)
     GET  /usage/transcript?session=ID&file=main|PATH&machine=&user=&gen=   one file's JSONL, whole lines in order;
                                     a person only (an agent's shell is refused). A stored piece that fails its
                                     check after bytes went out breaks the connection instead of ending the body
@@ -854,8 +866,8 @@ steers or clears one in effect.
     GET|POST /admin/automations      admin automations (no project; they see every project's events
                                      and the system's; system triggers system_resources,
                                      runner_offline, backup_failed). Edit them with PATCH|DELETE /automations/{id}
-    GET  /admin/system               free disk, database size, free memory and the limits
-    PUT  /admin/system-limits {"disk_free_mb","database_mb","memory_free_mb"}   0 turns a check off
+    GET  /admin/system               free disk, database size, free memory, the transcript archive (size, pieces, cap, refusals) and the limits
+    PUT  /admin/system-limits {"disk_free_mb","database_mb","memory_free_mb","transcripts_mb"}   0 turns a check off
     GET  /projects/{key}/bot-runs?limit=50   bot runs, newest first: pr, reason, status, log
                                      (each model tried: model, outcome, ms), findings, review_url
     POST /bot-runs/{id}/cancel       POST /bot-runs/{id}/retry   (again at the current head)

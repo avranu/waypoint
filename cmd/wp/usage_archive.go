@@ -53,6 +53,18 @@ import (
 // bytes still waiting are counted, kept in usage-archive.json and reported to
 // the server after each pass (collector health shows them).
 //
+// The status the server is told after a pass (collector health and
+// `wp usage machines` show it): what waits, what was dropped, how long the pass
+// took and the longest, why it stopped early ("" ran to the end), how many
+// passes were cut short, and whether the archive is off (WP_USAGE_ARCHIVE=off,
+// the machine's own opt-out; --no-archive says nothing). It is posted when
+// something but the pass's duration changed or the longest grew, and
+// again every archiveRefresh (12h) so the server can tell a machine that
+// stopped reporting from one with nothing new. A 507 from the server (its
+// size cap, WAYPOINT_TRANSCRIPT_MAX_MB) is a hold, not a refusal: the pass
+// stops with that reason, nothing is dropped, and the files go next time.
+// Each piece also carries how many values redaction blanked, and by which rule.
+//
 // Redaction (what it does and does not cover): redactTranscriptLineWith.
 // WP_USAGE_ARCHIVE=off keeps a machine's transcripts out of the archive.
 
@@ -75,8 +87,18 @@ var (
 	archiveHookLimit   = 20 * time.Second
 	archivePassLimit   = 10 * time.Minute
 	archiveUploadFloor = 15 * time.Second // an upload may run this long past the pass's end
-	archiveRedact      = redactTranscriptLineWith
+	archiveRedact      = redactTranscriptLineCounted
+	archiveNow         = time.Now // tests set the clock
+	// archivePassDuration is how long a pass that began at start took.
+	archivePassDuration = func(start time.Time) time.Duration { return time.Since(start) }
 )
+
+// archiveRefresh: the status is posted again when the last report is this
+// old, even if nothing changed. The server counts a machine whose usage sync
+// arrives long after its last status as waiting (audit 1218.10), and the
+// client posts only on change, so without this a healthy idle machine would
+// look like one that stopped reporting.
+const archiveRefresh = 12 * time.Hour
 
 type archiveFileState struct {
 	Off    int64  `json:"off"`               // the server's copy ends here (a line end)
@@ -94,7 +116,13 @@ type archiveState struct {
 	Dropped map[string]int64 `json:"dropped,omitempty"`
 	// Reported is the last status the server was told.
 	Reported string `json:"reported,omitempty"`
-	reset    bool   // the file could not be read as JSON and was started over
+	// ReportedAt is when (ms) a status was last posted, for the refresh.
+	ReportedAt int64 `json:"reported_at,omitempty"`
+	// Cut counts the passes that ended before the end, since this machine began.
+	Cut int64 `json:"cut,omitempty"`
+	// PassMax is the longest pass (ms) this machine has run.
+	PassMax int64 `json:"pass_max_ms,omitempty"`
+	reset   bool  // the file could not be read as JSON and was started over
 }
 
 // loadArchiveState reads the state. The file is scratch data (the server
@@ -133,6 +161,7 @@ type archiveResult struct {
 	Dropped      map[string]int64 `json:"dropped,omitempty"` // this pass
 	Stopped      string           `json:"stopped,omitempty"` // why the pass ended before the end
 	Elapsed      string           `json:"elapsed"`
+	ElapsedMS    int64            `json:"elapsed_ms"`
 }
 
 // archiveEnabled: WP_USAGE_ARCHIVE=off turns the upload off on a machine.
@@ -195,7 +224,7 @@ func (a *archiver) save() error {
 // first). Errors are for the caller to report; the pass itself counts what it
 // could not do.
 func usageArchive(c *cli, o usageSyncOptions, root string) (*archiveResult, error) {
-	started := time.Now()
+	started := archiveNow()
 	res := &archiveResult{Dropped: map[string]int64{}}
 	if !o.DryRun {
 		unlock, ok := tryLock(filepath.Join(c.dir, "usage-archive.lock"), 30*time.Minute)
@@ -291,9 +320,13 @@ func usageArchive(c *cli, o usageSyncOptions, root string) (*archiveResult, erro
 		}
 	}
 	res.Stopped = a.stop
-	res.Elapsed = time.Since(started).Round(time.Millisecond).String()
+	el := archivePassDuration(started)
+	res.Elapsed, res.ElapsedMS = el.Round(time.Millisecond).String(), el.Milliseconds()
 	if o.DryRun {
 		return res, nil
+	}
+	if a.stop != "" && !a.quiet {
+		a.st.Cut++ // a pass that ended early is counted, with the reason in the status
 	}
 	saveErr := a.save()
 	if a.quiet {
@@ -305,21 +338,67 @@ func usageArchive(c *cli, o usageSyncOptions, root string) (*archiveResult, erro
 	return res, saveErr
 }
 
-// report tells the server what waits and what was dropped, when that changed.
+// report tells the server what waits, what was dropped and how the passes
+// go, when that changed or when the last report is old (archiveRefresh: the
+// client posts only on change, and a machine whose status goes quiet while
+// its usage sync arrives is read by the server as one that stopped reporting).
+// How long this pass took is in the body but not in what is compared: a pass
+// that only took a different time is not news, unless it is the longest yet
+// (pass_max_ms is compared).
 func (a *archiver) report(c *cli, res *archiveResult) error {
-	body := map[string]any{"machine": machineName(), "pending_bytes": res.PendingBytes, "pending_files": res.PendingFiles, "dropped": a.st.Dropped}
+	a.st.PassMax = max(a.st.PassMax, res.ElapsedMS)
+	body := map[string]any{"machine": machineName(), "pending_bytes": res.PendingBytes, "pending_files": res.PendingFiles,
+		"dropped": a.st.Dropped, "pass_max_ms": a.st.PassMax, "stop": a.stop, "cut": a.st.Cut, "off": false}
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return err
 	}
-	if string(raw) == a.st.Reported {
+	if string(raw) == a.st.Reported && !reportDue(a.st.ReportedAt) {
 		return nil
 	}
+	body["pass_ms"] = res.ElapsedMS
 	if err := c.do("POST", "/api/v1/usage/transcript/status", body, nil); err != nil {
 		return fmt.Errorf("telling the server the archive's state: %w", err)
 	}
-	a.st.Reported = string(raw)
+	a.st.Reported, a.st.ReportedAt = string(raw), archiveNow().UnixMilli()
 	return a.save()
+}
+
+// reportDue: the last report is old enough to repeat.
+func reportDue(at int64) bool {
+	return archiveNow().Sub(time.UnixMilli(at)) >= archiveRefresh
+}
+
+// archiveReportOff tells the server this machine's archive is off
+// (WP_USAGE_ARCHIVE=off), once and then when that changes or the refresh is
+// due. --no-archive, a dry run and a busy pass say nothing: only the
+// environment is the machine's own opt-out.
+func archiveReportOff(c *cli, o usageSyncOptions) error {
+	if o.DryRun || o.NoArchive {
+		return nil
+	}
+	unlock, ok := tryLock(filepath.Join(c.dir, "usage-archive.lock"), 30*time.Minute)
+	if !ok {
+		return nil
+	}
+	defer unlock()
+	st, err := loadArchiveState(c.dir)
+	if err != nil {
+		return err
+	}
+	body := map[string]any{"machine": machineName(), "off": true}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	if string(raw) == st.Reported && !reportDue(st.ReportedAt) {
+		return nil
+	}
+	if err := c.do("POST", "/api/v1/usage/transcript/status", body, nil); err != nil {
+		return fmt.Errorf("telling the server the archive is off: %w", err)
+	}
+	st.Reported, st.ReportedAt = string(raw), archiveNow().UnixMilli()
+	return writeJSON(filepath.Join(c.dir, archiveStateFile), st)
 }
 
 // refusedForGood: the server answered no and asking again the same way will
@@ -415,9 +494,11 @@ func (a *archiver) file(f usageFile, size int64) {
 			gz = gzipBytes(piece.data)
 		}
 		to := piece.end(st.Off)
+		rc := piece.redactions()
+		rules, _ := json.Marshal(rc.rules())
 		q := url.Values{"machine": {machineName()}, "session": {f.Session}, "file": {archiveFileKey(f)}, "kind": {f.Kind},
 			"fp": {fmt.Sprintf("%s#%d", st.FP, st.Gen)}, "from": {fmt.Sprint(st.Off)}, "to": {fmt.Sprint(to)},
-			"redacted": {"1"}, "version": {version}}
+			"redacted": {"1"}, "version": {version}, "redactions": {fmt.Sprint(rc.Total)}, "redaction_rules": {string(rules)}}
 		ctx, cancel := a.uploadContext()
 		b, err := a.c.send(ctx, "POST", "/api/v1/usage/transcript?"+q.Encode(), "application/gzip", bytes.NewReader(gz))
 		cancel()
@@ -435,6 +516,11 @@ func (a *archiver) file(f usageFile, size int64) {
 			case errors.As(err, &ae) && ae.status == http.StatusForbidden && ae.msg == core.TranscriptJobRefusal:
 				a.stop = "this is a runner job's token; the runner's own sync archives its sessions"
 				a.quiet = true
+				return
+			case errors.As(err, &ae) && ae.status == http.StatusInsufficientStorage && ae.msg == core.TranscriptQuotaRefusal:
+				// the server's archive is at its size cap: held, not refused. Nothing is
+				// dropped or marked, the file stays pending, and asking again is for later
+				a.stop = "the server's transcript archive is full (its size cap); held until there is room"
 				return
 			case errors.As(err, &ae) && refusedForGood(ae.status):
 				if len(piece.lines) > 1 && !shrunk {
@@ -506,11 +592,22 @@ type pieceLine struct {
 	to      int64  // in the file, after the line
 	reason  string // set when the line is a stub: what is counted when the piece is stored
 	dropped int64  // the file bytes a stub stands for
+	redact  redactCount
 }
 
-func (p *archivePiece) add(out []byte, to int64, reason string, dropped int64) {
+func (p *archivePiece) add(out []byte, to int64, reason string, dropped int64, rc redactCount) {
 	p.data = append(p.data, out...)
-	p.lines = append(p.lines, pieceLine{end: len(p.data), to: to, reason: reason, dropped: dropped})
+	p.lines = append(p.lines, pieceLine{end: len(p.data), to: to, reason: reason, dropped: dropped, redact: rc})
+}
+
+// redactions is what redaction blanked in the lines the piece holds now (after
+// any cut or stub).
+func (p archivePiece) redactions() redactCount {
+	var r redactCount
+	for _, l := range p.lines {
+		r.add(l.redact)
+	}
+	return r
 }
 
 // end is the file offset after the last line (off when there is none).
@@ -530,7 +627,7 @@ func (p *archivePiece) keep(n int) {
 func (p *archivePiece) stubOnly(stub []byte, reason string, dropped int64) {
 	to := p.lines[0].to
 	p.data, p.lines = nil, nil
-	p.add(stub, to, reason, dropped)
+	p.add(stub, to, reason, dropped, redactCount{})
 }
 
 // lineTooLargeStub stands for a line that could not be sent.
@@ -577,16 +674,16 @@ func readArchivePiece(fh *os.File, off, size int64, known []string, maxLines int
 			if len(p.lines) > 0 {
 				break // what came before goes first; the next piece starts with the stub
 			}
-			p.add(lineTooLargeStub(n), pos+n, "line_too_large", n)
+			p.add(lineTooLargeStub(n), pos+n, "line_too_large", n, redactCount{})
 			pos += n
 			continue
 		}
-		out, ok := archiveRedact(data, known)
+		out, ok, rc := archiveRedact(data, known)
 		reason := ""
 		if !ok {
 			reason = "redaction_failed"
 		}
-		p.add(out, pos+n, reason, n)
+		p.add(out, pos+n, reason, n, rc)
 		pos += n
 	}
 	return p, p.end(off), nil
@@ -689,8 +786,55 @@ func archiveDropText(reason string, n int64) string {
 // same checks as plain text. The archive is private to its owner (admins can
 // read any), like the rest of usage data.
 func redactTranscriptLineWith(line []byte, known []string) ([]byte, bool) {
+	out, ok, _ := redactTranscriptLineCounted(line, known)
+	return out, ok
+}
+
+// redactCount says how many string values redaction blanked in a line (or a
+// piece), and by which rule. A value two rules both changed counts once in
+// Total and once in each rule. Only counts: never the values or key names
+// (audit 1218.33).
+type redactCount struct {
+	Total   int64
+	Key     int64 // under a key that names a secret
+	Known   int64 // this machine's own secret
+	Pattern int64 // a credential of a known shape
+}
+
+func (r *redactCount) add(o redactCount) {
+	r.Total += o.Total
+	r.Key += o.Key
+	r.Known += o.Known
+	r.Pattern += o.Pattern
+}
+
+// rules is the by-rule map the server stores (rules that did nothing left out).
+func (r redactCount) rules() map[string]int64 {
+	m := map[string]int64{}
+	for k, n := range map[string]int64{"secret_key": r.Key, "known_value": r.Known, "pattern": r.Pattern} {
+		if n > 0 {
+			m[k] = n
+		}
+	}
+	return m
+}
+
+// redactTranscriptLineCounted is redactTranscriptLineWith that also counts
+// what it blanked.
+func redactTranscriptLineCounted(line []byte, known []string) ([]byte, bool, redactCount) {
+	var cnt redactCount
 	if !json.Valid(bytes.TrimSpace(line)) {
-		return []byte(redactText(string(line), known)), true
+		r, kh, ph := redactTextCounted(string(line), known)
+		if kh || ph {
+			cnt.Total = 1
+			if kh {
+				cnt.Known = 1
+			}
+			if ph {
+				cnt.Pattern = 1
+			}
+		}
+		return []byte(r), true, cnt
 	}
 	var out []byte         // allocated at the first change
 	copied := 0            // line[:copied] is already in out
@@ -721,7 +865,7 @@ func redactTranscriptLineWith(line []byte, known []string) ([]byte, bool) {
 			j++
 		}
 		if j >= len(line) {
-			return stubLine(), false
+			return stubLine(), false, redactCount{}
 		}
 		lit := line[i+1 : j] // the string's text, still escaped
 		k := j + 1
@@ -738,16 +882,25 @@ func redactTranscriptLineWith(line []byte, known []string) ([]byte, bool) {
 			pendingSecret = false
 			if len(lit) > 0 && string(lit) != "***" {
 				repl = []byte("***")
+				cnt.Total++
+				cnt.Key++
 			}
 		case mayHoldSecret(lit, known):
 			var s string
 			if err := json.Unmarshal(line[i:j+1], &s); err != nil {
-				return stubLine(), false
+				return stubLine(), false, redactCount{}
 			}
-			if r := redactText(s, known); r != s {
+			if r, kh, ph := redactTextCounted(s, known); r != s {
+				if kh {
+					cnt.Known++
+				}
+				if ph {
+					cnt.Pattern++
+				}
+				cnt.Total++
 				q, err := marshalString(r)
 				if err != nil {
-					return stubLine(), false
+					return stubLine(), false, redactCount{}
 				}
 				repl = q[1 : len(q)-1]
 			}
@@ -760,9 +913,9 @@ func redactTranscriptLineWith(line []byte, known []string) ([]byte, bool) {
 		i = j + 1
 	}
 	if out == nil {
-		return line, true
+		return line, true, cnt
 	}
-	return append(out, line[copied:]...), true
+	return append(out, line[copied:]...), true, cnt
 }
 
 func stubLine() []byte {
@@ -771,12 +924,21 @@ func stubLine() []byte {
 
 // redactText is redact plus the machine's own secrets.
 func redactText(s string, known []string) string {
+	r, _, _ := redactTextCounted(s, known)
+	return r
+}
+
+// redactTextCounted also says whether a known secret and whether a pattern
+// changed the text.
+func redactTextCounted(s string, known []string) (out string, knownHit, patternHit bool) {
 	for _, k := range known {
-		if len(k) >= 8 {
+		if len(k) >= 8 && strings.Contains(s, k) {
 			s = strings.ReplaceAll(s, k, "***")
+			knownHit = true
 		}
 	}
-	return redact(s)
+	r := redact(s)
+	return r, knownHit, r != s
 }
 
 func marshalString(s string) ([]byte, error) {

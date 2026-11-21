@@ -516,6 +516,10 @@ func usageSync(c *cli, o usageSyncOptions) (*usageSyncResult, error) {
 		if aerr != nil {
 			res.ArchiveError = aerr.Error()
 		}
+	} else if !o.NoArchive {
+		if aerr := archiveReportOff(c, o); aerr != nil {
+			res.ArchiveError = aerr.Error()
+		}
 	}
 	res.Elapsed = time.Since(started).Round(time.Millisecond).String()
 	if flushErr != nil {

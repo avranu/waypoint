@@ -8,8 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"text/tabwriter"
-	"time"
 
 	"git.jmann.me/claude/waypoint/internal/core"
 )
@@ -22,7 +20,8 @@ var usageTranscriptCmd = &command{
 	about: `Without --file, lists the files the archive holds of the session (the main
 thread, and each sub-agent's transcript under subagents/), per machine, with
 their sizes, generation (a file Claude Code rewrote starts the next) and
-whether redaction ran. With --file (main, or a path from the list) writes
+whether redaction ran and how many values it blanked (unknown for pieces
+stored before that was counted). With --file (main, or a path from the list) writes
 that file's JSONL to stdout, every line whole, in the order it was written.
 Your own sessions; an admin can read anyone's with --user. Redaction removes
 credentials of known shapes, not everything private: treat the text as private.`,
@@ -70,15 +69,7 @@ func cmdUsageTranscript(c *cli, args []string) error {
 		if len(files) == 0 {
 			return "Nothing archived for that session."
 		}
-		var b strings.Builder
-		tw := tabwriter.NewWriter(&b, 0, 4, 2, ' ', 0)
-		_, _ = fmt.Fprintln(tw, "MACHINE\tFILE\tKIND\tGEN\tPIECES\tRAW\tSTORED\tREDACTED\tCOMPLETE\tLAST")
-		for _, f := range files {
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\t%s\t%s\t%v\t%v\t%s\n", f.Machine, f.File, f.Kind, f.Gen, f.Pieces,
-				bytesText(f.RawBytes), bytesText(f.StoredBytes), f.Redacted, f.Complete, time.UnixMilli(f.LastAt).Format("2006-01-02 15:04"))
-		}
-		_ = tw.Flush()
-		return b.String()
+		return transcriptFilesText(files)
 	})
 }
 

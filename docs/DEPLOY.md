@@ -32,6 +32,7 @@ All configuration is environment variables.
 | `WAYPOINT_LOG_DIR` | `logs/` next to the database (Docker image: `/data/logs`) | the server log's day files, read by `wp server log` across restarts and deploys: one JSON line a record, secrets blanked, mode 0600, gzipped once the day is over, at most 512 MB in all; `off` keeps the log in memory only |
 | `WAYPOINT_LOG_DAYS` | `30` | how many days of log files to keep |
 | `WAYPOINT_TRANSCRIPT_DIR` | `transcripts/` next to the database (Docker image: `/data/transcripts`) | the transcript archive `wp usage sync` uploads (WP-1466): one gzipped file per piece, about a quarter of the raw size of the sessions on the machines that sync (measured 2026-11-21 on one machine: 400 transcripts modified in 30 days were 935 MB raw and 254 MB gzipped, and about 900 MB raw per 7 days); the daily DB backup does not include it; `off` keeps no archive and uploads are refused |
+| `WAYPOINT_TRANSCRIPT_MAX_MB` | none (0 or unset: no cap) | the most the transcript archive may hold, in MB. When storing a piece would pass it, the server refuses with `507` (`the transcript archive is full: ...`) and counts the refusal; `wp usage sync` treats that as held (the file stays pending, the pass stops quietly with that reason, nothing is dropped) and tries again next time. The cap refuses, it never deletes: see "Backups and restore" |
 | `WAYPOINT_DEV_PROXY` | none | proxy the web app to a Vite dev server |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) | none | turns on OpenTelemetry traces, sent over OTLP/HTTP (e.g. `http://tempo:4318`). The other standard variables apply: `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_SERVICE_NAME` (default `waypoint`), `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_TRACES_SAMPLER`/`_ARG` (default `parentbased_always_on`); `OTEL_SDK_DISABLED=true` turns them off again. See Observability |
 
@@ -361,6 +362,19 @@ database holds only an index of it. Copy that directory off the machine too,
 and treat it as private (it holds what was said in every session, redacted of
 credentials of known shapes only). Restoring a database without it leaves the
 index pointing at files that are not there; reading such a piece is an error.
+
+Nothing in the transcript archive is ever deleted: not by age, not by size, not
+when a session is removed from the app. `WAYPOINT_TRANSCRIPT_MAX_MB` only makes
+the server refuse new pieces once the archive is that large (the uploading
+machines keep the files pending and say so in `wp usage machines`); it does not
+prune. Pruning old pieces and backing the archive up are yours to do: the
+directory needs its own off-machine copy, and freeing room means deleting
+files there (and, until the index is pruned too, reading such a piece is an
+error). The archive's size and piece count are in the admin Automations page
+(System limits, "Transcript archive larger than (MB)" alerts like disk,
+database and memory do) and in `GET /admin/system`; a machine's
+opt-out (`WP_USAGE_ARCHIVE=off`), drops and slow or cut-short passes are in
+`wp usage machines` and the "transcript archive" line of `wp server status`.
 
 Restore (compose):
 
