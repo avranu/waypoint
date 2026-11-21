@@ -333,7 +333,11 @@ func (s *Service) startRound(ctx context.Context, t *tx, id int64, at int64) (bo
 	}
 	s.emitWorkLog(ctx, t, r.issueID, id, RoundRunning)
 	if r.sessionID.Valid {
-		_ = s.sessionTimeline(ctx, t, r.sessionID.Int64, at, "autopilot", "", 0, "review", "", "Autopilot asked for an adversarial review of "+r.key, sql.NullInt64{}, map[string]any{"round": id})
+		if err := s.sessionTimeline(ctx, t, r.sessionID.Int64, at, "autopilot", "", 0, "review", "", "Autopilot asked for an adversarial review of "+r.key, sql.NullInt64{}, map[string]any{"round": id}); err != nil {
+			if readFault(err) {
+				s.log.WarnContext(ctx, "session timeline failed", "sessionid", r.sessionID.Int64, "err", err)
+			}
+		}
 	}
 	return true, nil
 }
@@ -406,7 +410,11 @@ func (s *Service) roundAtStop(ctx context.Context, t *tx, x *AgentSession, issue
 	}
 	key := ""
 	_ = t.QueryRowContext(ctx, `SELECT p.key || '-' || i.number FROM issues i JOIN projects p ON p.id = i.project_id WHERE i.id = ?`, issueID).Scan(&key)
-	_ = s.sessionTimeline(ctx, t, x.ID, at, "autopilot", "", 0, "reviewed", "", "Finished the adversarial review of "+key, x.projectID, map[string]any{"round": r.id})
+	if err := s.sessionTimeline(ctx, t, x.ID, at, "autopilot", "", 0, "reviewed", "", "Finished the adversarial review of "+key, x.projectID, map[string]any{"round": r.id}); err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "session timeline failed", "x", x.ID, "projectid", x.projectID, "err", err)
+		}
+	}
 	return true, nil
 }
 
@@ -543,8 +551,8 @@ func reviewStarted(ctx context.Context, q queryer, sessionID, issueID int64) boo
 // reviewHold: a round on one of the pull request's tasks still to run, or
 // running, holds its merge, so the fixes it pushes go in with it; only for
 // so long (reviewHoldPending, reviewHoldRunning). until is when the hold
-// lapses by itself.
-func (s *Service) reviewHold(ctx context.Context, pr *PullRequest) (reason string, until *time.Time) {
+// lapses by itself. A failed read is an error, not "no round holds it".
+func (s *Service) reviewHold(ctx context.Context, pr *PullRequest) (reason string, until *time.Time, err error) {
 	rows, err := s.db.R.QueryContext(ctx, `SELECT w.state, w.created_at, coalesce(w.started_at, 0), coalesce(w.audit_at, 0), p.key || '-' || i.number,
 			coalesce(a.status = 'queued' OR (a.status = 'running' AND j.state = 'queued'), 0), coalesce(j.started_at, 0), coalesce(a.finished_at, 0) FROM work_log w
 		JOIN issues i ON i.id = w.issue_id JOIN projects p ON p.id = i.project_id
@@ -553,7 +561,7 @@ func (s *Service) reviewHold(ctx context.Context, pr *PullRequest) (reason strin
 		AND EXISTS (SELECT 1 FROM external_links el WHERE el.issue_id = w.issue_id AND el.kind = 'pull' AND (el.url = ? OR (el.repo = ? COLLATE NOCASE AND el.number = ?)))`,
 		pr.URL, pr.Repo, pr.Number)
 	if err != nil {
-		return "", nil
+		return "", nil, err
 	}
 	defer rows.Close()
 	now := s.nowMS()
@@ -563,8 +571,8 @@ func (s *Service) reviewHold(ctx context.Context, pr *PullRequest) (reason strin
 		var state, key string
 		var created, started, auditAt, auditStarted, auditEnded int64
 		var auditQueued bool
-		if rows.Scan(&state, &created, &started, &auditAt, &key, &auditQueued, &auditStarted, &auditEnded) != nil {
-			continue
+		if err := rows.Scan(&state, &created, &started, &auditAt, &key, &auditQueued, &auditStarted, &auditEnded); err != nil {
+			return "", nil, err
 		}
 		end := created + reviewHoldPending.Milliseconds()
 		if auditAt > 0 {
@@ -595,11 +603,14 @@ func (s *Service) reviewHold(ctx context.Context, pr *PullRequest) (reason strin
 		}
 		last = max(last, end)
 	}
+	if err := rows.Err(); err != nil {
+		return "", nil, err
+	}
 	if len(keys) == 0 {
-		return "", nil
+		return "", nil, nil
 	}
 	t := msTime(last)
-	return "an adversarial review of " + strings.Join(keys, ", ") + " is still working on it", &t
+	return "an adversarial review of " + strings.Join(keys, ", ") + " is still working on it", &t, nil
 }
 
 // onWorkLogEvent: a round that ended no longer holds its task's pull

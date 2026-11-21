@@ -292,7 +292,11 @@ func (s *Service) waitOnSharedTimeout(ctx context.Context, b *Babysit, pr *PullR
 	key := "timeout@" + pr.HeadSHA
 	task := s.ciLimitsTask(ctx, pr.ForgeID, pr.Repo)
 	if b.told != key {
-		_ = s.setBabysit(ctx, b, map[string]any{"told": key})
+		if err := s.setBabysit(ctx, b, map[string]any{"told": key}); err != nil {
+			if readFault(err) {
+				s.log.WarnContext(ctx, "set babysit failed", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "err", err)
+			}
+		}
 		b.told = key
 		seen := fmt.Sprintf("%s held by it: %s timed out on %s (%s), as on %s; it waits out of the merge line for %s to move on.\n",
 			faultCode(fmt.Sprintf("%s#%d", pr.Repo, pr.Number)), faultCode(joinAnd(ev.checks)), short(pr.HeadSHA), faultCode(pr.URL), faultCode(joinAnd(ev.others)), base)
@@ -300,7 +304,13 @@ func (s *Service) waitOnSharedTimeout(ctx context.Context, b *Babysit, pr *PullR
 		if err != nil {
 			s.log.Debug("CI limits for a shared timeout", "pr", pr.ID, "err", err)
 		}
-		task, _ = s.fileCILimits(ctx, pr.ForgeID, pr.Repo, "problem", ls, seen)
+		var rerr error
+		task, rerr = s.fileCILimits(ctx, pr.ForgeID, pr.Repo, "problem", ls, seen)
+		if rerr != nil {
+			if readFault(rerr) {
+				s.log.WarnContext(ctx, "file cilimits failed", "forgeid", pr.ForgeID, "err", rerr)
+			}
+		}
 		if b.sessionID != 0 {
 			tracked := ""
 			if task != "" {

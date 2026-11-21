@@ -304,7 +304,10 @@ func (s *Service) fileFlake(ctx context.Context, b *Babysit, pr *PullRequest, fr
 	if len(fr.Checks) == 0 {
 		return "", nil
 	}
-	projectID := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo)
+	projectID, err := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo)
+	if err != nil {
+		return "", err
+	}
 	if projectID == 0 {
 		return "", nil
 	}

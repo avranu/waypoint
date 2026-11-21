@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 )
@@ -76,6 +77,7 @@ func (s *Service) prVoice(ctx context.Context, f *Forge) *prVoice {
 }
 
 // outside: a login that isn't a Waypoint person's, nor Waypoint's own.
+// Doubt counts as outside for showing text; outsideErr is for recording.
 func (v *prVoice) outside(ctx context.Context, q queryer, login string) bool {
 	if v.bot != "" && strings.EqualFold(strings.TrimSpace(login), v.bot) {
 		return false
@@ -83,21 +85,44 @@ func (v *prVoice) outside(ctx context.Context, q queryer, login string) bool {
 	return v.s.fromOutside(ctx, q, v.f, login)
 }
 
+func (v *prVoice) outsideErr(ctx context.Context, q queryer, login string) (bool, error) {
+	if v.bot != "" && strings.EqualFold(strings.TrimSpace(login), v.bot) {
+		return false, nil
+	}
+	outside, _, err := v.s.forgeWriterErr(ctx, q, v.f, login)
+	return outside, err
+}
+
 // authorOutside: a pull request's author isn't a Waypoint person. For
 // a mirror's copies of GitHub pull requests, the GitHub author named in
 // the text must be a person on some forge too, as the copying account is.
 func (v *prVoice) authorOutside(ctx context.Context, q queryer, forgeAuthor, author string) bool {
-	if v.outside(ctx, q, forgeAuthor) {
+	outside, err := v.authorOutsideErr(ctx, q, forgeAuthor, author)
+	if err != nil {
+		if readFault(err) {
+			v.s.log.WarnContext(ctx, "read whether a pull request's author is a person", "forge", forgeLogID(v.f), "err", err)
+		}
 		return true
 	}
+	return outside
+}
+
+// authorOutsideErr is authorOutside with a failed read as an error, for a
+// caller that records the answer: a read that failed marks nothing.
+func (v *prVoice) authorOutsideErr(ctx context.Context, q queryer, forgeAuthor, author string) (bool, error) {
+	if out, err := v.outsideErr(ctx, q, forgeAuthor); err != nil || out {
+		return out, err
+	}
 	if strings.EqualFold(author, forgeAuthor) {
-		return false
+		return false, nil
 	}
 	// The original is on GitHub: its author must be a person there.
 	var ok bool
-	_ = q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM forge_people fp JOIN forges g ON g.id = fp.forge_id
-		WHERE g.kind = 'github' AND fp.login = ?)`, strings.TrimSpace(author)).Scan(&ok)
-	return !ok
+	if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM forge_people fp JOIN forges g ON g.id = fp.forge_id
+		WHERE g.kind = 'github' AND fp.login = ?)`, strings.TrimSpace(author)).Scan(&ok); err != nil {
+		return false, err
+	}
+	return !ok, nil
 }
 
 // heldPR is a comment from outside on a pull request to keep for a person.
@@ -178,7 +203,11 @@ func (s *Service) screenPull(ctx context.Context, t *tx, v *prVoice, pr *PullReq
 		// A GitLab hook, or a refresh, doesn't say: who it was recorded as.
 		forgeAuthor = pr.forgeAuthor
 	}
-	if !v.authorOutside(ctx, t, forgeAuthor, pr.Author) {
+	outsider, err := v.authorOutsideErr(ctx, t, forgeAuthor, pr.Author)
+	if err != nil {
+		return err // marks nothing: the next sync decides
+	}
+	if !outsider {
 		if !pr.Outside {
 			return nil
 		}
@@ -187,7 +216,7 @@ func (s *Service) screenPull(ctx context.Context, t *tx, v *prVoice, pr *PullReq
 		return err
 	}
 	var state, okTitle, okHead, okHash string
-	err := t.QueryRowContext(ctx, `SELECT state, title, head_sha, body_hash FROM outside_pr_text WHERE pr_id = ? AND external_id = ''`, pr.ID).
+	err = t.QueryRowContext(ctx, `SELECT state, title, head_sha, body_hash FROM outside_pr_text WHERE pr_id = ? AND external_id = ''`, pr.ID).
 		Scan(&state, &okTitle, &okHead, &okHash)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
@@ -347,7 +376,13 @@ func (s *Service) ApproveOutsidePR(ctx context.Context, actor *Actor, id int64) 
 	}
 	bg := context.WithoutCancel(ctx)
 	if o.kind != OutsidePull {
-		s.goBG(func() { _, _ = s.syncReviewComments(bg, pr) })
+		s.goBG(func() {
+			if _, err := s.syncReviewComments(bg, pr); err != nil {
+				if readFault(err) && !errors.Is(err, ErrNotFound) && !isStatus(err, http.StatusNotFound) {
+					s.log.WarnContext(bg, "sync an outside pull request's review comments", "pr", pr.ID, "err", err)
+				}
+			}
+		})
 		return nil
 	}
 	if !opened {
@@ -363,12 +398,16 @@ func (s *Service) ApproveOutsidePR(ctx context.Context, actor *Actor, id int64) 
 		return err
 	}
 	if projects, err := s.botProjects(ctx, pr.ForgeID, pr.Repo); err == nil && (cur.State == "open" || cur.State == "draft") {
-		_ = s.write(ctx, SystemActor(), func(t *tx) error {
+		if err := s.write(ctx, SystemActor(), func(t *tx) error {
 			for _, p := range projects {
 				t.emit(&Event{Kind: EvPRUpdated, ProjectID: p, New: "opened", Data: prEventData(cur, map[string]any{"reason": "opened"})})
 			}
 			return nil
-		})
+		}); err != nil {
+			if readFault(err) {
+				s.log.WarnContext(ctx, "approve an outside pull request", "pr", id, "err", err)
+			}
+		}
 	}
 	s.afterPRRecorded(bg, f, cur)
 	return nil

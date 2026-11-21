@@ -161,7 +161,12 @@ func (s *Service) headAudited(ctx context.Context, pr *PullRequest) bool {
 // last auditWaitMax), or one asked for in the last auditQueueWait that no
 // runner has taken yet (its job queued, or its models busy).
 func (s *Service) auditGoing(ctx context.Context, prID int64) (int64, bool) {
-	id, going, _ := s.auditGoingErr(ctx, prID)
+	id, going, rerr := s.auditGoingErr(ctx, prID)
+	if rerr != nil {
+		if readFault(rerr) {
+			s.log.WarnContext(ctx, "audit going err failed", "prid", prID, "err", rerr)
+		}
+	}
 	return id, going
 }
 
@@ -194,117 +199,166 @@ func (s *Service) auditKind(ctx context.Context, id int64) string {
 	if s.db.R.QueryRowContext(ctx, `SELECT purpose FROM code_audits WHERE id = ?`, id).Scan(&purpose) != nil {
 		return ""
 	}
-	switch {
-	case purpose == AuditFootprint:
+	switch purpose {
+	case AuditFootprint:
 		return " (a footprint check)"
-	case purpose == AuditReview:
+	case AuditReview:
 		return " (for an adversarial review)"
-	case s.roundsAudit(ctx, id):
+	}
+	// Only a label: an unread answer (logged by roundsAudit) names no kind.
+	if rounds, err := s.roundsAudit(ctx, id); err == nil && rounds {
 		return " (from an adversarial review)"
 	}
 	return ""
 }
 
 // roundsAudit: a review round asked for the audit.
-func (s *Service) roundsAudit(ctx context.Context, id int64) bool {
+// A read that failed is an error, not "no round asked" (WP-1406); the Warn
+// is here, once.
+func (s *Service) roundsAudit(ctx context.Context, id int64) (bool, error) {
 	var ok bool
 	err := s.db.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM work_log WHERE kind = 'review' AND audit_id = ?)`, id).Scan(&ok)
-	return err == nil && ok
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read whether a review round asked for an audit", "audit", id, "err", err)
+		}
+		return false, err
+	}
+	return ok, nil
 }
 
 // roundRunning: a babysitting round's job for the pull request is queued or
-// running.
-func (s *Service) roundRunning(ctx context.Context, prID int64) bool {
+// running. A failed read is an error, not "no round running", for the merge
+// hold that asks.
+func (s *Service) roundRunning(ctx context.Context, prID int64) (bool, error) {
 	var n int
 	err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM babysits b JOIN runner_jobs j ON j.id = b.job_id
 		WHERE b.pr_id = ? AND b.job_id != 0 AND j.state IN ('queued','running')`, prID).Scan(&n)
-	return err == nil && n > 0
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 // auditDeadline is when the audit auditGoing found stops holding the merge:
 // the time at which a re-read of the pull request lets it go.
-func (s *Service) auditDeadline(ctx context.Context, id int64) *time.Time {
+// An audit that is gone has no deadline (nil, nil); a read that failed is an
+// error, so the caller keeps a time to look again (WP-1406).
+func (s *Service) auditDeadline(ctx context.Context, id int64) (*time.Time, error) {
 	var created int64
 	var state string
 	var started *int64
-	if s.db.R.QueryRowContext(ctx, `SELECT a.created_at, coalesce(j.state, 'queued'), j.started_at FROM code_audits a
-		LEFT JOIN runner_jobs j ON j.id = a.job_id WHERE a.id = ?`, id).Scan(&created, &state, &started) != nil {
-		return nil
+	err := s.db.R.QueryRowContext(ctx, `SELECT a.created_at, coalesce(j.state, 'queued'), j.started_at FROM code_audits a
+		LEFT JOIN runner_jobs j ON j.id = a.job_id WHERE a.id = ?`, id).Scan(&created, &state, &started)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
 	}
 	at := time.UnixMilli(created).Add(auditQueueWait)
 	if state == "running" && started != nil {
 		at = time.UnixMilli(*started).Add(auditWaitMax)
 	}
-	return &at
+	return &at, nil
 }
 
 // newestAudit is the pull request's audit that finished last, whatever its
 // end (0: none yet).
-func (s *Service) newestAudit(ctx context.Context, prID int64) (int64, string) {
+func (s *Service) newestAudit(ctx context.Context, prID int64) (int64, string, error) {
 	return s.newestOf(ctx, prID, "")
 }
 
 // newestOf is newestAudit for audits of a purpose ("" or AuditFootprint):
 // a footprint check finishing doesn't make an audit's findings go away.
-func (s *Service) newestOf(ctx context.Context, prID int64, purpose string) (int64, string) {
+// No finished audit is the answer (0, ""); a failed read is an error.
+func (s *Service) newestOf(ctx context.Context, prID int64, purpose string) (int64, string, error) {
 	var id int64
 	var status string
 	err := s.db.R.QueryRowContext(ctx, `SELECT id, status FROM code_audits WHERE pr_id = ? AND purpose = ? AND status IN ('done','failed','limited','cancelled')
 		ORDER BY coalesce(finished_at, created_at) DESC, id DESC LIMIT 1`, prID, purpose).Scan(&id, &status)
-	if err != nil {
-		return 0, ""
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, "", nil
 	}
-	return id, status
+	if err != nil {
+		return 0, "", err
+	}
+	return id, status, nil
 }
 
 // carriedAudits are the finished audits a review round's release carried to
 // the pull request: the round's own and its check of the session's marks.
 // They hold its merge and show in its work packet beside the newest audit,
 // which would otherwise shadow them (WP-1370).
-func (s *Service) carriedAudits(ctx context.Context, prID int64) []int64 {
+func (s *Service) carriedAudits(ctx context.Context, prID int64) ([]int64, error) {
 	rows, err := s.db.R.QueryContext(ctx, `SELECT id FROM code_audits WHERE pr_id = ? AND purpose = '' AND status = ? AND request_key LIKE 'review-round:%' ORDER BY id`, prID, AuditDone)
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	ids, err := scanIDs(rows)
-	if err != nil {
-		return nil
-	}
-	return ids
+	return scanIDs(rows)
 }
 
 // auditTodo is the findings still to do (open or confirmed), worst first,
 // of the pull request's newest finished audit and newest footprint check
 // (WP-440), each when it is done.
+// A read that fails is logged and leaves out what it could not read: the
+// callers start rounds and fill packets, which the next pass redoes; the
+// merge hold reads through auditTodoErr.
 func (s *Service) auditTodo(ctx context.Context, prID int64) []TodoFinding {
-	var out []TodoFinding
-	seen := map[int64]bool{}
-	for _, purpose := range []string{"", AuditFootprint} {
-		id, status := s.newestOf(ctx, prID, purpose)
-		if id == 0 || status != AuditDone {
-			continue
-		}
-		seen[id] = true
-		for _, f := range s.findingsToDo(ctx, id) {
-			out = append(out, TodoFinding{CodeAuditFinding: f, Audit: id, Footprint: purpose == AuditFootprint})
-		}
-	}
-	for _, id := range s.carriedAudits(ctx, prID) {
-		if seen[id] {
-			continue
-		}
-		for _, f := range s.findingsToDo(ctx, id) {
-			out = append(out, TodoFinding{CodeAuditFinding: f, Audit: id})
+	out, err := s.auditTodoErr(ctx, prID)
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read the pull request's audit findings", "pr", prID, "err", err)
 		}
 	}
 	return out
 }
 
+// auditTodoErr is auditTodo, also reporting a failed read.
+func (s *Service) auditTodoErr(ctx context.Context, prID int64) ([]TodoFinding, error) {
+	var out []TodoFinding
+	seen := map[int64]bool{}
+	for _, purpose := range []string{"", AuditFootprint} {
+		id, status, err := s.newestOf(ctx, prID, purpose)
+		if err != nil {
+			return out, err
+		}
+		if id == 0 || status != AuditDone {
+			continue
+		}
+		seen[id] = true
+		todo, err := s.findingsToDo(ctx, id)
+		if err != nil {
+			return out, err
+		}
+		for _, f := range todo {
+			out = append(out, TodoFinding{CodeAuditFinding: f, Audit: id, Footprint: purpose == AuditFootprint})
+		}
+	}
+	carried, err := s.carriedAudits(ctx, prID)
+	if err != nil {
+		return out, err
+	}
+	for _, id := range carried {
+		if seen[id] {
+			continue
+		}
+		todo, err := s.findingsToDo(ctx, id)
+		if err != nil {
+			return out, err
+		}
+		for _, f := range todo {
+			out = append(out, TodoFinding{CodeAuditFinding: f, Audit: id})
+		}
+	}
+	return out, nil
+}
+
 // findingsToDo are an audit's findings that are open or confirmed.
-func (s *Service) findingsToDo(ctx context.Context, id int64) []CodeAuditFinding {
+func (s *Service) findingsToDo(ctx context.Context, id int64) ([]CodeAuditFinding, error) {
 	a := &CodeAudit{ID: id}
 	if err := s.loadFindings(ctx, a); err != nil {
-		return nil
+		return nil, err
 	}
 	var todo []CodeAuditFinding
 	for _, f := range a.Findings {
@@ -312,7 +366,7 @@ func (s *Service) findingsToDo(ctx context.Context, id int64) []CodeAuditFinding
 			todo = append(todo, f)
 		}
 	}
-	return todo
+	return todo, nil
 }
 
 // auditRoundWork is the ids of the findings that start a babysitting round:
@@ -339,19 +393,29 @@ func (s *Service) auditRoundWork(ctx context.Context, b *Babysit, prID int64) []
 // auditHolds are the reasons the newest finished audit holds a pull request,
 // and, when that audit ended without findings, a note saying it holds
 // nothing.
-func (s *Service) auditHolds(ctx context.Context, prID, going int64) ([]string, string) {
+// A failed read is an error: the audit's findings are unknown, so the merge
+// must not go on them.
+func (s *Service) auditHolds(ctx context.Context, prID, going int64) ([]string, string, error) {
 	// An audit going (auditGoing) holds the merge until it ends, so an armed
 	// pull request doesn't merge under it. One that waited too long for a
 	// runner, or ran too long, holds nothing: the feature fails open.
 	if going != 0 {
-		return []string{fmt.Sprintf("waiting for audit #%d%s to finish", going, s.auditKind(ctx, going))}, ""
+		return []string{fmt.Sprintf("waiting for audit #%d%s to finish", going, s.auditKind(ctx, going))}, "", nil
 	}
 	// Scope creep a footprint check named holds it, whatever its severity,
 	// until it is undone, split out or turned down (WP-440).
 	var reasons []string
-	if id, status := s.newestOf(ctx, prID, AuditFootprint); id != 0 && status == AuditDone {
+	fid, fstatus, err := s.newestOf(ctx, prID, AuditFootprint)
+	if err != nil {
+		return nil, "", err
+	}
+	if id := fid; id != 0 && fstatus == AuditDone {
 		var ids []string
-		for _, f := range s.findingsToDo(ctx, id) {
+		todo, err := s.findingsToDo(ctx, id)
+		if err != nil {
+			return nil, "", err
+		}
+		for _, f := range todo {
 			ids = append(ids, f.ID)
 		}
 		if len(ids) > 0 {
@@ -361,11 +425,18 @@ func (s *Service) auditHolds(ctx context.Context, prID, going int64) ([]string, 
 	}
 	// What a review round's release carried to the pull request holds it as
 	// its own audit's findings do, whichever audit finished last (WP-1370).
-	id, status := s.newestAudit(ctx, prID)
+	id, status, err := s.newestAudit(ctx, prID)
+	if err != nil {
+		return nil, "", err
+	}
 	var held []string
 	if id != 0 && status == AuditDone {
 		var ids []string
-		for _, f := range s.findingsToDo(ctx, id) {
+		todo, err := s.findingsToDo(ctx, id)
+		if err != nil {
+			return nil, "", err
+		}
+		for _, f := range todo {
 			if auditHoldsMerge(f.Severity) {
 				ids = append(ids, f.ID)
 			}
@@ -375,12 +446,20 @@ func (s *Service) auditHolds(ctx context.Context, prID, going int64) ([]string, 
 				id, len(ids), plural(len(ids)), strings.Join(ids, ", ")))
 		}
 	}
-	for _, cid := range s.carriedAudits(ctx, prID) {
+	carried, err := s.carriedAudits(ctx, prID)
+	if err != nil {
+		return nil, "", err
+	}
+	for _, cid := range carried {
 		if cid == id {
 			continue
 		}
 		var ids []string
-		for _, f := range s.findingsToDo(ctx, cid) {
+		todo, err := s.findingsToDo(ctx, cid)
+		if err != nil {
+			return nil, "", err
+		}
+		for _, f := range todo {
 			if auditHoldsMerge(f.Severity) || s.isCheckAudit(ctx, cid) {
 				ids = append(ids, f.ID)
 			}
@@ -392,11 +471,11 @@ func (s *Service) auditHolds(ctx context.Context, prID, going int64) ([]string, 
 	}
 	switch {
 	case len(held) > 0:
-		return append(held, reasons...), ""
+		return append(held, reasons...), "", nil
 	case id != 0 && status != AuditDone:
-		return reasons, fmt.Sprintf("audit #%d ended %s: not holding the merge", id, status)
+		return reasons, fmt.Sprintf("audit #%d ended %s: not holding the merge", id, status), nil
 	}
-	return reasons, ""
+	return reasons, "", nil
 }
 
 // isCheckAudit: the audit is a review round's check of the session's marks

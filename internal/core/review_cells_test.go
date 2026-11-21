@@ -315,13 +315,13 @@ func TestReleasedRoundsFindingsHoldThePullRequest(t *testing.T) {
 	if todo := e.s.todoFindings(e.ctx, prID); len(todo) != 2 {
 		t.Fatalf("the pull request's packet lists %d findings, want the 2 nobody decided", len(todo))
 	}
-	if reasons, _ := e.s.auditHolds(e.ctx, prID, 0); len(reasons) == 0 {
+	if reasons, _, _ := e.s.auditHolds(e.ctx, prID, 0); len(reasons) == 0 {
 		t.Fatalf("the open findings don't hold the merge")
 	}
 	if _, err := e.s.db.W.Exec(`UPDATE code_audit_findings SET state = 'fixed' WHERE state = 'open'`); err != nil {
 		t.Fatal(err)
 	}
-	if reasons, _ := e.s.auditHolds(e.ctx, prID, 0); len(reasons) != 0 {
+	if reasons, _, _ := e.s.auditHolds(e.ctx, prID, 0); len(reasons) != 0 {
 		t.Fatalf("decided findings still hold the merge: %v", reasons)
 	}
 }
@@ -356,13 +356,13 @@ func TestUncheckedRejectionsHoldTheReleasedPullRequest(t *testing.T) {
 	if todo := e.s.todoFindings(e.ctx, prID); len(todo) != 2 {
 		t.Fatalf("the pull request's packet lists %d findings, want the 2 nobody checked", len(todo))
 	}
-	if reasons, _ := e.s.auditHolds(e.ctx, prID, 0); len(reasons) == 0 {
+	if reasons, _, _ := e.s.auditHolds(e.ctx, prID, 0); len(reasons) == 0 {
 		t.Fatalf("unchecked rejections don't hold the merge")
 	}
 	if _, err := e.s.db.W.Exec(`UPDATE code_audit_findings SET state = 'rejected' WHERE state = 'open'`); err != nil {
 		t.Fatal(err)
 	}
-	if reasons, _ := e.s.auditHolds(e.ctx, prID, 0); len(reasons) != 0 {
+	if reasons, _, _ := e.s.auditHolds(e.ctx, prID, 0); len(reasons) != 0 {
 		t.Fatalf("decided findings still hold the merge: %v", reasons)
 	}
 }

@@ -748,7 +748,12 @@ func (s *Service) auditLandingChance(ctx context.Context, a *CodeAudit, job *Run
 	case job != nil && job.State == "queued":
 		if cli == GatewayCLI && len(oks) > 0 {
 			var ahead int
-			running, _ := s.gatewayRunning(ctx)
+			running, rerr := s.gatewayRunning(ctx)
+			if rerr != nil {
+				if readFault(rerr) {
+					s.log.WarnContext(ctx, "gateway running failed", "audit", a.ID, "err", rerr)
+				}
+			}
 			_ = s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM runner_jobs WHERE kind = ? AND source != ? AND cli = ? AND state = 'queued' AND id < ?`,
 				JobAudit, prepAgentSource, cli, job.ID).Scan(&ahead)
 			if running+ahead >= GatewayTasksInFlight {
@@ -1280,7 +1285,13 @@ func (s *Service) onReviewAudit(ctx context.Context, e *Event) {
 func (s *Service) roundHoldsAudit(ctx context.Context, auditID int64) bool {
 	var n int
 	err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM work_log WHERE kind = 'review' AND state IN ('pending', 'running') AND audit_id = ? AND audit_note = ''`, auditID).Scan(&n)
-	return err == nil && n > 0
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read round holds audit", "auditID", auditID, "err", err)
+		}
+		return false
+	}
+	return n > 0
 }
 
 // cancelOrphanReviewAudits cancels the still-going audits that no round

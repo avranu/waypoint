@@ -23,6 +23,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -259,10 +260,14 @@ func (s *Service) markReadyOn(ctx context.Context, pr *PullRequest, st *queueSta
 		return err
 	}
 	if err := ed.EditPRTitle(ctx, f, pr.Repo, pr.Number, stripWIP(pr.Title)); err != nil {
-		_ = s.write(ctx, SystemActor(), func(t *tx) error {
+		if err := s.write(ctx, SystemActor(), func(t *tx) error {
 			_, err := t.ExecContext(ctx, `UPDATE pull_requests SET ready_at = NULL, ready_sha = '', ready_status_id = 0, ready_checks = '[]', ready_skipped = '[]' WHERE id = ? AND state = 'draft'`, pr.ID)
 			return err
-		})
+		}); err != nil {
+			if readFault(err) {
+				s.log.WarnContext(ctx, "clear the ready mark of a pull request", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "err", err)
+			}
+		}
 		return err
 	}
 	return s.write(ctx, SystemActor(), func(t *tx) error {
@@ -276,7 +281,10 @@ func (s *Service) markReadyOn(ctx context.Context, pr *PullRequest, st *queueSta
 			now, pr.ForgeID, pr.Repo, pr.HeadSHA, onEdit); err != nil {
 			return err
 		}
-		pid := s.attachedProject(ctx, t, pr.ForgeID, pr.Repo)
+		pid, err := s.attachedProject(ctx, t, pr.ForgeID, pr.Repo)
+		if err != nil {
+			return err
+		}
 		detail := "marked “" + excerpt(pr.Title, 120) + "” ready at " + short(pr.HeadSHA) + ": draft checks green, the full run starts"
 		if st != nil {
 			detail = "marked “" + excerpt(pr.Title, 120) + "” ready at " + short(pr.HeadSHA) + " on its passed merge queue stack (" + st.name() + "): no update or full run"
@@ -345,7 +353,10 @@ func (s *Service) markDraft(ctx context.Context, pr *PullRequest) error {
 		if _, err := t.ExecContext(ctx, `UPDATE pull_requests SET state = 'draft', ready_at = NULL WHERE id = ? AND state = 'open'`, pr.ID); err != nil {
 			return err
 		}
-		pid := s.attachedProject(ctx, t, pr.ForgeID, pr.Repo)
+		pid, err := s.attachedProject(ctx, t, pr.ForgeID, pr.Repo)
+		if err != nil {
+			return err
+		}
 		t.audit(AuditEntry{Action: "pr.draft", Category: AuditControl, ProjectID: pid, TargetType: "pr", TargetID: pr.ID,
 			Target: fmt.Sprintf("%s#%d", pr.Repo, pr.Number), URL: pr.URL, Detail: "put “" + excerpt(pr.Title, 120) + "” back to draft for another round", About: pr.Agent, Actor: "Waypoint"})
 		t.emit(&Event{Kind: EvPRActivity, ProjectID: pid, New: "draft", Data: map[string]any{"pr_id": pr.ID}})
@@ -356,17 +367,37 @@ func (s *Service) markDraft(ctx context.Context, pr *PullRequest) error {
 // fullRunOutstanding: a pull request Waypoint marked ready at this head still
 // lacks its full run, going by these checks. Until it has one, the head's CI
 // stays pending, so it is followed and its result announced when it comes.
+//
+// A read that fails counts as outstanding: the head's CI isn't reported passed
+// on a guess, and the next look at the forge asks again.
 func (s *Service) fullRunOutstanding(ctx context.Context, f *Forge, repo, sha string, checks []CommitCheck) bool {
+	outstanding, err := s.fullRunOutstandingErr(ctx, f, repo, sha, checks)
+	if err != nil {
+		if readFault(err) && !isStatus(err, http.StatusNotFound) {
+			s.log.WarnContext(ctx, "read whether a pull request's full run is outstanding", "repo", repo, "sha", sha, "err", err)
+		}
+		return true
+	}
+	return outstanding
+}
+
+func (s *Service) fullRunOutstandingErr(ctx context.Context, f *Forge, repo, sha string, checks []CommitCheck) (bool, error) {
 	rows, err := s.db.R.QueryContext(ctx, `SELECT id FROM pull_requests WHERE forge_id = ? AND repo = ? COLLATE NOCASE AND head_sha = ? AND state = 'open' AND wip_auto = 1 AND ready_at IS NOT NULL`, f.ID, repo, sha)
 	if err != nil {
-		return false
+		return false, err
 	}
 	var ids []int64
 	for rows.Next() {
 		var id int64
-		if rows.Scan(&id) == nil {
-			ids = append(ids, id)
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return false, err
 		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return false, err
 	}
 	rows.Close()
 	pcs := make([]PRCheck, 0, len(checks))
@@ -375,14 +406,20 @@ func (s *Service) fullRunOutstanding(ctx context.Context, f *Forge, repo, sha st
 	}
 	for _, id := range ids {
 		pr, err := s.prByID(ctx, s.db.R, id)
-		if err != nil || len(fullRunReasons(pr, pcs)) == 0 {
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+		if len(fullRunReasons(pr, pcs)) == 0 {
 			continue
 		}
 		if !s.noteFullRunSkips(ctx, f, pr, pcs) || len(fullRunReasons(pr, pcs)) > 0 {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 // noteFullRunSkips (WP-552): a job the draft tier runs and the full run

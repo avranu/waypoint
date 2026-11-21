@@ -82,7 +82,10 @@ func (s *Service) noteSurplusRefusal(pid int64, err error) *aiWaitError {
 // work lately, and it hasn't asked any normal request to wait (free
 // capacity is short then, whatever it would say).
 func (s *Service) surplusAllowed(ctx context.Context) bool {
-	ok, _, _ := s.surplusState(ctx)
+	ok, _, err := s.surplusState(ctx)
+	if err != nil {
+		return false // logged there: surplus work is held while the gateway can't be read
+	}
 	return ok
 }
 

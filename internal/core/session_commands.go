@@ -253,7 +253,12 @@ func (s *Service) sessionStatus(ctx context.Context, q queryer, x *AgentSession,
 	var held string
 	_ = q.QueryRowContext(ctx, `SELECT p.key || '-' || i.number FROM agent_runs r JOIN issues i ON i.id = r.issue_id JOIN projects p ON p.id = i.project_id
 		WHERE r.session_id = ? AND r.ended_at IS NULL ORDER BY r.started_at DESC, r.id DESC LIMIT 1`, x.ID).Scan(&held)
-	pid, _ := s.sessionProject(ctx, q, x.ID)
+	pid, rerr := s.sessionProject(ctx, q, x.ID)
+	if rerr != nil {
+		if readFault(rerr) {
+			s.log.WarnContext(ctx, "session project failed", "x", x.ID, "err", rerr)
+		}
+	}
 	if pid == 0 {
 		return "this session's repo isn't attached to a project, so autopilot leaves it alone."
 	}

@@ -426,7 +426,13 @@ func (s *Service) retakeForReview(ctx context.Context, actor *Actor, g *reviewGa
 // review in this session, before its pull request (WP-770).
 func (s *Service) ReviewsFirst(ctx context.Context, actor *Actor, task string) bool {
 	g, err := s.gateFor(ctx, actor, task, false, false)
-	return err == nil && g.no == ""
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read reviews first", "task", task, "err", err)
+		}
+		return false
+	}
+	return g.no == ""
 }
 
 // reviewFirst decides what wp ship's intent (in.Review) does about the
@@ -464,7 +470,12 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 		case intent == ShipSkip:
 			issueID := g.issueID
 			if issueID == 0 {
-				issueID, _ = s.resolveIssueID(ctx, s.db.R, cmp(in.For, in.Issue))
+				// No such task is an answer; a failed read is logged, and the
+				// pull request opens either way (as skipRoundsElsewhere's write).
+				var rerr error
+				if issueID, rerr = s.resolveIssueID(ctx, s.db.R, cmp(in.For, in.Issue)); readFault(rerr) && !missingOrDenied(rerr) {
+					s.log.WarnContext(ctx, "skip review: find the task whose waiting rounds end", "err", rerr)
+				}
 			}
 			if in.noSweep {
 				return true, "", "", nil
@@ -1143,7 +1154,13 @@ func (s *Service) roundAuditLives(ctx context.Context, roundID int64) bool {
 	var ok bool
 	err := s.db.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM work_log w JOIN code_audits a ON a.id = w.audit_id
 		WHERE w.id = ? AND a.purpose = ? AND a.status IN ('queued', 'running', 'done'))`, roundID, AuditReview).Scan(&ok)
-	return err == nil && ok
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read round audit lives", "roundID", roundID, "err", err)
+		}
+		return false
+	}
+	return ok
 }
 
 // reaskHeldRound asks again for a review held before its pull request that

@@ -46,8 +46,21 @@ func (s *Service) batchOrTell(ctx context.Context, sessionID, babysitID int64, b
 	if !blocking || moving {
 		if until := s.batchDeadline(ctx, sessionID, blocking); until.After(s.now()) {
 			// Blocking news held only for this babysit goes now, with this.
-			if err := hold(until.UnixMilli()); err == nil && (moving || !s.hasBlockingBatch(ctx, sessionID)) {
-				return
+			if err := hold(until.UnixMilli()); err == nil {
+				if moving {
+					return
+				}
+				blocking, herr := s.hasBlockingBatch(ctx, sessionID)
+				if herr != nil {
+					// Unknown is not "nothing is blocked on it": it stays held, to its deadline.
+					if readFault(herr) {
+						s.log.WarnContext(ctx, "read whether a session's batch is blocking", "session", sessionID, "err", herr)
+					}
+					return
+				}
+				if !blocking {
+					return
+				}
 			}
 		}
 	}
@@ -55,12 +68,12 @@ func (s *Service) batchOrTell(ctx context.Context, sessionID, babysitID int64, b
 }
 
 // hasBlockingBatch: news the agent is blocked on waits in a batch for the
-// session.
-func (s *Service) hasBlockingBatch(ctx context.Context, sessionID int64) bool {
+// session. A failed read is an error, not "none".
+func (s *Service) hasBlockingBatch(ctx context.Context, sessionID int64) (bool, error) {
 	var held bool
-	_ = s.db.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM session_messages WHERE session_id = ? AND state = 'queued' AND batch_until IS NOT NULL AND blocking = 1)
+	err := s.db.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM session_messages WHERE session_id = ? AND state = 'queued' AND batch_until IS NOT NULL AND blocking = 1)
 		OR EXISTS (SELECT 1 FROM requests WHERE session_id = ? AND delivered_at IS NULL AND batch_until IS NOT NULL AND blocking = 1)`, sessionID, sessionID).Scan(&held)
-	return held
+	return held, err
 }
 
 // babysitNotifiedNews: news the agent asked for with --notify (merged,
@@ -169,7 +182,17 @@ func (s *Service) releaseDueBatches(ctx context.Context) {
 	}
 	rows.Close()
 	for _, d := range list {
-		if d.until <= s.nowMS() || (len(s.movingSiblings(ctx, d.session, 0)) == 0 && s.hasBlockingBatch(ctx, d.session)) {
+		release := d.until <= s.nowMS()
+		if !release && len(s.movingSiblings(ctx, d.session, 0)) == 0 {
+			blocking, err := s.hasBlockingBatch(ctx, d.session)
+			if err != nil {
+				if readFault(err) {
+					s.log.WarnContext(ctx, "read whether a session's batch is blocking", "session", d.session, "err", err) // held to its deadline
+				}
+			}
+			release = err == nil && blocking
+		}
+		if release {
 			s.releaseBatch(ctx, d.session)
 		}
 	}
