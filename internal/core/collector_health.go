@@ -66,6 +66,9 @@ type collector struct {
 	name string
 	// what it is and who does it, for the notice
 	about string
+	// unit names what waiting counts when it is not the items the work is
+	// about (machines, not files); "" says nothing.
+	unit string
 	// waiting selects count(*) and the earliest ms any of it began to wait
 	// (NULL when none does); args are its bound values at a time.
 	waiting string
@@ -154,6 +157,7 @@ var collectors = []collector{
 	},
 	{
 		name:    "transcript archive",
+		unit:    "machines",
 		about:   "each machine's wp uploads its sessions' transcripts to the archive (wp usage sync); the drops it counted are in wp usage machines",
 		waiting: `SELECT COUNT(*), MIN(m.transcript_pending_since) FROM usage_machines m WHERE m.transcript_pending_bytes > 0`,
 		args:    noArgs,
@@ -420,6 +424,9 @@ func (s *Service) recordCollector(ctx context.Context, c collector, r collectorR
 			"name": c.name, "about": c.about, "waiting": stalledN, "oldest_ms": stalledOldest, "last_ms": r.last,
 			"since_ms": stalledSinceMS(since, now), "again": told.Valid && !early, "per_repo": r.perRepo,
 		}
+		if c.unit != "" {
+			data["unit"] = c.unit
+		}
 		if early {
 			data["new_repos"], data["new_by_repo"] = len(fresh), repoLabels(fresh)
 		}
@@ -453,7 +460,11 @@ func lastOutputText(last int64, now time.Time) string {
 func (s *Service) notifyCollector(ctx context.Context, e *Event) {
 	now := s.now()
 	name := dataStr(e, "name")
-	title := fmt.Sprintf("%s has stalled: %d waiting, nothing collected for %s", name, dataInt(e, "waiting"),
+	unit := ""
+	if u := dataStr(e, "unit"); u != "" {
+		unit = " " + u
+	}
+	title := fmt.Sprintf("%s has stalled: %d%s waiting, nothing collected for %s", name, dataInt(e, "waiting"), unit,
 		ShortDuration(collectorStallAfter))
 	lastWhere := "the last output was "
 	if e.Data["per_repo"] == true {

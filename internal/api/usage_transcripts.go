@@ -99,6 +99,9 @@ func (s *Server) transcriptRead(w http.ResponseWriter, r *http.Request) (any, er
 		w.Header().Del("Content-Type")
 		return nil, err
 	}
+	if n := noteFrom(r); n != nil {
+		n.err = err
+	}
 	panic(http.ErrAbortHandler) // some bytes are out: end the transfer as broken, not as whole
 }
 

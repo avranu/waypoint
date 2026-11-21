@@ -339,6 +339,9 @@ func (s *Service) dispatch(ctx context.Context, actor *Actor, events []*Event) {
 				s.resumeSessions(ctx, uid)
 			}
 		}
+		if e.Kind == EvUserDeleted {
+			s.dropUserTranscripts(e) // their archive's files: the rows went with the account
+		}
 		if e.Kind == EvKitSourceSet {
 			s.goBG(func() { s.RefreshKit(ctx) })
 		}

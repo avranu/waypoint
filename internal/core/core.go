@@ -71,6 +71,10 @@ type Service struct {
 
 	now func() time.Time
 
+	// afterTranscriptFile is a test hook: it runs after a transcript piece's
+	// file is on disk and before the write that records it.
+	afterTranscriptFile func()
+
 	// started is when New ran; jobs counts the scheduled jobs' runs and
 	// what is logged, by where (WP-375, WP-ADR139).
 	started time.Time

@@ -25,6 +25,11 @@ const (
 	// is posted to them. Data: user (id).
 	EvAgentsResumed = "agents.resumed"
 
+	// An account was deleted. Data: user (id). Seen by admins only; what
+	// belongs to the account outside the database goes in dispatch (the
+	// transcript archive's files, WP-1466).
+	EvUserDeleted = "user.deleted"
+
 	// Requests (WP-D16). Data: request (id), code (R-12), kind, state, session.
 	EvRequestCreated = "request.created"
 	EvRequestUpdated = "request.updated" // + decision: answered, approved, denied, done, dismissed, applied, failed, ran (a failed run sent it back)

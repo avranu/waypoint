@@ -1210,7 +1210,8 @@ func (s *Service) DeleteUser(ctx context.Context, actor *Actor, id int64) error 
 			return err
 		}
 		t.audit(AuditEntry{Action: "user.delete", Category: AuditAccess, TargetType: "user", TargetID: id, Target: name,
-			Detail: "deleted the account; their issues stay"})
+			Detail: "deleted the account; their issues stay; their archived transcripts are removed from the disk"})
+		t.emit(&Event{Kind: EvUserDeleted, UserID: id, AdminOnly: true, Data: map[string]any{"user": id}})
 		return nil
 	})
 }

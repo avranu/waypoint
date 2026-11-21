@@ -643,6 +643,18 @@ differences (a message written again with more tokens). Cost is API-equivalent, 
                                     agents ran (WP-647): deletes, force pushes, production, disks; each with its
                                     redacted command, outcome (ran, error, refused, unknown) and the task; the
                                     first page counts the period's by level and kind
+    POST /usage/transcript?machine=&session=&file=main|PATH&kind=&fp=&from=&to=&redacted=1&version=   the transcript
+                                    archive (WP-1466): the body is gzip of whole JSONL lines of one file, from..to
+                                    its byte offsets; answers {status: stored|duplicate|behind|gap, have, gen}
+                                    (behind and gap say where to resume). Needs the sessions:report permission and
+                                    a person's token, not a runner job's. The redacted flag is the client's
+                                    statement that it removed secrets; the server does not check it.
+    POST /usage/transcript/status {"machine","pending_bytes","pending_files","dropped":{reason:count}}   a machine's upload health
+    GET  /usage/transcripts?session=ID&user=&machine=&gen=   the files held for a session: pieces, byte range,
+                                    complete (no hole), sizes, whether every piece was redacted
+    GET  /usage/transcript?session=ID&file=main|PATH&machine=&user=&gen=   one file's JSONL, whole lines in order;
+                                    a person only (an agent's shell is refused). A stored piece that fails its
+                                    check after bytes went out breaks the connection instead of ending the body
     GET  /usage/warm?days=28&user=   keep-warm decisions per class of wait (WP-1000): pings, compactions,
                                     cools, what became of the sessions (used within the hour, used again,
                                     cleared, ended, open) and the shares a ping and a compaction need to pay

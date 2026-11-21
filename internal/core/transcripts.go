@@ -47,6 +47,10 @@ const (
 	TranscriptMaxUpload = 24 << 20
 )
 
+// TranscriptJobRefusal is what a runner job's token is told when it tries to
+// write to the archive: the client recognises it and stops the pass quietly.
+const TranscriptJobRefusal = "a runner job's token does not write the transcript archive; the runner's own sync covers its sessions"
+
 // ErrTranscriptsOff: the server has no transcript directory.
 var ErrTranscriptsOff = errors.New("this server keeps no transcript archive (WAYPOINT_TRANSCRIPT_DIR=off)")
 
@@ -75,6 +79,8 @@ type TranscriptPieceResult struct {
 	Status string `json:"status"`
 	// Have: where the server's copy of this file (this generation) ends.
 	Have int64 `json:"have"`
+	// Gen: the generation of the server's copy that Have is of.
+	Gen int64 `json:"gen"`
 	// Raw and Stored: the piece's size uncompressed and on disk, when stored.
 	Raw    int64 `json:"raw,omitempty"`
 	Stored int64 `json:"stored,omitempty"`
@@ -95,14 +101,120 @@ func hex16(parts ...string) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-// IngestTranscript stores one piece of a transcript file. Agents may upload
-// (the hooks run inside their sessions); read-only tokens may not.
-func (s *Service) IngestTranscript(ctx context.Context, actor *Actor, in TranscriptPieceIn) (*TranscriptPieceResult, error) {
+// transcriptWriter checks the actor may write to the archive: a person's
+// account, whether through its own token or an agent's (the hooks run inside
+// their sessions), but not a read-only token and not a runner job's scoped
+// token (WP-418), which reaches only its task and could otherwise store
+// pieces under any session of its owner. The runner's own sync archives a
+// job's sessions with the runner's token.
+func transcriptWriter(actor *Actor) (int64, error) {
 	uid, err := usageUser(actor)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
 	if err := actor.canWrite(); err != nil {
+		return 0, err
+	}
+	if actor.RunnerJob != 0 || actor.scope != nil {
+		return 0, forbidden("%s", TranscriptJobRefusal)
+	}
+	return uid, nil
+}
+
+// transcriptHead is where the server's copy of one file ends: the newest
+// generation's last piece. ok is false when it holds nothing of the file.
+type transcriptHead struct {
+	gen, to int64
+	fp      string
+	ok      bool
+}
+
+type rowQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+func transcriptHeadOf(ctx context.Context, q rowQuerier, uid int64, machine, session, file string) (transcriptHead, error) {
+	var h transcriptHead
+	err := q.QueryRowContext(ctx, `SELECT gen, to_off, fp FROM transcript_pieces
+		WHERE user_id = ? AND machine = ? AND session = ? AND file = ? ORDER BY gen DESC, from_off DESC LIMIT 1`,
+		uid, machine, session, file).Scan(&h.gen, &h.to, &h.fp)
+	switch {
+	case err == nil:
+		h.ok = true
+	case errors.Is(err, sql.ErrNoRows):
+		err = nil
+	}
+	return h, err
+}
+
+// fpSplit separates a fingerprint "<first-line hash>#<generation>" into its
+// two parts; a fingerprint without the suffix has generation 0.
+func fpSplit(fp string) (base string, gen int64) {
+	i := strings.LastIndexByte(fp, '#')
+	if i < 0 {
+		return fp, 0
+	}
+	n, err := strconv.ParseInt(fp[i+1:], 10, 64)
+	if err != nil {
+		return fp, 0
+	}
+	return fp[:i], n
+}
+
+// decideTranscript says what a piece becomes given where the server's copy
+// of its file ends: a result to answer with when nothing is stored, or
+// store with the generation the piece joins.
+func decideTranscript(h transcriptHead, in TranscriptPieceIn, shaHex string, same func(gen int64) (bool, error)) (res *TranscriptPieceResult, store bool, gen int64, err error) {
+	gen = h.gen
+	switch {
+	case !h.ok:
+		if in.From != 0 {
+			return &TranscriptPieceResult{Status: "gap", Have: 0}, false, 0, nil
+		}
+		return nil, true, 0, nil
+	case in.FP == h.fp:
+	case in.From == 0:
+		// A different fingerprint from the start. Either the file was
+		// rewritten (the client bumped its generation past ours), or the client lost its
+		// state and began again at generation 0 or below ours while the
+		// first line is the one we hold: then it is told where our copy
+		// ends and adopts our generation, and nothing is stored twice.
+		hb, hg := fpSplit(h.fp)
+		ib, ig := fpSplit(in.FP)
+		if ib == hb && ig < hg {
+			return &TranscriptPieceResult{Status: "behind", Have: h.to, Gen: h.gen}, false, 0, nil
+		}
+		return nil, true, h.gen + 1, nil // the file was rewritten: the next generation
+	default:
+		return &TranscriptPieceResult{Status: "gap", Have: 0, Gen: h.gen}, false, 0, nil // a new generation starts at 0
+	}
+	switch {
+	case in.From == h.to:
+		return nil, true, gen, nil
+	case in.From > h.to:
+		return &TranscriptPieceResult{Status: "gap", Have: h.to, Gen: gen}, false, 0, nil
+	}
+	// from < to: a retry, or a client that lost its place
+	dup, err := same(gen)
+	if err != nil {
+		return nil, false, 0, err
+	}
+	st := "behind"
+	if dup {
+		st = "duplicate"
+	}
+	return &TranscriptPieceResult{Status: st, Have: h.to, Gen: gen}, false, 0, nil
+}
+
+// IngestTranscript stores one piece of a transcript file. Agents may upload
+// (the hooks run inside their sessions); read-only tokens and runner jobs'
+// tokens may not.
+//
+// No event is emitted: a piece is bulk telemetry, as usage ingest is, with
+// no consumer to tell (WP-1466).
+func (s *Service) IngestTranscript(ctx context.Context, actor *Actor, in TranscriptPieceIn) (*TranscriptPieceResult, error) {
+	uid, err := transcriptWriter(actor)
+	if err != nil {
 		return nil, err
 	}
 	if s.cfg.TranscriptDir == "" {
@@ -143,53 +255,55 @@ func (s *Service) IngestTranscript(ctx context.Context, actor *Actor, in Transcr
 	sum := sha256.Sum256(raw)
 	shaHex := hex.EncodeToString(sum[:])
 	now := s.nowMS()
-	res := &TranscriptPieceResult{}
-	var written string
+	sameIn := func(q rowQuerier) func(gen int64) (bool, error) {
+		return func(gen int64) (bool, error) {
+			var n int
+			err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM transcript_pieces
+				WHERE user_id = ? AND machine = ? AND session = ? AND file = ? AND gen = ? AND from_off = ? AND to_off = ? AND sha256 = ?`,
+				uid, in.Machine, in.Session, in.File, gen, in.From, in.To, shaHex).Scan(&n)
+			return n > 0, err
+		}
+	}
+	// What the piece becomes is decided on the read connection first: a piece
+	// that stores nothing never takes the writer, and the one that is stored
+	// has its file written and synced before the write transaction begins,
+	// so no disk wait holds up every other write (the database has one writer).
+	head, err := transcriptHeadOf(ctx, s.db.R, uid, in.Machine, in.Session, in.File)
+	if err != nil {
+		return nil, err
+	}
+	res, store, gen, err := decideTranscript(head, in, shaHex, sameIn(s.db.R))
+	if err != nil || !store {
+		return res, err
+	}
+	// The name is fixed by what the piece is, so a retry writes the same file.
+	rel := filepath.Join(strconv.FormatInt(uid, 10), hex16(in.Machine, in.Session),
+		fmt.Sprintf("%s-%d-%d-%d-%s.jsonl.gz", hex16(in.File), gen, in.From, in.To, shaHex[:12]))
+	if err := writeTranscriptFile(s.cfg.TranscriptDir, rel, in.Gzip); err != nil {
+		return nil, fmt.Errorf("storing a transcript piece: %w", err)
+	}
+	if s.afterTranscriptFile != nil {
+		s.afterTranscriptFile()
+	}
+	res = &TranscriptPieceResult{}
 	err = s.write(ctx, actor, func(t *tx) error {
-		var gen, to int64
-		var fp string
-		err := t.QueryRowContext(ctx, `SELECT gen, to_off, fp FROM transcript_pieces
-			WHERE user_id = ? AND machine = ? AND session = ? AND file = ? ORDER BY gen DESC, from_off DESC LIMIT 1`,
-			uid, in.Machine, in.Session, in.File).Scan(&gen, &to, &fp)
-		haveHead := err == nil
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		// the head may have moved since it was read: decide again
+		h, err := transcriptHeadOf(ctx, t, uid, in.Machine, in.Session, in.File)
+		if err != nil {
 			return err
 		}
-		switch {
-		case !haveHead:
-			if in.From != 0 {
-				*res = TranscriptPieceResult{Status: "gap", Have: 0}
-				return nil
-			}
-		case in.From == 0 && in.FP != fp:
-			gen++ // the file was rewritten: the next generation
-		case in.FP != fp:
-			*res = TranscriptPieceResult{Status: "gap", Have: 0} // a new generation starts at 0
-			return nil
-		case in.From == to:
-		case in.From > to:
-			*res = TranscriptPieceResult{Status: "gap", Have: to}
-			return nil
-		default: // from < to: a retry, or a client that lost its place
-			var same int
-			if err := t.QueryRowContext(ctx, `SELECT COUNT(*) FROM transcript_pieces
-				WHERE user_id = ? AND machine = ? AND session = ? AND file = ? AND gen = ? AND from_off = ? AND to_off = ? AND sha256 = ?`,
-				uid, in.Machine, in.Session, in.File, gen, in.From, in.To, shaHex).Scan(&same); err != nil {
-				return err
-			}
-			st := "behind"
-			if same > 0 {
-				st = "duplicate"
-			}
-			*res = TranscriptPieceResult{Status: st, Have: to}
+		r, store, g, err := decideTranscript(h, in, shaHex, sameIn(t))
+		if err != nil {
+			return err
+		}
+		if !store {
+			*res = *r
 			return nil
 		}
-		rel := filepath.Join(strconv.FormatInt(uid, 10), hex16(in.Machine, in.Session),
-			fmt.Sprintf("%s-%d-%d.jsonl.gz", hex16(in.File), gen, in.From))
-		if err := writeTranscriptFile(s.cfg.TranscriptDir, rel, in.Gzip); err != nil {
-			return fmt.Errorf("storing a transcript piece: %w", err)
+		if g != gen {
+			*res = TranscriptPieceResult{Status: "behind", Have: h.to, Gen: h.gen} // another piece began a generation meanwhile: resume from its answer
+			return nil
 		}
-		written = rel
 		if _, err := t.ExecContext(ctx, `INSERT INTO transcript_pieces(user_id, machine, session, file, kind, gen, fp, from_off, to_off,
 				raw_bytes, stored_bytes, sha256, redacted, client_version, path, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			uid, in.Machine, in.Session, in.File, in.Kind, gen, in.FP, in.From, in.To, len(raw), len(in.Gzip), shaHex,
@@ -200,16 +314,40 @@ func (s *Service) IngestTranscript(ctx context.Context, actor *Actor, in Transcr
 			ON CONFLICT(user_id, machine) DO UPDATE SET transcript_piece_at = excluded.transcript_piece_at`, uid, in.Machine, now); err != nil {
 			return err
 		}
-		*res = TranscriptPieceResult{Status: "stored", Have: in.To, Raw: int64(len(raw)), Stored: int64(len(in.Gzip))}
+		*res = TranscriptPieceResult{Status: "stored", Have: in.To, Gen: gen, Raw: int64(len(raw)), Stored: int64(len(in.Gzip))}
 		return nil
 	})
-	if err != nil {
-		if written != "" {
-			_ = os.Remove(filepath.Join(s.cfg.TranscriptDir, written)) // the row did not commit
+	if err != nil || res.Status != "stored" {
+		s.dropUnreferencedPiece(rel) // the row did not commit
+		if err != nil {
+			return nil, err
 		}
-		return nil, err
 	}
 	return res, nil
+}
+
+// dropUnreferencedPiece removes a piece's file unless a row names it (an
+// identical piece stored meanwhile wrote the same file).
+func (s *Service) dropUnreferencedPiece(rel string) {
+	var n int
+	if err := s.db.R.QueryRow(`SELECT COUNT(*) FROM transcript_pieces WHERE path = ?`, filepath.ToSlash(rel)).Scan(&n); err != nil || n > 0 {
+		return
+	}
+	_ = os.Remove(filepath.Join(s.cfg.TranscriptDir, rel))
+}
+
+// dropUserTranscripts removes a deleted account's transcript files; the
+// rows went with the account (ON DELETE CASCADE).
+func (s *Service) dropUserTranscripts(e *Event) {
+	uid, ok := e.Data["user"].(int64)
+	if !ok || uid <= 0 || s.cfg.TranscriptDir == "" {
+		return
+	}
+	s.goBG(func() {
+		if err := os.RemoveAll(filepath.Join(s.cfg.TranscriptDir, strconv.FormatInt(uid, 10))); err != nil {
+			s.log.Warn("removing a deleted account's transcripts", "user", uid, "err", err)
+		}
+	})
 }
 
 // writeTranscriptFile stores bytes at rel under dir, atomically. The name is
@@ -253,12 +391,11 @@ type TranscriptStatus struct {
 
 // ReportTranscriptStatus records a machine's archive health: what still
 // waits to upload and every piece that failed, was refused or was skipped.
+//
+// No event is emitted: a status is bulk telemetry, as usage ingest is.
 func (s *Service) ReportTranscriptStatus(ctx context.Context, actor *Actor, in TranscriptStatus) error {
-	uid, err := usageUser(actor)
+	uid, err := transcriptWriter(actor)
 	if err != nil {
-		return err
-	}
-	if err := actor.canWrite(); err != nil {
 		return err
 	}
 	in.Machine = clip(strings.TrimSpace(in.Machine), 100)
@@ -359,7 +496,7 @@ func (s *Service) transcriptPieces(ctx context.Context, actor *Actor, q Transcri
 	if actor == nil {
 		return nil, ErrUnauthorized
 	}
-	if err := actor.requireHuman("reading a transcript"); err != nil {
+	if err := actor.requirePersonDirect("reading a transcript"); err != nil {
 		return nil, err
 	}
 	uids, everyone, _, err := s.usageWho(ctx, actor, q.User)
@@ -483,10 +620,14 @@ func (s *Service) WalkTranscript(ctx context.Context, actor *Actor, q Transcript
 	if len(ps) == 0 {
 		return notFound("transcript " + q.Session)
 	}
+	return s.walkGroups(groupTranscript(ps), fn)
+}
+
+func (s *Service) walkGroups(groups [][]transcriptPiece, fn func(TranscriptFile, io.Reader) error) error {
 	if s.cfg.TranscriptDir == "" {
 		return ErrTranscriptsOff
 	}
-	for _, g := range groupTranscript(ps) {
+	for _, g := range groups {
 		f := describeTranscript(g)
 		if !f.Complete {
 			return fmt.Errorf("the archive of %s %s (generation %d) has a hole: its pieces do not join", f.Machine, f.File, f.Gen)
@@ -503,19 +644,24 @@ func (s *Service) WalkTranscript(ctx context.Context, actor *Actor, q Transcript
 }
 
 // ReadTranscript writes one file's bytes to w (q.File names it; with several
-// machines holding it, q.Machine must say which).
+// machines holding it, q.Machine must say which). The pieces are listed
+// once, and the check that one file is meant is made on that same list.
 func (s *Service) ReadTranscript(ctx context.Context, actor *Actor, q TranscriptQuery, w io.Writer) error {
 	if q.File == "" {
 		return invalid("file is required")
 	}
-	files, err := s.TranscriptFiles(ctx, actor, q)
+	ps, err := s.transcriptPieces(ctx, actor, q)
 	if err != nil {
 		return err
 	}
-	if len(files) > 1 {
-		return invalid("%s is held on more than one machine or person: say which (machine)", q.File)
+	if len(ps) == 0 {
+		return notFound("transcript " + q.Session)
 	}
-	return s.WalkTranscript(ctx, actor, q, func(_ TranscriptFile, r io.Reader) error {
+	groups := groupTranscript(ps)
+	if len(groups) > 1 {
+		return invalid("%s is held on more than one machine or person: say which (--machine, or --user for another person's)", q.File)
+	}
+	return s.walkGroups(groups, func(_ TranscriptFile, r io.Reader) error {
 		_, err := io.Copy(w, r)
 		return err
 	})

@@ -185,9 +185,10 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 		defer func() {
 			p := recover()
 			var stack string
+			abort := p == http.ErrAbortHandler
 			if p != nil {
 				stack = string(debug.Stack())
-				if !sw.wrote {
+				if !sw.wrote && !abort {
 					writeJSON(sw, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 				}
 			}
@@ -204,6 +205,13 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 				httpDuration.WithLabelValues(route).Observe(d.Seconds())
 			}
 			s.logRequest(r, note, route, sw.status, d, p, stack)
+			if abort {
+				// A handler that fails after bytes went out ends the transfer
+				// as broken: net/http aborts the connection (and logs
+				// nothing) only for this panic, so a client sees an error,
+				// not a body that ended as if it were whole.
+				panic(http.ErrAbortHandler)
+			}
 		}()
 		next.ServeHTTP(sw, r)
 	})
