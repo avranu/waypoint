@@ -61,9 +61,21 @@ func TestAuditNewsToTheSession(t *testing.T) {
 		t.Errorf("an audit that read nothing told %q", body)
 	}
 
+	// F2b: one Waypoint started that read nothing isn't clean either: the
+	// session is told, passively (it wakes for nothing).
+	a = audit("system", AuditDone, false, func(a *CodeAudit) {
+		a.Summary = "no change in the paths asked for"
+		a.Attempts = []AuditAttempt{{Outcome: "nothing"}}
+	})
+	var passive bool
+	body, passive, ok = e.auditNote(a.ID, AuditDone)
+	if !ok || !passive || !strings.Contains(body, "read nothing") || strings.Contains(body, "found nothing") {
+		t.Errorf("a system audit that read nothing told %q (passive %v, told %v)", body, passive, ok)
+	}
+
 	// F3: a failure is passive unless someone waits on it, and then it says so.
 	a = audit("cli", AuditFailed, false, func(a *CodeAudit) { a.Error = "the runner went away" })
-	body, passive, ok := e.auditNote(a.ID, AuditFailed)
+	body, passive, ok = e.auditNote(a.ID, AuditFailed)
 	if !ok || !passive {
 		t.Errorf("a failed audit nobody waits on: told %q, passive %v, told %v", body, passive, ok)
 	}
@@ -146,6 +158,24 @@ func TestAuditNewsToThePerson(t *testing.T) {
 	} {
 		if got := told(func(a *CodeAudit) { a.automationID = 1; tc.mod(a) }); got != tc.want {
 			t.Errorf("an automation's audit, %s: told %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// An automation's audit that a usage limit stopped is as much the owner's
+// news as one that failed: nothing else tells them it never ran.
+func TestAutomationAuditLimitedTellsItsOwner(t *testing.T) {
+	e := newLoopEnv(t, map[string]string{"": "critical", "fixes": "complete"})
+	owner := e.ag.User.ID
+	for n, status := range []string{AuditFailed, AuditLimited, AuditCancelled} {
+		a := &CodeAudit{ID: int64(8000 + n), Title: "the branch", Status: status, Error: "a limit", automationID: 1, ownerID: owner}
+		e.s.tellAudit(e.ctx, a)
+		var got int
+		if err := e.s.db.R.QueryRow(`SELECT count(*) FROM notifications WHERE user_id = ? AND url = ?`, owner, "/audits/"+itoa64(a.ID)).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if want := map[string]int{AuditFailed: 1, AuditLimited: 1, AuditCancelled: 0}[status]; got != want {
+			t.Errorf("%s: owner told %d times, want %d", status, got, want)
 		}
 	}
 }

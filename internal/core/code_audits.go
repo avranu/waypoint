@@ -1770,7 +1770,8 @@ func writeAuditFinding(b *strings.Builder, f CodeAuditFinding) {
 
 // tellAudit tells whoever asked that an audit ended: the agent session that
 // asked (at its next stop), else the person, by a notification. An
-// automation's owner hears only of what needs them.
+// automation's owner hears only of what needs them: a failure, a usage
+// limit, findings.
 func (s *Service) tellAudit(ctx context.Context, a *CodeAudit) {
 	if a.Purpose == AuditCheck {
 		// A round's check of its marks is the round's: its findings go to
@@ -1781,15 +1782,17 @@ func (s *Service) tellAudit(ctx context.Context, a *CodeAudit) {
 	}
 	text := auditNews(a, s.BaseURL())
 	if a.sessionID != 0 {
-		if a.Status == AuditDone && a.Counts.Total == 0 && a.Via == "system" {
+		quiet := a.Status == AuditDone && a.Counts.Total == 0 && a.Via == "system"
+		if quiet && !a.readNothing() {
 			// Waypoint started it (a review round, a pull request's audit):
 			// finding nothing is not news to the session (WP-1370). One
 			// somebody asked for always answers, clean or not.
 			return
 		}
 		// Only someone waiting on it is told of a failure as news; for anyone
-		// else it waits for the next prompt.
-		passive := a.Status != AuditDone && !a.blocking
+		// else it waits for the next prompt. An audit of Waypoint's that read
+		// nothing is no clean one, and is said so without waking the session.
+		passive := (a.Status != AuditDone && !a.blocking) || quiet
 		s.messageSessionAs(ctx, a, text, fmt.Sprintf("audit:%d:%s", a.ID, a.Status), passive)
 		return
 	}
@@ -1799,7 +1802,10 @@ func (s *Service) tellAudit(ctx context.Context, a *CodeAudit) {
 	who := a.requestedBy
 	if a.automationID != 0 {
 		who = a.ownerID
-		needed := a.Status == AuditFailed || (a.Status == AuditDone && !a.Fix && a.Counts.Total > 0)
+		// A usage limit that stopped it is a failure to the owner too: the
+		// automation's run fails on it (auditStep), but nothing says so but
+		// this, and no code reason holds it back.
+		needed := a.Status == AuditFailed || a.Status == AuditLimited || (a.Status == AuditDone && !a.Fix && a.Counts.Total > 0)
 		if !needed {
 			return
 		}

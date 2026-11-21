@@ -953,6 +953,12 @@ func messageTask(ctx context.Context, q queryer, stepKey string) (task int64, bo
 	case "audit", "check":
 		bound = true
 		if err == nil {
+			var asked int
+			if kind == "audit" && q.QueryRowContext(ctx, `SELECT count(*) FROM code_audits WHERE id = ? AND request_key NOT LIKE 'review-round:%' AND pr_id IS NULL`, n).Scan(&asked) == nil && asked > 0 {
+				// An audit somebody asked for that no round or pull request
+				// carries is news of no task: it is the asker's.
+				return 0, false
+			}
 			_ = q.QueryRowContext(ctx, `SELECT coalesce(
 				(SELECT w.issue_id FROM code_audits c JOIN work_log w ON c.request_key IN ('review-round:' || w.id, 'review-round:' || w.id || ':check') WHERE c.id = ? LIMIT 1),
 				(SELECT el.issue_id FROM code_audits c JOIN pull_requests p ON p.id = c.pr_id
@@ -963,11 +969,14 @@ func messageTask(ctx context.Context, q queryer, stepKey string) (task int64, bo
 }
 
 // expireOrphanNews drops the news of a task that stayed with a session that
-// ended, once orphanMessageAge has passed with no session of that task
-// to take it: it is no use then, and it says so in the log.
+// ended, once orphanMessageAge has passed since the session ended (the age
+// moveOrphanMessages goes by) with no session of that task to take it: it is
+// no use then, and it says so in the log. An audit nobody tied to a task,
+// that no next session took, is told to the person who asked, in the write
+// that drops it (no event: the notice is the news, delivered by dispatch).
 func (s *Service) expireOrphanNews(ctx context.Context) {
 	rows, err := s.db.R.QueryContext(ctx, `SELECT m.id, m.step_key, m.session_id FROM session_messages m JOIN agent_sessions x ON x.id = m.session_id
-		WHERE m.state = 'queued' AND x.ended_at IS NOT NULL AND m.created_at < ?
+		WHERE m.state = 'queued' AND x.ended_at IS NOT NULL AND x.ended_at < ?
 		AND (m.step_key LIKE 'audit:%' OR m.step_key LIKE 'check:%' OR m.step_key LIKE 'shipped:%') LIMIT 100`, s.nowMS()-orphanMessageAge.Milliseconds())
 	if err != nil {
 		s.log.WarnContext(ctx, "orphan news to expire", "err", err)
@@ -994,11 +1003,35 @@ func (s *Service) expireOrphanNews(ctx context.Context) {
 		return
 	}
 	for _, c := range list {
-		res, err := s.db.W.ExecContext(ctx, `UPDATE session_messages SET state = 'cancelled' WHERE id = ? AND state = 'queued'`, c.id)
+		var expired bool
+		err := s.write(ctx, SystemActor(), func(t *tx) error {
+			expired = false
+			res, err := t.ExecContext(ctx, `UPDATE session_messages SET state = 'cancelled' WHERE id = ? AND state = 'queued'`, c.id)
+			if err != nil {
+				return err
+			}
+			n, _ := res.RowsAffected()
+			if expired = n > 0; !expired {
+				return nil
+			}
+			if _, bound := messageTask(ctx, t, c.key); bound || !strings.HasPrefix(c.key, "audit:") {
+				return nil
+			}
+			id, _ := strconv.ParseInt(strings.SplitN(c.key, ":", 3)[1], 10, 64)
+			var who int64
+			var title, status string
+			if err := t.QueryRowContext(ctx, `SELECT coalesce(requested_by, 0), title, status FROM code_audits WHERE id = ?`, id).Scan(&who, &title, &status); err != nil || who == 0 {
+				return nil
+			}
+			_, err = t.storeNotice(ctx, who, NotifyAudit, fmt.Sprintf("Audit #%d of %s ended (%s) after its session did", id, title, status),
+				"The session that asked for it ended before it could be told, and no later session in its worktree took it up. Read it at the audit's page.", fmt.Sprintf("/audits/%d", id))
+			return err
+		})
 		if err != nil {
+			s.log.WarnContext(ctx, "expire orphan news", "message", c.id, "err", err)
 			continue
 		}
-		if n, _ := res.RowsAffected(); n > 0 {
+		if expired {
 			s.log.InfoContext(ctx, "session message expired with its ended session", "message", c.id, "key", c.key, "session", c.session, "after", orphanMessageAge.String())
 		}
 	}
