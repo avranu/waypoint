@@ -353,7 +353,7 @@ func (c *cli) launchFanout(claim *fanoutClaimView, say func(string, ...any)) int
 	prefs := c.mySessionPrefs()
 	for _, it := range claim.Start {
 		path := "/api/v1/fanouts/" + strconv.FormatInt(f.ID, 10) + "/items/" + esc(it.Key)
-		attach, err := launchFanoutItem(f, it, c.kickoffTemplate(it.Key), prefs)
+		attach, err := launchFanoutItem(f, it, c.kickoffTemplate(it.Key), prefs, c.noteTypedStart)
 		if err != nil {
 			reason := strings.SplitN(err.Error(), "\n", 2)[0]
 			if err := c.tellFanoutItem(path+"/failed", map[string]any{"note": reason}); err != nil {
@@ -384,7 +384,7 @@ func fanoutWorktree(dir, branch string) string {
 // launchFanoutItem makes (or reuses) the package's worktree and starts its
 // session there in the background, its first prompt made from the kickoff
 // template tmpl (WP-1037); the id claude attach takes.
-func launchFanoutItem(f *fanoutView, it *fanoutItemView, tmpl string, prefs *sessionPrefs) (string, error) {
+func launchFanoutItem(f *fanoutView, it *fanoutItemView, tmpl string, prefs *sessionPrefs, note func(context.Context, string)) (string, error) {
 	bin, err := exec.LookPath(cliBinaries["claude"])
 	if err != nil {
 		return "", errors.New("claude (Claude Code) isn't installed here")
@@ -410,6 +410,7 @@ func launchFanoutItem(f *fanoutView, it *fanoutItemView, tmpl string, prefs *ses
 		name: strings.TrimSpace(it.Key + " " + truncRunes(it.Title, 60))}
 	prefs.forDir(wt).fill(&l)
 	l.prompt = fanoutPrompt(f, it, startKickoff(context.Background(), wt, l.sessionEnv(os.Environ()), it.Key, it.Title, tmpl))
+	note(context.Background(), l.prompt)
 	id, text, err := launchBackground(bin, wt, l)
 	if err != nil {
 		return "", err

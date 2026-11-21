@@ -6,15 +6,17 @@
 -- ever enough.
 CREATE TABLE typed_prompts (
     id          INTEGER PRIMARY KEY,
-    session_id  INTEGER NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+    session_id  INTEGER REFERENCES agent_sessions(id) ON DELETE CASCADE, -- NULL: for a session not started yet; its first prompt binds it
+    user_id     INTEGER NOT NULL DEFAULT 0, -- whose session may bind a NULL session_id
     hash        TEXT    NOT NULL,
-    kind        TEXT    NOT NULL, -- review, compact, keep_warm, message, kickoff
+    kind        TEXT    NOT NULL, -- review, compact, keep_warm, message, kickoff, start, exit
     created_at  INTEGER NOT NULL,
     expires_at  INTEGER NOT NULL,
     consumed_at INTEGER,
     consumed_key TEXT NOT NULL DEFAULT '' -- the hook invocation (HookEvent.Key) that consumed it
 );
 CREATE INDEX typed_prompts_lookup ON typed_prompts(session_id, hash);
+CREATE INDEX typed_prompts_unbound ON typed_prompts(user_id, hash) WHERE session_id IS NULL;
 CREATE INDEX typed_prompts_expiry ON typed_prompts(expires_at);
 
 -- Who typed a prompt event: '' a person (or Claude Code's own report), else

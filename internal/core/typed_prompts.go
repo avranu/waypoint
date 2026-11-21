@@ -27,6 +27,8 @@ const (
 	TypedKeepWarm = "keep_warm" // a keep-warm ping
 	TypedMessage  = "message"   // a message body typed instead of posted to the inbox
 	TypedKickoff  = "kickoff"   // the prompt autopilot gives a session it starts
+	TypedStart    = "start"     // the text a session was started with (argv), which a person may have composed
+	TypedExit     = "exit"      // /exit, typed before a restart
 )
 
 // typedSlack is how long after its job's own timeout a typed prompt may
@@ -139,6 +141,30 @@ func recordTyped(ctx context.Context, q queryer, sessionID int64, kind, text str
 	return err
 }
 
+// recordTypedUnbound is recordTyped for a session that doesn't exist yet: the
+// text is held for the user, and the first prompt of one of their new
+// sessions that is exactly this text binds it (recogniseTyped).
+func recordTypedUnbound(ctx context.Context, q queryer, userID int64, kind, text string, now int64, ttl time.Duration) error {
+	sum := PromptSum(text)
+	if sum == "" {
+		return nil
+	}
+	_, err := q.ExecContext(ctx, `INSERT INTO typed_prompts(session_id, user_id, hash, kind, created_at, expires_at) VALUES (NULL,?,?,?,?,?)`,
+		userID, sum, kind, now, now+ttl.Milliseconds())
+	return err
+}
+
+// RecordTypedStart records the text a session is about to be started with on
+// the command line, for the actor's user, before the session exists (WP-1370).
+func (s *Service) RecordTypedStart(ctx context.Context, a *Actor, text string) error {
+	if PromptSum(text) == "" {
+		return invalid("nothing to record")
+	}
+	return s.write(ctx, a, func(t *tx) error {
+		return recordTypedUnbound(ctx, t, a.id(), TypedStart, text, s.nowMS(), typedKickoffTTL)
+	})
+}
+
 // sessionByCLI is the id of a user's session by the CLI's own id (0: none).
 func sessionByCLI(ctx context.Context, q queryer, userID int64, cliID string) (int64, error) {
 	var id int64
@@ -173,12 +199,32 @@ func (s *Service) recordHandedOver(ctx context.Context, q queryer, kind string, 
 			}
 			texts = append(texts, typed{kind, m.Body})
 		}
+	case JobSession:
+		// A session started with text Waypoint composed: the session has no
+		// id yet. A kickoff the runner composes after the claim records itself.
+		var j SessionJob
+		if json.Unmarshal(input, &j) != nil || j.Prompt == "" {
+			return nil
+		}
+		return recordTypedUnbound(ctx, q, ownerID, TypedStart, j.Prompt, s.nowMS(), time.Duration(timeoutSec)*time.Second+typedKickoffTTL)
 	case JobAutopilot:
 		var a AutopilotJob
-		if json.Unmarshal(input, &a) != nil || a.ReviewOf == "" {
-			return nil // a restart's prompt is made on the runner: AutopilotTyped
+		if json.Unmarshal(input, &a) != nil {
+			return nil
 		}
 		cli = a.CLIID
+		if a.ReviewOf == "" {
+			// A restart types /exit into the old session; its kickoff is made
+			// on the runner: AutopilotTyped.
+			if cli == "" {
+				return nil
+			}
+			sid, err := sessionByCLI(ctx, q, ownerID, cli)
+			if err != nil || sid == 0 {
+				return err
+			}
+			return recordTyped(ctx, q, sid, TypedExit, "/exit", s.nowMS(), time.Duration(timeoutSec)*time.Second+typedSlack)
+		}
 		// The runner compacts first unless the transcript says it needn't.
 		texts = append(texts, typed{TypedCompact, "/compact"}, typed{TypedReview, a.Review})
 	}
@@ -260,6 +306,15 @@ func (s *Service) recogniseTyped(ctx context.Context, t *tx, sessionID int64, ev
 		SELECT id FROM typed_prompts WHERE session_id = ? AND hash = ? AND consumed_at IS NULL AND expires_at > ? ORDER BY id LIMIT 1) RETURNING kind`,
 		s.nowMS(), ev.Key, sessionID, sum, at).Scan(&kind)
 	if errors.Is(err, sql.ErrNoRows) {
+		// A text held for a session not started yet: only the first prompt of
+		// one of the same user's sessions can be it.
+		err = t.QueryRowContext(ctx, `UPDATE typed_prompts SET consumed_at = ?, consumed_key = ?, session_id = ? WHERE consumed_at IS NULL AND id = (
+			SELECT id FROM typed_prompts WHERE session_id IS NULL AND hash = ? AND consumed_at IS NULL AND expires_at > ?
+			  AND user_id = (SELECT user_id FROM agent_sessions WHERE id = ?)
+			  AND NOT EXISTS (SELECT 1 FROM session_events WHERE session_id = ? AND kind = 'prompt') ORDER BY id LIMIT 1) RETURNING kind`,
+			s.nowMS(), ev.Key, sessionID, sum, at, sessionID, sessionID).Scan(&kind)
+	}
+	if errors.Is(err, sql.ErrNoRows) {
 		if n := NormalisePrompt(ev.Prompt); strings.HasPrefix(n, AutopilotPromptMark) {
 			s.log.WarnContext(ctx, "a prompt with Waypoint's mark matches nothing Waypoint typed: read as the person's",
 				"session", sessionID, "kind_guess", markKindGuess(n), "length", len(n), "raw_length", len(ev.Prompt),
@@ -298,7 +353,7 @@ func typedAuto(kind string) bool { return kind == TypedReview || kind == TypedKi
 // a person's turn to whatever reads the session's timeline for takeover,
 // ownership and activity, as a body typed into the pane was before records
 // told who typed it. A review, compact, keep-warm or kickoff is nobody's turn.
-func typedCarriesPerson(kind string) bool { return kind == TypedMessage }
+func typedCarriesPerson(kind string) bool { return kind == TypedMessage || kind == TypedStart }
 
 // typedByWaypointAlone: Waypoint typed it and no person's words are in it.
 func typedByWaypointAlone(kind string) bool { return kind != "" && !typedCarriesPerson(kind) }

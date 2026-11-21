@@ -658,6 +658,18 @@ func (p *runnerProc) noteTyped(ctx context.Context, step, job int64, cliID, prom
 		map[string]string{"cli_id": cliID, "text": prompt}, nil)
 }
 
+// noteTypedStart tells Waypoint the text a session is about to be started
+// with on its command line, which it can't know when the text is made here
+// (the kickoff is wp next's answer). A person's own --prompt is their words
+// and is not noted. Best effort: a server that doesn't answer leaves the
+// first prompt read as the person's, as it was before.
+func (c *cli) noteTypedStart(ctx context.Context, text string) {
+	if c.server() == "" || strings.TrimSpace(text) == "" {
+		return
+	}
+	_ = c.callInto(ctx, "POST", "/api/v1/sessions/typed-start", map[string]string{"text": text}, nil)
+}
+
 // autopilotEnv is the environment wp next runs with: the new session's,
 // as the agent, without what ties this process to another session.
 func autopilotEnv(base []string, session, agent, server, token string) []string {

@@ -608,12 +608,14 @@ func TestTypedKindsWhoTypedAndWhoseWords(t *testing.T) {
 		{TypedCompact, false, false, true},
 		{TypedKeepWarm, false, false, true},
 		{TypedMessage, false, true, false},
+		{TypedStart, false, true, false},
+		{TypedExit, false, false, true},
 		{"", false, true, false},
 	} {
 		if got := typedAuto(c.kind); got != c.auto {
 			t.Errorf("typedAuto(%q) = %v, want %v", c.kind, got, c.auto)
 		}
-		if got := typedCarriesPerson(c.kind); got != (c.kind == TypedMessage) {
+		if got := typedCarriesPerson(c.kind); got != (c.kind == TypedMessage || c.kind == TypedStart) {
 			t.Errorf("typedCarriesPerson(%q) = %v", c.kind, got)
 		}
 		if got := ownPrompt("plain words", c.kind); got != c.ownsQuotaPrompt {
@@ -628,5 +630,144 @@ func TestTypedKindsWhoTypedAndWhoseWords(t *testing.T) {
 		case !c.auto && !c.person && ok:
 			t.Errorf("promptOwner(%q) = %v,%v, want it to keep whoever came before", c.kind, auto, ok)
 		}
+	}
+}
+
+// ---- prompts of a session that doesn't exist yet, and /exit (WP-1370) ----
+
+// hookPrompt is a UserPromptSubmit for a session by its CLI id, as that
+// session's hook sends it; it returns the typed_kind its event got.
+func (a *taskEnv) hookPrompt(cli, text string) string {
+	a.t.Helper()
+	if _, err := a.s.SessionHook(a.ctx, a.admin, []HookEvent{hook("box", cli, "UserPromptSubmit", func(h *HookEvent) { h.Prompt = text })}); err != nil {
+		a.t.Fatal(err)
+	}
+	var k string
+	if err := a.s.db.R.QueryRow(`SELECT e.typed_kind FROM session_events e JOIN agent_sessions x ON x.id = e.session_id
+		WHERE x.cli_id = ? AND e.kind = 'prompt' ORDER BY e.id DESC LIMIT 1`, cli).Scan(&k); err != nil {
+		a.t.Fatal(err)
+	}
+	return k
+}
+
+func (a *taskEnv) startSession(cli string) {
+	a.t.Helper()
+	if _, err := a.s.SessionHook(a.ctx, a.admin, []HookEvent{hook("box", cli, "SessionStart", nil)}); err != nil {
+		a.t.Fatal(err)
+	}
+}
+
+// A session started by an argv prompt has no id yet when Waypoint composes
+// its text: the text is recorded for the user, and the session's first prompt
+// that is that exact text binds it.
+func TestTypedStartIsRecordedBeforeItsSessionExists(t *testing.T) {
+	a := newTaskEnv(t, "")
+	text := "Waypoint started this session for APP-7.\n\nDo the task."
+	if err := a.s.RecordTypedStart(a.ctx, a.admin, text); err != nil {
+		t.Fatal(err)
+	}
+	a.startSession("fresh-1")
+	if k := a.hookPrompt("fresh-1", text); k != TypedStart {
+		t.Fatalf("the session's first prompt = %q, want %q", k, TypedStart)
+	}
+	var bound int
+	_ = a.s.db.R.QueryRow(`SELECT count(*) FROM typed_prompts t JOIN agent_sessions x ON x.id = t.session_id WHERE x.cli_id = 'fresh-1' AND t.consumed_at IS NOT NULL`).Scan(&bound)
+	if bound != 1 {
+		t.Fatalf("the record is bound to its session %d times, want 1", bound)
+	}
+	if k := a.hookPrompt("fresh-1", text); k != "" {
+		t.Fatalf("the same text again = %q, want the person's", k)
+	}
+
+	// Only a session's first prompt can be the one: a session that already
+	// has a prompt, typing the text, is a person.
+	if err := a.s.RecordTypedStart(a.ctx, a.admin, text); err != nil {
+		t.Fatal(err)
+	}
+	a.startSession("old-1")
+	a.hookPrompt("old-1", "something first")
+	if k := a.hookPrompt("old-1", text); k != "" {
+		t.Fatalf("a later prompt of an older session = %q, want the person's", k)
+	}
+	// Other text starting a new session never binds the record.
+	a.startSession("fresh-2")
+	if k := a.hookPrompt("fresh-2", text+" and more words"); k != "" {
+		t.Fatalf("the text with words added = %q, want the person's", k)
+	}
+	// A record expires.
+	a.setClock(a.clockNow().Add(typedKickoffTTL + time.Minute))
+	a.startSession("fresh-3")
+	if k := a.hookPrompt("fresh-3", text); k != "" {
+		t.Fatalf("after the record expired = %q, want the person's", k)
+	}
+}
+
+// A person's own --prompt is their words, not Waypoint's: nothing records it,
+// and the server refuses an empty text.
+func TestTypedStartRefusesNothingToRecord(t *testing.T) {
+	a := newTaskEnv(t, "")
+	if err := a.s.RecordTypedStart(a.ctx, a.admin, "  \n "); err == nil {
+		t.Fatal("an empty text was recorded")
+	}
+}
+
+// The text of a session job Waypoint composed itself (a follow-up's prompt)
+// is recorded in the claim's write, for the session it starts; a kickoff the
+// runner composes after the claim is not (it records itself: TypedStart).
+func TestTypedStartRecordedWhenTheRunnerClaimsASessionJob(t *testing.T) {
+	a := newTaskEnv(t, "")
+	box := a.runner(a.admin, "box", func(r *RunnerRegistration) {
+		r.Features = []string{FeatureTaskKickoff}
+		r.CLIs = []RunnerCLI{{Name: "claude"}}
+	})
+	queue := func(in SessionJob) {
+		raw, _ := json.Marshal(in)
+		if _, err := enqueueRunnerJob(a.ctx, a.s, a.admin, RunnerJobInput{Kind: JobSession, OwnerID: a.admin.User.ID, Label: "box", Input: raw, Source: "manual", SourceID: 1}); err != nil {
+			t.Fatal(err)
+		}
+		if w := a.poll(a.admin, box, RunnerPoll{}); w.Job == nil {
+			t.Fatal("no job claimed")
+		}
+	}
+	unbound := func() int {
+		var n int
+		_ = a.s.db.R.QueryRow(`SELECT count(*) FROM typed_prompts WHERE session_id IS NULL`).Scan(&n)
+		return n
+	}
+	queue(SessionJob{Dir: "/work", Kickoff: "{next}", Task: "APP-1", Title: "x"})
+	if unbound() != 0 {
+		t.Fatalf("a kickoff the runner will compose was recorded at the claim")
+	}
+	queue(SessionJob{Dir: "/work", Prompt: "Your follow-up: the review says X."})
+	if unbound() != 1 {
+		t.Fatalf("a composed prompt: %d records, want 1", unbound())
+	}
+	a.startSession("fresh-9")
+	if k := a.hookPrompt("fresh-9", "Your follow-up: the review says X."); k != TypedStart {
+		t.Fatalf("the follow-up session's first prompt = %q, want %q", k, TypedStart)
+	}
+}
+
+// A restart types /exit into the old session before the new one starts: it
+// is recorded with the job's claim, so if Claude Code reports it it is
+// Waypoint's, not a person's (it would otherwise stop the step as "prompted").
+func TestTypedExitRecordedWhenTheRunnerClaimsARestart(t *testing.T) {
+	a := newTaskEnv(t, "")
+	box := a.runner(a.admin, "box", func(r *RunnerRegistration) {
+		r.Features = []string{FeatureAutopilot}
+		r.CLIs = []RunnerCLI{{Name: "claude"}}
+	})
+	raw, _ := json.Marshal(AutopilotJob{CLIID: a.cli, Dir: "/work", Agent: "a", Done: "WP-1", Key: "WP-2", Step: 1})
+	if _, err := enqueueRunnerJob(a.ctx, a.s, a.admin, RunnerJobInput{Kind: JobAutopilot, OwnerID: a.admin.User.ID, Label: "box", Input: raw, Source: autopilotSource, SourceID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if w := a.poll(a.admin, box, RunnerPoll{}); w.Job == nil {
+		t.Fatal("no job claimed")
+	}
+	if k := a.hookPrompt(a.cli, "/exit"); k != TypedExit {
+		t.Fatalf("/exit = %q, want %q", k, TypedExit)
+	}
+	if k := a.hookPrompt(a.cli, "/exit"); k != "" {
+		t.Fatalf("a second /exit = %q, want the person's", k)
 	}
 }

@@ -85,6 +85,7 @@ func (p *runnerProc) execSession(ctx context.Context, run *jobRun, in sessionJob
 			kenv = append(kenv, "WAYPOINT_SERVER="+p.c.server(), "WAYPOINT_TOKEN="+run.token)
 		}
 		l.prompt = startKickoff(ctx, dir, kenv, tasks[0], in.Title, in.Kickoff)
+		p.c.noteTypedStart(ctx, l.prompt)
 	}
 	args := l.claudeArgs()
 	cmd := procCommand(ctx, cliBinaries["claude"], args...)
