@@ -147,7 +147,8 @@ const (
 	maxObjectiveDiagnose     = 20
 	// maxObjectiveDiagnosis is the most characters of a diagnosis.
 	maxObjectiveDiagnosis = 20000
-	// objectiveBriefDiagnosis is the most of a diagnosis a worker's brief carries.
+	// objectiveBriefDiagnosis is the most characters of a diagnosis a
+	// worker's brief carries.
 	objectiveBriefDiagnosis = 6000
 	maxObjectiveKeep        = 8
 	// maxObjectiveJudge: what a judge reads against goes into an audit as its
@@ -270,6 +271,9 @@ type Objective struct {
 	baseValue          *float64
 	stalledTold        int
 	stuckToldAt        int64
+	// diagnosisID is the objective_rounds row of the diagnosis that stands; 0
+	// for none.
+	diagnosisID int64
 }
 
 // ObjectiveDiagnosis is what a diagnose round found: why the rounds before it
@@ -1020,8 +1024,10 @@ func ObjectiveText(o *Objective, forAgent bool, now time.Time) string {
 		text := strings.TrimSpace(d.Text)
 		if forAgent {
 			// The brief carries what the next round needs; wp objective show
-			// has all of it.
-			text = ClipText(text, objectiveBriefDiagnosis, "\n[the rest is cut: wp objective show "+o.Key+" has all of it]")
+			// has all of it. Characters, as the diagnosis's own limit counts.
+			if r := []rune(text); len(r) > objectiveBriefDiagnosis {
+				text = string(r[:objectiveBriefDiagnosis]) + "\n[the rest is cut: wp objective show " + o.Key + " has all of it]"
+			}
 		}
 		for _, line := range strings.Split(text, "\n") {
 			b.WriteString("    " + line + "\n")
@@ -1141,7 +1147,7 @@ const objectiveCols = `o.issue_id, p.key || '-' || i.number, i.title, i.project_
 	o.repo, o.branch, o.keep_passing, o.judge, o.judge_bar, o.judge_models, o.phase, o.phase_at, o.phase_why, o.phase_note, o.blocked_from, o.close_status_id,
 	o.verify_try, o.verify_job, o.verify_audit, coalesce(o.verify_at, 0), o.pending_measurement, o.base_sha, o.base_ok, o.base_value, o.ended_why,
 	o.stuck_since, o.stuck_why, coalesce(o.stuck_told_at, 0), o.stalled_told, o.verify_reading, o.verify_head,
-	o.no_better, o.diagnose_after, o.round_kind`
+	o.no_better, o.diagnose_after, o.round_kind, coalesce(o.diagnosis_id, 0)`
 
 const objectiveFrom = ` FROM objectives o JOIN issues i ON i.id = o.issue_id JOIN projects p ON p.id = i.project_id JOIN statuses st ON st.id = i.status_id`
 
@@ -1167,7 +1173,7 @@ func scanObjective(sc interface{ Scan(...any) error }) (*Objective, error) {
 		&o.Repo, &o.Branch, &keep, &o.Judge, &o.JudgeBar, &models, &o.Phase, &phaseAt, &o.PhaseWhy, &o.PhaseNote, &o.blockedFrom, &closeStatus,
 		&o.verifyTry, &job, &audit, &o.verifyAt, &pending, &o.BaseSHA, &baseOK, &baseValue, &o.EndedWhy,
 		&stuck, &o.StuckWhy, &o.stuckToldAt, &o.stalledTold, &reading, &o.verifyHead,
-		&o.NoBetter, &o.DiagnoseAfter, &o.RoundKind); err != nil {
+		&o.NoBetter, &o.DiagnoseAfter, &o.RoundKind, &o.diagnosisID); err != nil {
 		return nil, err
 	}
 	o.issueClosed = isClosed(o.issueCategory)
@@ -1315,11 +1321,9 @@ func (s *Service) objectiveOf(ctx context.Context, q queryer, issueID int64) (*O
 	if len(verdicts) > 0 {
 		o.Verdict = verdicts[0]
 	}
-	// The diagnosis later rounds read, if one still stands.
-	var diagnosisID int64
-	if err := q.QueryRowContext(ctx, `SELECT coalesce(diagnosis_id, 0) FROM objectives WHERE issue_id = ?`, issueID).Scan(&diagnosisID); err != nil {
-		return nil, err
-	}
+	// The diagnosis later rounds read, if one still stands: read with the
+	// row, so a clear between the two reads can't fail this one.
+	diagnosisID := o.diagnosisID
 	rows, err := q.QueryContext(ctx, `SELECT round_no, started_at, ended_at, outcome, coalesce(measurement_id, 0), agent, pr_url, base_sha, head_sha, note, diagnosis, diagnosis_by, id FROM objective_rounds
 		WHERE issue_id = ? ORDER BY id DESC LIMIT ?`, issueID, objectiveRecent)
 	if err != nil {

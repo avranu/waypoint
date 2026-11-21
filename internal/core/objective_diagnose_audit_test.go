@@ -241,6 +241,15 @@ func TestObjectiveDiagnoseBriefClipsAndHedges(t *testing.T) {
 	if brief = ObjectiveText(ob, true, o.clockNow()); !strings.Contains(brief, "The check times the build.") || strings.Contains(brief, "is clipped") {
 		t.Errorf("a short diagnosis was cut:\n%s", brief)
 	}
+	// The limit is characters, not bytes: 5,000 three-byte characters fit.
+	ob.Diagnosis.Text = strings.Repeat("€", 5000) + "WIDE-END"
+	if brief = ObjectiveText(ob, true, o.clockNow()); !strings.Contains(brief, "WIDE-END") || strings.Contains(brief, "the rest is cut") {
+		t.Errorf("a diagnosis under the limit in characters was cut (%d bytes)", len(brief))
+	}
+	ob.Diagnosis.Text = strings.Repeat("€", objectiveBriefDiagnosis+1)
+	if brief = ObjectiveText(ob, true, o.clockNow()); !strings.Contains(brief, strings.Repeat("€", objectiveBriefDiagnosis)+"\n") || !strings.Contains(brief, "the rest is cut") {
+		t.Errorf("a diagnosis one character over isn't cut at the limit")
+	}
 }
 
 // .18: the stall notice says a diagnosis stands and the rounds since came no nearer.

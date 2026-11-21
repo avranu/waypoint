@@ -231,8 +231,9 @@ func (s *Service) objectiveTell(ctx context.Context, e *Event, what string) {
 			title = fmt.Sprintf("%s: %s without getting nearer its objective", o.Key, plural1(o.Stalled, "round"))
 			// A diagnosis that stands was written for the rounds before it: say
 			// the rounds since still came no nearer.
+			// The diagnosis_id is the one read with the objective above.
 			var dround int
-			if err := s.db.R.QueryRowContext(ctx, `SELECT r.round_no FROM objectives o JOIN objective_rounds r ON r.id = o.diagnosis_id WHERE o.issue_id = ?`, o.IssueID).Scan(&dround); err == nil {
+			if o.diagnosisID != 0 && s.db.R.QueryRowContext(ctx, `SELECT round_no FROM objective_rounds WHERE id = ?`, o.diagnosisID).Scan(&dround) == nil {
 				body += fmt.Sprintf(". A diagnosis was recorded in round %d, and the rounds since still came no nearer", dround)
 			}
 			body += fmt.Sprintf(". It goes on, with a longer wait between rounds; wp objective show %s has what each round read, and wp objective end %s ends it.", o.Key, o.Key)
