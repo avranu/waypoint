@@ -36,6 +36,9 @@ type roundIn struct {
 	Session    bool   // a live session could take what Waypoint tells it
 	RunOpen    bool
 	PROpen     bool
+	// Superseded: the round's decision scheduled another review round, which
+	// is what the branch waits on now; the round is not shipped again.
+	Superseded bool
 	// Unshipped: the round is before a pull request, the branch is recorded as
 	// pushed and no pull request is open for it.
 	Unshipped bool
@@ -88,6 +91,9 @@ func decideRound(in roundIn) roundOut {
 		return roundOut{Do: doFinish}
 	}
 	left := func(limit time.Duration, since time.Duration) time.Duration { return max(limit-since, 0) }
+	if in.Superseded {
+		return roundOut{Do: doWait, For: "the review round its decision scheduled", Until: left(heldScreenWait, in.SinceChange)}
+	}
 	switch in.Check {
 	case checkQueued, checkRunning:
 		// expireChecks cancels a check at checkPatience; this bounds a check
@@ -171,6 +177,9 @@ func (s *Service) roundInOf(ctx context.Context, id int64) (roundIn, error) {
 		if err := s.db.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM agent_runs WHERE id = ? AND ended_at IS NULL)`, r.runID.Int64).Scan(&in.RunOpen); err != nil {
 			return in, err
 		}
+	}
+	if err := s.db.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM review_again_decisions WHERE round_id = ? AND coalesce(next_round_id, 0) != 0)`, id).Scan(&in.Superseded); err != nil {
+		return in, err
 	}
 	if bp := roundBeforePR(ctx, s.db.R, id); bp != nil {
 		in.Unshipped = true

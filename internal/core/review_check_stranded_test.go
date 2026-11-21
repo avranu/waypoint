@@ -88,8 +88,8 @@ func TestCheckNeverTakenUpOpensThePR(t *testing.T) {
 	if len(e.g.created) != 1 {
 		t.Fatalf("opened %d pull requests; round %s", len(e.g.created), e.round(r1).state)
 	}
-	if n := e.lastNotice(); !strings.Contains(n, e.task.Key) || !strings.Contains(n, "check") {
-		t.Errorf("the person's notice doesn't name the task and the check: %s", n)
+	if n := e.noticeWith(e.task.Key, "check"); n == "" {
+		t.Errorf("the person's notice doesn't name the task and the check: %v", e.notices())
 	}
 	var carried int
 	if err := e.s.db.R.QueryRow(`SELECT count(*) FROM code_audits WHERE request_key = ? AND purpose = '' AND pr_id IS NOT NULL AND pr_id != 0`, "review-round:"+itoa64(r1)+":check").Scan(&carried); err != nil {

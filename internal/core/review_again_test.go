@@ -252,7 +252,7 @@ func TestReviewAgainBeforePR(t *testing.T) {
 				if qerr := a.s.db.R.QueryRow(`SELECT count(*) FROM review_again_decisions`).Scan(&n); qerr != nil {
 					t.Fatal(qerr)
 				}
-				if !errors.Is(err, errAgainRead) || !strings.Contains(err.Error(), "database is locked") || !strings.Contains(err.Error(), "--skip-review") || len(g.created) != 0 || n != 0 {
+				if !errors.Is(err, errAgainRead) || !strings.Contains(err.Error(), "database is locked") || len(g.created) != 0 || n != 0 {
 					t.Fatalf("record unreadable: %+v, %v (opened %d, %d decisions)", res, err, len(g.created), n)
 				}
 				// Read again once the record can be, the round is decided.

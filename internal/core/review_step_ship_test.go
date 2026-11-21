@@ -109,7 +109,13 @@ func TestRoundInterruptedForTheLastTimeIsReleased(t *testing.T) {
 		var in AutopilotJob
 		_ = json.Unmarshal(a.jobs[before].Input, &in)
 		a.prompt(in.Review)
-		a.prompt("wait, look at the migration first")
+		// The session leaves the review for another task: a person's prompt
+		// alone doesn't end it any more (WP-1320).
+		if err := a.s.write(a.ctx, SystemActor(), func(t *tx) error {
+			return a.s.stopStep(a.ctx, t, a.session, "working", "it took another task itself")
+		}); err != nil {
+			t.Fatal(err)
+		}
 		a.stopWith("Looked at it.")
 	}
 	if len(g.created) != 0 {

@@ -2743,6 +2743,11 @@ func (s *Service) roundOverdue(ctx context.Context, st *stepRow, review *roundRo
 		}
 	}
 	reason := fmt.Sprintf("the session wasn't free to take it for %d hours (it kept working, or its person did)", int(heldScreenWait.Hours()))
+	if st.reason == WaitScreen && st.detail != "" {
+		// What the screen showed the last time it was tried, as the
+		// held-screen failure says it (WP-752).
+		reason = fmt.Sprintf("the session stayed busy for %d hours, so it couldn't be started: %s", int(heldScreenWait.Hours()), st.detail)
+	}
 	if ra, err := s.roundAuditOf(ctx, review.id); err == nil && ra.id != 0 {
 		if n := len(s.auditTodo(ctx, ra.id)); n > 0 {
 			reason += fmt.Sprintf("; its audit found %d things nobody decided, and they go to the pull request's review gate", n)

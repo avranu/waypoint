@@ -11,11 +11,14 @@ import (
 // written after; tamper changes the round's records before the open.
 func roundThenShip(t *testing.T, early, late string, tamper func(a *apEnv, roundID int64)) (res *OpenPRResult, ask string) {
 	t.Helper()
-	a, first, id, ask := roundDone(t, early, late)
+	a, box, first, id, ask := roundDone(t, early, late)
 	if tamper != nil {
 		tamper(a, id)
 	}
-	res, err := a.ship(first, ShipPR)
+	// The marks are checked first (a fixed finding of that severity), and
+	// Waypoint carries on from the check's end: the ship that reads after
+	// it is the open itself.
+	res, err := a.shipChecked(box, first)
 	if err != nil || res.Pull == nil {
 		t.Fatalf("open = %+v, %v", res, err)
 	}
@@ -26,7 +29,7 @@ func roundThenShip(t *testing.T, early, late string, tamper func(a *apEnv, round
 // tamper changed, without the review gate's own say on whether it opens.
 func reviewedAfter(t *testing.T, tamper func(a *apEnv, roundID int64)) bool {
 	t.Helper()
-	a, first, id, _ := roundDone(t, "", "")
+	a, _, first, id, _ := roundDone(t, "", "")
 	tamper(a, id)
 	var branch string
 	if err := a.s.db.R.QueryRowContext(a.ctx, `SELECT json_extract(before_pr, '$.branch') FROM work_log WHERE id = ?`, id).Scan(&branch); err != nil {
@@ -41,10 +44,9 @@ func reviewedAfter(t *testing.T, tamper func(a *apEnv, roundID int64)) bool {
 }
 
 // roundDone runs a task through a review round that ended with its finding
-// marked fixed, the session about to open the pull request.
-func roundDone(t *testing.T, early, late string) (a *apEnv, key string, id int64, ask string) {
+// marked rejected (a fixed one of that severity is followed by round 2), the session about to open the pull request.
+func roundDone(t *testing.T, early, late string) (a *apEnv, box *Runner, key string, id int64, ask string) {
 	t.Helper()
-	var box *Runner
 	a, box, _ = firstEnv(t)
 	if _, err := a.s.SetAutopilot(a.ctx, a.admin, a.p.Key, AutopilotSettingInput{Merge: true,
 		Limits: AutopilotLimits{Review: ptrOf(true)}}); err != nil {
@@ -81,10 +83,10 @@ func roundDone(t *testing.T, early, late string) (a *apEnv, key string, id int64
 			t.Fatal(err)
 		}
 	}
-	if _, err := a.s.MarkAuditFindings(a.ctx, a.ag, MarkFindings{IDs: []string{itoa64(ra.id) + ".1"}, State: "fixed", Note: "added"}); err != nil {
+	if _, err := a.s.MarkAuditFindings(a.ctx, a.ag, MarkFindings{IDs: []string{itoa64(ra.id) + ".1"}, State: "rejected", Note: "not a bug"}); err != nil {
 		t.Fatal(err)
 	}
-	return a, first.Key, id, ask
+	return a, box, first.Key, id, ask
 }
 
 // Reviewed means this ship's own round ran its audit with the task's notes
@@ -184,10 +186,10 @@ func TestShipReviewedMarksTheOpenAfterARound(t *testing.T) {
 		a.endAudit(box, "done", "Off by one")
 		a.tick(time.Second)
 		ra, _ := a.roundAuditRow(a.newestRoundID())
-		if _, err := a.s.MarkAuditFindings(a.ctx, a.ag, MarkFindings{IDs: []string{itoa64(ra.id) + ".1"}, State: "fixed", Note: "added"}); err != nil {
+		if _, err := a.s.MarkAuditFindings(a.ctx, a.ag, MarkFindings{IDs: []string{itoa64(ra.id) + ".1"}, State: "rejected", Note: "not a bug"}); err != nil {
 			t.Fatal(err)
 		}
-		res, err := a.ship(first.Key, ShipPR)
+		res, err := a.shipChecked(box, first.Key)
 		if err != nil || res.Pull == nil || len(g.created) != 1 || !res.Reviewed {
 			t.Fatalf("after the round = %+v, %v", res, err)
 		}

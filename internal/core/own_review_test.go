@@ -125,7 +125,7 @@ func TestShipWithOwnReview(t *testing.T) {
 		a.ownReviewDone("No issues found.")
 		for range 2 { // and again: the same answer, one round
 			res, err := a.ship(key, ShipPR)
-			if err != nil || res.Pull != nil || !strings.Contains(res.Held, "wp audit report "+key) || !strings.Contains(res.Notice, "--skip-review") || len(g.created) != 0 {
+			if err != nil || res.Pull != nil || !strings.Contains(res.Held, "wp audit report "+key) || res.Notice != "" || len(g.created) != 0 {
 				t.Fatalf("pr = %+v, %v", res, err)
 			}
 		}

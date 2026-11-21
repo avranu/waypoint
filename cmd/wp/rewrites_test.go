@@ -64,7 +64,8 @@ func TestNoteRewritesPrintsOncePerPair(t *testing.T) {
 // The line holds nothing open: a held ship that a summary came with still
 // ends the turn by hook, which shipNeedsAgent saying nothing allows.
 func TestRewritesLineKeepsNoTurnOpen(t *testing.T) {
-	if got := shipNeedsAgent(&openedPR{Held: "review is running"}, "", nil, "", false); got != "" {
+	no := false
+	if got := shipNeedsAgent(&openedPR{Held: "review is running", HeldNeedsAgent: &no, NoticeNeedsAgent: &no}, "", nil, "", false); got != "" {
 		t.Errorf("held ship needs the agent: %q", got)
 	}
 }

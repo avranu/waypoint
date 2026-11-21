@@ -198,9 +198,9 @@ func TestReviewBeforePRAuditTakenBySession(t *testing.T) {
 	// is followed up: round 2 comes before the pull request.
 	a.stopWith("Waiting for the check of my marks.")
 	a.endCheck(box, "done")
-	a.deliverNews()
+	a.s.Wait()
 	res, err = a.ship(first.Key, ShipPR)
-	if err != nil || res.Pull != nil || len(g.created) != 0 || !strings.Contains(res.Held, "adversarial review round 2") {
+	if err != nil || res.Pull != nil || len(g.created) != 0 || !strings.Contains(res.Held, "review round 2 of") {
 		t.Fatalf("after the check = %+v, %v (opened %d)", res, err, len(g.created))
 	}
 	var arm string

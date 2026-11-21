@@ -508,6 +508,7 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 			// The round's review is still going, whatever audit_note says:
 			// its findings come to the session when it ends, and this ship
 			// asked before they did (WP-1320).
+			bp.facts.idleHeld()
 			return fmt.Sprintf("audit #%d, %s's adversarial review round, is still going: end your turn, and Waypoint carries the round on when it ends: it opens the pull request itself, or gives you what it found. Nothing more to run.", audit, g.key), "", nil
 		case a.Status != AuditDone || a.readNothing():
 			// One that ended any other way (failed, cancelled, over its
@@ -759,6 +760,7 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 		// told to run the same command again: where the round stands is what
 		// it needs, and nothing is left to run.
 		s.log.InfoContext(ctx, "ship raced a server-side change of its round", "round", round, "task", g.key, "err", err)
+		bp.facts.idleHeld()
 		return fmt.Sprintf("Pushed %s. Waypoint moved %s's adversarial review on while this ship ran, and carries it from where it stands: it opens the pull request itself, or tells this session what is left. Nothing more to run: end your turn.", head, g.key), "", nil
 	}
 	if err != nil {

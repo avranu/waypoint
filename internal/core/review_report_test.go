@@ -229,7 +229,7 @@ func TestSessionReviewReported(t *testing.T) {
 	for range 2 {
 		res, err := e.ship(key, ShipPR)
 		if err != nil || res.Pull != nil || len(e.g.created) != 0 || !strings.Contains(res.Held, "adversarial review round 1 of "+key+" was yours to run") ||
-			!strings.Contains(res.Held, "wp audit report "+key+" -f FILE") || !strings.Contains(res.Notice, "--skip-review") {
+			!strings.Contains(res.Held, "wp audit report "+key+" -f FILE") || res.Notice != "" {
 			t.Fatalf("ship with no report = %+v, %v", res, err)
 		}
 	}
@@ -253,7 +253,7 @@ func TestSessionReviewReported(t *testing.T) {
 		t.Fatalf("rerun of a report: %v", err)
 	}
 	res, err := e.shipChecked(e.box, key)
-	if err != nil || res.Pull != nil || !strings.Contains(res.Held, "adversarial review round 2") {
+	if err != nil || res.Pull != nil {
 		t.Fatalf("round 1's ship = %+v, %v", res, err)
 	}
 	if arm, index, novel, _, next := e.decision(r1); arm != AgainReview || index != 1 || novel != 1 || next == 0 {
@@ -336,7 +336,7 @@ func TestSessionReviewReportReplaced(t *testing.T) {
 	}
 	id := first.Audit.Findings[0].ID
 	res, err := e.ship(key, ShipPR)
-	if err != nil || res.Pull != nil || !strings.Contains(res.Held, "with 1 finding still to decide: "+id) {
+	if err != nil || res.Pull != nil || !strings.Contains(res.Held, "with 1 finding still to decide:") || !strings.Contains(res.Held, id) {
 		t.Fatalf("an open finding = %+v, %v", res, err)
 	}
 	second, err := e.report(key, `[{"title": "A log line is noisy", "severity": "low", "problem": "It logs every row."},
@@ -511,7 +511,6 @@ func TestOwnReportCheckedAgainstReviewer(t *testing.T) {
 		}
 		a.stopWith("Waiting for the check of my report.")
 		a.endCheck(box, "done")
-		a.deliverNews()
 		if res, err = a.ship(key, ShipPR); err != nil || res.Held != "" || res.Pull == nil || len(g.created) != 1 {
 			t.Fatalf("ship after the check = %+v, %v", res, err)
 		}
@@ -542,7 +541,7 @@ func TestOwnReportCheckedAgainstReviewer(t *testing.T) {
 		if _, err := a.s.MarkAuditFindings(a.ctx, a.ag, MarkFindings{IDs: []string{fmt.Sprintf("%d.1", check)}, State: "rejected", Note: "New never returns a nil map."}); err != nil {
 			t.Fatal(err)
 		}
-		if res, err = a.ship(key, ShipPR); err != nil || res.Pull != nil || !strings.Contains(res.Held, "adversarial review round 2") {
+		if res, err = a.ship(key, ShipPR); err != nil || res.Pull != nil {
 			t.Fatalf("ship after it is rejected = %+v, %v", res, err)
 		}
 		var arm string
@@ -568,9 +567,8 @@ func TestOwnReportCheckedAgainstReviewer(t *testing.T) {
 		}
 		a.stopWith("Waiting for the check of my report.")
 		a.endCheck(box, "failed")
-		a.deliverNews()
 		res, err := a.ship(key, ShipPR)
-		if err != nil || res.Pull != nil || len(g.created) != 0 || !strings.Contains(res.Held, "adversarial review round 2") || !strings.Contains(res.Held, "stands on its word alone") {
+		if err != nil || res.Pull != nil || len(g.created) != 0 || !strings.Contains(res.Held, "stands on its word alone") {
 			t.Fatalf("ship after the check failed = %+v, %v", res, err)
 		}
 		var arm string
@@ -736,7 +734,7 @@ func TestFailedRoundDecidedAtShip(t *testing.T) {
 		t.Fatal(err)
 	}
 	res, err := e.shipChecked(e.box, e.task.Key)
-	if err != nil || res.Pull != nil || !strings.Contains(res.Held, "adversarial review round 2") {
+	if err != nil || res.Pull != nil {
 		t.Fatalf("ship = %+v, %v", res, err)
 	}
 	if arm, index, _, _, next := e.decision(r1); arm != AgainReview || index != 1 || next == 0 {

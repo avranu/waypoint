@@ -212,11 +212,18 @@ func TestReadGiveUpIsReleasedTruthfully(t *testing.T) {
 func TestModelCountedDoneRoundIsShipped(t *testing.T) {
 	e := newLoopEnv(t, map[string]string{"": "critical", "fixes": "complete"})
 	r1 := e.review("Merge loses an update")
-	e.mark(r1, "fixed")
+	e.mark(r1, "rejected")
 	e.stopWith("Fixed it.")
 	if _, err := e.s.db.W.Exec(`UPDATE work_log SET state = 'done', read_state = 'done', read_by = 'claude-haiku-5-5' WHERE id = ?`, r1); err != nil {
 		t.Fatal(err)
 	}
+	// A Done round is decided as any is: its marks are checked first, and
+	// the check agreeing, the sweep opens the pull request.
+	for range 3 {
+		e.tickAll(5 * time.Minute)
+	}
+	e.endCheck(e.box, "done")
+	e.s.Wait()
 	for range 3 {
 		e.tickAll(5 * time.Minute)
 	}

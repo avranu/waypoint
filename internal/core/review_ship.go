@@ -101,14 +101,15 @@ func (s *Service) tellCheck(ctx context.Context, a *CodeAudit) {
 	if err != nil || len(todo) == 0 {
 		return
 	}
-	// Only a round still running, in a session that can take it, is the
-	// session's to answer (decideRound says so); any other waits on Waypoint:
+	// Only a round in a session that can take it is the session's to answer
+	// (decideRound says so, for a running round and for a done one: a ship
+	// ends its round Done while the check runs); any other waits on Waypoint:
 	// continueAfterCheck releases a running round at once, the sweep a done
 	// one, each opening its pull request with the marks carried and telling
 	// the person.
 	round := s.checkRound(ctx, a)
 	r, err := roundByID(ctx, s.db.R, round)
-	if err != nil || r == nil || r.state != RoundRunning || a.sessionID == 0 {
+	if err != nil || r == nil || (r.state != RoundRunning && r.state != RoundDone) || a.sessionID == 0 {
 		s.log.InfoContext(ctx, "check news not sent to a session", "audit", a.ID, "round", round, "session", a.sessionID)
 		return
 	}
