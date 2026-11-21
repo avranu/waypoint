@@ -39,7 +39,7 @@ func TestReviewStartsOverWhenMoreWasCommitted(t *testing.T) {
 	if !strings.Contains(res.Notice, "More was committed") || !strings.Contains(res.Held, "under way") {
 		t.Errorf("notice = %q, held = %q", res.Notice, res.Held)
 	}
-	if r := a.round(first); r.state != RoundInterrupted || a.reason(first) != roundReplaced {
+	if r := a.round(first); r.state != RoundInterrupted || a.reason(first) != roundRestarted {
 		t.Fatalf("old round = %+v (%q)", r, a.reason(first))
 	}
 	if st := a.auditStatus(ra.id); st != AuditCancelled {
@@ -102,8 +102,10 @@ func TestReviewKeepsAnAuditWithFindings(t *testing.T) {
 	if a.newestRoundID() != first || a.round(first).state != RoundPending {
 		t.Fatalf("round changed: %+v", a.round(first))
 	}
-	if !strings.Contains(res.Notice, "still to decide") && !strings.Contains(res.Notice, "to decide") {
-		t.Errorf("notice = %q", res.Notice)
+	// Notice: the audit's findings are the session's to decide.
+	ra, _ := a.roundAuditRow(first)
+	if want := "is audit #" + itoa64(ra.id) + ", with 1 finding still to decide"; !strings.Contains(res.Notice, want) {
+		t.Errorf("notice = %q, want it to contain %q", res.Notice, want)
 	}
 }
 
@@ -218,5 +220,135 @@ func TestShipRecordsTheHeadItsAuditReads(t *testing.T) {
 	}
 	if bp := roundBeforePR(a.ctx, a.s.db.R, first); bp == nil || bp.HeadTime != at+30 {
 		t.Fatalf("recorded head = %+v, want %d", bp, at+30)
+	}
+}
+
+func headIs(at int64, sha string) func(*OpenPRInput) {
+	return func(in *OpenPRInput) { in.HeadTime, in.HeadSHA = at, sha }
+}
+
+// The head's identity is its commit: another commit made in the same second
+// is another head (WP-1325).
+func TestRoundBehindByCommit(t *testing.T) {
+	t.Run("same time, another commit starts over", func(t *testing.T) {
+		a, _, _, key := startEnv(t)
+		at := a.clockNow().Unix()
+		if _, err := a.ship(key, ShipAuto, headIs(at, "aaaa")); err != nil {
+			t.Fatal(err)
+		}
+		first := a.newestRoundID()
+		a.lapse(time.Minute)
+		res, err := a.ship(key, ShipAuto, headIs(at, "bbbb"))
+		if err != nil || res.Pull != nil || !strings.Contains(res.Notice, "More was committed") {
+			t.Fatalf("ship = %+v, %v", res, err)
+		}
+		if a.round(first).state != RoundInterrupted || a.newestRoundID() == first {
+			t.Fatalf("round = %+v, newest %d", a.round(first), a.newestRoundID())
+		}
+		if bp := roundBeforePR(a.ctx, a.s.db.R, a.newestRoundID()); bp == nil || bp.HeadSHA != "bbbb" {
+			t.Fatalf("the new round's head = %+v", bp)
+		}
+	})
+	t.Run("the same commit is kept", func(t *testing.T) {
+		a, _, _, key := startEnv(t)
+		at := a.clockNow().Unix()
+		if _, err := a.ship(key, ShipAuto, headIs(at, "aaaa")); err != nil {
+			t.Fatal(err)
+		}
+		first := a.newestRoundID()
+		a.lapse(time.Minute)
+		res, err := a.ship(key, ShipAuto, headIs(at, "aaaa"))
+		if err != nil || res.Pull != nil || strings.Contains(res.Notice, "More was committed") {
+			t.Fatalf("ship = %+v, %v", res, err)
+		}
+		if a.newestRoundID() != first || a.round(first).state != RoundPending {
+			t.Fatalf("round replaced: %+v", a.round(first))
+		}
+	})
+	t.Run("a ship with no commit falls back to the times", func(t *testing.T) {
+		a, _, _, key := startEnv(t)
+		at := a.clockNow().Unix()
+		if _, err := a.ship(key, ShipAuto, headIs(at, "aaaa")); err != nil {
+			t.Fatal(err)
+		}
+		first := a.newestRoundID()
+		a.lapse(time.Minute)
+		if res, err := a.ship(key, ShipAuto, headIs(at, "")); err != nil || strings.Contains(res.Notice, "More was committed") || a.newestRoundID() != first {
+			t.Fatalf("same time: %+v, %v", res, err)
+		}
+		res, err := a.ship(key, ShipAuto, headIs(at+60, ""))
+		if err != nil || !strings.Contains(res.Notice, "More was committed") || a.newestRoundID() == first {
+			t.Fatalf("later time: %+v, %v", res, err)
+		}
+	})
+}
+
+// A pending round's audit that failed, was cancelled, or read nothing has
+// nothing the head could be ahead of: the round isn't behind (WP-1325).
+func TestRoundBehindNeedsAnAuditThatReads(t *testing.T) {
+	a, _, _, key := startEnv(t)
+	at := a.clockNow().Unix()
+	if _, err := a.ship(key, ShipAuto, headIs(at, "aaaa")); err != nil {
+		t.Fatal(err)
+	}
+	round := a.newestRoundID()
+	ra, _ := a.roundAuditRow(round)
+	behind := func() bool {
+		t.Helper()
+		b, err := a.s.roundBehind(a.ctx, round, at+60, "bbbb")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	if !behind() {
+		t.Fatal("a queued audit of another head isn't behind")
+	}
+	for name, set := range map[string]string{
+		"failed":             `UPDATE code_audits SET status = 'failed' WHERE id = ?`,
+		"cancelled":          `UPDATE code_audits SET status = 'cancelled' WHERE id = ?`,
+		"done, read nothing": `UPDATE code_audits SET status = 'done', attempts = '[{"outcome":"nothing"}]' WHERE id = ?`,
+	} {
+		if _, err := a.s.db.W.Exec(set, ra.id); err != nil {
+			t.Fatal(err)
+		}
+		if behind() {
+			t.Errorf("%s: behind", name)
+		}
+	}
+}
+
+// A replaced round's audits are cancelled with it, the reviewer's and the
+// other model's too, and another round's are left alone (WP-1325).
+func TestCancelRoundAuditsTakesTheRoundsOwn(t *testing.T) {
+	a, _, _, key := startEnv(t)
+	if _, err := a.ship(key, ShipAuto); err != nil {
+		t.Fatal(err)
+	}
+	round := a.newestRoundID()
+	ra, _ := a.roundAuditRow(round)
+	copyAs := func(k string) int64 {
+		t.Helper()
+		res, err := a.s.db.W.Exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, ref, base, owner_id, created_at, purpose, request_key, status)
+			SELECT project_id, forge_id, repo, target, ref, base, owner_id, created_at, purpose, ?, 'running' FROM code_audits WHERE id = ?`, k, ra.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, _ := res.LastInsertId()
+		return id
+	}
+	r := itoa64(round)
+	reviewer, other := copyAs("review-round:"+r+":sonnet"), copyAs("review-round:"+r+":other")
+	next, elsewhere := copyAs("review-round:"+r+"0"), copyAs("review-round:"+r+"0:sonnet")
+	a.s.cancelRoundAudits(a.ctx, round)
+	for name, id := range map[string]int64{"its audit": ra.id, "its reviewer's": reviewer, "the other model's": other} {
+		if st := a.auditStatus(id); st != AuditCancelled {
+			t.Errorf("%s is %q", name, st)
+		}
+	}
+	for name, id := range map[string]int64{"another round's": next, "another round's reviewer's": elsewhere} {
+		if st := a.auditStatus(id); st != AuditRunning {
+			t.Errorf("%s is %q", name, st)
+		}
 	}
 }

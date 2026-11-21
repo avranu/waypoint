@@ -11,12 +11,15 @@ import (
 // session's Stop and the tick after it. The planning at the Stop and the
 // tick finds that audit and goes on as before.
 
-// auditsOfRound counts the audits asked for under the round's request key.
+// auditsOfRound counts the audits asked for under the round's request keys
+// (the exact ones: round 1's don't include round 10's).
 func (a *apEnv) auditsOfRound(round int64) int {
 	a.t.Helper()
 	a.s.Wait()
 	var n int
-	if err := a.s.db.R.QueryRow(`SELECT count(*) FROM code_audits WHERE request_key LIKE ?`, "review-round:"+itoa64(round)+"%").Scan(&n); err != nil {
+	k := "review-round:" + itoa64(round)
+	if err := a.s.db.R.QueryRow(`SELECT count(*) FROM code_audits WHERE request_key IN (?, ?, ?, ?)`,
+		k, k+":sonnet", k+":other", k+":check").Scan(&n); err != nil {
 		a.t.Fatal(err)
 	}
 	return n
@@ -130,15 +133,39 @@ func TestReviewStartTwoShips(t *testing.T) {
 		t.Fatalf("gate = %+v, %v", g, err)
 	}
 	bp := beforePR{Project: a.p.Key, Repo: "acme/app", Branch: "wp-1-first", Base: "main"}
-	if err := a.s.scheduleRound(a.ctx, a.ag, g, bp, 0, 0, "", nil); err != nil {
+	if err := a.s.scheduleRound(a.ctx, a.ag, g, bp, 0, 0, "", "", nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.s.scheduleRound(a.ctx, a.ag, g, bp, 0, 0, "", nil); err == nil {
+	if err := a.s.scheduleRound(a.ctx, a.ag, g, bp, 0, 0, "", "", nil); err == nil {
 		t.Fatal("second schedule went ahead")
 	}
 	var n int
 	_ = a.s.db.R.QueryRow(`SELECT count(*) FROM code_audits WHERE request_key LIKE 'review-round:%'`).Scan(&n)
 	if n != 1 {
 		t.Fatalf("%d audits for two ships", n)
+	}
+}
+
+// No audit is asked at the ship while autopilot is paused for a reason
+// other than the week's limit, as the step's planning holds off too
+// (WP-1325).
+func TestReviewDoesNotStartWhilePaused(t *testing.T) {
+	a, _, _, key := startEnv(t)
+	if _, err := a.s.SetAutopilot(a.ctx, a.admin, a.p.Key, AutopilotSettingInput{Merge: true,
+		Limits: AutopilotLimits{Review: ptrOf(true), MaxHourlyUSD: ptrOf(500.0)}}); err != nil {
+		t.Fatal(err)
+	}
+	hour := a.clockNow().UnixMilli() - a.clockNow().UnixMilli()%3_600_000
+	// $100 or more this hour on Opus output: over the hourly limit.
+	if _, err := a.s.db.W.Exec(`INSERT INTO usage_hours(user_id, hour, machine, session, repo, model, output) VALUES (?,?,?,?,?,?,?)`,
+		a.admin.User.ID, hour, "box", "s", "", "claude-opus-5-5", 50_000_000); err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.ship(key, ShipAuto)
+	if err != nil || res.Held == "" {
+		t.Fatalf("ship = %+v, %v", res, err)
+	}
+	if n := a.auditsOfRound(a.newestRoundID()); n != 0 {
+		t.Fatalf("%d audits asked while paused", n)
 	}
 }

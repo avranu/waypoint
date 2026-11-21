@@ -954,11 +954,11 @@ func TestScheduleRoundRace(t *testing.T) {
 		t.Fatalf("gate = %+v, %v", g, err)
 	}
 	bp := beforePR{Project: a.p.Key, Repo: "acme/app", Branch: "wp-1-first", Base: "main"}
-	if err := a.s.scheduleRound(a.ctx, a.ag, g, bp, 0, 0, "", nil); err != nil {
+	if err := a.s.scheduleRound(a.ctx, a.ag, g, bp, 0, 0, "", "", nil); err != nil {
 		t.Fatal(err)
 	}
 	// The other ship read "no round yet" too.
-	if err := a.s.scheduleRound(a.ctx, a.ag, g, bp, 0, 0, "", nil); !errors.Is(err, ErrConflict) {
+	if err := a.s.scheduleRound(a.ctx, a.ag, g, bp, 0, 0, "", "", nil); !errors.Is(err, ErrConflict) {
 		t.Fatalf("second = %v", err)
 	}
 	if got := a.rounds(); len(got) != 1 || got[0] != RoundPending {

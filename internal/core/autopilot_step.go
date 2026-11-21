@@ -1806,7 +1806,19 @@ func (s *Service) reviewJobFinished(ctx context.Context, st *stepRow, job *Runne
 			if review.startedAt.Valid {
 				started = review.startedAt.Int64
 			}
-			_ = s.stepUpdate(ctx, st.id, StepWaiting, WaitReviewing, "running the adversarial review of "+review.key, started+reviewRunMax.Milliseconds())
+			detail := "running the adversarial review of " + review.key
+			if res.Outcome == "reviewing" {
+				// What the runner saw while typing it (WP-1325): kept, so the
+				// step says how it went in and whether the session took it.
+				if res.Detail != "" {
+					detail += " (" + res.Detail + ")"
+				}
+				if res.Warning != "" {
+					detail += "; " + res.Warning
+					s.log.WarnContext(ctx, "autopilot: the session didn't take the review typed into it", "task", review.key, "step", st.id, "warning", res.Warning)
+				}
+			}
+			_ = s.stepUpdate(ctx, st.id, StepWaiting, WaitReviewing, detail, started+reviewRunMax.Milliseconds())
 		default: // its Stop came before the job's answer: move on
 			_ = s.stepUpdate(ctx, st.id, StepDue, "", "", now)
 		}

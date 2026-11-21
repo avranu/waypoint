@@ -180,6 +180,27 @@ func TestShipWithOwnReview(t *testing.T) {
 			t.Fatalf("audit note = %q", note)
 		}
 	})
+	t.Run("a pending round whose audit ended becomes it", func(t *testing.T) {
+		a, g, key := introEnv(t)
+		if res, err := a.ship(key, ShipAuto); err != nil || res.Held == "" || len(g.created) != 0 {
+			t.Fatalf("auto = %+v, %v", res, err)
+		}
+		pending := a.newestRoundID()
+		ra, _ := a.roundAuditRow(pending)
+		if ra.id == 0 {
+			t.Fatal("the first ship asked for no audit")
+		}
+		if _, err := a.s.db.W.Exec(`UPDATE code_audits SET status = 'failed' WHERE id = ?`, ra.id); err != nil {
+			t.Fatal(err)
+		}
+		a.ownReviewDone("1. a bug")
+		if res, err := a.ship(key, ShipAuto); err != nil || res.Pull != nil || !strings.Contains(res.Held, "wp audit report") {
+			t.Fatalf("auto after own = %+v, %v", res, err)
+		}
+		if note := a.roundNote(pending); note != ownReviewNote {
+			t.Fatalf("audit note = %q, want %q", note, ownReviewNote)
+		}
+	})
 	t.Run("review still asks", func(t *testing.T) {
 		a, g, key := introEnv(t)
 		a.ownReviewDone("No issues found.")

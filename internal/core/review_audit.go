@@ -145,8 +145,7 @@ func (s *Service) startRoundReview(ctx context.Context, g *reviewGate, roundID i
 	if g == nil || g.x == nil || roundID == 0 || g.lim.reviewModel() == ReviewModelSession {
 		return false // the session reviews its own change: nothing to start
 	}
-	started := false
-	defer func() { g.reviewStarted = started }()
+	g.auditAsked = false
 	st := &stepRow{userID: g.x.userID, projectID: g.pid, sessionID: g.x.ID}
 	if m, err := s.autopilotMeter(ctx, st.userID); err == nil {
 		if why, _ := autopilotPaused(m, g.lim, s.now()); why != "" && pauseReason(why) != PauseWeek {
@@ -159,12 +158,16 @@ func (s *Service) startRoundReview(ctx context.Context, g *reviewGate, roundID i
 	}
 	ra, err := s.roundAuditOf(ctx, roundID)
 	if err != nil || ra.id != 0 || ra.note != "" {
-		started = err == nil && ra.id != 0
-		return started
+		g.auditAsked = err == nil && ra.id != 0
+		return g.auditAsked
 	}
 	id, err := s.auditForRound(ctx, st, review, roundBeforePR(ctx, s.db.R, roundID), reviewAuditKey)
 	if err != nil {
-		s.log.Info("review round: its audit wasn't started at the ship", "round", roundID, "err", err)
+		if errors.As(err, &auditRefused{}) || errors.Is(err, errNoRoundPR) {
+			s.log.Info("review round: its audit wasn't started at the ship", "round", roundID, "err", err)
+		} else {
+			s.log.WarnContext(ctx, "review round: its audit wasn't started at the ship", "round", roundID, "err", err)
+		}
 		return false
 	}
 	// What planReview writes after asking, so the audit's wait counts from
@@ -173,25 +176,28 @@ func (s *Service) startRoundReview(ctx context.Context, g *reviewGate, roundID i
 	if _, err := s.db.W.ExecContext(ctx, `UPDATE work_log SET audit_id = ?, audit_at = ?, updated_at = ? WHERE id = ? AND audit_id IS NULL AND audit_note = ''`, id, now, now, roundID); err != nil {
 		s.log.Info("review round: recording its audit", "round", roundID, "err", err)
 	}
-	started = true
+	g.auditAsked = true
 	return true
 }
 
 // roundBehind says whether a pending round's audit reads less than what a
 // ship pushed and has nothing for the session yet: it is still going, or
-// done with no findings (WP-1325). The round records the commit time of the
-// head its audit reads (beforePR.HeadTime), and a ship whose head has
-// another time has pushed something else. Comparing the head with when the
-// audit was asked can't say this: wp ship asks within a second or two of
-// the commit it pushes, and commit times are whole seconds, so the same
-// head would read as newer than its own audit about as often as not. A
-// round with no head recorded (scheduled before this, or outside a ship)
-// falls back to that comparison, as the session's own review does
+// done with no findings (WP-1325). The round records the head its audit
+// reads (beforePR.HeadSHA, the commit, and HeadTime, its time), and a ship
+// whose head is another has pushed something else. Comparing the head with
+// when the audit was asked can't say this: wp ship asks within a second or
+// two of the commit it pushes, and commit times are whole seconds, so the
+// same head can read as newer than its own audit. When the round has a
+// commit recorded and the ship sent one, the head is the same exactly when
+// they are equal (two commits of one second differ in it); otherwise the
+// head times are compared, as an older wp sends no commit. A round with no
+// head recorded (scheduled before this, or outside a ship) falls back to
+// the comparison with the audit's time, as the session's own review does
 // (ownReview.covers): a commit in the second the audit was asked counts as
 // since. An audit with findings is the session's to decide, and what it
 // commits after reading them is its fixes. An unknown head time (0) is
 // never behind.
-func (s *Service) roundBehind(ctx context.Context, roundID, headTime int64) (bool, error) {
+func (s *Service) roundBehind(ctx context.Context, roundID, headTime int64, headSHA string) (bool, error) {
 	if headTime <= 0 || roundID == 0 {
 		return false, nil
 	}
@@ -199,7 +205,11 @@ func (s *Service) roundBehind(ctx context.Context, roundID, headTime int64) (boo
 	if err != nil || ra.id == 0 || ra.note != "" {
 		return false, err
 	}
-	if bp := roundBeforePR(ctx, s.db.R, roundID); bp != nil && bp.HeadTime > 0 {
+	if bp := roundBeforePR(ctx, s.db.R, roundID); bp != nil && bp.HeadSHA != "" && headSHA != "" {
+		if bp.HeadSHA == headSHA {
+			return false, nil
+		}
+	} else if bp != nil && bp.HeadTime > 0 {
 		if bp.HeadTime == headTime {
 			return false, nil
 		}
@@ -231,12 +241,12 @@ func (s *Service) roundBehind(ctx context.Context, roundID, headTime int64) (boo
 // pushed when it is asked, which is this ship's head, not the one the round
 // was scheduled at (roundBehind, WP-1325). A round with its audit asked
 // keeps the head it has.
-func (s *Service) noteRoundHead(ctx context.Context, roundID, headTime int64) {
+func (s *Service) noteRoundHead(ctx context.Context, roundID, headTime int64, headSHA string) {
 	if roundID == 0 || headTime <= 0 {
 		return
 	}
-	if _, err := s.db.W.ExecContext(ctx, `UPDATE work_log SET before_pr = json_set(before_pr, '$.head_time', ?)
-		WHERE id = ? AND kind = 'review' AND state = 'pending' AND audit_id IS NULL AND before_pr != ''`, headTime, roundID); err != nil {
+	if _, err := s.db.W.ExecContext(ctx, `UPDATE work_log SET before_pr = json_set(before_pr, '$.head_time', ?, '$.head_sha', ?)
+		WHERE id = ? AND kind = 'review' AND state = 'pending' AND audit_id IS NULL AND before_pr != ''`, headTime, headSHA, roundID); err != nil {
 		s.log.Info("review round: recording the head its audit reads", "round", roundID, "err", err)
 	}
 }
@@ -250,6 +260,14 @@ func (s *Service) cancelRoundAudits(ctx context.Context, roundID int64) {
 		AND (a.request_key = ? OR a.request_key = ? OR a.request_key = ?
 			OR a.id = (SELECT audit_id FROM work_log WHERE id = ?))`,
 		AuditReview, fmt.Sprintf(reviewAuditKey, roundID), fmt.Sprintf(reviewerAuditKey, roundID), fmt.Sprintf(reviewOtherAuditKey, roundID), roundID)
+	s.cancelAuditRows(ctx, rows, err, "cancel the audit of a replaced round", "round", roundID)
+}
+
+// cancelAuditRows cancels the audits whose ids are in rows (the select that
+// err is the error of), logging each failure as msg with the attributes
+// given: the tail cancelRoundAudits and cancelOrphanReviewAudits share
+// (WP-1325).
+func (s *Service) cancelAuditRows(ctx context.Context, rows *sql.Rows, err error, msg string, attrs ...any) {
 	if err != nil {
 		return
 	}
@@ -263,7 +281,7 @@ func (s *Service) cancelRoundAudits(ctx context.Context, roundID int64) {
 	_ = rows.Close()
 	for _, id := range ids {
 		if _, err := s.CancelAudit(ctx, SystemActor(), id); err != nil {
-			s.log.Info("review round: cancel the audit of a replaced round", "round", roundID, "audit", id, "err", err)
+			s.log.Info("review round: "+msg, append(attrs, "audit", id, "err", err)...)
 		}
 	}
 }
@@ -1417,22 +1435,7 @@ func (s *Service) cancelOrphanReviewAudits(ctx context.Context) {
 		UNION SELECT a.id FROM code_audits a JOIN work_log w ON w.id = `+reviewerRoundSQL+`
 		WHERE a.purpose = ? AND a.status IN ('queued', 'running') AND a.request_key LIKE ? AND w.state != 'pending'
 		LIMIT 20`, AuditReview, s.nowMS()-handOverWithin.Milliseconds(), roundAuditOutwaited+"%", roundCancelledBy+"%", AuditReview, reviewerKeyLike)
-	if err != nil {
-		return
-	}
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if rows.Scan(&id) == nil {
-			ids = append(ids, id)
-		}
-	}
-	_ = rows.Close()
-	for _, id := range ids {
-		if _, err := s.CancelAudit(ctx, SystemActor(), id); err != nil {
-			s.log.Info("review round: cancel an orphaned audit", "audit", id, "err", err)
-		}
-	}
+	s.cancelAuditRows(ctx, rows, err, "cancel an orphaned audit")
 }
 
 // A round's audit outlives the round (WP-1059). A round can end before its
