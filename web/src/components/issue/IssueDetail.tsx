@@ -291,7 +291,8 @@ function Loaded({
             {issue.objective && (
               <ObjectiveBanner
                 objective={issue.objective}
-                editable={editable}
+                editable={editable && project.role !== 'guest'}
+                closed={closed}
                 onChange={() => setObjectiveOpen(true)}
                 className="mt-3"
               />

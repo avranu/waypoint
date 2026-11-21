@@ -46,7 +46,7 @@ const (
 )
 
 var tierOf = map[string]string{
-	NotifyAssigned: TierYou, NotifyMentioned: TierYou, NotifyShared: TierYou, NotifyDue: TierYou, NotifyRequest: TierYou,
+	NotifyAssigned: TierYou, NotifyMentioned: TierYou, NotifyShared: TierYou, NotifyDue: TierYou, NotifyRequest: TierYou, NotifyObjective: TierYou,
 	NotifyQuota: TierAlert, NotifyRisky: TierAlert, NotifySafety: TierAlert, NotifySandbox: TierAlert, NotifyToken: TierAlert, NotifyUnpushed: TierAlert, NotifyCollector: TierAlert, NotifyJobs: TierAlert,
 }
 

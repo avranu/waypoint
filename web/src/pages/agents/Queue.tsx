@@ -887,9 +887,9 @@ const WAITS: { reason: WaitReason; title: string; about: string }[] = [
   },
   {
     reason: 'objective',
-    title: 'Between rounds',
+    title: 'Waiting on its objective',
     about:
-      'Its objective’s next round isn’t due: rounds keep a least time apart, wait longer after rounds that moved nothing, and at the spare pace run only on quota that would go unused (WP-927).',
+      'Its objective keeps it from being handed out now: Waypoint is reading a round, the objective needs a person, the next round isn’t due (rounds keep a least time apart, and wait longer after rounds that moved nothing), or at the spare pace it runs only on quota that would go unused (WP-927).',
   },
   {
     reason: 'blocked',

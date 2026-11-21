@@ -622,6 +622,11 @@ func (s *Service) RequestAudit(ctx context.Context, actor *Actor, in AuditInput)
 	}
 	a.Purpose, a.Weakest = in.purpose, in.weakest
 	a.reviewText, a.roundContext, a.claims = in.reviewText, in.roundContext, in.claims
+	if a.Purpose == AuditObjective {
+		// What Waypoint tells a judge of the task and its round
+		// (objectiveJudgeContext); it reads the repository, not a pull request.
+		prContext = in.prContext
+	}
 	a.Helpers = auditHelpersFor(in, prContext)
 	a.prompt = codeAuditPrompt(a, prContext)
 	via := strings.TrimSpace(in.Via)
@@ -794,6 +799,9 @@ const auditSchema = `{"type":"object","additionalProperties":false,"required":["
 // codeAuditPrompt is what the model is asked: the rules every audit keeps, then
 // what the requester asked for. The runner adds the change's diff.
 func codeAuditPrompt(a *CodeAudit, prContext string) string {
+	if a.Purpose == AuditObjective {
+		return objectiveJudgePrompt(a, prContext)
+	}
 	var b strings.Builder
 	switch a.Purpose {
 	case AuditFootprint:
@@ -1103,10 +1111,12 @@ func (s *Service) settleAudit(ctx context.Context, id, jobID int64) {
 	a.Attempts = append(a.Attempts, att)
 	next := a.Slot + 1
 	switch {
-	case j.State == "expired", att.Outcome == "error" && (next >= len(a.chain) || a.Purpose != AuditReview && !s.roundsAudit(ctx, a.ID)):
+	case j.State == "expired", att.Outcome == "error" && (next >= len(a.chain) || a.Purpose != AuditReview && a.Purpose != AuditObjective && !s.roundsAudit(ctx, a.ID)):
 		// A review round's chain goes on after any failure (WP-820): an
 		// error text no list knows mustn't end it with models still to try.
-		// So does one handed from its round to the pull request (WP-1059).
+		// So does one handed from its round to the pull request (WP-1059),
+		// and an objective's judge, which decides whether a task closes
+		// (WP-ADR111).
 		s.failAudit(ctx, a, att.Error)
 		return
 	case next < len(a.chain):
@@ -2131,8 +2141,11 @@ func (s *Service) roundOnAudit(ctx context.Context, job, id int64) bool {
 
 // CancelAudit stops an audit that hasn't ended.
 func (s *Service) CancelAudit(ctx context.Context, actor *Actor, id int64) (*CodeAudit, error) {
-	if _, err := s.auditToChange(ctx, actor, id); err != nil {
+	if seen, err := s.auditToChange(ctx, actor, id); err != nil {
 		return nil, err
+	} else if seen.Purpose == AuditObjective && actor.id() != 0 && !objectivePerson(actor) {
+		// The judge of a round isn't stopped by whoever worked the round.
+		return nil, forbidden("audit #%d judges an objective: a person stops it, or ends the objective (wp objective end)", id)
 	}
 	unlock := s.auditLocks.lock(id)
 	a, err := s.auditRow(ctx, id)
