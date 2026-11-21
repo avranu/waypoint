@@ -10,6 +10,16 @@ import (
 // of any severity while it is the newest finished audit, and its marks the
 // check didn't answer are listed in the packet without holding it (WP-1370).
 func TestCarriedCheckHoldsOnAnySeverity(t *testing.T) {
+	for _, newest := range []bool{true, false} {
+		name := "the check is the newest audit"
+		if !newest {
+			name = "the check is carried beside a newer audit"
+		}
+		t.Run(name, func(t *testing.T) { carriedCheckHolds(t, newest) })
+	}
+}
+
+func carriedCheckHolds(t *testing.T, checkNewest bool) {
 	e := newLoopEnv(t, map[string]string{"": "critical", "fixes": "complete"})
 	r1 := e.review("Merge loses an update")
 	e.mark(r1, "rejected")
@@ -32,6 +42,11 @@ func TestCarriedCheckHoldsOnAnySeverity(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.exec(`UPDATE code_audits SET pr_id = ?, purpose = '', finished_at = coalesce(finished_at, created_at) + 3600000 WHERE id = ?`, prID, checkID)
+	if !checkNewest {
+		// The round's own audit finished after the check: the check is
+		// carried, not newest.
+		e.exec(`UPDATE code_audits SET pr_id = ?, purpose = '', finished_at = (SELECT finished_at FROM code_audits WHERE id = ?) + 3600000 WHERE request_key LIKE 'review-round:%' AND id != ?`, prID, checkID, checkID)
+	}
 	e.exec(`UPDATE code_audit_findings SET severity = 'low' WHERE audit_id = ?`, checkID)
 	reasons, _, err := e.s.auditHolds(e.ctx, prID, 0)
 	if err != nil {

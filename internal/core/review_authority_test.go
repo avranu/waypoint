@@ -29,7 +29,7 @@ func TestServerShipNeedsPullsWrite(t *testing.T) {
 		e.finishShip()
 		var body string
 		_ = e.s.db.R.QueryRow(`SELECT body FROM work_log WHERE kind = 'review' ORDER BY id DESC LIMIT 1`).Scan(&body)
-		if len(e.g.created) != 0 || !strings.Contains(body, "did not open the pull request") || !strings.Contains(body, "pulls.write") {
+		if len(e.g.created) != 0 || !strings.Contains(body, "did not open the pull request") || !strings.Contains(body, "can't open pull requests (it lacks pulls.write)") {
 			t.Fatalf("opened %d, round says %q", len(e.g.created), body)
 		}
 	})
