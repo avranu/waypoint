@@ -347,8 +347,8 @@ func (s *Service) takeUpHeldComments(ctx context.Context, b *Babysit, pr *PullRe
 func (s *Service) heldByAgent(ctx context.Context, b *Babysit, pr *PullRequest) []string {
 	var refs []string
 	for _, rc := range s.heldComments(ctx, b, pr) {
-		if !s.verdictByPerson(ctx, s.db.R, rc.id) {
-			refs = append(refs, rc.Ref)
+		if byPerson, err := s.verdictByPerson(ctx, s.db.R, rc.id); err == nil && !byPerson {
+			refs = append(refs, rc.Ref) // unread: not handed to the assessor as an agent's to settle
 		}
 	}
 	return refs
@@ -635,9 +635,12 @@ func (s *Service) rerunParkedChecks(ctx context.Context, pr *PullRequest) bool {
 	s.keepFailedEvidence(ctx, f, pr.Repo, pr.HeadSHA) // the re-run replaces their logs (WP-704)
 	n, err := cl.RetryChecks(ctx, f, pr.Repo, pr.HeadSHA)
 	if err != nil {
-		s.log.WarnContext(ctx, "re-run a resting pull request's checks", "pr", pr.ID, "err", err)
+		if readFault(err) {
+			s.log.WarnContext(ctx, "re-run a resting pull request's checks", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "err", err)
+		}
+		return false
 	}
-	return err == nil && n > 0
+	return n > 0
 }
 
 // restReply is what Waypoint tells the assessor's round after a rest: what
@@ -692,11 +695,12 @@ func (s *Service) askAboutPark(ctx context.Context, b *Babysit, pr *PullRequest,
 		"Answer in plain words and Waypoint carries it out, or close the pull request to drop it.\n\n" + pr.URL)
 	in := RequestInput{Kind: RequestQuestion, Title: fmt.Sprintf("%s#%d: %s", pr.Repo, pr.Number, excerpt(question, 120)), Body: body.String(),
 		Questions: []Question{{Question: question}}, ToolUseID: key, Followup: "never"}
-	if p := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo); p != 0 {
-		if proj, err := s.projectByID(ctx, s.db.R, p); err == nil {
-			in.Project = proj.Key
-		}
+	// The person is asked all the same: a project that couldn't be read files it with none.
+	projectKey, err := s.attachedProjectKey(ctx, pr.ForgeID, pr.Repo)
+	if readFault(err) {
+		s.log.WarnContext(ctx, "read the project to ask about a parked pull request", "repo", pr.Repo, "number", pr.Number, "err", err)
 	}
+	in.Project = projectKey
 	if _, _, err := s.CreateRequest(ctx, &Actor{User: u, Agent: "waypoint/babysit"}, in); err != nil {
 		s.log.WarnContext(ctx, "ask about a parked pull request", "repo", pr.Repo, "number", pr.Number, "err", err)
 	}
@@ -939,11 +943,11 @@ const maxParkWaits = 3
 // image, request R-277") waits on that, instead of a person being asked it
 // again (R-279, R-283 and R-285 each asked what R-277 did).
 func (s *Service) namedRequests(ctx context.Context, pr *PullRequest, text string) []ParkRequest {
-	home := ""
-	if p := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo); p != 0 {
-		if proj, err := s.projectByID(ctx, s.db.R, p); err == nil {
-			home = proj.Key
-		}
+	home, err := s.attachedProjectKey(ctx, pr.ForgeID, pr.Repo)
+	if readFault(err) {
+		// A bare R-277 is skipped (no home to read it in); one with its project's key still counts.
+		s.log.WarnContext(ctx, "read the project to find the requests a round names", "repo", pr.Repo, "number", pr.Number, "err", err)
+		home = ""
 	}
 	var out []ParkRequest
 	for _, m := range requestMention.FindAllStringSubmatch(text, -1) {
@@ -1071,16 +1075,20 @@ func (s *Service) withdrawParkRequest(ctx context.Context, b *Babysit, r *Babysi
 }
 
 // babysitParked is what a parked babysit holds the merge for ("" if it
-// isn't parked): its question waits for a person.
-func (s *Service) babysitParked(ctx context.Context, pr *PullRequest) string {
+// isn't parked): its question waits for a person. A babysit that can't be
+// read is an error, not "not parked".
+func (s *Service) babysitParked(ctx context.Context, pr *PullRequest) (string, error) {
 	b, err := s.activeBabysit(ctx, s.db.R, pr.ID)
-	if err != nil || b == nil || !parkedOn(b, pr.HeadSHA) {
-		return ""
+	if err != nil {
+		return "", err
+	}
+	if b == nil || !parkedOn(b, pr.HeadSHA) {
+		return "", nil
 	}
 	if r := lastRound(b); resting(r) {
-		return "Waypoint's rounds didn't settle it: " + r.Parked + "; " + restNext(r)
+		return "Waypoint's rounds didn't settle it: " + r.Parked + "; " + restNext(r), nil
 	}
-	return "Waypoint's rounds didn't settle it: " + lastRound(b).Parked + "; " + strings.TrimSuffix(parkWait, ": ")
+	return "Waypoint's rounds didn't settle it: " + lastRound(b).Parked + "; " + strings.TrimSuffix(parkWait, ": "), nil
 }
 
 // ---- the assessor's task ----
@@ -1133,7 +1141,12 @@ func (s *Service) writeIntent(ctx context.Context, p *strings.Builder, b *Babysi
 	p.WriteString("What the change is for:\n")
 	var issueIDs []any
 	if u, err := s.userByID(ctx, s.db.R, b.ownerID); err == nil {
-		links, _ := s.prLinks(ctx, &Actor{User: u}, []any{pr.ID})
+		links, rerr := s.prLinks(ctx, &Actor{User: u}, []any{pr.ID})
+		if rerr != nil {
+			if readFault(rerr) {
+				s.log.WarnContext(ctx, "pr links failed", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "err", rerr)
+			}
+		}
 		for _, l := range links {
 			if len(issueIDs) == assessorIssues {
 				break

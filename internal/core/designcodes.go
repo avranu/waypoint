@@ -217,7 +217,16 @@ func (s *Service) designByCode(ctx context.Context, actor *Actor, c DesignCode, 
 	}
 	readable := func(id int64) bool {
 		_, _, err := s.designFor(ctx, s.db.R, actor, id, RoleViewer)
-		return err == nil
+		if err != nil {
+			// Not found or not allowed is "can't read it"; anything else is a failed read.
+			if !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrForbidden) {
+				if readFault(err) {
+					s.log.WarnContext(ctx, "read whether a design note is readable", "note", id, "err", err)
+				}
+			}
+			return false
+		}
+		return true
 	}
 	if project != "" {
 		var chain []int64
@@ -318,12 +327,28 @@ func (s *Service) designByCodeIn(ctx context.Context, q queryer, c DesignCode, s
 		chain = []int64{p.ID}
 	default:
 		if scope != nil {
-			chain, _ = s.projectChainIDs(ctx, q, *scope)
+			var err error
+			if chain, err = s.projectChainIDs(ctx, q, *scope); err != nil {
+				// Without the chain a project's own ADR7 can't be told from the
+				// global one: name nothing rather than the wrong note.
+				if readFault(err) {
+					s.log.WarnContext(ctx, "read the project chain to resolve a design code", "project", *scope, "code", c.String(), "err", err)
+				}
+				return 0, false
+			}
 		}
 		chain = append(chain, 0)
 	}
 	for _, sc := range chain {
-		if id, ok, err := designCodeTaken(ctx, q, sc, c.Number); err == nil && ok && id != 0 {
+		id, ok, err := designCodeTaken(ctx, q, sc, c.Number)
+		if err != nil {
+			// A failed read of a nearer scope mustn't fall through to a farther one.
+			if readFault(err) {
+				s.log.WarnContext(ctx, "read a design code", "scope", sc, "code", c.String(), "err", err)
+			}
+			return 0, false
+		}
+		if ok && id != 0 {
 			return id, true
 		}
 	}

@@ -35,6 +35,7 @@ func matchGlob(glob, v string) bool {
 		return true
 	}
 	gs, err := newGlobSet([]string{glob})
+	//wplint:ignore blankerr newGlobSet only parses the pattern: a malformed one is an answer (it matches nothing), not a failed read
 	return err == nil && gs.match(v)
 }
 

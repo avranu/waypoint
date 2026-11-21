@@ -461,7 +461,13 @@ func (s *Service) pageByCodeIn(ctx context.Context, q queryer, c PageCode, scope
 		}
 		chain = []int64{p.ID}
 	} else if scope != nil {
-		chain, _ = s.projectChainIDs(ctx, q, *scope)
+		var rerr error
+		chain, rerr = s.projectChainIDs(ctx, q, *scope)
+		if rerr != nil {
+			if readFault(rerr) {
+				s.log.WarnContext(ctx, "project chain ids failed", "err", rerr)
+			}
+		}
 	}
 	for _, pid := range chain {
 		if id, ok, err := codeTaken(ctx, q, pid, c.Prefix, c.Number); err == nil && ok && id != 0 {

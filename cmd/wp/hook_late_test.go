@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -372,6 +373,21 @@ func TestHookCountWait(t *testing.T) {
 	}
 }
 
+// The lock wait is the time left before the late point and, past it, the
+// floor. TestChainNudgeLateFloor widens the floor, so its shipped value is
+// held here: two of lockFileWithin's 25 ms sleeps, which is three tries.
+func TestHookLockWait(t *testing.T) {
+	late := hookLateAfter(hookNudgeTimeout)
+	setAge(t, 0)
+	if got := hookLockWait(late); got != late {
+		t.Errorf("fresh = %v, want %v", got, late)
+	}
+	setAge(t, 1800*time.Millisecond)
+	if got := hookLockWait(late); got != 50*time.Millisecond {
+		t.Errorf("late = %v, want the 50ms floor", got)
+	}
+}
+
 // A chain lock held for a moment past the late point costs a short wait, not
 // the count.
 func TestChainNudgeLateFloor(t *testing.T) {
@@ -385,22 +401,21 @@ func TestChainNudgeLateFloor(t *testing.T) {
 		t.Fatal(err)
 	}
 	setAge(t, 1800*time.Millisecond)
-	// The holder lets go while the waiter pauses after its first failed try:
-	// a run with no floor never pauses and drops the count. Released on the
-	// pause, not after a timer, so a loaded runner can't outlast the floor.
-	polls := 0
-	oldPoll := lockPoll
-	lockPoll = func() {
-		if polls++; polls == 1 {
-			_ = os.Remove(path + ".lock")
-		}
-		oldPoll()
-	}
-	t.Cleanup(func() { lockPoll = oldPoll })
+	// Widen the floor so a slow runner delaying the release can't end the wait
+	// first; the lock is still held when chainNudge starts, and the wait ends
+	// when it is removed.
+	old := hookLockFloor
+	hookLockFloor = 5 * time.Second
+	t.Cleanup(func() { hookLockFloor = old })
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		time.Sleep(20 * time.Millisecond)
+		_ = os.Remove(path + ".lock")
+	}()
 	c.chainNudge(&hookEventInput{SessionID: "brief"}, repo, stepFind, false)
-	if polls == 0 {
-		t.Error("the held lock was not waited for: no floor past the late point")
-	}
+	wg.Wait()
 	st := &chainState{}
 	if err := readJSON(path, st); err != nil || st.Finds != 1 {
 		t.Errorf("chain = %+v, err %v: the late step was not counted", st, err)

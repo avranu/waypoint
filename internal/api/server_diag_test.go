@@ -157,3 +157,22 @@ func TestServerStatusTextRunsAndHealthCheck(t *testing.T) {
 		t.Errorf("nothing known:\n%s", out)
 	}
 }
+
+// wp server status lists hook data the collection dropped, by person (WP-1468).
+func TestServerStatusTextHookDrops(t *testing.T) {
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	st := &core.ServerStatus{Version: "x", Started: now.Add(-time.Hour)}
+	if out := serverStatusText(st, now); strings.Contains(out, "Hook data dropped") {
+		t.Errorf("nothing dropped:\n%s", out)
+	}
+	st.HookDrops = []core.HookDrop{{User: core.UserRef{ID: 2, Username: "ana"}, Machine: "box", Reason: "overflow", Event: "UserPromptSubmit", Dropped: 5, Last: now.Add(-3 * time.Hour)}}
+	out := serverStatusText(st, now)
+	for _, want := range []string{
+		"\nHook data dropped (person, machine, reason/event, count, last):\n",
+		"  ana          box              overflow/UserPromptSubmit               5  3h00m ago\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+}

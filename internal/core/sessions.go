@@ -113,7 +113,7 @@ const StopEndedByShip = "ship"
 // be reached with are sent later, in order, with At set to when they
 // happened.
 type HookEvent struct {
-	Event     string `json:"event"` // SessionStart, UserPromptSubmit, Notification, PermissionDenied, PreToolUse, PostToolUse, Stop, SubagentStart, SubagentStop, SessionEnd
+	Event     string `json:"event"` // SessionStart, UserPromptSubmit, Notification, PermissionDenied, PreToolUse, PostToolUse, Stop, SubagentStart, SubagentStop, SessionEnd, PostCompact, ConfigChange, InstructionsLoaded, PostModelSwitch
 	At        int64  `json:"at,omitempty"`
 	SessionID string `json:"session_id"` // the CLI's
 	Machine   string `json:"machine"`
@@ -174,6 +174,31 @@ type HookEvent struct {
 	// Checkouts: Stop and SessionStart: the git state of the checkouts the
 	// session works in (WP-567).
 	Checkouts []HookCheckout `json:"checkouts,omitempty"`
+
+	// What the session is running with, as the hook observed it (WP-1468).
+	// PermissionMode and Effort ride on the events Claude Code gives them to
+	// (UserPromptSubmit, Stop) and on the tool events the hook sends
+	// (PermissionDenied, AskUserQuestion's PreToolUse and PostToolUse, a
+	// watched Bash PostToolUse): a change mid-turn is otherwise recorded at the
+	// next UserPromptSubmit or Stop, with that event's time; File, MemoryType and LoadReason
+	// are InstructionsLoaded's; File and Source are ConfigChange's; FromModel
+	// and RequestedModel are PostModelSwitch's (Model is its to_model).
+	PermissionMode string `json:"permission_mode,omitempty"`
+	Effort         string `json:"effort,omitempty"`
+	FromModel      string `json:"from_model,omitempty"`
+	RequestedModel string `json:"requested_model,omitempty"`
+	File           string `json:"file,omitempty"`
+	MemoryType     string `json:"memory_type,omitempty"`
+	LoadReason     string `json:"load_reason,omitempty"`
+	// Snapshot: SessionStart, PostCompact and ConfigChange carry the
+	// inventory the CLI read on the machine.
+	Snapshot *HookSnapshot `json:"snapshot,omitempty"`
+	// Drops: what the CLI's outbox dropped since it last got through, by
+	// "reason/event" (WP-ADR145 point 5).
+	Drops map[string]int64 `json:"drops,omitempty"`
+	// DropsID names one report of Drops (random, at most 64 characters), so
+	// one the client sent again after a lost reply is counted once.
+	DropsID string `json:"drops_id,omitempty"`
 
 	// quiet: a keep-warm ping's prompt or stop, or Waypoint's /compact
 	// (WP-192): no turn of the session's work, so it records nothing of one.
@@ -432,7 +457,12 @@ func (s *Service) sessionVisible(ctx context.Context, q queryer, actor *Actor, x
 	if !x.projectID.Valid {
 		return false
 	}
-	r, _ := s.projectRole(ctx, q, actor, x.projectID.Int64)
+	r, rerr := s.projectRole(ctx, q, actor, x.projectID.Int64)
+	if rerr != nil {
+		if readFault(rerr) {
+			s.log.WarnContext(ctx, "project role failed", "projectid", x.projectID.Int64, "err", rerr)
+		}
+	}
 	return r > RoleNone
 }
 
@@ -701,7 +731,12 @@ func (s *Service) GetAgentSession(ctx context.Context, actor *Actor, id int64) (
 	// person and its project's editors (WP-232).
 	refusedText := ownPrompts
 	if !refusedText && x.projectID.Valid {
-		role, _ := s.projectRole(ctx, s.db.R, actor, x.projectID.Int64)
+		role, rerr := s.projectRole(ctx, s.db.R, actor, x.projectID.Int64)
+		if rerr != nil {
+			if readFault(rerr) {
+				s.log.WarnContext(ctx, "project role failed", "projectid", x.projectID.Int64, "err", rerr)
+			}
+		}
 		refusedText = role >= RoleEditor
 	}
 	refusedText = refusedText && !actor.HidesCommandText()
@@ -846,6 +881,17 @@ func (s *Service) SessionHook(ctx context.Context, actor *Actor, evs []HookEvent
 				return err
 			}
 			res.Session = x.ID
+			// Observational: a failure here is counted, never a reason to
+			// refuse the batch (WP-1468).
+			if err := s.recordObserved(ctx, t, actor, x, &ev); err != nil {
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					return err
+				}
+				s.log.WarnContext(ctx, "record observed", "session", x.ID, "event", ev.Event, "err", err)
+				if err := s.addDrop(ctx, t, actor, cmp(strings.TrimSpace(ev.Machine), "unknown"), "server_error", ev.Event, 1, s.hookTime(&ev)); err != nil {
+					return err
+				}
+			}
 			if created {
 				var extra map[string]any
 				if job := s.linkSpawned(ctx, t, actor, x, &ev); job != 0 {
@@ -954,7 +1000,13 @@ func (s *Service) SessionHook(ctx context.Context, actor *Actor, evs []HookEvent
 	}
 	if advance != nil {
 		st := advance
-		s.goBG(func() { _ = s.advanceStep(context.WithoutCancel(ctx), st) })
+		s.goBG(func() {
+			if err := s.advanceStep(context.WithoutCancel(ctx), st); err != nil {
+				if readFault(err) && !missingOrDenied(err) {
+					s.log.WarnContext(ctx, "advance step failed", "session", st.sessionID, "err", err)
+				}
+			}
+		})
 	}
 	res.Text = joinText(DecisionsText(res.Deliver), MessagesText(res.Messages))
 	if evs[len(evs)-1].Event == "SessionStart" && !lastQuiet {
@@ -1167,7 +1219,13 @@ func (s *Service) projectForRepo(ctx context.Context, q queryer, actor *Actor, r
 		return 0
 	}
 	for _, id := range ids {
-		if r, _ := s.projectRole(ctx, q, actor, id); r > RoleNone {
+		r, rerr := s.projectRole(ctx, q, actor, id)
+		if rerr != nil {
+			if readFault(rerr) {
+				s.log.WarnContext(ctx, "project role failed", "id", id, "err", rerr)
+			}
+		}
+		if r > RoleNone {
 			return id
 		}
 	}

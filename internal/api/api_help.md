@@ -291,7 +291,10 @@ idle, in 24 hours as ended. Prompts are only shown to their owner (and admins).
     POST /sessions/hook {"events":[{"event":"Stop","session_id","machine","cwd","repo","branch",…,"at":ms}]}
                  what the hooks send: one call for a batch (queued events first); events are SessionStart,
                  UserPromptSubmit, Notification, PermissionDenied, PreToolUse and PostToolUse (AskUserQuestion),
-                 Stop, SubagentStart, SubagentStop, SessionEnd. Answers {session, deliver:[requests], text}:
+                 Stop, SubagentStart, SubagentStop, SessionEnd, PostCompact, ConfigChange, InstructionsLoaded
+                 and PostModelSwitch (WP-1468: what the session runs with; see snapshots below). An event may
+                 carry "drops":{"reason/event":N} (what the CLI's outbox dropped) with "drops_id" (a random id,
+                 at most 64 characters): a report sent again with the same id is counted once. Answers {session, deliver:[requests], text}:
                  at Stop and SessionStart, the decisions made since the agent asked (marked delivered),
                  and messages queued for it (messages:[{id, body, from, agent, automation_id, …}]; agent:
                  the agent that wrote it, itself or as the automation's rule, WP-560). A Stop carries "pending":{tasks:[{type,status,
@@ -302,6 +305,17 @@ idle, in 24 hours as ended. Prompts are only shown to their owner (and admins).
                  a session shows cache:{ttl, decision: warm|cool|compacting|compacted|failed, note, pings, at},
                  what Waypoint did with its cache at its latest stop (WP-192). A prompt starting "Waypoint
                  keep-warm" is a keep-warm ping: its prompt and stop record nothing of a turn.
+    GET  /sessions/{id}/snapshots    what the session ran with: one row per SessionStart, PostCompact and
+                                     ConfigChange (model, effort, permission mode, git, memory, inventory by
+                                     name), oldest first; a null column is one the hook did not carry, and
+                                     "missing" says why. Owner and admins only (a colleague gets 403). Model,
+                                     effort and permission-mode changes between snapshots are in /observed;
+                                     a session keeps its first snapshot and its newest 99
+    GET  /sessions/{id}/observed     the changes the hook saw (model, effort, permission_mode, config_change,
+                                     instruction_file), oldest first, each with prev and source. Owner and
+                                     admins only
+                 Admins see what was dropped and counted in `GET /server/status` as hook_drops:[{user,
+                 machine, reason, event, dropped, first, last}] (wp server status).
     POST /sessions/hook/await {"session_id","machine","wait":8}   a Stop hook waiting for a follow-up's
                  message: {session, messages, text} (text empty: none came)
     GET  /sessions/pause         {pause}: your pause with running sessions included that covers this

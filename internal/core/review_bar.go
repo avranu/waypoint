@@ -16,12 +16,32 @@ import (
 // so the bar follows newer versions of the named model and admits any other
 // model that does as well, with no change here.
 //
+// There are three levels (WP-1440). Waypoint picks no model itself: it gives
+// the gateway a purpose and a minimum, and the gateway chooses. High-stakes
+// changes ask for trustedAuditBar, elevated ones for elevatedAuditBar
+// (WP-1248), and every other request that reviews or audits code and has no
+// higher bar asks for reviewFloorBar: the bot's reviewers and verifier, the
+// round's audits, footprint audits, the audits of PRs, automations and
+// objectives, and (the owner's later decision) fix checks, thread replies and
+// held-edit checks. Prep, task safety, titles and estimates send no minimum.
+// The floor is there at low stakes because a weak reviewer's false positives
+// cost the agents that chase them tokens; it is not a claim about risk (the
+// risk reasoning is for the two higher bars). A model a person named (a named
+// reviewer, a CLI chain entry, a gateway model named for an audit) is not
+// held to it.
+//
 // When no model at the bar can take the audit (none is that good outside
 // the author's family, or they are all spent), the gateway says
 // no_model_at_bar and the audit ends. What the round does then depends on
 // its stakes tier (review_stakes.go, WP-1231): a high-stakes round goes to
-// the Sonnet reviewer; an elevated one asks the gateway again at no bar.
-// An elevated round's bar is lower, elevatedAuditBar (WP-1248).
+// the Sonnet reviewer; an elevated one asks the gateway again at the floor;
+// a normal one, which asked at the floor already, goes to its Claude
+// reviewer. A request is never sent again without its bar.
+
+// reviewFloorBar is the minimum of every code-review request that has no
+// higher one (WP-1440). It is a model name the gateway rates, not a route
+// (see the trustedAuditBar comment about routes getting a 400).
+const reviewFloorBar = "deepseek-v4.1-flash"
 
 // trustedAuditBar is the weakest model a high-stakes change's audit accepts,
 // by the loose name the gateway rates (its best model of that name, so a

@@ -736,13 +736,13 @@ func TestDriftFailedReadsAreNotNothing(t *testing.T) {
 	if n, err := de.s.driftUnchecked(de.ctx, de.p.ID); n != 0 || err != nil {
 		t.Fatalf("nothing unchecked: %d, %v", n, err)
 	}
-	if id, err := de.s.attachedProjectRead(gone, de.s.db.R, de.f.ID, de.repo.Repo); id != 0 || err == nil {
+	if id, err := de.s.attachedProject(gone, de.s.db.R, de.f.ID, de.repo.Repo); id != 0 || err == nil {
 		t.Fatalf("a failed lookup: %d, %v", id, err)
 	}
-	if id, err := de.s.attachedProjectRead(de.ctx, de.s.db.R, de.f.ID, "nobody/nothing"); id != 0 || err != nil {
+	if id, err := de.s.attachedProject(de.ctx, de.s.db.R, de.f.ID, "nobody/nothing"); id != 0 || err != nil {
 		t.Fatalf("a repo attached to nothing: %d, %v", id, err)
 	}
-	if id, err := de.s.attachedProjectRead(de.ctx, de.s.db.R, de.f.ID, de.repo.Repo); id != de.p.ID || err != nil {
+	if id, err := de.s.attachedProject(de.ctx, de.s.db.R, de.f.ID, de.repo.Repo); id != de.p.ID || err != nil {
 		t.Fatalf("an attached repo: %d, %v", id, err)
 	}
 }

@@ -30,6 +30,9 @@ func TestOutcomesOfProviderErrors(t *testing.T) {
 	if !providersDown(down) {
 		t.Error("unavailable and rate limited should count as providers down")
 	}
+	if !providersDown([]reviewerAnswer{{log: []ModelAttempt{{Outcome: "no_model_at_bar"}}}}) {
+		t.Error("no model at the review minimum should count as providers down (WP-1440)")
+	}
 	if providersDown(append(down, reviewerAnswer{log: []ModelAttempt{{Outcome: "error"}}})) {
 		t.Error("an invalid answer is the model's, not the provider's")
 	}

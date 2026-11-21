@@ -201,7 +201,12 @@ func (s *Service) mayDecideOrOwn(ctx context.Context, actor *Actor, r *Request) 
 	if !r.projectID.Valid {
 		return false
 	}
-	role, _ := s.projectRole(ctx, s.db.R, actor, r.projectID.Int64)
+	role, rerr := s.projectRole(ctx, s.db.R, actor, r.projectID.Int64)
+	if rerr != nil {
+		if readFault(rerr) {
+			s.log.WarnContext(ctx, "project role failed", "projectid", r.projectID.Int64, "err", rerr)
+		}
+	}
 	return role >= RoleEditor
 }
 

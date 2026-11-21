@@ -29,6 +29,7 @@ type shipForge struct {
 	logs          map[string]string             // check name → log tail
 	merges        []MergeOptions
 	mergeErr      error
+	behindErr     error                 // BehindBase fails with it
 	createErr     error                 // CreatePR fails with it
 	defaultBranch string                // what DefaultBranch says: "" main, "-" an error
 	reacts        map[string][]Reaction // comment id → reactions

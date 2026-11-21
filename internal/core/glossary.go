@@ -252,7 +252,13 @@ func (s *Service) ListGlossary(ctx context.Context, actor *Actor, q GlossaryQuer
 		}
 		r, ok := roles[key]
 		if !ok {
-			r, _ = s.scopeRole(ctx, s.db.R, actor, g.ProjectID)
+			var rerr error
+			r, rerr = s.scopeRole(ctx, s.db.R, actor, g.ProjectID)
+			if rerr != nil {
+				if readFault(rerr) {
+					s.log.WarnContext(ctx, "scope role failed", "projectid", g.ProjectID, "err", rerr)
+				}
+			}
 			roles[key] = r
 		}
 		g.CanEdit = r >= RoleEditor && (!g.Locked || !actor.IsAgent()) && !actor.ReadOnly
@@ -356,7 +362,12 @@ func (s *Service) LookupGlossary(ctx context.Context, actor *Actor, term, projec
 	for i, g := range res.Matches {
 		s.fillGlossaryPeople(ctx, cache, g)
 		g.Shadowed = i > 0
-		r, _ := s.scopeRole(ctx, s.db.R, actor, g.ProjectID)
+		r, rerr := s.scopeRole(ctx, s.db.R, actor, g.ProjectID)
+		if rerr != nil {
+			if readFault(rerr) {
+				s.log.WarnContext(ctx, "scope role failed", "projectid", g.ProjectID, "err", rerr)
+			}
+		}
 		g.CanEdit = r >= RoleEditor && (!g.Locked || !actor.IsAgent()) && !actor.ReadOnly
 		if i == 0 {
 			if g.Links, err = s.ItemLinks(ctx, actor, LinkEnd{Type: KGlossary, ID: g.ID}); err != nil {

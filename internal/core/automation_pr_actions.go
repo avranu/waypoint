@@ -1,6 +1,7 @@
 package core
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -155,7 +156,11 @@ func (c *StepCtx) freshPR(pr *PullRequest, checks bool) *PullRequest {
 			// Firing what a change calls for (a new head is reviewed) as the
 			// forge's own webhook would: it may not have arrived yet, and once
 			// this has recorded the change it finds nothing new to react to.
-			_, _ = c.S.recordPR(c.Ctx, f, pr.Repo, fp, true)
+			if _, err := c.S.recordPR(c.Ctx, f, pr.Repo, fp, true); err != nil {
+				if readFault(err) {
+					c.S.log.WarnContext(c.Ctx, "record a pull request before firing what it calls for", "repo", pr.Repo, "number", pr.Number, "err", err)
+				}
+			}
 		}
 	}
 	if cur, err := c.S.prByID(c.Ctx, c.S.db.R, pr.ID); err == nil {
@@ -334,7 +339,10 @@ func waitForPR(c *StepCtx, what string) error {
 			return nil, false
 		}
 	case waitGate:
-		on, _ := c.S.gateConfig(c.Ctx, pr.ForgeID, pr.Repo)
+		on, _, err := c.S.gateConfigErr(c.Ctx, pr.ForgeID, pr.Repo)
+		if err != nil {
+			return err // an unreadable setting is not "no gate": the wait must not pass
+		}
 		if !on {
 			c.Logf("this repository has no review gate, so there is nothing to wait for")
 			c.Set("Green", true)
@@ -375,7 +383,11 @@ func waitForPR(c *StepCtx, what string) error {
 		// The rest of the time counts from when the first wait began, however
 		// long the run took to come back.
 		left := timeout - first
-		if d := c.WaitDeadline(0); d != 0 {
+		d, derr := c.WaitDeadline(0)
+		if derr != nil {
+			return derr
+		}
+		if d != 0 {
 			left = time.Duration(d+(timeout-first).Milliseconds()-c.S.nowMS()) * time.Millisecond
 		}
 		if left > 0 {
@@ -445,6 +457,22 @@ func waitLabel(what string) string {
 
 // ---- merge_pr ----
 
+// reloadPR is the pull request now; nil with no error is one that's gone.
+// A read that failed is an error, never "it was closed" (WP-1406).
+func (c *StepCtx) reloadPR(id int64) (*PullRequest, error) {
+	p, err := c.S.prByID(c.Ctx, c.S.db.R, id)
+	if errors.Is(err, ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		if readFault(err) {
+			c.S.log.WarnContext(c.Ctx, "pr by id failed", "pr", id, "err", err)
+		}
+		return nil, err
+	}
+	return p, nil
+}
+
 func mergePR(c *StepCtx) error {
 	pr, err := c.PullRequest("pr")
 	if err != nil {
@@ -491,12 +519,9 @@ func mergePR(c *StepCtx) error {
 		}
 		c.Logf("waiting for it to be ready: %s", strings.Join(res.Reasons, "; "))
 	}
-	reload := func() *PullRequest {
-		p, _ := c.S.prByID(c.Ctx, c.S.db.R, pr.ID)
-		return p
-	}
+	reload := func() (*PullRequest, error) { return c.reloadPR(pr.ID) }
 	_, timedOut, err := c.WaitSlot(0, EvPRActivity, "pr:"+itoa64(pr.ID), "new=merged", timeout, func() (*Event, bool) {
-		if p := reload(); p != nil && p.State == "merged" {
+		if p, rerr := reload(); rerr == nil && p != nil && p.State == "merged" {
 			return &Event{Kind: EvPRActivity, New: "merged", Data: map[string]any{"pr_id": p.ID}}, true
 		}
 		return nil, false
@@ -504,12 +529,17 @@ func mergePR(c *StepCtx) error {
 	if err != nil {
 		return err
 	}
-	cur := reload()
+	cur, err := reload()
+	if err != nil {
+		return err // not known to be merged or gone: the step doesn't disarm on a guess
+	}
 	if cur != nil && cur.State != "merged" && timedOut {
 		// A last look: nothing may have told Waypoint the checks settled.
 		cur = c.freshPR(cur, true)
 		c.S.maybeAutoMerge(c.Ctx, cur.ID)
-		cur = reload()
+		if cur, err = reload(); err != nil {
+			return err
+		}
 	}
 	if cur != nil && cur.State == "merged" {
 		c.Set("Merged", true)
@@ -517,7 +547,9 @@ func mergePR(c *StepCtx) error {
 		return nil
 	}
 	// It didn't merge: take the arming off so it doesn't go later, unseen.
-	_ = c.S.DisarmMerge(c.Ctx, c.Actor, pr.ID)
+	if err := c.S.DisarmMerge(c.Ctx, c.Actor, pr.ID); readFault(err) && !missingOrDenied(err) { // an actor that can't merge it has nothing armed to take off
+		c.S.log.WarnContext(c.Ctx, "take a pull request's merge off after the step", "pr", pr.ID, "err", err)
+	}
 	c.Set("Merged", false)
 	c.Set("TimedOut", timedOut)
 	why := "it was closed"

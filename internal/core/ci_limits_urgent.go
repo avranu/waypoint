@@ -45,7 +45,12 @@ func ciLimitUrgedKey(forgeID int64, repo string) string {
 }
 
 func (s *Service) ciLimitUrged(ctx context.Context, forgeID int64, repo string) string {
-	v, _ := s.serverSetting(ctx, s.db.R, ciLimitUrgedKey(forgeID, repo))
+	v, rerr := s.serverSetting(ctx, s.db.R, ciLimitUrgedKey(forgeID, repo))
+	if rerr != nil {
+		if readFault(rerr) {
+			s.log.WarnContext(ctx, "server setting failed", "err", rerr)
+		}
+	}
 	return v
 }
 

@@ -58,7 +58,10 @@ func hookTimeLeft(limit time.Duration) time.Duration {
 // hookLockFloor is the least a lock wait before the output takes, even past
 // the late point: a lock held for a moment (a peer's short write) is waited
 // out, where one failed try would drop the work.
-const hookLockFloor = 50 * time.Millisecond
+//
+// A var so a test can widen it: on a slow runner a fixed 50 ms races the
+// goroutine that releases the lock.
+var hookLockFloor = 50 * time.Millisecond
 
 // hookLockWait is how long a lock wait before the output may take: the time
 // left before limit (the late point), but at least hookLockFloor.

@@ -54,8 +54,13 @@ func sleepWait(cmd string) bool {
 
 // taskNudge is the note, or refusal (deny), for a Bash command or Read that
 // looks at a background task's output file; kind is "" when there is none.
-// subagent: the call is a sub-agent's, which isn't refused.
-func taskNudge(tool, cmd, path string, subagent bool) (kind, text string, deny bool) {
+// who: the call's maker. A subagent started in the background is refused too
+// (WP-1443): one with a background command of its own running is kept open
+// and woken when that exits, so its texts say to end the turn. One started in
+// the foreground (or not known to be a background one) is only noted: its
+// shells are reaped when it answers, so ending the turn would stop the task,
+// and it is told to wait in one foreground call instead.
+func taskNudge(tool, cmd, path string, who caller) (kind, text string, deny bool) {
 	src := cmd
 	if tool == "Read" {
 		src = path
@@ -71,7 +76,20 @@ func taskNudge(tool, cmd, path string, subagent bool) (kind, text string, deny b
 		if !heldOpen(file) {
 			continue // finished, or not knowable here: reading the output is fine
 		}
-		if tool == "Bash" && !subagent && reSleep.MatchString(cmd) {
+		switch who {
+		case callerBg:
+			if tool == "Bash" && reSleep.MatchString(cmd) {
+				return "task-wait", "Background task " + id + " is still running; sleeping on it re-reads your whole context for nothing. End your turn: you are woken when it exits.", true
+			}
+			return "task-poll", "Background task " + id + " is still running; reading its output again is polling. End your turn: you are woken when it exits.", false
+		case callerFg:
+			kind := "task-poll"
+			if tool == "Bash" && reSleep.MatchString(cmd) {
+				kind = "task-wait"
+			}
+			return kind, "Background task " + id + " is still running, and reading or sleeping on it again re-reads your whole context. Wait for it in ONE foreground Bash call with the timeout set to 600000 (`timeout 590 bash -c 'until CHECK; do sleep 5; done'`); ending your turn instead ends your run and stops the task.", false
+		}
+		if tool == "Bash" && reSleep.MatchString(cmd) {
 			return "task-wait", "Background task " + id + " is still running; Claude Code tells you when it exits.", true
 		}
 		return "task-poll", "Background task " + id + " is still running; Claude Code tells you when it exits, so reading its output again is polling.", false
