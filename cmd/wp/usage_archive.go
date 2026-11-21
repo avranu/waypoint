@@ -488,7 +488,7 @@ func (a *archiver) pass(o usageSyncOptions, root string) error {
 		}
 	}
 	res.OlderFiles, res.OlderBytes = 0, 0
-	if !o.Hook && !(o.All && o.Since == 0) {
+	if !o.Hook && (!o.All || o.Since != 0) {
 		a.countOlder(root, seen)
 	}
 	return nil
