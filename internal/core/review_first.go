@@ -947,6 +947,7 @@ func (s *Service) roundBeforeResume(ctx context.Context, q queryer, session, iss
 func (s *Service) scheduleRound(ctx context.Context, actor *Actor, g *reviewGate, bp beforePR, seen, replace int64, skip string, tr *triageRow) error {
 	raw, _ := json.Marshal(bp)
 	at := s.nowMS()
+	s.raced(ctx)
 	return s.write(ctx, actor, func(t *tx) error {
 		var latest int64
 		if err := t.QueryRowContext(ctx, `SELECT coalesce(max(id), 0) FROM work_log WHERE kind = 'review' AND run_id = ?`, g.run).Scan(&latest); err != nil {
@@ -1024,6 +1025,7 @@ func (s *Service) ownReviewRound(ctx context.Context, actor *Actor, g *reviewGat
 	}
 	body := fmt.Sprintf("The session ran its own adversarial review of the change (%s: wp worklog %s), which stands as this round. Its findings are the session's to report (wp audit report), and are checked and scored from there.", how, g.key)
 	id := pending
+	s.raced(ctx)
 	err := s.write(ctx, actor, func(t *tx) error {
 		var latest int64
 		if err := t.QueryRowContext(ctx, `SELECT coalesce(max(id), 0) FROM work_log WHERE kind = 'review' AND run_id = ?`, g.run).Scan(&latest); err != nil {
@@ -1243,13 +1245,20 @@ func (s *Service) reviewFirstAtStop(ctx context.Context, t *tx, x *AgentSession,
 		}
 	}
 	if state == RoundRunning {
-		if live, _ := liveBackground(seen, since, at); len(live) > 0 {
-			return "", true, nil // its background work wakes it again
-		}
-		// Its ship waits on the check of its marks, whose end is typed
-		// into it (tellAudit): the round goes on then.
-		if going, err := s.checkGoing(ctx, t, id, at); err != nil || going {
+		live, _ := liveBackground(seen, since, at)
+		going, err := s.checkGoing(ctx, t, id, at)
+		if err != nil {
 			return "", true, err
+		}
+		in := roundIn{State: state, Stopped: true, Subagents: len(live) > 0}
+		if going {
+			in.Check = checkRunning
+		}
+		// Its background work wakes it again; its ship waits on the check of
+		// its marks, whose end is typed into it (tellAudit): the round goes
+		// on then. Otherwise what it said is the round's report.
+		if decideRound(in).Do != doReport {
+			return "", true, nil
 		}
 		// It stopped without shipping: what it said is the round's report,
 		// and the task is the session's (or its person's) to finish.

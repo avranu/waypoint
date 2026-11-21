@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -173,9 +172,8 @@ func scanIDs(rows *sql.Rows) ([]int64, error) {
 func (s *Service) shipSettledRounds(ctx context.Context) {
 	now := s.nowMS()
 	rows, err := s.db.R.QueryContext(ctx, `SELECT w.id FROM work_log w JOIN agent_runs r ON r.id = w.run_id
-		WHERE w.kind = 'review' AND w.before_pr != '' AND r.ended_at IS NULL AND (
-			(w.state = 'done'
-				AND NOT EXISTS (SELECT 1 FROM autopilot_steps st WHERE st.review_id = w.id AND st.state IN ('due', 'waiting', 'starting')))
+		WHERE w.kind = 'review' AND w.before_pr != '' AND r.ended_at IS NULL AND w.state IN ('pending', 'running', 'done') AND (
+			NOT EXISTS (SELECT 1 FROM autopilot_steps st WHERE st.review_id = w.id AND st.state IN ('due', 'waiting', 'starting'))
 			OR (w.state = 'running' AND EXISTS (SELECT 1 FROM code_audits c WHERE c.request_key = 'review-round:' || w.id || ':check'
 				AND c.settled_at IS NOT NULL)))
 		ORDER BY w.id LIMIT 50`)
@@ -268,42 +266,4 @@ func (s *Service) shipTried(ctx context.Context, round int64, key string, now in
 	s.notifyURL(ctx, userID, nil, NotifyAutopilot, "Waypoint can't open "+key+"'s pull request",
 		fmt.Sprintf("%s's adversarial review is done, and Waypoint has tried %d times over %d minutes to open its pull request: %s. It keeps trying every %d minutes.", key, next.ShipTries, int(heldShipRetry.Minutes()), err, int(heldShipRetry.Minutes())),
 		"/agents?tab=autopilot")
-}
-
-// What a round's check leaves it needing (roundNeeds).
-const (
-	needNone  = ""      // no check was asked for: the session's own ship decides
-	needCheck = "check" // the check is queued or running: wait for it
-	needTell  = "tell"  // it disagrees with marks: the session decides them, or the deadline
-	needShip  = "ship"  // it agreed, or couldn't say: Waypoint ships
-)
-
-// roundNeeds is what a round still needs, by what its check (if one was asked
-// for) came to. One answer for the step, the sweeps, the settle event and
-// the agent's ship, so none of them ships a round whose check disagreed, or
-// ends one whose check still runs (WP-1370).
-func (s *Service) roundNeeds(ctx context.Context, round int64) (string, error) {
-	var id int64
-	err := s.db.R.QueryRowContext(ctx, `SELECT id FROM code_audits WHERE request_key = ?`, fmt.Sprintf(checkAuditKey, round)).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return needNone, nil
-	}
-	if err != nil {
-		return needNone, err
-	}
-	a, err := s.auditRow(ctx, id)
-	if err != nil {
-		return needNone, err
-	}
-	if a.Status == AuditQueued || a.Status == AuditRunning {
-		return needCheck, nil
-	}
-	todo, err := s.checkTodo(ctx, a)
-	if err != nil {
-		return needNone, err
-	}
-	if len(todo) > 0 {
-		return needTell, nil
-	}
-	return needShip, nil
 }

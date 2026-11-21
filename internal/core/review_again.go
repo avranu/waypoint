@@ -706,6 +706,7 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 	if len(findings) == 0 {
 		body = fmt.Sprintf("The session reported that its review raised nothing and ran wp ship. %s, so adversarial review round %d comes before the pull request (WP-1320).", upperFirst(why), index+1)
 	}
+	s.raced(ctx)
 	err = s.write(ctx, actor, func(t *tx) error {
 		var latest int64
 		if err := t.QueryRowContext(ctx, `SELECT coalesce(max(id), 0) FROM work_log WHERE kind = 'review' AND run_id = ?`, g.run).Scan(&latest); err != nil {
@@ -2058,3 +2059,11 @@ func (d *againDecision) insert(ctx context.Context, t *tx, at int64) (inserted b
 }
 
 func againRound(v float64) float64 { return math.Round(v*100) / 100 }
+
+// raced runs the test seam beforeRoundWrite, once.
+func (s *Service) raced(ctx context.Context) {
+	if h := s.beforeRoundWrite; h != nil {
+		s.beforeRoundWrite = nil
+		h(ctx)
+	}
+}

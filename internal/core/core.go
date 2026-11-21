@@ -99,6 +99,11 @@ type Service struct {
 	// upload changed (WP-250); tests set it.
 	tracesLanded func(issueIDs []int64)
 
+	// beforeRoundWrite, when set, runs once just before a ship writes its
+	// review round, after it read the run's newest round: a test makes
+	// another ship go first, so the write meets the conflict (WP-1370).
+	beforeRoundWrite func(ctx context.Context)
+
 	// failFanoutItems, when set, fails the write of a new fan-out's
 	// packages; tests use it for the half-made path.
 	failFanoutItems func() error

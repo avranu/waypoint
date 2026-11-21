@@ -1564,10 +1564,8 @@ func (s *Service) advanceStep(ctx context.Context, st *stepRow) error {
 				// A person has the session, but the pull request doesn't
 				// need it (WP-1370); a failed open is picked up again by
 				// the sweep (shipSettledRounds).
-				if ok, err := s.reviewedToShip(ctx, st.reviewID.Int64); err == nil && ok {
-					if err := s.shipReviewed(ctx, st.reviewID.Int64); err != nil {
-						s.log.WarnContext(ctx, "autopilot: open a reviewed pull request", "step", st.id, "err", err)
-					}
+				if _, err := s.shipOwed(ctx, st.reviewID.Int64); err != nil {
+					s.log.WarnContext(ctx, "autopilot: open a reviewed pull request", "step", st.id, "err", err)
 				}
 				return s.stepUpdate(ctx, st.id, StepStopped, "prompted", "you prompted the session", 0)
 			}
@@ -1717,11 +1715,16 @@ func (s *Service) advanceStep(ctx context.Context, st *stepRow) error {
 			// Its check of the marks is Waypoint's to finish (the check, the
 			// ship, or the deadline for a session that never answers it): the
 			// session going idle is no end of the round (WP-1370).
-			if need, err := s.roundNeeds(ctx, review.id); err == nil && need != needNone {
+			// Idle, and the round's Stop never came: move on without it,
+			// unless Waypoint is on its check (decideRound).
+			out, err := s.decideIdle(ctx, review.id)
+			if err != nil {
+				return err
+			}
+			if out.Do != doEnd {
 				return s.stepUpdate(ctx, st.id, StepWaiting, WaitJob, "waiting on Waypoint: "+review.key+"'s check of its marks, then its pull request", now+autopilotRetry.Milliseconds())
 			}
-			// Idle, and the round's Stop never came: move on without it.
-			s.setRoundNow(ctx, review.id, []string{RoundRunning}, RoundFailed, "no report came back: the session went idle without one")
+			s.setRoundNow(ctx, review.id, []string{RoundRunning}, out.To, out.Why)
 		case review.state == RoundPending && !slices.Contains(r.Features, FeatureAutopilotReview):
 			s.setRoundNow(ctx, review.id, []string{RoundPending}, RoundSkipped,
 				fmt.Sprintf("the runner on %s runs a wp from before adversarial reviews: update it (wp update, then restart the runner)", x.Machine))
@@ -1750,14 +1753,10 @@ func (s *Service) advanceStep(ctx context.Context, st *stepRow) error {
 	// Its review left nothing for the session to do: Waypoint opens the
 	// pull request the session's wp ship would have (WP-1370).
 	var shipErr error
-	if ok, err := s.reviewedToShip(ctx, st.reviewID.Int64); err != nil {
-		return err
-	} else if ok {
-		if shipErr = s.shipReviewed(ctx, st.reviewID.Int64); shipErr != nil {
-			s.log.WarnContext(ctx, "autopilot: open a reviewed pull request", "step", st.id, "err", shipErr)
-			if r, _ := roundByID(ctx, s.db.R, st.reviewID.Int64); r != nil && now-r.updatedAt < heldShipRetry.Milliseconds() {
-				return s.stepUpdate(ctx, st.id, StepWaiting, WaitJob, "couldn't open "+r.key+"'s pull request, trying again: "+shipErr.Error(), now+autopilotRetry.Milliseconds())
-			}
+	if _, shipErr = s.shipOwed(ctx, st.reviewID.Int64); shipErr != nil {
+		s.log.WarnContext(ctx, "autopilot: open a reviewed pull request", "step", st.id, "err", shipErr)
+		if r, _ := roundByID(ctx, s.db.R, st.reviewID.Int64); r != nil && now-r.updatedAt < heldShipRetry.Milliseconds() {
+			return s.stepUpdate(ctx, st.id, StepWaiting, WaitJob, "couldn't open "+r.key+"'s pull request, trying again: "+shipErr.Error(), now+autopilotRetry.Milliseconds())
 		}
 	}
 	why, release, err := s.heldUnshipped(ctx, st)

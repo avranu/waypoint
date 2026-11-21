@@ -381,7 +381,7 @@ func (s *Service) roundAtStop(ctx context.Context, t *tx, x *AgentSession, issue
 	}
 	seen := map[string]int64{}
 	_ = json.Unmarshal([]byte(raw), &seen)
-	if subagentsSince(seen, r.startedAt.Int64, at) {
+	if decideRound(roundIn{State: r.state, Stopped: true, Subagents: subagentsSince(seen, r.startedAt.Int64, at)}).Do != doReport {
 		return false, nil
 	}
 	body := clipText(strings.TrimSpace(msg), reviewReportMax)
@@ -483,56 +483,28 @@ func (s *Service) sweepRounds(ctx context.Context) {
 	s.shipSettledRounds(ctx) // a ship of Waypoint's that failed or was lost (WP-1370)
 	s.repostQueuedNews(ctx)
 	s.expireOrphanNews(ctx)
-	now := s.nowMS()
-	// A running round whose check has been asked for waits on Waypoint (the
-	// check, then the ship), not on the session: the session ending, or the
-	// hours its review took, don't end it (shipSettledRounds carries it on).
-	rows, err := s.db.R.QueryContext(ctx, `SELECT w.id, w.state, coalesce(x.ended_at, 0), coalesce(w.started_at, w.created_at),
-		EXISTS (SELECT 1 FROM autopilot_steps st WHERE st.review_id = w.id AND st.state IN ('due', 'waiting', 'starting'))
-		OR (w.before_pr != '' AND x.ended_at IS NULL AND EXISTS (SELECT 1 FROM agent_runs r WHERE r.id = w.run_id AND r.ended_at IS NULL)),
-		w.before_pr != '' AND EXISTS (SELECT 1 FROM code_audits c WHERE c.request_key = 'review-round:' || w.id || ':check')
-			AND EXISTS (SELECT 1 FROM agent_runs r WHERE r.id = w.run_id AND r.ended_at IS NULL)
-		FROM work_log w LEFT JOIN agent_sessions x ON x.id = w.session_id
-		WHERE w.kind = 'review' AND w.state IN ('pending', 'running') LIMIT 200`)
+	// What ends a round is decideRound's (doEnd); a round whose check
+	// Waypoint is on, in an open run, is shipped or released by
+	// shipSettledRounds, not ended here.
+	rows, err := s.db.R.QueryContext(ctx, `SELECT id FROM work_log WHERE kind = 'review' AND state IN ('pending', 'running') LIMIT 200`)
 	if err != nil {
 		s.log.WarnContext(ctx, "review rounds to end", "err", err)
 		return
 	}
-	type end struct {
-		id   int64
-		from string
-		to   string
-		why  string
-	}
-	var ends []end
-	for rows.Next() {
-		var id, ended, since int64
-		var state string
-		var live, awaitsShip bool
-		if err := rows.Scan(&id, &state, &ended, &since, &live, &awaitsShip); err != nil {
-			_ = rows.Close()
-			s.log.WarnContext(ctx, "review rounds to end: read one", "err", err) // read every row, or none
-			return
-		}
-		switch {
-		case awaitsShip && state == RoundRunning:
-			// Waypoint's own check or ship is what it waits on.
-		case state == RoundPending && !live:
-			ends = append(ends, end{id: id, from: state, to: RoundSkipped, why: "autopilot moved on without it"})
-		case state == RoundRunning && ended > 0:
-			ends = append(ends, end{id: id, from: state, to: RoundInterrupted, why: "the session ended during the review"})
-		case state == RoundRunning && now-since > reviewRunMax.Milliseconds()+autopilotNothingRetry.Milliseconds():
-			ends = append(ends, end{id: id, from: state, to: RoundFailed, why: fmt.Sprintf("no report came back within %d hours", int(reviewRunMax.Hours()))})
-		}
-	}
-	err = rows.Err()
-	_ = rows.Close()
+	ids, err := scanIDs(rows)
 	if err != nil {
 		s.log.WarnContext(ctx, "review rounds to end: read them", "err", err)
 		return
 	}
-	for _, e := range ends {
-		s.setRoundNow(ctx, e.id, []string{e.from}, e.to, e.why)
+	for _, id := range ids {
+		in, err := s.roundInOf(ctx, id)
+		if err != nil {
+			s.log.WarnContext(ctx, "review rounds to end: read one", "round", id, "err", err)
+			continue
+		}
+		if out := decideRound(in); out.Do == doEnd {
+			s.setRoundNow(ctx, id, []string{in.State}, out.To, out.Why)
+		}
 	}
 	s.cancelOrphanReviewAudits(ctx)
 	s.handOverRoundAudits(ctx)

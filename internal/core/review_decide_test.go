@@ -2,6 +2,10 @@ package core
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 )
@@ -24,44 +28,65 @@ func TestDecideRoundNeverStrands(t *testing.T) {
 									for _, since := range ages {
 										for _, change := range ages {
 											for _, unshipped := range []bool{false, true} {
-												in := roundIn{State: state, Read: read, Audit: audit, Undecided: undecided, Check: check, CheckMarks: 1,
-													Session: session, RunOpen: runOpen, PROpen: prOpen, Unshipped: unshipped, SinceStart: since, SinceChange: change}
-												out := decideRound(in)
-												n++
-												name := fmt.Sprintf("%+v -> %+v", in, out)
-												ended := state == RoundFailed || state == RoundSkipped || state == RoundInterrupted
-												if !runOpen && ended && unshipped && !prOpen && out.Do != doReleaseAfterRunEnded {
-													t.Fatalf("a round the ended run left unshipped isn't named for release: %s", name)
-												}
-												if out.Do == doReleaseAfterRunEnded && (runOpen || prOpen || !unshipped || !ended) {
-													t.Fatalf("released after the run ended when it hadn't, or shipped: %s", name)
-												}
-												if runOpen && out.Do == doNothing {
-													t.Fatalf("an open run is left alone: %s", name)
-												}
-												if runOpen && prOpen && out.Do != doFinish {
-													t.Fatalf("an open pull request with an open run isn't finished: %s", name)
-												}
-												if runOpen && !prOpen && out.Do == doFinish {
-													t.Fatalf("finished with no pull request: %s", name)
-												}
-												if out.Do == doTell && !session {
-													t.Fatalf("told a session that isn't there: %s", name)
-												}
-												if (out.Do == doTell || out.Do == doWait) && out.Until <= 0 {
-													t.Fatalf("a wait or a tell with no time left that doesn't end: %s", name)
-												}
-												if (out.Do == doRelease || out.Do == doShipCarried) && out.Why == "" {
-													t.Fatalf("a release says nothing: %s", name)
-												}
-												if check == checkDisagreed && (out.Do == doShip) {
-													t.Fatalf("shipped clean around a disagreeing check: %s", name)
-												}
-												if (check == checkQueued || check == checkRunning) && (out.Do == doShip || out.Do == doRelease) && since < 48*time.Hour {
-													t.Fatalf("ended a round whose check is going: %s", name)
-												}
-												if state == RoundDone && undecided > 0 && audit == AuditDone && read == readDone && (check == checkAbsent || check == checkAgreed) && out.Do == doShip {
-													t.Fatalf("shipped clean with findings undecided: %s", name)
+												for _, carried := range []bool{false, true} {
+													for _, ended := range []bool{false, true} {
+														in := roundIn{Carried: carried, SessionEnded: ended, State: state, Read: read, Audit: audit, Undecided: undecided, Check: check, CheckMarks: 1,
+															Session: session, RunOpen: runOpen, PROpen: prOpen, Unshipped: unshipped, SinceStart: since, SinceChange: change}
+														out := decideRound(in)
+														n++
+														name := fmt.Sprintf("%+v -> %+v", in, out)
+														over := state == RoundFailed || state == RoundSkipped || state == RoundInterrupted
+														waypoints := runOpen && !prOpen // an open run with no pull request: Waypoint's to carry on
+														if out.Do == doEnd && (out.To == "" || out.Why == "" || (state != RoundPending && state != RoundRunning)) {
+															t.Fatalf("an end says nothing or ends a round that isn't going: %s", name)
+														}
+														if out.Do == doEnd && state == RoundRunning && runOpen && check != checkAbsent {
+															t.Fatalf("ended a round Waypoint's check is on: %s", name)
+														}
+														if state == RoundRunning && ended && !(runOpen && (check != checkAbsent || prOpen)) && out.Do != doEnd {
+															t.Fatalf("a running round of an ended session isn't ended: %s", name)
+														}
+														if state == RoundPending && !carried && !(runOpen && prOpen) && out.Do != doEnd {
+															t.Fatalf("a pending round nobody carries isn't ended: %s", name)
+														}
+														_ = waypoints
+														if unshipped && !runOpen && (state == RoundPending || state == RoundRunning) && out.Do != doEnd {
+															t.Fatalf("a round of a held ship whose run ended stays %s: %s", state, name)
+														}
+														if !runOpen && over && unshipped && !prOpen && out.Do != doReleaseAfterRunEnded {
+															t.Fatalf("a round the ended run left unshipped isn't named for release: %s", name)
+														}
+														if out.Do == doReleaseAfterRunEnded && (runOpen || prOpen || !unshipped || !over) {
+															t.Fatalf("released after the run ended when it hadn't, or shipped: %s", name)
+														}
+														if runOpen && out.Do == doNothing {
+															t.Fatalf("an open run is left alone: %s", name)
+														}
+														if runOpen && prOpen && out.Do != doFinish {
+															t.Fatalf("an open pull request with an open run isn't finished: %s", name)
+														}
+														if runOpen && !prOpen && out.Do == doFinish {
+															t.Fatalf("finished with no pull request: %s", name)
+														}
+														if out.Do == doTell && !session {
+															t.Fatalf("told a session that isn't there: %s", name)
+														}
+														if (out.Do == doTell || out.Do == doWait) && out.Until <= 0 {
+															t.Fatalf("a wait or a tell with no time left that doesn't end: %s", name)
+														}
+														if (out.Do == doRelease || out.Do == doShipCarried) && out.Why == "" {
+															t.Fatalf("a release says nothing: %s", name)
+														}
+														if check == checkDisagreed && (out.Do == doShip) {
+															t.Fatalf("shipped clean around a disagreeing check: %s", name)
+														}
+														if (check == checkQueued || check == checkRunning) && (out.Do == doShip || out.Do == doRelease) && since < 48*time.Hour {
+															t.Fatalf("ended a round whose check is going: %s", name)
+														}
+														if state == RoundDone && undecided > 0 && audit == AuditDone && read == readDone && (check == checkAbsent || check == checkAgreed) && out.Do == doShip {
+															t.Fatalf("shipped clean with findings undecided: %s", name)
+														}
+													}
 												}
 											}
 										}
@@ -106,16 +131,50 @@ func TestDecideRoundCells(t *testing.T) {
 			roundIn{State: RoundDone, Read: readFailed, Audit: AuditDone, RunOpen: true}, doRelease},
 		{"a check going for hours is not a report that never came",
 			roundIn{State: RoundRunning, Check: checkRunning, RunOpen: true, SinceStart: 5 * time.Hour, SinceChange: time.Minute}, doWait},
-		{"no check, no report after the limit: released",
-			roundIn{State: RoundRunning, RunOpen: true, SinceStart: day}, doRelease},
+		{"no check, no report after the limit: the round fails (the release is of a failed round)",
+			roundIn{State: RoundRunning, RunOpen: true, SinceStart: day}, doEnd},
 		{"check didn't run: ships with the marks carried",
 			roundIn{State: RoundRunning, Check: checkDidnt, RunOpen: true}, doShipCarried},
 		{"the pull request is open: finish",
 			roundIn{State: RoundRunning, Check: checkAgreed, RunOpen: true, PROpen: true}, doFinish},
+		{"a stop with the review's agents still going: waits", roundIn{State: RoundRunning, Stopped: true, Subagents: true, RunOpen: true}, doWait},
+		{"a stop while the check is going: waits", roundIn{State: RoundRunning, Stopped: true, Check: checkRunning, RunOpen: true}, doWait},
+		{"a stop: its message is the report", roundIn{State: RoundRunning, Stopped: true, RunOpen: true}, doReport},
+		{"session idle, no check: the round fails", roundIn{State: RoundRunning, Idle: true, RunOpen: true}, doEnd},
+		{"session idle, check going: Waypoint's", roundIn{State: RoundRunning, Idle: true, Check: checkRunning, RunOpen: true}, doWait},
+		{"session ended in a running round, no check: interrupted", roundIn{State: RoundRunning, SessionEnded: true, RunOpen: true}, doEnd},
+		{"session ended, run ended too, check there: interrupted", roundIn{State: RoundRunning, SessionEnded: true, Check: checkRunning}, doEnd},
+		{"pending round nobody carries: skipped", roundIn{State: RoundPending, RunOpen: true}, doEnd},
+		{"pending round a step carries: waits", roundIn{State: RoundPending, RunOpen: true, Carried: true}, doWait},
+		{"running past the limit, run closed: failed", roundIn{State: RoundRunning, SinceStart: day}, doEnd},
+		{"a held ship's round pending when its run ended: skipped", roundIn{State: RoundPending, Unshipped: true, Carried: true}, doEnd},
+		{"a held ship's round running when its run ended: interrupted", roundIn{State: RoundRunning, Unshipped: true, Session: true}, doEnd},
 	}
 	for _, c := range cases {
 		if out := decideRound(c.in); out.Do != c.do {
 			t.Errorf("%s: %+v", c.name, out)
+		}
+	}
+}
+
+// The words of the old, separate decisions don't come back: what a round
+// needs is decideRound's alone (WP-1370).
+func TestNoSecondDecisionOutsideDecideRound(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gone := regexp.MustCompile(`\b(reviewedToShip|roundNeeds|needCheck|needTell|needShip|needNone)\b`)
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if m := gone.Find(raw); m != nil {
+			t.Errorf("%s names %s: ask decideRound instead", f, m)
 		}
 	}
 }

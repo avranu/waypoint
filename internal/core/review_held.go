@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -116,75 +117,6 @@ func (s *Service) shipReviewed(ctx context.Context, roundID int64) error {
 	return s.shipRound(ctx, shipRoundIn{round: roundID})
 }
 
-// reviewedToShip says whether a round's review ended with nothing for the
-// session to do while its pull request is still to open, so Waypoint opens
-// it (shipReviewed): the round is done, was asked before a pull request, has
-// another model's audit (or its reviewer's) that finished with every
-// finding decided, the session's run is open and no pull request is open
-// from the branch. Findings still to decide are the session's: they go
-// to it as they always did.
-func (s *Service) reviewedToShip(ctx context.Context, roundID int64) (bool, error) {
-	r, err := roundByID(ctx, s.db.R, roundID)
-	if err != nil || r == nil || r.state != RoundDone || !r.runID.Valid {
-		return false, err
-	}
-	bp := roundBeforePR(ctx, s.db.R, roundID)
-	if bp == nil {
-		return false, nil
-	}
-	var open bool
-	if err := s.db.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM agent_runs WHERE id = ? AND ended_at IS NULL)`, r.runID.Int64).Scan(&open); err != nil || !open {
-		return false, err
-	}
-	var existing bool
-	if err := s.db.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pull_requests WHERE repo = ? COLLATE NOCASE AND head_ref = ? AND state IN ('open', 'draft'))`,
-		bp.Repo, bp.Branch).Scan(&existing); err != nil || existing {
-		return false, err
-	}
-	// A check of the marks that disagreed, or is still going, is what the round
-	// waits on: a round that is Done doesn't ship around it (R2a).
-	if need, err := s.roundNeeds(ctx, roundID); err != nil {
-		return false, err
-	} else if need == needCheck || need == needTell {
-		return false, nil
-	}
-	ra, err := s.roundAuditOf(ctx, roundID)
-	if err != nil {
-		return false, err
-	}
-	ids := []int64{ra.id}
-	if rv, err := s.roundReviewer(ctx, roundID); err == nil && rv != nil {
-		ids = append(ids, rv.ID)
-	}
-	seen := false
-	for _, id := range ids {
-		if id == 0 {
-			continue
-		}
-		a, err := s.auditRow(ctx, id)
-		if errors.Is(err, ErrNotFound) {
-			continue
-		}
-		if err != nil {
-			return false, err
-		}
-		if a.Status != AuditDone {
-			continue
-		}
-		if err := s.loadFindings(ctx, a); err != nil {
-			return false, err
-		}
-		if a.readNothing() {
-			continue
-		}
-		seen = true
-		if len(s.roundTodo(ctx, a)) > 0 {
-			return false, nil
-		}
-	}
-	return seen, nil
-}
-
 // shipRoundIn says whose ship it is: user, agent and session are the
 // round's own when not given (a call with no step in hand). why is set for
 // a review that didn't run: the pull request then opens without it, and
@@ -196,6 +128,10 @@ type shipRoundIn struct {
 	userID  int64
 	agent   string
 	why     string
+	// ended: the round's session has ended (the run is still open). The
+	// ship then acts with no session: a babysit and a claim recorded for a
+	// dead session would send its news, and its warnings to others, nowhere.
+	ended bool
 }
 
 // shipRound is the one server-side ship of a round's branch: shipHeld (the
@@ -216,18 +152,24 @@ func (s *Service) shipRound(ctx context.Context, in shipRoundIn) error {
 	// and says what wasn't checked (WP-1370).
 	unchecked := ""
 	if reviewed {
-		unchecked = s.checkDidntRun(ctx, in.round)
+		unchecked = s.uncheckedOf(ctx, r)
 	}
 	facts, ran := "", false
 	if !reviewed {
 		// What the review did is told from what was recorded, not from why it ended.
-		facts, ran = s.roundFacts(ctx, in.round)
+		facts, ran = s.roundFacts(ctx, r)
 		if facts != "" {
 			in.why += " (" + facts + ")"
 		}
 	}
 	if in.session == 0 {
 		in.session = r.sessionID.Int64
+	}
+	if in.session != 0 {
+		var live bool
+		if err := s.db.R.QueryRowContext(ctx, `SELECT ended_at IS NULL FROM agent_sessions WHERE id = ?`, in.session).Scan(&live); err == nil {
+			in.ended = !live
+		}
 	}
 	in.agent = s.shipAgent(ctx, r, in.agent, in.session)
 	if in.userID == 0 {
@@ -257,6 +199,28 @@ func (s *Service) shipRound(ctx context.Context, in shipRoundIn) error {
 	if why != "" {
 		return s.stopShip(ctx, r, in, why)
 	}
+	// A pull request already open from the branch is the task's to arm and
+	// babysit only if it is linked to the task: one linked to none or to
+	// another task isn't Waypoint's to take over, so it is left as it is and
+	// the person told (WP-1370).
+	if id := s.openPROfBranch(ctx, bp); id != 0 {
+		var repo string
+		var number int
+		if err := s.db.R.QueryRowContext(ctx, `SELECT repo, number FROM pull_requests WHERE id = ?`, id).Scan(&repo, &number); err != nil {
+			return err
+		}
+		keys, err := s.pullTaskKeys(ctx, repo, number)
+		if err != nil {
+			return err
+		}
+		if !slices.ContainsFunc(keys, func(k string) bool { return strings.EqualFold(k, r.key) }) {
+			owner := "isn't linked to any task"
+			if len(keys) > 0 {
+				owner = "is linked to " + strings.Join(keys, ", ")
+			}
+			return s.stopShip(ctx, r, in, fmt.Sprintf("%s#%d is already open from %s and %s, not to %s, so Waypoint didn't arm or babysit it or take it over", repo, number, bp.Branch, owner, r.key))
+		}
+	}
 	body := bp.Body
 	// A review that ended with its findings undelivered did run.
 	given := !strings.HasPrefix(in.why, heldReviewEnded)
@@ -276,7 +240,7 @@ func (s *Service) shipRound(ctx context.Context, in shipRoundIn) error {
 	if reviewed {
 		in2.Review, in2.Body = ShipAuto, body
 		if unchecked != "" {
-			in2.Body = strings.TrimSpace(body + "\n\nWaypoint opened this: " + unchecked + ". The marks it didn't check go to the pull request's review gate.")
+			in2.Body = strings.TrimSpace(body + "\n\n" + uncheckedLines(unchecked).Body)
 		}
 	} else {
 		in2.Review, in2.Reason = ShipSkip, in.why
@@ -350,8 +314,11 @@ func (s *Service) shipRound(ctx context.Context, in shipRoundIn) error {
 			}
 			if reviewed {
 				comment = fmt.Sprintf("The adversarial review left nothing for the session to do, so Waypoint opened %s; CI and the review gate still apply.", pr.URL)
+				if res.Existing {
+					comment = fmt.Sprintf("The adversarial review left nothing for the session to do; %s was already open, so Waypoint moved the task on; CI and the review gate still apply.", pr.URL)
+				}
 				if unchecked != "" {
-					comment = fmt.Sprintf("%s, so Waypoint opened %s anyway; the marks it didn't check go to the pull request's review gate, which still applies with CI.", unchecked, pr.URL)
+					comment = uncheckedLines(unchecked).Comment(pr.URL, res.Existing)
 				}
 			}
 			if _, err := s.UpdateIssue(ctx, actor, r.key, IssuePatch{Status: &next, ViaLink: pr.URL, Comment: comment}); err != nil {
@@ -360,7 +327,7 @@ func (s *Service) shipRound(ctx context.Context, in shipRoundIn) error {
 		}
 	}
 	if reviewed {
-		if err := s.endRoundReviewed(ctx, r); err != nil {
+		if err := s.endRoundReviewed(ctx, r, unchecked, res.Existing); err != nil {
 			return err
 		}
 	}
@@ -373,11 +340,11 @@ func (s *Service) shipRound(ctx context.Context, in shipRoundIn) error {
 		text = s.shippedText(r.key, pr, armed, babysat, res.Existing, bp.Summary, notes)
 		if unchecked != "" {
 			head = r.key + " is in review, its marks unchecked: " + pr.Repo + "#" + strconv.Itoa(pr.Number)
-			text = "Waypoint: " + unchecked + ", so the marks you made stand unchecked and go to the pull request's review gate.\n\n" +
+			text = uncheckedLines(unchecked).Session + "\n\n" +
 				strings.Replace(strings.Replace(text, " after its adversarial review left nothing for you to do", "", 1), " when its adversarial review left nothing for you to do", "", 1)
 			s.carryAudits(ctx, r.id, pr.ID, pr.Number)
 		}
-		if in.session != 0 {
+		if in.session != 0 && !in.ended { // an ended session can't read it; the person's notice carries it
 			if _, err := s.queueMessage(ctx, in.session, text, fmt.Sprintf("shipped:%d", r.id), messageFrom{}, true); err != nil {
 				s.log.WarnContext(ctx, "autopilot: tell a session its pull request opened", "round", r.id, "err", err)
 			}
@@ -407,7 +374,7 @@ func (s *Service) shipRound(ctx context.Context, in shipRoundIn) error {
 	}
 	if bp.Urgent && pr.Urgent {
 		text += fmt.Sprintf(" Its wp ship marked it urgent, so it delays other CI runs to cut the line: `wp pr urgent %d --off` takes that off.", pr.Number)
-	} else if pr.Urgent && !res.Existing {
+	} else if pr.Urgent && !res.Existing && !strings.Contains(res.Notice, taggedUrgentNotice(r.key, pr.Number)) {
 		// wp ship didn't ask for it, so the task's tag did; no one reads this
 		// open's notice.
 		text += " " + taggedUrgentNotice(r.key, pr.Number)
@@ -450,12 +417,16 @@ func (s *Service) shippedText(key string, pr *PRDetail, armed, babysat, existing
 // counted from its audit's findings, whatever it was (a running round whose
 // session shipped and is checked; one that ended with nothing to do is
 // already done).
-func (s *Service) endRoundReviewed(ctx context.Context, r *roundRow) error {
+func (s *Service) endRoundReviewed(ctx context.Context, r *roundRow, unchecked string, existing bool) error {
 	if r.state == RoundDone {
-		return nil
+		return s.write(ctx, SystemActor(), func(t *tx) error { return s.endShippedStep(ctx, t, r.id) })
 	}
 	found, fixed, rejected := 0, 0, 0
-	body := "The adversarial review left nothing for the session to do; Waypoint opened the pull request."
+	opened := "Waypoint opened the pull request."
+	if existing {
+		opened = "The pull request was already open."
+	}
+	body := "The adversarial review left nothing for the session to do. " + opened
 	if ra, err := s.roundAuditOf(ctx, r.id); err == nil && ra.id != 0 {
 		if a, err := s.auditRow(ctx, ra.id); err == nil && s.loadFindings(ctx, a) == nil {
 			for _, f := range a.Findings {
@@ -467,8 +438,11 @@ func (s *Service) endRoundReviewed(ctx context.Context, r *roundRow) error {
 					rejected++
 				}
 			}
-			body = fmt.Sprintf("%s's audit #%d found %s: %d fixed, %d rejected. Waypoint opened the pull request.", cmp(a.Model, "another model"), a.ID, plural1(found, "finding"), fixed, rejected)
+			body = fmt.Sprintf("%s's audit #%d found %s: %d fixed, %d rejected. %s", cmp(a.Model, "another model"), a.ID, plural1(found, "finding"), fixed, rejected, opened)
 		}
+	}
+	if unchecked != "" {
+		body += " " + uncheckedLines(unchecked).EndReason
 	}
 	now := s.nowMS()
 	return s.write(ctx, SystemActor(), func(t *tx) error {
@@ -481,8 +455,25 @@ func (s *Service) endRoundReviewed(ctx context.Context, r *roundRow) error {
 		if n, _ := res.RowsAffected(); n > 0 {
 			s.emitWorkLog(ctx, t, r.issueID, r.id, RoundDone)
 		}
-		return nil
+		// The step carrying the round ends in the same write: a crash between
+		// the two can't leave a step waiting on a round that shipped.
+		return s.endShippedStep(ctx, t, r.id)
 	})
+}
+
+// endShippedStep ends the autopilot step carrying a round that has shipped
+// (none: nothing to do).
+func (s *Service) endShippedStep(ctx context.Context, t *tx, round int64) error {
+	var session int64
+	err := t.QueryRowContext(ctx, `SELECT session_id FROM autopilot_steps WHERE review_id = ? AND state IN (?, ?, ?) ORDER BY id DESC LIMIT 1`,
+		round, StepDue, StepWaiting, StepStarting).Scan(&session)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return s.stopStep(ctx, t, session, "shipped", "Waypoint opened the pull request after the adversarial review")
 }
 
 // heldOwed names the task whose review before its pull request the round
@@ -710,7 +701,8 @@ func (s *Service) liveStepRound(ctx context.Context, q queryer, sessionID int64)
 // session's marks (agreed, disagrees, or didn't run). ran is whether any of
 // it ran at all. The one place the texts of a round that ended short of a
 // clean review get this from (WP-1370).
-func (s *Service) roundFacts(ctx context.Context, round int64) (facts string, ran bool) {
+func (s *Service) roundFacts(ctx context.Context, r *roundRow) (facts string, ran bool) {
+	round := r.id
 	var parts []string
 	if ra, err := s.roundAuditOf(ctx, round); err == nil && ra.id != 0 {
 		if a, err := s.auditRow(ctx, ra.id); err == nil && a.Status == AuditDone && s.loadFindings(ctx, a) == nil {
@@ -736,7 +728,62 @@ func (s *Service) roundFacts(ctx context.Context, round int64) (facts string, ra
 			}
 		}
 	}
+	// An earlier round of the run's loop whose check didn't run: this round
+	// (a label-only one after a failed check) has no check of its own, but
+	// its predecessor's marks still stand unchecked.
+	if un := s.uncheckedOf(ctx, r); un != "" && !strings.Contains(strings.Join(parts, "; "), "didn't run") {
+		parts = append(parts, un)
+	}
 	return strings.Join(parts, "; "), ran
+}
+
+// loopRounds is the round and the rounds of its loop before it (the run's
+// earlier rounds of the same change), oldest first.
+func (s *Service) loopRounds(ctx context.Context, r *roundRow) []int64 {
+	loop, err := s.againLoopOf(ctx, r.id, r.runID.Int64)
+	if err != nil {
+		s.log.WarnContext(ctx, "read a round's earlier rounds", "round", r.id, "err", err)
+		return []int64{r.id}
+	}
+	if loop == nil {
+		return []int64{r.id}
+	}
+	return append(slices.Clone(loop.earlier), r.id)
+}
+
+// uncheckedOf says why marks of the round, or of an earlier round of its
+// loop, stand unchecked ("": none do): the round's own check, or one of an
+// earlier round that didn't run. One reason once, however many rounds share it.
+func (s *Service) uncheckedOf(ctx context.Context, r *roundRow) string {
+	var whys []string
+	for _, id := range s.loopRounds(ctx, r) {
+		if why := s.checkDidntRun(ctx, id); why != "" && !slices.Contains(whys, why) {
+			whys = append(whys, why)
+		}
+	}
+	return strings.Join(whys, "; and ")
+}
+
+// release lines: what every text of a ship that carries marks nobody checked
+// says, from the one reason (uncheckedOf): the pull request's description, the
+// session's message, the task's comment and the round's end.
+type release struct{ Body, Session, EndReason, because string }
+
+func uncheckedLines(unchecked string) release {
+	return release{
+		Body:      "Waypoint opened this: " + unchecked + ". The marks it didn't check go to the pull request's review gate.",
+		Session:   "Waypoint: " + unchecked + ", so the marks you made stand unchecked and go to the pull request's review gate.",
+		because:   unchecked,
+		EndReason: "Its marks stand unchecked (" + unchecked + ") and go to the pull request's review gate.",
+	}
+}
+
+// Comment is the task's comment on the move to In Review.
+func (l release) Comment(url string, existing bool) string {
+	if existing {
+		return fmt.Sprintf("%s; %s was already open, so Waypoint moved the task on; the marks it didn't check go to the pull request's review gate, which still applies with CI.", l.because, url)
+	}
+	return fmt.Sprintf("%s, so Waypoint opened %s anyway; the marks it didn't check go to the pull request's review gate, which still applies with CI.", l.because, url)
 }
 
 // carryAudits makes the audits of a round the pull request's, so what they
@@ -744,6 +791,21 @@ func (s *Service) roundFacts(ctx context.Context, round int64) (facts string, ra
 // request's newest finished audit): the round's own and the check of its
 // marks.
 func (s *Service) carryAudits(ctx context.Context, round, prID int64, number int) {
+	// A round of the loop before this one whose check didn't run: its audit's
+	// marks stand unchecked too, and are carried the same way.
+	if r, _ := roundByID(ctx, s.db.R, round); r != nil {
+		for _, e := range s.loopRounds(ctx, r) {
+			if e == round || s.checkDidntRun(ctx, e) == "" {
+				continue
+			}
+			if ra, err := s.roundAuditOf(ctx, e); err == nil && ra.id != 0 {
+				s.reopenUnverified(ctx, ra.id)
+				if err := s.handOverRoundAudit(ctx, ra.id, prID); err != nil {
+					s.log.WarnContext(ctx, "carry an earlier round's audit to its pull request", "round", e, "audit", ra.id, "err", err)
+				}
+			}
+		}
+	}
 	if ra, err := s.roundAuditOf(ctx, round); err == nil && ra.id != 0 {
 		// Marks nobody checked are not decisions the gate can lean on: the
 		// session's rejection of a critical or high finding stands only as a
@@ -799,4 +861,39 @@ func (s *Service) checkDidntRun(ctx context.Context, round int64) string {
 	}
 	why := strings.TrimSuffix(strings.TrimSpace(a.Error), ".")
 	return "the check of the marks didn't run: " + cmp(why, a.Status)
+}
+
+// openPROfBranch is the open pull request from a round's branch (0: none).
+func (s *Service) openPROfBranch(ctx context.Context, bp *beforePR) int64 {
+	var id int64
+	err := s.db.R.QueryRowContext(ctx, `SELECT id FROM pull_requests WHERE repo = ? COLLATE NOCASE AND head_ref = ? AND state IN ('open', 'draft') ORDER BY id DESC LIMIT 1`, bp.Repo, bp.Branch).Scan(&id)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		s.log.WarnContext(ctx, "read the pull request open from a branch", "repo", bp.Repo, "branch", bp.Branch, "err", err)
+	}
+	return id
+}
+
+// pullTaskKeys are the keys of the tasks a pull request is linked to,
+// whoever may see them: what decides whether it is the task's to arm. A
+// link counts by the pull request's address (a task linked by wp ship or by
+// hand) or as the forge's own pull link.
+func (s *Service) pullTaskKeys(ctx context.Context, repo string, number int) ([]string, error) {
+	rows, err := s.db.R.QueryContext(ctx, `SELECT DISTINCT p.key || '-' || i.number FROM external_links el
+		JOIN issues i ON i.id = el.issue_id JOIN projects p ON p.id = i.project_id
+		WHERE (el.kind = 'pull' AND el.repo = ? COLLATE NOCASE AND el.number = ?)
+		   OR el.url IN (SELECT pr.url FROM pull_requests pr WHERE pr.repo = ? COLLATE NOCASE AND pr.number = ?)
+		ORDER BY 1`, repo, number, repo, number)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var keys []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		keys = append(keys, key)
+	}
+	return keys, rows.Err()
 }

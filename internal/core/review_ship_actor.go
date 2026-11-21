@@ -30,7 +30,11 @@ func (s *Service) shipAuthority(ctx context.Context, r *roundRow, bp *beforePR, 
 	if in.user.Disabled {
 		return nil, in.user.Username + " is deactivated", nil
 	}
-	actor := &Actor{User: in.user, Agent: in.agent, Session: in.session}
+	session := in.session
+	if in.ended {
+		session = 0
+	}
+	actor := &Actor{User: in.user, Agent: in.agent, Session: session}
 	if bp.TokenID != 0 {
 		t, err := s.tokenActor(ctx, "", bp.TokenID, false)
 		if err != nil {
@@ -106,6 +110,23 @@ func (s *Service) stopShip(ctx context.Context, r *roundRow, in shipRoundIn, why
 	}
 	if who != 0 {
 		s.notifyURL(ctx, who, nil, NotifyAutopilot, fmt.Sprintf("%s: pull request not opened", r.key), body, "/agents?tab=autopilot")
+	}
+	// The run and the task's claim are let go: nothing is left that would try
+	// this ship again, and the task is free for a person.
+	if err := s.write(ctx, SystemActor(), func(t *tx) error {
+		var open int
+		if err := t.QueryRowContext(ctx, `SELECT count(*) FROM agent_runs WHERE issue_id = ? AND agent = ? AND ended_at IS NULL`, r.issueID, in.agent).Scan(&open); err != nil {
+			return err
+		}
+		if open > 0 {
+			if err := s.endRun(ctx, t, r.issueID, in.agent, "released", nil); err != nil {
+				return err
+			}
+		}
+		_, err := t.ExecContext(ctx, `UPDATE issues SET claimed_by = '', claimed_until = NULL, claimed_at = NULL WHERE id = ? AND claimed_by = ?`, r.issueID, in.agent)
+		return err
+	}); err != nil {
+		s.log.WarnContext(ctx, "release the run of a stopped ship", "round", r.id, "err", err)
 	}
 	s.log.Info("review: the server ship stopped", "round", r.id, "why", why)
 	return nil

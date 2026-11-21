@@ -2279,9 +2279,17 @@ func (s *Service) CancelAudit(ctx context.Context, actor *Actor, id int64) (*Cod
 	if who == "" && actor.User != nil {
 		who = actor.User.DisplayName
 	}
+	// One winner: the transition happens only if the audit is still going when
+	// the write runs, so a finish that landed since the read above (or another
+	// cancel) is never overwritten and never emits a second event.
 	err = s.write(ctx, actor, func(t *tx) error {
-		if _, err := t.ExecContext(ctx, `UPDATE code_audits SET status = ?, error = ?, finished_at = ? WHERE id = ?`, AuditCancelled, "Cancelled by "+cmp(who, "someone")+".", s.nowMS(), id); err != nil {
+		res, err := t.ExecContext(ctx, `UPDATE code_audits SET status = ?, error = ?, finished_at = ? WHERE id = ? AND status IN (?, ?)`,
+			AuditCancelled, "Cancelled by "+cmp(who, "someone")+".", s.nowMS(), id, AuditQueued, AuditRunning)
+		if err != nil {
 			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return invalid("audit #%d has ended", id)
 		}
 		t.emit(&Event{Kind: EvCodeAudit, ProjectID: a.projectID, Old: a.Status, New: AuditCancelled, Data: map[string]any{"audit": id}})
 		return nil

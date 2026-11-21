@@ -209,7 +209,11 @@ func TestRoundFactsTable(t *testing.T) {
 			r1 := e.review("Merge loses an update")
 			c.setup(e, r1)
 			e.s.Wait()
-			facts, ran := e.s.roundFacts(e.ctx, r1)
+			row, err := roundByID(e.ctx, e.s.db.R, r1)
+			if err != nil || row == nil {
+				t.Fatal(err)
+			}
+			facts, ran := e.s.roundFacts(e.ctx, row)
 			if ran != c.wantRan {
 				t.Errorf("ran = %v, want %v (%q)", ran, c.wantRan, facts)
 			}

@@ -42,6 +42,16 @@ type roundIn struct {
 	// Unshipped: the round is before a pull request, the branch is recorded as
 	// pushed and no pull request is open for it.
 	Unshipped bool
+	// Carried: a step carries the round, or the branch is before its pull
+	// request and the round's session is live in the open run: someone is on it.
+	Carried bool
+	// SessionEnded: the round's session has ended.
+	SessionEnded bool
+	// Stopped, Subagents: the round's session just stopped (its turn ended),
+	// with background agents of the review still going.
+	Stopped, Subagents bool
+	// Idle: the session went idle (autopilot's step saw it) and the round's Stop never came.
+	Idle bool
 	// Ages: since the round started, and since the thing it waits on last changed
 	// (the check settled, the round ended, the audit ended).
 	SinceStart, SinceChange time.Duration
@@ -56,6 +66,8 @@ const (
 	doShipCarried        // opened with unverified marks carried to its gate
 	doRelease            // opened without the review, with what it found carried
 	doFinish             // the pull request is open: end the round and the run
+	doEnd                // the round ends with a state of its own (To), Waypoint ships nothing
+	doReport             // the session's stop is the round's report
 	// doReleaseAfterRunEnded: the run ended with the round failed, skipped or
 	// interrupted for Waypoint's own reason, and the branch has no pull request.
 	// heldUnshipped, reviveHeldRounds, reaskHeldRound and reviewFirstAtStop all
@@ -68,7 +80,31 @@ type roundOut struct {
 	Do    int
 	For   string        // what a wait or a tell is for
 	Until time.Duration // how much longer a wait or a tell may last
-	Why   string        // why a release or a carried ship
+	Why   string        // why a release, an end or a carried ship
+	To    string        // the state a doEnd ends the round in
+}
+
+// endOf: a round nothing will carry on, which ends in a state of its own
+// (what sweepRounds used to decide). One whose check Waypoint is on, in an
+// open run, is Waypoint's: it ships or releases, it isn't ended here.
+func endOf(in roundIn) (roundOut, bool) {
+	switch {
+	case in.State == RoundRunning && in.RunOpen && in.Check != checkAbsent:
+		return roundOut{}, false
+	case in.Unshipped && !in.RunOpen && in.State == RoundPending:
+		return roundOut{Do: doEnd, To: RoundSkipped, Why: "the run ended before the review started"}, true
+	case in.Unshipped && !in.RunOpen && in.State == RoundRunning:
+		return roundOut{Do: doEnd, To: RoundInterrupted, Why: "the run ended during the review"}, true
+	case in.State == RoundPending && !in.Carried:
+		return roundOut{Do: doEnd, To: RoundSkipped, Why: "autopilot moved on without it"}, true
+	case in.State == RoundRunning && in.Idle:
+		return roundOut{Do: doEnd, To: RoundFailed, Why: "no report came back: the session went idle without one"}, true
+	case in.State == RoundRunning && in.SessionEnded:
+		return roundOut{Do: doEnd, To: RoundInterrupted, Why: "the session ended during the review"}, true
+	case in.State == RoundRunning && in.SinceStart > reviewRunMax+autopilotNothingRetry && (!in.Unshipped || !in.RunOpen):
+		return roundOut{Do: doEnd, To: RoundFailed, Why: fmt.Sprintf("no report came back within %d hours", int(reviewRunMax.Hours()))}, true
+	}
+	return roundOut{}, false
 }
 
 // readWait is how long a round's report may stay unread before Waypoint
@@ -78,7 +114,21 @@ const readWait = heldScreenWait
 // decideRound is the one decision. It never returns doNothing for an open
 // run whose pull request isn't open, and no wait or tell outlasts its limit.
 func decideRound(in roundIn) roundOut {
+	if in.Stopped && in.State == RoundRunning {
+		// The session stopped: its last message is the report, unless the
+		// review's own background agents or its check still go (they wake it).
+		switch {
+		case in.Subagents:
+			return roundOut{Do: doWait, For: "the review's background agents", Until: readWait}
+		case in.Check == checkQueued || in.Check == checkRunning:
+			return roundOut{Do: doWait, For: "the check of the marks", Until: checkPatience}
+		}
+		return roundOut{Do: doReport}
+	}
 	if !in.RunOpen {
+		if out, ok := endOf(in); ok {
+			return out
+		}
 		switch in.State {
 		case RoundFailed, RoundSkipped, RoundInterrupted:
 			if in.Unshipped && !in.PROpen {
@@ -89,6 +139,9 @@ func decideRound(in roundIn) roundOut {
 	}
 	if in.PROpen {
 		return roundOut{Do: doFinish}
+	}
+	if out, ok := endOf(in); ok {
+		return out
 	}
 	left := func(limit time.Duration, since time.Duration) time.Duration { return max(limit-since, 0) }
 	if in.Superseded {
@@ -190,9 +243,14 @@ func (s *Service) roundInOf(ctx context.Context, id int64) (roundIn, error) {
 	if r.sessionID.Valid && r.sessionID.Int64 != 0 {
 		var live bool
 		if s.db.R.QueryRowContext(ctx, `SELECT ended_at IS NULL FROM agent_sessions WHERE id = ?`, r.sessionID.Int64).Scan(&live) == nil {
-			in.Session = live
+			in.Session, in.SessionEnded = live, !live
 		}
 	}
+	var stepLive bool
+	if err := s.db.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM autopilot_steps WHERE review_id = ? AND state IN ('due', 'waiting', 'starting'))`, id).Scan(&stepLive); err != nil {
+		return in, err
+	}
+	in.Carried = stepLive || (in.Unshipped && in.Session && in.RunOpen)
 	var cid, checkSession int64
 	switch err := s.db.R.QueryRowContext(ctx, `SELECT id FROM code_audits WHERE request_key = ?`, fmt.Sprintf(checkAuditKey, id)).Scan(&cid); {
 	case err == nil:
@@ -281,7 +339,13 @@ func (s *Service) advanceRound(ctx context.Context, id int64) (roundOut, error) 
 	}
 	out := decideRound(in)
 	r, _ := roundByID(ctx, s.db.R, id)
+	if !in.Unshipped && out.Do != doEnd {
+		return roundOut{Do: doNothing}, nil // a round that isn't before a pull request ships nothing
+	}
 	switch out.Do {
+	case doEnd:
+		s.setRoundNow(ctx, id, []string{in.State}, out.To, out.Why)
+		return out, nil
 	case doReleaseAfterRunEnded:
 		// WP-1325 connects its release here (at the rebase): until then the
 		// decision is made and logged, and nothing acts.
@@ -321,4 +385,30 @@ func nonzero(a, b int64) int64 {
 		return a
 	}
 	return b
+}
+
+// decideIdle is the decision for a round whose session went idle without
+// its Stop coming (autopilot's step): a check Waypoint is on is waited for;
+// otherwise the round ends failed.
+func (s *Service) decideIdle(ctx context.Context, id int64) (roundOut, error) {
+	in, err := s.roundInOf(ctx, id)
+	if err != nil {
+		return roundOut{}, err
+	}
+	in.Idle = true
+	return decideRound(in), nil
+}
+
+// shipOwed: Waypoint ships (or releases) the round now, for the callers that
+// carry a round without being the sweep (autopilot's step): it advances it as
+// decideRound says, and returns the decision and the ship's error.
+func (s *Service) shipOwed(ctx context.Context, id int64) (roundOut, error) {
+	if id == 0 {
+		return roundOut{}, nil
+	}
+	out, err := s.advanceRound(ctx, id)
+	if errors.Is(err, ErrNotFound) && out.Do == doNothing {
+		return roundOut{}, nil
+	}
+	return out, err
 }
