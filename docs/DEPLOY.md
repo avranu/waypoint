@@ -31,7 +31,7 @@ All configuration is environment variables.
 | `WAYPOINT_LOG_FORMAT` | `json` | `text` for humans |
 | `WAYPOINT_LOG_DIR` | `logs/` next to the database (Docker image: `/data/logs`) | the server log's day files, read by `wp server log` across restarts and deploys: one JSON line a record, secrets blanked, mode 0600, gzipped once the day is over, at most 512 MB in all; `off` keeps the log in memory only |
 | `WAYPOINT_LOG_DAYS` | `30` | how many days of log files to keep |
-| `WAYPOINT_TRANSCRIPT_DIR` | `transcripts/` next to the database (Docker image: `/data/transcripts`) | the transcript archive `wp usage sync` uploads (WP-1466): one gzipped file per piece, about a quarter of the raw size of the sessions on the machines that sync (about 900 MB raw a week measured on one machine); the daily DB backup does not include it; `off` keeps no archive and uploads are refused |
+| `WAYPOINT_TRANSCRIPT_DIR` | `transcripts/` next to the database (Docker image: `/data/transcripts`) | the transcript archive `wp usage sync` uploads (WP-1466): one gzipped file per piece, about a quarter of the raw size of the sessions on the machines that sync (measured 2026-11-21 on one machine: 400 transcripts modified in 30 days were 935 MB raw and 254 MB gzipped, and about 900 MB raw per 7 days); the daily DB backup does not include it; `off` keeps no archive and uploads are refused |
 | `WAYPOINT_DEV_PROXY` | none | proxy the web app to a Vite dev server |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) | none | turns on OpenTelemetry traces, sent over OTLP/HTTP (e.g. `http://tempo:4318`). The other standard variables apply: `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_SERVICE_NAME` (default `waypoint`), `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_TRACES_SAMPLER`/`_ARG` (default `parentbased_always_on`); `OTEL_SDK_DISABLED=true` turns them off again. See Observability |
 
@@ -505,6 +505,12 @@ Any proxy works. Requirements:
   most, and it must arrive within Waypoint's two-minute read timeout. A
   proxy that refuses the upload only fails that try (the audit goes on to
   its next model).
+- The transcript archive (`POST /api/v1/usage/transcript`, WP-1466) sends
+  pieces of up to 8 MiB raw, and a piece may be up to 24 MiB compressed (the
+  server's cap), so give that route its own larger limit (below). A proxy
+  that refuses a piece is counted on the machine as a refused upload; `wp
+  usage sync` then retries the file with a smaller piece, and if that is
+  refused too it holds the file and tries again once a day.
 
 nginx example:
 
@@ -517,5 +523,15 @@ location / {
     proxy_http_version 1.1;
     proxy_read_timeout 1h;   # long-lived event stream
     client_max_body_size 5m;
+}
+
+location = /api/v1/usage/transcript {
+    proxy_pass http://prod-host:21200;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_http_version 1.1;
+    proxy_request_buffering off;
+    client_max_body_size 25m;
 }
 ```
