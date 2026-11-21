@@ -216,3 +216,43 @@ func TestNoteRewritesBoundsItsInput(t *testing.T) {
 		t.Errorf("a nested repo and %d pull requests: %v", rewriteMaxPRs, err)
 	}
 }
+
+// A task the read can't load is not "a task the actor can't see": only a
+// missing one is passed over, and a read that fails fails the call, so a
+// database error never reads as "nothing replaced" (which would then drop
+// the evidence held for it).
+func TestRewrittenWorkReturnsAReadErrorOnTheOtherTask(t *testing.T) {
+	f := newRewriteFixture(t)
+	if _, err := f.s.db.W.ExecContext(f.ctx, `UPDATE issues SET created_at = 'not a time' WHERE id = ?`, f.a.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := f.s.RewrittenWork(f.ctx, f.admin, f.b.Key, "o/r", f.prs)
+	if err == nil {
+		t.Fatalf("a task that can't be read was passed over: %+v", got)
+	}
+}
+
+// An editor demoted between NoteRewrites' role check and its write records
+// nothing and drops nothing: the role is read again in the write.
+func TestRecordRewritesRechecksTheRoleInTheWrite(t *testing.T) {
+	f := newRewriteFixture(t)
+	lee := f.user("lee", false)
+	if err := f.s.SetMember(f.ctx, f.admin, f.proj.Key, "lee", "editor"); err != nil {
+		t.Fatal(err)
+	}
+	read, err := f.s.RewrittenWork(f.ctx, lee, f.b.Key, "o/r", f.prs)
+	if err != nil || len(read) != 1 {
+		t.Fatalf("lee read %+v, %v", read, err)
+	}
+	d := f.get(f.admin, f.b.Key)
+	if err := f.s.SetMember(f.ctx, f.admin, f.proj.Key, "lee", "viewer"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := f.s.recordRewrites(f.ctx, lee, d, "o/r", "abc1234", read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 || f.relationRows(t) != 0 || f.evidenceRows(t) != 0 {
+		t.Errorf("a viewer recorded %+v, %d relations, %d evidence rows", got, f.relationRows(t), f.evidenceRows(t))
+	}
+}

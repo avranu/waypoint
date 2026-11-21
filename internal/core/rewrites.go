@@ -197,7 +197,14 @@ func (s *Service) RewrittenWork(ctx context.Context, actor *Actor, ref, repo str
 				continue
 			}
 			ci, err := s.issueByID(ctx, s.db.R, id, false)
-			if err != nil || !s.canSee(ctx, s.db.R, actor, id, ci.ProjectID) {
+			if errors.Is(err, ErrNotFound) {
+				skip[id] = true
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			if !s.canSee(ctx, s.db.R, actor, id, ci.ProjectID) {
 				skip[id] = true
 				continue
 			}
@@ -299,13 +306,18 @@ func (s *Service) recordRewrites(ctx context.Context, actor *Actor, d *IssueDeta
 	var got []*RewrittenTask
 	err := s.write(ctx, actor, func(t *tx) error {
 		got = nil
+		// The role is checked again here: it may have been taken away since
+		// NoteRewrites read it, and then nothing is recorded or dropped.
+		if err := s.requireProjectRole(ctx, t, actor, d.ProjectID, RoleEditor); err != nil {
+			return nil
+		}
 		have := map[int64]bool{} // pairs Waypoint's own relation already stands for
+		gone, err := s.rewriteDismissed(ctx, t, d.ID)
+		if err != nil {
+			return err
+		}
 		for _, r := range found {
 			id, err := s.resolveIssueID(ctx, t, r.Key)
-			if err != nil {
-				return err
-			}
-			gone, err := s.rewriteDismissed(ctx, t, d.ID)
 			if err != nil {
 				return err
 			}
