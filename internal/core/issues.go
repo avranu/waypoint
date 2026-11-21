@@ -3278,7 +3278,11 @@ func (s *Service) History(ctx context.Context, actor *Actor, ref string, limit i
 	if limit <= 0 || limit > 500 {
 		limit = 200
 	}
-	return s.queryEvents(ctx, `WHERE e.issue_id = ?`, []any{i.ID}, limit)
+	evs, err := s.queryEvents(ctx, `WHERE e.issue_id = ?`, []any{i.ID}, limit)
+	if err != nil {
+		return nil, err
+	}
+	return s.hideUnseenAll(ctx, s.db.R, actor, evs), nil
 }
 
 func (s *Service) queryEvents(ctx context.Context, where string, args []any, limit int) ([]Event, error) {
@@ -3327,7 +3331,11 @@ func (s *Service) ProjectActivity(ctx context.Context, actor *Actor, projectRef 
 	if actor.HidesDrafts() {
 		where += ` AND coalesce(i.draft, 0) = 0`
 	}
-	return s.queryEvents(ctx, where, []any{p.ID}, limit)
+	evs, err := s.queryEvents(ctx, where, []any{p.ID}, limit)
+	if err != nil {
+		return nil, err
+	}
+	return s.hideUnseenAll(ctx, s.db.R, actor, evs), nil
 }
 
 // appendMarkdown adds md after text as a new paragraph.

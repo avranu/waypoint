@@ -425,6 +425,9 @@ type Hub struct {
 	visible func(userID, projectID, issueID int64) bool
 	// admin says whether a user is an admin, for AdminOnly events.
 	admin func(userID int64) bool
+	// hide returns the event as a user may read it: a task they can't see
+	// is not named (WP-1370).
+	hide func(userID int64, e *Event) *Event
 	// observe sees every event first (the goal traces, WP-382).
 	observe func(e *Event)
 }
@@ -497,8 +500,12 @@ func (h *Hub) Publish(e *Event) {
 				continue
 			}
 		}
+		out := e
+		if h.hide != nil {
+			out = h.hide(sub.UserID, e)
+		}
 		select {
-		case sub.C <- e:
+		case sub.C <- out:
 		default:
 		}
 	}
@@ -519,6 +526,17 @@ func (s *Service) StartHub() {
 			return false
 		}
 		return u.IsAdmin && !u.Disabled
+	}
+	s.Hub.hide = func(userID int64, e *Event) *Event {
+		if e.Field != "relation" {
+			return e
+		}
+		ctx := context.Background()
+		u, err := s.userByID(ctx, s.db.R, userID)
+		if err != nil {
+			return &Event{Kind: e.Kind, ProjectID: e.ProjectID, IssueID: e.IssueID, IssueKey: e.IssueKey, Field: e.Field, At: e.At, Actor: e.Actor}
+		}
+		return s.hideUnseen(ctx, s.db.R, &Actor{User: u}, e)
 	}
 	s.Hub.visible = func(userID, projectID, issueID int64) bool {
 		ctx := context.Background()
