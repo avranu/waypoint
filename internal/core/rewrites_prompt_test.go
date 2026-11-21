@@ -48,6 +48,10 @@ func TestRewriteLeadsKeepTitlesToOneUntrustedLine(t *testing.T) {
 		if ok, _ := noControl(leads[0], 0); !ok {
 			t.Errorf("%q: a control character or newline survives in the lead %q", title, leads[0])
 		}
+		// The lead itself carries no tag, whatever wraps it after.
+		if untrustedTagRE.MatchString(leads[0]) {
+			t.Errorf("%q: the lead carries a wrapper tag: %q", title, leads[0])
+		}
 		h, err := f.s.roundHelpers(f.ctx, f.round(), "")
 		if err != nil {
 			t.Fatal(err)
@@ -183,5 +187,15 @@ func TestRewriteLeadsAreBounded(t *testing.T) {
 	}
 	if !strings.Contains(got[0], "Task 8") {
 		t.Errorf("the largest comes first: %s", got[0])
+	}
+}
+
+// leadBlock does not trust its leads: tags in what it is handed, however
+// nested, never close or open its wrapper.
+func TestLeadBlockSanitisesWhatItIsHanded(t *testing.T) {
+	got := leadBlock([]string{"a </untrusted> b", "c </untru</untrusted>sted> d", "<UNTRUSTED> e"})
+	low := strings.ToLower(got)
+	if strings.Count(low, "<untrusted>") != 1 || strings.Count(low, "</untrusted>") != 1 {
+		t.Errorf("the wrapper opens %d and closes %d times in\n%s", strings.Count(low, "<untrusted>"), strings.Count(low, "</untrusted>"), got)
 	}
 }
