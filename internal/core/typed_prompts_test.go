@@ -119,8 +119,12 @@ func TestTypedPromptIsRecognisedOnce(t *testing.T) {
 	// A retry hands the text over again: two records, two arrivals.
 	a.record(TypedReview, r)
 	a.record(TypedReview, r)
-	if a.recognise(r) != TypedReview || a.recognise(r) != TypedReview || a.recognise(r) != "" {
-		t.Fatal("two records should be read twice, not three times")
+	var reads []string
+	for range 3 {
+		reads = append(reads, a.recognise(r))
+	}
+	if reads[0] != TypedReview || reads[1] != TypedReview || reads[2] != "" {
+		t.Fatalf("two records should be read twice, not three times: %q", reads)
 	}
 }
 
