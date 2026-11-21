@@ -20,7 +20,7 @@ import (
 //     belong to;
 //   - a round no step is carrying is picked up again (reviveHeldRounds);
 //   - a round that can't run for a reason of Waypoint's own opens the pull
-//     request anyway (shipHeld), says so on the task, and the session moves
+//     request anyway (shipRound), says so on the task, and the session moves
 //     on. CI and the review gate still apply to it. A person cancelling the
 //     review is a decision: nothing opens then, and they are told. A check
 //     of the session's marks that didn't run (failed, limited, cancelled,
@@ -99,14 +99,6 @@ func (s *Service) reviveHeldRounds(ctx context.Context) {
 // request opens without them, not without a review.
 const heldReviewEnded = "the adversarial review ended (audit #"
 
-// shipHeld does what the session's wp ship would have done after the
-// review that couldn't run: it opens the pull request without it, arms and
-// babysits it, moves the task to In Review and ends the run. Opening again
-// finds the pull request already open, so a retry is safe.
-func (s *Service) shipHeld(ctx context.Context, st *stepRow, x *AgentSession, user *User, agent, why string) error {
-	return s.shipRound(ctx, shipRoundIn{round: st.reviewID.Int64, session: x.ID, user: user, agent: agent, userID: st.userID, why: why})
-}
-
 // shipReviewed does what the session's wp ship would have done once its
 // adversarial review left nothing for the session to do: the pull request
 // opens as the round's session, armed and babysat, the task moves to In
@@ -134,7 +126,7 @@ type shipRoundIn struct {
 	ended bool
 }
 
-// shipRound is the one server-side ship of a round's branch: shipHeld (the
+// shipRound is the one server-side ship of a round's branch: a release (the
 // review couldn't run) and shipReviewed (it ran, and left nothing to do).
 func (s *Service) shipRound(ctx context.Context, in shipRoundIn) error {
 	defer s.shipLocks.lock(in.round)()

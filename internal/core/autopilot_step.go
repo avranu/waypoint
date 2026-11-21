@@ -1759,25 +1759,12 @@ func (s *Service) advanceStep(ctx context.Context, st *stepRow) error {
 			return s.stepUpdate(ctx, st.id, StepWaiting, WaitJob, "couldn't open "+r.key+"'s pull request, trying again: "+shipErr.Error(), now+autopilotRetry.Milliseconds())
 		}
 	}
-	why, release, err := s.heldUnshipped(ctx, st)
+	why, err = s.heldUnshipped(ctx, st)
 	if err != nil {
 		return err
 	}
 	if shipErr != nil && why != "" {
 		why += ", and Waypoint couldn't open its pull request: " + shipErr.Error()
-	}
-	if release != "" {
-		// The review couldn't run for a reason of Waypoint's own: the task
-		// isn't left unshipped for it (WP-752).
-		if err := s.shipHeld(ctx, st, x, user, agent, release); err == nil {
-			why = ""
-		} else {
-			s.log.WarnContext(ctx, "autopilot: open a held pull request", "step", st.id, "err", err)
-			if r, _ := roundByID(ctx, s.db.R, st.reviewID.Int64); r != nil && now-r.updatedAt < heldShipRetry.Milliseconds() {
-				return s.stepUpdate(ctx, st.id, StepWaiting, WaitJob, "couldn't open "+r.key+"'s pull request, trying again: "+err.Error(), now+autopilotRetry.Milliseconds())
-			}
-			why += ", and Waypoint couldn't open its pull request: " + err.Error()
-		}
 	}
 	if why != "" {
 		if err := s.write(ctx, SystemActor(), func(t *tx) error { return s.stopStep(ctx, t, st.sessionID, "unshipped", why) }); err != nil {

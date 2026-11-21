@@ -45,22 +45,44 @@ func startSessionWithTask(t *testing.T, a *apEnv, issueID int64) []*SessionMessa
 	return out.Messages
 }
 
+// newsKey is the step key of news about the held task's round: a ship's by
+// the round, an audit's or a check's by the audit that carries the round's
+// request key (the round's own, or its check's).
+func newsKey(t *testing.T, a *apEnv, prefix string, round int64) string {
+	t.Helper()
+	if prefix == "shipped:" {
+		return prefix + itoa64(round)
+	}
+	key := "review-round:" + itoa64(round)
+	if prefix == "check:" {
+		key += ":check"
+	}
+	res, err := a.s.db.W.Exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, owner_id, created_at, request_key) VALUES (?, (SELECT id FROM forges LIMIT 1), 'acme/app', 'branch', ?, ?, ?)`,
+		a.p.ID, a.admin.User.ID, a.clockNow().UnixMilli(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := res.LastInsertId()
+	return prefix + itoa64(id) + ":done"
+}
+
 // News of one task's audit, check or ship, queued for a session that ended,
 // is not handed to the next session in the cwd when that one is on another
 // task (WP-1370).
 func TestTaskNewsStaysWithItsTask(t *testing.T) {
-	for _, prefix := range []string{"shipped:"} {
+	for _, prefix := range []string{"shipped:", "audit:", "check:"} {
 		t.Run(prefix, func(t *testing.T) {
 			a, _, _ := heldEnv(t)
 			round := a.heldRound()
-			old := endedSessionWithNews(t, a, prefix+itoa64(round))
+			key := newsKey(t, a, prefix, round)
+			old := endedSessionWithNews(t, a, key)
 			other := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "Another task", Agent: "claude"})
 			got := startSessionWithTask(t, a, other.ID)
 			if len(got) != 0 {
 				t.Fatalf("another task's news was delivered to the new session: %+v", got)
 			}
 			var sid int64
-			_ = a.s.db.R.QueryRow(`SELECT session_id FROM session_messages WHERE step_key = ?`, prefix+itoa64(round)).Scan(&sid)
+			_ = a.s.db.R.QueryRow(`SELECT session_id FROM session_messages WHERE step_key = ?`, key).Scan(&sid)
 			if sid != old {
 				t.Errorf("the message moved from session %d to %d", old, sid)
 			}
@@ -70,12 +92,15 @@ func TestTaskNewsStaysWithItsTask(t *testing.T) {
 
 // The same news goes on to a new session that is on its task.
 func TestTaskNewsMovesToASessionOnItsTask(t *testing.T) {
-	a, _, held := heldEnv(t)
-	round := a.heldRound()
-	endedSessionWithNews(t, a, "shipped:"+itoa64(round))
-	got := startSessionWithTask(t, a, held.ID)
-	if len(got) != 1 || !strings.Contains(got[0].Body, "news body") {
-		t.Fatalf("delivered %+v", got)
+	for _, prefix := range []string{"shipped:", "audit:", "check:"} {
+		t.Run(prefix, func(t *testing.T) {
+			a, _, held := heldEnv(t)
+			endedSessionWithNews(t, a, newsKey(t, a, prefix, a.heldRound()))
+			got := startSessionWithTask(t, a, held.ID)
+			if len(got) != 1 || !strings.Contains(got[0].Body, "news body") {
+				t.Fatalf("delivered %+v", got)
+			}
+		})
 	}
 }
 
@@ -91,15 +116,19 @@ func TestPersonMessageMovesToTheNextSession(t *testing.T) {
 
 // News of a task nobody takes up expires after a day, with a line in the log.
 func TestTaskNewsExpires(t *testing.T) {
-	a, _, _ := heldEnv(t)
-	round := a.heldRound()
-	endedSessionWithNews(t, a, "shipped:"+itoa64(round))
-	a.tick(orphanMessageAge + time.Hour)
-	a.s.RunWorkLog(a.ctx)
-	a.s.Wait()
-	var st string
-	_ = a.s.db.R.QueryRow(`SELECT state FROM session_messages WHERE step_key = ?`, "shipped:"+itoa64(round)).Scan(&st)
-	if st != "cancelled" {
-		t.Fatalf("state = %q, want cancelled", st)
+	for _, prefix := range []string{"shipped:", "audit:", "check:"} {
+		t.Run(prefix, func(t *testing.T) {
+			a, _, _ := heldEnv(t)
+			key := newsKey(t, a, prefix, a.heldRound())
+			endedSessionWithNews(t, a, key)
+			a.tick(orphanMessageAge + time.Hour)
+			a.s.RunWorkLog(a.ctx)
+			a.s.Wait()
+			var st string
+			_ = a.s.db.R.QueryRow(`SELECT state FROM session_messages WHERE step_key = ?`, key).Scan(&st)
+			if st != "cancelled" {
+				t.Fatalf("state = %q, want cancelled", st)
+			}
+		})
 	}
 }

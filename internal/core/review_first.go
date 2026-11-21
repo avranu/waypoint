@@ -1097,11 +1097,11 @@ func (s *Service) ownReviewRound(ctx context.Context, actor *Actor, g *reviewGat
 // has no such round, the round isn't over, or the task shipped). It says
 // what became of the round, so the person isn't told it didn't run when
 // it did. release is set when the review never got its chance for a reason
-// of Waypoint's own, so Waypoint opens the pull request (shipHeld); it says
+// of Waypoint's own, so Waypoint opens the pull request (shipRound); it says
 // why the review didn't run.
-func (s *Service) heldUnshipped(ctx context.Context, st *stepRow) (why, release string, err error) {
+func (s *Service) heldUnshipped(ctx context.Context, st *stepRow) (why string, err error) {
 	if !st.runID.Valid || !st.reviewID.Valid || roundBeforePR(ctx, s.db.R, st.reviewID.Int64) == nil {
-		return "", "", nil
+		return "", nil
 	}
 	var ended sql.NullInt64
 	var state, reason, key string
@@ -1109,15 +1109,15 @@ func (s *Service) heldUnshipped(ctx context.Context, st *stepRow) (why, release 
 	err = s.db.R.QueryRowContext(ctx, `SELECT r.ended_at, w.state, w.reason, p.key || '-' || i.number, coalesce(w.session_id, 0), w.issue_id FROM work_log w JOIN agent_runs r ON r.id = ?
 		JOIN issues i ON i.id = r.issue_id JOIN projects p ON p.id = i.project_id WHERE w.id = ?`, st.runID.Int64, st.reviewID.Int64).Scan(&ended, &state, &reason, &key, &sessionID, &issueID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", "", nil
+		return "", nil
 	}
 	if err != nil || ended.Valid {
-		return "", "", err
+		return "", err
 	}
 	what := ""
 	switch state {
 	case RoundPending, RoundRunning:
-		return "", "", nil
+		return "", nil
 	case RoundDone:
 		what = "its adversarial review ran, but the session didn't run wp ship after it"
 	case RoundSkipped:
@@ -1133,20 +1133,7 @@ func (s *Service) heldUnshipped(ctx context.Context, st *stepRow) (why, release 
 	if reason != "" && state != RoundDone {
 		what += " (" + reason + ")"
 	}
-	if (state == RoundSkipped || state == RoundFailed) && !strings.HasPrefix(reason, roundCancelledBy) {
-		release = cmp(reason, "its adversarial review didn't run")
-	}
-	if state == RoundInterrupted && reason != roundReplaced {
-		// Interrupted for the last time, the round isn't asked for again
-		// (askAgainAfterInterrupt): the session's stop that follows is a
-		// stop with nobody left to ship, and Waypoint ships.
-		if again, err := askAgainAfterInterrupt(ctx, s.db.R, sessionID, issueID); err != nil {
-			return "", "", err
-		} else if !again {
-			release = fmt.Sprintf("the session was interrupted %d times before its adversarial review reported, so it isn't asked again", reviewInterruptsMax)
-		}
-	}
-	return key + " isn't shipped yet: " + what, release, nil
+	return key + " isn't shipped yet: " + what, nil
 }
 
 // roundAuditLives: the round's audit hasn't failed or been cancelled, so

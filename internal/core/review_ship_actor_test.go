@@ -149,3 +149,25 @@ func TestServerShipAgentIsTheSessions(t *testing.T) {
 		t.Errorf("no session: %q", got)
 	}
 }
+
+// A server ship acts as the token the ship came with, but doesn't use it up:
+// the token's last-used time is the person's, not Waypoint's.
+func TestServerShipDoesNotTouchTheTokensLastUsed(t *testing.T) {
+	e := newLoopEnv(t, map[string]string{"": "critical", "fixes": "complete"})
+	e.reviewedUntilShip()
+	_, tok, err := e.s.CreateAPIToken(e.ctx, e.admin, "ship", false, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.exec(`UPDATE api_tokens SET last_used_at = 1000 WHERE id = ?`, tok.ID)
+	e.exec(`UPDATE work_log SET before_pr = json_set(before_pr, '$.token_id', ?) WHERE kind = 'review'`, tok.ID)
+	e.finishShip()
+	if len(e.g.created) != 1 {
+		t.Fatalf("Waypoint opened %d pull requests", len(e.g.created))
+	}
+	var used int64
+	_ = e.s.db.R.QueryRow(`SELECT last_used_at FROM api_tokens WHERE id = ?`, tok.ID).Scan(&used)
+	if used != 1000 {
+		t.Errorf("the server's ship set the token's last use to %d", used)
+	}
+}

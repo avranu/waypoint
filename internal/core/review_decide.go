@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -50,6 +51,10 @@ type roundIn struct {
 	// Stopped, Subagents: the round's session just stopped (its turn ended),
 	// with background agents of the review still going.
 	Stopped, Subagents bool
+	// Release: why a round that didn't run to its end is released (Waypoint
+	// opens the pull request without it); "" when a person's decision stands
+	// or the session is asked again.
+	Release string
 	// Idle: the session went idle (autopilot's step saw it) and the round's Stop never came.
 	Idle bool
 	// Ages: since the round started, and since the thing it waits on last changed
@@ -68,6 +73,7 @@ const (
 	doFinish             // the pull request is open: end the round and the run
 	doEnd                // the round ends with a state of its own (To), Waypoint ships nothing
 	doReport             // the session's stop is the round's report
+	doHold               // a person's decision (or a new ask) stands: Waypoint ships nothing, the step stops and says why
 	// doReleaseAfterRunEnded: the run ended with the round failed, skipped or
 	// interrupted for Waypoint's own reason, and the branch has no pull request.
 	// heldUnshipped, reviveHeldRounds, reaskHeldRound and reviewFirstAtStop all
@@ -210,7 +216,10 @@ func decideRound(in roundIn) roundOut {
 		return roundOut{Do: doShip}
 	}
 	// Skipped, failed, interrupted: the review didn't run to the end.
-	return roundOut{Do: doRelease, Why: "the review " + in.State}
+	if in.Release == "" {
+		return roundOut{Do: doHold, Why: "the review " + in.State}
+	}
+	return roundOut{Do: doRelease, Why: in.Release}
 }
 
 // roundInOf reads the facts decideRound needs.
@@ -244,6 +253,11 @@ func (s *Service) roundInOf(ctx context.Context, id int64) (roundIn, error) {
 		var live bool
 		if s.db.R.QueryRowContext(ctx, `SELECT ended_at IS NULL FROM agent_sessions WHERE id = ?`, r.sessionID.Int64).Scan(&live) == nil {
 			in.Session, in.SessionEnded = live, !live
+		}
+	}
+	if in.State == RoundSkipped || in.State == RoundFailed || in.State == RoundInterrupted {
+		if in.Release, err = s.releaseWhy(ctx, r); err != nil {
+			return in, err
 		}
 	}
 	var stepLive bool
@@ -411,4 +425,37 @@ func (s *Service) shipOwed(ctx context.Context, id int64) (roundOut, error) {
 		return roundOut{}, nil
 	}
 	return out, err
+}
+
+// releaseWhy: why a round that ended without running its review is
+// released, which is also what the pull request and the person are told. A
+// person's cancel is a decision, not a failure, and a round replaced or
+// asked for again isn't released; one interrupted for the last time is.
+func (s *Service) releaseWhy(ctx context.Context, r *roundRow) (string, error) {
+	var reason string
+	if err := s.db.R.QueryRowContext(ctx, `SELECT reason FROM work_log WHERE id = ?`, r.id).Scan(&reason); err != nil {
+		return "", err
+	}
+	reason = strings.TrimSpace(reason)
+	switch r.state {
+	case RoundSkipped, RoundFailed:
+		if !strings.HasPrefix(reason, roundCancelledBy) {
+			return cmp(reason, "its adversarial review didn't run"), nil
+		}
+	case RoundInterrupted:
+		if reason == roundReplaced {
+			return "", nil
+		}
+		// Interrupted for the last time, the round isn't asked for again
+		// (askAgainAfterInterrupt): the session's stop that follows is a stop
+		// with nobody left to ship, and Waypoint ships.
+		again, err := askAgainAfterInterrupt(ctx, s.db.R, nonzero(r.sessionID.Int64, 0), r.issueID)
+		if err != nil {
+			return "", err
+		}
+		if !again {
+			return fmt.Sprintf("the session was interrupted %d times before its adversarial review reported, so it isn't asked again", reviewInterruptsMax), nil
+		}
+	}
+	return "", nil
 }

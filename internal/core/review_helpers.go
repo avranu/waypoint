@@ -382,7 +382,7 @@ func (s *Service) currentPanelRuns(ctx context.Context, round int64) (runs []Aud
 // panelConfirmed is how many problems the round's Haiku checks confirmed
 // for its current range that no finding of a reviewer holds
 // (currentPanelRuns), and the audit with the most of them: for the notes of
-// a pull request Waypoint opened with no review (shipHeld). 0 when none.
+// a pull request Waypoint opened with no review (shipRound). 0 when none.
 func (s *Service) panelConfirmed(ctx context.Context, round int64) (n int, audit int64) {
 	_, n, audit = s.currentPanelRuns(ctx, round)
 	return n, audit

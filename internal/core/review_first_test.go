@@ -915,7 +915,7 @@ func TestReviewBeforePRUnshipped(t *testing.T) {
 			t.Fatal(err)
 		}
 		st := &stepRow{runID: sql.NullInt64{Int64: run, Valid: true}}
-		if why, _, err := a.s.heldUnshipped(a.ctx, st); err != nil || why != "" {
+		if why, err := a.s.heldUnshipped(a.ctx, st); err != nil || why != "" {
 			t.Fatalf("no round: %q, %v", why, err)
 		}
 		// A round after the pull request, over, with the run open.
@@ -928,7 +928,7 @@ func TestReviewBeforePRUnshipped(t *testing.T) {
 		}
 		id, _ := res.LastInsertId()
 		st.reviewID = sql.NullInt64{Int64: id, Valid: true}
-		if why, _, err := a.s.heldUnshipped(a.ctx, st); err != nil || why != "" {
+		if why, err := a.s.heldUnshipped(a.ctx, st); err != nil || why != "" {
 			t.Fatalf("round after the pull request: %q, %v", why, err)
 		}
 	})

@@ -323,6 +323,12 @@ func TestShipResumesAfterTheProcessDiedWithThePROpen(t *testing.T) {
 	if _, err := e.s.db.W.Exec(`UPDATE agent_runs SET ended_at = NULL WHERE id = (SELECT run_id FROM work_log WHERE id = ?)`, r1); err != nil {
 		t.Fatal(err)
 	}
+	// ... and before it armed the pull request, babysat it, moved the task
+	// or told the session: only the open had happened.
+	e.exec(`UPDATE pull_requests SET armed_at = NULL WHERE head_ref = 'wp-1-first'`)
+	e.exec(`DELETE FROM babysits`)
+	e.exec(`UPDATE issues SET status_id = (SELECT id FROM statuses WHERE name <> 'In Review' AND project_id = issues.project_id ORDER BY position LIMIT 1) WHERE id = (SELECT issue_id FROM work_log WHERE id = ?)`, r1)
+	e.exec(`DELETE FROM session_messages WHERE step_key LIKE 'shipped:%'`)
 	for range 3 {
 		e.tickAll(5 * time.Minute)
 	}
@@ -334,6 +340,14 @@ func TestShipResumesAfterTheProcessDiedWithThePROpen(t *testing.T) {
 	}
 	if n := e.told("shipped:"); n != 1 {
 		t.Errorf("%d shipped messages", n)
+	}
+	var armed, babysat int
+	var status string
+	_ = e.s.db.R.QueryRow(`SELECT count(armed_at) FROM pull_requests WHERE head_ref = 'wp-1-first'`).Scan(&armed)
+	_ = e.s.db.R.QueryRow(`SELECT count(*) FROM babysits`).Scan(&babysat)
+	_ = e.s.db.R.QueryRow(`SELECT s.name FROM issues i JOIN statuses s ON s.id = i.status_id WHERE i.id = (SELECT issue_id FROM work_log WHERE id = ?)`, r1).Scan(&status)
+	if armed != 1 || babysat != 1 || status != "In Review" {
+		t.Errorf("after the resume: armed %d, babysits %d, status %q", armed, babysat, status)
 	}
 }
 

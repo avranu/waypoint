@@ -178,3 +178,24 @@ func TestNoSecondDecisionOutsideDecideRound(t *testing.T) {
 		}
 	}
 }
+
+// A round that didn't run its review is released with its own reason, unless
+// a person's cancel or a new ask stands (WP-1370).
+func TestDecideRoundReleaseOrHold(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   roundIn
+		do   int
+		why  string
+	}{
+		{"failed with a reason", roundIn{State: RoundFailed, RunOpen: true, Unshipped: true, Release: "tmux went away"}, doRelease, "tmux went away"},
+		{"cancelled by a person", roundIn{State: RoundFailed, RunOpen: true, Unshipped: true}, doHold, ""},
+		{"replaced or asked again", roundIn{State: RoundInterrupted, RunOpen: true, Unshipped: true}, doHold, ""},
+		{"interrupted for the last time", roundIn{State: RoundInterrupted, RunOpen: true, Unshipped: true, Release: "interrupted 3 times"}, doRelease, "interrupted 3 times"},
+	} {
+		out := decideRound(tc.in)
+		if out.Do != tc.do || (tc.why != "" && out.Why != tc.why) {
+			t.Errorf("%s: %+v", tc.name, out)
+		}
+	}
+}
