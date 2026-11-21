@@ -48,7 +48,11 @@ func (s *Service) recordFailure(ctx context.Context, a *Automation, e *Event, er
 	now := s.now().UTC()
 	run := &AutomationRun{AutomationID: a.ID, Automation: a.Name, ProjectID: a.ProjectID, Via: "schedule", Trigger: a.Rule.Trigger.Event, Summary: eventSummary(e), Event: e,
 		Concurrency: a.Rule.concurrency(), CreatedAt: now, StartedAt: &now, depth: 1}
-	_, _ = s.finishInstant(ctx, a, run, nil, err)
+	if _, ferr := s.finishInstant(ctx, a, run, nil, err); ferr != nil {
+		if readFault(ferr) {
+			s.log.WarnContext(ctx, "finish a scheduled run that couldn't start", "automation", a.ID, "err", ferr)
+		}
+	}
 }
 
 // ruleLocation is the time zone a schedule runs in: the rule's, else the

@@ -327,11 +327,14 @@ func (s *Service) askAboutLine(ctx context.Context, l lineRef, since time.Time) 
 	}
 	in := RequestInput{Kind: RequestAction, Title: stalledLineTitle(prs[0].Repo, l.base, len(prs)),
 		Body: s.stalledLineBody(ctx, l, prs, since), ToolUseID: key, Followup: "never"}
-	if p := s.attachedProject(ctx, s.db.R, l.forge, prs[0].Repo); p != 0 {
-		if proj, err := s.projectByID(ctx, s.db.R, p); err == nil {
-			in.Project = proj.Key
+	projectKey, err := s.attachedProjectKey(ctx, l.forge, prs[0].Repo)
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read the project of a stalled merge line", "repo", prs[0].Repo, "err", err)
 		}
+		return
 	}
+	in.Project = projectKey
 	if _, _, err := s.CreateRequest(ctx, &Actor{User: u, Agent: "waypoint/babysit"}, in); err != nil {
 		s.log.WarnContext(ctx, "ask about a stalled merge line", "repo", prs[0].Repo, "base", l.base, "err", err)
 	}

@@ -48,7 +48,12 @@ func (s *Service) poolSaturated(ctx context.Context, forgeID int64) bool {
 		bctx := context.WithoutCancel(ctx)
 		s.goBG(func() {
 			defer s.poolSatReading.Store(false)
-			_, _ = s.ciSnapshot(bctx) // notes the verdicts
+			// Run to note the verdicts; the snapshot itself is not wanted.
+			if _, err := s.ciSnapshot(bctx); err != nil {
+				if readFault(err) {
+					s.log.WarnContext(bctx, "read the CI snapshot that notes the verdicts", "err", err)
+				}
+			}
 		})
 	}
 	return v.saturated
@@ -212,8 +217,8 @@ func (s *Service) makeBatch(ctx context.Context, f *Forge, pr *PullRequest, styl
 			break
 		}
 		if p.State == "draft" && s.knownConflict(ctx, p, queue[:i+1]) {
-			if s.earlyRoundDue(ctx, p) {
-				break // none past it until its round has gone; the riders before it stay
+			if due, err := s.earlyRoundDue(ctx, p); err != nil || due {
+				break // none past it until its round has gone (or is known not to be due); the riders before it stay
 			}
 			passed = append(passed, p)
 			continue

@@ -776,6 +776,9 @@ func (s *Service) nothingReady(ctx context.Context, actor *Actor, projectKey, cr
 func (s *Service) runEnded(ctx context.Context, q queryer, run int64) (int64, error) {
 	var ended sql.NullInt64
 	err := q.QueryRowContext(ctx, `SELECT ended_at FROM agent_runs WHERE id = ?`, run).Scan(&ended)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil // no such run: not ended
+	}
 	return ended.Int64, err
 }
 
@@ -1250,6 +1253,12 @@ func (s *Service) unstickSteps(ctx context.Context) {
 		ev := &Event{Kind: EvRunnerJobFinished, UserID: x.user, Data: map[string]any{"job": x.job, "source": autopilotSource, "source_id": x.id}}
 		job, err := lookupRunnerJob(ctx, s, x.job)
 		switch {
+		case err != nil && !missingOrDenied(err):
+			// Not known to be gone: the reservation stays and the step isn't failed;
+			// the sweep looks again (WP-1406).
+			if readFault(err) {
+				s.log.WarnContext(ctx, "read a stuck autopilot step's runner job", "step", x.id, "job", x.job, "err", err)
+			}
 		case err != nil:
 			var issue, sessionID int64
 			var run sql.NullInt64
@@ -1258,15 +1267,26 @@ func (s *Service) unstickSteps(ctx context.Context) {
 				if err := releaseOwnTask(ctx, s.db.W, x.id); err != nil {
 					continue // still reserved: try the release again next time
 				}
-				_ = s.stepUpdate(ctx, x.id, StepFailed, WaitJob, "its runner job is gone", 0) // the sweep tries again
+				if err := s.stepUpdate(ctx, x.id, StepFailed, WaitJob, "its runner job is gone", 0); err != nil { // the sweep tries again
+					if readFault(err) {
+						s.log.WarnContext(ctx, "step update failed", "step", x.id, "err", err)
+					}
+				}
 				continue
 			}
 			agent, _ := s.stepAgent(ctx, s.db.R, run, sessionID)
 			s.releaseReserved(ctx, issue, agent)
-			_ = s.stepUpdate(ctx, x.id, StepWaiting, WaitJob, "its runner job is gone", s.nowMS())
+			if err := s.stepUpdate(ctx, x.id, StepWaiting, WaitJob, "its runner job is gone", s.nowMS()); err != nil {
+				if readFault(err) {
+					s.log.WarnContext(ctx, "step update failed", "step", x.id, "err", err)
+				}
+			}
 		case job.State == "queued" || job.State == "running":
 			if u, err := s.userByID(ctx, s.db.R, x.user); err == nil {
-				_, _ = s.cancelRunnerJob(ctx, &Actor{User: u}, x.job, fmt.Sprintf("No runner finished it within %d minutes.", int(autopilotJobStuck.Minutes()))) // its finish event answers the step
+				// Its finish event answers the step.
+				if _, err := s.cancelRunnerJob(ctx, &Actor{User: u}, x.job, fmt.Sprintf("No runner finished it within %d minutes.", int(autopilotJobStuck.Minutes()))); readFault(err) && !IsInvalid(err) && !missingOrDenied(err) { // finished meanwhile: nothing to cancel
+					s.log.WarnContext(ctx, "cancel a stuck autopilot runner job", "step", x.id, "job", x.job, "err", err)
+				}
 			}
 		default:
 			s.autopilotJobFinished(ctx, ev) // finished while nobody listened
@@ -1463,7 +1483,13 @@ func (s *Service) advanceStep(ctx context.Context, st *stepRow) error {
 		_ = s.db.R.QueryRowContext(ctx, `SELECT bg_seen FROM agent_sessions WHERE id = ?`, x.ID).Scan(&raw)
 		seen := map[string]int64{}
 		_ = json.Unmarshal([]byte(raw), &seen)
-		doneAt, _ := s.runEnded(ctx, s.db.R, st.runID.Int64)
+		var doneAt int64
+		if st.runID.Valid { // a step started by hand has no run
+			var rerr error
+			if doneAt, rerr = s.runEnded(ctx, s.db.R, st.runID.Int64); readFault(rerr) {
+				s.log.WarnContext(ctx, "read when an autopilot step's run ended", "step", st.id, "run", st.runID.Int64, "err", rerr)
+			}
+		}
 		if doneAt == 0 && roundBeforePR(ctx, s.db.R, st.reviewID.Int64) != nil {
 			// A round before the pull request: its task is done from its ship.
 			if r, _ := roundByID(ctx, s.db.R, st.reviewID.Int64); r != nil {
@@ -1665,7 +1691,11 @@ func (s *Service) advanceStep(ctx context.Context, st *stepRow) error {
 	actor := &Actor{User: user, Agent: agent, Session: x.ID}
 	next, waitDetail, err := s.pickAutopilotTask(ctx, actor, st, x, lim)
 	if err != nil {
-		_ = s.stepUpdate(ctx, st.id, StepWaiting, WaitJob, "couldn't pick the next task: "+err.Error(), now+autopilotNothingRetry.Milliseconds())
+		if err := s.stepUpdate(ctx, st.id, StepWaiting, WaitJob, "couldn't pick the next task: "+err.Error(), now+autopilotNothingRetry.Milliseconds()); err != nil {
+			if readFault(err) {
+				s.log.WarnContext(ctx, "step update failed", "step", st.id, "err", err)
+			}
+		}
 		return err
 	}
 	if next == nil {
@@ -1789,16 +1819,24 @@ func (s *Service) unwarmReview(ctx context.Context, sessionID int64) {
 func (s *Service) reviewJobFinished(ctx context.Context, st *stepRow, job *RunnerJob, res AutopilotJobResult, now int64) {
 	review, err := roundByID(ctx, s.db.R, st.reviewID.Int64)
 	if err != nil || review == nil {
-		_ = s.stepUpdate(ctx, st.id, StepDue, "", "", now)
+		if err := s.stepUpdate(ctx, st.id, StepDue, "", "", now); err != nil {
+			if readFault(err) {
+				s.log.WarnContext(ctx, "step update failed", "step", st.id, "err", err)
+			}
+		}
 		return
 	}
 	reviewing := func() {
 		switch review.state {
 		case RoundPending: // the hook of its prompt hasn't come (yet)
-			_ = s.write(ctx, SystemActor(), func(t *tx) error {
+			if err := s.write(ctx, SystemActor(), func(t *tx) error {
 				_, err := s.startRound(ctx, t, review.id, now)
 				return err
-			})
+			}); err != nil {
+				if readFault(err) {
+					s.log.WarnContext(ctx, "start the review round of an autopilot step", "session", st.sessionID, "step", st.id, "err", err)
+				}
+			}
 			review.startedAt = sql.NullInt64{Int64: now, Valid: true}
 			fallthrough
 		case RoundRunning:
@@ -1818,9 +1856,17 @@ func (s *Service) reviewJobFinished(ctx context.Context, st *stepRow, job *Runne
 					s.log.WarnContext(ctx, "autopilot: the session didn't take the review typed into it", "task", review.key, "step", st.id, "warning", res.Warning)
 				}
 			}
-			_ = s.stepUpdate(ctx, st.id, StepWaiting, WaitReviewing, detail, started+reviewRunMax.Milliseconds())
+			if err := s.stepUpdate(ctx, st.id, StepWaiting, WaitReviewing, detail, started+reviewRunMax.Milliseconds()); err != nil {
+				if readFault(err) {
+					s.log.WarnContext(ctx, "step update failed", "step", st.id, "err", err)
+				}
+			}
 		default: // its Stop came before the job's answer: move on
-			_ = s.stepUpdate(ctx, st.id, StepDue, "", "", now)
+			if err := s.stepUpdate(ctx, st.id, StepDue, "", "", now); err != nil {
+				if readFault(err) {
+					s.log.WarnContext(ctx, "step update failed", "step", st.id, "err", err)
+				}
+			}
 		}
 	}
 	switch {
@@ -1828,7 +1874,11 @@ func (s *Service) reviewJobFinished(ctx context.Context, st *stepRow, job *Runne
 		reviewing()
 	case job.State == "done" && res.Outcome == "gone":
 		s.unwarmReview(ctx, st.sessionID)
-		_ = s.stepUpdate(ctx, st.id, StepStopped, "ended", cmp(res.Detail, "the session isn't running any more"), 0)
+		if err := s.stepUpdate(ctx, st.id, StepStopped, "ended", cmp(res.Detail, "the session isn't running any more"), 0); err != nil {
+			if readFault(err) {
+				s.log.WarnContext(ctx, "step update failed", "step", st.id, "err", err)
+			}
+		}
 	case job.State == "done" && res.Outcome == "unwanted":
 		s.unwarmReview(ctx, st.sessionID) // stopped while the job was on its way: stopStep ended the round
 	case job.State == "done" && res.Outcome == "held":
@@ -1838,7 +1888,11 @@ func (s *Service) reviewJobFinished(ctx context.Context, st *stepRow, job *Runne
 			// It can't be typed into: move on (the next task can't start
 			// either, which the step then says).
 			s.setRoundNow(ctx, review.id, []string{RoundPending}, RoundSkipped, res.Detail)
-			_ = s.stepUpdate(ctx, st.id, StepDue, "", "", now)
+			if err := s.stepUpdate(ctx, st.id, StepDue, "", "", now); err != nil {
+				if readFault(err) {
+					s.log.WarnContext(ctx, "step update failed", "step", st.id, "err", err)
+				}
+			}
 			return
 		} else if now-max(st.createdAt, s.roundAuditEnded(ctx, review.id)) > heldScreenWait.Milliseconds() && roundBeforePR(ctx, s.db.R, review.id) != nil {
 			// A task unshipped behind a screen that won't come free (WP-752).
@@ -1850,12 +1904,20 @@ func (s *Service) reviewJobFinished(ctx context.Context, st *stepRow, job *Runne
 					heldReviewEnded, audit, plural1(n, "finding"), int(heldScreenWait.Hours()), res.Detail)
 			}
 			s.setRoundNow(ctx, review.id, []string{RoundPending}, RoundFailed, why)
-			_ = s.stepUpdate(ctx, st.id, StepDue, "", "", now)
+			if err := s.stepUpdate(ctx, st.id, StepDue, "", "", now); err != nil {
+				if readFault(err) {
+					s.log.WarnContext(ctx, "step update failed", "step", st.id, "err", err)
+				}
+			}
 			return
 		} else if now-st.createdAt > autopilotScreenWait.Milliseconds() {
 			retry = 10 * time.Minute
 		}
-		_ = s.stepUpdate(ctx, st.id, StepWaiting, reason, res.Detail, now+retry.Milliseconds())
+		if err := s.stepUpdate(ctx, st.id, StepWaiting, reason, res.Detail, now+retry.Milliseconds()); err != nil {
+			if readFault(err) {
+				s.log.WarnContext(ctx, "step update failed", "step", st.id, "err", err)
+			}
+		}
 	default:
 		if review.state != RoundPending {
 			reviewing() // typed before it failed: its Stop ends it
@@ -1869,7 +1931,11 @@ func (s *Service) reviewJobFinished(ctx context.Context, st *stepRow, job *Runne
 			reason = why // a person's decision, not a failure (heldUnshipped)
 		}
 		s.setRoundNow(ctx, review.id, []string{RoundPending}, RoundFailed, reason)
-		_ = s.stepUpdate(ctx, st.id, StepDue, "", "", now)
+		if err := s.stepUpdate(ctx, st.id, StepDue, "", "", now); err != nil {
+			if readFault(err) {
+				s.log.WarnContext(ctx, "step update failed", "step", st.id, "err", err)
+			}
+		}
 	}
 }
 
@@ -2376,7 +2442,7 @@ func (s *Service) autopilotJobFinished(ctx context.Context, e *Event) {
 		_, _ = s.db.W.ExecContext(ctx, `UPDATE task_summaries SET autopilot = 1 WHERE run_id = ?`, st.runID.Int64)
 		var project sql.NullInt64
 		project.Int64, project.Valid = st.projectID, true
-		_ = s.write(ctx, SystemActor(), func(t *tx) error {
+		if err := s.write(ctx, SystemActor(), func(t *tx) error {
 			if err := s.sessionTimeline(ctx, t, st.sessionID, now, "autopilot", "", 0, "cleared", "", did+" for "+nextKey, project, map[string]any{"next": nextKey}); err != nil {
 				return err
 			}
@@ -2384,10 +2450,18 @@ func (s *Service) autopilotJobFinished(ctx context.Context, e *Event) {
 				return s.sessionTimeline(ctx, t, next.Int64, now, "autopilot", "", 0, "started", "", "autopilot started "+nextKey, project, map[string]any{"from": st.sessionID})
 			}
 			return nil
-		})
+		}); err != nil {
+			if readFault(err) {
+				s.log.WarnContext(ctx, "record the next autopilot session started", "session", st.sessionID, "step", st.id, "err", err)
+			}
+		}
 	case job.State == "done" && res.Outcome == "gone":
 		s.releaseReserved(ctx, st.nextIssue.Int64, agent)
-		_ = s.stepUpdate(ctx, st.id, StepStopped, "ended", cmp(res.Detail, "the session isn't running any more"), 0)
+		if err := s.stepUpdate(ctx, st.id, StepStopped, "ended", cmp(res.Detail, "the session isn't running any more"), 0); err != nil {
+			if readFault(err) {
+				s.log.WarnContext(ctx, "step update failed", "step", st.id, "err", err)
+			}
+		}
 	case job.State == "done" && res.Outcome == "unwanted":
 		// Stopped while the job was on its way: stopStep released the task.
 	case job.State == "done" && res.Outcome == "cleared":
@@ -2395,7 +2469,11 @@ func (s *Service) autopilotJobFinished(ctx context.Context, e *Event) {
 		// has to give it the task, and hears so at once.
 		if res.Via == "restart" && res.NewCLI == "" {
 			// Exited, and the new one didn't start: the pane has no session.
-			_ = s.stepUpdate(ctx, st.id, StepFailed, WaitJob, "exited the session to restart it, but "+res.Detail, 0)
+			if err := s.stepUpdate(ctx, st.id, StepFailed, WaitJob, "exited the session to restart it, but "+res.Detail, 0); err != nil {
+				if readFault(err) {
+					s.log.WarnContext(ctx, "step update failed", "step", st.id, "err", err)
+				}
+			}
 			s.tellOnce(ctx, st, "cleared", "Autopilot ended a session but couldn't start "+nextKey,
 				fmt.Sprintf("Autopilot exited the session that finished %s to start it again, but %s. Start Claude Code in its tmux pane yourself and give it the task: Handle %s.", cmp(st.doneKey(ctx, s), "its task"), res.Detail, nextKey))
 			break
@@ -2404,7 +2482,11 @@ func (s *Service) autopilotJobFinished(ctx context.Context, e *Event) {
 		if res.Via == "restart" {
 			did = "restarted"
 		}
-		_ = s.stepUpdate(ctx, st.id, StepFailed, WaitJob, did+" the session, but "+res.Detail, 0)
+		if err := s.stepUpdate(ctx, st.id, StepFailed, WaitJob, did+" the session, but "+res.Detail, 0); err != nil {
+			if readFault(err) {
+				s.log.WarnContext(ctx, "step update failed", "step", st.id, "err", err)
+			}
+		}
 		s.tellOnce(ctx, st, "cleared", "Autopilot "+did+" a session but couldn't start "+nextKey,
 			fmt.Sprintf("Autopilot %s the session that finished %s, but %s. Give it the task yourself: Handle %s.", did, cmp(st.doneKey(ctx, s), "its task"), res.Detail, nextKey))
 	case job.State == "done" && res.Outcome == "held":
@@ -2412,7 +2494,11 @@ func (s *Service) autopilotJobFinished(ctx context.Context, e *Event) {
 		if res.Reason == WaitNoTmux {
 			// Not a wait: nothing changes by looking again. This step ends, and
 			// the sweep starts the task in a session of its own (WP-ADR72).
-			_ = s.stepUpdate(ctx, st.id, StepStopped, WaitNoTmux, res.Detail, 0)
+			if err := s.stepUpdate(ctx, st.id, StepStopped, WaitNoTmux, res.Detail, 0); err != nil {
+				if readFault(err) {
+					s.log.WarnContext(ctx, "step update failed", "step", st.id, "err", err)
+				}
+			}
 			s.tellOnce(ctx, st, WaitNoTmux, "Autopilot can't move a session on", "Autopilot can't move on the session that finished "+cmp(st.doneKey(ctx, s), "its task")+": "+res.Detail+" Where the limit allows it, autopilot starts the next task in a session of its own.")
 			return
 		}
@@ -2422,7 +2508,11 @@ func (s *Service) autopilotJobFinished(ctx context.Context, e *Event) {
 		if long {
 			retry = 10 * time.Minute
 		}
-		_ = s.stepUpdate(ctx, st.id, StepWaiting, WaitScreen, res.Detail, now+retry.Milliseconds())
+		if err := s.stepUpdate(ctx, st.id, StepWaiting, WaitScreen, res.Detail, now+retry.Milliseconds()); err != nil {
+			if readFault(err) {
+				s.log.WarnContext(ctx, "step update failed", "step", st.id, "err", err)
+			}
+		}
 		if long {
 			s.tellOnce(ctx, st, WaitScreen, "Autopilot is waiting on a session", "Autopilot has been waiting a while to start the next task: "+res.Detail)
 		}
@@ -2432,11 +2522,19 @@ func (s *Service) autopilotJobFinished(ctx context.Context, e *Event) {
 		tries := st.attempts + 1
 		_, _ = s.db.W.ExecContext(ctx, `UPDATE autopilot_steps SET attempts = ? WHERE id = ?`, tries, st.id)
 		if tries >= autopilotJobTries {
-			_ = s.stepUpdate(ctx, st.id, StepFailed, WaitJob, why, 0)
+			if err := s.stepUpdate(ctx, st.id, StepFailed, WaitJob, why, 0); err != nil {
+				if readFault(err) {
+					s.log.WarnContext(ctx, "step update failed", "step", st.id, "err", err)
+				}
+			}
 			s.tellOnce(ctx, st, WaitJob, "Autopilot stopped on a session", "Autopilot couldn't start the next task after "+fmt.Sprint(tries)+" tries: "+why)
 			return
 		}
-		_ = s.stepUpdate(ctx, st.id, StepWaiting, WaitJob, why, now+autopilotNothingRetry.Milliseconds())
+		if err := s.stepUpdate(ctx, st.id, StepWaiting, WaitJob, why, now+autopilotNothingRetry.Milliseconds()); err != nil {
+			if readFault(err) {
+				s.log.WarnContext(ctx, "step update failed", "step", st.id, "err", err)
+			}
+		}
 	}
 }
 
@@ -2464,7 +2562,13 @@ func (s *Service) freshSession(ctx context.Context, sessionID int64) bool {
 	err := s.db.R.QueryRowContext(ctx, `SELECT NOT EXISTS (SELECT 1 FROM session_events p WHERE p.session_id = ? AND p.kind = 'prompt'
 		AND p.created_at >= coalesce((SELECT max(e.created_at) FROM session_events e WHERE e.session_id = ? AND e.kind = 'started'), 0))`,
 		sessionID, sessionID).Scan(&fresh)
-	return err == nil && fresh
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read fresh session", "sessionID", sessionID, "err", err)
+		}
+		return false
+	}
+	return fresh
 }
 
 // doneKey is the key of the task the step's session finished.
@@ -2519,7 +2623,13 @@ func (s *Service) AutopilotStepAction(ctx context.Context, a *Actor, id int64, a
 		if err != nil {
 			return err
 		}
-		s.goBG(func() { _ = s.advanceStep(context.WithoutCancel(ctx), st.withNow(s)) })
+		s.goBG(func() {
+			if err := s.advanceStep(context.WithoutCancel(ctx), st.withNow(s)); err != nil {
+				if readFault(err) && !missingOrDenied(err) {
+					s.log.WarnContext(ctx, "advance step failed", "step", id, "err", err)
+				}
+			}
+		})
 		return nil
 	}
 	return invalid("action must be stop or now")

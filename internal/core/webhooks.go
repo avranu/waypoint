@@ -288,7 +288,11 @@ func (s *Service) deliverWebhooks(ctx context.Context, e *Event) {
 	}
 	var issue *Issue
 	if e.IssueID != 0 && e.Kind != EvIssueDeleted {
-		issue, _ = s.issueByID(ctx, s.db.R, e.IssueID, true)
+		var rerr error
+		issue, rerr = s.issueByID(ctx, s.db.R, e.IssueID, true)
+		if readFault(rerr) && !errors.Is(rerr, ErrNotFound) { // deleted since: delivered without it
+			s.log.WarnContext(ctx, "read the issue of a webhook event", "issue", e.IssueID, "event", e.Kind, "err", rerr)
+		}
 	}
 	body, err := json.Marshal(s.webhookPayload(e, issue))
 	if err != nil {

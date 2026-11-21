@@ -38,18 +38,31 @@ type ChainModel struct {
 // ModelAttempt is one model call in a chain, for the run's log.
 type ModelAttempt struct {
 	Model   string `json:"model"`
-	Outcome string `json:"outcome"` // ok, rate_limit, timeout, server, auth, unavailable, bad_output, error
+	Outcome string `json:"outcome"` // ok, rate_limit, timeout, server, auth, unavailable, no_model_at_bar, bad_output, error
 	Error   string `json:"error,omitempty"`
 	MS      int64  `json:"ms"`
 	// RequestID is the X-Request-ID Waypoint gave a request to the gateway
 	// that asked for one (gatewayRouting), for feedback on its answer.
 	RequestID string `json:"request_id,omitempty"`
+	// Bar is the gateway's X-OpenLLMs-Bar header on the response: the
+	// minimum model it held the request to, and what it chose (WP-1440).
+	// Next to RequestID, it lets a weaker model's answer be reported.
+	Bar string `json:"bar,omitempty"`
 }
 
 // usageSink collects the HTTP requests one chain call took (a client retries some: a 429 with Retry-After, a schema
-// a provider refused) and the last one's status; the HTTP client finds it in
-// the context, so the LLM interface stays as it is.
-type usageSink struct{ sent, status atomic.Int64 }
+// a provider refused), the last one's status and the bar header of the last
+// response that had one; the HTTP client finds it in the context, so the LLM
+// interface stays as it is.
+type usageSink struct {
+	sent, status atomic.Int64
+	bar          atomic.Value // string: the gateway's barHeader on a response
+}
+
+func (u *usageSink) barSeen() string {
+	b, _ := u.bar.Load().(string)
+	return b
+}
 
 type usageKey struct{}
 
@@ -72,6 +85,9 @@ func (u *usageSink) sentOne(resp *http.Response) {
 	status := int64(0)
 	if resp != nil {
 		status = int64(resp.StatusCode)
+		if b := resp.Header.Get(barHeader); b != "" {
+			u.bar.Store(excerpt(b, 300))
+		}
 	}
 	u.status.Store(status)
 }
@@ -108,6 +124,8 @@ func classifyModelError(err error) string {
 		return "timeout"
 	case errors.As(err, &le):
 		switch {
+		case le.noModelAtBar():
+			return "no_model_at_bar"
 		case le.dailyQuota():
 			return "quota"
 		case le.status == http.StatusTooManyRequests:
@@ -370,7 +388,7 @@ func (s *Service) runChainAt(ctx context.Context, chain []ChainModel, system, pr
 		var requestID string
 		if routing != nil && routeID != 0 && p.ID == routeID {
 			requestID = routing.newID()
-			cctx = withGatewayAsk(cctx, &gatewayAsk{requestID: requestID, paid: routing.paid, priority: routing.priority})
+			cctx = withGatewayAsk(cctx, &gatewayAsk{requestID: requestID, paid: routing.paid, priority: routing.priority, weakest: routing.weakest})
 		}
 		if exID == 0 || p.ID != exID {
 			cctx = withoutGatewayExclude(cctx) // only a gateway that declares it takes exclude
@@ -394,9 +412,9 @@ func (s *Service) runChainAt(ctx context.Context, chain []ChainModel, system, pr
 		if served != "" {
 			model = served // the model behind a gateway's route
 		}
-		a := ModelAttempt{Model: model, Outcome: "ok", MS: time.Since(start).Milliseconds(), RequestID: requestID}
+		a := ModelAttempt{Model: model, Outcome: "ok", MS: time.Since(start).Milliseconds(), RequestID: requestID, Bar: usage.barSeen()}
 		call := aiCall{task: aiTaskOf(ctx), pid: p.ID, model: model, fallbacks: len(fallbacks), paid: cm.Paid, outcome: "ok", err: err,
-			ms: a.MS, sent: usage.sent.Load(), status: int(usage.status.Load())}
+			ms: a.MS, sent: usage.sent.Load(), status: int(usage.status.Load()), bar: a.Bar}
 		if err != nil {
 			if ctx.Err() != nil {
 				call.outcome = "cancelled"
@@ -442,6 +460,21 @@ func (s *Service) runChainAt(ctx context.Context, chain []ChainModel, system, pr
 					i++
 				}
 			}
+			// No model meets the request's bar: every later entry on this
+			// gateway carries the same bar (a separate `free` entry as
+			// well as the fallbacks), so its answer would be the same.
+			// Entries on other providers or runner CLIs stay reachable:
+			// they are models a person named in the chain, like a named
+			// reviewer, and no bar of ours holds them out (WP-1440).
+			// A paid entry is kept, as the quota skip above keeps it: it is
+			// asked with its own paid choice, from a pool the free ones'
+			// answer says nothing about. Waypoint never sends the request
+			// again without its bar.
+			if a.Outcome == "no_model_at_bar" && p.ID == gwID {
+				for i+1 < len(chain) && chain[i+1].CLI == "" && chain[i+1].ProviderID == p.ID && !chain[i+1].Paid {
+					i++
+				}
+			}
 			continue
 		}
 		call.priority = routing.priorityOrNone()
@@ -471,7 +504,7 @@ const maxCallsPerRequest = 3
 func attemptSummary(log []ModelAttempt) string {
 	labels := []struct{ outcome, label string }{
 		{"quota", "daily limit reached"}, {"rate_limit", "rate limited"}, {"server", "server errors"}, {"unavailable", "unavailable"},
-		{"timeout", "timed out"}, {"auth", "refused (auth)"}, {"bad_output", "bad answers"}, {"refused", "no spare capacity"}, {"error", "other errors"},
+		{"timeout", "timed out"}, {"auth", "refused (auth)"}, {"bad_output", "bad answers"}, {"refused", "no spare capacity"}, {"no_model_at_bar", "no model good enough"}, {"error", "other errors"},
 	}
 	counts := map[string]int{}
 	for _, a := range log {

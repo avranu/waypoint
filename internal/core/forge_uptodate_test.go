@@ -12,6 +12,9 @@ import (
 func (g *shipForge) BehindBase(ctx context.Context, f *Forge, repo, baseRef, headSHA string) (string, bool, error) {
 	g.sm.Lock()
 	defer g.sm.Unlock()
+	if g.behindErr != nil {
+		return "", false, g.behindErr
+	}
 	return cmp(g.baseTip, "tip-1"), g.behind[headSHA], nil
 }
 

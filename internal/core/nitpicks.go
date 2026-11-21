@@ -434,7 +434,10 @@ func (s *Service) sweepNitpicks(ctx context.Context, prID int64) (int, error) {
 	if pr.State != "merged" || pr.Outside {
 		return 0, nil
 	}
-	projectID := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo)
+	projectID, err := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo)
+	if err != nil {
+		return 0, err
+	}
 	if projectID == 0 {
 		return 0, nil
 	}

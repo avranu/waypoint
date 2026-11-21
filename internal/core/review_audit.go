@@ -54,7 +54,8 @@ import (
 // fails is followed by the round's own, once (audit_alt says why); one that
 // asked the gateway as a round would isn't asked for again. A round of a
 // high-stakes change holds its audit to a quality bar (WP-916,
-// roundStakes): an audit without that bar isn't reused, and one the
+// roundStakes), any other round to the floor (WP-1440, reviewFloorBar): an
+// audit without that bar isn't reused, and one the
 // gateway had no model at the bar for leaves the review to the Sonnet
 // reviewer. When the audit
 // found nothing, or everything it found is decided already, the round ends
@@ -953,7 +954,12 @@ func (s *Service) auditLandingChance(ctx context.Context, a *CodeAudit, job *Run
 	case job != nil && job.State == "queued":
 		if cli == GatewayCLI && len(oks) > 0 {
 			var ahead int
-			running, _ := s.gatewayRunning(ctx)
+			running, rerr := s.gatewayRunning(ctx)
+			if rerr != nil {
+				if readFault(rerr) {
+					s.log.WarnContext(ctx, "gateway running failed", "audit", a.ID, "err", rerr)
+				}
+			}
 			_ = s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM runner_jobs WHERE kind = ? AND source != ? AND cli = ? AND state = 'queued' AND id < ?`,
 				JobAudit, prepAgentSource, cli, job.ID).Scan(&ahead)
 			if running+ahead >= GatewayTasksInFlight {
@@ -1247,16 +1253,34 @@ func roundAsks(reviewText, roundContext string) []string {
 // its reviewer isn't of the family of sessionModel, the model of the session
 // the findings go to: the model that answered, for an audit that is done;
 // every model it may still ask, for one that isn't (otherFamilyChain). A
-// round with a quality bar (weakest) takes only an audit held to the same,
+// round with a quality bar (weakest) takes only an audit held to the same
+// or, at the floor, to a higher one,
 // and only one whose prompt asked each of asks (roundAsks): WP-1320's live
 // review found a round taking the pull request's own audit, which asks
 // neither the brief nor the task, in place of its own. (A round of a task
 // asks the task, so it never takes one: its own audit runs its panel.)
 func (s *Service) prAuditAtHead(ctx context.Context, pr *PullRequest, sessionModel, weakest string, asks []string) (int64, error) {
 	own := gatewayExcludeFor(sessionModel)
+	// The floor is what every audit on the gateway's choice asks (WP-1440),
+	// so a round at the floor takes an audit held to it or to a tier's bar
+	// above it, never one from before the floor (weakest ''). Any other bar
+	// takes only an audit held to the same. An audit that names its models
+	// (a CLI's, no gateway entry) was never the gateway's choice, so it has no
+	// bar to meet and a floor round takes it.
+	held := []string{weakest}
+	named := 0
+	if weakest == reviewFloorBar {
+		held = append(held, elevatedAuditBar, trustedAuditBar)
+		named = 1
+	}
 	q := `SELECT id, ref, status, models, model, author_model FROM code_audits WHERE pr_id = ? AND purpose = '' AND status IN ('queued','running','done')
-		AND (? = '' OR weakest = ?)`
-	args := []any{pr.ID, weakest, weakest}
+		AND (? = '' OR weakest IN (` + strings.TrimSuffix(strings.Repeat("?,", len(held)), ",") + `)
+			OR (? = 1 AND weakest = '' AND models != '' AND instr(models, '"cli":"gateway"') = 0))`
+	args := []any{pr.ID, weakest}
+	for _, h := range held {
+		args = append(args, h)
+	}
+	args = append(args, named)
 	for _, ask := range asks {
 		q += ` AND instr(prompt, ?) > 0`
 		args = append(args, ask)
@@ -1466,7 +1490,13 @@ func (s *Service) onReviewAudit(ctx context.Context, e *Event) {
 func (s *Service) roundHoldsAudit(ctx context.Context, auditID int64) bool {
 	var n int
 	err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM work_log WHERE kind = 'review' AND state IN ('pending', 'running') AND audit_id = ? AND audit_note = ''`, auditID).Scan(&n)
-	return err == nil && n > 0
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read round holds audit", "auditID", auditID, "err", err)
+		}
+		return false
+	}
+	return n > 0
 }
 
 // cancelOrphanReviewAudits cancels the still-going audits that no round

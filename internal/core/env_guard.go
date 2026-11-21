@@ -35,7 +35,13 @@ func (s *Service) EnvGuardHosts(ctx context.Context, actor *Actor, repo string) 
 	}
 	seen := map[string]bool{}
 	for _, id := range ids {
-		if r, _ := s.projectRole(ctx, s.db.R, actor, id); r <= RoleNone {
+		r, rerr := s.projectRole(ctx, s.db.R, actor, id)
+		if rerr != nil {
+			if readFault(rerr) {
+				s.log.WarnContext(ctx, "project role failed", "id", id, "err", rerr)
+			}
+		}
+		if r <= RoleNone {
 			continue
 		}
 		rows, err := s.db.R.QueryContext(ctx, `SELECT url, health_url, version_url FROM environments

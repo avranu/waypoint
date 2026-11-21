@@ -40,11 +40,11 @@ func TestChangeStakes(t *testing.T) {
 			t.Errorf("changeStakes(%+v) = %s %q, want %s %q", c.f, tier, why, c.tier, c.why)
 		}
 	}
-	if tierBar(StakesHigh) != trustedAuditBar || tierBar(StakesElevated) != elevatedAuditBar || tierBar(StakesNormal) != "" || tierBar(StakesUnknown) != "" {
-		t.Error("bars: high Sonnet or better, elevated Haiku or better, else none")
+	if tierBar(StakesHigh) != trustedAuditBar || tierBar(StakesElevated) != elevatedAuditBar || tierBar(StakesNormal) != reviewFloorBar || tierBar(StakesUnknown) != reviewFloorBar {
+		t.Error("bars: high Sonnet or better, elevated Haiku or better, else the floor")
 	}
 	r := roundStakes{tier: StakesElevated, bar: elevatedAuditBar}
-	if r.barFor(reviewAuditKey) != elevatedAuditBar || r.barFor(reviewOtherAuditKey) != "" || r.reviewer().Model != "haiku" {
+	if r.barFor(reviewAuditKey) != elevatedAuditBar || r.barFor(reviewOtherAuditKey) != reviewFloorBar || r.reviewer().Model != "haiku" {
 		t.Errorf("elevated: %q %q %v", r.barFor(reviewAuditKey), r.barFor(reviewOtherAuditKey), r.reviewer())
 	}
 	r = roundStakes{tier: StakesHigh, bar: trustedAuditBar}
@@ -100,7 +100,7 @@ func TestReviewRoundStakes(t *testing.T) {
 		return st.reviewID.Int64
 	}
 
-	t.Run("elevated asks again at no bar", func(t *testing.T) {
+	t.Run("elevated asks again at the floor", func(t *testing.T) {
 		a, box := auditAPEnv(t)
 		id := start(a, `{"files":1,"added":3,"sensitive":["internal/core/hooks.go"]}`)
 		a.tick(61 * time.Second)
@@ -123,7 +123,7 @@ func TestReviewRoundStakes(t *testing.T) {
 		a.endAudit(box, "failed")
 		a.tick(time.Second)
 		ra, au := a.roundAuditRow(id)
-		if ra.id == first.id || ra.alt == "" || ra.note != "" || au == nil || au.Weakest != "" {
+		if ra.id == first.id || ra.alt == "" || ra.note != "" || au == nil || au.Weakest != reviewFloorBar {
 			t.Fatalf("round = %+v, audit = %+v", ra, au)
 		}
 		if rv, _ := a.s.roundReviewer(a.ctx, id); rv != nil {
@@ -267,6 +267,33 @@ func TestReviewRoundStakes(t *testing.T) {
 		}
 		if normal != nil && (normal.Recomputed != 0 || len(normal.Outcomes) != len(experimentMetrics)+len(stakesExtraMetrics) || stats.Rows[0].Rule != StakesRule) {
 			t.Errorf("outcomes = %+v, recomputed %d, rule %q", normal.Outcomes, normal.Recomputed, stats.Rows[0].Rule)
+		}
+		// The floor is every round's, so it counts as no bar; a legacy row
+		// ('') too; a tier bar above it is a barred round (WP-1440).
+		barred := func(weakest string) int {
+			t.Helper()
+			if _, err := a.s.db.W.Exec(`UPDATE code_audits SET weakest = ? WHERE id = ?`, weakest, au.ID); err != nil {
+				t.Fatal(err)
+			}
+			st, err := a.s.GetReviewStakesStats(a.ctx, a.admin, "", 14, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, tier := range st.Tiers {
+				if tier.Tier == StakesNormal {
+					if tier.FreeReasks != 0 {
+						t.Errorf("weakest %q: %d free re-asks, want 0 with no second ask", weakest, tier.FreeReasks)
+					}
+					return tier.Barred
+				}
+			}
+			t.Fatal("no normal tier")
+			return -1
+		}
+		for weakest, want := range map[string]int{reviewFloorBar: 0, "": 0, elevatedAuditBar: 1, trustedAuditBar: 1} {
+			if got := barred(weakest); got != want {
+				t.Errorf("a round whose audit was held to %q: Barred = %d, want %d", weakest, got, want)
+			}
 		}
 		// Outcomes read every person's usage: someone not an admin gets the
 		// tiers without them, and a note saying why.

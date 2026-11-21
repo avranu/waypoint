@@ -358,7 +358,13 @@ func splitTarget(ref string) (string, string) {
 func (s *Service) resolveName(ctx context.Context, q queryer, typ, name string, scope *int64) (int64, bool) {
 	var chain []int64
 	if scope != nil {
-		chain, _ = s.projectChainIDs(ctx, q, *scope)
+		var rerr error
+		chain, rerr = s.projectChainIDs(ctx, q, *scope)
+		if rerr != nil {
+			if readFault(rerr) {
+				s.log.WarnContext(ctx, "project chain ids failed", "err", rerr)
+			}
+		}
 	}
 	in, rank := "project_id IS NULL", "0"
 	if len(chain) > 0 {

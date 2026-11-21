@@ -134,7 +134,7 @@ func (s *Service) verifyFindings(ctx context.Context, r *BotRun, f *Forge, cl Fo
 			Reason  string `json:"reason"`
 		}
 		checked++ // a failed call costs as much as a good one, so it counts toward verifyMax
-		used, attempts, err := s.runChain(aiContext(ctx, "fix_check"), chain, verifySystem, p.String(), verifySchema, &ans, 3*time.Minute)
+		used, attempts, err := s.runChain(withGatewayRouting(aiContext(ctx, "fix_check"), fixCheckRouting(r.ID)), chain, verifySystem, p.String(), verifySchema, &ans, 3*time.Minute)
 		out.log = append(out.log, attempts...)
 		if err != nil {
 			if ctx.Err() != nil {

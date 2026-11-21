@@ -171,7 +171,10 @@ func (c *httpLLM) send(ctx context.Context, p *AIProvider, method, path string, 
 		if ok {
 			le.retryAfter = wait
 		}
-		if resp.StatusCode != http.StatusTooManyRequests || !ok || try == maxRateRetries || wait > maxRetryAfter {
+		// A 429, or the gateway's no_model_at_bar with a Retry-After (some
+		// models at the bar are only busy), is asked again with the same
+		// request, bar included. With no Retry-After none is at the bar at all.
+		if (resp.StatusCode != http.StatusTooManyRequests && !le.noModelAtBar()) || !ok || try == maxRateRetries || wait > maxRetryAfter {
 			return nil, le
 		}
 		if d, has := ctx.Deadline(); has && time.Until(d) < wait {
@@ -213,6 +216,14 @@ type llmError struct {
 	status     int
 	body       string
 	retryAfter time.Duration // the Retry-After of a 429; 0 when it gave none
+}
+
+// noModelAtBar: the gateway has no model at the request's routing.weakest
+// (a 503 whose error envelope has that code; Retry-After when some are only
+// busy). The code is read as the task path reads it (gatewayErrorCode), so a
+// model's own text that mentions it, or another status, is not this.
+func (e *llmError) noModelAtBar() bool {
+	return e.status == http.StatusServiceUnavailable && gatewayErrorCode(e.body) == gatewayNoModelAtBar
 }
 
 func (e *llmError) Error() string { return fmt.Sprintf("HTTP %d: %s", e.status, e.body) }
@@ -468,6 +479,9 @@ func (c *httpLLM) openaiComplete(ctx context.Context, p *AIProvider, model strin
 		}
 		if a.priority != "" {
 			routing["priority"] = a.priority // surplus work (WP-906)
+		}
+		if a.weakest != "" {
+			routing["weakest"] = a.weakest // the minimum of a code review (WP-1440)
 		}
 		if len(routing) > 0 {
 			body["routing"] = routing

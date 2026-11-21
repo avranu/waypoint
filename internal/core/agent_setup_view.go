@@ -154,7 +154,13 @@ func (s *Service) GetAgentSetup(ctx context.Context, actor *Actor) (*AgentSetup,
 		ar.CanEdit = person && (actor.isAdmin() || slices.ContainsFunc(r.projects, func(k string) bool { return editor[k] }))
 		f, ok := forges[r.forgeID]
 		if !ok {
-			f, _ = s.forgeByID(ctx, r.forgeID)
+			var rerr error
+			f, rerr = s.forgeByID(ctx, r.forgeID)
+			if rerr != nil {
+				if readFault(rerr) && !errors.Is(rerr, ErrNotFound) {
+					s.log.WarnContext(ctx, "forge by id failed", "forgeid", r.forgeID, "err", rerr)
+				}
+			}
 			forges[r.forgeID] = f
 		}
 		if f != nil {
