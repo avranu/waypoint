@@ -173,8 +173,11 @@ func (s *Service) startRoundReview(ctx context.Context, g *reviewGate, roundID i
 	}
 	// What planReview writes after asking, so the audit's wait counts from
 	// here; it only fills a round that has no audit yet.
-	if err := s.noteRoundAudit(ctx, roundID, id); err != nil {
-		s.log.Info("review round: recording its audit", "round", roundID, "err", err)
+	if ok, err := s.noteRoundAudit(ctx, roundID, id); err != nil || !ok {
+		// Not the round's audit on record: the step's planning finds it by
+		// its key, or meets the note that was written first.
+		s.log.Info("review round: its audit isn't recorded on the round", "round", roundID, "recorded", ok, "err", err)
+		return false
 	}
 	g.auditAsked = true
 	return true
@@ -183,11 +186,16 @@ func (s *Service) startRoundReview(ctx context.Context, g *reviewGate, roundID i
 // noteRoundAudit records the audit asked for a round that has none, so its
 // wait counts from now. The guard on the note is right for both callers:
 // each has just read the round with no note, and a note written since (its
-// audit given up on) means this audit isn't the round's.
-func (s *Service) noteRoundAudit(ctx context.Context, roundID, auditID int64) error {
+// audit given up on) means this audit isn't the round's. It says whether the
+// round took it.
+func (s *Service) noteRoundAudit(ctx context.Context, roundID, auditID int64) (bool, error) {
 	now := s.nowMS()
-	_, err := s.db.W.ExecContext(ctx, `UPDATE work_log SET audit_id = ?, audit_at = ?, updated_at = ? WHERE id = ? AND audit_id IS NULL AND audit_note = ''`, auditID, now, now, roundID)
-	return err
+	res, err := s.db.W.ExecContext(ctx, `UPDATE work_log SET audit_id = ?, audit_at = ?, updated_at = ? WHERE id = ? AND audit_id IS NULL AND audit_note = ''`, auditID, now, now, roundID)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
 }
 
 // roundBehind says whether the audit a pending round is waiting on reads
@@ -286,15 +294,18 @@ func (s *Service) roundBehind(ctx context.Context, roundID, headTime int64, head
 // failed, or it was scheduled outside a ship): the audit reads what is
 // pushed when it is asked, which is this ship's head, not the one the round
 // was scheduled at (roundBehind, WP-1325). A round with its audit asked
-// keeps the head it has.
-func (s *Service) noteRoundHead(ctx context.Context, roundID, headTime int64, headSHA string) {
+// keeps the head it has. A failed write is returned: the audit isn't asked
+// then, as it would read a head the round doesn't record.
+func (s *Service) noteRoundHead(ctx context.Context, roundID, headTime int64, headSHA string) error {
 	if roundID == 0 || headTime <= 0 {
-		return
+		return nil
 	}
 	if _, err := s.db.W.ExecContext(ctx, `UPDATE work_log SET before_pr = json_set(before_pr, '$.head_time', ?, '$.head_sha', ?)
 		WHERE id = ? AND kind = 'review' AND state = 'pending' AND audit_id IS NULL AND before_pr != ''`, headTime, headSHA, roundID); err != nil {
 		s.log.Info("review round: recording the head its audit reads", "round", roundID, "err", err)
+		return err
 	}
+	return nil
 }
 
 // cancelRoundAudits cancels the queued or running audits asked for a round
@@ -470,8 +481,14 @@ func (s *Service) planReview(ctx context.Context, st *stepRow, review *roundRow,
 			// the session for good.
 			return reviewPlan{}, err
 		}
-		if err := s.noteRoundAudit(ctx, review.id, id); err != nil {
+		ok, err := s.noteRoundAudit(ctx, review.id, id)
+		if err != nil {
 			return reviewPlan{}, err
+		}
+		if !ok {
+			// The round changed since it was read (a note, or an audit): the
+			// step's next look plans from what it is now.
+			return reviewPlan{}, fmt.Errorf("round %d changed while its audit was asked for: %w", review.id, ErrConflict)
 		}
 		ra.id, ra.at = id, now
 	}

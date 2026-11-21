@@ -476,8 +476,9 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 	ensureStarted := func() {
 		if !scheduled && state == RoundPending {
 			// Its audit, asked now, reads this ship's head.
-			s.noteRoundHead(ctx, id, in.HeadTime, in.HeadSHA)
-			s.startRoundReview(ctx, g, id)
+			if s.noteRoundHead(ctx, id, in.HeadTime, in.HeadSHA) == nil {
+				s.startRoundReview(ctx, g, id)
+			}
 		}
 	}
 	// startOver replaces a pending round (roundBehind: the head differs
