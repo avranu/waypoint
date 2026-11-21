@@ -47,7 +47,7 @@ const FIELDS: { key: keyof ResourceLimits; resource: string; label: string; hint
     key: 'transcripts_mb',
     resource: 'transcripts',
     label: 'Transcript archive larger than (MB)',
-    hint: 'What the transcript archive holds. Nothing in it is ever deleted: this only tells you, and a size cap (WAYPOINT_TRANSCRIPT_MAX_MB) makes uploads wait.',
+    hint: 'What the transcript archive holds. Nothing in it is deleted by age or size (deleting a user’s account removes that account’s transcripts). This warns above the limit and, with a size cap (WAYPOINT_TRANSCRIPT_MAX_MB), at 90% of the cap; at the cap uploads wait.',
   },
 ]
 

@@ -47,23 +47,30 @@ import (
 // Which files: every pass, from a hook or by hand, considers every transcript
 // modified in the last 30 days (all with --all) and any file in the state
 // with bytes not yet sent; the hook's session only goes first. So the totals
-// reported to the server are always the machine's.
+// reported to the server are the machine's, for those files. A transcript
+// older than the window that was never uploaded is not pending: a manual pass
+// that is not --all counts them (older_files, older_bytes) and says so, and
+// --all archives them. A hook pass does not look for them.
 //
 // Nothing is dropped silently: a failed upload, a refusal, a line replaced by
-// a stub (too large to send, or one redaction could not make safe) and the
-// bytes still waiting are counted, kept in usage-archive.json and reported to
-// the server after each pass. `wp usage machines` shows every reason; the
-// server's collector health totals only line_too_large and redaction_failed,
-// because the others are retried (core.transcriptLostReasons).
+// a stub (too large to send, or one redaction could not make safe), the
+// unsent bytes of a file that was deleted (deleted_unsent) and the bytes still
+// waiting are counted, kept in usage-archive.json and reported to the server
+// after each pass. `wp usage machines` shows every reason; the server's
+// collector health totals the ones that need someone to act (line_too_large,
+// redaction_failed, refused, deleted_unsent) and leaves out the others, which
+// the next pass settles (core.transcriptDroppedReasons).
 //
 // The status the server is told after a pass (collector health and
-// `wp usage machines` show it): what waits, what was dropped, how long the pass
-// took and the longest, why it stopped early ("" ran to the end), how many
-// passes were cut short, and whether the archive is off (WP_USAGE_ARCHIVE=off,
-// the machine's own opt-out; a pass with --no-archive says so too). It is posted when
-// something but the pass's duration changed or the longest grew, and
-// again every archiveRefresh (12h) so the server can tell a machine that
-// stopped reporting from one with nothing new. A 507 from the server (its
+// `wp usage machines` show it): what waits, what was dropped, how long the last
+// hook pass took and the longest hook pass (a manual pass, a backfill that may
+// run ten minutes, is neither), why it stopped early ("" ran to the end), how
+// many passes were cut short, and whether the archive is off
+// (WP_USAGE_ARCHIVE=off, the machine's own opt-out; a pass with --no-archive
+// says so too). It is posted when something but the pass's duration changed or
+// the longest grew, and again every archiveRefresh (12h) so the server can
+// tell a machine that stopped reporting from one with nothing new; so the
+// pass_ms the server holds can be up to archiveRefresh old. A 507 from the server (its
 // size cap, WAYPOINT_TRANSCRIPT_MAX_MB) is a hold, not a refusal: the pass
 // stops with that reason, nothing is dropped, and the files go next time.
 // Each piece also carries how many values redaction blanked, and by which rule.
@@ -141,8 +148,11 @@ var (
 	// manual pass uses archiveReportTimeout); derived like archiveHookLimit.
 	archiveReportHookTimeout = 5 * time.Second
 	archiveReportTimeout     = 30 * time.Second // chosen, not measured: the status is small
-	archiveRedact            = redactTranscriptLineCounted
-	archiveNow               = time.Now // tests set the clock
+	// archiveHookMargin is kept clear of the hook's timeout when the status post
+	// is bounded by what is left of it. Chosen, not measured.
+	archiveHookMargin = 500 * time.Millisecond
+	archiveRedact     = redactTranscriptLineCounted
+	archiveNow        = time.Now // tests set the clock
 	// archivePassDuration is how long a pass that began at start took.
 	archivePassDuration = func(start time.Time) time.Duration { return time.Since(start) }
 )
@@ -156,6 +166,7 @@ const archiveRefresh = 12 * time.Hour
 
 type archiveFileState struct {
 	Off    int64  `json:"off"`               // the server's copy ends here (a line end)
+	Size   int64  `json:"size,omitempty"`    // the file's size when a pass last looked: bytes past Off were unsent if it is deleted
 	FP     string `json:"fp,omitempty"`      // hash of the file's first line (at most 256 bytes)
 	Gen    int    `json:"gen,omitempty"`     // the generation of the server's copy this continues
 	Tail   string `json:"tail,omitempty"`    // hash of the bytes just before Off ("" is not known)
@@ -185,7 +196,7 @@ type archiveState struct {
 	PieceCapAt int64 `json:"piece_cap_at,omitempty"`
 	// Cut counts the passes that ended before the end, since this machine began.
 	Cut int64 `json:"cut,omitempty"`
-	// PassMax is the longest pass (ms) this machine has run.
+	// PassMax is the longest hook pass (ms) this machine has run.
 	PassMax int64 `json:"pass_max_ms,omitempty"`
 	reset   bool  // the file could not be read as JSON and was started over
 }
@@ -227,6 +238,10 @@ type archiveResult struct {
 	Stopped      string           `json:"stopped,omitempty"` // why the pass ended before the end
 	Elapsed      string           `json:"elapsed"`
 	ElapsedMS    int64            `json:"elapsed_ms"`
+	// OlderFiles and OlderBytes: transcripts outside the window with no state,
+	// never uploaded and not pending (a manual pass without --all counts them).
+	OlderFiles int   `json:"older_files,omitempty"`
+	OlderBytes int64 `json:"older_bytes,omitempty"`
 }
 
 // archiveEnabled: WP_USAGE_ARCHIVE=off turns the upload off on a machine.
@@ -275,7 +290,10 @@ type archiver struct {
 	full     bool // the archive said full lately: nothing was tried this pass
 	quiet    bool // the server does not take this token's uploads, or keeps none: say nothing more
 	hook     bool // a hook's pass: shorter floor and report timeout, to end inside the hook's timeout
-	pieceCap int  // a 413 taught this: the most raw bytes of a piece (0: none known)
+	// syncStart is when the whole sync began; a hook's status post ends before
+	// syncStart + usageHookTimeout.
+	syncStart time.Time
+	pieceCap  int // a 413 taught this: the most raw bytes of a piece (0: none known)
 }
 
 func (a *archiver) drop(reason string) {
@@ -313,7 +331,7 @@ func usageArchive(c *cli, o usageSyncOptions, root string, syncStart time.Time) 
 	if err != nil {
 		return res, err
 	}
-	a := &archiver{c: c, st: st, res: res, dry: o.DryRun, known: []string{c.token()}, hook: o.Hook}
+	a := &archiver{c: c, st: st, res: res, dry: o.DryRun, known: []string{c.token()}, hook: o.Hook, syncStart: syncStart}
 	if st.reset {
 		a.drop("state_reset")
 	}
@@ -430,7 +448,8 @@ func (a *archiver) pass(o usageSyncOptions, root string) error {
 		add(f)
 	}
 	// a file with unsent bytes stays in the pass however old it is; state for a
-	// file that is gone is dropped
+	// file that is gone is dropped, and the bytes it had not sent are counted
+	// (an entry from before sizes were kept says nothing of them)
 	for p, fs := range a.st.Files {
 		if seen[p] {
 			continue
@@ -438,6 +457,9 @@ func (a *archiver) pass(o usageSyncOptions, root string) error {
 		fi, err := os.Stat(p)
 		switch {
 		case errors.Is(err, os.ErrNotExist):
+			if fs.Size > fs.Off {
+				a.drop("deleted_unsent")
+			}
 			delete(a.st.Files, p)
 		case err == nil && fi.Size() > fs.Off:
 			add(archiveFileOfPath(p))
@@ -458,13 +480,37 @@ func (a *archiver) pass(o usageSyncOptions, root string) error {
 		off := int64(0)
 		if s := a.st.Files[t.f.Path]; s != nil {
 			off = s.Off
+			s.Size = t.size
 		}
 		if t.size > off {
 			res.PendingBytes += t.size - off
 			res.PendingFiles++
 		}
 	}
+	res.OlderFiles, res.OlderBytes = 0, 0
+	if !o.Hook && !(o.All && o.Since == 0) {
+		a.countOlder(root, seen)
+	}
 	return nil
+}
+
+// countOlder counts the transcripts the window left out that were never
+// uploaded (no state), so a manual pass can say they wait for --all. It only
+// stats files; the hook's pass never does it.
+func (a *archiver) countOlder(root string, seen map[string]bool) {
+	all, err := discoverTranscripts(root, 0, nil)
+	if err != nil {
+		return
+	}
+	for _, f := range all {
+		if seen[f.Path] || a.st.Files[f.Path] != nil {
+			continue
+		}
+		if fi, err := os.Stat(f.Path); err == nil && fi.Size() > 0 {
+			a.res.OlderFiles++
+			a.res.OlderBytes += fi.Size()
+		}
+	}
 }
 
 // report tells the server what waits, what was dropped and how the passes
@@ -473,9 +519,18 @@ func (a *archiver) pass(o usageSyncOptions, root string) error {
 // its usage sync arrives is read by the server as one that stopped reporting).
 // How long this pass took is in the body but not in what is compared: a pass
 // that only took a different time is not news, unless it is the longest yet
-// (pass_max_ms is compared).
+// (pass_max_ms is compared), so pass_ms can be up to archiveRefresh old. Only
+// a hook pass is timed (pass_ms, pass_max_ms): a manual backfill runs for
+// minutes and would stay as the machine's longest pass for ever. A hook's post
+// is skipped when its time is spent; the next pass reports.
 func (a *archiver) report(c *cli, res *archiveResult) error {
-	a.st.PassMax = max(a.st.PassMax, res.ElapsedMS)
+	timeout, ok := a.reportTimeout()
+	if !ok {
+		return nil
+	}
+	if a.hook {
+		a.st.PassMax = max(a.st.PassMax, res.ElapsedMS)
+	}
 	body := map[string]any{"machine": machineName(), "pending_bytes": res.PendingBytes, "pending_files": res.PendingFiles,
 		"dropped": a.st.Dropped, "pass_max_ms": a.st.PassMax, "stop": a.stop, "cut": a.st.Cut, "off": false}
 	raw, err := json.Marshal(body)
@@ -485,10 +540,8 @@ func (a *archiver) report(c *cli, res *archiveResult) error {
 	if string(raw) == a.st.Reported && !reportDue(a.st.ReportedAt) {
 		return nil
 	}
-	body["pass_ms"] = res.ElapsedMS
-	timeout := archiveReportTimeout
 	if a.hook {
-		timeout = archiveReportHookTimeout // the hook's timeout covers the whole pass
+		body["pass_ms"] = res.ElapsedMS
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	_, err = c.callCtx(ctx, "POST", "/api/v1/usage/transcript/status", body)
@@ -498,6 +551,20 @@ func (a *archiver) report(c *cli, res *archiveResult) error {
 	}
 	a.st.Reported, a.st.ReportedAt = string(raw), archiveNow().UnixMilli()
 	return a.save()
+}
+
+// reportTimeout is how long the status post may take: the manual pass's, or a
+// hook's cut to what is left of the hook's timeout (ok false: under a second
+// is left, so no post is made).
+func (a *archiver) reportTimeout() (time.Duration, bool) {
+	if !a.hook {
+		return archiveReportTimeout, true
+	}
+	left := time.Until(a.syncStart.Add(time.Duration(usageHookTimeout)*time.Second)) - archiveHookMargin
+	if left < time.Second {
+		return 0, false
+	}
+	return min(archiveReportHookTimeout, left), true
 }
 
 // reportDue: the last report is old enough to repeat.
@@ -615,6 +682,7 @@ func (a *archiver) file(f usageFile, size int64) {
 		}
 	}
 	st.FP = fp
+	st.Size = size
 	a.st.Files[key] = st
 	if a.dry {
 		return
@@ -671,11 +739,13 @@ func (a *archiver) file(f usageFile, size int64) {
 		if err != nil {
 			var ae *apiError
 			switch {
-			case errors.As(err, &ae) && ae.status == http.StatusForbidden && ae.msg == core.TranscriptJobRefusal:
+			// the code names the refusals; the exact words are the fallback for a
+			// server that predates the code
+			case errors.As(err, &ae) && ae.status == http.StatusForbidden && (ae.code == "transcript_job" || ae.msg == core.TranscriptJobRefusal):
 				a.stop = "this is a runner job's token; the runner's own sync archives its sessions"
 				a.quiet = true
 				return
-			case errors.As(err, &ae) && ae.status == http.StatusInsufficientStorage && ae.msg == core.TranscriptQuotaRefusal:
+			case errors.As(err, &ae) && ae.status == http.StatusInsufficientStorage && (ae.code == "transcript_full" || ae.msg == core.TranscriptQuotaRefusal || ae.msg == core.TranscriptDiskLowRefusal):
 				// the server's archive is at its size cap: held, not refused. Nothing is
 				// dropped or marked, the file stays pending, and asking again is for later
 				a.stop = archiveFullStop
@@ -931,6 +1001,7 @@ var archiveDropUnits = map[string]string{
 	"unreadable_file":  "times a transcript could not be read",
 	"out_of_sync":      "times the server and this machine disagreed about a file",
 	"state_reset":      "times usage-archive.json was unreadable and started over",
+	"deleted_unsent":   "transcripts deleted from this machine with bytes the server never got",
 }
 
 func archiveDropText(reason string, n int64) string {
@@ -1014,7 +1085,13 @@ func (r redactCount) rules() map[string]int64 {
 func redactTranscriptLineCounted(line []byte, known []string) ([]byte, bool, redactCount) {
 	var cnt redactCount
 	if !json.Valid(bytes.TrimSpace(line)) {
-		r, kh, ph := redactTextCounted(string(line), known)
+		// the line end stays out of the text: a PEM pattern running to the end
+		// of the text would take it, and two lines would become one
+		body, end := line, []byte(nil)
+		if n := len(bytes.TrimRight(line, "\r\n")); n < len(line) {
+			body, end = line[:n], line[n:]
+		}
+		r, kh, ph := redactTextCounted(string(body), known)
 		if kh || ph {
 			cnt.Total = 1
 			if kh {
@@ -1024,7 +1101,7 @@ func redactTranscriptLineCounted(line []byte, known []string) ([]byte, bool, red
 				cnt.Pattern = 1
 			}
 		}
-		return []byte(r), true, cnt
+		return append([]byte(r), end...), true, cnt
 	}
 	var out []byte         // allocated at the first change
 	copied := 0            // line[:copied] is already in out

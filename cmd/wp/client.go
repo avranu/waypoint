@@ -23,6 +23,7 @@ var httpClient = &http.Client{Timeout: 60 * time.Second}
 type apiError struct {
 	status       int
 	msg          string
+	code         string // the server's machine-readable reason, when it gives one
 	method, path string
 }
 
@@ -150,9 +151,10 @@ func (c *cli) send(ctx context.Context, method, path, contentType string, rd io.
 	if resp.StatusCode >= 300 {
 		var e struct {
 			Error string `json:"error"`
+			Code  string `json:"code"`
 		}
 		_ = json.Unmarshal(b, &e)
-		return nil, &apiError{status: resp.StatusCode, msg: e.Error, method: method, path: strings.SplitN(path, "?", 2)[0]}
+		return nil, &apiError{status: resp.StatusCode, msg: e.Error, code: e.Code, method: method, path: strings.SplitN(path, "?", 2)[0]}
 	}
 	return b, nil
 }

@@ -114,7 +114,7 @@ func TestArchiveStatusPostsOnChangeAndRefresh(t *testing.T) {
 	ms, now := int64(100), time.Now()
 	fakePasses(t, &ms, &now)
 
-	archiveSync(t, e, dir)
+	hookSync(t, dir)
 	rec := machineRecord(t, e, me)
 	if rec.PassMS == nil || *rec.PassMS != 100 || rec.PassMaxMS == nil || *rec.PassMaxMS != 100 ||
 		rec.Stop == nil || *rec.Stop != "" || rec.Cut == nil || *rec.Cut != 0 || rec.Off == nil || *rec.Off {
@@ -124,12 +124,12 @@ func TestArchiveStatusPostsOnChangeAndRefresh(t *testing.T) {
 		t.Fatalf("statuses %d", n)
 	}
 	ms = 40 // faster: the same state, nothing to say
-	archiveSync(t, e, dir)
+	hookSync(t, dir)
 	if _, n := tap.counts(); n != 1 {
 		t.Errorf("a pass that only took a different time posted: %d", n)
 	}
 	ms = 300 // the longest grew
-	archiveSync(t, e, dir)
+	hookSync(t, dir)
 	if _, n := tap.counts(); n != 2 {
 		t.Errorf("a longer pass did not post: %d", n)
 	}
@@ -137,13 +137,13 @@ func TestArchiveStatusPostsOnChangeAndRefresh(t *testing.T) {
 		t.Errorf("record %+v", rec)
 	}
 	now = now.Add(archiveRefresh - time.Minute)
-	archiveSync(t, e, dir)
+	hookSync(t, dir)
 	if _, n := tap.counts(); n != 2 {
 		t.Errorf("posted before the refresh was due: %d", n)
 	}
 	now = now.Add(2 * time.Minute)
 	ms = 50
-	archiveSync(t, e, dir)
+	hookSync(t, dir)
 	if _, n := tap.counts(); n != 3 {
 		t.Errorf("no refresh when due: %d", n)
 	}
@@ -211,7 +211,7 @@ func TestArchiveOptOutIsReported(t *testing.T) {
 	t.Setenv("WP_USAGE_ARCHIVE", "")
 	archiveSync(t, e, dir)
 	rec := machineRecord(t, e, me)
-	if rec.Off == nil || *rec.Off || rec.PassMS == nil {
+	if rec.Off == nil || *rec.Off {
 		t.Errorf("back on: %+v", rec)
 	}
 }

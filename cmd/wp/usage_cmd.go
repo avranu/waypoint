@@ -132,6 +132,10 @@ func usageSyncText(r *usageSyncResult) string {
 			if a.Stopped != "" {
 				fmt.Fprintf(&b, "  stopped early: %s\n", a.Stopped)
 			}
+			if a.OlderFiles > 0 {
+				fmt.Fprintf(&b, "  %d older transcript%s (%s) never uploaded, outside the archive window (the last 30 days unless --since says more): wp usage sync --all archives them\n",
+					a.OlderFiles, map[bool]string{true: "", false: "s"}[a.OlderFiles == 1], bytesText(a.OlderBytes))
+			}
 		}
 	}
 	if r.ArchiveError != "" {

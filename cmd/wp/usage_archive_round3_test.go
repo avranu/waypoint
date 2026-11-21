@@ -198,7 +198,10 @@ func TestHookPassBoundFitsTheHookTimeout(t *testing.T) {
 	if usageHookUploadTimeout > archiveHookLimit {
 		t.Errorf("the hour-count upload timeout %v is past the archive's limit %v", usageHookUploadTimeout, archiveHookLimit)
 	}
-	total := max(archiveHookLimit, usageHookUploadTimeout) + archiveHookFloor + archiveReportHookTimeout
+	if usageHookUploadBudget > archiveHookLimit || usageHookUploadTimeout > usageHookUploadBudget {
+		t.Errorf("the hour-count budget %v must lie between one upload (%v) and the archive's limit (%v)", usageHookUploadBudget, usageHookUploadTimeout, archiveHookLimit)
+	}
+	total := max(archiveHookLimit, usageHookUploadBudget) + archiveHookFloor + archiveReportHookTimeout + archiveHookMargin
 	if hook := time.Duration(usageHookTimeout) * time.Second; total >= hook {
 		t.Errorf("hook limit %v + floor %v + report %v = %v, not under the hook's %v timeout",
 			archiveHookLimit, archiveHookFloor, archiveReportHookTimeout, total, hook)

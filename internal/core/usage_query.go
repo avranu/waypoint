@@ -183,7 +183,7 @@ type UsageTranscripts struct {
 	ReportedAt   *time.Time       `json:"reported_at"`
 	// The passes (nil: unknown, the machine has not said): off is the
 	// archive switched off on it (WP_USAGE_ARCHIVE), pass_ms and pass_max_ms
-	// the last and the longest pass, stop why the last ended early ("" ran to
+	// the last and the longest hook pass (manual passes are not timed), stop why the last ended early ("" ran to
 	// the end), cut how many passes ended early since the machine began.
 	Off       *bool   `json:"off"`
 	PassMS    *int64  `json:"pass_ms"`

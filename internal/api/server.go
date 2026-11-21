@@ -519,6 +519,8 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, core.ErrTranscriptQuota):
 		// the archive is full: the client keeps the file and tries again
 		status, msg = http.StatusInsufficientStorage, core.TranscriptQuotaRefusal
+	case errors.Is(err, core.ErrTranscriptDiskLow):
+		status, msg = http.StatusInsufficientStorage, core.TranscriptDiskLowRefusal
 	case errors.Is(err, core.ErrTranscriptsOff):
 		// a setting, not a fault: the client reads it as "this server keeps no archive"
 		status, msg = http.StatusNotImplemented, err.Error()
@@ -532,8 +534,13 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 		}
 	}
 	body := map[string]string{"error": msg}
-	if errors.Is(err, core.ErrReauth) {
+	switch {
+	case errors.Is(err, core.ErrReauth):
 		body["code"] = "reauth" // the web app asks for the password and retries
+	case errors.Is(err, core.ErrTranscriptQuota), errors.Is(err, core.ErrTranscriptDiskLow):
+		body["code"] = "transcript_full" // the client holds the file; the text may change, the code does not
+	case errors.Is(err, core.ErrTranscriptJob):
+		body["code"] = "transcript_job" // the client stops its archive pass quietly
 	}
 	writeJSON(w, status, body)
 }

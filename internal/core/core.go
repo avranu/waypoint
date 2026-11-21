@@ -86,6 +86,10 @@ type Service struct {
 	// transcript directory (nil: the real one).
 	removeAll func(string) error
 
+	// diskSpace is a test seam for the free-space reading the transcript
+	// archive's floor uses (nil: the real one).
+	diskSpace func(dir string) (free, total int64, err error)
+
 	// started is when New ran; jobs counts the scheduled jobs' runs and
 	// what is logged, by where (WP-375, WP-ADR139).
 	started time.Time

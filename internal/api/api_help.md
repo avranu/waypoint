@@ -654,15 +654,18 @@ differences (a message written again with more tokens). Cost is API-equivalent, 
                                     unknown). 507 "the transcript archive is full" when the server's size cap
                                     (WAYPOINT_TRANSCRIPT_MAX_MB) would be passed: the client holds the file and
                                     retries later; nothing is stored. The cap is checked against what the index
-                                    records, so deleting or moving files frees nothing: raise the cap.
+                                    records, so deleting or moving files frees nothing: raise the cap. Also 507 "the server's disk is
+                                    nearly full" when the piece would leave less free space than the admin's
+                                    free-disk limit. Both carry "code":"transcript_full"; a runner job's token's
+                                    403 carries "code":"transcript_job".
     POST /usage/transcript/status {"machine","pending_bytes","pending_files","dropped":{reason:count},"pass_ms",
                                     "pass_max_ms","stop","cut","off"}   a machine's upload health: the last and
-                                    longest pass (ms), why the last stopped early ("" ran to the end), passes cut
+                                    longest hook pass (ms; a manual pass sends neither), why the last stopped early ("" ran to the end), passes cut
                                     short so far, and off (WP_USAGE_ARCHIVE=off or a --no-archive pass; an off report changes nothing else).
                                     Fields left out keep what was reported before (unknown until reported)
     GET  /usage/machines?user=       the machines that report for you (admins: anyone) with each one's archive record:
                                     pending, dropped by reason (refused counts refused upload attempts, not
-                                    files), off, pass_ms, pass_max_ms, stop, cut, last_piece_at
+                                    files; deleted_unsent counts transcripts deleted with unsent bytes), off, pass_ms, pass_max_ms, stop, cut, last_piece_at
     GET  /usage/transcripts?session=ID&user=&machine=&gen=   the files held for a session: pieces, byte range,
                                     complete (no hole), sizes, whether every piece was redacted, and redactions (values blanked,
                                     with redaction_rules by rule; null when any piece predates the counts)

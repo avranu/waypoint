@@ -51,6 +51,10 @@ const (
 // write to the archive: the client recognises it and stops the pass quietly.
 const TranscriptJobRefusal = "a runner job's token does not write the transcript archive; the runner's own sync covers its sessions"
 
+// ErrTranscriptJob is the refusal itself, a 403 that errors.Is(ErrForbidden)
+// also matches; the API gives it the code transcript_job.
+var ErrTranscriptJob error = &forbiddenError{TranscriptJobRefusal}
+
 // ErrTranscriptQuota: storing the piece would pass the archive's cap
 // (WAYPOINT_TRANSCRIPT_MAX_MB). The client holds the file and tries again.
 var ErrTranscriptQuota = errors.New(TranscriptQuotaRefusal)
@@ -58,6 +62,14 @@ var ErrTranscriptQuota = errors.New(TranscriptQuotaRefusal)
 // TranscriptQuotaRefusal is what an upload is told, with status 507, when the
 // archive is full: the client recognises it and keeps the file pending.
 const TranscriptQuotaRefusal = "the transcript archive is full (WAYPOINT_TRANSCRIPT_MAX_MB); nothing is deleted and deleting files frees nothing, so an admin must raise the cap"
+
+// ErrTranscriptDiskLow: storing the piece would leave the disk with less free
+// space than the admin's floor (resource limits, free disk).
+var ErrTranscriptDiskLow = errors.New(TranscriptDiskLowRefusal)
+
+// TranscriptDiskLowRefusal is what an upload is told, with status 507, when
+// the server's disk is nearly full. Like the cap's, it holds the file.
+const TranscriptDiskLowRefusal = "the server's disk is nearly full, so it stores no more transcripts; nothing is deleted, so an admin must free disk space"
 
 // ErrTranscriptsOff: the server has no transcript directory.
 var ErrTranscriptsOff = errors.New("this server keeps no transcript archive (WAYPOINT_TRANSCRIPT_DIR=off)")
@@ -129,7 +141,7 @@ func transcriptWriter(actor *Actor) (int64, error) {
 		return 0, err
 	}
 	if actor.RunnerJob != 0 || actor.scope != nil {
-		return 0, forbidden("%s", TranscriptJobRefusal)
+		return 0, ErrTranscriptJob
 	}
 	return uid, nil
 }
@@ -345,7 +357,7 @@ func (s *Service) IngestTranscript(ctx context.Context, actor *Actor, in Transcr
 	})
 	if err != nil || res.Status != "stored" {
 		s.dropUnreferencedPiece(rel) // the row did not commit
-		if errors.Is(err, ErrTranscriptQuota) {
+		if errors.Is(err, ErrTranscriptQuota) || errors.Is(err, ErrTranscriptDiskLow) {
 			s.countQuotaRefusal(ctx)
 		}
 		if err != nil {
@@ -391,6 +403,9 @@ var redactionRuleRE = regexp.MustCompile(`^[a-z][a-z_]{0,29}$`)
 // transcriptRoom says whether n more stored bytes fit under the cap
 // (Config.TranscriptMaxMB; 0 is none). The total is the kept one, not a scan.
 func (s *Service) transcriptRoom(ctx context.Context, q rowQuerier, n int) error {
+	if err := s.transcriptDiskRoom(ctx, n); err != nil {
+		return err
+	}
 	if s.cfg.TranscriptMaxMB <= 0 {
 		return nil
 	}
@@ -402,6 +417,25 @@ func (s *Service) transcriptRoom(ctx context.Context, q rowQuerier, n int) error
 		return ErrTranscriptQuota
 	}
 	return nil
+}
+
+// transcriptDiskRoom refuses a piece that would take the free space of the
+// archive's disk below the admin's floor (0: none). A disk that cannot be read
+// does not refuse; the cap, if set, still holds (audit 1236.1).
+func (s *Service) transcriptDiskRoom(ctx context.Context, n int) error {
+	floor := int64(s.resourceLimits(ctx).DiskFreeMB) << 20
+	if floor <= 0 {
+		return nil
+	}
+	space := diskSpace
+	if s.diskSpace != nil {
+		space = s.diskSpace
+	}
+	free, _, err := space(s.cfg.TranscriptDir)
+	if err != nil || free-int64(n) >= floor {
+		return nil
+	}
+	return ErrTranscriptDiskLow
 }
 
 // countQuotaRefusal keeps the count of uploads the cap refused, and when.

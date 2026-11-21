@@ -186,10 +186,11 @@ var collectors = []collector{
 			return []any{collectorStallAfter.Milliseconds(), now.Add(-archiveWaitingWindow).UnixMilli()}
 		},
 		repoWaiting: `SELECT m.user_id || '/' || m.machine, u.username || '/' || m.machine, COUNT(*), MIN(` + archiveSince + `) FROM usage_machines m JOIN users u ON u.id = m.user_id WHERE ` + archiveWaitingWhere + ` GROUP BY m.user_id, m.machine`,
-		repoOutput:  `SELECT user_id || '/' || machine, transcript_piece_at FROM usage_machines WHERE transcript_piece_at >= ?`,
+		repoOutput:  `SELECT m.user_id || '/' || m.machine, m.transcript_piece_at FROM usage_machines m WHERE m.transcript_piece_at >= ?`,
 		output:      `SELECT MAX(m.transcript_piece_at) FROM usage_machines m`,
-		dropped:     `SELECT COALESCE(SUM(j.value), 0) FROM usage_machines m, json_each(m.transcript_dropped) j WHERE j.key IN ` + transcriptLostReasons,
-		off:         `SELECT COUNT(*) FROM usage_machines WHERE transcript_off = 1`,
+		dropped:     `SELECT COALESCE(SUM(j.value), 0) FROM usage_machines m, json_each(m.transcript_dropped) j WHERE j.key IN ` + transcriptDroppedReasons,
+		off:         `SELECT COUNT(*) FROM usage_machines m WHERE m.transcript_off = 1`,
+		scans:       map[string]string{"m": "usage_machines has one row per machine of each user: a small table, read whole once an hour"},
 	},
 }
 
@@ -213,14 +214,14 @@ const archiveSince = `min(coalesce(CASE WHEN m.transcript_pending_bytes > 0 THEN
 	coalesce(CASE WHEN ` + archiveSilent + ` THEN m.transcript_status_at END,
 	CASE WHEN m.transcript_pending_bytes > 0 THEN coalesce(m.transcript_pending_since, m.transcript_status_at) END))`
 
-// transcriptLostReasons are the drop reasons (cmd/wp/usage_archive.go) that
-// mean data did not reach the archive whole: a line replaced by a stub.
-// The others are not losses: an upload that failed or a file the server
-// refused stays pending and goes again (so it is not in the dropped total; such
-// a machine shows as waiting, and its pending bytes and refused count are in
-// `wp usage machines`), and a state reset or a disagreement is settled by the
-// server's answer of where its copy ends.
-const transcriptLostReasons = `('line_too_large', 'redaction_failed')`
+// transcriptDroppedReasons are the drop reasons (cmd/wp/usage_archive.go) that
+// mean something is not in the archive and will not get there unless someone
+// acts: a line replaced by a stub, a file the server refuses for good (the
+// machine retries it daily, and an active machine still stores other pieces,
+// so it never shows as stalled), and the unsent bytes of a file that was
+// deleted. upload_failed, out_of_sync and state_reset stay out: the next pass
+// settles them.
+const transcriptDroppedReasons = `('line_too_large', 'redaction_failed', 'refused', 'deleted_unsent')`
 
 // CollectorHealth is how one collector stood at the last hourly check.
 type CollectorHealth struct {
@@ -629,7 +630,7 @@ func (s *Service) notifyCollector(ctx context.Context, e *Event) {
 // notifyCollectorDropped tells the admins a collector's lost total grew.
 func (s *Service) notifyCollectorDropped(ctx context.Context, e *Event) {
 	title := fmt.Sprintf("%s has dropped %d (up %d)", dataStr(e, "name"), dataInt(e, "dropped"), dataInt(e, "grew_by"))
-	body := fmt.Sprintf("%s. What it dropped did not reach the collector whole, so a stub stands where the data was: wp usage machines shows which machine and why. This tells when the total grows, at most once a day.", dataStr(e, "about"))
+	body := fmt.Sprintf("%s. What it dropped is not in the archive and will not get there unless someone acts (a stubbed line, a file the server refuses, unsent bytes of a deleted file): wp usage machines shows which machine and why. This tells when the total grows, at most once a day.", dataStr(e, "about"))
 	if e.Data["again"] == true {
 		body = "Still dropping. " + body
 	}

@@ -112,7 +112,7 @@ func TestTranscriptCollectorMachineThatStoppedReporting(t *testing.T) {
 }
 
 // 1218.10: the collector's dropped total is what did not reach the archive
-// whole (stubs), not a held file or a retry; growth is told once a day.
+// whole (stubs, a file refused for good), not a retry; growth is told once a day.
 func TestTranscriptCollectorDropsAreCountedAndTold(t *testing.T) {
 	e := transcriptEnv(t)
 	e.setClock(time.Now())
@@ -120,11 +120,11 @@ func TestTranscriptCollectorDropsAreCountedAndTold(t *testing.T) {
 	if err := e.s.ReportTranscriptStatus(e.ctx, e.admin, st); err != nil {
 		t.Fatal(err)
 	}
-	if h := e.archiveHealth(); h.Dropped == nil || *h.Dropped != 3 {
-		t.Fatalf("dropped = %v, want 3 (line_too_large and redaction_failed)", h.Dropped)
+	if h := e.archiveHealth(); h.Dropped == nil || *h.Dropped != 4 {
+		t.Fatalf("dropped = %v, want 4 (stubs and the refused file; not upload_failed)", h.Dropped)
 	}
 	n := e.collectorNotices()
-	if len(n) != 1 || !strings.Contains(n[0], "3") || !strings.Contains(n[0], "dropped") {
+	if len(n) != 1 || !strings.Contains(n[0], "4") || !strings.Contains(n[0], "dropped") {
 		t.Fatalf("first telling: %v", n)
 	}
 	e.s.CheckCollectorHealth(e.ctx)
@@ -141,7 +141,7 @@ func TestTranscriptCollectorDropsAreCountedAndTold(t *testing.T) {
 	e.setClock(e.clockNow().Add(24 * time.Hour))
 	e.s.CheckCollectorHealth(e.ctx)
 	got := e.collectorNotices()
-	if len(got) != 2 || !strings.Contains(got[1], "5") {
+	if len(got) != 2 || !strings.Contains(got[1], "6") {
 		t.Errorf("growth after the day is told: %v", got)
 	}
 	// a collector that counts no drops has none

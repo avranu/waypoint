@@ -372,11 +372,22 @@ server where its copy ends. The remedy is to put the directory back from your
 copy; once the files are there the next daily check clears the line. Pieces
 with no copy anywhere stay missing.
 
-Nothing in the transcript archive is ever deleted: not by age, not by size, not
-when a session is removed from the app. `WAYPOINT_TRANSCRIPT_MAX_MB` only makes
+Nothing in the transcript archive is deleted by age or by size, and removing a
+session from the app leaves its transcripts. The one exception: deleting a
+user's account removes that account's archived transcripts from the disk (the
+`user.delete` audit entry says so, and `user.transcripts.remove_failed` says
+when the files could not be removed). `WAYPOINT_TRANSCRIPT_MAX_MB` only makes
 the server refuse new pieces once the archive is that large (the uploading
 machines keep the files pending and say so in `wp usage machines`); it does not
-prune. Pruning old pieces and backing the archive up are yours to do: the
+prune. Whatever the cap, the server also refuses (`507`, "the server's disk is
+nearly full") a piece that would leave less free space on the archive's disk
+than the free-disk limit of the admin Automations page (1024 MB unless changed;
+0 turns the floor off); nothing is deleted then either, and the machines hold
+their files like they do for a full archive. The refusals carry a `code`
+(`transcript_full` for both, `transcript_job` for a runner job's token) that
+the client goes by. The "Transcript archive" resource turns low, and the
+admin automations for it fire, when the archive holds 90% of the cap (and when
+it passes the admin's own limit), so you hear before uploads are refused. Pruning old pieces and backing the archive up are yours to do: the
 directory needs its own off-machine copy. The cap is checked against the
 size the index records, which changes only when pieces are added to the index:
 deleting or moving files in the directory frees no room (and reading such a
@@ -385,6 +396,20 @@ piece is an error); the remedy for a full archive is to raise the cap. The archi
 database and memory do) and in `GET /admin/system`; a machine's
 opt-out (`WP_USAGE_ARCHIVE=off`), drops and slow or cut-short passes are in
 `wp usage machines` and the "transcript archive" line of `wp server status`.
+The drop reasons `wp usage machines` lists are `upload_failed`, `refused` (a
+file the server refuses for good; the machine retries it daily),
+`line_too_large` and `redaction_failed` (a line replaced by a stub),
+`deleted_unsent` (a transcript deleted from the machine with bytes the server
+never got), `unreadable_file`, `out_of_sync` and `state_reset`. The "dropped"
+total of `wp server status` and the collector notice count the ones that need
+someone to act: `line_too_large`, `redaction_failed`, `refused` and
+`deleted_unsent`; the others the next pass settles. The pass times are the
+machine's hook passes only (a manual `wp usage sync` backfill is not timed
+there), and the last one can be up to 12 hours old. A hook pass is bounded:
+the hour counts' uploads together get 10 seconds from its start and its status
+post ends inside the hook's 30. A manual `wp usage sync` that is not `--all`
+says how many transcripts older than its 30-day window were never uploaded;
+`wp usage sync --all` archives them.
 
 Restore (compose):
 

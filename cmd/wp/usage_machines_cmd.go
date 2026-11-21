@@ -22,7 +22,8 @@ var usageMachinesCmd = &command{
 	about: `Lists the machines that report for you (an admin can name anyone with
 --user) and what each says of its transcript archive: whether it is off
 (WP_USAGE_ARCHIVE=off on that machine), the bytes still waiting to upload,
-what was dropped and why, how long the last and the longest pass took, why
+what was dropped and why, how long the last and the longest hook pass took (a
+manual pass is not timed; the last one can be 12 hours old), why
 the last pass stopped early (blank: it ran to the end), how many passes
 were cut short since the machine began, and when its last piece was stored.
 "unknown" means that machine has not said (an older wp, or never reported).`,
@@ -69,7 +70,7 @@ func usageMachinesText(ms []core.UsageMachine) string {
 	}
 	var b strings.Builder
 	tw := tabwriter.NewWriter(&b, 0, 4, 2, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "MACHINE\tARCHIVE\tWAITING\tDROPPED\tLAST PASS\tLONGEST\tSTOPPED\tCUT SHORT\tLAST PIECE")
+	_, _ = fmt.Fprintln(tw, "MACHINE\tARCHIVE\tWAITING\tDROPPED\tLAST HOOK PASS\tLONGEST HOOK PASS\tSTOPPED\tCUT SHORT\tLAST PIECE")
 	for _, m := range ms {
 		t := m.Transcripts
 		if t == nil {

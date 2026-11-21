@@ -106,7 +106,7 @@ func (s *Service) readResources(ctx context.Context) []ResourceStatus {
 		var bytes, pieces, refused int64
 		if err := s.db.R.QueryRowContext(ctx, `SELECT stored_bytes, pieces, refused FROM transcript_totals WHERE id = 1`).Scan(&bytes, &pieces, &refused); err == nil {
 			out = append(out, ResourceStatus{Resource: "transcripts", Label: "Transcript archive size", Bytes: bytes, Count: pieces, LimitMB: lim.TranscriptsMB,
-				CapMB: s.cfg.TranscriptMaxMB, Refused: refused, Low: lim.TranscriptsMB > 0 && bytes > int64(lim.TranscriptsMB)<<20})
+				CapMB: s.cfg.TranscriptMaxMB, Refused: refused, Low: (lim.TranscriptsMB > 0 && bytes > int64(lim.TranscriptsMB)<<20) || nearTranscriptCap(bytes, s.cfg.TranscriptMaxMB)})
 		}
 	}
 	if free, total, ok := memoryAvailable(); ok {
@@ -114,6 +114,16 @@ func (s *Service) readResources(ctx context.Context) []ResourceStatus {
 			Low: lim.MemoryFreeMB > 0 && free < int64(lim.MemoryFreeMB)<<20})
 	}
 	return out
+}
+
+// transcriptCapWarnPercent is how full the archive is, of its cap, when the
+// resource goes low: before uploads are refused (audit 1236.6).
+const transcriptCapWarnPercent = 90
+
+// nearTranscriptCap says the archive holds at least transcriptCapWarnPercent
+// of its cap (capMB 0: no cap, never).
+func nearTranscriptCap(bytes int64, capMB int) bool {
+	return capMB > 0 && bytes*100 >= int64(capMB)<<20*transcriptCapWarnPercent
 }
 
 // memoryAvailable reads MemAvailable from /proc/meminfo, where there is one.
@@ -183,6 +193,9 @@ func (s *Service) noteResource(ctx context.Context, r ResourceStatus) {
 		text = fmt.Sprintf("The database has grown to %s (the limit is %d MB)", humanBytes(r.Bytes), r.LimitMB)
 	case "transcripts":
 		text = fmt.Sprintf("The transcript archive has grown to %s in %d pieces (the limit is %d MB)", humanBytes(r.Bytes), r.Count, r.LimitMB)
+		if nearTranscriptCap(r.Bytes, r.CapMB) {
+			text = fmt.Sprintf("The transcript archive holds %s in %d pieces, nearly its cap of %d MB (WAYPOINT_TRANSCRIPT_MAX_MB); uploads are refused when it is full, so raise the cap", humanBytes(r.Bytes), r.Count, r.CapMB)
+		}
 	}
 	s.runGlobal(ctx, &Event{Kind: EvSystemResources, At: s.now().UTC(),
 		Data: map[string]any{"resource": r.Resource, "free": r.Bytes, "total": r.Total, "limit_mb": r.LimitMB, "text": text}})
