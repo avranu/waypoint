@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -84,14 +85,9 @@ func cmdUsageTranscript(c *cli, args []string) error {
 // streamGet copies a GET answer to w without the size cap or time limit of
 // a JSON call: a transcript can be large.
 func (c *cli) streamGet(path string, w io.Writer) error {
-	req, err := http.NewRequest("GET", c.server()+path, nil) // #nosec G107 G704 -- the configured server
+	req, err := c.newRequest(context.Background(), "GET", path, "", nil)
 	if err != nil {
 		return err
-	}
-	req.Header.Set("X-Waypoint-Client", "wp")
-	req.Header.Set("User-Agent", "wp/"+version)
-	if t := c.token(); t != "" {
-		req.Header.Set("Authorization", "Bearer "+t)
 	}
 	resp, err := (&http.Client{}).Do(req) // #nosec G704 -- the configured server
 	if err != nil {

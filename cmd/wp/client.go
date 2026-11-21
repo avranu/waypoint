@@ -82,7 +82,11 @@ func (c *cli) callRaw(method, path, contentType string, body io.Reader) ([]byte,
 	return c.send(context.Background(), method, path, contentType, body)
 }
 
-func (c *cli) send(ctx context.Context, method, path, contentType string, rd io.Reader) ([]byte, error) {
+// newRequest builds a request to the server with every header wp sends: its
+// client name, the token, the agent and agent-env headers and the session's.
+// Every call goes through it (send, and streamGet for what is streamed), so a
+// header added here reaches them all.
+func (c *cli) newRequest(ctx context.Context, method, path, contentType string, rd io.Reader) (*http.Request, error) {
 	server := c.server()
 	if server == "" {
 		return nil, errors.New("no server set: wp config server https://your-waypoint")
@@ -115,6 +119,18 @@ func (c *cli) send(ctx context.Context, method, path, contentType string, rd io.
 		}
 	}
 	c.addSessionHeaders(req)
+	return req, nil
+}
+
+func (c *cli) send(ctx context.Context, method, path, contentType string, rd io.Reader) ([]byte, error) {
+	server := c.server()
+	if server == "" {
+		return nil, errors.New("no server set: wp config server https://your-waypoint")
+	}
+	req, err := c.newRequest(ctx, method, path, contentType, rd)
+	if err != nil {
+		return nil, err
+	}
 	hc := httpClient
 	switch {
 	case c.hookTimeout > 0:
