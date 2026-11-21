@@ -830,10 +830,13 @@ func reviewBody(sha string, o reviewOutcome) string {
 		notes = append(notes, s)
 	}
 	if n := o.later; n > 0 {
-		s := fmt.Sprintf("%d more finding%s, the least severe, kept in Waypoint and not posted here", n, plural(n))
+		// Not "the least severe": a finding on a private file is posted past
+		// the number whatever its severity (WP-1421).
+		s := fmt.Sprintf("%d more finding%s past the %d posted, kept in Waypoint and not posted here", n, plural(n), inline+len(loose))
 		if o.readAt != "" {
 			s += ": " + o.readAt
 		}
+		s += "; they count toward the merge gate like the posted ones"
 		notes = append(notes, s)
 	}
 	if n := o.guardCut; n > 0 {

@@ -802,8 +802,8 @@ steers or clears one in effect.
         "skip_heads":[],"paths":["web/**"] (touches one),"skip_paths":["docs/**"] (every file
         matches one: left out),"min_changed_lines","max_changed_lines" (additions + deletions),
         "repos":["owner/*"]}. Actions: review {"models":[{"provider_id","model"}],"focus",
-        "max_findings" (how many are posted, worst first, 1-100, default 8; the rest are kept and
-        counted in the review),"min_severity":"P0|P1|P2|P3","skip_files":[globs],"force"}; when steps
+        "max_findings" (how many are posted, worst first, 1-100, default 8; the rest are kept,
+        counted in the review and hold the merge gate like the posted ones),"min_severity":"P0|P1|P2|P3","skip_files":[globs],"force"}; when steps
         follow a review the run waits for it and the step leaves Findings, Posted, Worst
         ("P0".."P3", "" for none), P0..P3 (counts), Reviewed, Status, Summary, URL, RunID, e.g.
         "only_if":"{{or .Steps.review.P0 .Steps.review.P1}}". pr_comment {"message"}, react
@@ -1048,7 +1048,8 @@ someone checks them. Not the audit log above.
                                      a pull request's findings on it; fix makes a task for Claude to check
                                      and fix them. max_findings (0: 15; 1-100) is how many findings are shown
                                      at a time (wp audit show, the audit's page, the pull request's comment: the
-                                     rest are counted and one step away); it is not a limit. The model is told no
+                                     rest are counted and one step away, and open ones hold a pull request's merge gate like the shown
+                                     ones); it is not a limit. The model is told no
                                      number and every finding it reports is kept (the guard is 100: past it the
                                      summary says how many were cut). GET returns all of them.
                                      The asking session is told when it ends

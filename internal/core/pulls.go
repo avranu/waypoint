@@ -163,6 +163,15 @@ func ptrIntN(v sql.NullInt64) *int {
 	return &n
 }
 
+// prPageURL is Waypoint's page for a pull request, where every finding kept
+// on it is shown; empty where Waypoint has no address (WP-1421).
+func prPageURL(base string, prID int64) string {
+	if base == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s/agents?tab=pulls&pr=%d", base, prID)
+}
+
 func (s *Service) prByID(ctx context.Context, q queryer, id int64) (*PullRequest, error) {
 	p, err := scanPR(q.QueryRowContext(ctx, `SELECT `+prCols+` FROM pull_requests WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1475,7 +1484,11 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 			if len(a.findings) == 0 && a.requestID != "" {
 				o.emptyRequests = append(o.emptyRequests, a.requestID) // reported as no_findings (WP-1230)
 			}
-			for _, fnd := range normalizeFindings(a.findings, findingsGuard) {
+			// One reviewer's answer past the guard is cut here, so it is
+			// counted here too (WP-1421).
+			raised := normalizeFindings(a.findings, 0)
+			o.guardCut += max(0, len(raised)-findingsGuard)
+			for _, fnd := range raised[:min(len(raised), findingsGuard)] {
 				fnd.Model = a.model
 				fnd.Strategy, fnd.PromptVersion = arms[i].strategy.name, arms[i].strategy.promptVersion()
 				if a.requestID != "" {
@@ -1519,8 +1532,11 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 	}
 	o.minSev, _ = parseSeverity(opts.MinSeverity)
 	found, below := atLeast(normalizeFindings(mergeReviewers(byReviewer), 0), o.minSev)
-	o.guardCut = max(0, len(found)-findingsGuard)
+	o.guardCut += max(0, len(found)-findingsGuard)
 	found = normalizeFindings(found, findingsGuard)
+	if o.guardCut > 0 {
+		s.log.WarnContext(ctx, "a review's findings were cut at the guard", "pr", pr.ID, "cut", o.guardCut, "kept", len(found))
+	}
 	found, o.repeated, err = s.dropRepeated(ctx, pr.ID, found, sr.threads)
 	if err != nil {
 		return res, err
@@ -1566,8 +1582,8 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 	o.later = keepPast(o.placed, show, private)
 	if o.later > 0 {
 		o.readAt = fmt.Sprintf("`wp pr todo %d` lists them", fp.Number)
-		if base := s.BaseURL(); base != "" {
-			o.readAt += fmt.Sprintf(", as does %s/agents?tab=pulls&pr=%d", base, pr.ID)
+		if page := prPageURL(s.BaseURL(), pr.ID); page != "" {
+			o.readAt += ", as does " + page
 		}
 	}
 	o.note = s.reviewNote(ctx)

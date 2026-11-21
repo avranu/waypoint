@@ -55,7 +55,7 @@ func TestReviewPostsTheFirstAndKeepsTheRest(t *testing.T) {
 		}
 	}
 	reviews := pe.fg.reviewsOn(pe.f, "me/app", 5)
-	if len(reviews) != 1 || !strings.Contains(reviews[0], "4 more findings, the least severe, kept in Waypoint and not posted here") {
+	if len(reviews) != 1 || !strings.Contains(reviews[0], "4 more findings past the 5 posted, kept in Waypoint and not posted here") || !strings.Contains(reviews[0], "; they count toward the merge gate like the posted ones") {
 		t.Fatalf("reviews = %q", reviews)
 	}
 	if lc := pe.fg.lines[0]; len(lc) != 5 {
@@ -120,5 +120,27 @@ func TestKeepPast(t *testing.T) {
 	}
 	if want := "withheld inline body later inline withheld later"; strings.Join(got, " ") != want {
 		t.Errorf("placements = %s, want %s", strings.Join(got, " "), want)
+	}
+}
+
+// The note on the findings not posted never claims they are the least
+// severe: one on a private file is posted past the number, whatever its
+// severity (WP-1421, 1248.30).
+func TestReviewBodyLaterWithAPrivateFinding(t *testing.T) {
+	private, err := newGlobSet([]string{"secret/**"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := func(file, sev, placement string) placedFinding {
+		return placedFinding{Finding: Finding{File: file, Severity: sev, Claim: "A problem."}, placement: placement}
+	}
+	placed := []placedFinding{at("app/a.go", "high", "inline"), at("app/b.go", "medium", "body"), at("secret/a.go", "low", "inline")}
+	later := keepPast(placed, 1, private)
+	body := reviewBody("abc1234", reviewOutcome{placed: placed, later: later, private: private})
+	if later != 1 || placed[1].placement != placementLater || placed[2].placement != "inline" {
+		t.Fatalf("later = %d, placements %s %s %s", later, placed[0].placement, placed[1].placement, placed[2].placement)
+	}
+	if !strings.Contains(body, "1 more finding past the 2 posted, kept in Waypoint") || strings.Contains(body, "least severe") {
+		t.Errorf("body:\n%s", body)
 	}
 }
