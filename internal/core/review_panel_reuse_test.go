@@ -421,10 +421,18 @@ func TestPriorPanelSetAtClaim(t *testing.T) {
 	if strings.Contains(stored, `"prior"`) {
 		t.Errorf("stored input = %s, want no prior runs", stored)
 	}
+	// Nor are they put on the audit that claimed them: the run stays the
+	// first audit's record alone (audit 1244.14).
+	var copied int
+	_ = fx.s.db.R.QueryRowContext(fx.ctx, `SELECT count(*) FROM audit_helper_runs WHERE audit_id = ?`, second).Scan(&copied)
+	if copied != 0 {
+		t.Errorf("%d panel runs recorded on the claiming audit, want none", copied)
+	}
 }
 
 // withPriorPanel leaves an input alone when there is nothing to add, and
-// keeps fields it doesn't know.
+// keeps fields it doesn't know; the claim calls it for an audit's own job
+// only, so a command job and a job of another source are claimed as queued.
 func TestWithPriorPanelLeavesInput(t *testing.T) {
 	fx := newHelperFixture(t)
 	a := fx.exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, owner_id, created_at, request_key, status) VALUES (0, 0, '', 'repo', 0, 1, 'review-round:42:sonnet', 'running')`)
@@ -434,6 +442,8 @@ func TestWithPriorPanelLeavesInput(t *testing.T) {
 		`{"cli":"cursor",  "prompt":"p", "helpers":{"cli":"cursor","model":"m"}}`, // no panel
 		`{"cli":"cursor", "prompt":"p"}`,                                          // no helpers
 		`{"helpers":{"panel":[]}}`,                                                // empty panel
+		`{"prompt":"p","helpers":null}`,                                           // helpers null
+		`{"helpers":{"panel":"goals"}}`,                                           // a panel that isn't a list
 		`not json`,
 	} {
 		if got := string(fx.s.withPriorPanel(fx.ctx, json.RawMessage(in), b)); got != in {

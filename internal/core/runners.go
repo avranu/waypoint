@@ -957,7 +957,9 @@ func (s *Service) claimRunnerJob(ctx context.Context, actor *Actor, r *Runner, l
 // that waited in the queue takes what finished meanwhile (WP-1481). Every
 // field of the input is kept, those this version doesn't know too; the
 // input is returned as it is when it has no panel, nothing finished, or it
-// can't be read.
+// can't be read. Two audits of one round that run at the same time still
+// both run the panel: a sibling that hasn't finished has recorded nothing
+// to take (WP-1544).
 func (s *Service) withPriorPanel(ctx context.Context, input json.RawMessage, auditID int64) json.RawMessage {
 	fail := func(what string, err error) json.RawMessage {
 		s.log.WarnContext(ctx, "prior panel runs not attached; the panel may run again", "audit", auditID, "step", what, "err", err)
