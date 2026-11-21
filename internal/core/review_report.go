@@ -364,14 +364,14 @@ func (s *Service) ReportReview(ctx context.Context, actor *Actor, ref string, in
 	}
 	var open []string
 	for _, f := range res.Audit.Findings {
-		if f.State == "open" || f.State == "confirmed" {
+		if findingToDo(f) {
 			open = append(open, f.ID)
 		}
 	}
 	switch {
 	case len(open) > 0:
-		res.Next = fmt.Sprintf("Decide %s (%s): fix it and `wp audit mark %s fixed -m \"what you did\"`, or `wp audit mark %s rejected -m \"why\"`. Then run `wp ship --pr`.",
-			plural1(len(open), "finding"), strings.Join(open, ", "), open[0], open[0])
+		res.Next = fmt.Sprintf("Decide %s (%s): fix it and `wp audit mark %s fixed -m \"what you did\"`, file it and `wp audit mark %s confirmed --issue KEY`, or `wp audit mark %s rejected -m \"why\"`. Then run `wp ship --pr`.",
+			plural1(len(open), "finding"), strings.Join(open, ", "), open[0], open[0], open[0])
 	default:
 		res.Next = "Run `wp ship --pr`: Waypoint checks the marks against the code, scores the findings, and opens the pull request or asks for another round."
 	}

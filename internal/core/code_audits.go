@@ -1705,8 +1705,16 @@ func (s *Service) auditFixTask(ctx context.Context, id int64) {
 }
 
 // findingToDo says whether a finding is still to do: undecided, or
-// confirmed and not fixed.
-func findingToDo(state string) bool { return state == "open" || state == "confirmed" }
+// confirmed and not fixed with no issue linked. One confirmed with an issue
+// (wp audit mark 12.3 confirmed --issue KEY) is real and handed to that
+// issue: no round, babysitter or fix task asks for it again (WP-1547).
+// findingToDoSQL is the same test in SQL.
+func findingToDo(f CodeAuditFinding) bool {
+	return f.State == "open" || (f.State == "confirmed" && f.Issue == "")
+}
+
+// findingToDoSQL is findingToDo over code_audit_findings as f.
+const findingToDoSQL = "(f.state = 'open' OR (f.state = 'confirmed' AND f.issue_id IS NULL))"
 
 func noteSuffix(n string) string {
 	if n = strings.TrimSpace(n); n == "" {
@@ -1741,7 +1749,7 @@ Record each verdict on the audit as you go: wp audit mark %d.1 fixed -m "what yo
 `, a.ID)
 	var todo []CodeAuditFinding
 	for _, f := range a.Findings {
-		if findingToDo(f.State) {
+		if findingToDo(f) {
 			todo = append(todo, f)
 		}
 	}
@@ -1946,8 +1954,8 @@ func (s *Service) auditRow(ctx context.Context, id int64) (*CodeAudit, error) {
 
 func (s *Service) auditCounts(ctx context.Context, id int64) AuditCounts {
 	var c AuditCounts
-	_ = s.db.R.QueryRowContext(ctx, `SELECT count(*), coalesce(sum(state IN ('open','confirmed')), 0), coalesce(sum(severity = 'critical'), 0), coalesce(sum(severity = 'high'), 0),
-		coalesce(sum(severity = 'medium'), 0), coalesce(sum(severity = 'low'), 0) FROM code_audit_findings WHERE audit_id = ?`, id).
+	_ = s.db.R.QueryRowContext(ctx, `SELECT count(*), coalesce(sum(`+findingToDoSQL+`), 0), coalesce(sum(severity = 'critical'), 0), coalesce(sum(severity = 'high'), 0),
+		coalesce(sum(severity = 'medium'), 0), coalesce(sum(severity = 'low'), 0) FROM code_audit_findings f WHERE audit_id = ?`, id).
 		Scan(&c.Total, &c.Open, &c.Critical, &c.High, &c.Medium, &c.Low)
 	return c
 }
@@ -1978,7 +1986,7 @@ func (s *Service) loadFindings(ctx context.Context, a *CodeAudit) error {
 	a.Counts = AuditCounts{}
 	for _, f := range a.Findings {
 		a.Counts.Total++
-		if findingToDo(f.State) {
+		if findingToDo(f) {
 			a.Counts.Open++
 		}
 		switch f.Severity {

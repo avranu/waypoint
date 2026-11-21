@@ -1024,7 +1024,7 @@ func (s *Service) roundTodo(ctx context.Context, a *CodeAudit) []CodeAuditFindin
 	}
 	var todo []CodeAuditFinding
 	for _, f := range a.Findings {
-		if findingToDo(f.State) && !given[f.ID] {
+		if findingToDo(f) && !given[f.ID] {
 			todo = append(todo, f)
 		}
 	}
@@ -1404,8 +1404,8 @@ func grokReviewPrompt(a *CodeAudit, todo []CodeAuditFinding) string {
 	fmt.Fprintf(&b, "Assess every claim to determine if it is legitimate and a change would be consistent with our codebase and goals. Fix any that are. "+
 		"Follow TDD to write tests for any failures before you produce a fix, so we ensure no future regressions. "+
 		"If there are any findings, comments, data, or unrelated issues you don't fix here, file them in waypoint so they aren't lost when the session is over (`wp new task \"description\"`, `wp comment \"message\"`, etc). "+
-		"Record each verdict: `wp audit mark %s fixed -m \"what you did\"` or `wp audit mark %s rejected -m \"why\"`. "+
-		"When you're done, run `wp ship --pr --summary \"what you fixed, filed and rejected, and why\"`: the summary is your reply to the user.\n\n", id, id)
+		"Record each verdict: `wp audit mark %s fixed -m \"what you did\"`, `wp audit mark %s confirmed --issue KEY` for a real one you filed instead of fixing, or `wp audit mark %s rejected -m \"why\"`. "+
+		"When you're done, run `wp ship --pr --summary \"what you fixed, filed and rejected, and why\"`: the summary is your reply to the user.\n\n", id, id, id)
 	writeAuditFindings(&b, todo)
 	return promptText(b.String())
 }
@@ -1652,7 +1652,7 @@ func (s *Service) mergedRoundAuditTasks(ctx context.Context, since int64) {
 	rows, err := s.db.R.QueryContext(ctx, `SELECT a.id FROM code_audits a JOIN pull_requests p ON p.id = a.pr_id
 		WHERE a.purpose = '' AND a.status = ? AND a.created_at > ? AND coalesce(a.fix_issue_id, 0) = 0 AND p.state = 'merged'
 		AND (EXISTS (SELECT 1 FROM work_log w WHERE w.kind = 'review' AND w.audit_id = a.id) OR a.request_key LIKE ?)
-		AND EXISTS (SELECT 1 FROM code_audit_findings f WHERE f.audit_id = a.id AND f.state IN ('open', 'confirmed') AND f.severity IN ('critical', 'high', 'medium'))
+		AND EXISTS (SELECT 1 FROM code_audit_findings f WHERE f.audit_id = a.id AND `+findingToDoSQL+` AND f.severity IN ('critical', 'high', 'medium'))
 		ORDER BY a.id LIMIT ?`, AuditDone, since, reviewerKeyLike, handOverBatch)
 	if err != nil {
 		s.log.Info("review round: merged audits' fix tasks", "err", err)

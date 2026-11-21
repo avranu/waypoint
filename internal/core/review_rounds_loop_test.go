@@ -916,3 +916,62 @@ func TestReviewRoundsUnscoredLater(t *testing.T) {
 		})
 	}
 }
+
+// A finding the session confirmed and filed as an issue (wp audit mark
+// confirmed --issue KEY) is handed to that issue: the round's ship isn't
+// held for it, the round's prompt isn't given again for it, and the model
+// that decides on another round reads it as filed (WP-1547). Confirmed
+// with no issue is still held (TestReviewRoundsProbe).
+func TestReviewRoundFiledFindingNotHeld(t *testing.T) {
+	e := newLoopEnv(t, map[string]string{"": "cosmetic", "fixes": "complete"})
+	r1 := e.review("Merge loses an update")
+	_, au := e.roundAuditRow(r1)
+	full, err := e.s.GetAudit(e.ctx, e.admin, au.ID)
+	if err != nil || len(full.Findings) != 1 {
+		t.Fatalf("audit = %+v %v", full, err)
+	}
+	if _, err := e.s.MarkAuditFindings(e.ctx, e.ag, MarkFindings{IDs: []string{full.Findings[0].ID}, State: "confirmed", Note: "Real, outside this change.", Issue: e.task.Key}); err != nil {
+		t.Fatal(err)
+	}
+	full, err = e.s.GetAudit(e.ctx, e.admin, au.ID)
+	if err != nil || full.Counts.Open != 0 || full.Findings[0].Issue != e.task.Key {
+		t.Fatalf("audit = %+v %v", full, err)
+	}
+	if todo := e.s.roundTodo(e.ctx, full); len(todo) != 0 {
+		t.Fatalf("round to do = %+v", todo)
+	}
+	if todo, err := e.s.againTodo(e.ctx, au.ID); err != nil || len(todo) != 0 {
+		t.Fatalf("again to do = %v %v", todo, err)
+	}
+	findings, err := e.s.againFindings(e.ctx, au.ID, 0)
+	if err != nil || len(findings) != 1 || !findings[0].filed {
+		t.Fatalf("findings = %+v %v", findings, err)
+	}
+	if st := againState(findings, nil, 1, 0, 0, 1, &TriageFeatures{}); !strings.Contains(st, "The agent marked it: confirmed, and filed as an issue") {
+		t.Errorf("state = %q", st)
+	}
+	res, err := e.shipChecked(e.box, e.task.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(res.Held, "still to decide") {
+		t.Fatalf("ship = %+v", res)
+	}
+	var n int
+	if err := e.s.db.R.QueryRow(`SELECT count(*) FROM review_again_decisions WHERE round_id = ?`, r1).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("%d decisions, %v", n, err)
+	}
+}
+
+// The round's prompt and its ship's hold name the mark for a finding filed
+// rather than fixed (WP-1547).
+func TestRoundPromptNamesFiledMark(t *testing.T) {
+	a := &CodeAudit{ID: 7, Model: "grok"}
+	p := grokReviewPrompt(a, []CodeAuditFinding{{ID: "7.1", Title: "t", Severity: "high", State: "open"}})
+	if !strings.Contains(p, "wp audit mark 7.1 confirmed --issue KEY") {
+		t.Errorf("prompt = %q", p)
+	}
+	if findingToDo(CodeAuditFinding{State: "confirmed", Issue: "WP-1"}) || !findingToDo(CodeAuditFinding{State: "confirmed"}) || !findingToDo(CodeAuditFinding{State: "open", Issue: "WP-1"}) {
+		t.Error("findingToDo")
+	}
+}

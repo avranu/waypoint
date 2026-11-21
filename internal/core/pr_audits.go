@@ -324,7 +324,7 @@ func (s *Service) auditTodoErr(ctx context.Context, prID int64) ([]TodoFinding, 
 	return out, nil
 }
 
-// findingsToDo are an audit's findings that are open or confirmed.
+// findingsToDo are an audit's findings still to do (findingToDo).
 func (s *Service) findingsToDo(ctx context.Context, id int64) ([]CodeAuditFinding, error) {
 	a := &CodeAudit{ID: id}
 	if err := s.loadFindings(ctx, a); err != nil {
@@ -332,7 +332,7 @@ func (s *Service) findingsToDo(ctx context.Context, id int64) ([]CodeAuditFindin
 	}
 	var todo []CodeAuditFinding
 	for _, f := range a.Findings {
-		if findingToDo(f.State) {
+		if findingToDo(f) {
 			todo = append(todo, f)
 		}
 	}

@@ -61,8 +61,11 @@ func init() {
 			examples: []string{"wp audit show 12", "wp audit show 12 13"}, run: auditShow},
 		{name: "mark", args: "FINDING... open|confirmed|fixed|rejected [-m NOTE] [--issue KEY]", summary: "record your verdict on findings (12.3: audit 12, finding 3)",
 			about: `confirmed is real but unfixed; rejected needs -m why. --issue links the
-task or bug that deals with it.`,
-			examples: []string{"wp audit mark 12.1 12.3 confirmed", "wp audit mark 12.1 fixed --issue WP-401", `wp audit mark 12.2 rejected -m "the caller holds the lock"`}, run: auditMark},
+task or bug that deals with it. A finding confirmed with --issue is handed to
+that issue: a review round, a pull request's babysitter or an audit's fix task
+no longer asks for it (file one with wp new first). Confirmed without an
+issue is still to do.`,
+			examples: []string{"wp audit mark 12.1 12.3 confirmed", "wp audit mark 12.4 confirmed --issue WP-401", "wp audit mark 12.1 fixed --issue WP-401", `wp audit mark 12.2 rejected -m "the caller holds the lock"`}, run: auditMark},
 		{name: "report", args: "[KEY] -f FILE | --none -m SUMMARY", summary: "record what the adversarial review you ran yourself found, as your task's review round",
 			about: `For an agent session whose review round was its own to run (wp ship
 says so, and holds the pull request for this). FILE (- for stdin) is JSON:
