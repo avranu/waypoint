@@ -121,13 +121,17 @@ func usageSyncText(r *usageSyncResult) string {
 		b.WriteString("Nothing new to upload.\n")
 	}
 	if a := r.Archive; a != nil {
-		fmt.Fprintf(&b, "Transcript archive: %s stored in %d pieces (%s sent compressed); %s still waiting in %d files.\n",
-			bytesText(a.RawBytes), a.Pieces, bytesText(a.SentBytes), bytesText(a.PendingBytes), a.PendingFiles)
-		for _, k := range slices.Sorted(maps.Keys(a.Dropped)) {
-			fmt.Fprintf(&b, "  not archived, counted: %s x%d\n", k, a.Dropped[k])
-		}
-		if a.Stopped != "" {
-			fmt.Fprintf(&b, "  stopped early: %s\n", a.Stopped)
+		if a.Stopped == archiveBusy && a.Files == 0 {
+			b.WriteString("Transcript archive: another pass is running; it uploads these too.\n")
+		} else {
+			fmt.Fprintf(&b, "Transcript archive: %s stored in %d pieces (%s sent compressed); %s still waiting in %d files.\n",
+				bytesText(a.RawBytes), a.Pieces, bytesText(a.SentBytes), bytesText(a.PendingBytes), a.PendingFiles)
+			for _, k := range slices.Sorted(maps.Keys(a.Dropped)) {
+				fmt.Fprintf(&b, "  not archived, counted: %s\n", archiveDropText(k, a.Dropped[k]))
+			}
+			if a.Stopped != "" {
+				fmt.Fprintf(&b, "  stopped early: %s\n", a.Stopped)
+			}
 		}
 	}
 	if r.ArchiveError != "" {

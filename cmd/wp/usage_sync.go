@@ -320,8 +320,8 @@ func usageSync(c *cli, o usageSyncOptions) (*usageSyncResult, error) {
 		if !ok {
 			return nil, errUsageBusy
 		}
-		defer unlock()
-		release = unlock
+		release = sync.OnceFunc(unlock) // one release: early, before the archive pass, or on return
+		defer release()
 	}
 	files, err := discoverTranscripts(root, o.Since, o.Files)
 	if err != nil {
