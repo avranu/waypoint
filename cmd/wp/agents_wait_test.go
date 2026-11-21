@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -61,9 +62,36 @@ func TestNoopRefusal(t *testing.T) {
 	}
 	startAgent(c, "boss", "a1", true)
 	startAgent(c, "boss", "f1", false)
-	k, text := c.hookRefusalFor(bashIn("a1", "echo waiting", false))
-	if k != "noop-poll" || !strings.Contains(text, "does nothing") || strings.Contains(text, "Monitor") {
-		t.Errorf("none: %s %q", k, text)
+	// Nothing running (a1 has no children, no background task): not a poll.
+	for _, cmd := range []string{"echo waiting", "echo done", "true"} {
+		for _, agent := range []string{"", "a1", "f1"} {
+			if k, text := c.hookRefusalFor(bashIn(agent, cmd, false)); k != "" || text != "" {
+				t.Errorf("%q by %q with nothing to wait for: refused %s %q", cmd, agent, k, text)
+			}
+		}
+	}
+	// A nil cli (the doc on hookRefusalFor allows one) never panics, and
+	// refuses only for a running background task.
+	var nilC *cli
+	if k, text := nilC.hookRefusalFor(bashIn("a1", "echo done", false)); k != "" {
+		t.Errorf("nil cli, nothing running: %s %q", k, text)
+	}
+	bgTaskRunning = func(string) bool { return true }
+	if k, text := nilC.hookRefusalFor(bashIn("a1", "echo done", false)); k != "noop-poll" || !strings.Contains(text, "background command") {
+		t.Errorf("nil cli, task running: %s %q", k, text)
+	}
+	if k, text := nilC.hookRefusalFor(bashIn("", "echo done", false)); k != "noop-poll" || !strings.Contains(text, "you are told when it exits") {
+		t.Errorf("nil cli, main, task running: %s %q", k, text)
+	}
+	// A running background task: refused.
+	if k, text := c.hookRefusalFor(bashIn("", "echo done", false)); k != "noop-poll" || !strings.Contains(text, "does nothing") || strings.Contains(text, "Monitor") {
+		t.Errorf("task running: %s %q", k, text)
+	}
+	bgTaskRunning = func(string) bool { return false }
+	// Live children: refused, with nothing else running.
+	startAgent(c, "f2", "kid9", true)
+	if k, text := c.hookRefusalFor(bashIn("f2", "echo done", false)); k != "noop-poll" || !strings.Contains(text, "agents are still running") {
+		t.Errorf("live children: %s %q", k, text)
 	}
 	bgTaskRunning = func(string) bool { return true }
 	_, sub := c.hookRefusalFor(bashIn("a1", "echo waiting", false))
@@ -99,6 +127,10 @@ func TestNoopRefusal(t *testing.T) {
 	}
 }
 
+// reEndWarning is the one sentence that may mention ending the turn in a
+// foreground agent's text: the warning that doing so ends its run.
+var reEndWarning = regexp.MustCompile(`Ending your turn instead ends your run[^.]*\.`)
+
 func TestSleepTexts(t *testing.T) {
 	cases := map[string]string{
 		"sleep 60; wp pr show 5":      "wp pr wait N",
@@ -115,8 +147,10 @@ func TestSleepTexts(t *testing.T) {
 			if who != callerMain && strings.Contains(got, "Monitor") {
 				t.Errorf("%q: a subagent is told of Monitor: %q", cmd, got)
 			}
-			if who == callerFg && strings.Contains(got, "end your turn") && !strings.Contains(got, "Ending your turn") {
-				t.Errorf("%q: a foreground agent is told to end its turn: %q", cmd, got)
+			if who == callerFg { // callerOf reads an agent whose start is unknown as callerFg too
+				if rest := strings.ToLower(reEndWarning.ReplaceAllString(got, "")); strings.Contains(rest, "end your turn") || strings.Contains(rest, "ending your turn") {
+					t.Errorf("%q: a foreground agent is told to end its turn: %q", cmd, got)
+				}
 			}
 		}
 	}

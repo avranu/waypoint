@@ -120,15 +120,21 @@ func splitLiteral(cmd string) (segs [][]string, ok bool) {
 }
 
 // noopRefusalText is the refusal for a no-op poll by the agent that made the
-// call, chosen by what it could do instead: wait for agents it started (a background
-// subagent runs `wp agents wait` in the background and ends its turn; a foreground one waits in the foreground), wait
-// for a background command of the session, or nothing. Each states the
-// reason, and none names Monitor, which does not keep a subagent's run open.
+// call, or "" when the agent has nothing it could wait for (then the call is
+// let through: a lone `echo done` is not a poll). Otherwise it is chosen by
+// what the agent could do instead: wait for agents it started (a background
+// subagent runs `wp agents wait` in the background and ends its turn; a
+// foreground one waits in the foreground), or wait for a background command of
+// the session. Each states the reason, and none names Monitor, which does not
+// keep a subagent's run open. c may be nil.
 func (c *cli) noopRefusalText(in hookEventInput) string {
 	const why = "This command does nothing, and each call re-reads your whole context. "
+	children := c.hasLiveChildren(in.SessionID, in.AgentID)
+	if !children && !bgTaskRunning(in.SessionID) {
+		return ""
+	}
 	who := c.callerOf(in.SessionID, in.AgentID)
-	switch {
-	case c != nil && c.hasLiveChildren(in.SessionID, in.AgentID):
+	if children {
 		switch who {
 		case callerBg:
 			return why + "Your agents are still running and you are told when each finishes: run `wp agents wait` with run_in_background: true and end your turn."
@@ -136,22 +142,21 @@ func (c *cli) noopRefusalText(in hookEventInput) string {
 			return why + "Your agents are still running: run `wp agents wait` in the foreground with the Bash timeout set to 600000; it blocks until they have all finished. Ending your turn instead ends your run and stops them."
 		}
 		return why + "The agents you started are still running; you are told when each finishes."
-	case bgTaskRunning(in.SessionID):
-		switch who {
-		case callerBg:
-			return why + "A background command is still running: end your turn and you are woken when it exits."
-		case callerFg:
-			return why + "A background command is still running: wait for it in ONE foreground Bash call with the timeout set to 600000 (`timeout 590 bash -c 'until CHECK; do sleep 5; done'`). Ending your turn instead ends your run and stops it."
-		}
-		return why + "A background command is still running; you are told when it exits."
 	}
-	return "This command does nothing; each call costs a turn and re-reads your whole context."
+	switch who {
+	case callerBg:
+		return why + "A background command is still running: end your turn and you are woken when it exits."
+	case callerFg:
+		return why + "A background command is still running: wait for it in ONE foreground Bash call with the timeout set to 600000 (`timeout 590 bash -c 'until CHECK; do sleep 5; done'`). Ending your turn instead ends your run and stops it."
+	}
+	return why + "A background command is still running; you are told when it exits."
 }
 
 // hasLiveChildren says whether agent (empty: the main thread) of session
 // has started an agent that is still running.
+// A nil c has none.
 func (c *cli) hasLiveChildren(session, agent string) bool {
-	if session == "" {
+	if c == nil || session == "" {
 		return false
 	}
 	s := c.loadState()

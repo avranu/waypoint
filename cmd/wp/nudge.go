@@ -202,7 +202,7 @@ func hookClaudeNudge(c *cli, stdin io.Reader, stdout io.Writer) {
 		}
 		return taskRes.kind, taskRes.text, taskRes.deny
 	}
-	rk, _ := hookRefusalWith(in, task, func() string { return "-" })
+	rk, _ := hookRefusalWith(in, task, func() string { return c.noopRefusalText(in) })
 	refused := rk != ""
 	// A person's pause (WP-146): told on the first call it reaches, then
 	// every few minutes, ahead of any other nudge.

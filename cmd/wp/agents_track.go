@@ -80,7 +80,7 @@ func (s *State) runningTasks(session, agent string, raw json.RawMessage) []bgTas
 			if p, ok := s.AgentParents[session][t.ID]; ok && p.Parent == agent {
 				out = append(out, bgTask{ID: t.ID, Type: t.Type})
 			}
-		case reWaitCall.MatchString(t.Command):
+		case runsAgentsWait(t.Command):
 		default:
 			out = append(out, bgTask{ID: t.ID, Type: t.Type})
 		}
@@ -201,6 +201,7 @@ func (s *State) pendingStarts(session, parent string, now time.Time) int {
 type waitClaim struct {
 	Session string    `json:"session"`
 	Agent   string    `json:"agent,omitempty"`
+	Command string    `json:"command,omitempty"` // the Bash command, to tell claims of one session apart
 	At      time.Time `json:"at"`
 }
 

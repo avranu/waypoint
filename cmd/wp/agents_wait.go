@@ -1,11 +1,9 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -35,46 +33,6 @@ const (
 	// 600000 ms, the longest there is; calling it again continues the wait.
 	agentsWaitDefault = 9 * time.Minute
 )
-
-var reWaitCall = regexp.MustCompile(`(^|[\s;&|(/])wp\s+agents\s+wait\b`)
-
-// claimWait records, from the guard hook, that a Bash call is about to run
-// `wp agents wait`, and which agent made it: the command cannot tell, since a
-// subagent's shell has its session's id but not its own. It is picked up by
-// that command within waitClaimTTL.
-func (c *cli) claimWait(in hookEventInput) {
-	if in.ToolName != "Bash" || in.SessionID == "" || !strings.Contains(string(in.ToolInput), "agents") {
-		return
-	}
-	var ti struct {
-		Command string `json:"command"`
-	}
-	if json.Unmarshal(in.ToolInput, &ti) != nil || !reWaitCall.MatchString(ti.Command) {
-		return
-	}
-	_ = c.updateStateWithin(hookCountWait(hookGuardTimeout), func(s *State) {
-		s.pruneAgents(time.Now())
-		s.WaitClaims = append(s.WaitClaims, waitClaim{Session: in.SessionID, Agent: in.AgentID, At: time.Now()})
-	})
-}
-
-// takeWaitClaim removes and returns the oldest claim of session: which agent
-// ("" for the main thread) made the call that runs this command. found is
-// false when there is none (the guard hook isn't installed, or didn't run).
-func (c *cli) takeWaitClaim(session string) (agent string, found bool) {
-	_ = c.updateStateWithin(2*time.Second, func(s *State) {
-		now := time.Now()
-		s.pruneAgents(now)
-		for i, w := range s.WaitClaims {
-			if w.Session == session {
-				agent, found = w.Agent, true
-				s.WaitClaims = append(s.WaitClaims[:i:i], s.WaitClaims[i+1:]...)
-				return
-			}
-		}
-	})
-	return agent, found
-}
 
 // agentSession is the Claude Code session this command runs in.
 func agentSession() string {

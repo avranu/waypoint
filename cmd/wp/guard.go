@@ -221,7 +221,6 @@ func hookClaudeGuard(c *cli, stdin io.Reader, stdout io.Writer) {
 		return
 	}
 	mode := guardMode()
-	c.claimWait(in)
 	if kind, text := c.hookRefusalFor(in); kind != "" {
 		// The guard still judges and logs a call refused here, so its finding
 		// is not held back until the retry and guard.log has every hit.
@@ -238,19 +237,23 @@ func hookClaudeGuard(c *cli, stdin io.Reader, stdout io.Writer) {
 			c.logGuard(in, mode, h, hookCountWait(hookGuardTimeout))
 		}
 		c.countNudge(kind, hookCountWait(hookGuardTimeout))
-		return
+		return // refused: the command will not run, so no wait claim
 	}
-	if mode == "off" {
-		return
-	}
-	if !c.guardActive(in.SessionID) {
+	// The call is let through unless the guard denies it below; only then is
+	// `wp agents wait` going to run and claim its agent.
+	if mode == "off" || !c.guardActive(in.SessionID) {
+		c.claimWait(in)
 		return
 	}
 	h := c.guardCheck(in)
 	if h == nil {
+		c.claimWait(in)
 		return
 	}
 	_, _ = stdout.Write(guardOutput(mode, h))
+	if mode != "deny" {
+		c.claimWait(in) // a warning only: the call still runs
+	}
 	c.logGuard(in, mode, h, hookCountWait(hookGuardTimeout))
 }
 
