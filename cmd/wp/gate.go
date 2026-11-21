@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -29,6 +30,18 @@ const (
 type liveAgent struct {
 	Type  string    `json:"type,omitempty"`
 	Since time.Time `json:"since"`
+	Mode  string    `json:"mode,omitempty"` // how its Agent call started it: modeBg, modeFg, "" when not known (WP-1443)
+
+	// Provisional: made by the PostToolUse of its Agent call before its
+	// SubagentStart came; that start adopts it (keeping Since).
+	Provisional bool `json:"provisional,omitempty"`
+	// Waiting: the agent stopped with background work of its own still
+	// running (SubagentStop's background_tasks). Claude Code wakes it when
+	// that exits, so its run is not over: it is kept, with what it waits for.
+	Waiting bool      `json:"waiting,omitempty"`
+	WaitAt  time.Time `json:"wait_at,omitempty"`
+	Seen    time.Time `json:"seen,omitempty"` // the last time a waiter saw what it waits for still running
+	Tasks   []bgTask  `json:"tasks,omitempty"`
 }
 
 // gateMode is "deny", "warn" or "off".
@@ -165,24 +178,51 @@ func (c *cli) trackSubagent(in hookEventInput) {
 			s.Agents = map[string]map[string]liveAgent{}
 		}
 		now := time.Now()
-		for sid, m := range s.Agents { // forget what never stopped
-			for id, a := range m {
-				if now.Sub(a.Since) > gateLiveTTL {
-					delete(m, id)
+		s.pruneAgents(now) // forget what never stopped
+		if in.HookEventName == "SubagentStop" {
+			// Stopped with work of its own still running: it will be woken
+			// when that exits, so its run goes on (WP-1443).
+			if tasks := s.runningTasks(in.SessionID, in.AgentID, in.BackgroundTasks); len(tasks) > 0 {
+				if a, ok := s.Agents[in.SessionID][in.AgentID]; ok {
+					a.Waiting, a.WaitAt, a.Tasks, a.Provisional = true, now, tasks, false
+					s.Agents[in.SessionID][in.AgentID] = a
+					return
 				}
 			}
-			if len(m) == 0 {
-				delete(s.Agents, sid)
-			}
-		}
-		if in.HookEventName == "SubagentStop" {
 			delete(s.Agents[in.SessionID], in.AgentID)
+			if len(s.Agents[in.SessionID]) == 0 {
+				delete(s.Agents, in.SessionID)
+			}
 			return
 		}
 		if s.Agents[in.SessionID] == nil {
 			s.Agents[in.SessionID] = map[string]liveAgent{}
 		}
-		s.Agents[in.SessionID][in.AgentID] = liveAgent{Type: in.AgentType, Since: now}
+		// A resumed agent starts again: a new run, under the same id and
+		// the same parent (the parent's record is kept young while it lives).
+		// Not when it is waking from Waiting, or was made by its Agent call's
+		// PostToolUse: that is the run it already is.
+		la := liveAgent{Type: in.AgentType, Since: now}
+		if old, ok := s.Agents[in.SessionID][in.AgentID]; ok && (old.Waiting || old.Provisional) {
+			la.Since, la.Mode = old.Since, old.Mode
+			if la.Type == "" {
+				la.Type = old.Type
+			}
+		}
+		p, hasParent := s.AgentParents[in.SessionID][in.AgentID]
+		if hasParent {
+			la.Mode = p.Mode
+			p.At = now
+			s.AgentParents[in.SessionID][in.AgentID] = p
+		}
+		// The start answers the Agent call that made it: the oldest the gate
+		// let through with the same parent and type when the parent is
+		// known, else the oldest of the type. It takes from it how it was
+		// started when nothing else says.
+		if r, ok := s.takeReservation(in.SessionID, "", p.Parent, hasParent, in.AgentType); ok && la.Mode == "" {
+			la.Mode = r.Mode
+		}
+		s.Agents[in.SessionID][in.AgentID] = la
 	})
 }
 
@@ -203,6 +243,7 @@ func hookClaudeGate(c *cli, stdin io.Reader, stdout io.Writer) {
 	var ti struct {
 		Type  string `json:"subagent_type"`
 		Model string `json:"model"`
+		Bg    bool   `json:"run_in_background"`
 	}
 	if len(in.ToolInput) > 0 {
 		if err := json.Unmarshal(in.ToolInput, &ti); err != nil {
@@ -248,8 +289,28 @@ func hookClaudeGate(c *cli, stdin io.Reader, stdout io.Writer) {
 		}
 		mode = "deny"
 	}
-	if b := gateOutput(mode, problems); b != nil {
-		_, _ = stdout.Write(b)
+	if mode == "deny" && len(problems) > 0 {
+		_, _ = stdout.Write(gateOutput(mode, problems))
+		return // refused: no slot to wait for
+	}
+	// What the agent is told with the call, besides a warning's own text.
+	notes := problems // warn mode: they are context
+	// The slot queue (WP-1443): an agent past Claude Code's limit would be
+	// refused with "do not retry", so the start waits for a stop instead.
+	if limit := subagentLimit(); in.SessionID != "" {
+		r := c.waitForSlot(in.SessionID, reservation{ID: in.ToolUseID, Mode: startMode(ti.Bg), Parent: in.AgentID, Type: ti.Type}, limit)
+		switch {
+		case r.abandoned:
+			return
+		case r.timedOut:
+			notes = append(notes, queueTimedOutText(r, limit)) // undecided: Claude Code arbitrates
+		}
+	}
+	if in.AgentID != "" && ti.Bg && c.tellOnce(noteAgentWait, in.SessionID, in.AgentID, hookCountWait(hookGateTimeout)) {
+		notes = append(notes, noteAgentWaitText(c.callerOf(in.SessionID, in.AgentID)))
+	}
+	if len(notes) > 0 {
+		_, _ = stdout.Write(gateOutput("warn", notes))
 	}
 }
 
@@ -277,16 +338,12 @@ func resolveModel(call, agent, parent string, dirs []string) string {
 
 // subagentModelEnv reads CLAUDE_CODE_SUBAGENT_MODEL from the process
 // environment, falling back to the "env" object in ~/.claude/settings.json.
-func subagentModelEnv() string {
-	const key = "CLAUDE_CODE_SUBAGENT_MODEL"
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	b, err := os.ReadFile(filepath.Join(home, ".claude", "settings.json")) // #nosec G304 -- fixed path under home
+func subagentModelEnv() string { return claudeEnvSetting("CLAUDE_CODE_SUBAGENT_MODEL") }
+
+// settingsEnv is key in the "env" object of the Claude Code settings file at
+// path ("" when it is not there).
+func settingsEnv(path, key string) string {
+	b, err := os.ReadFile(path) // #nosec G304 -- fixed path under home
 	if err != nil {
 		return ""
 	}
@@ -296,8 +353,13 @@ func subagentModelEnv() string {
 	if json.Unmarshal(b, &st) != nil {
 		return ""
 	}
-	v, _ := st.Env[key].(string)
-	return v
+	switch v := st.Env[key].(type) {
+	case string:
+		return v
+	case float64:
+		return strconv.Itoa(int(v))
+	}
+	return ""
 }
 
 // agentDirs are the agent definition directories: the user's, then the repo

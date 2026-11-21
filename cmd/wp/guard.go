@@ -221,7 +221,8 @@ func hookClaudeGuard(c *cli, stdin io.Reader, stdout io.Writer) {
 		return
 	}
 	mode := guardMode()
-	if kind, text := hookRefusal(in); kind != "" {
+	c.claimWait(in)
+	if kind, text := c.hookRefusalFor(in); kind != "" {
 		// The guard still judges and logs a call refused here, so its finding
 		// is not held back until the retry and guard.log has every hit.
 		var h *guardHit
