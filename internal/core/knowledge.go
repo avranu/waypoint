@@ -546,7 +546,8 @@ func (s *Service) applyAutoLinks(ctx context.Context, t *tx, srcType string, src
 		}
 	}
 	for _, m := range moved {
-		if _, err := t.ExecContext(ctx, `UPDATE knowledge_links SET created_by = ?, created_agent = ? WHERE id = ?`, m.c.by, m.c.agent, m.id); err != nil {
+		sessID, sessTask := t.creditSession(ctx, m.c.agent)
+		if _, err := t.ExecContext(ctx, `UPDATE knowledge_links SET created_by = ?, created_agent = ?, session_id = ?, session_issue_id = ? WHERE id = ?`, m.c.by, m.c.agent, sessID, sessTask, m.id); err != nil {
 			return 0, 0, err
 		}
 	}
@@ -559,7 +560,7 @@ func (s *Service) applyAutoLinks(ctx context.Context, t *tx, srcType string, src
 		if have[e] || (allow != nil && !allow(e)) {
 			continue
 		}
-		sessID, sessTask := t.sessionStamp(ctx)
+		sessID, sessTask := t.creditSession(ctx, c.agent)
 		res, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO knowledge_links(src_type, src_id, dst_type, dst_id, rel, auto, created_by, created_agent, created_at, session_id, session_issue_id)
 			VALUES (?,?,?,?,'mentions',1,?,?,?,?,?)`, srcType, srcID, e.typ, e.id, c.by, c.agent, now, sessID, sessTask)
 		if err != nil {

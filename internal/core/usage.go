@@ -31,8 +31,9 @@ const (
 	UseAvoided = "avoided"
 )
 
-// lookupRepeat: the same tool reading the same item again this soon is the
-// same use (an agent re-reading a term in a loop isn't using it more).
+// lookupRepeat: the same reader (a session, else the person and agent)
+// reading the same item again this soon is the same use (an agent re-reading
+// a term in a loop isn't using it more); the row counts the repeats.
 const lookupRepeat = 10 * time.Minute
 
 // knowledgeTables are the tables of the items whose use is recorded.
@@ -53,28 +54,38 @@ func (s *Service) NoteLookup(ctx context.Context, actor *Actor, typ string, id i
 	// The same reader reading the same item again this soon is one read
 	// (the reader is a session when the request names one, else the person
 	// and agent), but the row counts the repeats, so a reread isn't hidden.
-	who, whoArg := `user_id = ? AND agent = ?`, []any{actor.User.ID, agent}
+	who, whoArg := `user_id = ? AND agent = ? AND session_id IS NULL`, []any{actor.User.ID, agent}
 	if sessID != nil {
 		who, whoArg = `session_id = ?`, []any{sessID}
 	}
 	args := append([]any{typ, id}, whoArg...)
 	args = append(args, now-lookupRepeat.Milliseconds())
-	// #nosec G202 -- who is one of two fixed clauses; values are bound
-	res, err := s.db.W.ExecContext(ctx, `UPDATE knowledge_uses SET repeats = repeats + 1 WHERE id = (
-		SELECT max(id) FROM knowledge_uses WHERE item_type = ? AND item_id = ? AND kind = 'lookup' AND `+who+` AND created_at > ?)`, args...)
-	if err != nil {
-		s.log.WarnContext(ctx, "count repeated knowledge lookup", "type", typ, "id", id, "err", err)
-		return
-	}
-	if n, _ := res.RowsAffected(); n > 0 {
-		return
-	}
-	// #nosec G202 -- table is one of three fixed names; values are bound
-	_, err = s.db.W.ExecContext(ctx, `INSERT INTO knowledge_uses(item_type, item_id, kind, word, project_id, user_id, agent, created_at, session_id, session_issue_id)
-		SELECT ?, ?, 'lookup', ?, (SELECT project_id FROM `+table+` WHERE id = ?), ?, ?, ?, ?, ?`,
-		typ, id, excerpt(word, 100), id, actor.User.ID, agent, now, sessID, sessTask)
-	if err != nil {
-		s.log.WarnContext(ctx, "record knowledge lookup", "type", typ, "id", id, "err", err)
+	// The bump and the insert are guarded by the same window test, so two
+	// concurrent first reads end as one row and one repeat, not two rows.
+	for range 3 {
+		// #nosec G202 -- who is one of two fixed clauses; values are bound
+		res, err := s.db.W.ExecContext(ctx, `UPDATE knowledge_uses SET repeats = repeats + 1 WHERE id = (
+			SELECT max(id) FROM knowledge_uses WHERE item_type = ? AND item_id = ? AND kind = 'lookup' AND `+who+` AND created_at > ?)`, args...)
+		if err != nil {
+			s.log.WarnContext(ctx, "count repeated knowledge lookup", "type", typ, "id", id, "err", err)
+			return
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			return
+		}
+		// #nosec G202 -- table and who are fixed; values are bound
+		res, err = s.db.W.ExecContext(ctx, `INSERT INTO knowledge_uses(item_type, item_id, kind, word, project_id, user_id, agent, created_at, session_id, session_issue_id)
+			SELECT ?, ?, 'lookup', ?, (SELECT project_id FROM `+table+` WHERE id = ?), ?, ?, ?, ?, ?
+			WHERE NOT EXISTS (SELECT 1 FROM knowledge_uses WHERE item_type = ? AND item_id = ? AND kind = 'lookup' AND `+who+` AND created_at > ?)`,
+			append([]any{typ, id, excerpt(word, 100), id, actor.User.ID, agent, now, sessID, sessTask}, args...)...)
+		if err != nil {
+			s.log.WarnContext(ctx, "record knowledge lookup", "type", typ, "id", id, "err", err)
+			return
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			return
+		}
+		// Another read inserted between the two statements: count this one as its repeat.
 	}
 }
 
@@ -93,7 +104,7 @@ type ShownRef struct {
 // point 7). refs are what the client printed; ones that name nothing are
 // counted in the result, not dropped silently.
 func (s *Service) NoteShown(ctx context.Context, actor *Actor, via string, refs []ShownRef) (recorded, unknown int, err error) {
-	if actor == nil || actor.User == nil || actor.User.ID == 0 || actor.session != "" || actor.ReadOnly {
+	if actor == nil || actor.User == nil || actor.User.ID == 0 || actor.session != "" || actor.ReadOnly || !actor.IsAgent() {
 		return 0, 0, nil
 	}
 	if via != "brief" && via != "prep" {
@@ -213,9 +224,10 @@ func (s *Service) recordMentions(ctx context.Context, t *tx, src mentionSource) 
 	if src.user != 0 {
 		user = src.user
 	}
+	sessID, sessTask := t.creditSession(ctx, src.agent)
 	for k, word := range found {
-		if _, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO knowledge_uses(item_type, item_id, kind, src_type, src_id, word, project_id, user_id, agent, created_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?)`, k.typ, k.id, k.kind, src.typ, src.id, word, nullInt(src.project), user, src.agent, at); err != nil {
+		if _, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO knowledge_uses(item_type, item_id, kind, src_type, src_id, word, project_id, user_id, agent, created_at, session_id, session_issue_id)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, k.typ, k.id, k.kind, src.typ, src.id, word, nullInt(src.project), user, src.agent, at, sessID, sessTask); err != nil {
 			s.log.WarnContext(ctx, "record knowledge mention", "source", src.typ, "id", src.id, "err", err)
 			return
 		}

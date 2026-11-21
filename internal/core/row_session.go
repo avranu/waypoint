@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"database/sql"
+	"errors"
 )
 
 // rowQuerier is what a session lookup needs: a transaction or a pool.
@@ -24,8 +25,13 @@ func sessionStamp(ctx context.Context, q rowQuerier, a *Actor) (session, task an
 	// The session row may be gone (deleted since the header was resolved);
 	// then the task is unknown and the session id would break the key.
 	err := q.QueryRowContext(ctx, `SELECT issue_id FROM agent_sessions WHERE id = ?`, a.Session).Scan(&held)
-	if err != nil {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
+	}
+	// Any other failure (busy, I/O): the session is known from the header, the
+	// task is not. Keep the session so the row stays countable; NULL the task.
+	if err != nil {
+		return a.Session, nil
 	}
 	if held.Valid {
 		task = held.Int64
@@ -36,4 +42,13 @@ func sessionStamp(ctx context.Context, q rowQuerier, a *Actor) (session, task an
 // sessionStamp is the stamp for a row written in this transaction.
 func (t *tx) sessionStamp(ctx context.Context) (session, task any) {
 	return sessionStamp(ctx, t, t.actor)
+}
+
+// creditSession is the stamp for a row credited to agent: the acting session
+// only when the credit is an agent's, so a person's text never names a session.
+func (t *tx) creditSession(ctx context.Context, agent string) (session, task any) {
+	if agent == "" {
+		return nil, nil
+	}
+	return t.sessionStamp(ctx)
 }

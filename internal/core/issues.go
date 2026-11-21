@@ -1138,8 +1138,9 @@ func (s *Service) CreateIssue(ctx context.Context, actor *Actor, in IssueInput) 
 		// What an agent files while working on a task follows it (WP-255),
 		// unless it is a slice of that task.
 		if o, ok := origin[0].(int64); ok && o != id && o != parentID {
-			if _, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO issue_relations(source_id, target_id, kind, created_at, found, basis)
-				VALUES (?,?,'follows',?,'session','inferred')`, id, o, now); err != nil {
+			sessID, sessTask := t.sessionStamp(ctx)
+			if _, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO issue_relations(source_id, target_id, kind, created_at, found, basis, session_id, session_issue_id)
+				VALUES (?,?,'follows',?,'session','inferred',?,?)`, id, o, now, sessID, sessTask); err != nil {
 				return err
 			}
 		}
