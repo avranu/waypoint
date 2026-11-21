@@ -280,8 +280,17 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 			np.Labels = []string{CIUrgentLabel}
 		}
 		start := time.Now()
-		fp, err := cl.CreatePR(fctx, f, pick.Repo, np)
-		if err == nil {
+		// An earlier attempt may have opened it and failed or died before
+		// recording it: what the forge already has open from the branch is
+		// adopted, not opened a second time.
+		var fp *ForgePR
+		if open := s.openOnForge(fctx, f, pick.Repo, in.Head, base); open != nil {
+			open.wipAuto = managed && open.State == "draft"
+			fp, res.Existing = open, true
+		} else {
+			fp, err = cl.CreatePR(fctx, f, pick.Repo, np)
+		}
+		if err == nil && !res.Existing {
 			fp.wipAuto = managed
 		}
 		if err != nil {
