@@ -351,7 +351,7 @@ func TestRewriteLeadsFollowTheLatestShip(t *testing.T) {
 		t.Errorf("a head given:\n%s", ask)
 	}
 	// The next ship's change no longer touches that work.
-	if _, err := f.s.NoteRewrites(f.ctx, f.admin, f.b.Key, "o/r", "h3", nil); err != nil {
+	if _, err := f.s.NoteRewrites(f.ctx, f.admin, f.b.Key, "o/r", "h3", []RewrittenPR{}); err != nil {
 		t.Fatal(err)
 	}
 	h, _ = f.s.roundHelpers(f.ctx, f.round(), "")

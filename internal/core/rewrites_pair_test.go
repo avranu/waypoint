@@ -87,3 +87,79 @@ func TestRecordRewritesDefersToARelationMadeSince(t *testing.T) {
 		}
 	}
 }
+
+func (f *rewriteFixture) evidenceRows(t *testing.T) int {
+	t.Helper()
+	var n int
+	if err := f.s.db.R.QueryRowContext(f.ctx, `SELECT count(*) FROM rewrite_evidence`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// A call that is malformed or partial deletes nothing; a well-formed one
+// that names the repo and says the change replaces nothing replaces that
+// repo's evidence with nothing.
+func TestNoteRewritesEmptyAndMalformedCalls(t *testing.T) {
+	f := newRewriteFixture(t)
+	if _, err := f.s.NoteRewrites(f.ctx, f.admin, f.b.Key, "o/r", "abc1234", f.prs); err != nil {
+		t.Fatal(err)
+	}
+	if f.evidenceRows(t) != 1 {
+		t.Fatal("setup: no evidence")
+	}
+	for _, c := range []struct {
+		name, repo, head string
+		prs              []RewrittenPR
+		invalid          bool
+	}{
+		{"blank repo, empty list", "", "abc1234", []RewrittenPR{}, true},
+		{"blank repo, spaces", "  ", "abc1234", []RewrittenPR{}, true},
+		{"no list at all", "o/r", "abc1234", nil, true},
+		{"empty list, no commit", "o/r", "", []RewrittenPR{}, false},
+		{"empty list, another repo", "o/other", "abc1234", []RewrittenPR{}, false},
+	} {
+		_, err := f.s.NoteRewrites(f.ctx, f.admin, f.b.Key, c.repo, c.head, c.prs)
+		if c.invalid != IsInvalid(err) || (!c.invalid && err != nil) {
+			t.Errorf("%s: err = %v, want invalid = %v", c.name, err, c.invalid)
+		}
+		if n := f.evidenceRows(t); n != 1 {
+			t.Errorf("%s: %d evidence rows, want the one kept", c.name, n)
+		}
+	}
+	// Well-formed, same repo, nothing replaced: the evidence goes, the relation stays.
+	if _, err := f.s.NoteRewrites(f.ctx, f.admin, f.b.Key, " o/r ", "def5678", []RewrittenPR{}); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.evidenceRows(t); n != 0 {
+		t.Errorf("%d evidence rows after a well-formed empty call", n)
+	}
+	if rels := f.relations(t, f.b.Key); len(rels) != 1 {
+		t.Errorf("relations = %+v", rels)
+	}
+}
+
+// A ship by someone who can't see a task doesn't drop the evidence another
+// ship recorded for it.
+func TestNoteRewritesKeepsEvidenceForTasksTheActorCannotSee(t *testing.T) {
+	f := newRewriteFixture(t)
+	if _, err := f.s.NoteRewrites(f.ctx, f.admin, f.b.Key, "o/r", "abc1234", f.prs); err != nil {
+		t.Fatal(err)
+	}
+	// The task moves to a project the second shipper can't see.
+	sam := f.user("sam", false)
+	sp := f.project(sam, "Sam", "kanban")
+	if _, err := f.s.db.W.ExecContext(f.ctx, `UPDATE issues SET project_id = ? WHERE id = ?`, sp.ID, f.a.ID); err != nil {
+		t.Fatal(err)
+	}
+	lee := f.user("lee", false)
+	if err := f.s.SetMember(f.ctx, f.admin, f.proj.Key, "lee", "editor"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.NoteRewrites(f.ctx, lee, f.b.Key, "o/r", "def5678", []RewrittenPR{}); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.evidenceRows(t); n != 1 {
+		t.Errorf("%d evidence rows: a shipper who can't see the task dropped its evidence", n)
+	}
+}

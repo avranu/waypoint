@@ -68,11 +68,14 @@ stateless, same bearer token).
     POST  /issues/{key}/relations/suggested/dismiss {"issue": "WAY-9"[, "undo": true]}  a person says a suggestion
           isn't related: it isn't suggested between the two again, from either end; undo takes that back (people
           only, not agents)
-    POST  /issues/{key}/rewritten {"repo": "owner/name", "prs": [{number, lines, share, at}]}  other tasks whose
-          recent work the change for {key} replaces, from the pull requests that last touched those lines (wp ship
-          sends it and prints `wp relate` commands for the result): [{key,title,pr,...}]; leaves out the task itself,
-          its parent and subtasks, tasks already related to it, tasks you can't see, and small overlaps; nothing is
-          linked
+    POST  /issues/{key}/rewritten {"repo": "owner/name", "head": "<commit>", "prs": [{number, lines, share, at}]}
+          other tasks whose recent work the change for {key} replaces, from the pull requests that last touched
+          those lines (wp ship sends it and prints `wp relate` commands for the result): [{key,title,pr,...}];
+          leaves out the task itself, its parent and subtasks, tasks already related to it, tasks you can't see,
+          and small overlaps. An editor's call also relates {key} to each task it names (inferred) and keeps what
+          it saw for the review round; a pair someone removed the relation of isn't related again. repo and prs
+          are required (prs: [] says the change replaces nothing, and drops what an earlier call recorded for
+          that repo); a call without them is refused and drops nothing
     PATCH|DELETE /comments/{id}    your own comments
     DELETE /issues/{key}/relations/{id} | /links/{id}
     POST  /issues/{key}/links/refresh  re-read PR/issue state from the forge

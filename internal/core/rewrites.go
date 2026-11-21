@@ -216,7 +216,22 @@ func rewriteNote(t *RewrittenTask) string {
 // the same pair again at a later ship refreshes the evidence and records
 // nothing twice. head is the commit the lines were traced for. Only an
 // editor of ref's project records anything; a draft is left alone.
+//
+// What a call may delete: repo must be named and prs must be given (an empty
+// list says the change replaces nothing; a missing one says nothing, and is
+// refused). A well-formed call replaces the evidence held for ref in that
+// repo with what it found, so an empty list drops it (the relation stays);
+// it never touches another repo's evidence, nor the evidence for a task the
+// actor can't see. A call without head and with nothing found says too little
+// to drop anything.
 func (s *Service) NoteRewrites(ctx context.Context, actor *Actor, ref, repo, head string, prs []RewrittenPR) ([]*RewrittenTask, error) {
+	repo = strings.TrimSpace(repo)
+	if repo == "" {
+		return nil, invalid("repo is required")
+	}
+	if prs == nil {
+		return nil, invalid("prs is required: send [] when the change replaces nothing")
+	}
 	got, err := s.RewrittenWork(ctx, actor, ref, repo, prs)
 	if err != nil {
 		return got, err
@@ -282,7 +297,12 @@ func (s *Service) recordRewrites(ctx context.Context, actor *Actor, d *IssueDeta
 		}
 		// The round is told what the latest ship saw: evidence for a pair
 		// this ship's change no longer replaces goes (the relation stays;
-		// a dismissal is kept).
+		// a dismissal is kept). Only what this call can speak for goes: the
+		// same repo (evidence for another repo's lines is not this call's to
+		// judge), and, without a commit to say which change was read, not on
+		// an empty reading (an older wp, or a call that says too little);
+		// and never the evidence for a task the actor can't see, which
+		// another shipper recorded and this one has no view of.
 		keep := map[int64]bool{}
 		for _, r := range got {
 			id, err := s.resolveIssueID(ctx, t, r.Key)
@@ -293,25 +313,34 @@ func (s *Service) recordRewrites(ctx context.Context, actor *Actor, d *IssueDeta
 			}
 			keep[id] = true
 		}
-		rows, err := t.QueryContext(ctx, `SELECT other_id FROM rewrite_evidence WHERE issue_id = ?`, d.ID)
-		if err != nil {
-			return err
-		}
 		var stale []int64
-		for rows.Next() {
-			var id int64
-			if err := rows.Scan(&id); err != nil {
-				_ = rows.Close()
+		if head != "" || len(found) > 0 {
+			rows, err := t.QueryContext(ctx, `SELECT other_id FROM rewrite_evidence WHERE issue_id = ? AND repo = ? COLLATE NOCASE`, d.ID, repo)
+			if err != nil {
 				return err
 			}
-			if !keep[id] {
-				stale = append(stale, id)
+			for rows.Next() {
+				var id int64
+				if err := rows.Scan(&id); err != nil {
+					_ = rows.Close()
+					return err
+				}
+				if !keep[id] {
+					stale = append(stale, id)
+				}
+			}
+			if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+				return err
 			}
 		}
-		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-			return err
-		}
 		for _, id := range stale {
+			o, err := s.issueByID(ctx, t, id, false)
+			if err != nil {
+				return err
+			}
+			if !s.canSee(ctx, t, actor, o.ID, o.ProjectID) {
+				continue
+			}
 			if _, err := t.ExecContext(ctx, `DELETE FROM rewrite_evidence WHERE issue_id = ? AND other_id = ?`, d.ID, id); err != nil {
 				return err
 			}
