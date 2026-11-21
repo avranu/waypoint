@@ -707,7 +707,11 @@ func (s *Service) openAgentFilePR(ctx context.Context, actor *Actor, r *setupRep
 	pr, err := af.commit.CreatePR(ctx, af.f, r.repo, NewPR{Title: in.title, Body: in.body, Head: rec.branch, Base: in.base, Labels: in.labels})
 	if err != nil {
 		rec.err = excerpt(err.Error(), 500)
-		_ = s.recordAgentPR(ctx, rec)
+		if err := s.recordAgentPR(ctx, rec); err != nil {
+			if readFault(err) {
+				s.log.WarnContext(ctx, "record agent pr failed", "repo", r.repo, "err", err)
+			}
+		}
 		return nil, fmt.Errorf("pushed the branch %s but could not open the pull request: %w", rec.branch, err)
 	}
 	rec.number, rec.url = pr.Number, pr.URL

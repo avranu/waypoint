@@ -50,6 +50,15 @@ type State struct {
 	Tidy   map[string]*tidyCache `json:"tidy,omitempty"`
 	// Live subagents by session, for the fan-out gate (WP-143).
 	Agents map[string]map[string]liveAgent `json:"agents,omitempty"`
+	// Who started each background subagent, by session and agent id, for wp
+	// agents wait; Agent calls the gate let through that no SubagentStart has
+	// answered yet, for its slot queue; the short-lived claims a Bash call to
+	// wp agents wait leaves so the command knows its caller; and when each
+	// once-per-run agent note was told (WP-1443).
+	AgentParents map[string]map[string]agentParent `json:"agent_parents,omitempty"`
+	Reserved     map[string][]reservation          `json:"reserved,omitempty"`
+	WaitClaims   []waitClaim                       `json:"wait_claims,omitempty"`
+	Told         map[string]time.Time              `json:"told,omitempty"`
 	// The agent kit (WP-ADR2): what each checkout last applied and which
 	// plugins wp enabled there; and what each repo was last sent, which
 	// SessionStart reuses for a while.

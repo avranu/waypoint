@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 	"sync"
@@ -263,7 +264,10 @@ func (s *Service) recordPR(ctx context.Context, f *Forge, repo string, fp *Forge
 	if err != nil {
 		return nil, err
 	}
-	attached := s.attachedProject(ctx, s.db.R, f.ID, repo)
+	attached, err := s.attachedProject(ctx, s.db.R, f.ID, repo)
+	if err != nil {
+		return nil, err
+	}
 	var botLogin string
 	if fire && len(fp.requested) > 0 && len(projects) > 0 {
 		botLogin = s.forgeBotLogin(ctx, f)
@@ -890,7 +894,13 @@ func (s *Service) enqueueBotRun(ctx context.Context, projectID int64, automation
 		}
 		s.kickBots()
 		if kind == "review" {
-			s.goBG(func() { _ = s.evalGate(context.WithoutCancel(ctx), pr.ID) }) // pending while it waits
+			s.goBG(func() {
+				if err := s.evalGate(context.WithoutCancel(ctx), pr.ID); err != nil {
+					if readFault(err) && !errors.Is(err, ErrNotFound) && !isStatus(err, http.StatusNotFound) {
+						s.log.WarnContext(ctx, "eval gate failed", "pr", pr.ID, "err", err)
+					}
+				}
+			}) // pending while it waits
 		}
 	}
 	return id, err
@@ -1393,7 +1403,12 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 		return res, &errSkip{"nothing reviewable in the diff"}
 	}
 	rules := s.repoReviewRules(ctx, cl, f, pr.Repo, fp.HeadSHA)
-	earlier, _ := s.prFindings(ctx, s.db.R, pr.ID) // with the verdicts just reached
+	earlier, rerr := s.prFindings(ctx, s.db.R, pr.ID) // with the verdicts just reached
+	if rerr != nil {
+		if readFault(rerr) {
+			s.log.WarnContext(ctx, "pr findings failed", "pr", pr.ID, "err", rerr)
+		}
+	}
 	conversation := reviewConversation(earlier, sr.threads)
 	paths := make([]string, len(files))
 	for i, fd := range files {

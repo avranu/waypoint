@@ -193,6 +193,12 @@ func (s *Service) StartAutopilotSession(ctx context.Context, a *Actor, sessionID
 		return err
 	}
 	st.byHand = true // no schedule or spacing either
-	s.goBG(func() { _ = s.advanceStep(context.WithoutCancel(ctx), st) })
+	s.goBG(func() {
+		if err := s.advanceStep(context.WithoutCancel(ctx), st); err != nil {
+			if readFault(err) && !missingOrDenied(err) {
+				s.log.WarnContext(ctx, "advance step failed", "session", sessionID, "err", err)
+			}
+		}
+	})
 	return nil
 }

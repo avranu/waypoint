@@ -509,7 +509,9 @@ func (s *Service) driftHold(ctx context.Context, pr *PullRequest, settle bool) (
 		return "", nil // a stranger's is held anyway; a person's own is a person's act
 	}
 	unread := func(what string, err error) (string, *time.Time) {
-		s.log.WarnContext(ctx, what, "pr", pr.ID, "err", err)
+		if readFault(err) {
+			s.log.WarnContext(ctx, what, "pr", pr.ID, "err", err)
+		}
 		next := s.now().Add(driftRetry)
 		return driftUnread, &next
 	}
@@ -536,11 +538,13 @@ func (s *Service) driftHold(ctx context.Context, pr *PullRequest, settle bool) (
 // that fails here is only tried again; the time is when.
 func (s *Service) advanceDriftCheck(ctx context.Context, pr *PullRequest, c *prGoalCheck) *time.Time {
 	again := func(what string, err error) *time.Time {
-		s.log.WarnContext(ctx, what, "pr", pr.ID, "err", err)
+		if readFault(err) {
+			s.log.WarnContext(ctx, what, "pr", pr.ID, "err", err)
+		}
 		next := s.now().Add(driftRetry)
 		return &next
 	}
-	projectID, err := s.attachedProjectRead(ctx, s.db.R, pr.ForgeID, pr.Repo)
+	projectID, err := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo)
 	if err != nil {
 		return again("read a pull request's project for the drift check", err)
 	}
@@ -667,7 +671,7 @@ func (s *Service) runDriftCheck(ctx context.Context, prID int64) error {
 	if err != nil {
 		return err
 	}
-	projectID, err := s.attachedProjectRead(ctx, s.db.R, pr.ForgeID, pr.Repo)
+	projectID, err := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo)
 	if err != nil {
 		return err
 	}

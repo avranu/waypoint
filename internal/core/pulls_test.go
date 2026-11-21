@@ -276,6 +276,7 @@ type prForge struct {
 	refuse    bool       // refuse line comments once
 	tokens    []string   // tokens reviews were posted with
 	listed    []*ForgePR // what ListPRs returns
+	listErr   error      // ListPRs fails with it
 	// ownLogin is the forge token's account when set (TokenLogin); else
 	// every token is the bot account's.
 	ownLogin string
@@ -364,6 +365,9 @@ func (p *prForge) PostPRComment(ctx context.Context, f *Forge, repo string, n in
 func (p *prForge) ListPRs(ctx context.Context, f *Forge, repo string) ([]*ForgePR, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.listErr != nil {
+		return nil, p.listErr
+	}
 	return p.listed, nil
 }
 

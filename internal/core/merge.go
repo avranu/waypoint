@@ -236,7 +236,17 @@ func (s *Service) readinessFor(ctx context.Context, pr *PullRequest, settle bool
 	if settle && attached && len(r.Reasons) == 0 && len(after) == 0 {
 		// Everything else is green: is it green for the base as it is now? A
 		// base that doesn't show Waypoint's last merge yet isn't known (WP-316).
-		if tip, behind, stale := s.behindBase(ctx, pr); behind || stale {
+		tip, behind, stale, err := s.behindBaseErr(ctx, pr)
+		if err != nil {
+			// Not known to be up to date: held, and looked at again soon (WP-1406).
+			if readFault(err) {
+				s.log.WarnContext(ctx, "read whether a pull request is behind its base", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "err", err)
+			}
+			no("whether it is behind %s couldn't be read", cmp(pr.BaseRef, "its base"))
+			if next := s.now().Add(driftRetry); r.wake == nil || next.Before(*r.wake) {
+				r.wake = &next
+			}
+		} else if behind || stale {
 			// A passed stack it was marked ready on stands in for the
 			// update while the base is the stack's heads merged (WP-404).
 			if st := s.readyStack(ctx, pr, tip); st != nil && !stale {
@@ -279,8 +289,27 @@ func (s *Service) readinessFor(ctx context.Context, pr *PullRequest, settle bool
 func (s *Service) reviewHolds(ctx context.Context, pr *PullRequest, settle bool, r *PRReadiness) ([]string, error) {
 	var reasons []string
 	no := func(format string, args ...any) { reasons = append(reasons, fmt.Sprintf(format, args...)) }
+	// A hold that can't be read holds the merge: it isn't "no hold". The
+	// reason says what couldn't be read, the log names the pull request, and
+	// the merge is looked at again soon.
+	retry := func() {
+		if next := s.now().Add(driftRetry); r.wake == nil || next.Before(*r.wake) {
+			r.wake = &next
+		}
+	}
+	unread := func(what, reason string, err error) {
+		if readFault(err) {
+			s.log.WarnContext(ctx, what, "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "err", err)
+		}
+		no("%s", reason)
+		retry()
+	}
 	if on, sev, err := s.gateConfigErr(ctx, pr.ForgeID, pr.Repo); err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read a repo's review gate setting for its merge", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "err", err)
+		}
 		no("the review gate setting couldn't be read") // not "gate off"
+		retry()
 	} else if on {
 		switch {
 		case pr.GateState == GateSuccess && pr.gateSHA == pr.HeadSHA:
@@ -312,16 +341,25 @@ func (s *Service) reviewHolds(ctx context.Context, pr *PullRequest, settle bool,
 	// running" (WP-748, audit 674.1).
 	going, _, auditErr := s.auditGoingErr(ctx, pr.ID)
 	if auditErr != nil {
+		if readFault(auditErr) {
+			s.log.WarnContext(ctx, "read a pull request's running audits for its merge", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "err", auditErr)
+		}
 		no("the running audits couldn't be read")
+		retry()
 	}
-	holds, note := s.auditHolds(ctx, pr.ID, going)
+	holds, note, err := s.auditHolds(ctx, pr.ID, going)
+	if err != nil {
+		unread("read a pull request's audit findings for its merge", "the audit findings couldn't be read", err)
+	}
 	reasons = append(reasons, holds...)
 	if note != "" {
 		r.Notes = append(r.Notes, note)
 	}
 	// Fix-up rounds that spread past what it shipped as wait for their
 	// footprint check, which the babysitter asks for (WP-440).
-	if why := s.footprintDue(ctx, pr); why != "" {
+	if why, err := s.footprintDue(ctx, pr); err != nil {
+		unread("read a pull request's babysit for its footprint check", "its babysit couldn't be read for a footprint check", err)
+	} else if why != "" {
 		no("%s", why)
 	}
 	// A person who said to stop an agent's change holds it; a model's flag
@@ -335,20 +373,38 @@ func (s *Service) reviewHolds(ctx context.Context, pr *PullRequest, settle bool,
 	}
 	// A round's commits reach the branch only when its job ends, so a merge
 	// before then would leave out what the round fixed.
-	if s.roundRunning(ctx, pr.ID) {
+	if running, err := s.roundRunning(ctx, pr.ID); err != nil {
+		unread("read whether a babysitting round is running", "whether a babysitting round is still working on it couldn't be read", err)
+	} else if running {
 		no("a babysitting round is still working on it")
 	}
-	if why := s.babysitParked(ctx, pr); why != "" {
+	if why, err := s.babysitParked(ctx, pr); err != nil {
+		unread("read whether a babysit is parked", "whether its babysit is parked couldn't be read", err)
+	} else if why != "" {
 		no("%s", why)
 	}
 	if going != 0 && settle {
 		// The hold ends by itself when the audit times out: look again then.
-		r.wake = s.auditDeadline(ctx, going)
+		at, err := s.auditDeadline(ctx, going)
+		if err != nil {
+			// The audit still holds the merge; without its deadline, look
+			// again soon instead of never (WP-1406).
+			if readFault(err) {
+				s.log.WarnContext(ctx, "read when a running audit stops holding a merge", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "audit", going, "err", err)
+			}
+			next := s.now().Add(driftRetry)
+			at = &next
+		}
+		if at != nil && (r.wake == nil || at.Before(*r.wake)) {
+			r.wake = at
+		}
 	}
 	if settle {
 		// An adversarial review of one of its tasks pushes its fixes to it
 		// (WP-285): an armed merge waits for it, for so long.
-		if why, until := s.reviewHold(ctx, pr); why != "" {
+		if why, until, err := s.reviewHold(ctx, pr); err != nil {
+			unread("read the adversarial reviews that hold a pull request", "whether an adversarial review is still working on it couldn't be read", err)
+		} else if why != "" {
 			no("%s", why)
 			if r.wake == nil || until.Before(*r.wake) {
 				r.wake = until
@@ -383,7 +439,10 @@ func (s *Service) prShipping(ctx context.Context, actor *Actor, pr *PullRequest)
 	if sh.Checks, err = s.prChecks(ctx, pr); err != nil {
 		return nil, err
 	}
-	on, sev := s.gateConfig(ctx, pr.ForgeID, pr.Repo)
+	on, sev, err := s.gateConfigErr(ctx, pr.ForgeID, pr.Repo)
+	if err != nil {
+		return nil, err
+	}
 	sh.Gate = PRGate{Enabled: on, Severity: sev, State: pr.GateState, Note: pr.gateNote, SHA: pr.gateSHA, Open: pr.gateOpen}
 	findings, err := s.prFindings(ctx, s.db.R, pr.ID)
 	if err != nil {
@@ -598,7 +657,10 @@ func (s *Service) DisarmMerge(ctx context.Context, actor *Actor, prID int64) err
 	if err := s.mayMerge(ctx, actor, pr); err != nil {
 		return err
 	}
-	projectID, _ := s.prAuthority(ctx, actor, pr, RoleViewer)
+	projectID, rerr := s.prAuthority(ctx, actor, pr, RoleViewer)
+	if readFault(rerr) && !missingOrDenied(rerr) { // no rights to see it: no project to name
+		s.log.WarnContext(ctx, "read the project of a pull request whose merge is taken off", "pr", pr.ID, "err", rerr)
+	}
 	// Not while an armed merge is under way: it would go ahead regardless.
 	defer forgeLocks.lock(fmt.Sprintf("merge:%d", pr.ID))()
 	return s.write(ctx, actor, func(t *tx) error {
@@ -691,12 +753,25 @@ func (s *Service) armByLabel(ctx context.Context, t *tx, pr *PullRequest, live b
 // maybeAutoMerge merges an armed pull request if it is ready now.
 func (s *Service) maybeAutoMerge(ctx context.Context, prID int64) {
 	pr, err := s.prByID(ctx, s.db.R, prID)
-	if err != nil || pr.ArmedAt == nil || (pr.State != "open" && pr.State != "draft") || pr.Outside {
+	if errors.Is(err, ErrNotFound) {
+		return // gone
+	}
+	if err != nil {
+		// Not "nothing to merge": the armed pull request stays armed, and is looked at again.
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read an armed pull request", "pr", prID, "err", err)
+		}
+		at := s.now().Add(driftRetry)
+		s.setMergeWake(ctx, prID, &at)
+		return
+	}
+	if pr.ArmedAt == nil || (pr.State != "open" && pr.State != "draft") || pr.Outside {
 		return // a head from outside waits for a person's approval first (WP-281)
 	}
 	s.ensureArmedBabysit(ctx, pr) // an armed pull request is always babysat (WP-188)
 	rd, err := s.readiness(ctx, pr)
 	if err != nil {
+		s.armedMergeUnread(ctx, pr, "read whether an armed pull request is ready", "whether it is ready couldn't be read", err)
 		return
 	}
 	s.recordHolds(ctx, pr, rd.Reasons)
@@ -726,6 +801,10 @@ func (s *Service) maybeAutoMerge(ctx context.Context, prID int64) {
 	}
 	if pr.armedBy != nil {
 		u, err := s.userByID(ctx, s.db.R, *pr.armedBy)
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			s.armedMergeUnread(ctx, pr, "read the person who armed a pull request", "the person who armed it couldn't be read", err)
+			return
+		}
 		if err != nil || u.Disabled {
 			s.armNote(ctx, pr.ID, mergeFailedNote+"the person who armed it is gone")
 			return
@@ -736,6 +815,11 @@ func (s *Service) maybeAutoMerge(ctx context.Context, prID int64) {
 		}
 		actor = &Actor{User: u, Agent: agent}
 		if err := s.mayMerge(ctx, actor, pr); err != nil {
+			if !errors.Is(err, ErrForbidden) && !errors.Is(err, ErrUnauthorized) && !errors.Is(err, ErrNotFound) {
+				// A read that failed says nothing of their rights.
+				s.armedMergeUnread(ctx, pr, "read whether the person who armed a pull request may merge it", "whether "+u.DisplayName+" may merge it couldn't be read", err)
+				return
+			}
 			s.armNote(ctx, pr.ID, mergeFailedNote+u.DisplayName+" can no longer merge it")
 			return
 		}
@@ -745,7 +829,6 @@ func (s *Service) maybeAutoMerge(ctx context.Context, prID int64) {
 		}
 	}
 	if _, err := s.mergeNow(ctx, actor, pr, MergeInput{Style: pr.ArmedStyle, armed: true}, how); err != nil {
-		s.log.WarnContext(ctx, "merge when ready", "repo", pr.Repo, "number", pr.Number, "err", err)
 		var fc *forgeChecking
 		var down *forgeDownError
 		switch {
@@ -758,8 +841,21 @@ func (s *Service) maybeAutoMerge(ctx context.Context, prID int64) {
 			s.retryArmedMerge(ctx, pr, down.what) // the forge didn't answer: no person needed yet (WP-265)
 			return
 		}
+		s.log.WarnContext(ctx, "merge when ready", "repo", pr.Repo, "number", pr.Number, "err", err)
 		s.armNote(ctx, pr.ID, mergeFailedNote+mergeNote(err))
 	}
+}
+
+// armedMergeUnread: a read an armed merge needs failed. The merge is held
+// (nothing was merged, and nothing is marked that would stop a retry), the
+// log names the pull request, and the page says it will look again.
+func (s *Service) armedMergeUnread(ctx context.Context, pr *PullRequest, what, note string, err error) {
+	if readFault(err) {
+		s.log.WarnContext(ctx, what, "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "err", err)
+	}
+	at := s.now().Add(driftRetry)
+	s.armNote(ctx, pr.ID, note+"; Waypoint will try again at "+at.UTC().Format("15:04")+" UTC")
+	s.setMergeWake(ctx, pr.ID, &at)
 }
 
 // mergeFailedNote starts the note of an armed merge that was tried and
@@ -779,6 +875,21 @@ func (s *Service) armNote(ctx context.Context, prID int64, note string) {
 	if _, err := s.db.W.ExecContext(ctx, `UPDATE pull_requests SET armed_note = ? WHERE id = ?`, excerpt(note, 300), prID); err != nil {
 		s.log.WarnContext(ctx, "best-effort write failed", "err", err)
 	}
+}
+
+// heldRead turns a read that failed before a merge into a held merge, tried
+// again, not a failure that asks a person: err is returned as it is when it
+// is an answer (a refusal, out of scope, not found or denied) or already one
+// that retries. what names the read in the log, note what the page says
+// (WP-1406).
+func (s *Service) heldRead(ctx context.Context, pr *PullRequest, what, note string, err error) error {
+	var down *forgeDownError
+	var fc *forgeChecking
+	if !readFault(err) || IsInvalid(err) || errors.Is(err, errArmOutOfScope) || missingOrDenied(err) || errors.As(err, &down) || errors.As(err, &fc) {
+		return err
+	}
+	s.log.WarnContext(ctx, what, "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "err", err)
+	return &forgeDownError{what: note, then: "try again", err: err}
 }
 
 // mergeNow merges after reading the forge afresh: the pull request, its
@@ -804,7 +915,7 @@ func (s *Service) mergeNow(ctx context.Context, actor *Actor, pr *PullRequest, i
 	}
 	cur, err := s.recordPR(ctx, f, pr.Repo, fp, false)
 	if err != nil {
-		return "", err
+		return "", s.heldRead(ctx, pr, "record the pull request before merging it", "the pull request couldn't be recorded", err)
 	}
 	if cur.State == "merged" || cur.State == "closed" {
 		return "", invalid("this pull request is %s", cur.State)
@@ -817,7 +928,7 @@ func (s *Service) mergeNow(ctx context.Context, actor *Actor, pr *PullRequest, i
 	}
 	if in.armed && scopedArm(cur) {
 		if err := s.armStillInScope(ctx, cur); err != nil {
-			return "", err
+			return "", s.heldRead(ctx, pr, "check an armed merge is still in scope", "whether the arming is still in scope couldn't be read", err)
 		}
 	}
 	// Fresh checks and gate for the head about to be merged.
@@ -834,7 +945,7 @@ func (s *Service) mergeNow(ctx context.Context, actor *Actor, pr *PullRequest, i
 	// A person merging now doesn't wait for reviews to settle; an armed merge does.
 	rd, err := s.readinessFor(ctx, cur, in.armed)
 	if err != nil {
-		return "", err
+		return "", s.heldRead(ctx, pr, "work out whether a pull request may merge", "whether it may merge couldn't be read", err)
 	}
 	// Nor for the pull requests it is set to merge after: merging it now
 	// is their call (WP-912).
@@ -862,7 +973,15 @@ func (s *Service) mergeNow(ctx context.Context, actor *Actor, pr *PullRequest, i
 		del = *in.DeleteBranch
 	}
 	style := cmp(in.Style, cur.ArmedStyle)
-	projectID, _ := s.attachedProjectFor(ctx, actor, cur)
+	projectID, err := s.attachedProjectFor(ctx, actor, cur)
+	if err != nil {
+		// Before anything merges, and a read that failed isn't a verdict on
+		// the merge: an armed merge tries again rather than asking a person.
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read the project a merge is audited under", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "err", err)
+		}
+		return "", &forgeDownError{what: "the project the merge is audited under couldn't be read", then: "try again", err: err}
+	}
 	// The base is being merged into: until the merge shows in a read of it,
 	// the next in the queue isn't updated with that read (WP-316).
 	s.noteMerging(cur)
@@ -908,10 +1027,19 @@ func (s *Service) mergeNow(ctx context.Context, actor *Actor, pr *PullRequest, i
 	s.audit(ctx, actor, e)
 	// The forge's word, so the page shows it merged before the webhook arrives.
 	var sha string
-	if fresh, err := prc.GetPR(ctx, f, pr.Repo, pr.Number); err == nil {
+	if fresh, err := prc.GetPR(ctx, f, pr.Repo, pr.Number); err != nil {
+		// It did merge: the page and the merge sha wait for the forge's webhook or the next sync.
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read a pull request after merging it", "repo", pr.Repo, "number", pr.Number, "err", err)
+		}
+	} else {
 		sha = fresh.MergeSHA
 		s.noteMerged(cur, sha) // before the page shows it merged: the next front reads the base after this
-		_, _ = s.recordPR(ctx, f, pr.Repo, fresh, false)
+		if _, err := s.recordPR(ctx, f, pr.Repo, fresh, false); err != nil {
+			if readFault(err) {
+				s.log.WarnContext(ctx, "record a pull request after merging it", "repo", pr.Repo, "number", pr.Number, "err", err)
+			}
+		}
 	}
 	if rd.stack != nil {
 		s.stackMerged(ctx, f, cur, rd.stack, sha)
@@ -956,7 +1084,7 @@ func (s *Service) armStillInScope(ctx context.Context, pr *PullRequest) error {
 // request's repo (0 if none: the audit entry is then not about a project).
 func (s *Service) attachedProjectFor(ctx context.Context, actor *Actor, pr *PullRequest) (int64, error) {
 	if actor.User.ID == 0 {
-		return s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo), nil
+		return s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo)
 	}
 	return s.prAuthority(ctx, actor, pr, RoleViewer)
 }
@@ -1020,7 +1148,11 @@ func (s *Service) CheckPullRequest(ctx context.Context, actor *Actor, prID int64
 	if f, err := s.forgeByID(bg, pr.ForgeID); err == nil && f.token != "" {
 		if prc, ok := s.Forges.(ForgePRs); ok {
 			if fp, err := prc.GetPR(bg, f, pr.Repo, pr.Number); err == nil {
-				_, _ = s.recordPR(bg, f, pr.Repo, fp, false)
+				if _, err := s.recordPR(bg, f, pr.Repo, fp, false); err != nil {
+					if readFault(err) {
+						s.log.WarnContext(bg, "record a pull request after reading it from the forge", "repo", pr.Repo, "number", pr.Number, "err", err)
+					}
+				}
 			}
 		}
 	}

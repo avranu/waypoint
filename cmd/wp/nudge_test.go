@@ -275,23 +275,24 @@ func TestTaskNudges(t *testing.T) {
 	heldOpen = func(f string) bool { return f == running }
 	for _, c := range []struct {
 		tool, cmd, path string
-		subagent        bool
+		who             caller
 		want            string
 		deny            bool
 	}{
-		{"Bash", "sleep 60; cat " + running, "", false, "task-wait", true},
-		{"Bash", "sleep 2 && tail -5 " + running + " | cut -c1-200", "", false, "task-wait", true},
-		{"Bash", "sleep 60; cat " + running, "", true, "task-poll", false},
-		{"Bash", "tail -20 " + running, "", false, "task-poll", false},
-		{"Read", "", running, false, "task-poll", false},
-		{"Bash", "sleep 60; cat " + done, "", false, "", false},
-		{"Read", "", done, false, "", false},
-		{"Bash", "tail " + agent, "", false, "agent-output", false},
-		{"Read", "", agent, false, "agent-output", false},
-		{"Bash", "sleep 60; ls " + dir, "", false, "", false},
-		{"Bash", "cat tasks/brun1.output", "", false, "", false},
+		{"Bash", "sleep 60; cat " + running, "", callerMain, "task-wait", true},
+		{"Bash", "sleep 2 && tail -5 " + running + " | cut -c1-200", "", callerMain, "task-wait", true},
+		{"Bash", "sleep 60; cat " + running, "", callerBg, "task-wait", true},
+		{"Bash", "sleep 60; cat " + running, "", callerFg, "task-wait", false},
+		{"Bash", "tail -20 " + running, "", callerMain, "task-poll", false},
+		{"Read", "", running, callerMain, "task-poll", false},
+		{"Bash", "sleep 60; cat " + done, "", callerMain, "", false},
+		{"Read", "", done, callerMain, "", false},
+		{"Bash", "tail " + agent, "", callerMain, "agent-output", false},
+		{"Read", "", agent, callerMain, "agent-output", false},
+		{"Bash", "sleep 60; ls " + dir, "", callerMain, "", false},
+		{"Bash", "cat tasks/brun1.output", "", callerMain, "", false},
 	} {
-		kind, text, deny := taskNudge(c.tool, c.cmd, c.path, c.subagent)
+		kind, text, deny := taskNudge(c.tool, c.cmd, c.path, c.who)
 		if kind != c.want || deny != c.deny {
 			t.Errorf("%s %q %q: %q deny=%v, want %q deny=%v", c.tool, c.cmd, c.path, kind, deny, c.want, c.deny)
 		}
@@ -304,11 +305,12 @@ func TestTaskNudges(t *testing.T) {
 	// call is never refused, nor a background sleep loop noted.
 	t.Setenv("WAYPOINT_CONFIG_DIR", t.TempDir())
 	t.Setenv("WP_GUARD", "")
+	tc := &cli{dir: t.TempDir()}
 	hookWith := func(h func(*cli, io.Reader, io.Writer), cmd string, bg bool, agentID string) string {
 		in, _ := json.Marshal(map[string]any{"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": dir, "agent_id": agentID,
 			"tool_input": map[string]any{"command": cmd, "run_in_background": bg}})
 		var out bytes.Buffer
-		h(&cli{}, bytes.NewReader(in), &out)
+		h(tc, bytes.NewReader(in), &out)
 		return out.String()
 	}
 	hook := func(cmd string, bg bool, agentID string) string { return hookWith(hookClaudeNudge, cmd, bg, agentID) }
@@ -319,11 +321,24 @@ func TestTaskNudges(t *testing.T) {
 	if out := hook("sleep 60; cat "+running, false, ""); out != "" {
 		t.Errorf("the nudge answered a refused call: %q", out)
 	}
-	if out := guard("sleep 60; cat "+running, false, "agent-1"); out != "" {
-		t.Errorf("the guard refused a sub-agent: %q", out)
+	// A sub-agent's too (WP-1443): the notice of its background task is as
+	// certain, and a sub-agent that ends its turn with one running is not asked
+	// for its report.
+	startAgent(tc, "", "agent-1", true)
+	if out := guard("sleep 60; cat "+running, false, "agent-1"); !strings.Contains(out, `"permissionDecision":"deny"`) || !strings.Contains(out, "brun1 is still running") {
+		t.Errorf("the guard did not refuse a background sub-agent: %q", out)
 	}
-	if out := hook("sleep 60; cat "+running, false, "agent-1"); strings.Contains(out, "permissionDecision") || !strings.Contains(out, "additionalContext") {
-		t.Errorf("sub-agent output %q", out)
+	if out := hook("sleep 60; cat "+running, false, "agent-1"); out != "" {
+		t.Errorf("the nudge answered a refused sub-agent call: %q", out)
+	}
+	// A foreground sub-agent (or one not known to be a background one) is
+	// only noted: its shells are reaped when it answers, so ending the turn
+	// would stop the task.
+	if out := guard("sleep 60; cat "+running, false, "agent-fg"); strings.Contains(out, `"permissionDecision":"deny"`) {
+		t.Errorf("the guard refused a foreground sub-agent: %q", out)
+	}
+	if out := hook("sleep 60; cat "+running, false, "agent-fg"); !strings.Contains(out, "600000") || strings.Contains(out, "End your turn") {
+		t.Errorf("the nudge's note for a foreground sub-agent: %q", out)
 	}
 	if out := guard("sleep 60; cat "+running, true, ""); out != "" {
 		t.Errorf("guard refused a background call: %q", out)

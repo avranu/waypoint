@@ -128,7 +128,13 @@ func (s *Service) filedFrom(ctx context.Context, q queryer, actor *Actor, i *Iss
 		f.DeclinedAt = &at
 	}
 	if r.projectID.Valid {
-		if role, _ := s.projectRole(ctx, q, actor, r.projectID.Int64); role > RoleNone {
+		role, rerr := s.projectRole(ctx, q, actor, r.projectID.Int64)
+		if rerr != nil {
+			if readFault(rerr) {
+				s.log.WarnContext(ctx, "project role failed", "projectid", r.projectID.Int64, "err", rerr)
+			}
+		}
+		if role > RoleNone {
 			f.Project, f.Repo = s.projectKeyOf(ctx, r.projectID.Int64), r.repo
 		}
 	} else {

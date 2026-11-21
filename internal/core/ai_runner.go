@@ -115,7 +115,13 @@ func (s *Service) runnerGate(ctx context.Context, projectID int64, repo string, 
 	var n int
 	err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM project_members m JOIN users u ON u.id = m.user_id
 		WHERE m.project_id = ? AND m.role IN ('owner','editor') AND u.disabled = 0 AND u.username = ? COLLATE NOCASE`, projectID, fp.Author).Scan(&n)
-	if err != nil || fp.Author == "" || n == 0 {
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read whether a pull request's author is a project member", "project", projectID, "repo", repo, "err", err)
+		}
+		return "whether its author is a member of this project couldn't be read, so it isn't handed to a coding agent on a runner now"
+	}
+	if fp.Author == "" || n == 0 {
 		return fmt.Sprintf("%s isn't a member of this project, and only a member's pull request is handed to a coding agent on a runner", cmp(fp.Author, "its author"))
 	}
 	return ""

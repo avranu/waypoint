@@ -384,13 +384,21 @@ func (s *Service) queueStage(ctx context.Context, pr *PullRequest) string {
 }
 
 // inQueue: the pull request holds a place in its merge queue, with a
-// babysit that moves it on (not one waiting for a person).
-func (s *Service) inQueue(ctx context.Context, pr *PullRequest) bool {
+// babysit that moves it on (not one waiting for a person). A babysit that
+// can't be read is an error, not "left the queue": the caller leaves the
+// pull request be until the next look (WP-1406).
+func (s *Service) inQueue(ctx context.Context, pr *PullRequest) (bool, error) {
 	if pr.QueuedAt == nil || pr.ArmedAt == nil {
-		return false
+		return false, nil
 	}
 	b, err := s.activeBabysit(ctx, s.db.R, pr.ID)
-	return err == nil && b != nil && slices.Contains(queueStates, b.State)
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read in queue", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "err", err)
+		}
+		return false, err
+	}
+	return b != nil && slices.Contains(queueStates, b.State), nil
 }
 
 // queueStates are the babysit states that hold a place in a merge queue.

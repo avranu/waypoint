@@ -162,7 +162,7 @@ func TestReviewRoundAuditFirst(t *testing.T) {
 		t.Fatalf("round audit = %+v %+v (owner %d)", ra, au, owner)
 	}
 	pr := &PullRequest{URL: "https://git.example/acme/app/pulls/7", Repo: "acme/app", Number: 7}
-	if why, _ := a.s.reviewHold(a.ctx, pr); why == "" {
+	if why, _, _ := a.s.reviewHold(a.ctx, pr); why == "" {
 		t.Error("the merge isn't held while the audit runs")
 	}
 	// A second look while it runs asks for no second audit.
@@ -517,7 +517,7 @@ func TestReviewRoundFallsBack(t *testing.T) {
 			t.Fatalf("gave up with a runner online: %+v %+v %+v %+v", a.step(), a.jobs, ra, au)
 		}
 		pr := &PullRequest{URL: "https://git.example/acme/app/pulls/7", Repo: "acme/app", Number: 7}
-		if why, until := a.s.reviewHold(a.ctx, pr); why == "" || until == nil || !until.After(a.clockNow()) {
+		if why, until, _ := a.s.reviewHold(a.ctx, pr); why == "" || until == nil || !until.After(a.clockNow()) {
 			t.Errorf("the merge went on without the queued review: %q %v", why, until)
 		}
 		// And when a runner gets to it in time, the round uses it.
@@ -717,7 +717,7 @@ func TestReviewRoundFallsBack(t *testing.T) {
 		if w.Job == nil || w.Job.Kind != JobAudit {
 			t.Fatalf("no audit job: %+v", w.Job)
 		}
-		if why, _ := a.s.reviewHold(a.ctx, pr); why == "" {
+		if why, _, _ := a.s.reviewHold(a.ctx, pr); why == "" {
 			t.Error("the hold lapsed when a runner took the audit")
 		}
 		res := auditResult("Read it.", map[string]any{"title": "Merge reads a nil map", "path": "internal/merge.go", "line": 10, "severity": "major",
@@ -727,7 +727,7 @@ func TestReviewRoundFallsBack(t *testing.T) {
 		}
 		a.s.Wait()
 		a.s.Wait()
-		if why, _ := a.s.reviewHold(a.ctx, pr); why == "" {
+		if why, _, _ := a.s.reviewHold(a.ctx, pr); why == "" {
 			t.Error("the hold lapsed between the audit and the round")
 		}
 	})

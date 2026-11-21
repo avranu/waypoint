@@ -23,6 +23,7 @@ type landForge struct {
 	refuse    bool                 // the forge refuses manual merges
 	noRepo    bool                 // the repo is gone: its default branch is a 404
 	defCalls  int
+	aheadErr  error // Ahead fails with it
 	deleted   []string
 	marked    []string // "number:sha"
 	closed    []int
@@ -53,6 +54,9 @@ func (g *landForge) Branches(ctx context.Context, f *Forge, repo string) ([]Forg
 func (g *landForge) Ahead(ctx context.Context, f *Forge, repo, base, head string) (int, error) {
 	g.lm.Lock()
 	defer g.lm.Unlock()
+	if g.aheadErr != nil {
+		return 0, g.aheadErr
+	}
 	if g.contained[base+"..."+head] {
 		return 0, nil
 	}

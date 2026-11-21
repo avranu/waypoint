@@ -689,7 +689,13 @@ func (s *Service) canDecide(ctx context.Context, actor *Actor, r *Request, roles
 	}
 	role, ok := roles[r.projectID.Int64]
 	if !ok {
-		role, _ = s.projectRole(ctx, s.db.R, actor, r.projectID.Int64)
+		var rerr error
+		role, rerr = s.projectRole(ctx, s.db.R, actor, r.projectID.Int64)
+		if rerr != nil {
+			if readFault(rerr) {
+				s.log.WarnContext(ctx, "project role failed", "projectid", r.projectID.Int64, "err", rerr)
+			}
+		}
 		roles[r.projectID.Int64] = role
 	}
 	return role >= RoleEditor
@@ -990,7 +996,13 @@ func (s *Service) createRequestTx(ctx context.Context, t *tx, actor *Actor, sess
 	case strings.EqualFold(in.Project, "me"):
 		projectID = sql.NullInt64{}
 	case !projectID.Valid && sess != nil && sess.projectID.Valid:
-		if r, _ := s.projectRole(ctx, t, actor, sess.projectID.Int64); r > RoleNone {
+		r, rerr := s.projectRole(ctx, t, actor, sess.projectID.Int64)
+		if rerr != nil {
+			if readFault(rerr) {
+				s.log.WarnContext(ctx, "project role failed", "projectid", sess.projectID.Int64, "err", rerr)
+			}
+		}
+		if r > RoleNone {
 			projectID = sess.projectID
 		}
 	}
@@ -1000,7 +1012,13 @@ func (s *Service) createRequestTx(ctx context.Context, t *tx, actor *Actor, sess
 		var parent sql.NullInt64
 		_ = t.QueryRowContext(ctx, `SELECT parent_id FROM projects WHERE id = ?`, projectID.Int64).Scan(&parent)
 		if parent.Valid {
-			if r, _ := s.projectRole(ctx, t, actor, parent.Int64); r > RoleNone {
+			r, rerr := s.projectRole(ctx, t, actor, parent.Int64)
+			if rerr != nil {
+				if readFault(rerr) {
+					s.log.WarnContext(ctx, "project role failed", "project", projectID.Int64, "err", rerr)
+				}
+			}
+			if r > RoleNone {
 				projectID = parent
 			}
 		}
