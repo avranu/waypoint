@@ -291,7 +291,13 @@ func (o ownReview) covers(headTime int64) bool {
 // as no).
 func (s *Service) ownReviewed(ctx context.Context, g *reviewGate, headTime int64) bool {
 	o, err := s.ownReviewFor(ctx, g)
-	return err == nil && o.id != 0 && o.covers(headTime)
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read own reviewed", "headTime", headTime, "err", err)
+		}
+		return false
+	}
+	return o.id != 0 && o.covers(headTime)
 }
 
 // ownReviewTitle is an own review's one line.

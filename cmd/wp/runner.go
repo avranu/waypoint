@@ -798,6 +798,12 @@ func (p *runnerProc) execute(ctx context.Context, run *jobRun, job *claimedJob) 
 			return failed("bad job input: %v", err)
 		}
 		return p.execAutopilotStart(ctx, run, in)
+	case "objective":
+		var in core.ObjectiveJob
+		if err := json.Unmarshal(job.Input, &in); err != nil {
+			return failed("bad job input: %v", err)
+		}
+		return p.execObjective(ctx, run, in)
 	case "sandbox_drill":
 		return p.execSandboxDrill(ctx, run, job)
 	}

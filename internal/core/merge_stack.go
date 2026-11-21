@@ -157,7 +157,13 @@ func (s *Service) liveStackOf(ctx context.Context, prID int64) (*queueStack, err
 // is (an update would change the head the stack tests).
 func (s *Service) stackHolds(ctx context.Context, pr *PullRequest) bool {
 	st, err := s.liveStackOf(ctx, pr.ID)
-	return err == nil && st != nil && st.live() && sameSHA(st.own().SHA, pr.HeadSHA)
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read stack holds", "pr", pr.ID, "err", err)
+		}
+		return true
+	}
+	return st != nil && st.live() && sameSHA(st.own().SHA, pr.HeadSHA)
 }
 
 // stackPRByCommit is the pull request a live stack on this commit is for (0: none).
@@ -1322,6 +1328,13 @@ func (s *Service) sweepStacks(ctx context.Context) {
 			continue
 		}
 		pr, err := s.prByID(ctx, s.db.R, st.PRID)
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			// Unread is not "gone": the stack stands, and is looked at again.
+			if readFault(err) {
+				s.log.WarnContext(ctx, "read a merge queue stack's pull request", "stack", st.ID, "pr", st.PRID, "err", err)
+			}
+			continue
+		}
 		why := ""
 		switch {
 		case err != nil:
@@ -1335,8 +1348,14 @@ func (s *Service) sweepStacks(ctx context.Context) {
 			why = "its pull request is " + pr.State
 		case !sameSHA(st.own().SHA, pr.HeadSHA):
 			why = fmt.Sprintf("#%d's head moved", pr.Number)
-		case !s.inQueue(ctx, pr):
-			why = fmt.Sprintf("#%d left the merge queue", pr.Number)
+		default:
+			queued, qerr := s.inQueue(ctx, pr)
+			if qerr != nil {
+				continue // unread is not "left the queue": the stack stands, and is looked at again
+			}
+			if !queued {
+				why = fmt.Sprintf("#%d left the merge queue", pr.Number)
+			}
 		}
 		if why == "" {
 			continue

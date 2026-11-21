@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -206,6 +207,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/v1/issues/{key}/objective", a(s.clearObjective))
 	mux.HandleFunc("POST /api/v1/issues/{key}/objective/confirm", a(s.confirmObjective))
 	mux.HandleFunc("POST /api/v1/issues/{key}/objective/checks", a(s.recordObjectiveCheck))
+	mux.HandleFunc("POST /api/v1/issues/{key}/objective/go", a(s.objectiveGo))
 	mux.HandleFunc("GET /api/v1/experiments", a(s.listExperiments)) // WP-254
 	mux.HandleFunc("POST /api/v1/experiments/{key}/start", a(s.startExperiment))
 	mux.HandleFunc("POST /api/v1/experiments/{key}/stop", a(s.stopExperiment))
@@ -1675,7 +1677,12 @@ func (s *Server) getIssue(w http.ResponseWriter, r *http.Request) (any, error) {
 		return nil, err
 	}
 	if r.URL.Query().Get("format") == "text" {
-		comments, _ := s.svc.ListComments(r.Context(), actorFrom(r), d.Key)
+		comments, rerr := s.svc.ListComments(r.Context(), actorFrom(r), d.Key)
+		if rerr != nil {
+			if !errors.Is(rerr, context.Canceled) {
+				s.log.WarnContext(r.Context(), "list comments failed", "key", d.Key, "err", rerr)
+			}
+		}
 		return rawResponse{"text/plain; charset=utf-8", []byte(issueTextHint(d, comments, true))}, nil
 	}
 	return d, nil

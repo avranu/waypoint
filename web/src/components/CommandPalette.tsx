@@ -12,6 +12,7 @@ import {
   FolderPlus,
   Home,
   Inbox,
+  Target,
   Keyboard,
   Lightbulb,
   Moon,
@@ -254,6 +255,13 @@ function Palette({
         text: 'inbox notifications',
         icon: <Inbox />,
         run: go('/inbox'),
+      },
+      {
+        id: 'objectives',
+        label: 'Go to Objectives',
+        text: 'objectives rounds check judge goal loop',
+        icon: <Target />,
+        run: go('/objectives'),
       },
       {
         id: 'pages',

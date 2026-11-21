@@ -38,6 +38,11 @@ const KINDS: [string, string, string][] = [
     'Deploys',
     'A production or staging environment of a project you own runs behind its branch: a release or deploy didn’t happen',
   ],
+  [
+    'objective',
+    'Objectives',
+    'An objective is proposed for you to read, met, ended, needs you, or has gone rounds without getting nearer',
+  ],
   ['goals', 'Goals', 'The weekly check finds work drifting from a project’s goals'],
   ['sandbox', 'Sandbox', 'Someone changes the sandbox of a project you own, or of a machine'],
   [

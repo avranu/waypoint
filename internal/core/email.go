@@ -84,7 +84,13 @@ func (s *Service) emailSettings(ctx context.Context) (*EmailSettings, error) {
 // EmailConfigured says whether email can be sent.
 func (s *Service) EmailConfigured(ctx context.Context) bool {
 	es, err := s.emailSettings(ctx)
-	return err == nil && es.Configured
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read email configured", "err", err)
+		}
+		return false
+	}
+	return es.Configured
 }
 
 // GetEmailSettings shows the SMTP settings to an admin, without the password.

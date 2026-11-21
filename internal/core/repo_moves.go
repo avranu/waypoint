@@ -130,7 +130,11 @@ func (s *Service) checkRepoNames(ctx context.Context) {
 	for _, a := range list {
 		f, ok := forges[a.forgeID]
 		if !ok {
-			f, _ = s.forgeByID(ctx, a.forgeID)
+			var rerr error
+			f, rerr = s.forgeByID(ctx, a.forgeID)
+			if readFault(rerr) && !errors.Is(rerr, ErrNotFound) { // a forge removed since: its repos aren't followed
+				s.log.WarnContext(ctx, "read the forge of an attached repo to follow its moves", "forge", a.forgeID, "repo", a.repo, "err", rerr)
+			}
 			forges[a.forgeID] = f
 		}
 		if f == nil {

@@ -169,7 +169,13 @@ func (s *Service) logRefusal(ctx context.Context, t *tx, actor *Actor, x *AgentS
 	// The session's project, when the person may see it, as for a request.
 	var project sql.NullInt64
 	if x.projectID.Valid {
-		if r, _ := s.projectRole(ctx, t, actor, x.projectID.Int64); r > RoleNone {
+		r, rerr := s.projectRole(ctx, t, actor, x.projectID.Int64)
+		if rerr != nil {
+			if readFault(rerr) {
+				s.log.WarnContext(ctx, "project role failed", "projectid", x.projectID.Int64, "err", rerr)
+			}
+		}
+		if r > RoleNone {
 			project = x.projectID
 		}
 	}

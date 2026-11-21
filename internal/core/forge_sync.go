@@ -450,7 +450,13 @@ func (s *Service) repoPostsComments(ctx context.Context, projectID, forgeID int6
 	var n int
 	err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM project_repos WHERE project_id = ? AND forge_id = ? AND lower(repo) = lower(?)
 		AND sync_issues = 1 AND post_comments = 1`, projectID, forgeID, repo).Scan(&n)
-	return err == nil && n > 0
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read repo posts comments", "forgeID", forgeID, "repo", repo, "err", err)
+		}
+		return false
+	}
+	return n > 0
 }
 
 // repoSynced: the project syncs issues for this repo from this forge.
@@ -458,7 +464,13 @@ func (s *Service) repoSynced(ctx context.Context, projectID, forgeID int64, repo
 	var n int
 	err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM project_repos WHERE project_id = ? AND forge_id = ? AND lower(repo) = lower(?) AND sync_issues = 1`,
 		projectID, forgeID, repo).Scan(&n)
-	return err == nil && n > 0
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read repo synced", "forgeID", forgeID, "repo", repo, "err", err)
+		}
+		return false
+	}
+	return n > 0
 }
 
 // pushStateToMirrors closes or reopens an issue's other forge copies after
@@ -597,7 +609,13 @@ func (s *Service) namespaceIsGroup(ctx context.Context, f *Forge, ns string, hin
 		return false
 	}
 	g, err := d.IsGroup(ctx, f, ns)
-	return err == nil && g
+	if err != nil {
+		if readFault(err) && !isStatus(err, http.StatusNotFound) {
+			s.log.WarnContext(ctx, "read namespace is group", "ns", ns, "err", err)
+		}
+		return false
+	}
+	return g
 }
 
 // namespaceProject is the project standing for an organisation or group,

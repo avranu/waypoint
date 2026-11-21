@@ -543,7 +543,7 @@ func TestBabysitEscalatesAfterAFixThatFailed(t *testing.T) {
 	if b = be.babysit(); !resting(&b.Rounds[2]) || len(be.jobs()) != 3 || !strings.Contains(b.Rounds[2].Parked, "forge-checks/codeql") {
 		t.Fatalf("after the assessor's fix failed: %+v", b)
 	}
-	if why := be.s.babysitParked(be.ctx, be.pr(7)); why == "" {
+	if why, _ := be.s.babysitParked(be.ctx, be.pr(7)); why == "" {
 		t.Error("resting, it doesn't hold the merge")
 	}
 }

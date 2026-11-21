@@ -236,7 +236,13 @@ func (s *Service) PrepDue(ctx context.Context, a *Actor, machine string, limit i
 	if limit <= 0 || limit > prepDueMax {
 		limit = prepDueMax
 	}
-	if ok, _ := s.runAITaskConfigured(ctx, "prep"); !ok {
+	// A lookup that failed is not "no model": the caller is told, not shown
+	// an empty list.
+	ok, rerr := s.aiTaskSetUp(ctx, "prep")
+	if rerr != nil {
+		return nil, rerr
+	}
+	if !ok {
 		return out, nil
 	}
 	places, err := s.sessionPlaces(ctx, a.User.ID, jobNeeds{})
@@ -409,8 +415,11 @@ func (s *Service) UploadPrep(ctx context.Context, a *Actor, key string, b PrepBu
 	if err != nil {
 		return nil, err
 	}
+	// Read before the request is queued: a surplus prep the gateway turns
+	// away at once is deleted, and the upload it answered was still taken.
+	p, err := s.prepOf(ctx, i, false)
 	s.queuePrep(i.ID, i.Key)
-	return s.prepOf(ctx, i, false)
+	return p, err
 }
 
 // prepPathOK: a plain relative path, not too long.

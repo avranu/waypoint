@@ -152,9 +152,7 @@ func cmdFinish(c *cli, args []string) error {
 		}
 	}
 	for _, k := range keys {
-		if c.objectiveBeforeShip(k) { // WP-927: a round's end is judged by its last check
-			so.before = "the objective's check has a result to read" // WP-1093
-		}
+		c.objectiveShipNote(k) // WP-927: Waypoint reads a round's end itself; nothing is measured here
 	}
 	if shipping {
 		s := c.rewritesNotice(shipKey(keys), *f.base)
