@@ -738,8 +738,12 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 			}
 			auditNotice = n
 			// A round with no audit asked yet has it asked by its step, which
-			// reads what is pushed then: this ship's head (roundBehind).
-			s.noteRoundHead(ctx, id, in.HeadTime, in.HeadSHA)
+			// reads what is pushed then: this ship's head (roundBehind). A
+			// head that can't be written fails the ship: the round would
+			// record an older head than its audit reads.
+			if err := s.noteRoundHead(ctx, id, in.HeadTime, in.HeadSHA); err != nil {
+				return false, "", "", err
+			}
 		}
 		if state == "" {
 			if tr := assess(); tr.decision.Action == triageSkip {

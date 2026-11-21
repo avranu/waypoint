@@ -226,6 +226,35 @@ func TestShipRecordsTheHeadItsAuditReads(t *testing.T) {
 	}
 }
 
+// A ship that can't write the head its audit will read is not taken as the
+// round's start: it fails rather than leave the round recording a head older
+// than the one the step's audit then reads (WP-1325, 1ada1bbf7 on main).
+func TestShipFailsWhenTheRoundsHeadIsNotWritten(t *testing.T) {
+	a, _, _, key := startEnv(t)
+	at := a.clockNow().Unix()
+	if _, err := a.shipStarted(key, ShipAuto, headAt(at-300)); err != nil {
+		t.Fatal(err)
+	}
+	first := a.newestRoundID()
+	a.s.Wait()
+	for _, q := range []string{`UPDATE work_log SET audit_id = NULL, audit_at = NULL WHERE id = ` + itoa64(first), `DELETE FROM code_audits`,
+		`CREATE TRIGGER no_head BEFORE UPDATE OF before_pr ON work_log BEGIN SELECT RAISE(ABORT, 'head not written'); END`} {
+		if _, err := a.s.db.W.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.lapse(time.Minute)
+	if _, err := a.shipStarted(key, ShipAuto, headAt(at+30)); err == nil {
+		t.Fatal("the ship went on though the round's head was not written")
+	}
+	if n := a.auditsOfRound(first); n != 0 {
+		t.Errorf("%d audits asked by a ship that failed", n)
+	}
+	if bp := roundBeforePR(a.ctx, a.s.db.R, first); bp == nil || bp.HeadTime != at-300 {
+		t.Errorf("recorded head = %+v, want the old %d", bp, at-300)
+	}
+}
+
 func headIs(at int64, sha string) func(*OpenPRInput) {
 	return func(in *OpenPRInput) { in.HeadTime, in.HeadSHA = at, sha }
 }
