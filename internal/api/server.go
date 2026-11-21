@@ -502,6 +502,8 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 		status, msg = http.StatusForbidden, err.Error()
 	case errors.Is(err, core.ErrConflict):
 		status, msg = http.StatusConflict, err.Error()
+	case errors.Is(err, errBodyTooLarge):
+		status, msg = http.StatusRequestEntityTooLarge, err.Error()
 	case errors.Is(err, errBadRequest):
 		status, msg = http.StatusBadRequest, err.Error()
 	case errors.Is(err, core.ErrUnavailable):
@@ -526,8 +528,10 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 
 var (
 	errBadRequest = errors.New("bad request")
-	errTooMany    = errors.New("too many attempts, try again in a minute")
-	errJobTooMany = fmt.Errorf("this runner job's token made too many requests; try again in a minute: %w", errTooMany)
+	// errBodyTooLarge: a request body over what its route reads (413).
+	errBodyTooLarge = errors.New("request body too large")
+	errTooMany      = errors.New("too many attempts, try again in a minute")
+	errJobTooMany   = fmt.Errorf("this runner job's token made too many requests; try again in a minute: %w", errTooMany)
 )
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -616,7 +620,16 @@ func decodeBodyLarge(r *http.Request, v any, max int64, tooLarge string) error {
 }
 
 func decodeBodyMax(r *http.Request, v any, max int64) (empty bool, err error) {
-	dec := json.NewDecoder(io.LimitReader(r.Body, max))
+	// One byte over the limit tells a body that was cut from one that was
+	// never longer: the first would read as broken JSON.
+	b, err := io.ReadAll(io.LimitReader(r.Body, max+1))
+	if err != nil {
+		return false, fmt.Errorf("%w: %v", errBadRequest, err)
+	}
+	if int64(len(b)) > max {
+		return false, fmt.Errorf("%w (limit %d)", errBodyTooLarge, max)
+	}
+	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		if errors.Is(err, io.EOF) {
