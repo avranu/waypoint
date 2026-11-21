@@ -36,7 +36,7 @@ const (
 	agentsWaitDefault = 9 * time.Minute
 )
 
-var reWaitCall = regexp.MustCompile(`(^|[\s;&|(/])wp\s+agents\s+wait\b`)
+var reWaitCall = regexp.MustCompile(`(^|[;&|(/]\s*)wp\s+agents\s+wait\b`)
 
 // claimWait records, from the guard hook, that a Bash call is about to run
 // `wp agents wait`, and which agent made it: the command cannot tell, since a

@@ -29,8 +29,8 @@ func (c *cli) hookRefusalFor(in hookEventInput) (kind, text string) {
 // that also needs the task note scans the task's output file once (WP-1398).
 // task is called only for a foreground Bash call that passed the other checks
 // and could be refused.
-// noop is called only for a foreground call that does nothing but print; the
-// nudge hook passes a stub, since it only needs to know the call is refused.
+// noop is called only for a foreground call that does nothing but print; it
+// returns "" when the agent has nothing to wait for, and the call is not refused.
 func hookRefusalWith(in hookEventInput, task func(cmd string) (kind, text string, deny bool), noop func() string) (kind, text string) {
 	if in.ToolName != "Bash" {
 		return "", ""
@@ -65,8 +65,11 @@ func hookRefusalWith(in hookEventInput, task func(cmd string) (kind, text string
 		}
 	}
 	// A background call is a timer or a waiter, however little it prints.
+	// Only when the agent has something to wait for (noop returns "" if not).
 	if !ti.Bg && pureNoop(ti.Command) {
-		return "noop-poll", noop()
+		if text := noop(); text != "" {
+			return "noop-poll", text
+		}
 	}
 	return "", ""
 }

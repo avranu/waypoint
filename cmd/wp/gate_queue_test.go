@@ -244,11 +244,13 @@ func TestGateQueue(t *testing.T) {
 		}
 	})
 	t.Run("a person's pause is not held", func(t *testing.T) {
-		// activePause reads the pause file; an absent one means no pause, so
-		// this only pins that the order is pause, then rules, then queue.
 		g := newGateFixture(t)
-		if g.c.activePause() != nil {
-			t.Skip("a pause is active here")
+		t.Setenv("CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS", "1")
+		g.start("s1", "a", "general-purpose")
+		g.c.savePause(json.RawMessage(`{"id":1,"spec":"all","note":"hold on"}`))
+		out := g.run(haikuCall)
+		if !strings.Contains(out, "deny") || g.f.sleeps != 0 {
+			t.Errorf("out %q sleeps %d", out, g.f.sleeps)
 		}
 	})
 	t.Run("three calls of one message, one slot free: the third waits", func(t *testing.T) {

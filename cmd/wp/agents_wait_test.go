@@ -62,8 +62,8 @@ func TestNoopRefusal(t *testing.T) {
 	startAgent(c, "boss", "a1", true)
 	startAgent(c, "boss", "f1", false)
 	k, text := c.hookRefusalFor(bashIn("a1", "echo waiting", false))
-	if k != "noop-poll" || !strings.Contains(text, "does nothing") || strings.Contains(text, "Monitor") {
-		t.Errorf("none: %s %q", k, text)
+	if k != "" {
+		t.Errorf("nothing to wait for is not refused: %s %q", k, text)
 	}
 	bgTaskRunning = func(string) bool { return true }
 	_, sub := c.hookRefusalFor(bashIn("a1", "echo waiting", false))
@@ -115,7 +115,7 @@ func TestSleepTexts(t *testing.T) {
 			if who != callerMain && strings.Contains(got, "Monitor") {
 				t.Errorf("%q: a subagent is told of Monitor: %q", cmd, got)
 			}
-			if who == callerFg && strings.Contains(got, "end your turn") && !strings.Contains(got, "Ending your turn") {
+			if who == callerFg && strings.Contains(strings.ReplaceAll(got, "Ending your turn", ""), "end your turn") {
 				t.Errorf("%q: a foreground agent is told to end its turn: %q", cmd, got)
 			}
 		}

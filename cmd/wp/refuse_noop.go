@@ -122,7 +122,8 @@ func splitLiteral(cmd string) (segs [][]string, ok bool) {
 // noopRefusalText is the refusal for a no-op poll by the agent that made the
 // call, chosen by what it could do instead: wait for agents it started (a background
 // subagent runs `wp agents wait` in the background and ends its turn; a foreground one waits in the foreground), wait
-// for a background command of the session, or nothing. Each states the
+// for a background command of the session. With neither it returns "": the
+// call is not refused. Each states the
 // reason, and none names Monitor, which does not keep a subagent's run open.
 func (c *cli) noopRefusalText(in hookEventInput) string {
 	const why = "This command does nothing, and each call re-reads your whole context. "
@@ -145,7 +146,7 @@ func (c *cli) noopRefusalText(in hookEventInput) string {
 		}
 		return why + "A background command is still running; you are told when it exits."
 	}
-	return "This command does nothing; each call costs a turn and re-reads your whole context."
+	return ""
 }
 
 // hasLiveChildren says whether agent (empty: the main thread) of session
