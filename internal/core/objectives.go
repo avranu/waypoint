@@ -112,6 +112,10 @@ const (
 	// RoundDiagnosed: a diagnose round that shipped no code and recorded
 	// why the rounds before it came no nearer (WP-1449).
 	RoundDiagnosed = "diagnosed"
+	// RunDiagnosed is the agent run a diagnosis ends: the agent's part is
+	// over, but it isn't "done", which a workflow step's same/different
+	// agent rule reads as the step before finished.
+	RunDiagnosed = "diagnosed"
 
 	// RoundKindDiagnose is what the round under way is when the rounds
 	// before it came no nearer (Objective.RoundKind); "" is a work round.
@@ -150,7 +154,8 @@ const (
 	maxObjectiveDiagnose     = 20
 	// maxObjectiveDiagnosis is the most characters of a diagnosis.
 	maxObjectiveDiagnosis = 20000
-	// objectiveBriefDiagnosis is the most of a diagnosis a worker's brief carries.
+	// objectiveBriefDiagnosis is the most characters of a diagnosis a
+	// worker's brief carries.
 	objectiveBriefDiagnosis = 6000
 	maxObjectiveKeep        = 8
 	// maxObjectiveJudge: what a judge reads against goes into an audit as its
@@ -254,7 +259,6 @@ type Objective struct {
 
 	everyMS                 int64
 	roundStartedAt          int64
-	diagnosisID             int64 // the standing diagnosis's round row; 0 for none
 	setBy, confirmedBy      *int64
 	issueClosed, issueDraft bool
 	issueCategory           string
@@ -274,6 +278,9 @@ type Objective struct {
 	baseValue          *float64
 	stalledTold        int
 	stuckToldAt        int64
+	// diagnosisID is the objective_rounds row of the diagnosis that stands; 0
+	// for none.
+	diagnosisID int64
 }
 
 // ObjectiveDiagnosis is what a diagnose round found: why the rounds before it
@@ -1024,8 +1031,10 @@ func ObjectiveText(o *Objective, forAgent bool, now time.Time) string {
 		text := strings.TrimSpace(d.Text)
 		if forAgent {
 			// The brief carries what the next round needs; wp objective show
-			// has all of it.
-			text = ClipText(text, objectiveBriefDiagnosis, "\n[the rest is cut: wp objective show "+o.Key+" has all of it]")
+			// has all of it. Characters, as the diagnosis's own limit counts.
+			if r := []rune(text); len(r) > objectiveBriefDiagnosis {
+				text = string(r[:objectiveBriefDiagnosis]) + "\n[the rest is cut: wp objective show " + o.Key + " has all of it]"
+			}
 		}
 		for _, line := range strings.Split(text, "\n") {
 			b.WriteString("    " + line + "\n")
@@ -1319,8 +1328,8 @@ func (s *Service) objectiveOf(ctx context.Context, q queryer, issueID int64) (*O
 	if len(verdicts) > 0 {
 		o.Verdict = verdicts[0]
 	}
-	// The diagnosis later rounds read, if one still stands, came with the
-	// row: a second read could find the row gone.
+	// The diagnosis later rounds read, if one still stands: read with the
+	// row, so a clear between the two reads can't fail this one.
 	diagnosisID := o.diagnosisID
 	rows, err := q.QueryContext(ctx, `SELECT round_no, started_at, ended_at, outcome, coalesce(measurement_id, 0), agent, pr_url, base_sha, head_sha, note, diagnosis, diagnosis_by, id FROM objective_rounds
 		WHERE issue_id = ? ORDER BY id DESC LIMIT ?`, issueID, objectiveRecent)

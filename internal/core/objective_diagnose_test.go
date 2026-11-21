@@ -190,6 +190,31 @@ func TestObjectiveDiagnoseRecordsAndReopensTheSameRound(t *testing.T) {
 	}
 }
 
+// A diagnosis ends its run, but not as "done": a workflow step's
+// same/different-agent rule reads the latest done run as whoever did the
+// step before, and a diagnosis finishes no step.
+func TestObjectiveDiagnoseRunIsNotAStepDone(t *testing.T) {
+	o := newObjEnv(t)
+	task := o.toDiagnose(2, 2, ObjectiveInput{})
+	// Another agent finished the step before.
+	if _, err := o.s.db.W.Exec(`INSERT INTO agent_runs(issue_id, agent, started_at, ended_at, outcome) VALUES (?, 'anthropic/claude-sonnet-5-5', ?, ?, 'done')`,
+		task.ID, o.clockNow().UnixMilli(), o.clockNow().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	o.take1(task.Key)
+	if _, err := o.diagnose(task.Key, ObjectiveDiagnoseInput{Text: "the check is wrong"}); err != nil {
+		t.Fatal(err)
+	}
+	var outcome string
+	if err := o.s.db.R.QueryRow(`SELECT outcome FROM agent_runs WHERE issue_id = ? AND agent = 'anthropic/claude-opus-5-5' AND ended_at IS NOT NULL ORDER BY id DESC LIMIT 1`, task.ID).Scan(&outcome); err != nil || outcome != RunDiagnosed {
+		t.Fatalf("the diagnosis run ended %q (%v), want %q", outcome, err, RunDiagnosed)
+	}
+	var prev string
+	if err := o.s.db.R.QueryRow(`SELECT agent FROM agent_runs WHERE issue_id = ? AND outcome = 'done' ORDER BY id DESC LIMIT 1`, task.ID).Scan(&prev); err != nil || prev != "anthropic/claude-sonnet-5-5" {
+		t.Fatalf("the step before was done by %q (%v), want the agent that did it", prev, err)
+	}
+}
+
 func TestObjectiveDiagnoseDoesNotUseUpRounds(t *testing.T) {
 	// MaxRounds 3, diagnose after 2: rounds 1 and 2 come no nearer, round 3 is a
 	// diagnose round, which reopens round 3 as a work round, with the last round still to use.
