@@ -1580,7 +1580,7 @@ func (s *Service) postAuditComment(ctx context.Context, a *CodeAudit) {
 	c, err := fprs.PostPRComment(ctx, botForge(f), a.Repo, a.PRNumber, auditComment(a, s.BaseURL()))
 	if err != nil {
 		s.log.WarnContext(ctx, "post an audit on its pull request", "audit", a.ID, "err", err)
-		_, _ = s.db.W.ExecContext(ctx, `UPDATE code_audits SET error = ? WHERE id = ? AND error = ''`, "Couldn't post it on the pull request: "+excerpt(PublicError(err), 200), a.ID)
+		s.writeLogged(ctx, "record why an audit's result wasn't passed on", `UPDATE code_audits SET error = ? WHERE id = ? AND error = ''`, "Couldn't post it on the pull request: "+excerpt(PublicError(err), 200), a.ID)
 		return
 	}
 	a.CommentURL = c.URL
@@ -1675,7 +1675,7 @@ func (s *Service) auditFixTask(ctx context.Context, id int64) {
 	made, err := s.CreateIssue(ctx, &writer, in)
 	if err != nil {
 		s.log.WarnContext(ctx, "make an audit's fix task", "audit", a.ID, "err", err)
-		_, _ = s.db.W.ExecContext(ctx, `UPDATE code_audits SET error = ? WHERE id = ?`, "Couldn't make the task for Claude: "+excerpt(PublicError(err), 200), a.ID)
+		s.writeLogged(ctx, "record why an audit's result wasn't passed on", `UPDATE code_audits SET error = ? WHERE id = ?`, "Couldn't make the task for Claude: "+excerpt(PublicError(err), 200), a.ID)
 		return
 	}
 	if err := s.write(ctx, SystemActor(), func(t *tx) error {
@@ -1802,10 +1802,11 @@ func (s *Service) tellAudit(ctx context.Context, a *CodeAudit) {
 	who := a.requestedBy
 	if a.automationID != 0 {
 		who = a.ownerID
-		// A usage limit that stopped it is a failure to the owner too: the
-		// automation's run fails on it (auditStep), but nothing says so but
-		// this, and no code reason holds it back.
-		needed := a.Status == AuditFailed || a.Status == AuditLimited || (a.Status == AuditDone && !a.Fix && a.Counts.Total > 0)
+		// A usage limit that stopped it doesn't tell the owner: a recurring
+		// automation on a spent pool would tell every run until the plan
+		// comes back, and its run already shows Limited (auditStep). A
+		// person's own audit is told once (below).
+		needed := a.Status == AuditFailed || (a.Status == AuditDone && !a.Fix && a.Counts.Total > 0)
 		if !needed {
 			return
 		}
@@ -1833,7 +1834,7 @@ func (s *Service) messageSessionAs(ctx context.Context, a *CodeAudit, text, key 
 	}
 	if m.State == MessageQueued && !passive {
 		s.batchOrTell(ctx, a.sessionID, 0, a.blocking, func(until int64) error {
-			_, err := s.db.W.ExecContext(ctx, `UPDATE session_messages SET batch_until = ?, blocking = ? WHERE id = ? AND state = 'queued'`, until, a.blocking, m.ID)
+			_, err := s.writeRows(ctx, `UPDATE session_messages SET batch_until = ?, blocking = ? WHERE id = ? AND state = 'queued'`, until, a.blocking, m.ID)
 			return err
 		})
 	}

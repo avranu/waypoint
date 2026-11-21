@@ -233,11 +233,11 @@ func (s *Service) fireFollowUp(ctx context.Context, sessionID int64, e *Event, f
 	if err != nil || a == nil {
 		return nil, err
 	}
-	res, err := s.db.W.ExecContext(ctx, `UPDATE automations SET enabled = 0 WHERE id = ? AND (enabled = 1 OR ?)`, a.ID, force)
+	n, err := s.writeRows(ctx, `UPDATE automations SET enabled = 0 WHERE id = ? AND (enabled = 1 OR ?)`, a.ID, force)
 	if err != nil {
 		return nil, err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if n == 0 {
 		return nil, nil // spent
 	}
 	owner := cmpID(a.savedBy, a.createdBy)
@@ -280,7 +280,7 @@ func (a *Automation) ownedBy(actor *Actor) bool {
 // cancelRunMessages withdraws the messages a run queued for agents and
 // hasn't delivered: a run that ended doesn't speak any more.
 func (s *Service) cancelRunMessages(ctx context.Context, runID int64) {
-	if _, err := s.db.W.ExecContext(ctx, `UPDATE session_messages SET state = 'cancelled' WHERE step_key LIKE ? AND state IN ('queued','sending')`,
+	if _, err := s.writeRows(ctx, `UPDATE session_messages SET state = 'cancelled' WHERE step_key LIKE ? AND state IN ('queued','sending')`,
 		itoa64(runID)+":%"); err != nil {
 		s.log.WarnContext(ctx, "cancel a run's messages", "run", runID, "err", err)
 	}
@@ -593,7 +593,7 @@ func (s *Service) queueMessage(ctx context.Context, sessionID int64, body, stepK
 // storeMessage queues text for a session, once per step key, waking no one:
 // babysit news decides first whether to wait in a batch (WP-209).
 func (s *Service) storeMessage(ctx context.Context, sessionID int64, body, stepKey string, from messageFrom, passive bool) (*SessionMessage, error) {
-	if _, err := s.db.W.ExecContext(ctx, `INSERT OR IGNORE INTO session_messages(session_id, body, step_key, created_by, created_at, passive, agent, automation_id) VALUES (?,?,?,?,?,?,?,?)`,
+	if _, err := s.writeRows(ctx, `INSERT OR IGNORE INTO session_messages(session_id, body, step_key, created_by, created_at, passive, agent, automation_id) VALUES (?,?,?,?,?,?,?,?)`,
 		sessionID, body, stepKey, nullUser(from.by), s.nowMS(), passive, from.agent, nullID(from.automation)); err != nil {
 		return nil, err
 	}

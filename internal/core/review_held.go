@@ -161,11 +161,15 @@ func (s *Service) shipRound(ctx context.Context, in shipRoundIn) error {
 		var live bool
 		if err := s.db.R.QueryRowContext(ctx, `SELECT ended_at IS NULL FROM agent_sessions WHERE id = ?`, in.session).Scan(&live); err == nil {
 			in.ended = !live
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return err // unknown is not "still live": the ship is tried again
 		}
 	}
 	in.agent = s.shipAgent(ctx, r, in.agent, in.session)
 	if in.userID == 0 {
-		_ = s.db.R.QueryRowContext(ctx, `SELECT user_id FROM agent_sessions WHERE id = ?`, in.session).Scan(&in.userID)
+		if err := s.db.R.QueryRowContext(ctx, `SELECT user_id FROM agent_sessions WHERE id = ?`, in.session).Scan(&in.userID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err // the ship is tried again, as whoever opens it is not known
+		}
 	}
 	if reviewed {
 		// The run must still be open: a ship of the session's own ends it,
@@ -860,8 +864,19 @@ func (s *Service) carryAudits(ctx context.Context, round, prID int64, number int
 		return
 	}
 	err := s.write(ctx, SystemActor(), func(t *tx) error {
-		_, err := t.ExecContext(ctx, `UPDATE code_audits SET purpose = '', pr_id = ?, pr_number = ? WHERE id = ? AND purpose = ?`, prID, number, id, AuditCheck)
-		return err
+		res, err := t.ExecContext(ctx, `UPDATE code_audits SET purpose = '', pr_id = ?, pr_number = ? WHERE id = ? AND purpose = ?`, prID, number, id, AuditCheck)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			// The gate reads the pull request's newest finished audit: it looks again.
+			var projectID int64
+			if err := t.QueryRowContext(ctx, `SELECT project_id FROM code_audits WHERE id = ?`, id).Scan(&projectID); err != nil {
+				return err
+			}
+			t.emit(&Event{Kind: EvCodeAudit, ProjectID: projectID, Field: "pr", Data: map[string]any{"audit": id, "pr_id": prID}})
+		}
+		return nil
 	})
 	if err != nil {
 		s.log.WarnContext(ctx, "carry a round's check to its pull request", "round", round, "audit", id, "err", err)
@@ -879,16 +894,31 @@ const uncheckedNote = "Rejected by the session, unchecked: "
 // low ones as unchecked, to be listed (WP-1370).
 func (s *Service) reopenUnverified(ctx context.Context, auditID int64) {
 	err := s.write(ctx, SystemActor(), func(t *tx) error {
-		if _, err := t.ExecContext(ctx, `UPDATE code_audit_findings SET state = 'open',
+		res, err := t.ExecContext(ctx, `UPDATE code_audit_findings SET state = 'open',
 			note = trim(? || note), decided_at = NULL
-			WHERE audit_id = ? AND state = 'rejected' AND severity IN ('critical', 'high')`, uncheckedNote, auditID); err != nil {
+			WHERE audit_id = ? AND state = 'rejected' AND severity IN ('critical', 'high')`, uncheckedNote, auditID)
+		if err != nil {
 			return err
 		}
+		reopened, _ := res.RowsAffected()
 		// A medium or low one stays rejected (it holds nothing), marked so the
 		// pull request's packet lists it as unchecked.
-		_, err := t.ExecContext(ctx, `UPDATE code_audit_findings SET note = trim(? || note)
+		res, err = t.ExecContext(ctx, `UPDATE code_audit_findings SET note = trim(? || note)
 			WHERE audit_id = ? AND state = 'rejected' AND severity IN ('medium', 'low') AND note NOT LIKE ?`, uncheckedNote, auditID, uncheckedNote+"%")
-		return err
+		if err != nil {
+			return err
+		}
+		marked, _ := res.RowsAffected()
+		if reopened+marked == 0 {
+			return nil
+		}
+		// What the audit's findings say changed: the packet and the gate look again.
+		var projectID int64
+		if err := t.QueryRowContext(ctx, `SELECT project_id FROM code_audits WHERE id = ?`, auditID).Scan(&projectID); err != nil {
+			return err
+		}
+		t.emit(&Event{Kind: EvCodeAudit, ProjectID: projectID, Field: "marks", Data: map[string]any{"audit": auditID, "reopened": reopened}})
+		return nil
 	})
 	if err != nil {
 		s.log.WarnContext(ctx, "reopen unchecked rejections", "audit", auditID, "err", err)

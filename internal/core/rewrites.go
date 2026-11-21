@@ -236,9 +236,13 @@ func (s *Service) NoteRewrites(ctx context.Context, actor *Actor, ref, repo, hea
 		// a dismissal is kept).
 		keep := map[int64]bool{}
 		for _, r := range got {
-			if id, err := s.resolveIssueID(ctx, t, r.Key); err == nil {
-				keep[id] = true
+			id, err := s.resolveIssueID(ctx, t, r.Key)
+			if err != nil {
+				// An unreadable key must not read as "no longer replaced":
+				// the evidence stays and the whole record fails.
+				return err
 			}
+			keep[id] = true
 		}
 		rows, err := t.QueryContext(ctx, `SELECT other_id FROM rewrite_evidence WHERE issue_id = ? AND dismissed = 0`, d.ID)
 		if err != nil {

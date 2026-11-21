@@ -137,7 +137,9 @@ func (s *Service) roundAuditOf(ctx context.Context, roundID int64) (roundAudit, 
 // audit given up on) means this audit isn't the round's.
 func (s *Service) noteRoundAudit(ctx context.Context, roundID, auditID int64) error {
 	now := s.nowMS()
-	_, err := s.db.W.ExecContext(ctx, `UPDATE work_log SET audit_id = ?, audit_at = ?, updated_at = ? WHERE id = ? AND audit_id IS NULL AND audit_note = ''`, auditID, now, now, roundID)
+	// No event: which audit a round waits on is read by the sweep, and no
+	// reader is shown it live.
+	_, err := s.writeRows(ctx, `UPDATE work_log SET audit_id = ?, audit_at = ?, updated_at = ? WHERE id = ? AND audit_id IS NULL AND audit_note = ''`, auditID, now, now, roundID)
 	return err
 }
 
@@ -242,7 +244,7 @@ func (s *Service) noteRoundHead(ctx context.Context, roundID, headTime int64, he
 	if roundID == 0 || headTime <= 0 {
 		return
 	}
-	if _, err := s.db.W.ExecContext(ctx, `UPDATE work_log SET before_pr = json_set(before_pr, '$.head_time', ?, '$.head_sha', ?)
+	if _, err := s.writeRows(ctx, `UPDATE work_log SET before_pr = json_set(before_pr, '$.head_time', ?, '$.head_sha', ?)
 		WHERE id = ? AND kind = 'review' AND state = 'pending' AND audit_id IS NULL AND before_pr != ''`, headTime, headSHA, roundID); err != nil {
 		s.log.Info("review round: recording the head its audit reads", "round", roundID, "err", err)
 	}
@@ -318,7 +320,7 @@ func (s *Service) planReview(ctx context.Context, st *stepRow, review *roundRow,
 		own.prompt += ownReportAsk
 	}
 	if ra.id == 0 && ra.note == "" && rv == nil && lim.reviewModel() == ReviewModelSession {
-		if _, err := s.db.W.ExecContext(ctx, `UPDATE work_log SET audit_note = ?, updated_at = ? WHERE id = ? AND audit_note = ''`,
+		if _, err := s.writeRows(ctx, `UPDATE work_log SET audit_note = ?, updated_at = ? WHERE id = ? AND audit_note = ''`,
 			reviewBySession, s.nowMS(), review.id); err != nil {
 			return reviewPlan{}, err
 		}
@@ -336,7 +338,7 @@ func (s *Service) planReview(ctx context.Context, st *stepRow, review *roundRow,
 		return s.planByReviewer(ctx, review, rv, first, own, now)
 	}
 	note := func(why string) error {
-		_, err := s.db.W.ExecContext(ctx, `UPDATE work_log SET audit_note = ?, updated_at = ? WHERE id = ? AND audit_note = ''`, clipText(why, 300), s.nowMS(), review.id)
+		_, err := s.writeRows(ctx, `UPDATE work_log SET audit_note = ?, updated_at = ? WHERE id = ? AND audit_note = ''`, clipText(why, 300), s.nowMS(), review.id)
 		return err
 	}
 	// askReviewer starts the round's Sonnet reviewer once; refused says why
@@ -402,7 +404,7 @@ func (s *Service) planReview(ctx context.Context, st *stepRow, review *roundRow,
 		if cancel {
 			cancelAudit()
 		}
-		if _, err := s.db.W.ExecContext(ctx, `UPDATE work_log SET audit_id = ?, audit_at = ?, audit_alt = ?, updated_at = ? WHERE id = ? AND audit_alt = ''`,
+		if _, err := s.writeRows(ctx, `UPDATE work_log SET audit_id = ?, audit_at = ?, audit_alt = ?, updated_at = ? WHERE id = ? AND audit_alt = ''`,
 			id, now, clipText(why, 300), now, review.id); err != nil {
 			return reviewPlan{}, err
 		}
@@ -578,8 +580,14 @@ func (s *Service) planFromFindings(ctx context.Context, review *roundRow, a *Cod
 		// WP-1370).
 		return reviewPlan{done: true}, s.endRoundNothing(ctx, review, a, now)
 	}
-	_, err := s.db.W.ExecContext(ctx, `UPDATE work_log SET prompt = ?, updated_at = ? WHERE id = ?`, prompt, s.nowMS(), review.id)
-	return reviewPlan{prompt: prompt}, err
+	return reviewPlan{prompt: prompt}, s.setRoundPrompt(ctx, review.id, prompt)
+}
+
+// setRoundPrompt stores what the session is told for a round. No event: the
+// session reads it when it asks for its next step.
+func (s *Service) setRoundPrompt(ctx context.Context, roundID int64, prompt string) error {
+	_, err := s.writeRows(ctx, `UPDATE work_log SET prompt = ?, updated_at = ? WHERE id = ?`, prompt, s.nowMS(), roundID)
+	return err
 }
 
 // The Claude reviewer (WP-1206, WP-ADR117): when a round's audit can't be
@@ -1431,9 +1439,11 @@ func (s *Service) onReviewAudit(ctx context.Context, e *Event) {
 		return
 	}
 	now := s.nowMS()
-	_, _ = s.db.W.ExecContext(ctx, `UPDATE autopilot_steps SET due_at = ?, updated_at = ? WHERE state = ? AND reason = ? AND due_at > ?
+	if _, err := s.writeRows(ctx, `UPDATE autopilot_steps SET due_at = ?, updated_at = ? WHERE state = ? AND reason = ? AND due_at > ?
 		AND review_id IN (SELECT id FROM work_log WHERE kind = 'review' AND audit_id = ?
-			UNION SELECT `+reviewerRoundSQL+` FROM code_audits a WHERE a.id = ? AND a.request_key LIKE ?)`, now, now, StepWaiting, WaitAudit, now, id, id, reviewerKeyLike)
+			UNION SELECT `+reviewerRoundSQL+` FROM code_audits a WHERE a.id = ? AND a.request_key LIKE ?)`, now, now, StepWaiting, WaitAudit, now, id, id, reviewerKeyLike); err != nil {
+		s.log.WarnContext(ctx, "wake the rounds waiting on a settled audit; the sweep does", "audit", id, "err", err)
+	}
 }
 
 // roundHoldsAudit: a review round that hasn't ended uses the audit, so

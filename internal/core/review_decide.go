@@ -503,7 +503,11 @@ func (s *Service) advanceRound(ctx context.Context, id int64) (roundOut, error) 
 		err = s.shipRound(ctx, shipRoundIn{round: id, why: out.Why})
 		if err == nil && r != nil && r.state == RoundRunning {
 			s.setRoundNow(ctx, id, []string{RoundRunning}, RoundFailed, out.Why)
-			_, _ = s.db.W.ExecContext(ctx, `UPDATE session_messages SET state = 'cancelled' WHERE state = 'queued' AND step_key LIKE 'check:%' AND session_id = ?`, r.sessionID.Int64)
+			// The check's news is no use to a round that ended: dropped, and
+			// a failure to drop it is said, not swallowed.
+			if _, cerr := s.writeRows(ctx, `UPDATE session_messages SET state = 'cancelled' WHERE state = 'queued' AND step_key LIKE 'check:%' AND session_id = ?`, r.sessionID.Int64); cerr != nil {
+				s.log.WarnContext(ctx, "drop the check news of a released round", "round", id, "session", r.sessionID.Int64, "err", cerr)
+			}
 		}
 	}
 	if out.Do == doShip || out.Do == doShipCarried || out.Do == doRelease || out.Do == doFinish || out.Do == doReleaseAfterRunEnded {

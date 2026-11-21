@@ -259,12 +259,15 @@ func (s *Service) decideStakes(ctx context.Context, roundID int64) (roundStakes,
 		}
 	}
 	r.bar = tierBar(r.tier)
-	if _, err := s.db.W.ExecContext(ctx, `INSERT OR IGNORE INTO review_stakes(round_id, issue_id, rule, tier, why, bar, source, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, roundID, issueID, StakesRule, r.tier, r.why, r.bar, source, s.nowMS()); err != nil {
-		return roundStakes{}, err
-	}
-	// Two callers at once: the first's stands.
-	err = s.db.W.QueryRowContext(ctx, `SELECT tier, why, bar FROM review_stakes WHERE round_id = ?`, roundID).Scan(&r.tier, &r.why, &r.bar)
+	// No event: the stakes are read when the round plans its review.
+	err = s.write(ctx, SystemActor(), func(t *tx) error {
+		if _, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO review_stakes(round_id, issue_id, rule, tier, why, bar, source, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, roundID, issueID, StakesRule, r.tier, r.why, r.bar, source, s.nowMS()); err != nil {
+			return err
+		}
+		// Two callers at once: the first's stands.
+		return t.QueryRowContext(ctx, `SELECT tier, why, bar FROM review_stakes WHERE round_id = ?`, roundID).Scan(&r.tier, &r.why, &r.bar)
+	})
 	return r, err
 }
 
@@ -301,8 +304,7 @@ const stakesNoClaude = "no Claude review starts"
 func (s *Service) planHandedOver(ctx context.Context, review *roundRow, auditID int64, first *beforePR, now int64) (reviewPlan, error) {
 	if first != nil {
 		prompt := handOverPrompt(auditID)
-		_, err := s.db.W.ExecContext(ctx, `UPDATE work_log SET prompt = ?, updated_at = ? WHERE id = ?`, prompt, s.nowMS(), review.id)
-		return reviewPlan{prompt: prompt}, err
+		return reviewPlan{prompt: prompt}, s.setRoundPrompt(ctx, review.id, prompt)
 	}
 	body := fmt.Sprintf("Audit #%d (%s/audits/%d) was still going, and the change's stakes don't call for a Claude review in its place: it goes on as the pull request's audit, which holds the merge until it ends.",
 		auditID, s.BaseURL(), auditID)
