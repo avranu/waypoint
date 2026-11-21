@@ -1729,7 +1729,10 @@ func (s *Service) advanceStep(ctx context.Context, st *stepRow) error {
 		// After the pull request too: its round then ends, and what its audit
 		// found goes to the pull request's review gate (handOverRoundAudits).
 		heldTooLong := !runnerOK && review.state == RoundPending && now-noRunnerSince(review.createdAt, r) > heldNoRunnerWait.Milliseconds()
-		if !runnerOK && !heldTooLong {
+		// A running round needs no runner for what Waypoint does for it (its
+		// check, its ship, the end of its wait: decideIdle), so a runner that
+		// is gone holds it no longer than its own bounds do.
+		if !runnerOK && !heldTooLong && review.state != RoundRunning {
 			return noRunner()
 		}
 		switch {
