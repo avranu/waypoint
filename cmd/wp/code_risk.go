@@ -144,6 +144,9 @@ func diffFiles(root, base string) ([]string, error) {
 		}
 	}
 	if base != "" {
+		if err := codeindex.CheckRef(base); err != nil {
+			return nil, fmt.Errorf("can't diff against %s: %w", base, err)
+		}
 		txt, err := gitIn(root, "diff", "--name-only", "--diff-filter=d", base+"...HEAD")
 		if err != nil {
 			return nil, fmt.Errorf("can't diff against %s: %w", base, err)
@@ -168,7 +171,7 @@ func (c *cli) prFiles(sf scopeFlags, n int, root string) ([]string, error) {
 	}
 	tip := ""
 	for _, spec := range []string{fmt.Sprintf("refs/pull/%d/head", n), fmt.Sprintf("refs/merge-requests/%d/head", n), d.HeadRef} {
-		if spec == "" {
+		if spec == "" || codeindex.CheckRef(spec) != nil { // a forge's branch name is no option
 			continue
 		}
 		if _, err := gitIn(root, "fetch", "-q", "origin", spec); err == nil {
@@ -179,6 +182,9 @@ func (c *cli) prFiles(sf scopeFlags, n int, root string) ([]string, error) {
 	}
 	if tip == "" {
 		return nil, fmt.Errorf("can't fetch pull request %d from origin", n)
+	}
+	if err := codeindex.CheckRef(d.BaseRef); err != nil {
+		return nil, fmt.Errorf("the pull request's base: %w", err)
 	}
 	base := "origin/" + d.BaseRef
 	_, _ = gitIn(root, "fetch", "-q", "origin", d.BaseRef)

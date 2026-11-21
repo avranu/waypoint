@@ -16,6 +16,7 @@ import (
 	"text/template"
 	"time"
 
+	"git.jmann.me/claude/waypoint/internal/codeindex"
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
@@ -571,7 +572,20 @@ const defaultShipReply = `Reply template (adapt it where it doesn't fit):
   The session can be cleared without losing work.`
 
 // openPR pushes the branch and has Waypoint open the pull request.
+// checkBase refuses a --base git would read as an option (--output=FILE,
+// --upload-pack=CMD) or that holds a control character, before any git
+// command is run with it.
+func (f prOpenFlags) checkBase() error {
+	if err := codeindex.CheckRef(*f.base); err != nil {
+		return fmt.Errorf("--base: %w", err)
+	}
+	return nil
+}
+
 func (c *cli) openPR(f prOpenFlags) (*openedPR, []byte, error) {
+	if err := f.checkBase(); err != nil {
+		return nil, nil, c.usage("%s", err)
+	}
 	intent, err := f.reviewIntent()
 	if err != nil {
 		return nil, nil, c.usage("%s", err)
@@ -847,6 +861,9 @@ func isExit(err error, code int) bool {
 // --base, origin's HEAD, else origin/main or origin/master.
 func baseRef(flag string) string {
 	if flag != "" {
+		if codeindex.CheckRef(flag) != nil {
+			return "" // git would read it as an option: never given to it
+		}
 		if _, err := localGit("rev-parse", "--verify", "-q", "origin/"+flag); err == nil {
 			return "origin/" + flag
 		}
@@ -926,7 +943,7 @@ func stackedOn(base, branch string) []string {
 // so the merge names neither. A merge that doesn't go through is left to the
 // merge queue, which merges the base in at this pull request's turn.
 func (c *cli) mergeBaseIfForkedTwice(base string) {
-	if name, ok := strings.CutPrefix(base, "origin/"); ok {
+	if name, ok := strings.CutPrefix(base, "origin/"); ok && codeindex.CheckRef(name) == nil {
 		_, _ = localGit("fetch", "-q", "origin", name) // a stale base can only miss one
 	}
 	out, err := localGit("merge-base", "--all", base, "HEAD")

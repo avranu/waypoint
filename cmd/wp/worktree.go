@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"git.jmann.me/claude/waypoint/internal/codeindex"
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
@@ -229,6 +230,14 @@ func cmdWorktreeAdd(c *cli, args []string) error {
 	noSetup := fs.Bool("no-setup", false, "don't copy .worktreeinclude files or run .waypoint/worktree-setup")
 	short(fs, "b", "branch")
 	pos, err := c.parse(fs, args)
+	for _, v := range []struct{ what, ref string }{{"--branch", *branch}, {"--from", *from}} {
+		if err == nil {
+			err = codeindex.CheckRef(v.ref)
+			if err != nil {
+				err = fmt.Errorf("%s: %w", v.what, err)
+			}
+		}
+	}
 	if err != nil {
 		return err
 	}
@@ -363,6 +372,11 @@ func makeWorktreeIn(ctx context.Context, repo *worktreeRepo, slug, branch, from 
 		cancel()
 		if err != nil {
 			note("note: fetch failed (%v); starting from the refs as they are", err)
+		}
+	}
+	for _, v := range []struct{ what, ref string }{{"--branch", branch}, {"--from", from}} {
+		if err := codeindex.CheckRef(v.ref); err != nil {
+			return madeWorktree{}, fmt.Errorf("%s: %w", v.what, err)
 		}
 	}
 	base := from

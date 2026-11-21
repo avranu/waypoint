@@ -13,6 +13,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/codeindex"
 )
 
 // Objectives (WP-927, WP-ADR111, WP-ADR142): a task worked in rounds until a check is
@@ -507,7 +509,7 @@ func (c *cli) objectiveCheck(o *objective, lim objectiveLimits) (met, ok bool, e
 // merge base computed here, which a branch that merged the default branch in
 // would move to the merge. "" when there is none or it isn't here.
 func objectiveBase(c *cli, o *objective, headTree string) string {
-	if o.BaseSHA == "" || o.Measure != "time" && o.Measure != "value" {
+	if o.BaseSHA == "" || o.Measure != "time" && o.Measure != "value" || codeindex.CheckRef(o.BaseSHA) != nil {
 		return ""
 	}
 	sha, err := localGit("rev-parse", "--verify", "-q", o.BaseSHA+"^{commit}")

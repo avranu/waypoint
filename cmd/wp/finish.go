@@ -66,6 +66,9 @@ func cmdFinish(c *cli, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := f.checkBase(); err != nil {
+		return c.usage("%s", err)
+	}
 	msgGiven := false
 	checkGiven := false
 	fs.Visit(func(fl *flag.Flag) {

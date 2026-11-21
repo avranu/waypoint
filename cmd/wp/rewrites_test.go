@@ -133,3 +133,28 @@ func TestRewrittenTasksRefusesABaseThatIsAnOption(t *testing.T) {
 		t.Errorf("git ran: %s", b)
 	}
 }
+
+// A --base git would read as an option never reaches git: wp ship and wp pr
+// open refuse it first, before any git command runs (WP-1370).
+func TestShipRefusesABaseThatIsAnOption(t *testing.T) {
+	dir := t.TempDir()
+	log := filepath.Join(dir, "ran")
+	shim := "#!/bin/sh\necho \"$@\" >> " + log + "\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(shim), 0o755); err != nil { // #nosec G306 -- a test shim must be executable
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	for _, cmd := range []func(*cli, []string) error{cmdFinish, cmdPROpen} {
+		for _, bad := range []string{"--output=/tmp/x", "--upload-pack=touch /tmp/y", "-p", "main\nx"} {
+			var errb bytes.Buffer
+			c := &cli{err: &errb, out: &bytes.Buffer{}}
+			err := cmd(c, []string{"--base=" + bad})
+			if err == nil || !strings.Contains(err.Error(), "base") {
+				t.Errorf("base %q: error %v does not refuse the base", bad, err)
+			}
+		}
+	}
+	if b, err := os.ReadFile(log); err == nil {
+		t.Errorf("git ran: %s", b)
+	}
+}

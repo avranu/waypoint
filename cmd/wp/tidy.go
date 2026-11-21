@@ -282,6 +282,9 @@ func tidyScan(ctx context.Context, dir string, merged []tidyPR, o tidyOpts) (*ti
 	sort.Strings(names)
 
 	isAncestor := func(a, b string) bool {
+		if strings.HasPrefix(a, "-") || strings.HasPrefix(b, "-") { // a forge's head sha is a sha, not an option
+			return false
+		}
 		_, err := g("merge-base", "--is-ancestor", a, b)
 		return err == nil
 	}
@@ -433,7 +436,7 @@ func tidyScan(ctx context.Context, dir string, merged []tidyPR, o tidyOpts) (*ti
 			f.by, f.checks = judge(w.branch, w.head)
 			f.touched = -1
 			if f.by != "" {
-				f.touched = touchedAgo(ctx, w.path, o.now, "HEAD", cmpStr(w.branch, ""))
+				f.touched = touchedAgo(ctx, w.path, o.now, "HEAD", branchRef(w.branch))
 			}
 			f.dirty = tidyDirty(ctx, w.path)
 			if f.dirty == "" {
@@ -618,7 +621,7 @@ func tidyApply(ctx context.Context, dir string, rep *tidyReport, o tidyOpts) {
 		if tip, err := g("rev-parse", "--verify", "-q", "refs/heads/"+r.Branch); err != nil || tip != r.Tip {
 			return "kept: the branch moved since the scan"
 		}
-		if _, err := g("branch", "-D", r.Branch); err != nil {
+		if _, err := g("branch", "-D", "--", r.Branch); err != nil {
 			return "failed: " + err.Error()
 		}
 		return "deleted"
@@ -861,4 +864,13 @@ func (c *cli) tidyRemote() error {
 		c.println("Waypoint deletes the removable ones in its daily sweep; nothing here is deleted by this command.")
 	}
 	return nil
+}
+
+// branchRef is a branch's full ref, "" for no branch: a name that starts
+// with a dash is never given to git bare.
+func branchRef(branch string) string {
+	if branch == "" {
+		return ""
+	}
+	return "refs/heads/" + branch
 }
