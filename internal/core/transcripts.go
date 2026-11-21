@@ -57,7 +57,7 @@ var ErrTranscriptQuota = errors.New(TranscriptQuotaRefusal)
 
 // TranscriptQuotaRefusal is what an upload is told, with status 507, when the
 // archive is full: the client recognises it and keeps the file pending.
-const TranscriptQuotaRefusal = "the transcript archive is full (WAYPOINT_TRANSCRIPT_MAX_MB); nothing is deleted, so an admin must raise the cap or move the archive"
+const TranscriptQuotaRefusal = "the transcript archive is full (WAYPOINT_TRANSCRIPT_MAX_MB); nothing is deleted and deleting files frees nothing, so an admin must raise the cap"
 
 // ErrTranscriptsOff: the server has no transcript directory.
 var ErrTranscriptsOff = errors.New("this server keeps no transcript archive (WAYPOINT_TRANSCRIPT_DIR=off)")

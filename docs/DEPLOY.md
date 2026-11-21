@@ -32,7 +32,7 @@ All configuration is environment variables.
 | `WAYPOINT_LOG_DIR` | `logs/` next to the database (Docker image: `/data/logs`) | the server log's day files, read by `wp server log` across restarts and deploys: one JSON line a record, secrets blanked, mode 0600, gzipped once the day is over, at most 512 MB in all; `off` keeps the log in memory only |
 | `WAYPOINT_LOG_DAYS` | `30` | how many days of log files to keep |
 | `WAYPOINT_TRANSCRIPT_DIR` | `transcripts/` next to the database (Docker image: `/data/transcripts`) | the transcript archive `wp usage sync` uploads (WP-1466): one gzipped file per piece, about a quarter of the raw size of the sessions on the machines that sync (measured 2026-11-21 on one machine: 400 transcripts modified in 30 days were 935 MB raw and 254 MB gzipped, and about 900 MB raw per 7 days); the daily DB backup does not include it; `off` keeps no archive and uploads are refused |
-| `WAYPOINT_TRANSCRIPT_MAX_MB` | none (0 or unset: no cap) | the most the transcript archive may hold, in MB. When storing a piece would pass it, the server refuses with `507` (`the transcript archive is full: ...`) and counts the refusal; `wp usage sync` treats that as held (the file stays pending, the pass stops quietly with that reason, nothing is dropped) and tries again next time. The cap refuses, it never deletes: see "Backups and restore" |
+| `WAYPOINT_TRANSCRIPT_MAX_MB` | none (0 or unset: no cap) | the most the transcript archive may hold, in MB. When storing a piece would pass it, the server refuses with `507` (`the transcript archive is full: ...`) and counts the refusal (`refused` in `wp usage machines` counts refused upload attempts, not files); `wp usage sync` treats that as held (the file stays pending, the pass stops quietly with that reason, nothing is dropped) and tries again next time (a machine's hook passes wait an hour after a `507` before trying again; a manual `wp usage sync` always tries). The cap refuses, it never deletes: see "Backups and restore" |
 | `WAYPOINT_DEV_PROXY` | none | proxy the web app to a Vite dev server |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) | none | turns on OpenTelemetry traces, sent over OTLP/HTTP (e.g. `http://tempo:4318`). The other standard variables apply: `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_SERVICE_NAME` (default `waypoint`), `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_TRACES_SAMPLER`/`_ARG` (default `parentbased_always_on`); `OTEL_SDK_DISABLED=true` turns them off again. See Observability |
 
@@ -368,9 +368,10 @@ when a session is removed from the app. `WAYPOINT_TRANSCRIPT_MAX_MB` only makes
 the server refuse new pieces once the archive is that large (the uploading
 machines keep the files pending and say so in `wp usage machines`); it does not
 prune. Pruning old pieces and backing the archive up are yours to do: the
-directory needs its own off-machine copy, and freeing room means deleting
-files there (and, until the index is pruned too, reading such a piece is an
-error). The archive's size and piece count are in the admin Automations page
+directory needs its own off-machine copy. The cap is checked against the
+size the index records, which changes only when pieces are added to the index:
+deleting or moving files in the directory frees no room (and reading such a
+piece is an error); the remedy for a full archive is to raise the cap. The archive's size and piece count are in the admin Automations page
 (System limits, "Transcript archive larger than (MB)" alerts like disk,
 database and memory do) and in `GET /admin/system`; a machine's
 opt-out (`WP_USAGE_ARCHIVE=off`), drops and slow or cut-short passes are in

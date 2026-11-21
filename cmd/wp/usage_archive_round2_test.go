@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"strings"
@@ -193,10 +194,6 @@ func TestArchiveOptOutIsReported(t *testing.T) {
 	ms, now := int64(10), time.Now()
 	fakePasses(t, &ms, &now)
 
-	archiveSync(t, e, dir, "--no-archive")
-	if _, n := tap.counts(); n != 0 {
-		t.Fatalf("--no-archive posted %d", n)
-	}
 	t.Setenv("WP_USAGE_ARCHIVE", "off")
 	archiveSync(t, e, dir)
 	if rec := machineRecord(t, e, me); rec.Off == nil || !*rec.Off {
@@ -287,5 +284,94 @@ func TestTranscriptFilesShowRedactions(t *testing.T) {
 		if strings.HasPrefix(l, "a ") && !strings.Contains(l, " 2 ") {
 			t.Errorf("count missing: %q", l)
 		}
+	}
+}
+
+// A --no-archive pass tells the server the archive is off exactly as
+// WP_USAGE_ARCHIVE=off does, so a machine whose hook always passes it is not
+// taken for a silent one; it is rate limited the same way, and a dry run says
+// nothing.
+func TestNoArchivePassReportsOff(t *testing.T) {
+	e, tap := tappedEnv(t)
+	me := e.login()
+	dir := emptyDir(t)
+	putTranscript(t, dir, "a", userLine("a1"))
+	ms, now := int64(10), time.Now()
+	fakePasses(t, &ms, &now)
+
+	archiveSync(t, e, dir, "--no-archive", "--dry-run")
+	if _, n := tap.counts(); n != 0 {
+		t.Fatalf("a dry run posted %d", n)
+	}
+	archiveSync(t, e, dir, "--no-archive")
+	if _, n := tap.counts(); n != 1 {
+		t.Fatalf("--no-archive posted %d, want 1", n)
+	}
+	if rec := machineRecord(t, e, me); rec.Off == nil || !*rec.Off {
+		t.Fatalf("off not recorded: %+v", rec)
+	}
+	if !strings.Contains(tap.bodies[0], `"off":true`) {
+		t.Errorf("body %s", tap.bodies[0])
+	}
+	archiveSync(t, e, dir, "--no-archive")
+	if _, n := tap.counts(); n != 1 {
+		t.Errorf("posted again with nothing changed: %d", n)
+	}
+	archiveSync(t, e, dir)
+	if rec := machineRecord(t, e, me); rec.Off == nil || *rec.Off {
+		t.Errorf("a normal pass did not say it is back on: %+v", rec)
+	}
+}
+
+// After the server said its archive is full, a hook's passes make no upload
+// for an hour (the files stay pending, the stop says why, and the pass is not
+// another cut); a manual sync always tries.
+func TestArchiveFullHoldsHookPasses(t *testing.T) {
+	e, tap := tappedEnv(t)
+	me := e.login()
+	dir := emptyDir(t)
+	p := putTranscript(t, dir, "a", userLine("a1"))
+	ms, now := int64(10), time.Now()
+	fakePasses(t, &ms, &now)
+	full := true
+	tap.onPiece = func(_ int, w http.ResponseWriter, _ *http.Request) bool {
+		if full {
+			answerError(w, 507, core.TranscriptQuotaRefusal)
+			return true
+		}
+		return false
+	}
+	hook := func() {
+		t.Helper()
+		c, _ := newCLI(&bytes.Buffer{}, &bytes.Buffer{})
+		usageHook(c, strings.NewReader(`{"session_id":"a","transcript_path":"`+p+`"}`), dir)
+	}
+	hook()
+	if pieces, _ := tap.counts(); pieces != 1 {
+		t.Fatalf("first pass tried %d", pieces)
+	}
+	now = now.Add(10 * time.Minute)
+	hook()
+	if pieces, _ := tap.counts(); pieces != 1 {
+		t.Errorf("a hook pass within the hour tried an upload: %d", pieces)
+	}
+	if rec := machineRecord(t, e, me); rec.Cut == nil || *rec.Cut != 1 || rec.Stop == nil || !strings.Contains(*rec.Stop, "full") || rec.PendingBytes == 0 {
+		t.Errorf("a skipped pass counted as a cut, or lost its stop or pending bytes: %+v", rec)
+	}
+	if res := archiveSync(t, e, dir); res.Archive.Stopped == "" {
+		t.Errorf("a manual sync did not try: %+v", res.Archive)
+	}
+	if pieces, _ := tap.counts(); pieces != 2 {
+		t.Errorf("manual sync tried %d in all", pieces)
+	}
+	now = now.Add(archiveFullHold)
+	hook()
+	if pieces, _ := tap.counts(); pieces != 3 {
+		t.Errorf("after the hour a hook pass did not try: %d", pieces)
+	}
+	full = false
+	hook()
+	if res := archiveSync(t, e, dir); res.Archive.PendingBytes != 0 {
+		t.Errorf("once there is room: %+v", res.Archive)
 	}
 }

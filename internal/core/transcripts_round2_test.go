@@ -375,3 +375,58 @@ func TestUsageMachinesListsTheArchiveRecord(t *testing.T) {
 		t.Errorf("all: %+v %v", ms, err)
 	}
 }
+
+// A machine not heard from for archiveWaitingWindow cannot send anything
+// more, so bytes it left pending do not make it wait or stall for good.
+func TestTranscriptCollectorRetiredMachineIsNotWaiting(t *testing.T) {
+	e := transcriptEnv(t)
+	e.setClock(time.Now())
+	e.machineRow("gone", `transcript_pending_bytes = 10, transcript_pending_files = 1, transcript_pending_since = ?, transcript_status_at = ?, last_sync_at = ?`,
+		e.ago(40*24*time.Hour), e.ago(31*24*time.Hour), e.ago(32*24*time.Hour))
+	if h := e.archiveHealth(); h.Stalled || h.Waiting != 0 {
+		t.Fatalf("a machine silent for 31 days is waiting: %+v", h)
+	}
+	if n := e.collectorNotices(); len(n) != 0 {
+		t.Fatalf("notices = %v", n)
+	}
+	e.machineRow("gone", `transcript_pending_since = ?, transcript_status_at = ?, last_sync_at = ?`,
+		e.ago(72*time.Hour), e.ago(3*24*time.Hour), e.ago(3*24*time.Hour))
+	if h := e.archiveHealth(); !h.Stalled || h.Waiting != 1 {
+		t.Fatalf("a machine heard from 3 days ago with bytes waiting 72h: %+v", h)
+	}
+}
+
+// The drops total can fall (a machine's state reset); drops after that are
+// told even while the total is below the old high-water mark.
+func TestTranscriptCollectorDropsToldAfterTotalFalls(t *testing.T) {
+	e := transcriptEnv(t)
+	e.setClock(time.Now())
+	report := func(n int64) {
+		t.Helper()
+		if err := e.s.ReportTranscriptStatus(e.ctx, e.admin, TranscriptStatus{Machine: "box", Dropped: map[string]int64{"line_too_large": n}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report(10)
+	e.archiveHealth()
+	if n := e.collectorNotices(); len(n) != 1 {
+		t.Fatalf("first telling: %v", n)
+	}
+	report(2)
+	e.setClock(e.clockNow().Add(25 * time.Hour))
+	e.archiveHealth()
+	if n := e.collectorNotices(); len(n) != 1 {
+		t.Fatalf("a fall is not told: %v", n)
+	}
+	report(5)
+	e.setClock(e.clockNow().Add(25 * time.Hour))
+	e.archiveHealth()
+	n := e.collectorNotices()
+	if len(n) != 2 {
+		t.Fatalf("growth after the fall is not told: %v", n)
+	}
+	var grew int64
+	if err := e.s.db.R.QueryRow(`SELECT dropped_told FROM collector_health WHERE name = 'transcript archive'`).Scan(&grew); err != nil || grew != 5 {
+		t.Errorf("dropped_told = %d, %v", grew, err)
+	}
+}

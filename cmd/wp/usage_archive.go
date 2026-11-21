@@ -57,7 +57,7 @@ import (
 // `wp usage machines` show it): what waits, what was dropped, how long the pass
 // took and the longest, why it stopped early ("" ran to the end), how many
 // passes were cut short, and whether the archive is off (WP_USAGE_ARCHIVE=off,
-// the machine's own opt-out; --no-archive says nothing). It is posted when
+// the machine's own opt-out; a pass with --no-archive says so too). It is posted when
 // something but the pass's duration changed or the longest grew, and
 // again every archiveRefresh (12h) so the server can tell a machine that
 // stopped reporting from one with nothing new. A 507 from the server (its
@@ -76,6 +76,8 @@ const (
 	archiveRetryHeld = 24 * time.Hour      // a file the server refused is tried again this often
 	archiveMaxPieces = 1000                // pieces for one file in one pass
 	archiveBusy      = "another pass is running"
+	archiveFullHold  = time.Hour // after the server said its archive is full, a hook's pass does not try again for this long
+	archiveFullStop  = "the server's transcript archive is full (its size cap); held until there is room"
 )
 
 // Limits that tests lower. archiveMaxLine and archivePieceSize together stay
@@ -118,6 +120,9 @@ type archiveState struct {
 	Reported string `json:"reported,omitempty"`
 	// ReportedAt is when (ms) a status was last posted, for the refresh.
 	ReportedAt int64 `json:"reported_at,omitempty"`
+	// FullAt is when (ms) the server last said its archive is full; a hook's
+	// passes make no uploads for archiveFullHold after that.
+	FullAt int64 `json:"full_at,omitempty"`
 	// Cut counts the passes that ended before the end, since this machine began.
 	Cut int64 `json:"cut,omitempty"`
 	// PassMax is the longest pass (ms) this machine has run.
@@ -207,6 +212,7 @@ type archiver struct {
 	fails    int
 	known    []string // this machine's own secrets, blanked wherever they appear
 	stop     string
+	full     bool // the archive said full lately: nothing was tried this pass
 	quiet    bool // the server does not take this token's uploads: say nothing more
 }
 
@@ -241,6 +247,10 @@ func usageArchive(c *cli, o usageSyncOptions, root string) (*archiveResult, erro
 	a := &archiver{c: c, st: st, res: res, dry: o.DryRun, known: []string{c.token()}}
 	if st.reset {
 		a.drop("state_reset")
+	}
+	if o.Hook && !o.DryRun && st.FullAt > 0 && archiveNow().Sub(time.UnixMilli(st.FullAt)) < archiveFullHold {
+		// the archive said full a short while ago: the files stay pending, and this pass is not another cut
+		a.stop, a.full = archiveFullStop, true
 	}
 	limit := archivePassLimit
 	if o.Hook {
@@ -325,7 +335,7 @@ func usageArchive(c *cli, o usageSyncOptions, root string) (*archiveResult, erro
 	if o.DryRun {
 		return res, nil
 	}
-	if a.stop != "" && !a.quiet {
+	if a.stop != "" && !a.quiet && !a.full {
 		a.st.Cut++ // a pass that ended early is counted, with the reason in the status
 	}
 	saveErr := a.save()
@@ -370,11 +380,10 @@ func reportDue(at int64) bool {
 }
 
 // archiveReportOff tells the server this machine's archive is off
-// (WP_USAGE_ARCHIVE=off), once and then when that changes or the refresh is
-// due. --no-archive, a dry run and a busy pass say nothing: only the
-// environment is the machine's own opt-out.
+// (WP_USAGE_ARCHIVE=off or a pass with --no-archive), once and then when that
+// changes or the refresh is due. A dry run and a busy pass say nothing.
 func archiveReportOff(c *cli, o usageSyncOptions) error {
-	if o.DryRun || o.NoArchive {
+	if o.DryRun {
 		return nil
 	}
 	unlock, ok := tryLock(filepath.Join(c.dir, "usage-archive.lock"), 30*time.Minute)
@@ -520,7 +529,8 @@ func (a *archiver) file(f usageFile, size int64) {
 			case errors.As(err, &ae) && ae.status == http.StatusInsufficientStorage && ae.msg == core.TranscriptQuotaRefusal:
 				// the server's archive is at its size cap: held, not refused. Nothing is
 				// dropped or marked, the file stays pending, and asking again is for later
-				a.stop = "the server's transcript archive is full (its size cap); held until there is room"
+				a.stop = archiveFullStop
+				a.st.FullAt = archiveNow().UnixMilli()
 				return
 			case errors.As(err, &ae) && refusedForGood(ae.status):
 				if len(piece.lines) > 1 && !shrunk {
@@ -539,6 +549,7 @@ func (a *archiver) file(f usageFile, size int64) {
 			return
 		}
 		a.fails = 0
+		a.st.FullAt = 0
 		if ans.Status == "stored" {
 			a.res.Pieces++
 			a.res.RawBytes += int64(len(piece.data))

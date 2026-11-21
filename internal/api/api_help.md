@@ -653,14 +653,16 @@ differences (a message written again with more tokens). Cost is API-equivalent, 
                                     many values redaction blanked in the piece (counts only; absent is stored as
                                     unknown). 507 "the transcript archive is full" when the server's size cap
                                     (WAYPOINT_TRANSCRIPT_MAX_MB) would be passed: the client holds the file and
-                                    retries later; nothing is stored.
+                                    retries later; nothing is stored. The cap is checked against what the index
+                                    records, so deleting or moving files frees nothing: raise the cap.
     POST /usage/transcript/status {"machine","pending_bytes","pending_files","dropped":{reason:count},"pass_ms",
                                     "pass_max_ms","stop","cut","off"}   a machine's upload health: the last and
                                     longest pass (ms), why the last stopped early ("" ran to the end), passes cut
-                                    short so far, and off (WP_USAGE_ARCHIVE=off; an off report changes nothing else).
+                                    short so far, and off (WP_USAGE_ARCHIVE=off or a --no-archive pass; an off report changes nothing else).
                                     Fields left out keep what was reported before (unknown until reported)
     GET  /usage/machines?user=       the machines that report for you (admins: anyone) with each one's archive record:
-                                    pending, dropped by reason, off, pass_ms, pass_max_ms, stop, cut, last_piece_at
+                                    pending, dropped by reason (refused counts refused upload attempts, not
+                                    files), off, pass_ms, pass_max_ms, stop, cut, last_piece_at
     GET  /usage/transcripts?session=ID&user=&machine=&gen=   the files held for a session: pieces, byte range,
                                     complete (no hole), sizes, whether every piece was redacted, and redactions (values blanked,
                                     with redaction_rules by rule; null when any piece predates the counts)

@@ -50,7 +50,7 @@ func cmdUsageSync(c *cli, args []string) error {
 	dry := fs.Bool("dry-run", false, "count only; upload nothing")
 	dir := fs.String("dir", "", "Claude Code config `DIR` (default CLAUDE_CONFIG_DIR, ~/.claude)")
 	noInv := fs.Bool("no-inventory", false, "skip the configured MCP servers, skills…")
-	noArchive := fs.Bool("no-archive", false, "skip the transcript archive upload (also WP_USAGE_ARCHIVE=off)")
+	noArchive := fs.Bool("no-archive", false, "skip the transcript archive upload and tell the server the archive is off, as WP_USAGE_ARCHIVE=off does")
 	pos, err := c.parse(fs, args)
 	if err != nil {
 		return err

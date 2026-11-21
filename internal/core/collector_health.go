@@ -17,7 +17,9 @@ package core
 // way: a machine is stalled when its own bytes have waited, or it stopped
 // reporting its archive while its usage sync still arrives (silent), and
 // nothing of its own was stored since. A machine that switched the archive
-// off is not waiting. A collector may also count what it lost (dropped); the
+// off is not waiting, nor is one not heard from for archiveWaitingWindow
+// (Claude Code keeps local transcripts about that long, so nothing more can
+// arrive from a retired machine). A collector may also count what it lost (dropped); the
 // hourly check tells admins when that total grew, at most daily.
 // A fix begins to wait when it can be traced: at the later of its pull
 // request's merge and the link that ties a bug task to it, so a bug linked
@@ -178,9 +180,11 @@ var collectors = []collector{
 		name:  "transcript archive",
 		unit:  "machines",
 		about: "each machine's wp uploads its sessions' transcripts to the archive (wp usage sync); what it dropped and what it could not send yet is in wp usage machines",
-		group: "machine", groupHelp: "Check that wp usage sync runs there and that the archive is not full (wp server status); a machine that should not archive sets WP_USAGE_ARCHIVE=off.",
-		waiting:     `SELECT COUNT(*), MIN(` + archiveSince + `) FROM usage_machines m WHERE ` + archiveWaitingWhere,
-		args:        func(time.Time) []any { return []any{collectorStallAfter.Milliseconds()} },
+		group: "machine", groupHelp: "Check that wp usage sync runs there and that the archive is not full (wp server status); a machine that should not archive sets WP_USAGE_ARCHIVE=off (or its passes use --no-archive), which it tells the server. A machine not heard from for 30 days is not counted.",
+		waiting: `SELECT COUNT(*), MIN(` + archiveSince + `) FROM usage_machines m WHERE ` + archiveWaitingWhere,
+		args: func(now time.Time) []any {
+			return []any{collectorStallAfter.Milliseconds(), now.Add(-archiveWaitingWindow).UnixMilli()}
+		},
 		repoWaiting: `SELECT m.user_id || '/' || m.machine, u.username || '/' || m.machine, COUNT(*), MIN(` + archiveSince + `) FROM usage_machines m JOIN users u ON u.id = m.user_id WHERE ` + archiveWaitingWhere + ` GROUP BY m.user_id, m.machine`,
 		repoOutput:  `SELECT user_id || '/' || machine, transcript_piece_at FROM usage_machines WHERE transcript_piece_at >= ?`,
 		output:      `SELECT MAX(m.transcript_piece_at) FROM usage_machines m`,
@@ -193,9 +197,14 @@ var collectors = []collector{
 // are pending, or an archive status that stopped (the machine reported before
 // and its usage sync still arrives more than ?1 ms after that report; the
 // client re-reports every few hours, so a healthy idle machine is not this).
-// A machine that opted out waits for nothing.
-const archiveWaitingWhere = `coalesce(m.transcript_off, 0) = 0 AND (m.transcript_pending_bytes > 0 OR ` + archiveSilent + `)`
+// A machine that opted out waits for nothing, nor does one last heard from (the
+// later of its usage sync and archive status) before ?2.
+const archiveWaitingWhere = `coalesce(m.transcript_off, 0) = 0 AND max(coalesce(m.last_sync_at, 0), coalesce(m.transcript_status_at, 0)) >= ?2 AND (m.transcript_pending_bytes > 0 OR ` + archiveSilent + `)`
 const archiveSilent = `(m.transcript_status_at IS NOT NULL AND m.last_sync_at > m.transcript_status_at + ?1)`
+
+// archiveWaitingWindow is how long after a machine was last heard from it can
+// still have something to send.
+const archiveWaitingWindow = 30 * 24 * time.Hour
 
 // archiveSince is when the machine began to wait: its bytes began to, or its
 // status stopped, whichever is earlier.
@@ -533,7 +542,14 @@ func (s *Service) noteDropped(ctx context.Context, t *tx, c collector, r collect
 	if err := t.QueryRowContext(ctx, `SELECT dropped_told, dropped_alerted_at FROM collector_health WHERE name = ?`, c.name).Scan(&toldTotal, &toldAt); err != nil {
 		return err
 	}
-	if *r.dropped <= toldTotal.Int64 || (toldAt.Valid && now.Sub(msTime(toldAt.Int64)) < collectorRepeat) {
+	if *r.dropped < toldTotal.Int64 {
+		// the total fell (a machine's state reset); what grows from here is new
+		if _, err := t.ExecContext(ctx, `UPDATE collector_health SET dropped_told = ? WHERE name = ?`, *r.dropped, c.name); err != nil {
+			return err
+		}
+		return nil
+	}
+	if *r.dropped == toldTotal.Int64 || (toldAt.Valid && now.Sub(msTime(toldAt.Int64)) < collectorRepeat) {
 		return nil
 	}
 	res, err := t.ExecContext(ctx, `UPDATE collector_health SET dropped_told = ?, dropped_alerted_at = ? WHERE name = ? AND coalesce(dropped_alerted_at, 0) = ?`,
