@@ -143,3 +143,64 @@ func TestObjectiveAPIProposeConfirmAndSteer(t *testing.T) {
 		t.Errorf("steering a task that isn't there: %d", code)
 	}
 }
+
+// The diagnose route (WP-1449): diagnose_after round-trips, a read-only
+// token is refused, and a round that isn't a diagnose round is told so.
+func TestObjectiveAPIDiagnose(t *testing.T) {
+	ts, svc := setup(t)
+	ctx := context.Background()
+	u, err := svc.CreateUser(ctx, core.SystemActor(), core.CreateUserInput{Username: "robin", Email: "robin@example.com", Password: "correct-horse-battery", IsAdmin: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &core.Actor{User: u}
+	kind, base := "forgejo", "https://git.example.com"
+	f, err := svc.CreateForge(ctx, a, core.ForgeInput{Kind: &kind, BaseURL: &base})
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := "App"
+	p, err := svc.CreateProject(ctx, a, core.ProjectInput{Name: &name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.AddProjectRepo(ctx, a, p.Key, f.ID, "me/app", false); err != nil {
+		t.Fatal(err)
+	}
+	task, err := svc.CreateIssue(ctx, a, core.IssueInput{Project: p.Key, Title: "Fast parse", Agent: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/v1/issues/" + task.Key + "/objective"
+	cl := func(spec core.TokenSpec) *client {
+		spec.Name = "t"
+		tok, _, err := svc.CreateToken(ctx, a, spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &client{t: t, base: ts.URL, http: http.DefaultClient, token: tok}
+	}
+	person := cl(core.TokenSpec{})
+	agent := cl(core.TokenSpec{Agent: "anthropic/claude-opus-5-5"})
+	readOnly := cl(core.TokenSpec{ReadOnly: true})
+
+	var ob core.Objective
+	if code := person.json("PUT", path, map[string]any{"check": "./parse", "until": "< 1.5ms", "diagnose_after": 3}, &ob); code != 200 || ob.DiagnoseAfter != 3 {
+		t.Fatalf("setting it: %d %+v", code, ob)
+	}
+	if code, _ := person.do("PUT", path, map[string]any{"diagnose_after": 99}); code != 400 {
+		t.Errorf("diagnose_after 99: %d", code)
+	}
+	if code, _ := readOnly.do("POST", path+"/diagnose", map[string]any{"text": "x"}); code != 403 {
+		t.Errorf("read-only token: %d", code)
+	}
+	if code, _ := person.do("POST", path+"/diagnose", "not json"); code != 400 {
+		t.Errorf("a body that isn't json: %d", code)
+	}
+	for who, c := range map[string]*client{"a person": person, "an agent": agent} {
+		code, b := c.do("POST", path+"/diagnose", map[string]any{"text": "the check is wrong"})
+		if code != 400 || !strings.Contains(string(b), "diagnose") {
+			t.Errorf("%s, not a diagnose round: %d %s", who, code, b)
+		}
+	}
+}

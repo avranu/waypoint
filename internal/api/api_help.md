@@ -708,7 +708,8 @@ steers or clears one in effect.
     GET    /issues/{key}/objective  {kind until|each|judged|loop, check, dir, setup, measure
                                     time|value|pass, until, repo, branch, keep_passing[], judge, judge_bar
                                     critical|high|medium|low, judge_models[], pace queue|spare, every
-                                    (seconds), max_rounds, round, stalled, next_at, state
+                                    (seconds), max_rounds, diagnose_after, round, round_kind ""|diagnose, no_better, stalled,
+                                    diagnosis {round,at,by,text}, next_at, state
                                     proposed|active|met|ended, phase ""|baseline|verdict|blocked,
                                     phase_why, phase_note, health proposed|working|ready|waiting|
                                     reading|blocked|stuck|met|ended, health_note, stuck_since,
@@ -716,16 +717,19 @@ steers or clears one in effect.
                                     reading of any source), verdict (newest of Waypoint's own),
                                     checks[] (each with source agent|runner|judge|baseline),
                                     rounds[] (outcome reading|met|progress|worked|none|empty|
-                                    unmeasured|loop), findings[]}; also "objective" on GET /issues/{key}
+                                    unmeasured|loop|diagnosed, and a diagnosed one's diagnosis,
+                                    diagnosis_by), findings[]}; also "objective" on GET /issues/{key}
     PUT    /issues/{key}/objective {"check","dir","setup","until","measure","better":"lower|higher",
                                     "repo":"owner/name","branch","keep_passing":[cmd],"judge","judge_bar",
-                                    "judge_models":[model],"pace","every":"24h","max_rounds":0,"rev"}
+                                    "judge_models":[model],"pace","every":"24h","max_rounds":0,"diagnose_after":2,"rev"}
                                     set or change; a field left out keeps its value. keep_passing:
                                     commands a round mustn't break. judge: what done means, in words. pace
                                     spare: handed out only while the week's-end plan wants more work
                                     (WP-ADR106). every: least time between rounds (default 24h for
                                     each and loop, 0 for until and judged). rev: the agent's proposal
-                                    a person's change builds on
+                                    a person's change builds on.
+                                    diagnose_after: rounds in a row that come no nearer before the next
+                                    is a diagnose round that ships no code (0: never; 2 by default)
     POST   /issues/{key}/objective/confirm {"rev"}   a person puts an agent's proposal in effect; rev
                                     is the one they read, refused if it was rewritten since
     POST   /issues/{key}/objective/go {"action":"retry|next|accept|end"}   a person steers one in
@@ -733,6 +737,11 @@ steers or clears one in effect.
                                     round out now, or leave an unread round behind; accept a reading
                                     that waits because the round changed what the check runs; end it (the
                                     task stays, an ordinary task)
+    POST   /issues/{key}/objective/diagnose {"text","ask","agent"}   the agent working a diagnose
+                                    round (or a person who may edit the task) records why the rounds
+                                    before it came no nearer, and what to try: the round ends with no
+                                    reading, the task goes back to To Do, and the same round opens as
+                                    a work round. ask: a person must act first, so it waits for them
     DELETE /issues/{key}/objective  takes it off, rounds and readings with it; the task's history says
                                     what it had reached
     POST   /issues/{key}/objective/checks {"ok","value","base_ok","base_value","base_sha","tree",

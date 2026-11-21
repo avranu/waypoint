@@ -367,6 +367,54 @@ async function run(width, scheme) {
   await shot("11-ended");
   await overflow("the ended banner");
 
+  // ---- G2. rounds that come no nearer make the next a diagnose round (WP-1449) ----
+  const dkey = await newIssue(`Make the lint pass ${tag}`);
+  await page.goto(`${base}/issue/${dkey}`);
+  await page.getByRole("button", { name: "More", exact: true }).click();
+  await page.getByText("Set an objective…").click();
+  const dd = page.getByRole("dialog");
+  await dd.getByLabel("Check command").fill("make lint");
+  await dd.getByLabel("Until", { exact: true }).fill("pass");
+  const after = dd.getByLabel("Diagnose after");
+  ok((await after.inputValue()) === "2", `${tag} the dialog offers Diagnose after, 2 by default`);
+  await after.fill("1");
+  await shot("13-diagnose-dialog", false);
+  await dd.getByRole("button", { name: "Set objective" }).click();
+  await dd.waitFor({ state: "detached" });
+  const failing = { ok: false, runs: 1, exit: 1, output: "FAIL: TestBoard" };
+  await answerJob("objective", () => ({ head: HEAD1, reading: failing }));
+  await has("Ready", "the lint objective is ready");
+  await workRound(dkey, "Tried a fix");
+  await answerJob("objective", () => ({ head: HEAD2, base: HEAD1, reading: failing, base_reading: failing }));
+  await has("a diagnose round", "a round that came no nearer is followed by a diagnose round");
+  const dline = await banner.textContent();
+  ok(/ships no code/.test(dline), `${tag} the banner says the round ships no code: ${dline.slice(0, 200)}`);
+  await shot("14-diagnose-round");
+  await overflow("the diagnose round");
+  // The worker takes it; wp done is refused, and the diagnosis is recorded.
+  const dt = await page.request.post(`${base}/api/v1/agent/take/${dkey}`, { headers: agentHdr, data: {} });
+  ok(dt.ok(), `${tag} the worker takes the diagnose round`);
+  const dn = await page.request.post(`${base}/api/v1/agent/done/${dkey}`, { headers: agentHdr, data: { comment: "done" } });
+  ok(dn.status() === 400 && (await dn.text()).includes("wp objective diagnose"), `${tag} wp done in a diagnose round is refused (${dn.status()})`);
+  const rec = await page.request.post(`${base}/api/v1/issues/${dkey}/objective/diagnose`, {
+    headers: agentHdr,
+    data: { text: "## Why\n\nThe **check** runs the whole suite, so one flaky test hides every fix.\n\nTry: run only `TestBoard`.\n\n<img src=x onerror=alert(1)>" },
+  });
+  ok(rec.ok(), `${tag} the diagnosis is recorded (${rec.status()}: ${(await rec.text()).slice(0, 160)})`);
+  await page.reload();
+  const diag = page.getByTestId("objective-diagnosis");
+  await diag.waitFor();
+  ok((await diag.textContent()).includes("flaky test hides every fix"), `${tag} the latest diagnosis shows in the banner`);
+  ok((await page.locator("img[src='x']").count()) === 0, `${tag} a diagnosis never becomes markup`);
+  ok(!/a diagnose round/.test(await banner.textContent()), `${tag} round 2 is a work round again`);
+  await banner.getByText(/finished round/).click();
+  const rd = banner.getByTestId("round-diagnosis").first();
+  await rd.waitFor();
+  ok(/diagnosed/.test(await banner.textContent()), `${tag} the round list shows the diagnosed outcome`);
+  await rd.getByText(/Diagnosis by/).click();
+  await shot("15-diagnosed");
+  await overflow("the recorded diagnosis");
+
   // ---- H. the inbox and the notification settings know objectives ----
   await page.goto(`${base}/settings?tab=notifications`);
   await page.getByRole("checkbox", { name: /Objectives/ }).waitFor().catch(async (e) => {

@@ -385,7 +385,15 @@ export interface ObjectiveCheck {
 }
 
 export type ObjectiveRoundOutcome =
-  'reading' | 'met' | 'progress' | 'worked' | 'none' | 'empty' | 'unmeasured' | 'loop'
+  'reading' | 'met' | 'progress' | 'worked' | 'none' | 'empty' | 'unmeasured' | 'loop' | 'diagnosed'
+
+/** What a diagnose round found (WP-1449). */
+export interface ObjectiveDiagnosis {
+  round: number
+  at: string
+  by: string
+  text: string
+}
 
 /** A round of an objective. */
 export interface ObjectiveRound {
@@ -393,6 +401,9 @@ export interface ObjectiveRound {
   started_at: string
   ended_at: string
   outcome: ObjectiveRoundOutcome
+  /** a diagnose round's findings, and who recorded them (WP-1449) */
+  diagnosis?: string
+  diagnosis_by?: string
   check?: ObjectiveCheck
   agent?: string
   pr_url?: string
@@ -416,7 +427,8 @@ export type ObjectiveHealth =
   'proposed' | 'working' | 'ready' | 'waiting' | 'reading' | 'blocked' | 'stuck' | 'met' | 'ended'
 /** Where one in effect stands: '' a round is worked or waited for. */
 export type ObjectivePhase = '' | 'baseline' | 'verdict' | 'blocked'
-export type ObjectiveBlockedWhy = 'repo' | 'person' | 'check' | 'touched' | 'reading' | 'rounds'
+export type ObjectiveBlockedWhy =
+  'repo' | 'person' | 'check' | 'touched' | 'reading' | 'rounds' | 'diagnosis'
 
 /**
  * A task's objective (WP-927): worked in rounds until a check is met
@@ -452,9 +464,17 @@ export interface Objective {
   /** least seconds from one round's end to the next's start */
   every: number
   max_rounds?: number
+  /** after this many rounds in a row that came no nearer, the next is a diagnose round; 0: never */
+  diagnose_after: number
   round: number
   /** rounds in a row that moved nothing */
   stalled?: number
+  /** rounds in a row that came no nearer, since the last progress or diagnosis */
+  no_better?: number
+  /** 'diagnose': this round ships no code; it finds out why the last ones came no nearer */
+  round_kind?: '' | 'diagnose'
+  /** the latest diagnosis, read by every later round until progress */
+  diagnosis?: ObjectiveDiagnosis
   next_at?: string
   /** proposed: an agent's, not in effect until a person confirms it */
   state: 'proposed' | 'active' | 'met' | 'ended'
@@ -505,6 +525,7 @@ export interface ObjectiveInput {
   /** a duration: "0", "90m", "24h", "3d" */
   every?: string
   max_rounds?: number
+  diagnose_after?: number
   repo?: string
   branch?: string
   /** replaces the commands that must keep passing */

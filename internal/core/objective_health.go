@@ -242,7 +242,7 @@ func (s *Service) objectiveTell(ctx context.Context, e *Event, what string) {
 		return
 	}
 	for _, id := range s.objectivePeople(ctx, o) {
-		if e.Actor == nil || e.Actor.ID != id {
+		if e.Actor == nil || e.Actor.ID != id || e.Data["tell_actor"] == true {
 			s.notify(ctx, id, e, NotifyObjective, title, body)
 		}
 	}
