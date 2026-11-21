@@ -270,7 +270,13 @@ func (s *Service) auditProgress(ctx context.Context, auditID int64, alt string, 
 			since = j.created
 			_ = q.QueryRowContext(ctx, `SELECT count(*) FROM runner_jobs WHERE kind = ? AND source != ? AND cli = ? AND state = 'queued' AND id < ?`, JobAudit, prepAgentSource, j.cli, a.jobID.Int64).Scan(&ahead)
 			if j.cli == GatewayCLI {
-				running, _ = s.gatewayRunning(ctx)
+				var rerr error
+				running, rerr = s.gatewayRunning(ctx)
+				if rerr != nil {
+					if readFault(rerr) {
+						s.log.WarnContext(ctx, "gateway running failed", "audit", auditID, "err", rerr)
+					}
+				}
 			}
 		}
 		line := fmt.Sprintf("  %s: queued %s ago", name, ago(since))

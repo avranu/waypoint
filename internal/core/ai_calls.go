@@ -30,8 +30,9 @@ type aiCall struct {
 	tokensIn  int64
 	tokensOut int64
 	ms        int64
-	sent      int64 // HTTP requests it took, the client's retries included
-	status    int   // the last response's HTTP status, when known
+	bar       string // the gateway's X-OpenLLMs-Bar header on the answer (WP-1440)
+	sent      int64  // HTTP requests it took, the client's retries included
+	status    int    // the last response's HTTP status, when known
 }
 
 // recordAICall keeps one request. Best effort: a failed write is logged, and
@@ -50,8 +51,8 @@ func (s *Service) recordAICall(ctx context.Context, c aiCall) {
 	if task == "" {
 		task = "other"
 	}
-	if _, err := s.db.W.ExecContext(context.WithoutCancel(ctx), `INSERT INTO ai_calls(at, task, provider_id, model, fallbacks, paid, outcome, status, tokens_in, tokens_out, ms, sent, priority)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, s.nowMS()-c.ms, task, c.pid, c.model, c.fallbacks, c.paid, c.outcome, status, c.tokensIn, c.tokensOut, c.ms, c.sent, c.priority); err != nil {
+	if _, err := s.db.W.ExecContext(context.WithoutCancel(ctx), `INSERT INTO ai_calls(at, task, provider_id, model, fallbacks, paid, outcome, status, tokens_in, tokens_out, ms, sent, priority, bar)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, s.nowMS()-c.ms, task, c.pid, c.model, c.fallbacks, c.paid, c.outcome, status, c.tokensIn, c.tokensOut, c.ms, c.sent, c.priority, c.bar); err != nil {
 		s.log.WarnContext(ctx, "AI request not recorded", "err", err)
 	}
 }
@@ -66,7 +67,7 @@ func (s *Service) pruneAICalls(ctx context.Context) {
 // AIUsageQuery is what `wp ai usage` asks for.
 type AIUsageQuery struct {
 	Since, Until time.Time // zero Since: 24h ago; zero Until: now
-	By           string    // task (default), model, outcome, status, hour, provider
+	By           string    // task (default), model, outcome, status, hour, day, provider, priority, bar
 	Task         string    // only this task's requests
 }
 
@@ -107,6 +108,8 @@ var aiUsageGroups = map[string]string{
 	"day":      `strftime('%Y-%m-%d', at / 1000, 'unixepoch')`,
 	"provider": `coalesce((SELECT name FROM ai_providers p WHERE p.id = provider_id), CAST(provider_id AS TEXT))`,
 	"priority": `CASE priority WHEN '' THEN 'normal' ELSE priority END`,
+	// The bar is the header's weakest=… part: the model it was held to.
+	"bar": `CASE WHEN bar = '' THEN 'none' WHEN bar LIKE 'weakest=%' THEN substr(bar, 9, CASE instr(bar, ';') WHEN 0 THEN length(bar) ELSE instr(bar, ';') - 9 END) ELSE bar END`,
 }
 
 // AIUsageGroups are the --by choices, for usage messages.

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"fmt"
 	"net/http"
 	"strings"
@@ -212,6 +213,12 @@ func serverStatusText(st *core.ServerStatus, now time.Time) string {
 			if c.Problem != "" {
 				b.WriteString("    problem: " + c.Problem + "\n")
 			}
+		}
+	}
+	if len(st.HookDrops) > 0 {
+		b.WriteString("\nHook data dropped (person, machine, reason/event, count, last):\n")
+		for _, d := range st.HookDrops {
+			fmt.Fprintf(&b, "  %-12s %-16s %-34s %6d  %s ago\n", cmp.Or(d.User.Username, "?"), d.Machine, d.Reason+"/"+d.Event, d.Dropped, agoText(now.Sub(d.Last)))
 		}
 	}
 	switch {

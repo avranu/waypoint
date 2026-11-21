@@ -73,7 +73,9 @@ func (s *Service) onPush(ctx context.Context, f *Forge, ev *forgeEvent) {
 	if _, ok := s.Forges.(ForgeChecks); ok && ev.after != "" && f.token != "" {
 		if _, err := s.trackHead(ctx, f.ID, ev.repo, ev.after); err == nil {
 			bg := context.WithoutCancel(ctx)
-			s.goBG(func() { _ = s.refreshHead(bg, f, ev.repo, ev.after) })
+			s.goBG(func() {
+				s.refreshHeadLogged(bg, f, ev.repo, ev.after)
+			})
 		}
 	}
 }

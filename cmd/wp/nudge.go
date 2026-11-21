@@ -65,7 +65,7 @@ var nudgeRules = []nudgeRule{
 			(len(reWorktreeRm.FindAllString(cmd, -1)) > 1 || reLoop.MatchString(cmd) || strings.Contains(cmd, "xargs"))
 	}, text: "`wp tidy` shows what's safe to remove."},
 	{kind: "sleep-wait", match: func(cmd, _ string) bool { return sleepWait(cmd) },
-		text: "Sleeping before a check wastes turns: run the work in the background (you're told when it exits), or wait in one call (`wp pr wait N`, Monitor with an until-loop)."},
+		text: sleepWaitMainText},
 }
 
 // forgeAPIPulls: a URL of a forge API for pull requests, statuses or commits.
@@ -149,7 +149,7 @@ type nudgeStat struct {
 // guard hook refuses (hookRefusal) gets no note here.
 func hookClaudeNudge(c *cli, stdin io.Reader, stdout io.Writer) {
 	var in hookEventInput
-	if err := json.NewDecoder(io.LimitReader(stdin, 4<<20)).Decode(&in); err != nil || (in.ToolName != "Bash" && in.ToolName != "Read") {
+	if err := json.NewDecoder(io.LimitReader(stdin, 4<<20)).Decode(&in); err != nil || (in.ToolName != "Bash" && in.ToolName != "Read" && in.ToolName != "Monitor") {
 		return
 	}
 	var ti struct {
@@ -166,6 +166,17 @@ func hookClaudeNudge(c *cli, stdin io.Reader, stdout io.Writer) {
 	if cwd == "" {
 		cwd, _ = os.Getwd()
 	}
+	if in.ToolName == "Monitor" {
+		// Registered for Monitor by name: a hook matched on "Bash" alone gets a
+		// Monitor call as a Bash one, with the Monitor's command, and the sleep
+		// rules judged it as a command (WP-1443). Here it is only noted, and
+		// only to a sub-agent, once per run.
+		if in.AgentID != "" && c.tellOnce(noteMonitor, in.SessionID, in.AgentID, hookCountWait(hookNudgeTimeout)) {
+			_, _ = stdout.Write(nudgeOutput(noteMonitorText(c.callerOf(in.SessionID, in.AgentID))))
+			c.countNudge(noteMonitor, hookCountWait(hookNudgeTimeout))
+		}
+		return
+	}
 	var r *nudgeRule
 	// A call the guard hook refuses (WP-1411) gets no note here, and does not
 	// use up a pause tell: the refusal is what the agent must read. Its
@@ -176,14 +187,22 @@ func hookClaudeNudge(c *cli, stdin io.Reader, stdout io.Writer) {
 		deny       bool
 	}
 	var taskRes *taskResult
+	var whoIs *caller // read once, and only by a call that needs it
+	who := func() caller {
+		if whoIs == nil {
+			w := c.callerOf(in.SessionID, in.AgentID)
+			whoIs = &w
+		}
+		return *whoIs
+	}
 	task := func(cmd string) (string, string, bool) {
 		if taskRes == nil {
-			k, text, deny := taskNudge(in.ToolName, cmd, ti.FilePath, in.AgentID != "")
+			k, text, deny := taskNudge(in.ToolName, cmd, ti.FilePath, who())
 			taskRes = &taskResult{k, text, deny}
 		}
 		return taskRes.kind, taskRes.text, taskRes.deny
 	}
-	rk, _ := hookRefusalWith(in, task)
+	rk, _ := hookRefusalWith(in, task, func() string { return c.noopRefusalText(in) })
 	refused := rk != ""
 	// A person's pause (WP-146): told on the first call it reaches, then
 	// every few minutes, ahead of any other nudge.
@@ -203,6 +222,9 @@ func hookClaudeNudge(c *cli, stdin io.Reader, stdout io.Writer) {
 		r = nudgeFor(ti.Command, func() string { return originHost(cwd) })
 		if r != nil && ti.Bg && (r.kind == "sleep-poll" || r.kind == "sleep-wait") {
 			r = nil // a waiter in the background costs no turns
+		}
+		if r != nil && r.kind == "sleep-wait" {
+			r = &nudgeRule{kind: r.kind, text: sleepWaitText(ti.Command, who())}
 		}
 	}
 	if r == nil && !refused {

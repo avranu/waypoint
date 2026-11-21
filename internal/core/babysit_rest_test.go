@@ -64,7 +64,7 @@ func TestRestRerunsItsChecksThenTheAssessor(t *testing.T) {
 	if be.notified("can't merge until you answer") {
 		t.Error("a person was notified about a rest")
 	}
-	if why := be.s.babysitParked(be.ctx, be.pr(7)); !strings.Contains(why, "it tries again at") {
+	if why, _ := be.s.babysitParked(be.ctx, be.pr(7)); !strings.Contains(why, "it tries again at") {
 		t.Errorf("babysitParked = %q", why)
 	}
 	// The rest ends: its checks are re-run, and it waits for their results,

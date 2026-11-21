@@ -127,7 +127,12 @@ func stakesPath(p string) bool {
 	return classifyFile(p) != fileTest && stakesPathRE.MatchString(strings.ToLower(p))
 }
 
-// tierBar is a tier's audit bar.
+// tierBar is a tier's audit bar, for a gateway that serves audits: the
+// high and elevated tiers' own, and the floor of every code review for the
+// normal and unknown ones (WP-1440). It is what decideStakes stores whether
+// or not a gateway is set; roundStakes answers with no bar when none is, and
+// RequestAudit records the floor only on an audit whose chain asks the
+// gateway to choose.
 func tierBar(tier string) string {
 	switch tier {
 	case StakesHigh:
@@ -135,7 +140,7 @@ func tierBar(tier string) string {
 	case StakesElevated:
 		return elevatedAuditBar
 	}
-	return ""
+	return reviewFloorBar
 }
 
 // roundStakes is a review round's stakes: its tier ("": unknown, the old
@@ -170,12 +175,13 @@ func (r roundStakes) reviewerName() string {
 }
 
 // barFor is the bar of the round's audit asked under key: the tier's, but
-// none for the one an elevated round asks after its first failed
-// (reviewOtherAuditKey), so a bar no model can meet doesn't send it to
-// Claude.
+// the floor for the one an elevated round asks after its first failed
+// (reviewOtherAuditKey): it must not hold out for Haiku's level again. If no
+// model meets even the floor, the round goes to its Claude reviewer, which
+// is the right end. A Waypoint without the gateway has no bar.
 func (r roundStakes) barFor(key string) string {
-	if key == reviewOtherAuditKey && r.tier == StakesElevated {
-		return ""
+	if key == reviewOtherAuditKey && r.tier == StakesElevated && r.bar != "" {
+		return reviewFloorBar
 	}
 	return r.bar
 }
@@ -201,6 +207,11 @@ func (s *Service) roundStakes(ctx context.Context, roundID int64) (roundStakes, 
 	}
 	if r.tier == StakesUnknown {
 		r.tier = ""
+	}
+	if r.bar == "" {
+		// Stored before WP-1440, when a normal round had no bar: it asks
+		// at the floor now, as a new round does.
+		r.bar = reviewFloorBar
 	}
 	return r, nil
 }
@@ -337,8 +348,9 @@ type StakesTierStats struct {
 	// Recomputed: rounds from before tiers were stored, put in this tier
 	// by the current rule rather than the one that applied to them.
 	Recomputed int `json:"recomputed"`
-	// The free audit: asked at the trusted bar; of those, ended without an
-	// answer; asked again at no bar after one failed (elevated); handed to
+	// The free audit: asked at a tier bar above the floor (reviewFloorBar,
+	// which every round has, WP-1440); of those, ended without an
+	// answer; asked again at the floor after one failed (elevated); handed to
 	// the pull request when slow, with no Claude review (elevated, normal;
 	// none since WP-1306).
 	Barred        int `json:"barred"`
@@ -632,14 +644,16 @@ func (s *Service) stakesProject(ctx context.Context, p *Project, since int64, wi
 		if err != nil {
 			return err
 		}
-		if first != nil && first.weakest != "" {
+		if first != nil && first.weakest != "" && first.weakest != reviewFloorBar {
 			t.Barred++
 			x.r.Bar = first.weakest
 			if first.status == AuditFailed || first.status == AuditLimited {
 				t.BarFailed++
 			}
 		}
-		if other != nil && other.weakest == "" && first != nil && first.weakest != "" {
+		// Asked again at the floor (before WP-1440: at no bar) after a tier
+		// bar's audit.
+		if other != nil && (other.weakest == "" || other.weakest == reviewFloorBar) && first != nil && first.weakest != "" && first.weakest != reviewFloorBar {
 			t.FreeReasks++
 		}
 		slow := strings.HasPrefix(x.r.Note, roundAuditOutwaited)

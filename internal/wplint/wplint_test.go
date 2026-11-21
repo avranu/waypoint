@@ -25,6 +25,7 @@ func TestAnalyzers(t *testing.T) {
 		"actorused":     {"actorused/internal/core"},
 		"clock":         {"clock/internal/core"},
 		"logctx":        {"logctx/internal/core"},
+		"blankerr":      {"blankerr/internal/core"},
 		"logmsg":        {"logmsg/internal/core"},
 		"sqlscan":       {"sqlscan/store"},
 		"schemachain":   {"schemachain/internal/core"},

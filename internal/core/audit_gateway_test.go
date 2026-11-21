@@ -44,6 +44,9 @@ func (l *taskLLM) CreateTask(ctx context.Context, p *AIProvider, spec gatewayTas
 		return nil, err
 	}
 	t := &gatewayTask{ID: fmt.Sprintf("task_%d", len(l.tasks)+1), Status: "queued"}
+	if spec.Weakest != "" {
+		t.Bar = "weakest=" + spec.Weakest + ";from=request" // the header a bar gets
+	}
 	l.tasks[t.ID] = t
 	return t, nil
 }

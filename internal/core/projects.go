@@ -393,7 +393,13 @@ func (s *Service) hasShareInProject(ctx context.Context, q queryer, actor *Actor
 	var n int
 	err := q.QueryRowContext(ctx, `SELECT count(*) FROM issue_shares sh JOIN issues i ON i.id = sh.issue_id
 		WHERE sh.user_id = ? AND i.project_id = ?`, actor.id(), projectID).Scan(&n)
-	return err == nil && n > 0
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read has share in project", "projectID", projectID, "err", err)
+		}
+		return false
+	}
+	return n > 0
 }
 
 func (s *Service) requireProjectRole(ctx context.Context, q queryer, actor *Actor, projectID int64, min int) error {

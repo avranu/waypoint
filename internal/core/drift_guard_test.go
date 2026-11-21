@@ -185,7 +185,7 @@ func TestDriftGuardFootprintCheck(t *testing.T) {
 			t.Errorf("the check's prompt lacks %q:\n%s", want, a.prompt)
 		}
 	}
-	if id, _ := be.s.newestAudit(be.ctx, pr.ID); id != 0 {
+	if id, _, _ := be.s.newestAudit(be.ctx, pr.ID); id != 0 {
 		t.Errorf("a footprint check counted as the audit")
 	}
 	if be.s.headAudited(be.ctx, be.pr(7)) {
@@ -288,7 +288,7 @@ func TestDriftGuardFootprintNotForSmallRounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	be.changes("8888888bbbb", "app/new.go")
-	if why := be.s.footprintDue(be.ctx, be.pr(7)); why != "" {
+	if why, _ := be.s.footprintDue(be.ctx, be.pr(7)); why != "" {
 		t.Errorf("due with no ship footprint: %q", why)
 	}
 }

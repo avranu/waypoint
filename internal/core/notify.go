@@ -159,7 +159,13 @@ func (s *Service) notifyFor(ctx context.Context, actor *Actor, e *Event) {
 				continue
 			}
 			// Only people who can see the issue hear about it.
-			if r, _ := s.issueRole(ctx, s.db.R, &Actor{User: u}, &Issue{ID: e.IssueID, ProjectID: e.ProjectID}); r == RoleNone {
+			r, rerr := s.issueRole(ctx, s.db.R, &Actor{User: u}, &Issue{ID: e.IssueID, ProjectID: e.ProjectID})
+			if rerr != nil {
+				if readFault(rerr) {
+					s.log.WarnContext(ctx, "issue role failed", "issue", e.IssueID, "err", rerr)
+				}
+			}
+			if r == RoleNone {
 				continue
 			}
 			mentioned[u.ID] = true

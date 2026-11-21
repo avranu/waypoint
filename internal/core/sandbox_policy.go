@@ -233,7 +233,12 @@ func (s *Service) ProjectSandbox(ctx context.Context, actor *Actor, ref string) 
 		return nil, err
 	}
 	if actor.inBrowser() {
-		r, _ := s.projectRole(ctx, s.db.R, actor, p.ID)
+		r, rerr := s.projectRole(ctx, s.db.R, actor, p.ID)
+		if rerr != nil {
+			if readFault(rerr) {
+				s.log.WarnContext(ctx, "project role failed", "p", p.ID, "err", rerr)
+			}
+		}
 		pol.CanEdit = r >= RoleOwner
 	}
 	return pol, nil
