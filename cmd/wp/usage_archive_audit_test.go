@@ -73,7 +73,7 @@ func TestArchiveRedactionOfSecretNamedKeys(t *testing.T) {
 		{`{"cookie":"sid=abc123"}`, `{"cookie":"***"}`},
 		{`{"x-auth":"zzzz"}`, `{"x-auth":"***"}`},
 		{`{"jwt":"abc.def.ghi"}`, `{"jwt":"***"}`},
-		{`{"author":"Jess Mann","authority":"the crown"}`, `{"author":"Jess Mann","authority":"the crown"}`},
+		{`{"author":"Robin Smith","authority":"the crown"}`, `{"author":"Robin Smith","authority":"the crown"}`},
 		{`{"tokens":["abcdefg","hij"],"n":1}`, `{"tokens":["***","***"],"n":1}`},
 		{`{"secret":{"a":"xx","b":{"c":["yy"]},"n":5},"o":"keep it"}`, `{"secret":{"a":"***","b":{"c":["***"]},"n":5},"o":"keep it"}`},
 		{`{"secret":["a"],"other":"keep it"}`, `{"secret":["***"],"other":"keep it"}`},
