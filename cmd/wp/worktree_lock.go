@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -152,10 +153,11 @@ func lockOwner(reason string, lockedAt time.Time) (gone bool, why string) {
 			return false, fmt.Sprintf("its lock names pid %d, and wp can't read this host's clock (%v)", pid, err)
 		}
 		// In ticks, so a start too large for a Duration is "later than up".
-		if start > uint64((up+lockSlack)/lockTick) {
+		upTicks := int64((up + lockSlack) / lockTick)
+		if upTicks < 0 || start > math.MaxInt64 || int64(start) > upTicks {
 			return false, fmt.Sprintf("its lock names pid %d, started at tick %d after a boot, later than this host has been up (%s): another host or container wrote it, or the start is no real time, so wp can't tell", pid, start, up.Round(time.Second))
 		}
-		startAfterBoot := time.Duration(start) * lockTick
+		startAfterBoot := time.Duration(int64(start)) * lockTick // no later than up, so no overflow
 		boot := now.Add(-up)
 		switch {
 		case lockedAt.IsZero():

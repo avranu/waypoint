@@ -158,12 +158,31 @@ func movedName(root, path string) string {
 // freePath is home/name, or home/name-2 and on when that is taken, on disk
 // or in claimed (destinations already handed out in this run).
 func freePath(home, name string, claimed map[string]bool) string {
-	p := filepath.Join(home, name)
+	// name is one folder directly under home: a name with a separator or a
+	// "..", from a branch or folder a person named, would be probed (and
+	// returned) outside it.
+	if !filepath.IsLocal(name) || filepath.Base(name) != name {
+		return ""
+	}
+	// The probes go through a root on home, which cannot name anything
+	// outside it. No home yet: nothing there is taken.
+	root, err := os.OpenRoot(home)
+	if err == nil {
+		defer func() { _ = root.Close() }()
+	}
+	taken := func(n string) bool {
+		if root == nil {
+			return false
+		}
+		_, err := root.Lstat(n)
+		return !errors.Is(err, fs.ErrNotExist)
+	}
+	n := name
 	for i := 2; i < 100; i++ {
-		if _, err := os.Lstat(p); errors.Is(err, fs.ErrNotExist) && !claimed[p] {
+		if p := filepath.Join(home, n); !taken(n) && !claimed[p] {
 			return p
 		}
-		p = filepath.Join(home, fmt.Sprintf("%s-%d", name, i))
+		n = fmt.Sprintf("%s-%d", name, i)
 	}
 	return ""
 }
