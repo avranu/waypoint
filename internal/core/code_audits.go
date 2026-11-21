@@ -1095,6 +1095,10 @@ func (s *Service) settleAudit(ctx context.Context, id, jobID int64) {
 			att.Outcome = "answered"
 			a.Attempts = append(a.Attempts, att)
 			found.keep(a)
+			a.Answer = found.answerWith(a.Answer)
+			if found.guardCut > 0 {
+				s.log.WarnContext(ctx, "an audit's answer was cut at the guard", "audit", a.ID, "raised", raised, "kept", len(found.Findings), "cut", found.guardCut)
+			}
 			found.Summary += found.keepNote(a, raised)
 			a.Model, a.Summary = auditModelName(m), excerpt(found.Summary, 2000)
 			if m.CLI == GatewayCLI {
@@ -1321,6 +1325,10 @@ type auditAnswer struct {
 	// floorCut and guardCut are how many keep took out below the severity
 	// floor and past the guard.
 	floorCut, guardCut int
+	// cutJSON is the findings past the guard, as JSON, for the audit's
+	// answer text (cutShort: cut at auditCutMax).
+	cutJSON  string
+	cutShort bool
 }
 
 // flexInt is a number a model may write as a string ("123", "L123").

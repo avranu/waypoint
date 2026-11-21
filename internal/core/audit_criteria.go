@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strconv"
@@ -269,9 +270,53 @@ func (f *auditAnswer) keep(a *CodeAudit) int {
 		f.Findings = slices.DeleteFunc(f.Findings, func(x CodeAuditFinding) bool { return slices.Index(auditSeverities, x.Severity) > floor })
 	}
 	f.floorCut = before - len(f.Findings)
-	f.Findings = f.Findings[:min(len(f.Findings), auditGuard(a))]
+	if g := auditGuard(a); len(f.Findings) > g {
+		f.rememberCut(f.Findings[g:])
+		f.Findings = f.Findings[:g]
+	}
 	f.guardCut = before - f.floorCut - len(f.Findings)
 	return before - len(f.Findings)
+}
+
+// auditCutHeading heads the findings the guard cut, which are added to the
+// audit's stored answer text; auditCutMax bounds them, in runes, so a
+// runaway answer is still not stored without bound (WP-1421).
+const (
+	auditCutHeading = "Findings past the guard, as they came:"
+	auditCutMax     = 400_000
+)
+
+// rememberCut keeps the findings the guard cut as JSON, to the bound
+// (cutShort: it had to stop early).
+func (f *auditAnswer) rememberCut(cut []CodeAuditFinding) {
+	b, err := json.Marshal(cut)
+	if err != nil {
+		return
+	}
+	r := []rune(string(b))
+	if len(r) > auditCutMax {
+		r, f.cutShort = r[:auditCutMax], true
+	}
+	f.cutJSON = string(r)
+}
+
+// answerWith is the answer text with the findings the guard cut after it.
+func (f *auditAnswer) answerWith(answer string) string {
+	if f.cutJSON == "" {
+		return answer
+	}
+	return answer + "\n\n" + auditCutHeading + "\n" + f.cutJSON
+}
+
+// cutWhere says where the findings the guard cut are, and how far.
+func (f *auditAnswer) cutWhere() string {
+	switch {
+	case f.cutJSON == "":
+		return "they are not kept"
+	case f.cutShort:
+		return "they are in the audit's answer text, cut short at its size limit"
+	}
+	return "they are in the audit's answer text"
 }
 
 // keepNote is what the summary says when keep left findings out: how many
@@ -282,8 +327,8 @@ func (f *auditAnswer) keepNote(a *CodeAudit, raised int) string {
 		fmt.Fprintf(&b, " (%d of the answer's %d findings were below the audit's lowest severity, %s, and are left out.)", f.floorCut, raised, a.MinSeverity)
 	}
 	if f.guardCut > 0 {
-		fmt.Fprintf(&b, " (The answer held %d findings; %d are kept, the worst first, at the guard of %d against a runaway answer; %d were cut, and the answer as it came is kept in the audit.)",
-			raised, len(f.Findings), auditGuard(a), f.guardCut)
+		fmt.Fprintf(&b, " (The answer held %d findings; %d are kept, the worst first, at the guard of %d against a runaway answer; %d were cut; %s)",
+			raised, len(f.Findings), auditGuard(a), f.guardCut, f.cutWhere())
 	}
 	return b.String()
 }
