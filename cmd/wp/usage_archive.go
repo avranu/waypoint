@@ -933,12 +933,6 @@ func stubLine() []byte {
 	return []byte(`{"type":"redaction-failed","note":"a line that redaction could not make safe was not sent"}` + "\n")
 }
 
-// redactText is redact plus the machine's own secrets.
-func redactText(s string, known []string) string {
-	r, _, _ := redactTextCounted(s, known)
-	return r
-}
-
 // redactTextCounted also says whether a known secret and whether a pattern
 // changed the text.
 func redactTextCounted(s string, known []string) (out string, knownHit, patternHit bool) {
