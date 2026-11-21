@@ -234,50 +234,58 @@ func (s *Service) shipDue(ctx context.Context, round, now int64) bool {
 // to the person (its flag is recorded with the rest, so a restart doesn't
 // send it again).
 func (s *Service) shipTried(ctx context.Context, round int64, key string, now int64, err error) {
-	bp := roundBeforePR(ctx, s.db.R, round)
-	if bp == nil {
-		return
-	}
-	next := *bp
-	tell := false
-	if err == nil {
-		next.ShipTries, next.ShipFirst, next.ShipNext, next.ShipTold, next.ShipErr = 0, 0, 0, false, ""
-	} else {
-		if next.ShipFirst == 0 {
-			next.ShipFirst = now
+	var tries int
+	merr := s.write(ctx, SystemActor(), func(t *tx) error {
+		bp := roundBeforePR(ctx, t, round)
+		if bp == nil {
+			return nil
 		}
-		next.ShipTries++
-		next.ShipNext = now + shipBackoff(next.ShipTries).Milliseconds()
-		next.ShipErr = clipText(err.Error(), 500)
-		if !next.ShipTold && now-next.ShipFirst >= heldShipRetry.Milliseconds() {
-			next.ShipTold, tell = true, true
+		next := *bp
+		tell := false
+		if err == nil {
+			next.ShipTries, next.ShipFirst, next.ShipNext, next.ShipTold, next.ShipErr = 0, 0, 0, false, ""
+		} else {
+			if next.ShipFirst == 0 {
+				next.ShipFirst = now
+			}
+			next.ShipTries++
+			next.ShipNext = now + shipBackoff(next.ShipTries).Milliseconds()
+			next.ShipErr = clipText(err.Error(), 500)
+			if !next.ShipTold && now-next.ShipFirst >= heldShipRetry.Milliseconds() {
+				next.ShipTold, tell = true, true
+			}
 		}
-	}
-	if next != *bp {
-		raw, merr := json.Marshal(next)
-		if merr == nil {
-			merr = s.write(ctx, SystemActor(), func(t *tx) error {
-				_, e := t.ExecContext(ctx, `UPDATE work_log SET before_pr = ? WHERE id = ?`, string(raw), round)
-				return e
-			})
+		tries = next.ShipTries
+		if next == *bp {
+			return nil
 		}
-		if merr != nil {
-			s.log.WarnContext(ctx, "autopilot: record a try of the ship", "round", round, "err", merr)
+		raw, e := json.Marshal(next)
+		if e != nil {
+			return e
 		}
+		if _, e := t.ExecContext(ctx, `UPDATE work_log SET before_pr = ? WHERE id = ?`, string(raw), round); e != nil {
+			return e
+		}
+		if !tell {
+			return nil
+		}
+		// The notice is stored by the write that sets the flag: both or
+		// neither, and dispatch sends it on.
+		var userID int64
+		if t.QueryRowContext(ctx, `SELECT coalesce(user_id, 0) FROM agent_runs WHERE id = (SELECT run_id FROM work_log WHERE id = ?)`, round).Scan(&userID) != nil || userID == 0 {
+			return nil
+		}
+		_, e = t.storeNotice(ctx, userID, NotifyAutopilot, "Waypoint can't open "+key+"'s pull request",
+			fmt.Sprintf("%s's adversarial review is done, and Waypoint has tried %d times over %d minutes to open its pull request: %s. It keeps trying every %d minutes.", key, next.ShipTries, int(heldShipRetry.Minutes()), err, int(heldShipRetry.Minutes())),
+			"/agents?tab=autopilot")
+		return e
+	})
+	if merr != nil {
+		s.log.WarnContext(ctx, "autopilot: record a try of the ship", "round", round, "err", merr)
 	}
 	if err == nil {
 		s.log.InfoContext(ctx, "server-side ship done", "round", round, "task", key)
 		return
 	}
-	s.log.WarnContext(ctx, "autopilot: open a reviewed pull request", "round", round, "task", key, "try", next.ShipTries, "err", err)
-	if !tell {
-		return
-	}
-	var userID int64
-	if s.db.R.QueryRowContext(ctx, `SELECT user_id FROM agent_runs WHERE id = (SELECT run_id FROM work_log WHERE id = ?)`, round).Scan(&userID) != nil || userID == 0 {
-		return
-	}
-	s.notifyURL(ctx, userID, nil, NotifyAutopilot, "Waypoint can't open "+key+"'s pull request",
-		fmt.Sprintf("%s's adversarial review is done, and Waypoint has tried %d times over %d minutes to open its pull request: %s. It keeps trying every %d minutes.", key, next.ShipTries, int(heldShipRetry.Minutes()), err, int(heldShipRetry.Minutes())),
-		"/agents?tab=autopilot")
+	s.log.WarnContext(ctx, "autopilot: open a reviewed pull request", "round", round, "task", key, "try", tries, "err", err)
 }

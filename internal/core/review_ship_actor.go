@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -100,24 +101,31 @@ func (s *Service) stopShip(ctx context.Context, r *roundRow, in shipRoundIn, why
 func (s *Service) stopShipWith(ctx context.Context, r *roundRow, in shipRoundIn, body, title, why string) error {
 	now := s.nowMS()
 	err := s.write(ctx, SystemActor(), func(t *tx) error {
-		_, err := t.ExecContext(ctx, `UPDATE work_log SET state = 'done', body = ?, ended_at = coalesce(ended_at, ?),
+		if _, err := t.ExecContext(ctx, `UPDATE work_log SET state = 'done', body = ?, ended_at = coalesce(ended_at, ?),
 			read_state = ?, read_by = ?, read_at = ?, updated_at = ?, before_pr = CASE WHEN before_pr = '' THEN before_pr ELSE json_set(before_pr, '$.ship_stop', ?) END WHERE id = ?`,
-			body, now, readDone, readByRules, now, now, why, r.id)
+			body, now, readDone, readByRules, now, now, why, r.id); err != nil {
+			return err
+		}
+		// The person is told by the write that ends the ship (dispatch
+		// sends it): the round ends and the notice stands or falls together.
+		who := in.userID
+		if in.user != nil {
+			who = in.user.ID
+		}
+		if u, err := s.userByID(ctx, t, who); err != nil || u.Disabled {
+			who = 0
+			if err := t.QueryRowContext(ctx, `SELECT coalesce(reporter_id, 0) FROM issues WHERE id = ?`, r.issueID).Scan(&who); err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+		}
+		if who == 0 {
+			return nil
+		}
+		_, err := t.storeNotice(ctx, who, NotifyAutopilot, fmt.Sprintf("%s: %s", r.key, title), body, "/agents?tab=autopilot")
 		return err
 	})
 	if err != nil {
 		return err
-	}
-	who := in.userID
-	if in.user != nil {
-		who = in.user.ID
-	}
-	if u, err := s.userByID(ctx, s.db.R, who); err != nil || u.Disabled {
-		who = 0
-		_ = s.db.R.QueryRowContext(ctx, `SELECT coalesce(reporter_id, 0) FROM issues WHERE id = ?`, r.issueID).Scan(&who)
-	}
-	if who != 0 {
-		s.notifyURL(ctx, who, nil, NotifyAutopilot, fmt.Sprintf("%s: %s", r.key, title), body, "/agents?tab=autopilot")
 	}
 	// The run and the task's claim are let go: nothing is left that would try
 	// this ship again, and the task is free for a person.
