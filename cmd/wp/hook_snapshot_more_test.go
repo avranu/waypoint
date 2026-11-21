@@ -455,6 +455,13 @@ func TestSnapshotLaunchFlagsFromTheClaudeAncestorBehindAWrapper(t *testing.T) {
 		{"skip permissions", []string{"--dangerously-skip-permissions"}, "", "", "bypassPermissions", "the launch gave no --model"},
 		{"nothing", nil, "", "", "", "the launch gave no --model"},
 		{"value with odd characters", []string{"--model=opus[1m]", "--effort", "lo w"}, "", "", "", "with a value that is not recorded (unexpected characters)"},
+		// A valued flag with no value: the next flag is not its value.
+		{"next is a flag", []string{"--model", "--verbose", "--effort", "--permission-mode", "plan"}, "", "", "plan", "the launch gave --model with no value"},
+		{"last is the flag", []string{"--model"}, "", "", "", "the launch gave --model with no value"},
+		{"empty equals form", []string{"--model="}, "", "", "", "the launch gave --model with no value"},
+		// After "--" are operands (the prompt), not flags.
+		{"after the terminator", []string{"-p", "--", "--model", "opus", "--dangerously-skip-permissions"}, "", "", "", "the launch gave no --model"},
+		{"given twice, the last wins", []string{"--model", "sonnet", "--model=opus"}, "opus", "", "", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

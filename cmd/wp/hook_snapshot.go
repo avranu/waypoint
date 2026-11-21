@@ -391,36 +391,58 @@ func (b *snapshotBuilder) fromArgv() {
 		b.missing("requested_permission_mode", why)
 		return
 	}
-	args := b.claude.Args
-	// flag is a flag's value, whether it was given, and whether the value is
-	// plain enough to record.
-	flag := func(name string) (v string, given, plain bool) {
-		for i, a := range args {
-			if val, ok := strings.CutPrefix(a, name+"="); ok {
-				return val, true, plainValueRE.MatchString(val)
-			}
-			if a == name && i+1 < len(args) {
-				return args[i+1], true, plainValueRE.MatchString(args[i+1])
-			}
-		}
-		return "", false, false
-	}
+	args := launchFlags(b.claude.Args)
 	for _, f := range []struct {
 		field, flag string
 		dst         **string
 	}{{"requested_model", "--model", &b.sn.RequestedModel}, {"requested_effort", "--effort", &b.sn.RequestedEffort}, {"requested_permission_mode", "--permission-mode", &b.sn.RequestedPermissionMode}} {
-		v, given, plain := flag(f.flag)
+		v, given, plain := argvFlag(args, f.flag)
 		switch {
 		case given && plain && v != "":
 			*f.dst, b.src[f.field] = sp(v), "process:argv"
 		case given && !plain:
 			b.missing(f.field, "the launch gave "+f.flag+" with a value that is not recorded (unexpected characters)")
+		case given:
+			b.missing(f.field, "the launch gave "+f.flag+" with no value")
 		case f.flag == "--permission-mode" && slices.Contains(args, "--dangerously-skip-permissions"):
 			*f.dst, b.src[f.field] = sp("bypassPermissions"), "process:argv"
 		default:
 			b.missing(f.field, "the launch gave no "+f.flag)
 		}
 	}
+}
+
+// launchFlags is the part of a process's argv that can hold its options:
+// without argv[0] (the executable) and without everything after "--" (the
+// prompt and other operands, which may look like flags).
+func launchFlags(argv []string) []string {
+	if len(argv) == 0 {
+		return nil
+	}
+	args := argv[1:]
+	if i := slices.Index(args, "--"); i >= 0 {
+		args = args[:i]
+	}
+	return args
+}
+
+// argvFlag is a valued flag's value in args, whether it was given, and
+// whether the value is plain enough to record. "--name=value" and
+// "--name value" are read; the next argument is the value only when it is
+// not itself a flag, so "--effort --verbose" is --effort with no value. A
+// flag given more than once has its last value, as the CLI parser keeps.
+func argvFlag(args []string, name string) (v string, given, plain bool) {
+	for i, a := range args {
+		if val, ok := strings.CutPrefix(a, name+"="); ok {
+			v, given = val, true
+		} else if a == name {
+			v, given = "", true
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				v = args[i+1]
+			}
+		}
+	}
+	return v, given, given && plainValueRE.MatchString(v)
 }
 
 // findClaudeProc is the nearest ancestor of pid that is Claude Code, a few
