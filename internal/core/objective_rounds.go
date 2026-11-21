@@ -806,9 +806,11 @@ func (s *Service) ObjectiveDiagnose(ctx context.Context, actor *Actor, ref strin
 			return err
 		}
 		// The diagnosis ends the run as a merge-ended round does: whoever
-		// held the round holds it no more.
+		// held the round holds it no more. Its outcome isn't "done": no
+		// workflow step was finished, and a step's same/different-agent rule
+		// reads the latest done run as whoever did the step before.
 		if i.ClaimedBy != "" {
-			if err := s.endRun(ctx, t, i.ID, i.ClaimedBy, "done", nil); err != nil {
+			if err := s.endRun(ctx, t, i.ID, i.ClaimedBy, RunDiagnosed, nil); err != nil {
 				return err
 			}
 			if _, err := t.ExecContext(ctx, `UPDATE issues SET claimed_by = '', claimed_until = NULL, claimed_at = NULL WHERE id = ?`, i.ID); err != nil {

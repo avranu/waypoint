@@ -118,7 +118,11 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 		if err != nil {
 			continue // not a task this can be said of; the rest of the open says so
 		}
-		if o, err := s.objectiveRow(ctx, s.db.R, i.ID); err == nil && o != nil && o.diagnoseRound() {
+		o, err := s.objectiveRow(ctx, s.db.R, i.ID)
+		if err != nil {
+			return nil, err // not knowing is not leave to open it
+		}
+		if o != nil && o.diagnoseRound() {
 			return nil, invalid("%s's round %d is a diagnose round, which ships no code: record the diagnosis first (wp objective diagnose %s -f FILE). The same round then reopens as a work round, and that is the round to ship in. A person can skip the diagnosis with wp objective next %s",
 				i.Key, o.Round, i.Key, i.Key)
 		}

@@ -105,6 +105,10 @@ const (
 	// RoundDiagnosed: a diagnose round that shipped no code and recorded
 	// why the rounds before it came no nearer (WP-1449).
 	RoundDiagnosed = "diagnosed"
+	// RunDiagnosed is the agent run a diagnosis ends: the agent's part is
+	// over, but it isn't "done", which a workflow step's same/different
+	// agent rule reads as the step before finished.
+	RunDiagnosed = "diagnosed"
 
 	// RoundKindDiagnose is what the round under way is when the rounds
 	// before it came no nearer (Objective.RoundKind); "" is a work round.

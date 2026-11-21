@@ -665,7 +665,7 @@ export interface AgentRun {
   started_at: string
   ended_at: string | null
   seconds: number
-  outcome?: '' | 'done' | 'released' | 'expired' | 'paused' | 'timeout'
+  outcome?: '' | 'done' | 'diagnosed' | 'released' | 'expired' | 'paused' | 'timeout'
   input_tokens: number
   output_tokens: number
   cost_usd: number
