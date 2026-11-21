@@ -1484,6 +1484,10 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 			if len(a.findings) == 0 && a.requestID != "" {
 				o.emptyRequests = append(o.emptyRequests, a.requestID) // reported as no_findings (WP-1230)
 			}
+			if a.salvaged > 0 {
+				o.salvagedAnswers++
+				o.salvagedFindings += a.salvaged
+			}
 			// One reviewer's answer past the guard is cut here, so it is
 			// counted here too (WP-1421).
 			raised := normalizeFindings(a.findings, 0)

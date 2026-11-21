@@ -724,11 +724,15 @@ type reviewOutcome struct {
 	later    int    // findings kept but past how many the review posts
 	readAt   string // how to read those: the command and, where Waypoint has an address, the page
 	guardCut int    // findings past the guard (findingsGuard), not kept
-	belowMin int    // findings under the rule's minimum severity, not posted
-	minSev   string // that minimum
-	private  globSet
-	rule     string // the automation, for the marker
-	note     string // the line every review starts with (Admin → AI)
+	// answers a reviewer's cut off at its length limit, and the findings
+	// they had finished, kept (WP-1421).
+	salvagedAnswers  int
+	salvagedFindings int
+	belowMin         int    // findings under the rule's minimum severity, not posted
+	minSev           string // that minimum
+	private          globSet
+	rule             string // the automation, for the marker
+	note             string // the line every review starts with (Admin → AI)
 	// The verifier models that checked the findings, what they dropped,
 	// and how many findings went unchecked (every verifier model failed on
 	// them, or their file couldn't be read).
@@ -841,6 +845,11 @@ func reviewBody(sha string, o reviewOutcome) string {
 	}
 	if n := o.guardCut; n > 0 {
 		notes = append(notes, fmt.Sprintf("%d finding%s past the guard of %d against a runaway answer not kept", n, plural(n), findingsGuard))
+	}
+	if n := o.salvagedAnswers; n == 1 {
+		notes = append(notes, fmt.Sprintf("a reviewer's answer was cut off at its length limit; kept the %d finding%s it had finished", o.salvagedFindings, plural(o.salvagedFindings)))
+	} else if n > 1 {
+		notes = append(notes, fmt.Sprintf("%d reviewers' answers were cut off at their length limit; kept the %d finding%s they had finished", n, o.salvagedFindings, plural(o.salvagedFindings)))
 	}
 	if o.cut {
 		notes = append(notes, "part of the diff was cut to fit the model")

@@ -347,7 +347,7 @@ function Findings({ audit: a }: { audit: CodeAudit }) {
   // The server says how many are listed at a time (shown); the rest are one
   // click away and counted (WP-1421). This page is served with its server,
   // so it has no rule of its own.
-  const listed = all ? list : list.slice(0, a.shown)
+  const listed = all || !a.shown ? list : list.slice(0, a.shown)
   const more = list.length - listed.length
   return (
     <Section

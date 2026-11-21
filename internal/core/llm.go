@@ -377,7 +377,7 @@ func (c *httpLLM) opencodeAsk(ctx context.Context, p *AIProvider, model, system,
 		if text == "" {
 			return nil, errors.New("the model gave no answer")
 		}
-		return extractJSON(text)
+		return extractAnswerJSON(ctx, text)
 	}
 	if len(res.Info.Structured) == 0 || string(res.Info.Structured) == "null" {
 		return nil, errors.New("the model gave no structured answer")
@@ -504,7 +504,7 @@ func (c *httpLLM) openaiComplete(ctx context.Context, p *AIProvider, model strin
 	if strings.TrimSpace(text) == "" {
 		return nil, served, errors.New("the model gave no answer")
 	}
-	raw, err := extractJSON(text)
+	raw, err := extractAnswerJSON(ctx, text)
 	return raw, served, err
 }
 
@@ -663,7 +663,7 @@ func (c *httpLLM) ollamaComplete(ctx context.Context, p *AIProvider, model, syst
 	if strings.TrimSpace(res.Message.Content) == "" {
 		return nil, errors.New("the model gave no answer")
 	}
-	return extractJSON(res.Message.Content)
+	return extractAnswerJSON(ctx, res.Message.Content)
 }
 
 // extractJSON finds the JSON object in a reply that may wrap it in prose or
@@ -711,4 +711,141 @@ func maxTokensOf(ctx context.Context) int {
 		return n
 	}
 	return defaultMaxTokens
+}
+
+// salvageKey asks the completion paths to keep the findings a cut-off
+// answer finished (WP-1421): the review call sets it, nothing else does.
+type salvageKey struct{}
+
+// salvageNote is what the call's last answer left behind: whether it was
+// salvaged and how many findings it held. The review reads it after the call.
+type salvageNote struct {
+	mu       sync.Mutex
+	answers  int
+	findings int
+}
+
+// withSalvage returns ctx with salvage on, and the note it fills.
+func withSalvage(ctx context.Context) (context.Context, *salvageNote) {
+	n := &salvageNote{}
+	return context.WithValue(ctx, salvageKey{}, n), n
+}
+
+// extractAnswerJSON is extractJSON, and when ctx asks for salvage, falls
+// back to the findings a cut-off answer finished.
+func extractAnswerJSON(ctx context.Context, s string) (json.RawMessage, error) {
+	n, _ := ctx.Value(salvageKey{}).(*salvageNote)
+	raw, err := extractJSON(s)
+	if n == nil {
+		return raw, err
+	}
+	// The note is the last answer's: a chain that salvaged one model's
+	// answer, rejected it and went on to a whole one has salvaged nothing.
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.answers, n.findings = 0, 0
+	if err == nil {
+		return raw, nil
+	}
+	saved, count, ok := salvageFindings(s)
+	if !ok {
+		return nil, err
+	}
+	n.answers, n.findings = 1, count
+	return saved, nil
+}
+
+// salvageFindings takes an answer cut off inside its JSON, {"findings":[{…},
+// {…},{… cut, and returns valid JSON holding the findings it finished, with
+// how many. It is not ok for any other shape, and for a cut inside the
+// first finding (no findings is not a salvage). It reads strings with their
+// escapes and keeps a stack of open brackets, so a brace or quote inside a
+// string is text. Callers use it only on an answer extractJSON rejected.
+func salvageFindings(s string) (json.RawMessage, int, bool) {
+	from := 0
+	for try := 0; try < 5; try++ {
+		i := strings.Index(s[from:], "{")
+		if i < 0 {
+			return nil, 0, false
+		}
+		start := from + i
+		if raw, n, ok := salvageFrom(s[start:]); ok {
+			return raw, n, true
+		}
+		from = start + 1
+	}
+	return nil, 0, false
+}
+
+func salvageFrom(s string) (json.RawMessage, int, bool) {
+	var (
+		stack    []byte
+		inStr    bool
+		esc      bool
+		strStart int
+		lastKey  string
+		keyReady bool // a key string at depth 1 just ended, awaiting its colon
+		arrStart = -1
+		lastEnd  = -1
+		count    int
+	)
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inStr {
+			switch {
+			case esc:
+				esc = false
+			case c == '\\':
+				esc = true
+			case c == '"':
+				inStr = false
+				if len(stack) == 1 && stack[0] == '{' && arrStart < 0 {
+					if k, err := strconv.Unquote(s[strStart : i+1]); err == nil {
+						lastKey, keyReady = k, true
+					}
+				}
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inStr, strStart = true, i
+			keyReady = false
+		case ':':
+			// only a key at depth 1 followed by a colon counts
+			if !(keyReady && len(stack) == 1) {
+				lastKey = ""
+			}
+			keyReady = false
+		case '{', '[':
+			if c == '[' && len(stack) == 1 && stack[0] == '{' && lastKey == "findings" && arrStart < 0 {
+				arrStart = i + 1
+			}
+			stack = append(stack, c)
+		case '}', ']':
+			if len(stack) == 0 || (c == '}') != (stack[len(stack)-1] == '{') {
+				return nil, 0, false
+			}
+			stack = stack[:len(stack)-1]
+			if arrStart >= 0 && len(stack) == 2 {
+				lastEnd = i + 1
+				count++
+			}
+			if arrStart >= 0 && len(stack) == 1 {
+				return nil, 0, false // the array closed: not cut inside it
+			}
+			if len(stack) == 0 {
+				return nil, 0, false // a complete object: not a cut answer
+			}
+		}
+	}
+	if arrStart < 0 || lastEnd < 0 || len(stack) < 2 {
+		return nil, 0, false
+	}
+	// elements of the array are objects; a cut-off tail past lastEnd is dropped.
+	raw := json.RawMessage(`{"findings":[` + s[arrStart:lastEnd] + `]}`)
+	if !json.Valid(raw) {
+		return nil, 0, false
+	}
+	return raw, count, true
 }

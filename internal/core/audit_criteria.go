@@ -316,14 +316,15 @@ func (f *auditAnswer) answerWith(answer string) string {
 }
 
 // cutWhere says where the findings the guard cut are, and how far.
-func (f *auditAnswer) cutWhere() string {
+func (f *auditAnswer) cutWhere(a *CodeAudit) string {
+	at := fmt.Sprintf("the audit's answer text (the answer field of `wp audit show %d --json`)", a.ID)
 	switch {
 	case f.cutJSON == "":
 		return "they are not kept"
 	case f.cutShort:
-		return "they are in the audit's answer text, cut short at its size limit"
+		return "they are in " + at + ", cut short at its size limit"
 	}
-	return "they are in the audit's answer text"
+	return "they are in " + at
 }
 
 // keepNote is what the summary says when keep left findings out: how many
@@ -335,7 +336,7 @@ func (f *auditAnswer) keepNote(a *CodeAudit, raised int) string {
 	}
 	if f.guardCut > 0 {
 		fmt.Fprintf(&b, " (The answer held %d findings; %d are kept, the worst first, at the guard of %d against a runaway answer; %d were cut; %s)",
-			raised, len(f.Findings), auditGuard(a), f.guardCut, f.cutWhere())
+			raised, len(f.Findings), auditGuard(a), f.guardCut, f.cutWhere(a))
 	}
 	return b.String()
 }

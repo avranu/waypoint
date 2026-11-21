@@ -64,6 +64,9 @@ type reviewerAnswer struct {
 	// requestID names the gateway request that answered, for feedback on
 	// its findings (WP-514); "" when another provider answered.
 	requestID string
+	// salvaged is how many findings an answer cut off at its length limit
+	// had finished and kept (WP-1421); 0 when the answer came whole.
+	salvaged int
 }
 
 // reviewChunk runs a run's reviewers on one part of the diff, each with
@@ -105,8 +108,14 @@ func (s *Service) reviewOnce(ctx context.Context, chain []ChainModel, prompt str
 	var ans struct {
 		Findings []Finding `json:"findings"`
 	}
-	used, attempts, err := s.runChain(withMaxTokens(ctx, reviewMaxTokens), chain, reviewSystem, prompt, reviewSchema, &ans, 5*time.Minute)
+	ctx, note := withSalvage(withMaxTokens(ctx, reviewMaxTokens))
+	used, attempts, err := s.runChain(ctx, chain, reviewSystem, prompt, reviewSchema, &ans, 5*time.Minute)
 	out := reviewerAnswer{findings: ans.Findings, model: used.Model, log: attempts, err: err}
+	if err == nil {
+		note.mu.Lock()
+		out.salvaged = note.findings
+		note.mu.Unlock()
+	}
 	if err == nil && len(attempts) > 0 {
 		out.requestID = attempts[len(attempts)-1].RequestID
 	}
