@@ -55,7 +55,10 @@ type ServerStatus struct {
 	// Collectors is what runners and hourly jobs collect, as the last hourly
 	// check found it (WP-999).
 	Collectors []CollectorHealth `json:"collectors"`
-	AIKeys     []AIKeyDay        `json:"ai_keys"`
+	// HookDrops is hook data dropped and counted: the CLIs' offline outboxes
+	// and the server's caps on what a session keeps (WP-1468, WP-ADR145).
+	HookDrops []HookDrop `json:"hook_drops"`
+	AIKeys    []AIKeyDay `json:"ai_keys"`
 	// Warnings is the last hour's warnings and errors, counted by message,
 	// most first.
 	Warnings []LogCount `json:"warnings"`
@@ -119,7 +122,7 @@ func (s *Service) ServerStatus(ctx context.Context, actor *Actor) (*ServerStatus
 	}
 	now := s.now()
 	out := &ServerStatus{Version: s.cfg.Version, Started: s.started, UptimeS: int64(now.Sub(s.started).Seconds()),
-		Jobs: []JobStatus{}, Problems: []JobProblem{}, Queues: []QueueDepth{}, Collectors: []CollectorHealth{}, AIKeys: []AIKeyDay{}, Warnings: []LogCount{}}
+		Jobs: []JobStatus{}, Problems: []JobProblem{}, Queues: []QueueDepth{}, Collectors: []CollectorHealth{}, HookDrops: []HookDrop{}, AIKeys: []AIKeyDay{}, Warnings: []LogCount{}}
 	if out.Version == "" {
 		out.Version = "dev"
 	}
@@ -168,6 +171,10 @@ func (s *Service) ServerStatus(ctx context.Context, actor *Actor) (*ServerStatus
 	if out.Collectors, err = s.CollectorHealthList(ctx); err != nil {
 		s.log.WarnContext(ctx, "server status: collectors", "err", err)
 		out.Collectors = nil
+	}
+	if out.HookDrops, err = s.HookDrops(ctx); err != nil {
+		s.log.WarnContext(ctx, "server status: hook drops", "err", err)
+		out.HookDrops = []HookDrop{}
 	}
 	out.AIKeys = s.aiKeyDays(ctx)
 	if s.cfg.Logs != nil {

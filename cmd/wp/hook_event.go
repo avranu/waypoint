@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"os/exec"
@@ -51,52 +52,85 @@ type hookEventInput struct {
 	AgentID         string          `json:"agent_id"`
 	AgentType       string          `json:"agent_type"`
 	AgentTranscript string          `json:"agent_transcript_path"` // SubagentStop
+	// What the session runs with (WP-1468). Confirmed against Claude Code
+	// 2.1.330's real payloads and its hooks documentation: see hook_snapshot.go.
+	PermissionMode string          `json:"permission_mode"` // UserPromptSubmit, tool events, Stop; not SessionStart or SessionEnd
+	EffortRaw      json.RawMessage `json:"effort"`          // {"level": "low"} on tool events and Stop
+	Trigger        string          `json:"trigger"`         // PreCompact, PostCompact: manual or auto
+	FilePath       string          `json:"file_path"`       // InstructionsLoaded, ConfigChange
+	MemoryType     string          `json:"memory_type"`     // InstructionsLoaded
+	LoadReason     string          `json:"load_reason"`     // InstructionsLoaded
+	FromModel      string          `json:"from_model"`      // PostModelSwitch
+	ToModel        string          `json:"to_model"`        // PostModelSwitch
+	RequestedModel string          `json:"requested_model"` // PostModelSwitch
 	// Stop: what can still wake the agent (WP-D22). Absent from Claude Code
 	// versions that don't say.
 	BackgroundTasks json.RawMessage `json:"background_tasks"`
 	SessionCrons    json.RawMessage `json:"session_crons"`
 }
 
+// effortLevel is the effort level of a payload: its `effort.level`, "" when
+// the payload has none or says it differently (never an error: a payload
+// this CLI can't read in one field must still be read in the rest).
+func (in hookEventInput) effortLevel() string {
+	var e struct {
+		Level string `json:"level"`
+	}
+	if json.Unmarshal(in.EffortRaw, &e) != nil {
+		return ""
+	}
+	return e.Level
+}
+
 // sessionEvent is core.HookEvent as the CLI sends it (the CLI doesn't link
 // the server's packages).
 type sessionEvent struct {
-	Event            string          `json:"event"`
-	At               int64           `json:"at,omitempty"`
-	SessionID        string          `json:"session_id"`
-	Machine          string          `json:"machine"`
-	CLI              string          `json:"cli,omitempty"`
-	Cwd              string          `json:"cwd,omitempty"`
-	Repo             string          `json:"repo,omitempty"`
-	Branch           string          `json:"branch,omitempty"`
-	Worktree         bool            `json:"worktree,omitempty"`
-	Model            string          `json:"model,omitempty"`
-	Source           string          `json:"source,omitempty"`
-	Prompt           string          `json:"prompt,omitempty"`
-	Title            string          `json:"title,omitempty"`
-	NotificationType string          `json:"notification_type,omitempty"`
-	Message          string          `json:"message,omitempty"`
-	LastMessage      string          `json:"last_message,omitempty"`
-	StopHookActive   bool            `json:"stop_hook_active,omitempty"`
-	InputTokens      int64           `json:"input_tokens,omitempty"`
-	OutputTokens     int64           `json:"output_tokens,omitempty"`
-	Tool             string          `json:"tool,omitempty"`
-	ToolUseID        string          `json:"tool_use_id,omitempty"`
-	ToolInput        json.RawMessage `json:"tool_input,omitempty"`
-	ToolResponse     json.RawMessage `json:"tool_response,omitempty"`
-	Reason           string          `json:"reason,omitempty"`
-	AgentID          string          `json:"agent_id,omitempty"`
-	AgentType        string          `json:"agent_type,omitempty"`
-	AgentDescription string          `json:"agent_description,omitempty"` // SubagentStop of an adversarial review (WP-1089)
-	AgentModel       string          `json:"agent_model,omitempty"`
-	AgentPrompt      string          `json:"agent_prompt,omitempty"`
-	AgentReport      string          `json:"agent_report,omitempty"`
-	EndReason        string          `json:"end_reason,omitempty"`
-	Pending          *hookPending    `json:"pending,omitempty"`
-	SpawnedBy        string          `json:"spawned_by,omitempty"`
-	Task             string          `json:"task,omitempty"`           // WP_TASK: the tasks a launcher bound the session to (WP-34)
-	ContextTokens    int64           `json:"context_tokens,omitempty"` // the context its last call carried
-	CacheTTL         string          `json:"cache_ttl,omitempty"`      // Stop: the prompt-cache tier its last calls wrote (WP-192)
-	Checkouts        []hookCheckout  `json:"checkouts,omitempty"`      // Stop, SessionStart: the git state of its checkouts (WP-567)
+	Event            string           `json:"event"`
+	At               int64            `json:"at,omitempty"`
+	SessionID        string           `json:"session_id"`
+	Machine          string           `json:"machine"`
+	CLI              string           `json:"cli,omitempty"`
+	Cwd              string           `json:"cwd,omitempty"`
+	Repo             string           `json:"repo,omitempty"`
+	Branch           string           `json:"branch,omitempty"`
+	Worktree         bool             `json:"worktree,omitempty"`
+	Model            string           `json:"model,omitempty"`
+	Source           string           `json:"source,omitempty"`
+	Prompt           string           `json:"prompt,omitempty"`
+	Title            string           `json:"title,omitempty"`
+	NotificationType string           `json:"notification_type,omitempty"`
+	Message          string           `json:"message,omitempty"`
+	LastMessage      string           `json:"last_message,omitempty"`
+	StopHookActive   bool             `json:"stop_hook_active,omitempty"`
+	InputTokens      int64            `json:"input_tokens,omitempty"`
+	OutputTokens     int64            `json:"output_tokens,omitempty"`
+	Tool             string           `json:"tool,omitempty"`
+	ToolUseID        string           `json:"tool_use_id,omitempty"`
+	ToolInput        json.RawMessage  `json:"tool_input,omitempty"`
+	ToolResponse     json.RawMessage  `json:"tool_response,omitempty"`
+	Reason           string           `json:"reason,omitempty"`
+	AgentID          string           `json:"agent_id,omitempty"`
+	AgentType        string           `json:"agent_type,omitempty"`
+	AgentDescription string           `json:"agent_description,omitempty"` // SubagentStop of an adversarial review (WP-1089)
+	AgentModel       string           `json:"agent_model,omitempty"`
+	AgentPrompt      string           `json:"agent_prompt,omitempty"`
+	AgentReport      string           `json:"agent_report,omitempty"`
+	EndReason        string           `json:"end_reason,omitempty"`
+	Pending          *hookPending     `json:"pending,omitempty"`
+	SpawnedBy        string           `json:"spawned_by,omitempty"`
+	Task             string           `json:"task,omitempty"`           // WP_TASK: the tasks a launcher bound the session to (WP-34)
+	ContextTokens    int64            `json:"context_tokens,omitempty"` // the context its last call carried
+	CacheTTL         string           `json:"cache_ttl,omitempty"`      // Stop: the prompt-cache tier its last calls wrote (WP-192)
+	Checkouts        []hookCheckout   `json:"checkouts,omitempty"`      // Stop, SessionStart: the git state of its checkouts (WP-567)
+	PermissionMode   string           `json:"permission_mode,omitempty"`
+	Effort           string           `json:"effort,omitempty"`
+	FromModel        string           `json:"from_model,omitempty"`
+	RequestedModel   string           `json:"requested_model,omitempty"`
+	File             string           `json:"file,omitempty"`
+	MemoryType       string           `json:"memory_type,omitempty"`
+	LoadReason       string           `json:"load_reason,omitempty"`
+	Snapshot         *hookSnapshot    `json:"snapshot,omitempty"` // SessionStart, PostCompact, ConfigChange (WP-1468)
+	Drops            map[string]int64 `json:"drops,omitempty"`    // what the outbox dropped since the last send, "reason/event"
 }
 
 // hookPending is core.HookPending: the background tasks, crons and wakeups
@@ -319,10 +353,11 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 		Task: taskBinding()}
 	if filepath.IsAbs(in.Cwd) {
 		switch in.HookEventName {
-		case "SessionStart", "UserPromptSubmit", "Stop":
+		case "SessionStart", "UserPromptSubmit", "Stop", "PostCompact", "ConfigChange":
 			ev.Repo, ev.Branch, ev.Worktree = gitInfo(in.Cwd)
 		}
 	}
+	ev.PermissionMode, ev.Effort = in.PermissionMode, in.effortLevel()
 	switch in.HookEventName {
 	case "SessionStart":
 		ev.Model, ev.Source = in.Model, in.Source
@@ -332,6 +367,7 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 			// Work an earlier session left here, unfinished (WP-567).
 			ev.Checkouts = hookCheckouts(in.Cwd, nil) // its own checkout only
 		}
+		ev.Snapshot = buildSnapshot(in, ev.Branch, ev.Worktree) // what it runs with, as observed (WP-1468)
 		rememberSession(c, in)
 		c.autoUpdateInBackground() // at most daily, detached: never slows the hook
 	case "UserPromptSubmit":
@@ -365,6 +401,17 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 			ev.Prompt = mark // a background task reporting back is no person's prompt; only that much is sent
 		}
 		ev.Title = in.SessionTitle
+	case "PostCompact":
+		// Only that it happened and how: the summary is the session's text.
+		ev.Source = in.Trigger
+		ev.Snapshot = buildSnapshot(in, ev.Branch, ev.Worktree)
+	case "ConfigChange":
+		ev.Source, ev.File = in.Source, in.FilePath
+		ev.Snapshot = buildSnapshot(in, ev.Branch, ev.Worktree)
+	case "InstructionsLoaded":
+		ev.File, ev.MemoryType, ev.LoadReason = in.FilePath, in.MemoryType, in.LoadReason
+	case "PostModelSwitch":
+		ev.Model, ev.FromModel, ev.RequestedModel, ev.Source = in.ToModel, in.FromModel, in.RequestedModel, in.Source
 	case "Notification":
 		ev.NotificationType, ev.Message = in.NotifType, in.Message
 	case "PermissionDenied":
@@ -732,8 +779,15 @@ func (c *cli) sendSessionEvent(ev sessionEvent) *hookReply {
 	for _, q := range queued {
 		events = append(events, q.Event)
 	}
+	// What the outbox dropped rides with this event; it leaves the state only
+	// once a send got through (a failed one queues ev without it).
+	drops := c.pendingDrops()
 	events = append(events, ev)
+	events[len(events)-1].Drops = drops
 	b, err := c.call("POST", "/api/v1/sessions/hook", map[string]any{"events": events})
+	if err == nil {
+		c.settleDrops(drops)
+	}
 	if err != nil {
 		if !serverRefused(err) {
 			c.queueEvent(ev)
@@ -744,10 +798,13 @@ func (c *cli) sendSessionEvent(ev sessionEvent) *hookReply {
 		// them one at a time: the good queued events still get through.
 		var settled []queuedEvent
 		for _, q := range queued {
-			if _, err := c.call("POST", "/api/v1/sessions/hook", map[string]any{"events": []sessionEvent{q.Event}}); err != nil && !serverRefused(err) {
-				c.dropOutbox(settled)
-				c.queueEvent(ev)
-				return nil
+			if _, err := c.call("POST", "/api/v1/sessions/hook", map[string]any{"events": []sessionEvent{q.Event}}); err != nil {
+				if !serverRefused(err) {
+					c.dropOutbox(settled)
+					c.queueEvent(ev)
+					return nil
+				}
+				c.countDrop("refused", q.Event.Event, 1)
 			}
 			settled = append(settled, q) // taken, or refused for good
 		}
@@ -755,12 +812,17 @@ func (c *cli) sendSessionEvent(ev sessionEvent) *hookReply {
 		if len(queued) == 0 {
 			return nil
 		}
-		if b, err = c.call("POST", "/api/v1/sessions/hook", map[string]any{"events": []sessionEvent{ev}}); err != nil {
+		one := ev
+		one.Drops = c.pendingDrops()
+		if b, err = c.call("POST", "/api/v1/sessions/hook", map[string]any{"events": []sessionEvent{one}}); err != nil {
 			if !serverRefused(err) {
 				c.queueEvent(ev)
+			} else {
+				c.countDrop("refused", ev.Event, 1)
 			}
 			return nil
 		}
+		c.settleDrops(one.Drops)
 		var r hookReply
 		_ = json.Unmarshal(b, &r)
 		return &r
@@ -792,17 +854,73 @@ func (c *cli) freshOutbox() []queuedEvent {
 // queueEvent keeps an event for the next call (the newest outboxMax).
 func (c *cli) queueEvent(ev sessionEvent) {
 	if ev.Event == "PostToolUse" && ev.Tool != "AskUserQuestion" {
+		c.countDrop("unqueued", ev.Event, 1)
 		return // a command that ran matters now or not at all
 	}
 	if ev.Event == "UserPromptSubmit" && isSessionCommand(ev.Prompt) {
+		c.countDrop("unqueued", ev.Event, 1)
 		return // /wp next an hour late would surprise; the person was told it did nothing (WP-562)
 	}
-	_ = c.updateState(func(s *State) {
+	ev.Drops = nil // sent from the state's counts, never from a copy
+	if err := c.updateState(func(s *State) {
 		s.Outbox = append(s.Outbox, queuedEvent{Event: ev})
-		if len(s.Outbox) > outboxMax {
-			s.Outbox = s.Outbox[len(s.Outbox)-outboxMax:]
+		if over := len(s.Outbox) - outboxMax; over > 0 {
+			for _, q := range s.Outbox[:over] {
+				s.addDrop("overflow", q.Event.Event, 1)
+			}
+			s.Outbox = s.Outbox[over:]
 		}
-	})
+	}); err != nil {
+		c.countDropInMemory("unqueued", ev.Event)
+	}
+}
+
+// addDrop counts hook data the outbox gave up, "reason/event" (WP-ADR145
+// point 5); the next send reports it to the server.
+func (s *State) addDrop(reason, event string, n int64) {
+	if s.Drops == nil {
+		s.Drops = map[string]int64{}
+	}
+	s.Drops[reason+"/"+event] += n
+}
+
+func (c *cli) countDrop(reason, event string, n int64) {
+	if err := c.updateState(func(s *State) { s.addDrop(reason, event, n) }); err != nil {
+		// The state file can't be written: keep the count for this process
+		// at least, and say so.
+		fmt.Fprintf(os.Stderr, "wp hook: couldn't record a dropped %s/%s: %v\n", reason, event, err)
+	}
+}
+
+// countDropInMemory is for a failed state write: nowhere to keep it but
+// stderr (the event itself was lost by the same failure).
+func (c *cli) countDropInMemory(reason, event string) {
+	fmt.Fprintf(os.Stderr, "wp hook: lost a %s %s event: the state file could not be written\n", reason, event)
+}
+
+// pendingDrops is a copy of what the outbox dropped and hasn't reported.
+func (c *cli) pendingDrops() map[string]int64 {
+	if len(c.state.Drops) == 0 {
+		return nil
+	}
+	return maps.Clone(c.state.Drops)
+}
+
+// settleDrops takes reported counts out of the state (others may have been
+// added meanwhile: only what was sent is subtracted).
+func (c *cli) settleDrops(sent map[string]int64) {
+	if len(sent) == 0 {
+		return
+	}
+	if err := c.updateState(func(s *State) {
+		for k, n := range sent {
+			if s.Drops[k] -= n; s.Drops[k] <= 0 {
+				delete(s.Drops, k)
+			}
+		}
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "wp hook: couldn't clear reported drop counts (they will be counted twice): %v\n", err)
+	}
 }
 
 // dropOutbox forgets the events that were sent, and any that are too old to
@@ -815,9 +933,13 @@ func (c *cli) dropOutbox(sent []queuedEvent) {
 		cut := time.Now().Add(-outboxMaxAge).UnixMilli()
 		var keep []queuedEvent
 		for _, q := range s.Outbox {
-			if q.Event.At < cut || slices.ContainsFunc(sent, func(x queuedEvent) bool {
+			if slices.ContainsFunc(sent, func(x queuedEvent) bool {
 				return x.Event.At == q.Event.At && x.Event.Event == q.Event.Event && x.Event.SessionID == q.Event.SessionID
 			}) {
+				continue
+			}
+			if q.Event.At < cut {
+				s.addDrop("expired", q.Event.Event, 1) // too old to matter, and never sent
 				continue
 			}
 			keep = append(keep, q)

@@ -205,6 +205,12 @@ func serverStatusText(st *core.ServerStatus, now time.Time) string {
 			b.WriteString(line + "\n")
 		}
 	}
+	if len(st.HookDrops) > 0 {
+		b.WriteString("\nHook data dropped (machine, reason/event, count, last):\n")
+		for _, d := range st.HookDrops {
+			fmt.Fprintf(&b, "  %-16s %-34s %6d  %s ago\n", d.Machine, d.Reason+"/"+d.Event, d.Dropped, agoText(now.Sub(d.Last)))
+		}
+	}
 	switch {
 	case st.ProblemsPersistent > 0:
 		fmt.Fprintf(&b, "\nProblems: %d persistent and unacknowledged, of %d open (wp server problems):\n", st.ProblemsPersistent, st.ProblemsOpen)
