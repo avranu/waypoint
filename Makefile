@@ -5,7 +5,7 @@
 # make lint      go vet, gofmt check, golangci-lint (needs: make tools), wplint
 # make sast      gosec (advisory; see README Tooling)
 # make vuln      govulncheck (needs network for the vulnerability DB)
-# make check     test + lint + sast + vuln, all run even if one fails (the full local gate)
+# make check     lint + sast + vuln, then test: all run even if one fails (the full local gate)
 # make prepush   CI's lint job on what changed (the pre-commit pre-push hook)
 # make tools     install pinned Go QA binaries into GOPATH/bin
 # make ci-image  build and push CI's job image, pin ci.yml to it (.forgejo/ci-image)
@@ -133,8 +133,10 @@ vuln: ## known-vulnerability scan of the module graph
 # Every step runs even when an earlier one fails (make -k), so one pass reports
 # test, lint, gosec and govulncheck together (WP-1433). The exit status is still
 # non-zero if any failed, and the test step keeps its own wp testsum record.
+# The quick steps go first: lint takes a minute or two and the tests most of an
+# hour, so a lint finding shows before the long wait, not after it (WP-1526).
 check: ## the full local gate (backend); web: cd web && npm run typecheck && npm run format:check && npm run audit && npm run build (lint dormant, see README)
-	@$(MAKE) --no-print-directory -k test lint sast vuln || { echo 'make check: a step above failed; every step ran' >&2; exit 1; }
+	@$(MAKE) --no-print-directory -k lint sast vuln test || { echo 'make check: a step above failed; every step ran' >&2; exit 1; }
 
 # Links in invites and notifications point at Vite (:5173), which proxies
 # /api, /mcp and /cal to the Go server. Ctrl-C stops both.
