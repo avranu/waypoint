@@ -18,6 +18,8 @@ package core
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -364,10 +366,22 @@ func (s *Service) baseFaultOwner(ctx context.Context, forgeID int64, repo, branc
 
 // repoProjectOwner is an owner of the repo's project (0: none).
 func (s *Service) repoProjectOwner(ctx context.Context, forgeID int64, repo string) int64 {
+	projectID, err := s.attachedProject(ctx, s.db.R, forgeID, repo)
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read the project to find its owner", "repo", repo, "err", err) // 0: nobody this pass
+		}
+		return 0
+	}
 	var id int64
-	if s.db.R.QueryRowContext(ctx, `SELECT u.id FROM project_members m JOIN users u ON u.id = m.user_id
-		WHERE m.project_id = ? AND m.role = 'owner' AND u.disabled = 0 ORDER BY m.user_id LIMIT 1`,
-		s.attachedProject(ctx, s.db.R, forgeID, repo)).Scan(&id) != nil {
+	switch err := s.db.R.QueryRowContext(ctx, `SELECT u.id FROM project_members m JOIN users u ON u.id = m.user_id
+		WHERE m.project_id = ? AND m.role = 'owner' AND u.disabled = 0 ORDER BY m.user_id LIMIT 1`, projectID).Scan(&id); {
+	case errors.Is(err, sql.ErrNoRows):
+		return 0
+	case err != nil:
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read the owner of a repo's project", "repo", repo, "err", err)
+		}
 		return 0
 	}
 	return id
@@ -392,7 +406,11 @@ func (s *Service) baseFaults(ctx context.Context, forgeID int64, repo string) ma
 }
 
 func (s *Service) putSetting(ctx context.Context, key, value string) {
-	_ = s.keepSetting(ctx, key, value) // logged
+	if err := s.keepSetting(ctx, key, value); err != nil { // logged
+		if readFault(err) {
+			s.log.WarnContext(ctx, "keep setting failed", "err", err)
+		}
+	}
 }
 
 // keepSetting is putSetting for a caller that must know the value is kept.

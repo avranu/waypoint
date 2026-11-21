@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 	"time"
@@ -119,7 +121,11 @@ func (s *Service) onLeftoverEvent(ctx context.Context, e *Event) {
 			// The comments as they stand at merge, if the forge answers.
 			if pr, err := s.prByID(bg, s.db.R, prID); err == nil && !pr.Outside {
 				c, cancel := context.WithTimeout(bg, 30*time.Second)
-				_, _ = s.syncReviewComments(c, pr)
+				if _, err := s.syncReviewComments(c, pr); err != nil {
+					if readFault(err) && !errors.Is(err, ErrNotFound) && !isStatus(err, http.StatusNotFound) {
+						s.log.WarnContext(c, "sync a merged pull request's review comments", "pr", prID, "err", err)
+					}
+				}
 				cancel()
 			}
 		}
@@ -144,7 +150,13 @@ func (s *Service) nitpicksDue(ctx context.Context, prID int64) bool {
 	err := s.db.R.QueryRowContext(ctx, `SELECT p.state = 'merged' AND p.outside = 0 AND p.nitpicks_swept_at IS NULL AND EXISTS (
 			SELECT 1 FROM review_comment_scores c WHERE c.pr_id = p.id AND c.waived_at IS NOT NULL)
 		FROM pull_requests p WHERE p.id = ?`, prID).Scan(&due)
-	return err == nil && due
+	if err != nil {
+		if readFault(err) && !errors.Is(err, sql.ErrNoRows) { // no such pull request: nothing due
+			s.log.WarnContext(ctx, "read whether a merged pull request's nitpicks are due", "pr", prID, "err", err)
+		}
+		return false
+	}
+	return due
 }
 
 // leftoverDue is the cheap check before a sweep: the pull request is merged,
@@ -155,7 +167,13 @@ func (s *Service) leftoverDue(ctx context.Context, prID int64) bool {
 	err := s.db.R.QueryRowContext(ctx, `SELECT p.state = 'merged' AND p.outside = 0 AND (p.open_others_at_merge IS NULL OR EXISTS (
 			SELECT 1 FROM bot_findings f WHERE f.pr_id = p.id AND f.state = 'open' AND f.audit_finding_id IS NULL AND f.placement != 'withheld'))
 		FROM pull_requests p WHERE p.id = ?`, prID).Scan(&due)
-	return err == nil && due
+	if err != nil {
+		if readFault(err) && !errors.Is(err, sql.ErrNoRows) { // no such pull request: nothing due
+			s.log.WarnContext(ctx, "read whether a merged pull request's leftovers are due", "pr", prID, "err", err)
+		}
+		return false
+	}
+	return due
 }
 
 type leftoverFinding struct {
@@ -243,7 +261,10 @@ func (s *Service) sweepLeftover(ctx context.Context, prID int64, fixSince time.T
 	if pr.State != "merged" || pr.Outside {
 		return 0, nil
 	}
-	projectID := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo)
+	projectID, err := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo)
+	if err != nil {
+		return 0, err // not "attached to nothing": the pull request stays due
+	}
 	if projectID == 0 {
 		return 0, nil
 	}
@@ -419,8 +440,12 @@ func (s *Service) settleLeftoverFindings(ctx context.Context, t *tx, actor *Acto
 		}
 		if changed {
 			var projectID int64
-			if pr, err := s.prByID(ctx, t, l.pr); err == nil {
-				projectID = s.attachedProject(ctx, t, pr.ForgeID, pr.Repo)
+			pr, err := s.prByID(ctx, t, l.pr)
+			if err != nil {
+				return err
+			}
+			if projectID, err = s.attachedProject(ctx, t, pr.ForgeID, pr.Repo); err != nil {
+				return err
 			}
 			t.emit(&Event{Kind: EvPRActivity, ProjectID: projectID, New: "finding", Data: map[string]any{"pr_id": l.pr}})
 		}

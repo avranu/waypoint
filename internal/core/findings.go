@@ -272,7 +272,13 @@ func (s *Service) syncFindings(ctx context.Context, f *Forge, pr *PullRequest, w
 	res := &syncResult{}
 	cl, ok := s.Forges.(ForgeThreads)
 	if !ok {
-		res.findings, _ = s.prFindings(ctx, s.db.R, pr.ID)
+		var rerr error
+		res.findings, rerr = s.prFindings(ctx, s.db.R, pr.ID)
+		if rerr != nil {
+			if readFault(rerr) {
+				s.log.WarnContext(ctx, "pr findings failed", "pr", pr.ID, "err", rerr)
+			}
+		}
 		return res, nil
 	}
 	threads, err := cl.ReviewThreads(ctx, f, pr.Repo, pr.Number)
@@ -341,9 +347,16 @@ func (s *Service) syncFindings(ctx context.Context, f *Forge, pr *PullRequest, w
 					return err
 				}
 				fnd.State, res.changed = FindingResolved, res.changed || ch
-			case !th.Resolved && fnd.State == FindingResolved && s.resolvedOnForge(ctx, t, fnd.ID):
+			case !th.Resolved && fnd.State == FindingResolved:
 				// Not when Waypoint holds the resolution itself (wp pr resolve):
 				// a forge that can't resolve threads never shows it.
+				byForgeClick, err := s.resolvedOnForge(ctx, t, fnd.ID)
+				if err != nil {
+					return err // unread is not "a person's click": nothing is reopened
+				}
+				if !byForgeClick {
+					break
+				}
 				ch, err := s.setFindingState(ctx, t, fnd.ID, FindingOpen, byForge(""), "", "the thread was reopened")
 				if err != nil {
 					return err
@@ -379,11 +392,18 @@ func (s *Service) syncFindings(ctx context.Context, f *Forge, pr *PullRequest, w
 }
 
 // resolvedOnForge says whether a finding's resolution came from the forge
-// (a person's click) rather than from Waypoint (wp pr resolve).
-func (s *Service) resolvedOnForge(ctx context.Context, t *tx, id int64) bool {
+// (a person's click) rather than from Waypoint (wp pr resolve). No event is
+// an answer (the forge's); a failed read is an error.
+func (s *Service) resolvedOnForge(ctx context.Context, t *tx, id int64) (bool, error) {
 	var kind string
 	err := t.QueryRowContext(ctx, `SELECT by_kind FROM finding_events WHERE finding_id = ? AND state = ? ORDER BY id DESC LIMIT 1`, id, FindingResolved).Scan(&kind)
-	return err != nil || kind == "forge"
+	if errors.Is(err, sql.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return kind == "forge", nil
 }
 
 // projectsOfRepo are the projects a repo is attached to.

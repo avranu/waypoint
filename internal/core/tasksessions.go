@@ -240,7 +240,13 @@ func (s *Service) boundCovers(ctx context.Context, bound []string, i *Issue) boo
 	// #nosec G202 -- only ? placeholders are joined in
 	err := s.db.R.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM issue_relations WHERE named_in IS NULL AND ((source_id = ? AND target_id IN (`+placeholders(len(ids))+`))
 		OR (target_id = ? AND source_id IN (`+placeholders(len(ids))+`))))`, args...).Scan(&related)
-	return err == nil && related
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read bound covers", "issue", i.ID, "err", err)
+		}
+		return false
+	}
+	return related
 }
 
 // underAny: the issue parentID, or one of its ancestors, is among ids.
@@ -251,5 +257,11 @@ func (s *Service) underAny(ctx context.Context, parentID int64, ids []int64) boo
 	err := s.db.R.QueryRowContext(ctx, `WITH RECURSIVE up(id, depth) AS (SELECT ?, 0
 			UNION ALL SELECT x.parent_id, up.depth + 1 FROM issues x JOIN up ON x.id = up.id WHERE x.parent_id IS NOT NULL AND up.depth < 50)
 		SELECT EXISTS(SELECT 1 FROM up WHERE id IN (`+placeholders(len(ids))+`))`, args...).Scan(&under)
-	return err == nil && under
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read under any", "parentID", parentID, "err", err)
+		}
+		return false
+	}
+	return under
 }

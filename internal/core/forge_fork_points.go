@@ -120,10 +120,14 @@ func (s *Service) forkedTwice(ctx context.Context, f *Forge, pr *PullRequest, ti
 		return false
 	}
 	twice, err := cl.ForkedTwice(ctx, f, pr.Repo, tip, pr.HeadSHA)
-	if err != nil && !errors.Is(err, ErrUnsupported) {
-		s.log.WarnContext(ctx, "tell whether a head forks from its base twice", "repo", pr.Repo, "number", pr.Number, "err", err)
+	if err != nil {
+		// A forge that can't say (GitHub, GitLab) or no longer has it is "not forked twice".
+		if readFault(err) && !errors.Is(err, ErrUnsupported) && !isStatus(err, http.StatusNotFound) {
+			s.log.WarnContext(ctx, "tell whether a head forks from its base twice", "repo", pr.Repo, "number", pr.Number, "err", err)
+		}
+		return false
 	}
-	return err == nil && twice
+	return twice
 }
 
 // Where a head's Actions run stands, as headRun reads it.

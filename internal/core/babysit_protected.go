@@ -91,7 +91,10 @@ func protectedConflictTitle(pr *PullRequest) string {
 // reason: `wp pr todo` shows the latest refused round's account and diff
 // (refusedRound) as untrusted text.
 func (s *Service) fileProtectedPush(ctx context.Context, b *Babysit, pr *PullRequest, since time.Time, title, body string, trusted bool) (string, error) {
-	projectID := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo)
+	projectID, err := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo)
+	if err != nil {
+		return "", err
+	}
 	if projectID == 0 {
 		return "", nil
 	}

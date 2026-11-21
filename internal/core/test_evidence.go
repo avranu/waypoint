@@ -485,7 +485,16 @@ func (s *Service) repoCIRunsTests(ctx context.Context, evidenceID int64, repo st
 		OR EXISTS (SELECT 1 FROM ci_job_packages WHERE repo = ? COLLATE NOCASE AND forge_id IN `+forges+` AND at >= ?)
 		OR EXISTS (SELECT 1 FROM ci_tests t JOIN ci_test_runs r ON r.test_id = t.id WHERE t.repo = ? COLLATE NOCASE AND t.forge_id IN `+forges+` AND r.at >= ?)`,
 		since, repo, repo, evidenceID, repo, repo, evidenceID, since, repo, repo, evidenceID, since).Scan(&one)
-	return err == nil
+	if errors.Is(err, sql.ErrNoRows) {
+		return false // no run of tests there
+	}
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read repo ciruns tests", "evidenceID", evidenceID, "repo", repo, "err", err)
+		}
+		return false
+	}
+	return true
 }
 
 // IssueEvidence is the task's newest test evidence, for wp show and the

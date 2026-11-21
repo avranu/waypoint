@@ -340,11 +340,18 @@ func (s *Service) prWaitState(ctx context.Context, prID int64, head string) (*PR
 		// Forgejo says "no" while it checks; wait for the answer to be repeated (WP-138).
 		w.Why = "the forge is still checking whether it merges with " + cmp(pr.BaseRef, "its base")
 		return w, nil
-	case conflict && s.inQueue(ctx, pr):
-		// Its turn at the front of the merge queue deals with it (WP-222).
-		w.Why = reasonConflict(pr.BaseRef) + "; Waypoint brings it up to date when its turn in the merge queue comes"
-		return w, nil
 	case conflict:
+		queued, qerr := s.inQueue(ctx, pr)
+		switch {
+		case qerr != nil:
+			// Not known whether its turn deals with it: not settled as a conflict.
+			w.Why = reasonConflict(pr.BaseRef) + "; whether it is in the merge queue couldn't be read"
+			return w, nil
+		case queued:
+			// Its turn at the front of the merge queue deals with it (WP-222).
+			w.Why = reasonConflict(pr.BaseRef) + "; Waypoint brings it up to date when its turn in the merge queue comes"
+			return w, nil
+		}
 		return settle(PRWaitConflict, reasonConflict(pr.BaseRef))
 	case w.CI == "":
 		w.Why = "checks haven't been read yet"
@@ -404,7 +411,12 @@ func (s *Service) prWaitState(ctx context.Context, prID int64, head string) (*PR
 // otherwise hold the pull request, and the merge queue behind it, for hours.
 // A review that lands later is still read on the next sweep.
 func (s *Service) reviewGoing(ctx context.Context, pr *PullRequest) (bool, string) {
-	going, why, _ := s.reviewGoingErr(ctx, pr)
+	going, why, rerr := s.reviewGoingErr(ctx, pr)
+	if rerr != nil {
+		if readFault(rerr) {
+			s.log.WarnContext(ctx, "review going err failed", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "err", rerr)
+		}
+	}
 	return going, why
 }
 
