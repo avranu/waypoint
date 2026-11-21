@@ -252,7 +252,8 @@ func TestObjectiveDiagnoseBriefClipsAndHedges(t *testing.T) {
 	}
 }
 
-// .18: the stall notice says a diagnosis stands and the rounds since came no nearer.
+// .18: the stall notice says a diagnosis stands and how many rounds read since
+// came no nearer.
 func TestObjectiveDiagnoseStallNoticeNamesTheDiagnosis(t *testing.T) {
 	o := newObjEnv(t)
 	task := o.toDiagnose(2, 2, ObjectiveInput{})
@@ -261,16 +262,11 @@ func TestObjectiveDiagnoseStallNoticeNamesTheDiagnosis(t *testing.T) {
 		t.Fatal(err)
 	}
 	o.noBetter(task.Key, 3)
-	var got string
-	for _, n := range o.toldBodies(NotifyObjective) {
-		if strings.Contains(n, "without getting nearer") {
-			got = n
-		}
-	}
+	got := o.stallNotice()
 	if got == "" {
 		t.Fatalf("no stall notice: %q", o.toldBodies(NotifyObjective))
 	}
-	hasAll(t, "the stall notice", got, "diagnosis", "round 3", "still came no nearer")
+	hasAll(t, "the stall notice", got, "A diagnosis was recorded in round 3", "since then Waypoint has read 1 round that came no nearer")
 }
 
 // .20: a loop has no rounds to read, so diagnose_after is refused on one.
@@ -366,8 +362,14 @@ func TestObjectiveDiagnosePersonOverAnAgentsHeldRound(t *testing.T) {
 	if d.ClaimedBy != "" || d.ClaimedUntil != nil {
 		t.Errorf("still claimed: %q until %v", d.ClaimedBy, d.ClaimedUntil)
 	}
-	if n := len(d.AgentRuns); n == 0 || d.AgentRuns[n-1].EndedAt == nil || d.AgentRuns[n-1].Outcome != "done" {
-		t.Errorf("the agent's run wasn't ended: %+v", d.AgentRuns)
+	// Runs come newest first: the first is the held round's, ended as diagnosed.
+	if len(d.AgentRuns) == 0 || d.AgentRuns[0].EndedAt == nil || d.AgentRuns[0].Outcome != RunDiagnosed {
+		t.Errorf("the agent's run wasn't ended as diagnosed: %+v", d.AgentRuns)
+	}
+	for _, r := range d.AgentRuns {
+		if r.EndedAt == nil {
+			t.Errorf("a run is still open: %+v", r)
+		}
 	}
 }
 

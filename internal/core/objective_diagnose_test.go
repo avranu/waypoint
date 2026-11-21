@@ -173,20 +173,54 @@ func TestObjectiveDiagnoseRecordsAndReopensTheSameRound(t *testing.T) {
 	}
 	// Every later round's brief reads it.
 	hasAll(t, "the next brief", ObjectiveText(ob, true, o.clockNow()), "latest diagnosis", "times the build", "anthropic/claude-opus-5-5")
-	// The same diagnose round can't be recorded twice.
+	// It can't be recorded twice: the round it reopened is a work round, and
+	// the refusal says so. The first diagnosis is left as it was.
 	o.take1(task.Key)
-	if _, err := o.diagnose(task.Key, ObjectiveDiagnoseInput{Text: "again"}); !IsInvalid(err) {
+	if _, err := o.diagnose(task.Key, ObjectiveDiagnoseInput{Text: "again"}); !IsInvalid(err) || !strings.Contains(err.Error(), "is a work round, not a diagnose round") {
 		t.Fatalf("recording twice: %v", err)
 	}
-	// Progress clears it from the brief.
+	if again := o.obj(task.Key); again.Diagnosis == nil || again.Diagnosis.Text != strings.TrimSpace(text) || len(again.Rounds) != len(ob.Rounds) {
+		t.Fatalf("a refused second diagnosis changed it: %+v (%d rounds, was %d)", again.Diagnosis, len(again.Rounds), len(ob.Rounds))
+	}
+	// A met reading clears it.
 	o.setClock(o.clockNow().Add(time.Minute))
 	if _, err := o.s.AgentDone(o.ctx, o.ag, task.Key, AgentDoneInput{}); err != nil {
 		t.Fatal(err)
 	}
 	o.s.Wait()
 	o.read(ObjectiveJobResult{Head: sha(3), Base: sha(2), Reading: passed(true)})
-	if ob = o.obj(task.Key); ob.State != ObjectiveMet {
-		t.Fatalf("state %s", ob.State)
+	if ob = o.obj(task.Key); ob.State != ObjectiveMet || ob.Diagnosis != nil {
+		t.Fatalf("state %s diagnosis %+v", ob.State, ob.Diagnosis)
+	}
+}
+
+// A round that reads nearer, though not met, clears the diagnosis: later
+// briefs no longer read it (WP-1449).
+func TestObjectiveDiagnoseProgressClearsIt(t *testing.T) {
+	o := newObjEnv(t)
+	task := o.task("Coverage")
+	o.set(task.Key, ObjectiveInput{Check: ptrOf("./coverage.sh"), Until: ptrOf(">= 99%"), DiagnoseAfter: ptrOf(1)})
+	val := func(v float64) *ObjectiveReading { return &ObjectiveReading{OK: true, Value: ptrOf(v), Runs: 3} }
+	o.read(ObjectiveJobResult{Head: sha(0), Reading: val(50)})
+	o.worked(task.Key)
+	o.read(ObjectiveJobResult{Head: sha(1), Base: sha(0), Reading: val(50), BaseReading: val(50), Exact: true})
+	o.take1(task.Key)
+	if _, err := o.diagnose(task.Key, ObjectiveDiagnoseInput{Text: "the check times the build"}); err != nil {
+		t.Fatal(err)
+	}
+	ob := o.obj(task.Key)
+	if ob.Diagnosis == nil || !strings.Contains(ObjectiveText(ob, true, o.clockNow()), "times the build") {
+		t.Fatalf("setup: diagnosis %+v", ob.Diagnosis)
+	}
+	o.setClock(o.clockNow().Add(100 * time.Hour))
+	o.worked(task.Key)
+	o.read(ObjectiveJobResult{Head: sha(2), Base: sha(1), Reading: val(60), BaseReading: val(50), Exact: true})
+	ob = o.obj(task.Key)
+	if ob.State != ObjectiveActive || ob.Diagnosis != nil || ob.NoBetter != 0 {
+		t.Fatalf("after progress: state %s diagnosis %+v no_better %d", ob.State, ob.Diagnosis, ob.NoBetter)
+	}
+	if brief := ObjectiveText(ob, true, o.clockNow()); strings.Contains(brief, "times the build") || strings.Contains(brief, "latest diagnosis") {
+		t.Errorf("the brief still reads the diagnosis after progress:\n%s", brief)
 	}
 }
 
@@ -311,12 +345,12 @@ func TestObjectiveDiagnoseMergedPullRequestIsANormalRound(t *testing.T) {
 	o.read(ObjectiveJobResult{Head: sha(3), Base: sha(2), Reading: passed(false)})
 	ob := o.obj(task.Key)
 	// Read as a normal round, no better: a diagnosis is still owed.
-	if ob.Round != 4 || ob.RoundKind != RoundKindDiagnose || ob.NoBetter < 2 {
+	if ob.Round != 4 || ob.RoundKind != RoundKindDiagnose || ob.NoBetter != 3 {
 		t.Fatalf("after the merge: round %d kind %q no_better %d", ob.Round, ob.RoundKind, ob.NoBetter)
 	}
 	found := false
 	for _, h := range o.history(task.Key) {
-		if strings.Contains(h, "read as any round") {
+		if strings.Contains(h, "a diagnose round, but a pull request landed in it") {
 			found = true
 		}
 	}
@@ -428,7 +462,7 @@ func TestObjectiveDiagnoseAsk(t *testing.T) {
 		if err != nil || ob.Phase != PhaseBlocked || ob.PhaseWhy != BlockedDiagnosis || ob.Diagnosis == nil {
 			t.Fatalf("ask: %+v, %v", ob, err)
 		}
-		if told := o.told(NotifyObjective); len(told) == 0 || !strings.Contains(told[len(told)-1], "needs you") {
+		if told := o.told(NotifyObjective); len(told) == 0 || !strings.Contains(told[0], "needs you") {
 			t.Errorf("told = %q", told)
 		}
 		return o, task
@@ -609,7 +643,7 @@ func TestObjectiveDiagnoseAskTellsThePersonOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 		told := o.told(NotifyObjective)
-		if len(told) != before+1 || !strings.Contains(told[len(told)-1], "needs you") {
+		if len(told) != before+1 || !strings.Contains(told[0], "needs you") {
 			t.Fatalf("notifications %d -> %d: %q", before, len(told), told)
 		}
 	})
@@ -636,7 +670,7 @@ func TestObjectiveDiagnoseAskTellsThePersonOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 		told := o.told(NotifyObjective)
-		if len(told) != before+1 || !strings.Contains(told[len(told)-1], "needs you") {
+		if len(told) != before+1 || !strings.Contains(told[0], "needs you") {
 			t.Fatalf("notifications %d -> %d: %q", before, len(told), told)
 		}
 	})
@@ -662,7 +696,7 @@ func TestObjectiveDiagnoseOutOfRoundsThenReSet(t *testing.T) {
 		// Round 1's no-better made round 2 a diagnose round, and so on; the
 		// last work round is round 3, and round 4 is over the limit.
 		ob := o.obj(task.Key)
-		if ob.PhaseWhy != BlockedRounds || ob.Diagnosis == nil || ob.NoBetter == 0 {
+		if ob.PhaseWhy != BlockedRounds || ob.Diagnosis == nil || ob.NoBetter != 1 {
 			t.Fatalf("setup: phase %q why %q no_better %d diagnosis %v", ob.Phase, ob.PhaseWhy, ob.NoBetter, ob.Diagnosis)
 		}
 		return o, task
@@ -713,8 +747,8 @@ func TestObjectiveRoundRowsHaveDistinctIDs(t *testing.T) {
 		seen[r.ID] = true
 		rounds[r.Round]++
 	}
-	if rounds[3] < 2 {
-		t.Fatalf("no round number is shared by two rows: %v", rounds)
+	if rounds[3] != 2 {
+		t.Fatalf("round 3 has %d rows, want the diagnosed one and the reopened work round: %v", rounds[3], rounds)
 	}
 }
 
@@ -775,15 +809,16 @@ func TestObjectiveDiagnoseRunIsNotAStepCompleted(t *testing.T) {
 	}
 }
 
+// stallNotice is the latest stall notice ("" for none). Notices come newest
+// first.
 func (o *objEnv) stallNotice() string {
 	o.t.Helper()
-	got := ""
 	for _, n := range o.toldBodies(NotifyObjective) {
 		if strings.Contains(n, "without getting nearer") {
-			got = n
+			return n
 		}
 	}
-	return got
+	return ""
 }
 
 // A reopened round that lands nothing has no reading after the diagnosis, so
@@ -796,21 +831,52 @@ func TestObjectiveDiagnoseStallNoticeWithoutLaterReadings(t *testing.T) {
 	if _, err := o.diagnose(task.Key, ObjectiveDiagnoseInput{Text: "the check times the build"}); err != nil {
 		t.Fatal(err)
 	}
-	o.setClock(o.clockNow().Add(100 * time.Hour))
-	o.take1(task.Key)
-	if _, err := o.s.AgentDone(o.ctx, o.ag, task.Key, AgentDoneInput{}); err != nil {
-		t.Fatal(err)
-	}
-	o.s.Wait()
-	// Nothing landed: head is where the round began.
-	o.read(ObjectiveJobResult{Head: sha(2), Base: sha(2), Reading: passed(false)})
+	o.landsNothing(task.Key, 2)
 	got := o.stallNotice()
 	if got == "" {
 		t.Fatalf("no stall notice: %q", o.toldBodies(NotifyObjective))
 	}
-	hasAll(t, "the stall notice", got, "diagnosis was recorded in round 3")
-	if strings.Contains(got, "still came no nearer") {
+	hasAll(t, "the stall notice", got, "diagnosis was recorded in round 3, and it stands")
+	if strings.Contains(got, "came no nearer") {
 		t.Errorf("claims rounds since the diagnosis were read: %s", got)
+	}
+}
+
+// landsNothing takes the round and finishes it with nothing landed: the head
+// is still sha(at), where the round began.
+func (o *objEnv) landsNothing(key string, at int) {
+	o.t.Helper()
+	o.setClock(o.clockNow().Add(100 * time.Hour))
+	o.take1(key)
+	if _, err := o.s.AgentDone(o.ctx, o.ag, key, AgentDoneInput{}); err != nil {
+		o.t.Fatal(err)
+	}
+	o.s.Wait()
+	o.read(ObjectiveJobResult{Head: sha(at), Base: sha(at), Reading: passed(false)})
+}
+
+// Rounds that land nothing after a read one count as stalled, but only the
+// read one is evidence against the diagnosis: the stall notice counts that
+// one alone, and doesn't say every round since came no nearer (WP-1449).
+func TestObjectiveDiagnoseStallNoticeCountsOnlyReadRounds(t *testing.T) {
+	o := newObjEnv(t)
+	task := o.toDiagnose(2, 2, ObjectiveInput{})
+	o.take1(task.Key)
+	if _, err := o.diagnose(task.Key, ObjectiveDiagnoseInput{Text: "the check times the build"}); err != nil {
+		t.Fatal(err)
+	}
+	o.noBetter(task.Key, 3) // read, no nearer: stalled 3, told once
+	for range 3 {
+		o.landsNothing(task.Key, 3) // stalled 4, 5, 6: told again at 6
+	}
+	ob := o.obj(task.Key)
+	if ob.Stalled != 6 || ob.NoBetter != 1 || ob.Round != 4 {
+		t.Fatalf("setup: stalled %d no_better %d round %d", ob.Stalled, ob.NoBetter, ob.Round)
+	}
+	got := o.stallNotice()
+	hasAll(t, "the stall notice", got, "6 rounds without getting nearer", "recorded in round 3, and since then Waypoint has read 1 round that came no nearer")
+	if strings.Contains(got, "rounds since") {
+		t.Errorf("says every round since the diagnosis came no nearer: %s", got)
 	}
 }
 
@@ -913,7 +979,7 @@ func TestObjectiveDiagnoseHeldRoundReadsAnEarlierPullRequest(t *testing.T) {
 	}
 	found := false
 	for _, h := range o.history(task.Key) {
-		if strings.Contains(h, "read as any round") {
+		if strings.Contains(h, "a diagnose round, but a pull request landed in it") {
 			found = true
 		}
 	}

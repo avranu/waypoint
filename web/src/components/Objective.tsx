@@ -293,8 +293,9 @@ export function ObjectiveBanner({
             {active && o.round_kind === 'diagnose' && !o.phase && (
               <>
                 {' '}
-                This is a diagnose round: it ships no code. The worker finds out why the last{' '}
-                {roundsText(o.no_better || o.diagnose_after)} came no nearer and records it.
+                This is a diagnose round: it ships no code. The worker finds out why{' '}
+                {o.no_better ? `the last ${roundsText(o.no_better)}` : 'the rounds before it'} came
+                no nearer and records it.
               </>
             )}
             {active && o.pace === 'spare' && <> Runs only on quota that would go unused.</>}
