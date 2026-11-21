@@ -154,6 +154,20 @@ func TestReviewNotTakenWarnsFromScreen(t *testing.T) {
 	}
 }
 
+// An idle session whose registry never goes busy after the prompt is told
+// so in those words: its screen was not what was read.
+func TestReviewNotTakenWarnsFromRegistry(t *testing.T) {
+	p, _, job := busyReviewEnv(t, "idle", screenAgentsIdle, screenWorking)
+	old := reviewTookWait
+	reviewTookWait = 200 * time.Millisecond
+	t.Cleanup(func() { reviewTookWait = old })
+	o := p.execAutopilot(context.Background(), newRun(time.Minute), job)
+	r, _ := o.Result.(autopilotResult)
+	if r.Outcome != "reviewing" || !strings.Contains(r.Warning, "didn't go busy") || strings.Contains(r.Warning, "screen") {
+		t.Fatalf("outcome %+v %+v", o, r)
+	}
+}
+
 // A working main thread is waited for and then held, as before.
 func TestReviewHeldWhileMainThreadWorks(t *testing.T) {
 	for name, screen := range map[string]string{"working": screenWorking, "working with agents": screenWorkingAgents, "dialog": screenDialog} {
