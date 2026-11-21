@@ -314,6 +314,11 @@ func TestReviewAgainBeforePR(t *testing.T) {
 			if arm != AgainReview || !next.Valid {
 				t.Fatalf("decision %s, next %v", arm, next)
 			}
+			// The next round's reviewer was asked for at this ship, and the
+			// text says it is under way (WP-1325).
+			if n := a.auditsOfRound(next.Int64); n != 1 || !strings.Contains(res.Held, "the review is under way") {
+				t.Fatalf("next round's audits %d, held %q", n, res.Held)
+			}
 			if _, err := a.s.db.W.Exec(`DELETE FROM work_log WHERE id = ?`, pastRound); err != nil {
 				t.Fatal(err)
 			}

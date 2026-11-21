@@ -62,7 +62,13 @@ func (s *Service) compactedForReview(ctx context.Context, sessionID, reviewID in
 	err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM runner_jobs j JOIN agent_sessions a ON a.id = ?
 		WHERE j.source = ? AND j.source_id = ? AND j.state = 'done' AND a.warm_state = ? AND a.warm_at >= j.created_at`,
 		sessionID, reviewCompactSource, reviewID, warmReview).Scan(&n)
-	return err == nil && n > 0
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read compacted for review", "reviewID", reviewID, "err", err)
+		}
+		return false
+	}
+	return n > 0
 }
 
 // compactingForReview: the round's compaction was typed and the session hasn't
@@ -75,7 +81,13 @@ func (s *Service) compactingForReview(ctx context.Context, sessionID, reviewID, 
 	err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM runner_jobs j JOIN agent_sessions a ON a.id = ?
 		WHERE j.source = ? AND j.source_id = ? AND j.state = 'done' AND a.warm_state = ? AND coalesce(a.warm_at, 0) < j.created_at AND j.finished_at >= ?`,
 		sessionID, reviewCompactSource, reviewID, warmReview, now-reviewCompactWait.Milliseconds()).Scan(&n)
-	return err == nil && n > 0
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read compacting for review", "session", sessionID, "review", reviewID, "err", err)
+		}
+		return false
+	}
+	return n > 0
 }
 
 // dropReviewCompact cancels the round's compaction if no runner took it yet:

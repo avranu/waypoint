@@ -298,7 +298,14 @@ func (x *execution) step(ctx context.Context, st Action, id string, iter, pos in
 	case row.Status == "waiting":
 		// Back from a retry's pause starts a new try; back from a step's own
 		// wait carries on with the same one.
-		if w, _ := x.s.stepWait(ctx, x.run.ID, id, iter, retrySeq(row.Attempts)); w != nil {
+		w, rerr := x.s.stepWait(ctx, x.run.ID, id, iter, retrySeq(row.Attempts))
+		if rerr != nil {
+			// Unread, it can't tell a retry's pause from the step's own
+			// wait, and carrying on would run the step before its pause
+			// was over (WP-1406).
+			return fail(fmt.Errorf("read what the step was waiting for: %w", rerr))
+		}
+		if w != nil {
 			if w.resolvedAt == nil {
 				return &parked{waitID: w.id}
 			}
@@ -666,13 +673,17 @@ func (c *StepCtx) Wait(kind, key, match string, timeout time.Duration) (ev *Even
 // slotSeq numbers a slot's wait among the step's waits.
 func (c *StepCtx) slotSeq(slot int) int { return 100_000 + c.Attempt*100 + slot }
 
-// WaitDeadline is when a slot's wait ends if nothing comes (0: it isn't stored yet).
-func (c *StepCtx) WaitDeadline(slot int) int64 {
-	w, _ := c.S.stepWait(c.Ctx, c.Run.ID, c.ID, c.Iteration, c.slotSeq(slot))
-	if w == nil {
-		return 0
+// WaitDeadline is when a slot's wait ends if nothing comes (0: it isn't stored
+// yet). A failed read is an error, not 0: the caller must not start the wait over.
+func (c *StepCtx) WaitDeadline(slot int) (int64, error) {
+	w, err := c.S.stepWait(c.Ctx, c.Run.ID, c.ID, c.Iteration, c.slotSeq(slot))
+	if err != nil {
+		return 0, err
 	}
-	return w.timeoutAt
+	if w == nil {
+		return 0, nil
+	}
+	return w.timeoutAt, nil
 }
 
 // WaitSlot is Wait for a step that waits more than once (a chain of models, a
@@ -683,7 +694,11 @@ func (c *StepCtx) WaitDeadline(slot int) int64 {
 func (c *StepCtx) WaitSlot(slot int, kind, key, match string, timeout time.Duration, ready func() (*Event, bool)) (*Event, bool, error) {
 	seq := c.slotSeq(slot)
 	if ready != nil {
-		if w, _ := c.S.stepWait(c.Ctx, c.Run.ID, c.ID, c.Iteration, seq); w == nil {
+		w, rerr := c.S.stepWait(c.Ctx, c.Run.ID, c.ID, c.Iteration, seq)
+		if rerr != nil {
+			return nil, false, rerr // whether it already waited isn't known: not "ready"
+		}
+		if w == nil {
 			if ev, ok := ready(); ok {
 				return ev, false, nil
 			}
@@ -1028,7 +1043,11 @@ func (s *Service) baseData(ctx context.Context, actor *Actor, a *Automation, e *
 	}
 	var project *Project
 	if pid := cmpID(a.ProjectID, e.ProjectID); pid != 0 {
-		project, _ = s.projectByID(ctx, s.db.R, pid)
+		var rerr error
+		project, rerr = s.projectByID(ctx, s.db.R, pid)
+		if readFault(rerr) && !errors.Is(rerr, ErrNotFound) { // a project removed since: the template has none
+			s.log.WarnContext(ctx, "read the project of an automation's event", "project", pid, "automation", a.ID, "err", rerr)
+		}
 	}
 	data := tplData{Issue: issue, Project: project, Actor: actor.User.Ref(), Event: e, Date: s.now().UTC().Format(dateLayout)}
 	if e.Kind == EvScheduled && e.New != "" {

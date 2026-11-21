@@ -572,7 +572,13 @@ func ciLimitTitle(repo string) string {
 // ciLimitsTask is the open CI limits task of repo, in the project the repo
 // is attached to, or "".
 func (s *Service) ciLimitsTask(ctx context.Context, forgeID int64, repo string) string {
-	project := s.attachedProject(ctx, s.db.R, forgeID, repo)
+	project, err := s.attachedProject(ctx, s.db.R, forgeID, repo)
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read the project of a repo's CI limits task", "repo", repo, "err", err)
+		}
+		return ""
+	}
 	if project == 0 {
 		return ""
 	}
@@ -620,7 +626,13 @@ func (s *Service) watchCILimits(ctx context.Context, f *Forge, repo string) {
 	st.Checked = now.UnixMilli()
 	worse := level == "problem" && st.Level != "problem" || level == "warn" && st.Level == ""
 	if level != "" && (worse || now.Sub(msTime(st.Told)) >= ciLimitRetell) {
-		if task, err := s.fileCILimits(ctx, f.ID, repo, level, ls, ""); task != "" && err == nil {
+		// Told is set only once it was filed, so a failure is tried again
+		// on the next look.
+		task, err := s.fileCILimits(ctx, f.ID, repo, level, ls, "")
+		if err != nil && readFault(err) {
+			s.log.WarnContext(ctx, "file the CI limits of a repo", "repo", repo, "err", err)
+		}
+		if task != "" && err == nil {
 			st.Told = now.UnixMilli()
 		}
 	}
@@ -655,7 +667,10 @@ func (s *Service) fileCILimits(ctx context.Context, forgeID int64, repo, level s
 	// goroutines.
 	defer forgeLocks.lock(fmt.Sprintf("cilimits:%d:%s", forgeID, strings.ToLower(repo)))()
 	owner := s.repoProjectOwner(ctx, forgeID, repo)
-	project := s.attachedProject(ctx, s.db.R, forgeID, repo)
+	project, err := s.attachedProject(ctx, s.db.R, forgeID, repo)
+	if err != nil {
+		return "", err
+	}
 	if owner == 0 || project == 0 {
 		return "", nil
 	}

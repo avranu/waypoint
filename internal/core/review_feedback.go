@@ -32,13 +32,14 @@ import (
 )
 
 // gatewayRouting is what a caller wants of its requests to the gateway: an
-// X-Request-ID on each, starting with prefix, a routing.paid choice and a
-// routing.priority. runChainAt turns it into a gatewayAsk for each request
+// X-Request-ID on each, starting with prefix, a routing.paid choice, a
+// routing.priority and a routing.weakest minimum. runChainAt turns it into a gatewayAsk for each request
 // to the gateway, and never sends it to another provider.
 type gatewayRouting struct {
 	prefix   string // token characters, short
 	paid     string // never, fallback, allowed; "" leaves the gateway's default
 	priority string // "" (the gateway's default) or prioritySurplus (WP-906)
+	weakest  string // the weakest model it accepts, by a name the gateway rates; "" sets no minimum (WP-1440)
 }
 
 type gatewayRoutingKey struct{}
@@ -68,16 +69,42 @@ func (r *gatewayRouting) newID() string {
 // reviewRouting is a review run's: its requests are named by the run and
 // may get paid models ranked with the free ones.
 func reviewRouting(runID int64) *gatewayRouting {
-	return &gatewayRouting{prefix: fmt.Sprintf("wp-review-%d", runID), paid: "allowed"}
+	return &gatewayRouting{prefix: fmt.Sprintf("wp-review-%d", runID), paid: "allowed", weakest: reviewFloorBar}
+}
+
+// verifyRouting is the verifier's: a code review's second half, so it asks
+// for the same minimum. Its request ids reach the run's log only; the
+// feedback sweep reads review_requests, which only the reviewers' answers
+// fill, so the verifier's opinion is still not reported.
+func verifyRouting(runID int64) *gatewayRouting {
+	return &gatewayRouting{prefix: fmt.Sprintf("wp-verify-%d", runID), weakest: reviewFloorBar}
+}
+
+// fixCheckRouting, replyRouting and heldRouting are the other review-chain
+// tasks': each decides something about a code review's findings or a change
+// to CI, so each asks the gateway for the same minimum (WP-1440), under its
+// own request ids. Those ids reach no feedback: the sweep reads
+// review_requests, which only the reviewers' answers fill. paid stays "".
+func fixCheckRouting(runID int64) *gatewayRouting {
+	return &gatewayRouting{prefix: fmt.Sprintf("wp-fixcheck-%d", runID), weakest: reviewFloorBar}
+}
+
+func replyRouting(runID int64) *gatewayRouting {
+	return &gatewayRouting{prefix: fmt.Sprintf("wp-reply-%d", runID), weakest: reviewFloorBar}
+}
+
+func heldRouting(prID int64) *gatewayRouting {
+	return &gatewayRouting{prefix: fmt.Sprintf("wp-held-%d", prID), weakest: reviewFloorBar}
 }
 
 // gatewayAsk is what one request to the gateway carries beyond the chat: the
-// httpLLM client sends requestID as X-Request-ID, paid as routing.paid and
-// priority as routing.priority.
+// httpLLM client sends requestID as X-Request-ID, paid as routing.paid,
+// priority as routing.priority and weakest as routing.weakest.
 type gatewayAsk struct {
 	requestID string
 	paid      string
 	priority  string
+	weakest   string
 }
 
 type gatewayAskKey struct{}

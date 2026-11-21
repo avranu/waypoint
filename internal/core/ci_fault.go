@@ -265,11 +265,12 @@ func (s *Service) askAboutRunner(ctx context.Context, userID int64, at faultSubj
 	b.WriteString("\n" + why + " Waypoint starts no agent round for these: babysat pull requests wait, keeping their place in the merge queue, and it keeps re-running them while it can. " +
 		"The pull requests carry on when their checks pass. The CI board (/ci) lists the jobs that failed this way, and the hosts' health. Mark this done when the runner is fit again.")
 	in := RequestInput{Kind: RequestAction, Title: fmt.Sprintf("Fix %s: %s", where, f.What), Body: b.String(), ToolUseID: key, Followup: "never"}
-	if p := s.attachedProject(ctx, s.db.R, at.forgeID, at.repo); p != 0 {
-		if proj, err := s.projectByID(ctx, s.db.R, p); err == nil {
-			in.Project = proj.Key
-		}
+	// Asked all the same: a project that couldn't be read files it with none.
+	projectKey, err := s.attachedProjectKey(ctx, at.forgeID, at.repo)
+	if readFault(err) {
+		s.log.WarnContext(ctx, "read the project to ask about a CI runner", "at", at.name, "repo", at.repo, "err", err)
 	}
+	in.Project = projectKey
 	if _, _, err := s.CreateRequest(ctx, &Actor{User: u, Agent: at.agent}, in); err != nil {
 		s.log.WarnContext(ctx, "ask a person to fix a CI runner", "at", at.name, "err", err)
 		return false

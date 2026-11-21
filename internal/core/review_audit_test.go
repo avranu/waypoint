@@ -162,7 +162,7 @@ func TestReviewRoundAuditFirst(t *testing.T) {
 		t.Fatalf("round audit = %+v %+v (owner %d)", ra, au, owner)
 	}
 	pr := &PullRequest{URL: "https://git.example/acme/app/pulls/7", Repo: "acme/app", Number: 7}
-	if why, _ := a.s.reviewHold(a.ctx, pr); why == "" {
+	if why, _, _ := a.s.reviewHold(a.ctx, pr); why == "" {
 		t.Error("the merge isn't held while the audit runs")
 	}
 	// A second look while it runs asks for no second audit.
@@ -517,7 +517,7 @@ func TestReviewRoundFallsBack(t *testing.T) {
 			t.Fatalf("gave up with a runner online: %+v %+v %+v %+v", a.step(), a.jobs, ra, au)
 		}
 		pr := &PullRequest{URL: "https://git.example/acme/app/pulls/7", Repo: "acme/app", Number: 7}
-		if why, until := a.s.reviewHold(a.ctx, pr); why == "" || until == nil || !until.After(a.clockNow()) {
+		if why, until, _ := a.s.reviewHold(a.ctx, pr); why == "" || until == nil || !until.After(a.clockNow()) {
 			t.Errorf("the merge went on without the queued review: %q %v", why, until)
 		}
 		// And when a runner gets to it in time, the round uses it.
@@ -717,7 +717,7 @@ func TestReviewRoundFallsBack(t *testing.T) {
 		if w.Job == nil || w.Job.Kind != JobAudit {
 			t.Fatalf("no audit job: %+v", w.Job)
 		}
-		if why, _ := a.s.reviewHold(a.ctx, pr); why == "" {
+		if why, _, _ := a.s.reviewHold(a.ctx, pr); why == "" {
 			t.Error("the hold lapsed when a runner took the audit")
 		}
 		res := auditResult("Read it.", map[string]any{"title": "Merge reads a nil map", "path": "internal/merge.go", "line": 10, "severity": "major",
@@ -727,7 +727,7 @@ func TestReviewRoundFallsBack(t *testing.T) {
 		}
 		a.s.Wait()
 		a.s.Wait()
-		if why, _ := a.s.reviewHold(a.ctx, pr); why == "" {
+		if why, _, _ := a.s.reviewHold(a.ctx, pr); why == "" {
 			t.Error("the hold lapsed between the audit and the round")
 		}
 	})
@@ -874,8 +874,8 @@ func TestReviewRoundAfterThePRsGatewayAudit(t *testing.T) {
 	if err := a.s.db.R.QueryRow(`SELECT id, forge_id FROM pull_requests WHERE number = 7`).Scan(&prID, &forge); err != nil {
 		t.Fatal(err)
 	}
-	res, err := a.s.db.W.Exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, pr_id, pr_number, ref, status, model, models, author_model, title, owner_id, created_at)
-		VALUES (?, ?, 'acme/app', 'pr', ?, 7, 'aaa', 'queued', '', '[{"cli":"gateway","model":"audit"}]', 'anthropic/claude-code', 'acme/app#7', ?, ?)`, a.p.ID, forge, prID, a.admin.User.ID, a.clockNow().UnixMilli())
+	res, err := a.s.db.W.Exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, pr_id, pr_number, ref, status, model, models, author_model, title, owner_id, created_at, weakest)
+		VALUES (?, ?, 'acme/app', 'pr', ?, 7, 'aaa', 'queued', '', '[{"cli":"gateway","model":"audit"}]', 'anthropic/claude-code', 'acme/app#7', ?, ?, 'deepseek-v4.1-flash')`, a.p.ID, forge, prID, a.admin.User.ID, a.clockNow().UnixMilli())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -942,8 +942,8 @@ func TestReviewRoundReusesPRAudit(t *testing.T) {
 		t.Fatal(err)
 	}
 	insert := func(ref, model, status, models, author string) int64 {
-		res, err := a.s.db.W.Exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, pr_id, pr_number, ref, status, model, models, author_model, title, owner_id, created_at)
-			VALUES (?, ?, 'acme/app', 'pr', ?, 7, ?, ?, ?, ?, ?, 'acme/app#7', ?, 0)`, a.p.ID, forge, prID, ref, status, model, models, author, a.admin.User.ID)
+		res, err := a.s.db.W.Exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, pr_id, pr_number, ref, status, model, models, author_model, title, owner_id, created_at, weakest)
+			VALUES (?, ?, 'acme/app', 'pr', ?, 7, ?, ?, ?, ?, ?, 'acme/app#7', ?, 0, 'deepseek-v4.1-flash')`, a.p.ID, forge, prID, ref, status, model, models, author, a.admin.User.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1117,9 +1117,9 @@ func TestReviewRoundHighStakesBar(t *testing.T) {
 	}
 }
 
-// A round of an ordinary change holds its audit to no bar, and reuses the
+// A round of an ordinary change holds its audit to the floor (WP-1440), and reuses the
 // pull request's own.
-func TestReviewRoundOrdinaryNoBar(t *testing.T) {
+func TestReviewRoundOrdinaryFloor(t *testing.T) {
 	a, _ := auditAPEnv(t)
 	first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude", Priority: "urgent"})
 	a.finish(first.Key)
@@ -1128,8 +1128,8 @@ func TestReviewRoundOrdinaryNoBar(t *testing.T) {
 	if err := a.s.db.R.QueryRow(`SELECT id, forge_id FROM pull_requests WHERE number = 7`).Scan(&prID, &forge); err != nil {
 		t.Fatal(err)
 	}
-	res, err := a.s.db.W.Exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, pr_id, pr_number, ref, status, model, models, author_model, title, owner_id, created_at)
-		VALUES (?, ?, 'acme/app', 'pr', ?, 7, 'aaa', 'done', 'gateway/deepseek/deepseek-v4.1-flash', '[{"cli":"gateway","model":"audit"}]', 'claude-opus-5-5', 'acme/app#7', ?, 0)`,
+	res, err := a.s.db.W.Exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, pr_id, pr_number, ref, status, model, models, author_model, title, owner_id, created_at, weakest)
+		VALUES (?, ?, 'acme/app', 'pr', ?, 7, 'aaa', 'done', 'gateway/deepseek/deepseek-v4.1-flash', '[{"cli":"gateway","model":"audit"}]', 'claude-opus-5-5', 'acme/app#7', ?, 0, 'deepseek-v4.1-flash')`,
 		a.p.ID, forge, prID, a.admin.User.ID)
 	if err != nil {
 		t.Fatal(err)

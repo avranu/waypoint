@@ -421,8 +421,11 @@ func (s *Service) strandOnEnd(ctx context.Context, t *tx, x *AgentSession, ev *H
 		if err != nil {
 			continue
 		}
-		if i.Closed() || i.Status.Category != CatInProgress || s.outOnPR(ctx, t, i) != nil || s.handedOn(ctx, t, i) {
+		if i.Closed() || i.Status.Category != CatInProgress || s.outOnPR(ctx, t, i) != nil {
 			continue // done, or shipped: nothing stranded
+		}
+		if handed, err := s.handedOn(ctx, t, i); handed || err != nil {
+			continue // moved on, or can't tell: leave it for the next pass (WP-1406)
 		}
 		if i.ClaimedBy != "" && i.ClaimedBy != h.agent && i.ClaimedUntil != nil && i.ClaimedUntil.UnixMilli() > now {
 			continue // another agent took it since
@@ -631,8 +634,11 @@ func (s *Service) noteStrandedHere(ctx context.Context, t *tx, actor *Actor, x *
 			if err != nil || !s.canSee(ctx, t, actor, i.ID, i.ProjectID) {
 				continue
 			}
-			if i.Closed() || s.outOnPR(ctx, t, i) != nil || s.handedOn(ctx, t, i) {
+			if i.Closed() || s.outOnPR(ctx, t, i) != nil {
 				continue
+			}
+			if handed, err := s.handedOn(ctx, t, i); handed || err != nil {
+				continue // moved on, or can't tell: skip it this pass (WP-1406)
 			}
 			if i.ClaimedBy != "" && i.ClaimedUntil != nil && i.ClaimedUntil.UnixMilli() > now {
 				continue // someone holds it
@@ -731,8 +737,11 @@ func (s *Service) sweepStranded(ctx context.Context) error {
 					return err
 				}
 				if i.Closed() || i.Status.Category != CatInProgress || (i.WorkflowID != nil && i.Step != "") || i.Hold.on(s.now()) ||
-					s.outOnPR(ctx, t, i) != nil || s.handedOn(ctx, t, i) {
+					s.outOnPR(ctx, t, i) != nil {
 					return nil
+				}
+				if handed, err := s.handedOn(ctx, t, i); handed || err != nil {
+					return nil // moved on, or can't tell: skip it this pass (WP-1406)
 				}
 				if i.Draft || i.Agent == AgentHumans || i.UpdatedAt.UnixMilli() >= cut {
 					return nil // changed since the candidate query

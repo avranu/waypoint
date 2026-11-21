@@ -98,6 +98,13 @@ func (a *apEnv) notes() []string {
 // the round and the prompt.
 func (e *loopEnv) sessionRound() (int64, string) {
 	e.t.Helper()
+	return e.sessionRoundWith(AutopilotJobResult{Outcome: "reviewing"})
+}
+
+// sessionRoundWith is sessionRound with the runner's answer to the review
+// job given.
+func (e *loopEnv) sessionRoundWith(res AutopilotJobResult) (int64, string) {
+	e.t.Helper()
 	if res, err := e.ship(e.task.Key, ShipAuto); err != nil || res.Held == "" {
 		e.t.Fatalf("ship = %+v, %v", res, err)
 	}
@@ -111,11 +118,22 @@ func (e *loopEnv) sessionRound() (int64, string) {
 	var in AutopilotJob
 	_ = json.Unmarshal(e.jobs[len(e.jobs)-1].Input, &in)
 	e.prompt(in.Review)
-	e.jobDone(len(e.jobs), AutopilotJobResult{Outcome: "reviewing"})
+	e.jobDone(len(e.jobs), res)
 	if r := e.round(round); r.state != RoundRunning {
 		e.t.Fatalf("round %d: %+v", round, r)
 	}
 	return round, in.Review
+}
+
+// What the runner saw while typing the review is kept on the step, and a
+// session that didn't take it is logged (WP-1325).
+func TestReviewJobWarningKeptOnTheStep(t *testing.T) {
+	e := sessionLoopEnv(t, nil)
+	e.sessionRoundWith(AutopilotJobResult{Outcome: "reviewing", Detail: "typed while the registry said busy", Warning: "the session's screen didn't show it starting the review within 15s; check it"})
+	st := e.step()
+	if st.reason != WaitReviewing || !strings.Contains(st.detail, "(typed while the registry said busy)") || !strings.Contains(st.detail, "; the session's screen didn't show it starting") {
+		t.Fatalf("step = %+v", st)
+	}
 }
 
 func sessionLoopEnv(t *testing.T, choice map[string]string) *loopEnv {
@@ -836,6 +854,17 @@ func TestSkipReviewRecorded(t *testing.T) {
 			t.Fatalf("triage = %+v", rows)
 		}
 	})
+	t.Run("a round under way, opened by Waypoint", func(t *testing.T) {
+		e := newLoopEnv(t, map[string]string{"": "critical", "fixes": "complete"})
+		r1 := e.review("Merge loses an update")
+		res, err := e.ship(e.task.Key, ShipSkip, func(in *OpenPRInput) { in.Reason = "its session ended"; in.byWaypoint = true })
+		if err != nil || res.Pull == nil {
+			t.Fatalf("skip = %+v, %v", res, err)
+		}
+		if got := e.reason(r1); !strings.Contains(got, "Waypoint opened the pull request without it: its session ended") || strings.Contains(got, "the agent") {
+			t.Fatalf("reason %q", got)
+		}
+	})
 	t.Run("a finished round, undecided", func(t *testing.T) {
 		a, g, key := introEnv(t)
 		a.ownReviewDone("No issues found.")
@@ -857,6 +886,21 @@ func TestSkipReviewRecorded(t *testing.T) {
 		}
 		if len(g.created) != 1 {
 			t.Fatalf("opened %d", len(g.created))
+		}
+	})
+	// Waypoint's own open (shipHeld) says so, not that the agent did it.
+	t.Run("a finished round, undecided, opened by Waypoint", func(t *testing.T) {
+		a, g, key := introEnv(t)
+		a.ownReviewDone("No issues found.")
+		if res, err := a.ship(key, ShipPR); err != nil || res.Pull != nil {
+			t.Fatalf("ship = %+v, %v", res, err)
+		}
+		if res, err := a.ship(key, ShipSkip, func(in *OpenPRInput) { in.Reason = "its session ended"; in.byWaypoint = true }); err != nil || res.Pull == nil {
+			t.Fatalf("skip = %+v, %v", res, err)
+		}
+		notes := a.notes()
+		if len(notes) != 1 || !strings.HasPrefix(notes[0], "Waypoint opened the pull request before") || strings.Contains(notes[0], "agent") || len(g.created) != 1 {
+			t.Fatalf("notes = %q, opened %d", notes, len(g.created))
 		}
 	})
 }

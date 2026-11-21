@@ -94,7 +94,7 @@ func TestPauseDoesNotHideRefusal(t *testing.T) {
 	if out := runHook(hookClaudeNudge, c, t.TempDir(), input); out != "" {
 		t.Errorf("nudge on a refused call: %q", out)
 	}
-	if out := runHook(hookClaudeNudge, c, t.TempDir(), map[string]any{"command": "true"}); !strings.Contains(out, "note what is left") {
+	if out := runHook(hookClaudeNudge, c, t.TempDir(), map[string]any{"command": "ls"}); !strings.Contains(out, "note what is left") {
 		t.Errorf("the call after a refusal did not hear the pause: %q", out)
 	}
 }

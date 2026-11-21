@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -502,8 +503,16 @@ func (s *Service) syncReviewComments(ctx context.Context, pr *PullRequest) (int,
 			}
 			// A person's hold stays through an edit: CodeRabbit rewrites its
 			// comments in place, and that doesn't answer what they held it for.
-			if _, ok := have[key]; ok && c.findingID == 0 && !c.resolved && reopenOnEdit(verdicts[id]) && botTextChanged(bodies[id], body) &&
-				(verdicts[id] != VerdictNeedsPerson || !s.verdictByPerson(ctx, t, id)) {
+			_, known := have[key]
+			edited := known && c.findingID == 0 && !c.resolved && reopenOnEdit(verdicts[id]) && botTextChanged(bodies[id], body)
+			byPerson := false
+			if edited && verdicts[id] == VerdictNeedsPerson {
+				var perr error
+				if byPerson, perr = s.verdictByPerson(ctx, t, id); perr != nil {
+					return perr // unread is not "nobody's call": not reopened
+				}
+			}
+			if edited && !byPerson {
 				// What it asks changed since it was dealt with (CodeRabbit
 				// rewrites its comments in place): it is to deal with again.
 				// A fixed comment that still makes the same point keeps its
@@ -544,7 +553,11 @@ func (s *Service) syncReviewComments(ctx context.Context, pr *PullRequest) (int,
 			}
 		}
 		if added > 0 || reopened > 0 || len(have) > 0 || len(dismiss) > 0 {
-			t.emit(&Event{Kind: EvBabysit, ProjectID: s.attachedProject(ctx, t, pr.ForgeID, pr.Repo), New: "comments", Data: map[string]any{"pr_id": pr.ID}})
+			projectID, err := s.attachedProject(ctx, t, pr.ForgeID, pr.Repo)
+			if err != nil {
+				return err
+			}
+			t.emit(&Event{Kind: EvBabysit, ProjectID: projectID, New: "comments", Data: map[string]any{"pr_id": pr.ID}})
 		}
 		return nil
 	})
@@ -570,7 +583,11 @@ func (s *Service) syncReviewComments(ctx context.Context, pr *PullRequest) (int,
 			if err := s.recordVerdict(ctx, t, h.id, pr.ID, VerdictNew, "", "", "", rcBy{kind: "forge", name: h.author}, 0, "edited on the forge"); err != nil {
 				return err
 			}
-			t.emit(&Event{Kind: EvBabysit, ProjectID: s.attachedProject(ctx, t, pr.ForgeID, pr.Repo), New: "comments", Data: map[string]any{"pr_id": pr.ID}})
+			projectID, err := s.attachedProject(ctx, t, pr.ForgeID, pr.Repo)
+			if err != nil {
+				return err
+			}
+			t.emit(&Event{Kind: EvBabysit, ProjectID: projectID, New: "comments", Data: map[string]any{"pr_id": pr.ID}})
 			return nil
 		})
 		if err != nil {
@@ -595,7 +612,13 @@ func (s *Service) fixOnHead(ctx context.Context, f *Forge, pr *PullRequest, fix 
 		return false
 	}
 	has, err := cl.Contains(ctx, f, pr.Repo, fix, pr.HeadSHA)
-	return err == nil && has
+	if err != nil {
+		if readFault(err) && !isStatus(err, http.StatusNotFound) { // the forge doesn't have it: not in the history
+			s.log.WarnContext(ctx, "read whether a fix is in a pull request's head", "repo", pr.Repo, "number", pr.Number, "fix", short(fix), "err", err)
+		}
+		return false
+	}
+	return has
 }
 
 // orMS is a, or b when a is unset.
@@ -857,7 +880,11 @@ func (s *Service) markComment(ctx context.Context, pr *PullRequest, rc *PRReview
 			rc.findingState = state
 		}
 		rc.Verdict = to
-		t.emit(&Event{Kind: EvBabysit, ProjectID: s.attachedProject(ctx, t, pr.ForgeID, pr.Repo), New: to, Data: map[string]any{"pr_id": pr.ID, "comment": rc.Ref}})
+		projectID, err := s.attachedProject(ctx, t, pr.ForgeID, pr.Repo)
+		if err != nil {
+			return err
+		}
+		t.emit(&Event{Kind: EvBabysit, ProjectID: projectID, New: to, Data: map[string]any{"pr_id": pr.ID, "comment": rc.Ref}})
 		return nil
 	})
 }
@@ -1039,7 +1066,13 @@ func (s *Service) loadComments(ctx context.Context, actor *Actor, ids []string, 
 		}
 		// A person's call stands: an agent can't overrule it. An agent's
 		// needs_person is only a hand-off: the assessor settles it (WP-759).
-		if guard && actor.IsAgent() && s.verdictByPerson(ctx, s.db.R, rc.id) {
+		byPerson := false
+		if guard && actor.IsAgent() {
+			if byPerson, err = s.verdictByPerson(ctx, s.db.R, rc.id); err != nil {
+				return nil, nil, err // unread is not "nobody's call": refused
+			}
+		}
+		if byPerson {
 			return nil, nil, invalid("%s waits for a person (%s); an agent can't change that", rc.Ref, rc.Verdict)
 		}
 		out = append(out, rc)
@@ -1050,10 +1083,21 @@ func (s *Service) loadComments(ctx context.Context, actor *Actor, ids []string, 
 // verdictByPerson says whether a person gave the comment the verdict it has
 // now: the latest event with a verdict says who did (a reply has none). A
 // forge's event counts: a comment reopened by an edit is nobody's call yet.
-func (s *Service) verdictByPerson(ctx context.Context, q queryer, id int64) bool {
+// No event is a plain no; a read that failed is an error, never "nobody's
+// call" (an agent could then overrule a person's verdict, WP-1406).
+func (s *Service) verdictByPerson(ctx context.Context, q queryer, id int64) (bool, error) {
 	var kind string
 	err := q.QueryRowContext(ctx, `SELECT by_kind FROM review_comment_events WHERE comment_id = ? AND verdict != '' ORDER BY id DESC LIMIT 1`, id).Scan(&kind)
-	return err == nil && kind == "person"
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read verdict by person", "id", id, "err", err)
+		}
+		return false, err
+	}
+	return kind == "person", nil
 }
 
 // roundOf is the round of the pull request's babysit, 0 when none.
@@ -1249,7 +1293,20 @@ func (s *Service) workPacket(ctx context.Context, actor *Actor, pr *PullRequest,
 // own verdict stays out: no agent can change it.
 func (s *Service) assessorPacket(ctx context.Context, pr *PullRequest) (*PRTodo, error) {
 	return s.packetOf(ctx, SystemActor(), pr, false, func(rc *PRReviewComment) bool {
-		return !rc.Dealt && (rc.Verdict != VerdictNeedsPerson || !s.verdictByPerson(ctx, s.db.R, rc.id))
+		if rc.Dealt {
+			return false
+		}
+		if rc.Verdict != VerdictNeedsPerson {
+			return true
+		}
+		byPerson, err := s.verdictByPerson(ctx, s.db.R, rc.id)
+		if err != nil {
+			if readFault(err) {
+				s.log.WarnContext(ctx, "leave a comment out of the assessor's packet: who decided its verdict is unread", "comment", rc.id, "pr", pr.ID, "err", err)
+			}
+			return false // unread: left out, as a person's would be
+		}
+		return !byPerson
 	})
 }
 
@@ -1274,7 +1331,12 @@ func (s *Service) packetOf(ctx context.Context, actor *Actor, pr *PullRequest, a
 	if err != nil {
 		return nil, err
 	}
-	f, _ := s.forgeByID(ctx, pr.ForgeID)
+	f, rerr := s.forgeByID(ctx, pr.ForgeID)
+	if rerr != nil {
+		if readFault(rerr) && !errors.Is(rerr, ErrNotFound) {
+			s.log.WarnContext(ctx, "forge by id failed", "forgeid", pr.ForgeID, "err", rerr)
+		}
+	}
 	files := map[string][]string{}
 	elsewhere := s.outsideDiff(ctx, pr, list) // nothing here to change for them (WP-432)
 	for _, rc := range list {

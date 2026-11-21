@@ -10,6 +10,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -65,7 +66,13 @@ func (s *Service) deletesMergedBranches(ctx context.Context, forgeID int64, repo
 	var on, off int
 	err := s.db.R.QueryRowContext(ctx, `SELECT coalesce(sum(delete_merged_branches), 0), coalesce(sum(1 - delete_merged_branches), 0) FROM project_repos WHERE forge_id = ? AND repo = ? COLLATE NOCASE`,
 		forgeID, repo).Scan(&on, &off)
-	return err == nil && on > 0 && off == 0
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read deletes merged branches", "forgeID", forgeID, "repo", repo, "err", err)
+		}
+		return false
+	}
+	return on > 0 && off == 0
 }
 
 // planBranches judges each branch of a repo on the forge.
@@ -180,7 +187,17 @@ func (s *Service) planBranches(ctx context.Context, f *Forge, repo string) (*Rem
 			by := ""
 			if n, ok := mergedHeads[b.Name+"@"+strings.ToLower(b.SHA)]; ok {
 				by = fmt.Sprintf("pull request #%d merged this very commit", n)
-			} else if defTip != "" && (b.SHA == defTip || func() bool { n, err := cl.Ahead(ctx, f, repo, def, b.SHA); return err == nil && n == 0 }()) {
+			} else if defTip != "" && (b.SHA == defTip || func() bool {
+				n, err := cl.Ahead(ctx, f, repo, def, b.SHA)
+				if err != nil {
+					// Not known to be in the default branch: the branch is kept.
+					if readFault(err) && !isStatus(err, http.StatusNotFound) && !errors.Is(err, ErrNotFound) { // a repo the forge no longer has is an answer
+						s.log.WarnContext(ctx, "read whether a branch is ahead of the default branch", "repo", repo, "branch", b.Name, "err", err)
+					}
+					return false
+				}
+				return n == 0
+			}()) {
 				by = "its tip is in " + def
 			}
 			age, known := idle(b)
@@ -246,12 +263,21 @@ func (s *Service) sweepRepoBranches(ctx context.Context, f *Forge, repo string) 
 	tips := map[string]string{}
 	now, err := cl.Branches(ctx, f, repo)
 	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "branch sweep: list the branches before deleting", "repo", repo, "err", err)
+		}
 		return
 	}
 	for _, b := range now {
 		tips[b.Name] = b.SHA
 	}
-	projectID := s.attachedProject(ctx, s.db.R, f.ID, repo)
+	projectID, err := s.attachedProject(ctx, s.db.R, f.ID, repo)
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read the project to delete merged branches", "repo", repo, "err", err) // before any is deleted
+		}
+		return
+	}
 	for _, r := range doomed {
 		if ctx.Err() != nil {
 			return
@@ -288,6 +314,9 @@ func (s *Service) SweepBranches(ctx context.Context) {
 	rows, err := s.db.R.QueryContext(ctx, `SELECT forge_id, repo FROM project_repos GROUP BY forge_id, lower(repo)
 		HAVING min(delete_merged_branches) = 1 AND (min(coalesce(branches_swept_at, 0)) < ?) ORDER BY forge_id, repo`, s.nowMS()-branchSweepEvery.Milliseconds())
 	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "branch sweep: find the repos to sweep", "err", err)
+		}
 		return
 	}
 	type fr struct {
@@ -297,16 +326,30 @@ func (s *Service) SweepBranches(ctx context.Context) {
 	var list []fr
 	for rows.Next() {
 		var x fr
-		if rows.Scan(&x.forge, &x.repo) == nil {
-			list = append(list, x)
+		if err := rows.Scan(&x.forge, &x.repo); err != nil {
+			s.log.WarnContext(ctx, "branch sweep: read a repo to sweep", "err", err)
+			continue
 		}
+		list = append(list, x)
 	}
-	rows.Close()
+	err = rows.Err()
+	if cerr := rows.Close(); err == nil {
+		err = cerr
+	}
+	if readFault(err) {
+		// The repos read so far are still swept; the rest wait for the next run.
+		s.log.WarnContext(ctx, "branch sweep: read the repos to sweep", "err", err)
+	}
 	for _, x := range list {
 		if ctx.Err() != nil {
 			return
 		}
-		if f, err := s.forgeByID(ctx, x.forge); err == nil && f.token != "" {
+		f, err := s.forgeByID(ctx, x.forge)
+		if err != nil {
+			if readFault(err) {
+				s.log.WarnContext(ctx, "branch sweep: read the forge", "repo", x.repo, "err", err)
+			}
+		} else if f.token != "" {
 			s.sweepRepoBranches(ctx, f, x.repo)
 		}
 	}

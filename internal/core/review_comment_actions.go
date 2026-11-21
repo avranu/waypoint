@@ -102,7 +102,11 @@ func (s *Service) postReply(ctx context.Context, pr *PullRequest, rc *PRReviewCo
 			VALUES (?,?,?,'',1,?,?,?,?,?,?)`, rc.id, pr.ID, rc.Verdict, by.kind, by.name, user, round, excerpt(body, 2000), s.nowMS()); err != nil {
 			return err
 		}
-		t.emit(&Event{Kind: EvBabysit, ProjectID: s.attachedProject(ctx, t, pr.ForgeID, pr.Repo), New: "reply", Data: map[string]any{"pr_id": pr.ID, "comment": rc.Ref}})
+		projectID, err := s.attachedProject(ctx, t, pr.ForgeID, pr.Repo)
+		if err != nil {
+			return err
+		}
+		t.emit(&Event{Kind: EvBabysit, ProjectID: projectID, New: "reply", Data: map[string]any{"pr_id": pr.ID, "comment": rc.Ref}})
 		return nil
 	})
 }
@@ -217,7 +221,11 @@ func (s *Service) UnresolveReviewComments(ctx context.Context, actor *Actor, ids
 				}
 			}
 			rc.Verdict, rc.Resolved = VerdictNew, false
-			t.emit(&Event{Kind: EvBabysit, ProjectID: s.attachedProject(ctx, t, pr.ForgeID, pr.Repo), New: "reopened", Data: map[string]any{"pr_id": pr.ID, "comment": rc.Ref}})
+			projectID, err := s.attachedProject(ctx, t, pr.ForgeID, pr.Repo)
+			if err != nil {
+				return err
+			}
+			t.emit(&Event{Kind: EvBabysit, ProjectID: projectID, New: "reopened", Data: map[string]any{"pr_id": pr.ID, "comment": rc.Ref}})
 			return nil
 		})
 		if err != nil {

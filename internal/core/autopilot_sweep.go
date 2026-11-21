@@ -353,9 +353,13 @@ func (s *Service) ownStartFinished(ctx context.Context, st *stepRow, job *Runner
 			StepStarted, excerpt(detail, 300), next, now, now, st.id, StepStarting)
 		if next.Valid {
 			project := sql.NullInt64{Int64: st.projectID, Valid: true}
-			_ = s.write(ctx, SystemActor(), func(t *tx) error {
+			if err := s.write(ctx, SystemActor(), func(t *tx) error {
 				return s.sessionTimeline(ctx, t, next.Int64, now, "autopilot", "", 0, "started", "", "autopilot started "+nextKey, project, map[string]any{"next": nextKey})
-			})
+			}); err != nil {
+				if readFault(err) {
+					s.log.WarnContext(ctx, "record the next autopilot session started", "session", st.sessionID, "step", st.id, "err", err)
+				}
+			}
 		}
 	case job.State == "done" && res.Outcome == "unwanted":
 		// Stopped while the job was on its way: stopping released the task.

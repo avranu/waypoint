@@ -263,7 +263,16 @@ func (s *Service) babysitBlocks(ctx context.Context, prID int64) bool {
 	var state string
 	var ended sql.NullInt64
 	err := s.db.R.QueryRowContext(ctx, `SELECT state, ended_at FROM babysits WHERE pr_id = ? ORDER BY id DESC LIMIT 1`, prID).Scan(&state, &ended)
-	return err == nil && (!ended.Valid || state == BabysitGaveUp)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false // never babysat: nothing to wait on
+	}
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read babysit blocks", "prID", prID, "err", err)
+		}
+		return true
+	}
+	return (!ended.Valid || state == BabysitGaveUp)
 }
 
 // ---- starting, stopping, looking ----
@@ -372,7 +381,11 @@ func (s *Service) startBabysit(ctx context.Context, actor *Actor, pr *PullReques
 		if started, err = scanBabysit(t.QueryRowContext(ctx, `SELECT `+babysitCols+babysitFrom+` WHERE b.id = ?`, id)); err != nil {
 			return err
 		}
-		t.emit(&Event{Kind: EvBabysit, ProjectID: s.attachedProject(ctx, t, pr.ForgeID, pr.Repo), New: "started", Data: prEventData(pr, map[string]any{"babysit": id})})
+		projectID, err := s.attachedProject(ctx, t, pr.ForgeID, pr.Repo)
+		if err != nil {
+			return err
+		}
+		t.emit(&Event{Kind: EvBabysit, ProjectID: projectID, New: "started", Data: prEventData(pr, map[string]any{"babysit": id})})
 		return nil
 	})
 	if err != nil {
@@ -651,7 +664,11 @@ func (s *Service) refreshFromForge(ctx context.Context, prID int64) {
 		return
 	}
 	if fp, err := prc.GetPR(ctx, f, pr.Repo, pr.Number); err == nil {
-		_, _ = s.recordPR(ctx, f, pr.Repo, fp, true)
+		if _, err := s.recordPR(ctx, f, pr.Repo, fp, true); err != nil {
+			if readFault(err) {
+				s.log.WarnContext(ctx, "record a pull request read from its forge", "repo", pr.Repo, "number", pr.Number, "err", err)
+			}
+		}
 	}
 }
 
@@ -699,10 +716,26 @@ func (s *Service) babysitOwnerFor(ctx context.Context, pr *PullRequest) int64 {
 			return u.ID
 		}
 	}
-	projectID := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo)
+	projectID, err := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo)
+	if err != nil {
+		// 0 is "nobody" for this pass: nothing is started or marked, so it is asked again.
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read the project to find a babysit's owner", "repo", pr.Repo, "number", pr.Number, "err", err)
+		}
+		return 0
+	}
 	var id int64
-	if pr.Author == "" || s.db.R.QueryRowContext(ctx, `SELECT u.id FROM project_members m JOIN users u ON u.id = m.user_id
-		WHERE m.project_id = ? AND m.role IN ('owner','editor') AND u.disabled = 0 AND u.username = ? COLLATE NOCASE`, projectID, pr.Author).Scan(&id) != nil {
+	if pr.Author == "" {
+		return 0
+	}
+	switch err := s.db.R.QueryRowContext(ctx, `SELECT u.id FROM project_members m JOIN users u ON u.id = m.user_id
+		WHERE m.project_id = ? AND m.role IN ('owner','editor') AND u.disabled = 0 AND u.username = ? COLLATE NOCASE`, projectID, pr.Author).Scan(&id); {
+	case errors.Is(err, sql.ErrNoRows):
+		return 0
+	case err != nil:
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read who may own a babysit", "repo", pr.Repo, "number", pr.Number, "err", err)
+		}
 		return 0
 	}
 	return id
@@ -828,7 +861,11 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 	if pr.HeadSHA != "" && !sameSHA(pr.HeadSHA, b.HeadSHA) {
 		// A push: what was being fixed is in it.
 		s.promoteFixing(ctx, pr)
-		_ = s.setBabysit(ctx, b, map[string]any{"head_sha": pr.HeadSHA})
+		if err := s.setBabysit(ctx, b, map[string]any{"head_sha": pr.HeadSHA}); err != nil {
+			if readFault(err) {
+				s.log.WarnContext(ctx, "record a push on a babysit", "pr", prID, "err", err)
+			}
+		}
 		b.HeadSHA = pr.HeadSHA
 		sync = true
 	}
@@ -836,10 +873,22 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 		if _, err := s.syncReviewComments(ctx, pr); err != nil {
 			s.log.WarnContext(ctx, "read review comments", "pr", pr.ID, "err", err)
 		}
-		_ = s.setBabysit(ctx, b, map[string]any{"synced_at": s.nowMS()})
+		if err := s.setBabysit(ctx, b, map[string]any{"synced_at": s.nowMS()}); err != nil {
+			if readFault(err) {
+				s.log.WarnContext(ctx, "record a babysit sync", "pr", prID, "err", err)
+			}
+		}
 	}
 	if b.JobID != 0 {
 		job, err := lookupRunnerJob(ctx, s, b.JobID)
+		if err != nil && !missingOrDenied(err) {
+			// Not known whether the job finished: a second round must not start
+			// beside it. Looked at again next tick (WP-1406).
+			if readFault(err) {
+				s.log.WarnContext(ctx, "read a babysit's runner job", "pr", prID, "job", b.JobID, "err", err)
+			}
+			return
+		}
 		if err == nil && job != nil && (job.State == "queued" || job.State == "running") {
 			s.setState(ctx, b, pr, BabysitWorking, fmt.Sprintf("round %d: an agent is on it (job #%d)", b.Round, b.JobID))
 			return
@@ -1050,6 +1099,9 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 	}
 	rd, err := s.readiness(ctx, pr)
 	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read whether a pull request is ready to merge", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "err", err)
+		}
 		return
 	}
 	switch {
@@ -1276,6 +1328,9 @@ func (s *Service) readyEarly(ctx context.Context, b *Babysit, pr *PullRequest, r
 	}
 	rd, err := s.readinessFor(ctx, pr, false)
 	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read whether a draft is ready to leave draft", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "err", err)
+		}
 		return false, ""
 	}
 	var rest []string
@@ -1567,9 +1622,16 @@ func (s *Service) waitForRunner(ctx context.Context, b *Babysit, pr *PullRequest
 	if why == "" || timeLimitOnly(faults) || b.told == key {
 		return true, false
 	}
-	_ = s.setBabysit(ctx, b, map[string]any{"told": key})
-	b.told = key
-	task, _ := s.reportRunnerFault(ctx, b.ownerID, prFaultSubject(pr), faults, why)
+	task, asked := s.reportRunnerFault(ctx, b.ownerID, prFaultSubject(pr), faults, why)
+	if task != "" || asked {
+		// Told only once it was filed or asked: a fault that couldn't be is tried again next pass.
+		if err := s.setBabysit(ctx, b, map[string]any{"told": key}); err != nil {
+			if readFault(err) {
+				s.log.WarnContext(ctx, "record that a runner fault was reported", "babysit", b.ID, "pr", pr.ID, "err", err)
+			}
+		}
+		b.told = key
+	}
 	if task != "" && !strings.Contains(b.Wait, task) {
 		s.setState(ctx, b, pr, BabysitWatching, b.Wait+"; "+task+" tracks it")
 	}
@@ -1654,7 +1716,11 @@ func (s *Service) waitForCancelled(ctx context.Context, b *Babysit, pr *PullRequ
 	st := parseFaultRerun(b.faultReruns)
 	save := func() {
 		b.faultReruns = st.String()
-		_ = s.setBabysit(ctx, b, map[string]any{"fault_reruns": b.faultReruns})
+		if err := s.setBabysit(ctx, b, map[string]any{"fault_reruns": b.faultReruns}); err != nil {
+			if readFault(err) {
+				s.log.WarnContext(ctx, "set babysit failed", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "err", err)
+			}
+		}
 	}
 	if st.begin(pr.HeadSHA, now.UnixMilli()) {
 		save()
@@ -1790,7 +1856,13 @@ func (s *Service) babysitGateRead(ctx context.Context, pr *PullRequest) (why str
 		}
 		return "", false
 	}
-	projectID := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo)
+	projectID, err := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo)
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read the project to check a pull request's runner", "repo", pr.Repo, "number", pr.Number, "err", err)
+		}
+		return "Waypoint couldn't read which project the pull request belongs to, to check its runner", true
+	}
 	return s.runnerGate(ctx, projectID, pr.Repo, fp), false
 }
 
@@ -1916,8 +1988,15 @@ func (s *Service) dispatchRound(ctx context.Context, b *Babysit, pr *PullRequest
 	in := AgentJob{CLI: "claude", Model: model, Effort: effort, Prompt: prompt, Repo: repo.cloneURL(), Base: pr.HeadRef, Branch: pr.HeadRef,
 		Push: true, Permission: AgentEditRun, CommitMessage: commit, ProtectPaths: protectedPaths, Target: pr.BaseRef}
 	raw, _ := json.Marshal(in)
+	projectID, err := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo)
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read the project to start a round", "repo", pr.Repo, "number", pr.Number, "err", err)
+		}
+		return dispatched{why: "its project couldn't be read"}
+	}
 	job, err := s.EnqueueRunnerJob(ctx, SystemActor(), RunnerJobInput{Kind: JobAgent, OwnerID: b.ownerID, Input: raw, Source: babysitSource, SourceID: b.ID,
-		Timeout: timeout, ProjectID: s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo)})
+		Timeout: timeout, ProjectID: projectID})
 	if err != nil {
 		if errors.Is(err, ErrNoRunner) {
 			return dispatched{why: "no runner of " + cmp(b.Owner.DisplayName, "its owner") + " can take it"}
@@ -2089,7 +2168,11 @@ func (s *Service) setState(ctx context.Context, b *Babysit, pr *PullRequest, sta
 		if _, err := t.ExecContext(ctx, `UPDATE babysits SET state = ?, wait = ?, updated_at = ?, wait_at = ? WHERE id = ? AND ended_at IS NULL`, state, wait, s.nowMS(), since.UnixMilli(), b.ID); err != nil {
 			return err
 		}
-		t.emit(&Event{Kind: EvBabysit, ProjectID: s.attachedProject(ctx, t, pr.ForgeID, pr.Repo), Old: b.State, New: state, Data: prEventData(pr, map[string]any{"babysit": b.ID, "wait": wait})})
+		projectID, err := s.attachedProject(ctx, t, pr.ForgeID, pr.Repo)
+		if err != nil {
+			return err
+		}
+		t.emit(&Event{Kind: EvBabysit, ProjectID: projectID, Old: b.State, New: state, Data: prEventData(pr, map[string]any{"babysit": b.ID, "wait": wait})})
 		return nil
 	})
 	if err != nil {
@@ -2110,7 +2193,11 @@ func (s *Service) endBabysit(ctx context.Context, b *Babysit, pr *PullRequest, s
 		if _, err := t.ExecContext(ctx, `UPDATE pull_requests SET queued_at = NULL WHERE id = ?`, pr.ID); err != nil {
 			return err // out of the merge queue: a babysit started again joins at its place in the line (WP-ADR29)
 		}
-		t.emit(&Event{Kind: EvBabysit, ProjectID: s.attachedProject(ctx, t, pr.ForgeID, pr.Repo), Old: b.State, New: state, Data: prEventData(pr, map[string]any{"babysit": b.ID, "reason": reason})})
+		projectID, err := s.attachedProject(ctx, t, pr.ForgeID, pr.Repo)
+		if err != nil {
+			return err
+		}
+		t.emit(&Event{Kind: EvBabysit, ProjectID: projectID, Old: b.State, New: state, Data: prEventData(pr, map[string]any{"babysit": b.ID, "reason": reason})})
 		b.State, b.EndReason = state, reason
 		return nil
 	})
@@ -2140,7 +2227,11 @@ func (s *Service) babysitTell(ctx context.Context, b *Babysit, pr *PullRequest, 
 	if b.told == key {
 		return
 	}
-	_ = s.setBabysit(ctx, b, map[string]any{"told": key})
+	if err := s.setBabysit(ctx, b, map[string]any{"told": key}); err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "set babysit failed", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "err", err)
+		}
+	}
 	b.told = key
 	if b.sessionID != 0 {
 		quiet := babysitQuiet(b, key)
@@ -2152,8 +2243,15 @@ func (s *Service) babysitTell(ctx context.Context, b *Babysit, pr *PullRequest, 
 				_, err := s.db.W.ExecContext(ctx, `UPDATE session_messages SET batch_until = ?, blocking = ? WHERE id = ? AND state = 'queued'`, until, b.Blocking, m.ID)
 				return err
 			})
-		} else if quiet && s.hasBlockingBatch(ctx, b.sessionID) && len(s.movingSiblings(ctx, b.sessionID, b.ID)) == 0 {
-			s.releaseBatch(ctx, b.sessionID) // this was the last one the batch waited for
+		} else if quiet {
+			blocking, err := s.hasBlockingBatch(ctx, b.sessionID)
+			if err != nil {
+				if readFault(err) {
+					s.log.WarnContext(ctx, "read whether a session's batch is blocking", "babysit", b.ID, "err", err) // held to its deadline
+				}
+			} else if blocking && len(s.movingSiblings(ctx, b.sessionID, b.ID)) == 0 {
+				s.releaseBatch(ctx, b.sessionID) // this was the last one the batch waited for
+			}
 		}
 	}
 	title := fmt.Sprintf("Babysitting %s#%d: %s", pr.Repo, pr.Number, babysitHeadline(key))

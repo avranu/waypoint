@@ -506,9 +506,12 @@ func (s *Service) autoArm(ctx context.Context, prID int64) bool {
 }
 
 func (s *Service) armBySetting(ctx context.Context, pr *PullRequest) bool {
-	projectID := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo)
 	armed := false
 	err := s.write(ctx, SystemActor(), func(t *tx) error {
+		projectID, err := s.attachedProject(ctx, t, pr.ForgeID, pr.Repo)
+		if err != nil {
+			return err // nothing is armed on a project that couldn't be read
+		}
 		res, err := t.ExecContext(ctx, `UPDATE pull_requests SET armed_at = ?, armed_by = NULL, armed_agent = ?, armed_style = '', armed_note = ''
 			WHERE id = ? AND armed_at IS NULL AND arm_declined = 0 AND state = 'open'`, s.nowMS(), mergeSettingAgent, pr.ID)
 		if err != nil {
@@ -543,7 +546,6 @@ func (s *Service) disarmOutOfScope(ctx context.Context, pr *PullRequest, why str
 	if !scopedArm(pr) {
 		return
 	}
-	projectID := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo)
 	if pr.ArmedAgent != mergeSettingAgent {
 		why += ", which merges by hand: " + pr.ArmedAgent + " armed it"
 	}
@@ -555,6 +557,10 @@ func (s *Service) disarmOutOfScope(ctx context.Context, pr *PullRequest, why str
 		}
 		if n, _ := res.RowsAffected(); n == 0 {
 			return nil
+		}
+		projectID, err := s.attachedProject(ctx, t, pr.ForgeID, pr.Repo)
+		if err != nil {
+			return err
 		}
 		t.audit(AuditEntry{Action: "pr.disarm", Category: AuditControl, ProjectID: projectID, TargetType: "pr", TargetID: pr.ID,
 			Target: fmt.Sprintf("%s#%d", pr.Repo, pr.Number), URL: pr.URL, Detail: "took merge when ready off “" + pr.Title + "”: " + why, Actor: mergeSettingName})
