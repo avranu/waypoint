@@ -229,11 +229,19 @@ func (s *Service) objectiveTell(ctx context.Context, e *Event, what string) {
 		case told == 0 || o.Stalled >= 2*told:
 			told = o.Stalled
 			title = fmt.Sprintf("%s: %s without getting nearer its objective", o.Key, plural1(o.Stalled, "round"))
-			// A diagnosis that stands was written for the rounds before it: say
-			// the rounds since still came no nearer.
-			var dround int
-			if err := s.db.R.QueryRowContext(ctx, `SELECT r.round_no FROM objectives o JOIN objective_rounds r ON r.id = o.diagnosis_id WHERE o.issue_id = ?`, o.IssueID).Scan(&dround); err == nil {
-				body += fmt.Sprintf(". A diagnosis was recorded in round %d, and the rounds since still came no nearer", dround)
+			// A diagnosis that stood when this was emitted was written for the
+			// rounds before it: say so, and that the rounds since came no
+			// nearer only if any were read.
+			if did := eventInt64(e.Data["diagnosis"]); did != 0 {
+				var dround int
+				if err := s.db.R.QueryRowContext(ctx, `SELECT round_no FROM objective_rounds WHERE id = ?`, did).Scan(&dround); err == nil {
+					body += fmt.Sprintf(". A diagnosis was recorded in round %d", dround)
+					if eventInt64(e.Data["no_better"]) > 0 {
+						body += ", and the rounds since still came no nearer"
+					} else {
+						body += ", and it stands"
+					}
+				}
 			}
 			body += fmt.Sprintf(". It goes on, with a longer wait between rounds; wp objective show %s has what each round read, and wp objective end %s ends it.", o.Key, o.Key)
 		}

@@ -718,3 +718,181 @@ func TestObjectiveDiagnoseWordsOneRound(t *testing.T) {
 		}
 	}
 }
+
+// A diagnosis ships no code, so its run isn't the step before that a workflow
+// step marked "different" compares against: the diagnoser can take the
+// reopened round exactly as it could have before diagnosing (WP-1449).
+func TestObjectiveDiagnoseRunIsNotAStepCompleted(t *testing.T) {
+	o := newObjEnv(t)
+	task := o.toDiagnose(2, 2, ObjectiveInput{})
+	id := "anthropic/claude-opus-5-5"
+	allowed := func() bool {
+		t.Helper()
+		d, err := o.s.GetIssue(o.ctx, o.admin, task.Key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ok, _ := o.s.stepAllows(o.ctx, d.Issue, "any", "different", id)
+		return ok
+	}
+	// Whatever earlier rounds left, the diagnosis must not change the answer
+	// for the agent that recorded it: make that answer "allowed" by dropping
+	// the earlier completions.
+	if _, err := o.s.db.W.ExecContext(o.ctx, `UPDATE agent_runs SET outcome = 'released' WHERE issue_id = ? AND outcome = 'done'`, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	o.take1(task.Key)
+	if _, err := o.diagnose(task.Key, ObjectiveDiagnoseInput{Text: "The check times the build."}); err != nil {
+		t.Fatal(err)
+	}
+	if !allowed() {
+		t.Error("after diagnosing, the diagnoser is barred from a step that needs a different agent than the one who did the step before")
+	}
+}
+
+func (o *objEnv) stallNotice() string {
+	o.t.Helper()
+	got := ""
+	for _, n := range o.toldBodies(NotifyObjective) {
+		if strings.Contains(n, "without getting nearer") {
+			got = n
+		}
+	}
+	return got
+}
+
+// A reopened round that lands nothing has no reading after the diagnosis, so
+// the stall notice says the diagnosis stands, not that rounds since came no
+// nearer (WP-1449).
+func TestObjectiveDiagnoseStallNoticeWithoutLaterReadings(t *testing.T) {
+	o := newObjEnv(t)
+	task := o.toDiagnose(2, 2, ObjectiveInput{})
+	o.take1(task.Key)
+	if _, err := o.diagnose(task.Key, ObjectiveDiagnoseInput{Text: "the check times the build"}); err != nil {
+		t.Fatal(err)
+	}
+	o.setClock(o.clockNow().Add(100 * time.Hour))
+	o.take1(task.Key)
+	if _, err := o.s.AgentDone(o.ctx, o.ag, task.Key, AgentDoneInput{}); err != nil {
+		t.Fatal(err)
+	}
+	o.s.Wait()
+	// Nothing landed: head is where the round began.
+	o.read(ObjectiveJobResult{Head: sha(2), Base: sha(2), Reading: passed(false)})
+	got := o.stallNotice()
+	if got == "" {
+		t.Fatalf("no stall notice: %q", o.toldBodies(NotifyObjective))
+	}
+	hasAll(t, "the stall notice", got, "diagnosis was recorded in round 3")
+	if strings.Contains(got, "still came no nearer") {
+		t.Errorf("claims rounds since the diagnosis were read: %s", got)
+	}
+}
+
+// The notice cites the diagnosis that stood when its event was emitted, not
+// one recorded before it was delivered.
+func TestObjectiveDiagnoseStallNoticeCitesTheDiagnosisOfItsEvent(t *testing.T) {
+	o := newObjEnv(t)
+	task := o.toDiagnose(2, 2, ObjectiveInput{})
+	o.take1(task.Key)
+	if _, err := o.diagnose(task.Key, ObjectiveDiagnoseInput{Text: "first"}); err != nil {
+		t.Fatal(err)
+	}
+	var first int64
+	if err := o.s.db.R.QueryRowContext(o.ctx, `SELECT diagnosis_id FROM objectives WHERE issue_id = ?`, task.ID).Scan(&first); err != nil {
+		t.Fatal(err)
+	}
+	o.noBetter(task.Key, 3)
+	o.noBetter(task.Key, 4)
+	o.take1(task.Key)
+	if _, err := o.diagnose(task.Key, ObjectiveDiagnoseInput{Text: "second"}); err != nil {
+		t.Fatal(err)
+	}
+	// Round 4's stall event is delivered only now.
+	if _, err := o.s.db.W.ExecContext(o.ctx, `UPDATE objectives SET stalled_told = 0 WHERE issue_id = ?`, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	before := len(o.toldBodies(NotifyObjective))
+	ev := &Event{IssueID: task.ID, New: "round 4: no nearer", Data: map[string]any{"objective": "round", "diagnosis": first, "no_better": 1}}
+	o.s.objectiveTell(o.ctx, ev, "round")
+	all := o.toldBodies(NotifyObjective)
+	if len(all) != before+1 {
+		t.Fatalf("notices %d -> %d: %q", before, len(all), all)
+	}
+	got := all[0] // newest first
+	if !strings.Contains(got, "recorded in round 3,") {
+		t.Errorf("the notice cites a later diagnosis than its event's: %s", got)
+	}
+}
+
+// An agent can't merge or arm an existing pull request of a task in a diagnose
+// round: the merge would end the round as an ordinary reading (WP-1449).
+func TestObjectiveDiagnoseAgentMergeIsRefused(t *testing.T) {
+	o := newObjEnv(t)
+	task := o.toDiagnose(2, 2, ObjectiveInput{})
+	o.pull(task.Key, 7)
+	rec, err := o.s.recordPR(o.ctx, o.f, "me/app", &ForgePR{Number: 7, Title: "Round work", HeadRef: "round", HeadSHA: "abc1234def", Author: o.admin.User.Username, State: "open"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prID := rec.ID
+	if _, err := o.s.db.W.ExecContext(o.ctx, `UPDATE pull_requests SET agent = ? WHERE id = ?`, o.ag.Agent, prID); err != nil {
+		t.Fatal(err)
+	}
+	for _, when := range []bool{false, true} {
+		_, err := o.s.MergePR(o.ctx, o.ag, prID, MergeInput{Style: "squash", WhenReady: when})
+		if err == nil || !strings.Contains(err.Error(), "diagnose round") || !strings.Contains(err.Error(), "wp objective diagnose "+task.Key) {
+			t.Errorf("agent merge (when ready %v): %v", when, err)
+		}
+	}
+	// A person's call: not refused for the round.
+	if _, err := o.s.MergePR(o.ctx, o.admin, prID, MergeInput{Style: "squash", WhenReady: true}); err != nil && strings.Contains(err.Error(), "diagnose round") {
+		t.Errorf("a person's arm was refused for the round: %v", err)
+	}
+}
+
+// A pull request linked before a diagnose round began that merges while a
+// worker holds it ends the round as an ordinary reading: the holder's claim
+// and run are closed, not orphaned, and the history says so (WP-1449).
+func TestObjectiveDiagnoseHeldRoundReadsAnEarlierPullRequest(t *testing.T) {
+	o := newObjEnv(t)
+	task := o.task("Lint clean")
+	o.set(task.Key, ObjectiveInput{Check: ptrOf("make lint"), Until: ptrOf("pass"), DiagnoseAfter: ptrOf(2)})
+	o.read(ObjectiveJobResult{Head: sha(0), Reading: passed(false)})
+	o.noBetter(task.Key, 1)
+	o.noBetter(task.Key, 2)
+	if ob := o.obj(task.Key); ob.RoundKind != RoundKindDiagnose || ob.Round != 3 {
+		t.Fatalf("setup: round %d kind %q", ob.Round, ob.RoundKind)
+	}
+	o.take1(task.Key)
+	url := o.pull(task.Key, 7)
+	// Linked before the round began.
+	if _, err := o.s.db.W.ExecContext(o.ctx, `UPDATE external_links SET created_at = 1 WHERE issue_id = ? AND kind = 'pull'`, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	o.linkState(url, "merged")
+	ob := o.obj(task.Key)
+	if ob.Round == 3 && ob.Phase == PhaseWork {
+		t.Fatalf("the merge left the diagnose round open: %+v", ob)
+	}
+	d, err := o.s.GetIssue(o.ctx, o.admin, task.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.ClaimedBy != "" {
+		t.Errorf("the holder's claim is orphaned: %q", d.ClaimedBy)
+	}
+	var open int
+	if err := o.s.db.R.QueryRowContext(o.ctx, `SELECT count(*) FROM agent_runs WHERE issue_id = ? AND ended_at IS NULL`, task.ID).Scan(&open); err != nil || open != 0 {
+		t.Errorf("open runs after the merge: %d, %v", open, err)
+	}
+	found := false
+	for _, h := range o.history(task.Key) {
+		if strings.Contains(h, "read as any round") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("history doesn't say the round was read as any: %q", o.history(task.Key))
+	}
+}

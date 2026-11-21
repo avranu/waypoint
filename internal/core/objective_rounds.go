@@ -14,7 +14,11 @@ import (
 // work ends where the task would close (objectiveClose); Waypoint then
 // reads it (objective_verify.go) and settles it here (objectiveSettle): the
 // objective is met and the task closes, or the next round opens, or it
-// needs a person. A person steers one with ObjectiveGo.
+// needs a person. A person steers one with ObjectiveGo. A diagnose round
+// (WP-1449, WP-ADR142) ends otherwise: only with a recorded diagnosis
+// (ObjectiveDiagnose), since wp done, opening a pull request, wp ship and an
+// agent's merge are refused in it; nothing is read, and the same round
+// reopens as a work round.
 
 // roundEnd is what a round came to.
 type roundEnd struct {
@@ -241,7 +245,7 @@ func (s *Service) objectiveSettle(ctx context.Context, t *tx, o *Objective, e ro
 	// until a round makes progress or what is measured changes (WP-1449).
 	switch {
 	case e.outcome == RoundMet || e.outcome == RoundProgress:
-		o.NoBetter = 0
+		o.NoBetter, o.diagnosisID = 0, 0
 		if err := s.objSet(ctx, t, o.IssueID, "no_better", 0, "diagnosis_id", nil); err != nil {
 			return err
 		}
@@ -805,10 +809,11 @@ func (s *Service) ObjectiveDiagnose(ctx context.Context, actor *Actor, ref strin
 		if err != nil {
 			return err
 		}
-		// The diagnosis ends the run as a merge-ended round does: whoever
-		// held the round holds it no more.
+		// Whoever held the round holds it no more. Their run ends as given
+		// back, not done: no code shipped, so it is not the step before that
+		// a workflow step needing a different agent compares against.
 		if i.ClaimedBy != "" {
-			if err := s.endRun(ctx, t, i.ID, i.ClaimedBy, "done", nil); err != nil {
+			if err := s.endRun(ctx, t, i.ID, i.ClaimedBy, "released", nil); err != nil {
 				return err
 			}
 			if _, err := t.ExecContext(ctx, `UPDATE issues SET claimed_by = '', claimed_until = NULL, claimed_at = NULL WHERE id = ?`, i.ID); err != nil {

@@ -75,8 +75,9 @@ After --diagnose-after rounds in a row that came no nearer (2 by default; 0:
 never), the next round is a diagnose round: it ships no code. The worker finds
 out why (the code, the check or judge itself, noise in the reading, a target out
 of reach), says what the next round should try, and records it with wp
-objective diagnose KEY -f FILE. wp done and wp ship are refused until it is
-recorded (a pull request opened on the forge directly can't be, and if it merges
+objective diagnose KEY -f FILE. wp done, wp ship and an agent's merge (or
+merge --when-ready) of a pull request of the task are refused until it is
+recorded (a pull request armed earlier still merges on its own; one opened on the forge directly can't be, and if it merges
 it is read as any round). The same round then opens again as a work round, the
 one to ship in, and every round after it reads the diagnosis until one makes
 progress. A diagnose round doesn't use up one of the --rounds, and a person
@@ -142,7 +143,7 @@ past --timeout (15m for one command), or had no number to read.
 			run:      cmdObjectiveCheck},
 		{name: "diagnose", args: "KEY (-f FILE | -m TEXT) [--ask]", summary: "record what a diagnose round found: why the rounds came no nearer, and what the next should try",
 			about: `A diagnose round follows rounds that came no nearer, and ships no code (wp
-objective show KEY says so; wp done and wp ship are refused in it). Find out why, sort what you find by cause (the code,
+objective show KEY says so; wp done, wp ship and an agent's wp pr merge of the task's pull request are refused in it). Find out why, sort what you find by cause (the code,
 the check or the judge itself, noise in the reading, a target out of reach) and
 say what the next round should try. Recording it ends the round without a
 reading, puts the task back in To Do, and opens the same round again as a work

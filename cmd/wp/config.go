@@ -435,10 +435,6 @@ func (c *cli) updateStateWithin(wait time.Duration, change func(*State)) error {
 // A lock older than staleLock is assumed abandoned by a crashed process.
 func lockFile(path string) (func(), error) { return lockFileWithin(path, 5*time.Second) }
 
-// lockPoll is the pause between tries for a held lock; a variable so a test
-// can release the lock on the waiter's retry rather than race a timer.
-var lockPoll = func() { time.Sleep(25 * time.Millisecond) }
-
 // lockFileWithin is lockFile waiting at most wait; wait <= 0 tries once and
 // fails at once if the lock is held (a stale one is still taken over).
 func lockFileWithin(path string, wait time.Duration) (func(), error) {
@@ -475,7 +471,7 @@ func lockFileWithin(path string, wait time.Duration) (func(), error) {
 		if wait <= 0 || time.Now().After(deadline) {
 			return nil, errors.New("state is locked by another wp; try again")
 		}
-		lockPoll()
+		time.Sleep(25 * time.Millisecond)
 	}
 }
 

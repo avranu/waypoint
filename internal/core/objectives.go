@@ -45,6 +45,13 @@ import (
 // says whether the work is enough, and it can't end the rounds by closing,
 // cancelling or deleting the task. Only a person's own act does that.
 //
+// A diagnose round (WP-1449, WP-ADR142) is the exception: after
+// diagnose_after rounds in a row that came no nearer, the next round ships no
+// code. wp done, opening a pull request, wp ship and an agent's merge or arm
+// of an existing pull request of the task are refused in it, and it ends only
+// with a recorded diagnosis (wp objective diagnose), after which the same
+// round reopens as a work round.
+//
 // The check and the keep-passing commands are shell commands a person's machine runs. So
 // only a person's own act puts an objective in effect: what an agent sets
 // is a proposal, shown but not run and not looping, until a person confirms
@@ -247,6 +254,7 @@ type Objective struct {
 
 	everyMS                 int64
 	roundStartedAt          int64
+	diagnosisID             int64 // the standing diagnosis's round row; 0 for none
 	setBy, confirmedBy      *int64
 	issueClosed, issueDraft bool
 	issueCategory           string
@@ -1120,7 +1128,7 @@ func (o *Objective) diagnoseRound() bool {
 // nothing, and finds out why the rounds before it came no nearer.
 func diagnoseBrief(o *Objective) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "  THIS ROUND IS A DIAGNOSE ROUND. The last %s came no nearer, so this one ships no code: don't change the repository or open a pull request. wp done and wp ship are refused until you have recorded a diagnosis (round %d then opens again as a work round, and that is the round to ship in; a person can skip the diagnosis with wp objective next %s). A pull request opened on the forge directly can't be refused: if one merges in this round it is read as any round, and if it is no better a diagnosis is still owed.\n", plural1(o.NoBetter, "round"), o.Round, o.Key)
+	fmt.Fprintf(&b, "  THIS ROUND IS A DIAGNOSE ROUND. The last %s came no nearer, so this one ships no code: don't change the repository or open a pull request. wp done, wp ship and wp pr merge of the task's pull request are refused until you have recorded a diagnosis (round %d then opens again as a work round, and that is the round to ship in; a person can skip the diagnosis with wp objective next %s). A pull request opened on the forge directly can't be refused: if one merges in this round it is read as any round, and if it is no better a diagnosis is still owed.\n", plural1(o.NoBetter, "round"), o.Round, o.Key)
 	b.WriteString("  Find out why. Read what those rounds tried (the readings above, this task's comments and pull requests) and measure where the problem actually is. Sort what you find by cause:\n")
 	b.WriteString("    - the code: what the rounds changed doesn't move what is measured (say what would)\n")
 	b.WriteString("    - the check or the judge itself: a bug in it, or it measures the wrong thing\n")
@@ -1137,7 +1145,7 @@ const objectiveCols = `o.issue_id, p.key || '-' || i.number, i.title, i.project_
 	o.repo, o.branch, o.keep_passing, o.judge, o.judge_bar, o.judge_models, o.phase, o.phase_at, o.phase_why, o.phase_note, o.blocked_from, o.close_status_id,
 	o.verify_try, o.verify_job, o.verify_audit, coalesce(o.verify_at, 0), o.pending_measurement, o.base_sha, o.base_ok, o.base_value, o.ended_why,
 	o.stuck_since, o.stuck_why, coalesce(o.stuck_told_at, 0), o.stalled_told, o.verify_reading, o.verify_head,
-	o.no_better, o.diagnose_after, o.round_kind`
+	o.no_better, o.diagnose_after, o.round_kind, coalesce(o.diagnosis_id, 0)`
 
 const objectiveFrom = ` FROM objectives o JOIN issues i ON i.id = o.issue_id JOIN projects p ON p.id = i.project_id JOIN statuses st ON st.id = i.status_id`
 
@@ -1163,7 +1171,7 @@ func scanObjective(sc interface{ Scan(...any) error }) (*Objective, error) {
 		&o.Repo, &o.Branch, &keep, &o.Judge, &o.JudgeBar, &models, &o.Phase, &phaseAt, &o.PhaseWhy, &o.PhaseNote, &o.blockedFrom, &closeStatus,
 		&o.verifyTry, &job, &audit, &o.verifyAt, &pending, &o.BaseSHA, &baseOK, &baseValue, &o.EndedWhy,
 		&stuck, &o.StuckWhy, &o.stuckToldAt, &o.stalledTold, &reading, &o.verifyHead,
-		&o.NoBetter, &o.DiagnoseAfter, &o.RoundKind); err != nil {
+		&o.NoBetter, &o.DiagnoseAfter, &o.RoundKind, &o.diagnosisID); err != nil {
 		return nil, err
 	}
 	o.issueClosed = isClosed(o.issueCategory)
@@ -1311,11 +1319,9 @@ func (s *Service) objectiveOf(ctx context.Context, q queryer, issueID int64) (*O
 	if len(verdicts) > 0 {
 		o.Verdict = verdicts[0]
 	}
-	// The diagnosis later rounds read, if one still stands.
-	var diagnosisID int64
-	if err := q.QueryRowContext(ctx, `SELECT coalesce(diagnosis_id, 0) FROM objectives WHERE issue_id = ?`, issueID).Scan(&diagnosisID); err != nil {
-		return nil, err
-	}
+	// The diagnosis later rounds read, if one still stands, came with the
+	// row: a second read could find the row gone.
+	diagnosisID := o.diagnosisID
 	rows, err := q.QueryContext(ctx, `SELECT round_no, started_at, ended_at, outcome, coalesce(measurement_id, 0), agent, pr_url, base_sha, head_sha, note, diagnosis, diagnosis_by, id FROM objective_rounds
 		WHERE issue_id = ? ORDER BY id DESC LIMIT ?`, issueID, objectiveRecent)
 	if err != nil {
@@ -1426,7 +1432,7 @@ func objectivePerson(a *Actor) bool {
 // names it for the handlers that act on it (objective_health.go).
 func objectiveEvent(o *Objective, what, old, text string) *Event {
 	return &Event{Kind: EvIssueUpdated, ProjectID: o.projectID, IssueID: o.IssueID, IssueKey: o.Key, Field: "objective", Old: old, New: text,
-		Data: map[string]any{"objective": what}}
+		Data: map[string]any{"objective": what, "diagnosis": o.diagnosisID, "no_better": o.NoBetter}}
 }
 
 // objectiveColumns are the columns objSet may write, by name. The name that
