@@ -185,9 +185,10 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 		defer func() {
 			p := recover()
 			var stack string
+			abort := p == http.ErrAbortHandler
 			if p != nil {
 				stack = string(debug.Stack())
-				if !sw.wrote {
+				if !sw.wrote && !abort {
 					writeJSON(sw, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 				}
 			}
@@ -204,6 +205,13 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 				httpDuration.WithLabelValues(route).Observe(d.Seconds())
 			}
 			s.logRequest(r, note, route, sw.status, d, p, stack)
+			if abort {
+				// A handler that fails after bytes went out ends the transfer
+				// as broken: net/http aborts the connection (and logs
+				// nothing) only for this panic, so a client sees an error,
+				// not a body that ended as if it were whole.
+				panic(http.ErrAbortHandler)
+			}
 		}()
 		next.ServeHTTP(sw, r)
 	})
@@ -508,8 +516,16 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 		status, msg = http.StatusBadGateway, err.Error()
 	case errors.Is(err, errTooMany):
 		status, msg = http.StatusTooManyRequests, err.Error()
+	case errors.Is(err, core.ErrTranscriptQuota):
+		// the archive is full: the client keeps the file and tries again
+		status, msg = http.StatusInsufficientStorage, core.TranscriptQuotaRefusal
+	case errors.Is(err, core.ErrTranscriptDiskLow):
+		status, msg = http.StatusInsufficientStorage, core.TranscriptDiskLowRefusal
+	case errors.Is(err, core.ErrTranscriptsOff):
+		// a setting, not a fault: the client reads it as "this server keeps no archive"
+		status, msg = http.StatusNotImplemented, err.Error()
 	}
-	if status >= 500 {
+	if status >= 500 && status != http.StatusInsufficientStorage && status != http.StatusNotImplemented {
 		// The middleware logs it, once, with the route and the time taken.
 		if n := noteFrom(r); n != nil {
 			n.err = err
@@ -518,8 +534,13 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 		}
 	}
 	body := map[string]string{"error": msg}
-	if errors.Is(err, core.ErrReauth) {
+	switch {
+	case errors.Is(err, core.ErrReauth):
 		body["code"] = "reauth" // the web app asks for the password and retries
+	case errors.Is(err, core.ErrTranscriptQuota), errors.Is(err, core.ErrTranscriptDiskLow):
+		body["code"] = "transcript_full" // the client holds the file; the text may change, the code does not
+	case errors.Is(err, core.ErrTranscriptJob):
+		body["code"] = "transcript_job" // the client stops its archive pass quietly
 	}
 	writeJSON(w, status, body)
 }

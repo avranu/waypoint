@@ -31,8 +31,9 @@ const (
 	UseAvoided = "avoided"
 )
 
-// lookupRepeat: the same tool reading the same item again this soon is the
-// same use (an agent re-reading a term in a loop isn't using it more).
+// lookupRepeat: the same reader (a session, else the person and agent)
+// reading the same item again this soon is the same use (an agent re-reading
+// a term in a loop isn't using it more); the row counts the repeats.
 const lookupRepeat = 10 * time.Minute
 
 // knowledgeTables are the tables of the items whose use is recorded.
@@ -46,18 +47,91 @@ func (s *Service) NoteLookup(ctx context.Context, actor *Actor, typ string, id i
 	if actor == nil || actor.User == nil || actor.User.ID == 0 || actor.session != "" || table == "" || id == 0 {
 		return
 	}
+	ctx = context.WithoutCancel(ctx)
 	now := s.nowMS()
 	agent := actor.agentName()
-	// #nosec G202 -- table is one of three fixed names; values are bound
-	_, err := s.db.W.ExecContext(context.WithoutCancel(ctx), `INSERT INTO knowledge_uses(item_type, item_id, kind, word, project_id, user_id, agent, created_at)
-		SELECT ?, ?, 'lookup', ?, (SELECT project_id FROM `+table+` WHERE id = ?), ?, ?, ?
-		WHERE NOT EXISTS (SELECT 1 FROM knowledge_uses WHERE item_type = ? AND item_id = ? AND kind = 'lookup'
-			AND user_id = ? AND agent = ? AND created_at > ?)`,
-		typ, id, excerpt(word, 100), id, actor.User.ID, agent, now,
-		typ, id, actor.User.ID, agent, now-lookupRepeat.Milliseconds())
-	if err != nil {
-		s.log.WarnContext(ctx, "record knowledge lookup", "type", typ, "id", id, "err", err)
+	sessID, sessTask := sessionStamp(ctx, s.db.R, actor)
+	// The same reader reading the same item again this soon is one read
+	// (the reader is a session when the request names one, else the person
+	// and agent), but the row counts the repeats, so a reread isn't hidden.
+	who, whoArg := `user_id = ? AND agent = ? AND session_id IS NULL`, []any{actor.User.ID, agent}
+	if sessID != nil {
+		who, whoArg = `session_id = ?`, []any{sessID}
 	}
+	args := append([]any{typ, id}, whoArg...)
+	args = append(args, now-lookupRepeat.Milliseconds())
+	// The bump and the insert are guarded by the same window test, so two
+	// concurrent first reads end as one row and one repeat, not two rows.
+	for range 3 {
+		// #nosec G202 -- who is one of two fixed clauses; values are bound
+		res, err := s.db.W.ExecContext(ctx, `UPDATE knowledge_uses SET repeats = coalesce(repeats, 0) + 1 WHERE id = (
+			SELECT max(id) FROM knowledge_uses WHERE item_type = ? AND item_id = ? AND kind = 'lookup' AND `+who+` AND created_at > ?)`, args...)
+		if err != nil {
+			s.log.WarnContext(ctx, "count repeated knowledge lookup", "type", typ, "id", id, "err", err)
+			return
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			return
+		}
+		// #nosec G202 -- table and who are fixed; values are bound
+		res, err = s.db.W.ExecContext(ctx, `INSERT INTO knowledge_uses(item_type, item_id, kind, word, project_id, user_id, agent, created_at, session_id, session_issue_id, repeats)
+			SELECT ?, ?, 'lookup', ?, (SELECT project_id FROM `+table+` WHERE id = ?), ?, ?, ?, ?, ?, 0
+			WHERE NOT EXISTS (SELECT 1 FROM knowledge_uses WHERE item_type = ? AND item_id = ? AND kind = 'lookup' AND `+who+` AND created_at > ?)`,
+			append([]any{typ, id, excerpt(word, 100), id, actor.User.ID, agent, now, sessID, sessTask}, args...)...)
+		if err != nil {
+			s.log.WarnContext(ctx, "record knowledge lookup", "type", typ, "id", id, "err", err)
+			return
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			return
+		}
+		// Another read inserted between the two statements: count this one as its repeat.
+	}
+}
+
+// ShownRef names a shown item: Type glossary (Ref a term), page or design
+// (Ref its code); Project is the scope a term or page code resolves in.
+type ShownRef struct {
+	Type    string `json:"type"`
+	Ref     string `json:"ref"`
+	Project string `json:"project,omitempty"`
+}
+
+// NoteShown records that items were put in front of an agent without its
+// asking: glossary entries, pages and design notes `wp brief` listed, or a
+// task's prep named. One row per showing and no dedupe, against the lookups
+// in knowledge_uses: "shown but never read" needs both counts (WP-ADR145
+// point 7). refs are what the client printed; ones that name nothing are
+// counted in the result, not dropped silently.
+func (s *Service) NoteShown(ctx context.Context, actor *Actor, via string, refs []ShownRef) (recorded, unknown int, err error) {
+	if actor == nil || actor.User == nil || actor.User.ID == 0 || actor.session != "" || actor.ReadOnly || !actor.IsAgent() {
+		return 0, 0, nil
+	}
+	if via != "brief" && via != "prep" {
+		return 0, 0, invalid("via is brief or prep")
+	}
+	if len(refs) > 50 {
+		return 0, 0, invalid("at most 50 items at a time")
+	}
+	ctx = context.WithoutCancel(ctx)
+	sessID, sessTask := sessionStamp(ctx, s.db.R, actor)
+	now := s.nowMS()
+	for _, r := range refs {
+		typ, id, ok := s.shownItem(ctx, actor, r)
+		if !ok {
+			unknown++
+			continue
+		}
+		table := knowledgeTables[typ]
+		// #nosec G202 -- table is one of three fixed names; values are bound
+		if _, err := s.db.W.ExecContext(ctx, `INSERT INTO knowledge_shown(item_type, item_id, via, session_id, session_issue_id, project_id, user_id, agent, created_at)
+			SELECT ?, ?, ?, ?, ?, (SELECT project_id FROM `+table+` WHERE id = ?), ?, ?, ?`,
+			typ, id, via, sessID, sessTask, id, actor.User.ID, actor.agentName(), now); err != nil {
+			return recorded, unknown, fmt.Errorf("record shown %s %d: %w", typ, id, err)
+		}
+		recorded++
+	}
+	return recorded, unknown, nil
 }
 
 // ---- mentions ----
@@ -156,9 +230,10 @@ func (s *Service) recordMentions(ctx context.Context, t *tx, src mentionSource) 
 	if src.user != 0 {
 		user = src.user
 	}
+	sessID, sessTask := t.creditSession(ctx, src.agent)
 	for k, word := range found {
-		if _, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO knowledge_uses(item_type, item_id, kind, src_type, src_id, word, project_id, user_id, agent, created_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?)`, k.typ, k.id, k.kind, src.typ, src.id, word, nullInt(src.project), user, src.agent, at); err != nil {
+		if _, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO knowledge_uses(item_type, item_id, kind, src_type, src_id, word, project_id, user_id, agent, created_at, session_id, session_issue_id)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, k.typ, k.id, k.kind, src.typ, src.id, word, nullInt(src.project), user, src.agent, at, sessID, sessTask); err != nil {
 			s.log.WarnContext(ctx, "record knowledge mention", "source", src.typ, "id", src.id, "err", err)
 			return
 		}
@@ -460,6 +535,11 @@ type UseCounts struct {
 	Avoided  int `json:"avoided"`  // places a word to avoid was written instead
 	People   int `json:"people"`
 	Agents   int `json:"agents"`
+	// Shown is how many times it was put in front of an agent unasked (wp
+	// brief, a prep); Rereads the extra lookups the 10-minute window folded
+	// into a lookup row (rows from before it are unknown, left out).
+	Shown   int `json:"shown"`
+	Rereads int `json:"rereads"`
 }
 
 // ItemUsage is how an item has been used.
@@ -531,9 +611,15 @@ func (s *Service) ItemUsage(ctx context.Context, actor *Actor, typ string, id in
 			count(DISTINCT CASE WHEN kind = 'avoided' THEN src_type || ':' || src_id END),
 			count(DISTINCT CASE WHEN agent = '' THEN user_id END),
 			count(DISTINCT nullif(agent, '')),
-			max(created_at)
+			max(created_at),
+			coalesce(sum(CASE WHEN kind = 'lookup' THEN repeats END), 0)
 		FROM knowledge_uses WHERE item_type = ? AND item_id = ? AND `+vis, append([]any{typ, id}, vargs...)...).
-		Scan(&out.Counts.Lookups, &out.Counts.Mentions, &out.Counts.Avoided, &out.Counts.People, &out.Counts.Agents, &last); err != nil {
+		Scan(&out.Counts.Lookups, &out.Counts.Mentions, &out.Counts.Avoided, &out.Counts.People, &out.Counts.Agents, &last, &out.Counts.Rereads); err != nil {
+		return nil, err
+	}
+	// #nosec G202 -- vis is a fixed condition; values are bound
+	if err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM knowledge_shown WHERE item_type = ? AND item_id = ? AND `+vis,
+		append([]any{typ, id}, vargs...)...).Scan(&out.Counts.Shown); err != nil {
 		return nil, err
 	}
 	if last.Valid {
@@ -1007,4 +1093,30 @@ func (s *Service) NoteSpecLookup(ctx context.Context, actor *Actor, sp *Spec) {
 	if sp != nil && sp.Note != nil {
 		s.NoteLookup(ctx, actor, KDesign, sp.Note.ID, "")
 	}
+}
+
+// shownItem resolves what a client printed to a record the actor can see.
+func (s *Service) shownItem(ctx context.Context, actor *Actor, r ShownRef) (typ string, id int64, ok bool) {
+	var err error
+	switch r.Type {
+	case KGlossary:
+		var res *GlossaryLookup
+		if res, err = s.LookupGlossary(ctx, actor, r.Ref, r.Project); err == nil && len(res.Matches) > 0 {
+			return KGlossary, res.Matches[0].ID, true
+		}
+	case KDesign:
+		// A numeric ref resolves without a row check, so ask for the item as the actor.
+		if id, err = s.ResolveDesign(ctx, actor, r.Ref, r.Project); err == nil && id > 0 {
+			if _, err = s.kitem(ctx, actor, KDesign, id, ""); err == nil {
+				return KDesign, id, true
+			}
+		}
+	case KPage:
+		if id, err = s.ResolvePage(ctx, actor, r.Ref, r.Project); err == nil && id > 0 {
+			if _, err = s.kitem(ctx, actor, KPage, id, ""); err == nil {
+				return KPage, id, true
+			}
+		}
+	}
+	return "", 0, false
 }

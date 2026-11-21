@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -48,6 +50,7 @@ func cmdUsageSync(c *cli, args []string) error {
 	dry := fs.Bool("dry-run", false, "count only; upload nothing")
 	dir := fs.String("dir", "", "Claude Code config `DIR` (default CLAUDE_CONFIG_DIR, ~/.claude)")
 	noInv := fs.Bool("no-inventory", false, "skip the configured MCP servers, skills…")
+	noArchive := fs.Bool("no-archive", false, "skip the transcript archive upload and tell the server the archive is off, as WP_USAGE_ARCHIVE=off does")
 	pos, err := c.parse(fs, args)
 	if err != nil {
 		return err
@@ -59,7 +62,7 @@ func cmdUsageSync(c *cli, args []string) error {
 		usageHook(c, os.Stdin, *dir)
 		return nil // a hook must never fail the session
 	}
-	o := usageSyncOptions{All: *all, DryRun: *dry, Dir: *dir, Inventory: !*noInv, Out: c.out}
+	o := usageSyncOptions{All: *all, DryRun: *dry, Dir: *dir, Inventory: !*noInv, NoArchive: *noArchive, Out: c.out}
 	switch {
 	case *all && *since == "":
 	default:
@@ -116,6 +119,27 @@ func usageSyncText(r *usageSyncResult) string {
 		fmt.Fprintf(&b, "Uploaded %d batches (%d already known to the server).\n", r.Chunks, r.Duplicate)
 	} else {
 		b.WriteString("Nothing new to upload.\n")
+	}
+	if a := r.Archive; a != nil {
+		if a.Stopped == archiveBusy && a.Files == 0 {
+			b.WriteString("Transcript archive: another pass is running; it uploads these too.\n")
+		} else {
+			fmt.Fprintf(&b, "Transcript archive: %s stored in %d pieces (%s sent compressed); %s still waiting in %d files.\n",
+				bytesText(a.RawBytes), a.Pieces, bytesText(a.SentBytes), bytesText(a.PendingBytes), a.PendingFiles)
+			for _, k := range slices.Sorted(maps.Keys(a.Dropped)) {
+				fmt.Fprintf(&b, "  not archived, counted: %s\n", archiveDropText(k, a.Dropped[k]))
+			}
+			if a.Stopped != "" {
+				fmt.Fprintf(&b, "  stopped early: %s\n", a.Stopped)
+			}
+			if a.OlderFiles > 0 {
+				fmt.Fprintf(&b, "  %d older transcript%s (%s) never uploaded, outside the archive window (the last 30 days unless --since says more): wp usage sync --all archives them\n",
+					a.OlderFiles, map[bool]string{true: "", false: "s"}[a.OlderFiles == 1], bytesText(a.OlderBytes))
+			}
+		}
+	}
+	if r.ArchiveError != "" {
+		fmt.Fprintf(&b, "Transcript archive failed: %s\n", r.ArchiveError)
 	}
 	if r.Skipped > 0 {
 		fmt.Fprintf(&b, "Skipped %s lines of kinds this wp doesn't read", n(r.Skipped))

@@ -43,9 +43,21 @@ const FIELDS: { key: keyof ResourceLimits; resource: string; label: string; hint
     label: 'Available memory below (MB)',
     hint: 'What the machine reports as available.',
   },
+  {
+    key: 'transcripts_mb',
+    resource: 'transcripts',
+    label: 'Transcript archive larger than (MB)',
+    hint: 'What the transcript archive holds. Nothing in it is deleted by age or size (deleting a user’s account removes that account’s transcripts). This warns above the limit and, with a size cap (WAYPOINT_TRANSCRIPT_MAX_MB), at 90% of the cap; at the cap uploads wait.',
+  },
 ]
 
 function reading(r: ResourceStatus): string {
+  if (r.resource === 'transcripts') {
+    const parts = [`${bytesText(r.bytes)} in ${r.count ?? 0} pieces`]
+    if (r.cap_mb) parts.push(`cap ${r.cap_mb} MB`)
+    if (r.refused) parts.push(`${r.refused} uploads refused for the cap`)
+    return parts.join(', ')
+  }
   if (r.resource === 'database') return `${bytesText(r.bytes)} used`
   return r.total
     ? `${bytesText(r.bytes)} free of ${bytesText(r.total)}`
@@ -59,6 +71,7 @@ function SystemLimits() {
     disk_free_mb: '',
     database_mb: '',
     memory_free_mb: '',
+    transcripts_mb: '',
   })
   const limits = sys.data?.limits
   useEffect(() => {
@@ -67,14 +80,16 @@ function SystemLimits() {
         disk_free_mb: String(limits.disk_free_mb),
         database_mb: String(limits.database_mb),
         memory_free_mb: String(limits.memory_free_mb),
+        transcripts_mb: String(limits.transcripts_mb ?? 0),
       })
-  }, [limits?.disk_free_mb, limits?.database_mb, limits?.memory_free_mb]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [limits?.disk_free_mb, limits?.database_mb, limits?.memory_free_mb, limits?.transcripts_mb]) // eslint-disable-line react-hooks/exhaustive-deps
   const save = useMutation({
     mutationFn: () =>
       api.put<ResourceLimits>('/admin/system-limits', {
         disk_free_mb: Math.max(0, Math.round(Number(form.disk_free_mb) || 0)),
         database_mb: Math.max(0, Math.round(Number(form.database_mb) || 0)),
         memory_free_mb: Math.max(0, Math.round(Number(form.memory_free_mb) || 0)),
+        transcripts_mb: Math.max(0, Math.round(Number(form.transcripts_mb) || 0)),
       }),
     onSuccess: () => {
       toast('Limits saved', { kind: 'success' })
@@ -82,11 +97,11 @@ function SystemLimits() {
     },
     onError: toastError,
   })
-  const dirty = !!limits && FIELDS.some((f) => Number(form[f.key] || 0) !== limits[f.key])
+  const dirty = !!limits && FIELDS.some((f) => Number(form[f.key] || 0) !== (limits[f.key] ?? 0))
   return (
     <Section
       title="System limits"
-      help="Admin automations can start when the disk, the database or memory crosses a limit below. It’s checked every minute; crossing fires once, and not again within the hour. Zero turns a check off."
+      help="Admin automations can start when the disk, the database, memory or the transcript archive crosses a limit below. It’s checked every minute; crossing fires once, and not again within the hour. Zero turns a check off."
     >
       {sys.isLoading ? (
         <div className="space-y-2 p-4">

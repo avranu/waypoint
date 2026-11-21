@@ -1095,16 +1095,17 @@ func (s *Service) CreateIssue(ctx context.Context, actor *Actor, in IssueInput) 
 		if err != nil {
 			return err
 		}
+		sessID, sessTask := sessionStamp(ctx, t, actor)
 		res, err := t.ExecContext(ctx, `INSERT INTO issues(project_id, number, type, title, description, status_id, priority, parent_id, sprint_id,
 			reporter_id, points, start_date, due_date, rank, created_at, updated_at, resolved_at,
 			agent, reporter_agent, category, workflow_id, step, text_by, text_agent, resolved_by, resolved_agent, close_review, draft,
-			outside, outside_by, outside_forge, origin_issue_id, origin_depth)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			outside, outside_by, outside_forge, origin_issue_id, origin_depth, session_id, session_issue_id)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			p.ID, number, in.Type, in.Title, in.Description, st.ID, prio, parentID, nullInt(sprintID),
 			reporter, nullFloat(in.Points), nullStr(start), nullStr(due), rank, now, now, resolved,
 			in.Agent, author, in.Category, nullInt(workflowID), step,
 			reporter, author, resolvedBy, resolvedAgent, resolvedAgent != "", in.Draft || in.outside,
-			in.outside, in.outsideBy, nullInt(in.outsideForge), origin[0], origin[1])
+			in.outside, in.outsideBy, nullInt(in.outsideForge), origin[0], origin[1], sessID, sessTask)
 		if err != nil {
 			return err
 		}
@@ -1155,8 +1156,9 @@ func (s *Service) CreateIssue(ctx context.Context, actor *Actor, in IssueInput) 
 		// What an agent files while working on a task follows it (WP-255),
 		// unless it is a slice of that task.
 		if o, ok := origin[0].(int64); ok && o != id && o != parentID {
-			if _, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO issue_relations(source_id, target_id, kind, created_at, found, basis)
-				VALUES (?,?,'follows',?,'session','inferred')`, id, o, now); err != nil {
+			sessID, sessTask := t.sessionStamp(ctx)
+			if _, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO issue_relations(source_id, target_id, kind, created_at, found, basis, session_id, session_issue_id)
+				VALUES (?,?,'follows',?,'session','inferred',?,?)`, id, o, now, sessID, sessTask); err != nil {
 				return err
 			}
 		}
@@ -2850,8 +2852,9 @@ func (s *Service) relate(ctx context.Context, t *tx, actor *Actor, a, b *Issue, 
 	}
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		_, err = t.ExecContext(ctx, `INSERT INTO issue_relations(source_id, target_id, kind, subkind, created_at, named_in, found, basis, created_by, created_agent)
-			VALUES (?,?,?,?,?,?,?,?,?,?)`, src.ID, dst.ID, kind, subkind, s.nowMS(), nullInt(namedIn), foundCol, basis, nullUser(actor.id()), actor.creditAgent())
+		sessID, sessTask := sessionStamp(ctx, t, actor)
+		_, err = t.ExecContext(ctx, `INSERT INTO issue_relations(source_id, target_id, kind, subkind, created_at, named_in, found, basis, created_by, created_agent, session_id, session_issue_id)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, src.ID, dst.ID, kind, subkind, s.nowMS(), nullInt(namedIn), foundCol, basis, nullUser(actor.id()), actor.creditAgent(), sessID, sessTask)
 	case err != nil:
 		return nil, err
 	case subkind == "" || subkind == had:
@@ -2859,8 +2862,9 @@ func (s *Service) relate(ctx context.Context, t *tx, actor *Actor, a, b *Issue, 
 	default:
 		// The pair already has the kind: saying it again with a subkind
 		// changes that, and the history says who did (WP-1036).
-		_, err = t.ExecContext(ctx, `UPDATE issue_relations SET subkind = ?, basis = ?, created_by = ?, created_agent = ? WHERE id = ?`,
-			subkind, basis, nullUser(actor.id()), actor.creditAgent(), existing)
+		sessID, sessTask := sessionStamp(ctx, t, actor)
+		_, err = t.ExecContext(ctx, `UPDATE issue_relations SET subkind = ?, basis = ?, created_by = ?, created_agent = ?, session_id = ?, session_issue_id = ? WHERE id = ?`,
+			subkind, basis, nullUser(actor.id()), actor.creditAgent(), sessID, sessTask, existing)
 	}
 	if err != nil {
 		return nil, err
@@ -3095,7 +3099,8 @@ func (s *Service) addComment(ctx context.Context, t *tx, actor *Actor, i *Issue,
 		author = actor.id()
 	}
 	agent := cmp(actor.textAgent, actor.agentName())
-	res, err := t.ExecContext(ctx, `INSERT INTO comments(issue_id, author_id, agent, body, created_at, updated_at) VALUES (?,?,?,?,?,?)`, i.ID, author, agent, body, now, now)
+	sessID, sessTask := sessionStamp(ctx, t, actor)
+	res, err := t.ExecContext(ctx, `INSERT INTO comments(issue_id, author_id, agent, body, created_at, updated_at, session_id, session_issue_id) VALUES (?,?,?,?,?,?,?,?)`, i.ID, author, agent, body, now, now, sessID, sessTask)
 	if err != nil {
 		return nil, err
 	}

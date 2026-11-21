@@ -197,6 +197,12 @@ func serverStatusText(st *core.ServerStatus, now time.Time) string {
 				last = agoText(now.Sub(*c.LastOutputAt)) + " ago"
 			}
 			line := fmt.Sprintf("  %-14s %5d  %-8s %s", c.Name, c.Waiting, wait, last)
+			if c.Dropped != nil {
+				line += fmt.Sprintf("  dropped %d", *c.Dropped)
+			}
+			if c.Off != nil {
+				line += fmt.Sprintf("  %d off", *c.Off)
+			}
 			if c.Stalled {
 				line += "  stalled"
 				if c.StalledSince != nil {
@@ -204,6 +210,9 @@ func serverStatusText(st *core.ServerStatus, now time.Time) string {
 				}
 			}
 			b.WriteString(line + "\n")
+			if c.Problem != "" {
+				b.WriteString("    problem: " + c.Problem + "\n")
+			}
 		}
 	}
 	if len(st.HookDrops) > 0 {

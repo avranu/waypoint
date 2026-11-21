@@ -331,7 +331,7 @@ func newEnvServing(t *testing.T, configure func(cfg *api.Config, url string), wr
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = d.Close() })
-	svc := core.New(d, core.Config{BaseURL: "http://wp.test"}, nil)
+	svc := core.New(d, core.Config{BaseURL: "http://wp.test", TranscriptDir: t.TempDir()}, nil)
 	svc.StartHub()
 	ts := httptest.NewUnstartedServer(nil) // listening already, so its URL is known
 	cfg := api.Config{BaseURL: "http://wp.test", Version: "test"}

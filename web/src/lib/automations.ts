@@ -282,19 +282,24 @@ export const adminAutomationsQuery = () =>
   })
 
 export interface ResourceStatus {
-  resource: 'disk' | 'database' | 'memory'
+  resource: 'disk' | 'database' | 'memory' | 'transcripts'
   label: string
   /** free (disk, memory) or used (database) */
   bytes: number
   total?: number
   limit_mb: number
   low: boolean
+  /** transcripts: pieces stored, the size cap in MB (0: none) and uploads refused for it */
+  count?: number
+  cap_mb?: number
+  refused?: number
 }
 
 export interface ResourceLimits {
   disk_free_mb: number
   database_mb: number
   memory_free_mb: number
+  transcripts_mb: number
 }
 
 export const adminSystemQuery = () =>

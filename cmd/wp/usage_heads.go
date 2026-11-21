@@ -350,18 +350,39 @@ func headOf(words []string) string {
 // excerpt of a refused command, say).
 // It takes NAME=value and name: value where the name holds a secret word
 // (AWS_SECRET_ACCESS_KEY=…), a flag with its value after a space
-// (--password hunter2, --token abc) and Bearer values.
-var secretRE = lazyre.New(`(?i)([\w-]*(?:token|secret|passw(?:or)?d|api[_-]?key|apikey|access[_-]?key|private[_-]?key|authorization|credential)[\w-]*["']?\s*[=:]\s*|--(?:token|secret|password|passwd|api[_-]?key|auth|access[_-]?key)\s+|bearer\s+)(["']?)(?:bearer\s+)?[^\s"']{4,}`)
+// (--password hunter2, --token abc) and Bearer values. After a name that
+// holds a secret, an auth scheme word (Basic, Token, Negotiate, NTLM, Bearer)
+// and the credential after it go together; Digest's parameters are
+// digestAuthRE's.
+var secretRE = lazyre.New(`(?i)([\w-]*(?:token|secret|passw(?:or)?d|api[_-]?key|apikey|access[_-]?key|private[_-]?key|authorization|credential)[\w-]*["']?\s*[=:]\s*|--(?:token|secret|password|passwd|api[_-]?key|auth|access[_-]?key)\s+|bearer\s+)(["']?)(?:(?:bearer|basic|token|negotiate|ntlm)\s+)?[^\s"']{4,}`)
 var tokenLikeRE = lazyre.New(`\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9_-]{16,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,})`)
 
 // urlPasswordRE finds the password in a URL's user part
 // (postgres://admin:pw@db/app).
+// digestAuthRE takes a Digest header's whole value (several quoted
+// parameters, one of them the response) to the end of the line or a closing
+// single quote.
+var digestAuthRE = lazyre.New(`(?i)(\bauthorization["']?\s*[=:]\s*["']?digest\s+)[^\n']+`)
+
+// schemeAuthRE takes a scheme word and the credential after it in an
+// Authorization value (ApiKey, AWS4-HMAC-SHA256, one not invented yet), so a
+// scheme secretRE does not list leaves no credential behind.
+var schemeAuthRE = lazyre.New(`(?i)(\bauthorization["']?\s*[=:]\s*["']?)[\w-]+\s+[^\s"']{4,}`)
+
+// pemKeyRE blanks a PEM private key's body between its BEGIN and END lines
+// (RSA, EC, OPENSSH, ENCRYPTED or plain), and to the end of the text when the
+// END line is missing (a key cut off by a limit). The body may hold real or
+// escaped newlines.
+var pemKeyRE = lazyre.New(`(-----BEGIN [A-Z ]*PRIVATE KEY-----)(?s:.*?)(-----END [A-Z ]*PRIVATE KEY-----|\z)`)
 var urlPasswordRE = lazyre.New(`(://[^\s/:@]+:)[^\s/@]+@`)
 
 // redact hides credentials in text that may leave the machine. Redact
 // before cutting, so a cut never leaves part of a token.
 func redact(s string) string {
+	s = pemKeyRE.ReplaceAllString(s, "${1}***${2}")
 	s = urlPasswordRE.ReplaceAllString(s, "${1}***@")
+	s = digestAuthRE.ReplaceAllString(s, "${1}***")
+	s = schemeAuthRE.ReplaceAllString(s, "${1}***")
 	s = secretRE.ReplaceAllString(s, "${1}${2}***")
 	return tokenLikeRE.ReplaceAllString(s, "***")
 }

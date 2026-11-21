@@ -17,6 +17,7 @@ func (s *Server) usageAnalyticsRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/usage/ingest", a(s.usageIngest))
 	mux.HandleFunc("POST /api/v1/usage/quota", a(s.usageQuota))
 	mux.HandleFunc("GET /api/v1/usage/overview", a(s.usageOverview))
+	mux.HandleFunc("GET /api/v1/usage/machines", a(s.usageMachinesList))
 	mux.HandleFunc("GET /api/v1/usage/ledger", a(s.usageLedger))
 	mux.HandleFunc("GET /api/v1/usage/trends", a(s.usageTrends))
 	mux.HandleFunc("GET /api/v1/usage/cli", a(s.usageCLI))
@@ -115,6 +116,10 @@ func (s *Server) usageCompare(w http.ResponseWriter, r *http.Request) (any, erro
 
 func (s *Server) usageSummary(w http.ResponseWriter, r *http.Request) (any, error) {
 	return s.svc.UsageSummary(r.Context(), actorFrom(r))
+}
+
+func (s *Server) usageMachinesList(w http.ResponseWriter, r *http.Request) (any, error) {
+	return s.svc.UsageMachines(r.Context(), actorFrom(r), r.URL.Query().Get("user"))
 }
 
 func (s *Server) usageBreakdown(w http.ResponseWriter, r *http.Request) (any, error) {
