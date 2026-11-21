@@ -1432,16 +1432,34 @@ func (s *Service) stepUpdate(ctx context.Context, id int64, state, reason, detai
 }
 
 // tellOnce notifies the person about a step's reason the first time it holds
-// the step up, not again for the same reason.
+// the step up, not again for that reason however the reasons alternate. The
+// reasons told are the step's notified (joined by notifiedSep); the mark and
+// the notice are one write.
 func (s *Service) tellOnce(ctx context.Context, st *stepRow, reason, title, body string) {
-	if st.notified == reason {
-		return
+	err := s.write(ctx, SystemActor(), func(t *tx) error {
+		var told string
+		if err := t.QueryRowContext(ctx, `SELECT notified FROM autopilot_steps WHERE id = ?`, st.id).Scan(&told); err != nil {
+			return err
+		}
+		if slices.Contains(strings.Split(told, notifiedSep), reason) {
+			return nil
+		}
+		if told != "" {
+			told += notifiedSep
+		}
+		if _, err := t.ExecContext(ctx, `UPDATE autopilot_steps SET notified = ? WHERE id = ?`, told+reason, st.id); err != nil {
+			return err
+		}
+		_, err := t.storeNotice(ctx, st.userID, NotifyAutopilot, title, body, "/agents?tab=autopilot")
+		return err
+	})
+	if err != nil {
+		s.log.WarnContext(ctx, "autopilot: tell the person once", "step", st.id, "reason", reason, "err", err)
 	}
-	if _, err := s.db.W.ExecContext(ctx, `UPDATE autopilot_steps SET notified = ? WHERE id = ?`, reason, st.id); err != nil {
-		return
-	}
-	s.notifyURL(ctx, st.userID, nil, NotifyAutopilot, title, body, "/agents?tab=autopilot")
 }
+
+// notifiedSep separates the reasons in a step's notified.
+const notifiedSep = "\x1f"
 
 // NotifyAutopilot is the notification kind of autopilot news.
 const NotifyAutopilot = "autopilot"
