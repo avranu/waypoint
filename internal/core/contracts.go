@@ -267,7 +267,8 @@ type AuditHelpers struct {
 	// Prior are done panel runs of this round's audit, from an attempt
 	// that failed, with the range each read (Row: its record). The runner
 	// takes a run whose range is its own as it is and runs the other
-	// checks (review_helpers.go's priorPanel). Never kept on the audit.
+	// checks. Set when a runner claims the job (runners.go's
+	// withPriorPanel, WP-1481), never in the stored input or on the audit.
 	Prior []AuditHelperRun `json:"prior,omitempty"`
 }
 

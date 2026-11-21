@@ -234,10 +234,11 @@ func (s *Service) helpersRanInRun(ctx context.Context, review *roundRow) (bool, 
 	return n == len(once), err
 }
 
-// priorPanel is the round's panel runs a new job for an audit of the round
-// can take as they are (WP-1320): the done runs of the round's reviewer
-// audits (a requeue of this one, the next model of its chain, the other
-// reviewer: request keys review-round:N, :sonnet, :other) from attempts
+// priorPanel is the round's panel runs a job for an audit of the round can
+// take as they are (WP-1320), read when a runner claims the job
+// (withPriorPanel, WP-1481): the done runs of the round's reviewer audits
+// (a requeue of this one, the next model of its chain, the other reviewer:
+// request keys review-round:N, :sonnet, :other) from attempts
 // whose reviewer didn't answer, so none was joined to a finding, with the
 // range each read. The newest of each check and range. A round's other
 // kinds of audit, and an audit that isn't a round's, get none.

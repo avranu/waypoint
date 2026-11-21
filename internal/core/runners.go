@@ -891,6 +891,8 @@ func (s *Service) claimRunnerJob(ctx context.Context, actor *Actor, r *Runner, l
 	}
 	signer := s.sandboxSigner(ctx, r)
 	var claim *RunnerClaim
+	var claimSource string
+	var claimSID int64
 	err = s.write(ctx, actor, func(t *tx) error {
 		for _, id := range ids {
 			var c RunnerClaim
@@ -936,13 +938,56 @@ func (s *Service) claimRunnerJob(ctx context.Context, actor *Actor, r *Runner, l
 			if c.Kind == JobSandboxDrill && source == sandboxDrillSource {
 				c.Sessions = s.drillSessions(ctx, t, signer, r, &c, sid)
 			}
-			claim = &c
+			claim, claimSource, claimSID = &c, source, sid
 			t.emit(jobUpdated(&c, "running", r.ID, r.Owner.ID, 0))
 			return nil
 		}
 		return nil
 	})
+	if err == nil && claim != nil && claim.Kind == JobAudit && claimSource == auditSource {
+		claim.Input = s.withPriorPanel(ctx, claim.Input, claimSID)
+	}
 	return claim, err
+}
+
+// withPriorPanel returns an audit job's input with the round's earlier
+// panel runs set (priorPanel), read now, when a runner takes the job: a job
+// that waited in the queue takes what finished meanwhile (WP-1481). Every
+// field of the input is kept, those this version doesn't know too; the
+// input is returned as it is when it has no panel, nothing finished, or it
+// can't be read.
+func (s *Service) withPriorPanel(ctx context.Context, input json.RawMessage, auditID int64) json.RawMessage {
+	var in map[string]json.RawMessage
+	if json.Unmarshal(input, &in) != nil {
+		return input
+	}
+	var h map[string]json.RawMessage
+	if json.Unmarshal(in["helpers"], &h) != nil || h == nil {
+		return input
+	}
+	var panel []json.RawMessage
+	if json.Unmarshal(h["panel"], &panel) != nil || len(panel) == 0 {
+		return input
+	}
+	prior := s.priorPanel(ctx, auditID)
+	if len(prior) == 0 {
+		return input
+	}
+	pb, err := json.Marshal(prior)
+	if err != nil {
+		return input
+	}
+	h["prior"] = pb
+	hb, err := json.Marshal(h)
+	if err != nil {
+		return input
+	}
+	in["helpers"] = hb
+	out, err := json.Marshal(in)
+	if err != nil {
+		return input
+	}
+	return out
 }
 
 func jobUpdated(c *RunnerClaim, state string, runner, owner, size int64) *Event {
