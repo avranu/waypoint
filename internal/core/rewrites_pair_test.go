@@ -300,3 +300,27 @@ func TestInsertRelationIsIdempotent(t *testing.T) {
 		t.Error("an issue related to itself")
 	}
 }
+
+// A dismissal made after RewrittenWork read, from either task's side, is
+// read again in the write: the pair is left out and nothing is recorded.
+func TestRecordRewritesRechecksTheDismissalInTheWrite(t *testing.T) {
+	f := newRewriteFixture(t)
+	read, err := f.s.RewrittenWork(f.ctx, f.admin, f.b.Key, "o/r", f.prs)
+	if err != nil || len(read) != 1 {
+		t.Fatalf("read %+v, %v", read, err)
+	}
+	lo, hi := f.a.ID, f.b.ID
+	if lo > hi {
+		lo, hi = hi, lo
+	}
+	if _, err := f.s.db.W.ExecContext(f.ctx, `INSERT INTO rewrite_dismissals(low_id, high_id, created_at) VALUES (?,?,1)`, lo, hi); err != nil {
+		t.Fatal(err)
+	}
+	got, err := f.s.recordRewrites(f.ctx, f.admin, f.get(f.admin, f.b.Key), "o/r", "abc1234", read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 || f.relationRows(t) != 0 || f.evidenceRows(t) != 0 {
+		t.Errorf("recorded %+v, %d relations, %d evidence rows for a dismissed pair", got, f.relationRows(t), f.evidenceRows(t))
+	}
+}
