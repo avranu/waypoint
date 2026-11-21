@@ -202,7 +202,13 @@ func (s *Service) recordMentions(ctx context.Context, t *tx, src mentionSource) 
 		} else {
 			var chain []int64
 			if src.project != nil {
-				chain, _ = s.projectChainIDs(ctx, t, *src.project)
+				var rerr error
+				chain, rerr = s.projectChainIDs(ctx, t, *src.project)
+				if rerr != nil {
+					if readFault(rerr) {
+						s.log.WarnContext(ctx, "project chain ids failed", "err", rerr)
+					}
+				}
 			}
 			for _, h := range idx.find(unscannedRE.ReplaceAllString(src.text, " "), chain, s.senseGate(idx)) {
 				// A definition saying which words to avoid isn't using them.
@@ -240,7 +246,13 @@ func (s *Service) itemExists(ctx context.Context, q queryer, typ string, id int6
 	var n int
 	// #nosec G202 -- the table name comes from knowledgeTables
 	err := q.QueryRowContext(ctx, `SELECT count(*) FROM `+knowledgeTables[typ]+` WHERE id = ?`, id).Scan(&n)
-	return err == nil && n > 0
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read item exists", "id", id, "err", err)
+		}
+		return false
+	}
+	return n > 0
 }
 
 // recordPRMentions records the page codes a pull request's title and

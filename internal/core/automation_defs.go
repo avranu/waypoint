@@ -35,6 +35,7 @@ func matchGlob(glob, v string) bool {
 		return true
 	}
 	gs, err := newGlobSet([]string{glob})
+	//wplint:ignore blankerr newGlobSet only parses the pattern: a malformed one is an answer (it matches nothing), not a failed read
 	return err == nil && gs.match(v)
 }
 
@@ -354,7 +355,7 @@ func init() {
 
 	// ---- system (admin automations) ----
 	registerTrigger(TriggerDef{Name: "system_resources", Label: "Disk, database or memory low", Group: "System", Phrase: "a system resource ({resource}) runs low", Event: EvSystemResources, Admin: true,
-		Params: []ParamDef{{Name: "resource", Label: "Resource", Type: PSelect, Options: opts("", "Any", "disk", "Disk space", "database", "Database size", "memory", "Memory")}},
+		Params: []ParamDef{{Name: "resource", Label: "Resource", Type: PSelect, Options: opts("", "Any", "disk", "Disk space", "database", "Database size", "memory", "Memory", "transcripts", "Transcript archive")}},
 		Match: func(tr Trigger, e *Event) bool {
 			r := tr.str("resource")
 			return r == "" || dataStr(e, "resource") == r

@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 	"time"
@@ -392,7 +393,13 @@ func (s *Service) pruneCI(ctx context.Context) {
 // empty when the payload doesn't say which: every pending head of the repo
 // is read).
 func (s *Service) onForgeCI(ctx context.Context, f *Forge, repo, sha string) {
-	if s.attachedProject(ctx, s.db.R, f.ID, repo) == 0 {
+	switch id, err := s.attachedProject(ctx, s.db.R, f.ID, repo); {
+	case err != nil:
+		// Not "attached to nothing": the checks are read all the same.
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read the project of a repo whose checks changed", "repo", repo, "err", err)
+		}
+	case id == 0:
 		return
 	}
 	if sha != "" {
@@ -427,6 +434,14 @@ func (s *Service) onForgeCI(ctx context.Context, f *Forge, repo, sha string) {
 	}
 }
 
+// refreshHeadLogged is refreshHead for the background: a forge that has no
+// such commit or repo (404) is the documented "no", the rest is a warning.
+func (s *Service) refreshHeadLogged(ctx context.Context, f *Forge, repo, sha string) {
+	if err := s.refreshHead(ctx, f, repo, sha); readFault(err) && !isStatus(err, http.StatusNotFound) {
+		s.log.WarnContext(ctx, "read the checks of a head", "repo", repo, "sha", short(sha), "err", err)
+	}
+}
+
 // afterPRRecorded does what a pull request's new state calls for: follow
 // its head's CI, re-evaluate the review gate, and merge it if it is armed
 // and ready. Quiet for repos that use none of it.
@@ -437,13 +452,22 @@ func (s *Service) afterPRRecorded(ctx context.Context, f *Forge, pr *PullRequest
 	bg := context.WithoutCancel(ctx)
 	if _, ok := s.Forges.(ForgeChecks); ok && pr.HeadSHA != "" && f.token != "" {
 		if _, err := s.trackHead(ctx, f.ID, pr.Repo, pr.HeadSHA); err == nil {
-			s.goBG(func() { _ = s.refreshHead(bg, f, pr.Repo, pr.HeadSHA) })
+			s.goBG(func() {
+				s.refreshHeadLogged(bg, f, pr.Repo, pr.HeadSHA)
+			})
 		}
 	}
 	if pr.Outside {
 		return // nothing acts on it before a person approves it (WP-281)
 	}
-	if on, _ := s.gateConfig(ctx, pr.ForgeID, pr.Repo); on || pr.GateState != "" {
+	on, _, gerr := s.gateConfigErr(ctx, pr.ForgeID, pr.Repo)
+	if gerr != nil {
+		// Not "gate off": evaluating it reports the same failure and posts nothing.
+		if readFault(gerr) {
+			s.log.WarnContext(ctx, "read a repo's review gate setting", "repo", pr.Repo, "number", pr.Number, "err", gerr)
+		}
+	}
+	if on || gerr != nil || pr.GateState != "" {
 		s.goBG(func() { s.checkPR(bg, pr.ID, "pull request updated") })
 	}
 	// Merge automatically (WP-133) arms, or takes its own arming off, as

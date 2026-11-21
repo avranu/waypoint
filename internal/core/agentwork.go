@@ -169,7 +169,11 @@ func (s *Service) AgentNext(ctx context.Context, actor *Actor, q AgentQuery) (*A
 		// Shipped: its pull request is open or merged, or it moved on to In
 		// Review, so the agent's part is done and asking again shouldn't hand
 		// it back (WP-246, WP-267).
-		if s.outOnPR(ctx, s.db.R, i) != nil || s.handedOn(ctx, s.db.R, i) {
+		handed, err := s.handedOn(ctx, s.db.R, i)
+		if err != nil {
+			return nil, err // can't tell if it moved on: keep the claim, ask again (WP-1406)
+		}
+		if s.outOnPR(ctx, s.db.R, i) != nil || handed {
 			if !q.Peek {
 				if err := s.dropClaim(ctx, actor, i.ID, id, "done"); err != nil {
 					return nil, err
@@ -226,7 +230,12 @@ func (s *Service) AgentNext(ctx context.Context, actor *Actor, q AgentQuery) (*A
 		if resumeHere[i.ID] {
 			why = "Resumes the work its session left in this checkout"
 		} else if i.AgentOrder != nil {
-			by, _ := s.pinners(ctx, []int64{i.ID})
+			by, rerr := s.pinners(ctx, []int64{i.ID})
+			if rerr != nil {
+				if readFault(rerr) {
+					s.log.WarnContext(ctx, "pinners failed", "err", rerr)
+				}
+			}
 			why = whyQueued(i, n+1, by[i.ID], today, qi.planned, qi.unblocks)
 		} else {
 			why = whyQueued(i, 0, nil, today, qi.planned, qi.unblocks)
@@ -358,8 +367,13 @@ func (s *Service) takeUnder(ctx context.Context, actor *Actor, epic *Issue, id s
 // safety screen.
 func (s *Service) agentCanTake(ctx context.Context, i *Issue, id string, now int64) bool {
 	if i.Closed() || i.Status.Category == CatBacklog || i.Hold.on(s.now()) || s.inReleaseWait(ctx, i.ID) || s.isBlocked(ctx, i.ID) || s.agentsPausedIn(ctx, i.ProjectID) ||
-		s.hasOpenAgentChildren(ctx, i) ||
-		s.outOnPR(ctx, s.db.R, i) != nil || s.handedOn(ctx, s.db.R, i) || s.fanoutOf(ctx, i.ID) != 0 || !s.agentEligible(ctx, i, id, now) {
+		s.hasOpenAgentChildren(ctx, i) || s.outOnPR(ctx, s.db.R, i) != nil {
+		return false
+	}
+	if handed, err := s.handedOn(ctx, s.db.R, i); handed || err != nil {
+		return false // moved on, or can't tell: not handed out (WP-1406)
+	}
+	if s.fanoutOf(ctx, i.ID) != 0 || !s.agentEligible(ctx, i, id, now) {
 		return false
 	}
 	d, _ := s.safetyWait(ctx, s.db.R, i)
@@ -370,7 +384,13 @@ func (s *Service) agentCanTake(ctx context.Context, i *Issue, id string, now int
 func (s *Service) agentsPausedIn(ctx context.Context, projectID int64) bool {
 	var paused bool
 	err := s.db.R.QueryRowContext(ctx, `SELECT coalesce(json_extract(settings, '$.agents_paused'), 0) = 1 FROM projects WHERE id = ?`, projectID).Scan(&paused)
-	return err != nil || paused // unsure means paused
+	if err != nil {
+		if readFault(err) && !errors.Is(err, sql.ErrNoRows) {
+			s.log.WarnContext(ctx, "read agents paused in", "projectID", projectID, "err", err)
+		}
+		return true
+	}
+	return paused
 }
 
 // hasOpenAgentChildren: sub-issues handed to agents are still open, so they
@@ -380,7 +400,13 @@ func (s *Service) hasOpenAgentChildren(ctx context.Context, i *Issue) bool {
 		return false
 	}
 	n, err := s.openAgentChildren(ctx, []*Issue{i})
-	return err != nil || n[i.ID] > 0 // unsure means they are
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read has open agent children", "issue", i.ID, "err", err)
+		}
+		return true
+	}
+	return n[i.ID] > 0
 }
 
 // isBlocked: an open issue blocks this one.
@@ -388,7 +414,13 @@ func (s *Service) isBlocked(ctx context.Context, issueID int64) bool {
 	var blocked bool
 	err := s.db.R.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM issue_relations r JOIN issues b ON b.id = r.source_id
 		JOIN statuses st ON st.id = b.status_id WHERE r.target_id = ? AND r.kind = 'blocks' AND st.category NOT IN ('done','canceled'))`, issueID).Scan(&blocked)
-	return err != nil || blocked // unsure means blocked
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read is blocked", "issueID", issueID, "err", err)
+		}
+		return true
+	}
+	return blocked
 }
 
 // outOnPR is the pull request a started issue is out on: an open, draft or
@@ -453,9 +485,19 @@ func (s *Service) outOnPRs(ctx context.Context, q queryer, issues []*Issue) (map
 // for a person like one out on a pull request, even with no open or merged
 // one linked: its pull request closed after the commits merged through
 // another, or the work went in without one (WP-267).
-func (s *Service) handedOn(ctx context.Context, q queryer, i *Issue) bool {
+//
+// A positions read that fails is an error, not an answer either way: the
+// caller neither drops a claim as done nor treats the issue as stranded
+// (WP-1406). The Warn is here, once.
+func (s *Service) handedOn(ctx context.Context, q queryer, i *Issue) (bool, error) {
 	working, err := s.workingPositions(ctx, q)
-	return err == nil && pastWorking(i, working)
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read handed on", "issue", i.ID, "err", err)
+		}
+		return false, err
+	}
+	return pastWorking(i, working), nil
 }
 
 // workingPositions is the position of each project's working status: the

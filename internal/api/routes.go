@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1677,7 +1678,12 @@ func (s *Server) getIssue(w http.ResponseWriter, r *http.Request) (any, error) {
 		return nil, err
 	}
 	if r.URL.Query().Get("format") == "text" {
-		comments, _ := s.svc.ListComments(r.Context(), actorFrom(r), d.Key)
+		comments, rerr := s.svc.ListComments(r.Context(), actorFrom(r), d.Key)
+		if rerr != nil {
+			if !errors.Is(rerr, context.Canceled) {
+				s.log.WarnContext(r.Context(), "list comments failed", "key", d.Key, "err", rerr)
+			}
+		}
 		return rawResponse{"text/plain; charset=utf-8", []byte(issueTextHint(d, comments, true))}, nil
 	}
 	return d, nil

@@ -534,13 +534,25 @@ func (s *Service) isDraft(ctx context.Context, q queryer, id int64) bool {
 	if errors.Is(err, sql.ErrNoRows) {
 		return false // nothing there to hide
 	}
-	return err != nil || d
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read is draft", "id", id, "err", err)
+		}
+		return true
+	}
+	return d
 }
 
 // canSee reports whether the actor can open the issue.
 func (s *Service) canSee(ctx context.Context, q queryer, actor *Actor, id, projectID int64) bool {
 	r, err := s.issueRole(ctx, q, actor, &Issue{ID: id, ProjectID: projectID})
-	return err == nil && r > RoleNone
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read can see", "projectID", projectID, "err", err)
+		}
+		return false
+	}
+	return r > RoleNone
 }
 
 // hideParents drops parent references a guest can't open: a share covers
@@ -979,7 +991,13 @@ func (s *Service) CreateIssue(ctx context.Context, actor *Actor, in IssueInput) 
 			if actor.scope != nil { // a job token's reach is its project's; the owner's shares don't extend it
 				return ErrForbidden
 			}
-			if r, _ := s.shareRole(ctx, t, actor.id(), parent.ID); r < RoleEditor {
+			r, rerr := s.shareRole(ctx, t, actor.id(), parent.ID)
+			if rerr != nil {
+				if readFault(rerr) {
+					s.log.WarnContext(ctx, "share role failed", "parent", parent.ID, "err", rerr)
+				}
+			}
+			if r < RoleEditor {
 				return ErrForbidden
 			}
 		}
@@ -1838,7 +1856,13 @@ func (s *Service) applyPatch(ctx context.Context, t *tx, actor *Actor, i *Issue,
 			if par.ProjectID != i.ProjectID {
 				return invalid("a parent must be in the same project; move the issue first")
 			}
-			if r, _ := s.issueRole(ctx, t, actor, par); r < RoleViewer {
+			r, rerr := s.issueRole(ctx, t, actor, par)
+			if rerr != nil {
+				if readFault(rerr) {
+					s.log.WarnContext(ctx, "issue role failed", "issue", i.ID, "err", rerr)
+				}
+			}
+			if r < RoleViewer {
 				return notFound("issue " + *p.Parent.Value)
 			}
 			// No cycles: the new parent must not be this issue or beneath it.

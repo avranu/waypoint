@@ -333,7 +333,11 @@ func (s *Service) startRound(ctx context.Context, t *tx, id int64, at int64) (bo
 	}
 	s.emitWorkLog(ctx, t, r.issueID, id, RoundRunning)
 	if r.sessionID.Valid {
-		_ = s.sessionTimeline(ctx, t, r.sessionID.Int64, at, "autopilot", "", 0, "review", "", "Autopilot asked for an adversarial review of "+r.key, sql.NullInt64{}, map[string]any{"round": id})
+		if err := s.sessionTimeline(ctx, t, r.sessionID.Int64, at, "autopilot", "", 0, "review", "", "Autopilot asked for an adversarial review of "+r.key, sql.NullInt64{}, map[string]any{"round": id}); err != nil {
+			if readFault(err) {
+				s.log.WarnContext(ctx, "session timeline failed", "sessionid", r.sessionID.Int64, "err", err)
+			}
+		}
 	}
 	return true, nil
 }
@@ -406,7 +410,11 @@ func (s *Service) roundAtStop(ctx context.Context, t *tx, x *AgentSession, issue
 	}
 	key := ""
 	_ = t.QueryRowContext(ctx, `SELECT p.key || '-' || i.number FROM issues i JOIN projects p ON p.id = i.project_id WHERE i.id = ?`, issueID).Scan(&key)
-	_ = s.sessionTimeline(ctx, t, x.ID, at, "autopilot", "", 0, "reviewed", "", "Finished the adversarial review of "+key, x.projectID, map[string]any{"round": r.id})
+	if err := s.sessionTimeline(ctx, t, x.ID, at, "autopilot", "", 0, "reviewed", "", "Finished the adversarial review of "+key, x.projectID, map[string]any{"round": r.id}); err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "session timeline failed", "x", x.ID, "projectid", x.projectID, "err", err)
+		}
+	}
 	return true, nil
 }
 
@@ -452,18 +460,24 @@ func (s *Service) endStepRound(ctx context.Context, t *tx, roundID int64, why st
 // (WP-1320), so it doesn't count.
 const reviewInterruptsMax = 3
 
-// roundReplaced is why a running round the agent replaced with a new one
-// (wp ship --review --force) ended interrupted. The review went on in the
-// new round, so it doesn't count towards reviewInterruptsMax.
-const roundReplaced = "replaced by another review the agent asked for"
+// roundReplaced is why a pending or running round the agent replaced with a
+// new one (wp ship --review --force) ended interrupted, and roundRestarted
+// why a pending round started over because the ship's head is newer than the
+// one its audit reads (roundBehind). The review went on in the new round, so
+// neither counts towards reviewInterruptsMax, and neither is opened as a
+// round that never ran (openStrandedRounds) (WP-1325).
+const (
+	roundReplaced  = "replaced by another review the agent asked for"
+	roundRestarted = "more was committed since its review was asked for"
+)
 
 // askAgainAfterInterrupt: the task's review, interrupted in the session
 // before it reported, is to be asked for again (fewer than
 // reviewInterruptsMax of the session's rounds of the task were).
 func askAgainAfterInterrupt(ctx context.Context, q queryer, sessionID, issueID int64) (bool, error) {
 	var n int
-	err := q.QueryRowContext(ctx, `SELECT count(*) FROM work_log WHERE kind = 'review' AND session_id = ? AND issue_id = ? AND state = 'interrupted' AND coalesce(reason, '') != ?`,
-		sessionID, issueID, roundReplaced).Scan(&n)
+	err := q.QueryRowContext(ctx, `SELECT count(*) FROM work_log WHERE kind = 'review' AND session_id = ? AND issue_id = ? AND state = 'interrupted' AND coalesce(reason, '') NOT IN (?, ?)`,
+		sessionID, issueID, roundReplaced, roundRestarted).Scan(&n)
 	return n < reviewInterruptsMax, err
 }
 
@@ -475,10 +489,16 @@ func (s *Service) sweepRounds(ctx context.Context) {
 	now := s.nowMS()
 	rows, err := s.db.R.QueryContext(ctx, `SELECT w.id, w.state, coalesce(x.ended_at, 0), coalesce(w.started_at, w.created_at),
 		EXISTS (SELECT 1 FROM autopilot_steps st WHERE st.review_id = w.id AND st.state IN ('due', 'waiting', 'starting'))
-		OR (w.before_pr != '' AND x.ended_at IS NULL AND EXISTS (SELECT 1 FROM agent_runs r WHERE r.id = w.run_id AND r.ended_at IS NULL))
+		OR (w.before_pr != '' AND x.ended_at IS NULL AND EXISTS (SELECT 1 FROM agent_runs r WHERE r.id = w.run_id AND r.ended_at IS NULL)
+			AND NOT EXISTS (SELECT 1 FROM agent_runs o WHERE o.session_id = w.session_id AND o.id > w.run_id AND o.issue_id != w.issue_id AND o.started_at < ?))
 		FROM work_log w LEFT JOIN agent_sessions x ON x.id = w.session_id
-		WHERE w.kind = 'review' AND w.state IN ('pending', 'running') LIMIT 200`)
+		WHERE w.kind = 'review' AND w.state IN ('pending', 'running') LIMIT 200`, now-heldStopLost.Milliseconds())
 	if err != nil {
+		// The rounds below don't depend on this read: they still run.
+		s.log.WarnContext(ctx, "review round: reading the rounds to end", "err", err)
+		s.openStrandedRounds(ctx)
+		s.cancelOrphanReviewAudits(ctx)
+		s.handOverRoundAudits(ctx)
 		return
 	}
 	type end struct {
@@ -508,6 +528,7 @@ func (s *Service) sweepRounds(ctx context.Context) {
 	for _, e := range ends {
 		s.setRoundNow(ctx, e.id, []string{e.from}, e.to, e.why)
 	}
+	s.openStrandedRounds(ctx)
 	s.cancelOrphanReviewAudits(ctx)
 	s.handOverRoundAudits(ctx)
 }
@@ -525,8 +546,8 @@ func reviewStarted(ctx context.Context, q queryer, sessionID, issueID int64) boo
 // reviewHold: a round on one of the pull request's tasks still to run, or
 // running, holds its merge, so the fixes it pushes go in with it; only for
 // so long (reviewHoldPending, reviewHoldRunning). until is when the hold
-// lapses by itself.
-func (s *Service) reviewHold(ctx context.Context, pr *PullRequest) (reason string, until *time.Time) {
+// lapses by itself. A failed read is an error, not "no round holds it".
+func (s *Service) reviewHold(ctx context.Context, pr *PullRequest) (reason string, until *time.Time, err error) {
 	rows, err := s.db.R.QueryContext(ctx, `SELECT w.state, w.created_at, coalesce(w.started_at, 0), coalesce(w.audit_at, 0), p.key || '-' || i.number,
 			coalesce(a.status = 'queued' OR (a.status = 'running' AND j.state = 'queued'), 0), coalesce(j.started_at, 0), coalesce(a.finished_at, 0) FROM work_log w
 		JOIN issues i ON i.id = w.issue_id JOIN projects p ON p.id = i.project_id
@@ -535,7 +556,7 @@ func (s *Service) reviewHold(ctx context.Context, pr *PullRequest) (reason strin
 		AND EXISTS (SELECT 1 FROM external_links el WHERE el.issue_id = w.issue_id AND el.kind = 'pull' AND (el.url = ? OR (el.repo = ? COLLATE NOCASE AND el.number = ?)))`,
 		pr.URL, pr.Repo, pr.Number)
 	if err != nil {
-		return "", nil
+		return "", nil, err
 	}
 	defer rows.Close()
 	now := s.nowMS()
@@ -545,8 +566,8 @@ func (s *Service) reviewHold(ctx context.Context, pr *PullRequest) (reason strin
 		var state, key string
 		var created, started, auditAt, auditStarted, auditEnded int64
 		var auditQueued bool
-		if rows.Scan(&state, &created, &started, &auditAt, &key, &auditQueued, &auditStarted, &auditEnded) != nil {
-			continue
+		if err := rows.Scan(&state, &created, &started, &auditAt, &key, &auditQueued, &auditStarted, &auditEnded); err != nil {
+			return "", nil, err
 		}
 		end := created + reviewHoldPending.Milliseconds()
 		if auditAt > 0 {
@@ -577,11 +598,14 @@ func (s *Service) reviewHold(ctx context.Context, pr *PullRequest) (reason strin
 		}
 		last = max(last, end)
 	}
+	if err := rows.Err(); err != nil {
+		return "", nil, err
+	}
 	if len(keys) == 0 {
-		return "", nil
+		return "", nil, nil
 	}
 	t := msTime(last)
-	return "an adversarial review of " + strings.Join(keys, ", ") + " is still working on it", &t
+	return "an adversarial review of " + strings.Join(keys, ", ") + " is still working on it", &t, nil
 }
 
 // onWorkLogEvent: a round that ended no longer holds its task's pull

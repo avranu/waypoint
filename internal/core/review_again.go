@@ -761,8 +761,10 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 	if err != nil {
 		return "", "", err
 	}
-	held = fmt.Sprintf("Pushed %s; no pull request yet. %s, so adversarial review round %d of %s comes first; it looks for what this one missed. End your turn now: it starts after it, and Waypoint gives you its findings here.",
-		head, upperFirst(why), index+1, g.key)
+	// The next round's reviewer starts now, as at the first ship (WP-1325).
+	underway := s.startRoundReview(ctx, g, d.next)
+	held = fmt.Sprintf("Pushed %s; no pull request yet. %s, so adversarial review round %d of %s comes first; it looks for what this one missed. End your turn now: %s",
+		head, upperFirst(why), index+1, g.key, reviewHandback(underway))
 	return held, "To open the pull request without it: `wp ship --skip-review \"WHY\"`.", nil
 }
 

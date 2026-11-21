@@ -253,7 +253,16 @@ func (s *Service) labelPRUrgent(ctx context.Context, actor *Actor, pr *PullReque
 		labels, detail = append(labels, CIUrgentLabel), "put the urgent CI lane on"
 	}
 	lb, _ := json.Marshal(labels)
-	projectID, _ := s.prAuthority(ctx, actor, pr, RoleViewer)
+	projectID, rerr := s.prAuthority(ctx, actor, pr, RoleViewer)
+	if rerr != nil {
+		// Not the access check (mayMerge, or the system, already decided that):
+		// this only finds the project to record the change under, and the label
+		// is already on the forge, so the record goes in unscoped. No project
+		// showing it is an answer; only a failed read is said.
+		if readFault(rerr) && !missingOrDenied(rerr) {
+			s.log.WarnContext(ctx, "pr authority failed", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "err", rerr)
+		}
+	}
 	return s.write(ctx, actor, func(t *tx) error {
 		if _, err := t.ExecContext(ctx, `UPDATE pull_requests SET labels = ? WHERE id = ?`, string(lb), pr.ID); err != nil {
 			return err

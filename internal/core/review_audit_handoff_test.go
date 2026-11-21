@@ -67,14 +67,14 @@ func TestRoundAuditOutlivesTheRound(t *testing.T) {
 		if going, ok := a.s.auditGoing(a.ctx, prID); !ok || going != audit {
 			t.Errorf("the handed audit doesn't hold the merge: %d %v", going, ok)
 		}
-		if why, _ := a.s.auditHolds(a.ctx, prID, audit); len(why) == 0 || !strings.Contains(why[0], "from an adversarial review") {
+		if why, _, _ := a.s.auditHolds(a.ctx, prID, audit); len(why) == 0 || !strings.Contains(why[0], "from an adversarial review") {
 			t.Errorf("hold = %q", why)
 		}
 		a.endAudit(box, "done", "Merge reads a nil map")
 		if len(a.jobs) != 0 {
 			t.Errorf("the skipped round was typed: %+v", a.jobs)
 		}
-		why, _ := a.s.auditHolds(a.ctx, prID, 0)
+		why, _, _ := a.s.auditHolds(a.ctx, prID, 0)
 		if len(why) == 0 || !strings.Contains(why[0], "audit #"+itoa64(audit)) {
 			t.Errorf("the findings don't hold the merge: %q", why)
 		}

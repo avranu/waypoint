@@ -241,7 +241,12 @@ func (s *Service) ListDesign(ctx context.Context, actor *Actor, q DesignQuery) (
 				return nil, err
 			}
 			s.fillDesignPeople(ctx, map[int64]*UserRef{}, n)
-			role, _ := s.scopeRole(ctx, s.db.R, actor, n.ProjectID)
+			role, rerr := s.scopeRole(ctx, s.db.R, actor, n.ProjectID)
+			if rerr != nil {
+				if readFault(rerr) {
+					s.log.WarnContext(ctx, "scope role failed", "projectid", n.ProjectID, "err", rerr)
+				}
+			}
 			designRights(n, actor, role)
 			return []*DesignNote{n}, nil
 		}
@@ -351,7 +356,13 @@ func (s *Service) ListDesign(ctx context.Context, actor *Actor, q DesignQuery) (
 		key := coalesceID(n.ProjectID)
 		r, ok := roles[key]
 		if !ok {
-			r, _ = s.scopeRole(ctx, s.db.R, actor, n.ProjectID)
+			var rerr error
+			r, rerr = s.scopeRole(ctx, s.db.R, actor, n.ProjectID)
+			if rerr != nil {
+				if readFault(rerr) {
+					s.log.WarnContext(ctx, "scope role failed", "projectid", n.ProjectID, "err", rerr)
+				}
+			}
 			roles[key] = r
 		}
 		designRights(n, actor, r)

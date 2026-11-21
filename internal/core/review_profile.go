@@ -228,7 +228,7 @@ func (s *Service) ReviewModelOptions(ctx context.Context, a *Actor) (*ReviewMode
 		},
 		Gateway: []ReviewModelOption{}, Runners: []ReviewModelOption{}}
 	if _, _, why := s.gatewayTasksLLM(ctx); why == "" {
-		out.Gateway = append(out.Gateway, ReviewModelOption{Value: GatewayCLI + "/" + gatewayAuditModel, Label: "Gateway: its audit purpose", Note: "the gateway picks by measured precision, without the stakes bar"})
+		out.Gateway = append(out.Gateway, ReviewModelOption{Value: GatewayCLI + "/" + gatewayAuditModel, Label: "Gateway: its audit purpose", Note: "the gateway picks by measured precision, held to the review minimum (a stakes bar replaces it when the change warrants one)"})
 		if id := s.gatewayID(ctx); id != 0 {
 			if p, err := s.aiProvider(ctx, id); err == nil {
 				if ms, err := s.providerModels(ctx, p); err == nil {
