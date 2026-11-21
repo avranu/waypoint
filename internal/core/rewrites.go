@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -105,15 +106,13 @@ func (s *Service) RewrittenWork(ctx context.Context, actor *Actor, ref, repo str
 		}
 	}
 	// A pair whose inferred relation someone removed or replaced stays
-	// unrelated (rewrite_evidence.dismissed).
-	if rows, err := s.db.R.QueryContext(ctx, `SELECT other_id FROM rewrite_evidence WHERE issue_id = ? AND dismissed = 1`, d.ID); err == nil {
-		for rows.Next() {
-			var id int64
-			if rows.Scan(&id) == nil {
-				skip[id] = true
-			}
-		}
-		_ = rows.Close()
+	// unrelated, whichever of the two ships (rewrite_dismissals).
+	dismissed, err := s.rewriteDismissed(ctx, s.db.R, d.ID)
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range dismissed {
+		skip[id] = true
 	}
 	if d.Parent != nil {
 		skip[d.Parent.ID] = true
@@ -246,12 +245,11 @@ func (s *Service) recordRewrites(ctx context.Context, actor *Actor, d *IssueDeta
 			if err != nil {
 				return err
 			}
-			var dismissed bool
-			err = t.QueryRowContext(ctx, `SELECT dismissed FROM rewrite_evidence WHERE issue_id = ? AND other_id = ?`, d.ID, id).Scan(&dismissed)
-			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			gone, err := s.rewriteDismissed(ctx, t, d.ID)
+			if err != nil {
 				return err
 			}
-			if dismissed {
+			if slices.Contains(gone, id) {
 				continue
 			}
 			o, err := s.issueByID(ctx, t, id, false)
@@ -276,7 +274,7 @@ func (s *Service) recordRewrites(ctx context.Context, actor *Actor, d *IssueDeta
 			}
 			keep[id] = true
 		}
-		rows, err := t.QueryContext(ctx, `SELECT other_id FROM rewrite_evidence WHERE issue_id = ? AND dismissed = 0`, d.ID)
+		rows, err := t.QueryContext(ctx, `SELECT other_id FROM rewrite_evidence WHERE issue_id = ?`, d.ID)
 		if err != nil {
 			return err
 		}
@@ -338,12 +336,33 @@ func (s *Service) recordRewrites(ctx context.Context, actor *Actor, d *IssueDeta
 
 // dismissRewrite remembers that the relation id, about to go, was the one
 // Waypoint inferred from a rewrite and that someone removed or replaced it,
-// so the next ship doesn't make it again (WP-1370).
+// so the next ship, of either task, doesn't make it again (WP-1370). The
+// pair is read from the relation itself, so it is kept whether or not
+// evidence for it is still held.
 func dismissRewrite(ctx context.Context, t *tx, relationID int64) error {
-	_, err := t.ExecContext(ctx, `UPDATE rewrite_evidence SET dismissed = 1 WHERE EXISTS (SELECT 1 FROM issue_relations r WHERE r.id = ? AND r.found = ?
-		AND ((r.source_id = rewrite_evidence.issue_id AND r.target_id = rewrite_evidence.other_id) OR (r.source_id = rewrite_evidence.other_id AND r.target_id = rewrite_evidence.issue_id)))`,
-		relationID, rewriteFound)
+	_, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO rewrite_dismissals(low_id, high_id, created_at)
+		SELECT min(source_id, target_id), max(source_id, target_id), ? FROM issue_relations WHERE id = ? AND found = ? AND source_id != target_id`,
+		t.s.nowMS(), relationID, rewriteFound)
 	return err
+}
+
+// rewriteDismissed are the tasks whose pair with id has been dismissed
+// (rewrite_dismissals is keyed on the unordered pair).
+func (s *Service) rewriteDismissed(ctx context.Context, q queryer, id int64) ([]int64, error) {
+	rows, err := q.QueryContext(ctx, `SELECT CASE low_id WHEN ? THEN high_id ELSE low_id END FROM rewrite_dismissals WHERE low_id = ? OR high_id = ?`, id, id, id)
+	if err != nil {
+		return nil, err
+	}
+	var out []int64
+	for rows.Next() {
+		var o int64
+		if err := rows.Scan(&o); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		out = append(out, o)
+	}
+	return out, errors.Join(rows.Err(), rows.Close())
 }
 
 // rewriteLeads are the leads the round's check of earlier work undone is
