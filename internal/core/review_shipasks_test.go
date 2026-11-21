@@ -31,3 +31,38 @@ func TestShipAsksDecideRound(t *testing.T) {
 		}
 	}
 }
+
+// The session's plain ship of a pending round whose audit it read asks
+// decideRound too (WP-1370; shipAudited): its report only for a pending
+// round with a finished, read audit nothing is left to decide in; a tell
+// while findings are left; nothing otherwise.
+func TestShipAuditedDecideRound(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		in   roundIn
+		do   int
+	}{
+		{"done audit, all decided", roundIn{State: RoundPending, Audit: AuditDone}, doReport},
+		{"done audit, findings left", roundIn{State: RoundPending, Audit: AuditDone, Undecided: 2}, doTell},
+		{"done audit that read nothing", roundIn{State: RoundPending, Audit: AuditDone, ReadNothing: true}, doNothing},
+		{"audit queued", roundIn{State: RoundPending, Audit: AuditQueued}, doNothing},
+		{"audit running", roundIn{State: RoundPending, Audit: AuditRunning}, doNothing},
+		{"audit failed", roundIn{State: RoundPending, Audit: AuditFailed}, doNothing},
+		{"no audit", roundIn{State: RoundPending}, doNothing},
+		{"round under way", roundIn{State: RoundRunning, Audit: AuditDone}, doNothing},
+		{"round done already", roundIn{State: RoundDone, Audit: AuditDone}, doNothing},
+		{"round skipped", roundIn{State: RoundSkipped, Audit: AuditDone}, doNothing},
+	} {
+		c.in.ShipAudited = true
+		out := decideRound(c.in)
+		if out.Do != c.do {
+			t.Errorf("%s: %+v, want %d", c.name, out, c.do)
+		}
+		if out.Do == doNothing && out.Settled == "" {
+			t.Errorf("%s: a doNothing without its reason", c.name)
+		}
+		if out.Do == doTell && out.Until <= 0 {
+			t.Errorf("%s: a tell with no time", c.name)
+		}
+	}
+}

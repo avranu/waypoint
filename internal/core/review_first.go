@@ -832,22 +832,26 @@ func (s *Service) shipAudited(ctx context.Context, actor *Actor, g *reviewGate, 
 	if err != nil {
 		return false, "", err
 	}
-	switch a.Status {
-	case AuditQueued, AuditRunning:
-		return false, "", nil // the held text says it: Waypoint opens the pull request when the audit leaves nothing for the session
-	case AuditDone:
-	default:
-		return false, "", nil // the round falls back or asks another model: planReview's to decide
+	in := roundIn{State: RoundPending, ShipAudited: true, Audit: a.Status}
+	var todo []CodeAuditFinding
+	if a.Status == AuditDone {
+		if err := s.loadFindings(ctx, a); err != nil {
+			return false, "", err
+		}
+		in.ReadNothing = a.readNothing()
+		todo = s.roundTodo(ctx, a)
+		in.Undecided = len(todo)
 	}
-	if err := s.loadFindings(ctx, a); err != nil {
-		return false, "", err
-	}
-	if a.readNothing() {
-		return false, "", nil // nothing was read, so the round's own prompt reviews
-	}
-	if todo := s.roundTodo(ctx, a); len(todo) > 0 {
+	// Whether the ship ends the round is decideRound's (WP-1370). An audit
+	// still queued or running is the held text's to say: Waypoint opens the
+	// pull request when the audit leaves nothing for the session.
+	switch out := decideRound(in); out.Do {
+	case doReport:
+	case doTell:
 		return false, fmt.Sprintf("%s's adversarial review is audit #%d, with %s still to decide:\n%s\nRead them (`wp audit show %d`), mark each (`wp audit mark %s fixed -m \"what you did\"` or `wp audit mark %s rejected -m \"why\"`), then run `wp ship`; or end your turn, and the review gives them to you.",
 			g.key, a.ID, plural1(len(todo), "finding"), findingLines(todo), a.ID, todo[0].ID, todo[0].ID), nil
+	default:
+		return false, "", nil
 	}
 	items := make([]WorkIssue, 0, len(a.Findings))
 	fixed, rejected := 0, 0

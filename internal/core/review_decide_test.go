@@ -113,6 +113,28 @@ func TestDecideRoundNeverStrands(t *testing.T) {
 			}
 		}
 	}
+	// The session's ship of an audited round (shipAudited) reports only a
+	// pending round whose finished audit read something and left nothing.
+	for _, state := range []string{RoundPending, RoundRunning, RoundDone, RoundSkipped, RoundInterrupted, RoundFailed} {
+		for _, audit := range []string{"", AuditQueued, AuditRunning, AuditDone, AuditFailed} {
+			for _, undecided := range []int{0, 2} {
+				for _, nothing := range []bool{false, true} {
+					in := roundIn{ShipAudited: true, State: state, Audit: audit, Undecided: undecided, ReadNothing: nothing, RunOpen: true}
+					out := decideRound(in)
+					may := state == RoundPending && audit == AuditDone && !nothing && undecided == 0
+					if (out.Do == doReport) != may {
+						t.Fatalf("%+v: report=%v: %+v", in, out.Do == doReport, out)
+					}
+					if out.Do != doReport && out.Do != doNothing && out.Do != doTell {
+						t.Fatalf("%+v: ship of an audited round answers %d", in, out.Do)
+					}
+					if out.Do == doNothing && out.Settled == "" {
+						t.Fatalf("%+v: a doNothing without its reason", in)
+					}
+				}
+			}
+		}
+	}
 	t.Logf("%d combinations", n)
 }
 

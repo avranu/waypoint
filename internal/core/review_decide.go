@@ -58,6 +58,11 @@ type roundIn struct {
 	// ShipAsks: the session's own `wp ship` is asking what it means for the
 	// round (reviewFirst, the report). Started: the round's prompt went in.
 	ShipAsks, Started bool
+	// ShipAudited: the session's plain `wp ship` reaches a round still
+	// pending whose audit it may have read itself (WP-919): the facts are
+	// State, Audit (its status), ReadNothing (the audit read nothing, so the
+	// round's own prompt reviews) and Undecided (findings left to decide).
+	ShipAudited, ReadNothing bool
 	// Stopped, Subagents: the round's session just stopped (its turn ended),
 	// with background agents of the review still going.
 	Stopped, Subagents bool
@@ -166,6 +171,21 @@ func decideRound(in roundIn) roundOut {
 			return roundOut{Do: doReport}
 		}
 		return roundOut{Do: doNothing, Settled: "a ship from the session is no report of a round that isn't under way or never started"}
+	}
+	if in.ShipAudited {
+		// The ship is the round's report only when the round hasn't started
+		// and its audit is done, read something, and leaves nothing to decide.
+		switch {
+		case in.State != RoundPending:
+			return roundOut{Do: doNothing, Settled: "only a round still pending is ended by the session's reading of its audit"}
+		case in.Audit != AuditDone:
+			return roundOut{Do: doNothing, Settled: "its audit is none, under way or didn't finish: the round's own prompt or its step decides"}
+		case in.ReadNothing:
+			return roundOut{Do: doNothing, Settled: "its audit read nothing, so the round's own prompt reviews"}
+		case in.Undecided > 0:
+			return roundOut{Do: doTell, For: "the session to decide what the audit found", Until: heldScreenWait}
+		}
+		return roundOut{Do: doReport}
 	}
 	if in.Stopped && in.State == RoundRunning {
 		// The session stopped: its last message is the report, unless the
