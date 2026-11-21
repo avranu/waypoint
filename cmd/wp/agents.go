@@ -64,8 +64,8 @@ func cmdQueue(c *cli, args []string) error {
 }
 
 var agentsCmd = &command{
-	name: "agents", group: "Tasks", args: "[pause|unpause|release …]",
-	summary: "list agents at work; pause, unpause, release",
+	name: "agents", group: "Tasks", args: "[pause|unpause|release|wait …]",
+	summary: "list agents at work; pause, unpause, release, wait",
 	about: `Lists the agents that worked on or hold work you can see, your agent
 tokens and your pauses. A pause stops agents (all, a family like claude, or
 one model) taking new work with wp next; what they hold stays theirs. Only
@@ -80,6 +80,28 @@ func init() {
 			examples: []string{"wp agents pause haiku -m \"too many failed reviews\""}, run: cmdAgentsPause},
 		{name: "unpause", args: "[SPEC]", summary: "let agents matching SPEC take work again (default all)",
 			run: cmdAgentsUnpause},
+		{name: "wait", args: "[AGENT_ID...] [--timeout 9m]", summary: "wait until agents you started have stopped",
+			about: `Blocks until the named agents, or with no ids every agent you started that is
+still running, have stopped, then prints one line each (type, id, how long it
+ran) and exits 0; exits 1 after --timeout (9m, so a foreground call fits in a
+Bash call of 600000 ms; call it again to continue the wait) with the ones
+still running. Prints "no agents of yours are running" and exits 0 when there
+are none.
+
+For an agent that starts others. Started in the background: run this with
+run_in_background: true and end your turn; Claude Code keeps it open while a
+background command of its own runs, and wakes it once, when they have all
+finished. Started in the foreground (a call that blocks its parent): run it in
+the foreground with the Bash timeout set to 600000; ending the turn instead
+ends the run and stops what it started.
+
+With no ids it works out which agent is asking from the hooks' record of the
+call, and exits 2 at once when the hooks did not see it: name the agents then.
+An agent resumed later is waited on only for the run that was live when this
+started. Reads that record of live agents on this machine, with no network, so
+it needs the Waypoint hooks (wp hook claude); a stop the hooks never saw is
+waited out by --timeout.`,
+			examples: []string{"wp agents wait", "wp agents wait a1b2c3d4e5 --timeout 5m"}, run: cmdAgentsWait},
 		{name: "release", args: "KEY...", summary: "take a task back from its agent, into the queue",
 			run: cmdAgentsRelease},
 	}
