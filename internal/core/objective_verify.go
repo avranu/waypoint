@@ -839,13 +839,13 @@ func objectiveJudgePrompt(a *CodeAudit, about string) string {
 	b.WriteString("What done means, in the words of the person who set the objective:\n\n" + a.Instructions + "\n\n")
 	b.WriteString("Each finding is one way the code falls short of those words: something they ask for that is missing, wrong, untested where they ask for tests, or only made to look done. For something missing, give the file where it belongs and line 0. Report nothing those words don't ask for.\n\n")
 	b.WriteString(auditCriteriaPrompt(a))
-	fmt.Fprintf(&b, `Rules:
+	b.WriteString(`Rules:
 - Report only what you checked against the code: the file (relative to the repository's root) and line, what falls short, and how someone could confirm it.
 - Change nothing: no edits, no commits, no commands that write. Reading, searching and git's own reading commands are yours to use.
 - Do not propose patches or plans.
 - Severity: critical (the task's main result is absent, wrong or faked), high (something the words ask for isn't met), medium (met in the main, wrong in some cases), low (minor).
-- At most %d findings, worst first.
-- If the task is done, give an empty list of findings and say in the summary what you checked.`, auditFindingsCap(a))
+- Report every way it falls short, worst first.
+- If the task is done, give an empty list of findings and say in the summary what you checked.`)
 	if a.MinSeverity != "" {
 		fmt.Fprintf(&b, "\n- Report only findings of %s severity or worse; leave out anything less.", a.MinSeverity)
 	}
