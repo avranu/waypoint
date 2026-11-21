@@ -36,6 +36,8 @@ func TestRewrittenRefusesMalformedCalls(t *testing.T) {
 		{"blank repo", `{"repo":"","head":"abc1234","prs":[]}`, "repo"},
 		{"no repo", `{"head":"abc1234","prs":[]}`, "repo"},
 		{"no prs", `{"repo":"o/r","head":"abc1234"}`, "prs"},
+		{"long repo", `{"repo":"` + strings.Repeat("a", 1<<20) + `","head":"abc1234","prs":[]}`, "repo"},
+		{"long head", `{"repo":"o/r","head":"` + strings.Repeat("a", 1<<20) + `","prs":[]}`, "head"},
 	} {
 		code, b := web.do("POST", "/api/v1/issues/WAY-1/rewritten", c.body)
 		if code != 400 || !strings.Contains(string(b), c.want) {

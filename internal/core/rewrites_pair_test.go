@@ -1,6 +1,8 @@
 package core
 
 import (
+	"math"
+	"strings"
 	"testing"
 	"time"
 )
@@ -161,5 +163,56 @@ func TestNoteRewritesKeepsEvidenceForTasksTheActorCannotSee(t *testing.T) {
 	}
 	if n := f.evidenceRows(t); n != 1 {
 		t.Errorf("%d evidence rows: a shipper who can't see the task dropped its evidence", n)
+	}
+}
+
+// Every string and count a call stores or reads is bounded at the boundary,
+// and a call over a bound is refused whole: nothing is written.
+func TestNoteRewritesBoundsItsInput(t *testing.T) {
+	f := newRewriteFixture(t)
+	long := strings.Repeat("a", 1<<20)
+	many := make([]RewrittenPR, rewriteMaxPRs+1)
+	for i := range many {
+		many[i] = f.prs[0]
+	}
+	bad := func(p RewrittenPR, edit func(*RewrittenPR)) []RewrittenPR { edit(&p); return []RewrittenPR{p} }
+	for _, c := range []struct {
+		name, repo, head string
+		prs              []RewrittenPR
+		field            string
+	}{
+		{"repo 1 MB", long, "abc1234", f.prs, "repo"},
+		{"repo with a newline", "o/r\nx", "abc1234", f.prs, "repo"},
+		{"repo with spaces", "o/ r", "abc1234", f.prs, "repo"},
+		{"repo is not owner/name", "justaname", "abc1234", f.prs, "repo"},
+		{"repo dot segments", "o/..", "abc1234", f.prs, "repo"},
+		{"head 1 MB", "o/r", long, f.prs, "head"},
+		{"head with a flag", "o/r", "--output=/tmp/x", f.prs, "head"},
+		{"head with a newline", "o/r", "abc1234\nx", f.prs, "head"},
+		{"too many pull requests", "o/r", "abc1234", many, "prs"},
+		{"pull request 0", "o/r", "abc1234", bad(f.prs[0], func(p *RewrittenPR) { p.Number = 0 }), "prs"},
+		{"negative lines", "o/r", "abc1234", bad(f.prs[0], func(p *RewrittenPR) { p.Lines = -1 }), "prs"},
+		{"huge lines", "o/r", "abc1234", bad(f.prs[0], func(p *RewrittenPR) { p.Lines = 1 << 40 }), "prs"},
+		{"share over 1", "o/r", "abc1234", bad(f.prs[0], func(p *RewrittenPR) { p.Share = 7 }), "prs"},
+		{"share NaN", "o/r", "abc1234", bad(f.prs[0], func(p *RewrittenPR) { p.Share = math.NaN() }), "prs"},
+		{"negative time", "o/r", "abc1234", bad(f.prs[0], func(p *RewrittenPR) { p.At = -5 }), "prs"},
+	} {
+		_, err := f.s.NoteRewrites(f.ctx, f.admin, f.b.Key, c.repo, c.head, c.prs)
+		if !IsInvalid(err) || !strings.Contains(err.Error(), c.field) {
+			t.Errorf("%s: err = %v, want an invalid error naming %q", c.name, err, c.field)
+		}
+	}
+	if f.evidenceRows(t) != 0 || f.relationRows(t) != 0 {
+		t.Error("a refused call wrote something")
+	}
+	// The bounds themselves are allowed, as are a commit hash of either
+	// length and HEAD (what wp sends when it can't read the commit).
+	for _, head := range []string{"", "HEAD", strings.Repeat("f", 40), strings.Repeat("F", 64), "refs/heads/x"} {
+		if _, err := f.s.NoteRewrites(f.ctx, f.admin, f.b.Key, "o/r", head, f.prs); err != nil {
+			t.Errorf("head %q: %v", head, err)
+		}
+	}
+	if _, err := f.s.NoteRewrites(f.ctx, f.admin, f.b.Key, "group/sub/r", "abc1234", many[:rewriteMaxPRs]); err != nil {
+		t.Errorf("a nested repo and %d pull requests: %v", rewriteMaxPRs, err)
 	}
 }

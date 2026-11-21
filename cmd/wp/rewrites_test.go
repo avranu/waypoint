@@ -69,3 +69,26 @@ func TestRewritesLineKeepsNoTurnOpen(t *testing.T) {
 		t.Errorf("held ship needs the agent: %q", got)
 	}
 }
+
+// wp refuses a call the server would, before sending it, naming the field
+// and the limit.
+func TestCheckRewriteSendNamesFieldAndLimit(t *testing.T) {
+	ok := []rewrittenPR{{Number: 3, Lines: 20, Share: 0.5, At: 1}}
+	if err := checkRewriteSend("o/r", strings.Repeat("a", 40), ok); err != nil {
+		t.Fatalf("a well-formed call: %v", err)
+	}
+	for _, c := range []struct {
+		name, repo, head string
+		prs              []rewrittenPR
+		want             string
+	}{
+		{"long repo", strings.Repeat("a", 300) + "/r", "abc1234", ok, "repo must be owner/name, at most 255 characters"},
+		{"long head", "o/r", strings.Repeat("a", 65), ok, "head must be a commit"},
+		{"flag as head", "o/r", "--output=/tmp/x", ok, "head must be a commit"},
+		{"many prs", "o/r", "abc1234", make([]rewrittenPR, 51), "prs: at most 50"},
+	} {
+		if err := checkRewriteSend(c.repo, c.head, c.prs); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v, want %q", c.name, err, c.want)
+		}
+	}
+}

@@ -75,7 +75,8 @@ stateless, same bearer token).
           and small overlaps. An editor's call also relates {key} to each task it names (inferred) and keeps what
           it saw for the review round; a pair someone removed the relation of isn't related again. repo and prs
           are required (prs: [] says the change replaces nothing, and drops what an earlier call recorded for
-          that repo); a call without them is refused and drops nothing
+          that repo); a call without them is refused and drops nothing, as is one past the limits (repo owner/name of
+          at most 255 characters, head a commit of at most 64, at most 50 prs)
     PATCH|DELETE /comments/{id}    your own comments
     DELETE /issues/{key}/relations/{id} | /links/{id}
     POST  /issues/{key}/links/refresh  re-read PR/issue state from the forge

@@ -5,11 +5,14 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
 // Rewritten work (WP-782, WP-ADR131): when a change replaces lines another
@@ -79,6 +82,50 @@ func rewriteCounts(lines int, share float64) bool {
 // rewrite (WP-1370): inferred "relates", which an agent's or a person's own
 // relation of the pair replaces (replaceRelations).
 const rewriteFound = "rewrite"
+
+// Bounds on what a call carries, all of which is stored or read (WP-1370).
+// The repo is an owner/name (validRepoFor, at most 255 bytes) and head a
+// commit (a hash, or HEAD, what wp sends when it can't read the commit); the
+// pull requests are the ones RewrittenWork reads, no more, each with counts
+// a real change can have.
+const (
+	rewriteMaxHead  = 64
+	rewriteMaxLines = 10_000_000
+)
+
+var rewriteHeadRE = lazyre.New(`^(?:[A-Za-z0-9][A-Za-z0-9._/-]*)?$`)
+
+// validRewriteCall refuses what NoteRewrites must not act on: a repo that
+// is blank or not an owner/name, a head that is not a commit, no list of
+// pull requests (an empty one is a reading), more than rewriteMaxPRs of them
+// or one with numbers no pull request has. The errors name the field and the
+// limit, for the person reading wp's output.
+func validRewriteCall(repo, head string, prs []RewrittenPR) error {
+	switch {
+	case repo == "":
+		return invalid("repo is required")
+	case !validRepoFor("gitlab", repo):
+		return invalid("repo must be owner/name, at most 255 characters")
+	case len(head) > rewriteMaxHead || !rewriteHeadRE.MatchString(head):
+		return invalid("head must be a commit (letters, digits and . _ / -, not starting with -, at most %d characters)", rewriteMaxHead)
+	case prs == nil:
+		return invalid("prs is required: send [] when the change replaces nothing")
+	case len(prs) > rewriteMaxPRs:
+		return invalid("prs: at most %d pull requests per call, got %d", rewriteMaxPRs, len(prs))
+	}
+	for i, p := range prs {
+		if p.Number < 1 || p.Number > math.MaxInt32 || p.Lines < 0 || p.Lines > rewriteMaxLines || !(p.Share >= 0 && p.Share <= 1) || p.At < 0 {
+			return invalid("prs[%d]: number must be 1 to %d, lines 0 to %d, share 0 to 1, at not negative", i, math.MaxInt32, rewriteMaxLines)
+		}
+	}
+	return nil
+}
+
+// ValidateRewriteCall is the check NoteRewrites makes of a call, for wp to
+// make before it sends one.
+func ValidateRewriteCall(repo, head string, prs []RewrittenPR) error {
+	return validRewriteCall(strings.TrimSpace(repo), head, prs)
+}
 
 // RewrittenWork lists the tasks behind the pull requests in repo whose
 // lines the change for task ref replaces, leaving out the task itself, its
@@ -226,11 +273,8 @@ func rewriteNote(t *RewrittenTask) string {
 // to drop anything.
 func (s *Service) NoteRewrites(ctx context.Context, actor *Actor, ref, repo, head string, prs []RewrittenPR) ([]*RewrittenTask, error) {
 	repo = strings.TrimSpace(repo)
-	if repo == "" {
-		return nil, invalid("repo is required")
-	}
-	if prs == nil {
-		return nil, invalid("prs is required: send [] when the change replaces nothing")
+	if err := validRewriteCall(repo, head, prs); err != nil {
+		return nil, err
 	}
 	got, err := s.RewrittenWork(ctx, actor, ref, repo, prs)
 	if err != nil {
