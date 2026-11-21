@@ -374,8 +374,12 @@ async function run(width, scheme, full) {
   await page.getByRole("heading", { name: "System limits" }).waitFor();
   await page.getByText(/free of/).first().waitFor();
   ok(true, `${tag} the system readings show`);
+  await page.getByText(/in \d+ pieces/).first().waitFor();
+  await page.getByLabel("Transcript archive larger than (MB)").waitFor();
+  ok(true, `${tag} the transcript archive reading and its limit show`);
   if (full) {
     await page.getByLabel("Free disk space below (MB)").fill("2048");
+    await page.getByLabel("Transcript archive larger than (MB)").fill("5000");
     await page.getByRole("button", { name: "Save limits" }).click();
     await page.getByText("Limits saved").waitFor();
     await page.reload();
@@ -386,6 +390,10 @@ async function run(width, scheme, full) {
     ok(
       (await page.getByLabel("Free disk space below (MB)").inputValue()) === "2048",
       `${tag} the saved limit comes back`,
+    );
+    ok(
+      (await page.getByLabel("Transcript archive larger than (MB)").inputValue()) === "5000",
+      `${tag} the transcript archive limit comes back`,
     );
     const low = page.locator("div.rounded-xl").filter({ hasText: "Low disk space" }).filter({ has: page.getByRole("button", { name: "Turn on" }) }).first();
     if (await low.count()) {

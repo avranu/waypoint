@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -32,6 +33,7 @@ type usageSyncOptions struct {
 	Dir       string        // the Claude config directory (CLAUDE_CONFIG_DIR, else ~/.claude)
 	Files     []string      // only these transcripts (and their subagents)
 	Inventory bool          // also report what is configured on this machine
+	NoArchive bool          // leave the transcript archive upload out (WP-1466)
 	Out       io.Writer     // progress lines, or nil
 }
 
@@ -61,13 +63,36 @@ type usageSyncResult struct {
 	Inventory     map[string]int   `json:"inventory,omitempty"`
 	SharedIDs     int64            `json:"messages_in_several_files,omitempty"` // dry runs: the same message in two files
 	Elapsed       string           `json:"elapsed"`
+	// Archive: the transcript archive upload (WP-1466); ArchiveError when it
+	// could not run (the counts above are unaffected).
+	Archive      *archiveResult `json:"archive,omitempty"`
+	ArchiveError string         `json:"archive_error,omitempty"`
 }
 
-const (
+// usageHookUploadTimeout bounds the hour counts' upload on a hook pass (the
+// shared client waits 60 s). It lies inside archiveHookLimit, which counts
+// from the sync's start; a test holds that, with the floor and the report,
+// under usageHookTimeout (WP-1466).
+var usageHookUploadTimeout = 8 * time.Second
+
+// usageHookUploadBudget is all the time a hook pass gives the hour counts'
+// uploads together, from the sync's start: each upload gets the least of
+// usageHookUploadTimeout and what is left of it. Derived like archiveHookLimit:
+// it lies inside that limit and, with the floor and the status post, under
+// usageHookTimeout (a test holds that). When it is spent the stage stops as a
+// failed upload does: nothing is lost, the chunk ids dedupe and the next sync
+// sends the rest.
+var usageHookUploadBudget = 10 * time.Second
+
+// The batch sizes are variables for the tests.
+var (
 	usageBatchRows   = 1500
 	usageBatchChunks = 150
-	usageStateFile   = "usage-state.json"
-	inventoryEvery   = 12 * time.Hour
+)
+
+const (
+	usageStateFile = "usage-state.json"
+	inventoryEvery = 12 * time.Hour
 )
 
 // usageState is wp's memory of what was uploaded.
@@ -191,7 +216,7 @@ func discoverTranscripts(root string, since time.Duration, only []string) ([]usa
 // release that adds a kind of row so fills in the past on every machine's
 // next sync, with nothing to run (WP-618), and each file's versions record
 // how far it got. Only files already synced count: a transcript never
-// uploaded still waits for --all.
+// uploaded still waits for --all (the archive pass counts those: older_files).
 func outdatedTranscripts(root string, st *usageState, have []usageFile) []usageFile {
 	under := filepath.Join(root, "projects") + string(filepath.Separator)
 	old := map[string]bool{}
@@ -298,10 +323,14 @@ func (s *idSet) add(id string) {
 }
 
 // usageSync does one sync. It is safe to run from a hook, the runner and
-// by hand at the same time: a second one finds the lock taken and returns.
+// by hand at the same time: a second one finds the usage-sync lock taken and
+// returns. The lock is let go before the archive pass, which has its own
+// (usage-archive.lock): a pass that finds that taken leaves a note, and the
+// holder looks once more before it ends.
 func usageSync(c *cli, o usageSyncOptions) (*usageSyncResult, error) {
 	started := time.Now()
 	res := &usageSyncResult{Machine: machineName(), DryRun: o.DryRun}
+	release := func() {}
 	root := claudeDir(o.Dir)
 	if root == "" {
 		return nil, errors.New("can't find Claude Code's config directory; use --dir")
@@ -314,7 +343,8 @@ func usageSync(c *cli, o usageSyncOptions) (*usageSyncResult, error) {
 		if !ok {
 			return nil, errUsageBusy
 		}
-		defer unlock()
+		release = sync.OnceFunc(unlock) // one release: early, before the archive pass, or on return
+		defer release()
 	}
 	files, err := discoverTranscripts(root, o.Since, o.Files)
 	if err != nil {
@@ -407,7 +437,25 @@ func usageSync(c *cli, o usageSyncOptions) (*usageSyncResult, error) {
 				Duplicate int `json:"duplicate"`
 				Dropped   int `json:"traces_dropped"`
 			}
-			if err := c.do("POST", "/api/v1/usage/ingest", body, &ans); err != nil {
+			ctx, cancel := context.Background(), context.CancelFunc(func() {})
+			if o.Hook {
+				// part of the hook pass's bound (usageHookUploadTimeout, within
+				// usageHookUploadBudget); a
+				// timed-out upload is a failed one: the state below is not
+				// saved, so the next pass offers these hours again
+				left := usageHookUploadBudget - time.Since(started)
+				if left <= 0 {
+					flushErr = fmt.Errorf("the hook's %v budget for the hour counts' upload is spent; the rest goes next time", usageHookUploadBudget)
+					return
+				}
+				ctx, cancel = context.WithTimeout(ctx, min(usageHookUploadTimeout, left))
+			}
+			raw, err := c.callCtx(ctx, "POST", "/api/v1/usage/ingest", body)
+			cancel()
+			if err == nil && len(raw) > 0 {
+				err = json.Unmarshal(raw, &ans)
+			}
+			if err != nil {
 				flushErr = err
 				return
 			}
@@ -501,6 +549,16 @@ func usageSync(c *cli, o usageSyncOptions) (*usageSyncResult, error) {
 	if flushErr != nil && inv != nil {
 		// the inventory didn't land, so offer it again next time
 		st.InventorySum, st.InventoryAt = "", 0
+	}
+	release() // the archive has its own lock: a long backfill must not hold up the next hook's counts
+	if !o.NoArchive && archiveEnabled() {
+		ar, aerr := usageArchive(c, o, root, started)
+		res.Archive = ar
+		if aerr != nil {
+			res.ArchiveError = aerr.Error()
+		}
+	} else if aerr := archiveReportOff(c, o); aerr != nil {
+		res.ArchiveError = aerr.Error()
 	}
 	res.Elapsed = time.Since(started).Round(time.Millisecond).String()
 	if flushErr != nil {

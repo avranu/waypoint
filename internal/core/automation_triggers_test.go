@@ -433,6 +433,26 @@ func TestAdminAutomationsSeeEveryProject(t *testing.T) {
 	}
 }
 
+// The transcript archive's alarm says how big it has grown, in how many
+// pieces, and what the limit is (audit 1233.25).
+func TestTranscriptArchiveAlarmText(t *testing.T) {
+	e := newEnv(t)
+	rule := Rule{Trigger: Trigger{Event: "system_resources", Extra: map[string]any{"resource": "transcripts"}}, Actions: []Action{{Type: "notify", User: "admins", Message: "{{.Trigger.Data.text}}"}}}
+	a, err := e.s.CreateAdminAutomation(e.ctx, e.admin, AutomationInput{Name: str("Archive full"), Rule: &rule})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.s.noteResource(e.ctx, ResourceStatus{Resource: "transcripts", Label: "Transcript archive", Bytes: 3 << 30, Count: 1234, CapMB: 4096, LimitMB: 4096, Low: true})
+	runs := runsOf(t, e, a)
+	if len(runs) != 1 {
+		t.Fatalf("%d runs", len(runs))
+	}
+	want := "The transcript archive has grown to 3.0 GiB in 1234 pieces (the limit is 4096 MB)"
+	if got := e.run(runs[0].ID).Event.Data["text"]; got != want {
+		t.Errorf("text = %q, want %q", got, want)
+	}
+}
+
 func runsOf(t *testing.T, e *env, a *Automation) []*AutomationRun {
 	t.Helper()
 	list, err := e.s.ListAutomationRuns(e.ctx, e.admin, a.ID, 50, 0)
