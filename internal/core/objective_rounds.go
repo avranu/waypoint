@@ -824,6 +824,7 @@ func (s *Service) ObjectiveDiagnose(ctx context.Context, actor *Actor, ref strin
 		if err := s.objSet(ctx, t, i.ID, "diagnosis_id", rid); err != nil {
 			return err
 		}
+		o.diagnosisID = rid
 		todo, err := s.objectiveTodo(ctx, t, i.ProjectID)
 		if err != nil {
 			return err

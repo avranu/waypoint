@@ -1912,7 +1912,7 @@ func (s *Service) objectiveEdited(ctx context.Context, t *tx, cur, o *Objective,
 			// round on the new measure. With more rounds alone, the rounds
 			// that came no nearer are still the history, so a diagnosis owed
 			// is owed (objectiveOpenRound reads o.NoBetter).
-			o.NoBetter = 0
+			o.NoBetter, o.diagnosisID = 0, 0
 			if err := s.objSet(ctx, t, o.IssueID, "no_better", 0, "diagnosis_id", nil); err != nil {
 				return err
 			}
@@ -1924,7 +1924,7 @@ func (s *Service) objectiveEdited(ctx context.Context, t *tx, cur, o *Objective,
 		if changed && outOfRounds {
 			// Still out of rounds, but measured another way: the count and the
 			// diagnosis belong to the old measure.
-			o.NoBetter = 0
+			o.NoBetter, o.diagnosisID = 0, 0
 			o.BaseSHA, o.baseOK, o.baseValue = "", nil, nil
 			if err := s.objSet(ctx, t, o.IssueID, "no_better", 0, "diagnosis_id", nil, "round_kind", "", "base_sha", "", "base_ok", nil, "base_value", nil); err != nil {
 				return err
