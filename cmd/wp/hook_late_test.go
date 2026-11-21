@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -386,15 +385,22 @@ func TestChainNudgeLateFloor(t *testing.T) {
 		t.Fatal(err)
 	}
 	setAge(t, 1800*time.Millisecond)
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		time.Sleep(20 * time.Millisecond)
-		_ = os.Remove(path + ".lock")
-	}()
+	// The holder lets go while the waiter pauses after its first failed try:
+	// a run with no floor never pauses and drops the count. Released on the
+	// pause, not after a timer, so a loaded runner can't outlast the floor.
+	polls := 0
+	oldPoll := lockPoll
+	lockPoll = func() {
+		if polls++; polls == 1 {
+			_ = os.Remove(path + ".lock")
+		}
+		oldPoll()
+	}
+	t.Cleanup(func() { lockPoll = oldPoll })
 	c.chainNudge(&hookEventInput{SessionID: "brief"}, repo, stepFind, false)
-	wg.Wait()
+	if polls == 0 {
+		t.Error("the held lock was not waited for: no floor past the late point")
+	}
 	st := &chainState{}
 	if err := readJSON(path, st); err != nil || st.Finds != 1 {
 		t.Errorf("chain = %+v, err %v: the late step was not counted", st, err)
