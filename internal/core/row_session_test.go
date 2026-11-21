@@ -228,10 +228,78 @@ func TestAgentWritableTablesCarryASession(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	for name := range sessionExempt {
-		var n int
-		if err := e.s.db.R.QueryRowContext(e.ctx, `SELECT count(*) FROM pragma_table_info(?) WHERE name = 'session_id'`, name).Scan(&n); err != nil || n != 0 {
-			t.Errorf("sessionExempt lists %s, which has a session_id column or does not exist: take it off the list", name)
+	for name, why := range sessionExempt {
+		var exists, sess, task int
+		if err := e.s.db.R.QueryRowContext(e.ctx, `SELECT (SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?),
+			(SELECT count(*) FROM pragma_table_info(?) WHERE name = 'session_id'),
+			(SELECT count(*) FROM pragma_table_info(?) WHERE name = 'session_issue_id')`, name, name, name).Scan(&exists, &sess, &task); err != nil {
+			t.Fatal(err)
 		}
+		if exists == 0 || sess != 0 {
+			t.Errorf("sessionExempt lists %s (%s), which does not exist or has a session_id column: take it off the list", name, why)
+		}
+	}
+	// The tables sessionStamp fills carry both columns.
+	for _, name := range []string{"issue_relations", "knowledge_links", "knowledge_uses", "knowledge_shown", "comments", "design_revisions", "issues", "pages"} {
+		var n int
+		if err := e.s.db.R.QueryRowContext(e.ctx, `SELECT count(*) FROM pragma_table_info(?) WHERE name IN ('session_id', 'session_issue_id')`, name).Scan(&n); err != nil || n != 2 {
+			t.Errorf("table %s has %d of session_id, session_issue_id, want both", name, n)
+		}
+	}
+}
+
+// The task stamped is the one the session holds: not one every run of the
+// session on has ended, and a session that is gone stamps nothing.
+func TestSessionStampTaskAndVanishedSession(t *testing.T) {
+	e := newEnv(t)
+	p := e.project(e.admin, "Acme", "")
+	own := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Held"})
+	a := agentActor(e.admin, "anthropic/claude-code")
+	sess, err := e.s.SessionHook(e.ctx, a, []HookEvent{hook("box", "stamp-a", "SessionStart", nil)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Session = sess.Session
+	stamp := func() (any, any) { return sessionStamp(e.ctx, e.s.db.R, a) }
+	if s, k := stamp(); s != sess.Session || k != nil {
+		t.Errorf("a session holding no task: %v, %v; want the session and NULL", s, k)
+	}
+	if _, err := e.s.db.W.ExecContext(e.ctx, `UPDATE agent_sessions SET issue_id = ? WHERE id = ?`, own.ID, sess.Session); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.s.db.W.ExecContext(e.ctx, `INSERT INTO agent_runs(issue_id, agent, session_id, started_at) VALUES (?, 'x', ?, 0)`, own.ID, sess.Session); err != nil {
+		t.Fatal(err)
+	}
+	if s, k := stamp(); s != sess.Session || k != own.ID {
+		t.Errorf("a run still open: %v, %v; want the session and task %d", s, k, own.ID)
+	}
+	if _, err := e.s.db.W.ExecContext(e.ctx, `UPDATE agent_runs SET ended_at = 1, outcome = 'done' WHERE session_id = ?`, sess.Session); err != nil {
+		t.Fatal(err)
+	}
+	if s, k := stamp(); s != sess.Session || k != nil {
+		t.Errorf("the run ended: %v, %v; want the session and NULL (the task is finished, not held)", s, k)
+	}
+	a.Session = 987654
+	if s, k := stamp(); s != nil || k != nil {
+		t.Errorf("a session that is gone: %v, %v; want NULL, NULL", s, k)
+	}
+}
+
+// NoteShown records only what the actor can see, and nothing for a read-only actor.
+func TestNoteShownRefusesWhatIsNotThere(t *testing.T) {
+	e := newEnv(t)
+	a := agentActor(e.admin, "anthropic/claude-code")
+	rec, unknown, err := e.s.NoteShown(e.ctx, a, "brief", []ShownRef{{Type: KPage, Ref: "99999"}, {Type: KDesign, Ref: "99999"}})
+	if err != nil || rec != 0 || unknown != 2 {
+		t.Errorf("NoteShown of ids that do not exist = %d recorded, %d unknown, %v; want 0, 2", rec, unknown, err)
+	}
+	var n int
+	if err := e.s.db.R.QueryRowContext(e.ctx, `SELECT count(*) FROM knowledge_shown`).Scan(&n); err != nil || n != 0 {
+		t.Errorf("knowledge_shown has %d rows, want 0", n)
+	}
+	ro := *a
+	ro.ReadOnly = true
+	if rec, _, err := e.s.NoteShown(e.ctx, &ro, "brief", []ShownRef{{Type: KGlossary, Ref: "Claim"}}); err != nil || rec != 0 {
+		t.Errorf("a read-only actor recorded %d, %v; want 0", rec, err)
 	}
 }

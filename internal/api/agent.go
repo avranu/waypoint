@@ -570,7 +570,7 @@ func (s *Server) getPage(w http.ResponseWriter, r *http.Request) (any, error) {
 		return nil, err
 	}
 	pg, err := s.svc.GetPage(r.Context(), actorFrom(r), id)
-	if err == nil {
+	if err == nil && !queryBool(r, "listed") { // listed=1: wp brief listing it unasked, recorded as shown
 		s.svc.NoteLookup(r.Context(), actorFrom(r), core.KPage, id, "")
 	}
 	if err != nil || !wantsText(r) {

@@ -64,7 +64,7 @@ func (s *Service) NoteLookup(ctx context.Context, actor *Actor, typ string, id i
 	// concurrent first reads end as one row and one repeat, not two rows.
 	for range 3 {
 		// #nosec G202 -- who is one of two fixed clauses; values are bound
-		res, err := s.db.W.ExecContext(ctx, `UPDATE knowledge_uses SET repeats = repeats + 1 WHERE id = (
+		res, err := s.db.W.ExecContext(ctx, `UPDATE knowledge_uses SET repeats = coalesce(repeats, 0) + 1 WHERE id = (
 			SELECT max(id) FROM knowledge_uses WHERE item_type = ? AND item_id = ? AND kind = 'lookup' AND `+who+` AND created_at > ?)`, args...)
 		if err != nil {
 			s.log.WarnContext(ctx, "count repeated knowledge lookup", "type", typ, "id", id, "err", err)
@@ -74,8 +74,8 @@ func (s *Service) NoteLookup(ctx context.Context, actor *Actor, typ string, id i
 			return
 		}
 		// #nosec G202 -- table and who are fixed; values are bound
-		res, err = s.db.W.ExecContext(ctx, `INSERT INTO knowledge_uses(item_type, item_id, kind, word, project_id, user_id, agent, created_at, session_id, session_issue_id)
-			SELECT ?, ?, 'lookup', ?, (SELECT project_id FROM `+table+` WHERE id = ?), ?, ?, ?, ?, ?
+		res, err = s.db.W.ExecContext(ctx, `INSERT INTO knowledge_uses(item_type, item_id, kind, word, project_id, user_id, agent, created_at, session_id, session_issue_id, repeats)
+			SELECT ?, ?, 'lookup', ?, (SELECT project_id FROM `+table+` WHERE id = ?), ?, ?, ?, ?, ?, 0
 			WHERE NOT EXISTS (SELECT 1 FROM knowledge_uses WHERE item_type = ? AND item_id = ? AND kind = 'lookup' AND `+who+` AND created_at > ?)`,
 			append([]any{typ, id, excerpt(word, 100), id, actor.User.ID, agent, now, sessID, sessTask}, args...)...)
 		if err != nil {
@@ -523,6 +523,11 @@ type UseCounts struct {
 	Avoided  int `json:"avoided"`  // places a word to avoid was written instead
 	People   int `json:"people"`
 	Agents   int `json:"agents"`
+	// Shown is how many times it was put in front of an agent unasked (wp
+	// brief, a prep); Rereads the extra lookups the 10-minute window folded
+	// into a lookup row (rows from before it are unknown, left out).
+	Shown   int `json:"shown"`
+	Rereads int `json:"rereads"`
 }
 
 // ItemUsage is how an item has been used.
@@ -594,9 +599,15 @@ func (s *Service) ItemUsage(ctx context.Context, actor *Actor, typ string, id in
 			count(DISTINCT CASE WHEN kind = 'avoided' THEN src_type || ':' || src_id END),
 			count(DISTINCT CASE WHEN agent = '' THEN user_id END),
 			count(DISTINCT nullif(agent, '')),
-			max(created_at)
+			max(created_at),
+			coalesce(sum(CASE WHEN kind = 'lookup' THEN repeats END), 0)
 		FROM knowledge_uses WHERE item_type = ? AND item_id = ? AND `+vis, append([]any{typ, id}, vargs...)...).
-		Scan(&out.Counts.Lookups, &out.Counts.Mentions, &out.Counts.Avoided, &out.Counts.People, &out.Counts.Agents, &last); err != nil {
+		Scan(&out.Counts.Lookups, &out.Counts.Mentions, &out.Counts.Avoided, &out.Counts.People, &out.Counts.Agents, &last, &out.Counts.Rereads); err != nil {
+		return nil, err
+	}
+	// #nosec G202 -- vis is a fixed condition; values are bound
+	if err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM knowledge_shown WHERE item_type = ? AND item_id = ? AND `+vis,
+		append([]any{typ, id}, vargs...)...).Scan(&out.Counts.Shown); err != nil {
 		return nil, err
 	}
 	if last.Valid {
@@ -1082,12 +1093,17 @@ func (s *Service) shownItem(ctx context.Context, actor *Actor, r ShownRef) (typ 
 			return KGlossary, res.Matches[0].ID, true
 		}
 	case KDesign:
+		// A numeric ref resolves without a row check, so ask for the item as the actor.
 		if id, err = s.ResolveDesign(ctx, actor, r.Ref, r.Project); err == nil && id > 0 {
-			return KDesign, id, true
+			if _, err = s.kitem(ctx, actor, KDesign, id, ""); err == nil {
+				return KDesign, id, true
+			}
 		}
 	case KPage:
 		if id, err = s.ResolvePage(ctx, actor, r.Ref, r.Project); err == nil && id > 0 {
-			return KPage, id, true
+			if _, err = s.kitem(ctx, actor, KPage, id, ""); err == nil {
+				return KPage, id, true
+			}
 		}
 	}
 	return "", 0, false

@@ -359,7 +359,34 @@ func (c *cli) prepSection(ix *codeindex.Index, key string, budget int, compact, 
 	if c.do("GET", path, nil, &p) != nil || p.State != "ready" || p.Notes == nil {
 		return ""
 	}
-	return renderPrepNotes(&p, prepIndex(ix, p.Repo), budget, compact)
+	return c.renderPrepShown(key, &p, prepIndex(ix, p.Repo), budget, compact)
+}
+
+// renderPrepShown is renderPrepNotes for an agent: the glossary terms it
+// printed (not the ones the compact form or the budget left out) are told to
+// the server as shown, whether or not this is the task it took (WP-ADR145).
+func (c *cli) renderPrepShown(key string, p *prepView, ix *codeindex.Index, budget int, compact bool) string {
+	out := renderPrepNotes(p, ix, budget, compact)
+	var items []shownItem
+	project := key[:max(strings.LastIndex(key, "-"), 0)]
+	for i, t := range p.Notes.Terms {
+		if i == prepTermLimit(compact) {
+			break
+		}
+		if strings.Contains(out, "\n    "+t.Term+": ") {
+			items = append(items, shownItem{Type: "glossary", Ref: t.Term, Project: project})
+		}
+	}
+	c.noteShown("prep", items)
+	return out
+}
+
+// prepTermLimit is how many of a prep's terms renderPrepNotes prints.
+func prepTermLimit(compact bool) int {
+	if compact {
+		return 3
+	}
+	return 5
 }
 
 // prepIndex is ix when this directory is a checkout of the repo the prep
@@ -488,7 +515,7 @@ func renderPrepNotes(p *prepView, ix *codeindex.Index, budget int, compact bool)
 	if len(n.Terms) > 0 {
 		b.WriteString("  Terms (wp define TERM):\n")
 		for i, t := range n.Terms {
-			if i == limit(5, 3) {
+			if i == prepTermLimit(compact) {
 				break
 			}
 			fmt.Fprintf(&b, "    %s: %s — %s\n", t.Term, t.Definition, t.Why)

@@ -393,9 +393,11 @@ func (c *cli) governingSection(key, project, title, body, extra, question string
 	seen := map[string]bool{}
 	addNote := func(ref string) {
 		var n govNote
-		path := "/api/v1/design/" + esc(ref)
+		// listed=1: the brief reads it to list it unasked; that is a showing
+		// (recorded below), not a lookup by the agent.
+		path := "/api/v1/design/" + esc(ref) + "?listed=1"
 		if project != "" {
-			path += "?project=" + url.QueryEscape(project)
+			path += "&project=" + url.QueryEscape(project)
 		}
 		if seen["d"+strings.ToUpper(ref)] || c.do("GET", path, nil, &n) != nil {
 			return
@@ -426,9 +428,9 @@ func (c *cli) governingSection(key, project, title, body, extra, question string
 			Title    string `json:"title"`
 			Body     string `json:"body"`
 		}
-		path := "/api/v1/pages/" + esc(strings.ToUpper(ref))
+		path := "/api/v1/pages/" + esc(strings.ToUpper(ref)) + "?listed=1" // as for notes above
 		if project != "" {
-			path += "?project=" + url.QueryEscape(project)
+			path += "&project=" + url.QueryEscape(project)
 		}
 		if seen["p"+strings.ToUpper(ref)] {
 			return true
@@ -609,9 +611,10 @@ type shownItem struct {
 }
 
 // noteShown tells the server what was printed, so shown can be counted
-// against looked up (WP-ADR145 point 7). Only an agent in a session counts;
-// a person at a terminal reading the brief is not a showing. A failure is
-// said on stderr once, not swallowed.
+// against looked up (WP-ADR145 point 7). Only an agent counts (the header the
+// CLI sends for one); a person at a terminal reading the brief is not a
+// showing. The server stamps the session when it knows it and leaves it NULL
+// when not. A failure is said on stderr, not swallowed.
 func (c *cli) noteShown(via string, items []shownItem) {
 	if len(items) == 0 || c.agentHeader() == "" {
 		return
