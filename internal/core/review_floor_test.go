@@ -158,7 +158,7 @@ func TestOtherReviewChainRequestsReachNoFeedback(t *testing.T) {
 // check says it could weaken CI, so a person decides. Every request carried
 // the bar, and none was sent without it.
 func TestHeldEditFailsClosedAtNoModelAtBar(t *testing.T) {
-	g := &fakeGateway{answer: `{"weakens": false, "reason": "fine"}`, noBar: 50, retry: "30"}
+	g := &fakeGateway{answer: `{"weakens": false, "reason": "fine"}`, noBar: 50, retry: "600"}
 	e, _ := floorEnv(t, g)
 	pr := &PullRequest{ID: 9, Repo: "acme/app", Number: 9}
 	h := &HeldEdit{Files: []string{".forgejo/workflows/ci.yml"}, Patch: "-run: make\n+run: make check\n"}

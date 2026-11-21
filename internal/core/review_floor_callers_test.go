@@ -45,7 +45,7 @@ func (g *fakeGateway) weakestOfLocked(i int) any {
 // still asked. The gateway lacks fallbacks, so each entry is its own request
 // and only the skip loop in runChainAt stops the second and third.
 func TestNoModelAtBarSkipsOnlyTheGatewayEntries(t *testing.T) {
-	g := &fakeGateway{answer: `{"points": 5, "confidence": "medium", "reason": "fine"}`, noBar: 50, retry: "30"}
+	g := &fakeGateway{answer: `{"points": 5, "confidence": "medium", "reason": "fine"}`, noBar: 50, retry: "600"}
 	e, pid := gatewayWithout(t, g, GatewayFallbacks)
 	other := &fakeGateway{answer: `{"points": 5, "confidence": "medium", "reason": "fine"}`, served: "gpt-named"}
 	osrv := httptest.NewServer(other)
@@ -298,6 +298,31 @@ func TestNoModelAtBarNeedsStatusAndCode(t *testing.T) {
 	} {
 		if got := c.e.noModelAtBar(); got != c.want {
 			t.Errorf("%d %s: %v, want %v", c.e.status, c.e.body, got, c.want)
+		}
+	}
+}
+
+// A no_model_at_bar that carries a Retry-After (some models at the bar are
+// only busy) is asked again with the same bar, and the answer is used.
+func TestNoModelAtBarWithRetryAfterIsAskedAgain(t *testing.T) {
+	g := &fakeGateway{answer: `{"points": 5, "confidence": "medium", "reason": "fine"}`, noBar: 1, retry: "0"}
+	e, pid := gatewayWithout(t, g, GatewayFallbacks)
+	chain := []ChainModel{{ProviderID: pid, Model: "free"}}
+	var out struct {
+		Points int `json:"points"`
+	}
+	ctx := withGatewayRouting(aiContext(e.ctx, "review"), reviewRouting(8))
+	if _, _, err := e.s.runChain(ctx, chain, estimateSystem, "x", estimateSchema, &out, time.Minute); err != nil || out.Points != 5 {
+		t.Fatalf("not answered after the busy refusal: %+v %v", out, err)
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if len(g.bodies) != 2 {
+		t.Fatalf("%d requests, want 2", len(g.bodies))
+	}
+	for i := range g.bodies {
+		if w := g.weakestOfLocked(i); w != reviewFloorBar {
+			t.Errorf("request %d went without the bar: %v", i, w)
 		}
 	}
 }

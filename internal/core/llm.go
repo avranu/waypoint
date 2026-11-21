@@ -171,7 +171,10 @@ func (c *httpLLM) send(ctx context.Context, p *AIProvider, method, path string, 
 		if ok {
 			le.retryAfter = wait
 		}
-		if resp.StatusCode != http.StatusTooManyRequests || !ok || try == maxRateRetries || wait > maxRetryAfter {
+		// A 429, or the gateway's no_model_at_bar with a Retry-After (some
+		// models at the bar are only busy), is asked again with the same
+		// request, bar included. With no Retry-After none is at the bar at all.
+		if (resp.StatusCode != http.StatusTooManyRequests && !le.noModelAtBar()) || !ok || try == maxRateRetries || wait > maxRetryAfter {
 			return nil, le
 		}
 		if d, has := ctx.Deadline(); has && time.Until(d) < wait {
