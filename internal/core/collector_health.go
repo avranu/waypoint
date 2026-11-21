@@ -235,6 +235,9 @@ type CollectorHealth struct {
 	// none); Off how many of its machines opted out (nil: not applicable).
 	Dropped *int64 `json:"dropped,omitempty"`
 	Off     *int64 `json:"off,omitempty"`
+	// Problem is something wrong that is not a stall, in plain words: the
+	// transcript archive's stored pieces whose files are gone (WP-1466).
+	Problem string `json:"problem,omitempty"`
 }
 
 // collectorReading is what one collector's queries said.
@@ -422,6 +425,7 @@ func (s *Service) readCollector(ctx context.Context, c collector, now time.Time)
 // admins about the stalled ones. Hourly.
 func (s *Service) CheckCollectorHealth(ctx context.Context) {
 	now := s.now()
+	s.CheckTranscriptFiles(ctx) // daily, and at the start: the files of stored pieces (WP-1466)
 	for _, c := range collectors {
 		if ctx.Err() != nil {
 			return
@@ -672,9 +676,18 @@ func (s *Service) CollectorHealthList(ctx context.Context) ([]CollectorHealth, e
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	var missing int64
+	if s.cfg.TranscriptDir != "" {
+		if err := s.db.R.QueryRowContext(ctx, `SELECT missing FROM transcript_totals WHERE id = 1`).Scan(&missing); err != nil {
+			return nil, err
+		}
+	}
 	out := make([]CollectorHealth, 0, len(collectors))
 	for _, c := range collectors {
 		if h, ok := by[c.name]; ok {
+			if c.name == "transcript archive" {
+				h.Problem = transcriptMissingProblem(missing)
+			}
 			out = append(out, h)
 		}
 	}

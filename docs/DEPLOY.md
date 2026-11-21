@@ -362,6 +362,15 @@ database holds only an index of it. Copy that directory off the machine too,
 and treat it as private (it holds what was said in every session, redacted of
 credentials of known shapes only). Restoring a database without it leaves the
 index pointing at files that are not there; reading such a piece is an error.
+The server notices: at start and then daily it checks (by file name only, no
+file is read) that each indexed piece has its file, and the "transcript
+archive" line of `wp server status` says "N stored transcript pieces are
+missing on disk" while any are. It reports only. It does not change the index,
+and the machines do not send those bytes again by themselves: their offsets
+are already past them, and a machine with nothing new in a file never asks the
+server where its copy ends. The remedy is to put the directory back from your
+copy; once the files are there the next daily check clears the line. Pieces
+with no copy anywhere stay missing.
 
 Nothing in the transcript archive is ever deleted: not by age, not by size, not
 when a session is removed from the app. `WAYPOINT_TRANSCRIPT_MAX_MB` only makes

@@ -78,6 +78,10 @@ type Service struct {
 	// file is on disk and before the write that records it.
 	afterTranscriptFile func()
 
+	// transcriptFilesChecked: this process has checked the transcript files
+	// once, so the next check waits its day (WP-1466).
+	transcriptFilesChecked atomic.Bool
+
 	// removeAll is a test seam for os.RemoveAll over a deleted account's
 	// transcript directory (nil: the real one).
 	removeAll func(string) error

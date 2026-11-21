@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -67,6 +68,12 @@ type usageSyncResult struct {
 	Archive      *archiveResult `json:"archive,omitempty"`
 	ArchiveError string         `json:"archive_error,omitempty"`
 }
+
+// usageHookUploadTimeout bounds the hour counts' upload on a hook pass (the
+// shared client waits 60 s). It lies inside archiveHookLimit, which counts
+// from the sync's start; a test holds that, with the floor and the report,
+// under usageHookTimeout (WP-1466).
+var usageHookUploadTimeout = 8 * time.Second
 
 const (
 	usageBatchRows   = 1500
@@ -417,7 +424,19 @@ func usageSync(c *cli, o usageSyncOptions) (*usageSyncResult, error) {
 				Duplicate int `json:"duplicate"`
 				Dropped   int `json:"traces_dropped"`
 			}
-			if err := c.do("POST", "/api/v1/usage/ingest", body, &ans); err != nil {
+			ctx, cancel := context.Background(), context.CancelFunc(func() {})
+			if o.Hook {
+				// part of the hook pass's bound (usageHookUploadTimeout); a
+				// timed-out upload is a failed one: the state below is not
+				// saved, so the next pass offers these hours again
+				ctx, cancel = context.WithTimeout(ctx, usageHookUploadTimeout)
+			}
+			raw, err := c.callCtx(ctx, "POST", "/api/v1/usage/ingest", body)
+			cancel()
+			if err == nil && len(raw) > 0 {
+				err = json.Unmarshal(raw, &ans)
+			}
+			if err != nil {
 				flushErr = err
 				return
 			}

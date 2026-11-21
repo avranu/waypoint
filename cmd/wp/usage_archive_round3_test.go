@@ -193,7 +193,12 @@ func TestArchiveOffServerStopsQuietlyAndHookPassesSkip(t *testing.T) {
 // ---- 5, 17: the hook's deadline is real ----
 
 func TestHookPassBoundFitsTheHookTimeout(t *testing.T) {
-	total := archiveHookLimit + archiveHookFloor + archiveReportHookTimeout
+	// the hour counts' upload counts from the sync's start, as the archive's
+	// limit does, so it must lie inside that limit (audit 1234.2)
+	if usageHookUploadTimeout > archiveHookLimit {
+		t.Errorf("the hour-count upload timeout %v is past the archive's limit %v", usageHookUploadTimeout, archiveHookLimit)
+	}
+	total := max(archiveHookLimit, usageHookUploadTimeout) + archiveHookFloor + archiveReportHookTimeout
 	if hook := time.Duration(usageHookTimeout) * time.Second; total >= hook {
 		t.Errorf("hook limit %v + floor %v + report %v = %v, not under the hook's %v timeout",
 			archiveHookLimit, archiveHookFloor, archiveReportHookTimeout, total, hook)

@@ -107,6 +107,10 @@ type archiveTap struct {
 	bodies   []string // the status bodies posted, in order
 	// onPiece, when set, answers a piece itself and returns true.
 	onPiece func(n int, w http.ResponseWriter, r *http.Request) bool
+	// onStatus and onIngest do the same for the status post (n counts them)
+	// and the hour counts' upload.
+	onStatus func(n int, w http.ResponseWriter, r *http.Request) bool
+	onIngest func(w http.ResponseWriter, r *http.Request) bool
 }
 
 func (a *archiveTap) counts() (pieces, statuses int) {
@@ -135,8 +139,20 @@ func tappedEnv(t *testing.T) (*env, *archiveTap) {
 				r.Body = io.NopCloser(bytes.NewReader(body))
 				tap.mu.Lock()
 				tap.statuses++
+				n := tap.statuses
+				hook := tap.onStatus
 				tap.bodies = append(tap.bodies, string(body))
 				tap.mu.Unlock()
+				if hook != nil && hook(n, w, r) {
+					return
+				}
+			case r.Method == "POST" && r.URL.Path == "/api/v1/usage/ingest":
+				tap.mu.Lock()
+				hook := tap.onIngest
+				tap.mu.Unlock()
+				if hook != nil && hook(w, r) {
+					return
+				}
 			}
 			h.ServeHTTP(w, r)
 		})

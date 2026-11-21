@@ -209,6 +209,9 @@ func serverStatusText(st *core.ServerStatus, now time.Time) string {
 				}
 			}
 			b.WriteString(line + "\n")
+			if c.Problem != "" {
+				b.WriteString("    problem: " + c.Problem + "\n")
+			}
 		}
 	}
 	switch {

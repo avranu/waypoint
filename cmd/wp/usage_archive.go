@@ -97,6 +97,9 @@ const (
 	// mean the network or the server is down, and each further try costs an
 	// upload timeout.
 	archiveFailStop = 3
+	// archiveAgainRounds: extra passes a holder runs for notes. Chosen, not
+	// measured: only a bound, so a busy writer cannot keep a pass going.
+	archiveAgainRounds = 3
 )
 
 // Limits that tests lower. archiveMaxLine and archivePieceSize together stay
@@ -104,8 +107,10 @@ const (
 // archivePieceSize), and archiveGzipCap is what the server takes.
 var (
 	// archiveMaxLine: derived. With archivePieceSize it must stay under the
-	// server's cap on a piece's raw size, core.TranscriptMaxPiece (64 MiB); a
-	// line over it is replaced by a stub.
+	// server's cap on a piece's raw size, core.TranscriptMaxPiece (64 MiB). It
+	// is checked on the line as sent, after redaction (which can lengthen it:
+	// a 1-character secret becomes "***"), as well as on the raw line; a line
+	// over it either way is replaced by a stub (WP-1466).
 	archiveMaxLine = 48 << 20
 	// archivePieceSize: raw bytes per piece, cut at a line end. Chosen, not
 	// measured: large enough that most sessions are one piece, small enough
@@ -333,36 +338,52 @@ func usageArchive(c *cli, o usageSyncOptions, root string, syncStart time.Time) 
 		limit, from = archiveHookLimit, syncStart
 	}
 	a.deadline = from.Add(limit)
-	if err := a.pass(o, root); err != nil {
-		return res, err
-	}
-	if !o.DryRun && a.stop == "" {
-		// a pass that found the lock taken left a note: bytes came after the
-		// files were listed. One more look, inside the same deadline.
-		if _, err := os.Stat(again); err == nil {
-			_ = os.Remove(again)
-			if err := a.pass(o, root); err != nil {
-				return res, err
-			}
+	// more: a pass that found the lock taken left a note, so bytes came after
+	// the files were listed. Another pass runs while there is a note and the
+	// deadline allows (at most archiveAgainRounds), and the note is taken
+	// then. When the deadline does not allow, the note stays and the next
+	// pass removes it at its start, when it lists everything anyway.
+	more := func() bool {
+		if o.DryRun || a.stop != "" || !time.Now().Before(a.deadline) {
+			return false
 		}
+		if _, err := os.Stat(again); err != nil {
+			return false
+		}
+		_ = os.Remove(again)
+		return true
 	}
-	res.Stopped = a.stop
-	el := archivePassDuration(started)
-	res.Elapsed, res.ElapsedMS = el.Round(time.Millisecond).String(), el.Milliseconds()
-	if o.DryRun {
-		return res, nil
-	}
-	if a.stop != "" && !a.quiet && !a.full {
-		a.st.Cut++ // a pass that ended early is counted, with the reason in the status
-	}
-	saveErr := a.save()
-	if a.quiet {
+	for round := 0; ; round++ {
+		if err := a.pass(o, root); err != nil {
+			return res, err
+		}
+		if round < archiveAgainRounds && more() {
+			continue
+		}
+		res.Stopped = a.stop
+		el := archivePassDuration(started)
+		res.Elapsed, res.ElapsedMS = el.Round(time.Millisecond).String(), el.Milliseconds()
+		if o.DryRun {
+			return res, nil
+		}
+		if a.stop != "" && !a.quiet && !a.full {
+			a.st.Cut++ // a pass that ended early is counted, with the reason in the status
+		}
+		saveErr := a.save()
+		if a.quiet {
+			return res, saveErr
+		}
+		if err := a.report(c, res); err != nil {
+			return res, errors.Join(saveErr, err)
+		}
+		// the last look, just before the deferred unlock: a note written
+		// during save and report is read here. What remains: a note written
+		// between this look and the unlock waits for the next pass.
+		if round < archiveAgainRounds && more() {
+			continue
+		}
 		return res, saveErr
 	}
-	if err := a.report(c, res); err != nil {
-		return res, errors.Join(saveErr, err)
-	}
-	return res, saveErr
 }
 
 // pass lists the transcripts with their sizes now and uploads what the server
@@ -508,7 +529,14 @@ func archiveReportOff(c *cli, o usageSyncOptions) error {
 	if string(raw) == st.Reported && !reportDue(st.ReportedAt) {
 		return nil
 	}
-	if err := c.do("POST", "/api/v1/usage/transcript/status", body, nil); err != nil {
+	timeout := archiveReportTimeout
+	if o.Hook {
+		timeout = archiveReportHookTimeout // the hook's timeout covers the whole pass (WP-1466)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	_, err = c.callCtx(ctx, "POST", "/api/v1/usage/transcript/status", body)
+	cancel()
+	if err != nil {
 		return fmt.Errorf("telling the server the archive is off: %w", err)
 	}
 	st.Reported, st.ReportedAt = string(raw), archiveNow().UnixMilli()
@@ -821,6 +849,13 @@ func readArchivePiece(fh *os.File, off, size int64, known []string, maxLines, ma
 		}
 		over := n > int64(archiveMaxLine)
 		long, longN = nil, 0
+		var out []byte
+		var ok bool
+		var rc redactCount
+		if !over {
+			out, ok, rc = archiveRedact(data, known)
+			over = len(out) > archiveMaxLine // redaction can lengthen a line
+		}
 		if over {
 			if len(p.lines) > 0 {
 				break // what came before goes first; the next piece starts with the stub
@@ -829,7 +864,6 @@ func readArchivePiece(fh *os.File, off, size int64, known []string, maxLines, ma
 			pos += n
 			continue
 		}
-		out, ok, rc := archiveRedact(data, known)
 		reason := ""
 		if !ok {
 			reason = "redaction_failed"

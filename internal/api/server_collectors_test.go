@@ -42,3 +42,16 @@ func TestServerStatusTextShowsDroppedAndOff(t *testing.T) {
 		t.Errorf("only the collectors that count them:\n%s", out)
 	}
 }
+
+// A collector's problem is in the listing in the words the server gave
+// (WP-1466, audit 1234.1).
+func TestServerStatusTextShowsCollectorProblem(t *testing.T) {
+	now := time.Now()
+	out := serverStatusText(&core.ServerStatus{Version: "x", Started: now, Collectors: []core.CollectorHealth{
+		{Name: "transcript archive", Problem: "2 stored transcript pieces are missing on disk"},
+		{Name: "prep scores"},
+	}}, now)
+	if strings.Count(out, "problem:") != 1 || !strings.Contains(out, "problem: 2 stored transcript pieces are missing on disk") {
+		t.Errorf("listing:\n%s", out)
+	}
+}
