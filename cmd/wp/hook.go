@@ -128,8 +128,12 @@ calls in unattended sessions. They never fail a session, and transcripts are rea
 only for token counts, message times and model names, and for the report of an
 adversarial-review subagent, kept in its task's work log (WP-1089).
 
---no-prompts leaves prompt text out of the reports, a review's prompt and description included. --uninstall removes
-every Waypoint hook.`,
+--no-prompts leaves prompt text out of the reports, a review's prompt and
+description included. What each prompt report still carries is a SHA-256 of
+the prompt's whole normalised text (whitespace collapsed), so Waypoint can
+tell what it typed into the session from what a person typed; the digest
+is not the text, but anyone who can guess a short prompt can check it
+against its digest. --uninstall removes every Waypoint hook.`,
 			examples: []string{"wp hook claude", "wp hook claude --uninstall"}, run: hookClaude},
 		{name: "claude-event", hidden: true, summary: "the session hooks (run by Claude Code)",
 			run: func(c *cli, args []string) error {
@@ -203,7 +207,7 @@ func claudeSettingsPath() (string, error) {
 func hookClaude(c *cli, args []string) error {
 	fs := c.flags()
 	uninstall := fs.Bool("uninstall", false, "remove the hooks")
-	noPrompts := fs.Bool("no-prompts", false, "leave prompt text out of the reports")
+	noPrompts := fs.Bool("no-prompts", false, "leave prompt text out of the reports (a SHA-256 of each prompt is still sent)")
 	if _, err := c.parse(fs, args); err != nil {
 		return err
 	}

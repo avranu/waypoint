@@ -97,7 +97,7 @@ func cmdSetup(c *cli, args []string) error {
 	maxJobs := fs.Int("max-jobs", 0, "`N`: most jobs at once (default 1)")
 	noRunner := fs.Bool("no-runner", false, "don't install the runner")
 	noHooks := fs.Bool("no-hooks", false, "don't install the Claude Code hooks")
-	noPrompts := fs.Bool("no-prompts", false, "hooks leave prompt text out")
+	noPrompts := fs.Bool("no-prompts", false, "hooks leave prompt text out (a SHA-256 of each prompt is still sent)")
 	noAutoUpdate := fs.Bool("no-auto-update", false, "runner keeps this wp version")
 	yes := fs.Bool("yes", false, "go ahead without asking")
 	server := fs.String("server", "", "Waypoint `URL` (or the argument)")

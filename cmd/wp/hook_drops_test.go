@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core"
 )
 
 // A fake server for the drop-report tests: it records every call's events,
@@ -309,5 +311,34 @@ func TestPromptHookKeyIsTheSameOnEveryAttempt(t *testing.T) {
 	}
 	if second.Key == "" || second.Key == first.Key {
 		t.Errorf("the next invocation has key %q, the first %q: want its own", second.Key, first.Key)
+	}
+}
+
+// --no-prompts sends no prompt text, and says so: what goes in its place is
+// the SHA-256 of the normalised text, which the help names (WP-1370).
+func TestNoPromptsSendsTheDigestAndNoText(t *testing.T) {
+	s := dropEnv(t)
+	ds := &dropServer{}
+	ds.start(t)
+	const secret = "please rotate the key sk-live-4242 now"
+	s.hook(map[string]any{"session_id": "np1", "hook_event_name": "UserPromptSubmit", "prompt": secret, "cwd": t.TempDir()}, "--no-prompts")
+	ds.mu.Lock()
+	defer ds.mu.Unlock()
+	if len(ds.calls) != 1 || len(ds.calls[0]) != 1 {
+		t.Fatalf("calls = %v", ds.calls)
+	}
+	ev := ds.calls[0][0]
+	if ev.Prompt != "" || strings.Contains(ev.Title+ev.Prompt, "sk-live") {
+		t.Errorf("the prompt's text was sent: %q", ev.Prompt)
+	}
+	if want := core.PromptSum(secret); ev.PromptSum != want {
+		t.Errorf("prompt_sum = %q, want the SHA-256 of the normalised text %q", ev.PromptSum, want)
+	}
+	if len(ev.PromptSum) != 64 {
+		t.Errorf("prompt_sum %q is not a SHA-256 in hex", ev.PromptSum)
+	}
+	help := hookCmd.subs[0].about + hookCmd.subs[0].args
+	if !strings.Contains(help, "SHA-256") || !strings.Contains(help, "normalised") {
+		t.Errorf("wp hook claude's help doesn't say what --no-prompts still sends:\n%s", help)
 	}
 }
