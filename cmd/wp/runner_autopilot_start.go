@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core"
 )
 
 // A session of autopilot's own (WP-799, WP-ADR72): no one's session is
@@ -124,6 +126,9 @@ func runnerFeatureList() []string {
 	out := []string{"confine", "autopilot", "audit", "audit-scope", "autopilot_review", "request_lane", "message_lane", "gateway_agent", "gateway_lane", "task_kickoff"}
 	if _, err := exec.LookPath("tmux"); err == nil {
 		out = append(out, "autopilot_start")
+	}
+	if objectiveFeature() {
+		out = append(out, core.FeatureObjective) // reads an objective's round (WP-927)
 	}
 	if runtime.GOOS == "linux" {
 		out = append(out, "sandbox_drill") // the escape drill (WP-473)

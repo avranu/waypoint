@@ -373,6 +373,21 @@ func TestHookCountWait(t *testing.T) {
 	}
 }
 
+// The lock wait is the time left before the late point and, past it, the
+// floor. TestChainNudgeLateFloor widens the floor, so its shipped value is
+// held here: two of lockFileWithin's 25 ms sleeps, which is three tries.
+func TestHookLockWait(t *testing.T) {
+	late := hookLateAfter(hookNudgeTimeout)
+	setAge(t, 0)
+	if got := hookLockWait(late); got != late {
+		t.Errorf("fresh = %v, want %v", got, late)
+	}
+	setAge(t, 1800*time.Millisecond)
+	if got := hookLockWait(late); got != 50*time.Millisecond {
+		t.Errorf("late = %v, want the 50ms floor", got)
+	}
+}
+
 // A chain lock held for a moment past the late point costs a short wait, not
 // the count.
 func TestChainNudgeLateFloor(t *testing.T) {
@@ -386,6 +401,12 @@ func TestChainNudgeLateFloor(t *testing.T) {
 		t.Fatal(err)
 	}
 	setAge(t, 1800*time.Millisecond)
+	// Widen the floor so a slow runner delaying the release can't end the wait
+	// first; the lock is still held when chainNudge starts, and the wait ends
+	// when it is removed.
+	old := hookLockFloor
+	hookLockFloor = 5 * time.Second
+	t.Cleanup(func() { hookLockFloor = old })
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
