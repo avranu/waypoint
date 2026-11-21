@@ -5,6 +5,18 @@ package core
 // and ConfigChange, and a timeline of the values the hook saw change. The CLI
 // reads the machine; this only stores, bounds and counts. Nothing here is
 // guessed: a value the source did not carry is NULL and `missing` says why.
+//
+// A snapshot row is the full state as the hook saw it at SessionStart,
+// PostCompact and ConfigChange. Model, effort and permission-mode changes
+// between snapshots are rows in session_observed, so the state at a moment is
+// the latest snapshot at or before it plus the session_observed changes after
+// that snapshot. A snapshot column is NULL when that hook's payload did not
+// carry it, and `missing` says why.
+//
+// A session keeps its first snapshot and its newest 99. Rows removed between
+// them are counted as server_cap/snapshot in hook_drops, so for a session past
+// the cap the stretch between the first and the oldest kept row has no
+// snapshot.
 
 import (
 	"context"
@@ -18,6 +30,8 @@ import (
 
 const (
 	snapshotsPerSession = 100 // the first is always kept
+	dropsIDMax          = 64
+	dropReportKeep      = 30 * 24 * time.Hour
 	observedPerSession  = 400 // instruction_file and config_change rows
 	snapshotMaxBytes    = 64 << 10
 	dropKeyMax          = 80
@@ -79,6 +93,7 @@ type ObservedChange struct {
 
 // HookDrop is a count of hook data that was dropped.
 type HookDrop struct {
+	User    UserRef   `json:"user"`
 	Machine string    `json:"machine"`
 	Reason  string    `json:"reason"`
 	Event   string    `json:"event"`
@@ -114,7 +129,7 @@ func nbool(p *bool) any {
 func (s *Service) recordObserved(ctx context.Context, t *tx, actor *Actor, x *AgentSession, ev *HookEvent) error {
 	at := s.hookTime(ev)
 	machine := cmp(strings.TrimSpace(ev.Machine), "unknown")
-	if err := s.countDrops(ctx, t, actor, machine, at, ev.Drops); err != nil {
+	if err := s.countDrops(ctx, t, actor, machine, at, ev.Drops, ev.DropsID); err != nil {
 		return err
 	}
 	src := "hook:" + ev.Event
@@ -124,18 +139,28 @@ func (s *Service) recordObserved(ctx context.Context, t *tx, actor *Actor, x *Ag
 	switch ev.Event {
 	case "SessionStart", "PostModelSwitch":
 		if ev.Model != "" {
-			if err := s.observeValue(ctx, t, x.ID, at, "model", ev.Model, src); err != nil {
+			// A switch says what it was from and what was asked for.
+			detail := map[string]string{}
+			if ev.Event == "PostModelSwitch" {
+				if ev.FromModel != "" {
+					detail["from_model"] = clipRunes(ev.FromModel, 1000)
+				}
+				if ev.RequestedModel != "" {
+					detail["requested_model"] = clipRunes(ev.RequestedModel, 1000)
+				}
+			}
+			if err := s.observeValue(ctx, t, x.ID, at, "model", ev.Model, src, detail); err != nil {
 				return err
 			}
 		}
 	}
 	if ev.PermissionMode != "" {
-		if err := s.observeValue(ctx, t, x.ID, at, "permission_mode", ev.PermissionMode, src); err != nil {
+		if err := s.observeValue(ctx, t, x.ID, at, "permission_mode", ev.PermissionMode, src, nil); err != nil {
 			return err
 		}
 	}
 	if ev.Effort != "" {
-		if err := s.observeValue(ctx, t, x.ID, at, "effort", ev.Effort, src); err != nil {
+		if err := s.observeValue(ctx, t, x.ID, at, "effort", ev.Effort, src, nil); err != nil {
 			return err
 		}
 	}
@@ -155,8 +180,28 @@ func (s *Service) recordObserved(ctx context.Context, t *tx, actor *Actor, x *Ag
 }
 
 // countDrops adds the CLI's counts of what it dropped. The key is
-// "reason/event"; a malformed key is counted as such rather than skipped.
-func (s *Service) countDrops(ctx context.Context, t *tx, actor *Actor, machine string, at int64, drops map[string]int64) error {
+// "reason/event"; a malformed key is counted as such rather than skipped. A
+// report with an id already applied (the client sent it again after a lost
+// reply) adds nothing; an empty or over-long id is counted every time, as
+// older clients are.
+func (s *Service) countDrops(ctx context.Context, t *tx, actor *Actor, machine string, at int64, drops map[string]int64, id string) error {
+	if len(drops) == 0 {
+		return nil
+	}
+	if id != "" && len(id) <= dropsIDMax {
+		if _, err := t.ExecContext(ctx, `DELETE FROM hook_drop_reports WHERE at < ?`, at-dropReportKeep.Milliseconds()); err != nil {
+			return err
+		}
+		res, err := t.ExecContext(ctx, `INSERT INTO hook_drop_reports(user_id, report_id, at) VALUES (?,?,?) ON CONFLICT DO NOTHING`, actor.id(), id, at)
+		if err != nil {
+			return err
+		}
+		if n, err := res.RowsAffected(); err != nil {
+			return err
+		} else if n == 0 {
+			return nil
+		}
+	}
 	for k, n := range drops {
 		if n <= 0 {
 			continue
@@ -179,19 +224,52 @@ func (s *Service) addDrop(ctx context.Context, t *tx, actor *Actor, machine, rea
 	return err
 }
 
-// observeValue adds a row when the value differs from the session's last
-// observed one of that kind.
-func (s *Service) observeValue(ctx context.Context, t *tx, sid, at int64, kind, value, source string) error {
-	var last sql.NullString
-	err := t.QueryRowContext(ctx, `SELECT value FROM session_observed WHERE session_id = ? AND kind = ? ORDER BY at DESC, id DESC LIMIT 1`, sid, kind).Scan(&last)
+// observeValue puts a change into the session's timeline of that kind. The
+// baseline is the latest row at or before the event's time (ties by id), so an
+// event that arrives late is placed where it belongs: equal to the baseline,
+// nothing is written; otherwise a row is added with the baseline as prev, and
+// the next row after it is repaired (deleted if it now says the same, else
+// its prev becomes this value).
+func (s *Service) observeValue(ctx context.Context, t *tx, sid, at int64, kind, value, source string, detail map[string]string) error {
+	var prev sql.NullString
+	err := t.QueryRowContext(ctx, `SELECT value FROM session_observed WHERE session_id = ? AND kind = ? AND at <= ? ORDER BY at DESC, id DESC LIMIT 1`, sid, kind, at).Scan(&prev)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	if last.Valid && last.String == value {
+	if prev.Valid && prev.String == value {
 		return nil
 	}
-	_, err = t.ExecContext(ctx, `INSERT INTO session_observed(session_id, at, kind, value, prev, source) VALUES (?,?,?,?,?,?)`,
-		sid, at, kind, value, last, source)
+	d, err := json.Marshal(detail)
+	if err != nil {
+		return fmt.Errorf("observed detail: %w", err)
+	}
+	if detail == nil {
+		d = []byte("{}")
+	}
+	res, err := t.ExecContext(ctx, `INSERT INTO session_observed(session_id, at, kind, value, prev, source, detail) VALUES (?,?,?,?,?,?,?)`,
+		sid, at, kind, value, prev, source, string(d))
+	if err != nil {
+		return err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return err
+	}
+	var nid int64
+	var nval string
+	err = t.QueryRowContext(ctx, `SELECT id, value FROM session_observed WHERE session_id = ? AND kind = ? AND (at > ? OR (at = ? AND id > ?)) ORDER BY at, id LIMIT 1`,
+		sid, kind, at, at, id).Scan(&nid, &nval)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if nval == value {
+		_, err = t.ExecContext(ctx, `DELETE FROM session_observed WHERE id = ?`, nid)
+		return err
+	}
+	_, err = t.ExecContext(ctx, `UPDATE session_observed SET prev = ? WHERE id = ?`, value, nid)
 	return err
 }
 
@@ -272,9 +350,25 @@ func (s *Service) storeSnapshot(ctx context.Context, t *tx, actor *Actor, machin
 	return nil
 }
 
-// SessionSnapshots is the session's snapshots, oldest first.
+// ownSession finds a session its owner or an admin may read the machine
+// details of (absolute paths, settings hashes, inventory): like prompts, they
+// are not shown to a colleague who can see the session. A colleague who can
+// see it is refused; one who can't gets not found.
+func (s *Service) ownSession(ctx context.Context, actor *Actor, sessionID int64) error {
+	x, err := s.sessionByID(ctx, s.db.R, actor, sessionID)
+	if err != nil {
+		return err
+	}
+	if x.userID != actor.id() && !actor.isAdmin() {
+		return forbidden("a session's snapshots and observed changes are for its owner and admins")
+	}
+	return nil
+}
+
+// SessionSnapshots is the session's snapshots, oldest first. Owner and admins
+// only.
 func (s *Service) SessionSnapshots(ctx context.Context, actor *Actor, sessionID int64) ([]SessionSnapshot, error) {
-	if _, err := s.GetAgentSession(ctx, actor, sessionID); err != nil {
+	if err := s.ownSession(ctx, actor, sessionID); err != nil {
 		return nil, err
 	}
 	rows, err := s.db.R.QueryContext(ctx, `SELECT id, at, trigger_event, trigger_source, harness, entrypoint, harness_version, wp_version, model, effort, permission_mode,
@@ -317,9 +411,10 @@ func (s *Service) SessionSnapshots(ctx context.Context, actor *Actor, sessionID 
 	return out, rows.Err()
 }
 
-// SessionObserved is the session's observed changes, oldest first.
+// SessionObserved is the session's observed changes, oldest first. Owner and
+// admins only.
 func (s *Service) SessionObserved(ctx context.Context, actor *Actor, sessionID int64) ([]ObservedChange, error) {
-	if _, err := s.GetAgentSession(ctx, actor, sessionID); err != nil {
+	if err := s.ownSession(ctx, actor, sessionID); err != nil {
 		return nil, err
 	}
 	rows, err := s.db.R.QueryContext(ctx, `SELECT at, kind, value, prev, source, detail FROM session_observed WHERE session_id = ? ORDER BY at, id`, sessionID)
@@ -342,10 +437,14 @@ func (s *Service) SessionObserved(ctx context.Context, actor *Actor, sessionID i
 	return out, rows.Err()
 }
 
-// HookDrops is the counts of hook data dropped, for every machine (server
-// status).
-func (s *Service) HookDrops(ctx context.Context) ([]HookDrop, error) {
-	rows, err := s.db.R.QueryContext(ctx, `SELECT machine, reason, event, sum(dropped), min(first_at), max(last_at) FROM hook_drops GROUP BY machine, reason, event ORDER BY 4 DESC`)
+// HookDrops is the counts of hook data dropped, for every person and machine
+// (server status; admins only).
+func (s *Service) HookDrops(ctx context.Context, actor *Actor) ([]HookDrop, error) {
+	if err := actor.canReadServer(); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.R.QueryContext(ctx, `SELECT h.user_id, coalesce(u.username, ''), coalesce(u.display_name, ''), h.machine, h.reason, h.event, sum(h.dropped), min(h.first_at), max(h.last_at)
+		FROM hook_drops h LEFT JOIN users u ON u.id = h.user_id GROUP BY h.user_id, h.machine, h.reason, h.event ORDER BY 7 DESC, 1, 4`)
 	if err != nil {
 		return nil, err
 	}
@@ -354,7 +453,7 @@ func (s *Service) HookDrops(ctx context.Context) ([]HookDrop, error) {
 	for rows.Next() {
 		var d HookDrop
 		var f, l int64
-		if err := rows.Scan(&d.Machine, &d.Reason, &d.Event, &d.Dropped, &f, &l); err != nil {
+		if err := rows.Scan(&d.User.ID, &d.User.Username, &d.User.DisplayName, &d.Machine, &d.Reason, &d.Event, &d.Dropped, &f, &l); err != nil {
 			return nil, err
 		}
 		d.First, d.Last = msTime(f), msTime(l)

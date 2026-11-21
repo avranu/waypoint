@@ -172,7 +172,7 @@ func (s *Service) ServerStatus(ctx context.Context, actor *Actor) (*ServerStatus
 		s.log.WarnContext(ctx, "server status: collectors", "err", err)
 		out.Collectors = nil
 	}
-	if out.HookDrops, err = s.HookDrops(ctx); err != nil {
+	if out.HookDrops, err = s.HookDrops(ctx, actor); err != nil {
 		s.log.WarnContext(ctx, "server status: hook drops", "err", err)
 		out.HookDrops = []HookDrop{}
 	}
