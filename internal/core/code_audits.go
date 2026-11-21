@@ -116,7 +116,8 @@ type CodeAudit struct {
 	Instructions string `json:"instructions"`
 	// The criteria (WP-548): a recent target's period as asked (7d,
 	// 2026-10-28) and its start; the focus areas' keys; the paths read or
-	// left out; the lowest severity reported ("": all); the most findings.
+	// left out; the lowest severity reported ("": all); how many findings are
+	// shown at a time (WP-1421: not a limit on what is kept).
 	Since       string     `json:"since,omitempty"`
 	SinceAt     *time.Time `json:"since_at,omitempty"`
 	Focus       []string   `json:"focus"`

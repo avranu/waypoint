@@ -74,6 +74,9 @@ func TestReviewPostsTheFirstAndKeepsTheRest(t *testing.T) {
 	// The review says how to read the ones it didn't post, and they are in
 	// the pull request's to-do with the posted ones: an open one can hold
 	// the gate, so the agent has to be given it.
+	if page := fmt.Sprintf("as does https://wp.test/agents?tab=pulls&pr=%d", run.PR.ID); !strings.Contains(reviews[0], page) {
+		t.Errorf("the review doesn't link Waypoint's page (%s):\n%s", page, reviews[0])
+	}
 	if !strings.Contains(reviews[0], "`wp pr todo 5` lists them") {
 		t.Errorf("the review doesn't say where the rest are read:\n%s", reviews[0])
 	}
@@ -142,5 +145,29 @@ func TestReviewBodyLaterWithAPrivateFinding(t *testing.T) {
 	}
 	if !strings.Contains(body, "1 more finding past the 2 posted, kept in Waypoint") || strings.Contains(body, "least severe") {
 		t.Errorf("body:\n%s", body)
+	}
+}
+
+// With fewer findings that can be posted than the number shown, none is
+// kept past it (WP-1421, 1248.36).
+func TestKeepPastFewerThanShown(t *testing.T) {
+	private, err := newGlobSet([]string{"secret/**"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	placed := []placedFinding{
+		{Finding: Finding{File: "app/a.go"}, placement: "inline"},
+		{Finding: Finding{File: "app/b.go"}, placement: "withheld"},
+		{Finding: Finding{File: "app/c.go"}, placement: "body"},
+	}
+	for _, show := range []int{2, 3, 8} {
+		if later := keepPast(placed, show, private); later != 0 {
+			t.Errorf("show %d: later = %d", show, later)
+		}
+	}
+	for _, p := range placed {
+		if p.placement == placementLater {
+			t.Errorf("%s was made later", p.File)
+		}
 	}
 }

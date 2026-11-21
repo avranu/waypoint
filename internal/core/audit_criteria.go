@@ -15,7 +15,8 @@ import (
 // What an audit reads and looks for, said more exactly than one sentence
 // (WP-548): what landed on a branch over a period, the parts of the
 // repository to read or leave out, the areas to look hardest at, the lowest
-// severity worth reporting and how many findings at most. The server turns
+// severity worth reporting and how many findings are shown at a time (not a
+// limit on what is kept, WP-1421). The server turns
 // them into the prompt; the runner finds the period's first commit and
 // limits the diff to the paths (WP-ADR40).
 

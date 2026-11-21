@@ -65,7 +65,8 @@ func TestAuditPastTheGuardSaysSo(t *testing.T) {
 	}
 }
 
-// A rule or audit stored with the old top (30) or more still loads and runs.
+// A rule or audit stored with the old top (30) or more still loads and
+// runs, and what was stored is what is shown (WP-1421, 1248.37).
 func TestStoredMaxFindingsOverTheOldTopStillRuns(t *testing.T) {
 	ae := newAgentEnv(t)
 	for _, n := range []int{30, 50} {
@@ -73,16 +74,27 @@ func TestStoredMaxFindingsOverTheOldTopStillRuns(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%d: %v", n, err)
 		}
-		if _, err := ae.s.db.W.ExecContext(ae.ctx, `UPDATE code_audits SET max_findings = 250 WHERE id = ?`, a.ID); err != nil {
-			t.Fatal(err)
-		}
 		ae.work()
 		claim := ae.take()
 		ae.finish(claim.ID, "done", auditResult("Read it.", lowFindings(3)...), "")
 		got := ae.audit(a.ID)
-		if got.Status != AuditDone || got.MaxFindings != 250 || AuditShown(got) != 250 || len(got.Findings) != 3 {
-			t.Errorf("%d: %s %d %d", n, got.Status, got.MaxFindings, len(got.Findings))
+		if got.Status != AuditDone || got.MaxFindings != n || AuditShown(got) != n || got.Shown != n || len(got.Findings) != 3 {
+			t.Errorf("%d: %s max %d shown %d, %d findings", n, got.Status, got.MaxFindings, got.Shown, len(got.Findings))
 		}
+	}
+	// A stored value out of range (250) still runs and is shown as stored.
+	a, err := ae.s.RequestAudit(ae.ctx, ae.admin, AuditInput{Project: ae.p.Key, Instructions: "Look.", MaxFindings: 30, Via: "web"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ae.s.db.W.ExecContext(ae.ctx, `UPDATE code_audits SET max_findings = 250 WHERE id = ?`, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	ae.work()
+	claim := ae.take()
+	ae.finish(claim.ID, "done", auditResult("Read it.", lowFindings(3)...), "")
+	if got := ae.audit(a.ID); got.Status != AuditDone || got.MaxFindings != 250 || AuditShown(got) != 250 || len(got.Findings) != 3 {
+		t.Errorf("250: %s %d %d", got.Status, got.MaxFindings, len(got.Findings))
 	}
 	c, err := cleanAuditCriteria(AuditInput{MaxFindings: 100})
 	if err != nil || c.maxFindings != 100 {
@@ -90,6 +102,34 @@ func TestStoredMaxFindingsOverTheOldTopStillRuns(t *testing.T) {
 	}
 	if _, err := cleanAuditCriteria(AuditInput{MaxFindings: 101}); err == nil {
 		t.Error("101 was taken")
+	}
+}
+
+// The audit step of a rule whose stored max_findings is between 31 and 100
+// (the old top was 30) still runs, and the audit shows that many.
+func TestAutomationAuditStepStoredShownPastTheOldTop(t *testing.T) {
+	ae := newAgentEnv(t)
+	card := ae.addAuto(ae.p, "Week", Rule{Trigger: Trigger{Event: "manual"}, Actions: []Action{{Type: "audit", ID: "audit", Extra: map[string]any{
+		"target": "recent", "since": "3d"}, MaxFindings: 3}}})
+	for _, n := range []int{31, 60, 100} {
+		r := card.Rule
+		r.Actions[0].MaxFindings = n
+		if _, err := ae.s.UpdateAutomation(ae.ctx, ae.admin, card.ID, AutomationInput{Rule: &r}); err != nil {
+			t.Fatalf("%d: %v", n, err)
+		}
+		if _, err := ae.s.RunAutomationNow(ae.ctx, ae.admin, card.ID, nil, ""); err != nil {
+			t.Fatalf("%d: %v", n, err)
+		}
+		ae.work()
+		claim := ae.take()
+		ae.finish(claim.ID, "done", auditResult("Read it.", lowFindings(2)...), "")
+		list, err := ae.s.ListAudits(ae.ctx, ae.admin, AuditFilter{Project: ae.p.Key})
+		if err != nil || len(list) == 0 {
+			t.Fatalf("%d: %v %d", n, err, len(list))
+		}
+		if got := ae.audit(list[0].ID); got.MaxFindings != n || got.Shown != n || got.Status != AuditDone {
+			t.Errorf("%d: max %d shown %d status %s", n, got.MaxFindings, got.Shown, got.Status)
+		}
 	}
 }
 
@@ -208,5 +248,31 @@ func TestAuditShownIsOneServerSideNumber(t *testing.T) {
 	}
 	if out.Shown != checkClaimsMax+checkLeftOutMax || out.MaxFindings != 3 || len(got.Findings) != 5 {
 		t.Errorf("shown %d, max_findings %d, %d findings in %s", out.Shown, out.MaxFindings, len(got.Findings), b[:min(len(b), 200)])
+	}
+}
+
+// The "more" line appears only when there are more findings than shown: not
+// at exactly the number, nor under it (WP-1421, 1248.36).
+func TestAuditMoreLineBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		findings int
+		more     string
+	}{{4, ""}, {5, ""}, {6, "1 more finding: https://wp.test/audits/7"}} {
+		c := auditComment(auditWithFindings(tc.findings, 5), "https://wp.test")
+		if got := strings.Contains(c, " more finding"); got != (tc.more != "") || !strings.Contains(c, tc.more) {
+			t.Errorf("%d findings, shown 5, comment:\n%s", tc.findings, c)
+		}
+		if rows := strings.Count(c, "\n| ") - 1; rows != min(tc.findings, 5) {
+			t.Errorf("%d findings: %d rows", tc.findings, rows)
+		}
+	}
+}
+
+// The judge asks for every way the work falls short, and names no number
+// (WP-1421, 1248.35).
+func TestObjectiveJudgePromptNamesNoNumber(t *testing.T) {
+	p := objectiveJudgePrompt(&CodeAudit{Instructions: "Done means x.", MaxFindings: 4}, "")
+	if !strings.Contains(p, "Report every way it falls short") || strings.Contains(p, "At most") {
+		t.Errorf("prompt:\n%s", p)
 	}
 }

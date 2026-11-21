@@ -369,52 +369,48 @@ func TestCleanLead(t *testing.T) {
 	}
 }
 
-func TestAuditSchemaForLead(t *testing.T) {
-	panel := &AuditHelpers{Panel: []PanelCheck{{Name: "goals"}}}
-	for _, tc := range []struct {
-		name     string
-		a        *CodeAudit
-		wantLead bool
-	}{
-		{"no helpers", &CodeAudit{}, false},
-		{"verify only", &CodeAudit{Helpers: &AuditHelpers{Verify: true}}, false},
-		{"a panel", &CodeAudit{Helpers: panel}, false},
-		{"a panel and a cap", &CodeAudit{Helpers: panel, MaxFindings: 22}, false},
-		{"a cap, no panel", &CodeAudit{MaxFindings: 7}, false},
-	} {
-		s := auditSchema
-		if !json.Valid([]byte(s)) {
-			t.Errorf("%s: schema isn't JSON: %s", tc.name, s)
-			continue
+// The one audit schema has no lead property (the panel runs beside the
+// reviewer and never tells it anything) and no maxItems (the model is told
+// no number, WP-1421), and a panel audit's job is given that same schema.
+func TestAuditSchemaHasNoLeadAndNoMaxItems(t *testing.T) {
+	if !json.Valid([]byte(auditSchema)) {
+		t.Fatalf("schema isn't JSON: %s", auditSchema)
+	}
+	var parsed struct {
+		Properties struct {
+			Findings struct {
+				MaxItems int `json:"maxItems"`
+				Items    struct {
+					Required   []string       `json:"required"`
+					Properties map[string]any `json:"properties"`
+				} `json:"items"`
+			} `json:"findings"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(auditSchema), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	items := parsed.Properties.Findings.Items
+	if _, ok := items.Properties["lead"]; ok || slices.Contains(items.Required, "lead") {
+		t.Error("the schema has a lead")
+	}
+	if parsed.Properties.Findings.MaxItems != 0 || strings.Contains(auditSchema, "maxItems") {
+		t.Errorf("maxItems = %d: the model is told no number", parsed.Properties.Findings.MaxItems)
+	}
+	for _, k := range []string{"title", "path", "line", "severity", "problem", "confirm"} {
+		if !slices.Contains(items.Required, k) {
+			t.Errorf("%s is not required", k)
 		}
-		var parsed struct {
-			Properties struct {
-				Findings struct {
-					MaxItems int `json:"maxItems"`
-					Items    struct {
-						Required   []string       `json:"required"`
-						Properties map[string]any `json:"properties"`
-					} `json:"items"`
-				} `json:"findings"`
-			} `json:"properties"`
-		}
-		if err := json.Unmarshal([]byte(s), &parsed); err != nil {
-			t.Fatal(err)
-		}
-		items := parsed.Properties.Findings.Items
-		_, hasProp := items.Properties["lead"]
-		if hasProp != tc.wantLead || slices.Contains(items.Required, "lead") != tc.wantLead {
-			t.Errorf("%s: lead property %v, required %v; want %v", tc.name, hasProp, slices.Contains(items.Required, "lead"), tc.wantLead)
-		}
-		if parsed.Properties.Findings.MaxItems != 0 {
-			t.Errorf("%s: maxItems = %d: the model is told no number", tc.name, parsed.Properties.Findings.MaxItems)
-		}
-		// What was there stays required.
-		for _, k := range []string{"title", "path", "line", "severity", "problem", "confirm"} {
-			if !slices.Contains(items.Required, k) {
-				t.Errorf("%s: %s no longer required", tc.name, k)
-			}
-		}
+	}
+
+	ae := newAgentEnv(t)
+	if _, err := ae.s.RequestAudit(ae.ctx, ae.admin, AuditInput{Project: ae.p.Key, Instructions: "Look.", MaxFindings: 7, Via: "web",
+		purpose: AuditReview, helpers: &AuditHelpers{Panel: []PanelCheck{{Name: "goals", Ask: "a"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	ae.work()
+	if in := agentJobOf(t, ae.take()); in.JSONSchema != auditSchema {
+		t.Errorf("a panel audit's job has another schema:\n%s", in.JSONSchema)
 	}
 }
 

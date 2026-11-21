@@ -93,7 +93,8 @@ func (s *Service) reviewChunk(ctx context.Context, chains [][]ChainModel, prompt
 }
 
 // Output caps for the review's gateway calls (see defaultMaxTokens): a
-// review lists up to a few dozen findings with quotes, a verification one
+// review is told no number of findings and may list many, with quotes (an
+// answer cut off at the cap is salvaged, WP-1421); a verification one is a
 // short verdict per finding.
 const (
 	reviewMaxTokens = 16384

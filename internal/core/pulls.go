@@ -1447,7 +1447,7 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 	// limits what is kept.
 	show := opts.MaxFindings
 	if show <= 0 || show > findingsGuard {
-		show = reviewMaxFinding
+		show = reviewDefaultShown
 	}
 	// Every reviewer reviews each part; a part no reviewer could review is
 	// listed as not reviewed.

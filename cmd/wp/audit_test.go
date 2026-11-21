@@ -162,6 +162,13 @@ func TestAuditShowListsWhatTheServerSaysIsShown(t *testing.T) {
 	if out := check.text(); !strings.Contains(out, "Mark 5") || strings.Contains(out, "more: wp audit show") {
 		t.Errorf("a check with max_findings 3 and 5 findings:\n%s", out)
 	}
+	// At exactly the number shown, and under it, there is no line for more.
+	for _, n := range []int{5, 4} {
+		exact := auditView{ID: 9, Status: "done", Shown: 5, Findings: fs[:n]}
+		if out := exact.text(); strings.Contains(out, "more: wp audit show") || !strings.Contains(out, fmt.Sprintf("Mark %d", n)) {
+			t.Errorf("%d findings, shown 5:\n%s", n, out)
+		}
+	}
 	older := auditView{ID: 9, Status: "done", MaxFindings: 3, Findings: fs}
 	if out := older.text(); strings.Contains(out, "Mark 4") || !strings.Contains(out, "2 more: wp audit show 9 --all") {
 		t.Errorf("an older server's audit:\n%s", out)

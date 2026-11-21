@@ -289,10 +289,10 @@ func tomlStrings(s string) ([]string, error) {
 
 // Review limits.
 const (
-	reviewChunkChars = 35_000 // what free models answer within a few minutes
-	reviewMaxChunks  = 4
-	reviewMaxChunk   = 60_000 // one file bigger than a chunk is cut to this
-	reviewMaxFinding = 8      // how many a review posts when its rule sets no number (the model is told none)
+	reviewChunkChars   = 35_000 // what free models answer within a few minutes
+	reviewMaxChunks    = 4
+	reviewMaxChunk     = 60_000 // one file bigger than a chunk is cut to this
+	reviewDefaultShown = 8      // how many a review posts when its rule sets no number (the model is told none)
 )
 
 // placementLater is the placement of a finding kept but not posted: it is
