@@ -759,8 +759,9 @@ func (s *Service) addRevision(ctx context.Context, t *tx, noteID int64, kind, ti
 	if state == RevApproved {
 		rby, rat = nullUser(t.actor.id()), s.nowMS()
 	}
-	_, err := t.ExecContext(ctx, `INSERT INTO design_revisions(note_id, kind, title, body, base_id, state, user_id, agent, created_at, reviewed_by, reviewed_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?)`, noteID, kind, title, body, nullInt(base), state, nullUser(t.actor.id()), t.actor.creditAgent(), s.nowMS(), rby, rat)
+	sessID, sessTask := t.sessionStamp(ctx)
+	_, err := t.ExecContext(ctx, `INSERT INTO design_revisions(note_id, kind, title, body, base_id, state, user_id, agent, created_at, reviewed_by, reviewed_at, session_id, session_issue_id)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, noteID, kind, title, body, nullInt(base), state, nullUser(t.actor.id()), t.actor.creditAgent(), s.nowMS(), rby, rat, sessID, sessTask)
 	return err
 }
 
@@ -1076,8 +1077,8 @@ func (s *Service) ReviewDesign(ctx context.Context, actor *Actor, revID int64, a
 		case action == "merge":
 			title, body = n.Title, strings.TrimSpace(n.Body+"\n\n"+r.Body)
 			// The merged text is the addition's author's, approved by this person.
-			if _, err := t.ExecContext(ctx, `INSERT INTO design_revisions(note_id, kind, title, body, base_id, state, user_id, agent, created_at, reviewed_by, reviewed_at, review_note)
-				SELECT note_id, 'edit', ?, ?, ?, 'approved', user_id, agent, ?, ?, ?, 'merged addition #' || id FROM design_revisions WHERE id = ?`,
+			if _, err := t.ExecContext(ctx, `INSERT INTO design_revisions(note_id, kind, title, body, base_id, state, user_id, agent, created_at, reviewed_by, reviewed_at, review_note, session_id, session_issue_id)
+				SELECT note_id, 'edit', ?, ?, ?, 'approved', user_id, agent, ?, ?, ?, 'merged addition #' || id, session_id, session_issue_id FROM design_revisions WHERE id = ?`,
 				title, body, nullInt(latestEdit(ctx, t, n.ID)), now, nullUser(actor.id()), now, revID); err != nil {
 				return err
 			}

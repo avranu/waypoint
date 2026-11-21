@@ -127,6 +127,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/glossary", a(s.listGlossary))
 	mux.HandleFunc("GET /api/v1/glossary/lookup", a(s.lookupGlossary))
 	mux.HandleFunc("POST /api/v1/glossary", a(s.createGlossary))
+	mux.HandleFunc("POST /api/v1/knowledge/shown", a(s.noteShown))
 	mux.HandleFunc("GET /api/v1/glossary/{id}", a(s.getGlossary))
 	mux.HandleFunc("PATCH /api/v1/glossary/{id}", a(s.updateGlossary))
 	mux.HandleFunc("DELETE /api/v1/glossary/{id}", a(s.deleteGlossary))

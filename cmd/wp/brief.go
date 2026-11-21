@@ -384,6 +384,12 @@ func (c *cli) governingSection(key, project, title, body, extra, question string
 	}
 	text := title + "\n" + body + "\n" + extra
 	var lines []string
+	// shownRef is what each line lists, to tell the server what was shown.
+	shownRef := map[string]shownItem{}
+	list := func(line, typ, ref string) {
+		lines = append(lines, line)
+		shownRef[line] = shownItem{Type: typ, Ref: ref, Project: project}
+	}
 	seen := map[string]bool{}
 	addNote := func(ref string) {
 		var n govNote
@@ -411,7 +417,7 @@ func (c *cli) governingSection(key, project, title, body, extra, question string
 		case n.Requested != nil:
 			state = "written for " + n.Requested.Issue + ", a person's task"
 		}
-		lines = append(lines, fmt.Sprintf("  %s %s (%s): %s — %s  [wp spec %s]", n.Code, n.Kind, state, truncRunes(n.Title, 70), noteSummary(n.Body, 260), n.Code))
+		list(fmt.Sprintf("  %s %s (%s): %s — %s  [wp spec %s]", n.Code, n.Kind, state, truncRunes(n.Title, 70), noteSummary(n.Body, 260), n.Code), "design", n.Code)
 	}
 	addPage := func(ref string) bool {
 		var p struct {
@@ -436,7 +442,7 @@ func (c *cli) governingSection(key, project, title, body, extra, question string
 		if dup {
 			return true
 		}
-		lines = append(lines, fmt.Sprintf("  %s %s: %s — %s  [wp page show %s]", p.Code, p.Category, truncRunes(p.Title, 70), noteSummary(p.Body, 200), p.Code))
+		list(fmt.Sprintf("  %s %s: %s — %s  [wp page show %s]", p.Code, p.Category, truncRunes(p.Title, 70), noteSummary(p.Body, 200), p.Code), "page", p.Code)
 		return true
 	}
 
@@ -489,7 +495,7 @@ func (c *cli) governingSection(key, project, title, body, extra, question string
 		}
 	}
 	for _, g := range c.glossaryFor(text+"\n"+question, project, terms) {
-		lines = append(lines, "  "+g)
+		list("  "+g.line, "glossary", g.term)
 	}
 	if question != "" && !compact {
 		q := url.Values{"q": {question}, "kinds": {"design,pages"}, "limit": {"3"}, "format": {"text"}}
@@ -500,7 +506,9 @@ func (c *cli) governingSection(key, project, title, body, extra, question string
 			for _, l := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
 				// the hit lines ("design #93 Title [decision] WP"), not the snippets under them
 				if t := strings.TrimSpace(l); (strings.HasPrefix(t, "design #") || strings.HasPrefix(t, "page #")) && len(lines) < 12 {
-					lines = append(lines, "  "+truncRunes(t, 150))
+					if f := strings.Fields(t); len(f) >= 2 {
+						list("  "+truncRunes(t, 150), strings.TrimSuffix(f[0], " "), strings.TrimPrefix(f[1], "#"))
+					}
 				}
 			}
 		}
@@ -510,7 +518,9 @@ func (c *cli) governingSection(key, project, title, body, extra, question string
 	}
 	out := "Governs this (read the spec before changing what it covers; proposed notes are suggestions):\n"
 	left := budget - codeindex.Tokens(out)
+	var printed []shownItem
 	for _, l := range lines {
+		ref := shownRef[l]
 		if compact {
 			l = truncRunes(l, 150)
 		}
@@ -519,13 +529,15 @@ func (c *cli) governingSection(key, project, title, body, extra, question string
 			break
 		}
 		out += l + "\n"
+		printed = append(printed, ref)
 	}
+	c.noteShown("brief", printed)
 	return out
 }
 
 // glossaryFor finds the glossary terms the text uses (or links with
 // [[Term]]) and gives their one-sentence definitions.
-func (c *cli) glossaryFor(text, project string, linked []string) []string {
+func (c *cli) glossaryFor(text, project string, linked []string) []glossHit {
 	path := "/api/v1/glossary"
 	if project != "" {
 		path += "?project=" + url.QueryEscape(project)
@@ -544,8 +556,8 @@ func (c *cli) glossaryFor(text, project string, linked []string) []string {
 		isLinked[strings.ToLower(l)] = true
 	}
 	type hit struct {
-		line string
-		n    int
+		glossHit
+		n int
 	}
 	var hits []hit
 	for _, g := range all {
@@ -565,7 +577,7 @@ func (c *cli) glossaryFor(text, project string, linked []string) []string {
 			need = 3 // one word (Take, Key, Claim) is often everyday English
 		}
 		if n >= need {
-			hits = append(hits, hit{fmt.Sprintf("%s (glossary): %s  [wp define %q]", g.Term, noteSummary(g.Definition, 160), g.Term), n})
+			hits = append(hits, hit{glossHit{fmt.Sprintf("%s (glossary): %s  [wp define %q]", g.Term, noteSummary(g.Definition, 160), g.Term), g.Term}, n})
 		}
 	}
 	for i := range hits { // few, most-used first
@@ -575,14 +587,38 @@ func (c *cli) glossaryFor(text, project string, linked []string) []string {
 			}
 		}
 	}
-	var out []string
+	var out []glossHit
 	for _, h := range hits {
 		if len(out) == 4 {
 			break
 		}
-		out = append(out, h.line)
+		out = append(out, h.glossHit)
 	}
 	return out
+}
+
+// glossHit is a glossary line `wp brief` lists and the term it is about.
+type glossHit struct{ line, term string }
+
+// shownItem is something `wp brief` printed for the agent: a glossary term,
+// or a page or design note by code (or number, from a search hit).
+type shownItem struct {
+	Type    string `json:"type"`
+	Ref     string `json:"ref"`
+	Project string `json:"project,omitempty"`
+}
+
+// noteShown tells the server what was printed, so shown can be counted
+// against looked up (WP-ADR145 point 7). Only an agent in a session counts;
+// a person at a terminal reading the brief is not a showing. A failure is
+// said on stderr once, not swallowed.
+func (c *cli) noteShown(via string, items []shownItem) {
+	if len(items) == 0 || c.agentHeader() == "" {
+		return
+	}
+	if err := c.do("POST", "/api/v1/knowledge/shown", map[string]any{"via": via, "items": items}, nil); err != nil {
+		fmt.Fprintln(os.Stderr, "wp: could not record what the brief showed:", err)
+	}
 }
 
 // countWord counts whole-word occurrences of w in s (both lower case).

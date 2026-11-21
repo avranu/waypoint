@@ -827,6 +827,19 @@ func (s *Service) GetPrep(ctx context.Context, a *Actor, key string, shown bool)
 		// agentic prep's (WP-ADR104).
 		s.prepPolicyApply(ctx, a, i, p, shown && !a.ReadOnly)
 	}
+	if shown && a.IsAgent() && !a.ReadOnly && p.State == "ready" && p.Notes != nil && len(p.Notes.Terms) > 0 {
+		// The glossary terms the agent was handed (after the policy: a held-out prep shows none).
+		project := i.Key[:max(strings.LastIndex(i.Key, "-"), 0)]
+		refs := make([]ShownRef, 0, len(p.Notes.Terms))
+		for _, t := range p.Notes.Terms {
+			refs = append(refs, ShownRef{Type: KGlossary, Ref: t.Term, Project: project})
+		}
+		if _, unknown, err := s.NoteShown(ctx, a, "prep", refs); err != nil {
+			s.log.WarnContext(ctx, "record prep terms shown", "task", i.Key, "err", err)
+		} else if unknown > 0 {
+			s.log.InfoContext(ctx, "prep terms that name no glossary entry", "task", i.Key, "count", unknown)
+		}
+	}
 	return p, nil
 }
 
