@@ -1,6 +1,8 @@
 package codeindex
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -92,5 +94,35 @@ func TestTraceRewritesUnknownBase(t *testing.T) {
 	r := introducedByPR5(t)
 	if _, err := TraceRewrites(r.dir, "nope", "HEAD", time.Now()); err == nil || !strings.Contains(err.Error(), "merge-tree") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// A ref that starts with a dash is an option to git (--output=FILE writes a
+// file; --upload-pack=CMD names a program), so a base or head like that is
+// refused before any git runs, and IndexCommit's parent likewise.
+func TestTraceRewritesRefusesRefsThatAreOptions(t *testing.T) {
+	r := newRepo(t)
+	r.write("a.go", "package a\n")
+	r.commit("start", 5)
+	out := filepath.Join(t.TempDir(), "x")
+	for _, bad := range []string{"--output=" + out, "--upload-pack=touch " + out, "-p", "main\nHEAD", "ma\x1bin", "HEAD\x00"} {
+		if _, err := TraceRewrites(r.dir, bad, "HEAD", time.Now()); err == nil {
+			t.Errorf("base %q: no error", bad)
+		} else if !strings.Contains(err.Error(), "not usable") {
+			t.Errorf("base %q: %v", bad, err)
+		}
+		if _, err := TraceRewrites(r.dir, "main", bad, time.Now()); err == nil {
+			t.Errorf("head %q: no error", bad)
+		}
+		if _, err := IndexCommit(r.dir, bad); err == nil {
+			t.Errorf("IndexCommit parent %q: no error", bad)
+		}
+	}
+	if _, err := os.Stat(out); err == nil {
+		t.Errorf("git ran the option: %s exists", out)
+	}
+	// A real ref still works.
+	if _, err := TraceRewrites(r.dir, "main", "HEAD", time.Now()); err != nil {
+		t.Errorf("main..HEAD: %v", err)
 	}
 }

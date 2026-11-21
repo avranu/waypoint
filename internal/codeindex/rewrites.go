@@ -5,7 +5,23 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 )
+
+// CheckRef refuses a revision git would read as an option (a leading dash:
+// --output=FILE, --upload-pack=CMD) or that holds a control character, a
+// newline or a NUL. Every ref a user supplies passes it before it reaches git.
+func CheckRef(ref string) error {
+	if strings.HasPrefix(ref, "-") {
+		return fmt.Errorf("ref %q is not usable: it starts with a dash, which git reads as an option", ref)
+	}
+	for _, r := range ref {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("ref %q is not usable: it holds a control character", ref)
+		}
+	}
+	return nil
+}
 
 // TraceRewrites blames the lines that merging head into base would replace
 // (WP-782): which pull requests put them there, and when. It is TraceFix on
@@ -19,7 +35,12 @@ func TraceRewrites(root, base, head string, now time.Time) (*FixTrace, error) {
 	if base == "" || head == "" {
 		return nil, errors.New("a base and a head are needed")
 	}
-	out, err := gitOut(root, "merge-tree", "--write-tree", "-X", "theirs", base, head)
+	for _, ref := range []string{base, head} {
+		if err := CheckRef(ref); err != nil {
+			return nil, err
+		}
+	}
+	out, err := gitOut(root, "merge-tree", "--write-tree", "-X", "theirs", "--end-of-options", base, head)
 	tree, _, _ := strings.Cut(out, "\n")
 	tree = strings.TrimSpace(tree)
 	if tree == "" {
@@ -51,6 +72,9 @@ func TraceRewrites(root, base, head string, now time.Time) (*FixTrace, error) {
 // IndexCommit is a commit object of what is staged in root, on parent, for
 // blaming a change wp ship is about to commit. No ref points to it.
 func IndexCommit(root, parent string) (string, error) {
+	if err := CheckRef(parent); err != nil {
+		return "", err
+	}
 	tree, err := gitOut(root, "write-tree")
 	if err != nil {
 		return "", fmt.Errorf("git write-tree: %w", err)

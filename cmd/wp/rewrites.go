@@ -69,6 +69,11 @@ func (c *cli) rewrittenTasks(key, baseFlag string) []rewrittenTask {
 	if key == "" {
 		return nil
 	}
+	// A --base git would read as an option is refused before git runs.
+	if err := codeindex.CheckRef(baseFlag); err != nil {
+		_, _ = fmt.Fprintf(c.err, "wp: not noting rewritten work: base: %v\n", err)
+		return nil
+	}
 	root, err := localGit("rev-parse", "--show-toplevel")
 	if err != nil {
 		return nil

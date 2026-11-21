@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -104,5 +106,30 @@ func TestRewritesTextTitleIsOnePlainLine(t *testing.T) {
 	}
 	if strings.Count(got, "\n") != 0 {
 		t.Errorf("more than one line: %q", got)
+	}
+}
+
+// A --base that starts with a dash would reach git as an option
+// (--output=FILE, --upload-pack=CMD): it is refused before git runs at all.
+func TestRewrittenTasksRefusesABaseThatIsAnOption(t *testing.T) {
+	dir := t.TempDir()
+	log := filepath.Join(dir, "ran")
+	shim := "#!/bin/sh\necho \"$@\" >> " + log + "\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(shim), 0o755); err != nil { // #nosec G306 -- a test shim must be executable
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	for _, bad := range []string{"--output=/tmp/x", "--upload-pack=touch /tmp/y", "-p", "main\nx", "ma\x1bin"} {
+		var errb bytes.Buffer
+		c := &cli{err: &errb, out: &bytes.Buffer{}}
+		if got := c.rewrittenTasks("WP-1", bad); got != nil {
+			t.Errorf("base %q: found %v", bad, got)
+		}
+		if !strings.Contains(errb.String(), "base") {
+			t.Errorf("base %q: stderr %q does not name the base", bad, errb.String())
+		}
+	}
+	if b, err := os.ReadFile(log); err == nil {
+		t.Errorf("git ran: %s", b)
 	}
 }
