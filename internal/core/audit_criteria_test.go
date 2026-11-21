@@ -108,10 +108,8 @@ func TestAuditAnswerKeep(t *testing.T) {
 	if note := h.keepNote(ca, findingsGuard+3); !strings.Contains(note, "held 103") || !strings.Contains(note, "3 were cut") || !strings.Contains(note, "kept in the audit") {
 		t.Errorf("guard note = %q", note)
 	}
-	for _, a := range []*CodeAudit{{MaxFindings: 4}, {}, {Purpose: AuditReview}, {MaxFindings: 50}} {
-		if s := auditSchemaFor(a); strings.Contains(s, "maxItems") {
-			t.Errorf("the model is told a number: %s", s)
-		}
+	if strings.Contains(auditSchema, "maxItems") {
+		t.Errorf("the model is told a number: %s", auditSchema)
 	}
 	if AuditShown(&CodeAudit{}) != 15 || AuditShown(&CodeAudit{MaxFindings: 50}) != 50 {
 		t.Error("shown at a time: 0 is 15, a stored 50 is kept")

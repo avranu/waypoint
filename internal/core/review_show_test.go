@@ -71,4 +71,54 @@ func TestReviewPostsTheFirstAndKeepsTheRest(t *testing.T) {
 	if len(run.Findings) != 9 || later != 4 || !strings.Contains(run.Summary, "5 findings and 4 more kept") {
 		t.Errorf("%d findings stored, %d later, summary %q", len(run.Findings), later, run.Summary)
 	}
+	// The review says how to read the ones it didn't post, and they are in
+	// the pull request's to-do with the posted ones: an open one can hold
+	// the gate, so the agent has to be given it.
+	if !strings.Contains(reviews[0], "`wp pr todo 5` lists them") {
+		t.Errorf("the review doesn't say where the rest are read:\n%s", reviews[0])
+	}
+	todo, err := pe.s.PRWorkPacket(pe.ctx, pe.admin, run.PR.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept := 0
+	for _, c := range todo.Comments {
+		if c.Kind == "finding" {
+			kept++
+		}
+	}
+	if kept != 4 || !strings.Contains(todo.Text, "Distinct problem number 9") {
+		t.Errorf("%d of the 4 unposted findings are in the to-do:\n%s", kept, todo.Text)
+	}
+}
+
+// Past the number posted, a withheld finding stays withheld and takes no
+// place, and one on a private file is posted anyway.
+func TestKeepPast(t *testing.T) {
+	private, err := newGlobSet([]string{"secret/**"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := func(file, placement string) placedFinding {
+		return placedFinding{Finding: Finding{File: file}, placement: placement}
+	}
+	placed := []placedFinding{
+		at("secret/a.go", "withheld"),
+		at("app/a.go", "inline"),
+		at("app/b.go", "body"),
+		at("app/c.go", "inline"),
+		at("secret/b.go", "inline"),
+		at("secret/c.go", "withheld"),
+		at("app/d.go", "body"),
+	}
+	if later := keepPast(placed, 2, private); later != 2 {
+		t.Errorf("later = %d, want 2", later)
+	}
+	var got []string
+	for _, p := range placed {
+		got = append(got, p.placement)
+	}
+	if want := "withheld inline body later inline withheld later"; strings.Join(got, " ") != want {
+		t.Errorf("placements = %s, want %s", strings.Join(got, " "), want)
+	}
 }

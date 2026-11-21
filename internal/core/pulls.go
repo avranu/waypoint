@@ -1521,11 +1521,12 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 	found = normalizeFindings(found, findingsGuard)
 	o.trusted = countVerify(found, VerifyTrusted)
 	o.placed = placeFindings(found, files, private)
-	// The first show, worst first, go on the pull request; the rest are
-	// stored and counted in the review's body (placementLater).
-	for n := show; n < len(o.placed); n++ {
-		o.placed[n].placement = placementLater
-		o.later++
+	o.later = keepPast(o.placed, show, private)
+	if o.later > 0 {
+		o.readAt = fmt.Sprintf("`wp pr todo %d` lists them", fp.Number)
+		if base := s.BaseURL(); base != "" {
+			o.readAt += fmt.Sprintf(", as does %s/agents?tab=pulls&pr=%d", base, pr.ID)
+		}
 	}
 	o.note = s.reviewNote(ctx)
 

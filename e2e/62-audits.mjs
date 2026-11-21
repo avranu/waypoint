@@ -450,7 +450,8 @@ let recentID;
   ok((await p.locator('li[id^="finding-"]').count()) === 5, "the page lists 5 findings");
   const showMore = p.getByRole("button", { name: "Show 7 more" });
   ok(await showMore.isVisible(), "and offers Show 7 more");
-  await p.screenshot({ path: `${out}/show-5-of-12-${(p.viewportSize() || {}).width}.png`, fullPage: true });
+  await showMore.scrollIntoViewIfNeeded();
+  await p.screenshot({ path: `${out}/show-5-of-12-${(p.viewportSize() || {}).width}.png` });
   await showMore.click();
   ok((await p.locator('li[id^="finding-"]').count()) === 12, "which shows all 12");
   ok(((await api("GET", `/audits/${more.id}`)).findings || []).length === 12, "and the API holds all 12");
@@ -459,7 +460,8 @@ let recentID;
   await p.locator('li[id^="finding-"]').first().waitFor();
   ok(await p.getByRole("button", { name: "Show 7 more" }).isVisible(), "at 390px too");
   ok(!(await p.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)), "no sideways scroll at 390px");
-  await p.screenshot({ path: `${out}/show-5-of-12-390.png`, fullPage: true });
+  await p.getByRole("button", { name: "Show 7 more" }).scrollIntoViewIfNeeded();
+  await p.screenshot({ path: `${out}/show-5-of-12-390.png` });
   await p.setViewportSize({ width: 1280, height: 900 });
 }
 

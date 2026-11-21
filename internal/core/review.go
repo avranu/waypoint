@@ -630,6 +630,29 @@ func placeFindings(fs []Finding, files []fileDiff, private globSet) []placedFind
 	return out
 }
 
+// keepPast leaves the first show findings that can be posted, worst first,
+// on the pull request and marks the rest placementLater: stored, counted
+// in the review's body and given to the agent with the review's comments
+// (WP-1421). It returns how many. A withheld one is neither: it takes no
+// place among those posted and stays withheld. One on a private file is
+// posted whatever the number: a verdict on a finding that isn't posted is
+// answered in the pull request's conversation with its claim, where a
+// mirror copies it.
+func keepPast(placed []placedFinding, show int, private globSet) (later int) {
+	posting := 0
+	for n := range placed {
+		switch {
+		case placed[n].placement == "withheld":
+		case posting < show || private.match(placed[n].File):
+			posting++
+		default:
+			placed[n].placement = placementLater
+			later++
+		}
+	}
+	return later
+}
+
 // fitSuggestion gives a one-line fix the indentation of the line it
 // replaces (models often drop it); a fix that changes nothing is dropped.
 func fitSuggestion(sug, orig string) string {
@@ -699,6 +722,7 @@ type reviewOutcome struct {
 	cut      bool
 	noise    int
 	later    int    // findings kept but past how many the review posts
+	readAt   string // how to read those: the command and, where Waypoint has an address, the page
 	guardCut int    // findings past the guard (findingsGuard), not kept
 	belowMin int    // findings under the rule's minimum severity, not posted
 	minSev   string // that minimum
@@ -806,7 +830,11 @@ func reviewBody(sha string, o reviewOutcome) string {
 		notes = append(notes, s)
 	}
 	if n := o.later; n > 0 {
-		notes = append(notes, fmt.Sprintf("%d more finding%s, the least severe, kept in Waypoint and not posted here: open the pull request there to read them", n, plural(n)))
+		s := fmt.Sprintf("%d more finding%s, the least severe, kept in Waypoint and not posted here", n, plural(n))
+		if o.readAt != "" {
+			s += ": " + o.readAt
+		}
+		notes = append(notes, s)
 	}
 	if n := o.guardCut; n > 0 {
 		notes = append(notes, fmt.Sprintf("%d finding%s past the guard of %d against a runaway answer not kept", n, plural(n), findingsGuard))

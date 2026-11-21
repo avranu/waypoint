@@ -382,7 +382,7 @@ func TestAuditSchemaForLead(t *testing.T) {
 		{"a panel and a cap", &CodeAudit{Helpers: panel, MaxFindings: 22}, false},
 		{"a cap, no panel", &CodeAudit{MaxFindings: 7}, false},
 	} {
-		s := auditSchemaFor(tc.a)
+		s := auditSchema
 		if !json.Valid([]byte(s)) {
 			t.Errorf("%s: schema isn't JSON: %s", tc.name, s)
 			continue

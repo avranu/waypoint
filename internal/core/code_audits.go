@@ -877,7 +877,7 @@ func (s *Service) advanceAudit(ctx context.Context, id int64) {
 	for a.Slot < len(a.chain) {
 		m := a.chain[a.Slot]
 		in := AgentJob{CLI: m.CLI, Model: m.Model, Prompt: a.prompt, Repo: repo.cloneURL(), Base: a.Ref, DiffFrom: a.Base, ReadOnly: true, Permission: AgentRead,
-			JSONSchema: auditSchemaFor(a), DiffPaths: a.Paths, DiffExclude: a.Exclude, Helpers: a.Helpers}
+			JSONSchema: auditSchema, DiffPaths: a.Paths, DiffExclude: a.Exclude, Helpers: a.Helpers}
 		if a.Helpers != nil && len(a.Helpers.Panel) > 0 {
 			// A copy: the prior runs go to this job only, never the audit's record.
 			h := *a.Helpers

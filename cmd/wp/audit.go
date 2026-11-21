@@ -32,8 +32,11 @@ ends.
 
 -m says what to look for. --model repeats for a fallback chain used when
 one is busy or out of quota; --model gateway/audit asks the gateway
-gateway's own agent, where there is one. --focus, --path, --exclude, --min-severity and
---show N (how many findings wp audit show and the audit's page list at a time; the model is told no number) narrow it; an audit whose paths match nothing runs no model.
+gateway's own agent, where there is one. --focus, --path, --exclude and
+--min-severity narrow it; an audit whose paths match nothing runs no model.
+--show N is how many findings wp audit show and the audit's page list at a
+time (default 15; --all lists every one). It is not a limit: the model is
+told no number and every finding is kept.
 --fix also makes a task for Claude to check and fix the real findings.
 
 Findings are claims to check; record your verdict with wp audit mark (12.3 is

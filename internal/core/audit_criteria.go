@@ -248,10 +248,6 @@ func AuditShown(a *CodeAudit) int {
 	return auditDefaultFindings
 }
 
-// auditSchemaFor is auditSchema as every model is asked for it: no number
-// of findings, worst first (WP-1421; min_severity asks for less).
-func auditSchemaFor(a *CodeAudit) string { return auditSchema }
-
 // auditGuard is the most findings any audit keeps: a guard against a
 // runaway answer, not the limit a person asked for (WP-1320). A check of a
 // session's marks may report every mark and what the session left out.
