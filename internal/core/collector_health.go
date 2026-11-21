@@ -13,6 +13,12 @@ package core
 // repo's fixes says nothing about a repo no runner can reach, so a repo is
 // stalled when its own oldest fix has waited and nothing in it was collected
 // since (a trace that found no cause counts: the collector worked).
+// The transcript archive is judged per machine (user and machine), the same
+// way: a machine is stalled when its own bytes have waited, or it stopped
+// reporting its archive while its usage sync still arrives (silent), and
+// nothing of its own was stored since. A machine that switched the archive
+// off is not waiting. A collector may also count what it lost (dropped); the
+// hourly check tells admins when that total grew, at most daily.
 // A fix begins to wait when it can be traced: at the later of its pull
 // request's merge and the link that ties a bug task to it, so a bug linked
 // today to a fix merged last week has not waited a week.
@@ -57,6 +63,10 @@ const (
 // and repos (repo, waiting, oldest_ms).
 const EvCollectorStalled = "collector.stalled"
 
+// EvCollectorDropped: the total a collector counted as lost grew (WP-1466).
+// + name, about, dropped (the total), grew_by (since the last telling), again.
+const EvCollectorDropped = "collector.dropped"
+
 // NotifyCollector is the notification kind of a stalled collector.
 const NotifyCollector = "collector"
 
@@ -75,13 +85,22 @@ type collector struct {
 	args    func(now time.Time) []any
 	// output selects the ms of the newest thing it produced, NULL for none.
 	output string
-	// repoWaiting and repoOutput, when set, make the stall per repo.
+	// group names what the stall is judged by when it is not the repo
+	// ("machine"), groupHelp what to do about one, groupWhere where the last
+	// output may have been ("in any machine").
+	group, groupHelp string
+	// repoWaiting and repoOutput, when set, make the stall per repo (or group).
 	// repoWaiting selects, for each repo with something waiting, (lower(repo),
 	// repo, count, earliest ms it began to wait); it uses the waiting query's
 	// predicate. repoOutput takes one argument, the stall cutoff in ms, and
 	// selects (lower(repo), newest output ms) for repos with output since.
 	repoWaiting string
 	repoOutput  string
+	// dropped, when set, selects one number: the total this collector has
+	// counted as lost, so that data it handled did not arrive whole. The hourly
+	// check tells admins when it grew. off selects how many of its machines
+	// opted out (they are not waiting).
+	dropped, off string
 	// scans says, by plan alias, why a query reads a whole table: each hourly
 	// check pays for it, so it is stated (TestCollectorQueriesUseIndexes fails
 	// on any scan of a table not listed here).
@@ -156,14 +175,41 @@ var collectors = []collector{
 		},
 	},
 	{
-		name:    "transcript archive",
-		unit:    "machines",
-		about:   "each machine's wp uploads its sessions' transcripts to the archive (wp usage sync); the drops it counted are in wp usage machines",
-		waiting: `SELECT COUNT(*), MIN(m.transcript_pending_since) FROM usage_machines m WHERE m.transcript_pending_bytes > 0`,
-		args:    noArgs,
-		output:  `SELECT MAX(m.transcript_piece_at) FROM usage_machines m`,
+		name:  "transcript archive",
+		unit:  "machines",
+		about: "each machine's wp uploads its sessions' transcripts to the archive (wp usage sync); what it dropped and what it could not send yet is in wp usage machines",
+		group: "machine", groupHelp: "Check that wp usage sync runs there and that the archive is not full (wp server status); a machine that should not archive sets WP_USAGE_ARCHIVE=off.",
+		waiting:     `SELECT COUNT(*), MIN(` + archiveSince + `) FROM usage_machines m WHERE ` + archiveWaitingWhere,
+		args:        func(time.Time) []any { return []any{collectorStallAfter.Milliseconds()} },
+		repoWaiting: `SELECT m.user_id || '/' || m.machine, u.username || '/' || m.machine, COUNT(*), MIN(` + archiveSince + `) FROM usage_machines m JOIN users u ON u.id = m.user_id WHERE ` + archiveWaitingWhere + ` GROUP BY m.user_id, m.machine`,
+		repoOutput:  `SELECT user_id || '/' || machine, transcript_piece_at FROM usage_machines WHERE transcript_piece_at >= ?`,
+		output:      `SELECT MAX(m.transcript_piece_at) FROM usage_machines m`,
+		dropped:     `SELECT COALESCE(SUM(j.value), 0) FROM usage_machines m, json_each(m.transcript_dropped) j WHERE j.key IN ` + transcriptLostReasons,
+		off:         `SELECT COUNT(*) FROM usage_machines WHERE transcript_off = 1`,
 	},
 }
+
+// What waits for the transcript archive, by machine: bytes the machine says
+// are pending, or an archive status that stopped (the machine reported before
+// and its usage sync still arrives more than ?1 ms after that report; the
+// client re-reports every few hours, so a healthy idle machine is not this).
+// A machine that opted out waits for nothing.
+const archiveWaitingWhere = `coalesce(m.transcript_off, 0) = 0 AND (m.transcript_pending_bytes > 0 OR ` + archiveSilent + `)`
+const archiveSilent = `(m.transcript_status_at IS NOT NULL AND m.last_sync_at > m.transcript_status_at + ?1)`
+
+// archiveSince is when the machine began to wait: its bytes began to, or its
+// status stopped, whichever is earlier.
+const archiveSince = `min(coalesce(CASE WHEN m.transcript_pending_bytes > 0 THEN coalesce(m.transcript_pending_since, m.transcript_status_at) END,
+	CASE WHEN ` + archiveSilent + ` THEN m.transcript_status_at END),
+	coalesce(CASE WHEN ` + archiveSilent + ` THEN m.transcript_status_at END,
+	CASE WHEN m.transcript_pending_bytes > 0 THEN coalesce(m.transcript_pending_since, m.transcript_status_at) END))`
+
+// transcriptLostReasons are the drop reasons (cmd/wp/usage_archive.go) that
+// mean data did not reach the archive whole: a line replaced by a stub.
+// The others are not losses: an upload that failed or a file the server
+// refused stays pending and goes again, and a state reset or a disagreement
+// is settled by the server's answer of where its copy ends.
+const transcriptLostReasons = `('line_too_large', 'redaction_failed')`
 
 // CollectorHealth is how one collector stood at the last hourly check.
 type CollectorHealth struct {
@@ -174,6 +220,10 @@ type CollectorHealth struct {
 	Stalled      bool       `json:"stalled"`
 	StalledSince *time.Time `json:"stalled_since,omitempty"`
 	CheckedAt    time.Time  `json:"checked_at"`
+	// Dropped is the total this collector has counted as lost (nil: it counts
+	// none); Off how many of its machines opted out (nil: not applicable).
+	Dropped *int64 `json:"dropped,omitempty"`
+	Off     *int64 `json:"off,omitempty"`
 }
 
 // collectorReading is what one collector's queries said.
@@ -184,6 +234,8 @@ type collectorReading struct {
 	// the longest waiting first.
 	perRepo bool
 	repos   []repoWait
+	// dropped and off, for a collector that has the queries (nil: none).
+	dropped, off *int64
 }
 
 // repoWait is one repo's waiting work.
@@ -339,6 +391,19 @@ func (s *Service) readCollector(ctx context.Context, c collector, now time.Time)
 		}
 		r.repos = repos
 	}
+	for _, q := range []struct {
+		sql string
+		to  **int64
+	}{{c.dropped, &r.dropped}, {c.off, &r.off}} {
+		if q.sql == "" {
+			continue
+		}
+		var n int64
+		if err := s.db.R.QueryRowContext(ctx, q.sql).Scan(&n); err != nil {
+			return r, fmt.Errorf("counts: %w", err)
+		}
+		*q.to = &n
+	}
 	return r, nil
 }
 
@@ -391,11 +456,15 @@ func (s *Service) recordCollector(ctx context.Context, c collector, r collectorR
 		if stalled && told.Valid {
 			keepTold, keepRepos = told.Int64, toldRepos
 		}
-		if _, err := t.ExecContext(ctx, `INSERT INTO collector_health(name, stalled_since, alerted_at, alerted_repos, waiting, oldest_wait_at, last_output_at, checked_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		if _, err := t.ExecContext(ctx, `INSERT INTO collector_health(name, stalled_since, alerted_at, alerted_repos, waiting, oldest_wait_at, last_output_at, checked_at, dropped, off)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(name) DO UPDATE SET stalled_since = excluded.stalled_since, alerted_at = excluded.alerted_at, alerted_repos = excluded.alerted_repos,
-				waiting = excluded.waiting, oldest_wait_at = excluded.oldest_wait_at, last_output_at = excluded.last_output_at, checked_at = excluded.checked_at`,
-			c.name, stalledSince, keepTold, keepRepos, r.waiting, nullMS(r.oldest), nullMS(r.last), now.UnixMilli()); err != nil {
+				waiting = excluded.waiting, oldest_wait_at = excluded.oldest_wait_at, last_output_at = excluded.last_output_at, checked_at = excluded.checked_at,
+				dropped = excluded.dropped, off = excluded.off`,
+			c.name, stalledSince, keepTold, keepRepos, r.waiting, nullMS(r.oldest), nullMS(r.last), now.UnixMilli(), ptrVal(r.dropped), ptrVal(r.off)); err != nil {
+			return err
+		}
+		if err := s.noteDropped(ctx, t, c, r, now); err != nil {
 			return err
 		}
 		if !stalled {
@@ -427,6 +496,9 @@ func (s *Service) recordCollector(ctx context.Context, c collector, r collectorR
 		if c.unit != "" {
 			data["unit"] = c.unit
 		}
+		if c.group != "" {
+			data["group"], data["group_help"] = c.group, c.groupHelp
+		}
 		if early {
 			data["new_repos"], data["new_by_repo"] = len(fresh), repoLabels(fresh)
 		}
@@ -440,6 +512,42 @@ func (s *Service) recordCollector(ctx context.Context, c collector, r collectorR
 		t.emit(&Event{Kind: EvCollectorStalled, Data: data})
 		return nil
 	})
+}
+
+func ptrVal(p *int64) any {
+	if p == nil {
+		return nil
+	}
+	return *p
+}
+
+// noteDropped tells the admins when the total a collector counted as lost
+// grew past what the last telling said, at most once collectorRepeat (what is
+// held back by that is told at the next check after it). The conditional
+// UPDATE lets only one server's check tell.
+func (s *Service) noteDropped(ctx context.Context, t *tx, c collector, r collectorReading, now time.Time) error {
+	if r.dropped == nil {
+		return nil
+	}
+	var toldTotal, toldAt sql.NullInt64
+	if err := t.QueryRowContext(ctx, `SELECT dropped_told, dropped_alerted_at FROM collector_health WHERE name = ?`, c.name).Scan(&toldTotal, &toldAt); err != nil {
+		return err
+	}
+	if *r.dropped <= toldTotal.Int64 || (toldAt.Valid && now.Sub(msTime(toldAt.Int64)) < collectorRepeat) {
+		return nil
+	}
+	res, err := t.ExecContext(ctx, `UPDATE collector_health SET dropped_told = ?, dropped_alerted_at = ? WHERE name = ? AND coalesce(dropped_alerted_at, 0) = ?`,
+		*r.dropped, now.UnixMilli(), c.name, toldAt.Int64)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil
+	}
+	s.log.WarnContext(ctx, "collector dropped data", "collector", c.name, "dropped", *r.dropped, "grew_by", *r.dropped-toldTotal.Int64)
+	t.emit(&Event{Kind: EvCollectorDropped, Data: map[string]any{"name": c.name, "about": c.about, "dropped": *r.dropped,
+		"grew_by": *r.dropped - toldTotal.Int64, "again": toldAt.Valid}})
+	return nil
 }
 
 func stalledSinceMS(since sql.NullInt64, now time.Time) int64 {
@@ -467,15 +575,23 @@ func (s *Service) notifyCollector(ctx context.Context, e *Event) {
 	title := fmt.Sprintf("%s has stalled: %d%s waiting, nothing collected for %s", name, dataInt(e, "waiting"), unit,
 		ShortDuration(collectorStallAfter))
 	lastWhere := "the last output was "
+	noun := "repo"
+	if g := dataStr(e, "group"); g != "" {
+		noun = g
+	}
 	if e.Data["per_repo"] == true {
 		title = fmt.Sprintf("%s has stalled in %s: %d waiting, nothing collected there for %s", name,
-			plural1(int(dataInt(e, "stalled_repos")), "repo"), dataInt(e, "waiting"), ShortDuration(collectorStallAfter))
-		lastWhere = "the last output, in any repo, was "
+			plural1(int(dataInt(e, "stalled_repos")), noun), dataInt(e, "waiting"), ShortDuration(collectorStallAfter))
+		lastWhere = "the last output, in any " + noun + ", was "
 	}
 	body := fmt.Sprintf("%s. The oldest has waited %s; %s%s. Likely no runner holds a checkout to do it, or the work fails before it records anything: wp server status lists the collectors, wp server log --level warn the failures.",
 		dataStr(e, "about"), ShortDuration(now.Sub(msTime(dataInt(e, "oldest_ms")))), lastWhere, lastOutputText(dataInt(e, "last_ms"), now))
 	if by := dataStr(e, "by_repo"); by != "" {
-		body += " Stalled repos (waiting, oldest): " + by + ". A repo no runner holds a checkout of waits for good: attach a runner with one, or detach the repo."
+		if help := dataStr(e, "group_help"); help != "" {
+			body += " Stalled " + noun + "s (waiting, oldest): " + by + ". " + help
+		} else {
+			body += " Stalled repos (waiting, oldest): " + by + ". A repo no runner holds a checkout of waits for good: attach a runner with one, or detach the repo."
+		}
 	}
 	if e.Data["again"] == true {
 		body = "Still stalled. " + body
@@ -488,10 +604,22 @@ func (s *Service) notifyCollector(ctx context.Context, e *Event) {
 	}
 }
 
+// notifyCollectorDropped tells the admins a collector's lost total grew.
+func (s *Service) notifyCollectorDropped(ctx context.Context, e *Event) {
+	title := fmt.Sprintf("%s has dropped %d (up %d)", dataStr(e, "name"), dataInt(e, "dropped"), dataInt(e, "grew_by"))
+	body := fmt.Sprintf("%s. What it dropped did not reach the collector whole, so a stub stands where the data was: wp usage machines shows which machine and why. This tells when the total grows, at most once a day.", dataStr(e, "about"))
+	if e.Data["again"] == true {
+		body = "Still dropping. " + body
+	}
+	for _, id := range s.userIDsWhere(ctx, `SELECT id FROM users WHERE is_admin = 1 AND disabled = 0 ORDER BY id`) {
+		s.notifyURL(ctx, id, nil, NotifyCollector, title, body, "")
+	}
+}
+
 // CollectorHealthList is the collectors as the last check found them, in
 // the order they are listed; one not checked yet is left out.
 func (s *Service) CollectorHealthList(ctx context.Context) ([]CollectorHealth, error) {
-	rows, err := s.db.R.QueryContext(ctx, `SELECT name, stalled_since, waiting, oldest_wait_at, last_output_at, checked_at FROM collector_health`)
+	rows, err := s.db.R.QueryContext(ctx, `SELECT name, stalled_since, waiting, oldest_wait_at, last_output_at, checked_at, dropped, off FROM collector_health`)
 	if err != nil {
 		return nil, err
 	}
@@ -499,10 +627,16 @@ func (s *Service) CollectorHealthList(ctx context.Context) ([]CollectorHealth, e
 	by := map[string]CollectorHealth{}
 	for rows.Next() {
 		var h CollectorHealth
-		var since, oldest, last sql.NullInt64
+		var since, oldest, last, dropped, off sql.NullInt64
 		var checked int64
-		if err := rows.Scan(&h.Name, &since, &h.Waiting, &oldest, &last, &checked); err != nil {
+		if err := rows.Scan(&h.Name, &since, &h.Waiting, &oldest, &last, &checked, &dropped, &off); err != nil {
 			return nil, err
+		}
+		if dropped.Valid {
+			h.Dropped = &dropped.Int64
+		}
+		if off.Valid {
+			h.Off = &off.Int64
 		}
 		h.Stalled = since.Valid
 		if since.Valid {

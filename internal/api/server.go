@@ -516,8 +516,11 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 		status, msg = http.StatusBadGateway, err.Error()
 	case errors.Is(err, errTooMany):
 		status, msg = http.StatusTooManyRequests, err.Error()
+	case errors.Is(err, core.ErrTranscriptQuota):
+		// the archive is full: the client keeps the file and tries again
+		status, msg = http.StatusInsufficientStorage, core.TranscriptQuotaRefusal
 	}
-	if status >= 500 {
+	if status >= 500 && status != http.StatusInsufficientStorage {
 		// The middleware logs it, once, with the route and the time taken.
 		if n := noteFrom(r); n != nil {
 			n.err = err

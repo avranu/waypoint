@@ -86,11 +86,12 @@ func open(ctx context.Context, log *slog.Logger, logs *core.LogRing) (*core.Serv
 	}
 	go core.WarmLogin() // the dummy login hash, off the start path (WP-1398)
 	svc := core.New(d, core.Config{
-		BaseURL:       env("WAYPOINT_BASE_URL", "http://localhost:8080"),
-		BackupDir:     backupDir(path),
-		BackupKeep:    keep,
-		TranscriptDir: transcriptDir(path),
-		Egress:        core.EgressPolicy{BlockPrivate: envBool("WAYPOINT_EGRESS_BLOCK_PRIVATE")},
+		BaseURL:         env("WAYPOINT_BASE_URL", "http://localhost:8080"),
+		BackupDir:       backupDir(path),
+		BackupKeep:      keep,
+		TranscriptDir:   transcriptDir(path),
+		TranscriptMaxMB: transcriptMaxMB(log),
+		Egress:          core.EgressPolicy{BlockPrivate: envBool("WAYPOINT_EGRESS_BLOCK_PRIVATE")},
 
 		MaxAttachmentMB: maxAttachmentMB(log),
 		Logs:            logs,
@@ -400,6 +401,22 @@ func serve(ctx context.Context, log *slog.Logger) error {
 	svc.Close()
 	svc.Wait()
 	return err
+}
+
+// transcriptMaxMB reads WAYPOINT_TRANSCRIPT_MAX_MB, the most the transcript
+// archive stores before it refuses uploads (0 or unset: no cap). Nothing is
+// ever deleted to make room.
+func transcriptMaxMB(log *slog.Logger) int {
+	v := env("WAYPOINT_TRANSCRIPT_MAX_MB", "")
+	if v == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		log.Warn("WAYPOINT_TRANSCRIPT_MAX_MB must be a number of megabytes, 0 for no cap; using no cap", "value", v)
+		return 0
+	}
+	return n
 }
 
 // transcriptDir is where the transcript archive's compressed pieces go:

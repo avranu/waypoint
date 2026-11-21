@@ -24,3 +24,21 @@ func TestServerStatusTextShowsCollectors(t *testing.T) {
 		t.Errorf("only one stalled:\n%s", out)
 	}
 }
+
+// What a collector dropped and how many of its machines opted out are in the
+// listing; a collector that counts neither says nothing (audit 1218.10, .35).
+func TestServerStatusTextShowsDroppedAndOff(t *testing.T) {
+	now := time.Now()
+	three, two, zero := int64(3), int64(2), int64(0)
+	out := serverStatusText(&core.ServerStatus{Version: "x", Started: now, Collectors: []core.CollectorHealth{
+		{Name: "transcript archive", Dropped: &three, Off: &two},
+		{Name: "other", Dropped: &zero},
+		{Name: "prep scores"},
+	}}, now)
+	if !strings.Contains(out, "dropped 3") || !strings.Contains(out, "2 off") || !strings.Contains(out, "dropped 0") {
+		t.Errorf("listing:\n%s", out)
+	}
+	if strings.Count(out, "dropped") != 2 || strings.Count(out, " off") != 1 {
+		t.Errorf("only the collectors that count them:\n%s", out)
+	}
+}

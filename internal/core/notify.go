@@ -118,6 +118,10 @@ func (s *Service) notifyFor(ctx context.Context, actor *Actor, e *Event) {
 		s.notifyCollector(ctx, e)
 		return
 	}
+	if e.Kind == EvCollectorDropped {
+		s.notifyCollectorDropped(ctx, e)
+		return
+	}
 	if e.Kind == EvReviewsDown {
 		s.notifyReviewsDown(ctx, e)
 		return

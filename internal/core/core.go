@@ -40,6 +40,9 @@ type Config struct {
 	// TranscriptDir holds the transcript archive's compressed pieces
 	// (WAYPOINT_TRANSCRIPT_DIR, WP-1466); empty keeps no archive.
 	TranscriptDir string
+	// TranscriptMaxMB caps the archive's stored bytes (0: no cap); an upload
+	// that would pass it is refused (ErrTranscriptQuota).
+	TranscriptMaxMB int
 	// MaxAttachmentMB bounds one attached file (WAYPOINT_MAX_ATTACHMENT_MB);
 	// 0 means DefaultMaxAttachmentMB.
 	MaxAttachmentMB int

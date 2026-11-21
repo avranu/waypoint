@@ -181,6 +181,15 @@ type UsageTranscripts struct {
 	Dropped      map[string]int64 `json:"dropped"`
 	LastPieceAt  *time.Time       `json:"last_piece_at"`
 	ReportedAt   *time.Time       `json:"reported_at"`
+	// The passes (nil: unknown, the machine has not said): off is the
+	// archive switched off on it (WP_USAGE_ARCHIVE), pass_ms and pass_max_ms
+	// the last and the longest pass, stop why the last ended early ("" ran to
+	// the end), cut how many passes ended early since the machine began.
+	Off       *bool   `json:"off"`
+	PassMS    *int64  `json:"pass_ms"`
+	PassMaxMS *int64  `json:"pass_max_ms"`
+	Stop      *string `json:"stop"`
+	Cut       *int64  `json:"cut"`
 }
 
 // UsagePerson is someone with usage an admin may look at.
@@ -547,6 +556,17 @@ func (s *Service) usagePeople(ctx context.Context) ([]UsagePerson, error) {
 	return out, rows.Err()
 }
 
+// UsageMachines lists the machines that report for a person (who: "" is you;
+// admins may name anyone, or "all"), with what each says of its transcript
+// archive: pending bytes, drops, the passes and whether it opted out.
+func (s *Service) UsageMachines(ctx context.Context, actor *Actor, who string) ([]UsageMachine, error) {
+	uids, everyone, _, err := s.usageWho(ctx, actor, who)
+	if err != nil {
+		return nil, err
+	}
+	return s.usageMachines(ctx, &usageScope{uids: uids, everyone: everyone})
+}
+
 func (s *Service) usageMachines(ctx context.Context, sc *usageScope) ([]UsageMachine, error) {
 	var where string
 	var args []any
@@ -562,7 +582,8 @@ func (s *Service) usageMachines(ctx context.Context, sc *usageScope) ([]UsageMac
 	// share is one line, with each person's unknown-kind counts added up.
 	// #nosec G202 -- where is built from fixed conditions; values are bound
 	rows, err := s.db.R.QueryContext(ctx, `SELECT machine, last_sync_at, last_status_at, wp_version, parsed, skipped, unknown,
-			transcript_pending_bytes, transcript_pending_files, transcript_dropped, transcript_status_at, transcript_piece_at
+			transcript_pending_bytes, transcript_pending_files, transcript_dropped, transcript_status_at, transcript_piece_at,
+			transcript_off, transcript_pass_ms, transcript_pass_max_ms, transcript_stop, transcript_cut
 		FROM usage_machines WHERE `+where+` ORDER BY machine, last_sync_at`, args...)
 	if err != nil {
 		return nil, err
@@ -576,9 +597,10 @@ func (s *Service) usageMachines(ctx context.Context, sc *usageScope) ([]UsageMac
 		var unknown sql.NullString
 		var tr UsageTranscripts
 		var dropped string
-		var trAt, trPiece sql.NullInt64
+		var trAt, trPiece, off, passMS, passMax, cut sql.NullInt64
+		var stop sql.NullString
 		if err := rows.Scan(&m.Name, &sync, &status, &m.Version, &m.Parsed, &m.Skipped, &unknown,
-			&tr.PendingBytes, &tr.PendingFiles, &dropped, &trAt, &trPiece); err != nil {
+			&tr.PendingBytes, &tr.PendingFiles, &dropped, &trAt, &trPiece, &off, &passMS, &passMax, &stop, &cut); err != nil {
 			return nil, err
 		}
 		if trAt.Valid || trPiece.Valid {
@@ -587,6 +609,11 @@ func (s *Service) usageMachines(ctx context.Context, sc *usageScope) ([]UsageMac
 				return nil, fmt.Errorf("transcript drop counts of %s: %w", m.Name, err)
 			}
 			tr.LastPieceAt, tr.ReportedAt = ptrTime(trPiece), ptrTime(trAt)
+			if off.Valid {
+				b := off.Int64 == 1
+				tr.Off = &b
+			}
+			tr.PassMS, tr.PassMaxMS, tr.Stop, tr.Cut = ptrInt(passMS), ptrInt(passMax), ptrStr(stop), ptrInt(cut)
 			m.Transcripts = &tr
 		}
 		m.LastSyncAt, m.LastStatusAt = ptrTime(sync), ptrTime(status)
@@ -622,6 +649,18 @@ func (s *Service) usageMachines(ctx context.Context, sc *usageScope) ([]UsageMac
 				}
 				if t := m.Transcripts.LastPieceAt; t != nil && (o.Transcripts.LastPieceAt == nil || t.After(*o.Transcripts.LastPieceAt)) {
 					o.Transcripts.LastPieceAt = t
+				}
+				// one name, two people's machines: off only when both are, the
+				// passes cut short add up, the longest is the longest
+				if o.Transcripts.Off != nil && m.Transcripts.Off != nil {
+					b := *o.Transcripts.Off && *m.Transcripts.Off
+					o.Transcripts.Off = &b
+				} else {
+					o.Transcripts.Off = nil
+				}
+				o.Transcripts.Cut = sumKnown(o.Transcripts.Cut, m.Transcripts.Cut)
+				if m.Transcripts.PassMaxMS != nil && (o.Transcripts.PassMaxMS == nil || *m.Transcripts.PassMaxMS > *o.Transcripts.PassMaxMS) {
+					o.Transcripts.PassMaxMS = m.Transcripts.PassMaxMS
 				}
 			}
 		}
@@ -1058,4 +1097,16 @@ func (s *Service) usageUnusedInto(ctx context.Context, sc *usageScope, o *UsageO
 	}
 	o.Unused, o.NoInvent = append(o.Unused, items...), !inv
 	return nil
+}
+
+// sumKnown adds two counts that may be unknown; unknown only when both are.
+func sumKnown(a, b *int64) *int64 {
+	switch {
+	case a == nil:
+		return b
+	case b == nil:
+		return a
+	}
+	n := *a + *b
+	return &n
 }

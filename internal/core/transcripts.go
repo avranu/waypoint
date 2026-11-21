@@ -51,6 +51,14 @@ const (
 // write to the archive: the client recognises it and stops the pass quietly.
 const TranscriptJobRefusal = "a runner job's token does not write the transcript archive; the runner's own sync covers its sessions"
 
+// ErrTranscriptQuota: storing the piece would pass the archive's cap
+// (WAYPOINT_TRANSCRIPT_MAX_MB). The client holds the file and tries again.
+var ErrTranscriptQuota = errors.New(TranscriptQuotaRefusal)
+
+// TranscriptQuotaRefusal is what an upload is told, with status 507, when the
+// archive is full: the client recognises it and keeps the file pending.
+const TranscriptQuotaRefusal = "the transcript archive is full (WAYPOINT_TRANSCRIPT_MAX_MB); nothing is deleted, so an admin must raise the cap or move the archive"
+
 // ErrTranscriptsOff: the server has no transcript directory.
 var ErrTranscriptsOff = errors.New("this server keeps no transcript archive (WAYPOINT_TRANSCRIPT_DIR=off)")
 
@@ -68,8 +76,13 @@ type TranscriptPieceIn struct {
 	FP       string
 	From, To int64 // byte offsets in the machine's file
 	Redacted bool
-	Version  string // the client's
-	Gzip     []byte // the lines, gzip-compressed
+	// Redactions is how many string values the client's redaction blanked in
+	// the piece, RedactionRules the same by rule name; nil: the client did
+	// not say (stored as unknown, never as 0).
+	Redactions     *int64
+	RedactionRules map[string]int64
+	Version        string // the client's
+	Gzip           []byte // the lines, gzip-compressed
 }
 
 // TranscriptPieceResult says what became of a piece.
@@ -238,6 +251,10 @@ func (s *Service) IngestTranscript(ctx context.Context, actor *Actor, in Transcr
 	case len(in.Gzip) == 0 || len(in.Gzip) > TranscriptMaxUpload:
 		return nil, invalid("a piece is 1 byte to %d MiB compressed", TranscriptMaxUpload>>20)
 	}
+	redactions, rules, err := redactionRecord(in.Redactions, in.RedactionRules)
+	if err != nil {
+		return nil, err
+	}
 	zr, err := gzip.NewReader(bytes.NewReader(in.Gzip))
 	if err != nil {
 		return nil, invalid("the piece is not gzip: %v", err)
@@ -276,6 +293,12 @@ func (s *Service) IngestTranscript(ctx context.Context, actor *Actor, in Transcr
 	if err != nil || !store {
 		return res, err
 	}
+	// The cap is checked here against the kept total, so a refused piece never
+	// writes its file, and again in the transaction, where writes are serial.
+	if err := s.transcriptRoom(ctx, s.db.R, len(in.Gzip)); err != nil {
+		s.countQuotaRefusal(ctx)
+		return nil, err
+	}
 	// The name is fixed by what the piece is, so a retry writes the same file.
 	rel := filepath.Join(strconv.FormatInt(uid, 10), hex16(in.Machine, in.Session),
 		fmt.Sprintf("%s-%d-%d-%d-%s.jsonl.gz", hex16(in.File), gen, in.From, in.To, shaHex[:12]))
@@ -304,10 +327,13 @@ func (s *Service) IngestTranscript(ctx context.Context, actor *Actor, in Transcr
 			*res = TranscriptPieceResult{Status: "behind", Have: h.to, Gen: h.gen} // another piece began a generation meanwhile: resume from its answer
 			return nil
 		}
+		if err := s.transcriptRoom(ctx, t, len(in.Gzip)); err != nil {
+			return err
+		}
 		if _, err := t.ExecContext(ctx, `INSERT INTO transcript_pieces(user_id, machine, session, file, kind, gen, fp, from_off, to_off,
-				raw_bytes, stored_bytes, sha256, redacted, client_version, path, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+				raw_bytes, stored_bytes, sha256, redacted, redactions, redaction_rules, client_version, path, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			uid, in.Machine, in.Session, in.File, in.Kind, gen, in.FP, in.From, in.To, len(raw), len(in.Gzip), shaHex,
-			boolInt(in.Redacted), clip(in.Version, 40), filepath.ToSlash(rel), now); err != nil {
+			boolInt(in.Redacted), redactions, rules, clip(in.Version, 40), filepath.ToSlash(rel), now); err != nil {
 			return err
 		}
 		if _, err := t.ExecContext(ctx, `INSERT INTO usage_machines(user_id, machine, transcript_piece_at) VALUES (?,?,?)
@@ -319,11 +345,74 @@ func (s *Service) IngestTranscript(ctx context.Context, actor *Actor, in Transcr
 	})
 	if err != nil || res.Status != "stored" {
 		s.dropUnreferencedPiece(rel) // the row did not commit
+		if errors.Is(err, ErrTranscriptQuota) {
+			s.countQuotaRefusal(ctx)
+		}
 		if err != nil {
 			return nil, err
 		}
 	}
 	return res, nil
+}
+
+// redactionRecord checks what the client says its redaction blanked and
+// returns it as the columns keep it: NULL when it said nothing. Only rule
+// names are kept (a short lower-case name), never what was blanked.
+func redactionRecord(n *int64, rules map[string]int64) (count, byRule any, err error) {
+	if n == nil {
+		if len(rules) > 0 {
+			return nil, nil, invalid("redaction_rules without redactions")
+		}
+		return nil, nil, nil
+	}
+	if *n < 0 {
+		return nil, nil, invalid("redactions is not negative")
+	}
+	if len(rules) > 12 {
+		return nil, nil, invalid("at most 12 redaction rules")
+	}
+	for k, v := range rules {
+		if !redactionRuleRE.MatchString(k) || v < 0 {
+			return nil, nil, invalid("a redaction rule is a short lower-case name with a count")
+		}
+	}
+	if len(rules) == 0 {
+		return *n, nil, nil
+	}
+	b, err := json.Marshal(rules)
+	if err != nil {
+		return nil, nil, err
+	}
+	return *n, string(b), nil
+}
+
+var redactionRuleRE = regexp.MustCompile(`^[a-z][a-z_]{0,29}$`)
+
+// transcriptRoom says whether n more stored bytes fit under the cap
+// (Config.TranscriptMaxMB; 0 is none). The total is the kept one, not a scan.
+func (s *Service) transcriptRoom(ctx context.Context, q rowQuerier, n int) error {
+	if s.cfg.TranscriptMaxMB <= 0 {
+		return nil
+	}
+	var have int64
+	if err := q.QueryRowContext(ctx, `SELECT stored_bytes FROM transcript_totals WHERE id = 1`).Scan(&have); err != nil {
+		return err
+	}
+	if have+int64(n) > int64(s.cfg.TranscriptMaxMB)<<20 {
+		return ErrTranscriptQuota
+	}
+	return nil
+}
+
+// countQuotaRefusal keeps the count of uploads the cap refused, and when.
+// Best effort: a refusal is answered whether or not the count lands.
+func (s *Service) countQuotaRefusal(ctx context.Context) {
+	if err := s.write(ctx, SystemActor(), func(t *tx) error {
+		_, err := t.ExecContext(ctx, `UPDATE transcript_totals SET refused = refused + 1, refused_at = ? WHERE id = 1`, s.nowMS())
+		return err
+	}); err != nil {
+		s.log.WarnContext(ctx, "counting a refused transcript upload", "err", err)
+	}
 }
 
 // dropUnreferencedPiece removes a piece's file unless a row names it (an
@@ -387,6 +476,16 @@ type TranscriptStatus struct {
 	PendingBytes int64            `json:"pending_bytes"`
 	PendingFiles int64            `json:"pending_files"`
 	Dropped      map[string]int64 `json:"dropped,omitempty"` // reason -> count, since the machine began
+	// The last pass: how long it took and the longest reported (ms), why it
+	// stopped before the end ("" ran to the end), the passes cut short since
+	// the machine began, and whether the archive is off on this machine
+	// (WP_USAGE_ARCHIVE). nil: the client did not say, which the server keeps
+	// as unknown, never as 0.
+	PassMS    *int64  `json:"pass_ms,omitempty"`
+	PassMaxMS *int64  `json:"pass_max_ms,omitempty"`
+	Stop      *string `json:"stop,omitempty"`
+	Cut       *int64  `json:"cut,omitempty"`
+	Off       *bool   `json:"off,omitempty"`
 }
 
 // ReportTranscriptStatus records a machine's archive health: what still
@@ -405,6 +504,15 @@ func (s *Service) ReportTranscriptStatus(ctx context.Context, actor *Actor, in T
 	if in.PendingBytes < 0 || in.PendingFiles < 0 {
 		return invalid("pending counts are not negative")
 	}
+	for _, n := range []*int64{in.PassMS, in.PassMaxMS, in.Cut} {
+		if n != nil && *n < 0 {
+			return invalid("pass durations and counts are not negative")
+		}
+	}
+	if in.Stop != nil {
+		stop := clip(*in.Stop, 200)
+		in.Stop = &stop
+	}
 	dropped := map[string]int64{}
 	for k, v := range in.Dropped {
 		if len(dropped) >= 40 {
@@ -419,21 +527,58 @@ func (s *Service) ReportTranscriptStatus(ctx context.Context, actor *Actor, in T
 	}
 	now := s.nowMS()
 	return s.write(ctx, actor, func(t *tx) error {
+		if in.Off != nil && *in.Off {
+			// Switched off on the machine: it says nothing about what waits,
+			// and what it said before is left as it was.
+			_, err := t.ExecContext(ctx, `INSERT INTO usage_machines(user_id, machine, transcript_off, transcript_status_at) VALUES (?,?,1,?)
+				ON CONFLICT(user_id, machine) DO UPDATE SET transcript_off = 1, transcript_status_at = excluded.transcript_status_at`, uid, in.Machine, now)
+			return err
+		}
 		var since any
 		if in.PendingBytes > 0 {
 			since = now
 		}
+		var passMax any
+		for _, n := range []*int64{in.PassMS, in.PassMaxMS} {
+			if n != nil && (passMax == nil || *n > passMax.(int64)) {
+				passMax = *n
+			}
+		}
+		// A field the client did not send keeps what the row had (NULL until
+		// some report says it); the longest pass only grows.
 		_, err := t.ExecContext(ctx, `INSERT INTO usage_machines(user_id, machine, transcript_pending_bytes, transcript_pending_files,
-				transcript_pending_since, transcript_dropped, transcript_status_at) VALUES (?,?,?,?,?,?,?)
+				transcript_pending_since, transcript_dropped, transcript_status_at, transcript_pass_ms, transcript_pass_max_ms,
+				transcript_stop, transcript_cut, transcript_off) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
 			ON CONFLICT(user_id, machine) DO UPDATE SET
 				transcript_pending_since = CASE WHEN excluded.transcript_pending_bytes = 0 THEN NULL
 					WHEN usage_machines.transcript_pending_bytes = 0 OR usage_machines.transcript_pending_since IS NULL THEN excluded.transcript_status_at
 					ELSE usage_machines.transcript_pending_since END,
 				transcript_pending_bytes = excluded.transcript_pending_bytes, transcript_pending_files = excluded.transcript_pending_files,
-				transcript_dropped = excluded.transcript_dropped, transcript_status_at = excluded.transcript_status_at`,
-			uid, in.Machine, in.PendingBytes, in.PendingFiles, since, string(raw), now)
+				transcript_dropped = excluded.transcript_dropped, transcript_status_at = excluded.transcript_status_at,
+				transcript_pass_ms = coalesce(excluded.transcript_pass_ms, usage_machines.transcript_pass_ms),
+				transcript_pass_max_ms = CASE WHEN excluded.transcript_pass_max_ms IS NULL THEN usage_machines.transcript_pass_max_ms
+					ELSE max(excluded.transcript_pass_max_ms, coalesce(usage_machines.transcript_pass_max_ms, 0)) END,
+				transcript_stop = coalesce(excluded.transcript_stop, usage_machines.transcript_stop),
+				transcript_cut = coalesce(excluded.transcript_cut, usage_machines.transcript_cut),
+				transcript_off = coalesce(excluded.transcript_off, usage_machines.transcript_off)`,
+			uid, in.Machine, in.PendingBytes, in.PendingFiles, since, string(raw), now, ptrVal(in.PassMS), passMax,
+			strVal(in.Stop), ptrVal(in.Cut), ptrBoolInt(in.Off))
 		return err
 	})
+}
+
+func strVal(p *string) any {
+	if p == nil {
+		return nil
+	}
+	return *p
+}
+
+func ptrBoolInt(p *bool) any {
+	if p == nil {
+		return nil
+	}
+	return boolInt(*p)
 }
 
 // ---- reading back ----
@@ -466,9 +611,14 @@ type TranscriptFile struct {
 	RawBytes    int64 `json:"raw_bytes"`
 	StoredBytes int64 `json:"stored_bytes"`
 	// Redacted: every piece went through the client's redaction.
-	Redacted bool  `json:"redacted"`
-	FirstAt  int64 `json:"first_at"`
-	LastAt   int64 `json:"last_at"`
+	Redacted bool `json:"redacted"`
+	// Redactions is the values the client's redaction blanked in the file's
+	// pieces; nil when any piece was stored without a count (unknown, not 0).
+	// RedactionRules is the same by rule, over the pieces that have one.
+	Redactions     *int64           `json:"redactions"`
+	RedactionRules map[string]int64 `json:"redaction_rules,omitempty"`
+	FirstAt        int64            `json:"first_at"`
+	LastAt         int64            `json:"last_at"`
 }
 
 type transcriptPiece struct {
@@ -482,6 +632,8 @@ type transcriptPiece struct {
 	raw, stored int64
 	sha         string
 	redacted    bool
+	redactions  sql.NullInt64
+	rules       sql.NullString
 	path        string
 	at          int64
 }
@@ -518,7 +670,7 @@ func (s *Service) transcriptPieces(ctx context.Context, actor *Actor, q Transcri
 	}
 	// #nosec G202 -- where is built from fixed conditions; values are bound
 	rows, err := s.db.R.QueryContext(ctx, `SELECT p.id, u.username, p.machine, p.session, p.file, p.kind, p.gen, p.from_off, p.to_off,
-			p.raw_bytes, p.stored_bytes, p.sha256, p.redacted, p.path, p.created_at
+			p.raw_bytes, p.stored_bytes, p.sha256, p.redacted, p.redactions, p.redaction_rules, p.path, p.created_at
 		FROM transcript_pieces p JOIN users u ON u.id = p.user_id WHERE `+strings.Join(where, " AND ")+`
 		ORDER BY u.username, p.machine, p.file = 'main' DESC, p.file, p.gen, p.from_off`, args...)
 	if err != nil {
@@ -530,7 +682,7 @@ func (s *Service) transcriptPieces(ctx context.Context, actor *Actor, q Transcri
 		var p transcriptPiece
 		var red int
 		if err := rows.Scan(&p.id, &p.user, &p.machine, &p.session, &p.file, &p.kind, &p.gen, &p.from, &p.to,
-			&p.raw, &p.stored, &p.sha, &red, &p.path, &p.at); err != nil {
+			&p.raw, &p.stored, &p.sha, &red, &p.redactions, &p.rules, &p.path, &p.at); err != nil {
 			return nil, err
 		}
 		p.redacted = red == 1
@@ -584,11 +736,32 @@ func contiguous(ps []transcriptPiece) bool {
 func describeTranscript(ps []transcriptPiece) TranscriptFile {
 	f := TranscriptFile{User: ps[0].user, Machine: ps[0].machine, Session: ps[0].session, File: ps[0].file, Kind: ps[0].kind, Gen: ps[0].gen,
 		Pieces: len(ps), From: ps[0].from, To: ps[len(ps)-1].to, Complete: contiguous(ps), Redacted: true, FirstAt: ps[0].at, LastAt: ps[0].at}
+	var redactions int64
+	known := true
 	for _, p := range ps {
+		if p.redactions.Valid {
+			redactions += p.redactions.Int64
+		} else {
+			known = false
+		}
+		if p.rules.Valid {
+			var by map[string]int64
+			if json.Unmarshal([]byte(p.rules.String), &by) == nil {
+				if f.RedactionRules == nil {
+					f.RedactionRules = map[string]int64{}
+				}
+				for k, v := range by {
+					f.RedactionRules[k] += v
+				}
+			}
+		}
 		f.RawBytes += p.raw
 		f.StoredBytes += p.stored
 		f.Redacted = f.Redacted && p.redacted
 		f.FirstAt, f.LastAt = min(f.FirstAt, p.at), max(f.LastAt, p.at)
+	}
+	if known {
+		f.Redactions = &redactions
 	}
 	return f
 }

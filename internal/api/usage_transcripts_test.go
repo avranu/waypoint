@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -56,7 +57,10 @@ type transcriptAPI struct {
 	human *client
 }
 
-func newTranscriptAPI(t *testing.T) *transcriptAPI {
+func newTranscriptAPI(t *testing.T) *transcriptAPI { return newTranscriptAPICapped(t, 0) }
+
+// newTranscriptAPICapped is a server whose archive holds at most maxMB (0: no cap).
+func newTranscriptAPICapped(t *testing.T, maxMB int) *transcriptAPI {
 	t.Helper()
 	ctx := context.Background()
 	d, err := db.OpenFresh(ctx, filepath.Join(t.TempDir(), "api.db"))
@@ -65,7 +69,7 @@ func newTranscriptAPI(t *testing.T) *transcriptAPI {
 	}
 	t.Cleanup(func() { d.Close() })
 	dir := t.TempDir()
-	svc := core.New(d, core.Config{BaseURL: "http://wp.test", TranscriptDir: dir}, nil)
+	svc := core.New(d, core.Config{BaseURL: "http://wp.test", TranscriptDir: dir, TranscriptMaxMB: maxMB}, nil)
 	svc.StartHub()
 	ts := httptest.NewServer(New(svc, Config{BaseURL: "http://wp.test", Version: "test"}, svc.Log()).Handler())
 	t.Cleanup(ts.Close)
@@ -179,5 +183,39 @@ func TestTranscriptRoutes(t *testing.T) {
 	resp.Body.Close()
 	if err == nil {
 		t.Errorf("a damaged piece ended the body as whole: %q", b)
+	}
+}
+
+// A full archive answers 507 with the stable words the client tells apart
+// from every other failure, and a piece's redaction counts arrive in the list
+// (audit 1218.33, .50).
+func TestTranscriptQuotaAnswers507AndRedactionsArrive(t *testing.T) {
+	a := newTranscriptAPICapped(t, 1)
+	l1 := `{"n":1}` + "\n"
+	q := url.Values{"machine": {"box"}, "session": {"s1"}, "file": {"main"}, "kind": {"main"}, "fp": {"h#0"},
+		"from": {"0"}, "to": {itoa(len(l1))}, "redacted": {"1"}, "version": {"t"}, "redactions": {"3"}, "redaction_rules": {`{"key":2,"pattern":1}`}}
+	resp, err := a.req("POST", "/api/v1/usage/transcript?"+q.Encode(), tgz(t, l1), nil)
+	if err != nil || resp.StatusCode != 200 {
+		t.Fatalf("piece: %v %v", resp, err)
+	}
+	_ = resp.Body.Close()
+	var files []core.TranscriptFile
+	if code := a.human.json("GET", "/api/v1/usage/transcripts?session=s1", nil, &files); code != 200 || len(files) != 1 ||
+		files[0].Redactions == nil || *files[0].Redactions != 3 || files[0].RedactionRules["key"] != 2 {
+		t.Fatalf("list: %d %+v", code, files)
+	}
+	big := make([]byte, 1100<<10)
+	_, _ = rand.Read(big)
+	big = append(bytes.ReplaceAll(big, []byte("\n"), []byte("x")), '\n')
+	q.Set("from", itoa(len(l1)))
+	q.Set("to", itoa(len(l1)+len(big)))
+	resp, err = a.req("POST", "/api/v1/usage/transcript?"+q.Encode(), tgz(t, string(big)), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != 507 || !strings.Contains(string(body), core.TranscriptQuotaRefusal) {
+		t.Errorf("full archive: %d %s", resp.StatusCode, body)
 	}
 }
