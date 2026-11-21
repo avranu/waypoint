@@ -1,6 +1,7 @@
 package core
 
 import (
+	"database/sql"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,8 @@ type rewriteFixture struct {
 	*escapeEnv
 	a, b *IssueDetail
 	prs  []RewrittenPR
+	// session of the round f.round() returns, once made.
+	session int64
 }
 
 func newRewriteFixture(t *testing.T) *rewriteFixture {
@@ -23,6 +26,18 @@ func newRewriteFixture(t *testing.T) *rewriteFixture {
 	b := e.issue(e.admin, IssueInput{Project: e.proj.Key, Title: "Refused calls are logged"})
 	return &rewriteFixture{escapeEnv: e, a: a, b: b,
 		prs: []RewrittenPR{{Number: 413, Lines: 181, Share: 0.96, At: e.s.now().Add(-3 * day).UnixMilli()}}}
+}
+
+// round is a review round of b, in a session of the admin.
+func (f *rewriteFixture) round() *roundRow {
+	if f.session == 0 {
+		res, err := f.s.db.W.ExecContext(f.ctx, `INSERT INTO agent_sessions(user_id, machine, cli_id, issue_id, started_at, last_seen_at) VALUES (?, 'box', 'c1', ?, 1, 1)`, f.admin.User.ID, f.b.ID)
+		if err != nil {
+			f.env.t.Fatal(err)
+		}
+		f.session, _ = res.LastInsertId()
+	}
+	return &roundRow{id: 1, issueID: f.b.ID, sessionID: sql.NullInt64{Int64: f.session, Valid: true}}
 }
 
 func (f *rewriteFixture) relations(t *testing.T, key string) []Relation {
@@ -183,11 +198,11 @@ func TestRoundsRegressionCheckGetsTheRewrites(t *testing.T) {
 	if _, err := f.s.NoteRewrites(f.ctx, f.admin, f.b.Key, "o/r", "h", f.prs); err != nil {
 		t.Fatal(err)
 	}
-	h, err := f.s.roundHelpers(f.ctx, &roundRow{id: 1, issueID: f.b.ID}, "")
+	h, err := f.s.roundHelpers(f.ctx, f.round(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "this change replaces 181 lines that " + f.a.Key + " (Accepting a request adds an allow rule) added in PR 413, 3 days ago: does it undo what " + f.a.Key + " did, on purpose?"
+	want := "this change replaces 181 lines that " + f.a.Key + " (\"Accepting a request adds an allow rule\") added in PR 413, 3 days ago: does it undo what " + f.a.Key + " did, on purpose?"
 	if ask := askOf(h, "regressions"); !strings.Contains(ask, want) || !strings.HasSuffix(ask, panelRules) {
 		t.Errorf("regressions ask:\n%s\nwant %q before the panel rules", ask, want)
 	}
@@ -200,7 +215,7 @@ func TestRoundsRegressionCheckGetsTheRewrites(t *testing.T) {
 	if _, err := f.s.Relate(f.ctx, f.admin, f.b.Key, RelationInput{Kind: "supersedes", Issue: f.a.Key}); err != nil {
 		t.Fatal(err)
 	}
-	h, _ = f.s.roundHelpers(f.ctx, &roundRow{id: 1, issueID: f.b.ID}, "")
+	h, _ = f.s.roundHelpers(f.ctx, f.round(), "")
 	if strings.Contains(askOf(h, "regressions"), "181 lines") {
 		t.Error("the lead stayed after the agent related the tasks")
 	}
@@ -309,7 +324,7 @@ func TestNoteRewritesDoesNotRecreateARemovedRelation(t *testing.T) {
 		if rels := f.relations(t, f.b.Key); len(rels) != 0 {
 			t.Errorf("%s: relation made again: %+v", how, rels)
 		}
-		h, _ := f.s.roundHelpers(f.ctx, &roundRow{id: 1, issueID: f.b.ID}, "")
+		h, _ := f.s.roundHelpers(f.ctx, f.round(), "")
 		if strings.Contains(askOf(h, "regressions"), "181 lines") {
 			t.Errorf("%s: the lead stayed", how)
 		}
@@ -324,14 +339,14 @@ func TestRewriteLeadsFollowTheLatestShip(t *testing.T) {
 	if _, err := f.s.NoteRewrites(f.ctx, f.admin, f.b.Key, "o/r", "", f.prs); err != nil {
 		t.Fatal(err)
 	}
-	h, _ := f.s.roundHelpers(f.ctx, &roundRow{id: 1, issueID: f.b.ID}, "")
+	h, _ := f.s.roundHelpers(f.ctx, f.round(), "")
 	if ask := askOf(h, "regressions"); !strings.Contains(ask, "may be out of date") {
 		t.Errorf("no head, no caveat:\n%s", ask)
 	}
 	if _, err := f.s.NoteRewrites(f.ctx, f.admin, f.b.Key, "o/r", "h2", f.prs); err != nil {
 		t.Fatal(err)
 	}
-	h, _ = f.s.roundHelpers(f.ctx, &roundRow{id: 1, issueID: f.b.ID}, "")
+	h, _ = f.s.roundHelpers(f.ctx, f.round(), "")
 	if ask := askOf(h, "regressions"); !strings.Contains(ask, "181 lines") || strings.Contains(ask, "may be out of date") {
 		t.Errorf("a head given:\n%s", ask)
 	}
@@ -339,7 +354,7 @@ func TestRewriteLeadsFollowTheLatestShip(t *testing.T) {
 	if _, err := f.s.NoteRewrites(f.ctx, f.admin, f.b.Key, "o/r", "h3", nil); err != nil {
 		t.Fatal(err)
 	}
-	h, _ = f.s.roundHelpers(f.ctx, &roundRow{id: 1, issueID: f.b.ID}, "")
+	h, _ = f.s.roundHelpers(f.ctx, f.round(), "")
 	if strings.Contains(askOf(h, "regressions"), "181 lines") {
 		t.Error("the lead outlived the change that replaced those lines")
 	}
