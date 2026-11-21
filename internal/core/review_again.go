@@ -684,7 +684,7 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 	d.model = model
 	probe, err := p.settle(&d, findings, earlier, ans, err == nil && len(findings) > 0, noModel, facts)
 	if err != nil {
-		return "", "", fmt.Errorf("%s's adversarial review round can't be decided now, so its pull request isn't opened; run wp ship again: %w", g.key, err)
+		return "", "", againReadError(g.key, g.byWaypoint, err)
 	}
 	if d.arm != "" {
 		return "", "", record()
@@ -1747,6 +1747,7 @@ func (s *Service) checkMarks(ctx context.Context, actor *Actor, g *reviewGate, b
 			requestKey: key, purpose: AuditCheck, chain: checkChain, owner: owner, authorModel: model, claims: claims})
 		if err != nil {
 			s.log.WarnContext(ctx, "couldn't check a round's marks; they stand unchecked", "round", round, "err", err)
+			s.noteCheckNotAsked(ctx, round, err)
 			return 0, "", true, due, nil
 		}
 		bp.facts.idleHeld()
@@ -2065,5 +2066,30 @@ func (s *Service) raced(ctx context.Context) {
 	if h := s.beforeRoundWrite; h != nil {
 		s.beforeRoundWrite = nil
 		h(ctx)
+	}
+}
+
+// againReadError is the error of a round that can't be decided now. Its
+// pull request isn't opened yet; who asks again depends on whose ship it is:
+// a session's wp ship is run again by the session, Waypoint's own ship is
+// tried again by Waypoint (the sweep).
+func againReadError(key string, byWaypoint bool, err error) error {
+	if byWaypoint {
+		return fmt.Errorf("%s's adversarial review round can't be decided now, so its pull request isn't opened yet; Waypoint tries again: %w", key, err)
+	}
+	return fmt.Errorf("%s's adversarial review round can't be decided now, so its pull request isn't opened; run wp ship again: %w", key, err)
+}
+
+// noteCheckNotAsked records why a round's check of the session's marks
+// couldn't be asked, so every text that says whether the check ran (it
+// didn't) has the cause (checkDidntRun). No event: nothing but those texts
+// reads it, and each is written at the time it is told.
+func (s *Service) noteCheckNotAsked(ctx context.Context, round int64, cause error) {
+	why := clipRunes(strings.Join(strings.Fields(cause.Error()), " "), 300)
+	if err := s.write(ctx, SystemActor(), func(t *tx) error {
+		_, err := t.ExecContext(ctx, `UPDATE work_log SET before_pr = json_set(before_pr, '$.check_err', ?) WHERE id = ? AND before_pr != ''`, why, round)
+		return err
+	}); err != nil {
+		s.log.WarnContext(ctx, "record why a round's check couldn't be asked", "round", round, "err", err)
 	}
 }

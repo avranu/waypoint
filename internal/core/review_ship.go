@@ -124,6 +124,9 @@ func (s *Service) tellCheck(ctx context.Context, a *CodeAudit) {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Waypoint's check of your marks on %s's adversarial review (audit #%d) disagrees with %s. These are another model's claims: read the code before you accept one.\n\n", r.key, a.ID, plural1(len(todo), "mark"))
+	if facts, _ := s.roundFacts(ctx, r); facts != "" {
+		fmt.Fprintf(&b, "Where the round stands: %s.\n\n", facts)
+	}
 	var claims strings.Builder
 	for _, f := range todo {
 		at := f.Path
@@ -247,6 +250,12 @@ func (s *Service) shipTried(ctx context.Context, round int64, key string, now in
 	// ship ran out of time.
 	ctx = context.WithoutCancel(ctx)
 	var tries int
+	// What the round did, as it was recorded: the notice says no more of the
+	// review than that (it may not have run at all).
+	did, _ := s.factsOfRound(ctx, round)
+	if did == "" {
+		did = "no result of its review is recorded"
+	}
 	merr := s.write(ctx, SystemActor(), func(t *tx) error {
 		bp := roundBeforePR(ctx, t, round)
 		if bp == nil {
@@ -288,7 +297,7 @@ func (s *Service) shipTried(ctx context.Context, round int64, key string, now in
 			return nil
 		}
 		_, e = t.storeNotice(ctx, userID, NotifyAutopilot, "Waypoint can't open "+key+"'s pull request",
-			fmt.Sprintf("%s's adversarial review is done, and Waypoint has tried %d times over %d minutes to open its pull request: %s. It keeps trying every %d minutes.", key, next.ShipTries, int(heldShipRetry.Minutes()), err, int(heldShipRetry.Minutes())),
+			fmt.Sprintf("%s's adversarial review round has ended (%s), and Waypoint has tried %d times over %d minutes to open its pull request: %s. It keeps trying every %d minutes.", key, did, next.ShipTries, int(heldShipRetry.Minutes()), err, int(heldShipRetry.Minutes())),
 			"/agents?tab=autopilot")
 		return e
 	})

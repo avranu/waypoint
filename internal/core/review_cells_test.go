@@ -367,6 +367,60 @@ func TestUncheckedRejectionsHoldTheReleasedPullRequest(t *testing.T) {
 	}
 }
 
+// failedCheckThenRound2 is a loop: round 1's check of the session's marks
+// failed, and the session shipped again, so round 2's audit is done.
+func failedCheckThenRound2(e *loopEnv, r1 int64) {
+	e.t.Helper()
+	e.mark(r1, "rejected")
+	if _, err := e.ship(e.task.Key, ShipAuto); err != nil {
+		e.t.Fatal(err)
+	}
+	e.stopWith("Waiting for the check of my marks.")
+	e.endCheck(e.box, "failed")
+	e.s.Wait()
+	e.setClock(e.clockNow().Add(time.Minute))
+	if _, err := e.ship(e.task.Key, ShipAuto); err != nil {
+		e.t.Fatal(err)
+	}
+	e.stopWith("Pushed; the review comes first.")
+	e.tick(61 * time.Second)
+	e.endAudit(e.box, "done")
+	e.s.Wait()
+}
+
+// round2Of is the loop's newest round after round 1.
+func round2Of(e *loopEnv, r1 int64) int64 {
+	e.t.Helper()
+	var id int64
+	if err := e.s.db.R.QueryRow(`SELECT max(id) FROM work_log WHERE kind = 'review' AND id > ?`, r1).Scan(&id); err != nil {
+		e.t.Fatal(err)
+	}
+	return id
+}
+
+// copyCheckAudit gives round to a check of its own that failed with why, a
+// copy of from's check.
+func copyCheckAudit(e *loopEnv, from, round int64, why string) {
+	e.t.Helper()
+	rows, err := e.s.db.R.Query(`SELECT name FROM pragma_table_info('code_audits') WHERE name NOT IN ('id', 'request_key')`)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	var cols []string
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			e.t.Fatal(err)
+		}
+		cols = append(cols, `"`+c+`"`)
+	}
+	_ = rows.Close()
+	list := strings.Join(cols, ", ")
+	e.exec(`INSERT INTO code_audits (`+list+`, request_key) SELECT `+list+`, ? FROM code_audits WHERE request_key = ?`,
+		fmt.Sprintf(checkAuditKey, round), fmt.Sprintf(checkAuditKey, from))
+	e.exec(`UPDATE code_audits SET error = ?, status = 'failed' WHERE request_key = ?`, why, fmt.Sprintf(checkAuditKey, round))
+}
+
 // 3. A release's three texts (the pull request's body, and the person's
 // notice) say what ran, and never a phrase the facts contradict.
 func TestReleaseTextsAreTrue(t *testing.T) {
@@ -375,15 +429,17 @@ func TestReleaseTextsAreTrue(t *testing.T) {
 		setup  func(e *loopEnv, r1 int64)
 		want   []string
 		absent []string
+		// round: the round Waypoint ships (nil: round 1); round2 sets it up.
+		round func(e *loopEnv, r1 int64) int64
 	}{
 		{"audit ran, no check", func(e *loopEnv, r1 int64) {},
 			[]string{"before its adversarial review was settled", "its audit found 1 thing"},
-			[]string{"without an adversarial review", "nothing for you to do", "isn't open"}},
+			[]string{"without an adversarial review", "nothing for you to do", "isn't open"}, nil},
 		{"audit failed", func(e *loopEnv, r1 int64) {
 			if _, err := e.s.db.W.Exec(`UPDATE code_audits SET status = 'failed'`); err != nil {
 				t.Fatal(err)
 			}
-		}, []string{"without an adversarial review"}, []string{"before its adversarial review was settled", "nothing for you to do"}},
+		}, []string{"without an adversarial review"}, []string{"before its adversarial review was settled", "nothing for you to do"}, nil},
 		{"check agreed", func(e *loopEnv, r1 int64) {
 			e.mark(r1, "rejected")
 			if _, err := e.ship(e.task.Key, ShipAuto); err != nil {
@@ -392,7 +448,7 @@ func TestReleaseTextsAreTrue(t *testing.T) {
 			e.stopWith("Waiting.")
 			e.endCheck(e.box, "done")
 			e.s.Wait()
-		}, []string{"agreed"}, []string{"without an adversarial review", "disagreed", "didn't run"}},
+		}, []string{"agreed"}, []string{"without an adversarial review", "disagreed", "didn't run"}, nil},
 		{"check disagreed", func(e *loopEnv, r1 int64) {
 			e.mark(r1, "rejected")
 			if _, err := e.ship(e.task.Key, ShipAuto); err != nil {
@@ -401,7 +457,7 @@ func TestReleaseTextsAreTrue(t *testing.T) {
 			e.stopWith("Waiting.")
 			e.endCheck(e.box, "done", "[x.1] Merge loses an update")
 			e.s.Wait()
-		}, []string{"disagreed with 1 mark"}, []string{"without an adversarial review", "nothing for you to do"}},
+		}, []string{"disagreed with 1 mark"}, []string{"without an adversarial review", "nothing for you to do"}, nil},
 		{"check didn't run", func(e *loopEnv, r1 int64) {
 			e.mark(r1, "rejected")
 			if _, err := e.ship(e.task.Key, ShipAuto); err != nil {
@@ -410,7 +466,14 @@ func TestReleaseTextsAreTrue(t *testing.T) {
 			e.stopWith("Waiting.")
 			e.endCheck(e.box, "cancelled")
 			e.s.Wait()
-		}, []string{"didn't run"}, []string{"without an adversarial review", "nothing for you to do", "agreed"}},
+		}, []string{"didn't run"}, []string{"without an adversarial review", "nothing for you to do", "agreed"}, nil},
+		{"round 2 after a check that didn't run", failedCheckThenRound2, []string{"didn't run: plan spent"},
+			[]string{"without an adversarial review", "nothing for you to do", "agreed"}, round2Of},
+		{"loop: round 2's check didn't run either", func(e *loopEnv, r1 int64) {
+			failedCheckThenRound2(e, r1)
+			r2 := round2Of(e, r1)
+			copyCheckAudit(e, r1, r2, "disk full")
+		}, []string{"plan spent", "disk full"}, []string{"without an adversarial review", "nothing for you to do", "agreed"}, round2Of},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -420,7 +483,11 @@ func TestReleaseTextsAreTrue(t *testing.T) {
 			if len(e.g.created) > 0 {
 				e.g.created = nil
 			}
-			if err := e.s.shipRound(e.ctx, shipRoundIn{round: r1, why: "the session never took it up"}); err != nil {
+			round := r1
+			if c.round != nil {
+				round = c.round(e, r1)
+			}
+			if err := e.s.shipRound(e.ctx, shipRoundIn{round: round, why: "the session never took it up"}); err != nil {
 				t.Fatal(err)
 			}
 			text := e.prBodies() + "\n" + strings.Join(e.notices(), "\n")

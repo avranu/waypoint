@@ -144,7 +144,7 @@ func (s *Service) shipRound(ctx context.Context, in shipRoundIn) error {
 	// and says what wasn't checked (WP-1370).
 	unchecked := ""
 	if reviewed {
-		unchecked = s.uncheckedOf(ctx, r)
+		unchecked = s.uncheckedOf(ctx, r, true)
 	}
 	facts, ran := "", false
 	if !reviewed {
@@ -741,7 +741,7 @@ func (s *Service) roundFacts(ctx context.Context, r *roundRow) (facts string, ra
 			case a.Status == AuditQueued || a.Status == AuditRunning:
 				parts = append(parts, "the check of its marks hadn't finished")
 			case a.Status != AuditDone:
-				parts = append(parts, "the check of its marks didn't run ("+a.Status+")")
+				parts = append(parts, "the check of its marks didn't run ("+cmp(strings.TrimSuffix(strings.TrimSpace(a.Error), "."), a.Status)+")")
 			case todoErr != nil:
 				parts = append(parts, "the check of its marks couldn't be read")
 			case len(todo) > 0:
@@ -753,13 +753,22 @@ func (s *Service) roundFacts(ctx context.Context, r *roundRow) (facts string, ra
 			}
 		}
 	}
-	// An earlier round of the run's loop whose check didn't run: this round
-	// (a label-only one after a failed check) has no check of its own, but
-	// its predecessor's marks still stand unchecked.
-	if un := s.uncheckedOf(ctx, r); un != "" && !strings.Contains(strings.Join(parts, "; "), "didn't run") {
+	// An earlier round of the run's loop whose check didn't run: its marks
+	// still stand unchecked, whatever this round's own check did (the
+	// round's own is said above).
+	if un := s.uncheckedOf(ctx, r, false); un != "" {
 		parts = append(parts, un)
 	}
 	return strings.Join(parts, "; "), ran
+}
+
+// factsOfRound is roundFacts for a round by id ("": unknown or nothing recorded).
+func (s *Service) factsOfRound(ctx context.Context, round int64) (facts string, ran bool) {
+	r, err := roundByID(ctx, s.db.R, round)
+	if err != nil || r == nil {
+		return "", false
+	}
+	return s.roundFacts(ctx, r)
 }
 
 // loopRounds is the round and the rounds of its loop before it (the run's
@@ -778,10 +787,14 @@ func (s *Service) loopRounds(ctx context.Context, r *roundRow) []int64 {
 
 // uncheckedOf says why marks of the round, or of an earlier round of its
 // loop, stand unchecked ("": none do): the round's own check, or one of an
-// earlier round that didn't run. One reason once, however many rounds share it.
-func (s *Service) uncheckedOf(ctx context.Context, r *roundRow) string {
+// earlier round that didn't run (own: the round's own check counts). One
+// reason once, however many rounds share it.
+func (s *Service) uncheckedOf(ctx context.Context, r *roundRow, own bool) string {
 	var whys []string
 	for _, id := range s.loopRounds(ctx, r) {
+		if id == r.id && !own {
+			continue
+		}
 		if why := s.checkDidntRun(ctx, id); why != "" && !slices.Contains(whys, why) {
 			whys = append(whys, why)
 		}
@@ -888,7 +901,12 @@ func (s *Service) reopenUnverified(ctx context.Context, auditID int64) {
 func (s *Service) checkDidntRun(ctx context.Context, round int64) string {
 	var id int64
 	if s.db.R.QueryRowContext(ctx, `SELECT id FROM code_audits WHERE request_key = ?`, fmt.Sprintf(checkAuditKey, round)).Scan(&id) != nil {
-		return ""
+		// Never recorded: asked for and refused (noteCheckNotAsked), or none was.
+		var why string
+		if s.db.R.QueryRowContext(ctx, `SELECT coalesce(json_extract(before_pr, '$.check_err'), '') FROM work_log WHERE id = ? AND before_pr != ''`, round).Scan(&why) != nil || why == "" {
+			return ""
+		}
+		return "the check of the marks didn't run: couldn't be asked: " + strings.TrimSuffix(why, ".")
 	}
 	a, err := s.auditRow(ctx, id)
 	if err != nil || a.Status == AuditQueued || a.Status == AuditRunning || a.Status == AuditDone {

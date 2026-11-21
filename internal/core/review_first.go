@@ -69,6 +69,9 @@ type beforePR struct {
 	// ShipStop: why Waypoint stopped shipping this round for good (its
 	// authority went, or the forge refused). The round is left as it ends.
 	ShipStop string `json:"ship_stop,omitempty"`
+	// CheckErr is why the check of the session's marks couldn't be asked
+	// (RequestAudit failed): the check didn't run (checkDidntRun).
+	CheckErr string `json:"check_err,omitempty"`
 	// BodyInputs are what a model rewords the body from (WP-55): a pull
 	// request Waypoint opens keeps them as the direct open would. They go
 	// and come with Body.
@@ -213,6 +216,9 @@ type reviewGate struct {
 	// wanted: autopilot reviews before pull requests in this session, so a
 	// no is a review it wanted and didn't get (WP-803).
 	wanted bool
+	// byWaypoint: the ship is Waypoint's own (shipHeld), not a session's wp
+	// ship, which decides who tries again after an error.
+	byWaypoint bool
 }
 
 // gateFor finds the run a ship's review belongs to. The gate holds only
@@ -473,6 +479,7 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 	if err != nil {
 		return false, "", "", err
 	}
+	g.byWaypoint = in.byWaypoint
 	if g.no != "" {
 		// The pull request goes ahead: holding it for a review the session
 		// would do itself costs the session's tokens and ships nothing
@@ -1204,6 +1211,9 @@ func (s *Service) heldUnshipped(ctx context.Context, st *stepRow) (why string, e
 	reason = strings.TrimSpace(reason)
 	if reason != "" && state != RoundDone {
 		what += " (" + reason + ")"
+	}
+	if facts, _ := s.factsOfRound(ctx, st.reviewID.Int64); facts != "" {
+		what += "; " + facts
 	}
 	return key + " isn't shipped yet: " + what, nil
 }

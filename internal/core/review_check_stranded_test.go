@@ -185,7 +185,7 @@ func TestRoundFactsTable(t *testing.T) {
 			}
 			e.stopWith("Waiting.")
 			e.endCheck(e.box, "failed")
-		}, []string{"the check of its marks didn't run (failed)"}, true, []string{"agreed", "disagreed"}},
+		}, []string{"the check of its marks didn't run (plan spent)"}, true, []string{"agreed", "disagreed"}},
 		{"check disagreed", func(e *loopEnv, r1 int64) {
 			e.mark(r1, "rejected")
 			if _, err := e.ship(e.task.Key, ShipAuto); err != nil {
