@@ -564,7 +564,7 @@ func (st *roundStats) nitpickText() string {
 			fmt.Fprintf(&b, "The decision model's asks: %d decisions scored from %d answers (%.1f each); in %d the answers called a question differently, and in %d the asks' mean still changed its decision with the last asks.\n",
 				sampled, asks, float64(asks)/float64(sampled), split, unsettled)
 		}
-		b.WriteString("SIGNAL: decisions a finding's own label decided (new, standing, not refuted, at or over the stakes' floor). HOLDOUT: before 11-18 only. FOLLOWED: the rounds after an again that an audit reviewed and whose findings were judged (scored, or none that counts). USEFUL: of those, the ones that found something new of medium or worse the session fixed or confirmed. PROBE, JUDGED, USEFUL: the same for rounds the scores were under the bar for but that got another round to measure the bar.\n")
+		b.WriteString("SIGNAL: decisions a finding's own label decided (new, standing, not refuted, at or over the stakes' floor, weighing what the round needs, WP-1569). HOLDOUT: before 11-18 only. FOLLOWED: the rounds after an again that an audit reviewed and whose findings were judged (scored, or none that counts). USEFUL: of those, the ones that found something new of medium or worse the session fixed or confirmed. PROBE, JUDGED, USEFUL: the same for rounds the scores were under the bar for but that got another round to measure the bar.\n")
 	}
 	if g := n.AgainAgreement; g != nil && g.Findings > 0 {
 		fmt.Fprintf(&b, "Severity: the reviewers' labels and the decision model's scores of %d findings are %.1f points apart on average; %d within two points.\n", g.Findings, g.MeanGap, g.Within2)

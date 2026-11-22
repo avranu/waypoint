@@ -201,3 +201,87 @@ func TestNearestEarlier(t *testing.T) {
 		t.Fatal("the earlier findings were reordered in place")
 	}
 }
+
+// The stop rule weighs the round and how many serious findings there are
+// (WP-1569): a medium signal weighs 1, a high 2 (a critical is one too, and
+// calls on any round besides); after the k-th review round the weight
+// needed for another is 1 at k = 1, else 2^(k-1); an unchecked rejection
+// calls on any round. d.index is 1-based: the round being decided is the
+// index-th, which is len(earlier)+1.
+func TestAgainPolicyWeighs(t *testing.T) {
+	of := func(severity string, n int) []againFinding {
+		var fs []againFinding
+		for i := range n {
+			fs = append(fs, policyFinding(int64(i+1), severity, "fixed", ""))
+		}
+		return fs
+	}
+	mixed := []againFinding{policyFinding(1, "medium", "fixed", ""), policyFinding(2, "high", "fixed", "")}
+	base := againFacts{tier: StakesElevated, trusted: true, probed: true, probeYield: againYieldRead{p: 0.5}, reviewYield: againYieldRead{p: 0.5, n: 50}}
+	grows := func(p *againPolicy) { p.needBase, p.needGrowth = 3, 3 }
+	normal := func(f *againFacts) { f.tier = StakesNormal }
+	// A high label alone scores over the elevated bar however the model reads
+	// it, so a high the weight doesn't call is still called by the scores
+	// when the reviewer's record backs them; with no record the weight shows.
+	untrusted := func(f *againFacts) { f.trusted = false }
+	for _, tc := range []struct {
+		name         string
+		k            int // the k-th review round of the change is being decided
+		findings     []againFinding
+		facts        func(*againFacts)
+		policy       func(*againPolicy)
+		calls        bool
+		arm          string // when it doesn't call: the arm it takes
+		need, weight int
+	}{
+		{name: "round 1, one medium", k: 1, findings: of("medium", 1), calls: true, need: 1, weight: 1},
+		{name: "round 2, one medium", k: 2, findings: of("medium", 1), need: 2, weight: 1},
+		{name: "round 2, two mediums", k: 2, findings: of("medium", 2), calls: true, need: 2, weight: 2},
+		{name: "round 2, one high", k: 2, findings: of("high", 1), calls: true, need: 2, weight: 2},
+		{name: "round 2, a medium and a high", k: 2, findings: mixed, calls: true, need: 2, weight: 3},
+		{name: "round 3, one high: too light for the weight, an untrusted reviewer's scores can't call it", k: 3, findings: of("high", 1), need: 4, weight: 2, arm: AgainUntrusted, facts: untrusted},
+		{name: "round 3, one high: the scores call it for a trusted reviewer", k: 3, findings: of("high", 1), calls: true, need: 4, weight: 2},
+		{name: "round 3, two highs", k: 3, findings: of("high", 2), calls: true, need: 4, weight: 4},
+		{name: "round 4, seven mediums", k: 4, findings: of("medium", 7), need: 8, weight: 7},
+		{name: "round 4, eight mediums", k: 4, findings: of("medium", 8), calls: true, need: 8, weight: 8},
+		{name: "a critical at round 6", k: 6, findings: of("critical", 1), calls: true, need: 32, weight: 2},
+		{name: "a critical at round 9", k: 9, findings: of("critical", 1), calls: true, need: 256, weight: 2},
+		{name: "unchecked at a late round", k: 7, calls: true, need: 64, facts: func(f *againFacts) { f.passed = true },
+			findings: []againFinding{policyFinding(1, "high", "rejected", "")}},
+		{name: "normal stakes: mediums weigh nothing", k: 1, findings: of("medium", 3), need: 1, facts: normal},
+		{name: "normal stakes: a high at round 1", k: 1, findings: of("high", 1), calls: true, need: 1, weight: 2, facts: normal},
+		{name: "normal stakes: a high at round 3", k: 3, findings: of("high", 1), need: 4, weight: 2, arm: AgainUntrusted, facts: func(f *againFacts) { normal(f); untrusted(f) }},
+		{name: "a base and growth of 3: a high at round 2", k: 2, findings: of("high", 1), need: 9, weight: 2, arm: AgainUntrusted, facts: untrusted, policy: grows},
+		{name: "a base and growth of 3: two mediums at round 1", k: 1, findings: of("medium", 2), need: 3, weight: 2, policy: grows},
+		{name: "a base and growth of 3: three mediums at round 1", k: 1, findings: of("medium", 3), calls: true, need: 3, weight: 3, policy: grows},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var earlier []againFinding
+			for i := 1; i < tc.k; i++ {
+				earlier = append(earlier, againFinding{id: int64(100 + i), title: fmt.Sprintf("earlier %d", i), severity: "high", state: "fixed"})
+			}
+			facts := base
+			if tc.facts != nil {
+				tc.facts(&facts)
+			}
+			p := defaultAgainPolicy()
+			if tc.policy != nil {
+				tc.policy(&p)
+			}
+			for _, f := range tc.findings {
+				if f.state == "fixed" {
+					facts.fixed++
+				}
+			}
+			ans := policyAnswers(len(tc.findings), "minor", "complete", nil)
+			// index is the round's place among the change's rounds, 1 the first.
+			d := againDecision{audit: 1, index: len(earlier) + 1, yieldP: -1}
+			if _, err := p.settle(&d, tc.findings, earlier, ans, true, false, facts); err != nil {
+				t.Fatal(err)
+			}
+			if called := d.arm == ""; called != tc.calls || d.need != tc.need || d.weight != tc.weight || !tc.calls && tc.arm != "" && d.arm != tc.arm {
+				t.Fatalf("arm %q need %d weight %d, want calls %v need %d weight %d", d.arm, d.need, d.weight, tc.calls, tc.need, tc.weight)
+			}
+		})
+	}
+}

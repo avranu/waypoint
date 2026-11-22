@@ -28,12 +28,27 @@ type againPolicy struct {
 	// needs its record's draw at or over yieldFloor.
 	yieldFloor float64
 	yieldMin   int
+	// needBase, needGrowth: the signal weight another round needs after the
+	// change's k-th round (k = 1 the first) is needBase * needGrowth^(k-1)
+	// (WP-1569): 1 after round 1, then 2, 4, 8 and on.
+	needBase, needGrowth int
 }
 
 // defaultAgainPolicy is the rule's numbers as they stand.
 func defaultAgainPolicy() againPolicy {
 	return againPolicy{bars: maps.Clone(againBars), floors: maps.Clone(againFloors), cap: reviewRoundsCap,
-		yieldFloor: againYieldFloor, yieldMin: againYieldMin}
+		yieldFloor: againYieldFloor, yieldMin: againYieldMin, needBase: againNeedBase, needGrowth: againNeedGrowth}
+}
+
+// needFor is the signal weight another round needs after the change's
+// k-th round (k = 1 the first): needBase * needGrowth^(k-1). The growth is
+// capped where it can't overflow; the round cap ends loops long before.
+func (p againPolicy) needFor(k int) int {
+	need := p.needBase
+	for range min(max(k, 1)-1, 30) {
+		need *= p.needGrowth
+	}
+	return need
 }
 
 func (p againPolicy) bar(tier string) againBar {
@@ -108,7 +123,13 @@ func (p againPolicy) settle(c *againDecision, fs, earlier []againFinding, ans ma
 	// one such round a loop, so the pull request doesn't open on findings
 	// no one followed up (WP-1320's live check of its own first round, 2.2).
 	unscoredLater := !scored && len(earlier) > 0
-	calls := c.signals > 0 || c.unchecked > 0
+	// A signal's weight must reach what this round index needs, and a
+	// critical one calls on any round (WP-1569): c.index is the round being
+	// decided, 1-based (reviewAgain sets it to len(earlier)+1), so after
+	// the first round any signal calls and each later round asks for twice
+	// the weight. An unchecked rejection calls on any round, as before.
+	c.need = p.needFor(c.index)
+	calls := c.critical || c.signals > 0 && c.weight >= c.need || c.unchecked > 0
 	if unscoredLater && calls && f.historyErr != nil {
 		return false, errors.Join(errAgainRead, f.historyErr)
 	}
