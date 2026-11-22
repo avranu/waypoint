@@ -149,6 +149,19 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
     "<table><tbody><tr><th>h</th></tr><tr><td>a|b \\| <code>c|d</code><br>e</td></tr></tbody></table>",
     "| h |\n| --- |\n| a\\|b \\\\\\| `c\\|d` e |",
   );
+  // Everything else written into a cell escapes its pipes too: link and
+  // image destinations, a bare URL, alt text, a list or code block.
+  await writes(
+    "Table cell targets",
+    '<table><tbody><tr><th>h</th></tr><tr><td><a href="/x?a|b">l</a> <img src="/i|.png" alt="p|q"> <a href="/y|z"></a></td></tr></tbody></table>',
+    "| h |\n| --- |\n| [l](/x?a\\|b) ![p\\|q](/i\\|.png) /y\\|z |",
+  );
+  await writes(
+    "Table cell blocks",
+    "<table><tbody><tr><th>h</th></tr><tr><td><ul><li>a|b</li></ul><pre><code>c|d\ne</code></pre></td></tr></tbody></table>",
+    "| h |\n| --- |\n| - a\\|b `c\\|d e` |",
+  );
+  await writes("Script and style", "<p>a<style>p{}</style><script>x()</script>b</p>", "ab");
   await writes("Heading break", "<h2>a<br>b</h2>", "## a b");
   await writes("Heading closer", "<h2>Issue #</h2>", "## Issue \\#");
   // A paragraph's start, on its first line or after a blank one: an indent

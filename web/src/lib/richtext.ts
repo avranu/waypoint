@@ -161,10 +161,19 @@ function codeSpan(raw: string, opts: Opts = {}) {
 
 // A link or image destination. A backslash before punctuation would be read
 // as an escape, a line break can't be in one, and `<` or `>` would end the
-// angle form, so those are escaped or encoded.
-function target(url: string) {
+// angle form, so those are escaped or encoded. In a table cell a pipe would
+// end the cell.
+function target(url: string, opts: Opts = {}) {
   const u = url.replace(/\\(?=[!-/:-@[-`{-~])/g, '\\\\').replace(/[\r\n]/g, encodeURIComponent)
-  return /[()\s<>]/.test(u) ? `<${u.replace(/[\\<>]/g, (c) => (c === '\\' ? c : `\\${c}`))}>` : u
+  const t = /[()\s<>]/.test(u) ? `<${u.replace(/[\\<>]/g, (c) => (c === '\\' ? c : `\\${c}`))}>` : u
+  return cellPipes(t, opts)
+}
+
+// Markdown written into a table cell outside escapeText and codeSpan (a link
+// destination, a bare URL): GFM takes every `\|` out of the row before it
+// reads the cell, so each pipe gets one backslash, whatever precedes it.
+function cellPipes(md: string, opts: Opts) {
+  return opts.cell ? md.replace(/\|/g, '\\|') : md
 }
 
 function serialize(node: Node, opts: Opts = {}): string {
@@ -199,6 +208,8 @@ function serialize(node: Node, opts: Opts = {}): string {
       const code = el.querySelector('code')
       const lang = (code?.className.match(/language-([\w-]+)/) ?? [])[1] ?? ''
       const body = (code ?? el).textContent?.replace(/\n$/, '') ?? ''
+      // A table cell is one line: code pasted into one stays inline code.
+      if (opts.cell) return codeSpan(oneLine(body), opts)
       const longest = Math.max(0, ...(body.match(/`+/g) ?? []).map((r) => r.length))
       const fence = '`'.repeat(Math.max(3, longest + 1))
       return `\n${fence}${lang}\n${body}\n${fence}\n`
@@ -225,29 +236,34 @@ function serialize(node: Node, opts: Opts = {}): string {
     }
     case 'ul':
     case 'ol':
-      return `\n${list(el)}\n`
+      return `\n${list(el, opts)}\n`
     case 'a': {
       const href = el.getAttribute('href') ?? ''
       if (!href) return inner().trim()
       const label = inner({ ...opts, label: true }).trim()
-      if (!label || label === href) return href
-      return `[${label}](${target(href)})`
+      if (!label || label === href) return cellPipes(href, opts)
+      return `[${label}](${target(href, opts)})`
     }
     case 'img': {
       const alt = el.getAttribute('alt') ?? ''
       const src = el.getAttribute('src') ?? ''
-      return `![${altText(alt)}](${target(src)})`
+      return `![${altText(alt, opts)}](${target(src, opts)})`
     }
     case 'video': {
       const alt = el.getAttribute('aria-label') ?? ''
       const src = el.getAttribute('src') ?? ''
-      return `![${altText(alt)}](${target(src)})`
+      return `![${altText(alt, opts)}](${target(src, opts)})`
     }
     case 'hr':
       return '\n---\n'
     case 'table':
       return `\n${table(el)}\n`
+    // Their text is code or markup, not words the reader sees.
     case 'input':
+    case 'script':
+    case 'style':
+    case 'template':
+    case 'noscript':
       return ''
     default:
       return inner()
@@ -255,8 +271,8 @@ function serialize(node: Node, opts: Opts = {}): string {
 }
 
 // Alt text is plain text, read back as markdown inline content.
-function altText(alt: string) {
-  return escapeText(oneLine(alt), { label: true })
+function altText(alt: string, opts: Opts = {}) {
+  return escapeText(oneLine(alt), { label: true, cell: opts.cell })
 }
 
 // A heading or table row is one line: a line break inside it becomes a space.
@@ -317,7 +333,7 @@ function blocksOf(nodes: Node[], opts: Opts = {}) {
   return out + text(false)
 }
 
-function list(el: HTMLElement): string {
+function list(el: HTMLElement, opts: Opts = {}): string {
   const ordered = el.tagName.toLowerCase() === 'ol'
   let out = ''
   let n = ordered ? Number.parseInt(el.getAttribute('start') ?? '', 10) : 1
@@ -343,7 +359,7 @@ function list(el: HTMLElement): string {
     }
     // Inline text is line-start escaped and blocks (a paragraph, code, a
     // quote) are kept as they are, as anywhere else.
-    let body = blocksOf(own).trim()
+    let body = blocksOf(own, opts).trim()
     // A literal "[ ]" opening a bullet would become a task box.
     if (!box && /^\[[ xX]\]/.test(body)) body = `\\${body}`
     const bare = ordered ? `${n++}.` : '-'
@@ -358,7 +374,7 @@ function list(el: HTMLElement): string {
       .join('\n')
     out += `${marker} ${body}\n`
     for (const sub of nested)
-      out += list(sub)
+      out += list(sub, opts)
         .split('\n')
         .map((l) => (l ? pad + l : l))
         .join('\n')
