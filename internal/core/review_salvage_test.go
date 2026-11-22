@@ -45,6 +45,10 @@ func TestSalvageFindings(t *testing.T) {
 		// Only objects are findings (1255.17).
 		{"array elements", `{"findings":[["a"],["b"`, 0},
 		{"an array among the objects", `{"findings":[` + f1 + `,["a"],{"fi`, 0},
+		// a scalar past the last whole object is part of the dropped tail
+		{"a scalar in the cut tail", `{"findings":[` + f1 + `,"x",{"fi`, 1},
+		{"a string between objects", `{"findings":[` + f1 + `,"x",` + f2 + `,{"fi`, 0},
+		{"a number among the objects", `{"findings":[` + f1 + `,3,` + f2 + `,{"fi`, 0},
 	}
 	for _, c := range cases {
 		raw, n, ok := salvageFindings(c.in)

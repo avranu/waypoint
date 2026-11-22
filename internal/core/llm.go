@@ -758,7 +758,8 @@ func extractAnswerJSON(ctx context.Context, s string) (json.RawMessage, error) {
 // salvageFindings takes an answer cut off inside its JSON, {"findings":[{…},
 // {…},{… cut, or cut after the array closed, and returns valid JSON holding
 // the findings it finished, with how many. It is not ok for any other
-// shape (an element that is not an object among them), and for a cut
+// shape (a kept element that is not an object; a scalar in the dropped tail
+// past the last whole object is dropped with it), and for a cut
 // inside the first finding (no findings is not a salvage). It reads strings with their
 // escapes and keeps a stack of open brackets, so a brace or quote inside a
 // string is text. Callers use it only on an answer extractJSON rejected.
@@ -853,6 +854,19 @@ func salvageFrom(s string) (json.RawMessage, int, bool) {
 	raw := json.RawMessage(`{"findings":[` + s[arrStart:lastEnd] + `]}`)
 	if !json.Valid(raw) {
 		return nil, 0, false
+	}
+	// The bracket scan sees only closers, so a scalar element ("x", 3) is
+	// caught here: every element must be an object.
+	var doc struct {
+		Findings []json.RawMessage `json:"findings"`
+	}
+	if json.Unmarshal(raw, &doc) != nil || len(doc.Findings) != count {
+		return nil, 0, false
+	}
+	for _, f := range doc.Findings {
+		if len(f) == 0 || f[0] != '{' {
+			return nil, 0, false
+		}
 	}
 	return raw, count, true
 }
