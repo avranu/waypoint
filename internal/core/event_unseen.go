@@ -17,7 +17,7 @@ const unseenTask = "a task you can't see"
 // the one a code link infers); a new kind that does must be handled here, so
 // every reader of events (history, activity, the live stream) inherits it.
 func (s *Service) hideUnseen(ctx context.Context, q queryer, actor *Actor, e *Event) *Event {
-	if e.Field != "relation" || actor == nil || actor.isAdmin() {
+	if e.Field != "relation" || actor == nil {
 		return e
 	}
 	unseen := func(key string) bool {

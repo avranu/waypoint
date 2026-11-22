@@ -2,6 +2,7 @@ package core
 
 import (
 	"database/sql"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -389,5 +390,61 @@ func TestRecordRewritesRereadsTheDismissalInTheWrite(t *testing.T) {
 	}
 	if rels := f.relations(t, f.b.Key); len(rels) != 0 {
 		t.Errorf("the removed relation came back: %+v", rels)
+	}
+}
+
+// A token that may only read cannot make NoteRewrites record relations and
+// evidence: core asks for issues.edit itself, whatever route called it (WP-1370).
+func TestNoteRewritesNeedsTheEditPermission(t *testing.T) {
+	f := newRewriteFixture(t)
+	reader := &Actor{User: f.admin.User, Permissions: PermissionSet{PermIssuesRead: true}}
+	if _, err := f.s.NoteRewrites(f.ctx, reader, f.b.Key, "o/r", "head1", f.prs); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("a read-only token: err = %v, want ErrForbidden", err)
+	}
+	if rels := f.relations(t, f.b.Key); len(rels) != 0 {
+		t.Errorf("a refused call recorded %+v", rels)
+	}
+	editor := &Actor{User: f.admin.User, Permissions: PermissionSet{PermIssuesRead: true, PermIssuesEdit: true}}
+	if got, err := f.s.NoteRewrites(f.ctx, editor, f.b.Key, "o/r", "head1", f.prs); err != nil || len(got) != 1 {
+		t.Fatalf("an editing token: %+v, %v", got, err)
+	}
+}
+
+// A draft task's key stays out of a published task's history, as relate
+// records it: the event of the relation NoteRewrites makes goes on the draft
+// (WP-42, WP-1370).
+func TestNoteRewritesKeepsADraftsKeyOutOfThePublishedHistory(t *testing.T) {
+	f := newRewriteFixture(t)
+	if _, err := f.s.db.W.ExecContext(f.ctx, `UPDATE issues SET draft = 1 WHERE id = ?`, f.a.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := f.s.NoteRewrites(f.ctx, f.admin, f.b.Key, "o/r", "head1", f.prs)
+	if err != nil || len(got) != 1 || !got[0].Recorded {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+	f.s.Wait()
+	var onB, onA int
+	if err := f.s.db.R.QueryRowContext(f.ctx, `SELECT count(*) FROM events WHERE issue_id = ? AND field = 'relation' AND (new_value LIKE ? OR data LIKE ?)`, f.b.ID, "%"+f.a.Key+"%", "%"+f.a.Key+"%").Scan(&onB); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.db.R.QueryRowContext(f.ctx, `SELECT count(*) FROM events WHERE issue_id = ? AND field = 'relation' AND (new_value LIKE ? OR data LIKE ?)`, f.a.ID, "%"+f.b.Key+"%", "%"+f.b.Key+"%").Scan(&onA); err != nil {
+		t.Fatal(err)
+	}
+	if onB != 0 || onA != 1 {
+		t.Errorf("relation events naming the draft on the published task = %d, on the draft naming the task = %d; want 0 and 1", onB, onA)
+	}
+}
+
+// The lines a relation's note names are the total over the task's pull
+// requests, so with several they are not said to be one pull request's
+// (WP-1370).
+func TestRewriteNoteSaysATotalOverPullRequests(t *testing.T) {
+	one := rewriteNote(&RewrittenTask{PR: 413, PRs: 1, Lines: 181, Share: 0.96})
+	if one != "replaces 181 lines from PR 413, 96% of the lines it replaces" {
+		t.Errorf("one pull request: %q", one)
+	}
+	many := rewriteNote(&RewrittenTask{PR: 413, PRs: 3, Lines: 181, Share: 0.5})
+	if strings.Contains(many, "lines from PR") || !strings.Contains(many, "181 lines from 3 pull requests") || !strings.Contains(many, "PR 413") {
+		t.Errorf("three pull requests: %q", many)
 	}
 }
