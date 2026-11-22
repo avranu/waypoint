@@ -213,20 +213,24 @@ type AuditCounts struct {
 
 // CodeAuditFinding is one thing an audit reported.
 type CodeAuditFinding struct {
-	ID       string     `json:"id"` // "12.3": audit 12, finding 3
-	Ordinal  int        `json:"ordinal"`
-	Title    string     `json:"title"`
-	Path     string     `json:"path,omitempty"`
-	Line     int        `json:"line,omitempty"`
-	Severity string     `json:"severity"`
-	Problem  string     `json:"problem"`
-	Confirm  string     `json:"confirm,omitempty"`
-	State    string     `json:"state"`
-	Note     string     `json:"note,omitempty"`
-	Issue    string     `json:"issue,omitempty"`
-	By       string     `json:"by,omitempty"` // who decided its state
-	At       *time.Time `json:"at,omitempty"`
-	URL      string     `json:"url,omitempty"` // the line on the forge
+	ID       string `json:"id"` // "12.3": audit 12, finding 3
+	Ordinal  int    `json:"ordinal"`
+	Title    string `json:"title"`
+	Path     string `json:"path,omitempty"`
+	Line     int    `json:"line,omitempty"`
+	Severity string `json:"severity"`
+	Problem  string `json:"problem"`
+	Confirm  string `json:"confirm,omitempty"`
+	State    string `json:"state"`
+	Note     string `json:"note,omitempty"`
+	Issue    string `json:"issue,omitempty"`
+	// IssueCanceled is set when Issue is in a canceled status (won't do,
+	// duplicate): the filing came to nothing, so the finding is to do again
+	// (findingFiled, WP-1554). loadFindings sets it.
+	IssueCanceled bool       `json:"issue_canceled,omitempty"`
+	By            string     `json:"by,omitempty"` // who decided its state
+	At            *time.Time `json:"at,omitempty"`
+	URL           string     `json:"url,omitempty"` // the line on the forge
 	// Verdict is a Haiku check's of the finding against the code
 	// (confirmed, refuted, unsupported; "" not checked), VerdictNote its
 	// evidence, and Lead the panel leads (check.n, comma separated) the runner
@@ -1725,9 +1729,12 @@ func findingToDo(f CodeAuditFinding) bool {
 // severities that hold a merge (auditHoldsMerge). A critical or high one
 // stays to do until it is fixed or rejected, as the merge hold has always
 // asked: filing it would let a known serious defect merge on an agent's
-// word. findingFiledSQL is the same test in SQL.
+// word. A filing holds only while its issue is not canceled: one closed as
+// won't do or duplicate fixed nothing, and would drop the finding for good,
+// so the finding is to do again (WP-1554); open, in progress and done issues
+// keep it filed. findingFiledSQL is the same test in SQL.
 func findingFiled(f CodeAuditFinding) bool {
-	return f.State == "confirmed" && f.Issue != "" && !auditHoldsMerge(f.Severity)
+	return f.State == "confirmed" && f.Issue != "" && !f.IssueCanceled && !auditHoldsMerge(f.Severity)
 }
 
 // markHint is the ways to mark a finding, for the prompts and holds that
@@ -1737,9 +1744,10 @@ func markHint(id, why string) string {
 }
 
 // findingFiledSQL and findingToDoSQL are findingFiled and findingToDo over
-// code_audit_findings as f.
+// code_audit_findings as f. The canceled-issue test is a subquery with its
+// own aliases so every query that embeds it can join what it likes.
 const (
-	findingFiledSQL = "(f.state = 'confirmed' AND f.issue_id IS NOT NULL AND f.severity NOT IN ('critical', 'high'))"
+	findingFiledSQL = "(f.state = 'confirmed' AND f.issue_id IS NOT NULL AND f.severity NOT IN ('critical', 'high') AND NOT EXISTS (SELECT 1 FROM issues fiss JOIN statuses fst ON fst.id = fiss.status_id WHERE fiss.id = f.issue_id AND fst.category = 'canceled'))"
 	findingToDoSQL  = "(f.state IN ('open', 'confirmed') AND NOT " + findingFiledSQL + ")"
 )
 
@@ -1996,7 +2004,7 @@ func (s *Service) auditCounts(ctx context.Context, id int64) AuditCounts {
 
 func (s *Service) loadFindings(ctx context.Context, a *CodeAudit) error {
 	rows, err := s.db.R.QueryContext(ctx, `SELECT f.ordinal, f.title, f.path, f.line, f.severity, f.problem, f.confirm, f.state, f.note,
-		coalesce(ip.key || '-' || i.number, ''), coalesce(nullif(u.display_name, ''), u.username, f.decided_agent, ''), f.decided_at, f.verdict, f.verdict_note, f.lead
+		coalesce(ip.key || '-' || i.number, ''), coalesce((SELECT st.category = 'canceled' FROM statuses st WHERE st.id = i.status_id), 0), coalesce(nullif(u.display_name, ''), u.username, f.decided_agent, ''), f.decided_at, f.verdict, f.verdict_note, f.lead
 		FROM code_audit_findings f LEFT JOIN issues i ON i.id = f.issue_id LEFT JOIN projects ip ON ip.id = i.project_id
 		LEFT JOIN users u ON u.id = f.decided_by WHERE f.audit_id = ? ORDER BY f.ordinal`, a.ID)
 	if err != nil {
@@ -2007,7 +2015,7 @@ func (s *Service) loadFindings(ctx context.Context, a *CodeAudit) error {
 	for rows.Next() {
 		var f CodeAuditFinding
 		var at sql.NullInt64
-		if err := rows.Scan(&f.Ordinal, &f.Title, &f.Path, &f.Line, &f.Severity, &f.Problem, &f.Confirm, &f.State, &f.Note, &f.Issue, &f.By, &at, &f.Verdict, &f.VerdictNote, &f.Lead); err != nil {
+		if err := rows.Scan(&f.Ordinal, &f.Title, &f.Path, &f.Line, &f.Severity, &f.Problem, &f.Confirm, &f.State, &f.Note, &f.Issue, &f.IssueCanceled, &f.By, &at, &f.Verdict, &f.VerdictNote, &f.Lead); err != nil {
 			return err
 		}
 		f.ID = fmt.Sprintf("%d.%d", a.ID, f.Ordinal)
