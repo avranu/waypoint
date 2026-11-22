@@ -1047,6 +1047,20 @@ func (s *Service) SessionHook(ctx context.Context, actor *Actor, evs []HookEvent
 	if evs[len(evs)-1].Event == "SessionStart" && !lastQuiet {
 		res.Text = joinText(res.Text, s.autopilotSessionNote(ctx, res.Session, 0))
 	}
+	// A Stop that leaves a background run going: Claude Code says so, and the
+	// work that doesn't need its result is named once, so the turn doesn't end
+	// idle (WP-1571). The stop it continues is let through.
+	if last := evs[len(evs)-1]; last.Event == "Stop" && !last.StopHookActive && !lastQuiet && !pausedStop && !leftStop && res.Text == "" && res.Session != 0 {
+		if running := runningTasks(last.Pending); len(running) > 0 {
+			ac := *actor
+			ac.Session = res.Session
+			if o, err := s.SessionOutstanding(ctx, &ac); err != nil {
+				s.log.WarnContext(ctx, "outstanding work at stop", "session", res.Session, "err", err)
+			} else {
+				res.Text = o.stopText(running)
+			}
+		}
+	}
 	if last := evs[len(evs)-1]; (last.Event == "SessionStart" || last.Event == "UserPromptSubmit") && last.Repo != "" {
 		// Each prompt too, so a vouch a person answers mid-session reaches
 		// the guard at the agent's next turn (WP-1087).

@@ -31,7 +31,10 @@ var slotCmd = &command{
 a free slot of NAME, runs CMD holding it and exits with CMD's code. N
 defaults to half the cores. A nested run of the same NAME reuses the slot it
 is in. A run of tests drops credential-named variables, as wp testsum does
-(--keep-env NAME passes one through; WP-1065).`,
+(--keep-env NAME passes one through; WP-1065). Each successful run's time is
+kept (runs.jsonl in the slot directory); a run that has to wait, and again
+one that starts, says on stderr when it expects to finish, from the median
+of the command's recent runs, and says nothing without any (WP-1571).`,
 	examples: []string{"wp slot run tests -- go test ./...", "wp slot ls"},
 }
 
@@ -95,6 +98,9 @@ func acquireSlot(ctx context.Context, name string, n int, notify func()) (*slotH
 		}
 		if !notified && time.Since(start) > slotWaitNotice {
 			notified = true
+			// Join the queue, so those who come later can count this one.
+			remove := slotAddWaiter(dir, name)
+			defer remove()
 			if notify != nil {
 				notify()
 			}
@@ -180,18 +186,37 @@ func slotHeld(name string) bool {
 func (c *cli) runInSlotThen(name string, n int, argv []string, out, errw io.Writer, started func(), envf func([]string) []string) (int, error) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	env, release, err := c.takeSlot(ctx, name, n)
+	own := !slotHeld(name) // a nested run is inside someone's slot and time
+	cmd := slotCmdKey(slotField(strings.Join(os.Args[1:], " ")))
+	if !strings.Contains(strings.Join(os.Args[1:], " "), " -- ") {
+		cmd = slotField(strings.Join(argv, " "))
+	}
+	if !own {
+		cmd = ""
+	}
+	env, release, err := c.takeSlotFor(ctx, name, n, cmd)
 	if err != nil {
 		return 0, err
 	}
 	defer release()
+	dir, derr := slotDir()
+	if cmd != "" && derr == nil {
+		if note := slotRunningNote(dir, name, cmd); note != "" {
+			_, _ = fmt.Fprintln(c.err, note)
+		}
+	}
 	if started != nil {
 		started()
 	}
 	if envf != nil {
 		env = envf(env)
 	}
-	return runSlotCmd(ctx, env, argv, os.Stdin, out, errw)
+	begun := time.Now()
+	code, err := runSlotCmd(ctx, env, argv, os.Stdin, out, errw)
+	if err == nil && code == 0 && cmd != "" && derr == nil {
+		slotRecordRun(dir, slotRunRec{Name: name, Cmd: cmd, Repo: slotRepoKey(), At: time.Now().Unix(), Secs: time.Since(begun).Seconds()})
+	}
+	return code, err
 }
 
 // runSlotCmd runs argv with env and returns its exit code (128+N when a
@@ -330,12 +355,26 @@ func cmdSlotLs(c *cli, args []string) error {
 // one, and returns the environment for commands run in it (marking the slot
 // held, so a nested run doesn't wait on itself) and what lets it go.
 func (c *cli) takeSlot(ctx context.Context, name string, n int) (env []string, release func(), err error) {
+	return c.takeSlotFor(ctx, name, n, "")
+}
+
+// takeSlotFor is takeSlot for the command cmd (slotCmdKey): while it waits it
+// says when it expects to finish, if it knows how long cmd runs (WP-1571).
+func (c *cli) takeSlotFor(ctx context.Context, name string, n int, cmd string) (env []string, release func(), err error) {
 	env = os.Environ()
 	if slotHeld(name) {
 		return env, func() {}, nil
 	}
 	hold, err := acquireSlot(ctx, name, n, func() {
 		_, _ = fmt.Fprintf(c.err, "wp slot: waiting for a free %q slot (%d on this host; wp slot ls shows who has them)\n", name, n)
+		if cmd == "" {
+			return
+		}
+		if dir, err := slotDir(); err == nil {
+			if note := slotQueuedNote(dir, name, cmd); note != "" {
+				_, _ = fmt.Fprintln(c.err, note)
+			}
+		}
 	})
 	if err != nil {
 		return nil, nil, err
