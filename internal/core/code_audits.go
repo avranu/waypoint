@@ -926,7 +926,7 @@ func (s *Service) advanceAudit(ctx context.Context, id int64) {
 	for a.Slot < len(a.chain) {
 		m := a.chain[a.Slot]
 		in := AgentJob{CLI: m.CLI, Model: m.Model, Prompt: a.prompt, Repo: repo.cloneURL(), Base: a.Ref, DiffFrom: a.Base, ReadOnly: true, Permission: AgentRead,
-			JSONSchema: auditSchemaFor(a), DiffPaths: a.Paths, DiffExclude: a.Exclude, Helpers: a.Helpers}
+			JSONSchema: auditSchema, DiffPaths: a.Paths, DiffExclude: a.Exclude, Helpers: a.Helpers}
 		if a.SinceAt != nil {
 			in.DiffFrom, in.DiffSince = "", a.SinceAt.Unix()
 		}
