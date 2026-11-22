@@ -864,13 +864,13 @@ func TestScheduleIsSound(t *testing.T) {
 		"forge rechecks", "pull requests", "resume babysits", "forge sync", "armed heads", "CI history", "CI health", "review gates",
 		"pending checks", "system resources", "armed merges", "babysits", "audits", "objectives", "request conditions", "hold conditions", "safety screens",
 		"quota guard watch", "autopilot", "warm caches", "work logs", "PR descriptions", "fan-outs", "log secrets",
-		"session facts",
+		"session facts", "front rounds",
 	} {
 		if _, ok := at[name]; !ok {
 			t.Errorf("no job %q", name)
 		}
 	}
-	if len(at) != 65 {
+	if len(at) != 66 {
 		t.Errorf("%d jobs: one was added or removed; name it above", len(at))
 	}
 	// The watchdog is started by RunScheduler on its own, not by the loop it

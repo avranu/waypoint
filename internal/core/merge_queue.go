@@ -441,6 +441,20 @@ func (s *Service) lineAhead(ctx context.Context, pr *PullRequest) (int, error) {
 	return n, err
 }
 
+// lineFrontPR is SQL true for a pull_requests row of alias p that is at the
+// front of its merge line: armed, in the line, and either the holder
+// (queueHolder) or with no other pull request ahead of it by the rule
+// lineAhead counts with (WP-1618, WP-ADR149). Keep the two in agreement.
+var lineFrontPR = `(p.armed_at IS NOT NULL AND p.outside = 0 AND p.state IN ('open','draft')
+	AND ((p.wip_auto = 1 AND p.state = 'open' AND p.ready_at IS NOT NULL)
+	  OR NOT EXISTS (SELECT 1 FROM pull_requests q
+		WHERE q.forge_id = p.forge_id AND q.repo = p.repo COLLATE NOCASE AND q.base_ref = p.base_ref AND q.id != p.id AND q.state IN ('open','draft')
+		  AND q.armed_at IS NOT NULL AND q.outside = 0
+		  AND EXISTS (SELECT 1 FROM babysits b2 WHERE b2.pr_id = q.id AND b2.ended_at IS NULL AND b2.state IN ('` + strings.Join(queueStates, "','") + `'))
+		  AND ((q.wip_auto = 1 AND q.state = 'open' AND q.ready_at IS NOT NULL)
+		    OR coalesce(q.queued_at, q.armed_at) < coalesce(p.queued_at, p.armed_at)
+		    OR (coalesce(q.queued_at, q.armed_at) = coalesce(p.queued_at, p.armed_at) AND q.number < p.number)))))`
+
 // roundTurn says what a round for pr waits for: "" when it goes now. Only
 // an armed pull request waits, and not one marked ready (the front) or one
 // labelled ci-urgent, which goes ahead of the line anyway (WP-686).
