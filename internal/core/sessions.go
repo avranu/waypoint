@@ -864,7 +864,8 @@ func (s *Service) SessionHook(ctx context.Context, actor *Actor, evs []HookEvent
 	for n := range evs {
 		// A prompt pasted whole is its text, so autopilot's own (pasted
 		// into the pane) still reads as autopilot's, whatever wp sent it
-		// (WP-1562).
+		// (WP-1562). Unwrapped here only: the hook reads the text inside
+		// for its own checks but sends a person's prompt as it came.
 		if evs[n].Event == "UserPromptSubmit" {
 			evs[n].Prompt = UnwrapPasted(evs[n].Prompt)
 		}

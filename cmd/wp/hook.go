@@ -14,6 +14,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core"
 )
 
 // Claude Code integration: hooks report each session's token usage to the
@@ -873,6 +875,7 @@ func hookClaudeResume(c *cli, stdin io.Reader) {
 	if err := json.NewDecoder(io.LimitReader(stdin, 1<<20)).Decode(&in); err != nil || !filepath.IsAbs(in.Cwd) {
 		return
 	}
+	in.Prompt = core.UnwrapPasted(in.Prompt) // a paste's text (WP-1562)
 	if strings.HasPrefix(strings.TrimSpace(in.Prompt), keepWarmMark) || isSessionCommand(in.Prompt) {
 		return // a keep-warm ping, or a /wp command, is no work on the task (WP-192, WP-562)
 	}
