@@ -487,6 +487,8 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 		ev.AgentID, ev.AgentType = in.AgentID, in.AgentType
 		if in.HookEventName == "SubagentStop" {
 			ownReview(in, &ev, noPrompts) // its report goes to the task's work log (WP-1089)
+		} else {
+			ev.AgentModel = c.subagentModel(in) // which instructions are for it (ADR146)
 		}
 	case "SessionEnd":
 		ev.EndReason = in.Reason
@@ -561,7 +563,12 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 		// write (WP-1398).
 		text := c.withTidyHint(res.Text, in)
 		text = joinParts(c.pauseTell(in.SessionID, hookLateAfter(hookSessionStartTimeout)), text)
-		_, _ = stdout.Write(sessionStartOutput(text, kit))
+		// The session's instructions first (ADR146): Claude Code cuts the end.
+		_, _ = stdout.Write(sessionStartOutput(joinParts(res.Instructions, text), kit))
+	case "SubagentStart":
+		if res.Instructions != "" {
+			_, _ = stdout.Write(hookContext("SubagentStart", truncateUTF8(res.Instructions, maxSessionContext)))
+		}
 	case "UserPromptSubmit":
 		c.saveEnvHosts(ev.Repo, res.EnvHosts)
 		if res.Block != "" {
@@ -797,9 +804,12 @@ type hookReply struct {
 	Session int64  `json:"session"`
 	Text    string `json:"text"`
 	Await   int    `json:"await"` // seconds to wait for a follow-up's message (WP-D22)
-	Note    string `json:"note"`  // a line for the person, never the model (WP-34)
-	End     bool   `json:"end"`   // a task session that finished its tasks: end it (WP-97)
-	Block   string `json:"block"` // UserPromptSubmit: drop the prompt, show the person this (WP-ADR9)
+	// Instructions: at a SessionStart or SubagentStart, the agent
+	// instructions for whoever just started (ADR146); "" from older servers.
+	Instructions string `json:"instructions"`
+	Note         string `json:"note"`  // a line for the person, never the model (WP-34)
+	End          bool   `json:"end"`   // a task session that finished its tasks: end it (WP-97)
+	Block        string `json:"block"` // UserPromptSubmit: drop the prompt, show the person this (WP-ADR9)
 	// Pause: the person's session pause, or null (absent from older
 	// servers); kept in a local file for the PreToolUse hooks (WP-146).
 	Pause json.RawMessage `json:"pause"`
@@ -889,6 +899,8 @@ func eventHookTimeout(event string) int {
 		return hookSessionStartTimeout
 	case "UserPromptSubmit", "Stop":
 		return 20
+	case "SubagentStart":
+		return hookSubagentStartTimeout
 	case "SessionEnd":
 		return 2
 	}
