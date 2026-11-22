@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -45,9 +46,14 @@ type sugReport struct {
 	StartMedian int64           `json:"start_context_median,omitempty"`
 	Until       float64         `json:"until_days,omitempty"`
 	Orientation *sugOrientation `json:"orientation,omitempty"`
-	DocTokens   int64           `json:"instruction_tokens"`
-	Docs        []sugDoc        `json:"instruction_files"`
-	Suggestions []sugAdvice     `json:"suggestions"`
+	DocTokens   int64           `json:"instruction_tokens"` // the files as they are on disk now: an estimate
+	// Measured is what the hooks saw at the start of these sessions (the
+	// session_snapshots on the server); nil, with MeasuredNote saying why, when
+	// there is none (WP-1470).
+	Measured     *sugMeasured `json:"measured_start,omitempty"`
+	MeasuredNote string       `json:"measured_note,omitempty"`
+	Docs         []sugDoc     `json:"instruction_files"`
+	Suggestions  []sugAdvice  `json:"suggestions"`
 }
 
 const defaultSuggestSince = 30 * 24 * time.Hour
@@ -82,7 +88,7 @@ func cmdUsageSuggest(c *cli, args []string) error {
 	if err != nil {
 		return fmt.Errorf("run wp usage suggest in a git checkout of the repository: %w", err)
 	}
-	rep, err := buildSuggestReport(root, claudeDir(*dir), d, u, c.server() != "")
+	rep, err := buildSuggestReport(root, claudeDir(*dir), d, u, c.server() != "", func(ids []string) (*sugMeasured, string) { return measuredStart(c, ids) })
 	if err != nil {
 		return err
 	}
@@ -90,7 +96,7 @@ func cmdUsageSuggest(c *cli, args []string) error {
 	return c.emit(raw, func() string { return suggestText(rep) })
 }
 
-func buildSuggestReport(root, claudeRoot string, since, until time.Duration, waypoint bool) (*sugReport, error) {
+func buildSuggestReport(root, claudeRoot string, since, until time.Duration, waypoint bool, measure func(ids []string) (*sugMeasured, string)) (*sugReport, error) {
 	mainRoot := root
 	if common, err := gitOutput(root, "rev-parse", "--path-format=absolute", "--git-common-dir"); err == nil && filepath.Base(common) == ".git" {
 		mainRoot = filepath.Dir(common)
@@ -143,6 +149,20 @@ func buildSuggestReport(root, claudeRoot string, since, until time.Duration, way
 		}
 	}
 	rep.StartMedian = median(start)
+	if measure != nil {
+		var mains []*sugSession
+		for _, s := range sessions {
+			if s.Kind == "main" {
+				mains = append(mains, s)
+			}
+		}
+		sort.SliceStable(mains, func(i, j int) bool { return mains[i].FirstAt > mains[j].FirstAt })
+		ids := make([]string, len(mains))
+		for i, s := range mains {
+			ids[i] = s.ID
+		}
+		rep.Measured, rep.MeasuredNote = measure(ids)
+	}
 	rep.Docs = instructionDocs(claudeRoot, root, memDirs)
 	for _, d := range rep.Docs {
 		rep.DocTokens += tokOf(d.Bytes)
@@ -155,6 +175,7 @@ func buildSuggestReport(root, claudeRoot string, since, until time.Duration, way
 		Inventory: collectInventory(claudeRoot, []string{root}),
 		Window:    compactWindowFor(readCompactHave(root)),
 		Waypoint:  waypoint,
+		Measured:  rep.Measured, MeasuredNote: rep.MeasuredNote,
 	}
 	rep.Suggestions = runSuggestChecks(in)
 	rep.Orientation = orientation(sessions)
@@ -223,7 +244,12 @@ func suggestText(r *sugReport) string {
 	} else {
 		fmt.Fprintf(&b, "%s: %s and %s on this machine in the last %s days%s.\n", r.Repo, plural1(r.Sessions, "session"), plural1(r.Subagents, "subagent run"), days, untilText(r.Until))
 		if r.StartMedian > 0 {
-			fmt.Fprintf(&b, "Sessions start at a median of %s tokens of context; instruction files and memory are about %s of it.\n", tok(r.StartMedian), tok(r.DocTokens))
+			fmt.Fprintf(&b, "Sessions start at a median of %s tokens of context.\n", tok(r.StartMedian))
+		}
+		if r.Measured != nil {
+			b.WriteString(r.Measured.text() + "\n")
+		} else if r.StartMedian > 0 || r.DocTokens > 0 {
+			fmt.Fprintf(&b, "Instruction files and memory: no measurement from the sessions themselves (%s); the files on disk now come to about %s tokens, an estimate.\n", cmpStr(r.MeasuredNote, "no session-start snapshot"), tok(r.DocTokens))
 		}
 		b.WriteString(orientationText(r.Orientation))
 	}

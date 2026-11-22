@@ -240,6 +240,9 @@ async function run(width, scheme) {
   const lg = await api("GET", "/usage/ledger?days=30");
   ok(lg.overall.calls > 500 && lg.overall.cold_starts > 0 && lg.spawns[0].forks > 0 && lg.spawns[0].fresh > 0, `${tag} API ledger: ${lg.overall.calls} calls, avg ${Math.round(lg.overall.avg_context)}, ${lg.overall.cold_starts} cold`);
   await led.screenshot({ path: `${out}/ledger-${width}-${scheme}.png` });
+  // the word "inferred" must survive the narrowest tile (WP-1470)
+  const coldTile = await page.getByText(/^Cold starts \(inferred\)$/).first().evaluate((el) => ({ cut: el.scrollWidth > el.clientWidth + 1, shown: el.getBoundingClientRect().width > 0 }));
+  ok(coldTile.shown && !coldTile.cut, `${tag} the cold-starts tile label shows "inferred" whole`);
   ok((await page.getByText("Cache hit rate").first().isVisible()) && (await page.getByText("API-equivalent cost").first().isVisible()), `${tag} cache and cost tiles show`);
   // suggestions with evidence, and an allow rule to copy
   ok(await page.getByText("Search subagents are running on a premium model").isVisible(), `${tag} the model suggestion shows`);

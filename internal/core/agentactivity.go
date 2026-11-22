@@ -99,6 +99,7 @@ type ActivityRun struct {
 	Issue        ActivityIssue `json:"issue"`
 	StartedAt    time.Time     `json:"started_at"`
 	EndedAt      *time.Time    `json:"ended_at"`
+	EndInferred  bool          `json:"end_inferred,omitempty"` // EndedAt is the sweep's bound for a run it never saw end (WP-1470)
 	Seconds      int64         `json:"seconds"`
 	Outcome      string        `json:"outcome"` // done, released, expired, paused, timeout; '' while working
 	InputTokens  int64         `json:"input_tokens"`
@@ -235,7 +236,7 @@ func (a *activityBuilder) runs(ctx context.Context, where string, args []any) er
 	// #nosec G202 -- where is built from fixed conditions; values are bound
 	rows, err := a.s.db.R.QueryContext(ctx, `SELECT r.id, r.agent, r.model, r.step, r.started_at, r.ended_at,
 			min(coalesce(r.ended_at, min(?, coalesce((SELECT x.claimed_until FROM issues x WHERE x.id = r.issue_id AND x.claimed_by = r.agent), r.started_at + ?))), ?),
-			r.input_tokens, r.output_tokens, r.cost_usd, r.outcome,
+			r.input_tokens, r.output_tokens, r.cost_usd, r.outcome, r.end_inferred,
 			i.id, p.key || '-' || i.number, i.title, p.key, st.name, st.category
 		FROM agent_runs r JOIN issues i ON i.id = r.issue_id JOIN projects p ON p.id = i.project_id JOIN statuses st ON st.id = i.status_id
 		WHERE `+where+` AND r.started_at < ? AND coalesce(r.ended_at, ?) > ?
@@ -251,7 +252,7 @@ func (a *activityBuilder) runs(ctx context.Context, where string, args []any) er
 		var start, stop int64
 		var end sql.NullInt64
 		var issueID int64
-		if err := rows.Scan(&r.ID, &r.Agent, &r.Model, &r.Step, &start, &end, &stop, &r.InputTokens, &r.OutputTokens, &r.CostUSD, &r.Outcome,
+		if err := rows.Scan(&r.ID, &r.Agent, &r.Model, &r.Step, &start, &end, &stop, &r.InputTokens, &r.OutputTokens, &r.CostUSD, &r.Outcome, &r.EndInferred,
 			&issueID, &r.Issue.Key, &r.Issue.Title, &r.Issue.ProjectKey, &r.Issue.Status, &r.Issue.StatusCategory); err != nil {
 			return err
 		}
