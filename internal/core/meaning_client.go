@@ -131,9 +131,9 @@ func (m *httpMeaning) post(ctx context.Context, path string, body, out any) erro
 		}
 	}()
 	unanswered, err := m.send(ctx, path, body, out)
-	if unanswered && ctx.Err() != nil {
-		// The caller gave up (the server is stopping), which says nothing
-		// about the service.
+	if unanswered && errors.Is(ctx.Err(), context.Canceled) {
+		// The caller cancelled (the server is stopping), which says nothing
+		// about the service. A deadline passing is a timeout, and counts.
 		return err
 	}
 	judged = true

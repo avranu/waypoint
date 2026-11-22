@@ -175,3 +175,28 @@ func TestMeaningBreakerOneProbeAndRefused(t *testing.T) {
 		t.Fatalf("the failed probe after a cancelled one: %+v", h)
 	}
 }
+
+// A call whose own deadline passes is an unanswered call, not a caller giving up.
+func TestMeaningDeadlineCountsAsUnanswered(t *testing.T) {
+	stop := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-stop:
+		case <-r.Context().Done():
+		}
+	}))
+	defer srv.Close()
+	defer close(stop)
+	m := newHTTPMeaning(srv.URL, "", srv.Client(), nil, nil)
+	for range meaningTrips {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		_, _, err := m.Embed(ctx, []string{"x"})
+		cancel()
+		if !errors.Is(err, ErrMeaningDown) {
+			t.Fatalf("a timed-out call: %v", err)
+		}
+	}
+	if h := m.Health(); h.State != "down" || h.Failures != meaningTrips {
+		t.Fatalf("%+v", h)
+	}
+}
