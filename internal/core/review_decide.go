@@ -615,6 +615,14 @@ func (s *Service) shipOwed(ctx context.Context, id int64) (roundOut, error) {
 	if id == 0 {
 		return roundOut{}, nil
 	}
+	// A ship that failed isn't tried again before its backoff is up, whoever
+	// asks: the same gate as the sweep's, unless its time is spent and the
+	// round only has to end (WP-1370).
+	if bp := roundBeforePR(ctx, s.db.R, id); bp != nil && bp.ShipErr != "" && bp.ShipStop == "" && !s.shipDue(ctx, id, s.nowMS()) {
+		if in, err := s.roundInOf(ctx, id); err != nil || !in.ShipSpent {
+			return roundOut{}, err
+		}
+	}
 	out, err := s.advanceRound(ctx, id)
 	if errors.Is(err, ErrNotFound) && out.Do == doNothing {
 		return roundOut{}, nil
