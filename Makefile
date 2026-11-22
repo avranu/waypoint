@@ -31,7 +31,7 @@ GOVULNCHECK_VERSION ?= v1.9.0
 ACTIONLINT_VERSION ?= v1.7.12
 KUBECONFORM_VERSION ?= v0.8.0
 
-.PHONY: e2e all build web server cli cross-check test lint wplint sast vuln check prepush prepush-go prepush-ops prepush-web tools ci-image ops-lint dev docker deploy deploy-remote rollback-remote deploy-status restart-remote need-deploy-host release-dry-run clean help
+.PHONY: e2e all build web server cli cross-check test lint golint wplint wplint-code sast vuln check prepush prepush-go prepush-ops prepush-web tools ci-image ops-lint dev docker deploy deploy-remote rollback-remote deploy-status restart-remote need-deploy-host release-dry-run clean help
 
 all: build
 
@@ -86,17 +86,24 @@ tools: ## install pinned Go QA binaries
 ci-image: ## build and push CI's job image if the registry lacks it, and pin ci.yml to it
 	.forgejo/ci-image/build.sh
 
-lint: cross-check ## vet + format check + full lint + wplint + wp cross-builds
+lint: cross-check golint ## vet + format check + full lint + wplint + wp cross-builds
+	$(MAKE) wplint
+
+# Also what GitHub's lint job runs (.github/workflows/ci.yml), so it follows GOPKGS.
+golint: ## go vet, gofmt check and golangci-lint over GOPKGS
 	go vet $(GOPKGS)
 	test -z "$$(gofmt -l cmd internal)"
 	$(GOTOOLS) $(SLOT) golangci-lint run $(GOPKGS)
-	$(MAKE) wplint
 
 # Waypoint's own rules from AGENTS.md and REVIEW.md (internal/wplint, WP-707).
 # A finding is fixed or waived on its line: //wplint:ignore RULE why.
-wplint: ## Waypoint's own analyzers + the migration and e2e-wait checks against origin/main
-	$(SLOT) go run ./cmd/wplint ./cmd/... ./internal/...
+wplint: wplint-code ## Waypoint's own analyzers + the migration and e2e-wait checks against origin/main
 	go run ./cmd/wplint repo -base origin/main
+
+# All of wplint that GitHub's lint job runs (.github/workflows/ci.yml): on
+# main there is no base to compare with.
+wplint-code: ## Waypoint's own analyzers over cmd and internal
+	$(SLOT) go run ./cmd/wplint ./cmd/... ./internal/...
 
 # wp ships for Windows and macOS too (make cli); build those here so a
 # Unix-only call in a shared file fails before the release job does.
@@ -117,6 +124,7 @@ prepush-go: cross-check
 
 prepush-ops:
 	$(GOTOOLS) actionlint -config-file .forgejo/actionlint.yaml .forgejo/workflows/ci.yml
+	$(GOTOOLS) actionlint .github/workflows/*.yml
 	$(GOTOOLS) kubeconform -strict -summary deploy/k8s/waypoint.yaml
 	@go run ./cmd/wp ci lint || true  # advisory: runner-time waste in the workflows (WP-161)
 
@@ -155,6 +163,7 @@ HADOLINT_IMAGE ?= hadolint/hadolint:v2.14.0
 
 ops-lint: ## lint CI workflow, k8s manifest, shell scripts (+ Dockerfile via docker)
 	actionlint -config-file .forgejo/actionlint.yaml .forgejo/workflows/ci.yml
+	actionlint .github/workflows/*.yml
 	kubeconform -strict -summary deploy/k8s/waypoint.yaml
 	@if git ls-files '*.sh' | grep -q .; then shellcheck $$(git ls-files '*.sh'); fi
 	@if command -v docker >/dev/null; then for f in deploy/Dockerfile .forgejo/ci-image/Dockerfile; do docker run --rm -i $(HADOLINT_IMAGE) < $$f || exit 1; done; else echo "skip hadolint (no docker)"; fi
