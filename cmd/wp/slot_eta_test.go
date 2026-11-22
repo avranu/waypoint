@@ -509,7 +509,7 @@ func TestSlotRecordRunWaitsForTheRecordLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lf.Close()
+	defer func() { _ = lf.Close() }()
 	unlock, err := fileLock(lf)
 	if err != nil {
 		t.Skip("no flock here:", err)

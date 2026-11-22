@@ -292,7 +292,21 @@ func TestWaitETACommand(t *testing.T) {
 		{"wp slot run 'a b' -- x", "", "", 0, false},
 		{"wp testsum --", "", "", 0, false},
 		{"wp slot run tests --", "", "", 0, false},
-		{"wp testsum go test ./...", "", "", 0, false},
+		// The command without -- (testsum's own examples), keyed as the run is.
+		{"wp testsum go test ./...", "tests", "go test ./...", 0, true},
+		{"wp testsum go test -json ./...", "tests", "go test ./...", 0, true},
+		{"wp testsum --keep-env GH_TOKEN --format=go make check", "tests", "make check", 0, true},
+		{"wp testsum --format go -- make check", "tests", "make check", 0, true},
+		{"wp testsum --until-fail make check", "", "", 0, false},
+		{"wp testsum --repeat 3 make check", "", "", 0, false},
+		{"wp testsum --bogus make check", "", "", 0, false},
+		{"wp testsum -", "", "", 0, false},
+		{"wp testsum", "", "", 0, false},
+		{"wp >/tmp/log", "", "", 0, false},
+		// A quoted target is still a redirection's.
+		{`wp testsum -- make check >"/tmp/o.log"`, "tests", "make check", 0, true},
+		{`wp testsum -- make check 2>"$LOG" >'f'`, "tests", "make check", 0, true},
+		{`wp testsum -- grep \> f`, "tests", "grep > f", 0, true},
 		{"make check", "", "", 0, false},
 		{"echo wp testsum -- x", "", "", 0, false},
 	} {

@@ -53,13 +53,21 @@ func TestUnregisteredSessionWriteIsCountedByTheAPI(t *testing.T) {
 	if code, b := c.do("POST", "/api/v1/sessions/outstanding", map[string]any{}); code != 200 {
 		t.Fatalf("outstanding: %d %s", code, b)
 	}
+	// nor does its word that it gave answers
+	if code, b := c.do("POST", "/api/v1/sessions/outstanding/told", map[string]any{"requests": []int64{1}}); code != 204 {
+		t.Fatalf("told: %d %s", code, b)
+	}
+	many := make([]int64, 51)
+	if code, _ := c.do("POST", "/api/v1/sessions/outstanding/told", map[string]any{"requests": many}); code != 400 {
+		t.Errorf("told with 51 requests: %d, want 400", code)
+	}
 	if code := c.json("POST", "/api/v1/sessions/hook", map[string]any{"events": []map[string]any{
 		{"event": "SessionStart", "session_id": "ghost", "machine": "box", "cwd": "/work/app"},
 	}}, nil); code != 200 {
 		t.Fatalf("hook: %d", code)
 	}
 	if n := counted(); n != 1 {
-		t.Errorf("a read, a refused write, the wait hook's ask or the hook's own call was counted: %d", n)
+		t.Errorf("a read, a refused write, the wait hook's ask or word, or the hook's own call was counted: %d", n)
 	}
 }
 

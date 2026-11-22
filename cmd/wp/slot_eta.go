@@ -210,7 +210,7 @@ func slotRecordRun(dir string, r slotRunRec) {
 	// isn't trimmed (audit #1372.10).
 	locked := false
 	if lf, err := os.OpenFile(filepath.Join(dir, slotRunsLock), os.O_CREATE|os.O_RDWR, 0o600); err == nil { // #nosec G304 -- our own directory
-		defer lf.Close()
+		defer func() { _ = lf.Close() }()
 		if unlock, err := fileLock(lf); err == nil {
 			defer unlock()
 			locked = true

@@ -23,7 +23,9 @@ type SessionOutstanding struct {
 	// Requests: the decided requests given in Lines (R-12). At a Stop they
 	// are marked told (delivered_at) as its own are; at the wait the hook
 	// marks them (RequestIDs, SessionDecisionsTold) once it has given them,
-	// so a reply it never gets loses no answer.
+	// so a reply it never gets loses no answer. Delivery is at least once:
+	// two hooks at once, or a Stop or a turn's start before the hook says it
+	// told them, can give an answer twice.
 	Requests   []string `json:"requests,omitempty"`
 	RequestIDs []int64  `json:"request_ids,omitempty"`
 	// Lines: the findings and the answers, to put before the agent.
@@ -156,7 +158,18 @@ func (s *Service) SessionOutstanding(ctx context.Context, actor *Actor, via stri
 		if err != nil {
 			return nil, err
 		}
-		list = slices.DeleteFunc(list, func(r *Request) bool { return r.quiet() })
+		// A quiet dismissal is marked told unsaid, as takeDecisions does, so
+		// fifty of them don't hide an answer behind them.
+		var quiet []int64
+		list = slices.DeleteFunc(list, func(r *Request) bool {
+			if r.quiet() {
+				quiet = append(quiet, r.ID)
+			}
+			return r.quiet()
+		})
+		if err := s.SessionDecisionsTold(ctx, actor, quiet); err != nil {
+			return nil, err
+		}
 		out.decisions = fitDecisions(list, outstandingRoom-len(outstandingLines(out)))
 		for _, r := range out.decisions {
 			out.RequestIDs = append(out.RequestIDs, r.ID)
@@ -183,6 +196,10 @@ func (s *Service) sessionTold(ctx context.Context, t *tx, session int64, kind, r
 // before them.
 const outstandingRoom = 9000
 
+// outstandingFindingsRoom is how much of outstandingRoom the findings' lines
+// take at most, so long titles and paths leave room for the answers.
+const outstandingFindingsRoom = 6000
+
 // fitDecisions is as many of list, in order, as DecisionsText says in room
 // characters; one too long for it waits for a Stop or a turn's start, which
 // have no such limit.
@@ -205,16 +222,21 @@ func outstandingLines(o *SessionOutstanding) string {
 		fmt.Fprintf(&b, "- %s still to do in your review round's audit #%d, in full in the round's prompt. Record each verdict: %s.\n",
 			plural1(n, "finding"), o.Audit, markHint("ID", "why"))
 		b.WriteString("<untrusted>\n")
+		shown, size := 0, 0
 		for _, f := range o.todo[:min(n, 30)] {
-			fmt.Fprintf(&b, "%s [%s] %s", f.ID, f.Severity, untrusted(f.Title))
+			line := fmt.Sprintf("%s [%s] %s", f.ID, f.Severity, untrusted(f.Title))
 			if f.Path != "" {
-				fmt.Fprintf(&b, " (%s%s)", untrusted(f.Path), lineSuffix(f.Line))
+				line += fmt.Sprintf(" (%s%s)", untrusted(f.Path), lineSuffix(f.Line))
 			}
-			b.WriteString("\n")
+			if size += len(line) + 1; size > outstandingFindingsRoom {
+				break
+			}
+			b.WriteString(line + "\n")
+			shown++
 		}
 		b.WriteString("</untrusted>\n")
-		if n > 30 {
-			fmt.Fprintf(&b, "and %d more.\n", n-30)
+		if n > shown {
+			fmt.Fprintf(&b, "and %d more.\n", n-shown)
 		}
 	}
 	if text := DecisionsText(o.decisions); text != "" {
@@ -227,20 +249,21 @@ func outstandingLines(o *SessionOutstanding) string {
 }
 
 // SessionDecisionsTold marks the decisions ids of the actor's session told:
-// the wait hook says so once it has given them (SessionOutstanding).
+// the wait hook says so once it has given them (SessionOutstanding). Only
+// decided requests of the session that are to be told are marked.
 func (s *Service) SessionDecisionsTold(ctx context.Context, actor *Actor, ids []int64) error {
 	if actor == nil || actor.User == nil || actor.User.ID == 0 {
 		return ErrUnauthorized
 	}
-	if actor.Session == 0 || len(ids) == 0 {
-		return nil
-	}
 	if len(ids) > 50 {
 		return invalid("at most 50 requests")
 	}
+	if actor.Session == 0 || len(ids) == 0 {
+		return nil
+	}
 	return s.write(ctx, actor, func(t *tx) error {
 		// #nosec G202 -- only ? placeholders are joined in
-		_, err := t.ExecContext(ctx, `UPDATE requests SET delivered_at = ? WHERE session_id = ? AND user_id = ? AND delivered_at IS NULL AND id IN (`+placeholders(len(ids))+`)`,
+		_, err := t.ExecContext(ctx, `UPDATE requests SET delivered_at = ? WHERE session_id = ? AND user_id = ? AND delivered_at IS NULL AND decided_at IS NOT NULL AND via = '' AND id IN (`+placeholders(len(ids))+`)`,
 			append([]any{s.nowMS(), actor.Session, actor.id()}, int64Args(ids)...)...)
 		return err
 	})

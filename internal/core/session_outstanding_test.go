@@ -244,6 +244,40 @@ func TestSessionOutstanding(t *testing.T) {
 	if got, _ = a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtWait); !got.Empty() {
 		t.Fatalf("the request named twice: %+v", got)
 	}
+	// The hook's word marks only answers to tell: an open request it names
+	// stays untold, so its answer is given once there is one.
+	open, _, err := a.s.CreateRequest(a.ctx, &ag, RequestInput{Kind: "question", Title: "Drop the column?", Project: a.p.Key,
+		Questions: []Question{{Question: "Drop?", Choices: []Choice{{Label: "yes"}, {Label: "no"}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.s.SessionDecisionsTold(a.ctx, &ag, []int64{open.ID}); err != nil {
+		t.Fatal(err)
+	}
+	var openAt sql.NullInt64
+	if err := a.s.db.R.QueryRow(`SELECT delivered_at FROM requests WHERE id = ?`, open.ID).Scan(&openAt); err != nil || openAt.Valid {
+		t.Fatalf("an open request was marked told: %v %v", openAt, err)
+	}
+	if _, err := a.s.db.W.Exec(`UPDATE requests SET state = ? WHERE id = ?`, RequestWithdrawn, open.ID); err != nil {
+		t.Fatal(err)
+	}
+	// A quiet dismissal is marked told unsaid at the wait, as at a Stop, so
+	// fifty of them hide no answer behind them.
+	hush, _, err := a.s.CreateRequest(a.ctx, &ag, RequestInput{Kind: "question", Title: "Vendor the module?", Project: a.p.Key,
+		Questions: []Question{{Question: "Vendor?", Choices: []Choice{{Label: "yes"}, {Label: "no"}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.s.db.W.Exec(`UPDATE requests SET state = ?, decision = 'dismiss', decided_at = 1, via = '' WHERE id = ?`, RequestDismissed, hush.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtWait); !got.Empty() {
+		t.Fatalf("a quiet dismissal was given: %+v", got)
+	}
+	var hushAt sql.NullInt64
+	if err := a.s.db.R.QueryRow(`SELECT delivered_at FROM requests WHERE id = ?`, hush.ID).Scan(&hushAt); err != nil || !hushAt.Valid {
+		t.Fatalf("a quiet dismissal was left untold at the wait: %v %v", hushAt, err)
+	}
 	// Another session has none of the session's requests (audit #1372.22).
 	if o, err := a.s.SessionOutstanding(a.ctx, &other, OutstandingAtStop); err != nil || !o.Empty() {
 		t.Fatalf("another session's, with a request: %+v %v", o, err)
@@ -364,6 +398,18 @@ func TestOutstandingLines(t *testing.T) {
 	huge.Answer = strings.Repeat("y", 20000)
 	if fit := fitDecisions([]*Request{r, &huge, &small2}, 5000); len(fit) != 2 || fit[0] != r || fit[1] != &small2 {
 		t.Errorf("fit = %v", fit)
+	}
+	// Long findings take no more than their share, so with the answers the
+	// lines stay inside the hook's room (an adversarial review of WP-1571).
+	long := make([]CodeAuditFinding, 30)
+	for i := range long {
+		long[i] = CodeAuditFinding{ID: fmt.Sprintf("7.%d", i+1), Severity: "low", Title: strings.Repeat("t", 200), Path: strings.Repeat("p/", 60) + "a.go", Line: 3}
+	}
+	o := &SessionOutstanding{Audit: 7, todo: long}
+	o.decisions = fitDecisions([]*Request{r, &small2}, outstandingRoom-len(outstandingLines(o)))
+	got = outstandingLines(o)
+	if len(got) > outstandingRoom || len(o.decisions) != 2 || !strings.Contains(got, "more.") || !strings.Contains(got, "7.1 [low]") {
+		t.Errorf("30 long findings and two answers: %d bytes, %d answers:\n%s", len(got), len(o.decisions), got)
 	}
 }
 

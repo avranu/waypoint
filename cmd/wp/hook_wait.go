@@ -23,7 +23,8 @@ import (
 // ETA, if any. Both are worked out at once, and the hook says what it has by
 // waitBudget. Once it has printed answers it says so (POST
 // .../outstanding/told), and only then are they marked told: a hook cut off
-// before it printed loses none.
+// before it printed loses none, and an answer can come twice (two hooks at
+// once, or a Stop before the hook's word).
 
 // hookWait is the PostToolUse(Bash) hook's command.
 const hookWait = "hook claude-wait"
@@ -58,8 +59,8 @@ func waitStarts(toolInput, toolResponse json.RawMessage) bool {
 	return bashBackground(toolResponse) != ""
 }
 
-// waitETACommand finds, in a Bash command line, a wp testsum or wp slot run
-// with a command after "--" (alone, or after cd, assignments or wrappers such
+// waitETACommand finds, in a Bash command line, a wp testsum with a command
+// (after its flags, or after "--") or a wp slot run with one after "--" (alone, or after cd, assignments or wrappers such
 // as timeout, nice, nohup, env, or inside bash -c): the slot it takes, the
 // command as the run record knows it (slotRunKey of its arguments, without
 // redirections) and the -n given (0: none). A testsum with --repeat or --base
@@ -72,7 +73,7 @@ func waitETACommandAt(command string, depth int) (name, cmd string, n int, ok bo
 	if len(command) > 20000 {
 		return "", "", 0, false
 	}
-	cmds, quoted := shellCommandsQuoted(command)
+	cmds, plain := shellCommandsQuoted(command)
 	for k, words := range cmds {
 		rest, script := skipWrappers(words)
 		if script != "" {
@@ -86,22 +87,22 @@ func waitETACommandAt(command string, depth int) (name, cmd string, n int, ok bo
 		if len(rest) < 2 || !isWp(rest[0]) {
 			continue
 		}
-		args := dropRedirections(rest[1:], quoted[k][len(words)-len(rest)+1:]) // os.Args[1:] of that wp
+		args := dropRedirections(rest[1:], plain[k][len(words)-len(rest)+1:]) // os.Args[1:] of that wp
+		if len(args) == 0 {
+			continue
+		}
+		if args[0] == "testsum" {
+			if run, ok := testsumRuns(args[1:]); ok {
+				// As runInSlotThen keys the run it records.
+				return "tests", slotRunKey(append([]string{"wp"}, args...), goTestJSON(run)), 0, true
+			}
+			continue
+		}
 		dash := slices.Index(args, "--")
 		if dash < 0 || dash == len(args)-1 {
 			continue
 		}
 		switch {
-		case args[0] == "testsum":
-			name = "tests"
-			for _, a := range args[1:dash] {
-				if f, _, _ := strings.Cut(strings.TrimLeft(a, "-"), "="); f == "repeat" || f == "base" {
-					name = ""
-				}
-			}
-			if name == "" {
-				continue
-			}
 		case len(args) > 2 && args[0] == "slot" && args[1] == "run" && validSlotName(args[2]):
 			name = args[2]
 			for i := 3; i < dash; i++ {
@@ -121,18 +122,43 @@ func waitETACommandAt(command string, depth int) (name, cmd string, n int, ok bo
 	return "", "", 0, false
 }
 
+// testsumRuns is the command `wp testsum ARGS` runs once, its flags read as
+// testsum reads them (parseBeforeCommand: flags until -- or the first other
+// word). false for none, for --repeat, --until-fail or --base, which are not
+// one run of it, for an unknown flag, and for saved output on stdin (-).
+func testsumRuns(args []string) ([]string, bool) {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--":
+			return args[i+1:], i+1 < len(args)
+		case a == "-" || !strings.HasPrefix(a, "-"):
+			return args[i:], a != "-"
+		}
+		f, _, hasValue := strings.Cut(strings.TrimLeft(a, "-"), "=")
+		if f != "format" && f != "keep-env" {
+			return nil, false
+		}
+		if !hasValue {
+			i++ // its value is the next word
+		}
+	}
+	return nil, false
+}
+
 // reRedirect matches a redirection word: an optional fd (or &), > >> or <,
 // an optional & and the target, which is empty when it is the next word.
-var reRedirect = regexp.MustCompile(`^(\d*|&)(>>?|<)&?(.*)$`)
+var reRedirect = regexp.MustCompile(`^(\d*|&)(>>?|<)(&?)(.*)$`)
 
-// dropRedirections removes redirections (2>&1, >log, > log, >>log,
-// 2>/dev/null, &>log, <in) from words; a word quoted (quoted[i]) is an
+// dropRedirections removes redirections (2>&1, >log, > log, >>log, >"log",
+// 2>/dev/null, &>log, <in) from words; a word whose operator was quoted or
+// escaped (beyond its first plain[i] bytes, which were neither) is an
 // argument, as grep '>' has.
-func dropRedirections(words []string, quoted []bool) []string {
+func dropRedirections(words []string, plain []int) []string {
 	var out []string
 	for i := 0; i < len(words); i++ {
-		if m := reRedirect.FindStringSubmatch(words[i]); m != nil && !quoted[i] {
-			if m[3] == "" {
+		if m := reRedirect.FindStringSubmatch(words[i]); m != nil && len(m[1])+len(m[2])+len(m[3]) <= plain[i] {
+			if m[4] == "" {
 				i++ // the target is the next word
 			}
 			continue

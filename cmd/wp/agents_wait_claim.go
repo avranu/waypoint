@@ -152,29 +152,38 @@ func shellCommands(cmd string) [][]string {
 	return out
 }
 
-// shellCommandsQuoted is shellCommands, saying of each word whether any of
-// it was quoted or escaped: such a word is never an operator, as a quoted
-// '>' is no redirection (audit #1382.3).
-func shellCommandsQuoted(cmd string) (out [][]string, quoted [][]bool) {
+// shellCommandsQuoted is shellCommands, saying of each word how many of its
+// first bytes were neither quoted nor escaped (plain): only those can be an
+// operator, as a quoted '>' is no redirection (audit #1382.3) while
+// >"f" is one.
+func shellCommandsQuoted(cmd string) (out [][]string, plain [][]int) {
 	var words []string
-	var qs []bool
+	var ps []int
 	var w strings.Builder
-	inWord, q := false, false
+	inWord, lead := false, -1
+	quote := func() {
+		if lead < 0 {
+			lead = w.Len()
+		}
+	}
 	endWord := func() {
 		if inWord {
+			if lead < 0 {
+				lead = w.Len()
+			}
 			words = append(words, w.String())
-			qs = append(qs, q)
+			ps = append(ps, lead)
 			w.Reset()
-			inWord, q = false, false
+			inWord, lead = false, -1
 		}
 	}
 	endCmd := func() {
 		endWord()
 		if len(words) > 0 {
 			out = append(out, words)
-			quoted = append(quoted, qs)
+			plain = append(plain, ps)
 		}
-		words, qs = nil, nil
+		words, ps = nil, nil
 	}
 	rs := []rune(cmd)
 	for i := 0; i < len(rs); i++ {
@@ -182,19 +191,22 @@ func shellCommandsQuoted(cmd string) (out [][]string, quoted [][]bool) {
 		switch r {
 		case '\\':
 			if i+1 < len(rs) {
+				quote()
 				i++
 				w.WriteRune(rs[i])
-				inWord, q = true, true
+				inWord = true
 			}
 		case '\'':
+			quote()
 			j := i + 1
 			for j < len(rs) && rs[j] != '\'' {
 				j++
 			}
 			w.WriteString(string(rs[i+1 : j]))
-			inWord, q = true, true
+			inWord = true
 			i = j
 		case '"':
+			quote()
 			j := i + 1
 			for j < len(rs) && rs[j] != '"' {
 				if rs[j] == '\\' && j+1 < len(rs) {
@@ -203,7 +215,7 @@ func shellCommandsQuoted(cmd string) (out [][]string, quoted [][]bool) {
 				w.WriteRune(rs[j])
 				j++
 			}
-			inWord, q = true, true
+			inWord = true
 			i = j
 		case ' ', '\t':
 			endWord()
@@ -223,7 +235,7 @@ func shellCommandsQuoted(cmd string) (out [][]string, quoted [][]bool) {
 		}
 	}
 	endCmd()
-	return out, quoted
+	return out, plain
 }
 
 var (
