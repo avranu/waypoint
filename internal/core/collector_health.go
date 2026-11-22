@@ -46,6 +46,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/transcript"
 )
 
 const (
@@ -191,6 +193,24 @@ var collectors = []collector{
 		dropped:     `SELECT COALESCE(SUM(j.value), 0) FROM usage_machines m, json_each(m.transcript_dropped) j WHERE j.key IN ` + transcriptDroppedReasons,
 		off:         `SELECT COUNT(*) FROM usage_machines m WHERE m.transcript_off = 1`,
 		scans:       map[string]string{"m": "usage_machines has one row per machine of each user: a small table, read whole once an hour"},
+	},
+	{
+		name:  "session facts",
+		unit:  "files",
+		about: "the server derives per-event facts (model calls, tool calls, turns, compactions...) from each archived transcript file once it has been quiet for 10 minutes (RunSessionFacts); a file that failed is in session_fact_files.error",
+		waiting: `SELECT COUNT(*), MIN(newest) FROM (SELECT MAX(p.created_at) AS newest FROM transcript_pieces p
+			LEFT JOIN session_fact_files f ON f.user_id = p.user_id AND f.machine = p.machine AND f.session = p.session AND f.file = p.file AND f.gen = p.gen
+			GROUP BY p.user_id, p.machine, p.session, p.file, p.gen
+			HAVING MAX(p.created_at) <= ?1 AND (f.user_id IS NULL OR f.parser_version < ?2 OR f.attempted_to < MAX(p.to_off)
+				OR (f.error IS NOT NULL AND f.error_at <= ?3)))`,
+		args: func(now time.Time) []any {
+			return []any{now.Add(-factsQuiet).UnixMilli(), transcript.ParserVersion, now.Add(-factsRetry).UnixMilli()}
+		},
+		output:  `SELECT MAX(f.derived_at) FROM session_fact_files f`,
+		dropped: `SELECT COUNT(*) FROM session_fact_files f WHERE f.error IS NOT NULL`,
+		scans: map[string]string{
+			"p": "transcript_pieces is read whole, grouped by file, every 5 minutes: one row per stored piece, no index leads with created_at",
+		},
 	},
 }
 
@@ -688,6 +708,12 @@ func (s *Service) CollectorHealthList(ctx context.Context) ([]CollectorHealth, e
 		if h, ok := by[c.name]; ok {
 			if c.name == "transcript archive" {
 				h.Problem = transcriptMissingProblem(missing)
+			}
+			if c.name == "session facts" {
+				var err error
+				if h.Problem, err = s.factsProblem(ctx); err != nil {
+					return nil, err
+				}
 			}
 			out = append(out, h)
 		}
