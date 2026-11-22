@@ -1213,6 +1213,7 @@ func (s *Service) autopilotSessionNote(ctx context.Context, sessionID, orProject
 
 // RunAutopilot moves on the steps that are due: each in its own write.
 func (s *Service) RunAutopilot(ctx context.Context) {
+	s.sweepTypedPrompts(ctx) // first: a failed read of the steps below doesn't skip it
 	rows, err := s.db.R.QueryContext(ctx, `SELECT `+stepCols+` FROM autopilot_steps WHERE state IN (?, ?) AND due_at <= ? AND session_id IS NOT NULL ORDER BY due_at LIMIT 50`,
 		StepDue, StepWaiting, s.nowMS())
 	if err != nil {
@@ -1235,7 +1236,6 @@ func (s *Service) RunAutopilot(ctx context.Context) {
 	}
 	s.unstickSteps(ctx)
 	s.expireChecks(ctx)
-	s.sweepTypedPrompts(ctx)
 	s.sweepAutopilot(ctx)
 }
 
@@ -1764,10 +1764,17 @@ func (s *Service) advanceStep(ctx context.Context, st *stepRow) error {
 	// Its review left nothing for the session to do: Waypoint opens the
 	// pull request the session's wp ship would have (WP-1370).
 	var shipErr error
+	if !s.shipDue(ctx, st.reviewID.Int64, now) {
+		// The ship failed and its next try isn't due: the same backoff as the
+		// sweep's, not a try every autopilotRetry (WP-1370).
+		if bp := roundBeforePR(ctx, s.db.R, st.reviewID.Int64); bp != nil && bp.ShipErr != "" {
+			return s.stepUpdate(ctx, st.id, StepWaiting, WaitJob, "couldn't open its pull request, trying again: "+forgeSaid(errors.New(bp.ShipErr)), bp.ShipNext)
+		}
+	}
 	if _, shipErr = s.shipOwed(ctx, st.reviewID.Int64); shipErr != nil {
 		s.log.WarnContext(ctx, "autopilot: open a reviewed pull request", "step", st.id, "err", shipErr)
 		if r, _ := roundByID(ctx, s.db.R, st.reviewID.Int64); r != nil && now-r.updatedAt < heldShipRetry.Milliseconds() {
-			return s.stepUpdate(ctx, st.id, StepWaiting, WaitJob, "couldn't open "+r.key+"'s pull request, trying again: "+shipErr.Error(), now+autopilotRetry.Milliseconds())
+			return s.stepUpdate(ctx, st.id, StepWaiting, WaitJob, "couldn't open "+r.key+"'s pull request, trying again: "+forgeSaid(shipErr), now+autopilotRetry.Milliseconds())
 		}
 	}
 	why, err = s.heldUnshipped(ctx, st)
@@ -1775,7 +1782,7 @@ func (s *Service) advanceStep(ctx context.Context, st *stepRow) error {
 		return err
 	}
 	if shipErr != nil && why != "" {
-		why += ", and Waypoint couldn't open its pull request: " + shipErr.Error()
+		why += ", and Waypoint couldn't open its pull request: " + forgeSaid(shipErr)
 	}
 	if why != "" {
 		if err := s.write(ctx, SystemActor(), func(t *tx) error { return s.stopStep(ctx, t, st.sessionID, "unshipped", why) }); err != nil {

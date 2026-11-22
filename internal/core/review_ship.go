@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"crypto/tls"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -156,6 +157,29 @@ func shipBackoff(n int) time.Duration {
 	return heldShipRetry
 }
 
+// forgeSaid is an error that carries a forge's own words, made fit to put in a
+// notice or a step's reason: on one line, bounded, and with any tag that
+// would pass it off as ours removed.
+func forgeSaid(err error) string {
+	if err == nil {
+		return ""
+	}
+	return clipText(untrusted(strings.Join(strings.Fields(err.Error()), " ")), 300)
+}
+
+// shipWait is how long to wait after the n-th failed try of a round's ship:
+// the backoff, or what the forge asked for (Retry-After, up to six hours) if
+// longer, and a little more, by the round, so rounds that failed together
+// don't all try again in the same second.
+func shipWait(round int64, n int, err error) time.Duration {
+	wait := shipBackoff(n)
+	var ae *forgeAPIError
+	if errors.As(err, &ae) && ae.retryAfter > wait {
+		wait = min(ae.retryAfter, 6*time.Hour)
+	}
+	return wait + wait/100*time.Duration(round%10)
+}
+
 // scanIDs reads every row of ids, or fails: a row that can't be read is
 // not a round to skip (WP-1407).
 func scanIDs(rows *sql.Rows) ([]int64, error) {
@@ -198,7 +222,9 @@ func (s *Service) shipSettledRounds(ctx context.Context) {
 					OR EXISTS (SELECT 1 FROM agent_runs o WHERE o.session_id = w.session_id AND o.id > w.run_id AND o.issue_id != w.issue_id))
 				AND w.id = (SELECT max(m.id) FROM work_log m WHERE m.kind = 'review' AND m.issue_id = w.issue_id)
 				AND NOT EXISTS (SELECT 1 FROM external_links l WHERE l.issue_id = w.issue_id AND l.kind = 'pull')
-				AND max(w.updated_at, coalesce(r.ended_at, 0), coalesce(x.ended_at, 0)) > ?))
+				AND (max(w.updated_at, coalesce(r.ended_at, 0), coalesce(x.ended_at, 0),
+					coalesce((SELECT min(o.started_at) FROM agent_runs o WHERE o.session_id = w.session_id AND o.id > w.run_id AND o.issue_id != w.issue_id), 0)) > ?
+					OR coalesce(json_extract(w.before_pr, '$.ship_first'), 0) > 0)))
 		ORDER BY w.id DESC LIMIT 50`, now-strandedShipWindow.Milliseconds())
 	if err != nil {
 		s.log.WarnContext(ctx, "rounds due a ship of Waypoint's", "err", err)
@@ -218,10 +244,11 @@ func (s *Service) shipSettledRounds(ctx context.Context) {
 		if err != nil {
 			continue
 		}
-		if out := decideRound(in); out.Do != doShip && out.Do != doShipCarried && out.Do != doRelease && out.Do != doFinish && out.Do != doReleaseAfterRunEnded && out.Do != doSettle {
+		out := decideRound(in)
+		if out.Do != doShip && out.Do != doShipCarried && out.Do != doRelease && out.Do != doFinish && out.Do != doReleaseAfterRunEnded && out.Do != doSettle && !(out.Do == doEnd && in.ShipSpent) {
 			continue
 		}
-		if !s.shipDue(ctx, id, now) {
+		if out.Do != doEnd && !s.shipDue(ctx, id, now) {
 			continue
 		}
 		rctx, cancel := context.WithTimeout(ctx, shipBudget)
@@ -264,14 +291,15 @@ func (s *Service) shipTried(ctx context.Context, round int64, key string, now in
 		next := *bp
 		tell := false
 		if err == nil {
-			next.ShipTries, next.ShipFirst, next.ShipNext, next.ShipTold, next.ShipErr = 0, 0, 0, false, ""
+			next.ShipTries, next.ShipFirst, next.ShipNext, next.ShipTold, next.ShipErr, next.ShipRefused = 0, 0, 0, false, "", false
 		} else {
 			if next.ShipFirst == 0 {
 				next.ShipFirst = now
 			}
 			next.ShipTries++
-			next.ShipNext = now + shipBackoff(next.ShipTries).Milliseconds()
+			next.ShipNext = now + shipWait(round, next.ShipTries, err).Milliseconds()
 			next.ShipErr = clipText(err.Error(), 500)
+			next.ShipRefused = shipRefused(err)
 			if !next.ShipTold && now-next.ShipFirst >= heldShipRetry.Milliseconds() {
 				next.ShipTold, tell = true, true
 			}
@@ -297,7 +325,7 @@ func (s *Service) shipTried(ctx context.Context, round int64, key string, now in
 			return nil
 		}
 		_, e = t.storeNotice(ctx, userID, NotifyAutopilot, "Waypoint can't open "+key+"'s pull request",
-			fmt.Sprintf("%s's adversarial review round has ended (%s), and Waypoint has tried %d times over %d minutes to open its pull request: %s. It keeps trying every %d minutes.", key, did, next.ShipTries, int(heldShipRetry.Minutes()), err, int(heldShipRetry.Minutes())),
+			fmt.Sprintf("%s's adversarial review round has ended (%s), and Waypoint has tried %d times over %d minutes to open its pull request: %s. It keeps trying every %d minutes.", key, did, next.ShipTries, int(heldShipRetry.Minutes()), forgeSaid(err), int(heldShipRetry.Minutes())),
 			"/agents?tab=autopilot")
 		return e
 	})
@@ -327,9 +355,19 @@ func shipRefused(err error) bool {
 	if errors.As(err, &ae) {
 		switch ae.status {
 		case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusGone, http.StatusUnprocessableEntity:
-			return true
+			return !ae.limited // a rate limit passes by waiting
 		}
-		return false
+		// A redirect isn't the API answering: the forge is addressed wrongly,
+		// and waiting doesn't change that.
+		return ae.status >= 300 && ae.status < 400
+	}
+	// A certificate that doesn't verify, and an answer that isn't the API's
+	// (a login page with 200), are the forge's setup, not its being down.
+	var cv *tls.CertificateVerificationError
+	var syn *json.SyntaxError
+	var typ *json.UnmarshalTypeError
+	if errors.As(err, &cv) || errors.As(err, &syn) || errors.As(err, &typ) {
+		return true
 	}
 	return errors.Is(err, ErrForbidden) || errors.Is(err, ErrNotFound)
 }
@@ -343,7 +381,7 @@ func (s *Service) shipEnds(ctx context.Context, id int64, err error, last bool) 
 	if bp == nil || bp.ShipStop != "" {
 		return false
 	}
-	refused := shipRefused(err)
+	refused := shipRefused(err) || bp.ShipRefused
 	spent := bp.ShipFirst != 0 && s.nowMS()-bp.ShipFirst >= shipGiveUp.Milliseconds()
 	if !refused && !spent && !last {
 		return false
@@ -355,12 +393,17 @@ func (s *Service) shipEnds(ctx context.Context, id int64, err error, last bool) 
 	in := shipRoundIn{round: id, session: r.sessionID.Int64}
 	in.agent = s.shipAgent(ctx, r, "", in.session)
 	_ = s.db.R.QueryRowContext(ctx, `SELECT user_id FROM agent_sessions WHERE id = ?`, in.session).Scan(&in.userID)
-	why := clipText(err.Error(), 500)
+	why := forgeSaid(err)
 	body := "Waypoint did not open the pull request: the forge refused it: " + why + "."
 	title := "pull request not opened"
-	if !refused {
+	if !refused && spent {
 		body = fmt.Sprintf("Waypoint gave up opening the pull request after trying for %d hours (%d tries). The last error: %s.", int(shipGiveUp.Hours()), bp.ShipTries, why)
 		title = "pull request not opened: gave up"
+	} else if !refused {
+		// The round's window closed before the give-up did: say what
+		// happened, not a give-up it wasn't.
+		body = fmt.Sprintf("Waypoint stopped trying to open the pull request: the round ended after %d tries. The last error: %s.", bp.ShipTries, why)
+		title = "pull request not opened: stopped trying"
 	}
 	if serr := s.stopShipWith(ctx, r, in, body, title, why); serr != nil {
 		s.log.WarnContext(ctx, "autopilot: end a round whose ship failed", "round", id, "err", serr)

@@ -34,9 +34,18 @@ func firstEnv(t *testing.T) (*apEnv, *Runner, *shipForge) {
 // with its intent about the review ("" is a CLI from before intents).
 func (a *apEnv) ship(key, review string, more ...func(*OpenPRInput)) (*OpenPRResult, error) {
 	a.t.Helper()
-	in := OpenPRInput{Project: a.p.Key, Repo: "acme/app", Head: "wp-1-first", Title: "First", Issue: key, For: key, Ready: true, Review: review}
+	in := OpenPRInput{Project: a.p.Key, Repo: "acme/app", Head: "wp-1-first", Title: "First", Issue: key, For: key, Ready: true, Review: review, HeadSHA: shippedHead}
 	for _, f := range more {
 		f(&in)
+	}
+	// The pull request the forge opens from the branch starts at the commit
+	// wp ship pushed unless the test says where the branch is.
+	if g, ok := a.s.Forges.(*shipForge); ok && in.Head != "" {
+		g.sm.Lock()
+		if _, set := g.heads[in.Head]; !set {
+			g.heads[in.Head] = in.HeadSHA
+		}
+		g.sm.Unlock()
 	}
 	return a.s.OpenPullRequest(a.ctx, a.ag, in)
 }

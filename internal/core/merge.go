@@ -636,6 +636,10 @@ func (s *Service) MergePR(ctx context.Context, actor *Actor, prID int64, in Merg
 				return &MergeResult{ByHand: true, Reasons: []string{byHand}}, nil
 			}
 		}
+		if in.Head != "" && !sameSHA(pr.HeadSHA, in.Head) {
+			// Armed for the head that was reviewed, not whatever it moved to.
+			return nil, invalid("its head is %s, not %s; not armed", short(pr.HeadSHA), short(in.Head))
+		}
 		return s.armMerge(ctx, actor, pr, in.Style)
 	}
 	sha, err := s.mergeNow(ctx, actor, pr, in, "from the pull request page")
@@ -1000,8 +1004,9 @@ func (s *Service) mergeNow(ctx context.Context, actor *Actor, pr *PullRequest, i
 		}
 		if rd.stack != nil && (isStatus(err, http.StatusMethodNotAllowed) || isStatus(err, http.StatusUnprocessableEntity)) {
 			// The forge wants what the stack stood in for (WP-404): an
-			// outdated branch or a missing check. A newer push (409) ends
-			// the stack as a moved head; a token refusal isn't the stack's.
+			// outdated branch (405) or a missing check (422). A 409 and a
+			// token refusal aren't the stack's; the head pin catches a newer
+			// push before the merge is asked for.
 			s.stackRefused(ctx, cur, rd.stack, mergeRefusal(err))
 		}
 		return "", invalid("the forge refused the merge: %s", mergeRefusal(err))

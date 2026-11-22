@@ -83,6 +83,9 @@ type roundIn struct {
 	// (beforePR.ShipStop).
 	Halted   bool
 	SinceEnd time.Duration
+	// ShipSpent: Waypoint's own ship of this ended round has failed for
+	// shipGiveUp, counted from its first try, and nothing stopped it yet.
+	ShipSpent bool
 	// Idle: the session went idle (autopilot's step saw it) and the round's Stop never came.
 	Idle bool
 	// Ages: since the round started, and since the thing it waits on last changed
@@ -215,6 +218,11 @@ func decideRound(in roundIn) roundOut {
 	}
 	left := func(limit time.Duration, since time.Duration) time.Duration { return max(limit-since, 0) }
 	if in.Superseded {
+		if in.SinceChange >= heldScreenWait {
+			// A wait with no time left that nothing acts on would hold the
+			// round for ever: it is shipped, with what it found carried.
+			return roundOut{Do: doShipCarried, Why: "the review round its decision scheduled never settled"}
+		}
 		return roundOut{Do: doWait, For: "the review round its decision scheduled", Until: left(heldScreenWait, in.SinceChange)}
 	}
 	switch in.Check {
@@ -310,6 +318,8 @@ func decideEnded(in roundIn) roundOut {
 		return left("a newer round carries the task")
 	case in.Taken:
 		return left("another session holds the task")
+	case in.ShipSpent:
+		return roundOut{Do: doEnd, To: RoundFailed, Why: "Waypoint gave up opening its pull request"}
 	case in.SinceEnd > strandedShipWindow:
 		return left("it ended longer ago than Waypoint keeps trying")
 	}
@@ -349,7 +359,7 @@ func (s *Service) roundInOf(ctx context.Context, id int64) (roundIn, error) {
 	if bp := roundBeforePR(ctx, s.db.R, id); bp != nil {
 		in.Unshipped = true
 		in.Halted = bp.ShipStop != ""
-		if err := s.db.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pull_requests WHERE repo = ? COLLATE NOCASE AND head_ref = ? AND state IN ('open', 'draft'))`, bp.Repo, bp.Branch).Scan(&in.PROpen); err != nil {
+		if err := s.db.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pull_requests WHERE repo = ? COLLATE NOCASE AND head_ref = ? AND state IN ('open', 'draft') AND (head_repo = '' OR head_repo = repo COLLATE NOCASE))`, bp.Repo, bp.Branch).Scan(&in.PROpen); err != nil {
 			return in, err
 		}
 		// A pull request that existed when the round was scheduled and was
@@ -474,6 +484,12 @@ func (s *Service) endedFacts(ctx context.Context, r *roundRow, in *roundIn) erro
 		return err
 	}
 	in.SinceEnd = time.Duration(max(now-max(updated, runEnd, sessEnd, moved), 0)) * time.Millisecond
+	// A ship that has been failing counts its window from its first try:
+	// the end of the run says nothing of how long Waypoint has kept at it.
+	if bp := roundBeforePR(ctx, s.db.R, r.id); bp != nil && bp.ShipFirst != 0 && bp.ShipStop == "" {
+		in.SinceEnd = time.Duration(max(now-bp.ShipFirst, 0)) * time.Millisecond
+		in.ShipSpent = bp.ShipErr != "" && in.SinceEnd >= shipGiveUp
+	}
 	// A session that went on to another task has left the round: its run is
 	// over for it. A round still pending or running is the session's own
 	// Stop's for heldStopLost first; one that has an end state has nothing

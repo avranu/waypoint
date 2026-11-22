@@ -28,7 +28,9 @@ func TestServerShipNeedsPullsWrite(t *testing.T) {
 		e.exec(`UPDATE work_log SET before_pr = json_set(before_pr, '$.token_id', ?) WHERE kind = 'review'`, tok.ID)
 		e.finishShip()
 		var body string
-		_ = e.s.db.R.QueryRow(`SELECT body FROM work_log WHERE kind = 'review' ORDER BY id DESC LIMIT 1`).Scan(&body)
+		if err := e.s.db.R.QueryRow(`SELECT body FROM work_log WHERE kind = 'review' ORDER BY id DESC LIMIT 1`).Scan(&body); err != nil {
+			t.Fatalf("read the state: %v", err)
+		}
 		if len(e.g.created) != 0 || !strings.Contains(body, "did not open the pull request") || !strings.Contains(body, "can't open pull requests (it lacks pulls.write)") {
 			t.Fatalf("opened %d, round says %q", len(e.g.created), body)
 		}
@@ -49,7 +51,9 @@ func TestServerShipAuthorityLostDuringTheForgeCall(t *testing.T) {
 		}},
 		{"token deleted", func(e *loopEnv) {
 			var id int64
-			_ = e.s.db.R.QueryRow(`SELECT json_extract(before_pr, '$.token_id') FROM work_log WHERE kind = 'review' ORDER BY id DESC LIMIT 1`).Scan(&id)
+			if err := e.s.db.R.QueryRow(`SELECT json_extract(before_pr, '$.token_id') FROM work_log WHERE kind = 'review' ORDER BY id DESC LIMIT 1`).Scan(&id); err != nil {
+				t.Fatalf("read the state: %v", err)
+			}
 			if err := e.s.RevokeAPIToken(e.ctx, e.admin, id); err != nil {
 				e.t.Error(err)
 			}
@@ -92,19 +96,29 @@ func TestServerShipAuthorityLostDuringTheForgeCall(t *testing.T) {
 				t.Fatalf("opened %d", len(e.g.created))
 			}
 			var armed, babysits, linked int
-			_ = e.s.db.R.QueryRow(`SELECT count(*) FROM pull_requests WHERE armed_at IS NOT NULL`).Scan(&armed)
-			_ = e.s.db.R.QueryRow(`SELECT count(*) FROM babysits`).Scan(&babysits)
-			_ = e.s.db.R.QueryRow(`SELECT count(*) FROM pull_requests`).Scan(&linked)
+			if err := e.s.db.R.QueryRow(`SELECT count(*) FROM pull_requests WHERE armed_at IS NOT NULL`).Scan(&armed); err != nil {
+				t.Fatalf("read the state: %v", err)
+			}
+			if err := e.s.db.R.QueryRow(`SELECT count(*) FROM babysits`).Scan(&babysits); err != nil {
+				t.Fatalf("read the state: %v", err)
+			}
+			if err := e.s.db.R.QueryRow(`SELECT count(*) FROM pull_requests`).Scan(&linked); err != nil {
+				t.Fatalf("read the state: %v", err)
+			}
 			if armed != 0 || babysits != 0 || linked != 1 {
 				t.Errorf("armed %d, babysat %d, recorded %d: want the pull request recorded, unarmed and unwatched", armed, babysits, linked)
 			}
 			var status string
-			_ = e.s.db.R.QueryRow(`SELECT s.name FROM issues i JOIN statuses s ON s.id = i.status_id WHERE i.id = ?`, e.task.ID).Scan(&status)
+			if err := e.s.db.R.QueryRow(`SELECT s.name FROM issues i JOIN statuses s ON s.id = i.status_id WHERE i.id = ?`, e.task.ID).Scan(&status); err != nil {
+				t.Fatalf("read the state: %v", err)
+			}
 			if tc.name == "task closed" && status != "Done" {
 				t.Errorf("a closed task is now %q", status)
 			}
 			var body string
-			_ = e.s.db.R.QueryRow(`SELECT body FROM work_log WHERE kind = 'review' ORDER BY id DESC LIMIT 1`).Scan(&body)
+			if err := e.s.db.R.QueryRow(`SELECT body FROM work_log WHERE kind = 'review' ORDER BY id DESC LIMIT 1`).Scan(&body); err != nil {
+				t.Fatalf("read the state: %v", err)
+			}
 			if !strings.Contains(body, "opened") || !strings.Contains(body, "not armed") {
 				t.Errorf("the round says %q", body)
 			}

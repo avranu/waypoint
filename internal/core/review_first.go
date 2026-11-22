@@ -66,6 +66,12 @@ type beforePR struct {
 	ShipNext  int64  `json:"ship_next,omitempty"`
 	ShipTold  bool   `json:"ship_told,omitempty"`
 	ShipErr   string `json:"ship_err,omitempty"`
+	// ShipDone: Waypoint's ship of this round finished (shipRecord): a second
+	// caller that was waiting on the round's lock does nothing more.
+	ShipDone bool `json:"ship_done,omitempty"`
+	// ShipRefused: the last failure was the forge refusing the request
+	// (shipRefused), which trying again won't change.
+	ShipRefused bool `json:"ship_refused,omitempty"`
 	// ShipStop: why Waypoint stopped shipping this round for good (its
 	// authority went, or the forge refused). The round is left as it ends.
 	ShipStop string `json:"ship_stop,omitempty"`
@@ -1321,12 +1327,11 @@ func (s *Service) reviewFirstAtStop(ctx context.Context, t *tx, x *AgentSession,
 		}
 	}
 	if state == RoundRunning {
-		live, _ := liveBackground(seen, since, at)
 		going, err := s.checkGoing(ctx, t, id, at)
 		if err != nil {
 			return "", true, err
 		}
-		in := roundIn{State: state, Stopped: true, Subagents: len(live) > 0}
+		in := roundIn{State: state, Stopped: true, Subagents: subagentsSince(seen, since, at)}
 		if going {
 			in.Check = checkRunning
 		}

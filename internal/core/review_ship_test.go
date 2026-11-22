@@ -322,8 +322,9 @@ func TestShipResumesAfterTheProcessDiedWithThePROpen(t *testing.T) {
 	if len(e.g.created) != 1 || e.round(r1).state != RoundDone {
 		t.Fatalf("setup: %d pull requests, round %+v", len(e.g.created), e.round(r1))
 	}
-	// As if the process died before endRoundReviewed and endHeldRun.
-	if _, err := e.s.db.W.Exec(`UPDATE work_log SET state = 'running', ended_at = NULL, read_state = 'pending' WHERE id = ?`, r1); err != nil {
+	// As if the process died before endRoundReviewed and endHeldRun (the
+	// ship_done mark is made in the write that ends the held run).
+	if _, err := e.s.db.W.Exec(`UPDATE work_log SET state = 'running', ended_at = NULL, read_state = 'pending', before_pr = json_remove(before_pr, '$.ship_done') WHERE id = ?`, r1); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.s.db.W.Exec(`UPDATE agent_runs SET ended_at = NULL WHERE id = (SELECT run_id FROM work_log WHERE id = ?)`, r1); err != nil {
