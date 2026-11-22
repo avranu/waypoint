@@ -617,7 +617,7 @@ func (s *Service) OpenNitpicks(ctx context.Context, actor *Actor, projectRef str
 	rows, err := s.db.R.QueryContext(ctx, `SELECT f.audit_id, f.ordinal, f.path, f.line, f.severity, f.title, a.repo, a.pr_number
 		FROM code_audit_findings f JOIN code_audits a ON a.id = f.audit_id
 		WHERE a.project_id = ? AND (a.requested_agent = ? OR (a.requested_agent = ? AND a.fix_issue_id IS NULL))
-			AND f.state IN ('open', 'confirmed') AND f.path IN (`+strings.TrimSuffix(strings.Repeat("?,", len(clean)), ",")+`)
+			AND `+findingToDoSQL+` AND f.path IN (`+strings.TrimSuffix(strings.Repeat("?,", len(clean)), ",")+`)
 		ORDER BY CASE f.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, f.audit_id DESC, f.ordinal LIMIT ?`, args...)
 	if err != nil {
 		return nil, err
