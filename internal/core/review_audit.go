@@ -1404,8 +1404,8 @@ func grokReviewPrompt(a *CodeAudit, todo []CodeAuditFinding) string {
 	fmt.Fprintf(&b, "Assess every claim to determine if it is legitimate and a change would be consistent with our codebase and goals. Fix any that are. "+
 		"Follow TDD to write tests for any failures before you produce a fix, so we ensure no future regressions. "+
 		"If there are any findings, comments, data, or unrelated issues you don't fix here, file them in waypoint so they aren't lost when the session is over (`wp new task \"description\"`, `wp comment \"message\"`, etc). "+
-		"Record each verdict: `wp audit mark %s fixed -m \"what you did\"`, `wp audit mark %s confirmed --issue KEY` for a real one you filed instead of fixing, or `wp audit mark %s rejected -m \"why\"`. "+
-		"When you're done, run `wp ship --pr --summary \"what you fixed, filed and rejected, and why\"`: the summary is your reply to the user.\n\n", id, id, id)
+		"Record each verdict: %s. "+
+		"When you're done, run `wp ship --pr --summary \"what you fixed, filed and rejected, and why\"`: the summary is your reply to the user.\n\n", markHint(id, "why"))
 	writeAuditFindings(&b, todo)
 	return promptText(b.String())
 }

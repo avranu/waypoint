@@ -1705,16 +1705,35 @@ func (s *Service) auditFixTask(ctx context.Context, id int64) {
 }
 
 // findingToDo says whether a finding is still to do: undecided, or
-// confirmed and not fixed with no issue linked. One confirmed with an issue
-// (wp audit mark 12.3 confirmed --issue KEY) is real and handed to that
-// issue: no round, babysitter or fix task asks for it again (WP-1547).
+// confirmed and not filed (findingFiled). A filed one is real and handed to
+// its issue: no round, babysitter or fix task asks for it again (WP-1547).
 // findingToDoSQL is the same test in SQL.
 func findingToDo(f CodeAuditFinding) bool {
-	return f.State == "open" || (f.State == "confirmed" && f.Issue == "")
+	return (f.State == "open" || f.State == "confirmed") && !findingFiled(f)
 }
 
-// findingToDoSQL is findingToDo over code_audit_findings as f.
-const findingToDoSQL = "(f.state = 'open' OR (f.state = 'confirmed' AND f.issue_id IS NULL))"
+// findingFiled says whether a finding was filed, not fixed: confirmed with
+// an issue linked (wp audit mark 12.3 confirmed --issue KEY), below the
+// severities that hold a merge (auditHoldsMerge). A critical or high one
+// stays to do until it is fixed or rejected, as the merge hold has always
+// asked: filing it would let a known serious defect merge on an agent's
+// word. findingFiledSQL is the same test in SQL.
+func findingFiled(f CodeAuditFinding) bool {
+	return f.State == "confirmed" && f.Issue != "" && !auditHoldsMerge(f.Severity)
+}
+
+// markHint is the ways to mark a finding, for the prompts and holds that
+// ask for verdicts: id is a finding's ID (12.3), why the rejection's note.
+func markHint(id, why string) string {
+	return fmt.Sprintf("`wp audit mark %s fixed -m \"what you did\"`, `wp audit mark %s confirmed --issue KEY` for a real one you filed for later (not a critical or high one: fix or reject those), or `wp audit mark %s rejected -m \"%s\"`", id, id, id, why)
+}
+
+// findingFiledSQL and findingToDoSQL are findingFiled and findingToDo over
+// code_audit_findings as f.
+const (
+	findingFiledSQL = "(f.state = 'confirmed' AND f.issue_id IS NOT NULL AND f.severity NOT IN ('critical', 'high'))"
+	findingToDoSQL  = "(f.state IN ('open', 'confirmed') AND NOT " + findingFiledSQL + ")"
+)
 
 func noteSuffix(n string) string {
 	if n = strings.TrimSpace(n); n == "" {
@@ -2433,9 +2452,12 @@ func (s *Service) MarkAuditFindings(ctx context.Context, actor *Actor, in MarkFi
 					return err
 				}
 			}
-			res, err := t.ExecContext(ctx, `UPDATE code_audit_findings SET state = ?, note = CASE WHEN ? = '' THEN note ELSE ? END, issue_id = coalesce(?, issue_id),
+			// A mark without --issue keeps the finding's issue, except
+			// confirmed: confirmed with no issue is still to do, so it
+			// unfiles a finding filed before (findingFiled).
+			res, err := t.ExecContext(ctx, `UPDATE code_audit_findings SET state = ?, note = CASE WHEN ? = '' THEN note ELSE ? END, issue_id = CASE WHEN ? IS NOT NULL THEN ? WHEN ? = 'confirmed' THEN NULL ELSE issue_id END,
 				decided_by = ?, decided_agent = ?, decided_at = ? WHERE audit_id = ? AND ordinal = ?`,
-				state, note, note, issueID, by, actor.agentName(), s.nowMS(), r.audit, r.n)
+				state, note, note, issueID, issueID, state, by, actor.agentName(), s.nowMS(), r.audit, r.n)
 			if err != nil {
 				return err
 			}

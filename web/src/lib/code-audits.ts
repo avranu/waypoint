@@ -41,6 +41,18 @@ export interface AuditFinding {
   url?: string
 }
 
+/**
+ * Whether a finding is still to do, as the server counts it (findingToDo in
+ * internal/core/code_audits.go): open, or confirmed and not filed. A finding
+ * confirmed with an issue linked is filed, handed to that issue, unless it
+ * is critical or high, which must be fixed or rejected.
+ */
+export function findingToDo(f: AuditFinding): boolean {
+  if (f.state === 'open') return true
+  if (f.state !== 'confirmed') return false
+  return !f.issue || f.severity === 'critical' || f.severity === 'high'
+}
+
 export interface AuditAttempt {
   model: string
   job?: number

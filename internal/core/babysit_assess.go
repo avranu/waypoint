@@ -1108,7 +1108,8 @@ func (s *Service) assessorPrompt(ctx context.Context, b *Babysit, pr *PullReques
 	fmt.Fprintf(&p, "PR %d %q, branch %s at %s. Its babysitting rounds haven't settled it: %s.\n\n", pr.Number, pr.Title, pr.HeadRef, short(pr.HeadSHA), why)
 	fmt.Fprintf(&p, "Assess what is really wrong and fix it properly, with evidence: reproduce failures and run the tests that cover your change. "+
 		"You may redo what earlier rounds did, or rebuild the change from %s, in new commits (the push isn't forced). "+
-		"A review comment or audit finding that is wrong or belongs in later work: `wp pr ack ID --reject -m WHY` (file the later work with `wp new`), `wp audit mark ID rejected -m WHY`; "+
+		"A review comment that is wrong or belongs in later work: `wp pr ack ID --reject -m WHY` (file the later work with `wp new`); an audit finding that is wrong: `wp audit mark ID rejected -m WHY`, "+
+		"or real but for later work: file it with `wp new` and `wp audit mark ID confirmed --issue KEY` (not a critical or high one: fix or reject those); "+
 		"one you fixed: `wp pr fixed ID`. Waypoint pushes your commits when you end. "+
 		"Commits that change CI configuration, lockfiles or secrets are refused.\n"+
 		"What the code, its tests and a reviewer can settle is yours to settle: fix it, defer a finding to a follow-up task, reject a comment with a reason, take one side of a conflict. "+
