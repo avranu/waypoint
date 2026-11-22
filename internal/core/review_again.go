@@ -1439,8 +1439,9 @@ type AgainRoundStat struct {
 	ProbeFollowed int            `json:"probe_followed"`
 	ProbeUseful   int            `json:"probe_useful"`
 	// Signalled: the decisions a signal called: a high or critical one, the
-	// mediums reaching the round's need, or, from before the weighing (need 0),
-	// any (againDecision.serious, weight, need).
+	// mediums reaching the round's need, or any on a round read by labels
+	// alone or from before the weighing (need 0), as why() reads them
+	// (againDecision.serious, weight, need, labels).
 	Signalled int `json:"signalled"`
 	// Checks: the decisions whose check of the session's marks was asked;
 	// Passed: of them, the ones it was passed over in (it couldn't be
@@ -1483,7 +1484,7 @@ func (s *Service) againReport(ctx context.Context, ivis string, iargs []any, sin
 	rows, err := s.db.R.QueryContext(ctx, `SELECT min(d.round_index, 3), d.arm, count(*),
 			sum(CASE WHEN w.state = 'done' AND `+againAuditSQL+` IS NOT NULL AND `+againJudgedSQL+` THEN 1 ELSE 0 END),
 			sum(CASE WHEN w.state = 'done' AND `+againAuditSQL+` IS NOT NULL AND `+againJudgedSQL+` AND `+againUsefulSQL+` THEN 1 ELSE 0 END),
-			sum(d.serious > 0 OR (d.need > 0 AND d.weight >= d.need) OR (d.need = 0 AND d.signals > 0)), sum(d.checked >= 0), sum(d.checked = 0), sum(d.unchecked > 0),
+			sum(d.signals > 0 AND (d.serious > 0 OR (d.need > 0 AND d.weight >= d.need) OR d.labels = 1 OR d.need = 0)), sum(d.checked >= 0), sum(d.checked = 0), sum(d.unchecked > 0),
 			sum(d.samples > 0), sum(d.samples), sum(d.spread != '{}'), sum(json_extract(d.spread, '$.`+spreadUnsettled+`') IS NOT NULL),
 			sum(d.samples > 0 OR d.labels = 1), sum(d.labels = 1)
 		FROM review_again_decisions d JOIN issues i ON i.id = d.issue_id LEFT JOIN work_log w ON w.id = d.next_round_id

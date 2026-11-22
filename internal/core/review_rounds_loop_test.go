@@ -203,7 +203,8 @@ func TestReviewRoundsLoopUntilRepeats(t *testing.T) {
 	}
 	// The SIGNAL column counts the decisions a signal called (WP-1569): a
 	// high or critical signal, the mediums reaching what the round needed,
-	// or a decision from before the weighing (need 0) with any signal.
+	// any signal on a round read by labels alone, or a decision from before
+	// the weighing (need 0) with any signal.
 	signalled := func(set string) string {
 		for i, round := range []int64{r1, r2, r3} {
 			if _, err := e.s.db.W.Exec(`UPDATE review_again_decisions SET `+strings.Fields(set)[i]+` WHERE round_id = ?`, round); err != nil {
@@ -227,6 +228,11 @@ func TestReviewRoundsLoopUntilRepeats(t *testing.T) {
 	}
 	// round 2 with its two mediums, round 3 with one medium short of 4.
 	if got := signalled("signals=0,need=1,weight=0,serious=0 signals=2,need=2,weight=2,serious=0 signals=1,need=4,weight=1,serious=0"); got != "[0 1 0]" {
+		t.Errorf("signalled by round = %s, want [0 1 0]", got)
+	}
+	// round 2 read by labels alone, its one medium short of 2: the loop's
+	// one round read that way is called by any signal, as why() says.
+	if got := signalled("signals=0,need=1,weight=0,serious=0,labels=0 signals=1,need=2,weight=1,serious=0,labels=1 signals=1,need=4,weight=1,serious=0,labels=0"); got != "[0 1 0]" {
 		t.Errorf("signalled by round = %s, want [0 1 0]", got)
 	}
 }
