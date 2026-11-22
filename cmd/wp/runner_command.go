@@ -55,6 +55,9 @@ type agentJob struct {
 	// Patch, for a job that runs no agent: changes to protected files held
 	// back from a round, applied to Branch and pushed once checked.
 	Patch string `json:"patch"`
+	// KeepOnTimeout: when the agent runs out of time, the commits it had
+	// made are still checked and pushed (salvage, WP-1597).
+	KeepOnTimeout bool `json:"keep_on_timeout,omitempty"`
 	// Confine: the prompt carries text others wrote (a pull request), so the
 	// CLI must not be able to read beyond its checkout; a CLI that can't be
 	// confined is refused (WP-6).
@@ -71,6 +74,10 @@ type agentJob struct {
 	// Helpers, for an audit: the Haiku checks run around its model in the
 	// same checkout (runner_helpers.go, WP-1320).
 	Helpers *auditHelpers `json:"helpers,omitempty"`
+	// WorkTimeout (seconds) is how long the agent may work, not counting
+	// the time its commands wait for a machine-wide slot; the claim's
+	// timeout limits the whole run. 0: no separate limit (WP-1618).
+	WorkTimeout int `json:"work_timeout"`
 }
 
 // perm is the permission level the job runs at: read-only (files can be

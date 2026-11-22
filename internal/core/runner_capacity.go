@@ -116,7 +116,7 @@ type RunnerCapacity struct {
 	MemFree float64 `json:"mem_free,omitempty"`
 	// BusyAt: the hours of the next day the machine is usually busy with
 	// other work, from what the runner saw in past weeks (it takes fewer
-	// heavy jobs then).
+	// heavy jobs then, unless it measures the machine calm; WP-1618).
 	BusyAt []time.Time `json:"busy_at,omitempty"`
 	// Running: jobs it runs now by lane.
 	Heavy   int `json:"heavy"`
