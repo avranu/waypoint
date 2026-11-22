@@ -353,7 +353,7 @@ func TestAutopilotReviewUnwantedAfterLateRenderWait(t *testing.T) {
 	after := screenEmpty
 	f, r, _ := reviewTypingFixture(t, &after, func(n int) (bool, bool) { return n <= 3, true }, func(n int, f *fakeTmux) {
 		if n == 1 {
-			f.lateRender = 2
+			f.lateRender = 3 // the capture right after the settle takes one
 		}
 	})
 	if r.Outcome != "unwanted" || strings.Contains(strings.Join(f.typed, " "), "Enter") {
@@ -366,7 +366,7 @@ func TestAutopilotReviewPasteRendersLate(t *testing.T) {
 	after := screenEmpty
 	f, r, _ := reviewTypingFixture(t, &after, always, func(n int, f *fakeTmux) {
 		if n == 1 {
-			f.lateRender = 2
+			f.lateRender = 3 // the capture right after the settle takes one
 		}
 	})
 	if r.Outcome != "reviewing" || r.Warning != "" || strings.Join(f.typed, " ") != "Enter" {
@@ -423,6 +423,19 @@ func TestAutopilotReviewPersonsPasteOverTheReview(t *testing.T) {
 	f, r, _ = reviewTypingFixture(t, nil, func(n int) (bool, bool) { return n <= 2, true }, swap)
 	if r.Outcome != "unwanted" || r.Warning == "" || len(f.typed) != 0 || f.screen != theirs {
 		t.Errorf("unwanted: %+v typed %q", r, f.typed)
+	}
+}
+
+// Text typed while the last ask was out (a slow server) is seen: the box is
+// read again after it, so the review isn't sent along with that text.
+func TestAutopilotReviewTypedDuringTheLastAsk(t *testing.T) {
+	f, r, _ := reviewTypingFixture(t, nil, always, func(n int, f *fakeTmux) {
+		if n == 4 {
+			f.screen = "────────\n❯ [Pasted text #1 +3 lines] and also do X\n────────\n"
+		}
+	})
+	if r.Outcome != "held" || r.Reason != "draft" || len(f.typed) != 0 {
+		t.Errorf("%+v typed %q", r, f.typed)
 	}
 }
 

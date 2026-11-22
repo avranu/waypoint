@@ -330,8 +330,10 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 	// ours is Claude Code's placeholder for this paste ([Pasted text #3 +40
 	// lines]) as first read, right after it settled: a placeholder seen later
 	// is ours only if it is the same, since a person's own paste gets the
-	// next number (audit #1350.1). Only a person who swaps the paste for
-	// their own within the settle can still be taken for it.
+	// next number (audit #1350.1). A person who swaps the paste for their
+	// own within the settle, or before a paste drawn late is first seen, can
+	// still be taken for it; so can one whose paste Claude Code numbers and
+	// counts the same as ours.
 	var ours string
 	mine := func(text string) bool {
 		if !pastedOnly(text, in.Review) {
@@ -399,9 +401,13 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 		box, err = readPenBox(ctx, socket, pane)
 	}
 	// The wait above can take a settle period: ask once more, so a Stop in it
-	// is seen before Enter.
+	// is seen before Enter. The ask is a round trip that can be slow, so the
+	// box is read again after it: what decides Enter is the box as it is now.
 	if o, stop := askAgain(); stop {
 		return o
+	}
+	if err == nil && box.found && box.text != "" {
+		box, err = readPenBox(ctx, socket, pane)
 	}
 	switch {
 	case err != nil || !box.found:
