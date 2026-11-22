@@ -321,9 +321,11 @@ func (p *runnerProc) execAgent(ctx context.Context, run *jobRun, kind string, in
 			_, _ = p.git(bg, bare, "branch", "-D", "--", in.Branch)
 		}
 	}()
-	// Registered after the removal above, so it runs first, and after the
-	// helpers' finish below, so it runs once they are done: the job's
-	// transcripts are kept on every way out, a timeout or a cancel included.
+	// keepTranscripts is registered after the removal above and before the
+	// helpers' finish below. Defers run last in, first out, so it runs after
+	// the helpers finish (their sessions are written) and before the checkout
+	// is removed; moving either defer breaks that. The job's transcripts are
+	// kept on every way out, a timeout or a cancel included.
 	started := time.Now()
 	var jobDrv *cliDriver
 	defer func() { o = p.keepTranscripts(ctx, run, in, work, started, jobDrv, o) }()

@@ -279,6 +279,7 @@ func archiveFileOfPath(p string) usageFile {
 }
 
 type archiver struct {
+	ctx      context.Context // the caller's bound on the pass (usageSyncOptions.Ctx)
 	c        *cli
 	st       archiveState
 	res      *archiveResult
@@ -294,6 +295,14 @@ type archiver struct {
 	// syncStart + usageHookTimeout.
 	syncStart time.Time
 	pieceCap  int // a 413 taught this: the most raw bytes of a piece (0: none known)
+}
+
+// bound is the caller's context for the pass, or the background one.
+func (a *archiver) bound() context.Context {
+	if a.ctx == nil {
+		return context.Background()
+	}
+	return a.ctx
 }
 
 func (a *archiver) drop(reason string) {
@@ -331,7 +340,7 @@ func usageArchive(c *cli, o usageSyncOptions, root string, syncStart time.Time) 
 	if err != nil {
 		return res, err
 	}
-	a := &archiver{c: c, st: st, res: res, dry: o.DryRun, known: []string{c.token()}, hook: o.Hook, syncStart: syncStart}
+	a := &archiver{ctx: o.ctx(), c: c, st: st, res: res, dry: o.DryRun, known: []string{c.token()}, hook: o.Hook, syncStart: syncStart}
 	if st.reset {
 		a.drop("state_reset")
 	}
@@ -356,13 +365,16 @@ func usageArchive(c *cli, o usageSyncOptions, root string, syncStart time.Time) 
 		limit, from = archiveHookLimit, syncStart
 	}
 	a.deadline = from.Add(limit)
+	if d, ok := a.bound().Deadline(); ok && d.Before(a.deadline) {
+		a.deadline = d
+	}
 	// more: a pass that found the lock taken left a note, so bytes came after
 	// the files were listed. Another pass runs while there is a note and the
 	// deadline allows (at most archiveAgainRounds), and the note is taken
 	// then. When the deadline does not allow, the note stays and the next
 	// pass removes it at its start, when it lists everything anyway.
 	more := func() bool {
-		if o.DryRun || a.stop != "" || !time.Now().Before(a.deadline) {
+		if o.DryRun || a.stop != "" || a.bound().Err() != nil || !time.Now().Before(a.deadline) {
 			return false
 		}
 		if _, err := os.Stat(again); err != nil {
@@ -419,9 +431,17 @@ func (a *archiver) pass(o usageSyncOptions, root string) error {
 	} else if since < archiveBackfill {
 		since = archiveBackfill
 	}
-	files, err := discoverTranscripts(root, since, nil)
-	if err != nil {
-		return err
+	var files []usageFile
+	if o.OnlyFiles { // the named sessions, whatever their age; none named is none
+		since = 0
+		if len(o.Files) > 0 {
+			files, _ = discoverTranscripts(root, 0, o.Files)
+		}
+	} else {
+		var err error
+		if files, err = discoverTranscripts(root, since, nil); err != nil {
+			return err
+		}
 	}
 	type sized struct {
 		f     usageFile
@@ -439,7 +459,7 @@ func (a *archiver) pass(o usageSyncOptions, root string) error {
 		if seen[f.Path] {
 			return
 		}
-		if fi, err := os.Stat(f.Path); err == nil {
+		if fi, err := os.Lstat(f.Path); err == nil { // a link or other odd file is counted unreadable when opened
 			seen[f.Path] = true
 			todo = append(todo, sized{f, fi.Size(), fi.ModTime(), hooked[f.Session]})
 		}
@@ -451,10 +471,10 @@ func (a *archiver) pass(o usageSyncOptions, root string) error {
 	// file that is gone is dropped, and the bytes it had not sent are counted
 	// (an entry from before sizes were kept says nothing of them)
 	for p, fs := range a.st.Files {
-		if seen[p] {
+		if seen[p] || o.OnlyFiles {
 			continue
 		}
-		fi, err := os.Stat(p)
+		fi, err := os.Lstat(p) // a link is not followed: it is counted unreadable when opened
 		switch {
 		case errors.Is(err, os.ErrNotExist):
 			if fs.Size > fs.Off {
@@ -488,7 +508,7 @@ func (a *archiver) pass(o usageSyncOptions, root string) error {
 		}
 	}
 	res.OlderFiles, res.OlderBytes = 0, 0
-	if !o.Hook && (!o.All || o.Since != 0) {
+	if !o.Hook && !o.OnlyFiles && (!o.All || o.Since != 0) {
 		a.countOlder(root, seen)
 	}
 	return nil
@@ -506,7 +526,7 @@ func (a *archiver) countOlder(root string, seen map[string]bool) {
 		if seen[f.Path] || a.st.Files[f.Path] != nil {
 			continue
 		}
-		if fi, err := os.Stat(f.Path); err == nil && fi.Size() > 0 {
+		if fi, err := os.Lstat(f.Path); err == nil && fi.Mode().IsRegular() && fi.Size() > 0 {
 			a.res.OlderFiles++
 			a.res.OlderBytes += fi.Size()
 		}
@@ -543,7 +563,7 @@ func (a *archiver) report(c *cli, res *archiveResult) error {
 	if a.hook {
 		body["pass_ms"] = res.ElapsedMS
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(a.bound(), timeout)
 	_, err = c.callCtx(ctx, "POST", "/api/v1/usage/transcript/status", body)
 	cancel()
 	if err != nil {
@@ -625,7 +645,7 @@ func (a *archiver) uploadContext() (context.Context, context.CancelFunc) {
 		floor = archiveHookFloor
 	}
 	d := max(time.Until(a.deadline), floor)
-	return context.WithTimeout(context.Background(), d)
+	return context.WithTimeout(a.bound(), d)
 }
 
 // learnCap makes n raw bytes the most a piece holds (when that is smaller than
@@ -637,6 +657,28 @@ func (a *archiver) learnCap(n int) {
 		a.pieceCap = n
 		a.st.PieceCap, a.st.PieceCapAt = int64(n), archiveNow().UnixMilli()
 	}
+}
+
+// openRegularTranscript opens a transcript that is a regular file and not a link (a
+// link named x.jsonl could point at any file the user can read); what was
+// opened is checked to be what was listed, so a swap in between fails.
+func openRegularTranscript(path string) (*os.File, error) {
+	li, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !li.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", path)
+	}
+	fh, err := os.Open(path) // #nosec G304 -- a transcript Claude Code wrote
+	if err != nil {
+		return nil, err
+	}
+	if fi, err := fh.Stat(); err != nil || !os.SameFile(li, fi) {
+		_ = fh.Close()
+		return nil, fmt.Errorf("%s changed as it was opened", path)
+	}
+	return fh, nil
 }
 
 // file uploads what the server lacks of one transcript.
@@ -652,7 +694,7 @@ func (a *archiver) file(f usageFile, size int64) {
 	if st.Held != "" && time.Since(time.UnixMilli(st.HeldAt)) < archiveRetryHeld {
 		return // the server refused it; it is tried again once a day
 	}
-	fh, err := os.Open(key) // #nosec G304 -- a transcript Claude Code wrote
+	fh, err := openRegularTranscript(key)
 	if err != nil {
 		a.drop("unreadable_file")
 		return
@@ -698,7 +740,7 @@ func (a *archiver) file(f usageFile, size int64) {
 			a.stop = "a file with more pieces than one pass sends; the rest goes next time"
 			return
 		}
-		if time.Now().After(a.deadline) {
+		if time.Now().After(a.deadline) || a.bound().Err() != nil {
 			a.stop = "time limit; the rest goes next time"
 			return
 		}

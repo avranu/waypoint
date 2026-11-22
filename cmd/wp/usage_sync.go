@@ -35,6 +35,21 @@ type usageSyncOptions struct {
 	Inventory bool          // also report what is configured on this machine
 	NoArchive bool          // leave the transcript archive upload out (WP-1466)
 	Out       io.Writer     // progress lines, or nil
+	// Ctx bounds the hour counts' upload and every archive upload, and ends the
+	// archive pass at its deadline (nil: no bound but the pass's own limits).
+	Ctx context.Context
+	// OnlyFiles limits the sync to Files and their sessions: no outdated
+	// transcripts, and in the archive pass no 30-day discovery and no backlog
+	// from earlier passes (the end of a job sends the job's sessions only).
+	OnlyFiles bool
+}
+
+// ctx is o.Ctx, or the background context when there is none.
+func (o usageSyncOptions) ctx() context.Context {
+	if o.Ctx == nil {
+		return context.Background()
+	}
+	return o.Ctx
 }
 
 // usageSyncResult is what a sync did.
@@ -166,7 +181,9 @@ func discoverTranscripts(root string, since time.Duration, only []string) ([]usa
 		cut = time.Now().Add(-since)
 	}
 	add := func(f usageFile) {
-		if fi, err := os.Stat(f.Path); err == nil && fi.Mode().IsRegular() && (cut.IsZero() || fi.ModTime().After(cut)) {
+		// Lstat: a link named x.jsonl is not a transcript, whatever it points at
+		// (a link in a directory above the file is fine; the path is followed to there)
+		if fi, err := os.Lstat(f.Path); err == nil && fi.Mode().IsRegular() && (cut.IsZero() || fi.ModTime().After(cut)) {
 			files = append(files, f)
 		}
 	}
@@ -222,7 +239,7 @@ func outdatedTranscripts(root string, st *usageState, have []usageFile) []usageF
 	old := map[string]bool{}
 	for p, s := range st.Files {
 		if s != nil && s.outdated() && strings.HasPrefix(p, under) {
-			if _, err := os.Stat(p); err == nil { // so deleted ones don't cost a walk per hook
+			if fi, err := os.Lstat(p); err == nil && fi.Mode().IsRegular() { // so deleted ones don't cost a walk per hook
 				old[p] = true
 			}
 		}
@@ -251,7 +268,7 @@ func outdatedTranscripts(root string, st *usageState, have []usageFile) []usageF
 func subagentFiles(dir string) []string {
 	var out []string
 	_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
-		if err == nil && !d.IsDir() && strings.HasPrefix(d.Name(), "agent-") && strings.HasSuffix(d.Name(), ".jsonl") {
+		if err == nil && d.Type().IsRegular() && strings.HasPrefix(d.Name(), "agent-") && strings.HasSuffix(d.Name(), ".jsonl") {
 			out = append(out, p)
 		}
 		return nil
@@ -346,12 +363,17 @@ func usageSync(c *cli, o usageSyncOptions) (*usageSyncResult, error) {
 		release = sync.OnceFunc(unlock) // one release: early, before the archive pass, or on return
 		defer release()
 	}
-	files, err := discoverTranscripts(root, o.Since, o.Files)
-	if err != nil {
-		return nil, err
+	var files []usageFile
+	if !o.OnlyFiles || len(o.Files) > 0 { // no files named is not every file
+		var err error
+		if files, err = discoverTranscripts(root, o.Since, o.Files); err != nil {
+			return nil, err
+		}
 	}
 	st := loadUsageState(c.dir)
-	files = append(files, outdatedTranscripts(root, &st, files)...)
+	if !o.OnlyFiles {
+		files = append(files, outdatedTranscripts(root, &st, files)...)
+	}
 	res.Files = len(files)
 	if o.DryRun { // look at the state, never change it
 		cp := usageState{Files: map[string]*usageFileState{}, InventoryAt: st.InventoryAt, InventorySum: st.InventorySum}
@@ -437,7 +459,7 @@ func usageSync(c *cli, o usageSyncOptions) (*usageSyncResult, error) {
 				Duplicate int `json:"duplicate"`
 				Dropped   int `json:"traces_dropped"`
 			}
-			ctx, cancel := context.Background(), context.CancelFunc(func() {})
+			ctx, cancel := o.ctx(), context.CancelFunc(func() {})
 			if o.Hook {
 				// part of the hook pass's bound (usageHookUploadTimeout, within
 				// usageHookUploadBudget); a

@@ -228,6 +228,9 @@ type jobRun struct {
 	// launch is the owner's session settings (WP-1265), for a job that
 	// starts a session.
 	launch *sessionPrefs
+	// cancelled is set when a person cancels the job; nil in a job nothing
+	// can cancel.
+	cancelled *atomic.Bool
 }
 
 type claimedJob struct {
@@ -721,6 +724,18 @@ func (p *runnerProc) stopAll(reportStop context.CancelFunc) {
 	p.wg.Wait()
 }
 
+// settleOutcome words how a job that was stopped ended: cancelled by a person
+// (cancelled), or the runner was stopped (ctx). The sidecar kept beside a
+// job's transcripts says the same as what the server is told.
+func settleOutcome(ctx context.Context, cancelled *atomic.Bool, o outcome) outcome {
+	if cancelled != nil && cancelled.Load() && o.State != "done" {
+		o.State, o.Error = "cancelled", "Cancelled by a person."
+	} else if ctx.Err() != nil && o.State == "cancelled" && o.Error == "Stopped." {
+		o.Error = "The runner was stopped." // internal/core's runnerStoppedError: such an audit goes again
+	}
+	return o
+}
+
 // runJob carries out one job and reports how it ended.
 func (p *runnerProc) runJob(ctx context.Context, aj *activeJob, job *claimedJob) {
 	sink := newLogSink()
@@ -729,7 +744,7 @@ func (p *runnerProc) runJob(ctx context.Context, aj *activeJob, job *claimedJob)
 		timeout = 10 * time.Minute
 	}
 	p.ensureSandboxUsers(ctx, job)
-	run := &jobRun{id: job.ID, kind: job.Kind, title: job.Title, timeout: timeout, out: sink, token: job.Token, launch: job.Launch}
+	run := &jobRun{id: job.ID, kind: job.Kind, title: job.Title, timeout: timeout, out: sink, token: job.Token, launch: job.Launch, cancelled: &aj.cancelled}
 	var logs sync.WaitGroup
 	logs.Add(1)
 	go func() {
@@ -737,11 +752,7 @@ func (p *runnerProc) runJob(ctx context.Context, aj *activeJob, job *claimedJob)
 		sink.run(p.reportCtx, p.sendLog(job.ID), func() { p.cancelJob(job.ID) })
 	}()
 	o := p.execute(ctx, run, job)
-	if aj.cancelled.Load() && o.State != "done" {
-		o.State, o.Error = "cancelled", "Cancelled by a person."
-	} else if ctx.Err() != nil && o.State == "cancelled" && o.Error == "Stopped." {
-		o.Error = "The runner was stopped." // internal/core's runnerStoppedError: such an audit goes again
-	}
+	o = settleOutcome(ctx, &aj.cancelled, o)
 	o = fitResult(o, resultLimit, sink)
 	sink.close()
 	logs.Wait()
