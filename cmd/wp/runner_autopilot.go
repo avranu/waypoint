@@ -327,12 +327,33 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 		return held("screen", "the review prompt couldn't be pasted: %v", err)
 	}
 	sleepCtx(ctx, reviewPasteSettle(len(in.Review)))
+	// ours is Claude Code's placeholder for this paste ([Pasted text #3 +40
+	// lines]) as first read, right after it settled: a placeholder seen later
+	// is ours only if it is the same, since a person's own paste gets the
+	// next number (audit #1350.1). Only a person who swaps the paste for
+	// their own within the settle can still be taken for it.
+	var ours string
+	mine := func(text string) bool {
+		if !pastedOnly(text, in.Review) {
+			return false
+		}
+		if !pastedPlaceholderRE.MatchString(text) {
+			return true // the review's own text, whole
+		}
+		if ours == "" {
+			ours = text
+		}
+		return text == ours
+	}
+	if box, err := readPenBox(ctx, socket, pane); err == nil && box.found && box.text != "" {
+		mine(box.text)
+	}
 	// unpaste takes the review back out of the box when the box holds only
 	// it (C-u), so nothing is left for a person to clear and a retry finds
 	// the box empty; it says whether the box is empty now.
 	unpaste := func() bool {
 		box, err := readPenBox(ctx, socket, pane)
-		if err != nil || !box.found || box.text == "" || !pastedOnly(box.text, in.Review) {
+		if err != nil || !box.found || box.text == "" || !mine(box.text) {
 			return err == nil && box.found && box.text == ""
 		}
 		if _, err := runTmux(ctx, socket, nil, "send-keys", "-t", pane, "C-u"); err != nil {
@@ -388,8 +409,8 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 	case box.text == "":
 		say("the input box is empty: the paste was already sent, no Enter")
 		return outcome{State: "done", Result: autopilotResult{Outcome: "reviewing", Warning: "the review prompt's paste was already gone from the input box before Enter (someone sent it?): no Enter was sent; check the session"}}
-	case !pastedOnly(box.text, in.Review):
-		return held("draft", "the review prompt was pasted and not sent, since text was typed into the input box with it (%q): it waits until that is sent or cleared", truncRunes(box.text, 40))
+	case !mine(box.text):
+		return held("draft", "the review prompt was pasted and not sent, since text was typed or pasted into the input box with or over it (%q): it waits until that is sent or cleared", truncRunes(box.text, 40))
 	}
 	if _, err := runTmux(ctx, socket, nil, "send-keys", "-t", pane, "Enter"); err != nil {
 		// Pasted and not sent: the box now holds a draft, which a person
@@ -437,7 +458,9 @@ var pastedPlaceholderRE = regexp.MustCompile(`^\[Pasted text #\d+( \+\d+ lines?)
 // pastedOnly is whether the box text (what promptInput reads, its lines
 // joined by spaces) is just the pasted review: Claude Code's placeholder for
 // it, or, for a paste short enough to show whole, its text. Anything else
-// has more in it, or less than the paste, so it doesn't count (WP-1572).
+// has more in it, or less than the paste, so it doesn't count (WP-1572). A
+// placeholder doesn't say whose paste it is: reviewSession compares it with
+// the one it saw first.
 func pastedOnly(box, review string) bool {
 	if pastedPlaceholderRE.MatchString(box) {
 		return true

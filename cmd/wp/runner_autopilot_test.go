@@ -406,6 +406,26 @@ func TestAutopilotReviewTypedAfterPaste(t *testing.T) {
 	}
 }
 
+// A person's own paste in place of the review (audit #1350.1) has its own
+// placeholder: it isn't sent while the step still wants the review, nor
+// cleared once the step doesn't.
+func TestAutopilotReviewPersonsPasteOverTheReview(t *testing.T) {
+	theirs := "────────\n❯ [Pasted text #2 +7 lines]\n────────\n"
+	swap := func(n int, f *fakeTmux) { // the ask after the settle
+		if n == 3 {
+			f.screen = theirs
+		}
+	}
+	f, r, _ := reviewTypingFixture(t, nil, always, swap)
+	if r.Outcome != "held" || r.Reason != "draft" || len(f.typed) != 0 || f.screen != theirs {
+		t.Errorf("still wanted: %+v typed %q", r, f.typed)
+	}
+	f, r, _ = reviewTypingFixture(t, nil, func(n int) (bool, bool) { return n <= 2, true }, swap)
+	if r.Outcome != "unwanted" || r.Warning == "" || len(f.typed) != 0 || f.screen != theirs {
+		t.Errorf("unwanted: %+v typed %q", r, f.typed)
+	}
+}
+
 // An empty box after the settle: the paste was already sent (their own
 // Enter); a second Enter would be a stray one (WP-1572).
 func TestAutopilotReviewBoxEmptyAfterPaste(t *testing.T) {
