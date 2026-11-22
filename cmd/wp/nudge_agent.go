@@ -60,7 +60,11 @@ var (
 func waitHint(cmd string, who caller) string {
 	switch {
 	case reWaitTestRun.MatchString(cmd):
-		return "`wp testsum` and `wp slot run` queue for the slot themselves, so there is nothing to wait for before running them."
+		hint := "`wp testsum` and `wp slot run` queue for the slot themselves, so there is nothing to wait for before running them."
+		if who == callerFg {
+			return hint + " To wait for your own run, wait on that run's exit, never on `pgrep -f 'wp testsum'`, which waits for every run on the machine, other repos' included, and matches itself."
+		}
+		return hint + " To wait for your own run, wait on that run's exit (run it with run_in_background and end your turn), never on `pgrep -f 'wp testsum'`, which waits for every run on the machine, other repos' included, and matches itself."
 	case reWaitRequest.MatchString(cmd):
 		return "`wp request wait R-N` blocks until a person decides the request."
 	case reWaitAgents.MatchString(cmd):
