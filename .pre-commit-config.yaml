@@ -55,7 +55,7 @@ repos:
         name: CI lint, workflow and k8s (make prepush-ops)
         entry: make prepush-ops
         language: system
-        files: '^(\.forgejo/|deploy/k8s/)'
+        files: '^(\.forgejo/|\.github/|deploy/k8s/)'
         pass_filenames: false
         stages: [pre-push]
       - id: prepush-web
