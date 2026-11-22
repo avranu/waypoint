@@ -1,7 +1,9 @@
 package core
 
 import (
+	"database/sql"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -178,7 +180,11 @@ func TestSessionOutstanding(t *testing.T) {
 		t.Fatalf("after the round ended: %+v %v", got, err)
 	}
 
-	// An answered request the session hasn't read, named once.
+	// An answered request the session hasn't been told of. At a Stop with no
+	// findings to do it doesn't carry the agent on alone: it waits for the
+	// start of a turn (WP-176). At the wait its answer is given in full and
+	// marked told, so the agent needs no command to read it and no later
+	// Stop or wakeup gives it again.
 	req, _, err := a.s.CreateRequest(a.ctx, &ag, RequestInput{Kind: "question", Title: "Squash the migrations?", Project: a.p.Key,
 		Questions: []Question{{Question: "Squash?", Choices: []Choice{{Label: "yes"}, {Label: "no"}}}}})
 	if err != nil {
@@ -187,11 +193,19 @@ func TestSessionOutstanding(t *testing.T) {
 	if got, _ = a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtWait); len(got.Requests) != 0 {
 		t.Fatalf("an open request is not outstanding: %+v", got)
 	}
-	if _, err := a.s.db.W.Exec(`UPDATE requests SET state = 'answered', decided_at = 1, via = '' WHERE id = ?`, req.ID); err != nil {
+	if _, err := a.s.db.W.Exec(`UPDATE requests SET state = 'answered', decided_at = 1, via = '', answer = 'No, keep them apart.' WHERE id = ?`, req.ID); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ = a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtWait); !slices.Equal(got.Requests, []string{req.Code}) || !strings.Contains(got.Lines, "1 answered request you haven't read ("+req.Code+")") {
-		t.Fatalf("requests = %v %q, want [%s]", got.Requests, got.Lines, req.Code)
+	if got, _ = a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtStop); !got.Empty() {
+		t.Fatalf("an answer alone carried a stop on: %+v", got)
+	}
+	got, _ = a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtWait)
+	if !slices.Equal(got.Requests, []string{req.Code}) || !strings.Contains(got.Lines, "No, keep them apart.") || strings.Contains(got.Lines, "wp request") {
+		t.Fatalf("requests = %v %q, want [%s] with its answer", got.Requests, got.Lines, req.Code)
+	}
+	var delivered sql.NullInt64
+	if err := a.s.db.R.QueryRow(`SELECT delivered_at FROM requests WHERE id = ?`, req.ID).Scan(&delivered); err != nil || !delivered.Valid {
+		t.Fatalf("the answer given at the wait isn't marked told: %v %v", delivered, err)
 	}
 	if got, _ = a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtWait); !got.Empty() {
 		t.Fatalf("the request named twice: %+v", got)
@@ -258,37 +272,66 @@ func TestPausedOrLeftAloneStopNamesNoOutstandingWork(t *testing.T) {
 	}
 }
 
-// The lines: one finding in the singular, more than twelve cut short.
+// The lines give each finding and each answer in full, so the agent needn't
+// run a command to read them (WP-1571); past a budget the rest of the
+// findings are a line each.
 func TestOutstandingLines(t *testing.T) {
-	one := outstandingLines(&SessionOutstanding{Audit: 7, Findings: []string{"7.1"}})
+	one := outstandingLines(&SessionOutstanding{Audit: 7, todo: []CodeAuditFinding{{ID: "7.1", Severity: "medium", Title: "Merge reads a nil map", Path: "a.go", Line: 3, Problem: "It panics on a fresh map."}}})
 	// A confirmed finding not filed is one too: it has a verdict, and the line
 	// offers filing it (audit #1372.5).
-	for _, want := range []string{"- 1 finding still to do in your review round's audit #7 (7.1): `wp audit show 7`", "`wp audit mark ID fixed -m", "`confirmed --issue KEY` for a real one you filed for later", "`rejected -m"} {
+	for _, want := range []string{"- 1 finding still to do in your review round's audit #7", "### 7.1 [medium] Merge reads a nil map", "a.go:3", "It panics on a fresh map.",
+		"`wp audit mark ID fixed -m", "`wp audit mark ID confirmed --issue KEY` for a real one you filed for later", "rejected -m"} {
 		if !strings.Contains(one, want) {
 			t.Errorf("one finding lacks %q:\n%s", want, one)
 		}
 	}
-	var many []string
-	for i := 1; i <= 13; i++ {
-		many = append(many, "7."+itoa64(int64(i)))
+	if strings.Contains(one, "wp audit show") {
+		t.Errorf("the line sends the agent to read what it could have said:\n%s", one)
 	}
-	got := outstandingLines(&SessionOutstanding{Audit: 7, Findings: many, Requests: []string{"R-1", "R-2"}})
-	// wp request show tells the session of them; ls doesn't (audit #1372.4).
-	for _, want := range []string{"13 findings", "7.12, …", "2 answered requests you haven't read (R-1, R-2): `wp request show R-1 R-2`"} {
+	var many []CodeAuditFinding
+	for i := 1; i <= 40; i++ {
+		many = append(many, CodeAuditFinding{ID: fmt.Sprintf("7.%d", i), Severity: "low", Title: fmt.Sprintf("Finding %d", i), Problem: strings.Repeat("x", 400) + fmt.Sprintf(" end %d.", i)})
+	}
+	got := outstandingLines(&SessionOutstanding{Audit: 7, todo: many})
+	for _, want := range []string{"40 findings", "end 1.", "7.40 [low] Finding 40"} {
 		if !strings.Contains(got, want) {
-			t.Errorf("lines lack %q:\n%s", want, got)
+			t.Errorf("many findings lack %q:\n%s", want, got)
 		}
 	}
-	if strings.Contains(got, "7.13") {
-		t.Errorf("more than twelve named:\n%s", got)
+	if strings.Contains(got, "end 40.") || len(got) > 9000 {
+		t.Errorf("the findings aren't cut to the budget (%d bytes)", len(got))
 	}
-	// More answered than the page holds: the count is all of them (audit #1372.7).
-	var page []string
-	for i := 1; i <= 20; i++ {
-		page = append(page, "R-"+itoa64(int64(i)))
+	r := &Request{Ref: "WP:R-4", Kind: "question", Title: "Squash the migrations?", State: RequestAnswered, Answer: "No, keep them apart.", DecidedBy: &UserRef{DisplayName: "Sam"}}
+	got = outstandingLines(&SessionOutstanding{delivered: []*Request{r}})
+	for _, want := range []string{"WP:R-4", "Sam answered:\nNo, keep them apart."} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the answer lacks %q:\n%s", want, got)
+		}
 	}
-	if got := outstandingLines(&SessionOutstanding{Requests: page, RequestsTotal: 25}); !strings.Contains(got, "25 answered requests you haven't read (R-1, ") || !strings.Contains(got, "R-20, …)") {
-		t.Errorf("a cut page:\n%s", got)
+	if strings.Contains(got, "wp request") {
+		t.Errorf("the answer sends the agent to read it:\n%s", got)
+	}
+}
+
+// At a Stop with findings to name, the answers it hasn't been told of go
+// with them, in full, and are marked told.
+func TestStopGivesAnswersWithTheFindings(t *testing.T) {
+	a, box := auditAPEnv(t)
+	ag := *a.ag
+	ag.Session = a.session
+	handoffStart(t, a)
+	a.endAudit(box, "done", "Merge reads a nil map")
+	req, _, err := a.s.CreateRequest(a.ctx, &ag, RequestInput{Kind: "question", Title: "Squash the migrations?", Project: a.p.Key,
+		Questions: []Question{{Question: "Squash?", Choices: []Choice{{Label: "yes"}, {Label: "no"}}}}, Followup: "never"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.s.db.W.Exec(`UPDATE requests SET state = 'answered', decided_at = 1, via = '', answer = 'No, keep them apart.' WHERE id = ?`, req.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtStop)
+	if err != nil || len(got.Findings) != 1 || !slices.Equal(got.Requests, []string{req.Code}) || !strings.Contains(got.Lines, "No, keep them apart.") || !strings.Contains(got.Lines, "Merge reads a nil map") {
+		t.Fatalf("at the stop: %+v %v", got, err)
 	}
 }
 

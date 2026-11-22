@@ -17,7 +17,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-const waitOutstanding = `{"audit":12,"findings":["12.1","12.2"],"requests":["R-4"],"lines":"- 2 findings without a verdict in your review round's audit #12 (12.1, 12.2): ` + "`wp audit mark ID fixed`" + `.\n- 1 answered request you haven't read (R-4): ` + "`wp request show R-4`" + `."}`
+const waitOutstanding = `{"audit":12,"findings":["12.1","12.2"],"requests":["R-4"],"lines":"- 2 findings still to do in your review round's audit #12, below.\n### 12.1 [high] Merge reads a nil map\n### 12.2 [low] Dead code\n\nWaypoint: a request you filed was decided.\n\nWP:R-4 (question) \"Squash?\": Sam answered:\nNo, keep them apart."}`
 
 // waitHook runs the hook against a server that answers body with status and
 // returns what it printed and how often it was asked.
@@ -107,7 +107,7 @@ func TestWaitHookNamesOutstandingWorkOfABackgroundCall(t *testing.T) {
 				t.Fatalf("the server was asked %d times", asked)
 			}
 			ctx := waitContext(t, out)
-			for _, want := range []string{"12.1, 12.2", "wp request show R-4", "Work of yours to do while it runs (leave anything that needs its result):"} {
+			for _, want := range []string{"12.1 [high] Merge reads a nil map", "Sam answered:\nNo, keep them apart.", "Work of yours to do while it runs (leave anything that needs its result):"} {
 				if !strings.Contains(ctx, want) {
 					t.Errorf("context lacks %q:\n%s", want, ctx)
 				}
@@ -213,7 +213,7 @@ func TestWaitHookAnswersWithinItsBudget(t *testing.T) {
 	if took := time.Since(start); took > 2*time.Second {
 		t.Errorf("took %v", took)
 	}
-	if ctx := waitContext(t, out); !strings.Contains(ctx, "12.1, 12.2") || strings.Contains(ctx, "late ETA") {
+	if ctx := waitContext(t, out); !strings.Contains(ctx, "12.1 [high]") || strings.Contains(ctx, "late ETA") {
 		t.Errorf("context:\n%s", ctx)
 	}
 }
@@ -447,7 +447,7 @@ func TestWaitHookSaysTheETAOfABackgroundedRun(t *testing.T) {
 		seedRuns(t, "tests", "make check", "/tmp", 30, 30, 30)
 		out, asked := waitHook(t, 200, waitOutstanding, bashCall("wp testsum -- make check", true))
 		ctx := waitContext(t, out)
-		i, j := strings.Index(ctx, "expected to complete"), strings.Index(ctx, "12.1, 12.2")
+		i, j := strings.Index(ctx, "expected to complete"), strings.Index(ctx, "12.1 [high]")
 		if asked != 1 || i < 0 || j < 0 || i > j {
 			t.Errorf("asked %d; context:\n%s", asked, ctx)
 		}
