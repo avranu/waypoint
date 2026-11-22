@@ -1713,8 +1713,35 @@ func (s *Service) auditFixTask(ctx context.Context, id int64) {
 }
 
 // findingToDo says whether a finding is still to do: undecided, or
-// confirmed and not fixed.
-func findingToDo(state string) bool { return state == "open" || state == "confirmed" }
+// confirmed and not filed (findingFiled). A filed one is real and handed to
+// its issue: no round, babysitter or fix task asks for it again (WP-1547).
+// findingToDoSQL is the same test in SQL.
+func findingToDo(f CodeAuditFinding) bool {
+	return (f.State == "open" || f.State == "confirmed") && !findingFiled(f)
+}
+
+// findingFiled says whether a finding was filed, not fixed: confirmed with
+// an issue linked (wp audit mark 12.3 confirmed --issue KEY), below the
+// severities that hold a merge (auditHoldsMerge). A critical or high one
+// stays to do until it is fixed or rejected, as the merge hold has always
+// asked: filing it would let a known serious defect merge on an agent's
+// word. findingFiledSQL is the same test in SQL.
+func findingFiled(f CodeAuditFinding) bool {
+	return f.State == "confirmed" && f.Issue != "" && !auditHoldsMerge(f.Severity)
+}
+
+// markHint is the ways to mark a finding, for the prompts and holds that
+// ask for verdicts: id is a finding's ID (12.3), why the rejection's note.
+func markHint(id, why string) string {
+	return fmt.Sprintf("`wp audit mark %s fixed -m \"what you did\"`, `wp audit mark %s confirmed --issue KEY` for a real one you filed for later (not a critical or high one: fix or reject those), or `wp audit mark %s rejected -m \"%s\"`", id, id, id, why)
+}
+
+// findingFiledSQL and findingToDoSQL are findingFiled and findingToDo over
+// code_audit_findings as f.
+const (
+	findingFiledSQL = "(f.state = 'confirmed' AND f.issue_id IS NOT NULL AND f.severity NOT IN ('critical', 'high'))"
+	findingToDoSQL  = "(f.state IN ('open', 'confirmed') AND NOT " + findingFiledSQL + ")"
+)
 
 func noteSuffix(n string) string {
 	if n = strings.TrimSpace(n); n == "" {
@@ -1749,7 +1776,7 @@ Record each verdict on the audit as you go: wp audit mark %d.1 fixed -m "what yo
 `, a.ID)
 	var todo []CodeAuditFinding
 	for _, f := range a.Findings {
-		if findingToDo(f.State) {
+		if findingToDo(f) {
 			todo = append(todo, f)
 		}
 	}
@@ -1961,8 +1988,8 @@ func (s *Service) auditRow(ctx context.Context, id int64) (*CodeAudit, error) {
 
 func (s *Service) auditCounts(ctx context.Context, id int64) AuditCounts {
 	var c AuditCounts
-	_ = s.db.R.QueryRowContext(ctx, `SELECT count(*), coalesce(sum(state IN ('open','confirmed')), 0), coalesce(sum(severity = 'critical'), 0), coalesce(sum(severity = 'high'), 0),
-		coalesce(sum(severity = 'medium'), 0), coalesce(sum(severity = 'low'), 0) FROM code_audit_findings WHERE audit_id = ?`, id).
+	_ = s.db.R.QueryRowContext(ctx, `SELECT count(*), coalesce(sum(`+findingToDoSQL+`), 0), coalesce(sum(severity = 'critical'), 0), coalesce(sum(severity = 'high'), 0),
+		coalesce(sum(severity = 'medium'), 0), coalesce(sum(severity = 'low'), 0) FROM code_audit_findings f WHERE audit_id = ?`, id).
 		Scan(&c.Total, &c.Open, &c.Critical, &c.High, &c.Medium, &c.Low)
 	return c
 }
@@ -1993,7 +2020,7 @@ func (s *Service) loadFindings(ctx context.Context, a *CodeAudit) error {
 	a.Counts = AuditCounts{}
 	for _, f := range a.Findings {
 		a.Counts.Total++
-		if findingToDo(f.State) {
+		if findingToDo(f) {
 			a.Counts.Open++
 		}
 		switch f.Severity {
@@ -2440,9 +2467,12 @@ func (s *Service) MarkAuditFindings(ctx context.Context, actor *Actor, in MarkFi
 					return err
 				}
 			}
-			res, err := t.ExecContext(ctx, `UPDATE code_audit_findings SET state = ?, note = CASE WHEN ? = '' THEN note ELSE ? END, issue_id = coalesce(?, issue_id),
+			// A mark without --issue keeps the finding's issue, except
+			// confirmed: confirmed with no issue is still to do, so it
+			// unfiles a finding filed before (findingFiled).
+			res, err := t.ExecContext(ctx, `UPDATE code_audit_findings SET state = ?, note = CASE WHEN ? = '' THEN note ELSE ? END, issue_id = CASE WHEN ? IS NOT NULL THEN ? WHEN ? = 'confirmed' THEN NULL ELSE issue_id END,
 				decided_by = ?, decided_agent = ?, decided_at = ? WHERE audit_id = ? AND ordinal = ?`,
-				state, note, note, issueID, by, actor.agentName(), s.nowMS(), r.audit, r.n)
+				state, note, note, issueID, issueID, state, by, actor.agentName(), s.nowMS(), r.audit, r.n)
 			if err != nil {
 				return err
 			}

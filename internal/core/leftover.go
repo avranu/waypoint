@@ -72,7 +72,7 @@ func (s *Service) leftOpen(ctx context.Context, prID int64) *PRLeftOpen {
 	}
 	out := &PRLeftOpen{Others: int(others.Int64)}
 	rows, err := s.db.R.QueryContext(ctx, `SELECT a.id, (SELECT count(*) FROM code_audit_findings WHERE audit_id = a.id),
-		(SELECT count(*) FROM code_audit_findings WHERE audit_id = a.id AND state IN ('open','confirmed')),
+		(SELECT count(*) FROM code_audit_findings f WHERE f.audit_id = a.id AND `+findingToDoSQL+`),
 		coalesce(ip.key || '-' || i.number, '')
 		FROM code_audits a LEFT JOIN issues i ON i.id = a.fix_issue_id LEFT JOIN projects ip ON ip.id = i.project_id
 		WHERE a.pr_id = ? AND a.requested_agent = ? ORDER BY a.id`, prID, leftoverAgent)

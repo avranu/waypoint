@@ -33,6 +33,7 @@ import {
   codeAuditQuery,
   FINDING_STATE,
   fixAudit,
+  findingToDo,
   markFindings,
   modelShort,
   outcomeText,
@@ -339,7 +340,7 @@ function Findings({ audit: a }: { audit: CodeAudit }) {
       ),
     [a.findings],
   )
-  const open = findings.filter((f) => f.state === 'open' || f.state === 'confirmed')
+  const open = findings.filter(findingToDo)
   const [show, setShow] = useState<Show>('open')
   const [all, setAll] = useState(false)
   if (a.status !== 'done') return null
