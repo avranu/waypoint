@@ -307,6 +307,9 @@ func TestProfileCapGivesWayToACalmMachine(t *testing.T) {
 	if r := g.report(now, 1, 0, 0); r["busy_at"] == nil {
 		t.Errorf("the report dropped the usually busy hours: %v", r)
 	}
+	if why, _ := g.report(now, 1, 0, 0)["reason"].(string); !strings.Contains(why, "usually uses") || !strings.Contains(why, "calm") {
+		t.Errorf("the report doesn't say the usual limit gave way: %q", why)
+	}
 
 	// The same hour with a busy sample: capped at one.
 	b := newGovernor(4, loadLoadProfile(path))

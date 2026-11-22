@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -148,6 +149,7 @@ type governor struct {
 	started   time.Time // last heavy job started
 	capped    int       // from the profile, while the machine isn't calm; 0 none
 	capWhy    string
+	calmOver  string // the profile's cap that a calm machine isn't held to, for the status
 	profile   *loadProfile
 }
 
@@ -191,8 +193,8 @@ func (g *governor) observe(s loadSample, now time.Time, heavy int) string {
 	// What the machine does now outranks what it usually does (WP-1618,
 	// WP-ADR149): the profile caps heavy jobs only while the sample isn't
 	// calm. Calm means nothing else is using it, whatever the hour says.
-	g.capped, g.capWhy = 0, ""
-	if g.profile != nil && s.CPUs > 0 && level != levelCalm {
+	g.capped, g.capWhy, g.calmOver = 0, "", ""
+	if g.profile != nil && s.CPUs > 0 {
 		if busy, ok := g.profile.predict(now); ok {
 			switch {
 			case busy >= 0.75*float64(s.CPUs):
@@ -202,6 +204,12 @@ func (g *governor) observe(s loadSample, now time.Time, heavy int) string {
 			}
 			if g.capped > 0 {
 				g.capWhy = fmt.Sprintf("other work usually uses %.1f of %d CPUs about now", busy, s.CPUs)
+			}
+			if g.capped > 0 && level == levelCalm {
+				// Said in the status, so the times the usual limit
+				// gave way can be seen (audit 1406.6).
+				g.calmOver = fmt.Sprintf("%s, but the machine is calm, so the usual limit of %d isn't applied", g.capWhy, g.capped)
+				g.capped, g.capWhy = 0, ""
 			}
 		}
 	}
@@ -277,6 +285,9 @@ func (g *governor) report(now time.Time, heavy, light, gw int) map[string]any {
 	r["reason"], r["cpus"], r["load"] = g.reason, s.CPUs, round2(s.Load1/float64(max(s.CPUs, 1)))
 	if g.capped > 0 && g.capped <= g.limit {
 		r["reason"] = g.capWhy
+	}
+	if g.calmOver != "" {
+		r["reason"] = strings.TrimSuffix(g.reason, ".") + "; " + g.calmOver
 	}
 	if s.MemFree >= 0 {
 		r["mem_free"] = round2(s.MemFree)

@@ -2,6 +2,8 @@ package core
 
 import (
 	"encoding/json"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	"strings"
 	"testing"
 	"time"
@@ -85,8 +87,18 @@ func TestWithdrawnRoundIsRecordedWholeAndRestartsTheWaitClock(t *testing.T) {
 		t.Fatal(err)
 	}
 	pr.HeadSHA = "8888888bbbb"
+	sub := be.s.Hub.Subscribe(be.admin.User.ID)
+	defer be.s.Hub.Unsubscribe(sub)
+	before := counterValue(t, babysitRoundsWithdrawn)
 	if !be.s.withdrawQueuedRound(be.ctx, b, pr, job) {
 		t.Fatal("not withdrawn")
+	}
+	// Audit 1406.5 and 1406.7: the change is announced and counted.
+	if !hubHas(sub, EvBabysit) {
+		t.Error("no babysit event for the withdrawal")
+	}
+	if got := counterValue(t, babysitRoundsWithdrawn) - before; got != 1 {
+		t.Errorf("withdrawals counted: %v, want 1", got)
 	}
 	stored := be.babysit()
 	for name, got := range map[string]*Babysit{"in memory": b, "stored": stored} {
@@ -129,4 +141,13 @@ func TestIsQueuedRoundWait(t *testing.T) {
 	if !IsQueuedRoundWait("round 2: queued, waiting for the runner since 09:30 UTC (next in line; job #4)") || IsQueuedRoundWait("round 2: an agent is on it (job #4)") || IsQueuedRoundWait("") {
 		t.Error("IsQueuedRoundWait")
 	}
+}
+
+func counterValue(t *testing.T, c prometheus.Counter) float64 {
+	t.Helper()
+	var m dto.Metric
+	if err := c.Write(&m); err != nil {
+		t.Fatal(err)
+	}
+	return m.GetCounter().GetValue()
 }

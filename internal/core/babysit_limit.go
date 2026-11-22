@@ -196,6 +196,11 @@ func (s *Service) withdrawQueuedRound(ctx context.Context, b *Babysit, pr *PullR
 			return nil // no longer this babysit's job
 		}
 		cancelled = true
+		projectID, err := s.attachedProject(wctx, t, pr.ForgeID, pr.Repo)
+		if err != nil {
+			return err
+		}
+		t.emit(&Event{Kind: EvBabysit, ProjectID: projectID, Old: b.State, New: b.State, Data: prEventData(pr, map[string]any{"babysit": b.ID, "withdrawn": jobID})})
 		return t.finishRunnerJob(wctx, jobID, "cancelled", nil, nil, "Withdrawn: the pull request was pushed to before a runner took the round.")
 	})
 	if err != nil {
@@ -207,6 +212,7 @@ func (s *Service) withdrawQueuedRound(ctx context.Context, b *Babysit, pr *PullR
 	}
 	oldHead := b.RoundSHA
 	b.Rounds, b.Round, b.RoundSHA, b.streaks, b.JobID, b.WaitSince = nb.Rounds, nb.Round, nb.RoundSHA, nb.streaks, 0, now
+	babysitRoundsWithdrawn.Inc()
 	s.log.Info("queued babysit round withdrawn: the head moved before a runner took it", "pr", pr.ID, "job", jobID, "old_head", short(oldHead), "new_head", short(pr.HeadSHA))
 	s.kickRunners()
 	return true
