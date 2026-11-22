@@ -20,7 +20,7 @@ var (
 	reGitHubSecret = regexp.MustCompile(`(?i)\bsecrets\b`)
 	// GitHub expands ${{ }} in a run script before the shell sees it, even on
 	// a # line, so this check runs on the whole source, comments included.
-	reGitHubSecretExpr = regexp.MustCompile(`(?i)\$\{\{[^}]*\bsecrets\b`)
+	reGitHubSecretExpr = regexp.MustCompile(`(?i)\$\{\{.*\bsecrets\b`)
 	reForgejoPath      = regexp.MustCompile(`\.forgejo\b`)
 	githubEvents       = []string{"push", "schedule", "workflow_dispatch"}
 )

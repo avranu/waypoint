@@ -45,6 +45,7 @@ func TestGitHubWorkflowProblems(t *testing.T) {
 		{"forgejo path", sub("make", "./.forgejo/x.sh"), ".forgejo/"},
 		{"forgejo bare dir", sub("make", "ls .forgejo"), ".forgejo/"},
 		{"secrets in a run comment", sub("- run: make", "- run: |\n          # echo ${{ secrets.X }}\n          make"), "secrets context"},
+		{"secrets in a call in a run comment", sub("- run: make", "- run: |\n          # echo ${{ format('{0}', secrets.X) }}\n          make"), "secrets context"},
 		{"push without branches", sub("  push:\n    branches: [main]\n", "  push:\n"), "push must be branches: [main] only"},
 		{"push to more branches", sub("branches: [main]", "branches: [main, dev]"), "push must be branches: [main] only"},
 		{"push with tags", sub("    branches: [main]\n", "    branches: [main]\n    tags: ['v*']\n"), "push must be branches: [main] only"},
