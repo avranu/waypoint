@@ -241,7 +241,7 @@ func TestCompactCarryAndReviewRounds(t *testing.T) {
 	s.call(500, 51000, "Read", map[string]any{"file_path": "/r/d.go"}, strings.Repeat("d", 1800), false)
 	s.call(500, 51500, "Edit", map[string]any{"file_path": "/r/d.go"}, "ok", false)
 	s.call(500, 52000, "Agent", map[string]any{"prompt": "look"}, "done", false)
-	s.prompt(cmpReviewPrompt + "WP-1: once more")
+	s.prompt("\n\n<pasted_content id=\"x\">\n" + cmpReviewPrompt + "WP-1: once more\n</pasted_content id=\"x\">\n") // as Claude Code wraps a paste (WP-1562)
 	s.call(500, 52500, "Read", map[string]any{"file_path": "/r/a.go"}, strings.Repeat("a", 3600), false)
 	s.write(t, root, "one")
 

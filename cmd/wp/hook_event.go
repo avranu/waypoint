@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"git.jmann.me/claude/waypoint/internal/core"
 )
 
 // The session hooks (WP-D16): Claude Code runs `wp hook claude-event` for
@@ -412,7 +414,10 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 	case "UserPromptSubmit":
 		// Waypoint's own prompts (a keep-warm ping, a bare /compact) still
 		// reach the core under --no-prompts, so it can tell them from typing.
-		p := strings.TrimSpace(in.Prompt)
+		// A prompt pasted whole is its text: Claude Code wraps a paste, and
+		// Waypoint's own prompts are pasted (WP-1562).
+		prompt := core.UnwrapPasted(in.Prompt)
+		p := strings.TrimSpace(prompt)
 		if slash != "" {
 			ev.Prompt = strings.TrimSpace("/wp " + slash + " " + slashArg) // nothing else typed after it rides along
 			if slash == "keep" && strings.EqualFold(p, "/keep") {
@@ -425,12 +430,12 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 			switch {
 			case noPrompts:
 			case strings.HasPrefix(p, autopilotPromptMark):
-				ev.Prompt = in.Prompt
+				ev.Prompt = prompt
 			default:
-				ev.Prompt += "\n\n" + in.Prompt
+				ev.Prompt += "\n\n" + prompt
 			}
 		} else if !noPrompts || strings.HasPrefix(p, keepWarmMark) || p == "/compact" {
-			ev.Prompt = in.Prompt
+			ev.Prompt = prompt
 			if noPrompts && strings.HasPrefix(p, keepWarmMark) {
 				ev.Prompt = keepWarmMark // nothing the person wrote rides along
 			}

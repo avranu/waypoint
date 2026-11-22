@@ -861,6 +861,14 @@ func (s *Service) SessionHook(ctx context.Context, actor *Actor, evs []HookEvent
 			return nil, invalid("machine or cwd too long")
 		}
 	}
+	for n := range evs {
+		// A prompt pasted whole is its text, so autopilot's own (pasted
+		// into the pane) still reads as autopilot's, whatever wp sent it
+		// (WP-1562).
+		if evs[n].Event == "UserPromptSubmit" {
+			evs[n].Prompt = UnwrapPasted(evs[n].Prompt)
+		}
+	}
 	res := &HookResult{}
 	lastQuiet := false
 	// A pause that winds sessions down (WP-146): every reply carries it for

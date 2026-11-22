@@ -1814,6 +1814,31 @@ func (s *Service) unwarmReview(ctx context.Context, sessionID int64) {
 	_, _ = s.db.W.ExecContext(ctx, `UPDATE agent_sessions SET warm_state = '' WHERE id = ? AND warm_state = ?`, sessionID, warmReview)
 }
 
+// typedReviewLanded: a review job typed its prompt, but a prompt taken for
+// the person's cleared it from the step first (reviewWaitsForPerson). The job
+// asks before it types, so the review went in: its round runs, and the step
+// waits on it instead of having it typed again at the next Stop. A prompt
+// Waypoint failed to tell as its own, as Claude Code's paste wrapper once
+// hid it, cost a compaction and the whole prompt at every Stop (WP-1562).
+// The finish event names the job's source and step: a review job of st.
+func (s *Service) typedReviewLanded(ctx context.Context, st *stepRow, jobID int64) {
+	if st.jobID.Valid || st.sessionID == 0 || st.nextIssue.Valid || !st.reviewID.Valid || st.state != StepWaiting || st.reason != WaitPrompted {
+		return
+	}
+	job, err := lookupRunnerJob(ctx, s, jobID)
+	if err != nil || job.State != "done" {
+		return
+	}
+	var res AutopilotJobResult
+	if json.Unmarshal(job.Result, &res) != nil || res.Outcome != "reviewing" {
+		return
+	}
+	if r, err := roundByID(ctx, s.db.R, st.reviewID.Int64); err != nil || r == nil || r.state != RoundPending {
+		return
+	}
+	s.reviewJobFinished(ctx, st, job, res, s.nowMS())
+}
+
 // reviewJobFinished handles the end of a review job: the review is under
 // way (or done already), or the job didn't type it.
 func (s *Service) reviewJobFinished(ctx context.Context, st *stepRow, job *RunnerJob, res AutopilotJobResult, now int64) {
@@ -2388,7 +2413,13 @@ func (s *Service) autopilotJobFinished(ctx context.Context, e *Event) {
 	stepID := dataInt(e, "source_id")
 	jobID, _ := e.Data["job"].(int64)
 	st, err := scanStep(s.db.R.QueryRowContext(ctx, `SELECT `+stepCols+` FROM autopilot_steps WHERE id = ?`, stepID))
-	if err != nil || st.jobID.Int64 != jobID {
+	if err != nil {
+		return
+	}
+	if st.jobID.Int64 != jobID {
+		if src, _ := e.Data["source"].(string); src == autopilotReviewSource {
+			s.typedReviewLanded(ctx, st, jobID)
+		}
 		return
 	}
 	if st.state != StepStarting {

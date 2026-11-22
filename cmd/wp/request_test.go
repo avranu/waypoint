@@ -207,6 +207,18 @@ func TestSessionHooksEndToEnd(t *testing.T) {
 	if x = s.sessions()[0]; strings.HasPrefix(x.LastPrompt, core.AutopilotPromptMark) {
 		t.Fatalf("a typed prompt counted as autopilot's: %q", x.LastPrompt)
 	}
+	// Claude Code wraps a paste, and Waypoint's prompts are pasted: still
+	// Waypoint's under --no-prompts, not the person's (WP-1562).
+	wrap := func(p string) string { return "\n\n<pasted_content id=\"d29a\">\n" + p + "\n</pasted_content id=\"d29a\">\n" }
+	s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": wrap(autopilotReviewMark + "APP-9: secret findings")}), "--no-prompts")
+	if x = s.sessions()[0]; x.LastPrompt != core.AutopilotReviewMark+"APP-9" {
+		t.Fatalf("autopilot's pasted review prompt: %q", x.LastPrompt)
+	}
+	c.notePastedPrompt("sess-1", "APP-9", "Handle APP-9.\n\nsecret steps")
+	s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": wrap("Handle APP-9.\n\nsecret steps")}), "--no-prompts")
+	if x = s.sessions()[0]; x.LastPrompt != core.AutopilotPromptMark+" started this session for APP-9" {
+		t.Fatalf("autopilot's wrapped pasted prompt: %q", x.LastPrompt)
+	}
 
 	// Notification → waiting for you.
 	s.hook(in("sess-1", "Notification", s.repo, map[string]any{"notification_type": "idle_prompt", "message": "Claude is waiting"}))
