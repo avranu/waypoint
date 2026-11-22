@@ -145,7 +145,8 @@ func slotOrder(class string, n int) []int {
 }
 
 // appendWaitRec adds r to waits.jsonl, trimming the file when it is large.
-// The whole of it runs under an exclusive flock on waits.jsonl.lock, so a
+// The whole of it runs under an exclusive flock on waits.jsonl.flock (not
+// ".lock": wp slot ls reads every *.lock in the directory as a slot), so a
 // record another wp appends while a trim rewrites the file isn't lost to the
 // rename (WP-1604). Readers need no lock: the rename is atomic. The lock is
 // best effort; holders are short-lived, and if it can't be taken the record
@@ -156,7 +157,7 @@ func appendWaitRec(dir string, r waitRec) {
 		return
 	}
 	p := filepath.Join(dir, slotWaitsFile)
-	if lf, err := os.OpenFile(p+".lock", os.O_CREATE|os.O_RDWR, 0o600); err == nil { // #nosec G304 -- our own directory
+	if lf, err := os.OpenFile(p+".flock", os.O_CREATE|os.O_RDWR, 0o600); err == nil { // #nosec G304 -- our own directory
 		defer func() { _ = lf.Close() }() // closing drops the lock too
 		if unlock, err := fileLock(lf); err == nil {
 			defer unlock()

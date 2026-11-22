@@ -318,6 +318,10 @@ func TestSlotWaitsLogIsTrimmed(t *testing.T) {
 	if len(recs) != slotWaitsKeep || recs[len(recs)-1].At != 9999 || recs[0].At != 3500-int64(slotWaitsKeep)+2 {
 		t.Errorf("kept %d records, first at %d, last at %d", len(recs), recs[0].At, recs[len(recs)-1].At)
 	}
+	// wp slot ls reads every *.lock here as a slot: the log's lock isn't one.
+	if m, _ := filepath.Glob(filepath.Join(dir, "*.lock")); len(m) != 0 {
+		t.Errorf("appending left %v, which wp slot ls would list as slots", m)
+	}
 }
 
 func TestSlotLsShowsWaitersAndWaits(t *testing.T) {
