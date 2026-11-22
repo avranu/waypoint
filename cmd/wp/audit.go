@@ -66,7 +66,10 @@ func init() {
 			about: `confirmed is real but unfixed; rejected needs -m why. --issue links the
 task or bug that deals with it. A finding confirmed with --issue is filed:
 handed to that issue, so a review round, a pull request's babysitter or an
-audit's fix task no longer asks for it (file one with wp new first). A
+audit's fix task no longer asks for it (file one with wp new first). An
+issue that is canceled (won't do, duplicate) doesn't count unless it
+duplicates an open one: that is refused, and a filing whose issue is
+canceled later is to do again. A
 round's check of your marks reads each filing, and a critical or high
 finding can't be filed: fix or reject it. Confirmed without an issue is still
 to do, and marking a filed finding confirmed again without --issue unfiles
@@ -169,9 +172,11 @@ type auditFinding struct {
 	State    string `json:"state"`
 	Note     string `json:"note"`
 	Issue    string `json:"issue"`
-	By       string `json:"by"`
-	Lead     string `json:"lead"`
-	Verdict  string `json:"verdict"`
+	// FilingVoid: its issue is canceled, so the filing doesn't count.
+	FilingVoid bool   `json:"filing_void"`
+	By         string `json:"by"`
+	Lead       string `json:"lead"`
+	Verdict    string `json:"verdict"`
 }
 
 // what names the code an audit reads: "#12", "feature-x against main".
@@ -323,6 +328,9 @@ func (a *auditView) text() string {
 			state := f.State
 			if f.Issue != "" {
 				state += " " + f.Issue
+				if f.FilingVoid && f.State == "confirmed" {
+					state += " (canceled)"
+				}
 			}
 			fmt.Fprintf(&s, "  %-6s %-8s %-9s%s: %s\n", f.ID, f.Severity, state, where, f.Title)
 			if f.Problem != "" {

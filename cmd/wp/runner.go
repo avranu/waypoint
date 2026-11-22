@@ -44,7 +44,8 @@ the runner's token stay behind. --env NAME passes one more.
 It also uploads Claude Code usage and prepares queued tasks, and updates wp
 between jobs to the server's version; the --no-* flags turn each off.
 On Linux --max-jobs is a ceiling: it takes fewer while the machine is busy
-(wp runner status shows how many and why).
+(wp runner status shows how many and why). A job that has waited over a
+minute for a test slot doesn't count toward it, one such job at a time.
 
 Needs wp auth login first, as you. wp runner install starts it at login
 (systemd user unit, launchd agent); wp setup does that and the hooks.`,
@@ -218,6 +219,9 @@ type activeJob struct {
 	lane      string // jobLane of its kind
 	cancel    context.CancelFunc
 	cancelled atomic.Bool
+	// slotWaitSince is since when a command of the job has been waiting for
+	// a slot (zero: none is); guarded by runnerProc.mu (WP-1618).
+	slotWaitSince time.Time
 }
 
 // jobRun is what an executor gets besides the input.
@@ -236,6 +240,9 @@ type jobRun struct {
 	// cancelled is set when a person cancels the job; nil in a job nothing
 	// can cancel.
 	cancelled *atomic.Bool
+	// job is the runner's record of it (nil in tests), which an agent's
+	// clock tells when it waits for a slot (WP-1618).
+	job *activeJob
 }
 
 type claimedJob struct {
@@ -679,10 +686,7 @@ func (p *runnerProc) start(ctx context.Context, job *claimedJob) {
 			p.mu.Lock()
 			delete(p.jobs, job.ID)
 			p.mu.Unlock()
-			select {
-			case p.freed <- struct{}{}:
-			default:
-			}
+			p.wake()
 		}()
 		p.runJob(jctx, aj, job)
 	}()
@@ -756,7 +760,7 @@ func (p *runnerProc) runJob(ctx context.Context, aj *activeJob, job *claimedJob)
 		timeout = 10 * time.Minute
 	}
 	p.ensureSandboxUsers(ctx, job)
-	run := &jobRun{id: job.ID, kind: job.Kind, title: job.Title, timeout: timeout, out: sink, token: job.Token, launch: job.Launch, cancelled: &aj.cancelled}
+	run := &jobRun{id: job.ID, kind: job.Kind, title: job.Title, timeout: timeout, out: sink, token: job.Token, launch: job.Launch, cancelled: &aj.cancelled, job: aj}
 	var logs sync.WaitGroup
 	logs.Add(1)
 	go func() {

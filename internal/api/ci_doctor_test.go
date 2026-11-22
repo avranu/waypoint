@@ -53,3 +53,21 @@ func TestCIDoctorText(t *testing.T) {
 		t.Errorf("urgent lane:\n%s", out)
 	}
 }
+
+// The front's line says a round is queued, unless its wait already does.
+func TestCIDoctorTextQueuedRound(t *testing.T) {
+	now := time.Date(2026, 11, 22, 10, 0, 0, 0, time.UTC)
+	text := func(wait string) string {
+		q := &core.CIQueuedRound{Job: 9, Since: now.Add(-10 * time.Minute), For: 600, Ahead: 1}
+		d := &core.CIDoctor{GeneratedAt: now, Lines: []core.CILine{{Repo: "acme/app", Base: "main", Armed: 3, Moving: 3,
+			Front: &core.CILinePR{Number: 12, Title: "Add tags", State: "working", Wait: wait, WaitFor: 600, Queued: q}}}}
+		return ciDoctorText(d, "", true)
+	}
+	const note = " (round queued, waiting for the runner for 10m)"
+	if out := text("round 1: an agent is on it (job #9)"); strings.Count(out, note) != 1 {
+		t.Errorf("want one %q in:\n%s", note, out)
+	}
+	if out := text("round 1: queued, waiting for the runner since 09:50 UTC (1 job ahead; job #9)"); strings.Contains(out, "round queued, waiting for the runner for") {
+		t.Errorf("the queued round is said twice in:\n%s", out)
+	}
+}

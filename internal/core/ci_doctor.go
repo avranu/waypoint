@@ -7,8 +7,10 @@ package core
 // bottleneck, what is stuck or broken and what to do about it, and the
 // numbers behind each, so the answer needs no investigating.
 //
-// The bottleneck is, in order: a merge line that stopped moving; the
-// runners, when jobs wait for them; else the line that takes longest to
+// The bottleneck is, in order: the runner, when the pull request at the
+// front of a line has had a round queued over doctorRunnerQueued that no
+// runner took (kind "runner", WP-1618); a merge line that stopped moving;
+// the runners, when jobs wait for them (kind "runners"); else the line that takes longest to
 // drain, and the step of its merges that costs most. A merge is the front's
 // time from the merge before it (or from its babysit's start, when the line
 // was empty) to its own merge, in steps read from its final head and that
@@ -87,7 +89,7 @@ type CIUrgentLane struct {
 
 // CIBottleneck is what limits how fast work merges.
 type CIBottleneck struct {
-	Kind     string   `json:"kind"` // stalled, runners, line, none
+	Kind     string   `json:"kind"` // runner, stalled, runners, line, none
 	Repo     string   `json:"repo,omitempty"`
 	Base     string   `json:"base,omitempty"`
 	Step     string   `json:"step,omitempty"` // a line's: update, before_full, runner_wait, full_run, after_green
@@ -204,7 +206,23 @@ type CILinePR struct {
 	CI       string `json:"ci,omitempty"`
 	Round    int    `json:"round,omitempty"`
 	Position int    `json:"position,omitempty"` // in its line, from 1
+	// Queued is the babysit's round job when no runner has taken it yet
+	// (WP-1618, WP-ADR149); only a line's front has it.
+	Queued *CIQueuedRound `json:"queued,omitempty"`
 }
+
+// CIQueuedRound is a round of a babysit that waits in the runners' queue.
+type CIQueuedRound struct {
+	Job   int64     `json:"job"`
+	Since time.Time `json:"since"`         // when the job was queued
+	For   int64     `json:"for"`           // seconds queued
+	Ahead int       `json:"ahead"`         // jobs a runner takes before it; -1 when it can't be read
+	Why   string    `json:"why,omitempty"` // queuedWhy: which runner is busy with what, and its limit
+}
+
+// doctorRunnerQueued is how long a front's round may sit in the runners'
+// queue before the doctor names the runner as the bottleneck (WP-1618).
+const doctorRunnerQueued = 5 * time.Minute
 
 // CIMergeSteps is where a merge's time went, seconds.
 type CIMergeSteps struct {
@@ -687,6 +705,7 @@ func (s *Service) doctorLine(ctx context.Context, ref lineRef, project string, n
 		f := moving[0]
 		lp := linePR(f.pr, f.b, now)
 		lp.Position = 1
+		lp.Queued = s.queuedRound(ctx, f.b.JobID, now)
 		l.Front = &lp
 		// The later of its first babysit, its arming (wp ship starts a
 		// babysit when the pull request opens, maybe days before it's
@@ -1874,6 +1893,36 @@ func doctorFindings(d *CIDoctor, b *CIBoard, now time.Time, extra ...CIFinding) 
 
 func doctorBottleneck(d *CIDoctor) {
 	dur := func(sec int64) string { return ShortDuration(secs(float64(sec))) }
+	// A front whose round no runner has taken holds its whole line, whatever
+	// else is wrong with it: the one that has waited longest first.
+	var queued *CILine
+	for i := range d.Lines {
+		if l := &d.Lines[i]; l.Front != nil && l.Front.Queued != nil && l.Front.Queued.For > int64(doctorRunnerQueued.Seconds()) &&
+			(queued == nil || l.Front.Queued.For > queued.Front.Queued.For) {
+			queued = l
+		}
+	}
+	if queued != nil {
+		f, q := queued.Front, queued.Front.Queued
+		sum := fmt.Sprintf("The runner: %s's front #%d has had a round queued since %s UTC (%s)", queued.Repo, f.Number, q.Since.UTC().Format("15:04"), dur(q.For))
+		// Why the runner hasn't taken it (it runs one job at a time, what
+		// it is running, how many jobs are ahead) is in the one line: the
+		// evidence shows only with -v.
+		switch {
+		case q.Why != "":
+			sum += ": " + strings.TrimSuffix(q.Why, ".")
+		case q.Ahead >= 0:
+			sum += fmt.Sprintf(", %d job%s ahead", q.Ahead, plural(q.Ahead))
+		}
+		bn := CIBottleneck{Kind: "runner", Repo: queued.Repo, Base: queued.Base, Summary: sum}
+		verb := "wait"
+		if queued.Moving-1 == 1 {
+			verb = "waits"
+		}
+		bn.Evidence = append(bn.Evidence, fmt.Sprintf("%d pull request%s %s behind it", queued.Moving-1, plural(queued.Moving-1), verb))
+		d.Bottleneck = bn
+		return
+	}
 	// A stalled line holds everything behind it: the one holding most first.
 	var stalled *CILine
 	for i := range d.Lines {
@@ -2066,4 +2115,17 @@ func JobFates(j CIDoctorJob) string {
 		out += fmt.Sprintf(", %d stack runs the merge queue dropped", j.QueueCancelled)
 	}
 	return out
+}
+
+// queuedRound reads babysit round job id: nil unless a runner hasn't taken
+// it. The count of jobs ahead is -1 when it can't be read.
+func (s *Service) queuedRound(ctx context.Context, id int64, now time.Time) *CIQueuedRound {
+	if id == 0 {
+		return nil
+	}
+	j, err := scanJob(s.db.R.QueryRowContext(ctx, `SELECT `+jobCols+` FROM runner_jobs j LEFT JOIN users cu ON cu.id = j.created_by WHERE j.id = ?`, id))
+	if err != nil || j.State != "queued" {
+		return nil
+	}
+	return &CIQueuedRound{Job: id, Since: j.CreatedAt, For: max(0, int64(now.Sub(j.CreatedAt).Seconds())), Ahead: s.aheadOf(ctx, j), Why: s.queuedWhy(ctx, j)}
 }

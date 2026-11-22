@@ -52,18 +52,9 @@ func (s *Service) jobWaiting(ctx context.Context, id int64) string {
 
 // queuedWhy says what a queued job is waiting for.
 func (s *Service) queuedWhy(ctx context.Context, j *RunnerJobInfo) string {
-	all, err := s.ownerRunners(ctx, j.OwnerID)
+	mine, online, err := s.runnersFor(ctx, j)
 	if err != nil {
 		return ""
-	}
-	var mine, online []*Runner
-	for _, r := range all {
-		if (j.TargetRunnerID == nil || *j.TargetRunnerID == r.ID) && runnerCanTake(r, j.needs) {
-			mine = append(mine, r)
-			if r.Online {
-				online = append(online, r)
-			}
-		}
 	}
 	switch {
 	case len(mine) == 0:
@@ -103,6 +94,38 @@ func (s *Service) queuedWhy(ctx context.Context, j *RunnerJobInfo) string {
 		out += fmt.Sprintf(" %d jobs are ahead of this one.", ahead)
 	}
 	return out
+}
+
+// aheadOf is jobsAhead for queued job j among the runners online that may
+// take it, or -1 when that can't be read.
+func (s *Service) aheadOf(ctx context.Context, j *RunnerJobInfo) int {
+	_, online, err := s.runnersFor(ctx, j)
+	if err != nil {
+		return -1
+	}
+	n, err := s.jobsAhead(ctx, j, online)
+	if err != nil {
+		return -1
+	}
+	return n
+}
+
+// runnersFor lists the owner's runners that may take queued job j, and of
+// them those online.
+func (s *Service) runnersFor(ctx context.Context, j *RunnerJobInfo) (mine, online []*Runner, err error) {
+	all, err := s.ownerRunners(ctx, j.OwnerID)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, r := range all {
+		if (j.TargetRunnerID == nil || *j.TargetRunnerID == r.ID) && runnerCanTake(r, j.needs) {
+			mine = append(mine, r)
+			if r.Online {
+				online = append(online, r)
+			}
+		}
+	}
+	return mine, online, nil
 }
 
 // runnerBusyWith says what keeps r from taking j now: the jobs it runs in
@@ -256,15 +279,37 @@ func listJobs(nouns []string) string {
 }
 
 // jobsAhead counts the queued jobs a runner of online takes before j: in
-// j's lane, urgent pull requests' rounds first, every other kind before
-// audits, oldest first (claimOrder; the audits of pull requests before
-// other audits is left out).
+// j's lane, urgent pull requests' rounds first, then the rounds at the front
+// of a merge line in queuedFrontRounds's order (WP-1618), every other kind
+// before audits, oldest first (claimOrder; the audits of pull requests
+// before other audits is left out).
 func (s *Service) jobsAhead(ctx context.Context, j *RunnerJobInfo, online []*Runner) (int, error) {
+	front, err := s.queuedFrontRounds(ctx, j.OwnerID)
+	if err != nil {
+		return 0, err
+	}
+	place := map[int64]int{}
+	for i, f := range front {
+		place[f.id] = i
+	}
+	// tier is the claimOrder tier of a job, as far as jobsAhead tells them apart.
+	tier := func(audit, urgent bool, id int64) int {
+		switch _, isFront := place[id]; {
+		case audit:
+			return 3
+		case urgent:
+			return 0
+		case isFront:
+			return 1
+		}
+		return 2
+	}
 	var urgent bool
 	// #nosec G202 -- a fixed SQL fragment; values are bound
 	if err := s.db.R.QueryRowContext(ctx, `SELECT `+urgentRoundJob+` FROM runner_jobs WHERE id = ?`, j.ID).Scan(&urgent); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return 0, err
 	}
+	mine := tier(j.Kind == JobAudit, urgent, j.ID)
 	// #nosec G202 -- a fixed SQL fragment; values are bound
 	rows, err := s.db.R.QueryContext(ctx, `SELECT id, kind, source, label, dir, cli, target_runner_id, `+urgentRoundJob+` FROM runner_jobs
 		WHERE owner_id = ? AND state = 'queued' AND id != ? ORDER BY id LIMIT 1000`, j.OwnerID, j.ID)
@@ -281,12 +326,14 @@ func (s *Service) jobsAhead(ctx context.Context, j *RunnerJobInfo, online []*Run
 		if err := rows.Scan(&id, &n.kind, &n.source, &n.label, &n.dir, &n.cli, &target, &u); err != nil {
 			return 0, err
 		}
-		before := id < j.ID
-		switch {
-		case (n.kind == JobAudit) != (j.Kind == JobAudit):
-			before = j.Kind == JobAudit
-		case u != urgent:
-			before = u
+		t := tier(n.kind == JobAudit, u, id)
+		before := t < mine
+		if t == mine {
+			if t == 1 {
+				before = place[id] < place[j.ID]
+			} else {
+				before = id < j.ID
+			}
 		}
 		if !before {
 			continue

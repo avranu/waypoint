@@ -35,6 +35,8 @@ export interface AuditFinding {
   state: FindingState
   note?: string
   issue?: string
+  /** The issue is canceled and no open issue stands for it: the filing doesn't count. */
+  filing_void?: boolean
   by?: string
   at?: string
   /** The line on the forge. */
@@ -45,12 +47,13 @@ export interface AuditFinding {
  * Whether a finding is still to do, as the server counts it (findingToDo in
  * internal/core/code_audits.go): open, or confirmed and not filed. A finding
  * confirmed with an issue linked is filed, handed to that issue, unless it
- * is critical or high, which must be fixed or rejected.
+ * is critical or high, which must be fixed or rejected, or its issue is
+ * canceled without an open duplicate (filing_void), which is to do again.
  */
 export function findingToDo(f: AuditFinding): boolean {
   if (f.state === 'open') return true
   if (f.state !== 'confirmed') return false
-  return !f.issue || f.severity === 'critical' || f.severity === 'high'
+  return !f.issue || !!f.filing_void || f.severity === 'critical' || f.severity === 'high'
 }
 
 export interface AuditAttempt {

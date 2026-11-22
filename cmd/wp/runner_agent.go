@@ -292,7 +292,7 @@ func (p *runnerProc) execAgent(ctx context.Context, run *jobRun, kind string, in
 			return failed("%s isn't signed in on this machine: run %s", bin, signInHint(in.CLI))
 		}
 	}
-	ctx, cancel := context.WithTimeout(ctx, run.timeout)
+	ctx, cancel, clock := p.jobClock(ctx, run, in.WorkTimeout)
 	defer cancel()
 
 	bare, err := p.ensureClone(ctx, run, in.Repo)
@@ -420,6 +420,7 @@ func (p *runnerProc) execAgent(ctx context.Context, run *jobRun, kind string, in
 	cmd := procCommand(runCtx, path, drv.args...)
 	cmd.Dir = work
 	cmd.Env = append(jobEnv(os.Environ(), drv.env, drv.keepKeys), p.jobTokenEnv(run, in)...)
+	cmd.Env = append(cmd.Env, clock.env()...)
 	if drv.stdin != "" {
 		cmd.Stdin = strings.NewReader(drv.stdin)
 	}
@@ -451,7 +452,7 @@ func (p *runnerProc) execAgent(ctx context.Context, run *jobRun, kind string, in
 	}
 	switch {
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
-		timedOut := outcome{State: "failed", Error: fmt.Sprintf("The %s timed out after %s and was stopped.", bin, run.timeout.Round(time.Second))}
+		timedOut := outcome{State: "failed", Error: fmt.Sprintf("The %s timed out after %s and was stopped.", bin, clock.timedOutAfter())}
 		if spent := drv.calls.spent(); spent != "" {
 			// Where the time went, for whoever reads the failure and for the
 			// round that takes over.
