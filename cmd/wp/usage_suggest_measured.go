@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strings"
 )
 
 // What the hooks measured at the start of the sessions wp usage suggest looks
@@ -15,15 +16,21 @@ import (
 // window is a bounded number of calls.
 const sugMeasuredMax = 30
 
-// sugMeasured is the median of the session-start snapshots found.
+// sugMeasured is the median of the session-start snapshots found. Each
+// figure is the median over the snapshots that carry it, and says how many
+// those were: a snapshot without an instruction-file inventory is not a
+// session with no instruction files.
 type sugMeasured struct {
-	Sessions         int   `json:"sessions"` // with a snapshot
-	Of               int   `json:"of"`       // asked about
-	InstructionBytes int64 `json:"instruction_bytes"`
-	InstructionFiles int64 `json:"instruction_files"`
-	MemoryIndexBytes int64 `json:"memory_index_bytes"`
-	MemoryBytes      int64 `json:"memory_bytes"`
-	MemoryFiles      int64 `json:"memory_files"`
+	Sessions            int   `json:"sessions"`             // with a snapshot carrying any of the figures
+	Of                  int   `json:"of"`                   // asked about
+	InstructionSessions int   `json:"instruction_sessions"` // of Sessions, the ones whose snapshot listed the instruction files
+	InstructionBytes    int64 `json:"instruction_bytes"`
+	InstructionFiles    int64 `json:"instruction_files"`
+	MemoryIndexSessions int   `json:"memory_index_sessions"`
+	MemoryIndexBytes    int64 `json:"memory_index_bytes"`
+	MemorySessions      int   `json:"memory_sessions"`
+	MemoryBytes         int64 `json:"memory_bytes"`
+	MemoryFiles         int64 `json:"memory_files"`
 }
 
 type sugSnapshot struct {
@@ -47,6 +54,7 @@ func measuredStart(c *cli, ids []string) (*sugMeasured, string) {
 		ids = ids[:sugMeasuredMax]
 	}
 	var instr, files, idx, mem, memFiles []int64
+	sessions := 0
 	for _, id := range ids {
 		var x struct {
 			ID int64 `json:"id"`
@@ -65,37 +73,57 @@ func measuredStart(c *cli, ids []string) (*sugMeasured, string) {
 				Bytes int64 `json:"bytes"`
 			} `json:"instruction_files"`
 		}
+		got := false
 		if len(s.Inventory) > 0 && json.Unmarshal(s.Inventory, &inv) == nil && inv.Files != nil {
 			var sum int64
 			for _, f := range inv.Files {
 				sum += f.Bytes
 			}
 			instr, files = append(instr, sum), append(files, int64(len(inv.Files)))
+			got = true
 		}
 		if s.MemoryIndexBytes != nil {
 			idx = append(idx, *s.MemoryIndexBytes)
+			got = true
 		}
-		if s.MemoryBytes != nil {
-			mem = append(mem, *s.MemoryBytes)
+		if s.MemoryBytes != nil && s.MemoryFiles != nil {
+			mem, memFiles = append(mem, *s.MemoryBytes), append(memFiles, *s.MemoryFiles)
+			got = true
 		}
-		if s.MemoryFiles != nil {
-			memFiles = append(memFiles, *s.MemoryFiles)
+		if got {
+			sessions++
 		}
 	}
-	n := max(len(instr), len(idx), len(mem))
-	if n == 0 {
+	if sessions == 0 {
 		return nil, fmt.Sprintf("no session-start snapshot for %s of these (the hooks take one: wp hook claude)", plural1(len(ids), "session"))
 	}
-	return &sugMeasured{Sessions: n, Of: len(ids), InstructionBytes: median(instr), InstructionFiles: median(files),
-		MemoryIndexBytes: median(idx), MemoryBytes: median(mem), MemoryFiles: median(memFiles)}, ""
+	return &sugMeasured{Sessions: sessions, Of: len(ids),
+		InstructionSessions: len(instr), InstructionBytes: median(instr), InstructionFiles: median(files),
+		MemoryIndexSessions: len(idx), MemoryIndexBytes: median(idx),
+		MemorySessions: len(mem), MemoryBytes: median(mem), MemoryFiles: median(memFiles)}, ""
 }
 
-// text is the measured sizes as a sentence, in tokens as estimated from bytes.
+// text is the measured sizes as a sentence, in tokens as estimated from
+// bytes. A figure no snapshot carried is said to be missing, not given as 0,
+// and one fewer snapshots carried says how many.
 func (m *sugMeasured) text() string {
-	s := fmt.Sprintf("Measured when the sessions started (median of %d of %d): instruction files %s in %s, memory index %s",
-		m.Sessions, m.Of, tok(tokOf(m.InstructionBytes)), plural1(int(m.InstructionFiles), "file"), tok(tokOf(m.MemoryIndexBytes)))
-	if m.MemoryFiles > 0 {
-		s += fmt.Sprintf(" (%s in all, %s)", plural1(int(m.MemoryFiles), "memory file"), tok(tokOf(m.MemoryBytes)))
+	from := func(n int) string {
+		if n == m.Sessions {
+			return ""
+		}
+		return fmt.Sprintf(" (from %d of them)", n)
 	}
-	return s + " tokens, at about 4 bytes a token."
+	var parts []string
+	if m.InstructionSessions > 0 {
+		parts = append(parts, fmt.Sprintf("instruction files %s tokens in %s%s", tok(tokOf(m.InstructionBytes)), plural1(int(m.InstructionFiles), "file"), from(m.InstructionSessions)))
+	} else {
+		parts = append(parts, "instruction files not listed in any of them")
+	}
+	if m.MemoryIndexSessions > 0 {
+		parts = append(parts, fmt.Sprintf("memory index %s tokens%s", tok(tokOf(m.MemoryIndexBytes)), from(m.MemoryIndexSessions)))
+	}
+	if m.MemorySessions > 0 && m.MemoryFiles > 0 {
+		parts = append(parts, fmt.Sprintf("%s in all, %s tokens%s", plural1(int(m.MemoryFiles), "memory file"), tok(tokOf(m.MemoryBytes)), from(m.MemorySessions)))
+	}
+	return fmt.Sprintf("Measured when the sessions started (median of the %d of %d with a snapshot): %s; at about 4 bytes a token.", m.Sessions, m.Of, strings.Join(parts, ", "))
 }

@@ -437,7 +437,7 @@ func TestWorkLogNotes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s := wl.Summary; s.Notes != 2 || s.Found != 2 || s.Fixed != 1 || len(wl.Entries) != 2 {
+	if s := wl.Summary; s.Notes != 2 || s.NoteFound != 2 || s.NoteFixed != 1 || s.Found != 0 || len(wl.Entries) != 2 { // a note is not a counted round
 		t.Errorf("log = %+v %+v", s, wl.Entries)
 	}
 	// Someone who can't see the task can't read or add to its log.

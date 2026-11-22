@@ -115,7 +115,8 @@ type WorkLogSummary struct {
 	Reviews int `json:"reviews"`
 	// Counted, Found, Fixed and Rejected are the rounds counted by rules or
 	// from the session's own record; the ModelRead ones are rounds whose
-	// report a model read (WP-1470): the two are never added together.
+	// report a model read (WP-1470); the Note ones are notes a person tagged.
+	// The three are never added together.
 	Counted           int `json:"counted"`
 	Found             int `json:"found"`
 	Fixed             int `json:"fixed"`
@@ -126,6 +127,9 @@ type WorkLogSummary struct {
 	ModelReadFound    int `json:"model_read_found"`
 	ModelReadFixed    int `json:"model_read_fixed"`
 	ModelReadRejected int `json:"model_read_rejected"`
+	NoteFound         int `json:"note_found"`
+	NoteFixed         int `json:"note_fixed"`
+	NoteRejected      int `json:"note_rejected"`
 	// The session's own reviews (WP-1089) and the issues their reports
 	// named.
 	OwnReviews int `json:"own_reviews"`
@@ -1082,13 +1086,13 @@ func (s *Service) storedWorkLog(ctx context.Context, wl *WorkLog, issueID int64)
 			e.Title = workTitle(e.Body)
 			switch e.Tag {
 			case TagFound:
-				wl.Summary.Found++
+				wl.Summary.NoteFound++
 			case TagFixed:
-				wl.Summary.Found++
-				wl.Summary.Fixed++
+				wl.Summary.NoteFound++
+				wl.Summary.NoteFixed++
 			case TagRejected:
-				wl.Summary.Found++
-				wl.Summary.Rejected++
+				wl.Summary.NoteFound++
+				wl.Summary.NoteRejected++
 			}
 		}
 		wl.Entries = append(wl.Entries, e)

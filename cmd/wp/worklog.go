@@ -118,6 +118,9 @@ type workLog struct {
 		ModelReadFound                                              int `json:"model_read_found"`
 		ModelReadFixed                                              int `json:"model_read_fixed"`
 		ModelReadRejected                                           int `json:"model_read_rejected"`
+		NoteFound                                                   int `json:"note_found"`
+		NoteFixed                                                   int `json:"note_fixed"`
+		NoteRejected                                                int `json:"note_rejected"`
 		PRFindings                                                  int `json:"pr_findings"`
 		PRFixed                                                     int `json:"pr_fixed"`
 		PRRejected                                                  int `json:"pr_rejected"`
@@ -159,7 +162,7 @@ func (l *workLog) text() string {
 	if s.Reviews > 0 {
 		p := fmt.Sprintf("%d review round%s", s.Reviews, plural(s.Reviews))
 		var counts []string
-		if s.Counted > 0 || s.Found > 0 {
+		if s.Counted > 0 {
 			counts = append(counts, fmt.Sprintf("%d found, %d fixed, %d rejected in %d round%s counted by rules", s.Found, s.Fixed, s.Rejected, s.Counted, plural(s.Counted)))
 		}
 		if s.ModelReadCounted > 0 {
@@ -168,6 +171,9 @@ func (l *workLog) text() string {
 		if s.Uncounted > 0 {
 			counts = append(counts, fmt.Sprintf("%d finished round%s not counted", s.Uncounted, plural(s.Uncounted)))
 		}
+		if s.NoteFound > 0 {
+			counts = append(counts, fmt.Sprintf("%d found, %d fixed, %d rejected in notes", s.NoteFound, s.NoteFixed, s.NoteRejected))
+		}
 		if len(counts) > 0 {
 			p += ": " + strings.Join(counts, "; ")
 		}
@@ -175,8 +181,8 @@ func (l *workLog) text() string {
 			p += fmt.Sprintf(", %d pushed fixes", s.Pushed)
 		}
 		parts = append(parts, p)
-	} else if s.Found > 0 { // only tagged notes
-		parts = append(parts, fmt.Sprintf("%d found, %d fixed, %d rejected", s.Found, s.Fixed, s.Rejected))
+	} else if s.NoteFound > 0 { // only tagged notes
+		parts = append(parts, fmt.Sprintf("%d found, %d fixed, %d rejected in notes", s.NoteFound, s.NoteFixed, s.NoteRejected))
 	}
 	if s.OwnReviews > 0 {
 		parts = append(parts, fmt.Sprintf("%d own review%s: %d found", s.OwnReviews, plural(s.OwnReviews), s.OwnFound))

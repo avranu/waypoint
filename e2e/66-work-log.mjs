@@ -203,7 +203,7 @@ async function run(width, scheme, n) {
   await block.getByRole("button", { name: "Add note" }).click();
   await block.getByText("The review missed the empty-input case").waitFor();
   await block.getByText("1 note", { exact: true }).waitFor();
-  ok(/2 review round|1 review round: 3 found/.test(await block.innerText()), `${tag} a note tagged found counts`);
+  ok(/1 found, 0 fixed, 0 rejected in notes/.test(await block.innerText()) && !/in 0 rounds/.test(await block.innerText()), `${tag} a note tagged found counts, apart from the rounds`);
   const log = await api("GET", `/issues/${issue.key}/worklog`);
   const note = log.entries.find((e) => e.kind === "note");
   ok(note && note.tag === "found" && note.author?.username === "robin", `${tag} the note is stored, tagged and attributed`);
@@ -212,7 +212,7 @@ async function run(width, scheme, n) {
 
   // ---- stats ----
   const stats = await api("GET", `/worklog/stats?project=${KEY}&days=30`);
-  ok(stats.total.rounds === 1 && stats.total.found === 2 && stats.total.pushed === 1, `${tag} the stats count the round (${JSON.stringify(stats.total)})`);
+  ok(stats.total.rounds === 1 && stats.total.model_read.rounds === 1 && stats.total.model_read.found === 2 && stats.total.measured.rounds === 0 && stats.total.pushed === 1, `${tag} the stats count the round (${JSON.stringify(stats.total)})`);
 
   // ---- test evidence and mismatches (WP-715) ----
   const long = "go test -run " + "VeryLongTestNameWithoutAnyBreak".repeat(8) + " ./...";

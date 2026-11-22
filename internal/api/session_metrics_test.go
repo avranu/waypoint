@@ -44,13 +44,17 @@ func TestUnregisteredSessionWriteIsCountedByTheAPI(t *testing.T) {
 	if code, b := c.do("GET", "/api/v1/projects", nil); code != 200 {
 		t.Fatalf("list: %d %s", code, b)
 	}
+	// a write that is refused stored nothing, so dropped nothing
+	if code, _ := c.do("POST", "/api/v1/projects", map[string]any{"name": "Widgets", "key": "WID"}); code < 400 {
+		t.Fatalf("a duplicate project was taken: %d", code)
+	}
 	if code := c.json("POST", "/api/v1/sessions/hook", map[string]any{"events": []map[string]any{
 		{"event": "SessionStart", "session_id": "ghost", "machine": "box", "cwd": "/work/app"},
 	}}, nil); code != 200 {
 		t.Fatalf("hook: %d", code)
 	}
 	if n := counted(); n != 1 {
-		t.Errorf("a read or the hook's own call was counted: %d", n)
+		t.Errorf("a read, a refused write or the hook's own call was counted: %d", n)
 	}
 }
 

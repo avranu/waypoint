@@ -188,7 +188,7 @@ func TestServerStatusCountsAgentEventsWithASession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Agent != 3 || got.WithSession != 1 {
-		t.Errorf("agent events = %+v, want 3 agent-written, 1 with a session", got)
+	if got.Agent != 3 || got.WithSession != 1 || got.Sampled < 4 || got.Sampled > agentEventsSampled {
+		t.Errorf("agent events = %+v, want 3 agent-written, 1 with a session, of the events read", got)
 	}
 }

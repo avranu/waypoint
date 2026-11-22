@@ -2062,6 +2062,10 @@ export interface WorkLogSummary {
   model_read_found: number
   model_read_fixed: number
   model_read_rejected: number
+  /** What notes a person tagged found, fixed or rejected: kept apart from the rounds. */
+  note_found: number
+  note_fixed: number
+  note_rejected: number
   pr_findings: number
   pr_fixed: number
   pr_rejected: number

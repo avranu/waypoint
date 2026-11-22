@@ -448,19 +448,22 @@ func agoDuration(s string) (time.Duration, bool) {
 // (the events table has no index by time, so the newest by id stand for "lately").
 const agentEventsSampled = 20000
 
-// AgentEventSessions: of the newest Sampled events, Agent were written by an
-// agent (a person's token that names an agent, or an MCP client) and WithSession
-// of those carry the session that wrote them in data.session.
+// AgentEventSessions: of the newest events (Sampled of them, at most
+// agentEventsSampled, fewer when the table holds fewer), Agent were written by
+// an agent (a person's token that names an agent, or an MCP client) and
+// WithSession of those carry the session that wrote them in data.session.
 type AgentEventSessions struct {
 	Sampled     int `json:"sampled"`
 	Agent       int `json:"agent"`
 	WithSession int `json:"with_session"`
 }
 
+// agentEventSessions takes the newest events first and only then asks which
+// an agent wrote, so the window is the one the status line names and the
+// work is bounded however sparse agent events are.
 func (s *Service) agentEventSessions(ctx context.Context) (AgentEventSessions, error) {
 	var out AgentEventSessions
-	out.Sampled = agentEventsSampled
-	err := s.db.R.QueryRowContext(ctx, `SELECT count(*), coalesce(sum(coalesce(json_extract(data, '$.session'), 0) > 0), 0) FROM
-		(SELECT data FROM events WHERE actor_id IS NOT NULL AND json_extract(data, '$.via') IS NOT NULL ORDER BY id DESC LIMIT ?)`, agentEventsSampled).Scan(&out.Agent, &out.WithSession)
+	err := s.db.R.QueryRowContext(ctx, `SELECT count(*), coalesce(sum(agent), 0), coalesce(sum(agent AND coalesce(json_extract(data, '$.session'), 0) > 0), 0) FROM
+		(SELECT data, actor_id IS NOT NULL AND json_extract(data, '$.via') IS NOT NULL AS agent FROM events ORDER BY id DESC LIMIT ?)`, agentEventsSampled).Scan(&out.Sampled, &out.Agent, &out.WithSession)
 	return out, err
 }

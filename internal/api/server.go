@@ -112,6 +112,14 @@ const (
 type requestNote struct {
 	err   error
 	waits bool
+	// unregistered is set when a write names a session the server hasn't
+	// registered; it is counted once the write has succeeded (WP-1470).
+	unregistered *unregisteredWrite
+}
+
+type unregisteredWrite struct {
+	user    int64
+	machine string
 }
 
 func noteFrom(r *http.Request) *requestNote {
@@ -205,6 +213,11 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 				httpDuration.WithLabelValues(route).Observe(d.Seconds())
 			}
 			s.logRequest(r, note, route, sw.status, d, p, stack)
+			// Only a write that went through stored rows without their
+			// session: one refused (4xx, 5xx) or that panicked stored none.
+			if u := note.unregistered; u != nil && p == nil && sw.status < 400 {
+				s.svc.CountUnregisteredWrite(context.WithoutCancel(r.Context()), u.user, u.machine)
+			}
 			if abort {
 				// A handler that fails after bytes went out ends the transfer
 				// as broken: net/http aborts the connection (and logs
@@ -405,10 +418,13 @@ func (s *Server) authenticate(r *http.Request) (*core.Actor, error) {
 			machine := strings.TrimSpace(r.Header.Get("X-Waypoint-Machine"))
 			a.Session = s.svc.SessionForHeader(r.Context(), a.User.ID, sid, machine)
 			// A write naming a session the server hasn't registered gets no
-			// session on its rows: counted (WP-1470). The hook's own calls
+			// session on its rows: noted here, counted by the middleware
+			// once the write has succeeded (WP-1470). The hook's own calls
 			// register sessions, so they are not.
 			if a.Session == 0 && r.Method != http.MethodGet && r.Method != http.MethodHead && !strings.HasPrefix(r.URL.Path, "/api/v1/sessions/hook") {
-				s.svc.CountUnregisteredWrite(r.Context(), a.User.ID, machine)
+				if n := noteFrom(r); n != nil {
+					n.unregistered = &unregisteredWrite{user: a.User.ID, machine: machine}
+				}
 			}
 		}
 		a.ClientVersion = core.ClientVersionFrom(r.Header.Get("User-Agent"))
