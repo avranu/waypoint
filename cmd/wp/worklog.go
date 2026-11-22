@@ -316,10 +316,10 @@ func cmdWorklogStats(c *cli, args []string) error {
 			writeEvidenceWeeks(&b, st.Evidence)
 			return b.String()
 		}
-		fmt.Fprintf(&b, "%-8s %6s %8s %6s %9s %6s %8s | %8s %6s %6s %8s | %6s %6s\n", "PROJECT", "ROUNDS", "MEASURED", "FOUND", "PER ROUND", "FIXED", "REJECTED", "MODEL-RD", "FOUND", "FIXED", "REJECTED", "UNCNT", "PUSHED")
+		fmt.Fprintf(&b, "%-8s %6s %8s %5s %6s %9s %6s %8s | %8s %5s %6s %6s %8s | %6s %6s %6s\n", "PROJECT", "ROUNDS", "MEASURED", "ANY", "FOUND", "PER ROUND", "FIXED", "REJECTED", "MODEL-RD", "ANY", "FOUND", "FIXED", "REJECTED", "UNCNT", "NOTFIN", "PUSHED")
 		row := func(name string, t workLogTotals) {
-			fmt.Fprintf(&b, "%-8s %6d %8d %6d %9.1f %6d %8d | %8d %6d %6d %8d | %6d %6d\n", name, t.Rounds, t.Measured.Rounds, t.Measured.Found, t.FoundPerRound, t.Measured.Fixed, t.Measured.Rejected,
-				t.ModelRead.Rounds, t.ModelRead.Found, t.ModelRead.Fixed, t.ModelRead.Rejected, t.Uncounted, t.Pushed)
+			fmt.Fprintf(&b, "%-8s %6d %8d %5d %6d %9.1f %6d %8d | %8d %5d %6d %6d %8d | %6d %6d %6d\n", name, t.Rounds, t.Measured.Rounds, t.Measured.WithIssues, t.Measured.Found, t.FoundPerRound, t.Measured.Fixed, t.Measured.Rejected,
+				t.ModelRead.Rounds, t.ModelRead.WithIssues, t.ModelRead.Found, t.ModelRead.Fixed, t.ModelRead.Rejected, t.Uncounted, t.NotFinished, t.Pushed)
 		}
 		for _, p := range st.Projects {
 			row(p.Key, p.workLogTotals)
@@ -327,7 +327,7 @@ func cmdWorklogStats(c *cli, args []string) error {
 		if len(st.Projects) > 1 {
 			row("all", st.Total)
 		}
-		b.WriteString("MEASURED: rounds counted by rules or from the session's own record. MODEL-RD: rounds whose report a model read; never added to the measured ones. UNCNT: finished rounds nobody counted.\n")
+		b.WriteString("MEASURED: rounds counted by rules or from the session's own record. MODEL-RD: rounds whose report a model read; never added to the measured ones. UNCNT: finished rounds nobody counted. NOTFIN: rounds still running, failed or skipped. ANY: rounds that found at least one. ROUNDS = MEASURED + MODEL-RD + UNCNT + NOTFIN.\n")
 		writeEvidenceWeeks(&b, st.Evidence)
 		return b.String()
 	})
@@ -365,6 +365,7 @@ type workLogTotals struct {
 	Measured      roundCounts `json:"measured"`
 	ModelRead     roundCounts `json:"model_read"`
 	Uncounted     int         `json:"uncounted"`
+	NotFinished   int         `json:"not_finished"`
 	Pushed        int         `json:"pushed"`
 	FoundPerRound float64     `json:"found_per_round"`
 }

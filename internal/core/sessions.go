@@ -1122,8 +1122,12 @@ var agentOfCLI = map[string]string{
 // pauses that match it, are labelled with (WP-1470): the identity the request
 // carries (an agent token's own, else the CLI's X-Waypoint-Agent header),
 // the same one events record as "via"; only when it says none, the agent the
-// hook's own cli names ("claude" when it names none, as before). Never a
-// blanket default, so a Gemini session is not recorded as Claude Code.
+// hook's own cli names. A cli that names none is "claude" (as before), which
+// is anthropic/claude-code, so with no identity and no cli that is still the
+// answer: pausedAgent has no cli to pass (pauses are matched from the actor
+// alone), so a pause for a session of another CLI with no identity is matched
+// as Claude Code. A Gemini session that says it is gemini is not recorded as
+// Claude Code.
 func agentLabel(actor *Actor, cli string) string {
 	if a := actor.agentName(); a != "" {
 		return a

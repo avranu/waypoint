@@ -1367,6 +1367,7 @@ type WorkLogTotals struct {
 	Measured    RoundCounts    `json:"measured"`
 	ModelRead   RoundCounts    `json:"model_read"`
 	Uncounted   int            `json:"uncounted"`
+	NotFinished int            `json:"not_finished"` // running, failed or skipped rounds with no counts; Rounds = Measured.Rounds + ModelRead.Rounds + Uncounted + NotFinished
 	Pushed      int            `json:"pushed"`
 	Tasks       int            `json:"tasks"`
 	FoundPerRun float64        `json:"found_per_round"` // of the measured rounds only
@@ -1386,6 +1387,8 @@ func (t *WorkLogTotals) add(state, readBy string, found, fixed, rejected sql.Nul
 		t.Measured.add(found.Int64, fixed.Int64, rejected.Int64)
 	case state == RoundDone:
 		t.Uncounted++
+	default:
+		t.NotFinished++
 	}
 	if pushed {
 		t.Pushed++

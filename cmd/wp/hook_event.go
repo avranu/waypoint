@@ -165,7 +165,11 @@ type pendingCron struct {
 
 // stopPending reads what a Stop says still runs; nil when it says nothing
 // (an older Claude Code), so Waypoint can't call the agent finished.
-func stopPending(in hookEventInput) *hookPending {
+//
+// Its text is a person's: a cron's prompt is what they typed and a task's
+// description can quote it, so both get the redaction the prompt does, and
+// under --no-prompts a cron's prompt text is not sent at all (WP-1470).
+func stopPending(in hookEventInput, known []string, noPrompts bool) *hookPending {
 	if len(in.BackgroundTasks) == 0 && len(in.SessionCrons) == 0 {
 		return nil
 	}
@@ -177,10 +181,16 @@ func stopPending(in hookEventInput) *hookPending {
 		p.Crons = []pendingCron{}
 	}
 	for n := range p.Tasks {
-		p.Tasks[n].Description = truncRunes(p.Tasks[n].Description, 200)
+		d, _, _ := redactTextCounted(p.Tasks[n].Description, known)
+		p.Tasks[n].Description = truncRunes(d, 200)
 	}
 	for n := range p.Crons {
-		p.Crons[n].Prompt = truncRunes(p.Crons[n].Prompt, 200)
+		if noPrompts {
+			p.Crons[n].Prompt = ""
+			continue
+		}
+		d, _, _ := redactTextCounted(p.Crons[n].Prompt, known)
+		p.Crons[n].Prompt = truncRunes(d, 200)
 	}
 	return p
 }
@@ -490,7 +500,7 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 	case "Stop":
 		ev.LastMessage, ev.StopHookActive = in.LastMessage, in.StopHookActive
 		ev.InputTokens, ev.OutputTokens, ev.ContextTokens, ev.CacheTTL = sessionTotals(c, in)
-		ev.Pending = stopPending(in)
+		ev.Pending = stopPending(in, []string{c.token()}, noPrompts)
 		// Where its work is, should the session end before it ships (WP-567).
 		ev.Checkouts = hookCheckouts(in.Cwd, c.state.sessionClaims(in.SessionID))
 	case "SubagentStart", "SubagentStop":
@@ -500,7 +510,7 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 		}
 	case "SessionEnd":
 		ev.EndReason = in.Reason
-		ev.Pending = stopPending(in) // what dies with it, if Claude Code says (WP-567)
+		ev.Pending = stopPending(in, []string{c.token()}, noPrompts) // what dies with it, if Claude Code says (WP-567)
 		ev.InputTokens, ev.OutputTokens, ev.ContextTokens, _ = sessionTotals(c, in)
 		// Its tasks' commits go to the forge once nothing else is in their
 		// checkouts; a detached process does it, after this hook (WP-843).

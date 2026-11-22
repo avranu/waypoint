@@ -940,7 +940,10 @@ func TestWorkLogTotalsKeepMeasuredModelReadAndUncountedApart(t *testing.T) {
 	tot.add(RoundDone, "", none, none, none, false) // finished, never counted
 	tot.add(RoundSkipped, "", none, none, none, false)
 	tot.finish()
-	if tot.Rounds != 4 || tot.Uncounted != 1 || tot.Pushed != 1 {
+	if tot.Rounds != tot.Measured.Rounds+tot.ModelRead.Rounds+tot.Uncounted+tot.NotFinished {
+		t.Errorf("the parts do not add up to the rounds: %+v", tot)
+	}
+	if tot.Rounds != 4 || tot.Uncounted != 1 || tot.NotFinished != 1 || tot.Pushed != 1 {
 		t.Errorf("totals = %+v", tot)
 	}
 	if tot.Measured != (RoundCounts{Rounds: 1, WithIssues: 1, Found: 2, Fixed: 1}) {

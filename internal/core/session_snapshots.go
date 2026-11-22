@@ -239,7 +239,6 @@ func addDropRow(ctx context.Context, q queryer, uid int64, machine, reason, even
 const (
 	DropSessionEventsTrim  = "session_events_trim"  // events past a session's newest 1500, deleted at its Stop
 	DropEvidenceRunsCap    = "evidence_cap"         // test runs and bench rows past what one commit keeps
-	DropIngestRow          = "ingest_skipped"       // usage rows with no session, kind or model, or an hour out of range
 	DropPromptTextWithheld = "prompt_text_withheld" // a typed prompt recorded without its text (--no-prompts)
 	DropUnregisteredWrite  = "unregistered_session" // a write that named a session the server has not registered
 )

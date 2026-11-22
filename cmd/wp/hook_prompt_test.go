@@ -62,3 +62,22 @@ func TestHookNoPromptsSaysThePromptWasWithheld(t *testing.T) {
 		t.Errorf("without --no-prompts: %q withheld=%v", ev.Prompt, ev.PromptWithheld)
 	}
 }
+
+// What a Stop says still runs carries a person's text: a cron's prompt and a
+// task's description are redacted like a prompt, and --no-prompts leaves the
+// cron's prompt out (WP-1470).
+func TestStopPendingRedactsAndHonoursNoPrompts(t *testing.T) {
+	const tok = "wpt_supersecrettoken123"
+	raw := hookEventInput{
+		BackgroundTasks: json.RawMessage(`[{"type":"shell","description":"curl with ` + tok + ` here"}]`),
+		SessionCrons:    json.RawMessage(`[{"schedule":"*/5 * * * *","prompt":"check using ` + tok + ` and password=hunter2hunter2"}]`),
+	}
+	p := stopPending(raw, []string{tok}, false)
+	if strings.Contains(p.Tasks[0].Description, tok) || strings.Contains(p.Crons[0].Prompt, tok) || strings.Contains(p.Crons[0].Prompt, "hunter2hunter2") || !strings.Contains(p.Crons[0].Prompt, "check using") {
+		t.Errorf("pending = %+v", p)
+	}
+	p = stopPending(raw, []string{tok}, true)
+	if p.Crons[0].Prompt != "" || p.Crons[0].Schedule == "" || strings.Contains(p.Tasks[0].Description, tok) {
+		t.Errorf("under --no-prompts: %+v", p)
+	}
+}
