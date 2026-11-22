@@ -10,6 +10,7 @@ import (
 	"io"
 	"maps"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +21,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"git.jmann.me/claude/waypoint/internal/codeindex"
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
@@ -101,9 +103,12 @@ func (in hookEventInput) effortPresent() bool {
 // the server's packages).
 type sessionEvent struct {
 	// PromptSum: UserPromptSubmit: the digest of the whole prompt (core.PromptSum),
-	// sent whatever --no-prompts withholds of its text, for the server to
-	// tell what Waypoint typed from what a person did (WP-1370).
+	// for the server to tell what Waypoint typed from what a person did
+	// (WP-1370). Not sent under --no-prompts: see TypedID.
 	PromptSum string `json:"prompt_sum,omitempty"`
+	// TypedID: under --no-prompts, the id of the pending record the hook matched
+	// itself (matchTyped); in place of the digest and the text, which stay here.
+	TypedID int64 `json:"typed_id,omitempty"`
 	// Key: one id per hook invocation, made once and kept in the outbox, so
 	// every attempt to post this event carries it and the server answers a
 	// repeat as it answered the first (WP-1370).
@@ -239,7 +244,9 @@ func procFSExists() bool {
 }
 
 // procStart is the start time (in clock ticks since boot) of process pid, as
-// /proc says; "" when there is no such process or no /proc.
+// /proc says; "" when there is no such process, it has exited and is only
+// waiting to be reaped (a zombie is gone here as on the lock side, readLockProc),
+// or there is no /proc.
 func procStart(pid int) string {
 	b, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat")) // #nosec G304 -- /proc
 	if err != nil {
@@ -253,6 +260,9 @@ func procStart(pid int) string {
 	}
 	f := strings.Fields(string(b[i+1:]))
 	if len(f) < 20 {
+		return ""
+	}
+	if f[0] == "Z" || f[0] == "X" {
 		return ""
 	}
 	return f[19] // field 22 of the line: starttime
@@ -355,7 +365,7 @@ func (c *cli) addSessionHeaders(req *http.Request) {
 // session's. The CLI then sends no session header, so the call is recorded
 // with no session rather than another's (WP-1370).
 func (s *State) sessionIn(dir string) string {
-	for d := filepath.Clean(dir); ; d = filepath.Dir(d) {
+	for d := realDir(dir); ; d = filepath.Dir(d) {
 		if here := s.sessionsAt(d); len(here) > 0 {
 			var usable []*cwdSession
 			for _, cs := range here {
@@ -374,11 +384,24 @@ func (s *State) sessionIn(dir string) string {
 	}
 }
 
+// realDir is dir with its symlinks resolved, so a session that started in a
+// directory by one path and a command run in it by another are the same place.
+// A path that can't be resolved (it is gone) stays as cleaned.
+func realDir(dir string) string {
+	d := filepath.Clean(dir)
+	if r, err := filepath.EvalSymlinks(d); err == nil {
+		return r
+	}
+	return d
+}
+
 // sessionsAt are the entries of sessions that started in dir, newest first.
+// Both sides are compared with their symlinks resolved.
 func (s *State) sessionsAt(dir string) []*cwdSession {
 	var out []*cwdSession
+	want := realDir(dir)
 	for k, cs := range s.Cwds {
-		if cs != nil && cs.dir(k) == dir {
+		if cs != nil && realDir(cs.dir(k)) == want {
 			out = append(out, cs)
 		}
 	}
@@ -448,7 +471,9 @@ func gitFactsAt(dir string) gitFacts {
 	}
 	remote := git("remote", "get-url", "origin")
 	if remote == "" {
-		if first := strings.Fields(git("remote")); len(first) > 0 {
+		// A remote named like an option (a config's [remote "--all"]) is no
+		// remote git is told about: get-url would read it as one.
+		if first := strings.Fields(git("remote")); len(first) > 0 && codeindex.CheckRef(first[0]) == nil {
 			remote = git("remote", "get-url", first[0])
 		}
 	}
@@ -474,11 +499,19 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 	// A session command (WP-562): the server's go to it as only the command,
 	// prompts or not; the slash hook answers the rest on this machine.
 	slash, slashArg, shipText := "", "", ""
+	// A hook that sends no prompt text asks which text Waypoint typed is
+	// pending and compares it here, so the server learns only the id of the
+	// match, or that there was none (matchTyped).
+	var typedID int64
+	var typedKind string
 	if in.HookEventName == "UserPromptSubmit" {
+		if noPrompts && c.server() != "" && c.token() != "" {
+			typedID, typedKind = c.matchTyped(in)
+		}
 		// local, so the guard knows even with no server (WP-277); a prompt
 		// automation pastes into a session the quota guard stopped goes no
 		// further (WP-932)
-		if refusal := c.noteAttendance(in); refusal != "" {
+		if refusal := c.noteAttendanceKind(in, typedKind); refusal != "" {
 			_, _ = stdout.Write(promptStop(refusal))
 			return
 		}
@@ -559,7 +592,11 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 		// Waypoint's own prompts (a keep-warm ping, a bare /compact) still
 		// reach the core under --no-prompts, so it can tell them from typing.
 		p := strings.TrimSpace(in.Prompt)
-		ev.PromptSum = core.PromptSum(in.Prompt)
+		if noPrompts {
+			ev.TypedID = typedID // neither the text nor a digest of it leaves this machine
+		} else {
+			ev.PromptSum = core.PromptSum(in.Prompt)
+		}
 		ev.Key = newHookKey()
 		if slash != "" {
 			ev.Prompt = strings.TrimSpace("/wp " + slash + " " + slashArg) // nothing else typed after it rides along
@@ -577,13 +614,8 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 			default:
 				ev.Prompt += "\n\n" + in.Prompt
 			}
-		} else if !noPrompts || strings.HasPrefix(p, keepWarmMark) || p == "/compact" {
+		} else if !noPrompts {
 			ev.Prompt = in.Prompt
-			if noPrompts && strings.HasPrefix(p, keepWarmMark) {
-				ev.Prompt = keepWarmMark // nothing the person wrote rides along
-			}
-		} else if key, ok := reviewPromptKey(p); ok {
-			ev.Prompt = autopilotReviewMark + key // autopilot's review prompt (WP-285): only whose review it is
 		} else if mark := harnessPromptMark(p); mark != "" {
 			ev.Prompt = mark // a background task reporting back is no person's prompt; only that much is sent
 		}
@@ -1305,4 +1337,34 @@ func newHookKey() string {
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// matchTyped asks the server for the texts it typed into this session that no
+// prompt has used, and compares the prompt with their digests here
+// (core.PromptSum), so a hook that sends no prompt text can still tell
+// Waypoint's own prompt: the id of the record it matched, and its kind, are
+// all that is reported. 0, "": no match, or the server didn't answer (the
+// prompt then reads as the person's, as it did before records).
+func (c *cli) matchTyped(in hookEventInput) (int64, string) {
+	sums := core.PromptSums(in.Prompt)
+	if len(sums) == 0 {
+		return 0, ""
+	}
+	c.hookTimeout = hookHTTPTimeout
+	b, err := c.call("GET", "/api/v1/sessions/typed-prompts?cli="+url.QueryEscape(in.SessionID), nil)
+	if err != nil {
+		return 0, ""
+	}
+	var pending []core.PendingTyped
+	if json.Unmarshal(b, &pending) != nil {
+		return 0, ""
+	}
+	for _, sum := range sums { // its own digest first, as the server tries them
+		for _, p := range pending {
+			if p.Sum == sum {
+				return p.ID, p.Kind
+			}
+		}
+	}
+	return 0, ""
 }

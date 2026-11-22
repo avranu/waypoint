@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -21,14 +22,31 @@ type dropServer struct {
 	mu    sync.Mutex
 	calls [][]sessionEvent
 	reply func(call int, evs []sessionEvent) int // HTTP status
+	// pending is the body GET /api/v1/sessions/typed-prompts answers with
+	// (a JSON list of core.PendingTyped); bodies is every body posted to the
+	// hook route, as the server saw it.
+	pending string
+	bodies  []string
 }
 
 func (d *dropServer) start(t *testing.T) {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions/typed-prompts" {
+			d.mu.Lock()
+			body := d.pending
+			d.mu.Unlock()
+			if body == "" {
+				body = "[]"
+			}
+			_, _ = w.Write([]byte(body))
+			return
+		}
+		raw, _ := io.ReadAll(r.Body)
 		var in struct{ Events []sessionEvent }
-		_ = json.NewDecoder(r.Body).Decode(&in)
+		_ = json.Unmarshal(raw, &in)
 		d.mu.Lock()
+		d.bodies = append(d.bodies, string(raw))
 		d.calls = append(d.calls, in.Events)
 		n := len(d.calls) - 1
 		d.mu.Unlock()
@@ -314,31 +332,56 @@ func TestPromptHookKeyIsTheSameOnEveryAttempt(t *testing.T) {
 	}
 }
 
-// --no-prompts sends no prompt text, and says so: what goes in its place is
-// the SHA-256 of the normalised text, which the help names (WP-1370).
-func TestNoPromptsSendsTheDigestAndNoText(t *testing.T) {
-	s := dropEnv(t)
-	ds := &dropServer{}
-	ds.start(t)
+// --no-prompts sends neither the prompt's text nor a digest of it: the hook
+// asks which texts Waypoint typed are pending, compares them here, and sends
+// the id of the one it matched, or none (WP-1370).
+func TestNoPromptsBodiesCarryNeitherTextNorDigest(t *testing.T) {
 	const secret = "please rotate the key sk-live-4242 now"
-	s.hook(map[string]any{"session_id": "np1", "hook_event_name": "UserPromptSubmit", "prompt": secret, "cwd": t.TempDir()}, "--no-prompts")
+	const typed = "Waypoint typed this one, with sk-live-9999 in it"
+	for _, tc := range []struct {
+		name, prompt string
+		wantID       int64
+	}{
+		{"no match", secret, 0},
+		{"a match", typed, 7},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := dropEnv(t)
+			ds := &dropServer{pending: `[{"id":7,"sum":"` + core.PromptSum(typed) + `","kind":"review"},{"id":8,"sum":"` + core.PromptSum("another") + `","kind":"compact"}]`}
+			ds.start(t)
+			s.hook(map[string]any{"session_id": "np1", "hook_event_name": "UserPromptSubmit", "prompt": tc.prompt, "cwd": t.TempDir()}, "--no-prompts")
+			ds.mu.Lock()
+			defer ds.mu.Unlock()
+			if len(ds.calls) != 1 || len(ds.calls[0]) != 1 {
+				t.Fatalf("calls = %v", ds.calls)
+			}
+			ev := ds.calls[0][0]
+			if ev.TypedID != tc.wantID {
+				t.Errorf("typed_id = %d, want %d", ev.TypedID, tc.wantID)
+			}
+			for _, body := range ds.bodies {
+				for _, leak := range []string{"sk-live", tc.prompt, core.PromptSum(tc.prompt), core.PromptSum(secret), core.PromptSum(typed)} {
+					if strings.Contains(body, leak) {
+						t.Errorf("the body carries %q:\n%s", leak, body)
+					}
+				}
+				if strings.Contains(body, "prompt_sum") {
+					t.Errorf("the body carries a prompt_sum:\n%s", body)
+				}
+			}
+		})
+	}
+}
+
+// With no server answer, a --no-prompts prompt is read as the person's: no id.
+func TestNoPromptsSendsNoIDWhenTheServerDoesntList(t *testing.T) {
+	s := dropEnv(t)
+	ds := &dropServer{pending: `not json`}
+	ds.start(t)
+	s.hook(map[string]any{"session_id": "np2", "hook_event_name": "UserPromptSubmit", "prompt": "anything", "cwd": t.TempDir()}, "--no-prompts")
 	ds.mu.Lock()
 	defer ds.mu.Unlock()
-	if len(ds.calls) != 1 || len(ds.calls[0]) != 1 {
-		t.Fatalf("calls = %v", ds.calls)
-	}
-	ev := ds.calls[0][0]
-	if ev.Prompt != "" || strings.Contains(ev.Title+ev.Prompt, "sk-live") {
-		t.Errorf("the prompt's text was sent: %q", ev.Prompt)
-	}
-	if want := core.PromptSum(secret); ev.PromptSum != want {
-		t.Errorf("prompt_sum = %q, want the SHA-256 of the normalised text %q", ev.PromptSum, want)
-	}
-	if len(ev.PromptSum) != 64 {
-		t.Errorf("prompt_sum %q is not a SHA-256 in hex", ev.PromptSum)
-	}
-	help := hookCmd.subs[0].about + hookCmd.subs[0].args
-	if !strings.Contains(help, "SHA-256") || !strings.Contains(help, "normalised") {
-		t.Errorf("wp hook claude's help doesn't say what --no-prompts still sends:\n%s", help)
+	if len(ds.calls) != 1 || ds.calls[0][0].TypedID != 0 || ds.calls[0][0].PromptSum != "" || ds.calls[0][0].Prompt != "" {
+		t.Fatalf("calls = %+v", ds.calls)
 	}
 }
