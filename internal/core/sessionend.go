@@ -104,7 +104,7 @@ func (s *Service) promptedSince(ctx context.Context, q queryer, sessionID, since
 		return false, err
 	}
 	for _, p := range prompts {
-		p = strings.TrimSpace(strings.TrimSuffix(p, "…"))
+		p = pasteText(strings.TrimSuffix(strings.TrimSpace(p), "…"))
 		own := isOwnPrompt(p) // autopilot's pasted prompt (WP-ADR9), or a background task's report
 		for _, b := range bodies {
 			if strings.HasPrefix(b, p) {

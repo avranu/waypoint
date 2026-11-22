@@ -431,9 +431,13 @@ func (s *Service) holdsUnmerged(ctx context.Context, id int64) bool {
 func (s *Service) unattendedSession(ctx context.Context, id int64) bool {
 	var prompted, typed sql.NullInt64
 	var started bool
-	if err := s.db.R.QueryRowContext(ctx, `SELECT (SELECT max(created_at) FROM session_events WHERE session_id = ? AND kind = 'prompt' AND detail LIKE ?),
+	// A row written before WP-1562 kept Claude Code's wrapper, its whitespace
+	// collapsed by excerpt: "<pasted_content id=…> Waypoint autopilot…". Its
+	// text starts after the opening tag's '>' (the tag holds no other).
+	if err := s.db.R.QueryRowContext(ctx, `SELECT (SELECT max(created_at) FROM session_events WHERE session_id = ? AND kind = 'prompt'
+			AND (detail LIKE ? OR (detail LIKE '<pasted_content%' AND ltrim(substr(detail, instr(detail, '>') + 1)) LIKE ?))),
 		(SELECT typed_at FROM agent_sessions WHERE id = ?), EXISTS (SELECT 1 FROM autopilot_steps WHERE next_session = ?)`,
-		id, AutopilotPromptMark+"%", id, id).Scan(&prompted, &typed, &started); err != nil {
+		id, AutopilotPromptMark+"%", AutopilotPromptMark+"%", id, id).Scan(&prompted, &typed, &started); err != nil {
 		s.log.WarnContext(ctx, "is it autopilot's session", "session", id, "err", err)
 		return false
 	}

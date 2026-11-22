@@ -811,7 +811,7 @@ func (s *Service) sessionOwners(ctx context.Context, uid int64, machine, cliID s
 // promptOwner says whether a prompt is automation's (auto) or a person's;
 // ok false when it keeps whoever came before it.
 func promptOwner(prompt string) (auto, ok bool) {
-	p := strings.TrimSpace(prompt)
+	p := pasteText(prompt)
 	switch {
 	case strings.HasPrefix(p, AutopilotPromptMark):
 		return true, true
