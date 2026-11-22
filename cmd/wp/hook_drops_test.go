@@ -27,6 +27,7 @@ type dropServer struct {
 	// hook route, as the server saw it.
 	pending string
 	bodies  []string
+	lists   int // GETs of the typed-prompts list
 }
 
 func (d *dropServer) start(t *testing.T) {
@@ -35,6 +36,7 @@ func (d *dropServer) start(t *testing.T) {
 		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions/typed-prompts" {
 			d.mu.Lock()
 			body := d.pending
+			d.lists++
 			d.mu.Unlock()
 			if body == "" {
 				body = "[]"
@@ -373,16 +375,31 @@ func TestNoPromptsBodiesCarryNeitherTextNorDigest(t *testing.T) {
 	}
 }
 
-// With no server answer, a --no-prompts prompt is read as the person's: no id.
+// With no server answer, a --no-prompts prompt is read as the person's: no id,
+// no text. Only Waypoint's fixed texts (the whole keep-warm ping, exactly
+// /compact or /exit) are sent, as constants, so the server can match its own
+// record by digest.
 func TestNoPromptsSendsNoIDWhenTheServerDoesntList(t *testing.T) {
-	s := dropEnv(t)
-	ds := &dropServer{pending: `not json`}
-	ds.start(t)
-	s.hook(map[string]any{"session_id": "np2", "hook_event_name": "UserPromptSubmit", "prompt": "anything", "cwd": t.TempDir()}, "--no-prompts")
-	ds.mu.Lock()
-	defer ds.mu.Unlock()
-	if len(ds.calls) != 1 || ds.calls[0][0].TypedID != 0 || ds.calls[0][0].PromptSum != "" || ds.calls[0][0].Prompt != "" {
-		t.Fatalf("calls = %+v", ds.calls)
+	for _, tc := range []struct{ name, prompt, want string }{
+		{"ordinary", "anything", ""},
+		{"a mark and more", "<task-notification>x", "<task-notification>"},
+		{"keep-warm ping", core.KeepWarmPing(), core.KeepWarmPing()},
+		{"compact", "/compact", "/compact"},
+		{"exit", " /exit ", "/exit"},
+		{"compact with words", "/compact please keep the notes", ""},
+		{"ping with words", core.KeepWarmPing() + " and my password", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := dropEnv(t)
+			ds := &dropServer{pending: `not json`}
+			ds.start(t)
+			s.hook(map[string]any{"session_id": "np2", "hook_event_name": "UserPromptSubmit", "prompt": tc.prompt, "cwd": t.TempDir()}, "--no-prompts")
+			ds.mu.Lock()
+			defer ds.mu.Unlock()
+			if len(ds.calls) != 1 || ds.calls[0][0].TypedID != 0 || ds.calls[0][0].PromptSum != "" || ds.calls[0][0].Prompt != tc.want {
+				t.Fatalf("calls = %+v, want prompt %q", ds.calls, tc.want)
+			}
+		})
 	}
 }
 

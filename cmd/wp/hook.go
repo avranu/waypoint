@@ -862,15 +862,7 @@ const keepWarmMark = "Waypoint keep-warm"
 // harnessPromptMark is the mark (core.HarnessPromptMarks, the list the server
 // reads) the prompt starts with once normalised as the server normalises
 // (core.NormalisePrompt), "" if none.
-func harnessPromptMark(prompt string) string {
-	p := core.NormalisePrompt(prompt)
-	for _, mark := range core.HarnessPromptMarks {
-		if strings.HasPrefix(p, mark) {
-			return mark
-		}
-	}
-	return ""
-}
+func harnessPromptMark(prompt string) string { return core.HarnessPromptMark(prompt) }
 
 // hookClaudeResume handles UserPromptSubmit: the session in a directory
 // where a task was taken is working again, so the task's clock restarts.

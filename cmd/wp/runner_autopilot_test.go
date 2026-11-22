@@ -276,8 +276,8 @@ func TestAutopilotReviewCompactsThenPrompts(t *testing.T) {
 	if f.pasted != prompt {
 		t.Errorf("pasted %q", f.pasted)
 	}
-	if key, ok := reviewPromptKey(f.pasted); !ok || key != "APP-1" {
-		t.Errorf("the hook reads %q %v from the review prompt", key, ok)
+	if !strings.HasPrefix(f.pasted, autopilotReviewMark+"APP-1:") {
+		t.Errorf("the pasted text doesn't start with the review mark and the task key: %q", f.pasted)
 	}
 
 	// Still busy compacting when the wait runs out: nothing is pasted.

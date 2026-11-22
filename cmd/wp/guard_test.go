@@ -640,7 +640,7 @@ func TestGuardHook(t *testing.T) {
 	// A call the guard can't read is refused while the guard is active (a
 	// 4.2 MB Write to .claude/settings.json was allowed), and the control: a
 	// person's own session, where the guard is silent, is let through, and so
-	// is a call of 4 MB that does decode.
+	// is a call of 3 MB that does decode.
 	big := `{"session_id":"sess-1","hook_event_name":"PreToolUse","tool_name":"Write","cwd":` + strconv.Quote(repo) +
 		`,"tool_input":{"file_path":".claude/settings.json","content":"` + strings.Repeat("x", 4<<20+200) + `"}}`
 	var refused bytes.Buffer
@@ -652,6 +652,12 @@ func TestGuardHook(t *testing.T) {
 	hookClaudeGuard(c, strings.NewReader("not json"), &refused)
 	if !strings.Contains(refused.String(), "deny") {
 		t.Errorf("unreadable input was let through while the guard is active: %q", refused.String())
+	}
+	if log, _ := os.ReadFile(filepath.Join(c.dir, "guard.log")); !strings.Contains(string(log), "can't read") {
+		t.Errorf("guard.log has no line for a call the guard couldn't read: %q", log)
+	}
+	if c.loadState().Nudges["guard_unreadable"] == nil {
+		t.Error("a refused unreadable call was not counted")
 	}
 	// Control: a large call that is under the limit and harmless still passes.
 	fine := `{"session_id":"sess-1","hook_event_name":"PreToolUse","tool_name":"Write","cwd":` + strconv.Quote(repo) +
@@ -1294,5 +1300,23 @@ func TestGuardLogUnlockedCap(t *testing.T) {
 				t.Error("the new line is not in guard.log")
 			}
 		})
+	}
+}
+
+// The guard reads up to guardInputMax bytes of input: that many decode, one
+// more is refused.
+func TestDecodeGuardInputAtTheLimit(t *testing.T) {
+	const head = `{"tool_name":"Write","tool_input":{"file_path":"a","content":"`
+	const tail = `"}}`
+	exact := head + strings.Repeat("x", guardInputMax-len(head)-len(tail)) + tail
+	if len(exact) != guardInputMax {
+		t.Fatalf("built %d bytes", len(exact))
+	}
+	var in hookEventInput
+	if err := decodeGuardInput(strings.NewReader(exact), &in); err != nil || in.ToolName != "Write" {
+		t.Errorf("exactly %d bytes: %v", guardInputMax, err)
+	}
+	if err := decodeGuardInput(strings.NewReader(exact+" "), &in); err == nil || !strings.Contains(err.Error(), "over") {
+		t.Errorf("%d bytes: %v", guardInputMax+1, err)
 	}
 }

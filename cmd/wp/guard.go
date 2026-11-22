@@ -69,8 +69,10 @@ func (s *State) autopilotDriven(session string) bool {
 // typedKind is set for a prompt the hook already matched to a text Waypoint
 // typed (its kind, "" if none or not asked): one of
 // Waypoint's own words, with no person's in it (core.TypedWaypointAlone), is
-// no person's turn, whatever it says.
-func (c *cli) noteAttendanceKind(in hookEventInput, typedKind string) (refusal string) {
+// no person's turn, whatever it says. answered says the lookup got an answer:
+// for exactly /compact or /exit, an answer with no match means a person typed
+// it, and no answer (or no lookup) means Waypoint did.
+func (c *cli) noteAttendanceKind(in hookEventInput, typedKind string, answered bool) (refusal string) {
 	id := in.SessionID
 	if id == "" {
 		return ""
@@ -99,7 +101,13 @@ func (c *cli) noteAttendanceKind(in hookEventInput, typedKind string) (refusal s
 				}
 			}
 		})
-	case core.IsKeepWarmPing(p) || p == "/compact" || harnessPromptMark(p) != "" || core.TypedWaypointAlone(typedKind):
+	case (p == "/compact" || p == "/exit") && (!answered || typedKind != ""):
+		// Texts Waypoint types with no visible mark, so a person can type
+		// them too. The server's record decides when it answered: a match is
+		// Waypoint's, no match is the person's (the default branch below).
+		// With no answer it is Waypoint's, the side that keeps the unattended
+		// mark and a quota stop.
+	case core.IsKeepWarmPing(p) || harnessPromptMark(p) != "" || core.TypedWaypointAlone(typedKind):
 		// Only the whole ping, not the mark that starts it: a person can type
 		// the mark, and what skips the person's branch below (lifting a stop,
 		// clearing the unattended mark, the refusal in a session nobody types
@@ -313,7 +321,12 @@ func (c *cli) refuseUnreadable(stdout io.Writer, why error) {
 	if !active {
 		return
 	}
-	_, _ = stdout.Write(guardOutput(mode, hit(ruleGuard, "a call the guard can't read ("+why.Error()+")", "")))
+	h := hit(ruleGuard, "a call the guard can't read ("+why.Error()+")", "")
+	_, _ = stdout.Write(guardOutput(mode, h))
+	// Logged and counted as a normal refusal is; the call is unknown, so the
+	// input is empty.
+	c.logGuard(hookEventInput{}, mode, h, hookCountWait(hookGuardTimeout))
+	c.countNudge("guard_unreadable", hookCountWait(hookGuardTimeout))
 }
 
 const (

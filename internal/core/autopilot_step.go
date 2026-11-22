@@ -103,16 +103,20 @@ const AutopilotPromptMark = "Waypoint autopilot"
 // text is all there is to go by.
 var HarnessPromptMarks = []string{"<task-notification>", "Another Claude session sent a message:", `<agent-message from="`}
 
-// isHarnessPrompt: the prompt is one of those.
-func isHarnessPrompt(prompt string) bool {
+// HarnessPromptMark is the mark the prompt starts with once normalised
+// (NormalisePrompt), "" if none.
+func HarnessPromptMark(prompt string) string {
 	p := NormalisePrompt(prompt)
 	for _, mark := range HarnessPromptMarks {
 		if strings.HasPrefix(p, mark) {
-			return true
+			return mark
 		}
 	}
-	return false
+	return ""
 }
+
+// isHarnessPrompt: the prompt is one of those.
+func isHarnessPrompt(prompt string) bool { return HarnessPromptMark(prompt) != "" }
 
 // promptedAfterStop is when the timeline's last prompt after since that
 // isn't autopilot's or Claude Code's own came (0: none).

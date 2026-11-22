@@ -99,8 +99,8 @@ func (in hookEventInput) effortPresent() bool {
 	return raw != "" && raw != "null"
 }
 
-// sessionEvent is core.HookEvent as the CLI sends it (the CLI doesn't link
-// the server's packages).
+// sessionEvent is core.HookEvent as the CLI sends it (the CLI imports
+// internal/core, but sends only these fields).
 type sessionEvent struct {
 	// PromptSum: UserPromptSubmit: the digest of the whole prompt (core.PromptSum),
 	// for the server to tell what Waypoint typed from what a person did
@@ -109,9 +109,9 @@ type sessionEvent struct {
 	// TypedID: under --no-prompts, the id of the pending record the hook matched
 	// itself (matchTyped); in place of the digest and the text, which stay here.
 	TypedID int64 `json:"typed_id,omitempty"`
-	// Key: one id per hook invocation, made once and kept in the outbox, so
-	// every attempt to post this event carries it and the server answers a
-	// repeat as it answered the first (WP-1370).
+	// Key: set on UserPromptSubmit only: one id per hook invocation, made once
+	// and kept in the outbox, so every attempt to post this event carries it
+	// and the server answers a repeat as it answered the first (WP-1370).
 	Key              string           `json:"key,omitempty"`
 	Event            string           `json:"event"`
 	At               int64            `json:"at,omitempty"`
@@ -522,14 +522,23 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 	// match, or that there was none (matchTyped).
 	var typedID int64
 	var typedKind string
+	typedAnswered := false // the server answered the lookup (matchTyped)
 	if in.HookEventName == "UserPromptSubmit" {
-		if noPrompts && c.server() != "" && c.token() != "" {
-			typedID, typedKind = c.matchTyped(in)
+		// Under --no-prompts the lookup is how the server learns what the
+		// prompt was. Otherwise it is made only for the two texts Waypoint
+		// types with no visible mark, to tell them from a person typing the
+		// same words (noteAttendanceKind). The server's record is used up by
+		// the event, by digest, not by this lookup.
+		if p := strings.TrimSpace(in.Prompt); c.server() != "" && c.token() != "" && (noPrompts || p == "/compact" || p == "/exit") {
+			typedID, typedKind, typedAnswered = c.matchTyped(in)
+			if !typedAnswered {
+				c.countDrop("typed_lookup", "UserPromptSubmit", 1) // reported with the next event
+			}
 		}
 		// local, so the guard knows even with no server (WP-277); a prompt
 		// automation pastes into a session the quota guard stopped goes no
 		// further (WP-932)
-		if refusal := c.noteAttendanceKind(in, typedKind); refusal != "" {
+		if refusal := c.noteAttendanceKind(in, typedKind, typedAnswered); refusal != "" {
 			_, _ = stdout.Write(promptStop(refusal))
 			return
 		}
@@ -607,8 +616,9 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 		rememberSession(c, in)
 		c.autoUpdateInBackground() // at most daily, detached: never slows the hook
 	case "UserPromptSubmit":
-		// Waypoint's own prompts (a keep-warm ping, a bare /compact) still
-		// reach the core under --no-prompts, so it can tell them from typing.
+		// Waypoint's own fixed prompts (a keep-warm ping, a bare /compact or
+		// /exit) are sent as their text under --no-prompts when the lookup
+		// found no record, so the server can match its record by digest.
 		prompt := in.Prompt // unwrapped above, so the digest is of what was typed
 		p := strings.TrimSpace(prompt)
 		if noPrompts {
@@ -635,6 +645,11 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 			}
 		} else if !noPrompts {
 			ev.Prompt = raw // the server unwraps it, once
+		} else if fixed := fixedWaypointPrompt(p); fixed != "" && !typedAnswered {
+			// The lookup did not answer. These texts are Waypoint's own
+			// constants, not a person's words, so sending them leaks nothing
+			// and lets the server match its record by digest.
+			ev.Prompt = fixed
 		} else if mark := harnessPromptMark(p); mark != "" {
 			ev.Prompt = mark // a background task reporting back is no person's prompt; only that much is sent
 		}
@@ -940,9 +955,18 @@ func rememberSession(c *cli, in hookEventInput) {
 					cs.Pid, cs.PidStart = pid, start
 				}
 			}
+			// One harness process has one session at a time: a /clear or a
+			// resume in the same process replaced the one it had.
+			if cs.Pid != 0 && cs.PidStart != "" {
+				for k, other := range s.Cwds {
+					if other != nil && k != in.SessionID && other.Pid == cs.Pid && other.PidStart == cs.PidStart {
+						delete(s.Cwds, k)
+					}
+				}
+			}
 			s.Cwds[in.SessionID] = cs
 			for k, cs := range s.Cwds { // forget old ones, but not a session still running
-				if time.Since(cs.At) > 7*24*time.Hour && !cs.provablyAlive() {
+				if cs == nil || (time.Since(cs.At) > 7*24*time.Hour && !cs.provablyAlive()) {
 					delete(s.Cwds, k)
 				}
 			}
@@ -1362,14 +1386,17 @@ func (c *cli) sessionID() string {
 // AutopilotReviewMark), followed by the task's key.
 const autopilotReviewMark = autopilotPromptMark + " review of "
 
-// reviewPromptKey: the task whose review prompt p is, if it is one.
-func reviewPromptKey(p string) (string, bool) {
-	rest, ok := strings.CutPrefix(p, autopilotReviewMark)
-	if !ok {
-		return "", false
+// fixedWaypointPrompt is p when it is one of the texts Waypoint types with no
+// visible mark, the whole keep-warm ping or exactly /compact or /exit, else "".
+// The ping is returned as core's text. They are constants, never a person's words.
+func fixedWaypointPrompt(p string) string {
+	switch {
+	case core.IsKeepWarmPing(p):
+		return core.KeepWarmPing()
+	case p == "/compact" || p == "/exit":
+		return p
 	}
-	key, _, _ := strings.Cut(rest, ":")
-	return key, keyRE.MatchString(key)
+	return ""
 }
 
 // newHookKey is a fresh id for one hook invocation (sessionEvent.Key).
@@ -1383,28 +1410,30 @@ func newHookKey() string {
 // prompt has used, and compares the prompt with their digests here
 // (core.PromptSum), so a hook that sends no prompt text can still tell
 // Waypoint's own prompt: the id of the record it matched, and its kind, are
-// all that is reported. 0, "": no match, or the server didn't answer (the
-// prompt then reads as the person's, as it did before records).
-func (c *cli) matchTyped(in hookEventInput) (int64, string) {
+// all that is reported. Three outcomes: matched (id, kind, answered); the
+// server answered and none matched (0, "", answered); it did not answer, by a
+// failed call or a body that isn't a list (0, "", not answered). A prompt with
+// no digest has nothing to look up and counts as answered with no match.
+func (c *cli) matchTyped(in hookEventInput) (id int64, kind string, answered bool) {
 	sums := core.PromptSums(in.Prompt)
 	if len(sums) == 0 {
-		return 0, ""
+		return 0, "", true
 	}
 	c.hookTimeout = hookHTTPTimeout
 	b, err := c.call("GET", "/api/v1/sessions/typed-prompts?cli="+url.QueryEscape(in.SessionID), nil)
 	if err != nil {
-		return 0, ""
+		return 0, "", false
 	}
 	var pending []core.PendingTyped
 	if json.Unmarshal(b, &pending) != nil {
-		return 0, ""
+		return 0, "", false
 	}
 	for _, sum := range sums { // its own digest first, as the server tries them
 		for _, p := range pending {
 			if p.Sum == sum {
-				return p.ID, p.Kind
+				return p.ID, p.Kind, true
 			}
 		}
 	}
-	return 0, ""
+	return 0, "", true
 }
