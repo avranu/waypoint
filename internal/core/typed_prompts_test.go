@@ -915,18 +915,74 @@ func TestTypedKeylessRepostIsANewPrompt(t *testing.T) {
 	}
 }
 
-// A hook that sends no text names the record it matched.
+// A hook that sends no text names the record it matched. Only a record that is
+// this session's (or held for this user and no prompt has come yet), unused and
+// unexpired, is claimed.
 func TestTypedClaimByID(t *testing.T) {
 	a := newAPEnv(t)
-	a.record(TypedKeepWarm, "ping")
-	a.record(TypedReview, "review text")
-	pend, err := a.s.PendingTypedPrompts(a.ctx, a.admin, "cli-"+fmt.Sprint(a.session))
+	var cli string
+	if err := a.s.db.R.QueryRow(`SELECT cli_id FROM agent_sessions WHERE id = ?`, a.session).Scan(&cli); err != nil {
+		t.Fatal(err)
+	}
+	lastID := func() int64 {
+		t.Helper()
+		var id int64
+		if err := a.s.db.R.QueryRow(`SELECT max(id) FROM typed_prompts`).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	notClaimed := func(name string, id int64) {
+		t.Helper()
+		if k := a.recogniseEv(HookEvent{TypedID: id, Key: "n-" + name}); k != "" {
+			t.Errorf("%s: claimed as %q", name, k)
+		}
+	}
+	// Records that must not be claimed by this session.
+	res, err := a.s.db.W.Exec(`INSERT INTO agent_sessions(user_id, machine, cli_id, state, started_at, last_seen_at) VALUES (?, 'box', 'other', 'working', 1, 1)`, a.admin.User.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = pend
+	other, _ := res.LastInsertId()
+	a.recordIn(other, TypedReview, "bound to another session", typedTTL)
+	notClaimed("another session's", lastID())
+	if err := a.s.write(a.ctx, a.admin, func(t *tx) error {
+		return recordTypedUnbound(a.ctx, t, a.admin.User.ID+1000, TypedKickoff, "held for another user", a.clockNow().UnixMilli(), typedTTL)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	notClaimed("another user's unbound", lastID())
+	a.recordIn(a.session, TypedReview, "already expired", -time.Minute)
+	notClaimed("expired", lastID())
+	// An unbound record of this user is claimed while the session has no prompt
+	// event, and not once it has one.
+	if err := a.s.write(a.ctx, a.admin, func(t *tx) error {
+		return recordTypedUnbound(a.ctx, t, a.admin.User.ID, TypedStart, "held for this user", a.clockNow().UnixMilli(), typedTTL)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	unbound := lastID()
+	if _, err := a.s.db.W.Exec(`INSERT INTO session_events (session_id, kind, detail, created_at) VALUES (?, 'prompt', 'hello', ?)`, a.session, a.clockNow().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	notClaimed("unbound, after a prompt", unbound)
+
+	// The session's own records: the ids are the ones the listing gives.
+	a.record(TypedKeepWarm, "ping")
+	a.record(TypedReview, "review text")
+	pend, err := a.s.PendingTypedPrompts(a.ctx, a.admin, cli)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var id int64
-	_ = a.s.db.R.QueryRow(`SELECT id FROM typed_prompts WHERE session_id = ? AND kind = 'review'`, a.session).Scan(&id)
+	for _, p := range pend {
+		if p.Kind == TypedReview && p.Sum == PromptSum("review text") {
+			id = p.ID
+		}
+	}
+	if id == 0 {
+		t.Fatalf("the review record is not in the listing: %+v", pend)
+	}
 	if k := a.recogniseEv(HookEvent{TypedID: id, Key: "k1"}); k != TypedReview {
 		t.Fatalf("by id = %q", k)
 	}
@@ -938,6 +994,32 @@ func TestTypedClaimByID(t *testing.T) {
 	}
 	if k := a.recogniseEv(HookEvent{TypedID: id + 1000, Key: "k3"}); k != "" {
 		t.Fatalf("an id that isn't a record = %q", k)
+	}
+}
+
+// With more than 200 unused records the listing keeps the newest.
+func TestPendingTypedPromptsKeepsTheNewest(t *testing.T) {
+	a := newAPEnv(t)
+	var cli string
+	if err := a.s.db.R.QueryRow(`SELECT cli_id FROM agent_sessions WHERE id = ?`, a.session).Scan(&cli); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 205; i++ {
+		a.record(TypedKeepWarm, fmt.Sprintf("ping %d", i))
+	}
+	got, err := a.s.PendingTypedPrompts(a.ctx, a.admin, cli)
+	if err != nil || len(got) != 200 {
+		t.Fatalf("listed %d, %v", len(got), err)
+	}
+	newest := PromptSum("ping 204")
+	oldest := PromptSum("ping 0")
+	var hasNewest, hasOldest bool
+	for _, p := range got {
+		hasNewest = hasNewest || p.Sum == newest
+		hasOldest = hasOldest || p.Sum == oldest
+	}
+	if !hasNewest || hasOldest {
+		t.Errorf("newest listed %v, oldest listed %v: want the newest kept and the oldest cut", hasNewest, hasOldest)
 	}
 }
 

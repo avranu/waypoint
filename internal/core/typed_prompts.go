@@ -442,8 +442,8 @@ type PendingTyped struct {
 
 // PendingTypedPrompts lists the unused, unexpired records the session's next
 // prompt may be: its own, and the texts held for the user's sessions not
-// started yet. A hook that sends no prompt text (--no-prompts) compares them
-// locally and reports only the id it matched, or none.
+// started yet, the newest 200. A hook that sends no prompt text
+// (--no-prompts) compares them locally and reports only the id it matched, or none.
 func (s *Service) PendingTypedPrompts(ctx context.Context, a *Actor, cliID string) ([]PendingTyped, error) {
 	if err := a.need(PermSessionsReport); err != nil {
 		return nil, err
@@ -451,7 +451,7 @@ func (s *Service) PendingTypedPrompts(ctx context.Context, a *Actor, cliID strin
 	rows, err := s.db.R.QueryContext(ctx, `SELECT id, hash, kind FROM typed_prompts
 		WHERE consumed_at IS NULL AND expires_at > ? AND hash != '' AND (
 		  session_id = (SELECT id FROM agent_sessions WHERE user_id = ? AND cli_id = ? ORDER BY id DESC LIMIT 1)
-		  OR (session_id IS NULL AND user_id = ?)) ORDER BY id LIMIT 200`, s.nowMS(), a.id(), cliID, a.id())
+		  OR (session_id IS NULL AND user_id = ?)) ORDER BY id DESC LIMIT 200`, s.nowMS(), a.id(), cliID, a.id())
 	if err != nil {
 		return nil, err
 	}
