@@ -431,9 +431,9 @@ func (s *Service) holdsUnmerged(ctx context.Context, id int64) bool {
 func (s *Service) unattendedSession(ctx context.Context, id int64) bool {
 	var prompted, typed sql.NullInt64
 	var started bool
-	if err := s.db.R.QueryRowContext(ctx, `SELECT (SELECT max(created_at) FROM session_events WHERE session_id = ? AND kind = 'prompt' AND detail LIKE ?),
+	if err := s.db.R.QueryRowContext(ctx, `SELECT (SELECT max(created_at) FROM session_events WHERE session_id = ? AND kind = 'prompt' AND (detail LIKE ? OR detail LIKE ?)),
 		(SELECT typed_at FROM agent_sessions WHERE id = ?), EXISTS (SELECT 1 FROM autopilot_steps WHERE next_session = ?)`,
-		id, AutopilotPromptMark+"%", id, id).Scan(&prompted, &typed, &started); err != nil {
+		id, AutopilotPromptMark+"%", "<pasted_content%>"+AutopilotPromptMark+"%", id, id).Scan(&prompted, &typed, &started); err != nil {
 		s.log.WarnContext(ctx, "is it autopilot's session", "session", id, "err", err)
 		return false
 	}

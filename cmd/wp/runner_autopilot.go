@@ -314,9 +314,9 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 	// review isn't sent into it (WP-1572). What was pasted stays as a draft
 	// they can see and clear; if their own Enter already took it, it went
 	// with their prompt, a window this check can only narrow.
-	if !p.stepWanted(ctx, in.Step, run.id) {
-		say("the step no longer wants this job: the review was pasted and not sent")
-		return outcome{State: "done", Result: autopilotResult{Outcome: "unwanted", Warning: "the review prompt was pasted and not sent, since the session was taken while it settled: clear it from the input box if it is still there"}}
+	if !p.stepWantedOr(ctx, in.Step, run.id, false) {
+		say("the step no longer wants this job, or Waypoint couldn't say: the review was pasted and not sent")
+		return outcome{State: "done", Result: autopilotResult{Outcome: "unwanted", Warning: "the review prompt was pasted and not sent, since the session was taken while it settled, or Waypoint couldn't say it wasn't: clear it from the input box if it is still there"}}
 	}
 	if _, err := runTmux(ctx, socket, nil, "send-keys", "-t", pane, "Enter"); err != nil {
 		// Pasted and not sent: the box now holds a draft, which a person
@@ -643,6 +643,13 @@ func (p *runnerProc) waitRegistered(ctx context.Context, cliID string, limit tim
 // stepWanted asks Waypoint whether the step still waits for this job. An
 // answer it can't get counts as yes: the draft and idle checks still hold.
 func (p *runnerProc) stepWanted(ctx context.Context, step, job int64) bool {
+	return p.stepWantedOr(ctx, step, job, true)
+}
+
+// stepWantedOr is stepWanted with the answer for when Waypoint can't be
+// asked. Before an Enter that would send a review it is no: a person may
+// have taken the session, and sending into their turn can't be undone.
+func (p *runnerProc) stepWantedOr(ctx context.Context, step, job int64, unknown bool) bool {
 	if step == 0 || p.c.server() == "" {
 		return true
 	}
@@ -650,7 +657,7 @@ func (p *runnerProc) stepWanted(ctx context.Context, step, job int64) bool {
 		Wanted bool `json:"wanted"`
 	}
 	if err := p.c.callInto(ctx, "GET", fmt.Sprintf("/api/v1/autopilot/steps/%d/wanted?job=%d", step, job), nil, &r); err != nil {
-		return true
+		return unknown
 	}
 	return r.Wanted
 }

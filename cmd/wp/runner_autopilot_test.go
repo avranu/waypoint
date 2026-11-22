@@ -203,6 +203,15 @@ func TestAutopilotReviewAlreadyCompacted(t *testing.T) {
 // Taken while the pasted review settled (WP-1572): no Enter, so the review
 // isn't sent into the person's turn.
 func TestAutopilotReviewTakenWhilePasted(t *testing.T) {
+	testReviewTakenWhilePasted(t, false)
+}
+
+// Waypoint not answering before Enter is no: no Enter over a person's turn.
+func TestAutopilotReviewWantedUnknownBeforeEnter(t *testing.T) {
+	testReviewTakenWhilePasted(t, true)
+}
+
+func testReviewTakenWhilePasted(t *testing.T, failSecond bool) {
 	cfg := t.TempDir()
 	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
 	_ = os.MkdirAll(filepath.Join(cfg, "sessions"), 0o700)
@@ -222,6 +231,10 @@ func TestAutopilotReviewTakenWhilePasted(t *testing.T) {
 			return
 		}
 		asked++
+		if asked == 2 && failSecond {
+			http.Error(w, "down", http.StatusInternalServerError)
+			return
+		}
 		// Wanted at the last word before typing, not once it is pasted.
 		_, _ = w.Write([]byte(`{"wanted":` + strconv.FormatBool(asked == 1) + `}`))
 	}))

@@ -61,10 +61,12 @@ func UnwrapPasted(prompt string) string {
 
 // pasteText is a stored prompt's text for reading its marks: rows written
 // before WP-1562 kept Claude Code's wrapper, in an excerpt that may have
-// lost its closing tag, so an opening tag alone is dropped too.
+// lost its closing tag, so an opening tag alone is dropped too (a prompt
+// that still has one, a paste with typed text after it, stays as it is).
 func pasteText(prompt string) string {
 	p := strings.TrimSpace(UnwrapPasted(prompt))
-	if open := pastedOpenRE.FindString(p); open != "" {
+	// A closing tag left means text came after the paste: not a truncation.
+	if open := pastedOpenRE.FindString(p); open != "" && !strings.Contains(p, "</pasted_content") {
 		return strings.TrimSpace(p[len(open):])
 	}
 	return p

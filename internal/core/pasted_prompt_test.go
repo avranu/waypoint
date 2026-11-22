@@ -221,3 +221,31 @@ func TestTypedReviewNotTypedTwice(t *testing.T) {
 		t.Fatalf("round = %+v", r)
 	}
 }
+
+// A review job queued before inputs carried their round has none: it counts
+// for the round of the task it reviewed (WP-1562, audit 1287.1).
+func TestTypedReviewWithoutRound(t *testing.T) {
+	a, key, id := clearedReview(t)
+	var in AutopilotJob
+	if err := json.Unmarshal(a.jobs[0].Input, &in); err != nil {
+		t.Fatal(err)
+	}
+	in.Round = 0
+	a.jobs[0].Input, _ = json.Marshal(in)
+	a.jobDone(1, AutopilotJobResult{Outcome: "reviewing"})
+	if r := a.round(id); r.state != RoundRunning {
+		t.Fatalf("round = %+v for %s", r, key)
+	}
+}
+
+// A paste with text typed after it keeps its opening tag: pasteText only
+// drops one from an excerpt that lost its closing tag (audit 1287.9).
+func TestPasteTextKeepsTypedAfterPaste(t *testing.T) {
+	typed := `<pasted_content id="1">` + AutopilotReviewMark + `x</pasted_content id="1"> and also this`
+	if got := pasteText(typed); got != typed {
+		t.Errorf("pasteText = %q", got)
+	}
+	if got := pasteText(`<pasted_content id="1">` + AutopilotReviewMark + "cut"); got != AutopilotReviewMark+"cut" {
+		t.Errorf("pasteText of an excerpt = %q", got)
+	}
+}

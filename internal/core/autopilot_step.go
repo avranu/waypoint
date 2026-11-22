@@ -596,7 +596,7 @@ func autopilotStartedUntouched(ctx context.Context, q queryer, sessionID int64) 
 		if err := rows.Scan(&detail); err != nil {
 			return false, err
 		}
-		if strings.HasPrefix(strings.TrimSpace(detail), AutopilotPromptMark) {
+		if strings.HasPrefix(pasteText(detail), AutopilotPromptMark) {
 			return true, nil
 		}
 		if !isOwnPrompt(detail) {
@@ -1768,7 +1768,7 @@ const autopilotReviewSource = "autopilot_review"
 // The session's warm state keeps the compaction quiet, and the cache pings
 // off it, until the review's prompt starts a turn.
 func (s *Service) startReviewJob(ctx context.Context, st *stepRow, x *AgentSession, user *User, agent string, review *roundRow, prompt string, now int64) error {
-	if job, res := s.typedRound(ctx, st.id, review.id); job != nil {
+	if job, res := s.typedRound(ctx, st.id, review); job != nil {
 		// Typed already, and its round never started: whatever hid the
 		// prompt or lost the job's finish, typing it again costs the session
 		// a compaction and the whole prompt (WP-1562).
@@ -1841,34 +1841,44 @@ func (s *Service) typedReviewLanded(ctx context.Context, st *stepRow, jobID int6
 	if st.jobID.Valid || st.sessionID == 0 || st.nextIssue.Valid || !st.reviewID.Valid || st.state != StepWaiting || st.reason != WaitPrompted {
 		return
 	}
-	job, res, ok := s.typedReview(ctx, jobID, st.reviewID.Int64)
+	r, err := roundByID(ctx, s.db.R, st.reviewID.Int64)
+	if err != nil || r == nil || r.state != RoundPending {
+		return // reviewJobFinished moves a step on whose round ended; this one is the person's
+	}
+	job, res, ok := s.typedReview(ctx, jobID, r)
 	if !ok {
 		return
-	}
-	if r, err := roundByID(ctx, s.db.R, st.reviewID.Int64); err != nil || r == nil || r.state != RoundPending {
-		return // reviewJobFinished moves a step on whose round ended; this one is the person's
 	}
 	s.log.InfoContext(ctx, "autopilot: a review typed after a prompt cleared its step; its round runs", "round", st.reviewID.Int64, "step", st.id, "job", jobID)
 	s.reviewJobFinished(ctx, st, job, res, s.nowMS())
 }
 
-// typedReview: job jobID finished having typed round's review prompt.
-func (s *Service) typedReview(ctx context.Context, jobID, round int64) (*RunnerJob, AutopilotJobResult, bool) {
+// typedReview: job jobID finished having typed round's review prompt. A job
+// queued before review inputs carried their round has none (0): it counts
+// when it reviewed the same task.
+func (s *Service) typedReview(ctx context.Context, jobID int64, round *roundRow) (*RunnerJob, AutopilotJobResult, bool) {
 	var res AutopilotJobResult
 	job, err := lookupRunnerJob(ctx, s, jobID)
-	if err != nil || job.State != "done" || json.Unmarshal(job.Result, &res) != nil || res.Outcome != "reviewing" {
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "autopilot: read a review job", "job", jobID, "err", err)
+		}
+		return nil, res, false
+	}
+	if job.State != "done" || json.Unmarshal(job.Result, &res) != nil || res.Outcome != "reviewing" {
 		return nil, res, false
 	}
 	var in AutopilotJob
-	if json.Unmarshal(job.Input, &in) != nil || in.Round != round {
+	if json.Unmarshal(job.Input, &in) != nil || (in.Round != round.id && (in.Round != 0 || in.ReviewOf != round.key)) {
 		return nil, res, false
 	}
 	return job, res, true
 }
 
-// typedRound is the newest of step's review jobs that typed round's prompt
-// (nil: none did).
-func (s *Service) typedRound(ctx context.Context, step, round int64) (*RunnerJob, AutopilotJobResult) {
+// typedRound is the newest of step's recent review jobs that typed round's
+// prompt (nil: none did). Five reach past the jobs of rounds after it that
+// a step could have run since.
+func (s *Service) typedRound(ctx context.Context, step int64, round *roundRow) (*RunnerJob, AutopilotJobResult) {
 	ids, err := queryIDs(ctx, s.db.R, `SELECT id FROM runner_jobs WHERE source = ? AND source_id = ? ORDER BY id DESC LIMIT 5`, autopilotReviewSource, step)
 	if err != nil && readFault(err) {
 		s.log.WarnContext(ctx, "read a step's review jobs", "step", step, "err", err)
@@ -1948,6 +1958,9 @@ func (s *Service) reviewJobFinished(ctx context.Context, st *stepRow, job *Runne
 		}
 	case job.State == "done" && res.Outcome == "unwanted":
 		s.unwarmReview(ctx, st.sessionID) // stopped while the job was on its way: stopStep ended the round
+		if res.Warning != "" {
+			s.log.WarnContext(ctx, "autopilot: the review job found the step unwanted", "task", review.key, "step", st.id, "warning", res.Warning)
+		}
 	case job.State == "done" && res.Outcome == "held":
 		s.unwarmReview(ctx, st.sessionID)
 		reason, retry := WaitScreen, autopilotRetry
