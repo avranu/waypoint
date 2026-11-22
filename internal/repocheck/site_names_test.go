@@ -24,6 +24,10 @@ var siteBaseline = map[string]int{
 	// changes CI's image tag (build.sh hashes it), so it waits for the next
 	// image change.
 	".forgejo/ci-image/Dockerfile": 1,
+	// The public mirror's address: the GitHub workflow's header says where
+	// GitHub bills, and the runbook's gh commands (-R) must name the repo.
+	".github/workflows/ci.yml": 1,
+	"docs/DEPLOY.md":           4,
 }
 
 var siteWordRE = regexp.MustCompile(`[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*`)
