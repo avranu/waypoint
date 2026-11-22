@@ -304,7 +304,9 @@ func TestCombineLossless(t *testing.T) {
 		return panelLead{ID: id, Title: "t " + id, Severity: "low", ReadSeverity: sev, Path: path, Line: line, Problem: "p " + id, Confirmed: true, Evidence: "e " + id}
 	}
 	leads := []panelLead{lead("goals.1", "high", "a.go", 3), lead("goals.2", "low", "a.go", 3), lead("tests.1", "medium", "b.go", 0), lead("tests.2", "low", "c.go", 5)}
-	reviewer := []any{map[string]any{"title": "Mine", "path": "c.go", "line": float64(5)}, map[string]any{"title": "Other", "path": "d.go", "line": float64(1)}}
+	// tests.2 restates the reviewer's R1: the same place and a similar claim.
+	leads[3].Problem = "the registry entry leaks when the handle closes early"
+	reviewer := []any{map[string]any{"title": "Mine", "path": "c.go", "line": float64(5), "problem": "when the handle closes early the registry entry leaks"}, map[string]any{"title": "Other", "path": "d.go", "line": float64(1)}}
 	runs := func(extra ...helperRun) []helperRun {
 		return append([]helperRun{{Check: "goals", State: "done", Leads: leads[:2]}, {Check: "tests", State: "done", Leads: leads[2:]}}, extra...)
 	}
@@ -1121,7 +1123,7 @@ func TestCombineVerdictsAndPlaces(t *testing.T) {
 	}
 
 	reviewer := []any{
-		map[string]any{"title": "Mine", "path": "a.go", "line": float64(3), "severity": "high", "problem": "x", "verdict": "refuted"},
+		map[string]any{"title": "Mine", "path": "a.go", "line": float64(3), "severity": "high", "problem": "the cache entry is never evicted", "verdict": "refuted"},
 		map[string]any{"title": "Other", "path": "a.go", "line": float64(4), "severity": "low", "problem": "y"},
 	}
 	prompt := combinePrompt(reviewer, leads)
@@ -1129,7 +1131,7 @@ func TestCombineVerdictsAndPlaces(t *testing.T) {
 		t.Errorf("the prompt's verdicts: %s", prompt)
 	}
 	// The fallback keeps a lead out of a refuted finding's place.
-	at := panelLead{ID: "goals.1", Title: "t", Severity: "high", Problem: "p", Confirmed: true, ReadTitle: "RT", ReadPath: "a.go", ReadLine: 3}
+	at := panelLead{ID: "goals.1", Title: "t", Severity: "high", Problem: "the cache entry is never evicted", Confirmed: true, ReadTitle: "RT", ReadPath: "a.go", ReadLine: 3}
 	if o, s := unmerged([]panelLead{at}, reviewer); len(o) != 1 || len(s) != 0 {
 		t.Errorf("unmerged at a refuted finding's place: %+v %v", o, s)
 	}
@@ -1149,5 +1151,88 @@ func TestAfterNoTimeKeptOnceReviewerFailed(t *testing.T) {
 	e.reviewerFailed()
 	if got := e.after(); got != 0 {
 		t.Errorf("after the reviewer failed = %v, want 0", got)
+	}
+}
+
+// WP-1570: when the combine fails, the panel's problems are still merged
+// where different checks (different agents) restate each other, none lost:
+// the kept finding lists each lead it is made of. Two problems of one
+// check's own output are never merged.
+func TestUnmergedMergesRestatedPanelLeads(t *testing.T) {
+	lead := func(id, sev, path string, line int, problem string) panelLead {
+		return panelLead{ID: id, Severity: sev, Confirmed: true, ReadPath: path, ReadLine: line, ReadTitle: "T " + id, ReadProblem: problem, ReadSeverity: sev}
+	}
+	claim := "the cache entry is never evicted when the owner closes the session handle"
+	restated := "when the owner closes the session handle the cache entry is never evicted"
+	leads := []panelLead{
+		lead("tests.1", "low", "a.go", 10, claim),
+		lead("quality.1", "high", "a.go", 14, restated),
+		lead("goals.1", "high", "a.go", 40, restated),                                        // too far
+		lead("goals.2", "high", "b.go", 12, restated),                                        // another file
+		lead("goals.3", "high", "a.go", 12, "an unrelated race on the queue length counter"), // another claim
+	}
+	out, same := unmerged(leads, nil)
+	if len(same) != 0 {
+		t.Fatalf("same = %v", same)
+	}
+	if len(out) != 4 {
+		t.Fatalf("got %d findings, want 4: %+v", len(out), out)
+	}
+	var got combined
+	for _, c := range out {
+		if slices.Contains(c.from, "tests.1") {
+			got = c
+		}
+	}
+	if len(got.from) != 2 || !slices.Contains(got.from, "quality.1") {
+		t.Errorf("merged from = %v", got.from)
+	}
+	if got.severity != "high" || got.title != "T quality.1" {
+		t.Errorf("kept %q at %q, want the high one", got.title, got.severity)
+	}
+}
+
+// Equal severity: the earlier is kept. A lead with no line merges on its
+// claim alone. Two problems of one check (one agent) stay apart.
+func TestUnmergedTiesNoLineAndOneAgent(t *testing.T) {
+	claim := "the retry loop sleeps without checking the context so cancellation hangs"
+	mk := func(id, title, path string, line int) panelLead {
+		return panelLead{ID: id, Severity: "medium", Confirmed: true, ReadPath: path, ReadLine: line, ReadTitle: title, ReadProblem: claim}
+	}
+	out, _ := unmerged([]panelLead{mk("tests.1", "first", "a.go", 0), mk("quality.1", "second", "a.go", 90)}, nil)
+	if len(out) != 1 || out[0].title != "first" || len(out[0].from) != 2 {
+		t.Fatalf("tie: %+v", out)
+	}
+	out, _ = unmerged([]panelLead{mk("tests.1", "first", "a.go", 90), mk("tests.2", "second", "a.go", 91)}, nil)
+	if len(out) != 2 {
+		t.Fatalf("one agent's own findings were merged: %+v", out)
+	}
+}
+
+// WP-1570: a panel lead goes to the reviewer's finding it restates when the
+// combine fails: the same file, lines within 5 (or one with none) and a
+// similar claim; a refuted finding holds no place.
+func TestUnmergedLeadToReviewerFinding(t *testing.T) {
+	claim := "the cache entry is never evicted when the owner closes the session handle"
+	reviewer := []any{map[string]any{"title": "Leak", "path": "a.go", "line": float64(10), "severity": "high", "problem": claim}}
+	mk := func(line int, problem string) panelLead {
+		return panelLead{ID: "tests.1", Severity: "high", Confirmed: true, ReadPath: "a.go", ReadLine: line, ReadTitle: "T", ReadProblem: problem}
+	}
+	similar := "when the owner closes the session handle the cache entry is never evicted"
+	if o, s := unmerged([]panelLead{mk(13, similar)}, reviewer); len(o) != 0 || s["tests.1"] != "R1" {
+		t.Errorf("3 lines away, similar claim: %+v %v", o, s)
+	}
+	if o, s := unmerged([]panelLead{mk(0, similar)}, reviewer); len(o) != 0 || s["tests.1"] != "R1" {
+		t.Errorf("no line, similar claim: %+v %v", o, s)
+	}
+	if o, s := unmerged([]panelLead{mk(13, "an unrelated race on the queue length counter")}, reviewer); len(o) != 1 || len(s) != 0 {
+		t.Errorf("dissimilar claim: %+v %v", o, s)
+	}
+	if o, s := unmerged([]panelLead{mk(17, similar)}, reviewer); len(o) != 1 || len(s) != 0 {
+		t.Errorf("7 lines away: %+v %v", o, s)
+	}
+	reviewer[0].(map[string]any)["verdict"] = "refuted"
+	if o, s := unmerged([]panelLead{mk(10, claim)}, reviewer); len(o) != 1 || len(s) != 0 {
+		t.Errorf("at a refuted finding's place: %+v %v", o, s)
 	}
 }

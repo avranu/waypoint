@@ -83,6 +83,17 @@ services:
       MEANING_THREADS: ${MEANING_THREADS:-4}
       # Optional: a bearer token both sides share.
       MEANING_TOKEN: ${MEANING_TOKEN:-}
+      # A batch running longer than this many seconds is stuck: the service
+      # exits and is restarted (WP-1602).
+      MEANING_STUCK_S: ${MEANING_STUCK_S:-180}
+    # /health runs both models on a word, so wedged models fail it (the
+    # same check as the image's; here so deploy-status shows it).
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=9).status==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
 
 volumes:
   waypoint-data:
