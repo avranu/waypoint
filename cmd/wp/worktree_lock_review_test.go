@@ -205,3 +205,15 @@ func TestUnlockJudgedChangedLock(t *testing.T) {
 		t.Errorf("unlocked a lock that is not the one judged: %v", err)
 	}
 }
+
+// A host with no /proc of its own has no view: a pid it can't find there is
+// "can't tell", never an owner that is gone (WP-1370).
+func TestReadLockProcWithoutProcIsCantTell(t *testing.T) {
+	oldRoot, oldSig := lockProcRoot, lockPidSignal
+	t.Cleanup(func() { lockProcRoot, lockPidSignal = oldRoot, oldSig })
+	lockProcRoot = t.TempDir() // no self/stat in it
+	lockPidSignal = func(int) bool { return false }
+	if _, found, err := readLockProc(4242); err == nil || found {
+		t.Fatalf("no /proc: found %v, err %v; want an error", found, err)
+	}
+}
