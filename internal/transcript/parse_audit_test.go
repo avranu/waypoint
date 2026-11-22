@@ -208,12 +208,17 @@ func TestURLHeadKeepsNoSecret(t *testing.T) {
 		"not a url":                                     unparsedURL,
 		"://broken":                                     unparsedURL,
 		"https://host.example/p":                        "https://host.example/p",
+		"https://u:12/ss@host.example/p":                unparsedURL,
+		"https://user:12?ss@host.example/x":             unparsedURL,
+		"https://user:12#ss@host.example/x":             unparsedURL,
+		"https://medium.example/@someone/post":          "https://medium.example/@someone/post",
+		"http://localhost:3000/a":                       "http://localhost:3000/a",
 	} {
 		got := urlHead(in)
 		if got != want {
 			t.Errorf("urlHead(%q) = %q, want %q", in, got, want)
 		}
-		if strings.Contains(got, "p#") || strings.Contains(got, "u:") || strings.Contains(got, "pw") || strings.Contains(got, "ss@") || strings.Contains(got, "token") {
+		if strings.Contains(got, "p#") || strings.Contains(got, "u:") || strings.Contains(got, ":12") || strings.Contains(got, "pw") || strings.Contains(got, "ss@") || strings.Contains(got, "token") {
 			t.Errorf("urlHead(%q) kept a secret: %q", in, got)
 		}
 	}
