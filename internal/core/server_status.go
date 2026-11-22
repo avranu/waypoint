@@ -62,6 +62,9 @@ type ServerStatus struct {
 	// session that wrote them (WP-1470, WP-ADR145 point 6).
 	AgentEvents AgentEventSessions `json:"agent_events"`
 	AIKeys      []AIKeyDay         `json:"ai_keys"`
+	// Meaning is the meaning service as its circuit breaker sees it
+	// (WP-1602); absent when none is configured.
+	Meaning *MeaningHealth `json:"meaning,omitempty"`
 	// Warnings is the last hour's warnings and errors, counted by message,
 	// most first.
 	Warnings []LogCount `json:"warnings"`
@@ -183,6 +186,10 @@ func (s *Service) ServerStatus(ctx context.Context, actor *Actor) (*ServerStatus
 		s.log.WarnContext(ctx, "server status: agent events", "err", err)
 	}
 	out.AIKeys = s.aiKeyDays(ctx)
+	if m, ok := s.Meaning.(interface{ Health() MeaningHealth }); ok {
+		h := m.Health()
+		out.Meaning = &h
+	}
 	if s.cfg.Logs != nil {
 		out.Warnings = warningCounts(s.cfg.Logs, now.Add(-time.Hour), 10)
 		n, oldest := s.cfg.Logs.size()
