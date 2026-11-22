@@ -20,6 +20,9 @@ COPY server.py ./
 ENV HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 TOKENIZERS_PARALLELISM=false MEANING_THREADS=4
 USER meaning
 EXPOSE 8080
-HEALTHCHECK --interval=30s --timeout=5s --start-period=60s \
-  CMD ["python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=4).status==200 else 1)"]
+# /health runs both models on a word (or says they are busy, not stuck), so a
+# process that answers HTTP with its models wedged turns unhealthy; a batch
+# stuck past MEANING_STUCK_S (180) ends the process and compose restarts it.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
+  CMD ["python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=9).status==200 else 1)"]
 ENTRYPOINT ["python", "/app/server.py"]

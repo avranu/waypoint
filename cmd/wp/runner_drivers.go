@@ -11,8 +11,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
@@ -150,6 +153,105 @@ func excerpt(s string, n int) string {
 	return s
 }
 
+// callClock times an agent's tool calls, so a job that runs out of time
+// can say where the time went (WP-1597): an hour spent waiting for a test
+// slot and an hour spent on the work call for different fixes, and the log
+// alone has no times in it.
+type callClock struct {
+	mu   sync.Mutex // the CLI's output is read on its own goroutine, which can outlive Wait
+	open map[string]timedCall
+	done []timedCall // the slowest few that ended, slowest first
+	now  func() time.Time
+}
+
+type timedCall struct {
+	what  string
+	start time.Time
+	took  time.Duration
+}
+
+// slowCalls is how many ended calls the clock keeps, and slowCallMin the
+// shortest worth naming.
+const (
+	slowCalls   = 3
+	slowCallMin = 2 * time.Minute
+)
+
+func (c *callClock) clock() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
+}
+
+func (c *callClock) begin(id, what string) {
+	if c == nil || id == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.open == nil {
+		c.open = map[string]timedCall{}
+	}
+	// Cut here, not when named: a call that never returns stays in the map.
+	c.open[id] = timedCall{what: excerpt(what, 120), start: c.clock()}
+}
+
+func (c *callClock) end(id string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	t, ok := c.open[id]
+	if !ok {
+		return
+	}
+	delete(c.open, id)
+	if t.took = c.clock().Sub(t.start); t.took < slowCallMin {
+		return
+	}
+	c.done = append(c.done, t)
+	sort.SliceStable(c.done, func(i, j int) bool { return c.done[i].took > c.done[j].took })
+	c.done = c.done[:min(len(c.done), slowCalls)]
+}
+
+// spent says where a stopped agent's time went: the calls it was in when it
+// was stopped and the slowest that had ended. Empty when no call was slow.
+func (c *callClock) spent() string {
+	if c == nil {
+		return ""
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	name := func(t timedCall) string {
+		return fmt.Sprintf("%s in `%s`", t.took.Round(time.Minute), excerpt(t.what, 120))
+	}
+	var running []timedCall
+	for _, t := range c.open {
+		if t.took = c.clock().Sub(t.start); t.took >= slowCallMin {
+			running = append(running, t)
+		}
+	}
+	sort.Slice(running, func(i, j int) bool { return running[i].start.Before(running[j].start) })
+	var parts []string
+	if len(running) > 0 {
+		var names []string
+		for _, t := range running[:min(len(running), slowCalls)] {
+			names = append(names, name(t))
+		}
+		parts = append(parts, "When stopped it had been "+strings.Join(names, ", and ")+".")
+	}
+	if len(c.done) > 0 {
+		var names []string
+		for _, t := range c.done {
+			names = append(names, name(t))
+		}
+		parts = append(parts, "Its slowest calls that ended: "+strings.Join(names, "; ")+".")
+	}
+	return strings.Join(parts, " ")
+}
+
 // ---- Claude Code ----
 
 type claudeEvent struct {
@@ -162,6 +264,9 @@ type claudeEvent struct {
 			Text  string         `json:"text"`
 			Name  string         `json:"name"`
 			Input map[string]any `json:"input"`
+			// A tool call's id, and on its result the call it answers.
+			ID        string `json:"id"`
+			ToolUseID string `json:"tool_use_id"`
 		} `json:"content"`
 	} `json:"message"`
 	IsError          bool            `json:"is_error"`
@@ -205,7 +310,7 @@ func claudeDriver(in agentJob, prompt, work string) (*cliDriver, error) {
 		args = append(args, "--permission-mode", "acceptEdits")
 	}
 	var res *claudeEvent
-	d := &cliDriver{args: args, stdin: prompt, isStream: true}
+	d := &cliDriver{args: args, stdin: prompt, isStream: true, calls: &callClock{}}
 	d.line = func(line []byte, out *logSink) {
 		var ev claudeEvent
 		if json.Unmarshal(line, &ev) != nil {
@@ -225,6 +330,13 @@ func claudeDriver(in agentJob, prompt, work string) (*cliDriver, error) {
 					}
 				case "tool_use":
 					fmt.Fprintf(out, "→ %s %s\n", c.Name, hint(c.Input))
+					d.calls.begin(c.ID, c.Name+" "+hint(c.Input))
+				}
+			}
+		case "user":
+			for _, c := range ev.Message.Content {
+				if c.Type == "tool_result" {
+					d.calls.end(c.ToolUseID)
 				}
 			}
 		case "result":

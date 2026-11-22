@@ -67,7 +67,7 @@ async function run(width, scheme) {
 
   // Saving a description that names a task shows the relation at once.
   await page.getByRole("button", { name: "Add a description…" }).click();
-  await page.getByPlaceholder(/Markdown supported/).fill(`See ${d.key}.`);
+  await page.getByRole("textbox", { name: "Description" }).fill(`See ${d.key}.`);
   await relation(d).waitFor();
   ok(true, `${tag} the saved description's relation shows without a reload`);
 
