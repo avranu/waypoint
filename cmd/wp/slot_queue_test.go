@@ -485,3 +485,24 @@ func TestSlotTrimLeavesNoTempFile(t *testing.T) {
 		t.Errorf("trimmed to %q", b)
 	}
 }
+
+// A hold of several runs (wp testsum --repeat) is recorded under its own key,
+// so its total doesn't make a plain run of the same command classify long.
+func TestSlotRepeatHoldDoesNotClassifyPlainRuns(t *testing.T) {
+	argv := []string{"go", "test", "./x", "-run", "TestA"}
+	plain, repeat := slotField(slotKey(argv)), slotField(slotKeyFor("wp testsum --repeat", argv))
+	if plain == repeat {
+		t.Fatalf("one key %q for a plain run and a repeat hold", plain)
+	}
+	long := int64(slotLongRun.Seconds()) * 2
+	var recs []waitRec
+	for i := 0; i < 5; i++ {
+		recs = append(recs, waitRec{Name: "tests", Repo: "/a/.git", Cmd: repeat, Secs: long}, waitRec{Name: "tests", Repo: "/a/.git", Cmd: plain, Secs: 30})
+	}
+	if got := classifyRun(recs, "tests", "/a/.git", plain); got != slotClassShort {
+		t.Errorf("plain run classified %s by repeat holds", got)
+	}
+	if got := classifyRun(recs, "tests", "/a/.git", repeat); got != slotClassLong {
+		t.Errorf("repeat hold classified %s", got)
+	}
+}

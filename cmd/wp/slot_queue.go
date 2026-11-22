@@ -144,12 +144,24 @@ func slotOrder(class string, n int) []int {
 	return order
 }
 
+// appendWaitRec adds r to waits.jsonl, trimming the file when it is large.
+// The whole of it runs under an exclusive flock on waits.jsonl.lock, so a
+// record another wp appends while a trim rewrites the file isn't lost to the
+// rename (WP-1604). Readers need no lock: the rename is atomic. The lock is
+// best effort; holders are short-lived, and if it can't be taken the record
+// is still written.
 func appendWaitRec(dir string, r waitRec) {
 	b, err := json.Marshal(r)
 	if err != nil {
 		return
 	}
 	p := filepath.Join(dir, slotWaitsFile)
+	if lf, err := os.OpenFile(p+".lock", os.O_CREATE|os.O_RDWR, 0o600); err == nil { // #nosec G304 -- our own directory
+		defer func() { _ = lf.Close() }() // closing drops the lock too
+		if unlock, err := fileLock(lf); err == nil {
+			defer unlock()
+		}
+	}
 	f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) // #nosec G304 -- our own directory
 	if err != nil {
 		return
@@ -430,3 +442,12 @@ func (c *cli) slotQueueLs(dir string) bool {
 // slotKey is the command key of a run of argv, the same whichever of wp
 // testsum, wp ship --check or wp slot run asked for it (WP-1604).
 func slotKey(argv []string) string { return strings.Join(goTestJSON(argv), " ") }
+
+// slotKeyFor is the history key of a hold that is not one single run of argv
+// but several (--repeat runs it N times, bench times it over many rounds,
+// --base runs it again at the base). Its total would otherwise be logged as
+// the command's own run time and could make later plain runs of it classify
+// long, so such a hold has its own key, prefixed with what it is (WP-1604).
+// The count is left out: a repeat of 3 and of 500 share a history, and a
+// misjudged first run costs one run before the history classes it.
+func slotKeyFor(kind string, argv []string) string { return kind + ": " + slotKey(argv) }

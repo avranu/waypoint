@@ -29,8 +29,8 @@ type repeatTally struct {
 func (c *cli) testsumRepeat(argv []string, format string, n int, untilFail bool, keep []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	rec := newTestRunRecorder(argv) // as typed
-	key := slotKey(argv)
+	rec := newTestRunRecorder(argv)                // as typed
+	key := slotKeyFor("wp testsum --repeat", argv) // the hold is N runs, so not the command's own history
 	argv = goTestCount1(goTestJSON(argv))
 	env, release, err := c.takeSlotFor(ctx, "tests", defaultSlots(), key)
 	if err != nil {
