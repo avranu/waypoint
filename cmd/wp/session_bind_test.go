@@ -73,14 +73,19 @@ func TestRememberSessionTwoInOneCwd(t *testing.T) {
 	needProc(t)
 	dir := t.TempDir()
 	c := &cli{}
-	for _, id := range []string{"first", "second"} {
-		rememberSession(c, hookEventInput{SessionID: id, Cwd: dir})
-	}
+	rememberSession(c, hookEventInput{SessionID: "first", Cwd: dir})
+	// Give the first a different process, as a second harness would have.
+	c.state.Cwds["first"].Pid, c.state.Cwds["first"].PidStart = os.Getpid(), procStart(os.Getpid())
+	rememberSession(c, hookEventInput{SessionID: "second", Cwd: dir})
 	if c.state.Cwds["first"] == nil || c.state.Cwds["second"] == nil || c.state.Cwds["first"].Session != "first" {
 		b, _ := json.Marshal(c.state.Cwds)
 		t.Fatalf("each session should have its own entry: %s", b)
 	}
-	// Both look alive (same harness here): from the directory alone, none.
+	// Two different live processes (the harness here, and this test): from the
+	// directory alone, none.
+	if c.state.Cwds["first"].Pid == c.state.Cwds["second"].Pid {
+		t.Fatal("the test needs two different processes")
+	}
 	if got := c.state.sessionIn(dir); got != "" {
 		t.Errorf("two live sessions in one directory: %q", got)
 	}
@@ -89,6 +94,37 @@ func TestRememberSessionTwoInOneCwd(t *testing.T) {
 	c.state.Cwds["second"].Pid, c.state.Cwds["second"].PidStart = pid, start
 	if got := c.state.sessionIn(dir); got != "first" {
 		t.Errorf("the lone live session: %q", got)
+	}
+}
+
+// A second SessionStart from the same process (a /clear or a resume) replaces
+// the first: the directory then names the new session.
+func TestRememberSessionSameProcessSupersedes(t *testing.T) {
+	needProc(t)
+	dir := t.TempDir()
+	c := &cli{}
+	rememberSession(c, hookEventInput{SessionID: "before", Cwd: dir})
+	rememberSession(c, hookEventInput{SessionID: "after", Cwd: dir})
+	if c.state.Cwds["before"] != nil {
+		t.Error("the replaced session kept its entry")
+	}
+	if got := c.state.sessionIn(dir); got != "after" {
+		t.Errorf("sessionIn after a /clear: %q", got)
+	}
+}
+
+// A null entry in the state file doesn't panic the cleanup.
+func TestRememberSessionNullEntry(t *testing.T) {
+	needProc(t)
+	dir := t.TempDir()
+	c := &cli{}
+	c.state.Cwds = map[string]*cwdSession{"x": nil}
+	rememberSession(c, hookEventInput{SessionID: "s", Cwd: dir})
+	if _, ok := c.state.Cwds["x"]; ok {
+		t.Error("the null entry stayed")
+	}
+	if got := c.state.sessionIn(dir); got != "s" {
+		t.Errorf("sessionIn: %q", got)
 	}
 }
 
