@@ -58,9 +58,10 @@ func (s *Service) insertRelation(ctx context.Context, t *tx, r newRelation) (boo
 	if r.Score != nil {
 		score = *r.Score
 	}
-	res, err := t.ExecContext(ctx, `INSERT INTO issue_relations(source_id, target_id, kind, subkind, created_at, named_in, found, basis, created_by, created_agent, score)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(source_id, target_id, kind) DO NOTHING`,
-		r.Src, r.Dst, r.Kind, r.Subkind, s.nowMS(), nullInt(r.NamedIn), found, r.Basis, nullUser(r.CreatedBy), r.CreatedAgent, score)
+	sessID, sessTask := t.sessionStamp(ctx)
+	res, err := t.ExecContext(ctx, `INSERT INTO issue_relations(source_id, target_id, kind, subkind, created_at, named_in, found, basis, created_by, created_agent, score, session_id, session_issue_id)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(source_id, target_id, kind) DO NOTHING`,
+		r.Src, r.Dst, r.Kind, r.Subkind, s.nowMS(), nullInt(r.NamedIn), found, r.Basis, nullUser(r.CreatedBy), r.CreatedAgent, score, sessID, sessTask)
 	if err != nil {
 		return false, err
 	}
