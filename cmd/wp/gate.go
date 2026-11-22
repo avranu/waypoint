@@ -31,6 +31,9 @@ type liveAgent struct {
 	Type  string    `json:"type,omitempty"`
 	Since time.Time `json:"since"`
 	Mode  string    `json:"mode,omitempty"` // how its Agent call started it: modeBg, modeFg, "" when not known (WP-1443)
+	// Model: the model its Agent call resolved to at the gate, "" when not
+	// known. Claude Code's hooks don't say a sub-agent's model (ADR146).
+	Model string `json:"model,omitempty"`
 
 	// Provisional: made by the PostToolUse of its Agent call before its
 	// SubagentStart came; that start adopts it (keeping Since).
@@ -206,7 +209,7 @@ func (c *cli) trackSubagent(in hookEventInput) {
 		old, ok := s.Agents[in.SessionID][in.AgentID]
 		sameRun := ok && (old.Waiting || old.Provisional)
 		if sameRun {
-			la.Since, la.Mode = old.Since, old.Mode
+			la.Since, la.Mode, la.Model = old.Since, old.Mode, old.Model
 			if la.Type == "" {
 				la.Type = old.Type
 			}
@@ -214,6 +217,9 @@ func (c *cli) trackSubagent(in hookEventInput) {
 		p, hasParent := s.AgentParents[in.SessionID][in.AgentID]
 		if hasParent {
 			la.Mode = p.Mode
+			if la.Model == "" {
+				la.Model = p.Model
+			}
 			p.At = now
 			s.AgentParents[in.SessionID][in.AgentID] = p
 		}
@@ -225,8 +231,11 @@ func (c *cli) trackSubagent(in hookEventInput) {
 		// is a new admitted call, and taking one would free a slot Claude
 		// Code still holds for a pending start.
 		if !sameRun && !p.Taken {
-			if r, ok := s.takeReservation(in.SessionID, "", p.Parent, hasParent, in.AgentType); ok && la.Mode == "" {
-				la.Mode = r.Mode
+			if r, ok := s.takeReservation(in.SessionID, "", p.Parent, hasParent, in.AgentType); ok {
+				la.Model = r.Model
+				if la.Mode == "" {
+					la.Mode = r.Mode
+				}
 			}
 			if hasParent {
 				p.Taken = true // a later start of this id is a resume
@@ -309,7 +318,7 @@ func hookClaudeGate(c *cli, stdin io.Reader, stdout io.Writer) {
 	// The slot queue (WP-1443): an agent past Claude Code's limit would be
 	// refused with "do not retry", so the start waits for a stop instead.
 	if limit := subagentLimit(); in.SessionID != "" {
-		r := c.waitForSlot(in.SessionID, reservation{ID: in.ToolUseID, Mode: startMode(ti.Bg), Parent: in.AgentID, Type: ti.Type}, limit)
+		r := c.waitForSlot(in.SessionID, reservation{ID: in.ToolUseID, Mode: startMode(ti.Bg), Parent: in.AgentID, Type: ti.Type, Model: eff}, limit)
 		switch {
 		case r.abandoned:
 			return
@@ -345,6 +354,20 @@ func resolveModel(call, agent, parent string, dirs []string) string {
 		return m
 	}
 	return parent
+}
+
+// subagentModel is the model a sub-agent that just started runs on: what the
+// gate resolved for its Agent call (the call's model, its definition's, the
+// env setting, its parent's), else its definition's or the env setting. ""
+// when neither says: unknown, never a guess (ADR146).
+func (c *cli) subagentModel(in hookEventInput) string {
+	if a, ok := c.loadState().Agents[in.SessionID][in.AgentID]; ok && a.Model != "" {
+		return a.Model
+	}
+	if m := resolveModel("", in.AgentType, "", agentDirs(in.Cwd)); !strings.EqualFold(m, "inherit") {
+		return m
+	}
+	return "" // its parent's, which this hook isn't told
 }
 
 // subagentModelEnv reads CLAUDE_CODE_SUBAGENT_MODEL from the process
