@@ -493,6 +493,8 @@ const OUTCOME: Record<
     className: 'text-accent',
   },
   done: { label: 'done', icon: <CircleCheck />, className: 'text-ok' },
+  // A diagnose round's run: it recorded why rounds stall and shipped no code.
+  diagnosed: { label: 'diagnosed', icon: <CircleCheck />, className: 'text-muted' },
   released: { label: 'released', icon: <Undo2 />, className: 'text-muted' },
   expired: { label: 'expired', icon: <Clock3 />, className: 'text-warn' },
   timeout: { label: 'clock stopped', icon: <Clock3 />, className: 'text-warn' },

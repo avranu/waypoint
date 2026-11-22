@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -17,7 +18,14 @@ import (
 // is its first commit, and the CLI logged in (as an agent's token).
 func objectiveEnv(t *testing.T) (*env, *core.Actor, string) {
 	t.Helper()
-	e := newEnv(t)
+	return objectiveEnvServing(t, nil)
+}
+
+// objectiveEnvServing is objectiveEnv with the server's handler wrapped, to
+// see or stub what the CLI sends.
+func objectiveEnvServing(t *testing.T, wrap func(http.Handler) http.Handler) (*env, *core.Actor, string) {
+	t.Helper()
+	e := newEnvServing(t, nil, wrap)
 	me := e.login()
 	t.Setenv("WAYPOINT_SLOT_DIR", t.TempDir())
 	ctx := context.Background()
@@ -438,5 +446,66 @@ func TestMeasureCheckLaterSideTimingOutIsAnAnswer(t *testing.T) {
 		if !reads[0].OK || reads[1].OK || !strings.Contains(reads[1].Output, "longer than") {
 			t.Errorf("%s: head %+v, base %+v", measure, reads[0], reads[1])
 		}
+	}
+}
+
+// wp objective diagnose (WP-1449): what it asks for before the server is
+// asked, and what the server says to a worker whose round isn't a diagnose round.
+func TestObjectiveDiagnoseCommand(t *testing.T) {
+	e, me, key := objectiveEnv(t)
+	for name, args := range map[string][]string{
+		"no key":       {"objective", "diagnose", "-m", "x"},
+		"no text":      {"objective", "diagnose", key},
+		"blank text":   {"objective", "diagnose", key, "-m", "  "},
+		"both":         {"objective", "diagnose", key, "-m", "x", "-f", "d.md"},
+		"missing file": {"objective", "diagnose", key, "-f", "nowhere.md"},
+	} {
+		if out, code := e.run(args...); code == 0 || strings.TrimSpace(out) == "" {
+			t.Errorf("%s: exit %d, %q", name, code, out)
+		}
+	}
+	// No objective yet.
+	if out, code := e.run("objective", "diagnose", key, "-m", "x"); code == 0 || !strings.Contains(out, "has no objective, so there is nothing to diagnose") {
+		t.Errorf("no objective: exit %d, %q", code, out)
+	}
+	e.setObjective(me, key, core.ObjectiveInput{Check: ptr("cat n.txt"), Until: ptr("< 10")})
+	// The server's own words say the round isn't a diagnose round, from a file too.
+	write(t, "d.md", "# Why\n\nThe check measures the wrong file.\n")
+	for _, args := range [][]string{
+		{"objective", "diagnose", key, "-m", "the check is wrong", "--ask"},
+		{"objective", "diagnose", key, "-f", "d.md"},
+	} {
+		if out, code := e.run(args...); code == 0 || !strings.Contains(out, "a diagnosis is for a diagnose round") {
+			t.Errorf("%v: exit %d, %q", args, code, out)
+		}
+	}
+	// What wp objective set and wp objective diagnose say in help.
+	if out := e.wp("help", "objective", "diagnose"); !strings.Contains(out, "KEY (-f FILE | -m TEXT) [--ask]") {
+		t.Errorf("help:\n%s", out)
+	}
+}
+
+func TestObjectiveDiagnoseAfterFlag(t *testing.T) {
+	e, me, key := objectiveEnv(t)
+	e.wp("objective", "set", key, "--check", "cat n.txt", "--until", "< 10", "--diagnose-after", "4")
+	o, err := e.svc.GetObjective(context.Background(), me, key)
+	if err != nil || o.DiagnoseAfter != 4 {
+		t.Fatalf("diagnose_after = %+v, %v", o, err)
+	}
+	e.wp("objective", "set", key, "--diagnose-after", "0")
+	if o, _ = e.svc.GetObjective(context.Background(), me, key); o.DiagnoseAfter != 0 {
+		t.Errorf("diagnose_after = %d, want 0 (never)", o.DiagnoseAfter)
+	}
+	if out, code := e.run("objective", "set", key, "--diagnose-after", "99"); code == 0 {
+		t.Errorf("99: %s", out)
+	}
+	project := key[:strings.Index(key, "-")]
+	if out, code := e.run("new", "Alone", "--project", project, "--diagnose-after", "3"); code == 0 || !strings.Contains(out, "--diagnose-after") {
+		t.Errorf("--diagnose-after alone: exit %d %s", code, out)
+	}
+	out := e.wp("new", "Cut it", "--project", project, "--check", "cat n.txt", "--until", "< 10", "--diagnose-after", "3")
+	made := regexp.MustCompile(project + `-\d+`).FindString(out)
+	if o, err = e.svc.GetObjective(context.Background(), me, made); err != nil || o.DiagnoseAfter != 3 {
+		t.Errorf("new: %+v, %v", o, err)
 	}
 }

@@ -3,7 +3,7 @@
 
 import { Link } from '@tanstack/react-router'
 import { Badge } from '@/components/ui/misc'
-import { Markdown } from '../Transcript'
+import { Markdown } from '@/components/Markdown'
 import { splitFrontmatter } from './data'
 
 export function SkillDoc({
