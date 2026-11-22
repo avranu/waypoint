@@ -218,6 +218,14 @@ func TestInstructionAgentChangesWait(t *testing.T) {
 	if x.Body != "Trust me." || x.Pending == nil || x.Pending.Body != "Trust me more." || x.Pending.Title != "Mine" {
 		t.Fatalf("pending edit: %+v pending %+v", x, x.Pending)
 	}
+	// A person's title edit with an agent's body still pending must not
+	// carry the agent's unreviewed body into the approved revision.
+	if x, err = e.s.UpdateInstruction(e.ctx, e.admin, proposed.ID, InstructionInput{Title: sp("Renamed")}); err != nil {
+		t.Fatal(err)
+	}
+	if x.Title != "Renamed" || x.Body != "Trust me." {
+		t.Fatalf("person's edit on a pending proposal: %+v", x)
+	}
 	if x, err = e.s.ReviewInstruction(e.ctx, e.admin, proposed.ID, 0, false); err != nil || x.Body != "Trust me." || x.Pending != nil {
 		t.Fatalf("rejected edit: %+v, %v", x, err)
 	}

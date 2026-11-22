@@ -479,11 +479,19 @@ func (s *Service) UpdateInstruction(ctx context.Context, actor *Actor, id int64,
 	err = s.write(ctx, actor, func(t *tx) error {
 		state := ""
 		if content {
-			// From the newest revision, so a second proposal builds on the first.
+			// An agent builds on the newest revision that is not rejected, so a
+			// second proposal builds on the first. A person's edit is approved
+			// as written, so it builds on the delivered revision only: an
+			// agent's pending text must not ride in unreviewed.
 			var b instrContent
 			var models, types string
-			if err := t.QueryRowContext(ctx, `SELECT title, body, scope, models, agent_types, moment FROM agent_instruction_revisions
-				WHERE instruction_id = ? AND state <> ? ORDER BY rev DESC LIMIT 1`, id, InstrRejected).Scan(&b.title, &b.body, &b.scope, &models, &types, &b.moment); err != nil {
+			q, args := `SELECT title, body, scope, models, agent_types, moment FROM agent_instruction_revisions
+				WHERE instruction_id = ? AND state <> ? ORDER BY rev DESC LIMIT 1`, []any{id, InstrRejected}
+			if !actor.writesAsAgent() {
+				q, args = `SELECT title, body, scope, models, agent_types, moment FROM agent_instruction_revisions
+				WHERE instruction_id = ? AND rev = (SELECT rev FROM agent_instructions WHERE id = ?)`, []any{id, id}
+			}
+			if err := t.QueryRowContext(ctx, q, args...).Scan(&b.title, &b.body, &b.scope, &models, &types, &b.moment); err != nil {
 				return err
 			}
 			b.models, b.types = instrList(models), instrList(types)
