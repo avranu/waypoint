@@ -90,10 +90,10 @@ function Tiles({ l }: { l: UsageLedger }) {
         title="Share of all cache-read tokens made by calls whose context was over 300k"
       />
       <Tile
-        label="Cold cache starts"
+        label="Cold starts (inferred)"
         value={o.cold_starts.toLocaleString()}
-        sub={`${pct(o.cold_share, 1)} of calls · ${tok(o.cold_tokens)} rewritten · +${usd(o.cold_extra_usd)}`}
-        title="A call that wrote to the cache after a gap longer than the cache lived (5 minutes, or an hour when the previous call wrote the 1 hour cache). The extra is what those writes cost beyond reading the same tokens from a warm cache."
+        sub={`${pct(o.cold_share, 1)} of calls · ${tok(o.cold_tokens)} rewritten · est. +${usd(o.cold_extra_est_usd)}`}
+        title="Inferred, not measured: the CLI guessed that a call wrote to the cache after a gap longer than the cache lived (5 minutes, or an hour when the previous call wrote the 1 hour cache). The estimate is what those writes would cost beyond reading the same tokens from a warm cache, if the guess is right."
       />
       <Tile
         label="Forks / fresh"
@@ -294,7 +294,7 @@ function ledgerCols(by: By): Col<LedgerRow>[] {
     },
     {
       id: 'cold',
-      label: 'Cold',
+      label: 'Cold (inferred)',
       value: (r) => r.cold_starts,
       cell: (r) => r.cold_starts.toLocaleString(),
       wide: true,

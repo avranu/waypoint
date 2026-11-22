@@ -611,7 +611,7 @@ func TestHookInstallSet(t *testing.T) {
 		{"PreToolUse", "claude-event", "AskUserQuestion", true, 30},
 		{"PostToolUse", "claude-event", "AskUserQuestion|Bash|Read|Agent|Task", true, 30},
 		{"Stop", "claude-event", "", false, 20},
-		{"SubagentStart", "claude-event", "", true, 30},
+		{"SubagentStart", "claude-event", "", false, 5}, // waits for its instructions (ADR146)
 		{"SubagentStop", "claude-event", "", true, 30},
 		{"SessionEnd", "claude-event", "", false, 2},
 		{"PreToolUse", "claude-nudge", "Bash|Read|Monitor", false, 2},

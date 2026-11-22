@@ -218,11 +218,30 @@ func (s *Service) countDrops(ctx context.Context, t *tx, actor *Actor, machine s
 }
 
 func (s *Service) addDrop(ctx context.Context, t *tx, actor *Actor, machine, reason, event string, n, at int64) error {
-	_, err := t.ExecContext(ctx, `INSERT INTO hook_drops(user_id, machine, reason, event, dropped, first_at, last_at) VALUES (?,?,?,?,?,?,?)
+	return addDropRow(ctx, t, actor.id(), machine, reason, event, n, at)
+}
+
+// addDropRow adds n to the count of what was dropped for a person's machine.
+// The server's own drops (a trim, a cap, a skipped row, a withheld prompt) and
+// the CLI's outbox drops are counted the same way, and shown by `wp server
+// status` and in the "session data" collector (WP-1470, WP-ADR145 point 5).
+func addDropRow(ctx context.Context, q queryer, uid int64, machine, reason, event string, n, at int64) error {
+	if n <= 0 {
+		return nil
+	}
+	_, err := q.ExecContext(ctx, `INSERT INTO hook_drops(user_id, machine, reason, event, dropped, first_at, last_at) VALUES (?,?,?,?,?,?,?)
 		ON CONFLICT(user_id, machine, reason, event) DO UPDATE SET dropped = dropped + excluded.dropped, last_at = max(last_at, excluded.last_at)`,
-		actor.id(), machine, reason, event, n, at, at)
+		uid, machine, reason, event, n, at, at)
 	return err
 }
+
+// Reasons the server counts in hook_drops for data it did not keep.
+const (
+	DropSessionEventsTrim  = "session_events_trim"  // events past a session's newest 1500, deleted at its Stop
+	DropEvidenceRunsCap    = "evidence_cap"         // test runs and bench rows past what one commit keeps
+	DropPromptTextWithheld = "prompt_text_withheld" // a typed prompt recorded without its text (--no-prompts)
+	DropUnregisteredWrite  = "unregistered_session" // a write that named a session the server has not registered
+)
 
 // observeValue puts a change into the session's timeline of that kind. The
 // baseline is the latest row at or before the event's time (ties by id), so an

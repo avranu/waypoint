@@ -522,6 +522,31 @@ wait apart. Approving a pull request covers its title, description and code at t
                                   title, body, head_sha, created_at, updated_at}]
     POST /outside-pr/{id}/approve    POST /outside-pr/{id}/discard (comments only)
 
+## Agent instructions
+
+Text Waypoint adds to a session's context by what the session is, at its start, at a sub-agent's
+start and after a compaction (ADR146). An instruction belongs to a project or to none (every
+project; admins). Who it is for: "scope" main, subagent or any; "models" (names matched inside the
+model id; a session whose model isn't known gets only instructions naming none); "agent_types"
+(globs on the sub-agent's type, "!" leaves one out); "moment" start (and again after each
+compaction) or compact (main thread, only after one). A person's change stands as written; an
+agent's is a pending revision until a person approves it, and only the approved text is sent.
+
+    GET  /instructions?project=KEY               the project's and every project's, each with "pending"
+    GET  /instructions/preview?project=KEY&scope=main|subagent&model=M&agent_type=T&compact=1
+                                                 {text, chars, items: [{id, title, outcome, chars}]}: what such
+                                                 a session would get now; records nothing
+    POST /instructions {"project","title","body","scope","models":[],"agent_types":[],"moment"}
+    GET  /instructions/{id}                      + "revisions" and "sent" {sent, cut, unknown_model, sessions,
+                                                 subagents, compactions, last}
+    PATCH /instructions/{id}                     any of the fields above; "enabled", "position" (people only)
+    POST /instructions/{id}/review {"approve":true|false,"rev":N}   people only; rev 0 or absent: the newest pending
+    DELETE /instructions/{id}                    people only
+The hook answer (POST /sessions/hook) carries "instructions" at a SessionStart and SubagentStart.
+Outcomes recorded per hook: sent, cut (over the size budget: 6,000 characters a session start, 9,000 a
+sub-agent start; sent whole or not at all), unknown_model. A project turns delivery off with its
+setting "no_agent_instructions".
+
 ## Glossary
 
 Terms per project or global (no project). A project's full glossary is its own terms, its
@@ -631,7 +656,9 @@ differences (a message written again with more tokens). Cost is API-equivalent, 
                         "sessions":[{s,cwd,repo,branch,version,title,first,last,compactions}],
                         "refusals":[{t,s,repo,model,tool,detail,reason,source,excerpt}]}],
                         "inventory":[{kind,name,scope}], "parsed","skipped","unknown":{type:count}}
-                                    {accepted, duplicate}; h is an hour start in ms; at most 2000 chunks and
+                                    {accepted, duplicate}; h is an hour start in ms; messages counts model
+                                    responses (API messages), not turns, and prompts in tools counts permission
+                                    prompts (WP-1470); at most 2000 chunks and
                                     60000 rows; unknown fields are ignored
     POST /usage/quota {"machine","session","model","context_pct","five_hour":{percent,resets_at},"seven_day":{…}}
                                     resets_at in ms; a reading the same as the last is not stored again
