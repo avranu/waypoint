@@ -72,7 +72,7 @@ func init() {
 		contextCmd,
 		runnerCmd,
 		nextCmd, batchCmd, startCmd, shipCmd, shotCmd, previewCmd, releaseCmd, declineCmd, claimsCmd, pauseCmd, resumeCmd, usageCmd, queueCmd, agentsCmd, autopilotCmd, followupCmd, activityCmd,
-		specCmd, defineCmd, searchCmd, briefCmd, prepCmd, codeCmd, glossaryCmd, designCmd, reviewCmd, riskCmd, goalsCmd, goalCmd, traceCmd, graphCmd, unlinkCmd,
+		specCmd, defineCmd, searchCmd, briefCmd, prepCmd, codeCmd, glossaryCmd, instructionCmd, designCmd, reviewCmd, riskCmd, goalsCmd, goalCmd, traceCmd, graphCmd, unlinkCmd,
 		prCmd, tidyCmd, worktreeCmd, unshippedCmd, slotCmd, testsumCmd, benchCmd, burnCmd, fanoutCmd, ciCmd, codeqlCmd, auditCmd, mistakesCmd, escapesCmd, serverCmd, aiCmd, experimentCmd, objectiveCmd,
 		lsCmd, showCmd, newCmd, editCmd, publishCmd, draftCmd, holdCmd, mvCmd, assignCmd, unassignCmd, commentCmd, worklogCmd, attachCmd, filesCmd, linkCmd, relateCmd, rmCmd, openCmd,
 		projectCmd, envCmd, timerCmd, logCmd, automationCmd,
