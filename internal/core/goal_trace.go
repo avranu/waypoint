@@ -539,7 +539,12 @@ func (g *goalGraph) scoped(project int64) bool {
 // goalState coalesces recomputes: one runs at a time, and a change while
 // it runs starts one more after it.
 type goalState struct {
-	mu       sync.Mutex
+	mu sync.Mutex
+	// store serializes storeGoalTraces. A recompute called directly (a goals
+	// view, a test) runs beside the background one; without it, a pass that
+	// read the graph before a link was made could write its rows over those
+	// of a pass that read it after.
+	store    sync.Mutex
 	running  bool
 	dirty    bool
 	hasGoals bool // the instance has a goal note; nothing to keep otherwise
@@ -566,6 +571,9 @@ type goalState struct {
 	// settleWait caps goalsSettle for this Service (0: goalsSettleWait), so a
 	// test can shorten it without touching other Services (WP-1372).
 	settleWait time.Duration
+	// beforeStore, when set, runs as a trace pass has worked out its rows and
+	// is about to write them, so a test can hold one pass there.
+	beforeStore func(context.Context)
 }
 
 // goalsSettleWait caps goalsSettle: a view waits this long for a recompute,
@@ -697,6 +705,10 @@ func (s *Service) RecomputeGoalTraces(ctx context.Context) (int, error) {
 }
 
 func (s *Service) storeGoalTraces(ctx context.Context) (int, error) {
+	// Read, compare and write as one pass: a pass that waits starts from
+	// what the one before it wrote.
+	s.goals.store.Lock()
+	defer s.goals.store.Unlock()
 	var goals int
 	if err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM design_notes WHERE kind = 'goal'`).Scan(&goals); err != nil {
 		return 0, err
@@ -774,6 +786,9 @@ func (s *Service) storeGoalTraces(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 	sort.Slice(put, func(a, b int) bool { return cmpNode(put[a], put[b]) < 0 })
+	if s.goals.beforeStore != nil {
+		s.goals.beforeStore(ctx)
+	}
 	now := s.nowMS()
 	err = s.write(ctx, SystemActor(), func(t *tx) error {
 		for _, n := range drop {

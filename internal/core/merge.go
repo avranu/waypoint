@@ -569,6 +569,42 @@ type MergeResult struct {
 	Warning string `json:"warning,omitempty"`
 }
 
+// refuseDiagnoseMerge refuses an agent's merge or arm of a pull request linked
+// to a task whose objective is in a diagnose round: a diagnose round ships no
+// code, and the merge would end it as an ordinary reading (WP-1449). A person
+// may still merge it; a pull request already armed merges on its own as it
+// would, since Waypoint's automatic merge doesn't come through here.
+func (s *Service) refuseDiagnoseMerge(ctx context.Context, pr *PullRequest) error {
+	rows, err := s.db.R.QueryContext(ctx, `SELECT DISTINCT el.issue_id FROM external_links el
+		WHERE el.kind = 'pull' AND (el.url = ? OR (el.repo = ? COLLATE NOCASE AND el.number = ?))`, pr.URL, pr.Repo, pr.Number)
+	if err != nil {
+		return err
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		o, err := s.objectiveRow(ctx, s.db.R, id)
+		if err != nil {
+			return err
+		}
+		if o != nil && o.State == ObjectiveActive && o.diagnoseRound() {
+			return invalid("%s's round %d is a diagnose round, which ships no code: record the diagnosis first (wp objective diagnose %s -f FILE), then ship in the round that reopens. A person can merge this pull request, or skip the diagnosis with wp objective next %s",
+				o.Key, o.Round, o.Key, o.Key)
+		}
+	}
+	return nil
+}
+
 // MergePR merges a pull request that is ready, or with WhenReady arms it to
 // merge when it becomes ready (at once if it already is). Agents may use it
 // on their own pull requests. Merges are audited.
@@ -588,6 +624,11 @@ func (s *Service) MergePR(ctx context.Context, actor *Actor, prID int64, in Merg
 	}
 	if pr.State != "open" && pr.State != "draft" {
 		return nil, invalid("this pull request is %s", pr.State)
+	}
+	if actor.IsAgent() {
+		if err := s.refuseDiagnoseMerge(ctx, pr); err != nil {
+			return nil, err
+		}
 	}
 	// Read first, as merging releases the claim the warning is about. The
 	// claim itself waits for an arm that worked (WP-117).

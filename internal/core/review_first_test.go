@@ -574,7 +574,7 @@ func TestGrokReviewPromptKeepsFindingsUntrusted(t *testing.T) {
 func TestGrokReviewPromptIsWhole(t *testing.T) {
 	a := &CodeAudit{ID: 286, Model: "cursor/grok-4.7-high", Title: "branch wp-1"}
 	var todo []CodeAuditFinding
-	for i := range auditMaxFindings {
+	for i := range 30 {
 		todo = append(todo, CodeAuditFinding{ID: "286." + itoa64(int64(i+1)), Title: "Tab\there " + strings.Repeat("x", 190), Path: strings.Repeat("d/", 500) + "a.go", Line: i,
 			Severity: "major", Problem: strings.Repeat("p\r", 2000), Confirm: strings.Repeat("c", 2000), State: "confirmed", By: "someone", Note: strings.Repeat("n", 2000)})
 	}

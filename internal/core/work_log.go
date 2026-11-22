@@ -1127,7 +1127,7 @@ func (s *Service) runsWorkLog(ctx context.Context, wl *WorkLog, issueID int64) e
 		}
 		wl.Entries = append(wl.Entries, &WorkLogEntry{Kind: WorkRun, At: msTime(started), State: "started", Title: agentShort(agent) + " took it", Agent: agent, Author: who, Session: session})
 		if ended.Valid {
-			what := map[string]string{"done": "finished it", "released": "let it go", "expired": "let its claim lapse"}[outcome]
+			what := map[string]string{"done": "finished it", "released": "let it go", RunDiagnosed: "recorded a diagnosis", "expired": "let its claim lapse"}[outcome]
 			wl.Entries = append(wl.Entries, &WorkLogEntry{Kind: WorkRun, At: msTime(ended.Int64), State: cmp(outcome, "ended"), Title: agentShort(agent) + " " + cmp(what, "stopped working on it"),
 				Agent: agent, Author: who, Session: session})
 		}
