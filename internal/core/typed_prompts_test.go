@@ -623,9 +623,9 @@ func TestTypedKindsWhoTypedAndWhoseWords(t *testing.T) {
 		}
 		auto, ok := promptOwner("plain words", c.kind)
 		switch {
-		case c.auto && !(auto && ok):
+		case c.auto && (!auto || !ok):
 			t.Errorf("promptOwner(%q) = %v,%v, want automation's", c.kind, auto, ok)
-		case c.person && !(!auto && ok):
+		case c.person && (auto || !ok):
 			t.Errorf("promptOwner(%q) = %v,%v, want the person's", c.kind, auto, ok)
 		case !c.auto && !c.person && ok:
 			t.Errorf("promptOwner(%q) = %v,%v, want it to keep whoever came before", c.kind, auto, ok)
