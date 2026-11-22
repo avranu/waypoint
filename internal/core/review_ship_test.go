@@ -409,3 +409,11 @@ func TestShipReviewedForgeDownBeyondTheWindow(t *testing.T) {
 		t.Errorf("%d shipped messages", n)
 	}
 }
+
+func TestShipBackoff(t *testing.T) {
+	for n, want := range map[int]time.Duration{0: time.Minute, 1: time.Minute, 2: 2 * time.Minute, 3: 5 * time.Minute, 4: 10 * time.Minute, 5: heldShipRetry, 50: heldShipRetry} {
+		if got := shipBackoff(n); got != want {
+			t.Errorf("shipBackoff(%d) = %v, want %v", n, got, want)
+		}
+	}
+}

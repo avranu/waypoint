@@ -457,3 +457,44 @@ func TestResumedRoundWithNoReviewOpensNothing(t *testing.T) {
 		t.Fatalf("opened %d pull requests with no review", len(e.g.created))
 	}
 }
+
+// A ship's question and the sweep give the same answer for the same facts: a
+// round with findings still undecided is told to the session within the wait,
+// and past it (or with no session) is released.
+func TestUndecidedAnswerIsTheSameForAShipAndTheSweep(t *testing.T) {
+	for _, session := range []bool{true, false} {
+		for _, since := range []time.Duration{0, heldScreenWait - time.Minute, heldScreenWait, heldScreenWait + time.Hour} {
+			in := roundIn{State: RoundDone, Audit: AuditDone, Undecided: 2, Session: session, RunOpen: true, SinceChange: since}
+			sweep := decideRound(in)
+			in.ShipOpens = true
+			ship := decideRound(in)
+			wantTell := session && since < heldScreenWait
+			want := doRelease
+			if wantTell {
+				want = doTell
+			}
+			if sweep.Do != want || ship.Do != want {
+				t.Errorf("session %v, %v since the change: sweep %d, ship %d, want %d", session, since, sweep.Do, ship.Do, want)
+			}
+			if wantTell && (ship.Need != needMarks || ship.For == "" || ship.Until <= 0) {
+				t.Errorf("a ship's tell: %+v", ship)
+			}
+			if !wantTell && (ship.Why == "" || ship.Why != sweep.Why) {
+				t.Errorf("the release says %q (ship) and %q (sweep)", ship.Why, sweep.Why)
+			}
+		}
+	}
+}
+
+// Past heldScreenWait the session's own ship is not held for findings nobody
+// decided: it opens the pull request, as the sweep's release would.
+func TestShipPastTheWaitIsNotHeldForUndecidedFindings(t *testing.T) {
+	e := newLoopEnv(t, map[string]string{"": "critical", "fixes": "complete"})
+	r := e.review("Merge loses an update")
+	e.doneRound(r)
+	e.setClock(e.clockNow().Add(heldScreenWait + time.Hour))
+	res, err := e.ship(e.task.Key, ShipAuto)
+	if err != nil || strings.Contains(res.Held, "still to decide") {
+		t.Fatalf("held = %q, %v: want the ship not held for findings", res.Held, err)
+	}
+}

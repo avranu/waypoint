@@ -530,6 +530,11 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 		// No review was recorded and the deadline is past: this session is
 		// here, so it is asked for the report once more; the sweep ends the round.
 		return reportHold(g.key, index, bp.Base), "", nil
+	case doRelease:
+		// The findings weren't decided in time (or no session is left to
+		// decide them): as the sweep does, the round is released. This ship
+		// opens the pull request, and no further round runs.
+		return "", "", nil
 	}
 	if audit == 0 {
 		// Its slow audit went on as the pull request's, and the session was
@@ -802,7 +807,7 @@ func reportHold(key string, index int, base string) string {
 	}
 	return fmt.Sprintf("No pull request yet: adversarial review round %d of %s was yours to run, and what it found isn't recorded, so nothing can be checked or scored. "+
 		"Record every issue the review raised, the ones you rejected too, with what you did about each: `wp audit report %s -f FILE` (- for stdin), FILE being JSON as %s. "+
-		"If it raised nothing: `wp audit report %s --none -m \"who reviewed what, and how\"`. Then run `wp ship --pr`. "+
+		"If it raised nothing: `wp audit report %s --none -m \"who reviewed what, and how\"`. Then run `wp ship`. "+
 		"If no review ran, run one first: an adversarial-review subagent on the branch's whole change against %s, by the brief the round gave you. "+
 		"(A wp that doesn't know `wp audit report` is older than this server: `wp update` first.)",
 		index, key, key, reviewReportForm, key, against)
@@ -1598,23 +1603,20 @@ func againRecordOf(rt reviewerTrust, model string) string {
 // againTodoLines is againTodo with a line for each finding: its ID, severity,
 // place and title, so a session sees what to decide without another command.
 func (s *Service) againTodoLines(ctx context.Context, audit int64) (ids []string, lines string, err error) {
-	rows, err := s.db.R.QueryContext(ctx, `SELECT ordinal, severity, path, line, title FROM code_audit_findings f WHERE audit_id = ? AND `+findingToDoSQL+` ORDER BY ordinal`, audit)
+	// The same findings the gate counts as undecided (roundTodo): those the
+	// pull request's babysitter already holds are left out.
+	a, err := s.auditRow(ctx, audit)
 	if err != nil {
 		return nil, "", err
 	}
-	defer rows.Close()
-	var b strings.Builder
-	for rows.Next() {
-		var n, line int
-		var sev, path, title string
-		if err := rows.Scan(&n, &sev, &path, &line, &title); err != nil {
-			return nil, "", err
-		}
-		id := fmt.Sprintf("%d.%d", audit, n)
-		ids = append(ids, id)
-		fmt.Fprintf(&b, "- %s\n", findingLine(id, sev, path, line, title))
+	if err := s.loadFindings(ctx, a); err != nil {
+		return nil, "", err
 	}
-	return ids, untrustedBlock(strings.TrimRight(b.String(), "\n")), rows.Err()
+	todo := s.roundTodo(ctx, a)
+	for _, f := range todo {
+		ids = append(ids, f.ID)
+	}
+	return ids, findingLines(todo), nil
 }
 
 // The check of a round's marks (WP-1320): the session's own "rejected"

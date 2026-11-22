@@ -2,6 +2,7 @@ package core
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1031,6 +1032,102 @@ func TestReviewRoundSharesPRAuditWithBabysitter(t *testing.T) {
 	a.s.setRoundNow(a.ctx, roundID, []string{RoundPending, RoundRunning}, RoundDone, "")
 	if got := a.s.auditRoundWork(a.ctx, b, prID); len(got) != 2 {
 		t.Errorf("after the round, the babysitter's work = %v", got)
+	}
+}
+
+// The findings a held ship lists are the ones the gate counts as undecided: a
+// finding the pull request's babysitter holds is in neither.
+func TestAgainTodoLinesMatchTheGateWithABabysitter(t *testing.T) {
+	a, _ := auditAPEnv(t)
+	first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude", Priority: "urgent"})
+	a.finish(first.Key)
+	a.linkPR(first.ID, 7, "aaa")
+	var prID, forge int64
+	if err := a.s.db.R.QueryRow(`SELECT id, forge_id FROM pull_requests WHERE number = 7`).Scan(&prID, &forge); err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.s.db.W.Exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, pr_id, pr_number, ref, status, model, models, title, owner_id, created_at)
+		VALUES (?, ?, 'acme/app', 'pr', ?, 7, 'aaa', 'done', 'cursor/grok-4.7-high', '[]', 'acme/app#7', ?, 0)`, a.p.ID, forge, prID, a.admin.User.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	audit, _ := res.LastInsertId()
+	for i, title := range []string{"Babysitter has it", "Left one", "Left two"} {
+		if _, err := a.s.db.W.Exec(`INSERT INTO code_audit_findings(audit_id, ordinal, title, severity, problem) VALUES (?, ?, ?, 'high', 'p')`, audit, i+1, title); err != nil {
+			t.Fatal(err)
+		}
+	}
+	given := mustJSON([]BabysitRound{{N: 1, Findings: []string{itoa64(audit) + ".1"}}})
+	if _, err := a.s.db.W.Exec(`INSERT INTO babysits(pr_id, round, owner_id, rounds, created_at, updated_at) VALUES (?, 1, ?, ?, 0, 0)`, prID, a.admin.User.ID, given); err != nil {
+		t.Fatal(err)
+	}
+	ids, lines, err := a.s.againTodoLines(a.ctx, audit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	au, err := a.s.auditRow(a.ctx, audit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.s.loadFindings(a.ctx, au); err != nil {
+		t.Fatal(err)
+	}
+	if want := len(a.s.roundTodo(a.ctx, au)); len(ids) != 2 || len(ids) != want {
+		t.Errorf("listed %v, the gate counts %d", ids, want)
+	}
+	if strings.Contains(lines, "Babysitter has it") || !strings.Contains(lines, "Left one") || !strings.Contains(lines, "Left two") {
+		t.Errorf("lines:\n%s", lines)
+	}
+}
+
+// An audit whose findings are all decided or the babysitter's ends its round
+// with a body that says how many were marked, how, by whom, and which the
+// babysitter holds.
+func TestEndRoundNothingBodySaysWhatBecameOfTheFindings(t *testing.T) {
+	a, _ := auditAPEnv(t)
+	first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude", Priority: "urgent"})
+	a.finish(first.Key)
+	a.linkPR(first.ID, 7, "aaa")
+	var prID, forge int64
+	if err := a.s.db.R.QueryRow(`SELECT id, forge_id FROM pull_requests WHERE number = 7`).Scan(&prID, &forge); err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.s.db.W.Exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, pr_id, pr_number, ref, status, model, models, title, owner_id, created_at)
+		VALUES (?, ?, 'acme/app', 'pr', ?, 7, 'aaa', 'done', 'cursor/grok-4.7-high', '[]', 'acme/app#7', ?, 0)`, a.p.ID, forge, prID, a.admin.User.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	audit, _ := res.LastInsertId()
+	for i, title := range []string{"Fixed one", "Rejected one", "Babysitter has it"} {
+		if _, err := a.s.db.W.Exec(`INSERT INTO code_audit_findings(audit_id, ordinal, title, severity, problem) VALUES (?, ?, ?, 'high', 'p')`, audit, i+1, title); err != nil {
+			t.Fatal(err)
+		}
+	}
+	id := func(n int) string { return itoa64(audit) + "." + strconv.Itoa(n) }
+	for _, m := range []MarkFindings{{IDs: []string{id(1)}, State: "fixed", Note: "done"}, {IDs: []string{id(2)}, State: "rejected", Note: "not real"}} {
+		if _, err := a.s.MarkAuditFindings(a.ctx, a.admin, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	given := mustJSON([]BabysitRound{{N: 1, Findings: []string{id(3)}}})
+	if _, err := a.s.db.W.Exec(`INSERT INTO babysits(pr_id, round, owner_id, rounds, created_at, updated_at) VALUES (?, 1, ?, ?, 0, 0)`, prID, a.admin.User.ID, given); err != nil {
+		t.Fatal(err)
+	}
+	au, err := a.s.auditRow(a.ctx, audit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.s.loadFindings(a.ctx, au); err != nil {
+		t.Fatal(err)
+	}
+	got := a.s.nothingLeftFacts(a.ctx, au)
+	for _, want := range []string{"2 of its 3 findings were marked already", "1 fixed", "1 rejected", "#" + id(3) + " with the pull request's babysitter"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the body lacks %q: %s", want, got)
+		}
+	}
+	if strings.Contains(got, "#"+id(1)) || strings.Contains(got, "#"+id(2)) {
+		t.Errorf("the body names a finding that was marked: %s", got)
 	}
 }
 

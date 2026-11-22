@@ -202,9 +202,21 @@ func decideOpens(in roundIn) roundOut {
 		return out
 	}
 	if in.Undecided > 0 {
-		return roundOut{Do: doTell, Need: needMarks, For: "the session to decide what the review found", Until: max(heldScreenWait-in.SinceChange, 0)}
+		return undecidedAnswer(in, needMarks)
 	}
 	return roundOut{Do: doShip}
+}
+
+// undecidedAnswer is the one answer for a round whose findings are not all
+// decided, so a ship's question and the sweep agree on the same facts: while
+// a session is there and the wait isn't over, the session is told to decide
+// them; past the wait, or with no session, the round is released with its
+// findings carried. need is what the tell asks (needMarks for a ship).
+func undecidedAnswer(in roundIn, need string) roundOut {
+	if in.Session && in.SinceChange < heldScreenWait {
+		return roundOut{Do: doTell, Need: need, For: "the session to decide what the review found", Until: max(heldScreenWait-in.SinceChange, 0)}
+	}
+	return roundOut{Do: doRelease, Why: fmt.Sprintf("%s the review found weren't decided in %d hours", plural1(in.Undecided, "thing"), int(heldScreenWait.Hours()))}
 }
 
 // strandedShipWindow is how long after a round ended, or after its run or
@@ -361,10 +373,7 @@ func decideRound(in roundIn) roundOut {
 			}
 			return roundOut{Do: doWait, For: "Waypoint to read the review's report", Until: left(readWait, in.SinceChange)}
 		case in.Undecided > 0:
-			if in.Session && in.SinceChange < heldScreenWait {
-				return roundOut{Do: doTell, For: "the session to decide what the review found", Until: left(heldScreenWait, in.SinceChange)}
-			}
-			return roundOut{Do: doRelease, Why: fmt.Sprintf("%s the review found weren't decided in %d hours", plural1(in.Undecided, "thing"), int(heldScreenWait.Hours()))}
+			return undecidedAnswer(in, "")
 		case in.Check == checkDidnt:
 			return roundOut{Do: doShipCarried, Why: "the check of its marks didn't run"}
 		}

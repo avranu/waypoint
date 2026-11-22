@@ -52,7 +52,9 @@ func TestDecideRoundNeverStrands(t *testing.T) {
 														if state == RoundPending && !carried && (!runOpen || !prOpen) && out.Do != doEnd {
 															t.Fatalf("a pending round nobody carries isn't ended: %s", name)
 														}
-														_ = waypoints
+														if waypoints && (out.Do == doNothing || out.Do == doFinish) {
+															t.Fatalf("an open run with no pull request is left alone or finished: %s", name)
+														}
 														if unshipped && !runOpen && (state == RoundPending || state == RoundRunning) && out.Do != doEnd {
 															t.Fatalf("a round of a held ship whose run ended stays %s: %s", state, name)
 														}

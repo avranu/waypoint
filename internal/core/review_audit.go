@@ -964,6 +964,19 @@ func (s *Service) auditLandingChance(ctx context.Context, a *CodeAudit, job *Run
 // have gone to its babysitter already: those stay with it (auditRoundWork
 // leaves the rest to the round while it is live).
 func (s *Service) roundTodo(ctx context.Context, a *CodeAudit) []CodeAuditFinding {
+	given := s.babysitHolds(ctx, a)
+	var todo []CodeAuditFinding
+	for _, f := range a.Findings {
+		if findingToDo(f) && !given[f.ID] {
+			todo = append(todo, f)
+		}
+	}
+	return todo
+}
+
+// babysitHolds is the ids of the audit's findings the pull request's
+// babysitter was given (none for the round's own audit).
+func (s *Service) babysitHolds(ctx context.Context, a *CodeAudit) map[string]bool {
 	given := map[string]bool{}
 	if a.Purpose != AuditReview && a.PRID != nil {
 		if b, err := s.latestBabysit(ctx, s.db.R, *a.PRID); err == nil && b != nil {
@@ -974,13 +987,7 @@ func (s *Service) roundTodo(ctx context.Context, a *CodeAudit) []CodeAuditFindin
 			}
 		}
 	}
-	var todo []CodeAuditFinding
-	for _, f := range a.Findings {
-		if findingToDo(f) && !given[f.ID] {
-			todo = append(todo, f)
-		}
-	}
-	return todo
+	return given
 }
 
 // roundEndedAudit is the audit whose findings the round was waiting to give
@@ -1327,11 +1334,62 @@ func (s *Service) requestRoundAudit(ctx context.Context, review *roundRow, in Au
 // report says so, counted as nothing found, and the session isn't asked.
 func (s *Service) endRoundNothing(ctx context.Context, review *roundRow, a *CodeAudit, now int64) error {
 	body := fmt.Sprintf("%s audited the change (audit #%d: %s/audits/%d) and found nothing to fix.", cmp(a.Model, "Grok"), a.ID, s.BaseURL(), a.ID)
-	if n := len(a.Findings); n > 0 {
-		body = fmt.Sprintf("%s audited the change (audit #%d: %s/audits/%d): its %d finding%s were all decided already or with the pull request's babysitter, so the session wasn't asked to review it.",
-			cmp(a.Model, "Grok"), a.ID, s.BaseURL(), a.ID, n, plural(n))
+	if len(a.Findings) > 0 {
+		body = fmt.Sprintf("%s audited the change (audit #%d: %s/audits/%d): %s The session wasn't asked to review it.",
+			cmp(a.Model, "Grok"), a.ID, s.BaseURL(), a.ID, s.nothingLeftFacts(ctx, a))
 	}
 	return s.endPendingRoundDone(ctx, review, body, now)
+}
+
+// nothingLeftFacts says what became of an audit's findings when none is left
+// for the session: how many were marked and how, by whom, and which the pull
+// request's babysitter holds.
+func (s *Service) nothingLeftFacts(ctx context.Context, a *CodeAudit) string {
+	given := s.babysitHolds(ctx, a)
+	counts := map[string]int{}
+	var order, by, held []string
+	for _, f := range a.Findings {
+		switch {
+		case findingToDo(f) && given[f.ID]:
+			held = append(held, "#"+f.ID)
+			continue
+		case findingFiled(f):
+			counts["filed"]++
+			if counts["filed"] == 1 {
+				order = append(order, "filed")
+			}
+		default:
+			counts[f.State]++
+			if counts[f.State] == 1 {
+				order = append(order, f.State)
+			}
+		}
+		if f.By != "" && !slices.Contains(by, f.By) {
+			by = append(by, f.By)
+		}
+	}
+	var parts []string
+	marked := 0
+	for _, st := range order {
+		marked += counts[st]
+		parts = append(parts, fmt.Sprintf("%d %s", counts[st], st))
+	}
+	var out []string
+	if marked > 0 {
+		were := "were"
+		if marked == 1 {
+			were = "was"
+		}
+		o := fmt.Sprintf("%d of its %s %s marked already (%s)", marked, plural1(len(a.Findings), "finding"), were, strings.Join(parts, ", "))
+		if len(by) > 0 {
+			o += " by " + strings.Join(by, ", ")
+		}
+		out = append(out, o)
+	}
+	if len(held) > 0 {
+		out = append(out, fmt.Sprintf("%s with the pull request's babysitter", strings.Join(held, ", ")))
+	}
+	return strings.Join(out, "; ") + "."
 }
 
 // endPendingRoundDone ends a pending round as reviewed by the rules, with
@@ -1449,7 +1507,7 @@ func ownReviewBrief(prompt string, lim AutopilotLimits) string {
 
 // ownReportAsk tells a session reviewing its own change, up front, to
 // record what the review finds (ReportReview): its ship waits for that.
-const ownReportAsk = "\n\nBefore `wp ship --pr`, record what the review found, so it can be checked and scored: `wp audit report -f FILE` (- for stdin), FILE being JSON as " + reviewReportForm +
+const ownReportAsk = "\n\nBefore `wp ship`, record what the review found, so it can be checked and scored: `wp audit report -f FILE` (- for stdin), FILE being JSON as " + reviewReportForm +
 	". Give every issue the review raised, the ones you rejected too, with what you did about each. If it raised nothing: `wp audit report --none -m \"who reviewed what, and how\"`. " +
 	"Waypoint checks your marks against the code, and your report against what your reviewer said where it kept that, then scores the findings; the pull request opens after that, or another round comes first."
 
