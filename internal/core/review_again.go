@@ -474,21 +474,22 @@ func (s *Service) againLoopOf(ctx context.Context, round, run int64) (*againLoop
 // (shipAudited). seen is the run's own newest round (0: none, round is an
 // earlier run's the session took up again). held is what to tell the agent
 // when the pull request doesn't open yet ("": it opens).
+//
+// The boundary with decideRound: whether the round may open at all (a review
+// recorded, findings decided, a review still going) is decideRound's, asked
+// here with ShipOpens and rendered as this ship's held text; the policy past
+// that gate (check of the marks, the score, decision recording, round N+1) is
+// this function's alone.
 func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, bp beforePR, round, seen int64, head string) (held, notice string, err error) {
 	loop, err := s.againLoopOf(ctx, round, g.run)
 	if err != nil {
 		return "", "", err
 	}
-	var decided int
-	var state, note string
-	var started bool
-	var audit, own int64
-	if err := s.db.R.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM review_again_decisions WHERE round_id = w.id), w.state, w.started_at IS NOT NULL, w.audit_note,
-			coalesce(`+againAuditSQL+`, 0), coalesce(`+againOwnSQL+`, 0) FROM work_log w WHERE w.id = ?`,
-		round).Scan(&decided, &state, &started, &note, &audit, &own); err != nil {
+	in, err := s.roundInOf(ctx, round)
+	if err != nil {
 		return "", "", err
 	}
-	if loop == nil || decided > 0 || !roundDecidable(state, started) {
+	if loop == nil || in.Decisions > 0 || !roundDecidable(in.State, in.Started) {
 		// (no round of a change before its pull request, one that never
 		// ran, or one decided already: a ship asked again after its pull
 		// request failed to open)
@@ -496,51 +497,43 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 	}
 	index := len(loop.earlier) + 1
 	p := s.againPolicy()
-	if audit != 0 && own == 0 {
-		// A reviewer that read nothing reviewed nothing: the session did,
-		// on the round's own prompt (planByReviewer).
-		a, err := s.auditRow(ctx, audit)
-		if err != nil {
-			return "", "", err
+	audit, own := in.AuditID, in.OwnID
+	// Whether this round may open its pull request at all is decideRound's,
+	// from the one reader of a round's review (roundInOf): reviewAgain
+	// renders what it answers for this session's ship, and goes on to its own
+	// question only for a round that answers doShip: whether another round
+	// comes first.
+	in.ShipOpens = true
+	switch out := decideRound(in); out.Do {
+	case doWait:
+		// The round's review is still going: its findings come to the
+		// session when it ends, and this ship asked before they did (WP-1320).
+		bp.facts.idleHeld()
+		return fmt.Sprintf("audit #%d, %s's adversarial review round, is still going: end your turn, and Waypoint carries the round on when it ends: it opens the pull request itself, or gives you what it found. Nothing more to run.", audit, g.key), "", nil
+	case doTell:
+		if out.Need == needMarks {
+			// A finding still to do (open, or confirmed and not yet fixed)
+			// holds this ship as it holds one whose round came back before
+			// the session's turn ended (shipAudited's roundTodo): the round
+			// asked for a verdict on each (WP-1320).
+			todo, lines, err := s.againTodoLines(ctx, audit)
+			if err != nil || len(todo) == 0 {
+				return "", "", err
+			}
+			return fmt.Sprintf("%s's adversarial review round is audit #%d, with %s still to decide:\n%s\nMark each (`wp audit mark %s fixed -m \"what you did\"`, `wp audit mark %s fixed --issue KEY` for one a task will fix, or `wp audit mark %s rejected -m \"why\"`), then run `wp ship`.",
+				g.key, audit, plural1(len(todo), "finding"), lines, todo[0], todo[0], todo[0]), "", nil
 		}
-		switch {
-		case a.Status == AuditQueued || a.Status == AuditRunning:
-			// The round's review is still going, whatever audit_note says:
-			// its findings come to the session when it ends, and this ship
-			// asked before they did (WP-1320).
-			bp.facts.idleHeld()
-			return fmt.Sprintf("audit #%d, %s's adversarial review round, is still going: end your turn, and Waypoint carries the round on when it ends: it opens the pull request itself, or gives you what it found. Nothing more to run.", audit, g.key), "", nil
-		case a.Status != AuditDone || a.readNothing():
-			// One that ended any other way (failed, cancelled, over its
-			// limit) gave no findings, as one that read nothing: the
-			// session's report holds the ship.
-			audit = 0
-		}
-	}
-	if audit == 0 {
-		if strings.Contains(note, stakesNoClaude) {
-			// Its slow audit went on as the pull request's, and the
-			// session was asked for nothing but this ship (planHandedOver):
-			// that audit holds the merge.
-			return "", "", nil
-		}
-		// The review was the session's to run, and nothing it found is
-		// recorded: the ship waits for its report (ReportReview), whose
-		// findings are then marked, checked and scored like any round's.
-		// Before, the pull request opened here on the session's word,
-		// which is how most rounds ended (WP-1320's audit).
+		return reportHold(g.key, index, bp.Base), "", nil
+	case doEnd:
+		// No review was recorded and the deadline is past: this session is
+		// here, so it is asked for the report once more; the sweep ends the round.
 		return reportHold(g.key, index, bp.Base), "", nil
 	}
-	// A finding still to do (open, or confirmed and not yet fixed) holds
-	// this ship as it holds one whose round came back before the session's
-	// turn ended (shipAudited's roundTodo): the round asked for a verdict on
-	// each, and nothing past here would take one left open (WP-1320).
-	if todo, lines, err := s.againTodoLines(ctx, audit); err != nil || len(todo) > 0 {
-		if err != nil {
-			return "", "", err
-		}
-		return fmt.Sprintf("%s's adversarial review round is audit #%d, with %s still to decide:\n%s\nMark each (`wp audit mark %s fixed -m \"what you did\"`, `wp audit mark %s fixed --issue KEY` for one a task will fix, or `wp audit mark %s rejected -m \"why\"`), then run `wp ship`.",
-			g.key, audit, plural1(len(todo), "finding"), lines, todo[0], todo[0], todo[0]), "", nil
+	if audit == 0 {
+		// Its slow audit went on as the pull request's, and the session was
+		// asked for nothing but this ship (planHandedOver): that audit holds
+		// the merge.
+		return "", "", nil
 	}
 	// The session's marks are checked before they count: an all-rejected
 	// round would otherwise end the loop with no model asked, and a fix
@@ -566,7 +559,7 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 		// says so, and one given up for want of a report ran after all.
 		return "", "", s.write(ctx, actor, func(t *tx) error {
 			at := s.nowMS()
-			if err := s.roundReported(ctx, t, g.issueID, round, state, at); err != nil {
+			if err := s.roundReported(ctx, t, g.issueID, round, in.State, at); err != nil {
 				return err
 			}
 			return s.countOwnRound(ctx, t, g.issueID, round, 0, 0, 0, at)
@@ -591,10 +584,10 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 	record := func() error {
 		err := s.write(ctx, actor, func(t *tx) error {
 			at := s.nowMS()
-			if err := s.roundReported(ctx, t, g.issueID, round, state, at); err != nil {
+			if err := s.roundReported(ctx, t, g.issueID, round, in.State, at); err != nil {
 				return err
 			}
-			if own != 0 || state == RoundFailed {
+			if own != 0 || in.State == RoundFailed {
 				if err := s.countOwnRound(ctx, t, g.issueID, round, total, fixed, rejected, at); err != nil {
 					return err
 				}

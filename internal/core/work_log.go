@@ -490,7 +490,7 @@ const reviewInterruptsMax = 3
 // why a pending round started over because the ship's head is newer than the
 // one its audit reads (roundBehind). The review went on in the new round, so
 // neither counts towards reviewInterruptsMax, and neither is opened as a
-// round that never ran (openStrandedRounds) (WP-1325).
+// round that never ran (shipSettledRounds, doReleaseAfterRunEnded) (WP-1325).
 const (
 	roundReplaced  = "replaced by another review the agent asked for"
 	roundRestarted = "more was committed since its review was asked for"
@@ -536,7 +536,7 @@ func (s *Service) sweepRounds(ctx context.Context) {
 			s.log.WarnContext(ctx, "review rounds to end: read one", "round", id, "err", err)
 			continue
 		}
-		if out := decideRound(in); out.Do == doEnd {
+		if out := decideRound(in); out.Do == doEnd && out.Told == "" { // a told end is advanceRound's: it is the person's notice too
 			s.setRoundNow(ctx, id, []string{in.State}, out.To, out.Why)
 		}
 	}

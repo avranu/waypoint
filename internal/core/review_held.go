@@ -406,14 +406,7 @@ func (s *Service) shipOpen(ctx context.Context, sh *shipRun) (done bool, err err
 		return true, s.stopShipWith(ctx, r, in, body, "pull request opened, then stopped", res.Stopped)
 	}
 	if res.Held != "" {
-		if reviewed {
-			// The ship the session would have run is held as well: another
-			// review round was scheduled, or marks wait on the session.
-			// Waypoint says nothing more; the round carries on.
-			s.log.Info("autopilot: a reviewed ship was held", "round", r.id, "held", clipText(res.Held, 200))
-			return true, nil
-		}
-		return true, errors.New(res.Held)
+		return true, s.heldOutcome(ctx, r.id, reviewed, res.Held)
 	}
 	if res.Pull == nil {
 		return true, errors.New("no pull request came back")
@@ -1211,4 +1204,35 @@ func errString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+// heldCarries says a round's held ship leaves the round waiting on something
+// that has a deadline (decideRound's wait or tell): then nothing is lost by
+// not trying again until that changes.
+func (s *Service) heldCarries(ctx context.Context, round int64) bool {
+	in, err := s.roundInOf(ctx, round)
+	if err != nil {
+		return false
+	}
+	switch out := decideRound(in); out.Do {
+	case doWait, doTell:
+		return true
+	}
+	return false
+}
+
+// heldOutcome is what a ship held at the pull request's opening comes to
+// (WP-1370). It is a success only when the round now waits on something with
+// a deadline (decideRound: a wait or a tell): another review round was
+// scheduled (the round is superseded and waits on it), the check of the marks
+// started, or the marks wait on the session. Any other hold, of a round that
+// was reviewed or not, is a failed try with its text as the error, so the
+// back-off, the give-up and the person's notice apply: nothing logs and
+// returns nil.
+func (s *Service) heldOutcome(ctx context.Context, round int64, reviewed bool, held string) error {
+	if reviewed && s.heldCarries(ctx, round) {
+		s.log.Info("autopilot: a reviewed ship was held, and the round waits", "round", round, "held", clipText(held, 200))
+		return nil
+	}
+	return errors.New(held)
 }

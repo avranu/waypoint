@@ -88,6 +88,20 @@ type roundIn struct {
 	ShipSpent bool
 	// Idle: the session went idle (autopilot's step saw it) and the round's Stop never came.
 	Idle bool
+	// What a review of the round is, read once by roundInOf (WP-1370): Audit
+	// is the status of the audit whose findings are the round's (the session's
+	// own report of its review, else the reviewer's: AuditID, OwnID), ReadNothing
+	// says it read nothing, HandedOver that the round's slow audit went on as the
+	// pull request's and holds the merge (stakesNoClaude), Decisions how many
+	// review-again decisions the round has. A pull request opens only on a
+	// review that read something, or one handed over (reviewed).
+	Own, HandedOver bool
+	AuditID, OwnID  int64
+	Decisions       int
+	// ShipOpens asks the one question reviewAgain used to answer from its own
+	// reads: a ship (the session's, or the server's) is about to open the
+	// round's pull request, so is the round reviewed?
+	ShipOpens bool
 	// Ages: since the round started, and since the thing it waits on last changed
 	// (the check settled, the round ended, the audit ended).
 	SinceStart, SinceChange time.Duration
@@ -127,6 +141,70 @@ type roundOut struct {
 	// Settled says why a doNothing leaves a round alone for good: the only
 	// answer that names no one to act later. Every doNothing has one.
 	Settled string
+	// Need says what a tell asks of the session (needReport, needMarks), and
+	// Told, on a doEnd, that the end is told to the person with these words:
+	// the round had no review, so nothing was opened.
+	Need, Told string
+}
+
+// What a tell asks of the session.
+const (
+	needReport = "report" // its review isn't recorded: wp audit report
+	needMarks  = "marks"  // findings of the review are still to decide
+)
+
+// reviewed says the round has a review a pull request may open on (WP-1370):
+// one that read something (the reviewer's audit done and not read-nothing, or
+// the session's own report of it), or one handed over to the pull request
+// (stakesNoClaude), whose audit holds the merge, or one that a decision was recorded on
+// (it passed this very question). An audit that failed, was
+// cancelled, ran over its limit or read nothing is no review.
+func (in roundIn) reviewed() bool {
+	return in.Own || in.HandedOver || in.Decisions > 0 || (in.Audit == AuditDone && !in.ReadNothing)
+}
+
+// noReviewAnswer answers for a round with no review (ok) and says nothing (not
+// ok) for one that has one. A review still going is waited on, to a limit; one
+// that is none is the session's to report, to a deadline; and a round whose
+// session is gone, or whose deadline passed, ends and tells the person once.
+// The server never opens a pull request for it.
+func noReviewAnswer(in roundIn) (roundOut, bool) {
+	if in.reviewed() {
+		return roundOut{}, false
+	}
+	noReview := func(why string) roundOut {
+		return roundOut{Do: doEnd, To: RoundFailed, Why: why, Told: "No review of this round was recorded (" + why + "), so Waypoint opened nothing. Run `wp ship` again to start a new review round."}
+	}
+	if in.Audit == AuditQueued || in.Audit == AuditRunning {
+		if in.SinceStart >= reviewRunMax+autopilotNothingRetry {
+			return noReview("its review never finished"), true
+		}
+		return roundOut{Do: doWait, For: "the review's audit", Until: max(reviewRunMax+autopilotNothingRetry-in.SinceStart, 0)}, true
+	}
+	if in.Session && in.SinceChange < heldScreenWait {
+		return roundOut{Do: doTell, Need: needReport, For: "the session's report of its review", Until: max(heldScreenWait-in.SinceChange, 0)}, true
+	}
+	why := "the session had no report of it by the deadline"
+	if !in.Session {
+		why = "the session that was to report it is gone"
+	}
+	return noReview(why), true
+}
+
+// decideOpens is decideRound's answer when a ship is about to open the
+// round's pull request (ShipOpens): reviewAgain asks it, and the Done and ended
+// cases of decideRound ask the same gate. It decides whether this round may
+// open; whether another review round comes first is reviewAgain's policy
+// (the check of marks, the score, the next round), asked of a round that is
+// doShip here.
+func decideOpens(in roundIn) roundOut {
+	if out, ok := noReviewAnswer(in); ok {
+		return out
+	}
+	if in.Undecided > 0 {
+		return roundOut{Do: doTell, Need: needMarks, For: "the session to decide what the review found", Until: max(heldScreenWait-in.SinceChange, 0)}
+	}
+	return roundOut{Do: doShip}
 }
 
 // strandedShipWindow is how long after a round ended, or after its run or
@@ -161,9 +239,18 @@ func endOf(in roundIn) (roundOut, bool) {
 // stops waiting on it.
 const readWait = heldScreenWait
 
-// decideRound is the one decision. It never returns doNothing for an open
-// run whose pull request isn't open, and no wait or tell outlasts its limit.
+// decideRound is the one decision of whether a round's pull request opens,
+// and the one reader of a round's review (roundInOf). It never returns
+// doNothing for an open run whose pull request isn't open, and no wait or tell
+// outlasts its limit. A round with no recorded review never answers a ship
+// (R1, WP-1370). The boundary with reviewAgain: decideRound decides whether
+// the round may open (and, for the session's ship, ShipOpens, what holds it);
+// reviewAgain keeps the review-again policy past that gate (the check of
+// the marks, the score, scheduling round N+1) and renders decideRound's holds.
 func decideRound(in roundIn) roundOut {
+	if in.ShipOpens {
+		return decideOpens(in)
+	}
 	if in.ShipAsks {
 		// The session's ship answers a round under way (the ship is its
 		// report), one that ended (at a Stop, or by the session reading its
@@ -262,6 +349,9 @@ func decideRound(in roundIn) roundOut {
 		}
 		return roundOut{Do: doWait, For: "the review", Until: left(heldScreenWait, in.SinceChange)}
 	case RoundDone:
+		if out, ok := noReviewAnswer(in); ok && in.Unshipped {
+			return out
+		}
 		switch {
 		case in.Read == readFailed:
 			return roundOut{Do: doRelease, Why: "Waypoint couldn't read the review's report"}
@@ -270,13 +360,6 @@ func decideRound(in roundIn) roundOut {
 				return roundOut{Do: doRelease, Why: "Waypoint couldn't read the review's report in time"}
 			}
 			return roundOut{Do: doWait, For: "Waypoint to read the review's report", Until: left(readWait, in.SinceChange)}
-		case in.Audit == AuditQueued || in.Audit == AuditRunning:
-			if in.SinceStart >= reviewRunMax+autopilotNothingRetry {
-				return roundOut{Do: doRelease, Why: "the review's audit never finished"}
-			}
-			return roundOut{Do: doWait, For: "the review's audit", Until: left(reviewRunMax+autopilotNothingRetry, in.SinceStart)}
-		case in.Audit != AuditDone:
-			return roundOut{Do: doRelease, Why: "the review's audit didn't finish (" + cmp(in.Audit, "none") + ")"}
 		case in.Undecided > 0:
 			if in.Session && in.SinceChange < heldScreenWait {
 				return roundOut{Do: doTell, For: "the session to decide what the review found", Until: left(heldScreenWait, in.SinceChange)}
@@ -325,6 +408,9 @@ func decideEnded(in roundIn) roundOut {
 	}
 	switch in.State {
 	case RoundDone:
+		if out, ok := noReviewAnswer(in); ok {
+			return out
+		}
 		return roundOut{Do: doReleaseAfterRunEnded, Why: "its adversarial review finished and the run ended before its pull request opened"}
 	case RoundFailed, RoundSkipped, RoundInterrupted:
 		if in.Release == "" {
@@ -344,6 +430,7 @@ func (s *Service) roundInOf(ctx context.Context, id int64) (roundIn, error) {
 	}
 	now := s.nowMS()
 	in.State = r.state
+	in.Started = r.startedAt.Valid
 	started := nonzero(r.startedAt.Int64, r.createdAt)
 	in.SinceStart = time.Duration(max(now-started, 0)) * time.Millisecond
 	in.SinceChange = time.Duration(max(now-nonzero(r.ended.Int64, started), 0)) * time.Millisecond
@@ -429,42 +516,75 @@ func (s *Service) roundInOf(ctx context.Context, id int64) (roundIn, error) {
 		var live bool
 		in.Session = s.db.R.QueryRowContext(ctx, `SELECT ended_at IS NULL FROM agent_sessions WHERE id = ?`, checkSession).Scan(&live) == nil && live
 	}
-	ra, err := s.roundAuditOf(ctx, id)
-	if err != nil {
+	if err := s.reviewFacts(ctx, id, &in); err != nil {
 		return in, err
 	}
-	ids := []int64{ra.id}
-	if rv, err := s.roundReviewer(ctx, id); err == nil && rv != nil {
-		ids = append(ids, rv.ID)
+	return in, nil
+}
+
+// reviewFacts reads, once and for every decider, what a review of the round
+// is (roundIn: Audit, ReadNothing, Own, HandedOver, AuditID, OwnID,
+// Decisions, Undecided, Decided): the audit whose findings are the round's is
+// the session's own report of the review it ran, else the reviewer's
+// (againAuditSQL); a reviewer still going is the round's until it ends.
+func (s *Service) reviewFacts(ctx context.Context, id int64, in *roundIn) error {
+	var own, chosen int64
+	var note string
+	if err := s.db.R.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM review_again_decisions WHERE round_id = w.id), w.audit_note,
+			coalesce(`+againOwnSQL+`, 0), coalesce(`+againReviewerSQL+`, 0) FROM work_log w WHERE w.id = ?`, id).Scan(&in.Decisions, &note, &own, &chosen); err != nil {
+		return err
 	}
+	in.OwnID, in.Own = own, own != 0
+	in.AuditID = own
+	if in.AuditID == 0 {
+		in.AuditID = chosen
+	}
+	if in.AuditID == 0 {
+		// The reviewer that replaced a given-up audit, still going: its
+		// findings are the round's when it ends.
+		if rv, err := s.roundReviewer(ctx, id); err != nil && !errors.Is(err, ErrNotFound) {
+			return err
+		} else if rv != nil && (rv.Status == AuditQueued || rv.Status == AuditRunning) {
+			in.AuditID = rv.ID
+		}
+	}
+	in.HandedOver = in.AuditID == 0 && strings.Contains(note, stakesNoClaude)
+	// The findings that are the round's are those of the audit it chose, as
+	// reviewAgain has always counted them: no other audit's decide it.
+	ids := []int64{in.AuditID}
+	seen := map[int64]bool{}
 	for _, aid := range ids {
-		if aid == 0 {
+		if aid == 0 || seen[aid] {
 			continue
 		}
+		seen[aid] = true
 		a, err := s.auditRow(ctx, aid)
 		if errors.Is(err, ErrNotFound) {
 			continue
 		}
 		if err != nil {
-			return in, err
+			return err
 		}
-		if aid == ra.id {
+		if aid == in.AuditID {
 			in.Audit = a.Status
 		}
 		if a.Status != AuditDone {
 			continue
 		}
 		if err := s.loadFindings(ctx, a); err != nil {
-			return in, err
+			return err
 		}
 		if a.readNothing() {
+			if aid == in.AuditID {
+				in.ReadNothing = true
+			}
 			continue
 		}
 		todo := len(s.roundTodo(ctx, a))
 		in.Undecided += todo
 		in.Decided += len(a.Findings) - todo
 	}
-	return in, nil
+	return nil
 }
 
 // endedFacts reads what leaves a round alone once its run has ended
@@ -540,6 +660,12 @@ func (s *Service) advanceRound(ctx context.Context, id int64) (roundOut, error) 
 	}
 	switch out.Do {
 	case doEnd:
+		if out.Told != "" {
+			// No review was recorded: nothing is opened, the person is told
+			// once, by the write that ends the round, and wp ship works again.
+			err = s.endUnreviewed(ctx, id, r, out)
+			return out, err
+		}
 		// A round the window ended while its ship kept failing says what the
 		// ship met, and tells the person.
 		if bp := roundBeforePR(ctx, s.db.R, id); bp != nil && bp.ShipFirst != 0 && bp.ShipStop == "" {

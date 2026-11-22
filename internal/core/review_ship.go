@@ -253,7 +253,7 @@ func (s *Service) shipSettledRounds(ctx context.Context) {
 			continue
 		}
 		out := decideRound(in)
-		if out.Do != doShip && out.Do != doShipCarried && out.Do != doRelease && out.Do != doFinish && out.Do != doReleaseAfterRunEnded && out.Do != doSettle && (out.Do != doEnd || !in.ShipSpent) {
+		if out.Do != doShip && out.Do != doShipCarried && out.Do != doRelease && out.Do != doFinish && out.Do != doReleaseAfterRunEnded && out.Do != doSettle && (out.Do != doEnd || !(in.ShipSpent || out.Told != "")) {
 			continue
 		}
 		if out.Do != doEnd && !s.shipDue(ctx, id, now) {
@@ -387,9 +387,7 @@ func (s *Service) shipEnds(ctx context.Context, id int64, err error, last bool) 
 	if rerr != nil || r == nil {
 		return false
 	}
-	in := shipRoundIn{round: id, session: r.sessionID.Int64}
-	in.agent = s.shipAgent(ctx, r, "", in.session)
-	_ = s.db.R.QueryRowContext(ctx, `SELECT user_id FROM agent_sessions WHERE id = ?`, in.session).Scan(&in.userID)
+	in := s.endingShip(ctx, r)
 	why := forgeSaid(err)
 	body := "Waypoint did not open the pull request: the forge refused it: " + why + "."
 	title := "pull request not opened"
@@ -407,4 +405,27 @@ func (s *Service) shipEnds(ctx context.Context, id int64, err error, last bool) 
 		return false
 	}
 	return true
+}
+
+// endingShip is who a round's end acts for: its session, the user it belongs
+// to and the agent its run was.
+func (s *Service) endingShip(ctx context.Context, r *roundRow) shipRoundIn {
+	in := shipRoundIn{round: r.id, session: r.sessionID.Int64}
+	in.agent = s.shipAgent(ctx, r, "", in.session)
+	_ = s.db.R.QueryRowContext(ctx, `SELECT user_id FROM agent_sessions WHERE id = ?`, in.session).Scan(&in.userID)
+	return in
+}
+
+// endUnreviewed ends a round that has no review (decideRound: Told): nothing
+// is opened, and the round, the person's notice and the release of the run
+// and the claim are one write (stopShipWith), so wp ship starts again.
+func (s *Service) endUnreviewed(ctx context.Context, id int64, r *roundRow, out roundOut) error {
+	ctx = context.WithoutCancel(ctx)
+	if r == nil {
+		return nil
+	}
+	if bp := roundBeforePR(ctx, s.db.R, id); bp != nil && bp.ShipStop != "" {
+		return nil
+	}
+	return s.stopShipWith(ctx, r, s.endingShip(ctx, r), out.Told, "pull request not opened: no review recorded", out.Why)
 }

@@ -40,7 +40,7 @@ func TestDecideRoundNeverStrands(t *testing.T) {
 														name := fmt.Sprintf("%+v -> %+v", in, out)
 														over := state == RoundFailed || state == RoundSkipped || state == RoundInterrupted
 														waypoints := runOpen && !prOpen // an open run with no pull request: Waypoint's to carry on
-														if out.Do == doEnd && (out.To == "" || out.Why == "" || (state != RoundPending && state != RoundRunning)) {
+														if out.Do == doEnd && (out.To == "" || out.Why == "" || (state != RoundPending && state != RoundRunning && out.Told == "")) {
 															t.Fatalf("an end says nothing or ends a round that isn't going: %s", name)
 														}
 														if out.Do == doEnd && state == RoundRunning && runOpen && check != checkAbsent {
@@ -56,7 +56,7 @@ func TestDecideRoundNeverStrands(t *testing.T) {
 														if unshipped && !runOpen && (state == RoundPending || state == RoundRunning) && out.Do != doEnd {
 															t.Fatalf("a round of a held ship whose run ended stays %s: %s", state, name)
 														}
-														if !runOpen && (over || state == RoundDone) && unshipped && !prOpen && out.Do != doReleaseAfterRunEnded {
+														if !runOpen && (over || (state == RoundDone && in.reviewed())) && unshipped && !prOpen && out.Do != doReleaseAfterRunEnded {
 															t.Fatalf("a round the ended run left unshipped isn't named for release: %s", name)
 														}
 														if out.Do == doReleaseAfterRunEnded && (runOpen || prOpen || !unshipped || (!over && state != RoundDone)) {
@@ -280,7 +280,8 @@ func TestDecideEndedRoundNeverStrands(t *testing.T) {
 								// interrupted with a reason to release) or ended in its own state.
 								free := in.Unshipped && !in.PROpen && !in.PRGone && !in.Linked && !in.Resolved && !in.Superseded && !in.Newer && !in.Taken && in.SinceEnd <= strandedShipWindow
 								over := state == RoundSkipped || state == RoundFailed || state == RoundInterrupted
-								if free && out.Do != doEnd && (state == RoundDone || (over && in.Release != "")) && out.Do != doReleaseAfterRunEnded {
+								unreviewed := state == RoundDone && !in.reviewed() // asked for its report, or ended and told (WP-1370), never opened
+								if free && out.Do != doEnd && !(unreviewed && (out.Do == doTell || out.Do == doWait)) && (state == RoundDone || (over && in.Release != "")) && out.Do != doReleaseAfterRunEnded {
 									t.Fatalf("an unshipped round of an ended run isn't released: %s", name)
 								}
 								if free && (state == RoundPending || state == RoundRunning) && out.Do != doEnd {
