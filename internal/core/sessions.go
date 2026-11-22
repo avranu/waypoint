@@ -115,9 +115,13 @@ const StopEndedByShip = "ship"
 type HookEvent struct {
 	// PromptSum: UserPromptSubmit: the SHA-256 of the whole prompt's
 	// normalised text (PromptSum), which the hook computes from what it was
-	// given, so a hook that withholds the text (--no-prompts) can still say
-	// whether Waypoint typed it. Empty: the server digests Prompt.
+	// given. A hook that withholds the prompt (--no-prompts) sends TypedID
+	// instead, and no digest. Empty: the server digests Prompt.
 	PromptSum string `json:"prompt_sum,omitempty"`
+	// TypedID: UserPromptSubmit from a hook that sends no prompt text or
+	// digest (--no-prompts): the id of the pending record (PendingTypedPrompts)
+	// whose digest it matched itself.
+	TypedID int64 `json:"typed_id,omitempty"`
 	// Key: one hook invocation's own key, the same on every attempt to post
 	// it (the CLI's outbox sends the stored event again). A repeat of a
 	// UserPromptSubmit with a key the server has already answered gets the

@@ -36,7 +36,17 @@ import (
 // on this same kernel that shows nothing of the owner can't be detected.
 
 // The start time is optional: an older Claude Code wrote only the pid.
-var lockReasonRE = lazyre.New(`^claude (?:agent|session) \S+ \(pid ([0-9]+)(?: start ([0-9]+))?\)$`)
+//
+// Claude Code records no host. A reason that does name one ("... start T host
+// H)") is honoured: another host's lock is never judged by this host's /proc.
+// With no host named, the only proof a pid belongs to this host is the start
+// tick, checked against this boot below; a reason with no start tick has none,
+// so it is never gone by pid (WP-1370).
+var lockReasonRE = lazyre.New(`^claude (?:agent|session) \S+ \(pid ([0-9]+)(?: start ([0-9]+))?(?: host (\S+))?\)$`)
+
+// lockHost is this host's name, as a lock's host is compared with it. A seam
+// for tests.
+var lockHost = func() string { h, _ := os.Hostname(); return h }
 
 // lockProc is what /proc says of one process.
 type lockProc struct {
@@ -141,7 +151,13 @@ func lockOwner(reason string, lockedAt time.Time) (gone bool, why string) {
 	if err != nil || pid <= 0 {
 		return false, fmt.Sprintf("its lock says %q, which names no process wp can check", reason)
 	}
+	if m[3] != "" && m[3] != lockHost() {
+		return false, fmt.Sprintf("its lock names pid %d on host %s, not this host, so wp can't tell whether that owner is gone", pid, m[3])
+	}
 	hasStart := m[2] != ""
+	if !hasStart && m[3] == "" {
+		return false, fmt.Sprintf("its lock names pid %d with neither a start time nor a host, so nothing shows the pid is of this host and wp can't tell whether the owner is gone", pid)
+	}
 	var start uint64
 	if hasStart {
 		start, err = strconv.ParseUint(m[2], 10, 64)

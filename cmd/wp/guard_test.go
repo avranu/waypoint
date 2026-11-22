@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -636,9 +637,40 @@ func TestGuardHook(t *testing.T) {
 	if out := run("Bash", bash); !strings.Contains(out, "deny") {
 		t.Errorf("runner job: %q", out)
 	}
-	// Bad input fails open.
+	// A call the guard can't read is refused while the guard is active (a
+	// 4.2 MB Write to .claude/settings.json was allowed), and the control: a
+	// person's own session, where the guard is silent, is let through, and so
+	// is a call of 4 MB that does decode.
+	big := `{"session_id":"sess-1","hook_event_name":"PreToolUse","tool_name":"Write","cwd":` + strconv.Quote(repo) +
+		`,"tool_input":{"file_path":".claude/settings.json","content":"` + strings.Repeat("x", 4<<20+200) + `"}}`
+	var refused bytes.Buffer
+	hookClaudeGuard(c, strings.NewReader(big), &refused)
+	if !strings.Contains(refused.String(), `"permissionDecision":"deny"`) || !strings.Contains(refused.String(), "over 4 MB") {
+		t.Errorf("an oversize call was let through: %.200q", refused.String())
+	}
+	refused.Reset()
+	hookClaudeGuard(c, strings.NewReader("not json"), &refused)
+	if !strings.Contains(refused.String(), "deny") {
+		t.Errorf("unreadable input was let through while the guard is active: %q", refused.String())
+	}
+	// Control: a large call that is under the limit and harmless still passes.
+	fine := `{"session_id":"sess-1","hook_event_name":"PreToolUse","tool_name":"Write","cwd":` + strconv.Quote(repo) +
+		`,"tool_input":{"file_path":"notes.txt","content":"` + strings.Repeat("x", 3<<20) + `"}}`
+	refused.Reset()
+	hookClaudeGuard(c, strings.NewReader(fine), &refused)
+	if refused.Len() != 0 {
+		t.Errorf("a 3 MB harmless Write was refused: %.200q", refused.String())
+	}
+	t.Setenv("WAYPOINT_UNATTENDED", "")
+	refused.Reset()
+	hookClaudeGuard(c, strings.NewReader(big), &refused)
+	hookClaudeGuard(c, strings.NewReader("not json"), &refused)
+	if refused.Len() != 0 {
+		t.Errorf("a person's session was refused for unreadable input: %.200q", refused.String())
+	}
+	t.Setenv("WAYPOINT_UNATTENDED", "1")
+	// Input that decodes but isn't a call the guard judges is let through.
 	var quiet bytes.Buffer
-	hookClaudeGuard(c, strings.NewReader("not json"), &quiet)
 	hookClaudeGuard(c, strings.NewReader(`{"tool_name":"Bash","tool_input":"x"}`), &quiet)
 	hookClaudeGuard(c, strings.NewReader(`{"tool_name":"Bash","tool_input":{"command":"x"}}`), &quiet)
 	hookClaudeGuard(c, strings.NewReader(`{"tool_name":"Write","tool_input":{"file_path":5}}`), &quiet)

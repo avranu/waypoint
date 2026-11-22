@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"os/exec"
@@ -663,11 +664,41 @@ func (p *runnerProc) noteTyped(ctx context.Context, step, job int64, cliID, prom
 // (the kickoff is wp next's answer). A person's own --prompt is their words
 // and is not noted. Best effort: a server that doesn't answer leaves the
 // first prompt read as the person's, as it was before.
-func (c *cli) noteTypedStart(ctx context.Context, text string) {
+func (c *cli) noteTypedStart(ctx context.Context, text string) error {
 	if c.server() == "" || strings.TrimSpace(text) == "" {
-		return
+		return nil
 	}
-	_ = c.callInto(ctx, "POST", "/api/v1/sessions/typed-start", map[string]string{"text": text}, nil)
+	var err error
+	for i, wait := range typedStartBackoff {
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(wait):
+			}
+		}
+		if err = c.callInto(ctx, "POST", "/api/v1/sessions/typed-start", map[string]string{"text": text}, nil); err == nil {
+			return nil
+		}
+		if serverRefused(err) {
+			return err // sending it again won't change the answer
+		}
+	}
+	return err
+}
+
+// typedStartBackoff are the waits before each attempt to note a start (the
+// first is at once). It is a var for the tests.
+var typedStartBackoff = []time.Duration{0, 500 * time.Millisecond, 2 * time.Second}
+
+// warnTypedStart tells where a person will see it that the start couldn't be
+// noted: the session still starts, because a server that is down for one
+// best-effort call must not strand the task, and the cost of going on is one
+// first prompt read as a person's turn, which the warning names.
+func warnTypedStart(w io.Writer, err error) {
+	if err != nil {
+		fmt.Fprintf(w, "wp: couldn't tell Waypoint what this session starts with (%v); its first prompt will read as a person's, not as Waypoint's.\n", err)
+	}
 }
 
 // autopilotEnv is the environment wp next runs with: the new session's,

@@ -164,13 +164,14 @@ func TestSessionHooksEndToEnd(t *testing.T) {
 	if x = s.sessions()[0]; strings.Contains(x.LastPrompt, "secret") {
 		t.Fatal("--no-prompts sent the prompt")
 	}
-	// Under --no-prompts a keep-warm-looking prompt reaches the core as its
-	// mark alone, with the digest of the whole text (WP-1370): nothing the
-	// person wrote rides along. With no record of Waypoint typing it, it is
-	// the person's; the quiet ping with a record is core's test
-	// (TestKeepWarmPingsASessionWaitingOnWork).
+	// Under --no-prompts a keep-warm-looking prompt sends neither its text nor a
+	// digest of it (WP-1370): nothing the person wrote rides along. The hook
+	// compares it with the pending prompts Waypoint typed, here and locally,
+	// and sends only the id of the one it matches; with none it is the
+	// person's (the quiet ping with a record is core's test,
+	// TestKeepWarmPingsASessionWaitingOnWork).
 	s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": keepWarmMark + ": still here, and secret"}), "--no-prompts")
-	if x = s.sessions()[0]; x.LastPrompt != keepWarmMark || strings.Contains(x.LastPrompt, "secret") {
+	if x = s.sessions()[0]; strings.Contains(x.LastPrompt, "secret") || strings.Contains(x.LastPrompt, keepWarmMark) {
 		t.Fatalf("a keep-warm-looking prompt under --no-prompts: %q", x.LastPrompt)
 	}
 	// So does a background task reporting back, as its mark alone: an empty

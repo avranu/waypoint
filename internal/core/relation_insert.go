@@ -23,7 +23,9 @@ type newRelation struct {
 // has is not an error but a relation that is already there (the same kind
 // the same way round, or, for a kind that reads the same from both ends such
 // as relates, the other way round), so two writers meeting on one pair,
-// whichever end each names, leave one row and both succeed. The survivor is
+// whichever end each names, leave one row and both succeed. A kind with an
+// inverse, said the other way round while the pair has it one way, is refused:
+// it contradicts what stands. The survivor is
 // whichever write ran first: writes are serialised, and the later one finds
 // it here. A person's own relation of a pair replaces Waypoint's inferred
 // one before it gets here (replaceRelations), so a person's wins either way.
@@ -41,14 +43,21 @@ func (s *Service) insertRelation(ctx context.Context, t *tx, r newRelation) (boo
 			return false, nil
 		}
 	}
-	if k, _, ok := storedRelation(r.Kind); ok && k.Inverse == "" {
+	// The pair the other way round, in the same kind. A kind that reads the same
+	// from both ends (relates, tension) says it already: the relation is there.
+	// A kind with an inverse (blocks, follows, ...) says the opposite: A blocks
+	// B and B blocks A can't both hold, so it is refused, and says so.
+	if k, _, ok := storedRelation(r.Kind); ok {
 		var back bool
 		if err := t.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM issue_relations WHERE kind = ? AND source_id = ? AND target_id = ?)`,
 			r.Kind, r.Dst, r.Src).Scan(&back); err != nil {
 			return false, err
 		}
 		if back {
-			return false, nil
+			if k.Inverse == "" {
+				return false, nil
+			}
+			return false, invalid("the two already have the relation %q the other way: they can't each %s the other", r.Kind, r.Kind)
 		}
 	}
 	var found, score any

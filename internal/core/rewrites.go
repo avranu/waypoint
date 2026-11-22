@@ -254,11 +254,17 @@ func (s *Service) pullTasks(ctx context.Context, repo string, number int) ([]int
 // rewriteNote is what Waypoint saw, as the relation's history and the
 // review round's lead say it.
 func rewriteNote(t *RewrittenTask) string {
-	more := ""
-	if t.PRs > 1 {
-		more = fmt.Sprintf(" and %d more", t.PRs-1)
+	return fmt.Sprintf("replaces %s, %.0f%% of the lines it replaces", RewriteSpan(t.Lines, t.PR, t.PRs), 100*t.Share)
+}
+
+// RewriteSpan says where a task's replaced lines are from. lines is the total
+// over all prs of its pull requests, so with more than one it is said as a
+// total over them, with the one that has most named, never as that one's own.
+func RewriteSpan(lines, pr, prs int) string {
+	if prs > 1 {
+		return fmt.Sprintf("%d lines from %d pull requests, the most of them from PR %d", lines, prs, pr)
 	}
-	return fmt.Sprintf("replaces %d lines from PR %d%s, %.0f%% of the lines it replaces", t.Lines, t.PR, more, 100*t.Share)
+	return fmt.Sprintf("%d lines from PR %d", lines, pr)
 }
 
 // NoteRewrites is RewrittenWork that also acts on what it finds (WP-1370):
@@ -279,6 +285,11 @@ func rewriteNote(t *RewrittenTask) string {
 // actor can't see. A call without head and with nothing found says too little
 // to drop anything.
 func (s *Service) NoteRewrites(ctx context.Context, actor *Actor, ref, repo, head string, prs []RewrittenPR) ([]*RewrittenTask, error) {
+	// The call records relations and evidence, so it is an edit whatever the
+	// route says: core is the authority (WP-1370).
+	if err := actor.need(PermIssuesEdit); err != nil {
+		return nil, err
+	}
 	repo = strings.TrimSpace(repo)
 	if err := validRewriteCall(repo, head, prs); err != nil {
 		return nil, err
@@ -415,8 +426,14 @@ func (s *Service) recordRewrites(ctx context.Context, actor *Actor, d *IssueDeta
 				}
 				if inserted {
 					r.Recorded = true
-					t.emit(&Event{Kind: EvIssueUpdated, ProjectID: d.ProjectID, IssueID: d.ID, IssueKey: d.Key, Field: "relation", New: "relates " + r.Key,
-						Data: map[string]any{"basis": linkBasisInferred, "found": rewriteFound, "note": note, "other": r.Key, "pr": r.PR, "lines": r.Lines}})
+					// Where relate puts it: a draft's key stays out of this task's history.
+					o, err := s.issueByID(ctx, t, otherID, false)
+					if err != nil {
+						return err
+					}
+					holder, named := relationEventHome(d.Issue, o)
+					t.emit(&Event{Kind: EvIssueUpdated, ProjectID: holder.ProjectID, IssueID: holder.ID, IssueKey: holder.Key, Field: "relation", New: "relates " + named.Key,
+						Data: map[string]any{"basis": linkBasisInferred, "found": rewriteFound, "note": note, "other": named.Key, "pr": r.PR, "lines": r.Lines}})
 				}
 			}
 			if _, err := t.ExecContext(ctx, `INSERT INTO rewrite_evidence(issue_id, other_id, repo, pr, prs, lines, share, merged_at, head, note, created_at, updated_at)

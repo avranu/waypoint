@@ -56,11 +56,11 @@ func TestReviewStartsOverWhenMoreWasCommitted(t *testing.T) {
 
 func TestReviewKeepsItsAuditWhenNothingNewWasCommitted(t *testing.T) {
 	a, _, _, key := startEnv(t)
-	if _, err := a.shipStarted(key, ShipAuto); err != nil {
+	same := a.clockNow().Unix() - 60
+	if _, err := a.shipStarted(key, ShipAuto, func(in *OpenPRInput) { in.HeadTime = same }); err != nil {
 		t.Fatal(err)
 	}
 	first := a.newestRoundID()
-	same := a.clockNow().Unix() - 60
 	res, err := a.shipStarted(key, ShipAuto, func(in *OpenPRInput) { in.HeadTime = same })
 	if err != nil || res.Pull != nil || strings.Contains(res.Notice, "More was committed") || !strings.Contains(res.Held, "Nothing more to run") {
 		t.Fatalf("ship = %+v, %v", res, err)

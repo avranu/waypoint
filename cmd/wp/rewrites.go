@@ -196,12 +196,8 @@ func shipKey(keys []string) string {
 func rewritesText(key string, got []rewrittenTask) string {
 	var lines []string
 	for _, t := range got {
-		more := ""
-		if t.PRs > 1 {
-			more = fmt.Sprintf(" and %d more", t.PRs-1)
-		}
-		lines = append(lines, fmt.Sprintf("Related %s to %s (%s): this change replaces %d lines from PR %d%s. If it replaces that work on purpose or carries it further, say which: `wp relate %s supersedes %s` or `wp relate %s follows %s`.",
-			key, t.Key, excerptLine(t.Title, 70), t.Lines, t.PR, more, key, t.Key, key, t.Key))
+		lines = append(lines, fmt.Sprintf("Related %s to %s (%s): this change replaces %s. If it replaces that work on purpose or carries it further, say which: `wp relate %s supersedes %s` or `wp relate %s follows %s`.",
+			key, t.Key, excerptLine(t.Title, 70), core.RewriteSpan(t.Lines, t.PR, t.PRs), key, t.Key, key, t.Key))
 	}
 	return strings.Join(lines, "\n")
 }

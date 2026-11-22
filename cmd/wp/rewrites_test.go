@@ -17,7 +17,7 @@ func TestRewritesText(t *testing.T) {
 		{Key: "WP-301", Title: "wp next fetches", PR: 249, PRs: 2, Lines: 20, Share: 0.25},
 	})
 	want := "Related WP-232 to WP-233 (When an agent hits an auto mode classifier, then they manually file a…): this change replaces 80 lines from PR 463. If it replaces that work on purpose or carries it further, say which: `wp relate WP-232 supersedes WP-233` or `wp relate WP-232 follows WP-233`.\n" +
-		"Related WP-232 to WP-301 (wp next fetches): this change replaces 20 lines from PR 249 and 1 more. If it replaces that work on purpose or carries it further, say which: `wp relate WP-232 supersedes WP-301` or `wp relate WP-232 follows WP-301`."
+		"Related WP-232 to WP-301 (wp next fetches): this change replaces 20 lines from 2 pull requests, the most of them from PR 249. If it replaces that work on purpose or carries it further, say which: `wp relate WP-232 supersedes WP-301` or `wp relate WP-232 follows WP-301`."
 	if got != want {
 		t.Errorf("text:\n%s\nwant:\n%s", got, want)
 	}

@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -35,22 +37,109 @@ func TestLockOwnerStartOverflow(t *testing.T) {
 	}
 }
 
-// An old-format lock with a pid and no start time: a pid that does not exist
-// is gone; one that exists can't be compared.
+// An old-format lock with a pid and no start time has nothing tying the pid
+// to this host or boot, so it is never gone by pid, whether or not a process of
+// that number runs here (WP-1370).
 func TestLockOwnerNoStartTime(t *testing.T) {
 	fakeClock(t)
 	old := lockProcLookup
 	t.Cleanup(func() { lockProcLookup = old })
 	lockProcLookup = func(pid int) (lockProc, bool, error) { return lockProc{}, pid == 10, nil }
-	if gone, why := lockOwner("claude agent a (pid 12)", time.Time{}); !gone {
-		t.Errorf("absent pid, no start: not gone: %s", why)
-	}
-	if gone, why := lockOwner("claude session a (pid 10)", time.Time{}); gone {
-		t.Errorf("running pid, no start: gone: %s", why)
+	for _, reason := range []string{"claude agent a (pid 12)", "claude session a (pid 10)"} {
+		if gone, why := lockOwner(reason, time.Time{}); gone {
+			t.Errorf("%s: judged gone with no start and no host: %s", reason, why)
+		}
 	}
 	lockProcLookup = func(int) (lockProc, bool, error) { return lockProc{}, false, errors.New("no /proc") }
 	if gone, why := lockOwner("claude agent a (pid 12)", time.Time{}); gone {
 		t.Errorf("no view: gone: %s", why)
+	}
+}
+
+// A lock that names another host is never judged by this host's /proc, and one
+// that names this host is judged as any other (WP-1370).
+func TestLockOwnerHost(t *testing.T) {
+	now := fakeClock(t)
+	oldProc, oldHost := lockProcLookup, lockHost
+	t.Cleanup(func() { lockProcLookup, lockHost = oldProc, oldHost })
+	lockHost = func() string { return "here" }
+	lockProcLookup = func(int) (lockProc, bool, error) { return lockProc{}, false, nil } // no such pid
+	at := now
+	for name, c := range map[string]struct {
+		reason string
+		gone   bool
+	}{
+		"another host, pid absent here":      {"claude agent a (pid 12 start 90000 host elsewhere)", false},
+		"another host, no start":             {"claude agent a (pid 12 host elsewhere)", false},
+		"this host, pid absent":              {"claude agent a (pid 12 start 90000 host here)", true},
+		"this host, no start, pid absent":    {"claude agent a (pid 12 host here)", true},
+		"no host, no start, pid absent":      {"claude agent a (pid 12)", false},
+		"no host, start, pid absent (known)": {"claude agent a (pid 12 start 90000)", true},
+	} {
+		if gone, why := lockOwner(c.reason, at); gone != c.gone {
+			t.Errorf("%s: gone=%v (%s), want %v", name, gone, why, c.gone)
+		}
+	}
+}
+
+// A real child process: not gone while it runs, gone once killed, and gone
+// while it is a zombie (exited, not reaped), which the session side agrees
+// with (WP-1370).
+func TestLockOwnerKilledChildAndZombie(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("reads /proc")
+	}
+	cmd := exec.Command("sleep", "60")
+	if err := cmd.Start(); err != nil {
+		t.Skip("no sleep to run")
+	}
+	reaped := false
+	t.Cleanup(func() {
+		if !reaped {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	})
+	pid := cmd.Process.Pid
+	start := procStart(pid)
+	if start == "" {
+		t.Fatal("a running child has no start time")
+	}
+	reason := fmt.Sprintf("claude agent k (pid %d start %s)", pid, start)
+	cs := &cwdSession{Session: "k", Pid: pid, PidStart: start, At: time.Now()}
+	if gone, why := lockOwner(reason, time.Now()); gone {
+		t.Fatalf("running child judged gone: %s", why)
+	}
+	if !cs.provablyAlive() || !cs.alive() {
+		t.Fatal("a running child is not alive on the session side")
+	}
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	// Killed and not yet waited for: a zombie. Wait for the kernel to show it.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if e, found, _ := readLockProc(pid); found && e.zombie {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if e, found, _ := readLockProc(pid); !found || !e.zombie {
+		t.Fatalf("the killed child is not a zombie: %+v %v", e, found)
+	}
+	if gone, why := lockOwner(reason, time.Now()); !gone {
+		t.Errorf("lock side: a zombie is not gone: %s", why)
+	}
+	if cs.provablyAlive() || cs.alive() {
+		t.Errorf("session side: a zombie is alive (provablyAlive %v, alive %v)", cs.provablyAlive(), cs.alive())
+	}
+	_ = cmd.Wait()
+	reaped = true
+	if gone, why := lockOwner(reason, time.Now()); !gone {
+		t.Errorf("lock side: a reaped child is not gone: %s", why)
+	}
+	if cs.provablyAlive() || cs.alive() {
+		t.Errorf("session side: a reaped child is alive")
 	}
 }
 

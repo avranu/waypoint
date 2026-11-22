@@ -28,6 +28,13 @@ func gitShim(t *testing.T) string {
 	return log
 }
 
+// gitRanFor is what the shim was asked ("" when git never ran).
+func gitRanFor(t *testing.T, log string) string {
+	t.Helper()
+	b, _ := os.ReadFile(log)
+	return string(b)
+}
+
 func noGitRan(t *testing.T, log string) {
 	t.Helper()
 	if b, err := os.ReadFile(log); err == nil {
@@ -50,6 +57,13 @@ func TestWorktreeAddRefusesAnOptionAsBranchOrFrom(t *testing.T) {
 		}
 	}
 	noGitRan(t, log)
+	// Control: a legal branch and base do get as far as git (the shim fails
+	// it), so a mutant that refuses everything fails here.
+	c := &cli{err: &bytes.Buffer{}, out: &bytes.Buffer{}}
+	_ = cmdWorktreeAdd(c, []string{"--branch=feature/ok", "--from=main", "some-name"})
+	if gitRanFor(t, log) == "" {
+		t.Error("a legal --branch and --from never reached git: the refusal refuses everything")
+	}
 }
 
 // A remote named like an option in the checkout's config isn't fetched.
@@ -73,15 +87,23 @@ func TestRunnerRefusesAnOptionAsTarget(t *testing.T) {
 			t.Errorf("target %q was accepted", bad)
 		}
 	}
+	// Control: names git accepts pass.
+	if err := p.checkJobRefs(context.Background(), agentJob{Target: "main", Base: "main", DiffFrom: "abc1234"}); err != nil {
+		t.Errorf("legal refs were refused: %v", err)
+	}
 }
 
 // wp code risk --diff BASE and the pull request's refs from the forge, the
 // commit a round started from and the trees a test run recorded: refused
 // before git is given them.
 func TestOptionLikeRefsNeverReachGitInTheirReaders(t *testing.T) {
+	// A real repository: the refusal must be the guard, not "not a repo".
+	repo := t.TempDir()
+	tgit(t, repo, "init", "-q", "-b", "main")
+	tcommit(t, repo, "a.txt")
 	log := gitShim(t)
 	for _, bad := range optionLike {
-		if _, err := diffFiles(t.TempDir(), bad); err == nil {
+		if _, err := diffFiles(repo, bad); err == nil {
 			t.Errorf("diffFiles base %q was accepted", bad)
 		}
 		if got := filesBetween(bad, "HEAD"); got != -1 {
@@ -92,6 +114,24 @@ func TestOptionLikeRefsNeverReachGitInTheirReaders(t *testing.T) {
 		}
 	}
 	noGitRan(t, log)
+}
+
+// The accept controls of the readers above, with the real git: a legal ref
+// passes each, so a guard that refuses everything fails.
+func TestLegalRefsStillReachGitInTheirReaders(t *testing.T) {
+	repo := t.TempDir()
+	tgit(t, repo, "init", "-q", "-b", "main")
+	head := tcommit(t, repo, "a.txt")
+	t.Chdir(repo)
+	if _, err := diffFiles(repo, "main"); err != nil {
+		t.Errorf("diffFiles against main: %v", err)
+	}
+	if got := filesBetween("HEAD", "HEAD"); got != 0 {
+		t.Errorf("filesBetween(HEAD, HEAD) = %d, want 0", got)
+	}
+	if got := objectiveBase(&cli{err: &bytes.Buffer{}}, &objective{BaseSHA: head, Measure: "time"}, ""); got != head {
+		t.Errorf("objectiveBase(%s) = %q", head, got)
+	}
 }
 
 // A ref named like an option can exist (git update-ref makes one): tidy
@@ -120,6 +160,11 @@ func TestMakeWorktreeRefusesAnOptionAsBranchOrFrom(t *testing.T) {
 		}
 	}
 	noGitRan(t, log)
+	// Control: a legal branch and base reach git (the shim fails it).
+	_, _ = makeWorktree(context.Background(), repo, "slug", "feature/ok", "main", false, func(string, ...any) {})
+	if gitRanFor(t, log) == "" {
+		t.Error("a legal branch and from never reached git: the refusal refuses everything")
+	}
 }
 
 // A pull request's refs come from the forge: a head or base named like an

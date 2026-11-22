@@ -180,12 +180,13 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 	}
 	defer s.branchLocks.lock(fmt.Sprintf("%d/%s/%s", pick.ForgeID, strings.ToLower(pick.Repo), in.Head))()
 	var existing int64
-	if err := s.db.R.QueryRowContext(ctx, `SELECT id FROM pull_requests WHERE forge_id = ? AND repo = ? COLLATE NOCASE AND head_ref = ? AND state IN ('open','draft') ORDER BY id DESC LIMIT 1`,
+	if err := s.db.R.QueryRowContext(ctx, `SELECT id FROM pull_requests WHERE forge_id = ? AND repo = ? COLLATE NOCASE AND head_ref = ? AND state IN ('open','draft') AND (head_repo = '' OR head_repo = repo COLLATE NOCASE) ORDER BY id DESC LIMIT 1`,
 		pick.ForgeID, pick.Repo, in.Head).Scan(&existing); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
 	res := &OpenPRResult{}
-	tagged := "" // the task whose ci-urgent tag made a new pull request urgent
+	tagged := ""    // the task whose ci-urgent tag made a new pull request urgent
+	linked := false // the task's link was made as the pull request was recorded
 	if existing == 0 && in.Title == "" {
 		return nil, invalid("the pull request needs a title")
 	}
@@ -296,7 +297,7 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 		if err != nil {
 			// A concurrent open of the same branch won: return its pull request.
 			var again int64
-			if s.db.R.QueryRowContext(ctx, `SELECT id FROM pull_requests WHERE forge_id = ? AND repo = ? COLLATE NOCASE AND head_ref = ? AND state IN ('open','draft') ORDER BY id DESC LIMIT 1`,
+			if s.db.R.QueryRowContext(ctx, `SELECT id FROM pull_requests WHERE forge_id = ? AND repo = ? COLLATE NOCASE AND head_ref = ? AND state IN ('open','draft') AND (head_repo = '' OR head_repo = repo COLLATE NOCASE) ORDER BY id DESC LIMIT 1`,
 				pick.ForgeID, pick.Repo, in.Head).Scan(&again) == nil && again != 0 {
 				existing, res.Existing = again, true
 			} else if open := s.openOnForge(fctx, f, pick.Repo, in.Head, base); open != nil {
@@ -305,15 +306,32 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 				open.wipAuto = managed && open.State == "draft"
 				fp, res.Existing = open, true
 			} else {
+				var ae *forgeAPIError
+				if errors.As(err, &ae) && (ae.status == 409 || ae.status == 422) && strings.Contains(strings.ToLower(err.Error()), "already exist") {
+					// "Already exists" with the pull request not found: it may
+					// be one the forge hasn't listed yet, so this is tried
+					// again, not a refusal that ends the round.
+					return nil, fmt.Errorf("open the pull request: the forge says one from %s may already exist, but didn't list it: %v", in.Head, err)
+				}
 				return nil, fmt.Errorf("open the pull request: %w", s.forgeUnanswered(f, time.Since(start), err))
 			}
 		}
 		if fp != nil {
-			if existing, err = s.recordOpened(ctx, actor, p.ID, f, pick.Repo, fp); err != nil {
+			if existing, err = s.recordOpened(ctx, actor, p.ID, f, pick.Repo, fp, res.Existing); err != nil {
 				return nil, err
 			}
 			if !res.Existing {
 				s.queuePRBody(ctx, existing, in.Issue, in.Body, in.BodyInputs)
+				// Linked at once, before any more forge calls: a pull request
+				// recorded and not linked would read as someone else's (WP-1370).
+				if in.Issue != "" {
+					linked = true
+					if pr, err := s.prByID(ctx, s.db.R, existing); err != nil {
+						res.Warning = "couldn't link " + in.Issue + ": " + err.Error()
+					} else if _, err := s.AddLink(ctx, actor, in.Issue, pr.URL, ""); err != nil {
+						res.Warning = strings.TrimPrefix(res.Warning+"; couldn't link "+in.Issue+": "+err.Error(), "; ")
+					}
+				}
 			}
 		}
 	}
@@ -356,7 +374,7 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 			}
 		}
 	}
-	if in.Issue != "" && res.OtherTasks == nil {
+	if in.Issue != "" && res.OtherTasks == nil && !linked {
 		pr, err := s.prByID(ctx, s.db.R, existing)
 		if err != nil {
 			return nil, err
@@ -379,12 +397,20 @@ const openPRBudget = 50 * time.Second
 // openOnForge is the open pull request from head into base the forge
 // lists, or nil: one opened by an attempt whose answer never came.
 func (s *Service) openOnForge(ctx context.Context, f *Forge, repo, head, base string) *ForgePR {
-	pl, ok := s.Forges.(ForgePRLister)
-	if !ok {
-		return nil
-	}
-	prs, err := pl.ListPRs(ctx, f, repo)
-	if err != nil {
+	var prs []*ForgePR
+	if hf, ok := s.Forges.(ForgeHeadPRFinder); ok {
+		list, err := hf.OpenPRsFromHead(ctx, f, repo, head)
+		if err != nil {
+			return nil
+		}
+		prs = list
+	} else if pl, ok := s.Forges.(ForgePRLister); ok {
+		list, err := pl.ListPRs(ctx, f, repo)
+		if err != nil {
+			return nil
+		}
+		prs = list
+	} else {
 		return nil
 	}
 	for _, fp := range prs {
@@ -398,12 +424,26 @@ func (s *Service) openOnForge(ctx context.Context, f *Forge, repo, head, base st
 
 // recordOpened stores a pull request just opened and remembers an agent as
 // its author.
-func (s *Service) recordOpened(ctx context.Context, actor *Actor, projectID int64, f *Forge, repo string, fp *ForgePR) (int64, error) {
+func (s *Service) recordOpened(ctx context.Context, actor *Actor, projectID int64, f *Forge, repo string, fp *ForgePR, adopted bool) (int64, error) {
 	pr, err := s.recordPR(ctx, f, repo, fp, true)
 	if err != nil {
 		return 0, err
 	}
-	if agent := actor.agentName(); agent != "" {
+	agent := actor.agentName()
+	if agent != "" && adopted && fp.Author != "" {
+		// A pull request the forge already had open from the branch is the
+		// agent's only when its author is an account Waypoint opens agents'
+		// pull requests as: a person's own isn't made the agent's by being
+		// adopted (WP-1370).
+		var n int
+		if err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM pull_requests WHERE forge_id = ? AND agent != '' AND forge_author = ? COLLATE NOCASE AND id != ?`, f.ID, fp.Author, pr.ID).Scan(&n); err != nil {
+			return 0, err
+		}
+		if n == 0 {
+			agent = ""
+		}
+	}
+	if agent != "" {
 		err = s.write(ctx, actor, func(t *tx) error {
 			if _, err := t.ExecContext(ctx, `UPDATE pull_requests SET agent = ? WHERE id = ? AND agent = ''`, agent, pr.ID); err != nil {
 				return err

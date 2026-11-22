@@ -1,6 +1,7 @@
 package core
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -93,5 +94,34 @@ func TestHistoryNeverNamesATaskTheReaderCannotSee(t *testing.T) {
 	}
 	if !strings.Contains(seen, y.Key) {
 		t.Errorf("a reader who sees both ends lost the key: %q", seen)
+	}
+}
+
+// hideUnseen asks the question the task read path asks, with no exemption of
+// its own: an admin acting as an agent can't open a draft, so its key isn't
+// read to them either; the same admin as a person can (WP-1370).
+func TestHideUnseenAsksWhatTheReadPathAsks(t *testing.T) {
+	e := newEnv(t)
+	p := e.project(e.admin, "Alpha", "")
+	pub := e.issue(e.admin, IssueInput{Project: p.Key, Title: "published"})
+	draft := e.issue(e.admin, IssueInput{Project: p.Key, Title: "unfinished", Draft: true})
+	ev := func() *Event {
+		return &Event{Field: "relation", IssueKey: pub.Key, New: "relates " + draft.Key, Data: map[string]any{"other": draft.Key}}
+	}
+	agent := agentActor(e.admin, "anthropic/claude-opus-5-5")
+	if _, err := e.s.GetIssue(e.ctx, agent, draft.Key); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("setup: the agent opens the draft: %v", err)
+	}
+	got := e.s.hideUnseen(e.ctx, e.s.db.R, agent, ev())
+	if strings.Contains(got.New, draft.Key) || got.Data["other"] != unseenTask {
+		t.Errorf("an admin agent reads the draft's key: %q %v", got.New, got.Data)
+	}
+	if got := e.s.hideUnseen(e.ctx, e.s.db.R, e.admin, ev()); !strings.Contains(got.New, draft.Key) {
+		t.Errorf("an admin as a person lost the key: %q", got.New)
+	}
+	// A key that no longer resolves is left as it is.
+	gone := &Event{Field: "relation", New: "relates NOPE-9"}
+	if got := e.s.hideUnseen(e.ctx, e.s.db.R, agent, gone); got != gone {
+		t.Errorf("an unresolvable key was changed: %q", got.New)
 	}
 }

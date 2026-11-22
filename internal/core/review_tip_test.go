@@ -84,3 +84,72 @@ func TestShipRoundOpensOnlyForTheCommitReviewed(t *testing.T) {
 		}
 	})
 }
+
+func TestShipRoundHeldToTheReviewedHead(t *testing.T) {
+	t.Run("pushed between the check and the forge opening it: recorded, not armed, round starts over", func(t *testing.T) {
+		e, round := tipRound(t)
+		e.g.tips = map[string]string{"wp-1-first": tipAudited}
+		e.g.heads = map[string]string{"wp-1-first": tipPushed} // the push lands inside CreatePR
+		e.tick(time.Second)
+		e.s.Wait()
+		if len(e.g.created) != 1 {
+			t.Fatalf("opened %d", len(e.g.created))
+		}
+		var armed int
+		_ = e.s.db.R.QueryRow(`SELECT count(*) FROM pull_requests WHERE armed_at IS NOT NULL`).Scan(&armed)
+		if armed != 0 {
+			t.Fatal("a pull request at a commit the review didn't read was armed")
+		}
+		if r := e.round(round); r.state != RoundInterrupted || e.roundReason(round) != roundRestarted {
+			t.Fatalf("round = %s (%s)", r.state, e.roundReason(round))
+		}
+	})
+	t.Run("nothing says what the review read: nothing opens", func(t *testing.T) {
+		e, round := tipRound(t)
+		e.g.tips = map[string]string{"wp-1-first": tipAudited}
+		ra, _ := e.roundAuditRow(round)
+		e.exec(`UPDATE code_audits SET to_sha = '' WHERE id = ?`, ra.id)
+		e.exec(`UPDATE work_log SET before_pr = json_set(before_pr, '$.head_sha', '') WHERE id = ?`, round)
+		e.tick(time.Second)
+		e.s.Wait()
+		if len(e.g.created) != 0 {
+			t.Fatalf("opened %d with no commit the review read", len(e.g.created))
+		}
+	})
+	t.Run("the pin keeps an arm to the reviewed head", func(t *testing.T) {
+		e, _ := tipRound(t)
+		e.g.tips = map[string]string{"wp-1-first": tipAudited}
+		e.g.heads = map[string]string{"wp-1-first": tipAudited}
+		e.tick(time.Second)
+		e.s.Wait()
+		var id int64
+		_ = e.s.db.R.QueryRow(`SELECT id FROM pull_requests ORDER BY id DESC LIMIT 1`).Scan(&id)
+		if _, err := e.s.MergePR(e.ctx, e.admin, id, MergeInput{WhenReady: true, Head: tipPushed}); err == nil || !strings.Contains(err.Error(), "not armed") {
+			t.Fatalf("an arm pinned to another head = %v", err)
+		}
+	})
+}
+
+// A review session that stops with a background shell running (a waiter on
+// CI) has reported: the same Stop reads the same background work whether it
+// is the Stop path or the idle one (WP-1370).
+func TestReviewStopWithABackgroundShellIsTheReport(t *testing.T) {
+	e := newLoopEnv(t, map[string]string{"": "critical", "fixes": "complete"})
+	round := e.review("Merge loses an update")
+	e.stopWith("Review: nothing found.", PendingTask{Type: "shell", Status: "running", Description: "wp pr wait 7"})
+	if r := e.round(round); r.state != RoundDone {
+		t.Fatalf("a background shell held the review's report: %+v", r)
+	}
+}
+
+// A background agent the review session started and is waiting on holds the
+// report: its Stop is not yet the review's end, on the Stop path the review
+// round reads as well as the idle one (WP-1370).
+func TestReviewStopWithABackgroundAgentIsNotTheReport(t *testing.T) {
+	e := newLoopEnv(t, map[string]string{"": "critical", "fixes": "complete"})
+	round := e.review("Merge loses an update")
+	e.stopWith("Review: a helper is still reading.", PendingTask{Type: "agent", Status: "running", Description: "read the diff"})
+	if r := e.round(round); r.state != RoundRunning {
+		t.Fatalf("a background agent still running, and the round is %s", r.state)
+	}
+}

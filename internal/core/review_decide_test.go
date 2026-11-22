@@ -174,6 +174,9 @@ func TestDecideRoundCells(t *testing.T) {
 		{"running past the limit, run closed: failed", roundIn{State: RoundRunning, SinceStart: day}, doEnd},
 		{"a held ship's round pending when its run ended: skipped", roundIn{State: RoundPending, Unshipped: true, Carried: true}, doEnd},
 		{"a held ship's round running when its run ended: interrupted", roundIn{State: RoundRunning, Unshipped: true, Session: true}, doEnd},
+		{"superseded, still within the wait: waits", roundIn{State: RoundDone, Superseded: true, RunOpen: true, Unshipped: true, SinceChange: time.Minute}, doWait},
+		{"superseded and the wait is over: shipped, not a wait with no time left", roundIn{State: RoundDone, Superseded: true, RunOpen: true, Unshipped: true, SinceChange: heldScreenWait + time.Minute}, doShipCarried},
+		{"a ship that has failed for the give-up window, run ended: ended, not left alone", roundIn{State: RoundDone, Unshipped: true, ShipSpent: true, SinceEnd: shipGiveUp + time.Minute}, doEnd},
 	}
 	for _, c := range cases {
 		if out := decideRound(c.in); out.Do != c.do {

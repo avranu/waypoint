@@ -3,7 +3,10 @@ package core
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -327,17 +330,17 @@ func TestTypedPromptRecordedWhenTheRunnerClaims(t *testing.T) {
 	claim()
 	queue(JobMessage, MessageJob{CLIID: cli, Body: "posted to the inbox, not typed"}, sessionBatchSource)
 	claim()
-	if count() != 2 {
-		t.Fatalf("after /compact and an inbox post: %d records, want 2", count())
+	if count() != 3 {
+		t.Fatalf("after /compact and an inbox post: %d records, want 3 (an inbox post is typed, so it is recorded)", count())
 	}
 	queue(JobAutopilot, AutopilotJob{CLIID: cli, Dir: "/work", Agent: "a", Done: "WP-1", Step: 1, ReviewOf: "WP-1", Review: reviewPromptText("WP-1", "go")}, autopilotReviewSource)
 	claim()
-	if count() != 4 {
-		t.Fatalf("a review job records its /compact and its prompt: %d records, want 4", count())
+	if count() != 5 {
+		t.Fatalf("a review job records its /compact and its prompt: %d records, want 5", count())
 	}
 	var kinds string
 	_ = e.s.db.R.QueryRow(`SELECT group_concat(kind) FROM (SELECT kind FROM typed_prompts WHERE session_id = ? ORDER BY id)`, e.session).Scan(&kinds)
-	if kinds != "keep_warm,compact,compact,review" {
+	if kinds != "keep_warm,compact,inbox,compact,review" {
 		t.Fatalf("kinds = %s", kinds)
 	}
 	// The same job claimed again (lease lapsed, retried) is handed over again.
@@ -345,8 +348,8 @@ func TestTypedPromptRecordedWhenTheRunnerClaims(t *testing.T) {
 		t.Fatal(err)
 	}
 	claim()
-	if count() != 6 {
-		t.Fatalf("a retry records again: %d records, want 6", count())
+	if count() != 7 {
+		t.Fatalf("a retry records again: %d records, want 7", count())
 	}
 }
 
@@ -403,18 +406,16 @@ func FuzzNormalisePrompt(f *testing.F) {
 			"bracket": "\x1b[200~" + x + "\x1b[201~",
 			"crlf":    strings.ReplaceAll(x, "\n", "\r\n"),
 		}
-		if !strings.Contains(x, "\x1b") && !strings.Contains(x, "pasted_content") {
+		{
 			decorated["wrapped"] = "\n<pasted_content id=\"1\">\n" + x + "\n</pasted_content>"
 			decorated["wrapped_twice"] = "<pasted_content>\n<pasted_content id=\"2\">" + x + "</pasted_content></pasted_content>"
 		}
 		for name, d := range decorated {
-			if name == "esc" || name == "bracket" || name == "zwsp" || name == "bom" {
-				if strings.Contains(x, "\x1b") {
-					continue // an escape in x can join the decoration's own
-				}
-			}
-			if got := NormalisePrompt(d); got != n {
-				t.Fatalf("%s: NormalisePrompt(%q) = %q, want %q (x = %q)", name, d, got, n, x)
+			// No exclusions. A paste wrapper round text that holds a stray tag
+			// is not one NormalisePrompt can unwrap, so what is compared is
+			// what the recogniser tries (PromptSums), not one normal form.
+			if got := NormalisePrompt(d); got != n && !slices.Contains(PromptSums(d), PromptSum(x)) {
+				t.Fatalf("%s: NormalisePrompt(%q) = %q, want %q (x = %q), and %v lacks the sum of x", name, d, got, n, x, PromptSums(d))
 			}
 		}
 		if PromptSum(x) != PromptSum(n) {
@@ -608,6 +609,7 @@ func TestTypedKindsWhoTypedAndWhoseWords(t *testing.T) {
 		{TypedCompact, false, false, true},
 		{TypedKeepWarm, false, false, true},
 		{TypedMessage, false, true, false},
+		{TypedInbox, false, true, false},
 		{TypedStart, false, true, false},
 		{TypedExit, false, false, true},
 		{"", false, true, false},
@@ -615,7 +617,7 @@ func TestTypedKindsWhoTypedAndWhoseWords(t *testing.T) {
 		if got := typedAuto(c.kind); got != c.auto {
 			t.Errorf("typedAuto(%q) = %v, want %v", c.kind, got, c.auto)
 		}
-		if got := typedCarriesPerson(c.kind); got != (c.kind == TypedMessage || c.kind == TypedStart) {
+		if got := typedCarriesPerson(c.kind); got != (c.person && c.kind != "") {
 			t.Errorf("typedCarriesPerson(%q) = %v", c.kind, got)
 		}
 		if got := ownPrompt("plain words", c.kind); got != c.ownsQuotaPrompt {
@@ -786,5 +788,196 @@ func TestTypedExitRecordedWhenTheRunnerClaimsARestart(t *testing.T) {
 	}
 	if k := a.hookPrompt(a.cli, "/exit"); k != "" {
 		t.Fatalf("a second /exit = %q, want the person's", k)
+	}
+}
+
+// The two typed-prompt writes ask for the permission their routes map to, so
+// a token without it can't plant a record (WP-1370).
+func TestTypedWritesNeedTheirPermissions(t *testing.T) {
+	a := newAPEnv(t)
+	none := &Actor{User: a.admin.User, Permissions: PermissionSet{PermIssuesRead: true}}
+	if err := a.s.RecordTypedStart(a.ctx, none, "do the thing"); !errors.Is(err, ErrForbidden) {
+		t.Errorf("RecordTypedStart without sessions.report: %v", err)
+	}
+	if err := a.s.AutopilotTyped(a.ctx, none, 1, 1, "c", "text"); !errors.Is(err, ErrForbidden) {
+		t.Errorf("AutopilotTyped without runners.host: %v", err)
+	}
+	ok := &Actor{User: a.admin.User, Permissions: PermissionSet{PermSessionsReport: true}}
+	if err := a.s.RecordTypedStart(a.ctx, ok, "do the thing"); err != nil {
+		t.Errorf("RecordTypedStart with sessions.report: %v", err)
+	}
+}
+
+// ---- review of WP-1370: what is recorded, kept and answered ----
+
+func (a *apEnv) recogniseEv(ev HookEvent) string {
+	a.t.Helper()
+	if ev.At == 0 {
+		ev.At = a.clockNow().UnixMilli()
+	}
+	var kind string
+	if err := a.s.write(a.ctx, a.admin, func(t *tx) (err error) {
+		kind, err = a.s.recogniseTyped(a.ctx, t, a.session, &ev)
+		return err
+	}); err != nil {
+		a.t.Fatal(err)
+	}
+	return kind
+}
+
+// An inbox post carries decisions and messages people wrote, so it is typed
+// by Waypoint and a person's words: recognised, and a person's turn.
+func TestTypedInboxPostIsRecognisedAsAPersonsWords(t *testing.T) {
+	a := newAPEnv(t)
+	a.record(TypedInbox, "Decision: yes, ship it.")
+	if k := a.recognise("Decision: yes, ship it."); k != TypedInbox {
+		t.Fatalf("kind = %q, want inbox", k)
+	}
+	if !TypedCarriesPerson(TypedInbox) || TypedWaypointAlone(TypedInbox) {
+		t.Fatal("an inbox post carries a person's words")
+	}
+}
+
+// One table says whose words each kind of typed text is, for core and the CLI.
+func TestTypedKindsTable(t *testing.T) {
+	for kind, person := range map[string]bool{TypedReview: false, TypedCompact: false, TypedKeepWarm: false, TypedKickoff: false, TypedExit: false,
+		TypedMessage: true, TypedInbox: true, TypedStart: true} {
+		if TypedCarriesPerson(kind) != person || TypedWaypointAlone(kind) == person {
+			t.Errorf("%s: carries person %v, alone %v; want person = %v", kind, TypedCarriesPerson(kind), TypedWaypointAlone(kind), person)
+		}
+	}
+	if TypedWaypointAlone("") || TypedWaypointAlone("a_new_kind") || !TypedCarriesPerson("a_new_kind") {
+		t.Error("an unknown kind must read as a person's, not as Waypoint's")
+	}
+}
+
+// A used record stays as long as the CLI keeps an event to resend, so the
+// resend of an event posted at the edge of that window is still answered.
+func TestTypedConsumedRecordsStayForTheResendWindow(t *testing.T) {
+	a := newAPEnv(t)
+	a.record(TypedReview, "kept")
+	if k := a.recogniseKeyed("inv-1", "kept"); k != TypedReview {
+		t.Fatalf("first = %q", k)
+	}
+	a.setClock(a.clockNow().Add(HookOutboxMaxAge - time.Minute))
+	a.s.RunAutopilot(a.ctx)
+	if k := a.recogniseKeyed("inv-1", "kept"); k != TypedReview {
+		t.Fatalf("a resend just inside the window = %q, want the first answer (review)", k)
+	}
+	a.setClock(a.clockNow().Add(2 * time.Minute))
+	a.s.RunAutopilot(a.ctx)
+	var n int
+	_ = a.s.db.R.QueryRow(`SELECT count(*) FROM typed_prompts`).Scan(&n)
+	if n != 0 {
+		t.Fatalf("%d records left after the window", n)
+	}
+}
+
+// A keyed prompt that matched nothing stays the person's when it is posted
+// again, even if a record of that very text exists by then.
+func TestTypedKeyedMissIsTheSameMissOnRepost(t *testing.T) {
+	a := newAPEnv(t)
+	if k := a.recogniseKeyed("inv-1", "later recorded"); k != "" {
+		t.Fatalf("first = %q", k)
+	}
+	a.record(TypedReview, "later recorded")
+	if k := a.recogniseKeyed("inv-1", "later recorded"); k != "" {
+		t.Fatalf("a repost of a miss = %q, want the person's again", k)
+	}
+	if k := a.recogniseKeyed("inv-2", "later recorded"); k != TypedReview {
+		t.Fatalf("a new invocation = %q, want the record", k)
+	}
+}
+
+// A post with no key is a new prompt: each takes the next record, and when
+// none is left it is the person's.
+func TestTypedKeylessRepostIsANewPrompt(t *testing.T) {
+	a := newAPEnv(t)
+	a.record(TypedReview, "twice")
+	a.record(TypedReview, "twice")
+	for i, want := range []string{TypedReview, TypedReview, ""} {
+		if k := a.recognise("twice"); k != want {
+			t.Fatalf("keyless post %d = %q, want %q", i+1, k, want)
+		}
+	}
+}
+
+// A hook that sends no text names the record it matched.
+func TestTypedClaimByID(t *testing.T) {
+	a := newAPEnv(t)
+	a.record(TypedKeepWarm, "ping")
+	a.record(TypedReview, "review text")
+	pend, err := a.s.PendingTypedPrompts(a.ctx, a.admin, "cli-"+fmt.Sprint(a.session))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = pend
+	var id int64
+	_ = a.s.db.R.QueryRow(`SELECT id FROM typed_prompts WHERE session_id = ? AND kind = 'review'`, a.session).Scan(&id)
+	if k := a.recogniseEv(HookEvent{TypedID: id, Key: "k1"}); k != TypedReview {
+		t.Fatalf("by id = %q", k)
+	}
+	if k := a.recogniseEv(HookEvent{TypedID: id, Key: "k1"}); k != TypedReview {
+		t.Fatalf("the same invocation again = %q", k)
+	}
+	if k := a.recogniseEv(HookEvent{TypedID: id, Key: "k2"}); k != "" {
+		t.Fatalf("a used id, another invocation = %q, want none", k)
+	}
+	if k := a.recogniseEv(HookEvent{TypedID: id + 1000, Key: "k3"}); k != "" {
+		t.Fatalf("an id that isn't a record = %q", k)
+	}
+}
+
+func TestPendingTypedPromptsListsThisSessionsUnusedRecords(t *testing.T) {
+	a := newAPEnv(t)
+	var cli string
+	if err := a.s.db.R.QueryRow(`SELECT cli_id FROM agent_sessions WHERE id = ?`, a.session).Scan(&cli); err != nil {
+		t.Fatal(err)
+	}
+	a.record(TypedReview, "one")
+	a.record(TypedKeepWarm, "two")
+	a.recognise("one")
+	got, err := a.s.PendingTypedPrompts(a.ctx, a.admin, cli)
+	if err != nil || len(got) != 1 || got[0].Kind != TypedKeepWarm || got[0].Sum != PromptSum("two") {
+		t.Fatalf("pending = %+v, %v; want the keep-warm record only", got, err)
+	}
+	if _, err := a.s.PendingTypedPrompts(a.ctx, &Actor{User: a.admin.User, Permissions: permissionSet([]Permission{PermIssuesRead})}, cli); err == nil {
+		t.Fatal("listing without sessions.report was allowed")
+	}
+}
+
+// Waypoint's text that holds an unbalanced <pasted_content> tag, which
+// Claude Code wraps whole, is still recognised (the wrapper is not one
+// NormalisePrompt can tell is round the whole text).
+func TestTypedTextWithAnUnbalancedPasteTagIsRecognisedWrapped(t *testing.T) {
+	a := newAPEnv(t)
+	body := "Task body that mentions <pasted_content> and never closes it."
+	a.record(TypedKickoff, body)
+	if k := a.recogniseEv(HookEvent{Prompt: "<pasted_content id=\"1\">\n" + body + "\n</pasted_content>"}); k != TypedKickoff {
+		t.Fatalf("wrapped text holding an unbalanced tag = %q, want kickoff", k)
+	}
+}
+
+// Every prompt that matches nothing while text is pending for the session is
+// logged, whether or not it carries the mark.
+func TestTypedMissWithPendingRecordsIsLogged(t *testing.T) {
+	a := newAPEnv(t)
+	logs := &bytes.Buffer{}
+	a.s.log = slog.New(slog.NewTextHandler(logs, nil))
+	a.record(TypedInbox, "Waypoint's text, as sent")
+	a.recognise("Waypoint's text, as Claude Code changed it")
+	if !strings.Contains(logs.String(), "matches nothing Waypoint typed") || !strings.Contains(logs.String(), "pending=1") {
+		t.Fatalf("no log of the miss:\n%s", logs)
+	}
+}
+
+// Normalising is its own fixed point for every input, including ones where
+// removing an escape sequence or format character joins the parts around it.
+func TestNormalisePromptIsIdempotentWhereRemovalJoins(t *testing.T) {
+	for _, x := range []string{"\x1b[3\x1b[1m1m", "\x1b\u200b[31mred", "<pasted\u200b_content>a</pasted_content>", "\x1b]0;\x1b\\x", "<pasted_content><\x1b[0mpasted_content>x</pasted_content></pasted_content>"} {
+		n := NormalisePrompt(x)
+		if again := NormalisePrompt(n); again != n {
+			t.Errorf("%q -> %q -> %q", x, n, again)
+		}
 	}
 }

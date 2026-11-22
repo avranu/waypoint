@@ -2881,14 +2881,14 @@ func (s *Service) relate(ctx context.Context, t *tx, actor *Actor, a, b *Issue, 
 	if subkind != "" {
 		said += " (" + subkind + ")"
 	}
-	if b.Draft && !a.Draft {
+	if holder, named := relationEventHome(a, b); holder == b {
 		// Recorded on the draft, so its key stays out of the published
 		// issue's history (WP-42).
 		rel := relationFrom(kind, src.ID != b.ID)
 		if subkind != "" {
 			rel += " (" + subkind + ")"
 		}
-		t.emit(&Event{Kind: EvIssueUpdated, ProjectID: b.ProjectID, IssueID: b.ID, IssueKey: b.Key, Field: "relation", New: rel + " " + a.Key})
+		t.emit(&Event{Kind: EvIssueUpdated, ProjectID: holder.ProjectID, IssueID: holder.ID, IssueKey: holder.Key, Field: "relation", New: rel + " " + named.Key})
 		return made, nil
 	}
 	t.emit(&Event{Kind: EvIssueUpdated, ProjectID: a.ProjectID, IssueID: a.ID, IssueKey: a.Key, Field: "relation", New: said + " " + b.Key})

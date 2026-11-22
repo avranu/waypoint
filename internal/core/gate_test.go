@@ -41,6 +41,9 @@ type shipForge struct {
 
 	tips   map[string]string // branch → what BranchHead says; absent: it can't say
 	tipErr error             // BranchHead fails with it
+	// tipDefault is what BranchHead says for a branch when tips is nil (a test
+	// that sets tips, even empty, says every branch itself).
+	tipDefault string
 	// tipHang: BranchHead doesn't answer until its context ends.
 	tipHang bool
 
@@ -89,9 +92,17 @@ type shipForge struct {
 	cancelled []string // commits whose runs were cancelled
 }
 
+// shippedHead is the commit wp ship says it pushed in the tests, and where the
+// fake forge's branches are unless a test says otherwise.
+const shippedHead = "5h1ppedc0mmit01"
+
+// shippedHeadTime is that commit's time (seconds): wp ship sends both, and the
+// server notes the head of a round it finds with no audit asked from them.
+const shippedHeadTime = 1
+
 func newShipForge() *shipForge {
 	return &shipForge{prForge: newPRForge(), statuses: map[string][]CommitStatusPost{}, checks: map[string][]CommitCheck{},
-		logs: map[string]string{}, reacts: map[string][]Reaction{}, fileAt: map[string]string{}, heads: map[string]string{}}
+		logs: map[string]string{}, reacts: map[string][]Reaction{}, fileAt: map[string]string{}, heads: map[string]string{}, tipDefault: shippedHead}
 }
 
 func (g *shipForge) id() string {
@@ -1014,6 +1025,9 @@ func (g *shipForge) BranchHead(ctx context.Context, f *Forge, repo, branch strin
 	}
 	if sha, ok := g.tips[branch]; ok {
 		return sha, nil
+	}
+	if g.tips == nil && g.tipDefault != "" {
+		return g.tipDefault, nil
 	}
 	return "", ErrNotFound
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -12,11 +13,18 @@ func selfEntry(session, dir string, age time.Duration) *cwdSession {
 	return &cwdSession{Session: session, Cwd: dir, Pid: os.Getpid(), PidStart: procStart(os.Getpid()), At: time.Now().Add(-age)}
 }
 
+// needProc skips where there is no /proc to read (not Linux); on Linux a
+// missing /proc is a failure, so these tests can't go quiet in a container that
+// hides it (WP-1370).
 func needProc(t *testing.T) {
 	t.Helper()
-	if procStart(os.Getpid()) == "" {
-		t.Skip("no /proc")
+	if procStart(os.Getpid()) != "" {
+		return
 	}
+	if runtime.GOOS == "linux" {
+		t.Fatal("no /proc/self/stat on Linux: the session tests that read it would pass by skipping")
+	}
+	t.Skip("no /proc")
 }
 
 // The nearest entry decides: when it is too old to use, a farther live

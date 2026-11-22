@@ -384,7 +384,7 @@ func (a *auditView) asked(blocking bool) string {
 	chain := strings.Join(a.Models, ", then ")
 	when := "carry on; you'll hear when it ends, even if it finds nothing."
 	if blocking {
-		when = "you'll be woken within minutes when it ends, even if it finds nothing."
+		when = "when it ends you'll be told straight away, not held to share a wake-up with other news (if your session is still running), even if it finds nothing."
 	}
 	return fmt.Sprintf("Audit #%d of %s asked of %s; %s\n%s", a.ID, a.what(), chain, when, a.URL)
 }
@@ -405,7 +405,7 @@ func auditRun(target string) func(c *cli, args []string) error {
 		fs.Var(&models, "model", "`MODEL` to try, in order (repeatable; default gateway/audit, or cursor/grok-4.7-high with no LLM gateway)")
 		fix := fs.Bool("fix", false, "also make a task to check and fix the findings")
 		noComment := fs.Bool("no-comment", false, "don't post findings on the pull request")
-		blocking := fs.Bool("blocking", false, "wake me within minutes when it ends")
+		blocking := fs.Bool("blocking", false, "when it ends, tell me straight away, without waiting to share a wake-up with other news")
 		since := fs.String("since", "", "recent: what landed in this `PERIOD` (7d, 2w, a date; default 7d)")
 		focus := fs.String("focus", "", "`AREAS`, comma separated: security, data, concurrency, errors, logic, performance, compat, tests")
 		var paths, exclude multiFlag

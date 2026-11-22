@@ -96,6 +96,55 @@ type ForgePRLister interface {
 	ListPRs(ctx context.Context, f *Forge, repo string) ([]*ForgePR, error)
 }
 
+// ForgeHeadPRFinder lists the open pull requests from one branch, as the
+// forge filters or pages them, so a pull request isn't missed in a busy repo
+// that ListPRs' one page doesn't reach (httpForgeClient has it).
+type ForgeHeadPRFinder interface {
+	OpenPRsFromHead(ctx context.Context, f *Forge, repo, head string) ([]*ForgePR, error)
+}
+
+// OpenPRsFromHead is the open pull requests from branch head of repo: GitLab
+// and GitHub filter on the branch; Forgejo is paged through its open ones.
+func (c *httpForgeClient) OpenPRsFromHead(ctx context.Context, f *Forge, repo, head string) ([]*ForgePR, error) {
+	var out []*ForgePR
+	switch f.Kind {
+	case "gitlab":
+		var list []glMR
+		if err := c.do(ctx, f, http.MethodGet, glProject(repo)+"/merge_requests?state=opened&per_page=50&source_branch="+url.QueryEscape(head), nil, &list); err != nil {
+			return nil, err
+		}
+		for _, m := range list {
+			out = append(out, m.pr())
+		}
+		return out, nil
+	case "github":
+		owner, _, _ := strings.Cut(repo, "/")
+		var list []apiPR
+		if err := c.do(ctx, f, http.MethodGet, fmt.Sprintf("/repos/%s/pulls?state=open&per_page=50&head=%s", repo, url.QueryEscape(owner+":"+head)), nil, &list); err != nil {
+			return nil, err
+		}
+		for _, a := range list {
+			out = append(out, a.pr())
+		}
+		return out, nil
+	}
+	for page := 1; page <= maxForgePages; page++ {
+		var list []apiPR
+		if err := c.do(ctx, f, http.MethodGet, fmt.Sprintf("/repos/%s/pulls?state=open&limit=50&page=%d", repo, page), nil, &list); err != nil {
+			return nil, err
+		}
+		for _, a := range list {
+			if p := a.pr(); p.HeadRef == head {
+				out = append(out, p)
+			}
+		}
+		if len(list) < 50 {
+			break
+		}
+	}
+	return out, nil
+}
+
 // raw fetches a non-JSON body (a diff, a file) up to limit bytes.
 func (c *httpForgeClient) raw(ctx context.Context, f *Forge, path, accept string, limit int64) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiBase(f)+path, nil)

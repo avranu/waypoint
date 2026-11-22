@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -20,12 +19,6 @@ import (
 func TestKeepWarmMarkMatchesCore(t *testing.T) {
 	if keepWarmMark != core.KeepWarmMark {
 		t.Fatalf("cmd/wp says %q, core says %q", keepWarmMark, core.KeepWarmMark)
-	}
-}
-
-func TestHarnessPromptMarksMatchCore(t *testing.T) {
-	if !slices.Equal(harnessPromptMarks, core.HarnessPromptMarks) {
-		t.Fatalf("cmd/wp says %q, core says %q", harnessPromptMarks, core.HarnessPromptMarks)
 	}
 }
 

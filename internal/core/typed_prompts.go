@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -26,6 +27,7 @@ const (
 	TypedCompact  = "compact"   // /compact
 	TypedKeepWarm = "keep_warm" // a keep-warm ping
 	TypedMessage  = "message"   // a message body typed instead of posted to the inbox
+	TypedInbox    = "inbox"     // a batch of decisions and messages posted to an idle session (cache_warm markPosted)
 	TypedKickoff  = "kickoff"   // the prompt autopilot gives a session it starts
 	TypedStart    = "start"     // the text a session was started with (argv), which a person may have composed
 	TypedExit     = "exit"      // /exit, typed before a restart
@@ -39,6 +41,35 @@ const typedSlack = 5 * time.Minute
 // typedKickoffTTL is how long a kickoff the runner reports stays good: the
 // autopilot job's timeout (runnerTimeouts) and its slack.
 const typedKickoffTTL = 15*time.Minute + typedSlack
+
+// typedKinds is the one table of who owns the words of each kind of text
+// Waypoint types: true carries a person's words (a message or decision a
+// person wrote, or the text a session was started with, which a person may
+// have composed), false is Waypoint's own. Core and the CLI both read it
+// (TypedCarriesPerson, TypedWaypointAlone); a kind not in it is read as a
+// person's, so a new kind has to be put here to count as Waypoint's.
+var typedKinds = map[string]bool{
+	TypedReview:   false,
+	TypedCompact:  false,
+	TypedKeepWarm: false,
+	TypedKickoff:  false,
+	TypedExit:     false,
+	TypedMessage:  true,
+	TypedInbox:    true,
+	TypedStart:    true,
+}
+
+// TypedCarriesPerson: Waypoint typed it, but the words are a person's.
+func TypedCarriesPerson(kind string) bool {
+	carries, known := typedKinds[kind]
+	return kind != "" && (carries || !known)
+}
+
+// TypedWaypointAlone: Waypoint typed it and no person's words are in it.
+func TypedWaypointAlone(kind string) bool {
+	carries, known := typedKinds[kind]
+	return known && !carries
+}
 
 // ---- normalisation ----
 
@@ -57,6 +88,19 @@ var (
 // ones among them) are dropped, invalid UTF-8 becomes a space, every run of
 // whitespace becomes one space, and the ends are trimmed. Idempotent.
 func NormalisePrompt(text string) string {
+	// Removing an escape sequence or a format character can join what was
+	// around it into a new one, so the pass repeats until it changes nothing:
+	// that is what makes the result its own normal form.
+	for {
+		n := normalisePromptOnce(text)
+		if n == text {
+			return n
+		}
+		text = n
+	}
+}
+
+func normalisePromptOnce(text string) string {
 	if !utf8.ValidString(text) {
 		var b strings.Builder
 		for i := 0; i < len(text); {
@@ -127,6 +171,35 @@ func PromptSum(text string) string {
 	return hex.EncodeToString(h[:])
 }
 
+// PromptSums are the digests a prompt may be recorded under: its own
+// (PromptSum) first, then those of the text with its paste wrappers taken
+// off layer by layer without checking that they balance. Waypoint records the
+// text it types as it is, and Claude Code may wrap it in <pasted_content>;
+// when the text itself holds an unbalanced tag, NormalisePrompt leaves the
+// wrapper on (it is not one round the whole text), so the wrapped prompt's
+// own digest is not the record's.
+func PromptSums(text string) []string {
+	n := NormalisePrompt(text)
+	if n == "" {
+		return nil
+	}
+	sum := func(x string) string { h := sha256.Sum256([]byte(x)); return hex.EncodeToString(h[:]) }
+	out := []string{sum(n)}
+	for cur := n; ; {
+		open := pasteOpen.FindString(cur)
+		if open == "" || !strings.HasSuffix(cur, "</pasted_content>") || len(cur) < len(open)+len("</pasted_content>") {
+			return out
+		}
+		cur = NormalisePrompt(cur[len(open) : len(cur)-len("</pasted_content>")])
+		if cur == "" {
+			return out
+		}
+		if x := sum(cur); !slices.Contains(out, x) {
+			out = append(out, x)
+		}
+	}
+}
+
 // ---- records ----
 
 // recordTyped notes that text is being handed to a runner to type into
@@ -157,6 +230,10 @@ func recordTypedUnbound(ctx context.Context, q queryer, userID int64, kind, text
 // RecordTypedStart records the text a session is about to be started with on
 // the command line, for the actor's user, before the session exists (WP-1370).
 func (s *Service) RecordTypedStart(ctx context.Context, a *Actor, text string) error {
+	// The permission of its route, as the sibling session hooks ask for it.
+	if err := a.need(PermSessionsReport); err != nil {
+		return err
+	}
 	if PromptSum(text) == "" {
 		return invalid("nothing to record")
 	}
@@ -198,6 +275,12 @@ func (s *Service) recordHandedOver(ctx context.Context, q queryer, kind string, 
 				kind = TypedKeepWarm
 			}
 			texts = append(texts, typed{kind, m.Body})
+		default:
+			// A batch posted to the inbox, which the session reads by its own
+			// prompt: decisions and messages people wrote (wakeups.go), so it
+			// carries a person's words. Claude Code may wrap what it shows
+			// (a peer note's heading); only an exact body is recognised.
+			texts = append(texts, typed{TypedInbox, m.Body})
 		}
 	case JobSession:
 		// A session started with text Waypoint composed: the session has no
@@ -249,6 +332,10 @@ func (s *Service) recordHandedOver(ctx context.Context, q queryer, kind string, 
 // wp next's answer) just before it types it into session cliID (WP-1370).
 // The step must be waiting for this job, as AutopilotStepWanted asks.
 func (s *Service) AutopilotTyped(ctx context.Context, a *Actor, step, job int64, cliID, text string) error {
+	// Only a runner types for autopilot, as its route says (runners.host).
+	if err := a.need(PermRunnersHost); err != nil {
+		return err
+	}
 	return s.write(ctx, a, func(t *tx) error {
 		var n int
 		if err := t.QueryRowContext(ctx, `SELECT count(*) FROM autopilot_steps WHERE id = ? AND user_id = ? AND state = ? AND job_id = ?`, step, a.id(), StepStarting, job).Scan(&n); err != nil {
@@ -281,20 +368,38 @@ func (s *Service) AutopilotTyped(ctx context.Context, a *Actor, step, job int64,
 // has no record, so it reads as the person's, once, and is logged if it
 // carried the mark.
 func (s *Service) recogniseTyped(ctx context.Context, t *tx, sessionID int64, ev *HookEvent) (kind string, err error) {
-	sum := ev.PromptSum
-	if sum == "" {
-		sum = PromptSum(ev.Prompt)
+	var sums []string
+	if ev.PromptSum != "" {
+		sums = append(sums, ev.PromptSum)
 	}
-	if sum == "" {
+	for _, x := range PromptSums(ev.Prompt) {
+		if !slices.Contains(sums, x) {
+			sums = append(sums, x)
+		}
+	}
+	sum := ""
+	if len(sums) > 0 {
+		sum = sums[0]
+	}
+	if len(sums) == 0 && ev.TypedID == 0 {
 		return "", nil
 	}
 	at := min(s.hookTime(ev), s.nowMS())
 	// The same invocation posted again (the CLI's outbox resends after a lost
-	// answer) is answered as the first was, from the record that invocation
-	// used up, and uses no other.
+	// answer) is answered as the first was: from the record that invocation
+	// used up, or from the tombstone it left when it matched none, and it uses
+	// no other. A resend with no key is a new prompt and takes the next record.
 	if ev.Key != "" {
-		err = t.QueryRowContext(ctx, `SELECT kind FROM typed_prompts WHERE session_id = ? AND hash = ? AND consumed_key = ? ORDER BY id LIMIT 1`,
-			sessionID, sum, ev.Key).Scan(&kind)
+		// On the same text: a key is one invocation's, so it is no answer for
+		// other text. (A hook that sent an id has no text to compare.)
+		q, args := `SELECT kind FROM typed_prompts WHERE session_id = ? AND consumed_key = ?`, []any{sessionID, ev.Key}
+		if len(sums) > 0 {
+			q += ` AND hash IN (?` + strings.Repeat(`,?`, len(sums)-1) + `)`
+			for _, x := range sums {
+				args = append(args, x)
+			}
+		}
+		err = t.QueryRowContext(ctx, q+` ORDER BY id LIMIT 1`, args...).Scan(&kind)
 		if err == nil {
 			return kind, nil
 		}
@@ -302,27 +407,92 @@ func (s *Service) recogniseTyped(ctx context.Context, t *tx, sessionID int64, ev
 			return "", err
 		}
 	}
-	err = t.QueryRowContext(ctx, `UPDATE typed_prompts SET consumed_at = ?, consumed_key = ? WHERE consumed_at IS NULL AND id = (
+	err = sql.ErrNoRows
+	if ev.TypedID != 0 {
+		// The hook matched a record itself (a --no-prompts hook sends no text
+		// or digest): the record is that one, and only if it is this
+		// session's, or held for this user's session not yet started.
+		err = t.QueryRowContext(ctx, `UPDATE typed_prompts SET consumed_at = ?, consumed_key = ?, session_id = ? WHERE consumed_at IS NULL AND id = ? AND expires_at > ? AND (
+			session_id = ? OR (session_id IS NULL AND user_id = (SELECT user_id FROM agent_sessions WHERE id = ?)
+			  AND NOT EXISTS (SELECT 1 FROM session_events WHERE session_id = ? AND kind = 'prompt'))) RETURNING kind`,
+			s.nowMS(), ev.Key, sessionID, ev.TypedID, at, sessionID, sessionID, sessionID).Scan(&kind)
+	}
+	for _, sm := range sums {
+		if !errors.Is(err, sql.ErrNoRows) {
+			break
+		}
+		err = t.QueryRowContext(ctx, `UPDATE typed_prompts SET consumed_at = ?, consumed_key = ? WHERE consumed_at IS NULL AND id = (
 		SELECT id FROM typed_prompts WHERE session_id = ? AND hash = ? AND consumed_at IS NULL AND expires_at > ? ORDER BY id LIMIT 1) RETURNING kind`,
-		s.nowMS(), ev.Key, sessionID, sum, at).Scan(&kind)
-	if errors.Is(err, sql.ErrNoRows) {
-		// A text held for a session not started yet: only the first prompt of
-		// one of the same user's sessions can be it.
-		err = t.QueryRowContext(ctx, `UPDATE typed_prompts SET consumed_at = ?, consumed_key = ?, session_id = ? WHERE consumed_at IS NULL AND id = (
+			s.nowMS(), ev.Key, sessionID, sm, at).Scan(&kind)
+		if errors.Is(err, sql.ErrNoRows) {
+			// A text held for a session not started yet: only the first prompt of
+			// one of the same user's sessions can be it.
+			err = t.QueryRowContext(ctx, `UPDATE typed_prompts SET consumed_at = ?, consumed_key = ?, session_id = ? WHERE consumed_at IS NULL AND id = (
 			SELECT id FROM typed_prompts WHERE session_id IS NULL AND hash = ? AND consumed_at IS NULL AND expires_at > ?
 			  AND user_id = (SELECT user_id FROM agent_sessions WHERE id = ?)
 			  AND NOT EXISTS (SELECT 1 FROM session_events WHERE session_id = ? AND kind = 'prompt') ORDER BY id LIMIT 1) RETURNING kind`,
-			s.nowMS(), ev.Key, sessionID, sum, at, sessionID, sessionID).Scan(&kind)
+				s.nowMS(), ev.Key, sessionID, sm, at, sessionID, sessionID).Scan(&kind)
+		}
 	}
 	if errors.Is(err, sql.ErrNoRows) {
-		if n := NormalisePrompt(ev.Prompt); strings.HasPrefix(n, AutopilotPromptMark) {
+		n := NormalisePrompt(ev.Prompt)
+		pending := 0
+		_ = t.QueryRowContext(ctx, `SELECT count(*) FROM typed_prompts WHERE session_id = ? AND consumed_at IS NULL AND expires_at > ?`, sessionID, at).Scan(&pending)
+		if strings.HasPrefix(n, AutopilotPromptMark) || pending > 0 {
+			// Every prompt that matches nothing while Waypoint has text pending
+			// for the session is logged, not only one with the mark: a Waypoint
+			// prompt turned away for a changed byte would otherwise be silent.
 			s.log.WarnContext(ctx, "a prompt with Waypoint's mark matches nothing Waypoint typed: read as the person's",
-				"session", sessionID, "kind_guess", markKindGuess(n), "length", len(n), "raw_length", len(ev.Prompt),
+				"session", sessionID, "kind_guess", markKindGuess(n), "pending", pending, "typed_id", ev.TypedID, "length", len(n), "raw_length", len(ev.Prompt),
 				"sum", sum, "client_sum", ev.PromptSum, "text_sum", PromptSum(ev.Prompt))
+		}
+		if ev.Key != "" {
+			// So the same invocation, sent again, is the person's again even if
+			// a record was recorded for that text meanwhile.
+			now := s.nowMS()
+			if _, err := t.ExecContext(ctx, `INSERT INTO typed_prompts(session_id, hash, kind, created_at, expires_at, consumed_at, consumed_key) VALUES (?,?,'',?,?,?,?)`,
+				sessionID, sum, now, now, now, ev.Key); err != nil {
+				return "", err
+			}
 		}
 		return "", nil
 	}
 	return kind, err
+}
+
+// PendingTyped is a record a hook may match itself: the digest to compare
+// with core.PromptSum of what it was given, and the kind.
+type PendingTyped struct {
+	ID   int64  `json:"id"`
+	Sum  string `json:"sum"`
+	Kind string `json:"kind"`
+}
+
+// PendingTypedPrompts lists the unused, unexpired records the session's next
+// prompt may be: its own, and the texts held for the user's sessions not
+// started yet. A hook that sends no prompt text (--no-prompts) compares them
+// locally and reports only the id it matched, or none.
+func (s *Service) PendingTypedPrompts(ctx context.Context, a *Actor, cliID string) ([]PendingTyped, error) {
+	if err := a.need(PermSessionsReport); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.R.QueryContext(ctx, `SELECT id, hash, kind FROM typed_prompts
+		WHERE consumed_at IS NULL AND expires_at > ? AND hash != '' AND (
+		  session_id = (SELECT id FROM agent_sessions WHERE user_id = ? AND cli_id = ? ORDER BY id DESC LIMIT 1)
+		  OR (session_id IS NULL AND user_id = ?)) ORDER BY id LIMIT 200`, s.nowMS(), a.id(), cliID, a.id())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []PendingTyped{}
+	for rows.Next() {
+		var p PendingTyped
+		if err := rows.Scan(&p.ID, &p.Sum, &p.Kind); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }
 
 // markKindGuess says what a mark-carrying prompt claims to be, for the log.
@@ -333,11 +503,16 @@ func markKindGuess(n string) string {
 	return TypedKickoff
 }
 
-// sweepTypedPrompts removes records that expired or were used long enough
-// ago to be of no use.
+// HookOutboxMaxAge is how long the CLI keeps a hook event it couldn't send
+// to resend it. A record a prompt used up stays that long, so a resend of
+// the event is still answered as the first was (recogniseTyped).
+const HookOutboxMaxAge = 24 * time.Hour
+
+// sweepTypedPrompts removes records that expired unused, and those used up
+// longer ago than a hook's resend window.
 func (s *Service) sweepTypedPrompts(ctx context.Context) {
 	now := s.nowMS()
-	if _, err := s.db.W.ExecContext(ctx, `DELETE FROM typed_prompts WHERE expires_at <= ? OR consumed_at <= ?`, now, now-typedSlack.Milliseconds()); err != nil {
+	if _, err := s.writeRows(ctx, `DELETE FROM typed_prompts WHERE (consumed_at IS NULL AND expires_at <= ?) OR consumed_at <= ?`, now, now-HookOutboxMaxAge.Milliseconds()); err != nil {
 		s.log.WarnContext(ctx, "typed prompts sweep", "err", err)
 	}
 }
@@ -353,10 +528,10 @@ func typedAuto(kind string) bool { return kind == TypedReview || kind == TypedKi
 // a person's turn to whatever reads the session's timeline for takeover,
 // ownership and activity, as a body typed into the pane was before records
 // told who typed it. A review, compact, keep-warm or kickoff is nobody's turn.
-func typedCarriesPerson(kind string) bool { return kind == TypedMessage || kind == TypedStart }
+func typedCarriesPerson(kind string) bool { return TypedCarriesPerson(kind) }
 
 // typedByWaypointAlone: Waypoint typed it and no person's words are in it.
-func typedByWaypointAlone(kind string) bool { return kind != "" && !typedCarriesPerson(kind) }
+func typedByWaypointAlone(kind string) bool { return TypedWaypointAlone(kind) }
 
 // IsKeepWarmPing: text is the whole keep-warm ping Waypoint sends, up to the
 // whitespace a terminal changes. The mark alone is not enough: a person can

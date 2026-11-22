@@ -18,10 +18,12 @@ var shipCmd = &command{
 	about: `With code here to ship (staged changes, commits not pushed, or a branch with
 its own commits that has a pull request open, is named for the task, or (one
 task finishing) has every commit's subject naming that task), it
-commits what is staged, opens the pull request, arms merge when ready (not
-where the repo's Merge automatically is off), babysits it and moves the task
-to In Review; Waypoint merges it. A pull request already open from the branch
-for another task is pushed to but not armed, babysat or linked.
+commits what is staged, opens the pull request, arms merge when ready,
+babysits it and moves the task to In Review; Waypoint merges it. It is not
+armed, and a person merges it, where the repo's Merge automatically is off or
+covers only other base branches than this pull request's, and for a pull
+request whose head is outside the repo. A pull request already open from the
+branch for another task is pushed to but not armed, babysat or linked.
 With nothing to ship, the task moves to its next workflow step, or Done.
 -m is the commit message for staged changes, the task's comment and the
 lead of the pull request's description, which Waypoint writes: don't write

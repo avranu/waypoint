@@ -25,7 +25,9 @@ CREATE INDEX typed_prompts_expiry ON typed_prompts(expires_at);
 -- text, which can no longer be matched once its row is consumed.
 ALTER TABLE session_events ADD COLUMN typed_kind TEXT NOT NULL DEFAULT '';
 
--- Prompts recorded before this migration were told by their mark: keep them
--- as they were read (review prompts, and kickoffs autopilot's hook marked).
-UPDATE session_events SET typed_kind = CASE WHEN detail LIKE 'Waypoint autopilot review of %' THEN 'review' ELSE 'kickoff' END
- WHERE kind = 'prompt' AND detail LIKE 'Waypoint autopilot%';
+-- Prompts recorded before this migration were told by their mark, which the
+-- code before it read case-sensitively (strings.HasPrefix): keep them as they
+-- were read (review prompts, and kickoffs autopilot's hook marked). LIKE is
+-- case-insensitive in SQLite, so the test is an exact, binary prefix compare.
+UPDATE session_events SET typed_kind = CASE WHEN substr(detail, 1, 29) = 'Waypoint autopilot review of ' THEN 'review' ELSE 'kickoff' END
+ WHERE kind = 'prompt' AND substr(detail, 1, 18) = 'Waypoint autopilot';

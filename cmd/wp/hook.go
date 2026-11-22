@@ -14,6 +14,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core"
 )
 
 // Claude Code integration: hooks report each session's token usage to the
@@ -128,12 +130,16 @@ calls in unattended sessions. They never fail a session, and transcripts are rea
 only for token counts, message times and model names, and for the report of an
 adversarial-review subagent, kept in its task's work log (WP-1089).
 
---no-prompts leaves prompt text out of the reports, a review's prompt and
-description included. What each prompt report still carries is a SHA-256 of
-the prompt's whole normalised text (whitespace collapsed), so Waypoint can
-tell what it typed into the session from what a person typed; the digest
-is not the text, but anyone who can guess a short prompt can check it
-against its digest. --uninstall removes every Waypoint hook.`,
+--no-prompts leaves prompt text out of the reports: what a person typed, a
+review's prompt, and the description of a review. No digest of a prompt is
+sent either. To tell what Waypoint typed into a session from what a person
+typed, the hook asks the server which texts it typed are still pending
+(their SHA-256 digests), compares them on this machine, and reports only
+the id of the one it matched, or that none did. What still goes is the
+session's title (Claude Code's name for it, which may be drawn from the
+first prompt), the event's time and kind, the marks of prompts Claude Code
+itself submits (a background task reporting back), and the rest of each
+report. Without a server answer a prompt reads as a person's. --uninstall removes every Waypoint hook.`,
 			examples: []string{"wp hook claude", "wp hook claude --uninstall"}, run: hookClaude},
 		{name: "claude-event", hidden: true, summary: "the session hooks (run by Claude Code)",
 			run: func(c *cli, args []string) error {
@@ -207,7 +213,7 @@ func claudeSettingsPath() (string, error) {
 func hookClaude(c *cli, args []string) error {
 	fs := c.flags()
 	uninstall := fs.Bool("uninstall", false, "remove the hooks")
-	noPrompts := fs.Bool("no-prompts", false, "leave prompt text out of the reports (a SHA-256 of each prompt is still sent)")
+	noPrompts := fs.Bool("no-prompts", false, "leave prompt text out of the reports (no digest of it either; the session title is still sent: wp hook claude -h)")
 	if _, err := c.parse(fs, args); err != nil {
 		return err
 	}
@@ -848,14 +854,12 @@ func (c *cli) saveSession(id string, sess *sessionState) {
 // keepWarmMark starts Waypoint's keep-warm pings (core.KeepWarmMark).
 const keepWarmMark = "Waypoint keep-warm"
 
-// harnessPromptMarks start the prompts Claude Code submits when something
-// the session started reports back (core.HarnessPromptMarks).
-var harnessPromptMarks = []string{"<task-notification>", "Another Claude session sent a message:", `<agent-message from="`}
-
-// harnessPromptMark is the mark the prompt starts with, "" if none.
+// harnessPromptMark is the mark (core.HarnessPromptMarks, the list the server
+// reads) the prompt starts with once normalised as the server normalises
+// (core.NormalisePrompt), "" if none.
 func harnessPromptMark(prompt string) string {
-	p := strings.TrimSpace(prompt)
-	for _, mark := range harnessPromptMarks {
+	p := core.NormalisePrompt(prompt)
+	for _, mark := range core.HarnessPromptMarks {
 		if strings.HasPrefix(p, mark) {
 			return mark
 		}

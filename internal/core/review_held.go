@@ -145,6 +145,9 @@ type shipRun struct {
 	res              *OpenPRResult
 	notes            []string
 	armed, babysat   bool
+	// pin: the commit the review read, which a pull request must be at to
+	// be opened for it and armed ("" when none is known).
+	pin string
 }
 
 // shipRound is the one server-side ship of a round's branch: a release (the
@@ -188,6 +191,9 @@ func (s *Service) shipRead(ctx context.Context, in shipRoundIn) (*shipRun, error
 	bp := roundBeforePR(ctx, s.db.R, in.round)
 	if r == nil || bp == nil {
 		return nil, errors.New("its review round is gone")
+	}
+	if bp.ShipDone {
+		return nil, nil // another caller finished this ship while this one waited
 	}
 	sh := &shipRun{r: r, bp: bp, in: in}
 	reviewed := in.why == ""
@@ -283,6 +289,22 @@ func (s *Service) shipAuthorize(ctx context.Context, sh *shipRun) (done bool, er
 		if err != nil {
 			return true, err
 		}
+		if len(keys) == 0 {
+			// Waypoint's own pull request for this task whose link a crash
+			// kept from being made: the link is made now, and it is the
+			// task's again (WP-1370).
+			// Not one a person unlinked from the task on purpose (RemoveLink keeps
+			// a record of that).
+			var by, url string
+			var unlinked bool
+			if s.db.R.QueryRowContext(ctx, `SELECT p.agent, p.url, EXISTS (SELECT 1 FROM issue_unlinks u WHERE u.issue_id = ? AND u.url = p.url) FROM pull_requests p WHERE p.id = ?`, r.issueID, id).Scan(&by, &url, &unlinked) == nil && by != "" && by == in.agent && !unlinked {
+				if _, lerr := s.AddLink(ctx, actor, r.key, url, ""); lerr == nil {
+					keys = []string{r.key}
+				} else {
+					s.log.WarnContext(ctx, "link a pull request Waypoint opened", "round", r.id, "pr", id, "err", lerr)
+				}
+			}
+		}
 		if !slices.ContainsFunc(keys, func(k string) bool { return strings.EqualFold(k, r.key) }) {
 			owner := "isn't linked to any task"
 			if len(keys) > 0 {
@@ -295,17 +317,38 @@ func (s *Service) shipAuthorize(ctx context.Context, sh *shipRun) (done bool, er
 		if moved, err := s.branchMovedSinceReview(ctx, actor, r, bp); err != nil {
 			return true, err
 		} else if moved {
-			// Not the commit the review read: nothing is opened. The round
-			// ends the way a ship that pushed more ends it (roundRestarted,
-			// which no release follows), and the next ship asks for a review
-			// of what is pushed now.
-			s.setRoundNow(ctx, r.id, []string{r.state}, RoundInterrupted, roundRestarted)
-			s.notifyURL(ctx, in.userID, nil, NotifyAutopilot, r.key+": its branch moved after its review",
-				fmt.Sprintf("%s was pushed to after %s's adversarial review read it, so Waypoint opened no pull request for what the review didn't see. Run `wp ship` again and the review starts over on what is pushed now.", bp.Branch, r.key), "/agents?tab=autopilot")
-			return true, nil
+			// Not the commit the review read: nothing is opened.
+			return true, s.startOverAfterMove(ctx, r, in, bp, "")
 		}
 	}
 	return false, nil
+}
+
+// startOverAfterMove ends the round the way a ship that pushed more ends it
+// (roundRestarted, which no release follows) and tells the person: the next
+// ship asks for a review of what is pushed now. opened is the pull request
+// that was opened at the wrong commit, if one was (it is left unarmed).
+func (s *Service) startOverAfterMove(ctx context.Context, r *roundRow, in shipRoundIn, bp *beforePR, opened string) error {
+	s.setRoundNow(ctx, r.id, []string{r.state}, RoundInterrupted, roundRestarted)
+	what := "so Waypoint opened no pull request for what the review didn't see."
+	if opened != "" {
+		what = "so " + opened + " is at a commit the review didn't see; Waypoint left it unarmed."
+	}
+	s.notifyURL(ctx, in.userID, nil, NotifyAutopilot, r.key+": its branch moved after its review",
+		fmt.Sprintf("%s was pushed to after %s's adversarial review read it, %s Run `wp ship` again and the review starts over on what is pushed now.", bp.Branch, r.key, what), "/agents?tab=autopilot")
+	return nil
+}
+
+// reviewedHead is the commit a round's review read: its audit's ToSHA when it
+// reported one, else the commit the round was shipped at ("" when neither).
+func (s *Service) reviewedHead(ctx context.Context, r *roundRow, bp *beforePR) string {
+	read := bp.HeadSHA
+	if ra, err := s.roundAuditOf(ctx, r.id); err == nil && ra.id != 0 && ra.note == "" {
+		if a, err := s.auditRow(ctx, ra.id); err == nil && a != nil && a.ToSHA != "" {
+			read = a.ToSHA
+		}
+	}
+	return read
 }
 
 // shipOpen opens the pull request as the ship's actor, or records that it
@@ -339,6 +382,7 @@ func (s *Service) shipOpen(ctx context.Context, sh *shipRun) (done bool, err err
 	// while the call is out, and then the pull request that exists is
 	// recorded and left alone.
 	again := in
+	again.user = nil // read the person again: in.user is from before the forge call
 	in2.stillMay = func(ctx context.Context) string {
 		_, why, err := s.shipAuthority(ctx, r, bp, &again)
 		if err != nil {
@@ -349,6 +393,13 @@ func (s *Service) shipOpen(ctx context.Context, sh *shipRun) (done bool, err err
 	res, err := s.OpenPullRequest(ctx, actor, in2)
 	if err != nil {
 		return true, err
+	}
+	sh.pin = s.reviewedHead(ctx, r, bp)
+	if reviewed && res.Pull != nil && res.Held == "" && res.Stopped == "" && sh.pin != "" && !sameSHA(res.Pull.HeadSHA, sh.pin) {
+		// Pushed between the check of the branch and the forge opening it
+		// (or an open pull request that is at another commit): it is
+		// recorded, not armed, and the review starts over.
+		return true, s.startOverAfterMove(ctx, r, in, bp, fmt.Sprintf("%s#%d", res.Pull.Repo, res.Pull.Number))
 	}
 	if res.Stopped != "" && res.Pull != nil {
 		body := fmt.Sprintf("Waypoint opened %s#%d, then stopped: %s. It is recorded, not armed and not watched; the task was left as it is.", res.Pull.Repo, res.Pull.Number, res.Stopped)
@@ -384,7 +435,7 @@ func (s *Service) shipArm(ctx context.Context, sh *shipRun) {
 		notes = append(notes, "that branch's pull request belongs to "+strings.Join(res.OtherTasks, ", ")+", so it wasn't armed")
 	} else {
 		if !bp.Draft && (pr.State != "draft" || pr.WipAuto) {
-			if mr, err := s.MergePR(ctx, actor, pr.ID, MergeInput{WhenReady: true}); err != nil {
+			if mr, err := s.MergePR(ctx, actor, pr.ID, MergeInput{WhenReady: true, Head: sh.pin}); err != nil {
 				notes = append(notes, "couldn't arm it: "+err.Error())
 			} else if mr != nil && mr.ByHand {
 				// Not an error, and not armed: a person merges it.
@@ -446,20 +497,32 @@ func (s *Service) shipRecord(ctx context.Context, sh *shipRun) error {
 			return err
 		}
 	}
-	if err := s.endHeldRun(ctx, actor, r.issueID, in.agent); err != nil {
+	// The person's notice is stored by the write that ends the run: both or
+	// neither, so a crash between them can't leave a shipped task nobody was
+	// told of. Dispatch sends it on (WP-1370).
+	head, text, _ := s.shipWords(ctx, sh)
+	return s.endHeldRunWith(ctx, actor, r.issueID, in.agent, func(t *tx) error {
+		// The claim: the first to finish the ship sets it, and only that one
+		// tells the person (a second caller sees no row change).
+		res, err := t.ExecContext(ctx, `UPDATE work_log SET before_pr = json_set(before_pr, '$.ship_done', json('true')) WHERE id = ? AND before_pr != '' AND coalesce(json_extract(before_pr, '$.ship_done'), 0) = 0`, r.id)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 || in.userID == 0 {
+			return nil
+		}
+		_, err = t.storeNotice(ctx, in.userID, NotifyAutopilot, head, text, "/agents?tab=autopilot")
 		return err
-	}
-	return nil
+	})
 }
 
-// shipTell tells the person, and the session when it is still there, what
-// was opened and what was done to it.
-func (s *Service) shipTell(ctx context.Context, sh *shipRun) {
+// shipWords is what the person is told (and the session, when it is still
+// there) of what was opened and what was done to it.
+func (s *Service) shipWords(ctx context.Context, sh *shipRun) (head, text, session string) {
 	r, bp, in, reviewed, res := sh.r, sh.bp, sh.in, sh.reviewed, sh.res
 	unchecked, given, panel, ran := sh.unchecked, sh.given, sh.panel, sh.ran
 	notes, armed, babysat := sh.notes, sh.armed, sh.babysat
 	pr := res.Pull
-	var text, head string
 	if reviewed {
 		head = r.key + " is in review: " + pr.Repo + "#" + strconv.Itoa(pr.Number)
 		text = s.shippedText(r.key, pr, armed, babysat, res.Existing, bp.Summary, notes)
@@ -467,13 +530,8 @@ func (s *Service) shipTell(ctx context.Context, sh *shipRun) {
 			head = r.key + " is in review, its marks unchecked: " + pr.Repo + "#" + strconv.Itoa(pr.Number)
 			text = uncheckedLines(unchecked).Session + "\n\n" +
 				strings.Replace(strings.Replace(text, " after its adversarial review left nothing for you to do", "", 1), " when its adversarial review left nothing for you to do", "", 1)
-			s.carryAudits(ctx, r.id, pr.ID, pr.Number)
 		}
-		if in.session != 0 && !in.ended { // an ended session can't read it; the person's notice carries it
-			if _, err := s.queueMessage(ctx, in.session, text, fmt.Sprintf("shipped:%d", r.id), messageFrom{}, true); err != nil {
-				s.log.WarnContext(ctx, "autopilot: tell a session its pull request opened", "round", r.id, "err", err)
-			}
-		}
+		session = text
 	} else {
 		head = r.key + " opened without its adversarial review"
 		text = fmt.Sprintf("%s's adversarial review didn't run (%s), so Waypoint opened %s#%d without it. CI and the review gate still apply.", r.key, in.why, pr.Repo, pr.Number)
@@ -486,7 +544,6 @@ func (s *Service) shipTell(ctx context.Context, sh *shipRun) {
 			text = fmt.Sprintf("%s's adversarial review findings weren't given to the session (%s), so Waypoint opened %s#%d without them. What it found and nobody decided is carried to the pull request's review gate; CI and the gate still apply.", r.key, in.why, pr.Repo, pr.Number)
 		}
 		text += panel
-		s.carryAudits(ctx, r.id, pr.ID, pr.Number)
 		if len(notes) > 0 {
 			text += " It " + strings.Join(notes, "; ") + "."
 		}
@@ -504,7 +561,26 @@ func (s *Service) shipTell(ctx context.Context, sh *shipRun) {
 		// open's notice.
 		text += " " + taggedUrgentNotice(r.key, pr.Number)
 	}
-	s.notifyURL(ctx, in.userID, nil, NotifyAutopilot, head, text, "/agents?tab=autopilot")
+	return head, text, session
+}
+
+// shipTell tells the session, when it is still there, what was opened and
+// what was done to it; the person's notice is stored by shipRecord.
+func (s *Service) shipTell(ctx context.Context, sh *shipRun) {
+	r, in, reviewed, res := sh.r, sh.in, sh.reviewed, sh.res
+	pr := res.Pull
+	if reviewed && sh.unchecked != "" || !reviewed {
+		s.carryAudits(ctx, r.id, pr.ID, pr.Number)
+	}
+	if !reviewed {
+		return
+	}
+	_, _, text := s.shipWords(ctx, sh)
+	if in.session != 0 && !in.ended { // an ended session can't read it; the person's notice carries it
+		if _, err := s.queueMessage(ctx, in.session, text, fmt.Sprintf("shipped:%d", r.id), messageFrom{}, true); err != nil {
+			s.log.WarnContext(ctx, "autopilot: tell a session its pull request opened", "round", r.id, "err", err)
+		}
+	}
 }
 
 // shippedText is what Waypoint tells the session, and the person, after it
@@ -694,6 +770,11 @@ func noRunnerSince(created int64, r *Runner) int64 {
 // endHeldRun finishes the run and claim of a task whose pull request is
 // out, as wp done does for one: the merge finishes the task itself.
 func (s *Service) endHeldRun(ctx context.Context, actor *Actor, issueID int64, agent string) error {
+	return s.endHeldRunWith(ctx, actor, issueID, agent, nil)
+}
+
+// endHeldRunWith is endHeldRun with more written in the same transaction.
+func (s *Service) endHeldRunWith(ctx context.Context, actor *Actor, issueID int64, agent string, also func(t *tx) error) error {
 	return s.write(ctx, actor, func(t *tx) error {
 		var open int
 		if err := t.QueryRowContext(ctx, `SELECT count(*) FROM agent_runs WHERE issue_id = ? AND agent = ? AND ended_at IS NULL`, issueID, agent).Scan(&open); err != nil {
@@ -704,8 +785,13 @@ func (s *Service) endHeldRun(ctx context.Context, actor *Actor, issueID int64, a
 				return err
 			}
 		}
-		_, err := t.ExecContext(ctx, `UPDATE issues SET claimed_by = '', claimed_until = NULL, claimed_at = NULL WHERE id = ? AND claimed_by = ?`, issueID, agent)
-		return err
+		if _, err := t.ExecContext(ctx, `UPDATE issues SET claimed_by = '', claimed_until = NULL, claimed_at = NULL WHERE id = ? AND claimed_by = ?`, issueID, agent); err != nil {
+			return err
+		}
+		if also != nil {
+			return also(t)
+		}
+		return nil
 	})
 }
 
@@ -1047,7 +1133,7 @@ func (s *Service) checkDidntRun(ctx context.Context, round int64) string {
 // openPROfBranch is the open pull request from a round's branch (0: none).
 func (s *Service) openPROfBranch(ctx context.Context, bp *beforePR) int64 {
 	var id int64
-	err := s.db.R.QueryRowContext(ctx, `SELECT id FROM pull_requests WHERE repo = ? COLLATE NOCASE AND head_ref = ? AND state IN ('open', 'draft') ORDER BY id DESC LIMIT 1`, bp.Repo, bp.Branch).Scan(&id)
+	err := s.db.R.QueryRowContext(ctx, `SELECT id FROM pull_requests WHERE repo = ? COLLATE NOCASE AND head_ref = ? AND state IN ('open', 'draft') AND (head_repo = '' OR head_repo = repo COLLATE NOCASE) ORDER BY id DESC LIMIT 1`, bp.Repo, bp.Branch).Scan(&id)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		s.log.WarnContext(ctx, "read the pull request open from a branch", "repo", bp.Repo, "branch", bp.Branch, "err", err)
 	}
@@ -1087,18 +1173,14 @@ func (s *Service) pullTaskKeys(ctx context.Context, repo string, number int) ([]
 // error: shipRound's caller tries again (shipTried), and nothing opens
 // meanwhile.
 func (s *Service) branchMovedSinceReview(ctx context.Context, actor *Actor, r *roundRow, bp *beforePR) (bool, error) {
-	read := bp.HeadSHA
-	if ra, err := s.roundAuditOf(ctx, r.id); err == nil && ra.id != 0 && ra.note == "" {
-		if a, err := s.auditRow(ctx, ra.id); err == nil && a != nil && a.ToSHA != "" {
-			read = a.ToSHA
-		}
-	}
+	read := s.reviewedHead(ctx, r, bp)
 	if read == "" {
-		return false, nil
+		// Nothing says what the review read: a pull request can't be held to it.
+		return false, fmt.Errorf("waypoint can't tell which commit %s's review read, so it didn't open a pull request for %s", r.key, bp.Branch)
 	}
 	cl, ok := s.Forges.(ForgeKitReader)
 	if !ok {
-		return false, nil
+		return false, fmt.Errorf("this forge client can't say where %s is, so Waypoint didn't open its pull request after a review", bp.Branch)
 	}
 	repos, err := s.ListProjectRepos(ctx, actor, bp.Project)
 	if err != nil {

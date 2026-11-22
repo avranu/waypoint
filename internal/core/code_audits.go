@@ -40,8 +40,13 @@ const (
 	AuditLimited   = "limited" // a usage limit stopped every model
 	AuditCancelled = "cancelled"
 
-	auditTimeout    = 2700 // seconds: Grok at high effort reads a large repository slowly
-	auditMaxRetries = 3    // times a chain whose models were all busy is tried again
+	auditTimeout = 2700 // seconds: Grok at high effort reads a large repository slowly
+	// AuditCLITimeoutSecs and AuditGatewayTimeoutSecs are the runner job's time
+	// for an audit by a CLI model and by the gateway's agent, before a helper
+	// panel's extra: what wp says of how long an audit may take.
+	AuditCLITimeoutSecs     = auditTimeout
+	AuditGatewayTimeoutSecs = gatewayAuditTimeout
+	auditMaxRetries         = 3 // times a chain whose models were all busy is tried again
 	// auditUnreadableRetries: times the chain's last runner model is asked
 	// again after an answer out of form.
 	auditUnreadableRetries = 1
@@ -2449,6 +2454,11 @@ func (s *Service) MarkAuditFindings(ctx context.Context, actor *Actor, in MarkFi
 	note := strings.TrimSpace(in.Note)
 	if utf8.RuneCountInString(note) > 2000 {
 		return nil, invalid("a note is at most 2000 characters")
+	}
+	// As for a bot's finding (DismissFinding): an agent says why it is wrong or
+	// not worth fixing, so its dismissal can be judged and isn't a bare click.
+	if state == "rejected" && note == "" && actor.IsAgent() {
+		return nil, invalid("say why the finding is wrong or not worth fixing (a note)")
 	}
 	type ref struct {
 		audit int64

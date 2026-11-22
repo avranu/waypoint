@@ -487,6 +487,9 @@ func TestReleaseTextsAreTrue(t *testing.T) {
 			if c.round != nil {
 				round = c.round(e, r1)
 			}
+			// A round the loop already shipped is finished; the text under test is
+			// the release of one that wasn't.
+			e.exec(`UPDATE work_log SET state = 'running', ended_at = NULL, read_state = 'pending', before_pr = json_remove(before_pr, '$.ship_done') WHERE id = ? AND json_extract(before_pr, '$.ship_done')`, round)
 			if err := e.s.shipRound(e.ctx, shipRoundIn{round: round, why: "the session never took it up"}); err != nil {
 				t.Fatal(err)
 			}
