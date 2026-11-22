@@ -62,6 +62,21 @@ func TestBabysitTimedOutRoundKeepsItsCommits(t *testing.T) {
 	}
 }
 
+// The runner's text for a timeout is long (the calls the time went on) and
+// ends with why its commits weren't pushed: the outcome keeps that end, even
+// when the part before it is longer than the runner can make it.
+func TestTimedOutOutcomeKeepsWhyNothingWasPushed(t *testing.T) {
+	call := " 12m0s in `Bash " + strings.Repeat("x", 115) + "`,"
+	head := "The claude timed out after 1h0m0s and was stopped. When stopped it had been" + strings.Repeat(call, 3) +
+		". Its slowest calls that ended:" + strings.Repeat(call, 3) + "."
+	why := "the remote rejected the push (non-fast-forward)"
+	for _, h := range []string{head, strings.Repeat(head, 5)} {
+		if got := timedOutOutcome(h+notPushedMarker+why, false, 2, nil); !strings.Contains(got, why) {
+			t.Errorf("outcome lost why nothing was pushed: %s", got)
+		}
+	}
+}
+
 // A round that ran out of time with nothing committed hands the next round
 // how it ended, so that one doesn't spend its hour the same way.
 func TestBabysitTimedOutRoundTellsTheNext(t *testing.T) {

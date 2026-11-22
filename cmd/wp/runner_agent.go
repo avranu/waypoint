@@ -535,7 +535,7 @@ func (p *runnerProc) salvage(ctx context.Context, run *jobRun, in agentJob, bare
 	}
 	fmt.Fprintf(run.out, "\nThe agent ran out of time; delivering the commits it had made\n")
 	if d := p.deliver(ctx, run, in, bare, work, env, baseSHA, result, pushed); d.State != "done" {
-		timedOut.Error += " Its commits weren't pushed: " + d.Error
+		timedOut.Error += " Its commits weren't pushed: " + excerpt(d.Error, 300)
 	}
 	return timedOut
 }

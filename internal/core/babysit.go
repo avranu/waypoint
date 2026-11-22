@@ -661,11 +661,28 @@ func (s *Service) recordRoundOutcome(ctx context.Context, bid, jobID int64) {
 	}
 }
 
+// notPushedMarker is what the runner's text for a timed-out round says before
+// why its commits weren't pushed (salvage in cmd/wp/runner_agent.go).
+const notPushedMarker = " Its commits weren't pushed: "
+
+// Caps on a timed-out round's failure text: its head (the timeout, and the
+// calls the time went on) and the runner's tail (why its commits weren't
+// pushed, already cut to 300 there). Each is cut on its own, so the tail
+// survives however long the head is (WP-1597).
+const (
+	timedOutHeadMax = 1200
+	timedOutTailMax = 300
+)
+
 // timedOutOutcome is how a round that ran out of time ended: what of its
 // work is on the branch and what was lost, for the next round and for a
 // person reading the babysit.
 func timedOutOutcome(jobError string, pushed bool, commits int, uncommitted []string) string {
-	out := "failed: " + excerpt(jobError, 300)
+	head, tail, notPushed := strings.Cut(jobError, notPushedMarker)
+	out := "failed: " + excerpt(head, timedOutHeadMax)
+	if notPushed {
+		out += notPushedMarker + excerpt(tail, timedOutTailMax)
+	}
 	switch {
 	case pushed:
 		out += fmt.Sprintf(" The %d commit%s it had made %s pushed.", commits, plural(commits), map[bool]string{true: "was", false: "were"}[commits == 1])
