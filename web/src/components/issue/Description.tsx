@@ -225,8 +225,10 @@ export function MarkdownEditor({
   }, [editing])
   const editor = picked ?? opening
   const toRich = () => {
-    writeMode('rich')
-    setPicked(survivesRichEdit(draft) ? { mode: 'rich', note: false } : { mode: 'md', note: true })
+    if (survivesRichEdit(draft)) {
+      writeMode('rich')
+      setPicked({ mode: 'rich', note: false })
+    } else setPicked({ mode: 'md', note: true })
   }
   const toMarkdown = () => {
     writeMode('md')
@@ -246,6 +248,7 @@ export function MarkdownEditor({
     }
   }
 
+  const uploads = !!(issueKey || attachTo)
   if (editing) {
     return (
       <div className="space-y-2" onBlur={autosave && !conflict ? () => void flush() : undefined}>
@@ -258,7 +261,8 @@ export function MarkdownEditor({
             attachTo={attachTo}
             onKeyDown={editorKeyDown}
             ariaLabel={ariaLabel}
-            placeholder={placeholder}
+            getValue={() => latest.current.draft}
+            placeholder={`${placeholder}${uploads ? ' Type @ to mention someone; paste or drop files to attach them.' : ' Type @ to mention someone.'}`}
             onSource={toMarkdown}
           />
         ) : (
@@ -272,7 +276,7 @@ export function MarkdownEditor({
             attachTo={attachTo}
             onKeyDown={editorKeyDown}
             aria-label={ariaLabel}
-            placeholder={`Markdown supported: **bold**, - [ ] tasks, \`code\`, links, WAY-12 references, [[wikilinks]], @mentions${issueKey || attachTo ? '; paste or drop files' : ''}`}
+            placeholder={`Markdown supported: **bold**, - [ ] tasks, \`code\`, links, WAY-12 references, [[wikilinks]], @mentions${uploads ? '; paste or drop files' : ''}`}
             className="font-[450]"
           />
         )}

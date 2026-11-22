@@ -1,10 +1,11 @@
 // A what-you-see-is-what-you-get editor for task descriptions (WP-628): the
 // markdown renders in place while it is edited, and goes back to markdown on
-// every change, so the stored text is unchanged. @mentions and pasted or
-// dropped files work as they do in the plain textarea.
+// every change. Opening and closing it leaves the text as it was; an edit
+// writes the whole description in the editor's canonical markdown, which
+// renders the same. @mentions and pasted or dropped files work as they do in
+// the plain textarea.
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'
 import {
@@ -25,14 +26,14 @@ import {
   Undo2,
 } from 'lucide-react'
 import { q } from '@/lib/queries'
-import { Avatar } from '@/components/ui/misc'
 import { IconButton } from '@/components/ui/button'
 import { useEscapeLayer } from '@/components/ui/layers'
-import { toastError } from '@/components/ui/toast'
+import { toast, toastError } from '@/components/ui/toast'
 import { issueTarget, refreshAttachments, uploadAttachment } from '@/lib/attachments'
 import { renderMarkdownForEdit } from '@/lib/markdown'
 import { htmlToMarkdown } from '@/lib/richtext'
 import type { UserRef } from '@/lib/types'
+import { MENTION_RE, MentionList, useMentionMatches } from './userMention'
 
 type Props = {
   value: string
@@ -42,14 +43,18 @@ type Props = {
   placeholder?: string
   autoFocus?: boolean
   ariaLabel?: string
+  /**
+   * The newest text of the draft, wherever it is edited now. An upload that
+   * finishes after this editor is gone (the person switched to markdown, or
+   * closed it) puts its link in the draft through this and onValueChange.
+   */
+  getValue?: () => string
   onKeyDown?: (e: React.KeyboardEvent) => void
   /** Switches to the markdown source; a button at the toolbar's end. */
   onSource?: () => void
 }
 
 type Mention = { node: Text; start: number; end: number; text: string }
-
-const MENTION_RE = /(^|[\s(])@([\w.-]{0,39})$/
 
 export function RichTextInput({
   value,
@@ -59,6 +64,7 @@ export function RichTextInput({
   placeholder,
   autoFocus,
   ariaLabel,
+  getValue,
   onKeyDown,
   onSource,
 }: Props) {
@@ -72,21 +78,9 @@ export function RichTextInput({
   const [mention, setMention] = useState<Mention | null>(null)
   const [active, setActive] = useState(0)
   const [dragging, setDragging] = useState(false)
+  const internalDrag = useRef(false)
 
-  const matches = useMemo(() => {
-    if (!mention) return []
-    const t = mention.text.toLowerCase()
-    return users
-      .filter(
-        (u) =>
-          u.username.toLowerCase().startsWith(t) ||
-          u.display_name
-            .toLowerCase()
-            .split(/\s+/)
-            .some((w) => w.startsWith(t)),
-      )
-      .slice(0, 6)
-  }, [mention, users])
+  const matches = useMentionMatches(users, mention?.text)
   const open = !!mention && matches.length > 0
   useEscapeLayer(open, () => setMention(null))
   useEffect(() => setActive(0), [mention?.text])
@@ -94,12 +88,16 @@ export function RichTextInput({
   const sync = () => {
     const el = editor.current
     if (!el) return
-    if (empty(el) && el.innerHTML !== '') el.innerHTML = ''
+    // A browser leaves a <br> or an empty <p> behind when everything is
+    // deleted; that goes. An empty heading, quote or list is the block the
+    // person just asked for, and stays.
+    if (blank(el) && el.innerHTML !== '') el.innerHTML = ''
     // A ticked box changes the property, not the attribute innerHTML shows.
     for (const box of Array.from(el.querySelectorAll<HTMLInputElement>('input[type=checkbox]')))
       box.toggleAttribute('checked', box.checked)
     const md = htmlToMarkdown(el.innerHTML)
     shown.current = md
+    latest.current = md
     onValueChange(md)
   }
 
@@ -130,6 +128,18 @@ export function RichTextInput({
     el.innerHTML = renderMarkdownForEdit(value)
     shown.current = value
   }, [value])
+
+  // What the editor last wrote out; the draft's newest text while mounted.
+  const latest = useRef(value)
+  latest.current = value
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
+  const draftNow = () => (getValue ? getValue() : latest.current)
 
   const detect = () => {
     const sel = window.getSelection()
@@ -267,13 +277,14 @@ export function RichTextInput({
       range.collapse(false)
     }
     const nodes: Text[] = []
-    files.forEach((f, i) => {
+    const placeholders = files.map((f) => `[Uploading ${f.name || 'pasted image'}…]()`)
+    files.forEach((_f, i) => {
       if (i > 0) {
         const br = document.createElement('br')
         range!.insertNode(br)
         range!.setStartAfter(br)
       }
-      const placeholder = document.createTextNode(`[Uploading ${f.name || 'pasted image'}…]()`)
+      const placeholder = document.createTextNode(placeholders[i])
       range!.insertNode(placeholder)
       range!.setStartAfter(placeholder)
       nodes.push(placeholder)
@@ -282,19 +293,41 @@ export function RichTextInput({
     sel?.removeAllRanges()
     sel?.addRange(range)
     sync()
+    // The editor may be gone when an upload ends (switched to markdown, done,
+    // Escape), or the placeholder deleted; then the draft is what to edit.
+    const finish = (i: number, markdown: string | null) => {
+      const ph = placeholders[i]
+      const node = nodes[i]
+      if (mounted.current && node.isConnected) {
+        if (markdown === null) node.remove()
+        else {
+          const holder = document.createElement('span')
+          holder.innerHTML = renderMarkdownForEdit(markdown)
+          node.replaceWith(...Array.from(holder.childNodes))
+        }
+        sync()
+        return true
+      }
+      // The draft holds the placeholder as the serializer wrote it (escaped),
+      // or as typed if markdown mode has rewritten it.
+      const v = draftNow()
+      const at = [ph, asWritten(ph)].find((p) => v.includes(p))
+      if (!at) return false
+      const next = v.replace(at, () => markdown ?? '')
+      latest.current = next
+      onValueChange(next)
+      return true
+    }
     files.forEach((f, i) => {
       uploadAttachment(target, f).then(
         (a) => {
-          const holder = document.createElement('span')
-          holder.innerHTML = renderMarkdownForEdit(a.markdown)
-          nodes[i].replaceWith(...Array.from(holder.childNodes))
           refreshAttachments(qc, target)
-          sync()
+          if (!finish(i, a.markdown))
+            toast(`${f.name || 'The file'} was attached but not inserted: its place was deleted.`)
         },
         (err) => {
-          nodes[i].remove()
+          finish(i, null)
           toastError(err)
-          sync()
         },
       )
     })
@@ -318,11 +351,32 @@ export function RichTextInput({
         setDragging(true)
       }}
       onDragLeave={() => setDragging(false)}
+      onDragStart={() => (internalDrag.current = true)}
+      onDragEnd={() => (internalDrag.current = false)}
       onDrop={(e) => {
-        if (!target || !e.dataTransfer.files.length) return
-        e.preventDefault()
+        const inside = internalDrag.current
+        internalDrag.current = false
         setDragging(false)
-        upload([...e.dataTransfer.files])
+        if (target && e.dataTransfer.files.length) {
+          e.preventDefault()
+          upload([...e.dataTransfer.files])
+          return
+        }
+        // Text dragged in from elsewhere is plain text, as a paste is; moving
+        // text around inside the editor is the browser's.
+        const el = editor.current
+        const text = e.dataTransfer.getData('text/plain')
+        if (inside || !text || !el || !el.contains(e.target as Node)) return
+        e.preventDefault()
+        const at = pointRange(e.clientX, e.clientY)
+        if (at && el.contains(at.startContainer)) {
+          const sel = window.getSelection()
+          sel?.removeAllRanges()
+          sel?.addRange(at)
+        }
+        el.focus()
+        document.execCommand('insertText', false, text)
+        sync()
       }}
     >
       <div
@@ -374,12 +428,20 @@ export function RichTextInput({
           if (t instanceof HTMLInputElement && t.type === 'checkbox') {
             // The browser toggles the box; save it after it does.
             window.setTimeout(sync, 0)
+            return
           }
+          detect()
         }}
         onKeyUp={(e) => {
           if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) detect()
         }}
         onKeyDown={(e) => {
+          // Markdown has no underline; the shortcut would make one that
+          // vanishes on save.
+          if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'u') {
+            e.preventDefault()
+            return
+          }
           if (open) {
             if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
               e.preventDefault()
@@ -387,7 +449,7 @@ export function RichTextInput({
               setActive((a) => (a + d + matches.length) % matches.length)
               return
             }
-            if ((e.key === 'Enter' && !e.metaKey && !e.ctrlKey) || e.key === 'Tab') {
+            if ((e.key === 'Enter' && !e.metaKey && !e.ctrlKey && !e.shiftKey) || e.key === 'Tab') {
               e.preventDefault()
               pick(matches[active])
               return
@@ -435,6 +497,32 @@ function empty(el: HTMLElement) {
   return !el.textContent?.trim() && !el.querySelector('img,video,hr,input,pre,table')
 }
 
+/** Plain text as htmlToMarkdown writes it, escapes included. */
+function asWritten(text: string) {
+  const p = document.createElement('p')
+  p.textContent = text
+  return htmlToMarkdown(p.outerHTML)
+}
+
+/** True when nothing is in the editor, not even an empty heading or list. */
+function blank(el: HTMLElement) {
+  return empty(el) && !el.querySelector('h1,h2,h3,h4,h5,h6,blockquote,ul,ol,li,pre,table,hr')
+}
+
+function pointRange(x: number, y: number): Range | null {
+  const doc = document as Document & {
+    caretRangeFromPoint?: (x: number, y: number) => Range | null
+    caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null
+  }
+  if (doc.caretRangeFromPoint) return doc.caretRangeFromPoint(x, y)
+  const pos = doc.caretPositionFromPoint?.(x, y)
+  if (!pos) return null
+  const r = document.createRange()
+  r.setStart(pos.offsetNode, pos.offset)
+  r.collapse(true)
+  return r
+}
+
 function placeCaretAtEnd(el: HTMLElement) {
   const range = document.createRange()
   range.selectNodeContents(el)
@@ -471,32 +559,5 @@ function MentionMenu({
     if (top + 220 > window.innerHeight) top = Math.max(8, (r.top || box.top) - 220)
     setPos({ top, left })
   }, [anchor, mention])
-  return createPortal(
-    <div
-      role="listbox"
-      aria-label="Mention someone"
-      style={{ top: pos?.top ?? -9999, left: pos?.left ?? -9999 }}
-      className="animate-pop fixed z-[70] w-60 overflow-hidden rounded-xl border border-line bg-raised p-1 shadow-pop"
-      onMouseDown={(e) => e.preventDefault()}
-    >
-      {users.map((u, i) => (
-        <button
-          key={u.id}
-          role="option"
-          aria-selected={i === active}
-          onMouseEnter={() => onHover(i)}
-          onClick={() => onPick(u)}
-          className={clsx(
-            'flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-[13px]',
-            i === active && 'bg-hover',
-          )}
-        >
-          <Avatar user={u} size={18} />
-          <span className="truncate">{u.display_name}</span>
-          <span className="ml-auto shrink-0 text-xs text-subtle">@{u.username}</span>
-        </button>
-      ))}
-    </div>,
-    document.body,
-  )
+  return <MentionList users={users} active={active} pos={pos} onHover={onHover} onPick={onPick} />
 }
