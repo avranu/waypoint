@@ -69,7 +69,8 @@ type slotHold struct{ f *os.File }
 func (h *slotHold) release() { _ = h.f.Close() }
 
 // acquireSlot waits for one of n slots called name. notify gets called once
-// if the wait passes slotWaitNotice.
+// if the wait passes slotWaitNotice. Inside an agent job the wait is noted
+// for the runner (WP-1618): its work clock leaves slot waits out.
 func acquireSlot(ctx context.Context, name string, n int, notify func()) (*slotHold, error) {
 	order := make([]int, n)
 	for i := range order {
@@ -81,6 +82,7 @@ func acquireSlot(ctx context.Context, name string, n int, notify func()) (*slotH
 // acquireSlotIn is acquireSlot trying only the slots in order, in that order.
 // firstMiss, when not nil, is called once when the first pass finds none free.
 func acquireSlotIn(ctx context.Context, name string, order []int, notify, firstMiss func()) (*slotHold, error) {
+	defer noteSlotWait(name)()
 	dir, err := slotDir()
 	if err != nil {
 		return nil, err

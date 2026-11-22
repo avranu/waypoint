@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"time"
 
@@ -66,13 +67,7 @@ func (s *Service) uncountLimitedRound(ctx context.Context, b *Babysit, jobID int
 		}
 		tries++
 	}
-	r := b.Rounds[i]
-	b.Rounds = slices.Delete(b.Rounds, i, i+1)
-	b.Round, b.RoundSHA = 0, ""
-	if prev := lastRound(b); prev != nil {
-		b.Round, b.RoundSHA = prev.N, prev.SHA
-	}
-	restoreStreaks(b, r)
+	r := takeBackRound(b, i)
 	b.limitedUntil, b.limitTries, b.JobID = until.UnixMilli(), tries, 0
 	rounds, _ := json.Marshal(b.Rounds)
 	st, _ := json.Marshal(b.streaks)
@@ -144,4 +139,81 @@ func (s *Service) limitWait(b *Babysit) string {
 		when = at.Format("Jan 2 15:04 UTC")
 	}
 	return fmt.Sprintf("%s's usage limit stopped the last round, which doesn't count; the next goes after %s", cmp(b.Owner.DisplayName, "its owner"), when)
+}
+
+// takeBackRound removes round i from b as if it was never handed out: the
+// round count and sha go back to the round before it, and the streaks to
+// what they were. The caller records it.
+func takeBackRound(b *Babysit, i int) BabysitRound {
+	r := b.Rounds[i]
+	b.Rounds = slices.Delete(b.Rounds, i, i+1)
+	b.Round, b.RoundSHA = 0, ""
+	if prev := lastRound(b); prev != nil {
+		b.Round, b.RoundSHA = prev.N, prev.SHA
+	}
+	restoreStreaks(b, r)
+	return r
+}
+
+// withdrawQueuedRound takes back the round of job jobID, the babysit's
+// current job, when no runner has the job yet and the head it was for has
+// moved on: a push makes it stale, and what the new head needs is decided
+// afresh once its checks settle (WP-1618, WP-ADR149). The job is cancelled
+// and the babysit recorded without the round in one write, so the job's end
+// isn't recorded as the round's outcome and the stored babysit is never
+// left with half of it. The wait's clock starts again: the round that
+// replaces this one hasn't waited since this one was queued. A job a runner
+// has taken is never touched. It reports whether the round was withdrawn; b
+// is changed only when it was.
+func (s *Service) withdrawQueuedRound(ctx context.Context, b *Babysit, pr *PullRequest, jobID int64) bool {
+	// Most jobs a step asks about are running: no write for those.
+	var state string
+	if err := s.db.R.QueryRowContext(ctx, `SELECT state FROM runner_jobs WHERE id = ?`, jobID).Scan(&state); err != nil || state != "queued" {
+		return false
+	}
+	nb := &Babysit{Rounds: slices.Clone(b.Rounds), Round: b.Round, RoundSHA: b.RoundSHA, streaks: maps.Clone(b.streaks), prevStreaks: b.prevStreaks}
+	if i := slices.IndexFunc(nb.Rounds, func(r BabysitRound) bool { return r.Job == jobID }); i >= 0 {
+		takeBackRound(nb, i)
+	}
+	rounds, _ := json.Marshal(nb.Rounds)
+	st, _ := json.Marshal(nb.streaks)
+	now := s.now()
+	cancelled := false
+	wctx := context.WithoutCancel(ctx)
+	err := s.write(wctx, SystemActor(), func(t *tx) error {
+		cancelled = false
+		if err := t.QueryRowContext(wctx, `SELECT state FROM runner_jobs WHERE id = ?`, jobID).Scan(&state); err != nil || state != "queued" {
+			return err
+		}
+		// In the same write as the cancel, so whoever hears of the job's
+		// end finds it is no longer the babysit's and records no outcome.
+		res, err := t.ExecContext(wctx, `UPDATE babysits SET job_id = NULL, round = ?, round_sha = ?, rounds = ?, streaks = ?, wait_at = ?, updated_at = ? WHERE id = ? AND job_id = ?`,
+			nb.Round, nb.RoundSHA, string(rounds), string(st), now.UnixMilli(), now.UnixMilli(), b.ID, jobID)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return nil // no longer this babysit's job
+		}
+		cancelled = true
+		projectID, err := s.attachedProject(wctx, t, pr.ForgeID, pr.Repo)
+		if err != nil {
+			return err
+		}
+		t.emit(&Event{Kind: EvBabysit, ProjectID: projectID, Old: b.State, New: b.State, Data: prEventData(pr, map[string]any{"babysit": b.ID, "withdrawn": jobID})})
+		return t.finishRunnerJob(wctx, jobID, "cancelled", nil, nil, "Withdrawn: the pull request was pushed to before a runner took the round.")
+	})
+	if err != nil {
+		s.log.WarnContext(ctx, "withdraw a queued babysit round", "pr", pr.ID, "job", jobID, "err", err)
+		return false
+	}
+	if !cancelled {
+		return false
+	}
+	oldHead := b.RoundSHA
+	b.Rounds, b.Round, b.RoundSHA, b.streaks, b.JobID, b.WaitSince = nb.Rounds, nb.Round, nb.RoundSHA, nb.streaks, 0, now
+	babysitRoundsWithdrawn.Inc()
+	s.log.Info("queued babysit round withdrawn: the head moved before a runner took it", "pr", pr.ID, "job", jobID, "old_head", short(oldHead), "new_head", short(pr.HeadSHA))
+	s.kickRunners()
+	return true
 }

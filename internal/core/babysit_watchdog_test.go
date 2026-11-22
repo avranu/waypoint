@@ -338,6 +338,10 @@ func TestLateMinorClosingRoundWhenUnarmed(t *testing.T) {
 	be.setClock(be.clockNow().Add(10 * time.Minute))
 	be.sg.setNotes(carol, PRNote{ID: "602", Kind: "comment", Author: "mirror", At: be.clockNow(),
 		Body: "**coderabbitai[bot]** commented on GitHub:\n\n_⚠️ Potential issue_ | _🟡 Minor_\n\nTrim the name before comparing.\n\n<!-- mirror:comment github 9 -->"})
+	// A runner has the round: a push doesn't withdraw it (WP-1618).
+	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE runner_jobs SET state = 'running' WHERE id = ?`, jobs[0]); err != nil {
+		t.Fatal(err)
+	}
 	be.push("8888888bbbb")
 	be.finish(jobs[0], true)
 	be.ci("8888888bbbb", CheckSuccess)
