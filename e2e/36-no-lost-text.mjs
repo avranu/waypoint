@@ -300,12 +300,12 @@ async function run(width) {
 
   // Description: an open edit survives a refresh too.
   await page.getByRole("button", { name: "Add a description…" }).click();
-  const desc = page.getByPlaceholder(/Markdown supported/);
+  const desc = page.getByRole("textbox", { name: "Description" });
   await desc.fill(`Notes I haven't saved ${tag}`);
   await page.reload();
   await desc.waitFor({ timeout: 5000 }).catch(() => {});
   ok(
-    (await desc.inputValue().catch(() => "")) === `Notes I haven't saved ${tag}`,
+    (await desc.evaluate((el) => (el.textContent ?? "").trim()).catch(() => "")) === `Notes I haven't saved ${tag}`,
     `${tag} an open description edit comes back after a refresh`,
   );
   ok(
