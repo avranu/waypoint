@@ -100,6 +100,17 @@ export function MarkdownEditor({
     if (!editing) setDraftState(shown)
   }, [shown, editing])
   const setDraft = (v: string) => {
+    // An upload can end after Done/Escape closed the editor. Nothing autosaves
+    // then, so the link (or the removal of a failed upload's placeholder)
+    // would stay in local state; send it now. `latest` is a ref because the
+    // upload's closure is stale. Without autosave, the text is kept as a
+    // draft and the next edit session shows it.
+    if (autosave && !latest.current.editing) {
+      latest.current.draft = v
+      setDraftState(v)
+      void flush()
+      return
+    }
     setDraftState(v)
     if (draftKey) setKept(writeDraft(draftKey, v !== shown ? v : null))
   }
@@ -262,7 +273,7 @@ export function MarkdownEditor({
             onKeyDown={editorKeyDown}
             ariaLabel={ariaLabel}
             getValue={() => latest.current.draft}
-            placeholder={`${placeholder}${uploads ? ' Type @ to mention someone; paste or drop files to attach them.' : ' Type @ to mention someone.'}`}
+            placeholder={`Write here. Type @ to mention someone${uploads ? '; paste or drop files to attach them.' : '.'}`}
             onSource={toMarkdown}
           />
         ) : (

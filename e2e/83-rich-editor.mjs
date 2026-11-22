@@ -307,6 +307,39 @@ for (const [width, scheme] of looks([
   // Back to the rich editor for what follows.
   await page.evaluate(() => localStorage.setItem("wp.editor.mode", "rich"));
 
+  // Done/Escape pressed while the file is still uploading: the editor is gone
+  // when it ends, and the link (or the failed upload's cleanup) must still be
+  // saved rather than left as the placeholder (WP-628).
+  const ue = await make("Upload escape", "pic");
+  await openRich(ue.key, "pic");
+  await slow(1500);
+  await pastePng("esc.png");
+  await field.press("Escape");
+  const ued = await waitDesc(ue.key, (d) => link("esc.png").test(d));
+  ok(link("esc.png").test(ued) && !ued.includes("Uploading"), `${tag} an upload finishing after Escape is saved: ${JSON.stringify(ued)}`);
+  await page.reload();
+  await page.getByRole("img").first().waitFor({ timeout: 8000 }).catch(() => {});
+  ok(
+    (await page.locator('img[src*="esc.png"]').count()) > 0 && !(await page.content()).includes("Uploading esc.png"),
+    `${tag} ...and shows after a reload`,
+  );
+  await page.unrouteAll({ behavior: "ignoreErrors" });
+
+  // The same upload failing after Escape: the placeholder goes, and is saved.
+  const uf = await make("Upload escape fail", "pic");
+  await openRich(uf.key, "pic");
+  await page.route(/\/api\/v1\/attachments\?/, async (route) => {
+    await new Promise((r) => setTimeout(r, 1500));
+    await route.fulfill({ status: 500, contentType: "application/json", body: '{"error":"nope"}' });
+  });
+  await pastePng("bad.png");
+  await field.press("Escape");
+  // Escape saves the placeholder first; the failure then has to take it out.
+  await waitDesc(uf.key, (d) => d.includes("Uploading bad.png"));
+  const ufd = await waitDesc(uf.key, (d) => !d.includes("Uploading"));
+  ok(!ufd.includes("Uploading") && !ufd.includes("bad.png"), `${tag} an upload failing after Escape leaves no placeholder saved: ${JSON.stringify(ufd)}`);
+  await page.unrouteAll({ behavior: "ignoreErrors" });
+
   // The placeholder deleted mid-upload: the file is attached, say so.
   const ud = await make("Upload deleted", "pic");
   await openRich(ud.key, "pic");
@@ -417,7 +450,11 @@ for (const [width, scheme] of looks([
   await page.getByRole("button", { name: "Add a description…", exact: true }).click();
   await richBox.waitFor();
   const prompt = await richBox.evaluate((el) => getComputedStyle(el, "::before").content);
-  ok(prompt.includes("Add a description"), `${tag} an empty editor shows its prompt: ${prompt}`);
+  ok(prompt.length > 2, `${tag} an empty editor shows its prompt: ${prompt}`);
+  ok(
+    !prompt.replace(/^["']/, "").startsWith("Add a description"),
+    `${tag} the in-field hint does not depend on the empty-state label: ${prompt}`,
+  );
   ok(
     prompt.includes("@") && prompt.includes("paste or drop files"),
     `${tag} the in-field hint mentions @ and files: ${prompt}`,
