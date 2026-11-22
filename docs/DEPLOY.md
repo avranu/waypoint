@@ -298,6 +298,46 @@ needs no login: the `claude` account's packages are public, and the image holds
 only public toolchains. `.forgejo/ci-image/build.sh --local` builds it without
 pushing, to try a change.
 
+**CI on GitHub** (WP-1624): the public mirror, github.com/avranu/waypoint, runs
+`.github/workflows/` on GitHub's hosted runners, which are free for a public
+repository. Nothing there gates a merge, a release or a deploy; those go by
+Forgejo's statuses alone, so a GitHub outage or a halted mirror stops nothing.
+`github-ci` runs on each push forge-sync makes to main: lint, the backend tests
+under the race detector (three jobs: `internal/core`, `cmd/wp`, the rest) and
+the four e2e shards; on Sundays it runs the e2e shards at all four looks.
+`github-codeql` scans main with CodeQL into GitHub's Security tab (pull requests
+are scanned on Forgejo by forge-checks; a finding triaged in `.forgejo/codeql/`
+is dismissed by hand on GitHub, which never sees that file).
+
+The rules, which `internal/cilint/repo_test.go` checks: no secrets (GitHub has
+none of ours), no `pull_request` or `pull_request_target` trigger, GitHub's
+hosted runners only (never attach one of ours to the public repository),
+read-only `permissions:`, and no path under `.forgejo/`, which forge-sync
+strips: the workflows can't use Forgejo's scripts, actions or job image, so they
+install Go, Node, the QA tools and Chromium themselves, from GitHub's cache.
+forge-sync also rewrites every commit (the tree without `.forgejo/`), so a
+GitHub SHA is never Forgejo's; the commit's `Sync-Origin-Commit:` trailer names
+it. A run starts only after forge-sync has published the push, and not at all
+while it holds main (a gitleaks finding).
+
+To compare GitHub's runners with ours, job for job:
+
+```sh
+gh run list -R avranu/waypoint -w github-ci -s completed -L 30 --json databaseId -q '.[].databaseId' |
+  while read -r id; do
+    gh run view -R avranu/waypoint "$id" --json jobs \
+      -q '.jobs[] | select(.conclusion == "success") | [.name, ((.completedAt | fromdate) - (.startedAt | fromdate))] | @tsv'
+  done | sort | awk -F'\t' '{ n[$1]++; s[$1] += $2 } END { for (j in n) printf "%-22s %3d runs, mean %4.1f min\n", j, n[j], s[j] / n[j] / 60 }' | sort
+wp ci history --days 7 -v   # ours: lint, e2e shard N, backend shard N
+```
+
+`gh workflow run github-ci -R avranu/waypoint -f e2e_shards=8` deals the browser
+checks over eight jobs instead of four. Moving a check that gates to GitHub
+needs more than a faster runner: a relay that posts GitHub's result on the
+Forgejo commit the trailer names, pull request runs (and so a rule for the
+mirror's twin pull requests), and Waypoint reading `wp-evidence` lines from
+GitHub's logs.
+
 **Go's caches** are kept per kind of job (`.forgejo/actions/go-cache`, with
 setup-go's own cache off): `backend-race`, `backend` (the draft tier),
 `lint` (with golangci-lint's), `e2e` and `release`, each keyed by Go's

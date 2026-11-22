@@ -1,0 +1,26 @@
+# The Makefile's pinned Go QA tools (`make tools`) on a GitHub runner, cached
+# by Go's version and the pins: building gosec and golangci-lint takes minutes.
+# Forgejo's jobs get them from their job image (.forgejo/actions/go-tools).
+name: go-tools
+description: Install the Makefile's pinned Go QA tools, from the cache when the pins are unchanged.
+runs:
+  using: composite
+  steps:
+    - id: key
+      shell: bash
+      run: |
+        echo "bin=$(go env GOPATH)/bin" >> "$GITHUB_OUTPUT"
+        echo "key=go-tools-$(go env GOVERSION)-$(grep -E '^[A-Z_]+_VERSION \?=' Makefile | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+    - id: cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ${{ steps.key.outputs.bin }}/gosec
+          ${{ steps.key.outputs.bin }}/govulncheck
+          ${{ steps.key.outputs.bin }}/golangci-lint
+          ${{ steps.key.outputs.bin }}/actionlint
+          ${{ steps.key.outputs.bin }}/kubeconform
+        key: ${{ steps.key.outputs.key }}
+    - if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: make tools

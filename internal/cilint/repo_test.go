@@ -172,3 +172,80 @@ func TestRepoScriptsExecutable(t *testing.T) {
 		}
 	}
 }
+
+// TestRepoGitHubWorkflows guards the workflows GitHub's hosted runners run on
+// the public mirror (WP-1624). The repository is public, so they hold no
+// secret, never run a pull request's code (pull_request_target would with
+// write access; pull_request waits until a check there gates), ask for
+// GitHub's own runners only, and start read-only. forge-sync strips .forgejo/
+// from what GitHub gets, so a step that names it has nothing to run; and each
+// job says it is GitHub's, since Forgejo has no runner with these labels.
+func TestRepoGitHubWorkflows(t *testing.T) {
+	files, err := filepath.Glob("../../.github/workflows/*.y*ml")
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no GitHub workflows found: %v", err)
+	}
+	actions, _ := filepath.Glob("../../.github/actions/*/action.y*ml")
+	reSecret := regexp.MustCompile(`\bsecrets\s*[.\[]`)
+	uncommented := func(src []byte) string {
+		var b strings.Builder
+		for line := range strings.SplitSeq(string(src), "\n") {
+			if !strings.HasPrefix(strings.TrimSpace(line), "#") {
+				b.WriteString(line + "\n")
+			}
+		}
+		return b.String()
+	}
+	for _, f := range append(actions, files...) {
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		code := uncommented(src)
+		if reSecret.MatchString(code) {
+			t.Errorf("%s reads a secret: GitHub's workflows get none", f)
+		}
+		if strings.Contains(code, ".forgejo/") {
+			t.Errorf("%s uses a path under .forgejo/, which GitHub never gets", f)
+		}
+	}
+	for _, f := range files {
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var w struct {
+			On          map[string]any `yaml:"on"`
+			Permissions map[string]string
+			Jobs        map[string]struct {
+				If     string
+				RunsOn any `yaml:"runs-on"`
+			}
+		}
+		if err := yaml.Unmarshal(src, &w); err != nil {
+			t.Fatalf("%s: %v", f, err)
+		}
+		for ev := range w.On {
+			if strings.HasPrefix(ev, "pull_request") {
+				t.Errorf("%s runs on %s: GitHub's workflows run on main, the schedule and by hand only", f, ev)
+			}
+		}
+		if len(w.On) == 0 {
+			t.Errorf("%s: no on: map of events", f)
+		}
+		if len(w.Permissions) != 1 || w.Permissions["contents"] != "read" {
+			t.Errorf("%s: top-level permissions are %v, want only contents: read", f, w.Permissions)
+		}
+		if len(w.Jobs) == 0 {
+			t.Errorf("%s: no jobs", f)
+		}
+		for id, j := range w.Jobs {
+			if label, ok := j.RunsOn.(string); !ok || !strings.HasPrefix(label, "ubuntu-") {
+				t.Errorf("%s job %s runs on %v: GitHub's hosted ubuntu runners only", f, id, j.RunsOn)
+			}
+			if !strings.Contains(j.If, "github.server_url == 'https://github.com'") {
+				t.Errorf("%s job %s: its if: must hold only on GitHub (github.server_url == 'https://github.com')", f, id)
+			}
+		}
+	}
+}

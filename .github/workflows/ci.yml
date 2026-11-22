@@ -1,0 +1,186 @@
+# Waypoint's checks on GitHub's hosted runners (WP-1624). Nothing here gates a
+# merge: Waypoint lives on Forgejo, merges on .forgejo/workflows/ci.yml's
+# statuses, and releases from there. forge-sync publishes main to
+# github.com/avranu/waypoint, where runners are free for a public repository,
+# so these runs cost our CI hosts nothing. They are here to
+#   - measure GitHub's runners against ours, job for job (lint, the e2e
+#     shards, the race detector), before any check that gates is moved; and
+#   - run the weekly four-look browser checks.
+# docs/DEPLOY.md ("CI on GitHub") says how to read the timings.
+#
+# Rules for every workflow under .github/ (the repository is public):
+#   - no secrets, and none are set on GitHub; `permissions:` is read-only;
+#   - never `pull_request_target`, and no `pull_request` either until a check
+#     here gates: these run on main, which only merged pull requests reach;
+#   - GitHub's hosted runners only, never a self-hosted one;
+#   - nothing under .forgejo/ exists on GitHub (forge-sync strips it), so no
+#     step may use its scripts, actions or job image. The commits differ too:
+#     each carries a `Sync-Origin-Commit:` trailer naming Forgejo's.
+# Forgejo ignores .github/workflows while .forgejo/workflows exists; each job's
+# `if:` says so again, since Forgejo has no runner with these labels.
+#
+# Action pins are full SHAs with the tag in a comment, as in Forgejo's ci.yml.
+name: github-ci
+
+on:
+  push:
+    branches: [main]
+  # The four looks (1280/1440 wide and 390, light and dark), e2e only (WP-313).
+  schedule:
+    - cron: '47 4 * * 0'
+  workflow_dispatch:
+    inputs:
+      looks:
+        description: 'Browser checks: one look per suite (like a push) or all four'
+        type: choice
+        options: ['one', 'all']
+        default: 'one'
+      e2e_shards:
+        description: 'How many jobs the browser checks are dealt over'
+        type: choice
+        options: ['4', '8']
+        default: '4'
+
+permissions:
+  contents: read
+
+# forge-sync may publish several merges in one push, and the next push
+# supersedes this one: nothing waits on these results.
+concurrency:
+  group: github-ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Forgejo's lint job, less the steps that compare with main (dependency age,
+  # wplint's repo half: on main nothing is new) and the ones that read
+  # .forgejo/ (actionlint's config, the shard check, the job image).
+  lint:
+    if: github.server_url == 'https://github.com' && github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/go
+        with:
+          kind: lint
+          path: ~/.cache/golangci-lint
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: ./.github/actions/go-tools
+      - name: vet and gofmt
+        run: |
+          go vet ./cmd/... ./internal/... ./web
+          test -z "$(gofmt -l cmd internal)"
+      - name: golangci-lint (uses .golangci.yml)
+        run: golangci-lint run ./cmd/... ./internal/... ./web
+      - name: Waypoint rules (cmd/wplint)
+        run: go run ./cmd/wplint ./cmd/... ./internal/...
+      - name: wp builds for Windows and macOS
+        run: make cross-check
+      - name: workflow lint (actionlint)
+        run: actionlint .github/workflows/*.yml
+      - name: gosec
+        run: make sast
+      - name: vulnerabilities (govulncheck)
+        run: govulncheck ./cmd/... ./internal/... ./web
+      - name: install app deps
+        working-directory: web
+        run: npm ci --no-audit --no-fund
+      - name: typecheck
+        working-directory: web
+        run: npm run typecheck
+      - name: formatting (prettier --check)
+        working-directory: web
+        run: npm run format:check
+      - name: npm audit (high and above)
+        working-directory: web
+        run: npm run audit
+      - name: build
+        working-directory: web
+        run: npm run build
+
+  # The backend tests under the race detector, as Forgejo's full tier runs
+  # them, in three jobs: internal/core and cmd/wp (the two long packages) each
+  # alone, and every other package. Forgejo deals the same tests over four
+  # shards by name (.forgejo/scripts/gotest-shard.sh, private to Forgejo), so
+  # compare the jobs' total time with the shards' total, not job with job.
+  race:
+    name: race (${{ matrix.group }})
+    if: github.server_url == 'https://github.com' && github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [core, wp, rest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/go
+        with:
+          kind: race-${{ matrix.group }}
+      # modernc.org's transpiled SQLite engine stays uninstrumented (WP-738).
+      - name: test (race detector)
+        env:
+          GROUP: ${{ matrix.group }}
+        run: |
+          mod=$(go list -m)
+          case "$GROUP" in
+            core) pkgs=./internal/core ;;
+            wp) pkgs=./cmd/wp ;;
+            rest) pkgs=$(go list ./cmd/... ./internal/... ./web | grep -v -x -e "$mod/internal/core" -e "$mod/cmd/wp") ;;
+          esac
+          # shellcheck disable=SC2086 # one word per package
+          go test -race \
+            -gcflags='modernc.org/sqlite/lib=-race=false' \
+            -gcflags='modernc.org/libc/...=-race=false' \
+            -gcflags='modernc.org/memory=-race=false' \
+            -gcflags='modernc.org/mathutil=-race=false' \
+            -count=1 -timeout 50m $pkgs
+
+  # Forgejo's e2e shards, the same command: e2e/shard.mjs deals the suites by
+  # e2e/weights.txt, and each shard builds the binary and starts its own
+  # server. A manual run can deal them over 8 jobs to see what more shards buy.
+  e2e:
+    name: e2e shard ${{ matrix.shard }}
+    if: github.server_url == 'https://github.com'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(inputs.e2e_shards == '8' && '[1, 2, 3, 4, 5, 6, 7, 8]' || '[1, 2, 3, 4]') }}
+    env:
+      SHARDS: ${{ inputs.e2e_shards || '4' }}
+      E2E_LOOKS: ${{ (github.event_name == 'schedule' || inputs.looks == 'all') && 'all' || 'one' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/go
+        with:
+          kind: e2e
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            e2e/package-lock.json
+      # Only this runner's wp: the checks run no other (e2e/26-runners).
+      - name: build
+        run: WP_TARGETS="$(go env GOOS)/$(go env GOARCH)" make build
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('e2e/package-lock.json') }}
+      - name: browsers
+        working-directory: e2e
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: browser checks
+        working-directory: e2e
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: ./run.sh --shard "$SHARD/$SHARDS"
