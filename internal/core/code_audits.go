@@ -48,9 +48,9 @@ const (
 	auditRetryStep         = 15 * time.Minute
 	auditInstructionsMax   = 2000
 	// auditMaxFindings is the top of the max_findings option a person sets
-	// on an ordinary audit (audit_criteria.go): what the model is asked for,
-	// not what is kept (findingsGuard).
-	auditMaxFindings = 30
+	// (audit_criteria.go): how many are shown at a time, the guard's number
+	// (findingsGuard), not what the model is asked for or what is kept.
+	auditMaxFindings = findingsGuard
 	auditMaxModels   = 6
 	// findingsGuard is the most findings any audit keeps (WP-1320,
 	// WP-ADR141): a guard against a runaway answer, not a number anyone is
@@ -59,9 +59,10 @@ const (
 	// Haiku panel's findings don't compete with the reviewer's for room
 	// below it. Past it the worst are kept (the reviewer's before the
 	// panel's within a severity) and the audit's summary says how many the
-	// answer held and how many are kept; the answer as it came stays in the
-	// audit, and the panel's runs in its helper runs. (auditGuard: a check
-	// of marks has more room.)
+	// answer held and how many are kept; the answer's text stays in the
+	// audit (its spacing flattened, to 60,000 characters), with the
+	// findings cut here after it, and the panel's runs in its helper runs.
+	// (auditGuard: a check of marks has more room.)
 	findingsGuard = 100
 )
 
@@ -116,7 +117,8 @@ type CodeAudit struct {
 	Instructions string `json:"instructions"`
 	// The criteria (WP-548): a recent target's period as asked (7d,
 	// 2026-10-28) and its start; the focus areas' keys; the paths read or
-	// left out; the lowest severity reported ("": all); the most findings.
+	// left out; the lowest severity reported ("": all); how many findings are
+	// shown at a time (WP-1421: not a limit on what is kept).
 	Since       string     `json:"since,omitempty"`
 	SinceAt     *time.Time `json:"since_at,omitempty"`
 	Focus       []string   `json:"focus"`
@@ -137,20 +139,23 @@ type CodeAudit struct {
 	// trustedAuditBar). An audit whose chain asks the gateway to choose has
 	// one at least reviewFloorBar (WP-1440); "" is a chain of models named
 	// for it, or no gateway.
-	Weakest     string             `json:"weakest,omitempty"`
-	Models      []string           `json:"models"`
-	PostComment bool               `json:"post_comment"`
-	Fix         bool               `json:"fix"`
-	Status      string             `json:"status"`
-	Slot        int                `json:"slot"`
-	JobID       *int64             `json:"job_id,omitempty"`
-	JobState    string             `json:"job_state,omitempty"`
-	Attempts    []AuditAttempt     `json:"attempts"`
-	Retries     int                `json:"retries"`
-	RetryAt     *time.Time         `json:"retry_at,omitempty"`
-	Model       string             `json:"model,omitempty"`
-	Summary     string             `json:"summary,omitempty"`
-	Answer      string             `json:"answer,omitempty"`
+	Weakest     string         `json:"weakest,omitempty"`
+	Models      []string       `json:"models"`
+	PostComment bool           `json:"post_comment"`
+	Fix         bool           `json:"fix"`
+	Status      string         `json:"status"`
+	Slot        int            `json:"slot"`
+	JobID       *int64         `json:"job_id,omitempty"`
+	JobState    string         `json:"job_state,omitempty"`
+	Attempts    []AuditAttempt `json:"attempts"`
+	Retries     int            `json:"retries"`
+	RetryAt     *time.Time     `json:"retry_at,omitempty"`
+	Model       string         `json:"model,omitempty"`
+	Summary     string         `json:"summary,omitempty"`
+	Answer      string         `json:"answer,omitempty"`
+	// Shown is how many findings are listed at a time (AuditShown), worked
+	// out when the audit is read, never stored (WP-1421).
+	Shown       int                `json:"shown"`
 	Error       string             `json:"error,omitempty"`
 	Tokens      map[string]any     `json:"tokens,omitempty"`
 	CommentURL  string             `json:"comment_url,omitempty"`
@@ -264,7 +269,8 @@ type AuditInput struct {
 	Exclude []string `json:"exclude"`
 	// MinSeverity: report nothing below it (empty: everything).
 	MinSeverity string `json:"min_severity"`
-	// MaxFindings: at most this many (0: 15; up to 30).
+	// MaxFindings: how many findings are shown at a time (0: 15; 1 to 100).
+	// The model is told no number and every finding is kept (to the guard).
 	MaxFindings int `json:"max_findings"`
 	// Base: what a branch is compared with (empty: the default branch).
 	Base         string   `json:"base"`
@@ -817,7 +823,7 @@ func oldAuditRunnerWhy(runners []*Runner, cli string) string {
 // auditSchema is the answer every model is asked for.
 const auditSchema = `{"type":"object","additionalProperties":false,"required":["summary","findings"],"properties":{` +
 	`"summary":{"type":"string","description":"Two or three sentences: what you read and what you found."},` +
-	`"findings":{"type":"array","maxItems":15,"items":{"type":"object","additionalProperties":false,"required":["title","path","line","severity","problem","confirm"],"properties":{` +
+	`"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["title","path","line","severity","problem","confirm"],"properties":{` +
 	`"title":{"type":"string","description":"One line: the defect."},` +
 	`"path":{"type":"string","description":"The file, relative to the repository's root."},` +
 	`"line":{"type":"integer","description":"The line the defect is on (0 if it has none)."},` +
@@ -872,11 +878,8 @@ func codeAuditPrompt(a *CodeAudit, prContext string) string {
 		b.WriteString("What to look for: " + a.Instructions + " Report other serious problems you come across too.\n\n")
 	}
 	b.WriteString(auditCriteriaPrompt(a))
-	// A review round's reviewer is told no number (findingsGuard).
-	count := fmt.Sprintf("At most %d findings, worst first.", auditFindingsCap(a))
-	if auditUncapped(a) {
-		count = "Report every problem you find, worst first."
-	}
+	// No audit's model is told a number (WP-1421): min_severity asks for less.
+	count := "Report every problem you find, worst first."
 	fmt.Fprintf(&b, `Rules:
 - Report only problems you can point to in the code: the file (relative to the repository's root) and line, what goes wrong, and when.
 - No style nits, no "consider adding", nothing you did not check against the code.
@@ -923,13 +926,7 @@ func (s *Service) advanceAudit(ctx context.Context, id int64) {
 	for a.Slot < len(a.chain) {
 		m := a.chain[a.Slot]
 		in := AgentJob{CLI: m.CLI, Model: m.Model, Prompt: a.prompt, Repo: repo.cloneURL(), Base: a.Ref, DiffFrom: a.Base, ReadOnly: true, Permission: AgentRead,
-			JSONSchema: auditSchemaFor(a), DiffPaths: a.Paths, DiffExclude: a.Exclude, Helpers: a.Helpers}
-		if a.Helpers != nil && len(a.Helpers.Panel) > 0 {
-			// A copy: the prior runs go to this job only, never the audit's record.
-			h := *a.Helpers
-			h.Prior = s.priorPanel(ctx, a.ID)
-			in.Helpers = &h
-		}
+			JSONSchema: auditSchema, DiffPaths: a.Paths, DiffExclude: a.Exclude, Helpers: a.Helpers}
 		if a.SinceAt != nil {
 			in.DiffFrom, in.DiffSince = "", a.SinceAt.Unix()
 		}
@@ -1097,8 +1094,12 @@ func (s *Service) settleAudit(ctx context.Context, id, jobID int64) {
 			att.Outcome = "answered"
 			a.Attempts = append(a.Attempts, att)
 			found.keep(a)
-			found.Summary += found.keepNote(a, raised)
-			a.Model, a.Summary = auditModelName(m), excerpt(found.Summary, 2000)
+			a.Answer = found.answerWith(a.Answer)
+			if found.guardCut > 0 {
+				s.log.WarnContext(ctx, "an audit's answer was cut at the guard", "audit", a.ID, "raised", raised, "kept", len(found.Findings), "cut", found.guardCut)
+			}
+			found.Summary = summaryWithNote(found.Summary, found.keepNote(a, raised))
+			a.Model, a.Summary = auditModelName(m), found.Summary
 			if m.CLI == GatewayCLI {
 				// Which of the gateway's models answered, and that its
 				// findings are to be reported on.
@@ -1323,6 +1324,10 @@ type auditAnswer struct {
 	// floorCut and guardCut are how many keep took out below the severity
 	// floor and past the guard.
 	floorCut, guardCut int
+	// cutJSON is the findings past the guard, as JSON, for the audit's
+	// answer text (cutShort: cut at auditCutMax).
+	cutJSON  string
+	cutShort bool
 }
 
 // flexInt is a number a model may write as a string ("123", "L123").
@@ -1641,12 +1646,15 @@ func auditComment(a *CodeAudit, base string) string {
 	}
 	if n > 0 {
 		b.WriteString("\n\n| # | Severity | Where | Finding |\n|---|---|---|---|\n")
-		for _, f := range a.Findings {
+		for _, f := range a.Findings[:min(n, AuditShown(a))] {
 			where := ""
 			if f.Path != "" {
 				where = "`" + strings.ReplaceAll(f.Path, "`", "") + lineSuffix(f.Line) + "`"
 			}
 			fmt.Fprintf(&b, "| %d | %s | %s | %s |\n", f.Ordinal, f.Severity, where, forgeSafe(f.Title, true))
+		}
+		if more := n - AuditShown(a); more > 0 {
+			fmt.Fprintf(&b, "\n%d more finding%s: %s/audits/%d (or `wp audit show %d --all`)\n", more, plural(more), base, a.ID, a.ID)
 		}
 	}
 	fmt.Fprintf(&b, "\nThe details, how to confirm each and their verdicts: %s/audits/%d\n\n", base, a.ID)
@@ -1745,7 +1753,13 @@ Record each verdict on the audit as you go: wp audit mark %d.1 fixed -m "what yo
 			todo = append(todo, f)
 		}
 	}
-	writeAuditFindings(&b, todo)
+	// The first findings shown at a time, worst first; the rest are counted
+	// and marked too (WP-1421).
+	shown := todo[:min(len(todo), AuditShown(a))]
+	writeAuditFindings(&b, shown)
+	if more := len(todo) - len(shown); more > 0 {
+		fmt.Fprintf(&b, "\n%d more finding%s: `wp audit show %d --all` lists them; mark them too.\n", more, plural(more), a.ID)
+	}
 	return b.String()
 }
 
@@ -1906,6 +1920,7 @@ func scanAudit(sc interface{ Scan(...any) error }) (*CodeAudit, error) {
 		return &t
 	}
 	a.RetryAt, a.StartedAt, a.FinishedAt, a.CreatedAt = ts(retryAt), ts(started), ts(finished), msTime(created)
+	a.Shown = AuditShown(&a)
 	_ = json.Unmarshal([]byte(models), &a.chain)
 	_ = json.Unmarshal([]byte(attempts), &a.Attempts)
 	_ = json.Unmarshal([]byte(tokens), &a.Tokens)

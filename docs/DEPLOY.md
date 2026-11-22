@@ -562,6 +562,10 @@ Any proxy works. Requirements:
   smaller limit, in more requests. Only a single line too large for the
   proxy holds its file (counted as a refused upload, tried again once a day,
   and `wp usage machines` names the likely cause).
+- Whether any of this needs a change depends on the proxy: nginx refuses
+  bodies over 1 MB unless `client_max_body_size` says otherwise, while Caddy
+  has no limit unless the site sets `request_body max_size`. A response's
+  `Server` or `Via` header says which one answers (`curl -sI URL/healthz`).
 
 nginx example:
 

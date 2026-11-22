@@ -56,8 +56,10 @@ func TestTrustedReviewerOnNoVerifierArm(t *testing.T) {
 	}
 }
 
-// The summary counts the trusted findings posted, not the ones found.
-func TestTrustedCountIsWhatWasPosted(t *testing.T) {
+// The summary counts the trusted findings the review kept: the ones posted
+// and the ones past the shown number, which are kept and given to the agent
+// too (WP-1421).
+func TestTrustedCountIsWhatWasKept(t *testing.T) {
 	re := newReviewEnv(t)
 	re.s.trustSeeds = []string{"muse-spark-1.3"}
 	var fs []string
@@ -66,7 +68,8 @@ func TestTrustedCountIsWhatWasPosted(t *testing.T) {
 	}
 	re.llm.answers[museModel] = `{"findings":[` + strings.Join(fs, ",") + `]}`
 	run := re.review(t)
-	if len(run.Findings) != 8 || !strings.Contains(run.Summary, "; 8 from a trusted reviewer") {
+	if len(run.Findings) != 12 || !strings.Contains(run.Summary, "8 findings and 4 more kept, not posted") ||
+		!strings.Contains(run.Summary, "; 12 from a trusted reviewer") {
 		t.Errorf("%d findings, summary = %q", len(run.Findings), run.Summary)
 	}
 }

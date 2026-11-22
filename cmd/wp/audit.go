@@ -32,8 +32,11 @@ ends.
 
 -m says what to look for. --model repeats for a fallback chain used when
 one is busy or out of quota; --model gateway/audit asks the gateway
-gateway's own agent, where there is one. --focus, --path, --exclude, --min-severity and
---max-findings narrow it; an audit whose paths match nothing runs no model.
+gateway's own agent, where there is one. --focus, --path, --exclude and
+--min-severity narrow it; an audit whose paths match nothing runs no model.
+--show N is how many findings wp audit show and the audit's page list at a
+time (default 15; --all lists every one). It is not a limit: the model is
+told no number and every finding is kept.
 --fix also makes a task for Claude to check and fix the real findings.
 
 Findings are claims to check; record your verdict with wp audit mark (12.3 is
@@ -103,7 +106,11 @@ type auditView struct {
 	Paths        []string `json:"paths"`
 	Exclude      []string `json:"exclude"`
 	MinSeverity  string   `json:"min_severity"`
-	MaxFindings  int      `json:"max_findings"`
+	MaxFindings  int      `json:"max_findings"` // how many are shown at a time; 0 is the default
+	// Shown is how many findings are listed at a time, as the server works it
+	// out (0 from an older server: shownAtATime falls back to its old rule).
+	Shown int  `json:"shown"`
+	all   bool // wp audit show --all
 	// HelperRuns: the Haiku checks around the model (core.AuditHelperRun).
 	HelperRuns  []core.AuditHelperRun `json:"helper_runs"`
 	FromSHA     string                `json:"from_sha"`
@@ -227,6 +234,27 @@ func (a *auditView) state() string {
 	return a.Status
 }
 
+func (a *auditView) shownAtATime() int {
+	if a.Shown > 0 {
+		return a.Shown
+	}
+	// An older server sends no number: the rule it had.
+	if a.MaxFindings > 0 {
+		return a.MaxFindings
+	}
+	return core.AuditDefaultShown
+}
+
+// moreFindings is the line after the first few findings: how many are not
+// listed and how to list them (WP-1421). Empty with --all or when all show.
+func (a *auditView) moreFindings() string {
+	more := len(a.Findings) - a.shownAtATime()
+	if a.all || more <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("  %d more: wp audit show %d --all\n", more, a.ID)
+}
+
 func (a *auditView) text() string {
 	var s strings.Builder
 	fmt.Fprintf(&s, "Audit #%d of %s: %s\n", a.ID, a.what(), a.state())
@@ -274,7 +302,11 @@ func (a *auditView) text() string {
 	s.WriteString(a.job)
 	if len(a.Findings) > 0 {
 		s.WriteString("\nFindings (claims to check, not facts):\n")
-		for _, f := range a.Findings {
+		shown := len(a.Findings)
+		if !a.all {
+			shown = min(shown, a.shownAtATime())
+		}
+		for _, f := range a.Findings[:shown] {
 			where := ""
 			if f.Path != "" {
 				where = " " + f.Path
@@ -301,6 +333,7 @@ func (a *auditView) text() string {
 			}
 		}
 	}
+	s.WriteString(a.moreFindings())
 	s.WriteString(a.unansweredPanel())
 	fmt.Fprintf(&s, "\n%s", a.URL)
 	return strings.TrimRight(s.String(), "\n")
@@ -369,8 +402,10 @@ func (a *auditView) criteria() string {
 	if a.MinSeverity != "" {
 		parts = append(parts, a.MinSeverity+" and worse")
 	}
-	if a.MaxFindings > 0 {
-		parts = append(parts, fmt.Sprintf("asked for at most %d findings", a.MaxFindings))
+	// Only when it is the number in use: a check of marks and a review
+	// round's audit list every finding whatever max_findings holds.
+	if a.MaxFindings > 0 && (a.Shown == 0 || a.Shown == a.MaxFindings) {
+		parts = append(parts, fmt.Sprintf("shows %d findings at a time", a.MaxFindings))
 	}
 	return strings.Join(parts, "; ")
 }
@@ -412,7 +447,8 @@ func auditRun(target string) func(c *cli, args []string) error {
 		fs.Var(&paths, "path", "audit only this `PATH` or glob (repeatable)")
 		fs.Var(&exclude, "exclude", "leave this `PATH` or glob out (repeatable)")
 		minSev := fs.String("min-severity", "", "drop findings below `SEVERITY`: medium, high, critical")
-		maxFindings := fs.Int("max-findings", 0, "at most `N` findings (default 15, max 30)")
+		maxFindings := fs.Int("show", 0, fmt.Sprintf("show `N` findings at a time (1 to 100; default %d); the model is told no number and every finding is kept", core.AuditDefaultShown))
+		fs.IntVar(maxFindings, "max-findings", 0, "same as --show (kept so scripts keep working)")
 		pos, err := c.parse(fs, args)
 		if err != nil {
 			return err
@@ -616,6 +652,7 @@ func auditID(c *cli, v string) (int64, error) {
 
 func auditShow(c *cli, args []string) error {
 	fs := c.flags()
+	all := fs.Bool("all", false, "list every finding, not the first few")
 	pos, err := c.parse(fs, args)
 	if err != nil {
 		return err
@@ -639,6 +676,7 @@ func auditShow(c *cli, args []string) error {
 		}
 		return c.emit(raw, func() string {
 			a.job = auditJobText(c, &a)
+			a.all = *all
 			return a.text()
 		})
 	})

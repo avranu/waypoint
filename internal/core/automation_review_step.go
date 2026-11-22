@@ -123,7 +123,7 @@ func (c *StepCtx) setReviewOutputs(id int64) error {
 		rank := severityRank(sev)
 		counts[rank]++
 		found++
-		if placement != "withheld" {
+		if placement != "withheld" && placement != placementLater {
 			posted++
 		}
 		worst = min(worst, rank)
@@ -149,7 +149,7 @@ func (c *StepCtx) setReviewOutputs(id int64) error {
 // steps follow it, which is when it waits for the review to end.
 var reviewOutputs = []OutputDef{
 	{Name: "Findings", Type: "number", Doc: "findings this review raised (after the verifier and the limits)"},
-	{Name: "Posted", Type: "number", Doc: "of them, posted on the forge (the rest are on private files with no changed line)"},
+	{Name: "Posted", Type: "number", Doc: "of them, posted on the forge (the rest are on private files with no changed line, or kept past the number the review shows)"},
 	{Name: "Worst", Type: "text", Doc: "the highest severity found: P0 (critical) to P3 (low); empty when it found nothing"},
 	{Name: "P0", Type: "number", Doc: "critical findings"}, {Name: "P1", Type: "number", Doc: "high"},
 	{Name: "P2", Type: "number", Doc: "medium"}, {Name: "P3", Type: "number", Doc: "low"},
