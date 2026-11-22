@@ -26,7 +26,7 @@ func noteSlotWait(name string) (done func()) {
 		return func() {}
 	}
 	note := func(what string) {
-		f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600) // #nosec G304 -- named by the runner that started this job
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600) // #nosec G304 G703 -- named by the runner that started this job
 		if err != nil {
 			return
 		}
