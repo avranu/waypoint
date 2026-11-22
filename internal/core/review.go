@@ -577,6 +577,10 @@ func similarClaim(a, b string) bool {
 	return float64(common)/float64(min(len(wa), len(wb))) >= 0.6
 }
 
+// SimilarClaim is similarClaim for the runner's merging of one problem's
+// restatements (WP-1570).
+func SimilarClaim(a, b string) bool { return similarClaim(a, b) }
+
 func claimWords(s string) map[string]bool {
 	out := map[string]bool{}
 	for _, w := range strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {

@@ -540,8 +540,8 @@ func (st *roundStats) nitpickText() string {
 		b.WriteString("PRS: merged pull requests of the arm. ROUNDS, TOKENS, COST: per pull request, rounds after its first decision. TO MERGE: median hours from it.\n")
 	}
 	if len(n.Again) > 0 {
-		fmt.Fprintf(&b, "\nAdversarial reviews before a pull request, scored for another round: again %d, probe %d, holdout %d, enough %d, only repeats %d, unscored %d, no decision model %d, every finding rejected %d, reviewer's record too weak %d, reviewer's record unreadable %d, rounds at this place rarely find anything %d, at the cap %d; %d more rounds.\n",
-			n.Again["again"], n.Again["probe"], n.Again["holdout"], n.Again["enough"], n.Again["repeat"], n.Again["unscored"], n.Again["no_model"], n.Again["rejected"], n.Again["untrusted"], n.Again["no_record"], n.Again["low_yield"], n.Again["cap"], n.AgainRounds)
+		fmt.Fprintf(&b, "\nAdversarial reviews before a pull request, scored for another round: again %d, probe %d, holdout %d, enough %d, only repeats %d, unscored %d, no decision model %d, every finding rejected %d, reviewer's record too weak %d, reviewer's record unreadable %d, rounds at this place rarely find anything %d, at the cap %d, signals short of the round's weight %d; %d more rounds.\n",
+			n.Again["again"], n.Again["probe"], n.Again["holdout"], n.Again["enough"], n.Again["repeat"], n.Again["unscored"], n.Again["no_model"], n.Again["rejected"], n.Again["untrusted"], n.Again["no_record"], n.Again["low_yield"], n.Again["cap"], n.Again["weighed"], n.AgainRounds)
 	}
 	if len(n.AgainByRound) > 0 {
 		fmt.Fprintf(&b, "%-6s %7s %5s %6s %7s %8s %6s %5s %6s %6s\n", "ROUND", "DECIDED", "AGAIN", "SIGNAL", "HOLDOUT", "FOLLOWED", "USEFUL", "PROBE", "JUDGED", "USEFUL")
@@ -564,7 +564,7 @@ func (st *roundStats) nitpickText() string {
 			fmt.Fprintf(&b, "The decision model's asks: %d decisions scored from %d answers (%.1f each); in %d the answers called a question differently, and in %d the asks' mean still changed its decision with the last asks.\n",
 				sampled, asks, float64(asks)/float64(sampled), split, unsettled)
 		}
-		b.WriteString("SIGNAL: decisions a finding's own label decided (new, standing, not refuted, at or over the stakes' floor). HOLDOUT: before 11-18 only. FOLLOWED: the rounds after an again that an audit reviewed and whose findings were judged (scored, or none that counts). USEFUL: of those, the ones that found something new of medium or worse the session fixed or confirmed. PROBE, JUDGED, USEFUL: the same for rounds the scores were under the bar for but that got another round to measure the bar.\n")
+		b.WriteString("SIGNAL: decisions a finding's own label decided (new, standing, not refuted, at or over the stakes' floor, weighing what the round needs, WP-1569). HOLDOUT: before 11-18 only. FOLLOWED: the rounds after an again that an audit reviewed and whose findings were judged (scored, or none that counts). USEFUL: of those, the ones that found something new of medium or worse the session fixed or confirmed. PROBE, JUDGED, USEFUL: the same for rounds the scores were under the bar for but that got another round to measure the bar.\n")
 	}
 	if g := n.AgainAgreement; g != nil && g.Findings > 0 {
 		fmt.Fprintf(&b, "Severity: the reviewers' labels and the decision model's scores of %d findings are %.1f points apart on average; %d within two points.\n", g.Findings, g.MeanGap, g.Within2)

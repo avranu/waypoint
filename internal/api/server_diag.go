@@ -182,6 +182,9 @@ func serverStatusText(st *core.ServerStatus, now time.Time) string {
 			b.WriteString("\n")
 		}
 	}
+	if m := st.Meaning; m != nil {
+		b.WriteString(meaningHealthText(m, now) + "\n")
+	}
 	b.WriteString("\nQueues (waiting, running):\n")
 	for _, q := range st.Queues {
 		fmt.Fprintf(&b, "  %-16s %4d %4d\n", q.Name, q.Waiting, q.Running)
@@ -288,6 +291,35 @@ func serverStatusText(st *core.ServerStatus, now time.Time) string {
 		fmt.Fprintf(&b, "Log files: since %s UTC, %s (kept %d days).\n", f.Since.UTC().Format("2006-01-02 15:04"), bytesText(f.Bytes), f.Days)
 	}
 	return b.String()
+}
+
+// meaningHealthText is the meaning service's line in the status (WP-1602).
+func meaningHealthText(m *core.MeaningHealth, now time.Time) string {
+	since := func(t *time.Time) string {
+		if t == nil {
+			return "never"
+		}
+		return t.UTC().Format("01-02 15:04") + " UTC (" + agoText(now.Sub(*t)) + " ago)"
+	}
+	switch m.State {
+	case "down":
+		l := fmt.Sprintf("Meaning service: DOWN since %s, %d calls unanswered in a row", since(m.DownSince), m.Failures)
+		if m.RetryAt != nil {
+			l += "; next try " + m.RetryAt.UTC().Format("15:04 UTC")
+		} else {
+			l += "; a try is out"
+		}
+		l += "; last answered " + since(m.LastOK)
+		if m.LastError != "" {
+			l += "\n  " + m.LastError
+		}
+		return l
+	case "failing":
+		return fmt.Sprintf("Meaning service: %d calls unanswered in a row since %s: %s", m.Failures, since(m.DownSince), m.LastError)
+	case "up":
+		return "Meaning service: answering, last answered " + since(m.LastOK)
+	}
+	return "Meaning service: not asked since this start"
 }
 
 // problemLine is one problem in a line.
