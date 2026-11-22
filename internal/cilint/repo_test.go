@@ -12,12 +12,22 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
+// needForgejo skips a test that reads .forgejo/: forge-sync strips it from the
+// public mirror, whose GitHub runners run this package's tests too (WP-1624).
+func needForgejo(t *testing.T) {
+	t.Helper()
+	if _, err := os.Stat("../../.forgejo"); os.IsNotExist(err) {
+		t.Skip("the mirror's checkout has no .forgejo/ (WP-1624)")
+	}
+}
+
 // TestRepoShardMatrices guards this repository's own ci.yml (WP-313, WP-314):
 // a job that runs one shard of a split suite names the shard count in
 // env.SHARDS and lists the shards in its matrix, and the two must agree.
 // A matrix missing shard 3 of 4 would still go green, with a quarter of the
 // tests never run.
 func TestRepoShardMatrices(t *testing.T) {
+	needForgejo(t)
 	src, err := os.ReadFile("../../.forgejo/workflows/ci.yml")
 	if err != nil {
 		t.Fatal(err)
@@ -65,6 +75,7 @@ func TestRepoShardMatrices(t *testing.T) {
 // or never runs, with nothing to show for it (WP-174, WP-536); and a
 // permissions: block is ignored, with a warning on every job (WP-289).
 func TestRepoForgejoEventNames(t *testing.T) {
+	needForgejo(t)
 	files, err := filepath.Glob("../../.forgejo/workflows/*.y*ml")
 	if err != nil || len(files) == 0 {
 		t.Fatalf("no workflows found: %v", err)
@@ -87,6 +98,7 @@ func TestRepoForgejoEventNames(t *testing.T) {
 // digest as well as tag. A tag can be pushed again by any holder of the
 // account; the digest ci.yml names can't change under it.
 func TestRepoHeavyJobImage(t *testing.T) {
+	needForgejo(t)
 	src, err := os.ReadFile("../../.forgejo/workflows/ci.yml")
 	if err != nil {
 		t.Fatal(err)
@@ -154,7 +166,11 @@ func repoModes(t *testing.T) ModeFunc {
 // Makefiles run by path is committed executable (WP-950).
 func TestRepoScriptsExecutable(t *testing.T) {
 	mode := repoModes(t)
+	// The mirror's checkout has no .forgejo/ (WP-1624); its Makefiles and
+	// GitHub workflows are still checked.
 	files, _ := filepath.Glob("../../.forgejo/workflows/*.y*ml")
+	gh, _ := filepath.Glob("../../.github/workflows/*.y*ml")
+	files = append(files, gh...)
 	mk, _ := filepath.Glob("../../*.mk")
 	files = append(files, mk...)
 	files = append(files, "../../Makefile")
@@ -186,66 +202,25 @@ func TestRepoGitHubWorkflows(t *testing.T) {
 		t.Fatalf("no GitHub workflows found: %v", err)
 	}
 	actions, _ := filepath.Glob("../../.github/actions/*/action.y*ml")
-	reSecret := regexp.MustCompile(`\bsecrets\s*[.\[]`)
-	uncommented := func(src []byte) string {
-		var b strings.Builder
-		for line := range strings.SplitSeq(string(src), "\n") {
-			if !strings.HasPrefix(strings.TrimSpace(line), "#") {
-				b.WriteString(line + "\n")
-			}
-		}
-		return b.String()
-	}
-	for _, f := range append(actions, files...) {
-		src, err := os.ReadFile(f)
-		if err != nil {
-			t.Fatal(err)
-		}
-		code := uncommented(src)
-		if reSecret.MatchString(code) {
-			t.Errorf("%s reads a secret: GitHub's workflows get none", f)
-		}
-		if strings.Contains(code, ".forgejo/") {
-			t.Errorf("%s uses a path under .forgejo/, which GitHub never gets", f)
-		}
-	}
 	for _, f := range files {
+		if strings.HasSuffix(f, ".yaml") {
+			t.Errorf("%s: name it .yml, since actionlint runs on *.yml only", f)
+		}
 		src, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)
 		}
-		var w struct {
-			On          map[string]any `yaml:"on"`
-			Permissions map[string]string
-			Jobs        map[string]struct {
-				If     string
-				RunsOn any `yaml:"runs-on"`
-			}
+		for _, p := range GitHubWorkflowProblems(f, src) {
+			t.Error(p)
 		}
-		if err := yaml.Unmarshal(src, &w); err != nil {
-			t.Fatalf("%s: %v", f, err)
+	}
+	for _, f := range actions {
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
 		}
-		for ev := range w.On {
-			if strings.HasPrefix(ev, "pull_request") {
-				t.Errorf("%s runs on %s: GitHub's workflows run on main, the schedule and by hand only", f, ev)
-			}
-		}
-		if len(w.On) == 0 {
-			t.Errorf("%s: no on: map of events", f)
-		}
-		if len(w.Permissions) != 1 || w.Permissions["contents"] != "read" {
-			t.Errorf("%s: top-level permissions are %v, want only contents: read", f, w.Permissions)
-		}
-		if len(w.Jobs) == 0 {
-			t.Errorf("%s: no jobs", f)
-		}
-		for id, j := range w.Jobs {
-			if label, ok := j.RunsOn.(string); !ok || !strings.HasPrefix(label, "ubuntu-") {
-				t.Errorf("%s job %s runs on %v: GitHub's hosted ubuntu runners only", f, id, j.RunsOn)
-			}
-			if !strings.Contains(j.If, "github.server_url == 'https://github.com'") {
-				t.Errorf("%s job %s: its if: must hold only on GitHub (github.server_url == 'https://github.com')", f, id)
-			}
+		for _, p := range GitHubFileProblems(f, src) {
+			t.Error(p)
 		}
 	}
 }

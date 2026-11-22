@@ -267,7 +267,14 @@ type sarifResult struct {
 // parseSarif reads CodeQL's SARIF into findings:
 // suppressed results are skipped, the level falls back to the rule's, and the
 // security severity is the rule's property (a number or a string).
-func parseSarif(data []byte) ([]codeqlFinding, error) {
+func parseSarif(data []byte) ([]codeqlFinding, error) { return parseSarifPaths(data, nil) }
+
+// parseSarifPaths is parseSarif with each result path passed through repoPath
+// (nil leaves them), so the key and the triage match see the repository's path.
+func parseSarifPaths(data []byte, repoPath func(string) string) ([]codeqlFinding, error) {
+	if repoPath == nil {
+		repoPath = func(p string) string { return p }
+	}
 	var doc struct {
 		Runs []struct {
 			Tool struct {
@@ -307,7 +314,7 @@ func parseSarif(data []byte) ([]codeqlFinding, error) {
 			}
 			f := codeqlFinding{Rule: id, Level: level, Score: score, Severity: codeqlSeverityName(score, level), Blocking: level == "error" || score >= 7}
 			if len(res.Locations) > 0 {
-				f.Path = res.Locations[0].PhysicalLocation.ArtifactLocation.URI
+				f.Path = repoPath(res.Locations[0].PhysicalLocation.ArtifactLocation.URI)
 				f.Line = res.Locations[0].PhysicalLocation.Region.StartLine
 			}
 			f.Message, _, _ = strings.Cut(strings.TrimSpace(res.Message.Text), "\n")
@@ -322,7 +329,7 @@ func parseSarif(data []byte) ([]codeqlFinding, error) {
 			if len(res.CodeFlows) > 0 && len(res.CodeFlows[0].ThreadFlows) > 0 {
 				for _, l := range res.CodeFlows[0].ThreadFlows[0].Locations {
 					msg, _, _ := strings.Cut(strings.TrimSpace(l.Location.Message.Text), "\n")
-					f.Flow = append(f.Flow, codeqlStep{Path: l.Location.PhysicalLocation.ArtifactLocation.URI, Line: l.Location.PhysicalLocation.Region.StartLine, Message: msg})
+					f.Flow = append(f.Flow, codeqlStep{Path: repoPath(l.Location.PhysicalLocation.ArtifactLocation.URI), Line: l.Location.PhysicalLocation.Region.StartLine, Message: msg})
 				}
 			}
 			out = append(out, f)
@@ -767,7 +774,12 @@ func runCodeqlScan(ctx context.Context, d codeqlDocker, o codeqlOpts) (*codeqlRe
 		if err != nil {
 			return nil, codeqlFailed{fmt.Sprintf("%s: no results file; log %s", lang, logPath)}
 		}
-		found, err := parseSarif(data)
+		var found []codeqlFinding
+		if lang == "actions" {
+			found, err = parseSarifPaths(data, codeqlActionsRepoPath)
+		} else {
+			found, err = parseSarif(data)
+		}
 		if err != nil {
 			return nil, codeqlFailed{fmt.Sprintf("%s: %v", lang, err)}
 		}
@@ -816,32 +828,80 @@ func codeqlSweep(cache string) {
 	}
 }
 
+// codeqlStagePrefix marks a workflow or action staged from .forgejo or .gitea
+// next to the repository's own .github ones, so same-named files don't collide.
+// The stage is "<prefix><base>--<name>", e.g. ".github/workflows/wp-stage-forgejo--ci.yml".
+const codeqlStagePrefix = "wp-stage-"
+
 // codeqlActionsSource is the tree the actions extractor reads. It looks only
 // in .github/workflows, so for a repository whose workflows are in .forgejo or
-// .gitea, they are copied there (with their actions). Otherwise it is dir
-// itself.
+// .gitea, they are copied there (with their actions). When .github/workflows
+// also has YAML, the .github workflows and actions are copied too and the
+// others get a codeqlStagePrefix name, so every set is read and
+// codeqlActionsRepoPath can name the true path. With only .github/workflows it
+// is dir itself.
 func codeqlActionsSource(dir, work string) (string, error) {
 	hasYAML := func(d string) bool {
 		m, _ := filepath.Glob(filepath.Join(dir, filepath.FromSlash(d), "*.y*ml"))
 		return len(m) > 0
 	}
-	if hasYAML(".github/workflows") {
-		return dir, nil
-	}
+	github := hasYAML(".github/workflows")
+	stage := filepath.Join(work, "actions-src")
+	var bases []string
 	for _, base := range []string{".forgejo", ".gitea"} {
-		if !hasYAML(base + "/workflows") {
-			continue
+		if hasYAML(base + "/workflows") {
+			bases = append(bases, base)
 		}
-		stage := filepath.Join(work, "actions-src")
-		if err := copyFiles(filepath.Join(dir, base, "workflows"), filepath.Join(stage, ".github", "workflows")); err != nil {
+	}
+	switch {
+	case len(bases) == 0:
+		return dir, nil
+	case !github:
+		bases = bases[:1]
+		if err := copyFiles(filepath.Join(dir, bases[0], "workflows"), filepath.Join(stage, ".github", "workflows")); err != nil {
 			return "", err
 		}
-		if err := copyFiles(filepath.Join(dir, base, "actions"), filepath.Join(stage, ".github", "actions")); err != nil {
+		if err := copyFiles(filepath.Join(dir, bases[0], "actions"), filepath.Join(stage, ".github", "actions")); err != nil {
 			return "", err
 		}
 		return stage, nil
 	}
-	return dir, nil
+	for _, kind := range []string{"workflows", "actions"} {
+		if err := copyFiles(filepath.Join(dir, ".github", kind), filepath.Join(stage, ".github", kind)); err != nil {
+			return "", err
+		}
+		for _, base := range bases {
+			prefix := codeqlStagePrefix + strings.TrimPrefix(base, ".") + "--"
+			entries, _ := os.ReadDir(filepath.Join(dir, base, kind))
+			for _, e := range entries {
+				to := filepath.Join(stage, ".github", kind, prefix+e.Name())
+				if e.IsDir() {
+					if err := copyFiles(filepath.Join(dir, base, kind, e.Name()), to); err != nil {
+						return "", err
+					}
+				} else if err := copyFiles1(filepath.Join(dir, base, kind, e.Name()), to); err != nil {
+					return "", err
+				}
+			}
+		}
+	}
+	return stage, nil
+}
+
+// codeqlActionsRepoPath is the repository path of a path in the actions
+// extractor's tree: a staged workflow or action goes back to .forgejo or
+// .gitea; any other path is its own.
+func codeqlActionsRepoPath(p string) string {
+	for _, kind := range []string{"workflows", "actions"} {
+		rest, ok := strings.CutPrefix(p, ".github/"+kind+"/"+codeqlStagePrefix)
+		if !ok {
+			continue
+		}
+		if base, name, ok := strings.Cut(rest, "--"); ok && base != "" {
+			return "." + base + "/" + kind + "/" + name
+		}
+	}
+	return p
 }
 
 // copyFiles copies the regular files and directories under from to to;
@@ -861,16 +921,27 @@ func copyFiles(from, to string) error {
 				return err
 			}
 		case e.Type().IsRegular():
-			b, err := os.ReadFile(filepath.Join(from, e.Name())) // #nosec G304 -- the tree being scanned
-			if err != nil {
-				return err
-			}
-			if err := os.WriteFile(filepath.Join(to, e.Name()), b, 0o600); err != nil { // #nosec G703 -- a file name read from the tree being scanned, written under the scan's own work dir
+			if err := copyFiles1(filepath.Join(from, e.Name()), filepath.Join(to, e.Name())); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// copyFiles1 copies one regular file, creating its directory.
+func copyFiles1(from, to string) error {
+	if info, err := os.Lstat(from); err != nil || !info.Mode().IsRegular() {
+		return nil // symlinks are left behind
+	}
+	if err := os.MkdirAll(filepath.Dir(to), 0o750); err != nil {
+		return err
+	}
+	b, err := os.ReadFile(from) // #nosec G304 -- the tree being scanned
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(to, b, 0o600) // #nosec G703 -- a file name read from the tree being scanned, written under the scan's own work dir
 }
 
 // tailLines is the last n lines of a file.

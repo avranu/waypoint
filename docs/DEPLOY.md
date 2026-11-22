@@ -299,9 +299,14 @@ only public toolchains. `.forgejo/ci-image/build.sh --local` builds it without
 pushing, to try a change.
 
 **CI on GitHub** (WP-1624): the public mirror, github.com/avranu/waypoint, runs
-`.github/workflows/` on GitHub's hosted runners, which are free for a public
-repository. Nothing there gates a merge, a release or a deploy; those go by
-Forgejo's statuses alone, so a GitHub outage or a halted mirror stops nothing.
+`.github/workflows/` on GitHub's standard hosted runners, which GitHub does not
+bill a public repository for (its limits on concurrent jobs and runner size
+have not been checked against our load: WP-1629). No run there gates a merge, a
+release or a deploy; those go by Forgejo's statuses alone, so a GitHub outage
+or a halted mirror stops nothing. (Forgejo's lint and backend jobs do check the
+files themselves, with actionlint and `internal/cilint`.) Nothing in Waypoint
+watches these runs either: a failure shows in GitHub's Actions and Security
+tabs only, until WP-1629 decides whether they earn an alarm.
 `github-ci` runs on each push forge-sync makes to main: lint, the backend tests
 under the race detector (three jobs: `internal/core`, `cmd/wp`, the rest) and
 the four e2e shards; on Sundays it runs the e2e shards at all four looks.
@@ -312,31 +317,48 @@ is dismissed by hand on GitHub, which never sees that file).
 The rules, which `internal/cilint/repo_test.go` checks: no secrets (GitHub has
 none of ours), no `pull_request` or `pull_request_target` trigger, GitHub's
 hosted runners only (never attach one of ours to the public repository),
-read-only `permissions:`, and no path under `.forgejo/`, which forge-sync
+read-only `permissions:` (but `security-events: write` for the job that uploads
+CodeQL's findings), and no path under `.forgejo/`, which forge-sync
 strips: the workflows can't use Forgejo's scripts, actions or job image, so they
 install Go, Node, the QA tools and Chromium themselves, from GitHub's cache.
 forge-sync also rewrites every commit (the tree without `.forgejo/`), so a
 GitHub SHA is never Forgejo's; the commit's `Sync-Origin-Commit:` trailer names
-it. A run starts only after forge-sync has published the push, and not at all
-while it holds main (a gitleaks finding).
+it (read off the mirror's commits in November 2026: forge-sync is another
+repository, so nothing here checks it). A run starts only after forge-sync has
+published the push, and not at all while it holds main (a gitleaks finding).
 
-To compare GitHub's runners with ours, job for job:
+What a GitHub job leaves out: the race jobs run without `-cover`, and
+`TestNoSiteNames` skips there (its list is the `SITE_NAMES` secret), as do
+`internal/cilint`'s checks of Forgejo's workflow.
+
+To compare GitHub's runners with ours, take push runs only (a Sunday run does
+four looks, and a manual one may deal eight shards), and for each job its wait
+for a runner, its time, and how often it failed:
 
 ```sh
-gh run list -R avranu/waypoint -w github-ci -s completed -L 30 --json databaseId -q '.[].databaseId' |
+gh run list -R avranu/waypoint -w github-ci -e push -s completed -L 30 --json databaseId -q '.[].databaseId' |
   while read -r id; do
-    gh run view -R avranu/waypoint "$id" --json jobs \
-      -q '.jobs[] | select(.conclusion == "success") | [.name, ((.completedAt | fromdate) - (.startedAt | fromdate))] | @tsv'
-  done | sort | awk -F'\t' '{ n[$1]++; s[$1] += $2 } END { for (j in n) printf "%-22s %3d runs, mean %4.1f min\n", j, n[j], s[j] / n[j] / 60 }' | sort
+    gh run view -R avranu/waypoint "$id" --json createdAt,jobs \
+      -q '.createdAt as $c | .jobs[] | select(.conclusion == "success" or .conclusion == "failure")
+          | [.name, .conclusion, ((.startedAt | fromdate) - ($c | fromdate)), ((.completedAt | fromdate) - (.startedAt | fromdate))] | @tsv'
+  done | awk -F'\t' '{ n[$1]++; f[$1] += ($2 == "failure"); w[$1] += $3; if ($2 == "success") { k[$1]++; s[$1] += $4 } }
+    END { for (j in n) printf "%-22s %3d runs, %2d failed, mean wait %4.1f min, mean time when green %4.1f min\n", j, n[j], f[j], w[j] / n[j] / 60, (k[j] ? s[j] / k[j] / 60 : 0) }' | sort
 wp ci history --days 7 -v   # ours: lint, e2e shard N, backend shard N
 ```
+
+Lint and the e2e shards compare job with job, with one caution: GitHub's e2e
+job installs Chromium each time and ours has it in the job image, so compare
+the "browser checks" step (`gh run view --job ID --json steps`) or allow for
+the install. The race jobs do not: ours are four shards dealt by test name and
+GitHub's are three groups by package, so compare the sum of the three with the
+sum of our four backend shards.
 
 `gh workflow run github-ci -R avranu/waypoint -f e2e_shards=8` deals the browser
 checks over eight jobs instead of four. Moving a check that gates to GitHub
 needs more than a faster runner: a relay that posts GitHub's result on the
 Forgejo commit the trailer names, pull request runs (and so a rule for the
 mirror's twin pull requests), and Waypoint reading `wp-evidence` lines from
-GitHub's logs.
+GitHub's logs. WP-1629 holds the measurement and that decision.
 
 **Go's caches** are kept per kind of job (`.forgejo/actions/go-cache`, with
 setup-go's own cache off): `backend-race`, `backend` (the draft tier),

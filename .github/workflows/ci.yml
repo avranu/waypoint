@@ -1,21 +1,28 @@
-# Waypoint's checks on GitHub's hosted runners (WP-1624). Nothing here gates a
+# Waypoint's checks on GitHub's hosted runners (WP-1624). No run here gates a
 # merge: Waypoint lives on Forgejo, merges on .forgejo/workflows/ci.yml's
-# statuses, and releases from there. forge-sync publishes main to
-# github.com/avranu/waypoint, where runners are free for a public repository,
-# so these runs cost our CI hosts nothing. They are here to
-#   - measure GitHub's runners against ours, job for job (lint, the e2e
-#     shards, the race detector), before any check that gates is moved; and
+# statuses, and releases from there. (Forgejo's own lint and backend jobs do
+# check these files: actionlint and internal/cilint's TestRepoGitHubWorkflows.)
+# forge-sync publishes main to github.com/avranu/waypoint, where GitHub bills
+# a public repository nothing for its standard hosted runners, so these runs
+# cost our CI hosts nothing. They are here to
+#   - measure GitHub's runners against ours (lint, the e2e shards, the race
+#     detector) before any check that gates is moved (WP-1629); and
 #   - run the weekly four-look browser checks.
-# docs/DEPLOY.md ("CI on GitHub") says how to read the timings.
+# docs/DEPLOY.md ("CI on GitHub") says how to read the timings, and what a
+# GitHub job leaves out that Forgejo's runs.
 #
 # Rules for every workflow under .github/ (the repository is public):
-#   - no secrets, and none are set on GitHub; `permissions:` is read-only;
-#   - never `pull_request_target`, and no `pull_request` either until a check
-#     here gates: these run on main, which only merged pull requests reach;
+#   - no secrets, and none are set on GitHub;
+#   - `permissions:` is read-only, but for `security-events: write` on the job
+#     that uploads CodeQL's findings;
+#   - on a push to main, the schedule or by hand only: never
+#     `pull_request_target`, and no `pull_request` either until a check here
+#     gates, since only merged pull requests reach main;
 #   - GitHub's hosted runners only, never a self-hosted one;
 #   - nothing under .forgejo/ exists on GitHub (forge-sync strips it), so no
 #     step may use its scripts, actions or job image. The commits differ too:
-#     each carries a `Sync-Origin-Commit:` trailer naming Forgejo's.
+#     each carries a `Sync-Origin-Commit:` trailer naming Forgejo's (read off
+#     the mirror's commits in November 2026; forge-sync is another repository).
 # Forgejo ignores .github/workflows while .forgejo/workflows exists; each job's
 # `if:` says so again, since Forgejo has no runner with these labels.
 #
@@ -54,6 +61,8 @@ jobs:
   # Forgejo's lint job, less the steps that compare with main (dependency age,
   # wplint's repo half: on main nothing is new) and the ones that read
   # .forgejo/ (actionlint's config, the shard check, the job image).
+  # The timeouts here are guesses at twice a cold-cache run, since no run has
+  # been timed yet; WP-1629 sets them from the first weeks' runs.
   lint:
     if: github.server_url == 'https://github.com' && github.event_name != 'schedule'
     runs-on: ubuntu-24.04
@@ -80,12 +89,14 @@ jobs:
         run: go run ./cmd/wplint ./cmd/... ./internal/...
       - name: wp builds for Windows and macOS
         run: make cross-check
-      - name: workflow lint (actionlint)
-        run: actionlint .github/workflows/*.yml
+      - name: workflow and k8s manifest lint (actionlint, kubeconform)
+        run: |
+          actionlint .github/workflows/*.yml
+          kubeconform -strict -summary deploy/k8s/waypoint.yaml
       - name: gosec
         run: make sast
       - name: vulnerabilities (govulncheck)
-        run: govulncheck ./cmd/... ./internal/... ./web
+        run: make vuln
       - name: install app deps
         working-directory: web
         run: npm ci --no-audit --no-fund
@@ -107,6 +118,10 @@ jobs:
   # alone, and every other package. Forgejo deals the same tests over four
   # shards by name (.forgejo/scripts/gotest-shard.sh, private to Forgejo), so
   # compare the jobs' total time with the shards' total, not job with job.
+  # Two things Forgejo's run has and this one lacks: -cover, and the site
+  # names. internal/repocheck's TestNoSiteNames skips here, since its list is a
+  # secret (SITE_NAMES) and GitHub gets none; internal/cilint's checks of
+  # Forgejo's workflow skip too, with no .forgejo/ to read.
   race:
     name: race (${{ matrix.group }})
     if: github.server_url == 'https://github.com' && github.event_name != 'schedule'
@@ -138,7 +153,7 @@ jobs:
             -gcflags='modernc.org/libc/...=-race=false' \
             -gcflags='modernc.org/memory=-race=false' \
             -gcflags='modernc.org/mathutil=-race=false' \
-            -count=1 -timeout 50m $pkgs
+            -count=1 -timeout 50m $pkgs # 50m: a group holds more than one of Forgejo's four shards (30m each)
 
   # Forgejo's e2e shards, the same command: e2e/shard.mjs deals the suites by
   # e2e/weights.txt, and each shard builds the binary and starts its own
@@ -174,6 +189,9 @@ jobs:
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('e2e/package-lock.json') }}
+      # Forgejo's job image has the browser baked in; here each job installs
+      # it (the cache saves the download, not apt's packages), so compare the
+      # "browser checks" step with Forgejo's, not the whole job.
       - name: browsers
         working-directory: e2e
         run: |
