@@ -333,7 +333,8 @@ What a GitHub job leaves out: the race jobs run without `-cover`, and
 
 To compare GitHub's runners with ours, take push runs only (a Sunday run does
 four looks, and a manual one may deal eight shards), and for each job its wait
-for a runner, its time, and how often it failed:
+for a runner, its time, and how often it failed. Cancelled jobs (a push the
+next one superseded) and skipped ones are left out of every column:
 
 ```sh
 gh run list -R avranu/waypoint -w github-ci -e push -s completed -L 30 --json databaseId -q '.[].databaseId' |

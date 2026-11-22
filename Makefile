@@ -30,7 +30,7 @@ GOVULNCHECK_VERSION ?= v1.9.0
 ACTIONLINT_VERSION ?= v1.7.12
 KUBECONFORM_VERSION ?= v0.8.0
 
-.PHONY: e2e all build web server cli cross-check test lint wplint sast vuln check prepush prepush-go prepush-ops prepush-web tools ci-image ops-lint dev docker deploy deploy-remote rollback-remote deploy-status need-deploy-host release-dry-run clean help
+.PHONY: e2e all build web server cli cross-check test lint golint wplint sast vuln check prepush prepush-go prepush-ops prepush-web tools ci-image ops-lint dev docker deploy deploy-remote rollback-remote deploy-status need-deploy-host release-dry-run clean help
 
 all: build
 
@@ -85,11 +85,14 @@ tools: ## install pinned Go QA binaries
 ci-image: ## build and push CI's job image if the registry lacks it, and pin ci.yml to it
 	.forgejo/ci-image/build.sh
 
-lint: cross-check ## vet + format check + full lint + wplint + wp cross-builds
+lint: cross-check golint ## vet + format check + full lint + wplint + wp cross-builds
+	$(MAKE) wplint
+
+# Also what GitHub's lint job runs (.github/workflows/ci.yml), so it follows GOPKGS.
+golint: ## go vet, gofmt check and golangci-lint over GOPKGS
 	go vet $(GOPKGS)
 	test -z "$$(gofmt -l cmd internal)"
 	$(GOTOOLS) $(SLOT) golangci-lint run $(GOPKGS)
-	$(MAKE) wplint
 
 # Waypoint's own rules from AGENTS.md and REVIEW.md (internal/wplint, WP-707).
 # A finding is fixed or waived on its line: //wplint:ignore RULE why.

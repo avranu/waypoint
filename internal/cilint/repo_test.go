@@ -1,6 +1,7 @@
 package cilint
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -223,4 +224,78 @@ func TestRepoGitHubWorkflows(t *testing.T) {
 			t.Error(p)
 		}
 	}
+}
+
+// github-ci writes the e2e shard count three times: the manual run's choices,
+// the matrix each choice gets, and the SHARDS the checks are dealt by. A
+// matrix shorter than SHARDS goes green with part of the suite never run.
+func TestRepoGitHubShardCounts(t *testing.T) {
+	src, err := os.ReadFile("../../.github/workflows/ci.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range githubShardProblems(src) {
+		t.Error(p)
+	}
+	good := string(src)
+	for name, bad := range map[string]string{
+		"fallback differs from default": strings.Replace(good, "inputs.e2e_shards || '4'", "inputs.e2e_shards || '3'", 1),
+		"matrix misses a shard":         strings.Replace(good, "'[1, 2, 3, 4]'", "'[1, 2, 3]'", 1),
+		"choice without a matrix":       strings.Replace(good, "options: ['4', '8']", "options: ['4', '8', '12']", 1),
+		"long matrix misses a shard":    strings.Replace(good, "'[1, 2, 3, 4, 5, 6, 7, 8]'", "'[1, 2, 3, 4, 5, 6, 8]'", 1),
+	} {
+		if bad == good {
+			t.Errorf("%s: the fixture changed nothing; ci.yml's wording moved", name)
+		} else if len(githubShardProblems([]byte(bad))) == 0 {
+			t.Errorf("%s: want a problem, got none", name)
+		}
+	}
+}
+
+func githubShardProblems(src []byte) []string {
+	var wf struct {
+		On struct {
+			Dispatch struct {
+				Inputs map[string]struct {
+					Options []string `yaml:"options"`
+					Default string   `yaml:"default"`
+				} `yaml:"inputs"`
+			} `yaml:"workflow_dispatch"`
+		} `yaml:"on"`
+		Jobs map[string]struct {
+			Strategy struct {
+				Matrix struct {
+					Shard string `yaml:"shard"`
+				} `yaml:"matrix"`
+			} `yaml:"strategy"`
+			Env map[string]string `yaml:"env"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(src, &wf); err != nil {
+		return []string{err.Error()}
+	}
+	in, job := wf.On.Dispatch.Inputs["e2e_shards"], wf.Jobs["e2e"]
+	var out []string
+	if want := "${{ inputs.e2e_shards || '" + in.Default + "' }}"; job.Env["SHARDS"] != want {
+		out = append(out, fmt.Sprintf("e2e: env.SHARDS is %q, want %q (the input's default)", job.Env["SHARDS"], want))
+	}
+	list := func(n int) string {
+		var s []string
+		for i := 1; i <= n; i++ {
+			s = append(s, strconv.Itoa(i))
+		}
+		return "'[" + strings.Join(s, ", ") + "]'"
+	}
+	def, _ := strconv.Atoi(in.Default)
+	want := "${{ fromJSON("
+	for _, o := range in.Options {
+		if n, _ := strconv.Atoi(o); o != in.Default {
+			want += "inputs.e2e_shards == '" + o + "' && " + list(n) + " || "
+		}
+	}
+	want += list(def) + ") }}"
+	if job.Strategy.Matrix.Shard != want {
+		out = append(out, fmt.Sprintf("e2e: matrix.shard is %q, want %q (one list per choice of e2e_shards)", job.Strategy.Matrix.Shard, want))
+	}
+	return out
 }

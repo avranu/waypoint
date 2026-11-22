@@ -39,6 +39,8 @@ func TestGitHubWorkflowProblems(t *testing.T) {
 		{"secrets dot", sub("make", "make ${{ secrets.X }}"), "secrets context"},
 		{"secrets toJSON", sub("make", "echo ${{ toJSON(secrets) }}"), "secrets context"},
 		{"secrets bare", sub("make", "echo ${{ secrets }}"), "secrets context"},
+		{"secrets upper case", sub("make", "echo ${{ SECRETS.X }}"), "secrets context"},
+		{"secrets title case", sub("make", "echo ${{ Secrets.X }}"), "secrets context"},
 		{"secrets inherit", sub("    steps:", "    secrets: inherit\n    steps:"), "secrets context"},
 		{"forgejo path", sub("make", "./.forgejo/x.sh"), ".forgejo/"},
 		{"pull_request", sub("  workflow_dispatch:", "  pull_request:"), "runs on pull_request"},

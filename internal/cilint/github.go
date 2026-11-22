@@ -14,7 +14,8 @@ import (
 // Lint and `wp ci lint` does not run them; TestRepoGitHubWorkflows does.
 
 var (
-	reGitHubSecret = regexp.MustCompile(`\bsecrets\b`)
+	// GitHub reads context names in any case, so SECRETS.X is a secret too.
+	reGitHubSecret = regexp.MustCompile(`(?i)\bsecrets\b`)
 	githubEvents   = []string{"push", "schedule", "workflow_dispatch"}
 )
 
