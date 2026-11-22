@@ -29,7 +29,13 @@ var slotCmd = &command{
 	summary: "run a command once a per-machine slot is free",
 	about: `A per-host semaphore so concurrent test suites take turns. run waits for
 a free slot of NAME, runs CMD holding it and exits with CMD's code. N
-defaults to half the cores. A nested run of the same NAME reuses the slot it
+defaults to half the cores. Runs whose last five (same repo and command) took
+5 minutes or more are long: they may only use the lower half of the slots, so
+short runs (the rest) never queue behind them, and a worktree runs one long
+run of a NAME at a time (a second waits behind its first; short runs from it
+go straight to a slot). ls shows the slots, who waits (and whether behind its
+own worktree) and the waits of the last 24h, including runs that gave up.
+A nested run of the same NAME reuses the slot it
 is in. A run of tests drops credential-named variables, as wp testsum does
 (--keep-env NAME passes one through; WP-1065). Each successful run's time is
 kept (runs.jsonl in the slot directory); a run that has to wait, and again
@@ -42,7 +48,7 @@ func init() {
 	slotCmd.subs = []*command{
 		{name: "run", args: "NAME [-n N] -- CMD…", summary: "wait for a free slot, run CMD, pass its exit code through",
 			run: cmdSlotRun},
-		{name: "ls", aliases: []string{"list"}, summary: "show the slots and who holds them",
+		{name: "ls", aliases: []string{"list"}, summary: "show the slots, who holds and awaits them, and recent waits",
 			run: cmdSlotLs},
 	}
 }
@@ -68,6 +74,16 @@ func (h *slotHold) release() { _ = h.f.Close() }
 // acquireSlot waits for one of n slots called name. notify gets called once
 // if the wait passes slotWaitNotice.
 func acquireSlot(ctx context.Context, name string, n int, notify func()) (*slotHold, error) {
+	order := make([]int, n)
+	for i := range order {
+		order[i] = i
+	}
+	return acquireSlotIn(ctx, name, order, notify, nil)
+}
+
+// acquireSlotIn is acquireSlot trying only the slots in order, in that order.
+// firstMiss, when not nil, is called once when the first pass finds none free.
+func acquireSlotIn(ctx context.Context, name string, order []int, notify, firstMiss func()) (*slotHold, error) {
 	dir, err := slotDir()
 	if err != nil {
 		return nil, err
@@ -84,7 +100,7 @@ func acquireSlot(ctx context.Context, name string, n int, notify func()) (*slotH
 		}
 	}()
 	for {
-		for i := 0; i < n; i++ {
+		for _, i := range order {
 			f, err := os.OpenFile(filepath.Join(dir, fmt.Sprintf("%s.%d.lock", name, i)), os.O_RDWR|os.O_CREATE, 0o600) // #nosec G304 -- name is validated
 			if err != nil {
 				return nil, err
@@ -106,8 +122,11 @@ func acquireSlot(ctx context.Context, name string, n int, notify func()) (*slotH
 		}
 		if remove == nil {
 			// The first round found no slot: join the queue as of now, so those
-			// who come later can count this one.
+			// who come later can count this one (WP-1571).
 			remove = slotAddWaiter(dir, name)
+			if firstMiss != nil {
+				firstMiss()
+			}
 		}
 		if !notified && time.Since(start) > slotWaitNotice {
 			notified = true
@@ -201,7 +220,7 @@ func (c *cli) runInSlotThen(name string, n int, argv []string, out, errw io.Writ
 	if own {
 		cmd = slotRunKey(os.Args, argv)
 	}
-	env, release, err := c.takeSlotFor(ctx, name, n, cmd)
+	env, release, err := c.takeSlotETA(ctx, name, n, slotKey(argv), cmd)
 	if err != nil {
 		return 0, err
 	}
@@ -327,6 +346,9 @@ func cmdSlotLs(c *cli, args []string) error {
 	files, _ := filepath.Glob(filepath.Join(dir, "*.lock"))
 	sort.Strings(files)
 	if len(files) == 0 {
+		if c.slotQueueLs(dir) {
+			return nil
+		}
 		_, _ = fmt.Fprintf(c.out, "no slots in use yet (%d per name by default; %s)\n", defaultSlots(), dir)
 		return nil
 	}
@@ -355,6 +377,7 @@ func cmdSlotLs(c *cli, args []string) error {
 		}
 		_, _ = fmt.Fprintf(c.out, "%-12s held pid %s for %s in %s: wp %s\n", label, parts[0], since, parts[2], parts[3])
 	}
+	c.slotQueueLs(dir)
 	return nil
 }
 
@@ -362,27 +385,24 @@ func cmdSlotLs(c *cli, args []string) error {
 // one, and returns the environment for commands run in it (marking the slot
 // held, so a nested run doesn't wait on itself) and what lets it go.
 func (c *cli) takeSlot(ctx context.Context, name string, n int) (env []string, release func(), err error) {
-	return c.takeSlotFor(ctx, name, n, "")
+	return c.takeSlotFor(ctx, name, n, slotCmdOf(slotOSArgs[1:]))
 }
 
-// takeSlotFor is takeSlot for the command cmd (slotCmdKey): while it waits it
-// says when it expects to finish, if it knows how long cmd runs (WP-1571).
+// takeSlotFor is takeSlot for a run of cmd, which the wait history is kept by
+// (so one command has one key however wp was asked to run it).
 func (c *cli) takeSlotFor(ctx context.Context, name string, n int, cmd string) (env []string, release func(), err error) {
+	return c.takeSlotETA(ctx, name, n, cmd, "")
+}
+
+// takeSlotETA is takeSlotFor that, while it waits, also says when it expects
+// to finish if it knows how long etaCmd (slotCmdKey) runs; "" says nothing
+// (WP-1571).
+func (c *cli) takeSlotETA(ctx context.Context, name string, n int, cmd, etaCmd string) (env []string, release func(), err error) {
 	env = os.Environ()
 	if slotHeld(name) {
 		return env, func() {}, nil
 	}
-	hold, err := acquireSlot(ctx, name, n, func() {
-		_, _ = fmt.Fprintf(c.err, "wp slot: waiting for a free %q slot (%d on this host; wp slot ls shows who has them)\n", name, n)
-		if cmd == "" {
-			return
-		}
-		if dir, err := slotDir(); err == nil {
-			if note := slotQueuedNote(dir, name, cmd); note != "" {
-				_, _ = fmt.Fprintln(c.err, note)
-			}
-		}
-	})
+	hold, err := c.acquireQueued(ctx, name, n, cmd, etaCmd)
 	if err != nil {
 		return nil, nil, err
 	}
