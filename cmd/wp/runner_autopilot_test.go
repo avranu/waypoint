@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -195,6 +197,46 @@ func TestAutopilotReviewAlreadyCompacted(t *testing.T) {
 	}
 	if f.pasted != prompt {
 		t.Errorf("pasted %q", f.pasted)
+	}
+}
+
+// Taken while the pasted review settled (WP-1572): no Enter, so the review
+// isn't sent into the person's turn.
+func TestAutopilotReviewTakenWhilePasted(t *testing.T) {
+	cfg := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
+	_ = os.MkdirAll(filepath.Join(cfg, "sessions"), 0o700)
+	file := filepath.Join(cfg, "sessions", strconv.Itoa(os.Getpid())+".json")
+	b, _ := json.Marshal(map[string]any{"pid": os.Getpid(), "sessionId": "old-123", "status": "idle", "tmux": "w:@1.%7"})
+	if err := os.WriteFile(file, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeTmux{t: t, file: file, screen: screenEmpty}
+	oldTmux, oldPoll, oldSettle := runTmux, autopilotPoll, autopilotSettle
+	runTmux, autopilotPoll, autopilotSettle = f.run, 10*time.Millisecond, 10*time.Millisecond
+	t.Cleanup(func() { runTmux, autopilotPoll, autopilotSettle = oldTmux, oldPoll, oldSettle })
+	asked := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/wanted") {
+			_, _ = w.Write([]byte(`{}`))
+			return
+		}
+		asked++
+		// Wanted at the last word before typing, not once it is pasted.
+		_, _ = w.Write([]byte(`{"wanted":` + strconv.FormatBool(asked == 1) + `}`))
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("WAYPOINT_SERVER", srv.URL)
+	t.Setenv("WAYPOINT_TOKEN", "wpt_runner")
+	dir := t.TempDir()
+	p := newTestProc(t, dir)
+	prompt := autopilotReviewMark + "APP-1: Grok's findings."
+	o := p.execAutopilot(context.Background(), newRun(time.Minute), autopilotJob{CLIID: "old-123", Dir: dir, Done: "APP-1", ReviewOf: "APP-1", Review: prompt, Compacted: true, Step: 7})
+	if r, _ := o.Result.(autopilotResult); o.State != "done" || r.Outcome != "unwanted" || r.Warning == "" {
+		t.Fatalf("outcome %+v", o)
+	}
+	if f.pasted != prompt || len(f.typed) != 0 || asked != 2 {
+		t.Errorf("pasted %q, typed %q, asked %d", f.pasted, f.typed, asked)
 	}
 }
 
