@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"git.jmann.me/claude/waypoint/internal/lazyre"
@@ -157,6 +158,7 @@ func excerpt(s string, n int) string {
 // slot and an hour spent on the work call for different fixes, and the log
 // alone has no times in it.
 type callClock struct {
+	mu   sync.Mutex // the CLI's output is read on its own goroutine, which can outlive Wait
 	open map[string]timedCall
 	done []timedCall // the slowest few that ended, slowest first
 	now  func() time.Time
@@ -186,16 +188,21 @@ func (c *callClock) begin(id, what string) {
 	if c == nil || id == "" {
 		return
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.open == nil {
 		c.open = map[string]timedCall{}
 	}
-	c.open[id] = timedCall{what: what, start: c.clock()}
+	// Cut here, not when named: a call that never returns stays in the map.
+	c.open[id] = timedCall{what: excerpt(what, 120), start: c.clock()}
 }
 
 func (c *callClock) end(id string) {
 	if c == nil {
 		return
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	t, ok := c.open[id]
 	if !ok {
 		return
@@ -215,6 +222,8 @@ func (c *callClock) spent() string {
 	if c == nil {
 		return ""
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	name := func(t timedCall) string {
 		return fmt.Sprintf("%s in `%s`", t.took.Round(time.Minute), excerpt(t.what, 120))
 	}

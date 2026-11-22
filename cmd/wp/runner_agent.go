@@ -526,7 +526,7 @@ func (p *runnerProc) salvage(ctx context.Context, run *jobRun, in agentJob, bare
 		fmt.Fprintf(run.out, "\nCouldn't set aside what the agent left uncommitted, so nothing was pushed: %v\n", err)
 		return timedOut
 	}
-	if _, err := p.git(ctx, work, "clean", "-fdq"); err != nil {
+	if _, err := p.git(ctx, work, "clean", "-ffdq"); err != nil {
 		fmt.Fprintf(run.out, "\nCouldn't set aside what the agent left uncommitted, so nothing was pushed: %v\n", err)
 		return timedOut
 	}

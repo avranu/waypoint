@@ -82,10 +82,60 @@ func TestCallClockSaysWhereTheTimeWent(t *testing.T) {
 	if got := c.spent(); got != want {
 		t.Errorf("spent = %q\nwant    %q", got, want)
 	}
+	// A call that never returns is kept short, and the clock is safe to read
+	// while the CLI's output is still being read.
+	c.begin("d", "Bash "+strings.Repeat("y", 8000))
+	if n := len(c.open["d"].what); n > 130 {
+		t.Errorf("kept %d bytes of a command", n)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 200; i++ {
+			c.begin("e", "Bash sleep")
+			c.end("e")
+		}
+	}()
+	for i := 0; i < 200; i++ {
+		_ = c.spent()
+	}
+	<-done
 	var none *callClock // a CLI whose output doesn't tell its calls apart
 	none.begin("x", "y")
 	none.end("x")
 	if got := none.spent(); got != "" {
 		t.Errorf("nil clock: %q", got)
+	}
+}
+
+// fakeClaudeLeavesARepo commits one piece of work and leaves a clone of its
+// own, untracked, in the work tree.
+const fakeClaudeLeavesARepo = `#!/bin/sh
+cat > /dev/null
+echo done > finished.txt
+git add finished.txt
+git -c user.name=agent -c user.email=agent@example.invalid commit -q -m "Merge the base"
+git init -q sub
+git -C sub -c user.name=agent -c user.email=agent@example.invalid commit -q --allow-empty -m x
+exec sleep 60
+`
+
+// What a timed-out agent left uncommitted is dropped, a repository of its own
+// inside the work tree included: it isn't committed as a gitlink.
+func TestTimedOutAgentDropsAClone(t *testing.T) {
+	fakeCLI(t, "claude", fakeClaudeLeavesARepo)
+	remote := newGitRepo(t)
+	gitOut(t, remote, "config", "receive.denyCurrentBranch", "ignore")
+	p := newTestProc(t)
+	job := agentJob{CLI: "claude", Prompt: "x", Repo: remote, Branch: "agent/round", Push: true, Permission: "edit_run", CommitMessage: "Round", KeepOnTimeout: true}
+	run := newRun(10 * time.Second)
+	if o := p.execAgent(context.Background(), run, "agent", job); o.State != "failed" {
+		t.Fatalf("outcome = %+v\n%s", o, run.out.text())
+	}
+	if got := gitOut(t, remote, "ls-tree", "-r", "--name-only", "agent/round"); strings.Contains(got, "sub") {
+		t.Errorf("the clone was committed: %q\n%s", got, run.out.text())
+	}
+	if got := gitOut(t, remote, "log", "-1", "--format=%s", "agent/round"); got != "Merge the base" {
+		t.Errorf("pushed head = %q", got)
 	}
 }
