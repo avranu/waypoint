@@ -66,7 +66,8 @@ func waitETACommandAt(command string, depth int) (name, cmd string, n int, ok bo
 	if len(command) > 20000 {
 		return "", "", 0, false
 	}
-	for _, words := range shellCommands(command) {
+	cmds, quoted := shellCommandsQuoted(command)
+	for k, words := range cmds {
 		rest, script := skipWrappers(words)
 		if script != "" {
 			if depth < 2 {
@@ -79,7 +80,7 @@ func waitETACommandAt(command string, depth int) (name, cmd string, n int, ok bo
 		if len(rest) < 2 || !isWp(rest[0]) {
 			continue
 		}
-		args := dropRedirections(rest[1:]) // os.Args[1:] of that wp
+		args := dropRedirections(rest[1:], quoted[k][len(words)-len(rest)+1:]) // os.Args[1:] of that wp
 		dash := slices.Index(args, "--")
 		if dash < 0 || dash == len(args)-1 {
 			continue
@@ -119,11 +120,12 @@ func waitETACommandAt(command string, depth int) (name, cmd string, n int, ok bo
 var reRedirect = regexp.MustCompile(`^(\d*|&)(>>?|<)&?(.*)$`)
 
 // dropRedirections removes redirections (2>&1, >log, > log, >>log,
-// 2>/dev/null, &>log, <in) from words.
-func dropRedirections(words []string) []string {
+// 2>/dev/null, &>log, <in) from words; a word quoted (quoted[i]) is an
+// argument, as grep '>' has.
+func dropRedirections(words []string, quoted []bool) []string {
 	var out []string
 	for i := 0; i < len(words); i++ {
-		if m := reRedirect.FindStringSubmatch(words[i]); m != nil {
+		if m := reRedirect.FindStringSubmatch(words[i]); m != nil && !quoted[i] {
 			if m[3] == "" {
 				i++ // the target is the next word
 			}
@@ -159,16 +161,12 @@ func waitETA(command, cwd, session string) string {
 	holders := slotHolders(dir, name)
 	// The command was started a moment ago, so it may already hold a slot: that
 	// is no one else's. It is the holder of the same command that this session's
-	// process started; where that can't be read, one that began just now.
+	// process started (slotOwn).
 	for i, h := range holders {
 		if h.Cmd != cmd {
 			continue
 		}
-		own := h.Elapsed < 15*time.Second
-		if s := slotPidSession(h.Pid); s != "" {
-			own = s == session
-		}
-		if own {
+		if slotOwn(h.Session, h.Pid, session, h.Elapsed < 15*time.Second) {
 			holders = append(holders[:i], holders[i+1:]...)
 			break
 		}

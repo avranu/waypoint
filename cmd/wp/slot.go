@@ -97,7 +97,9 @@ func acquireSlot(ctx context.Context, name string, n int, notify func()) (*slotH
 			if ok {
 				wd, _ := os.Getwd()
 				_ = f.Truncate(0)
-				_, _ = f.WriteAt([]byte(fmt.Sprintf("%d\t%d\t%s\t%s\n", os.Getpid(), time.Now().Unix(), slotField(wd), slotField(strings.Join(os.Args[1:], " ")))), 0)
+				// The session last, so a wp from before it was recorded still
+				// reads the command (audit #1382.1).
+				_, _ = f.WriteAt([]byte(fmt.Sprintf("%d\t%d\t%s\t%s\t%s\n", os.Getpid(), time.Now().Unix(), slotField(wd), slotField(strings.Join(os.Args[1:], " ")), slotField(slotSession()))), 0)
 				return &slotHold{f}, nil
 			}
 			_ = f.Close()
@@ -342,7 +344,7 @@ func cmdSlotLs(c *cli, args []string) error {
 		}
 		b, _ := io.ReadAll(io.LimitReader(f, 4096))
 		_ = f.Close()
-		parts := strings.SplitN(strings.TrimSpace(string(b)), "\t", 4)
+		parts := strings.SplitN(strings.TrimSpace(string(b)), "\t", 5)
 		if len(parts) < 4 {
 			_, _ = fmt.Fprintf(c.out, "%-12s held\n", label)
 			continue

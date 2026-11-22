@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,6 +33,7 @@ type slotRunRec struct {
 type slotHolder struct {
 	Pid     int // the wp holding it; 0 when the lock file doesn't say
 	Cmd     string
+	Session string // the Claude Code session it runs in; "" when the lock file doesn't say
 	Elapsed time.Duration
 }
 
@@ -258,32 +260,89 @@ func slotHolders(dir, name string) []slotHolder {
 		buf := make([]byte, 4096)
 		n, _ := f.Read(buf)
 		_ = f.Close()
-		parts := strings.SplitN(strings.TrimSpace(string(buf[:n])), "\t", 4)
+		parts := strings.SplitN(strings.TrimSpace(string(buf[:n])), "\t", 5)
 		if len(parts) < 4 {
 			continue
+		}
+		session := ""
+		if len(parts) == 5 {
+			session = parts[4]
 		}
 		ts, err := strconv.ParseInt(parts[1], 10, 64)
 		if err != nil {
 			continue
 		}
 		pid, _ := strconv.Atoi(parts[0])
-		out = append(out, slotHolder{Pid: pid, Cmd: slotCmdKey(parts[3]), Elapsed: time.Since(time.Unix(ts, 0))})
+		out = append(out, slotHolder{Pid: pid, Cmd: slotCmdKey(parts[3]), Session: session, Elapsed: time.Since(time.Unix(ts, 0))})
 	}
 	return out
 }
 
-// A waiter leaves NAME.PID.wait holding the time it began to wait, so those
-// who come later can count who is ahead of them.
+// A waiter leaves NAME.PID.wait holding the time it began to wait and its
+// session, so those who come later can count who is ahead of them, and holds
+// the file's lock while it waits: a file whose lock can be taken is one a
+// killed waiter left, whoever has its pid now (audit #1382.2).
 
 func slotWaiterPath(dir, name string) string {
 	return filepath.Join(dir, fmt.Sprintf("%s.%d.wait", name, os.Getpid()))
 }
 
+// slotSession is the Claude Code session this process runs in ("" outside
+// one), recorded in its slot files: another process can't read it on darwin
+// (audit #1382.1).
+func slotSession() string { return os.Getenv("CLAUDE_CODE_SESSION_ID") }
+
+// slotOwn says whether a slot file's process is session's: by the session
+// it recorded, else by its environment, else (a wp from before sessions were
+// recorded, on darwin) whether it began just now.
+func slotOwn(recorded string, pid int, session string, young bool) bool {
+	if recorded != "" {
+		return recorded == session
+	}
+	if s := slotPidSession(pid); s != "" {
+		return s == session
+	}
+	return young
+}
+
 // slotAddWaiter registers this process as waiting; the result removes it.
+// The file is written and locked under another name first, so nobody finds
+// it unlocked and takes it for a dead waiter's.
 func slotAddWaiter(dir, name string) (remove func()) {
 	p := slotWaiterPath(dir, name)
-	_ = os.WriteFile(p, []byte(strconv.FormatInt(time.Now().UnixNano(), 10)), 0o600)
-	return func() { _ = os.Remove(p) }
+	tmp := p + ".new"
+	line := strconv.FormatInt(time.Now().UnixNano(), 10) + "\t" + slotField(slotSession())
+	f, err := os.OpenFile(tmp, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600) // #nosec G304 -- our own directory
+	if err != nil {
+		return func() {}
+	}
+	if _, err := f.WriteString(line); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return func() {}
+	}
+	if ok, err := slotTryLock(f); !ok || err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return func() {}
+	}
+	if err := os.Rename(tmp, p); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return func() {}
+	}
+	return func() {
+		_ = os.Remove(p)
+		_ = f.Close()
+	}
+}
+
+// slotWaiterLine parses a waiter file: when it began, and its session ("":
+// not recorded, by a wp from before it was).
+func slotWaiterLine(b []byte) (at int64, session string, ok bool) {
+	ts, session, _ := strings.Cut(strings.TrimSpace(string(b)), "\t")
+	at, err := strconv.ParseInt(ts, 10, 64)
+	return at, session, err == nil
 }
 
 // slotQueuedAhead counts the live waiters that began before this process.
@@ -298,7 +357,7 @@ func slotQueuedAheadOf(dir, name, session string) int {
 	mine, minePid := time.Now().UnixNano(), os.Getpid()
 	if session == "" {
 		if b, err := os.ReadFile(slotWaiterPath(dir, name)); err == nil { // #nosec G304 -- our own directory
-			if v, err := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64); err == nil {
+			if v, _, ok := slotWaiterLine(b); ok {
 				mine = v
 			}
 		}
@@ -316,25 +375,29 @@ func slotQueuedAheadOf(dir, name, session string) int {
 		if err != nil || (session == "" && pid == os.Getpid()) {
 			continue
 		}
-		if !slotPidAlive(pid) {
+		f, err := os.Open(p) // #nosec G304 -- our own directory
+		if err != nil {
+			continue
+		}
+		if ok, err := slotTryLock(f); err == nil && ok {
+			// No waiter holds it: one killed before it could remove it left
+			// it, and its pid may be another process's now.
 			_ = os.Remove(p)
+			_ = f.Close()
 			continue
 		}
-		b, err := os.ReadFile(p) // #nosec G304 -- our own directory
+		b, err := io.ReadAll(io.LimitReader(f, 4096))
+		_ = f.Close()
 		if err != nil {
 			continue
 		}
-		v, err := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64)
-		if err != nil {
+		v, recorded, ok := slotWaiterLine(b)
+		if !ok {
 			continue
 		}
 		own := false
 		if session != "" {
-			// Where a process's session can't be read (darwin has no /proc),
-			// a waiter that began just now is the command's own, as in waitETA
-			// (audit #1372.6).
-			s := slotPidSession(pid)
-			own = s == session || (s == "" && time.Since(time.Unix(0, v)) < 15*time.Second)
+			own = slotOwn(recorded, pid, session, time.Since(time.Unix(0, v)) < 15*time.Second)
 		}
 		ws = append(ws, waiter{pid, v, own})
 	}

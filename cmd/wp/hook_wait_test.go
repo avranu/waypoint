@@ -303,6 +303,13 @@ func holdSlot(t *testing.T, name string, ago time.Duration, args string) {
 // holdSlotPid is holdSlot as the process pid.
 func holdSlotPid(t *testing.T, name string, pid int, ago time.Duration, args string) {
 	t.Helper()
+	holdSlotAs(t, name, pid, ago, args, "")
+}
+
+// holdSlotAs is holdSlotPid recording the holder's session (none: the
+// four-field line of a wp from before it was recorded).
+func holdSlotAs(t *testing.T, name string, pid int, ago time.Duration, args, session string) {
+	t.Helper()
 	dir, _ := slotDir()
 	h, err := acquireSlot(t.Context(), name, 1, nil)
 	if err != nil {
@@ -314,7 +321,11 @@ func holdSlotPid(t *testing.T, name string, pid int, ago time.Duration, args str
 		t.Fatal(err)
 	}
 	_ = f.Truncate(0)
-	_, _ = f.WriteAt([]byte(strconv.Itoa(pid)+"\t"+strconv.FormatInt(time.Now().Add(-ago).Unix(), 10)+"\t/r\t"+args+"\n"), 0)
+	line := strconv.Itoa(pid) + "\t" + strconv.FormatInt(time.Now().Add(-ago).Unix(), 10) + "\t/r\t" + args
+	if session != "" {
+		line += "\t" + session
+	}
+	_, _ = f.WriteAt([]byte(line+"\n"), 0)
 	_ = f.Close()
 }
 
@@ -355,7 +366,7 @@ func TestWaitHookSaysTheETAOfABackgroundedRun(t *testing.T) {
 		seedRuns(t, "tests", "go test ./...", "/tmp", 30, 30, 30)
 		holdSlot(t, "tests", 10*time.Minute, "slot run tests -n 1 -- go test ./...")
 		dir, _ := slotDir()
-		_ = os.WriteFile(filepath.Join(dir, "tests."+strconv.Itoa(os.Getppid())+".wait"), []byte(strconv.FormatInt(time.Now().Add(-time.Minute).UnixNano(), 10)), 0o600)
+		writeWaiter(t, dir, os.Getppid(), time.Now().Add(-time.Minute).UnixNano())
 		out, _ := waitHook(t, 200, `{}`, bashCall("wp slot run tests -n 1 -- go test ./...", true))
 		// (20 + 30 for the one ahead + 30) * 1.2
 		if ctx := waitContext(t, out); !strings.Contains(ctx, "is expected to complete in 96 minutes.") {
@@ -439,6 +450,41 @@ func TestWaitHookSaysTheETAOfABackgroundedRun(t *testing.T) {
 		out, _ := waitHook(t, 200, `{}`, bashCall("wp slot run tests -n 1 -- go test ./...", true))
 		// (20 left + 30 run) * 1.2 (audit #1372.6)
 		if ctx := waitContext(t, out); !strings.Contains(ctx, "is expected to complete in 60 minutes.") {
+			t.Errorf("context:\n%s", ctx)
+		}
+	})
+	// Where no process's session can be read (darwin), the session each
+	// recorded says whose it is (audit #1382.1).
+	t.Run("no session to read: another session's identical run 1s old holds it: queued", func(t *testing.T) {
+		t.Setenv("WAYPOINT_SLOT_DIR", t.TempDir())
+		stubPidSessions(t, map[int]string{})
+		seedRuns(t, "tests", "go test ./...", "/tmp", 30, 30, 30)
+		holdSlotAs(t, "tests", 1, time.Second, "slot run tests -n 1 -- go test ./...", "sess-2")
+		out, _ := waitHook(t, 200, `{}`, bashCall("wp slot run tests -n 1 -- go test ./...", true))
+		if ctx := waitContext(t, out); !strings.Contains(ctx, "The test is queued") {
+			t.Errorf("context:\n%s", ctx)
+		}
+	})
+	t.Run("no session to read: its own waiter minutes old (auto-backgrounded) is not ahead of it", func(t *testing.T) {
+		t.Setenv("WAYPOINT_SLOT_DIR", t.TempDir())
+		stubPidSessions(t, map[int]string{})
+		seedRuns(t, "tests", "go test ./...", "/tmp", 30, 30, 30)
+		holdSlot(t, "tests", 10*time.Minute, "slot run tests -n 1 -- go test ./...")
+		dir, _ := slotDir()
+		writeWaiterAs(t, dir, os.Getppid(), time.Now().Add(-2*time.Minute).UnixNano(), "sess-1")
+		out, _ := waitHook(t, 200, `{}`, bashCall("wp slot run tests -n 1 -- go test ./...", true))
+		// (20 left + 30 run) * 1.2
+		if ctx := waitContext(t, out); !strings.Contains(ctx, "is expected to complete in 60 minutes.") {
+			t.Errorf("context:\n%s", ctx)
+		}
+	})
+	// A quoted '>' is an argument, not a redirection: the key is the one the
+	// run records (audit #1382.3).
+	t.Run("a quoted > is an argument", func(t *testing.T) {
+		t.Setenv("WAYPOINT_SLOT_DIR", t.TempDir())
+		seedRuns(t, "tests", "grep > file", "/tmp", 30, 30, 30)
+		out, _ := waitHook(t, 200, `{}`, bashCall("wp testsum -- grep '>' file", true))
+		if ctx := waitContext(t, out); !strings.Contains(ctx, "is expected to complete in 36 minutes.") {
 			t.Errorf("context:\n%s", ctx)
 		}
 	})

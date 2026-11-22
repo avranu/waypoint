@@ -148,23 +148,33 @@ func runsAgentsWaitAt(cmd string, depth int) bool {
 // removed) at the unquoted separators ; & | ( ) { } a backquote and newline;
 // the & of a redirection (2>&1 >&2 <&3 &>f &>>f) is not one.
 func shellCommands(cmd string) [][]string {
-	var out [][]string
+	out, _ := shellCommandsQuoted(cmd)
+	return out
+}
+
+// shellCommandsQuoted is shellCommands, saying of each word whether any of
+// it was quoted or escaped: such a word is never an operator, as a quoted
+// '>' is no redirection (audit #1382.3).
+func shellCommandsQuoted(cmd string) (out [][]string, quoted [][]bool) {
 	var words []string
+	var qs []bool
 	var w strings.Builder
-	inWord := false
+	inWord, q := false, false
 	endWord := func() {
 		if inWord {
 			words = append(words, w.String())
+			qs = append(qs, q)
 			w.Reset()
-			inWord = false
+			inWord, q = false, false
 		}
 	}
 	endCmd := func() {
 		endWord()
 		if len(words) > 0 {
 			out = append(out, words)
+			quoted = append(quoted, qs)
 		}
-		words = nil
+		words, qs = nil, nil
 	}
 	rs := []rune(cmd)
 	for i := 0; i < len(rs); i++ {
@@ -174,7 +184,7 @@ func shellCommands(cmd string) [][]string {
 			if i+1 < len(rs) {
 				i++
 				w.WriteRune(rs[i])
-				inWord = true
+				inWord, q = true, true
 			}
 		case '\'':
 			j := i + 1
@@ -182,7 +192,7 @@ func shellCommands(cmd string) [][]string {
 				j++
 			}
 			w.WriteString(string(rs[i+1 : j]))
-			inWord = true
+			inWord, q = true, true
 			i = j
 		case '"':
 			j := i + 1
@@ -193,7 +203,7 @@ func shellCommands(cmd string) [][]string {
 				w.WriteRune(rs[j])
 				j++
 			}
-			inWord = true
+			inWord, q = true, true
 			i = j
 		case ' ', '\t':
 			endWord()
@@ -213,7 +223,7 @@ func shellCommands(cmd string) [][]string {
 		}
 	}
 	endCmd()
-	return out
+	return out, quoted
 }
 
 var (

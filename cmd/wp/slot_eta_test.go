@@ -233,14 +233,22 @@ func TestSlotQueuedAheadCountsLiveEarlierWaiters(t *testing.T) {
 	dir, _ := slotDir()
 	_ = os.MkdirAll(dir, 0o700)
 	now := time.Now().UnixNano()
-	// Alive and earlier; alive and later; dead and earlier.
-	_ = os.WriteFile(filepath.Join(dir, "tests."+strconv.Itoa(os.Getppid())+".wait"), []byte(strconv.FormatInt(now-1e9, 10)), 0o600)
-	_ = os.WriteFile(filepath.Join(dir, "tests.1.wait"), []byte(strconv.FormatInt(now+1e12, 10)), 0o600)
+	// Waiting and earlier; waiting and later; dead and earlier; and the file
+	// a waiter killed with SIGKILL left, whose pid a live process has now
+	// (pid 1): it holds no lock, so it is no one's (audit #1382.2).
+	writeWaiter(t, dir, os.Getppid(), now-1e9)
+	writeWaiter(t, dir, os.Getpid()+1, now+1e12)
 	_ = os.WriteFile(filepath.Join(dir, "tests.4194999.wait"), []byte(strconv.FormatInt(now-2e9, 10)), 0o600)
+	_ = os.WriteFile(filepath.Join(dir, "tests.1.wait"), []byte(strconv.FormatInt(now-3e9, 10)), 0o600)
 	remove := slotAddWaiter(dir, "tests")
 	defer remove()
 	if got := slotQueuedAhead(dir, "tests"); got != 1 {
 		t.Errorf("ahead = %d, want 1", got)
+	}
+	for _, pid := range []string{"1", "4194999"} {
+		if _, err := os.Stat(filepath.Join(dir, "tests."+pid+".wait")); !os.IsNotExist(err) {
+			t.Errorf("the left-over waiter file of %s is still there: %v", pid, err)
+		}
 	}
 }
 
@@ -252,12 +260,31 @@ func stubPidSessions(t *testing.T, m map[int]string) {
 	t.Cleanup(func() { slotPidSession = old })
 }
 
+// writeWaiter is a waiter of pid that began at ts, waiting (it holds the
+// file's lock) until the test ends.
 func writeWaiter(t *testing.T, dir string, pid int, ts int64) {
+	writeWaiterAs(t, dir, pid, ts, "")
+}
+
+// writeWaiterAs is writeWaiter recording the waiter's session.
+func writeWaiterAs(t *testing.T, dir string, pid int, ts int64, session string) {
 	t.Helper()
 	p := filepath.Join(dir, "tests."+strconv.Itoa(pid)+".wait")
-	if err := os.WriteFile(p, []byte(strconv.FormatInt(ts, 10)), 0o600); err != nil {
+	line := strconv.FormatInt(ts, 10)
+	if session != "" {
+		line += "\t" + session
+	}
+	if err := os.WriteFile(p, []byte(line), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	f, err := os.OpenFile(p, os.O_RDWR, 0o600) // #nosec G304 -- the test's own directory
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := slotTryLock(f); !ok || err != nil {
+		t.Fatalf("lock %s: %v %v", p, ok, err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
 }
 
 func TestSlotQueuedAheadTieBreaksOnPid(t *testing.T) {
@@ -340,6 +367,39 @@ func TestSlotWaiterIsRegisteredWhenTheWaitBegins(t *testing.T) {
 	h.release()
 	if files, _ := filepath.Glob(filepath.Join(dir, "*.wait")); len(files) != 0 {
 		t.Errorf("waiter files left: %v", files)
+	}
+}
+
+// A waiter and a holder record the session they run in, so the wait hook
+// knows its own where a process's session can't be read (darwin, audit
+// #1382.1).
+func TestSlotWaiterAndHolderRecordTheirSession(t *testing.T) {
+	slotEnv(t)
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "sess-x")
+	stubPidSessions(t, map[int]string{})
+	dir, _ := slotDir()
+	h, err := acquireSlot(t.Context(), "tests", 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.release()
+	if hs := slotHolders(dir, "tests"); len(hs) != 1 || hs[0].Session != "sess-x" {
+		t.Errorf("holders = %+v", hs)
+	}
+	remove := slotAddWaiter(dir, "tests")
+	defer remove()
+	b, _ := os.ReadFile(slotWaiterPath(dir, "tests"))
+	if !strings.HasSuffix(strings.TrimSpace(string(b)), "\tsess-x") {
+		t.Errorf("waiter file = %q", b)
+	}
+	// Another process asking for sess-x's command counts the waiter as its
+	// own, old as it is; for another session it is ahead.
+	stubPidSessions(t, map[int]string{})
+	if got := slotQueuedAheadOf(dir, "tests", "sess-x"); got != 0 {
+		t.Errorf("own waiter ahead: %d", got)
+	}
+	if got := slotQueuedAheadOf(dir, "tests", "sess-y"); got != 1 {
+		t.Errorf("another session's waiter: ahead = %d, want 1", got)
 	}
 }
 
