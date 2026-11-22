@@ -2,11 +2,12 @@ package core
 
 import (
 	"encoding/json"
-	"github.com/prometheus/client_golang/prometheus"
-	dto "github.com/prometheus/client_model/go"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 )
 
 // Audit 1391.5: a runner that doesn't keep a work clock gets the work limit

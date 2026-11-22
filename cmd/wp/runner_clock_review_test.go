@@ -98,7 +98,7 @@ func TestJobClockKeepsTheWorkLimitWithoutAWaitsFile(t *testing.T) {
 	if got := c.timedOutAfter(); got != "1s of work" {
 		t.Errorf("timedOutAfter = %q", got)
 	}
-	if log := string(run.out.Tail()); !strings.Contains(log, "count as work") {
+	if log := run.out.Tail(); !strings.Contains(log, "count as work") {
 		t.Errorf("the log doesn't say waits count as work: %q", log)
 	}
 }
@@ -126,7 +126,7 @@ func TestJobClockWaitedLine(t *testing.T) {
 			t.Fatal(err)
 		}
 		cancel()
-		log := string(run.out.Tail())
+		log := run.out.Tail()
 		if !strings.Contains(log, tc.say) || tc.not != "" && strings.Contains(log, tc.not) {
 			t.Errorf("work %d: log %q, want %q", tc.work, log, tc.say)
 		}
@@ -178,7 +178,7 @@ func TestJobClockLogsWhenItGivesUpItsPlace(t *testing.T) {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(3 * time.Second)
-	for !strings.Contains(string(run.out.Tail()), "the runner may take another heavy job") {
+	for !strings.Contains(run.out.Tail(), "the runner may take another heavy job") {
 		if time.Now().After(deadline) {
 			t.Fatalf("no line about the place it gave up: %q", run.out.Tail())
 		}
