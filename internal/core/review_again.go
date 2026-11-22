@@ -1245,11 +1245,11 @@ func (d *againDecision) probeable() bool {
 func (d *againDecision) weighed() string {
 	switch {
 	case d.serious > 0:
-		return fmt.Sprintf("; %s high or critical, which calls for another round after any round", plural1(d.serious, "finding"))
+		return fmt.Sprintf("; %d of them high or critical, which calls for another round after any round", d.serious)
 	case d.weight >= d.need:
-		return fmt.Sprintf("; %s medium, at or over the %d another round needs after round %d", plural1(d.weight, "finding"), d.need, d.index)
+		return fmt.Sprintf("; %d of them medium, at or over the %d another round needs after round %d", d.weight, d.need, d.index)
 	}
-	return fmt.Sprintf("; %s medium, under the %d another round needs after round %d, but a round read by labels alone gets one for any signal", plural1(d.weight, "finding"), d.need, d.index)
+	return fmt.Sprintf("; %d of them medium, under the %d another round needs after round %d, but a round read by labels alone gets one for any signal", d.weight, d.need, d.index)
 }
 
 // why says what called for another round.
