@@ -124,13 +124,19 @@ func (m *httpMeaning) post(ctx context.Context, path string, body, out any) erro
 	if err != nil {
 		return err
 	}
+	judged := false
+	defer func() {
+		if !judged {
+			m.breaker.release(probe) // a probe hands its turn back whatever happens
+		}
+	}()
 	unanswered, err := m.send(ctx, path, body, out)
 	if unanswered && ctx.Err() != nil {
 		// The caller gave up (the server is stopping), which says nothing
 		// about the service.
-		m.breaker.release(probe)
 		return err
 	}
+	judged = true
 	m.breaker.done(ctx, probe, unanswered, err)
 	if unanswered {
 		return fmt.Errorf("%w: %w", ErrMeaningDown, err)

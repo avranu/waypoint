@@ -10,6 +10,7 @@ import os
 import sys
 import threading
 import time
+import urllib.request
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -40,7 +41,10 @@ TOKEN = os.environ.get("MEANING_TOKEN", "")
 # A batch that runs longer than this is stuck (a batch of 32 takes seconds):
 # the watchdog ends the process so compose restarts it (WP-1602).
 STUCK_S = max(30, int(os.environ.get("MEANING_STUCK_S", "180") or 180))
+SELF_FAILS = 6  # the watchdog's checks of /health, 10s apart, that may fail in a row
+HEALTH_EVERY = 10  # seconds a health pass through the models stands for
 _lock = threading.Lock()  # one forward pass at a time; threads are for I/O
+_health_ok = 0.0  # time.monotonic() of the last health pass that ran the models
 _beat = None  # time.monotonic() when the batch running now started; None when idle
 _loaded = {}
 
@@ -49,7 +53,7 @@ _loaded = {}
 def forward(wait=-1):
     """Holds the model lock for a forward pass; False when it can't be had in wait seconds."""
     global _beat
-    if not _lock.acquire(timeout=wait):
+    if not (_lock.acquire(blocking=False) if wait == 0 else _lock.acquire(timeout=wait)):
         yield False
         return
     try:
@@ -71,14 +75,31 @@ def stuck_for():
     return 0.0 if b is None else time.monotonic() - b
 
 
+def die(why):
+    sys.stderr.write(f"meaning: {why}; exiting so the container restarts\n")
+    sys.stderr.flush()
+    os._exit(70)
+
+
 def watchdog():
+    """Ends the process when a batch is stuck, or when its own /health has
+    failed SELF_FAILS times in a row (a server that stopped answering, or
+    models that fail outside a batch). Compose restarts it; Docker's
+    unhealthy mark alone restarts nothing."""
+    fails = 0
     while True:
         time.sleep(10)
         took = stuck_for()
         if took > STUCK_S:
-            sys.stderr.write(f"meaning: a batch has run {took:.0f}s (limit {STUCK_S}s); exiting so the container restarts\n")
-            sys.stderr.flush()
-            os._exit(70)
+            die(f"a batch has run {took:.0f}s (limit {STUCK_S}s)")
+        try:
+            with urllib.request.urlopen("http://127.0.0.1:8080/health", timeout=30) as res:
+                fails = 0 if res.status == 200 else fails + 1
+        except Exception as e:  # an error status, a refused connection, a timeout
+            fails += 1
+            sys.stderr.write(f"watchdog: /health: {e!r}\n")
+        if fails >= SELF_FAILS:
+            die(f"/health failed {fails} times in a row")
 
 
 class BadRequest(Exception):
@@ -185,16 +206,22 @@ def nli(body):
 
 def health():
     """A real forward pass through both models, unless one is running: a
-    process that answers HTTP but whose models are wedged is not healthy."""
+    process that answers HTTP but whose models are wedged is not healthy.
+    It never waits for the lock, and a pass stands for HEALTH_EVERY seconds,
+    so callers of /health (it needs no token) can't crowd out real work."""
+    global _health_ok
     took = stuck_for()
     if took > STUCK_S:
         return 503, {"ok": False, "error": f"a batch has run {took:.0f}s"}
-    with forward(wait=2) as got:
+    if time.monotonic() - _health_ok < HEALTH_EVERY:
+        return 200, {"ok": True}
+    with forward(wait=0) as got:
         if not got:
             return 200, {"ok": True, "busy": True}
         _loaded[DEFAULTS["embed"]].encode(["query: health"], show_progress_bar=False)
         tok, model, _ = _loaded[DEFAULTS["nli"]]
         model(**tok(["health"], ["health"], return_tensors="pt"))
+        _health_ok = time.monotonic()
     return 200, {"ok": True}
 
 

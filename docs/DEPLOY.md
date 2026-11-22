@@ -106,13 +106,20 @@ The API is JSON over HTTP on port 8080: `GET /health`, `GET /v1/models`,
 per request, each clipped to 2000 characters. `MEANING_TOKEN` (in `.env`) makes it require
 `Authorization: Bearer <token>`, and compose hands the same token to Waypoint
 as `WAYPOINT_AI_MEANING_TOKEN`; `MEANING_THREADS` (default 4) sets the torch
-threads. `/health` runs both models on a word (or reports them busy with a
-request), so a process that answers HTTP while its models are wedged turns
-unhealthy; a batch that runs longer than `MEANING_STUCK_S` (default 180
-seconds) ends the process, and compose restarts it. Waypoint stops calling a
+threads. `/health` needs no token; it runs both models on a word at most
+every 10 seconds and never waits behind a request (it reports them busy),
+so a process that answers HTTP while its models are wedged turns
+unhealthy. Docker's unhealthy mark restarts nothing, so the service ends
+itself and compose restarts it: a watchdog thread exits when a batch has
+run longer than `MEANING_STUCK_S` (default 180 seconds) or when its own
+`/health` has failed six times in a row, 10 seconds apart. A deadlock that
+stops every Python thread stops the watchdog too; that one takes `make
+restart-remote` (below). Waypoint stops calling a
 service that left three calls in a row unanswered (no connection, a timeout,
 a 5xx): calls fail at once for 5 minutes, then one goes through as a try,
-and each failed try doubles the wait, up to an hour. It logs `meaning
+and each failed try doubles the wait, up to an hour; the goal judgements
+schedule a run for when the next try may go, so it comes back without
+waiting for new work. It logs `meaning
 service: not answering` when it stops and after each failed try (one
 problem in `wp server problems`, with when it began), `answering again`
 when it comes back, and `wp server status` shows its state. To use another server with the same API, set
@@ -554,8 +561,8 @@ itself, an agent restarts it with `make restart-remote SERVICE=meaning`
 (`SERVICE=opencode` for the opencode service). It runs one fixed command
 through the deploy script (`remote-deploy.sh restart SERVICE`, which takes
 only those two names), restarts that container alone and prints its state;
-the next try of Waypoint's breaker, at most an hour later, finds it
-answering.
+Waypoint's breaker tries it again on its own timer (5 minutes after it
+stopped answering, doubling to at most an hour) and finds it answering.
 
 ## Reverse proxy
 

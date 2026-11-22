@@ -743,6 +743,13 @@ func (s *Service) refreshMeaning(ctx context.Context) bool {
 		ps.more, ps.progress = true, true // the next pass decides with the new fit
 	}
 	s.queueMeaningFeedback(ctx)
+	// A meaning service that is down is tried again when its breaker lets
+	// a call through, not only when a goal changes (WP-1602).
+	if m, ok := s.Meaning.(interface{ Health() MeaningHealth }); ok {
+		if h := m.Health(); h.RetryAt != nil {
+			ps.retry(h.RetryAt.UnixMilli())
+		}
+	}
 	s.meaningRetryLater(ps.retryAt)
 	return ps.more && ps.progress && ctx.Err() == nil
 }

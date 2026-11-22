@@ -199,8 +199,8 @@ deploy-status: need-deploy-host ## the version and containers running on $(DEPLO
 	ssh $(DEPLOY_HOST) 'bash waypoint/deploy/remote-deploy.sh status; if [ -x bin/waypoint-deployer ]; then bin/waypoint-deployer status; else echo "no deployer installed (deploy/setup-cd.sh)"; fi'
 
 restart-remote: need-deploy-host ## restart one helper service on $(DEPLOY_HOST): make restart-remote SERVICE=meaning (or opencode)
-	@case "$(SERVICE)" in meaning|opencode) ;; *) echo 'say SERVICE=meaning or SERVICE=opencode' >&2; exit 2;; esac
-	ssh $(DEPLOY_HOST) 'bash waypoint/deploy/remote-deploy.sh restart $(SERVICE)'
+	$(if $(filter-out 1,$(words $(SERVICE)))$(filter-out meaning opencode,$(SERVICE)),$(error say SERVICE=meaning or SERVICE=opencode))
+	ssh $(DEPLOY_HOST) 'bash waypoint/deploy/remote-deploy.sh restart $(filter meaning opencode,$(SERVICE))'
 
 release-dry-run: ## the next version and release notes CI would publish
 	deploy/release.sh --dry-run

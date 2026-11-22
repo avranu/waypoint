@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -105,5 +106,72 @@ func TestMeaningBreakerIgnoresAnswersAndCancels(t *testing.T) {
 	}
 	if h := m.Health(); h.State != "up" || h.Failures != 0 {
 		t.Fatalf("%+v", h)
+	}
+}
+
+// While the breaker is open only one call goes as a probe, however many
+// arrive meanwhile; a probe whose caller gives up hands its turn back; and
+// a service that refuses connections counts as down like one that errors.
+func TestMeaningBreakerOneProbeAndRefused(t *testing.T) {
+	var hold atomic.Bool
+	var hits atomic.Int64
+	stop := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		if hold.Load() {
+			select { // the server may not see the client hang up
+			case <-r.Context().Done():
+			case <-stop:
+			}
+		}
+		http.Error(w, "wedged", http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+	now := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+	var mu sync.Mutex
+	clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	m := newHTTPMeaning(srv.URL, "", srv.Client(), nil, clock)
+	for range meaningTrips {
+		_, _, _ = m.Embed(context.Background(), []string{"x"})
+	}
+	if m.Health().State != "down" {
+		t.Fatalf("%+v", m.Health())
+	}
+	hold.Store(true)
+	mu.Lock()
+	now = now.Add(meaningCooldown)
+	mu.Unlock()
+	before := hits.Load()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	got := make(chan error, 1)
+	go func() { _, _, err := m.Embed(ctx, []string{"x"}); got <- err }()
+	for hits.Load() == before {
+		time.Sleep(time.Millisecond)
+	}
+	for range 10 {
+		if _, _, err := m.Embed(context.Background(), []string{"x"}); !errors.Is(err, ErrMeaningDown) {
+			t.Fatalf("a call while a probe is out: %v", err)
+		}
+	}
+	if n := hits.Load() - before; n != 1 {
+		t.Fatalf("%d calls reached the service while one probe was out", n)
+	}
+	cancel()
+	<-got
+	if h := m.Health(); h.State != "down" || h.Failures != meaningTrips {
+		t.Fatalf("a cancelled probe is no verdict: %+v", h)
+	}
+
+	// The turn came back: the next call probes, and the service is gone.
+	hold.Store(false)
+	close(stop)
+	srv.CloseClientConnections()
+	srv.Close()
+	if _, _, err := m.Embed(context.Background(), []string{"x"}); !errors.Is(err, ErrMeaningDown) {
+		t.Fatalf("refused connection: %v", err)
+	}
+	if h := m.Health(); h.Failures != meaningTrips+1 || h.RetryAt == nil || !h.RetryAt.Equal(clock().Add(2*meaningCooldown)) {
+		t.Fatalf("the failed probe after a cancelled one: %+v", h)
 	}
 }
