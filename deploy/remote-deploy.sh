@@ -10,6 +10,7 @@
 #                                       (make deploy-remote); argv only
 #   remote-deploy.sh rollback           swap back to ~/waypoint.prev
 #   remote-deploy.sh status             running version, previous version, containers
+#   remote-deploy.sh restart SERVICE    restart one helper service (meaning, opencode)
 #
 # The deploy key in ~/.ssh/authorized_keys is pinned to this file:
 #   command="$HOME/bin/waypoint-deploy",no-pty,no-agent-forwarding,...
@@ -219,11 +220,26 @@ do_status() {
   [[ -n $got ]]
 }
 
+# The services restart may touch: the helpers beside Waypoint, which keep
+# no state a restart loses. Waypoint itself restarts by a deploy.
+RESTARTABLE=(meaning opencode)
+
+do_restart() {
+  local svc=$1 ok=0 s
+  for s in "${RESTARTABLE[@]}"; do [[ $svc == "$s" ]] && ok=1; done
+  ((ok)) || die "refused: restart takes one of: ${RESTARTABLE[*]}"
+  [[ -d $LIVE ]] || die "no live tree at $LIVE"
+  say "restarting $svc"
+  compose "$LIVE" restart "$svc"
+  compose "$LIVE" ps --format 'table {{.Service}}\t{{.State}}\t{{.Status}}' "$svc" 2>&1 | sed 's/^/[deploy] /' || true
+}
+
 usage() {
   cat >&2 <<'EOF'
 usage: waypoint-deploy deploy VERSION   (tarball on stdin)
        waypoint-deploy rollback
        waypoint-deploy status
+       waypoint-deploy restart SERVICE   (meaning or opencode)
 EOF
   exit 1
 }
@@ -258,6 +274,10 @@ main() {
   status)
     [[ ${#words[@]} -eq 1 ]] || usage
     do_status
+    ;;
+  restart)
+    [[ ${#words[@]} -eq 2 ]] || usage
+    do_restart "${words[1]}"
     ;;
   *) usage ;;
   esac
