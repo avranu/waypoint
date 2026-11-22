@@ -18,6 +18,12 @@ import (
 func answers(t *testing.T, status int, ctype, body string, n *int) {
 	t.Helper()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/projects/WP/pulls" {
+			// Not this test's own call: say whose, instead of counting it.
+			t.Errorf("unexpected request %s %s (UA %q) from %s", r.Method, r.URL.Path, r.Header.Get("User-Agent"), r.RemoteAddr)
+			w.WriteHeader(http.StatusTeapot)
+			return
+		}
 		*n++
 		if ctype != "" {
 			w.Header().Set("Content-Type", ctype)
