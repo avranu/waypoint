@@ -1883,7 +1883,7 @@ func (s *Service) checkClaims(ctx context.Context, audit int64) (string, []strin
 // againFindings are a round's findings, worst first: its audit's, and
 // those of its check of the session's rejections (0: none).
 func (s *Service) againFindings(ctx context.Context, audit, check int64) ([]againFinding, error) {
-	rows, err := s.db.R.QueryContext(ctx, `SELECT f.id, f.audit_id, f.ordinal, f.title, f.severity, f.problem, f.state, f.note, f.path, f.line, f.verdict, `+findingFiledSQL+`, `+filingVoidSQL("f.issue_id")+`,
+	rows, err := s.db.R.QueryContext(ctx, `SELECT f.id, f.audit_id, f.ordinal, f.title, f.severity, f.problem, f.state, f.note, f.path, f.line, f.verdict, `+findingFiledSQL+`, `+filingVoidOfFinding+`,
 		coalesce((SELECT p.key || '-' || i.number FROM issues i JOIN projects p ON p.id = i.project_id WHERE i.id = f.issue_id), '')
 		FROM code_audit_findings f WHERE f.audit_id IN (?, ?)
 		ORDER BY CASE f.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, f.audit_id, f.ordinal LIMIT ?`, audit, check, reviewAgainFindings)

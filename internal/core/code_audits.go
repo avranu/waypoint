@@ -225,7 +225,7 @@ type CodeAuditFinding struct {
 	Note     string `json:"note,omitempty"`
 	Issue    string `json:"issue,omitempty"`
 	// FilingVoid is set when Issue is canceled (won't do, duplicate) and no
-	// open issue stands for it (filingVoidSQL): the filing came to nothing,
+	// open issue stands for it (filingVoid*SQL consts): the filing came to nothing,
 	// so the finding is to do again (findingFiled, WP-1554). loadFindings
 	// sets it.
 	FilingVoid bool       `json:"filing_void,omitempty"`
@@ -1747,17 +1747,22 @@ func (f CodeAuditFinding) filingVoid() bool {
 	return f.State == "confirmed" && f.Issue != "" && f.FilingVoid && !auditHoldsMerge(f.Severity)
 }
 
-// filingVoidSQL says an issue, named by the column or placeholder issue,
-// can't hold a filing: it is canceled (won't do, duplicate) and does not
-// duplicate an issue that isn't, which would track the work in its place
-// (WP-1554; "A duplicates B" is stored A source, B target; one hop only). The
-// subqueries have their own aliases so any query can embed it. A placeholder
-// appears twice, so the query takes its argument twice.
-func filingVoidSQL(issue string) string {
-	return "(EXISTS (SELECT 1 FROM issues fiss JOIN statuses fst ON fst.id = fiss.status_id WHERE fiss.id = " + issue + " AND fst.category = '" + CatCanceled + "')" +
-		" AND NOT EXISTS (SELECT 1 FROM issue_relations frel JOIN issues fdup ON fdup.id = frel.target_id JOIN statuses fdst ON fdst.id = fdup.status_id" +
-		" WHERE frel.source_id = " + issue + " AND frel.kind = 'duplicates' AND fdst.category != '" + CatCanceled + "'))"
-}
+// The filingVoid consts say an issue, named by a column or placeholder, can't hold
+// a filing: it is canceled (won't do, duplicate) and does not duplicate an
+// issue that isn't, which would track the work in its place (WP-1554; "A
+// duplicates B" is stored A source, B target; one hop only). It is built
+// from constants (filingVoid with the column named twice) so the queries
+// that embed it stay constant strings; a subquery has its own aliases so any
+// query can embed it. Placeholder form: its argument is taken twice.
+const (
+	filingVoidHead = "(EXISTS (SELECT 1 FROM issues fiss JOIN statuses fst ON fst.id = fiss.status_id WHERE fiss.id = "
+	filingVoidMid  = " AND fst.category = '" + CatCanceled + "') AND NOT EXISTS (SELECT 1 FROM issue_relations frel JOIN issues fdup ON fdup.id = frel.target_id JOIN statuses fdst ON fdst.id = fdup.status_id WHERE frel.source_id = "
+	filingVoidTail = " AND frel.kind = 'duplicates' AND fdst.category != '" + CatCanceled + "'))"
+
+	filingVoidOfFinding = filingVoidHead + "f.issue_id" + filingVoidMid + "f.issue_id" + filingVoidTail
+	filingVoidOfIssue   = filingVoidHead + "i.id" + filingVoidMid + "i.id" + filingVoidTail
+	filingVoidOfArg     = filingVoidHead + "?" + filingVoidMid + "?" + filingVoidTail
+)
 
 // markHint is the ways to mark a finding, for the prompts and holds that
 // ask for verdicts: id is a finding's ID (12.3), why the rejection's note.
@@ -1766,9 +1771,9 @@ func markHint(id, why string) string {
 }
 
 // findingFiledSQL and findingToDoSQL are findingFiled and findingToDo over
-// code_audit_findings as f; a void filing (filingVoidSQL) is not filed.
-var (
-	findingFiledSQL = "(f.state = 'confirmed' AND f.issue_id IS NOT NULL AND f.severity NOT IN ('critical', 'high') AND NOT " + filingVoidSQL("f.issue_id") + ")"
+// code_audit_findings as f; a void filing (filingVoid*SQL consts) is not filed.
+const (
+	findingFiledSQL = "(f.state = 'confirmed' AND f.issue_id IS NOT NULL AND f.severity NOT IN ('critical', 'high') AND NOT " + filingVoidOfFinding + ")"
 	findingToDoSQL  = "(f.state IN ('open', 'confirmed') AND NOT " + findingFiledSQL + ")"
 )
 
@@ -2028,7 +2033,7 @@ func (s *Service) auditCounts(ctx context.Context, id int64) AuditCounts {
 
 func (s *Service) loadFindings(ctx context.Context, a *CodeAudit) error {
 	rows, err := s.db.R.QueryContext(ctx, `SELECT f.ordinal, f.title, f.path, f.line, f.severity, f.problem, f.confirm, f.state, f.note,
-		coalesce(ip.key || '-' || i.number, ''), i.id IS NOT NULL AND `+filingVoidSQL("i.id")+`, coalesce(nullif(u.display_name, ''), u.username, f.decided_agent, ''), f.decided_at, f.verdict, f.verdict_note, f.lead
+		coalesce(ip.key || '-' || i.number, ''), i.id IS NOT NULL AND `+filingVoidOfIssue+`, coalesce(nullif(u.display_name, ''), u.username, f.decided_agent, ''), f.decided_at, f.verdict, f.verdict_note, f.lead
 		FROM code_audit_findings f LEFT JOIN issues i ON i.id = f.issue_id LEFT JOIN projects ip ON ip.id = i.project_id
 		LEFT JOIN users u ON u.id = f.decided_by WHERE f.audit_id = ? ORDER BY f.ordinal`, a.ID)
 	if err != nil {
@@ -2488,7 +2493,7 @@ func (s *Service) MarkAuditFindings(ctx context.Context, actor *Actor, in MarkFi
 		}
 		issueID = id
 		var void bool
-		if err := s.db.R.QueryRowContext(ctx, `SELECT `+filingVoidSQL("?"), id, id).Scan(&void); err != nil {
+		if err := s.db.R.QueryRowContext(ctx, `SELECT `+filingVoidOfArg, id, id).Scan(&void); err != nil {
 			return nil, err
 		}
 		if void && state == "confirmed" {
