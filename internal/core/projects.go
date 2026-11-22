@@ -98,6 +98,10 @@ type ProjectSettings struct {
 	// project's repos (WP-ADR44 §6): the shared instructions aren't
 	// published to them. Its repos are still read and shown.
 	NoSharedSetup bool `json:"no_shared_setup,omitempty"`
+	// NoAgentInstructions turns off agent instructions for the project's
+	// sessions (ADR146): neither its own nor the ones for every project are
+	// added to their context.
+	NoAgentInstructions bool `json:"no_agent_instructions,omitempty"`
 	// NoRecurringChecks stops Waypoint filing a task when a kind of mistake
 	// keeps coming up here (WP-710).
 	NoRecurringChecks bool `json:"no_recurring_checks,omitempty"`

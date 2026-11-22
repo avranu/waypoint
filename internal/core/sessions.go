@@ -263,6 +263,10 @@ type HookResult struct {
 	Deliver []*Request `json:"deliver,omitempty"`
 	// Messages: queued prompts for the agent (WP-D22), delivered with Text.
 	Messages []*SessionMessage `json:"messages,omitempty"`
+	// Instructions: at a SessionStart or SubagentStart, the agent
+	// instructions for this session (ADR146), for the hook to add to its
+	// context.
+	Instructions string `json:"instructions,omitempty"`
 	// Await: at a Stop that set off a follow-up, how many seconds the hook
 	// should wait for a message before letting the agent stop.
 	Await int `json:"await,omitempty"`
@@ -921,6 +925,18 @@ func (s *Service) SessionHook(ctx context.Context, actor *Actor, evs []HookEvent
 				return err
 			}
 			last := n == len(evs)-1
+			if last && (ev.Event == "SessionStart" || ev.Event == "SubagentStart") {
+				// What this session is told by what it is (ADR146). Never a
+				// reason to refuse the batch.
+				text, err := s.deliverInstructions(ctx, t, x, &ev)
+				if err != nil {
+					if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+						return err
+					}
+					s.log.WarnContext(ctx, "agent instructions", "session", x.ID, "event", ev.Event, "err", err)
+				}
+				res.Instructions = text
+			}
 			if last && ev.kept != "" {
 				res.Block, advance, review = ev.kept, ev.advance, ev.review
 				continue // no turn: what would start one waits for the next prompt
