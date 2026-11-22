@@ -284,7 +284,6 @@ func TestInsertRelationIsIdempotent(t *testing.T) {
 		{"same again", f.a.ID, f.b.ID, "relates", false, false},
 		{"relates from the other end", f.b.ID, f.a.ID, "relates", false, false},
 		{"blocks beside relates", f.a.ID, f.b.ID, "blocks", false, true},
-		{"blocks the other way is its own relation", f.b.ID, f.a.ID, "blocks", false, true},
 		{"unrelated holds off for any relation", f.b.ID, f.a.ID, "duplicates", true, false},
 	}
 	for _, st := range steps {
@@ -293,8 +292,13 @@ func TestInsertRelationIsIdempotent(t *testing.T) {
 			t.Errorf("%s: inserted = %v, %v; want %v, nil", st.name, got, err, st.want)
 		}
 	}
-	if n := f.relationRows(t); n != 3 {
-		t.Errorf("%d relation rows, want 3", n)
+	// A kind with an inverse said the other way round contradicts what stands
+	// (A blocks B, B blocks A): refused, not a second row (WP-1370).
+	if got, err := put(f.b.ID, f.a.ID, "blocks", false); got || !IsInvalid(err) {
+		t.Errorf("blocks the other way: inserted = %v, %v; want refused as invalid", got, err)
+	}
+	if n := f.relationRows(t); n != 2 {
+		t.Errorf("%d relation rows, want 2", n)
 	}
 	if _, err := put(f.a.ID, f.a.ID, "relates", false); err == nil {
 		t.Error("an issue related to itself")

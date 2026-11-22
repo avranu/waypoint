@@ -96,6 +96,10 @@ type shipForge struct {
 // fake forge's branches are unless a test says otherwise.
 const shippedHead = "5h1ppedc0mmit01"
 
+// shippedHeadTime is that commit's time (seconds): wp ship sends both, and the
+// server notes the head of a round it finds with no audit asked from them.
+const shippedHeadTime = 1
+
 func newShipForge() *shipForge {
 	return &shipForge{prForge: newPRForge(), statuses: map[string][]CommitStatusPost{}, checks: map[string][]CommitCheck{},
 		logs: map[string]string{}, reacts: map[string][]Reaction{}, fileAt: map[string]string{}, heads: map[string]string{}, tipDefault: shippedHead}

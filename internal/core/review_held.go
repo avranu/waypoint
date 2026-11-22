@@ -293,8 +293,11 @@ func (s *Service) shipAuthorize(ctx context.Context, sh *shipRun) (done bool, er
 			// Waypoint's own pull request for this task whose link a crash
 			// kept from being made: the link is made now, and it is the
 			// task's again (WP-1370).
+			// Not one a person unlinked from the task on purpose (RemoveLink keeps
+			// a record of that).
 			var by, url string
-			if s.db.R.QueryRowContext(ctx, `SELECT agent, url FROM pull_requests WHERE id = ?`, id).Scan(&by, &url) == nil && by != "" && by == in.agent {
+			var unlinked bool
+			if s.db.R.QueryRowContext(ctx, `SELECT p.agent, p.url, EXISTS (SELECT 1 FROM issue_unlinks u WHERE u.issue_id = ? AND u.url = p.url) FROM pull_requests p WHERE p.id = ?`, r.issueID, id).Scan(&by, &url, &unlinked) == nil && by != "" && by == in.agent && !unlinked {
 				if _, lerr := s.AddLink(ctx, actor, r.key, url, ""); lerr == nil {
 					keys = []string{r.key}
 				} else {

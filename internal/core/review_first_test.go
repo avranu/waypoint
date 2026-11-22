@@ -34,9 +34,15 @@ func firstEnv(t *testing.T) (*apEnv, *Runner, *shipForge) {
 // with its intent about the review ("" is a CLI from before intents).
 func (a *apEnv) ship(key, review string, more ...func(*OpenPRInput)) (*OpenPRResult, error) {
 	a.t.Helper()
-	in := OpenPRInput{Project: a.p.Key, Repo: "acme/app", Head: "wp-1-first", Title: "First", Issue: key, For: key, Ready: true, Review: review, HeadSHA: shippedHead}
+	in := OpenPRInput{Project: a.p.Key, Repo: "acme/app", Head: "wp-1-first", Title: "First", Issue: key, For: key, Ready: true, Review: review}
 	for _, f := range more {
 		f(&in)
+	}
+	// A ship that says nothing of its head pushed the commit every test's forge
+	// has the branch at; one that names a time (a test of commits made after a
+	// review) names its own head and has no sha.
+	if in.HeadTime == 0 && in.HeadSHA == "" {
+		in.HeadTime, in.HeadSHA = shippedHeadTime, shippedHead
 	}
 	// The pull request the forge opens from the branch starts at the commit
 	// wp ship pushed unless the test says where the branch is.

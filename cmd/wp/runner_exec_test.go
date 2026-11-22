@@ -837,7 +837,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"### 1. A f
 	a, _ := os.ReadFile(filepath.Join(os.Getenv("FAKE_OUT"), "args"))
 	// Read-only is Cursor's ask mode; the fresh checkout is trusted, or print
 	// mode stops to ask.
-	if !strings.Contains(string(a), "-p --output-format json --trust --model grok-4.7-high --mode ask Audit") || strings.Contains(string(a), "--force") {
+	if !strings.Contains(string(a), "-p --output-format json --trust --model grok-4.7-high --mode ask -- Audit") || strings.Contains(string(a), "--force") {
 		t.Errorf("cursor args = %s", a)
 	}
 	// Reading is all it may do: the checkout's tool rules are replaced.
@@ -856,7 +856,7 @@ echo '{"type":"result","subtype":"error","is_error":true,"result":"You have hit 
 	if o.State != "failed" || !strings.Contains(o.Error, "usage limit") {
 		t.Errorf("cursor error = %+v", o)
 	}
-	if a, _ := os.ReadFile(filepath.Join(os.Getenv("FAKE_OUT"), "args")); !strings.Contains(string(a), "--trust --force Fix it") {
+	if a, _ := os.ReadFile(filepath.Join(os.Getenv("FAKE_OUT"), "args")); !strings.Contains(string(a), "--trust --force -- Fix it") {
 		t.Errorf("cursor edit args = %s", a)
 	}
 	if c, _ := os.ReadFile(filepath.Join(os.Getenv("FAKE_OUT"), "cli.json")); string(c) != `{"permissions":{"allow":["Shell(*)"]}}` {

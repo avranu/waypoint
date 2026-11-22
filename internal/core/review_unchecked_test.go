@@ -90,7 +90,7 @@ func openedThenLost(t *testing.T) (*loopEnv, int64) {
 	if len(e.g.created) != 1 || e.round(r1).state != RoundDone {
 		t.Fatalf("setup: %d pull requests, round %+v", len(e.g.created), e.round(r1))
 	}
-	e.exec(`UPDATE work_log SET state = 'running', ended_at = NULL, read_state = 'pending' WHERE id = ?`, r1)
+	e.exec(`UPDATE work_log SET state = 'running', ended_at = NULL, read_state = 'pending', before_pr = json_remove(before_pr, '$.ship_done') WHERE id = ?`, r1)
 	e.exec(`UPDATE agent_runs SET ended_at = NULL WHERE id = (SELECT run_id FROM work_log WHERE id = ?)`, r1)
 	e.exec(`DELETE FROM session_messages WHERE step_key LIKE 'shipped:%'`)
 	e.exec(`DELETE FROM notifications`)
@@ -125,7 +125,7 @@ func TestServerShipLeavesAPRAlone(t *testing.T) {
 		name, relink string
 		wantOwner    string
 	}{
-		{"linked to no task", `DELETE FROM external_links WHERE url LIKE '%/pulls/%'`, "isn't linked to any task"},
+		{"unlinked by a person", `INSERT INTO issue_unlinks(issue_id, url, user_id, agent, created_at) SELECT issue_id, url, NULL, '', 0 FROM external_links WHERE url LIKE '%/pulls/%'; DELETE FROM external_links WHERE url LIKE '%/pulls/%'`, "isn't linked to any task"},
 		{"linked to another task", `UPDATE external_links SET issue_id = (SELECT id FROM issues WHERE title = 'Second') WHERE url LIKE '%/pulls/%'`, "is linked to"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
