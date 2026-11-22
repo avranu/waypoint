@@ -347,6 +347,20 @@ func TestAutopilotReviewUnwantedBeforePaste(t *testing.T) {
 	}
 }
 
+// A Stop while the box is read again for a late paste is seen before Enter
+// (WP-1572): the paste is taken back out, no Enter.
+func TestAutopilotReviewUnwantedAfterLateRenderWait(t *testing.T) {
+	after := screenEmpty
+	f, r, _ := reviewTypingFixture(t, &after, func(n int) (bool, bool) { return n <= 3, true }, func(n int, f *fakeTmux) {
+		if n == 1 {
+			f.lateRender = 2
+		}
+	})
+	if r.Outcome != "unwanted" || strings.Contains(strings.Join(f.typed, " "), "Enter") {
+		t.Errorf("%+v typed %q", r, f.typed)
+	}
+}
+
 // A paste Claude Code draws late is waited for, then sent (WP-1572).
 func TestAutopilotReviewPasteRendersLate(t *testing.T) {
 	after := screenEmpty

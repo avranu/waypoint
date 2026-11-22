@@ -346,21 +346,27 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 	// Only a no from Waypoint is unwanted (the step is over); an answer it
 	// can't give holds the step, which retries, as the step still waits on
 	// this job: a send into a person's turn can't be undone.
-	wanted, werr := p.stepWantedAsk(ctx, in.Step, run.id)
-	if werr == nil && !wanted {
-		res := autopilotResult{Outcome: "unwanted"}
-		if !unpaste() {
-			res.Warning = "the review prompt was pasted and not sent, since the session was taken while it settled: clear it from the input box if it is still there"
+	askAgain := func() (outcome, bool) {
+		wanted, werr := p.stepWantedAsk(ctx, in.Step, run.id)
+		if werr == nil && !wanted {
+			res := autopilotResult{Outcome: "unwanted"}
+			if !unpaste() {
+				res.Warning = "the review prompt was pasted and not sent, since the session was taken while it settled: clear it from the input box if it is still there"
+			}
+			say("the step no longer wants this job: the review was pasted and not sent")
+			return outcome{State: "done", Result: res}, true
 		}
-		say("the step no longer wants this job: the review was pasted and not sent")
-		return outcome{State: "done", Result: res}
+		if werr != nil {
+			left := ""
+			if !unpaste() {
+				left = "; it may still be in the input box"
+			}
+			return held("screen", "the review prompt was pasted and not sent, since Waypoint couldn't say whether the step still wants it (%v)%s", werr, left), true
+		}
+		return outcome{}, false
 	}
-	if werr != nil {
-		left := ""
-		if !unpaste() {
-			left = "; it may still be in the input box"
-		}
-		return held("screen", "the review prompt was pasted and not sent, since Waypoint couldn't say whether the step still wants it (%v)%s", werr, left)
+	if o, stop := askAgain(); stop {
+		return o
 	}
 	// The last look, right before Enter (WP-1572): only the pasted review
 	// may be in the box. Anything typed with it would go along. An empty box
@@ -370,6 +376,11 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 	for wait := time.Now().Add(reviewPasteSettle(len(in.Review))); err == nil && box.found && box.text == "" && time.Now().Before(wait); {
 		sleepCtx(ctx, autopilotPoll)
 		box, err = readPenBox(ctx, socket, pane)
+	}
+	// The wait above can take a settle period: ask once more, so a Stop in it
+	// is seen before Enter.
+	if o, stop := askAgain(); stop {
+		return o
 	}
 	switch {
 	case err != nil || !box.found:
