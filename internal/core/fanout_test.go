@@ -332,3 +332,19 @@ func TestFanoutPlanChecks(t *testing.T) {
 		t.Errorf("someone else's: %v", err)
 	}
 }
+
+// The id a package's session is attached by is the shape claude --bg prints,
+// so a stop or an attach can't be handed an option (WP-1370).
+func TestFanoutItemStartedRefusesAnAttachIDThatIsNotOne(t *testing.T) {
+	fe := newFanoutEnv(t)
+	f := fe.create(fe.plan(3, nil))
+	c := fe.claim(f.ID)
+	for _, bad := range []string{"--bogus-x", "-abcdef", "abcde", strings.Repeat("a", 37), "ABCDEF12", "abcdef\n--x"} {
+		if err := fe.s.FanoutItemStarted(fe.ctx, fe.ag, f.ID, c.Start[0].Key, bad); !IsInvalid(err) {
+			t.Errorf("%q accepted: %v", bad, err)
+		}
+	}
+	if err := fe.s.FanoutItemStarted(fe.ctx, fe.ag, f.ID, c.Start[0].Key, "a1b2c3d4"); err != nil {
+		t.Fatalf("a real id refused: %v", err)
+	}
+}
