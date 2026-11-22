@@ -57,6 +57,8 @@ package core
 //     a medium weighs 1 and a high 2, and after the k-th round the weight
 //     the signals add up to must reach 2^(k-1) (1 after the first round),
 //     unless one is critical, which sends on at any round.
+//     From the second round on the scores can't send a round on alone: one
+//     that falls short of its weight is arm weighed (a probe aside).
 //   - Otherwise, what stands is serious enough for the change's risk. Each
 //     finding is scored on its own: its severity is the mean of the
 //     reviewer's own label (critical 10, high 8, medium 5, low 3) and the
@@ -245,6 +247,10 @@ const (
 	AgainCap = "cap"
 	// AgainLowYield: rounds at this index have rarely found anything.
 	AgainLowYield = "low_yield"
+	// AgainWeighed: from the second round on, the signals fell short of the
+	// weight the round's index needs (againPolicy.needFor) and no probe was
+	// due, so the scores don't call another round on their own (WP-1569).
+	AgainWeighed = "weighed"
 	// AgainProbe: the scores were under the bar, but a new finding of
 	// medium or worse stood, and the record of rounds after such rounds
 	// (drawn as for low_yield) says they may pay off: another round comes,

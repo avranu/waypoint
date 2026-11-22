@@ -167,6 +167,13 @@ func (p againPolicy) settle(c *againDecision, fs, earlier []againFinding, ans ma
 	// the check against the code: neither the reviewer's record nor the
 	// yield record overrides it.
 	scoresCall := c.arm == "" && !probe && !calls
+	if scoresCall && c.index >= 2 {
+		// From the second round on the scores can't call a round on their
+		// own (WP-1569): the signals' weight didn't reach what this index
+		// needs, and the only other round is the loop's one probe, above.
+		c.arm = AgainWeighed
+		return probe, nil
+	}
 	if scoresCall && c.fixesMean < bar.risky {
 		// How the findings and fixes sound is what calls: the reviewer's
 		// record must back it.

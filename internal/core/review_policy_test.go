@@ -221,9 +221,10 @@ func TestAgainPolicyWeighs(t *testing.T) {
 	grows := func(p *againPolicy) { p.needBase, p.needGrowth = 3, 3 }
 	normal := func(f *againFacts) { f.tier = StakesNormal }
 	// A high label alone scores over the elevated bar however the model reads
-	// it, so a high the weight doesn't call is still called by the scores
-	// when the reviewer's record backs them; with no record the weight shows.
+	// it: on round 1 that still calls; from round 2 the scores can't call a
+	// round on their own, and the arm is weighed.
 	untrusted := func(f *againFacts) { f.trusted = false }
+	low := []againFinding{policyFinding(1, "low", "fixed", "")}
 	for _, tc := range []struct {
 		name         string
 		k            int // the k-th review round of the change is being decided
@@ -232,6 +233,7 @@ func TestAgainPolicyWeighs(t *testing.T) {
 		policy       func(*againPolicy)
 		calls        bool
 		arm          string // when it doesn't call: the arm it takes
+		severity     string // what the model calls every finding; "" minor
 		need, weight int
 	}{
 		{name: "round 1, one medium", k: 1, findings: of("medium", 1), calls: true, need: 1, weight: 1},
@@ -239,8 +241,12 @@ func TestAgainPolicyWeighs(t *testing.T) {
 		{name: "round 2, two mediums", k: 2, findings: of("medium", 2), calls: true, need: 2, weight: 2},
 		{name: "round 2, one high", k: 2, findings: of("high", 1), calls: true, need: 2, weight: 2},
 		{name: "round 2, a medium and a high", k: 2, findings: mixed, calls: true, need: 2, weight: 3},
-		{name: "round 3, one high: too light for the weight, an untrusted reviewer's scores can't call it", k: 3, findings: of("high", 1), need: 4, weight: 2, arm: AgainUntrusted, facts: untrusted},
-		{name: "round 3, one high: the scores call it for a trusted reviewer", k: 3, findings: of("high", 1), calls: true, need: 4, weight: 2},
+		{name: "round 3, one high, a trusted reviewer, scores over the bar: weighed", k: 3, findings: of("high", 1), need: 4, weight: 2, arm: AgainWeighed},
+		{name: "round 3, one high, an untrusted reviewer: weighed", k: 3, findings: of("high", 1), need: 4, weight: 2, arm: AgainWeighed, facts: untrusted},
+		{name: "round 1, scores over the bar on a low the model calls serious: still calls", k: 1, findings: low, severity: "serious", calls: true, need: 1},
+		{name: "round 2, the same low: the scores can't call", k: 2, findings: low, severity: "serious", need: 2, arm: AgainWeighed},
+		{name: "round 2, a high the model calls serious, weight 2 reaches 2: calls", k: 2, findings: of("high", 1), severity: "serious", calls: true, need: 2, weight: 2},
+		{name: "round 4, seven mediums the model calls serious: weighed", k: 4, findings: of("medium", 7), severity: "serious", need: 8, weight: 7, arm: AgainWeighed},
 		{name: "round 3, two highs", k: 3, findings: of("high", 2), calls: true, need: 4, weight: 4},
 		{name: "round 4, seven mediums", k: 4, findings: of("medium", 7), need: 8, weight: 7},
 		{name: "round 4, eight mediums", k: 4, findings: of("medium", 8), calls: true, need: 8, weight: 8},
@@ -251,7 +257,7 @@ func TestAgainPolicyWeighs(t *testing.T) {
 		{name: "normal stakes: mediums weigh nothing", k: 1, findings: of("medium", 3), need: 1, facts: normal},
 		{name: "normal stakes: a high at round 1", k: 1, findings: of("high", 1), calls: true, need: 1, weight: 2, facts: normal},
 		{name: "normal stakes: a high at round 3", k: 3, findings: of("high", 1), need: 4, weight: 2, arm: AgainEnough, facts: normal},
-		{name: "a base and growth of 3: a high at round 2", k: 2, findings: of("high", 1), need: 9, weight: 2, arm: AgainUntrusted, facts: untrusted, policy: grows},
+		{name: "a base and growth of 3: a high at round 2", k: 2, findings: of("high", 1), need: 9, weight: 2, arm: AgainWeighed, policy: grows},
 		{name: "a base and growth of 3: two mediums at round 1", k: 1, findings: of("medium", 2), need: 3, weight: 2, policy: grows},
 		{name: "a base and growth of 3: three mediums at round 1", k: 1, findings: of("medium", 3), calls: true, need: 3, weight: 3, policy: grows},
 	} {
@@ -273,7 +279,8 @@ func TestAgainPolicyWeighs(t *testing.T) {
 					facts.fixed++
 				}
 			}
-			ans := policyAnswers(len(tc.findings), "minor", "complete", nil)
+			severity := cmp(tc.severity, "minor")
+			ans := policyAnswers(len(tc.findings), severity, "complete", nil)
 			// index is the round's place among the change's rounds, 1 the first.
 			d := againDecision{audit: 1, index: len(earlier) + 1, yieldP: -1}
 			if _, err := p.settle(&d, tc.findings, earlier, ans, true, false, facts); err != nil {
