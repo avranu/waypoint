@@ -58,6 +58,9 @@ type cliDriver struct {
 	// errLine reads a line of standard error while the CLI runs; an error
 	// stops it at once and is the job's failure (opencode's spent model).
 	errLine func(line []byte) error
+	// calls times the CLI's tool calls, where its output tells them apart
+	// (Claude Code); nil otherwise.
+	calls *callClock
 }
 
 // runnerCacheDir is where clones and work trees live.
@@ -436,7 +439,17 @@ func (p *runnerProc) execAgent(ctx context.Context, run *jobRun, kind string, in
 	}
 	switch {
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
-		return outcome{State: "failed", Error: fmt.Sprintf("The %s timed out after %s and was stopped.", bin, run.timeout.Round(time.Second))}
+		timedOut := outcome{State: "failed", Error: fmt.Sprintf("The %s timed out after %s and was stopped.", bin, run.timeout.Round(time.Second))}
+		if spent := drv.calls.spent(); spent != "" {
+			// Where the time went, for whoever reads the failure and for the
+			// round that takes over.
+			fmt.Fprintf(run.out, "\n%s\n", spent)
+			timedOut.Error += " " + spent
+		}
+		if in.KeepOnTimeout && !in.ReadOnly {
+			return p.salvage(ctx, run, in, bare, work, env, baseSHA, timedOut, &pushed)
+		}
+		return timedOut
 	case ctx.Err() != nil:
 		return outcome{State: "cancelled", Error: "Stopped."}
 	case runCtx.Err() != nil:
@@ -474,6 +487,65 @@ func (p *runnerProc) execAgent(ctx context.Context, run *jobRun, kind string, in
 		hx.join(ctx, result)
 	}
 	if !in.ReadOnly {
+		return p.deliver(ctx, run, in, bare, work, env, baseSHA, result, &pushed)
+	}
+	return outcome{State: "done", Result: result}
+}
+
+// salvageTimeout is how long the runner has to check and push what a
+// timed-out agent had committed: inside the 5 minutes past its limit after
+// which the server gives a running job up (runnerExpireAfter).
+const salvageTimeout = 3 * time.Minute
+
+// salvage delivers what an agent had committed when its time ran out
+// (WP-1597, WP-ADR148): its commits are finished work, checked and pushed as
+// a round that ended would have them, so the next round starts from them and
+// not from the head this one started at. What it left uncommitted may be half
+// an edit or a merge with its markers still in, so that is dropped, and named
+// in the result. The job still fails as timed out.
+func (p *runnerProc) salvage(ctx context.Context, run *jobRun, in agentJob, bare, work string, env []string, baseSHA string, timedOut outcome, pushed *bool) outcome {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), salvageTimeout)
+	defer cancel()
+	result := map[string]any{"answer": "", "cli": in.CLI, "base": baseSHA, "commits": []string{}, "timed_out": true}
+	timedOut.Result = result
+	// The CLI's process group is gone, but one of its git commands may have
+	// left its lock behind.
+	if dir, err := p.git(ctx, work, "rev-parse", "--absolute-git-dir"); err == nil {
+		_ = os.Remove(filepath.Join(dir, "index.lock"))
+	}
+	if left, _ := p.gitPaths(ctx, work, "status", "--porcelain", "--no-renames"); len(left) > 0 {
+		for i, l := range left { // "XY path"
+			left[i] = l[min(len(l), 3):]
+		}
+		result["uncommitted"] = left[:min(len(left), 50)]
+		fmt.Fprintf(run.out, "\nThe agent ran out of time with %d file%s changed and not committed; they are dropped\n", len(left), map[bool]string{true: "", false: "s"}[len(left) == 1])
+	}
+	// A rebase it was in the middle of leaves HEAD off the branch: back to it.
+	_, _ = p.git(ctx, work, "rebase", "--abort")
+	if _, err := p.git(ctx, work, "reset", "--hard", "--quiet", "HEAD"); err != nil {
+		fmt.Fprintf(run.out, "\nCouldn't set aside what the agent left uncommitted, so nothing was pushed: %v\n", err)
+		return timedOut
+	}
+	if _, err := p.git(ctx, work, "clean", "-fdq"); err != nil {
+		fmt.Fprintf(run.out, "\nCouldn't set aside what the agent left uncommitted, so nothing was pushed: %v\n", err)
+		return timedOut
+	}
+	if revs, err := p.git(ctx, work, "rev-list", baseSHA+"..HEAD"); err != nil || strings.TrimSpace(revs) == "" {
+		return timedOut
+	}
+	fmt.Fprintf(run.out, "\nThe agent ran out of time; delivering the commits it had made\n")
+	if d := p.deliver(ctx, run, in, bare, work, env, baseSHA, result, pushed); d.State != "done" {
+		timedOut.Error += " Its commits weren't pushed: " + d.Error
+	}
+	return timedOut
+}
+
+// deliver is what becomes of an agent's work once its CLI is over: what it
+// left uncommitted is committed, changes to protected files are held back,
+// and the branch is pushed. result gains what was done; pushed is set once
+// the branch is on the remote.
+func (p *runnerProc) deliver(ctx context.Context, run *jobRun, in agentJob, bare, work string, env []string, baseSHA string, result map[string]any, pushed *bool) outcome {
+	{ // at the depth it had in execAgent, so the lines keep their history
 		if status, _ := p.git(ctx, work, "status", "--porcelain"); status != "" {
 			msg := strings.TrimSpace(in.CommitMessage)
 			if msg == "" {
@@ -559,7 +631,7 @@ func (p *runnerProc) execAgent(ctx context.Context, run *jobRun, kind string, in
 			if _, err := p.gitIn(ctx, work, nil, env, "push", "origin", ref+":"+ref); err != nil {
 				return p.partial(result, "pushing %s failed: %v", in.Branch, err)
 			}
-			pushed = true
+			*pushed = true
 			result["pushed"] = true
 		}
 	}

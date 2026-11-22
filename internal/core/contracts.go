@@ -223,6 +223,9 @@ type AgentJob struct {
 	// is Base) and pushed. Only a check of the change or a person's approval
 	// sends one (WP-ADR138).
 	Patch string `json:"patch,omitempty"`
+	// KeepOnTimeout: an agent that runs out of time has the commits it had
+	// made checked and pushed all the same; the job still fails (WP-1597).
+	KeepOnTimeout bool `json:"keep_on_timeout,omitempty"`
 	// Confine marks a prompt that carries text others wrote (a pull request):
 	// the runner confines the CLI to its checkout, or refuses a CLI it can't
 	// confine. Always set for review jobs.

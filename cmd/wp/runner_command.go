@@ -55,6 +55,9 @@ type agentJob struct {
 	// Patch, for a job that runs no agent: changes to protected files held
 	// back from a round, applied to Branch and pushed once checked.
 	Patch string `json:"patch"`
+	// KeepOnTimeout: when the agent runs out of time, the commits it had
+	// made are still checked and pushed (salvage, WP-1597).
+	KeepOnTimeout bool `json:"keep_on_timeout,omitempty"`
 	// Confine: the prompt carries text others wrote (a pull request), so the
 	// CLI must not be able to read beyond its checkout; a CLI that can't be
 	// confined is refused (WP-6).
