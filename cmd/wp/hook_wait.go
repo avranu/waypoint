@@ -15,13 +15,15 @@ import (
 // The wait hook (WP-1571): after a Bash call that went to the background, the
 // session is told how long the run is likely to take (when it is wp testsum
 // or wp slot run, from the slot directory's history) and what it can do
-// meanwhile: the findings of its review round still to do, the answered
-// requests it hasn't been told of (by wp request show or a wakeup). A
-// foreground call is over by the time a PostToolUse hook runs, so it says
-// nothing for one. The server says what is outstanding (POST
-// /api/v1/sessions/outstanding, which also records that it told); with none,
-// or with no answer, the hook prints only the ETA, if any. Both are worked out
-// at once, and the hook says what it has by waitBudget.
+// meanwhile: the findings of its review round still to do, the answers to its
+// requests it hasn't been told of, in full. A foreground call is over by the
+// time a PostToolUse hook runs, so it says nothing for one. The server says
+// what is outstanding (POST /api/v1/sessions/outstanding, which records the
+// findings named); with none, or with no answer, the hook prints only the
+// ETA, if any. Both are worked out at once, and the hook says what it has by
+// waitBudget. Once it has printed answers it says so (POST
+// .../outstanding/told), and only then are they marked told: a hook cut off
+// before it printed loses none.
 
 // hookWait is the PostToolUse(Bash) hook's command.
 const hookWait = "hook claude-wait"
@@ -31,6 +33,10 @@ const hookWait = "hook claude-wait"
 const hookWaitTimeout = 5
 
 const waitHTTPTimeout = 3 * time.Second
+
+// waitToldMin is the least time left in the hook's timeout worth saying it
+// told answers in; with less they stay untold and come again.
+const waitToldMin = 200 * time.Millisecond
 
 // waitBudget is how long the hook takes at most, inside hookWaitTimeout;
 // waitETAFor works out the ETA (variables so tests set them).
@@ -193,17 +199,19 @@ func hookClaudeWait(c *cli, stdin io.Reader, stdout io.Writer) {
 	// The ETA reads git and the slot directory, which can be slow: it goes
 	// alongside the server's call, and what isn't ready by the budget is left
 	// out rather than the hook timing out with nothing said (audit #1372.13).
+	start := time.Now()
 	deadline := time.After(waitBudget)
 	eta := make(chan string, 1)
 	go func() { eta <- waitETAFor(call.Command, in.Cwd, in.SessionID) }()
 	var lines string
+	var told []int64
 	if c.server() != "" && c.token() != "" {
 		c.session = in.SessionID
 		c.hookTimeout = waitHTTPTimeout
 		if b, err := c.call("POST", "/api/v1/sessions/outstanding", struct{}{}); err == nil {
 			var o core.SessionOutstanding
 			if json.Unmarshal(b, &o) == nil {
-				lines = strings.TrimSpace(o.Lines)
+				lines, told = strings.TrimSpace(o.Lines), o.RequestIDs
 			}
 		}
 	}
@@ -221,5 +229,17 @@ func hookClaudeWait(c *cli, stdin io.Reader, stdout io.Writer) {
 	if text == "" {
 		return
 	}
-	_, _ = stdout.Write(hookContext("PostToolUse", text))
+	if _, err := stdout.Write(hookContext("PostToolUse", text)); err != nil || lines == "" || len(told) == 0 {
+		return
+	}
+	// The answers were given: they are told. Within the hook's own timeout,
+	// with a little to spare.
+	left := time.Duration(hookWaitTimeout)*time.Second - 500*time.Millisecond - time.Since(start)
+	if left < waitToldMin {
+		return
+	}
+	c.hookTimeout = min(left, waitHTTPTimeout)
+	_, _ = c.call("POST", "/api/v1/sessions/outstanding/told", struct {
+		Requests []int64 `json:"requests"`
+	}{told})
 }

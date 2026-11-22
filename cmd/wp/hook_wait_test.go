@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -17,15 +18,37 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-const waitOutstanding = `{"audit":12,"findings":["12.1","12.2"],"requests":["R-4"],"lines":"- 2 findings still to do in your review round's audit #12, below.\n### 12.1 [high] Merge reads a nil map\n### 12.2 [low] Dead code\n\nWaypoint: a request you filed was decided.\n\nWP:R-4 (question) \"Squash?\": Sam answered:\nNo, keep them apart."}`
+const waitOutstanding = `{"audit":12,"findings":["12.1","12.2"],"requests":["R-4"],"request_ids":[4],"lines":"- 2 findings still to do in your review round's audit #12, below.\n### 12.1 [high] Merge reads a nil map\n### 12.2 [low] Dead code\n\nWaypoint: a request you filed was decided.\n\nWP:R-4 (question) \"Squash?\": Sam answered:\nNo, keep them apart."}`
 
 // waitHook runs the hook against a server that answers body with status and
 // returns what it printed and how often it was asked.
 func waitHook(t *testing.T, status int, body string, input map[string]any) (string, int32) {
 	t.Helper()
+	out, asked, _ := waitHookTold(t, status, body, input)
+	return out, asked
+}
+
+// waitHookTold is waitHook, also returning the requests the hook said it
+// told (nil: it didn't say).
+func waitHookTold(t *testing.T, status int, body string, input map[string]any) (string, int32, []int64) {
+	t.Helper()
 	var asked atomic.Int32
 	var session string
+	var told []int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions/outstanding/told" {
+			var in struct {
+				Requests []int64 `json:"requests"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+				t.Errorf("told: %v", err)
+			}
+			told = in.Requests
+			if r.Header.Get("X-Waypoint-Session") != "sess-1" {
+				t.Errorf("told for session %q", r.Header.Get("X-Waypoint-Session"))
+			}
+			return
+		}
 		if r.URL.Path != "/api/v1/sessions/outstanding" || r.Method != http.MethodPost {
 			t.Errorf("asked %s %s", r.Method, r.URL.Path)
 		}
@@ -54,7 +77,7 @@ func waitHook(t *testing.T, status int, body string, input map[string]any) (stri
 	if asked.Load() > 0 && session != "sess-1" {
 		t.Errorf("the server was asked for session %q", session)
 	}
-	return stdout.String(), asked.Load()
+	return stdout.String(), asked.Load(), told
 }
 
 // bashCall is a PostToolUse event for a Bash call; background says Claude
@@ -540,5 +563,22 @@ func TestShellCommandsKeepRedirectionsInTheCommand(t *testing.T) {
 		if got := fmt.Sprint(shellCommands(tc.in)); got != tc.want {
 			t.Errorf("%q = %s, want %s", tc.in, got, tc.want)
 		}
+	}
+}
+
+// Answers are marked told only once the hook has printed them, and only those
+// the server sent; with none, or no output, it says nothing.
+func TestWaitHookSaysItToldAfterPrinting(t *testing.T) {
+	out, _, told := waitHookTold(t, 200, waitOutstanding, bashCall("make check", true))
+	if !strings.Contains(out, "No, keep them apart.") || !slices.Equal(told, []int64{4}) {
+		t.Errorf("told %v after printing:\n%s", told, out)
+	}
+	_, _, told = waitHookTold(t, 200, `{"audit":12,"findings":["12.1"],"lines":"- 1 finding"}`, bashCall("make check", true))
+	if told != nil {
+		t.Errorf("told %v with no answers", told)
+	}
+	_, _, told = waitHookTold(t, 200, waitOutstanding, bashCall("make check", false))
+	if told != nil {
+		t.Errorf("told %v for a foreground call", told)
 	}
 }

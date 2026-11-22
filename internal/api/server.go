@@ -421,9 +421,10 @@ func (s *Server) authenticate(r *http.Request) (*core.Actor, error) {
 			// session on its rows: noted here, counted by the middleware
 			// once the write has succeeded (WP-1470). The hook's own calls
 			// register sessions, so they are not; nor is the wait hook's ask
-			// for outstanding work, which writes nothing without a session.
+			// for outstanding work and its word that it told, which write
+			// nothing without a session.
 			if a.Session == 0 && r.Method != http.MethodGet && r.Method != http.MethodHead && !strings.HasPrefix(r.URL.Path, "/api/v1/sessions/hook") &&
-				r.URL.Path != "/api/v1/sessions/outstanding" {
+				!strings.HasPrefix(r.URL.Path, "/api/v1/sessions/outstanding") {
 				if n := noteFrom(r); n != nil {
 					n.unregistered = &unregisteredWrite{user: a.User.ID, machine: machine}
 				}

@@ -4,27 +4,33 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"strings"
 )
 
 // SessionOutstanding is work a session can do while it waits on something
 // slow, because none of it needs the result (WP-1571). Lines says all of it,
-// each finding and each answer in full: a session told to run a command to
-// read them spends a turn on its whole context doing so (WP-769).
+// so the session needn't run a command to read any of it, which costs a turn
+// on its whole context (WP-769): the findings it has in full from its
+// round's prompt are named, and the answers are given in full.
 type SessionOutstanding struct {
-	// Audit and Findings: findings (41.2 style) of the session's open review
-	// round's audit still to do (roundTodo: no verdict, or confirmed and not
-	// filed).
+	// Audit and Findings: findings (41.2 style) still to do (roundTodo: no
+	// verdict, or confirmed and not filed) in the audit of the session's
+	// review round whose prompt went in (RoundRunning). Before it goes in
+	// they are the prompt's to give.
 	Audit    int64    `json:"audit,omitempty"`
 	Findings []string `json:"findings,omitempty"`
-	// Requests: the decided requests given in Lines (R-12), now marked told
-	// (delivered_at) as a Stop or a wakeup would.
-	Requests []string `json:"requests,omitempty"`
+	// Requests: the decided requests given in Lines (R-12). At a Stop they
+	// are marked told (delivered_at) as its own are; at the wait the hook
+	// marks them (RequestIDs, SessionDecisionsTold) once it has given them,
+	// so a reply it never gets loses no answer.
+	Requests   []string `json:"requests,omitempty"`
+	RequestIDs []int64  `json:"request_ids,omitempty"`
 	// Lines: the findings and the answers, to put before the agent.
 	Lines string `json:"lines,omitempty"`
 
 	todo      []CodeAuditFinding
-	delivered []*Request
+	decisions []*Request
 }
 
 // outstandingKind is the session_events kind that records what was named to a
@@ -49,18 +55,16 @@ func (o *SessionOutstanding) Empty() bool {
 
 // SessionOutstanding is what the actor's session can do while it waits, to
 // give at via (OutstandingAtWait or OutstandingAtStop): the findings still to
-// do in the audit of its open review round, and the decisions on its
-// requests it hasn't been told of. It is not a plain read. Findings are
-// recorded as named, and none are named (Empty) when all were named at via
-// before; when one is new, all are, so the count is the whole. Decisions are
-// taken as a Stop takes them (takeDecisions, bundled): marked told, so no
-// later Stop or wakeup gives them again. A Stop gives them only with new
-// findings: one that would carry the agent on for answers alone already
-// took those that warrant it, and the rest wait for a turn's start (WP-176).
-//
-// A decision given at the wait whose reply the hook never gets (it is cut
-// at 3 s) is lost to the agent, as at a Stop whose hook reply is lost; it
-// stays readable with wp request show.
+// do in the audit of its review round whose prompt went in (at a Stop, one
+// still running because a subagent it started runs on, roundAtStop), and the
+// decisions on its requests it hasn't been told of. It is not a plain read.
+// Findings are recorded as named, and none are named when all were named at
+// via before; when one is new, all are, so the count is the whole. At the
+// wait, decisions are given as a bundled Stop would (takeDecisions) but left
+// untold until the hook says it gave them, and only as many as fit the
+// hook's room. A Stop takes them, and gives them only with new findings: one
+// that would carry the agent on for answers alone already took those that
+// warrant it, and the rest wait for a turn's start (WP-176).
 func (s *Service) SessionOutstanding(ctx context.Context, actor *Actor, via string) (*SessionOutstanding, error) {
 	if actor == nil || actor.User == nil || actor.User.ID == 0 {
 		return nil, ErrUnauthorized
@@ -69,9 +73,9 @@ func (s *Service) SessionOutstanding(ctx context.Context, actor *Actor, via stri
 	if actor.Session == 0 {
 		return out, nil // not a session: nothing is its own
 	}
-	// The newest open round whose audit has ended with findings.
-	rows, err := s.db.R.QueryContext(ctx, `SELECT id FROM work_log WHERE kind = 'review' AND session_id = ? AND state IN (?, ?) ORDER BY id DESC`,
-		actor.Session, RoundPending, RoundRunning)
+	// The newest round whose prompt went in with findings still to do.
+	rows, err := s.db.R.QueryContext(ctx, `SELECT id FROM work_log WHERE kind = 'review' AND session_id = ? AND state = ? ORDER BY id DESC`,
+		actor.Session, RoundRunning)
 	if err != nil {
 		return nil, err
 	}
@@ -133,9 +137,12 @@ func (s *Service) SessionOutstanding(ctx context.Context, actor *Actor, via stri
 		if fresh == 0 && via == OutstandingAtStop {
 			return nil
 		}
-		var err error
-		out.delivered, err = s.takeDecisions(ctx, t, actor, &AgentSession{ID: actor.Session}, false, true)
-		return err
+		if via == OutstandingAtStop {
+			var err error
+			out.decisions, err = s.takeDecisions(ctx, t, actor, &AgentSession{ID: actor.Session}, false, true)
+			return err
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -143,7 +150,19 @@ func (s *Service) SessionOutstanding(ctx context.Context, actor *Actor, via stri
 	if fresh == 0 {
 		out.Audit, out.Findings, out.todo = 0, nil, nil
 	}
-	for _, r := range out.delivered {
+	if via == OutstandingAtWait {
+		where, args := decisionsWhere(actor, &AgentSession{ID: actor.Session}, false)
+		list, err := s.loadRequests(ctx, actor, true, where+` ORDER BY r.id LIMIT 50`, args...)
+		if err != nil {
+			return nil, err
+		}
+		list = slices.DeleteFunc(list, func(r *Request) bool { return r.quiet() })
+		out.decisions = fitDecisions(list, outstandingRoom-len(outstandingLines(out)))
+		for _, r := range out.decisions {
+			out.RequestIDs = append(out.RequestIDs, r.ID)
+		}
+	}
+	for _, r := range out.decisions {
 		out.Requests = append(out.Requests, r.Code)
 	}
 	out.Lines = outstandingLines(out)
@@ -159,40 +178,72 @@ func (s *Service) sessionTold(ctx context.Context, t *tx, session int64, kind, r
 	return told, err
 }
 
-// outstandingFindingsBudget is about how much of Lines the findings take
-// in full; past it the rest are a line each. Claude Code keeps a hook's
-// context whole up to 10,000 characters.
-const outstandingFindingsBudget = 6000
+// outstandingRoom is how long the wait hook's Lines may be: Claude Code
+// keeps a hook's context whole up to 10,000 characters, and the ETA goes
+// before them.
+const outstandingRoom = 9000
 
-// outstandingLines says the findings still to do, each in full while the
-// budget lasts, how to mark them, and the decisions given with them.
+// fitDecisions is as many of list, in order, as DecisionsText says in room
+// characters; one too long for it waits for a Stop or a turn's start, which
+// have no such limit.
+func fitDecisions(list []*Request, room int) []*Request {
+	var fit []*Request
+	for _, r := range list {
+		if len(DecisionsText(append(slices.Clone(fit), r))) <= room {
+			fit = append(fit, r)
+		}
+	}
+	return fit
+}
+
+// outstandingLines names the findings still to do, which the session has in
+// full from its round's prompt, says how to mark them, and gives the
+// decisions in full.
 func outstandingLines(o *SessionOutstanding) string {
 	var b strings.Builder
 	if n := len(o.todo); n > 0 {
-		fmt.Fprintf(&b, "- %s still to do in your review round's audit #%d, below. Record each verdict: %s.\n",
+		fmt.Fprintf(&b, "- %s still to do in your review round's audit #%d, in full in the round's prompt. Record each verdict: %s.\n",
 			plural1(n, "finding"), o.Audit, markHint("ID", "why"))
 		b.WriteString("<untrusted>\n")
-		start := b.Len()
-		for _, f := range o.todo {
-			if b.Len()-start < outstandingFindingsBudget {
-				writeAuditFinding(&b, f)
-				continue
-			}
-			fmt.Fprintf(&b, "### %s [%s] %s", f.ID, f.Severity, untrusted(f.Title))
+		for _, f := range o.todo[:min(n, 30)] {
+			fmt.Fprintf(&b, "%s [%s] %s", f.ID, f.Severity, untrusted(f.Title))
 			if f.Path != "" {
 				fmt.Fprintf(&b, " (%s%s)", untrusted(f.Path), lineSuffix(f.Line))
 			}
 			b.WriteString("\n")
 		}
 		b.WriteString("</untrusted>\n")
+		if n > 30 {
+			fmt.Fprintf(&b, "and %d more.\n", n-30)
+		}
 	}
-	if text := DecisionsText(o.delivered); text != "" {
+	if text := DecisionsText(o.decisions); text != "" {
 		if b.Len() > 0 {
 			b.WriteString("\n")
 		}
 		b.WriteString(text)
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// SessionDecisionsTold marks the decisions ids of the actor's session told:
+// the wait hook says so once it has given them (SessionOutstanding).
+func (s *Service) SessionDecisionsTold(ctx context.Context, actor *Actor, ids []int64) error {
+	if actor == nil || actor.User == nil || actor.User.ID == 0 {
+		return ErrUnauthorized
+	}
+	if actor.Session == 0 || len(ids) == 0 {
+		return nil
+	}
+	if len(ids) > 50 {
+		return invalid("at most 50 requests")
+	}
+	return s.write(ctx, actor, func(t *tx) error {
+		// #nosec G202 -- only ? placeholders are joined in
+		_, err := t.ExecContext(ctx, `UPDATE requests SET delivered_at = ? WHERE session_id = ? AND user_id = ? AND delivered_at IS NULL AND id IN (`+placeholders(len(ids))+`)`,
+			append([]any{s.nowMS(), actor.Session, actor.id()}, int64Args(ids)...)...)
+		return err
+	})
 }
 
 // stopText is what a Stop says while a background run goes (running: what
