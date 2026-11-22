@@ -391,6 +391,28 @@ func TestKeepTranscriptsSaysWhenTheSidecarCantBeWritten(t *testing.T) {
 	}
 }
 
+// A link the job left under the sidecar's name is replaced, not written
+// through: what it points at is untouched (c6135).
+func TestKeepTranscriptsDoesNotWriteThroughASymlinkedSidecar(t *testing.T) {
+	_, p, _, work, proj := jobEndSetup(t, nil)
+	target := writeAt(t, filepath.Join(t.TempDir(), "elsewhere"), "mine\n")
+	linkAt(t, target, filepath.Join(proj, jobSidecarFile))
+	if o, log := keepIt(p, work, nil); o.State != "done" {
+		t.Errorf("outcome = %+v, log = %s", o, log)
+	}
+	if b, err := os.ReadFile(target); err != nil || string(b) != "mine\n" {
+		t.Errorf("the link's target = %q, %v", b, err)
+	}
+	fi, err := os.Lstat(filepath.Join(proj, jobSidecarFile))
+	if err != nil || !fi.Mode().IsRegular() {
+		t.Fatalf("the sidecar: %v, %v", fi, err)
+	}
+	var meta jobMeta
+	if b, err := os.ReadFile(filepath.Join(proj, jobSidecarFile)); err != nil || json.Unmarshal(b, &meta) != nil || meta.State != "done" {
+		t.Errorf("the sidecar = %s, %v", b, err)
+	}
+}
+
 // A symlinked meta file is not read: its text is uploaded as the sub-agent's kind.
 func TestSubagentTypeIgnoresASymlinkedMetaFile(t *testing.T) {
 	dir := t.TempDir()

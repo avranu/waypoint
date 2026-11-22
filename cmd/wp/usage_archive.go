@@ -437,7 +437,10 @@ func (a *archiver) pass(o usageSyncOptions, root string) error {
 	var files []usageFile
 	if o.OnlyFiles { // the named sessions, whatever their age; none named is none
 		if len(o.Files) > 0 {
-			files, _ = discoverTranscripts(root, 0, o.Files)
+			var err error
+			if files, err = discoverTranscripts(root, 0, o.Files); err != nil {
+				return err
+			}
 		}
 	} else {
 		var err error

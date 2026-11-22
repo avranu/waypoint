@@ -160,7 +160,9 @@ func (p *runnerProc) keepTranscripts(ctx context.Context, run *jobRun, in agentJ
 	}
 	writeSidecar := func() {
 		if b, err := json.MarshalIndent(meta, "", "  "); err == nil {
-			if err := os.WriteFile(filepath.Join(proj, jobSidecarFile), append(b, '\n'), 0o600); err != nil {
+			// Through a rename: the job's own claude run can write here, and a
+			// link it left under this name is replaced, never written through (c6135).
+			if err := writeFileAtomic(filepath.Join(proj, jobSidecarFile), append(b, '\n'), 0o600); err != nil {
 				fmt.Fprintf(run.out, "Couldn't write %s beside the transcripts: %v\n", jobSidecarFile, err)
 			}
 		}
