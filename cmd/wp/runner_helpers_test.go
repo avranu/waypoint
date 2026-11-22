@@ -1151,3 +1151,58 @@ func TestAfterNoTimeKeptOnceReviewerFailed(t *testing.T) {
 		t.Errorf("after the reviewer failed = %v, want 0", got)
 	}
 }
+
+// WP-1570: when the combine fails, the panel's problems are still merged
+// where different checks (different agents) restate each other, none lost:
+// the kept finding lists each lead it is made of. Two problems of one
+// check's own output are never merged.
+func TestUnmergedMergesRestatedPanelLeads(t *testing.T) {
+	lead := func(id, sev, path string, line int, problem string) panelLead {
+		return panelLead{ID: id, Severity: sev, Confirmed: true, ReadPath: path, ReadLine: line, ReadTitle: "T " + id, ReadProblem: problem, ReadSeverity: sev}
+	}
+	claim := "the cache entry is never evicted when the owner closes the session handle"
+	restated := "when the owner closes the session handle the cache entry is never evicted"
+	leads := []panelLead{
+		lead("tests.1", "low", "a.go", 10, claim),
+		lead("quality.1", "high", "a.go", 14, restated),
+		lead("goals.1", "high", "a.go", 40, restated),                                        // too far
+		lead("goals.2", "high", "b.go", 12, restated),                                        // another file
+		lead("goals.3", "high", "a.go", 12, "an unrelated race on the queue length counter"), // another claim
+	}
+	out, same := unmerged(leads, nil)
+	if len(same) != 0 {
+		t.Fatalf("same = %v", same)
+	}
+	if len(out) != 4 {
+		t.Fatalf("got %d findings, want 4: %+v", len(out), out)
+	}
+	var got combined
+	for _, c := range out {
+		if slices.Contains(c.from, "tests.1") {
+			got = c
+		}
+	}
+	if len(got.from) != 2 || !slices.Contains(got.from, "quality.1") {
+		t.Errorf("merged from = %v", got.from)
+	}
+	if got.severity != "high" || got.title != "T quality.1" {
+		t.Errorf("kept %q at %q, want the high one", got.title, got.severity)
+	}
+}
+
+// Equal severity: the earlier is kept. A lead with no line merges on its
+// claim alone. Two problems of one check (one agent) stay apart.
+func TestUnmergedTiesNoLineAndOneAgent(t *testing.T) {
+	claim := "the retry loop sleeps without checking the context so cancellation hangs"
+	mk := func(id, title, path string, line int) panelLead {
+		return panelLead{ID: id, Severity: "medium", Confirmed: true, ReadPath: path, ReadLine: line, ReadTitle: title, ReadProblem: claim}
+	}
+	out, _ := unmerged([]panelLead{mk("tests.1", "first", "a.go", 0), mk("quality.1", "second", "a.go", 90)}, nil)
+	if len(out) != 1 || out[0].title != "first" || len(out[0].from) != 2 {
+		t.Fatalf("tie: %+v", out)
+	}
+	out, _ = unmerged([]panelLead{mk("tests.1", "first", "a.go", 90), mk("tests.2", "second", "a.go", 91)}, nil)
+	if len(out) != 2 {
+		t.Fatalf("one agent's own findings were merged: %+v", out)
+	}
+}

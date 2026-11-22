@@ -1546,7 +1546,63 @@ func unmerged(leads []panelLead, findings []any) ([]combined, map[string]string)
 		}
 		out = append(out, ownFinding(l))
 	}
-	return out, same
+	return mergeRestated(out), same
+}
+
+// restatedLines is how far apart two problems' lines may be and still be one
+// (core's verifyAgreedLines).
+const restatedLines = 5
+
+// mergeRestated merges findings that different checks raised about one
+// problem, when the combine that would have done it failed (WP-1570): the
+// same file, lines within restatedLines of each other (a finding with no
+// line goes on its claim alone) and a similar claim (core.SimilarClaim).
+// The most severe is kept (a tie: the earlier) and the others' leads are
+// added to its own, so nothing is lost. A check's own findings are never
+// merged with each other: one agent's output is left as it wrote it. A lead's
+// check is the part of its id before the dot.
+func mergeRestated(in []combined) []combined {
+	checks := func(c combined) map[string]bool {
+		m := map[string]bool{}
+		for _, id := range c.from {
+			m[strings.SplitN(id, ".", 2)[0]] = true
+		}
+		return m
+	}
+	var out []combined
+	for _, c := range in {
+		hit := -1
+		cc := checks(c)
+		for n, k := range out {
+			if k.path == "" || k.path != c.path || (k.line > 0 && c.line > 0 && abs(k.line-c.line) > restatedLines) || !core.SimilarClaim(k.problem, c.problem) {
+				continue
+			}
+			if slices.ContainsFunc(slices.Collect(maps.Keys(checks(k))), func(ck string) bool { return cc[ck] }) {
+				continue
+			}
+			hit = n
+			break
+		}
+		if hit < 0 {
+			out = append(out, c)
+			continue
+		}
+		k := out[hit]
+		from := append(slices.Clone(k.from), c.from...)
+		if severityRank(c.severity) < severityRank(k.severity) {
+			k = c
+		}
+		k.from = from
+		out[hit] = k
+	}
+	return out
+}
+
+func abs(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
 }
 
 // moveToCut moves the leads that became no finding of their own from their
