@@ -431,6 +431,11 @@ const maxRunnerJobs = 16
 // at once, so the runner takes another while it waits (WP-1618, WP-ADR149):
 // a round that waited a whole hour for a test slot kept the runner's one
 // heavy place the whole time.
+// Neither number is measured. A minute is longer than a slot takes to
+// come free when the machine isn't short of them, so a job that has waited
+// that long is likely to wait much longer; one job at a time keeps a runner
+// with --max-jobs 1 from ever running more than two heavy agents. WP-1644
+// is to measure the waits and set both from that.
 const (
 	slotWaitYield     = time.Minute
 	slotWaitYieldJobs = 1

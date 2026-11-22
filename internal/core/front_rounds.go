@@ -2,14 +2,14 @@ package core
 
 import (
 	"context"
-	"time"
 )
 
 // frontRoundQueued is how long a round of a pull request at the front of its
 // merge line may wait for a runner before it is a problem (WP-1618,
 // WP-ADR149). The doctor names the runner after doctorRunnerQueued; this is
-// the long wait that nobody should have to find out about by looking.
-const frontRoundQueued = 20 * time.Minute
+// the long wait that nobody should have to find out about by looking, and
+// the same one the doctor calls long for any job (doctorQueueLong).
+const frontRoundQueued = doctorQueueLong
 
 // CheckFrontRounds logs a warning for each round at the front of a merge
 // line that no runner has taken for frontRoundQueued: the line waits on it.

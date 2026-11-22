@@ -54,7 +54,9 @@ func noteSlotWait(name string) (done func()) {
 
 // slotWaitReader reads a waits file. It keeps when it first saw a waiting
 // process gone, which is when that wait is taken to have ended: kept per
-// wait, not per pid, since a later process may get the same pid. The job's
+// wait, not per pid, since a later process may get the same pid. For the
+// same reason it keeps when each waiter's process started, as first seen: a
+// live pid whose process started at another time is not the waiter. The job's
 // clock reads it from its watcher and from whoever ends the job, so read
 // holds mu. A wait counts only between start (the job's; zero: any time)
 // and now, whatever its lines say: the file is the job's own commands' to
@@ -63,16 +65,37 @@ func noteSlotWait(name string) (done func()) {
 type slotWaitReader struct {
 	path  string
 	alive func(pid int) bool
-	mu    sync.Mutex
-	start time.Time
-	dead  map[deadWait]time.Time
+	// started names when the process started ("" when that can't be read).
+	started func(pid int) string
+	mu      sync.Mutex
+	start   time.Time
+	dead    map[deadWait]time.Time
+	seen    map[deadWait]string // the waiter's start, when first seen alive
 }
 
 func newSlotWaitReader(path string) *slotWaitReader {
-	return &slotWaitReader{path: path, alive: slotPidAlive, dead: map[deadWait]time.Time{}}
+	return &slotWaitReader{path: path, alive: slotPidAlive, started: procStarted, dead: map[deadWait]time.Time{}, seen: map[deadWait]string{}}
 }
 
-// deadWait is an open wait whose process was seen gone.
+// procStarted is the kernel's start time of process pid (clock ticks since
+// boot, from /proc/PID/stat), or "" where there is no /proc or no such
+// process. With the pid it names one process.
+func procStarted(pid int) string {
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return ""
+	}
+	// The command name, in brackets, may hold spaces and brackets: the
+	// fields are counted from the last one. Start time is the 22nd field.
+	s := string(b)
+	f := strings.Fields(s[strings.LastIndexByte(s, ')')+1:])
+	if len(f) < 20 {
+		return ""
+	}
+	return f[19]
+}
+
+// deadWait names an open wait; the reader keeps what it saw of its process.
 type deadWait struct {
 	pid  int
 	name string
@@ -131,9 +154,18 @@ func (r *slotWaitReader) read(now time.Time) (total time.Duration, waitingSince 
 	}
 	for k, from := range open {
 		end, live := now, true
-		if !r.alive(k.pid) {
+		d := deadWait{k.pid, k.name, from.UnixMilli()}
+		gone := !r.alive(k.pid)
+		if !gone {
+			at := r.started(k.pid)
+			if was, ok := r.seen[d]; !ok {
+				r.seen[d] = at
+			} else if was != "" && at != was {
+				gone = true // the pid is another process's now
+			}
+		}
+		if gone {
 			live = false
-			d := deadWait{k.pid, k.name, from.UnixMilli()}
 			if _, ok := r.dead[d]; !ok {
 				r.dead[d] = now
 			}

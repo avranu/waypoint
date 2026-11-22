@@ -276,3 +276,49 @@ func TestSlotWaitReaderDeadPidReused(t *testing.T) {
 		t.Errorf("a dead wait by a reused pid: %v, want 10s", total)
 	}
 }
+
+// Audit 1415.3: a waiter that died without its "got" line, whose pid a
+// later process got, isn't waiting: the wait ended when the pid was first
+// seen to be another process.
+func TestSlotWaitReaderLivePidIsAnotherProcess(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0)
+	at := func(s int) time.Time { return base.Add(time.Duration(s) * time.Second) }
+	path := filepath.Join(t.TempDir(), "waits")
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("wait %d 10 tests\n", at(0).UnixMilli())), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := newSlotWaitReader(path)
+	r.alive = func(int) bool { return true }
+	started := "100"
+	r.started = func(int) string { return started }
+	if total, since := r.read(at(10)); total != 10*time.Second || !since.Equal(at(0)) {
+		t.Fatalf("the waiter itself: %v since %v", total, since)
+	}
+	started = "999" // the pid is a process that started at another time
+	for _, now := range []int{20, 60} {
+		if total, since := r.read(at(now)); total != 20*time.Second || !since.IsZero() {
+			t.Errorf("at +%ds, another process with the pid: %v since %v, want 20s and not waiting", now, total, since)
+		}
+	}
+	// Where a process's start can't be read, a live pid is believed.
+	u := newSlotWaitReader(path)
+	u.alive = func(int) bool { return true }
+	u.started = func(int) string { return "" }
+	u.read(at(10))
+	if total, since := u.read(at(30)); total != 30*time.Second || since.IsZero() {
+		t.Errorf("no start times: %v since %v", total, since)
+	}
+}
+
+func TestProcStarted(t *testing.T) {
+	if _, err := os.Stat("/proc/self/stat"); err != nil {
+		t.Skip("no /proc")
+	}
+	me := procStarted(os.Getpid())
+	if me == "" || me != procStarted(os.Getpid()) {
+		t.Errorf("procStarted(self) = %q", me)
+	}
+	if got := procStarted(1 << 30); got != "" {
+		t.Errorf("procStarted(no such pid) = %q", got)
+	}
+}
