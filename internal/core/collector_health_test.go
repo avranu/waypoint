@@ -342,6 +342,9 @@ func TestCollectorQueriesUseIndexes(t *testing.T) {
 			queries[col.name+" repo waiting"] = query{col.repoWaiting, col.args(now)}
 			queries[col.name+" repo output"] = query{col.repoOutput, []any{now.UnixMilli()}}
 		}
+		for name, q := range col.also {
+			queries[col.name+" "+name] = query(q)
+		}
 		for name, q := range queries {
 			for _, d := range c.planOf(t, q.sql, q.args...) {
 				if scansCollectorTable(d) {
@@ -382,6 +385,13 @@ func TestCollectorScanReasonsAreUsed(t *testing.T) {
 				args = nil
 			}
 			for _, d := range c.planOf(t, q, args...) {
+				if scansCollectorTable(d) {
+					seen[strings.Fields(d)[1]] = true
+				}
+			}
+		}
+		for _, q := range col.also {
+			for _, d := range c.planOf(t, q.sql, q.args...) {
 				if scansCollectorTable(d) {
 					seen[strings.Fields(d)[1]] = true
 				}

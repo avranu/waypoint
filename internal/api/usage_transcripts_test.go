@@ -326,3 +326,47 @@ func TestTranscriptQueryAndNumbers(t *testing.T) {
 		}
 	}
 }
+
+// The facts route end to end: a stored transcript is derived, its owner reads
+// the counts, another person's session id holds nothing for someone else,
+// naming another person is refused to a non-admin, and an agent's shell gets
+// nothing (the route's permission and core.Service's own check together).
+func TestSessionFactsRoute(t *testing.T) {
+	a := newTranscriptAPI(t)
+	line := `{"type":"assistant","uuid":"u1","timestamp":"2026-03-01T10:00:02.000Z","requestId":"q1","message":{"id":"m1","model":"model-a","content":[],"usage":{"input_tokens":1,"output_tokens":7}}}` + "\n"
+	if code := a.put("s1", 0, line); code != 200 {
+		t.Fatalf("put: %d", code)
+	}
+	a.svc.SetClock(func() time.Time { return time.Now().Add(time.Hour) })
+	if run, err := a.svc.DeriveSessionFacts(context.Background()); err != nil || run.Derived != 1 {
+		t.Fatalf("derive: %+v %v", run, err)
+	}
+	var f core.SessionFacts
+	if code := a.human.json("GET", "/api/v1/usage/facts?session=s1", nil, &f); code != 200 || f.ModelCalls.Total != 1 || f.ModelCalls.Output.Sum != 7 || f.Status.FilesDerived != 1 {
+		t.Fatalf("owner read: %d %+v", code, f)
+	}
+	if code, _ := a.human.do("GET", "/api/v1/usage/facts", nil); code != 400 {
+		t.Errorf("neither session nor task: %d", code)
+	}
+	resp, err := a.req("GET", "/api/v1/usage/facts?session=s1", nil, map[string]string{"X-Waypoint-Agent-Env": "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 403 || strings.Contains(string(body), "model_calls") {
+		t.Errorf("from an agent's shell: %d %q", resp.StatusCode, body)
+	}
+	other, err := a.svc.CreateUser(context.Background(), core.SystemActor(), core.CreateUserInput{Username: "sam", Email: "sam@example.com", Password: "correct-horse-battery"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, _, _ := a.svc.CreateAPIToken(context.Background(), &core.Actor{User: other}, "sam", false, 0)
+	sam := &client{t: t, base: a.ts.URL, http: http.DefaultClient, token: tok}
+	if code, _ := sam.do("GET", "/api/v1/usage/facts?session=s1", nil); code != 404 {
+		t.Errorf("another person's session id: %d, want 404", code)
+	}
+	if code, _ := sam.do("GET", "/api/v1/usage/facts?session=s1&user=robin", nil); code != 403 {
+		t.Errorf("a non-admin naming another person: %d, want 403", code)
+	}
+}

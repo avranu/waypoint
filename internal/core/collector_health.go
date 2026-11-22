@@ -46,6 +46,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/transcript"
 )
 
 const (
@@ -103,10 +105,22 @@ type collector struct {
 	// check tells admins when it grew. off selects how many of its machines
 	// opted out (they are not waiting).
 	dropped, off string
+	// problem, when set, says in plain words what is wrong beyond a stall (a
+	// failing file, a record the collector cannot read); "" for nothing.
+	problem func(s *Service, ctx context.Context) (string, error)
+	// also names the other queries the collector runs, with their bound values,
+	// so TestCollectorQueriesUseIndexes plans them too.
+	also map[string]collectorQuery
 	// scans says, by plan alias, why a query reads a whole table: each hourly
 	// check pays for it, so it is stated (TestCollectorQueriesUseIndexes fails
 	// on any scan of a table not listed here).
 	scans map[string]string
+}
+
+// collectorQuery is a query with its bound values.
+type collectorQuery struct {
+	sql  string
+	args []any
 }
 
 func noArgs(time.Time) []any { return nil }
@@ -177,10 +191,11 @@ var collectors = []collector{
 		},
 	},
 	{
-		name:  "transcript archive",
-		unit:  "machines",
-		about: "each machine's wp uploads its sessions' transcripts to the archive (wp usage sync); what it dropped and what it could not send yet is in wp usage machines",
-		group: "machine", groupHelp: "Check that wp usage sync runs there and that the archive is not full (wp server status); a machine that should not archive sets WP_USAGE_ARCHIVE=off (or its passes use --no-archive), which it tells the server. A machine not heard from for 30 days is not counted.",
+		name:    "transcript archive",
+		problem: (*Service).transcriptProblem,
+		unit:    "machines",
+		about:   "each machine's wp uploads its sessions' transcripts to the archive (wp usage sync); what it dropped and what it could not send yet is in wp usage machines",
+		group:   "machine", groupHelp: "Check that wp usage sync runs there and that the archive is not full (wp server status); a machine that should not archive sets WP_USAGE_ARCHIVE=off (or its passes use --no-archive), which it tells the server. A machine not heard from for 30 days is not counted.",
 		waiting: `SELECT COUNT(*), MIN(` + archiveSince + `) FROM usage_machines m WHERE ` + archiveWaitingWhere,
 		args: func(now time.Time) []any {
 			return []any{collectorStallAfter.Milliseconds(), now.Add(-archiveWaitingWindow).UnixMilli()}
@@ -191,6 +206,28 @@ var collectors = []collector{
 		dropped:     `SELECT COALESCE(SUM(j.value), 0) FROM usage_machines m, json_each(m.transcript_dropped) j WHERE j.key IN ` + transcriptDroppedReasons,
 		off:         `SELECT COUNT(*) FROM usage_machines m WHERE m.transcript_off = 1`,
 		scans:       map[string]string{"m": "usage_machines has one row per machine of each user: a small table, read whole once an hour"},
+	},
+	{
+		name:    "session facts",
+		unit:    "files",
+		about:   "the server derives per-event facts (model calls, tool calls, turns, compactions...) from each archived transcript file once it has been quiet for 10 minutes (RunSessionFacts); a file that failed is in session_fact_files.error",
+		waiting: `SELECT COUNT(*), MIN(newest) FROM (` + factsWaitingSQL + `)`,
+		args: func(now time.Time) []any {
+			return []any{now.Add(-factsQuiet).UnixMilli(), transcript.ParserVersion, now.Add(-factsRetry).UnixMilli()}
+		},
+		output: `SELECT MAX(f.derived_at) FROM session_fact_files f`,
+		// A derive failure is not a drop: the collector lost nothing, the file
+		// waits for the next attempt. Its failures are in the problem line.
+		problem: (*Service).factsProblem,
+		also: map[string]collectorQuery{
+			"failed":    {factsFailedSQL, nil},
+			"unknown":   {factsUnknownSQL, []any{transcript.ParserVersion, "", ""}},
+			"undecoded": {factsIgnoredSQL, []any{transcript.ParserVersion, "undecoded/", "undecoded/"}},
+		},
+		scans: map[string]string{
+			"p": "transcript_pieces is read whole, grouped by file, every 5 minutes: one row per stored piece, no index leads with created_at",
+			"f": "session_fact_files has one row per archived file: read whole once an hour for the newest derive and the problem line (json_each over each row's counts)",
+		},
 	},
 	{
 		// Nothing waits for it and it produces nothing of its own: it is the
@@ -689,17 +726,14 @@ func (s *Service) CollectorHealthList(ctx context.Context) ([]CollectorHealth, e
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	var missing int64
-	if s.cfg.TranscriptDir != "" {
-		if err := s.db.R.QueryRowContext(ctx, `SELECT missing FROM transcript_totals WHERE id = 1`).Scan(&missing); err != nil {
-			return nil, err
-		}
-	}
 	out := make([]CollectorHealth, 0, len(collectors))
 	for _, c := range collectors {
 		if h, ok := by[c.name]; ok {
-			if c.name == "transcript archive" {
-				h.Problem = transcriptMissingProblem(missing)
+			if c.problem != nil {
+				var err error
+				if h.Problem, err = c.problem(s, ctx); err != nil {
+					return nil, err
+				}
 			}
 			out = append(out, h)
 		}

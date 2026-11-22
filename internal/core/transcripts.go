@@ -31,6 +31,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -892,22 +893,31 @@ func (s *Service) ReadTranscript(ctx context.Context, actor *Actor, q Transcript
 	})
 }
 
+// pieceFault is a stored piece that cannot be used: missing, damaged or no
+// longer what was stored. Any other copy error is a failure to read.
+type pieceFault struct{ error }
+
+func (e *pieceFault) Unwrap() error { return e.error }
+
 func (s *Service) copyPieces(g []transcriptPiece, w io.Writer) error {
 	for _, p := range g {
 		b, err := os.ReadFile(filepath.Join(s.cfg.TranscriptDir, filepath.FromSlash(p.path))) // #nosec G304 -- a path this server wrote
+		if errors.Is(err, fs.ErrNotExist) {
+			return &pieceFault{fmt.Errorf("stored piece %d of %s is missing: %w", p.id, p.file, err)}
+		}
 		if err != nil {
 			return fmt.Errorf("reading stored piece %d of %s: %w", p.id, p.file, err)
 		}
 		zr, err := gzip.NewReader(bytes.NewReader(b))
 		if err != nil {
-			return fmt.Errorf("stored piece %d of %s is damaged: %w", p.id, p.file, err)
+			return &pieceFault{fmt.Errorf("stored piece %d of %s is damaged: %w", p.id, p.file, err)}
 		}
 		raw, err := io.ReadAll(io.LimitReader(zr, TranscriptMaxPiece+1))
 		if err != nil {
-			return fmt.Errorf("stored piece %d of %s is damaged: %w", p.id, p.file, err)
+			return &pieceFault{fmt.Errorf("stored piece %d of %s is damaged: %w", p.id, p.file, err)}
 		}
 		if sum := sha256.Sum256(raw); hex.EncodeToString(sum[:]) != p.sha || int64(len(raw)) != p.raw {
-			return fmt.Errorf("stored piece %d of %s no longer matches its hash", p.id, p.file)
+			return &pieceFault{fmt.Errorf("stored piece %d of %s no longer matches its hash", p.id, p.file)}
 		}
 		if _, err := w.Write(raw); err != nil {
 			return err
