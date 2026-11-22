@@ -48,10 +48,13 @@ request without it and says so. A round's reviewer works from your brief
 (--review-text-file; wp autopilot reviewer --brief prints the default) and is
 who --review-model names: auto (the stakes-tiered chain), session (the
 session reviews itself), or a model such as gateway/MODEL or claude/sonnet
-(wp autopilot reviewer lists them). Each round's findings are scored, and
-another round follows while new, serious findings keep coming on a change
-whose stakes call for it (wp pr rounds). Every session keeps the agent's last message as its
-summary (wp autopilot summaries).
+(wp autopilot reviewer lists them). Each round's
+findings are scored. Another round follows a change whose stakes call for it
+when the round found a new, standing finding the session fixed or confirmed and
+that was not refuted: a high or critical one always calls another round; mediums
+must number 1 after round 1, 2 after round 2, then 4, 8 and so on (wp pr
+rounds). Every session keeps the agent's last message as its summary (wp
+autopilot summaries).
 
 Without a subcommand: what autopilot is doing in each project and the limit
 readings. -p picks the project for on, off and set.`,
