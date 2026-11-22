@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -14,22 +15,39 @@ type SessionOutstanding struct {
 	// round's audit that have no verdict yet.
 	Audit    int64    `json:"audit,omitempty"`
 	Findings []string `json:"findings,omitempty"`
-	// Requests: answered requests the session hasn't been told of (R-12).
+	// Requests: answered requests the session hasn't read (R-12).
 	Requests []string `json:"requests,omitempty"`
 	// Lines: each of them as a line naming the command to do it.
 	Lines string `json:"lines,omitempty"`
 }
+
+// outstandingKind is the session_events kind that records what was named to a
+// session as outstanding: bookkeeping, left out of its timeline and its trim.
+const outstandingKind = "outstanding"
+
+// Where outstanding work is named (the record's ref_type): at the start of a
+// background wait (the PostToolUse hook) or at a Stop while it goes. Each
+// names an item once, apart: the hook's answer can be lost (it is cut at 3 s,
+// and Claude Code may drop it) and the agent may not act on it, so the Stop
+// still names what is left once (WP-1571, audit #1344).
+const (
+	OutstandingAtWait = "wait"
+	OutstandingAtStop = "stop"
+)
 
 // Empty says there is nothing to name.
 func (o *SessionOutstanding) Empty() bool {
 	return o == nil || (len(o.Findings) == 0 && len(o.Requests) == 0)
 }
 
-// SessionOutstanding reads what the actor's session can do while it waits:
-// the findings with no verdict in the audit of its open review round, and
-// the requests answered that it hasn't been told of (wp request ls
-// --answered). Only what is there.
-func (s *Service) SessionOutstanding(ctx context.Context, actor *Actor) (*SessionOutstanding, error) {
+// SessionOutstanding is what the actor's session can do while it waits, to
+// name at via (OutstandingAtWait or OutstandingAtStop): the findings with no
+// verdict in the audit of its open review round, and the requests answered
+// that it hasn't read (wp request ls --answered). Only what is there. It is
+// not a plain read: it records what it names, and names nothing (Empty) when
+// all of it was named at via before; when something is new, it names all of
+// it, so the counts are the whole of what is outstanding.
+func (s *Service) SessionOutstanding(ctx context.Context, actor *Actor, via string) (*SessionOutstanding, error) {
 	if actor == nil || actor.User == nil || actor.User.ID == 0 {
 		return nil, ErrUnauthorized
 	}
@@ -87,49 +105,47 @@ func (s *Service) SessionOutstanding(ctx context.Context, actor *Actor) (*Sessio
 	for _, r := range page.Requests {
 		out.Requests = append(out.Requests, r.Code)
 	}
-	// Each item is named to a session once, so an agent that holds findings
-	// while a worker fixes them isn't re-prompted with them at every stop. The
-	// hook and the Stop share the record (session_events, kind 'outstanding',
-	// label the item's code).
-	if len(out.Findings)+len(out.Requests) > 0 {
-		err := s.write(ctx, actor, func(t *tx) error {
-			var err error
-			if out.Findings, err = s.tellOutstanding(ctx, t, actor.Session, out.Findings); err != nil {
+	// Each item is named to a session once at each of via, so an agent that
+	// holds findings while a worker fixes them isn't re-prompted with them at
+	// every stop (session_events, kind outstandingKind, ref_type via, label
+	// the item's code).
+	if len(out.Findings)+len(out.Requests) == 0 {
+		return out, nil
+	}
+	fresh := 0
+	err = s.write(ctx, actor, func(t *tx) error {
+		for _, it := range append(slices.Clone(out.Findings), out.Requests...) {
+			told, err := s.sessionTold(ctx, t, actor.Session, outstandingKind, via, it)
+			if err != nil {
 				return err
 			}
-			out.Requests, err = s.tellOutstanding(ctx, t, actor.Session, out.Requests)
-			return err
-		})
-		if err != nil {
-			return nil, err
+			if told {
+				continue
+			}
+			if err := s.sessionTimeline(ctx, t, actor.Session, s.nowMS(), outstandingKind, via, 0, it, "", "named while a run was going", sql.NullInt64{}, nil); err != nil {
+				return err
+			}
+			fresh++
 		}
-		if len(out.Findings) == 0 {
-			out.Audit = 0
-		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if fresh == 0 {
+		return &SessionOutstanding{}, nil
 	}
 	out.Lines = outstandingLines(out)
 	return out, nil
 }
 
-// tellOutstanding records each item as told to the session and returns the
-// ones that weren't yet.
-func (s *Service) tellOutstanding(ctx context.Context, t *tx, session int64, items []string) ([]string, error) {
-	var fresh []string
-	for _, it := range items {
-		var told bool
-		if err := t.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM session_events WHERE session_id = ? AND kind = 'outstanding' AND label = ?)`,
-			session, it).Scan(&told); err != nil {
-			return nil, err
-		}
-		if told {
-			continue
-		}
-		if err := s.sessionTimeline(ctx, t, session, s.nowMS(), "outstanding", "", 0, it, "", "named while a run was going", sql.NullInt64{}, nil); err != nil {
-			return nil, err
-		}
-		fresh = append(fresh, it)
-	}
-	return fresh, nil
+// sessionTold says whether the session has a session_events row of kind and
+// label (refType "": any), the mark of something told to it once.
+func (s *Service) sessionTold(ctx context.Context, t *tx, session int64, kind, refType, label string) (bool, error) {
+	var told bool
+	err := t.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM session_events WHERE session_id = ? AND kind = ? AND (? = '' OR ref_type = ?) AND label = ?)`,
+		session, kind, refType, refType, label).Scan(&told)
+	return told, err
 }
 
 // outstandingLines are the bullets naming each piece of work and its command.
@@ -144,7 +160,7 @@ func outstandingLines(o *SessionOutstanding) string {
 			plural1(n, "finding"), o.Audit, shown, o.Audit)
 	}
 	if n := len(o.Requests); n > 0 {
-		fmt.Fprintf(&b, "- %s you haven't acted on (%s): `wp request ls --answered`.\n", plural1(n, "answered request"), strings.Join(o.Requests, ", "))
+		fmt.Fprintf(&b, "- %s you haven't read (%s): `wp request ls --answered`.\n", plural1(n, "answered request"), strings.Join(o.Requests, ", "))
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -156,5 +172,5 @@ func (o *SessionOutstanding) stopText(running []string) string {
 		return ""
 	}
 	return "Something is still running in the background (" + strings.Join(running[:min(len(running), 3)], "; ") +
-		"). Work that doesn't need its result is waiting; do it now instead of ending the turn idle:\n" + o.Lines
+		"). Work of yours is waiting; do what doesn't need its result now instead of ending the turn idle:\n" + o.Lines
 }

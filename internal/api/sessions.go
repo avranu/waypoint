@@ -52,7 +52,7 @@ func (s *Server) currentAgentSession(w http.ResponseWriter, r *http.Request) (an
 // sessionOutstanding is the work the calling session can do while it waits on
 // something slow (WP-1571): the PostToolUse hook asks for it.
 func (s *Server) sessionOutstanding(w http.ResponseWriter, r *http.Request) (any, error) {
-	return s.svc.SessionOutstanding(r.Context(), actorFrom(r))
+	return s.svc.SessionOutstanding(r.Context(), actorFrom(r), core.OutstandingAtWait)
 }
 
 // sessionHook takes the events an agent's CLI hooks report, one call for a

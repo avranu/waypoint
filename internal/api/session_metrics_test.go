@@ -48,13 +48,18 @@ func TestUnregisteredSessionWriteIsCountedByTheAPI(t *testing.T) {
 	if code, _ := c.do("POST", "/api/v1/projects", map[string]any{"name": "Widgets", "key": "WID"}); code < 400 {
 		t.Fatalf("a duplicate project was taken: %d", code)
 	}
+	// the wait hook's ask for outstanding work writes nothing without a
+	// session (WP-1571, audit #1344.15)
+	if code, b := c.do("POST", "/api/v1/sessions/outstanding", map[string]any{}); code != 200 {
+		t.Fatalf("outstanding: %d %s", code, b)
+	}
 	if code := c.json("POST", "/api/v1/sessions/hook", map[string]any{"events": []map[string]any{
 		{"event": "SessionStart", "session_id": "ghost", "machine": "box", "cwd": "/work/app"},
 	}}, nil); code != 200 {
 		t.Fatalf("hook: %d", code)
 	}
 	if n := counted(); n != 1 {
-		t.Errorf("a read, a refused write or the hook's own call was counted: %d", n)
+		t.Errorf("a read, a refused write, the wait hook's ask or the hook's own call was counted: %d", n)
 	}
 }
 
