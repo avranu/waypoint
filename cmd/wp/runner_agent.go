@@ -58,6 +58,9 @@ type cliDriver struct {
 	// errLine reads a line of standard error while the CLI runs; an error
 	// stops it at once and is the job's failure (opencode's spent model).
 	errLine func(line []byte) error
+	// sessionID is the CLI's own id for the run, once it has said (claude's
+	// session_id), and names the transcript it leaves behind.
+	sessionID string
 }
 
 // runnerCacheDir is where clones and work trees live.
@@ -318,6 +321,12 @@ func (p *runnerProc) execAgent(ctx context.Context, run *jobRun, kind string, in
 			_, _ = p.git(bg, bare, "branch", "-D", "--", in.Branch)
 		}
 	}()
+	// Registered after the removal above, so it runs first, and after the
+	// helpers' finish below, so it runs once they are done: the job's
+	// transcripts are kept on every way out, a timeout or a cancel included.
+	started := time.Now()
+	var jobDrv *cliDriver
+	defer func() { o = p.keepTranscripts(ctx, run, in, work, started, jobDrv, o) }()
 	if _, err := p.git(ctx, bare, "worktree", "add", "--detach", "--quiet", work, baseSHA); err != nil {
 		return p.agentError(ctx, run, "%v", err)
 	}
@@ -397,6 +406,7 @@ func (p *runnerProc) execAgent(ctx context.Context, run *jobRun, kind string, in
 	if err != nil {
 		return failed("%v", err)
 	}
+	jobDrv = drv
 	fmt.Fprintf(run.out, "Running %s%s\n\n", bin, map[string]string{"read": " (read only)", "edit_run": " (may run commands)"}[in.perm()])
 
 	// stop ends the CLI early with a reason (errLine), apart from a timeout or cancel.

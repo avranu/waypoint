@@ -219,6 +219,7 @@ type activeJob struct {
 type jobRun struct {
 	id      int64
 	kind    string
+	title   string
 	timeout time.Duration
 	out     *logSink
 	// token is the job's own Waypoint token (WP-418), for the jobs that run
@@ -728,7 +729,7 @@ func (p *runnerProc) runJob(ctx context.Context, aj *activeJob, job *claimedJob)
 		timeout = 10 * time.Minute
 	}
 	p.ensureSandboxUsers(ctx, job)
-	run := &jobRun{id: job.ID, kind: job.Kind, timeout: timeout, out: sink, token: job.Token, launch: job.Launch}
+	run := &jobRun{id: job.ID, kind: job.Kind, title: job.Title, timeout: timeout, out: sink, token: job.Token, launch: job.Launch}
 	var logs sync.WaitGroup
 	logs.Add(1)
 	go func() {
