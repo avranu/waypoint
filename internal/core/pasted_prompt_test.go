@@ -249,3 +249,56 @@ func TestPasteTextKeepsTypedAfterPaste(t *testing.T) {
 		t.Errorf("pasteText of an excerpt = %q", got)
 	}
 }
+
+// realLookupRunnerJob is the lookup the server runs, before an apEnv stubs it.
+var realLookupRunnerJob = lookupRunnerJob
+
+// typedReview reads the job's input as the server stores it, through the
+// real lookup and not the apEnv stub that hands it a.jobs' input: a review
+// job that names its round, or (queued before inputs did) only its task,
+// counts for it (audit 1287.1, c6035).
+func TestTypedReviewReadsStoredInput(t *testing.T) {
+	a, key, id := clearedReview(t)
+	lookupRunnerJob = realLookupRunnerJob // newAPEnv's cleanup puts its stub back, then the original
+	r, err := roundByID(a.ctx, a.s.db.R, id)
+	if err != nil || r == nil {
+		t.Fatal(r, err)
+	}
+	var in AutopilotJob
+	if err := json.Unmarshal(a.jobs[0].Input, &in); err != nil {
+		t.Fatal(err)
+	}
+	roundless := in
+	roundless.Round = 0
+	other := roundless
+	other.ReviewOf = key + "0"
+	res, _ := json.Marshal(AutopilotJobResult{Outcome: "reviewing"})
+	for n, tc := range []struct {
+		in   AutopilotJob
+		want bool
+	}{{in, true}, {roundless, true}, {other, false}} {
+		raw, _ := json.Marshal(tc.in)
+		jobID := int64(100 + n)
+		if _, err := a.s.db.W.Exec(`INSERT INTO runner_jobs(id, owner_id, kind, input, result, state, timeout, source, source_id, created_at) VALUES (?, ?, ?, ?, ?, 'done', 60, ?, ?, ?)`,
+			jobID, a.admin.User.ID, JobAutopilot, string(raw), string(res), autopilotReviewSource, a.step().id, a.clockNow().UnixMilli()); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, ok := a.s.typedReview(a.ctx, jobID, r); ok != tc.want {
+			t.Errorf("job %d (round %d, task %s): typed = %v, want %v", jobID, tc.in.Round, tc.in.ReviewOf, ok, tc.want)
+		}
+	}
+}
+
+// SessionHook records a pasted prompt unwrapped without changing the events
+// its caller handed it (c6034).
+func TestSessionHookLeavesCallersEvents(t *testing.T) {
+	a := newAPEnv(t)
+	wrapped := pasted("hello there")
+	evs := []HookEvent{hook("box", a.cli, "UserPromptSubmit", func(h *HookEvent) { h.Prompt = wrapped })}
+	if _, err := a.s.SessionHook(a.ctx, a.ag, evs); err != nil {
+		t.Fatal(err)
+	}
+	if evs[0].Prompt != wrapped {
+		t.Errorf("the caller's prompt became %q", evs[0].Prompt)
+	}
+}

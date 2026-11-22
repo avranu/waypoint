@@ -861,6 +861,7 @@ func (s *Service) SessionHook(ctx context.Context, actor *Actor, evs []HookEvent
 			return nil, invalid("machine or cwd too long")
 		}
 	}
+	evs = append([]HookEvent(nil), evs...) // unwrapped below: the caller's stay as sent
 	for n := range evs {
 		// A prompt pasted whole is its text, so autopilot's own (pasted
 		// into the pane) still reads as autopilot's, whatever wp sent it
