@@ -235,10 +235,10 @@ func TestObjectiveDiagnoseBriefClipsAndHedges(t *testing.T) {
 	if strings.Contains(brief, "THE-END-MARKER") || len(brief) > 12000 {
 		t.Errorf("the brief isn't clipped (%d bytes)", len(brief))
 	}
-	hasAll(t, "the brief", brief, "wp objective show "+task.Key, "not something Waypoint checked", "check it against the readings")
+	hasAll(t, "the brief", brief, "[the rest is cut: wp objective show "+task.Key+" has all of it]", "not something Waypoint checked", "check it against the readings")
 	// A short one is whole.
 	ob.Diagnosis.Text = "The check times the build."
-	if brief = ObjectiveText(ob, true, o.clockNow()); !strings.Contains(brief, "The check times the build.") || strings.Contains(brief, "is clipped") {
+	if brief = ObjectiveText(ob, true, o.clockNow()); !strings.Contains(brief, "The check times the build.") || strings.Contains(brief, "the rest is cut") {
 		t.Errorf("a short diagnosis was cut:\n%s", brief)
 	}
 	// The limit is characters, not bytes: 5,000 three-byte characters fit.
