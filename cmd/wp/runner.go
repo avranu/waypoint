@@ -213,6 +213,9 @@ type activeJob struct {
 	lane      string // jobLane of its kind
 	cancel    context.CancelFunc
 	cancelled atomic.Bool
+	// slotWaitSince is since when a command of the job has been waiting for
+	// a slot (zero: none is); guarded by runnerProc.mu (WP-1618).
+	slotWaitSince time.Time
 }
 
 // jobRun is what an executor gets besides the input.
@@ -227,6 +230,9 @@ type jobRun struct {
 	// launch is the owner's session settings (WP-1265), for a job that
 	// starts a session.
 	launch *sessionPrefs
+	// job is the runner's record of it (nil in tests), which an agent's
+	// clock tells when it waits for a slot (WP-1618).
+	job *activeJob
 }
 
 type claimedJob struct {
@@ -728,7 +734,7 @@ func (p *runnerProc) runJob(ctx context.Context, aj *activeJob, job *claimedJob)
 		timeout = 10 * time.Minute
 	}
 	p.ensureSandboxUsers(ctx, job)
-	run := &jobRun{id: job.ID, kind: job.Kind, timeout: timeout, out: sink, token: job.Token, launch: job.Launch}
+	run := &jobRun{id: job.ID, kind: job.Kind, timeout: timeout, out: sink, token: job.Token, launch: job.Launch, job: aj}
 	var logs sync.WaitGroup
 	logs.Add(1)
 	go func() {

@@ -145,7 +145,9 @@ func TestLoadProfileLearnsBusyHours(t *testing.T) {
 	// The next Monday 03:30: the coming hour is usually busy.
 	g := newGovernor(6, q)
 	now := at.AddDate(0, 0, 7).Add(-30 * time.Minute)
-	g.observe(calmSample(), now, 0)
+	busy := calmSample()
+	busy.Load1 = 14
+	g.observe(busy, now, 0)
 	if g.heavyLimit() != 1 {
 		t.Fatalf("before a usually busy hour: heavy limit %d", g.heavyLimit())
 	}
@@ -277,5 +279,75 @@ func TestLightLaneOutgrowsHeavyLimit(t *testing.T) {
 	}
 	if l := one.lanes(0, 0, 0); !slices.Equal(l, []string{laneHeavy, laneLight, laneRequest}) {
 		t.Fatalf("--max-jobs 1, idle: lanes %v", l)
+	}
+}
+
+// The usual load caps heavy jobs only while the machine isn't calm now
+// (WP-1618, WP-ADR149).
+func TestProfileCapGivesWayToACalmMachine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "load-profile.json")
+	p := loadLoadProfile(path)
+	at := time.Date(2026, 11, 2, 4, 0, 0, 0, time.UTC)
+	for i := range 240 {
+		p.add(at.Add(time.Duration(i)*15*time.Second), loadSample{CPUs: 8, Busy: 9, Own: 2, measured: true})
+	}
+	p.add(at.Add(time.Hour), loadSample{CPUs: 8, Busy: 1, Own: 0, measured: true})
+	now := at.AddDate(0, 0, 7).Add(30 * time.Minute) // next Monday, 04:30
+
+	g := newGovernor(4, loadLoadProfile(path))
+	g.observe(calmSample(), now, 0)
+	g.heavyStarted(now)
+	for range 3 {
+		now = now.Add(growAfter)
+		g.observe(calmSample(), now, g.limit)
+	}
+	if g.limit < 2 || g.heavyLimit() != g.limit || g.capped != 0 || g.capWhy != "" {
+		t.Fatalf("calm in a usually busy hour: limit %d, heavy limit %d, capped %d (%q)", g.limit, g.heavyLimit(), g.capped, g.capWhy)
+	}
+	if r := g.report(now, 1, 0, 0); r["busy_at"] == nil {
+		t.Errorf("the report dropped the usually busy hours: %v", r)
+	}
+
+	// The same hour with a busy sample: capped at one.
+	b := newGovernor(4, loadLoadProfile(path))
+	b.limit = 3
+	busy := calmSample()
+	busy.Load1 = 14
+	b.observe(busy, now, 3)
+	if b.limit != 3 || b.heavyLimit() != 1 || !strings.Contains(b.capWhy, "usually uses") {
+		t.Fatalf("busy in a usually busy hour: limit %d, heavy limit %d, why %q", b.limit, b.heavyLimit(), b.capWhy)
+	}
+}
+
+func heavyJob(id int64, waiting time.Duration) *activeJob {
+	j := &activeJob{id: id, lane: laneHeavy}
+	if waiting > 0 {
+		j.slotWaitSince = time.Now().Add(-waiting)
+	}
+	return j
+}
+
+func TestWaitingJobGivesUpItsHeavyPlace(t *testing.T) {
+	p := &runnerProc{opts: runnerOpts{MaxJobs: 1}, jobs: map[int64]*activeJob{}}
+	p.gov = newGovernor(1, nil)
+	p.gov.observe(calmSample(), time.Now(), 0)
+	p.jobs[1] = heavyJob(1, 30*time.Second)
+	if l, _ := p.slotsNow(); slices.Contains(l, laneHeavy) {
+		t.Fatalf("waiting 30s: lanes %v", l)
+	}
+	p.jobs[1].slotWaitSince = time.Now().Add(-2 * time.Minute)
+	if l, _ := p.slotsNow(); !slices.Contains(l, laneHeavy) {
+		t.Fatalf("waiting 2m: lanes %v", l)
+	}
+	if h, _, _, _, _ := p.running(); h != 0 {
+		t.Fatalf("running counts %d heavy", h)
+	}
+	// Only one job at a time gives up its place.
+	p.jobs[2] = heavyJob(2, 3*time.Minute)
+	if h, _, _, _, _ := p.running(); h != 1 {
+		t.Fatalf("two waiting: %d counted heavy, want 1", h)
+	}
+	if l, _ := p.slotsNow(); slices.Contains(l, laneHeavy) {
+		t.Fatalf("two waiting: lanes %v", l)
 	}
 }

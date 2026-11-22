@@ -223,6 +223,11 @@ type AgentJob struct {
 	// is Base) and pushed. Only a check of the change or a person's approval
 	// sends one (WP-ADR138).
 	Patch string `json:"patch,omitempty"`
+	// WorkTimeout, in seconds, is how long the agent may work, not counting
+	// the time its commands wait for a machine slot (wp slot, wp testsum);
+	// the job's timeout stays the limit on the whole run, waits included.
+	// 0: the job's timeout is the only limit (WP-1618).
+	WorkTimeout int `json:"work_timeout,omitempty"`
 	// Confine marks a prompt that carries text others wrote (a pull request):
 	// the runner confines the CLI to its checkout, or refuses a CLI it can't
 	// confine. Always set for review jobs.

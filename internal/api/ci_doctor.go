@@ -104,6 +104,9 @@ func ciDoctorText(d *core.CIDoctor, repo string, verbose bool) string {
 			if f.Wait != "" {
 				fmt.Fprintf(&o, " (%s)", clipText(f.Wait, 100))
 			}
+			if q := f.Queued; q != nil && !strings.Contains(f.Wait, "queued") {
+				fmt.Fprintf(&o, " (round queued, waiting for the runner for %s)", dur(q.For))
+			}
 			fmt.Fprintf(&o, "; at the front %s%s\n", dur(l.AtFront), stalled)
 		}
 		last := "none this week"

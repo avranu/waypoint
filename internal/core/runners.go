@@ -803,7 +803,9 @@ func runnerCanTake(r *Runner, n jobNeeds) bool {
 }
 
 // claimOrder is the queue a runner takes from, in turn: the rounds of
-// urgent pull requests (WP-686), every kind but audits, then audits of pull
+// urgent pull requests (WP-686), then the rounds at the front of a merge
+// line, which claimRunnerJob takes by frontRounds, not from this list
+// (WP-1618, WP-ADR149), every kind but audits, then audits of pull
 // requests, then the other audits. Each lists its jobs oldest first; the
 // parameters are the owner, the runner, JobAudit, auditSource, the id to
 // start after and a page size.
@@ -871,8 +873,73 @@ func (s *Service) claimable(ctx context.Context, r *Runner, q string, lanes []st
 	return ids, nil
 }
 
+// frontRound is a queued round of a babysit whose pull request is at the
+// front of its merge line, with what a runner needs to know to take it.
+type frontRound struct {
+	id     int64
+	needs  jobNeeds
+	target sql.NullInt64
+}
+
+// queuedFrontRounds lists the owner's queued rounds of the pull requests at
+// the front of their merge lines (lineFrontPR), in the order runners take
+// them: the line whose babysit rounds least recently got a runner first
+// (never: first), so two repos' fronts alternate, then the oldest job. At
+// most one pull request per line is the front, so the list is short. Both
+// claiming and jobsAhead read it, so they agree (WP-1618, WP-ADR149).
+func (s *Service) queuedFrontRounds(ctx context.Context, owner int64) ([]frontRound, error) {
+	// #nosec G202 -- fixed SQL fragments; values are bound
+	rows, err := s.db.R.QueryContext(ctx, `SELECT j.id, j.kind, j.source, j.label, j.dir, j.cli, `+jobFeatureColJ+`, j.target_runner_id
+		FROM runner_jobs j JOIN babysits b ON b.id = j.source_id JOIN pull_requests p ON p.id = b.pr_id
+		WHERE j.owner_id = ? AND j.state = 'queued' AND j.source = ? AND j.kind != ? AND b.ended_at IS NULL AND `+lineFrontPR+`
+		ORDER BY coalesce((SELECT max(j2.started_at) FROM runner_jobs j2 JOIN babysits b2 ON b2.id = j2.source_id JOIN pull_requests p2 ON p2.id = b2.pr_id
+			WHERE j2.source = ? AND p2.forge_id = p.forge_id AND lower(p2.repo) = lower(p.repo) AND p2.base_ref = p.base_ref), 0), j.id`,
+		owner, babysitSource, JobAudit, babysitSource)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []frontRound
+	for rows.Next() {
+		var f frontRound
+		n := &f.needs
+		if err := rows.Scan(&f.id, &n.kind, &n.source, &n.label, &n.dir, &n.cli, &n.feature, &f.target); err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+// frontRounds lists up to ten queued rounds at the front of a merge line
+// that the runner may take, in queuedFrontRounds's order, with the same
+// per-job limits claimable applies.
+func (s *Service) frontRounds(ctx context.Context, r *Runner, lanes []string) ([]int64, error) {
+	all, err := s.queuedFrontRounds(ctx, r.Owner.ID)
+	if err != nil {
+		return nil, err
+	}
+	var ids []int64
+	for _, f := range all {
+		if f.target.Valid && f.target.Int64 != r.ID {
+			continue
+		}
+		if _, ok := claimLane(r, f.needs, lanes); ok && runnerCanTake(r, f.needs) {
+			ids = append(ids, f.id)
+			if len(ids) == 10 {
+				break
+			}
+		}
+	}
+	return ids, nil
+}
+
 // claimRunnerJob takes the oldest queued job of the runner's owner that
-// this runner may run, atomically. Audits come after every other kind, and
+// this runner may run, atomically. The round of an urgent pull request
+// goes first, then the round of a pull request at the front of its merge
+// line, the line served least recently first (frontRounds): a round of a
+// pull request further back must not hold up the one the line waits for
+// (WP-1618, WP-ADR149). Audits come after every other kind, and
 // an audit of a pull request before other audits: those are background
 // reads, and a batch of them queued at once would otherwise hold the runner
 // for hours while babysit rounds, autopilot steps, sessions and the audit a
@@ -883,7 +950,12 @@ func (s *Service) claimable(ctx context.Context, r *Runner, q string, lanes []st
 func (s *Service) claimRunnerJob(ctx context.Context, actor *Actor, r *Runner, lanes []string) (*RunnerClaim, error) {
 	var ids []int64
 	var err error
-	for _, q := range claimOrder {
+	for i, q := range claimOrder {
+		if i == 1 {
+			if ids, err = s.frontRounds(ctx, r, lanes); err != nil || len(ids) > 0 {
+				break
+			}
+		}
 		if ids, err = s.claimable(ctx, r, q, lanes); err != nil || len(ids) > 0 {
 			break
 		}

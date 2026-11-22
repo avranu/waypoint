@@ -334,9 +334,11 @@ func (c *cli) takeSlot(ctx context.Context, name string, n int) (env []string, r
 	if slotHeld(name) {
 		return env, func() {}, nil
 	}
+	done := noteSlotWait(name) // WP-1618: an agent job's work clock leaves slot waits out
 	hold, err := acquireSlot(ctx, name, n, func() {
 		_, _ = fmt.Fprintf(c.err, "wp slot: waiting for a free %q slot (%d on this host; wp slot ls shows who has them)\n", name, n)
 	})
+	done()
 	if err != nil {
 		return nil, nil, err
 	}

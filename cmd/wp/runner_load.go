@@ -38,7 +38,9 @@ import (
 // gatewaySlots of its own beside --max-jobs, never held, so two of them no
 // longer fill the light lane for hours while the machine sits calm
 // (WP-1064). From what it saw in past weeks, it also allows fewer heavy jobs during and just
-// before the hours the machine is usually busy with other work.
+// before the hours the machine is usually busy with other work, but only
+// while the machine measures busy or overloaded: a calm one is taken as it is
+// (WP-1618).
 
 const (
 	laneHeavy   = "heavy"
@@ -143,7 +145,7 @@ type governor struct {
 	calmSince time.Time
 	changed   time.Time // limit last changed
 	started   time.Time // last heavy job started
-	capped    int       // from the profile; 0 none
+	capped    int       // from the profile, while the machine isn't calm; 0 none
 	capWhy    string
 	profile   *loadProfile
 }
@@ -185,8 +187,11 @@ func (g *governor) observe(s loadSample, now time.Time, heavy int) string {
 	if g.limit != wasLimit {
 		g.changed = now
 	}
+	// What the machine does now outranks what it usually does (WP-1618,
+	// WP-ADR149): the profile caps heavy jobs only while the sample isn't
+	// calm. Calm means nothing else is using it, whatever the hour says.
 	g.capped, g.capWhy = 0, ""
-	if g.profile != nil && s.CPUs > 0 {
+	if g.profile != nil && s.CPUs > 0 && level != levelCalm {
 		if busy, ok := g.profile.predict(now); ok {
 			switch {
 			case busy >= 0.75*float64(s.CPUs):
@@ -408,11 +413,44 @@ var newLoadMeterFn = newLoadMeter // tests
 // maxRunnerJobs is core.MaxRunnerJobs: the most --max-jobs allows.
 const maxRunnerJobs = 16
 
-// running counts the jobs running now by lane.
+// slotWaitYield is how long a heavy job waits for a slot before it stops
+// counting as heavy, and slotWaitYieldJobs how many such jobs there can be
+// at once, so the runner takes another while it waits (WP-1618, WP-ADR149):
+// a round that waited a whole hour for a test slot kept the runner's one
+// heavy place the whole time.
+const (
+	slotWaitYield     = time.Minute
+	slotWaitYieldJobs = 1
+)
+
+// yieldingJobs are the heavy jobs that don't count as heavy now: the
+// longest waiting for a slot, among those waiting at least slotWaitYield.
+// p.mu is held.
+func (p *runnerProc) yieldingJobs(now time.Time) map[*activeJob]bool {
+	var waiting []*activeJob
+	for _, j := range p.jobs {
+		if j.lane == laneHeavy && !j.slotWaitSince.IsZero() && now.Sub(j.slotWaitSince) >= slotWaitYield {
+			waiting = append(waiting, j)
+		}
+	}
+	sort.Slice(waiting, func(a, b int) bool { return waiting[a].slotWaitSince.Before(waiting[b].slotWaitSince) })
+	out := map[*activeJob]bool{}
+	for _, j := range waiting[:min(len(waiting), slotWaitYieldJobs)] {
+		out[j] = true
+	}
+	return out
+}
+
+// running counts the jobs running now by lane, except a heavy job that is
+// yielding its place (yieldingJobs).
 func (p *runnerProc) running() (heavy, light, req, msg, gw int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	yielding := p.yieldingJobs(time.Now())
 	for _, j := range p.jobs {
+		if yielding[j] {
+			continue
+		}
 		switch j.lane {
 		case laneLight:
 			light++

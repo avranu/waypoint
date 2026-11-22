@@ -71,6 +71,10 @@ type agentJob struct {
 	// Helpers, for an audit: the Haiku checks run around its model in the
 	// same checkout (runner_helpers.go, WP-1320).
 	Helpers *auditHelpers `json:"helpers,omitempty"`
+	// WorkTimeout (seconds) is how long the agent may work, not counting
+	// the time its commands wait for a machine-wide slot; the claim's
+	// timeout limits the whole run. 0: no separate limit (WP-1618).
+	WorkTimeout int `json:"work_timeout"`
 }
 
 // perm is the permission level the job runs at: read-only (files can be
