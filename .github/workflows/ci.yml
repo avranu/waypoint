@@ -3,8 +3,9 @@
 # statuses, and releases from there. (Forgejo's own lint and backend jobs do
 # check these files: actionlint and internal/cilint's TestRepoGitHubWorkflows.)
 # forge-sync publishes main to github.com/avranu/waypoint, where GitHub bills
-# a public repository nothing for its standard hosted runners, so these runs
-# cost our CI hosts nothing. They are here to
+# a public repository nothing for its standard hosted runners (GitHub's docs,
+# "About billing for GitHub Actions"; docs/DEPLOY.md has the link), so these
+# runs cost our CI hosts nothing. They are here to
 #   - measure GitHub's runners against ours (lint, the e2e shards, the race
 #     detector) before any check that gates is moved (WP-1629); and
 #   - run the weekly four-look browser checks.
@@ -52,9 +53,10 @@ permissions:
   contents: read
 
 # forge-sync may publish several merges in one push, and the next push
-# supersedes this one: nothing waits on these results.
+# supersedes this one: nothing waits on these results. A manual run is its own
+# group, so a 4-shard and an 8-shard run can be timed side by side.
 concurrency:
-  group: github-ci-${{ github.event_name }}-${{ github.ref }}
+  group: github-ci-${{ github.event_name }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -82,7 +84,7 @@ jobs:
       - name: vet, gofmt and golangci-lint (uses .golangci.yml)
         run: make golint
       - name: Waypoint rules (cmd/wplint)
-        run: go run ./cmd/wplint ./cmd/... ./internal/...
+        run: make wplint-code
       - name: wp builds for Windows and macOS
         run: make cross-check
       - name: workflow and k8s manifest lint (actionlint, kubeconform)
@@ -114,6 +116,9 @@ jobs:
   # alone, and every other package. Forgejo deals the same tests over four
   # shards by name (.forgejo/scripts/gotest-shard.sh, private to Forgejo), so
   # compare the jobs' total time with the shards' total, not job with job.
+  # The wall clock is another matter: internal/core's tests run one after
+  # another in one process here (26 minutes on our hosts, WP-314), so `race
+  # (core)` sets it, where a Forgejo shard takes about 8.
   # Two things Forgejo's run has and this one lacks: -cover, and the site
   # names. internal/repocheck's TestNoSiteNames skips here, since its list is a
   # secret (SITE_NAMES) and GitHub gets none; internal/cilint's checks of
@@ -142,6 +147,7 @@ jobs:
             core) pkgs=./internal/core ;;
             wp) pkgs=./cmd/wp ;;
             rest) pkgs=$(go list ./cmd/... ./internal/... ./web | grep -v -x -e "$mod/internal/core" -e "$mod/cmd/wp") ;;
+            *) echo "::error::no packages for race group $GROUP"; exit 1 ;;
           esac
           # shellcheck disable=SC2086 # one word per package
           go test -race \

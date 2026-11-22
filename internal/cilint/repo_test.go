@@ -13,9 +13,9 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-// needForgejo skips a test that reads .forgejo/: forge-sync strips it from the
+// skipWithoutForgejo skips a test that reads .forgejo/: forge-sync strips it from the
 // public mirror, whose GitHub runners run this package's tests too (WP-1624).
-func needForgejo(t *testing.T) {
+func skipWithoutForgejo(t *testing.T) {
 	t.Helper()
 	if _, err := os.Stat("../../.forgejo"); os.IsNotExist(err) {
 		t.Skip("the mirror's checkout has no .forgejo/ (WP-1624)")
@@ -28,7 +28,7 @@ func needForgejo(t *testing.T) {
 // A matrix missing shard 3 of 4 would still go green, with a quarter of the
 // tests never run.
 func TestRepoShardMatrices(t *testing.T) {
-	needForgejo(t)
+	skipWithoutForgejo(t)
 	src, err := os.ReadFile("../../.forgejo/workflows/ci.yml")
 	if err != nil {
 		t.Fatal(err)
@@ -76,7 +76,7 @@ func TestRepoShardMatrices(t *testing.T) {
 // or never runs, with nothing to show for it (WP-174, WP-536); and a
 // permissions: block is ignored, with a warning on every job (WP-289).
 func TestRepoForgejoEventNames(t *testing.T) {
-	needForgejo(t)
+	skipWithoutForgejo(t)
 	files, err := filepath.Glob("../../.forgejo/workflows/*.y*ml")
 	if err != nil || len(files) == 0 {
 		t.Fatalf("no workflows found: %v", err)
@@ -99,7 +99,7 @@ func TestRepoForgejoEventNames(t *testing.T) {
 // digest as well as tag. A tag can be pushed again by any holder of the
 // account; the digest ci.yml names can't change under it.
 func TestRepoHeavyJobImage(t *testing.T) {
-	needForgejo(t)
+	skipWithoutForgejo(t)
 	src, err := os.ReadFile("../../.forgejo/workflows/ci.yml")
 	if err != nil {
 		t.Fatal(err)

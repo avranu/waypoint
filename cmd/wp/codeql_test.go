@@ -586,3 +586,112 @@ func TestParseSarifPathsMapsLocationsAndFlowBeforeKeying(t *testing.T) {
 		t.Errorf("mapped finding %+v", mapped[0])
 	}
 }
+
+func TestCodeqlActionsSourceLeavesSymlinksBehind(t *testing.T) {
+	dir := t.TempDir()
+	writeTree(t, dir, map[string]string{
+		".github/workflows/x.yml":     "github x\n",
+		".forgejo/workflows/ci.yml":   "forgejo ci\n",
+		".forgejo/workflows/real.yml": "forgejo real\n",
+	})
+	if err := os.Symlink(filepath.Join(dir, ".forgejo/workflows/ci.yml"), filepath.Join(dir, ".forgejo/workflows/link.yml")); err != nil {
+		t.Skip("no symlinks here:", err)
+	}
+	stage, err := codeqlActionsSource(dir, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := stagedContents(t, stage)
+	if len(got) != 3 || got["github x\n"] == "" || got["forgejo ci\n"] == "" || got["forgejo real\n"] == "" {
+		t.Errorf("want the three regular files staged, got %v", got)
+	}
+	if _, err := os.Lstat(filepath.Join(stage, ".github/workflows", codeqlStagePrefix+"forgejo--link.yml")); err == nil {
+		t.Errorf("the symlink was staged")
+	}
+}
+
+func TestCodeqlActionsSourceReturnsReadErrors(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads any directory")
+	}
+	dir := t.TempDir()
+	writeTree(t, dir, map[string]string{
+		".github/workflows/x.yml":       "github x\n",
+		".forgejo/workflows/ci.yml":     "forgejo ci\n",
+		".forgejo/actions/b/action.yml": "b\n",
+	})
+	locked := filepath.Join(dir, ".forgejo", "actions")
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Skip(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o750) }) // #nosec G302 -- a test's own temp dir
+	if _, err := codeqlActionsSource(dir, t.TempDir()); err == nil {
+		t.Errorf("an unreadable .forgejo/actions was skipped without an error")
+	}
+}
+
+func TestCodeqlActionsSourceRefusesAStagePrefixedFile(t *testing.T) {
+	dir := t.TempDir()
+	writeTree(t, dir, map[string]string{
+		".github/workflows/wp-stage-forgejo--ci.yml": "github own\n",
+		".forgejo/workflows/ci.yml":                  "forgejo ci\n",
+	})
+	if _, err := codeqlActionsSource(dir, t.TempDir()); err == nil || !strings.Contains(err.Error(), codeqlStagePrefix) {
+		t.Errorf("want an error naming %s, got %v", codeqlStagePrefix, err)
+	}
+	// With nothing staged the repo's own name is its own path, so it is fine.
+	only := t.TempDir()
+	writeTree(t, only, map[string]string{".github/workflows/wp-stage-forgejo--ci.yml": "x\n"})
+	if stage, err := codeqlActionsSource(only, t.TempDir()); err != nil || stage != only {
+		t.Errorf("github only: %q, %v", stage, err)
+	}
+}
+
+func TestCodeqlScanKeepsRepoPathsWhenNothingWasStaged(t *testing.T) {
+	sarif := `{"runs":[{"results":[{"ruleId":"actions/x","level":"error","message":{"text":"m"},"partialFingerprints":{"primaryLocationLineHash":"h"},
+	"locations":[{"physicalLocation":{"artifactLocation":{"uri":".github/workflows/wp-stage-forgejo--ci.yml"},"region":{"startLine":3}}}]}]}]}`
+	dir := t.TempDir()
+	writeTree(t, dir, map[string]string{".github/workflows/wp-stage-forgejo--ci.yml": "name: own\n"})
+	fd := &fakeDocker{sarif: map[string]string{"actions": sarif}}
+	out, _, _ := scan(t, fd, dir, "--lang", "actions")
+	if !strings.Contains(out, ".github/workflows/wp-stage-forgejo--ci.yml:3") || strings.Contains(out, ".forgejo/") {
+		t.Errorf("the repo's own path was remapped:\n%s", out)
+	}
+}
+
+func TestCodeqlScanMapsStagedActionsPathsBack(t *testing.T) {
+	sarif := `{"runs":[{"results":[{"ruleId":"actions/x","level":"error","message":{"text":"m"},"partialFingerprints":{"primaryLocationLineHash":"h"},
+	"locations":[{"physicalLocation":{"artifactLocation":{"uri":".github/workflows/wp-stage-forgejo--ci.yml"},"region":{"startLine":3}}}]}]}]}`
+	dir := t.TempDir()
+	writeTree(t, dir, map[string]string{
+		".github/workflows/x.yml":   "name: gh\n",
+		".forgejo/workflows/ci.yml": "name: fj\n",
+	})
+	fd := &fakeDocker{sarif: map[string]string{"actions": sarif}}
+	out, _, _ := scan(t, fd, dir, "--lang", "actions", "--json")
+	var rep struct{ Findings []struct{ Path string } }
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if len(rep.Findings) != 1 || rep.Findings[0].Path != ".forgejo/workflows/ci.yml" {
+		t.Errorf("findings %+v\n%s", rep.Findings, out)
+	}
+}
+
+func TestParseSarifPathsMapsCodeFlowSteps(t *testing.T) {
+	sarif := `{"runs":[{"results":[{"ruleId":"actions/x","level":"error","message":{"text":"m"},"partialFingerprints":{"primaryLocationLineHash":"h"},
+	"locations":[{"physicalLocation":{"artifactLocation":{"uri":".github/workflows/wp-stage-forgejo--ci.yml"},"region":{"startLine":3}}}],
+	"codeFlows":[{"threadFlows":[{"locations":[
+	  {"location":{"physicalLocation":{"artifactLocation":{"uri":".github/workflows/wp-stage-forgejo--ci.yml"},"region":{"startLine":2}},"message":{"text":"src"}}},
+	  {"location":{"physicalLocation":{"artifactLocation":{"uri":".github/workflows/x.yml"},"region":{"startLine":3}},"message":{"text":"sink"}}}]}]}]}]}]}`
+	got, err := parseSarifPaths([]byte(sarif), codeqlActionsRepoPath)
+	if err != nil || len(got) != 1 || len(got[0].Flow) != 2 {
+		t.Fatalf("%v %+v", err, got)
+	}
+	if p := got[0].Flow[0].Path; p != ".forgejo/workflows/ci.yml" {
+		t.Errorf("staged step path %s", p)
+	}
+	if p := got[0].Flow[1].Path; p != ".github/workflows/x.yml" {
+		t.Errorf("own step path %s", p)
+	}
+}

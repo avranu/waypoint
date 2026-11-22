@@ -15,8 +15,14 @@ import (
 
 var (
 	// GitHub reads context names in any case, so SECRETS.X is a secret too.
+	// This strict check runs on the lines that are not comments: the word
+	// "secrets" there is almost surely the context, and a false alarm is cheap.
 	reGitHubSecret = regexp.MustCompile(`(?i)\bsecrets\b`)
-	githubEvents   = []string{"push", "schedule", "workflow_dispatch"}
+	// GitHub expands ${{ }} in a run script before the shell sees it, even on
+	// a # line, so this check runs on the whole source, comments included.
+	reGitHubSecretExpr = regexp.MustCompile(`(?i)\$\{\{[^}]*\bsecrets\b`)
+	reForgejoPath      = regexp.MustCompile(`\.forgejo\b`)
+	githubEvents       = []string{"push", "schedule", "workflow_dispatch"}
 )
 
 const githubOnly = "github.server_url == 'https://github.com'"
@@ -34,15 +40,16 @@ func uncommentedLines(src []byte) string {
 
 // GitHubFileProblems checks a workflow or composite action GitHub runs: the
 // repository is public, so it holds no secret (any use of the secrets
-// context), and forge-sync strips .forgejo/ from what GitHub gets, so a path
-// under it has nothing to run. Each problem is one line naming name.
+// context, or the word "secrets" outside a comment line; a ${{ }} that names
+// it is caught in comments too), and forge-sync strips .forgejo/ from what
+// GitHub gets, so a path under it has nothing to run. Each problem is one line naming name.
 func GitHubFileProblems(name string, src []byte) []string {
 	var out []string
 	code := uncommentedLines(src)
-	if reGitHubSecret.MatchString(code) {
-		out = append(out, name+" uses the secrets context: GitHub's workflows get none")
+	if reGitHubSecret.MatchString(code) || reGitHubSecretExpr.Match(src) {
+		out = append(out, name+" uses the secrets context (or says \"secrets\" outside a comment line): GitHub's workflows get none")
 	}
-	if strings.Contains(code, ".forgejo/") {
+	if reForgejoPath.MatchString(code) {
 		out = append(out, name+" uses a path under .forgejo/, which GitHub never gets")
 	}
 	return out
@@ -68,9 +75,12 @@ func GitHubWorkflowProblems(name string, src []byte) []string {
 	}
 	switch on := w.On.(type) {
 	case map[string]any:
-		for ev := range on {
+		for ev, v := range on {
 			if !slices.Contains(githubEvents, ev) {
 				out = append(out, fmt.Sprintf("%s runs on %s: GitHub's workflows run on %s only", name, ev, strings.Join(githubEvents, ", ")))
+			}
+			if ev == "push" && !pushesMainOnly(v) {
+				out = append(out, fmt.Sprintf("%s: push must be branches: [main] only, got %v", name, v))
 			}
 		}
 	default:
@@ -111,4 +121,15 @@ func githubOnlyIf(cond string) bool {
 		return false
 	}
 	return cond == githubOnly || strings.HasPrefix(cond, githubOnly+" && ")
+}
+
+// pushesMainOnly reports whether a push event's value is branches: [main] and
+// nothing else (a tags: filter beside it would run on tag pushes too).
+func pushesMainOnly(v any) bool {
+	m, ok := v.(map[string]any)
+	if !ok || len(m) != 1 {
+		return false
+	}
+	b, ok := m["branches"].([]any)
+	return ok && len(b) == 1 && b[0] == "main"
 }

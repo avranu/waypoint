@@ -15,12 +15,9 @@ runs:
     - id: cache
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
-        path: |
-          ${{ steps.key.outputs.bin }}/gosec
-          ${{ steps.key.outputs.bin }}/govulncheck
-          ${{ steps.key.outputs.bin }}/golangci-lint
-          ${{ steps.key.outputs.bin }}/actionlint
-          ${{ steps.key.outputs.bin }}/kubeconform
+        # All of GOPATH/bin, which holds nothing else on a hosted runner: a
+        # list of the tools here would miss the next one `make tools` gains.
+        path: ${{ steps.key.outputs.bin }}
         key: ${{ steps.key.outputs.key }}
     - if: steps.cache.outputs.cache-hit != 'true'
       shell: bash

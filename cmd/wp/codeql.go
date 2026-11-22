@@ -775,7 +775,7 @@ func runCodeqlScan(ctx context.Context, d codeqlDocker, o codeqlOpts) (*codeqlRe
 			return nil, codeqlFailed{fmt.Sprintf("%s: no results file; log %s", lang, logPath)}
 		}
 		var found []codeqlFinding
-		if lang == "actions" {
+		if lang == "actions" && src != o.Dir { // only a staged tree has renamed paths
 			found, err = parseSarifPaths(data, codeqlActionsRepoPath)
 		} else {
 			found, err = parseSarif(data)
@@ -867,12 +867,24 @@ func codeqlActionsSource(dir, work string) (string, error) {
 		return stage, nil
 	}
 	for _, kind := range []string{"workflows", "actions"} {
+		own, err := os.ReadDir(filepath.Join(dir, ".github", kind))
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return "", err
+		}
+		for _, e := range own {
+			if strings.HasPrefix(e.Name(), codeqlStagePrefix) {
+				return "", fmt.Errorf(".github/%s/%s starts with %q, which the scan uses to tell staged .forgejo or .gitea files from this repository's own; rename it", kind, e.Name(), codeqlStagePrefix)
+			}
+		}
 		if err := copyFiles(filepath.Join(dir, ".github", kind), filepath.Join(stage, ".github", kind)); err != nil {
 			return "", err
 		}
 		for _, base := range bases {
 			prefix := codeqlStagePrefix + strings.TrimPrefix(base, ".") + "--"
-			entries, _ := os.ReadDir(filepath.Join(dir, base, kind))
+			entries, err := os.ReadDir(filepath.Join(dir, base, kind))
+			if err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return "", err
+			}
 			for _, e := range entries {
 				to := filepath.Join(stage, ".github", kind, prefix+e.Name())
 				if e.IsDir() {
@@ -905,11 +917,15 @@ func codeqlActionsRepoPath(p string) string {
 }
 
 // copyFiles copies the regular files and directories under from to to;
-// symlinks are left behind. A missing from copies nothing.
+// symlinks are left behind. A missing from copies nothing; any other error
+// is returned.
 func copyFiles(from, to string) error {
 	entries, err := os.ReadDir(from)
-	if err != nil {
+	if errors.Is(err, fs.ErrNotExist) {
 		return nil
+	}
+	if err != nil {
+		return err
 	}
 	if err := os.MkdirAll(to, 0o750); err != nil {
 		return err
@@ -929,10 +945,19 @@ func copyFiles(from, to string) error {
 	return nil
 }
 
-// copyFiles1 copies one regular file, creating its directory.
+// copyFiles1 copies one regular file, creating its directory. Anything else
+// (a symlink) is left behind without an error, and so is a missing file; any
+// other error is returned.
 func copyFiles1(from, to string) error {
-	if info, err := os.Lstat(from); err != nil || !info.Mode().IsRegular() {
-		return nil // symlinks are left behind
+	info, err := os.Lstat(from)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(to), 0o750); err != nil {
 		return err

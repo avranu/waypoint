@@ -30,7 +30,7 @@ GOVULNCHECK_VERSION ?= v1.9.0
 ACTIONLINT_VERSION ?= v1.7.12
 KUBECONFORM_VERSION ?= v0.8.0
 
-.PHONY: e2e all build web server cli cross-check test lint golint wplint sast vuln check prepush prepush-go prepush-ops prepush-web tools ci-image ops-lint dev docker deploy deploy-remote rollback-remote deploy-status need-deploy-host release-dry-run clean help
+.PHONY: e2e all build web server cli cross-check test lint golint wplint wplint-code sast vuln check prepush prepush-go prepush-ops prepush-web tools ci-image ops-lint dev docker deploy deploy-remote rollback-remote deploy-status need-deploy-host release-dry-run clean help
 
 all: build
 
@@ -96,9 +96,13 @@ golint: ## go vet, gofmt check and golangci-lint over GOPKGS
 
 # Waypoint's own rules from AGENTS.md and REVIEW.md (internal/wplint, WP-707).
 # A finding is fixed or waived on its line: //wplint:ignore RULE why.
-wplint: ## Waypoint's own analyzers + the migration and e2e-wait checks against origin/main
-	$(SLOT) go run ./cmd/wplint ./cmd/... ./internal/...
+wplint: wplint-code ## Waypoint's own analyzers + the migration and e2e-wait checks against origin/main
 	go run ./cmd/wplint repo -base origin/main
+
+# All of wplint that GitHub's lint job runs (.github/workflows/ci.yml): on
+# main there is no base to compare with.
+wplint-code: ## Waypoint's own analyzers over cmd and internal
+	$(SLOT) go run ./cmd/wplint ./cmd/... ./internal/...
 
 # wp ships for Windows and macOS too (make cli); build those here so a
 # Unix-only call in a shared file fails before the release job does.
