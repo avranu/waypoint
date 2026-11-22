@@ -159,6 +159,7 @@ func (s *Service) schedule() []scheduled {
 
 		scheduled{name: "runners", every: halfMin, run: s.CheckRunners, atStart: true},
 		scheduled{name: "auto question notices", every: halfMin, run: s.NotifyAutoQuestions, atStart: true}, // at start: after a restart (WP-96)
+		scheduled{name: "front rounds", every: fiveMin, run: s.CheckFrontRounds},                            // a round at the front of a line no runner took (WP-1618)
 		scheduled{name: "forge rechecks", every: halfMin, run: s.CheckMergeRechecks},                        // a forge still checking (WP-138)
 
 		// Pull requests merged or closed while Waypoint was down or before
