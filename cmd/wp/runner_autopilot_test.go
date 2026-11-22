@@ -20,7 +20,9 @@ import (
 const (
 	screenEmpty       = "● banana\n\x1b[39m────────\n\x1b[39m❯ \n\x1b[39m────────\n  ⏵⏵ auto mode on\n"
 	screenPlaceholder = "\x1b[39m────────\n\x1b[39m❯ \x1b[2mTry \"create a util logging.py that...\"\x1b[0m\n\x1b[39m────────\n"
-	screenDraft       = "\x1b[38;5;246m❯\x1b[39m old prompt\n\x1b[39m────────\n\x1b[39m❯ my draft\n  second line\n\x1b[39m────────\n"
+	// A long paste shows in the box as a placeholder, not its text.
+	screenPasted = "\x1b[39m────────\n\x1b[39m❯ [Pasted text #1 +3 lines]\n\x1b[39m────────\n"
+	screenDraft  = "\x1b[38;5;246m❯\x1b[39m old prompt\n\x1b[39m────────\n\x1b[39m❯ my draft\n  second line\n\x1b[39m────────\n"
 )
 
 func TestPromptInput(t *testing.T) {
@@ -56,6 +58,9 @@ type fakeTmux struct {
 	screen string
 	typed  []string
 	pasted string
+	// afterPaste is the screen once paste-buffer ran; nil is Claude Code's
+	// own: a placeholder for the paste. Enter on a paste empties the box.
+	afterPaste *string
 }
 
 func (f *fakeTmux) run(ctx context.Context, socket string, stdin []byte, args ...string) (string, error) {
@@ -75,10 +80,16 @@ func (f *fakeTmux) run(ctx context.Context, socket string, stdin []byte, args ..
 		f.typed = append(f.typed, key)
 		if key == "Enter" && f.pasted != "" {
 			set("status", "busy")
+			f.screen = screenEmpty
 		}
 	case "load-buffer":
 		f.pasted = string(stdin)
 	case "paste-buffer":
+		if f.afterPaste != nil {
+			f.screen = *f.afterPaste
+		} else {
+			f.screen = screenPasted
+		}
 	default:
 		return "", errors.New("unexpected tmux " + args[0])
 	}
@@ -237,6 +248,117 @@ func TestAutopilotReviewTakenWhilePasted(t *testing.T) {
 	}
 	if f.pasted != prompt || len(f.typed) != 0 || asked != 2 {
 		t.Errorf("pasted %q, typed %q, asked %d", f.pasted, f.typed, asked)
+	}
+}
+
+// reviewTypingFixture runs a review job against a fake pane whose /wanted
+// answers come from wanted(n) (n counts from 1; ok false is a server error),
+// calling onAsk(n) first. It returns the fake, the result and the prompt.
+func reviewTypingFixture(t *testing.T, afterPaste *string, wanted func(n int) (yes, ok bool), onAsk func(n int, f *fakeTmux)) (*fakeTmux, autopilotResult, string) {
+	t.Helper()
+	cfg := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
+	_ = os.MkdirAll(filepath.Join(cfg, "sessions"), 0o700)
+	file := filepath.Join(cfg, "sessions", strconv.Itoa(os.Getpid())+".json")
+	b, _ := json.Marshal(map[string]any{"pid": os.Getpid(), "sessionId": "old-123", "status": "idle", "tmux": "w:@1.%7"})
+	if err := os.WriteFile(file, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fk := &fakeTmux{t: t, file: file, screen: screenEmpty, afterPaste: afterPaste}
+	oldTmux, oldPoll, oldSettle := runTmux, autopilotPoll, autopilotSettle
+	runTmux, autopilotPoll, autopilotSettle = fk.run, 10*time.Millisecond, 10*time.Millisecond
+	t.Cleanup(func() { runTmux, autopilotPoll, autopilotSettle = oldTmux, oldPoll, oldSettle })
+	asked := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/wanted") {
+			_, _ = w.Write([]byte(`{}`))
+			return
+		}
+		asked++
+		if onAsk != nil {
+			onAsk(asked, fk)
+		}
+		yes, ok := wanted(asked)
+		if !ok {
+			http.Error(w, "down", http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write([]byte(`{"wanted":` + strconv.FormatBool(yes) + `}`))
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("WAYPOINT_SERVER", srv.URL)
+	t.Setenv("WAYPOINT_TOKEN", "wpt_runner")
+	dir := t.TempDir()
+	p := newTestProc(t, dir)
+	prompt := autopilotReviewMark + "APP-1: Grok's findings."
+	o := p.execAutopilot(context.Background(), newRun(time.Minute), autopilotJob{CLIID: "old-123", Dir: dir, Done: "APP-1", ReviewOf: "APP-1", Review: prompt, Compacted: true, Step: 7})
+	if o.State != "done" {
+		t.Fatalf("outcome %+v", o)
+	}
+	r, _ := o.Result.(autopilotResult)
+	return fk, r, prompt
+}
+
+func always(int) (bool, bool) { return true, true }
+
+// The normal path (WP-1572): the box holds just the paste, so Enter goes.
+func TestAutopilotReviewEntersWhenBoxHoldsOnlyThePaste(t *testing.T) {
+	short := "────────\n❯ " + autopilotReviewMark + "APP-1: Grok's findings.\n────────\n"
+	for name, after := range map[string]*string{"placeholder": nil, "short text": &short} {
+		f, r, _ := reviewTypingFixture(t, after, always, nil)
+		if r.Outcome != "reviewing" || strings.Join(f.typed, " ") != "Enter" {
+			t.Errorf("%s: %+v typed %q", name, r, f.typed)
+		}
+	}
+}
+
+// Waypoint not answering before Enter counts as no (WP-1572): the review is
+// left pasted, with a warning.
+func TestAutopilotReviewWantedUnknownBeforeEnter(t *testing.T) {
+	f, r, prompt := reviewTypingFixture(t, nil, func(n int) (bool, bool) { return true, n == 1 }, nil)
+	if r.Outcome != "unwanted" || !strings.Contains(r.Warning, "clear") || len(f.typed) != 0 || f.pasted != prompt {
+		t.Errorf("%+v typed %q pasted %q", r, f.typed, f.pasted)
+	}
+}
+
+// A draft typed while the session compacted (or any time before the paste)
+// is never pasted over (WP-1572).
+func TestAutopilotReviewDraftBeforePaste(t *testing.T) {
+	f, r, _ := reviewTypingFixture(t, nil, always, func(n int, f *fakeTmux) {
+		if n == 1 {
+			f.screen = screenDraft
+		}
+	})
+	if r.Outcome != "held" || r.Reason != "draft" || f.pasted != "" || len(f.typed) != 0 {
+		t.Errorf("%+v typed %q pasted %q", r, f.typed, f.pasted)
+	}
+	// And a box that isn't on the screen.
+	f, r, _ = reviewTypingFixture(t, nil, always, func(n int, f *fakeTmux) {
+		if n == 1 {
+			f.screen = "Do you want to proceed?\n 1. Yes\n"
+		}
+	})
+	if r.Outcome != "held" || r.Reason != "screen" || f.pasted != "" || len(f.typed) != 0 {
+		t.Errorf("no box: %+v typed %q pasted %q", r, f.typed, f.pasted)
+	}
+}
+
+// Text typed after the paste, before Enter, is not sent along (WP-1572).
+func TestAutopilotReviewTypedAfterPaste(t *testing.T) {
+	after := "────────\n❯ [Pasted text #1 +3 lines] and also do X\n────────\n"
+	f, r, _ := reviewTypingFixture(t, &after, always, nil)
+	if r.Outcome != "unwanted" || !strings.Contains(r.Warning, "typed") || len(f.typed) != 0 {
+		t.Errorf("%+v typed %q", r, f.typed)
+	}
+}
+
+// An empty box after the settle: the paste was already sent (their own
+// Enter); a second Enter would be a stray one (WP-1572).
+func TestAutopilotReviewBoxEmptyAfterPaste(t *testing.T) {
+	after := screenEmpty
+	f, r, _ := reviewTypingFixture(t, &after, always, nil)
+	if r.Warning == "" || len(f.typed) != 0 {
+		t.Errorf("%+v typed %q", r, f.typed)
 	}
 }
 

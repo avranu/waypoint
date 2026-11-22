@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -302,6 +303,15 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 			return outcome{State: "done", Result: autopilotResult{Outcome: "unwanted"}}
 		}
 	}
+	// A person may have started typing while it compacted (minutes), or a
+	// dialog may have opened: paste nothing over that (WP-1572).
+	if box, err := readPenBox(ctx, socket, pane); err != nil {
+		return held("screen", "can't read its tmux pane: %v", err)
+	} else if !box.found {
+		return held("screen", "its input box isn't on the screen (a dialog or a scrolled pane?)")
+	} else if box.text != "" {
+		return held("draft", "someone has typed into its input box (%q): it waits until that is sent or cleared", truncRunes(box.text, 40))
+	}
 	buf := fmt.Sprintf("wp-autopilot-%d", run.id)
 	if _, err := runTmux(ctx, socket, []byte(in.Review), "load-buffer", "-b", buf, "-"); err != nil {
 		return held("screen", "the review prompt couldn't be loaded: %v", err)
@@ -311,10 +321,27 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 	}
 	sleepCtx(ctx, reviewPasteSettle(len(in.Review)))
 	// A person who prompted while it settled keeps the turn: no Enter, so the
-	// review isn't sent into it. What was pasted stays as a draft they can see.
-	if !p.stepWanted(ctx, in.Step, run.id) {
-		say("the step no longer wants this job: the review was pasted and not sent")
-		return outcome{State: "done", Result: autopilotResult{Outcome: "unwanted"}}
+	// review isn't sent into it (WP-1572). What was pasted stays as a draft
+	// they can see and clear. An answer Waypoint can't give counts as no: a
+	// send into a person's turn can't be undone.
+	if !p.stepWantedOr(ctx, in.Step, run.id, false) {
+		say("the step no longer wants this job, or Waypoint couldn't say: the review was pasted and not sent")
+		return outcome{State: "done", Result: autopilotResult{Outcome: "unwanted", Warning: "the review prompt was pasted and not sent, since the session was taken while it settled, or Waypoint couldn't say it wasn't: clear it from the input box if it is still there"}}
+	}
+	// The last look, right before Enter (WP-1572): only the pasted review
+	// may be in the box. Anything typed with it would go along; an empty box
+	// means a person's own Enter already sent it.
+	box, err := readPenBox(ctx, socket, pane)
+	switch {
+	case err != nil || !box.found:
+		say("the box couldn't be read before Enter: the review was pasted and not sent")
+		return outcome{State: "done", Result: autopilotResult{Outcome: "unwanted", Warning: "the review prompt was pasted and not sent, since its input box couldn't be read just before Enter: clear it from the input box if it is still there"}}
+	case box.text == "":
+		say("the input box is empty: the paste was already sent, no Enter")
+		return outcome{State: "done", Result: autopilotResult{Outcome: "reviewing", Warning: "the review prompt's paste was already gone from the input box before Enter (someone sent it?): no Enter was sent; check the session"}}
+	case !pastedOnly(box.text, in.Review):
+		say("the input box holds more than the review (%q): pasted and not sent", truncRunes(box.text, 40))
+		return outcome{State: "done", Result: autopilotResult{Outcome: "unwanted", Warning: "the review prompt was pasted and not sent, since text was typed into the input box with it: send or clear it there"}}
 	}
 	if _, err := runTmux(ctx, socket, nil, "send-keys", "-t", pane, "Enter"); err != nil {
 		// Pasted and not sent: the box now holds a draft, which a person
@@ -337,6 +364,37 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 	}
 	say("asked session %s for the adversarial review of %s", in.CLIID, in.ReviewOf)
 	return outcome{State: "done", Result: res}
+}
+
+// penBox is what readPenBox saw of Claude Code's input box.
+type penBox struct {
+	text  string
+	found bool
+}
+
+// readPenBox captures the pane and reads the input box off it.
+func readPenBox(ctx context.Context, socket, pane string) (penBox, error) {
+	screen, err := runTmux(ctx, socket, nil, "capture-pane", "-p", "-e", "-t", pane)
+	if err != nil {
+		return penBox{}, err
+	}
+	text, found := promptInput(screen)
+	return penBox{text: text, found: found}, nil
+}
+
+// pastedPlaceholderRE is how Claude Code shows a long paste in its input
+// box: [Pasted text #1 +12 lines] (no count for one line).
+var pastedPlaceholderRE = regexp.MustCompile(`^\[Pasted text #\d+( \+\d+ lines?)?\]$`)
+
+// pastedOnly is whether the box text (what promptInput reads, its lines
+// joined by spaces) is just the pasted review: Claude Code's placeholder for
+// it, or, for a paste short enough to show whole, its text. Anything else
+// has more in it, or less than the paste, so it doesn't count (WP-1572).
+func pastedOnly(box, review string) bool {
+	if pastedPlaceholderRE.MatchString(box) {
+		return true
+	}
+	return strings.Join(strings.Fields(box), " ") == strings.Join(strings.Fields(review), " ")
 }
 
 // promptSession gives the fresh session newID (process pid, in pane) the
@@ -641,6 +699,14 @@ func (p *runnerProc) waitRegistered(ctx context.Context, cliID string, limit tim
 // stepWanted asks Waypoint whether the step still waits for this job. An
 // answer it can't get counts as yes: the draft and idle checks still hold.
 func (p *runnerProc) stepWanted(ctx context.Context, step, job int64) bool {
+	return p.stepWantedOr(ctx, step, job, true)
+}
+
+// stepWantedOr is stepWanted with the answer for when Waypoint can't be
+// asked. Before an Enter that would send a review it is no (WP-1572): a
+// person may have taken the session, and sending into their turn can't be
+// undone.
+func (p *runnerProc) stepWantedOr(ctx context.Context, step, job int64, unknown bool) bool {
 	if step == 0 || p.c.server() == "" {
 		return true
 	}
@@ -648,7 +714,7 @@ func (p *runnerProc) stepWanted(ctx context.Context, step, job int64) bool {
 		Wanted bool `json:"wanted"`
 	}
 	if err := p.c.callInto(ctx, "GET", fmt.Sprintf("/api/v1/autopilot/steps/%d/wanted?job=%d", step, job), nil, &r); err != nil {
-		return true
+		return unknown
 	}
 	return r.Wanted
 }
