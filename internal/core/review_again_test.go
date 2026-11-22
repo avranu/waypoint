@@ -330,7 +330,7 @@ func TestReviewAgainBeforePR(t *testing.T) {
 				// Counted over all of them, past the ones the model read.
 				n := reviewAgainFindings + 3
 				wantFound, wantFixed, wantRejected = n, 1, n-1
-				if !strings.Contains(asked[0], fmt.Sprintf("Findings: %d (1 fixed, %d rejected, 0 left open); the %d most serious follow", n, n-1, reviewAgainFindings)) {
+				if !strings.Contains(asked[0], fmt.Sprintf("Findings: %d (1 fixed, %d rejected, 0 filed as issues, 0 left open); the %d most serious follow", n, n-1, reviewAgainFindings)) {
 					t.Errorf("decision model read %q", asked[0])
 				}
 			}

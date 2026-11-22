@@ -612,7 +612,7 @@ func (s *Service) findingItem(ctx context.Context, audit int64, f CodeAuditFindi
 	var at int64
 	_ = s.db.R.QueryRowContext(ctx, `SELECT to_sha, created_at FROM code_audits WHERE id = ?`, audit).Scan(&sha, &at)
 	it := ledgerItem{ID: f.ID, Kind: "finding", Path: f.Path, Line: f.Line, SHA: sha, Body: f.Title + ". " + f.Problem,
-		Fixed: f.State == "fixed", Dealt: !findingToDo(f.State)}
+		Fixed: f.State == "fixed", Dealt: !findingToDo(f)}
 	if at > 0 {
 		it.At = time.UnixMilli(at)
 	}
