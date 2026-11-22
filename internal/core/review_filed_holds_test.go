@@ -216,7 +216,7 @@ func TestAgainHolds(t *testing.T) {
 		hold(c.ID, 4, "round", 1, h)
 	}
 	got, err := pe.s.againHolds(pe.ctx, "i.project_id = ?", []any{pe.p.ID}, base)
-	want := []AgainHoldStat{{Issue: a.Key, Holds: 9, Repeats: 2}, {Issue: b.Key, Holds: 1, Repeats: 1}}
+	want := []AgainHoldStat{{Issue: a.Key, Holds: 9, Repeats: 2, Audits: []int64{2}}, {Issue: b.Key, Holds: 1, Repeats: 1, Audits: []int64{3}}}
 	if err != nil || fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("holds = %+v, %v; want %+v", got, err, want)
 	}
@@ -258,6 +258,19 @@ func TestShipHoldsLoopFilesHealth(t *testing.T) {
 	}
 	if n := filed(); n != 1 {
 		t.Fatalf("three holds with nothing marked filed %d, want 1 (holds %v)", n, e.holds())
+	}
+	// The task names the audit the ship was held for, which wp pr rounds
+	// shows too.
+	var audit int64
+	var body string
+	if err := e.s.db.R.QueryRow(`SELECT audit_id FROM review_ship_holds WHERE issue_id = ? ORDER BY id DESC LIMIT 1`, e.task.ID).Scan(&audit); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.s.db.R.QueryRow(`SELECT description FROM issues WHERE title = ?`, title).Scan(&body); err != nil {
+		t.Fatal(err)
+	}
+	if want := fmt.Sprintf("audit #%d", audit); !strings.Contains(body, want) {
+		t.Errorf("the health task doesn't name %s:\n%s", want, body)
 	}
 }
 

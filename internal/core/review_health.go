@@ -149,8 +149,8 @@ func reviewHealthIssues(byRound []AgainRoundStat, agree *AgainAgreement, helpers
 	for _, h := range holds {
 		if h.Repeats >= healthMinRepeats {
 			add("Review loop: "+h.Issue+"'s ship held again and again with nothing marked",
-				"%s's ship was refused %d times within one day in the last %d days for the same findings, with none of them decided since the refusal before (the condition is %d or more; %d refusals in all). A session that marks what a refusal names never repeats one: either its marks don't clear the hold (a mark the hold doesn't count, as filed findings once weren't), or the session ships without deciding. `wp pr rounds` lists the task's holds; read them and its audits' findings.",
-				h.Issue, h.Repeats, reviewHealthDays, healthMinRepeats, h.Holds)
+				"%s's ship was refused %d times within one day in the last %d days for the same findings, with none of them decided since the refusal before (the condition is %d or more; %d refusals in all), held for %s. A session that marks what a refusal names never repeats one: either its marks don't clear the hold (a mark the hold doesn't count, as filed findings once weren't), or the session ships without deciding. Read those audits' findings and how they were marked (`wp audit show N`).",
+				h.Issue, h.Repeats, reviewHealthDays, healthMinRepeats, h.Holds, auditList(h.Audits))
 		}
 	}
 	for _, h := range helpers {
@@ -280,11 +280,13 @@ func (s *Service) fileReviewHealth(ctx context.Context, projectID int64, h revie
 
 // AgainHoldStat is one task's ship holds since a time (recordShipHold):
 // Holds in all, and Repeats, the most repeat holds (shipHoldRepeatSQL) that
-// fell within one day (healthHoldDay).
+// fell within one day (healthHoldDay), and Audits, the audits a repeat
+// held the ship for, in the order first held.
 type AgainHoldStat struct {
-	Issue   string `json:"issue"`
-	Holds   int    `json:"holds"`
-	Repeats int    `json:"repeats"`
+	Issue   string  `json:"issue"`
+	Holds   int     `json:"holds"`
+	Repeats int     `json:"repeats"`
+	Audits  []int64 `json:"audits,omitempty"`
 }
 
 // shipHoldRepeatSQL is, over review_ship_holds as h, whether the hold is a
@@ -300,7 +302,7 @@ const shipHoldRepeatSQL = `coalesce((SELECT h0.findings <= h.findings FROM revie
 // through, in the order the tasks were made.
 func (s *Service) againHolds(ctx context.Context, ivis string, iargs []any, since int64) ([]AgainHoldStat, error) {
 	// #nosec G202 -- fixed conditions; values are bound
-	rows, err := s.db.R.QueryContext(ctx, `SELECT p.key || '-' || i.number, h.created_at, `+shipHoldRepeatSQL+`
+	rows, err := s.db.R.QueryContext(ctx, `SELECT p.key || '-' || i.number, h.created_at, h.audit_id, `+shipHoldRepeatSQL+`
 		FROM review_ship_holds h JOIN issues i ON i.id = h.issue_id JOIN projects p ON p.id = i.project_id
 		WHERE `+ivis+` AND h.created_at >= ? ORDER BY h.issue_id, h.created_at, h.id`, append(slices.Clone(iargs), since)...)
 	if err != nil {
@@ -322,9 +324,9 @@ func (s *Service) againHolds(ctx context.Context, ivis string, iargs []any, sinc
 	}
 	for rows.Next() {
 		var key string
-		var at int64
+		var at, audit int64
 		var repeat bool
-		if err := rows.Scan(&key, &at, &repeat); err != nil {
+		if err := rows.Scan(&key, &at, &audit, &repeat); err != nil {
 			return nil, err
 		}
 		if len(out) == 0 || out[len(out)-1].Issue != key {
@@ -336,6 +338,9 @@ func (s *Service) againHolds(ctx context.Context, ivis string, iargs []any, sinc
 		out[len(out)-1].Holds++
 		if repeat {
 			repeats = append(repeats, at)
+			if cur := &out[len(out)-1]; !slices.Contains(cur.Audits, audit) {
+				cur.Audits = append(cur.Audits, audit)
+			}
 		}
 	}
 	if len(out) > 0 {
@@ -373,4 +378,16 @@ func (s *Service) recordShipHold(ctx context.Context, actor *Actor, issue, audit
 	if err != nil {
 		s.log.WarnContext(ctx, "couldn't record a ship hold", "issue", issue, "audit", audit, "check", check, "err", err)
 	}
+}
+
+// auditList names audits: "audit #4", "audits #4, #7".
+func auditList(ids []int64) string {
+	codes := make([]string, len(ids))
+	for i, id := range ids {
+		codes[i] = fmt.Sprintf("#%d", id)
+	}
+	if len(ids) == 1 {
+		return "audit " + codes[0]
+	}
+	return "audits " + strings.Join(codes, ", ")
 }

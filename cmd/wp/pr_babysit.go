@@ -507,9 +507,10 @@ type roundStats struct {
 		} `json:"review_again_agreement"`
 		Helpers []helperStat `json:"review_helpers"`
 		Holds   []struct {
-			Issue   string `json:"issue"`
-			Holds   int    `json:"holds"`
-			Repeats int    `json:"repeats"`
+			Issue   string  `json:"issue"`
+			Holds   int     `json:"holds"`
+			Repeats int     `json:"repeats"`
+			Audits  []int64 `json:"audits"`
 		} `json:"review_ship_holds"`
 	} `json:"nitpicks"`
 }
@@ -588,7 +589,19 @@ func (st *roundStats) nitpickText() string {
 		for _, h := range n.Holds {
 			holds += h.Holds
 			if h.Repeats > 0 {
-				repeats = append(repeats, fmt.Sprintf("%s %d", h.Issue, h.Repeats))
+				var codes []string
+				for _, a := range h.Audits {
+					codes = append(codes, fmt.Sprintf("#%d", a))
+				}
+				line := fmt.Sprintf("%s %d", h.Issue, h.Repeats)
+				switch len(codes) {
+				case 0: // a server from before the audits were sent
+				case 1:
+					line += " (audit " + codes[0] + ")"
+				default:
+					line += " (audits " + strings.Join(codes, ", ") + ")"
+				}
+				repeats = append(repeats, line)
 			}
 		}
 		fmt.Fprintf(&b, "\nShips held for findings still to decide: %d, of %d tasks.", holds, len(n.Holds))
