@@ -192,6 +192,18 @@ var collectors = []collector{
 		off:         `SELECT COUNT(*) FROM usage_machines m WHERE m.transcript_off = 1`,
 		scans:       map[string]string{"m": "usage_machines has one row per machine of each user: a small table, read whole once an hour"},
 	},
+	{
+		// Nothing waits for it and it produces nothing of its own: it is the
+		// total of what session data the CLIs' hooks, usage uploads and the
+		// server's caps dropped (hook_drops: which, where and how many is in
+		// wp server status), so that a drop is never silent (WP-1470).
+		name:    "session data",
+		about:   "session hooks, usage uploads and the caps on what a session keeps; what each dropped, by reason, is in wp server status (Hook data dropped)",
+		waiting: `SELECT 0, NULL`,
+		args:    noArgs,
+		output:  `SELECT MAX(h.last_at) FROM hook_drops h`,
+		dropped: `SELECT COALESCE(SUM(h.dropped), 0) FROM hook_drops h`,
+	},
 }
 
 // What waits for the transcript archive, by machine: bytes the machine says

@@ -656,7 +656,9 @@ differences (a message written again with more tokens). Cost is API-equivalent, 
                         "sessions":[{s,cwd,repo,branch,version,title,first,last,compactions}],
                         "refusals":[{t,s,repo,model,tool,detail,reason,source,excerpt}]}],
                         "inventory":[{kind,name,scope}], "parsed","skipped","unknown":{type:count}}
-                                    {accepted, duplicate}; h is an hour start in ms; at most 2000 chunks and
+                                    {accepted, duplicate}; h is an hour start in ms; messages counts model
+                                    responses (API messages), not turns, and prompts in tools counts permission
+                                    prompts (WP-1470); at most 2000 chunks and
                                     60000 rows; unknown fields are ignored
     POST /usage/quota {"machine","session","model","context_pct","five_hour":{percent,resets_at},"seven_day":{…}}
                                     resets_at in ms; a reading the same as the last is not stored again

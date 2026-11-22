@@ -61,7 +61,7 @@ function cols(noun: string, withAsked = false): Col<UsageTool>[] {
   if (withAsked)
     out.push({
       id: 'asked',
-      label: 'Asked',
+      label: 'Permission prompts',
       value: (r) => r.prompts,
       wide: true,
       cell: (r) => (r.prompts ? String(r.prompts) : '–'),
