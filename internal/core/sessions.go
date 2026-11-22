@@ -752,8 +752,9 @@ func (s *Service) GetAgentSession(ctx context.Context, actor *Actor, id int64) (
 		refusedText = role >= RoleEditor
 	}
 	refusedText = refusedText && !actor.HidesCommandText()
-	// The latest entries; a long session keeps its newest 1,000.
-	rows, err := s.db.R.QueryContext(ctx, `SELECT id, kind, ref_type, label, url, detail, data, created_at FROM session_events WHERE session_id = ? ORDER BY id DESC LIMIT 1000`, id)
+	// The latest entries; a long session keeps its newest 1,000. What was
+	// named to it as outstanding (session_outstanding.go) is bookkeeping.
+	rows, err := s.db.R.QueryContext(ctx, `SELECT id, kind, ref_type, label, url, detail, data, created_at FROM session_events WHERE session_id = ? AND kind != 'outstanding' ORDER BY id DESC LIMIT 1000`, id)
 	if err != nil {
 		return nil, err
 	}

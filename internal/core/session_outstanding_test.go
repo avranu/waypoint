@@ -92,6 +92,17 @@ func TestSessionOutstanding(t *testing.T) {
 	if more, _ := a.s.SessionOutstanding(a.ctx, &ag); !slices.Equal(more.Findings, []string{itoa64(audit) + ".4"}) {
 		t.Fatalf("new finding = %v", more.Findings)
 	}
+	// The record is bookkeeping, not something the session did: the
+	// session's timeline doesn't list it.
+	sum, err := a.s.GetAgentSession(a.ctx, &ag, a.session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range sum.Timeline {
+		if e.Kind == "outstanding" {
+			t.Fatalf("the timeline lists an outstanding record: %+v", e)
+		}
+	}
 
 	// A round that is over leaves nothing outstanding.
 	a.s.setRoundNow(a.ctx, round, []string{RoundPending, RoundRunning}, RoundSkipped, "test")
