@@ -215,3 +215,27 @@ func TestOutstandingLines(t *testing.T) {
 		t.Errorf("more than twelve named:\n%s", got)
 	}
 }
+
+// A finding confirmed and still to do is outstanding; one confirmed and filed
+// in an issue (findingFiledSQL) is handed off and isn't (audit #1357.1).
+func TestSessionOutstandingNamesConfirmedButNotFiled(t *testing.T) {
+	a, box := auditAPEnv(t)
+	ag := *a.ag
+	ag.Session = a.session
+	_, audit, _ := handoffStart(t, a)
+	a.endAudit(box, "done", "Merge reads a nil map", "Unchecked error", "Dead code")
+	var issue int64
+	if err := a.s.db.R.QueryRow(`SELECT id FROM issues ORDER BY id LIMIT 1`).Scan(&issue); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.s.db.W.Exec(`UPDATE code_audit_findings SET severity = 'low', state = 'confirmed', issue_id = CASE ordinal WHEN 2 THEN ? END WHERE audit_id = ? AND ordinal IN (1, 2)`, issue, audit); err != nil {
+		t.Fatal(err)
+	}
+	got, err := a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtWait)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{itoa64(audit) + ".1", itoa64(audit) + ".3"}; !slices.Equal(got.Findings, want) {
+		t.Fatalf("findings = %v, want %v", got.Findings, want)
+	}
+}

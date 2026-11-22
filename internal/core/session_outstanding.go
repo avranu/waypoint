@@ -78,7 +78,7 @@ func (s *Service) SessionOutstanding(ctx context.Context, actor *Actor, via stri
 		if audit == 0 {
 			continue
 		}
-		frows, err := s.db.R.QueryContext(ctx, `SELECT ordinal FROM code_audit_findings WHERE audit_id = ? AND state = 'open' ORDER BY ordinal`, audit)
+		frows, err := s.db.R.QueryContext(ctx, `SELECT f.ordinal FROM code_audit_findings f WHERE f.audit_id = ? AND `+findingToDoSQL+` ORDER BY f.ordinal`, audit)
 		if err != nil {
 			return nil, err
 		}

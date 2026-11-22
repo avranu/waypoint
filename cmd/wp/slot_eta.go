@@ -37,8 +37,9 @@ type slotHolder struct {
 
 const (
 	slotRunsFile   = "runs.jsonl"
-	slotRunsRecent = 10  // runs the median is taken over
-	slotRunsKeep   = 200 // lines kept when the file is trimmed
+	slotRunsLock   = "runs.jsonl.flock" // held while the record is appended to or trimmed (not *.lock: wp slot ls lists those)
+	slotRunsRecent = 10                 // runs the median is taken over
+	slotRunsKeep   = 200                // lines kept when the file is trimmed
 	slotETAPad     = 1.2
 )
 
@@ -195,11 +196,20 @@ func slotRuns(dir string) []slotRunRec {
 }
 
 // slotRecordRun appends a finished run to the record, trimming it to the
-// latest lines now and then. Best effort.
+// latest lines now and then, under the record's lock. Best effort.
 func slotRecordRun(dir string, r slotRunRec) {
 	b, err := json.Marshal(r)
 	if err != nil {
 		return
+	}
+	// Appends and the trim (read, then rename over) take one lock, so a trim
+	// can't drop a line another process appends meanwhile. Where there's no
+	// flock (Windows) it goes on unlocked.
+	if lf, err := os.OpenFile(filepath.Join(dir, slotRunsLock), os.O_CREATE|os.O_RDWR, 0o600); err == nil { // #nosec G304 -- our own directory
+		defer lf.Close()
+		if unlock, err := fileLock(lf); err == nil {
+			defer unlock()
+		}
 	}
 	p := filepath.Join(dir, slotRunsFile)
 	f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) // #nosec G304 -- our own directory

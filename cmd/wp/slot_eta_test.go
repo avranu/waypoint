@@ -379,6 +379,41 @@ func TestSlotRecordRunTrimsByRename(t *testing.T) {
 	}
 }
 
+// A run is recorded under the record's lock, so a trim (read, then rename)
+// by one process can't drop a line another appends meanwhile (audit #1357.2):
+// with the lock held elsewhere, the append waits for it.
+func TestSlotRecordRunWaitsForTheRecordLock(t *testing.T) {
+	dir := t.TempDir()
+	lf, err := os.OpenFile(filepath.Join(dir, slotRunsLock), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lf.Close()
+	unlock, err := fileLock(lf)
+	if err != nil {
+		t.Skip("no flock here:", err)
+	}
+	done := make(chan struct{})
+	go func() {
+		slotRecordRun(dir, slotRunRec{Name: "tests", Cmd: "c", Repo: "/r", At: 1, Secs: 1})
+		close(done)
+	}()
+	select {
+	case <-done:
+		t.Fatal("recorded a run while another process held the record's lock")
+	case <-time.After(200 * time.Millisecond):
+	}
+	unlock()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the run was never recorded after the lock was released")
+	}
+	if got := slotRuns(dir); len(got) != 1 {
+		t.Fatalf("runs = %+v", got)
+	}
+}
+
 func TestSlotRunKey(t *testing.T) {
 	for _, tc := range []struct {
 		name string
