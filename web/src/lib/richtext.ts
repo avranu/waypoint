@@ -92,7 +92,7 @@ function escapeLineStarts(s: string) {
         line.includes('|') &&
         /^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?\s*$/.test(line)
       ) {
-        return line.replace(/\|/g, '\\|')
+        return line.replace(/[\\|]/g, (c) => (c === '|' ? '\\|' : c))
       }
       // Only the opening bracket: escaping it is enough, and a [[wikilink]]
       // later in the line stays as typed.
@@ -164,7 +164,7 @@ function codeSpan(raw: string, opts: Opts = {}) {
 // angle form, so those are escaped or encoded.
 function target(url: string) {
   const u = url.replace(/\\(?=[!-/:-@[-`{-~])/g, '\\\\').replace(/[\r\n]/g, encodeURIComponent)
-  return /[()\s<>]/.test(u) ? `<${u.replace(/[<>]/g, '\\$&')}>` : u
+  return /[()\s<>]/.test(u) ? `<${u.replace(/[\\<>]/g, (c) => (c === '\\' ? c : `\\${c}`))}>` : u
 }
 
 function serialize(node: Node, opts: Opts = {}): string {
