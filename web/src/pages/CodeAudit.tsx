@@ -346,8 +346,8 @@ function Findings({ audit: a }: { audit: CodeAudit }) {
   if (a.status !== 'done') return null
   const list = show === 'open' ? open : findings
   // The server says how many are listed at a time (shown); the rest are one
-  // click away and counted (WP-1421). This page is served with its server,
-  // so it has no rule of its own.
+  // click away and counted (WP-1421). The To do tab follows the server's
+  // rule (findingToDo in lib/code-audits.ts, which reads filing_void).
   const listed = all || !a.shown ? list : list.slice(0, a.shown)
   const more = list.length - listed.length
   return (
@@ -470,6 +470,9 @@ function FindingItem({ finding: f, audit: a }: { finding: AuditFinding; audit: C
           {f.by && ` by ${f.by}`}
           {f.at && ` ${relativeTime(f.at)}`}
           {f.note && <>: {f.note}</>}
+          {f.filing_void && f.state === 'confirmed' && (
+            <> · its issue was canceled, so it is to do again</>
+          )}
           {f.issue && (
             <>
               {' '}
