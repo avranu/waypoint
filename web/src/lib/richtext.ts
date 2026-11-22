@@ -226,8 +226,12 @@ function serialize(node: Node, opts: Opts = {}): string {
     case 'a': {
       const href = el.getAttribute('href') ?? ''
       if (!href) return inner().trim()
-      const label = inner({ ...opts, label: true }).trim()
-      if (!label || label === href) return href
+      // A link with no text shows its address, as an autolink would.
+      const own = escapeText(href, { label: true })
+      const label = inner({ ...opts, label: true }).trim() || own
+      // One that reads as its own address is an autolink; autolinks() picks
+      // its form once its neighbours are known.
+      if (label === own && AUTOLINK.test(href)) return `\0${href}\0`
       return `[${label}](${target(href)})`
     }
     case 'img': {
@@ -412,11 +416,37 @@ function tidy(md: string) {
   return out.join('\n').replace(/^\n+/, '').replace(/\n+$/, '')
 }
 
+// A CommonMark autolink's address: a scheme, then no space, `<` or `>`.
+const AUTOLINK = /^[A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>\x00-\x1f]*$/
+// A web address that reads back whole when written bare: nothing the reader
+// would stop at, take as markup, decode or trim off its end.
+const BARE = /^(?:https?|ftp):\/\/[A-Za-z0-9-][^\s<>()[\]\\`*~"']*$/
+
+// Autolinks come out of serialize() between NULs (the HTML parser drops or
+// replaces any NUL in the input, so no text holds one). Written bare, an
+// address runs into what follows it, and the reader trims closing
+// punctuation off its end; so it is bare only after the start, a space or
+// "(", and before the end, a space, or closing punctuation and then one of
+// those. Anywhere else it is <angled>, which nothing next to it changes.
+function autolinks(md: string) {
+  return md.replace(/\0([^\0]*)\0/g, (m, url: string, i: number) => {
+    const before = md[i - 1]
+    const after = md.slice(i + m.length, i + m.length + 40)
+    const bare =
+      BARE.test(url) &&
+      !/[?!.,:;_]$/.test(url) &&
+      !/&[#A-Za-z0-9]+;/.test(url) &&
+      (before === undefined || /[\s(]/.test(before)) &&
+      /^[.,:;!?)]*(?:\s|$)/.test(after)
+    return bare ? url : `<${url}>`
+  })
+}
+
 /** The markdown behind a rich editor's HTML. */
 export function htmlToMarkdown(html: string): string {
   const tpl = document.createElement('template')
   tpl.innerHTML = html
-  return tidy(serialize(tpl.content))
+  return autolinks(tidy(serialize(tpl.content)))
 }
 
 const norm = (html: string) => html.replace(/\s+/g, ' ').trim()

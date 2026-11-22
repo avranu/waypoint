@@ -150,11 +150,24 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
     "| h |\n| --- |\n| a\\|b \\\\\\| `c\\|d` e |",
   );
   // Everything else written into a cell escapes its pipes too: link and
-  // image destinations, a bare URL, alt text, a list or code block.
+  // image destinations, a link shown by its address, alt text, a list or
+  // code block.
   await writes(
     "Table cell targets",
-    '<table><tbody><tr><th>h</th></tr><tr><td><a href="/x?a|b">l</a> <img src="/i|.png" alt="p|q"> <a href="/y|z"></a></td></tr></tbody></table>',
-    "| h |\n| --- |\n| [l](/x?a\\|b) ![p\\|q](/i\\|.png) /y\\|z |",
+    '<table><tbody><tr><th>h</th></tr><tr><td><a href="/x?a|b">l</a> <img src="/i|.png" alt="p|q"> <a href="/y|z"></a> <a href="https://e.com/a|b">https://e.com/a|b</a></td></tr></tbody></table>',
+    "| h |\n| --- |\n| [l](/x?a\\|b) ![p\\|q](/i\\|.png) [/y\\|z](/y\\|z) <https://e.com/a\\|b> |",
+  );
+  // A link that reads as its own address stays a link: bare where nothing
+  // next to it changes where it ends, <angled> where something would, and
+  // [text](target) where it isn't an absolute address at all.
+  await writes(
+    "Autolinks",
+    '<p>see <a href="https://example.com/a_b">https://example.com/a_b</a>. (<a href="https://example.com/">https://example.com/</a>)</p>' +
+      '<p><a href="https://example.com/">https://example.com/</a>more <a href="https://example.com/x.">https://example.com/x.</a> <em><a href="https://example.com/">https://example.com/</a></em></p>' +
+      '<p><a href="/issue/a b">/issue/a b</a> <a href="mailto:a@example.com">mailto:a@example.com</a> <a href="https://example.com/"></a></p>',
+    "see https://example.com/a_b. (https://example.com/)\n\n" +
+      "<https://example.com/>more <https://example.com/x.> *<https://example.com/>*\n\n" +
+      "[/issue/a b](</issue/a b>) <mailto:a@example.com> https://example.com/",
   );
   await writes(
     "Table cell blocks",
