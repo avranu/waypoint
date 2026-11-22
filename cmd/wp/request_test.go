@@ -215,6 +215,8 @@ func TestSessionHooksEndToEnd(t *testing.T) {
 	wrap := func(p string) string {
 		return "\n\n<pasted_content id=\"d29a\">\n" + p + "\n</pasted_content id=\"d29a\">\n"
 	}
+	// (The same prompt with a record is Waypoint's: hook_drops_test.go's
+	// TestNoPromptsMatchesAWrappedTypedPrompt.)
 	// A review prompt is known by its recorded digest (WP-1370), never its
 	// visible words: with no record, wrapped or not, it is a person's prompt,
 	// and --no-prompts sends none of it.

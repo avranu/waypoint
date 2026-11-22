@@ -75,7 +75,7 @@ func TypedWaypointAlone(kind string) bool {
 
 var (
 	pasteOpen  = regexp.MustCompile(`^<pasted_content(?:\s[^>]*)?>`)
-	pasteTags  = regexp.MustCompile(`<pasted_content(?:\s[^>]*)?>|</pasted_content>`)
+	pasteEnd   = regexp.MustCompile(`</pasted_content(?:\s[^>]*)?>$`)
 	ansiSeq    = regexp.MustCompile("\x1b(?:\\[[0-?]*[ -/]*[@-~]|\\][^\x07\x1b]*(?:\x07|\x1b\\\\)?|[ -/]*[0-~]?)")
 	ansiEscape = "\x1b"
 )
@@ -132,34 +132,6 @@ func normalisePromptOnce(text string) string {
 	}
 }
 
-// unwrapPasted: text is one <pasted_content> element from its first byte to
-// its last, and inner is what is inside, trimmed. A wrapper that closes
-// before the text ends, or never closes, isn't one round the whole text.
-func unwrapPasted(text string) (inner string, ok bool) {
-	open := pasteOpen.FindString(text)
-	if open == "" || !strings.HasSuffix(text, "</pasted_content>") {
-		return "", false
-	}
-	depth := 0
-	for _, loc := range pasteTags.FindAllStringIndex(text, -1) {
-		if text[loc[0]+1] == '/' {
-			depth--
-		} else {
-			depth++
-		}
-		if depth == 0 && loc[1] != len(text) {
-			return "", false // closed before the end
-		}
-		if depth < 0 {
-			return "", false
-		}
-	}
-	if depth != 0 {
-		return "", false
-	}
-	return strings.TrimSpace(text[len(open) : len(text)-len("</pasted_content>")]), true
-}
-
 // PromptSum is the SHA-256 (hex) of a prompt's whole normalised text; "" for
 // text that normalises to nothing.
 func PromptSum(text string) string {
@@ -186,11 +158,11 @@ func PromptSums(text string) []string {
 	sum := func(x string) string { h := sha256.Sum256([]byte(x)); return hex.EncodeToString(h[:]) }
 	out := []string{sum(n)}
 	for cur := n; ; {
-		open := pasteOpen.FindString(cur)
-		if open == "" || !strings.HasSuffix(cur, "</pasted_content>") || len(cur) < len(open)+len("</pasted_content>") {
+		open, end := pasteOpen.FindString(cur), pasteEnd.FindStringIndex(cur)
+		if open == "" || end == nil || end[0] < len(open) {
 			return out
 		}
-		cur = NormalisePrompt(cur[len(open) : len(cur)-len("</pasted_content>")])
+		cur = NormalisePrompt(cur[len(open):end[0]])
 		if cur == "" {
 			return out
 		}

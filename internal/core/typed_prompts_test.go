@@ -165,6 +165,13 @@ func TestTypedPromptVariantsOfARecordedText(t *testing.T) {
 		"reflowed":       func(p string) string { return "  " + strings.ReplaceAll(p, "\n", "\n   ") + "\n\n" },
 		"bracketed":      func(p string) string { return "\x1b[200~" + p + "\x1b[201~" },
 		"pasted_content": func(p string) string { return "\n\n<pasted_content id=\"7fe6\">\n" + p + "\n</pasted_content>" },
+		// What Claude Code 2.1.328 sends: the closing tag repeats the id (WP-1562).
+		"pasted_content_id_close": func(p string) string {
+			return "\n\n<pasted_content id=\"d29a\">\n" + p + "\n</pasted_content id=\"d29a\">\n"
+		},
+		"bracketed_id_close": func(p string) string {
+			return "\x1b[200~\n\n<pasted_content id=\"d29a\">\n" + p + "\n</pasted_content id=\"d29a\">\n\x1b[201~"
+		},
 		"double_wrapper": func(p string) string {
 			return "<pasted_content id=\"a\">\n<pasted_content id=\"b\">\n" + p + "\n</pasted_content>\n</pasted_content>"
 		},
@@ -378,6 +385,8 @@ func TestNormalisePromptTable(t *testing.T) {
 		{"<pasted_content id=\"1\">\n<pasted_content>x > y</pasted_content>\n</pasted_content>", "x > y"},
 		{"<pasted_content>a</pasted_content> b <pasted_content>c</pasted_content>", "<pasted_content>a</pasted_content> b <pasted_content>c</pasted_content>"},
 		{"<pasted_content>unclosed", "<pasted_content>unclosed"},
+		{"\n\n<pasted_content id=\"d29a\">\nx > y\n</pasted_content id=\"d29a\">\n", "x > y"},
+		{"<pasted_content id=\"1\">a</pasted_content id=\"2\">", "<pasted_content id=\"1\">a</pasted_content id=\"2\">"},
 		{"", ""},
 	} {
 		if got := NormalisePrompt(tc.in); got != tc.want {
@@ -408,6 +417,7 @@ func FuzzNormalisePrompt(f *testing.F) {
 		}
 		{
 			decorated["wrapped"] = "\n<pasted_content id=\"1\">\n" + x + "\n</pasted_content>"
+			decorated["wrapped_id_close"] = "\n\n<pasted_content id=\"d29a\">\n" + x + "\n</pasted_content id=\"d29a\">\n"
 			decorated["wrapped_twice"] = "<pasted_content>\n<pasted_content id=\"2\">" + x + "</pasted_content></pasted_content>"
 		}
 		for name, d := range decorated {
@@ -439,6 +449,9 @@ func TestTypedReviewPromptWrappedStartsTheRound(t *testing.T) {
 	for name, wrap := range map[string]func(string) string{
 		"pasted_content": func(p string) string {
 			return "\n\n<pasted_content id=\"7fe6\">\n" + p + "\n</pasted_content>"
+		},
+		"pasted_content_id_close": func(p string) string {
+			return "\n\n<pasted_content id=\"d29a\">\n" + p + "\n</pasted_content id=\"d29a\">\n"
 		},
 		"reflowed":        func(p string) string { return "  " + strings.ReplaceAll(p, "\n", "\r\n  ") + "  " },
 		"bracketed_paste": func(p string) string { return "\x1b[200~" + p + "\x1b[201~" },

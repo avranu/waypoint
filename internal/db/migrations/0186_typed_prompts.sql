@@ -31,3 +31,11 @@ ALTER TABLE session_events ADD COLUMN typed_kind TEXT NOT NULL DEFAULT '';
 -- case-insensitive in SQLite, so the test is an exact, binary prefix compare.
 UPDATE session_events SET typed_kind = CASE WHEN substr(detail, 1, 29) = 'Waypoint autopilot review of ' THEN 'review' ELSE 'kickoff' END
  WHERE kind = 'prompt' AND substr(detail, 1, 18) = 'Waypoint autopilot';
+
+-- The same rows from the Claude Code that wraps a paste (2.1.328 on) kept its
+-- wrapper, its whitespace collapsed by the excerpt: "<pasted_content id=…>
+-- Waypoint autopilot…". The text starts after the opening tag's '>' (the tag
+-- holds no other), and a row cut short has lost only its closing tag.
+UPDATE session_events SET typed_kind = CASE WHEN substr(ltrim(substr(detail, instr(detail, '>') + 1)), 1, 29) = 'Waypoint autopilot review of ' THEN 'review' ELSE 'kickoff' END
+ WHERE kind = 'prompt' AND typed_kind = '' AND detail LIKE '<pasted_content%'
+   AND substr(ltrim(substr(detail, instr(detail, '>') + 1)), 1, 18) = 'Waypoint autopilot';

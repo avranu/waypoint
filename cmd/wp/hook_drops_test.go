@@ -385,3 +385,47 @@ func TestNoPromptsSendsNoIDWhenTheServerDoesntList(t *testing.T) {
 		t.Fatalf("calls = %+v", ds.calls)
 	}
 }
+
+// WP-1562 under the digest rule: a text Waypoint typed arrives wrapped as
+// Claude Code 2.1.328 wraps a paste (the id on the closing tag too), and the
+// --no-prompts hook unwraps it, compares its digest with the pending records
+// here, and sends only the matched id: neither text nor digest. A person's
+// paste with no record sends no id.
+func TestNoPromptsMatchesAWrappedTypedPrompt(t *testing.T) {
+	wrap := func(p string) string {
+		return "\n\n<pasted_content id=\"d29a\">\n" + p + "\n</pasted_content id=\"d29a\">\n"
+	}
+	review := "Waypoint autopilot review of WP-1: go, with sk-live-1234 in it"
+	pending := `[{"id":7,"sum":"` + core.PromptSum(review) + `","kind":"review"},{"id":8,"sum":"` + core.PromptSum("/compact") + `","kind":"compact"},{"id":9,"sum":"` + core.PromptSum(core.KeepWarmPing()) + `","kind":"keep_warm"}]`
+	for _, tc := range []struct {
+		name, prompt string
+		wantID       int64
+	}{
+		{"review", wrap(review), 7},
+		{"compact", wrap("/compact"), 8},
+		{"keep-warm", wrap(core.KeepWarmPing()), 9},
+		{"a person's paste", wrap("my private notes sk-live-5678"), 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := dropEnv(t)
+			ds := &dropServer{pending: pending}
+			ds.start(t)
+			s.hook(map[string]any{"session_id": "np2", "hook_event_name": "UserPromptSubmit", "prompt": tc.prompt, "cwd": t.TempDir()}, "--no-prompts")
+			ds.mu.Lock()
+			defer ds.mu.Unlock()
+			if len(ds.calls) != 1 || len(ds.calls[0]) != 1 {
+				t.Fatalf("calls = %v", ds.calls)
+			}
+			if got := ds.calls[0][0].TypedID; got != tc.wantID {
+				t.Errorf("typed_id = %d, want %d", got, tc.wantID)
+			}
+			for _, body := range ds.bodies {
+				for _, leak := range []string{"sk-live", "private notes", "prompt_sum", core.PromptSum(review), core.PromptSum(core.UnwrapPasted(tc.prompt))} {
+					if strings.Contains(body, leak) {
+						t.Errorf("the body carries %q:\n%s", leak, body)
+					}
+				}
+			}
+		})
+	}
+}

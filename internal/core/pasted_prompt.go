@@ -25,22 +25,39 @@ var (
 // early, and two pastes, which Claude Code gives the same id, stay two.
 // Anything else, text typed around a paste, comes back as it was.
 func UnwrapPasted(prompt string) string {
-	p := strings.TrimSpace(prompt)
+	if inner, ok := unwrapPasted(prompt); ok {
+		return inner
+	}
+	return prompt
+}
+
+// unwrapPasted is the one unwrapper: UnwrapPasted (the hooks and the server),
+// pasteText (stored rows) and NormalisePrompt (every digest, the server's and
+// the hook's local match) all go through it. text is one <pasted_content>
+// element from its first byte to its last (surrounding whitespace aside), and
+// inner is what is inside, trimmed. A wrapper that closes before the text
+// ends, never closes, or whose closing tag names another id isn't one round
+// the whole text.
+func unwrapPasted(text string) (inner string, ok bool) {
+	p := strings.TrimSpace(text)
 	open := pastedOpenRE.FindStringSubmatch(p)
 	if open == nil {
-		return prompt
+		return "", false
 	}
 	if id := pastedIDRE.FindStringSubmatch(open[1]); id != nil {
-		end := `</pasted_content id="` + id[1] + `">`
-		if !strings.HasSuffix(p, end) || len(p) < len(open[0])+len(end) || strings.Count(p, end) != 1 {
-			return prompt
+		// Claude Code's own form: the closing tag repeats the id, once.
+		if end := `</pasted_content id="` + id[1] + `">`; strings.HasSuffix(p, end) {
+			if len(p) < len(open[0])+len(end) || strings.Count(p, end) != 1 {
+				return "", false
+			}
+			return strings.TrimSpace(p[len(open[0]) : len(p)-len(end)]), true
 		}
-		return strings.TrimSpace(p[len(open[0]) : len(p)-len(end)])
 	}
-	// No id: the tags nest, and the first one closes at the very end.
+	// Otherwise the tags nest, closing plain, and the first one closes at the
+	// very end.
 	const end = "</pasted_content>"
 	if !strings.HasSuffix(p, end) {
-		return prompt
+		return "", false
 	}
 	depth := 0
 	for _, loc := range pastedTagsRE.FindAllStringIndex(p, -1) {
@@ -50,13 +67,13 @@ func UnwrapPasted(prompt string) string {
 			depth++
 		}
 		if depth <= 0 && loc[1] != len(p) {
-			return prompt
+			return "", false
 		}
 	}
 	if depth != 0 || len(p) < len(open[0])+len(end) {
-		return prompt
+		return "", false
 	}
-	return strings.TrimSpace(p[len(open[0]) : len(p)-len(end)])
+	return strings.TrimSpace(p[len(open[0]) : len(p)-len(end)]), true
 }
 
 // pasteText is a stored prompt's text for reading its marks: rows written

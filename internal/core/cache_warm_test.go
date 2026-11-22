@@ -291,6 +291,21 @@ func TestKeepWarmAutopilotSession(t *testing.T) {
 		t.Fatal("still autopilot's after its person kept it")
 	}
 
+	// A prompt stored before this branch kept Claude Code's paste wrapper and
+	// has no typed record: it reads as a person's, by what it says (not at
+	// all by how it opens), unless migration 0186's backfill gave it a kind
+	// (db.TestTypedPromptsBackfillReadsWrappedRows), which keeps it autopilot's.
+	be.setClock(be.clockNow().Add(time.Minute))
+	legacy := excerpt(pasted(AutopilotPromptMark+" started this session for WP-3"), 500)
+	for _, typedKind := range []string{"", TypedKickoff} {
+		if _, err := be.s.db.W.Exec(`INSERT INTO session_events (session_id, kind, detail, typed_kind, created_at) VALUES (?, 'prompt', ?, ?, ?)`, be.agent.Session, legacy, typedKind, be.clockNow().UnixMilli()); err != nil {
+			t.Fatal(err)
+		}
+		if got := be.s.unattendedSession(be.ctx, be.agent.Session); got != (typedKind != "") {
+			t.Fatalf("typed_kind %q: autopilot's = %v after its wrapped prompt %q", typedKind, got, legacy)
+		}
+		be.setClock(be.clockNow().Add(time.Minute))
+	}
 	// Its person types, then pastes something with typed text naming
 	// autopilot after it: that prompt is theirs.
 	if _, err := be.s.db.W.Exec(`UPDATE agent_sessions SET typed_at = ? WHERE id = ?`, be.clockNow().Add(30*time.Second).UnixMilli(), be.agent.Session); err != nil {
