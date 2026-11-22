@@ -1176,7 +1176,7 @@ func (s *Service) branchMovedSinceReview(ctx context.Context, actor *Actor, r *r
 	read := s.reviewedHead(ctx, r, bp)
 	if read == "" {
 		// Nothing says what the review read: a pull request can't be held to it.
-		return false, fmt.Errorf("Waypoint can't tell which commit %s's review read, so it didn't open a pull request for %s", r.key, bp.Branch)
+		return false, fmt.Errorf("waypoint can't tell which commit %s's review read, so it didn't open a pull request for %s", r.key, bp.Branch)
 	}
 	cl, ok := s.Forges.(ForgeKitReader)
 	if !ok {

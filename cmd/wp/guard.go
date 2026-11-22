@@ -55,7 +55,7 @@ func (s *State) autopilotDriven(session string) bool {
 	return session != "" && ok && time.Since(at) < unattendedMaxAge
 }
 
-// noteAttendance runs on every UserPromptSubmit, before anything that needs
+// noteAttendanceKind runs on every UserPromptSubmit, before anything that needs
 // the server: a prompt autopilot pasted (it starts with autopilotPromptMark,
 // its review prompt too) marks the session unattended; the next prompt a
 // person types clears the mark. Waypoint's other prompts (a keep-warm ping,
@@ -65,12 +65,9 @@ func (s *State) autopilotDriven(session string) bool {
 //
 // The quota guard (WP-932) counts from the same prompts: refusal is set
 // when automation's prompt reaches a session the guard stopped.
-func (c *cli) noteAttendance(in hookEventInput) (refusal string) {
-	return c.noteAttendanceKind(in, "")
-}
-
-// noteAttendanceKind is noteAttendance for a prompt the hook already matched
-// to a text Waypoint typed (its kind, "" if none or not asked): one of
+//
+// typedKind is set for a prompt the hook already matched to a text Waypoint
+// typed (its kind, "" if none or not asked): one of
 // Waypoint's own words, with no person's in it (core.TypedWaypointAlone), is
 // no person's turn, whatever it says.
 func (c *cli) noteAttendanceKind(in hookEventInput, typedKind string) (refusal string) {

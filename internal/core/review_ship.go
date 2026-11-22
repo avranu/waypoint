@@ -245,7 +245,7 @@ func (s *Service) shipSettledRounds(ctx context.Context) {
 			continue
 		}
 		out := decideRound(in)
-		if out.Do != doShip && out.Do != doShipCarried && out.Do != doRelease && out.Do != doFinish && out.Do != doReleaseAfterRunEnded && out.Do != doSettle && !(out.Do == doEnd && in.ShipSpent) {
+		if out.Do != doShip && out.Do != doShipCarried && out.Do != doRelease && out.Do != doFinish && out.Do != doReleaseAfterRunEnded && out.Do != doSettle && (out.Do != doEnd || !in.ShipSpent) {
 			continue
 		}
 		if out.Do != doEnd && !s.shipDue(ctx, id, now) {
