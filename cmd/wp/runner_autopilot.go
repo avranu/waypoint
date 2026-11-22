@@ -312,6 +312,13 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 	} else if box.text != "" {
 		return held("draft", "someone has typed into its input box (%q): it waits until that is sent or cleared", truncRunes(box.text, 40))
 	}
+	// Asked again right before the paste (WP-1572): a person who prompted
+	// since the last ask has an empty box and a busy session, which the box
+	// alone doesn't show.
+	if !p.stepWanted(ctx, in.Step, run.id) {
+		say("the step no longer wants this job: review not pasted")
+		return outcome{State: "done", Result: autopilotResult{Outcome: "unwanted"}}
+	}
 	buf := fmt.Sprintf("wp-autopilot-%d", run.id)
 	if _, err := runTmux(ctx, socket, []byte(in.Review), "load-buffer", "-b", buf, "-"); err != nil {
 		return held("screen", "the review prompt couldn't be loaded: %v", err)
@@ -320,28 +327,58 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 		return held("screen", "the review prompt couldn't be pasted: %v", err)
 	}
 	sleepCtx(ctx, reviewPasteSettle(len(in.Review)))
+	// unpaste takes the review back out of the box when the box holds only
+	// it (C-u), so nothing is left for a person to clear and a retry finds
+	// the box empty; it says whether the box is empty now.
+	unpaste := func() bool {
+		box, err := readPenBox(ctx, socket, pane)
+		if err != nil || !box.found || box.text == "" || !pastedOnly(box.text, in.Review) {
+			return err == nil && box.found && box.text == ""
+		}
+		if _, err := runTmux(ctx, socket, nil, "send-keys", "-t", pane, "C-u"); err != nil {
+			return false
+		}
+		box, err = readPenBox(ctx, socket, pane)
+		return err == nil && box.found && box.text == ""
+	}
 	// A person who prompted while it settled keeps the turn: no Enter, so the
-	// review isn't sent into it (WP-1572). What was pasted stays as a draft
-	// they can see and clear. An answer Waypoint can't give counts as no: a
-	// send into a person's turn can't be undone.
-	if !p.stepWantedOr(ctx, in.Step, run.id, false) {
-		say("the step no longer wants this job, or Waypoint couldn't say: the review was pasted and not sent")
-		return outcome{State: "done", Result: autopilotResult{Outcome: "unwanted", Warning: "the review prompt was pasted and not sent, since the session was taken while it settled, or Waypoint couldn't say it wasn't: clear it from the input box if it is still there"}}
+	// review isn't sent into it, and the paste is taken back out (WP-1572).
+	// Only a no from Waypoint is unwanted (the step is over); an answer it
+	// can't give holds the step, which retries, as the step still waits on
+	// this job: a send into a person's turn can't be undone.
+	wanted, werr := p.stepWantedAsk(ctx, in.Step, run.id)
+	if werr == nil && !wanted {
+		res := autopilotResult{Outcome: "unwanted"}
+		if !unpaste() {
+			res.Warning = "the review prompt was pasted and not sent, since the session was taken while it settled: clear it from the input box if it is still there"
+		}
+		say("the step no longer wants this job: the review was pasted and not sent")
+		return outcome{State: "done", Result: res}
+	}
+	if werr != nil {
+		left := ""
+		if !unpaste() {
+			left = "; it may still be in the input box"
+		}
+		return held("screen", "the review prompt was pasted and not sent, since Waypoint couldn't say whether the step still wants it (%v)%s", werr, left)
 	}
 	// The last look, right before Enter (WP-1572): only the pasted review
-	// may be in the box. Anything typed with it would go along; an empty box
-	// means a person's own Enter already sent it.
+	// may be in the box. Anything typed with it would go along. An empty box
+	// is a paste not shown yet (a long one renders slowly) or one a person's
+	// own Enter already sent: it is read again for up to another settle.
 	box, err := readPenBox(ctx, socket, pane)
+	for wait := time.Now().Add(reviewPasteSettle(len(in.Review))); err == nil && box.found && box.text == "" && time.Now().Before(wait); {
+		sleepCtx(ctx, autopilotPoll)
+		box, err = readPenBox(ctx, socket, pane)
+	}
 	switch {
 	case err != nil || !box.found:
-		say("the box couldn't be read before Enter: the review was pasted and not sent")
-		return outcome{State: "done", Result: autopilotResult{Outcome: "unwanted", Warning: "the review prompt was pasted and not sent, since its input box couldn't be read just before Enter: clear it from the input box if it is still there"}}
+		return held("screen", "the review prompt was pasted and not sent, since its input box couldn't be read just before Enter; it may still be in the input box")
 	case box.text == "":
 		say("the input box is empty: the paste was already sent, no Enter")
 		return outcome{State: "done", Result: autopilotResult{Outcome: "reviewing", Warning: "the review prompt's paste was already gone from the input box before Enter (someone sent it?): no Enter was sent; check the session"}}
 	case !pastedOnly(box.text, in.Review):
-		say("the input box holds more than the review (%q): pasted and not sent", truncRunes(box.text, 40))
-		return outcome{State: "done", Result: autopilotResult{Outcome: "unwanted", Warning: "the review prompt was pasted and not sent, since text was typed into the input box with it: send or clear it there"}}
+		return held("draft", "the review prompt was pasted and not sent, since text was typed into the input box with it (%q): it waits until that is sent or cleared", truncRunes(box.text, 40))
 	}
 	if _, err := runTmux(ctx, socket, nil, "send-keys", "-t", pane, "Enter"); err != nil {
 		// Pasted and not sent: the box now holds a draft, which a person
@@ -699,24 +736,25 @@ func (p *runnerProc) waitRegistered(ctx context.Context, cliID string, limit tim
 // stepWanted asks Waypoint whether the step still waits for this job. An
 // answer it can't get counts as yes: the draft and idle checks still hold.
 func (p *runnerProc) stepWanted(ctx context.Context, step, job int64) bool {
-	return p.stepWantedOr(ctx, step, job, true)
+	wanted, err := p.stepWantedAsk(ctx, step, job)
+	return wanted || err != nil
 }
 
-// stepWantedOr is stepWanted with the answer for when Waypoint can't be
-// asked. Before an Enter that would send a review it is no (WP-1572): a
-// person may have taken the session, and sending into their turn can't be
-// undone.
-func (p *runnerProc) stepWantedOr(ctx context.Context, step, job int64, unknown bool) bool {
+// stepWantedAsk is stepWanted's question, with the error when Waypoint
+// couldn't answer it. Before an Enter that would send a review that is not
+// a yes (WP-1572): a person may have taken the session, and sending into
+// their turn can't be undone.
+func (p *runnerProc) stepWantedAsk(ctx context.Context, step, job int64) (bool, error) {
 	if step == 0 || p.c.server() == "" {
-		return true
+		return true, nil
 	}
 	var r struct {
 		Wanted bool `json:"wanted"`
 	}
 	if err := p.c.callInto(ctx, "GET", fmt.Sprintf("/api/v1/autopilot/steps/%d/wanted?job=%d", step, job), nil, &r); err != nil {
-		return unknown
+		return false, err
 	}
-	return r.Wanted
+	return r.Wanted, nil
 }
 
 // autopilotEnv is the environment wp next runs with: the new session's,

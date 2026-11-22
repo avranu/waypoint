@@ -61,6 +61,9 @@ type fakeTmux struct {
 	// afterPaste is the screen once paste-buffer ran; nil is Claude Code's
 	// own: a placeholder for the paste. Enter on a paste empties the box.
 	afterPaste *string
+	// lateRender is how many captures after the paste still show an empty
+	// box: a long paste Claude Code hasn't drawn yet.
+	lateRender int
 }
 
 func (f *fakeTmux) run(ctx context.Context, socket string, stdin []byte, args ...string) (string, error) {
@@ -74,12 +77,22 @@ func (f *fakeTmux) run(ctx context.Context, socket string, stdin []byte, args ..
 	}
 	switch args[0] {
 	case "capture-pane":
+		if f.lateRender > 0 && f.pasted != "" && f.screen == screenEmpty {
+			f.lateRender--
+			if f.lateRender == 0 {
+				f.screen = screenPasted
+			}
+			return screenEmpty, nil
+		}
 		return f.screen, nil
 	case "send-keys":
 		key := args[len(args)-1]
 		f.typed = append(f.typed, key)
 		if key == "Enter" && f.pasted != "" {
 			set("status", "busy")
+			f.screen = screenEmpty
+		}
+		if key == "C-u" { // the line's text is cut: here, the paste
 			f.screen = screenEmpty
 		}
 	case "load-buffer":
@@ -233,8 +246,9 @@ func TestAutopilotReviewTakenWhilePasted(t *testing.T) {
 			return
 		}
 		asked++
-		// Wanted at the last word before typing, not once it is pasted.
-		_, _ = w.Write([]byte(`{"wanted":` + strconv.FormatBool(asked == 1) + `}`))
+		// Wanted at the last word before typing and before the paste, not
+		// once it is pasted.
+		_, _ = w.Write([]byte(`{"wanted":` + strconv.FormatBool(asked <= 2) + `}`))
 	}))
 	t.Cleanup(srv.Close)
 	t.Setenv("WAYPOINT_SERVER", srv.URL)
@@ -243,10 +257,11 @@ func TestAutopilotReviewTakenWhilePasted(t *testing.T) {
 	p := newTestProc(t, dir)
 	prompt := autopilotReviewMark + "APP-1: Grok's findings."
 	o := p.execAutopilot(context.Background(), newRun(time.Minute), autopilotJob{CLIID: "old-123", Dir: dir, Done: "APP-1", ReviewOf: "APP-1", Review: prompt, Compacted: true, Step: 7})
-	if r, _ := o.Result.(autopilotResult); o.State != "done" || r.Outcome != "unwanted" {
+	// Unwanted, and the paste taken back out (WP-1572): nothing to clear.
+	if r, _ := o.Result.(autopilotResult); o.State != "done" || r.Outcome != "unwanted" || r.Warning != "" {
 		t.Fatalf("outcome %+v", o)
 	}
-	if f.pasted != prompt || len(f.typed) != 0 || asked != 2 {
+	if f.pasted != prompt || strings.Join(f.typed, " ") != "C-u" || f.screen != screenEmpty || asked != 3 {
 		t.Errorf("pasted %q, typed %q, asked %d", f.pasted, f.typed, asked)
 	}
 }
@@ -312,12 +327,36 @@ func TestAutopilotReviewEntersWhenBoxHoldsOnlyThePaste(t *testing.T) {
 	}
 }
 
-// Waypoint not answering before Enter counts as no (WP-1572): the review is
-// left pasted, with a warning.
+// Waypoint not answering before Enter is no yes (WP-1572): no Enter, the
+// paste is taken back out, and the step is held, not left as unwanted,
+// since it still waits on this job; its retry finds the box empty.
 func TestAutopilotReviewWantedUnknownBeforeEnter(t *testing.T) {
-	f, r, prompt := reviewTypingFixture(t, nil, func(n int) (bool, bool) { return true, n == 1 }, nil)
-	if r.Outcome != "unwanted" || !strings.Contains(r.Warning, "clear") || len(f.typed) != 0 || f.pasted != prompt {
+	f, r, prompt := reviewTypingFixture(t, nil, func(n int) (bool, bool) { return true, n <= 2 }, nil)
+	if r.Outcome != "held" || r.Reason != "screen" || !strings.Contains(r.Detail, "couldn't say") || strings.Contains(r.Detail, "may still be") ||
+		strings.Join(f.typed, " ") != "C-u" || f.pasted != prompt || f.screen != screenEmpty {
 		t.Errorf("%+v typed %q pasted %q", r, f.typed, f.pasted)
+	}
+}
+
+// A person who prompted between the last ask and the paste (an empty box,
+// a busy session) gets nothing pasted into their turn (WP-1572).
+func TestAutopilotReviewUnwantedBeforePaste(t *testing.T) {
+	f, r, _ := reviewTypingFixture(t, nil, func(n int) (bool, bool) { return n == 1, true }, nil)
+	if r.Outcome != "unwanted" || f.pasted != "" || len(f.typed) != 0 {
+		t.Errorf("%+v typed %q pasted %q", r, f.typed, f.pasted)
+	}
+}
+
+// A paste Claude Code draws late is waited for, then sent (WP-1572).
+func TestAutopilotReviewPasteRendersLate(t *testing.T) {
+	after := screenEmpty
+	f, r, _ := reviewTypingFixture(t, &after, always, func(n int, f *fakeTmux) {
+		if n == 1 {
+			f.lateRender = 2
+		}
+	})
+	if r.Outcome != "reviewing" || r.Warning != "" || strings.Join(f.typed, " ") != "Enter" {
+		t.Errorf("%+v typed %q", r, f.typed)
 	}
 }
 
@@ -343,11 +382,12 @@ func TestAutopilotReviewDraftBeforePaste(t *testing.T) {
 	}
 }
 
-// Text typed after the paste, before Enter, is not sent along (WP-1572).
+// Text typed after the paste, before Enter, is not sent along, nor cut
+// (WP-1572): the step is held until it is sent or cleared.
 func TestAutopilotReviewTypedAfterPaste(t *testing.T) {
 	after := "────────\n❯ [Pasted text #1 +3 lines] and also do X\n────────\n"
 	f, r, _ := reviewTypingFixture(t, &after, always, nil)
-	if r.Outcome != "unwanted" || !strings.Contains(r.Warning, "typed") || len(f.typed) != 0 {
+	if r.Outcome != "held" || r.Reason != "draft" || !strings.Contains(r.Detail, "typed") || len(f.typed) != 0 {
 		t.Errorf("%+v typed %q", r, f.typed)
 	}
 }
