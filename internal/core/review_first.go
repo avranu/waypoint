@@ -779,8 +779,8 @@ func (s *Service) shipAudited(ctx context.Context, actor *Actor, g *reviewGate, 
 		for i, f := range todo {
 			ids[i] = f.ID
 		}
-		return false, fmt.Sprintf("%s's adversarial review is audit #%d, with %s still to decide: %s. Read them (`wp audit show %d`), mark each (`wp audit mark %s fixed -m \"what you did\"` or `wp audit mark %s rejected -m \"why\"`), then run `wp ship --pr` again; or end your turn, and the review gives them to you.",
-			g.key, a.ID, plural1(len(todo), "finding"), strings.Join(ids, ", "), a.ID, ids[0], ids[0]), nil
+		return false, fmt.Sprintf("%s's adversarial review is audit #%d, with %s still to decide: %s. Read them (`wp audit show %d`), mark each (%s), then run `wp ship --pr` again; or end your turn, and the review gives them to you.",
+			g.key, a.ID, plural1(len(todo), "finding"), strings.Join(ids, ", "), a.ID, markHint(ids[0], "why")), nil
 	}
 	items := make([]WorkIssue, 0, len(a.Findings))
 	fixed, rejected := 0, 0
