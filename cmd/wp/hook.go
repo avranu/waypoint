@@ -26,7 +26,7 @@ const (
 	hookCommand = "hook claude-report" // Stop, SessionEnd: report usage, pause the clock
 	hookResume  = "hook claude-resume" // UserPromptSubmit: restart the clock
 	hookEvent   = "hook claude-event"  // everything else: sessions and requests (WP-D16)
-	hookNudge   = "hook claude-nudge"  // PreToolUse(Bash|Read): the better tool, in one line (WP-47); notes a poll of a running background task (WP-191); never refuses (WP-1411)
+	hookNudge   = "hook claude-nudge"  // PreToolUse(Bash|Read): the better tool, in one line (WP-47); notes a poll of a running background task (WP-191); lets a Read of a project, task or scratchpad picture through unasked (WP-1137); never refuses (WP-1411)
 	hookGate    = "hook claude-gate"   // PreToolUse(Agent): forks, depth, width, model (WP-143); holds a start while Claude Code's agent limit is reached (WP-1443)
 	hookBurn    = "hook claude-burn"   // PostToolUse(all): silent unless the tree burns above $100/h (WP-144)
 	hookGuard   = "hook claude-guard"  // PreToolUse(Bash|Write|Edit|web): refuses risky calls in unattended sessions (WP-270), and the nudge refusals in every session (WP-1411)

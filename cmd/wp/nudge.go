@@ -131,8 +131,21 @@ func remoteHost(remote string) string {
 }
 
 // nudgeOutput is the PreToolUse reply: the note as context, no decision.
-func nudgeOutput(text string) []byte {
-	b, _ := json.Marshal(map[string]any{"hookSpecificOutput": map[string]string{"hookEventName": "PreToolUse", "additionalContext": text}})
+func nudgeOutput(text string) []byte { return nudgeReply(text, false) }
+
+// nudgeReply is the PreToolUse reply: the note as context, if any, and
+// "allow" for a picture the session may look at unasked (WP-1137); never a
+// refusal.
+func nudgeReply(text string, allow bool) []byte {
+	o := map[string]string{"hookEventName": "PreToolUse"}
+	if text != "" {
+		o["additionalContext"] = text
+	}
+	if allow {
+		o["permissionDecision"] = "allow"
+		o["permissionDecisionReason"] = "a picture from this project, its tasks or this session (WP-1137)"
+	}
+	b, _ := json.Marshal(map[string]any{"hookSpecificOutput": o})
 	return append(b, '\n')
 }
 
@@ -145,8 +158,9 @@ type nudgeStat struct {
 }
 
 // hookClaudeNudge handles one PreToolUse(Bash|Read) event. Silent unless the
-// call matches a rule; never fails and never refuses (WP-1411): a call the
-// guard hook refuses (hookRefusal) gets no note here.
+// call matches a rule or reads a picture the session may look at unasked
+// (WP-1137); never fails and never refuses (WP-1411): a call the guard hook
+// refuses (hookRefusal) gets no note here.
 func hookClaudeNudge(c *cli, stdin io.Reader, stdout io.Writer) {
 	var in hookEventInput
 	if err := json.NewDecoder(io.LimitReader(stdin, 4<<20)).Decode(&in); err != nil || (in.ToolName != "Bash" && in.ToolName != "Read" && in.ToolName != "Monitor") {
@@ -204,6 +218,7 @@ func hookClaudeNudge(c *cli, stdin io.Reader, stdout io.Writer) {
 	}
 	rk, _ := hookRefusalWith(in, task, func() string { return c.noopRefusalText(in) })
 	refused := rk != ""
+	allow := !refused && in.ToolName == "Read" && pictureReadAllowed(cwd, ti.FilePath)
 	// A person's pause (WP-146): told on the first call it reaches, then
 	// every few minutes, ahead of any other nudge.
 	// Not a subagent's call: it would use up the parent's slot, and the
@@ -240,8 +255,11 @@ func hookClaudeNudge(c *cli, stdin io.Reader, stdout io.Writer) {
 		r = &nudgeRule{kind: chainKind, text: chainText}
 	}
 	if r == nil {
+		if allow {
+			_, _ = stdout.Write(nudgeReply("", true))
+		}
 		return
 	}
-	_, _ = stdout.Write(nudgeOutput(r.text))
+	_, _ = stdout.Write(nudgeReply(r.text, allow))
 	c.countNudge(r.kind, hookCountWait(hookNudgeTimeout))
 }
