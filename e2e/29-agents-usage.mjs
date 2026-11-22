@@ -146,7 +146,10 @@ async function seed(api, call) {
   const forge = db
     .prepare(`INSERT INTO forges(kind, name, base_url, created_at) VALUES ('forgejo', 'Usage forge', 'http://127.0.0.1:1', ?) RETURNING id`)
     .get(now).id;
-  const project = db.prepare("SELECT id FROM projects ORDER BY id LIMIT 1").get().id;
+  // On this suite's own project: a repo on WAYP is one more than suites run
+  // after this one in the same lane expect (79-objectives' dialog then asks
+  // which repository, and its Set objective stays open).
+  const project = db.prepare("SELECT id FROM projects WHERE key = 'USG'").get().id;
   db.prepare("INSERT INTO project_repos(project_id, forge_id, repo, created_at) VALUES (?, ?, 'acme/web', ?)").run(project, forge, now);
   // ten tasks, each held by two of the sessions (WP-196's per-task view)
   const held = db.prepare("INSERT INTO agent_sessions(user_id, machine, cli_id, issue_id, started_at, last_seen_at) VALUES (?,?,?,?,?,?)");
