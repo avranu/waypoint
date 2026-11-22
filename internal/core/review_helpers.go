@@ -234,10 +234,11 @@ func (s *Service) helpersRanInRun(ctx context.Context, review *roundRow) (bool, 
 	return n == len(once), err
 }
 
-// priorPanel is the round's panel runs a new job for an audit of the round
-// can take as they are (WP-1320): the done runs of the round's reviewer
-// audits (a requeue of this one, the next model of its chain, the other
-// reviewer: request keys review-round:N, :sonnet, :other) from attempts
+// priorPanel is the round's panel runs a job for an audit of the round can
+// take as they are (WP-1320), read when a runner claims the job
+// (withPriorPanel, WP-1481): the done runs of the round's reviewer audits
+// (a requeue of this one, the next model of its chain, the other reviewer:
+// request keys review-round:N, :sonnet, :other) from attempts
 // whose reviewer didn't answer, so none was joined to a finding, with the
 // range each read. The newest of each check and range. A round's other
 // kinds of audit, and an audit that isn't a round's, get none.
@@ -251,6 +252,46 @@ func (s *Service) priorPanel(ctx context.Context, auditID int64) []AuditHelperRu
 		return nil
 	}
 	return s.roundPanelRuns(ctx, round)
+}
+
+// settleRoundSiblings reads in the finished jobs of the round's other
+// reviewer audits that no one has read in yet, before a claim looks up the
+// round's panel runs. A finished attempt's runs are recorded by settleAudit,
+// which the job's finish starts in the background: a runner that finishes
+// one audit and polls at once would otherwise claim the round's next audit
+// before those runs are on record, and run the panel again (WP-1481, audit
+// 1245.1). settleAudit takes the audit's lock and does nothing when the job
+// was read in already, so this and the background call can't both act.
+func (s *Service) settleRoundSiblings(ctx context.Context, auditID int64) {
+	var key string
+	if s.db.R.QueryRowContext(ctx, `SELECT coalesce(request_key, '') FROM code_audits WHERE id = ?`, auditID).Scan(&key) != nil {
+		return
+	}
+	round := roundOfKey(key)
+	if round == 0 {
+		return
+	}
+	num := strconv.FormatInt(round, 10)
+	rows, err := s.db.R.QueryContext(ctx, `SELECT a.id, a.job_id FROM code_audits a JOIN runner_jobs j ON j.id = a.job_id
+		WHERE a.request_key IN (?, ?, ?) AND a.id != ? AND a.status = ? AND j.state IN ('done', 'failed', 'cancelled', 'expired') ORDER BY a.id`,
+		"review-round:"+num, "review-round:"+num+":sonnet", "review-round:"+num+":other", auditID, AuditRunning)
+	if err != nil {
+		return
+	}
+	type pending struct{ audit, job int64 }
+	var todo []pending
+	for rows.Next() {
+		var p pending
+		if rows.Scan(&p.audit, &p.job) == nil {
+			todo = append(todo, p)
+		}
+	}
+	_ = rows.Close()
+	for _, p := range todo {
+		// Not the poll's context: a settle cut short by a dropped poll
+		// would leave the audit half read in.
+		s.settleAudit(context.WithoutCancel(ctx), p.audit, p.job)
+	}
 }
 
 // roundRun is a helper run of one of a round's reviewer audits, and the
@@ -685,9 +726,21 @@ func (s *Service) insertHelperRuns(ctx context.Context, t *tx, auditID int64, ru
 				continue
 			}
 			k1, k2, k3 := roundAuditKeys(round)
-			res, err := t.ExecContext(ctx, `UPDATE audit_helper_runs SET leads = ?, cut = ?, dropped = ?, cost_usd = cost_usd + ?, answered = (answered OR ?)
+			// Two attempts can reuse one run: with the round's runs read at
+			// claim (WP-1481), an attempt's requeue and the round's other
+			// reviewer, queued beside it, both take what it left. A row a
+			// reviewer has answered beside keeps its leads as that answer
+			// left them when an attempt that did not answer reports after
+			// it: that one's are unjoined, and would put back what the
+			// answer was joined to (audit 1245.3). Its reads still cost
+			// what they cost.
+			res, err := t.ExecContext(ctx, `UPDATE audit_helper_runs SET
+				leads = CASE WHEN answered AND NOT ? THEN leads ELSE ? END,
+				cut = CASE WHEN answered AND NOT ? THEN cut ELSE ? END,
+				dropped = CASE WHEN answered AND NOT ? THEN dropped ELSE ? END,
+				cost_usd = cost_usd + ?, answered = (answered OR ?)
 				WHERE id = ? AND audit_id IN (SELECT id FROM code_audits WHERE request_key IN (?, ?, ?))`,
-				asJSON(r.Leads), asJSON(r.Cut), r.Dropped, max(r.CostUSD, 0), answered, r.Row, k1, k2, k3)
+				answered, asJSON(r.Leads), answered, asJSON(r.Cut), answered, r.Dropped, max(r.CostUSD, 0), answered, r.Row, k1, k2, k3)
 			if err != nil {
 				return err
 			}

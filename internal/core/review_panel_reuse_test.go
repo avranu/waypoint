@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"strings"
@@ -137,6 +138,15 @@ func TestReusedRunWriteBack(t *testing.T) {
 	fx.s.endAudit(fx.ctx, &CodeAudit{ID: retry, Status: AuditRunning, HelperRuns: []AuditHelperRun{{Check: "goals", State: "done", Reused: true, Row: goals, CostUSD: 0, Leads: []PanelLead{conf, now}}}}, AuditDone, "", &auditAnswer{Summary: "ok"})
 	if _, _, _, cost, answered := read(goals); !answered || math.Abs(cost-0.03) > 1e-9 {
 		t.Errorf("after the answering attempt: cost %v answered %v", cost, answered)
+	}
+	// Another attempt that reused the same run and whose reviewer did not
+	// answer reports after the answering one: the row keeps what the answer
+	// was joined to, and only the cost of this attempt's reads is added
+	// (audit 1245.3).
+	fx.exec(`UPDATE code_audits SET status = 'running' WHERE id = ?`, first)
+	fx.s.requeueAudit(fx.ctx, &CodeAudit{ID: first, Status: AuditRunning, HelperRuns: []AuditHelperRun{{Check: "goals", State: "done", Reused: true, Row: goals, CostUSD: 0.01, Leads: []PanelLead{conf}, Dropped: 5}}}, 1, 0, nil)
+	if leads, _, dropped, cost, answered := read(goals); !strings.Contains(leads, `"goals.2"`) || dropped != 0 || !answered || math.Abs(cost-0.04) > 1e-9 {
+		t.Errorf("an unanswered attempt after the answering one: leads %s dropped %d cost %v answered %v", leads, dropped, cost, answered)
 	}
 	// An audit that isn't a round's can't write back to any row.
 	fx.s.requeueAudit(fx.ctx, &CodeAudit{ID: plain, Status: AuditRunning, HelperRuns: []AuditHelperRun{{Check: "goals", State: "done", Reused: true, Row: goals, CostUSD: 9, Leads: nil}}}, 1, 0, nil)
@@ -352,5 +362,192 @@ func TestUnansweredAttemptUndoesJoins(t *testing.T) {
 	runs, _ := fx.s.helperRuns(fx.ctx, id)
 	if len(runs) != 1 || len(runs[0].Leads) != 2 || len(runs[0].Cut) != 2 || !runs[0].Answered {
 		t.Errorf("an answered attempt's joins were undone: %+v", runs)
+	}
+}
+
+// A job made before any panel run existed takes the round's finished runs
+// when a runner claims it, not before; its stored input never holds them
+// (WP-1481).
+func TestPriorPanelSetAtClaim(t *testing.T) {
+	fx := newHelperFixture(t)
+	r := fx.runner(fx.admin, "devhost", func(r *RunnerRegistration) {
+		r.CLIs = []RunnerCLI{{Name: "cursor"}}
+		r.Features = []string{FeatureAudit}
+	})
+	first := fx.exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, owner_id, created_at, request_key, status) VALUES (0, 0, '', 'repo', 0, 1, 'review-round:41:sonnet', 'running')`)
+	second := fx.exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, owner_id, created_at, request_key, status) VALUES (0, 0, '', 'repo', 0, 1, 'review-round:41:other', 'running')`)
+	in, _ := json.Marshal(AgentJob{CLI: "cursor", Prompt: "audit", Repo: "https://x.test/a/b.git",
+		Helpers: &AuditHelpers{Panel: []PanelCheck{{Name: "goals"}}, CLI: "cursor", Model: "m"}})
+	mk := func(audit int64) *RunnerJob {
+		return fx.enqueue(SystemActor(), RunnerJobInput{Kind: JobAudit, OwnerID: fx.admin.User.ID, Input: in, Source: auditSource, SourceID: audit})
+	}
+	j1, j2 := mk(first), mk(second)
+
+	w := fx.poll(fx.admin, r, RunnerPoll{})
+	if w.Job == nil || w.Job.ID != j1.ID {
+		t.Fatalf("claimed %+v, want the first job", w.Job)
+	}
+	if strings.Contains(string(w.Job.Input), `"prior"`) {
+		t.Errorf("the first job's input holds prior runs: %s", w.Job.Input)
+	}
+	// The first audit's reviewer did not answer; its done checks are on record.
+	fx.s.requeueAudit(fx.ctx, &CodeAudit{ID: first, Status: AuditRunning, HelperRuns: []AuditHelperRun{
+		{Check: "goals", State: "done", From: "aaaaaaaa", To: "bbbbbbbb", CostUSD: 0.02},
+		{Check: "tests", State: "failed", From: "aaaaaaaa", To: "bbbbbbbb", Error: "x"},
+	}}, 1, 0, nil)
+
+	w = fx.poll(fx.admin, r, RunnerPoll{})
+	if w.Job == nil || w.Job.ID != j2.ID {
+		t.Fatalf("claimed %+v, want the second job", w.Job)
+	}
+	var got AgentJob
+	if err := json.Unmarshal(w.Job.Input, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Helpers == nil || len(got.Helpers.Prior) != 1 || got.Helpers.Prior[0].Check != "goals" || got.Helpers.Prior[0].From != "aaaaaaaa" || got.Helpers.Prior[0].To != "bbbbbbbb" {
+		t.Fatalf("claimed input helpers = %+v, want the first audit's done goals run with its range", got.Helpers)
+	}
+	if got.Prompt != "audit" || got.Helpers.CLI != "cursor" || len(got.Helpers.Panel) != 1 {
+		t.Errorf("the rest of the input changed: %+v", got)
+	}
+	// The run handed on is the first audit's row itself, with what it cost.
+	var row int64
+	_ = fx.s.db.R.QueryRowContext(fx.ctx, `SELECT id FROM audit_helper_runs WHERE audit_id = ? AND check_name = 'goals'`, first).Scan(&row)
+	if p := got.Helpers.Prior[0]; row == 0 || p.Row != row || p.State != "done" || p.CostUSD != 0.02 {
+		t.Errorf("prior run = %+v, want row %d, done, at 0.02", p, row)
+	}
+	var stored string
+	_ = fx.s.db.R.QueryRowContext(fx.ctx, `SELECT input FROM runner_jobs WHERE id = ?`, j2.ID).Scan(&stored)
+	if strings.Contains(stored, `"prior"`) {
+		t.Errorf("stored input = %s, want no prior runs", stored)
+	}
+	// Nor are they put on the audit that claimed them: the run stays the
+	// first audit's record alone (audit 1244.14).
+	var copied int
+	_ = fx.s.db.R.QueryRowContext(fx.ctx, `SELECT count(*) FROM audit_helper_runs WHERE audit_id = ?`, second).Scan(&copied)
+	if copied != 0 {
+		t.Errorf("%d panel runs recorded on the claiming audit, want none", copied)
+	}
+}
+
+// withPriorPanel leaves an input alone when there is nothing to add, and
+// keeps fields it doesn't know; the claim calls it for an audit's own job
+// only, so a command job and a job of another source are claimed as queued.
+func TestWithPriorPanelLeavesInput(t *testing.T) {
+	fx := newHelperFixture(t)
+	a := fx.exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, owner_id, created_at, request_key, status) VALUES (0, 0, '', 'repo', 0, 1, 'review-round:42:sonnet', 'running')`)
+	b := fx.exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, owner_id, created_at, request_key, status) VALUES (0, 0, '', 'repo', 0, 1, 'review-round:42:other', 'running')`)
+	fx.s.requeueAudit(fx.ctx, &CodeAudit{ID: a, Status: AuditRunning, HelperRuns: []AuditHelperRun{{Check: "goals", State: "done", From: "aaaaaaaa", To: "bbbbbbbb"}}}, 1, 0, nil)
+	for _, in := range []string{
+		`{"cli":"cursor",  "prompt":"p", "helpers":{"cli":"cursor","model":"m"}}`, // no panel
+		`{"cli":"cursor", "prompt":"p"}`,                                          // no helpers
+		`{"helpers":{"panel":[]}}`,                                                // empty panel
+		`{"prompt":"p","helpers":null}`,                                           // helpers null
+		`{"helpers":{"panel":"goals"}}`,                                           // a panel that isn't a list
+		`not json`,
+	} {
+		if got := string(fx.s.withPriorPanel(fx.ctx, json.RawMessage(in), b)); got != in {
+			t.Errorf("input %s became %s", in, got)
+		}
+	}
+	// A job that isn't an audit's is never touched by the claim.
+	r := fx.runner(fx.admin, "cmdhost", nil)
+	cmd := cmdInput("make check", "/work")
+	fx.enqueue(fx.admin, RunnerJobInput{Kind: JobCommand, Input: cmd})
+	if w := fx.poll(fx.admin, r, RunnerPoll{}); w.Job == nil || string(w.Job.Input) != string(cmd) {
+		t.Errorf("a command job's input = %+v, want %s", w.Job, cmd)
+	}
+	// A panel and nothing finished in the audit's round: as it came, byte
+	// for byte (audit 1245.18).
+	lone := fx.exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, owner_id, created_at, request_key, status) VALUES (0, 0, '', 'repo', 0, 1, 'review-round:45:other', 'running')`)
+	withPanel := `{"prompt":"p",  "helpers":{"panel":[{"name":"goals"}],"model":"m"}}`
+	if got := string(fx.s.withPriorPanel(fx.ctx, json.RawMessage(withPanel), lone)); got != withPanel {
+		t.Errorf("with nothing finished, input %s became %s", withPanel, got)
+	}
+	// Only an audit's own job is given prior runs: a job of another source
+	// whose source id happens to be an audit's, with a panel in its input,
+	// is claimed as it was queued.
+	ar := fx.runner(fx.admin, "audithost", func(r *RunnerRegistration) {
+		r.CLIs = []RunnerCLI{{Name: "cursor"}}
+		r.Features = []string{FeatureAudit}
+	})
+	other, _ := json.Marshal(AgentJob{CLI: "cursor", Prompt: "audit", Repo: "https://x.test/a/b.git",
+		Helpers: &AuditHelpers{Panel: []PanelCheck{{Name: "goals"}}, CLI: "cursor", Model: "m"}})
+	oj := fx.enqueue(SystemActor(), RunnerJobInput{Kind: JobAudit, OwnerID: fx.admin.User.ID, Input: other, Source: "manual", SourceID: b})
+	if w := fx.poll(fx.admin, ar, RunnerPoll{}); w.Job == nil || w.Job.ID != oj.ID || strings.Contains(string(w.Job.Input), `"prior"`) {
+		t.Errorf("a job that isn't an audit's got prior runs: %+v", w.Job)
+	}
+	// Fields this version doesn't know survive.
+	in := `{"future":{"x":[1,2]},"helpers":{"panel":[{"name":"goals"}],"later":7}}`
+	got := string(fx.s.withPriorPanel(fx.ctx, json.RawMessage(in), b))
+	if !strings.Contains(got, `"future":{"x":[1,2]}`) || !strings.Contains(got, `"later":7`) || !strings.Contains(got, `"prior":[`) {
+		t.Errorf("got %s", got)
+	}
+}
+
+// A runner that finishes one of a round's audits and polls at once claims
+// the round's next audit before the background settle has recorded the
+// first one's panel runs: the claim reads the finished job in itself, so
+// the runs are there to reuse (audit 1245.1).
+func TestClaimSettlesFinishedSiblingFirst(t *testing.T) {
+	fx := newHelperFixture(t)
+	r := fx.runner(fx.admin, "devhost", func(r *RunnerRegistration) {
+		r.CLIs = []RunnerCLI{{Name: "cursor"}}
+		r.Features = []string{FeatureAudit}
+	})
+	// A project of its own: settleAudit reads the audit with its project.
+	proj := fx.project(fx.admin, "Settle", "kanban")
+	first := fx.exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, owner_id, created_at, request_key, status) VALUES (?, 0, '', 'repo', 0, 1, 'review-round:43:sonnet', 'running')`, proj.ID)
+	second := fx.exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, owner_id, created_at, request_key, status) VALUES (?, 0, '', 'repo', 0, 1, 'review-round:43:other', 'running')`, proj.ID)
+	in, _ := json.Marshal(AgentJob{CLI: "cursor", Prompt: "audit", Repo: "https://x.test/a/b.git",
+		Helpers: &AuditHelpers{Panel: []PanelCheck{{Name: "goals"}}, CLI: "cursor", Model: "m"}})
+	mk := func(audit int64) *RunnerJob {
+		return fx.enqueue(SystemActor(), RunnerJobInput{Kind: JobAudit, OwnerID: fx.admin.User.ID, Input: in, Source: auditSource, SourceID: audit})
+	}
+	j1, j2 := mk(first), mk(second)
+	if w := fx.poll(fx.admin, r, RunnerPoll{}); w.Job == nil || w.Job.ID != j1.ID {
+		t.Fatalf("claimed %+v, want the first job", w.Job)
+	}
+	// The first job ended with its reviewer unanswered and its goals check
+	// done, and nothing has read it into its audit yet: the state between
+	// the finish and the background settle.
+	fx.exec(`UPDATE code_audits SET job_id = ? WHERE id = ?`, j1.ID, first)
+	fx.exec(`UPDATE runner_jobs SET state = 'failed', error = 'the model did not answer', finished_at = 2, result = ? WHERE id = ?`,
+		`{"helpers":[{"check":"goals","state":"done","from":"aaaaaaaa","to":"bbbbbbbb"}]}`, j1.ID)
+
+	w := fx.poll(fx.admin, r, RunnerPoll{})
+	if w.Job == nil || w.Job.ID != j2.ID {
+		t.Fatalf("claimed %+v, want the second job", w.Job)
+	}
+	var got AgentJob
+	if err := json.Unmarshal(w.Job.Input, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Helpers == nil || len(got.Helpers.Prior) != 1 || got.Helpers.Prior[0].Check != "goals" || got.Helpers.Prior[0].To != "bbbbbbbb" {
+		t.Fatalf("claimed input helpers = %+v, want the first audit's goals run, read in by the claim", got.Helpers)
+	}
+	// The audit this job is for is running too, with this job: it is not
+	// read in by its own claim.
+	var status string
+	_ = fx.s.db.R.QueryRowContext(fx.ctx, `SELECT status FROM code_audits WHERE id = ?`, second).Scan(&status)
+	if status != AuditRunning {
+		t.Errorf("the claimed job's own audit is %s, want running", status)
+	}
+}
+
+// A job queued before prior runs were set at claim holds a prior list in its
+// stored input. With nothing left to reuse, the claim drops it: the runner
+// would take those runs as they are, though a reviewer has answered beside
+// them since (audit 1245.4).
+func TestClaimDropsStaleStoredPrior(t *testing.T) {
+	fx := newHelperFixture(t)
+	b := fx.exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, owner_id, created_at, request_key, status) VALUES (0, 0, '', 'repo', 0, 1, 'review-round:44:other', 'running')`)
+	in := `{"prompt":"p","helpers":{"panel":[{"name":"goals"}],"prior":[{"check":"goals","state":"done","from":"aaaaaaaa","to":"bbbbbbbb"}],"model":"m"}}`
+	got := string(fx.s.withPriorPanel(fx.ctx, json.RawMessage(in), b))
+	if strings.Contains(got, `"prior"`) {
+		t.Errorf("claimed input still holds the stored prior list: %s", got)
+	}
+	if !strings.Contains(got, `"panel":[{"name":"goals"}]`) || !strings.Contains(got, `"model":"m"`) || !strings.Contains(got, `"prompt":"p"`) {
+		t.Errorf("the rest of the input changed: %s", got)
 	}
 }

@@ -3,7 +3,7 @@
 // its reasoning folded away, and each tool call as a quiet card that opens
 // to show what went in and what came back.
 
-import { memo, useMemo, useState, type ReactNode } from 'react'
+import { memo, useState, type ReactNode } from 'react'
 import clsx from 'clsx'
 import {
   Brain,
@@ -24,29 +24,13 @@ import {
   Wrench,
   X,
 } from 'lucide-react'
-import { renderMarkdown } from '@/lib/markdown'
 import { copyText } from '@/lib/clipboard'
 import { dateTime } from '@/lib/format'
 import { iso } from '@/lib/assistant'
+import { Markdown } from '@/components/Markdown'
 import { Spinner } from '@/components/ui/button'
 import { toast } from '@/components/ui/toast'
 import type { LiveItem, LiveTurn, Row, Todo, ToolItem } from './chat-state'
-
-export const Markdown = memo(function Markdown({
-  text,
-  className,
-}: {
-  text: string
-  className?: string
-}) {
-  const html = useMemo(() => renderMarkdown(text, { untrusted: true }), [text])
-  return (
-    <div
-      className={clsx('prose-wp break-words text-[14px] leading-relaxed', className)}
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
-  )
-})
 
 function toolIcon(name: string): ReactNode {
   const n = name.toLowerCase()

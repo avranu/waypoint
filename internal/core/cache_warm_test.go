@@ -477,6 +477,19 @@ func TestKeepWarmCompactsAnUnmergedSession(t *testing.T) {
 	if _, err := be.s.db.W.Exec(`DELETE FROM agent_runs WHERE session_id IS NULL AND issue_id = ?`, task.ID); err != nil {
 		t.Fatal(err)
 	}
+	// A run a diagnosis ended shipped nothing (WP-1449): nothing of it is on
+	// its way to a merge.
+	for _, c := range []struct {
+		outcome string
+		holds   bool
+	}{{RunDiagnosed, false}, {"done", true}} {
+		if _, err := be.s.db.W.Exec(`UPDATE agent_runs SET outcome = ? WHERE session_id = ? AND issue_id = ?`, c.outcome, be.agent.Session, task.ID); err != nil {
+			t.Fatal(err)
+		}
+		if got := be.s.holdsUnmerged(be.ctx, be.agent.Session); got != c.holds {
+			t.Errorf("a run that ended %q: holds unmerged work = %v, want %v", c.outcome, got, c.holds)
+		}
+	}
 	// Merged: the task is done.
 	if _, err := be.s.db.W.Exec(`UPDATE issues SET status_id = (SELECT id FROM statuses WHERE category = 'done' ORDER BY id LIMIT 1) WHERE id = ?`, task.ID); err != nil {
 		t.Fatal(err)

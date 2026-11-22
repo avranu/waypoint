@@ -229,6 +229,23 @@ func (s *Service) objectiveTell(ctx context.Context, e *Event, what string) {
 		case told == 0 || o.Stalled >= 2*told:
 			told = o.Stalled
 			title = fmt.Sprintf("%s: %s without getting nearer its objective", o.Key, plural1(o.Stalled, "round"))
+			// A diagnosis that stood when this was emitted was written for the
+			// rounds before it: say so, and how many rounds since were read
+			// and came no nearer in a row. That is the event's no_better (a
+			// recorded diagnosis zeroes it), never the stall count: a round
+			// that landed nothing counts as stalled but was never read, so it
+			// is no evidence the diagnosis failed.
+			if did := eventInt64(e.Data["diagnosis"]); did != 0 {
+				var dround int
+				if err := s.db.R.QueryRowContext(ctx, `SELECT round_no FROM objective_rounds WHERE id = ?`, did).Scan(&dround); err == nil {
+					body += fmt.Sprintf(". A diagnosis was recorded in round %d", dround)
+					if read := eventInt64(e.Data["no_better"]); read > 0 {
+						body += fmt.Sprintf(", and since then Waypoint has read %s that came no nearer", plural1(int(read), "round"))
+					} else {
+						body += ", and it stands"
+					}
+				}
+			}
 			body += fmt.Sprintf(". It goes on, with a longer wait between rounds; wp objective show %s has what each round read, and wp objective end %s ends it.", o.Key, o.Key)
 		}
 		if told != o.stalledTold {
@@ -242,7 +259,7 @@ func (s *Service) objectiveTell(ctx context.Context, e *Event, what string) {
 		return
 	}
 	for _, id := range s.objectivePeople(ctx, o) {
-		if e.Actor == nil || e.Actor.ID != id {
+		if e.Actor == nil || e.Actor.ID != id || e.Data[eventTellActor] == true {
 			s.notify(ctx, id, e, NotifyObjective, title, body)
 		}
 	}
