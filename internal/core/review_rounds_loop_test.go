@@ -201,6 +201,40 @@ func TestReviewRoundsLoopUntilRepeats(t *testing.T) {
 	if s, l := scoring(); fmt.Sprint(s, l) != "[1 1 1] [1 0 0]" {
 		t.Errorf("with round 1 read by labels: scoring %v, labels %v", s, l)
 	}
+	// The SIGNAL column counts the decisions a signal called (WP-1569): a
+	// high or critical signal, the mediums reaching what the round needed,
+	// any signal on a round read by labels alone, or a decision from before
+	// the weighing (need 0) with any signal.
+	signalled := func(set string) string {
+		for i, round := range []int64{r1, r2, r3} {
+			if _, err := e.s.db.W.Exec(`UPDATE review_again_decisions SET `+strings.Fields(set)[i]+` WHERE round_id = ?`, round); err != nil {
+				t.Fatal(err)
+			}
+		}
+		byRound, _, err := e.s.againReport(e.ctx, "1 = 1", nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []int
+		for _, r := range byRound {
+			got = append(got, r.Signalled)
+		}
+		return fmt.Sprint(got)
+	}
+	// round 1 from before the weighing, round 2 one medium short of its 2,
+	// round 3 one high.
+	if got := signalled("signals=1,need=0,weight=0,serious=0 signals=1,need=2,weight=1,serious=0 signals=1,need=4,weight=0,serious=1"); got != "[1 0 1]" {
+		t.Errorf("signalled by round = %s, want [1 0 1]", got)
+	}
+	// round 2 with its two mediums, round 3 with one medium short of 4.
+	if got := signalled("signals=0,need=1,weight=0,serious=0 signals=2,need=2,weight=2,serious=0 signals=1,need=4,weight=1,serious=0"); got != "[0 1 0]" {
+		t.Errorf("signalled by round = %s, want [0 1 0]", got)
+	}
+	// round 2 read by labels alone, its one medium short of 2: the loop's
+	// one round read that way is called by any signal, as why() says.
+	if got := signalled("signals=0,need=1,weight=0,serious=0,labels=0 signals=1,need=2,weight=1,serious=0,labels=1 signals=1,need=4,weight=1,serious=0,labels=0"); got != "[0 1 0]" {
+		t.Errorf("signalled by round = %s, want [0 1 0]", got)
+	}
 }
 
 // withFloor sets every stakes tier's signal floor (againFloors) to floor
