@@ -44,7 +44,8 @@ the runner's token stay behind. --env NAME passes one more.
 It also uploads Claude Code usage and prepares queued tasks, and updates wp
 between jobs to the server's version; the --no-* flags turn each off.
 On Linux --max-jobs is a ceiling: it takes fewer while the machine is busy
-(wp runner status shows how many and why).
+(wp runner status shows how many and why). A job that has waited over a
+minute for a test slot doesn't count toward it, one such job at a time.
 
 Needs wp auth login first, as you. wp runner install starts it at login
 (systemd user unit, launchd agent); wp setup does that and the hooks.`,
@@ -676,10 +677,7 @@ func (p *runnerProc) start(ctx context.Context, job *claimedJob) {
 			p.mu.Lock()
 			delete(p.jobs, job.ID)
 			p.mu.Unlock()
-			select {
-			case p.freed <- struct{}{}:
-			default:
-			}
+			p.wake()
 		}()
 		p.runJob(jctx, aj, job)
 	}()

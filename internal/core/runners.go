@@ -133,7 +133,13 @@ const FeatureGatewayLane = "gateway_lane"
 // (SessionJob.Kickoff, WP-1037).
 const FeatureTaskKickoff = "task_kickoff"
 
-var runnerFeatures = []string{FeatureConfine, FeatureAutopilot, FeatureAutopilotStart, FeatureAudit, FeatureAutopilotReview, FeatureRequestLane, FeatureMessageLane, FeatureGatewayAudit, FeatureGatewayLane, FeatureSandboxDrill, FeatureTaskKickoff, FeatureObjective}
+// FeatureWorkClock: the runner's wp stops an agent job at its work limit
+// (AgentJob.WorkTimeout), leaving its commands' waits for a test slot out.
+// One without it gets the work limit as the job's whole limit at the claim,
+// as before WP-1618.
+const FeatureWorkClock = "work_clock"
+
+var runnerFeatures = []string{FeatureWorkClock, FeatureConfine, FeatureAutopilot, FeatureAutopilotStart, FeatureAudit, FeatureAutopilotReview, FeatureRequestLane, FeatureMessageLane, FeatureGatewayAudit, FeatureGatewayLane, FeatureSandboxDrill, FeatureTaskKickoff, FeatureObjective}
 
 // runnerState is the Service's in-memory part of runners: a broadcast that
 // wakes held polls, and when each job's last live update went out.
@@ -809,8 +815,10 @@ func runnerCanTake(r *Runner, n jobNeeds) bool {
 // requests, then the other audits. Each lists its jobs oldest first; the
 // parameters are the owner, the runner, JobAudit, auditSource, the id to
 // start after and a page size.
+const claimUrgent = 0 // claimOrder's first: the rounds of urgent pull requests
+
 var claimOrder = []string{
-	`SELECT id, kind, source, label, dir, cli, ` + jobFeatureCol + ` FROM runner_jobs WHERE owner_id = ?1 AND state = 'queued' AND (target_runner_id IS NULL OR target_runner_id = ?2)
+	claimUrgent: `SELECT id, kind, source, label, dir, cli, ` + jobFeatureCol + ` FROM runner_jobs WHERE owner_id = ?1 AND state = 'queued' AND (target_runner_id IS NULL OR target_runner_id = ?2)
 		AND kind != ?3 AND ` + urgentRoundJob + ` AND id > ?5 ORDER BY id LIMIT ?6`,
 	`SELECT id, kind, source, label, dir, cli, ` + jobFeatureCol + ` FROM runner_jobs WHERE owner_id = ?1 AND state = 'queued' AND (target_runner_id IS NULL OR target_runner_id = ?2)
 		AND kind != ?3 AND id > ?5 ORDER BY id LIMIT ?6`,
@@ -912,8 +920,10 @@ func (s *Service) queuedFrontRounds(ctx context.Context, owner int64) ([]frontRo
 }
 
 // frontRounds lists up to ten queued rounds at the front of a merge line
-// that the runner may take, in queuedFrontRounds's order, with the same
-// per-job limits claimable applies.
+// that the runner may take, in queuedFrontRounds's order: those not kept
+// for another runner, of a lane the poll asks for, that the runner has the
+// CLI for. A round is never a gateway job (EnqueueRunnerJob), so
+// claimable's limit on those has nothing to hold here.
 func (s *Service) frontRounds(ctx context.Context, r *Runner, lanes []string) ([]int64, error) {
 	all, err := s.queuedFrontRounds(ctx, r.Owner.ID)
 	if err != nil {
@@ -951,7 +961,7 @@ func (s *Service) claimRunnerJob(ctx context.Context, actor *Actor, r *Runner, l
 	var ids []int64
 	var err error
 	for i, q := range claimOrder {
-		if i == 1 {
+		if i == claimUrgent+1 { // the fronts' rounds come right after the urgent ones
 			if ids, err = s.frontRounds(ctx, r, lanes); err != nil || len(ids) > 0 {
 				break
 			}
@@ -983,6 +993,14 @@ func (s *Service) claimRunnerJob(ctx context.Context, actor *Actor, r *Runner, l
 				return err
 			}
 			c.Input = json.RawMessage(input)
+			if !slices.Contains(r.Features, FeatureWorkClock) {
+				var in struct {
+					WorkTimeout int `json:"work_timeout"`
+				}
+				if json.Unmarshal(c.Input, &in) == nil && in.WorkTimeout > 0 && in.WorkTimeout < c.Timeout {
+					c.Timeout = in.WorkTimeout
+				}
+			}
 			c.Lane, _ = claimLane(r, jobNeeds{kind: c.Kind, source: source, cli: cli}, lanes)
 			if agent, ok := jobTokenAgent(c.Kind, c.Input); ok {
 				if c.Token, err = t.mintJobToken(ctx, c.ID, r.Owner.ID, agent, c.Timeout); err != nil {

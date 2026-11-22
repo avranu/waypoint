@@ -58,14 +58,8 @@ func (s *Service) CheckFrontRounds(ctx context.Context) {
 			if err := s.db.R.QueryRowContext(ctx, `SELECT p.repo, p.number FROM babysits b JOIN pull_requests p ON p.id = b.pr_id WHERE b.id = ?`, j.SourceID).Scan(&repo, &number); err != nil {
 				continue
 			}
-			ahead := -1
-			if _, online, err := s.runnersFor(ctx, j); err == nil {
-				if n, err := s.jobsAhead(ctx, j, online); err == nil {
-					ahead = n
-				}
-			}
 			s.log.WarnContext(ctx, "front round queued", "repo", repo, "number", number, "job", j.ID,
-				"queued_minutes", int(s.now().Sub(j.CreatedAt).Minutes()), "jobs_ahead", ahead, "why", s.queuedWhy(ctx, j))
+				"queued_minutes", int(s.now().Sub(j.CreatedAt).Minutes()), "jobs_ahead", s.aheadOf(ctx, j), "why", s.queuedWhy(ctx, j))
 		}
 	}
 }

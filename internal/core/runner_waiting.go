@@ -96,6 +96,20 @@ func (s *Service) queuedWhy(ctx context.Context, j *RunnerJobInfo) string {
 	return out
 }
 
+// aheadOf is jobsAhead for queued job j among the runners online that may
+// take it, or -1 when that can't be read.
+func (s *Service) aheadOf(ctx context.Context, j *RunnerJobInfo) int {
+	_, online, err := s.runnersFor(ctx, j)
+	if err != nil {
+		return -1
+	}
+	n, err := s.jobsAhead(ctx, j, online)
+	if err != nil {
+		return -1
+	}
+	return n
+}
+
 // runnersFor lists the owner's runners that may take queued job j, and of
 // them those online.
 func (s *Service) runnersFor(ctx context.Context, j *RunnerJobInfo) (mine, online []*Runner, err error) {

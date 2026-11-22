@@ -181,8 +181,7 @@ func TestBabysitWaitSaysQueuedRound(t *testing.T) {
 	if want := "round 1: queued, waiting for the runner since " + at + " UTC (next in line; job #"; b.State != BabysitWorking || !strings.Contains(b.Wait, want) {
 		t.Fatalf("wait %q, want it to contain %q", b.Wait, want)
 	}
-	ahead := be.enqueue(be.admin, RunnerJobInput{Kind: JobCommand, Input: cmdInput("a", "/work")})
-	_ = ahead
+	be.enqueue(be.admin, RunnerJobInput{Kind: JobCommand, Input: cmdInput("a", "/work")})
 	// An older job of the owner is ahead of a round that isn't at a line's front
 	// only by id; here the round is the babysit's own, at the front of its line.
 	runners, _ := be.s.ownerRunners(be.ctx, be.admin.User.ID)
@@ -283,8 +282,8 @@ func TestDoctorBottleneckRunner(t *testing.T) {
 	doctorBottleneck(d)
 	bn := d.Bottleneck
 	if bn.Kind != "runner" || bn.Repo != "acme/app" ||
-		bn.Summary != "The runner: acme/app's front #12 has had a round queued since 09:30 UTC (10m), 2 jobs ahead" ||
-		len(bn.Evidence) != 2 || !strings.Contains(bn.Evidence[0], "laptop runs 1 job") || bn.Evidence[1] != "3 pull requests wait behind it" {
+		bn.Summary != "The runner: acme/app's front #12 has had a round queued since 09:30 UTC (10m): laptop runs 1 job at once; it is running a babysit round" ||
+		len(bn.Evidence) != 1 || bn.Evidence[0] != "3 pull requests wait behind it" {
 		t.Errorf("bottleneck = %+v", bn)
 	}
 	d = &CIDoctor{Lines: []CILine{line(120)}}

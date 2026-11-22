@@ -63,8 +63,10 @@ type slotHold struct{ f *os.File }
 func (h *slotHold) release() { _ = h.f.Close() }
 
 // acquireSlot waits for one of n slots called name. notify gets called once
-// if the wait passes slotWaitNotice.
+// if the wait passes slotWaitNotice. Inside an agent job the wait is noted
+// for the runner (WP-1618): its work clock leaves slot waits out.
 func acquireSlot(ctx context.Context, name string, n int, notify func()) (*slotHold, error) {
+	defer noteSlotWait(name)()
 	dir, err := slotDir()
 	if err != nil {
 		return nil, err
@@ -334,11 +336,9 @@ func (c *cli) takeSlot(ctx context.Context, name string, n int) (env []string, r
 	if slotHeld(name) {
 		return env, func() {}, nil
 	}
-	done := noteSlotWait(name) // WP-1618: an agent job's work clock leaves slot waits out
 	hold, err := acquireSlot(ctx, name, n, func() {
 		_, _ = fmt.Fprintf(c.err, "wp slot: waiting for a free %q slot (%d on this host; wp slot ls shows who has them)\n", name, n)
 	})
-	done()
 	if err != nil {
 		return nil, nil, err
 	}

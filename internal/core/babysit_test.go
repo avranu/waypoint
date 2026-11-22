@@ -434,7 +434,7 @@ func TestBabysitFailedCheckRounds(t *testing.T) {
 	_ = be.s.db.R.QueryRow(`SELECT timeout FROM runner_jobs WHERE id = ?`, jobs[2]).Scan(&timeout)
 	// The assessor's own time is its work; the job's limit leaves room for
 	// its commands' waits for a test slot (WP-1618).
-	if in := be.jobInput(jobs[2]); in.WorkTimeout != assessorJobTimeout || timeout != roundWallTimeout(assessorJobTimeout) {
+	if in := be.jobInput(jobs[2]); in.WorkTimeout != 5400 || timeout != 7200 {
 		t.Errorf("assessor work timeout %d, job timeout %d", in.WorkTimeout, timeout)
 	}
 	// The assessor leaves it too: out of the merge line, resting, nobody

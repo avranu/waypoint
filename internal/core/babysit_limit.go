@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"time"
 
@@ -158,23 +159,44 @@ func takeBackRound(b *Babysit, i int) BabysitRound {
 // current job, when no runner has the job yet and the head it was for has
 // moved on: a push makes it stale, and what the new head needs is decided
 // afresh once its checks settle (WP-1618, WP-ADR149). The job is cancelled
-// and the babysit let go of it in one write, so the job's end
-// isn't recorded as the round's outcome. A job a runner has taken is never
-// touched. It reports whether the round was withdrawn.
-func (s *Service) withdrawQueuedRound(ctx context.Context, b *Babysit, pr *PullRequest, jobID int64, oldHead string) bool {
+// and the babysit recorded without the round in one write, so the job's end
+// isn't recorded as the round's outcome and the stored babysit is never
+// left with half of it. The wait's clock starts again: the round that
+// replaces this one hasn't waited since this one was queued. A job a runner
+// has taken is never touched. It reports whether the round was withdrawn; b
+// is changed only when it was.
+func (s *Service) withdrawQueuedRound(ctx context.Context, b *Babysit, pr *PullRequest, jobID int64) bool {
+	// Most jobs a step asks about are running: no write for those.
+	var state string
+	if err := s.db.R.QueryRowContext(ctx, `SELECT state FROM runner_jobs WHERE id = ?`, jobID).Scan(&state); err != nil || state != "queued" {
+		return false
+	}
+	nb := &Babysit{Rounds: slices.Clone(b.Rounds), Round: b.Round, RoundSHA: b.RoundSHA, streaks: maps.Clone(b.streaks), prevStreaks: b.prevStreaks}
+	if i := slices.IndexFunc(nb.Rounds, func(r BabysitRound) bool { return r.Job == jobID }); i >= 0 {
+		takeBackRound(nb, i)
+	}
+	rounds, _ := json.Marshal(nb.Rounds)
+	st, _ := json.Marshal(nb.streaks)
+	now := s.now()
 	cancelled := false
-	err := s.write(context.WithoutCancel(ctx), SystemActor(), func(t *tx) error {
-		var state string
-		if err := t.QueryRowContext(ctx, `SELECT state FROM runner_jobs WHERE id = ?`, jobID).Scan(&state); err != nil || state != "queued" {
+	wctx := context.WithoutCancel(ctx)
+	err := s.write(wctx, SystemActor(), func(t *tx) error {
+		cancelled = false
+		if err := t.QueryRowContext(wctx, `SELECT state FROM runner_jobs WHERE id = ?`, jobID).Scan(&state); err != nil || state != "queued" {
 			return err
 		}
-		cancelled = true
 		// In the same write as the cancel, so whoever hears of the job's
 		// end finds it is no longer the babysit's and records no outcome.
-		if _, err := t.ExecContext(ctx, `UPDATE babysits SET job_id = NULL WHERE id = ? AND job_id = ?`, b.ID, jobID); err != nil {
+		res, err := t.ExecContext(wctx, `UPDATE babysits SET job_id = NULL, round = ?, round_sha = ?, rounds = ?, streaks = ?, wait_at = ?, updated_at = ? WHERE id = ? AND job_id = ?`,
+			nb.Round, nb.RoundSHA, string(rounds), string(st), now.UnixMilli(), now.UnixMilli(), b.ID, jobID)
+		if err != nil {
 			return err
 		}
-		return t.finishRunnerJob(ctx, jobID, "cancelled", nil, nil, "Withdrawn: the pull request was pushed to before a runner took the round.")
+		if n, _ := res.RowsAffected(); n == 0 {
+			return nil // no longer this babysit's job
+		}
+		cancelled = true
+		return t.finishRunnerJob(wctx, jobID, "cancelled", nil, nil, "Withdrawn: the pull request was pushed to before a runner took the round.")
 	})
 	if err != nil {
 		s.log.WarnContext(ctx, "withdraw a queued babysit round", "pr", pr.ID, "job", jobID, "err", err)
@@ -183,16 +205,8 @@ func (s *Service) withdrawQueuedRound(ctx context.Context, b *Babysit, pr *PullR
 	if !cancelled {
 		return false
 	}
-	if i := slices.IndexFunc(b.Rounds, func(r BabysitRound) bool { return r.Job == jobID }); i >= 0 {
-		takeBackRound(b, i)
-	}
-	b.JobID = 0
-	rounds, _ := json.Marshal(b.Rounds)
-	st, _ := json.Marshal(b.streaks)
-	if _, err := s.db.W.ExecContext(ctx, `UPDATE babysits SET job_id = NULL, round = ?, round_sha = ?, rounds = ?, streaks = ?, updated_at = ? WHERE id = ?`,
-		b.Round, b.RoundSHA, string(rounds), string(st), s.nowMS(), b.ID); err != nil {
-		s.log.WarnContext(ctx, "record a babysit round", "babysit", b.ID, "err", err)
-	}
+	oldHead := b.RoundSHA
+	b.Rounds, b.Round, b.RoundSHA, b.streaks, b.JobID, b.WaitSince = nb.Rounds, nb.Round, nb.RoundSHA, nb.streaks, 0, now
 	s.log.Info("queued babysit round withdrawn: the head moved before a runner took it", "pr", pr.ID, "job", jobID, "old_head", short(oldHead), "new_head", short(pr.HeadSHA))
 	s.kickRunners()
 	return true

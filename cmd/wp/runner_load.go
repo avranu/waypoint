@@ -14,7 +14,8 @@ import (
 )
 
 // The runner takes as many jobs as its machine has room for (WP-366,
-// WP-ADR27). --max-jobs is the ceiling; between it and one, a governor
+// WP-ADR27). --max-jobs is the ceiling, but for one heavy job that waits
+// for a test slot (yieldingJobs); between it and one, a governor
 // watches the machine (load, CPU, memory and disk pressure) and:
 //   - calm: allows one more heavy job when the ones allowed are all running
 //     and nothing changed for a couple of minutes (a job's load comes a
@@ -523,10 +524,7 @@ func (p *runnerProc) watchLoad(ctx context.Context) {
 			p.logf("%s", line)
 		}
 		if after := p.gov.lanes(heavy, light, req); len(after) > len(before) {
-			select {
-			case p.freed <- struct{}{}:
-			default:
-			}
+			p.wake()
 		}
 	}
 	look()

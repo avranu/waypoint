@@ -7,8 +7,10 @@ package core
 // bottleneck, what is stuck or broken and what to do about it, and the
 // numbers behind each, so the answer needs no investigating.
 //
-// The bottleneck is, in order: a merge line that stopped moving; the
-// runners, when jobs wait for them; else the line that takes longest to
+// The bottleneck is, in order: the runner, when the pull request at the
+// front of a line has had a round queued over doctorRunnerQueued that no
+// runner took (kind "runner", WP-1618); a merge line that stopped moving;
+// the runners, when jobs wait for them (kind "runners"); else the line that takes longest to
 // drain, and the step of its merges that costs most. A merge is the front's
 // time from the merge before it (or from its babysit's start, when the line
 // was empty) to its own merge, in steps read from its final head and that
@@ -1903,13 +1905,16 @@ func doctorBottleneck(d *CIDoctor) {
 	if queued != nil {
 		f, q := queued.Front, queued.Front.Queued
 		sum := fmt.Sprintf("The runner: %s's front #%d has had a round queued since %s UTC (%s)", queued.Repo, f.Number, q.Since.UTC().Format("15:04"), dur(q.For))
-		if q.Ahead >= 0 {
+		// Why the runner hasn't taken it (it runs one job at a time, what
+		// it is running, how many jobs are ahead) is in the one line: the
+		// evidence shows only with -v.
+		switch {
+		case q.Why != "":
+			sum += ": " + strings.TrimSuffix(q.Why, ".")
+		case q.Ahead >= 0:
 			sum += fmt.Sprintf(", %d job%s ahead", q.Ahead, plural(q.Ahead))
 		}
 		bn := CIBottleneck{Kind: "runner", Repo: queued.Repo, Base: queued.Base, Summary: sum}
-		if q.Why != "" {
-			bn.Evidence = append(bn.Evidence, q.Why)
-		}
 		verb := "wait"
 		if queued.Moving-1 == 1 {
 			verb = "waits"
@@ -2122,11 +2127,5 @@ func (s *Service) queuedRound(ctx context.Context, id int64, now time.Time) *CIQ
 	if err != nil || j.State != "queued" {
 		return nil
 	}
-	q := &CIQueuedRound{Job: id, Since: j.CreatedAt, For: max(0, int64(now.Sub(j.CreatedAt).Seconds())), Ahead: -1, Why: s.queuedWhy(ctx, j)}
-	if _, online, err := s.runnersFor(ctx, j); err == nil {
-		if n, err := s.jobsAhead(ctx, j, online); err == nil {
-			q.Ahead = n
-		}
-	}
-	return q
+	return &CIQueuedRound{Job: id, Since: j.CreatedAt, For: max(0, int64(now.Sub(j.CreatedAt).Seconds())), Ahead: s.aheadOf(ctx, j), Why: s.queuedWhy(ctx, j)}
 }
