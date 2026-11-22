@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+
+	"git.jmann.me/claude/waypoint/internal/core"
 )
 
 // Fan-outs (WP-148, X6): parallel work as budgeted task sessions, not
@@ -384,7 +386,7 @@ func fanoutWorktree(dir, branch string) string {
 // launchFanoutItem makes (or reuses) the package's worktree and starts its
 // session there in the background, its first prompt made from the kickoff
 // template tmpl (WP-1037); the id claude attach takes.
-func launchFanoutItem(f *fanoutView, it *fanoutItemView, tmpl string, prefs *sessionPrefs, note func(context.Context, string)) (string, error) {
+func launchFanoutItem(f *fanoutView, it *fanoutItemView, tmpl string, prefs *sessionPrefs, note func(context.Context, string) error) (string, error) {
 	bin, err := exec.LookPath(cliBinaries["claude"])
 	if err != nil {
 		return "", errors.New("claude (Claude Code) isn't installed here")
@@ -410,7 +412,7 @@ func launchFanoutItem(f *fanoutView, it *fanoutItemView, tmpl string, prefs *ses
 		name: strings.TrimSpace(it.Key + " " + truncRunes(it.Title, 60))}
 	prefs.forDir(wt).fill(&l)
 	l.prompt = fanoutPrompt(f, it, startKickoff(context.Background(), wt, l.sessionEnv(os.Environ()), it.Key, it.Title, tmpl))
-	note(context.Background(), l.prompt)
+	warnTypedStart(os.Stderr, note(context.Background(), l.prompt))
 	id, text, err := launchBackground(bin, wt, l)
 	if err != nil {
 		return "", err
@@ -520,6 +522,24 @@ func cmdFanoutStart(c *cli, args []string) error {
 	return c.fanoutStart(id, false)
 }
 
+// stopAttached runs `claude stop ID` for each running or starting item and
+// says how many stopped. The id came from the server: only the shape
+// claude --bg prints reaches the command line, where anything else (a leading
+// dash) would be read as an option of claude stop. It takes no "--" (checked:
+// "unknown option '--'"), so the shape is the guard.
+func stopAttached(bin string, items []*fanoutItemView) int {
+	stopped := 0
+	for _, it := range items {
+		if (it.State == "running" || it.State == "starting") && core.ValidAttachID(it.AttachID) {
+			cmd := exec.Command(bin, "stop", it.AttachID) // #nosec G204 -- claude, with the id claude --bg printed
+			if cmd.Run() == nil {
+				stopped++
+			}
+		}
+	}
+	return stopped
+}
+
 func cmdFanoutStop(c *cli, args []string) error {
 	fs := c.flags()
 	now := fs.Bool("now", false, "also stop its running sessions here")
@@ -542,14 +562,7 @@ func cmdFanoutStop(c *cli, args []string) error {
 	if *now && f.Machine == machineName() {
 		bin, err := exec.LookPath(cliBinaries["claude"])
 		if err == nil {
-			for _, it := range f.Items {
-				if (it.State == "running" || it.State == "starting") && it.AttachID != "" {
-					cmd := exec.Command(bin, "stop", it.AttachID) // #nosec G204 -- claude, with the id claude --bg printed
-					if cmd.Run() == nil {
-						stopped++
-					}
-				}
-			}
+			stopped = stopAttached(bin, f.Items)
 		}
 	}
 	if c.asJSON {

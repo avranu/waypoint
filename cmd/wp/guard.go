@@ -66,6 +66,14 @@ func (s *State) autopilotDriven(session string) bool {
 // The quota guard (WP-932) counts from the same prompts: refusal is set
 // when automation's prompt reaches a session the guard stopped.
 func (c *cli) noteAttendance(in hookEventInput) (refusal string) {
+	return c.noteAttendanceKind(in, "")
+}
+
+// noteAttendanceKind is noteAttendance for a prompt the hook already matched
+// to a text Waypoint typed (its kind, "" if none or not asked): one of
+// Waypoint's own words, with no person's in it (core.TypedWaypointAlone), is
+// no person's turn, whatever it says.
+func (c *cli) noteAttendanceKind(in hookEventInput, typedKind string) (refusal string) {
 	id := in.SessionID
 	if id == "" {
 		return ""
@@ -94,7 +102,7 @@ func (c *cli) noteAttendance(in hookEventInput) (refusal string) {
 				}
 			}
 		})
-	case core.IsKeepWarmPing(p) || p == "/compact" || harnessPromptMark(p) != "":
+	case core.IsKeepWarmPing(p) || p == "/compact" || harnessPromptMark(p) != "" || core.TypedWaypointAlone(typedKind):
 		// Only the whole ping, not the mark that starts it: a person can type
 		// the mark, and what skips the person's branch below (lifting a stop,
 		// clearing the unattended mark, the refusal in a session nobody types
@@ -229,7 +237,8 @@ func (g *guard) fileHit(p string) *guardHit {
 // guard's own refusals.
 func hookClaudeGuard(c *cli, stdin io.Reader, stdout io.Writer) {
 	var in hookEventInput
-	if err := json.NewDecoder(io.LimitReader(stdin, 4<<20)).Decode(&in); err != nil {
+	if err := decodeGuardInput(stdin, &in); err != nil {
+		c.refuseUnreadable(stdout, err)
 		return
 	}
 	mode := guardMode()
@@ -267,6 +276,47 @@ func hookClaudeGuard(c *cli, stdin io.Reader, stdout io.Writer) {
 		c.claimWait(in) // a warning only: the call still runs
 	}
 	c.logGuard(in, mode, h, hookCountWait(hookGuardTimeout))
+}
+
+// guardInputMax is the most of a call the guard reads: a Write of a whole
+// file is that large.
+const guardInputMax = 4 << 20
+
+// decodeGuardInput reads one PreToolUse call. A call over guardInputMax or
+// that isn't JSON is an error the caller must answer, not skip: it is exactly
+// what a guard that fails open lets through (a 4.2 MB Write to
+// .claude/settings.json was allowed).
+func decodeGuardInput(stdin io.Reader, in *hookEventInput) error {
+	b, err := io.ReadAll(io.LimitReader(stdin, guardInputMax+1))
+	if err != nil {
+		return fmt.Errorf("it couldn't be read: %w", err)
+	}
+	if len(b) > guardInputMax {
+		return fmt.Errorf("it is over %d MB", guardInputMax>>20)
+	}
+	if err := json.Unmarshal(b, in); err != nil {
+		return fmt.Errorf("it isn't JSON: %w", err)
+	}
+	return nil
+}
+
+// refuseUnreadable answers a call the guard couldn't read. Which session it
+// is can't be known, so the guard counts as active when the environment says
+// so or any session autopilot drives is marked here; a person's own session
+// is let through, as the guard is silent there.
+func (c *cli) refuseUnreadable(stdout io.Writer, why error) {
+	mode := guardMode()
+	if mode == "off" {
+		return
+	}
+	active := c.guardActive("")
+	for id := range c.state.Unattended {
+		active = active || c.state.autopilotDriven(id)
+	}
+	if !active {
+		return
+	}
+	_, _ = stdout.Write(guardOutput(mode, hit(ruleGuard, "a call the guard can't read ("+why.Error()+")", "")))
 }
 
 const (

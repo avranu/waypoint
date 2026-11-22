@@ -598,7 +598,10 @@ func cursorDriver(in agentJob, prompt, work string) (*cliDriver, error) {
 	} else {
 		args = append(args, "--force") // without it changes are only proposed
 	}
-	args = append(args, prompt)
+	// "--" ends the options: a prompt that starts with a dash ("--force",
+	// "--version") is the prompt, not a flag (cursor-agent takes it, as it
+	// takes other positionals; the other drivers pass theirs on stdin).
+	args = append(args, "--", prompt)
 	d := &cliDriver{args: args}
 	d.finish = func(stdout []byte) (string, json.RawMessage, tokenUse, error) {
 		var res struct {
