@@ -257,7 +257,7 @@ func TestSessionReviewReported(t *testing.T) {
 	}
 	au := rep.Audit
 	if rep.Round != r1 || rep.Replaced || au.Model != ownReportModel || au.Status != AuditDone || au.Purpose != AuditReview || len(au.Findings) != 2 ||
-		!strings.Contains(rep.Next, "wp ship --pr") {
+		!strings.Contains(rep.Next, "wp ship") {
 		t.Fatalf("report = %+v, audit %+v", rep, au)
 	}
 	if f := au.Findings[0]; f.Title != "Merge loses an update" || f.Severity != "high" || f.State != "fixed" || f.Note != "Took the row lock before the read." || f.Path != "internal/merge.go" || f.Line != 10 {

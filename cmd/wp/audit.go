@@ -85,7 +85,7 @@ says so, and holds the pull request for this). FILE (- for stdin) is JSON:
 Give every issue the review raised, the ones you rejected too (those need a
 note). --none says it raised nothing; -m then says who reviewed what, and
 how. The findings become an audit: change a verdict with wp audit mark, and
-wp ship --pr then has Waypoint check your marks against the code and score
+wp ship then has Waypoint check your marks against the code and score
 the findings, which decides whether another round comes. Reporting again
 replaces the report until that check starts.`,
 			examples: []string{"wp audit report -f review.json", "wp audit report WP-12 -f -", `wp audit report --none -m "adversarial-review agent read the whole diff against main; nothing stood"`}, run: auditReport},
@@ -425,7 +425,7 @@ func (a *auditView) asked(blocking bool) string {
 	chain := strings.Join(a.Models, ", then ")
 	when := "carry on; you'll hear when it ends, even if it finds nothing."
 	if blocking {
-		when = "when it ends you'll be told straight away, not held to share a wake-up with other news (if your session is still running), even if it finds nothing."
+		when = "when it ends you'll be told, within five minutes if one of your pull requests is still being watched (if your session is still running), even if it finds nothing."
 	}
 	return fmt.Sprintf("Audit #%d of %s asked of %s; %s\n%s", a.ID, a.what(), chain, when, a.URL)
 }
@@ -446,7 +446,7 @@ func auditRun(target string) func(c *cli, args []string) error {
 		fs.Var(&models, "model", "`MODEL` to try, in order (repeatable; default gateway/audit, or cursor/grok-4.7-high with no LLM gateway)")
 		fix := fs.Bool("fix", false, "also make a task to check and fix the findings")
 		noComment := fs.Bool("no-comment", false, "don't post findings on the pull request")
-		blocking := fs.Bool("blocking", false, "when it ends, tell me straight away, without waiting to share a wake-up with other news")
+		blocking := fs.Bool("blocking", false, "tell me when it ends, or within five minutes if one of my pull requests is still being watched")
 		since := fs.String("since", "", "recent: what landed in this `PERIOD` (7d, 2w, a date; default 7d)")
 		focus := fs.String("focus", "", "`AREAS`, comma separated: security, data, concurrency, errors, logic, performance, compat, tests")
 		var paths, exclude multiFlag

@@ -202,11 +202,13 @@ func TestPRFilesRefusesABaseThatIsAnOptionOnceTheHeadIsFetched(t *testing.T) {
 	}
 	b, _ := os.ReadFile(log)
 	for _, line := range strings.Split(string(b), "\n") {
-		for _, arg := range strings.Fields(line) {
-			for _, bad := range optionLike[:3] {
-				if arg == strings.SplitN(bad, "\n", 2)[0] || strings.TrimPrefix(arg, "origin/") == bad {
-					t.Errorf("git was given the base %q: %s", bad, line)
-				}
+		// The shim logs one line per command, its arguments joined by spaces:
+		// an argument with a space in it (--upload-pack=touch /tmp/y) can't be
+		// found by splitting the line, so look for it as a whole between spaces.
+		padded := " " + line + " "
+		for _, bad := range optionLike[:3] {
+			if strings.Contains(padded, " "+bad+" ") || strings.Contains(padded, " origin/"+bad+" ") {
+				t.Errorf("git was given the base %q: %s", bad, line)
 			}
 		}
 	}

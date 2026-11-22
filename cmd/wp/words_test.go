@@ -35,12 +35,17 @@ func TestGrokRefusalNamesTheAuditLimits(t *testing.T) {
 	}
 }
 
-// A blocking audit is held to share a wake-up while the session's other
-// babysits move, so it is not promised "within minutes".
-func TestAuditAskedBlockingPromisesNoMinutes(t *testing.T) {
+// A blocking audit is told when it ends, or within five minutes while another
+// of the session's pull requests is still being watched: not "straight away".
+func TestAuditAskedBlockingSaysTheFiveMinutes(t *testing.T) {
 	a := &auditView{ID: 4, Models: []string{"gateway/audit"}}
-	if got := a.asked(true); strings.Contains(got, "within minutes") {
+	got := a.asked(true)
+	if strings.Contains(got, "straight away") || strings.Contains(got, "within minutes") || !strings.Contains(got, "within five minutes if one of your pull requests is still being watched") {
 		t.Errorf("blocking: %s", got)
+	}
+	e := newEnv(t)
+	if help := strings.Join(strings.Fields(e.wp("audit", "pr", "-h")), " "); strings.Contains(help, "straight away") || !strings.Contains(help, "within five minutes if one of my pull requests is still being watched") {
+		t.Errorf("the --blocking help:\n%s", help)
 	}
 }
 

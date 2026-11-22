@@ -214,6 +214,14 @@ func TestCLIPROpenAndShip(t *testing.T) {
 	if strings.Contains(out, "Before you reply") {
 		t.Errorf("nothing in the task is put off, yet:\n%s", out)
 	}
+	// --pr is plain wp ship, kept for older prompts: it is not refused, and
+	// gives the same answer, also beside --skip-review.
+	for _, args := range [][]string{{"ship", "--pr"}, {"ship", "--pr", "--skip-review", "tested by hand"}} {
+		got, code := e.run(args...)
+		if code != 0 || !strings.Contains(got, "Reply template (adapt it where it doesn't fit):") || !strings.Contains(got, iss.Key+" shipped in PR #41 (") {
+			t.Errorf("wp %s: exit %d, want what wp ship gives:\n%s", strings.Join(args, " "), code, got)
+		}
+	}
 	// Steps the task leaves for later are quoted before the reply, as
 	// something to check (WP-479).
 	if _, err := e.svc.AddComment(ctx, me, iss.Key, "Fix the redirect now. Step 2 only if real users still loop."); err != nil {

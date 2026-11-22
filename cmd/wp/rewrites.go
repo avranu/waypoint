@@ -150,9 +150,10 @@ func checkRewriteSend(repo, head string, prs []rewrittenPR) error {
 }
 
 // rewritesSeen says whether this checkout's last ship of key already named
-// the tasks in notice, and records them (an empty notice clears the record). A repeat is still printed but
-// doesn't keep the turn open again: an agent that judged the first one a
-// passing edit has answered it, and only wp relate would silence it.
+// the tasks in notice, and records them (an empty notice clears the record). A
+// repeat is not printed and doesn't keep the turn open again: an agent that
+// judged the first one a passing edit has answered it, and only wp relate would
+// silence it.
 func rewritesSeen(key, notice string) bool {
 	dir, err := localGit("rev-parse", "--absolute-git-dir")
 	if err != nil || key == "" {
