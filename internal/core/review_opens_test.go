@@ -460,7 +460,8 @@ func TestResumedRoundWithNoReviewOpensNothing(t *testing.T) {
 
 // A ship's question and the sweep give the same answer for the same facts: a
 // round with findings still undecided is told to the session within the wait,
-// and past it (or with no session) is released.
+// and past it (or with no session) is released. A ship's facts always include
+// a session (whoever ships is present), so reviewAgain asks with Session set.
 func TestUndecidedAnswerIsTheSameForAShipAndTheSweep(t *testing.T) {
 	for _, session := range []bool{true, false} {
 		for _, since := range []time.Duration{0, heldScreenWait - time.Minute, heldScreenWait, heldScreenWait + time.Hour} {
@@ -486,15 +487,63 @@ func TestUndecidedAnswerIsTheSameForAShipAndTheSweep(t *testing.T) {
 	}
 }
 
-// Past heldScreenWait the session's own ship is not held for findings nobody
-// decided: it opens the pull request, as the sweep's release would.
-func TestShipPastTheWaitIsNotHeldForUndecidedFindings(t *testing.T) {
+// A ship is someone present: the round's own session being gone (roundInOf
+// says Session false) doesn't release a ship inside the wait. reviewAgain asks
+// as the session, so the answer is to show the findings, and the sweep's own
+// answer for the same round stays a release.
+func TestShipInsideTheWaitAsksEvenWithTheRoundsSessionGone(t *testing.T) {
 	e := newLoopEnv(t, map[string]string{"": "critical", "fixes": "complete"})
 	r := e.review("Merge loses an update")
 	e.doneRound(r)
-	e.setClock(e.clockNow().Add(heldScreenWait + time.Hour))
+	e.endSession()
+	e.setClock(e.clockNow().Add(time.Minute))
+	in, err := e.s.roundInOf(e.ctx, r)
+	if err != nil || in.Session || in.Undecided == 0 {
+		t.Fatalf("facts = %+v, %v: want undecided findings and no session", in, err)
+	}
+	if out := decideRound(in); out.Do != doRelease {
+		t.Fatalf("the sweep's answer = %+v: want a release", out)
+	}
+	in.ShipOpens, in.Session = true, true // as reviewAgain asks
+	if out := decideRound(in); out.Do != doTell || out.Need != needMarks {
+		t.Fatalf("the ship's answer = %+v: want the findings shown", out)
+	}
+}
+
+// Past heldScreenWait the ship is not held for findings nobody decided: it
+// opens the pull request as the sweep's release would, the findings are
+// carried on the pull request and hold its merge, and the round's record says
+// why it was released.
+func TestShipPastTheWaitIsNotHeldForUndecidedFindings(t *testing.T) {
+	e := newLoopEnv(t, map[string]string{"": "critical", "fixes": "complete"})
+	r := e.review("Merge loses an update")
+	e.stopWith("Reviewed; shipping later.")
+	if _, err := e.s.AgentPause(e.ctx, e.ag, e.task.Key, ""); err != nil {
+		t.Fatal(err)
+	}
+	e.lapse(heldScreenWait + time.Hour)
+	if err := e.s.expireRuns(e.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.s.AgentResume(e.ctx, e.ag, e.task.Key, ""); err != nil {
+		t.Fatal(err)
+	}
+	e.gateOpen(e.task.Key)
 	res, err := e.ship(e.task.Key, ShipAuto)
-	if err != nil || strings.Contains(res.Held, "still to decide") {
-		t.Fatalf("held = %q, %v: want the ship not held for findings", res.Held, err)
+	if err != nil || strings.Contains(res.Held, "still to decide") || res.Pull == nil {
+		t.Fatalf("ship = %+v, %v: want the pull request opened", res, err)
+	}
+	_, au := e.roundAuditRow(r)
+	var prID int64
+	if err := e.s.db.R.QueryRow(`SELECT coalesce(pr_id, 0) FROM code_audits WHERE id = ?`, au.ID).Scan(&prID); err != nil || prID != res.Pull.ID {
+		t.Fatalf("the audit's pull request = %d (%v), want %d: the findings weren't carried", prID, err, res.Pull.ID)
+	}
+	reasons, _, err := e.s.auditHolds(e.ctx, res.Pull.ID, 0)
+	if err != nil || !strings.Contains(strings.Join(reasons, "\n"), fmt.Sprintf("audit #%d", au.ID)) {
+		t.Fatalf("the carried critical finding doesn't hold the merge: %v, %v", reasons, err)
+	}
+	var reason string
+	if err := e.s.db.R.QueryRow(`SELECT reason FROM work_log WHERE id = ?`, r).Scan(&reason); err != nil || !strings.Contains(reason, "weren't decided") {
+		t.Fatalf("the round's record says %q (%v), want why it was released", reason, err)
 	}
 }

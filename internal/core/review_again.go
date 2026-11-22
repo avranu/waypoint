@@ -505,7 +505,10 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 	// renders what it answers for this session's ship, and goes on to its own
 	// question only for a round that answers doShip: whether another round
 	// comes first.
-	in.ShipOpens = true
+	// A ship is someone present, whatever the round's own session is doing:
+	// what it is asked depends on the wait alone, so a ship a minute after
+	// the review ended is shown the findings, not released past them.
+	in.ShipOpens, in.Session = true, true
 	switch out := decideRound(in); out.Do {
 	case doWait:
 		// The round's review is still going: its findings come to the
@@ -533,7 +536,14 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 	case doRelease:
 		// The findings weren't decided in time (or no session is left to
 		// decide them): as the sweep does, the round is released. This ship
-		// opens the pull request, and no further round runs.
+		// opens the pull request, and no further round runs. The round's
+		// record says why, and the open carries its audit to the pull
+		// request (OpenPR, carryAudits), where an open critical or high
+		// finding holds the merge.
+		s.writeLogged(ctx, "record why a round was released at its ship", `UPDATE work_log SET reason = ? WHERE id = ? AND state = ?`, out.Why, round, in.State)
+		if bp.facts != nil {
+			bp.facts.released = round
+		}
 		return "", "", nil
 	}
 	if audit == 0 {

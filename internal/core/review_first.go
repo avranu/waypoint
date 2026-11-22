@@ -106,7 +106,13 @@ type beforePR struct {
 // asked, and never when something is; a producer that forgets to say gets
 // the safe answer for Held (the agent is asked) and the quiet one for a
 // Notice, which the table test over every producer pins. Nil-safe.
-type shipFacts struct{ heldIdle, noticeAsks bool }
+type shipFacts struct {
+	heldIdle, noticeAsks bool
+	// released: the round this ship released past findings nobody decided
+	// (reviewAgain): once its pull request is open the round's audit is
+	// carried to it, as the sweep's release carries it (carryAudits).
+	released int64
+}
 
 func (f *shipFacts) idleHeld() {
 	if f != nil {

@@ -406,6 +406,9 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 	if res.Pull, err = s.GetPullRequest(ctx, actor, existing); err != nil {
 		return nil, err
 	}
+	if in.facts != nil && in.facts.released != 0 {
+		s.carryAudits(ctx, in.facts.released, res.Pull.ID, res.Pull.Number)
+	}
 	res.ClaimWarning = s.claimPR(ctx, actor, existing)
 	return res, nil
 }
