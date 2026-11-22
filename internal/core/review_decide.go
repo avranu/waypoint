@@ -488,7 +488,7 @@ func (s *Service) endedFacts(ctx context.Context, r *roundRow, in *roundIn) erro
 	// the end of the run says nothing of how long Waypoint has kept at it.
 	if bp := roundBeforePR(ctx, s.db.R, r.id); bp != nil && bp.ShipFirst != 0 && bp.ShipStop == "" {
 		in.SinceEnd = time.Duration(max(now-bp.ShipFirst, 0)) * time.Millisecond
-		in.ShipSpent = bp.ShipErr != "" && in.SinceEnd >= shipGiveUp
+		in.ShipSpent = in.SinceEnd >= shipGiveUp // however the last try left the record: a ship ever tried is ended, and told, never dropped
 	}
 	// A session that went on to another task has left the round: its run is
 	// over for it. A round still pending or running is the session's own
@@ -542,8 +542,14 @@ func (s *Service) advanceRound(ctx context.Context, id int64) (roundOut, error) 
 	case doEnd:
 		// A round the window ended while its ship kept failing says what the
 		// ship met, and tells the person.
-		if bp := roundBeforePR(ctx, s.db.R, id); bp != nil && bp.ShipErr != "" && bp.ShipStop == "" && s.shipEnds(ctx, id, errors.New(bp.ShipErr), true) {
-			return out, nil
+		if bp := roundBeforePR(ctx, s.db.R, id); bp != nil && bp.ShipFirst != 0 && bp.ShipStop == "" {
+			why := bp.ShipErr
+			if why == "" {
+				why = "its last try left no error"
+			}
+			if s.shipEnds(ctx, id, errors.New(why), true) {
+				return out, nil
+			}
 		}
 		s.setRoundNow(ctx, id, []string{in.State}, out.To, out.Why)
 		return out, nil
