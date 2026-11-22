@@ -252,6 +252,32 @@ function untrustedImages(root: DocumentFragment) {
   }
 }
 
+// The parse, template and sanitise steps both renderers share, so a SANITIZE
+// change applies to both.
+function sanitized(src: string, addAttr: string[] = []) {
+  const html = marked.parse(src, { async: false }) as string
+  const tpl = document.createElement('template')
+  tpl.innerHTML = DOMPurify.sanitize(html, {
+    ...SANITIZE,
+    ADD_ATTR: [...SANITIZE.ADD_ATTR, ...addAttr],
+  })
+  return tpl
+}
+
+/**
+ * Whether the markdown holds raw HTML (a block or inline `html` token, comments
+ * included), which the sanitiser may strip. Conservative: any counts.
+ */
+export function hasRawHtml(src: string): boolean {
+  const walk = (t: unknown): boolean => {
+    if (Array.isArray(t)) return t.some(walk)
+    if (!t || typeof t !== 'object') return false
+    const o = t as Record<string, unknown>
+    return o.type === 'html' || walk(o.tokens) || walk(o.items) || walk(o.header) || walk(o.rows)
+  }
+  return walk(marked.lexer(src))
+}
+
 /**
  * Markdown as sanitised HTML; `project` scopes [[wikilinks]]. `untrusted`
  * is for text an outside agent wrote: no remote images, no wikilinks.
@@ -262,14 +288,29 @@ export function renderMarkdown(
   src: string,
   opts: { project?: string; untrusted?: boolean; refs?: TextRef[] } = {},
 ): string {
-  const html = marked.parse(src, { async: false }) as string
-  const tpl = document.createElement('template')
-  tpl.innerHTML = DOMPurify.sanitize(html, SANITIZE)
+  const tpl = sanitized(src)
   if (opts.untrusted) untrustedImages(tpl.content)
   else wikilinks(tpl.content, opts.project)
   if (opts.refs) linkRefs(tpl.content, opts.refs)
   linkify(tpl.content, !opts.refs)
   copyButtons(tpl.content)
+  return tpl.innerHTML
+}
+
+/**
+ * Markdown as HTML for a rich editor: formatting renders in place, but codes,
+ * mentions and [[wikilinks]] stay as written so the text round-trips back to
+ * the same markdown. Task checkboxes are the only form controls kept.
+ */
+export function renderMarkdownForEdit(src: string): string {
+  const tpl = sanitized(src, ['contenteditable'])
+  for (const input of Array.from(tpl.content.querySelectorAll('input'))) {
+    if (input.getAttribute('type') === 'checkbox' && input.classList.contains('task')) {
+      input.setAttribute('contenteditable', 'false')
+    } else {
+      input.remove()
+    }
+  }
   return tpl.innerHTML
 }
 

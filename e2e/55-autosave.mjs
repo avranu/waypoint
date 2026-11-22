@@ -59,7 +59,7 @@ for (const [width, scheme] of looks([
     })
   ).json();
   const desc = () => api(`/issues/${issue.key}`).then((i) => i.description);
-  const field = page.getByPlaceholder(/Markdown supported/);
+  const field = page.getByRole("textbox", { name: "Description" });
   const save = page.getByRole("button", { name: "Save", exact: true });
 
   await page.goto(`${base}/issue/${issue.key}`);
@@ -76,7 +76,7 @@ for (const [width, scheme] of looks([
   await page.reload();
   await field.waitFor();
   ok(
-    (await field.inputValue()) === "First thoughts and more",
+    (await field.evaluate((el) => (el.textContent ?? "").trim())) === "First thoughts and more",
     `${tag} a refresh mid-typing brings the text back`,
   );
   await page.waitForTimeout(2800); // autosave is silent
@@ -105,8 +105,8 @@ for (const [width, scheme] of looks([
   const retry = page.getByRole("button", { name: "Not saved: retry" });
   await retry.waitFor({ timeout: 8000 });
   ok(
-    (await field.inputValue()).endsWith(" offline"),
-    `${tag} a failed save keeps the text: ${JSON.stringify(await field.inputValue())}`,
+    (await field.evaluate((el) => (el.textContent ?? "").trim())).endsWith(" offline"),
+    `${tag} a failed save keeps the text: ${JSON.stringify(await field.evaluate((el) => el.textContent ?? ""))}`,
   );
   await page.screenshot({ path: `${out}/failed-${tag}.png` });
   await page.unroute("**/api/v1/issues/*");
@@ -118,7 +118,7 @@ for (const [width, scheme] of looks([
   await field.pressSequentially("!");
   await field.press("Control+Enter");
   await page.waitForFunction(
-    () => !document.querySelector("textarea[placeholder^='Markdown supported']"),
+    () => !document.querySelector('[contenteditable="true"][aria-label="Description"]'),
   );
   ok((await desc()).endsWith("offline!"), `${tag} Ctrl+Enter saves now and closes`);
 
@@ -138,6 +138,7 @@ for (const [width, scheme] of looks([
   ok((await box.inputValue()) === "", `${tag} a posted comment leaves no draft: ${JSON.stringify(await box.inputValue())}`);
 
   // A page body autosaves too.
+  const body = page.getByPlaceholder(/Markdown supported/);
   const pg = await (
     await page.request.post(base + "/api/v1/pages", {
       headers: H,
@@ -146,8 +147,8 @@ for (const [width, scheme] of looks([
   ).json();
   await page.goto(`${base}/pages/${pg.id}`);
   await page.locator(".prose-wp").first().click({ position: { x: 5, y: 5 } });
-  await field.press("Control+End");
-  await field.pressSequentially(" More.", { delay: 10 });
+  await body.press("Control+End");
+  await body.pressSequentially(" More.", { delay: 10 });
   await page.waitForTimeout(2800); // autosave is silent
   const got = await api(`/pages/${pg.id}`);
   ok(got.body === "Start. More.", `${tag} a page body autosaves: ${JSON.stringify(got.body)}`);
