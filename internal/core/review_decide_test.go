@@ -281,7 +281,7 @@ func TestDecideEndedRoundNeverStrands(t *testing.T) {
 								free := in.Unshipped && !in.PROpen && !in.PRGone && !in.Linked && !in.Resolved && !in.Superseded && !in.Newer && !in.Taken && in.SinceEnd <= strandedShipWindow
 								over := state == RoundSkipped || state == RoundFailed || state == RoundInterrupted
 								unreviewed := state == RoundDone && !in.reviewed() // asked for its report, or ended and told (WP-1370), never opened
-								if free && out.Do != doEnd && !(unreviewed && (out.Do == doTell || out.Do == doWait)) && (state == RoundDone || (over && in.Release != "")) && out.Do != doReleaseAfterRunEnded {
+								if free && out.Do != doEnd && (!unreviewed || (out.Do != doTell && out.Do != doWait)) && (state == RoundDone || (over && in.Release != "")) && out.Do != doReleaseAfterRunEnded {
 									t.Fatalf("an unshipped round of an ended run isn't released: %s", name)
 								}
 								if free && (state == RoundPending || state == RoundRunning) && out.Do != doEnd {
