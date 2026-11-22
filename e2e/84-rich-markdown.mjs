@@ -124,6 +124,33 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
   await typeInto("Esc spaced star", "2 * 3 * 4", "2 * 3 * 4");
   await typeInto("Esc line star", "a" + "\n".repeat(0) + " * b", "a * b");
 
+  // What the editor writes for a DOM it holds (as a paste or the browser can
+  // leave it): link labels, alt text and table cells escape what would end
+  // them, a heading or table row stays one line, and inline text next to a
+  // block stays its own paragraph.
+  const writes = async (title, html, want) => {
+    const issue = await open(title);
+    await richBox.waitFor();
+    await richBox.evaluate((el, h) => {
+      el.innerHTML = h;
+      el.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    }, html);
+    const got = await saved(issue.key, want);
+    ok(got === want, `${tag} ${title} writes ${JSON.stringify(want)}: ${JSON.stringify(got)}`);
+    await settleClose();
+  };
+  await writes("Label brackets", '<p><a href="https://example.com/">a]b \\] [c</a></p>', "[a\\]b \\\\\\] \\[c](https://example.com/)");
+  await writes("Alt text", '<p><img src="/i.png" alt="a*b [c]"></p>', "![a\\*b \\[c\\]](/i.png)");
+  await writes("Def and wiki", "<p>[a]: see [[Page]]</p>", "\\[a]: see [[Page]]");
+  await writes("Rule under text", "text<hr>", "text\n\n---");
+  await writes("Text under paragraph", "<p>a</p>b", "a\n\nb");
+  await writes(
+    "Table cell",
+    "<table><tbody><tr><th>h</th></tr><tr><td>a|b \\| <code>c|d</code><br>e</td></tr></tbody></table>",
+    "| h |\n| --- |\n| a\\|b \\\\\\| `c\\|d` e |",
+  );
+  await writes("Heading break", "<h2>a<br>b</h2>", "## a b");
+
   // A literal task box at the start of a list item stays literal.
   {
     const i = await open("Esc task", "- first");

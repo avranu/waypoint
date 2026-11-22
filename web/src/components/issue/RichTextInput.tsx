@@ -101,8 +101,8 @@ export function RichTextInput({
     onValueChange(md)
   }
 
-  // Render the starting markdown once, and again only when it changes while
-  // the editor isn't focused (a draft restored, a conflict overwritten).
+  // Render the starting markdown once, and again whenever it changes from
+  // outside (an upload's link put in the draft).
   useLayoutEffect(() => {
     const el = editor.current
     if (!el) return
@@ -121,12 +121,17 @@ export function RichTextInput({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- starting value only
   }, [])
 
+  // The editor's own changes come back equal to `shown`. Anything else is
+  // newer than the DOM, so it is shown even under the caret: left out, the
+  // next keystroke would serialize the old DOM over it. The caret keeps its
+  // place in the text.
   useEffect(() => {
     const el = editor.current
     if (!el || value === shown.current) return
-    if (el.contains(document.activeElement)) return
+    const caret = el.contains(document.activeElement) ? caretOffset(el) : null
     el.innerHTML = renderMarkdownForEdit(value)
     shown.current = value
+    if (caret !== null) placeCaretAt(el, caret)
   }, [value])
 
   // What the editor last wrote out; the draft's newest text while mounted.
@@ -315,7 +320,8 @@ export function RichTextInput({
         return true
       }
       // The draft holds the placeholder as the serializer wrote it (escaped),
-      // or as typed if markdown mode has rewritten it.
+      // or as typed if markdown mode has rewritten it. While this editor is
+      // open, the change comes back as `value` and the effect above shows it.
       const v = draftNow()
       const at = [ph, asWritten(ph)].find((p) => v.includes(p))
       if (!at) return false
@@ -527,6 +533,37 @@ function pointRange(x: number, y: number): Range | null {
   r.setStart(pos.offsetNode, pos.offset)
   r.collapse(true)
   return r
+}
+
+/** Characters of text before the caret, or null if it isn't in `el`. */
+function caretOffset(el: HTMLElement): number | null {
+  const sel = window.getSelection()
+  if (!sel || sel.rangeCount === 0) return null
+  const r = sel.getRangeAt(0)
+  if (!el.contains(r.startContainer)) return null
+  const before = document.createRange()
+  before.selectNodeContents(el)
+  before.setEnd(r.startContainer, r.startOffset)
+  return before.toString().length
+}
+
+/** Puts the caret `n` characters of text into `el`, or at its end. */
+function placeCaretAt(el: HTMLElement, n: number) {
+  const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
+  let left = n
+  for (let t = walk.nextNode() as Text | null; t; t = walk.nextNode() as Text | null) {
+    if (left <= t.data.length) {
+      const range = document.createRange()
+      range.setStart(t, left)
+      range.collapse(true)
+      const sel = window.getSelection()
+      sel?.removeAllRanges()
+      sel?.addRange(range)
+      return
+    }
+    left -= t.data.length
+  }
+  placeCaretAtEnd(el)
 }
 
 function placeCaretAtEnd(el: HTMLElement) {

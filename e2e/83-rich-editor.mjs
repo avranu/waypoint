@@ -322,6 +322,31 @@ for (const [width, scheme] of looks([
   await page.unrouteAll({ behavior: "ignoreErrors" });
   await settleClose();
 
+  // The placeholder's text node remade mid-upload (the browser can swap it
+  // for an equal one): the link goes into the draft and must show in the
+  // editor too, or the next keystroke writes the editor's old text over it.
+  const ur = await make("Upload remade", "pic");
+  await openRich(ur.key, "pic");
+  await slow(1200);
+  await pastePng("remade.png");
+  await richBox.evaluate((el) => {
+    const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    for (let t = w.nextNode(); t; t = w.nextNode())
+      if (t.data.includes("Uploading remade.png")) {
+        t.replaceWith(document.createTextNode(t.data));
+        break;
+      }
+  });
+  await page
+    .waitForFunction(() => !!document.querySelector('[aria-label="Description"] img[src*="remade.png"]'), null, { timeout: 10000 })
+    .catch(() => {});
+  ok(await richBox.evaluate((el) => !!el.querySelector('img[src*="remade.png"]')), `${tag} an upload whose placeholder was remade shows in the editor`);
+  await field.pressSequentially("!");
+  const urd = await waitDesc(ur.key, (d) => link("remade.png").test(d) && d.includes("!"));
+  ok(link("remade.png").test(urd) && !urd.includes("Uploading"), `${tag} ...and keeps its link after the next keystroke: ${JSON.stringify(urd)}`);
+  await page.unrouteAll({ behavior: "ignoreErrors" });
+  await settleClose();
+
   // ---- toolbar buttons, empty and not ----
   const tools = [
     ["Italic", /^[*_]TXT[*_]$/],
@@ -375,7 +400,7 @@ for (const [width, scheme] of looks([
   });
   ok(!(await richBox.evaluate((el) => !!el.querySelector("h1"))), `${tag} dropped HTML is not inserted as HTML`);
   const drd = await waitDesc(dr.key, (d) => d.includes("dropped words"));
-  ok(/^plain\s*dropped words$/.test(drd) || drd.includes("dropped words") && !drd.includes("#"), `${tag} dropped text is inserted as text: ${JSON.stringify(drd)}`);
+  ok(/^plain\s*dropped words$/.test(drd), `${tag} dropped text is inserted as text: ${JSON.stringify(drd)}`);
   await settleClose();
 
   // An empty description shows the prompt and nothing overflows.

@@ -4,7 +4,9 @@
 
 import { renderMarkdownForEdit, hasRawHtml } from '@/lib/markdown'
 
-type Opts = { code?: boolean }
+// `label`: text inside a link label or image alt, where any bracket would end
+// it early. `cell`: text inside a table cell, where a pipe would end it.
+type Opts = { code?: boolean; label?: boolean; cell?: boolean }
 
 // Descriptions are read raw by agents, so only what would change meaning when
 // the markdown is rendered again is escaped: backticks and `*` (except a
@@ -14,10 +16,11 @@ type Opts = { code?: boolean }
 // lone "~" or a leading "~/path"); `<` only where it would start HTML or an
 // autolink; `]` only before `(` or `[` (a link or image the typist didn't
 // mean; [[wikilinks]] stay as typed); `&` only where it starts an entity.
-// Edges of a text node count as non-word and non-space.
+// In a link label or alt text every bracket is escaped, and in a table cell
+// every pipe. Edges of a text node count as non-word and non-space.
 const ENTITY = /^&(?:#\d+|#[xX][\da-fA-F]+|[A-Za-z][A-Za-z0-9]*);/
-function escapeText(s: string) {
-  return s.replace(/[\\`*_~<\]&]/g, (c, i: number) => {
+function escapeText(s: string, opts: Opts = {}) {
+  return s.replace(/[\\`*_~<[\]&|]/g, (c, i: number) => {
     const prev = s[i - 1]
     const next = s[i + 1]
     switch (c) {
@@ -34,8 +37,12 @@ function escapeText(s: string) {
       }
       case '<':
         return next && /[A-Za-z/!?]/.test(next) ? '\\<' : c
+      case '[':
+        return opts.label ? '\\[' : c
       case ']':
-        return next === '(' || next === '[' ? '\\]' : c
+        return opts.label || next === '(' || next === '[' ? '\\]' : c
+      case '|':
+        return opts.cell ? '\\|' : c
       case '&':
         return ENTITY.test(s.slice(i)) ? '\\&' : c
       default:
@@ -67,7 +74,10 @@ function escapeLineStarts(s: string) {
       if (rule && (i > 0 || (rule[2] === '-' && line.trim().length >= 3))) {
         return `${rule[1]}\\${line.slice(rule[1].length)}`
       }
-      if (/^\s*\[[^\]]+\]:/.test(line)) return line.replace(/\[/g, '\\[')
+      // Only the opening bracket: escaping it is enough, and a [[wikilink]]
+      // later in the line stays as typed.
+      const def = /^(\s*)\[[^\]]+\]:/.exec(line)
+      if (def) return `${def[1]}\\${line.slice(def[1].length)}`
       return line
     })
     .join('\n')
@@ -80,16 +90,15 @@ function wrap(mark: string, s: string) {
   return m[2] ? `${m[1]}${mark}${m[2]}${mark}${m[3]}` : s
 }
 
-function codeSpan(text: string) {
+function codeSpan(raw: string, opts: Opts = {}) {
+  // GFM takes `\|` out of a table row before it reads code spans, so a pipe
+  // in a cell's code is escaped too. Backslashes are not: inside a code span
+  // they are literal and escaping one would show it twice.
+  const text = opts.cell ? raw.split('|').join('\\|') : raw
   const longest = Math.max(0, ...(text.match(/`+/g) ?? []).map((r) => r.length))
   const ticks = '`'.repeat(longest + 1)
   const pad = text.startsWith('`') || text.endsWith('`') ? ' ' : ''
   return `${ticks}${pad}${text}${pad}${ticks}`
-}
-
-// Brackets inside a link label or alt text would end it early.
-function escapeBrackets(s: string) {
-  return s.replace(/(?<!\\)([[\]])/g, '\\$1')
 }
 
 function target(url: string) {
@@ -99,7 +108,7 @@ function target(url: string) {
 function serialize(node: Node, opts: Opts = {}): string {
   if (node.nodeType === Node.TEXT_NODE) {
     const data = (node as Text).data.replace(/\u00a0/g, ' ')
-    return opts.code ? data : escapeText(data)
+    return opts.code ? data : escapeText(data, opts)
   }
   if (node.nodeType === Node.DOCUMENT_FRAGMENT_NODE) return blocks(node, opts)
   if (node.nodeType !== Node.ELEMENT_NODE) return ''
@@ -123,7 +132,7 @@ function serialize(node: Node, opts: Opts = {}): string {
       return wrap('~~', inner())
     case 'code':
       if (el.parentElement?.tagName.toLowerCase() === 'pre') return el.textContent ?? ''
-      return codeSpan(el.textContent ?? '')
+      return codeSpan(el.textContent ?? '', opts)
     case 'pre': {
       const code = el.querySelector('code')
       const lang = (code?.className.match(/language-([\w-]+)/) ?? [])[1] ?? ''
@@ -138,7 +147,7 @@ function serialize(node: Node, opts: Opts = {}): string {
     case 'h4':
     case 'h5':
     case 'h6':
-      return `\n${'#'.repeat(Number(tag[1]))} ${inner().trim()}\n`
+      return `\n${'#'.repeat(Number(tag[1]))} ${oneLine(inner())}\n`
     case 'p':
     case 'div':
       return `\n${blocks(el, opts)}\n`
@@ -155,20 +164,20 @@ function serialize(node: Node, opts: Opts = {}): string {
       return `\n${list(el)}\n`
     case 'a': {
       const href = el.getAttribute('href') ?? ''
-      const label = inner().trim()
-      if (!href) return label
+      if (!href) return inner().trim()
+      const label = inner({ ...opts, label: true }).trim()
       if (!label || label === href) return href
-      return `[${escapeBrackets(label)}](${target(href)})`
+      return `[${label}](${target(href)})`
     }
     case 'img': {
       const alt = el.getAttribute('alt') ?? ''
       const src = el.getAttribute('src') ?? ''
-      return `![${escapeBrackets(alt)}](${target(src)})`
+      return `![${altText(alt)}](${target(src)})`
     }
     case 'video': {
       const alt = el.getAttribute('aria-label') ?? ''
       const src = el.getAttribute('src') ?? ''
-      return `![${escapeBrackets(alt)}](${target(src)})`
+      return `![${altText(alt)}](${target(src)})`
     }
     case 'hr':
       return '\n---\n'
@@ -179,6 +188,16 @@ function serialize(node: Node, opts: Opts = {}): string {
     default:
       return inner()
   }
+}
+
+// Alt text is plain text, read back as markdown inline content.
+function altText(alt: string) {
+  return escapeText(oneLine(alt), { label: true })
+}
+
+// A heading or table row is one line: a line break inside it becomes a space.
+function oneLine(md: string) {
+  return md.replace(/\s*\n\s*/g, ' ').trim()
 }
 
 function children(node: Node, opts: Opts = {}) {
@@ -209,16 +228,25 @@ const BLOCK = new Set([
 function blocks(node: Node, opts: Opts = {}) {
   let out = ''
   let run = ''
+  let afterBlock = false
+  // Inline text gets a blank line from a block on either side, so neither
+  // joins the other: text right above a rule would become a setext heading,
+  // and text right under a paragraph, quote or list would continue it.
+  const text = (beforeBlock: boolean) =>
+    run.trim()
+      ? `${afterBlock ? '\n' : ''}${escapeLineStarts(run)}${beforeBlock ? '\n' : ''}`
+      : escapeLineStarts(run)
   for (const child of Array.from(node.childNodes)) {
     if (
       child.nodeType === Node.ELEMENT_NODE &&
       BLOCK.has((child as Element).tagName.toLowerCase())
     ) {
-      out += escapeLineStarts(run) + serialize(child, opts)
+      out += text(true) + serialize(child, opts)
       run = ''
+      afterBlock = true
     } else run += serialize(child, opts)
   }
-  return out + escapeLineStarts(run)
+  return out + text(false)
 }
 
 function list(el: HTMLElement): string {
@@ -266,7 +294,7 @@ function table(el: HTMLElement): string {
   const rows = Array.from(el.querySelectorAll('tr'))
   if (!rows.length) return ''
   const cells = (tr: Element) =>
-    Array.from(tr.children).map((c) => children(c).trim().replace(/\|/g, '\\|'))
+    Array.from(tr.children).map((c) => oneLine(children(c, { cell: true })))
   const head = cells(rows[0])
   const lines = [`| ${head.join(' | ')} |`, `| ${head.map(() => '---').join(' | ')} |`]
   for (const row of rows.slice(1)) lines.push(`| ${cells(row).join(' | ')} |`)
