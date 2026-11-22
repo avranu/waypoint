@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"git.jmann.me/claude/waypoint/internal/core"
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
@@ -85,7 +86,7 @@ const cmpReviewPrompt = "Waypoint autopilot review of "
 // or Waypoint types when a background task or subagent ends ('n') and from
 // text that asks for no work ('x': a keep-warm ping, an interruption).
 func cmpPromptKind(text string) byte {
-	t := strings.TrimSpace(text)
+	t := strings.TrimSpace(core.UnwrapPasted(text))
 	switch {
 	case strings.HasPrefix(t, "<task-notification"), strings.HasPrefix(t, "[SYSTEM NOTIFICATION"), strings.HasPrefix(t, "Another Claude session sent a message"):
 		return 'n'
@@ -341,7 +342,7 @@ func readCompactFile(path string) ([]cmpEvent, error) {
 						}
 					case l.IsMeta || text == "" || strings.HasPrefix(text, "<local-command") || strings.HasPrefix(text, "<command-"):
 					default:
-						p := cmpEvent{kind: 'p', ts: parseTS(l.Timestamp), chars: len(text), pk: cmpPromptKind(text), review: strings.HasPrefix(strings.TrimSpace(text), cmpReviewPrompt), names: cmpNames(text)}
+						p := cmpEvent{kind: 'p', ts: parseTS(l.Timestamp), chars: len(text), pk: cmpPromptKind(text), review: strings.HasPrefix(strings.TrimSpace(core.UnwrapPasted(text)), cmpReviewPrompt), names: cmpNames(text)}
 						ev = append(ev, p)
 					}
 				case l.Type == "attachment" && l.Attachment != nil:

@@ -311,6 +311,12 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 		return held("screen", "the review prompt couldn't be pasted: %v", err)
 	}
 	sleepCtx(ctx, reviewPasteSettle(len(in.Review)))
+	// A person who prompted while it settled keeps the turn: no Enter, so the
+	// review isn't sent into it. What was pasted stays as a draft they can see.
+	if !p.stepWanted(ctx, in.Step, run.id) {
+		say("the step no longer wants this job: the review was pasted and not sent")
+		return outcome{State: "done", Result: autopilotResult{Outcome: "unwanted"}}
+	}
 	if _, err := runTmux(ctx, socket, nil, "send-keys", "-t", pane, "Enter"); err != nil {
 		// Pasted and not sent: the box now holds a draft, which a person
 		// sees; the round reads as running and ends at the next Stop.

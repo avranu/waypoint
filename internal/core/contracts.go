@@ -297,7 +297,8 @@ type RunnerJob struct {
 	Source   string          `json:"source,omitempty"`
 	SourceID int64           `json:"source_id,omitempty"`
 	// StartedAt is when a runner claimed it (nil: still queued).
-	StartedAt *time.Time `json:"started_at,omitempty"`
+	StartedAt *time.Time      `json:"started_at,omitempty"`
+	Input     json.RawMessage `json:"-"` // what it was queued with, for the code that queued it
 }
 
 // ErrNoRunner: no runner of the right owner (and label) is registered.

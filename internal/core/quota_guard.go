@@ -815,7 +815,7 @@ func promptOwner(detail, typed string) (auto, ok bool) {
 	switch {
 	case typedAuto(typed):
 		return true, true
-	case typedByWaypointAlone(typed), isHarnessPrompt(detail):
+	case typedByWaypointAlone(typed), isHarnessPrompt(pasteText(detail)):
 		return false, false
 	}
 	return false, true

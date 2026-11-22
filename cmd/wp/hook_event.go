@@ -507,6 +507,13 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 	if err := json.NewDecoder(io.LimitReader(stdin, 4<<20)).Decode(&in); err != nil || in.SessionID == "" || in.HookEventName == "" {
 		return
 	}
+	// Every check reads a paste's text: Claude Code wraps a paste, and
+	// Waypoint's own prompts are pasted (WP-1562). What the server gets of a
+	// person's prompt is as typed, and the server unwraps it, once.
+	raw := in.Prompt
+	if in.HookEventName == "UserPromptSubmit" {
+		in.Prompt = core.UnwrapPasted(in.Prompt)
+	}
 	// A session command (WP-562): the server's go to it as only the command,
 	// prompts or not; the slash hook answers the rest on this machine.
 	slash, slashArg, shipText := "", "", ""
@@ -602,11 +609,12 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 	case "UserPromptSubmit":
 		// Waypoint's own prompts (a keep-warm ping, a bare /compact) still
 		// reach the core under --no-prompts, so it can tell them from typing.
-		p := strings.TrimSpace(in.Prompt)
+		prompt := in.Prompt // unwrapped above, so the digest is of what was typed
+		p := strings.TrimSpace(prompt)
 		if noPrompts {
 			ev.TypedID = typedID // neither the text nor a digest of it leaves this machine
 		} else {
-			ev.PromptSum = core.PromptSum(in.Prompt)
+			ev.PromptSum = core.PromptSum(prompt)
 		}
 		ev.Key = newHookKey()
 		if slash != "" {
@@ -621,12 +629,12 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 			switch {
 			case noPrompts:
 			case strings.HasPrefix(p, autopilotPromptMark):
-				ev.Prompt = in.Prompt
+				ev.Prompt = raw
 			default:
-				ev.Prompt += "\n\n" + in.Prompt
+				ev.Prompt += "\n\n" + prompt
 			}
 		} else if !noPrompts {
-			ev.Prompt = in.Prompt
+			ev.Prompt = raw // the server unwraps it, once
 		} else if mark := harnessPromptMark(p); mark != "" {
 			ev.Prompt = mark // a background task reporting back is no person's prompt; only that much is sent
 		}
