@@ -89,7 +89,7 @@ func (s *Service) checkTodo(ctx context.Context, a *CodeAudit) ([]CodeAuditFindi
 	}
 	var todo []CodeAuditFinding
 	for _, f := range a.Findings {
-		if findingToDo(f.State) {
+		if findingToDo(f) {
 			todo = append(todo, f)
 		}
 	}

@@ -2966,7 +2966,7 @@ func (s *Service) roundOverdue(ctx context.Context, st *stepRow, review *roundRo
 		reason = fmt.Sprintf("the session stayed busy for %d hours, so it couldn't be started: %s", int(heldScreenWait.Hours()), st.detail)
 	}
 	if ra, err := s.roundAuditOf(ctx, review.id); err == nil && ra.id != 0 {
-		todo, err := s.findingsToDo(ctx, ra.id)
+		todo, err := s.findingsToDo(ctx, ra.id, false)
 		if err != nil {
 			s.log.WarnContext(ctx, "read what a round's audit found nobody decided; the failure's reason says nothing of it", "round", review.id, "audit", ra.id, "err", err)
 		}

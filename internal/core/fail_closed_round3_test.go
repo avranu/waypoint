@@ -358,7 +358,7 @@ func TestReadHelpersUnreadable(t *testing.T) {
 			return id != 0, err
 		}},
 		{"code_audit_findings", func() (bool, error) {
-			todo, err := se.s.findingsToDo(se.ctx, 1)
+			todo, err := se.s.findingsToDo(se.ctx, 1, false)
 			return len(todo) > 0, err
 		}},
 		{"session_messages", func() (bool, error) { return se.s.hasBlockingBatch(se.ctx, 1) }},

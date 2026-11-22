@@ -858,8 +858,8 @@ func (s *Service) shipAudited(ctx context.Context, actor *Actor, g *reviewGate, 
 	switch out := decideRound(in); out.Do {
 	case doReport:
 	case doTell:
-		return false, fmt.Sprintf("%s's adversarial review is audit #%d, with %s still to decide:\n%s\nRead them (`wp audit show %d`), mark each (`wp audit mark %s fixed -m \"what you did\"` or `wp audit mark %s rejected -m \"why\"`), then run `wp ship`; or end your turn, and the review gives them to you.",
-			g.key, a.ID, plural1(len(todo), "finding"), findingLines(todo), a.ID, todo[0].ID, todo[0].ID), nil
+		return false, fmt.Sprintf("%s's adversarial review is audit #%d, with %s still to decide:\n%s\nRead them (`wp audit show %d`), mark each (%s), then run `wp ship`; or end your turn, and the review gives them to you.",
+			g.key, a.ID, plural1(len(todo), "finding"), findingLines(todo), a.ID, markHint(todo[0].ID, "why")), nil
 	default:
 		return false, "", nil
 	}

@@ -298,8 +298,8 @@ func (s *Service) carriedAudits(ctx context.Context, prID int64) ([]int64, error
 	return scanIDs(rows)
 }
 
-// auditTodo is the findings still to do (open or confirmed), worst first,
-// of the pull request's newest finished audit and newest footprint check
+// auditTodo is the findings still to do (findingsToDo), worst first, of
+// the pull request's newest finished audit and newest footprint check
 // (WP-440), each when it is done.
 // A read that fails is logged and leaves out what it could not read: the
 // callers start rounds and fill packets, which the next pass redoes; the
@@ -327,7 +327,7 @@ func (s *Service) auditTodoErr(ctx context.Context, prID int64) ([]TodoFinding, 
 			continue
 		}
 		seen[id] = true
-		todo, err := s.findingsToDo(ctx, id)
+		todo, err := s.findingsToDo(ctx, id, purpose == AuditFootprint)
 		if err != nil {
 			return out, err
 		}
@@ -350,7 +350,7 @@ func (s *Service) auditTodoErr(ctx context.Context, prID int64) ([]TodoFinding, 
 		if seen[id] {
 			continue
 		}
-		todo, err := s.findingsToDo(ctx, id)
+		todo, err := s.findingsToDo(ctx, id, false)
 		if err != nil {
 			return out, err
 		}
@@ -383,15 +383,18 @@ func (s *Service) uncheckedRejections(ctx context.Context, id int64) ([]TodoFind
 	return out, nil
 }
 
-// findingsToDo are an audit's findings that are open or confirmed.
-func (s *Service) findingsToDo(ctx context.Context, id int64) ([]CodeAuditFinding, error) {
+// findingsToDo are an audit's findings still to do (findingToDo). A
+// footprint check's (footprint) are so while confirmed, filed or not:
+// filing a change beyond the task leaves it in the pull request, which only
+// undoing it or a rejection settles (WP-440).
+func (s *Service) findingsToDo(ctx context.Context, id int64, footprint bool) ([]CodeAuditFinding, error) {
 	a := &CodeAudit{ID: id}
 	if err := s.loadFindings(ctx, a); err != nil {
 		return nil, err
 	}
 	var todo []CodeAuditFinding
 	for _, f := range a.Findings {
-		if findingToDo(f.State) {
+		if findingToDo(f) || (footprint && f.State == "confirmed") {
 			todo = append(todo, f)
 		}
 	}
@@ -440,7 +443,7 @@ func (s *Service) auditHolds(ctx context.Context, prID, going int64) ([]string, 
 	}
 	if id := fid; id != 0 && fstatus == AuditDone {
 		var ids []string
-		todo, err := s.findingsToDo(ctx, id)
+		todo, err := s.findingsToDo(ctx, id, true)
 		if err != nil {
 			return nil, "", err
 		}
@@ -461,7 +464,7 @@ func (s *Service) auditHolds(ctx context.Context, prID, going int64) ([]string, 
 	var held []string
 	if id != 0 && status == AuditDone {
 		var ids []string
-		todo, err := s.findingsToDo(ctx, id)
+		todo, err := s.findingsToDo(ctx, id, false)
 		if err != nil {
 			return nil, "", err
 		}
@@ -492,7 +495,7 @@ func (s *Service) auditHolds(ctx context.Context, prID, going int64) ([]string, 
 			continue
 		}
 		var ids []string
-		todo, err := s.findingsToDo(ctx, cid)
+		todo, err := s.findingsToDo(ctx, cid, false)
 		if err != nil {
 			return nil, "", err
 		}
@@ -567,7 +570,7 @@ func renderFindings(b *strings.Builder, all []TodoFinding) {
 	}
 	if len(audit) > 0 {
 		fmt.Fprintf(b, "\n## Audit findings (%d), from audit #%d\n", len(audit), audit[0].Audit)
-		b.WriteString("A model's claims: check each, fix the real ones, then `wp audit mark ID fixed`, or `rejected -m WHY`. Low ones are optional.\n")
+		b.WriteString("A model's claims: check each, fix the real ones, then mark each: " + markHint("ID", "WHY") + ". Low ones are optional.\n")
 		writeFindings(b, audit)
 	}
 	if len(creep) > 0 {
