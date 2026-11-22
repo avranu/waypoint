@@ -1376,24 +1376,27 @@ const (
 // againHeldSQL is, over code_audit_findings as f, whether a session's mark
 // says the finding held and was dealt with here: fixed, or confirmed and not
 // filed. A filed finding (findingFiled) held too, but was handed to its issue
-// and not fixed, so it is counted apart (againFiledUsefulSQL; WP-1555).
+// and not fixed. Only reports use it (againHelperStats, to keep filed apart
+// from fixed); no decision does (WP-1555).
 const againHeldSQL = `(f.state = 'fixed' OR (f.state = 'confirmed' AND NOT ` + findingFiledSQL + `))`
 
 // againUsefulSQL is, in SQL over a next round's work_log row w, whether
 // that round found something worth it: a finding of medium or worse the
-// session fixed or confirmed, which wasn't one an earlier round had raised
-// (the next round's own decision scored it and found no earlier one it
-// repeats), and that the check against the code didn't refute. One that
-// was filed is not counted (againHeldSQL).
-const againUsefulSQL = `EXISTS(SELECT 1 FROM code_audit_findings f WHERE f.audit_id IN ` + againAuditsSQL + ` AND ` + againHeldSQL + `
+// session fixed or confirmed (filed or not: the decision's record counts a
+// filed finding as found, WP-1569 changes that rule, not WP-1555), which
+// wasn't one an earlier round had raised (the next round's own decision
+// scored it and found no earlier one it repeats), and that the check
+// against the code didn't refute.
+const againUsefulSQL = `EXISTS(SELECT 1 FROM code_audit_findings f WHERE f.audit_id IN ` + againAuditsSQL + ` AND f.state IN ('fixed', 'confirmed')
 	AND f.severity IN ('critical', 'high', 'medium') AND f.verdict != 'refuted'
 	AND EXISTS(SELECT 1 FROM review_finding_scores fs WHERE fs.finding_id = f.id AND fs.repeat_of IS NULL))`
 
-// againFiledUsefulSQL is againUsefulSQL for a finding filed instead: what
-// the round found worth it, handed to its issue and not fixed.
-const againFiledUsefulSQL = `EXISTS(SELECT 1 FROM code_audit_findings f WHERE f.audit_id IN ` + againAuditsSQL + ` AND ` + findingFiledSQL + `
+// againAllFiledSQL is againUsefulSQL for a round whose useful findings were
+// all filed: none the session fixed or confirmed without filing. A measure
+// beside the useful record, not a change to it (WP-1555).
+const againAllFiledSQL = `(` + againUsefulSQL + ` AND NOT EXISTS(SELECT 1 FROM code_audit_findings f WHERE f.audit_id IN ` + againAuditsSQL + ` AND ` + againHeldSQL + `
 	AND f.severity IN ('critical', 'high', 'medium') AND f.verdict != 'refuted'
-	AND EXISTS(SELECT 1 FROM review_finding_scores fs WHERE fs.finding_id = f.id AND fs.repeat_of IS NULL))`
+	AND EXISTS(SELECT 1 FROM review_finding_scores fs WHERE fs.finding_id = f.id AND fs.repeat_of IS NULL)))`
 
 // againJudgedSQL is, in SQL over a next round's work_log row w, whether
 // againUsefulSQL can tell: the round found nothing of medium or worse that
@@ -1446,11 +1449,12 @@ type AgainRoundStat struct {
 	Labels  int `json:"labels"`
 	// Standing: the findings of these decisions' rounds that weren't
 	// rejected; Filed: of them, the ones filed (againDecision.filed).
-	// UsefulFiled: the followed rounds againUsefulSQL would have counted
-	// useful had filing counted as a fix (a filed finding is not useful).
-	Standing    int `json:"standing"`
-	Filed       int `json:"filed"`
-	UsefulFiled int `json:"useful_filed"`
+	// UsefulAllFiled: of the followed rounds counted useful, the ones whose
+	// useful findings were all filed (againAllFiledSQL); a measure beside
+	// Useful, which counts them.
+	Standing       int `json:"standing"`
+	Filed          int `json:"filed"`
+	UsefulAllFiled int `json:"useful_all_filed"`
 }
 
 // AgainAgreement is how far the reviewers' own severity labels and the
@@ -1473,7 +1477,7 @@ func (s *Service) againReport(ctx context.Context, ivis string, iargs []any, sin
 			sum(d.signals > 0), sum(d.checked >= 0), sum(d.checked = 0), sum(d.unchecked > 0),
 			sum(d.samples > 0), sum(d.samples), sum(d.spread != '{}'), sum(json_extract(d.spread, '$.`+spreadUnsettled+`') IS NOT NULL),
 			sum(d.samples > 0 OR d.labels = 1), sum(d.labels = 1), sum(d.findings - d.rejected), sum(d.filed),
-			sum(CASE WHEN w.state = 'done' AND `+againAuditSQL+` IS NOT NULL AND `+againJudgedSQL+` AND NOT `+againUsefulSQL+` AND `+againFiledUsefulSQL+` THEN 1 ELSE 0 END)
+			sum(CASE WHEN w.state = 'done' AND `+againAuditSQL+` IS NOT NULL AND `+againJudgedSQL+` AND `+againAllFiledSQL+` THEN 1 ELSE 0 END)
 		FROM review_again_decisions d JOIN issues i ON i.id = d.issue_id LEFT JOIN work_log w ON w.id = d.next_round_id
 		WHERE `+ivis+` AND d.created_at >= ? GROUP BY 1, 2 ORDER BY 1`, append(slices.Clone(iargs), since)...)
 	if err != nil {
@@ -1482,9 +1486,9 @@ func (s *Service) againReport(ctx context.Context, ivis string, iargs []any, sin
 	defer rows.Close()
 	var out []AgainRoundStat
 	for rows.Next() {
-		var index, n, followed, useful, signalled, checks, passed, unchecked, sampled, asks, split, unsettled, scoring, labels, standing, filed, usefulFiled int
+		var index, n, followed, useful, signalled, checks, passed, unchecked, sampled, asks, split, unsettled, scoring, labels, standing, filed, usefulAllFiled int
 		var arm string
-		if err := rows.Scan(&index, &arm, &n, &followed, &useful, &signalled, &checks, &passed, &unchecked, &sampled, &asks, &split, &unsettled, &scoring, &labels, &standing, &filed, &usefulFiled); err != nil {
+		if err := rows.Scan(&index, &arm, &n, &followed, &useful, &signalled, &checks, &passed, &unchecked, &sampled, &asks, &split, &unsettled, &scoring, &labels, &standing, &filed, &usefulAllFiled); err != nil {
 			return nil, nil, err
 		}
 		if len(out) == 0 || out[len(out)-1].Index != index {
@@ -1511,7 +1515,7 @@ func (s *Service) againReport(ctx context.Context, ivis string, iargs []any, sin
 		} else {
 			st.Followed += followed
 			st.Useful += useful
-			st.UsefulFiled += usefulFiled
+			st.UsefulAllFiled += usefulAllFiled
 		}
 	}
 	if err := rows.Err(); err != nil {

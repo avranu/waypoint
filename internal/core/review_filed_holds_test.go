@@ -2,6 +2,8 @@ package core
 
 import (
 	"fmt"
+	"hash/fnv"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -61,8 +63,8 @@ func TestReviewRoundRecordsFiled(t *testing.T) {
 				t.Fatalf("report = %+v, %v", byRound, err)
 			}
 			first, second := byRound[0], byRound[1]
-			if first.Followed != 1 || first.Useful != 1-want || first.UsefulFiled != want {
-				t.Errorf("round 1 followed %d useful %d useful-filed %d; want 1, %d, %d", first.Followed, first.Useful, first.UsefulFiled, 1-want, want)
+			if first.Followed != 1 || first.Useful != 1 || first.UsefulAllFiled != want {
+				t.Errorf("round 1 followed %d useful %d all-filed %d; want 1, 1, %d", first.Followed, first.Useful, first.UsefulAllFiled, want)
 			}
 			if second.Standing != 1 || second.Filed != want {
 				t.Errorf("round 2 standing %d filed %d, want 1, %d", second.Standing, second.Filed, want)
@@ -279,5 +281,41 @@ func TestShipHoldRecordedByAudited(t *testing.T) {
 	}
 	if name != "audit" || audit != ra.id || round != roundID || n != 1 {
 		t.Errorf("hold = %s audit %d round %d findings %d; want audit, %d, %d, 1", name, audit, round, n, ra.id, roundID)
+	}
+}
+
+// A round whose only medium finding was filed still counts as a hit in the
+// yield record the loop's rule draws from (againYield): filing is measured
+// beside the record, not taken out of it (WP-1555; WP-1569 changes the rule).
+func TestAgainYieldCountsFiledFinding(t *testing.T) {
+	e := newLoopEnv(t, map[string]string{"": "critical", "fixes": "complete"})
+	r1 := e.review("Merge loses an update")
+	e.mark(r1, "fixed")
+	if _, err := e.shipChecked(e.box, e.task.Key); err != nil {
+		t.Fatal(err)
+	}
+	e.setClock(e.clockNow().Add(time.Minute))
+	r2 := e.review("The cache key leaves out the tenant")
+	e.fileFinding(r2)
+	if _, err := e.shipChecked(e.box, e.task.Key); err != nil {
+		t.Fatal(err)
+	}
+	var arm string
+	if err := e.s.db.R.QueryRow(`SELECT arm FROM review_again_decisions WHERE round_id = ?`, r1).Scan(&arm); err != nil {
+		t.Fatal(err)
+	}
+	p, n, err := e.s.againYield(e.ctx, arm, 1, r1)
+	if err != nil || n != 1 {
+		t.Fatalf("the record has %d rounds, %v; want 1", n, err)
+	}
+	h := fnv.New32a()
+	if arm == AgainReview {
+		_, _ = fmt.Fprintf(h, "yield/%d", r1)
+	} else {
+		_, _ = fmt.Fprintf(h, "yield/%s/%d", arm, r1)
+	}
+	u := (float64(h.Sum32()%10000) + 0.5) / 10000
+	if want := betaQuantile(u, 2, 1); math.Abs(p-want) > 1e-9 {
+		t.Errorf("yield draw %.4f, want %.4f (a hit: the filed finding counts as found); a miss would draw %.4f", p, want, betaQuantile(u, 1, 2))
 	}
 }
