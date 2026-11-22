@@ -88,6 +88,7 @@ for (const [width, scheme] of looks([
     const end = Date.now() + ms;
     let d = await desc(key);
     while (!hit(d) && Date.now() < end) {
+      // wplint:ignore e2e-wait polling a value or proving a negative: there is nothing to wait on
       await page.waitForTimeout(250);
       d = await desc(key);
     }
@@ -111,6 +112,7 @@ for (const [width, scheme] of looks([
   await richBox.waitFor();
   ok((await note.count()) === 0, `${tag} mixed markdown opens in the rich editor`);
   await page.screenshot({ path: `${out}/rich-open-${tag}.png` });
+  // wplint:ignore e2e-wait polling a value or proving a negative: there is nothing to wait on
   await page.waitForTimeout(2200); // longer than the autosave pause: it would have gone out
   await settleClose();
   ok((await desc(a.key)) === MIXED, `${tag} an untouched open and close keeps the text byte for byte`);
@@ -247,6 +249,7 @@ for (const [width, scheme] of looks([
   const mo = await make("Mention dot", "hello");
   await openRich(mo.key, "hello");
   await field.pressSequentially(" @.");
+  // wplint:ignore e2e-wait polling a value or proving a negative: there is nothing to wait on
   await page.waitForTimeout(300);
   ok(!(await menu.isVisible()), `${tag} "@." opens no menu`);
   await settleClose();

@@ -63,6 +63,7 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
     for (let i = 0; i < 40; i++) {
       got = await desc(key);
       if (got === want) return got;
+      // wplint:ignore e2e-wait polling a value or proving a negative: there is nothing to wait on
       await page.waitForTimeout(250);
     }
     return got;
@@ -158,6 +159,7 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
     const text = '<img src=x onerror="window.__pwned=1"> <script>window.__pwned=2</script>';
     const i = await open("Html script", text);
     await mdBox.waitFor();
+    // wplint:ignore e2e-wait polling a value or proving a negative: there is nothing to wait on
     await page.waitForTimeout(500);
     ok((await page.evaluate(() => window.__pwned)) === 0, `${tag} script and onerror do not run`);
     ok((await note.count()) === 1, `${tag} script text opens as markdown with a note`);

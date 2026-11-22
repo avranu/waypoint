@@ -298,12 +298,18 @@ export function RichTextInput({
     const finish = (i: number, markdown: string | null) => {
       const ph = placeholders[i]
       const node = nodes[i]
-      if (mounted.current && node.isConnected) {
-        if (markdown === null) node.remove()
+      // Text typed beside the placeholder joins its node: cut the
+      // placeholder out and leave the rest alone. If it was edited, fall
+      // through to the draft.
+      const at0 = mounted.current && node.isConnected ? node.data.indexOf(ph) : -1
+      if (at0 >= 0) {
+        const mid = at0 > 0 ? node.splitText(at0) : node
+        if (mid.data.length > ph.length) mid.splitText(ph.length)
+        if (markdown === null) mid.remove()
         else {
           const holder = document.createElement('span')
           holder.innerHTML = renderMarkdownForEdit(markdown)
-          node.replaceWith(...Array.from(holder.childNodes))
+          mid.replaceWith(...Array.from(holder.childNodes))
         }
         sync()
         return true

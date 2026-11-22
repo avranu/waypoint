@@ -54,13 +54,14 @@ function escapeLineStarts(s: string) {
   return s
     .split('\n')
     .map((line, i) => {
-      const m = /^(\s*)(?:(#{1,6}|[>+*-])|(\d+)([.)]))(?=\s|$)/.exec(line)
+      // `>` opens a blockquote with or without a space after it.
+      const m = /^(\s*)(?:(>)|(#{1,6}|[+*-])(?=\s|$)|(\d+)([.)])(?=\s|$))/.exec(line)
       if (m) {
-        if (m[3] !== undefined) {
-          if (i > 0 && Number(m[3]) !== 1) return line
-          return `${m[1]}${m[3]}\\${m[4]}${line.slice(m[0].length)}`
+        if (m[4] !== undefined) {
+          if (i > 0 && Number(m[4]) !== 1) return line
+          return `${m[1]}${m[4]}\\${m[5]}${line.slice(m[0].length)}`
         }
-        return `${m[1]}\\${m[2]}${line.slice(m[0].length)}`
+        return `${m[1]}\\${m[2] ?? m[3]}${line.slice(m[0].length)}`
       }
       const rule = /^(\s*)([-=])\2*\s*$/.exec(line)
       if (rule && (i > 0 || (rule[2] === '-' && line.trim().length >= 3))) {
@@ -84,6 +85,11 @@ function codeSpan(text: string) {
   const ticks = '`'.repeat(longest + 1)
   const pad = text.startsWith('`') || text.endsWith('`') ? ' ' : ''
   return `${ticks}${pad}${text}${pad}${ticks}`
+}
+
+// Brackets inside a link label or alt text would end it early.
+function escapeBrackets(s: string) {
+  return s.replace(/(?<!\\)([[\]])/g, '\\$1')
 }
 
 function target(url: string) {
@@ -152,17 +158,17 @@ function serialize(node: Node, opts: Opts = {}): string {
       const label = inner().trim()
       if (!href) return label
       if (!label || label === href) return href
-      return `[${label}](${target(href)})`
+      return `[${escapeBrackets(label)}](${target(href)})`
     }
     case 'img': {
       const alt = el.getAttribute('alt') ?? ''
       const src = el.getAttribute('src') ?? ''
-      return `![${alt}](${target(src)})`
+      return `![${escapeBrackets(alt)}](${target(src)})`
     }
     case 'video': {
       const alt = el.getAttribute('aria-label') ?? ''
       const src = el.getAttribute('src') ?? ''
-      return `![${alt}](${target(src)})`
+      return `![${escapeBrackets(alt)}](${target(src)})`
     }
     case 'hr':
       return '\n---\n'
