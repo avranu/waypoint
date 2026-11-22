@@ -309,6 +309,8 @@ function Loaded({
               key={issue.key}
               draftKey={editable ? `description:${issue.key}` : undefined}
               autosave
+              rich
+              ariaLabel="Description"
               value={issue.description ?? ''}
               onSave={edit.description}
               editable={editable}

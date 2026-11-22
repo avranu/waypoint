@@ -149,6 +149,13 @@ body {
   display: none;
 }
 
+/* A rich editor (WP-628): an empty one shows its prompt. */
+.rich-editor:empty::before {
+  content: attr(data-placeholder);
+  color: var(--wp-subtle);
+  pointer-events: none;
+}
+
 /* Rendered markdown. */
 .prose-wp {
   overflow-wrap: anywhere;
