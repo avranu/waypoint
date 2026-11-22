@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -315,5 +316,89 @@ func TestJobProjectDirWithGlobCharactersInTheConfigDir(t *testing.T) {
 	}
 	if err := json.Unmarshal(b, &meta); err != nil || !slices.Equal(meta.Sessions, []string{"a"}) {
 		t.Errorf("sidecar = %+v, %v", meta, err)
+	}
+}
+
+// A cancel that comes while the job-end upload runs: the sidecar says what
+// the job reports, not the state it had before the upload.
+func TestCancelDuringTheJobEndUploadReachesTheSidecar(t *testing.T) {
+	run := keepRun(time.Minute)
+	run.cancelled = &atomic.Bool{}
+	_, p, _, work, proj := jobEndSetup(t, func(h http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasPrefix(r.URL.Path, "/api/v1/usage/") {
+				run.cancelled.Store(true) // a person cancels while the upload is in flight
+				time.Sleep(100 * time.Millisecond)
+			}
+			h.ServeHTTP(w, r)
+		})
+	})
+	o := p.keepTranscripts(context.Background(), run, agentJob{CLI: "claude"}, work, time.Now(), nil, outcome{State: "failed", Error: "claude exited 1"})
+	// what runJob reports to the server
+	reported := settleOutcome(context.Background(), run.cancelled, o)
+	var meta jobMeta
+	b, err := os.ReadFile(filepath.Join(proj, jobSidecarFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(b, &meta); err != nil {
+		t.Fatal(err)
+	}
+	if reported.State != "cancelled" || meta.State != reported.State || meta.Error != reported.Error {
+		t.Errorf("sidecar %q/%q, finish call %q/%q", meta.State, meta.Error, reported.State, reported.Error)
+	}
+	if !strings.Contains(run.out.text(), "cancelled during the upload") {
+		t.Errorf("log = %s", run.out.text())
+	}
+}
+
+// The archive stopped early with no error: the log says so.
+func TestJobEndUploadSaysWhenTheArchiveStoppedEarly(t *testing.T) {
+	_, p, _, work, proj := jobEndSetup(t, func(h http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == "POST" && r.URL.Path == "/api/v1/usage/transcript" {
+				http.Error(w, "no", http.StatusInternalServerError)
+				return
+			}
+			h.ServeHTTP(w, r)
+		})
+	})
+	for _, s := range []string{"x1", "x2", "x3", "x4"} {
+		writeAt(t, filepath.Join(proj, s+".jsonl"), tline(s, s))
+	}
+	_, log := keepIt(p, work, nil)
+	if !strings.Contains(log, "not all transcripts were sent (uploads are failing") || !strings.Contains(log, "next usage sync sends the rest") {
+		t.Errorf("log = %s", log)
+	}
+}
+
+// A sidecar that can't be written is logged and the job still ends with its outcome.
+func TestKeepTranscriptsSaysWhenTheSidecarCantBeWritten(t *testing.T) {
+	_, p, _, work, proj := jobEndSetup(t, nil)
+	if err := os.Mkdir(filepath.Join(proj, jobSidecarFile), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	o, log := keepIt(p, work, nil)
+	if !strings.Contains(log, "Couldn't write "+jobSidecarFile+" beside the transcripts") {
+		t.Errorf("log = %s", log)
+	}
+	if o.State != "done" {
+		t.Errorf("outcome = %+v", o)
+	}
+}
+
+// A symlinked meta file is not read: its text is uploaded as the sub-agent's kind.
+func TestSubagentTypeIgnoresASymlinkedMetaFile(t *testing.T) {
+	dir := t.TempDir()
+	other := writeAt(t, filepath.Join(t.TempDir(), "other.json"), `{"agentType":"from-elsewhere"}`)
+	tr := writeAt(t, filepath.Join(dir, "subagents", "agent-x.jsonl"), tline("m", "s"))
+	linkAt(t, other, filepath.Join(dir, "subagents", "agent-x.meta.json"))
+	if k := subagentType(tr); k == "from-elsewhere" {
+		t.Errorf("read through a symlink: %q", k)
+	}
+	real := writeAt(t, filepath.Join(dir, "subagents", "agent-y.meta.json"), `{"agentType":"real"}`)
+	_ = real
+	if k := subagentType(filepath.Join(dir, "subagents", "agent-y.jsonl")); k != "real" {
+		t.Errorf("a regular meta file: %q", k)
 	}
 }

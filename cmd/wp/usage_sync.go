@@ -279,7 +279,12 @@ func subagentFiles(dir string) []string {
 // subagentType reads agent-<id>.meta.json beside a subagent transcript.
 func subagentType(path string) string {
 	meta := strings.TrimSuffix(path, ".jsonl") + ".meta.json"
-	b, err := os.ReadFile(meta) // #nosec G304 -- beside a transcript Claude Code wrote
+	fh, err := openRegularTranscript(meta) // not a symlink: this text is uploaded
+	if err != nil {
+		return "subagent"
+	}
+	defer fh.Close()
+	b, err := io.ReadAll(io.LimitReader(fh, 1<<16))
 	if err != nil {
 		return "subagent"
 	}

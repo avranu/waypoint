@@ -124,7 +124,7 @@ func (p *runnerProc) keepTranscripts(ctx context.Context, run *jobRun, in agentJ
 		return o
 	}
 	mains := jobTranscripts(proj)
-	// the same words the server will be told (the sidecar is written before the job reports)
+	// the words the server will be told, unless a cancel comes during the upload (settled again below)
 	o = settleOutcome(ctx, run.cancelled, o)
 	meta := jobMeta{
 		Job: run.id, Kind: run.kind, Title: run.title, CLI: in.CLI, Model: in.Model, Effort: in.Effort,
@@ -138,9 +138,22 @@ func (p *runnerProc) keepTranscripts(ctx context.Context, run *jobRun, in agentJ
 	for _, m := range mains {
 		meta.Sessions = append(meta.Sessions, strings.TrimSuffix(filepath.Base(m), ".jsonl"))
 	}
-	if b, err := json.MarshalIndent(meta, "", "  "); err == nil {
-		if err := os.WriteFile(filepath.Join(proj, jobSidecarFile), append(b, '\n'), 0o600); err != nil {
-			fmt.Fprintf(run.out, "Couldn't write %s beside the transcripts: %v\n", jobSidecarFile, err)
+	writeSidecar := func() {
+		if b, err := json.MarshalIndent(meta, "", "  "); err == nil {
+			if err := os.WriteFile(filepath.Join(proj, jobSidecarFile), append(b, '\n'), 0o600); err != nil {
+				fmt.Fprintf(run.out, "Couldn't write %s beside the transcripts: %v\n", jobSidecarFile, err)
+			}
+		}
+	}
+	writeSidecar()
+	// A cancel can arrive while the upload runs: settle again, and make the
+	// sidecar say what the job reports (locally only; it is not re-sent).
+	resettle := func() {
+		if n := settleOutcome(ctx, run.cancelled, o); n.State != o.State || n.Error != o.Error {
+			o = n
+			meta.State, meta.Error = o.State, o.Error
+			writeSidecar()
+			fmt.Fprintf(run.out, "The job was cancelled during the upload; %s on this machine now says %s.\n", jobSidecarFile, o.State)
 		}
 	}
 	// The link from the job's record to its transcripts: the session's id when
@@ -179,6 +192,7 @@ func (p *runnerProc) keepTranscripts(ctx context.Context, run *jobRun, in agentJ
 	uctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), transcriptUploadLimit)
 	defer cancel()
 	res, err := p.uploadTranscripts(uctx, dir, mains)
+	resettle()
 	const rest = "the next usage sync sends the rest."
 	switch {
 	case err != nil:
@@ -187,6 +201,8 @@ func (p *runnerProc) keepTranscripts(ctx context.Context, run *jobRun, in agentJ
 		fmt.Fprintf(run.out, "The usage counts were uploaded, the transcript archive was not (%s); %s\n", res.ArchiveError, rest)
 	case res.Archive != nil && res.Archive.Stopped == archiveBusy:
 		fmt.Fprintf(run.out, "The usage counts were uploaded; another transcript archive pass is running and sends these too; %s\n", rest)
+	case res.Archive != nil && res.Archive.Stopped != "":
+		fmt.Fprintf(run.out, "The usage counts were uploaded; not all transcripts were sent (%s); %s\n", res.Archive.Stopped, rest)
 	}
 	return o
 }

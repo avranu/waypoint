@@ -725,8 +725,10 @@ func (p *runnerProc) stopAll(reportStop context.CancelFunc) {
 }
 
 // settleOutcome words how a job that was stopped ended: cancelled by a person
-// (cancelled), or the runner was stopped (ctx). The sidecar kept beside a
-// job's transcripts says the same as what the server is told.
+// (cancelled), or the runner was stopped (ctx). keepTranscripts settles before
+// it writes the sidecar kept beside a job's transcripts and again after the
+// upload, so the sidecar says what the server is told even when a cancel
+// comes during the upload.
 func settleOutcome(ctx context.Context, cancelled *atomic.Bool, o outcome) outcome {
 	if cancelled != nil && cancelled.Load() && o.State != "done" {
 		o.State, o.Error = "cancelled", "Cancelled by a person."
