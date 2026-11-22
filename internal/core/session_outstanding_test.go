@@ -31,6 +31,19 @@ func TestStopNamesOutstandingWorkWhileARunGoes(t *testing.T) {
 			t.Errorf("the stop's text lacks %q:\n%s", want, res.Text)
 		}
 	}
+	// Told once: the same findings at the next stop are not repeated, or an
+	// agent holding them while a worker fixes them is re-prompted at every stop.
+	if res := a.stopWith("Still waiting.", run); res.Text != "" {
+		t.Errorf("a second stop repeated the findings: %q", res.Text)
+	}
+	// A new finding is named alone.
+	if _, err := a.s.db.W.Exec(`INSERT INTO code_audit_findings(audit_id, ordinal, title) VALUES (?, 3, 'Late finding')`, audit); err != nil {
+		t.Fatal(err)
+	}
+	res = a.stopWith("Waiting more.", run)
+	if !strings.Contains(res.Text, itoa64(audit)+".3") || strings.Contains(res.Text, itoa64(audit)+".1") || strings.Contains(res.Text, itoa64(audit)+".2") {
+		t.Errorf("the new finding should be named alone:\n%s", res.Text)
+	}
 	// The continued turn's own stop is not held again.
 	res, err := a.s.SessionHook(a.ctx, a.ag, []HookEvent{hook("box", a.cli, "Stop", func(h *HookEvent) {
 		h.StopHookActive = true
@@ -66,6 +79,18 @@ func TestSessionOutstanding(t *testing.T) {
 	want := []string{itoa64(audit) + ".1", itoa64(audit) + ".3"}
 	if got.Audit != audit || !slices.Equal(got.Findings, want) {
 		t.Fatalf("findings = %d %v, want %d %v (round %d)", got.Audit, got.Findings, audit, want, round)
+	}
+
+	// Told once: asking again names nothing new (the hook and the Stop share
+	// this record), and a finding that turns up later is named alone.
+	if again, err := a.s.SessionOutstanding(a.ctx, &ag); err != nil || !again.Empty() || again.Lines != "" {
+		t.Fatalf("asked twice: %+v %v", again, err)
+	}
+	if _, err := a.s.db.W.Exec(`INSERT INTO code_audit_findings(audit_id, ordinal, title) VALUES (?, 4, 'New one')`, audit); err != nil {
+		t.Fatal(err)
+	}
+	if more, _ := a.s.SessionOutstanding(a.ctx, &ag); !slices.Equal(more.Findings, []string{itoa64(audit) + ".4"}) {
+		t.Fatalf("new finding = %v", more.Findings)
 	}
 
 	// A round that is over leaves nothing outstanding.

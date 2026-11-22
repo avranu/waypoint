@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 )
@@ -86,8 +87,49 @@ func (s *Service) SessionOutstanding(ctx context.Context, actor *Actor) (*Sessio
 	for _, r := range page.Requests {
 		out.Requests = append(out.Requests, r.Code)
 	}
+	// Each item is named to a session once, so an agent that holds findings
+	// while a worker fixes them isn't re-prompted with them at every stop. The
+	// hook and the Stop share the record (session_events, kind 'outstanding',
+	// label the item's code).
+	if len(out.Findings)+len(out.Requests) > 0 {
+		err := s.write(ctx, actor, func(t *tx) error {
+			var err error
+			if out.Findings, err = s.tellOutstanding(ctx, t, actor.Session, out.Findings); err != nil {
+				return err
+			}
+			out.Requests, err = s.tellOutstanding(ctx, t, actor.Session, out.Requests)
+			return err
+		})
+		if err != nil {
+			return nil, err
+		}
+		if len(out.Findings) == 0 {
+			out.Audit = 0
+		}
+	}
 	out.Lines = outstandingLines(out)
 	return out, nil
+}
+
+// tellOutstanding records each item as told to the session and returns the
+// ones that weren't yet.
+func (s *Service) tellOutstanding(ctx context.Context, t *tx, session int64, items []string) ([]string, error) {
+	var fresh []string
+	for _, it := range items {
+		var told bool
+		if err := t.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM session_events WHERE session_id = ? AND kind = 'outstanding' AND label = ?)`,
+			session, it).Scan(&told); err != nil {
+			return nil, err
+		}
+		if told {
+			continue
+		}
+		if err := s.sessionTimeline(ctx, t, session, s.nowMS(), "outstanding", "", 0, it, "", "named while a run was going", sql.NullInt64{}, nil); err != nil {
+			return nil, err
+		}
+		fresh = append(fresh, it)
+	}
+	return fresh, nil
 }
 
 // outstandingLines are the bullets naming each piece of work and its command.

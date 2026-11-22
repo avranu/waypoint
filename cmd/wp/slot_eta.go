@@ -52,11 +52,21 @@ func slotCmdKey(args string) string {
 
 // slotRepoKey names the repository the command runs in, the same for all its
 // worktrees: git's common directory, else the working directory.
-func slotRepoKey() string {
-	if out, err := exec.Command("git", "rev-parse", "--path-format=absolute", "--git-common-dir").Output(); err == nil { // #nosec G204 -- fixed arguments
+func slotRepoKey() string { return slotRepoKeyIn("") }
+
+// slotRepoKeyIn is slotRepoKey for the folder dir ("": this process's).
+func slotRepoKeyIn(dir string) string {
+	args := []string{"rev-parse", "--path-format=absolute", "--git-common-dir"}
+	if dir != "" {
+		args = append([]string{"-C", dir}, args...)
+	}
+	if out, err := exec.Command("git", args...).Output(); err == nil { // #nosec G204 -- fixed arguments
 		if s := strings.TrimSpace(string(out)); s != "" {
 			return s
 		}
+	}
+	if dir != "" {
+		return dir
 	}
 	wd, _ := os.Getwd()
 	return wd

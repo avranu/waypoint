@@ -379,7 +379,7 @@ var routePermissions = map[string]core.Permission{
 	"POST /api/v1/fanouts/{id}/items/{key}/end":     core.PermSessionsStart,
 	"GET /api/v1/sessions":                          core.PermSessionsRead,
 	"GET /api/v1/sessions/current":                  core.PermSessionsRead,
-	"GET /api/v1/sessions/outstanding":              core.PermSessionsRead,
+	"POST /api/v1/sessions/outstanding":             core.PermSessionsReport,
 	"GET /api/v1/sessions/{id}":                     core.PermSessionsRead,
 	"GET /api/v1/sessions/{id}/usage":               core.PermSessionsRead,
 	"GET /api/v1/sessions/{id}/snapshots":           core.PermSessionsRead,
