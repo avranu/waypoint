@@ -224,13 +224,14 @@ type CodeAuditFinding struct {
 	State    string `json:"state"`
 	Note     string `json:"note,omitempty"`
 	Issue    string `json:"issue,omitempty"`
-	// IssueCanceled is set when Issue is in a canceled status (won't do,
-	// duplicate): the filing came to nothing, so the finding is to do again
-	// (findingFiled, WP-1554). loadFindings sets it.
-	IssueCanceled bool       `json:"issue_canceled,omitempty"`
-	By            string     `json:"by,omitempty"` // who decided its state
-	At            *time.Time `json:"at,omitempty"`
-	URL           string     `json:"url,omitempty"` // the line on the forge
+	// FilingVoid is set when Issue is canceled (won't do, duplicate) and no
+	// open issue stands for it (filingVoidSQL): the filing came to nothing,
+	// so the finding is to do again (findingFiled, WP-1554). loadFindings
+	// sets it.
+	FilingVoid bool       `json:"filing_void,omitempty"`
+	By         string     `json:"by,omitempty"` // who decided its state
+	At         *time.Time `json:"at,omitempty"`
+	URL        string     `json:"url,omitempty"` // the line on the forge
 	// Verdict is a Haiku check's of the finding against the code
 	// (confirmed, refuted, unsupported; "" not checked), VerdictNote its
 	// evidence, and Lead the panel leads (check.n, comma separated) the runner
@@ -1719,7 +1720,9 @@ func (s *Service) auditFixTask(ctx context.Context, id int64) {
 // findingToDo says whether a finding is still to do: undecided, or
 // confirmed and not filed (findingFiled). A filed one is real and handed to
 // its issue: no round, babysitter or fix task asks for it again (WP-1547).
-// findingToDoSQL is the same test in SQL.
+// A filing into an issue that is canceled, and not a duplicate of an open
+// one, doesn't count: the finding is to do again (WP-1554). findingToDoSQL
+// is the same test in SQL.
 func findingToDo(f CodeAuditFinding) bool {
 	return (f.State == "open" || f.State == "confirmed") && !findingFiled(f)
 }
@@ -1732,22 +1735,40 @@ func findingToDo(f CodeAuditFinding) bool {
 // word. A filing holds only while its issue is not canceled: one closed as
 // won't do or duplicate fixed nothing, and would drop the finding for good,
 // so the finding is to do again (WP-1554); open, in progress and done issues
-// keep it filed. findingFiledSQL is the same test in SQL.
+// keep it filed, and so does a canceled one that duplicates a live issue,
+// which tracks the work (one hop). findingFiledSQL is the same test in SQL.
 func findingFiled(f CodeAuditFinding) bool {
-	return f.State == "confirmed" && f.Issue != "" && !f.IssueCanceled && !auditHoldsMerge(f.Severity)
+	return f.State == "confirmed" && f.Issue != "" && !f.FilingVoid && !auditHoldsMerge(f.Severity)
+}
+
+// filingVoid says a confirmed finding's filing came to nothing and it is to
+// do again: it would be filed (findingFiled) but for its issue.
+func (f CodeAuditFinding) filingVoid() bool {
+	return f.State == "confirmed" && f.Issue != "" && f.FilingVoid && !auditHoldsMerge(f.Severity)
+}
+
+// filingVoidSQL says an issue, named by the column or placeholder issue,
+// can't hold a filing: it is canceled (won't do, duplicate) and does not
+// duplicate an issue that isn't, which would track the work in its place
+// (WP-1554; "A duplicates B" is stored A source, B target; one hop only). The
+// subqueries have their own aliases so any query can embed it. A placeholder
+// appears twice, so the query takes its argument twice.
+func filingVoidSQL(issue string) string {
+	return "(EXISTS (SELECT 1 FROM issues fiss JOIN statuses fst ON fst.id = fiss.status_id WHERE fiss.id = " + issue + " AND fst.category = '" + CatCanceled + "')" +
+		" AND NOT EXISTS (SELECT 1 FROM issue_relations frel JOIN issues fdup ON fdup.id = frel.target_id JOIN statuses fdst ON fdst.id = fdup.status_id" +
+		" WHERE frel.source_id = " + issue + " AND frel.kind = 'duplicates' AND fdst.category != '" + CatCanceled + "'))"
 }
 
 // markHint is the ways to mark a finding, for the prompts and holds that
 // ask for verdicts: id is a finding's ID (12.3), why the rejection's note.
 func markHint(id, why string) string {
-	return fmt.Sprintf("`wp audit mark %s fixed -m \"what you did\"`, `wp audit mark %s confirmed --issue KEY` for a real one you filed for later (not a critical or high one: fix or reject those), or `wp audit mark %s rejected -m \"%s\"`", id, id, id, why)
+	return fmt.Sprintf("`wp audit mark %s fixed -m \"what you did\"`, `wp audit mark %s confirmed --issue KEY` for a real one you filed for later in an issue that isn't canceled (not a critical or high one: fix or reject those; a canceled issue that isn't a duplicate of an open one doesn't count), or `wp audit mark %s rejected -m \"%s\"`", id, id, id, why)
 }
 
 // findingFiledSQL and findingToDoSQL are findingFiled and findingToDo over
-// code_audit_findings as f. The canceled-issue test is a subquery with its
-// own aliases so every query that embeds it can join what it likes.
-const (
-	findingFiledSQL = "(f.state = 'confirmed' AND f.issue_id IS NOT NULL AND f.severity NOT IN ('critical', 'high') AND NOT EXISTS (SELECT 1 FROM issues fiss JOIN statuses fst ON fst.id = fiss.status_id WHERE fiss.id = f.issue_id AND fst.category = 'canceled'))"
+// code_audit_findings as f; a void filing (filingVoidSQL) is not filed.
+var (
+	findingFiledSQL = "(f.state = 'confirmed' AND f.issue_id IS NOT NULL AND f.severity NOT IN ('critical', 'high') AND NOT " + filingVoidSQL("f.issue_id") + ")"
 	findingToDoSQL  = "(f.state IN ('open', 'confirmed') AND NOT " + findingFiledSQL + ")"
 )
 
@@ -1813,6 +1834,9 @@ func writeAuditFinding(b *strings.Builder, f CodeAuditFinding) {
 	fmt.Fprintf(b, "### %s [%s] %s\n", f.ID, f.Severity, untrusted(f.Title))
 	if f.State == "confirmed" {
 		fmt.Fprintf(b, "- Confirmed by %s: it's real, fix it%s\n", untrusted(cmp(f.By, "a person")), noteSuffix(f.Note))
+		if f.filingVoid() {
+			fmt.Fprintf(b, "- It was filed as %s, which was closed unfixed, so it's to do here: fix it, or reject it with why.\n", f.Issue)
+		}
 	}
 	if f.Path != "" {
 		fmt.Fprintf(b, "- Where: %s%s\n", untrusted(f.Path), lineSuffix(f.Line))
@@ -2004,7 +2028,7 @@ func (s *Service) auditCounts(ctx context.Context, id int64) AuditCounts {
 
 func (s *Service) loadFindings(ctx context.Context, a *CodeAudit) error {
 	rows, err := s.db.R.QueryContext(ctx, `SELECT f.ordinal, f.title, f.path, f.line, f.severity, f.problem, f.confirm, f.state, f.note,
-		coalesce(ip.key || '-' || i.number, ''), coalesce((SELECT st.category = 'canceled' FROM statuses st WHERE st.id = i.status_id), 0), coalesce(nullif(u.display_name, ''), u.username, f.decided_agent, ''), f.decided_at, f.verdict, f.verdict_note, f.lead
+		coalesce(ip.key || '-' || i.number, ''), i.id IS NOT NULL AND `+filingVoidSQL("i.id")+`, coalesce(nullif(u.display_name, ''), u.username, f.decided_agent, ''), f.decided_at, f.verdict, f.verdict_note, f.lead
 		FROM code_audit_findings f LEFT JOIN issues i ON i.id = f.issue_id LEFT JOIN projects ip ON ip.id = i.project_id
 		LEFT JOIN users u ON u.id = f.decided_by WHERE f.audit_id = ? ORDER BY f.ordinal`, a.ID)
 	if err != nil {
@@ -2015,7 +2039,7 @@ func (s *Service) loadFindings(ctx context.Context, a *CodeAudit) error {
 	for rows.Next() {
 		var f CodeAuditFinding
 		var at sql.NullInt64
-		if err := rows.Scan(&f.Ordinal, &f.Title, &f.Path, &f.Line, &f.Severity, &f.Problem, &f.Confirm, &f.State, &f.Note, &f.Issue, &f.IssueCanceled, &f.By, &at, &f.Verdict, &f.VerdictNote, &f.Lead); err != nil {
+		if err := rows.Scan(&f.Ordinal, &f.Title, &f.Path, &f.Line, &f.Severity, &f.Problem, &f.Confirm, &f.State, &f.Note, &f.Issue, &f.FilingVoid, &f.By, &at, &f.Verdict, &f.VerdictNote, &f.Lead); err != nil {
 			return err
 		}
 		f.ID = fmt.Sprintf("%d.%d", a.ID, f.Ordinal)
@@ -2463,6 +2487,13 @@ func (s *Service) MarkAuditFindings(ctx context.Context, actor *Actor, in MarkFi
 			return nil, err
 		}
 		issueID = id
+		var void bool
+		if err := s.db.R.QueryRowContext(ctx, `SELECT `+filingVoidSQL("?"), id, id).Scan(&void); err != nil {
+			return nil, err
+		}
+		if void && state == "confirmed" {
+			return nil, invalid("%s is canceled and isn't a duplicate of an open issue, so filing into it would drop the finding: fix it, reject it with why (-m), or file it in an open issue", strings.TrimSpace(in.Issue))
+		}
 	}
 	var by any
 	if actor.User != nil && actor.User.ID != 0 && !actor.IsAgent() {

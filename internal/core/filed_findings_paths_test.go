@@ -2,6 +2,8 @@ package core
 
 import (
 	"fmt"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -36,16 +38,34 @@ type seedFinding struct {
 	filed    bool // confirmed with the issue linked; else confirmed with none
 	state    string
 	cat      string // the linked issue's status category when filed ("": the shared issue)
+	dupOf    string // when set, the issue duplicates another in this status category
 }
 
 // issueIn makes an issue in a status of this category and returns its ID.
 func (e *filedEnv) issueIn(cat string) int64 {
 	e.t.Helper()
 	made := e.apEnv.issue(e.admin, IssueInput{Project: e.p.Key, Title: "Filed " + cat, Agent: "claude"})
-	if _, err := e.s.db.W.Exec(`UPDATE issues SET status_id = (SELECT id FROM statuses WHERE project_id = ? AND category = ? LIMIT 1) WHERE id = ?`, e.p.ID, cat, made.ID); err != nil {
+	e.setCategory(made.ID, cat)
+	return made.ID
+}
+
+func (e *filedEnv) setCategory(issue int64, cat string) {
+	e.t.Helper()
+	if _, err := e.s.db.W.Exec(`UPDATE issues SET status_id = (SELECT id FROM statuses WHERE project_id = ? AND category = ? LIMIT 1) WHERE id = ?`, e.p.ID, cat, issue); err != nil {
 		e.t.Fatal(err)
 	}
-	return made.ID
+}
+
+// duplicateOf makes an issue in the canceled category that duplicates a
+// new issue in dupCat ("A duplicates B": A is the source, B the one kept).
+func (e *filedEnv) duplicateOf(dupCat string) int64 {
+	e.t.Helper()
+	dup := e.issueIn(CatCanceled)
+	kept := e.issueIn(dupCat)
+	if _, err := e.s.db.W.Exec(`INSERT INTO issue_relations(source_id, target_id, kind, created_at) VALUES (?, ?, 'duplicates', ?)`, dup, kept, e.s.nowMS()); err != nil {
+		e.t.Fatal(err)
+	}
+	return dup
 }
 
 // audit seeds a finished audit on the pull request with these findings (path
@@ -63,7 +83,10 @@ func (e *filedEnv) audit(agent, key string, fs ...seedFinding) int64 {
 		var issue any
 		if f.filed {
 			issue = e.issue
-			if f.cat != "" {
+			switch {
+			case f.dupOf != "":
+				issue = e.duplicateOf(f.dupOf)
+			case f.cat != "":
 				issue = e.issueIn(f.cat)
 			}
 		}
@@ -211,5 +234,170 @@ func TestCanceledFindingAgainFindings(t *testing.T) {
 	}
 	if got[0].filed || !got[1].filed {
 		t.Errorf("filed = %v (canceled issue), %v (done issue)", got[0].filed, got[1].filed)
+	}
+}
+
+// WP-1554, audit 1296: a canceled issue that duplicates one that is not
+// canceled still tracks the work, one hop only.
+var (
+	filedDupOfOpen     = seedFinding{severity: "medium", filed: true, dupOf: CatTodo}
+	filedDupOfCanceled = seedFinding{severity: "medium", filed: true, dupOf: CatCanceled}
+)
+
+// A finding's filing is void when its issue is canceled and no live issue
+// stands for it; loadFindings says so, and findingToDo follows.
+func TestFilingVoidRule(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		f    seedFinding
+		void bool
+	}{
+		{"canceled", filedCanceled, true},
+		{"done", filedDone, false},
+		{"in progress", seedFinding{severity: "medium", filed: true, cat: CatInProgress}, false},
+		{"backlog", seedFinding{severity: "medium", filed: true, cat: CatBacklog}, false},
+		{"duplicate of an open issue", filedDupOfOpen, false},
+		{"duplicate of a done issue", seedFinding{severity: "medium", filed: true, dupOf: CatDone}, false},
+		{"duplicate of a canceled issue", filedDupOfCanceled, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := filedPR(t)
+			id := e.audit("", "", c.f)
+			a := &CodeAudit{ID: id}
+			if err := e.s.loadFindings(e.ctx, a); err != nil || len(a.Findings) != 1 {
+				t.Fatalf("findings = %+v, %v", a.Findings, err)
+			}
+			f := a.Findings[0]
+			if f.FilingVoid != c.void || findingToDo(f) != c.void {
+				t.Errorf("void = %v, to do = %v; want %v", f.FilingVoid, findingToDo(f), c.void)
+			}
+			if a.Counts.Open != map[bool]int{true: 1, false: 0}[c.void] {
+				t.Errorf("open = %d", a.Counts.Open)
+			}
+		})
+	}
+}
+
+// Reopening the canceled issue files the finding again.
+func TestFilingVoidEndsWhenTheIssueReopens(t *testing.T) {
+	e := filedPR(t)
+	id := e.audit("", "", filedCanceled)
+	var issue int64
+	if err := e.s.db.R.QueryRow(`SELECT issue_id FROM code_audit_findings WHERE audit_id = ?`, id).Scan(&issue); err != nil {
+		t.Fatal(err)
+	}
+	a := &CodeAudit{ID: id}
+	if err := e.s.loadFindings(e.ctx, a); err != nil || !findingToDo(a.Findings[0]) {
+		t.Fatalf("canceled: %+v, %v", a.Findings, err)
+	}
+	e.setCategory(issue, CatTodo)
+	a = &CodeAudit{ID: id}
+	if err := e.s.loadFindings(e.ctx, a); err != nil || findingToDo(a.Findings[0]) {
+		t.Fatalf("reopened: %+v, %v", a.Findings, err)
+	}
+	if out := e.s.leftOpen(e.ctx, e.prID); out != nil && len(out.Audits) > 0 && out.Audits[0].Open != 0 {
+		t.Errorf("left open = %+v", out)
+	}
+}
+
+// The SQL form agrees, in each query that embeds it.
+func TestFilingVoidSQLPaths(t *testing.T) {
+	e := filedPR(t)
+	e.audit(leftoverAgent, "", filedCanceled, filedDupOfOpen, filedDupOfCanceled)
+	out := e.s.leftOpen(e.ctx, e.prID)
+	if out == nil || len(out.Audits) != 1 || out.Audits[0].Findings != 3 || out.Audits[0].Open != 2 {
+		t.Fatalf("left open = %+v", out)
+	}
+}
+
+func TestFilingVoidAgainFindings(t *testing.T) {
+	e := filedPR(t)
+	id := e.audit("", "", filedCanceled, filedDupOfOpen, filedDupOfCanceled)
+	got, err := e.s.againFindings(e.ctx, id, 0)
+	if err != nil || len(got) != 3 {
+		t.Fatalf("again findings = %+v, %v", got, err)
+	}
+	for i, want := range []struct{ filed, void bool }{{false, true}, {true, false}, {false, true}} {
+		if got[i].filed != want.filed || got[i].void != want.void {
+			t.Errorf("finding %d: filed %v void %v, want %v", i+1, got[i].filed, got[i].void, want)
+		}
+	}
+	text := got[0].mark()
+	if !strings.Contains(text, "closed unfixed") || !strings.Contains(text, got[0].issue) {
+		t.Errorf("mark = %q", text)
+	}
+}
+
+func TestFilingVoidCheckClaims(t *testing.T) {
+	e := filedPR(t)
+	id := e.audit("", "", filedCanceled, filedDupOfOpen)
+	_, ids, err := e.s.checkClaims(e.ctx, id)
+	if want := []string{fmt.Sprintf("%d.2", id)}; err != nil || !slices.Equal(ids, want) {
+		t.Fatalf("claims = %v, %v; want %v", ids, err, want)
+	}
+}
+
+func TestFilingVoidAgainTodo(t *testing.T) {
+	e := filedPR(t)
+	id := e.audit("", "", filedCanceled, filedDupOfOpen)
+	todo, err := e.s.againTodo(e.ctx, id)
+	if want := []string{fmt.Sprintf("%d.1", id)}; err != nil || !slices.Equal(todo, want) {
+		t.Fatalf("to do = %v, %v; want %v", todo, err, want)
+	}
+}
+
+func TestFilingVoidMarkCounts(t *testing.T) {
+	e := filedPR(t)
+	id := e.audit("", "", filedCanceled, filedDupOfOpen, filedDone)
+	total, fixed, rejected, filed, err := e.s.markCounts(e.ctx, id, 0)
+	if err != nil || total != 3 || fixed != 0 || rejected != 0 || filed != 2 {
+		t.Fatalf("counts = %d %d %d %d, %v", total, fixed, rejected, filed, err)
+	}
+}
+
+func TestFilingVoidFindingText(t *testing.T) {
+	var b strings.Builder
+	writeAuditFinding(&b, CodeAuditFinding{ID: "7.1", Severity: "medium", Title: "t", State: "confirmed", Issue: "WP-5", FilingVoid: true})
+	for _, want := range []string{"WP-5", "closed unfixed", "to do here"} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("text lacks %q: %s", want, b.String())
+		}
+	}
+	b.Reset()
+	writeAuditFinding(&b, CodeAuditFinding{ID: "7.1", Severity: "medium", Title: "t", State: "confirmed", Issue: "WP-5"})
+	if strings.Contains(b.String(), "closed unfixed") {
+		t.Errorf("a live filing reads as void: %s", b.String())
+	}
+}
+
+// Filing into an issue that is already closed unfixed is refused, with a way
+// out; one into a duplicate of a live issue, or a done one, is taken.
+func TestMarkRefusesAVoidFiling(t *testing.T) {
+	e := filedPR(t)
+	id := e.audit("", "", unfiledMedium, unfiledMedium, unfiledMedium)
+	key := func(issue int64) string {
+		var k string
+		if err := e.s.db.R.QueryRow(`SELECT p.key || '-' || i.number FROM issues i JOIN projects p ON p.id = i.project_id WHERE i.id = ?`, issue).Scan(&k); err != nil {
+			t.Fatal(err)
+		}
+		return k
+	}
+	mark := func(n int, issue int64) error {
+		_, err := e.s.MarkAuditFindings(e.ctx, e.admin, MarkFindings{IDs: []string{fmt.Sprintf("%d.%d", id, n)}, State: "confirmed", Issue: key(issue)})
+		return err
+	}
+	err := mark(1, e.issueIn(CatCanceled))
+	if err == nil || !strings.Contains(err.Error(), "canceled") || !strings.Contains(err.Error(), "reject") {
+		t.Fatalf("a canceled issue: %v", err)
+	}
+	if err := mark(2, e.duplicateOf(CatTodo)); err != nil {
+		t.Errorf("a duplicate of an open issue: %v", err)
+	}
+	if err := mark(3, e.issueIn(CatDone)); err != nil {
+		t.Errorf("a done issue: %v", err)
+	}
+	var state string
+	if err := e.s.db.R.QueryRow(`SELECT state FROM code_audit_findings WHERE audit_id = ? AND ordinal = 1`, id).Scan(&state); err != nil || state != "confirmed" {
+		t.Errorf("a refused mark changed the finding: %q, %v", state, err)
 	}
 }
