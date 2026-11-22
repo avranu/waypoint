@@ -250,7 +250,7 @@ func TestAgainPolicyWeighs(t *testing.T) {
 			findings: []againFinding{policyFinding(1, "high", "rejected", "")}},
 		{name: "normal stakes: mediums weigh nothing", k: 1, findings: of("medium", 3), need: 1, facts: normal},
 		{name: "normal stakes: a high at round 1", k: 1, findings: of("high", 1), calls: true, need: 1, weight: 2, facts: normal},
-		{name: "normal stakes: a high at round 3", k: 3, findings: of("high", 1), need: 4, weight: 2, arm: AgainUntrusted, facts: func(f *againFacts) { normal(f); untrusted(f) }},
+		{name: "normal stakes: a high at round 3", k: 3, findings: of("high", 1), need: 4, weight: 2, arm: AgainEnough, facts: normal},
 		{name: "a base and growth of 3: a high at round 2", k: 2, findings: of("high", 1), need: 9, weight: 2, arm: AgainUntrusted, facts: untrusted, policy: grows},
 		{name: "a base and growth of 3: two mediums at round 1", k: 1, findings: of("medium", 2), need: 3, weight: 2, policy: grows},
 		{name: "a base and growth of 3: three mediums at round 1", k: 1, findings: of("medium", 3), calls: true, need: 3, weight: 3, policy: grows},
