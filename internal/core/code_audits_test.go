@@ -374,3 +374,69 @@ func TestAPullRequestsAuditGoesBeforeOtherAudits(t *testing.T) {
 		t.Errorf("took jobs %d then %d; the pull request's audit has job %v, the repository's %v", first.ID, second.ID, a.JobID, b.JobID)
 	}
 }
+
+// The news that an audit ended, queued for the session that asked for it,
+// is withdrawn once every finding in it is decided before it is typed in:
+// it would be the session's next task with nothing left to do (WP-1525).
+// News of an audit with a finding still to do stays.
+func TestAuditNewsWithdrawnOnceDecided(t *testing.T) {
+	ae := newAgentEnv(t)
+	ae.prHook("opened", ForgePR{Number: 7, Title: "Export the board", HeadRef: "export", HeadSHA: "abc1234def", HeadRepo: "me/app", Author: ae.admin.User.Username})
+	res, err := ae.s.db.W.Exec(`INSERT INTO agent_sessions(user_id, machine, cli_id, started_at, last_seen_at) VALUES (?, 'devhost', 'claude', 5, 5)`, ae.admin.User.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _ := res.LastInsertId()
+	audit := func() *CodeAudit {
+		t.Helper()
+		a, err := ae.s.RequestAudit(ae.ctx, ae.admin, AuditInput{PRID: ae.pr(7).ID, Via: "cli"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ae.s.db.W.Exec(`UPDATE code_audits SET session_id = ? WHERE id = ?`, session, a.ID); err != nil {
+			t.Fatal(err)
+		}
+		ae.work()
+		ae.finish(ae.take().ID, "done", auditResult("Read it.",
+			map[string]any{"title": "Export skips the project check", "path": "internal/api/export.go", "line": 42, "severity": "high", "problem": "Any user exports any board."},
+			map[string]any{"title": "A typo in a log line", "path": "internal/log.go", "line": 9, "severity": "low", "problem": "It says recieve."},
+		), "")
+		return ae.audit(a.ID)
+	}
+	news := func(id int64) string {
+		t.Helper()
+		var state string
+		if err := ae.s.db.R.QueryRow(`SELECT state FROM session_messages WHERE session_id = ? AND step_key = ?`, session, auditNewsKey(id, AuditDone)).Scan(&state); err != nil {
+			t.Fatalf("news of audit %d: %v", id, err)
+		}
+		return state
+	}
+	mark := func(id, state string) {
+		t.Helper()
+		if _, err := ae.s.MarkAuditFindings(ae.ctx, ae.admin, MarkFindings{IDs: []string{id}, State: state, Note: "checked"}); err != nil {
+			t.Fatal(err)
+		}
+		ae.work()
+	}
+
+	a := audit()
+	if st := news(a.ID); st != MessageQueued {
+		t.Fatalf("news of the audit = %q, want queued", st)
+	}
+	mark(a.Findings[0].ID, "fixed")
+	if st := news(a.ID); st != MessageQueued {
+		t.Fatalf("with a finding still to do the news is %q", st)
+	}
+	mark(a.Findings[1].ID, "rejected")
+	if st := news(a.ID); st != "cancelled" {
+		t.Fatalf("with every finding decided the news is %q", st)
+	}
+
+	// Confirmed is still to do: the news stays.
+	b := audit()
+	mark(b.Findings[0].ID, "rejected")
+	mark(b.Findings[1].ID, "confirmed")
+	if st := news(b.ID); st != MessageQueued {
+		t.Fatalf("with a finding confirmed the news is %q", st)
+	}
+}

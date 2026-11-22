@@ -1511,13 +1511,16 @@ func (s *Service) CheckAudits(ctx context.Context) {
 }
 
 // codeAuditEvent: dispatch's part. A queued audit is started; a finished
-// one is posted, handed to Claude if asked, and told to whoever asked.
+// one is posted, handed to Claude if asked, and told to whoever asked; one
+// whose findings were marked takes back news of it nobody needs now.
 func (s *Service) codeAuditEvent(ctx context.Context, e *Event) {
 	id, _ := e.Data["audit"].(int64)
 	if id == 0 {
 		return
 	}
 	switch {
+	case e.Field == "findings":
+		s.withdrawDecidedAuditNews(ctx, id)
 	case e.Field == "fix":
 		// Asked for after the fact: made now, so the caller gets its key.
 		s.auditFixTask(ctx, id)
@@ -1828,7 +1831,7 @@ func writeAuditFinding(b *strings.Builder, f CodeAuditFinding) {
 func (s *Service) tellAudit(ctx context.Context, a *CodeAudit) {
 	text := auditNews(a, s.BaseURL())
 	if a.sessionID != 0 {
-		m, err := s.storeMessage(ctx, a.sessionID, text, fmt.Sprintf("audit:%d:%s", a.ID, a.Status), messageFrom{}, false)
+		m, err := s.storeMessage(ctx, a.sessionID, text, auditNewsKey(a.ID, a.Status), messageFrom{}, false)
 		if err != nil {
 			s.log.WarnContext(ctx, "tell a session about its audit", "audit", a.ID, "err", err)
 		} else if m.State == MessageQueued {
@@ -1854,6 +1857,30 @@ func (s *Service) tellAudit(ctx context.Context, a *CodeAudit) {
 		return
 	}
 	s.notifyURL(ctx, who, nil, NotifyAudit, auditHeadline(a), text, fmt.Sprintf("/audits/%d", a.ID))
+}
+
+// auditNewsKey is the step key of the message telling a session an audit
+// ended (tellAudit).
+func auditNewsKey(id int64, status string) string {
+	return fmt.Sprintf("audit:%d:%s", id, status)
+}
+
+// withdrawDecidedAuditNews withdraws the news that an audit ended, still
+// queued for the session that asked for it, once no finding in it is left
+// to do: typed in at the session's next Stop, it would be its next task
+// with nothing in it (WP-1525). The news can wait long enough for that: a
+// session that ended before taking it hands it to the next one in its
+// worktree (takeMessages), which may well have found and marked the
+// findings first. The news stays withdrawn if a finding is to do again
+// later (marked open, or its issue closed unfixed): whoever reopened it, or
+// what reads the findings then, already knows.
+func (s *Service) withdrawDecidedAuditNews(ctx context.Context, id int64) {
+	if _, err := s.db.W.ExecContext(ctx, `UPDATE session_messages SET state = 'cancelled' WHERE step_key = ? AND state = 'queued'
+		AND EXISTS (SELECT 1 FROM code_audit_findings f WHERE f.audit_id = ?)
+		AND NOT EXISTS (SELECT 1 FROM code_audit_findings f WHERE f.audit_id = ? AND `+findingToDoSQL+`)`,
+		auditNewsKey(id, AuditDone), id, id); err != nil {
+		s.log.WarnContext(ctx, "withdraw an audit's news once its findings are decided", "audit", id, "err", err)
+	}
 }
 
 func auditHeadline(a *CodeAudit) string {
