@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -99,12 +100,44 @@ func TestCLIAudit(t *testing.T) {
 	}
 
 	// Recent changes, with criteria (WP-548).
-	out = e.wp("audit", "--since", "2w", "--focus", "security,data", "--path", "internal", "--exclude", "*_test.go", "--min-severity", "high", "--max-findings", "5")
+	out = e.wp("audit", "--since", "2w", "--focus", "security,data", "--path", "internal", "--exclude", "*_test.go", "--min-severity", "high", "--show", "5")
 	if !strings.Contains(out, "Audit #2 of robin/waypoint main, the last 2 weeks (internal) asked of") {
 		t.Errorf("wp audit --since:\n%s", out)
 	}
-	if out := e.wp("audit", "show", "2"); !strings.Contains(out, "Criteria: focus security, data; only internal; not *_test.go; high and worse; asked for at most 5 findings") {
+	if out := e.wp("audit", "show", "2"); !strings.Contains(out, "Criteria: focus security, data; only internal; not *_test.go; high and worse; shows 5 findings at a time") {
 		t.Errorf("wp audit show 2:\n%s", out)
+	}
+
+	// Shown at a time (WP-1421): asked to show 5, a model that reports 12 keeps 12.
+	e.svc.Wait()
+	if w, err := e.svc.RunnerPoll(ctx, me, core.RunnerPoll{Runner: box.ID, Wait: &zero}); err != nil || w.Job == nil {
+		t.Fatalf("poll for audit 2: %v %+v", err, w)
+	} else {
+		var twelve []any
+		for i := 1; i <= 12; i++ {
+			twelve = append(twelve, map[string]any{"title": fmt.Sprintf("Hole %d", i), "path": "internal/a.go", "line": i, "severity": "high", "problem": "x", "confirm": "y"})
+		}
+		res, _ := json.Marshal(map[string]any{"answer": "(structured)", "structured": map[string]any{"summary": "A dozen.", "findings": twelve}})
+		if _, err := e.svc.FinishRunnerJob(ctx, me, w.Job.ID, core.RunnerFinish{State: "done", Result: res}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.svc.Wait()
+	e.svc.Wait()
+	if out := e.wp("audit", "show", "2"); !strings.Contains(out, "Hole 5") || strings.Contains(out, "Hole 6") || !strings.Contains(out, "7 more: wp audit show 2 --all") {
+		t.Errorf("wp audit show 2 (5 of 12):\n%s", out)
+	}
+	if out := e.wp("audit", "show", "2", "--all"); !strings.Contains(out, "Hole 12") || strings.Contains(out, "more: wp audit show") {
+		t.Errorf("wp audit show 2 --all:\n%s", out)
+	}
+	if out := e.wp("audit", "show", "2", "--json"); strings.Count(out, "Hole ") != 12 {
+		t.Errorf("wp audit show 2 --json holds %d findings", strings.Count(out, "Hole "))
+	}
+	// The old name of the flag still works.
+	if out := e.wp("audit", "recent", "--max-findings", "7"); !strings.Contains(out, "Audit #3 ") {
+		t.Errorf("wp audit recent --max-findings:\n%s", out)
+	} else if out := e.wp("audit", "show", "3"); !strings.Contains(out, "shows 7 findings at a time") {
+		t.Errorf("wp audit show 3:\n%s", out)
 	}
 	if out := e.wp("audit", "recent", "release"); !strings.Contains(out, "robin/waypoint release, the last 7 days") {
 		t.Errorf("wp audit recent release:\n%s", out)
@@ -114,6 +147,48 @@ func TestCLIAudit(t *testing.T) {
 	}
 	if out, code := e.run("audit", "recent", "--focus", "vibes"); code == 0 || !strings.Contains(out, "isn't a focus area") {
 		t.Errorf("a bad focus: %d %s", code, out)
+	}
+}
+
+// The server says how many findings are listed at a time (WP-1421): a check
+// of a session's marks has more than its max_findings and lists every one,
+// and an older server, which sends no number, gets the old rule.
+func TestAuditShowListsWhatTheServerSaysIsShown(t *testing.T) {
+	var fs []auditFinding
+	for i := 1; i <= 5; i++ {
+		fs = append(fs, auditFinding{ID: fmt.Sprintf("9.%d", i), Title: fmt.Sprintf("Mark %d", i), Severity: "low", State: "open"})
+	}
+	check := auditView{ID: 9, Status: "done", Purpose: "check", MaxFindings: 3, Shown: 100, Findings: fs}
+	if out := check.text(); !strings.Contains(out, "Mark 5") || strings.Contains(out, "more: wp audit show") {
+		t.Errorf("a check with max_findings 3 and 5 findings:\n%s", out)
+	}
+	// At exactly the number shown, and under it, there is no line for more.
+	for _, n := range []int{5, 4} {
+		exact := auditView{ID: 9, Status: "done", Shown: 5, Findings: fs[:n]}
+		if out := exact.text(); strings.Contains(out, "more: wp audit show") || !strings.Contains(out, fmt.Sprintf("Mark %d", n)) {
+			t.Errorf("%d findings, shown 5:\n%s", n, out)
+		}
+	}
+	// The criteria line names the number only when it is the one in use (1255.6).
+	if out := check.text(); strings.Contains(out, "shows 3 findings at a time") {
+		t.Errorf("a check that lists every finding says it shows 3:\n%s", out)
+	}
+	set := auditView{ID: 9, Status: "done", MaxFindings: 4, Shown: 4, Findings: fs}
+	if out := set.text(); !strings.Contains(out, "shows 4 findings at a time") || !strings.Contains(out, "1 more: wp audit show 9 --all") {
+		t.Errorf("an audit set to show 4:\n%s", out)
+	}
+	// A server that sends neither number: the default (1255.22).
+	var many []auditFinding
+	for i := 1; i <= core.AuditDefaultShown+2; i++ {
+		many = append(many, auditFinding{ID: fmt.Sprintf("9.%d", i), Title: fmt.Sprintf("Mark %d", i), Severity: "low", State: "open"})
+	}
+	bare := auditView{ID: 9, Status: "done", Findings: many}
+	if out := bare.text(); !strings.Contains(out, "2 more: wp audit show 9 --all") || strings.Contains(out, "at a time") {
+		t.Errorf("an audit with no number:\n%s", out)
+	}
+	older := auditView{ID: 9, Status: "done", MaxFindings: 3, Findings: fs}
+	if out := older.text(); strings.Contains(out, "Mark 4") || !strings.Contains(out, "2 more: wp audit show 9 --all") {
+		t.Errorf("an older server's audit:\n%s", out)
 	}
 }
 

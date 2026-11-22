@@ -279,7 +279,7 @@ func TestParseAuditAnswer(t *testing.T) {
 	// medium an unknown label gets; the worst are kept when there are more
 	// than the cap, wherever the model wrote them.
 	var many []string
-	for i := range auditMaxFindings + 5 {
+	for i := range 30 + 5 {
 		many = append(many, fmt.Sprintf(`{"title": "Nit %d", "problem": "A small thing.", "severity": "trivial"}`, i))
 	}
 	many = append(many, `{"title": "Loses data", "problem": "The write is dropped.", "severity": "Severe"}`, `{"title": "Odd", "problem": "Hm.", "severity": "weird"}`)
@@ -287,7 +287,7 @@ func TestParseAuditAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(a.Findings) != auditMaxFindings+7 || a.raised != auditMaxFindings+7 || a.Findings[0].Title != "Loses data" || a.Findings[0].Severity != "critical" ||
+	if len(a.Findings) != 30+7 || a.raised != 30+7 || a.Findings[0].Title != "Loses data" || a.Findings[0].Severity != "critical" ||
 		a.Findings[1].Title != "Odd" || a.Findings[1].Severity != "medium" || a.Findings[2].Title != "Nit 0" || a.Findings[2].Severity != "low" {
 		t.Errorf("many = %d findings, raised %d, first %+v", len(a.Findings), a.raised, a.Findings[:min(3, len(a.Findings))])
 	}
