@@ -217,7 +217,7 @@ func TestTypedReviewNotTypedTwice(t *testing.T) {
 	a.stopWith("Answered the person.") // the Stop that typed the review again
 	a.tick(61 * time.Second)
 	noMoreReviews(a, key)
-	if r := a.round(id); r.state != RoundRunning && r.state != RoundDone {
+	if r := a.round(id); r.state != RoundRunning {
 		t.Fatalf("round = %+v", r)
 	}
 }
