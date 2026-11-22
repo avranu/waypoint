@@ -408,13 +408,13 @@ func (s *Service) warmSession(ctx context.Context, id int64) error {
 
 // holdsUnmerged: a task the session worked on in the last unmergedWithin
 // isn't merged or closed (its status not done or canceled), and its latest
-// run is the session's and wasn't given back (released, cancelled,
-// refused): the session holds work still on its way (WP-1306).
+// run is the session's and wasn't given back or a diagnosis (released, cancelled,
+// refused, diagnosed): the session holds work still on its way (WP-1306).
 func (s *Service) holdsUnmerged(ctx context.Context, id int64) bool {
 	var unmerged bool
 	if err := s.db.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM agent_runs r JOIN issues i ON i.id = r.issue_id JOIN statuses st ON st.id = i.status_id
 		WHERE r.session_id = ? AND coalesce(r.ended_at, r.started_at) > ? AND st.category NOT IN ('done', 'canceled')
-		AND r.outcome NOT IN ('released', 'cancelled', 'refused')
+		AND r.outcome NOT IN ('released', 'cancelled', 'refused', 'diagnosed')
 		AND r.id = (SELECT max(l.id) FROM agent_runs l WHERE l.issue_id = r.issue_id))`,
 		id, s.nowMS()-unmergedWithin.Milliseconds()).Scan(&unmerged); err != nil {
 		s.log.WarnContext(ctx, "is its task merged", "session", id, "err", err)

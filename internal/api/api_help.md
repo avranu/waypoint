@@ -522,6 +522,31 @@ wait apart. Approving a pull request covers its title, description and code at t
                                   title, body, head_sha, created_at, updated_at}]
     POST /outside-pr/{id}/approve    POST /outside-pr/{id}/discard (comments only)
 
+## Agent instructions
+
+Text Waypoint adds to a session's context by what the session is, at its start, at a sub-agent's
+start and after a compaction (ADR146). An instruction belongs to a project or to none (every
+project; admins). Who it is for: "scope" main, subagent or any; "models" (names matched inside the
+model id; a session whose model isn't known gets only instructions naming none); "agent_types"
+(globs on the sub-agent's type, "!" leaves one out); "moment" start (and again after each
+compaction) or compact (main thread, only after one). A person's change stands as written; an
+agent's is a pending revision until a person approves it, and only the approved text is sent.
+
+    GET  /instructions?project=KEY               the project's and every project's, each with "pending"
+    GET  /instructions/preview?project=KEY&scope=main|subagent&model=M&agent_type=T&compact=1
+                                                 {text, chars, items: [{id, title, outcome, chars}]}: what such
+                                                 a session would get now; records nothing
+    POST /instructions {"project","title","body","scope","models":[],"agent_types":[],"moment"}
+    GET  /instructions/{id}                      + "revisions" and "sent" {sent, cut, unknown_model, sessions,
+                                                 subagents, compactions, last}
+    PATCH /instructions/{id}                     any of the fields above; "enabled", "position" (people only)
+    POST /instructions/{id}/review {"approve":true|false,"rev":N}   people only; rev 0 or absent: the newest pending
+    DELETE /instructions/{id}                    people only
+The hook answer (POST /sessions/hook) carries "instructions" at a SessionStart and SubagentStart.
+Outcomes recorded per hook: sent, cut (over the size budget: 6,000 characters a session start, 9,000 a
+sub-agent start; sent whole or not at all), unknown_model. A project turns delivery off with its
+setting "no_agent_instructions".
+
 ## Glossary
 
 Terms per project or global (no project). A project's full glossary is its own terms, its
@@ -751,7 +776,8 @@ steers or clears one in effect.
     GET    /issues/{key}/objective  {kind until|each|judged|loop, check, dir, setup, measure
                                     time|value|pass, until, repo, branch, keep_passing[], judge, judge_bar
                                     critical|high|medium|low, judge_models[], pace queue|spare, every
-                                    (seconds), max_rounds, round, stalled, next_at, state
+                                    (seconds), max_rounds, diagnose_after, round, round_kind ""|diagnose, no_better, stalled,
+                                    diagnosis {round,at,by,text}, next_at, state
                                     proposed|active|met|ended, phase ""|baseline|verdict|blocked,
                                     phase_why, phase_note, health proposed|working|ready|waiting|
                                     reading|blocked|stuck|met|ended, health_note, stuck_since,
@@ -759,16 +785,20 @@ steers or clears one in effect.
                                     reading of any source), verdict (newest of Waypoint's own),
                                     checks[] (each with source agent|runner|judge|baseline),
                                     rounds[] (outcome reading|met|progress|worked|none|empty|
-                                    unmeasured|loop), findings[]}; also "objective" on GET /issues/{key}
+                                    unmeasured|loop|diagnosed, and a diagnosed one's diagnosis,
+                                    diagnosis_by), findings[]}; also "objective" on GET /issues/{key}
     PUT    /issues/{key}/objective {"check","dir","setup","until","measure","better":"lower|higher",
                                     "repo":"owner/name","branch","keep_passing":[cmd],"judge","judge_bar",
-                                    "judge_models":[model],"pace","every":"24h","max_rounds":0,"rev"}
+                                    "judge_models":[model],"pace","every":"24h","max_rounds":0,"diagnose_after":2,"rev"}
                                     set or change; a field left out keeps its value. keep_passing:
                                     commands a round mustn't break. judge: what done means, in words. pace
                                     spare: handed out only while the week's-end plan wants more work
                                     (WP-ADR106). every: least time between rounds (default 24h for
                                     each and loop, 0 for until and judged). rev: the agent's proposal
-                                    a person's change builds on
+                                    a person's change builds on.
+                                    diagnose_after: rounds in a row that come no nearer before the next
+                                    is a diagnose round that ships no code (0: never; 2 by default, and for
+                                    objectives that existed before it; a loop has none to set)
     POST   /issues/{key}/objective/confirm {"rev"}   a person puts an agent's proposal in effect; rev
                                     is the one they read, refused if it was rewritten since
     POST   /issues/{key}/objective/go {"action":"retry|next|accept|end"}   a person steers one in
@@ -776,6 +806,11 @@ steers or clears one in effect.
                                     round out now, or leave an unread round behind; accept a reading
                                     that waits because the round changed what the check runs; end it (the
                                     task stays, an ordinary task)
+    POST   /issues/{key}/objective/diagnose {"text","ask","agent"}   the agent working a diagnose
+                                    round (or a person who may edit the task) records why the rounds
+                                    before it came no nearer, and what to try: the round ends with no
+                                    reading, the task goes back to To Do, and the same round opens as
+                                    a work round. ask: a person must act first, so it waits for them
     DELETE /issues/{key}/objective  takes it off, rounds and readings with it; the task's history says
                                     what it had reached
     POST   /issues/{key}/objective/checks {"ok","value","base_ok","base_value","base_sha","tree",

@@ -26,6 +26,8 @@ type agentParent struct {
 	// Taken: the reservation of the Agent call that made this agent is
 	// accounted for, so a later SubagentStart of it takes none.
 	Taken bool `json:"taken,omitempty"`
+	// Model: the model the gate resolved for that call, "" when not known (ADR146).
+	Model string `json:"model,omitempty"`
 }
 
 // reservation is an Agent call the gate let through: it counts against the
@@ -36,6 +38,7 @@ type reservation struct {
 	Mode   string    `json:"mode,omitempty"`
 	Parent string    `json:"parent,omitempty"` // the agent that made the call ("" the main thread)
 	Type   string    `json:"type,omitempty"`   // its subagent_type
+	Model  string    `json:"model,omitempty"`  // the model the gate resolved for it, "" when it couldn't (ADR146)
 	At     time.Time `json:"at"`
 }
 
@@ -307,13 +310,19 @@ func (c *cli) trackAgentParent(in hookEventInput) {
 		// the agent's start then takes none (Taken).
 		ap := agentParent{Parent: in.AgentID, Mode: mode, At: time.Now(), Taken: s.AgentParents[in.SessionID][r.AgentID].Taken}
 		if in.ToolUseID != "" {
-			if _, ok := s.takeReservation(in.SessionID, in.ToolUseID, "", false, ""); ok {
-				ap.Taken = true
+			if res, ok := s.takeReservation(in.SessionID, in.ToolUseID, "", false, ""); ok {
+				ap.Taken, ap.Model = true, res.Model
 			}
+		}
+		if ap.Model == "" {
+			ap.Model = s.AgentParents[in.SessionID][r.AgentID].Model
 		}
 		s.AgentParents[in.SessionID][r.AgentID] = ap
 		if a, ok := s.Agents[in.SessionID][r.AgentID]; ok {
 			a.Mode = mode // the call is a better witness than the order of starts
+			if a.Model == "" {
+				a.Model = ap.Model
+			}
 			s.Agents[in.SessionID][r.AgentID] = a
 		} else if r.Status == "async_launched" {
 			// Launched, and its SubagentStart not here yet: it exists now
@@ -325,7 +334,7 @@ func (c *cli) trackAgentParent(in hookEventInput) {
 			if s.Agents[in.SessionID] == nil {
 				s.Agents[in.SessionID] = map[string]liveAgent{}
 			}
-			s.Agents[in.SessionID][r.AgentID] = liveAgent{Type: ti.Type, Since: time.Now(), Mode: mode, Provisional: true}
+			s.Agents[in.SessionID][r.AgentID] = liveAgent{Type: ti.Type, Since: time.Now(), Mode: mode, Model: ap.Model, Provisional: true}
 		}
 		s.pruneAgents(time.Now())
 	})

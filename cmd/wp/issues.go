@@ -512,7 +512,7 @@ func cmdNew(c *cli, args []string) error {
 	}
 	obj := of.body(fs)
 	if len(obj) > 0 && obj["check"] == nil && obj["judge"] == nil && obj["until"] == nil {
-		return c.usage("--keep-passing goes with a --check or a --judge")
+		return c.usage("--keep-passing and --diagnose-after go with a --check or a --judge")
 	}
 	if len(pos) >= 2 && slices.Contains(issueTypes, strings.ToLower(pos[0])) && *f.typ == "" {
 		*f.typ, pos = strings.ToLower(pos[0]), pos[1:]
