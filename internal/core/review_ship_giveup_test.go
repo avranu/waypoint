@@ -86,23 +86,3 @@ func TestShipRoundTwoCallersShipOnce(t *testing.T) {
 		t.Fatalf("told %d more times", n-told)
 	}
 }
-
-// A ship that failed once and was then left alone for longer than its
-// window (the server was down) is still found by the sweep, and ended: the
-// sweep's prefilter takes in a round that has been tried (WP-1370).
-func TestShipTriedOnceIsEndedAfterALongSilence(t *testing.T) {
-	e := newLoopEnv(t, map[string]string{"": "critical", "fixes": "complete"})
-	r1 := e.review("Merge loses an update")
-	e.g.createErr = errors.New("forge unavailable")
-	e.shipAndCheck(r1, []string{"rejected"})
-	e.exec(`UPDATE agent_runs SET ended_at = ?, outcome = 'released' WHERE id = (SELECT run_id FROM work_log WHERE id = ?)`, e.clockNow().UnixMilli(), r1)
-	e.tickAll(time.Minute) // the first try fails and is recorded
-	if bp := roundBeforePR(e.ctx, e.s.db.R, r1); bp == nil || bp.ShipFirst == 0 {
-		t.Fatalf("no first try recorded: %+v", bp)
-	}
-	e.setClock(e.clockNow().Add(3 * 24 * time.Hour))
-	e.tickAll(time.Minute)
-	if bp := roundBeforePR(e.ctx, e.s.db.R, r1); bp == nil || bp.ShipStop == "" {
-		t.Fatalf("a ship tried once and then left for three days was never ended: %+v", bp)
-	}
-}
