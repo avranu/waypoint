@@ -108,6 +108,19 @@ func (s *Service) countMissingTranscriptFiles(ctx context.Context) (int64, error
 	}
 }
 
+// transcriptProblem is the archive collector's problem line: stored pieces
+// that are missing on disk.
+func (s *Service) transcriptProblem(ctx context.Context) (string, error) {
+	if s.cfg.TranscriptDir == "" {
+		return "", nil
+	}
+	var missing int64
+	if err := s.db.R.QueryRowContext(ctx, `SELECT missing FROM transcript_totals WHERE id = 1`).Scan(&missing); err != nil {
+		return "", err
+	}
+	return transcriptMissingProblem(missing), nil
+}
+
 // transcriptMissingProblem is the archive collector's problem text for n
 // missing pieces ("" for none).
 func transcriptMissingProblem(n int64) string {

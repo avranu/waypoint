@@ -19,6 +19,14 @@ func (s *Server) usageTranscriptRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/usage/transcript/status", a(s.transcriptStatus))
 	mux.HandleFunc("GET /api/v1/usage/transcripts", a(s.transcriptFiles))
 	mux.HandleFunc("GET /api/v1/usage/transcript", a(s.transcriptRead))
+	mux.HandleFunc("GET /api/v1/usage/facts", a(s.sessionFacts))
+}
+
+// sessionFacts counts a session's per-event facts (derived from its archived
+// transcript), or a task's share of its sessions (WP-1467).
+func (s *Server) sessionFacts(w http.ResponseWriter, r *http.Request) (any, error) {
+	v := r.URL.Query()
+	return s.svc.SessionFacts(r.Context(), actorFrom(r), core.FactsQuery{Session: v.Get("session"), Task: v.Get("task"), User: v.Get("user"), Machine: v.Get("machine")})
 }
 
 // transcriptPiece takes one piece: the gzip bytes are the body, what they
