@@ -1,0 +1,16 @@
+# forge-sync scans the commits it mirrors to GitHub with gitleaks and reads this
+# file from main. It extends the default rules; nothing here turns a rule off.
+title = "Waypoint gitleaks config"
+
+[extend]
+useDefault = true
+
+# The transcript archive's redaction tests feed redact() fake credentials on purpose:
+# PEM headers with no key body, "hunter2", "abcd1234wxyz", "Authorization: Basic ..."
+# of "user:password". Only these two rules, only these files. Agents keep adding
+# rounds (usage_archive_roundN_test.go), so the files are matched by pattern instead
+# of listing line numbers in .gitleaksignore, which shift with every edit.
+[[allowlists]]
+description = "fake credentials in the transcript archive's redaction tests"
+targetRules = ["generic-api-key", "private-key"]
+paths = ['''^cmd/wp/usage_archive[a-z0-9_]*_test\.go$''']
