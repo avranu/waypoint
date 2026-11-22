@@ -206,7 +206,9 @@ var collectors = []collector{
 		args: func(now time.Time) []any {
 			return []any{now.Add(-factsQuiet).UnixMilli(), transcript.ParserVersion, now.Add(-factsRetry).UnixMilli()}
 		},
-		output:  `SELECT MAX(f.derived_at) FROM session_fact_files f`,
+		output: `SELECT MAX(f.derived_at) FROM session_fact_files f`,
+		// failing files now, not a total over time: a file leaves it when a
+		// later run derives it
 		dropped: `SELECT COUNT(*) FROM session_fact_files f WHERE f.error IS NOT NULL`,
 		scans: map[string]string{
 			"p": "transcript_pieces is read whole, grouped by file, every 5 minutes: one row per stored piece, no index leads with created_at",

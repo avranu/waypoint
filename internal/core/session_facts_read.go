@@ -62,6 +62,13 @@ type FactsStatus struct {
 	// Unknown is the records the parser did not understand in those files, by
 	// type: facts may be missing for them.
 	Unknown map[string]int64 `json:"unknown,omitempty"`
+	// Undecoded is the fields of understood records the parser could not
+	// decode (a malformed content array, say), by what was lost: facts are
+	// missing for them too.
+	Undecoded map[string]int64 `json:"undecoded,omitempty"`
+	// WholeSession is true for a task: these file figures cover the task's
+	// whole sessions, while its facts cover only the task's time windows.
+	WholeSession bool `json:"whole_session,omitempty"`
 }
 
 // RepeatedCall is the same call made more than once.
@@ -92,6 +99,9 @@ type SessionFacts struct {
 	Key     string        `json:"key"`
 	Sources []FactsSource `json:"sources"`
 	Status  FactsStatus   `json:"status"`
+	// UntimedLeftOut is, for a task, the rows with no timestamp that its
+	// time windows cannot place: they are in no task's counts.
+	UntimedLeftOut int `json:"untimed_rows_left_out,omitempty"`
 
 	Turns struct {
 		Total int `json:"total"`
@@ -287,6 +297,14 @@ func (s *Service) SessionFacts(ctx context.Context, actor *Actor, q FactsQuery) 
 	if err := s.factsStatus(ctx, scopes, &out.Status); err != nil {
 		return nil, err
 	}
+	out.Status.WholeSession = out.Scope == "task"
+	if out.Scope == "task" {
+		n, err := s.factsUntimed(ctx, scopes)
+		if err != nil {
+			return nil, err
+		}
+		out.UntimedLeftOut = n
+	}
 	if out.Status.FilesArchived == 0 {
 		return nil, notFound("archived transcript for " + out.Key)
 	}
@@ -337,14 +355,15 @@ func (s *Service) factsStatus(ctx context.Context, scopes []factScope, st *Facts
 	_ = rows.Close()
 	st.FilesArchived = len(files)
 	unknown := map[string]int64{}
+	undecoded := map[string]int64{}
 	for _, k := range files {
 		var version int
 		var derived sql.NullInt64
 		var errText sql.NullString
-		var unk string
-		err := s.db.R.QueryRowContext(ctx, `SELECT parser_version, derived_to, error, unknown FROM session_fact_files
+		var unk, ign string
+		err := s.db.R.QueryRowContext(ctx, `SELECT parser_version, derived_to, error, unknown, ignored FROM session_fact_files
 			WHERE user_id = ? AND machine = ? AND session = ? AND file = ? AND gen = ?`, k.uid, k.machine, k.session, k.file, k.gen).
-			Scan(&version, &derived, &errText, &unk)
+			Scan(&version, &derived, &errText, &unk, &ign)
 		switch {
 		case err == sql.ErrNoRows:
 			st.FilesWaiting++
@@ -363,6 +382,13 @@ func (s *Service) factsStatus(ctx context.Context, scopes []factScope, st *Facts
 					unknown[t] += n
 				}
 			}
+			if json.Unmarshal([]byte(ign), &m) == nil {
+				for t, n := range m {
+					if what, ok := strings.CutPrefix(t, "undecoded/"); ok {
+						undecoded[what] += n
+					}
+				}
+			}
 		} else {
 			st.FilesWaiting++
 		}
@@ -370,7 +396,35 @@ func (s *Service) factsStatus(ctx context.Context, scopes []factScope, st *Facts
 	if len(unknown) > 0 {
 		st.Unknown = unknown
 	}
+	if len(undecoded) > 0 {
+		st.Undecoded = undecoded
+	}
 	return nil
+}
+
+// factsUntimed counts the rows of a task's sessions that carry no timestamp:
+// a task's windows are cut by time, so they cannot say which task those
+// belong to and the task's counts leave them out.
+func (s *Service) factsUntimed(ctx context.Context, scopes []factScope) (int, error) {
+	seen := map[string]bool{}
+	total := 0
+	for _, sc := range scopes {
+		k := fmt.Sprint(sc.uid, "\x00", sc.machine, "\x00", sc.session)
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		w, args := factScope{uid: sc.uid, machine: sc.machine, session: sc.session}.where("")
+		for _, tbl := range factTables {
+			var n int
+			// #nosec G202 -- tbl is a constant from factTables, w is built from fixed conditions; values are bound
+			if err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM `+tbl+` WHERE `+w+` AND at IS NULL`, args...).Scan(&n); err != nil {
+				return 0, err
+			}
+			total += n
+		}
+	}
+	return total, nil
 }
 
 func isDocPath(p string) bool {

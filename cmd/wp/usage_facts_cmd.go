@@ -127,6 +127,20 @@ func factsText(f *core.SessionFacts) string {
 	if st.FilesWaiting > 0 {
 		p("  counts below cover only the derived files; the rest are derived a few minutes after a file stops growing")
 	}
+	if st.WholeSession {
+		p("  (the file figures above are for the task's whole sessions; the counts below are for the task's time windows only)")
+	}
+	if f.UntimedLeftOut > 0 {
+		p("  %d rows carry no timestamp, so no task window holds them: they are left out of the counts below", f.UntimedLeftOut)
+	}
+	if len(st.Undecoded) > 0 {
+		var parts []string
+		for k, n := range st.Undecoded {
+			parts = append(parts, fmt.Sprintf("%s %d", k, n))
+		}
+		sort.Strings(parts)
+		p("  fields the parser could not decode (facts may be missing): %s", strings.Join(parts, ", "))
+	}
 	if len(st.Unknown) > 0 {
 		var parts []string
 		for k, n := range st.Unknown {

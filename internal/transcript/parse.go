@@ -246,6 +246,12 @@ func Parse(r io.Reader, file string) (*Result, error) {
 func (p *parser) unknown(k string) { p.res.Unknown[k]++ }
 func (p *parser) ignored(k string) { p.res.Ignored[k]++ }
 
+// undecoded counts a field the parser could not decode, so that what it
+// dropped is told and not silent (ADR145: every drop counted). The line is
+// still counted once in its own kind; this is the extra "and part of it was
+// lost" figure, named by what was lost.
+func (p *parser) undecoded(what string) { p.res.Ignored["undecoded/"+what]++ }
+
 func ptr[T any](v T) *T { return &v }
 
 func strp(s string) *string {
@@ -276,6 +282,7 @@ func (p *parser) line(b []byte) {
 			p.unknown("(unreadable)")
 			return
 		}
+		p.undecoded("line_field")
 	}
 	ts := parseTS(r.Timestamp)
 	if ts != nil {
@@ -422,7 +429,9 @@ func (p *parser) assistant(r *rec, ts *int64, thread string, main bool) {
 	}
 	if bytes.Contains(m.Content, []byte(`"tool_use"`)) {
 		var blocks []block
-		if json.Unmarshal(m.Content, &blocks) == nil {
+		if err := json.Unmarshal(m.Content, &blocks); err != nil {
+			p.undecoded("assistant_content") // every tool call in this message is lost
+		} else {
 			for i := range blocks {
 				if blocks[i].Type == "tool_use" && blocks[i].ID != "" {
 					p.toolUse(&blocks[i], r, ts, thread, m.ID)
@@ -459,9 +468,21 @@ func commandHead(c string) string {
 	return clip(strings.Join(w, " "), commandRunes)
 }
 
+// urlHead is a URL without its query, fragment or userinfo (user:password@),
+// which can carry a secret.
 func urlHead(u string) string {
 	if i := strings.IndexAny(u, "?#"); i >= 0 {
 		u = u[:i]
+	}
+	if i := strings.Index(u, "://"); i >= 0 {
+		rest := u[i+3:]
+		host := rest
+		if j := strings.IndexByte(rest, '/'); j >= 0 {
+			host = rest[:j]
+		}
+		if k := strings.LastIndexByte(host, '@'); k >= 0 {
+			u = u[:i+3] + rest[k+1:]
+		}
 	}
 	return clip(u, targetRunes)
 }
@@ -471,7 +492,9 @@ func (p *parser) toolUse(bl *block, r *rec, ts *int64, thread, msgID string) {
 		return
 	}
 	var in toolInput
-	_ = json.Unmarshal(bl.Input, &in) // a wrong-typed field leaves the rest filled in
+	if err := json.Unmarshal(bl.Input, &in); err != nil { // a wrong-typed field leaves the rest filled in
+		p.undecoded("tool_input")
+	}
 	t := ToolCall{Row: p.row(bl.ID, ts, thread), ToolUseID: bl.ID, MsgID: strp(msgID), PromptID: p.prompt, Tool: bl.Name}
 	set := func(kind, target string) {
 		if target != "" {
@@ -536,11 +559,17 @@ func (p *parser) user(r *rec, ts *int64, thread string, main bool) {
 	var text string
 	var textBytes int64
 	if len(content) > 0 && content[0] == '"' {
-		_ = json.Unmarshal(content, &text)
+		if err := json.Unmarshal(content, &text); err != nil {
+			p.undecoded("user_content") // not a prompt we can size: no turn from it
+			return
+		}
 		textBytes = int64(len(text))
 	} else if len(content) > 0 && content[0] == '[' {
 		var blocks []block
-		_ = json.Unmarshal(content, &blocks)
+		if err := json.Unmarshal(content, &blocks); err != nil {
+			p.undecoded("user_content") // a partial decode must not pass for a human prompt
+			return
+		}
 		results := 0
 		for i := range blocks {
 			switch blocks[i].Type {
@@ -594,18 +623,22 @@ func (p *parser) user(r *rec, ts *int64, thread string, main bool) {
 	p.res.Turns = append(p.res.Turns, t)
 }
 
-func resultSize(raw json.RawMessage) (n int64, text string) {
+func (p *parser) resultSize(raw json.RawMessage) (n int64, text string) {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 {
 		return 0, ""
 	}
 	if raw[0] == '"' {
 		var s string
-		_ = json.Unmarshal(raw, &s)
+		if err := json.Unmarshal(raw, &s); err != nil {
+			p.undecoded("tool_result_content")
+		}
 		return int64(len(s)), s
 	}
 	var blocks []block
-	_ = json.Unmarshal(raw, &blocks)
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		p.undecoded("tool_result_content")
+	}
 	for _, b := range blocks {
 		n += int64(len(b.Text))
 		if text == "" {
@@ -619,7 +652,9 @@ func (p *parser) results(blocks []block, r *rec, ts *int64, n int) {
 	var tr *toolResult
 	if raw := bytes.TrimSpace(r.ToolUseResult); n == 1 && len(raw) > 0 && raw[0] == '{' {
 		tr = &toolResult{}
-		_ = json.Unmarshal(raw, tr)
+		if err := json.Unmarshal(raw, tr); err != nil {
+			p.undecoded("tool_use_result")
+		}
 	}
 	for i := range blocks {
 		bl := &blocks[i]
@@ -632,7 +667,7 @@ func (p *parser) results(blocks []block, r *rec, ts *int64, n int) {
 			continue
 		}
 		t := &p.res.ToolCalls[idx]
-		size, text := resultSize(bl.Content)
+		size, text := p.resultSize(bl.Content)
 		t.ResultAt, t.ResultBytes, t.IsError = ts, ptr(size), ptr(bl.IsError)
 		if ts != nil && t.At != nil && *ts >= *t.At {
 			t.DurationMS = ptr(*ts - *t.At)
@@ -730,6 +765,7 @@ func (p *parser) attachment(r *rec, ts *int64, thread string) {
 			p.unknown("attachment/(unreadable)")
 			return
 		}
+		p.undecoded("attachment_field")
 	}
 	add := func(i int, f InjectedFile) {
 		f.Row = p.row(fmt.Sprintf("%s#%d", orUID(r.UUID, p.file, p.seq), i), ts, thread)

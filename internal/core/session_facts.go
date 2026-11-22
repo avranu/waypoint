@@ -124,7 +124,12 @@ func (s *Service) DeriveSessionFacts(ctx context.Context) (FactsRun, error) {
 			return run, ctx.Err()
 		}
 		if run.Bytes > 0 && run.Bytes+f.raw > factsRunBytes {
-			break
+			// Skip the file that does not fit and go on: a break would let
+			// one large file defer every smaller due file behind it, run
+			// after run. The first file is always taken (above), so a file
+			// larger than the budget still gets its run when it leads the list; the order (never
+			// derived first, then newest) keeps the skipped one due next time.
+			continue
 		}
 		run.Bytes += f.raw
 		n, err := s.deriveFactFile(ctx, f)

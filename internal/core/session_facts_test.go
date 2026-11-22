@@ -214,6 +214,34 @@ func TestFactsRunByteBudget(t *testing.T) {
 	}
 }
 
+// A file too big for what is left of the run's budget is skipped, not a stop:
+// the smaller due files behind it still run, and the big one is next in line.
+func TestFactsRunBudgetSkipsTheFileThatDoesNotFit(t *testing.T) {
+	e := transcriptEnv(t)
+	jo := e.user("jo", false)
+	small := fAssistant("ma", 2, 5)
+	big := fAssistant("mb", 2, 5, fm{"type": "text", "text": strings.Repeat("x", 4000)})
+	e.putFile(jo, "c", "main", 0, small) // oldest
+	e.setClock(e.clockNow().Add(time.Second))
+	e.putFile(jo, "b", "main", 0, big)
+	e.setClock(e.clockNow().Add(time.Second))
+	e.putFile(jo, "a", "main", 0, small) // newest, so first
+	e.quiet()
+	old := factsRunBytes
+	factsRunBytes = int64(2*len(small) + 10)
+	t.Cleanup(func() { factsRunBytes = old })
+	run := e.derive()
+	if run.Derived != 2 {
+		t.Fatalf("first run derived %d, want 2: the big file is skipped and the small one behind it runs (%+v)", run.Derived, run)
+	}
+	if got := e.rowCount("fact_model_calls"); got != 2 {
+		t.Errorf("calls %d", got)
+	}
+	if run := e.derive(); run.Derived != 1 {
+		t.Errorf("second run derived %d, want the skipped big file (%+v)", run.Derived, run)
+	}
+}
+
 // A file that cannot be read is recorded, counted in the collector health and
 // not retried until something changes or the retry time has passed.
 func TestFactsFailureRecordedNotRetried(t *testing.T) {
@@ -294,6 +322,7 @@ func factsEnv(t *testing.T) (e *env, jo *Actor) {
 		fResult("t3", 21, false, fm{"type": "create", "content": "a\nb\n"}) +
 		fResult("t4", 21, false, nil) +
 		fAssistant("m3", 22, 30, fTool("t5", "Read", fm{"file_path": "/r/docs/guide.md"})) +
+		fj(fm{"type": "permission-mode", "permissionMode": "plan", "sessionId": "s1"}) + // no timestamp
 		fj(fm{"type": "attachment", "uuid": "i1", "timestamp": fat(1, 0), "attachment": fm{"type": "instructions",
 			"files": []fm{{"path": "/r/AGENTS.md", "type": "Project", "content": "12345678"}}}})
 	e.putFile(jo, "s1", "main", 0, lines)
@@ -369,6 +398,17 @@ func TestFactsReadTaskByWindows(t *testing.T) {
 	if f1.Scope != "task" || len(f1.Sources) != 1 || f1.Sources[0].To == nil || f2.Sources[0].To != nil {
 		t.Errorf("windows: %+v %+v", f1.Sources, f2.Sources)
 	}
+	// the status is the sessions' files, not the windows, and says so; the
+	// row with no timestamp is in no window, and the answer says how many
+	if !f1.Status.WholeSession || !f2.Status.WholeSession || f1.Status.FilesArchived != 2 {
+		t.Errorf("a task's status must be named whole-session: %+v", f1.Status)
+	}
+	if f1.UntimedLeftOut != 1 || f2.UntimedLeftOut != 1 {
+		t.Errorf("untimed rows left out: %d, %d, want 1", f1.UntimedLeftOut, f2.UntimedLeftOut)
+	}
+	if sf, err := e.s.SessionFacts(e.ctx, jo, FactsQuery{Session: "s1"}); err != nil || sf.Status.WholeSession || sf.UntimedLeftOut != 0 {
+		t.Errorf("a session read is not whole-session-labelled and leaves nothing out: %v %+v", err, sf)
+	}
 	// nothing is counted twice across the two tasks
 	if f1.ModelCalls.Total+f2.ModelCalls.Total != 4 {
 		t.Errorf("the tasks' calls do not add up to the session's")
@@ -384,8 +424,8 @@ func TestFactsReadAccess(t *testing.T) {
 	if _, err := e.s.SessionFacts(e.ctx, kim, FactsQuery{Session: "s1", User: "jo"}); !errors.Is(err, ErrForbidden) {
 		t.Errorf("reading another person's facts: %v", err)
 	}
-	if _, err := e.s.SessionFacts(e.ctx, agentActor(jo, "anthropic/claude-code"), FactsQuery{Session: "s1"}); err == nil {
-		t.Error("an agent's token read session facts")
+	if f, err := e.s.SessionFacts(e.ctx, agentActor(jo, "anthropic/claude-code"), FactsQuery{Session: "s1"}); !errors.Is(err, ErrForbidden) || f != nil {
+		t.Errorf("an agent's shell must be refused with forbidden and no facts: %v %v", err, f)
 	}
 	if f, err := e.s.SessionFacts(e.ctx, e.admin, FactsQuery{Session: "s1", User: "jo"}); err != nil || f.ModelCalls.Total != 4 {
 		t.Errorf("admin: %v %+v", err, f)
@@ -409,6 +449,16 @@ func TestFactsReadAccess(t *testing.T) {
 	}
 	if f, err := e.s.SessionFacts(e.ctx, e.admin, FactsQuery{Task: i.Key, User: "jo"}); err != nil || f.ModelCalls.Total == 0 {
 		t.Errorf("admin with --user: %v", err)
+	}
+	// a person whose own session traced a task in a project they cannot view
+	// is told it is not found: the facts of a task are not a way around the
+	// project's access
+	priv := e.project(e.admin, "Priv", "")
+	pi := e.issue(e.admin, IssueInput{Project: priv.Key, Title: "hidden"})
+	e.exec(`INSERT INTO task_traces(user_id, machine, session, seq, issue_id, started_at, last_at, ended, updated_at) VALUES (?, 'box', 's1', 2, ?, ?, ?, '', 1)`,
+		jo.User.ID, pi.ID, fatMS(10, 0), fatMS(15, 0))
+	if f, err := e.s.SessionFacts(e.ctx, jo, FactsQuery{Task: pi.Key}); !errors.Is(err, ErrNotFound) || f != nil {
+		t.Errorf("a task in a project the person cannot view: %v %v", err, f)
 	}
 }
 

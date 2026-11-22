@@ -320,3 +320,43 @@ func TestParseIsDeterministicAndLongLinesCounted(t *testing.T) {
 		t.Errorf("parsing the same bytes twice gave different results")
 	}
 }
+
+// A message whose content array is malformed loses its tool calls or its
+// prompt: the loss is counted by name, and a half-decoded user message is not
+// recorded as a human prompt.
+func TestUndecodedFieldsAreCounted(t *testing.T) {
+	bad := j(m{"type": "assistant", "uuid": "u-bad", "timestamp": ts(1), "requestId": "req-bad",
+		"message": m{"id": "mb", "model": "model-a", "usage": m{"output_tokens": 2},
+			"content": []any{toolUse("tb", "Read", m{"file_path": "/a"}), 5}}})
+	badUser := j(m{"type": "user", "uuid": "ub", "timestamp": ts(2), "promptId": "p1",
+		"message": m{"content": []any{m{"type": "text", "text": "hello"}, 5}}})
+	badLine := j(m{"type": "system", "subtype": "x", "uuid": "sl", "timestamp": 5})
+	badInput := j(m{"type": "assistant", "uuid": "u-in", "timestamp": ts(3), "requestId": "req-in",
+		"message": m{"id": "mi", "model": "model-a", "usage": m{"output_tokens": 2},
+			"content": []m{toolUse("ti", "Read", m{"file_path": 7})}}})
+	r := parse(t, "main", bad, badUser, badLine, badInput)
+	for _, k := range []string{"undecoded/assistant_content", "undecoded/user_content", "undecoded/line_field", "undecoded/tool_input"} {
+		if r.Ignored[k] != 1 {
+			t.Errorf("%s = %d, want 1 (ignored: %v)", k, r.Ignored[k], r.Ignored)
+		}
+	}
+	if len(r.Turns) != 0 {
+		t.Errorf("a half-decoded user message became %d turn(s)", len(r.Turns))
+	}
+	if len(r.ModelCalls) != 2 {
+		t.Errorf("the model calls still count, got %d", len(r.ModelCalls))
+	}
+}
+
+func TestURLHeadDropsQueryFragmentAndUserinfo(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://user:pw@host.example/a/b?token=x#frag": "https://host.example/a/b",
+		"https://host.example/a@b?x=1":                  "https://host.example/a@b",
+		"http://u@host":                                 "http://host",
+		"https://host.example/p":                        "https://host.example/p",
+	} {
+		if got := urlHead(in); got != want {
+			t.Errorf("urlHead(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
