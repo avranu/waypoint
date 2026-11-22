@@ -661,6 +661,9 @@ type NitpickStats struct {
 	// AgainHelpers: how each Haiku helper around the rounds' audits did
 	// (review_helpers.go).
 	AgainHelpers []AgainHelperStat `json:"review_helpers"`
+	// AgainHolds: ships held for findings still to decide, by task
+	// (review_health.go).
+	AgainHolds []AgainHoldStat `json:"review_ship_holds"`
 }
 
 // NitpickArm is the merged pull requests of one arm.
@@ -781,6 +784,9 @@ func (s *Service) nitpickStats(ctx context.Context, actor *Actor, projectID, sin
 		return nil, err
 	}
 	if out.AgainHelpers, err = s.againHelperStats(ctx, ivis, iargs, since); err != nil {
+		return nil, err
+	}
+	if out.AgainHolds, err = s.againHolds(ctx, ivis, iargs, since); err != nil {
 		return nil, err
 	}
 	for arm, hs := range hours {

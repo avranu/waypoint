@@ -936,8 +936,8 @@ func PanelSource(f CodeAuditFinding) string {
 // pruning), how many a second read confirmed (Confirmed), how many findings
 // name it (Added: the findings the runner added from its problems; what a
 // reviewer took up while it was handed the leads, before 2026-11-20, is in
-// taken_lead and not counted) and how sessions marked those (Fixed: fixed
-// or confirmed; Rejected). For the check of findings (Check "verify") Confirmed, Refuted
+// taken_lead and not counted) and how sessions marked those (Fixed: fixed,
+// or confirmed and not filed; Filed; Rejected). For the check of findings (Check "verify") Confirmed, Refuted
 // and Unsupported are the verdicts it gave, and how they match what the
 // session did with the same findings: refuted ones it fixed or confirmed
 // anyway (RefutedHeld) and confirmed ones it rejected (ConfirmedRejected),

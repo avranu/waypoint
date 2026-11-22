@@ -1387,16 +1387,18 @@ const againHeldSQL = `(f.state = 'fixed' OR (f.state = 'confirmed' AND NOT ` + f
 // wasn't one an earlier round had raised (the next round's own decision
 // scored it and found no earlier one it repeats), and that the check
 // against the code didn't refute.
-const againUsefulSQL = `EXISTS(SELECT 1 FROM code_audit_findings f WHERE f.audit_id IN ` + againAuditsSQL + ` AND f.state IN ('fixed', 'confirmed')
-	AND f.severity IN ('critical', 'high', 'medium') AND f.verdict != 'refuted'
-	AND EXISTS(SELECT 1 FROM review_finding_scores fs WHERE fs.finding_id = f.id AND fs.repeat_of IS NULL))`
+const againUsefulSQL = `EXISTS(SELECT 1 FROM code_audit_findings f WHERE f.audit_id IN ` + againAuditsSQL + ` AND f.state IN ('fixed', 'confirmed') AND ` + againNewSQL + `)`
+
+// againNewSQL is, over code_audit_findings as f, the part of againUsefulSQL
+// that isn't the mark: medium or worse, not refuted, and new (scored, and
+// no repeat of an earlier round's).
+const againNewSQL = `f.severity IN ('critical', 'high', 'medium') AND f.verdict != 'refuted'
+	AND EXISTS(SELECT 1 FROM review_finding_scores fs WHERE fs.finding_id = f.id AND fs.repeat_of IS NULL)`
 
 // againAllFiledSQL is againUsefulSQL for a round whose useful findings were
 // all filed: none the session fixed or confirmed without filing. A measure
 // beside the useful record, not a change to it (WP-1555).
-const againAllFiledSQL = `(` + againUsefulSQL + ` AND NOT EXISTS(SELECT 1 FROM code_audit_findings f WHERE f.audit_id IN ` + againAuditsSQL + ` AND ` + againHeldSQL + `
-	AND f.severity IN ('critical', 'high', 'medium') AND f.verdict != 'refuted'
-	AND EXISTS(SELECT 1 FROM review_finding_scores fs WHERE fs.finding_id = f.id AND fs.repeat_of IS NULL)))`
+const againAllFiledSQL = `(` + againUsefulSQL + ` AND NOT EXISTS(SELECT 1 FROM code_audit_findings f WHERE f.audit_id IN ` + againAuditsSQL + ` AND ` + againHeldSQL + ` AND ` + againNewSQL + `))`
 
 // againJudgedSQL is, in SQL over a next round's work_log row w, whether
 // againUsefulSQL can tell: the round found nothing of medium or worse that
@@ -1448,10 +1450,12 @@ type AgainRoundStat struct {
 	Scoring int `json:"scoring"`
 	Labels  int `json:"labels"`
 	// Standing: the findings of these decisions' rounds that weren't
-	// rejected; Filed: of them, the ones filed (againDecision.filed).
+	// rejected; Filed: of them, the ones filed (againDecision.filed). Both
+	// are as they stood when each round was decided.
 	// UsefulAllFiled: of the followed rounds counted useful, the ones whose
 	// useful findings were all filed (againAllFiledSQL); a measure beside
-	// Useful, which counts them.
+	// Useful, which counts them. Like Useful it reads the marks as they
+	// stand now, so a mark changed after a decision moves it and not Filed.
 	Standing       int `json:"standing"`
 	Filed          int `json:"filed"`
 	UsefulAllFiled int `json:"useful_all_filed"`
