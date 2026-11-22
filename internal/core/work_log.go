@@ -1375,7 +1375,7 @@ type WorkLogTotals struct {
 
 // modelRead says a count was read by a model: a count has a reader, and
 // "rules" is the one that is not a model.
-func modelRead(readBy string) bool { return readBy != readByRules }
+func modelRead(readBy string) bool { return readBy != readByRules && readBy != "" }
 
 func (t *WorkLogTotals) add(state, readBy string, found, fixed, rejected sql.NullInt64, pushed bool) {
 	t.Rounds++

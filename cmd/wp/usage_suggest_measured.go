@@ -84,7 +84,7 @@ func measuredStart(c *cli, ids []string) (*sugMeasured, string) {
 	}
 	n := max(len(instr), len(idx), len(mem))
 	if n == 0 {
-		return nil, fmt.Sprintf("no session-start snapshot for %s (the hooks take one: wp hook claude)", plural1(len(ids), "of these sessions"))
+		return nil, fmt.Sprintf("no session-start snapshot for %s of these (the hooks take one: wp hook claude)", plural1(len(ids), "session"))
 	}
 	return &sugMeasured{Sessions: n, Of: len(ids), InstructionBytes: median(instr), InstructionFiles: median(files),
 		MemoryIndexBytes: median(idx), MemoryBytes: median(mem), MemoryFiles: median(memFiles)}, ""

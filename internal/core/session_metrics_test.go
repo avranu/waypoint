@@ -133,7 +133,7 @@ func TestAgentLabelHasOneSource(t *testing.T) {
 		{"", "claude", "anthropic/claude-code"},
 		{"", "gemini", "google/gemini-cli"},
 		{"", "Codex", "openai/codex"},
-		{"", "unheard-of", ""},
+		{"", "unheard-of", "unheard-of"},
 		{"acme/own-agent", "gemini", "acme/own-agent"}, // identity beats the cli
 	} {
 		if got := agentLabel(&Actor{Agent: c.agent}, c.cli); got != c.want {

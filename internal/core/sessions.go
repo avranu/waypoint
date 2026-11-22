@@ -1132,7 +1132,9 @@ func agentLabel(actor *Actor, cli string) string {
 	if a := actor.agentName(); a != "" {
 		return a
 	}
-	return agentOfCLI[strings.ToLower(cmp(strings.TrimSpace(cli), "claude"))]
+	name := strings.ToLower(cmp(strings.TrimSpace(cli), "claude"))
+	// A CLI this map does not know is recorded under its own name, never as "".
+	return cmp(agentOfCLI[name], name)
 }
 
 // touchSession registers the session (or updates its place and last-seen
