@@ -228,7 +228,8 @@ func hookClaudeWait(c *cli, stdin io.Reader, stdout io.Writer) {
 	start := time.Now()
 	deadline := time.After(waitBudget)
 	eta := make(chan string, 1)
-	go func() { eta <- waitETAFor(call.Command, in.Cwd, in.SessionID) }()
+	etaFor := waitETAFor // read here: the goroutine can outlive the hook
+	go func() { eta <- etaFor(call.Command, in.Cwd, in.SessionID) }()
 	var lines string
 	var told []int64
 	if c.server() != "" && c.token() != "" {

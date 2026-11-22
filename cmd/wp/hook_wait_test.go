@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -35,6 +36,7 @@ func waitHookTold(t *testing.T, status int, body string, input map[string]any) (
 	var asked atomic.Int32
 	var session string
 	var told []int64
+	var stdout lockedBuffer
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions/outstanding/told" {
 			var in struct {
@@ -44,6 +46,11 @@ func waitHookTold(t *testing.T, status int, body string, input map[string]any) (
 				t.Errorf("told: %v", err)
 			}
 			told = in.Requests
+			// The order is the point (c6152): an answer is told only once
+			// the hook has printed it.
+			if stdout.String() == "" {
+				t.Errorf("told %v before the hook printed anything", in.Requests)
+			}
 			if r.Header.Get("X-Waypoint-Session") != "sess-1" {
 				t.Errorf("told for session %q", r.Header.Get("X-Waypoint-Session"))
 			}
@@ -72,12 +79,30 @@ func waitHookTold(t *testing.T, status int, body string, input map[string]any) (
 		t.Fatal(err)
 	}
 	b, _ := json.Marshal(input)
-	var stdout bytes.Buffer
 	hookClaudeWait(c, bytes.NewReader(b), &stdout)
 	if asked.Load() > 0 && session != "sess-1" {
 		t.Errorf("the server was asked for session %q", session)
 	}
 	return stdout.String(), asked.Load(), told
+}
+
+// lockedBuffer is the hook's stdout, which the test's server reads while the
+// hook is still running.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }
 
 // bashCall is a PostToolUse event for a Bash call; background says Claude
