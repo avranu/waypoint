@@ -297,6 +297,20 @@ func TestColdCacheInferredFromGap(t *testing.T) {
 			t.Errorf("4000 s after a 1 hour write is cold: %v", c[2].ColdInferred)
 		}
 	})
+	t.Run("a read of all the previous call cached is warm", func(t *testing.T) {
+		read := func(r, w int) m {
+			return m{"output_tokens": 1, "cache_creation_input_tokens": w, "cache_read_input_tokens": r,
+				"cache_creation": m{"ephemeral_5m_input_tokens": w, "ephemeral_1h_input_tokens": 0}}
+		}
+		r := parse(t, "main", assistant("m1", 0, read(0, 100)), assistant("m2", 400, read(100, 500)), assistant("m3", 800, read(50, 700)))
+		c := r.ModelCalls
+		if c[1].ColdInferred == nil || *c[1].ColdInferred {
+			t.Errorf("the whole previous cache was read back, so it had not expired: %v", c[1].ColdInferred)
+		}
+		if c[2].ColdInferred == nil || !*c[2].ColdInferred {
+			t.Errorf("only part of the previous cache was read after the gap: cold, got %v", c[2].ColdInferred)
+		}
+	})
 	t.Run("split unknown", func(t *testing.T) {
 		r := parse(t, "main", assistant("m1", 0, plain(50)), assistant("m2", 400, plain(60)), assistant("m3", 400+4000, plain(60)), assistant("m4", 400+4000+10, plain(60)))
 		c := r.ModelCalls
