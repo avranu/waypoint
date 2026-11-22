@@ -174,6 +174,7 @@ func TestShownIsCountedApartFromLookedUp(t *testing.T) {
 // row_session.go): TestAgentWritableTablesCarryASession fails for a new table
 // that names an agent and is in neither place (WP-ADR145 point 6).
 var sessionExempt = map[string]string{
+	"fact_spawns":         "derived from the transcript archive by the session facts job, keyed by session already (WP-1467)",
 	"agent_sessions":      "not written by an agent session on its own behalf (a session, token, mirror, log or setting)",
 	"agent_usage_reports": "not written by an agent session on its own behalf (a session, token, mirror, log or setting)",
 	"api_tokens":          "not written by an agent session on its own behalf (a session, token, mirror, log or setting)",

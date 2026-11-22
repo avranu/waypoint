@@ -112,13 +112,24 @@ type WorkLog struct {
 type WorkLogSummary struct {
 	// Adversarial review rounds: all of them, the counted ones, and the
 	// issues their reports named.
-	Reviews   int `json:"reviews"`
-	Counted   int `json:"counted"`
-	Found     int `json:"found"`
-	Fixed     int `json:"fixed"`
-	Rejected  int `json:"rejected"`
-	Pushed    int `json:"pushed"` // rounds that pushed commits
-	Uncounted int `json:"uncounted"`
+	Reviews int `json:"reviews"`
+	// Counted, Found, Fixed and Rejected are the rounds counted by rules or
+	// from the session's own record; the ModelRead ones are rounds whose
+	// report a model read (WP-1470); the Note ones are notes a person tagged.
+	// The three are never added together.
+	Counted           int `json:"counted"`
+	Found             int `json:"found"`
+	Fixed             int `json:"fixed"`
+	Rejected          int `json:"rejected"`
+	Pushed            int `json:"pushed"` // rounds that pushed commits
+	Uncounted         int `json:"uncounted"`
+	ModelReadCounted  int `json:"model_read_counted"`
+	ModelReadFound    int `json:"model_read_found"`
+	ModelReadFixed    int `json:"model_read_fixed"`
+	ModelReadRejected int `json:"model_read_rejected"`
+	NoteFound         int `json:"note_found"`
+	NoteFixed         int `json:"note_fixed"`
+	NoteRejected      int `json:"note_rejected"`
 	// The session's own reviews (WP-1089) and the issues their reports
 	// named.
 	OwnReviews int `json:"own_reviews"`
@@ -1040,10 +1051,17 @@ func (s *Service) storedWorkLog(ctx context.Context, wl *WorkLog, issueID int64)
 			if found.Valid {
 				f, x, r := int(found.Int64), int(fixed.Int64), int(rejected.Int64)
 				e.Found, e.Fixed, e.Rejected = &f, &x, &r
-				wl.Summary.Counted++
-				wl.Summary.Found += f
-				wl.Summary.Fixed += x
-				wl.Summary.Rejected += r
+				if modelRead(e.ReadBy) {
+					wl.Summary.ModelReadCounted++
+					wl.Summary.ModelReadFound += f
+					wl.Summary.ModelReadFixed += x
+					wl.Summary.ModelReadRejected += r
+				} else {
+					wl.Summary.Counted++
+					wl.Summary.Found += f
+					wl.Summary.Fixed += x
+					wl.Summary.Rejected += r
+				}
 			} else if e.State == RoundDone {
 				wl.Summary.Uncounted++
 			}
@@ -1068,13 +1086,13 @@ func (s *Service) storedWorkLog(ctx context.Context, wl *WorkLog, issueID int64)
 			e.Title = workTitle(e.Body)
 			switch e.Tag {
 			case TagFound:
-				wl.Summary.Found++
+				wl.Summary.NoteFound++
 			case TagFixed:
-				wl.Summary.Found++
-				wl.Summary.Fixed++
+				wl.Summary.NoteFound++
+				wl.Summary.NoteFixed++
 			case TagRejected:
-				wl.Summary.Found++
-				wl.Summary.Rejected++
+				wl.Summary.NoteFound++
+				wl.Summary.NoteRejected++
 			}
 		}
 		wl.Entries = append(wl.Entries, e)
@@ -1323,31 +1341,58 @@ type WorkLogProject struct {
 	WorkLogTotals
 }
 
-// WorkLogTotals counts rounds and what they found.
+// RoundCounts is what the rounds counted one way found.
+type RoundCounts struct {
+	Rounds     int `json:"rounds"`      // rounds behind the numbers
+	WithIssues int `json:"with_issues"` // of them, rounds that found at least one
+	Found      int `json:"found"`
+	Fixed      int `json:"fixed"`
+	Rejected   int `json:"rejected"`
+}
+
+func (c *RoundCounts) add(found, fixed, rejected int64) {
+	c.Rounds++
+	c.Found += int(found)
+	c.Fixed += int(fixed)
+	c.Rejected += int(rejected)
+	if found > 0 {
+		c.WithIssues++
+	}
+}
+
+// WorkLogTotals counts rounds and what they found. Counts a round's own
+// record or Waypoint's rules took (Measured) are kept apart from counts a
+// model read out of the report (ModelRead), each with the number of rounds
+// behind it, and a finished round nobody counted is in Uncounted, in neither
+// (WP-1470, WP-ADR145 point 4).
 type WorkLogTotals struct {
 	Rounds      int            `json:"rounds"`
 	ByState     map[string]int `json:"by_state"`
-	Counted     int            `json:"counted"`
-	WithIssues  int            `json:"with_issues"` // counted rounds that found at least one
-	Found       int            `json:"found"`
-	Fixed       int            `json:"fixed"`
-	Rejected    int            `json:"rejected"`
+	Measured    RoundCounts    `json:"measured"`
+	ModelRead   RoundCounts    `json:"model_read"`
+	Uncounted   int            `json:"uncounted"`
+	NotFinished int            `json:"not_finished"` // running, failed or skipped rounds with no counts; Rounds = Measured.Rounds + ModelRead.Rounds + Uncounted + NotFinished
 	Pushed      int            `json:"pushed"`
 	Tasks       int            `json:"tasks"`
-	FoundPerRun float64        `json:"found_per_round"`
+	FoundPerRun float64        `json:"found_per_round"` // of the measured rounds only
 }
 
-func (t *WorkLogTotals) add(state string, found, fixed, rejected sql.NullInt64, pushed bool) {
+// modelRead says a count was read by a model: a count has a reader, and
+// "rules" is the one that is not a model.
+func modelRead(readBy string) bool { return readBy != readByRules && readBy != "" }
+
+func (t *WorkLogTotals) add(state, readBy string, found, fixed, rejected sql.NullInt64, pushed bool) {
 	t.Rounds++
 	t.ByState[state]++
-	if found.Valid {
-		t.Counted++
-		t.Found += int(found.Int64)
-		t.Fixed += int(fixed.Int64)
-		t.Rejected += int(rejected.Int64)
-		if found.Int64 > 0 {
-			t.WithIssues++
-		}
+	switch {
+	case found.Valid && modelRead(readBy):
+		t.ModelRead.add(found.Int64, fixed.Int64, rejected.Int64)
+	case found.Valid:
+		t.Measured.add(found.Int64, fixed.Int64, rejected.Int64)
+	case state == RoundDone:
+		t.Uncounted++
+	default:
+		t.NotFinished++
 	}
 	if pushed {
 		t.Pushed++
@@ -1355,8 +1400,8 @@ func (t *WorkLogTotals) add(state string, found, fixed, rejected sql.NullInt64, 
 }
 
 func (t *WorkLogTotals) finish() {
-	if t.Counted > 0 {
-		t.FoundPerRun = float64(t.Found) / float64(t.Counted)
+	if t.Measured.Rounds > 0 {
+		t.FoundPerRun = float64(t.Measured.Found) / float64(t.Measured.Rounds)
 	}
 }
 
@@ -1390,7 +1435,7 @@ func (s *Service) GetWorkLogStats(ctx context.Context, actor *Actor, projectRef 
 		if p.Role == "guest" {
 			continue // a guest sees shared issues, not the project's numbers
 		}
-		rows, err := s.db.R.QueryContext(ctx, `SELECT w.issue_id, w.state, w.found, w.fixed, w.rejected, w.heads FROM work_log w JOIN issues i ON i.id = w.issue_id
+		rows, err := s.db.R.QueryContext(ctx, `SELECT w.issue_id, w.state, w.found, w.fixed, w.rejected, w.heads, w.read_by FROM work_log w JOIN issues i ON i.id = w.issue_id
 			WHERE i.project_id = ? AND w.kind = 'review' AND w.created_at >= ?`, p.ID, since)
 		if err != nil {
 			return nil, err
@@ -1399,15 +1444,15 @@ func (s *Service) GetWorkLogStats(ctx context.Context, actor *Actor, projectRef 
 		ptasks := map[int64]bool{}
 		for rows.Next() {
 			var issue int64
-			var state, heads string
+			var state, heads, readBy string
 			var found, fixed, rejected sql.NullInt64
-			if err := rows.Scan(&issue, &state, &found, &fixed, &rejected, &heads); err != nil {
+			if err := rows.Scan(&issue, &state, &found, &fixed, &rejected, &heads, &readBy); err != nil {
 				_ = rows.Close()
 				return nil, err
 			}
 			pushed := pushedFixes(heads)
-			pt.add(state, found, fixed, rejected, pushed)
-			out.Total.add(state, found, fixed, rejected, pushed)
+			pt.add(state, readBy, found, fixed, rejected, pushed)
+			out.Total.add(state, readBy, found, fixed, rejected, pushed)
 			ptasks[issue], tasks[issue] = true, true
 		}
 		_ = rows.Close()

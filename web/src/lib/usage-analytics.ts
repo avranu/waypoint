@@ -658,7 +658,7 @@ export interface LedgerStats {
   cold_starts: number
   cold_share: number | null
   cold_tokens: number
-  cold_extra_usd: number
+  cold_extra_est_usd: number
 }
 
 export interface LedgerDay {

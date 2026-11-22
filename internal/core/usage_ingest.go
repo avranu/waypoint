@@ -256,13 +256,35 @@ func (s *Service) IngestUsage(ctx context.Context, actor *Actor, in UsageIngest)
 	return res, nil
 }
 
+// rowSkip says why an uploaded hour row cannot be kept ("" keeps it): an hour
+// out of range, no session, or no model or kind. The skip is counted (WP-1470,
+// WP-ADR145 point 5), not silent.
+func rowSkip(hour, maxHour int64, session, what, whatName string) string {
+	switch {
+	case hour < usageMinHour || hour > maxHour:
+		return "ingest_hour"
+	case session == "":
+		return "ingest_no_session"
+	case what == "":
+		return "ingest_no_" + whatName
+	}
+	return ""
+}
+
+// ingestSkips counts the rows one upload skipped, by reason and table.
+type ingestSkips map[[2]string]int64
+
+func (k ingestSkips) add(reason, table string) { k[[2]string{reason, table}]++ }
+
 func (t *tx) applyUsageChunk(ctx context.Context, uid int64, machine string, c UsageChunk, maxHour int64) error {
+	skips := ingestSkips{}
 	// A session read from its transcript no longer counts its OTLP events.
 	if err := t.dropOTLPFor(ctx, uid, c); err != nil {
 		return err
 	}
 	for _, m := range c.Messages {
-		if m.Hour < usageMinHour || m.Hour > maxHour || m.Session == "" || m.Model == "" {
+		if why := rowSkip(m.Hour, maxHour, m.Session, m.Model, "model"); why != "" {
+			skips.add(why, "usage_hours")
 			continue
 		}
 		kind := clip(m.Kind, 80)
@@ -281,7 +303,8 @@ func (t *tx) applyUsageChunk(ctx context.Context, uid int64, machine string, c U
 		}
 	}
 	for _, r := range c.Ledger {
-		if r.Hour < usageMinHour || r.Hour > maxHour || r.Session == "" || r.Model == "" {
+		if why := rowSkip(r.Hour, maxHour, r.Session, r.Model, "model"); why != "" {
+			skips.add(why, "ledger_hours")
 			continue
 		}
 		kind := clip(r.Kind, 80)
@@ -302,7 +325,8 @@ func (t *tx) applyUsageChunk(ctx context.Context, uid int64, machine string, c U
 		}
 	}
 	for _, r := range c.Tools {
-		if r.Hour < usageMinHour || r.Hour > maxHour || r.Session == "" || r.Kind == "" {
+		if why := rowSkip(r.Hour, maxHour, r.Session, r.Kind, "kind"); why != "" {
+			skips.add(why, "tool_hours")
 			continue
 		}
 		if _, err := t.ExecContext(ctx, `INSERT INTO tool_hours(user_id, hour, machine, session, repo, model, kind, tool, detail, calls, errors, refusals, prompts, result_bytes)
@@ -316,7 +340,8 @@ func (t *tx) applyUsageChunk(ctx context.Context, uid int64, machine string, c U
 		}
 	}
 	for _, r := range c.Refusals {
-		if r.At < usageMinHour || r.At > maxHour || r.Session == "" || r.Tool == "" {
+		if why := rowSkip(r.At, maxHour, r.Session, r.Tool, "tool"); why != "" {
+			skips.add(why, "permission_events")
 			continue
 		}
 		if _, err := t.ExecContext(ctx, `INSERT INTO permission_events(user_id, at, machine, session, repo, model, tool, detail, reason, source, excerpt)
@@ -328,6 +353,7 @@ func (t *tx) applyUsageChunk(ctx context.Context, uid int64, machine string, c U
 	}
 	for _, r := range c.Sessions {
 		if r.Session == "" {
+			skips.add("ingest_no_session", "usage_sessions")
 			continue
 		}
 		if _, err := t.ExecContext(ctx, `INSERT INTO usage_sessions(user_id, machine, session, cwd, repo, branch, version, title, first_at, last_at, compactions)
@@ -343,6 +369,12 @@ func (t *tx) applyUsageChunk(ctx context.Context, uid int64, machine string, c U
 				compactions = usage_sessions.compactions + excluded.compactions`,
 			uid, machine, clip(r.Session, 80), clip(r.Cwd, 400), clip(r.Repo, 200), clip(r.Branch, 200), clip(r.Version, 40), clip(r.Title, 300),
 			nullPositive(r.First), nullPositive(r.Last), r.Compactions); err != nil {
+			return err
+		}
+	}
+	now := t.s.nowMS()
+	for k, n := range skips {
+		if err := addDropRow(ctx, t, uid, cmp(machine, "unknown"), k[0], k[1], n, now); err != nil {
 			return err
 		}
 	}

@@ -233,7 +233,7 @@ func TestTranscriptHoleAndMissingPiece(t *testing.T) {
 	if err := os.Remove(filepath.Join(e.s.cfg.TranscriptDir, rel)); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.s.ReadTranscript(e.ctx, e.admin, TranscriptQuery{Session: "s1", File: "main"}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "reading stored piece") {
+	if err := e.s.ReadTranscript(e.ctx, e.admin, TranscriptQuery{Session: "s1", File: "main"}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "is missing") {
 		t.Errorf("missing piece: %v", err)
 	}
 	if _, err := e.s.db.W.Exec(`UPDATE transcript_pieces SET from_off = from_off + 5 WHERE from_off > 0`); err != nil {

@@ -154,7 +154,8 @@ func (s *Service) schedule() []scheduled {
 		scheduled{name: "timed automations", every: fiveMin, run: s.RunTimedAutomations, atStart: true},
 		// how review findings fared, to the gateway (WP-514)
 		bg(scheduled{name: "review feedback", every: fiveMin, run: s.ReportReviewFeedback}),
-		bg(scheduled{name: "prep trials", every: fiveMin, run: s.RunPrepTrials}), // surplus only (WP-906)
+		bg(scheduled{name: "prep trials", every: fiveMin, run: s.RunPrepTrials}),     // surplus only (WP-906)
+		bg(scheduled{name: "session facts", every: fiveMin, run: s.RunSessionFacts}), // facts from the transcript archive (WP-1467)
 
 		scheduled{name: "runners", every: halfMin, run: s.CheckRunners, atStart: true},
 		scheduled{name: "auto question notices", every: halfMin, run: s.NotifyAutoQuestions, atStart: true}, // at start: after a restart (WP-96)

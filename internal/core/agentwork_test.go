@@ -282,13 +282,18 @@ func TestAgentLoopRound3(t *testing.T) {
 		t.Fatal(err)
 	}
 	var secs int64
+	var inferred bool
 	for _, r := range e.get(e.admin, side.Key).AgentRuns {
 		if r.Outcome == "expired" {
-			secs = r.Seconds
+			secs, inferred = r.Seconds, r.EndInferred
 		}
 	}
 	if secs != 3*3600 {
 		t.Errorf("expired run lasted %ds, want %d", secs, 3*3600)
+	}
+	// Its end is a bound the server made up, and the run says so (WP-1470).
+	if !inferred {
+		t.Error("an expired run's end is not marked inferred")
 	}
 }
 

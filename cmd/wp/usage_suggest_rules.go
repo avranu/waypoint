@@ -33,6 +33,10 @@ type sugInput struct {
 	Inventory []usageInventoryItem
 	Window    func(model string) string // the auto-compact window in effect for a model, as written
 	Waypoint  bool                      // the repository is tracked in Waypoint
+	// What the hooks measured at session start, when the server had it
+	// (Measured nil: MeasuredNote says why not).
+	Measured     *sugMeasured
+	MeasuredNote string
 }
 
 func (in *sugInput) mains() []*sugSession {
@@ -100,6 +104,11 @@ func adviceDocs(in *sugInput) *sugAdvice {
 		head += fmt.Sprintf(" Over %s and %s messages that came to about %s tokens read from the cache.", plural1(len(mains), "session"), commas(msgs), tok(total*msgs))
 	}
 	ev := []string{head}
+	if in.Measured != nil {
+		ev = append(ev, in.Measured.text())
+	} else {
+		ev = append(ev, "These sizes are the files as they are on disk now, not measured in the sessions: "+cmpStr(in.MeasuredNote, "no session-start snapshot for them")+".")
+	}
 	level := "info"
 	for _, d := range in.Docs {
 		t := tokOf(d.Bytes)
