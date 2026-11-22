@@ -745,6 +745,11 @@ func (a *archiver) file(f usageFile, size int64) {
 			a.stop = "a file with more pieces than one pass sends; the rest goes next time"
 			return
 		}
+		if err := a.bound().Err(); err != nil && !errors.Is(err, context.DeadlineExceeded) && !time.Now().After(a.deadline) {
+			// a runner stop or a cancel, not the clock (c6196)
+			a.stop = "stopped before the end; the rest goes next time"
+			return
+		}
 		if time.Now().After(a.deadline) || a.bound().Err() != nil {
 			a.stop = "time limit; the rest goes next time"
 			return

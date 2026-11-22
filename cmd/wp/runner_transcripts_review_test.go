@@ -155,3 +155,20 @@ func TestArchiveReportOffHonoursTheBound(t *testing.T) {
 		t.Errorf("%d requests with an expired bound", n)
 	}
 }
+
+// A pass cut by a cancel (a runner stop, a person) says so, not "time limit" (c6196).
+func TestArchivePassCutByACancelDoesNotSayTimeLimit(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	t.Setenv("WAYPOINT_MACHINE", "testbox")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	// the status post is cut by the same cancel, so the pass also returns its error
+	res, _ := usageArchive(&cli{dir: e.dir, out: &strings.Builder{}, err: &strings.Builder{}}, usageSyncOptions{Ctx: ctx}, fixtureDir(t), time.Now())
+	if res == nil {
+		t.Fatal("no result")
+	}
+	if !strings.Contains(res.Stopped, "stopped before the end") || res.Pieces != 0 {
+		t.Errorf("pass: %+v", res)
+	}
+}
