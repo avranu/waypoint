@@ -53,7 +53,12 @@ package core
 //     scores, the reviewer's record or the yield record say: it is backed
 //     by the session's own mark and two checks, where the decision model's
 //     scores for the same findings spread by more than a point from one
-//     ask to the next.
+//     ask to the next. The round's index weighs it (WP-1569): a new high
+//     or critical signal calls another round at any index; medium signals
+//     are counted, and after the k-th round they must number 1 at k = 1,
+//     else 2^(k-1) (2, 4, 8). Mediums that fall short go on to the scores
+//     below as before, and when nothing else calls the round ends as arm
+//     weighed (probed as enough is).
 //   - Otherwise, what stands is serious enough for the change's risk. Each
 //     finding is scored on its own: its severity is the mean of the
 //     reviewer's own label (critical 10, high 8, medium 5, low 3) and the
@@ -120,6 +125,9 @@ const (
 	// exceptional count, for a loop they miss. WP-1320's live review found
 	// real defects in each of six rounds.
 	reviewRoundsCap = 10
+	// againNeedBase, againNeedGrowth: the weight of signals another round
+	// needs after the k-th is againNeedBase * againNeedGrowth^(k-1) (WP-1569).
+	againNeedBase, againNeedGrowth = 1, 2
 	// againEarlierMax bounds the earlier findings a repeat is judged against.
 	againEarlierMax = 30
 	// againYieldFloor: a round index whose rounds are drawn to find a
@@ -196,7 +204,9 @@ var againBars = map[string]againBar{
 func againBarFor(tier string) againBar { return defaultAgainPolicy().bar(tier) }
 
 // againFloors are the lowest reviewer label a signal may carry, by stakes
-// tier: a new, standing, unrefuted finding at or over it is another round.
+// tier: a new, standing, unrefuted finding at or over it is a signal, which
+// calls another round when it is high or critical, or the mediums number
+// enough (againPolicy.needFor).
 var againFloors = map[string]float64{
 	StakesHigh:     labelScore["medium"],
 	StakesElevated: labelScore["medium"],
@@ -238,6 +248,10 @@ const (
 	AgainCap = "cap"
 	// AgainLowYield: rounds at this index have rarely found anything.
 	AgainLowYield = "low_yield"
+	// AgainWeighed: medium signals stood but fell short of the number the
+	// round's index needs (againPolicy.needFor), and nothing else called:
+	// the stop the weighing made (WP-1569). Probed as enough is.
+	AgainWeighed = "weighed"
 	// AgainProbe: the scores were under the bar, but a new finding of
 	// medium or worse stood, and the record of rounds after such rounds
 	// (drawn as for low_yield) says they may pay off: another round comes,
@@ -362,7 +376,7 @@ func (d *againDecision) countUnchecked(findings []againFinding, floor float64, p
 // round's own findings that is itself a signal is the same problem, so it
 // counts once.
 func (d *againDecision) countSignals(findings []againFinding, floor float64) {
-	d.signals, d.signalRepeats, d.floor = 0, 0, floor
+	d.signals, d.signalRepeats, d.floor, d.serious, d.weight = 0, 0, floor, 0, 0
 	counted := map[string]bool{}
 	for pass := range 2 {
 		for i := range findings {
@@ -380,6 +394,11 @@ func (d *againDecision) countSignals(findings []againFinding, floor float64) {
 			case f.signal(floor) && !counted[key]:
 				counted[key] = true
 				d.signals++
+				if findingLabel(f.severity) >= labelScore["high"] {
+					d.serious++
+				} else {
+					d.weight++
+				}
 			}
 		}
 	}
@@ -1221,16 +1240,29 @@ func (d *againDecision) probeable() bool {
 	return false
 }
 
+// weighed says how the signals met what another round needed (WP-1569): a
+// high or critical one calls after any round; mediums are counted against
+// the round's need. A round read by labels alone gets its one round for any.
+func (d *againDecision) weighed() string {
+	switch {
+	case d.serious > 0:
+		return fmt.Sprintf("; %d of them high or critical, which calls for another round after any round", d.serious)
+	case d.weight >= d.need:
+		return fmt.Sprintf("; %d of them medium, at or over the %d another round needs after round %d", d.weight, d.need, d.index)
+	}
+	return fmt.Sprintf("; %d of them medium, under the %d another round needs after round %d, but a round read by labels alone gets one for any signal", d.weight, d.need, d.index)
+}
+
 // why says what called for another round.
 func (d *againDecision) why(bar againBar) string {
 	var parts []string
-	if d.signals > 0 {
+	if d.signals > 0 && (d.serious > 0 || d.weight >= d.need || d.labels == 1) {
 		lowest := "medium"
 		if d.floor > labelScore["medium"] {
 			lowest = "high"
 		}
 		parts = append(parts, fmt.Sprintf("%s no earlier round raised %s, %s or worse (the floor for a change of %s stakes), and the check against the code didn't refute it",
-			plural1(d.signals, "finding"), map[bool]string{true: "stands", false: "stand"}[d.signals == 1], lowest, d.tier))
+			plural1(d.signals, "finding"), map[bool]string{true: "stands", false: "stand"}[d.signals == 1], lowest, d.tier)+d.weighed())
 	}
 	if n := d.unchecked - b2i(d.unread); n > 0 {
 		parts = append(parts, fmt.Sprintf("%s the session rejected, at or over the floor for a change of %s stakes, %s on its word alone (the check of its marks didn't answer, or disagreed and was rejected in turn)", plural1(n, "finding"), d.tier, map[bool]string{true: "stands", false: "stand"}[n == 1]))
@@ -1425,7 +1457,10 @@ type AgainRoundStat struct {
 	Useful        int            `json:"useful"`
 	ProbeFollowed int            `json:"probe_followed"`
 	ProbeUseful   int            `json:"probe_useful"`
-	// Signalled: the decisions a signal decided (againDecision.signals).
+	// Signalled: the decisions a signal called: a high or critical one, the
+	// mediums reaching the round's need, or any on a round read by labels
+	// alone or from before the weighing (need 0), as why() reads them
+	// (againDecision.serious, weight, need, labels).
 	Signalled int `json:"signalled"`
 	// Checks: the decisions whose check of the session's marks was asked;
 	// Passed: of them, the ones it was passed over in (it couldn't be
@@ -1478,7 +1513,7 @@ func (s *Service) againReport(ctx context.Context, ivis string, iargs []any, sin
 	rows, err := s.db.R.QueryContext(ctx, `SELECT min(d.round_index, 3), d.arm, count(*),
 			sum(CASE WHEN w.state = 'done' AND `+againAuditSQL+` IS NOT NULL AND `+againJudgedSQL+` THEN 1 ELSE 0 END),
 			sum(CASE WHEN w.state = 'done' AND `+againAuditSQL+` IS NOT NULL AND `+againJudgedSQL+` AND `+againUsefulSQL+` THEN 1 ELSE 0 END),
-			sum(d.signals > 0), sum(d.checked >= 0), sum(d.checked = 0), sum(d.unchecked > 0),
+			sum(d.signals > 0 AND (d.serious > 0 OR (d.need > 0 AND d.weight >= d.need) OR d.labels = 1 OR d.need = 0)), sum(d.checked >= 0), sum(d.checked = 0), sum(d.unchecked > 0),
 			sum(d.samples > 0), sum(d.samples), sum(d.spread != '{}'), sum(json_extract(d.spread, '$.`+spreadUnsettled+`') IS NOT NULL),
 			sum(d.samples > 0 OR d.labels = 1), sum(d.labels = 1), sum(d.findings - d.rejected), sum(d.filed),
 			sum(CASE WHEN w.state = 'done' AND `+againAuditSQL+` IS NOT NULL AND `+againJudgedSQL+` AND `+againAllFiledSQL+` THEN 1 ELSE 0 END)
@@ -2036,6 +2071,7 @@ type againDecision struct {
 	reworked                        int // new findings the session changed code for, refuted or not (pick's fixes gate)
 	tier                            string
 	signals, signalRepeats          int
+	serious, weight, need           int // high and critical signals (each calls another round); medium signals; the mediums another round needed (againPolicy.needFor)
 	unchecked, checked              int
 	unread                          bool   // the report of its own review was not read against its reviewer's words (counted in unchecked)
 	labels                          int    // 1: read by labels alone, the model unscored
@@ -2065,11 +2101,11 @@ func (d *againDecision) insertOnce(ctx context.Context, t *tx, at int64) error {
 func (d *againDecision) insert(ctx context.Context, t *tx, at int64) (inserted bool, err error) {
 	next := sql.NullInt64{Int64: d.next, Valid: d.next != 0}
 	res, err := t.ExecContext(ctx, `INSERT INTO review_again_decisions(round_id, issue_id, audit_id, findings, fixed, rejected, left_open, issues_score, fixes_score, probs, model, arm, next_round_id, created_at,
-			round_index, tier, worst, worst_all, fixes_mean, novel, repeats, yield_p, signals, checked, unchecked, labels, samples, spread, filed)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(round_id) DO NOTHING`,
+			round_index, tier, worst, worst_all, fixes_mean, novel, repeats, yield_p, signals, checked, unchecked, labels, samples, spread, need, weight, serious, filed)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(round_id) DO NOTHING`,
 		d.round, d.issue, d.audit, d.findings, d.fixed, d.rejected, d.open, d.issues, d.fixes, cmp(d.probs, "{}"), d.model, d.arm, next, at,
 		d.index, d.tier, againRound(d.worst), againRound(d.worstAll), againRound(d.fixesMean), d.novel, d.repeats, againRound(d.yieldP), d.signals, d.checked, d.unchecked, d.labels,
-		d.samples, cmp(d.spread, "{}"), d.filed)
+		d.samples, cmp(d.spread, "{}"), d.need, d.weight, d.serious, d.filed)
 	if err != nil {
 		return false, err
 	}

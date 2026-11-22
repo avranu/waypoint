@@ -490,15 +490,17 @@ func commandHead(c string) string {
 const unparsedURL = "unparsed url"
 
 // urlHead is a URL without its userinfo (user:password@), query or fragment,
-// any of which can carry a secret; one that does not parse is not kept. An
-// empty one is "" (no target).
+// any of which can carry a secret; one that does not parse is not kept. Nor
+// is one with a port and a later "@" and no userinfo: a password that starts
+// with digits and holds "/", "?" or "#" parses as a port, so the rest of it
+// would be kept as path. An empty one is "" (no target).
 func urlHead(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return ""
 	}
 	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" {
+	if err != nil || u.Host == "" || (u.User == nil && u.Port() != "" && strings.Contains(raw, "@")) {
 		return unparsedURL
 	}
 	u.User, u.RawQuery, u.Fragment, u.RawFragment, u.ForceQuery = nil, "", "", "", false
@@ -882,8 +884,9 @@ func orUID(uuid, file string, seq int) string {
 func (p *parser) finish() {
 	type prev struct {
 		at    int64
-		long  bool // the call wrote to the 1 hour cache
-		split bool // its usage said how its cache write split between the two
+		long  bool  // the call wrote to the 1 hour cache
+		split bool  // its usage said how its cache write split between the two
+		held  int64 // what it left cached: its cache read plus its cache write
 	}
 	last := map[string]prev{}
 	for i := range p.res.ModelCalls {
@@ -902,13 +905,19 @@ func (p *parser) finish() {
 			c.GapMS = ptr(*c.At - pv.at)
 			if c.CacheWrite != nil {
 				c.ColdInferred = coldInferred(*c.CacheWrite, *c.GapMS, pv.long, pv.split)
+				if pv.held > 0 && valOr(c.CacheRead) >= pv.held {
+					// All the previous call left cached was read back, so it
+					// had not expired, whatever the gap says.
+					c.ColdInferred = ptr(false)
+				}
 			}
 		}
 		at := *c.At
 		if c.EndAt != nil {
 			at = *c.EndAt
 		}
-		last[c.Thread] = prev{at: at, long: valOr(c.CacheW1h) > 0, split: c.CacheW5m != nil || c.CacheW1h != nil}
+		last[c.Thread] = prev{at: at, long: valOr(c.CacheW1h) > 0, split: c.CacheW5m != nil || c.CacheW1h != nil,
+			held: valOr(c.CacheRead) + valOr(c.CacheWrite)}
 	}
 	for range p.reqs { // an api-request no assistant record named
 		p.ignored("api-request/unmatched")
@@ -923,7 +932,8 @@ const (
 )
 
 // coldInferred says whether a cache write came after the previous call's cache
-// had expired. nil when that cannot be told: without the previous call's
+// had expired, judged by the gap alone (the caller overrules it when the cache
+// read shows the previous call's cache was still there). nil when that cannot be told: without the previous call's
 // split between the 5 minute and 1 hour caches, a gap between the two
 // lifetimes may or may not have outlived it.
 func coldInferred(write, gap int64, prevLong, prevSplit bool) *bool {
