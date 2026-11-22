@@ -80,7 +80,8 @@ export function TokensSection({ o }: { o: UsageOverview }) {
           title="Input tokens served from the prompt cache, of all input"
         />
         <Tile
-          label="Messages"
+          label="API messages"
+          title="Model responses (one per API call that carried usage), not turns: a single prompt can make dozens"
           value={tok(t.messages)}
           sub={`${o.sessions} session${o.sessions === 1 ? '' : 's'}`}
         />

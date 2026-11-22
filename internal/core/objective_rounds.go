@@ -7,13 +7,18 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // How an objective's rounds end and begin (WP-927, WP-ADR111, WP-ADR142). A round's
 // work ends where the task would close (objectiveClose); Waypoint then
 // reads it (objective_verify.go) and settles it here (objectiveSettle): the
 // objective is met and the task closes, or the next round opens, or it
-// needs a person. A person steers one with ObjectiveGo.
+// needs a person. A person steers one with ObjectiveGo. A diagnose round
+// (WP-1449, WP-ADR142) ends otherwise: only with a recorded diagnosis
+// (ObjectiveDiagnose), since wp done, opening a pull request, wp ship and an
+// agent's merge are refused in it; nothing is read, and the same round
+// reopens as a work round.
 
 // roundEnd is what a round came to.
 type roundEnd struct {
@@ -103,7 +108,13 @@ func (s *Service) objectiveOpenRound(ctx context.Context, t *tx, o *Objective, r
 	if baseline {
 		phase = PhaseBaseline
 	}
-	return s.objSet(ctx, t, o.IssueID, append([]any{"round_no", round, "round_started_at", now, "stalled", stalled, "next_at", next,
+	// The round is a diagnose round when the rounds before it came no
+	// nearer, enough in a row (WP-1449). A loop reads nothing, so it never is.
+	kind := ""
+	if o.diagnosisDue(o.NoBetter) {
+		kind = RoundKindDiagnose
+	}
+	return s.objSet(ctx, t, o.IssueID, append([]any{"round_no", round, "round_kind", kind, "round_started_at", now, "stalled", stalled, "next_at", next,
 		"phase", phase, "phase_at", now, "phase_why", "", "phase_note", "", "blocked_from", "", "close_status_id", nil,
 		"base_sha", o.BaseSHA, "base_ok", nullBoolP(o.baseOK), "base_value", nullFloat(o.baseValue)}, verifyReset()...)...)
 }
@@ -111,11 +122,30 @@ func (s *Service) objectiveOpenRound(ctx context.Context, t *tx, o *Objective, r
 // objectiveBlock stops an objective until a person acts: from is the phase
 // it goes back to when they do.
 func (s *Service) objectiveBlock(ctx context.Context, t *tx, o *Objective, why, note, from string) error {
+	return s.objectiveBlockTold(ctx, t, o, why, note, from, false)
+}
+
+// eventTellActor is the event data that has the person who did the thing
+// told of it too, where it would be left out (objectiveTell).
+const eventTellActor = "tell_actor"
+
+func (s *Service) objectiveBlockTold(ctx context.Context, t *tx, o *Objective, why, note, from string, tellActor bool) error {
 	if err := s.objSet(ctx, t, o.IssueID, "phase", PhaseBlocked, "phase_at", s.nowMS(), "phase_why", why, "phase_note", note, "blocked_from", from); err != nil {
 		return err
 	}
-	t.emit(objectiveEvent(o, "blocked", fmt.Sprintf("round %d", o.Round), "needs a person: "+note))
+	e := objectiveEvent(o, "blocked", fmt.Sprintf("round %d", o.Round), "needs a person: "+note)
+	if tellActor {
+		e.Data[eventTellActor] = true
+	}
+	t.emit(e)
 	return nil
+}
+
+// objectiveAsk blocks an objective for a person's answer to what an agent
+// wrote (a diagnosis asked about): the person is told even when the agent
+// acts on their own token, as no one else is there to read it (WP-1449).
+func (s *Service) objectiveAsk(ctx context.Context, t *tx, o *Objective, why, note, from string) error {
+	return s.objectiveBlockTold(ctx, t, o, why, note, from, true)
 }
 
 // objectiveEnd ends an objective in effect: met, or ended for why.
@@ -124,7 +154,7 @@ func (s *Service) objectiveEnd(ctx context.Context, t *tx, o *Objective, state, 
 	if err := s.objectiveDropJob(ctx, t, o, "the objective "+state); err != nil {
 		return err
 	}
-	return s.objSet(ctx, t, o.IssueID, append([]any{"state", state, "ended_at", now, "ended_why", why, "next_at", nil, "phase", PhaseWork, "phase_at", now,
+	return s.objSet(ctx, t, o.IssueID, append([]any{"state", state, "ended_at", now, "ended_why", why, "next_at", nil, "phase", PhaseWork, "phase_at", now, "round_kind", "",
 		"phase_why", "", "phase_note", "", "blocked_from", "", "close_status_id", nil, "stuck_since", nil, "stuck_why", "", "stuck_told_at", nil}, verifyReset()...)...)
 }
 
@@ -207,9 +237,35 @@ func (s *Service) objectiveSettle(ctx context.Context, t *tx, o *Objective, e ro
 			return err
 		}
 	}
+	// Rounds in a row that came no nearer: what makes a round a diagnose
+	// round. A round that landed nothing (RoundEmpty) neither counts nor
+	// clears: nothing was tried, so it is no evidence either way, and the
+	// rounds around it are still in a row. A person moving the objective on
+	// skips the diagnose round that was owed, and a diagnosis recorded stands
+	// until a round makes progress or what is measured changes (WP-1449).
+	switch {
+	case e.outcome == RoundMet || e.outcome == RoundProgress:
+		o.NoBetter, o.diagnosisID = 0, 0
+		if err := s.objSet(ctx, t, o.IssueID, "no_better", 0, "diagnosis_id", nil); err != nil {
+			return err
+		}
+	case e.outcome == RoundNone || e.outcome == RoundWorked:
+		o.NoBetter++
+		if err := s.objSet(ctx, t, o.IssueID, "no_better", o.NoBetter); err != nil {
+			return err
+		}
+	case e.moved && o.NoBetter != 0:
+		o.NoBetter = 0
+		if err := s.objSet(ctx, t, o.IssueID, "no_better", 0); err != nil {
+			return err
+		}
+	}
 	said := fmt.Sprintf("round %d: %s", o.Round, roundWords(e.outcome))
 	if e.m != nil {
 		said += " (" + e.m.Line + ")"
+	}
+	if o.RoundKind == RoundKindDiagnose && (e.outcome == RoundNone || e.outcome == RoundWorked || e.outcome == RoundProgress || e.outcome == RoundMet) {
+		said += " (it was a diagnose round, but a pull request landed in it, so it is read as any round)"
 	}
 	if e.note != "" {
 		said += ": " + e.note
@@ -272,7 +328,7 @@ func (s *Service) objectiveSettle(ctx context.Context, t *tx, o *Objective, e ro
 		return over(ObjectiveEnded, "its "+plural1(o.MaxRounds, "round")+" are done", "ended")
 	case o.MaxRounds > 0 && o.Round >= o.MaxRounds:
 		if err := s.objSet(ctx, t, o.IssueID, append([]any{"base_sha", o.BaseSHA, "base_ok", nullBoolP(o.baseOK), "base_value", nullFloat(o.baseValue),
-			"close_status_id", nil, "next_at", nil}, verifyReset()...)...); err != nil {
+			"close_status_id", nil, "next_at", nil, "round_kind", ""}, verifyReset()...)...); err != nil {
 			return err
 		}
 		t.emit(objectiveEvent(o, "round", old, said))
@@ -306,6 +362,9 @@ func (s *Service) objectiveSettle(ctx context.Context, t *tx, o *Objective, e ro
 		return err
 	}
 	said += fmt.Sprintf("; open again for round %d", o.Round+1)
+	if o.diagnosisDue(o.NoBetter) {
+		said += ", as a diagnose round (the last " + plural1(o.NoBetter, "round") + " came no nearer: it ships no code, and finds out why)"
+	}
 	if wait > 0 {
 		said += ", not before " + objectiveClock(msTime(now+wait.Milliseconds()))
 	}
@@ -453,6 +512,16 @@ func (s *Service) objectiveWorkEnded(ctx context.Context, t *tx, o *Objective, i
 		}
 		t.emit(objectiveEvent(o, "verdict", old, fmt.Sprintf("another pull request merged while round %d was being read: it is read again", o.Round)))
 		return nil, nil
+	case o.RoundKind == RoundKindDiagnose && w.merged == "":
+		// A diagnose round ships nothing, so it isn't finished like a work
+		// round: it ends with a diagnosis (WP-1449). A merge can't be
+		// refused, and is read as any round's end (below).
+		if w.direct {
+			held := i.ClaimedBy != "" && i.ClaimedUntil != nil && i.ClaimedUntil.UnixMilli() > now
+			return nil, o.diagnoseDoneError(i.Key, inProgress && held)
+		}
+		note(fmt.Sprintf("something other than a person tried to close the task in round %d, a diagnose round: it stays open until a diagnosis is recorded (wp objective diagnose %s)", o.Round, i.Key))
+		return nil, nil
 	case !inProgress && w.merged == "":
 		// A round ends only if it was taken up. A task still waiting in To
 		// Do or the backlog has no round under way for a close to end.
@@ -485,7 +554,7 @@ func (s *Service) objectiveWorkEnded(ctx context.Context, t *tx, o *Objective, i
 			return nil, err
 		}
 		held := i.ClaimedBy != "" && i.ClaimedUntil != nil && i.ClaimedUntil.UnixMilli() > now
-		if err == nil && made < o.roundStartedAt && held {
+		if err == nil && made < o.roundStartedAt && held && o.RoundKind != RoundKindDiagnose {
 			note(fmt.Sprintf("a pull request from before round %d merged while %s works the round: it doesn't end it, and is read with the round", o.Round, i.ClaimedBy))
 			return nil, nil
 		}
@@ -574,7 +643,14 @@ func (s *Service) objectiveWorkEnded(ctx context.Context, t *tx, o *Objective, i
 	if err := s.objSet(ctx, t, i.ID, "close_status_id", closeAs, "next_at", nil); err != nil {
 		return nil, err
 	}
-	t.emit(objectiveEvent(o, "verdict", old, fmt.Sprintf("round %d's work ended: Waypoint is reading it", o.Round)))
+	said := fmt.Sprintf("round %d's work ended: Waypoint is reading it", o.Round)
+	if o.RoundKind == RoundKindDiagnose {
+		said += ". It was a diagnose round, but a pull request landed in it: it is read as any round"
+		if o.MaxRounds == 0 || o.Round < o.MaxRounds {
+			said += fmt.Sprintf(", and if it is no better a diagnosis is still owed in round %d", o.Round+1)
+		}
+	}
+	t.emit(objectiveEvent(o, "verdict", old, said))
 	return todo, nil
 }
 
@@ -645,7 +721,162 @@ func (s *Service) objectiveReopened(ctx context.Context, issueID int64) string {
 	if o.NextAt != nil {
 		msg += ", not before " + objectiveClock(*o.NextAt)
 	}
+	if o.RoundKind == RoundKindDiagnose {
+		msg += fmt.Sprintf(". Round %d is a diagnose round: it ships no code, and finds out why the last %s came no nearer", o.Round, plural1(o.NoBetter, "round"))
+	}
 	return msg + "."
+}
+
+// ObjectiveDiagnoseInput is what a diagnose round found.
+type ObjectiveDiagnoseInput struct {
+	Text string `json:"text"`
+	// Ask: a person must act on it (the check is wrong, the target out of
+	// reach), so the objective waits for them.
+	Ask bool `json:"ask"`
+	// Agent names the agent when its token doesn't.
+	Agent string `json:"agent"`
+}
+
+// ObjectiveDiagnose records what a diagnose round found (WP-1449): why the
+// rounds before it came no nearer, sorted by cause, and what the next should
+// try. It is the agent holding the round's claim, or a person who may edit
+// the task. No code shipped, so nothing is read: the round ends, the task
+// goes back to To Do, and the same round opens again as a work round (a
+// diagnose round doesn't use up one of the objective's rounds) after its own
+// pace. With Ask the objective instead waits for a person.
+func (s *Service) ObjectiveDiagnose(ctx context.Context, actor *Actor, ref string, in ObjectiveDiagnoseInput) (*Objective, error) {
+	text := strings.TrimSpace(in.Text)
+	switch {
+	case text == "":
+		return nil, invalid("say what you found: wp objective diagnose KEY -f FILE (or -m 'TEXT'), by cause (the code, the check or judge, noise, a target out of reach), and what the next round should try")
+	case utf8.RuneCountInString(text) > maxObjectiveDiagnosis:
+		return nil, invalid("the diagnosis is too long (at most %d characters): keep what the next round needs, and put the detail in a comment on the task", maxObjectiveDiagnosis)
+	}
+	person := objectivePerson(actor)
+	id := ""
+	if !person {
+		var err error
+		if id, err = agentIdentity(actor, in.Agent); err != nil {
+			return nil, err
+		}
+	}
+	var issueID int64
+	err := s.write(ctx, actor, func(t *tx) error {
+		i, _, err := s.getIssueFor(ctx, t, actor, ref, RoleEditor, false)
+		if err != nil {
+			return err
+		}
+		issueID = i.ID
+		o, err := s.objectiveRow(ctx, t, i.ID)
+		switch {
+		case err != nil:
+			return err
+		case o == nil:
+			return invalid("%s has no objective, so there is nothing to diagnose", i.Key)
+		case o.State != ObjectiveActive:
+			return invalid("%s's objective is %s: there is no round to diagnose", i.Key, o.State)
+		case o.Phase == PhaseBlocked:
+			return invalid("%s's objective needs a person (%s): nothing is being worked until that is put right", i.Key, o.PhaseNote)
+		case o.Phase != PhaseWork:
+			return invalid("%s's round %d isn't being worked: Waypoint is reading it, and a diagnosis is for a diagnose round", i.Key, o.Round)
+		case o.RoundKind != RoundKindDiagnose && o.DiagnoseAfter == 0:
+			return invalid("round %d of %s is a work round, not a diagnose round: diagnose rounds are off for this objective (to turn them on: wp objective set %s --diagnose-after N). Ship what the round gains (wp ship)",
+				o.Round, i.Key, i.Key)
+		case o.RoundKind != RoundKindDiagnose:
+			return invalid("round %d of %s is a work round, not a diagnose round: a diagnosis is owed after %s in a row that came no nearer (it has had %d). Ship what the round gains (wp ship)",
+				o.Round, i.Key, plural1(max(o.DiagnoseAfter, 1), "round"), o.NoBetter)
+		}
+		now := s.nowMS()
+		held := i.ClaimedBy != "" && i.ClaimedUntil != nil && i.ClaimedUntil.UnixMilli() > now
+		by := cmp(actor.User.DisplayName, actor.User.Username)
+		if !person {
+			by = id
+			switch {
+			case held && i.ClaimedBy != id:
+				return invalid("%s is claimed by %s: only the agent working the round records its diagnosis", i.Key, i.ClaimedBy)
+			case !held || i.Status.Category != CatInProgress:
+				return invalid("%s's diagnose round hasn't been taken up by you: take it first (wp next %s)", i.Key, i.Key)
+			}
+		}
+		agent := id
+		old := fmt.Sprintf("round %d", o.Round)
+		res, err := t.ExecContext(ctx, `INSERT INTO objective_rounds (issue_id, round_no, started_at, ended_at, outcome, agent, base_sha, diagnosis, diagnosis_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			i.ID, o.Round, o.roundStartedAt, now, RoundDiagnosed, agent, o.BaseSHA, text, by)
+		if err != nil {
+			return err
+		}
+		rid, err := res.LastInsertId()
+		if err != nil {
+			return err
+		}
+		// The diagnosis ends the run as a merge-ended round does: whoever
+		// held the round holds it no more. Its outcome isn't "done": no
+		// workflow step was finished, and a step's same/different-agent rule
+		// reads the latest done run as whoever did the step before.
+		if i.ClaimedBy != "" {
+			if err := s.endRun(ctx, t, i.ID, i.ClaimedBy, RunDiagnosed, nil); err != nil {
+				return err
+			}
+			if _, err := t.ExecContext(ctx, `UPDATE issues SET claimed_by = '', claimed_until = NULL, claimed_at = NULL WHERE id = ?`, i.ID); err != nil {
+				return err
+			}
+		}
+		// The latest diagnosis stands whichever way the round goes on.
+		if err := s.objSet(ctx, t, i.ID, "diagnosis_id", rid); err != nil {
+			return err
+		}
+		o.diagnosisID = rid
+		todo, err := s.objectiveTodo(ctx, t, i.ProjectID)
+		if err != nil {
+			return err
+		}
+		said := fmt.Sprintf("round %d: diagnosed by %s (it shipped no code): %s", o.Round, by, excerpt(strings.Join(strings.Fields(text), " "), 300))
+		if todo == nil {
+			// Nowhere for the task to wait (the workflow lost its To Do
+			// status since the objective was set): it ends, said plainly,
+			// as when a round's work ends there.
+			if err := s.objectiveEnd(ctx, t, o, ObjectiveEnded, "the workflow has no To Do status to open the task again in"); err != nil {
+				return err
+			}
+			t.emit(objectiveEvent(o, "ended", old, said+"; the workflow has no To Do status to open the task again in: the objective is ended"))
+			st, err := s.objectiveDone(ctx, t, i.ProjectID)
+			if err != nil || st == nil {
+				return err
+			}
+			ref := itoa64(st.ID)
+			return s.applyPatch(ctx, t, SystemActor(), i, IssuePatch{Status: &ref})
+		}
+		if todo.ID != i.Status.ID {
+			ref := itoa64(todo.ID)
+			if err := s.applyPatch(ctx, t, SystemActor(), i, IssuePatch{Status: &ref}); err != nil {
+				return err
+			}
+		}
+		// The same round again, as a work round after its own pace: nothing
+		// was read, so no back-off follows.
+		o.NoBetter = 0
+		wait := time.Duration(o.everyMS) * time.Millisecond
+		if err := s.objectiveOpenRound(ctx, t, o, o.Round, o.Stalled, wait, false); err != nil {
+			return err
+		}
+		if err := s.objSet(ctx, t, i.ID, "no_better", 0); err != nil {
+			return err
+		}
+		said += fmt.Sprintf("; round %d is open again as a work round", o.Round)
+		if wait > 0 {
+			said += ", not before " + objectiveClock(msTime(now+wait.Milliseconds()))
+		}
+		t.emit(objectiveEvent(o, "diagnosed", old, said))
+		if in.Ask {
+			return s.objectiveAsk(ctx, t, o, BlockedDiagnosis, fmt.Sprintf("round %d's diagnosis says a person must act: %s Read it (wp objective show %s), then: wp objective set %s … changes what is measured and starts again; wp objective accept %s goes on with round %d as it is; wp objective next %s hands it out now; wp objective end %s ends it.",
+				o.Round, excerpt(strings.Join(strings.Fields(text), " "), 240), o.Key, o.Key, o.Key, o.Round, o.Key, o.Key), PhaseWork)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.objectiveOf(ctx, s.db.R, issueID)
 }
 
 // Objective actions a person steers one with (ObjectiveGo).
@@ -708,6 +939,9 @@ func (s *Service) ObjectiveGo(ctx context.Context, actor *Actor, ref, action str
 			switch {
 			case o.Phase == PhaseBlocked && o.PhaseWhy == BlockedRounds:
 				return invalid("%s is out of rounds: give it more (wp objective set %s --rounds N, or 0 for no limit)", i.Key, i.Key)
+			case o.Phase == PhaseBlocked && o.PhaseWhy == BlockedDiagnosis:
+				return invalid("%s's objective waits for you to act on round %d's diagnosis, not for a reading: read it (wp objective show %s), then wp objective accept %s goes on with the round, wp objective set %s changes what is measured, wp objective next %s hands the round out now, wp objective end %s ends it",
+					i.Key, o.Round, i.Key, i.Key, i.Key, i.Key, i.Key)
 			case from != PhaseBaseline && from != PhaseVerdict:
 				return invalid("nothing of %s's objective is being read: round %d %s", i.Key, o.Round, map[bool]string{true: "is being worked", false: "waits to be taken up"}[i.Status.Category == CatInProgress])
 			}
@@ -726,6 +960,15 @@ func (s *Service) ObjectiveGo(ctx context.Context, actor *Actor, ref, action str
 			t.emit(objectiveEvent(o, "retry", old, who+" asked for it to be read again"))
 			return nil
 		case ObjectiveAccept:
+			if o.Phase == PhaseBlocked && o.PhaseWhy == BlockedDiagnosis {
+				// The person has read the diagnosis: the round goes on as it
+				// was, handed out when its own wait is over.
+				if err := s.objSet(ctx, t, i.ID, "phase", from, "phase_at", now, "phase_why", "", "phase_note", "", "blocked_from", ""); err != nil {
+					return err
+				}
+				t.emit(objectiveEvent(o, "accept", old, fmt.Sprintf("%s read round %d's diagnosis: the round goes on", who, o.Round)))
+				return nil
+			}
 			if o.Phase != PhaseBlocked || o.PhaseWhy != BlockedTouched || o.pendingMeasurement == nil {
 				return invalid("%s has no reading waiting for you to accept", i.Key)
 			}
@@ -741,6 +984,20 @@ func (s *Service) ObjectiveGo(ctx context.Context, actor *Actor, ref, action str
 				return invalid("%s is out of rounds: give it more (wp objective set %s --rounds N, or 0 for no limit)", i.Key, i.Key)
 			case o.Phase == PhaseBlocked && (o.PhaseWhy == BlockedRepo || o.PhaseWhy == BlockedPerson):
 				return invalid("%s's objective can't be read at all until that is put right: %s Then wp objective retry %s", i.Key, o.PhaseNote, i.Key)
+			case o.Phase == PhaseBlocked && o.PhaseWhy == BlockedDiagnosis:
+				// Round N goes on as a work round, handed out now.
+				if err := s.objSet(ctx, t, i.ID, "phase", from, "phase_at", now, "phase_why", "", "phase_note", "", "blocked_from", "", "next_at", nil, "no_better", 0, "round_kind", ""); err != nil {
+					return err
+				}
+				t.emit(objectiveEvent(o, "next", old, fmt.Sprintf("%s read round %d's diagnosis and sent the round ahead: it is handed out now", who, o.Round)))
+				return nil
+			case o.Phase == PhaseWork && o.RoundKind == RoundKindDiagnose:
+				// Skip the diagnosis: a work round, handed out now.
+				if err := s.objSet(ctx, t, i.ID, "round_kind", "", "no_better", 0, "next_at", nil); err != nil {
+					return err
+				}
+				t.emit(objectiveEvent(o, "next", old, fmt.Sprintf("%s skipped round %d's diagnosis: it is a work round, handed out now", who, o.Round)))
+				return nil
 			case from == PhaseVerdict:
 				// The round's work ended and isn't read: it is left behind.
 				if err := s.objectiveDropJob(ctx, t, o, "moved on by "+who); err != nil {

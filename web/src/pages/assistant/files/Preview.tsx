@@ -29,7 +29,7 @@ import { Empty, Kbd, Skeleton } from '@/components/ui/misc'
 import { MenuList, Popover, usePopover } from '@/components/ui/popover'
 import { SegmentedControl } from '@/components/ui/segmented'
 import { toast, toastError } from '@/components/ui/toast'
-import { Markdown } from '../Transcript'
+import { Markdown } from '@/components/Markdown'
 import { useFileActions } from './actions'
 import { KindIcon } from './Listing'
 import {

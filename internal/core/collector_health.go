@@ -229,6 +229,18 @@ var collectors = []collector{
 			"f": "session_fact_files has one row per archived file: read whole once an hour for the newest derive and the problem line (json_each over each row's counts)",
 		},
 	},
+	{
+		// Nothing waits for it and it produces nothing of its own: it is the
+		// total of what session data the CLIs' hooks, usage uploads and the
+		// server's caps dropped (hook_drops: which, where and how many is in
+		// wp server status), so that a drop is never silent (WP-1470).
+		name:    "session data",
+		about:   "session hooks, usage uploads and the caps on what a session keeps; what each dropped, by reason, is in wp server status (Hook data dropped)",
+		waiting: `SELECT 0, NULL`,
+		args:    noArgs,
+		output:  `SELECT MAX(h.last_at) FROM hook_drops h`,
+		dropped: `SELECT COALESCE(SUM(h.dropped), 0) FROM hook_drops h`,
+	},
 }
 
 // What waits for the transcript archive, by machine: bytes the machine says

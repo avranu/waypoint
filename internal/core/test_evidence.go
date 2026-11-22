@@ -358,7 +358,9 @@ func (s *Service) RecordTestEvidence(ctx context.Context, actor *Actor, projectR
 	if in.Repo == "" || in.SHA == "" || in.Tree == "" || len(in.SHA) > maxEvidenceHash || len(in.Tree) > maxEvidenceHash || len(in.Repo) > 300 {
 		return nil, invalid("repo, sha and tree are required")
 	}
+	capped := int64(0) // runs and bench rows past the caps, counted (WP-1470)
 	if len(in.Runs) > maxEvidenceRuns {
+		capped += int64(len(in.Runs) - maxEvidenceRuns)
 		in.Runs = in.Runs[:maxEvidenceRuns]
 	}
 	for i := range in.Runs {
@@ -372,6 +374,7 @@ func (s *Service) RecordTestEvidence(ctx context.Context, actor *Actor, projectR
 		}
 	}
 	if len(in.Bench) > maxEvidenceBench {
+		capped += int64(len(in.Bench) - maxEvidenceBench)
 		in.Bench = in.Bench[:maxEvidenceBench]
 	}
 	for i := range in.Bench {
@@ -435,6 +438,9 @@ func (s *Service) RecordTestEvidence(ctx context.Context, actor *Actor, projectR
 				runs = excluded.runs, nearest = excluded.nearest, bench = excluded.bench, session_id = excluded.session_id, user_id = excluded.user_id, agent = excluded.agent, updated_at = excluded.updated_at
 			RETURNING id`,
 			p.ID, issueID, in.Repo, in.SHA, in.Tree, outcome, line, string(runs), string(near), string(bench), sess, uid, actor.agentName(), now, now).Scan(&id); err != nil {
+			return err
+		}
+		if err := addDropRow(ctx, t, actor.id(), "server", DropEvidenceRunsCap, "test_evidence", capped, now); err != nil {
 			return err
 		}
 		out = &TestEvidence{ID: id, Repo: in.Repo, SHA: in.SHA, Tree: in.Tree, Outcome: outcome, Line: line, Runs: in.Runs, Bench: in.Bench, BenchLines: benchLines(in.Bench), At: msTime(now)}

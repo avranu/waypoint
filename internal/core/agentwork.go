@@ -106,8 +106,12 @@ type AgentRun struct {
 	Step      string     `json:"step,omitempty"`
 	StartedAt time.Time  `json:"started_at"`
 	EndedAt   *time.Time `json:"ended_at"`
-	Seconds   int64      `json:"seconds"`
-	Outcome   string     `json:"outcome,omitempty"` // done, released, expired; "" while running
+	// EndInferred: EndedAt is a time the sweep worked out for a run it never
+	// saw end (its lease, or 24 hours after it started), not one it saw
+	// (WP-1470). Seconds then is a bound, not a measurement.
+	EndInferred bool   `json:"end_inferred,omitempty"`
+	Seconds     int64  `json:"seconds"`
+	Outcome     string `json:"outcome,omitempty"` // done, released, expired; "" while running
 	AgentUsage
 }
 
@@ -740,7 +744,7 @@ func (s *Service) claimIssueTx(ctx context.Context, t *tx, actor *Actor, issueID
 		if i.ClaimedBy == id && i.ClaimedUntil != nil {
 			until = i.ClaimedUntil.UnixMilli()
 		}
-		if _, err := t.ExecContext(ctx, `UPDATE agent_runs SET outcome = 'expired', ended_at = min(?, coalesce(?, started_at + ?))
+		if _, err := t.ExecContext(ctx, `UPDATE agent_runs SET outcome = 'expired', end_inferred = 1, ended_at = min(?, coalesce(?, started_at + ?))
 			WHERE issue_id = ? AND agent = ? AND ended_at IS NULL AND NOT `+runHeldForReview, now, until, ClaimLease.Milliseconds(), i.ID, id); err != nil {
 			return err
 		}
@@ -1111,6 +1115,16 @@ func (s *Service) AgentDone(ctx context.Context, actor *Actor, ref string, in Ag
 		if i.Closed() {
 			return invalid("%s is already %s", i.Key, i.Status.Name)
 		}
+		// A diagnose round ships no code, so nothing finishes it but a
+		// diagnosis: not wp done, whatever it would do next (leave a pull
+		// request open, step a workflow on) (WP-1449).
+		o, err := s.objectiveRow(ctx, t, i.ID)
+		if err != nil {
+			return err
+		}
+		if o != nil && o.diagnoseRound() {
+			return o.diagnoseDoneError(i.Key, i.ClaimedBy == id && live && i.Status.Category == CatInProgress)
+		}
 		// Out on a pull request that hasn't merged: the merge (or a person)
 		// finishes it, not wp done. The agent's part ends here: its run and
 		// claim do, and the issue stays where it is (WP-246).
@@ -1340,7 +1354,7 @@ func (s *Service) closeRun(ctx context.Context, t *tx, issueID int64, id, outcom
 
 // agentRuns lists an issue's runs, newest first.
 func (s *Service) agentRuns(ctx context.Context, q queryer, issueID int64) ([]AgentRun, error) {
-	rows, err := q.QueryContext(ctx, `SELECT id, agent, step, started_at, ended_at, input_tokens, output_tokens, cost_usd, outcome, model
+	rows, err := q.QueryContext(ctx, `SELECT id, agent, step, started_at, ended_at, input_tokens, output_tokens, cost_usd, outcome, model, end_inferred
 		FROM agent_runs WHERE issue_id = ? ORDER BY id DESC LIMIT 100`, issueID)
 	if err != nil {
 		return nil, err
@@ -1352,7 +1366,7 @@ func (s *Service) agentRuns(ctx context.Context, q queryer, issueID int64) ([]Ag
 		var r AgentRun
 		var start int64
 		var end sql.NullInt64
-		if err := rows.Scan(&r.ID, &r.Agent, &r.Step, &start, &end, &r.InputTokens, &r.OutputTokens, &r.CostUSD, &r.Outcome, &r.Model); err != nil {
+		if err := rows.Scan(&r.ID, &r.Agent, &r.Step, &start, &end, &r.InputTokens, &r.OutputTokens, &r.CostUSD, &r.Outcome, &r.Model, &r.EndInferred); err != nil {
 			return nil, err
 		}
 		r.StartedAt, r.EndedAt = msTime(start), ptrTime(end)
@@ -1374,7 +1388,7 @@ func (s *Service) expireRuns(ctx context.Context) error {
 	// A day without a pause means nobody stopped the clock: it stops at the
 	// limit. The claim stays; the agent's next sign of work starts a new run.
 	limit := AgentTimerLimit.Milliseconds()
-	if _, err := s.db.W.ExecContext(ctx, `UPDATE agent_runs SET outcome = 'timeout', ended_at = started_at + ?
+	if _, err := s.db.W.ExecContext(ctx, `UPDATE agent_runs SET outcome = 'timeout', end_inferred = 1, ended_at = started_at + ?
 		WHERE ended_at IS NULL AND started_at < ?`, limit, now-limit); err != nil {
 		return err
 	}
@@ -1383,7 +1397,7 @@ func (s *Service) expireRuns(ctx context.Context) error {
 	}
 	// A run ends when its lease ran out: the last renewal plus the lease if
 	// the agent still holds the (lapsed) claim, otherwise one lease long.
-	_, err := s.db.W.ExecContext(ctx, `UPDATE agent_runs SET outcome = 'expired', ended_at = min(?, coalesce(
+	_, err := s.db.W.ExecContext(ctx, `UPDATE agent_runs SET outcome = 'expired', end_inferred = 1, ended_at = min(?, coalesce(
 			(SELECT i.claimed_until FROM issues i WHERE i.id = agent_runs.issue_id AND i.claimed_by = agent_runs.agent),
 			started_at + ?))
 		WHERE ended_at IS NULL AND started_at < ? AND NOT `+runHeldForReview+` AND NOT EXISTS (

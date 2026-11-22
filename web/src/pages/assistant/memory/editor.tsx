@@ -10,7 +10,7 @@ import { Button } from '@/components/ui/button'
 import { Confirm } from '@/components/ui/dialog'
 import { Textarea } from '@/components/ui/input'
 import { SegmentedControl } from '@/components/ui/segmented'
-import { Markdown } from '../Transcript'
+import { Markdown } from '@/components/Markdown'
 
 export type EditorMode = 'write' | 'preview'
 

@@ -89,13 +89,26 @@ export function summaryParts(s: WorkLogSummary): string[] {
   const parts: string[] = []
   if (s.reviews > 0) {
     let p = plural(s.reviews, 'review round')
-    if (s.counted > 0 || s.found > 0)
-      p += `: ${s.found} found, ${s.fixed} fixed, ${s.rejected} rejected`
+    const counts: string[] = []
+    if (s.counted > 0)
+      counts.push(
+        `${s.found} found, ${s.fixed} fixed, ${s.rejected} rejected in ${plural(s.counted, 'round')} counted by rules`,
+      )
+    if (s.model_read_counted > 0)
+      counts.push(
+        `${s.model_read_found} found, ${s.model_read_fixed} fixed, ${s.model_read_rejected} rejected in ${plural(s.model_read_counted, 'round')} a model read (not measured)`,
+      )
+    if (s.uncounted > 0) counts.push(`${plural(s.uncounted, 'finished round')} not counted`)
+    if (s.note_found > 0)
+      counts.push(
+        `${s.note_found} found, ${s.note_fixed} fixed, ${s.note_rejected} rejected in notes`,
+      )
+    if (counts.length > 0) p += `: ${counts.join('; ')}`
     if (s.pushed > 0) p += ` · ${s.pushed} pushed fixes`
     parts.push(p)
-  } else if (s.found > 0) {
+  } else if (s.note_found > 0) {
     // Only notes tagged found, fixed or rejected.
-    parts.push(`${s.found} found, ${s.fixed} fixed, ${s.rejected} rejected`)
+    parts.push(`${s.note_found} found, ${s.note_fixed} fixed, ${s.note_rejected} rejected in notes`)
   }
   if (s.own_reviews > 0) parts.push(`${plural(s.own_reviews, 'own review')}: ${s.own_found} found`)
   if (s.pr_findings > 0)

@@ -26,10 +26,14 @@ type LedgerStats struct {
 	Share200k  *float64 `json:"share_200k"` // of calls
 	Share300k  *float64 `json:"share_300k"`
 	ReadShare  *float64 `json:"read_share_300k"` // of cache reads, made by calls over 300k
+	// The cold figures are INFERRED, not measured (WP-1470, WP-ADR145): a call
+	// that wrote the cache after a gap the CLI judged longer than the cache
+	// lived. The server never sees the gap, only the CLI's guess; computing it
+	// from per-call facts is WP-1551. So the price is an estimate, named so.
 	ColdStarts int64    `json:"cold_starts"`
 	ColdShare  *float64 `json:"cold_share"` // of calls
 	ColdTokens int64    `json:"cold_tokens"`
-	ColdExtra  float64  `json:"cold_extra_usd"` // the writes' price over reading the same tokens warm
+	ColdExtra  float64  `json:"cold_extra_est_usd"` // estimate: the writes' price over reading the same tokens warm, if the guess is right
 }
 
 // LedgerDay is one day of the series.

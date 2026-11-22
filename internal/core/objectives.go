@@ -45,6 +45,13 @@ import (
 // says whether the work is enough, and it can't end the rounds by closing,
 // cancelling or deleting the task. Only a person's own act does that.
 //
+// A diagnose round (WP-1449, WP-ADR142) is the exception: after
+// diagnose_after rounds in a row that came no nearer, the next round ships no
+// code. wp done, opening a pull request, wp ship and an agent's merge or arm
+// of an existing pull request of the task are refused in it, and it ends only
+// with a recorded diagnosis (wp objective diagnose), after which the same
+// round reopens as a work round.
+//
 // The check and the keep-passing commands are shell commands a person's machine runs. So
 // only a person's own act puts an objective in effect: what an agent sets
 // is a proposal, shown but not run and not looping, until a person confirms
@@ -80,6 +87,9 @@ const (
 	BlockedTouched = "touched" // the round changed what the check runs
 	BlockedReading = "reading" // the reading couldn't be taken, after retries
 	BlockedRounds  = "rounds"  // out of rounds, not met
+	// BlockedDiagnosis: a diagnose round found a person must act (the check
+	// is wrong, the target out of reach) (WP-1449).
+	BlockedDiagnosis = "diagnosis"
 
 	MeasureTime  = "time"
 	MeasureValue = "value"
@@ -99,6 +109,17 @@ const (
 	RoundEmpty      = "empty" // nothing landed: the round is still owed
 	RoundUnmeasured = "unmeasured"
 	RoundLoop       = "loop"
+	// RoundDiagnosed: a diagnose round that shipped no code and recorded
+	// why the rounds before it came no nearer (WP-1449).
+	RoundDiagnosed = "diagnosed"
+	// RunDiagnosed is the agent run a diagnosis ends: the agent's part is
+	// over, but it isn't "done", which a workflow step's same/different
+	// agent rule reads as the step before finished.
+	RunDiagnosed = "diagnosed"
+
+	// RoundKindDiagnose is what the round under way is when the rounds
+	// before it came no nearer (Objective.RoundKind); "" is a work round.
+	RoundKindDiagnose = "diagnose"
 
 	// Who took a reading. Only Waypoint's own decide a round.
 	SourceAgent    = "agent"    // wp objective check, by the agent working the round
@@ -127,7 +148,16 @@ const (
 
 	maxObjectiveCmd    = 2000
 	maxObjectiveRounds = 1000
-	maxObjectiveKeep   = 8
+	// A diagnose round follows this many rounds in a row that came no
+	// nearer, unless the objective says otherwise (0: never).
+	objectiveDiagnoseDefault = 2
+	maxObjectiveDiagnose     = 20
+	// maxObjectiveDiagnosis is the most characters of a diagnosis.
+	maxObjectiveDiagnosis = 20000
+	// objectiveBriefDiagnosis is the most characters of a diagnosis a
+	// worker's brief carries.
+	objectiveBriefDiagnosis = 6000
+	maxObjectiveKeep        = 8
 	// maxObjectiveJudge: what a judge reads against goes into an audit as its
 	// instructions (auditInstructionsMax).
 	maxObjectiveJudge = auditInstructionsMax
@@ -169,12 +199,22 @@ type Objective struct {
 	JudgeModels []string `json:"judge_models"`
 	Pace        string   `json:"pace"`
 	// Every is the least seconds from one round's end to the next's start.
-	Every     int64      `json:"every"`
-	MaxRounds int        `json:"max_rounds,omitempty"`
-	Round     int        `json:"round"`
-	Stalled   int        `json:"stalled,omitempty"`
-	NextAt    *time.Time `json:"next_at,omitempty"`
-	State     string     `json:"state"`
+	Every     int64 `json:"every"`
+	MaxRounds int   `json:"max_rounds,omitempty"`
+	Round     int   `json:"round"`
+	Stalled   int   `json:"stalled,omitempty"`
+	// NoBetter counts the rounds in a row Waypoint read and found no nearer
+	// (stalled also counts rounds that landed nothing). DiagnoseAfter is how
+	// many make the next round a diagnose round (0: never). RoundKind is
+	// RoundKindDiagnose while the round under way is one; Diagnosis the
+	// latest, read by every round after it until one makes progress or the
+	// objective is set again (WP-1449).
+	NoBetter      int                 `json:"no_better,omitempty"`
+	DiagnoseAfter int                 `json:"diagnose_after"`
+	RoundKind     string              `json:"round_kind,omitempty"`
+	Diagnosis     *ObjectiveDiagnosis `json:"diagnosis,omitempty"`
+	NextAt        *time.Time          `json:"next_at,omitempty"`
+	State         string              `json:"state"`
 	// Phase is where one in effect stands (PhaseWork …); PhaseWhy and
 	// PhaseNote say why it is blocked, key and words.
 	Phase     string     `json:"phase,omitempty"`
@@ -238,6 +278,19 @@ type Objective struct {
 	baseValue          *float64
 	stalledTold        int
 	stuckToldAt        int64
+	// diagnosisID is the objective_rounds row of the diagnosis that stands; 0
+	// for none.
+	diagnosisID int64
+}
+
+// ObjectiveDiagnosis is what a diagnose round found: why the rounds before it
+// came no nearer, and what the next should try.
+type ObjectiveDiagnosis struct {
+	Round int       `json:"round"`
+	At    time.Time `json:"at"`
+	// By is the agent or the person who wrote it.
+	By   string `json:"by"`
+	Text string `json:"text"`
 }
 
 // ObjectiveFinding is one thing a judge found.
@@ -293,6 +346,9 @@ type ObjectiveMeasurement struct {
 
 // ObjectiveRound is one round.
 type ObjectiveRound struct {
+	// ID is the row's own: a diagnosed round and the work round that reopens
+	// it share Round.
+	ID        int64                 `json:"id"`
 	Round     int                   `json:"round"`
 	StartedAt time.Time             `json:"started_at"`
 	EndedAt   time.Time             `json:"ended_at"`
@@ -303,6 +359,10 @@ type ObjectiveRound struct {
 	BaseSHA   string                `json:"base_sha,omitempty"`
 	HeadSHA   string                `json:"head_sha,omitempty"`
 	Note      string                `json:"note,omitempty"`
+	// Diagnosis is a diagnose round's: what it found, and DiagnosisBy who
+	// wrote it.
+	Diagnosis   string `json:"diagnosis,omitempty"`
+	DiagnosisBy string `json:"diagnosis_by,omitempty"`
 }
 
 // ObjectiveInput sets or changes an objective; nil keeps what is there.
@@ -317,8 +377,11 @@ type ObjectiveInput struct {
 	// Every is a duration: "0", "90m", "24h", "3d".
 	Every     *string `json:"every"`
 	MaxRounds *int    `json:"max_rounds"`
-	Repo      *string `json:"repo"`
-	Branch    *string `json:"branch"`
+	// DiagnoseAfter is how many rounds in a row that come no nearer make the
+	// next one a diagnose round (0: never; 2 unless said).
+	DiagnoseAfter *int    `json:"diagnose_after"`
+	Repo          *string `json:"repo"`
+	Branch        *string `json:"branch"`
 	// KeepPassing replaces the commands that must keep passing.
 	KeepPassing *[]string `json:"keep_passing"`
 	// Judge is the criteria of a judged objective ("" takes the judge off);
@@ -607,7 +670,13 @@ func (o *Objective) measuredRev() string { return objectiveHash(o.measured()) }
 // rounds are paced and bounded. A person confirms the proposal they read
 // and not one written over it since.
 func (o *Objective) rev() string {
-	return objectiveHash(append(o.measured(), o.Pace, strconv.FormatInt(o.everyMS, 10), strconv.Itoa(o.MaxRounds)))
+	parts := append(o.measured(), o.Pace, strconv.FormatInt(o.everyMS, 10), strconv.Itoa(o.MaxRounds))
+	// The default adds nothing, so the rev of a proposal read before
+	// diagnose-after existed is still the one a person confirms.
+	if o.DiagnoseAfter != objectiveDiagnoseDefault {
+		parts = append(parts, strconv.Itoa(o.DiagnoseAfter))
+	}
+	return objectiveHash(parts)
 }
 
 func (o *Objective) kind() string {
@@ -851,6 +920,8 @@ func roundWords(outcome string) string {
 		return "nothing landed, so the round is still owed"
 	case RoundUnmeasured:
 		return "ended without a reading"
+	case RoundDiagnosed:
+		return "diagnosed: it shipped no code, and said why the rounds before it came no nearer"
 	}
 	return "done"
 }
@@ -951,6 +1022,27 @@ func ObjectiveText(o *Objective, forAgent bool, now time.Time) string {
 	case PhaseBlocked:
 		b.WriteString("  Needs a person: " + o.PhaseNote + "\n")
 	}
+	if d := o.Diagnosis; d != nil {
+		who := "diagnosis of round " + strconv.Itoa(d.Round)
+		if d.By != "" {
+			who += ", by " + d.By
+		}
+		fmt.Fprintf(&b, "  The latest %s, %s (it stands until a round makes progress or the objective is set again):\n", who, objectiveClock(d.At))
+		text := strings.TrimSpace(d.Text)
+		if forAgent {
+			// The brief carries what the next round needs; wp objective show
+			// has all of it. Characters, as the diagnosis's own limit counts.
+			if r := []rune(text); len(r) > objectiveBriefDiagnosis {
+				text = string(r[:objectiveBriefDiagnosis]) + "\n[the rest is cut: wp objective show " + o.Key + " has all of it]"
+			}
+		}
+		for _, line := range strings.Split(text, "\n") {
+			b.WriteString("    " + line + "\n")
+		}
+	}
+	if o.diagnoseRound() && !forAgent {
+		fmt.Fprintf(&b, "  Round %d is a diagnose round: the last %s came no nearer, so it ships no code. Whoever takes it finds out why and records it (wp objective diagnose %s -f FILE).\n", o.Round, plural1(o.NoBetter, "round"), o.Key)
+	}
 	if o.StuckSince != nil && o.Phase != PhaseBlocked {
 		fmt.Fprintf(&b, "  Stuck since %s: %s\n", objectiveClock(*o.StuckSince), o.StuckWhy)
 	}
@@ -986,6 +1078,8 @@ func ObjectiveText(o *Objective, forAgent bool, now time.Time) string {
 		return b.String()
 	}
 	switch {
+	case o.diagnoseRound():
+		b.WriteString(diagnoseBrief(o))
 	case !o.verified():
 		b.WriteString("  A round is one useful step. Ship it as usual (wp ship): the task opens again for the next round by itself.\n")
 	default:
@@ -1003,12 +1097,54 @@ func ObjectiveText(o *Objective, forAgent bool, now time.Time) string {
 		if o.Judge != "" && len(o.Findings) > 0 {
 			b.WriteString("  Settle each finding in the code. Where one is wrong, say why with the evidence in your closing note (wp ship -m): the next judge reads it.\n")
 		}
-		if o.Stalled >= 2 {
-			fmt.Fprintf(&b, "  The last %d rounds moved nothing. Before another attempt, find out why: read what they tried (this task's comments and pull requests), measure where the problem actually is, and write what you learn in your closing note so the next round builds on it.\n", o.Stalled)
+		if o.Diagnosis != nil {
+			b.WriteString("  Start from the diagnosis above, but it is the diagnosing worker's account, not something Waypoint checked: check it against the readings before you rely on it. It says why the rounds before it came no nearer, and what to try.\n")
+		} else if o.Stalled >= 2 {
+			fmt.Fprintf(&b, "  The last %s moved nothing. Before another attempt, find out why: read what they tried (this task's comments and pull requests), measure where the problem actually is, and write what you learn in your closing note so the next round builds on it.\n", plural1(o.Stalled, "round"))
 		} else {
 			b.WriteString("  If nothing you tried helped, say what you tried in your closing note so the next round doesn't repeat it.\n")
 		}
 	}
+	return b.String()
+}
+
+// diagnosisDue: that many rounds in a row that came no nearer make the
+// next round a diagnose round. A loop reads nothing, so never.
+func (o *Objective) diagnosisDue(noBetter int) bool {
+	return o.verified() && o.DiagnoseAfter > 0 && noBetter >= o.DiagnoseAfter
+}
+
+// diagnoseDoneError is what a worker is told when it tries to finish a
+// diagnose round, which ships no code: whoever the task is, and whichever
+// way it is finished (wp done, a close, a pull request left open). taken: the
+// round has been taken up.
+func (o *Objective) diagnoseDoneError(key string, taken bool) error {
+	if !taken {
+		return invalid("%s's round %d is a diagnose round that hasn't been taken up: take it first (wp next %s), find out why the last %s came no nearer, and record it with wp objective diagnose %s -f FILE (or -m 'TEXT')",
+			key, o.Round, key, plural1(o.NoBetter, "round"), key)
+	}
+	return invalid("%s's round %d is a diagnose round: the last %s came no nearer, so it ships no code and the task isn't finished by shipping. Find out why, and record it with wp objective diagnose %s -f FILE (or -m 'TEXT'); round %d opens again as a work round after",
+		key, o.Round, plural1(o.NoBetter, "round"), key, o.Round)
+}
+
+// diagnoseRound: the round under way is a diagnose round, and is waiting
+// to be worked (WP-1449).
+func (o *Objective) diagnoseRound() bool {
+	return o.State == ObjectiveActive && o.Phase == PhaseWork && o.RoundKind == RoundKindDiagnose
+}
+
+// diagnoseBrief is what a worker is told of a diagnose round: it ships
+// nothing, and finds out why the rounds before it came no nearer.
+func diagnoseBrief(o *Objective) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "  THIS ROUND IS A DIAGNOSE ROUND. The last %s came no nearer, so this one ships no code: don't change the repository or open a pull request. wp done, wp ship and wp pr merge of the task's pull request are refused until you have recorded a diagnosis (round %d then opens again as a work round, and that is the round to ship in; a person can skip the diagnosis with wp objective next %s). A pull request opened on the forge directly can't be refused: if one merges in this round it is read as any round, and if it is no better a diagnosis is still owed.\n", plural1(o.NoBetter, "round"), o.Round, o.Key)
+	b.WriteString("  Find out why. Read what those rounds tried (the readings above, this task's comments and pull requests) and measure where the problem actually is. Sort what you find by cause:\n")
+	b.WriteString("    - the code: what the rounds changed doesn't move what is measured (say what would)\n")
+	b.WriteString("    - the check or the judge itself: a bug in it, or it measures the wrong thing\n")
+	b.WriteString("    - noise in the reading: runs that vary more than a round could move them\n")
+	b.WriteString("    - a target out of reach: nothing in this repository gets there\n")
+	fmt.Fprintf(&b, "  Then say what the next round should try, and record it: wp objective diagnose %s -f FILE (or -m 'TEXT'). ", o.Key)
+	fmt.Fprintf(&b, "Round %d then opens again as a work round, and its worker reads your diagnosis. Where a person must act first (the check is wrong, the target can't be reached), add --ask: the objective then waits for them.\n", o.Round)
 	return b.String()
 }
 
@@ -1017,7 +1153,8 @@ const objectiveCols = `o.issue_id, p.key || '-' || i.number, i.title, i.project_
 	o.round_no, o.round_started_at, o.stalled, o.next_at, o.state, o.set_by, o.set_agent, o.confirmed_by, o.confirmed_at, o.ended_at, o.updated_at,
 	o.repo, o.branch, o.keep_passing, o.judge, o.judge_bar, o.judge_models, o.phase, o.phase_at, o.phase_why, o.phase_note, o.blocked_from, o.close_status_id,
 	o.verify_try, o.verify_job, o.verify_audit, coalesce(o.verify_at, 0), o.pending_measurement, o.base_sha, o.base_ok, o.base_value, o.ended_why,
-	o.stuck_since, o.stuck_why, coalesce(o.stuck_told_at, 0), o.stalled_told, o.verify_reading, o.verify_head`
+	o.stuck_since, o.stuck_why, coalesce(o.stuck_told_at, 0), o.stalled_told, o.verify_reading, o.verify_head,
+	o.no_better, o.diagnose_after, o.round_kind, coalesce(o.diagnosis_id, 0)`
 
 const objectiveFrom = ` FROM objectives o JOIN issues i ON i.id = o.issue_id JOIN projects p ON p.id = i.project_id JOIN statuses st ON st.id = i.status_id`
 
@@ -1042,7 +1179,8 @@ func scanObjective(sc interface{ Scan(...any) error }) (*Objective, error) {
 		&o.Round, &o.roundStartedAt, &o.Stalled, &next, &o.State, &setBy, &o.SetAgent, &confBy, &confAt, &ended, &updated,
 		&o.Repo, &o.Branch, &keep, &o.Judge, &o.JudgeBar, &models, &o.Phase, &phaseAt, &o.PhaseWhy, &o.PhaseNote, &o.blockedFrom, &closeStatus,
 		&o.verifyTry, &job, &audit, &o.verifyAt, &pending, &o.BaseSHA, &baseOK, &baseValue, &o.EndedWhy,
-		&stuck, &o.StuckWhy, &o.stuckToldAt, &o.stalledTold, &reading, &o.verifyHead); err != nil {
+		&stuck, &o.StuckWhy, &o.stuckToldAt, &o.stalledTold, &reading, &o.verifyHead,
+		&o.NoBetter, &o.DiagnoseAfter, &o.RoundKind, &o.diagnosisID); err != nil {
 		return nil, err
 	}
 	o.issueClosed = isClosed(o.issueCategory)
@@ -1190,7 +1328,10 @@ func (s *Service) objectiveOf(ctx context.Context, q queryer, issueID int64) (*O
 	if len(verdicts) > 0 {
 		o.Verdict = verdicts[0]
 	}
-	rows, err := q.QueryContext(ctx, `SELECT round_no, started_at, ended_at, outcome, coalesce(measurement_id, 0), agent, pr_url, base_sha, head_sha, note FROM objective_rounds
+	// The diagnosis later rounds read, if one still stands: read with the
+	// row, so a clear between the two reads can't fail this one.
+	diagnosisID := o.diagnosisID
+	rows, err := q.QueryContext(ctx, `SELECT round_no, started_at, ended_at, outcome, coalesce(measurement_id, 0), agent, pr_url, base_sha, head_sha, note, diagnosis, diagnosis_by, id FROM objective_rounds
 		WHERE issue_id = ? ORDER BY id DESC LIMIT ?`, issueID, objectiveRecent)
 	if err != nil {
 		return nil, err
@@ -1198,12 +1339,16 @@ func (s *Service) objectiveOf(ctx context.Context, q queryer, issueID int64) (*O
 	var checks []int64
 	for rows.Next() {
 		r := &ObjectiveRound{}
-		var started, ended, mid int64
-		if err := rows.Scan(&r.Round, &started, &ended, &r.Outcome, &mid, &r.Agent, &r.PR, &r.BaseSHA, &r.HeadSHA, &r.Note); err != nil {
+		var started, ended, mid, rid int64
+		if err := rows.Scan(&r.Round, &started, &ended, &r.Outcome, &mid, &r.Agent, &r.PR, &r.BaseSHA, &r.HeadSHA, &r.Note, &r.Diagnosis, &r.DiagnosisBy, &rid); err != nil {
 			_ = rows.Close()
 			return nil, err
 		}
+		r.ID = rid
 		r.StartedAt, r.EndedAt = msTime(started), msTime(ended)
+		if rid == diagnosisID {
+			o.Diagnosis = &ObjectiveDiagnosis{Round: r.Round, At: r.EndedAt, By: r.DiagnosisBy, Text: r.Diagnosis}
+		}
 		o.Rounds, checks = append([]*ObjectiveRound{r}, o.Rounds...), append([]int64{mid}, checks...)
 	}
 	if err := cmpErr(rows.Err(), rows.Close()); err != nil {
@@ -1215,6 +1360,19 @@ func (s *Service) objectiveOf(ctx context.Context, q queryer, issueID int64) (*O
 		}
 		if o.Rounds[n].Check, err = s.measurementByID(ctx, q, o, mid); err != nil {
 			return nil, err
+		}
+	}
+	if o.Diagnosis == nil && diagnosisID != 0 {
+		// Older than the rounds listed.
+		var r ObjectiveRound
+		var ended int64
+		err := q.QueryRowContext(ctx, `SELECT round_no, ended_at, diagnosis, diagnosis_by FROM objective_rounds WHERE id = ?`, diagnosisID).Scan(&r.Round, &ended, &r.Diagnosis, &r.DiagnosisBy)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+		case err != nil:
+			return nil, err
+		default:
+			o.Diagnosis = &ObjectiveDiagnosis{Round: r.Round, At: msTime(ended), By: r.DiagnosisBy, Text: r.Diagnosis}
 		}
 	}
 	if o.State == ObjectiveActive && o.Judge != "" {
@@ -1244,12 +1402,18 @@ func (o *Objective) health(now time.Time) (string, string) {
 		return "reading", strings.TrimSpace("Waypoint is reading where it starts from. " + o.PhaseNote)
 	case o.Phase == PhaseVerdict:
 		return "reading", strings.TrimSpace(fmt.Sprintf("Waypoint is reading round %d. ", o.Round) + o.PhaseNote)
-	case o.NextAt != nil && o.NextAt.After(now):
-		return "waiting", fmt.Sprintf("Round %d isn't handed out before %s.", o.Round, objectiveClock(*o.NextAt))
-	case o.issueCategory == CatInProgress:
-		return "working", fmt.Sprintf("Round %d is being worked.", o.Round)
 	}
-	return "ready", fmt.Sprintf("Round %d waits to be handed out.", o.Round)
+	round := fmt.Sprintf("Round %d", o.Round)
+	if o.RoundKind == RoundKindDiagnose {
+		round += ", a diagnose round,"
+	}
+	switch {
+	case o.NextAt != nil && o.NextAt.After(now):
+		return "waiting", fmt.Sprintf("%s isn't handed out before %s.", round, objectiveClock(*o.NextAt))
+	case o.issueCategory == CatInProgress:
+		return "working", round + " is being worked."
+	}
+	return "ready", round + " waits to be handed out."
 }
 
 // agoWords: "just now", "12 minutes ago", "3 hours ago", "2 days ago".
@@ -1277,7 +1441,7 @@ func objectivePerson(a *Actor) bool {
 // names it for the handlers that act on it (objective_health.go).
 func objectiveEvent(o *Objective, what, old, text string) *Event {
 	return &Event{Kind: EvIssueUpdated, ProjectID: o.projectID, IssueID: o.IssueID, IssueKey: o.Key, Field: "objective", Old: old, New: text,
-		Data: map[string]any{"objective": what}}
+		Data: map[string]any{"objective": what, "diagnosis": o.diagnosisID, "no_better": o.NoBetter}}
 }
 
 // objectiveColumns are the columns objSet may write, by name. The name that
@@ -1286,11 +1450,11 @@ var objectiveColumns = func() map[string]string {
 	m := map[string]string{}
 	for _, c := range []string{
 		"base_ok", "base_sha", "base_value", "better", "blocked_from", "branch",
-		"check_cmd", "close_status_id", "confirmed_at", "confirmed_by", "dir", "ended_at",
+		"check_cmd", "close_status_id", "confirmed_at", "confirmed_by", "diagnose_after", "diagnosis_id", "dir", "ended_at",
 		"ended_why", "every_ms", "factor", "judge", "judge_bar", "judge_models",
-		"keep_passing", "max_rounds", "measure", "next_at", "op", "pace",
+		"keep_passing", "max_rounds", "measure", "next_at", "no_better", "op", "pace",
 		"pending_measurement", "phase", "phase_at", "phase_note", "phase_why", "repo",
-		"round_no", "round_started_at", "set_agent", "set_by", "setup", "stalled",
+		"round_kind", "round_no", "round_started_at", "set_agent", "set_by", "setup", "stalled",
 		"stalled_told", "state", "stuck_since", "stuck_told_at", "stuck_why", "target",
 		"unit", "until", "verify_at", "verify_audit", "verify_head", "verify_job",
 		"verify_reading", "verify_try",
@@ -1478,7 +1642,7 @@ func (s *Service) SetObjective(ctx context.Context, actor *Actor, ref string, in
 					i.Key, cur.Summary, i.Key, cur.Rev)
 			}
 		}
-		o := &Objective{Pace: PaceQueue, Round: 1, everyMS: -1, KeepPassing: []string{}, JudgeModels: []string{}}
+		o := &Objective{Pace: PaceQueue, Round: 1, everyMS: -1, DiagnoseAfter: objectiveDiagnoseDefault, KeepPassing: []string{}, JudgeModels: []string{}}
 		if !fresh {
 			c := *cur
 			o = &c
@@ -1554,6 +1718,8 @@ func (s *Service) SetObjective(ctx context.Context, actor *Actor, ref string, in
 			return invalid("an amount every round never ends, and a judged objective ends when the judge finds nothing: give the check a fixed target or pass, or leave the judge out")
 		case o.Judge == "" && o.Check == "" && len(o.KeepPassing) > 0:
 			return invalid("--keep-passing names a command that must keep passing while a check or a judge decides the rounds: give one of those (a loop has no rounds to read)")
+		case o.Judge == "" && o.Check == "" && in.DiagnoseAfter != nil:
+			return invalid("--diagnose-after counts rounds that come no nearer, read by a check or a judge: give one of those (a loop has no rounds to read)")
 		}
 		o.Measure, o.Until, o.Op, o.Target, o.Factor, o.Better, o.Unit = tg.measure, tg.until, tg.op, tg.target, tg.factor, tg.better, tg.unit
 		if in.JudgeModels != nil {
@@ -1630,6 +1796,12 @@ func (s *Service) SetObjective(ctx context.Context, actor *Actor, ref string, in
 		if o.MaxRounds < 0 || o.MaxRounds > maxObjectiveRounds {
 			return invalid("rounds is 0 (no limit) to %d", maxObjectiveRounds)
 		}
+		if in.DiagnoseAfter != nil {
+			o.DiagnoseAfter = *in.DiagnoseAfter
+		}
+		if o.DiagnoseAfter < 0 || o.DiagnoseAfter > maxObjectiveDiagnose {
+			return invalid("diagnose-after is 0 (never) to %d: the rounds in a row that come no nearer before the next is a diagnose round", maxObjectiveDiagnose)
+		}
 		// One that was met or ended starts again on a new round: the round
 		// it ended on is recorded, and its readings aren't the new round's.
 		restart := !fresh && person && (cur.State == ObjectiveMet || cur.State == ObjectiveEnded)
@@ -1668,7 +1840,7 @@ func (s *Service) SetObjective(ctx context.Context, actor *Actor, ref string, in
 		}
 		if err := s.objSet(ctx, t, i.ID, "check_cmd", o.Check, "dir", o.Dir, "setup", o.Setup, "measure", o.Measure, "until", o.Until, "op", o.Op,
 			"target", nullFloat(o.Target), "factor", nullFloat(o.Factor), "better", o.Better, "unit", o.Unit, "pace", o.Pace, "every_ms", o.everyMS,
-			"max_rounds", o.MaxRounds, "repo", o.Repo, "branch", o.Branch, "keep_passing", jsonList(o.KeepPassing), "judge", o.Judge, "judge_bar", o.JudgeBar,
+			"max_rounds", o.MaxRounds, "diagnose_after", o.DiagnoseAfter, "repo", o.Repo, "branch", o.Branch, "keep_passing", jsonList(o.KeepPassing), "judge", o.Judge, "judge_bar", o.JudgeBar,
 			"judge_models", jsonList(o.JudgeModels), "set_by", nullUser(actor.id()), "set_agent", actor.creditAgent()); err != nil {
 			return err
 		}
@@ -1713,7 +1885,7 @@ func (s *Service) objectiveStart(ctx context.Context, t *tx, o *Objective, by in
 		phase = PhaseBaseline
 	}
 	return s.objSet(ctx, t, o.IssueID, append([]any{"state", ObjectiveActive, "confirmed_by", nullUser(by), "confirmed_at", now, "round_no", round, "round_started_at", now,
-		"stalled", 0, "stalled_told", 0, "next_at", nil, "ended_at", nil, "ended_why", "", "phase", phase, "phase_at", now, "phase_why", "", "phase_note", "",
+		"stalled", 0, "stalled_told", 0, "no_better", 0, "round_kind", "", "diagnosis_id", nil, "next_at", nil, "ended_at", nil, "ended_why", "", "phase", phase, "phase_at", now, "phase_why", "", "phase_note", "",
 		"blocked_from", "", "close_status_id", nil, "base_sha", "", "base_ok", nil, "base_value", nil, "stuck_since", nil, "stuck_why", "", "stuck_told_at", nil},
 		verifyReset()...)...)
 }
@@ -1744,15 +1916,43 @@ func (s *Service) objectiveEdited(ctx context.Context, t *tx, cur, o *Objective,
 		// More rounds: the next one starts.
 		if changed {
 			o.BaseSHA, o.baseOK, o.baseValue = "", nil, nil
+			// What the earlier rounds came to was of something else, and the
+			// diagnosis said of it no longer stands: the next round is a work
+			// round on the new measure. With more rounds alone, the rounds
+			// that came no nearer are still the history, so a diagnosis owed
+			// is owed (objectiveOpenRound reads o.NoBetter).
+			o.NoBetter, o.diagnosisID = 0, 0
+			if err := s.objSet(ctx, t, o.IssueID, "no_better", 0, "diagnosis_id", nil); err != nil {
+				return err
+			}
 		}
-		return s.objectiveOpenRound(ctx, t, o, cur.Round+1, 0, 0, changed && o.verified())
+		// With no commit to start from (the check changed while it was out of
+		// rounds) the next round starts with a reading of one.
+		return s.objectiveOpenRound(ctx, t, o, cur.Round+1, 0, 0, o.verified() && (changed || o.BaseSHA == ""))
 	case !changed || outOfRounds:
+		if changed && outOfRounds {
+			// Still out of rounds, but measured another way: the count and the
+			// diagnosis belong to the old measure.
+			o.NoBetter, o.diagnosisID = 0, 0
+			o.BaseSHA, o.baseOK, o.baseValue = "", nil, nil
+			if err := s.objSet(ctx, t, o.IssueID, "no_better", 0, "diagnosis_id", nil, "round_kind", "", "base_sha", "", "base_ok", nil, "base_value", nil); err != nil {
+				return err
+			}
+			return nil
+		}
+		// A diagnose round the objective no longer asks for (diagnose-after
+		// raised past its rounds, or 0) is a work round. Lowering it takes
+		// effect when the next round opens (objectiveOpenRound reads the
+		// count then): a round under way is a work round to its end.
+		if cur.RoundKind == RoundKindDiagnose && !o.diagnosisDue(cur.NoBetter) && !outOfRounds {
+			return s.objSet(ctx, t, o.IssueID, "round_kind", "")
+		}
 		return nil
 	}
 	if err := s.objectiveDropJob(ctx, t, cur, "the objective changed"); err != nil {
 		return err
 	}
-	sets := append([]any{"stalled", 0, "stalled_told", 0, "next_at", nil, "phase_at", now, "phase_why", "", "phase_note", "", "blocked_from", ""}, verifyReset()...)
+	sets := append([]any{"stalled", 0, "stalled_told", 0, "no_better", 0, "round_kind", "", "diagnosis_id", nil, "next_at", nil, "phase_at", now, "phase_why", "", "phase_note", "", "blocked_from", ""}, verifyReset()...)
 	if cur.Repo != o.Repo || cur.Branch != o.Branch {
 		sets = append(sets, "base_sha", "", "base_ok", nil, "base_value", nil)
 	} else {
@@ -1858,7 +2058,7 @@ func (s *Service) ClearObjective(ctx context.Context, actor *Actor, ref string) 
 			return err
 		}
 		var rounds int
-		if err := t.QueryRowContext(ctx, `SELECT count(*) FROM objective_rounds WHERE issue_id = ? AND outcome != ?`, i.ID, RoundReading).Scan(&rounds); err != nil {
+		if err := t.QueryRowContext(ctx, `SELECT count(*) FROM objective_rounds WHERE issue_id = ? AND outcome NOT IN (?, ?)`, i.ID, RoundReading, RoundDiagnosed).Scan(&rounds); err != nil {
 			return err
 		}
 		said := "taken off"
