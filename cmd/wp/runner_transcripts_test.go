@@ -88,7 +88,7 @@ func keptJob(t *testing.T, cfg string, p *runnerProc, o outcome, state string) (
 	}
 	if meta.Job != 7 || meta.Kind != "review" || meta.State != state || meta.SessionID != "s1" || meta.Model != "sonnet" ||
 		meta.Title != "Review PR 12" || meta.Started == "" || meta.Ended == "" || !slices.Equal(meta.Sessions, []string{"h1", "s1"}) ||
-		meta.CLI != "claude" || meta.Repo == "" || meta.Work == "" {
+		meta.CLI != "claude" || meta.Repo == "" || meta.Work == "" || meta.WPVersion != version {
 		t.Errorf("sidecar = %+v", meta)
 	}
 	return proj, meta
@@ -130,16 +130,19 @@ func TestFailedAgentJobKeepsItsTranscripts(t *testing.T) {
 
 // waitForFile polls (briefly) for the fake claude's first transcript to exist,
 // (the fake writes it last, after its init line) so a cancel comes after the session was filed however long the checkout took.
-func waitForFile(t *testing.T, cfg string) {
+// It is called from goroutines, so it reports with t.Error and returns whether
+// the file came, and the caller cancels either way.
+func waitForFile(t *testing.T, cfg string) bool {
 	t.Helper()
 	for range 400 {
 		if m, _ := filepath.Glob(filepath.Join(cfg, "projects", "*-job7-*", "s1.jsonl")); len(m) == 1 {
 			time.Sleep(200 * time.Millisecond) // the init line, written first, has been read
-			return
+			return true
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	t.Fatal("claude never filed its session")
+	t.Error("claude never filed its session")
+	return false
 }
 
 // The path that matters most: a job killed on its timeout, and one cancelled,
@@ -211,7 +214,7 @@ func TestAgentJobUploadsItsTranscriptsAtTheEnd(t *testing.T) {
 	if ov.Totals.Messages != 3 { // the two sessions' main threads and the sub-agent's
 		t.Errorf("messages on the server = %d\nlog:\n%s", ov.Totals.Messages, run.out.text())
 	}
-	if strings.Contains(run.out.text(), "not uploaded") {
+	if strings.Contains(run.out.text(), "did not finish") {
 		t.Errorf("log = %s", run.out.text())
 	}
 }

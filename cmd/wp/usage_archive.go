@@ -400,7 +400,10 @@ func usageArchive(c *cli, o usageSyncOptions, root string, syncStart time.Time) 
 			a.st.Cut++ // a pass that ended early is counted, with the reason in the status
 		}
 		saveErr := a.save()
-		if a.quiet {
+		if a.quiet || o.OnlyFiles {
+			// A pass over the named files has the backlog of those files only:
+			// posting it as the machine's would zero the server's figure, so the
+			// timer's full pass reports.
 			return res, saveErr
 		}
 		if err := a.report(c, res); err != nil {
@@ -433,7 +436,6 @@ func (a *archiver) pass(o usageSyncOptions, root string) error {
 	}
 	var files []usageFile
 	if o.OnlyFiles { // the named sessions, whatever their age; none named is none
-		since = 0
 		if len(o.Files) > 0 {
 			files, _ = discoverTranscripts(root, 0, o.Files)
 		}
@@ -620,7 +622,7 @@ func archiveReportOff(c *cli, o usageSyncOptions) error {
 	if o.Hook {
 		timeout = archiveReportHookTimeout // the hook's timeout covers the whole pass (WP-1466)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(o.ctx(), timeout)
 	_, err = c.callCtx(ctx, "POST", "/api/v1/usage/transcript/status", body)
 	cancel()
 	if err != nil {

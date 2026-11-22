@@ -37,15 +37,15 @@ const jobSidecarFile = "wp-job.json"
 // transcriptUploadLimit bounds the upload at the end of a job. A job that
 // ends on its timeout or a cancel has no context left, so the upload has its
 // own; the runner's timer sends what a slow or failed one leaves. Chosen, not
-// measured: a job's sessions are a few MB, and the job's result and the
-// runner's slot wait on the upload.
+// measured: this assumes a job's sessions are a few MB (not checked), and the
+// job's result and the runner's slot wait on the upload.
 var transcriptUploadLimit = 2 * time.Minute
 
 // transcriptBusyWait and transcriptBusyTries: another sync holds the lock
 // (the timer's, a hook's), so look again a few times before leaving it to the
-// timer. Chosen, not measured: a hook's sync pass normally ends within
-// seconds, and the timer's is covered by the next timer pass. Tests shorten
-// the wait.
+// timer. Chosen, not measured: it assumes a hook's sync pass normally ends
+// within seconds (not checked), and the timer's is covered by the next timer
+// pass. Tests shorten the wait.
 var (
 	transcriptBusyWait  = 5 * time.Second
 	transcriptBusyTries = 6
@@ -70,6 +70,23 @@ type jobMeta struct {
 	SessionID string   `json:"session_id,omitempty"`
 	Sessions  []string `json:"sessions"`
 	Work      string   `json:"work"`
+	WPVersion string   `json:"wp_version"`
+}
+
+// withLink puts link (the session id, the directory) in the job's result.
+func withLink(o outcome, link map[string]any) outcome {
+	if len(link) == 0 {
+		return o
+	}
+	switch m := o.Result.(type) {
+	case nil:
+		o.Result = link
+	case map[string]any:
+		for k, v := range link {
+			m[k] = v
+		}
+	}
+	return o
 }
 
 // jobProjectDir is the directory Claude Code filed the job's sessions under:
@@ -119,7 +136,10 @@ func (p *runnerProc) keepTranscripts(ctx context.Context, run *jobRun, in agentJ
 	proj := jobProjectDir(dir, work)
 	if proj == "" {
 		if drv != nil { // silent when the job ended before the CLI was built
-			fmt.Fprintf(run.out, "No transcript found for this job under %s\n", filepath.Join(dir, "projects"))
+			fmt.Fprintf(run.out, "No transcript found for this job (session id %q) under %s\n", drv.sessionID, filepath.Join(dir, "projects"))
+			if drv.sessionID != "" { // no directory, so no sidecar, but the link to the session stands
+				o = withLink(o, map[string]any{"session_id": drv.sessionID})
+			}
 		}
 		return o
 	}
@@ -130,7 +150,7 @@ func (p *runnerProc) keepTranscripts(ctx context.Context, run *jobRun, in agentJ
 		Job: run.id, Kind: run.kind, Title: run.title, CLI: in.CLI, Model: in.Model, Effort: in.Effort,
 		Repo: in.Repo, Base: in.Base, Branch: in.Branch,
 		Started: started.UTC().Format(time.RFC3339), Ended: time.Now().UTC().Format(time.RFC3339),
-		State: o.State, Error: o.Error, Sessions: []string{}, Work: work,
+		State: o.State, Error: o.Error, Sessions: []string{}, Work: work, WPVersion: version,
 	}
 	if drv != nil {
 		meta.SessionID = drv.sessionID
@@ -165,16 +185,7 @@ func (p *runnerProc) keepTranscripts(ctx context.Context, run *jobRun, in agentJ
 	if len(mains) > 0 {
 		link["transcript_dir"] = proj
 	}
-	if len(link) > 0 {
-		switch m := o.Result.(type) {
-		case nil:
-			o.Result = link
-		case map[string]any:
-			for k, v := range link {
-				m[k] = v
-			}
-		}
-	}
+	o = withLink(o, link)
 	if len(mains) > 0 {
 		fmt.Fprintf(run.out, "Transcripts kept in %s (%d session%s)\n", proj, len(mains), plural(len(mains)))
 	}
@@ -191,16 +202,26 @@ func (p *runnerProc) keepTranscripts(ctx context.Context, run *jobRun, in agentJ
 	// Not the job's context: on a timeout or a cancel it is done.
 	uctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), transcriptUploadLimit)
 	defer cancel()
+	// A person's cancel of this job does not cut the upload, but the runner
+	// stopping does: its finish report must not wait for a slow server.
+	if p.stopCtx != nil {
+		defer context.AfterFunc(p.stopCtx, cancel)()
+	}
 	res, err := p.uploadTranscripts(uctx, dir, mains)
 	resettle()
 	const rest = "the next usage sync sends the rest."
+	unfinished := err != nil || res.ArchiveError != "" || (res.Archive != nil && res.Archive.Stopped != "")
 	switch {
+	case p.stopCtx != nil && p.stopCtx.Err() != nil && unfinished:
+		fmt.Fprintln(run.out, "The runner is stopping, so the transcript upload was cut short; a later usage sync sends the rest.")
 	case err != nil:
-		fmt.Fprintf(run.out, "Transcripts not uploaded yet (%v); %s\n", err, rest)
+		fmt.Fprintf(run.out, "The transcript upload did not finish (%v); %s\n", err, rest)
 	case res.ArchiveError != "":
-		fmt.Fprintf(run.out, "The usage counts were uploaded, the transcript archive was not (%s); %s\n", res.ArchiveError, rest)
+		fmt.Fprintf(run.out, "The usage counts were uploaded; the transcript archive upload did not finish cleanly (%s); %s\n", res.ArchiveError, rest)
 	case res.Archive != nil && res.Archive.Stopped == archiveBusy:
-		fmt.Fprintf(run.out, "The usage counts were uploaded; another transcript archive pass is running and sends these too; %s\n", rest)
+		fmt.Fprintln(run.out, "The usage counts were uploaded; another transcript archive pass is running, and a later usage sync sends these transcripts.")
+	case res.Archive != nil && res.Archive.Stopped == archiveNoneStop:
+		fmt.Fprintf(run.out, "The usage counts were uploaded; %s, so the transcripts stay on this machine.\n", archiveNoneStop)
 	case res.Archive != nil && res.Archive.Stopped != "":
 		fmt.Fprintf(run.out, "The usage counts were uploaded; not all transcripts were sent (%s); %s\n", res.Archive.Stopped, rest)
 	}

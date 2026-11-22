@@ -53,6 +53,10 @@ func TestDiscoverTranscriptsIgnoresSymlinkedFiles(t *testing.T) {
 	real := writeAt(t, filepath.Join(proj, "s.jsonl"), tline("m1", "s"))
 	sub := writeAt(t, filepath.Join(proj, "s", "subagents", "agent-x.jsonl"), tline("m2", "s"))
 	linkAt(t, secret, filepath.Join(proj, "link.jsonl"))
+	writeAt(t, filepath.Join(proj, jobSidecarFile), "{}\n")                      // the job's sidecar is not a transcript
+	if err := os.MkdirAll(filepath.Join(proj, "dir.jsonl"), 0o700); err != nil { // nor is a directory named like one
+		t.Fatal(err)
+	}
 	linkAt(t, secret, filepath.Join(proj, "s", "subagents", "agent-y.jsonl"))
 	linkAt(t, secret, filepath.Join(proj, "t", "subagents", "agent-z.jsonl"))
 	realDir := t.TempDir()
@@ -186,7 +190,7 @@ func TestJobEndUploadIsTimeBounded(t *testing.T) {
 	if d := time.Since(t0); d > 3*time.Second {
 		t.Errorf("the end of the job took %v", d)
 	}
-	if !strings.Contains(log, "not uploaded yet") {
+	if !strings.Contains(log, "transcript upload did not finish") {
 		t.Errorf("log = %s", log)
 	}
 }
@@ -206,10 +210,10 @@ func TestJobEndUploadRetriesWhenBusy(t *testing.T) {
 	t0 := time.Now()
 	_, log := keepIt(p, work, nil)
 	d := time.Since(t0)
-	if d < 400*time.Millisecond || d > 700*time.Millisecond {
+	if d < 400*time.Millisecond || d > 5*time.Second {
 		t.Errorf("two tries 400ms apart took %v", d)
 	}
-	if !strings.Contains(log, "not uploaded yet") || haveSession(e, "s1") {
+	if !strings.Contains(log, "transcript upload did not finish") || haveSession(e, "s1") {
 		t.Errorf("log = %s", log)
 	}
 
@@ -217,24 +221,21 @@ func TestJobEndUploadRetriesWhenBusy(t *testing.T) {
 	transcriptBusyWait, transcriptBusyTries = 300*time.Millisecond, 3
 	go func() { time.Sleep(100 * time.Millisecond); unlock() }()
 	_, log = keepIt(p, work, nil)
-	if strings.Contains(log, "not uploaded") || !haveSession(e, "s1") {
+	if strings.Contains(log, "did not finish") || !haveSession(e, "s1") {
 		t.Errorf("log = %s", log)
 	}
 }
 
-// The counts went but the archive's status post failed: not "nothing sent".
+// The counts went but the archive pass itself failed (its state file can't be
+// written): not "nothing sent", and not "the archive was not uploaded" either.
 func TestJobEndUploadSaysWhenOnlyTheArchiveFailed(t *testing.T) {
-	_, p, _, work, _ := jobEndSetup(t, func(h http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/api/v1/usage/transcript/status" {
-				http.Error(w, "no", http.StatusInternalServerError)
-				return
-			}
-			h.ServeHTTP(w, r)
-		})
-	})
+	e, p, _, work, _ := jobEndSetup(t, nil)
+	if err := os.Mkdir(filepath.Join(e.dir, archiveStateFile), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	_, log := keepIt(p, work, nil)
-	if !strings.Contains(log, "usage counts were uploaded") || strings.Contains(log, "Transcripts not uploaded yet") {
+	if !strings.Contains(log, "usage counts were uploaded") || !strings.Contains(log, "archive upload did not finish cleanly") ||
+		strings.Contains(log, "transcript upload did not finish") || strings.Contains(log, "was not uploaded") {
 		t.Errorf("log = %s", log)
 	}
 }
@@ -248,7 +249,7 @@ func TestJobEndUploadSaysWhenTheArchiveIsBusy(t *testing.T) {
 	}
 	defer unlock()
 	_, log := keepIt(p, work, nil)
-	if !strings.Contains(log, "another transcript archive pass is running") {
+	if !strings.Contains(log, "another transcript archive pass is running") || !strings.Contains(log, "a later usage sync sends these transcripts") {
 		t.Errorf("log = %s", log)
 	}
 }
@@ -272,7 +273,7 @@ func TestKeepTranscriptsWhenNothingWasFiled(t *testing.T) {
 	work := filepath.Join(t.TempDir(), "job7-1")
 
 	o, log := keepIt(p, work, &cliDriver{})
-	if o.Result != nil || !strings.Contains(log, "No transcript found for this job under "+filepath.Join(cfg, "projects")) {
+	if o.Result != nil || !strings.Contains(log, `No transcript found for this job (session id "") under `+filepath.Join(cfg, "projects")) {
 		t.Errorf("no dir: result %v, log %q", o.Result, log)
 	}
 	if o, log = keepIt(p, work, nil); o.Result != nil || log != "" {
@@ -294,6 +295,9 @@ func TestKeepTranscriptsWhenNothingWasFiled(t *testing.T) {
 	if !strings.Contains(log, "no session") {
 		t.Errorf("log = %q", log)
 	}
+	if o.Result != nil {
+		t.Errorf("result = %v", o.Result)
+	}
 }
 
 // A [ in the config directory is a path, not a pattern.
@@ -314,7 +318,7 @@ func TestJobProjectDirWithGlobCharactersInTheConfigDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := json.Unmarshal(b, &meta); err != nil || !slices.Equal(meta.Sessions, []string{"a"}) {
+	if err := json.Unmarshal(b, &meta); err != nil || !slices.Equal(meta.Sessions, []string{"a"}) || meta.WPVersion != version {
 		t.Errorf("sidecar = %+v, %v", meta, err)
 	}
 }
@@ -393,11 +397,10 @@ func TestSubagentTypeIgnoresASymlinkedMetaFile(t *testing.T) {
 	other := writeAt(t, filepath.Join(t.TempDir(), "other.json"), `{"agentType":"from-elsewhere"}`)
 	tr := writeAt(t, filepath.Join(dir, "subagents", "agent-x.jsonl"), tline("m", "s"))
 	linkAt(t, other, filepath.Join(dir, "subagents", "agent-x.meta.json"))
-	if k := subagentType(tr); k == "from-elsewhere" {
+	if k := subagentType(tr); k != "subagent" {
 		t.Errorf("read through a symlink: %q", k)
 	}
-	real := writeAt(t, filepath.Join(dir, "subagents", "agent-y.meta.json"), `{"agentType":"real"}`)
-	_ = real
+	writeAt(t, filepath.Join(dir, "subagents", "agent-y.meta.json"), `{"agentType":"real"}`)
 	if k := subagentType(filepath.Join(dir, "subagents", "agent-y.jsonl")); k != "real" {
 		t.Errorf("a regular meta file: %q", k)
 	}

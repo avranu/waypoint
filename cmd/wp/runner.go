@@ -174,7 +174,9 @@ func runRunner(ctx context.Context, c *cli, o runnerOpts) error {
 	}
 	reportCtx, reportStop := context.WithCancel(context.Background())
 	defer reportStop()
-	p := &runnerProc{c: c, opts: o, allowed: allowed, host: host, jobs: map[int64]*activeJob{}, freed: make(chan struct{}, 1), reportCtx: reportCtx}
+	stopCtx, stopCancel := context.WithCancel(context.Background())
+	defer stopCancel()
+	p := &runnerProc{c: c, opts: o, allowed: allowed, host: host, jobs: map[int64]*activeJob{}, freed: make(chan struct{}, 1), reportCtx: reportCtx, stopCtx: stopCtx, stopCancel: stopCancel}
 	return p.run(ctx, reportStop)
 }
 
@@ -192,6 +194,9 @@ type runnerProc struct {
 	updateTriedAt  time.Time
 
 	reportCtx context.Context // ends when the runner has stopped waiting to report
+	// stopCtx ends when a runner stop begins (stopAll); nil in a runner built by hand
+	stopCtx    context.Context
+	stopCancel context.CancelFunc
 
 	mu            sync.Mutex
 	jobs          map[int64]*activeJob
@@ -708,8 +713,13 @@ func (p *runnerProc) waitJobs(d time.Duration) {
 }
 
 // stopAll ends the jobs still running (they report that they were stopped)
-// and gives the reports a few seconds to get through.
+// and gives the reports a few seconds to get through. A job's transcript
+// upload at its end ignores its cancel, so the stop also ends those (stopCtx):
+// otherwise one could outlast the wait and the finish report would be lost.
 func (p *runnerProc) stopAll(reportStop context.CancelFunc) {
+	if p.stopCancel != nil {
+		p.stopCancel() // cuts a job's transcript upload short (keepTranscripts), which would outlast the wait below
+	}
 	p.mu.Lock()
 	for _, aj := range p.jobs {
 		aj.cancel()
