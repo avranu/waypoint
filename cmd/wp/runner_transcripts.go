@@ -196,7 +196,7 @@ func (p *runnerProc) keepTranscripts(ctx context.Context, run *jobRun, in agentJ
 		return o
 	}
 	if p.opts.NoUsageSync {
-		fmt.Fprintln(run.out, "Usage sync is off here: the transcripts are kept on this machine only and not uploaded.")
+		fmt.Fprintf(run.out, "Usage sync is off here: the transcripts are kept on this machine only and not uploaded.\n")
 		return o
 	}
 	// Not the job's context: on a timeout or a cancel it is done.
@@ -213,13 +213,13 @@ func (p *runnerProc) keepTranscripts(ctx context.Context, run *jobRun, in agentJ
 	unfinished := err != nil || res.ArchiveError != "" || (res.Archive != nil && res.Archive.Stopped != "")
 	switch {
 	case p.stopCtx != nil && p.stopCtx.Err() != nil && unfinished:
-		fmt.Fprintln(run.out, "The runner is stopping, so the transcript upload was cut short; a later usage sync sends the rest.")
+		fmt.Fprintf(run.out, "The runner is stopping, so the transcript upload was cut short; a later usage sync sends the rest.\n")
 	case err != nil:
 		fmt.Fprintf(run.out, "The transcript upload did not finish (%v); %s\n", err, rest)
 	case res.ArchiveError != "":
 		fmt.Fprintf(run.out, "The usage counts were uploaded; the transcript archive upload did not finish cleanly (%s); %s\n", res.ArchiveError, rest)
 	case res.Archive != nil && res.Archive.Stopped == archiveBusy:
-		fmt.Fprintln(run.out, "The usage counts were uploaded; another transcript archive pass is running, and a later usage sync sends these transcripts.")
+		fmt.Fprintf(run.out, "The usage counts were uploaded; another transcript archive pass is running, and a later usage sync sends these transcripts.\n")
 	case res.Archive != nil && res.Archive.Stopped == archiveNoneStop:
 		fmt.Fprintf(run.out, "The usage counts were uploaded; %s, so the transcripts stay on this machine.\n", archiveNoneStop)
 	case res.Archive != nil && res.Archive.Stopped != "":

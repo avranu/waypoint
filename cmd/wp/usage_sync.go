@@ -283,7 +283,7 @@ func subagentType(path string) string {
 	if err != nil {
 		return "subagent"
 	}
-	defer fh.Close()
+	defer func() { _ = fh.Close() }() // read only
 	b, err := io.ReadAll(io.LimitReader(fh, 1<<16))
 	if err != nil {
 		return "subagent"
