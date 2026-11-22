@@ -67,7 +67,7 @@ function escapeLineStarts(s: string) {
       if (rule && (i > 0 || (rule[2] === '-' && line.trim().length >= 3))) {
         return `${rule[1]}\\${line.slice(rule[1].length)}`
       }
-      if (/^\s*\[[^\]]+\]:/.test(line)) return line.replace('[', '\\[')
+      if (/^\s*\[[^\]]+\]:/.test(line)) return line.replace(/\[/g, '\\[')
       return line
     })
     .join('\n')
