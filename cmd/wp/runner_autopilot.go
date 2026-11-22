@@ -320,7 +320,13 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 		res.Detail = "typed while the registry said busy: the screen showed the main thread at its prompt"
 	}
 	if !waitTook(ctx, ccDir, pid, socket, pane, byScreen, reviewTookWait) {
-		res.Warning = fmt.Sprintf("the session's screen didn't show it starting the review within %s; check it", reviewTookWait.Round(time.Second))
+		// Say what was looked at: the screen is read only when the registry
+		// can't tell (byScreen); otherwise it is the registry that never
+		// went busy.
+		res.Warning = fmt.Sprintf("the session didn't go busy within %s of the review being typed; check it", reviewTookWait.Round(time.Second))
+		if byScreen {
+			res.Warning = fmt.Sprintf("the session's screen didn't show it starting the review within %s; check it", reviewTookWait.Round(time.Second))
+		}
 		say("session %s: %s", in.CLIID, res.Warning)
 	}
 	say("asked session %s for the adversarial review of %s", in.CLIID, in.ReviewOf)

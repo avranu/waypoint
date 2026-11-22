@@ -417,12 +417,21 @@ func (s *Service) syncReviewComments(ctx context.Context, pr *PullRequest) (int,
 			in[i].author, in[i].bot = "waypoint", true
 		}
 	}
+	// A finding in the review's body, or kept past how many the review
+	// posts (WP-1421), is a comment here, so it is given to the agent and
+	// answered like one that has a thread.
 	for _, x := range findings {
-		if x.placement != "body" || x.private || x.state != FindingOpen {
+		if (x.placement != "body" && x.placement != placementLater) || x.private || x.state != FindingOpen {
 			continue
 		}
+		// The review a later finding was kept past does not show it: its
+		// link is Waypoint's page, or none (the reader of the field copes).
+		link := cmp(x.reviewURL, pr.URL)
+		if x.placement == placementLater {
+			link = prPageURL(s.BaseURL(), pr.ID)
+		}
 		in = append(in, rcIn{kind: "finding", extID: "f" + strconv.FormatInt(x.id, 10), author: "waypoint", bot: true, path: x.path, line: x.line,
-			sha: x.sha, body: "[" + x.severity + "] " + x.claim, url: cmp(x.reviewURL, pr.URL), findingID: x.id, at: x.createdAt, updated: x.createdAt})
+			sha: x.sha, body: "[" + x.severity + "] " + x.claim, url: link, findingID: x.id, at: x.createdAt, updated: x.createdAt})
 	}
 
 	now := s.nowMS()

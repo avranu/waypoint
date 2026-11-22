@@ -28,7 +28,7 @@ func init() {
 			"`target` is repo, branch, commit, range, recent or pr (empty: the trigger's pull request, else the repository); `ref` the branch, commit, FROM..TO range or pull request number; `instructions` what to look for. " +
 			"For recent, `since` is the period (7d, 2w, 1mo or a date; on a schedule, 7d each Monday audits the week), and `ref` the branch (empty: the default branch). " +
 			"`focus` names areas to look hardest at (security, data, concurrency, errors, logic, performance, compat, tests); `paths` and `exclude` the parts of the repository to read and to leave out; " +
-			"`min_severity` and `max_findings` what to report. " +
+			"`min_severity` what to report, and `max_findings` how many findings are shown at a time (the model is told no number; the rest stay one click or `wp audit show ID --all` away). " +
 			"The audit is kept in Waypoint (Audits), posted on a pull request, and handed to Claude only when `fix` is on. Outputs AuditID, URL, Status, Findings, Critical, High, Medium, Low, Summary, Model, FixIssue, Limited, Failed",
 		Params: []ParamDef{
 			{Name: "target", Label: "Audit", Type: PSelect, Options: auditTargetOptions},
@@ -41,7 +41,8 @@ func init() {
 			{Name: "paths", Label: "Only these paths", Type: PGlobs, Advanced: true, Placeholder: "internal/core\nweb/src/**/*.tsx", Help: "From the repository's root, one per line (empty: all of it)."},
 			{Name: "exclude", Label: "Leave out", Type: PGlobs, Advanced: true, Placeholder: "*_test.go\ndocs", Help: "Paths not to read or report on, one per line."},
 			{Name: "min_severity", Label: "Report", Type: PSelect, Advanced: true, Options: auditSeverityOptions},
-			{Name: "max_findings", Label: "At most findings", Type: PNumber, Advanced: true, Placeholder: "15", Min: f64(1), Max: f64(auditMaxFindings)},
+			{Name: "max_findings", Label: "Show at a time", Type: PNumber, Advanced: true, Placeholder: "15", Min: f64(1), Max: f64(auditMaxFindings),
+				Help: "How many findings are listed first; the rest are counted and one click away. The model is told no number."},
 			{Name: "base", Label: "Against", Type: PTemplate, Advanced: true, Placeholder: "main", Help: "What a branch is compared with (empty: the default branch)."},
 			{Name: "repo", Label: "Repository", Type: PRepo, Advanced: true, Placeholder: "owner/name", Help: "Leave empty for the project's repository."},
 			{Name: "instructions", Label: "Look for", Type: PTemplate, Default: DefaultAuditInstructions, Help: "A sentence is plenty. Wrap outside text in {{untrusted …}}."},
