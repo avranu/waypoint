@@ -1,5 +1,5 @@
 -- A removed inferred rewrite relation is remembered for the pair of tasks,
--- whichever of them ships next (WP-1370). 0183_rewrite_evidence kept it as a flag on the
+-- whichever of them ships next (WP-1370). 0185_rewrite_evidence kept it as a flag on the
 -- evidence row, which is directional (the task whose change replaced lines,
 -- the task whose lines they were): removing the relation from the other
 -- task's side marked a row the other task's ship never reads, and that ship
