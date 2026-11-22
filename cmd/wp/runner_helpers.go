@@ -1520,27 +1520,37 @@ func ownFinding(l panelLead) combined {
 }
 
 // unmerged is the combine's fallback: every confirmed lead its own
-// finding, less any at the same path and line (above 0) as a reviewer's
-// finding, which is the same (same, lead id to Rn).
+// finding, less any that restates a reviewer's finding (same, lead id to
+// Rn): the same path, lines within restatedLines of each other (a lead or
+// finding with no line goes on its claim alone) and a similar claim
+// (core.SimilarClaim); a refuted finding holds no place. Leads that restate
+// each other are then merged (mergeRestated).
 func unmerged(leads []panelLead, findings []any) ([]combined, map[string]string) {
-	at := map[string]string{}
+	type held struct {
+		path    string
+		line    int
+		problem string
+		rn      string
+	}
+	var at []held
 	for i, x := range findings {
 		f, _ := x.(map[string]any)
 		path, _ := f["path"].(string)
 		n, _ := f["line"].(float64)
-		if v, _ := f["verdict"].(string); path != "" && n > 0 && v != "refuted" { // a refuted finding holds no place
-			key := fmt.Sprintf("%s:%d", strings.TrimSpace(path), int(n))
-			if at[key] == "" {
-				at[key] = fmt.Sprintf("R%d", i+1)
-			}
+		problem, _ := f["problem"].(string)
+		if v, _ := f["verdict"].(string); strings.TrimSpace(path) != "" && v != "refuted" { // a refuted finding holds no place
+			at = append(at, held{strings.TrimSpace(path), int(n), problem, fmt.Sprintf("R%d", i+1)})
 		}
 	}
 	var out []combined
 	same := map[string]string{}
 	for _, l := range leads {
-		if _, path, line, _ := readText(l); path != "" && line > 0 {
-			if rn := at[fmt.Sprintf("%s:%d", path, line)]; rn != "" {
-				same[l.ID] = rn
+		_, path, line, problem := readText(l)
+		if path != "" {
+			if h := slices.IndexFunc(at, func(h held) bool {
+				return h.path == path && (h.line <= 0 || line <= 0 || abs(h.line-line) <= restatedLines) && core.SimilarClaim(h.problem, problem)
+			}); h >= 0 {
+				same[l.ID] = at[h].rn
 				continue
 			}
 		}
