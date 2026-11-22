@@ -37,9 +37,10 @@ func (c *cli) testsumBase(argv []string, format, ref string, keep []string) erro
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	rec := newTestRunRecorder(argv) // as typed
+	rec := newTestRunRecorder(argv)              // as typed
+	key := slotKeyFor("wp testsum --base", argv) // the hold can include a second run at the base
 	argv = goTestJSON(argv)
-	env, release, err := c.takeSlot(ctx, "tests", defaultSlots())
+	env, release, err := c.takeSlotFor(ctx, "tests", defaultSlots(), key)
 	if err != nil {
 		if ctx.Err() != nil {
 			_, _ = fmt.Fprintln(c.err, "wp testsum: stopped while waiting for the slot")
