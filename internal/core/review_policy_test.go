@@ -38,6 +38,7 @@ func TestAgainPolicySettle(t *testing.T) {
 	}
 	earlier := []againFinding{{id: 90, title: "an earlier finding", severity: "high", state: "fixed"}}
 	fixedHigh := []againFinding{policyFinding(1, "high", "fixed", "")}
+	fixedMedium := []againFinding{policyFinding(1, "medium", "fixed", "")}
 	fixedLow := []againFinding{policyFinding(1, "low", "fixed", "")}
 	for _, tc := range []struct {
 		name               string
@@ -72,6 +73,8 @@ func TestAgainPolicySettle(t *testing.T) {
 			facts: with(func(f *againFacts) { f.tier = "no such tier" })},
 		{name: "no model on a first round: the labels decide", findings: fixedHigh, absent: true, facts: good},
 		{name: "no model on a later round: one round by labels", findings: fixedHigh, earlier: earlier, absent: true, facts: good},
+		{name: "no model on a later round: a medium short of its weight still gets the one round by labels", findings: fixedMedium, earlier: earlier, absent: true, facts: good},
+		{name: "the model failed on a later round: a short medium gets the one round by labels", findings: fixedMedium, earlier: earlier, unanswered: true, facts: good},
 
 		// What opens the pull request.
 		{name: "nothing serious", findings: fixedLow, severity: "minor", fixes: "complete", facts: good, arm: AgainEnough},
@@ -90,6 +93,10 @@ func TestAgainPolicySettle(t *testing.T) {
 			facts: with(func(f *againFacts) { f.passed = true }), arm: AgainRejected},
 		{name: "the model failed, nothing over the floor", findings: fixedLow, unanswered: true, facts: good, arm: AgainUnscored},
 		{name: "no model, nothing over the floor", findings: fixedLow, absent: true, facts: good, arm: AgainNoModel},
+		{name: "no model on a later round, a short medium's one round by labels spent", findings: fixedMedium, earlier: earlier, absent: true,
+			facts: with(func(f *againFacts) { f.spent = true }), arm: AgainNoModel},
+		{name: "the model failed on a later round, a short medium's round by labels spent", findings: fixedMedium, earlier: earlier, unanswered: true,
+			facts: with(func(f *againFacts) { f.spent = true }), arm: AgainUnscored},
 		{name: "no model on a later round, its one round by labels spent", findings: fixedHigh, earlier: earlier, absent: true,
 			facts: with(func(f *againFacts) { f.spent = true }), arm: AgainNoModel},
 		{name: "the model failed on a later round, its round by labels spent", findings: fixedHigh, earlier: earlier, unanswered: true,
@@ -203,11 +210,12 @@ func TestNearestEarlier(t *testing.T) {
 }
 
 // The stop rule weighs the round and how many serious findings there are
-// (WP-1569): a medium signal weighs 1, a high 2 (a critical is one too, and
-// calls on any round besides); after the k-th review round the weight
-// needed for another is 1 at k = 1, else 2^(k-1); an unchecked rejection
-// calls on any round. d.index is 1-based: the round being decided is the
-// index-th, which is len(earlier)+1.
+// (WP-1569). A new high or critical signal calls another round at any round
+// index. Medium signals are counted: after the change's k-th review round
+// they must number 1 at k = 1, else 2^(k-1) (2, 4, 8, ...). Mediums that
+// fall short fall through to the scores as before; when nothing else calls
+// they end the round as weighed, not enough. d.index is 1-based: the round
+// being decided is the index-th, which is len(earlier)+1.
 func TestAgainPolicyWeighs(t *testing.T) {
 	of := func(severity string, n int) []againFinding {
 		var fs []againFinding
@@ -216,50 +224,58 @@ func TestAgainPolicyWeighs(t *testing.T) {
 		}
 		return fs
 	}
-	mixed := []againFinding{policyFinding(1, "medium", "fixed", ""), policyFinding(2, "high", "fixed", "")}
+	mixed := append(of("high", 1), policyFinding(2, "medium", "fixed", ""))
 	base := againFacts{tier: StakesElevated, trusted: true, probed: true, probeYield: againYieldRead{p: 0.5}, reviewYield: againYieldRead{p: 0.5, n: 50}}
 	grows := func(p *againPolicy) { p.needBase, p.needGrowth = 3, 3 }
 	normal := func(f *againFacts) { f.tier = StakesNormal }
-	// A high label alone scores over the elevated bar however the model reads
-	// it: on round 1 that still calls; from round 2 the scores can't call a
-	// round on their own, and the arm is weighed.
+	unprobed := func(f *againFacts) { f.probed = false }
 	untrusted := func(f *againFacts) { f.trusted = false }
 	low := []againFinding{policyFinding(1, "low", "fixed", "")}
 	for _, tc := range []struct {
-		name         string
-		k            int // the k-th review round of the change is being decided
-		findings     []againFinding
-		facts        func(*againFacts)
-		policy       func(*againPolicy)
-		calls        bool
-		arm          string // when it doesn't call: the arm it takes
-		severity     string // what the model calls every finding; "" minor
-		need, weight int
+		name                  string
+		k                     int // the k-th review round of the change is being decided
+		findings              []againFinding
+		facts                 func(*againFacts)
+		policy                func(*againPolicy)
+		severity              string // what the model calls every finding; "" minor
+		calls, probe          bool
+		arm                   string // when it doesn't call: the arm it takes; "" enough
+		need, weight, serious int
 	}{
+		// Mediums are counted against the round's need.
 		{name: "round 1, one medium", k: 1, findings: of("medium", 1), calls: true, need: 1, weight: 1},
-		{name: "round 2, one medium", k: 2, findings: of("medium", 1), need: 2, weight: 1},
+		{name: "round 2, one medium: not by signal, weighed", k: 2, findings: of("medium", 1), arm: AgainWeighed, need: 2, weight: 1},
 		{name: "round 2, two mediums", k: 2, findings: of("medium", 2), calls: true, need: 2, weight: 2},
-		{name: "round 2, one high", k: 2, findings: of("high", 1), calls: true, need: 2, weight: 2},
-		{name: "round 2, a medium and a high", k: 2, findings: mixed, calls: true, need: 2, weight: 3},
-		{name: "round 3, one high, a trusted reviewer, scores over the bar: weighed", k: 3, findings: of("high", 1), need: 4, weight: 2, arm: AgainWeighed},
-		{name: "round 3, one high, an untrusted reviewer: weighed", k: 3, findings: of("high", 1), need: 4, weight: 2, arm: AgainWeighed, facts: untrusted},
-		{name: "round 1, scores over the bar on a low the model calls serious: still calls", k: 1, findings: low, severity: "serious", calls: true, need: 1},
-		{name: "round 2, the same low: the scores can't call", k: 2, findings: low, severity: "serious", need: 2, arm: AgainWeighed},
-		{name: "round 2, a high the model calls serious, weight 2 reaches 2: calls", k: 2, findings: of("high", 1), severity: "serious", calls: true, need: 2, weight: 2},
-		{name: "round 4, seven mediums the model calls serious: weighed", k: 4, findings: of("medium", 7), severity: "serious", need: 8, weight: 7, arm: AgainWeighed},
-		{name: "round 3, two highs", k: 3, findings: of("high", 2), calls: true, need: 4, weight: 4},
-		{name: "round 4, seven mediums", k: 4, findings: of("medium", 7), need: 8, weight: 7},
+		{name: "round 3, three mediums: weighed", k: 3, findings: of("medium", 3), arm: AgainWeighed, need: 4, weight: 3},
+		{name: "round 3, four mediums", k: 3, findings: of("medium", 4), calls: true, need: 4, weight: 4},
+		{name: "round 4, seven mediums: weighed", k: 4, findings: of("medium", 7), arm: AgainWeighed, need: 8, weight: 7},
 		{name: "round 4, eight mediums", k: 4, findings: of("medium", 8), calls: true, need: 8, weight: 8},
-		{name: "a critical at round 6", k: 6, findings: of("critical", 1), calls: true, need: 32, weight: 2},
-		{name: "a critical at round 9", k: 9, findings: of("critical", 1), calls: true, need: 256, weight: 2},
+		{name: "round 5, ten mediums: under 16, weighed", k: 5, findings: of("medium", 10), arm: AgainWeighed, need: 16, weight: 10},
+		// A high or critical signal calls at any round.
+		{name: "round 2, one high", k: 2, findings: of("high", 1), calls: true, need: 2, serious: 1},
+		{name: "round 3, one high", k: 3, findings: of("high", 1), calls: true, need: 4, serious: 1},
+		{name: "round 5, one high", k: 5, findings: of("high", 1), calls: true, need: 16, serious: 1},
+		{name: "round 4, a high and a medium", k: 4, findings: mixed, calls: true, need: 8, weight: 1, serious: 1},
+		{name: "a critical at round 6", k: 6, findings: of("critical", 1), calls: true, need: 32, serious: 1},
+		{name: "a critical at round 9", k: 9, findings: of("critical", 1), calls: true, need: 256, serious: 1},
 		{name: "unchecked at a late round", k: 7, calls: true, need: 64, facts: func(f *againFacts) { f.passed = true },
 			findings: []againFinding{policyFinding(1, "high", "rejected", "")}},
-		{name: "normal stakes: mediums weigh nothing", k: 1, findings: of("medium", 3), need: 1, facts: normal},
-		{name: "normal stakes: a high at round 1", k: 1, findings: of("high", 1), calls: true, need: 1, weight: 2, facts: normal},
-		{name: "normal stakes: a high at round 3", k: 3, findings: of("high", 1), need: 4, weight: 2, arm: AgainEnough, facts: normal},
-		{name: "a base and growth of 3: a high at round 2", k: 2, findings: of("high", 1), need: 9, weight: 2, arm: AgainWeighed, policy: grows},
-		{name: "a base and growth of 3: two mediums at round 1", k: 1, findings: of("medium", 2), need: 3, weight: 2, policy: grows},
+		// The scores path still calls from the second round on.
+		{name: "round 2, a low the model calls serious: the scores call", k: 2, findings: low, severity: "serious", calls: true, need: 2},
+		{name: "round 4, the same low, an untrusted reviewer", k: 4, findings: low, severity: "serious", arm: AgainUntrusted, need: 8, facts: untrusted},
+		{name: "round 2, one short medium the model calls serious: the scores call", k: 2, findings: of("medium", 1), severity: "serious", calls: true, need: 2, weight: 1},
+		{name: "round 3, three mediums the model calls serious: the scores call", k: 3, findings: of("medium", 3), severity: "serious", calls: true, need: 4, weight: 3},
+		// Weighed is probed as enough is.
+		{name: "round 2, one medium, a probe due", k: 2, findings: of("medium", 1), probe: true, need: 2, weight: 1, facts: unprobed},
+		{name: "round 2, one medium, the probe spent", k: 2, findings: of("medium", 1), arm: AgainWeighed, need: 2, weight: 1},
+		// Stakes still set the floor: normal stakes count no mediums.
+		{name: "normal stakes: mediums weigh nothing", k: 1, findings: of("medium", 3), arm: AgainEnough, need: 1, facts: normal},
+		{name: "normal stakes: a high at round 3", k: 3, findings: of("high", 1), calls: true, need: 4, serious: 1, facts: normal},
+		// The numbers are the policy's.
+		{name: "a base and growth of 3: two mediums at round 1", k: 1, findings: of("medium", 2), arm: AgainWeighed, need: 3, weight: 2, policy: grows},
 		{name: "a base and growth of 3: three mediums at round 1", k: 1, findings: of("medium", 3), calls: true, need: 3, weight: 3, policy: grows},
+		{name: "a base and growth of 3: eight mediums at round 2", k: 2, findings: of("medium", 8), arm: AgainWeighed, need: 9, weight: 8, policy: grows},
+		{name: "a base and growth of 3: a high at round 2", k: 2, findings: of("high", 1), calls: true, need: 9, serious: 1, policy: grows},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var earlier []againFinding
@@ -279,15 +295,17 @@ func TestAgainPolicyWeighs(t *testing.T) {
 					facts.fixed++
 				}
 			}
-			severity := cmp(tc.severity, "minor")
-			ans := policyAnswers(len(tc.findings), severity, "complete", nil)
+			ans := policyAnswers(len(tc.findings), cmp(tc.severity, "minor"), "complete", nil)
 			// index is the round's place among the change's rounds, 1 the first.
 			d := againDecision{audit: 1, index: len(earlier) + 1, yieldP: -1}
-			if _, err := p.settle(&d, tc.findings, earlier, ans, true, false, facts); err != nil {
+			probe, err := p.settle(&d, tc.findings, earlier, ans, true, false, facts)
+			if err != nil {
 				t.Fatal(err)
 			}
-			if called := d.arm == ""; called != tc.calls || d.need != tc.need || d.weight != tc.weight || !tc.calls && tc.arm != "" && d.arm != tc.arm {
-				t.Fatalf("arm %q need %d weight %d, want calls %v need %d weight %d", d.arm, d.need, d.weight, tc.calls, tc.need, tc.weight)
+			if called := d.arm == ""; called != (tc.calls || tc.probe) || probe != tc.probe || d.need != tc.need || d.weight != tc.weight || d.serious != tc.serious ||
+				!tc.calls && !tc.probe && d.arm != cmp(tc.arm, AgainEnough) {
+				t.Fatalf("arm %q probe %v need %d weight %d serious %d, want calls %v probe %v arm %q need %d weight %d serious %d",
+					d.arm, probe, d.need, d.weight, d.serious, tc.calls, tc.probe, tc.arm, tc.need, tc.weight, tc.serious)
 			}
 		})
 	}
