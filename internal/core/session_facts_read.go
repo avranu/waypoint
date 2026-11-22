@@ -53,18 +53,30 @@ type FactsSource struct {
 	To   *int64 `json:"to,omitempty"`
 }
 
-// FactsStatus says how much of the archive the facts cover.
+// FactsStatus says how much of the archive the facts cover. Every rewrite
+// (generation) of an archived file is counted as one file, and each is exactly
+// one of derived, failed or waiting: the three add up to FilesArchived.
 type FactsStatus struct {
 	FilesArchived int `json:"files_archived"`
-	FilesDerived  int `json:"files_derived"` // by the current parser
-	FilesWaiting  int `json:"files_waiting"` // not derived yet, or by an older parser
-	FilesFailed   int `json:"files_failed"`
-	// Unknown is the records the parser did not understand in those files, by
-	// type: facts may be missing for them.
+	// FilesDerived: derived by the current parser up to the archive's end, with
+	// no error on the last attempt.
+	FilesDerived int `json:"files_derived"`
+	// FilesFailed: the last attempt failed (retried when the file grows, the
+	// parser changes or after 6 hours).
+	FilesFailed int `json:"files_failed"`
+	// FilesWaiting: neither: not derived yet, or grown or re-parsed since.
+	FilesWaiting int `json:"files_waiting"`
+	// FilesEarlierRows: files, of the failed and waiting, whose stored rows
+	// come from an earlier derive (the file grew since, the parser is older or
+	// the last attempt failed). The counts include those rows.
+	FilesEarlierRows int `json:"files_earlier_rows"`
+	// Unknown is the records the parser did not understand, by type, in the
+	// files whose last attempt succeeded with the current parser (those
+	// files' rows are in the counts): facts may be missing for them.
 	Unknown map[string]int64 `json:"unknown,omitempty"`
 	// Undecoded is the fields of understood records the parser could not
 	// decode (a malformed content array, say), by what was lost: facts are
-	// missing for them too.
+	// missing for them too. Counted over the same files.
 	Undecoded map[string]int64 `json:"undecoded,omitempty"`
 	// WholeSession is true for a task: these file figures cover the task's
 	// whole sessions, while its facts cover only the task's time windows.
@@ -82,7 +94,7 @@ type RepeatedCall struct {
 type InjectedSummary struct {
 	Kind     string `json:"kind"`
 	FileType string `json:"file_type,omitempty"`
-	Name     string `json:"name"`
+	Name     string `json:"name"` // "unknown" when the record carried none
 	Times    int    `json:"times"`
 	Bytes    *int64 `json:"bytes"` // each time (the largest seen); nil: unknown
 }
@@ -90,6 +102,12 @@ type InjectedSummary struct {
 // DocRead is a documentation file read, by path.
 type DocRead struct {
 	Path  string `json:"path"`
+	Times int    `json:"times"`
+}
+
+// DocFetch is a URL fetched, by address (no user, query or fragment).
+type DocFetch struct {
+	URL   string `json:"url"`
 	Times int    `json:"times"`
 }
 
@@ -108,16 +126,21 @@ type SessionFacts struct {
 		// ByOrigin: what started each turn (human, task_notification, peer,
 		// scheduled), "unknown" for a turn whose transcript does not say.
 		ByOrigin map[string]int `json:"by_origin"`
+		// BySlashCommand: turns that were a slash command, by command.
+		BySlashCommand map[string]int `json:"by_slash_command"`
+		// ByPromptSource: how the prompt was entered, "unknown" when the
+		// transcript does not say.
+		ByPromptSource map[string]int `json:"by_prompt_source"`
 	} `json:"turns"`
 
 	ModelCalls struct {
-		Total     int            `json:"total"`
-		Sidechain int            `json:"sidechain"` // made by sub-agents
-		ByModel   map[string]int `json:"by_model"`
-		Output    Tally          `json:"output_tokens"`
-		Thinking  Tally          `json:"thinking_tokens"` // part of the output
-		CacheRead Tally          `json:"cache_read_tokens"`
-		CacheWrit Tally          `json:"cache_write_tokens"`
+		Total      int            `json:"total"`
+		Sidechain  int            `json:"sidechain"` // made by sub-agents
+		ByModel    map[string]int `json:"by_model"`
+		Output     Tally          `json:"output_tokens"`
+		Thinking   Tally          `json:"thinking_tokens"` // part of the output
+		CacheRead  Tally          `json:"cache_read_tokens"`
+		CacheWrite Tally          `json:"cache_write_tokens"`
 	} `json:"model_calls"`
 
 	ToolCalls struct {
@@ -133,20 +156,28 @@ type SessionFacts struct {
 		Top   []InjectedSummary `json:"top"` // largest first
 	} `json:"injected"`
 
+	// DocsRead: documentation files read (Read of a doc path). DocsFetched:
+	// URLs fetched (WebFetch), reported separately.
 	DocsRead struct {
 		Calls    int       `json:"calls"`
 		Distinct int       `json:"distinct"`
 		Top      []DocRead `json:"top"`
 	} `json:"docs_read"`
+	DocsFetched struct {
+		Calls    int        `json:"calls"`
+		Distinct int        `json:"distinct"`
+		Top      []DocFetch `json:"top"`
+	} `json:"docs_fetched"`
 
-	// Changes: edits whose result was not an error.
+	// Changes: Edits is every edit call. Failed is those whose result was an
+	// error; every other figure counts the edits that did not fail.
 	Changes struct {
 		Edits        int   `json:"edits"`
 		Failed       int   `json:"failed"`
 		FilesChanged int   `json:"files_changed"`
 		LinesAdded   Tally `json:"lines_added"`
 		LinesRemoved Tally `json:"lines_removed"`
-		TestEdits    int   `json:"test_edits"` // edits of test files
+		TestEdits    int   `json:"test_edits"` // edits of test files (not failed)
 		TestFiles    int   `json:"test_files"`
 		TestLinesAdd Tally `json:"test_lines_added"`
 	} `json:"changes"`
@@ -175,17 +206,17 @@ type SessionFacts struct {
 	// CacheExpiry is inferred from timing, not read from the transcript: a
 	// cache write after a gap longer than the cache's life.
 	CacheExpiry struct {
-		Inferred      bool  `json:"inferred"`
-		Determinable  int   `json:"determinable"` // calls with a previous call and a known write
-		Cold          int   `json:"cold"`
-		Undeterminate int   `json:"undeterminable"`
-		ColdWrite     Tally `json:"cold_write_tokens"`
+		Inferred       bool  `json:"inferred"`
+		Determinable   int   `json:"determinable"` // calls with a previous call and a known write
+		Cold           int   `json:"cold"`
+		Undeterminable int   `json:"undeterminable"`
+		ColdWrite      Tally `json:"cold_write_tokens"`
 	} `json:"cache_expiry"`
 }
 
-// factScope is a stretch of one session; uid 0 is any person (an admin's "all").
+// factScope is a stretch of one session; userID 0 is any person (an admin's "all").
 type factScope struct {
-	uid       int64
+	userID    int64
 	machine   string
 	session   string
 	from, to  *int64
@@ -195,8 +226,8 @@ type factScope struct {
 func (sc factScope) where(pre string) (string, []any) {
 	w := []string{pre + "session = ?"}
 	a := []any{sc.session}
-	if sc.uid != 0 {
-		w, a = append(w, pre+"user_id = ?"), append(a, sc.uid)
+	if sc.userID != 0 {
+		w, a = append(w, pre+"user_id = ?"), append(a, sc.userID)
 	}
 	if sc.machine != "" {
 		w, a = append(w, pre+"machine = ?"), append(a, sc.machine)
@@ -245,7 +276,7 @@ func (s *Service) SessionFacts(ctx context.Context, actor *Actor, q FactsQuery) 
 		out.Scope, out.Key = "session", q.Session
 		sc := factScope{machine: strings.TrimSpace(q.Machine), session: q.Session}
 		if !everyone {
-			sc.uid = uids[0]
+			sc.userID = uids[0]
 		}
 		scopes = []factScope{sc}
 	} else {
@@ -263,29 +294,37 @@ func (s *Service) SessionFacts(ctx context.Context, actor *Actor, q FactsQuery) 
 		for _, u := range uids {
 			allowed[u] = true
 		}
-		for i, t := range traces {
+		// Every task's trace in a session bounds the others: the stretch after
+		// this task's trace belongs to whichever task was taken next.
+		starts := map[string][]int64{}
+		for _, t := range traces {
 			if !everyone && !allowed[t.UserID] {
 				continue
 			}
 			if m := strings.TrimSpace(q.Machine); m != "" && m != t.Machine {
 				continue
 			}
+			k := fmt.Sprint(t.UserID, "\x00", t.Machine, "\x00", t.Session)
+			if _, ok := starts[k]; !ok {
+				if starts[k], err = s.sessionTraceStarts(ctx, t.UserID, t.Machine, t.Session); err != nil {
+					return nil, err
+				}
+			}
 			from := t.Started
 			var to *int64
-			// The window ends where the session's next trace begins; the last
-			// one at its end when it has one, else it is open.
-			for _, n := range traces[i+1:] {
-				if n.UserID == t.UserID && n.Machine == t.Machine && n.Session == t.Session && n.Started > t.Started {
-					v := n.Started
+			// The window ends where the session's next trace (of any task)
+			// begins; with none, at its own end when it has one, else it is open.
+			for _, n := range starts[k] {
+				if n > t.Started && (to == nil || n < *to) {
+					v := n
 					to = &v
-					break
 				}
 			}
 			if to == nil && t.Ended != "" {
 				v := t.Last + 1
 				to = &v
 			}
-			scopes = append(scopes, factScope{uid: t.UserID, machine: t.Machine, session: t.Session, from: &from, to: to, userLabel: t.User})
+			scopes = append(scopes, factScope{userID: t.UserID, machine: t.Machine, session: t.Session, from: &from, to: to, userLabel: t.User})
 		}
 		if len(scopes) == 0 {
 			return nil, notFound("traces of " + q.Task + " in your sessions")
@@ -314,84 +353,92 @@ func (s *Service) SessionFacts(ctx context.Context, actor *Actor, q FactsQuery) 
 	return out, nil
 }
 
-// factsStatus counts the files of the scopes' sessions and where they stand.
+// sessionTraceStarts is when each trace of any task in one session began.
+func (s *Service) sessionTraceStarts(ctx context.Context, userID int64, machine, session string) ([]int64, error) {
+	rows, err := s.db.R.QueryContext(ctx, `SELECT started_at FROM task_traces WHERE user_id = ? AND machine = ? AND session = ?`, userID, machine, session)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := []int64{}
+	for rows.Next() {
+		var v int64
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// factsStatus counts the files of the scopes' sessions and where they stand:
+// each is derived, failed or waiting, and the three add up to the files.
 func (s *Service) factsStatus(ctx context.Context, scopes []factScope, st *FactsStatus) error {
 	seen := map[string]bool{}
 	var sessions []factScope
 	for _, sc := range scopes {
-		k := fmt.Sprint(sc.uid, "\x00", sc.machine, "\x00", sc.session)
+		k := fmt.Sprint(sc.userID, "\x00", sc.machine, "\x00", sc.session)
 		if !seen[k] {
 			seen[k] = true
-			sessions = append(sessions, factScope{uid: sc.uid, machine: sc.machine, session: sc.session})
+			sessions = append(sessions, factScope{userID: sc.userID, machine: sc.machine, session: sc.session})
 		}
 	}
 	w, args := scopesWhere(sessions, "p.")
 	// #nosec G202 -- w is built from fixed conditions; values are bound
-	rows, err := s.db.R.QueryContext(ctx, `SELECT p.user_id, p.machine, p.session, p.file, p.gen, MAX(p.to_off)
-		FROM transcript_pieces p WHERE `+w+`
+	rows, err := s.db.R.QueryContext(ctx, `SELECT MAX(p.to_off), f.user_id IS NOT NULL, f.parser_version, f.derived_to, f.error IS NOT NULL, f.unknown, f.ignored
+		FROM transcript_pieces p
+		LEFT JOIN session_fact_files f ON f.user_id = p.user_id AND f.machine = p.machine AND f.session = p.session AND f.file = p.file AND f.gen = p.gen
+		WHERE `+w+`
 		GROUP BY p.user_id, p.machine, p.session, p.file, p.gen`, args...)
 	if err != nil {
 		return err
 	}
-	type key struct {
-		uid              int64
-		machine, session string
-		file             string
-		gen              int
-		end              int64
-	}
-	var files []key
+	defer func() { _ = rows.Close() }()
+	unknown := map[string]int64{}
+	undecoded := map[string]int64{}
 	for rows.Next() {
-		var k key
-		if err := rows.Scan(&k.uid, &k.machine, &k.session, &k.file, &k.gen, &k.end); err != nil {
-			_ = rows.Close()
+		var end int64
+		var has, failed bool
+		var version, derived sql.NullInt64
+		var unk, ign sql.NullString
+		if err := rows.Scan(&end, &has, &version, &derived, &failed, &unk, &ign); err != nil {
 			return err
 		}
-		files = append(files, k)
+		st.FilesArchived++
+		current := has && version.Valid && version.Int64 == transcript.ParserVersion
+		switch {
+		case failed:
+			st.FilesFailed++
+		case current && derived.Valid && derived.Int64 >= end:
+			st.FilesDerived++
+		default:
+			st.FilesWaiting++
+		}
+		if has && derived.Valid && (!current || failed || derived.Int64 < end) {
+			st.FilesEarlierRows++
+		}
+		// What the parser did not understand: only from a last attempt that
+		// succeeded with the current parser; a failed attempt's counts are old.
+		if !current || failed || !derived.Valid {
+			continue
+		}
+		var m map[string]int64
+		if json.Unmarshal([]byte(unk.String), &m) == nil {
+			for t, n := range m {
+				unknown[t] += n
+			}
+		}
+		m = nil
+		if json.Unmarshal([]byte(ign.String), &m) == nil {
+			for t, n := range m {
+				if what, ok := strings.CutPrefix(t, "undecoded/"); ok {
+					undecoded[what] += n
+				}
+			}
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return err
-	}
-	_ = rows.Close()
-	st.FilesArchived = len(files)
-	unknown := map[string]int64{}
-	undecoded := map[string]int64{}
-	for _, k := range files {
-		var version int
-		var derived sql.NullInt64
-		var errText sql.NullString
-		var unk, ign string
-		err := s.db.R.QueryRowContext(ctx, `SELECT parser_version, derived_to, error, unknown, ignored FROM session_fact_files
-			WHERE user_id = ? AND machine = ? AND session = ? AND file = ? AND gen = ?`, k.uid, k.machine, k.session, k.file, k.gen).
-			Scan(&version, &derived, &errText, &unk, &ign)
-		switch {
-		case err == sql.ErrNoRows:
-			st.FilesWaiting++
-			continue
-		case err != nil:
-			return err
-		}
-		if errText.Valid {
-			st.FilesFailed++
-		}
-		if derived.Valid && version == transcript.ParserVersion && derived.Int64 >= k.end {
-			st.FilesDerived++
-			var m map[string]int64
-			if json.Unmarshal([]byte(unk), &m) == nil {
-				for t, n := range m {
-					unknown[t] += n
-				}
-			}
-			if json.Unmarshal([]byte(ign), &m) == nil {
-				for t, n := range m {
-					if what, ok := strings.CutPrefix(t, "undecoded/"); ok {
-						undecoded[what] += n
-					}
-				}
-			}
-		} else {
-			st.FilesWaiting++
-		}
 	}
 	if len(unknown) > 0 {
 		st.Unknown = unknown
@@ -404,18 +451,22 @@ func (s *Service) factsStatus(ctx context.Context, scopes []factScope, st *Facts
 
 // factsUntimed counts the rows of a task's sessions that carry no timestamp:
 // a task's windows are cut by time, so they cannot say which task those
-// belong to and the task's counts leave them out.
+// belong to and the task's counts leave them out. Settings changes are not
+// counted: no figure of the read path is made from them.
 func (s *Service) factsUntimed(ctx context.Context, scopes []factScope) (int, error) {
 	seen := map[string]bool{}
 	total := 0
 	for _, sc := range scopes {
-		k := fmt.Sprint(sc.uid, "\x00", sc.machine, "\x00", sc.session)
+		k := fmt.Sprint(sc.userID, "\x00", sc.machine, "\x00", sc.session)
 		if seen[k] {
 			continue
 		}
 		seen[k] = true
-		w, args := factScope{uid: sc.uid, machine: sc.machine, session: sc.session}.where("")
+		w, args := factScope{userID: sc.userID, machine: sc.machine, session: sc.session}.where("")
 		for _, tbl := range factTables {
+			if tbl == "fact_settings" {
+				continue // a setting change keeps near_at: it is placed by the time before it
+			}
 			var n int
 			// #nosec G202 -- tbl is a constant from factTables, w is built from fixed conditions; values are bound
 			if err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM `+tbl+` WHERE `+w+` AND at IS NULL`, args...).Scan(&n); err != nil {
@@ -435,14 +486,6 @@ func isDocPath(p string) bool {
 		}
 	}
 	return strings.Contains(l, "/docs/")
-}
-
-func isEditTool(t string) bool {
-	switch t {
-	case "Edit", "Write", "MultiEdit", "NotebookEdit":
-		return true
-	}
-	return false
 }
 
 func topN[K comparable](m map[K]int, n int, less func(a, b K) bool) []K {
@@ -466,6 +509,8 @@ func topN[K comparable](m map[K]int, n int, less func(a, b K) bool) []K {
 func (s *Service) factsCount(ctx context.Context, scopes []factScope, o *SessionFacts) error {
 	w, args := scopesWhere(scopes, "")
 	o.Turns.ByOrigin = map[string]int{}
+	o.Turns.BySlashCommand = map[string]int{}
+	o.Turns.ByPromptSource = map[string]int{}
 	o.ModelCalls.ByModel = map[string]int{}
 	o.ToolCalls.ByTool = map[string]int{}
 	o.Compactions.ByTrigger = map[string]int{}
@@ -473,18 +518,22 @@ func (s *Service) factsCount(ctx context.Context, scopes []factScope, o *Session
 	o.CacheExpiry.Inferred = true
 
 	// #nosec G202 -- w is built from fixed conditions; values are bound
-	rows, err := s.db.R.QueryContext(ctx, `SELECT origin FROM fact_turns WHERE `+w, args...)
+	rows, err := s.db.R.QueryContext(ctx, `SELECT origin, prompt_source, slash_command FROM fact_turns WHERE `+w, args...)
 	if err != nil {
 		return err
 	}
 	for rows.Next() {
-		var origin sql.NullString
-		if err := rows.Scan(&origin); err != nil {
+		var origin, source, slash sql.NullString
+		if err := rows.Scan(&origin, &source, &slash); err != nil {
 			_ = rows.Close()
 			return err
 		}
 		o.Turns.Total++
-		o.Turns.ByOrigin[orUnknown(origin)]++
+		o.Turns.ByOrigin[strOrUnknown(origin)]++
+		o.Turns.ByPromptSource[strOrUnknown(source)]++
+		if slash.Valid {
+			o.Turns.BySlashCommand[slash.String]++
+		}
 	}
 	if err := closeRows(rows); err != nil {
 		return err
@@ -509,11 +558,11 @@ func (s *Service) factsCount(ctx context.Context, scopes []factScope, o *Session
 		if side == 1 {
 			m.Sidechain++
 		}
-		m.ByModel[orUnknown(model)]++
+		m.ByModel[strOrUnknown(model)]++
 		m.Output.add(out)
 		m.Thinking.add(think)
 		m.CacheRead.add(cr)
-		m.CacheWrit.add(cw)
+		m.CacheWrite.add(cw)
 		if cold.Valid {
 			o.CacheExpiry.Determinable++
 			if cold.Int64 == 1 {
@@ -521,7 +570,7 @@ func (s *Service) factsCount(ctx context.Context, scopes []factScope, o *Session
 				o.CacheExpiry.ColdWrite.add(cw)
 			}
 		} else {
-			o.CacheExpiry.Undeterminate++
+			o.CacheExpiry.Undeterminable++
 		}
 	}
 	if err := closeRows(rows); err != nil {
@@ -538,7 +587,7 @@ func (s *Service) factsCount(ctx context.Context, scopes []factScope, o *Session
 	type rkey struct{ tool, target string }
 	repeatShown := map[[2]string]rkey{}
 	changed, testFiles := map[string]bool{}, map[string]bool{}
-	docs := map[string]int{}
+	docs, fetched := map[string]int{}, map[string]int{}
 	for rows.Next() {
 		var tool string
 		var target sql.NullString
@@ -555,7 +604,7 @@ func (s *Service) factsCount(ctx context.Context, scopes []factScope, o *Session
 		}
 		if target.Valid {
 			o.Repeated.Calls++
-			k := [2]string{tool + "\x00" + target.String, orUnknown(off) + "/" + orUnknown(lim)}
+			k := [2]string{tool + "\x00" + target.String, intOrUnknown(off) + "/" + intOrUnknown(lim)}
 			repeats[k]++
 			repeatShown[k] = rkey{tool, target.String}
 		}
@@ -563,7 +612,11 @@ func (s *Service) factsCount(ctx context.Context, scopes []factScope, o *Session
 			o.DocsRead.Calls++
 			docs[target.String]++
 		}
-		if isEditTool(tool) {
+		if tool == "WebFetch" && target.Valid {
+			o.DocsFetched.Calls++
+			fetched[target.String]++
+		}
+		if transcript.IsEditTool(tool) {
 			c := &o.Changes
 			c.Edits++
 			if failed {
@@ -604,13 +657,21 @@ func (s *Service) factsCount(ctx context.Context, scopes []factScope, o *Session
 	for _, p := range topN(docs, 15, func(a, b string) bool { return a < b }) {
 		o.DocsRead.Top = append(o.DocsRead.Top, DocRead{Path: p, Times: docs[p]})
 	}
+	o.DocsFetched.Distinct = len(fetched)
+	for _, u := range topN(fetched, 15, func(a, b string) bool { return a < b }) {
+		o.DocsFetched.Top = append(o.DocsFetched.Top, DocFetch{URL: u, Times: fetched[u]})
+	}
 
 	// #nosec G202 -- w is built from fixed conditions; values are bound
 	rows, err = s.db.R.QueryContext(ctx, `SELECT kind, file_type, name, bytes FROM fact_injected_files WHERE `+w, args...)
 	if err != nil {
 		return err
 	}
-	type ik struct{ kind, ftype, name string }
+	// a NULL name is its own entry, not merged with an empty one
+	type ik struct {
+		kind, ftype, name string
+		noName            bool
+	}
 	inj := map[ik]*InjectedSummary{}
 	for rows.Next() {
 		var kind string
@@ -622,10 +683,10 @@ func (s *Service) factsCount(ctx context.Context, scopes []factScope, o *Session
 		}
 		o.Injected.Count++
 		o.Injected.Bytes.add(b)
-		k := ik{kind, ftype.String, name.String}
+		k := ik{kind, ftype.String, name.String, !name.Valid}
 		e := inj[k]
 		if e == nil {
-			e = &InjectedSummary{Kind: kind, FileType: ftype.String, Name: name.String}
+			e = &InjectedSummary{Kind: kind, FileType: ftype.String, Name: strOrUnknown(name)}
 			inj[k] = e
 		}
 		e.Times++
@@ -674,7 +735,7 @@ func (s *Service) factsCount(ctx context.Context, scopes []factScope, o *Session
 			return err
 		}
 		o.Compactions.Total++
-		o.Compactions.ByTrigger[orUnknown(trig)]++
+		o.Compactions.ByTrigger[strOrUnknown(trig)]++
 		o.Compactions.PreTokens.add(pre)
 		o.Compactions.PostTokens.add(post)
 	}
@@ -695,24 +756,25 @@ func (s *Service) factsCount(ctx context.Context, scopes []factScope, o *Session
 			return err
 		}
 		o.Subagents.Total++
-		o.Subagents.ByType[orUnknown(typ)]++
+		o.Subagents.ByType[strOrUnknown(typ)]++
 		o.Subagents.DurationMS.add(dur)
 		o.Subagents.Tokens.add(tok)
 	}
 	return closeRows(rows)
 }
 
-// orUnknown names a value, or says it is unknown.
-func orUnknown(v any) string {
-	switch x := v.(type) {
-	case sql.NullString:
-		if x.Valid {
-			return x.String
-		}
-	case sql.NullInt64:
-		if x.Valid {
-			return fmt.Sprint(x.Int64)
-		}
+// strOrUnknown names a value, or says it is unknown.
+func strOrUnknown(v sql.NullString) string {
+	if v.Valid {
+		return v.String
+	}
+	return "unknown"
+}
+
+// intOrUnknown is the same for a number.
+func intOrUnknown(v sql.NullInt64) string {
+	if v.Valid {
+		return fmt.Sprint(v.Int64)
 	}
 	return "unknown"
 }

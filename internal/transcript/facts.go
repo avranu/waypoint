@@ -18,6 +18,16 @@ const ParserVersion = 1
 // Thread names who wrote a record: the main thread, or the sub-agent's id.
 const MainThread = "main"
 
+// IsEditTool is a tool that changes a file: the parser gives its calls an
+// is_test flag and line counts, and the read path counts them as edits.
+func IsEditTool(name string) bool {
+	switch name {
+	case "Edit", "Write", "MultiEdit", "NotebookEdit":
+		return true
+	}
+	return false
+}
+
 // Result is what one transcript file holds.
 type Result struct {
 	Lines int64 // non-empty lines read
@@ -27,8 +37,14 @@ type Result struct {
 	// lines that were not a JSON object with a type, "(too long)" a line over
 	// MaxLine.
 	Unknown map[string]int
-	// Ignored counts the records it understands and takes no fact from, by the
-	// same names, so Lines = facts' sources + Ignored + Unknown.
+	// Ignored counts what it understood and took no fact from, by the same
+	// names as Unknown: records ("system/x", "attachment/x", "user/meta", ...)
+	// and parts of records that could not be used ("undecoded/WHAT", the
+	// "api-request/..." drops, "tool_use/(no id)", "tool_result/unmatched").
+	// It is not a record total and Lines is not the sum of anything here: an
+	// api-request line that joined a model call, and a user line whose content
+	// could not be decoded (counted only as undecoded/user_content), are in no
+	// key of their own.
 	Ignored map[string]int
 
 	ModelCalls  []ModelCall
@@ -94,7 +110,9 @@ type ModelCall struct {
 	// GapMS is the time since the thread's previous call. ColdInferred is an
 	// inference, not a measurement: a cache write after a gap longer than the
 	// cache's lifetime (5 minutes, or 1 hour when the previous call wrote to the
-	// 1 hour cache). nil when there is no previous call or no times.
+	// 1 hour cache; Anthropic prompt caching). nil when there is no previous call
+	// or no times, or when the previous call's split between the two caches is
+	// unknown and the gap is between the two lifetimes.
 	GapMS        *int64
 	ColdInferred *bool
 	Sidechain    bool

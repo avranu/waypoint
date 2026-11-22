@@ -278,7 +278,7 @@ func TestFactsFailureRecordedNotRetried(t *testing.T) {
 			h = &hs[i]
 		}
 	}
-	if h == nil || h.Dropped == nil || *h.Dropped != 1 || !strings.Contains(h.Problem, "failed") {
+	if h == nil || !strings.Contains(h.Problem, "failed") {
 		t.Fatalf("collector health: %+v", h)
 	}
 	e.setClock(e.clockNow().Add(factsRetry + time.Minute))
@@ -301,11 +301,21 @@ func TestFactsUnknownRecordsReported(t *testing.T) {
 		t.Fatalf("unknown: %v %v", got, err)
 	}
 	e.s.CheckCollectorHealth(e.ctx)
-	hs, _ := e.s.CollectorHealthList(e.ctx)
+	hs, err := e.s.CollectorHealthList(e.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
 	for _, h := range hs {
-		if h.Name == "session facts" && !strings.Contains(h.Problem, "brand-new 2") {
-			t.Errorf("problem: %q", h.Problem)
+		if h.Name == "session facts" {
+			found = true
+			if !strings.Contains(h.Problem, "brand-new 2") {
+				t.Errorf("problem: %q", h.Problem)
+			}
 		}
+	}
+	if !found {
+		t.Error("no session facts entry in the collector health")
 	}
 }
 
@@ -322,7 +332,8 @@ func factsEnv(t *testing.T) (e *env, jo *Actor) {
 		fResult("t3", 21, false, fm{"type": "create", "content": "a\nb\n"}) +
 		fResult("t4", 21, false, nil) +
 		fAssistant("m3", 22, 30, fTool("t5", "Read", fm{"file_path": "/r/docs/guide.md"})) +
-		fj(fm{"type": "permission-mode", "permissionMode": "plan", "sessionId": "s1"}) + // no timestamp
+		fj(fm{"type": "permission-mode", "permissionMode": "plan", "sessionId": "s1"}) + // no timestamp; a setting, which the untimed count leaves out
+		fj(fm{"type": "system", "subtype": "compact_boundary", "uuid": "cb1", "compactMetadata": fm{"trigger": "auto"}}) + // no timestamp
 		fj(fm{"type": "attachment", "uuid": "i1", "timestamp": fat(1, 0), "attachment": fm{"type": "instructions",
 			"files": []fm{{"path": "/r/AGENTS.md", "type": "Project", "content": "12345678"}}}})
 	e.putFile(jo, "s1", "main", 0, lines)

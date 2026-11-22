@@ -10,7 +10,8 @@ import (
 
 // TestSampleFile parses the transcript named by WP_TRANSCRIPT_SAMPLE and prints
 // what it found: rows by table, unknown records, time per MB. It is how the
-// numbers in the pull request were measured; without the variable it skips.
+// numbers in the pull request were measured. It asserts nothing: it prints
+// figures; without the variable it skips.
 func TestSampleFile(t *testing.T) {
 	path := os.Getenv("WP_TRANSCRIPT_SAMPLE")
 	if path == "" {

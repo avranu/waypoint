@@ -11,7 +11,7 @@
 -- (never 0, never a default label). A column whose name ends in _inferred is
 -- inferred from timing, not read from the record.
 --
--- uid names the event itself: a message id, a tool-use id, a record uuid. It is
+-- uid names the event itself: a message id, a tool-use id, a record uuid (a setting change: name=value@time, numbered when the same change repeats). It is
 -- unique per session, so an event that appears in two generations of a file, or
 -- in a sub-agent's file and the main thread's, is one row. A file's rows are
 -- replaced as a whole when it is derived again.
@@ -31,7 +31,7 @@ CREATE TABLE session_fact_files (
     rows           INTEGER NOT NULL DEFAULT 0, -- fact rows it produced (before the session-wide dedupe)
     kept           INTEGER NOT NULL DEFAULT 0, -- fact rows stored: the rest were the same event in another file or generation
     unknown        TEXT    NOT NULL DEFAULT '{}', -- JSON: record type -> count the parser did not understand
-    ignored        TEXT    NOT NULL DEFAULT '{}', -- JSON: record type -> count it understands and takes no fact from
+    ignored        TEXT    NOT NULL DEFAULT '{}', -- JSON: what it understood and took no fact from, by record type (system/x, user/meta, ...), plus parts of records that could not be used (undecoded/WHAT, api-request/WHAT, tool_use/(no id), tool_result/unmatched); not a record total
     parse_ms       INTEGER,
     derived_at     INTEGER,                    -- last success (ms)
     error          TEXT,                       -- why the last attempt failed; NULL: it did not
@@ -76,7 +76,7 @@ CREATE TABLE fact_model_calls (
     gap_ms          INTEGER,           -- since the thread's previous call ended
     cold_inferred   INTEGER            -- 1: wrote the cache after a gap longer than its life (inferred from timing)
 );
-CREATE UNIQUE INDEX fact_model_calls_uid ON fact_model_calls(user_id, machine, session, uid);
+CREATE UNIQUE INDEX fact_model_calls_uid ON fact_model_calls(session, user_id, machine, uid);
 
 CREATE TABLE fact_tool_calls (
     id             INTEGER PRIMARY KEY,
@@ -93,7 +93,7 @@ CREATE TABLE fact_tool_calls (
     msg_id         TEXT,               -- the model call that made it
     prompt_id      TEXT,
     tool           TEXT    NOT NULL,
-    target         TEXT,               -- file path, URL (no query), command head, pattern, query, skill or recipient: clipped, never content
+    target         TEXT,               -- file path, URL (no user, query or fragment), command head, pattern, query, skill or recipient: clipped, never content
     target_kind    TEXT,               -- file, url, command, pattern, query, skill, recipient
     detail         TEXT,               -- recipient kind (SendMessage), sub-agent type (Agent)
     read_offset    INTEGER,
@@ -113,7 +113,7 @@ CREATE TABLE fact_tool_calls (
     lines_added    INTEGER,            -- edits, from the result's patch
     lines_removed  INTEGER
 );
-CREATE UNIQUE INDEX fact_tool_calls_uid ON fact_tool_calls(user_id, machine, session, uid);
+CREATE UNIQUE INDEX fact_tool_calls_uid ON fact_tool_calls(session, user_id, machine, uid);
 
 CREATE TABLE fact_turns (
     id             INTEGER PRIMARY KEY,
@@ -139,7 +139,7 @@ CREATE TABLE fact_turns (
     messages       INTEGER,
     ended_at       INTEGER
 );
-CREATE UNIQUE INDEX fact_turns_uid ON fact_turns(user_id, machine, session, uid);
+CREATE UNIQUE INDEX fact_turns_uid ON fact_turns(session, user_id, machine, uid);
 
 CREATE TABLE fact_compactions (
     id             INTEGER PRIMARY KEY,
@@ -159,7 +159,7 @@ CREATE TABLE fact_compactions (
     dropped_tokens INTEGER,            -- cumulative over the session, as the record says
     duration_ms    INTEGER
 );
-CREATE UNIQUE INDEX fact_compactions_uid ON fact_compactions(user_id, machine, session, uid);
+CREATE UNIQUE INDEX fact_compactions_uid ON fact_compactions(session, user_id, machine, uid);
 
 CREATE TABLE fact_injected_files (
     id             INTEGER PRIMARY KEY,
@@ -180,7 +180,7 @@ CREATE TABLE fact_injected_files (
     lines          INTEGER,
     count          INTEGER             -- skill_listing: skills listed
 );
-CREATE UNIQUE INDEX fact_injected_files_uid ON fact_injected_files(user_id, machine, session, uid);
+CREATE UNIQUE INDEX fact_injected_files_uid ON fact_injected_files(session, user_id, machine, uid);
 
 CREATE TABLE fact_spawns (
     id              INTEGER PRIMARY KEY,
@@ -206,7 +206,7 @@ CREATE TABLE fact_spawns (
     duration_ms     INTEGER,
     tokens          INTEGER
 );
-CREATE UNIQUE INDEX fact_spawns_uid ON fact_spawns(user_id, machine, session, uid);
+CREATE UNIQUE INDEX fact_spawns_uid ON fact_spawns(session, user_id, machine, uid);
 
 CREATE TABLE fact_settings (
     id             INTEGER PRIMARY KEY,
@@ -226,4 +226,4 @@ CREATE TABLE fact_settings (
     near_at        INTEGER,            -- the latest time seen before a record that has none
     source         TEXT    NOT NULL    -- the record type it was read from
 );
-CREATE UNIQUE INDEX fact_settings_uid ON fact_settings(user_id, machine, session, uid);
+CREATE UNIQUE INDEX fact_settings_uid ON fact_settings(session, user_id, machine, uid);

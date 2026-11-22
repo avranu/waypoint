@@ -12,7 +12,8 @@ import (
 // TestFactsSample archives the transcript named by WP_TRANSCRIPT_SAMPLE,
 // derives it and prints rows by table, the time to derive and the database
 // bytes per MB of transcript. It is how the numbers in the pull request were
-// measured; without the variable it skips.
+// measured. It asserts nothing: it prints figures; without the variable it
+// skips.
 func TestFactsSample(t *testing.T) {
 	path := os.Getenv("WP_TRANSCRIPT_SAMPLE")
 	if path == "" {
@@ -30,8 +31,12 @@ func TestFactsSample(t *testing.T) {
 		if i := bytes.LastIndexByte(raw[:n], '\n'); i >= 0 && n < len(raw) {
 			n = i + 1
 		} else if n < len(raw) {
-			j := bytes.IndexByte(raw, '\n')
-			n = j + 1
+			// one line longer than the chunk: take it whole, or the rest when no newline remains
+			if j := bytes.IndexByte(raw, '\n'); j >= 0 {
+				n = j + 1
+			} else {
+				n = len(raw)
+			}
 		}
 		from = e.putFile(jo, "sample", "main", from, string(raw[:n]))
 		raw = raw[n:]

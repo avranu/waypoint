@@ -13,17 +13,23 @@ package core
 // event that appears in two generations of a file, or in a sub-agent's file and
 // the main thread's, is stored once per session (a unique uid).
 //
-// A failed attempt is recorded on the file's progress row and not retried until
+// A failure about the file itself (no pieces, a hole, a damaged or mismatched
+// piece) is recorded on its progress row and not retried until
 // the file grows, the parser changes or factsRetry has passed: a file the parser
-// cannot read does not loop. Records it does not understand are counted by type
-// on that row and reported through the collector health.
+// cannot read does not loop. A failure that says nothing about the file (a read
+// error on the disk, a database error) is not recorded: the run counts it
+// (FactsRun.Errored), logs it, and the file is tried again next run. Records the
+// parser does not understand are counted by type on the file's row and reported
+// through the collector health.
 
 import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -60,7 +66,8 @@ const factsWaitingSQL = `SELECT p.user_id, p.machine, p.session, p.file, p.gen, 
 // FactsRun is what one run of the job did.
 type FactsRun struct {
 	Derived int   // files derived
-	Failed  int   // files that failed (recorded, not returned)
+	Failed  int   // files that failed (recorded on the file, not returned)
+	Errored int   // files not derived for a reason outside the file (disk, database); not recorded, tried again next run
 	Waiting int   // files due, derived or not
 	Bytes   int64 // raw transcript bytes read
 	Rows    int   // fact rows stored
@@ -72,15 +79,15 @@ func (s *Service) RunSessionFacts(ctx context.Context) {
 	switch {
 	case err != nil && ctx.Err() == nil:
 		s.log.WarnContext(ctx, "session facts", "err", err)
-	case run.Failed > 0:
-		s.log.WarnContext(ctx, "session facts: files failed to derive (see session_fact_files.error)", "failed", run.Failed, "derived", run.Derived)
+	case run.Failed > 0 || run.Errored > 0:
+		s.log.WarnContext(ctx, "session facts: files failed to derive (a failed file: see session_fact_files.error; an errored one is tried again)", "failed", run.Failed, "errored", run.Errored, "derived", run.Derived)
 	case run.Derived > 0:
 		s.log.InfoContext(ctx, "session facts derived", "files", run.Derived, "rows", run.Rows, "bytes", run.Bytes, "still_waiting", run.Waiting-run.Derived)
 	}
 }
 
 type factFile struct {
-	uid     int64
+	userID  int64
 	machine string
 	session string
 	file    string
@@ -108,7 +115,7 @@ func (s *Service) DeriveSessionFacts(ctx context.Context) (FactsRun, error) {
 	var due []factFile
 	for rows.Next() {
 		var f factFile
-		if err := rows.Scan(&f.uid, &f.machine, &f.session, &f.file, &f.gen, &f.end, &f.raw, &f.newest); err != nil {
+		if err := rows.Scan(&f.userID, &f.machine, &f.session, &f.file, &f.gen, &f.end, &f.raw, &f.newest); err != nil {
 			_ = rows.Close()
 			return run, err
 		}
@@ -133,24 +140,39 @@ func (s *Service) DeriveSessionFacts(ctx context.Context) (FactsRun, error) {
 		}
 		run.Bytes += f.raw
 		n, err := s.deriveFactFile(ctx, f)
-		if err != nil {
+		var fault *factFault
+		switch {
+		case err == nil:
+			run.Derived++
+			run.Rows += n
+		case errors.As(err, &fault):
 			run.Failed++
 			if rerr := s.recordFactFailure(ctx, f, err); rerr != nil {
 				return run, rerr
 			}
-			continue
+		default:
+			run.Errored++
+			if ctx.Err() == nil {
+				s.log.WarnContext(ctx, "session facts: a file could not be read or stored; tried again next run", "session", f.session, "file", f.file, "err", err)
+			}
 		}
-		run.Derived++
-		run.Rows += n
 	}
 	return run, nil
 }
+
+// factFault is a failure about the file itself: what is recorded on its
+// progress row. Any other error from deriving it says nothing about the file.
+type factFault struct{ error }
+
+func (e *factFault) Unwrap() error { return e.error }
+
+func faultf(format string, a ...any) error { return &factFault{fmt.Errorf(format, a...)} }
 
 // factPieces lists one file's pieces in order.
 func (s *Service) factPieces(ctx context.Context, f factFile) ([]transcriptPiece, error) {
 	rows, err := s.db.R.QueryContext(ctx, `SELECT p.id, p.machine, p.session, p.file, p.kind, p.gen, p.from_off, p.to_off, p.raw_bytes, p.stored_bytes, p.sha256, p.path, p.created_at
 		FROM transcript_pieces p WHERE p.user_id = ? AND p.machine = ? AND p.session = ? AND p.file = ? AND p.gen = ? ORDER BY p.from_off`,
-		f.uid, f.machine, f.session, f.file, f.gen)
+		f.userID, f.machine, f.session, f.file, f.gen)
 	if err != nil {
 		return nil, err
 	}
@@ -174,18 +196,32 @@ func (s *Service) deriveFactFile(ctx context.Context, f factFile) (int, error) {
 		return 0, err
 	}
 	if len(ps) == 0 {
-		return 0, fmt.Errorf("no pieces")
+		return 0, faultf("no pieces")
 	}
 	d := describeTranscript(ps)
 	if !d.Complete {
-		return 0, fmt.Errorf("the archive has a hole: its pieces do not join")
+		return 0, faultf("the archive has a hole: its pieces do not join")
 	}
 	pr, pw := io.Pipe()
-	go func() { pw.CloseWithError(s.copyPieces(ps, pw)) }()
+	copied := make(chan error, 1)
+	go func() {
+		err := s.copyPieces(ps, pw)
+		pw.CloseWithError(err)
+		copied <- err
+	}()
 	start := time.Now()
 	res, err := transcript.Parse(pr, f.file)
 	_ = pr.CloseWithError(err)
+	if cerr := <-copied; cerr != nil {
+		var pf *pieceFault
+		if errors.As(cerr, &pf) {
+			return 0, &factFault{cerr}
+		}
+		return 0, cerr // a read error: not about the file
+	}
 	if err != nil {
+		// Parse fails only on the reader, whose error was classified above, so
+		// this is not reached; if it ever is, it says nothing about the file.
 		return 0, err
 	}
 	parseMS := time.Since(start).Milliseconds()
@@ -193,7 +229,7 @@ func (s *Service) deriveFactFile(ctx context.Context, f factFile) (int, error) {
 	err = s.write(ctx, nil, func(t *tx) error {
 		for _, tbl := range factTables {
 			if _, err := t.ExecContext(ctx, `DELETE FROM `+tbl+` WHERE user_id = ? AND machine = ? AND session = ? AND file = ? AND gen = ?`,
-				f.uid, f.machine, f.session, f.file, f.gen); err != nil {
+				f.userID, f.machine, f.session, f.file, f.gen); err != nil {
 				return err
 			}
 		}
@@ -211,7 +247,7 @@ func (s *Service) deriveFactFile(ctx context.Context, f factFile) (int, error) {
 			ON CONFLICT (user_id, machine, session, file, gen) DO UPDATE SET parser_version = excluded.parser_version, attempted_to = excluded.attempted_to,
 				derived_to = excluded.derived_to, lines = excluded.lines, bytes = excluded.bytes, rows = excluded.rows, kept = excluded.kept,
 				unknown = excluded.unknown, ignored = excluded.ignored, parse_ms = excluded.parse_ms, derived_at = excluded.derived_at, error = NULL, error_at = NULL`,
-			f.uid, f.machine, f.session, f.file, f.gen, transcript.ParserVersion, f.end, f.end, res.Lines, res.Bytes, produced, kept,
+			f.userID, f.machine, f.session, f.file, f.gen, transcript.ParserVersion, f.end, f.end, res.Lines, res.Bytes, produced, kept,
 			string(unknown), string(ignored), parseMS, s.nowMS())
 		return err
 	})
@@ -223,16 +259,13 @@ func (s *Service) deriveFactFile(ctx context.Context, f factFile) (int, error) {
 
 // recordFactFailure notes a failed attempt, keeping what the last success left.
 func (s *Service) recordFactFailure(ctx context.Context, f factFile, cause error) error {
-	msg := cause.Error()
-	if len(msg) > 300 {
-		msg = msg[:300]
-	}
+	msg := clip(cause.Error(), 300)
 	return s.write(ctx, nil, func(t *tx) error {
 		_, err := t.ExecContext(ctx, `INSERT INTO session_fact_files (user_id, machine, session, file, gen, parser_version, attempted_to, error, error_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (user_id, machine, session, file, gen) DO UPDATE SET parser_version = excluded.parser_version, attempted_to = excluded.attempted_to,
 				error = excluded.error, error_at = excluded.error_at`,
-			f.uid, f.machine, f.session, f.file, f.gen, transcript.ParserVersion, f.end, msg, s.nowMS())
+			f.userID, f.machine, f.session, f.file, f.gen, transcript.ParserVersion, f.end, msg, s.nowMS())
 		return err
 	})
 }
@@ -254,7 +287,7 @@ func (w *factWriter) close() {
 	}
 }
 
-// ins prepares the insert of a table with the common columns first. A uid
+// prepare prepares the insert of a table with the common columns first. A uid
 // already stored for the session (from another file or generation) is kept: the
 // insert does nothing.
 func (w *factWriter) prepare(table string, cols ...string) (*sql.Stmt, error) {
@@ -272,7 +305,7 @@ func (w *factWriter) prepare(table string, cols ...string) (*sql.Stmt, error) {
 // put runs one insert and says whether the row was stored (false: the session
 // already had that event).
 func (w *factWriter) put(st *sql.Stmt, r transcript.Row, vals ...any) (int, error) {
-	args := append([]any{w.f.uid, w.f.machine, w.f.session, w.f.file, w.f.gen, transcript.ParserVersion, r.Uid, r.Seq, r.At, r.Thread}, vals...)
+	args := append([]any{w.f.userID, w.f.machine, w.f.session, w.f.file, w.f.gen, transcript.ParserVersion, r.Uid, r.Seq, r.At, r.Thread}, vals...)
 	res, err := st.ExecContext(w.ctx, args...)
 	if err != nil {
 		return 0, err
@@ -368,46 +401,93 @@ func (w *factWriter) store(r *transcript.Result) (produced, kept int, err error)
 
 // ---- health ----
 
-// factsProblem is the collector health's plain-words problem: records the
-// parser did not understand, by type, and files that failed.
+// factsProblem is the collector health's plain-words problem: files that
+// failed, and records and fields the parser did not understand or decode, by
+// type. It reads the rows of the current parser's successful derives only.
 func (s *Service) factsProblem(ctx context.Context) (string, error) {
-	rows, err := s.db.R.QueryContext(ctx, `SELECT j.key, SUM(j.value) FROM session_fact_files f, json_each(f.unknown) j
-		WHERE f.parser_version = ? GROUP BY j.key ORDER BY SUM(j.value) DESC, j.key LIMIT 8`, transcript.ParserVersion)
+	var failed int64
+	if err := s.db.R.QueryRowContext(ctx, factsFailedSQL).Scan(&failed); err != nil {
+		return "", err
+	}
+	unknown, err := s.FactsUnknown(ctx)
 	if err != nil {
 		return "", err
 	}
-	defer func() { _ = rows.Close() }()
-	var parts []string
-	for rows.Next() {
-		var k string
-		var n int64
-		if err := rows.Scan(&k, &n); err != nil {
-			return "", err
-		}
-		parts = append(parts, fmt.Sprintf("%s %d", k, n))
-	}
-	if err := rows.Err(); err != nil {
-		return "", err
-	}
-	var failed int64
-	if err := s.db.R.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_fact_files WHERE error IS NOT NULL`).Scan(&failed); err != nil {
+	undecoded, err := s.factsUndecoded(ctx)
+	if err != nil {
 		return "", err
 	}
 	var out []string
 	if failed > 0 {
 		out = append(out, fmt.Sprintf("%d transcript files failed to derive (session_fact_files.error)", failed))
 	}
-	if len(parts) > 0 {
-		out = append(out, "records the parser does not understand (type count): "+strings.Join(parts, ", ")+"; a new Claude Code record type needs the parser taught and ParserVersion bumped")
+	if len(unknown) > 0 {
+		out = append(out, "records the parser does not understand (type count): "+topCounts(unknown, 8)+"; a new Claude Code record type needs the parser taught and ParserVersion bumped")
+	}
+	if len(undecoded) > 0 {
+		out = append(out, "fields the parser could not decode (what count): "+topCounts(undecoded, 8)+"; the facts are missing those values")
 	}
 	return strings.Join(out, "; "), nil
 }
 
+// topCounts is "k n, k n" for the n largest, ties by key.
+func topCounts(m map[string]int64, n int) string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if m[keys[i]] != m[keys[j]] {
+			return m[keys[i]] > m[keys[j]]
+		}
+		return keys[i] < keys[j]
+	})
+	if len(keys) > n {
+		keys = keys[:n]
+	}
+	parts := make([]string, len(keys))
+	for i, k := range keys {
+		parts[i] = fmt.Sprintf("%s %d", k, m[k])
+	}
+	return strings.Join(parts, ", ")
+}
+
 // FactsUnknown is the records the parser did not understand, by type, over the
-// files derived by the current parser.
+// files whose last attempt succeeded with the current parser. It is the one
+// query for this: the collector's problem line and the tests read it.
 func (s *Service) FactsUnknown(ctx context.Context) (map[string]int64, error) {
-	rows, err := s.db.R.QueryContext(ctx, `SELECT j.key, SUM(j.value) FROM session_fact_files f, json_each(f.unknown) j
-		WHERE f.parser_version = ? GROUP BY j.key`, transcript.ParserVersion)
+	return s.factsCountsOf(ctx, factsUnknownSQL, "")
+}
+
+// factsUndecoded is the fields of understood records that could not be
+// decoded, by what was lost (the "undecoded/" keys of the ignored counts).
+func (s *Service) factsUndecoded(ctx context.Context) (map[string]int64, error) {
+	m, err := s.factsCountsOf(ctx, factsIgnoredSQL, "undecoded/")
+	out := make(map[string]int64, len(m))
+	for k, v := range m {
+		out[strings.TrimPrefix(k, "undecoded/")] = v
+	}
+	return out, err
+}
+
+// The health queries: the files that failed, and the JSON counts (unknown,
+// ignored) by key over the files whose last attempt succeeded with the current
+// parser, with the keys starting with a prefix (?2 and ?3, the same value).
+const factsFailedSQL = `SELECT COUNT(*) FROM session_fact_files f WHERE f.error IS NOT NULL`
+
+var (
+	factsUnknownSQL = factsCountsSQL("unknown")
+	factsIgnoredSQL = factsCountsSQL("ignored")
+)
+
+func factsCountsSQL(column string) string {
+	return `SELECT j.key, SUM(j.value) FROM session_fact_files f, json_each(f.` + column + `) j
+		WHERE f.parser_version = ?1 AND f.error IS NULL AND substr(j.key, 1, length(?2)) = ?3 GROUP BY j.key`
+}
+
+// factsCountsOf runs one of them.
+func (s *Service) factsCountsOf(ctx context.Context, query, prefix string) (map[string]int64, error) {
+	rows, err := s.db.R.QueryContext(ctx, query, transcript.ParserVersion, prefix, prefix)
 	if err != nil {
 		return nil, err
 	}

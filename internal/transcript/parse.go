@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"path"
 	"regexp"
 	"strconv"
@@ -143,16 +144,16 @@ type toolResult struct {
 type attach struct {
 	Type  string `json:"type"`
 	Files []struct {
-		Path    string `json:"path"`
-		Type    string `json:"type"`
-		Content string `json:"content"`
+		Path    string  `json:"path"`
+		Type    string  `json:"type"`
+		Content *string `json:"content"`
 	} `json:"files"`
 	Filename   string          `json:"filename"`
 	Content    json.RawMessage `json:"content"`
 	SkillCount *int64          `json:"skillCount"`
 	Skills     []struct {
-		Name    string `json:"name"`
-		Content string `json:"content"`
+		Name    string  `json:"name"`
+		Content *string `json:"content"`
 	} `json:"skills"`
 	Reread *struct {
 		Length *int64 `json:"contentLength"`
@@ -195,11 +196,12 @@ type parser struct {
 	turn       *string
 	lastTurn   int
 	msgs       map[string]int
-	msgReq     map[int]int64 // model call index -> api-request time
 	tools      map[string]int
 	spawns     map[string]int
 	reqs       map[string]reqInfo
+	reqRef     map[int]string // model call index -> the requestRef its lines carry
 	setting    map[string]string
+	settingUID map[string]int // how many changes had this name=value@time, so each change has its own uid
 }
 
 // Parse reads one transcript file. file is where it sits under the session
@@ -210,8 +212,8 @@ func Parse(r io.Reader, file string) (*Result, error) {
 		res:      &Result{Unknown: map[string]int{}, Ignored: map[string]int{}},
 		file:     file,
 		lastTurn: -1,
-		msgs:     map[string]int{}, msgReq: map[int]int64{}, tools: map[string]int{}, spawns: map[string]int{},
-		reqs: map[string]reqInfo{}, setting: map[string]string{},
+		msgs:     map[string]int{}, tools: map[string]int{}, spawns: map[string]int{},
+		reqs: map[string]reqInfo{}, reqRef: map[int]string{}, setting: map[string]string{}, settingUID: map[string]int{},
 	}
 	p.fileThread = MainThread
 	if file != "" && file != "main" {
@@ -315,6 +317,8 @@ func (p *parser) line(b []byte) {
 	case "api-request":
 		if r.ID != "" && ts != nil {
 			p.reqs[r.ID] = reqInfo{*ts, r.QuerySource}
+		} else {
+			p.ignored("api-request/(no id or time)")
 		}
 	default:
 		if ignoredTypes[r.Type] {
@@ -350,7 +354,15 @@ func (p *parser) observe(name, value, source string, r *rec, ts *int64) {
 	if at != nil {
 		when = *at
 	}
-	s.Row = Row{Uid: fmt.Sprintf("%s=%s@%d", name, value, when), Seq: p.seq, At: at, Thread: MainThread}
+	// A setting can return to an earlier value with no timed record between
+	// (permission modes have none), so name=value@when can repeat: the n-th
+	// change with it gets "#n", which is the same for the same bytes.
+	uid := fmt.Sprintf("%s=%s@%d", name, value, when)
+	p.settingUID[uid]++
+	if n := p.settingUID[uid]; n > 1 {
+		uid = fmt.Sprintf("%s#%d", uid, n)
+	}
+	s.Row = Row{Uid: uid, Seq: p.seq, At: at, Thread: MainThread}
 	p.res.Settings = append(p.res.Settings, s)
 }
 
@@ -395,11 +407,9 @@ func (p *parser) assistant(r *rec, ts *int64, thread string, main bool) {
 		if uid != "" {
 			p.msgs[uid] = idx
 		}
-		if ri, ok := p.reqs[r.RequestRef]; ok && r.RequestRef != "" {
-			p.msgReq[idx] = ri.at
-			p.res.ModelCalls[idx].QuerySource = strp(ri.source)
-			delete(p.reqs, r.RequestRef)
-		}
+	}
+	if r.RequestRef != "" && p.reqRef[idx] == "" { // joined in finish, so the order of the two records does not matter
+		p.reqRef[idx] = r.RequestRef
 	}
 	c := &p.res.ModelCalls[idx]
 	c.Effort, c.PerTurnEffort = orStr(strp(r.Effort), c.Effort), orStr(strp(r.PerTurnEffort), c.PerTurnEffort)
@@ -433,7 +443,11 @@ func (p *parser) assistant(r *rec, ts *int64, thread string, main bool) {
 			p.undecoded("assistant_content") // every tool call in this message is lost
 		} else {
 			for i := range blocks {
-				if blocks[i].Type == "tool_use" && blocks[i].ID != "" {
+				switch {
+				case blocks[i].Type != "tool_use":
+				case blocks[i].ID == "":
+					p.ignored("tool_use/(no id)")
+				default:
 					p.toolUse(&blocks[i], r, ts, thread, m.ID)
 				}
 			}
@@ -455,7 +469,10 @@ func valOr(p *int64) int64 {
 	return *p
 }
 
-var testPathRE = regexp.MustCompile(`(_test\.(go|py|rs)$|(^|/)test_[^/]*\.py$|\.(test|spec)\.[a-z]+$|(^|/)(tests?|__tests__|e2e|spec)/)`)
+// testPathRE: a test file by name (foo_test.go, foo_spec.rb, test_foo.py,
+// foo.test.ts, FooTest.java, FooTests.cs) or by a test directory. A heuristic:
+// a path it misses is recorded as not a test, one it matches wrongly as a test.
+var testPathRE = regexp.MustCompile(`(_(test|spec)\.[A-Za-z0-9]+$|(^|/)test_[^/]*\.py$|\.(test|spec)\.[A-Za-z0-9]+$|Tests?\.(java|kt|cs|scala|swift)$|(^|/)(tests?|__tests__|e2e|spec)/)`)
 
 func isTestPath(p string) bool { return testPathRE.MatchString(p) }
 
@@ -468,23 +485,24 @@ func commandHead(c string) string {
 	return clip(strings.Join(w, " "), commandRunes)
 }
 
-// urlHead is a URL without its query, fragment or userinfo (user:password@),
-// which can carry a secret.
-func urlHead(u string) string {
-	if i := strings.IndexAny(u, "?#"); i >= 0 {
-		u = u[:i]
+// unparsedURL is what a URL that does not parse is stored as: nothing of it
+// is kept, because any part of it could be a secret.
+const unparsedURL = "unparsed url"
+
+// urlHead is a URL without its userinfo (user:password@), query or fragment,
+// any of which can carry a secret; one that does not parse is not kept. An
+// empty one is "" (no target).
+func urlHead(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
 	}
-	if i := strings.Index(u, "://"); i >= 0 {
-		rest := u[i+3:]
-		host := rest
-		if j := strings.IndexByte(rest, '/'); j >= 0 {
-			host = rest[:j]
-		}
-		if k := strings.LastIndexByte(host, '@'); k >= 0 {
-			u = u[:i+3] + rest[k+1:]
-		}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return unparsedURL
 	}
-	return clip(u, targetRunes)
+	u.User, u.RawQuery, u.Fragment, u.RawFragment, u.ForceQuery = nil, "", "", "", false
+	return clip(u.String(), targetRunes)
 }
 
 func (p *parser) toolUse(bl *block, r *rec, ts *int64, thread, msgID string) {
@@ -501,17 +519,18 @@ func (p *parser) toolUse(bl *block, r *rec, ts *int64, thread, msgID string) {
 			t.Target, t.TargetKind = ptr(target), ptr(kind)
 		}
 	}
-	switch bl.Name {
-	case "Read":
-		set("file", clip(in.FilePath, targetRunes))
-		t.ReadOffset, t.ReadLimit = in.Offset, in.Limit
-	case "Edit", "Write", "MultiEdit", "NotebookEdit":
+	if IsEditTool(bl.Name) {
 		f := in.FilePath
 		if f == "" {
 			f = in.NotebookPath
 		}
 		set("file", clip(f, targetRunes))
 		t.IsTest = ptr(isTestPath(f))
+	}
+	switch bl.Name {
+	case "Read":
+		set("file", clip(in.FilePath, targetRunes))
+		t.ReadOffset, t.ReadLimit = in.Offset, in.Limit
 	case "Bash", "PowerShell":
 		set("command", commandHead(in.Command))
 		t.Background = in.Background
@@ -623,29 +642,34 @@ func (p *parser) user(r *rec, ts *int64, thread string, main bool) {
 	p.res.Turns = append(p.res.Turns, t)
 }
 
-func (p *parser) resultSize(raw json.RawMessage) (n int64, text string) {
+// resultSize is the size of a tool result's content and its first text; nil
+// when the result has no content key (an empty string is a known 0).
+func (p *parser) resultSize(raw json.RawMessage) (n *int64, text string) {
 	raw = bytes.TrimSpace(raw)
-	if len(raw) == 0 {
-		return 0, ""
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, ""
 	}
 	if raw[0] == '"' {
 		var s string
 		if err := json.Unmarshal(raw, &s); err != nil {
 			p.undecoded("tool_result_content")
+			return nil, ""
 		}
-		return int64(len(s)), s
+		return ptr(int64(len(s))), s
 	}
 	var blocks []block
-	if err := json.Unmarshal(raw, &blocks); err != nil {
+	if err := json.Unmarshal(raw, &blocks); err != nil { // neither a string nor a block array: size unknown
 		p.undecoded("tool_result_content")
+		return nil, ""
 	}
+	var total int64
 	for _, b := range blocks {
-		n += int64(len(b.Text))
+		total += int64(len(b.Text))
 		if text == "" {
 			text = b.Text
 		}
 	}
-	return n, text
+	return ptr(total), text
 }
 
 func (p *parser) results(blocks []block, r *rec, ts *int64, n int) {
@@ -668,7 +692,11 @@ func (p *parser) results(blocks []block, r *rec, ts *int64, n int) {
 		}
 		t := &p.res.ToolCalls[idx]
 		size, text := p.resultSize(bl.Content)
-		t.ResultAt, t.ResultBytes, t.IsError = ts, ptr(size), ptr(bl.IsError)
+		// is_error: the Messages API defines an omitted is_error as false, so
+		// absent is a known success here, not an unknown (WP-1467 audit 1283.6);
+		// a NULL would make most successful calls unknown. result_bytes has no
+		// such default, so it is nil without a content key.
+		t.ResultAt, t.ResultBytes, t.IsError = ts, size, ptr(bl.IsError)
 		if ts != nil && t.At != nil && *ts >= *t.At {
 			t.DurationMS = ptr(*ts - *t.At)
 		}
@@ -706,12 +734,10 @@ func (p *parser) applyResult(t *ToolCall, tr *toolResult, ts *int64) {
 	if tr.BackgroundTask != "" {
 		t.Background = ptr(true)
 	}
-	switch t.Tool {
-	case "Edit", "Write", "MultiEdit", "NotebookEdit":
+	if IsEditTool(t.Tool) {
 		switch {
 		case tr.Type == "create":
-			var s string
-			if json.Unmarshal(tr.Content, &s) == nil {
+			if s, ok := p.decodeString(tr.Content, "create_result_content"); ok {
 				n := int64(strings.Count(s, "\n"))
 				if s != "" && !strings.HasSuffix(s, "\n") {
 					n++
@@ -774,30 +800,33 @@ func (p *parser) attachment(r *rec, ts *int64, thread string) {
 	switch a.Type {
 	case "instructions":
 		for i, f := range a.Files {
-			add(i, InjectedFile{Kind: "instructions", FileType: strp(f.Type), Name: strp(f.Path), Bytes: ptr(int64(len(f.Content)))})
+			add(i, InjectedFile{Kind: "instructions", FileType: strp(f.Type), Name: strp(f.Path), Bytes: sizeOf(f.Content)})
 		}
 	case "file":
 		f := InjectedFile{Kind: "file", Name: strp(a.Filename)}
 		var c struct {
 			File *struct {
-				Content  string `json:"content"`
-				NumLines *int64 `json:"numLines"`
+				Content  *string `json:"content"`
+				NumLines *int64  `json:"numLines"`
 			} `json:"file"`
 		}
-		if json.Unmarshal(a.Content, &c) == nil && c.File != nil {
-			f.Bytes, f.Lines = ptr(int64(len(c.File.Content))), c.File.NumLines
+		if len(bytes.TrimSpace(a.Content)) > 0 {
+			if err := json.Unmarshal(a.Content, &c); err != nil {
+				p.undecoded("file_attachment")
+			} else if c.File != nil {
+				f.Bytes, f.Lines = sizeOf(c.File.Content), c.File.NumLines
+			}
 		}
 		add(0, f)
 	case "skill_listing":
 		f := InjectedFile{Kind: "skill_listing", Count: a.SkillCount}
-		var s string
-		if json.Unmarshal(a.Content, &s) == nil {
+		if s, ok := p.decodeString(a.Content, "skill_listing"); ok {
 			f.Bytes = ptr(int64(len(s)))
 		}
 		add(0, f)
 	case "invoked_skills":
 		for i, s := range a.Skills {
-			add(i, InjectedFile{Kind: "skill", Name: strp(s.Name), Bytes: ptr(int64(len(s.Content)))})
+			add(i, InjectedFile{Kind: "skill", Name: strp(s.Name), Bytes: sizeOf(s.Content)})
 		}
 	case "compact_file_reference":
 		add(0, InjectedFile{Kind: "compact_file_reference", Name: strp(a.Filename)})
@@ -818,6 +847,29 @@ func (p *parser) attachment(r *rec, ts *int64, thread string) {
 	}
 }
 
+// sizeOf is the length of a string that may be absent: nil when it is.
+func sizeOf(s *string) *int64 {
+	if s == nil {
+		return nil
+	}
+	return ptr(int64(len(*s)))
+}
+
+// decodeString decodes a JSON string field that may be absent: absent is not
+// an error and is not counted (nor is a JSON null), a value that is not a
+// string is counted as undecoded under what.
+func (p *parser) decodeString(raw json.RawMessage, what string) (string, bool) {
+	if raw = bytes.TrimSpace(raw); len(raw) == 0 || string(raw) == "null" {
+		return "", false
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		p.undecoded(what)
+		return "", false
+	}
+	return s, true
+}
+
 func orUID(uuid, file string, seq int) string {
 	if uuid != "" {
 		return uuid
@@ -829,14 +881,19 @@ func orUID(uuid, file string, seq int) string {
 // the request latency and the inferred cold cache.
 func (p *parser) finish() {
 	type prev struct {
-		at   int64
-		long bool
+		at    int64
+		long  bool // the call wrote to the 1 hour cache
+		split bool // its usage said how its cache write split between the two
 	}
 	last := map[string]prev{}
 	for i := range p.res.ModelCalls {
 		c := &p.res.ModelCalls[i]
-		if at, ok := p.msgReq[i]; ok && c.EndAt != nil && *c.EndAt >= at {
-			c.LatencyMS = ptr(*c.EndAt - at)
+		if ri, ok := p.reqs[p.reqRef[i]]; ok && p.reqRef[i] != "" {
+			c.QuerySource = strp(ri.source)
+			if c.EndAt != nil && *c.EndAt >= ri.at {
+				c.LatencyMS = ptr(*c.EndAt - ri.at)
+			}
+			delete(p.reqs, p.reqRef[i])
 		}
 		if c.At == nil {
 			continue
@@ -844,19 +901,46 @@ func (p *parser) finish() {
 		if pv, ok := last[c.Thread]; ok {
 			c.GapMS = ptr(*c.At - pv.at)
 			if c.CacheWrite != nil {
-				ttl := int64(5 * 60 * 1000)
-				if pv.long {
-					ttl = 60 * 60 * 1000
-				}
-				c.ColdInferred = ptr(*c.CacheWrite > 0 && *c.GapMS > ttl)
+				c.ColdInferred = coldInferred(*c.CacheWrite, *c.GapMS, pv.long, pv.split)
 			}
 		}
 		at := *c.At
 		if c.EndAt != nil {
 			at = *c.EndAt
 		}
-		last[c.Thread] = prev{at: at, long: valOr(c.CacheW1h) > 0}
+		last[c.Thread] = prev{at: at, long: valOr(c.CacheW1h) > 0, split: c.CacheW5m != nil || c.CacheW1h != nil}
 	}
+	for range p.reqs { // an api-request no assistant record named
+		p.ignored("api-request/unmatched")
+	}
+}
+
+// Cache lifetimes (Anthropic prompt caching): 5 minutes by default, 1 hour
+// when the request asks for the longer one.
+const (
+	cacheTTL     = 5 * 60 * 1000
+	cacheTTLLong = 60 * 60 * 1000
+)
+
+// coldInferred says whether a cache write came after the previous call's cache
+// had expired. nil when that cannot be told: without the previous call's
+// split between the 5 minute and 1 hour caches, a gap between the two
+// lifetimes may or may not have outlived it.
+func coldInferred(write, gap int64, prevLong, prevSplit bool) *bool {
+	if write <= 0 {
+		return ptr(false)
+	}
+	switch {
+	case prevLong:
+		return ptr(gap > cacheTTLLong)
+	case prevSplit:
+		return ptr(gap > cacheTTL)
+	case gap > cacheTTLLong:
+		return ptr(true)
+	case gap <= cacheTTL:
+		return ptr(false)
+	}
+	return nil
 }
 
 // readLine reads one line; one over MaxLine is read through and reported as

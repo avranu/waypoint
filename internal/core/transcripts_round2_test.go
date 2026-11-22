@@ -146,7 +146,7 @@ func TestTranscriptCollectorDropsAreCountedAndTold(t *testing.T) {
 	}
 	// a collector that counts no drops has none
 	for _, h := range mustHealth(t, e) {
-		if h.Name != "transcript archive" && h.Name != "session facts" && h.Dropped != nil {
+		if h.Name != "transcript archive" && h.Dropped != nil {
 			t.Errorf("%s has a dropped total %d", h.Name, *h.Dropped)
 		}
 	}

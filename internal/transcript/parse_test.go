@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Fixtures are synthetic lines in the shape Claude Code writes; none is copied
@@ -20,7 +21,9 @@ func j(v any) string {
 
 type m = map[string]any
 
-func ts(sec int) string { return fmt.Sprintf("2026-03-01T10:%02d:%02d.000Z", sec/60, sec%60) }
+func ts(sec int) string {
+	return time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC).Add(time.Duration(sec) * time.Second).Format("2006-01-02T15:04:05.000Z")
+}
 
 func assistant(id string, sec int, usage m, content ...m) string {
 	r := m{"type": "assistant", "uuid": "u-" + id + fmt.Sprint(sec), "timestamp": ts(sec), "requestId": "req-" + id,
@@ -264,22 +267,49 @@ func TestInjectedFiles(t *testing.T) {
 }
 
 func TestColdCacheInferredFromGap(t *testing.T) {
-	r := parse(t, "main",
-		assistant("m1", 0, m{"output_tokens": 1, "cache_creation_input_tokens": 50, "cache_read_input_tokens": 0}),
-		assistant("m2", 100, m{"output_tokens": 1, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 50}),
-		assistant("m3", 100+400, m{"output_tokens": 1, "cache_creation_input_tokens": 60, "cache_read_input_tokens": 0}),
-		assistant("m4", 100+400+10, m{"output_tokens": 1}),
-	)
-	c := r.ModelCalls
-	if c[0].ColdInferred != nil || c[0].GapMS != nil {
-		t.Errorf("the first call has no gap: %+v", c[0])
+	split := func(w5, w1 int) m {
+		return m{"output_tokens": 1, "cache_creation_input_tokens": w5 + w1, "cache_read_input_tokens": 0,
+			"cache_creation": m{"ephemeral_5m_input_tokens": w5, "ephemeral_1h_input_tokens": w1}}
 	}
-	if *c[1].ColdInferred || !*c[2].ColdInferred || *c[2].GapMS != 400_000 {
-		t.Errorf("cold: %v %v gap %v", *c[1].ColdInferred, *c[2].ColdInferred, *c[2].GapMS)
+	plain := func(write int) m {
+		return m{"output_tokens": 1, "cache_creation_input_tokens": write, "cache_read_input_tokens": 0}
 	}
-	if c[3].ColdInferred != nil {
-		t.Errorf("no cache figure: cannot be judged, got %v", *c[3].ColdInferred)
-	}
+	t.Run("5 minute cache, split known", func(t *testing.T) {
+		r := parse(t, "main", assistant("m1", 0, split(50, 0)), assistant("m2", 100, split(0, 0)), assistant("m3", 100+400, split(60, 0)), assistant("m4", 100+400+10, m{"output_tokens": 1}))
+		c := r.ModelCalls
+		if c[0].ColdInferred != nil || c[0].GapMS != nil {
+			t.Errorf("the first call has no gap: %+v", c[0])
+		}
+		if *c[1].ColdInferred || !*c[2].ColdInferred || *c[2].GapMS != 400_000 {
+			t.Errorf("cold: %v %v gap %v", *c[1].ColdInferred, *c[2].ColdInferred, *c[2].GapMS)
+		}
+		if c[3].ColdInferred != nil {
+			t.Errorf("no cache figure: cannot be judged, got %v", *c[3].ColdInferred)
+		}
+	})
+	t.Run("1 hour cache lives past 5 minutes", func(t *testing.T) {
+		r := parse(t, "main", assistant("m1", 0, split(0, 50)), assistant("m2", 400, split(0, 60)), assistant("m3", 400+4000, plain(60)))
+		c := r.ModelCalls
+		if c[1].ColdInferred == nil || *c[1].ColdInferred {
+			t.Errorf("400 s after a 1 hour write is not cold: %v", c[1].ColdInferred)
+		}
+		if c[2].ColdInferred == nil || !*c[2].ColdInferred {
+			t.Errorf("4000 s after a 1 hour write is cold: %v", c[2].ColdInferred)
+		}
+	})
+	t.Run("split unknown", func(t *testing.T) {
+		r := parse(t, "main", assistant("m1", 0, plain(50)), assistant("m2", 400, plain(60)), assistant("m3", 400+4000, plain(60)), assistant("m4", 400+4000+10, plain(60)))
+		c := r.ModelCalls
+		if c[1].ColdInferred != nil {
+			t.Errorf("between 5 and 60 minutes with no split: undeterminable, got %v", *c[1].ColdInferred)
+		}
+		if c[2].ColdInferred == nil || !*c[2].ColdInferred {
+			t.Errorf("over an hour is cold whichever cache it was: %v", c[2].ColdInferred)
+		}
+		if c[3].ColdInferred == nil || *c[3].ColdInferred {
+			t.Errorf("10 s is warm whichever cache it was: %v", c[3].ColdInferred)
+		}
+	})
 }
 
 func TestSettingsTimelineAndUntimedRecord(t *testing.T) {
