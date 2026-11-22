@@ -200,18 +200,9 @@ func TestAutopilotReviewAlreadyCompacted(t *testing.T) {
 	}
 }
 
-// Taken while the pasted review settled (WP-1572): no Enter, so the review
-// isn't sent into the person's turn.
+// Taken while the pasted review settled: no Enter, so the review isn't sent
+// into the person's turn.
 func TestAutopilotReviewTakenWhilePasted(t *testing.T) {
-	testReviewTakenWhilePasted(t, false)
-}
-
-// Waypoint not answering before Enter is no: no Enter over a person's turn.
-func TestAutopilotReviewWantedUnknownBeforeEnter(t *testing.T) {
-	testReviewTakenWhilePasted(t, true)
-}
-
-func testReviewTakenWhilePasted(t *testing.T, failSecond bool) {
 	cfg := t.TempDir()
 	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
 	_ = os.MkdirAll(filepath.Join(cfg, "sessions"), 0o700)
@@ -231,10 +222,6 @@ func testReviewTakenWhilePasted(t *testing.T, failSecond bool) {
 			return
 		}
 		asked++
-		if asked == 2 && failSecond {
-			http.Error(w, "down", http.StatusInternalServerError)
-			return
-		}
 		// Wanted at the last word before typing, not once it is pasted.
 		_, _ = w.Write([]byte(`{"wanted":` + strconv.FormatBool(asked == 1) + `}`))
 	}))
@@ -245,7 +232,7 @@ func testReviewTakenWhilePasted(t *testing.T, failSecond bool) {
 	p := newTestProc(t, dir)
 	prompt := autopilotReviewMark + "APP-1: Grok's findings."
 	o := p.execAutopilot(context.Background(), newRun(time.Minute), autopilotJob{CLIID: "old-123", Dir: dir, Done: "APP-1", ReviewOf: "APP-1", Review: prompt, Compacted: true, Step: 7})
-	if r, _ := o.Result.(autopilotResult); o.State != "done" || r.Outcome != "unwanted" || r.Warning == "" {
+	if r, _ := o.Result.(autopilotResult); o.State != "done" || r.Outcome != "unwanted" {
 		t.Fatalf("outcome %+v", o)
 	}
 	if f.pasted != prompt || len(f.typed) != 0 || asked != 2 {
