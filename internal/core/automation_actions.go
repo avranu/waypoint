@@ -164,13 +164,14 @@ func registerActions() {
 
 	// ---- pull requests ----
 	registerAction(ActionDef{Name: "review", Label: "Review it with a model", Group: "Pull request", Phrase: "review it with {models}", Needs: "pr",
-		Doc: "Review the pull request with a model and post one review with line comments; `models` (else Admin → AI's review models, tried in order; an entry `{cli, model}` runs a coding agent such as claude, codex, cursor or opencode on the rule owner's runner), `focus` (extra instructions), `max_findings`, `min_severity` (P0-P3: findings below aren't posted), `skip_files` (globs left out beside lockfiles, generated and minified files), `force` (even at a head already reviewed), `second_models` and `third_models` (more reviewers, in parallel), `verify_models` (else Admin → AI's verify models) or `no_verify`. When steps follow it, the run waits for the review and leaves Findings, Posted, Worst (P0-P3), P0…P3, Reviewed, Status, URL",
+		Doc: "Review the pull request with a model and post one review with line comments; `models` (else Admin → AI's review models, tried in order; an entry `{cli, model}` runs a coding agent such as claude, codex, cursor or opencode on the rule owner's runner), `focus` (extra instructions), `max_findings` (how many are posted on the pull request, worst first; the rest are kept in Waypoint and counted in the review), `min_severity` (P0-P3: findings below aren't posted), `skip_files` (globs left out beside lockfiles, generated and minified files), `force` (even at a head already reviewed), `second_models` and `third_models` (more reviewers, in parallel), `verify_models` (else Admin → AI's verify models) or `no_verify`. When steps follow it, the run waits for the review and leaves Findings, Posted, Worst (P0-P3), P0…P3, Reviewed, Status, URL",
 		Run: reviewStep, Check: checkReview, Outputs: reviewOutputs,
 		Params: []ParamDef{
 			{Name: "models", Label: "Models", Type: PModels, Runners: true, Help: "Tried in order; empty uses Admin → AI's review models."},
 			{Name: "focus", Label: "Focus", Type: PText, Help: "Extra instructions for the reviewer."},
 			{Name: "force", Label: "Even if already reviewed", Type: PBool, Advanced: true},
-			{Name: "max_findings", Label: "Most findings", Type: PNumber, Min: f64(1), Max: f64(100), Advanced: true},
+			{Name: "max_findings", Label: "Show at a time", Type: PNumber, Min: f64(1), Max: f64(findingsGuard), Advanced: true,
+				Help: "How many findings are posted on the pull request, worst first; the rest are kept and counted in the review."},
 			{Name: "min_severity", Label: "Post findings from", Type: PSelect, Advanced: true,
 				Options: opts("", "Any severity", "P0", "P0 critical only", "P1", "P1 high and worse", "P2", "P2 medium and worse"),
 				Help:    "Findings below this severity aren't posted; the review says how many it left out."},

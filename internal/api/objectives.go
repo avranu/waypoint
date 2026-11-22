@@ -63,6 +63,19 @@ func (s *Server) objectiveGo(w http.ResponseWriter, r *http.Request) (any, error
 	return textResponse(o.Text), nil
 }
 
+// diagnoseObjective records what a diagnose round found (WP-1449).
+func (s *Server) diagnoseObjective(w http.ResponseWriter, r *http.Request) (any, error) {
+	var in core.ObjectiveDiagnoseInput
+	if err := decode(r, &in); err != nil {
+		return nil, err
+	}
+	o, err := s.svc.ObjectiveDiagnose(r.Context(), actorFrom(r), r.PathValue("key"), in)
+	if err != nil || !wantsText(r) {
+		return o, err
+	}
+	return textResponse(o.Text), nil
+}
+
 func (s *Server) clearObjective(w http.ResponseWriter, r *http.Request) (any, error) {
 	return nil, s.svc.ClearObjective(r.Context(), actorFrom(r), r.PathValue("key"))
 }

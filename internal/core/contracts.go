@@ -269,10 +269,11 @@ type AuditHelpers struct {
 	Verify  bool         `json:"verify,omitempty"`
 	CLI     string       `json:"cli"`
 	Model   string       `json:"model"`
-	// Prior are done panel runs of this round's audit, from an attempt
+	// Prior are done, unanswered panel runs of the round's reviewer audits, from an attempt
 	// that failed, with the range each read (Row: its record). The runner
 	// takes a run whose range is its own as it is and runs the other
-	// checks (review_helpers.go's priorPanel). Never kept on the audit.
+	// checks. Set when a runner claims the job (runners.go's
+	// withPriorPanel, WP-1481), never in the stored input or on the audit.
 	Prior []AuditHelperRun `json:"prior,omitempty"`
 }
 
@@ -294,6 +295,7 @@ type RunnerJob struct {
 	Error    string          `json:"error,omitempty"`
 	Source   string          `json:"source,omitempty"`
 	SourceID int64           `json:"source_id,omitempty"`
+	Input    json.RawMessage `json:"-"` // what it was queued with, for the code that queued it
 }
 
 // ErrNoRunner: no runner of the right owner (and label) is registered.

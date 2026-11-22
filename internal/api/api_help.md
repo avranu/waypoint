@@ -522,6 +522,31 @@ wait apart. Approving a pull request covers its title, description and code at t
                                   title, body, head_sha, created_at, updated_at}]
     POST /outside-pr/{id}/approve    POST /outside-pr/{id}/discard (comments only)
 
+## Agent instructions
+
+Text Waypoint adds to a session's context by what the session is, at its start, at a sub-agent's
+start and after a compaction (ADR146). An instruction belongs to a project or to none (every
+project; admins). Who it is for: "scope" main, subagent or any; "models" (names matched inside the
+model id; a session whose model isn't known gets only instructions naming none); "agent_types"
+(globs on the sub-agent's type, "!" leaves one out); "moment" start (and again after each
+compaction) or compact (main thread, only after one). A person's change stands as written; an
+agent's is a pending revision until a person approves it, and only the approved text is sent.
+
+    GET  /instructions?project=KEY               the project's and every project's, each with "pending"
+    GET  /instructions/preview?project=KEY&scope=main|subagent&model=M&agent_type=T&compact=1
+                                                 {text, chars, items: [{id, title, outcome, chars}]}: what such
+                                                 a session would get now; records nothing
+    POST /instructions {"project","title","body","scope","models":[],"agent_types":[],"moment"}
+    GET  /instructions/{id}                      + "revisions" and "sent" {sent, cut, unknown_model, sessions,
+                                                 subagents, compactions, last}
+    PATCH /instructions/{id}                     any of the fields above; "enabled", "position" (people only)
+    POST /instructions/{id}/review {"approve":true|false,"rev":N}   people only; rev 0 or absent: the newest pending
+    DELETE /instructions/{id}                    people only
+The hook answer (POST /sessions/hook) carries "instructions" at a SessionStart and SubagentStart.
+Outcomes recorded per hook: sent, cut (over the size budget: 6,000 characters a session start, 9,000 a
+sub-agent start; sent whole or not at all), unknown_model. A project turns delivery off with its
+setting "no_agent_instructions".
+
 ## Glossary
 
 Terms per project or global (no project). A project's full glossary is its own terms, its
@@ -631,7 +656,9 @@ differences (a message written again with more tokens). Cost is API-equivalent, 
                         "sessions":[{s,cwd,repo,branch,version,title,first,last,compactions}],
                         "refusals":[{t,s,repo,model,tool,detail,reason,source,excerpt}]}],
                         "inventory":[{kind,name,scope}], "parsed","skipped","unknown":{type:count}}
-                                    {accepted, duplicate}; h is an hour start in ms; at most 2000 chunks and
+                                    {accepted, duplicate}; h is an hour start in ms; messages counts model
+                                    responses (API messages), not turns, and prompts in tools counts permission
+                                    prompts (WP-1470); at most 2000 chunks and
                                     60000 rows; unknown fields are ignored
     POST /usage/quota {"machine","session","model","context_pct","five_hour":{percent,resets_at},"seven_day":{…}}
                                     resets_at in ms; a reading the same as the last is not stored again
@@ -751,7 +778,8 @@ steers or clears one in effect.
     GET    /issues/{key}/objective  {kind until|each|judged|loop, check, dir, setup, measure
                                     time|value|pass, until, repo, branch, keep_passing[], judge, judge_bar
                                     critical|high|medium|low, judge_models[], pace queue|spare, every
-                                    (seconds), max_rounds, round, stalled, next_at, state
+                                    (seconds), max_rounds, diagnose_after, round, round_kind ""|diagnose, no_better, stalled,
+                                    diagnosis {round,at,by,text}, next_at, state
                                     proposed|active|met|ended, phase ""|baseline|verdict|blocked,
                                     phase_why, phase_note, health proposed|working|ready|waiting|
                                     reading|blocked|stuck|met|ended, health_note, stuck_since,
@@ -759,16 +787,20 @@ steers or clears one in effect.
                                     reading of any source), verdict (newest of Waypoint's own),
                                     checks[] (each with source agent|runner|judge|baseline),
                                     rounds[] (outcome reading|met|progress|worked|none|empty|
-                                    unmeasured|loop), findings[]}; also "objective" on GET /issues/{key}
+                                    unmeasured|loop|diagnosed, and a diagnosed one's diagnosis,
+                                    diagnosis_by), findings[]}; also "objective" on GET /issues/{key}
     PUT    /issues/{key}/objective {"check","dir","setup","until","measure","better":"lower|higher",
                                     "repo":"owner/name","branch","keep_passing":[cmd],"judge","judge_bar",
-                                    "judge_models":[model],"pace","every":"24h","max_rounds":0,"rev"}
+                                    "judge_models":[model],"pace","every":"24h","max_rounds":0,"diagnose_after":2,"rev"}
                                     set or change; a field left out keeps its value. keep_passing:
                                     commands a round mustn't break. judge: what done means, in words. pace
                                     spare: handed out only while the week's-end plan wants more work
                                     (WP-ADR106). every: least time between rounds (default 24h for
                                     each and loop, 0 for until and judged). rev: the agent's proposal
-                                    a person's change builds on
+                                    a person's change builds on.
+                                    diagnose_after: rounds in a row that come no nearer before the next
+                                    is a diagnose round that ships no code (0: never; 2 by default, and for
+                                    objectives that existed before it; a loop has none to set)
     POST   /issues/{key}/objective/confirm {"rev"}   a person puts an agent's proposal in effect; rev
                                     is the one they read, refused if it was rewritten since
     POST   /issues/{key}/objective/go {"action":"retry|next|accept|end"}   a person steers one in
@@ -776,6 +808,11 @@ steers or clears one in effect.
                                     round out now, or leave an unread round behind; accept a reading
                                     that waits because the round changed what the check runs; end it (the
                                     task stays, an ordinary task)
+    POST   /issues/{key}/objective/diagnose {"text","ask","agent"}   the agent working a diagnose
+                                    round (or a person who may edit the task) records why the rounds
+                                    before it came no nearer, and what to try: the round ends with no
+                                    reading, the task goes back to To Do, and the same round opens as
+                                    a work round. ask: a person must act first, so it waits for them
     DELETE /issues/{key}/objective  takes it off, rounds and readings with it; the task's history says
                                     what it had reached
     POST   /issues/{key}/objective/checks {"ok","value","base_ok","base_value","base_sha","tree",
@@ -831,7 +868,8 @@ steers or clears one in effect.
         "skip_heads":[],"paths":["web/**"] (touches one),"skip_paths":["docs/**"] (every file
         matches one: left out),"min_changed_lines","max_changed_lines" (additions + deletions),
         "repos":["owner/*"]}. Actions: review {"models":[{"provider_id","model"}],"focus",
-        "max_findings","min_severity":"P0|P1|P2|P3","skip_files":[globs],"force"}; when steps
+        "max_findings" (how many are posted, worst first, 1-100, default 8; the rest are kept,
+        counted in the review and hold the merge gate like the posted ones),"min_severity":"P0|P1|P2|P3","skip_files":[globs],"force"}; when steps
         follow a review the run waits for it and the step leaves Findings, Posted, Worst
         ("P0".."P3", "" for none), P0..P3 (counts), Reviewed, Status, Summary, URL, RunID, e.g.
         "only_if":"{{or .Steps.review.P0 .Steps.review.P1}}". pr_comment {"message"}, react
@@ -1065,7 +1103,8 @@ Cursor on a Waypoint with no LLM gateway. It never changes anything; findings ar
 someone checks them. Not the audit log above.
 
     POST /audits {target: repo|branch|commit|range|pr, repo, project, ref, base, pr, pr_id,
-                 instructions, models: ["cursor/grok-4.7-high", …], comment, fix, blocking}
+                 instructions, models: ["cursor/grok-4.7-high", …], comment, fix, blocking,
+                 max_findings}
                                      ask for one (editors with audits.run): target empty means pr when pr or
                                      pr_id is set, range when ref has "..", else repo. branch: ref against
                                      base (default branch); commit: ref against its parent; range: "A..B";
@@ -1073,7 +1112,13 @@ someone checks them. Not the audit log above.
                                      or out of quota (default: the chain from GET /audits/defaults); a chain
                                      that is only busy is retried up to 3 times. comment (default yes) posts
                                      a pull request's findings on it; fix makes a task for Claude to check
-                                     and fix them. The asking session is told when it ends
+                                     and fix them. max_findings (0: 15; 1-100) is how many findings are shown
+                                     at a time (wp audit show, the audit's page, the pull request's comment: the
+                                     rest are counted and one step away, and open ones hold a pull request's merge gate like the shown
+                                     ones); it is not a limit. The model is told no
+                                     number and every finding it reports is kept (the guard is 100: past it the
+                                     summary says how many were cut). GET returns all of them.
+                                     The asking session is told when it ends
     GET /audits?project=KEY&pr_id=N&status=queued|running|done|failed|limited|cancelled|active&limit=50
                                      newest first, each with counts {total, open, critical, high, medium, low}
     GET /audits/defaults             {instructions, models, targets, severities, states, clis}

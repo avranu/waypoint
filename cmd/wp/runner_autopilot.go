@@ -310,6 +310,12 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 		return held("screen", "the review prompt couldn't be pasted: %v", err)
 	}
 	sleepCtx(ctx, reviewPasteSettle(len(in.Review)))
+	// A person who prompted while it settled keeps the turn: no Enter, so the
+	// review isn't sent into it. What was pasted stays as a draft they can see.
+	if !p.stepWanted(ctx, in.Step, run.id) {
+		say("the step no longer wants this job: the review was pasted and not sent")
+		return outcome{State: "done", Result: autopilotResult{Outcome: "unwanted"}}
+	}
 	if _, err := runTmux(ctx, socket, nil, "send-keys", "-t", pane, "Enter"); err != nil {
 		// Pasted and not sent: the box now holds a draft, which a person
 		// sees; the round reads as running and ends at the next Stop.
@@ -320,7 +326,13 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 		res.Detail = "typed while the registry said busy: the screen showed the main thread at its prompt"
 	}
 	if !waitTook(ctx, ccDir, pid, socket, pane, byScreen, reviewTookWait) {
-		res.Warning = fmt.Sprintf("the session's screen didn't show it starting the review within %s; check it", reviewTookWait.Round(time.Second))
+		// Say what was looked at: the screen is read only when the registry
+		// can't tell (byScreen); otherwise it is the registry that never
+		// went busy.
+		res.Warning = fmt.Sprintf("the session didn't go busy within %s of the review being typed; check it", reviewTookWait.Round(time.Second))
+		if byScreen {
+			res.Warning = fmt.Sprintf("the session's screen didn't show it starting the review within %s; check it", reviewTookWait.Round(time.Second))
+		}
 		say("session %s: %s", in.CLIID, res.Warning)
 	}
 	say("asked session %s for the adversarial review of %s", in.CLIID, in.ReviewOf)

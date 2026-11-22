@@ -81,7 +81,7 @@ type UsageTrendTask struct {
 	ToolCalls   int64      `json:"tool_calls"`
 	ToolErrors  int64      `json:"tool_errors"`
 	ActiveHours int        `json:"active_hours"`
-	Compactions int64      `json:"compactions"`
+	Compactions int64      `json:"compactions"` // each session's go to the task it spent most on only (WP-1470)
 	AvgContext  *float64   `json:"avg_context"`
 	FirstAt     time.Time  `json:"first_at"`
 	LastAt      time.Time  `json:"last_at"`
@@ -813,7 +813,7 @@ func usageFactors(tasks []UsageTrendTask) []UsageFactor {
 			}
 			return *t.AvgContext, true
 		}},
-		{"compactions", "Compactions", always(func(t *UsageTrendTask) float64 { return float64(t.Compactions) })},
+		{"compactions", "Compactions (a session's, credited to its top-cost task)", always(func(t *UsageTrendTask) float64 { return float64(t.Compactions) })},
 		{"lines", "Lines changed", withPR(func(t *UsageTrendTask) float64 { return float64(t.Lines) })},
 		{"files", "Files changed", withPR(func(t *UsageTrendTask) float64 { return float64(t.Files) })},
 		{"commits", "Commits", withPR(func(t *UsageTrendTask) float64 { return float64(t.Commits) })},

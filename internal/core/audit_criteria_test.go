@@ -63,7 +63,7 @@ func TestCleanAuditCriteria(t *testing.T) {
 		{Exclude: []string{"-x"}},
 		{Paths: []string{"a\\b"}},
 		{MinSeverity: "urgent"},
-		{MaxFindings: 31},
+		{MaxFindings: 101},
 		{MaxFindings: -1},
 		{Paths: []string{strings.Repeat("a/", 101)}},
 		{Paths: []string{"1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21"}},
@@ -79,7 +79,7 @@ func TestAuditAnswerKeep(t *testing.T) {
 	if n := f.keep(&CodeAudit{MinSeverity: "high"}); n != 2 || len(f.Findings) != 2 {
 		t.Errorf("high floor: dropped %d, kept %+v", n, f.Findings)
 	}
-	// max_findings is what the model is asked for, not a cut: all are kept.
+	// max_findings is how many are shown at a time, not a cut: all are kept.
 	if n := f.keep(&CodeAudit{MaxFindings: 1}); n != 0 || len(f.Findings) != 2 || f.Findings[0].Severity != "critical" {
 		t.Errorf("asked for 1: dropped %d, kept %+v", n, f.Findings)
 	}
@@ -93,8 +93,8 @@ func TestAuditAnswerKeep(t *testing.T) {
 	if n := g.keep(ca); n != 0 || len(g.Findings) != 8 {
 		t.Errorf("5 asked, 8 held: dropped %d, kept %d", n, len(g.Findings))
 	}
-	if note := g.keepNote(ca, 8); !strings.Contains(note, "Asked for at most 5") || !strings.Contains(note, "answer held 8") || !strings.Contains(note, "all are kept") {
-		t.Errorf("note = %q", note)
+	if note := g.keepNote(ca, 8); note != "" {
+		t.Errorf("nothing was cut, so the note is empty: %q", note)
 	}
 	// Past the guard the worst are kept and the note says how many were cut.
 	var lots []CodeAuditFinding
@@ -105,14 +105,14 @@ func TestAuditAnswerKeep(t *testing.T) {
 	if n := h.keep(ca); n != 3 || len(h.Findings) != findingsGuard {
 		t.Errorf("past the guard: dropped %d, kept %d", n, len(h.Findings))
 	}
-	if note := h.keepNote(ca, findingsGuard+3); !strings.Contains(note, "3") {
+	if note := h.keepNote(ca, findingsGuard+3); !strings.Contains(note, "held 103") || !strings.Contains(note, "3 were cut") || !strings.Contains(note, "they are in the audit's answer text") {
 		t.Errorf("guard note = %q", note)
 	}
-	if s := auditSchemaFor(&CodeAudit{MaxFindings: 4}); !strings.Contains(s, `"maxItems":4,`) {
-		t.Errorf("schema: %s", s)
+	if strings.Contains(auditSchema, "maxItems") {
+		t.Errorf("the model is told a number: %s", auditSchema)
 	}
-	if s := auditSchemaFor(&CodeAudit{}); !strings.Contains(s, `"maxItems":15,`) {
-		t.Errorf("default schema: %s", s)
+	if AuditShown(&CodeAudit{}) != 15 || AuditShown(&CodeAudit{MaxFindings: 50}) != 50 {
+		t.Error("shown at a time: 0 is 15, a stored 50 is kept")
 	}
 }
 
@@ -137,11 +137,11 @@ func TestAuditOfRecentChangesWithCriteria(t *testing.T) {
 	claim := ae.take()
 	in := agentJobOf(t, claim)
 	if in.DiffFrom != "" || in.DiffSince != a.SinceAt.Unix() || strings.Join(in.DiffPaths, ",") != "internal" || strings.Join(in.DiffExclude, ",") != "*_test.go" ||
-		!strings.Contains(in.JSONSchema, `"maxItems":2,`) {
+		strings.Contains(in.JSONSchema, "maxItems") {
 		t.Fatalf("job = %+v", in)
 	}
 	for _, want := range []string{"everything that landed on it the last 7 days", "Look hardest at:", "Security: injection", "Data integrity",
-		"Audit only these parts of the repository: `internal`", "Leave these out: `*_test.go`", "At most 2 findings", "Report only findings of high severity or worse"} {
+		"Audit only these parts of the repository: `internal`", "Leave these out: `*_test.go`", "Report every problem you find, worst first", "Report only findings of high severity or worse"} {
 		if !strings.Contains(in.Prompt, want) {
 			t.Errorf("the prompt lacks %q:\n%s", want, in.Prompt)
 		}
@@ -155,12 +155,11 @@ func TestAuditOfRecentChangesWithCriteria(t *testing.T) {
 	res["base"], res["diff_from"], res["change_commits"] = "bbbbbbbbbbbb", "aaaaaaaaaaaa", float64(12)
 	ae.finish(claim.ID, "done", res, "")
 	got := ae.audit(a.ID)
-	// max_findings (2) is what the model was asked for, not a cut (E5): the
-	// three at or over the floor are kept, and the summary says both what the
-	// floor left out and that more than asked for are kept.
+	// max_findings (2) is how many are shown at a time, not a cut: the three
+	// at or over the floor are kept, and the summary says what the floor left out.
 	if got.Status != AuditDone || got.Counts.Total != 3 || got.FromSHA != "aaaaaaaaaaaa" || got.ToSHA != "bbbbbbbbbbbb" || got.CommitCount == nil || *got.CommitCount != 12 ||
 		!strings.Contains(got.Summary, "(1 of the answer's 4 findings were below the audit's lowest severity, high, and are left out.)") ||
-		!strings.Contains(got.Summary, "(Asked for at most 2; 3 remain, and all are kept.)") {
+		strings.Contains(got.Summary, "Asked for") {
 		t.Fatalf("done = %s %+v from %s to %s commits %v %q (%s)", got.Status, got.Counts, got.FromSHA, got.ToSHA, got.CommitCount, got.Summary, got.Error)
 	}
 
@@ -222,7 +221,7 @@ func TestAuditStepCriteria(t *testing.T) {
 	ae.work()
 	in := agentJobOf(t, ae.take())
 	if in.DiffSince == 0 || strings.Join(in.DiffPaths, ",") != "internal" || strings.Join(in.DiffExclude, ",") != "docs" || !strings.Contains(in.Prompt, "the last 3 days") ||
-		!strings.Contains(in.Prompt, "Tests: tests that") || !strings.Contains(in.Prompt, "At most 3 findings") || !strings.Contains(in.Prompt, "high severity or worse") {
+		!strings.Contains(in.Prompt, "Tests: tests that") || !strings.Contains(in.Prompt, "Report every problem you find, worst first") || !strings.Contains(in.Prompt, "high severity or worse") {
 		t.Fatalf("job = %+v", in)
 	}
 
@@ -235,7 +234,7 @@ func TestAuditStepCriteria(t *testing.T) {
 		t.Fatalf("weekly job = %+v", in)
 	}
 
-	for _, bad := range []map[string]any{{"target": "recent", "since": "soon"}, {"focus": "vibes"}, {"max_findings": 99}, {"paths": []any{"../x"}}} {
+	for _, bad := range []map[string]any{{"target": "recent", "since": "soon"}, {"focus": "vibes"}, {"max_findings": 101}, {"paths": []any{"../x"}}} {
 		r := Rule{Trigger: Trigger{Event: "manual"}, Actions: []Action{{Type: "audit", ID: "audit", Extra: bad}}}
 		name := "Bad"
 		if _, err := ae.s.CreateAutomation(ae.ctx, ae.admin, ae.p.Key, AutomationInput{Name: &name, Rule: &r}); err == nil {

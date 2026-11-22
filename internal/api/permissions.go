@@ -162,6 +162,7 @@ var routePermissions = map[string]core.Permission{
 	"PUT /api/v1/issues/{key}/objective":            core.PermIssuesEdit,
 	"DELETE /api/v1/issues/{key}/objective":         core.PermIssuesEdit,
 	"POST /api/v1/issues/{key}/objective/checks":    core.PermTasksWork,
+	"POST /api/v1/issues/{key}/objective/diagnose":  core.PermTasksWork, // WP-1449
 	// Confirming an agent's proposed objective puts its command in effect:
 	// a person's own act (WP-ADR111).
 	"POST /api/v1/issues/{key}/objective/confirm": permNever,
@@ -391,6 +392,7 @@ var routePermissions = map[string]core.Permission{
 	"POST /api/v1/usage/transcript":                 core.PermSessionsReport,
 	"POST /api/v1/usage/transcript/status":          core.PermSessionsReport,
 	"GET /api/v1/usage/transcripts":                 core.PermUsageRead,
+	"GET /api/v1/usage/facts":                       core.PermUsageRead,
 	"GET /api/v1/usage/transcript":                  core.PermUsageRead,
 	"GET /api/v1/usage/machines":                    core.PermUsageRead,
 	"POST /api/v1/usage/quota":                      core.PermSessionsReport,
@@ -431,16 +433,26 @@ var routePermissions = map[string]core.Permission{
 	// Agent setup (WP-ADR44): reading is the Agents page; a machine's
 	// report is part of a session, like the kit's; edits open pull requests;
 	// the shared instructions are admins'.
-	"GET /api/v1/agent-setup":              core.PermAgentsRead,
-	"GET /api/v1/agent-setup/file":         core.PermAgentsRead,
-	"GET /api/v1/agent-setup/machine-file": core.PermAgentsRead,
-	"POST /api/v1/agent-setup/refresh":     core.PermAgentsManage,
-	"POST /api/v1/agent-setup/machines":    core.PermSessionsReport,
-	"PUT /api/v1/agent-setup/file":         core.PermPullsWrite,
-	"PUT /api/v1/agent-setup/shared":       core.PermAdmin,
-	"POST /api/v1/agent-setup/publish":     core.PermAdmin,
-	"GET /api/v1/admin/kit":                core.PermAdmin,
-	"PUT /api/v1/admin/kit":                core.PermAdmin,
+	// Agent instructions (ADR146). Writing one is a design write: an agent's
+	// is a proposal, as its design notes are; the core keeps approving,
+	// switching and deleting to people.
+	"GET /api/v1/instructions":              core.PermAgentsRead,
+	"GET /api/v1/instructions/preview":      core.PermAgentsRead,
+	"GET /api/v1/instructions/{id}":         core.PermAgentsRead,
+	"POST /api/v1/instructions":             core.PermDesignWrite,
+	"PATCH /api/v1/instructions/{id}":       core.PermDesignWrite,
+	"POST /api/v1/instructions/{id}/review": core.PermAgentsManage,
+	"DELETE /api/v1/instructions/{id}":      core.PermAgentsManage,
+	"GET /api/v1/agent-setup":               core.PermAgentsRead,
+	"GET /api/v1/agent-setup/file":          core.PermAgentsRead,
+	"GET /api/v1/agent-setup/machine-file":  core.PermAgentsRead,
+	"POST /api/v1/agent-setup/refresh":      core.PermAgentsManage,
+	"POST /api/v1/agent-setup/machines":     core.PermSessionsReport,
+	"PUT /api/v1/agent-setup/file":          core.PermPullsWrite,
+	"PUT /api/v1/agent-setup/shared":        core.PermAdmin,
+	"POST /api/v1/agent-setup/publish":      core.PermAdmin,
+	"GET /api/v1/admin/kit":                 core.PermAdmin,
+	"PUT /api/v1/admin/kit":                 core.PermAdmin,
 
 	// Code, deploys, automations, AI.
 	"GET /api/v1/pulls":                         core.PermPullsRead,

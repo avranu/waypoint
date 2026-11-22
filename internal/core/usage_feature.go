@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"git.jmann.me/claude/waypoint/internal/lazyre"
+	"git.jmann.me/claude/waypoint/internal/transcript"
 )
 
 // What a run or a task had of a release.
@@ -408,8 +409,6 @@ type TaskUsage struct {
 
 const taskUsageTools = 40
 
-var editingTools = []string{"Edit", "MultiEdit", "NotebookEdit", "Write"}
-
 // taskRuns reads a task's runs, oldest first, and the period they cover.
 func (s *Service) taskRuns(ctx context.Context, issueID int64) (runs []TaskUsageRun, from, to, minutes int64, err error) {
 	now := s.nowMS()
@@ -576,7 +575,7 @@ func (s *Service) taskToolsInto(ctx context.Context, sc *usageScope, attr *taskA
 		if attr.taskOf(sessKeyAt{k.machine, k.session}, k.hour) != issueID {
 			continue
 		}
-		if kind == "builtin" && slices.Contains(editingTools, tool) {
+		if kind == "builtin" && transcript.IsEditTool(tool) {
 			o.Edits += calls
 		}
 		name := strings.TrimSpace(tool + " " + detail)

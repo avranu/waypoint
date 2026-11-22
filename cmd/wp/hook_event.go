@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"git.jmann.me/claude/waypoint/internal/core"
 )
 
 // The session hooks (WP-D16): Claude Code runs `wp hook claude-event` for
@@ -106,6 +108,7 @@ type sessionEvent struct {
 	Model            string           `json:"model,omitempty"`
 	Source           string           `json:"source,omitempty"`
 	Prompt           string           `json:"prompt,omitempty"`
+	PromptWithheld   bool             `json:"prompt_withheld,omitempty"` // a typed prompt whose text --no-prompts left out
 	Title            string           `json:"title,omitempty"`
 	NotificationType string           `json:"notification_type,omitempty"`
 	Message          string           `json:"message,omitempty"`
@@ -164,7 +167,11 @@ type pendingCron struct {
 
 // stopPending reads what a Stop says still runs; nil when it says nothing
 // (an older Claude Code), so Waypoint can't call the agent finished.
-func stopPending(in hookEventInput) *hookPending {
+//
+// Its text is a person's: a cron's prompt is what they typed and a task's
+// description can quote it, so both get the redaction the prompt does, and
+// under --no-prompts a cron's prompt text is not sent at all (WP-1470).
+func stopPending(in hookEventInput, known []string, noPrompts bool) *hookPending {
 	if len(in.BackgroundTasks) == 0 && len(in.SessionCrons) == 0 {
 		return nil
 	}
@@ -176,10 +183,16 @@ func stopPending(in hookEventInput) *hookPending {
 		p.Crons = []pendingCron{}
 	}
 	for n := range p.Tasks {
-		p.Tasks[n].Description = truncRunes(p.Tasks[n].Description, 200)
+		d, _, _ := redactTextCounted(p.Tasks[n].Description, known)
+		p.Tasks[n].Description = truncRunes(d, 200)
 	}
 	for n := range p.Crons {
-		p.Crons[n].Prompt = truncRunes(p.Crons[n].Prompt, 200)
+		if noPrompts {
+			p.Crons[n].Prompt = ""
+			continue
+		}
+		d, _, _ := redactTextCounted(p.Crons[n].Prompt, known)
+		p.Crons[n].Prompt = truncRunes(d, 200)
 	}
 	return p
 }
@@ -325,6 +338,13 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 	if err := json.NewDecoder(io.LimitReader(stdin, 4<<20)).Decode(&in); err != nil || in.SessionID == "" || in.HookEventName == "" {
 		return
 	}
+	// Every check reads a paste's text: Claude Code wraps a paste, and
+	// Waypoint's own prompts are pasted (WP-1562). What the server gets of a
+	// person's prompt is as typed, and the server unwraps it, once.
+	raw := in.Prompt
+	if in.HookEventName == "UserPromptSubmit" {
+		in.Prompt = core.UnwrapPasted(in.Prompt)
+	}
 	// A session command (WP-562): the server's go to it as only the command,
 	// prompts or not; the slash hook answers the rest on this machine.
 	slash, slashArg, shipText := "", "", ""
@@ -412,7 +432,8 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 	case "UserPromptSubmit":
 		// Waypoint's own prompts (a keep-warm ping, a bare /compact) still
 		// reach the core under --no-prompts, so it can tell them from typing.
-		p := strings.TrimSpace(in.Prompt)
+		prompt := in.Prompt
+		p := strings.TrimSpace(prompt)
 		if slash != "" {
 			ev.Prompt = strings.TrimSpace("/wp " + slash + " " + slashArg) // nothing else typed after it rides along
 			if slash == "keep" && strings.EqualFold(p, "/keep") {
@@ -425,12 +446,12 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 			switch {
 			case noPrompts:
 			case strings.HasPrefix(p, autopilotPromptMark):
-				ev.Prompt = in.Prompt
+				ev.Prompt = prompt
 			default:
-				ev.Prompt += "\n\n" + in.Prompt
+				ev.Prompt += "\n\n" + prompt
 			}
 		} else if !noPrompts || strings.HasPrefix(p, keepWarmMark) || p == "/compact" {
-			ev.Prompt = in.Prompt
+			ev.Prompt = raw
 			if noPrompts && strings.HasPrefix(p, keepWarmMark) {
 				ev.Prompt = keepWarmMark // nothing the person wrote rides along
 			}
@@ -438,6 +459,15 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 			ev.Prompt = autopilotReviewMark + key // autopilot's review prompt (WP-285): only whose review it is
 		} else if mark := harnessPromptMark(p); mark != "" {
 			ev.Prompt = mark // a background task reporting back is no person's prompt; only that much is sent
+		}
+		// A prompt is text a person typed: it can hold a pasted key or token, so it
+		// gets the redaction the transcript upload gives (this machine's own token,
+		// then the credential patterns) before it leaves the machine (WP-1470).
+		ev.Prompt, _, _ = redactTextCounted(ev.Prompt, []string{c.token()})
+		// A typed prompt whose text --no-prompts left out is still a prompt:
+		// the server records it with no text, and counts it (WP-1470).
+		if noPrompts && ev.Prompt == "" && p != "" {
+			ev.PromptWithheld = true
 		}
 		ev.Title = in.SessionTitle
 	case "PostCompact":
@@ -480,17 +510,19 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 	case "Stop":
 		ev.LastMessage, ev.StopHookActive = in.LastMessage, in.StopHookActive
 		ev.InputTokens, ev.OutputTokens, ev.ContextTokens, ev.CacheTTL = sessionTotals(c, in)
-		ev.Pending = stopPending(in)
+		ev.Pending = stopPending(in, []string{c.token()}, noPrompts)
 		// Where its work is, should the session end before it ships (WP-567).
 		ev.Checkouts = hookCheckouts(in.Cwd, c.state.sessionClaims(in.SessionID))
 	case "SubagentStart", "SubagentStop":
 		ev.AgentID, ev.AgentType = in.AgentID, in.AgentType
 		if in.HookEventName == "SubagentStop" {
 			ownReview(in, &ev, noPrompts) // its report goes to the task's work log (WP-1089)
+		} else {
+			ev.AgentModel = c.subagentModel(in) // which instructions are for it (ADR146)
 		}
 	case "SessionEnd":
 		ev.EndReason = in.Reason
-		ev.Pending = stopPending(in) // what dies with it, if Claude Code says (WP-567)
+		ev.Pending = stopPending(in, []string{c.token()}, noPrompts) // what dies with it, if Claude Code says (WP-567)
 		ev.InputTokens, ev.OutputTokens, ev.ContextTokens, _ = sessionTotals(c, in)
 		// Its tasks' commits go to the forge once nothing else is in their
 		// checkouts; a detached process does it, after this hook (WP-843).
@@ -561,7 +593,12 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 		// write (WP-1398).
 		text := c.withTidyHint(res.Text, in)
 		text = joinParts(c.pauseTell(in.SessionID, hookLateAfter(hookSessionStartTimeout)), text)
-		_, _ = stdout.Write(sessionStartOutput(text, kit))
+		// The session's instructions first (ADR146): Claude Code cuts the end.
+		_, _ = stdout.Write(sessionStartOutput(joinParts(res.Instructions, text), kit))
+	case "SubagentStart":
+		if res.Instructions != "" {
+			_, _ = stdout.Write(hookContext("SubagentStart", truncateUTF8(res.Instructions, maxSessionContext)))
+		}
 	case "UserPromptSubmit":
 		c.saveEnvHosts(ev.Repo, res.EnvHosts)
 		if res.Block != "" {
@@ -797,9 +834,12 @@ type hookReply struct {
 	Session int64  `json:"session"`
 	Text    string `json:"text"`
 	Await   int    `json:"await"` // seconds to wait for a follow-up's message (WP-D22)
-	Note    string `json:"note"`  // a line for the person, never the model (WP-34)
-	End     bool   `json:"end"`   // a task session that finished its tasks: end it (WP-97)
-	Block   string `json:"block"` // UserPromptSubmit: drop the prompt, show the person this (WP-ADR9)
+	// Instructions: at a SessionStart or SubagentStart, the agent
+	// instructions for whoever just started (ADR146); "" from older servers.
+	Instructions string `json:"instructions"`
+	Note         string `json:"note"`  // a line for the person, never the model (WP-34)
+	End          bool   `json:"end"`   // a task session that finished its tasks: end it (WP-97)
+	Block        string `json:"block"` // UserPromptSubmit: drop the prompt, show the person this (WP-ADR9)
 	// Pause: the person's session pause, or null (absent from older
 	// servers); kept in a local file for the PreToolUse hooks (WP-146).
 	Pause json.RawMessage `json:"pause"`
@@ -889,6 +929,8 @@ func eventHookTimeout(event string) int {
 		return hookSessionStartTimeout
 	case "UserPromptSubmit", "Stop":
 		return 20
+	case "SubagentStart":
+		return hookSubagentStartTimeout
 	case "SessionEnd":
 		return 2
 	}

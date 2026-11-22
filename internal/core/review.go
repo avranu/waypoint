@@ -289,11 +289,16 @@ func tomlStrings(s string) ([]string, error) {
 
 // Review limits.
 const (
-	reviewChunkChars = 35_000 // what free models answer within a few minutes
-	reviewMaxChunks  = 4
-	reviewMaxChunk   = 60_000 // one file bigger than a chunk is cut to this
-	reviewMaxFinding = 8
+	reviewChunkChars   = 35_000 // what free models answer within a few minutes
+	reviewMaxChunks    = 4
+	reviewMaxChunk     = 60_000 // one file bigger than a chunk is cut to this
+	reviewDefaultShown = 8      // how many a review posts when its rule sets no number (the model is told none)
 )
+
+// placementLater is the placement of a finding kept but not posted: it is
+// past how many the review shows (max_findings), and the review's body says
+// how many (WP-1421).
+const placementLater = "later"
 
 type reviewChunk struct {
 	files []fileDiff
@@ -419,7 +424,7 @@ func reviewPrompt(pr *ForgePR, rules, focus, conversation, intent, history strin
 	if history != "" {
 		fmt.Fprintf(&b, promptHistory, history)
 	}
-	fmt.Fprintf(&b, promptLimit, reviewMaxFinding)
+	b.WriteString(promptLimit)
 	if parts > 1 {
 		fmt.Fprintf(&b, promptPart, part, parts)
 	}
@@ -587,7 +592,7 @@ func claimWords(s string) map[string]bool {
 // placedFinding is a finding with where it will appear.
 type placedFinding struct {
 	Finding
-	placement string // inline, body, withheld
+	placement string // inline, body, withheld, later
 	note      string // e.g. " (line 40)" when moved to the first changed line
 	marker    string // what names the run and place of its comment, so syncing finds it again
 }
@@ -623,6 +628,29 @@ func placeFindings(fs []Finding, files []fileDiff, private globSet) []placedFind
 		out = append(out, p)
 	}
 	return out
+}
+
+// keepPast leaves the first show findings that can be posted, worst first,
+// on the pull request and marks the rest placementLater: stored, counted
+// in the review's body and given to the agent with the review's comments
+// (WP-1421). It returns how many. A withheld one is neither: it takes no
+// place among those posted and stays withheld. One on a private file is
+// posted whatever the number: a verdict on a finding that isn't posted is
+// answered in the pull request's conversation with its claim, where a
+// mirror copies it.
+func keepPast(placed []placedFinding, show int, private globSet) (later int) {
+	posting := 0
+	for n := range placed {
+		switch {
+		case placed[n].placement == "withheld":
+		case posting < show || private.match(placed[n].File):
+			posting++
+		default:
+			placed[n].placement = placementLater
+			later++
+		}
+	}
+	return later
 }
 
 // fitSuggestion gives a one-line fix the indentation of the line it
@@ -693,11 +721,18 @@ type reviewOutcome struct {
 	dropped  []string // files not reviewed (too large, out of time, every model failed)
 	cut      bool
 	noise    int
-	belowMin int    // findings under the rule's minimum severity, not posted
-	minSev   string // that minimum
-	private  globSet
-	rule     string // the automation, for the marker
-	note     string // the line every review starts with (Admin → AI)
+	later    int    // findings kept but past how many the review posts
+	readAt   string // how to read those: the command and, where Waypoint has an address, the page
+	guardCut int    // findings past the guard (findingsGuard), not kept
+	// answers a reviewer's cut off at its length limit, and the findings
+	// they had finished, kept (WP-1421).
+	salvagedAnswers  int
+	salvagedFindings int
+	belowMin         int    // findings under the rule's minimum severity, not posted
+	minSev           string // that minimum
+	private          globSet
+	rule             string // the automation, for the marker
+	note             string // the line every review starts with (Admin → AI)
 	// The verifier models that checked the findings, what they dropped,
 	// and how many findings went unchecked (every verifier model failed on
 	// them, or their file couldn't be read).
@@ -753,6 +788,7 @@ func reviewBody(sha string, o reviewOutcome) string {
 			inline++
 		case "body":
 			loose = append(loose, p)
+		case placementLater:
 		default:
 			withheld++
 		}
@@ -796,6 +832,24 @@ func reviewBody(sha string, o reviewOutcome) string {
 			}
 		}
 		notes = append(notes, s)
+	}
+	if n := o.later; n > 0 {
+		// Not "the least severe": a finding on a private file is posted past
+		// the number whatever its severity (WP-1421).
+		s := fmt.Sprintf("%d more finding%s past the %d posted, kept in Waypoint and not posted here", n, plural(n), inline+len(loose))
+		if o.readAt != "" {
+			s += ": " + o.readAt
+		}
+		s += "; they count toward the merge gate like the posted ones"
+		notes = append(notes, s)
+	}
+	if n := o.guardCut; n > 0 {
+		notes = append(notes, fmt.Sprintf("%d finding%s past the guard of %d against a runaway answer not kept", n, plural(n), findingsGuard))
+	}
+	if n := o.salvagedAnswers; n == 1 {
+		notes = append(notes, fmt.Sprintf("a reviewer's answer was cut off at its length limit; kept the %d finding%s it had finished", o.salvagedFindings, plural(o.salvagedFindings)))
+	} else if n > 1 {
+		notes = append(notes, fmt.Sprintf("%d reviewers' answers were cut off at their length limit; kept the %d finding%s they had finished", n, o.salvagedFindings, plural(o.salvagedFindings)))
 	}
 	if o.cut {
 		notes = append(notes, "part of the diff was cut to fit the model")

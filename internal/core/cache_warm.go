@@ -408,13 +408,13 @@ func (s *Service) warmSession(ctx context.Context, id int64) error {
 
 // holdsUnmerged: a task the session worked on in the last unmergedWithin
 // isn't merged or closed (its status not done or canceled), and its latest
-// run is the session's and wasn't given back (released, cancelled,
-// refused): the session holds work still on its way (WP-1306).
+// run is the session's and wasn't given back or a diagnosis (released, cancelled,
+// refused, diagnosed): the session holds work still on its way (WP-1306).
 func (s *Service) holdsUnmerged(ctx context.Context, id int64) bool {
 	var unmerged bool
 	if err := s.db.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM agent_runs r JOIN issues i ON i.id = r.issue_id JOIN statuses st ON st.id = i.status_id
 		WHERE r.session_id = ? AND coalesce(r.ended_at, r.started_at) > ? AND st.category NOT IN ('done', 'canceled')
-		AND r.outcome NOT IN ('released', 'cancelled', 'refused')
+		AND r.outcome NOT IN ('released', 'cancelled', 'refused', 'diagnosed')
 		AND r.id = (SELECT max(l.id) FROM agent_runs l WHERE l.issue_id = r.issue_id))`,
 		id, s.nowMS()-unmergedWithin.Milliseconds()).Scan(&unmerged); err != nil {
 		s.log.WarnContext(ctx, "is its task merged", "session", id, "err", err)
@@ -431,9 +431,13 @@ func (s *Service) holdsUnmerged(ctx context.Context, id int64) bool {
 func (s *Service) unattendedSession(ctx context.Context, id int64) bool {
 	var prompted, typed sql.NullInt64
 	var started bool
-	if err := s.db.R.QueryRowContext(ctx, `SELECT (SELECT max(created_at) FROM session_events WHERE session_id = ? AND kind = 'prompt' AND detail LIKE ?),
+	// A row written before WP-1562 kept Claude Code's wrapper, its whitespace
+	// collapsed by excerpt: "<pasted_content id=…> Waypoint autopilot…". Its
+	// text starts after the opening tag's '>' (the tag holds no other).
+	if err := s.db.R.QueryRowContext(ctx, `SELECT (SELECT max(created_at) FROM session_events WHERE session_id = ? AND kind = 'prompt'
+			AND (detail LIKE ? OR (detail LIKE '<pasted_content%' AND ltrim(substr(detail, instr(detail, '>') + 1)) LIKE ?))),
 		(SELECT typed_at FROM agent_sessions WHERE id = ?), EXISTS (SELECT 1 FROM autopilot_steps WHERE next_session = ?)`,
-		id, AutopilotPromptMark+"%", id, id).Scan(&prompted, &typed, &started); err != nil {
+		id, AutopilotPromptMark+"%", AutopilotPromptMark+"%", id, id).Scan(&prompted, &typed, &started); err != nil {
 		s.log.WarnContext(ctx, "is it autopilot's session", "session", id, "err", err)
 		return false
 	}

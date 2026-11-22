@@ -126,7 +126,10 @@ type HookEvent struct {
 	Source    string `json:"source,omitempty"` // SessionStart: startup, resume, clear, compact
 
 	Prompt string `json:"prompt,omitempty"` // UserPromptSubmit (omitted with --no-prompts)
-	Title  string `json:"title,omitempty"`
+	// PromptWithheld: a typed prompt whose text the CLI left out (--no-prompts).
+	// It is recorded as a prompt with no text and counted (WP-1470).
+	PromptWithheld bool   `json:"prompt_withheld,omitempty"`
+	Title          string `json:"title,omitempty"`
 
 	NotificationType string `json:"notification_type,omitempty"`
 	Message          string `json:"message,omitempty"`
@@ -245,6 +248,10 @@ type HookResult struct {
 	Deliver []*Request `json:"deliver,omitempty"`
 	// Messages: queued prompts for the agent (WP-D22), delivered with Text.
 	Messages []*SessionMessage `json:"messages,omitempty"`
+	// Instructions: at a SessionStart or SubagentStart, the agent
+	// instructions for this session (ADR146), for the hook to add to its
+	// context.
+	Instructions string `json:"instructions,omitempty"`
 	// Await: at a Stop that set off a follow-up, how many seconds the hook
 	// should wait for a message before letting the agent stop.
 	Await int `json:"await,omitempty"`
@@ -663,6 +670,11 @@ type TimelineEntry struct {
 	At     time.Time `json:"at"`
 }
 
+const sessionEventsKept = 1500 // newest timeline events a session keeps
+
+// PromptWithheldLine is the timeline line of a prompt whose text was not sent.
+const PromptWithheldLine = "(prompt text not recorded: wp hook --no-prompts)"
+
 const (
 	sessionPromptLine = 300      // of a prompt, on the timeline's line and in last_prompt
 	sessionPromptMax  = 32 << 10 // a prompt is kept whole up to this many characters
@@ -861,6 +873,17 @@ func (s *Service) SessionHook(ctx context.Context, actor *Actor, evs []HookEvent
 			return nil, invalid("machine or cwd too long")
 		}
 	}
+	evs = append([]HookEvent(nil), evs...) // unwrapped below: the caller's stay as sent
+	for n := range evs {
+		// A prompt pasted whole is its text, so autopilot's own (pasted
+		// into the pane) still reads as autopilot's, whatever wp sent it
+		// (WP-1562). The CLI hook sends a person's prompt as it came and
+		// unwraps it only for its own checks; it is unwrapped here, once,
+		// and recorded so (a paste's text, as the transcript shows it).
+		if evs[n].Event == "UserPromptSubmit" {
+			evs[n].Prompt = UnwrapPasted(evs[n].Prompt)
+		}
+	}
 	res := &HookResult{}
 	lastQuiet := false
 	// A pause that winds sessions down (WP-146): every reply carries it for
@@ -903,6 +926,18 @@ func (s *Service) SessionHook(ctx context.Context, actor *Actor, evs []HookEvent
 				return err
 			}
 			last := n == len(evs)-1
+			if last && (ev.Event == "SessionStart" || ev.Event == "SubagentStart") {
+				// What this session is told by what it is (ADR146). Never a
+				// reason to refuse the batch.
+				text, err := s.deliverInstructions(ctx, t, x, &ev)
+				if err != nil {
+					if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+						return err
+					}
+					s.log.WarnContext(ctx, "agent instructions", "session", x.ID, "event", ev.Event, "err", err)
+				}
+				res.Instructions = text
+			}
 			if last && ev.kept != "" {
 				res.Block, advance, review = ev.kept, ev.advance, ev.review
 				continue // no turn: what would start one waits for the next prompt
@@ -1085,6 +1120,50 @@ func (s *Service) hookTime(ev *HookEvent) int64 {
 	return now
 }
 
+// CountUnregisteredWrite counts a write that named, in X-Waypoint-Session, a
+// session the server has not registered (yet): the row it makes gets no
+// session, and nothing retries it (WP-1470). The hook's own calls, which
+// register sessions, are not counted by the caller.
+func (s *Service) CountUnregisteredWrite(ctx context.Context, userID int64, machine string) {
+	if userID == 0 {
+		return
+	}
+	err := s.write(ctx, SystemActor(), func(t *tx) error {
+		return addDropRow(ctx, t, userID, cmp(machine, "unknown"), DropUnregisteredWrite, "api", 1, s.nowMS())
+	})
+	if err != nil {
+		s.log.WarnContext(ctx, "count unregistered session write", "err", err)
+	}
+}
+
+// agentOfCLI is the agent identity of a coding agent's CLI, as the hook names
+// it (cli on the hook event); "" for one it does not know.
+var agentOfCLI = map[string]string{
+	"claude":   "anthropic/claude-code",
+	"gemini":   "google/gemini-cli",
+	"codex":    "openai/codex",
+	"opencode": "opencode",
+}
+
+// agentLabel is the one place that decides the agent a session, and the
+// pauses that match it, are labelled with (WP-1470): the identity the request
+// carries (an agent token's own, else the CLI's X-Waypoint-Agent header),
+// the same one events record as "via"; only when it says none, the agent the
+// hook's own cli names. A cli that names none is "claude" (as before), which
+// is anthropic/claude-code, so with no identity and no cli that is still the
+// answer: pausedAgent has no cli to pass (pauses are matched from the actor
+// alone), so a pause for a session of another CLI with no identity is matched
+// as Claude Code. A Gemini session that says it is gemini is not recorded as
+// Claude Code.
+func agentLabel(actor *Actor, cli string) string {
+	if a := actor.agentName(); a != "" {
+		return a
+	}
+	name := strings.ToLower(cmp(strings.TrimSpace(cli), "claude"))
+	// A CLI this map does not know is recorded under its own name, never as "".
+	return cmp(agentOfCLI[name], name)
+}
+
 // touchSession registers the session (or updates its place and last-seen
 // time) for a hook event.
 func (s *Service) touchSession(ctx context.Context, t *tx, actor *Actor, ev *HookEvent) (*AgentSession, bool, error) {
@@ -1102,7 +1181,7 @@ func (s *Service) touchSession(ctx context.Context, t *tx, actor *Actor, ev *Hoo
 		}
 		res, err := t.ExecContext(ctx, `INSERT INTO agent_sessions(user_id, machine, cli_id, cli, agent, started_at, last_seen_at, kind, task_keys, started_server, started_wp)
 			VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-			actor.id(), machine, ev.SessionID, cmp(ev.CLI, "claude"), cmp(actor.agentName(), "anthropic/claude-code"), at, at, kind, keys, s.cfg.Version, actor.ClientVersion)
+			actor.id(), machine, ev.SessionID, cmp(ev.CLI, "claude"), agentLabel(actor, ev.CLI), at, at, kind, keys, s.cfg.Version, actor.ClientVersion)
 		if err != nil {
 			return nil, false, err
 		}
@@ -1338,6 +1417,16 @@ func (s *Service) applyHookEvent(ctx context.Context, t *tx, actor *Actor, x *Ag
 				return err
 			}
 		}
+		if ev.Prompt == "" && ev.PromptWithheld {
+			// A prompt was typed and its text was left out on purpose: the
+			// turn is still on the timeline, and the missing text is counted.
+			if err := s.sessionTimeline(ctx, t, x.ID, at, "prompt", "", 0, "", "", PromptWithheldLine, x.projectID, map[string]any{"withheld": true}); err != nil {
+				return err
+			}
+			if err := s.addDrop(ctx, t, actor, cmp(x.Machine, "unknown"), DropPromptTextWithheld, "UserPromptSubmit", 1, at); err != nil {
+				return err
+			}
+		}
 		if ev.Prompt != "" {
 			// The line shows the start; a longer prompt is kept whole beside
 			// it (WP-860), as what an agent was asked is part of the record.
@@ -1448,8 +1537,14 @@ func (s *Service) applyHookEvent(ctx context.Context, t *tx, actor *Actor, x *Ag
 			s.log.WarnContext(ctx, "task summary", "session", x.ID, "err", err)
 		}
 		// Keep the timeline bounded.
-		if _, err := t.ExecContext(ctx, `DELETE FROM session_events WHERE session_id = ? AND id < (SELECT id FROM session_events WHERE session_id = ? ORDER BY id DESC LIMIT 1 OFFSET 1500)`, x.ID, x.ID); err != nil {
+		res, err := t.ExecContext(ctx, `DELETE FROM session_events WHERE session_id = ? AND id < (SELECT id FROM session_events WHERE session_id = ? ORDER BY id DESC LIMIT 1 OFFSET ?)`, x.ID, x.ID, sessionEventsKept)
+		if err != nil {
 			return err
+		}
+		if n, _ := res.RowsAffected(); n > 0 { // counted, not silent (WP-1470)
+			if err := s.addDrop(ctx, t, actor, cmp(x.Machine, "unknown"), DropSessionEventsTrim, "session_events", n, at); err != nil {
+				return err
+			}
 		}
 		return setState(SessionIdle, "")
 	case "SubagentStart", "SubagentStop":

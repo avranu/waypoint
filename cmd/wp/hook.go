@@ -14,6 +14,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core"
 )
 
 // Claude Code integration: hooks report each session's token usage to the
@@ -53,6 +55,10 @@ const (
 // hookSessionStartTimeout is the SessionStart hook's timeout in seconds.
 const hookSessionStartTimeout = 10
 
+// hookSubagentStartTimeout is how long a sub-agent's start waits for its
+// instructions (ADR146) before it starts without them.
+const hookSubagentStartTimeout = 5
+
 // hookOpts are the settings of a hook entry beyond its command.
 type hookOpts struct {
 	matcher string // which tools or notifications (empty: all)
@@ -88,7 +94,8 @@ var claudeHooks = []claudeHook{
 	// + a Bash call that satisfies a request (WP-126), silent unless the session has one; + a screenshot the agent read, to its task (WP-263); + who started a background agent (WP-1443)
 	{event: "PostToolUse", command: hookEvent, opts: hookOpts{matcher: "AskUserQuestion|Bash|Read|Agent|Task", async: true}},
 	{event: "Stop", command: hookEvent, opts: hookOpts{timeout: 20}}, // + a follow-up's message (WP-D22)
-	{event: "SubagentStart", command: hookEvent, opts: hookOpts{async: true}},
+	// Answered with the sub-agent's instructions (ADR146), so it waits; fails open.
+	{event: "SubagentStart", command: hookEvent, opts: hookOpts{timeout: hookSubagentStartTimeout}},
 	{event: "SubagentStop", command: hookEvent, opts: hookOpts{async: true}, prompts: true}, // + an adversarial review's report and prompt (WP-1089)
 	{event: "SessionEnd", command: hookEvent, opts: hookOpts{timeout: 2}},
 	// What the session runs with (WP-1468): the snapshot after a compaction and after a settings change, each instruction file as it loads, a model switch.
@@ -246,7 +253,7 @@ func hookClaude(c *cli, args []string) error {
 // usage hooks and the status line. Bump it whenever they change (the test
 // TestHookSchemaFollowsTheHooks fails until it is): hooks that an older wp
 // installed then bring themselves up to date the next time one runs.
-const hookSchema = 18
+const hookSchema = 19
 
 // hookRefreshEvery is how often a hook may try to bring the hooks up to date.
 const hookRefreshEvery = 24 * time.Hour
@@ -873,6 +880,7 @@ func hookClaudeResume(c *cli, stdin io.Reader) {
 	if err := json.NewDecoder(io.LimitReader(stdin, 1<<20)).Decode(&in); err != nil || !filepath.IsAbs(in.Cwd) {
 		return
 	}
+	in.Prompt = core.UnwrapPasted(in.Prompt) // a paste's text (WP-1562)
 	if strings.HasPrefix(strings.TrimSpace(in.Prompt), keepWarmMark) || isSessionCommand(in.Prompt) {
 		return // a keep-warm ping, or a /wp command, is no work on the task (WP-192, WP-562)
 	}

@@ -151,7 +151,7 @@ function columns(by: By): Col<UsageBreakdown>[] {
     { id: 'fresh', label: 'Fresh tokens', value: fresh, bar: true, cell: (r) => tok(fresh(r)) },
     {
       id: 'messages',
-      label: 'Messages',
+      label: 'API messages',
       value: (r) => r.messages,
       wide: true,
       cell: (r) => tok(r.messages),

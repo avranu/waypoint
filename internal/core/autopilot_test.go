@@ -38,6 +38,9 @@ func newAPEnv(t *testing.T) *apEnv {
 	lookupRunnerJob = func(ctx context.Context, s *Service, id int64) (*RunnerJob, error) {
 		j := a.res[id]
 		j.ID = id
+		if id >= 1 && id <= int64(len(a.jobs)) {
+			j.Input = a.jobs[id-1].Input
+		}
 		return &j, nil
 	}
 	t.Cleanup(func() { enqueueRunnerJob, lookupRunnerJob = oldEnq, oldLook })

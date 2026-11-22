@@ -85,8 +85,13 @@ export interface CodeAudit {
   exclude: string[] | null
   /** The lowest severity reported; none: all. */
   min_severity?: FindingSeverity
-  /** The most findings asked for; none: the default. */
+  /** How many findings are listed at a time, as set (max_findings; none:
+   * the default). It limits neither what the model reports nor what is kept. */
   max_findings?: number
+  /** How many findings are listed at a time, as the server works it out:
+   * max_findings or the default, and every finding for a check or a review
+   * round's audit (WP-1421). */
+  shown: number
   /** What the runner read: the change's ends and its commits. */
   from_sha?: string
   to_sha?: string
