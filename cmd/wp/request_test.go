@@ -207,6 +207,60 @@ func TestSessionHooksEndToEnd(t *testing.T) {
 	if x = s.sessions()[0]; strings.HasPrefix(x.LastPrompt, core.AutopilotPromptMark) {
 		t.Fatalf("a typed prompt counted as autopilot's: %q", x.LastPrompt)
 	}
+	// Claude Code wraps a paste, and Waypoint's prompts are pasted: still
+	// Waypoint's under --no-prompts, not the person's (WP-1562).
+	wrap := func(p string) string {
+		return "\n\n<pasted_content id=\"d29a\">\n" + p + "\n</pasted_content id=\"d29a\">\n"
+	}
+	s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": wrap(autopilotReviewMark + "APP-9: secret findings")}), "--no-prompts")
+	if x = s.sessions()[0]; x.LastPrompt != core.AutopilotReviewMark+"APP-9" {
+		t.Fatalf("autopilot's pasted review prompt: %q", x.LastPrompt)
+	}
+	c.notePastedPrompt("sess-1", "APP-9", "Handle APP-9.\n\nsecret steps")
+	s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": wrap("Handle APP-9.\n\nsecret steps")}), "--no-prompts")
+	if x = s.sessions()[0]; x.LastPrompt != core.AutopilotPromptMark+" started this session for APP-9" {
+		t.Fatalf("autopilot's wrapped pasted prompt: %q", x.LastPrompt)
+	}
+	// The note is used up: a wrapped copy is the person's, sent as pasted.
+	s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": wrap("Handle APP-9.\n\nsecret steps")}))
+	if x = s.sessions()[0]; x.LastPrompt != "Handle APP-9. secret steps" {
+		t.Fatalf("a person's wrapped copy: %q", x.LastPrompt)
+	}
+	// A person's paste stays theirs under --no-prompts: nothing is sent.
+	s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": wrap("private note")}), "--no-prompts")
+	if x = s.sessions()[0]; strings.Contains(x.LastPrompt, "private") {
+		t.Fatalf("--no-prompts sent a person's paste: %q", x.LastPrompt)
+	}
+	// Every check reads a paste's text: a keep-warm ping, a background
+	// task's report, a /wp command or /keep, wrapped, are what they are.
+	before = s.sessions()[0].LastPrompt
+	s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": wrap(keepWarmMark + ": still here")}), "--no-prompts")
+	if x = s.sessions()[0]; x.LastPrompt != before {
+		t.Fatalf("a wrapped keep-warm ping under --no-prompts counted as typed: %q", x.LastPrompt)
+	}
+	for _, mark := range core.HarnessPromptMarks {
+		s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": wrap(mark + "\nsecret")}), "--no-prompts")
+		if x = s.sessions()[0]; x.LastPrompt != mark {
+			t.Fatalf("a wrapped harness prompt under --no-prompts: %q", x.LastPrompt)
+		}
+	}
+	s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": wrap("/compact secret")}), "--no-prompts")
+	if x = s.sessions()[0]; strings.Contains(x.LastPrompt, "secret") {
+		t.Fatal("--no-prompts sent a wrapped /compact with arguments")
+	}
+	if got := stopReason(t, s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": wrap("/wp status secret")}), "--no-prompts")); !strings.HasPrefix(got, "Waypoint: ") {
+		t.Fatalf("a wrapped /wp status: %q", got)
+	}
+	if got := stopReason(t, s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": wrap("/keep")}), "--no-prompts")); got != core.AutopilotNothingToKeepLine {
+		t.Fatalf("a wrapped /keep: %q", got)
+	}
+	// Unwrapped once, on the server: a paste of text that is itself one
+	// whole paste keeps its inner wrapper.
+	inner := `<pasted_content id="b">quoted</pasted_content id="b">`
+	s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": wrap(inner)}))
+	if x = s.sessions()[0]; x.LastPrompt != inner {
+		t.Fatalf("a paste of a paste: %q", x.LastPrompt)
+	}
 
 	// Notification → waiting for you.
 	s.hook(in("sess-1", "Notification", s.repo, map[string]any{"notification_type": "idle_prompt", "message": "Claude is waiting"}))

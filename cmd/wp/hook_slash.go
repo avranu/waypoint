@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"git.jmann.me/claude/waypoint/internal/core"
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
@@ -295,6 +296,7 @@ func hookClaudeSlash(c *cli, stdin io.Reader, stdout io.Writer) {
 	if err := json.NewDecoder(io.LimitReader(stdin, 4<<20)).Decode(&in); err != nil || in.SessionID == "" {
 		return
 	}
+	in.Prompt = core.UnwrapPasted(in.Prompt) // a paste's text (WP-1562)
 	p := strings.TrimSpace(in.Prompt)
 	cmd, word, rest, ok := parseWpCommand(p)
 	if !ok {
