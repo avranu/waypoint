@@ -2,7 +2,7 @@
 // branch over a period by default), what to look for (one sentence by
 // default, editable) and the criteria (areas to look hardest at, paths to
 // read or leave out, the lowest severity worth reporting, how many findings
-// at most), which models to try in order, and whether to post on the pull
+// shown at a time), which models to try in order, and whether to post on the pull
 // request and have Claude check and fix the findings. Opened from anywhere
 // with openAuditDialog, or in place with <AuditDialog>.
 
@@ -216,7 +216,7 @@ function AuditForm({
   const [comment, setComment] = useState(p.comment ?? true)
   const [fix, setFix] = useState(p.fix ?? false)
 
-  const cap = defaults?.findings_cap ?? 30
+  const cap = defaults?.findings_cap ?? 100
   const pathsCap = defaults?.paths_cap ?? 20
 
   const input = (): AuditInput | string => {
@@ -228,7 +228,7 @@ function AuditForm({
     if (maxFindings.trim()) {
       max = Number(maxFindings)
       if (!Number.isInteger(max) || max < 1 || max > cap)
-        return `Ask for between 1 and ${cap} findings.`
+        return `Show between 1 and ${cap} findings at a time.`
     }
     const base_: AuditInput = {
       target,
@@ -716,7 +716,10 @@ function Criteria({
             ))}
           </Select>
         </Field>
-        <Field label="At most" note={`Findings, worst first; up to ${cap}.`}>
+        <Field
+          label="Show at a time"
+          note={`Findings listed first, worst first, up to ${cap}; the rest are one click away. The model is told no number.`}
+        >
           <Input
             type="number"
             inputMode="numeric"
