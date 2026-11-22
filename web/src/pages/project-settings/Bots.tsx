@@ -56,6 +56,7 @@ export function FindingMarks({ f }: { f: BotFinding }) {
   const marks: string[] = []
   if ((f.agreed ?? 1) > 1) marks.push(`raised by ${f.agreed} reviewers`)
   if (f.verified_by) marks.push(`checked by ${shortModel(f.verified_by)}`)
+  if (f.placement === 'later') marks.push('not posted on the pull request')
   if (marks.length === 0) return null
   return (
     <span className="text-xs text-subtle" title={f.verified_by || undefined}>

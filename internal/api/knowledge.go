@@ -126,7 +126,9 @@ func (s *Server) getDesign(w http.ResponseWriter, r *http.Request) (any, error) 
 	if err != nil {
 		return nil, err
 	}
-	s.svc.NoteLookup(r.Context(), actorFrom(r), core.KDesign, id, "")
+	if !queryBool(r, "listed") { // listed=1: wp brief listing it unasked, recorded as shown
+		s.svc.NoteLookup(r.Context(), actorFrom(r), core.KDesign, id, "")
+	}
 	if wantsText(r) {
 		return textResponse(designNoteText(n)), nil
 	}
@@ -349,4 +351,21 @@ func (s *Server) agentTakeKey(w http.ResponseWriter, r *http.Request) (any, erro
 		return map[string]any{"task": t.Issue, "workflow": t.Workflow, "step": t.Step, "related": t.Related, "resumed": t.Resumed, "skipped": t.Skipped, "why": t.Why, "design": t.Design, "comments": t.Comments, "warning": warning}, nil
 	}
 	return textResponse(agentTaskText(t, s.taskTextFor(r, t, s.onlyClaim(r, t))) + warningText(warning)), nil
+}
+
+// noteShown records what the CLI listed to an agent unasked (wp brief); the
+// answer counts what was recorded and what named nothing.
+func (s *Server) noteShown(w http.ResponseWriter, r *http.Request) (any, error) {
+	var in struct {
+		Via   string          `json:"via"`
+		Items []core.ShownRef `json:"items"`
+	}
+	if err := decode(r, &in); err != nil {
+		return nil, err
+	}
+	rec, unknown, err := s.svc.NoteShown(r.Context(), actorFrom(r), in.Via, in.Items)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]int{"recorded": rec, "unknown": unknown}, nil
 }

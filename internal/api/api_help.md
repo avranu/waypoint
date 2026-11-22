@@ -657,6 +657,35 @@ differences (a message written again with more tokens). Cost is API-equivalent, 
                                     agents ran (WP-647): deletes, force pushes, production, disks; each with its
                                     redacted command, outcome (ran, error, refused, unknown) and the task; the
                                     first page counts the period's by level and kind
+    POST /usage/transcript?machine=&session=&file=main|PATH&kind=&fp=&from=&to=&redacted=1&version=   the transcript
+                                    archive (WP-1466): the body is gzip of whole JSONL lines of one file, from..to
+                                    its byte offsets; answers {status: stored|duplicate|behind|gap, have, gen}
+                                    (behind and gap say where to resume). Needs the sessions:report permission and
+                                    a person's token, not a runner job's. The redacted flag is the client's
+                                    statement that it removed secrets; the server does not check it. Optional
+                                    redactions=N&redaction_rules={"secret_key":n,"known_value":n,"pattern":n}: how
+                                    many values redaction blanked in the piece (counts only; absent is stored as
+                                    unknown). 507 "the transcript archive is full" when the server's size cap
+                                    (WAYPOINT_TRANSCRIPT_MAX_MB) would be passed: the client holds the file and
+                                    retries later; nothing is stored. The cap is checked against what the index
+                                    records, so deleting or moving files frees nothing: raise the cap. Also 507 "the server's disk is
+                                    nearly full" when the piece would leave less free space than the admin's
+                                    free-disk limit. Both carry "code":"transcript_full"; a runner job's token's
+                                    403 carries "code":"transcript_job".
+    POST /usage/transcript/status {"machine","pending_bytes","pending_files","dropped":{reason:count},"pass_ms",
+                                    "pass_max_ms","stop","cut","off"}   a machine's upload health: the last and
+                                    longest hook pass (ms; a manual pass sends neither), why the last stopped early ("" ran to the end), passes cut
+                                    short so far, and off (WP_USAGE_ARCHIVE=off or a --no-archive pass; an off report changes nothing else).
+                                    Fields left out keep what was reported before (unknown until reported)
+    GET  /usage/machines?user=       the machines that report for you (admins: anyone) with each one's archive record:
+                                    pending, dropped by reason (refused counts refused upload attempts, not
+                                    files; deleted_unsent counts transcripts deleted with unsent bytes), off, pass_ms, pass_max_ms, stop, cut, last_piece_at
+    GET  /usage/transcripts?session=ID&user=&machine=&gen=   the files held for a session: pieces, byte range,
+                                    complete (no hole), sizes, whether every piece was redacted, and redactions (values blanked,
+                                    with redaction_rules by rule; null when any piece predates the counts)
+    GET  /usage/transcript?session=ID&file=main|PATH&machine=&user=&gen=   one file's JSONL, whole lines in order;
+                                    a person only (an agent's shell is refused). A stored piece that fails its
+                                    check after bytes went out breaks the connection instead of ending the body
     GET  /usage/warm?days=28&user=   keep-warm decisions per class of wait (WP-1000): pings, compactions,
                                     cools, what became of the sessions (used within the hour, used again,
                                     cleared, ended, open) and the shares a ping and a compaction need to pay
@@ -802,7 +831,8 @@ steers or clears one in effect.
         "skip_heads":[],"paths":["web/**"] (touches one),"skip_paths":["docs/**"] (every file
         matches one: left out),"min_changed_lines","max_changed_lines" (additions + deletions),
         "repos":["owner/*"]}. Actions: review {"models":[{"provider_id","model"}],"focus",
-        "max_findings","min_severity":"P0|P1|P2|P3","skip_files":[globs],"force"}; when steps
+        "max_findings" (how many are posted, worst first, 1-100, default 8; the rest are kept,
+        counted in the review and hold the merge gate like the posted ones),"min_severity":"P0|P1|P2|P3","skip_files":[globs],"force"}; when steps
         follow a review the run waits for it and the step leaves Findings, Posted, Worst
         ("P0".."P3", "" for none), P0..P3 (counts), Reviewed, Status, Summary, URL, RunID, e.g.
         "only_if":"{{or .Steps.review.P0 .Steps.review.P1}}". pr_comment {"message"}, react
@@ -856,8 +886,8 @@ steers or clears one in effect.
     GET|POST /admin/automations      admin automations (no project; they see every project's events
                                      and the system's; system triggers system_resources,
                                      runner_offline, backup_failed). Edit them with PATCH|DELETE /automations/{id}
-    GET  /admin/system               free disk, database size, free memory and the limits
-    PUT  /admin/system-limits {"disk_free_mb","database_mb","memory_free_mb"}   0 turns a check off
+    GET  /admin/system               free disk, database size, free memory, the transcript archive (size, pieces, cap, refusals) and the limits
+    PUT  /admin/system-limits {"disk_free_mb","database_mb","memory_free_mb","transcripts_mb"}   0 turns a check off
     GET  /projects/{key}/bot-runs?limit=50   bot runs, newest first: pr, reason, status, log
                                      (each model tried: model, outcome, ms), findings, review_url
     POST /bot-runs/{id}/cancel       POST /bot-runs/{id}/retry   (again at the current head)
@@ -1036,7 +1066,8 @@ Cursor on a Waypoint with no LLM gateway. It never changes anything; findings ar
 someone checks them. Not the audit log above.
 
     POST /audits {target: repo|branch|commit|range|pr, repo, project, ref, base, pr, pr_id,
-                 instructions, models: ["cursor/grok-4.7-high", …], comment, fix, blocking}
+                 instructions, models: ["cursor/grok-4.7-high", …], comment, fix, blocking,
+                 max_findings}
                                      ask for one (editors with audits.run): target empty means pr when pr or
                                      pr_id is set, range when ref has "..", else repo. branch: ref against
                                      base (default branch); commit: ref against its parent; range: "A..B";
@@ -1044,7 +1075,13 @@ someone checks them. Not the audit log above.
                                      or out of quota (default: the chain from GET /audits/defaults); a chain
                                      that is only busy is retried up to 3 times. comment (default yes) posts
                                      a pull request's findings on it; fix makes a task for Claude to check
-                                     and fix them. The asking session is told when it ends
+                                     and fix them. max_findings (0: 15; 1-100) is how many findings are shown
+                                     at a time (wp audit show, the audit's page, the pull request's comment: the
+                                     rest are counted and one step away, and open ones hold a pull request's merge gate like the shown
+                                     ones); it is not a limit. The model is told no
+                                     number and every finding it reports is kept (the guard is 100: past it the
+                                     summary says how many were cut). GET returns all of them.
+                                     The asking session is told when it ends
     GET /audits?project=KEY&pr_id=N&status=queued|running|done|failed|limited|cancelled|active&limit=50
                                      newest first, each with counts {total, open, critical, high, medium, low}
     GET /audits/defaults             {instructions, models, targets, severities, states, clis}

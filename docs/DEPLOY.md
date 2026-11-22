@@ -31,6 +31,8 @@ All configuration is environment variables.
 | `WAYPOINT_LOG_FORMAT` | `json` | `text` for humans |
 | `WAYPOINT_LOG_DIR` | `logs/` next to the database (Docker image: `/data/logs`) | the server log's day files, read by `wp server log` across restarts and deploys: one JSON line a record, secrets blanked, mode 0600, gzipped once the day is over, at most 512 MB in all; `off` keeps the log in memory only |
 | `WAYPOINT_LOG_DAYS` | `30` | how many days of log files to keep |
+| `WAYPOINT_TRANSCRIPT_DIR` | `transcripts/` next to the database (Docker image: `/data/transcripts`) | the transcript archive `wp usage sync` uploads (WP-1466): one gzipped file per piece, about a third of the raw size of the sessions on the machines that sync (one busy machine on 2026-11-21, by `find ~/.claude/projects -name '*.jsonl' -mtime -30`, sub-agent files included: 3,314 files were 6.6 GB raw and 2.0 GB through `gzip -6`, and the last 7 days alone were 3.0 GB raw; that is before redaction and gzipped as one stream, so take it as a rough size, not a forecast); the daily DB backup does not include it; `off` keeps no archive: an upload and a read are answered `501` (`this server keeps no transcript archive ...`), which is a setting and not logged as a failed request, and `wp usage sync` takes it to mean this server keeps no archive (nothing is held or counted as failed) |
+| `WAYPOINT_TRANSCRIPT_MAX_MB` | none (0 or unset: no cap) | the most the transcript archive may hold, in MB. When storing a piece would pass it, the server refuses with `507` (`the transcript archive is full: ...`) and counts the refusal (`refused` in `wp usage machines` counts refused upload attempts, not files); `wp usage sync` treats that as held (the file stays pending, the pass stops quietly with that reason, nothing is dropped) and tries again next time (a machine's hook passes wait an hour after a `507` before trying again; a manual `wp usage sync` always tries). The cap refuses, it never deletes: see "Backups and restore" |
 | `WAYPOINT_DEV_PROXY` | none | proxy the web app to a Vite dev server |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) | none | turns on OpenTelemetry traces, sent over OTLP/HTTP (e.g. `http://tempo:4318`). The other standard variables apply: `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_SERVICE_NAME` (default `waypoint`), `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_TRACES_SAMPLER`/`_ARG` (default `parentbased_always_on`); `OTEL_SDK_DISABLED=true` turns them off again. See Observability |
 
@@ -355,6 +357,60 @@ Daily backups land in `WAYPOINT_BACKUP_DIR` as `waypoint-YYYY-MM-DD.db`
 integration tokens, so keep the directory private and copy it off the machine
 (restic, rclone, …).
 
+The transcript archive (`WAYPOINT_TRANSCRIPT_DIR`) is not in these backups: the
+database holds only an index of it. Copy that directory off the machine too,
+and treat it as private (it holds what was said in every session, redacted of
+credentials of known shapes only). Restoring a database without it leaves the
+index pointing at files that are not there; reading such a piece is an error.
+The server notices: at start and then daily it checks (by file name only, no
+file is read) that each indexed piece has its file, and the "transcript
+archive" line of `wp server status` says "N stored transcript pieces are
+missing on disk" while any are. It reports only. It does not change the index,
+and the machines do not send those bytes again by themselves: their offsets
+are already past them, and a machine with nothing new in a file never asks the
+server where its copy ends. The remedy is to put the directory back from your
+copy; once the files are there the next daily check clears the line. Pieces
+with no copy anywhere stay missing.
+
+Nothing in the transcript archive is deleted by age or by size, and removing a
+session from the app leaves its transcripts. The one exception: deleting a
+user's account removes that account's archived transcripts from the disk (the
+`user.delete` audit entry says so, and `user.transcripts.remove_failed` says
+when the files could not be removed). `WAYPOINT_TRANSCRIPT_MAX_MB` only makes
+the server refuse new pieces once the archive is that large (the uploading
+machines keep the files pending and say so in `wp usage machines`); it does not
+prune. Whatever the cap, the server also refuses (`507`, "the server's disk is
+nearly full") a piece that would leave less free space on the archive's disk
+than the free-disk limit of the admin Automations page (1024 MB unless changed;
+0 turns the floor off); nothing is deleted then either, and the machines hold
+their files like they do for a full archive. The refusals carry a `code`
+(`transcript_full` for both, `transcript_job` for a runner job's token) that
+the client goes by. The "Transcript archive" resource turns low, and the
+admin automations for it fire, when the archive holds 90% of the cap (and when
+it passes the admin's own limit), so you hear before uploads are refused. Pruning old pieces and backing the archive up are yours to do: the
+directory needs its own off-machine copy. The cap is checked against the
+size the index records, which changes only when pieces are added to the index:
+deleting or moving files in the directory frees no room (and reading such a
+piece is an error); the remedy for a full archive is to raise the cap. The archive's size and piece count are in the admin Automations page
+(System limits, "Transcript archive larger than (MB)" alerts like disk,
+database and memory do) and in `GET /admin/system`; a machine's
+opt-out (`WP_USAGE_ARCHIVE=off`), drops and slow or cut-short passes are in
+`wp usage machines` and the "transcript archive" line of `wp server status`.
+The drop reasons `wp usage machines` lists are `upload_failed`, `refused` (a
+file the server refuses for good; the machine retries it daily),
+`line_too_large` and `redaction_failed` (a line replaced by a stub),
+`deleted_unsent` (a transcript deleted from the machine with bytes the server
+never got), `unreadable_file`, `out_of_sync` and `state_reset`. The "dropped"
+total of `wp server status` and the collector notice count the ones that need
+someone to act: `line_too_large`, `redaction_failed`, `refused` and
+`deleted_unsent`; the others the next pass settles. The pass times are the
+machine's hook passes only (a manual `wp usage sync` backfill is not timed
+there), and the last one can be up to 12 hours old. A hook pass is bounded:
+the hour counts' uploads together get 10 seconds from its start and its status
+post ends inside the hook's 30. A manual `wp usage sync` that is not `--all`
+says how many transcripts older than its 30-day window were never uploaded;
+`wp usage sync --all` archives them.
+
 Restore (compose):
 
 ```sh
@@ -498,6 +554,18 @@ Any proxy works. Requirements:
   most, and it must arrive within Waypoint's two-minute read timeout. A
   proxy that refuses the upload only fails that try (the audit goes on to
   its next model).
+- The transcript archive (`POST /api/v1/usage/transcript`, WP-1466) sends
+  pieces of up to 8 MiB raw, and a piece may be up to 24 MiB compressed (the
+  server's cap), so give that route its own larger limit (below). When a
+  proxy answers 413 to a piece, `wp usage sync` halves its piece size and
+  goes on, keeps the smaller size for a day, and so still archives through a
+  smaller limit, in more requests. Only a single line too large for the
+  proxy holds its file (counted as a refused upload, tried again once a day,
+  and `wp usage machines` names the likely cause).
+- Whether any of this needs a change depends on the proxy: nginx refuses
+  bodies over 1 MB unless `client_max_body_size` says otherwise, while Caddy
+  has no limit unless the site sets `request_body max_size`. A response's
+  `Server` or `Via` header says which one answers (`curl -sI URL/healthz`).
 
 nginx example:
 
@@ -510,5 +578,15 @@ location / {
     proxy_http_version 1.1;
     proxy_read_timeout 1h;   # long-lived event stream
     client_max_body_size 5m;
+}
+
+location = /api/v1/usage/transcript {
+    proxy_pass http://prod-host:21200;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_http_version 1.1;
+    proxy_request_buffering off;
+    client_max_body_size 25m;
 }
 ```

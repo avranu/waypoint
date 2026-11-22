@@ -13,6 +13,7 @@ func (s *Server) agentsHubRoutes(mux *http.ServeMux) {
 	s.pullRoutes(mux)
 	s.usageRoutes(mux)
 	s.usageAnalyticsRoutes(mux)
+	s.usageTranscriptRoutes(mux)
 	s.otlpRoutes(mux)
 	s.overviewRoutes(mux)
 	s.auditRoutes(mux)

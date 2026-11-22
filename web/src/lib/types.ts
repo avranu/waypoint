@@ -1055,7 +1055,7 @@ export interface BotFinding {
   severity: 'critical' | 'high' | 'medium' | 'low'
   claim: string
   model: string
-  placement: 'inline' | 'body' | 'withheld'
+  placement: 'inline' | 'body' | 'withheld' | 'later'
   /** resolved: a person resolved its thread on the forge; dismissed: a person or an agent said it is wrong. Only open ones block the review gate. */
   state: 'open' | 'fixed' | 'withdrawn' | 'dismissed' | 'resolved' | 'dropped'
   /** how many reviewers raised it (a review pipeline's; 1 for one reviewer) */

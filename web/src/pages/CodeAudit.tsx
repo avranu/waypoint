@@ -341,8 +341,14 @@ function Findings({ audit: a }: { audit: CodeAudit }) {
   )
   const open = findings.filter((f) => f.state === 'open' || f.state === 'confirmed')
   const [show, setShow] = useState<Show>('open')
+  const [all, setAll] = useState(false)
   if (a.status !== 'done') return null
   const list = show === 'open' ? open : findings
+  // The server says how many are listed at a time (shown); the rest are one
+  // click away and counted (WP-1421). This page is served with its server,
+  // so it has no rule of its own.
+  const listed = all || !a.shown ? list : list.slice(0, a.shown)
+  const more = list.length - listed.length
   return (
     <Section
       title={`Findings${findings.length ? ` (${findings.length})` : ''}`}
@@ -374,10 +380,17 @@ function Findings({ audit: a }: { audit: CodeAudit }) {
         </Empty>
       ) : (
         <ul className="divide-y divide-line">
-          {list.map((f) => (
+          {listed.map((f) => (
             <FindingItem key={f.id} finding={f} audit={a} />
           ))}
         </ul>
+      )}
+      {more > 0 && (
+        <div className="border-t border-line px-4 py-3">
+          <Button size="sm" onClick={() => setAll(true)}>
+            Show {more} more
+          </Button>
+        </div>
       )}
     </Section>
   )
@@ -559,6 +572,9 @@ function Verdict({
 }
 
 function Asked({ audit: a }: { audit: CodeAudit }) {
+  // The number is named only when it is the one in use: a check of marks and
+  // a review round's audit list every finding whatever max_findings holds.
+  const showsSet = !!a.max_findings && (!a.shown || a.shown === a.max_findings)
   const target = TARGETS.find((t) => t.value === a.target)
   const focusAreas = useQuery({ ...auditDefaultsQuery(), enabled: !!a.focus?.length }).data?.focus
   const what =
@@ -641,14 +657,14 @@ function Asked({ audit: a }: { audit: CodeAudit }) {
             </dd>
           </>
         )}
-        {!!(a.min_severity || a.max_findings) && (
+        {!!(a.min_severity || showsSet) && (
           <>
             <dt className="text-subtle">Report</dt>
             <dd>
               {[
                 a.min_severity &&
                   MIN_SEVERITY.find((x) => x.value === a.min_severity)?.label.toLowerCase(),
-                a.max_findings && `at most ${plural(a.max_findings, 'finding')}`,
+                showsSet && `showing ${plural(a.max_findings ?? 0, 'finding')} at a time`,
               ]
                 .filter(Boolean)
                 .join(', ')
