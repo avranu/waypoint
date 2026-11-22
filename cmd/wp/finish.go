@@ -101,6 +101,12 @@ func cmdFinish(c *cli, args []string) error {
 	if shipping && len(keys) > 1 {
 		return c.usage("a pull request ships one task: give one KEY (the others finish with wp ship KEY once it is open)")
 	}
+	if shipping {
+		// Before anything is committed or pushed (WP-1449).
+		if err := c.refuseDiagnoseRound(keys); err != nil {
+			return err
+		}
+	}
 	if !shipping && keyErr != nil {
 		return keyErr
 	}
@@ -406,4 +412,36 @@ func (c *cli) prOpenFrom(f prOpenFlags, branch string) bool {
 		}
 	}
 	return false
+}
+
+// refuseDiagnoseRound stops a ship of a task whose round is a diagnose round,
+// which ships no code: before the branch is committed to or pushed, not after
+// the server refuses the pull request. The task is the one named, else the
+// one the branch names. Anything the server can't say is left to it.
+func (c *cli) refuseDiagnoseRound(keys []string) error {
+	key := ""
+	switch {
+	case len(keys) == 1:
+		key = keys[0]
+	case len(keys) == 0:
+		if branch, err := localGit("rev-parse", "--abbrev-ref", "HEAD"); err == nil {
+			if m := branchKeyRE.FindStringSubmatch(branch); m != nil {
+				key = m[1]
+			}
+		}
+	}
+	if key == "" {
+		return nil
+	}
+	var o objective
+	if err := c.do("GET", "/api/v1/issues/"+esc(key)+"/objective", nil, &o); err != nil {
+		if isNotFound(err) { // no objective on it: nothing to refuse
+			return nil
+		}
+		return err // not knowing is not leave to commit or push
+	}
+	if o.State != "active" || o.Phase != "" || o.RoundKind != "diagnose" {
+		return nil
+	}
+	return fmt.Errorf("%s's round %d is a diagnose round: it ships no code, so there is nothing to ship yet. Record what you found with wp objective diagnose %s -f FILE; the same round then opens again as a work round, and that is the round to ship in (a person can skip the diagnosis with wp objective next %s)", key, o.Round, key, key)
 }

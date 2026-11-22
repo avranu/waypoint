@@ -69,6 +69,13 @@ func (c *client) json(method, path string, body any, out any) int {
 func setup(t *testing.T) (*httptest.Server, *core.Service) { return setupServer(t, nil) }
 
 func setupServer(t *testing.T, configure func(*http.Server)) (*httptest.Server, *core.Service) {
+	ts, svc, _ := setupServerDB(t, configure)
+	return ts, svc
+}
+
+// setupServerDB is setupServer with the database too, for a test that has
+// to put the data in a state the service only reaches over many steps.
+func setupServerDB(t *testing.T, configure func(*http.Server)) (*httptest.Server, *core.Service, *db.DB) {
 	ctx := context.Background()
 	d, err := db.OpenFresh(ctx, filepath.Join(t.TempDir(), "api.db"))
 	if err != nil {
@@ -84,7 +91,7 @@ func setupServer(t *testing.T, configure func(*http.Server)) (*httptest.Server, 
 	ts.Start()
 	t.Cleanup(ts.Close)
 	t.Cleanup(svc.Wait)
-	return ts, svc
+	return ts, svc, d
 }
 
 func TestAPIFlow(t *testing.T) {

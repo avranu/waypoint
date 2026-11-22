@@ -72,7 +72,7 @@ type PRSummary struct {
 	Reviews          PRCounts       `json:"reviews"`   // bots: Waypoint's reviews and other bots'
 	Approvals        []string       `json:"approvals"` // people who approved it
 	ChangesRequested int            `json:"changes_requested"`
-	Findings         map[string]int `json:"findings"` // by severity, as bots posted them
+	Findings         map[string]int `json:"findings"` // by severity: what bots raised and kept, posted or past the shown number (WP-1421)
 	Issues           []PRIssue      `json:"issues"`
 	// Mentions are issues its text or comments name without it being their
 	// work, so not linked (WP-379).

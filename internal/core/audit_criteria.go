@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strconv"
@@ -14,9 +15,14 @@ import (
 // What an audit reads and looks for, said more exactly than one sentence
 // (WP-548): what landed on a branch over a period, the parts of the
 // repository to read or leave out, the areas to look hardest at, the lowest
-// severity worth reporting and how many findings at most. The server turns
+// severity worth reporting and how many findings are shown at a time (not a
+// limit on what is kept, WP-1421). The server turns
 // them into the prompt; the runner finds the period's first commit and
 // limits the diff to the paths (WP-ADR40).
+
+// AuditDefaultShown is how many findings are shown at a time when an audit
+// sets no number.
+const AuditDefaultShown = auditDefaultFindings
 
 const (
 	auditDefaultFindings = 15
@@ -96,12 +102,12 @@ func cleanAuditCriteria(in AuditInput) (auditCriteria, error) {
 	// checkLeftOutMax), which can pass what a person may ask for.
 	most := auditMaxFindings
 	if in.purpose == AuditCheck {
-		most = checkClaimsMax + checkLeftOutMax
+		most = max(most, checkClaimsMax+checkLeftOutMax)
 	}
 	switch n := in.MaxFindings; {
 	case n == 0:
 	case n < 1 || n > most:
-		return c, invalid("an audit reports between 1 and %d findings", most)
+		return c, invalid("an audit shows between 1 and %d findings at a time", most)
 	default:
 		c.maxFindings = n
 	}
@@ -232,30 +238,22 @@ func auditCriteriaPrompt(a *CodeAudit) string {
 	return b.String()
 }
 
-// auditUncapped: the audit is a review round's, whose reviewer is told no
-// number of findings to stay under (findingsGuard is only a guard).
-func auditUncapped(a *CodeAudit) bool { return a.Purpose == AuditReview }
-
-// auditFindingsCap is how many findings an audit keeps at most: what a
-// person set (max_findings), or for a review round the guard.
-func auditFindingsCap(a *CodeAudit) int {
-	switch {
-	case auditUncapped(a):
-		return findingsGuard
-	case a.MaxFindings > 0:
+// AuditShown is how many of an audit's findings are shown or delivered at
+// a time, and the one place the rule lives (the audit's JSON carries it as
+// shown). An ordinary audit shows what a person set (max_findings, which
+// names the field as it was stored and as the API has always called it),
+// else the default. A check of a session's marks and a review round's
+// audit are delivered in full (auditGuard): the session must mark every
+// finding, so none is hidden behind a number. It never limits what is asked
+// of the model or what is kept: the rest are one step away (WP-1421).
+func AuditShown(a *CodeAudit) int {
+	if a.Purpose == AuditCheck || a.Purpose == AuditReview {
+		return auditGuard(a)
+	}
+	if a.MaxFindings > 0 {
 		return a.MaxFindings
 	}
 	return auditDefaultFindings
-}
-
-// auditSchemaFor is auditSchema with the audit's cap on findings; a review
-// round's has none, and none of the Haiku panel's leads: the panel runs
-// beside the reviewer and never tells it anything (WP-1320, WP-ADR141).
-func auditSchemaFor(a *CodeAudit) string {
-	if auditUncapped(a) {
-		return strings.Replace(auditSchema, `"maxItems":15,`, "", 1)
-	}
-	return strings.Replace(auditSchema, `"maxItems":15`, fmt.Sprintf(`"maxItems":%d`, auditFindingsCap(a)), 1)
 }
 
 // auditGuard is the most findings any audit keeps: a guard against a
@@ -270,8 +268,8 @@ func auditGuard(a *CodeAudit) int {
 
 // keep drops the findings an audit's criteria rule out (a model may report
 // them anyway), and any past the guard (auditGuard), and says how many went.
-// No audit drops findings past the number it asked for (max_findings): it
-// keeps them all, worst first, and says so (keepNote).
+// max_findings is how many are shown at a time (AuditShown), not how many
+// are kept: it keeps them all up to the guard, worst first.
 func (f *auditAnswer) keep(a *CodeAudit) int {
 	before := len(f.Findings)
 	if a.MinSeverity != "" {
@@ -279,29 +277,78 @@ func (f *auditAnswer) keep(a *CodeAudit) int {
 		f.Findings = slices.DeleteFunc(f.Findings, func(x CodeAuditFinding) bool { return slices.Index(auditSeverities, x.Severity) > floor })
 	}
 	f.floorCut = before - len(f.Findings)
-	f.Findings = f.Findings[:min(len(f.Findings), auditGuard(a))]
+	if g := auditGuard(a); len(f.Findings) > g {
+		f.rememberCut(f.Findings[g:])
+		f.Findings = f.Findings[:g]
+	}
 	f.guardCut = before - f.floorCut - len(f.Findings)
 	return before - len(f.Findings)
 }
 
-// keepNote is what the summary says when keep left findings out, or kept
-// more than the audit asked for: how many the answer held and how many are
-// kept, so no finding goes unseen. raised is how many the answer held.
+// auditCutHeading heads the findings the guard cut, which are added to the
+// audit's stored answer text; auditCutMax bounds them, in runes, so a
+// runaway answer is still not stored without bound (WP-1421).
+const (
+	auditCutHeading = "Findings past the guard, as read from the answer:"
+	auditCutMax     = 400_000
+)
+
+// rememberCut keeps the findings the guard cut as JSON, to the bound
+// (cutShort: it had to stop early).
+func (f *auditAnswer) rememberCut(cut []CodeAuditFinding) {
+	b, err := json.Marshal(cut)
+	if err != nil {
+		return
+	}
+	r := []rune(string(b))
+	if len(r) > auditCutMax {
+		r, f.cutShort = r[:auditCutMax], true
+	}
+	f.cutJSON = string(r)
+}
+
+// answerWith is the answer text with the findings the guard cut after it.
+func (f *auditAnswer) answerWith(answer string) string {
+	if f.cutJSON == "" {
+		return answer
+	}
+	return answer + "\n\n" + auditCutHeading + "\n" + f.cutJSON
+}
+
+// cutWhere says where the findings the guard cut are, and how far.
+func (f *auditAnswer) cutWhere(a *CodeAudit) string {
+	at := fmt.Sprintf("the audit's answer text (the answer field of `wp audit show %d --json`)", a.ID)
+	switch {
+	case f.cutJSON == "":
+		return "they are not kept"
+	case f.cutShort:
+		return "they are in " + at + ", cut short at its size limit"
+	}
+	return "they are in " + at
+}
+
+// summaryWithNote is an audit's stored summary: the model's words, cut to
+// leave room for the note about findings left out, which is never the part
+// that is cut.
+func summaryWithNote(summary, note string) string {
+	const most = 2000
+	room := most - len([]rune(note))
+	if room < 1 {
+		return excerpt(note, most)
+	}
+	return excerpt(summary, room) + note
+}
+
+// keepNote is what the summary says when keep left findings out: how many
+// the answer held and how many are kept, so no finding goes unseen. raised is how many the answer held.
 func (f *auditAnswer) keepNote(a *CodeAudit, raised int) string {
 	var b strings.Builder
 	if f.floorCut > 0 {
 		fmt.Fprintf(&b, " (%d of the answer's %d findings were below the audit's lowest severity, %s, and are left out.)", f.floorCut, raised, a.MinSeverity)
 	}
 	if f.guardCut > 0 {
-		fmt.Fprintf(&b, " (The answer held %d findings; %d are kept, the worst first, at the guard of %d against a runaway answer; %d were cut, and the answer as it came is kept in the audit.)",
-			raised, len(f.Findings), auditGuard(a), f.guardCut)
-	} else if !auditUncapped(a) && a.Purpose != AuditCheck && len(f.Findings) > auditFindingsCap(a) {
-		if f.floorCut > 0 {
-			// After the severity note: the number is what is left of it.
-			fmt.Fprintf(&b, " (Asked for at most %d; %d remain, and all are kept.)", auditFindingsCap(a), len(f.Findings))
-		} else {
-			fmt.Fprintf(&b, " (Asked for at most %d; the answer held %d; all are kept.)", auditFindingsCap(a), len(f.Findings))
-		}
+		fmt.Fprintf(&b, " (The answer held %d findings; %d are kept, the worst first, at the guard of %d against a runaway answer; %d were cut; %s)",
+			raised, len(f.Findings), auditGuard(a), f.guardCut, f.cutWhere(a))
 	}
 	return b.String()
 }

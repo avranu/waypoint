@@ -1115,6 +1115,16 @@ func (s *Service) AgentDone(ctx context.Context, actor *Actor, ref string, in Ag
 		if i.Closed() {
 			return invalid("%s is already %s", i.Key, i.Status.Name)
 		}
+		// A diagnose round ships no code, so nothing finishes it but a
+		// diagnosis: not wp done, whatever it would do next (leave a pull
+		// request open, step a workflow on) (WP-1449).
+		o, err := s.objectiveRow(ctx, t, i.ID)
+		if err != nil {
+			return err
+		}
+		if o != nil && o.diagnoseRound() {
+			return o.diagnoseDoneError(i.Key, i.ClaimedBy == id && live && i.Status.Category == CatInProgress)
+		}
 		// Out on a pull request that hasn't merged: the merge (or a person)
 		// finishes it, not wp done. The agent's part ends here: its run and
 		// claim do, and the issue stays where it is (WP-246).
