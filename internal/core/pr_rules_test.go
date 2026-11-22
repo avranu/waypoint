@@ -2,7 +2,9 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -354,5 +356,61 @@ func TestReviewRequestedHooks(t *testing.T) {
 		"changes":{"reviewers":{"previous":[{"username":"ann"}],"current":[{"username":"ann"},{"username":"bo"}]}}}`))
 	if err != nil || ev.pr == nil || !slices.Equal(ev.pr.requested, []string{"bo"}) {
 		t.Fatalf("gitlab reviewers: %+v %v", ev, err)
+	}
+}
+
+// WP-1599: CodeRabbit is asked once per pull request (opened, marked ready
+// or reopened), never per push, and the migration adds the template's rule.
+func TestAskCodeRabbitOncePerPullRequest(t *testing.T) {
+	pe := newPREnv(t, "github")
+	var tpl *AutomationTemplate
+	for i := range AutomationTemplates {
+		if AutomationTemplates[i].Name == "Ask CodeRabbit to review" {
+			tpl = &AutomationTemplates[i]
+		}
+	}
+	if tpl == nil || tpl.Default {
+		t.Fatalf("template: %+v", tpl)
+	}
+	pe.onlyRule(tpl.Name, tpl.Rule)
+	asks := func() int {
+		n := 0
+		for _, p := range pe.posted() {
+			if strings.HasSuffix(p, "|@coderabbitai review") {
+				n++
+			}
+		}
+		return n
+	}
+	pe.prHook("opened", ForgePR{Number: 7, Title: "Fix login", Author: "sam", HeadRef: "fix", HeadSHA: "aaaa1111", State: "open"}, sampleDiff, nil)
+	pe.settle()
+	if n := asks(); n != 1 {
+		t.Fatalf("opened: %d asks, posted %q", n, pe.posted())
+	}
+	pe.prHook("synchronize", ForgePR{Number: 7, Title: "Fix login", Author: "sam", HeadRef: "fix", HeadSHA: "bbbb2222", State: "open"}, sampleDiff, nil)
+	pe.settle()
+	if n := asks(); n != 1 {
+		t.Fatalf("a push asked again: %d asks", n)
+	}
+	// A person's draft waits until it is marked ready.
+	pe.prHook("opened", ForgePR{Number: 8, Title: "WIP", Author: "sam", HeadRef: "wip", HeadSHA: "cccc3333", State: "draft"}, sampleDiff, nil)
+	pe.settle()
+	if n := asks(); n != 1 {
+		t.Fatalf("a draft was asked about: %d asks", n)
+	}
+	pe.prHook("ready_for_review", ForgePR{Number: 8, Title: "WIP", Author: "sam", HeadRef: "wip", HeadSHA: "cccc3333", State: "open"}, sampleDiff, nil)
+	pe.settle()
+	if n := asks(); n != 2 {
+		t.Fatalf("marked ready: %d asks", n)
+	}
+
+	// The migration's rule is the template's.
+	sqlText, err := os.ReadFile("../db/migrations/0185_coderabbit_requests.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := json.Marshal(tpl.Rule)
+	if !strings.Contains(string(sqlText), "'"+string(want)+"'") {
+		t.Errorf("migration's rule differs from the template's %s", want)
 	}
 }
