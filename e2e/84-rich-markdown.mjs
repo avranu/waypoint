@@ -161,6 +161,13 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
     "<table><tbody><tr><th>h</th></tr><tr><td><ul><li>a|b</li></ul><pre><code>c|d\ne</code></pre></td></tr></tbody></table>",
     "| h |\n| --- |\n| - a\\|b `c\\|d e` |",
   );
+  // The table reader splits at a pipe after an even run of backslashes, so a
+  // code span's own backslash before a pipe must not leave it at two.
+  await writes(
+    "Table cell code backslash",
+    "<table><tbody><tr><th>h</th><th>k</th></tr><tr><td><code>c\\|d</code></td><td>e</td></tr></tbody></table>",
+    "| h | k |\n| --- | --- |\n| `c\\|d` | e |",
+  );
   await writes("Script and style", "<p>a<style>p{}</style><script>x()</script>b</p>", "ab");
   await writes("Heading break", "<h2>a<br>b</h2>", "## a b");
   await writes("Heading closer", "<h2>Issue #</h2>", "## Issue \\#");

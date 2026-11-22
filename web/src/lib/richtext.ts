@@ -5,7 +5,8 @@
 import { renderMarkdownForEdit, hasRawHtml } from '@/lib/markdown'
 
 // `label`: text inside a link label or image alt, where any bracket would end
-// it early. `cell`: text inside a table cell, where a pipe would end it.
+// it early. `cell`: inside a table cell, which is one line (its pipes are
+// escaped once, by table()).
 type Opts = { code?: boolean; label?: boolean; cell?: boolean }
 
 // Descriptions are read raw by agents, so only what would change meaning when
@@ -16,11 +17,11 @@ type Opts = { code?: boolean; label?: boolean; cell?: boolean }
 // lone "~" or a leading "~/path"); `<` only where it would start HTML or an
 // autolink; `]` only before `(` or `[` (a link or image the typist didn't
 // mean; [[wikilinks]] stay as typed); `&` only where it starts an entity.
-// In a link label or alt text every bracket is escaped, and in a table cell
-// every pipe. Edges of a text node count as non-word and non-space.
+// In a link label or alt text every bracket is escaped. Edges of a text node
+// count as non-word and non-space.
 const ENTITY = /^&(?:#\d+|#[xX][\da-fA-F]+|[A-Za-z][A-Za-z0-9]*);/
 function escapeText(s: string, opts: Opts = {}) {
-  return s.replace(/[\\`*_~<[\]&|]/g, (c, i: number) => {
+  return s.replace(/[\\`*_~<[\]&]/g, (c, i: number) => {
     const prev = s[i - 1]
     const next = s[i + 1]
     switch (c) {
@@ -41,8 +42,6 @@ function escapeText(s: string, opts: Opts = {}) {
         return opts.label ? '\\[' : c
       case ']':
         return opts.label || next === '(' || next === '[' ? '\\]' : c
-      case '|':
-        return opts.cell ? '\\|' : c
       case '&':
         return ENTITY.test(s.slice(i)) ? '\\&' : c
       default:
@@ -148,11 +147,7 @@ function wrap(mark: string, s: string) {
   return m[2] ? `${m[1]}${mark}${m[2]}${mark}${m[3]}` : s
 }
 
-function codeSpan(raw: string, opts: Opts = {}) {
-  // GFM takes `\|` out of a table row before it reads code spans, so a pipe
-  // in a cell's code is escaped too. Backslashes are not: inside a code span
-  // they are literal and escaping one would show it twice.
-  const text = opts.cell ? raw.split('|').join('\\|') : raw
+function codeSpan(text: string) {
   const longest = Math.max(0, ...(text.match(/`+/g) ?? []).map((r) => r.length))
   const ticks = '`'.repeat(longest + 1)
   const pad = text.startsWith('`') || text.endsWith('`') ? ' ' : ''
@@ -161,19 +156,10 @@ function codeSpan(raw: string, opts: Opts = {}) {
 
 // A link or image destination. A backslash before punctuation would be read
 // as an escape, a line break can't be in one, and `<` or `>` would end the
-// angle form, so those are escaped or encoded. In a table cell a pipe would
-// end the cell.
-function target(url: string, opts: Opts = {}) {
+// angle form, so those are escaped or encoded.
+function target(url: string) {
   const u = url.replace(/\\(?=[!-/:-@[-`{-~])/g, '\\\\').replace(/[\r\n]/g, encodeURIComponent)
-  const t = /[()\s<>]/.test(u) ? `<${u.replace(/[\\<>]/g, (c) => (c === '\\' ? c : `\\${c}`))}>` : u
-  return cellPipes(t, opts)
-}
-
-// Markdown written into a table cell outside escapeText and codeSpan (a link
-// destination, a bare URL): GFM takes every `\|` out of the row before it
-// reads the cell, so each pipe gets one backslash, whatever precedes it.
-function cellPipes(md: string, opts: Opts) {
-  return opts.cell ? md.replace(/\|/g, '\\|') : md
+  return /[()\s<>]/.test(u) ? `<${u.replace(/[\\<>]/g, (c) => (c === '\\' ? c : `\\${c}`))}>` : u
 }
 
 function serialize(node: Node, opts: Opts = {}): string {
@@ -203,13 +189,13 @@ function serialize(node: Node, opts: Opts = {}): string {
       return wrap('~~', inner())
     case 'code':
       if (el.parentElement?.tagName.toLowerCase() === 'pre') return el.textContent ?? ''
-      return codeSpan(el.textContent ?? '', opts)
+      return codeSpan(el.textContent ?? '')
     case 'pre': {
       const code = el.querySelector('code')
       const lang = (code?.className.match(/language-([\w-]+)/) ?? [])[1] ?? ''
       const body = (code ?? el).textContent?.replace(/\n$/, '') ?? ''
       // A table cell is one line: code pasted into one stays inline code.
-      if (opts.cell) return codeSpan(oneLine(body), opts)
+      if (opts.cell) return codeSpan(oneLine(body))
       const longest = Math.max(0, ...(body.match(/`+/g) ?? []).map((r) => r.length))
       const fence = '`'.repeat(Math.max(3, longest + 1))
       return `\n${fence}${lang}\n${body}\n${fence}\n`
@@ -241,18 +227,18 @@ function serialize(node: Node, opts: Opts = {}): string {
       const href = el.getAttribute('href') ?? ''
       if (!href) return inner().trim()
       const label = inner({ ...opts, label: true }).trim()
-      if (!label || label === href) return cellPipes(href, opts)
-      return `[${label}](${target(href, opts)})`
+      if (!label || label === href) return href
+      return `[${label}](${target(href)})`
     }
     case 'img': {
       const alt = el.getAttribute('alt') ?? ''
       const src = el.getAttribute('src') ?? ''
-      return `![${altText(alt, opts)}](${target(src, opts)})`
+      return `![${altText(alt)}](${target(src)})`
     }
     case 'video': {
       const alt = el.getAttribute('aria-label') ?? ''
       const src = el.getAttribute('src') ?? ''
-      return `![${altText(alt, opts)}](${target(src, opts)})`
+      return `![${altText(alt)}](${target(src)})`
     }
     case 'hr':
       return '\n---\n'
@@ -271,8 +257,8 @@ function serialize(node: Node, opts: Opts = {}): string {
 }
 
 // Alt text is plain text, read back as markdown inline content.
-function altText(alt: string, opts: Opts = {}) {
-  return escapeText(oneLine(alt), { label: true, cell: opts.cell })
+function altText(alt: string) {
+  return escapeText(oneLine(alt), { label: true })
 }
 
 // A heading or table row is one line: a line break inside it becomes a space.
@@ -382,11 +368,23 @@ function list(el: HTMLElement, opts: Opts = {}): string {
   return out
 }
 
+// A table cell's markdown, made safe to sit between pipes. The table reader
+// (marked) splits a row at every pipe after an even run of backslashes, then
+// takes one backslash off each pipe it kept, and only then reads the cell as
+// inline markdown. So a pipe after an even run (none, or escaped backslashes)
+// gets one more backslash, and the cell reads back as written. A pipe after
+// an odd run is already escaped and is left alone: as inline text it meant a
+// plain pipe anyway (inside a code span one backslash before it is lost;
+// there is no way to write that in a cell).
+function cellPipes(md: string) {
+  return md.replace(/(\\*)\|/g, (_m, bs: string) => (bs.length % 2 ? `${bs}|` : `${bs}\\|`))
+}
+
 function table(el: HTMLElement): string {
   const rows = Array.from(el.querySelectorAll('tr'))
   if (!rows.length) return ''
   const cells = (tr: Element) =>
-    Array.from(tr.children).map((c) => oneLine(children(c, { cell: true })))
+    Array.from(tr.children).map((c) => cellPipes(oneLine(children(c, { cell: true }))))
   const head = cells(rows[0])
   const lines = [`| ${head.join(' | ')} |`, `| ${head.map(() => '---').join(' | ')} |`]
   for (const row of rows.slice(1)) lines.push(`| ${cells(row).join(' | ')} |`)
