@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"strconv"
 	"strings"
@@ -182,7 +183,7 @@ func TestWorkLogReviewRound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s := wl.Summary; s.Reviews != 1 || s.Counted != 1 || s.Found != 2 || s.Fixed != 1 || s.Rejected != 1 || s.Pushed != 1 {
+	if s := wl.Summary; s.Reviews != 1 || s.Counted != 0 || s.Found != 0 || s.ModelReadCounted != 1 || s.ModelReadFound != 2 || s.ModelReadFixed != 1 || s.ModelReadRejected != 1 || s.Pushed != 1 {
 		t.Errorf("summary = %+v", s)
 	}
 	var review *WorkLogEntry
@@ -198,7 +199,7 @@ func TestWorkLogReviewRound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if tot := stats.Total; tot.Rounds != 1 || tot.Found != 2 || tot.WithIssues != 1 || tot.Pushed != 1 || tot.FoundPerRun != 2 || tot.ByState[RoundDone] != 1 {
+	if tot := stats.Total; tot.Rounds != 1 || tot.Measured.Rounds != 0 || tot.ModelRead != (RoundCounts{Rounds: 1, WithIssues: 1, Found: 2, Fixed: 1, Rejected: 1}) || tot.Pushed != 1 || tot.FoundPerRun != 0 || tot.ByState[RoundDone] != 1 {
 		t.Errorf("stats = %+v", tot)
 	}
 }
@@ -925,4 +926,30 @@ func TestStepStoppedWhileItsJobIsQueued(t *testing.T) {
 			t.Fatalf("%s is still reserved for %q", second.Key, claimed)
 		}
 	})
+}
+
+// Rounds counted by rules, rounds counted by a model, and finished rounds
+// nobody counted are three things: the model's numbers are never in the
+// measured ones, and an uncounted round is in neither (WP-1470).
+func TestWorkLogTotalsKeepMeasuredModelReadAndUncountedApart(t *testing.T) {
+	tot := WorkLogTotals{ByState: map[string]int{}}
+	n := func(v int64) sql.NullInt64 { return sql.NullInt64{Int64: v, Valid: true} }
+	none := sql.NullInt64{}
+	tot.add(RoundDone, readByRules, n(2), n(1), n(0), true)
+	tot.add(RoundDone, "opencode/big-pickle", n(5), n(3), n(1), false)
+	tot.add(RoundDone, "", none, none, none, false) // finished, never counted
+	tot.add(RoundSkipped, "", none, none, none, false)
+	tot.finish()
+	if tot.Rounds != 4 || tot.Uncounted != 1 || tot.Pushed != 1 {
+		t.Errorf("totals = %+v", tot)
+	}
+	if tot.Measured != (RoundCounts{Rounds: 1, WithIssues: 1, Found: 2, Fixed: 1}) {
+		t.Errorf("measured = %+v: the model's round is in it, or the uncounted one", tot.Measured)
+	}
+	if tot.ModelRead != (RoundCounts{Rounds: 1, WithIssues: 1, Found: 5, Fixed: 3, Rejected: 1}) {
+		t.Errorf("model read = %+v", tot.ModelRead)
+	}
+	if tot.FoundPerRun != 2 {
+		t.Errorf("found per round = %v, want the measured round's 2", tot.FoundPerRun)
+	}
 }

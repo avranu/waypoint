@@ -1,6 +1,8 @@
 package core
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -60,6 +62,9 @@ func TestUsageLedgerMeasuresTasksAndPullRequests(t *testing.T) {
 	}
 	if o.ReadShare == nil || !approx(*o.ReadShare, 1_500_000.0/2_100_000) {
 		t.Errorf("read share %v", o.ReadShare)
+	}
+	if b, _ := json.Marshal(o); !strings.Contains(string(b), `"cold_extra_est_usd"`) || strings.Contains(string(b), `"cold_extra_usd"`) {
+		t.Errorf("the cold price is an estimate and its field says so: %s", b)
 	}
 	if o.ColdExtra <= 0 {
 		t.Errorf("a cold write costs more than a warm read: %v", o.ColdExtra)

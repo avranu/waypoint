@@ -215,6 +215,9 @@ func serverStatusText(st *core.ServerStatus, now time.Time) string {
 			}
 		}
 	}
+	if a := st.AgentEvents; a.Agent > 0 {
+		fmt.Fprintf(&b, "\nAgent-written events that carry the session that wrote them: %d of %d (%.0f%%), among the newest %d agent-written events.\n", a.WithSession, a.Agent, 100*float64(a.WithSession)/float64(a.Agent), a.Agent)
+	}
 	if len(st.HookDrops) > 0 {
 		b.WriteString("\nHook data dropped (person, machine, reason/event, count, last):\n")
 		for _, d := range st.HookDrops {

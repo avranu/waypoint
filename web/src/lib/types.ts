@@ -2034,6 +2034,11 @@ export interface WorkLogSummary {
   rejected: number
   pushed: number
   uncounted: number
+  /** Rounds whose report a model read, and what it read (WP-1470): never added to the counted ones. */
+  model_read_counted: number
+  model_read_found: number
+  model_read_fixed: number
+  model_read_rejected: number
   pr_findings: number
   pr_fixed: number
   pr_rejected: number

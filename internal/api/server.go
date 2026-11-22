@@ -402,7 +402,14 @@ func (s *Server) authenticate(r *http.Request) (*core.Actor, error) {
 			return nil, err
 		}
 		if sid := strings.TrimSpace(r.Header.Get("X-Waypoint-Session")); sid != "" && a.User != nil {
-			a.Session = s.svc.SessionForHeader(r.Context(), a.User.ID, sid, strings.TrimSpace(r.Header.Get("X-Waypoint-Machine")))
+			machine := strings.TrimSpace(r.Header.Get("X-Waypoint-Machine"))
+			a.Session = s.svc.SessionForHeader(r.Context(), a.User.ID, sid, machine)
+			// A write naming a session the server hasn't registered gets no
+			// session on its rows: counted (WP-1470). The hook's own calls
+			// register sessions, so they are not.
+			if a.Session == 0 && r.Method != http.MethodGet && r.Method != http.MethodHead && !strings.HasPrefix(r.URL.Path, "/api/v1/sessions/hook") {
+				s.svc.CountUnregisteredWrite(r.Context(), a.User.ID, machine)
+			}
 		}
 		a.ClientVersion = core.ClientVersionFrom(r.Header.Get("User-Agent"))
 		return a, nil

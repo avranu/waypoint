@@ -37,7 +37,7 @@ func (s *Service) sessionPause(ctx context.Context, userID int64, agent string) 
 
 // pausedAgent is the agent identity a session of actor's records.
 func pausedAgent(actor *Actor) string {
-	return cmp(actor.agentName(), "anthropic/claude-code")
+	return agentLabel(actor, "")
 }
 
 // SessionPause is the pause covering the actor's sessions, for the hooks.

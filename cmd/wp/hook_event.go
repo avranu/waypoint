@@ -106,6 +106,7 @@ type sessionEvent struct {
 	Model            string           `json:"model,omitempty"`
 	Source           string           `json:"source,omitempty"`
 	Prompt           string           `json:"prompt,omitempty"`
+	PromptWithheld   bool             `json:"prompt_withheld,omitempty"` // a typed prompt whose text --no-prompts left out
 	Title            string           `json:"title,omitempty"`
 	NotificationType string           `json:"notification_type,omitempty"`
 	Message          string           `json:"message,omitempty"`
@@ -438,6 +439,15 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 			ev.Prompt = autopilotReviewMark + key // autopilot's review prompt (WP-285): only whose review it is
 		} else if mark := harnessPromptMark(p); mark != "" {
 			ev.Prompt = mark // a background task reporting back is no person's prompt; only that much is sent
+		}
+		// A prompt is text a person typed: it can hold a pasted key or token, so it
+		// gets the redaction the transcript upload gives (this machine's own token,
+		// then the credential patterns) before it leaves the machine (WP-1470).
+		ev.Prompt, _, _ = redactTextCounted(ev.Prompt, []string{c.token()})
+		// A typed prompt whose text --no-prompts left out is still a prompt:
+		// the server records it with no text, and counts it (WP-1470).
+		if noPrompts && ev.Prompt == "" && p != "" {
+			ev.PromptWithheld = true
 		}
 		ev.Title = in.SessionTitle
 	case "PostCompact":

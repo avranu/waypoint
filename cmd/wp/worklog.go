@@ -114,6 +114,10 @@ type workLog struct {
 	} `json:"issue"`
 	Summary struct {
 		Reviews, Counted, Found, Fixed, Rejected, Pushed, Uncounted int
+		ModelReadCounted                                            int `json:"model_read_counted"`
+		ModelReadFound                                              int `json:"model_read_found"`
+		ModelReadFixed                                              int `json:"model_read_fixed"`
+		ModelReadRejected                                           int `json:"model_read_rejected"`
 		PRFindings                                                  int `json:"pr_findings"`
 		PRFixed                                                     int `json:"pr_fixed"`
 		PRRejected                                                  int `json:"pr_rejected"`
@@ -154,8 +158,18 @@ func (l *workLog) text() string {
 	var parts []string
 	if s.Reviews > 0 {
 		p := fmt.Sprintf("%d review round%s", s.Reviews, plural(s.Reviews))
+		var counts []string
 		if s.Counted > 0 || s.Found > 0 {
-			p += fmt.Sprintf(": %d found, %d fixed, %d rejected", s.Found, s.Fixed, s.Rejected)
+			counts = append(counts, fmt.Sprintf("%d found, %d fixed, %d rejected in %d round%s counted by rules", s.Found, s.Fixed, s.Rejected, s.Counted, plural(s.Counted)))
+		}
+		if s.ModelReadCounted > 0 {
+			counts = append(counts, fmt.Sprintf("%d found, %d fixed, %d rejected in %d round%s a model read (not measured)", s.ModelReadFound, s.ModelReadFixed, s.ModelReadRejected, s.ModelReadCounted, plural(s.ModelReadCounted)))
+		}
+		if s.Uncounted > 0 {
+			counts = append(counts, fmt.Sprintf("%d finished round%s not counted", s.Uncounted, plural(s.Uncounted)))
+		}
+		if len(counts) > 0 {
+			p += ": " + strings.Join(counts, "; ")
 		}
 		if s.Pushed > 0 {
 			p += fmt.Sprintf(", %d pushed fixes", s.Pushed)
@@ -302,9 +316,10 @@ func cmdWorklogStats(c *cli, args []string) error {
 			writeEvidenceWeeks(&b, st.Evidence)
 			return b.String()
 		}
-		fmt.Fprintf(&b, "%-8s %6s %7s %10s %6s %9s %6s %8s %6s\n", "PROJECT", "ROUNDS", "COUNTED", "FOUND ANY", "FOUND", "PER ROUND", "FIXED", "REJECTED", "PUSHED")
+		fmt.Fprintf(&b, "%-8s %6s %8s %6s %9s %6s %8s | %8s %6s %6s %8s | %6s %6s\n", "PROJECT", "ROUNDS", "MEASURED", "FOUND", "PER ROUND", "FIXED", "REJECTED", "MODEL-RD", "FOUND", "FIXED", "REJECTED", "UNCNT", "PUSHED")
 		row := func(name string, t workLogTotals) {
-			fmt.Fprintf(&b, "%-8s %6d %7d %10d %6d %9.1f %6d %8d %6d\n", name, t.Rounds, t.Counted, t.WithIssues, t.Found, t.FoundPerRound, t.Fixed, t.Rejected, t.Pushed)
+			fmt.Fprintf(&b, "%-8s %6d %8d %6d %9.1f %6d %8d | %8d %6d %6d %8d | %6d %6d\n", name, t.Rounds, t.Measured.Rounds, t.Measured.Found, t.FoundPerRound, t.Measured.Fixed, t.Measured.Rejected,
+				t.ModelRead.Rounds, t.ModelRead.Found, t.ModelRead.Fixed, t.ModelRead.Rejected, t.Uncounted, t.Pushed)
 		}
 		for _, p := range st.Projects {
 			row(p.Key, p.workLogTotals)
@@ -312,6 +327,7 @@ func cmdWorklogStats(c *cli, args []string) error {
 		if len(st.Projects) > 1 {
 			row("all", st.Total)
 		}
+		b.WriteString("MEASURED: rounds counted by rules or from the session's own record. MODEL-RD: rounds whose report a model read; never added to the measured ones. UNCNT: finished rounds nobody counted.\n")
 		writeEvidenceWeeks(&b, st.Evidence)
 		return b.String()
 	})
@@ -336,13 +352,19 @@ func writeEvidenceWeeks(b *strings.Builder, weeks []evidenceWeek) {
 	}
 }
 
+type roundCounts struct {
+	Rounds     int `json:"rounds"`
+	WithIssues int `json:"with_issues"`
+	Found      int `json:"found"`
+	Fixed      int `json:"fixed"`
+	Rejected   int `json:"rejected"`
+}
+
 type workLogTotals struct {
-	Rounds        int     `json:"rounds"`
-	Counted       int     `json:"counted"`
-	WithIssues    int     `json:"with_issues"`
-	Found         int     `json:"found"`
-	Fixed         int     `json:"fixed"`
-	Rejected      int     `json:"rejected"`
-	Pushed        int     `json:"pushed"`
-	FoundPerRound float64 `json:"found_per_round"`
+	Rounds        int         `json:"rounds"`
+	Measured      roundCounts `json:"measured"`
+	ModelRead     roundCounts `json:"model_read"`
+	Uncounted     int         `json:"uncounted"`
+	Pushed        int         `json:"pushed"`
+	FoundPerRound float64     `json:"found_per_round"`
 }
