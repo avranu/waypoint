@@ -65,7 +65,8 @@ type auditHelpers struct {
 	CLI     string       `json:"cli"`
 	Model   string       `json:"model"`
 	// Prior are done runs of the round's earlier attempts (core.AuditHelpers),
-	// each with the range it read; one for this range is taken as it is.
+	// each with the range it read; one for this range is taken as it is. The
+	// server sets them when this runner claims the job.
 	Prior []helperRun `json:"prior,omitempty"`
 }
 
