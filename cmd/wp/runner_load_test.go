@@ -354,3 +354,40 @@ func TestWaitingJobGivesUpItsHeavyPlace(t *testing.T) {
 		t.Fatalf("two waiting: lanes %v", l)
 	}
 }
+
+// Audit 1413.5: one calm sample doesn't lift the profile's limit. The
+// machine has to stay calm for growAfter, so samples that go back and forth
+// in a usually busy hour leave the limit where it was.
+func TestProfileCapNeedsLastingCalm(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "load-profile.json")
+	p := loadLoadProfile(path)
+	at := time.Date(2026, 11, 2, 4, 0, 0, 0, time.UTC)
+	for i := range 240 {
+		p.add(at.Add(time.Duration(i)*15*time.Second), loadSample{CPUs: 8, Busy: 9, Own: 2, measured: true})
+	}
+	p.add(at.Add(time.Hour), loadSample{CPUs: 8, Busy: 1, Own: 0, measured: true}) // the next hour's first sample saves it
+	now := at.AddDate(0, 0, 7).Add(10 * time.Minute)
+	g := newGovernor(4, loadLoadProfile(path))
+	g.limit = 3
+	busy := calmSample()
+	busy.Load1 = 14
+	for i := range 20 {
+		s := calmSample()
+		if i%2 == 1 {
+			s = busy
+		}
+		g.observe(s, now, 1)
+		if g.capped != 1 || g.heavyLimit() != 1 {
+			t.Fatalf("sample %d: capped %d, heavy limit %d, want 1", i, g.capped, g.heavyLimit())
+		}
+		now = now.Add(15 * time.Second)
+	}
+	// Calm throughout growAfter: the limit gives way.
+	for range int(growAfter/(15*time.Second)) + 1 {
+		g.observe(calmSample(), now, 1)
+		now = now.Add(15 * time.Second)
+	}
+	if g.capped != 0 || g.calmOver == "" {
+		t.Errorf("after lasting calm: capped %d, calmOver %q", g.capped, g.calmOver)
+	}
+}

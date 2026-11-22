@@ -32,7 +32,11 @@ func TestSlotWaitReaderIsSafeFromSeveralGoroutines(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				r.read(base.Add(time.Duration(g+1) * time.Second))
+				// Every wait ended when its pid was first seen gone,
+				// which is some reader's now: 1s to 8s after base.
+				if total, since := r.read(base.Add(time.Duration(g+1) * time.Second)); total < time.Second || total > 8*time.Second || !since.IsZero() {
+					t.Errorf("read: %v since %v", total, since)
+				}
 			}()
 		}
 		wg.Wait()
@@ -219,5 +223,56 @@ func TestNoteSlotWaitSaysWhenItCannotWrite(t *testing.T) {
 	done()
 	if n := strings.Count(warn.String(), "counts against the job's time"); n != 1 {
 		t.Errorf("warned %d times: %q", n, warn.String())
+	}
+}
+
+// Audit 1413.3: a wait whose line can't be written (the file opens, the
+// write fails) is said too.
+func TestNoteSlotWaitSaysWhenTheWriteFails(t *testing.T) {
+	if _, err := os.Stat("/dev/full"); err != nil {
+		t.Skip("no /dev/full")
+	}
+	var warn strings.Builder
+	old := slotWaitWarn
+	slotWaitWarn = &warn
+	t.Cleanup(func() { slotWaitWarn = old })
+	t.Setenv(slotWaitsEnv, "/dev/full")
+	noteSlotWait("tests")()
+	if n := strings.Count(warn.String(), "counts against the job's time"); n != 1 {
+		t.Errorf("warned %d times: %q", n, warn.String())
+	}
+}
+
+// Audit 1413.7: a pid seen dead for one wait says nothing about a later
+// wait by a process that got the same pid.
+func TestSlotWaitReaderDeadPidReused(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0)
+	at := func(s int) time.Time { return base.Add(time.Duration(s) * time.Second) }
+	ms := func(s int) string { return fmt.Sprint(at(s).UnixMilli()) }
+	path := filepath.Join(t.TempDir(), "waits")
+	write := func(lines ...string) {
+		if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := newSlotWaitReader(path)
+	alive := false
+	r.alive = func(int) bool { return alive }
+	write("wait " + ms(0) + " 10 tests")
+	if total, _ := r.read(at(10)); total != 10*time.Second {
+		t.Fatalf("the dead wait: %v, want 10s", total)
+	}
+	// The same pid waits again, later, and is alive.
+	alive = true
+	write("wait "+ms(0)+" 10 tests", "wait "+ms(30)+" 10 tests")
+	if total, since := r.read(at(50)); total != 20*time.Second || !since.Equal(at(30)) {
+		t.Errorf("a live wait by a reused pid: %v since %v, want 20s since +30s", total, since)
+	}
+	// And one that died too: it ended when it was first seen gone, not when
+	// the earlier holder of the pid was.
+	alive = false
+	write("wait "+ms(0)+" 10 tests", "wait "+ms(60)+" 10 tests")
+	if total, _ := r.read(at(70)); total != 10*time.Second {
+		t.Errorf("a dead wait by a reused pid: %v, want 10s", total)
 	}
 }

@@ -40,8 +40,8 @@ import (
 // gatewaySlots of its own beside --max-jobs, never held, so two of them no
 // longer fill the light lane for hours while the machine sits calm
 // (WP-1064). From what it saw in past weeks, it also allows fewer heavy jobs during and just
-// before the hours the machine is usually busy with other work, but only
-// while the machine measures busy or overloaded: a calm one is taken as it is
+// before the hours the machine is usually busy with other work, but not once
+// the machine has measured calm for growAfter: lasting calm is taken as it is
 // (WP-1618).
 
 const (
@@ -191,8 +191,9 @@ func (g *governor) observe(s loadSample, now time.Time, heavy int) string {
 		g.changed = now
 	}
 	// What the machine does now outranks what it usually does (WP-1618,
-	// WP-ADR149): the profile caps heavy jobs only while the sample isn't
-	// calm. Calm means nothing else is using it, whatever the hour says.
+	// WP-ADR149): the profile caps heavy jobs unless the machine has been
+	// calm for growAfter. Lasting calm means nothing else is using it,
+	// whatever the hour says; one calm sample between busy ones doesn't.
 	g.capped, g.capWhy, g.calmOver = 0, "", ""
 	if g.profile != nil && s.CPUs > 0 {
 		if busy, ok := g.profile.predict(now); ok {
@@ -205,7 +206,7 @@ func (g *governor) observe(s loadSample, now time.Time, heavy int) string {
 			if g.capped > 0 {
 				g.capWhy = fmt.Sprintf("other work usually uses %.1f of %d CPUs about now", busy, s.CPUs)
 			}
-			if g.capped > 0 && level == levelCalm {
+			if g.capped > 0 && level == levelCalm && now.Sub(g.calmSince) >= growAfter {
 				// Said in the status, so the times the usual limit
 				// gave way can be seen (audit 1406.6).
 				g.calmOver = fmt.Sprintf("%s, but the machine is calm, so the usual limit of %d isn't applied", g.capWhy, g.capped)

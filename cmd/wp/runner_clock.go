@@ -24,7 +24,9 @@ var clockEvery = 5 * time.Second
 var errWorkLimit = errors.New("the agent used up its time to work")
 
 // clockCtx reports context.DeadlineExceeded when the work limit ended it, as
-// the wall limit does, so every check for a timeout holds for both.
+// the wall limit does, so a check of this context for a timeout holds for
+// both. A context derived from it reports context.Canceled for the work
+// limit: ask this one, or context.Cause.
 type clockCtx struct{ context.Context }
 
 func (c clockCtx) Err() error {

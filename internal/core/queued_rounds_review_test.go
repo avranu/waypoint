@@ -151,3 +151,18 @@ func counterValue(t *testing.T, c prometheus.Counter) float64 {
 	}
 	return m.GetCounter().GetValue()
 }
+
+// Audit 1413.13: the wait text for each count of jobs ahead, with the count
+// left out when it couldn't be read.
+func TestQueuedRoundWaitText(t *testing.T) {
+	for ahead, want := range map[int]string{
+		-1: "round 2: queued (job #7)",
+		0:  "round 2: queued (next in line; job #7)",
+		1:  "round 2: queued (1 job ahead; job #7)",
+		4:  "round 2: queued (4 jobs ahead; job #7)",
+	} {
+		if got := queuedRoundWaitText("round 2: queued", ahead, 7); got != want {
+			t.Errorf("%d ahead: %q, want %q", ahead, got, want)
+		}
+	}
+}

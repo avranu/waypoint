@@ -2351,7 +2351,13 @@ func (s *Service) roundWait(ctx context.Context, round int, jobID int64) string 
 		return running
 	}
 	text := fmt.Sprintf("round %d%s%s UTC", round, queuedRoundWait, j.CreatedAt.UTC().Format("15:04"))
-	switch ahead := s.aheadOf(ctx, j); ahead {
+	return queuedRoundWaitText(text, s.aheadOf(ctx, j), jobID)
+}
+
+// queuedRoundWaitText ends a queued round's wait text with the jobs ahead of
+// it (-1: not known, so not said) and its job.
+func queuedRoundWaitText(text string, ahead int, jobID int64) string {
+	switch ahead {
 	case -1:
 		return fmt.Sprintf("%s (job #%d)", text, jobID)
 	case 0:

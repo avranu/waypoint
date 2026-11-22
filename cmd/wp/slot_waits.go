@@ -37,22 +37,24 @@ func noteSlotWait(name string) (done func()) {
 		// chose it: it is opened with that user's own rights, to append,
 		// and never created.
 		f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600) // #nosec G304 G703 -- see above
-		if err != nil {
-			if !warned {
-				warned = true
-				_, _ = fmt.Fprintf(slotWaitWarn, "wp: this wait for a %q slot couldn't be noted for the runner, so it counts against the job's time: %v\n", name, err)
+		if err == nil {
+			_, err = fmt.Fprintf(f, "%s %d %d %s\n", what, time.Now().UnixMilli(), os.Getpid(), name)
+			if cerr := f.Close(); err == nil {
+				err = cerr
 			}
-			return
 		}
-		_, _ = fmt.Fprintf(f, "%s %d %d %s\n", what, time.Now().UnixMilli(), os.Getpid(), name)
-		_ = f.Close()
+		if err != nil && !warned {
+			warned = true
+			_, _ = fmt.Fprintf(slotWaitWarn, "wp: this wait for a %q slot couldn't be noted for the runner, so it counts against the job's time: %v\n", name, err)
+		}
 	}
 	note("wait")
 	return func() { note("got") }
 }
 
 // slotWaitReader reads a waits file. It keeps when it first saw a waiting
-// process gone, which is when that wait is taken to have ended. The job's
+// process gone, which is when that wait is taken to have ended: kept per
+// wait, not per pid, since a later process may get the same pid. The job's
 // clock reads it from its watcher and from whoever ends the job, so read
 // holds mu. A wait counts only between start (the job's; zero: any time)
 // and now, whatever its lines say: the file is the job's own commands' to
@@ -63,11 +65,18 @@ type slotWaitReader struct {
 	alive func(pid int) bool
 	mu    sync.Mutex
 	start time.Time
-	dead  map[int]time.Time
+	dead  map[deadWait]time.Time
 }
 
 func newSlotWaitReader(path string) *slotWaitReader {
-	return &slotWaitReader{path: path, alive: slotPidAlive, dead: map[int]time.Time{}}
+	return &slotWaitReader{path: path, alive: slotPidAlive, dead: map[deadWait]time.Time{}}
+}
+
+// deadWait is an open wait whose process was seen gone.
+type deadWait struct {
+	pid  int
+	name string
+	from int64 // unix ms, as its line gave it
 }
 
 type waitSpan struct {
@@ -124,10 +133,11 @@ func (r *slotWaitReader) read(now time.Time) (total time.Duration, waitingSince 
 		end, live := now, true
 		if !r.alive(k.pid) {
 			live = false
-			if _, ok := r.dead[k.pid]; !ok {
-				r.dead[k.pid] = now
+			d := deadWait{k.pid, k.name, from.UnixMilli()}
+			if _, ok := r.dead[d]; !ok {
+				r.dead[d] = now
 			}
-			end = r.dead[k.pid]
+			end = r.dead[d]
 		}
 		add(from, end, live)
 	}
