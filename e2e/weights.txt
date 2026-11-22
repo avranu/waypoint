@@ -98,3 +98,4 @@
 4 81-parent-done
 8 81-stalled-settings
 6 82-inbox
+20 83-rich-editor

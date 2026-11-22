@@ -309,6 +309,9 @@ function Loaded({
               key={issue.key}
               draftKey={editable ? `description:${issue.key}` : undefined}
               autosave
+              rich
+              ariaLabel="Description"
+              placeholder="Add a description… Type @ to mention someone; paste or drop files to attach them."
               value={issue.description ?? ''}
               onSave={edit.description}
               editable={editable}

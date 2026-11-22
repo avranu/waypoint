@@ -7,7 +7,26 @@ import { renderMarkdown, toggleTask } from '@/lib/markdown'
 import { refsQuery } from '@/lib/knowledge'
 import type { TextRef } from '@/lib/types'
 import { MarkdownInput } from './MarkdownInput'
+import { RichTextInput } from './RichTextInput'
+import { survivesRichEdit } from '@/lib/richtext'
 import { clearDraft, readDraft, tracked, useUnsaved, writeDraft } from '@/lib/drafts'
+
+// The editor a description opens in is remembered (WP-628).
+const MODE_KEY = 'wp.editor.mode'
+const readMode = (): 'rich' | 'md' => {
+  try {
+    return localStorage.getItem(MODE_KEY) === 'md' ? 'md' : 'rich'
+  } catch {
+    return 'rich'
+  }
+}
+const writeMode = (m: 'rich' | 'md') => {
+  try {
+    localStorage.setItem(MODE_KEY, m)
+  } catch {
+    // Private mode: the choice lasts until the page closes.
+  }
+}
 
 // How long typing pauses before an autosave goes out.
 const AUTOSAVE_MS = 1800
@@ -29,6 +48,8 @@ export function MarkdownEditor({
   draftKey,
   autosave = false,
   batchedRefs,
+  rich = false,
+  ariaLabel,
 }: {
   value: string
   onSave: (v: string) => Promise<unknown> | void
@@ -41,6 +62,13 @@ export function MarkdownEditor({
   issueKey?: string
   /** Same for a page or design note: page:12, design:3. */
   attachTo?: string
+  /**
+   * Edits with formatting shown in place (WP-628), for a task description.
+   * The value is still markdown, so everything that reads it is unchanged.
+   */
+  rich?: boolean
+  /** Names the editor for assistive tech, e.g. "Description". */
+  ariaLabel?: string
   /** The project [[wikilinks]] are looked up in. */
   project?: string
   /** Keeps an open edit in this browser until it's saved (WP-68). */
@@ -178,32 +206,92 @@ export function MarkdownEditor({
     [],
   )
 
+  // Which editor is open (WP-628): the remembered one, unless the text has
+  // formatting the rich editor can't keep, which opens as markdown with a note.
+  const opening = useMemo(
+    () => {
+      if (!rich || !editing) return null
+      if (readMode() === 'md') return { mode: 'md' as const, note: false }
+      return survivesRichEdit(draft)
+        ? { mode: 'rich' as const, note: false }
+        : { mode: 'md' as const, note: true }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- decided once per edit
+    [rich, editing],
+  )
+  const [picked, setPicked] = useState<{ mode: 'rich' | 'md'; note: boolean } | null>(null)
+  useEffect(() => {
+    if (!editing) setPicked(null)
+  }, [editing])
+  const editor = picked ?? opening
+  const toRich = () => {
+    writeMode('rich')
+    setPicked(survivesRichEdit(draft) ? { mode: 'rich', note: false } : { mode: 'md', note: true })
+  }
+  const toMarkdown = () => {
+    writeMode('md')
+    setPicked({ mode: 'md', note: false })
+  }
+
+  const editorKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault()
+      if (autosave) void settle()
+      else save()
+    } else if (e.key === 'Escape') {
+      e.preventDefault()
+      e.stopPropagation()
+      if (autosave && !conflict) void settle()
+      else cancel()
+    }
+  }
+
   if (editing) {
     return (
       <div className="space-y-2" onBlur={autosave && !conflict ? () => void flush() : undefined}>
-        <MarkdownInput
-          autoFocus
-          autoGrow
-          rows={minRows}
-          value={draft}
-          onValueChange={setDraft}
-          issueKey={issueKey}
-          attachTo={attachTo}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-              e.preventDefault()
-              if (autosave) void settle()
-              else save()
-            } else if (e.key === 'Escape') {
-              e.preventDefault()
-              e.stopPropagation()
-              if (autosave && !conflict) void settle()
-              else cancel()
-            }
-          }}
-          placeholder={`Markdown supported: **bold**, - [ ] tasks, \`code\`, links, WAY-12 references, [[wikilinks]], @mentions${issueKey || attachTo ? '; paste or drop files' : ''}`}
-          className="font-[450]"
-        />
+        {rich && editor?.mode === 'rich' ? (
+          <RichTextInput
+            autoFocus
+            value={draft}
+            onValueChange={setDraft}
+            issueKey={issueKey}
+            attachTo={attachTo}
+            onKeyDown={editorKeyDown}
+            ariaLabel={ariaLabel}
+            placeholder={placeholder}
+            onSource={toMarkdown}
+          />
+        ) : (
+          <MarkdownInput
+            autoFocus
+            autoGrow
+            rows={minRows}
+            value={draft}
+            onValueChange={setDraft}
+            issueKey={issueKey}
+            attachTo={attachTo}
+            onKeyDown={editorKeyDown}
+            aria-label={ariaLabel}
+            placeholder={`Markdown supported: **bold**, - [ ] tasks, \`code\`, links, WAY-12 references, [[wikilinks]], @mentions${issueKey || attachTo ? '; paste or drop files' : ''}`}
+            className="font-[450]"
+          />
+        )}
+        {rich && editor?.mode === 'md' && (
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            {editor.note && (
+              <span className="text-subtle">
+                Opened as markdown: this text has formatting the editor can't keep.
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={toRich}
+              className="ml-auto rounded-md px-1.5 py-0.5 text-subtle hover:bg-hover hover:text-fg"
+            >
+              Edit formatted
+            </button>
+          </div>
+        )}
         {autosave ? (
           <div className="flex items-center gap-2">
             {conflict ? (

@@ -273,6 +273,28 @@ export function renderMarkdown(
   return tpl.innerHTML
 }
 
+/**
+ * Markdown as HTML for a rich editor: formatting renders in place, but codes,
+ * mentions and [[wikilinks]] stay as written so the text round-trips back to
+ * the same markdown. Task checkboxes are the only form controls kept.
+ */
+export function renderMarkdownForEdit(src: string): string {
+  const html = marked.parse(src, { async: false }) as string
+  const tpl = document.createElement('template')
+  tpl.innerHTML = DOMPurify.sanitize(html, {
+    ...SANITIZE,
+    ADD_ATTR: ['target', 'contenteditable'],
+  })
+  for (const input of Array.from(tpl.content.querySelectorAll('input'))) {
+    if (input.getAttribute('type') === 'checkbox' && input.classList.contains('task')) {
+      input.setAttribute('contenteditable', 'false')
+    } else {
+      input.remove()
+    }
+  }
+  return tpl.innerHTML
+}
+
 const TASK = /^(\s*(?:>\s?)*\s*(?:[-*+]|\d+[.)])\s+)\[( |x|X)\]/
 const FENCE = /^\s*(`{3,}|~{3,})/
 
