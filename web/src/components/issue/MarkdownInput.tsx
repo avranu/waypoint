@@ -2,17 +2,16 @@
 // autocomplete, and files pasted or dropped in upload to the thing being
 // edited (an issue, page or design note) and become markdown.
 
-import { forwardRef, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
+import { forwardRef, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'
 import { q } from '@/lib/queries'
 import { Textarea } from '@/components/ui/input'
-import { Avatar } from '@/components/ui/misc'
 import { useEscapeLayer } from '@/components/ui/layers'
 import { toastError } from '@/components/ui/toast'
 import { issueTarget, refreshAttachments, uploadAttachment } from '@/lib/attachments'
 import type { UserRef } from '@/lib/types'
+import { MENTION_RE, MentionList, useMentionMatches } from './userMention'
 
 type Props = Omit<React.TextareaHTMLAttributes<HTMLTextAreaElement>, 'value' | 'onChange'> & {
   value: string
@@ -23,8 +22,6 @@ type Props = Omit<React.TextareaHTMLAttributes<HTMLTextAreaElement>, 'value' | '
   attachTo?: string
   autoGrow?: boolean
 }
-
-const MENTION_RE = /(^|[\s(])@([\w.-]{0,39})$/
 
 export const MarkdownInput = forwardRef<HTMLTextAreaElement, Props>(function MarkdownInput(
   { value, onValueChange, issueKey, attachTo, onKeyDown, className, ...rest },
@@ -45,20 +42,7 @@ export const MarkdownInput = forwardRef<HTMLTextAreaElement, Props>(function Mar
   const [active, setActive] = useState(0)
   const [dragging, setDragging] = useState(false)
 
-  const matches = useMemo(() => {
-    if (!mention) return []
-    const t = mention.text.toLowerCase()
-    return users
-      .filter(
-        (u) =>
-          u.username.toLowerCase().startsWith(t) ||
-          u.display_name
-            .toLowerCase()
-            .split(/\s+/)
-            .some((w) => w.startsWith(t)),
-      )
-      .slice(0, 6)
-  }, [mention, users])
+  const matches = useMentionMatches(users, mention?.text)
   const open = !!mention && matches.length > 0
   useEscapeLayer(open, () => setMention(null))
   useEffect(() => setActive(0), [mention?.text])
@@ -162,7 +146,7 @@ export const MarkdownInput = forwardRef<HTMLTextAreaElement, Props>(function Mar
               setActive((a) => (a + d + matches.length) % matches.length)
               return
             }
-            if ((e.key === 'Enter' && !e.metaKey && !e.ctrlKey) || e.key === 'Tab') {
+            if ((e.key === 'Enter' && !e.metaKey && !e.ctrlKey && !e.shiftKey) || e.key === 'Tab') {
               e.preventDefault()
               pick(matches[active])
               return
@@ -212,34 +196,7 @@ function MentionMenu({
     if (top + 220 > window.innerHeight) top = Math.max(8, r.top + c.top - 220)
     setPos({ top, left })
   }, [anchor, caret])
-  return createPortal(
-    <div
-      role="listbox"
-      aria-label="Mention someone"
-      style={{ top: pos?.top ?? -9999, left: pos?.left ?? -9999 }}
-      className="animate-pop fixed z-[70] w-60 overflow-hidden rounded-xl border border-line bg-raised p-1 shadow-pop"
-      onMouseDown={(e) => e.preventDefault()}
-    >
-      {users.map((u, i) => (
-        <button
-          key={u.id}
-          role="option"
-          aria-selected={i === active}
-          onMouseEnter={() => onHover(i)}
-          onClick={() => onPick(u)}
-          className={clsx(
-            'flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-[13px]',
-            i === active && 'bg-hover',
-          )}
-        >
-          <Avatar user={u} size={18} />
-          <span className="truncate">{u.display_name}</span>
-          <span className="ml-auto shrink-0 text-xs text-subtle">@{u.username}</span>
-        </button>
-      ))}
-    </div>,
-    document.body,
-  )
+  return <MentionList users={users} active={active} pos={pos} onHover={onHover} onPick={onPick} />
 }
 
 /** Where a character index sits inside a textarea, relative to its box. */
