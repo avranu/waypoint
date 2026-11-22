@@ -72,7 +72,16 @@ func TestShipWaitHonoursRetryAfterAndSpreadsRounds(t *testing.T) {
 
 func TestRecordPRRefusesNoNumber(t *testing.T) {
 	e := newLoopEnv(t, map[string]string{"": "critical"})
-	if _, err := e.s.recordPR(e.ctx, &Forge{}, "acme/app", &ForgePR{Title: "x", State: "open"}, false); err == nil {
+	var fid int64
+	if err := e.s.db.R.QueryRow(`SELECT id FROM forges LIMIT 1`).Scan(&fid); err != nil {
+		t.Fatal(err)
+	}
+	f := &Forge{ID: fid}
+	if _, err := e.s.recordPR(e.ctx, f, "acme/app", &ForgePR{Title: "x", State: "open"}, false); err == nil {
 		t.Fatal("a pull request with no number was recorded")
+	}
+	var n int
+	if err := e.s.db.R.QueryRow(`SELECT count(*) FROM pull_requests WHERE number = 0`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("%d pull requests recorded as #0 (%v)", n, err)
 	}
 }

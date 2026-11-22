@@ -122,6 +122,11 @@ func TestServerShipAuthorityLostDuringTheForgeCall(t *testing.T) {
 			if !strings.Contains(body, "opened") || !strings.Contains(body, "not armed") {
 				t.Errorf("the round says %q", body)
 			}
+			// The person is read again after the forge answered: the stop says why
+			// it was Waypoint's own check that stopped the ship.
+			if tc.name == "deactivated" && !strings.Contains(body, "is deactivated") {
+				t.Errorf("the round says %q, not that its person was deactivated", body)
+			}
 			if n := e.noticeCount("%pull request opened, then stopped"); n != 1 {
 				t.Errorf("the person was told %d times", n)
 			}

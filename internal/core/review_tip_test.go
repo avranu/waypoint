@@ -135,17 +135,21 @@ func TestShipRoundHeldToTheReviewedHead(t *testing.T) {
 // is the Stop path or the idle one (WP-1370).
 func TestReviewStopWithABackgroundShellIsTheReport(t *testing.T) {
 	e := newLoopEnv(t, map[string]string{"": "critical", "fixes": "complete"})
-	if res, err := e.ship(e.task.Key, ShipAuto); err != nil || res.Held == "" {
-		t.Fatalf("ship = %+v, %v", res, err)
-	}
-	e.stopWith("Pushed; the review comes first.")
-	round := e.step().reviewID.Int64
-	e.tick(61 * time.Second)
-	if r := e.round(round); r.state != RoundRunning {
-		t.Skipf("round = %s: the setup didn't reach a running review", r.state)
-	}
+	round := e.review("Merge loses an update")
 	e.stopWith("Review: nothing found.", PendingTask{Type: "shell", Status: "running", Description: "wp pr wait 7"})
 	if r := e.round(round); r.state != RoundDone {
 		t.Fatalf("a background shell held the review's report: %+v", r)
+	}
+}
+
+// A background agent the review session started and is waiting on holds the
+// report: its Stop is not yet the review's end, on the Stop path the review
+// round reads as well as the idle one (WP-1370).
+func TestReviewStopWithABackgroundAgentIsNotTheReport(t *testing.T) {
+	e := newLoopEnv(t, map[string]string{"": "critical", "fixes": "complete"})
+	round := e.review("Merge loses an update")
+	e.stopWith("Review: a helper is still reading.", PendingTask{Type: "agent", Status: "running", Description: "read the diff"})
+	if r := e.round(round); r.state != RoundRunning {
+		t.Fatalf("a background agent still running, and the round is %s", r.state)
 	}
 }
