@@ -814,6 +814,16 @@ func (s *Service) meaningModels(ctx context.Context) (embed, nli string) {
 	return embed, nli
 }
 
+// meaningCallFailed logs a failed call: below a warning when the service
+// did not answer, which its breaker reports once (meaning_breaker.go).
+func (s *Service) meaningCallFailed(ctx context.Context, msg string, err error) {
+	if errors.Is(err, ErrMeaningDown) {
+		s.log.InfoContext(ctx, msg, "err", err)
+		return
+	}
+	s.log.WarnContext(ctx, msg, "err", err)
+}
+
 // meaningKeepTexts records texts by hash, so a label keeps its text after
 // the goal or task changes.
 func (s *Service) meaningKeepTexts(ctx context.Context, texts map[string]string) error {
@@ -876,7 +886,7 @@ func (s *Service) meaningEmbed(ctx context.Context, ps *meaningPass, texts map[s
 		model, vecs, err := s.Meaning.Embed(ctx, in)
 		if err != nil || model != ps.st.embedModel {
 			if err != nil {
-				s.log.WarnContext(ctx, "goal meaning: embed", "err", err)
+				s.meaningCallFailed(ctx, "goal meaning: embed", err)
 			}
 			return // a model that changed mid-pass is taken up by the next pass
 		}
@@ -927,7 +937,7 @@ func (s *Service) meaningNLI(ctx context.Context, ps *meaningPass, pairs []*mean
 		model, scores, err := s.Meaning.Entail(ctx, in)
 		if err != nil || model != ps.st.nliModel {
 			if err != nil {
-				s.log.WarnContext(ctx, "goal meaning: NLI", "err", err)
+				s.meaningCallFailed(ctx, "goal meaning: NLI", err)
 			}
 			return
 		}

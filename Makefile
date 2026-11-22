@@ -14,6 +14,7 @@
 # make deploy-remote  ship HEAD to DEPLOY_HOST and deploy it there
 # make rollback-remote  go back to the previous deploy on DEPLOY_HOST
 # make deploy-status    what DEPLOY_HOST is running
+# make restart-remote SERVICE=meaning  restart one helper service there
 # make release-dry-run  the next version and release notes (deploy/release.sh)
 # make help      list targets
 
@@ -30,7 +31,7 @@ GOVULNCHECK_VERSION ?= v1.9.0
 ACTIONLINT_VERSION ?= v1.7.12
 KUBECONFORM_VERSION ?= v0.8.0
 
-.PHONY: e2e all build web server cli cross-check test lint wplint sast vuln check prepush prepush-go prepush-ops prepush-web tools ci-image ops-lint dev docker deploy deploy-remote rollback-remote deploy-status need-deploy-host release-dry-run clean help
+.PHONY: e2e all build web server cli cross-check test lint wplint sast vuln check prepush prepush-go prepush-ops prepush-web tools ci-image ops-lint dev docker deploy deploy-remote rollback-remote deploy-status restart-remote need-deploy-host release-dry-run clean help
 
 all: build
 
@@ -196,6 +197,10 @@ rollback-remote: need-deploy-host ## swap $(DEPLOY_HOST) back to its previous de
 
 deploy-status: need-deploy-host ## the version and containers running on $(DEPLOY_HOST), and what its deployer will do next
 	ssh $(DEPLOY_HOST) 'bash waypoint/deploy/remote-deploy.sh status; if [ -x bin/waypoint-deployer ]; then bin/waypoint-deployer status; else echo "no deployer installed (deploy/setup-cd.sh)"; fi'
+
+restart-remote: need-deploy-host ## restart one helper service on $(DEPLOY_HOST): make restart-remote SERVICE=meaning (or opencode)
+	@case "$(SERVICE)" in meaning|opencode) ;; *) echo 'say SERVICE=meaning or SERVICE=opencode' >&2; exit 2;; esac
+	ssh $(DEPLOY_HOST) 'bash waypoint/deploy/remote-deploy.sh restart $(SERVICE)'
 
 release-dry-run: ## the next version and release notes CI would publish
 	deploy/release.sh --dry-run

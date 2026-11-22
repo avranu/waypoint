@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -43,11 +44,15 @@ const meaningBatch = 128
 type httpMeaning struct {
 	url, token string
 	http       *http.Client
+	breaker    *meaningBreaker
 }
 
-func newHTTPMeaning(url, token string, c *http.Client) *httpMeaning {
-	return &httpMeaning{url: strings.TrimRight(strings.TrimSpace(url), "/"), token: token, http: c}
+func newHTTPMeaning(url, token string, c *http.Client, log *slog.Logger, now func() time.Time) *httpMeaning {
+	return &httpMeaning{url: strings.TrimRight(strings.TrimSpace(url), "/"), token: token, http: c, breaker: newMeaningBreaker(log, now)}
 }
+
+// Health is the breaker's view of the service (meaning_breaker.go).
+func (m *httpMeaning) Health() MeaningHealth { return m.breaker.health() }
 
 func (m *httpMeaning) Embed(ctx context.Context, texts []string) (string, [][]float32, error) {
 	var model string
@@ -111,14 +116,38 @@ func (m *httpMeaning) Entail(ctx context.Context, pairs []NLIPair) (string, []fl
 	return model, out, nil
 }
 
+// post sends one request through the breaker (meaning_breaker.go): a
+// failure to reach the service is ErrMeaningDown, and while it is down
+// calls fail at once.
 func (m *httpMeaning) post(ctx context.Context, path string, body, out any) error {
-	raw, err := json.Marshal(body)
+	probe, err := m.breaker.allow()
 	if err != nil {
 		return err
 	}
+	unanswered, err := m.send(ctx, path, body, out)
+	if unanswered && ctx.Err() != nil {
+		// The caller gave up (the server is stopping), which says nothing
+		// about the service.
+		m.breaker.release(probe)
+		return err
+	}
+	m.breaker.done(ctx, probe, unanswered, err)
+	if unanswered {
+		return fmt.Errorf("%w: %w", ErrMeaningDown, err)
+	}
+	return err
+}
+
+// send makes the request; unanswered is true when the service did not
+// answer it: no connection, a timeout, or a server error (5xx).
+func (m *httpMeaning) send(ctx context.Context, path string, body, out any) (unanswered bool, err error) {
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return false, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.url+path, bytes.NewReader(raw))
 	if err != nil {
-		return err
+		return false, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if m.token != "" {
@@ -126,17 +155,17 @@ func (m *httpMeaning) post(ctx context.Context, path string, body, out any) erro
 	}
 	res, err := m.http.Do(req) // #nosec G704 -- the admin's configured service
 	if err != nil {
-		return err
+		return true, err
 	}
 	defer res.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(res.Body, 64<<20))
 	if err != nil {
-		return err
+		return true, err
 	}
 	if res.StatusCode != http.StatusOK {
-		return fmt.Errorf("the meaning service answered HTTP %d: %s", res.StatusCode, excerpt(string(data), 200))
+		return res.StatusCode >= 500, fmt.Errorf("the meaning service answered HTTP %d: %s", res.StatusCode, excerpt(string(data), 200))
 	}
-	return json.Unmarshal(data, out)
+	return false, json.Unmarshal(data, out)
 }
 
 // meaningTimeout bounds one call to the meaning service: a batch of NLI

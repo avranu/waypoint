@@ -9,6 +9,8 @@ import json
 import os
 import sys
 import threading
+import time
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import torch
@@ -35,8 +37,48 @@ MODELS = {
 DEFAULTS = {"embed": "intfloat/e5-base-v2", "nli": "cross-encoder/nli-deberta-v3-base"}
 
 TOKEN = os.environ.get("MEANING_TOKEN", "")
+# A batch that runs longer than this is stuck (a batch of 32 takes seconds):
+# the watchdog ends the process so compose restarts it (WP-1602).
+STUCK_S = max(30, int(os.environ.get("MEANING_STUCK_S", "180") or 180))
 _lock = threading.Lock()  # one forward pass at a time; threads are for I/O
+_beat = None  # time.monotonic() when the batch running now started; None when idle
 _loaded = {}
+
+
+@contextmanager
+def forward(wait=-1):
+    """Holds the model lock for a forward pass; False when it can't be had in wait seconds."""
+    global _beat
+    if not _lock.acquire(timeout=wait):
+        yield False
+        return
+    try:
+        with torch.inference_mode():
+            beat()
+            yield True
+    finally:
+        _beat = None
+        _lock.release()
+
+
+def beat():
+    global _beat
+    _beat = time.monotonic()
+
+
+def stuck_for():
+    b = _beat
+    return 0.0 if b is None else time.monotonic() - b
+
+
+def watchdog():
+    while True:
+        time.sleep(10)
+        took = stuck_for()
+        if took > STUCK_S:
+            sys.stderr.write(f"meaning: a batch has run {took:.0f}s (limit {STUCK_S}s); exiting so the container restarts\n")
+            sys.stderr.flush()
+            os._exit(70)
 
 
 class BadRequest(Exception):
@@ -91,8 +133,9 @@ def embed(body):
         raise BadRequest(f"at most {MAX_ITEMS} inputs per request")
     texts = [m["prefix"] + clip(t, "input item") for t in texts]
     out = []
-    with _lock, torch.inference_mode():
+    with forward():
         for i in range(0, len(texts), BATCH):
+            beat()
             vecs = _loaded[mid].encode(
                 texts[i : i + BATCH],
                 batch_size=BATCH,
@@ -123,8 +166,9 @@ def nli(body):
         hyp.append(clip(p.get("hypothesis"), "hypothesis"))
     tok, model, labels = _loaded[mid]
     scores = []
-    with _lock, torch.inference_mode():
+    with forward():
         for i in range(0, len(pairs), BATCH):
+            beat()
             enc = tok(
                 prem[i : i + BATCH],
                 hyp[i : i + BATCH],
@@ -137,6 +181,21 @@ def nli(body):
             for row in probs:
                 scores.append({labels[j]: row[j] for j in range(len(row))})
     return {"model": tag, "scores": scores}
+
+
+def health():
+    """A real forward pass through both models, unless one is running: a
+    process that answers HTTP but whose models are wedged is not healthy."""
+    took = stuck_for()
+    if took > STUCK_S:
+        return 503, {"ok": False, "error": f"a batch has run {took:.0f}s"}
+    with forward(wait=2) as got:
+        if not got:
+            return 200, {"ok": True, "busy": True}
+        _loaded[DEFAULTS["embed"]].encode(["query: health"], show_progress_bar=False)
+        tok, model, _ = _loaded[DEFAULTS["nli"]]
+        model(**tok(["health"], ["health"], return_tensors="pt"))
+    return 200, {"ok": True}
 
 
 def models():
@@ -171,7 +230,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?")[0]
         if path == "/health":
-            return self.send(200, {"ok": True})
+            try:
+                return self.send(*health())
+            except Exception as e:  # report, keep serving
+                sys.stderr.write(f"health: {e!r}\n")
+                return self.err(503, "health check failed")
         if not self.authed():
             return self.err(401, "missing or wrong bearer token")
         if path == "/v1/models":
@@ -209,6 +272,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     load_all()
+    threading.Thread(target=watchdog, name="watchdog", daemon=True).start()
     srv = ThreadingHTTPServer(("0.0.0.0", 8080), Handler)
     srv.daemon_threads = True
     print("meaning: ready", flush=True)

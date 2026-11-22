@@ -327,7 +327,7 @@ func New(d *db.DB, cfg Config, log *slog.Logger) *Service {
 	// provider that doesn't stream sends with the whole answer.
 	s.LLM = &httpLLM{http: forgeEgress.streamClient(llmHeaderTimeout)}
 	if strings.TrimSpace(cfg.MeaningURL) != "" {
-		s.Meaning = newHTTPMeaning(cfg.MeaningURL, cfg.MeaningToken, forgeEgress.client(meaningTimeout))
+		s.Meaning = newHTTPMeaning(cfg.MeaningURL, cfg.MeaningToken, forgeEgress.client(meaningTimeout), s.log, func() time.Time { return s.now() })
 	}
 	s.envs = newEnvRunner(cfg.Egress)
 	s.botKick = make(chan struct{}, 1)
