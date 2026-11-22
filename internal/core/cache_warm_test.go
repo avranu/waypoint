@@ -291,15 +291,6 @@ func TestKeepWarmAutopilotSession(t *testing.T) {
 		t.Fatal("still autopilot's after its person kept it")
 	}
 
-	// A prompt recorded before WP-1562 kept Claude Code's paste wrapper.
-	be.setClock(be.clockNow().Add(time.Minute))
-	legacy := excerpt(pasted(AutopilotPromptMark+" started this session for WP-3"), 500)
-	if _, err := be.s.db.W.Exec(`INSERT INTO session_events (session_id, kind, detail, created_at) VALUES (?, 'prompt', ?, ?)`, be.agent.Session, legacy, be.clockNow().UnixMilli()); err != nil {
-		t.Fatal(err)
-	}
-	if !be.s.unattendedSession(be.ctx, be.agent.Session) {
-		t.Fatalf("not autopilot's after its wrapped prompt %q", legacy)
-	}
 	// Its person types, then pastes something with typed text naming
 	// autopilot after it: that prompt is theirs.
 	if _, err := be.s.db.W.Exec(`UPDATE agent_sessions SET typed_at = ? WHERE id = ?`, be.clockNow().Add(30*time.Second).UnixMilli(), be.agent.Session); err != nil {

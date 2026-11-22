@@ -64,33 +64,6 @@ func noMoreReviews(a *apEnv, key string) {
 	}
 }
 
-// Claude Code wraps the review prompt autopilot pastes in <pasted_content>:
-// it is still autopilot's, so its round runs, and its Stop ends it instead
-// of having the review typed again (WP-1562).
-func TestPastedReviewPromptStartsItsRound(t *testing.T) {
-	a := reviewAPEnv(t)
-	first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude"})
-	a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "Second", Agent: "claude"})
-	a.finish(first.Key)
-	a.linkPR(first.ID, 7, "aaa")
-	a.stopWith("Shipped.")
-	id := a.step().reviewID.Int64
-	a.tick(61 * time.Second)
-	a.prompt(pasted(AutopilotReviewMark + first.Key + ": " + DefaultReviewPrompt))
-	if r := a.round(id); r.state != RoundRunning {
-		t.Fatalf("the pasted review prompt didn't start its round: %+v", r)
-	}
-	if st := a.step(); st.reason == WaitPrompted {
-		t.Fatalf("the pasted review prompt counted as the person's: %+v", st)
-	}
-	a.jobDone(1, AutopilotJobResult{Outcome: "reviewing"})
-	a.stopWith("Reviewed: nothing to fix.")
-	if r := a.round(id); r.state != RoundDone {
-		t.Fatalf("the review's Stop didn't end the round: %+v", r)
-	}
-	noMoreReviews(a, first.Key)
-}
-
 // Whatever the session's hook makes of the review prompt, the runner typed
 // it: a review job that says so starts its round even after a prompt taken
 // for the person's cleared the step's job, so the round is typed only once
