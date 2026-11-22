@@ -275,6 +275,14 @@ var fixScale = []struct {
 // labelScore is a reviewer's own severity label as a score.
 var labelScore = map[string]float64{"critical": 10, "high": 8, "medium": 5, "low": 3}
 
+// markCounts counts the findings of a round's audit and its check of the
+// marks (0: none): all, fixed, rejected and filed (findingFiled).
+func (s *Service) markCounts(ctx context.Context, audit, check int64) (total, fixed, rejected, filed int, err error) {
+	err = s.db.R.QueryRowContext(ctx, `SELECT count(*), coalesce(sum(f.state = 'fixed'), 0), coalesce(sum(f.state = 'rejected'), 0), coalesce(sum(`+findingFiledSQL+`), 0)
+		FROM code_audit_findings f WHERE f.audit_id IN (?, ?)`, audit, check).Scan(&total, &fixed, &rejected, &filed)
+	return
+}
+
 // againFinding is one of a round's findings as the model reads it.
 type againFinding struct {
 	id, audit                                   int64
@@ -283,6 +291,7 @@ type againFinding struct {
 	verdict                                     string // the runner's check against the code
 	line                                        int
 	filed                                       bool   // handed to its issue (findingFiled)
+	void                                        bool   // confirmed into an issue that came to nothing (FilingVoid)
 	issue                                       string // the issue linked, WP-12
 	// scored
 	ref                   string // f1, f2, … in the model's state
@@ -595,9 +604,8 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 	// The marks are counted over every finding, past the ones the model reads.
 	// open is neither fixed nor rejected, filed (findingFiled) among them:
 	// a filed finding stands as real, so it is not an all-rejected round.
-	var total, fixed, rejected, filed int
-	if err := s.db.R.QueryRowContext(ctx, `SELECT count(*), coalesce(sum(f.state = 'fixed'), 0), coalesce(sum(f.state = 'rejected'), 0), coalesce(sum(`+findingFiledSQL+`), 0)
-		FROM code_audit_findings f WHERE f.audit_id IN (?, ?)`, audit, check).Scan(&total, &fixed, &rejected, &filed); err != nil {
+	total, fixed, rejected, filed, err := s.markCounts(ctx, audit, check)
+	if err != nil {
 		return "", "", err
 	}
 	open := total - fixed - rejected
@@ -1910,7 +1918,7 @@ func (s *Service) checkClaims(ctx context.Context, audit int64) (string, []strin
 // againFindings are a round's findings, worst first: its audit's, and
 // those of its check of the session's rejections (0: none).
 func (s *Service) againFindings(ctx context.Context, audit, check int64) ([]againFinding, error) {
-	rows, err := s.db.R.QueryContext(ctx, `SELECT f.id, f.audit_id, f.ordinal, f.title, f.severity, f.problem, f.state, f.note, f.path, f.line, f.verdict, `+findingFiledSQL+`,
+	rows, err := s.db.R.QueryContext(ctx, `SELECT f.id, f.audit_id, f.ordinal, f.title, f.severity, f.problem, f.state, f.note, f.path, f.line, f.verdict, `+findingFiledSQL+`, `+filingVoidOfFinding+`,
 		coalesce((SELECT p.key || '-' || i.number FROM issues i JOIN projects p ON p.id = i.project_id WHERE i.id = f.issue_id), '')
 		FROM code_audit_findings f WHERE f.audit_id IN (?, ?)
 		ORDER BY CASE f.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, f.audit_id, f.ordinal LIMIT ?`, audit, check, reviewAgainFindings)
@@ -1921,9 +1929,10 @@ func (s *Service) againFindings(ctx context.Context, audit, check int64) ([]agai
 	var out []againFinding
 	for rows.Next() {
 		var f againFinding
-		if err := rows.Scan(&f.id, &f.audit, &f.ordinal, &f.title, &f.severity, &f.problem, &f.state, &f.note, &f.path, &f.line, &f.verdict, &f.filed, &f.issue); err != nil {
+		if err := rows.Scan(&f.id, &f.audit, &f.ordinal, &f.title, &f.severity, &f.problem, &f.state, &f.note, &f.path, &f.line, &f.verdict, &f.filed, &f.void, &f.issue); err != nil {
 			return nil, err
 		}
+		f.void = f.void && f.state == "confirmed" && f.issue != "" && !auditHoldsMerge(f.severity)
 		out = append(out, f)
 	}
 	return out, rows.Err()
@@ -1978,6 +1987,9 @@ func againState(findings, earlier []againFinding, total, fixed, rejected, filed,
 // mark is the session's mark on a finding, for the model. A filed one says
 // only what the data shows: an issue is linked, not that it will be fixed.
 func (f againFinding) mark() string {
+	if f.void {
+		return "confirmed, filed as issue " + f.issue + " but that was closed unfixed, so it is open again"
+	}
 	if f.filed {
 		return "confirmed, and filed as issue " + f.issue + " instead of being fixed in this change"
 	}

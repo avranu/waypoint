@@ -1,0 +1,62 @@
+# Go for a job on GitHub's runners (WP-1624): go.mod's version, the module and
+# build caches under a key per kind of job, and the modules downloaded before
+# anything builds. It does what .forgejo/actions/go-cache and go-mod do for
+# Forgejo's jobs; those are private to Forgejo (forge-sync publishes nothing
+# under .forgejo/), so GitHub's workflows can't use them.
+#
+# GitHub never overwrites a cache key, so the key ends in the day: the first
+# passing job of a kind each day saves, the rest of the day restores it, and a
+# new go.sum or day starts from the closest older cache of the same kind.
+name: go
+description: Set up Go at go.mod's version with a cache per kind of job, and download the modules.
+inputs:
+  kind:
+    description: what the job builds, e.g. lint, race-core, e2e
+    required: true
+  path:
+    description: more directories to keep with Go's caches
+    required: false
+    default: ''
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: go.mod
+        cache: false # the cache step below
+    - id: key
+      shell: bash
+      env:
+        KIND: ${{ inputs.kind }}
+      run: |
+        base="go-$KIND-$(go env GOVERSION)-$(go env GOOS)-$(go env GOARCH)"
+        {
+          echo "gocache=$(go env GOCACHE)"
+          echo "gomodcache=$(go env GOMODCACHE)"
+          echo "base=$base"
+          echo "sum=$base-$(sha256sum go.sum | cut -c1-16)"
+          echo "day=$(date -u +%Y%m%d)"
+        } >>"$GITHUB_OUTPUT"
+    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ${{ steps.key.outputs.gocache }}
+          ${{ steps.key.outputs.gomodcache }}
+          ${{ inputs.path }}
+        key: ${{ steps.key.outputs.sum }}-${{ steps.key.outputs.day }}
+        restore-keys: |
+          ${{ steps.key.outputs.sum }}-
+          ${{ steps.key.outputs.base }}-
+    # A dropped connection to the module proxy must not read as a build error (WP-474).
+    - shell: bash
+      run: |
+        for wait in 5 15 45 0; do
+          if go mod download 2>"$RUNNER_TEMP/go-mod.log"; then exit 0; fi
+          if [ "$wait" = 0 ]; then
+            tail -n 20 "$RUNNER_TEMP/go-mod.log"
+            echo "::error title=Go modules::go mod download failed 4 times; the module proxy is unreachable, not the code"
+            exit 1
+          fi
+          echo "::warning title=Go modules::go mod download failed ($(tail -n 1 "$RUNNER_TEMP/go-mod.log")); trying again in ${wait}s"
+          sleep "$wait"
+        done
