@@ -230,7 +230,7 @@ func decideRound(in roundIn) roundOut {
 		// expireChecks cancels a check at checkPatience; this bounds a check
 		// that stays stuck anyway. The round's age plays no part: a check
 		// still going is never "no report came back".
-		if in.SinceChange > checkPatience+heldScreenWait {
+		if in.SinceChange >= checkPatience+heldScreenWait {
 			return roundOut{Do: doShipCarried, Why: "the check of its marks never settled"}
 		}
 		return roundOut{Do: doWait, For: "the check of the marks", Until: left(checkPatience+heldScreenWait, in.SinceChange)}
@@ -252,12 +252,12 @@ func decideRound(in roundIn) roundOut {
 			return roundOut{Do: doShipCarried, Why: "the check of its marks didn't run"}
 		}
 		// No check: the session's own ship is in flight.
-		if in.SinceStart > reviewRunMax+autopilotNothingRetry {
+		if in.SinceStart >= reviewRunMax+autopilotNothingRetry {
 			return roundOut{Do: doRelease, Why: "no report came back"}
 		}
 		return roundOut{Do: doWait, For: "the review's report", Until: left(reviewRunMax+autopilotNothingRetry, in.SinceStart)}
 	case RoundPending:
-		if in.SinceChange > heldScreenWait {
+		if in.SinceChange >= heldScreenWait {
 			return roundOut{Do: doRelease, Why: "the review didn't finish"}
 		}
 		return roundOut{Do: doWait, For: "the review", Until: left(heldScreenWait, in.SinceChange)}
@@ -266,12 +266,12 @@ func decideRound(in roundIn) roundOut {
 		case in.Read == readFailed:
 			return roundOut{Do: doRelease, Why: "Waypoint couldn't read the review's report"}
 		case in.Read == readPending:
-			if in.SinceChange > readWait {
+			if in.SinceChange >= readWait {
 				return roundOut{Do: doRelease, Why: "Waypoint couldn't read the review's report in time"}
 			}
 			return roundOut{Do: doWait, For: "Waypoint to read the review's report", Until: left(readWait, in.SinceChange)}
 		case in.Audit == AuditQueued || in.Audit == AuditRunning:
-			if in.SinceStart > reviewRunMax+autopilotNothingRetry {
+			if in.SinceStart >= reviewRunMax+autopilotNothingRetry {
 				return roundOut{Do: doRelease, Why: "the review's audit never finished"}
 			}
 			return roundOut{Do: doWait, For: "the review's audit", Until: left(reviewRunMax+autopilotNothingRetry, in.SinceStart)}

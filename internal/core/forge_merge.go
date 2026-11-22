@@ -132,17 +132,20 @@ func escapePath(p string) string {
 func mergeRefusal(err error) string {
 	var ae *forgeAPIError
 	if !errors.As(err, &ae) {
-		return err.Error()
+		return forgeSaid(err)
 	}
+	// The forge's words are sanitised: this reaches the armed note, which
+	// the babysit types into a session.
+	body := forgeWords(ae.body, 300)
 	switch ae.status {
 	case http.StatusConflict:
 		return "a newer push replaced the head that was checked"
 	case http.StatusMethodNotAllowed:
-		return "the forge says it can't be merged yet (conflicts, or a required check or approval is missing): " + ae.body
+		return "the forge says it can't be merged yet (conflicts, or a required check or approval is missing): " + body
 	case http.StatusForbidden, http.StatusUnauthorized:
-		return "the forge's token isn't allowed to merge here: " + ae.body
+		return "the forge's token isn't allowed to merge here: " + body
 	case http.StatusUnprocessableEntity, http.StatusNotAcceptable:
-		return "the forge refused the merge: " + ae.body
+		return "the forge refused the merge: " + body
 	}
-	return err.Error()
+	return forgeSaid(err)
 }

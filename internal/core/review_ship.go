@@ -2,12 +2,10 @@ package core
 
 import (
 	"context"
-	"crypto/tls"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 )
@@ -164,7 +162,17 @@ func forgeSaid(err error) string {
 	if err == nil {
 		return ""
 	}
-	return clipText(untrusted(strings.Join(strings.Fields(err.Error()), " ")), 300)
+	if cause := forgeSetupFault(err); cause != "" {
+		return clipText(strings.Join(strings.Fields(cause), " "), 400) // ours, not the forge's words
+	}
+	return forgeWords(err.Error(), 300)
+}
+
+// forgeWords is a forge's own text made fit to put in a note, a notice or a
+// message: on one line, bounded, and with any tag that would pass it off as
+// ours removed.
+func forgeWords(s string, most int) string {
+	return clipText(untrusted(strings.Join(strings.Fields(s), " ")), most)
 }
 
 // shipWait is how long to wait after the n-th failed try of a round's ship:
@@ -351,23 +359,12 @@ const shipGiveUp = 24 * time.Hour
 // forge refused the request (not authorised, not found, not valid), or what
 // the ship needs is gone.
 func shipRefused(err error) bool {
+	if forgeSetupFault(err) != "" {
+		return true
+	}
 	var ae *forgeAPIError
 	if errors.As(err, &ae) {
-		switch ae.status {
-		case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusGone, http.StatusUnprocessableEntity:
-			return !ae.limited // a rate limit passes by waiting
-		}
-		// A redirect isn't the API answering: the forge is addressed wrongly,
-		// and waiting doesn't change that.
-		return ae.status >= 300 && ae.status < 400
-	}
-	// A certificate that doesn't verify, and an answer that isn't the API's
-	// (a login page with 200), are the forge's setup, not its being down.
-	var cv *tls.CertificateVerificationError
-	var syn *json.SyntaxError
-	var typ *json.UnmarshalTypeError
-	if errors.As(err, &cv) || errors.As(err, &syn) || errors.As(err, &typ) {
-		return true
+		return forgeRefusalStatus(ae.status) && !ae.limited // a rate limit passes by waiting
 	}
 	return errors.Is(err, ErrForbidden) || errors.Is(err, ErrNotFound)
 }
