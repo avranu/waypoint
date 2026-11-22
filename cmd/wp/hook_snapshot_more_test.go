@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // invOf decodes a snapshot's inventory.
@@ -250,6 +251,11 @@ func TestSnapshotTruncatesInstructionAndMemoryFiles(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	// This is about the count limits, not the clock: under -race on a busy
+	// runner the 300ms budget can stop the memory count short of its limit.
+	old := snapshotBudget
+	snapshotBudget = time.Minute
+	t.Cleanup(func() { snapshotBudget = old })
 	for i := 0; i < snapshotMaxFiles+5; i++ {
 		writeFile(t, filepath.Join(repo, fmt.Sprintf("d%03d", i), "AGENTS.md"), "x")
 	}

@@ -53,26 +53,46 @@ function escapeText(s: string, opts: Opts = {}) {
 
 // A line that begins with block syntax would turn into that block when the
 // markdown is rendered, so a literal one is escaped. Only what would really
-// become a block: a number starts a list only on a paragraph's first line or
-// as "1." (its `.` or `)` is escaped, the digits aren't), and a run of "-" or
-// "=" matters as a rule or a setext underline. A "[label]:" is a link
-// definition.
+// become a block. A paragraph starts on a run's first line and after a blank
+// line; there, an indent of four columns would make it code, so it is
+// dropped (the renderer drops a shorter one anyway), any number can start a
+// list, and three dashes are a rule. Inside a paragraph a number starts a
+// list only as "1." (its `.` or `)` is escaped, the digits aren't), a run of
+// "-" or "=" is a setext underline, and a dash-and-pipe row under a line of
+// cells makes a table. A "[label]:" is a link definition.
 function escapeLineStarts(s: string) {
+  let start = true
   return s
     .split('\n')
-    .map((line, i) => {
+    .map((raw) => {
+      const first = start
+      start = !raw.trim()
+      let line = raw
+      if (first) {
+        const indent = /^[ \t]*/.exec(line)![0]
+        if (columns(indent) >= 4) line = line.slice(indent.length)
+      }
       // `>` opens a blockquote with or without a space after it.
       const m = /^(\s*)(?:(>)|(#{1,6}|[+*-])(?=\s|$)|(\d+)([.)])(?=\s|$))/.exec(line)
       if (m) {
         if (m[4] !== undefined) {
-          if (i > 0 && Number(m[4]) !== 1) return line
+          if (!first && Number(m[4]) !== 1) return line
           return `${m[1]}${m[4]}\\${m[5]}${line.slice(m[0].length)}`
         }
         return `${m[1]}\\${m[2] ?? m[3]}${line.slice(m[0].length)}`
       }
-      const rule = /^(\s*)([-=])\2*\s*$/.exec(line)
-      if (rule && (i > 0 || (rule[2] === '-' && line.trim().length >= 3))) {
+      // A rule may have spaces between its dashes ("- - -" is caught above).
+      const rule = /^(\s*)([-=])(?:\s*\2)*\s*$/.exec(line)
+      const dashes = line.split('-').length - 1
+      if (rule && (!first || (rule[2] === '-' && dashes >= 3))) {
         return `${rule[1]}\\${line.slice(rule[1].length)}`
+      }
+      if (
+        !first &&
+        line.includes('|') &&
+        /^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?\s*$/.test(line)
+      ) {
+        return line.replace(/\|/g, '\\|')
       }
       // Only the opening bracket: escaping it is enough, and a [[wikilink]]
       // later in the line stays as typed.
@@ -81,6 +101,44 @@ function escapeLineStarts(s: string) {
       return line
     })
     .join('\n')
+}
+
+// How wide an indent is, with a tab reaching the next multiple of four.
+function columns(indent: string) {
+  let n = 0
+  for (const c of indent) n = c === '\t' ? n + 4 - (n % 4) : n + 1
+  return n
+}
+
+// Whether the character at i is escaped by the backslashes before it.
+function escapedAt(s: string, i: number) {
+  let n = 0
+  while (i - n - 1 >= 0 && s[i - n - 1] === '\\') n++
+  return n % 2 === 1
+}
+
+// Pieces of serialized markdown put side by side. escapeText sees one text
+// node at a time, so what one piece ends with can combine with what the next
+// starts with: "!" before a link makes it an image, "]" before "(" or "[" a
+// link, "<" before a letter a tag, and "&" before the rest of a name an
+// entity. That character of the first piece is escaped.
+function join(a: string, b: string) {
+  if (!a || !b) return a + b
+  const last = a.length - 1
+  const c = a[last]
+  if (
+    !escapedAt(a, last) &&
+    ((c === '!' && b[0] === '[') ||
+      (c === ']' && (b[0] === '(' || b[0] === '[')) ||
+      (c === '<' && /[A-Za-z/!?]/.test(b[0])))
+  ) {
+    return `${a.slice(0, last)}\\${c}${b}`
+  }
+  const amp = /&[#A-Za-z0-9]*$/.exec(a)
+  if (amp && !escapedAt(a, amp.index) && ENTITY.test(amp[0] + b.slice(0, 40))) {
+    return `${a.slice(0, amp.index)}\\${a.slice(amp.index)}${b}`
+  }
+  return a + b
 }
 
 // Emphasis markers hug the text: edge whitespace goes outside them, and an
@@ -101,8 +159,12 @@ function codeSpan(raw: string, opts: Opts = {}) {
   return `${ticks}${pad}${text}${pad}${ticks}`
 }
 
+// A link or image destination. A backslash before punctuation would be read
+// as an escape, a line break can't be in one, and `<` or `>` would end the
+// angle form, so those are escaped or encoded.
 function target(url: string) {
-  return /[()\s]/.test(url) ? `<${url}>` : url
+  const u = url.replace(/\\(?=[!-/:-@[-`{-~])/g, '\\\\').replace(/[\r\n]/g, encodeURIComponent)
+  return /[()\s<>]/.test(u) ? `<${u.replace(/[<>]/g, '\\$&')}>` : u
 }
 
 function serialize(node: Node, opts: Opts = {}): string {
@@ -147,7 +209,9 @@ function serialize(node: Node, opts: Opts = {}): string {
     case 'h4':
     case 'h5':
     case 'h6':
-      return `\n${'#'.repeat(Number(tag[1]))} ${oneLine(inner())}\n`
+      // A trailing run of "#" after a space would be read as the heading's
+      // closing sequence and dropped.
+      return `\n${'#'.repeat(Number(tag[1]))} ${oneLine(inner()).replace(/(^|\s)(#+)$/, '$1\\$2')}\n`
     case 'p':
     case 'div':
       return `\n${blocks(el, opts)}\n`
@@ -202,7 +266,7 @@ function oneLine(md: string) {
 
 function children(node: Node, opts: Opts = {}) {
   let out = ''
-  for (const child of Array.from(node.childNodes)) out += serialize(child, opts)
+  for (const child of Array.from(node.childNodes)) out = join(out, serialize(child, opts))
   return out
 }
 
@@ -226,6 +290,10 @@ const BLOCK = new Set([
 // A container's children, with each run of inline content (a bare text node
 // at the editor's root, say, as well as a paragraph's) line-start escaped.
 function blocks(node: Node, opts: Opts = {}) {
+  return blocksOf(Array.from(node.childNodes), opts)
+}
+
+function blocksOf(nodes: Node[], opts: Opts = {}) {
   let out = ''
   let run = ''
   let afterBlock = false
@@ -236,7 +304,7 @@ function blocks(node: Node, opts: Opts = {}) {
     run.trim()
       ? `${afterBlock ? '\n' : ''}${escapeLineStarts(run)}${beforeBlock ? '\n' : ''}`
       : escapeLineStarts(run)
-  for (const child of Array.from(node.childNodes)) {
+  for (const child of nodes) {
     if (
       child.nodeType === Node.ELEMENT_NODE &&
       BLOCK.has((child as Element).tagName.toLowerCase())
@@ -244,7 +312,7 @@ function blocks(node: Node, opts: Opts = {}) {
       out += text(true) + serialize(child, opts)
       run = ''
       afterBlock = true
-    } else run += serialize(child, opts)
+    } else run = join(run, serialize(child, opts))
   }
   return out + text(false)
 }
@@ -261,7 +329,7 @@ function list(el: HTMLElement): string {
       (c) => c.tagName.toLowerCase() === 'input' && (c as HTMLInputElement).type === 'checkbox',
     ) as HTMLInputElement | undefined
     const nested: HTMLElement[] = []
-    let body = ''
+    const own: Node[] = []
     for (const c of Array.from(li.childNodes)) {
       if (c.nodeType === Node.ELEMENT_NODE) {
         const t = (c as HTMLElement).tagName.toLowerCase()
@@ -271,16 +339,24 @@ function list(el: HTMLElement): string {
         }
         if (t === 'input') continue
       }
-      body += serialize(c)
+      own.push(c)
     }
-    body = escapeLineStarts(body.trim())
+    // Inline text is line-start escaped and blocks (a paragraph, code, a
+    // quote) are kept as they are, as anywhere else.
+    let body = blocksOf(own).trim()
     // A literal "[ ]" opening a bullet would become a task box.
     if (!box && /^\[[ xX]\]/.test(body)) body = `\\${body}`
     const bare = ordered ? `${n++}.` : '-'
     const marker = box ? `${bare} [${box.checked ? 'x' : ' '}]` : bare
-    out += `${marker} ${body}\n`
     // Nested content lines up with the parent's text: marker width + 1.
+    // Lines after the first are indented by that too, or a second paragraph
+    // or a code block would end the item.
     const pad = ' '.repeat(bare.length + 1)
+    body = body
+      .split('\n')
+      .map((l, i) => (i && l ? pad + l : l))
+      .join('\n')
+    out += `${marker} ${body}\n`
     for (const sub of nested)
       out += list(sub)
         .split('\n')
@@ -302,17 +378,18 @@ function table(el: HTMLElement): string {
 }
 
 // Blank-line runs and trailing spaces are tidied outside fenced code, where
-// they are part of the code.
+// they are part of the code. A fence may open a list item.
 function tidy(md: string) {
   const out: string[] = []
   let fence = 0
   for (const line of md.split('\n')) {
-    const f = /^(?:>\s?)*\s*(`{3,})(.*)$/.exec(line)
     if (fence) {
-      if (f && f[1].length >= fence && !f[2].trim()) fence = 0
+      const f = /^(?:>\s?)*\s*(`{3,})\s*$/.exec(line)
+      if (f && f[1].length >= fence) fence = 0
       out.push(line)
       continue
     }
+    const f = /^(?:>\s?)*\s*(?:(?:[-+*]|\d+[.)])\s+)*(`{3,})(.*)$/.exec(line)
     if (f && !f[2].includes('`')) fence = f[1].length
     const l = line.replace(/[ \t]+$/, '')
     if (!l && out.length && !out[out.length - 1]) continue

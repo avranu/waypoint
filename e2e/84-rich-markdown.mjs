@@ -150,6 +150,24 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
     "| h |\n| --- |\n| a\\|b \\\\\\| `c\\|d` e |",
   );
   await writes("Heading break", "<h2>a<br>b</h2>", "## a b");
+  await writes("Heading closer", "<h2>Issue #</h2>", "## Issue \\#");
+  // A paragraph's start, on its first line or after a blank one: an indent
+  // that would make code is dropped, and any number or three dashes is a
+  // block; inside it, a dash-and-pipe row would make a table.
+  await writes("Indent", "<p>&nbsp;&nbsp;&nbsp;&nbsp;a<br><br>&nbsp;&nbsp;&nbsp;&nbsp;b<br>&nbsp;&nbsp;&nbsp;&nbsp;c</p>", "a\n\nb\n    c");
+  await writes("Number after blank", "<p>a<br><br>2. b<br>3. c</p>", "a\n\n2\\. b\n3. c");
+  await writes("Spaced rule", "<p>-- -<br><br>---</p>", "\\-- -\n\n\\---");
+  await writes("Table row", "<p>a | b<br>--- | ---</p>", "a | b\n--- \\| ---");
+  // escapeText sees one node: where a node meets the next, "!" before a link
+  // and "]" before "(" are escaped too.
+  await writes("Bang link", '<p><span>wow!</span><a href="https://example.com/">x</a></p>', "wow\\![x](https://example.com/)");
+  await writes("Bracket span", "<p><span>[a]</span>(b)</p>", "[a\\](b)");
+  // A list item's later lines are indented, so its blocks stay in it.
+  await writes(
+    "Item blocks",
+    "<ul><li><p>a</p><p>b</p><pre><code># c</code></pre></li><li>d</li></ul>",
+    "- a\n\n  b\n\n  ```\n  # c\n  ```\n- d",
+  );
 
   // A literal task box at the start of a list item stays literal.
   {
