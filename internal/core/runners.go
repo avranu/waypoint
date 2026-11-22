@@ -961,13 +961,9 @@ func (s *Service) claimRunnerJob(ctx context.Context, actor *Actor, r *Runner, l
 // both run the panel: a sibling that hasn't finished has recorded nothing
 // to take (WP-1544).
 func (s *Service) withPriorPanel(ctx context.Context, input json.RawMessage, auditID int64) json.RawMessage {
-	fail := func(what string, err error) json.RawMessage {
-		s.log.WarnContext(ctx, "prior panel runs not attached; the panel may run again", "audit", auditID, "step", what, "err", err)
-		return input
-	}
 	var in map[string]json.RawMessage
-	if err := json.Unmarshal(input, &in); err != nil {
-		return fail("input", err)
+	if json.Unmarshal(input, &in) != nil {
+		return input
 	}
 	var h map[string]json.RawMessage
 	if json.Unmarshal(in["helpers"], &h) != nil || h == nil {
@@ -989,19 +985,19 @@ func (s *Service) withPriorPanel(ctx context.Context, input json.RawMessage, aud
 	} else {
 		pb, err := json.Marshal(prior)
 		if err != nil {
-			return fail("prior", err)
+			return input
 		}
 		h["prior"] = pb
 		s.log.InfoContext(ctx, "prior panel runs attached at claim", "audit", auditID, "runs", len(prior))
 	}
 	hb, err := json.Marshal(h)
 	if err != nil {
-		return fail("helpers", err)
+		return input
 	}
 	in["helpers"] = hb
 	out, err := json.Marshal(in)
 	if err != nil {
-		return fail("job", err)
+		return input
 	}
 	return out
 }
