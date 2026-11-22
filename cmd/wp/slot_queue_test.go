@@ -108,11 +108,12 @@ func sqGot(t *testing.T, ch chan sqTake) func() {
 	return nil
 }
 
-func TestSlotWorktreeRunsOneAtATime(t *testing.T) {
+func TestSlotWorktreeRunsOneLongRunAtATime(t *testing.T) {
 	slotEnv(t)
 	t.Setenv(slotHeldEnv, "")
 	sqRepo(t)
 	sqArgs(t)
+	sqSeed(t, "tests", sqCmd, 1800, 3)
 	old := slotWaitNotice
 	slotWaitNotice = 50 * time.Millisecond
 	t.Cleanup(func() { slotWaitNotice = old })
@@ -135,7 +136,7 @@ func TestSlotWorktreeRunsOneAtATime(t *testing.T) {
 	rel1()
 	rel2 := sqGot(t, ch)
 	notice := errb.String()
-	if !strings.Contains(notice, fmt.Sprintf("this worktree's own earlier run to finish (pid %d, running 0m: wp testsum -- go test ./x)", os.Getpid())) || !strings.Contains(notice, "WP-1604") {
+	if !strings.Contains(notice, fmt.Sprintf("this worktree's own earlier long run to finish (pid %d, running 0m: wp testsum -- go test ./x)", os.Getpid())) || !strings.Contains(notice, "WP-1604") {
 		t.Errorf("notice %q", notice)
 	}
 	rel2()
@@ -364,5 +365,123 @@ func TestSlotLsShowsWaitersAndWaits(t *testing.T) {
 	}
 	if strings.Index(s, "pid 1 in /own") < strings.Index(s, "in /wd") {
 		t.Errorf("waiters not oldest first:\n%s", s)
+	}
+}
+
+// A short run from a worktree whose long run is holding goes straight to a slot.
+func TestSlotShortRunSkipsItsWorktreesLongRun(t *testing.T) {
+	slotEnv(t)
+	t.Setenv(slotHeldEnv, "")
+	sqRepo(t)
+	sqSeed(t, "tests", "make check", 1800, 3)
+	c, _, _ := sqCLI()
+	_, long, err := c.takeSlotFor(context.Background(), "tests", 4, "make check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch := make(chan sqTake, 1)
+	go func() {
+		_, rel, err := c.takeSlotFor(context.Background(), "tests", 4, "go test ./x")
+		ch <- sqTake{rel, err}
+	}()
+	short := sqGot(t, ch)
+	if h := sqHeld(t, "tests", 4); len(h) != 2 || h[1] != 3 {
+		t.Errorf("held %v, want the long run's slot and slot 3", h)
+	}
+	dir, _ := slotDir()
+	if m, _ := filepath.Glob(filepath.Join(dir, "*.queue")); len(m) != 0 {
+		t.Errorf("a short run that never waited left %v", m)
+	}
+	short()
+	long()
+}
+
+// The key is the command, however wp was asked to run it.
+func TestSlotKeyIsTheSameForTestsumAndShip(t *testing.T) {
+	typed := []string{"go", "test", "./x"}
+	if a, b := slotKey(typed), slotKey(goTestJSON(typed)); a != b {
+		t.Errorf("typed %q, with -json %q", a, b)
+	}
+	if got := slotKey([]string{"make", "check"}); got != "make check" {
+		t.Errorf("slotKey = %q", got)
+	}
+}
+
+// A run whose WAYPOINT_SLOTS_HELD was lost waits on its own ancestor's tree
+// lock forever unless it goes on to a slot.
+func TestSlotLostHeldEnvDoesNotDeadlock(t *testing.T) {
+	slotEnv(t)
+	t.Setenv(slotHeldEnv, "")
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WP_TEST_MAIN", "1")
+	sqRepo(t)
+	sqSeed(t, "tests", "env -u WAYPOINT_SLOTS_HELD "+bin+" slot run tests -n 4 -- echo x", 1800, 3)
+	sqSeed(t, "tests", "echo x", 1800, 3)
+	var out, errb bytes.Buffer
+	done := make(chan int, 1)
+	go func() {
+		done <- run([]string{"slot", "run", "tests", "-n", "4", "--", "env", "-u", slotHeldEnv, bin, "slot", "run", "tests", "-n", "4", "--", "echo", "x"}, &out, &errb)
+	}()
+	select {
+	case code := <-done:
+		if code != 0 || !strings.Contains(out.String(), "x") {
+			t.Fatalf("code %d out %q err %q", code, out.String(), errb.String())
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the inner run waited on its ancestor's worktree lock")
+	}
+}
+
+func TestSlotGaveUpWaitIsRecorded(t *testing.T) {
+	slotEnv(t)
+	t.Setenv(slotHeldEnv, "")
+	sqRepo(t)
+	sqArgs(t)
+	c, _, _ := sqCLI()
+	_, rel, err := c.takeSlot(context.Background(), "tests", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if _, _, err := c.takeSlot(ctx, "tests", 1); err == nil {
+		t.Fatal("got a slot that was taken")
+	}
+	rel()
+	dir, _ := slotDir()
+	recs := readWaitRecs(dir)
+	if len(recs) != 2 || !recs[0].GaveUp || recs[0].Secs != 0 || recs[1].GaveUp {
+		t.Fatalf("records %+v", recs)
+	}
+	// Giving up says nothing about how long the command takes.
+	long := waitRec{Name: "tests", Repo: recs[0].Repo, Cmd: sqCmd, Secs: 1800}
+	gave := waitRec{Name: "tests", Repo: recs[0].Repo, Cmd: sqCmd, GaveUp: true}
+	if got := classifyRun([]waitRec{long, long, gave, gave, gave}, "tests", recs[0].Repo, sqCmd); got != slotClassLong {
+		t.Errorf("gave-up records counted: %s", got)
+	}
+	// They show in the 24h waits.
+	var out bytes.Buffer
+	(&cli{out: &out}).slotQueueLs(dir)
+	if !strings.Contains(out.String(), "(2)") {
+		t.Errorf("stats: %q", out.String())
+	}
+}
+
+func TestSlotTrimLeavesNoTempFile(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, slotWaitsFile)
+	if err := os.WriteFile(p, []byte("{}\n{}\n{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	trimWaits(p, 2)
+	ents, _ := os.ReadDir(dir)
+	if len(ents) != 1 {
+		t.Errorf("directory holds %v", ents)
+	}
+	if b, _ := os.ReadFile(p); string(b) != "{}\n{}\n" {
+		t.Errorf("trimmed to %q", b)
 	}
 }

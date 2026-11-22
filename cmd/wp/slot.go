@@ -29,12 +29,13 @@ var slotCmd = &command{
 	summary: "run a command once a per-machine slot is free",
 	about: `A per-host semaphore so concurrent test suites take turns. run waits for
 a free slot of NAME, runs CMD holding it and exits with CMD's code. N
-defaults to half the cores. A worktree runs one command of a NAME at a time:
-a second run from it waits behind its first. Runs whose last five (same repo
-and command) took 5 minutes or more are long and may only use the lower half
-of the slots, so short runs don't queue behind them; the rest are short. ls
-shows the slots, who waits (and whether behind its own worktree) and the
-waits of the last 24h. A nested run of the same NAME reuses the slot it
+defaults to half the cores. Runs whose last five (same repo and command) took
+5 minutes or more are long: they may only use the lower half of the slots, so
+short runs (the rest) never queue behind them, and a worktree runs one long
+run of a NAME at a time (a second waits behind its first; short runs from it
+go straight to a slot). ls shows the slots, who waits (and whether behind its
+own worktree) and the waits of the last 24h, including runs that gave up.
+A nested run of the same NAME reuses the slot it
 is in. A run of tests drops credential-named variables, as wp testsum does
 (--keep-env NAME passes one through; WP-1065).`,
 	examples: []string{"wp slot run tests -- go test ./...", "wp slot ls"},
@@ -199,7 +200,7 @@ func slotHeld(name string) bool {
 func (c *cli) runInSlotThen(name string, n int, argv []string, out, errw io.Writer, started func(), envf func([]string) []string) (int, error) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	env, release, err := c.takeSlot(ctx, name, n)
+	env, release, err := c.takeSlotFor(ctx, name, n, slotKey(argv))
 	if err != nil {
 		return 0, err
 	}
@@ -353,11 +354,17 @@ func cmdSlotLs(c *cli, args []string) error {
 // one, and returns the environment for commands run in it (marking the slot
 // held, so a nested run doesn't wait on itself) and what lets it go.
 func (c *cli) takeSlot(ctx context.Context, name string, n int) (env []string, release func(), err error) {
+	return c.takeSlotFor(ctx, name, n, slotCmdOf(slotOSArgs[1:]))
+}
+
+// takeSlotFor is takeSlot for a run of cmd, which the wait history is kept by
+// (so one command has one key however wp was asked to run it).
+func (c *cli) takeSlotFor(ctx context.Context, name string, n int, cmd string) (env []string, release func(), err error) {
 	env = os.Environ()
 	if slotHeld(name) {
 		return env, func() {}, nil
 	}
-	hold, err := c.acquireQueued(ctx, name, n)
+	hold, err := c.acquireQueued(ctx, name, n, cmd)
 	if err != nil {
 		return nil, nil, err
 	}

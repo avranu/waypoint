@@ -40,6 +40,8 @@ type waitRec struct {
 	At    int64  `json:"at"`
 	Wait  int64  `json:"wait"`
 	Secs  int64  `json:"secs"`
+	// GaveUp marks a wait that ended without a slot (stopped or failed).
+	GaveUp bool `json:"gave_up,omitempty"`
 }
 
 // queueRec is the content of NAME.PID.queue while a run waits.
@@ -117,7 +119,7 @@ func readWaitRecs(dir string) []waitRec {
 func classifyRun(recs []waitRec, name, repo, cmd string) string {
 	var secs []int64
 	for i := len(recs) - 1; i >= 0 && len(secs) < 5; i-- {
-		if r := recs[i]; r.Name == name && r.Repo == repo && r.Cmd == cmd {
+		if r := recs[i]; !r.GaveUp && r.Name == name && r.Repo == repo && r.Cmd == cmd {
 			secs = append(secs, r.Secs)
 		}
 	}
@@ -170,15 +172,21 @@ func trimWaits(p string, keep int) {
 		lines = lines[len(lines)-keep:]
 	}
 	out := append(bytes.Join(lines, nil), '\n')
-	tmp := p + ".tmp"
-	if os.WriteFile(tmp, out, 0o600) != nil || os.Rename(tmp, p) != nil { // #nosec G703 -- our own directory
-		_ = os.Remove(tmp)
+	f, err := os.CreateTemp(filepath.Dir(p), slotWaitsFile+".*.tmp")
+	if err != nil {
+		return
+	}
+	_, werr := f.Write(out)
+	if cerr := f.Close(); werr != nil || cerr != nil || os.Rename(f.Name(), p) != nil { // #nosec G703 -- our own directory
+		_ = os.Remove(f.Name())
 	}
 }
 
-// acquireQueued takes this worktree's turn for NAME, then a slot of the
-// class's range, and shows the wait in NAME.PID.queue (WP-1604, WP-ADR150).
-func (c *cli) acquireQueued(ctx context.Context, name string, n int) (*queuedHold, error) {
+// acquireQueued takes a slot of NAME for the run of cmd. A long run first
+// takes its worktree's turn, so a worktree has one long run at a time; a
+// short run goes straight to the slots it may use. The wait shows in
+// NAME.PID.queue (WP-1604, WP-ADR150).
+func (c *cli) acquireQueued(ctx context.Context, name string, n int, cmd string) (qh *queuedHold, err error) {
 	start := time.Now()
 	dir, err := slotDir()
 	if err != nil {
@@ -196,10 +204,18 @@ func (c *cli) acquireQueued(ctx context.Context, name string, n int) (*queuedHol
 	if repo == "" {
 		repo = wd
 	}
-	cmdKey := slotField(slotCmdOf(slotOSArgs[1:]))
+	cmdKey := slotField(cmd)
 	class := classifyRun(readWaitRecs(dir), name, repo, cmdKey)
+	waited := func() int64 { return int64(time.Since(start).Round(time.Second) / time.Second) }
+	// A wait that gives up is recorded: those are the worst waits.
+	defer func() {
+		if err != nil {
+			appendWaitRec(dir, waitRec{Name: name, Repo: repo, Cmd: cmdKey, Class: class, At: time.Now().Unix(), Wait: waited(), GaveUp: true})
+		}
+	}()
 
-	q := queueRec{Since: start.Unix(), WD: slotField(wd), Cmd: cmdKey, Class: class, BehindOwn: true}
+	long := class == slotClassLong
+	q := queueRec{Since: start.Unix(), WD: slotField(wd), Cmd: cmdKey, Class: class, BehindOwn: long}
 	qpath := filepath.Join(dir, fmt.Sprintf("%s.%d.queue", name, os.Getpid()))
 	written := false
 	writeQueue := func() {
@@ -213,41 +229,52 @@ func (c *cli) acquireQueued(ctx context.Context, name string, n int) (*queuedHol
 		}
 	}()
 
-	// One slot per worktree: wait behind this worktree's own earlier run.
-	sum := sha256.Sum256([]byte(tree))
-	tf, err := os.OpenFile(filepath.Join(dir, fmt.Sprintf("tree-%s.%s.treelock", hex.EncodeToString(sum[:])[:12], name)), os.O_RDWR|os.O_CREATE, 0o600) // #nosec G304 -- name is validated
-	if err != nil {
-		return nil, err
-	}
-	notified := false
-	for {
-		ok, err := slotTryLock(tf)
+	var tf *os.File
+	if long {
+		// One long run per worktree: wait behind this worktree's own earlier one.
+		sum := sha256.Sum256([]byte(tree))
+		tf, err = os.OpenFile(filepath.Join(dir, fmt.Sprintf("tree-%s.%s.treelock", hex.EncodeToString(sum[:])[:12], name)), os.O_RDWR|os.O_CREATE, 0o600) // #nosec G304 -- name is validated
 		if err != nil {
-			_ = tf.Close()
 			return nil, err
 		}
-		if ok {
-			break
+		notified := false
+		for {
+			ok, lerr := slotTryLock(tf)
+			if lerr != nil {
+				_ = tf.Close()
+				return nil, lerr
+			}
+			if ok {
+				_ = tf.Truncate(0)
+				_, _ = tf.WriteAt([]byte(fmt.Sprintf("%d\t%d\t%s\t%s\n", os.Getpid(), time.Now().Unix(), slotField(wd), slotField(strings.Join(slotOSArgs[1:], " ")))), 0)
+				break
+			}
+			holder := slotHolderLine(tf)
+			if pid, _ := strconv.Atoi(holder[0]); pid > 0 && slotIsAncestor(pid) {
+				// Waiting on the run that started this one would never end
+				// (WAYPOINT_SLOTS_HELD was lost on the way): take a slot instead.
+				_ = tf.Close()
+				tf = nil
+				break
+			}
+			if !written {
+				writeQueue()
+			}
+			if !notified && time.Since(start) > slotWaitNotice {
+				notified = true
+				c.ownRunNotice(holder)
+			}
+			select {
+			case <-ctx.Done():
+				_ = tf.Close()
+				return nil, ctx.Err()
+			case <-time.After(slotPoll):
+			}
 		}
-		if !written {
+		q.BehindOwn = false
+		if written {
 			writeQueue()
 		}
-		if !notified && time.Since(start) > slotWaitNotice {
-			notified = true
-			c.ownRunNotice(tf)
-		}
-		select {
-		case <-ctx.Done():
-			_ = tf.Close()
-			return nil, ctx.Err()
-		case <-time.After(slotPoll):
-		}
-	}
-	_ = tf.Truncate(0)
-	_, _ = tf.WriteAt([]byte(fmt.Sprintf("%d\t%d\t%s\t%s\n", os.Getpid(), time.Now().Unix(), slotField(wd), slotField(strings.Join(slotOSArgs[1:], " ")))), 0)
-	q.BehindOwn = false
-	if written {
-		writeQueue()
 	}
 
 	hold, err := acquireSlotIn(ctx, name, slotOrder(class, n), func() {
@@ -258,28 +285,63 @@ func (c *cli) acquireQueued(ctx context.Context, name string, n int) (*queuedHol
 		}
 	})
 	if err != nil {
-		_ = tf.Close()
+		if tf != nil {
+			_ = tf.Close()
+		}
 		return nil, err
 	}
-	now := time.Now()
-	return &queuedHold{slot: hold, tree: tf, dir: dir, acquired: now, rec: waitRec{
-		Name: name, Repo: repo, Cmd: cmdKey, Class: class, Wait: int64(now.Sub(start).Round(time.Second) / time.Second),
+	return &queuedHold{slot: hold, tree: tf, dir: dir, acquired: time.Now(), rec: waitRec{
+		Name: name, Repo: repo, Cmd: cmdKey, Class: class, Wait: waited(),
 	}}, nil
 }
 
-// ownRunNotice says which earlier run of this worktree holds its turn.
-func (c *cli) ownRunNotice(tf *os.File) {
+// slotHolderLine reads the holder line of a lock file as four fields (pid,
+// unix time, folder, args); missing ones are "".
+func slotHolderLine(f *os.File) [4]string {
 	b := make([]byte, 4096)
-	k, _ := tf.ReadAt(b, 0)
-	parts := strings.SplitN(strings.TrimSpace(string(b[:k])), "\t", 4)
-	if len(parts) < 4 {
+	k, _ := f.ReadAt(b, 0)
+	var out [4]string
+	copy(out[:], strings.SplitN(strings.TrimSpace(string(b[:k])), "\t", 4))
+	return out
+}
+
+// slotIsAncestor reports whether pid is an ancestor of this process, by
+// walking the parent chain in /proc (false where there is none).
+func slotIsAncestor(pid int) bool {
+	cur := os.Getppid()
+	for i := 0; i < 64 && cur > 1; i++ {
+		if cur == pid {
+			return true
+		}
+		b, err := os.ReadFile("/proc/" + strconv.Itoa(cur) + "/stat") // #nosec G304 -- a pid
+		if err != nil {
+			return false
+		}
+		// pid (comm) state ppid ...: comm may hold spaces and parentheses.
+		s := string(b)
+		j := strings.LastIndex(s, ")")
+		if j < 0 {
+			return false
+		}
+		f := strings.Fields(s[j+1:])
+		if len(f) < 2 {
+			return false
+		}
+		cur, _ = strconv.Atoi(f[1])
+	}
+	return false
+}
+
+// ownRunNotice says which earlier long run of this worktree holds its turn.
+func (c *cli) ownRunNotice(h [4]string) {
+	if h[3] == "" {
 		return
 	}
 	mins := 0
-	if ts, err := strconv.ParseInt(parts[1], 10, 64); err == nil {
+	if ts, err := strconv.ParseInt(h[1], 10, 64); err == nil {
 		mins = int(time.Since(time.Unix(ts, 0)) / time.Minute)
 	}
-	_, _ = fmt.Fprintf(c.err, "wp slot: waiting for this worktree's own earlier run to finish (pid %s, running %dm: wp %s); a worktree runs one at a time (WP-1604)\n", parts[0], mins, parts[3])
+	_, _ = fmt.Fprintf(c.err, "wp slot: waiting for this worktree's own earlier long run to finish (pid %s, running %dm: wp %s); a worktree runs one long run at a time (WP-1604)\n", h[0], mins, h[3])
 }
 
 // slotRepoLabel names a repo by its folder.
@@ -364,3 +426,7 @@ func (c *cli) slotQueueLs(dir string) bool {
 	}
 	return true
 }
+
+// slotKey is the command key of a run of argv, the same whichever of wp
+// testsum, wp ship --check or wp slot run asked for it (WP-1604).
+func slotKey(argv []string) string { return strings.Join(goTestJSON(argv), " ") }
