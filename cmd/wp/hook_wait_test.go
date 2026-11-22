@@ -13,9 +13,11 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-const waitOutstanding = `{"audit":12,"findings":["12.1","12.2"],"requests":["R-4"],"lines":"- 2 findings without a verdict in your review round's audit #12 (12.1, 12.2): ` + "`wp audit mark ID fixed`" + `.\n- 1 answered request you haven't acted on (R-4): ` + "`wp request ls --answered`" + `."}`
+const waitOutstanding = `{"audit":12,"findings":["12.1","12.2"],"requests":["R-4"],"lines":"- 2 findings without a verdict in your review round's audit #12 (12.1, 12.2): ` + "`wp audit mark ID fixed`" + `.\n- 1 answered request you haven't read (R-4): ` + "`wp request show R-4`" + `."}`
 
 // waitHook runs the hook against a server that answers body with status and
 // returns what it printed and how often it was asked.
@@ -105,7 +107,7 @@ func TestWaitHookNamesOutstandingWorkOfABackgroundCall(t *testing.T) {
 				t.Fatalf("the server was asked %d times", asked)
 			}
 			ctx := waitContext(t, out)
-			for _, want := range []string{"12.1, 12.2", "wp request ls --answered", "Work of yours to do while it runs (leave anything that needs its result):"} {
+			for _, want := range []string{"12.1, 12.2", "wp request show R-4", "Work of yours to do while it runs (leave anything that needs its result):"} {
 				if !strings.Contains(ctx, want) {
 					t.Errorf("context lacks %q:\n%s", want, ctx)
 				}
@@ -187,6 +189,35 @@ func TestWaitHookWithNoServerIsSilent(t *testing.T) {
 	}
 }
 
+// The hook reads the server's own type, so a renamed field can't leave it
+// printing nothing (audit #1372.21).
+func TestWaitHookReadsTheServersOutstanding(t *testing.T) {
+	b, _ := json.Marshal(core.SessionOutstanding{Audit: 3, Findings: []string{"3.1"}, Lines: "- 1 finding still to do in audit #3"})
+	out, _ := waitHook(t, 200, string(b), bashCall("sleep 600", true))
+	if ctx := waitContext(t, out); !strings.Contains(ctx, "- 1 finding still to do in audit #3") {
+		t.Errorf("context:\n%s", ctx)
+	}
+}
+
+// A slow ETA (git, the slot directory) doesn't cost the outstanding work:
+// the hook says what it has by its budget, inside Claude Code's timeout
+// (audit #1372.13).
+func TestWaitHookAnswersWithinItsBudget(t *testing.T) {
+	oldETA, oldBudget := waitETAFor, waitBudget
+	release := make(chan struct{})
+	waitETAFor = func(string, string, string) string { <-release; return "late ETA" }
+	waitBudget = 300 * time.Millisecond
+	t.Cleanup(func() { close(release); waitETAFor, waitBudget = oldETA, oldBudget })
+	start := time.Now()
+	out, _ := waitHook(t, 200, waitOutstanding, bashCall("wp testsum -- make check", true))
+	if took := time.Since(start); took > 2*time.Second {
+		t.Errorf("took %v", took)
+	}
+	if ctx := waitContext(t, out); !strings.Contains(ctx, "12.1, 12.2") || strings.Contains(ctx, "late ETA") {
+		t.Errorf("context:\n%s", ctx)
+	}
+}
+
 func TestWaitHookNeedsASession(t *testing.T) {
 	t.Setenv("WAYPOINT_SLOT_DIR", t.TempDir())
 	seedRuns(t, "tests", "make check", "/tmp", 30, 30, 30)
@@ -220,6 +251,13 @@ func TestWaitETACommand(t *testing.T) {
 		{"wp testsum -- make check &>/tmp/log", "tests", "make check", 0, true},
 		{"wp testsum -- make check <in", "tests", "make check", 0, true},
 		{"timeout 900 wp testsum -- make check", "tests", "make check", 0, true},
+		// An option's value as the next word (audit #1372.9).
+		{"timeout -s KILL 900 wp testsum -- make check", "tests", "make check", 0, true},
+		{"timeout --signal TERM -k 10 900 wp testsum -- make check", "tests", "make check", 0, true},
+		{"env -u NAME wp testsum -- make check", "tests", "make check", 0, true},
+		{"env -C /r X=1 wp testsum -- make check", "tests", "make check", 0, true},
+		{"stdbuf -o L wp testsum -- make check", "tests", "make check", 0, true},
+		{"nice --adjustment 5 wp testsum -- make check", "tests", "make check", 0, true},
 		{"nice -n 5 wp slot run tests -- go test ./...", "tests", "go test ./...", 0, true},
 		{"FOO=1 nohup env X=2 wp testsum -- make check", "tests", "make check", 0, true},
 		{"bash -c 'wp testsum -- make check'", "tests", "make check", 0, true},
@@ -370,6 +408,37 @@ func TestWaitHookSaysTheETAOfABackgroundedRun(t *testing.T) {
 		out, _ := waitHook(t, 200, `{}`, bashCall("wp slot run tests -n 1 -- go test ./...", true))
 		// (20 + 30 for the one ahead + 30) * 1.2
 		if ctx := waitContext(t, out); !strings.Contains(ctx, "is expected to complete in 96 minutes.") {
+			t.Errorf("context:\n%s", ctx)
+		}
+	})
+	t.Run("a young holder of another command is not the run itself: queued", func(t *testing.T) {
+		t.Setenv("WAYPOINT_SLOT_DIR", t.TempDir())
+		seedRuns(t, "tests", "go test ./...", "/tmp", 30, 30, 30)
+		holdSlot(t, "tests", time.Second, "slot run tests -n 1 -- make lint")
+		out, _ := waitHook(t, 200, `{}`, bashCall("wp slot run tests -n 1 -- go test ./...", true))
+		if ctx := waitContext(t, out); !strings.Contains(ctx, "The test is queued") { // audit #1372.20
+			t.Errorf("context:\n%s", ctx)
+		}
+	})
+	t.Run("two slots, one held by someone else: running", func(t *testing.T) {
+		t.Setenv("WAYPOINT_SLOT_DIR", t.TempDir())
+		seedRuns(t, "tests", "go test ./...", "/tmp", 30, 30, 30)
+		holdSlot(t, "tests", 10*time.Minute, "slot run tests -n 1 -- go test ./...")
+		out, _ := waitHook(t, 200, `{}`, bashCall("wp slot run tests -n 2 -- go test ./...", true))
+		if ctx := waitContext(t, out); !strings.Contains(ctx, "The test is running") { // audit #1372.24
+			t.Errorf("context:\n%s", ctx)
+		}
+	})
+	t.Run("no session to read (darwin): its own new waiter is not ahead of it", func(t *testing.T) {
+		t.Setenv("WAYPOINT_SLOT_DIR", t.TempDir())
+		stubPidSessions(t, map[int]string{})
+		seedRuns(t, "tests", "go test ./...", "/tmp", 30, 30, 30)
+		holdSlot(t, "tests", 10*time.Minute, "slot run tests -n 1 -- go test ./...")
+		dir, _ := slotDir()
+		writeWaiter(t, dir, os.Getppid(), time.Now().Add(-2*time.Second).UnixNano())
+		out, _ := waitHook(t, 200, `{}`, bashCall("wp slot run tests -n 1 -- go test ./...", true))
+		// (20 left + 30 run) * 1.2 (audit #1372.6)
+		if ctx := waitContext(t, out); !strings.Contains(ctx, "is expected to complete in 60 minutes.") {
 			t.Errorf("context:\n%s", ctx)
 		}
 	})

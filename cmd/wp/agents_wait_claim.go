@@ -220,6 +220,15 @@ var (
 	reDigitLed = regexp.MustCompile(`^\d`)
 )
 
+// wrapperValueOpts are the wrappers skipWrappers skips with their options,
+// and for each the options whose value is the next word (audit #1372.9).
+var wrapperValueOpts = map[string]map[string]bool{
+	"timeout": {"-s": true, "--signal": true, "-k": true, "--kill-after": true},
+	"nice":    {"-n": true, "--adjustment": true},
+	"stdbuf":  {"-i": true, "-o": true, "-e": true, "--input": true, "--output": true, "--error": true},
+	"env":     {"-u": true, "--unset": true, "-C": true, "--chdir": true},
+}
+
 // skipWrappers drops from the front of one simple command's words what only
 // wraps the command: assignments; timeout, nice, stdbuf and env with their
 // options; nohup, time, exec, command and setsid. It returns the words from
@@ -232,10 +241,13 @@ func skipWrappers(words []string) (rest []string, script string) {
 		switch {
 		case isAssignment(w):
 			i++
-		case w == "timeout" || w == "nice" || w == "stdbuf" || w == "env":
+		case wrapperValueOpts[w] != nil:
 			i++
 			for i < len(words) && (strings.HasPrefix(words[i], "-") || isAssignment(words[i]) ||
 				(w != "env" && reDigitLed.MatchString(words[i]))) {
+				if wrapperValueOpts[w][words[i]] {
+					i++ // its value is the next word: timeout -s KILL, env -u NAME
+				}
 				i++
 			}
 		case w == "nohup" || w == "time" || w == "exec" || w == "command" || w == "setsid":

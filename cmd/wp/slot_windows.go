@@ -12,7 +12,7 @@ func slotTryLock(*os.File) (bool, error) {
 }
 
 // fileLock has no flock to take on Windows; callers go on unlocked.
-func fileLock(*os.File) (func(), error) {
+var fileLock = func(*os.File) (func(), error) {
 	return nil, errors.New("no flock on Windows")
 }
 

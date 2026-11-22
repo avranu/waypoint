@@ -203,12 +203,15 @@ func slotRecordRun(dir string, r slotRunRec) {
 		return
 	}
 	// Appends and the trim (read, then rename over) take one lock, so a trim
-	// can't drop a line another process appends meanwhile. Where there's no
-	// flock (Windows) it goes on unlocked.
+	// can't drop a line another process appends meanwhile. Without the lock a
+	// run is still appended (one write to an O_APPEND file), but the record
+	// isn't trimmed (audit #1372.10).
+	locked := false
 	if lf, err := os.OpenFile(filepath.Join(dir, slotRunsLock), os.O_CREATE|os.O_RDWR, 0o600); err == nil { // #nosec G304 -- our own directory
 		defer lf.Close()
 		if unlock, err := fileLock(lf); err == nil {
 			defer unlock()
+			locked = true
 		}
 	}
 	p := filepath.Join(dir, slotRunsFile)
@@ -218,7 +221,7 @@ func slotRecordRun(dir string, r slotRunRec) {
 	}
 	_, _ = f.Write(append(b, '\n'))
 	_ = f.Close()
-	if st, err := os.Stat(p); err == nil && st.Size() > 256<<10 {
+	if st, err := os.Stat(p); err == nil && locked && st.Size() > 256<<10 {
 		if all := slotRuns(dir); len(all) > slotRunsKeep {
 			var sb strings.Builder
 			for _, x := range all[len(all)-slotRunsKeep:] {
@@ -325,7 +328,15 @@ func slotQueuedAheadOf(dir, name, session string) int {
 		if err != nil {
 			continue
 		}
-		ws = append(ws, waiter{pid, v, session != "" && slotPidSession(pid) == session})
+		own := false
+		if session != "" {
+			// Where a process's session can't be read (darwin has no /proc),
+			// a waiter that began just now is the command's own, as in waitETA
+			// (audit #1372.6).
+			s := slotPidSession(pid)
+			own = s == session || (s == "" && time.Since(time.Unix(0, v)) < 15*time.Second)
+		}
+		ws = append(ws, waiter{pid, v, own})
 	}
 	if session != "" {
 		first := true

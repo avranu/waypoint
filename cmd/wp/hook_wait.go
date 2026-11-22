@@ -8,16 +8,20 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core"
 )
 
 // The wait hook (WP-1571): after a Bash call that went to the background, the
 // session is told how long the run is likely to take (when it is wp testsum
 // or wp slot run, from the slot directory's history) and what it can do
-// meanwhile: the findings of its review round with no verdict, the requests
-// answered that it hasn't acted on. A foreground call is over by the time a
-// PostToolUse hook runs, so it says nothing for one. The server says what is
-// outstanding (POST /api/v1/sessions/outstanding, which also records that it
-// told); with none, or with no answer, the hook prints only the ETA, if any.
+// meanwhile: the findings of its review round still to do, the answered
+// requests it hasn't been told of (by wp request show or a wakeup). A
+// foreground call is over by the time a PostToolUse hook runs, so it says
+// nothing for one. The server says what is outstanding (POST
+// /api/v1/sessions/outstanding, which also records that it told); with none,
+// or with no answer, the hook prints only the ETA, if any. Both are worked out
+// at once, and the hook says what it has by waitBudget.
 
 // hookWait is the PostToolUse(Bash) hook's command.
 const hookWait = "hook claude-wait"
@@ -27,6 +31,13 @@ const hookWait = "hook claude-wait"
 const hookWaitTimeout = 5
 
 const waitHTTPTimeout = 3 * time.Second
+
+// waitBudget is how long the hook takes at most, inside hookWaitTimeout;
+// waitETAFor works out the ETA (variables so tests set them).
+var (
+	waitBudget = 4 * time.Second
+	waitETAFor = waitETA
+)
 
 // waitStarts says whether a Bash call went to the background: it was asked to
 // (run_in_background), or Claude Code moved it there itself (the response
@@ -181,21 +192,33 @@ func hookClaudeWait(c *cli, stdin io.Reader, stdout io.Writer) {
 		Command string `json:"command"`
 	}
 	_ = json.Unmarshal(in.ToolInput, &call)
-	text := waitETA(call.Command, in.Cwd, in.SessionID)
+	// The ETA reads git and the slot directory, which can be slow: it goes
+	// alongside the server's call, and what isn't ready by the budget is left
+	// out rather than the hook timing out with nothing said (audit #1372.13).
+	deadline := time.After(waitBudget)
+	eta := make(chan string, 1)
+	go func() { eta <- waitETAFor(call.Command, in.Cwd, in.SessionID) }()
+	var lines string
 	if c.server() != "" && c.token() != "" {
 		c.session = in.SessionID
 		c.hookTimeout = waitHTTPTimeout
 		if b, err := c.call("POST", "/api/v1/sessions/outstanding", struct{}{}); err == nil {
-			var o struct {
-				Lines string `json:"lines"`
-			}
-			if json.Unmarshal(b, &o) == nil && strings.TrimSpace(o.Lines) != "" {
-				if text != "" {
-					text += "\n\n"
-				}
-				text += "Work of yours to do while it runs (leave anything that needs its result):\n" + strings.TrimSpace(o.Lines)
+			var o core.SessionOutstanding
+			if json.Unmarshal(b, &o) == nil {
+				lines = strings.TrimSpace(o.Lines)
 			}
 		}
+	}
+	var text string
+	select {
+	case text = <-eta:
+	case <-deadline:
+	}
+	if lines != "" {
+		if text != "" {
+			text += "\n\n"
+		}
+		text += "Work of yours to do while it runs (leave anything that needs its result):\n" + lines
 	}
 	if text == "" {
 		return

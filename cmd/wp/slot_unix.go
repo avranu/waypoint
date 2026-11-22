@@ -25,8 +25,8 @@ func slotTryLock(f *os.File) (bool, error) {
 }
 
 // fileLock waits for an exclusive flock on f; unlock releases it (closing f
-// does too).
-func fileLock(f *os.File) (unlock func(), err error) {
+// does too). A variable so tests set it.
+var fileLock = func(f *os.File) (unlock func(), err error) {
 	fd := int(f.Fd()) // #nosec G115 -- fds fit an int
 	if err := syscall.Flock(fd, syscall.LOCK_EX); err != nil {
 		return nil, err

@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -338,6 +340,65 @@ func TestSlotWaiterIsRegisteredWhenTheWaitBegins(t *testing.T) {
 	h.release()
 	if files, _ := filepath.Glob(filepath.Join(dir, "*.wait")); len(files) != 0 {
 		t.Errorf("waiter files left: %v", files)
+	}
+}
+
+// A waiter whose wait is cancelled leaves no waiter file (audit #1372.25).
+func TestSlotWaiterCancelledLeavesNoFile(t *testing.T) {
+	slotEnv(t)
+	oldPoll := slotPoll
+	slotPoll = 10 * time.Millisecond
+	t.Cleanup(func() { slotPoll = oldPoll })
+	dir, _ := slotDir()
+	first, err := acquireSlot(t.Context(), "tests", 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.release()
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		_, err := acquireSlot(ctx, "tests", 1, nil)
+		done <- err
+	}()
+	deadline := time.After(5 * time.Second)
+	for files, _ := filepath.Glob(filepath.Join(dir, "*.wait")); len(files) == 0; files, _ = filepath.Glob(filepath.Join(dir, "*.wait")) {
+		select {
+		case <-deadline:
+			t.Fatal("no waiter file")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v", err)
+	}
+	if files, _ := filepath.Glob(filepath.Join(dir, "*.wait")); len(files) != 0 {
+		t.Errorf("waiter files left: %v", files)
+	}
+}
+
+// Without the record's lock a run is still appended, but the record isn't
+// trimmed: a trim then could drop a line another process appends
+// (audit #1372.10).
+func TestSlotRecordRunWithoutTheLockDoesntTrim(t *testing.T) {
+	dir := t.TempDir()
+	old := fileLock
+	fileLock = func(*os.File) (func(), error) { return nil, errors.New("no lock") }
+	t.Cleanup(func() { fileLock = old })
+	pad := strings.Repeat("x", 2000)
+	var sb strings.Builder
+	for i := range slotRunsKeep + 50 {
+		b, _ := json.Marshal(slotRunRec{Name: "tests", Cmd: pad, At: int64(i), Secs: 1})
+		sb.Write(b)
+		sb.WriteByte('\n')
+	}
+	if err := os.WriteFile(filepath.Join(dir, slotRunsFile), []byte(sb.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	slotRecordRun(dir, slotRunRec{Name: "tests", Cmd: "new", At: 9999, Secs: 1})
+	if got := len(slotRuns(dir)); got != slotRunsKeep+51 {
+		t.Errorf("runs = %d, want %d", got, slotRunsKeep+51)
 	}
 }
 

@@ -12,11 +12,15 @@ import (
 // slow, because none of it needs the result (WP-1571).
 type SessionOutstanding struct {
 	// Audit and Findings: findings (41.2 style) of the session's open review
-	// round's audit that have no verdict yet.
+	// round's audit still to do (findingToDoSQL: no verdict, or confirmed and
+	// not filed).
 	Audit    int64    `json:"audit,omitempty"`
 	Findings []string `json:"findings,omitempty"`
-	// Requests: answered requests the session hasn't read (R-12).
+	// Requests: answered requests the session hasn't been told of (R-12):
+	// not read with wp request show nor sent in a wakeup (delivered_at).
 	Requests []string `json:"requests,omitempty"`
+	// RequestsTotal: how many there are, Requests being the newest 20.
+	RequestsTotal int `json:"requests_total,omitempty"`
 	// Lines: each of them as a line naming the command to do it.
 	Lines string `json:"lines,omitempty"`
 }
@@ -27,9 +31,10 @@ const outstandingKind = "outstanding"
 
 // Where outstanding work is named (the record's ref_type): at the start of a
 // background wait (the PostToolUse hook) or at a Stop while it goes. Each
-// names an item once, apart: the hook's answer can be lost (it is cut at 3 s,
-// and Claude Code may drop it) and the agent may not act on it, so the Stop
-// still names what is left once (WP-1571, audit #1344).
+// records an item once, apart: the hook's answer can be lost (it is cut at
+// 3 s, and Claude Code may drop it) and the agent may not act on it, so the
+// Stop still names what is left (WP-1571, audit #1344). An item already
+// recorded is named again only with a new one, which names the whole list.
 const (
 	OutstandingAtWait = "wait"
 	OutstandingAtStop = "stop"
@@ -43,7 +48,7 @@ func (o *SessionOutstanding) Empty() bool {
 // SessionOutstanding is what the actor's session can do while it waits, to
 // name at via (OutstandingAtWait or OutstandingAtStop): the findings with no
 // verdict in the audit of its open review round, and the requests answered
-// that it hasn't read (wp request ls --answered). Only what is there. It is
+// that it hasn't been told of. Only what is there. It is
 // not a plain read: it records what it names, and names nothing (Empty) when
 // all of it was named at via before; when something is new, it names all of
 // it, so the counts are the whole of what is outstanding.
@@ -70,6 +75,10 @@ func (s *Service) SessionOutstanding(ctx context.Context, actor *Actor, via stri
 		}
 		rounds = append(rounds, id)
 	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
@@ -90,6 +99,10 @@ func (s *Service) SessionOutstanding(ctx context.Context, actor *Actor, via stri
 			}
 			out.Findings = append(out.Findings, fmt.Sprintf("%d.%d", audit, n))
 		}
+		if err := frows.Err(); err != nil {
+			_ = frows.Close()
+			return nil, err
+		}
 		if err := frows.Close(); err != nil {
 			return nil, err
 		}
@@ -105,6 +118,7 @@ func (s *Service) SessionOutstanding(ctx context.Context, actor *Actor, via stri
 	for _, r := range page.Requests {
 		out.Requests = append(out.Requests, r.Code)
 	}
+	out.RequestsTotal = page.Total
 	// Each item is named to a session once at each of via, so an agent that
 	// holds findings while a worker fixes them isn't re-prompted with them at
 	// every stop (session_events, kind outstandingKind, ref_type via, label
@@ -156,11 +170,17 @@ func outstandingLines(o *SessionOutstanding) string {
 		if n > 12 {
 			shown += ", …"
 		}
-		fmt.Fprintf(&b, "- %s without a verdict in your review round's audit #%d (%s): `wp audit show %d`, then `wp audit mark ID fixed -m \"what you did\"` or `rejected -m \"why\"`.\n",
+		fmt.Fprintf(&b, "- %s still to do in your review round's audit #%d (%s): `wp audit show %d`, then for each `wp audit mark ID fixed -m \"what you did\"`, `confirmed --issue KEY` for a real one you filed for later (not a critical or high one), or `rejected -m \"why\"`.\n",
 			plural1(n, "finding"), o.Audit, shown, o.Audit)
 	}
 	if n := len(o.Requests); n > 0 {
-		fmt.Fprintf(&b, "- %s you haven't read (%s): `wp request ls --answered`.\n", plural1(n, "answered request"), strings.Join(o.Requests, ", "))
+		// wp request show tells the session of them, so they aren't named
+		// again; wp request ls --answered doesn't (audit #1372.4).
+		codes := strings.Join(o.Requests, ", ")
+		if o.RequestsTotal > n {
+			codes += ", …"
+		}
+		fmt.Fprintf(&b, "- %s you haven't read (%s): `wp request show %s`.\n", plural1(max(n, o.RequestsTotal), "answered request"), codes, strings.Join(o.Requests, " "))
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
