@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -25,7 +26,10 @@ func min2(m float64) time.Duration { return time.Duration(m * float64(time.Minut
 func TestSlotMedianRunUsesRecentRunsOfThisCommandHere(t *testing.T) {
 	h := append(recs("tests", "make check", "/r", 100, 100, 100), recs("tests", "make check", "/other", 1)...)
 	h = append(h, recs("tests", "go vet", "/r", 2)...)
-	h = append(h, recs("tests", "make check", "/r", 30, 40, 20, 30, 50, 30, 20, 40, 30, 30)...) // the latest ten: median 30
+	// The latest ten, an even count: the middle pair is 20 and 40, so 30. Without
+	// the window the three 100s before them would make it 40; one middle value
+	// alone would be 20 or 40.
+	h = append(h, recs("tests", "make check", "/r", 10, 10, 10, 10, 20, 40, 40, 40, 40, 40)...)
 	if got, ok := slotMedianRun(h, "tests", "make check", "/r"); !ok || got != min2(30) {
 		t.Errorf("median = %v %v, want 30m", got, ok)
 	}
@@ -58,6 +62,14 @@ func TestSlotWaitETA(t *testing.T) {
 	if w, ok := slotWaitETA(h, "tests", late, 0, min2(30)); !ok || w != 0 {
 		t.Errorf("a late holder: %v %v", w, ok)
 	}
+	// Two queued ahead each take the slot in turn.
+	if w, ok := slotWaitETA(h, "tests", holders, 2, min2(30)); !ok || w != min2(80) {
+		t.Errorf("one holder, two ahead: %v %v", w, ok)
+	}
+	// No holders: nothing to estimate from.
+	if _, ok := slotWaitETA(h, "tests", nil, 0, min2(30)); ok {
+		t.Error("an estimate with no holders")
+	}
 	// A holder whose command has no history: unknown.
 	if _, ok := slotWaitETA(h, "tests", []slotHolder{{Cmd: "pytest", Elapsed: min2(1)}}, 0, min2(30)); ok {
 		t.Error("an estimate from a holder nobody has timed")
@@ -66,29 +78,34 @@ func TestSlotWaitETA(t *testing.T) {
 
 func TestSlotETAMessage(t *testing.T) {
 	// Queued: wait plus run, padded by 20% and rounded to minutes: (20+30)*1.2 = 60.
-	got := slotETAMessage("tests", true, min2(20), min2(30))
+	got := slotETAMessage("tests", true, min2(20), min2(30), true)
 	want := "The test is queued, and is expected to complete in 60 minutes. If you have other work to do in the meantime, handle it while you wait. Otherwise, end your turn and you'll be notified when the test concludes."
 	if got != want {
 		t.Errorf("queued:\n%s\nwant:\n%s", got, want)
 	}
-	if got := slotETAMessage("tests", false, 0, min2(10)); !strings.HasPrefix(got, "The test is running, and is expected to complete in 12 minutes.") {
+	if got := slotETAMessage("tests", false, 0, min2(10), true); !strings.HasPrefix(got, "The test is running, and is expected to complete in 12 minutes.") {
 		t.Errorf("running: %s", got)
 	}
-	if got := slotETAMessage("build", false, 0, min2(10)); !strings.HasPrefix(got, "The command is running,") || !strings.Contains(got, "when the command concludes") {
+	if got := slotETAMessage("build", false, 0, min2(10), true); !strings.HasPrefix(got, "The command is running,") || !strings.Contains(got, "when the command concludes") {
 		t.Errorf("another slot's command: %s", got)
 	}
-	if got := slotETAMessage("tests", false, 0, min2(1)); !strings.Contains(got, "in 1 minute.") {
+	if got := slotETAMessage("tests", false, 0, min2(1), true); !strings.Contains(got, "in 1 minute.") {
 		t.Errorf("singular: %s", got)
 	}
 	// Queued with no way to tell the wait: only the run is said.
-	if got := slotETAMessage("tests", true, -1, min2(10)); !strings.Contains(got, "queued") || !strings.Contains(got, "once it starts") || !strings.Contains(got, "12 minutes") {
+	if got := slotETAMessage("tests", true, -1, min2(10), true); !strings.Contains(got, "queued") || !strings.Contains(got, "once it starts") || !strings.Contains(got, "12 minutes") {
 		t.Errorf("unknown wait: %s", got)
 	}
+	// Without the advice (the stderr of a foreground run, read after the run
+	// ends) only the ETA sentence is said.
+	if got := slotETAMessage("tests", true, min2(20), min2(30), false); got != "The test is queued, and is expected to complete in 60 minutes." {
+		t.Errorf("no advice: %q", got)
+	}
 	// Nothing to say: no run time, or under half a minute in all.
-	if got := slotETAMessage("tests", true, min2(5), 0); got != "" {
+	if got := slotETAMessage("tests", true, min2(5), 0, true); got != "" {
 		t.Errorf("no run history: %q", got)
 	}
-	if got := slotETAMessage("tests", false, 0, 5*time.Second); got != "" {
+	if got := slotETAMessage("tests", false, 0, 5*time.Second, true); got != "" {
 		t.Errorf("a few seconds: %q", got)
 	}
 }
@@ -126,6 +143,9 @@ func TestSlotRunSaysItsETAFromTheRecordedRuns(t *testing.T) {
 	errb.Reset()
 	if code := run(args, &out, &errb); code != 0 || !strings.Contains(errb.String(), "The test is running, and is expected to complete in 12 minutes.") {
 		t.Fatalf("second run: %d %q", code, errb.String())
+	}
+	if strings.Contains(errb.String(), "end your turn") {
+		t.Errorf("a foreground run's stderr gave the advice for a backgrounded one: %q", errb.String())
 	}
 	// A failed run is not a run to expect.
 	if code := run([]string{"slot", "run", "tests", "-n", "1", "--", "sh", "-c", "exit 3"}, &out, &errb); code != 3 {
@@ -183,7 +203,7 @@ func TestSlotRunQueuedSaysItsETA(t *testing.T) {
 	hold.release()
 	<-done
 	// (20 left + 30 run) * 1.2 = 60
-	if got := eb.String(); !strings.Contains(got, "The test is queued, and is expected to complete in 60 minutes.") {
+	if got := eb.String(); !strings.Contains(got, "The test is queued, and is expected to complete in 60 minutes.") || strings.Contains(got, "end your turn") {
 		t.Errorf("stderr:\n%s", got)
 	}
 }
@@ -219,5 +239,168 @@ func TestSlotQueuedAheadCountsLiveEarlierWaiters(t *testing.T) {
 	defer remove()
 	if got := slotQueuedAhead(dir, "tests"); got != 1 {
 		t.Errorf("ahead = %d, want 1", got)
+	}
+}
+
+// stubPidSessions makes slotPidSession read from m (pid to session id).
+func stubPidSessions(t *testing.T, m map[int]string) {
+	t.Helper()
+	old := slotPidSession
+	slotPidSession = func(pid int) string { return m[pid] }
+	t.Cleanup(func() { slotPidSession = old })
+}
+
+func writeWaiter(t *testing.T, dir string, pid int, ts int64) {
+	t.Helper()
+	p := filepath.Join(dir, "tests."+strconv.Itoa(pid)+".wait")
+	if err := os.WriteFile(p, []byte(strconv.FormatInt(ts, 10)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSlotQueuedAheadTieBreaksOnPid(t *testing.T) {
+	slotEnv(t)
+	dir, _ := slotDir()
+	_ = os.MkdirAll(dir, 0o700)
+	child := exec.Command("sleep", "30")
+	if err := child.Start(); err != nil {
+		t.Skip("no sleep:", err)
+	}
+	t.Cleanup(func() { _ = child.Process.Kill(); _ = child.Wait() })
+	const ts = int64(5e18)
+	writeWaiter(t, dir, os.Getpid(), ts)
+	writeWaiter(t, dir, 1, ts)
+	writeWaiter(t, dir, child.Process.Pid, ts)
+	// Began at the same instant: the lower pid is ahead.
+	want := 1
+	if child.Process.Pid < os.Getpid() {
+		want = 2
+	}
+	if got := slotQueuedAhead(dir, "tests"); got != want {
+		t.Errorf("ahead = %d, want %d (pids %d, %d)", got, want, os.Getpid(), child.Process.Pid)
+	}
+}
+
+func TestSlotQueuedAheadForASession(t *testing.T) {
+	slotEnv(t)
+	dir, _ := slotDir()
+	_ = os.MkdirAll(dir, 0o700)
+	now := time.Now().UnixNano()
+	own, other := os.Getppid(), 1
+	stubPidSessions(t, map[int]string{own: "s1", other: "s2", os.Getpid(): "s2"})
+	writeWaiter(t, dir, own, now-60e9)
+	// The command's own waiter is not ahead of it, and with nobody else: 0.
+	if got := slotQueuedAheadOf(dir, "tests", "s1"); got != 0 {
+		t.Errorf("own waiter counted: %d", got)
+	}
+	// One that began before it is ahead; one that began after is not.
+	writeWaiter(t, dir, other, now-300e9)
+	writeWaiter(t, dir, os.Getpid(), now-10e9)
+	if got := slotQueuedAheadOf(dir, "tests", "s1"); got != 1 {
+		t.Errorf("ahead = %d, want 1", got)
+	}
+	// No waiter of the session yet (it has not started to wait): both are ahead.
+	if got := slotQueuedAheadOf(dir, "tests", "s9"); got != 3 {
+		t.Errorf("a session with no waiter: ahead = %d, want 3", got)
+	}
+}
+
+// A run that fails to get a slot at once is a waiter from then on, not only
+// once it says it is waiting.
+func TestSlotWaiterIsRegisteredWhenTheWaitBegins(t *testing.T) {
+	slotEnv(t)
+	oldNotice, oldPoll := slotWaitNotice, slotPoll
+	slotWaitNotice, slotPoll = time.Hour, 10*time.Millisecond
+	t.Cleanup(func() { slotWaitNotice, slotPoll = oldNotice, oldPoll })
+	dir, _ := slotDir()
+	first, err := acquireSlot(t.Context(), "tests", 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(chan *slotHold, 1)
+	go func() {
+		h, _ := acquireSlot(t.Context(), "tests", 1, nil)
+		got <- h
+	}()
+	// Someone else (as another session's process) counts it ahead, long before
+	// slotWaitNotice.
+	stubPidSessions(t, map[int]string{os.Getpid(): "waiter"})
+	deadline := time.After(5 * time.Second)
+	for slotQueuedAheadOf(dir, "tests", "newcomer") != 1 {
+		select {
+		case <-deadline:
+			t.Fatal("the waiter is not visible before slotWaitNotice")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	first.release()
+	h := <-got
+	h.release()
+	if files, _ := filepath.Glob(filepath.Join(dir, "*.wait")); len(files) != 0 {
+		t.Errorf("waiter files left: %v", files)
+	}
+}
+
+func TestSlotRunsSkipsBadLines(t *testing.T) {
+	dir := t.TempDir()
+	good := `{"name":"tests","cmd":"a","repo":"/r","at":1,"secs":3}`
+	body := good + "\nnot json\n" + `{"name":"tests","cmd":"b","repo":"/r","at":2,"secs":-4}` + "\n" + good + "\n"
+	if err := os.WriteFile(filepath.Join(dir, slotRunsFile), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := slotRuns(dir); len(got) != 2 || got[0].Cmd != "a" || got[1].Cmd != "a" {
+		t.Errorf("slotRuns = %+v", got)
+	}
+}
+
+func TestSlotRecordRunTrimsByRename(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, slotRunsFile)
+	var sb strings.Builder
+	for i := range 3000 {
+		b, _ := json.Marshal(slotRunRec{Name: "tests", Cmd: "c" + strconv.Itoa(i) + strings.Repeat("x", 100), Repo: "/r", At: int64(i), Secs: 1})
+		sb.Write(b)
+		sb.WriteByte('\n')
+	}
+	if err := os.WriteFile(p, []byte(sb.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.Stat(p)
+	slotRecordRun(dir, slotRunRec{Name: "tests", Cmd: "last", Repo: "/r", At: 9999, Secs: 1})
+	got := slotRuns(dir)
+	if len(got) != slotRunsKeep || got[len(got)-1].Cmd != "last" {
+		t.Fatalf("kept %d lines, last %+v", len(got), got[len(got)-1])
+	}
+	if after, _ := os.Stat(p); os.SameFile(before, after) {
+		t.Error("the file was rewritten in place")
+	}
+	if files, _ := filepath.Glob(filepath.Join(dir, "*.tmp")); len(files) != 0 {
+		t.Errorf("temp files left: %v", files)
+	}
+}
+
+func TestSlotRunKey(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		os   []string
+		argv []string
+		want string
+	}{
+		{"testsum", []string{"wp", "testsum", "--", "make", "check"}, nil, "make check"},
+		{"a dashes word inside one argument", []string{"wp", "ship", "WP-1", "--check", "cargo test -- --nocapture"}, []string{"cargo", "test", "--", "--nocapture"}, "cargo test -- --nocapture"},
+		{"ship check of go test", []string{"wp", "ship", "WP-1", "--check", "go test ./..."}, []string{"go", "test", "-json", "./..."}, "go test ./..."},
+		{"testsum without dashes", []string{"wp", "testsum", "go", "test", "./..."}, []string{"go", "test", "-json", "./..."}, "go test ./..."},
+		{"slot run", []string{"wp", "slot", "run", "tests", "-n", "1", "--", "sh", "-c", "true"}, []string{"sh", "-c", "true"}, "sh -c true"},
+	} {
+		if got := slotRunKey(tc.os, tc.argv); got != tc.want {
+			t.Errorf("%s: %q, want %q", tc.name, got, tc.want)
+		}
+	}
+	if got, _, _, _ := waitETACommand("wp testsum -- make check"); got != "tests" {
+		t.Fatal(got)
+	}
+	_, cmd, _, _ := waitETACommand("wp testsum -- make check")
+	if want := slotRunKey([]string{"wp", "testsum", "--", "make", "check"}, nil); cmd != want {
+		t.Errorf("hook key %q, command key %q", cmd, want)
 	}
 }

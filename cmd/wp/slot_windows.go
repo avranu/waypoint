@@ -18,3 +18,6 @@ func fileLock(*os.File) (func(), error) {
 
 // slotPidAlive is never reached on Windows: no slot is ever held there.
 func slotPidAlive(int) bool { return false }
+
+// slotPidSession can't read another process's environment on Windows.
+var slotPidSession = func(int) string { return "" }

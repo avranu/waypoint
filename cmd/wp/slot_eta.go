@@ -30,6 +30,7 @@ type slotRunRec struct {
 
 // slotHolder is a command holding a slot.
 type slotHolder struct {
+	Pid     int // the wp holding it; 0 when the lock file doesn't say
 	Cmd     string
 	Elapsed time.Duration
 }
@@ -48,6 +49,24 @@ func slotCmdKey(args string) string {
 		return strings.TrimSpace(after)
 	}
 	return strings.TrimSpace(args)
+}
+
+// slotRunKey is the command as a run records it: the words after the "--"
+// that is one of wp's own arguments, else the command run (without the -json
+// that goTestJSON adds to a go test, so a ship check and wp testsum of the
+// same command share a history).
+func slotRunKey(osArgs, argv []string) string {
+	if len(osArgs) > 1 {
+		for i, a := range osArgs[1:] {
+			if a == "--" {
+				return strings.TrimSpace(slotField(strings.Join(osArgs[1:][i+1:], " ")))
+			}
+		}
+	}
+	if len(argv) > 2 && argv[0] == "go" && argv[1] == "test" && argv[2] == "-json" {
+		argv = append([]string{"go", "test"}, argv[3:]...)
+	}
+	return strings.TrimSpace(slotField(strings.Join(argv, " ")))
 }
 
 // slotRepoKey names the repository the command runs in, the same for all its
@@ -119,8 +138,10 @@ func slotWaitETA(recs []slotRunRec, name string, holders []slotHolder, queued in
 }
 
 // slotETAMessage is what the command tells the agent: "" when there is no
-// estimate. wait < 0: unknown; queued: it is waiting for a slot.
-func slotETAMessage(name string, queued bool, wait, run time.Duration) string {
+// estimate. wait < 0: unknown; queued: it is waiting for a slot; advice: add
+// what to do meanwhile, which is only true of a run that went to the
+// background (a foreground run's stderr is read after it has ended).
+func slotETAMessage(name string, queued bool, wait, run time.Duration, advice bool) string {
 	if run <= 0 {
 		return ""
 	}
@@ -148,6 +169,9 @@ func slotETAMessage(name string, queued bool, wait, run time.Duration) string {
 		head = fmt.Sprintf("The %s is queued, and is expected to complete in %s.", what, n)
 	default:
 		head = fmt.Sprintf("The %s is running, and is expected to complete in %s.", what, n)
+	}
+	if !advice {
+		return head
 	}
 	return fmt.Sprintf("%s If you have other work to do in the meantime, handle it while you wait. Otherwise, end your turn and you'll be notified when the %s concludes.", head, what)
 }
@@ -192,7 +216,14 @@ func slotRecordRun(dir string, r slotRunRec) {
 				sb.Write(line)
 				sb.WriteByte('\n')
 			}
-			_ = os.WriteFile(p, []byte(sb.String()), 0o600)
+			// Replace the file whole, so a reader never sees it half written.
+			if tmp, err := os.CreateTemp(dir, slotRunsFile+".*.tmp"); err == nil {
+				_, werr := tmp.WriteString(sb.String())
+				cerr := tmp.Close()
+				if werr != nil || cerr != nil || os.Rename(tmp.Name(), p) != nil {
+					_ = os.Remove(tmp.Name())
+				}
+			}
 		}
 	}
 }
@@ -222,7 +253,8 @@ func slotHolders(dir, name string) []slotHolder {
 		if err != nil {
 			continue
 		}
-		out = append(out, slotHolder{Cmd: slotCmdKey(parts[3]), Elapsed: time.Since(time.Unix(ts, 0))})
+		pid, _ := strconv.Atoi(parts[0])
+		out = append(out, slotHolder{Pid: pid, Cmd: slotCmdKey(parts[3]), Elapsed: time.Since(time.Unix(ts, 0))})
 	}
 	return out
 }
@@ -242,19 +274,33 @@ func slotAddWaiter(dir, name string) (remove func()) {
 }
 
 // slotQueuedAhead counts the live waiters that began before this process.
-func slotQueuedAhead(dir, name string) int {
-	mine := time.Now().UnixNano()
-	if b, err := os.ReadFile(slotWaiterPath(dir, name)); err == nil { // #nosec G304 -- our own directory
-		if v, err := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64); err == nil {
-			mine = v
+func slotQueuedAhead(dir, name string) int { return slotQueuedAheadOf(dir, name, "") }
+
+// slotQueuedAheadOf is slotQueuedAhead for a command that isn't this process
+// but one of session's (the wait hook asks about the command it is told of):
+// the waiters of that session are the command's own, not counted, and those
+// that began before the latest of them are ahead; with none, all are. With
+// session "": the waiters that began before this process.
+func slotQueuedAheadOf(dir, name, session string) int {
+	mine, minePid := time.Now().UnixNano(), os.Getpid()
+	if session == "" {
+		if b, err := os.ReadFile(slotWaiterPath(dir, name)); err == nil { // #nosec G304 -- our own directory
+			if v, err := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64); err == nil {
+				mine = v
+			}
 		}
 	}
+	type waiter struct {
+		pid int
+		at  int64
+		own bool
+	}
+	var ws []waiter
 	files, _ := filepath.Glob(filepath.Join(dir, name+".*.wait"))
-	ahead := 0
 	for _, p := range files {
 		pidStr := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(p), name+"."), ".wait")
 		pid, err := strconv.Atoi(pidStr)
-		if err != nil || pid == os.Getpid() {
+		if err != nil || (session == "" && pid == os.Getpid()) {
 			continue
 		}
 		if !slotPidAlive(pid) {
@@ -265,26 +311,51 @@ func slotQueuedAhead(dir, name string) int {
 		if err != nil {
 			continue
 		}
-		if v, err := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64); err == nil && (v < mine || (v == mine && pid < os.Getpid())) {
+		v, err := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64)
+		if err != nil {
+			continue
+		}
+		ws = append(ws, waiter{pid, v, session != "" && slotPidSession(pid) == session})
+	}
+	if session != "" {
+		first := true
+		for _, w := range ws {
+			if w.own && (first || w.at > mine) {
+				mine, minePid, first = w.at, w.pid, false
+			}
+		}
+	}
+	ahead := 0
+	for _, w := range ws {
+		if !w.own && (w.at < mine || (w.at == mine && w.pid < minePid)) {
 			ahead++
 		}
 	}
 	return ahead
 }
 
+// slotQueuedETA is the message for a command that has to wait, given the
+// history, the slot's holders, how many are queued ahead and the command's
+// own run time: the wait is unknown (-1) when a holder's command has no
+// history.
+func slotQueuedETA(recs []slotRunRec, name string, holders []slotHolder, ahead int, run time.Duration, advice bool) string {
+	wait, ok := slotWaitETA(recs, name, holders, ahead, run)
+	if !ok {
+		wait = -1
+	}
+	return slotETAMessage(name, true, wait, run, advice)
+}
+
 // slotQueuedNote is the ETA line for a command that has to wait: "" when
-// there is no history of how long it runs.
+// there is no history of how long it runs. It is what a foreground run says on
+// stderr, so it has no advice on what to do meanwhile.
 func slotQueuedNote(dir, name, cmd string) string {
 	recs := slotRuns(dir)
 	run, ok := slotMedianRun(recs, name, cmd, slotRepoKey())
 	if !ok {
 		return ""
 	}
-	wait, ok := slotWaitETA(recs, name, slotHolders(dir, name), slotQueuedAhead(dir, name), run)
-	if !ok {
-		wait = -1
-	}
-	return slotETAMessage(name, true, wait, run)
+	return slotQueuedETA(recs, name, slotHolders(dir, name), slotQueuedAhead(dir, name), run, false)
 }
 
 // slotRunningNote is the ETA line for a command that has started.
@@ -293,5 +364,5 @@ func slotRunningNote(dir, name, cmd string) string {
 	if !ok {
 		return ""
 	}
-	return slotETAMessage(name, false, 0, run)
+	return slotETAMessage(name, false, 0, run, false)
 }

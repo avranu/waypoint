@@ -145,7 +145,8 @@ func runsAgentsWaitAt(cmd string, depth int) bool {
 }
 
 // shellCommands splits cmd into simple commands (lists of words, quotes
-// removed) at the unquoted separators ; & | ( ) { } a backquote and newline.
+// removed) at the unquoted separators ; & | ( ) { } a backquote and newline;
+// the & of a redirection (2>&1 >&2 <&3 &>f &>>f) is not one.
 func shellCommands(cmd string) [][]string {
 	var out [][]string
 	var words []string
@@ -196,7 +197,15 @@ func shellCommands(cmd string) [][]string {
 			i = j
 		case ' ', '\t':
 			endWord()
-		case ';', '&', '|', '(', ')', '{', '}', '`', '\n', '\r':
+		case '&':
+			// The & of a redirection (2>&1, >&2, <&3, &>f, &>>f) is part of the word.
+			if (i > 0 && (rs[i-1] == '>' || rs[i-1] == '<')) || (i+1 < len(rs) && rs[i+1] == '>') {
+				w.WriteRune(r)
+				inWord = true
+			} else {
+				endCmd()
+			}
+		case ';', '|', '(', ')', '{', '}', '`', '\n', '\r':
 			endCmd()
 		default:
 			w.WriteRune(r)
@@ -211,8 +220,12 @@ var (
 	reDigitLed = regexp.MustCompile(`^\d`)
 )
 
-// commandIsAgentsWait: words, one simple command, runs `wp agents wait`.
-func commandIsAgentsWait(words []string, depth int) bool {
+// skipWrappers drops from the front of one simple command's words what only
+// wraps the command: assignments; timeout, nice, stdbuf and env with their
+// options; nohup, time, exec, command and setsid. It returns the words from
+// the command itself (none: there was none), or, when that is `bash -c` or
+// `sh -c`, the script it runs.
+func skipWrappers(words []string) (rest []string, script string) {
 	i := 0
 	for i < len(words) {
 		w := words[i]
@@ -228,10 +241,25 @@ func commandIsAgentsWait(words []string, depth int) bool {
 		case w == "nohup" || w == "time" || w == "exec" || w == "command" || w == "setsid":
 			i++
 		case w == "bash" || w == "sh" || strings.HasSuffix(w, "/bash") || strings.HasSuffix(w, "/sh"):
-			return depth < 2 && i+2 < len(words) && words[i+1] == "-c" && runsAgentsWaitAt(words[i+2], depth+1)
+			if i+2 < len(words) && words[i+1] == "-c" {
+				return nil, words[i+2]
+			}
+			return nil, ""
 		default:
-			return (w == "wp" || strings.HasSuffix(w, "/wp")) && i+2 < len(words) && words[i+1] == "agents" && words[i+2] == "wait"
+			return words[i:], ""
 		}
 	}
-	return false
+	return nil, ""
+}
+
+// isWp says the word names the wp command.
+func isWp(w string) bool { return w == "wp" || strings.HasSuffix(w, "/wp") }
+
+// commandIsAgentsWait: words, one simple command, runs `wp agents wait`.
+func commandIsAgentsWait(words []string, depth int) bool {
+	rest, script := skipWrappers(words)
+	if script != "" {
+		return depth < 2 && runsAgentsWaitAt(script, depth+1)
+	}
+	return len(rest) > 2 && isWp(rest[0]) && rest[1] == "agents" && rest[2] == "wait"
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -104,7 +105,7 @@ func TestWaitHookNamesOutstandingWorkOfABackgroundCall(t *testing.T) {
 				t.Fatalf("the server was asked %d times", asked)
 			}
 			ctx := waitContext(t, out)
-			for _, want := range []string{"12.1, 12.2", "wp request ls --answered", "doesn't need"} {
+			for _, want := range []string{"12.1, 12.2", "wp request ls --answered", "Work of yours to do while it runs (leave anything that needs its result):"} {
 				if !strings.Contains(ctx, want) {
 					t.Errorf("context lacks %q:\n%s", want, ctx)
 				}
@@ -176,6 +177,25 @@ func TestWaitHookWithNoServerIsSilent(t *testing.T) {
 	if stdout.Len() != 0 {
 		t.Errorf("printed %q", stdout.String())
 	}
+	// With history of the run, the ETA is still said, with no server to ask.
+	seedRuns(t, "tests", "make check", "/tmp", 30, 30, 30)
+	b, _ = json.Marshal(bashCall("wp testsum -- make check", true))
+	stdout.Reset()
+	hookClaudeWait(c, bytes.NewReader(b), &stdout)
+	if ctx := waitContext(t, stdout.String()); !strings.Contains(ctx, "is expected to complete in 36 minutes.") {
+		t.Errorf("context:\n%s", ctx)
+	}
+}
+
+func TestWaitHookNeedsASession(t *testing.T) {
+	t.Setenv("WAYPOINT_SLOT_DIR", t.TempDir())
+	seedRuns(t, "tests", "make check", "/tmp", 30, 30, 30)
+	in := bashCall("wp testsum -- make check", true)
+	in["session_id"] = ""
+	out, asked := waitHook(t, 200, waitOutstanding, in)
+	if out != "" || asked != 0 {
+		t.Errorf("printed %q after asking %d times", out, asked)
+	}
 }
 
 func TestWaitETACommand(t *testing.T) {
@@ -191,6 +211,26 @@ func TestWaitETACommand(t *testing.T) {
 		{"wp slot run tests -- go test ./...", "tests", "go test ./...", 0, true},
 		{"wp slot run build -n 2 -- make all", "build", "make all", 2, true},
 		{"./wp slot run tests -n1 -- sh -c 'echo hi there'", "tests", "sh -c echo hi there", 1, true},
+		{"wp slot run build -n=2 -- make all", "build", "make all", 2, true},
+		{"wp slot run build -n 3 -- make all", "build", "make all", 3, true},
+		{"wp testsum -- make check 2>&1 | tail -5", "tests", "make check", 0, true},
+		{"wp testsum -- make check > /tmp/log 2>&1", "tests", "make check", 0, true},
+		{"wp testsum -- make check >/tmp/log", "tests", "make check", 0, true},
+		{"wp testsum -- make check >>/tmp/log 2>/dev/null", "tests", "make check", 0, true},
+		{"wp testsum -- make check &>/tmp/log", "tests", "make check", 0, true},
+		{"wp testsum -- make check <in", "tests", "make check", 0, true},
+		{"timeout 900 wp testsum -- make check", "tests", "make check", 0, true},
+		{"nice -n 5 wp slot run tests -- go test ./...", "tests", "go test ./...", 0, true},
+		{"FOO=1 nohup env X=2 wp testsum -- make check", "tests", "make check", 0, true},
+		{"bash -c 'wp testsum -- make check'", "tests", "make check", 0, true},
+		{"timeout 5 bash -c \"cd /r && wp testsum -- make check\"", "tests", "make check", 0, true},
+		{"wp testsum --repeat 3 -- make check", "", "", 0, false},
+		{"wp testsum --repeat=3 -- make check", "", "", 0, false},
+		{"wp testsum --base main -- make check", "", "", 0, false},
+		{"wp testsum --base=main -- make check", "", "", 0, false},
+		{"wp slot run 'a b' -- x", "", "", 0, false},
+		{"wp testsum --", "", "", 0, false},
+		{"wp slot run tests --", "", "", 0, false},
 		{"wp testsum go test ./...", "", "", 0, false},
 		{"make check", "", "", 0, false},
 		{"echo wp testsum -- x", "", "", 0, false},
@@ -219,6 +259,11 @@ func seedRuns(t *testing.T, name, cmd, repo string, mins ...float64) {
 
 // holdSlot holds the slot as a command that began ago before.
 func holdSlot(t *testing.T, name string, ago time.Duration, args string) {
+	holdSlotPid(t, name, 1, ago, args)
+}
+
+// holdSlotPid is holdSlot as the process pid.
+func holdSlotPid(t *testing.T, name string, pid int, ago time.Duration, args string) {
 	t.Helper()
 	dir, _ := slotDir()
 	h, err := acquireSlot(t.Context(), name, 1, nil)
@@ -231,7 +276,7 @@ func holdSlot(t *testing.T, name string, ago time.Duration, args string) {
 		t.Fatal(err)
 	}
 	_ = f.Truncate(0)
-	_, _ = f.WriteAt([]byte("1\t"+strconv.FormatInt(time.Now().Add(-ago).Unix(), 10)+"\t/r\t"+args+"\n"), 0)
+	_, _ = f.WriteAt([]byte(strconv.Itoa(pid)+"\t"+strconv.FormatInt(time.Now().Add(-ago).Unix(), 10)+"\t/r\t"+args+"\n"), 0)
 	_ = f.Close()
 }
 
@@ -279,6 +324,55 @@ func TestWaitHookSaysTheETAOfABackgroundedRun(t *testing.T) {
 			t.Errorf("context:\n%s", ctx)
 		}
 	})
+	t.Run("another session's identical run < 15s old holds it: queued", func(t *testing.T) {
+		t.Setenv("WAYPOINT_SLOT_DIR", t.TempDir())
+		stubPidSessions(t, map[int]string{1: "sess-2"})
+		seedRuns(t, "tests", "go test ./...", "/tmp", 30, 30, 30)
+		holdSlot(t, "tests", time.Second, "slot run tests -n 1 -- go test ./...")
+		out, _ := waitHook(t, 200, `{}`, bashCall("wp slot run tests -n 1 -- go test ./...", true))
+		if ctx := waitContext(t, out); !strings.Contains(ctx, "The test is queued") {
+			t.Errorf("context:\n%s", ctx)
+		}
+	})
+	t.Run("its own run, past 15s on the slot: running", func(t *testing.T) {
+		t.Setenv("WAYPOINT_SLOT_DIR", t.TempDir())
+		stubPidSessions(t, map[int]string{1: "sess-1"})
+		seedRuns(t, "tests", "go test ./...", "/tmp", 30, 30, 30)
+		holdSlot(t, "tests", 20*time.Second, "slot run tests -n 1 -- go test ./...")
+		out, _ := waitHook(t, 200, `{}`, bashCall("wp slot run tests -n 1 -- go test ./...", true))
+		if ctx := waitContext(t, out); !strings.Contains(ctx, "The test is running") {
+			t.Errorf("context:\n%s", ctx)
+		}
+	})
+	t.Run("its own waiter file is not ahead of it", func(t *testing.T) {
+		t.Setenv("WAYPOINT_SLOT_DIR", t.TempDir())
+		stubPidSessions(t, map[int]string{1: "sess-2", os.Getppid(): "sess-1"})
+		seedRuns(t, "tests", "go test ./...", "/tmp", 30, 30, 30)
+		holdSlot(t, "tests", 10*time.Minute, "slot run tests -n 1 -- go test ./...")
+		dir, _ := slotDir()
+		writeWaiter(t, dir, os.Getppid(), time.Now().Add(-time.Minute).UnixNano())
+		out, _ := waitHook(t, 200, `{}`, bashCall("wp slot run tests -n 1 -- go test ./...", true))
+		// (20 left + 30 run) * 1.2
+		if ctx := waitContext(t, out); !strings.Contains(ctx, "is expected to complete in 60 minutes.") {
+			t.Errorf("context:\n%s", ctx)
+		}
+	})
+	t.Run("only waiters older than its own are ahead", func(t *testing.T) {
+		t.Setenv("WAYPOINT_SLOT_DIR", t.TempDir())
+		stubPidSessions(t, map[int]string{1: "sess-2", os.Getppid(): "sess-1", os.Getpid(): "sess-3"})
+		seedRuns(t, "tests", "go test ./...", "/tmp", 30, 30, 30)
+		holdSlotPid(t, "tests", 4194000, 10*time.Minute, "slot run tests -n 1 -- go test ./...")
+		dir, _ := slotDir()
+		now := time.Now()
+		writeWaiter(t, dir, os.Getppid(), now.Add(-time.Minute).UnixNano())
+		writeWaiter(t, dir, 1, now.Add(-5*time.Minute).UnixNano())            // older: ahead
+		writeWaiter(t, dir, os.Getpid(), now.Add(-10*time.Second).UnixNano()) // newer: behind
+		out, _ := waitHook(t, 200, `{}`, bashCall("wp slot run tests -n 1 -- go test ./...", true))
+		// (20 + 30 for the one ahead + 30) * 1.2
+		if ctx := waitContext(t, out); !strings.Contains(ctx, "is expected to complete in 96 minutes.") {
+			t.Errorf("context:\n%s", ctx)
+		}
+	})
 	t.Run("with outstanding work: the ETA first", func(t *testing.T) {
 		t.Setenv("WAYPOINT_SLOT_DIR", t.TempDir())
 		seedRuns(t, "tests", "make check", "/tmp", 30, 30, 30)
@@ -312,4 +406,24 @@ func TestWaitHookSaysTheETAOfABackgroundedRun(t *testing.T) {
 			t.Errorf("printed %q", out)
 		}
 	})
+}
+
+func TestShellCommandsKeepRedirectionsInTheCommand(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want string
+	}{
+		{"a 2>&1 | b", "[[a 2>&1] [b]]"},
+		{"a >&2; b", "[[a >&2] [b]]"},
+		{"a <&3 && b", "[[a <&3] [b]]"},
+		{"a &>f; b", "[[a &>f] [b]]"},
+		{"a &>>f & b", "[[a &>>f] [b]]"},
+		{"a & b", "[[a] [b]]"},
+		{"a && b", "[[a] [b]]"},
+		{"a |& b", "[[a] [b]]"},
+	} {
+		if got := fmt.Sprint(shellCommands(tc.in)); got != tc.want {
+			t.Errorf("%q = %s, want %s", tc.in, got, tc.want)
+		}
+	}
 }

@@ -77,6 +77,12 @@ func acquireSlot(ctx context.Context, name string, n int, notify func()) (*slotH
 	}
 	start := time.Now()
 	notified := false
+	var remove func() // leaves the queue
+	defer func() {
+		if remove != nil {
+			remove()
+		}
+	}()
 	for {
 		for i := 0; i < n; i++ {
 			f, err := os.OpenFile(filepath.Join(dir, fmt.Sprintf("%s.%d.lock", name, i)), os.O_RDWR|os.O_CREATE, 0o600) // #nosec G304 -- name is validated
@@ -96,11 +102,13 @@ func acquireSlot(ctx context.Context, name string, n int, notify func()) (*slotH
 			}
 			_ = f.Close()
 		}
+		if remove == nil {
+			// The first round found no slot: join the queue as of now, so those
+			// who come later can count this one.
+			remove = slotAddWaiter(dir, name)
+		}
 		if !notified && time.Since(start) > slotWaitNotice {
 			notified = true
-			// Join the queue, so those who come later can count this one.
-			remove := slotAddWaiter(dir, name)
-			defer remove()
 			if notify != nil {
 				notify()
 			}
@@ -187,12 +195,9 @@ func (c *cli) runInSlotThen(name string, n int, argv []string, out, errw io.Writ
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	own := !slotHeld(name) // a nested run is inside someone's slot and time
-	cmd := slotCmdKey(slotField(strings.Join(os.Args[1:], " ")))
-	if !strings.Contains(strings.Join(os.Args[1:], " "), " -- ") {
-		cmd = slotField(strings.Join(argv, " "))
-	}
-	if !own {
-		cmd = ""
+	cmd := ""
+	if own {
+		cmd = slotRunKey(os.Args, argv)
 	}
 	env, release, err := c.takeSlotFor(ctx, name, n, cmd)
 	if err != nil {

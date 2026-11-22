@@ -4,7 +4,9 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
+	"strings"
 	"syscall"
 )
 
@@ -37,4 +39,20 @@ func fileLock(f *os.File) (unlock func(), err error) {
 func slotPidAlive(pid int) bool {
 	err := syscall.Kill(pid, 0)
 	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+// slotPidSession is the Claude Code session whose Bash call started the
+// process pid (its CLAUDE_CODE_SESSION_ID, read from /proc), "" when it can't
+// be read. A variable so tests set it.
+var slotPidSession = func(pid int) string {
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", pid)) // #nosec G304 -- a pid's own environment
+	if err != nil {
+		return ""
+	}
+	for _, e := range strings.Split(string(b), "\x00") {
+		if v, ok := strings.CutPrefix(e, "CLAUDE_CODE_SESSION_ID="); ok {
+			return v
+		}
+	}
+	return ""
 }

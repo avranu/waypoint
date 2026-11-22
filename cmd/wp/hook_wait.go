@@ -3,7 +3,8 @@ package main
 import (
 	"encoding/json"
 	"io"
-	"path/filepath"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -40,87 +41,49 @@ func waitStarts(toolInput, toolResponse json.RawMessage) bool {
 	return bashBackground(toolResponse) != ""
 }
 
-// shellSegments splits a command line into the words of each simple command,
-// honouring quotes: separators (; & | newline parentheses) end a command
-// unless quoted.
-func shellSegments(s string) [][]string {
-	var segs [][]string
-	var words []string
-	var cur strings.Builder
-	have := false // a word is under way (even an empty quoted one)
-	var quote rune
-	flushWord := func() {
-		if have {
-			words = append(words, cur.String())
-			cur.Reset()
-			have = false
-		}
-	}
-	flushSeg := func() {
-		flushWord()
-		if len(words) > 0 {
-			segs = append(segs, words)
-			words = nil
-		}
-	}
-	rs := []rune(s)
-	for i := 0; i < len(rs); i++ {
-		r := rs[i]
-		switch {
-		case quote != 0:
-			if r == quote {
-				quote = 0
-			} else if r == '\\' && quote == '"' && i+1 < len(rs) {
-				i++
-				cur.WriteRune(rs[i])
-			} else {
-				cur.WriteRune(r)
-			}
-		case r == '\'' || r == '"':
-			quote, have = r, true
-		case r == '\\' && i+1 < len(rs):
-			i++
-			cur.WriteRune(rs[i])
-			have = true
-		case r == ' ' || r == '\t':
-			flushWord()
-		case r == ';' || r == '&' || r == '|' || r == '\n' || r == '(' || r == ')':
-			flushSeg()
-		default:
-			cur.WriteRune(r)
-			have = true
-		}
-	}
-	flushSeg()
-	return segs
+// waitETACommand finds, in a Bash command line, a wp testsum or wp slot run
+// with a command after "--" (alone, or after cd, assignments or wrappers such
+// as timeout, nice, nohup, env, or inside bash -c): the slot it takes, the
+// command as the run record knows it (slotRunKey of its arguments, without
+// redirections) and the -n given (0: none). A testsum with --repeat or --base
+// is not one run of the command, and has no ETA.
+func waitETACommand(command string) (name, cmd string, n int, ok bool) {
+	return waitETACommandAt(command, 0)
 }
 
-// waitETACommand finds, in a Bash command line, a wp testsum or wp slot run
-// with a command after "--" (alone, or after cd, env settings, time, nohup or
-// exec): the slot it takes, the command as the lock file and the run record
-// know it (slotCmdKey of the arguments), and the -n given (0: none).
-func waitETACommand(command string) (name, cmd string, n int, ok bool) {
-	for _, words := range shellSegments(command) {
-		for len(words) > 0 && (strings.Contains(words[0], "=") || words[0] == "time" || words[0] == "nohup" || words[0] == "exec") {
-			words = words[1:]
-		}
-		if len(words) < 2 || filepath.Base(words[0]) != "wp" {
+func waitETACommandAt(command string, depth int) (name, cmd string, n int, ok bool) {
+	if len(command) > 20000 {
+		return "", "", 0, false
+	}
+	for _, words := range shellCommands(command) {
+		rest, script := skipWrappers(words)
+		if script != "" {
+			if depth < 2 {
+				if name, cmd, n, ok = waitETACommandAt(script, depth+1); ok {
+					return name, cmd, n, true
+				}
+			}
 			continue
 		}
-		args := words[1:] // os.Args[1:] of that wp
-		dash := -1
-		for i, a := range args {
-			if a == "--" {
-				dash = i
-				break
-			}
+		if len(rest) < 2 || !isWp(rest[0]) {
+			continue
 		}
+		args := dropRedirections(rest[1:]) // os.Args[1:] of that wp
+		dash := slices.Index(args, "--")
 		if dash < 0 || dash == len(args)-1 {
 			continue
 		}
 		switch {
 		case args[0] == "testsum":
 			name = "tests"
+			for _, a := range args[1:dash] {
+				if f, _, _ := strings.Cut(strings.TrimLeft(a, "-"), "="); f == "repeat" || f == "base" {
+					name = ""
+				}
+			}
+			if name == "" {
+				continue
+			}
 		case len(args) > 2 && args[0] == "slot" && args[1] == "run" && validSlotName(args[2]):
 			name = args[2]
 			for i := 3; i < dash; i++ {
@@ -135,15 +98,37 @@ func waitETACommand(command string) (name, cmd string, n int, ok bool) {
 		default:
 			continue
 		}
-		return name, slotCmdKey(slotField(strings.Join(args, " "))), n, true
+		return name, slotRunKey(append([]string{"wp"}, args...), nil), n, true
 	}
 	return "", "", 0, false
 }
 
+// reRedirect matches a redirection word: an optional fd (or &), > >> or <,
+// an optional & and the target, which is empty when it is the next word.
+var reRedirect = regexp.MustCompile(`^(\d*|&)(>>?|<)&?(.*)$`)
+
+// dropRedirections removes redirections (2>&1, >log, > log, >>log,
+// 2>/dev/null, &>log, <in) from words.
+func dropRedirections(words []string) []string {
+	var out []string
+	for i := 0; i < len(words); i++ {
+		if m := reRedirect.FindStringSubmatch(words[i]); m != nil {
+			if m[3] == "" {
+				i++ // the target is the next word
+			}
+			continue
+		}
+		out = append(out, words[i])
+	}
+	return out
+}
+
 // waitETA is what a backgrounded wp testsum or wp slot run says about how
 // long it will take, as the command itself would say it on stderr but where
-// the agent can read it: "" without a run of that command to go by.
-func waitETA(command, cwd string) string {
+// the agent can read it: "" without a run of that command to go by. session is
+// the one that made the call: its processes are the ones that are the command
+// itself.
+func waitETA(command, cwd, session string) string {
 	name, cmd, n, ok := waitETACommand(command)
 	if !ok {
 		return ""
@@ -162,21 +147,25 @@ func waitETA(command, cwd string) string {
 	}
 	holders := slotHolders(dir, name)
 	// The command was started a moment ago, so it may already hold a slot: that
-	// is no one else's.
+	// is no one else's. It is the holder of the same command that this session's
+	// process started; where that can't be read, one that began just now.
 	for i, h := range holders {
-		if h.Cmd == cmd && h.Elapsed < 15*time.Second {
+		if h.Cmd != cmd {
+			continue
+		}
+		own := h.Elapsed < 15*time.Second
+		if s := slotPidSession(h.Pid); s != "" {
+			own = s == session
+		}
+		if own {
 			holders = append(holders[:i], holders[i+1:]...)
 			break
 		}
 	}
 	if len(holders) < n {
-		return slotETAMessage(name, false, 0, run)
+		return slotETAMessage(name, false, 0, run, true)
 	}
-	wait, ok := slotWaitETA(recs, name, holders, slotQueuedAhead(dir, name), run)
-	if !ok {
-		wait = -1
-	}
-	return slotETAMessage(name, true, wait, run)
+	return slotQueuedETA(recs, name, holders, slotQueuedAheadOf(dir, name, session), run, true)
 }
 
 // hookClaudeWait handles one PostToolUse event. Silent unless the call went to
@@ -192,7 +181,7 @@ func hookClaudeWait(c *cli, stdin io.Reader, stdout io.Writer) {
 		Command string `json:"command"`
 	}
 	_ = json.Unmarshal(in.ToolInput, &call)
-	text := waitETA(call.Command, in.Cwd)
+	text := waitETA(call.Command, in.Cwd, in.SessionID)
 	if c.server() != "" && c.token() != "" {
 		c.session = in.SessionID
 		c.hookTimeout = waitHTTPTimeout
@@ -204,7 +193,7 @@ func hookClaudeWait(c *cli, stdin io.Reader, stdout io.Writer) {
 				if text != "" {
 					text += "\n\n"
 				}
-				text += "Work of yours that doesn't need its result, to do while it runs:\n" + strings.TrimSpace(o.Lines)
+				text += "Work of yours to do while it runs (leave anything that needs its result):\n" + strings.TrimSpace(o.Lines)
 			}
 		}
 	}
