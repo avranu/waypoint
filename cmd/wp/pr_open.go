@@ -303,7 +303,7 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 	if kept && !c.asJSON {
 		c.println("Using the --summary you gave this task's last wp ship (--summary \"\" drops it).")
 	}
-	if o.Held != "" && c.canWaitShip(so) {
+	if o.Held != "" && c.canWaitShip(so, o) {
 		o2, raw2, done, err := c.waitHeldShip(f, so, o, raw, cmpStr(key, o.key), summary)
 		if err != nil || done {
 			return false, err

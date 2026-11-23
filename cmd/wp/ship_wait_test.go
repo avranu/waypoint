@@ -53,8 +53,8 @@ func heldShip(t *testing.T, c *cli, noWait bool) (*openedPR, []byte, bool, error
 	t.Helper()
 	wait := 5 * time.Second
 	so := shipOpts{noWait: &noWait, waitTimeout: &wait}
-	o := &openedPR{Held: "Pushed. Nothing more to run: end your turn."}
-	if !c.canWaitShip(so) {
+	o := &openedPR{Held: "Pushed. Nothing more to run: end your turn.", HeldNeedsAgent: new(bool)}
+	if !c.canWaitShip(so, o) {
 		return o, nil, false, nil
 	}
 	return c.waitHeldShip(heldFlags(), so, o, []byte(`{}`), "WP-9", "Shipped {task}.")
@@ -123,6 +123,22 @@ func TestHeldShipNoWait(t *testing.T) {
 	o, _, done, err := heldShip(t, c, true)
 	if err != nil || done || o.Held == "" || out.Len() != 0 || calls.Load() != 0 {
 		t.Fatalf("done %v err %v after %d calls; output %q", done, err, calls.Load(), out.String())
+	}
+}
+
+// A held answer that asks the agent for something (findings to mark, its own
+// report), or doesn't say whether it does, is the agent's now: no wait.
+func TestHeldShipThatNeedsTheAgentDoesNotWait(t *testing.T) {
+	c, _, _ := waitEnv(t, say(map[string]any{"outcome": "findings", "text": "x"}))
+	no, yes := false, true
+	so := shipOpts{noWait: &no}
+	for _, o := range []*openedPR{{Held: "mark these", HeldNeedsAgent: &yes}, {Held: "older server"}} {
+		if c.canWaitShip(so, o) {
+			t.Fatalf("a ship held with %+v waits", o)
+		}
+	}
+	if !c.canWaitShip(so, &openedPR{Held: "end your turn", HeldNeedsAgent: &no}) {
+		t.Fatal("a ship held with nothing for the agent doesn't wait")
 	}
 }
 

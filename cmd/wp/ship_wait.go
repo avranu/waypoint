@@ -38,10 +38,12 @@ type shipNews struct {
 }
 
 // canWaitShip: the same conditions under which endTurnAfterShip may write a
-// marker (an agent's ship, in a session with Waypoint's hooks), and the wait
-// wasn't switched off.
-func (c *cli) canWaitShip(so shipOpts) bool {
-	return !*so.noWait && !c.asJSON && c.agentHeader() != "" && c.thisSession() != "" && c.server() != "" && c.token() != ""
+// marker (an agent's ship, in a session with Waypoint's hooks), the wait
+// wasn't switched off, and the held answer asks nothing of the agent: one
+// that does (findings to mark, its own report) is the agent's to act on now,
+// and nothing would come while it waited.
+func (c *cli) canWaitShip(so shipOpts, o *openedPR) bool {
+	return !*so.noWait && !factAsks(o.HeldNeedsAgent) && !c.asJSON && c.agentHeader() != "" && c.thisSession() != "" && c.server() != "" && c.token() != ""
 }
 
 // waitShipNews holds until the task's round has something for the agent, or
