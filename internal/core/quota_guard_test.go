@@ -50,7 +50,11 @@ func (g *guardEnv) session(cli string, prompts ...any) int64 {
 	id := g.exec(`INSERT INTO agent_sessions(user_id, machine, cli_id, title, repo, started_at, last_seen_at) VALUES (?,?,?,?,?,?,?)`,
 		g.me.User.ID, "box", cli, "session "+cli, "acme/app", g.h(0), g.h(0))
 	for i := 0; i+1 < len(prompts); i += 2 {
-		g.exec(`INSERT INTO session_events(session_id, kind, detail, created_at) VALUES (?,?,?,?)`, id, "prompt", prompts[i+1], g.h(prompts[i].(time.Duration)))
+		typed := ""
+		if strings.HasPrefix(prompts[i+1].(string), AutopilotPromptMark) {
+			typed = TypedKickoff // what Waypoint typed, as the recogniser records it
+		}
+		g.exec(`INSERT INTO session_events(session_id, kind, detail, typed_kind, created_at) VALUES (?,?,?,?,?)`, id, "prompt", prompts[i+1], typed, g.h(prompts[i].(time.Duration)))
 	}
 	return id
 }
@@ -221,18 +225,19 @@ func TestQuotaGuardUnexplainedAndEarlySpend(t *testing.T) {
 
 func TestPromptOwner(t *testing.T) {
 	for _, tc := range []struct {
-		prompt   string
-		auto, ok bool
+		detail, typed string
+		auto, ok      bool
 	}{
-		{"Waypoint autopilot: next task", true, true},
-		{AutopilotReviewMark + "WP-1", true, true},
-		{"<task-notification>done</task-notification>", false, false},
-		{KeepWarmMark + " ping", false, false},
-		{"/compact", false, false},
-		{"please fix it", false, true},
+		{"Waypoint autopilot: next task", TypedKickoff, true, true},
+		{AutopilotReviewMark + "WP-1", TypedReview, true, true},
+		{"<task-notification>done</task-notification>", "", false, false},
+		{KeepWarmMark + " ping", TypedKeepWarm, false, false},
+		{"/compact", TypedCompact, false, false},
+		{"please fix it", "", false, true},
+		{"Waypoint autopilot: a person wrote this", "", false, true}, // the mark alone says nothing
 	} {
-		if auto, ok := promptOwner(tc.prompt); auto != tc.auto || ok != tc.ok {
-			t.Errorf("%q: %v %v", tc.prompt, auto, ok)
+		if auto, ok := promptOwner(tc.detail, tc.typed); auto != tc.auto || ok != tc.ok {
+			t.Errorf("%q (%q): %v %v", tc.detail, tc.typed, auto, ok)
 		}
 	}
 	line := ownerLine{{at: 0, auto: false}, {at: 100, auto: true}, {at: 150, auto: false}}

@@ -171,8 +171,7 @@ func (s *Service) noteFollowUpsByFiles(ctx context.Context, issueID int64, linkU
 			if related {
 				continue
 			}
-			if _, err := t.ExecContext(ctx, `INSERT INTO issue_relations(source_id, target_id, kind, created_at, found, basis, score)
-				VALUES (?,?,'follows',?,'files','inferred',?)`, issueID, other, s.nowMS(), share); err != nil {
+			if _, err := s.insertRelation(ctx, t, newRelation{Src: issueID, Dst: other, Kind: "follows", Found: "files", Basis: "inferred", Score: &share, Unrelated: true}); err != nil {
 				return err
 			}
 		}

@@ -14,6 +14,8 @@ func (s *Server) sessionRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/sessions", a(s.listAgentSessions))
 	mux.HandleFunc("POST /api/v1/sessions/hook", a(s.sessionHook))
 	mux.HandleFunc("POST /api/v1/sessions/hook/await", a(s.sessionHookAwait))
+	mux.HandleFunc("POST /api/v1/sessions/typed-start", a(s.sessionTypedStart))
+	mux.HandleFunc("GET /api/v1/sessions/typed-prompts", a(s.sessionTypedPrompts))
 	mux.HandleFunc("GET /api/v1/sessions/pause", a(s.sessionPause))
 	mux.HandleFunc("POST /api/v1/sessions/pulse", a(s.sessionPulse))
 	mux.HandleFunc("GET /api/v1/sessions/current", a(s.currentAgentSession))
@@ -82,6 +84,26 @@ func (s *Server) sessionHook(w http.ResponseWriter, r *http.Request) (any, error
 		return nil, err
 	}
 	return s.svc.SessionHook(r.Context(), actorFrom(r), in.Events)
+}
+
+// sessionTypedStart: the text a session is about to be started with, noted
+// before the session exists so its first prompt is known as Waypoint's
+// (WP-1370).
+func (s *Server) sessionTypedStart(w http.ResponseWriter, r *http.Request) (any, error) {
+	var in struct {
+		Text string `json:"text"`
+	}
+	if err := decode(r, &in); err != nil {
+		return nil, err
+	}
+	return nil, s.svc.RecordTypedStart(r.Context(), actorFrom(r), in.Text)
+}
+
+// sessionTypedPrompts: the digests of the texts Waypoint has typed into the
+// session (?cli=ID) that no prompt has used yet, for a hook that sends no
+// prompt text to match locally (WP-1370).
+func (s *Server) sessionTypedPrompts(w http.ResponseWriter, r *http.Request) (any, error) {
+	return s.svc.PendingTypedPrompts(r.Context(), actorFrom(r), r.URL.Query().Get("cli"))
 }
 
 // sessionPause is the pause winding the caller's sessions down, or null:

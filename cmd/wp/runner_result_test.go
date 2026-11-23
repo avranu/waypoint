@@ -95,6 +95,12 @@ func TestFinishRetriesTooLargeOnce(t *testing.T) {
 	var mu sync.Mutex
 	var bodies []map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/runner/jobs/7/finish" {
+			// Not this test's own call: say whose, instead of counting it.
+			t.Errorf("unexpected request %s %s (UA %q) from %s", r.Method, r.URL.Path, r.Header.Get("User-Agent"), r.RemoteAddr)
+			w.WriteHeader(http.StatusTeapot)
+			return
+		}
 		var in map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&in)
 		mu.Lock()

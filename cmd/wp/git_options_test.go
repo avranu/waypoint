@@ -1,0 +1,274 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+// gitShim puts a git on PATH that only logs what it was asked, and returns
+// the log's path: a refused value must leave it absent.
+func gitShim(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	log := filepath.Join(dir, "ran")
+	shim := "#!/bin/sh\necho \"$@\" >> " + log + "\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(shim), 0o755); err != nil { // #nosec G306 -- a test shim must be executable
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return log
+}
+
+// gitRanFor is what the shim was asked ("" when git never ran).
+func gitRanFor(t *testing.T, log string) string {
+	t.Helper()
+	b, _ := os.ReadFile(log)
+	return string(b)
+}
+
+func noGitRan(t *testing.T, log string) {
+	t.Helper()
+	if b, err := os.ReadFile(log); err == nil {
+		t.Errorf("git ran: %s", b)
+	}
+}
+
+var optionLike = []string{"--output=/tmp/x", "--upload-pack=touch /tmp/y", "-p", "main\nx"}
+
+// A value a person, a forge or a file supplies that git would read as an
+// option never reaches git (WP-1370): --branch and --from of wp worktree.
+func TestWorktreeAddRefusesAnOptionAsBranchOrFrom(t *testing.T) {
+	log := gitShim(t)
+	for _, flag := range []string{"--branch", "--from"} {
+		for _, bad := range optionLike {
+			c := &cli{err: &bytes.Buffer{}, out: &bytes.Buffer{}}
+			if err := cmdWorktreeAdd(c, []string{flag + "=" + bad, "some-name"}); err == nil {
+				t.Errorf("%s=%q was accepted", flag, bad)
+			}
+		}
+	}
+	noGitRan(t, log)
+	// Control: a legal branch and base do get as far as git (the shim fails
+	// it), so a mutant that refuses everything fails here.
+	c := &cli{err: &bytes.Buffer{}, out: &bytes.Buffer{}}
+	_ = cmdWorktreeAdd(c, []string{"--branch=feature/ok", "--from=main", "some-name"})
+	if gitRanFor(t, log) == "" {
+		t.Error("a legal --branch and --from never reached git: the refusal refuses everything")
+	}
+}
+
+// A remote named like an option in the checkout's config isn't fetched.
+func TestFetchRemoteSkipsAnOptionNamedRemote(t *testing.T) {
+	dir := gitRepo(t, "https://example.invalid/r.git")
+	tgit(t, dir, "config", "remote.--upload-pack=touch /tmp/z.url", "https://example.invalid/o.git")
+	if got := fetchRemote(dir); got != "origin" {
+		t.Errorf("remote = %q, want origin", got)
+	}
+	tgit(t, dir, "remote", "remove", "origin")
+	if got := fetchRemote(dir); got != "" {
+		t.Errorf("only an option-named remote: got %q, want none", got)
+	}
+}
+
+// The runner checks a job's target like its base and branch.
+func TestRunnerRefusesAnOptionAsTarget(t *testing.T) {
+	p := &runnerProc{}
+	for _, bad := range optionLike {
+		if err := p.checkJobRefs(context.Background(), agentJob{Target: bad}); err == nil {
+			t.Errorf("target %q was accepted", bad)
+		}
+	}
+	// Control: names git accepts pass.
+	if err := p.checkJobRefs(context.Background(), agentJob{Target: "main", Base: "main", DiffFrom: "abc1234"}); err != nil {
+		t.Errorf("legal refs were refused: %v", err)
+	}
+}
+
+// wp code risk --diff BASE and the pull request's refs from the forge, the
+// commit a round started from and the trees a test run recorded: refused
+// before git is given them.
+func TestOptionLikeRefsNeverReachGitInTheirReaders(t *testing.T) {
+	// A real repository: the refusal must be the guard, not "not a repo".
+	repo := t.TempDir()
+	tgit(t, repo, "init", "-q", "-b", "main")
+	tcommit(t, repo, "a.txt")
+	log := gitShim(t)
+	for _, bad := range optionLike {
+		if _, err := diffFiles(repo, bad); err == nil {
+			t.Errorf("diffFiles base %q was accepted", bad)
+		}
+		if got := filesBetween(bad, "HEAD"); got != -1 {
+			t.Errorf("filesBetween(%q) = %d", bad, got)
+		}
+		if got := objectiveBase(&cli{err: &bytes.Buffer{}}, &objective{BaseSHA: bad, Measure: "time"}, ""); got != "" {
+			t.Errorf("objectiveBase(%q) = %q", bad, got)
+		}
+	}
+	noGitRan(t, log)
+}
+
+// The accept controls of the readers above, with the real git: a legal ref
+// passes each, so a guard that refuses everything fails.
+func TestLegalRefsStillReachGitInTheirReaders(t *testing.T) {
+	repo := t.TempDir()
+	tgit(t, repo, "init", "-q", "-b", "main")
+	head := tcommit(t, repo, "a.txt")
+	t.Chdir(repo)
+	if _, err := diffFiles(repo, "main"); err != nil {
+		t.Errorf("diffFiles against main: %v", err)
+	}
+	if got := filesBetween("HEAD", "HEAD"); got != 0 {
+		t.Errorf("filesBetween(HEAD, HEAD) = %d, want 0", got)
+	}
+	if got := objectiveBase(&cli{err: &bytes.Buffer{}}, &objective{BaseSHA: head, Measure: "time"}, ""); got != head {
+		t.Errorf("objectiveBase(%s) = %q", head, got)
+	}
+}
+
+// A ref named like an option can exist (git update-ref makes one): tidy
+// deletes it with the name after "--", and reads its reflog by full name.
+func TestTidyDeletesABranchNamedLikeAnOption(t *testing.T) {
+	f := newTidyFixture(t)
+	tgit(t, f.repo, "update-ref", "refs/heads/-x", "main")
+	rep := scanTidy(t, f.repo, nil, later())
+	tidyApply(context.Background(), f.repo, rep, tidyOpts{worktrees: true, branches: true})
+	if strings.Contains(tgit(t, f.repo, "for-each-ref", "refs/heads/-x"), "-x") {
+		t.Error("the branch named -x is still there")
+	}
+}
+
+// makeWorktree's callers pass a branch the server or a stored plan named
+// (wp next's continuation, a revive): it is refused before any git runs.
+func TestMakeWorktreeRefusesAnOptionAsBranchOrFrom(t *testing.T) {
+	log := gitShim(t)
+	repo := &worktreeRepo{root: t.TempDir(), common: t.TempDir()}
+	for _, bad := range optionLike {
+		if _, err := makeWorktree(context.Background(), repo, "slug", bad, "", false, func(string, ...any) {}); err == nil {
+			t.Errorf("branch %q was accepted", bad)
+		}
+		if _, err := makeWorktree(context.Background(), repo, "slug", "", bad, false, func(string, ...any) {}); err == nil {
+			t.Errorf("from %q was accepted", bad)
+		}
+	}
+	noGitRan(t, log)
+	// Control: a legal branch and base reach git (the shim fails it).
+	_, _ = makeWorktree(context.Background(), repo, "slug", "feature/ok", "main", false, func(string, ...any) {})
+	if gitRanFor(t, log) == "" {
+		t.Error("a legal branch and from never reached git: the refusal refuses everything")
+	}
+}
+
+// A pull request's refs come from the forge: a head or base named like an
+// option is never fetched, and the base is refused.
+func TestPRFilesNeverGivesGitAForgeRefThatIsAnOption(t *testing.T) {
+	log := gitShim(t)
+	for _, bad := range optionLike {
+		if _, err := prFilesOf(t.TempDir(), 5, &prDetail{HeadRef: bad, BaseRef: bad}); err == nil {
+			t.Errorf("a pull request with head and base %q was read", bad)
+		}
+	}
+	if b, err := os.ReadFile(log); err == nil {
+		for _, l := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+			if strings.Contains(l, "--output") || strings.Contains(l, "--upload-pack") || strings.Contains(l, " -p") || strings.Contains(l, "main") {
+				t.Errorf("git was given a forge ref that is an option: %s", l)
+			}
+		}
+	}
+}
+
+// With the head fetched, only the base is left to refuse: a git that answers
+// every command must still never be given it.
+func TestPRFilesRefusesABaseThatIsAnOptionOnceTheHeadIsFetched(t *testing.T) {
+	dir := t.TempDir()
+	log := filepath.Join(dir, "ran")
+	shim := "#!/bin/sh\necho \"$@\" >> " + log + "\necho abc123\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(shim), 0o755); err != nil { // #nosec G306 -- a test shim must be executable
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	for _, bad := range optionLike {
+		if _, err := prFilesOf(t.TempDir(), 5, &prDetail{HeadRef: "topic", BaseRef: bad}); err == nil {
+			t.Errorf("a pull request based on %q was read", bad)
+		}
+	}
+	b, _ := os.ReadFile(log)
+	for _, line := range strings.Split(string(b), "\n") {
+		// The shim logs one line per command, its arguments joined by spaces:
+		// an argument with a space in it (--upload-pack=touch /tmp/y) can't be
+		// found by splitting the line, so look for it as a whole between spaces.
+		padded := " " + line + " "
+		for _, bad := range optionLike[:3] {
+			if strings.Contains(padded, " "+bad+" ") || strings.Contains(padded, " origin/"+bad+" ") {
+				t.Errorf("git was given the base %q: %s", bad, line)
+			}
+		}
+	}
+}
+
+// --base reaches git only as a branch: one that is an option gives no base.
+func TestBaseRefAndMergeBaseNeverGiveGitAnOption(t *testing.T) {
+	log := gitShim(t)
+	for _, bad := range optionLike {
+		if got := baseRef(bad); got != "" {
+			t.Errorf("baseRef(%q) = %q", bad, got)
+		}
+		(&cli{err: &bytes.Buffer{}}).mergeBaseIfForkedTwice("origin/" + bad)
+	}
+	if b, err := os.ReadFile(log); err == nil {
+		for _, l := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+			if strings.HasPrefix(l, "fetch") {
+				t.Errorf("git fetched a base that is an option: %s", l)
+			}
+			if strings.Contains(l, "rev-parse") && strings.Contains(l, "--output") {
+				t.Errorf("git read a base that is an option: %s", l)
+			}
+		}
+	}
+}
+
+// The kickoff a runner composes for a session job is noted to the server
+// before the session is started with it as its argv prompt.
+func TestRunnerSessionKickoffIsNotedAsTypedStart(t *testing.T) {
+	var mu sync.Mutex
+	var noted string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		if r.URL.Path == "/api/v1/sessions/typed-start" {
+			mu.Lock()
+			noted += string(b)
+			mu.Unlock()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{}"))
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("WAYPOINT_SERVER", srv.URL)
+	t.Setenv("WAYPOINT_TOKEN", "t")
+	old := runWpNext
+	t.Cleanup(func() { runWpNext = old })
+	runWpNext = func(context.Context, string, []string, string, string) (string, error) { return "THE-ANSWER", nil }
+	fakeCLI(t, "claude", fakeClaudeBG)
+	dir := t.TempDir()
+	p := newTestProc(t, dir)
+	c, _ := newCLI(&bytes.Buffer{}, &bytes.Buffer{})
+	p.c = c
+	p.clis = []runnerCLI{{Name: "claude"}}
+	o := p.execSession(context.Background(), newRun(time.Minute), sessionJob{Dir: dir, Task: "APP-1", Kickoff: "KICKOFF-TEMPLATE"})
+	if o.State != "done" {
+		t.Fatalf("outcome = %+v", o)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !strings.Contains(noted, "KICKOFF-TEMPLATE") {
+		t.Errorf("the kickoff was not noted to the server: %q", noted)
+	}
+}

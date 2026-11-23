@@ -370,10 +370,10 @@ func (s *Service) ReportReview(ctx context.Context, actor *Actor, ref string, in
 	}
 	switch {
 	case len(open) > 0:
-		res.Next = fmt.Sprintf("Decide %s (%s): %s. Then run `wp ship --pr`.",
+		res.Next = fmt.Sprintf("Decide %s (%s): %s. Then run `wp ship`.",
 			plural1(len(open), "finding"), strings.Join(open, ", "), markHint(open[0], "why"))
 	default:
-		res.Next = "Run `wp ship --pr`: Waypoint checks the marks against the code, scores the findings, and opens the pull request or asks for another round."
+		res.Next = "Run `wp ship`: Waypoint checks the marks against the code, scores the findings, and opens the pull request or asks for another round."
 	}
 	return res, nil
 }
@@ -504,7 +504,7 @@ func (s *Service) ownReportCounts(ctx context.Context, q queryer, round int64) (
 }
 
 // reportRoundOf is the round a report lands on: the one wp ship --pr in the
-// session's run of the task decides (shipRound), so a report can't land on
+// session's run of the task decides (roundOfShip), so a report can't land on
 // a round of another branch or another session that the ship won't decide.
 func (s *Service) reportRoundOf(ctx context.Context, q queryer, session, issueID int64) (*reportRound, error) {
 	run, err := s.openRunIn(ctx, q, session, issueID)
@@ -514,7 +514,7 @@ func (s *Service) reportRoundOf(ctx context.Context, q queryer, session, issueID
 	if run == 0 {
 		return &reportRound{}, nil
 	}
-	id, _, _, _, err := s.shipRound(ctx, q, session, issueID, run, "")
+	id, _, _, _, err := s.roundOfShip(ctx, q, session, issueID, run, "")
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && id == 0) {
 		return &reportRound{}, nil
 	}
@@ -554,9 +554,9 @@ func (r *reportRound) takes(key string) error {
 	case r.id == 0:
 		return invalid("%s has no adversarial review round in this session yet: run `wp ship` first. It records the round, and asks for this report when the review was yours to run", key)
 	case r.decided > 0:
-		return invalid("%s's adversarial review round is decided already: run `wp ship --pr` to see where the task stands", key)
+		return invalid("%s's adversarial review round is decided already: run `wp ship` to see where the task stands", key)
 	case r.state == RoundPending:
-		return invalid("%s's adversarial review round hasn't started: end your turn and its review comes to you, or read its audit yourself (`wp ship --pr` says which)", key)
+		return invalid("%s's adversarial review round hasn't started: end your turn and its review comes to you", key)
 	case !roundDecidable(r.state, r.started):
 		return invalid("%s's adversarial review round ended %s: run `wp ship` to see what comes next", key, r.state)
 	case r.reviewer != 0:

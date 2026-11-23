@@ -217,6 +217,9 @@ type Relation struct {
 	// mostly the same files, "after" someone related it to the other, done
 	// before it was filed (WP-1003); "" someone chose it.
 	Found string `json:"found,omitempty"`
+	// Note is what Waypoint saw when it made the relation itself (found
+	// "rewrite", WP-1370).
+	Note string `json:"note,omitempty"`
 	// Basis is who stands behind it, as for links (WP-ADR50): person,
 	// agent, automation or inferred (Waypoint found it); "" made before
 	// Waypoint recorded that. Score is how sure Waypoint was, where it
@@ -1156,9 +1159,7 @@ func (s *Service) CreateIssue(ctx context.Context, actor *Actor, in IssueInput) 
 		// What an agent files while working on a task follows it (WP-255),
 		// unless it is a slice of that task.
 		if o, ok := origin[0].(int64); ok && o != id && o != parentID {
-			sessID, sessTask := t.sessionStamp(ctx)
-			if _, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO issue_relations(source_id, target_id, kind, created_at, found, basis, session_id, session_issue_id)
-				VALUES (?,?,'follows',?,'session','inferred',?,?)`, id, o, now, sessID, sessTask); err != nil {
+			if _, err := s.insertRelation(ctx, t, newRelation{Src: id, Dst: o, Kind: "follows", Found: "session", Basis: "inferred"}); err != nil {
 				return err
 			}
 		}
@@ -2629,7 +2630,8 @@ func (s *Service) ShareIssue(ctx context.Context, actor *Actor, ref, userRef, ro
 
 func (s *Service) relations(ctx context.Context, q queryer, actor *Actor, issueID int64) ([]Relation, error) {
 	const cols = `r.id, r.kind, o.id, o.project_id, p.key || '-' || o.number, o.title, o.type, st.category, st.name, o.resolved_at, r.named_in IS NOT NULL, coalesce(r.found, ''),
-		r.subkind, r.basis, r.created_by, r.created_agent, r.score, r.created_at`
+		r.subkind, r.basis, r.created_by, r.created_agent, r.score, r.created_at,
+		coalesce((SELECT e.note FROM rewrite_evidence e WHERE r.found = 'rewrite' AND ((e.issue_id = r.source_id AND e.other_id = r.target_id) OR (e.issue_id = r.target_id AND e.other_id = r.source_id)) LIMIT 1), '')`
 	rows, err := q.QueryContext(ctx, `
 		SELECT `+cols+`, 0
 		FROM issue_relations r JOIN issues o ON o.id = r.target_id JOIN projects p ON p.id = o.project_id JOIN statuses st ON st.id = o.status_id
@@ -2652,7 +2654,7 @@ func (s *Service) relations(ctx context.Context, q queryer, actor *Actor, issueI
 		var basis sql.NullString
 		var score sql.NullFloat64
 		if err := rows.Scan(&r.ID, &r.Kind, &r.Issue.ID, &pid, &r.Issue.Key, &r.Issue.Title, &r.Issue.Type, &r.State, &r.Status, &resolved, &r.Named, &r.Found,
-			&r.Subkind, &basis, &by, &r.CreatedAgent, &score, &created, &inverse); err != nil {
+			&r.Subkind, &basis, &by, &r.CreatedAgent, &score, &created, &r.Note, &inverse); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -2846,15 +2848,14 @@ func (s *Service) relate(ctx context.Context, t *tx, actor *Actor, a, b *Issue, 
 	err := t.QueryRowContext(ctx, `SELECT id, subkind FROM issue_relations WHERE kind = ? AND ((source_id = ? AND target_id = ?) OR (? = 1 AND source_id = ? AND target_id = ?))`,
 		kind, src.ID, dst.ID, symmetric, dst.ID, src.ID).Scan(&existing, &had)
 	made := &RelationMade{Kind: given, Found: found}
-	var foundCol any // NULL: someone chose the kind
-	if found != "" {
-		foundCol = found
-	}
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		sessID, sessTask := sessionStamp(ctx, t, actor)
-		_, err = t.ExecContext(ctx, `INSERT INTO issue_relations(source_id, target_id, kind, subkind, created_at, named_in, found, basis, created_by, created_agent, session_id, session_issue_id)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, src.ID, dst.ID, kind, subkind, s.nowMS(), nullInt(namedIn), foundCol, basis, nullUser(actor.id()), actor.creditAgent(), sessID, sessTask)
+		var inserted bool
+		inserted, err = s.insertRelation(ctx, t, newRelation{Src: src.ID, Dst: dst.ID, Kind: kind, Subkind: subkind, NamedIn: namedIn, Found: found,
+			Basis: basis, CreatedBy: actor.id(), CreatedAgent: actor.creditAgent()})
+		if err == nil && !inserted {
+			return made, nil // already there, as said: nothing more to record
+		}
 	case err != nil:
 		return nil, err
 	case subkind == "" || subkind == had:
@@ -2880,14 +2881,14 @@ func (s *Service) relate(ctx context.Context, t *tx, actor *Actor, a, b *Issue, 
 	if subkind != "" {
 		said += " (" + subkind + ")"
 	}
-	if b.Draft && !a.Draft {
+	if holder, named := relationEventHome(a, b); holder == b {
 		// Recorded on the draft, so its key stays out of the published
 		// issue's history (WP-42).
 		rel := relationFrom(kind, src.ID != b.ID)
 		if subkind != "" {
 			rel += " (" + subkind + ")"
 		}
-		t.emit(&Event{Kind: EvIssueUpdated, ProjectID: b.ProjectID, IssueID: b.ID, IssueKey: b.Key, Field: "relation", New: rel + " " + a.Key})
+		t.emit(&Event{Kind: EvIssueUpdated, ProjectID: holder.ProjectID, IssueID: holder.ID, IssueKey: holder.Key, Field: "relation", New: rel + " " + named.Key})
 		return made, nil
 	}
 	t.emit(&Event{Kind: EvIssueUpdated, ProjectID: a.ProjectID, IssueID: a.ID, IssueKey: a.Key, Field: "relation", New: said + " " + b.Key})
@@ -2901,7 +2902,7 @@ func (s *Service) relate(ctx context.Context, t *tx, actor *Actor, a, b *Issue, 
 // one (WP-999); a draft's key stays out of the published issue's history
 // (WP-42), so then the removal is recorded on the draft.
 func (s *Service) replaceRelations(ctx context.Context, t *tx, a, b *Issue, found, replacement string) error {
-	rows, err := t.QueryContext(ctx, `SELECT id FROM issue_relations WHERE (named_in IS NOT NULL OR ? != '') AND kind = 'relates'
+	rows, err := t.QueryContext(ctx, `SELECT id FROM issue_relations WHERE (named_in IS NOT NULL OR found = 'rewrite' OR ? != '') AND kind = 'relates'
 		AND ((source_id = ? AND target_id = ?) OR (source_id = ? AND target_id = ?))`, found, a.ID, b.ID, b.ID, a.ID)
 	if err != nil {
 		return err
@@ -2927,6 +2928,9 @@ func (s *Service) replaceRelations(ctx context.Context, t *tx, a, b *Issue, foun
 		if err != nil {
 			return err
 		}
+		if err := dismissRewrite(ctx, t, id); err != nil {
+			return err
+		}
 		if _, err := t.ExecContext(ctx, `DELETE FROM issue_relations WHERE id = ?`, id); err != nil {
 			return err
 		}
@@ -2942,21 +2946,38 @@ func (s *Service) RemoveRelation(ctx context.Context, actor *Actor, ref string, 
 		if err != nil {
 			return err
 		}
-		holder, err := s.relationHolder(ctx, t, a, relationID)
-		if err != nil {
-			return err
-		}
 		var src, dst int64
-		err = t.QueryRowContext(ctx, `SELECT source_id, target_id FROM issue_relations WHERE id = ?`, relationID).Scan(&src, &dst)
+		err = t.QueryRowContext(ctx, `SELECT source_id, target_id FROM issue_relations WHERE id = ? AND (source_id = ? OR target_id = ?)`, relationID, a.ID, a.ID).Scan(&src, &dst)
 		if errors.Is(err, sql.ErrNoRows) {
 			return notFound("relation")
 		} else if err != nil {
+			return err
+		}
+		// A relation to a task the actor can't open isn't theirs to remove,
+		// and says nothing but what a missing one does: GetIssue doesn't
+		// list it, and removing it would write its key into this history.
+		otherID := dst
+		if src != a.ID {
+			otherID = src
+		}
+		other, err := s.issueByID(ctx, t, otherID, false)
+		if err != nil {
+			return err
+		}
+		if !s.canSee(ctx, t, actor, other.ID, other.ProjectID) {
+			return notFound("relation")
+		}
+		holder, err := s.relationHolder(ctx, t, a, relationID)
+		if err != nil {
 			return err
 		}
 		old, data, err := s.relationGone(ctx, t, holder, relationID, "", "")
 		if errors.Is(err, sql.ErrNoRows) {
 			return notFound("relation")
 		} else if err != nil {
+			return err
+		}
+		if err := dismissRewrite(ctx, t, relationID); err != nil {
 			return err
 		}
 		if _, err := t.ExecContext(ctx, `DELETE FROM issue_relations WHERE id = ?`, relationID); err != nil {
@@ -3251,7 +3272,11 @@ func (s *Service) History(ctx context.Context, actor *Actor, ref string, limit i
 	if limit <= 0 || limit > 500 {
 		limit = 200
 	}
-	return s.queryEvents(ctx, `WHERE e.issue_id = ?`, []any{i.ID}, limit)
+	evs, err := s.queryEvents(ctx, `WHERE e.issue_id = ?`, []any{i.ID}, limit)
+	if err != nil {
+		return nil, err
+	}
+	return s.hideUnseenAll(ctx, s.db.R, actor, evs), nil
 }
 
 func (s *Service) queryEvents(ctx context.Context, where string, args []any, limit int) ([]Event, error) {
@@ -3300,7 +3325,11 @@ func (s *Service) ProjectActivity(ctx context.Context, actor *Actor, projectRef 
 	if actor.HidesDrafts() {
 		where += ` AND coalesce(i.draft, 0) = 0`
 	}
-	return s.queryEvents(ctx, where, []any{p.ID}, limit)
+	evs, err := s.queryEvents(ctx, where, []any{p.ID}, limit)
+	if err != nil {
+		return nil, err
+	}
+	return s.hideUnseenAll(ctx, s.db.R, actor, evs), nil
 }
 
 // appendMarkdown adds md after text as a new paragraph.

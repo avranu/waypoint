@@ -11,6 +11,7 @@
 // own has no session yet: its line says so, and only Stop is offered.
 // Run after 01-signup-flow (user robin, an admin).
 import { chromium } from "playwright";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { looks } from "./looks.mjs";
@@ -208,7 +209,9 @@ async function run(width, scheme, n) {
   // Autopilot moves on only sessions it started (WP-1319), so each of these
   // has the step that started it (next_session). The prompt that started a
   // task doesn't count as a person's (WP-307); one a person typed would make
-  // the session theirs, and its step would stop.
+  // the session theirs, and its step would stop. Waypoint knows the prompt
+  // it typed by its recorded digest, not its words (WP-1370, ADR147), so
+  // the kickoff is recorded as autopilot records it when it starts one.
   const finish = async (suffix, machine, last, prompt) => {
     const where = { session_id: `cli-ap-${n}-${suffix}`, machine, cwd: `/work/ap${n}`, branch: `feat/ap${n}${suffix}` };
     const hook = (event, extra = {}) => api("POST", "/sessions/hook", { events: [{ event, ...where, ...extra }] }, agent);
@@ -223,6 +226,10 @@ async function run(width, scheme, n) {
       const at = Date.now() - 2 * 24 * 3600 * 1000; // days ago: not among today's steps
       born.prepare(`INSERT INTO autopilot_steps (user_id, project_id, session_id, stop_at, state, due_at, next_session, next_session_at, created_at, updated_at)
         VALUES (?, ?, NULL, ?, 'started', ?, ?, ?, ?, ?)`).run(uid, pid, at, at, sid, at, at, at);
+      // The prompt is one line of single spaces, so its normalised text is itself (core.PromptSum).
+      const sum = crypto.createHash("sha256").update(prompt).digest("hex");
+      born.prepare(`INSERT INTO typed_prompts (session_id, user_id, hash, kind, created_at, expires_at) VALUES (?, ?, ?, 'kickoff', ?, ?)`).run(
+        sid, uid, sum, Date.now(), Date.now() + 3600 * 1000);
       born.close();
     }
     const issue = await api("POST", "/issues", { project: KEY, title: `Task ${suffix} of ${KEY}`, agent: "claude" });

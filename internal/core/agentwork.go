@@ -737,7 +737,7 @@ func (s *Service) claimIssueTx(ctx context.Context, t *tx, actor *Actor, issueID
 	// Coming back after its lease lapsed (before the sweep ended the run)
 	// starts a new run: the gap wasn't work. A run held for its review
 	// before the pull request goes on, as the sweep leaves it (WP-752): a
-	// new run has no round, so its wp ship --pr would ask for the review
+	// new run has no round, so its wp ship would ask for the review
 	// again.
 	if live := i.ClaimedBy == id && i.ClaimedUntil != nil && i.ClaimedUntil.UnixMilli() > now; !live {
 		var until any

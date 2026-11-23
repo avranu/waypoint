@@ -26,17 +26,17 @@ func (a *apEnv) newerHead() func(*OpenPRInput) {
 
 func TestReviewStartsOverWhenMoreWasCommitted(t *testing.T) {
 	a, _, _, key := startEnv(t)
-	if _, err := a.ship(key, ShipAuto); err != nil {
+	if _, err := a.shipStarted(key, ShipAuto); err != nil {
 		t.Fatal(err)
 	}
 	first := a.newestRoundID()
 	ra, _ := a.roundAuditRow(first)
 	a.lapse(time.Minute)
-	res, err := a.ship(key, ShipAuto, a.newerHead())
+	res, err := a.shipStarted(key, ShipAuto, a.newerHead())
 	if err != nil || res.Held == "" || res.Pull != nil {
 		t.Fatalf("ship = %+v, %v", res, err)
 	}
-	if !strings.Contains(res.Notice, "More was committed") || !strings.Contains(res.Held, "under way") {
+	if !strings.Contains(res.Notice, "More was committed") || !strings.Contains(res.Held, "Nothing more to run") {
 		t.Errorf("notice = %q, held = %q", res.Notice, res.Held)
 	}
 	if r := a.round(first); r.state != RoundInterrupted || a.reason(first) != roundRestarted {
@@ -56,13 +56,13 @@ func TestReviewStartsOverWhenMoreWasCommitted(t *testing.T) {
 
 func TestReviewKeepsItsAuditWhenNothingNewWasCommitted(t *testing.T) {
 	a, _, _, key := startEnv(t)
-	if _, err := a.ship(key, ShipAuto); err != nil {
+	same := a.clockNow().Unix() - 60
+	if _, err := a.shipStarted(key, ShipAuto, func(in *OpenPRInput) { in.HeadTime = same }); err != nil {
 		t.Fatal(err)
 	}
 	first := a.newestRoundID()
-	same := a.clockNow().Unix() - 60
-	res, err := a.ship(key, ShipAuto, func(in *OpenPRInput) { in.HeadTime = same })
-	if err != nil || res.Pull != nil || !strings.Contains(res.Notice, "still under way") {
+	res, err := a.shipStarted(key, ShipAuto, func(in *OpenPRInput) { in.HeadTime = same })
+	if err != nil || res.Pull != nil || strings.Contains(res.Notice, "More was committed") || !strings.Contains(res.Held, "Nothing more to run") {
 		t.Fatalf("ship = %+v, %v", res, err)
 	}
 	if a.newestRoundID() != first || a.round(first).state != RoundPending {
@@ -72,13 +72,13 @@ func TestReviewKeepsItsAuditWhenNothingNewWasCommitted(t *testing.T) {
 
 func TestReviewStartsOverAfterAnAuditThatFoundNothing(t *testing.T) {
 	a, box, g, key := startEnv(t)
-	if _, err := a.ship(key, ShipAuto); err != nil {
+	if _, err := a.shipStarted(key, ShipAuto); err != nil {
 		t.Fatal(err)
 	}
 	first := a.newestRoundID()
 	a.endAudit(box, "done")
 	a.lapse(time.Minute)
-	res, err := a.ship(key, ShipAuto, a.newerHead())
+	res, err := a.shipStarted(key, ShipAuto, a.newerHead())
 	if err != nil || res.Pull != nil || len(g.created) != 0 {
 		t.Fatalf("ship = %+v, %v (opened %d)", res, err, len(g.created))
 	}
@@ -89,13 +89,13 @@ func TestReviewStartsOverAfterAnAuditThatFoundNothing(t *testing.T) {
 
 func TestReviewKeepsAnAuditWithFindings(t *testing.T) {
 	a, box, g, key := startEnv(t)
-	if _, err := a.ship(key, ShipAuto); err != nil {
+	if _, err := a.shipStarted(key, ShipAuto); err != nil {
 		t.Fatal(err)
 	}
 	first := a.newestRoundID()
 	a.endAudit(box, "done", "Off by one")
 	a.lapse(time.Minute)
-	res, err := a.ship(key, ShipAuto, a.newerHead())
+	res, err := a.shipStarted(key, ShipAuto, a.newerHead())
 	if err != nil || res.Pull != nil || len(g.created) != 0 {
 		t.Fatalf("ship = %+v, %v", res, err)
 	}
@@ -113,7 +113,7 @@ func TestReviewKeepsAnAuditWithFindings(t *testing.T) {
 // one whose start was refused or never made (WP-1325).
 func TestShipStartsThePendingRoundsReviewer(t *testing.T) {
 	a, _, _, key := startEnv(t)
-	if _, err := a.ship(key, ShipAuto); err != nil {
+	if _, err := a.shipStarted(key, ShipAuto); err != nil {
 		t.Fatal(err)
 	}
 	first := a.newestRoundID()
@@ -126,14 +126,16 @@ func TestShipStartsThePendingRoundsReviewer(t *testing.T) {
 	if n := a.auditsOfRound(first); n != 0 {
 		t.Fatalf("%d audits left", n)
 	}
-	res, err := a.ship(key, ShipAuto)
+	res, err := a.shipStarted(key, ShipAuto)
 	if err != nil || res.Pull != nil {
 		t.Fatalf("ship = %+v, %v", res, err)
 	}
+	a.lapse(time.Minute)
+	a.tick(time.Minute) // the round's step asks the reviewer it has none of
 	if n := a.auditsOfRound(first); n != 1 || a.newestRoundID() != first {
 		t.Fatalf("audits = %d, newest round %d", n, a.newestRoundID())
 	}
-	if !strings.Contains(res.Held, "under way") {
+	if !strings.Contains(res.Held, "Nothing more to run") {
 		t.Errorf("held = %q", res.Held)
 	}
 }
@@ -149,13 +151,13 @@ func headAt(at int64) func(*OpenPRInput) {
 func TestReviewKeepsItsAuditWhenTheSameHeadShipsAgain(t *testing.T) {
 	a, _, _, key := startEnv(t)
 	head := headAt(a.clockNow().Unix())
-	if _, err := a.ship(key, ShipAuto, head); err != nil {
+	if _, err := a.shipStarted(key, ShipAuto, head); err != nil {
 		t.Fatal(err)
 	}
 	first := a.newestRoundID()
 	ra, _ := a.roundAuditRow(first)
 	for _, intent := range []string{ShipAuto, ShipPR, ShipReview} {
-		res, err := a.ship(key, intent, head)
+		res, err := a.shipStarted(key, intent, head)
 		if err != nil || res.Pull != nil || strings.Contains(res.Notice, "More was committed") {
 			t.Fatalf("%s: ship = %+v, %v", intent, res, err)
 		}
@@ -174,12 +176,12 @@ func TestReviewKeepsItsAuditWhenTheSameHeadShipsAgain(t *testing.T) {
 func TestReviewStartsOverOnAHeadTheAuditDidNotRead(t *testing.T) {
 	a, _, _, key := startEnv(t)
 	at := a.clockNow().Unix()
-	if _, err := a.ship(key, ShipAuto, headAt(at-300)); err != nil {
+	if _, err := a.shipStarted(key, ShipAuto, headAt(at-300)); err != nil {
 		t.Fatal(err)
 	}
 	first := a.newestRoundID()
 	a.lapse(time.Minute)
-	res, err := a.ship(key, ShipAuto, headAt(at-200))
+	res, err := a.shipStarted(key, ShipAuto, headAt(at-200))
 	if err != nil || res.Pull != nil || !strings.Contains(res.Notice, "More was committed") {
 		t.Fatalf("ship = %+v, %v", res, err)
 	}
@@ -188,7 +190,7 @@ func TestReviewStartsOverOnAHeadTheAuditDidNotRead(t *testing.T) {
 	}
 	// The new round reads that head: shipping it again changes nothing.
 	second := a.newestRoundID()
-	if _, err := a.ship(key, ShipAuto, headAt(at-200)); err != nil || a.newestRoundID() != second {
+	if _, err := a.shipStarted(key, ShipAuto, headAt(at-200)); err != nil || a.newestRoundID() != second {
 		t.Fatalf("shipped again: newest %d, want %d (%v)", a.newestRoundID(), second, err)
 	}
 }
@@ -198,7 +200,7 @@ func TestReviewStartsOverOnAHeadTheAuditDidNotRead(t *testing.T) {
 func TestShipRecordsTheHeadItsAuditReads(t *testing.T) {
 	a, _, _, key := startEnv(t)
 	at := a.clockNow().Unix()
-	if _, err := a.ship(key, ShipAuto, headAt(at-300)); err != nil {
+	if _, err := a.shipStarted(key, ShipAuto, headAt(at-300)); err != nil {
 		t.Fatal(err)
 	}
 	first := a.newestRoundID()
@@ -210,16 +212,46 @@ func TestShipRecordsTheHeadItsAuditReads(t *testing.T) {
 	}
 	a.lapse(time.Minute)
 	for range 2 {
-		res, err := a.ship(key, ShipAuto, headAt(at+30))
+		res, err := a.shipStarted(key, ShipAuto, headAt(at+30))
 		if err != nil || res.Pull != nil || strings.Contains(res.Notice, "More was committed") {
 			t.Fatalf("ship = %+v, %v", res, err)
 		}
+		a.tick(time.Minute)
 		if n := a.auditsOfRound(first); n != 1 || a.newestRoundID() != first || a.round(first).state != RoundPending {
 			t.Fatalf("audits = %d, newest round %d, %+v", n, a.newestRoundID(), a.round(first))
 		}
 	}
 	if bp := roundBeforePR(a.ctx, a.s.db.R, first); bp == nil || bp.HeadTime != at+30 {
 		t.Fatalf("recorded head = %+v, want %d", bp, at+30)
+	}
+}
+
+// A ship that can't write the head its audit will read is not taken as the
+// round's start: it fails rather than leave the round recording a head older
+// than the one the step's audit then reads (WP-1325, 1ada1bbf7 on main).
+func TestShipFailsWhenTheRoundsHeadIsNotWritten(t *testing.T) {
+	a, _, _, key := startEnv(t)
+	at := a.clockNow().Unix()
+	if _, err := a.shipStarted(key, ShipAuto, headAt(at-300)); err != nil {
+		t.Fatal(err)
+	}
+	first := a.newestRoundID()
+	a.s.Wait()
+	for _, q := range []string{`UPDATE work_log SET audit_id = NULL, audit_at = NULL WHERE id = ` + itoa64(first), `DELETE FROM code_audits`,
+		`CREATE TRIGGER no_head BEFORE UPDATE OF before_pr ON work_log BEGIN SELECT RAISE(ABORT, 'head not written'); END`} {
+		if _, err := a.s.db.W.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.lapse(time.Minute)
+	if _, err := a.shipStarted(key, ShipAuto, headAt(at+30)); err == nil {
+		t.Fatal("the ship went on though the round's head was not written")
+	}
+	if n := a.auditsOfRound(first); n != 0 {
+		t.Errorf("%d audits asked by a ship that failed", n)
+	}
+	if bp := roundBeforePR(a.ctx, a.s.db.R, first); bp == nil || bp.HeadTime != at-300 {
+		t.Errorf("recorded head = %+v, want the old %d", bp, at-300)
 	}
 }
 
@@ -233,12 +265,12 @@ func TestRoundBehindByCommit(t *testing.T) {
 	t.Run("same time, another commit starts over", func(t *testing.T) {
 		a, _, _, key := startEnv(t)
 		at := a.clockNow().Unix()
-		if _, err := a.ship(key, ShipAuto, headIs(at, "aaaa")); err != nil {
+		if _, err := a.shipStarted(key, ShipAuto, headIs(at, "aaaa")); err != nil {
 			t.Fatal(err)
 		}
 		first := a.newestRoundID()
 		a.lapse(time.Minute)
-		res, err := a.ship(key, ShipAuto, headIs(at, "bbbb"))
+		res, err := a.shipStarted(key, ShipAuto, headIs(at, "bbbb"))
 		if err != nil || res.Pull != nil || !strings.Contains(res.Notice, "More was committed") {
 			t.Fatalf("ship = %+v, %v", res, err)
 		}
@@ -252,12 +284,12 @@ func TestRoundBehindByCommit(t *testing.T) {
 	t.Run("the same commit is kept", func(t *testing.T) {
 		a, _, _, key := startEnv(t)
 		at := a.clockNow().Unix()
-		if _, err := a.ship(key, ShipAuto, headIs(at, "aaaa")); err != nil {
+		if _, err := a.shipStarted(key, ShipAuto, headIs(at, "aaaa")); err != nil {
 			t.Fatal(err)
 		}
 		first := a.newestRoundID()
 		a.lapse(time.Minute)
-		res, err := a.ship(key, ShipAuto, headIs(at, "aaaa"))
+		res, err := a.shipStarted(key, ShipAuto, headIs(at, "aaaa"))
 		if err != nil || res.Pull != nil || strings.Contains(res.Notice, "More was committed") {
 			t.Fatalf("ship = %+v, %v", res, err)
 		}
@@ -268,15 +300,15 @@ func TestRoundBehindByCommit(t *testing.T) {
 	t.Run("a ship with no commit falls back to the times", func(t *testing.T) {
 		a, _, _, key := startEnv(t)
 		at := a.clockNow().Unix()
-		if _, err := a.ship(key, ShipAuto, headIs(at, "aaaa")); err != nil {
+		if _, err := a.shipStarted(key, ShipAuto, headIs(at, "aaaa")); err != nil {
 			t.Fatal(err)
 		}
 		first := a.newestRoundID()
 		a.lapse(time.Minute)
-		if res, err := a.ship(key, ShipAuto, headIs(at, "")); err != nil || strings.Contains(res.Notice, "More was committed") || a.newestRoundID() != first {
+		if res, err := a.shipStarted(key, ShipAuto, headIs(at, "")); err != nil || strings.Contains(res.Notice, "More was committed") || a.newestRoundID() != first {
 			t.Fatalf("same time: %+v, %v", res, err)
 		}
-		res, err := a.ship(key, ShipAuto, headIs(at+60, ""))
+		res, err := a.shipStarted(key, ShipAuto, headIs(at+60, ""))
 		if err != nil || !strings.Contains(res.Notice, "More was committed") || a.newestRoundID() == first {
 			t.Fatalf("later time: %+v, %v", res, err)
 		}
@@ -288,7 +320,7 @@ func TestRoundBehindByCommit(t *testing.T) {
 func TestRoundBehindNeedsAnAuditThatReads(t *testing.T) {
 	a, _, _, key := startEnv(t)
 	at := a.clockNow().Unix()
-	if _, err := a.ship(key, ShipAuto, headIs(at, "aaaa")); err != nil {
+	if _, err := a.shipStarted(key, ShipAuto, headIs(at, "aaaa")); err != nil {
 		t.Fatal(err)
 	}
 	round := a.newestRoundID()
@@ -322,7 +354,7 @@ func TestRoundBehindNeedsAnAuditThatReads(t *testing.T) {
 // other model's too, and another round's are left alone (WP-1325).
 func TestCancelRoundAuditsTakesTheRoundsOwn(t *testing.T) {
 	a, _, _, key := startEnv(t)
-	if _, err := a.ship(key, ShipAuto); err != nil {
+	if _, err := a.shipStarted(key, ShipAuto); err != nil {
 		t.Fatal(err)
 	}
 	round := a.newestRoundID()
@@ -375,7 +407,7 @@ func reviewerEnv(t *testing.T, status, note string) (a *apEnv, key string, at, r
 	t.Helper()
 	a, _, _, key = startEnv(t)
 	at = a.clockNow().Unix()
-	if _, err := a.ship(key, ShipAuto, headIs(at, "aaaa")); err != nil {
+	if _, err := a.shipStarted(key, ShipAuto, headIs(at, "aaaa")); err != nil {
 		t.Fatal(err)
 	}
 	round = a.newestRoundID()
@@ -397,7 +429,7 @@ func TestRoundBehindOfAReviewer(t *testing.T) {
 	const slow = roundAuditOutwaited + "audit #1 was slow"
 	t.Run("running, a newer head: starts over", func(t *testing.T) {
 		a, key, at, round, reviewer := reviewerEnv(t, AuditRunning, slow)
-		res, err := a.ship(key, ShipAuto, headIs(at+60, "bbbb"))
+		res, err := a.shipStarted(key, ShipAuto, headIs(at+60, "bbbb"))
 		if err != nil || res.Pull != nil || !strings.Contains(res.Notice, "More was committed") {
 			t.Fatalf("ship = %+v, %v", res, err)
 		}
@@ -425,7 +457,7 @@ func TestRoundBehindOfAReviewer(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if _, err := a.ship(key, ShipAuto, headIs(at+60, tc.sha)); err != nil {
+			if _, err := a.shipStarted(key, ShipAuto, headIs(at+60, tc.sha)); err != nil {
 				t.Fatal(err)
 			}
 			if a.newestRoundID() != round || a.round(round).state != RoundPending {
@@ -438,7 +470,7 @@ func TestRoundBehindOfAReviewer(t *testing.T) {
 		if _, err := a.s.db.W.Exec(`INSERT INTO code_audit_findings(audit_id, ordinal, title, path, line, severity, problem, state) VALUES (?, 1, 'Wrong', 'a.go', 1, 'high', 'Wrong', 'open')`, reviewer); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := a.ship(key, ShipAuto, headIs(at+60, "bbbb")); err != nil {
+		if _, err := a.shipStarted(key, ShipAuto, headIs(at+60, "bbbb")); err != nil {
 			t.Fatal(err)
 		}
 		if a.newestRoundID() != round || a.round(round).state != RoundPending {
@@ -453,13 +485,13 @@ func TestRoundBehindOfAReviewer(t *testing.T) {
 func TestShipReviewStartsOver(t *testing.T) {
 	a, _, _, key := startEnv(t)
 	at := a.clockNow().Unix()
-	if _, err := a.ship(key, ShipAuto, headIs(at, "aaaa")); err != nil {
+	if _, err := a.shipStarted(key, ShipAuto, headIs(at, "aaaa")); err != nil {
 		t.Fatal(err)
 	}
 	first := a.newestRoundID()
 	ra, _ := a.roundAuditRow(first)
 	a.lapse(time.Minute)
-	res, err := a.ship(key, ShipReview, headIs(at+60, "bbbb"))
+	res, err := a.shipStarted(key, ShipReview, headIs(at+60, "bbbb"))
 	if err != nil || res.Pull != nil || !strings.Contains(res.Notice, "More was committed") {
 		t.Fatalf("ship = %+v, %v", res, err)
 	}
@@ -478,7 +510,7 @@ func TestShipReviewStartsOver(t *testing.T) {
 func TestNoteRoundHeadKeepsAnAskedAudit(t *testing.T) {
 	a, _, _, key := startEnv(t)
 	at := a.clockNow().Unix()
-	if _, err := a.ship(key, ShipAuto, headIs(at, "aaaa")); err != nil {
+	if _, err := a.shipStarted(key, ShipAuto, headIs(at, "aaaa")); err != nil {
 		t.Fatal(err)
 	}
 	round := a.newestRoundID()

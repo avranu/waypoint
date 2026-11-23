@@ -55,10 +55,10 @@ func init() {
 			examples: []string{"wp pr merge 12 --when-ready", "wp pr merge 12 --style squash --keep-branch"}, run: cmdPRMerge},
 		prUrgentCmd,
 		prAfterCmd,
-		{name: "dismiss", args: "FINDING|ID... -m NOTE", summary: "say a finding is wrong or not worth fixing: it stops blocking",
-			examples: []string{`wp pr dismiss 281 282 c14 -m "the caller validates it"`}, run: cmdPRDismiss},
-		{name: "reopen", args: "FINDING...", summary: "undo a dismissal or resolution: the finding blocks again",
-			examples: []string{"wp pr reopen 280"}, run: cmdPRReopen},
+		{name: "dismiss", args: "FINDING|ID... -m NOTE", summary: "say a finding is wrong or not worth fixing: it stops blocking (FINDING: a number like 281, or AUDIT.N like 12.1)",
+			examples: []string{`wp pr dismiss 281 282 c14 -m "the caller validates it"`, `wp pr dismiss 12.1 -m "the caller holds the lock"`}, run: cmdPRDismiss},
+		{name: "reopen", args: "FINDING...", summary: "undo a dismissal or resolution: the finding blocks again (FINDING: a number like 280, or AUDIT.N like 12.1)",
+			examples: []string{"wp pr reopen 280", "wp pr reopen 12.1"}, run: cmdPRReopen},
 		prReviewCmd,
 		prReviewStatsCmd,
 		prBodiesCmd,
@@ -517,6 +517,24 @@ func cmdPRMerge(c *cli, args []string) error {
 	})
 }
 
+// auditFindingRef reads a carried audit finding's name, AUDIT.N ("12.1" or
+// "#12.1"), as wp pr todo prints it and wp audit mark takes it.
+func auditFindingRef(arg string) (string, bool) {
+	a, n, ok := strings.Cut(strings.TrimPrefix(arg, "#"), ".")
+	ai, err1 := strconv.ParseInt(a, 10, 64)
+	ni, err2 := strconv.ParseInt(n, 10, 64)
+	if !ok || err1 != nil || err2 != nil || ai < 1 || ni < 1 || strings.HasPrefix(a, "+") || strings.HasPrefix(n, "+") {
+		return "", false
+	}
+	return fmt.Sprintf("%d.%d", ai, ni), true
+}
+
+// markAuditFinding sets a carried audit finding's verdict through the call
+// wp audit mark makes.
+func (c *cli) markAuditFinding(ref, state, note string) ([]byte, error) {
+	return c.call("POST", "/api/v1/audits/findings", map[string]any{"ids": []string{ref}, "state": state, "note": note, "issue": ""})
+}
+
 // findingArg reads a finding's number ("280" or "#280").
 func (c *cli) findingArg(arg string) (int64, error) {
 	id, err := strconv.ParseInt(strings.TrimPrefix(arg, "#"), 10, 64)
@@ -534,7 +552,7 @@ func cmdPRDismiss(c *cli, args []string) error {
 		return err
 	}
 	if len(pos) == 0 {
-		return c.usage("give the finding's number, as wp pr show lists it, or a review comment's id")
+		return c.usage("give the finding's number, as wp pr show lists it, a carried audit finding's name (AUDIT.N, like 12.1), or a review comment's id")
 	}
 	return c.each(listArgs(pos), false, func(arg string) error {
 		if strings.HasPrefix(strings.ToLower(arg), "c") {
@@ -544,6 +562,13 @@ func cmdPRDismiss(c *cli, args []string) error {
 				return err
 			}
 			return c.emit(raw, func() string { return fmt.Sprintf("Dismissed %s.", arg) })
+		}
+		if ref, ok := auditFindingRef(arg); ok {
+			raw, err := c.markAuditFinding(ref, "rejected", *note)
+			if err != nil {
+				return err
+			}
+			return c.emit(raw, func() string { return fmt.Sprintf("Dismissed finding %s: it no longer blocks the gate.", ref) })
 		}
 		id, err := c.findingArg(arg)
 		if err != nil {
@@ -564,9 +589,16 @@ func cmdPRReopen(c *cli, args []string) error {
 		return err
 	}
 	if len(pos) == 0 {
-		return c.usage("give the finding's number, as wp pr show lists it")
+		return c.usage("give the finding's number, as wp pr show lists it, or a carried audit finding's name (AUDIT.N, like 12.1)")
 	}
 	return c.each(listArgs(pos), false, func(arg string) error {
+		if ref, ok := auditFindingRef(arg); ok {
+			raw, err := c.markAuditFinding(ref, "open", "")
+			if err != nil {
+				return err
+			}
+			return c.emit(raw, func() string { return fmt.Sprintf("Reopened finding %s.", ref) })
+		}
 		id, err := c.findingArg(arg)
 		if err != nil {
 			return err

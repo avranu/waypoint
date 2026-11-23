@@ -42,9 +42,13 @@ const (
 	snapshotMaxInventory   = 64 << 10 // the server's snapshotMaxBytes (internal/core): it discards a larger inventory whole
 )
 
-// snapshotBudget is the build's time budget. A var so a test can make it
-// already spent.
-var snapshotBudget = 300 * time.Millisecond
+// snapshotBudget is the build's time budget, snapshotBudgetReal as a hook
+// runs it. A var so a test can make it already spent, or roomy: the tests
+// run it roomy (TestMain), since a loaded CI runner under -race can spend
+// 300ms writing and reading one test's files.
+const snapshotBudgetReal = 300 * time.Millisecond
+
+var snapshotBudget = snapshotBudgetReal
 
 // hookSnapshot is core.HookSnapshot as the CLI sends it.
 type hookSnapshot struct {
