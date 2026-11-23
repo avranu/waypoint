@@ -39,8 +39,8 @@ func TestMemorySlugIsPinned(t *testing.T) {
 		"/projects/management/waypoint": "-projects-management-waypoint",
 		"/home/a.b/c_d e":               "-home-a-b-c-d-e",
 	} {
-		if got := memorySlug(in); got != want {
-			t.Errorf("memorySlug(%q) = %q, want %q", in, got, want)
+		if got := projectDirName(in); got != want {
+			t.Errorf("projectDirName(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
