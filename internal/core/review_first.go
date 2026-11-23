@@ -67,14 +67,15 @@ type beforePR struct {
 
 // askedBase is the base wp ship named when the branch's latest round was
 // scheduled: the wp ship --pr that follows the review doesn't repeat it.
-func (s *Service) askedBase(ctx context.Context, task, head string) string {
+func (s *Service) askedBase(ctx context.Context, actor *Actor, task, head string) string {
 	if task == "" {
 		return ""
 	}
-	issue, err := s.resolveIssueID(ctx, s.db.R, task)
+	i, _, err := s.getIssueFor(ctx, s.db.R, actor, task, RoleViewer, false)
 	if err != nil {
 		return ""
 	}
+	issue := i.ID
 	var raw string
 	if s.db.R.QueryRowContext(ctx, `SELECT before_pr FROM work_log WHERE kind = 'review' AND issue_id = ? AND before_pr != '' ORDER BY id DESC LIMIT 1`, issue).Scan(&raw) != nil {
 		return ""

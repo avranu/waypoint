@@ -23,6 +23,7 @@ type EditPRInput struct {
 // the forge. A draft keeps its "WIP: " prefix; Waypoint's record keeps the
 // clean title. Whoever may merge it may edit it.
 func (s *Service) EditPullRequest(ctx context.Context, actor *Actor, prID int64, in EditPRInput) error {
+	defer forgeLocks.lock(fmt.Sprintf("stackmove:%d", prID))() // one at a time with a stacked-child move
 	pr, err := s.prByID(ctx, s.db.R, prID)
 	if err != nil {
 		return err

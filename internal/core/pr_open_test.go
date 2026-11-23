@@ -598,14 +598,14 @@ func TestAskedBaseRound(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got := e.s.askedBase(e.ctx, "", "upgrade"); got != "" {
+	if got := e.s.askedBase(e.ctx, e.admin, "", "upgrade"); got != "" {
 		t.Errorf("no task: %q", got)
 	}
 	round("upgrade", "release")
-	if got := e.s.askedBase(e.ctx, task.Key, "elsewhere"); got != "" {
+	if got := e.s.askedBase(e.ctx, e.admin, task.Key, "elsewhere"); got != "" {
 		t.Errorf("another branch's round applied: %q", got)
 	}
-	if got := e.s.askedBase(e.ctx, task.Key, "upgrade"); got != "release" {
+	if got := e.s.askedBase(e.ctx, e.admin, task.Key, "upgrade"); got != "release" {
 		t.Errorf("asked base %q", got)
 	}
 	open := func(head string, stacked []string) *OpenPRResult {

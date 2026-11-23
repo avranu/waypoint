@@ -216,7 +216,7 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 			return nil, invalid("the forge has no API token; add one in Admin → Forges")
 		}
 		if strings.TrimSpace(in.Base) == "" {
-			in.Base = s.askedBase(ctx, task, in.Head)
+			in.Base = s.askedBase(ctx, actor, task, in.Head)
 		}
 		base, stackNote, stackedOn := strings.TrimSpace(in.Base), "", 0
 		if base == "" {

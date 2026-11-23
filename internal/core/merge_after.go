@@ -374,6 +374,9 @@ func (s *Service) withStackWait(ctx context.Context, q queryer, pr *PullRequest,
 	for n := range out {
 		if out[n].PRID == w.PRID {
 			out[n].Stack, out[n].onto = true, w.onto
+			if !out[n].Set { // a task-derived overlap says the stack reason, not its task keys
+				out[n].Why = out[n].said()
+			}
 			return out, nil
 		}
 	}
@@ -417,7 +420,7 @@ func (s *Service) mergeWaitReasons(ctx context.Context, pr *PullRequest) (reason
 		case w.Stack && w.State == "merged":
 			reasons = append(reasons, stackMergedReason(pr, w))
 		case !w.open():
-		case w.Mutual:
+		case w.Mutual && !w.Stack: // a stack wait holds however the wait was also set
 			other := "a pull request in another project"
 			if !w.apart {
 				other = fmt.Sprintf("%s (%s)", w.ref(pr), w.said())
