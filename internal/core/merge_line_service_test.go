@@ -246,3 +246,66 @@ func (se *shipEnv) inLine(id int64) {
 	se.s.lineChanged(se.ctx, lineOf(pr))
 	se.s.Wait()
 }
+
+// An armed pull request that no babysit watches, behind its base, joins the
+// line and is brought up to date there; then it merges as any other.
+func TestLineArmedWithoutBabysitJoins(t *testing.T) {
+	se := newShipEnv(t, "forgejo")
+	se.llm.answers["opencode/muse-spark-1.3-contributor-free"] = noFindings
+	se.noWaits()
+	const head = "1111111aaaa"
+	se.sg.behind = map[string]bool{head: true}
+	se.pullHook("opened", testPR)
+	se.drain()
+	se.sg.setChecks(head, CommitCheck{Name: "ci / backend (pull_request)", State: CheckSuccess})
+	se.poll()
+	id := se.pr(5).ID
+	// Its babysit ends (a person stopped it) and none is started again.
+	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE babysits SET ended_at = ?, state = ? WHERE pr_id = ? AND ended_at IS NULL`, se.s.nowMS(), BabysitStopped, id); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := se.s.activeBabysit(se.ctx, se.s.db.R, id); b != nil {
+		t.Fatalf("a babysit is still active: %+v", b)
+	}
+	se.s.maybeAutoMerge(se.ctx, id)
+	se.s.Wait()
+	if pr := se.pr(5); pr.QueuedAt == nil {
+		t.Fatalf("it didn't join the line: %+v", pr)
+	}
+	if se.sg.updated() != 1 || len(se.sg.merged()) != 0 {
+		t.Fatalf("updates %d, merges %+v", se.sg.updated(), se.sg.merged())
+	}
+	se.sg.behind = nil
+	se.s.maybeAutoMerge(se.ctx, id)
+	se.s.Wait()
+	if len(se.sg.merged()) != 1 {
+		t.Fatalf("merges %+v", se.sg.merged())
+	}
+}
+
+// A babysit that needs a person keeps its pull request out of the line.
+func TestLineNeedsPersonStaysOut(t *testing.T) {
+	se := newShipEnv(t, "forgejo")
+	se.llm.answers["opencode/muse-spark-1.3-contributor-free"] = noFindings
+	se.noWaits()
+	const head = "1111111aaaa"
+	se.sg.behind = map[string]bool{head: true}
+	se.pullHook("opened", testPR)
+	se.drain()
+	se.sg.setChecks(head, CommitCheck{Name: "ci / backend (pull_request)", State: CheckSuccess})
+	se.poll()
+	id := se.pr(5).ID
+	se.s.Wait()
+	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE babysits SET state = ? WHERE pr_id = ? AND ended_at IS NULL`, BabysitNeedsPerson, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE pull_requests SET queued_at = NULL WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	before := se.sg.updated()
+	se.s.maybeAutoMerge(se.ctx, id)
+	se.s.Wait()
+	if pr := se.pr(5); pr.QueuedAt != nil || se.sg.updated() != before {
+		t.Fatalf("a pull request that needs a person is in the line: %v, updates %d", pr.QueuedAt, se.sg.updated())
+	}
+}

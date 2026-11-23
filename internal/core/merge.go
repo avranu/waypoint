@@ -820,9 +820,12 @@ func (s *Service) maybeAutoMerge(ctx context.Context, prID int64) {
 	if rd.Checking {
 		s.scheduleMergeRecheck(ctx, pr.ID) // the forge's "no" may be it still working
 	}
-	if rd.behind {
+	if rd.behind || queueable(pr, rd.Reasons) {
 		// The merge line tests it on a candidate or updates it at its turn
-		// (WP-ADR152); nothing here.
+		// (WP-ADR152). A babysit joins it there; one nobody babysits does so here.
+		s.joinUnbabysat(ctx, pr)
+	}
+	if rd.behind {
 		return
 	}
 	if !rd.Ready {

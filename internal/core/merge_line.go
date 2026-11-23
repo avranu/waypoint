@@ -92,7 +92,8 @@ func (s *Service) lineMembers(ctx context.Context, ref lineRef) ([]*PullRequest,
 	rows, err := s.db.R.QueryContext(ctx, `SELECT `+prColsAs("p")+` FROM pull_requests p
 		WHERE p.forge_id = ? AND p.repo = ? COLLATE NOCASE AND p.base_ref = ? AND p.state IN ('open','draft')
 		  AND p.armed_at IS NOT NULL AND p.outside = 0 AND p.queued_at IS NOT NULL
-		  AND EXISTS (SELECT 1 FROM babysits b WHERE b.pr_id = p.id AND b.ended_at IS NULL AND b.state IN (?, ?, ?, ?))`,
+		  AND (EXISTS (SELECT 1 FROM babysits b WHERE b.pr_id = p.id AND b.ended_at IS NULL AND b.state IN (?, ?, ?, ?))
+		       OR NOT EXISTS (SELECT 1 FROM babysits b WHERE b.pr_id = p.id AND b.ended_at IS NULL))`,
 		ref.forge, ref.repo, ref.base, queueStates[0], queueStates[1], queueStates[2], queueStates[3])
 	if err != nil {
 		return nil, err
@@ -1124,6 +1125,27 @@ func (s *Service) sweepLines(ctx context.Context) {
 		}
 		s.lineChanged(ctx, r)
 	}
+}
+
+// joinUnbabysat puts a settled armed pull request that no babysit watches (a
+// fork's, one a person stopped or that gave up, one the babysit gate refuses)
+// in the line, where it is updated or tested on a candidate and merged as
+// any other. A babysit that needs a person keeps it out: that is a state
+// outside queueStates, and lineMembers takes only the two cases. Reports
+// whether it joined.
+func (s *Service) joinUnbabysat(ctx context.Context, pr *PullRequest) bool {
+	if pr.QueuedAt != nil {
+		return false
+	}
+	if b, err := s.activeBabysit(ctx, s.db.R, pr.ID); err != nil || b != nil {
+		return false
+	}
+	if s.lineLeft(ctx, pr) != "" {
+		return false
+	}
+	s.joinLine(ctx, pr)
+	s.lineChangedAsync(lineOf(pr))
+	return true
 }
 
 // joinLine puts a settled armed pull request in the line.
