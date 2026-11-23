@@ -25,7 +25,7 @@ var slotWaitNotice = 5 * time.Second
 var slotPoll = 100 * time.Millisecond
 
 var slotCmd = &command{
-	name: "slot", group: "Code and CI", args: "run NAME [-n N] -- CMD… | ls",
+	name: "slot", group: "Code and CI", args: "run NAME [-n N] -- CMD… | ls | send | replay",
 	summary: "run a command once a per-machine slot is free",
 	about: `A per-host semaphore so concurrent test suites take turns. run waits for
 a free slot of NAME, runs CMD holding it and exits with CMD's code. N
@@ -35,6 +35,10 @@ short runs (the rest) never queue behind them, and a worktree runs one long
 run of a NAME at a time (a second waits behind its first; short runs from it
 go straight to a slot). ls shows the slots, who waits (and whether behind its
 own worktree) and the waits of the last 24h, including runs that gave up.
+Each finished hold and each wait that gave up is also
+sent to the server (not when WAYPOINT_SLOT_SEND=off or no server is set), by
+the next run in the background or by send; replay runs the recorded holds
+through the policy again, and through other settings (WP-1646).
 A nested run of the same NAME reuses the slot it
 is in. A run of tests drops credential-named variables, as wp testsum does
 (--keep-env NAME passes one through; WP-1065).`,
@@ -45,6 +49,10 @@ func init() {
 	slotCmd.subs = []*command{
 		{name: "run", args: "NAME [-n N] -- CMD…", summary: "wait for a free slot, run CMD, pass its exit code through",
 			run: cmdSlotRun},
+		{name: "send", summary: "send the recorded slot holds to the server now",
+			run: cmdSlotSend},
+		{name: "replay", args: "[--days 7] [--threshold 5m] [--long-share 0.5] [--slots N] [--machine NAME] [--local]",
+			summary: "replay recorded slot holds under the policy and under another one", run: cmdSlotReplay},
 		{name: "ls", aliases: []string{"list"}, summary: "show the slots, who holds and awaits them, and recent waits",
 			run: cmdSlotLs},
 	}
@@ -64,7 +72,10 @@ func slotDir() (string, error) {
 func defaultSlots() int { return max(1, runtime.NumCPU()/2) }
 
 // slotHold is a held slot.
-type slotHold struct{ f *os.File }
+type slotHold struct {
+	f   *os.File
+	idx int // which slot (NAME.IDX.lock)
+}
 
 func (h *slotHold) release() { _ = h.f.Close() }
 
@@ -107,7 +118,7 @@ func acquireSlotIn(ctx context.Context, name string, order []int, notify, firstM
 				wd, _ := os.Getwd()
 				_ = f.Truncate(0)
 				_, _ = f.WriteAt([]byte(fmt.Sprintf("%d\t%d\t%s\t%s\n", os.Getpid(), time.Now().Unix(), slotField(wd), slotField(strings.Join(os.Args[1:], " ")))), 0)
-				return &slotHold{f}, nil
+				return &slotHold{f: f, idx: i}, nil
 			}
 			_ = f.Close()
 		}
@@ -202,7 +213,7 @@ func slotHeld(name string) bool {
 func (c *cli) runInSlotThen(name string, n int, argv []string, out, errw io.Writer, started func(), envf func([]string) []string) (int, error) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	env, release, err := c.takeSlotFor(ctx, name, n, slotKey(argv))
+	env, release, setExit, err := c.takeSlotExit(ctx, name, n, slotKey(argv))
 	if err != nil {
 		return 0, err
 	}
@@ -213,7 +224,9 @@ func (c *cli) runInSlotThen(name string, n int, argv []string, out, errw io.Writ
 	if envf != nil {
 		env = envf(env)
 	}
-	return runSlotCmd(ctx, env, argv, os.Stdin, out, errw)
+	code, err := runSlotCmd(ctx, env, argv, os.Stdin, out, errw)
+	setExit(code)
+	return code, err
 }
 
 // runSlotCmd runs argv with env and returns its exit code (128+N when a
@@ -362,13 +375,21 @@ func (c *cli) takeSlot(ctx context.Context, name string, n int) (env []string, r
 // takeSlotFor is takeSlot for a run of cmd, which the wait history is kept by
 // (so one command has one key however wp was asked to run it).
 func (c *cli) takeSlotFor(ctx context.Context, name string, n int, cmd string) (env []string, release func(), err error) {
+	env, release, _, err = c.takeSlotExit(ctx, name, n, cmd)
+	return env, release, err
+}
+
+// takeSlotExit is takeSlotFor that also returns setExit, which tells the hold
+// what the command run in the slot exited with before release (WP-1646). A
+// caller that doesn't call it leaves the exit unknown.
+func (c *cli) takeSlotExit(ctx context.Context, name string, n int, cmd string) (env []string, release func(), setExit func(int), err error) {
 	env = os.Environ()
 	if slotHeld(name) {
-		return env, func() {}, nil
+		return env, func() {}, func(int) {}, nil
 	}
 	hold, err := c.acquireQueued(ctx, name, n, cmd)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	held := name
 	if dir, err := slotDir(); err == nil {
@@ -385,5 +406,5 @@ func (c *cli) takeSlotFor(ctx context.Context, name string, n int, cmd string) (
 			kept = append(kept, e)
 		}
 	}
-	return append(kept, slotHeldEnv+"="+held), hold.release, nil
+	return append(kept, slotHeldEnv+"="+held), hold.release, hold.setExit, nil
 }

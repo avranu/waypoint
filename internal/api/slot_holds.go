@@ -1,0 +1,65 @@
+package api
+
+import (
+	"fmt"
+	"net/http"
+	"strconv"
+	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core"
+)
+
+// Test slot holds (WP-1646): wp sends the holds it recorded and reads them
+// back for `wp slot replay`.
+func (s *Server) slotHoldRoutes(mux *http.ServeMux) {
+	a := s.authed
+	mux.HandleFunc("POST /api/v1/slot-holds", a(s.slotHoldsPost))
+	mux.HandleFunc("GET /api/v1/slot-holds", a(s.slotHoldsList))
+}
+
+func (s *Server) slotHoldsPost(w http.ResponseWriter, r *http.Request) (any, error) {
+	var body struct {
+		Holds []core.SlotHold `json:"holds"`
+	}
+	empty, err := decodeBodyMax(r, &body, 8<<20)
+	if empty {
+		return nil, fmt.Errorf("%w: request body is empty", errBadRequest)
+	}
+	if err != nil {
+		return nil, err
+	}
+	q := r.URL.Query()
+	num := func(name string) (int64, error) {
+		if q.Get(name) == "" {
+			return 0, nil
+		}
+		n, err := strconv.ParseInt(q.Get(name), 10, 64)
+		if err != nil || n < 0 {
+			return 0, fmt.Errorf("%w: %s is a count", errBadRequest, name)
+		}
+		return n, nil
+	}
+	in := core.SlotHoldsIn{Machine: q.Get("machine"), Holds: body.Holds}
+	for name, dst := range map[string]*int64{"pending": &in.Pending, "oldest": &in.Oldest, "dropped": &in.Dropped} {
+		if *dst, err = num(name); err != nil {
+			return nil, err
+		}
+	}
+	return s.svc.RecordSlotHolds(r.Context(), actorFrom(r), in)
+}
+
+func (s *Server) slotHoldsList(w http.ResponseWriter, r *http.Request) (any, error) {
+	v := r.URL.Query()
+	f := core.SlotHoldsFilter{Machine: v.Get("machine"), User: v.Get("user"), Limit: queryInt(r, "limit", 0)}
+	for name, dst := range map[string]*time.Time{"since": &f.Since, "until": &f.Until} {
+		if v.Get(name) == "" {
+			continue
+		}
+		ms, err := strconv.ParseInt(v.Get(name), 10, 64)
+		if err != nil || ms < 0 {
+			return nil, fmt.Errorf("%w: %s is unix milliseconds", errBadRequest, name)
+		}
+		*dst = time.UnixMilli(ms)
+	}
+	return s.svc.SlotHolds(r.Context(), actorFrom(r), f)
+}

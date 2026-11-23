@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core"
 )
 
 // slotLongRun is the typical run time from which a run counts as long and may
@@ -24,6 +26,7 @@ const (
 	slotWaitsFile    = "waits.jsonl"
 	slotWaitsMaxSize = 512 << 10
 	slotWaitsKeep    = 2000
+	slotClassRuns    = 5 // the latest runs a class is decided from
 	slotClassShort   = "short"
 	slotClassLong    = "long"
 )
@@ -60,13 +63,25 @@ type queuedHold struct {
 	dir      string
 	rec      waitRec
 	acquired time.Time
+	// full is the record sent to the server (WP-1646), nil when none is kept.
+	full *core.SlotHold
+	exit *int
 }
+
+// setExit says what the command run in the slot exited with; release
+// records it.
+func (h *queuedHold) setExit(code int) { h.exit = &code }
 
 func (h *queuedHold) release() {
 	h.slot.release()
-	h.rec.At = time.Now().Unix()
-	h.rec.Secs = int64(time.Since(h.acquired).Round(time.Second) / time.Second)
-	appendWaitRec(h.dir, h.rec)
+	now := time.Now()
+	h.rec.At = now.Unix()
+	h.rec.Secs = int64(now.Sub(h.acquired).Round(time.Second) / time.Second)
+	if h.full != nil {
+		h.full.HoldMS = now.Sub(h.acquired).Milliseconds()
+		h.full.Exit = h.exit
+	}
+	appendWaitRecFull(h.dir, h.rec, h.full)
 	_ = h.tree.Close()
 }
 
@@ -117,16 +132,35 @@ func readWaitRecs(dir string) []waitRec {
 // classifyRun says long when the median of the latest 5 runs of this name,
 // repo and command took slotLongRun or more.
 func classifyRun(recs []waitRec, name, repo, cmd string) string {
+	class, _, _ := classifyRunStats(recs, name, repo, cmd)
+	return class
+}
+
+// classifyRunStats is classifyRun with what the class was decided from: the
+// median of those runs and how many there were (0: no history, so short).
+func classifyRunStats(recs []waitRec, name, repo, cmd string) (class string, median float64, runs int) {
 	var secs []int64
-	for i := len(recs) - 1; i >= 0 && len(secs) < 5; i-- {
+	for i := len(recs) - 1; i >= 0 && len(secs) < slotClassRuns; i-- {
 		if r := recs[i]; !r.GaveUp && r.Name == name && r.Repo == repo && r.Cmd == cmd {
 			secs = append(secs, r.Secs)
 		}
 	}
-	if len(secs) > 0 && slotMedianSecs(secs) >= slotLongRun.Seconds() {
-		return slotClassLong
+	class, median = slotClassOf(secs, slotLongRun)
+	return class, median, len(secs)
+}
+
+// slotClassOf is the class a run gets from the run times (secs) of its latest
+// runs: long when their median is threshold or more. With none it is short
+// and the median 0.
+func slotClassOf(secs []int64, threshold time.Duration) (class string, median float64) {
+	if len(secs) == 0 {
+		return slotClassShort, 0
 	}
-	return slotClassShort
+	median = slotMedianSecs(secs)
+	if median >= threshold.Seconds() {
+		return slotClassLong, median
+	}
+	return slotClassShort, median
 }
 
 // slotOrder is the slot indexes a run of this class tries, in order.
@@ -151,7 +185,11 @@ func slotOrder(class string, n int) []int {
 // rename (WP-1604). Readers need no lock: the rename is atomic. The lock is
 // best effort; holders are short-lived, and if it can't be taken the record
 // is still written.
-func appendWaitRec(dir string, r waitRec) {
+func appendWaitRec(dir string, r waitRec) { appendWaitRecFull(dir, r, nil) }
+
+// appendWaitRecFull is appendWaitRec that also spools hold, when not nil, for
+// the server (WP-1646), under the same lock.
+func appendWaitRecFull(dir string, r waitRec, hold *core.SlotHold) {
 	b, err := json.Marshal(r)
 	if err != nil {
 		return
@@ -171,6 +209,9 @@ func appendWaitRec(dir string, r waitRec) {
 	_ = f.Close()
 	if st, err := os.Stat(p); err == nil && st.Size() > slotWaitsMaxSize {
 		trimWaits(p, slotWaitsKeep)
+	}
+	if hold != nil {
+		appendOutbox(dir, *hold)
 	}
 }
 
@@ -208,6 +249,12 @@ func (c *cli) acquireQueued(ctx context.Context, name string, n int, cmd string)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
+	if slotSendOn(c) {
+		// Earlier runs' holds go while this one waits and runs; it never
+		// waits for this, and a request cut by the process ending is sent
+		// again later (the server keeps an id once). WP-1646.
+		go func() { _, _, _ = c.sendSlotHolds(context.Background()) }()
+	}
 	wd, _ := os.Getwd()
 	tree := slotGit(ctx, "rev-parse", "--show-toplevel")
 	if tree == "" {
@@ -218,12 +265,34 @@ func (c *cli) acquireQueued(ctx context.Context, name string, n int, cmd string)
 		repo = wd
 	}
 	cmdKey := slotField(cmd)
-	class := classifyRun(readWaitRecs(dir), name, repo, cmdKey)
+	class, median, runs := classifyRunStats(readWaitRecs(dir), name, repo, cmdKey)
 	waited := func() int64 { return int64(time.Since(start).Round(time.Second) / time.Second) }
+	// What the server is told of this hold (WP-1646): what was known when it
+	// queued; the rest is filled in as it goes.
+	var full *core.SlotHold
+	if slotSendOn(c) {
+		full = c.newSlotHold(dir, name, repo, slotField(tree), cmdKey, class, median, runs, n, start)
+	}
+	var treeStart, treeEnd time.Time
+	treeWaited := func() int64 {
+		switch {
+		case treeStart.IsZero():
+			return 0
+		case treeEnd.IsZero():
+			return time.Since(treeStart).Milliseconds()
+		}
+		return treeEnd.Sub(treeStart).Milliseconds()
+	}
 	// A wait that gives up is recorded: those are the worst waits.
 	defer func() {
 		if err != nil {
-			appendWaitRec(dir, waitRec{Name: name, Repo: repo, Cmd: cmdKey, Class: class, At: time.Now().Unix(), Wait: waited(), GaveUp: true})
+			var gave *core.SlotHold
+			if full != nil {
+				g := *full
+				g.GaveUp, g.WaitMS, g.TreeWaitMS = true, time.Since(start).Milliseconds(), treeWaited()
+				gave = &g
+			}
+			appendWaitRecFull(dir, waitRec{Name: name, Repo: repo, Cmd: cmdKey, Class: class, At: time.Now().Unix(), Wait: waited(), GaveUp: true}, gave)
 		}
 	}()
 
@@ -251,6 +320,12 @@ func (c *cli) acquireQueued(ctx context.Context, name string, n int, cmd string)
 			return nil, err
 		}
 		notified := false
+		treeStart = time.Now()
+		defer func() {
+			if treeEnd.IsZero() {
+				treeEnd = time.Now()
+			}
+		}()
 		for {
 			ok, lerr := slotTryLock(tf)
 			if lerr != nil {
@@ -284,6 +359,7 @@ func (c *cli) acquireQueued(ctx context.Context, name string, n int, cmd string)
 			case <-time.After(slotPoll):
 			}
 		}
+		treeEnd = time.Now()
 		q.BehindOwn = false
 		if written {
 			writeQueue()
@@ -303,7 +379,10 @@ func (c *cli) acquireQueued(ctx context.Context, name string, n int, cmd string)
 		}
 		return nil, err
 	}
-	return &queuedHold{slot: hold, tree: tf, dir: dir, acquired: time.Now(), rec: waitRec{
+	if full != nil {
+		full.WaitMS, full.TreeWaitMS, full.Slot = time.Since(start).Milliseconds(), treeWaited(), &hold.idx
+	}
+	return &queuedHold{slot: hold, tree: tf, dir: dir, acquired: time.Now(), full: full, rec: waitRec{
 		Name: name, Repo: repo, Cmd: cmdKey, Class: class, Wait: waited(),
 	}}, nil
 }
@@ -434,8 +513,7 @@ func (c *cli) slotQueueLs(dir string) bool {
 	for _, k := range keys {
 		v := waits[k]
 		sort.Slice(v, func(i, j int) bool { return v[i] < v[j] })
-		pct := func(p float64) int64 { return v[max(0, int(p*float64(len(v))+0.999999)-1)] }
-		_, _ = fmt.Fprintf(c.out, "  %-11s %-5s   %s / %s (%d)\n", k.label, k.class, slotDur(pct(0.5)), slotDur(pct(0.95)), len(v))
+		_, _ = fmt.Fprintf(c.out, "  %-11s %-5s   %s / %s (%d)\n", k.label, k.class, slotDur(slotPct(v, 0.5)), slotDur(slotPct(v, 0.95)), len(v))
 	}
 	return true
 }
