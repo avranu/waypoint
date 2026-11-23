@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -39,6 +40,14 @@ func TestPictureReadAllowed(t *testing.T) {
 		must(os.MkdirAll(filepath.Dir(p), 0o750))
 		must(os.WriteFile(p, []byte("x"), 0o600))
 		return p
+	}
+	// The user's own directories, private whatever the umask: t.TempDir makes
+	// them 0777 less it, and a umask of 0 leaves them open to everyone, where
+	// rightly nothing is let through (pathPrivate).
+	must(os.Chmod(tmp, 0o700))
+	must(os.Chmod(base, 0o700))
+	if d := notPrivateDir(write(filepath.Join(tmp, "probe.png"))); d != "" {
+		t.Fatalf("this machine's %s, above the test's temp directory, is open to others: nothing under it can be let through", d)
 	}
 	wtGit := filepath.Join(repo, ".git", "worktrees", "wt")
 	must(os.MkdirAll(wtGit, 0o750))
@@ -79,10 +88,13 @@ func TestPictureReadAllowed(t *testing.T) {
 		{wt, dirPic, false}, // a directory with a picture's name
 		{wt, write(filepath.Join(tmp, filesDirName, "WP-1", "d.jpg")), true},
 		{wt, write(filepath.Join(tmp, shotsDirName, "wp-1-x", "e.webp")), true},
-		{wt, write(filepath.Join(base, "out", shotsDirName, "e.png")), true}, // wp shot --out
+		{wt, write(filepath.Join(wt, "out", shotsDirName, "e.png")), true},     // wp shot --out in the project
+		{wt, write(filepath.Join(base, "out", shotsDirName, "e2.png")), false}, // wp shot --out elsewhere: left to Claude Code
+		{wt, write(filepath.Join(other, shotsDirName, "e3.png")), false},       // another project's wp-shots
+		{wt, write(filepath.Join(other, filesDirName, "WP-1", "e4.png")), false},
 		{wt, filepath.Join(tmp, filesDirName, "..", "f.png"), false},
 		{wt, write(filepath.Join(tmp, "f.png")), false},
-		{wt, write(filepath.Join(tmp, "else", filesDirName, "g.png")), true},       // wp files --dir under a wp-files directory
+		{wt, write(filepath.Join(tmp, "else", filesDirName, "g.png")), false},      // a wp-files of no one's making
 		{outside, write(filepath.Join(tmp, filesDirName, "WP-3", "g2.png")), true}, // outside a repository too
 		{wt, pad(repo, "h.png"), true},
 		{repo, pad(wt, "i.png"), true}, // a scratchpad of a worktree, from the main checkout
@@ -232,3 +244,34 @@ func (f fakeOwned) Mode() os.FileMode  { return 0o600 }
 func (f fakeOwned) ModTime() time.Time { return time.Time{} }
 func (f fakeOwned) IsDir() bool        { return false }
 func (f fakeOwned) Sys() any           { return &syscall.Stat_t{Uid: f.uid} }
+
+// notPrivateDir: the highest directory above p that pathPrivate refuses,
+// with its mode and owner; empty if none does.
+func notPrivateDir(p string) string {
+	var chain []string // p and the directories above it, the root last
+	for d := p; ; d = filepath.Dir(d) {
+		chain = append(chain, d)
+		if d == filepath.Dir(d) {
+			break
+		}
+	}
+	for i := len(chain) - 2; i >= 0; i-- { // from the root's child down: pathPrivate checks what is above it
+		fi, err := os.Lstat(chain[i])
+		if err != nil {
+			return err.Error()
+		}
+		if !pathPrivate(chain[i], fi) {
+			d := chain[i+1]
+			di, err := os.Lstat(d)
+			if err != nil {
+				return err.Error()
+			}
+			st, _ := di.Sys().(*syscall.Stat_t)
+			if st == nil {
+				st = &syscall.Stat_t{}
+			}
+			return fmt.Sprintf("%s (mode %v, uid %d, gid %d; the tests run as %d:%d, umask aside)", d, di.Mode(), st.Uid, st.Gid, os.Getuid(), os.Getgid())
+		}
+	}
+	return ""
+}

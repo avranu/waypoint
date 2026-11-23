@@ -114,3 +114,12 @@ func (s *State) sessionClaim(cwd, session string) *claim {
 	}
 	return found
 }
+
+// wpPictureDir: p is in a directory named as wp names its pictures' ones:
+// wp shot's (wp-shots, also under --out) or wp files' downloads (wp-files).
+// Only for not attaching them again: by name alone it says nothing about
+// whose they are, so the unasked Read (pictureReadAllowed) doesn't use it.
+func wpPictureDir(p string) bool {
+	parts := strings.Split(filepath.ToSlash(filepath.Dir(p)), "/")
+	return slices.Contains(parts, filesDirName) || slices.Contains(parts, shotsDirName)
+}

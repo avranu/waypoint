@@ -3,7 +3,6 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 )
@@ -30,17 +29,19 @@ const (
 // may look at unasked:
 //   - in the session's repository or another worktree of it, unless that
 //     repository holds the home directory (dotfiles are not a project);
-//   - in a wp-shots or wp-files directory (wpPictureDir: wp shot, with or
-//     without --out; wp files, any task's attachments);
+//   - under a temp directory, in wp's own directories there: wp-shots (wp
+//     shot) and wp-files (wp files: any task's attachments). wp shot --out
+//     in the project is the project's; anywhere else, and a directory of
+//     either name made by anything else, is left to Claude Code;
 //   - under a temp directory, in a scratchpad of a Claude Code session
 //     started at the top of one of the repository's checkouts
 //     (claude-UID/PROJECT/SESSION/scratchpad, the path Claude Code names to
 //     each session as its scratchpad).
 //
 // And only where no one else can swap it for another file before the Read
-// (pathPrivate). Outside any repository only the wp directories are: Claude
-// Code already lets a session read its own directory. Windows is left to
-// Claude Code (ownedByMe).
+// (pathPrivate). Outside any repository only wp's temp directories are:
+// Claude Code already lets a session read its own directory. Windows is left
+// to Claude Code (ownedByMe).
 func pictureReadAllowed(cwd, path string) bool {
 	if !filepath.IsAbs(path) || !isPicture(path) {
 		return false
@@ -55,14 +56,8 @@ func pictureReadAllowed(cwd, path string) bool {
 	if err != nil || !fi.Mode().IsRegular() || !ownedByMe(fi) || !pathPrivate(p, fi) {
 		return false
 	}
-	if wpPictureDir(p) {
-		return true
-	}
 	s := newGuardSite(cwd)
-	if !s.has {
-		return false
-	}
-	if !s.repoHoldsHome() && s.ownRepo(p) {
+	if s.has && !s.repoHoldsHome() && s.ownRepo(p) {
 		return true
 	}
 	for _, t := range guardTempDirs() {
@@ -71,7 +66,10 @@ func pictureReadAllowed(cwd, path string) bool {
 			continue
 		}
 		parts := strings.Split(rel, "/")
-		if len(parts) >= 5 && parts[0] == "claude-"+strconv.Itoa(os.Getuid()) && parts[3] == "scratchpad" && s.ownsScratchpad(parts[1]) {
+		if len(parts) >= 2 && (parts[0] == shotsDirName || parts[0] == filesDirName) {
+			return true
+		}
+		if s.has && len(parts) >= 5 && parts[0] == "claude-"+strconv.Itoa(os.Getuid()) && parts[3] == "scratchpad" && s.ownsScratchpad(parts[1]) {
 			return true
 		}
 	}
@@ -79,15 +77,6 @@ func pictureReadAllowed(cwd, path string) bool {
 }
 
 func isPicture(p string) bool { return shotExts[strings.ToLower(filepath.Ext(p))] }
-
-// wpPictureDir: p is in a directory wp made for pictures: wp shot's
-// (wp-shots, also under --out) or wp files' downloads (wp-files). The one
-// rule for both the allow here and the screenshot hook, which doesn't attach
-// them again (hook_shots.go).
-func wpPictureDir(p string) bool {
-	parts := strings.Split(filepath.ToSlash(filepath.Dir(p)), "/")
-	return slices.Contains(parts, filesDirName) || slices.Contains(parts, shotsDirName)
-}
 
 // repoHoldsHome: the session's repository is the home directory or above it.
 func (s guardSite) repoHoldsHome() bool {
