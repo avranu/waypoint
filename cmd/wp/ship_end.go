@@ -36,8 +36,10 @@ const (
 	shipStopFresh = 2 * time.Minute
 	// shipBgFresh: how long a wp ship running in the background may take
 	// to report back and still end the turn.
-	// It outlasts wp ship's longest wait (shipWaitMax), so the marker the
-	// call writes at its end finds its background entry still there (WP-1669).
+	// It outlasts wp ship's longest wait (shipWaitMax, counted from the start
+	// of the wp process, so the check and push before the call went to the
+	// background are in it), so the marker the call writes at its end finds
+	// its background entry still there (WP-1669).
 	shipBgFresh = 3 * time.Hour
 	// keptSummaryFor: how long a summary waits for the task's next wp ship.
 	keptSummaryFor = 48 * time.Hour

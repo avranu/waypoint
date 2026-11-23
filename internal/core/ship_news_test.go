@@ -41,7 +41,8 @@ func (a *apEnv) await(key string, wait time.Duration) *ShipNews {
 }
 
 // The wait returns the round's queued audit news, wrapped as the hook would,
-// and takes it so nothing types it again.
+// and leaves it queued until the client acks it (a lost response must not
+// lose it); the ack delivers it so nothing types it again.
 func TestAwaitShipNewsReturnsTheRoundsNews(t *testing.T) {
 	a, held, round := shipNewsEnv(t)
 	audit := a.queueNews(t, "audit:", round, "Audit of the branch: 2 findings")
@@ -51,10 +52,46 @@ func TestAwaitShipNewsReturnsTheRoundsNews(t *testing.T) {
 		!strings.Contains(got.Text, "news of an audit you asked for") || !strings.Contains(got.Text, "the check of your marks") {
 		t.Fatalf("got %+v", got)
 	}
+	if len(got.IDs) != 2 {
+		t.Fatalf("ids %v", got.IDs)
+	}
+	for _, k := range []string{audit, check} {
+		if st, _ := a.messageState(k); st != MessageQueued {
+			t.Errorf("%s is %s before the ack", k, st)
+		}
+	}
+	// A retry before the ack gets the same findings.
+	if again := a.await(held.Key, time.Second); again.Outcome != ShipNewsFindings || again.Text != got.Text {
+		t.Fatalf("retry got %+v", again)
+	}
+	if err := a.s.AckShipNews(a.ctx, a.ag, a.cli, "box", held.Key, got.IDs); err != nil {
+		t.Fatal(err)
+	}
 	for _, k := range []string{audit, check} {
 		if st, via := a.messageState(k); st != MessageDelivered || via != "ship" {
 			t.Errorf("%s: %s via %q", k, st, via)
 		}
+	}
+	if after := a.await(held.Key, 50*time.Millisecond); after.Outcome != ShipNewsWaiting {
+		t.Fatalf("after the ack: %+v", after)
+	}
+}
+
+// News queued while a wait is blocked wakes it at once, not at the recheck.
+func TestAwaitShipNewsWakesOnNews(t *testing.T) {
+	a, held, round := shipNewsEnv(t)
+	done := make(chan *ShipNews, 1)
+	go func() { done <- a.await(held.Key, 10*time.Second) }()
+	time.Sleep(200 * time.Millisecond)
+	start := time.Now()
+	a.queueNews(t, "audit:", round, "late findings")
+	select {
+	case got := <-done:
+		if got.Outcome != ShipNewsFindings || time.Since(start) > shipNewsRecheck/2 {
+			t.Fatalf("got %+v after %v", got, time.Since(start))
+		}
+	case <-time.After(shipNewsRecheck / 2):
+		t.Fatal("the wait wasn't woken by the news")
 	}
 }
 
@@ -77,25 +114,71 @@ func TestAwaitShipNewsIgnoresOtherTasksNews(t *testing.T) {
 	}
 }
 
-func TestAwaitShipNewsPullRequestOpened(t *testing.T) {
-	a, held, round := shipNewsEnv(t)
+func (a *apEnv) openPull(t *testing.T, round int64, state string) {
+	t.Helper()
 	bp := roundBeforePR(a.ctx, a.s.db.R, round)
-	if _, err := a.s.db.W.Exec(`INSERT INTO pull_requests(forge_id, repo, number, url, head_sha, head_ref, state, created_at, updated_at) VALUES ((SELECT id FROM forges LIMIT 1), ?, 12, 'https://git.example/acme/app/pulls/12', 'abc', ?, 'open', 0, 0)`, bp.Repo, bp.Branch); err != nil {
+	if _, err := a.s.db.W.Exec(`INSERT INTO pull_requests(forge_id, repo, number, url, head_sha, head_ref, state, created_at, updated_at) VALUES ((SELECT id FROM forges LIMIT 1), ?, 12, 'https://git.example/acme/app/pulls/12', 'abc', ?, ?, 0, 0)`, bp.Repo, bp.Branch, state); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func (a *apEnv) shipDone(t *testing.T, round int64) {
+	t.Helper()
+	if _, err := a.s.db.W.Exec(`UPDATE work_log SET before_pr = json_set(before_pr, '$.ship_done', json('true')) WHERE id = ?`, round); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAwaitShipNewsPullRequestOpened(t *testing.T) {
+	a, held, round := shipNewsEnv(t)
+	a.openPull(t, round, "open")
+	a.shipDone(t, round)
 	got := a.await(held.Key, time.Second)
-	if got.Outcome != ShipNewsPull || got.Pull == nil || got.Pull.Number != 12 || got.Pull.State != "open" || !strings.Contains(got.Pull.URL, "/pulls/12") {
+	if got.Outcome != ShipNewsPull || got.Pull == nil || got.Pull.Number != 12 || got.Pull.State != "open" || !strings.Contains(got.Pull.URL, "/pulls/12") || !strings.Contains(got.Text, "PR 12") {
 		t.Fatalf("got %+v", got)
 	}
 }
 
-func TestAwaitShipNewsRoundEnded(t *testing.T) {
+// An open pull request without Waypoint's own finished ship (a --review of a
+// branch whose pull request is open) is no answer.
+func TestAwaitShipNewsOpenPullWithoutShipDoneWaits(t *testing.T) {
+	a, held, round := shipNewsEnv(t)
+	a.openPull(t, round, "open")
+	if got := a.await(held.Key, 80*time.Millisecond); got.Outcome != ShipNewsWaiting {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestAwaitShipNewsShippedPullMergedEnds(t *testing.T) {
+	a, held, round := shipNewsEnv(t)
+	a.openPull(t, round, "merged")
+	a.shipDone(t, round)
+	got := a.await(held.Key, time.Second)
+	if got.Outcome != ShipNewsEnded || !strings.Contains(got.Text, "PR 12") || !strings.Contains(got.Text, "merged") {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+// A skipped round nobody will release is over.
+func TestAwaitShipNewsSkippedRoundEnds(t *testing.T) {
+	a, held, round := shipNewsEnv(t)
+	if _, err := a.s.db.W.Exec(`UPDATE work_log SET state = ?, ended_at = ?, reason = ? WHERE id = ?`, RoundSkipped, a.clockNow().UnixMilli(), roundCancelledBy+" a person", round); err != nil {
+		t.Fatal(err)
+	}
+	got := a.await(held.Key, time.Second)
+	if got.Outcome != ShipNewsEnded || !strings.Contains(got.Text, "over") {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+// A failed round Waypoint will release keeps the wait going for the pull
+// request it opens.
+func TestAwaitShipNewsReleasedRoundKeepsWaiting(t *testing.T) {
 	a, held, round := shipNewsEnv(t)
 	if _, err := a.s.db.W.Exec(`UPDATE work_log SET state = ?, ended_at = ? WHERE id = ?`, RoundFailed, a.clockNow().UnixMilli(), round); err != nil {
 		t.Fatal(err)
 	}
-	got := a.await(held.Key, time.Second)
-	if got.Outcome != ShipNewsEnded || got.Text == "" {
+	if got := a.await(held.Key, 80*time.Millisecond); got.Outcome != ShipNewsWaiting {
 		t.Fatalf("got %+v", got)
 	}
 }
@@ -140,7 +223,9 @@ func TestShipNewsHeldWhileAWaiterIsOpen(t *testing.T) {
 	if st, _ := a.messageState(key); st != MessageQueued {
 		t.Errorf("round news is %s while a waiter is open", st)
 	}
-	_ = other
+	if st, _ := a.messageState(other); st == MessageQueued {
+		t.Errorf("the non-held message is still %s after the Stop", st)
+	}
 	end()
 	// Still held for the reconnect gap.
 	a.s.postToSession(a.ctx, a.session, false)

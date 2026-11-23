@@ -19,7 +19,7 @@ import (
 
 // What a wait returns (ShipNews.Outcome).
 const (
-	ShipNewsFindings = "findings" // the round's news, taken: Text
+	ShipNewsFindings = "findings" // the round's news: Text, IDs
 	ShipNewsPull     = "pull"     // Waypoint opened the pull request: Pull
 	ShipNewsEnded    = "ended"    // the round ended or was released: Text says why
 	ShipNewsWaiting  = "waiting"  // nothing yet: ask again
@@ -50,6 +50,8 @@ type ShipNews struct {
 	Outcome string    `json:"outcome"`
 	Text    string    `json:"text,omitempty"`
 	Pull    *ShipPull `json:"pull,omitempty"`
+	// IDs are the messages of Text: still queued until AckShipNews.
+	IDs []int64 `json:"ids,omitempty"`
 }
 
 // shipWaits is the registry of waits, by session and task.
@@ -178,24 +180,41 @@ func (w *stopWaits) removeShip(id int64, ch chan struct{}) {
 	}
 }
 
+func (s *Service) logShipNews(ctx context.Context, session, task int64, got *ShipNews) {
+	outcome := "error"
+	if got != nil {
+		outcome = got.Outcome
+	}
+	s.log.InfoContext(context.WithoutCancel(ctx), "ship news returned", "session", session, "task", task, "outcome", outcome)
+}
+
+// shipWaitTarget resolves the session and task of a wait and checks the actor may.
+func (s *Service) shipWaitTarget(ctx context.Context, actor *Actor, cliID, machine, taskKey string) (session, task int64, err error) {
+	if actor == nil || actor.User == nil || actor.User.ID == 0 {
+		return 0, 0, ErrUnauthorized
+	}
+	session = s.SessionForHeader(ctx, actor.id(), cliID, machine)
+	if session == 0 {
+		return 0, 0, notFound("session")
+	}
+	task, err = s.resolveIssueID(ctx, s.db.R, taskKey)
+	if err != nil {
+		return 0, 0, err
+	}
+	// Reading the task is the access check (the session is the actor's: SessionForHeader).
+	if _, err := s.sessionByID(ctx, s.db.R, actor, session); err != nil {
+		return 0, 0, err
+	}
+	return session, task, nil
+}
+
 // AwaitShipNews holds a wp ship that was held for its task's review round
 // (up to wait, at most prWaitMax) until the round has something for the
 // agent: its audit or check news (taken, so nothing types it again), the pull
 // request Waypoint opened, or the round's end. Neither in time: waiting.
 func (s *Service) AwaitShipNews(ctx context.Context, actor *Actor, cliID, machine, taskKey string, wait time.Duration) (*ShipNews, error) {
-	if actor == nil || actor.User == nil || actor.User.ID == 0 {
-		return nil, ErrUnauthorized
-	}
-	session := s.SessionForHeader(ctx, actor.id(), cliID, machine)
-	if session == 0 {
-		return nil, notFound("session")
-	}
-	task, err := s.resolveIssueID(ctx, s.db.R, taskKey)
+	session, task, err := s.shipWaitTarget(ctx, actor, cliID, machine, taskKey)
 	if err != nil {
-		return nil, err
-	}
-	// Reading the task is the access check (the session is the actor's: SessionForHeader).
-	if _, err := s.sessionByID(ctx, s.db.R, actor, session); err != nil {
 		return nil, err
 	}
 	wait = min(max(wait, 0), shipNewsMax)
@@ -207,72 +226,55 @@ func (s *Service) AwaitShipNews(ctx context.Context, actor *Actor, cliID, machin
 	recheck := time.NewTicker(shipNewsRecheck)
 	defer recheck.Stop()
 	for {
-		if got, err := s.shipNewsNow(ctx, actor, session, task); err != nil || got != nil {
+		if got, err := s.shipNewsNow(ctx, session, task); err != nil || got != nil {
+			s.logShipNews(ctx, session, task, got)
 			return got, err
 		}
 		select {
 		case <-ch:
 		case <-recheck.C:
 		case <-deadline.C:
+			s.logShipNews(ctx, session, task, &ShipNews{Outcome: ShipNewsWaiting})
 			return &ShipNews{Outcome: ShipNewsWaiting}, nil
 		case <-ctx.Done():
+			s.logShipNews(ctx, session, task, &ShipNews{Outcome: ShipNewsWaiting})
 			return &ShipNews{Outcome: ShipNewsWaiting}, nil
 		}
 	}
 }
 
-// shipNewsNow is the answer if there is one: the round's news first, then
-// what the round's state says.
-func (s *Service) shipNewsNow(ctx context.Context, actor *Actor, session, task int64) (*ShipNews, error) {
-	var taken []*SessionMessage
-	err := s.write(ctx, actor, func(t *tx) error {
-		x, err := scanSession(t.QueryRowContext(ctx, `SELECT `+sessionCols+` FROM agent_sessions s WHERE s.id = ?`, session), s.nowMS())
-		if err != nil {
-			return err
-		}
-		rows, err := t.QueryContext(ctx, `SELECT `+messageCols+` FROM session_messages m LEFT JOIN users u ON u.id = m.created_by
-			WHERE m.session_id = ? AND m.state = 'queued' AND (m.step_key LIKE 'audit:%' OR m.step_key LIKE 'check:%') ORDER BY m.id`, session)
-		if err != nil {
-			return err
-		}
-		var mine []*SessionMessage
-		for rows.Next() {
-			m, err := scanMessage(rows)
-			if err != nil {
-				rows.Close()
-				return err
-			}
-			if n, bound := messageTask(ctx, t, m.stepKey); bound && n == task {
-				mine = append(mine, m)
-			}
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return err
-		}
-		now := s.nowMS()
-		for _, m := range mine {
-			res, err := t.ExecContext(ctx, `UPDATE session_messages SET state = 'delivered', via = 'ship', delivered_at = ?, batch_until = NULL WHERE id = ? AND state = 'queued'`, now, m.ID)
-			if err != nil {
-				return err
-			}
-			if n, _ := res.RowsAffected(); n == 0 {
-				continue // another path took it
-			}
-			m.State, m.Via = MessageDelivered, "ship"
-			m.deliveredAt = sql.NullInt64{Int64: now, Valid: true}
-			s.log.InfoContext(ctx, "session message delivered to a waiting ship", "message", m.ID, "session", session, "step_key", m.stepKey)
-			t.emit(sessionEvent(EvSessionMessage, x, map[string]any{"message": m.ID, "via": "ship"}))
-			taken = append(taken, m)
-		}
-		return nil
-	})
+// shipNewsNow is the answer if there is one: the round's news first (read,
+// not taken: AckShipNews delivers it once the client has it), then what the
+// round's state says.
+func (s *Service) shipNewsNow(ctx context.Context, session, task int64) (*ShipNews, error) {
+	rows, err := s.db.R.QueryContext(ctx, `SELECT `+messageCols+` FROM session_messages m LEFT JOIN users u ON u.id = m.created_by
+		WHERE m.session_id = ? AND m.state = 'queued' AND (m.step_key LIKE 'audit:%' OR m.step_key LIKE 'check:%') ORDER BY m.id`, session)
 	if err != nil {
 		return nil, err
 	}
-	if len(taken) > 0 {
-		s.publishSession(ctx, session)
-		return &ShipNews{Outcome: ShipNewsFindings, Text: MessagesText(taken)}, nil
+	var mine []*SessionMessage
+	for rows.Next() {
+		m, err := scanMessage(rows)
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
+		mine = append(mine, m)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var found []*SessionMessage
+	var ids []int64
+	for _, m := range mine {
+		if n, bound := messageTask(ctx, s.db.R, m.stepKey); bound && n == task {
+			found = append(found, m)
+			ids = append(ids, m.ID)
+		}
+	}
+	if len(found) > 0 {
+		return &ShipNews{Outcome: ShipNewsFindings, Text: MessagesText(found), IDs: ids}, nil
 	}
 	r, err := reviewRound(ctx, s.db.R, session, task)
 	if err != nil {
@@ -281,6 +283,26 @@ func (s *Service) shipNewsNow(ctx context.Context, actor *Actor, session, task i
 	if r == nil {
 		return &ShipNews{Outcome: ShipNewsNone}, nil
 	}
+	bp := roundBeforePR(ctx, s.db.R, r.id)
+	if bp == nil {
+		return &ShipNews{Outcome: ShipNewsNone}, nil
+	}
+	if bp.ShipDone {
+		p := &ShipPull{Repo: bp.Repo}
+		err := s.db.R.QueryRowContext(ctx, `SELECT number, url, state FROM pull_requests WHERE repo = ? COLLATE NOCASE AND head_ref = ? AND (head_repo = '' OR head_repo = repo COLLATE NOCASE) ORDER BY id DESC LIMIT 1`, bp.Repo, bp.Branch).
+			Scan(&p.Number, &p.URL, &p.State)
+		switch {
+		case err == nil:
+			if p.State == "open" || p.State == "draft" {
+				return &ShipNews{Outcome: ShipNewsPull, Pull: p, Text: fmt.Sprintf("The review ended and Waypoint shipped the pull request: PR %d (%s): %s", p.Number, p.State, p.URL)}, nil
+			}
+			return &ShipNews{Outcome: ShipNewsEnded, Text: fmt.Sprintf("Waypoint's review round for this task is over, and its pull request, PR %d, is %s. Nothing more is waiting on you here.", p.Number, p.State)}, nil
+		case errors.Is(err, sql.ErrNoRows):
+			return nil, nil // not recorded yet: the recheck finds it
+		default:
+			return nil, err
+		}
+	}
 	in, err := s.roundInOf(ctx, r.id)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
@@ -288,28 +310,63 @@ func (s *Service) shipNewsNow(ctx context.Context, actor *Actor, session, task i
 		}
 		return nil, err
 	}
-	if in.PROpen {
-		if bp := roundBeforePR(ctx, s.db.R, r.id); bp != nil {
-			p := &ShipPull{Repo: bp.Repo}
-			err := s.db.R.QueryRowContext(ctx, `SELECT number, url, state FROM pull_requests WHERE repo = ? COLLATE NOCASE AND head_ref = ? AND state IN ('open', 'draft') ORDER BY id DESC LIMIT 1`, bp.Repo, bp.Branch).
-				Scan(&p.Number, &p.URL, &p.State)
-			if err == nil {
-				return &ShipNews{Outcome: ShipNewsPull, Pull: p}, nil
-			}
-			if !errors.Is(err, sql.ErrNoRows) {
-				return nil, err
-			}
-		}
+	ended := func(why string) *ShipNews {
+		return &ShipNews{Outcome: ShipNewsEnded, Text: fmt.Sprintf("Waypoint's review round for this task is over (%s)%s. Nothing more is waiting on you here.", in.State, colonIf(why))}
 	}
-	switch in.State {
-	case RoundSkipped, RoundInterrupted, RoundFailed:
-		why := in.Release
-		if out := decideRound(in); why == "" {
-			why = cmp(out.Told, out.Why)
-		}
-		return &ShipNews{Outcome: ShipNewsEnded, Text: fmt.Sprintf("The review round for this task ended (%s)%s. Nothing more is waiting on you here: Waypoint opens the pull request without the review where it can and tells the person.", in.State, colonIf(why))}, nil
+	if bp.ShipStop != "" {
+		return ended(bp.ShipStop), nil
 	}
-	return nil, nil
+	switch out := decideRound(in); {
+	case out.Do == doSettle || out.Do == doHold:
+		return ended(out.Why), nil
+	case out.Do == doNothing:
+		return ended(out.Settled), nil
+	case out.Do == doEnd && out.Told != "":
+		return ended(out.Told), nil
+	}
+	return nil, nil // Waypoint is still acting: what it does next produces news
+}
+
+// AckShipNews says the client has the findings AwaitShipNews returned: they
+// are delivered (via 'ship') so nothing types them again.
+func (s *Service) AckShipNews(ctx context.Context, actor *Actor, cliID, machine, taskKey string, ids []int64) error {
+	session, task, err := s.shipWaitTarget(ctx, actor, cliID, machine, taskKey)
+	if err != nil {
+		return err
+	}
+	defer s.openShipWait(session, task)()
+	delivered := false
+	err = s.write(ctx, actor, func(t *tx) error {
+		x, err := scanSession(t.QueryRowContext(ctx, `SELECT `+sessionCols+` FROM agent_sessions s WHERE s.id = ?`, session), s.nowMS())
+		if err != nil {
+			return err
+		}
+		now := s.nowMS()
+		for _, id := range ids {
+			var key string
+			if t.QueryRowContext(ctx, `SELECT step_key FROM session_messages WHERE id = ? AND session_id = ?`, id, session).Scan(&key) != nil {
+				continue
+			}
+			res, err := t.ExecContext(ctx, `UPDATE session_messages SET state = 'delivered', via = 'ship', delivered_at = ?, batch_until = NULL WHERE id = ? AND session_id = ? AND state = 'queued'`, now, id, session)
+			if err != nil {
+				return err
+			}
+			if n, _ := res.RowsAffected(); n == 0 {
+				continue // another path took it
+			}
+			delivered = true
+			s.log.InfoContext(ctx, "session message delivered to a waiting ship", "message", id, "session", session, "step_key", key)
+			t.emit(sessionEvent(EvSessionMessage, x, map[string]any{"message": id, "via": "ship"}))
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if delivered {
+		s.publishSession(ctx, session)
+	}
+	return nil
 }
 
 func colonIf(s string) string {

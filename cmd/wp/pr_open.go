@@ -171,18 +171,32 @@ func cmdPROpen(c *cli, args []string) error {
 }
 
 // heldText is what to say about a ship held for its review.
-func (o *openedPR) heldText() string {
-	s := noticed(o.Notice, o.Held)
+func (o *openedPR) heldText() string { return strings.Join(o.heldLines(true), "\n") }
+
+// heldNotes is heldText without the held answer itself: what a ship that goes
+// on to say something else still owes the agent (the tested text is separate).
+func (o *openedPR) heldNotes() string {
+	return strings.TrimSpace(strings.Join(append(o.heldLines(false), o.tested.text()), "\n"))
+}
+
+func (o *openedPR) heldLines(withHeld bool) []string {
+	var l []string
+	if o.Notice != "" {
+		l = append(l, "Notice: "+o.Notice)
+	}
+	if withHeld {
+		l = append(l, o.Held)
+	}
 	if o.UrgentPR != 0 {
-		s += "\n" + urgentNote(o.UrgentPR)
+		l = append(l, urgentNote(o.UrgentPR))
 	}
 	if o.Warning != "" {
-		s += "\nWarning: " + o.Warning
+		l = append(l, "Warning: "+o.Warning)
 	}
 	if o.ClaimWarning != "" {
-		s += "\nWarning: " + o.ClaimWarning
+		l = append(l, "Warning: "+o.ClaimWarning)
 	}
-	return s
+	return l
 }
 
 // withTested adds the test evidence to the server's answer, for --json.
@@ -251,7 +265,7 @@ func addShipFlags(fs *flag.FlagSet) shipOpts {
 		notify:      fs.Bool("notify", false, "wake me when it merges (only if work must follow)"),
 		blocking:    fs.Bool("blocking", false, "wake me within minutes (only if other work waits on it)"),
 		noWait:      fs.Bool("no-wait", false, "when the pull request waits on a review round, don't wait for the round's findings: end as before"),
-		waitTimeout: fs.Duration("wait-timeout", shipWaitDefault, "how long to wait on a review round before ending as with --no-wait (`DURATION`)"),
+		waitTimeout: fs.Duration("wait-timeout", shipWaitDefault, "how long to wait on a review round before ending as with --no-wait (at most "+waitMaxText()+"; `DURATION`)"),
 		summary:     fs.String("summary", "", "your final reply to the person, shown as the turn ends if the ship goes as expected (no reply turn after it); {task}, {pr} and {url} are filled in (`TEXT`)"),
 	}
 }

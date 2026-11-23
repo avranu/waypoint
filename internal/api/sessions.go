@@ -123,9 +123,17 @@ func (s *Server) sessionShipNews(w http.ResponseWriter, r *http.Request) (any, e
 		Machine   string `json:"machine"`
 		Task      string `json:"task"`
 		Wait      int    `json:"wait"` // seconds
+		// Ack: the messages of findings the client has; delivers them.
+		Ack []int64 `json:"ack"`
 	}
 	if err := decode(r, &in); err != nil {
 		return nil, err
+	}
+	if len(in.Ack) > 0 {
+		if err := s.svc.AckShipNews(r.Context(), actorFrom(r), in.SessionID, in.Machine, in.Task, in.Ack); err != nil {
+			return nil, err
+		}
+		return map[string]string{"outcome": "acked"}, nil
 	}
 	return s.svc.AwaitShipNews(r.Context(), actorFrom(r), in.SessionID, in.Machine, in.Task, time.Duration(in.Wait)*time.Second)
 }

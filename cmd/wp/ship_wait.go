@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -12,12 +13,26 @@ import (
 // turn end, a reply and a typed prompt (WP-1669). Run in the background (Claude
 // Code moves a long command there itself), the agent is woken when it exits.
 
-// shipWaitDefault bounds the wait. It stays under shipBgFresh so a marker
-// written at its end still counts for the background call.
+// shipWaitDefault bounds the wait. shipWaitMax is the longest it may run
+// from the start of the wp ship process: it stays under shipBgFresh so a
+// marker written at its end still counts for the background call. Claude Code
+// moves the call to the background after the --check run and the push have
+// already used time, so the bound is what is left of shipWaitMax (shipLeft).
 const (
 	shipWaitDefault = 90 * time.Minute
 	shipWaitMax     = shipBgFresh - 5*time.Minute
 )
+
+// shipStart is when this wp process started.
+var shipStart = time.Now()
+
+// shipLeft is how much of shipWaitMax this process has left (replaced in tests).
+var shipLeft = func() time.Duration { return shipWaitMax - time.Since(shipStart) }
+
+// waitMaxText is the --wait-timeout help's ceiling.
+func waitMaxText() string {
+	return strings.TrimSuffix(shipWaitMax.String(), "0s")
+}
 
 // shipChunk is what one request asks the server to hold; tests shorten it.
 var shipChunk = waitChunk
@@ -27,8 +42,9 @@ var shipSleep = time.Sleep
 
 // shipNews is the server's answer to a wait.
 type shipNews struct {
-	Outcome string `json:"outcome"` // findings, pull, ended, waiting, none
-	Text    string `json:"text"`
+	Outcome string  `json:"outcome"` // findings, pull, ended, waiting, none
+	Text    string  `json:"text"`
+	IDs     []int64 `json:"ids"` // the messages of findings, acked once printed
 	Pull    *struct {
 		Repo   string `json:"repo"`
 		Number int    `json:"number"`
@@ -46,28 +62,46 @@ func (c *cli) canWaitShip(so shipOpts, o *openedPR) bool {
 	return !*so.noWait && !factAsks(o.HeldNeedsAgent) && !c.asJSON && c.agentHeader() != "" && c.thisSession() != "" && c.server() != "" && c.token() != ""
 }
 
+// Why waitShipNews returned no news.
+type waitStop int
+
+const (
+	stopQuiet waitStop = iota // an older server, or no round: nothing to say
+	stopBound                 // the bound passed
+	stopLost                  // retries ran out, or a request failed for good
+)
+
 // waitShipNews holds until the task's round has something for the agent, or
-// bound has passed. nil: nothing to show (an older server, an error, the
-// bound), and the ship goes on as it did before the wait existed.
-func (c *cli) waitShipNews(task string, bound time.Duration, announce func()) *shipNews {
+// bound has passed. nil: nothing to show, and why; the ship goes on as it did
+// before the wait existed. announce runs once the server has said it is
+// waiting.
+func (c *cli) waitShipNews(task string, bound time.Duration, announce func()) (*shipNews, waitStop, error) {
 	deadline := time.Now().Add(bound)
 	chunk, failures := shipChunk, 0
 	probe := true // the first request holds nothing: it says whether the server knows the wait
+	announced := false
+	// quit is how a stop reads: silent until the wait was announced.
+	quit := func(why waitStop, err error) (*shipNews, waitStop, error) {
+		if !announced {
+			why = stopQuiet
+		}
+		return nil, why, err
+	}
 	for {
 		hold := min(chunk, time.Until(deadline))
 		if probe {
 			hold = 0
 		} else if hold < time.Second {
-			return nil
+			return quit(stopBound, nil)
 		}
 		n, err := c.shipNewsOnce(task, hold)
 		if err != nil {
 			var ae *apiError
 			if errors.As(err, &ae) && (ae.status == http.StatusNotFound || ae.status == http.StatusMethodNotAllowed) {
-				return nil // an older server
+				return nil, stopQuiet, nil // an older server
 			}
 			if !transientErr(err) || failures >= len(waitRetry) {
-				return nil
+				return quit(stopLost, err)
 			}
 			if hold > 0 {
 				chunk = min(chunk, waitShortChunk) // a proxy may have cut it short: ask for less
@@ -77,18 +111,41 @@ func (c *cli) waitShipNews(task string, bound time.Duration, announce func()) *s
 			continue
 		}
 		failures = 0
-		if probe {
-			probe = false
-			if n.Outcome != "none" {
+		wasProbe := probe
+		probe = false
+		switch n.Outcome {
+		case "findings":
+			c.ackShipNews(task, n.IDs)
+			return n, stopQuiet, nil
+		case "pull", "ended":
+			return n, stopQuiet, nil
+		case "waiting":
+			if wasProbe {
+				announced = true
 				announce()
 			}
+		default: // "none", or one this client doesn't know: stop
+			return nil, stopQuiet, nil
 		}
-		switch n.Outcome {
-		case "findings", "pull", "ended":
-			return n
-		case "none":
-			return nil
+	}
+}
+
+// ackShipNews tells the server the findings were received, so it delivers
+// them and nothing types them again. A failure is ignored: the news then
+// reaches the agent the usual way as well.
+func (c *cli) ackShipNews(task string, ids []int64) {
+	if len(ids) == 0 {
+		return
+	}
+	c.longPoll = 10 * time.Second
+	defer func() { c.longPoll = 0 }()
+	for try := 0; ; try++ {
+		_, err := c.call("POST", "/api/v1/sessions/hook/ship-news", map[string]any{
+			"session_id": c.thisSession(), "machine": machineName(), "task": task, "ack": ids})
+		if err == nil || !transientErr(err) || try >= 2 {
+			return
 		}
+		shipSleep(waitRetry[try])
 	}
 }
 
@@ -111,7 +168,7 @@ func (n *shipNews) pullLine() string {
 	if n.Pull == nil {
 		return ""
 	}
-	return fmt.Sprintf("Waypoint opened the pull request: PR %d (%s): %s", n.Pull.Number, n.Pull.State, n.Pull.URL)
+	return fmt.Sprintf("Waypoint shipped the pull request: PR %d (%s): %s", n.Pull.Number, n.Pull.State, n.Pull.URL)
 }
 
 // reopenPR finds the pull request Waypoint opened (replaced in tests).
@@ -126,28 +183,30 @@ func (c *cli) waitHeldShip(f prOpenFlags, so shipOpts, o *openedPR, raw []byte, 
 	if summary != "" {
 		c.keepSummary(task, summary)
 	}
-	announced := false
-	n := c.waitShipNews(task, min(*so.waitTimeout, shipWaitMax), func() {
-		announced = true
+	announce := func() {
 		c.println(fmt.Sprintf("Pushed; waiting for %s's review (it can take a while; you are woken when this command exits).", cmpStr(task, "the task")))
-	})
+	}
+	n, why, werr := c.waitShipNews(task, min(*so.waitTimeout, shipLeft()), announce)
 	switch {
 	case n == nil:
-		if announced {
+		switch why {
+		case stopBound:
 			c.println("The review is still going; stopped waiting here, so what it finds comes to you as before.")
+		case stopLost:
+			c.println(fmt.Sprintf("Lost touch with Waypoint while waiting (%v); what the review finds comes to you as before.", werr))
 		}
 		return o, raw, false, nil
 	case n.Outcome == "pull":
-		c.println(n.pullLine())
+		c.println(cmpStr(n.Text, n.pullLine()))
 		*f.review, *f.force = false, false // the round ran: this only finds its pull request
 		o2, raw2, err := reopenPR(c, f)
 		if err != nil {
 			return nil, nil, true, err
 		}
-		if o2.Held == "" {
-			return o2, raw2, false, nil
-		}
-		return o, raw, false, nil
+		return o2, raw2, false, nil
+	}
+	if notes := o.heldNotes(); notes != "" {
+		c.println(notes)
 	}
 	c.println(n.Text)
 	return o, raw, true, nil
