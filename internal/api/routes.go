@@ -1448,6 +1448,7 @@ func (s *Server) updateRepo(w http.ResponseWriter, r *http.Request) (any, error)
 		ReviewWaitMinutes *int      `json:"review_wait_minutes"`
 		QuietMinutes      *int      `json:"quiet_minutes"`
 		ExternalReviewers *[]string `json:"external_reviewers"`
+		LineCandidates    *bool     `json:"line_candidates"`
 	}
 	if err := decode(r, &in); err != nil {
 		return nil, err
@@ -1466,7 +1467,7 @@ func (s *Server) updateRepo(w http.ResponseWriter, r *http.Request) (any, error)
 		}
 	}
 	pol := core.MergePolicyInput{AutoMerge: in.AutoMerge, AutoMergeInto: in.AutoMergeInto, AutoMergeBases: in.AutoMergeBases, RequiredChecks: in.RequiredChecks, ReviewWaitMinutes: in.ReviewWaitMinutes,
-		QuietMinutes: in.QuietMinutes, ExternalReviewers: in.ExternalReviewers}
+		QuietMinutes: in.QuietMinutes, ExternalReviewers: in.ExternalReviewers, LineCandidates: in.LineCandidates}
 	if err := s.svc.SetRepoMergePolicy(r.Context(), actorFrom(r), r.PathValue("key"), id, pol); err != nil {
 		return nil, err
 	}

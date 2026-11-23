@@ -55,6 +55,7 @@ type transcriptAPI struct {
 	svc   *core.Service
 	dir   string
 	human *client
+	db    *db.DB
 }
 
 func newTranscriptAPI(t *testing.T) *transcriptAPI { return newTranscriptAPICapped(t, 0) }
@@ -84,7 +85,7 @@ func newTranscriptAPIIn(t *testing.T, dir string, maxMB int) *transcriptAPI {
 		t.Fatal(err)
 	}
 	tok, _, _ := svc.CreateAPIToken(ctx, &core.Actor{User: u}, "robin", false, 0)
-	return &transcriptAPI{t: t, ts: ts, svc: svc, dir: dir, human: &client{t: t, base: ts.URL, http: http.DefaultClient, token: tok}}
+	return &transcriptAPI{t: t, ts: ts, svc: svc, dir: dir, db: d, human: &client{t: t, base: ts.URL, http: http.DefaultClient, token: tok}}
 }
 
 func tgz(t *testing.T, s string) []byte {

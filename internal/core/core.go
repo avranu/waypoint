@@ -24,6 +24,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"git.jmann.me/claude/waypoint/internal/core/meaning"
 	"git.jmann.me/claude/waypoint/internal/db"
 	"git.jmann.me/claude/waypoint/internal/tracing"
 )
@@ -146,25 +147,19 @@ type Service struct {
 	// Waypoint made into that base (WP-316): a read of the base that doesn't
 	// show it yet is stale.
 	baseMerged sync.Map
-	// baseRed holds what fixFirst found (WP-428): "holds:tip:head" → whether
-	// the head holds the base's tip, "first:forge/repo/base@tip" → the pull
-	// request that went first to fix it.
+	// baseRed holds what the line's ordering found (WP-428): "holds:tip:head"
+	// → whether the head holds the base's tip.
 	baseRed sync.Map
 	// stackOpt holds baseKey → stackOpt: whether the base gets merge queue
-	// stacks (WP-404), read again after stackOptTTL. stackOff holds baseKey
-	// → until when it gets none (a refused stacked merge, a stack whose run
-	// never started). stackCommits holds "repo\x00sha" → the commit's
+	// stacks (WP-404), read again after stackOptTTL. stackCommits holds "repo\x00sha" → the commit's
 	// parents (commits don't change).
 	stackOpt     sync.Map
-	stackOff     sync.Map
 	stackCommits sync.Map
 	// poolSat holds forge id → poolVerdict: whether that forge's CI runners
 	// are saturated (WP-509), with poolSatReading set while it is read
-	// again. batchDepth holds baseKey → how many pull requests behind the
-	// front a merge queue batch takes now.
+	// again.
 	poolSat        sync.Map
 	poolSatReading atomic.Bool
-	batchDepth     sync.Map
 	// workLogReading is set while review reports are counted (WP-285).
 	workLogReading atomic.Bool
 	// prBodyWriting is set while a model words PR descriptions (WP-55).
@@ -186,8 +181,8 @@ type Service struct {
 	Forges ForgeClient
 	// language models for AI tasks, swappable in tests
 	LLM LLM
-	// Meaning is the meaning service (meaning_client.go); nil without one.
-	Meaning     MeaningModels
+	// Meaning is the meaning service (package meaning); nil without one.
+	Meaning     meaning.Models
 	aiSlots     chan struct{}
 	surplusSlot chan struct{} // surplus work, one at a time beside aiSlots: it never waits for normal work nor holds it up (WP-906)
 	aiMu        sync.Mutex
@@ -334,7 +329,7 @@ func New(d *db.DB, cfg Config, log *slog.Logger) *Service {
 	// provider that doesn't stream sends with the whole answer.
 	s.LLM = &httpLLM{http: forgeEgress.streamClient(llmHeaderTimeout)}
 	if strings.TrimSpace(cfg.MeaningURL) != "" {
-		s.Meaning = newHTTPMeaning(cfg.MeaningURL, cfg.MeaningToken, forgeEgress.client(meaningTimeout), s.log, func() time.Time { return s.now() })
+		s.Meaning = meaning.NewHTTP(cfg.MeaningURL, cfg.MeaningToken, forgeEgress.client(meaning.Timeout), s.log, func() time.Time { return s.now() })
 	}
 	s.envs = newEnvRunner(cfg.Egress)
 	s.botKick = make(chan struct{}, 1)
@@ -384,35 +379,6 @@ func (s *Service) goBG(f func()) {
 		f()
 	}()
 }
-
-// ---- errors ----
-
-var (
-	ErrNotFound     = errors.New("not found")
-	ErrForbidden    = errors.New("forbidden")
-	ErrUnauthorized = errors.New("unauthorized")
-	ErrConflict     = errors.New("conflict")
-	// ErrUnavailable: a service Waypoint stands in front of (an assistant's
-	// door) didn't answer; a 502.
-	ErrUnavailable = errors.New("unavailable")
-)
-
-// InvalidError is a validation failure with a message safe to show users.
-type InvalidError struct{ Msg string }
-
-func (e *InvalidError) Error() string { return e.Msg }
-
-func invalid(format string, args ...any) error {
-	return &InvalidError{Msg: fmt.Sprintf(format, args...)}
-}
-
-// IsInvalid reports whether err is a validation error.
-func IsInvalid(err error) bool {
-	var ie *InvalidError
-	return errors.As(err, &ie)
-}
-
-func notFound(what string) error { return fmt.Errorf("%s %w", what, ErrNotFound) }
 
 // ---- actors ----
 

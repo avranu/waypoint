@@ -976,8 +976,8 @@ func PanelSource(f CodeAuditFinding) string {
 // pruning), how many a second read confirmed (Confirmed), how many findings
 // name it (Added: the findings the runner added from its problems; what a
 // reviewer took up while it was handed the leads, before 2026-11-20, is in
-// taken_lead and not counted) and how sessions marked those (Fixed: fixed
-// or confirmed; Rejected). For the check of findings (Check "verify") Confirmed, Refuted
+// taken_lead and not counted) and how sessions marked those (Fixed: fixed,
+// or confirmed and not filed; Filed; Rejected). For the check of findings (Check "verify") Confirmed, Refuted
 // and Unsupported are the verdicts it gave, and how they match what the
 // session did with the same findings: refuted ones it fixed or confirmed
 // anyway (RefutedHeld) and confirmed ones it rejected (ConfirmedRejected),
@@ -1008,6 +1008,11 @@ type AgainHelperStat struct {
 	// they stand unsupported).
 	Reasked    int `json:"reasked,omitempty"`
 	Overturned int `json:"overturned,omitempty"`
+	// Filed: findings a session filed instead of fixing (findingFiled), apart
+	// from Fixed; RefutedFiled the same among the refuted, apart from
+	// RefutedHeld.
+	Filed        int `json:"filed,omitempty"`
+	RefutedFiled int `json:"refuted_filed,omitempty"`
 }
 
 // againHelperStats is the helpers' record since then, over the projects the
@@ -1060,24 +1065,27 @@ func (s *Service) againHelperStats(ctx context.Context, ivis string, iargs []any
 	// The findings that name a check, and how sessions marked them: the
 	// check names are read in Go (PanelChecksOf), from the lead column.
 	// #nosec G202 -- fixed conditions; values are bound
-	rows, err = s.db.R.QueryContext(ctx, `SELECT f.lead, f.state`+from+`
+	rows, err = s.db.R.QueryContext(ctx, `SELECT f.lead, f.state, `+findingFiledSQL+from+`
 		JOIN code_audit_findings f ON f.audit_id = a.id WHERE `+ivis+` AND a.created_at >= ? AND f.lead != ''`, args...)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		var lead, state string
-		if err := rows.Scan(&lead, &state); err != nil {
+		var filed bool
+		if err := rows.Scan(&lead, &state, &filed); err != nil {
 			_ = rows.Close()
 			return nil, err
 		}
 		for _, name := range PanelChecksOf(lead) {
 			st := get(name)
 			st.Added++
-			switch state {
-			case "fixed", "confirmed":
+			switch {
+			case filed:
+				st.Filed++
+			case state == "fixed" || state == "confirmed":
 				st.Fixed++
-			case "rejected":
+			case state == "rejected":
 				st.Rejected++
 			}
 		}
@@ -1101,15 +1109,15 @@ func (s *Service) againHelperStats(ctx context.Context, ivis string, iargs []any
 	// The check of findings' verdicts are on the reviewer's findings: a
 	// panel finding's verdict is its second read's, counted with its check.
 	// #nosec G202 -- fixed conditions; values are bound
-	rows, err = s.db.R.QueryContext(ctx, `SELECT f.verdict, count(*), sum(f.state IN ('fixed', 'confirmed')), sum(f.state = 'rejected')`+from+`
+	rows, err = s.db.R.QueryContext(ctx, `SELECT f.verdict, count(*), sum(`+againHeldSQL+`), sum(f.state = 'rejected'), sum(`+findingFiledSQL+`)`+from+`
 		JOIN code_audit_findings f ON f.audit_id = a.id WHERE `+ivis+` AND a.created_at >= ? AND f.verdict != '' AND f.lead = '' GROUP BY 1`, args...)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		var verdict string
-		var n, held, rejected int
-		if err := rows.Scan(&verdict, &n, &held, &rejected); err != nil {
+		var n, held, rejected, filed int
+		if err := rows.Scan(&verdict, &n, &held, &rejected, &filed); err != nil {
 			_ = rows.Close()
 			return nil, err
 		}
@@ -1118,7 +1126,7 @@ func (s *Service) againHelperStats(ctx context.Context, ivis string, iargs []any
 		case VerdictConfirmed:
 			st.Confirmed, st.ConfirmedRejected = n, rejected
 		case VerdictRefuted:
-			st.Refuted, st.RefutedHeld = n, held
+			st.Refuted, st.RefutedHeld, st.RefutedFiled = n, held, filed
 		case VerdictUnsupported:
 			st.Unsupported = n
 		}

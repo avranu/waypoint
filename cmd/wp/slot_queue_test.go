@@ -33,6 +33,9 @@ func sqArgs(t *testing.T) {
 
 const sqCmd = "go test ./x"
 
+// sqRun is a run of the space-separated words of s, keyed by s itself.
+func sqRun(s string) slotRun { return slotRun{s, slotShown(strings.Fields(s))} }
+
 func sqCLI() (*cli, *bytes.Buffer, *bytes.Buffer) {
 	var out, errb bytes.Buffer
 	return &cli{out: &out, err: &errb}, &out, &errb
@@ -379,13 +382,13 @@ func TestSlotShortRunSkipsItsWorktreesLongRun(t *testing.T) {
 	sqRepo(t)
 	sqSeed(t, "tests", "make check", 1800, 3)
 	c, _, _ := sqCLI()
-	_, long, err := c.takeSlotFor(context.Background(), "tests", 4, "make check")
+	_, long, err := c.takeSlotFor(context.Background(), "tests", 4, sqRun("make check"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	ch := make(chan sqTake, 1)
 	go func() {
-		_, rel, err := c.takeSlotFor(context.Background(), "tests", 4, "go test ./x")
+		_, rel, err := c.takeSlotFor(context.Background(), "tests", 4, sqRun("go test ./x"))
 		ch <- sqTake{rel, err}
 	}()
 	short := sqGot(t, ch)

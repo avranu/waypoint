@@ -163,6 +163,11 @@ The CI board (WP-225): Forgejo Actions on the attached repos, with ETAs:
                                       time, merges and time per merge; the last 7 days against the 7 before;
                                       each full-tier job's p50 now and before (?repo=OWNER/NAME, ?days=N
                                       up to 730, default 30; ?bucket=day|week; ?format=text: wp ci history)
+    GET  /ci/line                     each merge line (WP-1658): its armed pull requests in order with their
+                                      babysit and live stack or batch; per UTC day the stacks and batches
+                                      started, by state and why they ended, merges and how many used one,
+                                      full-tier runs per merge (?repo=OWNER/NAME, ?days=N up to 90,
+                                      default 7; ?format=text: wp ci line)
     GET  /ci/tests                    from the backend test jobs' evidence (WP-704): flaky tests (passed and
                                       failed on one commit, with a score), the slowest tests and packages,
                                       tests failing on the default branch (?repo, ?view=flaky|slow|failing,
@@ -717,6 +722,11 @@ differences (a message written again with more tokens). Cost is API-equivalent, 
     GET  /usage/transcript?session=ID&file=main|PATH&machine=&user=&gen=   one file's JSONL, whole lines in order;
                                     a person only (an agent's shell is refused). A stored piece that fails its
                                     check after bytes went out breaks the connection instead of ending the body
+    POST /slot-holds?machine=&pending=&oldest=&dropped=   {"holds":[...]} up to 500 test slot holds a machine recorded
+                                    (WP-1646); pending, oldest (queued_at ms) and dropped are the machine's outbox state, kept
+                                    even when the batch is refused. Answers {"stored","duplicate","rejected"}; an id seen before is a duplicate
+    GET  /slot-holds?since=&until=&machine=&user=&limit=   the holds, oldest first (queued_at unix ms; limit up to 20000; past it the newest are kept);
+                                    yours, admins: user=NAME or all
     GET  /usage/warm?days=28&user=   keep-warm decisions per class of wait (WP-1000): pings, compactions,
                                     cools, what became of the sessions (used within the hour, used again,
                                     cleared, ended, open) and the shares a ping and a compaction need to pay
@@ -1101,7 +1111,8 @@ steers or clears one in effect.
                                      state,gate,armed}}
     PATCH /projects/{key}/repos/{id} {review_gate: bool, gate_severity: "P0".."P3"|critical..low} (owners)
     PATCH /projects/{key}/repos/{id} {auto_merge: bool, required_checks: [..], review_wait_minutes: 0..1440,
-                                     quiet_minutes: 0..1440, external_reviewers: [login|context]} (owners;
+                                     quiet_minutes: 0..1440, external_reviewers: [login|context],
+                                     line_candidates: bool (the merge line tests on a candidate branch)} (owners;
                                      WP-133). auto_merge arms every open non-draft pull request (not forks,
                                      release PRs, do-not-merge or wip); off takes off only its own arming.
                                      The repo list returns the same fields

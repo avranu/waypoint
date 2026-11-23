@@ -26,7 +26,7 @@ const (
 	hookCommand = "hook claude-report" // Stop, SessionEnd: report usage, pause the clock
 	hookResume  = "hook claude-resume" // UserPromptSubmit: restart the clock
 	hookEvent   = "hook claude-event"  // everything else: sessions and requests (WP-D16)
-	hookNudge   = "hook claude-nudge"  // PreToolUse(Bash|Read): the better tool, in one line (WP-47); notes a poll of a running background task (WP-191); never refuses (WP-1411)
+	hookNudge   = "hook claude-nudge"  // PreToolUse(Bash|Read): the better tool, in one line (WP-47); notes a poll of a running background task (WP-191); lets a Read of a project, task or scratchpad picture through unasked (WP-1137); never refuses (WP-1411)
 	hookGate    = "hook claude-gate"   // PreToolUse(Agent): forks, depth, width, model (WP-143); holds a start while Claude Code's agent limit is reached (WP-1443)
 	hookBurn    = "hook claude-burn"   // PostToolUse(all): silent unless the tree burns above $100/h (WP-144)
 	hookGuard   = "hook claude-guard"  // PreToolUse(Bash|Write|Edit|web): refuses risky calls in unattended sessions (WP-270), and the nudge refusals in every session (WP-1411)
@@ -103,7 +103,7 @@ var claudeHooks = []claudeHook{
 	{event: "ConfigChange", command: hookEvent, opts: hookOpts{async: true}},
 	{event: "InstructionsLoaded", command: hookEvent, opts: hookOpts{async: true}},
 	{event: "PostModelSwitch", command: hookEvent, opts: hookOpts{async: true}},
-	{event: "PreToolUse", command: hookNudge, opts: hookOpts{matcher: "Bash|Read|Monitor", timeout: hookNudgeTimeout}}, // no network; Read for big whole-file reads (WP-145) and task output (WP-191); Monitor by name, or a Bash matcher gets it as a Bash call (WP-1443)
+	{event: "PreToolUse", command: hookNudge, opts: hookOpts{matcher: "Bash|Read|Monitor", timeout: hookNudgeTimeout}}, // no network; Read for big whole-file reads (WP-145), task output (WP-191) and the pictures it lets through unasked (WP-1137); Monitor by name, or a Bash matcher gets it as a Bash call (WP-1443)
 	{event: "PreToolUse", command: hookGate, opts: hookOpts{matcher: "Agent|Task", timeout: hookGateTimeout}},          // local only; refuses in every session
 	// The guard: local only, no subprocess; refuses risky calls in unattended sessions (WP-270, WP-ADR10) and the nudge refusals in every session (WP-1411).
 	{event: "PreToolUse", command: hookGuard, opts: hookOpts{matcher: "Bash|Write|Edit|MultiEdit|NotebookEdit", timeout: hookGuardTimeout}},
@@ -111,6 +111,8 @@ var claudeHooks = []claudeHook{
 	{event: "PostToolUse", command: hookBurn, opts: hookOpts{timeout: 20}},
 	// The pause copy: async, asks the server at most every 30 s (WP-146).
 	{event: "PostToolUse", command: hookPause, opts: hookOpts{async: true}},
+	// Foreground, since it answers the agent: after a Bash call that starts a wait, the work to do meanwhile (WP-1571); silent for any other call, and fails open.
+	{event: "PostToolUse", command: hookWait, opts: hookOpts{matcher: "Bash", timeout: hookWaitTimeout}},
 }
 
 // hookMarker finds our entries when removing them, whichever of the hooks.
@@ -159,7 +161,7 @@ report. Without a server answer a prompt reads as a person's. --uninstall remove
 			}},
 		{name: "claude-push", hidden: true, summary: "pushes an ended session's commits (its SessionEnd hook starts it, WP-843)",
 			run: hookClaudePush},
-		{name: "claude-nudge", hidden: true, summary: "the Bash nudges (run by Claude Code): names the better tool in one line",
+		{name: "claude-nudge", hidden: true, summary: "the Bash and Read nudges (run by Claude Code): names the better tool in one line; lets a Read of the project's pictures through unasked",
 			run: func(c *cli, args []string) error {
 				hookClaudeNudge(c, os.Stdin, c.out)
 				return nil // never blocks, never fails
@@ -183,6 +185,11 @@ report. Without a server answer a prompt reads as a person's. --uninstall remove
 			run: func(c *cli, args []string) error {
 				hookClaudeSlash(c, os.Stdin, c.out)
 				return nil // never fails
+			}},
+		{name: "claude-wait", hidden: true, summary: "the wait hook (run by Claude Code): after a slow Bash call, names the work to do meanwhile",
+			run: func(c *cli, args []string) error {
+				hookClaudeWait(c, os.Stdin, c.out)
+				return nil // fails quiet
 			}},
 		{name: "claude-pause", hidden: true, summary: "the pause pull (run by Claude Code): keeps a local copy of the person's session pause",
 			run: func(c *cli, args []string) error {
@@ -261,7 +268,7 @@ func hookClaude(c *cli, args []string) error {
 // usage hooks and the status line. Bump it whenever they change (the test
 // TestHookSchemaFollowsTheHooks fails until it is): hooks that an older wp
 // installed then bring themselves up to date the next time one runs.
-const hookSchema = 19
+const hookSchema = 20
 
 // hookRefreshEvery is how often a hook may try to bring the hooks up to date.
 const hookRefreshEvery = 24 * time.Hour

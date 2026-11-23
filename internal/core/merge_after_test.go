@@ -233,7 +233,7 @@ func TestMergeAfterNotUpdatedWhileWaiting(t *testing.T) {
 	}
 	se.sg.setChecks(head, CommitCheck{Name: "ci / backend (pull_request)", State: CheckSuccess})
 	se.poll()
-	se.s.maybeAutoMerge(se.ctx, id)
+	se.inLine(id)
 	if len(se.sg.merged()) != 0 || se.sg.updated() != 0 {
 		t.Fatalf("merges %+v, updates %d", se.sg.merged(), se.sg.updated())
 	}
@@ -242,7 +242,7 @@ func TestMergeAfterNotUpdatedWhileWaiting(t *testing.T) {
 		t.Fatal(err)
 	}
 	se.s.Wait()
-	se.s.maybeAutoMerge(se.ctx, id)
+	se.inLine(id)
 	if se.sg.updated() != 1 {
 		t.Fatalf("updates %d after the wait dropped", se.sg.updated())
 	}

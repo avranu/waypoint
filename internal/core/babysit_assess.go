@@ -334,12 +334,9 @@ func (s *Service) takeUpHeldComments(ctx context.Context, b *Babysit, pr *PullRe
 			s.setState(ctx, b, pr, BabysitWatching, fmt.Sprintf("waiting for round %d's push to arrive", b.Round))
 			return true
 		}
-	} else if wait := s.roundTurn(ctx, pr); wait != "" {
-		s.setState(ctx, b, pr, BabysitWatching, wait)
-		return true
 	}
 	why := "an earlier round left " + joinAnd(held) + " for a person"
-	s.babysitRoundBy(ctx, b, pr, nil, false, held, nil, &roundPlan{rung: rungAssessor, why: why}, false)
+	s.babysitRoundBy(ctx, b, pr, nil, false, held, nil, &roundPlan{rung: rungAssessor, why: why})
 	return true
 }
 
@@ -385,7 +382,7 @@ func (s *Service) parkBabysit(ctx context.Context, b *Babysit, pr *PullRequest, 
 	about := parkSubject(failed, conflict, comments, findings)
 	failed = parkLifts(failed, conflict, comments, findings)
 	s.leaveQueue(ctx, pr.ID)
-	s.nudgeQueue(ctx, pr)
+	s.nudgeLine(ctx, pr)
 	r := lastRound(b)
 	if r == nil {
 		s.setState(ctx, b, pr, BabysitNeedsPerson, parkWait+why)

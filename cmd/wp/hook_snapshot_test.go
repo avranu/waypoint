@@ -21,7 +21,7 @@ import (
 
 // literalSlug writes out what Claude Code does to a path to name its
 // project directory (every non-alphanumeric byte becomes a dash), apart from
-// the code under test, so a wrong memorySlug fails.
+// the code under test, so a wrong projectDirName fails.
 func literalSlug(p string) string {
 	return strings.Map(func(r rune) rune {
 		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {

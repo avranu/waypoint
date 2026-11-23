@@ -111,15 +111,10 @@ func gateOutput(mode string, problems []string) []byte {
 		return nil
 	}
 	text := strings.Join(problems, " ")
-	h := map[string]string{"hookEventName": "PreToolUse"}
 	if mode == "deny" {
-		h["permissionDecision"] = "deny"
-		h["permissionDecisionReason"] = text
-	} else {
-		h["additionalContext"] = text
+		return preToolReply("deny", text, "")
 	}
-	b, _ := json.Marshal(map[string]any{"hookSpecificOutput": h})
-	return append(b, '\n')
+	return preToolReply("", "", text)
 }
 
 // transcriptTail reads the caller's current context (input + cache reads +

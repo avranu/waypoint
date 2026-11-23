@@ -13,6 +13,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/expfmt"
+
+	"git.jmann.me/claude/waypoint/internal/core/meaning"
 )
 
 // `wp server status|log|metrics` (WP-375): what agents read from production
@@ -64,7 +66,7 @@ type ServerStatus struct {
 	AIKeys      []AIKeyDay         `json:"ai_keys"`
 	// Meaning is the meaning service as its circuit breaker sees it
 	// (WP-1602); absent when none is configured.
-	Meaning *MeaningHealth `json:"meaning,omitempty"`
+	Meaning *meaning.Health `json:"meaning,omitempty"`
 	// Warnings is the last hour's warnings and errors, counted by message,
 	// most first.
 	Warnings []LogCount `json:"warnings"`
@@ -186,8 +188,7 @@ func (s *Service) ServerStatus(ctx context.Context, actor *Actor) (*ServerStatus
 		s.log.WarnContext(ctx, "server status: agent events", "err", err)
 	}
 	out.AIKeys = s.aiKeyDays(ctx)
-	if m, ok := s.Meaning.(interface{ Health() MeaningHealth }); ok {
-		h := m.Health()
+	if h, ok := meaning.HealthOf(s.Meaning); ok {
 		out.Meaning = &h
 	}
 	if s.cfg.Logs != nil {

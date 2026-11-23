@@ -145,16 +145,10 @@ func guardOutput(mode string, h *guardHit) []byte {
 	if h == nil || mode == "off" {
 		return nil
 	}
-	text := h.message()
-	o := map[string]string{"hookEventName": "PreToolUse"}
 	if mode == "deny" {
-		o["permissionDecision"] = "deny"
-		o["permissionDecisionReason"] = text
-	} else {
-		o["additionalContext"] = text
+		return preToolReply("deny", h.message(), "")
 	}
-	b, _ := json.Marshal(map[string]any{"hookSpecificOutput": o})
-	return append(b, '\n')
+	return preToolReply("", "", h.message())
 }
 
 // contained: the session runs inside a Contained sandbox (WP-473), so the

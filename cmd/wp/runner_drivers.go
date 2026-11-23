@@ -255,9 +255,10 @@ func (c *callClock) spent() string {
 // ---- Claude Code ----
 
 type claudeEvent struct {
-	Type    string `json:"type"`
-	Subtype string `json:"subtype"`
-	Message struct {
+	Type      string `json:"type"`
+	Subtype   string `json:"subtype"`
+	SessionID string `json:"session_id"`
+	Message   struct {
 		Content []struct {
 			Type  string         `json:"type"`
 			Text  string         `json:"text"`
@@ -281,7 +282,10 @@ type claudeEvent struct {
 }
 
 func claudeDriver(in agentJob, prompt, work string) (*cliDriver, error) {
-	args := []string{"-p", "--output-format", "stream-json", "--verbose", "--no-session-persistence",
+	// No --no-session-persistence: with it Claude Code writes no transcript,
+	// and nothing of the job survives it (the transcript archive, WP-1466,
+	// has nothing to read, and a round that timed out leaves no trace).
+	args := []string{"-p", "--output-format", "stream-json", "--verbose",
 		"--setting-sources", "user", "--strict-mcp-config", "--settings", unattendedSettings}
 	if in.Model != "" {
 		args = append(args, "--model", in.Model)
@@ -306,12 +310,17 @@ func claudeDriver(in agentJob, prompt, work string) (*cliDriver, error) {
 		args = append(args, "--permission-mode", "acceptEdits")
 	}
 	var res *claudeEvent
-	d := &cliDriver{args: args, stdin: prompt, isStream: true, calls: &callClock{}}
+	// Marked so the nudge hook lets no picture through for it (WP-1137): a
+	// job reads what its grants allow, and other jobs share the machine.
+	d := &cliDriver{args: args, stdin: prompt, isStream: true, calls: &callClock{}, env: map[string]string{runnerJobEnv: "1"}}
 	d.line = func(line []byte, out *logSink) {
 		var ev claudeEvent
 		if json.Unmarshal(line, &ev) != nil {
 			fmt.Fprintf(out, "%s\n", line)
 			return
+		}
+		if ev.SessionID != "" {
+			d.sessionID = ev.SessionID // the transcript's name, which the job's result carries
 		}
 		switch ev.Type {
 		case "assistant":

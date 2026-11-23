@@ -297,6 +297,8 @@ type MergePolicyInput struct {
 	ReviewWaitMinutes *int
 	QuietMinutes      *int
 	ExternalReviewers *[]string
+	// LineCandidates turns the merge line's candidate branches on or off.
+	LineCandidates *bool
 }
 
 // SetRepoMergePolicy changes an attached repo's merge policy (owners). Its
@@ -335,6 +337,10 @@ func (s *Service) SetRepoMergePolicy(ctx context.Context, actor *Actor, projectR
 		sets, args = append(sets, col+" = ?"), append(args, string(b))
 		changes = append(changes, what+": "+cmp(strings.Join(l, ", "), "none"))
 		return nil
+	}
+	if in.LineCandidates != nil {
+		sets, args = append(sets, "line_candidates = ?"), append(args, boolInt(*in.LineCandidates))
+		changes = append(changes, map[bool]string{true: "turned on", false: "turned off"}[*in.LineCandidates]+" merge line candidates")
 	}
 	scopeAt := -1
 	if in.AutoMerge != nil {
