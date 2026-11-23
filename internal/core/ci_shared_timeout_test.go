@@ -272,3 +272,30 @@ func TestSelfStoppedFromChecks(t *testing.T) {
 		t.Fatalf("not self-stopped: %v", self)
 	}
 }
+
+// The merge line can't be read when the base moves on: the held pull request
+// isn't taken for the front, so its branch isn't brought up to date ahead of
+// #8 (audit 1520.3).
+func TestSharedTimeoutRetryWaitsOnAnUnreadableLine(t *testing.T) {
+	be, head7, _ := timeoutAtFront(t, func(be *bsEnv) {
+		be.otherTimeout(100, "d145047aaaa", "main", 2*time.Hour)
+		be.otherTimeout(101, "5555555bbbb", "#5", time.Hour)
+	})
+	if pr := be.pr(7); pr.QueuedAt != nil {
+		t.Fatalf("#7 still holds the line: %+v", pr)
+	}
+	be.sg.baseTip = "tip-2"
+	be.sg.behind = map[string]bool{head7: true}
+	restore := be.breakTable("branch_activity")
+	be.step()
+	restore()
+	if u := be.sg.updatedPRs(); len(u) != 0 {
+		t.Fatalf("updated %v without its place in the line", u)
+	}
+	if w := be.babysitOf(7).Wait; !strings.Contains(w, "couldn't be read") {
+		t.Fatalf("#7 waits %q", w)
+	}
+	if st := be.s.sharedTimeoutState(be.ctx, be.babysitOf(7)); st.Tries != 0 {
+		t.Fatalf("a try counted: %+v", st)
+	}
+}

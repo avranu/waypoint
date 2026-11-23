@@ -547,16 +547,19 @@ func (s *Service) pollCand(ctx context.Context, f *Forge, st *queueStack) candPo
 	if !ok {
 		return running
 	}
-	all, err := cl.CommitChecks(ctx, f, st.Repo, st.CommitSHA)
-	if err != nil {
-		return running
-	}
 	age := s.now().Sub(st.CreatedAt)
 	overdue := func(what string) candPoll {
 		if age >= stackRunMax {
 			return candPoll{state: candLost, reason: endLost, note: what + " after " + fmtMinutes(stackRunMax)}
 		}
 		return running
+	}
+	all, err := cl.CommitChecks(ctx, f, st.Repo, st.CommitSHA)
+	if err != nil {
+		// Unread, it is still running, but not for ever: a forge that never
+		// answers for this commit would hold the line behind it.
+		s.log.WarnContext(ctx, "read a candidate's checks", "candidate", st.ID, "err", err)
+		return overdue("its checks couldn't be read")
 	}
 	var checks []CommitCheck
 	for _, c := range dropSuperseded(all) {
@@ -1101,6 +1104,12 @@ func (s *Service) lineEjectAct(ctx context.Context, ls *lineState, a lineAction)
 func (s *Service) lineUpdateAct(ctx context.Context, ls *lineState, a lineAction) {
 	pr := ls.prs[a.PR]
 	if pr == nil {
+		return
+	}
+	if !s.lineHolds(ctx, ls.ref, pr.ID) {
+		// It left the line since the step read it (as in lineMergeAct): its
+		// branch isn't pushed to and its draft isn't marked ready.
+		s.log.InfoContext(ctx, "the front left the line before its update", "repo", pr.Repo, "base", pr.BaseRef, "pr", pr.Number)
 		return
 	}
 	// A draft Waypoint holds is marked ready first, so the update's push runs

@@ -236,7 +236,15 @@ func (s *Service) waitOnSharedTimeout(ctx context.Context, b *Babysit, pr *PullR
 			return true
 		}
 		defer s.queueLock(pr)()
-		if ahead, err := s.queueAhead(ctx, pr); err == nil && len(ahead) > 0 {
+		ahead, err := s.queueAhead(ctx, pr)
+		if err != nil {
+			// Its place unread, it isn't the front's to take: the branch
+			// stays as it is and the next look reads the line again.
+			s.log.WarnContext(ctx, "read the merge line for a shared timeout's retry", "pr", pr.ID, "err", err)
+			s.setState(ctx, b, pr, BabysitWatching, fmt.Sprintf("%s; %s moved on, so it is tried again on it at its turn (its place in the merge line couldn't be read; looking again)", what, base))
+			return true
+		}
+		if len(ahead) > 0 {
 			s.setState(ctx, b, pr, BabysitWatching, fmt.Sprintf("%s; %s moved on, so it is tried again on it at its turn, behind #%d", what, base, ahead[0].Number))
 			return true
 		}

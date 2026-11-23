@@ -884,7 +884,89 @@ func TestLineRejectedRerunIsNotARerun(t *testing.T) {
 	se2.setClock(se2.clockNow().Add(stackRunMax + time.Minute))
 	se2.line()
 	if sts := se2.stacks(); sts[0].RerunAt == 0 {
-		t.Errorf("a forge that refuses for good holds the front forever: %+v", sts[0])
+		t.Fatalf("a forge that refuses for good holds the front forever: %+v", sts[0])
+	}
+	se2.setClock(se2.clockNow().Add(lineRerunSettle + time.Minute))
+	se2.line()
+	if sts := se2.stacks(); !sts[0].Ended || sts[0].EndReason != endFailed {
+		t.Errorf("the failure didn't count after the run limit: %s ended %v %q", sts[0].State, sts[0].Ended, sts[0].EndReason)
+	}
+	if p := se2.pr(7); p.QueuedAt != nil {
+		t.Errorf("#7 still in the line after its candidate failed for good")
+	}
+}
+
+// checksErrForge can't read a commit's checks.
+type checksErrForge struct{ *shipForge }
+
+func (checksErrForge) CommitChecks(context.Context, *Forge, string, string) ([]CommitCheck, error) {
+	return nil, errors.New("forge down")
+}
+
+// A candidate whose checks can't be read is still running, and lost at the
+// run limit: a forge that never answers doesn't hold the line for ever.
+func TestLineCandidateWithUnreadableChecksIsLostAtTheLimit(t *testing.T) {
+	se := newStackEnv(t)
+	se.draftGreen(head7s, 5)
+	se.step()
+	se.line()
+	st := se.stacks()[0]
+	se.s.Forges = checksErrForge{se.sg}
+	if got := se.s.pollCand(se.ctx, se.f, st); got.state != candRunning {
+		t.Fatalf("poll %+v", got)
+	}
+	se.setClock(se.clockNow().Add(stackRunMax + time.Minute))
+	if got := se.s.pollCand(se.ctx, se.f, st); got.state != candLost || got.reason != endLost {
+		t.Errorf("after the run limit: %+v", got)
+	}
+}
+
+// The front left the line after the step read it: its branch isn't brought
+// up to date and its draft isn't marked ready (as for a merge).
+func TestLineUpdateActSkipsAFrontThatLeft(t *testing.T) {
+	se := newStackEnv(t)
+	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE project_repos SET line_candidates = 0`); err != nil {
+		t.Fatal(err)
+	}
+	se.sg.behind = map[string]bool{head7s: true}
+	se.draftGreen(head7s, 5)
+	pr := se.pr(7)
+	if pr.QueuedAt == nil {
+		se.s.joinLine(se.ctx, pr)
+		pr = se.pr(7)
+	}
+	ls, err := se.s.lineGather(se.ctx, lineOf(pr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	acts := planLine(ls.snap)
+	if len(acts) != 1 || acts[0].Kind != lineUpdate {
+		t.Fatalf("plan: %+v", acts)
+	}
+	before := len(se.sg.updatedPRs()) // the step that read its checks updated it once
+	se.s.leaveQueue(se.ctx, pr.ID)
+	se.s.lineAct(se.ctx, ls, acts[0])
+	se.s.Wait()
+	if u := se.sg.updatedPRs(); len(u) != before {
+		t.Errorf("updated after it left the line: %v", u)
+	}
+}
+
+// baseFailing with no stored tip of the base reads nothing failing; a tip
+// that can't be read is an error.
+func TestBaseFailingWithoutATipAndUnreadable(t *testing.T) {
+	se := newStackEnv(t)
+	se.draftGreen(head7s, 5)
+	pr := se.pr(7)
+	if _, err := se.s.db.W.ExecContext(se.ctx, `DELETE FROM branch_activity`); err != nil {
+		t.Fatal(err)
+	}
+	if tip, failing, err := se.s.baseFailing(se.ctx, pr); err != nil || tip != "" || len(failing) != 0 {
+		t.Errorf("no stored tip: %q %v %v", tip, failing, err)
+	}
+	defer se.breakTable("branch_activity")()
+	if tip, failing, err := se.s.baseFailing(se.ctx, pr); err == nil {
+		t.Errorf("an unreadable tip read as %q failing %v", tip, failing)
 	}
 }
 
