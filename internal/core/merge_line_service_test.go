@@ -341,3 +341,88 @@ func TestLineCandidateWithNoRunIsEnded(t *testing.T) {
 		t.Fatalf("ended %q and %q, want no_run", sts[0].EndReason, sts[1].EndReason)
 	}
 }
+
+// redBase gives main's tip a failed check for each name, as its push run
+// recorded them.
+func (se *stackEnv) redBase(names ...string) {
+	se.t.Helper()
+	pr := se.pr(7)
+	tip := cmp(se.sg.baseTip, "tip-1")
+	if _, err := se.s.db.W.ExecContext(se.ctx, `INSERT INTO branch_activity(forge_id, repo, branch, head_sha, pushed_at) VALUES (?, ?, 'main', ?, ?)
+		ON CONFLICT(forge_id, repo, branch) DO UPDATE SET head_sha = excluded.head_sha`, pr.ForgeID, pr.Repo, tip, se.clockNow().UnixMilli()); err != nil {
+		se.t.Fatal(err)
+	}
+	res, err := se.s.db.W.ExecContext(se.ctx, `INSERT INTO ci_heads(forge_id, repo, sha, state, seen_at) VALUES (?, ?, ?, 'failed', ?)`, pr.ForgeID, pr.Repo, tip, se.clockNow().UnixMilli())
+	if err != nil {
+		se.t.Fatal(err)
+	}
+	id, _ := res.LastInsertId()
+	for _, n := range names {
+		if _, err := se.s.db.W.ExecContext(se.ctx, `INSERT INTO ci_checks(head_id, name, state, updated_at) VALUES (?, ?, 'failed', ?)`, id, n, se.clockNow().UnixMilli()); err != nil {
+			se.t.Fatal(err)
+		}
+	}
+}
+
+// A job that runs only on main (advisories) fails on its tip: no head can
+// pass it, so the line tests the front alone and merges it on a pass.
+func TestLineBaseRedTestsTheFrontAlone(t *testing.T) {
+	se := newStackEnv(t)
+	se.redBase("ci / advisories (push)")
+	se.draftGreen(head7s, 5)
+	se.draftGreen(head8s, 7)
+	se.step()
+	se.line()
+	if got := strings.Join(se.madeHeads(), " "); got != "7" {
+		t.Fatalf("candidates made: %q, want the front alone", got)
+	}
+	se.stackRun(0, CheckSuccess, treeA, "7 "+head7s)
+	se.sg.trees = map[string]string{"3e7000000": treeA}
+	se.line()
+	se.editSkipped(head7s, 30)
+	se.step()
+	if m := se.sg.merged(); len(m) != 1 || m[0].HeadSHA != head7s {
+		t.Fatalf("merges %+v (%q)", m, se.babysitOf(7).Wait)
+	}
+}
+
+// A candidate that fails only the jobs that fail on main ends base_red: no
+// one is ejected, no round starts, the same heads aren't started again on
+// that tip, and the wait names the job.
+func TestLineBaseRedFailureOfTheBaseOnly(t *testing.T) {
+	se := newStackEnv(t)
+	se.redBase("ci / lint (push)") // no pull request job of that name: nothing fixes it
+	se.draftGreen(head7s, 5)
+	se.draftGreen(head8s, 7)
+	se.step()
+	se.line()
+	if got := strings.Join(se.madeHeads(), " "); got != "7" {
+		t.Fatalf("candidates made: %q", got)
+	}
+	se.stackRun(0, CheckSuccess, treeA, "7 "+head7s)
+	var checks []CommitCheck
+	for j, name := range []string{"ci / backend (push)", "ci / lint (push)", "ci / e2e (push)"} {
+		st := CheckSuccess
+		if j == 1 {
+			st = CheckFailed // the job that fails on main, and only it
+		}
+		checks = append(checks, CommitCheck{Name: name, State: st, ID: int64(700 + j), Description: "x"})
+	}
+	se.sg.setChecks(se.shas[0], checks...)
+	se.line()
+	se.step()
+	sts := se.stacks()
+	if sts[0].EndReason != endBaseRed || !sts[0].Ended {
+		t.Fatalf("#7's candidate: ended=%v %q", sts[0].Ended, sts[0].EndReason)
+	}
+	if b := se.babysitOf(7); b.JobID != 0 {
+		t.Errorf("#7 got a round: %q", b.Wait)
+	}
+	se.line()
+	if got := strings.Join(se.madeHeads(), " "); got != "7" {
+		t.Errorf("started again: %q", got)
+	}
+	if w := se.babysitOf(7).Wait; !strings.Contains(w, "is failing") || !strings.Contains(w, "lint") {
+		t.Errorf("#7 waits %q", w)
+	}
+}

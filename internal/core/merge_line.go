@@ -60,6 +60,7 @@ type candPoll struct {
 	// check: the failed check; k: the head a conflict names, and whether it
 	// doesn't merge onto the base alone either.
 	check  CommitCheck
+	failed []string // a candFailed's failed jobs (checkJob names)
 	k      int
 	onBase bool
 }
@@ -81,8 +82,12 @@ type lineState struct {
 	tip         string
 	frontBehind bool
 	dropped     []*PullRequest
-	// red: the checks failing on the base's tip, while nothing fixes it.
-	red string
+	// failing: the jobs failing on the base's tip (checkJob names), and red
+	// their text while the front isn't what fixes them.
+	failing map[string]bool
+	red     string
+	// redWaits: the front's candidate ended base_red on this tip.
+	redWaits bool
 }
 
 // lineMembers are the armed pull requests that hold a place in the line,
@@ -197,11 +202,9 @@ func (s *Service) lineGather(ctx context.Context, ref lineRef) (*lineState, erro
 	}
 	ls.snap.TipStale = false
 	if len(ls.order) > 0 {
+		ls.failing = failing
 		ls.snap.BaseRed = len(failing) > 0
 		ls.snap.FrontFixes = fixer != 0 && ls.order[0].ID == fixer
-		if ls.snap.BaseRed && !ls.snap.FrontFixes {
-			ls.red = failingJobs(failing)
-		}
 	}
 	if len(ls.order) > 0 {
 		front := ls.order[0]
@@ -221,9 +224,15 @@ func (s *Service) lineGather(ctx context.Context, ref lineRef) (*lineState, erro
 	}
 	ls.snap.Saturated = s.poolSaturated(ctx, ref.forge)
 	ls.snap.BatchDepth = s.lineBatchDepth(ctx, ref)
-	ls.snap.Tried = s.lineTried(ctx, ref)
+	ls.snap.Tried = s.lineTried(ctx, ref, ls.tip, ls.snap.BaseRed)
 	if err := s.lineCands(ctx, ls); err != nil {
 		return nil, err
+	}
+	if ls.snap.BaseRed && len(ls.snap.Entries) > 0 {
+		// The front's heads ended base_red on this tip (or failed): it waits
+		// for the base, not for a candidate.
+		ls.red = failingJobs(ls.failing)
+		ls.redWaits = ls.snap.Tried[candKey(entryHeads(ls.snap.Entries, 1))]
 	}
 	return ls, nil
 }
@@ -349,12 +358,17 @@ func (s *Service) lineBatchDepth(ctx context.Context, ref lineRef) int {
 	return 2
 }
 
-// lineTried: the head sets whose candidate ended on the heads' account.
-func (s *Service) lineTried(ctx context.Context, ref lineRef) map[string]bool {
+// lineTried: the head sets whose candidate ended on the heads' account, and,
+// while the base is red, those that ended base_red on the current tip.
+func (s *Service) lineTried(ctx context.Context, ref lineRef, tip string, baseRed bool) map[string]bool {
 	tried := map[string]bool{}
+	red := ""
+	if baseRed && tip != "" {
+		red = tip
+	}
 	rows, err := s.db.R.QueryContext(ctx, `SELECT heads FROM queue_stacks WHERE forge_id = ? AND repo = ? COLLATE NOCASE AND base_ref = ?
-		AND state IN (?, ?) AND ended_at > ? ORDER BY id DESC LIMIT ?`, ref.forge, ref.repo, ref.base, stackFailed, stackConflict,
-		s.now().Add(-lineTriedWithin).UnixMilli(), lineTriedMax)
+		AND (state IN (?, ?) OR (end_reason = ? AND base_sha = ? AND base_sha != '')) AND ended_at > ? ORDER BY id DESC LIMIT ?`, ref.forge, ref.repo, ref.base, stackFailed, stackConflict,
+		endBaseRed, red, s.now().Add(-lineTriedWithin).UnixMilli(), lineTriedMax)
 	if err != nil {
 		return tried
 	}
@@ -423,6 +437,12 @@ func (s *Service) lineCands(ctx context.Context, ls *lineState) error {
 			c.State = p.state
 			if p.state == candPassed {
 				st.State = stackPassed
+			}
+			if p.state == candFailed && len(p.failed) > 0 {
+				c.BaseOnly = true
+				for _, j := range p.failed {
+					c.BaseOnly = c.BaseOnly && ls.failing[j]
+				}
 			}
 			if p.state == candConflict {
 				c.ConflictPR = st.Heads[p.k].PRID
@@ -500,7 +520,13 @@ func (s *Service) pollCand(ctx context.Context, f *Forge, st *queueStack) candPo
 			if k > 0 {
 				return candPoll{state: candConflict, note: fmt.Sprintf("#%d (%s) doesn't merge cleanly onto %s", st.Heads[k].Number, short(st.Heads[k].SHA), headNames(st.Heads[:k])), check: c, k: k}
 			}
-			return candPoll{state: candFailed, note: c.Name + " failed", check: c}
+			var jobs []string
+			for _, f := range checks {
+				if f.State == CheckFailed {
+					jobs = append(jobs, checkJob(f.Name))
+				}
+			}
+			return candPoll{state: candFailed, note: c.Name + " failed", check: c, failed: jobs}
 		case CheckPending:
 			return overdue(c.Name + " is still running")
 		}
@@ -1022,10 +1048,10 @@ func lineWait(ls *lineState, i int, base string) string {
 		if i == 0 {
 			what = "tested on a candidate (" + cand.name() + "): passed; merging"
 		}
-	case ls.red != "":
-		what = base + " is failing (" + ls.red + "); waiting for a fix to merge"
 	case cand != nil:
 		what = "tested on a candidate (" + cand.name() + "): its run is going"
+	case i == 0 && ls.redWaits:
+		what = base + " is failing (" + ls.red + "); waiting for a fix to merge"
 	case i == 0 && ls.snap.Entries[0].FullPassed && ls.snap.Entries[0].OnTip:
 		what = "its full run passed; merging"
 	case i == 0 && ls.snap.Entries[0].OnTip && ls.snap.Entries[0].FullRunning:

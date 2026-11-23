@@ -57,6 +57,9 @@ type lineCand struct {
 	Reran bool
 	// ConflictPR: the pull request whose head didn't merge (candConflict).
 	ConflictPR int64
+	// BaseOnly: its run failed and every job that failed in it also fails on
+	// the base's tip.
+	BaseOnly bool
 }
 
 // lineSnap is a line as read once.
@@ -70,12 +73,14 @@ type lineSnap struct {
 	// for its first BatchDepth places instead of one per place.
 	Saturated  bool
 	BatchDepth int
-	// BaseRed: jobs fail on the base's tip. FrontFixes: the front is the
-	// pull request that fixes them (lineFixer's).
+	// BaseRed: jobs fail on the base's tip; the line tests one place at a
+	// time. FrontFixes: the front is the pull request that fixes them
+	// (lineFixer's), so its failures are its own.
 	BaseRed    bool
 	FrontFixes bool
 	// Tried: candKey of every (heads) set whose candidate ended on the
-	// heads' account (failed, conflict). The same heads aren't run again.
+	// heads' account (failed, conflict), and, while BaseRed, of those that
+	// ended base_red on this tip. The same heads aren't run again.
 	Tried map[string]bool
 }
 
@@ -94,7 +99,7 @@ const (
 	endDuplicate   = "duplicate"
 	endBatchSplit  = "batch_split"
 	endLeft        = "left"
-	endBaseRed     = "base_red" // failed because the base's tip fails: not the heads' account
+	endBaseRed     = "base_red" // failed only what the base's tip fails: not the heads' account, tried again once the tip moves or turns green
 )
 
 type lineActionKind string
@@ -162,10 +167,13 @@ func planLine(s lineSnap) []lineAction {
 		return nil
 	}
 	var acts []lineAction
-	// A base whose tip fails and that nothing in the line fixes: candidates
-	// would all fail for its reason. Nothing is started, rerun or ejected for
-	// a failure; running candidates finish (a pass still merges).
-	redHold := s.BaseRed && !s.FrontFixes
+	// While the base's tip fails, the line tests one place at a time and the
+	// candidate's own run says whether the base's failure matters: a pass
+	// merges, a failure of only what fails on the base ends as base_red (no
+	// one is ejected) and the line waits for the base. No hold is placed on
+	// the base's status alone: jobs that run only on the base (advisories,
+	// scheduled runs) can't be passed by any head, so such a hold would
+	// never lift.
 	// by[n]: the live candidate that tests exactly the first n places.
 	by := map[int]lineCand{}
 	for _, c := range s.Cands {
@@ -175,10 +183,6 @@ func planLine(s lineSnap) []lineAction {
 			acts = append(acts, lineAction{Kind: lineEnd, Cand: c.ID, Why: "the line or the base changed under it", End: endLineChanged})
 		case c.State == candLost:
 			acts = append(acts, lineAction{Kind: lineEnd, Cand: c.ID, Why: "its run never came or never ended", End: endLost})
-		case c.State == candFailed && redHold:
-			// It failed for the base's reason: nobody is ejected for it, and
-			// it isn't counted against its heads.
-			acts = append(acts, lineAction{Kind: lineEnd, Cand: c.ID, Why: "the base's tip fails and nothing in the line fixes it", End: endBaseRed})
 		default:
 			if _, dup := by[n]; dup {
 				acts = append(acts, lineAction{Kind: lineEnd, Cand: c.ID, Why: "another candidate tests the same places", End: endDuplicate})
@@ -204,19 +208,10 @@ func planLine(s lineSnap) []lineAction {
 		}
 	}
 
-	if redHold {
-		// A head that doesn't merge is its own fault, base red or not.
-		for n := 1; n <= len(s.Entries); n++ {
-			if c, ok := by[n]; ok && c.State == candConflict {
-				return append(acts, lineAction{Kind: lineEject, PR: c.ConflictPR, Cand: c.ID, Conflict: true, Why: "its head doesn't merge onto the pull requests ahead of it or the base"})
-			}
-		}
-		return acts
-	}
-
 	// A candidate that failed or didn't merge says who leaves. Only the
 	// lowest one is read: those above it tested the same heads and more.
 	ejected := false
+	redEnded := map[string]bool{} // heads that ended base_red now: not started again in this plan
 	for n := 1; n <= len(s.Entries) && !ejected; n++ {
 		c, ok := by[n]
 		if !ok || c.State == candRunning {
@@ -226,6 +221,13 @@ func planLine(s lineSnap) []lineAction {
 		case c.State == candConflict:
 			acts = append(acts, lineAction{Kind: lineEject, PR: c.ConflictPR, Cand: c.ID, Conflict: true, Why: "its head doesn't merge onto the pull requests ahead of it or the base"})
 			ejected = true
+		case c.State == candFailed && c.BaseOnly && s.BaseRed && !s.FrontFixes:
+			// Only what fails on the base failed: not the heads' account. It
+			// ends, the same heads aren't started again on this tip, and the
+			// line waits for the base.
+			acts = append(acts, lineAction{Kind: lineEnd, Cand: c.ID, Why: "it failed only what fails on the base's tip", End: endBaseRed})
+			delete(by, n)
+			redEnded[candKey(c.Heads)] = true
 		case c.State == candFailed && !c.Reran:
 			acts = append(acts, lineAction{Kind: lineRerun, Cand: c.ID})
 			by[n] = lineCand{ID: c.ID, State: candRunning}
@@ -273,11 +275,11 @@ func planLine(s lineSnap) []lineAction {
 		}
 	}
 	if s.BaseRed {
-		places = min(places, 1) // the fix alone: a failure on it is its own
+		places = min(places, 1) // one place at a time while the base is red (a batch is the front alone)
 	}
 	start := func(n int) bool {
 		heads := entryHeads(s.Entries, n)
-		if _, live := by[n]; live || s.Tried[candKey(heads)] {
+		if _, live := by[n]; live || s.Tried[candKey(heads)] || redEnded[candKey(heads)] {
 			return false
 		}
 		acts = append(acts, lineAction{Kind: lineStart, Heads: heads})
