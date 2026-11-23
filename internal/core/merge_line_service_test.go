@@ -296,18 +296,21 @@ func TestLineNeedsPersonStaysOut(t *testing.T) {
 	se.poll()
 	id := se.pr(5).ID
 	se.s.Wait()
-	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE babysits SET state = ? WHERE pr_id = ? AND ended_at IS NULL`, BabysitNeedsPerson, id); err != nil {
-		t.Fatal(err)
+	if b, _ := se.s.activeBabysit(se.ctx, se.s.db.R, id); b == nil {
+		if _, err := se.s.StartBabysit(se.ctx, se.admin, id, BabysitInput{Via: "ship"}); err != nil {
+			t.Fatal(err)
+		}
+		se.s.Wait()
 	}
-	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE pull_requests SET queued_at = NULL WHERE id = ?`, id); err != nil {
+	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE babysits SET state = ? WHERE pr_id = ? AND ended_at IS NULL`, BabysitNeedsPerson, id); err != nil {
 		t.Fatal(err)
 	}
 	pr, err := se.s.prByID(se.ctx, se.s.db.R, id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if se.s.joinUnbabysat(se.ctx, pr) || pr.QueuedAt != nil {
-		t.Fatalf("a pull request that needs a person joined the line")
+	if b, _ := se.s.activeBabysit(se.ctx, se.s.db.R, id); b == nil || b.State != BabysitNeedsPerson {
+		t.Fatalf("babysit %+v", b)
 	}
 	members, err := se.s.lineMembers(se.ctx, lineOf(pr))
 	if err != nil || len(members) != 0 {
