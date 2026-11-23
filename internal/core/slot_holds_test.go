@@ -252,16 +252,17 @@ func TestSlotHoldRowRefusals(t *testing.T) {
 		"negative slot":       two(func(h *SlotHold) { n := -1; h.Slot = &n }),
 		"negative median":     two(func(h *SlotHold) { h.MedianSecs = &neg }),
 		"65 waiters":          two(func(h *SlotHold) { h.Waiters = make([]SlotWaiter, 65) }),
+		"id over 64":          two(func(h *SlotHold) { h.ID = strings.Repeat("i", 65) }),
 		"bad class":           two(func(h *SlotHold) { h.Class = "" }),
 	} {
 		if _, _, _, got := slotHoldRow(h, now); got {
 			t.Errorf("%s: accepted", name)
 		}
 	}
-	// the edges are accepted, and an id is clipped to 64 characters
+	// the edges are accepted, and a 64-character id is kept whole
 	edge := two(func(h *SlotHold) {
 		h.QueuedAt, h.WaitMS, h.HoldMS, h.TreeWaitMS = now+int64(24*time.Hour/time.Millisecond), slotDurMaxMS, slotDurMaxMS, slotDurMaxMS
-		h.ID = strings.Repeat("i", 70)
+		h.ID = strings.Repeat("i", 64)
 		h.Waiters = make([]SlotWaiter, 64)
 	})
 	got, _, _, accepted := slotHoldRow(edge, now)

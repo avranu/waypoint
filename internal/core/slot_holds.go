@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Test slot holds (WP-1646): each wp that runs tests in a per-machine slot
@@ -99,6 +100,9 @@ func slotWriter(actor *Actor) (int64, error) {
 
 // slotHoldRow validates h and returns its cleaned form (ok false: refused).
 func slotHoldRow(h SlotHold, now int64) (SlotHold, []byte, []byte, bool) {
+	if utf8.RuneCountInString(strings.TrimSpace(h.ID)) > 64 {
+		return h, nil, nil, false // cutting an id could merge two holds into one
+	}
 	h.ID, h.Name = clip(h.ID, 64), clip(h.Name, 100)
 	h.Repo, h.Tree, h.Cmd = clip(h.Repo, 1024), clip(h.Tree, 1024), clip(h.Cmd, 4000)
 	h.Policy = clip(h.Policy, 60)

@@ -259,6 +259,7 @@ func (g replayGroup) threshold() time.Duration {
 // was not recorded (or is overridden) has the slot order's long slots.
 func replayGroups(holds []core.SlotHold, slotsFlag int, since time.Time) []replayGroup {
 	idx := map[[3]string]int{}
+	hist := map[[2]string][]core.SlotHold{} // production's history ignores the policy
 	var gs []replayGroup
 	for _, h := range holds {
 		k := [3]string{h.Machine, h.Name, h.Policy}
@@ -271,7 +272,8 @@ func replayGroups(holds []core.SlotHold, slotsFlag int, since time.Time) []repla
 		g := &gs[i]
 		if h.QueuedAt < since.UnixMilli() {
 			if !h.GaveUp {
-				g.Hist = append(g.Hist, h)
+				hk := [2]string{h.Machine, h.Name}
+				hist[hk] = append(hist[hk], h)
 			}
 			continue
 		}
@@ -295,6 +297,9 @@ func replayGroups(holds []core.SlotHold, slotsFlag int, since time.Time) []repla
 		}
 	}
 	gs = kept
+	for i := range gs {
+		gs[i].Hist = hist[[2]string{gs[i].Machine, gs[i].Name}]
+	}
 	for i := range gs {
 		sort.SliceStable(gs[i].Jobs, func(a, b int) bool { return gs[i].Jobs[a].QueuedAt < gs[i].Jobs[b].QueuedAt })
 		if slotsFlag > 0 {
@@ -367,7 +372,7 @@ func cmdSlotReplay(c *cli, args []string) error {
 	} else if len(pos) > 0 {
 		return c.usage("wp slot replay takes no arguments")
 	}
-	if *days <= 0 || *threshold <= 0 || *share <= 0 || *share > 1 || *slots < 0 {
+	if *days <= 0 || *threshold <= 0 || math.IsNaN(*share) || *share <= 0 || *share > 1 || *slots < 0 {
 		return c.usage("--days and --threshold are positive, --long-share is above 0 up to 1, --slots is not negative")
 	}
 	if *local && *machine != "" && *machine != machineName() {

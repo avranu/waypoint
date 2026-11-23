@@ -315,8 +315,14 @@ func TestReplayGroupsHistoryAndRecordedPolicy(t *testing.T) {
 		t.Errorf("no policy %+v", none)
 	}
 	// --slots overrides the count, and the long slots follow the rule
-	if g := replayGroups(holds, 6, since); g[0].Slots != 6 && g[1].Slots != 6 || g[1].LongSlots != 3 && g[0].LongSlots != 3 {
-		t.Errorf("--slots 6: %+v", g)
+	g6 := replayGroups(holds, 6, since)
+	if len(g6) != len(gs) {
+		t.Fatalf("--slots 6: %d groups, want %d", len(g6), len(gs))
+	}
+	for _, g := range g6 {
+		if g.Slots != 6 || g.LongSlots != len(slotOrder(slotClassLong, 6)) {
+			t.Errorf("--slots 6: %+v", g)
+		}
 	}
 	for _, g := range replayGroups(holds, 5, since) {
 		if g.Slots != 5 || g.LongSlots != len(slotOrder(slotClassLong, 5)) {
