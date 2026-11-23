@@ -379,8 +379,21 @@ func (s *Service) recogniseTyped(ctx context.Context, t *tx, sessionID int64, ev
 			return "", err
 		}
 	}
+	// What could match at all: the session's own unused records, and those
+	// held for the user's session not started yet. Most prompts are a
+	// person's, with none of either, and are answered by this one read
+	// rather than an UPDATE per digest (a hook's outbox can bring 200 prompts
+	// in one write, which must finish inside the hook's timeout).
+	var pending, held int
+	if err := t.QueryRowContext(ctx, `SELECT coalesce(sum(session_id IS NOT NULL), 0), coalesce(sum(session_id IS NULL), 0) FROM typed_prompts
+		WHERE consumed_at IS NULL AND expires_at > ? AND (session_id = ? OR (session_id IS NULL AND user_id = (SELECT user_id FROM agent_sessions WHERE id = ?)))`,
+		at, sessionID, sessionID).Scan(&pending, &held); err != nil {
+		return "", err
+	}
 	err = sql.ErrNoRows
-	if ev.TypedID != 0 {
+	if pending+held == 0 {
+		sums = nil // nothing to match: the loop below has no record to find
+	} else if ev.TypedID != 0 {
 		// The hook matched a record itself (a --no-prompts hook sends no text
 		// or digest): the record is that one, and only if it is this
 		// session's, or held for this user's session not yet started.
@@ -408,8 +421,7 @@ func (s *Service) recogniseTyped(ctx context.Context, t *tx, sessionID int64, ev
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		n := NormalisePrompt(ev.Prompt)
-		pending := 0
-		_ = t.QueryRowContext(ctx, `SELECT count(*) FROM typed_prompts WHERE session_id = ? AND consumed_at IS NULL AND expires_at > ?`, sessionID, at).Scan(&pending)
+		// pending, as read above: no match consumed one since.
 		if strings.HasPrefix(n, AutopilotPromptMark) || pending > 0 {
 			// Every prompt that matches nothing while Waypoint has text pending
 			// for the session is logged, not only one with the mark: a Waypoint

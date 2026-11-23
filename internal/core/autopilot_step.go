@@ -975,30 +975,36 @@ func (s *Service) putStep(ctx context.Context, t *tx, x *AgentSession, projectID
 // it is still wanted just before it types anything (AutopilotStepWanted),
 // and the task reserved for it goes back.
 func (s *Service) stopStep(ctx context.Context, q *tx, sessionID int64, reason, detail string) error {
+	_, err := s.stopLiveStep(ctx, q, sessionID, reason, detail)
+	return err
+}
+
+// stopLiveStep is stopStep, and says whether there was a live step to stop.
+func (s *Service) stopLiveStep(ctx context.Context, q *tx, sessionID int64, reason, detail string) (bool, error) {
 	var review, run, next sql.NullInt64
 	var state string
 	if err := q.QueryRowContext(ctx, `SELECT review_id, run_id, next_issue, state FROM autopilot_steps WHERE session_id = ? AND state IN (?, ?, ?)`,
 		sessionID, StepDue, StepWaiting, StepStarting).Scan(&review, &run, &next, &state); errors.Is(err, sql.ErrNoRows) {
-		return nil
+		return false, nil
 	} else if err != nil {
-		return err
+		return false, err
 	}
 	if state == StepStarting && next.Valid {
 		agent, _ := s.stepAgent(ctx, q, run, sessionID)
 		if err := releaseStepTask(ctx, q, next.Int64, agent); err != nil {
-			return err
+			return true, err
 		}
 	}
 	if _, err := q.ExecContext(ctx, `UPDATE autopilot_steps SET state = ?, reason = ?, detail = ?, updated_at = ? WHERE session_id = ? AND state IN (?, ?, ?)`,
 		StepStopped, reason, detail, s.nowMS(), sessionID, StepDue, StepWaiting, StepStarting); err != nil {
-		return err
+		return true, err
 	}
 	if state != StepStarting { // a review job's finish does this for its own
 		if err := s.stopReviewCompact(ctx, q, sessionID, review.Int64); err != nil {
-			return err
+			return true, err
 		}
 	}
-	return s.endStepRound(ctx, q, review.Int64, roundEndWhy(reason, detail), roundTaken(reason))
+	return true, s.endStepRound(ctx, q, review.Int64, roundEndWhy(reason, detail), roundTaken(reason))
 }
 
 // releaseStepTask gives back the task reserved for a step that stops, while
@@ -1087,12 +1093,17 @@ func (s *Service) autopilotOnPrompt(ctx context.Context, t *tx, x *AgentSession,
 	if waits, err := s.reviewWaitsForPerson(ctx, t, x.ID); waits || err != nil {
 		return err
 	}
-	head := squeezeSpace(ev.Prompt)
-	if len(head) > 200 {
-		head = head[:200]
+	stopped, err := s.stopLiveStep(ctx, t, x.ID, "prompted", "you prompted the session")
+	if stopped && err == nil {
+		// Only a prompt that stopped a step: a session's every prompt would
+		// be a line each, and its cost, in a hook's batch of up to 200.
+		head := squeezeSpace(ev.Prompt)
+		if len(head) > 200 {
+			head = head[:200]
+		}
+		s.log.WarnContext(ctx, "autopilot: a prompt stopped the step", "session", x.ID, "prompt", head)
 	}
-	s.log.WarnContext(ctx, "autopilot: a prompt stopped the step", "session", x.ID, "prompt", head)
-	return s.stopStep(ctx, t, x.ID, "prompted", "you prompted the session")
+	return err
 }
 
 // squeezeSpace folds every run of whitespace to one space, so a prompt the
