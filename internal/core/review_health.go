@@ -5,19 +5,22 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
+	"time"
 )
 
 // The review loop's own health (WP-1320, WP-ADR135): whenever the loop's
-// record of a project changes (a round's decision, or an audit with Haiku
-// helpers ending: EvReviewLoopRecorded), the rounds' record and the
-// helpers' record of that project are read against the decision's reopen
+// record of a project changes (a round's decision, an audit with Haiku
+// helpers ending, or a ship held again with nothing marked since:
+// EvReviewLoopRecorded), the rounds', the helpers' and the ship holds'
+// records of that project are read against the decision's reopen
 // conditions, and a condition that trips files a task in the project
 // (once: an open task of the same title stands for it). Nobody has to
 // remember to look at `wp pr rounds`.
 //
 // Not a poll: every figure the conditions read changes only when one of
-// those two records is written, or when a session marks a finding, and a
+// those records is written, or when a session marks a finding, and a
 // run's marks come before its next decision. Marks made after a run's last
 // decision are read at the project's next one.
 
@@ -48,6 +51,23 @@ const (
 	// the 95% upper bound on the overturn rate is about 3/n (the rule of
 	// three): 6% at 50, 30% at 10, too high to drop a check on.
 	healthMinNeverOverturned = 50
+	// healthMinStanding: standing findings (not rejected) before the share
+	// of them filed can be called mostly filed (WP-1555). A count of
+	// findings, set as the runs' and leads' minimums are (20): a run or two
+	// can't trip it alone. The line is half: filing is the exception a
+	// finding outside the change gets, so more filed than fixed means it
+	// has become the way rounds end. Nothing measured sets either number
+	// yet; the record this condition reads is what can.
+	healthMinStanding = 20
+	// healthMinRepeats: repeat holds of one task inside one day
+	// (shipHoldRepeatSQL) before they are called a loop. A session that
+	// marks what a hold names makes none, however many rounds or findings:
+	// every hold after its first comes with fewer left to decide. One or
+	// two are a session shipping again before it marked; three are marks
+	// that don't clear the hold (WP-1547's filed findings did that) or a
+	// session that won't decide.
+	healthMinRepeats = 3
+	healthHoldDay    = 24 * time.Hour
 )
 
 // reviewHealthIssues reads a project's record against the reopen
@@ -55,7 +75,7 @@ const (
 // can't trip it; a run that reached the round cap and a check whose leads
 // the prompt's size guard cut are said at the first one, since one is
 // already exceptional.
-func reviewHealthIssues(byRound []AgainRoundStat, agree *AgainAgreement, helpers []AgainHelperStat) []reviewHealthIssue {
+func reviewHealthIssues(byRound []AgainRoundStat, agree *AgainAgreement, helpers []AgainHelperStat, holds []AgainHoldStat) []reviewHealthIssue {
 	var out []reviewHealthIssue
 	add := func(title, format string, a ...any) {
 		out = append(out, reviewHealthIssue{title: title, body: fmt.Sprintf(format, a...)})
@@ -67,7 +87,7 @@ func reviewHealthIssues(byRound []AgainRoundStat, agree *AgainAgreement, helpers
 		}
 		if r.Followed >= healthMinFollowed && r.Useful*4 < r.Followed {
 			add("Review loop: rounds after round "+idx+" rarely find anything",
-				"Of the %d judged rounds that followed an again decision at round %s in the last %d days, %d found something new of medium or worse that held (%.0f%%; the condition is under 25%%). Either the record (againUsefulSQL) or the signal floor and bars (againFloors, againBars) are wrong for that place.",
+				"Of the %d judged rounds that followed an again decision at round %s in the last %d days, %d found something new of medium or worse that the session fixed or confirmed, filed or not (%.0f%%; the condition is under 25%%). Either the record (againUsefulSQL) or the signal floor and bars (againFloors, againBars) are wrong for that place.",
 				r.Followed, idx, reviewHealthDays, r.Useful, pct(r.Useful, r.Followed))
 		}
 		if r.Arms[AgainCap] > 0 {
@@ -100,6 +120,17 @@ func reviewHealthIssues(byRound []AgainRoundStat, agree *AgainAgreement, helpers
 			"Of %d rounds whose marks were sent to the Haiku check in the last %d days, it was passed over in %d (%.0f%%): it couldn't be asked, failed, or ran past its 30 minutes. Those rounds' marks stood on the sessions' word, and %d of them went on to another round only because rejections were left unchecked. Read the check audits' errors (purpose check) and the runners' claude sign-in.",
 			checks, reviewHealthDays, passed, pct(passed, checks), unchecked)
 	}
+	// Filing ends a round as a fix does (WP-1547), so a rise in it is read
+	// as a drop in fixing: most of what stood filed, not fixed.
+	var standing, filed int
+	for _, r := range byRound {
+		standing, filed = standing+r.Standing, filed+r.Filed
+	}
+	if standing >= healthMinStanding && filed*2 > standing {
+		add("Review loop: findings are mostly filed, not fixed",
+			"Of %d findings that stood (weren't rejected) in review rounds decided in the last %d days, sessions filed %d as issues instead of fixing them (%.0f%%; the condition is over 50%%). Filing ends a round as a fix does, so a session can end a review by filing. Read the filed findings (wp audit show, review_finding_scores.filed): either the findings are real work the change should do, or the rounds are asking for what doesn't belong in it.",
+			standing, reviewHealthDays, filed, pct(filed, standing))
+	}
 	var sampled, unsettled int
 	for _, r := range byRound {
 		sampled, unsettled = sampled+r.Sampled, unsettled+r.Unsettled
@@ -114,12 +145,21 @@ func reviewHealthIssues(byRound []AgainRoundStat, agree *AgainAgreement, helpers
 			"Over %d findings scored both ways in the last %d days, the reviewers' labels and the decision model's scores are %.1f points apart on average (the condition is over 3); %d are within two points. One of them should get more weight in the decision, or be dropped.",
 			agree.Findings, reviewHealthDays, agree.MeanGap, agree.Within2)
 	}
+	// The title names the task: another task looping is another task to file.
+	for _, h := range holds {
+		if h.Repeats >= healthMinRepeats {
+			add("Review loop: "+h.Issue+"'s ship held again and again with nothing marked",
+				"%s's ship was refused %d times within one day in the last %d days for the same findings, with none of them decided since the refusal before (the condition is %d or more; %d refusals in all), held for %s. A session that marks what a refusal names never repeats one: either its marks don't clear the hold (a mark the hold doesn't count, as filed findings once weren't), or the session ships without deciding. Read those audits' findings and how they were marked (`wp audit show N`).",
+				h.Issue, h.Repeats, reviewHealthDays, healthMinRepeats, h.Holds, auditList(h.Audits))
+		}
+	}
 	for _, h := range helpers {
 		if h.Check == helperVerify {
-			if h.Refuted >= healthMinVerdicts && h.RefutedHeld*2 > h.Refuted {
+			// A refuted finding a session filed was held by it as real too.
+			if held := h.RefutedHeld + h.RefutedFiled; h.Refuted >= healthMinVerdicts && held*2 > h.Refuted {
 				add("Review loop: the check of findings refutes findings sessions fix",
-					"Of %d findings Haiku refuted against the code in the last %d days, sessions fixed or confirmed %d anyway (%.0f%%). A refuted finding doesn't count toward another round, so the check is costing real findings: read those findings' verdict notes.",
-					h.Refuted, reviewHealthDays, h.RefutedHeld, pct(h.RefutedHeld, h.Refuted))
+					"Of %d findings Haiku refuted against the code in the last %d days, sessions fixed or confirmed %d anyway (%.0f%%; %d of them filed as issues, not fixed). A refuted finding doesn't count toward another round, so the check is costing real findings: read those findings' verdict notes.",
+					h.Refuted, reviewHealthDays, held, pct(held, h.Refuted), h.RefutedFiled)
 			}
 			if h.Reasked >= healthMinReasked && h.Overturned*2 > h.Reasked {
 				add("Review loop: the check of findings' refutations don't repeat",
@@ -148,10 +188,11 @@ func reviewHealthIssues(byRound []AgainRoundStat, agree *AgainAgreement, helpers
 				"The %s check raised %d problems in %d runs over the last %d days, and a second read confirmed %d (%.0f%%; the condition is under 5%%). It costs $%.2f there: its question or its pruning needs changing, or it should go.",
 				h.Check, h.Raised, h.Answered, reviewHealthDays, h.Confirmed, pct(h.Confirmed, h.Raised), h.CostUSD)
 		}
-		if h.Check != helperVerify && h.Check != helperCombine && h.Fixed+h.Rejected >= healthMinVerdicts && h.Fixed*4 < h.Fixed+h.Rejected {
+		// A filed finding held as real: it counts with the fixed ones.
+		if held := h.Fixed + h.Filed; h.Check != helperVerify && h.Check != helperCombine && held+h.Rejected >= healthMinVerdicts && held*4 < held+h.Rejected {
 			add("Review loop: findings from Haiku check "+h.Check+" are mostly rejected by sessions",
-				"Of %d findings from the %s check's problems that sessions marked in the last %d days, they fixed or confirmed %d (%.0f%%; the condition is under 25%%) and rejected %d. The second read passes what a session then finds doesn't hold.",
-				h.Fixed+h.Rejected, h.Check, reviewHealthDays, h.Fixed, pct(h.Fixed, h.Fixed+h.Rejected), h.Rejected)
+				"Of %d findings from the %s check's problems that sessions marked in the last %d days, they fixed or confirmed %d (%.0f%%; the condition is under 25%%; %d of them filed as issues) and rejected %d. The second read passes what a session then finds doesn't hold.",
+				held+h.Rejected, h.Check, reviewHealthDays, held, pct(held, held+h.Rejected), h.Filed, h.Rejected)
 		}
 	}
 	return out
@@ -190,7 +231,11 @@ func (s *Service) sweepProjectHealth(ctx context.Context, pid, since int64) erro
 	if err != nil {
 		return err
 	}
-	for _, h := range reviewHealthIssues(byRound, agree, helpers) {
+	holds, err := s.againHolds(ctx, ivis, iargs, since)
+	if err != nil {
+		return err
+	}
+	for _, h := range reviewHealthIssues(byRound, agree, helpers, holds) {
 		if err := s.fileReviewHealth(ctx, pid, h); err != nil {
 			s.log.WarnContext(ctx, "review loop health task not filed", "project", pid, "condition", h.title, "err", err)
 		}
@@ -231,4 +276,118 @@ func (s *Service) fileReviewHealth(ctx context.Context, projectID int64, h revie
 	_, err = s.CreateIssue(ctx, &writer, IssueInput{Project: itoa64(projectID), Type: "story", Agent: "claude", Priority: "medium",
 		Labels: []string{"recurring"}, Title: h.title, Description: b.String()})
 	return err
+}
+
+// AgainHoldStat is one task's ship holds since a time (recordShipHold):
+// Holds in all, and Repeats, the most repeat holds (shipHoldRepeatSQL) that
+// fell within one day (healthHoldDay), and Audits, the audits a repeat
+// held the ship for, in the order first held.
+type AgainHoldStat struct {
+	Issue   string  `json:"issue"`
+	Holds   int     `json:"holds"`
+	Repeats int     `json:"repeats"`
+	Audits  []int64 `json:"audits,omitempty"`
+}
+
+// shipHoldRepeatSQL is, over review_ship_holds as h, whether the hold is a
+// repeat: the task's hold before it for the same audit's findings by the
+// same refusal had no more left to decide. A hold with fewer left came
+// after marks, and a refusal's first hold of an audit is a session being
+// told what to decide; neither is a loop.
+const shipHoldRepeatSQL = `coalesce((SELECT h0.findings <= h.findings FROM review_ship_holds h0
+	WHERE h0.issue_id = h.issue_id AND h0.audit_id = h.audit_id AND h0.check_name = h.check_name AND h0.id < h.id
+	ORDER BY h0.id DESC LIMIT 1), 0)`
+
+// againHolds reads the ship holds of the issues the condition (on i) lets
+// through, in the order the tasks were made.
+func (s *Service) againHolds(ctx context.Context, ivis string, iargs []any, since int64) ([]AgainHoldStat, error) {
+	// #nosec G202 -- fixed conditions; values are bound
+	rows, err := s.db.R.QueryContext(ctx, `SELECT p.key || '-' || i.number, h.created_at, h.audit_id, `+shipHoldRepeatSQL+`
+		FROM review_ship_holds h JOIN issues i ON i.id = h.issue_id JOIN projects p ON p.id = i.project_id
+		WHERE `+ivis+` AND h.created_at >= ? ORDER BY h.issue_id, h.created_at, h.id`, append(slices.Clone(iargs), since)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AgainHoldStat
+	var repeats []int64 // the current task's repeats' times, in order
+	day := healthHoldDay.Milliseconds()
+	settle := func() {
+		// The most repeats inside any day, counted from each repeat on.
+		for i, j := 0, 0; j < len(repeats); j++ {
+			for repeats[j]-repeats[i] >= day {
+				i++
+			}
+			out[len(out)-1].Repeats = max(out[len(out)-1].Repeats, j-i+1)
+		}
+		repeats = repeats[:0]
+	}
+	for rows.Next() {
+		var key string
+		var at, audit int64
+		var repeat bool
+		if err := rows.Scan(&key, &at, &audit, &repeat); err != nil {
+			return nil, err
+		}
+		if len(out) == 0 || out[len(out)-1].Issue != key {
+			if len(out) > 0 {
+				settle()
+			}
+			out = append(out, AgainHoldStat{Issue: key})
+		}
+		out[len(out)-1].Holds++
+		if repeat {
+			repeats = append(repeats, at)
+			if cur := &out[len(out)-1]; !slices.Contains(cur.Audits, audit) {
+				cur.Audits = append(cur.Audits, audit)
+			}
+		}
+	}
+	if len(out) > 0 {
+		settle()
+	}
+	return out, rows.Err()
+}
+
+// recordShipHold records a ship refused for findings still to decide, for
+// the review health (WP-1555). Only a repeat (shipHoldRepeatSQL) can trip
+// its condition, so only a repeat sets off the check. A record that can't
+// be written is logged and the hold goes on: the refusal must reach the
+// session either way.
+func (s *Service) recordShipHold(ctx context.Context, actor *Actor, issue, audit, round int64, check string, findings int) {
+	err := s.write(ctx, actor, func(t *tx) error {
+		res, err := t.ExecContext(ctx, `INSERT INTO review_ship_holds(issue_id, audit_id, round_id, check_name, findings, created_at) VALUES (?,?,?,?,?,?)`,
+			issue, audit, round, check, findings, s.nowMS())
+		if err != nil {
+			return err
+		}
+		id, err := res.LastInsertId()
+		if err != nil {
+			return err
+		}
+		var repeat bool
+		var project int64
+		if err := t.QueryRowContext(ctx, `SELECT `+shipHoldRepeatSQL+`, i.project_id FROM review_ship_holds h JOIN issues i ON i.id = h.issue_id WHERE h.id = ?`, id).Scan(&repeat, &project); err != nil {
+			return err
+		}
+		if repeat {
+			t.emit(&Event{Kind: EvReviewLoopRecorded, ProjectID: project})
+		}
+		return nil
+	})
+	if err != nil {
+		s.log.WarnContext(ctx, "couldn't record a ship hold", "issue", issue, "audit", audit, "check", check, "err", err)
+	}
+}
+
+// auditList names audits: "audit #4", "audits #4, #7".
+func auditList(ids []int64) string {
+	codes := make([]string, len(ids))
+	for i, id := range ids {
+		codes[i] = fmt.Sprintf("#%d", id)
+	}
+	if len(ids) == 1 {
+		return "audit " + codes[0]
+	}
+	return "audits " + strings.Join(codes, ", ")
 }
