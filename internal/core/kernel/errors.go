@@ -40,7 +40,7 @@ func Forbidden(format string, args ...any) error {
 }
 
 // ForbiddenError is the refusal Forbidden builds; it matches ErrForbidden.
-type ForbiddenError struct{ Msg string }
+type ForbiddenError struct{ msg string }
 
-func (e *ForbiddenError) Error() string { return e.Msg }
+func (e *ForbiddenError) Error() string { return e.msg }
 func (e *ForbiddenError) Unwrap() error { return ErrForbidden }

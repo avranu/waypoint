@@ -2,6 +2,7 @@ package udiff
 
 import (
 	"math/rand"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -60,5 +61,53 @@ func TestUnifiedDiff(t *testing.T) {
 	}
 	if GitBlobSHA("hello\n") != "ce013625030ba8dba906f756967f9e9ca394464a" {
 		t.Fatal("blob sha of hello\\n should match git hash-object")
+	}
+}
+
+// Past the edit cap the middle is replaced whole instead of searched: the
+// diff is longer than the shortest one but still turns the old text into the
+// new, and the counts are of the lines it shows.
+func TestUnifiedPastTheEditCap(t *testing.T) {
+	var a, b []string
+	a = append(a, "head\n")
+	b = append(b, "head\n")
+	for i := 0; i < 2000; i++ {
+		a = append(a, "old"+strconv.Itoa(i)+"\n")
+	}
+	for i := 0; i < 1000; i++ {
+		b = append(b, "new"+strconv.Itoa(i)+"\n")
+	}
+	for i := 0; i < 1000; i++ {
+		b = append(b, "old"+strconv.Itoa(i)+"\n") // shared with a, so the shortest script is 2000 edits
+	}
+	a = append(a, "tail\n")
+	b = append(b, "tail\n")
+	var gotA, gotB []string
+	for _, op := range diffLines(a, b) {
+		if op.kind != '+' {
+			gotA = append(gotA, op.line)
+		}
+		if op.kind != '-' {
+			gotB = append(gotB, op.line)
+		}
+	}
+	if strings.Join(gotA, "") != strings.Join(a, "") || strings.Join(gotB, "") != strings.Join(b, "") {
+		t.Fatal("the ops don't rebuild the inputs")
+	}
+	d, add, del := Unified("big.txt", strings.Join(a, ""), strings.Join(b, ""), false, false)
+	plus, minus := 0, 0
+	for _, l := range strings.Split(d, "\n")[2:] { // after the two file lines
+		switch {
+		case strings.HasPrefix(l, "+"):
+			plus++
+		case strings.HasPrefix(l, "-"):
+			minus++
+		}
+	}
+	if add != plus || del != minus || add != 2000 || del != 2000 {
+		t.Fatalf("counts +%d -%d, the diff shows +%d -%d; want the whole middle replaced (+2000 -2000)", add, del, plus, minus)
+	}
+	if strings.Contains(d, "-head") || strings.Contains(d, "-tail") {
+		t.Fatal("the shared ends should stay context")
 	}
 }

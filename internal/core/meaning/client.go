@@ -46,6 +46,8 @@ type NLIPair struct {
 // Batch: texts or pairs in one request (the service takes 256).
 const Batch = 128
 
+var _ Models = (*Client)(nil)
+
 // Client speaks the meaning service's API over HTTP; it is a Models.
 type Client struct {
 	url, token string
@@ -87,7 +89,9 @@ func (m *Client) Embed(ctx context.Context, texts []string) (string, [][]float32
 		model = res.Model
 		vecs := make([][]float32, len(part))
 		for _, d := range res.Data {
-			if d.Index < 0 || d.Index >= len(part) || len(d.Embedding) == 0 {
+			// Each text gets one vector: an index out of range or given
+			// twice would leave another text with none.
+			if d.Index < 0 || d.Index >= len(part) || len(d.Embedding) == 0 || vecs[d.Index] != nil {
 				return "", nil, errors.New("the meaning service returned a vector out of place")
 			}
 			vecs[d.Index] = d.Embedding

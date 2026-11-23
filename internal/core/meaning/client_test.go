@@ -136,3 +136,111 @@ func TestHealthOf(t *testing.T) {
 		t.Fatal("nil should give ok=false")
 	}
 }
+
+// answering is a service that gives each request the next of bodies.
+func answering(t *testing.T, bodies ...string) (*Client, *int) {
+	t.Helper()
+	calls := new(int)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		i := *calls
+		*calls++
+		if i >= len(bodies) {
+			t.Errorf("request %d, only %d expected", i+1, len(bodies))
+			return
+		}
+		_, _ = w.Write([]byte(bodies[i]))
+	}))
+	t.Cleanup(srv.Close)
+	return NewHTTP(srv.URL, "", srv.Client(), nil, nil), calls
+}
+
+func many(n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = strconv.Itoa(i)
+	}
+	return out
+}
+
+// okEmbed is a well-formed answer for n texts from model.
+func okEmbed(model string, n int) string {
+	data := make([]map[string]any, n)
+	for i := range data {
+		data[i] = map[string]any{"index": i, "embedding": []float32{1}}
+	}
+	raw, _ := json.Marshal(map[string]any{"model": model, "data": data})
+	return string(raw)
+}
+
+func okNLI(model string, n int) string {
+	scores := make([]map[string]any, n)
+	for i := range scores {
+		scores[i] = map[string]any{"entailment": 0.5}
+	}
+	raw, _ := json.Marshal(map[string]any{"model": model, "scores": scores})
+	return string(raw)
+}
+
+// An answer that doesn't hold one vector per text, each in its place, is an
+// error: a caller stores what Embed returns under the model's id.
+func TestEmbedRefusesMalformedAnswers(t *testing.T) {
+	for name, tc := range map[string]struct {
+		texts  int
+		bodies []string
+	}{
+		"too few vectors":    {2, []string{`{"model":"e5@1","data":[{"index":0,"embedding":[1]}]}`}},
+		"no model":           {1, []string{`{"data":[{"index":0,"embedding":[1]}]}`}},
+		"index past end":     {1, []string{`{"model":"e5@1","data":[{"index":1,"embedding":[1]}]}`}},
+		"index below zero":   {1, []string{`{"model":"e5@1","data":[{"index":-1,"embedding":[1]}]}`}},
+		"empty vector":       {1, []string{`{"model":"e5@1","data":[{"index":0,"embedding":[]}]}`}},
+		"one index twice":    {2, []string{`{"model":"e5@1","data":[{"index":0,"embedding":[1]},{"index":0,"embedding":[2]}]}`}},
+		"model changes":      {Batch + 1, []string{okEmbed("e5@1", Batch), okEmbed("e5@2", 1)}},
+		"not JSON at all":    {1, []string{`<html>`}},
+		"second batch short": {Batch + 2, []string{okEmbed("e5@1", Batch), okEmbed("e5@1", 1)}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m, _ := answering(t, tc.bodies...)
+			model, vecs, err := m.Embed(context.Background(), many(tc.texts))
+			if err == nil {
+				t.Fatalf("no error: %q %v", model, vecs)
+			}
+			if model != "" || vecs != nil {
+				t.Fatalf("an error came with a result: %q %v", model, vecs)
+			}
+		})
+	}
+}
+
+func TestEntailRefusesMalformedAnswers(t *testing.T) {
+	for name, tc := range map[string]struct {
+		pairs  int
+		bodies []string
+	}{
+		"too few scores":  {2, []string{okNLI("nli@1", 1)}},
+		"too many scores": {1, []string{okNLI("nli@1", 2)}},
+		"no model":        {1, []string{`{"scores":[{"entailment":0.5}]}`}},
+		"model changes":   {Batch + 1, []string{okNLI("nli@1", Batch), okNLI("nli@2", 1)}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m, _ := answering(t, tc.bodies...)
+			model, scores, err := m.Entail(context.Background(), make([]NLIPair, tc.pairs))
+			if err == nil || model != "" || scores != nil {
+				t.Fatalf("%q %v %v", model, scores, err)
+			}
+		})
+	}
+}
+
+// Nothing to ask is no request and no error.
+func TestNoInputsAskNothing(t *testing.T) {
+	m, calls := answering(t)
+	if model, vecs, err := m.Embed(context.Background(), nil); err != nil || model != "" || len(vecs) != 0 {
+		t.Fatalf("Embed: %q %v %v", model, vecs, err)
+	}
+	if model, scores, err := m.Entail(context.Background(), nil); err != nil || model != "" || len(scores) != 0 {
+		t.Fatalf("Entail: %q %v %v", model, scores, err)
+	}
+	if *calls != 0 {
+		t.Fatalf("%d requests for nothing", *calls)
+	}
+}
