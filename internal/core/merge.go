@@ -249,13 +249,13 @@ func (s *Service) readinessFor(ctx context.Context, pr *PullRequest, settle bool
 		} else if behind || stale {
 			// A passed stack it was marked ready on stands in for the
 			// update while the base is the stack's heads merged (WP-404).
-			if st := s.readyStack(ctx, pr, tip); st != nil && !stale {
+			if st := s.readyCand(ctx, pr, tip); st != nil && !stale {
 				r.stack = st
 			} else {
 				r.behind = true
 				no("%s", reasonBehind(pr.BaseRef))
 			}
-		} else if st := s.readyStack(ctx, pr, tip); st != nil {
+		} else if st := s.readyCand(ctx, pr, tip); st != nil {
 			// The first head of a batch (WP-509) holds the base as it is:
 			// its merge follows the batch all the same.
 			r.stack = st
@@ -820,13 +820,12 @@ func (s *Service) maybeAutoMerge(ctx context.Context, prID int64) {
 	if rd.Checking {
 		s.scheduleMergeRecheck(ctx, pr.ID) // the forge's "no" may be it still working
 	}
+	if rd.behind || queueable(pr, rd.Reasons) {
+		// The merge line tests it on a candidate or updates it at its turn
+		// (WP-ADR152). A babysit joins it there; one nobody babysits does so here.
+		s.joinUnbabysat(ctx, pr)
+	}
 	if rd.behind {
-		// Only the front of the merge queue is updated (WP-222); the babysit
-		// moves the others on when their turn comes.
-		defer s.queueLock(pr)()
-		if s.queueFront(ctx, pr) && !s.dropReadyStackBehind(ctx, pr) {
-			s.updateIfBehind(ctx, pr)
-		}
 		return
 	}
 	if !rd.Ready {
@@ -1043,7 +1042,7 @@ func (s *Service) mergeNow(ctx context.Context, actor *Actor, pr *PullRequest, i
 			// The forge wants what the stack stood in for (WP-404): an
 			// outdated branch or a missing check. A newer push (409) ends
 			// the stack as a moved head; a token refusal isn't the stack's.
-			s.stackRefused(ctx, cur, rd.stack, mergeRefusal(err))
+			s.candRefused(ctx, cur, rd.stack, mergeRefusal(err))
 		}
 		return "", invalid("the forge refused the merge: %s", mergeRefusal(err))
 	}
@@ -1083,7 +1082,7 @@ func (s *Service) mergeNow(ctx context.Context, actor *Actor, pr *PullRequest, i
 		}
 	}
 	if rd.stack != nil {
-		s.stackMerged(ctx, f, cur, rd.stack, sha)
+		s.candMergedOn(ctx, f, cur, rd.stack, sha)
 	} else {
 		s.markTested(ctx, f, cur, fp.HeadSHA, sha)
 	}

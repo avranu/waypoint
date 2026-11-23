@@ -113,7 +113,7 @@ func (s *Service) heldWait(ctx context.Context, b *Babysit, pr *PullRequest, r *
 		s.setState(ctx, b, pr, BabysitNeedsPerson, fmt.Sprintf("round %d's change to protected files (%s) waits for your approval: %s", r.N, files, excerpt(h.Why, 160)))
 		if pr.QueuedAt != nil {
 			s.leaveQueue(ctx, pr.ID)
-			s.nudgeQueue(ctx, pr)
+			s.nudgeLine(ctx, pr)
 		}
 	default:
 		return false

@@ -147,25 +147,19 @@ type Service struct {
 	// Waypoint made into that base (WP-316): a read of the base that doesn't
 	// show it yet is stale.
 	baseMerged sync.Map
-	// baseRed holds what fixFirst found (WP-428): "holds:tip:head" → whether
-	// the head holds the base's tip, "first:forge/repo/base@tip" → the pull
-	// request that went first to fix it.
+	// baseRed holds what the line's ordering found (WP-428): "holds:tip:head"
+	// → whether the head holds the base's tip.
 	baseRed sync.Map
 	// stackOpt holds baseKey → stackOpt: whether the base gets merge queue
-	// stacks (WP-404), read again after stackOptTTL. stackOff holds baseKey
-	// → until when it gets none (a refused stacked merge, a stack whose run
-	// never started). stackCommits holds "repo\x00sha" → the commit's
+	// stacks (WP-404), read again after stackOptTTL. stackCommits holds "repo\x00sha" → the commit's
 	// parents (commits don't change).
 	stackOpt     sync.Map
-	stackOff     sync.Map
 	stackCommits sync.Map
 	// poolSat holds forge id → poolVerdict: whether that forge's CI runners
 	// are saturated (WP-509), with poolSatReading set while it is read
-	// again. batchDepth holds baseKey → how many pull requests behind the
-	// front a merge queue batch takes now.
+	// again.
 	poolSat        sync.Map
 	poolSatReading atomic.Bool
-	batchDepth     sync.Map
 	// workLogReading is set while review reports are counted (WP-285).
 	workLogReading atomic.Bool
 	// prBodyWriting is set while a model words PR descriptions (WP-55).

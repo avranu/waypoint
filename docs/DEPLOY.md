@@ -338,9 +338,9 @@ later changes nothing already open, and a push or another ship doesn't bring
 back a label taken off. Waypoint
 makes the label in a repo that lacks it. Any other label added to a pull request runs nothing and cancels
 nothing (its checks skip as "label added, nothing to run"). Pushes, to main
-and the merge queue's stacks, carry no labels and keep their usual runners.
+and the merge line's candidates, carry no labels and keep their usual runners.
 `wp pr show` and `wp pr ls` say when a pull request is urgent. The label also
-puts it ahead in its merge queue and its babysit rounds ahead of the line
+puts it ahead in its merge line and its babysit rounds ahead of the line
 (WP design note 357, "An urgent pull request cuts the line", WP-686).
 
 **The CI job image** (WP-402): the heavy jobs (backend shards, lint, e2e

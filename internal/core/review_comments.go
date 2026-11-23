@@ -1231,16 +1231,19 @@ func (s *Service) promoteFixing(ctx context.Context, pr *PullRequest) {
 // PRTodo is what is left to do on a pull request: failed checks, conflicts
 // and the review comments not dealt with.
 type PRTodo struct {
-	PRID     int64         `json:"pr_id"`
-	Repo     string        `json:"repo"`
-	Number   int           `json:"number"`
-	URL      string        `json:"url"`
-	HeadRef  string        `json:"head_ref"`
-	BaseRef  string        `json:"base_ref"`
-	HeadSHA  string        `json:"head_sha"`
-	Checks   []CheckLog    `json:"checks"`
-	Conflict bool          `json:"conflict"`
-	Rebase   string        `json:"rebase,omitempty"` // the commands that bring it up to its base
+	PRID     int64      `json:"pr_id"`
+	Repo     string     `json:"repo"`
+	Number   int        `json:"number"`
+	URL      string     `json:"url"`
+	HeadRef  string     `json:"head_ref"`
+	BaseRef  string     `json:"base_ref"`
+	HeadSHA  string     `json:"head_sha"`
+	Checks   []CheckLog `json:"checks"`
+	Conflict bool       `json:"conflict"`
+	Rebase   string     `json:"rebase,omitempty"` // the commands that bring it up to its base
+	// Ejected: the failed checks were seen on the merge line's candidate,
+	// with the head merged onto the base's tip (WP-1659).
+	Ejected  string        `json:"ejected,omitempty"`
 	Comments []TodoComment `json:"comments"`
 	// Findings are the audit findings still to do (WP-355).
 	Findings []TodoFinding `json:"findings"`
@@ -1327,6 +1330,7 @@ func (s *Service) packetOf(ctx context.Context, actor *Actor, pr *PullRequest, a
 		} else {
 			t.Checks = logs.Checks
 		}
+		t.Ejected = s.candEjectText(ctx, pr)
 	}
 	if s.packetConflict(pr) {
 		t.Conflict = true
@@ -1450,6 +1454,9 @@ func (t *PRTodo) render() string {
 	if len(t.Checks) > 0 {
 		fmt.Fprintf(&b, "\n## Failed checks (%d)\n", len(t.Checks))
 		b.WriteString("Reproduce each here, fix it, and commit once it passes; if you can't run one, say the fix is unverified.\n")
+		if t.Ejected != "" {
+			b.WriteString(t.Ejected + "\n")
+		}
 		for _, c := range t.Checks {
 			fmt.Fprintf(&b, "\n### %s\n", c.Name)
 			if c.URL != "" {

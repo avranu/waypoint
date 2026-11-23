@@ -130,7 +130,7 @@ func (s *Service) reviveRound(ctx context.Context, prID int64) (readChecks bool)
 			"and a round may push a merge whose protected files match the base's (WP-750). Make the change the pull request needs without editing any of them"
 	}
 	s.log.Info("babysit watchdog", "repo", pr.Repo, "number", pr.Number, "wait", b.Wait)
-	s.babysitRoundBy(ctx, b, pr, nil, false, nil, findings, &roundPlan{rung: rungAssessor, why: why}, false)
+	s.babysitRoundBy(ctx, b, pr, nil, false, nil, findings, &roundPlan{rung: rungAssessor, why: why})
 	return false
 }
 

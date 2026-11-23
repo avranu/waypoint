@@ -38,7 +38,10 @@ func (s *Service) onBaseMoved(ctx context.Context, f *Forge, repo, branch string
 		return
 	}
 	bg := context.WithoutCancel(ctx)
-	s.goBG(func() { s.checkLanded(bg, f, repo, branch) })
+	s.goBG(func() {
+		s.checkLanded(bg, f, repo, branch)
+		s.lineChanged(bg, lineRef{forge: f.ID, repo: repo, base: branch}) // the base moved: candidates on the old tip end, the line reads the new one (WP-1659)
+	})
 }
 
 // CheckLandedPRs is the sync's safety net for missed push webhooks: every

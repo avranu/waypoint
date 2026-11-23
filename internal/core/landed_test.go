@@ -472,7 +472,7 @@ func TestFrontWhoseHeadLandedIsFinishedNotUpdated(t *testing.T) {
 	se.sg.setChecks(head, CommitCheck{Name: "ci / backend (pull_request)", State: CheckSuccess})
 	se.poll()
 	id := se.pr(5).ID
-	se.s.maybeAutoMerge(se.ctx, id)
+	se.inLine(id)
 	se.s.Wait()
 	if n := se.sg.updated(); n != 1 {
 		t.Fatalf("updates before = %d", n)
@@ -486,7 +486,7 @@ func TestFrontWhoseHeadLandedIsFinishedNotUpdated(t *testing.T) {
 	lf.setBranches(ForgeBranch{Name: "main", SHA: "tip-2"}, ForgeBranch{Name: "fix-login", SHA: head})
 	lf.landed("tip-2", head)
 	lf.landed("main", head)
-	se.s.maybeAutoMerge(se.ctx, id)
+	se.inLine(id)
 	se.s.Wait()
 	if n := se.sg.updated(); n != 1 {
 		t.Fatalf("updated the branch again: %d updates", n)
