@@ -486,13 +486,8 @@ type prLink struct {
 // prLinks are the issues linked to the pull requests that the actor can
 // see: by URL, or by repo and number (a link pasted in another spelling).
 func (s *Service) prLinks(ctx context.Context, actor *Actor, ids []any) ([]prLink, error) {
-	vis, vargs := visibleSQL("i.project_id", actor)
-	// #nosec G202 -- vis is a fixed condition and the rest placeholders; values are bound
-	rows, err := s.db.R.QueryContext(ctx, `SELECT DISTINCT p.id, i.id, el.id, pj.key || '-' || i.number, i.title, st.name, st.category, el.created_agent
-		FROM pull_requests p
-		JOIN external_links el ON el.kind = 'pull' AND (el.url = p.url OR (el.repo = p.repo COLLATE NOCASE AND el.number = p.number))
-		JOIN issues i ON i.id = el.issue_id JOIN projects pj ON pj.id = i.project_id JOIN statuses st ON st.id = i.status_id
-		WHERE p.id IN (`+idList(len(ids))+`) AND `+vis+` AND `+draftsHidden(actor, "i")+` ORDER BY i.id`, append(slices.Clone(ids), vargs...)...)
+	q, args := prLinksSQL(actor, ids)
+	rows, err := s.db.R.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -506,6 +501,24 @@ func (s *Service) prLinks(ctx context.Context, actor *Actor, ids []any) ([]prLin
 		out = append(out, l)
 	}
 	return out, rows.Err()
+}
+
+// prLinksSQL is prLinks' query. The two ways a link names a pull request are
+// two UNIONed index probes: one OR'd join condition makes SQLite scan every
+// external link for each pull request, and the list hung (WP pulls list).
+func prLinksSQL(actor *Actor, ids []any) (string, []any) {
+	vis, vargs := visibleSQL("i.project_id", actor)
+	in := idList(len(ids))
+	// #nosec G202 -- vis is a fixed condition and the rest placeholders; values are bound
+	q := `SELECT DISTINCT m.pid, i.id, el.id, pj.key || '-' || i.number, i.title, st.name, st.category, el.created_agent
+		FROM (SELECT p.id AS pid, el.id AS elid FROM pull_requests p JOIN external_links el ON el.url = p.url AND el.kind = 'pull' WHERE p.id IN (` + in + `)
+			UNION
+			SELECT p.id, el.id FROM pull_requests p JOIN external_links el ON el.number = p.number AND el.repo = p.repo COLLATE NOCASE AND el.kind = 'pull' WHERE p.id IN (` + in + `)) m
+		JOIN external_links el ON el.id = m.elid
+		JOIN issues i ON i.id = el.issue_id JOIN projects pj ON pj.id = i.project_id JOIN statuses st ON st.id = i.status_id
+		WHERE ` + vis + ` AND ` + draftsHidden(actor, "i") + ` ORDER BY i.id`
+	args := append(slices.Clone(ids), ids...)
+	return q, append(args, vargs...)
 }
 
 // prMentions adds the issues the pull requests' text names but which aren't
