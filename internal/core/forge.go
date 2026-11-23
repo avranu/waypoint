@@ -1820,7 +1820,7 @@ func (c *httpForgeClient) do(ctx context.Context, f *Forge, method, path string,
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return apiErrorOf(method, path, resp, b)
 	}
 	if out == nil {

@@ -1702,7 +1702,7 @@ func personal(pr *PullRequest, reasons []string) string {
 	for _, r := range reasons {
 		switch {
 		case strings.HasPrefix(r, "review gate: "), strings.HasSuffix(r, " asked for changes"), auditHoldReason(r),
-			strings.HasPrefix(r, driftStopReason), r == reasonDraft && pr.ArmedAt != nil && !pr.WipAuto: // WP-821
+			strings.HasPrefix(r, driftStopReason), strings.HasPrefix(r, stackClosedPrefix), r == reasonDraft && pr.ArmedAt != nil && !pr.WipAuto: // WP-821
 			return r
 		}
 	}

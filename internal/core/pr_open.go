@@ -6,10 +6,8 @@ package core
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 )
@@ -60,6 +58,10 @@ type OpenPRInput struct {
 	// HeadTime is the branch head's commit time (unix seconds; 0: unknown),
 	// to tell whether anything was committed since a review finished.
 	HeadTime int64
+	// StackedOn are the branches Head was built on, nearest first, when
+	// Base isn't given: the first with a pull request open becomes the base,
+	// so the new pull request shows only its own change (WP-ADR153, WP-1670).
+	StackedOn []string
 	// HeadSHA is the head's commit (empty: an older wp), which tells two
 	// heads committed in the same second apart (roundBehind).
 	HeadSHA string
@@ -199,11 +201,13 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 		return nil, invalid("%s has several repositories; say which with --repo", p.Key)
 	}
 	defer s.branchLocks.lock(fmt.Sprintf("%d/%s/%s", pick.ForgeID, strings.ToLower(pick.Repo), in.Head))()
-	var existing int64
-	if err := s.db.R.QueryRowContext(ctx, `SELECT id FROM pull_requests WHERE forge_id = ? AND repo = ? COLLATE NOCASE AND head_ref = ? AND state IN ('open','draft') AND (head_repo = '' OR head_repo = repo COLLATE NOCASE) ORDER BY id DESC LIMIT 1`,
-		pick.ForgeID, pick.Repo, in.Head).Scan(&existing); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return nil, err
-	}
+	// A person waits on this: the forge gets longer to answer, within
+	// a budget that answers before the CLI gives up (WP-265).
+	fctx, cancel := context.WithTimeout(forgePatient(ctx), openPRBudget)
+	defer cancel()
+	existing := s.openFrom(ctx, fctx, pick, in.Head)
+	alreadyOpen := existing != 0
+	task := cmp(in.For, in.Issue)
 	res := &OpenPRResult{}
 	tagged := ""    // the task whose ci-urgent tag made a new pull request urgent
 	linked := false // the task's link was made as the pull request was recorded
@@ -212,6 +216,11 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 	}
 	if existing != 0 {
 		res.Existing = true
+		// Before any hold for the review: the wp ship --pr that follows
+		// one doesn't repeat --base.
+		if res.Notice, err = s.moveToBase(ctx, actor, existing, in.Base, task); err != nil {
+			return nil, err
+		}
 		if in.Review == ShipReview || in.Review == ShipSkip {
 			pr, err := s.prByID(ctx, s.db.R, existing)
 			if err != nil {
@@ -223,7 +232,7 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 			}
 			if !open {
 				// The push has happened: held or not, this session is on it (WP-117).
-				hr := &OpenPRResult{Existing: true, Held: held, Notice: notice, HeldNeedsAgent: in.facts.heldAsks(held), NoticeNeedsAgent: in.facts.noticeAsksAgent(notice)}
+				hr := &OpenPRResult{Existing: true, Held: held, Notice: joinNotes(res.Notice, notice), HeldNeedsAgent: in.facts.heldAsks(held), NoticeNeedsAgent: in.facts.noticeAsksAgent(notice)}
 				if in.Urgent {
 					// The pull request is open, so --urgent applies now: the
 					// ship after the review needn't say it again, and its
@@ -237,7 +246,7 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 				hr.ClaimWarning = s.claimPR(ctx, actor, existing)
 				return hr, nil
 			}
-			res.Notice = notice
+			res.Notice = joinNotes(res.Notice, notice)
 		}
 	} else {
 		cl, ok := s.Forges.(ForgeCommitter)
@@ -251,16 +260,16 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 		if f.token == "" {
 			return nil, invalid("the forge has no API token; add one in Admin → Forges")
 		}
-		// A person waits on this: the forge gets longer to answer, within
-		// a budget that answers before the CLI gives up (WP-265).
-		fctx, cancel := context.WithTimeout(forgePatient(ctx), openPRBudget)
-		defer cancel()
-		base := strings.TrimSpace(in.Base)
+		if strings.TrimSpace(in.Base) == "" {
+			in.Base = s.askedBase(ctx, actor, task, in.Head)
+		}
+		base, stackNote, stackedOn := strings.TrimSpace(in.Base), "", 0
 		if base == "" {
 			start := time.Now()
 			if base, err = cl.DefaultBranch(fctx, f, pick.Repo); err != nil {
 				return nil, s.forgeUnanswered(f, time.Since(start), err)
 			}
+			base, stackNote, stackedOn = s.stackBase(ctx, fctx, pick, in.Head, base, in.StackedOn)
 		}
 		if base == in.Head {
 			return nil, invalid("%s is the base branch; open the pull request from a feature branch", base)
@@ -278,9 +287,9 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 			if in.Review == "" {
 				return nil, invalid("%s", strings.TrimSpace(notice+" "+held))
 			}
-			return &OpenPRResult{Held: held, Notice: notice, HeldNeedsAgent: in.facts.heldAsks(held), NoticeNeedsAgent: in.facts.noticeAsksAgent(notice)}, nil
+			return &OpenPRResult{Held: held, Notice: joinNotes(stackNote, notice), HeldNeedsAgent: in.facts.heldAsks(held), NoticeNeedsAgent: in.facts.noticeAsksAgent(notice)}, nil
 		}
-		res.Notice = notice
+		res.Notice = joinNotes(stackNote, notice)
 		if id, err := s.resolveIssueID(ctx, s.db.R, cmp(in.For, in.Issue)); err == nil && in.Review != ShipSkip && actor.Session != 0 {
 			if run, err := s.openRunIn(ctx, s.db.R, actor.Session, id); err != nil {
 				s.log.WarnContext(ctx, "read the session's open run", "session", actor.Session, "err", err) // Reviewed stays false: the open says nothing of a review
@@ -289,7 +298,7 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 			}
 		}
 		// After the review: a held ship reads the tag when it really opens.
-		if task := cmp(in.For, in.Issue); !in.Urgent && s.taskUrgent(ctx, actor, task) {
+		if !in.Urgent && s.taskUrgent(ctx, actor, task) {
 			in.Urgent, tagged = true, task
 		}
 		managed := actor.agentName() != "" && !in.Draft && !in.Ready && s.draftFirstRepo(fctx, f, pick.Repo, base)
@@ -316,9 +325,7 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 		}
 		if err != nil {
 			// A concurrent open of the same branch won: return its pull request.
-			var again int64
-			if s.db.R.QueryRowContext(ctx, `SELECT id FROM pull_requests WHERE forge_id = ? AND repo = ? COLLATE NOCASE AND head_ref = ? AND state IN ('open','draft') AND (head_repo = '' OR head_repo = repo COLLATE NOCASE) ORDER BY id DESC LIMIT 1`,
-				pick.ForgeID, pick.Repo, in.Head).Scan(&again) == nil && again != 0 {
+			if again := s.openFrom(ctx, fctx, pick, in.Head); again != 0 {
 				existing, res.Existing = again, true
 			} else if open := s.openOnForge(fctx, f, pick.Repo, in.Head, base); open != nil {
 				// An attempt the forge was too slow to answer opened it, and
@@ -337,7 +344,7 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 			}
 		}
 		if fp != nil {
-			if existing, err = s.recordOpened(ctx, actor, p.ID, f, pick.Repo, fp, res.Existing); err != nil {
+			if existing, err = s.recordOpened(ctx, actor, p.ID, f, pick.Repo, fp, res.Existing, stackedOn); err != nil {
 				return nil, err
 			}
 			if !res.Existing {
@@ -364,6 +371,12 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 			return res, nil
 		}
 	}
+	if pr, err := s.prByID(ctx, s.db.R, existing); err == nil {
+		// Opened into another pull request's branch: the forge says whether
+		// that is a branch the repo keeps, so its stack wait reads right
+		// (WP-1670). Within the forge budget, and nothing for the default.
+		s.settleStack(fctx, pr, false)
+	}
 	if in.Urgent {
 		pr, err := s.prByID(ctx, s.db.R, existing)
 		if err != nil {
@@ -379,19 +392,14 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 			res.Notice = strings.TrimSpace(res.Notice + " " + taggedUrgentNotice(tagged, pr.Number))
 		}
 	}
-	task := in.For
-	if task == "" {
-		task = in.Issue
-	}
-	if task != "" && res.Existing {
-		if cur, err := s.GetPullRequest(ctx, actor, existing); err == nil && len(cur.Issues) > 0 {
-			var keys []string
-			for _, i := range cur.Issues {
-				keys = append(keys, i.Key)
+	if res.Existing {
+		res.OtherTasks = s.otherTasks(ctx, actor, existing, task)
+		if !alreadyOpen { // another attempt opened it while this one was at it
+			note, err := s.moveToBase(ctx, actor, existing, in.Base, task)
+			if err != nil {
+				return nil, err
 			}
-			if !slices.ContainsFunc(keys, func(k string) bool { return strings.EqualFold(k, task) }) {
-				res.OtherTasks = keys
-			}
+			res.Notice = joinNotes(res.Notice, note)
 		}
 	}
 	if in.Issue != "" && res.OtherTasks == nil && !linked {
@@ -447,7 +455,7 @@ func (s *Service) openOnForge(ctx context.Context, f *Forge, repo, head, base st
 
 // recordOpened stores a pull request just opened and remembers an agent as
 // its author.
-func (s *Service) recordOpened(ctx context.Context, actor *Actor, projectID int64, f *Forge, repo string, fp *ForgePR, adopted bool) (int64, error) {
+func (s *Service) recordOpened(ctx context.Context, actor *Actor, projectID int64, f *Forge, repo string, fp *ForgePR, adopted bool, stackedOn int) (int64, error) {
 	pr, err := s.recordPR(ctx, f, repo, fp, true)
 	if err != nil {
 		return 0, err
@@ -467,12 +475,19 @@ func (s *Service) recordOpened(ctx context.Context, actor *Actor, projectID int6
 		}
 	}
 	if agent != "" {
+		detail := "opened “" + excerpt(pr.Title, 120) + "”"
+		if pr.BaseRef != "" {
+			detail += " into " + pr.BaseRef
+			if stackedOn != 0 { // stackBase chose the base (WP-1670)
+				detail += fmt.Sprintf(" (stacked on #%d)", stackedOn)
+			}
+		}
 		err = s.write(ctx, actor, func(t *tx) error {
 			if _, err := t.ExecContext(ctx, `UPDATE pull_requests SET agent = ? WHERE id = ? AND agent = ''`, agent, pr.ID); err != nil {
 				return err
 			}
 			t.audit(AuditEntry{Action: "pr.open", Category: AuditControl, ProjectID: projectID, TargetType: "pr", TargetID: pr.ID,
-				Target: fmt.Sprintf("%s#%d", pr.Repo, pr.Number), URL: pr.URL, Detail: "opened “" + excerpt(pr.Title, 120) + "”", About: agent})
+				Target: fmt.Sprintf("%s#%d", pr.Repo, pr.Number), URL: pr.URL, Detail: detail, About: agent})
 			return nil
 		})
 		if err != nil {

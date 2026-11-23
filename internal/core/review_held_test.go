@@ -1090,3 +1090,45 @@ func TestHeldShipSaysWhatThePanelConfirmed(t *testing.T) {
 		t.Errorf("the notice lacks %q: %q", want, n)
 	}
 }
+
+// A ship held for its review that was stacked on an open parent: the
+// record says the base came from stacking, and when Waypoint opens it after
+// the parent merged in the meantime, it reads the parent again as a live
+// ship does and opens into the default branch, not the parent's branch the
+// merge may have deleted (WP-1670).
+func TestHeldStackedShipReadsItsParentAgain(t *testing.T) {
+	a, _, g := firstEnv(t)
+	_, _ = a.s.db.W.Exec(`DELETE FROM runners WHERE name = 'auditbox'`)
+	parent, err := a.s.OpenPullRequest(a.ctx, a.admin, OpenPRInput{Project: a.p.Key, Repo: "acme/app", Head: "gate-go", Title: "Gate", Base: "main"})
+	if err != nil || parent.Pull == nil {
+		t.Fatalf("parent = %+v, %v", parent, err)
+	}
+	first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude"})
+	if _, err := a.s.AgentTake(a.ctx, a.ag, first.Key, ""); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := a.ship(first.Key, ShipAuto, func(in *OpenPRInput) { in.StackedOn = []string{"gate-go"} }); err != nil || res.Held == "" {
+		t.Fatalf("ship = %+v, %v", res, err)
+	}
+	if bp := roundBeforePR(a.ctx, a.s.db.R, a.heldRound()); bp == nil || bp.Base != "gate-go" || bp.Stacked != "gate-go" || bp.Asked != "" {
+		t.Fatalf("held record = %+v", bp)
+	}
+	g.mu.Lock()
+	for _, p := range g.prs {
+		if p.Number == parent.Pull.Number {
+			p.State = "merged"
+		}
+	}
+	g.mu.Unlock()
+	a.stopWith("Waiting for the review.")
+	a.tick(61 * time.Second)
+	if len(a.jobs) != 1 {
+		t.Fatalf("jobs = %+v", a.jobs)
+	}
+	a.failJob(1, "failed", "tmux went away")
+	a.tick(2 * time.Minute)
+	created, _, _, _ := g.snapshot()
+	if len(created) != 2 || created[1].Head != "wp-1-first" || created[1].Base != "main" {
+		t.Fatalf("created = %+v", created)
+	}
+}

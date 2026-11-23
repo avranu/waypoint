@@ -334,6 +334,7 @@ func (s *Service) recordPR(ctx context.Context, f *Forge, repo string, fp *Forge
 			ON CONFLICT(forge_id, repo, number) DO UPDATE SET title = excluded.title, author = CASE WHEN excluded.author = '' THEN author ELSE excluded.author END,
 				forge_author = CASE WHEN excluded.forge_author = '' THEN forge_author ELSE excluded.forge_author END,
 				url = excluded.url, base_ref = excluded.base_ref, head_ref = excluded.head_ref,
+				queued_at = CASE WHEN excluded.base_ref NOT IN ('', base_ref) AND base_ref != '' THEN NULL ELSE queued_at END,
 				head_sha = CASE WHEN excluded.head_sha = '' THEN head_sha ELSE excluded.head_sha END,
 				head_repo = CASE WHEN excluded.head_repo = '' THEN head_repo ELSE excluded.head_repo END,
 				head_at = CASE WHEN excluded.head_sha != '' AND (excluded.head_sha != head_sha OR head_at IS NULL) THEN excluded.head_at ELSE head_at END,
@@ -393,6 +394,11 @@ func (s *Service) recordPR(ctx context.Context, f *Forge, repo string, fp *Forge
 		history := prHistory(old, pr, fp.actor, now)
 		if err := s.savePREvents(ctx, t, pr, history, attached, old != nil); err != nil {
 			return err
+		}
+		if ended && fp.State == "merged" && attached != 0 {
+			// Those stacked on it move to its base (WP-760); quiet: this is
+			// no news to anyone, only the carrier of that.
+			t.emit(&Event{Kind: EvPRActivity, ProjectID: attached, New: "merged", quiet: true, stackParent: pr.ID, Data: map[string]any{"pr_id": pr.ID}})
 		}
 		if pr.Outside {
 			return nil

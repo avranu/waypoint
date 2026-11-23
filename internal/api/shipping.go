@@ -76,6 +76,8 @@ type openPullBody struct {
 	Change  *core.ChangeFacts `json:"change"`
 	// BodyInputs: what wp ship rendered the description from (WP-55).
 	BodyInputs *core.PRBodyInputs `json:"body_inputs"`
+	// StackedOn: the branches head was built on, nearest first (WP-1670).
+	StackedOn []string `json:"stacked_on"`
 }
 
 // openPull opens a pull request from a branch already pushed (wp pr open).
@@ -86,7 +88,7 @@ func (s *Server) openPull(w http.ResponseWriter, r *http.Request) (any, error) {
 	}
 	res, err := s.svc.OpenPullRequest(r.Context(), actorFrom(r), core.OpenPRInput{Project: r.PathValue("key"), Repo: in.Repo, Head: in.Head,
 		Base: in.Base, Title: in.Title, Body: in.Body, Draft: in.Draft, Ready: in.Ready, Issue: in.Issue, For: in.For, Urgent: in.Urgent,
-		Review: in.Review, Reason: in.Reason, Force: in.Force, HeadTime: in.HeadTime, HeadSHA: in.HeadSHA, Message: in.Message, Summary: in.Summary, Change: in.Change, BodyInputs: in.BodyInputs})
+		Review: in.Review, Reason: in.Reason, Force: in.Force, HeadTime: in.HeadTime, HeadSHA: in.HeadSHA, Message: in.Message, Summary: in.Summary, Change: in.Change, BodyInputs: in.BodyInputs, StackedOn: in.StackedOn})
 	if err != nil {
 		return nil, err
 	}
@@ -193,11 +195,12 @@ func (s *Server) editPull(w http.ResponseWriter, r *http.Request) (any, error) {
 	var in struct {
 		Title *string `json:"title"`
 		Body  *string `json:"body"`
+		Base  *string `json:"base"`
 	}
 	if err := decode(r, &in); err != nil {
 		return nil, err
 	}
-	return nil, s.svc.EditPullRequest(r.Context(), actorFrom(r), id, core.EditPRInput{Title: in.Title, Body: in.Body})
+	return nil, s.svc.EditPullRequest(r.Context(), actorFrom(r), id, core.EditPRInput{Title: in.Title, Body: in.Body, Base: in.Base})
 }
 
 // urgentPull puts a pull request's CI on the urgent lane (POST) or takes it
