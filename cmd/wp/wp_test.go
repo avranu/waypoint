@@ -39,6 +39,11 @@ func TestMain(m *testing.M) {
 	// No snapshot test may depend on the real process tree (a claude may sit
 	// above the test binary); those that need one build a fake (WP-1468).
 	snapshotProc = func() (string, int) { return "", 0 }
+	// A snapshot test checks what was read, not how fast: on a loaded CI
+	// runner under -race the real budget ran out before a 4 MB file was
+	// read, and the test saw "skipped" instead of "too large". The tests
+	// about the budget set it themselves.
+	snapshotBudget = time.Minute
 	for _, k := range []string{"CLAUDECODE", "CLAUDE_PID", "GEMINI_CLI", "OPENCODE", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "WAYPOINT_AGENT", noWorktreeEnv} {
 		_ = os.Unsetenv(k)
 	}
