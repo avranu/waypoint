@@ -1,22 +1,20 @@
 package core
 
-// The speculative merge queue (WP-404, WP-ADR33). The merge queue (ADR7,
-// ADR19) merged one pull request per full run: the next one was brought up
-// to date with the base only after the front merged, and its full run
-// started then. Now the two drafts behind the front are tested while the
-// front's full run goes on, each on a stack: the base's tip with every head
+// Candidates, the branches the merge line tests (WP-404, WP-ADR33, reworked
+// by WP-1659 and WP-ADR152). A candidate is the base's tip with every head
 // ahead of it merged in, then its own, built by the workflow's push run on a
 // branch Waypoint makes for it (wp-queue/...), whose one commit adds a file
-// listing those heads. When the front merges, the next one's passed stack
-// stands in for the update and the full run: it is marked ready with no full
-// run to come and merges as soon as its own per-pull-request conditions (the
-// review gate, comments, audits, the quiet period) are met.
+// listing those heads. The line makes one per place for the first few, so the
+// front's full run and the next places' run together. When the front merges,
+// the next one's passed candidate stands in for the update and the full run:
+// it is marked ready with no full run to come and merges as soon as its own
+// per-pull-request conditions (the review gate, comments, audits, the quiet
+// period) are met.
 //
-// A stack holds only while what it was built on does: the heads ahead of it
-// merged at the heads it merged, or still ahead in the same order at the
+// A candidate holds only while what it was built on does: the heads ahead of
+// it merged at the heads it merged, or still ahead in the same order at the
 // same heads, and its own head unchanged. Anything else ends it, cancels its
-// run and the stacks built on it, and the pull request goes back to the
-// queue as before (waiting as it is for its turn at the front, WP-510).
+// run and the candidates built on it, and the line plans again.
 
 import (
 	"context"
@@ -52,8 +50,9 @@ const (
 	stackFile    = ".waypoint-queue"
 	stackContext = "waypoint/stack"
 	// stackStartWait: a stack whose branch has no status this long after it
-	// was made counts as failed, and the base gets no stacks for stackOffFor
-	// (the workflow doesn't run on its pushes after all).
+	// was made counts as failed, and the fallback (lineFallbackFor) tests each pull
+	// request on its own branch (the workflow doesn't run on its pushes after
+	// all).
 	stackStartWait = 10 * time.Minute
 	// stackRunMax: a stack still running (a job stuck pending, logs that
 	// can't be read) this long after it was made fails, so a front waiting

@@ -28,10 +28,10 @@ var baseConflictLog = lazyre.New(`::error title=Merge queue stack::#(\d+) \(([0-
 
 // stackBaseConflict records that head doesn't merge cleanly onto the
 // stack's base tip, as a refused update of that head to that tip: a round
-// for its conflict can then go before its turn at the front (earlyConflict)
-// and finds the conflict in its work packet (packetConflict), and its turn
-// at the front, if the base is still there, goes straight to that round. Its
-// babysit is nudged to take it now. Kept in memory like the update's own.
+// for its conflict gets its round at once, whatever its place in the line
+// (WP-ADR152 removed rounds timed to a place), and it finds the conflict in
+// its work packet (packetConflict). Its babysit is nudged to take the round
+// now. Kept in memory like the update's own.
 func (s *Service) stackBaseConflict(st *queueStack, h stackHead) {
 	if st.BaseSHA == "" || h.SHA == "" {
 		return

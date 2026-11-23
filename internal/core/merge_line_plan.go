@@ -4,10 +4,11 @@ import "fmt"
 
 // The merge line's planner (WP-1659, WP-ADR152). A line is the armed pull
 // requests of one base of one repo whose heads are settled, in order. The
-// line never pushes to a pull request's branch: it tests candidates, each a
-// branch whose run merges the base's tip and the heads of the line's first
+// line pushes to no branch of a pull request that rides a candidate: it tests
+// candidates, each a branch whose run merges the base's tip and the heads of the line's first
 // places in order and runs the full tier on the result, and merges the
-// front on a candidate that passed.
+// front on a candidate that passed. A front that can't ride one is brought up
+// to date on its own branch.
 //
 // planLine is the only place that decides what a line does. It reads one
 // snapshot and returns actions; lineStep gathers the snapshot and carries
@@ -98,7 +99,6 @@ const (
 	endRefused     = "refused"
 	endDuplicate   = "duplicate"
 	endBatchSplit  = "batch_split"
-	endLeft        = "left"
 	endBaseRed     = "base_red" // failed only what the base's tip fails: not the heads' account, tried again once the tip moves or turns green
 )
 

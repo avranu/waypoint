@@ -833,8 +833,9 @@ func stackedOn(base, branch string) []string {
 // review other pull requests' code (WP-467). With the base merged in, its tip
 // is the only fork point. It runs after the title and summary are worked out,
 // so the merge names neither. A merge that doesn't go through is left to the
-// person: the merge line tests candidates and doesn't push to the branch
-// (WP-ADR152).
+// person: the merge line pushes to no branch of a pull request that rides a
+// candidate, and brings a front that can't ride one up to date on its own
+// branch (WP-ADR152).
 func (c *cli) mergeBaseIfForkedTwice(base string) {
 	if name, ok := strings.CutPrefix(base, "origin/"); ok {
 		_, _ = localGit("fetch", "-q", "origin", name) // a stale base can only miss one

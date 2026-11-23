@@ -1,12 +1,12 @@
 package core
 
-// Merge queue batches (WP-509, WP-ADR36 amending ADR33): while a forge's CI runners
-// are saturated, the front of a queue and the next few pull requests behind
-// it ride one stack branch, so one full run tests them all instead of a run
-// per place. Each riding pull request has a queue_stacks row on the one
-// branch and commit, whose pos says which of the heads is its own; they
-// pass, fail or are cancelled together, and merge in order. With idle
-// runners the queue keeps WP-404's stack per place.
+// Candidate batches (WP-509, WP-ADR36, reworked by WP-1659 and WP-ADR152):
+// while a forge's CI runners are saturated, one candidate carries the front
+// of a line and the next few pull requests behind it, so one full run tests
+// them all instead of a run per place. Each riding pull request has a
+// queue_stacks row on the one branch and commit, whose pos says which of the
+// heads is its own; they pass, fail or are cancelled together, and merge in
+// order. With idle runners the line makes a candidate per place.
 
 import (
 	"context"
@@ -19,10 +19,9 @@ const (
 	poolSatWait = 2 * time.Minute
 	// poolSatFresh: how long a reading of the pool is trusted.
 	poolSatFresh = 2 * time.Minute
-	// batchMinDepth and batchMaxDepth bound how many pull requests ride a
-	// batch behind its first head: it starts at the least, grows by one each
-	// time a batch merges whole and drops back when one fails.
-	batchMinDepth = 2
+	// batchMaxDepth bounds how many pull requests ride a batch behind its
+	// first head (lineBatchDepth: it grows by one each time a batch merges
+	// whole and drops back when one fails).
 	batchMaxDepth = 4
 )
 

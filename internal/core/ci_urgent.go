@@ -13,8 +13,8 @@ package core
 //
 // The label cuts the rest of the line too (WP-686): in its merge queue an
 // urgent pull request goes ahead of every one that isn't, behind the front
-// and a base fix (urgentFirst); its rounds don't wait for its place in the
-// line (roundTurn) nor for its checks to finish (urgentRound), and a runner
+// and a base fix (lineSort); its rounds don't wait for its place in the
+// line nor for its checks to finish (urgentRound), and a runner
 // takes them before any other job (claimOrder). Before, only its CI jobs
 // were ahead: waypoint#321 waited an hour as a draft behind the line, and
 // its review findings never got a round while each update of the front
