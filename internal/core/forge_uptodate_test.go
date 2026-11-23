@@ -27,6 +27,9 @@ func (g *shipForge) BehindBase(ctx context.Context, f *Forge, repo, baseRef, hea
 func (g *shipForge) Contains(ctx context.Context, f *Forge, repo, sha, headSHA string) (bool, error) {
 	g.sm.Lock()
 	defer g.sm.Unlock()
+	if g.containsErr != nil {
+		return false, g.containsErr
+	}
 	return !g.hidden[sha], nil
 }
 

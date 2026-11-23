@@ -9,7 +9,7 @@
 -- conflicts with the base, which a round resolves).
 -- end_reason: one machine word for how it ended (merged, failed, conflict,
 -- lost, no_run, no_merge, line_changed, base_moved, head_moved, refused,
--- duplicate, batch_split, base_red), beside the note's human text; '' while live and for rows
+-- duplicate, batch_split, base_red, unreadable), beside the note's human text; '' while live and for rows
 -- from before.
 ALTER TABLE queue_stacks ADD COLUMN reran INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE queue_stacks ADD COLUMN end_reason TEXT NOT NULL DEFAULT '';

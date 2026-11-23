@@ -1125,12 +1125,15 @@ func TestLineFallbackAndInCandidateFailClosedWhenUnread(t *testing.T) {
 		t.Fatal("no candidate rows, yet the line is paused or a candidate holds #7")
 	}
 	restore := se.breakTable("queue_stacks")
-	defer restore()
 	if !se.s.lineFallback(se.ctx, ref) {
 		t.Error("an unread pause isn't taken as paused")
 	}
 	if !se.s.inCandidate(se.ctx, pr.ID) {
 		t.Error("an unread candidate list isn't taken as holding #7")
+	}
+	restore()
+	if se.s.lineFallback(se.ctx, ref) || se.s.inCandidate(se.ctx, pr.ID) {
+		t.Error("the fail-closed answer stuck once the table was read again")
 	}
 }
 
@@ -1204,4 +1207,202 @@ func TestLedgerWithAnUnreadBaseIsClassifiedWithoutIt(t *testing.T) {
 	if !strings.Contains(logs.String(), "read what fails on the base for a round's ledger") {
 		t.Errorf("no warning:\n%s", logs.String())
 	}
+}
+
+// An unreadable live row is ended like any other candidate: its running run
+// is cancelled and its branch deleted (audit 1535).
+func TestLineGatherEndsAnUnreadableLiveCandidateLikeAnyOther(t *testing.T) {
+	se := newStackEnv(t)
+	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE project_repos SET line_candidates = 0`); err != nil {
+		t.Fatal(err)
+	}
+	se.draftGreen(head7s, 5)
+	pr := se.pr(7)
+	if _, err := se.s.db.W.ExecContext(se.ctx, `INSERT INTO queue_stacks(forge_id, repo, base_ref, pr_id, base_sha, heads, branch, commit_sha, state, created_at)
+		VALUES (?, ?, ?, ?, 'x', '[]', 'wp-queue/main/bad', 'bad0001', ?, 1)`, pr.ForgeID, pr.Repo, pr.BaseRef, pr.ID, stackRunning); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := se.s.lineGather(se.ctx, lineOf(pr)); err != nil {
+		t.Fatal(err)
+	}
+	var reason string
+	if err := se.s.db.R.QueryRowContext(se.ctx, `SELECT end_reason FROM queue_stacks`).Scan(&reason); err != nil || reason != endUnreadable {
+		t.Fatalf("end_reason %q, %v", reason, err)
+	}
+	se.sg.sm.Lock()
+	defer se.sg.sm.Unlock()
+	if len(se.sg.cancelled) != 1 || se.sg.cancelled[0] != "bad0001" {
+		t.Errorf("runs cancelled: %v", se.sg.cancelled)
+	}
+	if len(se.sg.deleted) != 1 || se.sg.deleted[0] != "wp-queue/main/bad" {
+		t.Errorf("branches deleted: %v", se.sg.deleted)
+	}
+}
+
+// A ready candidate whose row can't be read still gives back the readiness
+// its pull request got from it (audit 1535).
+func TestLineGatherDiscardsTheReadyMarkOfAnUnreadableCandidate(t *testing.T) {
+	se := newStackEnv(t)
+	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE project_repos SET line_candidates = 0`); err != nil {
+		t.Fatal(err)
+	}
+	se.draftGreen(head7s, 5)
+	pr := se.pr(7)
+	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE pull_requests SET state = 'open', wip_auto = 1, ready_at = 1, ready_sha = ? WHERE id = ?`, head7s, pr.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := se.s.db.W.ExecContext(se.ctx, `INSERT INTO queue_stacks(forge_id, repo, base_ref, pr_id, base_sha, heads, branch, commit_sha, state, created_at)
+		VALUES (?, ?, ?, ?, 'x', '[]', 'wp-queue/main/bad', 'bad0001', ?, 1)`, pr.ForgeID, pr.Repo, pr.BaseRef, pr.ID, stackReady); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := se.s.lineGather(se.ctx, lineOf(pr)); err != nil {
+		t.Fatal(err)
+	}
+	if got := se.pr(7).State; got != "draft" {
+		t.Errorf("the pull request marked ready on the unreadable candidate is %q, want draft", got)
+	}
+}
+
+// A live row one of whose columns can't be scanned is ended too: scanStack
+// hands back what it read so lineCands knows the row (audit 1535).
+func TestLineGatherEndsAnUnscannableLiveCandidate(t *testing.T) {
+	se := newStackEnv(t)
+	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE project_repos SET line_candidates = 0`); err != nil {
+		t.Fatal(err)
+	}
+	se.draftGreen(head7s, 5)
+	pr := se.pr(7)
+	if _, err := se.s.db.W.ExecContext(se.ctx, `INSERT INTO queue_stacks(forge_id, repo, base_ref, pr_id, base_sha, heads, branch, commit_sha, state, created_at)
+		VALUES (?, ?, ?, ?, 'x', '[{"pr_id":1,"number":7,"sha":"abc"}]', 'wp-queue/main/bad', 'bad0001', ?, 1)`, pr.ForgeID, pr.Repo, pr.BaseRef, pr.ID, stackRunning); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE queue_stacks SET reran = 'x'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := se.s.lineGather(se.ctx, lineOf(pr)); err != nil {
+		t.Fatal(err)
+	}
+	var reason string
+	if err := se.s.db.R.QueryRowContext(se.ctx, `SELECT end_reason FROM queue_stacks`).Scan(&reason); err != nil || reason != endUnreadable {
+		t.Fatalf("end_reason %q, %v", reason, err)
+	}
+}
+
+// fixesBase can't say a head doesn't fix the base from state it didn't read:
+// that is an error, so the line decides nothing. A forge that can't answer
+// for one head isn't (audit 1535).
+func TestFixesBaseErrorsOnUnreadChecks(t *testing.T) {
+	se := newStackEnv(t)
+	se.redBase("ci / lint (push)")
+	se.sg.setChecks(head8s,
+		CommitCheck{Name: "ci / backend (pull_request)", State: CheckSuccess, ID: 7, Description: "Successful in 4m"},
+		CommitCheck{Name: "ci / lint (pull_request)", State: CheckSuccess, ID: 9, Description: "Successful in 1m"})
+	se.poll()
+	se.s.Wait()
+	pr := se.pr(8)
+	failing := map[string]bool{checkJob("ci / lint (push)"): true}
+	se.s.baseRed.Clear() // the poll may have asked already
+	logs := &lockedBuf{}
+	se.s.log = slog.New(slog.NewTextHandler(logs, nil))
+	se.sg.sm.Lock()
+	se.sg.containsErr = errors.New("502 from the forge")
+	se.sg.sm.Unlock()
+	if ok, err := se.s.fixesBase(se.ctx, pr, "tip-1", failing); ok || err != nil {
+		t.Errorf("a forge that can't answer: %v, %v; want false, nil", ok, err)
+	}
+	if !strings.Contains(logs.String(), "ask whether a head holds the base's tip") {
+		t.Errorf("no warning:\n%s", logs.String())
+	}
+	se.sg.sm.Lock()
+	se.sg.containsErr = nil
+	se.sg.sm.Unlock()
+	if ok, err := se.s.fixesBase(se.ctx, pr, "tip-1", failing); !ok || err != nil {
+		t.Fatalf("control: %v, %v", ok, err)
+	}
+	se.s.baseRed.Clear()
+	restore := se.breakTable("ci_checks")
+	defer restore()
+	if ok, err := se.s.fixesBase(se.ctx, pr, "tip-1", failing); ok || err == nil {
+		t.Errorf("unread checks: %v, %v; want an error", ok, err)
+	}
+	if _, _, err := se.s.lineFixer(se.ctx, []*PullRequest{pr}, "tip-1"); err == nil {
+		t.Error("lineFixer chose without reading")
+	}
+}
+
+// lineHolds says no when its read fails (audit 1535).
+func TestLineHoldsIsNoWhenUnread(t *testing.T) {
+	se := newStackEnv(t)
+	se.draftGreen(head7s, 5)
+	pr := se.pr(7)
+	ref := lineOf(pr)
+	if !se.s.lineHolds(se.ctx, ref, pr.ID) {
+		t.Fatal("control: #7 is armed in the line")
+	}
+	defer se.breakTable("pull_requests")()
+	if se.s.lineHolds(se.ctx, ref, pr.ID) {
+		t.Error("an unread pull request holds its place")
+	}
+}
+
+// candRerun, with the forge failing in the ways it can (audit 1535).
+func TestLineRerunWhenTheForgeFails(t *testing.T) {
+	failed := func(t *testing.T, set func(g *shipForge)) (*stackEnv, []string) {
+		se := newStackEnv(t)
+		se.draftGreen(head7s, 5)
+		se.step()
+		se.line()
+		se.stackRun(0, CheckFailed, treeA, "7 "+head7s)
+		se.sg.sm.Lock()
+		set(se.sg)
+		se.sg.sm.Unlock()
+		se.line()
+		se.sg.sm.Lock()
+		defer se.sg.sm.Unlock()
+		return se, append([]string(nil), se.sg.retries...)
+	}
+	t.Run("can't tell whether it can", func(t *testing.T) {
+		se, retries := failed(t, func(g *shipForge) { g.canRetryErr = errors.New("502 from the forge") })
+		if len(retries) != 0 {
+			t.Errorf("RetryChecks was asked when CanRetryChecks failed: %v", retries)
+		}
+		if sts := se.stacks(); sts[0].RerunAt != 0 || sts[0].Ended {
+			t.Errorf("a re-run that was never asked counted: reran %d ended %v", sts[0].RerunAt, sts[0].Ended)
+		}
+	})
+	t.Run("some re-run before the failure", func(t *testing.T) {
+		se, retries := failed(t, func(g *shipForge) { g.retryErr, g.retryPartial = errors.New("502 from the forge"), 2 })
+		if len(retries) == 0 {
+			t.Error("the re-run wasn't asked")
+		}
+		if sts := se.stacks(); sts[0].RerunAt == 0 || sts[0].Ended {
+			t.Errorf("a re-run that part ran again was taken back: %+v", sts[0])
+		}
+	})
+}
+
+// A conflict eject records who conflicted before the candidate ends; when
+// that write fails the candidate stays live for the next step (audit 1535).
+func TestLineEjectConflictWriteFailureLeavesTheCandidateLive(t *testing.T) {
+	se := newStackEnv(t)
+	se.queueAll()
+	se.draftGreen(head7s, 5)
+	se.draftGreen(head8s, 7)
+	se.draftGreen(head9s, 9)
+	se.step()
+	i := se.candEndingAt(8)
+	se.stackConflictOn(i, "8 "+head8s, se.stacks()[i].BaseSHA, "7 "+head7s)
+	if _, err := se.s.db.W.ExecContext(se.ctx, `CREATE TRIGGER no_conflict_write BEFORE UPDATE OF conflict_pr ON queue_stacks
+		BEGIN SELECT RAISE(ABORT, 'no'); END`); err != nil {
+		t.Fatal(err)
+	}
+	se.step()
+	if st := se.stacks()[i]; st.Ended {
+		t.Fatalf("the candidate ended without its conflict recorded: %q", st.EndReason)
+	}
+	if _, err := se.s.db.W.ExecContext(se.ctx, `DROP TRIGGER no_conflict_write`); err != nil {
+		t.Fatal(err)
+	}
+	se.step()
+	se.conflictEnded(i, 8, false)
 }

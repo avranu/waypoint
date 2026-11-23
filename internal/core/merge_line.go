@@ -189,7 +189,14 @@ func (s *Service) lineFixer(ctx context.Context, prs []*PullRequest, tip string)
 		return 0, nil, nil
 	}
 	for _, p := range prs {
-		if !queueHolder(p) && !p.urgent() && p.HeadSHA != "" && s.fixesBase(ctx, p, tip, failing) {
+		if queueHolder(p) || p.urgent() || p.HeadSHA == "" {
+			continue
+		}
+		fixes, err := s.fixesBase(ctx, p, tip, failing)
+		if err != nil {
+			return 0, nil, err
+		}
+		if fixes {
 			return p.ID, failing, nil
 		}
 	}
@@ -275,7 +282,12 @@ func (s *Service) lineGather(ctx context.Context, ref lineRef) (*lineState, erro
 					return nil, fmt.Errorf("read what fails on the base's tip: %w", err)
 				}
 				ls.snap.BaseRed = len(ls.failing) > 0
-				ls.snap.FrontFixes = ls.snap.BaseRed && front.ID == fixer && s.fixesBase(ctx, front, ls.tip, ls.failing)
+				ls.snap.FrontFixes = false // asked again for this tip
+				if ls.snap.BaseRed && front.ID == fixer {
+					if ls.snap.FrontFixes, err = s.fixesBase(ctx, front, ls.tip, ls.failing); err != nil {
+						return nil, err
+					}
+				}
 			}
 		}
 	}
@@ -480,10 +492,7 @@ func (s *Service) lineCands(ctx context.Context, ls *lineState) error {
 			// them again every step: end it. Not a reason that pauses the line,
 			// as it says nothing about the forge (WP-1700).
 			if st != nil && st.ID != 0 {
-				if _, err := s.db.W.ExecContext(ctx, `UPDATE queue_stacks SET state = ?, note = ?, end_reason = ?, ended_at = ? WHERE id = ? AND ended_at IS NULL`,
-					stackCancelled, "its row could not be read", endUnreadable, s.nowMS(), st.ID); err != nil {
-					s.log.WarnContext(ctx, "end an unreadable candidate", "candidate", st.ID, "err", err)
-				}
+				s.candEnd(ctx, ls.f, st, stackCancelled, endUnreadable, "its row could not be read")
 			}
 			continue
 		}
@@ -723,7 +732,15 @@ func (s *Service) candEnd(ctx context.Context, f *Forge, st *queueStack, state, 
 // head says the candidate no longer counts (so the edit's run doesn't skip
 // its checks) and it goes back to draft for the usual way.
 func (s *Service) candDiscardReady(ctx context.Context, f *Forge, st *queueStack, why string) {
-	for _, h := range st.Heads {
+	heads := st.Heads
+	if len(heads) == 0 && st.PRID != 0 {
+		// A row whose heads couldn't be read: its own pull request stands in,
+		// with the head it was marked ready at.
+		if pr, err := s.prByID(ctx, s.db.R, st.PRID); err == nil && pr.readySHA != "" {
+			heads = []stackHead{{PRID: pr.ID, Number: pr.Number, SHA: pr.readySHA}}
+		}
+	}
+	for _, h := range heads {
 		pr, err := s.prByID(ctx, s.db.R, h.PRID)
 		if err != nil || pr.State != "open" || !pr.WipAuto || !sameSHA(pr.readySHA, h.SHA) || !sameSHA(pr.HeadSHA, h.SHA) {
 			continue

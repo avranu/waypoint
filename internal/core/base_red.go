@@ -14,6 +14,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -90,11 +91,10 @@ func (s *Service) shaChecks(ctx context.Context, forgeID int64, repo, sha string
 
 // fixesBase: pr's head passes (ran, not skipped) a job of failing and fails
 // none of them, and holds the base's tip, so it passed on top of what fails.
-func (s *Service) fixesBase(ctx context.Context, pr *PullRequest, tip string, failing map[string]bool) bool {
+func (s *Service) fixesBase(ctx context.Context, pr *PullRequest, tip string, failing map[string]bool) (bool, error) {
 	checks, err := s.shaChecks(ctx, pr.ForgeID, pr.Repo, pr.HeadSHA)
 	if err != nil {
-		s.log.WarnContext(ctx, "read a head's checks to see whether it fixes the base", "pr", pr.ID, "err", err)
-		return false
+		return false, fmt.Errorf("read a head's checks: %w", err)
 	}
 	passed := false
 	for _, c := range dropSuperseded(checks) {
@@ -103,31 +103,31 @@ func (s *Service) fixesBase(ctx context.Context, pr *PullRequest, tip string, fa
 		}
 		switch {
 		case c.State == CheckFailed, c.State == CheckPending:
-			return false
+			return false, nil
 		case c.State == CheckSuccess && !skippedCheck(c):
 			passed = true
 		}
 	}
 	if !passed {
-		return false
+		return false, nil
 	}
 	key := "holds:" + tip + ":" + pr.HeadSHA
 	if v, ok := s.baseRed.Load(key); ok {
-		return v.(bool)
+		return v.(bool), nil
 	}
 	cl, ok := s.Forges.(ForgeUpToDate)
 	if !ok {
-		return false
+		return false, nil
 	}
 	f, err := s.forgeByID(ctx, pr.ForgeID)
 	if err != nil || f.token == "" {
-		return false
+		return false, nil
 	}
 	holds, err := cl.Contains(ctx, f, pr.Repo, tip, pr.HeadSHA)
 	if err != nil {
 		s.log.WarnContext(ctx, "ask whether a head holds the base's tip", "pr", pr.ID, "err", err)
-		return false
+		return false, nil
 	}
 	s.baseRed.Store(key, holds)
-	return holds
+	return holds, nil
 }

@@ -122,7 +122,7 @@ func scanStack(row interface{ Scan(...any) error }) (*queueStack, error) {
 	var created int64
 	if err := row.Scan(&st.ID, &st.ForgeID, &st.Repo, &st.BaseRef, &st.PRID, &st.BaseSHA, &heads, &st.Pos, &st.Branch, &st.CommitSHA,
 		&st.State, &st.Tree, &st.RunURL, &st.Note, &created, &st.Ended, &st.RerunAt, &st.EndReason, &st.ConflictPR, &st.ConflictAhead); err != nil {
-		return nil, err
+		return &st, err // what was read before the failure, so the row can be told (st.ID)
 	}
 	if err := json.Unmarshal([]byte(heads), &st.Heads); err != nil || len(st.Heads) == 0 {
 		return &st, fmt.Errorf("stack %d lists no heads", st.ID)
