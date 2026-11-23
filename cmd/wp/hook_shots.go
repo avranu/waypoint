@@ -44,7 +44,7 @@ func (c *cli) keepScreenshot(in hookEventInput) {
 	}
 	// Someone's attachment fetched with wp files, or a picture wp shot
 	// attached already (WP-245).
-	if parts := strings.Split(filepath.ToSlash(ti.FilePath), "/"); slices.Contains(parts, "wp-files") || slices.Contains(parts, "wp-shots") {
+	if wpPictureDir(ti.FilePath) {
 		return
 	}
 	cl := c.state.sessionClaim(in.Cwd, in.SessionID)
@@ -113,4 +113,13 @@ func (s *State) sessionClaim(cwd, session string) *claim {
 		}
 	}
 	return found
+}
+
+// wpPictureDir: p is in a directory named as wp names its pictures' ones:
+// wp shot's (wp-shots, also under --out) or wp files' downloads (wp-files).
+// Only for not attaching them again: by name alone it says nothing about
+// whose they are, so the unasked Read (pictureReadAllowed) doesn't use it.
+func wpPictureDir(p string) bool {
+	parts := strings.Split(filepath.ToSlash(filepath.Dir(p)), "/")
+	return slices.Contains(parts, filesDirName) || slices.Contains(parts, shotsDirName)
 }

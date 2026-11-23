@@ -12,9 +12,12 @@ func slotTryLock(*os.File) (bool, error) {
 }
 
 // fileLock has no flock to take on Windows; callers go on unlocked.
-func fileLock(*os.File) (func(), error) {
+var fileLock = func(*os.File) (func(), error) {
 	return nil, errors.New("no flock on Windows")
 }
 
 // slotPidAlive is never reached on Windows: no slot is ever held there.
 func slotPidAlive(int) bool { return false }
+
+// slotPidSession can't read another process's environment on Windows.
+var slotPidSession = func(int) string { return "" }
