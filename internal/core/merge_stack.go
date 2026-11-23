@@ -566,7 +566,3 @@ func (s *Service) postStackFailure(ctx context.Context, f *Forge, pr *PullReques
 		s.log.WarnContext(ctx, "post the stack's status", "pr", pr.ID, "err", err)
 	}
 }
-
-func (s *Service) stackByID(ctx context.Context, id int64) (*queueStack, error) {
-	return scanStack(s.db.R.QueryRowContext(ctx, `SELECT `+stackCols+` FROM queue_stacks WHERE id = ?`, id))
-}

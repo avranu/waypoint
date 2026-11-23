@@ -206,9 +206,3 @@ func TestForkedTwiceLeavesAClosedPullRequest(t *testing.T) {
 		t.Fatalf("updated a closed pull request: %v", u)
 	}
 }
-
-// actionsJob is an Actions job's check on a head of me/app, in run 12.
-func actionsJob(name string, job int, state, description string) CommitCheck {
-	return CommitCheck{Name: "ci / " + name + " (pull_request)", State: state, Description: description,
-		URL: fmt.Sprintf("https://git.example.com/me/app/actions/runs/12/jobs/%d", job)}
-}

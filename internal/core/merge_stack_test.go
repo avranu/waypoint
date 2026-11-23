@@ -87,11 +87,6 @@ func (se *stackEnv) draftGreen(sha string, id int64) {
 	se.draftChecks(sha, CommitCheck{State: CheckSuccess, ID: id, Description: "Successful in 4m"}, CommitCheck{State: CheckSuccess, ID: id + 1, Description: "Has been skipped"})
 }
 
-// fullGreen: the full run passed on sha.
-func (se *stackEnv) fullGreen(sha string, id int64) {
-	se.draftChecks(sha, CommitCheck{State: CheckSuccess, ID: id, Description: "Successful in 16m"}, CommitCheck{State: CheckSuccess, ID: id + 1, Description: "Successful in 24m"})
-}
-
 // editSkipped: the run for marking it ready skipped its checks.
 func (se *stackEnv) editSkipped(sha string, id int64) {
 	se.draftChecks(sha, CommitCheck{State: CheckSuccess, ID: id, Description: "Has been skipped"}, CommitCheck{State: CheckSuccess, ID: id + 1, Description: "Has been skipped"})
@@ -142,28 +137,7 @@ func (se *stackEnv) stacks() []*queueStack {
 	return out
 }
 
-func stackStates(list []*queueStack) string {
-	var s []string
-	for _, st := range list {
-		s = append(s, st.name()+"="+st.State)
-	}
-	return strings.Join(s, ", ")
-}
-
 var treeA, treeB = strings.Repeat("a", 40), strings.Repeat("b", 40)
-
-// reviewOver finishes pull request n's review with no findings.
-func (se *stackEnv) reviewOver(n int) {
-	se.t.Helper()
-	pr := se.pr(n)
-	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE bot_runs SET status = 'done', finished_at = ? WHERE status = 'running' AND pr_id = ?`, se.s.nowMS(), pr.ID); err != nil {
-		se.t.Fatal(err)
-	}
-	if err := se.s.evalGate(se.ctx, pr.ID); err != nil {
-		se.t.Fatal(err)
-	}
-	se.s.Wait()
-}
 
 // A repo whose workflow doesn't run on wp-queue/ pushes gets no stacks.
 func TestStackedQueueNotOptedIn(t *testing.T) {
@@ -229,11 +203,6 @@ func TestPushCheckName(t *testing.T) {
 	}
 }
 
-// saturate sets the reading of the forge's runners (WP-509).
-func (se *stackEnv) saturate(on bool) {
-	se.s.poolSat.Store(se.pr(7).ForgeID, poolVerdict{saturated: on, at: se.s.now()})
-}
-
 // queueAll puts #7 #8 #9 in the queue in that order, as a backlog is: #7
 // at the front with its checks still running.
 func (se *stackEnv) queueAll() {
@@ -244,8 +213,6 @@ func (se *stackEnv) queueAll() {
 		}
 	}
 }
-
-const batch789 = "\n7 " + head7s + "\n8 " + head8s + "\n9 " + head9s + "\n"
 
 // The runners are saturated when a job has waited poolSatWait for one.
 func TestNotePoolSaturation(t *testing.T) {

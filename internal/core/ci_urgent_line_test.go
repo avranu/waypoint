@@ -13,19 +13,6 @@ func (be *bsEnv) labelUrgent(n int) {
 	}
 }
 
-func (be *bsEnv) aheadOf(n int) []int {
-	be.t.Helper()
-	list, err := be.s.queueAhead(be.ctx, be.pr(n))
-	if err != nil {
-		be.t.Fatal(err)
-	}
-	var out []int
-	for _, p := range list {
-		out = append(out, p.Number)
-	}
-	return out
-}
-
 // An urgent pull request's review comments get their round while its
 // checks still run, and a runner takes that round before older jobs; one
 // that isn't urgent waits for its checks (WP-686).

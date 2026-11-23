@@ -5,38 +5,6 @@ import (
 	"testing"
 )
 
-// reviewRunning turns the review gate on and puts a review of the pull
-// request's head in progress: its gate is pending until reviewDone.
-func (be *bsEnv) reviewRunning(n int) {
-	be.t.Helper()
-	pr := be.pr(n)
-	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE project_repos SET review_gate = 1`); err != nil {
-		be.t.Fatal(err)
-	}
-	if _, err := be.s.db.W.ExecContext(be.ctx, `INSERT INTO bot_runs(project_id, pr_id, kind, head_sha, status, created_at)
-		VALUES ((SELECT min(id) FROM projects), ?, 'review', ?, 'running', ?)`, pr.ID, pr.HeadSHA, be.s.nowMS()); err != nil {
-		be.t.Fatal(err)
-	}
-	if err := be.s.evalGate(be.ctx, pr.ID); err != nil {
-		be.t.Fatal(err)
-	}
-	be.s.Wait()
-}
-
-// reviewDone finishes the reviews of #7 and #8 with no findings.
-func (be *bsEnv) reviewDone() {
-	be.t.Helper()
-	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE bot_runs SET status = 'done', finished_at = ? WHERE status = 'running'`, be.s.nowMS()); err != nil {
-		be.t.Fatal(err)
-	}
-	for _, n := range []int{7, 8} {
-		if err := be.s.evalGate(be.ctx, be.pr(n).ID); err != nil {
-			be.t.Fatal(err)
-		}
-	}
-	be.s.Wait()
-}
-
 func (be *bsEnv) sweep() {
 	be.t.Helper()
 	be.s.CheckBabysits(be.ctx)
