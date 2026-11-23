@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"git.jmann.me/claude/waypoint/internal/core"
+	"git.jmann.me/claude/waypoint/internal/core/meaning"
 )
 
 // The log's reach is said as the server keeps it: days on disk, or memory
@@ -166,13 +167,13 @@ func TestServerStatusTextMeaning(t *testing.T) {
 		t.Errorf("none configured:\n%s", out)
 	}
 	since, ok, retry := now.Add(-2*24*time.Hour), now.Add(-50*time.Hour), now.Add(20*time.Minute)
-	st.Meaning = &core.MeaningHealth{State: "down", DownSince: &since, LastOK: &ok, Failures: 7, RetryAt: &retry, LastError: "context deadline exceeded"}
+	st.Meaning = &meaning.Health{State: "down", DownSince: &since, LastOK: &ok, Failures: 7, RetryAt: &retry, LastError: "context deadline exceeded"}
 	out := serverStatusText(st, now)
 	want := "Meaning service: DOWN since 11-18 12:00 UTC (2d0h ago), 7 calls unanswered in a row; next try 12:20 UTC; last answered 11-18 10:00 UTC (2d2h ago)\n  context deadline exceeded\n"
 	if !strings.Contains(out, want) {
 		t.Errorf("missing %q in:\n%s", want, out)
 	}
-	st.Meaning = &core.MeaningHealth{State: "up", LastOK: &ok}
+	st.Meaning = &meaning.Health{State: "up", LastOK: &ok}
 	if out := serverStatusText(st, now); !strings.Contains(out, "Meaning service: answering, last answered") {
 		t.Errorf("up:\n%s", out)
 	}

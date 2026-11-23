@@ -53,6 +53,37 @@ func TestSessionStopTrimIsCounted(t *testing.T) {
 	}
 }
 
+// The record of what was named as outstanding (WP-1571) neither counts toward
+// the events a trim keeps nor is trimmed: it is what stops an item being named
+// again (audit #1344.8).
+func TestSessionStopTrimLeavesTheOutstandingRecord(t *testing.T) {
+	e := newEnv(t)
+	ag := agentActor(e.admin, "anthropic/claude-code")
+	sess := startedSession(t, e, ag, "trim-2")
+	now := e.clockNow().UnixMilli()
+	for i := 0; i < 50; i++ {
+		if _, err := e.s.db.W.Exec(`INSERT INTO session_events(session_id, kind, ref_type, label, created_at) VALUES (?, 'outstanding', 'wait', ?, ?)`, sess.Session, itoa64(int64(i)), now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < sessionEventsKept-10; i++ {
+		if _, err := e.s.db.W.Exec(`INSERT INTO session_events(session_id, kind, created_at) VALUES (?, 'update', ?)`, sess.Session, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := e.s.SessionHook(e.ctx, sess, []HookEvent{hook("m1", "trim-2", "Stop", nil)}); err != nil {
+		t.Fatal(err)
+	}
+	if n := dropCount(t, e, DropSessionEventsTrim); n != 0 {
+		t.Errorf("fewer events than kept, yet the trim dropped %d", n)
+	}
+	var named int
+	_ = e.s.db.R.QueryRow(`SELECT count(*) FROM session_events WHERE session_id = ? AND kind = 'outstanding'`, sess.Session).Scan(&named)
+	if named != 50 {
+		t.Errorf("the outstanding record kept %d of 50 rows", named)
+	}
+}
+
 // --no-prompts: the prompt is on the timeline as a row with no text, and
 // counted; a prompt with its text is not.
 func TestWithheldPromptIsARowAndCounted(t *testing.T) {

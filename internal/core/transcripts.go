@@ -54,7 +54,7 @@ const TranscriptJobRefusal = "a runner job's token does not write the transcript
 
 // ErrTranscriptJob is the refusal itself, a 403 that errors.Is(ErrForbidden)
 // also matches; the API gives it the code transcript_job.
-var ErrTranscriptJob error = &forbiddenError{TranscriptJobRefusal}
+var ErrTranscriptJob = forbidden("%s", TranscriptJobRefusal)
 
 // ErrTranscriptQuota: storing the piece would pass the archive's cap
 // (WAYPOINT_TRANSCRIPT_MAX_MB). The client holds the file and tries again.

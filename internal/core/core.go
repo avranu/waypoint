@@ -24,6 +24,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"git.jmann.me/claude/waypoint/internal/core/meaning"
 	"git.jmann.me/claude/waypoint/internal/db"
 	"git.jmann.me/claude/waypoint/internal/tracing"
 )
@@ -180,8 +181,8 @@ type Service struct {
 	Forges ForgeClient
 	// language models for AI tasks, swappable in tests
 	LLM LLM
-	// Meaning is the meaning service (meaning_client.go); nil without one.
-	Meaning     MeaningModels
+	// Meaning is the meaning service (package meaning); nil without one.
+	Meaning     meaning.Models
 	aiSlots     chan struct{}
 	surplusSlot chan struct{} // surplus work, one at a time beside aiSlots: it never waits for normal work nor holds it up (WP-906)
 	aiMu        sync.Mutex
@@ -321,7 +322,7 @@ func New(d *db.DB, cfg Config, log *slog.Logger) *Service {
 	// provider that doesn't stream sends with the whole answer.
 	s.LLM = &httpLLM{http: forgeEgress.streamClient(llmHeaderTimeout)}
 	if strings.TrimSpace(cfg.MeaningURL) != "" {
-		s.Meaning = newHTTPMeaning(cfg.MeaningURL, cfg.MeaningToken, forgeEgress.client(meaningTimeout), s.log, func() time.Time { return s.now() })
+		s.Meaning = meaning.NewHTTP(cfg.MeaningURL, cfg.MeaningToken, forgeEgress.client(meaning.Timeout), s.log, func() time.Time { return s.now() })
 	}
 	s.envs = newEnvRunner(cfg.Egress)
 	s.botKick = make(chan struct{}, 1)
@@ -371,35 +372,6 @@ func (s *Service) goBG(f func()) {
 		f()
 	}()
 }
-
-// ---- errors ----
-
-var (
-	ErrNotFound     = errors.New("not found")
-	ErrForbidden    = errors.New("forbidden")
-	ErrUnauthorized = errors.New("unauthorized")
-	ErrConflict     = errors.New("conflict")
-	// ErrUnavailable: a service Waypoint stands in front of (an assistant's
-	// door) didn't answer; a 502.
-	ErrUnavailable = errors.New("unavailable")
-)
-
-// InvalidError is a validation failure with a message safe to show users.
-type InvalidError struct{ Msg string }
-
-func (e *InvalidError) Error() string { return e.Msg }
-
-func invalid(format string, args ...any) error {
-	return &InvalidError{Msg: fmt.Sprintf(format, args...)}
-}
-
-// IsInvalid reports whether err is a validation error.
-func IsInvalid(err error) bool {
-	var ie *InvalidError
-	return errors.As(err, &ie)
-}
-
-func notFound(what string) error { return fmt.Errorf("%s %w", what, ErrNotFound) }
 
 // ---- actors ----
 

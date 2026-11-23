@@ -19,18 +19,21 @@ import (
 // quiet on the shapes main uses on purpose (testdata/src/RULE).
 func TestAnalyzers(t *testing.T) {
 	dir := analysistest.TestData()
+	// The corelayers fixture's domains, bottom-up.
+	defer wplint.SetCoreOrder("forge", "pr", "merge", "top")()
 	cases := map[string][]string{
 		"apidb":         {"apidb/internal/api", "apidb/internal/core"},
 		"writeclosure":  {"writeclosure/internal/core"},
 		"actorused":     {"actorused/internal/core"},
 		"clock":         {"clock/internal/core"},
-		"logctx":        {"logctx/internal/core"},
-		"blankerr":      {"blankerr/internal/core"},
-		"logmsg":        {"logmsg/internal/core"},
+		"logctx":        {"logctx/internal/core", "logctx/internal/core/sub"},
+		"blankerr":      {"blankerr/internal/core", "blankerr/internal/core/sub"},
+		"logmsg":        {"logmsg/internal/core", "logmsg/internal/core/sub"},
 		"sqlscan":       {"sqlscan/store"},
 		"schemachain":   {"schemachain/internal/core"},
 		"protecteddiff": {"protecteddiff/forge"},
 		"statuscreator": {"statuscreator/internal/core"},
+		"corelayers":    {"corelayers/internal/core", "corelayers/internal/core/kernel", "corelayers/internal/core/forge", "corelayers/internal/core/pr", "corelayers/internal/core/merge", "corelayers/internal/core/top", "corelayers/internal/core/stray"},
 		"testenv":       {"testenv/cli", "testenv/clean", "testenv/notests", "testenv/ranged"},
 	}
 	// These rules need the package's tests (llmSchemas, TestMain), so only

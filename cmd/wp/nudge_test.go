@@ -128,7 +128,7 @@ func TestRemoteHost(t *testing.T) {
 	}
 }
 
-// The hook says its note as context and never decides; counts what it showed.
+// The hook says its note as context and never refuses (it only allows a picture Read, read_pictures_test.go); counts what it showed.
 func TestNudgeHook(t *testing.T) {
 	t.Setenv("WAYPOINT_CONFIG_DIR", t.TempDir())
 	c := &cli{}
