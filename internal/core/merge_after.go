@@ -66,6 +66,15 @@ type PRMergeWait struct {
 	// tasks: the projects of the two tasks a wait from task links comes
 	// from; Why names them only to someone who may see both.
 	tasks [2]int64
+	// Stack: the pull request waited for is the one this is stacked on, its
+	// base being that one's head branch (WP-ADR153, WP-1670). It isn't set
+	// or dropped: moving this one off that branch (wp pr edit --base) or
+	// the move when the other merges ends it. State closed: the branch is
+	// dead, and this one may not merge into it either.
+	Stack bool `json:"stacked,omitempty"`
+	// onto: where Waypoint moves a stacked pull request when the other
+	// merges, which is the other's base.
+	onto string
 }
 
 // taskWaitWhy is Why for a wait from task links, to someone who may not see
@@ -74,6 +83,9 @@ const taskWaitWhy = "its task blocks this one's"
 
 // said is Why as anyone who sees the pull request may read it.
 func (w PRMergeWait) said() string {
+	if w.Stack {
+		return "its base is that pull request's branch"
+	}
 	if w.Set {
 		return w.Why
 	}
@@ -97,11 +109,24 @@ const mergeWaitPrefix = "merges after "
 
 // mergeWaitReason is the merge check reason for one wait.
 func mergeWaitReason(pr *PullRequest, w PRMergeWait) string {
+	if w.Stack {
+		return fmt.Sprintf("%s%s, which it is stacked on (Waypoint moves it onto %s when %s merges)", mergeWaitPrefix, w.ref(pr), cmp(w.onto, "its base"), w.ref(pr))
+	}
 	state := map[bool]string{true: "a draft", false: "open"}[w.State == "draft"]
 	if w.apart {
 		return fmt.Sprintf("%sa pull request in another project, which is still %s", mergeWaitPrefix, state)
 	}
 	return fmt.Sprintf("%s%s, which is still %s (%s)", mergeWaitPrefix, w.ref(pr), state, w.said())
+}
+
+// stackClosedPrefix starts the merge check reason of a pull request whose
+// base is the branch of one closed without merging: a person's call.
+const stackClosedPrefix = "its base "
+
+// stackClosedReason is that reason (WP-1670).
+func stackClosedReason(pr *PullRequest, w PRMergeWait) string {
+	return fmt.Sprintf("%s%s is %s's branch, which was closed without merging; move it with `wp pr edit %d --base %s`",
+		stackClosedPrefix, pr.BaseRef, w.ref(pr), pr.Number, cmp(w.onto, "BRANCH"))
 }
 
 // withoutMergeWaits drops the waits from merge check reasons.
@@ -261,7 +286,56 @@ func (s *Service) mergeAfterOnce(ctx context.Context, q queryer, pr *PullRequest
 		w.Why = blocker + " blocks " + blocked
 		out = append(out, w)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return s.withStackWait(ctx, q, pr, out)
+}
+
+// withStackWait adds the wait a stacked pull request has (WP-ADR153,
+// WP-1670): its base is the head branch of a pull request of the repo,
+// open or a draft, so it doesn't merge into that branch, which would move
+// the parent's head after its review and CI. Waypoint moves it onto the
+// parent's base when the parent merges, and the wait ends with that move.
+// Recorded pull requests only, no forge read. A branch a pull request was
+// merged into is long-lived (develop), not a parent's: the default branch
+// never has a pull request from it, and a protected one is told by that.
+func (s *Service) withStackWait(ctx context.Context, q queryer, pr *PullRequest, out []PRMergeWait) ([]PRMergeWait, error) {
+	if pr.BaseRef == "" || (pr.State != "open" && pr.State != "draft") {
+		return out, nil
+	}
+	var w PRMergeWait
+	var onto string
+	err := q.QueryRowContext(ctx, `SELECT o.id, o.repo, o.number, o.url, o.state, o.base_ref FROM pull_requests o
+		WHERE o.forge_id = ? AND o.repo = ? COLLATE NOCASE AND o.head_ref = ? AND (o.head_repo = '' OR o.head_repo = o.repo COLLATE NOCASE)
+		  AND o.id != ? AND o.state IN ('open','draft')
+		  AND NOT EXISTS (SELECT 1 FROM pull_requests m WHERE m.forge_id = o.forge_id AND m.repo = o.repo COLLATE NOCASE AND m.base_ref = o.head_ref AND m.state = 'merged')
+		ORDER BY o.id DESC LIMIT 1`, pr.ForgeID, pr.Repo, pr.BaseRef, pr.ID).Scan(&w.PRID, &w.Repo, &w.Number, &w.URL, &w.State, &onto)
+	if errors.Is(err, sql.ErrNoRows) {
+		// No open parent: one closed without merging, the latest of that branch.
+		var state string
+		err = q.QueryRowContext(ctx, `SELECT o.id, o.repo, o.number, o.url, o.state, o.base_ref FROM pull_requests o
+			WHERE o.forge_id = ? AND o.repo = ? COLLATE NOCASE AND o.head_ref = ? AND (o.head_repo = '' OR o.head_repo = o.repo COLLATE NOCASE)
+			  AND o.id != ?
+			  AND NOT EXISTS (SELECT 1 FROM pull_requests m WHERE m.forge_id = o.forge_id AND m.repo = o.repo COLLATE NOCASE AND m.base_ref = o.head_ref AND m.state = 'merged')
+			ORDER BY o.id DESC LIMIT 1`, pr.ForgeID, pr.Repo, pr.BaseRef, pr.ID).Scan(&w.PRID, &w.Repo, &w.Number, &w.URL, &state, &onto)
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && state != "closed") {
+			return out, nil
+		}
+		w.State = state
+	}
+	if err != nil {
+		return nil, err
+	}
+	w.Stack, w.onto = true, onto
+	for n := range out {
+		if out[n].PRID == w.PRID {
+			out[n].Stack, out[n].onto = true, onto
+			return out, nil
+		}
+	}
+	w.Why = w.said()
+	return append(out, w), nil
 }
 
 // linkedPR is the SQL join condition for "pull request p is the one link l
@@ -295,6 +369,8 @@ func (s *Service) mergeWaitReasons(ctx context.Context, pr *PullRequest) (reason
 	}
 	for _, w := range waits {
 		switch {
+		case w.Stack && w.State == "closed":
+			reasons = append(reasons, stackClosedReason(pr, w))
 		case !w.open():
 		case w.Mutual:
 			other := "a pull request in another project"
@@ -346,6 +422,16 @@ func (s *Service) SetPRMergeAfter(ctx context.Context, actor *Actor, prID int64,
 	}
 	if other.ID == pr.ID {
 		return nil, invalid("a pull request can't merge after itself")
+	}
+	if !on && other.Repo == pr.Repo && other.HeadRef == pr.BaseRef && (other.State == "open" || other.State == "draft") && pr.BaseRef != "" {
+		if waits, err := s.mergeAfter(ctx, s.db.R, pr); err == nil {
+			for _, w := range waits {
+				if w.PRID == other.ID && w.Stack {
+					return nil, invalid("#%d waits for #%d because its base %s is that pull request's branch; Waypoint moves it onto %s when #%d merges. To merge it into %s without that: wp pr edit %d --base %s",
+						pr.Number, other.Number, pr.BaseRef, cmp(w.onto, "its base"), other.Number, pr.BaseRef, pr.Number, pr.BaseRef)
+				}
+			}
+		}
 	}
 	if on && pr.State != "open" && pr.State != "draft" {
 		return nil, invalid("it is %s: nothing to wait for", pr.State)
@@ -420,12 +506,14 @@ func (s *Service) nudgeMergeWaiters(ctx context.Context, pr *PullRequest) {
 	// #nosec G202 -- the joined SQL is fixed text; values are bound
 	s.lookAgainAt(ctx, "find the pull requests that merge after one", `SELECT pr_id FROM pr_merge_after WHERE after_id = ?
 		UNION
+		SELECT id FROM pull_requests WHERE forge_id = ? AND repo = ? COLLATE NOCASE AND base_ref = ? AND ? != '' AND state IN ('open','draft') AND id != ?
+		UNION
 		SELECT w.id FROM external_links bl
 		JOIN issue_relations r ON r.kind = 'blocks' AND r.source_id = bl.issue_id
 		JOIN external_links el ON el.issue_id = r.target_id AND el.kind = 'pull'
 		JOIN pull_requests w ON `+linkedPR("w", "el")+`
 		WHERE bl.kind = 'pull' AND `+linksPR("bl")+`
-		  AND w.id != ? AND w.state IN ('open','draft')`, pr.ID, pr.URL, pr.Repo, pr.Number, pr.ForgeID, pr.ForgeID, pr.ID)
+		  AND w.id != ? AND w.state IN ('open','draft')`, pr.ID, pr.ForgeID, pr.Repo, pr.HeadRef, pr.HeadRef, pr.ID, pr.URL, pr.Repo, pr.Number, pr.ForgeID, pr.ForgeID, pr.ID)
 }
 
 // onMergeOrderEvent looks again at once at the pull requests a task change

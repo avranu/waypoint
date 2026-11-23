@@ -429,3 +429,113 @@ func TestOpenWithBaseFailsWhenForgeCannotMove(t *testing.T) {
 		t.Errorf("recorded base %q after a failed move", pr.BaseRef)
 	}
 }
+
+// stackedPair opens a parent into main and a child into the parent's
+// branch, both with green CI, and arms the child (WP-1670).
+func stackedPair(t *testing.T) (se *shipEnv, parent, child ForgePR) {
+	t.Helper()
+	se = newShipEnv(t, "forgejo")
+	se.policy(MergePolicyInput{AutoMerge: ptr(false), ReviewWaitMinutes: ptr(0), QuietMinutes: ptr(0)})
+	se.llm.answers["opencode/muse-spark-1.3-contributor-free"] = noFindings
+	parent, child = testPR, testPR
+	parent.BaseRef = "main"
+	child.Number, child.HeadRef, child.HeadSHA, child.BaseRef = 6, "on-login", "2222222bbbb", parent.HeadRef
+	se.pullHook("opened", parent)
+	se.pullHook("opened", child)
+	se.drain()
+	if _, err := se.s.recordPR(se.ctx, se.f, "me/app", &child, false); err != nil { // the hook says main
+		t.Fatal(err)
+	}
+	se.sg.setChecks(parent.HeadSHA, CommitCheck{Name: "ci / web", State: CheckSuccess})
+	se.sg.setChecks(child.HeadSHA, CommitCheck{Name: "ci / web", State: CheckSuccess})
+	se.poll()
+	if res, err := se.s.MergePR(se.ctx, se.admin, se.pr(6).ID, MergeInput{WhenReady: true}); err != nil || !res.Armed {
+		t.Fatalf("arm the child: %+v %v", res, err)
+	}
+	return se, parent, child
+}
+
+// WP-ADR153, WP-1670: an armed child is never merged into its parent's
+// branch while the parent is open: that would move the parent's head after
+// its review. The parent's merge moves it onto the parent's base, still
+// armed, same head and reviews, and it is held no longer.
+func TestStackedChildWaitsForParent(t *testing.T) {
+	se, parent, _ := stackedPair(t)
+	before := se.pr(6)
+	for range 2 {
+		se.poll()
+	}
+	for _, m := range se.sg.merged() {
+		t.Fatalf("merged into the parent's branch: %+v", m)
+	}
+	rd, err := se.s.readinessFor(se.ctx, se.pr(6), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := mergeWaitIn(rd.Reasons); !strings.Contains(r, "merges after #5, which it is stacked on (Waypoint moves it onto main when #5 merges)") {
+		t.Fatalf("reasons %q", rd.Reasons)
+	}
+	if rd.Ready {
+		t.Error("ready while its parent is open")
+	}
+	// Not set, so it can't be dropped like a set wait: the way out is --base.
+	if _, err := se.s.SetPRMergeAfter(se.ctx, se.admin, se.pr(6).ID, "", 5, false); err == nil || !strings.Contains(err.Error(), "wp pr edit 6 --base fix-login") {
+		t.Errorf("off: %v", err)
+	}
+
+	if _, err := se.s.MergePR(se.ctx, se.admin, se.pr(5).ID, MergeInput{}); err != nil {
+		t.Fatal(err)
+	}
+	se.s.Wait()
+	c := se.pr(6)
+	if c.BaseRef != "main" || c.ArmedAt == nil || c.HeadSHA != before.HeadSHA {
+		t.Fatalf("moved: base %q armed %v head %q", c.BaseRef, c.ArmedAt, c.HeadSHA)
+	}
+	if rd, err = se.s.readinessFor(se.ctx, c, true); err != nil || mergeWaitIn(rd.Reasons) != "" {
+		t.Errorf("still waits: %+v %v", rd, err)
+	}
+	if parent.HeadRef == c.BaseRef {
+		t.Error("test setup")
+	}
+}
+
+// WP-1670: a parent closed without merging leaves its child nothing to
+// merge into: a person's call, with the way out in the reason.
+func TestStackedChildOfClosedParentNeedsPerson(t *testing.T) {
+	se, parent, _ := stackedPair(t)
+	parent.State = "closed"
+	se.pullHook("closed", parent)
+	se.s.Wait()
+	se.poll()
+	for _, m := range se.sg.merged() {
+		t.Fatalf("merged into a closed parent's branch: %+v", m)
+	}
+	c := se.pr(6)
+	if c.BaseRef != "fix-login" {
+		t.Fatalf("base %q: nothing moves it automatically", c.BaseRef)
+	}
+	rd, err := se.s.readinessFor(se.ctx, c, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	why := personal(c, rd.Reasons)
+	if rd.Ready || !strings.Contains(why, "closed without merging; move it with `wp pr edit 6 --base main`") {
+		t.Fatalf("ready %v reasons %q", rd.Ready, rd.Reasons)
+	}
+}
+
+// WP-1670: a pull request closed on the forge isn't armed.
+func TestArmClosedPullRequestFails(t *testing.T) {
+	se := newShipEnv(t, "forgejo")
+	se.llm.answers["opencode/muse-spark-1.3-contributor-free"] = noFindings
+	se.pullHook("opened", testPR)
+	se.drain()
+	// Closed on the forge, its webhook not in yet: the record says open.
+	se.sg.setForgeState(se.f, "me/app", 5, "closed")
+	if res, err := se.s.MergePR(se.ctx, se.admin, se.pr(5).ID, MergeInput{WhenReady: true}); err == nil {
+		t.Fatalf("armed a closed pull request: %+v", res)
+	}
+	if se.pr(5).ArmedAt != nil {
+		t.Error("armed")
+	}
+}

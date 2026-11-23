@@ -4,7 +4,8 @@ package core
 // the head branch of another open pull request of the repo. Shipping picks
 // that base, and when the parent merges its children move to the parent's
 // base before the parent's branch is deleted, so the forge doesn't close
-// them with it.
+// them with it. Until then a child never merges into the parent's branch:
+// it waits for the parent as a merge-after wait (merge_after.go).
 
 import (
 	"context"
@@ -228,7 +229,7 @@ func (s *Service) moveStackChild(ctx context.Context, f *Forge, parent, child *P
 	if err := rb.EditPRBase(ctx, f, cur.Repo, cur.Number, parent.BaseRef); err != nil {
 		return err
 	}
-	return s.write(ctx, SystemActor(), func(t *tx) error {
+	err = s.write(ctx, SystemActor(), func(t *tx) error {
 		if err := setPRBase(ctx, t, cur.ID, parent.BaseRef); err != nil {
 			return err
 		}
@@ -238,6 +239,11 @@ func (s *Service) moveStackChild(ctx context.Context, f *Forge, parent, child *P
 		t.emit(&Event{Kind: EvPRActivity, ProjectID: projectID, New: "edited", Data: map[string]any{"pr_id": cur.ID}})
 		return nil
 	})
+	if err == nil {
+		// Its stack wait ended with the move: it joins the new base's line.
+		s.nudgeBabysit(cur.ID, false)
+	}
+	return err
 }
 
 // moveStackOff moves every pull request in stacked onto the merged pr's

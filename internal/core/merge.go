@@ -643,6 +643,15 @@ func (s *Service) MergePR(ctx context.Context, actor *Actor, prID int64, in Merg
 		}
 	}()
 	if in.WhenReady {
+		// The record can lag the forge: one closed or merged there isn't
+		// armed (WP-1670). A forge that doesn't answer leaves the record.
+		if !s.forgeStillOpen(ctx, ctx, pr.ID) {
+			cur, err := s.prByID(ctx, s.db.R, pr.ID)
+			if err != nil {
+				return nil, err
+			}
+			return nil, invalid("this pull request is %s", cur.State)
+		}
 		if pr.Outside {
 			return nil, errPROutside(pr) // a head no person approved never merges by itself (WP-281)
 		}
