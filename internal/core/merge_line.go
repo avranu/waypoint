@@ -767,19 +767,19 @@ func (s *Service) candEndAs(ctx context.Context, f *Forge, st *queueStack, state
 
 // candDiscardReady takes back the readiness a pull request got from st: the
 // head says the candidate no longer counts (so the edit's run doesn't skip
-// its checks) and it goes back to draft for the usual way.
+// its checks) and it goes back to draft for the usual way. Who got it is
+// what markReadyOn recorded (ready_cand), still at that head: not a head of
+// st that happens to be ready (its readiness may be its own full run's), nor
+// st's pr_id (the last head, while the line marks the first ready).
 func (s *Service) candDiscardReady(ctx context.Context, f *Forge, st *queueStack, why string) {
-	heads := st.Heads
-	if len(heads) == 0 && st.PRID != 0 {
-		// A row whose heads couldn't be read: its own pull request stands in,
-		// with the head it was marked ready at.
-		if pr, err := s.prByID(ctx, s.db.R, st.PRID); err == nil && pr.readySHA != "" {
-			heads = []stackHead{{PRID: pr.ID, Number: pr.Number, SHA: pr.readySHA}}
-		}
+	ids, err := queryIDs(ctx, s.db.R, `SELECT id FROM pull_requests WHERE ready_cand = ? AND state = 'open'`, st.ID)
+	if err != nil {
+		s.log.WarnContext(ctx, "read who was marked ready on a candidate", "candidate", st.ID, "err", err)
+		return
 	}
-	for _, h := range heads {
-		pr, err := s.prByID(ctx, s.db.R, h.PRID)
-		if err != nil || pr.State != "open" || !pr.WipAuto || !sameSHA(pr.readySHA, h.SHA) || !sameSHA(pr.HeadSHA, h.SHA) {
+	for _, id := range ids {
+		pr, err := s.prByID(ctx, s.db.R, id)
+		if err != nil || pr.State != "open" || !pr.WipAuto || !sameSHA(pr.readySHA, pr.HeadSHA) {
 			continue
 		}
 		s.postStackFailure(ctx, f, pr, st, why)

@@ -790,6 +790,10 @@ func TestMarkReadyOnACandidateForAnOpenPR(t *testing.T) {
 	if got := se.pr(7).Title; got != pr.Title {
 		t.Errorf("title changed: %q -> %q", pr.Title, got)
 	}
+	var cand int64
+	if err := se.s.db.R.QueryRowContext(se.ctx, `SELECT ready_cand FROM pull_requests WHERE number = 7`).Scan(&cand); err != nil || cand != st.ID {
+		t.Errorf("ready_cand %d (%v), want the candidate %d", cand, err, st.ID)
+	}
 	// Marked at an earlier head: the time stays, the head is this one's.
 	se.setClock(se.clockNow().Add(time.Hour))
 	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE pull_requests SET ready_sha = 'old' WHERE number = 7`); err != nil {
@@ -1241,26 +1245,40 @@ func TestLineGatherEndsAnUnreadableLiveCandidateLikeAnyOther(t *testing.T) {
 }
 
 // A ready candidate whose row can't be read still gives back the readiness
-// its pull request got from it (audit 1535).
+// a pull request got from it (audit 1535): the one recorded as marked ready
+// on it, not its pr_id. A candidate for [7,8] has 8 as its pr_id while the
+// line marks 7 ready on it; 8, ready on its own full run, keeps that (c6438).
 func TestLineGatherDiscardsTheReadyMarkOfAnUnreadableCandidate(t *testing.T) {
 	se := newStackEnv(t)
 	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE project_repos SET line_candidates = 0`); err != nil {
 		t.Fatal(err)
 	}
 	se.draftGreen(head7s, 5)
-	pr := se.pr(7)
-	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE pull_requests SET state = 'open', wip_auto = 1, ready_at = 1, ready_sha = ? WHERE id = ?`, head7s, pr.ID); err != nil {
+	se.draftGreen(head8s, 6)
+	pr7, pr8 := se.pr(7), se.pr(8)
+	res, err := se.s.db.W.ExecContext(se.ctx, `INSERT INTO queue_stacks(forge_id, repo, base_ref, pr_id, base_sha, heads, branch, commit_sha, state, created_at)
+		VALUES (?, ?, ?, ?, 'x', '[]', 'wp-queue/main/bad', 'bad0001', ?, 1)`, pr8.ForgeID, pr8.Repo, pr8.BaseRef, pr8.ID, stackReady)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := se.s.db.W.ExecContext(se.ctx, `INSERT INTO queue_stacks(forge_id, repo, base_ref, pr_id, base_sha, heads, branch, commit_sha, state, created_at)
-		VALUES (?, ?, ?, ?, 'x', '[]', 'wp-queue/main/bad', 'bad0001', ?, 1)`, pr.ForgeID, pr.Repo, pr.BaseRef, pr.ID, stackReady); err != nil {
-		t.Fatal(err)
+	cand, _ := res.LastInsertId()
+	for _, r := range []struct {
+		id   int64
+		head string
+		cand int64
+	}{{pr7.ID, head7s, cand}, {pr8.ID, head8s, 0}} {
+		if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE pull_requests SET state = 'open', wip_auto = 1, ready_at = 1, ready_sha = ?, ready_cand = ? WHERE id = ?`, r.head, r.cand, r.id); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if _, err := se.s.lineGather(se.ctx, lineOf(pr)); err != nil {
+	if _, err := se.s.lineGather(se.ctx, lineOf(pr7)); err != nil {
 		t.Fatal(err)
 	}
 	if got := se.pr(7).State; got != "draft" {
 		t.Errorf("the pull request marked ready on the unreadable candidate is %q, want draft", got)
+	}
+	if got := se.pr(8).State; got != "open" {
+		t.Errorf("the candidate's pr_id, ready on its own run, is %q, want open", got)
 	}
 }
 
