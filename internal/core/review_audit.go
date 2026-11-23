@@ -845,7 +845,7 @@ func (s *Service) dropReviewer(ctx context.Context, rv *CodeAudit) {
 // landingOdds is how likely a round's audit is to end with findings by
 // the round's patience.
 type landingOdds struct {
-	known       bool    // enough recent runs to tell (reviewerMinRuns)
+	known       bool    // enough recent runs that went as long as it has to tell (reviewerMinRuns)
 	chance      float64 // the share of runs like it that would have
 	in, runs    int     // of how many runs that had gone as long as it has
 	start       int64   // when it likely starts running (now, for one running)
@@ -872,7 +872,8 @@ func (o landingOdds) late(now, patience int64) string {
 // attempts) is to end with findings by deadline, by the recent runs of
 // jobs like it (audits through the same CLI, the gateway's mostly, of the
 // last reviewStatsSpan): of those that had gone as long as it has, the
-// share that ended done by then. One queued starts after a median run for
+// share that ended done by then, when at least reviewerMinRuns had (with
+// fewer the odds aren't known). One queued starts after a median run for
 // each wave of the gateway's slots ahead of it, as /wp review estimates
 // (auditProgress); one between attempts at its retry. A failed run never
 // ended in time; one a person or a round cancelled says nothing, and so
@@ -953,9 +954,15 @@ func (s *Service) auditLandingChance(ctx context.Context, a *CodeAudit, job *Run
 			o.in++
 		}
 	}
-	if o.runs > 0 {
-		o.chance = float64(o.in) / float64(o.runs)
+	if o.runs < reviewerMinRuns {
+		// Too few runs went as long as this one has to tell (none, for one
+		// that has outlasted them all): the share of so few isn't odds, and
+		// no evidence isn't "unlikely", so the round waits out its patience
+		// as it does with too few runs at all (WP-ADR117, WP-1711).
+		o.known = false
+		return o
 	}
+	o.chance = float64(o.in) / float64(o.runs)
 	return o
 }
 

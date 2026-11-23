@@ -634,6 +634,42 @@ func TestReviewRoundFallsBack(t *testing.T) {
 			}
 		}
 	})
+	// WP-1711: an audit that has run longer than every recent run like it
+	// has no runs to read its odds from. That isn't "unlikely": no reviewer
+	// starts on it, and the round waits out its patience (WP-ADR117: "given
+	// at least 8 such runs; with fewer it waits out the hour").
+	t.Run("no runs went as long", func(t *testing.T) {
+		a, box := auditAPEnv(t)
+		at := a.clockNow().UnixMilli()
+		for i := range reviewerMinRuns + 2 {
+			end := at - int64(i)*int64(time.Hour/time.Millisecond)
+			if _, err := a.s.db.W.Exec(`INSERT INTO runner_jobs(owner_id, kind, title, cli, input, state, timeout, source, result, created_at, started_at, finished_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+				a.admin.User.ID, JobAudit, "an audit", GatewayCLI, "{}", "done", 3600, "audit", "{}", end-(30*time.Minute).Milliseconds(), end-(30*time.Minute).Milliseconds(), end); err != nil {
+				t.Fatal(err)
+			}
+		}
+		id := start(a)
+		a.tick(61 * time.Second)
+		a.s.Wait()
+		if audit := a.poll(a.admin, box, RunnerPoll{}).Job; audit == nil || agentJobOf(t, audit).CLI != GatewayCLI {
+			t.Fatalf("no audit job: %+v", audit)
+		}
+		for range 4 {
+			a.tick(10 * time.Minute)
+		}
+		if rv, err := a.s.roundReviewer(a.ctx, id); err != nil || rv != nil {
+			t.Fatalf("a reviewer started at 41m on no runs that went as long: %+v (%v); step %q", rv, err, a.step().detail)
+		}
+		if d := a.step().detail; strings.Contains(d, "recent runs") {
+			t.Errorf("the wait gives odds it doesn't have: %q", d)
+		}
+		for range 2 {
+			a.tick(10 * time.Minute)
+		}
+		if rv, err := a.s.roundReviewer(a.ctx, id); err != nil || rv == nil {
+			t.Errorf("no reviewer once the hour had passed: %+v (%v); step %q", rv, err, a.step().detail)
+		}
+	})
 	// WP-1306: audits the gateway refused (no model at the bar) say nothing
 	// of how long one that runs takes: they don't lower the odds, so the
 	// round still waits for an audit that likely lands. Other quick failures
