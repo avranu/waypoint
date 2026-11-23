@@ -55,8 +55,8 @@ func TestPRLinksUseIndexes(t *testing.T) {
 		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
 			t.Fatal(err)
 		}
-		if strings.HasPrefix(detail, "SCAN el") {
-			t.Errorf("a full scan of external links: %s", detail)
+		if strings.HasPrefix(detail, "SCAN el") || strings.Contains(detail, "AUTOMATIC") {
+			t.Errorf("external links scanned or indexed on the fly: %s", detail)
 		}
 	}
 	rows.Close()
