@@ -1,6 +1,7 @@
 package core
 
 import (
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -304,37 +305,142 @@ func TestDoctorUrgentLane(t *testing.T) {
 	}
 }
 
-// stacks_paused shows only while the line's fallback is on, with when it
-// ends and what it means.
-func TestCIDoctorStacksPaused(t *testing.T) {
-	be, pr := armedBabysit(t)
-	now := be.clockNow()
-	if _, err := be.s.db.W.ExecContext(be.ctx, `INSERT INTO queue_stacks(forge_id, repo, base_ref, pr_id, base_sha, branch, commit_sha, state, end_reason, created_at, ended_at)
-		VALUES (?,?,?,?,'b','wp-queue/main/1','c','cancelled',?,?,?)`, pr.ForgeID, pr.Repo, pr.BaseRef, pr.ID, endNoRun, now.UnixMilli(), now.UnixMilli()); err != nil {
+// A main push run whose only failed job is advisories is a warning that
+// doesn't say the tip is held back; any other failed job is main_red as before
+// (WP-1660).
+func TestDoctorMainAdvisories(t *testing.T) {
+	now := time.Now()
+	fail := func(run int64, names ...string) []ActionTask {
+		var ts []ActionTask
+		for _, n := range names {
+			ts = append(ts, ActionTask{Name: n, RunNumber: run, Status: "failure"})
+		}
+		// Another run's failed shard says nothing about this one.
+		return append(ts, ActionTask{Name: "lint", RunNumber: run, Status: "success"}, ActionTask{Name: "backend shard 1", RunNumber: run + 1, Status: "failure"})
+	}
+	if !onlyAdvisoriesFailed(fail(7, "advisories"), 7) {
+		t.Error("only advisories failed: want true")
+	}
+	if onlyAdvisoriesFailed(fail(7, "advisories", "backend shard 2"), 7) {
+		t.Error("advisories and a shard failed: want false")
+	}
+	if onlyAdvisoriesFailed(nil, 7) {
+		t.Error("no jobs on record: want false")
+	}
+	if onlyAdvisoriesFailed([]ActionTask{{Name: "advisories", RunNumber: 7, Status: "cancelled"}}, 7) {
+		t.Error("advisories cancelled: it found nothing, want false")
+	}
+
+	// doctorMains reads it from the run's jobs, the kept ones too: a failed
+	// shard the forge's capped read left out still makes main red.
+	main := func(status string, h *ciHistory) CIMain {
+		h.runs = map[int64]ActionRun{7: {Index: 7, Event: "push", PrettyRef: "main", Status: status, Created: now}}
+		d := &CIDoctor{}
+		snap := &ciSnapshot{repos: []*ciRepoData{{ref: ciRepoRef{forge: &Forge{ID: 1}, repo: "o/a"}, hist: h}}}
+		doctorMains(d, snap, now, func(int64, string) (string, bool) { return "o/a", true })
+		if len(d.Mains) != 1 {
+			t.Fatalf("mains = %+v", d.Mains)
+		}
+		return d.Mains[0]
+	}
+	if m := main("failure", &ciHistory{tasks: fail(7, "advisories")}); !m.OnlyAdvisories {
+		t.Errorf("read from the run's jobs: %+v", m)
+	}
+	if m := main("failure", &ciHistory{tasks: fail(7, "advisories"), kept: []ciKeptJob{{ActionTask: ActionTask{Name: "backend shard 2", RunNumber: 7, Status: "failure"}}}}); m.OnlyAdvisories {
+		t.Errorf("a kept failed shard: %+v", m)
+	}
+	if m := main("cancelled", &ciHistory{tasks: fail(7, "advisories")}); m.OnlyAdvisories {
+		t.Errorf("a cancelled run: %+v", m)
+	}
+
+	kinds := func(only bool) []CIFinding {
+		d := &CIDoctor{Mains: []CIMain{{Repo: "o/a", Branch: "main", Run: 7, Status: "failure", OnlyAdvisories: only}}}
+		doctorFindings(d, &CIBoard{}, now)
+		return d.Findings
+	}
+	got := kinds(true)
+	i := slices.IndexFunc(got, func(f CIFinding) bool { return f.Kind == "main_advisories" })
+	if i < 0 || slices.ContainsFunc(got, func(f CIFinding) bool { return f.Kind == "main_red" }) {
+		t.Fatalf("only advisories: findings = %+v", got)
+	}
+	f := got[i]
+	if f.Level != "warn" || f.Title != "o/a main has known advisories (run #7)" || !strings.Contains(f.Detail, "still released and deployed") || f.Next != "wp ci log --repo o/a --run 7 --job advisories" {
+		t.Errorf("finding = %+v", f)
+	}
+	if !strings.Contains(f.Detail, advisoriesTaskTitle("o/a", "main")) {
+		t.Errorf("the finding doesn't name its task: %s", f.Detail)
+	}
+	got = kinds(false)
+	if len(got) != 1 || got[0].Kind != "main_red" || got[0].Level != "problem" {
+		t.Errorf("advisories and another job: findings = %+v", got)
+	}
+
+	// Not stuck: an advisories-only red main doesn't suggest the urgent lane.
+	d := &CIDoctor{Mains: []CIMain{{Repo: "o/a", Branch: "main", Status: "failure", OnlyAdvisories: true}}}
+	if doctorUrgentLane(d); len(d.UrgentLane) != 0 {
+		t.Errorf("urgent lane for advisories: %+v", d.UrgentLane)
+	}
+}
+
+// A scheduled run newer than the newest push that failed in its advisories job
+// shows main_advisories naming that run, whatever the push run was (WP-1660).
+func TestDoctorScheduledAdvisories(t *testing.T) {
+	now := time.Now()
+	hist := func(runs ...ActionRun) *ciHistory {
+		h := &ciHistory{runs: map[int64]ActionRun{}, tasks: []ActionTask{{Name: "advisories", RunNumber: 9, Status: "failure"}, {Name: "advisories", RunNumber: 3, Status: "failure"}}}
+		for _, r := range runs {
+			r.PrettyRef, r.Created = "main", now
+			h.runs[r.Index] = r
+		}
+		return h
+	}
+	mains := func(h *ciHistory) CIMain {
+		d := &CIDoctor{}
+		snap := &ciSnapshot{repos: []*ciRepoData{{ref: ciRepoRef{forge: &Forge{ID: 1}, repo: "o/a"}, hist: h}}}
+		doctorMains(d, snap, now, func(int64, string) (string, bool) { return "o/a", true })
+		if len(d.Mains) != 1 {
+			t.Fatalf("mains = %+v", d.Mains)
+		}
+		return d.Mains[0]
+	}
+	m := mains(hist(ActionRun{Index: 7, Event: "push", Status: "success"}, ActionRun{Index: 9, Event: "schedule", Status: "failure", HTMLURL: "https://x/9"}))
+	if m.Run != 7 || m.Status != "success" || m.SchedAdvRun != 9 {
+		t.Fatalf("scheduled run after a green push: %+v", m)
+	}
+	if m := mains(hist(ActionRun{Index: 7, Event: "push", Status: "success"}, ActionRun{Index: 9, Event: "schedule", Status: "running"})); m.SchedAdvRun != 0 {
+		t.Errorf("a running scheduled run: %+v", m)
+	}
+	if m := mains(hist(ActionRun{Index: 10, Event: "push", Status: "success"}, ActionRun{Index: 9, Event: "schedule", Status: "failure"})); m.SchedAdvRun != 0 {
+		t.Errorf("a scheduled run older than the push: %+v", m)
+	}
+	if m := mains(hist(ActionRun{Index: 2, Event: "push", Status: "success"}, ActionRun{Index: 4, Event: "workflow_dispatch", Status: "failure"})); m.SchedAdvRun != 0 {
+		t.Errorf("a run whose advisories job passed: %+v", m)
+	}
+	d := &CIDoctor{Mains: []CIMain{{Repo: "o/a", Branch: "main", Run: 7, Status: "success", SchedAdvRun: 9, SchedAdvEvent: "schedule", SchedAdvURL: "https://x/9"}}}
+	doctorFindings(d, &CIBoard{}, now)
+	if len(d.Findings) != 1 || d.Findings[0].Kind != "main_advisories" || d.Findings[0].Title != "o/a main has known advisories (run #9)" ||
+		!strings.Contains(d.Findings[0].Detail, "Run #9 (schedule) found it.") || d.Findings[0].URL != "https://x/9" {
+		t.Fatalf("findings = %+v", d.Findings)
+	}
+	// A red push beside it is still main_red.
+	d = &CIDoctor{Mains: []CIMain{{Repo: "o/a", Branch: "main", Run: 7, Status: "failure", SchedAdvRun: 9}}}
+	doctorFindings(d, &CIBoard{}, now)
+	if len(d.Findings) != 2 {
+		t.Fatalf("findings = %+v", d.Findings)
+	}
+}
+
+// The advisories job the doctor, the base-fix rule and the runner-fault
+// re-runs know by name is the one ci.yml has (WP-1660).
+func TestAdvisoriesJobIsInWorkflow(t *testing.T) {
+	src, err := os.ReadFile("../../.forgejo/workflows/ci.yml")
+	if os.IsNotExist(err) {
+		t.Skip("the mirror's checkout has no .forgejo/ (WP-1624)")
+	}
+	if err != nil {
 		t.Fatal(err)
 	}
-	finding := func() (CIFinding, *CILine) {
-		t.Helper()
-		d, err := be.s.CIDoctor(be.ctx, be.admin)
-		if err != nil {
-			t.Fatal(err)
-		}
-		i := slices.IndexFunc(d.Findings, func(f CIFinding) bool { return f.Kind == "stacks_paused" })
-		if i < 0 {
-			return CIFinding{}, &d.Lines[0]
-		}
-		return d.Findings[i], &d.Lines[0]
-	}
-	f, l := finding()
-	until := now.Add(lineFallbackFor)
-	if f.Kind != "stacks_paused" || l.Stacks.PausedUntil == nil || !l.Stacks.PausedUntil.Equal(until.Truncate(time.Millisecond)) {
-		t.Fatalf("finding %+v, paused until %v, want %v", f, l.Stacks.PausedUntil, until)
-	}
-	if f.Detail != stacksPausedNote(until, now) {
-		t.Errorf("detail %q", f.Detail)
-	}
-	be.setClock(now.Add(lineFallbackFor + time.Minute))
-	if f, l := finding(); f.Kind != "" || l.Stacks.PausedUntil != nil {
-		t.Errorf("after the fallback: %+v, %v", f, l.Stacks.PausedUntil)
+	if !strings.Contains(string(src), "\n  "+advisoriesJob+":\n") {
+		t.Errorf("ci.yml has no job %q: advisoriesJob and the workflow disagree", advisoriesJob)
 	}
 }

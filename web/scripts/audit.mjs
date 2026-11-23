@@ -9,6 +9,10 @@
 //     fix exists, bump or override to it and drop the waiver);
 //   - the waiver's `until` date hasn't passed.
 // Any other high or critical advisory fails as plain npm audit would.
+//
+// `--only ID,ID` (npm run audit -- --only ID,ID) judges just those advisories:
+// the others are not reported. deploy/advisories.sh uses it to ask whether the
+// advisories a change adds are waived, whatever else the tree has (WP-1660).
 import { execFileSync } from 'node:child_process'
 
 const waivers = [
@@ -53,12 +57,20 @@ function fixPublished(pkg, range) {
   return affected.includes(latest) ? null : latest
 }
 
+const onlyAt = process.argv.indexOf('--only')
+if (onlyAt > 0 && !process.argv[onlyAt + 1]) {
+  console.error('npm audit: --only needs advisory ids, comma-separated')
+  process.exit(2)
+}
+const only = onlyAt > 0 ? new Set(process.argv[onlyAt + 1].split(',')) : null
+
 const all = advisories([])
 const prod = advisories(['--omit=dev'])
 const today = new Date().toISOString().slice(0, 10)
 const failures = []
 
 for (const adv of all.values()) {
+  if (only && !only.has(adv.id)) continue
   const waiver = waivers.find((w) => w.id === adv.id && w.pkg === adv.pkg)
   const label = `${adv.id} ${adv.pkg} ${adv.range}: ${adv.title} (${adv.url})`
   if (!waiver) {
