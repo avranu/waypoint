@@ -275,6 +275,14 @@ var fixScale = []struct {
 // labelScore is a reviewer's own severity label as a score.
 var labelScore = map[string]float64{"critical": 10, "high": 8, "medium": 5, "low": 3}
 
+// markCounts counts the findings of a round's audit and its check of the
+// marks (0: none): all, fixed, rejected and filed (findingFiled).
+func (s *Service) markCounts(ctx context.Context, audit, check int64) (total, fixed, rejected, filed int, err error) {
+	err = s.db.R.QueryRowContext(ctx, `SELECT count(*), coalesce(sum(f.state = 'fixed'), 0), coalesce(sum(f.state = 'rejected'), 0), coalesce(sum(`+findingFiledSQL+`), 0)
+		FROM code_audit_findings f WHERE f.audit_id IN (?, ?)`, audit, check).Scan(&total, &fixed, &rejected, &filed)
+	return
+}
+
 // againFinding is one of a round's findings as the model reads it.
 type againFinding struct {
 	id, audit                                   int64
@@ -283,6 +291,7 @@ type againFinding struct {
 	verdict                                     string // the runner's check against the code
 	line                                        int
 	filed                                       bool   // handed to its issue (findingFiled)
+	void                                        bool   // confirmed into an issue that came to nothing (FilingVoid)
 	issue                                       string // the issue linked, WP-12
 	// scored
 	ref                   string // f1, f2, … in the model's state
@@ -559,6 +568,7 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 		if err != nil {
 			return "", "", err
 		}
+		s.recordShipHold(ctx, actor, g.issueID, audit, round, holdRound, len(todo))
 		return fmt.Sprintf("%s's adversarial review round is audit #%d, with %s still to decide: %s. Mark each (%s), then run `wp ship --pr` again.",
 			g.key, audit, plural1(len(todo), "finding"), strings.Join(todo, ", "), markHint(todo[0], "why")), "", nil
 	}
@@ -595,13 +605,12 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 	// The marks are counted over every finding, past the ones the model reads.
 	// open is neither fixed nor rejected, filed (findingFiled) among them:
 	// a filed finding stands as real, so it is not an all-rejected round.
-	var total, fixed, rejected, filed int
-	if err := s.db.R.QueryRowContext(ctx, `SELECT count(*), coalesce(sum(f.state = 'fixed'), 0), coalesce(sum(f.state = 'rejected'), 0), coalesce(sum(`+findingFiledSQL+`), 0)
-		FROM code_audit_findings f WHERE f.audit_id IN (?, ?)`, audit, check).Scan(&total, &fixed, &rejected, &filed); err != nil {
+	total, fixed, rejected, filed, err := s.markCounts(ctx, audit, check)
+	if err != nil {
 		return "", "", err
 	}
 	open := total - fixed - rejected
-	d := againDecision{round: round, issue: g.issueID, audit: audit, findings: total, fixed: fixed, rejected: rejected, open: open, index: index, yieldP: -1, checked: checkNotAsked}
+	d := againDecision{round: round, issue: g.issueID, audit: audit, findings: total, fixed: fixed, rejected: rejected, open: open, filed: filed, index: index, yieldP: -1, checked: checkNotAsked}
 	switch {
 	case check != 0:
 		d.checked = checkScored
@@ -723,8 +732,8 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 	}
 	raw2, _ := json.Marshal(bp)
 	at := s.nowMS()
-	body := fmt.Sprintf("The session marked the audit's %s (%d fixed, %d rejected, %d open) and ran wp ship. %s, so adversarial review round %d comes before the pull request (WP-1320).",
-		plural1(total, "finding"), fixed, rejected, open, upperFirst(why), index+1)
+	body := fmt.Sprintf("The session marked the audit's %s (%d fixed, %d rejected, %d filed, %d open) and ran wp ship. %s, so adversarial review round %d comes before the pull request (WP-1320).",
+		plural1(total, "finding"), fixed, rejected, filed, open-filed, upperFirst(why), index+1)
 	if len(findings) == 0 {
 		body = fmt.Sprintf("The session reported that its review raised nothing and ran wp ship. %s, so adversarial review round %d comes before the pull request (WP-1320).", upperFirst(why), index+1)
 	}
@@ -1404,14 +1413,32 @@ const (
 	againAuditsSQL = `(` + againAuditSQL + `, ` + againCheckSQL + `)`
 )
 
+// againHeldSQL is, over code_audit_findings as f, whether a session's mark
+// says the finding held and was dealt with here: fixed, or confirmed and not
+// filed. A filed finding (findingFiled) held too, but was handed to its issue
+// and not fixed. Only reports use it (againHelperStats, to keep filed apart
+// from fixed); no decision does (WP-1555).
+const againHeldSQL = `(f.state = 'fixed' OR (f.state = 'confirmed' AND NOT ` + findingFiledSQL + `))`
+
 // againUsefulSQL is, in SQL over a next round's work_log row w, whether
 // that round found something worth it: a finding of medium or worse the
-// session fixed or confirmed, which wasn't one an earlier round had raised
-// (the next round's own decision scored it and found no earlier one it
-// repeats), and that the check against the code didn't refute.
-const againUsefulSQL = `EXISTS(SELECT 1 FROM code_audit_findings f WHERE f.audit_id IN ` + againAuditsSQL + ` AND f.state IN ('fixed', 'confirmed')
-	AND f.severity IN ('critical', 'high', 'medium') AND f.verdict != 'refuted'
-	AND EXISTS(SELECT 1 FROM review_finding_scores fs WHERE fs.finding_id = f.id AND fs.repeat_of IS NULL))`
+// session fixed or confirmed (filed or not: the decision's record counts a
+// filed finding as found, WP-1569 changes that rule, not WP-1555), which
+// wasn't one an earlier round had raised (the next round's own decision
+// scored it and found no earlier one it repeats), and that the check
+// against the code didn't refute.
+const againUsefulSQL = `EXISTS(SELECT 1 FROM code_audit_findings f WHERE f.audit_id IN ` + againAuditsSQL + ` AND f.state IN ('fixed', 'confirmed') AND ` + againNewSQL + `)`
+
+// againNewSQL is, over code_audit_findings as f, the part of againUsefulSQL
+// that isn't the mark: medium or worse, not refuted, and new (scored, and
+// no repeat of an earlier round's).
+const againNewSQL = `f.severity IN ('critical', 'high', 'medium') AND f.verdict != 'refuted'
+	AND EXISTS(SELECT 1 FROM review_finding_scores fs WHERE fs.finding_id = f.id AND fs.repeat_of IS NULL)`
+
+// againAllFiledSQL is againUsefulSQL for a round whose useful findings were
+// all filed: none the session fixed or confirmed without filing. A measure
+// beside the useful record, not a change to it (WP-1555).
+const againAllFiledSQL = `(` + againUsefulSQL + ` AND NOT EXISTS(SELECT 1 FROM code_audit_findings f WHERE f.audit_id IN ` + againAuditsSQL + ` AND ` + againHeldSQL + ` AND ` + againNewSQL + `))`
 
 // againJudgedSQL is, in SQL over a next round's work_log row w, whether
 // againUsefulSQL can tell: the round found nothing of medium or worse that
@@ -1465,6 +1492,16 @@ type AgainRoundStat struct {
 	// a model that can't score shows there too.
 	Scoring int `json:"scoring"`
 	Labels  int `json:"labels"`
+	// Standing: the findings of these decisions' rounds that weren't
+	// rejected; Filed: of them, the ones filed (againDecision.filed). Both
+	// are as they stood when each round was decided.
+	// UsefulAllFiled: of the followed rounds counted useful, the ones whose
+	// useful findings were all filed (againAllFiledSQL); a measure beside
+	// Useful, which counts them. Like Useful it reads the marks as they
+	// stand now, so a mark changed after a decision moves it and not Filed.
+	Standing       int `json:"standing"`
+	Filed          int `json:"filed"`
+	UsefulAllFiled int `json:"useful_all_filed"`
 }
 
 // AgainAgreement is how far the reviewers' own severity labels and the
@@ -1486,7 +1523,8 @@ func (s *Service) againReport(ctx context.Context, ivis string, iargs []any, sin
 			sum(CASE WHEN w.state = 'done' AND `+againAuditSQL+` IS NOT NULL AND `+againJudgedSQL+` AND `+againUsefulSQL+` THEN 1 ELSE 0 END),
 			sum(d.signals > 0 AND (d.serious > 0 OR (d.need > 0 AND d.weight >= d.need) OR d.labels = 1 OR d.need = 0)), sum(d.checked >= 0), sum(d.checked = 0), sum(d.unchecked > 0),
 			sum(d.samples > 0), sum(d.samples), sum(d.spread != '{}'), sum(json_extract(d.spread, '$.`+spreadUnsettled+`') IS NOT NULL),
-			sum(d.samples > 0 OR d.labels = 1), sum(d.labels = 1)
+			sum(d.samples > 0 OR d.labels = 1), sum(d.labels = 1), sum(d.findings - d.rejected), sum(d.filed),
+			sum(CASE WHEN w.state = 'done' AND `+againAuditSQL+` IS NOT NULL AND `+againJudgedSQL+` AND `+againAllFiledSQL+` THEN 1 ELSE 0 END)
 		FROM review_again_decisions d JOIN issues i ON i.id = d.issue_id LEFT JOIN work_log w ON w.id = d.next_round_id
 		WHERE `+ivis+` AND d.created_at >= ? GROUP BY 1, 2 ORDER BY 1`, append(slices.Clone(iargs), since)...)
 	if err != nil {
@@ -1495,9 +1533,9 @@ func (s *Service) againReport(ctx context.Context, ivis string, iargs []any, sin
 	defer rows.Close()
 	var out []AgainRoundStat
 	for rows.Next() {
-		var index, n, followed, useful, signalled, checks, passed, unchecked, sampled, asks, split, unsettled, scoring, labels int
+		var index, n, followed, useful, signalled, checks, passed, unchecked, sampled, asks, split, unsettled, scoring, labels, standing, filed, usefulAllFiled int
 		var arm string
-		if err := rows.Scan(&index, &arm, &n, &followed, &useful, &signalled, &checks, &passed, &unchecked, &sampled, &asks, &split, &unsettled, &scoring, &labels); err != nil {
+		if err := rows.Scan(&index, &arm, &n, &followed, &useful, &signalled, &checks, &passed, &unchecked, &sampled, &asks, &split, &unsettled, &scoring, &labels, &standing, &filed, &usefulAllFiled); err != nil {
 			return nil, nil, err
 		}
 		if len(out) == 0 || out[len(out)-1].Index != index {
@@ -1516,12 +1554,15 @@ func (s *Service) againReport(ctx context.Context, ivis string, iargs []any, sin
 		st.Unsettled += unsettled
 		st.Scoring += scoring
 		st.Labels += labels
+		st.Standing += standing
+		st.Filed += filed
 		if arm == AgainProbe {
 			st.ProbeFollowed += followed
 			st.ProbeUseful += useful
 		} else {
 			st.Followed += followed
 			st.Useful += useful
+			st.UsefulAllFiled += usefulAllFiled
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -1694,6 +1735,16 @@ const (
 	checkScored   = 1
 )
 
+// The refusals a ship is held by for findings still to decide
+// (review_ship_holds.check_name): shipAudited (the session read its round's
+// audit itself), reviewAgain (the round's own findings), checkMarks (what the
+// check of the session's marks found).
+const (
+	holdAudit = "audit"
+	holdRound = "round"
+	holdMarks = "marks"
+)
+
 // checkChain is the check's model: Claude Code's Haiku on the person's
 // runner, read-only, as the round's Claude reviewer runs (roundStakes.reviewer).
 var checkChain = []AgentModel{{CLI: "claude", Model: "haiku"}}
@@ -1798,6 +1849,7 @@ func (s *Service) checkMarks(ctx context.Context, actor *Actor, g *reviewGate, b
 			return 0, "", false, false, err
 		}
 		if len(todo) > 0 {
+			s.recordShipHold(ctx, actor, g.issueID, check, round, holdMarks, len(todo))
 			kinds := "rejections it thinks were wrong, fixes it thinks don't fix the problem, or filings of problems it thinks the change causes"
 			if own {
 				kinds += ", or what your review raised that your report of it left out or made milder"
@@ -1910,7 +1962,7 @@ func (s *Service) checkClaims(ctx context.Context, audit int64) (string, []strin
 // againFindings are a round's findings, worst first: its audit's, and
 // those of its check of the session's rejections (0: none).
 func (s *Service) againFindings(ctx context.Context, audit, check int64) ([]againFinding, error) {
-	rows, err := s.db.R.QueryContext(ctx, `SELECT f.id, f.audit_id, f.ordinal, f.title, f.severity, f.problem, f.state, f.note, f.path, f.line, f.verdict, `+findingFiledSQL+`,
+	rows, err := s.db.R.QueryContext(ctx, `SELECT f.id, f.audit_id, f.ordinal, f.title, f.severity, f.problem, f.state, f.note, f.path, f.line, f.verdict, `+findingFiledSQL+`, `+filingVoidOfFinding+`,
 		coalesce((SELECT p.key || '-' || i.number FROM issues i JOIN projects p ON p.id = i.project_id WHERE i.id = f.issue_id), '')
 		FROM code_audit_findings f WHERE f.audit_id IN (?, ?)
 		ORDER BY CASE f.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, f.audit_id, f.ordinal LIMIT ?`, audit, check, reviewAgainFindings)
@@ -1921,9 +1973,10 @@ func (s *Service) againFindings(ctx context.Context, audit, check int64) ([]agai
 	var out []againFinding
 	for rows.Next() {
 		var f againFinding
-		if err := rows.Scan(&f.id, &f.audit, &f.ordinal, &f.title, &f.severity, &f.problem, &f.state, &f.note, &f.path, &f.line, &f.verdict, &f.filed, &f.issue); err != nil {
+		if err := rows.Scan(&f.id, &f.audit, &f.ordinal, &f.title, &f.severity, &f.problem, &f.state, &f.note, &f.path, &f.line, &f.verdict, &f.filed, &f.void, &f.issue); err != nil {
 			return nil, err
 		}
+		f.void = f.void && f.state == "confirmed" && f.issue != "" && !auditHoldsMerge(f.severity)
 		out = append(out, f)
 	}
 	return out, rows.Err()
@@ -1978,6 +2031,9 @@ func againState(findings, earlier []againFinding, total, fixed, rejected, filed,
 // mark is the session's mark on a finding, for the model. A filed one says
 // only what the data shows: an issue is linked, not that it will be fixed.
 func (f againFinding) mark() string {
+	if f.void {
+		return "confirmed, filed as issue " + f.issue + " but that was closed unfixed, so it is open again"
+	}
 	if f.filed {
 		return "confirmed, and filed as issue " + f.issue + " instead of being fixed in this change"
 	}
@@ -2020,6 +2076,7 @@ func againQuoted(text string, n int) string {
 type againDecision struct {
 	round, issue, audit, next       int64
 	findings, fixed, rejected, open int
+	filed                           int // of the findings, filed (findingFiled); among open
 	issues, fixes                   int
 	probs, model, arm               string
 	index, novel, repeats           int
@@ -2056,11 +2113,11 @@ func (d *againDecision) insertOnce(ctx context.Context, t *tx, at int64) error {
 func (d *againDecision) insert(ctx context.Context, t *tx, at int64) (inserted bool, err error) {
 	next := sql.NullInt64{Int64: d.next, Valid: d.next != 0}
 	res, err := t.ExecContext(ctx, `INSERT INTO review_again_decisions(round_id, issue_id, audit_id, findings, fixed, rejected, left_open, issues_score, fixes_score, probs, model, arm, next_round_id, created_at,
-			round_index, tier, worst, worst_all, fixes_mean, novel, repeats, yield_p, signals, checked, unchecked, labels, samples, spread, need, weight, serious)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(round_id) DO NOTHING`,
+			round_index, tier, worst, worst_all, fixes_mean, novel, repeats, yield_p, signals, checked, unchecked, labels, samples, spread, need, weight, serious, filed)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(round_id) DO NOTHING`,
 		d.round, d.issue, d.audit, d.findings, d.fixed, d.rejected, d.open, d.issues, d.fixes, cmp(d.probs, "{}"), d.model, d.arm, next, at,
 		d.index, d.tier, againRound(d.worst), againRound(d.worstAll), againRound(d.fixesMean), d.novel, d.repeats, againRound(d.yieldP), d.signals, d.checked, d.unchecked, d.labels,
-		d.samples, cmp(d.spread, "{}"), d.need, d.weight, d.serious)
+		d.samples, cmp(d.spread, "{}"), d.need, d.weight, d.serious, d.filed)
 	if err != nil {
 		return false, err
 	}
@@ -2079,9 +2136,9 @@ func (d *againDecision) insert(ctx context.Context, t *tx, at int64) (inserted b
 			probs, _ = json.Marshal(f.probs)
 		}
 		repeat := sql.NullInt64{Int64: f.repeatOf, Valid: f.repeatOf != 0}
-		if _, err := t.ExecContext(ctx, `INSERT INTO review_finding_scores(finding_id, round_id, label, model_score, severity, hold, repeat_of, probs, created_at)
-			VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(finding_id) DO NOTHING`,
-			f.id, d.round, f.severity, againRound(f.modelScore), againRound(f.sev), f.hold, repeat, string(probs), at); err != nil {
+		if _, err := t.ExecContext(ctx, `INSERT INTO review_finding_scores(finding_id, round_id, label, model_score, severity, hold, repeat_of, probs, created_at, filed)
+			VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(finding_id) DO NOTHING`,
+			f.id, d.round, f.severity, againRound(f.modelScore), againRound(f.sev), f.hold, repeat, string(probs), at, f.filed); err != nil {
 			return false, err
 		}
 	}
