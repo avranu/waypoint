@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"git.jmann.me/claude/waypoint/internal/core/udiff"
 )
 
 const fixtureKitTOML = `
@@ -242,7 +244,7 @@ func (f *fakeKitForge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(404)
 	case r.Method == "GET" && strings.HasPrefix(path, "/contents/"):
 		if c, ok := f.files[strings.TrimPrefix(path, "/contents/")]; ok {
-			_, _ = fmt.Fprintf(w, `{"sha":%q,"type":"file"}`, gitBlobSHA(c))
+			_, _ = fmt.Fprintf(w, `{"sha":%q,"type":"file"}`, udiff.GitBlobSHA(c))
 			return
 		}
 		w.WriteHeader(404)

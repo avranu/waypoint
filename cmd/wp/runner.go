@@ -175,7 +175,9 @@ func runRunner(ctx context.Context, c *cli, o runnerOpts) error {
 	}
 	reportCtx, reportStop := context.WithCancel(context.Background())
 	defer reportStop()
-	p := &runnerProc{c: c, opts: o, allowed: allowed, host: host, jobs: map[int64]*activeJob{}, freed: make(chan struct{}, 1), reportCtx: reportCtx}
+	stopCtx, stopCancel := context.WithCancel(context.Background())
+	defer stopCancel()
+	p := &runnerProc{c: c, opts: o, allowed: allowed, host: host, jobs: map[int64]*activeJob{}, freed: make(chan struct{}, 1), reportCtx: reportCtx, stopCtx: stopCtx, stopCancel: stopCancel}
 	return p.run(ctx, reportStop)
 }
 
@@ -193,6 +195,9 @@ type runnerProc struct {
 	updateTriedAt  time.Time
 
 	reportCtx context.Context // ends when the runner has stopped waiting to report
+	// stopCtx ends when a runner stop begins (stopAll); nil in a runner built by hand
+	stopCtx    context.Context
+	stopCancel context.CancelFunc
 
 	mu            sync.Mutex
 	jobs          map[int64]*activeJob
@@ -223,6 +228,7 @@ type activeJob struct {
 type jobRun struct {
 	id      int64
 	kind    string
+	title   string
 	timeout time.Duration
 	out     *logSink
 	// token is the job's own Waypoint token (WP-418), for the jobs that run
@@ -231,6 +237,9 @@ type jobRun struct {
 	// launch is the owner's session settings (WP-1265), for a job that
 	// starts a session.
 	launch *sessionPrefs
+	// cancelled is set when a person cancels the job; nil in a job nothing
+	// can cancel.
+	cancelled *atomic.Bool
 	// job is the runner's record of it (nil in tests), which an agent's
 	// clock tells when it waits for a slot (WP-1618).
 	job *activeJob
@@ -708,8 +717,13 @@ func (p *runnerProc) waitJobs(d time.Duration) {
 }
 
 // stopAll ends the jobs still running (they report that they were stopped)
-// and gives the reports a few seconds to get through.
+// and gives the reports a few seconds to get through. A job's transcript
+// upload at its end ignores its cancel, so the stop also ends those (stopCtx):
+// otherwise one could outlast the wait and the finish report would be lost.
 func (p *runnerProc) stopAll(reportStop context.CancelFunc) {
+	if p.stopCancel != nil {
+		p.stopCancel() // cuts a job's transcript upload short (keepTranscripts), which would outlast the wait below
+	}
 	p.mu.Lock()
 	for _, aj := range p.jobs {
 		aj.cancel()
@@ -724,6 +738,20 @@ func (p *runnerProc) stopAll(reportStop context.CancelFunc) {
 	p.wg.Wait()
 }
 
+// settleOutcome words how a job that was stopped ended: cancelled by a person
+// (cancelled), or the runner was stopped (ctx). keepTranscripts settles before
+// it writes the sidecar kept beside a job's transcripts and again after the
+// upload, so the sidecar says what the server is told even when a cancel
+// comes during the upload.
+func settleOutcome(ctx context.Context, cancelled *atomic.Bool, o outcome) outcome {
+	if cancelled != nil && cancelled.Load() && o.State != "done" {
+		o.State, o.Error = "cancelled", "Cancelled by a person."
+	} else if ctx.Err() != nil && o.State == "cancelled" && o.Error == "Stopped." {
+		o.Error = "The runner was stopped." // internal/core's runnerStoppedError: such an audit goes again
+	}
+	return o
+}
+
 // runJob carries out one job and reports how it ended.
 func (p *runnerProc) runJob(ctx context.Context, aj *activeJob, job *claimedJob) {
 	sink := newLogSink()
@@ -732,7 +760,7 @@ func (p *runnerProc) runJob(ctx context.Context, aj *activeJob, job *claimedJob)
 		timeout = 10 * time.Minute
 	}
 	p.ensureSandboxUsers(ctx, job)
-	run := &jobRun{id: job.ID, kind: job.Kind, timeout: timeout, out: sink, token: job.Token, launch: job.Launch, job: aj}
+	run := &jobRun{id: job.ID, kind: job.Kind, title: job.Title, timeout: timeout, out: sink, token: job.Token, launch: job.Launch, cancelled: &aj.cancelled, job: aj}
 	var logs sync.WaitGroup
 	logs.Add(1)
 	go func() {
@@ -740,11 +768,7 @@ func (p *runnerProc) runJob(ctx context.Context, aj *activeJob, job *claimedJob)
 		sink.run(p.reportCtx, p.sendLog(job.ID), func() { p.cancelJob(job.ID) })
 	}()
 	o := p.execute(ctx, run, job)
-	if aj.cancelled.Load() && o.State != "done" {
-		o.State, o.Error = "cancelled", "Cancelled by a person."
-	} else if ctx.Err() != nil && o.State == "cancelled" && o.Error == "Stopped." {
-		o.Error = "The runner was stopped." // internal/core's runnerStoppedError: such an audit goes again
-	}
+	o = settleOutcome(ctx, &aj.cancelled, o)
 	o = fitResult(o, resultLimit, sink)
 	sink.close()
 	logs.Wait()

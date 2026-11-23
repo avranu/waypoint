@@ -75,7 +75,7 @@ func bigReadNote(subject, abs, cwd string) string {
 func bigReadFor(tool, cwd, path string, limit int, cmd string) (kind, text string) {
 	switch tool {
 	case "Read":
-		if limit > 0 || path == "" {
+		if limit > 0 || path == "" || isPicture(path) { // a picture is looked at, not grepped
 			return
 		}
 		if n := fileLines(bigReadPath(path, cwd)); n > bigReadLines {
