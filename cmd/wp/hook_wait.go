@@ -18,12 +18,12 @@ import (
 // meanwhile: the findings of its review round still to do, the answers to its
 // requests it hasn't been told of, in full. A foreground call is over by the
 // time a PostToolUse hook runs, so it says nothing for one. The server says
-// what is outstanding (POST /api/v1/sessions/outstanding, which records the
-// findings named); with none, or with no answer, the hook prints only the
+// what is outstanding (POST /api/v1/sessions/outstanding, which records
+// nothing at the wait); with none, or with no answer, the hook prints only the
 // ETA, if any. Both are worked out at once, and the hook says what it has by
 // waitBudget. Once it has printed answers it says so (POST
-// .../outstanding/told), and only then are they marked told: a hook cut off
-// before it printed loses none, and an answer can come twice (two hooks at
+// .../outstanding/told), and only then are they marked told and the findings
+// recorded as named: a hook cut off before it printed loses none, and an answer can come twice (two hooks at
 // once, or a Stop before the hook's word).
 
 // hookWait is the PostToolUse(Bash) hook's command.
@@ -232,13 +232,14 @@ func hookClaudeWait(c *cli, stdin io.Reader, stdout io.Writer) {
 	go func() { eta <- etaFor(call.Command, in.Cwd, in.SessionID) }()
 	var lines string
 	var told []int64
+	var named []string
 	if c.server() != "" && c.token() != "" {
 		c.session = in.SessionID
 		c.hookTimeout = waitHTTPTimeout
 		if b, err := c.call("POST", "/api/v1/sessions/outstanding", struct{}{}); err == nil {
 			var o core.SessionOutstanding
 			if json.Unmarshal(b, &o) == nil {
-				lines, told = strings.TrimSpace(o.Lines), o.RequestIDs
+				lines, told, named = strings.TrimSpace(o.Lines), o.RequestIDs, o.Findings
 			}
 		}
 	}
@@ -256,7 +257,7 @@ func hookClaudeWait(c *cli, stdin io.Reader, stdout io.Writer) {
 	if text == "" {
 		return
 	}
-	if _, err := stdout.Write(hookContext("PostToolUse", text)); err != nil || lines == "" || len(told) == 0 {
+	if _, err := stdout.Write(hookContext("PostToolUse", text)); err != nil || lines == "" || len(told)+len(named) == 0 {
 		return
 	}
 	// The answers were given: they are told. Within the hook's own timeout,
@@ -267,6 +268,7 @@ func hookClaudeWait(c *cli, stdin io.Reader, stdout io.Writer) {
 	}
 	c.hookTimeout = min(left, waitHTTPTimeout)
 	_, _ = c.call("POST", "/api/v1/sessions/outstanding/told", struct {
-		Requests []int64 `json:"requests"`
-	}{told})
+		Requests []int64  `json:"requests"`
+		Findings []string `json:"findings"`
+	}{told, named})
 }

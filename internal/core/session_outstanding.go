@@ -131,8 +131,12 @@ func (s *Service) SessionOutstanding(ctx context.Context, actor *Actor, via stri
 			if told {
 				continue
 			}
-			if err := s.sessionTimeline(ctx, t, actor.Session, s.nowMS(), outstandingKind, via, 0, it, "", "named while a run was going", sql.NullInt64{}, nil); err != nil {
-				return err
+			// At the wait the hook records them (SessionFindingsNamed) once it
+			// has printed them, so a print that fails names nothing.
+			if via != OutstandingAtWait {
+				if err := s.sessionTimeline(ctx, t, actor.Session, s.nowMS(), outstandingKind, via, 0, it, "", "named while a run was going", sql.NullInt64{}, nil); err != nil {
+					return err
+				}
 			}
 			fresh++
 		}
@@ -246,6 +250,38 @@ func outstandingLines(o *SessionOutstanding) string {
 		b.WriteString(text)
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// SessionFindingsNamed records findings (41.2 style) as named at the wait to
+// the actor's session: the hook says so once it has printed them.
+func (s *Service) SessionFindingsNamed(ctx context.Context, actor *Actor, findings []string) error {
+	if actor == nil || actor.User == nil || actor.User.ID == 0 {
+		return ErrUnauthorized
+	}
+	if len(findings) > 200 {
+		return invalid("at most 200 findings")
+	}
+	if actor.Session == 0 || len(findings) == 0 {
+		return nil
+	}
+	return s.write(ctx, actor, func(t *tx) error {
+		for _, it := range findings {
+			if len(it) > 40 {
+				return invalid("finding id too long")
+			}
+			told, err := s.sessionTold(ctx, t, actor.Session, outstandingKind, OutstandingAtWait, it)
+			if err != nil {
+				return err
+			}
+			if told {
+				continue
+			}
+			if err := s.sessionTimeline(ctx, t, actor.Session, s.nowMS(), outstandingKind, OutstandingAtWait, 0, it, "", "named while a run was going", sql.NullInt64{}, nil); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // SessionDecisionsTold marks the decisions ids of the actor's session told:

@@ -163,6 +163,14 @@ func TestSessionOutstanding(t *testing.T) {
 
 	// Told once at each way: asking again at the wait names nothing, the
 	// Stop still names them once, and a finding that turns up later names all.
+	// The wait records nothing itself: a hook that never printed names none
+	// (the review comment on WP-1571), so asking again names them again.
+	if again, err := a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtWait); err != nil || !slices.Equal(again.Findings, want) {
+		t.Fatalf("asked again before the print: %+v %v", again, err)
+	}
+	if err := a.s.SessionFindingsNamed(a.ctx, &ag, want); err != nil {
+		t.Fatal(err)
+	}
 	if again, err := a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtWait); err != nil || !again.Empty() || again.Lines != "" {
 		t.Fatalf("asked twice: %+v %v", again, err)
 	}

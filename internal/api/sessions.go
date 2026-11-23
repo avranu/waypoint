@@ -60,9 +60,13 @@ func (s *Server) sessionOutstanding(w http.ResponseWriter, r *http.Request) (any
 // (request_ids), so they are marked told.
 func (s *Server) sessionOutstandingTold(w http.ResponseWriter, r *http.Request) (any, error) {
 	var in struct {
-		Requests []int64 `json:"requests"`
+		Requests []int64  `json:"requests"`
+		Findings []string `json:"findings"`
 	}
 	if err := decode(r, &in); err != nil {
+		return nil, err
+	}
+	if err := s.svc.SessionFindingsNamed(r.Context(), actorFrom(r), in.Findings); err != nil {
 		return nil, err
 	}
 	return nil, s.svc.SessionDecisionsTold(r.Context(), actorFrom(r), in.Requests)
