@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"git.jmann.me/claude/waypoint/internal/core/meaning"
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
@@ -745,7 +746,7 @@ func (s *Service) refreshMeaning(ctx context.Context) bool {
 	s.queueMeaningFeedback(ctx)
 	// A meaning service that is down is tried again when its breaker lets
 	// a call through, not only when a goal changes (WP-1602).
-	if m, ok := s.Meaning.(interface{ Health() MeaningHealth }); ok {
+	if m, ok := s.Meaning.(interface{ Health() meaning.Health }); ok {
 		if h := m.Health(); h.RetryAt != nil {
 			ps.retry(h.RetryAt.UnixMilli())
 		}
@@ -810,7 +811,7 @@ func (s *Service) meaningModels(ctx context.Context) (embed, nli string) {
 	} else {
 		s.log.Info("goal meaning: the embedding model is not answering", "err", err)
 	}
-	if m, _, err := s.Meaning.Entail(ctx, []NLIPair{{Premise: "goal", Hypothesis: "goal"}}); err == nil {
+	if m, _, err := s.Meaning.Entail(ctx, []meaning.NLIPair{{Premise: "goal", Hypothesis: "goal"}}); err == nil {
 		nli = m
 	} else {
 		s.log.Info("goal meaning: the NLI model is not answering", "err", err)
@@ -824,7 +825,7 @@ func (s *Service) meaningModels(ctx context.Context) (embed, nli string) {
 // meaningCallFailed logs a failed call: below a warning when the service
 // did not answer, which its breaker reports once (meaning_breaker.go).
 func (s *Service) meaningCallFailed(ctx context.Context, msg string, err error) {
-	if errors.Is(err, ErrMeaningDown) {
+	if errors.Is(err, meaning.ErrDown) {
 		s.log.InfoContext(ctx, msg, "err", err)
 		return
 	}
@@ -884,8 +885,8 @@ func (s *Service) meaningEmbed(ctx context.Context, ps *meaningPass, texts map[s
 		}
 	}
 	sort.Strings(hashes)
-	for start := 0; start < len(hashes) && ctx.Err() == nil; start += meaningBatch {
-		part := hashes[start:min(start+meaningBatch, len(hashes))]
+	for start := 0; start < len(hashes) && ctx.Err() == nil; start += meaning.Batch {
+		part := hashes[start:min(start+meaning.Batch, len(hashes))]
 		in := make([]string, len(part))
 		for i, h := range part {
 			in[i] = texts[h]
@@ -935,11 +936,11 @@ func (s *Service) meaningNLI(ctx context.Context, ps *meaningPass, pairs []*mean
 	if len(todo) > meaningNLIPerPass {
 		todo, ps.more = todo[:meaningNLIPerPass], true
 	}
-	for start := 0; start < len(todo) && ctx.Err() == nil; start += meaningBatch {
-		part := todo[start:min(start+meaningBatch, len(todo))]
-		in := make([]NLIPair, len(part))
+	for start := 0; start < len(todo) && ctx.Err() == nil; start += meaning.Batch {
+		part := todo[start:min(start+meaning.Batch, len(todo))]
+		in := make([]meaning.NLIPair, len(part))
 		for i, d := range part {
-			in[i] = NLIPair{Premise: ps.st.texts[d[0]], Hypothesis: ps.st.texts[d[1]]}
+			in[i] = meaning.NLIPair{Premise: ps.st.texts[d[0]], Hypothesis: ps.st.texts[d[1]]}
 		}
 		model, scores, err := s.Meaning.Entail(ctx, in)
 		if err != nil || model != ps.st.nliModel {

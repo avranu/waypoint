@@ -1,4 +1,4 @@
-package core
+package meaning
 
 import (
 	"bytes"
@@ -15,7 +15,7 @@ import (
 )
 
 // A meaning service that stops answering opens the breaker after
-// meaningTrips calls; then calls fail at once, one probe goes after the
+// trips calls; then calls fail at once, one probe goes after the
 // cooldown, a failed probe doubles it, and an answer closes it. The outage
 // is logged as one warning per opening, not one per call (WP-1602).
 func TestMeaningBreakerOpensProbesAndCloses(t *testing.T) {
@@ -32,7 +32,7 @@ func TestMeaningBreakerOpensProbesAndCloses(t *testing.T) {
 	defer srv.Close()
 	var logs bytes.Buffer
 	now := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
-	m := newHTTPMeaning(srv.URL, "", srv.Client(), slog.New(slog.NewTextHandler(&logs, nil)), func() time.Time { return now })
+	m := NewHTTP(srv.URL, "", srv.Client(), slog.New(slog.NewTextHandler(&logs, nil)), func() time.Time { return now })
 	ctx := context.Background()
 	embed := func() error { _, _, err := m.Embed(ctx, []string{"x"}); return err }
 
@@ -43,36 +43,36 @@ func TestMeaningBreakerOpensProbesAndCloses(t *testing.T) {
 		t.Fatalf("up: %v %+v", err, m.Health())
 	}
 	down.Store(true)
-	for i := range meaningTrips {
-		if err := embed(); !errors.Is(err, ErrMeaningDown) {
+	for i := range trips {
+		if err := embed(); !errors.Is(err, ErrDown) {
 			t.Fatalf("call %d: %v", i, err)
 		}
 	}
 	h := m.Health()
-	if h.State != "down" || h.Failures != meaningTrips || h.RetryAt == nil || !h.RetryAt.Equal(now.Add(meaningCooldown)) || h.LastOK == nil {
-		t.Fatalf("after %d failures: %+v", meaningTrips, h)
+	if h.State != "down" || h.Failures != trips || h.RetryAt == nil || !h.RetryAt.Equal(now.Add(cooldown)) || h.LastOK == nil {
+		t.Fatalf("after %d failures: %+v", trips, h)
 	}
 	before := hits.Load()
 	for range 5 {
-		if err := embed(); !errors.Is(err, ErrMeaningDown) {
+		if err := embed(); !errors.Is(err, ErrDown) {
 			t.Fatalf("open: %v", err)
 		}
 	}
 	if hits.Load() != before {
 		t.Fatalf("calls reached the service while the breaker was open")
 	}
-	now = now.Add(meaningCooldown)
-	if err := embed(); !errors.Is(err, ErrMeaningDown) || hits.Load() != before+1 {
+	now = now.Add(cooldown)
+	if err := embed(); !errors.Is(err, ErrDown) || hits.Load() != before+1 {
 		t.Fatalf("probe: %v, %d calls", err, hits.Load()-before)
 	}
-	if h := m.Health(); h.RetryAt == nil || !h.RetryAt.Equal(now.Add(2*meaningCooldown)) {
+	if h := m.Health(); h.RetryAt == nil || !h.RetryAt.Equal(now.Add(2*cooldown)) {
 		t.Fatalf("a failed probe doubles the cooldown: %+v", h)
 	}
 	if n := strings.Count(logs.String(), "meaning service: not answering"); n != 2 {
 		t.Fatalf("want one warning when it opened and one for the failed probe, got %d:\n%s", n, logs.String())
 	}
 	down.Store(false)
-	now = now.Add(2 * meaningCooldown)
+	now = now.Add(2 * cooldown)
 	if err := embed(); err != nil {
 		t.Fatalf("recovered probe: %v", err)
 	}
@@ -91,16 +91,16 @@ func TestMeaningBreakerIgnoresAnswersAndCancels(t *testing.T) {
 		http.Error(w, "bad", http.StatusBadRequest)
 	}))
 	defer srv.Close()
-	m := newHTTPMeaning(srv.URL, "", srv.Client(), nil, nil)
-	for range meaningTrips + 1 {
-		if _, _, err := m.Embed(context.Background(), []string{"x"}); err == nil || errors.Is(err, ErrMeaningDown) {
+	m := NewHTTP(srv.URL, "", srv.Client(), nil, nil)
+	for range trips + 1 {
+		if _, _, err := m.Embed(context.Background(), []string{"x"}); err == nil || errors.Is(err, ErrDown) {
 			t.Fatalf("a 400 is an answer: %v", err)
 		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	for range meaningTrips + 1 {
-		if _, _, err := m.Embed(ctx, []string{"x"}); err == nil || errors.Is(err, ErrMeaningDown) {
+	for range trips + 1 {
+		if _, _, err := m.Embed(ctx, []string{"x"}); err == nil || errors.Is(err, ErrDown) {
 			t.Fatalf("a cancelled call: %v", err)
 		}
 	}
@@ -130,8 +130,8 @@ func TestMeaningBreakerOneProbeAndRefused(t *testing.T) {
 	now := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
 	var mu sync.Mutex
 	clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
-	m := newHTTPMeaning(srv.URL, "", srv.Client(), nil, clock)
-	for range meaningTrips {
+	m := NewHTTP(srv.URL, "", srv.Client(), nil, clock)
+	for range trips {
 		_, _, _ = m.Embed(context.Background(), []string{"x"})
 	}
 	if m.Health().State != "down" {
@@ -139,7 +139,7 @@ func TestMeaningBreakerOneProbeAndRefused(t *testing.T) {
 	}
 	hold.Store(true)
 	mu.Lock()
-	now = now.Add(meaningCooldown)
+	now = now.Add(cooldown)
 	mu.Unlock()
 	before := hits.Load()
 
@@ -150,7 +150,7 @@ func TestMeaningBreakerOneProbeAndRefused(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	for range 10 {
-		if _, _, err := m.Embed(context.Background(), []string{"x"}); !errors.Is(err, ErrMeaningDown) {
+		if _, _, err := m.Embed(context.Background(), []string{"x"}); !errors.Is(err, ErrDown) {
 			t.Fatalf("a call while a probe is out: %v", err)
 		}
 	}
@@ -159,7 +159,7 @@ func TestMeaningBreakerOneProbeAndRefused(t *testing.T) {
 	}
 	cancel()
 	<-got
-	if h := m.Health(); h.State != "down" || h.Failures != meaningTrips {
+	if h := m.Health(); h.State != "down" || h.Failures != trips {
 		t.Fatalf("a cancelled probe is no verdict: %+v", h)
 	}
 
@@ -168,10 +168,10 @@ func TestMeaningBreakerOneProbeAndRefused(t *testing.T) {
 	close(stop)
 	srv.CloseClientConnections()
 	srv.Close()
-	if _, _, err := m.Embed(context.Background(), []string{"x"}); !errors.Is(err, ErrMeaningDown) {
+	if _, _, err := m.Embed(context.Background(), []string{"x"}); !errors.Is(err, ErrDown) {
 		t.Fatalf("refused connection: %v", err)
 	}
-	if h := m.Health(); h.Failures != meaningTrips+1 || h.RetryAt == nil || !h.RetryAt.Equal(clock().Add(2*meaningCooldown)) {
+	if h := m.Health(); h.Failures != trips+1 || h.RetryAt == nil || !h.RetryAt.Equal(clock().Add(2*cooldown)) {
 		t.Fatalf("the failed probe after a cancelled one: %+v", h)
 	}
 }
@@ -187,16 +187,16 @@ func TestMeaningDeadlineCountsAsUnanswered(t *testing.T) {
 	}))
 	defer srv.Close()
 	defer close(stop)
-	m := newHTTPMeaning(srv.URL, "", srv.Client(), nil, nil)
-	for range meaningTrips {
+	m := NewHTTP(srv.URL, "", srv.Client(), nil, nil)
+	for range trips {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 		_, _, err := m.Embed(ctx, []string{"x"})
 		cancel()
-		if !errors.Is(err, ErrMeaningDown) {
+		if !errors.Is(err, ErrDown) {
 			t.Fatalf("a timed-out call: %v", err)
 		}
 	}
-	if h := m.Health(); h.State != "down" || h.Failures != meaningTrips {
+	if h := m.Health(); h.State != "down" || h.Failures != trips {
 		t.Fatalf("%+v", h)
 	}
 }

@@ -24,6 +24,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"git.jmann.me/claude/waypoint/internal/core/meaning"
 	"git.jmann.me/claude/waypoint/internal/db"
 	"git.jmann.me/claude/waypoint/internal/tracing"
 )
@@ -187,7 +188,7 @@ type Service struct {
 	// language models for AI tasks, swappable in tests
 	LLM LLM
 	// Meaning is the meaning service (meaning_client.go); nil without one.
-	Meaning     MeaningModels
+	Meaning     meaning.Models
 	aiSlots     chan struct{}
 	surplusSlot chan struct{} // surplus work, one at a time beside aiSlots: it never waits for normal work nor holds it up (WP-906)
 	aiMu        sync.Mutex
@@ -327,7 +328,7 @@ func New(d *db.DB, cfg Config, log *slog.Logger) *Service {
 	// provider that doesn't stream sends with the whole answer.
 	s.LLM = &httpLLM{http: forgeEgress.streamClient(llmHeaderTimeout)}
 	if strings.TrimSpace(cfg.MeaningURL) != "" {
-		s.Meaning = newHTTPMeaning(cfg.MeaningURL, cfg.MeaningToken, forgeEgress.client(meaningTimeout), s.log, func() time.Time { return s.now() })
+		s.Meaning = meaning.NewHTTP(cfg.MeaningURL, cfg.MeaningToken, forgeEgress.client(meaning.Timeout), s.log, func() time.Time { return s.now() })
 	}
 	s.envs = newEnvRunner(cfg.Egress)
 	s.botKick = make(chan struct{}, 1)
