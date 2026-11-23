@@ -870,6 +870,7 @@ func TestLineRejectedRerunIsNotARerun(t *testing.T) {
 	se.sg.sm.Lock()
 	se.sg.retryErr = nil
 	se.sg.sm.Unlock()
+	se.setClock(se.clockNow().Add(lineRerunRetry)) // the forge is asked again this long after it refused
 	se.line()
 	if sts := se.stacks(); sts[0].RerunAt == 0 || sts[0].Ended {
 		t.Fatalf("not run again once the forge took it: %+v", sts[0])
@@ -1379,6 +1380,39 @@ func TestLineRerunWhenTheForgeFails(t *testing.T) {
 			t.Errorf("a re-run that part ran again was taken back: %+v", sts[0])
 		}
 	})
+}
+
+// A forge that refuses a re-run is asked again lineRerunRetry later, not on
+// every step of the line (audit 1537).
+func TestLineRefusedRerunIsAskedAgainSpaced(t *testing.T) {
+	se := newStackEnv(t)
+	se.draftGreen(head7s, 5)
+	se.step()
+	se.line()
+	se.stackRun(0, CheckFailed, treeA, "7 "+head7s)
+	se.sg.sm.Lock()
+	se.sg.retryErr = errors.New("502 from the forge")
+	se.sg.sm.Unlock()
+	asks := func() int {
+		se.sg.sm.Lock()
+		defer se.sg.sm.Unlock()
+		return len(se.sg.retries)
+	}
+	se.line()
+	se.line()
+	se.setClock(se.clockNow().Add(lineRerunRetry - time.Second))
+	se.line()
+	if n := asks(); n != 1 {
+		t.Fatalf("the forge was asked %d times within lineRerunRetry, want 1", n)
+	}
+	if sts := se.stacks(); sts[0].RerunAt != 0 || sts[0].Ended {
+		t.Errorf("a refused re-run counted: reran %d ended %v", sts[0].RerunAt, sts[0].Ended)
+	}
+	se.setClock(se.clockNow().Add(2 * time.Second))
+	se.line()
+	if n := asks(); n != 2 {
+		t.Errorf("the forge was asked %d times after lineRerunRetry, want 2", n)
+	}
 }
 
 // A conflict eject records who conflicted before the candidate ends; when

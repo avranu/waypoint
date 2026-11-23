@@ -35,6 +35,10 @@ const (
 	// lineRerunSettle: the forge's old failure reads as the candidate's
 	// result for this long after its failed jobs were run again.
 	lineRerunSettle = 3 * time.Minute
+	// lineRerunRetry: how long after a forge refused a candidate's re-run it
+	// is asked again, so a forge that goes on refusing isn't asked on every
+	// step of the line.
+	lineRerunRetry = 5 * time.Minute
 	// lineTriedWithin bounds the head sets the line remembers failing.
 	lineTriedWithin = 24 * time.Hour
 	lineTriedMax    = 60
@@ -1007,12 +1011,17 @@ func (s *Service) candStart(ctx context.Context, ls *lineState, heads []stackHea
 // forge that didn't take the request (an error, not "can't") leaves the
 // candidate not run again, so the next step asks again and the first failure
 // isn't read as a second one that ejects the front. That goes on while the
-// candidate is younger than stackRunMax; after it the failure counts.
+// candidate is younger than stackRunMax; after it the failure counts. The
+// asks are lineRerunRetry apart.
 func (s *Service) candRerun(ctx context.Context, ls *lineState, a lineAction) {
 	st := ls.rows[a.Cand]
 	if st == nil {
 		return
 	}
+	if at, ok := s.rerunRefusedAt.Load(st.ID); ok && s.now().Sub(at.(time.Time)) < lineRerunRetry {
+		return // the forge refused it a moment ago
+	}
+	s.rerunRefusedAt.Delete(st.ID)
 	if _, err := s.db.W.ExecContext(ctx, `UPDATE queue_stacks SET reran = ? WHERE id = ? AND ended_at IS NULL`, s.nowMS(), st.ID); err != nil {
 		s.log.WarnContext(ctx, "record a candidate's re-run", "candidate", st.ID, "err", err)
 		return
@@ -1049,6 +1058,7 @@ func (s *Service) candRerun(ctx context.Context, ls *lineState, a lineAction) {
 		return
 	}
 	st.RerunAt = 0
+	s.rerunRefusedAt.Store(st.ID, s.now())
 }
 
 // lineMergeAct merges the front on its passed candidate: a draft is marked
