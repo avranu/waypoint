@@ -46,6 +46,11 @@ type beforePR struct {
 	// the time and can go stale, so only this one outlives the round
 	// (WP-1670).
 	Asked string `json:"asked,omitempty"`
+	// Stacked is the branch Base was, when it was the head of an open pull
+	// request this one is built on rather than a base asked for. A held
+	// replay reads again whether that one is still open, as a live ship
+	// does, and opens into the default branch if it isn't (WP-1670).
+	Stacked string `json:"stacked,omitempty"`
 	// What wp ship asked for, so Waypoint can open it if the review can't
 	// run and the session never ships (WP-752). Urgent is only for a pull
 	// request not open yet: one already open is labelled by the held ship
@@ -460,7 +465,11 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return false, "", "", err
 	}
-	bp := beforePR{Project: p.Key, Repo: repo, Branch: head, Base: base, Asked: strings.TrimSpace(in.Base), Title: in.Title, Body: in.Body, Draft: in.Draft, Ready: in.Ready, Urgent: in.Urgent && !existing, HeadTime: in.HeadTime, HeadSHA: in.HeadSHA}
+	asked, stacked := strings.TrimSpace(in.Base), ""
+	if asked == "" && slices.ContainsFunc(in.StackedOn, func(b string) bool { return strings.TrimSpace(b) == base }) {
+		stacked = base
+	}
+	bp := beforePR{Project: p.Key, Repo: repo, Branch: head, Base: base, Asked: asked, Stacked: stacked, Title: in.Title, Body: in.Body, Draft: in.Draft, Ready: in.Ready, Urgent: in.Urgent && !existing, HeadTime: in.HeadTime, HeadSHA: in.HeadSHA}
 	// wait is what the session is told when the round is before its pull
 	// request. It is built when a return needs it, after the scheduling it
 	// describes, as scheduling the round starts its reviewer (WP-1325).

@@ -127,8 +127,15 @@ func (s *Service) shipHeld(ctx context.Context, st *stepRow, x *AgentSession, us
 		panel = fmt.Sprintf(" Before the reviewing model failed, Waypoint's Haiku checks confirmed %s against the code; audit #%d holds them (`wp audit show %d`).", plural1(n, "problem"), audit, audit)
 		note += panel
 	}
+	// A stacked branch's parent may have merged or closed, its branch gone,
+	// while the ship was held: its base is worked out again, as a live
+	// ship's is (WP-1670). One asked for stays as asked.
+	base, stackedOn := bp.Base, []string(nil)
+	if bp.Stacked != "" {
+		base, stackedOn = bp.Asked, []string{bp.Stacked}
+	}
 	res, err := s.OpenPullRequest(ctx, actor, OpenPRInput{
-		Project: bp.Project, Repo: bp.Repo, Head: bp.Branch, Base: bp.Base,
+		Project: bp.Project, Repo: bp.Repo, Head: bp.Branch, Base: base, StackedOn: stackedOn,
 		Title: title, Body: strings.TrimSpace(bp.Body + "\n\n" + note),
 		Draft: bp.Draft, Ready: bp.Ready, Urgent: bp.Urgent,
 		Issue: r.key, For: r.key, Review: ShipSkip, Reason: why, noSweep: true, byWaypoint: true,
