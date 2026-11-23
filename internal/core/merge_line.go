@@ -94,15 +94,34 @@ type lineState struct {
 	redWaits bool
 }
 
+// lineMemberWhere is what holds a place in a line: armed, in it (queued_at),
+// and watched by a babysit that moves it on or by none.
+const lineMemberWhere = `p.forge_id = ? AND p.repo = ? COLLATE NOCASE AND p.base_ref = ? AND p.state IN ('open','draft')
+		  AND p.armed_at IS NOT NULL AND p.outside = 0 AND p.queued_at IS NOT NULL
+		  AND (EXISTS (SELECT 1 FROM babysits b WHERE b.pr_id = p.id AND b.ended_at IS NULL AND b.state IN (?, ?, ?, ?))
+		       OR NOT EXISTS (SELECT 1 FROM babysits b WHERE b.pr_id = p.id AND b.ended_at IS NULL))`
+
+// lineHolds: the pull request still holds its place in the line, read now. A
+// step reads the line once and acts on that for as long as its calls to the
+// forge take; a babysit that took the pull request out meanwhile (a round's
+// change waits for a person, its checks failed on the runner) doesn't take
+// the line's lock, so what the line does for a member alone is asked here
+// first. A read that fails is "no": the next step asks again.
+func (s *Service) lineHolds(ctx context.Context, ref lineRef, prID int64) bool {
+	var n int
+	if err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM pull_requests p WHERE p.id = ? AND `+lineMemberWhere,
+		prID, ref.forge, ref.repo, ref.base, queueStates[0], queueStates[1], queueStates[2], queueStates[3]).Scan(&n); err != nil {
+		s.log.WarnContext(ctx, "read whether a pull request is still in the merge line", "pr", prID, "err", err)
+		return false
+	}
+	return n > 0
+}
+
 // lineMembers are the armed pull requests that hold a place in the line,
 // unordered.
 func (s *Service) lineMembers(ctx context.Context, ref lineRef) ([]*PullRequest, error) {
 	// #nosec G202 -- a fixed column list; values are bound
-	rows, err := s.db.R.QueryContext(ctx, `SELECT `+prColsAs("p")+` FROM pull_requests p
-		WHERE p.forge_id = ? AND p.repo = ? COLLATE NOCASE AND p.base_ref = ? AND p.state IN ('open','draft')
-		  AND p.armed_at IS NOT NULL AND p.outside = 0 AND p.queued_at IS NOT NULL
-		  AND (EXISTS (SELECT 1 FROM babysits b WHERE b.pr_id = p.id AND b.ended_at IS NULL AND b.state IN (?, ?, ?, ?))
-		       OR NOT EXISTS (SELECT 1 FROM babysits b WHERE b.pr_id = p.id AND b.ended_at IS NULL))`,
+	rows, err := s.db.R.QueryContext(ctx, `SELECT `+prColsAs("p")+` FROM pull_requests p WHERE `+lineMemberWhere,
 		ref.forge, ref.repo, ref.base, queueStates[0], queueStates[1], queueStates[2], queueStates[3])
 	if err != nil {
 		return nil, err
@@ -153,24 +172,39 @@ func lineSort(prs []*PullRequest, fixer int64) {
 // most one per tip: the first by order that does). tip is the base's tip as
 // the forge says it, so the line reads one tip for its fixer, its red test
 // and its candidates; "" reads the tip Waypoint last stored.
-func (s *Service) lineFixer(ctx context.Context, prs []*PullRequest, tip string) (fixer int64, failing map[string]bool) {
+func (s *Service) lineFixer(ctx context.Context, prs []*PullRequest, tip string) (fixer int64, failing map[string]bool, err error) {
 	if len(prs) == 0 {
-		return 0, nil
+		return 0, nil, nil
 	}
 	if tip == "" {
-		tip, failing = s.baseFailing(ctx, prs[0])
+		tip, failing, err = s.baseFailing(ctx, prs[0])
 	} else {
-		failing = s.baseFailingAt(ctx, prs[0], tip)
+		failing, err = s.baseFailingAt(ctx, prs[0], tip)
+	}
+	if err != nil {
+		return 0, nil, fmt.Errorf("read what fails on the base's tip: %w", err)
 	}
 	if len(failing) == 0 {
-		return 0, nil
+		return 0, nil, nil
 	}
 	for _, p := range prs {
 		if !queueHolder(p) && !p.urgent() && p.HeadSHA != "" && s.fixesBase(ctx, p, tip, failing) {
-			return p.ID, failing
+			return p.ID, failing, nil
 		}
 	}
-	return 0, failing
+	return 0, failing, nil
+}
+
+// lineOrder puts prs in the line's order, the pull request that fixes a red
+// base in its place (lineSort), and says which one that is and what fails on
+// the base's tip. tip is as lineFixer's.
+func (s *Service) lineOrder(ctx context.Context, prs []*PullRequest, tip string) (fixer int64, failing map[string]bool, err error) {
+	lineSort(prs, 0) // lineFixer takes the first by order that fixes it
+	if fixer, failing, err = s.lineFixer(ctx, prs, tip); err != nil {
+		return 0, nil, err
+	}
+	lineSort(prs, fixer)
+	return fixer, failing, nil
 }
 
 // lineGather reads the line once: its entries in order, the live
@@ -208,8 +242,12 @@ func (s *Service) lineGather(ctx context.Context, ref lineRef) (*lineState, erro
 		asked = keep[0]
 		askedTip, askedBehind, askedStale = s.behindBase(ctx, asked)
 	}
-	fixer, failing := s.lineFixer(ctx, keep, askedTip)
-	lineSort(keep, fixer)
+	// What fails on the base unread, nothing is decided: a candidate's
+	// failure can't be told from the base's (c6385 of #569).
+	fixer, failing, err := s.lineOrder(ctx, keep, askedTip)
+	if err != nil {
+		return nil, err
+	}
 	for i, p := range keep {
 		if why := s.lineConflictAhead(ctx, p); why != "" && i > 0 {
 			ls.held[p.ID] = why
@@ -232,7 +270,9 @@ func (s *Service) lineGather(ctx context.Context, ref lineRef) (*lineState, erro
 			// The base moved between the two reads: what fails on it is
 			// read again, for the tip the candidates are built on.
 			if ls.tip != "" && ls.tip != askedTip {
-				ls.failing = s.baseFailingAt(ctx, front, ls.tip)
+				if ls.failing, err = s.baseFailingAt(ctx, front, ls.tip); err != nil {
+					return nil, fmt.Errorf("read what fails on the base's tip: %w", err)
+				}
 				ls.snap.BaseRed = len(ls.failing) > 0
 				ls.snap.FrontFixes = ls.snap.BaseRed && front.ID == fixer && s.fixesBase(ctx, front, ls.tip, ls.failing)
 			}
@@ -806,6 +846,8 @@ func (s *Service) lineAct(ctx context.Context, ls *lineState, a lineAction) {
 				}
 			case endBatchSplit:
 				state = stackFailed
+			case endBaseRed:
+				s.candRedOnTip(ctx, ls, st)
 			}
 			s.candEnd(ctx, ls.f, st, state, reason, a.Why)
 		}
@@ -817,6 +859,23 @@ func (s *Service) lineAct(ctx context.Context, ls *lineState, a lineAction) {
 		s.lineEjectAct(ctx, ls, a)
 	case lineUpdate:
 		s.lineUpdateAct(ctx, ls, a)
+	}
+}
+
+// candRedOnTip records a candidate that ends base_red as the test it was on
+// the base's tip now: built on X with heads [A,B], once A merged it tested B
+// on the tip that holds A, and that is what lineTried must find to keep B
+// from being started again on the same red tip. The row's base and heads
+// become the tip and the heads left; its branch and commit stay.
+func (s *Service) candRedOnTip(ctx context.Context, ls *lineState, st *queueStack) {
+	if st.Merged <= 0 || st.Merged >= len(st.Heads) || ls.tip == "" || sameSHA(ls.tip, st.BaseSHA) {
+		return
+	}
+	rest := st.Heads[st.Merged:]
+	hj, _ := json.Marshal(rest)
+	if _, err := s.db.W.ExecContext(ctx, `UPDATE queue_stacks SET base_sha = ?, heads = ?, pos = ? WHERE id = ? AND ended_at IS NULL`,
+		ls.tip, string(hj), len(rest)-1, st.ID); err != nil {
+		s.log.WarnContext(ctx, "record a base_red candidate on the base's tip", "candidate", st.ID, "err", err)
 	}
 }
 
@@ -897,7 +956,11 @@ func (s *Service) candStart(ctx context.Context, ls *lineState, heads []stackHea
 }
 
 // candRerun runs a failed candidate's failed jobs again, once; a forge that
-// can't says so by the candidate failing the second time all the same.
+// can't says so by the candidate failing the second time all the same. A
+// forge that didn't take the request (an error, not "can't") leaves the
+// candidate not run again, so the next step asks again and the first failure
+// isn't read as a second one that ejects the front. That goes on while the
+// candidate is younger than stackRunMax; after it the failure counts.
 func (s *Service) candRerun(ctx context.Context, ls *lineState, a lineAction) {
 	st := ls.rows[a.Cand]
 	if st == nil {
@@ -913,12 +976,26 @@ func (s *Service) candRerun(ctx context.Context, ls *lineState, a lineAction) {
 	if !ok {
 		return
 	}
-	if can, err := cl.CanRetryChecks(ctx, ls.f); err != nil || !can {
+	can, err := cl.CanRetryChecks(ctx, ls.f)
+	if err == nil && !can {
 		return
 	}
-	if _, err := cl.RetryChecks(ctx, ls.f, st.Repo, st.CommitSHA); err != nil {
-		s.log.WarnContext(ctx, "run a candidate's failed jobs again", "candidate", st.ID, "err", err)
+	n := 0
+	if err == nil {
+		n, err = cl.RetryChecks(ctx, ls.f, st.Repo, st.CommitSHA)
 	}
+	if err == nil {
+		return
+	}
+	s.log.WarnContext(ctx, "run a candidate's failed jobs again", "candidate", st.ID, "err", err)
+	if n > 0 || s.now().Sub(st.CreatedAt) >= stackRunMax {
+		return // some of it is running again, or it was asked for long enough
+	}
+	if _, err := s.db.W.ExecContext(ctx, `UPDATE queue_stacks SET reran = 0 WHERE id = ? AND ended_at IS NULL`, st.ID); err != nil {
+		s.log.WarnContext(ctx, "take back a candidate's re-run", "candidate", st.ID, "err", err)
+		return
+	}
+	st.RerunAt = 0
 }
 
 // lineMergeAct merges the front on its passed candidate: a draft is marked
@@ -927,6 +1004,13 @@ func (s *Service) candRerun(ctx context.Context, ls *lineState, a lineAction) {
 func (s *Service) lineMergeAct(ctx context.Context, ls *lineState, a lineAction) {
 	pr := ls.prs[a.PR]
 	if pr == nil {
+		return
+	}
+	if !s.lineHolds(ctx, ls.ref, pr.ID) {
+		// It left the line since the step read it: it isn't marked ready on a
+		// candidate or merged as the front. The next step reads the line
+		// without it (whoever took it out asked for one).
+		s.log.InfoContext(ctx, "the front left the line before its merge", "repo", pr.Repo, "base", pr.BaseRef, "pr", pr.Number)
 		return
 	}
 	if a.Cand != 0 {
@@ -979,10 +1063,15 @@ func (s *Service) lineEjectAct(ctx context.Context, ls *lineState, a lineAction)
 	s.log.InfoContext(ctx, "pull request ejected", "repo", pr.Repo, "base", pr.BaseRef, "pr", pr.Number, "candidate", st.ID, "why", excerpt(cmp(p.note, a.Why), 160))
 	if a.Conflict {
 		ahead := !p.onBase && p.k > 0
-		s.candEnd(ctx, ls.f, st, stackConflict, endConflict, p.note)
-		if _, err := s.db.W.ExecContext(ctx, `UPDATE queue_stacks SET conflict_pr = ?, conflict_ahead = ? WHERE id = ?`, pr.ID, ahead, st.ID); err != nil {
+		// Who conflicted goes on the row before it ends: an ended candidate
+		// without it can't be acted on again, and lineConflictAhead (which
+		// reads only ended ones) would never hold the pull request out. If
+		// this write fails the candidate stays live and the next step ejects.
+		if _, err := s.db.W.ExecContext(ctx, `UPDATE queue_stacks SET conflict_pr = ?, conflict_ahead = ? WHERE id = ? AND ended_at IS NULL`, pr.ID, ahead, st.ID); err != nil {
 			s.log.WarnContext(ctx, "record a candidate's conflict", "candidate", st.ID, "err", err)
+			return
 		}
+		s.candEnd(ctx, ls.f, st, stackConflict, endConflict, p.note)
 		if ahead {
 			return // it waits in place, passed over until the heads ahead of it merge
 		}

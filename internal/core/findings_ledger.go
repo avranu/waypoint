@@ -593,7 +593,7 @@ func (s *Service) classifyLiveRound(ctx context.Context, b *Babysit, pr *PullReq
 	}
 	in.Earlier = append(in.Earlier, s.earlierFindings(ctx, pr.ID, t.Findings)...)
 	if len(t.Checks) > 0 {
-		_, in.BaseRed = s.baseFailing(ctx, pr)
+		_, in.BaseRed, _ = s.baseFailing(ctx, pr) // unread reads as green here: it only words a packet
 	}
 	round.Ledger, round.Class = classifyRound(in)
 	round.WorkClass = round.Class

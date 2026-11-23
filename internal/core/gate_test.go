@@ -45,6 +45,7 @@ type shipForge struct {
 	retries    []string // shas whose failed checks were run again
 	noRetry    bool     // a forge that can't re-run checks (Forgejo before 17)
 	retryNone  bool     // a forge that finds nothing to re-run
+	retryErr   error    // a forge that refuses a re-run
 	notes      []PRNote // review bodies and conversation comments (babysit_test.go)
 	reactedTo  []string // "kind:id:emoji" put on comments
 	titleEdits []string // titles set through EditPRTitle (draft_first_test.go)

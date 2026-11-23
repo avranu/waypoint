@@ -12,25 +12,34 @@ package core
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"strings"
 )
 
 // baseFailing reads the jobs that fail on pr's base's tip, as its CI last
-// reported them; none while it runs or when the tip isn't known.
-func (s *Service) baseFailing(ctx context.Context, pr *PullRequest) (string, map[string]bool) {
+// reported them; none while it runs or when the tip isn't known. A read that
+// failed is an error, not "none fail": the line would take a failure of the
+// base for the pull request's own and eject it.
+func (s *Service) baseFailing(ctx context.Context, pr *PullRequest) (string, map[string]bool, error) {
 	var tip string
-	if err := s.db.R.QueryRowContext(ctx, `SELECT head_sha FROM branch_activity WHERE forge_id = ? AND repo = ? COLLATE NOCASE AND branch = ?`,
-		pr.ForgeID, pr.Repo, pr.BaseRef).Scan(&tip); err != nil || tip == "" {
-		return "", nil
+	err := s.db.R.QueryRowContext(ctx, `SELECT head_sha FROM branch_activity WHERE forge_id = ? AND repo = ? COLLATE NOCASE AND branch = ?`,
+		pr.ForgeID, pr.Repo, pr.BaseRef).Scan(&tip)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && tip == "") {
+		return "", nil, nil
 	}
-	return tip, s.baseFailingAt(ctx, pr, tip)
+	if err != nil {
+		return "", nil, err
+	}
+	failing, err := s.baseFailingAt(ctx, pr, tip)
+	return tip, failing, err
 }
 
 // baseFailingAt is baseFailing for a tip the caller already chose.
-func (s *Service) baseFailingAt(ctx context.Context, pr *PullRequest, tip string) map[string]bool {
+func (s *Service) baseFailingAt(ctx context.Context, pr *PullRequest, tip string) (map[string]bool, error) {
 	checks, err := s.shaChecks(ctx, pr.ForgeID, pr.Repo, tip)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	failing := map[string]bool{}
 	for _, c := range dropSuperseded(checks) {
@@ -38,7 +47,7 @@ func (s *Service) baseFailingAt(ctx context.Context, pr *PullRequest, tip string
 			failing[checkJob(c.Name)] = true
 		}
 	}
-	return failing
+	return failing, nil
 }
 
 // checkJob is a check's job, the same on a push and on a pull request.

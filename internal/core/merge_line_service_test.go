@@ -822,3 +822,161 @@ func TestCandEjectTextNamesTheHeadsAhead(t *testing.T) {
 		t.Errorf("#7: %q", got)
 	}
 }
+
+// What fails on the base can't be read: that is an error to the line's
+// order and fixer, not a base with nothing failing, so lineGather decides
+// nothing on it and a candidate's failure of the base's own job isn't taken
+// for the pull request's (c6385 of #569).
+func TestLineUnreadableBaseChecksIsAnError(t *testing.T) {
+	se := newStackEnv(t)
+	se.redBase("ci / lint (push)")
+	se.draftGreen(head7s, 5)
+	pr := se.pr(7)
+	if _, failing, err := se.s.lineOrder(se.ctx, []*PullRequest{pr}, "tip-1"); err != nil || len(failing) != 1 {
+		t.Fatalf("read: %v, %v", failing, err)
+	}
+	defer se.breakTable("ci_checks")()
+	if failing, err := se.s.baseFailingAt(se.ctx, pr, "tip-1"); err == nil {
+		t.Errorf("an unreadable base read as failing %v", failing)
+	}
+	if _, failing, err := se.s.baseFailing(se.ctx, pr); err == nil {
+		t.Errorf("an unreadable base at its stored tip read as failing %v", failing)
+	}
+	if _, _, err := se.s.lineOrder(se.ctx, []*PullRequest{pr}, "tip-1"); err == nil {
+		t.Error("the line was ordered without what fails on its base")
+	}
+}
+
+// The forge doesn't take the request to run a failed candidate's jobs again:
+// the candidate isn't marked run again, so its first failure isn't read as a
+// second and the front stays; the next step asks again (c6393 of #569).
+func TestLineRejectedRerunIsNotARerun(t *testing.T) {
+	se := newStackEnv(t)
+	se.draftGreen(head7s, 5)
+	se.step()
+	se.line()
+	se.stackRun(0, CheckFailed, treeA, "7 "+head7s)
+	se.sg.sm.Lock()
+	se.sg.retryErr = errors.New("502 from the forge")
+	se.sg.sm.Unlock()
+	se.line()
+	se.setClock(se.clockNow().Add(lineRerunSettle + time.Minute))
+	se.line()
+	if sts := se.stacks(); sts[0].RerunAt != 0 || sts[0].Ended {
+		t.Fatalf("a rejected re-run counted: reran %d, ended %v %q", sts[0].RerunAt, sts[0].Ended, sts[0].EndReason)
+	}
+	se.sg.sm.Lock()
+	se.sg.retryErr = nil
+	se.sg.sm.Unlock()
+	se.line()
+	if sts := se.stacks(); sts[0].RerunAt == 0 || sts[0].Ended {
+		t.Fatalf("not run again once the forge took it: %+v", sts[0])
+	}
+	// A forge that goes on refusing: after stackRunMax the failure counts.
+	se2 := newStackEnv(t)
+	se2.draftGreen(head7s, 5)
+	se2.step()
+	se2.line()
+	se2.stackRun(0, CheckFailed, treeA, "7 "+head7s)
+	se2.sg.sm.Lock()
+	se2.sg.retryErr = errors.New("502 from the forge")
+	se2.sg.sm.Unlock()
+	se2.setClock(se2.clockNow().Add(stackRunMax + time.Minute))
+	se2.line()
+	if sts := se2.stacks(); sts[0].RerunAt == 0 {
+		t.Errorf("a forge that refuses for good holds the front forever: %+v", sts[0])
+	}
+}
+
+// queueAhead orders as the line does: the pull request that fixes a red base
+// isn't behind the one armed before it (c6396 of #569).
+func TestQueueAheadPutsTheFixerFirst(t *testing.T) {
+	se := newStackEnv(t)
+	se.redBase("ci / lint (push)")
+	se.draftGreen(head7s, 5)
+	se.sg.setChecks(head8s,
+		CommitCheck{Name: "ci / backend (pull_request)", State: CheckSuccess, ID: 7, Description: "Successful in 4m"},
+		CommitCheck{Name: "ci / e2e (pull_request)", State: CheckSuccess, ID: 8, Description: "Has been skipped"},
+		CommitCheck{Name: "ci / lint (pull_request)", State: CheckSuccess, ID: 9, Description: "Successful in 1m"})
+	se.poll()
+	se.s.Wait()
+	if a, err := se.s.queueAhead(se.ctx, se.pr(8)); err != nil || len(a) != 0 {
+		t.Errorf("ahead of #8, which fixes main: %v, %v", a, err)
+	}
+	if a, err := se.s.queueAhead(se.ctx, se.pr(7)); err != nil || len(a) != 1 || a[0].Number != 8 {
+		t.Errorf("ahead of #7: %v, %v", a, err)
+	}
+	restore := se.breakTable("ci_checks")
+	defer restore()
+	if _, err := se.s.queueAhead(se.ctx, se.pr(7)); err == nil {
+		t.Error("the order was given without what fails on the base")
+	}
+}
+
+// The front left the line after the step read it (its babysit asked a person
+// about a round's held change): the step doesn't mark it ready on its passed
+// candidate or merge it (c6384 of #569).
+func TestLineMergeActSkipsAFrontThatLeft(t *testing.T) {
+	se := newStackEnv(t)
+	se.draftGreen(head7s, 5)
+	se.step()
+	se.line()
+	se.stackRun(0, CheckSuccess, treeA, "7 "+head7s)
+	se.sg.trees = map[string]string{"3e7000000": treeA}
+	pr := se.pr(7)
+	ls, err := se.s.lineGather(se.ctx, lineOf(pr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	acts := planLine(ls.snap)
+	if len(acts) != 1 || acts[0].Kind != lineMerge {
+		t.Fatalf("plan: %+v", acts)
+	}
+	se.s.leaveQueue(se.ctx, pr.ID) // as heldWait does, outside the line's lock
+	se.s.lineAct(se.ctx, ls, acts[0])
+	se.s.Wait()
+	if m := se.sg.merged(); len(m) != 0 {
+		t.Errorf("merged after it left the line: %+v", m)
+	}
+	if p := se.pr(7); p.State != "draft" {
+		t.Errorf("marked ready after it left the line: %s", p.State)
+	}
+	if sts := se.stacks(); sts[0].State == stackReady {
+		t.Errorf("its candidate was recorded ready")
+	}
+}
+
+// A candidate for #7 and #8 ends base_red after #7 merged: it is recorded as
+// the test of #8 on the tip that holds #7, which is what keeps #8 from being
+// started again while that tip is red (c6389 of #569).
+func TestLineBaseRedIsRecordedOnTheTipItEndedOn(t *testing.T) {
+	se := newStackEnv(t)
+	se.draftGreen(head7s, 5)
+	se.draftGreen(head8s, 7)
+	se.step()
+	se.line()
+	pr := se.pr(7)
+	ref := lineOf(pr)
+	ls, err := se.s.lineGather(se.ctx, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var both *queueStack
+	for _, st := range ls.rows {
+		if len(st.Heads) == 2 {
+			both = st
+		}
+	}
+	if both == nil {
+		t.Fatalf("no candidate for #7 and #8: %q", se.madeHeads())
+	}
+	both.Merged, ls.tip = 1, "3e7000000" // #7 merged on its own candidate
+	se.s.lineAct(se.ctx, ls, lineAction{Kind: lineEnd, Cand: both.ID, End: endBaseRed, Why: "it failed only what fails on the base's tip"})
+	rest := both.Heads[1:]
+	if tried := se.s.lineTried(se.ctx, ref, "3e7000000", true); !tried[candKey(rest)] {
+		t.Errorf("#8 alone isn't remembered on the tip that holds #7: %v", tried)
+	}
+	if tried := se.s.lineTried(se.ctx, ref, "tip-9", true); tried[candKey(rest)] {
+		t.Error("remembered on another tip too")
+	}
+}

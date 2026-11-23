@@ -227,7 +227,9 @@ func planLine(s lineSnap) []lineAction {
 			// line waits for the base.
 			acts = append(acts, lineAction{Kind: lineEnd, Cand: c.ID, Why: "it failed only what fails on the base's tip", End: endBaseRed})
 			delete(by, n)
-			redEnded[candKey(c.Heads)] = true
+			// The heads it still tests: those before them merged, and the
+			// same test on this tip is these alone (lineAct records it so).
+			redEnded[candKey(c.Heads[c.Merged:])] = true
 		case c.State == candFailed && !c.Reran:
 			acts = append(acts, lineAction{Kind: lineRerun, Cand: c.ID})
 			by[n] = lineCand{ID: c.ID, State: candRunning}
