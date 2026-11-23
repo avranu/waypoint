@@ -71,6 +71,7 @@ type queueResult struct {
 	waited    time.Duration
 	live      int  // the agents counted at the end
 	timedOut  bool // the bound passed with no slot free
+	blocked   bool // the slots are held by agents waiting on this very call: no slot can come free
 	abandoned bool // Claude Code is gone
 }
 
@@ -83,6 +84,9 @@ type slotQueue struct {
 	w     gateWaits
 	count func() (n int, ok bool) // a read without the lock; !ok: not readable now
 	admit func() (n int, ok bool) // under the lock: claim a slot if one is free
+	// blocked, when set, says whether every slot in use is held by an agent
+	// that is itself waiting on this call (no lock; false when not readable).
+	blocked func() bool
 }
 
 func (q slotQueue) run() queueResult {
@@ -100,6 +104,8 @@ func (q slotQueue) run() queueResult {
 					return queueResult{waited: q.w.now().Sub(start), live: a}
 				}
 				n = a
+			} else if q.blocked != nil && q.blocked() {
+				return queueResult{waited: q.w.now().Sub(start), live: c, blocked: true}
 			}
 		}
 		if waited := q.w.now().Sub(start); waited >= q.bound {
@@ -120,6 +126,38 @@ func (c *cli) liveCount(session string, now time.Time) (int, bool) {
 		return 0, false
 	}
 	return s.slotsUsed(session, now), true
+}
+
+// chainBlocked says whether the slots of session are all held by caller and
+// the agents waiting on it: the caller's Agent call is blocked in the gate, so
+// it cannot free its own slot, and nothing else is running or about to start.
+// The chain is the caller alone: a foreground parent is recorded only when
+// its Agent call returns, so it is not known while the caller runs. Read
+// without the state lock, like liveCount.
+func (c *cli) chainBlocked(session, caller string, now time.Time) bool {
+	var s State
+	if c.dir == "" {
+		s = c.state
+	} else if err := readJSON(filepath.Join(c.dir, "state.json"), &s); err != nil {
+		return false
+	}
+	return s.onlyHeldBy(session, map[string]bool{caller: true}, now)
+}
+
+// onlyHeldBy says whether every slot counted by slotsUsed is held by an agent
+// of chain, with no live reservation.
+func (s *State) onlyHeldBy(session string, chain map[string]bool, now time.Time) bool {
+	for _, r := range s.Reserved[session] {
+		if now.Sub(r.At) <= reserveTTL {
+			return false
+		}
+	}
+	for id, a := range s.liveIDs(session, now) {
+		if !a.Waiting && !chain[id] {
+			return false
+		}
+	}
+	return true
 }
 
 // slotsUsed is the live agents of session plus the Agent calls admitted that
@@ -169,12 +207,16 @@ func (c *cli) admitSlot(session string, res reservation, limit int) (int, bool) 
 }
 
 // waitForSlot holds an Agent call of session until a slot is free.
+// A nested call (res.Parent set) does not wait for slots only its own chain holds.
 func (c *cli) waitForSlot(session string, res reservation, limit int) queueResult {
 	w := gateWait()
 	q := slotQueue{
 		limit: limit, bound: gateBound, poll: gateQueuePoll, w: w,
 		count: func() (int, bool) { return c.liveCount(session, w.now()) },
 		admit: func() (int, bool) { return c.admitSlot(session, res, limit) },
+	}
+	if res.Parent != "" {
+		q.blocked = func() bool { return c.chainBlocked(session, res.Parent, w.now()) }
 	}
 	return q.run()
 }
@@ -185,6 +227,12 @@ func queueTimedOutText(r queueResult, limit int) string {
 	n := max(r.live, limit)
 	return fmt.Sprintf("%d agents are running, the most Claude Code runs at once; this start waited %s. If it is refused, start it when the next one finishes, which you are told about.",
 		n, shortDuration(r.waited))
+}
+
+// queueBlockedText is what the agent is told when its start was not held back
+// because the slots are held by the agents waiting on it.
+func queueBlockedText(limit int) string {
+	return fmt.Sprintf("Claude Code's limit of %d agents is held by the agents waiting on this call, so it was not held back. If it is refused, report back to your caller instead of retrying.", limit)
 }
 
 // shortDuration is d as "4m" or "45s": whole minutes when it is one.
