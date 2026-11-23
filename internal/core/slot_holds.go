@@ -23,6 +23,10 @@ const (
 	slotDurMaxMS     = int64(30 * 24 * time.Hour / time.Millisecond)
 )
 
+// EvSlotHoldsRecorded: a machine reported its slot holds. It goes live to
+// the owner only and is quiet: not recorded, and it sets nothing off.
+const EvSlotHoldsRecorded = "slot.holds_recorded"
+
 // SlotHolder is a slot that was held when a run queued.
 type SlotHolder struct {
 	Slot  int   `json:"slot"`
@@ -140,7 +144,9 @@ func slotHoldRow(h SlotHold, now int64) (SlotHold, []byte, []byte, bool) {
 // duplicate, so a resend is safe; a malformed one is counted as rejected and
 // the rest are kept.
 //
-// No event is emitted: holds are bulk telemetry, as usage ingest is.
+// Every report, a refused one too, emits a quiet EvSlotHoldsRecorded: holds
+// are bulk telemetry, so nothing is notified, hooked or kept in history; a
+// machine whose holds stop arriving is told by collector health.
 func (s *Service) RecordSlotHolds(ctx context.Context, actor *Actor, in SlotHoldsIn) (*SlotHoldsResult, error) {
 	uid, err := slotWriter(actor)
 	if err != nil {
@@ -173,6 +179,7 @@ func (s *Service) RecordSlotHolds(ctx context.Context, actor *Actor, in SlotHold
 			return err
 		}
 		if tooMany {
+			t.emit(slotHoldsEvent(uid, in.Machine, in.Pending, res, true))
 			return nil
 		}
 		for _, h := range in.Holds {
@@ -209,7 +216,11 @@ func (s *Service) RecordSlotHolds(ctx context.Context, actor *Actor, in SlotHold
 		_, err := t.ExecContext(ctx, `UPDATE slot_machines SET pending = ?, pending_since = CASE WHEN ? = 0 THEN NULL ELSE pending_since END,
 				rejected = rejected + ?, last_stored_at = CASE WHEN ? > 0 THEN ? ELSE last_stored_at END WHERE user_id = ? AND machine = ?`,
 			left, left, res.Rejected, res.Stored, now, uid, in.Machine)
-		return err
+		if err != nil {
+			return err
+		}
+		t.emit(slotHoldsEvent(uid, in.Machine, left, res, false))
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -218,6 +229,14 @@ func (s *Service) RecordSlotHolds(ctx context.Context, actor *Actor, in SlotHold
 		return nil, invalid("at most %d holds in one request", SlotHoldsMax)
 	}
 	return res, nil
+}
+
+// slotHoldsEvent is the quiet event for one machine's report.
+func slotHoldsEvent(uid int64, machine string, pending int64, res *SlotHoldsResult, refused bool) *Event {
+	return &Event{Kind: EvSlotHoldsRecorded, UserID: uid, quiet: true, Data: map[string]any{
+		"machine": machine, "pending": pending, "stored": res.Stored, "duplicate": res.Duplicate,
+		"rejected": res.Rejected, "refused": refused,
+	}}
 }
 
 // nullIf is v when ok, else NULL.

@@ -127,6 +127,54 @@ func TestRecordSlotHoldsTooManyKeepsMachineRow(t *testing.T) {
 	}
 }
 
+// Every report emits one quiet event, live to the owner only and not kept in
+// history; a batch refused as too big emits one as well.
+func TestRecordSlotHoldsEmitsQuietEvent(t *testing.T) {
+	e := newEnv(t)
+	jo := e.user("jo", false)
+	mine, theirs := e.s.Hub.Subscribe(e.admin.User.ID), e.s.Hub.Subscribe(jo.User.ID)
+	defer e.s.Hub.Unsubscribe(mine)
+	defer e.s.Hub.Unsubscribe(theirs)
+	next := func(sub *Subscription) *Event {
+		for {
+			select {
+			case ev := <-sub.C:
+				if ev.Kind == EvSlotHoldsRecorded {
+					return ev
+				}
+			case <-time.After(500 * time.Millisecond):
+				return nil
+			}
+		}
+	}
+	now := e.clockNow().UnixMilli()
+	if _, err := e.s.RecordSlotHolds(e.ctx, e.admin, SlotHoldsIn{Machine: "box", Pending: 3, Holds: []SlotHold{slotHoldIn("a", now)}}); err != nil {
+		t.Fatal(err)
+	}
+	ev := next(mine)
+	if ev == nil || !ev.quiet || ev.UserID != e.admin.User.ID || ev.Data["machine"] != "box" || ev.Data["stored"] != 1 ||
+		ev.Data["pending"] != int64(2) || ev.Data["refused"] != false {
+		t.Fatalf("event %+v", ev)
+	}
+	var hs []SlotHold
+	for i := range SlotHoldsMax + 1 {
+		hs = append(hs, slotHoldIn("h"+strconv.Itoa(i), now))
+	}
+	if _, err := e.s.RecordSlotHolds(e.ctx, e.admin, SlotHoldsIn{Machine: "box", Pending: 501, Holds: hs}); !IsInvalid(err) {
+		t.Fatalf("err = %v", err)
+	}
+	if ev := next(mine); ev == nil || ev.Data["refused"] != true || ev.Data["pending"] != int64(501) {
+		t.Errorf("refused batch: %+v", ev)
+	}
+	if ev := next(theirs); ev != nil {
+		t.Errorf("another person heard %+v", ev)
+	}
+	var n int
+	if err := e.s.db.R.QueryRow(`SELECT COUNT(*) FROM events WHERE kind = ?`, EvSlotHoldsRecorded).Scan(&n); err != nil || n != 0 {
+		t.Errorf("history rows %d %v", n, err)
+	}
+}
+
 func TestSlotHoldsAreSeparatePerUserAndAccess(t *testing.T) {
 	e := newEnv(t)
 	jo := e.user("jo", false)
