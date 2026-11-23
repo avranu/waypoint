@@ -52,6 +52,25 @@ func TestSlotHoldsOversizeBatchRefusedButMachineRowWritten(t *testing.T) {
 	if code := a.human.json("GET", "/api/v1/slot-holds", nil, &got); code != 200 || len(got) != 0 {
 		t.Errorf("stored %d (%d)", len(got), code)
 	}
+	// The machine's state was still recorded: the collector health counts it.
+	ctx := context.Background()
+	a.svc.CheckCollectorHealth(ctx)
+	hs, err := a.svc.CollectorHealthList(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, h := range hs {
+		if h.Name == "slot holds" {
+			found = true
+			if h.Waiting != 1 {
+				t.Errorf("slot holds waiting = %d, want 1 (the machine's pending was not recorded)", h.Waiting)
+			}
+		}
+	}
+	if !found {
+		t.Error("no slot holds row in collector health")
+	}
 }
 
 // A wp newer than the server sends fields it doesn't know: the batch is still
