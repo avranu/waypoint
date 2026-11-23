@@ -185,10 +185,6 @@ func TestPictureReadAllowed(t *testing.T) {
 	if out := run("Read", "default", big); !allowed(out) {
 		t.Errorf("big picture: %q", out)
 	}
-	// Counted, so the state file shows the prompts saved.
-	if st := hc.state.Nudges[pictureAllowKind]; st == nil || st.Shown != 2 {
-		t.Errorf("allows counted: %+v, want the 2 above", st)
-	}
 	// A note and the allow together: a person's pause told on a picture Read.
 	c := &cli{dir: t.TempDir()}
 	c.savePause(json.RawMessage(testPause))

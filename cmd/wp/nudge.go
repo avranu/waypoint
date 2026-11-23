@@ -159,10 +159,6 @@ func preToolReply(decision, reason, context string) []byte {
 	return append(b, '\n')
 }
 
-// pictureAllowKind counts, beside the nudges, the picture Reads let through
-// unasked: the prompts WP-1137 saved.
-const pictureAllowKind = "picture-allow"
-
 // picturePermit: a Read the session may make unasked (WP-1137). Not in a
 // runner's job (runnerJobEnv), nor where Claude Code asks nothing: a
 // session told to refuse what it wasn't granted (dontAsk, a read-only job)
@@ -282,13 +278,9 @@ func hookClaudeNudge(c *cli, stdin io.Reader, stdout io.Writer) {
 	if r == nil {
 		if allow {
 			_, _ = stdout.Write(nudgeReply("", true))
-			c.countNudge(pictureAllowKind, hookCountWait(hookNudgeTimeout))
 		}
 		return
 	}
 	_, _ = stdout.Write(nudgeReply(r.text, allow))
 	c.countNudge(r.kind, hookCountWait(hookNudgeTimeout))
-	if allow {
-		c.countNudge(pictureAllowKind, hookCountWait(hookNudgeTimeout))
-	}
 }
