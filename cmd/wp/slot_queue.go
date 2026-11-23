@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -101,6 +102,64 @@ func slotCmdOf(args []string) string {
 		return after
 	}
 	return s
+}
+
+// slotRun is the command a hold is for: key is the local wait-history key
+// (the arguments joined with spaces, as slotKey makes it), and shown is the
+// command as the server is told it (WP-1646): each argument quoted and
+// secret values blanked argument by argument, so a value with spaces after
+// --password is blanked whole. Joined with spaces the argument boundaries
+// are lost, so shown is never made from key.
+type slotRun struct{ key, shown string }
+
+// slotRunOf is the run of argv, whichever of wp testsum, wp ship --check or
+// wp slot run asked for it.
+func slotRunOf(argv []string) slotRun {
+	return slotRun{slotKey(argv), slotShown(goTestJSON(argv))}
+}
+
+// slotRunFor is the run of a hold that is several runs of argv (slotKeyFor).
+func slotRunFor(kind string, argv []string) slotRun {
+	return slotRun{slotKeyFor(kind, argv), kind + ": " + slotShown(goTestJSON(argv))}
+}
+
+// slotRunOfArgs is the run of a wp command line (os.Args[1:]): what follows
+// its first "--" argument, else all of it, as slotCmdOf.
+func slotRunOfArgs(args []string) slotRun {
+	shown := args
+	if i := slices.Index(args, "--"); i >= 0 {
+		shown = args[i+1:]
+	}
+	return slotRun{slotCmdOf(args), slotShown(shown)}
+}
+
+// slotShown is argv shell-quoted with secrets blanked per argument, each
+// value whole whatever it holds: the argument after a secret-named flag
+// (--password x, -H x), the value of a secret --flag=x or NAME=x, and an
+// attached header (-HAuthorization: x). Other arguments are redactCommand'd
+// for secrets inside them (sh -c 'curl --token x').
+func slotShown(argv []string) string {
+	secret := func(name string) bool {
+		return secretKeyCLI.MatchString(name) || name == "-H" || name == "--header" || name == "header"
+	}
+	out := make([]string, len(argv))
+	hide := false
+	for i, a := range argv {
+		name, _, inline := strings.Cut(a, "=")
+		switch {
+		case hide:
+			out[i], hide = "•••", false
+		case strings.HasPrefix(a, "-H") && len(a) > 2 && !strings.HasPrefix(a, "--"):
+			out[i] = "-H•••"
+		case inline && !strings.ContainsAny(name, " \t'\"") && secret(name):
+			out[i] = name + "=•••"
+		case !inline && strings.HasPrefix(a, "-") && secret(a):
+			out[i], hide = a, true
+		default:
+			out[i] = redactCommand(a)
+		}
+	}
+	return shellJoin(out)
 }
 
 // slotMedianSecs is the median of the values (mean of the middle two when even).
@@ -241,7 +300,7 @@ func trimWaits(p string, keep int) {
 // short run goes straight to the slots it may use. The wait shows in
 // NAME.PID.queue (WP-1604, WP-ADR150). A wait also says when the run is
 // expected to finish if etaCmd is not "" (WP-1571).
-func (c *cli) acquireQueued(ctx context.Context, name string, n int, cmd, etaCmd string) (qh *queuedHold, err error) {
+func (c *cli) acquireQueued(ctx context.Context, name string, n int, run slotRun, etaCmd string) (qh *queuedHold, err error) {
 	start := time.Now()
 	dir, err := slotDir()
 	if err != nil {
@@ -265,16 +324,16 @@ func (c *cli) acquireQueued(ctx context.Context, name string, n int, cmd, etaCmd
 	if repo == "" {
 		repo = wd
 	}
-	cmdKey := slotField(cmd)
+	cmdKey := slotField(run.key)
 	class, median, runs := classifyRunStats(readWaitRecs(dir), name, repo, cmdKey)
 	waited := func() int64 { return int64(time.Since(start).Round(time.Second) / time.Second) }
 	// What the server is told of this hold (WP-1646): what was known when it
 	// queued; the rest is filled in as it goes.
 	var full *core.SlotHold
 	if slotSendOn(c) {
-		// The command goes to the server with inline secrets blanked, before
-		// it is cut (a cut could leave half of one); cmdKey stays local.
-		full = c.newSlotHold(dir, name, repo, slotField(tree), slotField(redactCommand(cmd)), class, median, runs, n, start)
+		// The command goes to the server with secrets blanked per argument,
+		// before it is cut (a cut could leave half of one); cmdKey stays local.
+		full = c.newSlotHold(dir, name, repo, slotField(tree), slotField(run.shown), class, median, runs, n, start)
 	}
 	var treeStart, treeEnd time.Time
 	treeWaited := func() int64 {

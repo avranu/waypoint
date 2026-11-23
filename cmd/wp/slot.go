@@ -241,7 +241,7 @@ func (c *cli) runInSlotThen(name string, n int, argv []string, out, errw io.Writ
 	if own {
 		cmd = slotRunKey(os.Args, argv)
 	}
-	env, release, setExit, err := c.takeSlotExit(ctx, name, n, slotKey(argv), cmd)
+	env, release, setExit, err := c.takeSlotExit(ctx, name, n, slotRunOf(argv), cmd)
 	if err != nil {
 		return 0, err
 	}
@@ -411,13 +411,13 @@ func cmdSlotLs(c *cli, args []string) error {
 // one, and returns the environment for commands run in it (marking the slot
 // held, so a nested run doesn't wait on itself) and what lets it go.
 func (c *cli) takeSlot(ctx context.Context, name string, n int) (env []string, release func(), err error) {
-	return c.takeSlotFor(ctx, name, n, slotCmdOf(slotOSArgs[1:]))
+	return c.takeSlotFor(ctx, name, n, slotRunOfArgs(slotOSArgs[1:]))
 }
 
-// takeSlotFor is takeSlot for a run of cmd, which the wait history is kept by
+// takeSlotFor is takeSlot for a run, whose key the wait history is kept by
 // (so one command has one key however wp was asked to run it).
-func (c *cli) takeSlotFor(ctx context.Context, name string, n int, cmd string) (env []string, release func(), err error) {
-	env, release, _, err = c.takeSlotExit(ctx, name, n, cmd, "")
+func (c *cli) takeSlotFor(ctx context.Context, name string, n int, run slotRun) (env []string, release func(), err error) {
+	env, release, _, err = c.takeSlotExit(ctx, name, n, run, "")
 	return env, release, err
 }
 
@@ -426,12 +426,12 @@ func (c *cli) takeSlotFor(ctx context.Context, name string, n int, cmd string) (
 // caller that doesn't call it leaves the exit unknown. While it waits it also
 // says when it expects to finish if it knows how long etaCmd (slotCmdKey)
 // runs; "" says nothing (WP-1571).
-func (c *cli) takeSlotExit(ctx context.Context, name string, n int, cmd, etaCmd string) (env []string, release func(), setExit func(int), err error) {
+func (c *cli) takeSlotExit(ctx context.Context, name string, n int, run slotRun, etaCmd string) (env []string, release func(), setExit func(int), err error) {
 	env = os.Environ()
 	if slotHeld(name) {
 		return env, func() {}, func(int) {}, nil
 	}
-	hold, err := c.acquireQueued(ctx, name, n, cmd, etaCmd)
+	hold, err := c.acquireQueued(ctx, name, n, run, etaCmd)
 	if err != nil {
 		return nil, nil, nil, err
 	}

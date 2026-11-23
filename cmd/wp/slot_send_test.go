@@ -55,7 +55,7 @@ func TestSlotHoldRecordsWhatTheClassWasDecidedFrom(t *testing.T) {
 	sqSeed(t, "tests", sqCmd, 400, 3)
 	// another run holds slot 3; a live process waits
 	other, _, _ := sqCLI()
-	_, rel0, err := other.takeSlotFor(context.Background(), "tests", 4, "other cmd")
+	_, rel0, err := other.takeSlotFor(context.Background(), "tests", 4, sqRun("other cmd"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestSlotHoldRecordsWhatTheClassWasDecidedFrom(t *testing.T) {
 	q, _ := json.Marshal(queueRec{Since: 123, WD: "/x", Cmd: "c", Class: "long", BehindOwn: true})
 	_ = os.WriteFile(filepath.Join(dir, fmt.Sprintf("tests.%d.queue", ppid)), q, 0o600)
 
-	_, rel, setExit, err := c.takeSlotExit(context.Background(), "tests", 4, sqCmd, "")
+	_, rel, setExit, err := c.takeSlotExit(context.Background(), "tests", 4, sqRun(sqCmd), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,13 +128,13 @@ func TestSlotHoldGaveUpAndTreeWait(t *testing.T) {
 
 	// a long run waits behind its worktree's own earlier one
 	sqSeed(t, "tests", "make check", 1800, 3)
-	_, first, err := c.takeSlotFor(context.Background(), "tests", 4, "make check")
+	_, first, err := c.takeSlotFor(context.Background(), "tests", 4, sqRun("make check"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	ch := make(chan sqTake, 1)
 	go func() {
-		_, r, err := c.takeSlotFor(context.Background(), "tests", 4, "make check")
+		_, r, err := c.takeSlotFor(context.Background(), "tests", 4, sqRun("make check"))
 		ch <- sqTake{r, err}
 	}()
 	time.Sleep(400 * time.Millisecond)
@@ -355,8 +355,9 @@ func (r *ssRecorder) count() int {
 
 func TestSlotHoldSentToServerHasNoInlineSecrets(t *testing.T) {
 	c, dir := ssEnv(t, ssDown(t))
-	const cmd = "go test --token=abc123secret --password hunter2 ./x"
-	_, rel, err := c.takeSlotFor(context.Background(), "tests", 2, cmd)
+	// one argument holds a space: joined with spaces, its tail would leak
+	argv := []string{"go", "test", "--token=abc123secret", "--password", "hunter2 tail2", "./x"}
+	_, rel, err := c.takeSlotFor(context.Background(), "tests", 2, slotRunOf(argv))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -365,7 +366,7 @@ func TestSlotHoldSentToServerHasNoInlineSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, secret := range []string{"abc123secret", "hunter2"} {
+	for _, secret := range []string{"abc123secret", "hunter2", "tail2"} {
 		if strings.Contains(string(raw), secret) {
 			t.Errorf("outbox holds %q: %s", secret, raw)
 		}
@@ -388,12 +389,12 @@ func TestSlotHoldSentToServerHasNoInlineSecrets(t *testing.T) {
 		t.Fatal("nothing posted")
 	}
 	for _, b := range rec.bodies {
-		if strings.Contains(b, "abc123secret") || strings.Contains(b, "hunter2") {
+		if strings.Contains(b, "abc123secret") || strings.Contains(b, "hunter2") || strings.Contains(b, "tail2") {
 			t.Errorf("posted a secret: %s", b)
 		}
 	}
 	// the local key is unchanged (the classifier and waits.jsonl use it)
-	if recs := readWaitRecs(dir); len(recs) != 1 || recs[0].Cmd != cmd {
+	if recs := readWaitRecs(dir); len(recs) != 1 || recs[0].Cmd != slotKey(argv) {
 		t.Errorf("waits.jsonl %+v", recs)
 	}
 }
@@ -540,5 +541,35 @@ func TestSlotSnapshotLeavesOutDeadAndOwnQueueFiles(t *testing.T) {
 	_, waiters := slotSnapshot(dir, "tests")
 	if len(waiters) != 1 || waiters[0].PID != os.Getppid() {
 		t.Errorf("waiters %+v", waiters)
+	}
+}
+
+// Every way a hold gets its command blanks a secret value whole, a value with
+// spaces too, and keeps the local history key as it was (WP-1646).
+func TestSlotRunBlanksMultiwordSecretsAndKeepsTheKey(t *testing.T) {
+	argv := []string{"make", "check", "--password", "alpha beta", "-H", "Authorization: Bearer gamma", "API_KEY=delta epsilon", "--api-key=zeta eta", "-HCookie: theta iota", "--token", "-kappa lambda", "./x y"}
+	args := append([]string{"testsum", "--fast", "--"}, argv...)
+	for name, tc := range map[string]struct {
+		run slotRun
+		key string
+	}{
+		"of":      {slotRunOf(argv), strings.Join(argv, " ")},
+		"for":     {slotRunFor("wp bench", argv), "wp bench: " + strings.Join(argv, " ")},
+		"of args": {slotRunOfArgs(args), strings.Join(argv, " ")},
+	} {
+		if tc.run.key != tc.key {
+			t.Errorf("%s: key %q, want %q", name, tc.run.key, tc.key)
+		}
+		for _, secret := range []string{"alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota", "kappa", "lambda"} {
+			if strings.Contains(tc.run.shown, secret) {
+				t.Errorf("%s: shown %q holds %q", name, tc.run.shown, secret)
+			}
+		}
+		if !strings.Contains(tc.run.shown, "make check --password") || !strings.Contains(tc.run.shown, "'./x y'") {
+			t.Errorf("%s: shown %q", name, tc.run.shown)
+		}
+	}
+	if got := slotRunOfArgs(args).shown; strings.Contains(got, "testsum") {
+		t.Errorf("of args kept what precedes --: %q", got)
 	}
 }
