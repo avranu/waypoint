@@ -254,7 +254,7 @@ func TestForkBranchIsNotAParent(t *testing.T) {
 		t.Fatal(err)
 	}
 	se.s.Wait()
-	if m := se.sg.merged(); len(m) != 1 || len(se.sg.baseEdits) != 0 { // nothing moves; the fork's branch isn't one a pull request is stacked on
+	if m := se.sg.merged(); len(m) != 1 || !m[0].DeleteBranch || len(se.sg.baseEdits) != 0 { // nothing is stacked on a fork's branch: it is deleted, nothing moves
 		t.Errorf("merges %+v edits %v", m, se.sg.baseEdits)
 	}
 }
