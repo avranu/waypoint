@@ -978,7 +978,7 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 			s.setState(ctx, b, pr, BabysitNeedsPerson, parkWait+excerpt(cmp(r.Question, "what should happen to it?"), 200))
 		}
 		if pr.QueuedAt != nil {
-			s.leaveQueue(ctx, pr.ID)
+			s.leaveQueue(ctx, pr)
 			s.nudgeLine(ctx, pr)
 		}
 		return
@@ -1172,11 +1172,11 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 		// tries the merge again.
 		s.setState(ctx, b, pr, BabysitNeedsPerson, pr.armedNote)
 		s.babysitTell(ctx, b, pr, "refused@"+pr.HeadSHA+":"+pr.armedNote, fmt.Sprintf("%s#%d is ready, but Waypoint %s (%s).", pr.Repo, pr.Number, pr.armedNote, pr.URL))
-		bg := context.WithoutCancel(ctx)
+		bg := withoutLineLocks(context.WithoutCancel(ctx))
 		s.goBG(func() { s.maybeAutoMerge(bg, pr.ID) })
 	case pr.ArmedAt != nil && rd.Ready:
 		s.setState(ctx, b, pr, BabysitReady, "ready; merging")
-		bg := context.WithoutCancel(ctx)
+		bg := withoutLineLocks(context.WithoutCancel(ctx))
 		s.goBG(func() { s.maybeAutoMerge(bg, pr.ID) })
 	case personal(pr, rd.Reasons) != "":
 		why := personal(pr, rd.Reasons)
@@ -1187,7 +1187,7 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 		// up its place in its merge queue, which the other may be behind,
 		// and joins again at its place once that one merged.
 		if pr.QueuedAt != nil {
-			s.leaveQueue(ctx, pr.ID)
+			s.leaveQueue(ctx, pr)
 			pr.QueuedAt = nil
 			s.nudgeLine(ctx, pr)
 		}
@@ -1287,7 +1287,7 @@ func (s *Service) babysitRoundBy(ctx context.Context, b *Babysit, pr *PullReques
 				// line doesn't wait for that (WP-439).
 				s.protectedHandoff(ctx, b, pr, &b.Rounds[n-1], files, what)
 				if pr.QueuedAt != nil {
-					s.leaveQueue(ctx, pr.ID)
+					s.leaveQueue(ctx, pr)
 					s.nudgeLine(ctx, pr)
 				}
 				return
@@ -1369,7 +1369,7 @@ func (s *Service) babysitRoundBy(ctx context.Context, b *Babysit, pr *PullReques
 		// It has work to do before it can merge: out of the merge queue, and
 		// back in at its place in the line once it is done (WP-222, WP-428).
 		// A conflict alone is its turn at the front, so it keeps its place.
-		s.leaveQueue(ctx, pr.ID)
+		s.leaveQueue(ctx, pr)
 		s.nudgeLine(ctx, pr)
 	}
 	if !keepFront && pr.WipAuto && pr.State == "open" {

@@ -235,7 +235,9 @@ func (s *Service) waitOnSharedTimeout(ctx context.Context, b *Babysit, pr *PullR
 			s.setState(ctx, b, pr, BabysitWatching, what+"; "+waits[0])
 			return true
 		}
-		defer s.queueLock(pr)()
+		var unlock func()
+		ctx, unlock = s.queueLockCtx(ctx, pr)
+		defer unlock()
 		ahead, err := s.queueAhead(ctx, pr)
 		if err != nil {
 			// Its place unread, it isn't the front's to take: the branch
@@ -282,7 +284,7 @@ func (s *Service) waitOnSharedTimeout(ctx context.Context, b *Babysit, pr *PullR
 		s.saveSharedTimeout(ctx, b, st)
 	}
 	if pr.QueuedAt != nil {
-		s.leaveQueue(ctx, pr.ID)
+		s.leaveQueue(ctx, pr)
 		pr.QueuedAt = nil
 		s.log.Info("a pull request whose tests timed out like the others' gave up its turn in the merge queue", "pr", pr.ID, "head", pr.HeadSHA)
 		s.nudgeLine(ctx, pr)

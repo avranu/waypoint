@@ -88,9 +88,16 @@ func ordinal(n int) string {
 
 // leaveQueue takes pr out of its merge queue: it has work to do first, and
 // joins again at its place in the line once that is done.
-func (s *Service) leaveQueue(ctx context.Context, prID int64) {
-	if _, err := s.db.W.ExecContext(ctx, `UPDATE pull_requests SET queued_at = NULL WHERE id = ? AND queued_at IS NOT NULL`, prID); err != nil {
-		s.log.WarnContext(ctx, "leave the merge queue", "pr", prID, "err", err)
+//
+// It takes the line's lock (WP-1706), so a step that is inside its forge
+// calls for the line finishes before the pull request is out of it. A caller
+// that holds the lock already (the step's own drop, a babysit round under
+// readyCatchUp) carries it in ctx and passes straight through.
+func (s *Service) leaveQueue(ctx context.Context, pr *PullRequest) {
+	ctx, unlock := s.queueLockCtx(ctx, pr)
+	defer unlock()
+	if _, err := s.db.W.ExecContext(ctx, `UPDATE pull_requests SET queued_at = NULL WHERE id = ? AND queued_at IS NOT NULL`, pr.ID); err != nil {
+		s.log.WarnContext(ctx, "leave the merge queue", "pr", pr.ID, "err", err)
 	}
 }
 
@@ -116,7 +123,7 @@ func (s *Service) yieldToRunnerFault(ctx context.Context, b *Babysit, pr *PullRe
 	if st.sha != pr.HeadSHA || st.first == 0 || s.now().Sub(msTime(st.first)) < faultFrontHold {
 		return
 	}
-	s.leaveQueue(ctx, pr.ID)
+	s.leaveQueue(ctx, pr)
 	pr.QueuedAt = nil
 	s.log.Info("a pull request failing on the CI runner gave up its turn in the merge queue", "pr", pr.ID, "head", pr.HeadSHA)
 	s.nudgeLine(ctx, pr)
@@ -139,9 +146,29 @@ func (s *Service) queueStage(ctx context.Context, pr *PullRequest) string {
 // queueStates are the babysit states that hold a place in a merge queue.
 var queueStates = []string{BabysitWatching, BabysitWaitingReview, BabysitReady, BabysitWorking}
 
-// queueLock serializes the decisions about one merge queue.
-func (s *Service) queueLock(pr *PullRequest) func() {
-	return forgeLocks.lock(fmt.Sprintf("queue:%d:%s:%s", pr.ForgeID, strings.ToLower(pr.Repo), pr.BaseRef))
+// heldLinesKey keys the line locks a context's goroutine holds.
+type heldLinesKey struct{}
+
+// queueLockCtx serializes the decisions about one merge queue. The lock is
+// not reentrant, so the context it returns carries the line's key: pass it to
+// everything called while holding, and a leaveQueue (or another
+// queueLockCtx) on it passes through instead of waiting on itself (WP-1706).
+// A context that crossed to another goroutine must go through
+// withoutLineLocks, or it would skip a lock nobody there holds.
+func (s *Service) queueLockCtx(ctx context.Context, pr *PullRequest) (context.Context, func()) {
+	key := fmt.Sprintf("queue:%d:%s:%s", pr.ForgeID, strings.ToLower(pr.Repo), pr.BaseRef)
+	held, _ := ctx.Value(heldLinesKey{}).([]string)
+	if slices.Contains(held, key) {
+		return ctx, func() {}
+	}
+	unlock := forgeLocks.lock(key)
+	return context.WithValue(ctx, heldLinesKey{}, append(slices.Clone(held), key)), unlock
+}
+
+// withoutLineLocks is ctx for work that runs on another goroutine: the
+// holder's locks aren't that goroutine's.
+func withoutLineLocks(ctx context.Context) context.Context {
+	return context.WithValue(ctx, heldLinesKey{}, []string(nil))
 }
 
 // lineKey is a pull request's place in its line: when it was armed.
