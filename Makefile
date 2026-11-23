@@ -4,7 +4,7 @@
 # make test      go vet, go test (-timeout 30m as in CI), frontend typecheck (CI adds -race)
 # make lint      go vet, gofmt check, golangci-lint (needs: make tools), wplint
 # make sast      gosec (advisory; see README Tooling)
-# make vuln      govulncheck (needs network for the vulnerability DB)
+# make vuln      govulncheck, failing only for what this tree adds over origin/main (deploy/advisories.sh; needs network and jq)
 # make check     lint + sast + vuln, then test: all run even if one fails (the full local gate)
 # make prepush   CI's lint job on what changed (the pre-commit pre-push hook)
 # make tools     install pinned Go QA binaries into GOPATH/bin
@@ -123,7 +123,7 @@ prepush-go: cross-check
 	go run ./cmd/wplint repo -base origin/main
 
 prepush-ops:
-	$(GOTOOLS) actionlint -config-file .forgejo/actionlint.yaml .forgejo/workflows/ci.yml
+	$(GOTOOLS) actionlint -config-file .forgejo/actionlint.yaml .forgejo/workflows/ci.yml .forgejo/workflows/advisories.yml
 	$(GOTOOLS) actionlint .github/workflows/*.yml
 	$(GOTOOLS) kubeconform -strict -summary deploy/k8s/waypoint.yaml
 	@go run ./cmd/wp ci lint || true  # advisory: runner-time waste in the workflows (WP-161)
@@ -136,8 +136,8 @@ prepush-web:
 sast: ## gosec SAST (accepted findings are marked `#nosec <rule> -- why`)
 	$(GOTOOLS) $(SLOT) gosec -exclude=G104 -exclude-dir=testdata $(GOPKGS)
 
-vuln: ## known-vulnerability scan of the module graph
-	$(GOTOOLS) govulncheck $(GOPKGS)
+vuln: ## govulncheck: fails only for called vulnerabilities this tree adds over origin/main (deploy/advisories.sh)
+	$(GOTOOLS) deploy/advisories.sh check go pr
 
 # Every step runs even when an earlier one fails (make -k), so one pass reports
 # test, lint, gosec and govulncheck together (WP-1433). The exit status is still
@@ -162,7 +162,7 @@ dev: ## API on :8080 + Vite on :5173 with live reload
 HADOLINT_IMAGE ?= hadolint/hadolint:v2.14.0
 
 ops-lint: ## lint CI workflow, k8s manifest, shell scripts (+ Dockerfile via docker)
-	actionlint -config-file .forgejo/actionlint.yaml .forgejo/workflows/ci.yml
+	actionlint -config-file .forgejo/actionlint.yaml .forgejo/workflows/ci.yml .forgejo/workflows/advisories.yml
 	actionlint .github/workflows/*.yml
 	kubeconform -strict -summary deploy/k8s/waypoint.yaml
 	@if git ls-files '*.sh' | grep -q .; then shellcheck $$(git ls-files '*.sh'); fi

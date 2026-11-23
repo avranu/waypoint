@@ -190,9 +190,54 @@ deploy key in a CI job is readable by whatever runs beside it.
    `matrix.shard` list must agree; `internal/cilint/repo_test.go` checks.
    A pull request or main run does each browser suite at one viewport and
    theme (`E2E_LOOKS=one`); a weekly schedule (Sundays 03:17 UTC, or "Run
-   workflow" with looks `all`) runs the e2e jobs alone at all four looks. Its
+   workflow" with looks `all`) runs the e2e jobs alone at all four looks (plus `advisories`, below). Its
    failure is the red `ci / e2e (schedule)` on main's tip commit and in the
    repository's Actions list; nothing else waits for it.
+
+   **Advisories (WP-1660).** `npm audit` (high and above) and govulncheck
+   (called vulnerabilities) depend on advisory databases, not on the change
+   under test, so a new advisory used to fail every branch's full run. What
+   changes is where it fails; no advisory is ignored, except the npm ones on
+   `web/scripts/audit.mjs`'s waiver list (each reviewed by a person, with an
+   expiry, and checked again on every run).
+   `deploy/advisories.sh` runs the check on the tree under test
+   (`lint` for npm, the last `backend shard` for Go); with no findings that is
+   all. The npm check is skipped on a pull request that leaves `web/package.json`
+   and `web/package-lock.json` as they were where it left main: it can't add an
+   advisory. The Go check always runs, since a Go change alone can call
+   vulnerable code. With findings it checks origin/main's tip the same way and compares
+   by advisory id: a pull request or merge queue stack fails only for an id
+   it adds (and prints it), and when every finding is also on main it
+   passes with a `::warning title=Advisory on main::` naming them. An id
+   main's tip lacks isn't added by a branch that had it when it left main (main
+   fixed it since): the script checks that commit too (the pull request's
+   merge base, `ADVISORIES_BASE_SHA` in CI) and passes with
+   `::warning title=Advisory fixed on main::`. An npm advisory the change does
+   add passes when `npm run audit -- --only IDS` passes on its tree, with just
+   the ids the change adds, so another advisory main has too can't fail them.
+   That is how a pull request adds a dependency together with its reviewed
+   waiver. Main's own
+   findings fail the `advisories` job (its npm step is `npm run audit`, which
+   honours the waiver list and expiry rules in `web/scripts/audit.mjs`), which runs on every push to main
+   and, as a copy of the job in `.forgejo/workflows/advisories.yml`, every day at
+   04:43 and on a manual run (the weekly schedule above is the e2e looks'
+   only; a failed daily run shows as `advisories / advisories (schedule)`),
+   without
+   `current`'s skip, because a merge tested on its branch says nothing about
+   advisories published since. No other job needs `advisories`, so `release`
+   and `deploy` are not held back by it: an advisory in a build tool must not
+   stop the release of an unrelated fix, or of the fix for its own
+   dependency. A red `advisories` makes main's push run red; when it is the only
+   job that failed, the CI doctor says so as a `main_advisories` warning ("still
+   released and deployed") instead of `main_red`, and the base-fix-first and
+   runner-fault re-run logic ignore the job. Because nothing waits for the
+   job, Waypoint files one urgent task for an agent when it fails ("Fix the
+   advisories on REPO main", in the repo's project) and no other while that
+   one is open.
+   `make vuln` (needs network and `jq`) runs the same script in its pull request mode (it lives in
+   `deploy/` because the public mirror has no `.forgejo/`), so locally and on
+   the mirror a branch fails govulncheck only for what it adds over
+   origin/main. `npm run audit` is unchanged: whole tree, with the waiver list.
 2. `release` (needs all three to pass, or `current` to say the merge was already tested) runs `deploy/release.sh --publish`. It picks the
    next version from the commits since the last `v*` tag: the first release is
    `v0.1.0`; a breaking change (`type!:` subject or a `BREAKING CHANGE:` line)
@@ -293,9 +338,9 @@ later changes nothing already open, and a push or another ship doesn't bring
 back a label taken off. Waypoint
 makes the label in a repo that lacks it. Any other label added to a pull request runs nothing and cancels
 nothing (its checks skip as "label added, nothing to run"). Pushes, to main
-and the merge queue's stacks, carry no labels and keep their usual runners.
+and the merge line's candidates, carry no labels and keep their usual runners.
 `wp pr show` and `wp pr ls` say when a pull request is urgent. The label also
-puts it ahead in its merge queue and its babysit rounds ahead of the line
+puts it ahead in its merge line and its babysit rounds ahead of the line
 (WP design note 357, "An urgent pull request cuts the line", WP-686).
 
 **The CI job image** (WP-402): the heavy jobs (backend shards, lint, e2e

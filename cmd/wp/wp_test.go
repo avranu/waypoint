@@ -60,6 +60,9 @@ func TestMain(m *testing.M) {
 	// that is this test binary, which ran every test again in the
 	// background, outliving the run (WP-1065).
 	_ = os.Setenv("WP_CODE_UPLOAD", "off")
+	// A test that takes a slot outside slotEnv must not spool its hold for
+	// the real server (WP-1646); the send tests turn it back on.
+	_ = os.Setenv(slotSendEnv, "off")
 	// The host's sandbox helper is root's; a test asks its own socket.
 	sandboxHelperSocket = "/nonexistent/waypoint-sandboxd.sock"
 	testnet.Guard()

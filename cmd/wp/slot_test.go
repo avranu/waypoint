@@ -18,6 +18,7 @@ func slotEnv(t *testing.T) {
 	t.Setenv("WAYPOINT_CONFIG_DIR", t.TempDir())
 	t.Setenv("WAYPOINT_SERVER", "https://waypoint.example.com")
 	t.Setenv("WAYPOINT_SLOT_DIR", t.TempDir())
+	t.Setenv(slotSendEnv, "off") // no test spools holds for a server unless it says so (WP-1646)
 }
 
 func TestSlotSerializesWithOneSlot(t *testing.T) {

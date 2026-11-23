@@ -118,47 +118,6 @@ func TestMergeStepReloadUnreadableIsNotGone(t *testing.T) {
 	}
 }
 
-// A merge queue stack whose pull request's babysit can't be read isn't
-// discarded as "left the merge queue": it stands, and is looked at again.
-func TestSweepStacksKeepsStackWhenQueueUnreadable(t *testing.T) {
-	se := newStackEnv(t)
-	se.draftGreen(head7s, 5)
-	se.draftGreen(head8s, 7)
-	se.draftGreen(head9s, 9)
-	se.step()
-	se.stackRun(0, CheckSuccess, treeA, "7 "+head7s, "8 "+head8s)
-	se.stackRun(1, CheckSuccess, treeB, "7 "+head7s, "8 "+head8s, "9 "+head9s)
-	se.step()
-	before := stackStates(se.stacks())
-	se.s.sweepStacks(se.ctx)
-	if got := stackStates(se.stacks()); got != before {
-		t.Fatalf("a healthy sweep changed the stacks: %s -> %s", before, got)
-	}
-	restore := se.breakTable("babysits")
-	se.s.sweepStacks(se.ctx)
-	restore()
-	if got := stackStates(se.stacks()); got != before {
-		t.Errorf("an unreadable babysit ended a live stack: %s -> %s", before, got)
-	}
-}
-
-// inQueue and earlyRoundDue say so when the babysit can't be read, instead of
-// "left the queue" and "no round due".
-func TestInQueueAndEarlyRoundDueUnreadable(t *testing.T) {
-	be := newBabysitEnv(t)
-	pr := be.openMine()
-	cur := be.pr(pr.Number)
-	now := be.s.now()
-	cur.QueuedAt, cur.ArmedAt = &now, &now
-	defer be.breakTable("babysits")()
-	if in, err := be.s.inQueue(be.ctx, cur); err == nil || in {
-		t.Errorf("inQueue = %v, %v with an unreadable babysit; want an error", in, err)
-	}
-	if due, err := be.s.earlyRoundDue(be.ctx, cur); err == nil || due {
-		t.Errorf("earlyRoundDue = %v, %v with an unreadable babysit; want an error", due, err)
-	}
-}
-
 // A compare that fails keeps the branch (not known to be merged); a repo the
 // forge no longer has is an answer, so it isn't warned of every sweep, while
 // a real fault is.
@@ -227,8 +186,10 @@ func TestMergeNowReadFaultRetries(t *testing.T) {
 	se.s.Wait()
 	se.sg.setChecks(head, CommitCheck{Name: "ci / backend (pull_request)", State: CheckSuccess})
 	pr := se.pr(5)
+	se.s.Wait()
 	for _, table := range []string{"project_repos", "pull_requests", "forge_people"} {
 		t.Run(table, func(t *testing.T) {
+			before := len(se.sg.merged())
 			restore := se.breakTable(table)
 			_, err := se.s.mergeNow(se.ctx, se.admin, pr, MergeInput{armed: true}, "")
 			restore()
@@ -238,7 +199,7 @@ func TestMergeNowReadFaultRetries(t *testing.T) {
 			if !errors.Is(err, ErrUnavailable) || IsInvalid(err) {
 				t.Errorf("a read that failed is a plain error: %v", err)
 			}
-			if len(se.sg.merged()) != 0 {
+			if len(se.sg.merged()) != before {
 				t.Errorf("merged: %+v", se.sg.merged())
 			}
 		})

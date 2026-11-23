@@ -337,7 +337,8 @@ func (s *Service) updateConflicted(pr *PullRequest) bool {
 
 // conflictOnTip is updateConflicted for the tip its base is at now: a
 // conflict with a tip the base has left says little about the next one, and
-// is no reason to start a round ahead of its turn (earlyConflict).
+// is no reason to start a round for it: a conflict found on the base's tip
+// gets its round at once, whatever its place in the line.
 func (s *Service) conflictOnTip(ctx context.Context, pr *PullRequest) bool {
 	tip, _, stale := s.behindBase(ctx, pr)
 	if tip == "" || stale {

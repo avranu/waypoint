@@ -3261,15 +3261,6 @@ func truncateBytes(s string, n int) string {
 	return s[:cut] + "…"
 }
 
-func excerpt(s string, n int) string {
-	s = strings.Join(strings.Fields(s), " ")
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n-1]) + "…"
-}
-
 // ---- history ----
 
 // History returns an issue's events, newest first.

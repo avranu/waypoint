@@ -31,7 +31,7 @@ Waypoint is a Go backend (internal/) with a React app (web/). You see only part 
 - Behaviour that a comment, a test or the PR text says is deliberate.
 - A missing guard or branch. Look a few lines further and in the caller first.
 - Generated files and their shape (nullable arrays, missing limits on response types).
-- What wplint already checks on every push (cmd/wplint, `make wplint`): internal/api reaching the database, a forge, notify, HTTP or model call reached from a Service.write closure, an exported core method that ignores its *Actor, a literal SELECT whose columns differ from its Scan, a model schema missing from llmSchemas, time.Now where s.now is the clock, an edited, renamed or removed merged migration, a new e2e waitForTimeout. Flag these only where wplint can't see them (a query built at run time, a call through an interface or a function value), and say why. A `//wplint:ignore RULE why` line is a decision, not a defect.
+- What wplint already checks on every push (cmd/wplint, `make wplint`): internal/api reaching the database, a forge, notify, HTTP or model call reached from a Service.write closure, an exported core method that ignores its *Actor, a literal SELECT whose columns differ from its Scan, a model schema missing from llmSchemas, time.Now where s.now is the clock, an import in the wrong direction under internal/core (kernel importing a domain, a package under core importing core), an edited, renamed or removed merged migration, a new e2e waitForTimeout. Flag these only where wplint can't see them (a query built at run time, a call through an interface or a function value), and say why. A `//wplint:ignore RULE why` line is a decision, not a defect.
 
 ## Evidence
 

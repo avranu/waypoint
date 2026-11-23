@@ -140,16 +140,6 @@ func (s *Service) glossaryFor(ctx context.Context, q queryer, actor *Actor, id i
 	return g, r, nil
 }
 
-// forbidden is a refusal (403) with a message people can act on.
-func forbidden(format string, args ...any) error {
-	return &forbiddenError{fmt.Sprintf(format, args...)}
-}
-
-type forbiddenError struct{ msg string }
-
-func (e *forbiddenError) Error() string { return e.msg }
-func (e *forbiddenError) Unwrap() error { return ErrForbidden }
-
 // GlossaryQuery filters ListGlossary.
 type GlossaryQuery struct {
 	Project string // a project key: its full glossary (own + ancestors + global); "global" for the global one
