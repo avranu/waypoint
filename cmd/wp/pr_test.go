@@ -191,6 +191,21 @@ func TestCLIProjectRepo(t *testing.T) {
 	if !strings.Contains(out, "merge automatically: on · required") {
 		t.Errorf("set --into any:\n%s", out)
 	}
+	// Whether the merge line builds candidates (WP-1659).
+	out = e.wp("project", "repo", "set", "docs", "--line-candidates", "off")
+	if !strings.Contains(out, "line candidates: off") {
+		t.Errorf("set --line-candidates off:\n%s", out)
+	}
+	out = e.wp("project", "repo", "set", "docs", "--line-candidates", "on")
+	if !strings.Contains(out, "line candidates: on") {
+		t.Errorf("set --line-candidates on:\n%s", out)
+	}
+	if out, code := e.run("project", "repo", "set", "docs", "--line-candidates", "bogus"); code == 0 || !strings.Contains(out, "--line-candidates is on or off") {
+		t.Errorf("--line-candidates bogus: %d %s", code, out)
+	}
+	if out, code := e.run("project", "repo", "set", "docs"); code == 0 || !strings.Contains(out, "say what to change") {
+		t.Errorf("nothing to change: %d %s", code, out)
+	}
 	for _, bad := range [][]string{{"--auto-merge", "maybe"}, {"--quiet", "soon"}, {"--reviewer", "x", "--no-reviewers"}, {}, {"nope", "--quiet", "5m"}, {"--into", "others", "--into", "release/*"}, {"--into", "match"}} {
 		if out, code := e.run(append([]string{"project", "repo", "set"}, bad...)...); code == 0 {
 			t.Errorf("wp project repo set %v: %s", bad, out)

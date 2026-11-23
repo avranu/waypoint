@@ -310,7 +310,9 @@ func claudeDriver(in agentJob, prompt, work string) (*cliDriver, error) {
 		args = append(args, "--permission-mode", "acceptEdits")
 	}
 	var res *claudeEvent
-	d := &cliDriver{args: args, stdin: prompt, isStream: true, calls: &callClock{}}
+	// Marked so the nudge hook lets no picture through for it (WP-1137): a
+	// job reads what its grants allow, and other jobs share the machine.
+	d := &cliDriver{args: args, stdin: prompt, isStream: true, calls: &callClock{}, env: map[string]string{runnerJobEnv: "1"}}
 	d.line = func(line []byte, out *logSink) {
 		var ev claudeEvent
 		if json.Unmarshal(line, &ev) != nil {

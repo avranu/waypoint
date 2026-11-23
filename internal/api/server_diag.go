@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"git.jmann.me/claude/waypoint/internal/core"
+	"git.jmann.me/claude/waypoint/internal/core/meaning"
 )
 
 // Production diagnostics (WP-375): `wp server status|log|metrics` and
@@ -294,7 +295,7 @@ func serverStatusText(st *core.ServerStatus, now time.Time) string {
 }
 
 // meaningHealthText is the meaning service's line in the status (WP-1602).
-func meaningHealthText(m *core.MeaningHealth, now time.Time) string {
+func meaningHealthText(m *meaning.Health, now time.Time) string {
 	since := func(t *time.Time) string {
 		if t == nil {
 			return "never"

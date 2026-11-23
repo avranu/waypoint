@@ -1,4 +1,8 @@
-package core
+// Package meaning is the client for the meaning service (WP-1035, page
+// WP-PL17): the embedding and entailment models behind the goal judgements,
+// behind a circuit breaker (WP-1602) so a wedged service is one outage, not
+// one warning per call.
+package meaning
 
 import (
 	"bytes"
@@ -11,6 +15,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core/kernel"
 )
 
 // The meaning service (WP-1035, page WP-PL17): local models that read how
@@ -22,8 +28,8 @@ import (
 // is sent anywhere else, and without the service the judgements use the
 // scorers they still have.
 
-// MeaningModels is the meaning service; swappable in tests.
-type MeaningModels interface {
+// Models is the meaning service; swappable in tests.
+type Models interface {
 	// Embed returns one unit vector per text, and the model's id@revision.
 	Embed(ctx context.Context, texts []string) (string, [][]float32, error)
 	// Entail returns, per pair, the probability that the premise entails
@@ -37,28 +43,33 @@ type NLIPair struct {
 	Hypothesis string `json:"hypothesis"`
 }
 
-// meaningBatch: texts or pairs in one request (the service takes 256).
-const meaningBatch = 128
+// Batch: texts or pairs in one request (the service takes 256).
+const Batch = 128
 
-// httpMeaning speaks the meaning service's API.
-type httpMeaning struct {
+var _ Models = (*Client)(nil)
+
+// Client speaks the meaning service's API over HTTP; it is a Models.
+type Client struct {
 	url, token string
 	http       *http.Client
-	breaker    *meaningBreaker
+	breaker    *breaker
 }
 
-func newHTTPMeaning(url, token string, c *http.Client, log *slog.Logger, now func() time.Time) *httpMeaning {
-	return &httpMeaning{url: strings.TrimRight(strings.TrimSpace(url), "/"), token: token, http: c, breaker: newMeaningBreaker(log, now)}
+// NewHTTP builds a Client for the service at url (a trailing slash is
+// trimmed). Calls go through a circuit breaker that Health reports; now is
+// the clock the breaker uses.
+func NewHTTP(url, token string, c *http.Client, log *slog.Logger, now func() time.Time) *Client {
+	return &Client{url: strings.TrimRight(strings.TrimSpace(url), "/"), token: token, http: c, breaker: newBreaker(log, now)}
 }
 
-// Health is the breaker's view of the service (meaning_breaker.go).
-func (m *httpMeaning) Health() MeaningHealth { return m.breaker.health() }
+// Health is the breaker's view of the service (breaker.go).
+func (m *Client) Health() Health { return m.breaker.health() }
 
-func (m *httpMeaning) Embed(ctx context.Context, texts []string) (string, [][]float32, error) {
+func (m *Client) Embed(ctx context.Context, texts []string) (string, [][]float32, error) {
 	var model string
 	out := make([][]float32, 0, len(texts))
-	for start := 0; start < len(texts); start += meaningBatch {
-		part := texts[start:min(start+meaningBatch, len(texts))]
+	for start := 0; start < len(texts); start += Batch {
+		part := texts[start:min(start+Batch, len(texts))]
 		var res struct {
 			Model string `json:"model"`
 			Data  []struct {
@@ -78,7 +89,9 @@ func (m *httpMeaning) Embed(ctx context.Context, texts []string) (string, [][]fl
 		model = res.Model
 		vecs := make([][]float32, len(part))
 		for _, d := range res.Data {
-			if d.Index < 0 || d.Index >= len(part) || len(d.Embedding) == 0 {
+			// Each text gets one vector: an index out of range or given
+			// twice would leave another text with none.
+			if d.Index < 0 || d.Index >= len(part) || len(d.Embedding) == 0 || vecs[d.Index] != nil {
 				return "", nil, errors.New("the meaning service returned a vector out of place")
 			}
 			vecs[d.Index] = d.Embedding
@@ -88,11 +101,11 @@ func (m *httpMeaning) Embed(ctx context.Context, texts []string) (string, [][]fl
 	return model, out, nil
 }
 
-func (m *httpMeaning) Entail(ctx context.Context, pairs []NLIPair) (string, []float64, error) {
+func (m *Client) Entail(ctx context.Context, pairs []NLIPair) (string, []float64, error) {
 	var model string
 	out := make([]float64, 0, len(pairs))
-	for start := 0; start < len(pairs); start += meaningBatch {
-		part := pairs[start:min(start+meaningBatch, len(pairs))]
+	for start := 0; start < len(pairs); start += Batch {
+		part := pairs[start:min(start+Batch, len(pairs))]
 		var res struct {
 			Model  string `json:"model"`
 			Scores []struct {
@@ -116,10 +129,10 @@ func (m *httpMeaning) Entail(ctx context.Context, pairs []NLIPair) (string, []fl
 	return model, out, nil
 }
 
-// post sends one request through the breaker (meaning_breaker.go): a
-// failure to reach the service is ErrMeaningDown, and while it is down
+// post sends one request through the breaker (breaker.go): a
+// failure to reach the service is ErrDown, and while it is down
 // calls fail at once.
-func (m *httpMeaning) post(ctx context.Context, path string, body, out any) error {
+func (m *Client) post(ctx context.Context, path string, body, out any) error {
 	probe, err := m.breaker.allow()
 	if err != nil {
 		return err
@@ -139,14 +152,14 @@ func (m *httpMeaning) post(ctx context.Context, path string, body, out any) erro
 	judged = true
 	m.breaker.done(ctx, probe, unanswered, err)
 	if unanswered {
-		return fmt.Errorf("%w: %w", ErrMeaningDown, err)
+		return fmt.Errorf("%w: %w", ErrDown, err)
 	}
 	return err
 }
 
 // send makes the request; unanswered is true when the service did not
 // answer it: no connection, a timeout, or a server error (5xx).
-func (m *httpMeaning) send(ctx context.Context, path string, body, out any) (unanswered bool, err error) {
+func (m *Client) send(ctx context.Context, path string, body, out any) (unanswered bool, err error) {
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return false, err
@@ -169,11 +182,21 @@ func (m *httpMeaning) send(ctx context.Context, path string, body, out any) (una
 		return true, err
 	}
 	if res.StatusCode != http.StatusOK {
-		return res.StatusCode >= 500, fmt.Errorf("the meaning service answered HTTP %d: %s", res.StatusCode, excerpt(string(data), 200))
+		return res.StatusCode >= 500, fmt.Errorf("the meaning service answered HTTP %d: %s", res.StatusCode, kernel.Excerpt(string(data), 200))
 	}
 	return false, json.Unmarshal(data, out)
 }
 
-// meaningTimeout bounds one call to the meaning service: a batch of NLI
+// HealthOf is m's view of the service's health, when m keeps one (a
+// Client does; a test's fake may not).
+func HealthOf(m Models) (Health, bool) {
+	h, ok := m.(interface{ Health() Health })
+	if !ok {
+		return Health{}, false
+	}
+	return h.Health(), true
+}
+
+// Timeout bounds one call to the meaning service: a batch of NLI
 // pairs takes a few seconds on a CPU.
-const meaningTimeout = 2 * time.Minute
+const Timeout = 2 * time.Minute
