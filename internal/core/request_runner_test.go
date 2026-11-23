@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core/udiff"
 )
 
 // Requests and runners together, with the runner code itself in the loop (no
@@ -133,7 +135,7 @@ func TestApprovedChangeAppliesThroughARealRunnerJob(t *testing.T) {
 		t.Fatalf("the runner got %+v", w)
 	}
 	var in ApplyJob
-	if err := json.Unmarshal(w.Job.Input, &in); err != nil || in.Dir != "/work/app" || in.Commit != "Tighten the rules" || len(in.Files) != 2 || in.Files[0].BaseSHA != gitBlobSHA(base) {
+	if err := json.Unmarshal(w.Job.Input, &in); err != nil || in.Dir != "/work/app" || in.Commit != "Tighten the rules" || len(in.Files) != 2 || in.Files[0].BaseSHA != udiff.GitBlobSHA(base) {
 		t.Fatalf("apply job: %+v %v", in, err)
 	}
 	// The agent isn't told while it is being applied.
