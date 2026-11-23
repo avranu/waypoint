@@ -1285,6 +1285,11 @@ func auditLimitAdvice(chain []AgentModel) string {
 // with at, the whole chain again later). The audit is running, or queued
 // still when the chain's last entries were passed over (advanceAudit).
 func (s *Service) requeueAudit(ctx context.Context, a *CodeAudit, slot, retries int, at *time.Time) {
+	_ = s.requeueAuditErr(ctx, a, slot, retries, at)
+}
+
+// requeueAuditErr is requeueAudit that says whether the write held.
+func (s *Service) requeueAuditErr(ctx context.Context, a *CodeAudit, slot, retries int, at *time.Time) error {
 	var retryAt any
 	if at != nil {
 		retryAt = at.UnixMilli()
@@ -1313,6 +1318,7 @@ func (s *Service) requeueAudit(ctx context.Context, a *CodeAudit, slot, retries 
 	if err != nil {
 		s.log.WarnContext(ctx, "queue an audit's next model", "audit", a.ID, "err", err)
 	}
+	return err
 }
 
 // runnerStoppedError is the error of a job whose runner was stopped under it
@@ -1574,10 +1580,25 @@ func (s *Service) passQueuedAudit(ctx context.Context, id, jobID int64) {
 	}
 	a.Attempts = append(a.Attempts, AuditAttempt{Model: auditModelName(a.chain[a.Slot]), Job: jobID, Round: a.Retries, Outcome: "unavailable",
 		Error: "no runner took it in " + ShortDuration(auditRunnerWait), At: s.nowMS()})
-	s.requeueAudit(ctx, a, a.Slot+1, a.Retries, nil)
+	if err := s.requeueAuditErr(ctx, a, a.Slot+1, a.Retries, nil); err != nil {
+		// Still on its job: the next check looks again.
+		unlock()
+		return
+	}
 	unlock()
-	// After the audit left the job: its cancelling isn't the audit's.
-	s.cancelStepJob(ctx, jobID, "The audit went on to its next model.")
+	// After the audit left the job: its cancelling isn't the audit's. Only a
+	// job still queued: one a runner claimed since runs on, unheeded.
+	err = s.write(ctx, SystemActor(), func(t *tx) error {
+		var state string
+		if err := t.QueryRowContext(ctx, `SELECT state FROM runner_jobs WHERE id = ?`, jobID).Scan(&state); err != nil || state != "queued" {
+			return nil
+		}
+		return t.finishRunnerJob(ctx, jobID, "cancelled", nil, nil, "The audit went on to its next model.")
+	})
+	if err != nil {
+		s.log.WarnContext(ctx, "cancel an audit's passed-over job", "job", jobID, "err", err)
+	}
+	s.kickRunners()
 }
 
 // codeAuditEvent: dispatch's part. A queued audit is started; a finished
