@@ -496,6 +496,9 @@ type roundStats struct {
 			Asks          int            `json:"asks"`
 			Split         int            `json:"split"`
 			Unsettled     int            `json:"unsettled"`
+			Standing      int            `json:"standing"`
+			Filed         int            `json:"filed"`
+			AllFiled      int            `json:"useful_all_filed"`
 		} `json:"review_again_by_round"`
 		AgainAgreement *struct {
 			Findings int     `json:"findings"`
@@ -503,6 +506,12 @@ type roundStats struct {
 			Within2  int     `json:"within_2"`
 		} `json:"review_again_agreement"`
 		Helpers []helperStat `json:"review_helpers"`
+		Holds   []struct {
+			Issue   string  `json:"issue"`
+			Holds   int     `json:"holds"`
+			Repeats int     `json:"repeats"`
+			Audits  []int64 `json:"audits"`
+		} `json:"review_ship_holds"`
 	} `json:"nitpicks"`
 }
 
@@ -544,18 +553,22 @@ func (st *roundStats) nitpickText() string {
 			n.Again["again"], n.Again["probe"], n.Again["holdout"], n.Again["enough"], n.Again["repeat"], n.Again["unscored"], n.Again["no_model"], n.Again["rejected"], n.Again["untrusted"], n.Again["no_record"], n.Again["low_yield"], n.Again["cap"], n.Again["weighed"], n.AgainRounds)
 	}
 	if len(n.AgainByRound) > 0 {
-		fmt.Fprintf(&b, "%-6s %7s %5s %6s %7s %8s %6s %5s %6s %6s\n", "ROUND", "DECIDED", "AGAIN", "SIGNAL", "HOLDOUT", "FOLLOWED", "USEFUL", "PROBE", "JUDGED", "USEFUL")
+		fmt.Fprintf(&b, "%-6s %7s %5s %6s %7s %8s %6s %5s %6s %6s %8s %5s\n", "ROUND", "DECIDED", "AGAIN", "SIGNAL", "HOLDOUT", "FOLLOWED", "USEFUL", "PROBE", "JUDGED", "USEFUL", "STANDING", "FILED")
 		for _, r := range n.AgainByRound {
 			idx := strconv.Itoa(r.Index)
 			if r.Index >= 3 {
 				idx = "3+"
 			}
-			fmt.Fprintf(&b, "%-6s %7d %5d %6d %7d %8d %6d %5d %6d %6d\n", idx, r.Decided, r.Arms["again"], r.Signalled, r.Arms["holdout"], r.Followed, r.Useful, r.Arms["probe"], r.ProbeFollowed, r.ProbeUseful)
+			fmt.Fprintf(&b, "%-6s %7d %5d %6d %7d %8d %6d %5d %6d %6d %8d %5d\n", idx, r.Decided, r.Arms["again"], r.Signalled, r.Arms["holdout"], r.Followed, r.Useful, r.Arms["probe"], r.ProbeFollowed, r.ProbeUseful, r.Standing, r.Filed)
 		}
-		var checks, passed, unchecked, sampled, asks, split, unsettled int
+		var checks, passed, unchecked, sampled, asks, split, unsettled, allFiled int
 		for _, r := range n.AgainByRound {
 			checks, passed, unchecked = checks+r.Checks, passed+r.Passed, unchecked+r.Unchecked
 			sampled, asks, split, unsettled = sampled+r.Sampled, asks+r.Asks, split+r.Split, unsettled+r.Unsettled
+			allFiled += r.AllFiled
+		}
+		if allFiled > 0 {
+			fmt.Fprintf(&b, "Of the USEFUL rounds after an again, %d found only findings the session filed as issues.\n", allFiled)
 		}
 		if checks > 0 {
 			fmt.Fprintf(&b, "Checks of the sessions' marks: %d asked, %d passed over (couldn't be asked, failed or too slow), %d of those sent on for rejections left unchecked.\n", checks, passed, unchecked)
@@ -564,12 +577,39 @@ func (st *roundStats) nitpickText() string {
 			fmt.Fprintf(&b, "The decision model's asks: %d decisions scored from %d answers (%.1f each); in %d the answers called a question differently, and in %d the asks' mean still changed its decision with the last asks.\n",
 				sampled, asks, float64(asks)/float64(sampled), split, unsettled)
 		}
-		b.WriteString("SIGNAL: decisions a finding's own label decided (new, standing, not refuted, at or over the stakes' floor, weighing what the round needs, WP-1569). HOLDOUT: before 11-18 only. FOLLOWED: the rounds after an again that an audit reviewed and whose findings were judged (scored, or none that counts). USEFUL: of those, the ones that found something new of medium or worse the session fixed or confirmed. PROBE, JUDGED, USEFUL: the same for rounds the scores were under the bar for but that got another round to measure the bar.\n")
+		b.WriteString("SIGNAL: decisions a finding's own label decided (new, standing, not refuted, at or over the stakes' floor, weighing what the round needs, WP-1569). HOLDOUT: before 11-18 only. FOLLOWED: the rounds after an again that an audit reviewed and whose findings were judged (scored, or none that counts). USEFUL: of those, the ones that found something new of medium or worse the session fixed or confirmed (filed as an issue or not). PROBE, JUDGED, USEFUL: the same for rounds the scores were under the bar for but that got another round to measure the bar. STANDING: the decided rounds' findings that weren't rejected; FILED: of them, the ones filed as issues instead of fixed (both as they stood at each decision).\n")
 	}
 	if g := n.AgainAgreement; g != nil && g.Findings > 0 {
 		fmt.Fprintf(&b, "Severity: the reviewers' labels and the decision model's scores of %d findings are %.1f points apart on average; %d within two points.\n", g.Findings, g.MeanGap, g.Within2)
 	}
 	b.WriteString(helperStatsText(n.Helpers))
+	if len(n.Holds) > 0 {
+		var holds int
+		var repeats []string
+		for _, h := range n.Holds {
+			holds += h.Holds
+			if h.Repeats > 0 {
+				var codes []string
+				for _, a := range h.Audits {
+					codes = append(codes, fmt.Sprintf("#%d", a))
+				}
+				line := fmt.Sprintf("%s %d", h.Issue, h.Repeats)
+				switch len(codes) {
+				case 0: // a server from before the audits were sent
+				case 1:
+					line += " (audit " + codes[0] + ")"
+				default:
+					line += " (audits " + strings.Join(codes, ", ") + ")"
+				}
+				repeats = append(repeats, line)
+			}
+		}
+		fmt.Fprintf(&b, "\nShips held for findings still to decide: %d, of %d tasks.", holds, len(n.Holds))
+		if len(repeats) > 0 {
+			fmt.Fprintf(&b, " Held again for the same findings with none decided since, most in a day: %s.", strings.Join(repeats, ", "))
+		}
+		b.WriteString("\n")
+	}
 	return b.String()
 }
 
@@ -636,6 +676,8 @@ type helperStat struct {
 	ConfirmedRejected int     `json:"confirmed_rejected"`
 	Reasked           int     `json:"reasked"`
 	Overturned        int     `json:"overturned"`
+	Filed             int     `json:"filed"`
+	RefutedFiled      int     `json:"refuted_filed"`
 }
 
 // helperStatsText is the helpers' table: each panel check's runs, leads
@@ -647,19 +689,19 @@ func helperStatsText(hs []helperStat) string {
 	}
 	var b strings.Builder
 	b.WriteString("\nHaiku helpers around the rounds' audits (WP-1320):\n")
-	fmt.Fprintf(&b, "%-12s %5s %5s %6s %7s %6s %9s %5s %5s %8s %8s\n", "CHECK", "RUNS", "DONE", "FAILED", "SKIPPED", "RAISED", "CONFIRMED", "ADDED", "FIXED", "REJECTED", "COST")
+	fmt.Fprintf(&b, "%-12s %5s %5s %6s %7s %6s %9s %5s %5s %5s %8s %8s\n", "CHECK", "RUNS", "DONE", "FAILED", "SKIPPED", "RAISED", "CONFIRMED", "ADDED", "FIXED", "FILED", "REJECTED", "COST")
 	var verify *helperStat
 	for i, h := range hs {
 		if h.Check == "verify" {
 			verify = &hs[i]
 			continue
 		}
-		fmt.Fprintf(&b, "%-12s %5d %5d %6d %7d %6d %9d %5d %5d %8d %8s\n", h.Check, h.Runs, h.Done, h.Failed, h.Skipped, h.Raised, h.Confirmed, h.Added, h.Fixed, h.Rejected, fmt.Sprintf("$%.2f", h.CostUSD))
+		fmt.Fprintf(&b, "%-12s %5d %5d %6d %7d %6d %9d %5d %5d %5d %8d %8s\n", h.Check, h.Runs, h.Done, h.Failed, h.Skipped, h.Raised, h.Confirmed, h.Added, h.Fixed, h.Filed, h.Rejected, fmt.Sprintf("$%.2f", h.CostUSD))
 	}
 	if verify != nil {
-		fmt.Fprintf(&b, "%-12s %5d %5d %6d %7d %6s %9s %5s %5s %8s %8s\n", verify.Check, verify.Runs, verify.Done, verify.Failed, verify.Skipped, "", "", "", "", "", fmt.Sprintf("$%.2f", verify.CostUSD))
+		fmt.Fprintf(&b, "%-12s %5d %5d %6d %7d %6s %9s %5s %5s %5s %8s %8s\n", verify.Check, verify.Runs, verify.Done, verify.Failed, verify.Skipped, "", "", "", "", "", "", fmt.Sprintf("$%.2f", verify.CostUSD))
 	}
-	b.WriteString("RAISED: every problem a check raised after pruning. CONFIRMED: of them, by a second Haiku read of the code. ADDED: findings the runner added to the audit from the check's confirmed problems (since 2026-11-20; before it reviewers were handed the leads, and what they took up is not counted here). FIXED, REJECTED: how sessions marked those findings.\n")
+	b.WriteString("RAISED: every problem a check raised after pruning. CONFIRMED: of them, by a second Haiku read of the code. ADDED: findings the runner added to the audit from the check's confirmed problems (since 2026-11-20; before it reviewers were handed the leads, and what they took up is not counted here). FIXED, FILED, REJECTED: how sessions marked those findings (FILED: confirmed and filed as an issue instead of fixed, not in FIXED).\n")
 	for _, h := range hs {
 		if h.Partial+h.Stopped > 0 {
 			fmt.Fprintf(&b, "%s: %d runs failed in part, %d stopped with their job (counted in RUNS, not DONE or FAILED).\n", h.Check, h.Partial, h.Stopped)
@@ -669,8 +711,12 @@ func helperStatsText(hs []helperStat) string {
 		}
 	}
 	if v := verify; v != nil && v.Confirmed+v.Refuted+v.Unsupported > 0 {
-		fmt.Fprintf(&b, "Findings checked against the code: %d confirmed (%d of them rejected by the session), %d refuted (%d of them fixed or confirmed anyway), %d unsupported.\n",
-			v.Confirmed, v.ConfirmedRejected, v.Refuted, v.RefutedHeld, v.Unsupported)
+		filed := ""
+		if v.RefutedFiled > 0 {
+			filed = fmt.Sprintf(" and %d filed as issues", v.RefutedFiled)
+		}
+		fmt.Fprintf(&b, "Findings checked against the code: %d confirmed (%d of them rejected by the session), %d refuted (%d of them fixed or confirmed anyway%s), %d unsupported.\n",
+			v.Confirmed, v.ConfirmedRejected, v.Refuted, v.RefutedHeld, filed, v.Unsupported)
 	}
 	if v := verify; v != nil && v.Reasked > 0 {
 		fmt.Fprintf(&b, "Refuted findings asked about again: %d; %d not refuted the second time (so unsupported).\n", v.Reasked, v.Overturned)
