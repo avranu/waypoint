@@ -94,7 +94,7 @@ func cmdFiles(c *cli, args []string) error {
 		label = typ + "-" + label
 	}
 	if *dir == "" {
-		*dir = filepath.Join(os.TempDir(), "wp-files", label)
+		*dir = filepath.Join(os.TempDir(), filesDirName, label)
 	}
 	if len(files) == 0 {
 		if c.asJSON {

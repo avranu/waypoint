@@ -159,6 +159,11 @@ The CI board (WP-225): Forgejo Actions on the attached repos, with ETAs:
                                       time, merges and time per merge; the last 7 days against the 7 before;
                                       each full-tier job's p50 now and before (?repo=OWNER/NAME, ?days=N
                                       up to 730, default 30; ?bucket=day|week; ?format=text: wp ci history)
+    GET  /ci/line                     each merge line (WP-1658): its armed pull requests in order with their
+                                      babysit and live stack or batch; per UTC day the stacks and batches
+                                      started, by state and why they ended, merges and how many used one,
+                                      full-tier runs per merge (?repo=OWNER/NAME, ?days=N up to 90,
+                                      default 7; ?format=text: wp ci line)
     GET  /ci/tests                    from the backend test jobs' evidence (WP-704): flaky tests (passed and
                                       failed on one commit, with a score), the slowest tests and packages,
                                       tests failing on the default branch (?repo, ?view=flaky|slow|failing,
