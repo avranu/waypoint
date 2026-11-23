@@ -1433,6 +1433,57 @@ func TestLineRefusedRerunIsAskedAgainSpaced(t *testing.T) {
 	}
 }
 
+// A re-run is counted only by a write after the forge's answer: a refusal
+// writes nothing, so a failing write can't leave the first failure counted
+// as the second; a re-run the forge took whose count can't be written isn't
+// counted, and is asked again (c6439).
+func TestLineRerunCountedOnlyOnceWritten(t *testing.T) {
+	setup := func(t *testing.T, trigger string, refuse bool) *stackEnv {
+		se := newStackEnv(t)
+		se.draftGreen(head7s, 5)
+		se.step()
+		se.line()
+		se.stackRun(0, CheckFailed, treeA, "7 "+head7s)
+		if _, err := se.s.db.W.ExecContext(se.ctx, `CREATE TRIGGER no_reran BEFORE UPDATE OF reran ON queue_stacks WHEN `+trigger+` BEGIN SELECT RAISE(FAIL, 'disk I/O error'); END`); err != nil {
+			t.Fatal(err)
+		}
+		if refuse {
+			se.sg.sm.Lock()
+			se.sg.retryErr = errors.New("502 from the forge")
+			se.sg.sm.Unlock()
+		}
+		return se
+	}
+	asks := func(se *stackEnv) int {
+		se.sg.sm.Lock()
+		defer se.sg.sm.Unlock()
+		return len(se.sg.retries)
+	}
+	t.Run("refused, and taking a mark back would fail", func(t *testing.T) {
+		se := setup(t, "NEW.reran = 0", true)
+		se.line()
+		se.setClock(se.clockNow().Add(lineRerunSettle + time.Minute))
+		se.line()
+		if sts := se.stacks(); sts[0].RerunAt != 0 || sts[0].Ended {
+			t.Errorf("a refused re-run counted: reran %d ended %v %q", sts[0].RerunAt, sts[0].Ended, sts[0].EndReason)
+		}
+	})
+	t.Run("taken, and its count can't be written", func(t *testing.T) {
+		se := setup(t, "NEW.reran != 0", false)
+		se.line()
+		if n := asks(se); n != 1 {
+			t.Fatalf("the forge was asked %d times, want 1", n)
+		}
+		if sts := se.stacks(); sts[0].RerunAt != 0 || sts[0].Ended {
+			t.Errorf("an unwritten re-run: reran %d ended %v %q", sts[0].RerunAt, sts[0].Ended, sts[0].EndReason)
+		}
+		se.line()
+		if n := asks(se); n != 2 {
+			t.Errorf("the forge was asked %d times after the count couldn't be written, want 2", n)
+		}
+	})
+}
+
 // A conflict eject records who conflicted before the candidate ends; when
 // that write fails the candidate stays live for the next step (audit 1535).
 func TestLineEjectConflictWriteFailureLeavesTheCandidateLive(t *testing.T) {

@@ -1056,6 +1056,13 @@ func (s *Service) candStart(ctx context.Context, ls *lineState, heads []stackHea
 // isn't read as a second one that ejects the front. That goes on while the
 // candidate is younger than stackRunMax; after it the failure counts. The
 // asks are lineRerunRetry apart.
+//
+// The re-run is recorded (reran) only once it counts: after the forge took
+// it, started some of it, can't re-run at all, or was asked for long enough.
+// A refusal writes nothing, so no write that takes a mark back can fail and
+// leave the first failure counted as the second (c6423, c6439). A count that
+// can't be written leaves the candidate not re-run, so the next step asks
+// again: a re-run too many, never an ejection on one failure.
 func (s *Service) candRerun(ctx context.Context, ls *lineState, a lineAction) {
 	st := ls.rows[a.Cand]
 	if st == nil {
@@ -1065,43 +1072,35 @@ func (s *Service) candRerun(ctx context.Context, ls *lineState, a lineAction) {
 		return // the forge refused it a moment ago
 	}
 	s.rerunRefusedAt.Delete(st.ID)
-	if _, err := s.db.W.ExecContext(ctx, `UPDATE queue_stacks SET reran = ? WHERE id = ? AND ended_at IS NULL`, s.nowMS(), st.ID); err != nil {
+	if cl, ok := s.Forges.(ForgeCIRetry); ok {
+		can, err := cl.CanRetryChecks(ctx, ls.f)
+		asked := err == nil
+		n := 0
+		if err == nil && can {
+			n, err = cl.RetryChecks(ctx, ls.f, st.Repo, st.CommitSHA)
+		}
+		if err != nil {
+			// What failed is what is logged, as it is told apart (WP-1700).
+			if asked {
+				s.log.WarnContext(ctx, "run a candidate's failed jobs again", "candidate", st.ID, "err", err)
+			} else {
+				s.log.WarnContext(ctx, "ask whether a candidate's failed jobs can run again", "candidate", st.ID, "err", err)
+			}
+			if n == 0 && s.now().Sub(st.CreatedAt) < stackRunMax {
+				// Refused, and not asked for long enough yet: not a re-run.
+				s.rerunRefusedAt.Store(st.ID, s.now())
+				return
+			}
+			// Some of it is running again, or it was asked for long enough.
+		}
+	}
+	now := s.nowMS()
+	if _, err := s.db.W.ExecContext(ctx, `UPDATE queue_stacks SET reran = ? WHERE id = ? AND ended_at IS NULL`, now, st.ID); err != nil {
 		s.log.WarnContext(ctx, "record a candidate's re-run", "candidate", st.ID, "err", err)
 		return
 	}
-	st.RerunAt = s.nowMS()
+	st.RerunAt = now
 	s.log.InfoContext(ctx, "candidate rerun", "repo", st.Repo, "base", st.BaseRef, "candidate", st.ID, "heads", headNumbers(st.Heads))
-	cl, ok := s.Forges.(ForgeCIRetry)
-	if !ok {
-		return
-	}
-	can, err := cl.CanRetryChecks(ctx, ls.f)
-	if err == nil && !can {
-		return
-	}
-	asked := err == nil
-	n := 0
-	if err == nil {
-		n, err = cl.RetryChecks(ctx, ls.f, st.Repo, st.CommitSHA)
-	}
-	if err == nil {
-		return
-	}
-	// What failed is what is logged, as it is told apart (WP-1700).
-	if asked {
-		s.log.WarnContext(ctx, "run a candidate's failed jobs again", "candidate", st.ID, "err", err)
-	} else {
-		s.log.WarnContext(ctx, "ask whether a candidate's failed jobs can run again", "candidate", st.ID, "err", err)
-	}
-	if n > 0 || s.now().Sub(st.CreatedAt) >= stackRunMax {
-		return // some of it is running again, or it was asked for long enough
-	}
-	if _, err := s.db.W.ExecContext(ctx, `UPDATE queue_stacks SET reran = 0 WHERE id = ? AND ended_at IS NULL`, st.ID); err != nil {
-		s.log.WarnContext(ctx, "take back a candidate's re-run", "candidate", st.ID, "err", err)
-		return
-	}
-	st.RerunAt = 0
-	s.rerunRefusedAt.Store(st.ID, s.now())
 }
 
 // lineMergeAct merges the front on its passed candidate: a draft is marked
