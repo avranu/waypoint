@@ -34,8 +34,16 @@ then the commits, the issue and the recorded tests (.waypoint/pr-body.md and
 pr-checks.md override the template). A free model may reword the Summary
 from the same text, never the diff (wp pr bodies; WP-55).
 
-A branch stacked on another origin branch ignores that branch's commits.
-Running it again prints the open pull request.
+--base BRANCH opens it into BRANCH (default: the repo's default branch).
+A branch built on another branch ignores that branch's commits. Built on
+the branch of an open pull request of the repo, and without --base, it
+opens into that branch, so its diff shows only its own change, and the
+output says so (--base main opens it into main instead). Built on a
+branch with no open pull request, it opens into the default branch. When
+Waypoint merges a pull request, the ones open into its branch move onto
+its base first.
+Running it again prints the open pull request; with --base, it moves it
+there first (the forge must allow that, else it fails).
 
 When your autopilot settings review before pull requests (whether
 autopilot is on or off), say what you want: --review pushes and schedules
@@ -50,7 +58,7 @@ review on, and opens the pull request itself when the review leaves nothing
 for you to do (WP-1370).`
 
 var prOpenCmd = &command{
-	name: "open", aliases: []string{"create", "new"}, args: "[--draft] [--urgent] [--title T] [-f FILE]",
+	name: "open", aliases: []string{"create", "new"}, args: "[--draft] [--urgent] [--base BRANCH] [--title T] [-f FILE]",
 	summary: "push the branch and open a pull request",
 	about:   prOpenAbout, examples: []string{"wp pr open --draft", "wp pr open -f body.md --issue APP-12"},
 	run: cmdPROpen,
@@ -80,7 +88,7 @@ func addPROpenFlags(fs *flag.FlagSet) prOpenFlags {
 		file:       fs.String("file", "", "read your own description from `FILE` (- for stdin); rarely needed"),
 		issue:      fs.String("issue", "", "link this issue `KEY`"),
 		repo:       fs.String("repo", "", "the `REPO` (owner/name; default: the git remote)"),
-		base:       fs.String("base", "", "merge into `BRANCH` (default: the repo's default)"),
+		base:       fs.String("base", "", "open it into `BRANCH` (default: the repo's default; the branch of an open pull request this is built on)"),
 		check:      fs.String("checks", "", "the \"Checks run\" `TEXT`"),
 		draft:      fs.Bool("draft", false, "open a draft (ship: not armed or babysat)"),
 		ready:      fs.Bool("ready", false, "open ready, not as a \"WIP:\" draft"),
@@ -93,7 +101,7 @@ func addPROpenFlags(fs *flag.FlagSet) prOpenFlags {
 		skipGiven:  skipGiven,
 	}
 	short(fs, "f", "file")
-	hideFlags(fs, "base", "checks", "no-push")
+	hideFlags(fs, "checks", "no-push")
 	return f
 }
 
@@ -713,7 +721,11 @@ func (c *cli) openPR(f prOpenFlags) (*openedPR, []byte, error) {
 			bodyInputs.Tested = tested.Line
 		}
 	}
-	req := map[string]any{"head": branch, "base": *f.base, "title": text, "body": body, "draft": *f.draft, "ready": *f.ready, "issue": key, "for": f.finishing, "repo": repo, "urgent": *f.urgent,
+	stacked := []string(nil)
+	if *f.base == "" {
+		stacked = stackBranches(parents)
+	}
+	req := map[string]any{"stacked_on": stacked, "head": branch, "base": *f.base, "title": text, "body": body, "draft": *f.draft, "ready": *f.ready, "issue": key, "for": f.finishing, "repo": repo, "urgent": *f.urgent,
 		"review": intent, "reason": strings.TrimSpace(*f.skipReview), "force": *f.force}
 	// What a pull request Waypoint opens for a held ship carries: the newest
 	// ship's words win (WP-1370). A key is sent only when its flag was given
@@ -988,6 +1000,69 @@ func (c *cli) mergeBaseIfForkedTwice(base string) {
 		return
 	}
 	_, _ = fmt.Fprintf(c.err, "Merged %s in: this branch forked from it at %d commits, so its diff would have shown other pull requests' changes.\n", base, n)
+}
+
+// stackBranches are the branch names of the refs a branch is stacked on
+// (stackedOn), nearest first: fewest commits of HEAD's own line between it
+// and HEAD (--first-parent: a side branch merged in isn't nearer for it). A
+// branch known by two refs, its pushed tip and a newer local one, counts
+// from the nearer.
+func stackBranches(refs []string) []string {
+	type near struct {
+		name   string
+		n      int
+		onLine bool // its tip is on HEAD's first-parent line, not merged in from aside
+	}
+	line := map[string]bool{}
+	if out, err := localGit("rev-list", "--first-parent", "HEAD"); err == nil {
+		for _, h := range strings.Fields(out) {
+			line[h] = true
+		}
+	}
+	var bs []near
+	for _, r := range refs {
+		name := strings.TrimPrefix(r, "origin/")
+		if strings.HasPrefix(r, "refs/heads/") {
+			name = strings.TrimPrefix(r, "refs/heads/") // a local branch may itself be named origin/x
+		}
+		out, err := localGit("rev-list", "--count", "--first-parent", r+"..HEAD")
+		if err != nil {
+			continue
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(out))
+		if err != nil {
+			continue
+		}
+		on := false
+		if tip, err := localGit("rev-parse", "-q", "--verify", r+"^{commit}"); err == nil {
+			on = line[strings.TrimSpace(tip)]
+		}
+		if i := slices.IndexFunc(bs, func(b near) bool { return b.name == name }); i >= 0 {
+			if n < bs[i].n {
+				bs[i].n = n
+			}
+			bs[i].onLine = bs[i].onLine || on
+			continue
+		}
+		bs = append(bs, near{name, n, on})
+	}
+	slices.SortStableFunc(bs, func(a, b near) int {
+		if a.n != b.n {
+			return a.n - b.n
+		}
+		if a.onLine != b.onLine { // equal counts: the branch HEAD grew from, not one merged in
+			if a.onLine {
+				return -1
+			}
+			return 1
+		}
+		return 0
+	})
+	names := make([]string, len(bs))
+	for i, b := range bs {
+		names[i] = b.name
+	}
+	return names
 }
 
 var branchKeyRE = lazyre.New(`(?i)(?:^|[^A-Za-z0-9])([A-Z][A-Z0-9]{1,9}-[0-9]+)(?:[^A-Za-z0-9]|$)`)

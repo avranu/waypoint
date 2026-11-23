@@ -43,6 +43,15 @@ type beforePR struct {
 	Repo    string `json:"repo"`
 	Branch  string `json:"branch"`
 	Base    string `json:"base"`
+	// Asked is the base wp ship named, if it did. Base was worked out at
+	// the time and can go stale, so only this one outlives the round
+	// (WP-1670).
+	Asked string `json:"asked,omitempty"`
+	// Stacked is the branch Base was, when it was the head of an open pull
+	// request this one is built on rather than a base asked for. A held
+	// replay reads again whether that one is still open, as a live ship
+	// does, and opens into the default branch if it isn't (WP-1670).
+	Stacked string `json:"stacked,omitempty"`
 	// What wp ship asked for, so Waypoint can open it if the review can't
 	// run and the session never ships (WP-752). Urgent is only for a pull
 	// request not open yet: one already open is labelled by the held ship
@@ -169,6 +178,28 @@ func (s *Service) refreshBeforePR(ctx context.Context, actor *Actor, id int64, f
 	if err != nil {
 		s.log.WarnContext(ctx, "review: refresh a round's pull request words", "round", id, "err", err)
 	}
+}
+
+// askedBase is the base wp ship named when the branch's latest round was
+// scheduled: the wp ship --pr that follows the review doesn't repeat it.
+func (s *Service) askedBase(ctx context.Context, actor *Actor, task, head string) string {
+	if task == "" {
+		return ""
+	}
+	i, _, err := s.getIssueFor(ctx, s.db.R, actor, task, RoleViewer, false)
+	if err != nil {
+		return ""
+	}
+	issue := i.ID
+	var raw string
+	if s.db.R.QueryRowContext(ctx, `SELECT before_pr FROM work_log WHERE kind = 'review' AND issue_id = ? AND before_pr != '' ORDER BY id DESC LIMIT 1`, issue).Scan(&raw) != nil {
+		return ""
+	}
+	var b beforePR
+	if json.Unmarshal([]byte(raw), &b) != nil || b.Branch != head {
+		return ""
+	}
+	return b.Asked
 }
 
 // roundBeforePR is the round's branch when it runs before its pull
@@ -535,7 +566,11 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return false, "", "", err
 	}
-	bp := beforePR{Project: p.Key, Repo: repo, Branch: head, Base: base, Title: in.Title, Body: in.Body, BodyInputs: in.BodyInputs, TokenID: actor.TokenID, Message: deref(in.Message), Summary: deref(in.Summary), Draft: in.Draft, Ready: in.Ready, Urgent: in.Urgent && !existing, HeadTime: in.HeadTime, HeadSHA: in.HeadSHA}
+	asked, stacked := strings.TrimSpace(in.Base), ""
+	if asked == "" && slices.ContainsFunc(in.StackedOn, func(b string) bool { return strings.TrimSpace(b) == base }) {
+		stacked = base
+	}
+	bp := beforePR{Project: p.Key, Repo: repo, Branch: head, Base: base, Asked: asked, Stacked: stacked, Title: in.Title, Body: in.Body, BodyInputs: in.BodyInputs, TokenID: actor.TokenID, Message: deref(in.Message), Summary: deref(in.Summary), Draft: in.Draft, Ready: in.Ready, Urgent: in.Urgent && !existing, HeadTime: in.HeadTime, HeadSHA: in.HeadSHA}
 	wait := fmt.Sprintf("Pushed %s. Waypoint reviews %s before its pull request and opens the pull request itself when the review leaves nothing for you to do; findings that need you come to this session. Nothing more to run: end your turn.", head, g.key)
 	if existing {
 		wait = fmt.Sprintf("Pushed %s. Waypoint reviews %s, and its open pull request doesn't merge before the review ends; findings that need you come to this session. Nothing more to run: end your turn.", head, g.key)

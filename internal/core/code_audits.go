@@ -1934,9 +1934,9 @@ func (s *Service) messageSessionAs(ctx context.Context, a *CodeAudit, text, key 
 		s.log.WarnContext(ctx, "tell a session about its audit", "audit", a.ID, "err", err)
 		return
 	}
-	// Its findings may all be decided already, marked while the comment
-	// posted: then it is withdrawn as it is stored.
-	if m.State == MessageQueued && !passive && (a.Status != AuditDone || !s.withdrawDecidedAuditNews(ctx, a.ID)) {
+	// News of a finished audit whose findings were all decided while its
+	// comment posted is withdrawn as it is stored (WP-1525).
+	if m.State == MessageQueued && !passive && (key != auditNewsKey(a.ID, AuditDone) || !s.withdrawDecidedAuditNews(ctx, a.ID)) {
 		s.batchOrTell(ctx, a.sessionID, 0, a.blocking, func(until int64) error {
 			_, err := s.writeRows(ctx, `UPDATE session_messages SET batch_until = ?, blocking = ? WHERE id = ? AND state = 'queued'`, until, a.blocking, m.ID)
 			return err
@@ -1966,18 +1966,10 @@ func auditNewsKey(id int64, status string) string {
 // its filed issue canceled or deleted) does not queue the news again.
 // Whoever reopened it knows, and the audit's findings list it as to do.
 func (s *Service) withdrawDecidedAuditNews(ctx context.Context, id int64) bool {
-	var n int64
-	err := s.write(ctx, SystemActor(), func(t *tx) error {
-		res, err := t.ExecContext(ctx, `UPDATE session_messages SET state = 'cancelled' WHERE step_key = ? AND state = ?
+	n, err := s.writeRows(ctx, `UPDATE session_messages SET state = 'cancelled' WHERE step_key = ? AND state = ?
 		AND EXISTS (SELECT 1 FROM code_audit_findings f WHERE f.audit_id = ?)
 		AND NOT EXISTS (SELECT 1 FROM code_audit_findings f WHERE f.audit_id = ? AND `+findingToDoSQL+`)`,
-			auditNewsKey(id, AuditDone), MessageQueued, id, id)
-		if err != nil {
-			return err
-		}
-		n, _ = res.RowsAffected()
-		return nil
-	})
+		auditNewsKey(id, AuditDone), MessageQueued, id, id)
 	if err != nil {
 		s.log.WarnContext(ctx, "withdraw an audit's news once its findings are decided", "audit", id, "err", err)
 		return false

@@ -65,6 +65,9 @@ func TestReviewRoundRecordsFiled(t *testing.T) {
 			if res, err := e.shipChecked(e.box, e.task.Key); err != nil || !strings.Contains(res.Held, "Nothing more to run") {
 				t.Fatalf("round 1's ship = %+v, %v", res, err)
 			}
+			if arm, index, _, _, next := e.decision(r1); arm != AgainReview || index != 1 || next == 0 {
+				t.Fatalf("round 1's decision = %s, index %d, next %d", arm, index, next)
+			}
 			e.setClock(e.clockNow().Add(time.Minute))
 			r2 := e.review(c.titles...)
 			c.mark(e, r2)

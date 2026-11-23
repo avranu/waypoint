@@ -204,6 +204,9 @@ func TestSnapshotRequestedValuesComeFromTheLaunchNotThePayload(t *testing.T) {
 }
 
 func TestSnapshotStaysInItsTimeBudget(t *testing.T) {
+	old := snapshotBudget
+	snapshotBudget = snapshotBudgetReal // the tests run roomy (TestMain)
+	t.Cleanup(func() { snapshotBudget = old })
 	s := newSessionEnv(t)
 	snapshotHome(t, s.repo)
 	start := time.Now()

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -16,12 +17,79 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
+// The nearest branch is the one HEAD's own line came from: a side branch
+// merged in isn't nearer for it, and a branch's unpushed tip counts (WP-634).
+func TestStackBranchesNearest(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	commit := func(msg string) string {
+		t.Helper()
+		sh(t, dir, "commit", "-q", "--allow-empty", "-m", msg)
+		sha, err := localGit("rev-parse", "HEAD")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.TrimSpace(sha)
+	}
+	sh(t, dir, "init", "-q", "-b", "main")
+	sh(t, dir, "config", "user.email", "t@example.com")
+	sh(t, dir, "config", "user.name", "T")
+	commit("root")
+	sh(t, dir, "checkout", "-q", "-b", "parent")
+	pushed := commit("p0")
+	mid := commit("p1")
+	commit("p2")
+	sh(t, dir, "update-ref", "refs/remotes/origin/parent", pushed)
+	sh(t, dir, "update-ref", "refs/remotes/origin/mid", mid)
+	sh(t, dir, "checkout", "-q", "-b", "side", "main")
+	commit("s0")
+	commit("s1")
+	commit("s2")
+	commit("s3")
+	commit("s4")
+	sh(t, dir, "checkout", "-q", "-b", "child", "parent")
+	commit("c0")
+	if got := stackBranches([]string{"origin/parent", "refs/heads/parent", "origin/mid"}); !slices.Equal(got, []string{"parent", "mid"}) {
+		t.Errorf("unpushed tip: %v", got)
+	}
+	sh(t, dir, "merge", "-q", "--no-ff", "--no-edit", "side")
+	if got := stackBranches([]string{"refs/heads/side", "refs/heads/parent"}); !slices.Equal(got, []string{"parent", "side"}) {
+		t.Errorf("side branch merged in: %v", got)
+	}
+	// A ref git can't resolve is skipped, not an error for the rest.
+	if got := stackBranches([]string{"origin/gone", "refs/heads/parent"}); !slices.Equal(got, []string{"parent"}) {
+		t.Errorf("an unresolvable ref: %v", got)
+	}
+}
+
+// Branches at the same distance keep the order they were given in.
+func TestStackBranchesEqualCountKeepsOrder(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	sh(t, dir, "init", "-q", "-b", "main")
+	sh(t, dir, "config", "user.email", "t@example.com")
+	sh(t, dir, "config", "user.name", "T")
+	sh(t, dir, "commit", "-q", "--allow-empty", "-m", "root")
+	sh(t, dir, "branch", "twin-a")
+	sh(t, dir, "branch", "twin-b")
+	sh(t, dir, "checkout", "-q", "-b", "child")
+	sh(t, dir, "commit", "-q", "--allow-empty", "-m", "c0")
+	if got := stackBranches([]string{"refs/heads/twin-a", "refs/heads/twin-b"}); !slices.Equal(got, []string{"twin-a", "twin-b"}) {
+		t.Errorf("a, b: %v", got)
+	}
+	if got := stackBranches([]string{"refs/heads/twin-b", "refs/heads/twin-a"}); !slices.Equal(got, []string{"twin-b", "twin-a"}) {
+		t.Errorf("b, a: %v", got)
+	}
+}
+
 // openForge is a forge that opens pull requests and nothing else.
 type openForge struct {
 	core.ForgeClient
 	mu      sync.Mutex
 	created []core.NewPR
 	merged  map[int]bool // pull requests that read as merged
+	// baseEdits: "number:base" set through EditPRBase.
+	baseEdits []string
 }
 
 func (f *openForge) GetItem(ctx context.Context, fg *core.Forge, repo string, n int, pr bool) (*core.ForgeItem, error) {
@@ -303,7 +371,7 @@ func TestCLIPROpenAndShip(t *testing.T) {
 	if out := e.wp("pr", "show", "41"); !strings.Contains(out, "Fix the redirect loop properly") {
 		t.Errorf("not retitled:\n%s", out)
 	}
-	if out, code := e.run("pr", "edit", "41"); code != 2 || !strings.Contains(out, "--title or --body-file") {
+	if out, code := e.run("pr", "edit", "41"); code != 2 || !strings.Contains(out, "--title, --body-file or --base") {
 		t.Errorf("edit nothing: %d %s", code, out)
 	}
 	sh(t, dir, "checkout", "-q", "-b", "quick")
@@ -645,6 +713,29 @@ func TestCLIPROpenAndShip(t *testing.T) {
 	if !strings.Contains(out, "Stacked on origin/stack-parent") {
 		t.Errorf("stacking not said:\n%s", out)
 	}
+	// It merges into the pull request it is stacked on, not main, and the
+	// notice says how to ship the stack into main (WP-634).
+	if fg.created[opened].Base != "stack-parent" || !strings.Contains(out, "opens into stack-parent") || !strings.Contains(out, "--base main") {
+		t.Errorf("a stacked branch's base is %q:\n%s", fg.created[opened].Base, out)
+	}
+	// Two deep: the nearest branch with a pull request open is the base.
+	sh(t, dir, "checkout", "-q", "-b", "stack-grandchild")
+	sh(t, dir, "commit", "-q", "--allow-empty", "-m", "Grandchild work")
+	if out = e.wp("pr", "open"); fg.created[opened+1].Base != "stack-child" {
+		t.Errorf("two deep, the base is %q:\n%s", fg.created[opened+1].Base, out)
+	}
+	// --base on the one already open moves it; so does wp pr edit --base.
+	out = e.wp("pr", "open", "--base", "main")
+	if !strings.Contains(out, "Already open:") || !strings.Contains(out, "is now open into main") || len(fg.created) != opened+2 {
+		t.Errorf("--base on an open pull request:\n%s", out)
+	}
+	num := 40 + opened + 2
+	if out = e.wp("pr", "edit", fmt.Sprint(num), "--base", "stack-child"); !strings.Contains(out, "Edited") {
+		t.Errorf("wp pr edit --base:\n%s", out)
+	}
+	if want := []string{fmt.Sprintf("%d:main", num), fmt.Sprintf("%d:stack-child", num)}; !slices.Equal(fg.bases(), want) {
+		t.Errorf("base edits %v, want %v", fg.bases(), want)
+	}
 
 	// Marking a pull request urgent says what that costs and how to undo
 	// it; a run that didn't ask for the lane doesn't repeat it (WP-543).
@@ -672,6 +763,19 @@ func TestCLIPROpenAndShip(t *testing.T) {
 		t.Errorf("wp pr urgent --off warns:\n%s", out)
 	}
 	_ = time.Second
+}
+
+func (f *openForge) EditPRBase(_ context.Context, _ *core.Forge, _ string, n int, base string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.baseEdits = append(f.baseEdits, fmt.Sprintf("%d:%s", n, base))
+	return nil
+}
+
+func (f *openForge) bases() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.baseEdits)
 }
 
 func (f *openForge) EditPRTitle(context.Context, *core.Forge, string, int, string) error { return nil }

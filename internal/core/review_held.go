@@ -357,8 +357,15 @@ func (s *Service) shipOpen(ctx context.Context, sh *shipRun) (done bool, err err
 	r, bp, in, reviewed, actor := sh.r, sh.bp, sh.in, sh.reviewed, sh.actor
 	title, unchecked, given, panel, ran := sh.title, sh.unchecked, sh.given, sh.panel, sh.ran
 	body := bp.Body
+	// A stacked branch's parent may have merged or closed, its branch gone,
+	// while the ship was held: its base is worked out again, as a live
+	// ship's is (WP-1670). One asked for stays as asked.
+	base, stackedOn := bp.Base, []string(nil)
+	if bp.Stacked != "" {
+		base, stackedOn = bp.Asked, []string{bp.Stacked}
+	}
 	in2 := OpenPRInput{
-		Project: bp.Project, Repo: bp.Repo, Head: bp.Branch, Base: bp.Base,
+		Project: bp.Project, Repo: bp.Repo, Head: bp.Branch, Base: base, StackedOn: stackedOn,
 		Title: title, Draft: bp.Draft, Ready: bp.Ready, Urgent: bp.Urgent,
 		Issue: r.key, For: r.key, noSweep: true, byWaypoint: true, BodyInputs: bp.BodyInputs,
 	}

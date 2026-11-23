@@ -3,14 +3,11 @@ package db
 import (
 	"context"
 	"database/sql"
-	"io/fs"
 	"path/filepath"
-	"sort"
-	"strings"
 	"testing"
 )
 
-// 0189 moves the dismissals 0185 kept as a flag on directional evidence rows
+// 0188 moves the dismissals 0185 kept as a flag on directional evidence rows
 // to one row per unordered pair (WP-1370), and drops the flag.
 func TestRewriteDismissalsMigration(t *testing.T) {
 	ctx := context.Background()
@@ -20,26 +17,7 @@ func TestRewriteDismissalsMigration(t *testing.T) {
 	}
 	defer func() { _ = w.Close() }()
 	w.SetMaxOpenConns(1)
-	if _, err := w.ExecContext(ctx, `CREATE TABLE schema_migrations (name TEXT PRIMARY KEY, applied_at INTEGER NOT NULL DEFAULT (unixepoch()))`); err != nil {
-		t.Fatal(err)
-	}
-	names, _ := fs.Glob(migrations, "migrations/*.sql")
-	sort.Strings(names)
-	var last string
-	for _, n := range names {
-		base := strings.TrimPrefix(n, "migrations/")
-		if base >= "0189" {
-			last = n
-			break
-		}
-		body, _ := migrations.ReadFile(n)
-		if err := apply(ctx, w, base, string(body)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if !strings.Contains(last, "0189_rewrite_dismissals") {
-		t.Fatalf("first migration from 0189 is %q", last)
-	}
+	body := migrateBefore(ctx, t, w, "0188_rewrite_dismissals.sql")
 	for _, q := range []string{
 		`INSERT INTO projects(id, key, name, created_at, updated_at) VALUES (1, 'WP', 'Waypoint', 0, 0)`,
 		`INSERT INTO users(id, username, email, created_at, updated_at) VALUES (1, 'robin', 'j@example.com', 0, 0)`,
@@ -55,8 +33,7 @@ func TestRewriteDismissalsMigration(t *testing.T) {
 			t.Fatalf("%s: %v", q, err)
 		}
 	}
-	body, _ := migrations.ReadFile(last)
-	if err := apply(ctx, w, "0189_rewrite_dismissals.sql", string(body)); err != nil {
+	if err := apply(ctx, w, "0188_rewrite_dismissals.sql", body); err != nil {
 		t.Fatal(err)
 	}
 	var pairs, live string
