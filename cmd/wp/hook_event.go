@@ -942,11 +942,20 @@ func rememberSession(c *cli, in hookEventInput) {
 			// Entries are keyed by session, so one starting in a directory
 			// doesn't take another's there. Those from before are keyed by
 			// directory: moved under their session.
+			moved := map[string]*cwdSession{}
 			for k, old := range s.Cwds {
 				if old != nil && old.Cwd == "" && old.Session != "" {
 					old.Cwd = filepath.Clean(k)
 					delete(s.Cwds, k)
-					s.Cwds[old.Session] = old
+					if prev := moved[old.Session]; prev == nil || old.At.After(prev.At) {
+						moved[old.Session] = old
+					}
+				}
+			}
+			for sid, old := range moved {
+				// An entry already keyed by the session is the newer layout: keep it.
+				if _, ok := s.Cwds[sid]; !ok {
+					s.Cwds[sid] = old
 				}
 			}
 			cs := &cwdSession{Session: in.SessionID, Machine: machineName(), At: time.Now(), Cwd: filepath.Clean(in.Cwd)}

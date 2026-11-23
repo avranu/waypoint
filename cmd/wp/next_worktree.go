@@ -161,7 +161,8 @@ func (c *cli) ownWorktree(dir, key string) (at string) {
 			// Another agent starting the same task a moment ago may have made it.
 			if again, e2 := worktreeRepoAt(ctx, top); e2 == nil {
 				for _, w := range again.wts {
-					if !w.main && !w.prunable && !w.locked && w.branch != "" && branchCarries(w.branch, []string{key}) {
+					if !w.main && !w.prunable && !w.locked && w.branch != "" && branchCarries(w.branch, []string{key}) &&
+						inside(tidyReal(w.path), tidyReal(folder)) { // the folder check above ran on the planned path only
 						existing, target, err = w.path, w.path, nil
 						break
 					}
