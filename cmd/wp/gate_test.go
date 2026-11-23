@@ -231,13 +231,17 @@ func TestHookClaudeGateNestedParent(t *testing.T) {
 		a.Model = "opus"
 		s.Agents["p1"]["rec"] = a
 	})
-	run := func(agentID, session string) string {
+	run := func(agentID, session string, input ...string) string {
+		ti := `{"subagent_type":"general-purpose"}`
+		if len(input) > 0 {
+			ti = input[0]
+		}
 		tr := filepath.Join(t.TempDir(), "t.jsonl")
 		line := `{"type":"assistant","message":{"model":"` + session + `","usage":{"input_tokens":10}}}` + "\n"
 		if err := os.WriteFile(tr, []byte(line), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		in, _ := json.Marshal(map[string]any{"session_id": "p1", "tool_name": "Agent", "transcript_path": tr, "cwd": t.TempDir(), "agent_id": agentID, "tool_input": json.RawMessage(`{"subagent_type":"general-purpose"}`)})
+		in, _ := json.Marshal(map[string]any{"session_id": "p1", "tool_name": "Agent", "transcript_path": tr, "cwd": t.TempDir(), "agent_id": agentID, "tool_input": json.RawMessage(ti)})
 		var out bytes.Buffer
 		hookClaudeGate(c, bytes.NewReader(in), &out)
 		return out.String()
@@ -245,11 +249,22 @@ func TestHookClaudeGateNestedParent(t *testing.T) {
 	if got := run("rec", "claude-sonnet-5-5"); !strings.Contains(got, "can't start an agent on Opus") {
 		t.Errorf("caller recorded as Opus: %s", got)
 	}
-	if got := run("unk", "claude-fable-5-2"); !strings.Contains(got, "Fable") {
+	if got := run("unk", "claude-fable-5-2"); !strings.Contains(got, "can't start an agent on Fable") {
 		t.Errorf("unknown caller under a Fable session: %s", got)
 	}
 	if got := run("unk", "claude-sonnet-5-5"); got != "" {
 		t.Errorf("unknown caller under a Sonnet session: %s", got)
+	}
+	if got := run("rec", "claude-sonnet-5-5", `{"subagent_type":"general-purpose","model":"sonnet"}`); got != "" {
+		t.Errorf("caller recorded as Opus starting a Sonnet agent: %s", got)
+	}
+	if got := run("unk", "claude-fable-5-2", `{"subagent_type":"general-purpose","model":"opus"}`); !strings.Contains(got, `"permissionDecision":"deny"`) || !strings.Contains(got, "can't start an agent on Opus") {
+		t.Errorf("nested Opus call: want a deny: %s", got)
+	}
+	// The env model judges an unknown caller, and the call resolves to it.
+	t.Setenv("CLAUDE_CODE_SUBAGENT_MODEL", "sonnet")
+	if got := run("unk", "claude-fable-5-2"); got != "" {
+		t.Errorf("unknown caller under a Fable session, env sonnet: %s", got)
 	}
 }
 
@@ -272,6 +287,44 @@ func TestHookClaudeGateInheritDefinition(t *testing.T) {
 	hookClaudeGate(c, strings.NewReader(`{"session_id":"s1","tool_name":"Agent","tool_input":{"subagent_type":"inheriter"},"model":"claude-opus-5-5"}`), &out)
 	if !strings.Contains(out.String(), "would run on Opus") {
 		t.Errorf("inherit definition under Opus: %q", out.String())
+	}
+}
+
+// A call that says model: inherit names no model: it runs on what it inherits.
+func TestHookClaudeGateInheritCall(t *testing.T) {
+	t.Setenv("WP_TASK", "")
+	t.Setenv("WP_GATE", "")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CLAUDE_CODE_SUBAGENT_MODEL", "")
+	c := &cli{dir: t.TempDir()}
+	var out bytes.Buffer
+	hookClaudeGate(c, strings.NewReader(`{"session_id":"s1","tool_name":"Agent","tool_input":{"subagent_type":"general-purpose","model":"inherit"},"model":"claude-opus-5-5"}`), &out)
+	if !strings.Contains(out.String(), "would run on Opus") {
+		t.Errorf("inherit call under Opus: %q", out.String())
+	}
+}
+
+// subagentModel of an agent the gate did not record: its definition's model,
+// and for one that says inherit, the env setting (this pins what it does).
+func TestSubagentModelInheritDefinition(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	ad := filepath.Join(home, ".claude", "agents")
+	if err := os.MkdirAll(ad, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ad, "i.md"), []byte("---\nname: inheriter\nmodel: inherit\n---\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := &cli{dir: t.TempDir()}
+	in := hookEventInput{SessionID: "s1", AgentID: "x", AgentType: "inheriter", Cwd: t.TempDir()}
+	t.Setenv("CLAUDE_CODE_SUBAGENT_MODEL", "sonnet")
+	if got := c.subagentModel(in); got != "sonnet" {
+		t.Errorf("env sonnet: got %q", got)
+	}
+	t.Setenv("CLAUDE_CODE_SUBAGENT_MODEL", "")
+	if got := c.subagentModel(in); got != "" {
+		t.Errorf("no env: got %q", got)
 	}
 }
 
@@ -312,6 +365,9 @@ func TestResolveModel(t *testing.T) {
 		{"built-in uses env", "", "general-purpose", "opus", "sonnet", "sonnet"},
 		{"built-in uses parent", "", "Explore", "opus", "", "opus"},
 		{"fork uses parent", "haiku", "fork", "opus", "sonnet", "opus"},
+		{"inherit call falls to parent", "inherit", "general-purpose", "claude-opus-4", "", "claude-opus-4"},
+		{"inherit call falls to definition", " Inherit ", "haiku-worker", "opus", "", "haiku"},
+		{"inherit env falls to parent", "", "general-purpose", "claude-fable-5-2", "inherit", "claude-fable-5-2"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Setenv("CLAUDE_CODE_SUBAGENT_MODEL", c.env)

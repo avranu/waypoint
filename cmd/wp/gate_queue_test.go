@@ -52,6 +52,15 @@ func TestSlotQueue(t *testing.T) {
 			t.Errorf("%+v sleeps %d used %d", r, f.sleeps, used)
 		}
 	})
+	t.Run("at the limit: ends blocked when only the caller's chain holds the slots, checked on every poll", func(t *testing.T) {
+		f, used := &fakeWaits{t: time.Unix(0, 0)}, 2
+		q := newQ(f, &used, 2)
+		q.blocked = func() bool { return f.sleeps >= 3 }
+		r := q.run()
+		if !r.blocked || r.timedOut || f.sleeps != 3 {
+			t.Errorf("%+v sleeps %d", r, f.sleeps)
+		}
+	})
 	t.Run("at the limit: released when a stop arrives", func(t *testing.T) {
 		f, used := &fakeWaits{t: time.Unix(0, 0)}, 5
 		f.onSleep = func(n int) {
@@ -226,6 +235,35 @@ func TestGateQueue(t *testing.T) {
 			t.Errorf("out %q sleeps %d", out, g.f.sleeps)
 		}
 	})
+	t.Run("a nested start whose caller holds the only slot is not held", func(t *testing.T) {
+		g := newGateFixture(t)
+		t.Setenv("CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS", "1")
+		g.start("s1", "a", "general-purpose")
+		out := g.run(`{"session_id":"s1","tool_use_id":"tu1","tool_name":"Agent","agent_id":"a","tool_input":{"subagent_type":"general-purpose","model":"sonnet"}}`)
+		if g.f.sleeps != 0 || !strings.Contains(out, "held by the agents waiting on this call") || strings.Contains(out, "this start waited") || strings.Contains(out, "permissionDecision") {
+			t.Errorf("out %q sleeps %d", out, g.f.sleeps)
+		}
+	})
+	t.Run("a nested start waits while another agent outside its chain holds a slot", func(t *testing.T) {
+		g := newGateFixture(t)
+		t.Setenv("CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS", "2")
+		g.start("s1", "a", "general-purpose")
+		g.start("s1", "b", "general-purpose")
+		out := g.run(`{"session_id":"s1","tool_use_id":"tu1","tool_name":"Agent","agent_id":"a","tool_input":{"subagent_type":"general-purpose","model":"sonnet"}}`)
+		if !strings.Contains(out, "this start waited 4m") || strings.Contains(out, "held by the agents") {
+			t.Errorf("out %q sleeps %d", out, g.f.sleeps)
+		}
+	})
+	t.Run("a nested start waits for a pending start of another call", func(t *testing.T) {
+		g := newGateFixture(t)
+		t.Setenv("CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS", "2")
+		g.start("s1", "a", "general-purpose")
+		g.run(haikuCall) // a reservation by the main thread
+		out := g.run(`{"session_id":"s1","tool_use_id":"tu2","tool_name":"Agent","agent_id":"a","tool_input":{"subagent_type":"general-purpose","model":"sonnet"}}`)
+		if !strings.Contains(out, "this start waited 4m") {
+			t.Errorf("out %q sleeps %d", out, g.f.sleeps)
+		}
+	})
 	t.Run("WP_GATE=off skips the queue", func(t *testing.T) {
 		g := newGateFixture(t)
 		t.Setenv("CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS", "1")
@@ -248,8 +286,8 @@ func TestGateQueue(t *testing.T) {
 		g := newGateFixture(t)
 		t.Setenv("CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS", "1")
 		g.start("s1", "a", "general-purpose")
-		// Opus: a nested premium start is the rule a nested call can still
-		// break; a nested Sonnet start is allowed, and queued (next test).
+		// Opus: the nested premium rule (an agent can't start an Opus agent)
+		// refuses it before the slot queue, so nothing is held.
 		out := g.run(`{"session_id":"s1","tool_name":"Agent","agent_id":"z","tool_input":{"subagent_type":"general-purpose","model":"opus"}}`)
 		if !strings.Contains(out, "coordinator") || g.f.sleeps != 0 {
 			t.Errorf("out %q sleeps %d", out, g.f.sleeps)

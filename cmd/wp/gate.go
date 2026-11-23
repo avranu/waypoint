@@ -18,9 +18,10 @@ import (
 // start Sonnet and Haiku agents; a definition that must not start agents
 // leaves the Agent tool out of its tools. A premium model (Opus, Fable,
 // Mythos) is questioned from the main session and from inside an agent.
-// There is no cap on live agents (WP-1716). Local only, no network: it runs
-// before every Agent call. It refuses in every session, interactive ones
-// included; WP_GATE=warn|deny|off overrides, except for a fork, which is
+// The gate refuses no start for how many agents are live: a start past Claude
+// Code's limit waits in the slot queue (WP-1443, WP-1716). Local only, no
+// network: it runs before every Agent call. It refuses in every session,
+// interactive ones included; WP_GATE=warn|deny|off overrides, except for a fork, which is
 // refused in every mode. Haiku agents are exempt from all but the fork rule
 // (see gateProblems). Free models run as Bash calls (llm-task), never as
 // Agent calls, so the gate never sees them.
@@ -268,7 +269,8 @@ func hookClaudeGate(c *cli, stdin io.Reader, stdout io.Writer) {
 	// When that isn't recorded, the session's model stands in, since an agent
 	// inherits it unless a call or definition on the way said otherwise, so an
 	// unknown caller under a premium session is treated as premium rather than
-	// waved through.
+	// waved through. When the session's model is not known either, the call is
+	// judged on what the call, its definition and the env say alone.
 	parent := in.Model
 	if in.TranscriptPath != "" {
 		if fh, err := os.Open(in.TranscriptPath); err == nil { // #nosec G304 -- the hook's own transcript, named by Claude Code
@@ -292,7 +294,7 @@ func hookClaudeGate(c *cli, stdin io.Reader, stdout io.Writer) {
 	problems := gateProblems(f)
 	if fork {
 		if mode == "off" {
-			problems = problems[:1] // the fork message alone: off silences the rest
+			problems = problems[:1] // gateProblems puts the fork message first: it alone, off silences the rest
 		}
 		mode = "deny"
 	}
@@ -309,6 +311,8 @@ func hookClaudeGate(c *cli, stdin io.Reader, stdout io.Writer) {
 		switch {
 		case r.abandoned:
 			return
+		case r.blocked:
+			notes = append(notes, queueBlockedText(limit)) // undecided: Claude Code arbitrates
 		case r.timedOut:
 			notes = append(notes, queueTimedOutText(r, limit)) // undecided: Claude Code arbitrates
 		}
@@ -326,28 +330,35 @@ func isModel(m, family string) bool { return strings.Contains(strings.ToLower(m)
 // resolveModel is the model an Agent call will run on: the call's model, the
 // agent definition's model: frontmatter, CLAUDE_CODE_SUBAGENT_MODEL, then the
 // parent's model. A fork always uses the parent's. Built-in types without a
-// definition file fall through to the env var or the parent, and so does a
-// definition that says inherit: it says nothing.
+// definition file fall through to the env var or the parent. So does any of
+// the three that says inherit: it names no model.
 func resolveModel(call, agent, parent string, dirs []string) string {
 	if agent == "fork" {
 		return parent
 	}
-	if call != "" {
-		return call
+	if namesModel(call) {
+		return strings.TrimSpace(call)
 	}
-	if m := agentDefModel(dirs, agent); m != "" && !strings.EqualFold(m, "inherit") {
+	if m := agentDefModel(dirs, agent); namesModel(m) {
 		return m
 	}
-	if m := subagentModelEnv(); m != "" {
-		return m
+	if m := subagentModelEnv(); namesModel(m) {
+		return strings.TrimSpace(m)
 	}
 	return parent
 }
 
+// namesModel says whether m names a model: it is not empty and not inherit.
+func namesModel(m string) bool {
+	m = strings.TrimSpace(m)
+	return m != "" && !strings.EqualFold(m, "inherit")
+}
+
 // subagentModel is the model a sub-agent that just started runs on: what the
 // gate recorded for its Agent call (the call's model, its definition's, the
-// env setting, its parent's), else its definition's or the env setting. ""
-// when neither says: unknown, never a guess (ADR146).
+// env setting, its parent's), else its definition's model. When the definition
+// says nothing or inherit, the env setting. "" when none of them says:
+// unknown, never a guess (ADR146).
 func (c *cli) subagentModel(in hookEventInput) string {
 	if a, ok := c.loadState().Agents[in.SessionID][in.AgentID]; ok && a.Model != "" {
 		return a.Model
