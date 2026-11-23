@@ -521,7 +521,10 @@ func (s *Service) lineCands(ctx context.Context, ls *lineState) error {
 		if byCommit[st.CommitSHA] > 1 {
 			// A batch of the old kind: a row for each pull request on one
 			// run. They end once; the line starts its own.
-			s.candEnd(ctx, ls.f, st, stackCancelled, endLineChanged, "a batch of the old kind")
+			if err := s.candEnd(ctx, ls.f, st, stackCancelled, endLineChanged, "a batch of the old kind"); err != nil {
+				// Still live: planning now could start its heads a second time.
+				return fmt.Errorf("end a batch of the old kind: %w", err)
+			}
 			continue
 		}
 		if st.Pos != len(st.Heads)-1 {
@@ -539,7 +542,9 @@ func (s *Service) lineCands(ctx context.Context, ls *lineState) error {
 		}
 		st.Merged = m
 		if m == len(st.Heads) {
-			s.candEnd(ctx, ls.f, st, stackMerged, endMerged, "every head merged")
+			if err := s.candEnd(ctx, ls.f, st, stackMerged, endMerged, "every head merged"); err != nil {
+				return fmt.Errorf("end a merged candidate: %w", err)
+			}
 			continue
 		}
 		c := lineCand{ID: st.ID, Base: st.BaseSHA, Heads: st.Heads, Merged: m, Reran: st.RerunAt != 0}
@@ -830,7 +835,8 @@ func (s *Service) candMergedOn(ctx context.Context, f *Forge, pr *PullRequest, s
 	last := st.Merged == len(st.Heads)-1
 	defer func() {
 		if last {
-			s.candEnd(ctx, f, st, stackMerged, endMerged, "merged as "+short(merged))
+			//wplint:ignore blankerr candEndAs logs a failed end; the next step's lineCands finds every head merged and ends it then
+			_ = s.candEnd(ctx, f, st, stackMerged, endMerged, "merged as "+short(merged))
 		}
 	}()
 	tr, ok := s.Forges.(ForgeTrees)
@@ -866,7 +872,8 @@ func (s *Service) candRefused(ctx context.Context, pr *PullRequest, st *queueSta
 	if err != nil {
 		return
 	}
-	s.candEnd(ctx, f, st, stackRefused, endRefused, "the forge refused the merge: "+why)
+	//wplint:ignore blankerr candEndAs logs a failed end, which leaves the row live; the step asked for below reads the line again either way
+	_ = s.candEnd(ctx, f, st, stackRefused, endRefused, "the forge refused the merge: "+why)
 	s.lineChangedAsync(lineOf(pr))
 }
 
@@ -889,7 +896,12 @@ func (s *Service) lineStep(ctx context.Context, ref lineRef) {
 		if ctx.Err() != nil {
 			return
 		}
-		s.lineAct(ctx, ls, a)
+		if err := s.lineAct(ctx, ls, a); err != nil {
+			// A candidate the plan ended is still live: what the plan does
+			// next (start its heads again, drop a pull request) assumed it
+			// gone. The line is read again and the next step plans anew.
+			break
+		}
 	}
 	if len(acts) > 0 || len(ls.dropped) > 0 {
 		if again, err := s.lineGather(ctx, ref); err == nil {
@@ -899,7 +911,9 @@ func (s *Service) lineStep(ctx context.Context, ref lineRef) {
 	s.lineWaits(ctx, ls)
 }
 
-func (s *Service) lineAct(ctx context.Context, ls *lineState, a lineAction) {
+// lineAct does a. Its error is a candidate's end that couldn't be written:
+// the candidate is still live and the rest of the plan must not run.
+func (s *Service) lineAct(ctx context.Context, ls *lineState, a lineAction) error {
 	switch a.Kind {
 	case lineStart:
 		s.candStart(ctx, ls, a.Heads)
@@ -930,17 +944,18 @@ func (s *Service) lineAct(ctx context.Context, ls *lineState, a lineAction) {
 			if reason == endBaseRed {
 				rk = s.candRedOnTip(ls, st)
 			}
-			s.candEndAs(ctx, ls.f, st, state, reason, a.Why, rk)
+			return s.candEndAs(ctx, ls.f, st, state, reason, a.Why, rk)
 		}
 	case lineRerun:
 		s.candRerun(ctx, ls, a)
 	case lineMerge:
 		s.lineMergeAct(ctx, ls, a)
 	case lineEject:
-		s.lineEjectAct(ctx, ls, a)
+		return s.lineEjectAct(ctx, ls, a)
 	case lineUpdate:
 		s.lineUpdateAct(ctx, ls, a)
 	}
+	return nil
 }
 
 // candRedOnTip records a candidate that ends base_red as the test it was on
@@ -1114,7 +1129,8 @@ func (s *Service) lineMergeAct(ctx context.Context, ls *lineState, a lineAction)
 				if err := s.candMarkReady(ctx, ls.f, pr, st); err != nil {
 					s.log.WarnContext(ctx, "mark a pull request ready on its candidate", "repo", pr.Repo, "number", pr.Number, "err", err)
 					s.postStackFailure(ctx, ls.f, pr, st, "Waypoint couldn't mark it ready on the candidate")
-					s.candEnd(ctx, ls.f, st, stackCancelled, endLineChanged, "couldn't mark it ready: "+excerpt(err.Error(), 120))
+					//wplint:ignore blankerr candEndAs logs a failed end; it returns here either way, and the candidate, live and not ready, is planned again next step
+					_ = s.candEnd(ctx, ls.f, st, stackCancelled, endLineChanged, "couldn't mark it ready: "+excerpt(err.Error(), 120))
 					return
 				}
 			}
@@ -1144,11 +1160,12 @@ func (s *Service) candMarkReady(ctx context.Context, f *Forge, pr *PullRequest, 
 }
 
 // lineEjectAct takes a.PR out of the line: the candidate failed on it, or
-// its head doesn't merge.
-func (s *Service) lineEjectAct(ctx context.Context, ls *lineState, a lineAction) {
+// its head doesn't merge. Its error is the candidate's end that couldn't be
+// written: nothing is posted or dropped, and the next step ejects again.
+func (s *Service) lineEjectAct(ctx context.Context, ls *lineState, a lineAction) error {
 	st, pr := ls.rows[a.Cand], ls.prs[a.PR]
 	if st == nil || pr == nil {
-		return
+		return nil
 	}
 	p := ls.polls[st.ID]
 	s.log.InfoContext(ctx, "pull request ejected", "repo", pr.Repo, "base", pr.BaseRef, "pr", pr.Number, "candidate", st.ID, "why", excerpt(cmp(p.note, a.Why), 160))
@@ -1160,21 +1177,25 @@ func (s *Service) lineEjectAct(ctx context.Context, ls *lineState, a lineAction)
 		// this write fails the candidate stays live and the next step ejects.
 		if _, err := s.db.W.ExecContext(ctx, `UPDATE queue_stacks SET conflict_pr = ?, conflict_ahead = ? WHERE id = ? AND ended_at IS NULL`, pr.ID, ahead, st.ID); err != nil {
 			s.log.WarnContext(ctx, "record a candidate's conflict", "candidate", st.ID, "err", err)
-			return
+			return nil
 		}
-		s.candEnd(ctx, ls.f, st, stackConflict, endConflict, p.note)
+		if err := s.candEnd(ctx, ls.f, st, stackConflict, endConflict, p.note); err != nil {
+			return err
+		}
 		if ahead {
-			return // it waits in place, passed over until the heads ahead of it merge
+			return nil // it waits in place, passed over until the heads ahead of it merge
 		}
 		s.stackBaseConflict(st, st.Heads[p.k])
 		s.lineDrop(ctx, ls.ref, pr, reasonConflict(pr.BaseRef)+"; a round resolves it")
-		return
+		return nil
 	}
 	// A failure of its candidate's run is a failure of its head: said as one
 	// on the head, so its babysit reads the failed check's log and a round
 	// fixes it. (waypoint/ statuses are ignored by CI state, so the check
 	// keeps its own name.)
-	s.candEnd(ctx, ls.f, st, stackFailed, endFailed, p.note)
+	if err := s.candEnd(ctx, ls.f, st, stackFailed, endFailed, p.note); err != nil {
+		return err
+	}
 	name := cmp(p.check.Name, stackContext)
 	if cl, ok := s.Forges.(ForgeChecks); ok && !ownCheck(name) {
 		if err := cl.SetCommitStatus(ctx, ls.f, pr.Repo, pr.HeadSHA, CommitStatusPost{Context: name, State: "failure",
@@ -1185,6 +1206,7 @@ func (s *Service) lineEjectAct(ctx context.Context, ls *lineState, a lineAction)
 		}
 	}
 	s.lineDrop(ctx, ls.ref, pr, "its candidate failed: "+p.note)
+	return nil
 }
 
 // lineUpdateAct brings the front's own branch up to date: a line that can't
