@@ -188,6 +188,13 @@ type CIStackStats struct {
 	Cancelled int    `json:"cancelled"` // what it was built on changed
 	LastFail  string `json:"last_fail,omitempty"`
 	LastRun   string `json:"last_run,omitempty"` // the run of the latest that failed
+	// Reasons counts the ended ones by end_reason; rows from before
+	// migration 0187 have none and are left out (WP-1707).
+	Reasons map[string]int `json:"reasons,omitempty"`
+	// Reran: those whose failed jobs were run again.
+	Reran int `json:"reran,omitempty"`
+	// cancelledBy is Reasons of the cancelled ones alone, for StackFates.
+	cancelledBy map[string]int
 	// PausedUntil: the line builds no candidates until then (lineFallbackUntil).
 	PausedUntil *time.Time `json:"paused_until,omitempty"`
 }
@@ -731,7 +738,7 @@ func (s *Service) doctorLine(ctx context.Context, ref lineRef, project string, n
 // lineStacks counts the stacked places of a line that started since since.
 func (s *Service) lineStacks(ctx context.Context, ref lineRef, since time.Time) (CIStackStats, error) {
 	var st CIStackStats
-	rows, err := s.db.R.QueryContext(ctx, `SELECT state, ended_at IS NOT NULL, note, run_url FROM queue_stacks
+	rows, err := s.db.R.QueryContext(ctx, `SELECT state, ended_at IS NOT NULL, note, run_url, end_reason, reran FROM queue_stacks
 		WHERE forge_id = ? AND repo = ? COLLATE NOCASE AND base_ref = ? AND created_at >= ? ORDER BY created_at, id`,
 		ref.forge, ref.repo, ref.base, since.UnixMilli())
 	if err != nil {
@@ -739,12 +746,28 @@ func (s *Service) lineStacks(ctx context.Context, ref lineRef, since time.Time) 
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var state, note, run string
+		var state, note, run, reason string
 		var ended bool
-		if err := rows.Scan(&state, &ended, &note, &run); err != nil {
+		var reran int64
+		if err := rows.Scan(&state, &ended, &note, &run, &reason, &reran); err != nil {
 			return st, err
 		}
 		st.Tried++
+		if reran != 0 {
+			st.Reran++
+		}
+		if ended && reason != "" {
+			if st.Reasons == nil {
+				st.Reasons = map[string]int{}
+			}
+			st.Reasons[reason]++
+			if state == stackCancelled {
+				if st.cancelledBy == nil {
+					st.cancelledBy = map[string]int{}
+				}
+				st.cancelledBy[reason]++
+			}
+		}
 		switch {
 		case state == stackPassed || state == stackReady || state == stackMerged:
 			st.Passed++
@@ -1800,7 +1823,7 @@ func doctorFindings(d *CIDoctor, b *CIBoard, now time.Time, extra ...CIFinding) 
 			f := CIFinding{Level: "warn", Kind: "stacks_failing", Repo: l.Repo,
 				Title: fmt.Sprintf("%s: none of the %d stacked places that ended in the last %s passed (%s); the line merges one full run at a time",
 					where, st.Failed+st.Conflicts+st.Cancelled, ShortDuration(doctorTrend), StackFates(st)),
-				Detail: "A stack or batch tests the pull requests behind the front with the ones ahead merged in; when they all fail, each costs a full run of runners and saves no time.",
+				Detail: "A candidate is built from the base and the first places of the merge line and gets a full run, so the front can merge on it; when they all fail, each costs a full run of runners and saves no time.",
 				URL:    st.LastRun}
 			if st.LastFail != "" {
 				f.Detail += "\nLatest: " + clipLine(st.LastFail, 160)
@@ -2089,13 +2112,28 @@ func StackFates(st CIStackStats) string {
 		parts = append(parts, fmt.Sprintf("%d failed", st.Failed))
 	}
 	if st.Cancelled > 0 {
-		parts = append(parts, fmt.Sprintf("%d cancelled", st.Cancelled))
+		c := fmt.Sprintf("%d cancelled", st.Cancelled)
+		// Why they were cancelled, most frequent first (WP-1707).
+		why := slices.Collect(maps.Keys(st.cancelledBy))
+		slices.SortFunc(why, func(a, b string) int {
+			return stdcmp.Or(st.cancelledBy[b]-st.cancelledBy[a], strings.Compare(a, b))
+		})
+		for i, r := range why {
+			why[i] = fmt.Sprintf("%d %s", st.cancelledBy[r], endReasonWords(r))
+		}
+		if len(why) > 0 {
+			c += " (" + strings.Join(why, ", ") + ")"
+		}
+		parts = append(parts, c)
 	}
 	if len(parts) == 0 {
 		return "none failed"
 	}
 	return strings.Join(parts, ", ")
 }
+
+// endReasonWords words a candidate's end_reason for people.
+func endReasonWords(r string) string { return strings.ReplaceAll(r, "_", " ") }
 
 // JobFates says how a job's runs that didn't pass ended: "2 failed, 1
 // cancelled, 6 stopped when e2e failed".
