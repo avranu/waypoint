@@ -1109,11 +1109,29 @@ func TestLineBaseRedIsRecordedOnTheTipItEndedOn(t *testing.T) {
 	}
 	se.s.lineAct(se.ctx, ls, lineAction{Kind: lineEnd, Cand: both.ID, End: endBaseRed, Why: "it failed only what fails on the base's tip"})
 	rest := both.Heads[1:]
-	if tried := se.s.lineTried(se.ctx, ref, "3e7000000", true); !tried[candKey(rest)] {
-		t.Errorf("#8 alone isn't remembered on the tip that holds #7: %v", tried)
+	if tried, err := se.s.lineTried(se.ctx, ref, "3e7000000", true); err != nil || !tried[candKey(rest)] {
+		t.Errorf("#8 alone isn't remembered on the tip that holds #7: %v, %v", tried, err)
 	}
-	if tried := se.s.lineTried(se.ctx, ref, "tip-9", true); tried[candKey(rest)] {
-		t.Error("remembered on another tip too")
+	if tried, err := se.s.lineTried(se.ctx, ref, "tip-9", true); err != nil || tried[candKey(rest)] {
+		t.Errorf("remembered on another tip too (%v)", err)
+	}
+}
+
+// A tried head set that can't be read stops the gather: left out, its heads
+// would be started again on every step (c6474).
+func TestLineGatherStopsOnAnUnreadableTriedSet(t *testing.T) {
+	se := newStackEnv(t)
+	se.draftGreen(head7s, 5)
+	pr := se.pr(7)
+	if _, err := se.s.db.W.ExecContext(se.ctx, `INSERT INTO queue_stacks(forge_id, repo, base_ref, pr_id, base_sha, heads, branch, commit_sha, state, created_at, ended_at)
+		VALUES (?, ?, ?, ?, 'x', 'not json', 'wp-queue/main/bad', 'bad0001', ?, 1, ?)`, pr.ForgeID, pr.Repo, pr.BaseRef, pr.ID, stackFailed, se.s.now().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := se.s.lineTried(se.ctx, lineOf(pr), "", false); err == nil {
+		t.Error("lineTried read an unreadable head set as none")
+	}
+	if _, err := se.s.lineGather(se.ctx, lineOf(pr)); err == nil {
+		t.Error("the gather went on without the head sets tried")
 	}
 }
 

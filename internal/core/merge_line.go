@@ -313,7 +313,9 @@ func (s *Service) lineGather(ctx context.Context, ref lineRef) (*lineState, erro
 	}
 	ls.snap.Saturated = s.poolSaturated(ctx, ref.forge)
 	ls.snap.BatchDepth = s.lineBatchDepth(ctx, ref)
-	ls.snap.Tried = s.lineTried(ctx, ref, ls.tip, ls.snap.BaseRed)
+	if ls.snap.Tried, err = s.lineTried(ctx, ref, ls.tip, ls.snap.BaseRed); err != nil {
+		return nil, err
+	}
 	if err := s.lineCands(ctx, ls); err != nil {
 		return nil, err
 	}
@@ -458,8 +460,10 @@ func (s *Service) lineBatchDepth(ctx context.Context, ref lineRef) int {
 }
 
 // lineTried: the head sets whose candidate ended on the heads' account, and,
-// while the base is red, those that ended base_red on the current tip.
-func (s *Service) lineTried(ctx context.Context, ref lineRef, tip string, baseRed bool) map[string]bool {
+// while the base is red, those that ended base_red on the current tip. A
+// record it can't read is an error: left out, its heads would be started
+// again on every step.
+func (s *Service) lineTried(ctx context.Context, ref lineRef, tip string, baseRed bool) (map[string]bool, error) {
 	tried := map[string]bool{}
 	red := ""
 	if baseRed && tip != "" {
@@ -469,17 +473,24 @@ func (s *Service) lineTried(ctx context.Context, ref lineRef, tip string, baseRe
 		AND (state IN (?, ?) OR (end_reason = ? AND base_sha = ? AND base_sha != '')) AND ended_at > ? ORDER BY id DESC LIMIT ?`, ref.forge, ref.repo, ref.base, stackFailed, stackConflict,
 		endBaseRed, red, s.now().Add(-lineTriedWithin).UnixMilli(), lineTriedMax)
 	if err != nil {
-		return tried
+		return nil, fmt.Errorf("read the head sets tried: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var raw string
 		var heads []stackHead
-		if rows.Scan(&raw) == nil && json.Unmarshal([]byte(raw), &heads) == nil {
-			tried[candKey(heads)] = true
+		if err := rows.Scan(&raw); err != nil {
+			return nil, fmt.Errorf("read a head set tried: %w", err)
 		}
+		if err := json.Unmarshal([]byte(raw), &heads); err != nil {
+			return nil, fmt.Errorf("read a head set tried: %w", err)
+		}
+		tried[candKey(heads)] = true
 	}
-	return tried
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the head sets tried: %w", err)
+	}
+	return tried, nil
 }
 
 // lineCands reads the live candidates of the line, ends the old batches and
@@ -499,11 +510,14 @@ func (s *Service) lineCands(ctx context.Context, ls *lineState) error {
 			// Left live, the planner has no candidate for its heads and starts
 			// them again every step: end it. Not a reason that pauses the line,
 			// as it says nothing about the forge (WP-1700).
-			if st != nil && st.ID != 0 {
-				if err := s.candEnd(ctx, ls.f, st, stackCancelled, endUnreadable, "its row could not be read"); err != nil {
-					// Still live on the forge: planning now could start a second one.
-					return fmt.Errorf("end an unreadable candidate: %w", err)
-				}
+			if st == nil || st.ID == 0 {
+				// A row that can't even be told can't be ended: planning now
+				// could start its heads a second time.
+				return fmt.Errorf("read a live candidate: %w", err)
+			}
+			if err := s.candEnd(ctx, ls.f, st, stackCancelled, endUnreadable, "its row could not be read"); err != nil {
+				// Still live on the forge: planning now could start a second one.
+				return fmt.Errorf("end an unreadable candidate: %w", err)
 			}
 			continue
 		}
