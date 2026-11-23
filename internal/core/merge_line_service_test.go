@@ -137,6 +137,11 @@ func TestLineFrontFailsTwiceIsEjected(t *testing.T) {
 	if b := se.babysitOf(7); b.JobID == 0 && !strings.Contains(b.Wait, "re-ran") {
 		t.Errorf("#7 got no round or rerun: %q", b.Wait)
 	}
+	// The round that follows is told the failure was seen on the candidate.
+	if todo, err := se.s.PRWorkPacket(se.ctx, SystemActor(), se.pr(7).ID); err != nil ||
+		!strings.Contains(todo.Text, "merged onto main at tip-1") || !strings.Contains(todo.Text, "Merge main into the branch first") {
+		t.Errorf("packet of #7: %v %+v", err, todo)
+	}
 	if got := strings.Join(se.madeHeads(), " "); got != "7 7,8 7,8,9 8 8,9" {
 		t.Errorf("candidates made: %q", got)
 	}

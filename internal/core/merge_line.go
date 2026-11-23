@@ -66,16 +66,16 @@ type candPoll struct {
 
 // lineState is one reading of a line.
 type lineState struct {
-	ref     lineRef
-	f       *Forge
-	style   string
-	candOK  bool
-	snap    lineSnap
-	prs     map[int64]*PullRequest // the line's entries and members held out of it
-	order   []*PullRequest         // the entries, in order
-	held    map[int64]string       // members held out of the line, with why
-	rows    map[int64]*queueStack
-	polls   map[int64]candPoll
+	ref    lineRef
+	f      *Forge
+	style  string
+	candOK bool
+	snap   lineSnap
+	prs    map[int64]*PullRequest // the line's entries and members held out of it
+	order  []*PullRequest         // the entries, in order
+	held   map[int64]string       // members held out of the line, with why
+	rows   map[int64]*queueStack
+	polls  map[int64]candPoll
 	// tip, frontBehind: the base's tip and whether the front's head lacks
 	// it, read once per step.
 	tip         string
@@ -1177,4 +1177,36 @@ func failingJobs(failing map[string]bool) string {
 	}
 	slices.Sort(names)
 	return strings.Join(names, ", ")
+}
+
+// candEjectText is what a round for pr's failed head is told when the head
+// was ejected from a candidate: the failure was seen with the head merged onto
+// the base's tip (and the heads ahead of it), not on its own branch, where it
+// may not reproduce. "" when pr's head wasn't ejected from a candidate.
+func (s *Service) candEjectText(ctx context.Context, pr *PullRequest) string {
+	var raw, tip, run string
+	err := s.db.R.QueryRowContext(ctx, `SELECT heads, base_sha, run_url FROM queue_stacks WHERE pr_id = ? AND state = ? AND end_reason = ? ORDER BY id DESC LIMIT 1`,
+		pr.ID, stackFailed, endFailed).Scan(&raw, &tip, &run)
+	if err != nil {
+		return ""
+	}
+	var heads []stackHead
+	if json.Unmarshal([]byte(raw), &heads) != nil || len(heads) == 0 {
+		return ""
+	}
+	k := slices.IndexFunc(heads, func(h stackHead) bool { return h.PRID == pr.ID })
+	if k < 0 || !sameSHA(heads[k].SHA, pr.HeadSHA) {
+		return ""
+	}
+	base := cmp(pr.BaseRef, "its base")
+	onto := base + " at " + short(tip)
+	if k > 0 {
+		onto += " and the heads ahead of it (" + headNames(heads[:k])[len("the base + "):] + ")"
+	}
+	text := fmt.Sprintf("This head was tested on the merge line's candidate, not on its own branch: the check below failed with the head merged onto %s. "+
+		"It may not fail on the branch alone. Merge %s into the branch first (git fetch origin %s && git merge FETCH_HEAD), reproduce the failure there, then fix it.", onto, base, base)
+	if run != "" {
+		text += " The candidate's run: " + run
+	}
+	return text
 }
