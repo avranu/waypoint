@@ -314,6 +314,94 @@ needs no login: the `claude` account's packages are public, and the image holds
 only public toolchains. `.forgejo/ci-image/build.sh --local` builds it without
 pushing, to try a change.
 
+**CI on GitHub** (WP-1624): the public mirror, github.com/avranu/waypoint, runs
+`.github/workflows/` on GitHub's standard hosted runners, which GitHub does not
+bill a public repository for
+([About billing for GitHub Actions](https://docs.github.com/en/billing/managing-billing-for-your-products/managing-billing-for-github-actions/about-billing-for-github-actions);
+its limits on concurrent jobs and runner size have not been checked against our
+load: WP-1629). Two settings on the mirror must hold for them to run: Actions
+enabled (Settings, Actions), and code scanning left on advanced setup, not
+GitHub's default CodeQL setup, which refuses `github-codeql`'s upload. No run there gates a merge, a
+release or a deploy; those go by Forgejo's statuses alone, so a GitHub outage
+or a halted mirror stops nothing. (Forgejo's lint and backend jobs do check the
+files themselves, with actionlint and `internal/cilint`.) Nothing in Waypoint
+watches these runs either: a failure shows in GitHub's Actions and Security
+tabs only, until WP-1629 decides whether they earn an alarm.
+`github-ci` runs on each push forge-sync makes to main: lint, the backend tests
+under the race detector (three jobs: `internal/core`, `cmd/wp`, the rest) and
+the four e2e shards; on Sundays it runs the e2e shards at all four looks.
+`github-codeql` scans main with CodeQL into GitHub's Security tab (pull requests
+are scanned on Forgejo by forge-checks; a finding triaged in `.forgejo/codeql/`
+is dismissed by hand on GitHub, which never sees that file).
+
+The rules, which `internal/cilint/repo_test.go` checks: no secrets (GitHub has
+none of ours), no `pull_request` or `pull_request_target` trigger, GitHub's
+hosted runners only (never attach one of ours to the public repository),
+read-only `permissions:` (but `security-events: write` for the job that uploads
+CodeQL's findings), and no path under `.forgejo/`, which forge-sync
+strips: the workflows can't use Forgejo's scripts, actions or job image, so they
+install Go, Node, the QA tools and Chromium themselves, from GitHub's cache.
+forge-sync also rewrites every commit (the tree without `.forgejo/`), so a
+GitHub SHA is never Forgejo's; the commit's `Sync-Origin-Commit:` trailer names
+it (read off the mirror's commits in November 2026: forge-sync is another
+repository, so nothing here checks it). A run starts only after forge-sync has
+published the push, and not at all while it holds main (a gitleaks finding).
+
+What a GitHub job leaves out: the race jobs run without `-cover`, and
+`TestNoSiteNames` skips there (its list is the `SITE_NAMES` secret), as do
+`internal/cilint`'s checks of Forgejo's workflow.
+
+To compare GitHub's runners with ours, take the last 7 days' push runs only (a
+Sunday run does four looks, and a manual one may deal eight shards), and for
+each job its wait for a runner, its time when green (the median, as `wp ci
+history` gives ours), and how often it failed:
+
+```sh
+gh run list -R avranu/waypoint -w github-ci -e push -s completed --created ">=$(date -u -d '7 days ago' +%F)" -L 500 --json databaseId -q '.[].databaseId' |
+  while read -r id; do
+    gh run view -R avranu/waypoint "$id" --json createdAt,jobs \
+      -q '.createdAt as $c | .jobs[] | select(.conclusion != "skipped")
+          | if .conclusion == "success" or .conclusion == "failure"
+            then {name, conclusion, wait: ((.startedAt | fromdate) - ($c | fromdate)), time: ((.completedAt | fromdate) - (.startedAt | fromdate))}
+            else {name, conclusion} end'
+  done | jq -rs 'def p50: if length == 0 then "-" else sort[(length - 1) / 2 | floor] / 6 | round / 10 end;
+      group_by(.name)[] | map(select(.time)) as $done
+      | "\(.[0].name): \($done | length) finished, \($done | map(select(.conclusion == "failure")) | length) failed, \(length - ($done | length)) cancelled, p50 wait \($done | map(.wait) | p50) min, p50 time when green \($done | map(select(.conclusion == "success").time) | p50) min"'
+wp ci history --days 7   # ours, under "Full-tier jobs": lint, e2e shard N, backend shard N
+```
+
+Read the two with these in mind:
+
+- A cancelled job (the next push superseded its run) has no time, and the
+  longer a job runs the likelier it is cancelled, so GitHub's p50 reads low
+  when "cancelled" is large beside "finished". A handful of finished runs
+  settles nothing either: how many are enough, and how much faster counts, is
+  WP-1629's to set before it reads the numbers.
+- Ours counts the full tier's jobs on pull requests as well as on main: the
+  same jobs running the same commands on the same hosts, where GitHub has main
+  only. (Our Sunday four-look run is in there too, one run in a week's median.)
+- Lint and the e2e shards compare job with job, with two cautions. GitHub's e2e
+  job installs Chromium each time and ours has it in the job image, so compare
+  the "browser checks" step (`gh run view --job ID --json steps`) or allow for
+  the install. And GitHub's lint job builds the QA tools (`make tools`, some
+  minutes) on the first run after a Go version, a pin or the `tools` recipe
+  changes, where ours has them in the job image: leave that run out.
+- The race jobs do not compare job with job: ours are four shards dealt by test
+  name and GitHub's are three groups by package. For runner time compare the
+  sum of the three with the sum of our four backend shards; for the wall clock
+  compare the longest of each, which on GitHub is `race (core)`, all of
+  `internal/core` in one process (26 minutes on our hosts against 8 for a
+  shard).
+
+`gh workflow run github-ci -R avranu/waypoint -f e2e_shards=8` deals the browser
+checks over eight jobs instead of four (manual runs never cancel each other, so
+a 4-shard and an 8-shard run can go side by side; read their jobs with `gh run
+view`, since the recipe above takes push runs). Moving a check that gates to GitHub
+needs more than a faster runner: a relay that posts GitHub's result on the
+Forgejo commit the trailer names, pull request runs (and so a rule for the
+mirror's twin pull requests), and Waypoint reading `wp-evidence` lines from
+GitHub's logs. WP-1629 holds the measurement and that decision.
+
 **Go's caches** are kept per kind of job (`.forgejo/actions/go-cache`, with
 setup-go's own cache off): `backend-race`, `backend` (the draft tier),
 `lint` (with golangci-lint's), `e2e` and `release`, each keyed by Go's

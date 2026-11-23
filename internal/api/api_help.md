@@ -1159,7 +1159,10 @@ an agent). Only the owner's work runs on a runner. Jobs: `command`, `apply`, `ag
         and server_version
     POST /runner/poll            {runner, running[ids], free, clis?, wait?}
                                   → {job, cancel[ids], server_version}
-        held up to 30 s for a job this runner may take (claimed atomically); also the
+        held up to 30 s for a job this runner may take (claimed atomically; in this order:
+        the rounds of ci-urgent pull requests, then the round of the pull request at the
+        front of each merge line, the line served least recently first, then every other
+        kind oldest first, then audits); also the
         heartbeat: polled in the last 90 s = online. job = {id, kind, title, input, timeout,
         token?}: token is the job's own agent token (autopilot, and agent jobs that may run
         commands), deleted when the job ends; never hand the runner's token to a job;

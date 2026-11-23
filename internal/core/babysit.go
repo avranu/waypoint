@@ -943,6 +943,13 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 		b.HeadSHA = pr.HeadSHA
 		sync = true
 	}
+	// A round still queued for a head that has moved on is withdrawn
+	// (WP-1618). Asked at every step, not only the one that saw the push:
+	// a withdraw that failed is tried again. A runner that takes the round
+	// before this step keeps it, as one that had it before the push does.
+	if b.JobID != 0 && pr.HeadSHA != "" && !sameSHA(b.RoundSHA, pr.HeadSHA) {
+		s.withdrawQueuedRound(ctx, b, pr, b.JobID)
+	}
 	if sync {
 		if _, err := s.syncReviewComments(ctx, pr); err != nil {
 			s.log.WarnContext(ctx, "read review comments", "pr", pr.ID, "err", err)
@@ -964,7 +971,7 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 			return
 		}
 		if err == nil && job != nil && (job.State == "queued" || job.State == "running") {
-			s.setState(ctx, b, pr, BabysitWorking, fmt.Sprintf("round %d: an agent is on it (job #%d)", b.Round, b.JobID))
+			s.setState(ctx, b, pr, BabysitWorking, s.roundWait(ctx, b.Round, b.JobID))
 			return
 		}
 		// It finished and the event was missed.
@@ -1610,7 +1617,7 @@ func (s *Service) babysitRoundBy(ctx context.Context, b *Babysit, pr *PullReques
 	}
 	b.Round, b.RoundSHA, b.JobID = round.N, pr.HeadSHA, jobID
 	if jobID != 0 {
-		s.setState(ctx, b, pr, BabysitWorking, fmt.Sprintf("round %d: an agent is on it (job #%d)", round.N, jobID))
+		s.setState(ctx, b, pr, BabysitWorking, s.roundWait(ctx, round.N, jobID))
 		return
 	}
 	s.setState(ctx, b, pr, BabysitNeedsPerson, fmt.Sprintf("round %d handed over: %s", round.N, why))
@@ -2060,7 +2067,7 @@ func (s *Service) dispatchRound(ctx context.Context, b *Babysit, pr *PullRequest
 		prompt = babysitPrompt(pr, b, round, packet, nil)
 	}
 	in := AgentJob{CLI: "claude", Model: model, Effort: effort, Prompt: prompt, Repo: repo.cloneURL(), Base: pr.HeadRef, Branch: pr.HeadRef,
-		Push: true, Permission: AgentEditRun, CommitMessage: commit, ProtectPaths: protectedPaths, Target: pr.BaseRef, KeepOnTimeout: true}
+		Push: true, Permission: AgentEditRun, CommitMessage: commit, ProtectPaths: protectedPaths, Target: pr.BaseRef, WorkTimeout: timeout, KeepOnTimeout: true}
 	raw, _ := json.Marshal(in)
 	projectID, err := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo)
 	if err != nil {
@@ -2070,7 +2077,7 @@ func (s *Service) dispatchRound(ctx context.Context, b *Babysit, pr *PullRequest
 		return dispatched{why: "its project couldn't be read"}
 	}
 	job, err := s.EnqueueRunnerJob(ctx, SystemActor(), RunnerJobInput{Kind: JobAgent, OwnerID: b.ownerID, Input: raw, Source: babysitSource, SourceID: b.ID,
-		Timeout: timeout, ProjectID: projectID})
+		Timeout: roundWallTimeout(timeout), ProjectID: projectID})
 	if err != nil {
 		if errors.Is(err, ErrNoRunner) {
 			return dispatched{why: "no runner of " + cmp(b.Owner.DisplayName, "its owner") + " can take it"}
@@ -2244,11 +2251,12 @@ func (s *Service) setState(ctx context.Context, b *Babysit, pr *PullRequest, sta
 	if b.State == state && b.Wait == wait {
 		return
 	}
-	// A full run's wait quotes the repo's measured runs, so its sentence is
+	// A queued round's wait quotes how many jobs are ahead of it (WP-1618);
+	// a full run's wait quotes the repo's measured runs. Either sentence is
 	// rewritten as they change. It is still the same wait, and its clock goes
 	// on (WP-784).
 	since := s.now()
-	if b.State == state && isFullRunReason(b.Wait) && isFullRunReason(wait) {
+	if b.State == state && (isFullRunReason(b.Wait) && isFullRunReason(wait) || IsQueuedRoundWait(b.Wait) && IsQueuedRoundWait(wait)) {
 		since = b.WaitSince
 	}
 	err := s.write(ctx, SystemActor(), func(t *tx) error {
@@ -2397,4 +2405,53 @@ func (s *Service) fullRunStalled(ctx context.Context, pr *PullRequest) string {
 		}
 	}
 	return r[0] + " in " + fmtMinutes(after) + " (" + basis + ")"
+}
+
+// roundWallTimeout is the limit on a round's whole run, given the seconds
+// its agent may work: as long again for its commands' waits for a test slot,
+// which don't count as work (AgentJob.WorkTimeout, WP-1618), but no more
+// than a job may ask for (runnerMaxTimeout, two hours). So a round's hour
+// of work has an hour for waits, and the assessor's 90 minutes has 30: a run
+// that waits longer than that ends at this limit with work time left. A
+// runner without FeatureWorkClock gets the work limit as its whole limit
+// (claimRunnerJob).
+func roundWallTimeout(work int) int { return min(2*work, runnerMaxTimeout) }
+
+// queuedRoundWait is what the wait text of a round no runner has taken
+// holds between its round and its time: setState keeps the wait's clock while
+// only the count behind it changes.
+const queuedRoundWait = ": queued, waiting for the runner since "
+
+// IsQueuedRoundWait reports whether a babysit's wait text is roundWait's for
+// a round no runner has taken.
+func IsQueuedRoundWait(wait string) bool { return strings.Contains(wait, queuedRoundWait) }
+
+// roundWait is the wait text of a babysit whose round is job jobID: an agent
+// is on it once a runner has the job; while it is queued, since when it has
+// waited and how many jobs a runner takes before it, so "an agent is on it"
+// isn't said of a round nothing is running (WP-1618, WP-ADR149). The count
+// is left out when it can't be read.
+func (s *Service) roundWait(ctx context.Context, round int, jobID int64) string {
+	running := fmt.Sprintf("round %d: an agent is on it (job #%d)", round, jobID)
+	j, err := scanJob(s.db.R.QueryRowContext(ctx, `SELECT `+jobCols+` FROM runner_jobs j LEFT JOIN users cu ON cu.id = j.created_by WHERE j.id = ?`, jobID))
+	if err != nil || j.State != "queued" {
+		return running
+	}
+	text := fmt.Sprintf("round %d%s%s UTC", round, queuedRoundWait, j.CreatedAt.UTC().Format("15:04"))
+	return queuedRoundWaitText(text, s.aheadOf(ctx, j), jobID)
+}
+
+// queuedRoundWaitText ends a queued round's wait text with the jobs ahead of
+// it (-1: not known, so not said) and its job.
+func queuedRoundWaitText(text string, ahead int, jobID int64) string {
+	switch ahead {
+	case -1:
+		return fmt.Sprintf("%s (job #%d)", text, jobID)
+	case 0:
+		return fmt.Sprintf("%s (next in line; job #%d)", text, jobID)
+	case 1:
+		return fmt.Sprintf("%s (1 job ahead; job #%d)", text, jobID)
+	default:
+		return fmt.Sprintf("%s (%d jobs ahead; job #%d)", text, ahead, jobID)
+	}
 }
