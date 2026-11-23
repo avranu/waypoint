@@ -1,0 +1,470 @@
+package core
+
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+	"slices"
+	"strings"
+	"testing"
+)
+
+// A Stop that leaves a background run going names the outstanding work, once;
+// a Stop with nothing running, or with nothing outstanding, says nothing. The
+// wait hook naming it first doesn't stop the Stop naming it (audit #1344.1).
+func TestStopNamesOutstandingWorkWhileARunGoes(t *testing.T) {
+	a, box := auditAPEnv(t)
+	round, audit, _ := handoffStart(t, a)
+	// A subagent at work keeps the round running past a Stop (roundAtStop):
+	// otherwise the Stop is the round's report, and its findings are no
+	// longer the round's to name.
+	run := PendingTask{Type: "local_agent", Status: "running", Description: "wp testsum -- make check"}
+	// The round's own prompt is still to come: stops until it are quiet. A
+	// session at work is not in that state.
+	if _, err := a.s.db.W.Exec(`UPDATE agent_sessions SET warm_state = ''`); err != nil {
+		t.Fatal(err)
+	}
+	ag := *a.ag
+	ag.Session = a.session
+	f := func(n int) string { return itoa64(audit) + "." + itoa64(int64(n)) }
+
+	if res := a.stopWith("Waiting.", run); res.Text != "" {
+		t.Fatalf("before the audit's findings: %q", res.Text)
+	}
+	a.endAudit(box, "done", "Merge reads a nil map", "Unchecked error")
+	if res := a.stopWith("Done."); strings.Contains(res.Text, "wp audit mark") {
+		t.Errorf("nothing runs, yet the stop named work: %q", res.Text)
+	}
+	promptIn(t, a, round)
+	// The wait hook named them when the run went to the background.
+	if o, err := a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtWait); err != nil || !slices.Equal(o.Findings, []string{f(1), f(2)}) {
+		t.Fatalf("at the wait: %+v %v", o, err)
+	}
+	// The agent didn't act on them (or never got the hook's answer): the Stop
+	// still names them, with at most three of what runs.
+	more := []PendingTask{run, {Type: "local_bash", Status: "running", Description: "run b"}, {Type: "local_bash", Status: "running", Description: "run c"}, {Type: "local_bash", Status: "running", Description: "run d"}}
+	res := a.stopWith("Waiting.", more...)
+	for _, want := range []string{"still running", "run c", "audit #" + itoa64(audit), f(1), f(2), "wp audit mark"} {
+		if !strings.Contains(res.Text, want) {
+			t.Errorf("the stop's text lacks %q:\n%s", want, res.Text)
+		}
+	}
+	if strings.Contains(res.Text, "run d") {
+		t.Errorf("more than three runs named:\n%s", res.Text)
+	}
+	// Told once: the same findings at the next stop are not repeated, or an
+	// agent holding them while a worker fixes them is re-prompted at every stop.
+	if res := a.stopWith("Still waiting.", run); res.Text != "" {
+		t.Errorf("a second stop repeated the findings: %q", res.Text)
+	}
+	// A new finding names all that are open, so the count is the whole
+	// (audit #1344.10).
+	if _, err := a.s.db.W.Exec(`INSERT INTO code_audit_findings(audit_id, ordinal, title) VALUES (?, 3, 'Late finding')`, audit); err != nil {
+		t.Fatal(err)
+	}
+	res = a.stopWith("Waiting more.", run)
+	for _, want := range []string{"3 findings still to do", f(1), f(2), f(3)} {
+		if !strings.Contains(res.Text, want) {
+			t.Errorf("after a new finding the stop lacks %q:\n%s", want, res.Text)
+		}
+	}
+	// The continued turn's own stop is not held again, even with a finding
+	// it wasn't told of (audit #1344.33); the next stop names it.
+	if _, err := a.s.db.W.Exec(`INSERT INTO code_audit_findings(audit_id, ordinal, title) VALUES (?, 4, 'Later finding')`, audit); err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.s.SessionHook(a.ctx, a.ag, []HookEvent{hook("box", a.cli, "Stop", func(h *HookEvent) {
+		h.StopHookActive = true
+		h.Pending = &HookPending{Tasks: []PendingTask{run}, Crons: []PendingCron{}}
+	})})
+	if err != nil || strings.Contains(res.Text, "wp audit mark") {
+		t.Errorf("a stop the hook continued: %q %v", res.Text, err)
+	}
+	if res := a.stopWith("Waiting still.", run); !strings.Contains(res.Text, f(4)) {
+		t.Errorf("the finding the continued stop let through is never named: %q", res.Text)
+	}
+}
+
+// A follow-up with something to tell the agent goes first: the Stop that
+// would name outstanding work waits for it instead (audit #1344.18).
+func TestStopWithAFollowUpTalkingDoesntNameOutstandingWork(t *testing.T) {
+	a, box := auditAPEnv(t)
+	round, _, _ := handoffStart(t, a)
+	if _, err := a.s.db.W.Exec(`UPDATE agent_sessions SET warm_state = ''`); err != nil {
+		t.Fatal(err)
+	}
+	a.endAudit(box, "done", "Merge reads a nil map")
+	promptIn(t, a, round)
+	if _, err := a.s.SaveFollowUp(a.ctx, a.admin, a.session, FollowUpInput{Steps: []Action{step("tell_agent", map[string]any{"message": "Now write the tests."})}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.s.db.W.Exec(`INSERT INTO automation_runs(automation_id, rule_id, status, created_at)
+		SELECT r.automation_id, r.id, 'running', 0 FROM automation_rules r JOIN automations x ON x.id = r.automation_id WHERE x.session_id = ?`, a.session); err != nil {
+		t.Fatal(err)
+	}
+	if !a.s.followUpTalks(a.ctx, a.session) {
+		t.Fatal("the follow-up doesn't talk")
+	}
+	res := a.stopWith("Waiting.", PendingTask{Type: "local_bash", Status: "running", Description: "make check"})
+	if strings.Contains(res.Text, "wp audit mark") || res.Await == 0 {
+		t.Errorf("the stop named work instead of waiting for the follow-up: %+v", res)
+	}
+}
+
+// A session's outstanding work is the unmarked findings of its open review
+// round's audit and the answered requests it hasn't read (WP-1571); nothing
+// else, and nothing for a session with none, nor for another session.
+func TestSessionOutstanding(t *testing.T) {
+	a, box := auditAPEnv(t)
+	ag := *a.ag
+	ag.Session = a.session
+	if _, err := a.s.SessionOutstanding(a.ctx, nil, OutstandingAtWait); !errors.Is(err, ErrUnauthorized) {
+		t.Errorf("no actor: %v", err)
+	}
+	if o, err := a.s.SessionOutstanding(a.ctx, a.admin, OutstandingAtWait); err != nil || !o.Empty() {
+		t.Errorf("not a session: %+v %v", o, err)
+	}
+	empty, err := a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtWait)
+	if err != nil || !empty.Empty() {
+		t.Fatalf("before any round: %+v %v", empty, err)
+	}
+
+	round, audit, _ := handoffStart(t, a)
+	a.endAudit(box, "done", "Merge reads a nil map", "Unchecked error", "Dead code")
+	// Until the round's prompt goes in, its findings are the prompt's to give,
+	// in full: naming them too would give them twice.
+	if o, err := a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtWait); err != nil || !o.Empty() {
+		t.Fatalf("before the round's prompt went in: %+v %v", o, err)
+	}
+	promptIn(t, a, round)
+	// one finding already marked: no longer outstanding
+	if _, err := a.s.db.W.Exec(`UPDATE code_audit_findings SET state = 'rejected' WHERE audit_id = ? AND ordinal = 2`, audit); err != nil {
+		t.Fatal(err)
+	}
+	// Another session has none of them.
+	other := ag
+	other.Session = a.session + 1000
+	if o, err := a.s.SessionOutstanding(a.ctx, &other, OutstandingAtWait); err != nil || !o.Empty() {
+		t.Fatalf("another session's: %+v %v", o, err)
+	}
+	got, err := a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtWait)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{itoa64(audit) + ".1", itoa64(audit) + ".3"}
+	if got.Audit != audit || !slices.Equal(got.Findings, want) {
+		t.Fatalf("findings = %d %v, want %d %v (round %d)", got.Audit, got.Findings, audit, want, round)
+	}
+	// The session has them in full from the round's prompt: they are named,
+	// not given again.
+	if strings.Contains(got.Lines, "What goes wrong") || !strings.Contains(got.Lines, "Merge reads a nil map") {
+		t.Fatalf("lines:\n%s", got.Lines)
+	}
+
+	// Told once at each way: asking again at the wait names nothing, the
+	// Stop still names them once, and a finding that turns up later names all.
+	// The wait records nothing itself: a hook that never printed names none
+	// (the review comment on WP-1571), so asking again names them again.
+	if again, err := a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtWait); err != nil || !slices.Equal(again.Findings, want) {
+		t.Fatalf("asked again before the print: %+v %v", again, err)
+	}
+	if err := a.s.SessionFindingsNamed(a.ctx, &ag, want); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtWait); err != nil || !again.Empty() || again.Lines != "" {
+		t.Fatalf("asked twice: %+v %v", again, err)
+	}
+	if atStop, _ := a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtStop); !slices.Equal(atStop.Findings, want) {
+		t.Fatalf("at the stop after the wait: %v", atStop.Findings)
+	}
+	if _, err := a.s.db.W.Exec(`INSERT INTO code_audit_findings(audit_id, ordinal, title) VALUES (?, 4, 'New one')`, audit); err != nil {
+		t.Fatal(err)
+	}
+	if more, _ := a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtWait); !slices.Equal(more.Findings, append(want, itoa64(audit)+".4")) || !strings.Contains(more.Lines, "3 findings") {
+		t.Fatalf("new finding = %v %q", more.Findings, more.Lines)
+	}
+	// The record is bookkeeping, not something the session did: the
+	// session's timeline doesn't list it.
+	sum, err := a.s.GetAgentSession(a.ctx, &ag, a.session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sum.Timeline) == 0 {
+		t.Fatal("the timeline is empty, so it can't show the record is left out") // audit #1372.26
+	}
+	for _, e := range sum.Timeline {
+		if e.Kind == "outstanding" {
+			t.Fatalf("the timeline lists an outstanding record: %+v", e)
+		}
+	}
+
+	// A round that is over leaves nothing outstanding.
+	a.s.setRoundNow(a.ctx, round, []string{RoundPending, RoundRunning}, RoundSkipped, "test")
+	if got, err = a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtWait); err != nil || len(got.Findings) != 0 {
+		t.Fatalf("after the round ended: %+v %v", got, err)
+	}
+
+	// An answered request the session hasn't been told of. At a Stop with no
+	// findings to do it doesn't carry the agent on alone: it waits for the
+	// start of a turn (WP-176). At the wait its answer is given in full and
+	// marked told, so the agent needs no command to read it and no later
+	// Stop or wakeup gives it again.
+	req, _, err := a.s.CreateRequest(a.ctx, &ag, RequestInput{Kind: "question", Title: "Squash the migrations?", Project: a.p.Key,
+		Questions: []Question{{Question: "Squash?", Choices: []Choice{{Label: "yes"}, {Label: "no"}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtWait); len(got.Requests) != 0 {
+		t.Fatalf("an open request is not outstanding: %+v", got)
+	}
+	if _, err := a.s.db.W.Exec(`UPDATE requests SET state = 'answered', decided_at = 1, via = '', answer = 'No, keep them apart.' WHERE id = ?`, req.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtStop); !got.Empty() {
+		t.Fatalf("an answer alone carried a stop on: %+v", got)
+	}
+	got, _ = a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtWait)
+	if !slices.Equal(got.Requests, []string{req.Code}) || !slices.Equal(got.RequestIDs, []int64{req.ID}) || !strings.Contains(got.Lines, "No, keep them apart.") || strings.Contains(got.Lines, "wp request") {
+		t.Fatalf("requests = %v %v %q, want [%s] with its answer", got.Requests, got.RequestIDs, got.Lines, req.Code)
+	}
+	// It is told only once the hook says it gave the answer: a reply the hook
+	// never got loses nothing, and the next wait or Stop gives it again
+	// (an adversarial review of WP-1571).
+	delivered := func() bool {
+		var at sql.NullInt64
+		if err := a.s.db.R.QueryRow(`SELECT delivered_at FROM requests WHERE id = ?`, req.ID).Scan(&at); err != nil {
+			t.Fatal(err)
+		}
+		return at.Valid
+	}
+	if delivered() {
+		t.Fatal("the answer is marked told before the hook said it gave it")
+	}
+	if got, _ = a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtWait); !slices.Equal(got.RequestIDs, []int64{req.ID}) {
+		t.Fatalf("an answer whose giving wasn't confirmed isn't given again: %+v", got)
+	}
+	if err := a.s.SessionDecisionsTold(a.ctx, &other, []int64{req.ID}); err != nil || delivered() {
+		t.Fatalf("another session marked the answer told: %v", err)
+	}
+	if err := a.s.SessionDecisionsTold(a.ctx, &ag, []int64{req.ID}); err != nil || !delivered() {
+		t.Fatalf("the hook's word doesn't mark the answer told: %v", err)
+	}
+	if got, _ = a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtWait); !got.Empty() {
+		t.Fatalf("the request named twice: %+v", got)
+	}
+	// The hook's word marks only answers to tell: an open request it names
+	// stays untold, so its answer is given once there is one.
+	open, _, err := a.s.CreateRequest(a.ctx, &ag, RequestInput{Kind: "question", Title: "Drop the column?", Project: a.p.Key,
+		Questions: []Question{{Question: "Drop?", Choices: []Choice{{Label: "yes"}, {Label: "no"}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.s.SessionDecisionsTold(a.ctx, &ag, []int64{open.ID}); err != nil {
+		t.Fatal(err)
+	}
+	var openAt sql.NullInt64
+	if err := a.s.db.R.QueryRow(`SELECT delivered_at FROM requests WHERE id = ?`, open.ID).Scan(&openAt); err != nil || openAt.Valid {
+		t.Fatalf("an open request was marked told: %v %v", openAt, err)
+	}
+	if _, err := a.s.db.W.Exec(`UPDATE requests SET state = ? WHERE id = ?`, RequestWithdrawn, open.ID); err != nil {
+		t.Fatal(err)
+	}
+	// A quiet dismissal is marked told unsaid at the wait, as at a Stop, so
+	// fifty of them hide no answer behind them.
+	hush, _, err := a.s.CreateRequest(a.ctx, &ag, RequestInput{Kind: "question", Title: "Vendor the module?", Project: a.p.Key,
+		Questions: []Question{{Question: "Vendor?", Choices: []Choice{{Label: "yes"}, {Label: "no"}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.s.db.W.Exec(`UPDATE requests SET state = ?, decision = 'dismiss', decided_at = 1, via = '' WHERE id = ?`, RequestDismissed, hush.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtWait); !got.Empty() {
+		t.Fatalf("a quiet dismissal was given: %+v", got)
+	}
+	var hushAt sql.NullInt64
+	if err := a.s.db.R.QueryRow(`SELECT delivered_at FROM requests WHERE id = ?`, hush.ID).Scan(&hushAt); err != nil || !hushAt.Valid {
+		t.Fatalf("a quiet dismissal was left untold at the wait: %v %v", hushAt, err)
+	}
+	// Another session has none of the session's requests (audit #1372.22).
+	if o, err := a.s.SessionOutstanding(a.ctx, &other, OutstandingAtStop); err != nil || !o.Empty() {
+		t.Fatalf("another session's, with a request: %+v %v", o, err)
+	}
+	// An answer the session was told of (in a wakeup, or by wp request show)
+	// is not outstanding, at a Stop either.
+	told, _, err := a.s.CreateRequest(a.ctx, &ag, RequestInput{Kind: "question", Title: "Rename the table?", Project: a.p.Key,
+		Questions: []Question{{Question: "Rename?", Choices: []Choice{{Label: "yes"}, {Label: "no"}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.s.db.W.Exec(`UPDATE requests SET state = 'answered', decided_at = 1, delivered_at = 2, via = '' WHERE id = ?`, told.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtStop); slices.Contains(got.Requests, told.Code) {
+		t.Fatalf("a delivered answer is outstanding: %+v", got)
+	}
+}
+
+// promptIn marks the round's prompt typed in (RoundRunning): the findings
+// outstanding work names are those of a round the session holds.
+func promptIn(t *testing.T, a *apEnv, round int64) {
+	t.Helper()
+	if _, err := a.s.db.W.Exec(`UPDATE work_log SET state = ? WHERE id = ?`, RoundRunning, round); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The newest open round with findings to do is the one named: a newer one
+// whose audit hasn't ended is passed over (audit #1372.23).
+func TestSessionOutstandingPassesOverARoundStillAuditing(t *testing.T) {
+	a, box := auditAPEnv(t)
+	ag := *a.ag
+	ag.Session = a.session
+	round, audit, _ := handoffStart(t, a)
+	a.endAudit(box, "done", "Merge reads a nil map")
+	promptIn(t, a, round)
+	if _, err := a.s.db.W.Exec(`INSERT INTO work_log(issue_id, kind, session_id, state, created_at, updated_at) SELECT issue_id, kind, session_id, ?, created_at, updated_at FROM work_log WHERE id = ?`, RoundPending, round); err != nil {
+		t.Fatal(err)
+	}
+	got, err := a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtWait)
+	if err != nil || got.Audit != audit || !slices.Equal(got.Findings, []string{itoa64(audit) + ".1"}) {
+		t.Fatalf("with a newer round still auditing: %+v %v", got, err)
+	}
+}
+
+// A Stop the person paused, or in a session they left alone, names nothing,
+// with a run going and findings to do (audit #1372.19).
+func TestPausedOrLeftAloneStopNamesNoOutstandingWork(t *testing.T) {
+	run := PendingTask{Type: "local_agent", Status: "running", Description: "wp testsum -- make check"}
+	for _, how := range []string{"paused", "left alone"} {
+		t.Run(how, func(t *testing.T) {
+			a, box := auditAPEnv(t)
+			round, _, _ := handoffStart(t, a)
+			if _, err := a.s.db.W.Exec(`UPDATE agent_sessions SET warm_state = ''`); err != nil {
+				t.Fatal(err)
+			}
+			a.endAudit(box, "done", "Merge reads a nil map")
+			promptIn(t, a, round)
+			if how == "paused" {
+				if _, err := a.s.PauseAgents(a.ctx, a.admin, "any", "quota jumped", true); err != nil {
+					t.Fatal(err)
+				}
+			} else if _, err := a.s.db.W.Exec(`UPDATE agent_sessions SET left_alone_at = 1 WHERE id = ?`, a.session); err != nil {
+				t.Fatal(err)
+			}
+			if res := a.stopWith("Waiting.", run); strings.Contains(res.Text, "wp audit mark") {
+				t.Errorf("a %s stop named work: %q", how, res.Text)
+			}
+		})
+	}
+}
+
+// The lines name each finding, which the session has in full from its
+// round's prompt, and give each answer in full, so the agent needn't run a
+// command to read either (WP-1571).
+func TestOutstandingLines(t *testing.T) {
+	one := outstandingLines(&SessionOutstanding{Audit: 7, todo: []CodeAuditFinding{{ID: "7.1", Severity: "medium", Title: "Merge reads a nil map", Path: "a.go", Line: 3, Problem: "It panics on a fresh map."}}})
+	// A confirmed finding not filed is one too: it has a verdict, and the line
+	// offers filing it (audit #1372.5).
+	for _, want := range []string{"- 1 finding still to do in your review round's audit #7, in full in the round's prompt", "7.1 [medium] Merge reads a nil map (a.go:3)",
+		"`wp audit mark ID fixed -m", "`wp audit mark ID confirmed --issue KEY` for a real one you filed for later", "rejected -m"} {
+		if !strings.Contains(one, want) {
+			t.Errorf("one finding lacks %q:\n%s", want, one)
+		}
+	}
+	if strings.Contains(one, "wp audit show") || strings.Contains(one, "It panics") {
+		t.Errorf("the line sends the agent to read the finding, or gives it again:\n%s", one)
+	}
+	var many []CodeAuditFinding
+	for i := 1; i <= 40; i++ {
+		many = append(many, CodeAuditFinding{ID: fmt.Sprintf("7.%d", i), Severity: "low", Title: fmt.Sprintf("Finding %d", i)})
+	}
+	got := outstandingLines(&SessionOutstanding{Audit: 7, todo: many})
+	for _, want := range []string{"40 findings", "7.30 [low] Finding 30", "and 10 more"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("many findings lack %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "7.31 ") {
+		t.Errorf("more than thirty named:\n%s", got)
+	}
+	r := &Request{Ref: "WP:R-4", Kind: "question", Title: "Squash the migrations?", State: RequestAnswered, Answer: "No, keep them apart.", DecidedBy: &UserRef{DisplayName: "Sam"}}
+	got = outstandingLines(&SessionOutstanding{decisions: []*Request{r}})
+	for _, want := range []string{"WP:R-4", "Sam answered:\nNo, keep them apart."} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the answer lacks %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "wp request") {
+		t.Errorf("the answer sends the agent to read it:\n%s", got)
+	}
+	// Answers fit the hook's room; one too long for it waits for a Stop or a
+	// turn's start, which have no such limit.
+	small2 := *r
+	small2.Ref = "WP:R-5"
+	huge := *r
+	huge.Answer = strings.Repeat("y", 20000)
+	if fit := fitDecisions([]*Request{r, &huge, &small2}, 5000); len(fit) != 2 || fit[0] != r || fit[1] != &small2 {
+		t.Errorf("fit = %v", fit)
+	}
+	// Long findings take no more than their share, so with the answers the
+	// lines stay inside the hook's room (an adversarial review of WP-1571).
+	long := make([]CodeAuditFinding, 30)
+	for i := range long {
+		long[i] = CodeAuditFinding{ID: fmt.Sprintf("7.%d", i+1), Severity: "low", Title: strings.Repeat("t", 200), Path: strings.Repeat("p/", 60) + "a.go", Line: 3}
+	}
+	o := &SessionOutstanding{Audit: 7, todo: long}
+	o.decisions = fitDecisions([]*Request{r, &small2}, outstandingRoom-len(outstandingLines(o)))
+	got = outstandingLines(o)
+	if len(got) > outstandingRoom || len(o.decisions) != 2 || !strings.Contains(got, "more.") || !strings.Contains(got, "7.1 [low]") {
+		t.Errorf("30 long findings and two answers: %d bytes, %d answers:\n%s", len(got), len(o.decisions), got)
+	}
+}
+
+// At a Stop with findings to name, the answers it hasn't been told of go
+// with them, in full, and are marked told.
+func TestStopGivesAnswersWithTheFindings(t *testing.T) {
+	a, box := auditAPEnv(t)
+	ag := *a.ag
+	ag.Session = a.session
+	round, _, _ := handoffStart(t, a)
+	a.endAudit(box, "done", "Merge reads a nil map")
+	promptIn(t, a, round)
+	req, _, err := a.s.CreateRequest(a.ctx, &ag, RequestInput{Kind: "question", Title: "Squash the migrations?", Project: a.p.Key,
+		Questions: []Question{{Question: "Squash?", Choices: []Choice{{Label: "yes"}, {Label: "no"}}}}, Followup: "never"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.s.db.W.Exec(`UPDATE requests SET state = 'answered', decided_at = 1, via = '', answer = 'No, keep them apart.' WHERE id = ?`, req.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtStop)
+	if err != nil || len(got.Findings) != 1 || !slices.Equal(got.Requests, []string{req.Code}) || !strings.Contains(got.Lines, "No, keep them apart.") || !strings.Contains(got.Lines, "Merge reads a nil map") {
+		t.Fatalf("at the stop: %+v %v", got, err)
+	}
+}
+
+// A finding confirmed and still to do is outstanding; one confirmed and filed
+// in an issue (findingFiledSQL) is handed off and isn't (audit #1357.1).
+func TestSessionOutstandingNamesConfirmedButNotFiled(t *testing.T) {
+	a, box := auditAPEnv(t)
+	ag := *a.ag
+	ag.Session = a.session
+	round, audit, _ := handoffStart(t, a)
+	a.endAudit(box, "done", "Merge reads a nil map", "Unchecked error", "Dead code")
+	promptIn(t, a, round)
+	var issue int64
+	if err := a.s.db.R.QueryRow(`SELECT id FROM issues ORDER BY id LIMIT 1`).Scan(&issue); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.s.db.W.Exec(`UPDATE code_audit_findings SET severity = 'low', state = 'confirmed', issue_id = CASE ordinal WHEN 2 THEN ? END WHERE audit_id = ? AND ordinal IN (1, 2)`, issue, audit); err != nil {
+		t.Fatal(err)
+	}
+	got, err := a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtWait)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{itoa64(audit) + ".1", itoa64(audit) + ".3"}; !slices.Equal(got.Findings, want) {
+		t.Fatalf("findings = %v, want %v", got.Findings, want)
+	}
+}

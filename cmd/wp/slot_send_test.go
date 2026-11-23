@@ -64,7 +64,7 @@ func TestSlotHoldRecordsWhatTheClassWasDecidedFrom(t *testing.T) {
 	q, _ := json.Marshal(queueRec{Since: 123, WD: "/x", Cmd: "c", Class: "long", BehindOwn: true})
 	_ = os.WriteFile(filepath.Join(dir, fmt.Sprintf("tests.%d.queue", ppid)), q, 0o600)
 
-	_, rel, setExit, err := c.takeSlotExit(context.Background(), "tests", 4, sqCmd)
+	_, rel, setExit, err := c.takeSlotExit(context.Background(), "tests", 4, sqCmd, "")
 	if err != nil {
 		t.Fatal(err)
 	}

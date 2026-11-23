@@ -1958,6 +1958,9 @@ func (s *Service) reviewJobFinished(ctx context.Context, st *stepRow, job *Runne
 		}
 	case job.State == "done" && res.Outcome == "unwanted":
 		s.unwarmReview(ctx, st.sessionID) // stopped while the job was on its way: stopStep ended the round
+		if res.Warning != "" {
+			s.log.WarnContext(ctx, "autopilot: the review job found the step unwanted", "task", review.key, "step", st.id, "warning", res.Warning)
+		}
 	case job.State == "done" && res.Outcome == "held":
 		s.unwarmReview(ctx, st.sessionID)
 		reason, retry := WaitScreen, autopilotRetry

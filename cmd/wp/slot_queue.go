@@ -239,8 +239,9 @@ func trimWaits(p string, keep int) {
 // acquireQueued takes a slot of NAME for the run of cmd. A long run first
 // takes its worktree's turn, so a worktree has one long run at a time; a
 // short run goes straight to the slots it may use. The wait shows in
-// NAME.PID.queue (WP-1604, WP-ADR150).
-func (c *cli) acquireQueued(ctx context.Context, name string, n int, cmd string) (qh *queuedHold, err error) {
+// NAME.PID.queue (WP-1604, WP-ADR150). A wait also says when the run is
+// expected to finish if etaCmd is not "" (WP-1571).
+func (c *cli) acquireQueued(ctx context.Context, name string, n int, cmd, etaCmd string) (qh *queuedHold, err error) {
 	start := time.Now()
 	dir, err := slotDir()
 	if err != nil {
@@ -368,8 +369,14 @@ func (c *cli) acquireQueued(ctx context.Context, name string, n int, cmd string)
 		}
 	}
 
-	hold, err := acquireSlotIn(ctx, name, slotOrder(class, n), func() {
+	hold, err := acquireSlotIn(context.WithValue(ctx, slotCtxKeyT{}, etaCmd), name, slotOrder(class, n), func() {
 		_, _ = fmt.Fprintf(c.err, "wp slot: waiting for a free %q slot (%d on this host; wp slot ls shows who has them)\n", name, n)
+		if etaCmd == "" {
+			return
+		}
+		if note := slotQueuedNote(dir, name, etaCmd); note != "" {
+			_, _ = fmt.Fprintln(c.err, note)
+		}
 	}, func() {
 		if !written {
 			writeQueue()
