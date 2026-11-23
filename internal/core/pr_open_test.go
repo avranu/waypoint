@@ -510,16 +510,31 @@ func TestStackedChildWaitsForParent(t *testing.T) {
 		t.Errorf("off: %v", err)
 	}
 
+	// Once moved it is held no longer, so the auto-merge the move nudges
+	// may land it before Wait returns: only ever onto main, after the move.
+	var childMergedOnto []string
+	se.sg.sm.Lock()
+	se.sg.onMergeN = func(n int) { // sm is held
+		if n == 6 {
+			childMergedOnto = slices.Clone(se.sg.baseEdits)
+		}
+	}
+	se.sg.sm.Unlock()
 	if _, err := se.s.MergePR(se.ctx, se.admin, se.pr(5).ID, MergeInput{}); err != nil {
 		t.Fatal(err)
 	}
 	se.s.Wait()
 	c := se.pr(6)
-	if c.BaseRef != "main" || c.ArmedAt == nil || c.HeadSHA != before.HeadSHA {
-		t.Fatalf("moved: base %q armed %v head %q", c.BaseRef, c.ArmedAt, c.HeadSHA)
+	if c.BaseRef != "main" || c.HeadSHA != before.HeadSHA || (c.ArmedAt == nil && c.State != "merged") {
+		t.Fatalf("moved: base %q armed %v state %q head %q", c.BaseRef, c.ArmedAt, c.State, c.HeadSHA)
 	}
-	if rd, err = se.s.readinessFor(se.ctx, c, true); err != nil || mergeWaitIn(rd.Reasons) != "" {
-		t.Errorf("still waits: %+v %v", rd, err)
+	if c.State == "merged" && !slices.Equal(childMergedOnto, []string{"6:main"}) {
+		t.Fatalf("merged before its move: base edits then %v", childMergedOnto)
+	}
+	if c.State != "merged" {
+		if rd, err = se.s.readinessFor(se.ctx, c, true); err != nil || mergeWaitIn(rd.Reasons) != "" {
+			t.Errorf("still waits: %+v %v", rd, err)
+		}
 	}
 	// The move was made on the forge and audited.
 	if !slices.Equal(se.sg.baseEdits, []string{"6:main"}) {
