@@ -236,6 +236,9 @@ func (s *Service) handleBaseFault(ctx context.Context, cl ForgeActionLogs, f *Fo
 			if j.Status != "failure" && j.Status != "cancelled" {
 				continue
 			}
+			if j.Name == advisoriesJob {
+				continue // a vulnerability is the dependency's to fix, never a runner fault, and it mustn't hide one in the same run (WP-1660)
+			}
 			log, err := cl.ActionJobLog(ctx, f, repo, j.ID)
 			if err != nil {
 				return

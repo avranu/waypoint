@@ -4,7 +4,7 @@
 # make test      go vet, go test (-timeout 30m as in CI), frontend typecheck (CI adds -race)
 # make lint      go vet, gofmt check, golangci-lint (needs: make tools), wplint
 # make sast      gosec (advisory; see README Tooling)
-# make vuln      govulncheck (needs network for the vulnerability DB)
+# make vuln      govulncheck, failing only for what this tree adds over origin/main (deploy/advisories.sh; needs network)
 # make check     lint + sast + vuln, then test: all run even if one fails (the full local gate)
 # make prepush   CI's lint job on what changed (the pre-commit pre-push hook)
 # make tools     install pinned Go QA binaries into GOPATH/bin
@@ -136,8 +136,8 @@ prepush-web:
 sast: ## gosec SAST (accepted findings are marked `#nosec <rule> -- why`)
 	$(GOTOOLS) $(SLOT) gosec -exclude=G104 -exclude-dir=testdata $(GOPKGS)
 
-vuln: ## known-vulnerability scan of the module graph
-	$(GOTOOLS) govulncheck $(GOPKGS)
+vuln: ## govulncheck: fails only for called vulnerabilities this tree adds over origin/main (deploy/advisories.sh)
+	$(GOTOOLS) deploy/advisories.sh check go pr
 
 # Every step runs even when an earlier one fails (make -k), so one pass reports
 # test, lint, gosec and govulncheck together (WP-1433). The exit status is still

@@ -100,7 +100,7 @@ type CIBottleneck struct {
 // CIFinding is something wrong, or worth a look, and what to do about it.
 type CIFinding struct {
 	Level  string `json:"level"` // problem, warn, info
-	Kind   string `json:"kind"`  // line_stalled, front_waiting, round_long, needs_person, gave_up, main_red, unreliable_job, near_limit, queue_long, runners_busy, pool, host_no_progress, pool_no_progress, host_slow, job_time_limit
+	Kind   string `json:"kind"`  // line_stalled, front_waiting, round_long, needs_person, gave_up, main_red, main_advisories, unreliable_job, near_limit, queue_long, runners_busy, pool, host_no_progress, pool_no_progress, host_slow, job_time_limit
 	Repo   string `json:"repo,omitempty"`
 	PR     int    `json:"pr,omitempty"`
 	Title  string `json:"title"`
@@ -284,7 +284,11 @@ type CIMain struct {
 	At     time.Time `json:"at"`
 	URL    string    `json:"url,omitempty"`
 	Red24h int       `json:"red_24h"` // push runs of the last day that failed or were cancelled
-	Runs   int       `json:"runs_24h"`
+	// OnlyAdvisories: every job of the latest run that failed or was cancelled
+	// is the advisories job (npm audit, govulncheck), which no release or
+	// deploy waits for (WP-1660): the tip is released and deployed.
+	OnlyAdvisories bool `json:"only_advisories,omitempty"`
+	Runs           int  `json:"runs_24h"`
 }
 
 // CIDoctorJob is a job worth knowing: unreliable, or among a repo's slowest
@@ -1572,6 +1576,7 @@ func doctorMains(d *CIDoctor, snap *ciSnapshot, now time.Time, visible func(int6
 				}
 			}
 			if found {
+				m.OnlyAdvisories = onlyAdvisoriesFailed(r.hist.tasks, m.Run)
 				d.Mains = append(d.Mains, m)
 			}
 		}
@@ -1823,7 +1828,12 @@ func doctorFindings(d *CIDoctor, b *CIBoard, now time.Time, extra ...CIFinding) 
 		}
 	}
 	for _, m := range d.Mains {
-		if m.Status == "failure" || m.Status == "cancelled" {
+		if m.OnlyAdvisories && m.Status == "failure" {
+			add(CIFinding{Level: "warn", Kind: "main_advisories", Repo: m.Repo,
+				Title:  fmt.Sprintf("%s %s has known advisories (run #%d)", m.Repo, m.Branch, m.Run),
+				Detail: fmt.Sprintf("npm audit or govulncheck found a vulnerability on %s. It is still released and deployed; pull requests fail only for advisories they add. Upgrade or replace the dependency.", m.Branch),
+				Next:   fmt.Sprintf("wp ci log --repo %s --run %d --job advisories", m.Repo, m.Run), URL: m.URL})
+		} else if m.Status == "failure" || m.Status == "cancelled" {
 			add(CIFinding{Level: "problem", Kind: "main_red", Repo: m.Repo,
 				Title:  fmt.Sprintf("%s %s's latest push run #%d (%s) ended %s %s ago", m.Repo, m.Branch, m.Run, short(m.SHA), m.Status, ShortDuration(now.Sub(m.At))),
 				Detail: mainRedDetail(m),
@@ -2022,7 +2032,7 @@ func doctorUrgentLane(d *CIDoctor) {
 		}
 	}
 	for _, m := range d.Mains {
-		if m.Status == "failure" || m.Status == "cancelled" {
+		if (m.Status == "failure" || m.Status == "cancelled") && !m.OnlyAdvisories {
 			add(m.Repo, m.Branch+" is red")
 		}
 	}
@@ -2046,6 +2056,26 @@ func doctorUrgentLane(d *CIDoctor) {
 		d.UrgentLane = append(d.UrgentLane, CIUrgentLane{Repo: s.repo, Why: s.why, Command: cmd,
 			Text: fmt.Sprintf("%s is stuck (%s). For a task that fixes it, `%s` puts %s on the urgent lane: it delays non-urgent CI so the fix can cut the line.", where, s.why, cmd, who)})
 	}
+}
+
+// advisoriesJob is the ci.yml job that runs npm audit and govulncheck on main.
+const advisoriesJob = "advisories"
+
+// onlyAdvisoriesFailed: run has a failed or cancelled job and every one is
+// the advisories job. With no job of the run on record it is false: a red run
+// nobody can explain is main_red.
+func onlyAdvisoriesFailed(tasks []ActionTask, run int64) bool {
+	failed := false
+	for _, t := range tasks {
+		if t.RunNumber != run || (t.Status != "failure" && t.Status != "cancelled") {
+			continue
+		}
+		if t.Name != advisoriesJob {
+			return false
+		}
+		failed = true
+	}
+	return failed
 }
 
 func mainRedDetail(m CIMain) string {

@@ -196,25 +196,29 @@ deploy key in a CI job is readable by whatever runs beside it.
 
    **Advisories (WP-1660).** `npm audit` (high and above) and govulncheck
    (called vulnerabilities) depend on advisory databases, not on the change
-   under test, so a new advisory used to fail every branch's full run. Nothing
-   waives or ignores an advisory; what changes is where it fails.
-   `.forgejo/scripts/advisories.sh` runs the check on the tree under test
+   under test, so a new advisory used to fail every branch's full run. What
+   changes is where it fails; no advisory is ignored.
+   `deploy/advisories.sh` runs the check on the tree under test
    (`lint` for npm, the last `backend shard` for Go); with no findings that is
    all. With findings it checks origin/main's tip the same way and compares
    by advisory id: a pull request or merge queue stack fails only for an id
    main lacks (and prints it), and when every finding is also on main it
    passes with a `::warning title=Advisory on main::` naming them. Main's own
-   findings fail the `advisories` job, which runs on every push to main and
-   daily (Sunday's schedule above, Monday to Saturday 04:43 UTC), without
+   findings fail the `advisories` job (its npm step is `npm run audit`, which
+   honours the waiver list and expiry rules in `web/scripts/audit.mjs`), which runs on every push to main,
+   on the weekly schedule above (and a manual run), without
    `current`'s skip, because a merge tested on its branch says nothing about
    advisories published since. No other job needs `advisories`, so `release`
    and `deploy` are not held back by it: an advisory in a build tool must not
    stop the release of an unrelated fix, or of the fix for its own
-   dependency. A red `advisories` makes main's push run red, so the CI doctor
-   lists it as a red base branch (its "until one passes, its tip isn't
-   released" line does not apply to this job); no task is filed for it.
-   `make vuln` and `npm run audit` (which keeps its own waiver list) are
-   unchanged and still check the whole tree.
+   dependency. A red `advisories` makes main's push run red; when it is the only
+   job that failed, the CI doctor says so as a `main_advisories` warning ("still
+   released and deployed") instead of `main_red`, and the base-fix-first and
+   runner-fault re-run logic ignore the job. No task is filed for it.
+   `make vuln` runs the same script in its pull request mode (it lives in
+   `deploy/` because the public mirror has no `.forgejo/`), so locally and on
+   the mirror a branch fails govulncheck only for what it adds over
+   origin/main. `npm run audit` is unchanged: whole tree, with the waiver list.
 2. `release` (needs all three to pass, or `current` to say the merge was already tested) runs `deploy/release.sh --publish`. It picks the
    next version from the commits since the last `v*` tag: the first release is
    `v0.1.0`; a breaking change (`type!:` subject or a `BREAKING CHANGE:` line)

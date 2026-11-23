@@ -328,3 +328,51 @@ func TestDoctorUrgentLane(t *testing.T) {
 		t.Errorf("not stuck: %+v", d.UrgentLane)
 	}
 }
+
+// A main push run whose only failed job is advisories is a warning that
+// doesn't say the tip is held back; any other failed job is main_red as before
+// (WP-1660).
+func TestDoctorMainAdvisories(t *testing.T) {
+	now := time.Now()
+	fail := func(run int64, names ...string) []ActionTask {
+		var ts []ActionTask
+		for _, n := range names {
+			ts = append(ts, ActionTask{Name: n, RunNumber: run, Status: "failure"})
+		}
+		return append(ts, ActionTask{Name: "lint", RunNumber: run, Status: "success"}, ActionTask{Name: "advisories", RunNumber: run + 1, Status: "failure"})
+	}
+	if !onlyAdvisoriesFailed(fail(7, "advisories"), 7) {
+		t.Error("only advisories failed: want true")
+	}
+	if onlyAdvisoriesFailed(fail(7, "advisories", "backend shard 2"), 7) {
+		t.Error("advisories and a shard failed: want false")
+	}
+	if onlyAdvisoriesFailed(nil, 7) {
+		t.Error("no jobs on record: want false")
+	}
+
+	kinds := func(only bool) []CIFinding {
+		d := &CIDoctor{Mains: []CIMain{{Repo: "o/a", Branch: "main", Run: 7, Status: "failure", OnlyAdvisories: only}}}
+		doctorFindings(d, &CIBoard{}, now)
+		return d.Findings
+	}
+	got := kinds(true)
+	i := slices.IndexFunc(got, func(f CIFinding) bool { return f.Kind == "main_advisories" })
+	if i < 0 || slices.ContainsFunc(got, func(f CIFinding) bool { return f.Kind == "main_red" }) {
+		t.Fatalf("only advisories: findings = %+v", got)
+	}
+	f := got[i]
+	if f.Level != "warn" || f.Title != "o/a main has known advisories (run #7)" || !strings.Contains(f.Detail, "still released and deployed") || f.Next != "wp ci log --repo o/a --run 7 --job advisories" {
+		t.Errorf("finding = %+v", f)
+	}
+	got = kinds(false)
+	if len(got) != 1 || got[0].Kind != "main_red" || got[0].Level != "problem" {
+		t.Errorf("advisories and another job: findings = %+v", got)
+	}
+
+	// Not stuck: an advisories-only red main doesn't suggest the urgent lane.
+	d := &CIDoctor{Mains: []CIMain{{Repo: "o/a", Branch: "main", Status: "failure", OnlyAdvisories: true}}}
+	if doctorUrgentLane(d); len(d.UrgentLane) != 0 {
+		t.Errorf("urgent lane for advisories: %+v", d.UrgentLane)
+	}
+}

@@ -23,11 +23,10 @@ func npmReport(ids ...string) string {
 // TestAdvisoriesScript: a pull request fails only for advisories it adds over
 // main, main fails for any, and a clean tree never looks at main (WP-1660).
 func TestAdvisoriesScript(t *testing.T) {
-	skipWithoutForgejo(t)
 	if _, err := exec.LookPath("jq"); err != nil {
 		t.Skip("jq not installed")
 	}
-	script, err := filepath.Abs("../../.forgejo/scripts/advisories.sh")
+	script, err := filepath.Abs("../../deploy/advisories.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
