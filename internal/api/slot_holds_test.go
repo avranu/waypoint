@@ -55,3 +55,26 @@ func TestSlotHoldsOversizeBatchRefusedButMachineRowWritten(t *testing.T) {
 		t.Errorf("machine row: %d %d %v", pending, dropped, err)
 	}
 }
+
+// A wp newer than the server sends fields it doesn't know: the batch is still
+// stored. A body that can't be read is refused, but what the machine says is
+// waiting is kept, so the collector health shows it (WP-1646).
+func TestSlotHoldsUnknownFieldsAndUnreadableBody(t *testing.T) {
+	a := newTranscriptAPI(t)
+	hdr := map[string]string{"Content-Type": "application/json"}
+	body := fmt.Sprintf(`{"later":1,"holds":[{"id":"n1","name":"tests","class":"short","queued_at":%d,"new_field":"x"}]}`, time.Now().UnixMilli())
+	if resp, err := a.req("POST", "/api/v1/slot-holds?machine=box&pending=1", []byte(body), hdr); err != nil || resp.StatusCode != 200 {
+		t.Fatalf("unknown fields: %v %v", resp, err)
+	}
+	var got []core.SlotHold
+	if code := a.human.json("GET", "/api/v1/slot-holds", nil, &got); code != 200 || len(got) != 1 || got[0].ID != "n1" {
+		t.Fatalf("stored: %d %+v", code, got)
+	}
+	if resp, err := a.req("POST", "/api/v1/slot-holds?machine=box&pending=9&oldest=1000", []byte(`{"holds":`), hdr); err != nil || resp.StatusCode != 400 {
+		t.Fatalf("unreadable body: %v %v", resp, err)
+	}
+	var pending, since int64
+	if err := a.db.R.QueryRow(`SELECT pending, pending_since FROM slot_machines WHERE machine = 'box'`).Scan(&pending, &since); err != nil || pending != 9 || since != 1000 {
+		t.Errorf("machine row: pending %d since %d %v", pending, since, err)
+	}
+}

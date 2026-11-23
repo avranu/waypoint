@@ -1,7 +1,9 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -18,33 +20,32 @@ func (s *Server) slotHoldRoutes(mux *http.ServeMux) {
 }
 
 func (s *Server) slotHoldsPost(w http.ResponseWriter, r *http.Request) (any, error) {
-	var body struct {
-		Holds []core.SlotHold `json:"holds"`
-	}
-	empty, err := decodeBodyMax(r, &body, 8<<20)
-	if empty {
-		return nil, fmt.Errorf("%w: request body is empty", errBadRequest)
-	}
-	if err != nil {
-		return nil, err
-	}
 	q := r.URL.Query()
-	num := func(name string) (int64, error) {
+	in := core.SlotHoldsIn{Machine: q.Get("machine")}
+	for name, dst := range map[string]*int64{"pending": &in.Pending, "oldest": &in.Oldest, "dropped": &in.Dropped} {
 		if q.Get(name) == "" {
-			return 0, nil
+			continue
 		}
 		n, err := strconv.ParseInt(q.Get(name), 10, 64)
 		if err != nil || n < 0 {
-			return 0, fmt.Errorf("%w: %s is a count", errBadRequest, name)
+			return nil, fmt.Errorf("%w: %s is a count", errBadRequest, name)
 		}
-		return n, nil
+		*dst = n
 	}
-	in := core.SlotHoldsIn{Machine: q.Get("machine"), Holds: body.Holds}
-	for name, dst := range map[string]*int64{"pending": &in.Pending, "oldest": &in.Oldest, "dropped": &in.Dropped} {
-		if *dst, err = num(name); err != nil {
-			return nil, err
+	// Fields this server doesn't know are let through (a wp newer than the
+	// server must not have every batch refused), and a body that can't be
+	// read still records what the machine says is waiting, so it shows in
+	// the collector health instead of failing unseen.
+	var body struct {
+		Holds []core.SlotHold `json:"holds"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 8<<20)).Decode(&body); err != nil {
+		if _, rerr := s.svc.RecordSlotHolds(r.Context(), actorFrom(r), in); rerr != nil {
+			return nil, rerr
 		}
+		return nil, fmt.Errorf("%w: the body is not {\"holds\":[...]}: %v", errBadRequest, err)
 	}
+	in.Holds = body.Holds
 	return s.svc.RecordSlotHolds(r.Context(), actorFrom(r), in)
 }
 

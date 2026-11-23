@@ -44,7 +44,7 @@ CREATE TABLE slot_machines (
     user_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     machine        TEXT    NOT NULL,
     pending        INTEGER NOT NULL DEFAULT 0, -- holds still waiting to be sent, as the machine last said
-    pending_since  INTEGER,                    -- ms; when pending last went above 0; NULL when 0
+    pending_since  INTEGER,                    -- ms; queued_at of the oldest hold still waiting, as the machine last said; NULL when 0
     dropped        INTEGER NOT NULL DEFAULT 0, -- the machine's total of holds dropped from a full outbox
     rejected       INTEGER NOT NULL DEFAULT 0, -- the server's total of holds it refused as malformed
     last_report_at INTEGER NOT NULL,

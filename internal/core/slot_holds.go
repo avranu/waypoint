@@ -154,13 +154,16 @@ func (s *Service) RecordSlotHolds(ctx context.Context, actor *Actor, in SlotHold
 	tooMany := len(in.Holds) > SlotHoldsMax
 	err = s.write(ctx, actor, func(t *tx) error {
 		*res = SlotHoldsResult{}
+		// Waiting since the oldest hold the machine still has (its own clock,
+		// never later than now), so a stall is as old as the data that waits.
+		since := now
+		if in.Oldest > 0 && in.Oldest < now {
+			since = in.Oldest
+		}
 		if _, err := t.ExecContext(ctx, `INSERT INTO slot_machines(user_id, machine, pending, pending_since, dropped, last_report_at) VALUES (?,?,?,?,?,?)
-			ON CONFLICT(user_id, machine) DO UPDATE SET
-				pending_since = CASE WHEN excluded.pending = 0 THEN NULL
-					WHEN slot_machines.pending = 0 OR slot_machines.pending_since IS NULL THEN excluded.last_report_at
-					ELSE slot_machines.pending_since END,
-				pending = excluded.pending, dropped = excluded.dropped, last_report_at = excluded.last_report_at`,
-			uid, in.Machine, in.Pending, nullIf(in.Pending > 0, now), in.Dropped, now); err != nil {
+			ON CONFLICT(user_id, machine) DO UPDATE SET pending = excluded.pending, pending_since = excluded.pending_since,
+				dropped = excluded.dropped, last_report_at = excluded.last_report_at`,
+			uid, in.Machine, in.Pending, nullIf(in.Pending > 0, since), in.Dropped, now); err != nil {
 			return err
 		}
 		if tooMany {
