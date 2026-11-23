@@ -530,7 +530,7 @@ func TestAgentArmOfMergedParentsChildReadsTheMovedBase(t *testing.T) {
 	}
 	claude := agentActorFor(se.admin, "anthropic/claude-opus-5-5")
 	res, err := se.s.MergePR(se.ctx, claude, se.pr(6).ID, MergeInput{WhenReady: true})
-	if err != nil || res.ByHand || !(res.Armed || res.Merged) { // armed, or merged at once as it is ready
+	if err != nil || res.ByHand || (!res.Armed && !res.Merged) { // armed, or merged at once as it is ready
 		t.Fatalf("arm: %+v %v", res, err)
 	}
 	if c := se.pr(6); c.BaseRef != "main" {
