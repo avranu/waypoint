@@ -232,7 +232,8 @@ func (f prOpenFlags) reviewIntent() (string, error) {
 
 // shipOpts are the flags only shipping uses.
 type shipOpts struct {
-	noArm, noMove, noBabysit, notify, blocking *bool
+	noArm, noMove, noBabysit, notify, blocking, noWait *bool
+	waitTimeout                                        *time.Duration
 	// summary is the agent's final reply to the person (WP-1093); summaryGiven
 	// says --summary was on the command line ("" drops a kept one).
 	summary      *string
@@ -244,12 +245,14 @@ type shipOpts struct {
 
 func addShipFlags(fs *flag.FlagSet) shipOpts {
 	return shipOpts{
-		noArm:     fs.Bool("no-arm", false, "don't arm merge when ready"),
-		noMove:    fs.Bool("no-move", false, "don't move the issue to In Review"),
-		noBabysit: fs.Bool("no-babysit", false, "don't babysit it"),
-		notify:    fs.Bool("notify", false, "wake me when it merges (only if work must follow)"),
-		blocking:  fs.Bool("blocking", false, "wake me within minutes (only if other work waits on it)"),
-		summary:   fs.String("summary", "", "your final reply to the person, shown as the turn ends if the ship goes as expected (no reply turn after it); {task}, {pr} and {url} are filled in (`TEXT`)"),
+		noArm:       fs.Bool("no-arm", false, "don't arm merge when ready"),
+		noMove:      fs.Bool("no-move", false, "don't move the issue to In Review"),
+		noBabysit:   fs.Bool("no-babysit", false, "don't babysit it"),
+		notify:      fs.Bool("notify", false, "wake me when it merges (only if work must follow)"),
+		blocking:    fs.Bool("blocking", false, "wake me within minutes (only if other work waits on it)"),
+		noWait:      fs.Bool("no-wait", false, "when the pull request waits on a review round, don't wait for the round's findings: end as before"),
+		waitTimeout: fs.Duration("wait-timeout", shipWaitDefault, "how long to wait on a review round before ending as with --no-wait (`DURATION`)"),
+		summary:     fs.String("summary", "", "your final reply to the person, shown as the turn ends if the ship goes as expected (no reply turn after it); {task}, {pr} and {url} are filled in (`TEXT`)"),
 	}
 }
 
@@ -299,6 +302,13 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 	summary, kept := c.shipSummary(cmpStr(key, o.key), *so.summary, so.summaryGiven)
 	if kept && !c.asJSON {
 		c.println("Using the --summary you gave this task's last wp ship (--summary \"\" drops it).")
+	}
+	if o.Held != "" && c.canWaitShip(so) {
+		o2, raw2, done, err := c.waitHeldShip(f, so, o, raw, cmpStr(key, o.key), summary)
+		if err != nil || done {
+			return false, err
+		}
+		o, raw = o2, raw2
 	}
 	if o.Held != "" {
 		// Held for the task's review: nothing to arm, babysit or move yet,
