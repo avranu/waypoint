@@ -41,6 +41,15 @@ runner wait, full-run times, merges. First the last 7 days against the 7
 before. --days N looks back N days (default 30, at most 730).`,
 			examples: []string{"wp ci history --days 90 --week"},
 			run:      cmdCIHistory},
+		{name: "line", args: "[--repo OWNER/NAME] [--days N]", summary: "each merge line: its armed pull requests, and what became of its stacks and batches per day",
+			about: `Per merge line, the armed pull requests in order with what each waits for
+and its live stack or batch, then per UTC day the stacks and batches
+started, how each ended (merged on, failed, conflict, cancelled), the merges
+and how many used one, full-tier CI runs and full runs per merge, then the
+totals and why the ended ones ended. --days N looks back N days (default 7,
+at most 90). Reads Waypoint's own tables: no forge calls.`,
+			examples: []string{"wp ci line --days 14", "wp ci line --json"},
+			run:      cmdCILine},
 		{name: "tests", args: "[--flaky|--slow|--failing] [--days N] [--package P] [--repo OWNER/NAME]", summary: "flaky, slow and failing tests, from every CI job's results",
 			about: `Flaky: tests that passed and failed on one commit (in one tier), scored by
 the share of commits they did. Slow: tests and packages by their average in
@@ -303,6 +312,32 @@ func cmdCIHistory(c *cli, args []string) error {
 		return err
 	}
 	return c.emit(raw, func() string { return string(raw) })
+}
+
+func cmdCILine(c *cli, args []string) error {
+	fs := c.flags()
+	repo := fs.String("repo", "", "only repo `OWNER/NAME` (default: this checkout's)")
+	all := fs.Bool("all", false, "every repo, not only this checkout's")
+	short(fs, "A", "all")
+	days := fs.Int("days", 0, "look back `N` days (default 7, at most 90)")
+	pos, err := c.parse(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) > 0 {
+		return c.usage("unexpected %q", joinArgs(pos))
+	}
+	if *days < 0 {
+		return c.usage("--days must be positive")
+	}
+	q := url.Values{}
+	if r := c.ciRepo(*repo, *all); r != "" {
+		q.Set("repo", r)
+	}
+	if *days > 0 {
+		q.Set("days", strconv.Itoa(*days))
+	}
+	return c.ciGet("/api/v1/ci/line", q)
 }
 
 // ciRepo is the repo a CI report narrows to: --repo, else this checkout's
