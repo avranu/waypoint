@@ -1046,7 +1046,9 @@ func (s *Service) mergeNow(ctx context.Context, actor *Actor, pr *PullRequest, i
 				del, stacked = false, nil
 				s.log.WarnContext(ctx, "left a merged branch for the pull requests stacked on it", "repo", cur.Repo, "branch", cur.HeadRef)
 			case kept:
-				stacked = nil // not a branch that goes: they are not stacked on it
+				// A branch the repo keeps: they are not stacked on it, and
+				// it isn't deleted under them.
+				del, stacked = false, nil
 			}
 		}
 	}

@@ -192,7 +192,7 @@ func TestMergeOfKeptBranchLeavesPullRequestsWhereTheyAre(t *testing.T) {
 				t.Fatal(err)
 			}
 			se.s.Wait()
-			if m := se.sg.merged(); len(m) == 0 || !m[0].DeleteBranch {
+			if m := se.sg.merged(); len(m) == 0 || m[0].DeleteBranch { // a kept branch with pull requests open into it isn't deleted
 				t.Fatalf("merge options %+v", m)
 			}
 			if c := se.pr(6); c.BaseRef != "fix-login" || len(se.sg.baseEdits) != 0 {
@@ -253,7 +253,7 @@ func TestForkBranchIsNotAParent(t *testing.T) {
 		t.Fatal(err)
 	}
 	se.s.Wait()
-	if m := se.sg.merged(); len(m) != 1 || !m[0].DeleteBranch || len(se.sg.baseEdits) != 0 {
+	if m := se.sg.merged(); len(m) != 1 || m[0].DeleteBranch || len(se.sg.baseEdits) != 0 {
 		t.Errorf("merges %+v edits %v", m, se.sg.baseEdits)
 	}
 }
