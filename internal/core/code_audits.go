@@ -1876,8 +1876,9 @@ func auditNewsKey(id int64, status string) string {
 // and marked the findings first. It runs when findings are marked and when
 // the news is stored. News of an audit with no findings stays: it is the
 // session's answer, not a task. News a runner job is delivering ('sending')
-// is left to it. Withdrawn news stays withdrawn if a finding is marked open
-// again: whoever reopened it knows.
+// is left to it, and withdrawn if the job fails and puts it back in the
+// queue (withdrawRequeuedAuditNews). Withdrawn news stays withdrawn if a
+// finding is marked open again: whoever reopened it knows.
 func (s *Service) withdrawDecidedAuditNews(ctx context.Context, id int64) bool {
 	res, err := s.db.W.ExecContext(ctx, `UPDATE session_messages SET state = 'cancelled' WHERE step_key = ? AND state = ?
 		AND EXISTS (SELECT 1 FROM code_audit_findings f WHERE f.audit_id = ?)
@@ -1892,6 +1893,32 @@ func (s *Service) withdrawDecidedAuditNews(ctx context.Context, id int64) bool {
 		return true
 	}
 	return false
+}
+
+// withdrawRequeuedAuditNews withdraws audit news that a failed batch post
+// put back in the queue if its findings were all decided while it was being
+// posted. Audit news only goes out in batches (tellAudit, batchOrTell).
+func (s *Service) withdrawRequeuedAuditNews(ctx context.Context, batch int64) {
+	rows, err := s.db.R.QueryContext(ctx, `SELECT step_key FROM session_messages WHERE sent_with = ? AND state = ? AND step_key LIKE 'audit:%'`, batch, MessageQueued)
+	if err != nil {
+		s.log.WarnContext(ctx, "find audit news put back in the queue", "batch", batch, "err", err)
+		return
+	}
+	var ids []int64
+	for rows.Next() {
+		var key string
+		var id int64
+		if rows.Scan(&key) != nil {
+			continue
+		}
+		if _, err := fmt.Sscanf(key, "audit:%d:", &id); err == nil && key == auditNewsKey(id, AuditDone) {
+			ids = append(ids, id)
+		}
+	}
+	rows.Close()
+	for _, id := range ids {
+		s.withdrawDecidedAuditNews(ctx, id)
+	}
 }
 
 func auditHeadline(a *CodeAudit) string {

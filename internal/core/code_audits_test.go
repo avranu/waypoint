@@ -485,4 +485,25 @@ func TestAuditNewsWithdrawnOnceDecided(t *testing.T) {
 	if st := news(b.ID); st != MessageDelivered {
 		t.Fatalf("delivered news became %q", st)
 	}
+
+	// News being posted in a batch when its findings are decided, whose
+	// post then fails: it is withdrawn as it goes back to the queue.
+	g := audit()
+	res, err = ae.s.db.W.Exec(`INSERT INTO message_batches(session_id, created_at) VALUES (?, 5)`, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch, _ := res.LastInsertId()
+	if _, err := ae.s.db.W.Exec(`UPDATE session_messages SET state = 'sending', sent_with = ? WHERE step_key = ?`, batch, auditNewsKey(g.ID, AuditDone)); err != nil {
+		t.Fatal(err)
+	}
+	mark(high(g), "fixed")
+	mark(low(g), "rejected")
+	if st := news(g.ID); st != "sending" {
+		t.Fatalf("news being posted became %q", st)
+	}
+	ae.s.sessionMessageJobFinished(ae.ctx, &Event{Data: map[string]any{"source": sessionBatchSource, "source_id": batch, "state": "failed"}})
+	if st := news(g.ID); st != "cancelled" {
+		t.Fatalf("news whose post failed after every finding was decided is %q", st)
+	}
 }
