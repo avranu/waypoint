@@ -462,6 +462,7 @@ var routePermissions = map[string]core.Permission{
 	"GET /api/v1/ci/log":                        core.PermPullsRead,
 	"GET /api/v1/ci/doctor":                     core.PermPullsRead,
 	"GET /api/v1/ci/history":                    core.PermPullsRead,
+	"GET /api/v1/ci/line":                       core.PermPullsRead,
 	"GET /api/v1/ci/tests":                      core.PermPullsRead,
 	"GET /api/v1/ci/coverage":                   core.PermPullsRead,
 	"GET /api/v1/ci/suppressions":               core.PermPullsRead,
