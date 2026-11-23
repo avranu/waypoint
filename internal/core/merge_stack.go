@@ -125,7 +125,7 @@ func scanStack(row interface{ Scan(...any) error }) (*queueStack, error) {
 		return nil, err
 	}
 	if err := json.Unmarshal([]byte(heads), &st.Heads); err != nil || len(st.Heads) == 0 {
-		return nil, fmt.Errorf("stack %d lists no heads", st.ID)
+		return &st, fmt.Errorf("stack %d lists no heads", st.ID)
 	}
 	if st.Pos < 0 || st.Pos >= len(st.Heads) {
 		st.Pos = len(st.Heads) - 1 // a stack of its own

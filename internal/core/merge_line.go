@@ -476,6 +476,15 @@ func (s *Service) lineCands(ctx context.Context, ls *lineState) error {
 		st, err := scanStack(rows)
 		if err != nil {
 			s.log.WarnContext(ctx, "read a live candidate", "err", err)
+			// Left live, the planner has no candidate for its heads and starts
+			// them again every step: end it. Not a reason that pauses the line,
+			// as it says nothing about the forge (WP-1700).
+			if st != nil && st.ID != 0 {
+				if _, err := s.db.W.ExecContext(ctx, `UPDATE queue_stacks SET state = ?, note = ?, end_reason = ?, ended_at = ? WHERE id = ? AND ended_at IS NULL`,
+					stackCancelled, "its row could not be read", endUnreadable, s.nowMS(), st.ID); err != nil {
+					s.log.WarnContext(ctx, "end an unreadable candidate", "candidate", st.ID, "err", err)
+				}
+			}
 			continue
 		}
 		live = append(live, st)

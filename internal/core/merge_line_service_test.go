@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -1089,7 +1090,17 @@ func TestLineBaseRedIsRecordedOnTheTipItEndedOn(t *testing.T) {
 	if both == nil {
 		t.Fatalf("no candidate for #7 and #8: %q", se.madeHeads())
 	}
-	both.Merged, ls.tip = 1, "3e7000000" // #7 merged on its own candidate
+	// #7 merged on its own candidate: the base's tip is a merge of #7's head on
+	// the candidate's base, and the gather counts it from that.
+	se.sg.baseTip = "3e7000000"
+	se.sg.parents["3e7000000"] = []string{both.BaseSHA, head7s}
+	if ls, err = se.s.lineGather(se.ctx, ref); err != nil {
+		t.Fatal(err)
+	}
+	both = ls.rows[both.ID]
+	if both == nil || both.Merged != 1 || ls.tip != "3e7000000" {
+		t.Fatalf("gather: candidate %+v, tip %q; want Merged 1 on the new tip", both, ls.tip)
+	}
 	se.s.lineAct(se.ctx, ls, lineAction{Kind: lineEnd, Cand: both.ID, End: endBaseRed, Why: "it failed only what fails on the base's tip"})
 	rest := both.Heads[1:]
 	if tried := se.s.lineTried(se.ctx, ref, "3e7000000", true); !tried[candKey(rest)] {
@@ -1123,8 +1134,8 @@ func TestLineFallbackAndInCandidateFailClosedWhenUnread(t *testing.T) {
 	}
 }
 
-// A live candidate row that can't be read is left out of the line's reading,
-// and the rest is read (WP-1700).
+// A live candidate row that can't be read is ended, so nothing is left live
+// for the planner to start the same heads against again every step (WP-1700).
 func TestLineGatherSkipsAnUnreadableLiveCandidate(t *testing.T) {
 	se := newStackEnv(t)
 	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE project_repos SET line_candidates = 0`); err != nil {
@@ -1136,11 +1147,61 @@ func TestLineGatherSkipsAnUnreadableLiveCandidate(t *testing.T) {
 		VALUES (?, ?, ?, ?, 'x', '[]', 'wp-queue/main/bad', 1)`, pr.ForgeID, pr.Repo, pr.BaseRef, pr.ID); err != nil {
 		t.Fatal(err)
 	}
-	ls, err := se.s.lineGather(se.ctx, lineOf(pr))
-	if err != nil {
+	live := func() int {
+		var n int
+		if err := se.s.db.R.QueryRowContext(se.ctx, `SELECT count(*) FROM queue_stacks WHERE ended_at IS NULL`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	for i := 0; i < 2; i++ {
+		ls, err := se.s.lineGather(se.ctx, lineOf(pr))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(ls.snap.Cands) != 0 || len(ls.rows) != 0 {
+			t.Errorf("gather %d: the unreadable row is in the snapshot: %+v", i, ls.snap.Cands)
+		}
+		if n := live(); n != 0 {
+			t.Fatalf("gather %d: %d rows still live", i, n)
+		}
+	}
+	var state, reason string
+	var ended sql.NullInt64
+	if err := se.s.db.R.QueryRowContext(se.ctx, `SELECT state, end_reason, ended_at FROM queue_stacks`).Scan(&state, &reason, &ended); err != nil {
 		t.Fatal(err)
 	}
-	if len(ls.snap.Cands) != 0 || len(ls.rows) != 0 {
-		t.Errorf("the unreadable row is in the snapshot: %+v", ls.snap.Cands)
+	if state != stackCancelled || reason != endUnreadable || !ended.Valid {
+		t.Errorf("the bad row: state %q reason %q ended %v", state, reason, ended)
+	}
+}
+
+// A round with failed checks whose base can't be read is classified without
+// the base's failures, and the read is logged (WP-1700).
+func TestLedgerWithAnUnreadBaseIsClassifiedWithoutIt(t *testing.T) {
+	se := newStackEnv(t)
+	se.draftGreen(head7s, 5)
+	se.redBase("ci / backend (push)")
+	pr := se.pr(7)
+	todo := &PRTodo{Checks: []CheckLog{{Name: "ci / backend (pull_request)", State: CheckFailed, Log: "FAIL TestX"}}}
+	classify := func() *BabysitRound {
+		round := &BabysitRound{N: 1, At: se.clockNow()}
+		se.s.classifyLiveRound(se.ctx, &Babysit{}, pr, todo, round)
+		return round
+	}
+	round := classify()
+	if len(round.Ledger) != 1 || round.Ledger[0].Class != RoundBase {
+		t.Fatalf("control: a check the base fails too: %+v", round.Ledger)
+	}
+	logs := &lockedBuf{}
+	se.s.log = slog.New(slog.NewTextHandler(logs, nil))
+	restore := se.breakTable("branch_activity")
+	round = classify()
+	restore()
+	if len(round.Ledger) != 1 || round.Ledger[0].Class == RoundBase || round.Class == "" {
+		t.Errorf("an unread base was taken as red: %+v class %q", round.Ledger, round.Class)
+	}
+	if !strings.Contains(logs.String(), "read what fails on the base for a round's ledger") {
+		t.Errorf("no warning:\n%s", logs.String())
 	}
 }
