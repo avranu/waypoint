@@ -716,7 +716,7 @@ differences (a message written again with more tokens). Cost is API-equivalent, 
     POST /slot-holds?machine=&pending=&oldest=&dropped=   {"holds":[...]} up to 500 test slot holds a machine recorded
                                     (WP-1646); pending, oldest (queued_at ms) and dropped are the machine's outbox state, kept
                                     even when the batch is refused. Answers {"stored","duplicate","rejected"}; an id seen before is a duplicate
-    GET  /slot-holds?since=&until=&machine=&user=&limit=   the holds, oldest first (queued_at unix ms; limit up to 20000);
+    GET  /slot-holds?since=&until=&machine=&user=&limit=   the holds, oldest first (queued_at unix ms; limit up to 20000; past it the newest are kept);
                                     yours, admins: user=NAME or all
     GET  /usage/warm?days=28&user=   keep-warm decisions per class of wait (WP-1000): pings, compactions,
                                     cools, what became of the sessions (used within the hour, used again,

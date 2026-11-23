@@ -37,6 +37,9 @@ const (
 	slotSendRequest  = 10 * time.Second
 	slotSendLockFile = "holds-outbox.send.flock"
 	slotSendEnv      = "WAYPOINT_SLOT_SEND"
+	// slotHoldMinBytes is a lower bound on one encoded record, used only to
+	// skip counting the outbox's lines while it cannot be over the cap.
+	slotHoldMinBytes = 100
 )
 
 // slotSendOn says whether holds are kept for the server: one is set for this
@@ -89,6 +92,9 @@ func slotSnapshot(dir, name string) ([]core.SlotHolder, []core.SlotWaiter) {
 		}
 		line := slotHolderLine(f)
 		_ = f.Close()
+		// A held slot whose holder line is not written yet is recorded with
+		// pid 0 and since 0 on purpose: the slot is held, and leaving it out
+		// would undercount.
 		pid, _ := strconv.Atoi(line[0])
 		since, _ := strconv.ParseInt(line[1], 10, 64)
 		holders = append(holders, core.SlotHolder{Slot: idx, PID: pid, Since: since})
@@ -124,7 +130,7 @@ func appendOutbox(dir string, h core.SlotHold) {
 	_, _ = f.Write(append(b, '\n'))
 	_ = f.Close()
 	// Counting reads the file: skip it while it cannot be over the cap.
-	if st, err := os.Stat(p); err != nil || st.Size() < int64(slotOutboxMax)*100 {
+	if st, err := os.Stat(p); err != nil || st.Size() < int64(slotOutboxMax)*slotHoldMinBytes {
 		return
 	}
 	all, err := os.ReadFile(p) // #nosec G304 -- our own directory
@@ -157,8 +163,11 @@ func readDropped(dir string) int64 {
 }
 
 // rewriteOutbox replaces the outbox with data through a temp file and a
-// rename, as trimWaits does, and says whether it did.
-func rewriteOutbox(p string, data []byte) bool {
+// rename, as trimWaits does, and says whether it did. A variable for the
+// tests.
+var rewriteOutbox = rewriteOutboxFile
+
+func rewriteOutboxFile(p string, data []byte) bool {
 	f, err := os.CreateTemp(filepath.Dir(p), slotOutboxFile+".*.tmp")
 	if err != nil {
 		return false
@@ -190,8 +199,9 @@ func readOutbox(dir string) []core.SlotHold {
 
 // removeSent takes the records with these ids out of the outbox, under the
 // waits flock so a record another wp appended meanwhile stays. A line that is
-// not a record goes too.
-func removeSent(dir string, ids map[string]bool) {
+// not a record goes too. It says whether the outbox was rewritten or removed
+// (true too when there was nothing to take out).
+func removeSent(dir string, ids map[string]bool) bool {
 	p := filepath.Join(dir, slotOutboxFile)
 	if lf, err := os.OpenFile(filepath.Join(dir, slotWaitsFile+".flock"), os.O_CREATE|os.O_RDWR, 0o600); err == nil { // #nosec G304 -- our own directory
 		defer func() { _ = lf.Close() }()
@@ -201,7 +211,7 @@ func removeSent(dir string, ids map[string]bool) {
 	}
 	b, err := os.ReadFile(p) // #nosec G304 -- our own directory
 	if err != nil {
-		return
+		return os.IsNotExist(err)
 	}
 	var keep [][]byte
 	for _, line := range bytes.Split(b, []byte("\n")) {
@@ -211,10 +221,9 @@ func removeSent(dir string, ids map[string]bool) {
 		}
 	}
 	if len(keep) == 0 {
-		_ = os.Remove(p)
-		return
+		return os.Remove(p) == nil
 	}
-	rewriteOutbox(p, append(bytes.Join(keep, []byte("\n")), '\n'))
+	return rewriteOutbox(p, append(bytes.Join(keep, []byte("\n")), '\n'))
 }
 
 // sendSlotHolds posts the outbox to the server in batches of up to
@@ -267,8 +276,11 @@ func (c *cli) sendSlotHolds(ctx context.Context) (sent, remaining int, err error
 		for _, h := range batch {
 			ids[h.ID] = true
 		}
-		removeSent(dir, ids)
 		sent += len(batch)
+		if !removeSent(dir, ids) {
+			// The same batch would be posted again and again.
+			return sent, remaining, fmt.Errorf("the outbox could not be rewritten")
+		}
 	}
 }
 

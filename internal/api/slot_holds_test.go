@@ -1,8 +1,10 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"testing"
 	"time"
 
@@ -33,7 +35,7 @@ func TestSlotHoldsRoundTrip(t *testing.T) {
 		t.Fatalf("resend: %v %v", resp, err)
 	}
 	var got []core.SlotHold
-	if code := a.human.json("GET", "/api/v1/slot-holds?machine=box&limit=2", nil, &got); code != 200 || len(got) != 2 || got[0].ID != "h0" || got[0].Machine != "box" {
+	if code := a.human.json("GET", "/api/v1/slot-holds?machine=box&limit=2", nil, &got); code != 200 || len(got) != 2 || got[0].ID != "h1" || got[0].Machine != "box" {
 		t.Fatalf("get: %d %+v", code, got)
 	}
 	if code := a.human.json("GET", "/api/v1/slot-holds?since=abc", nil, nil); code != 400 {
@@ -76,5 +78,52 @@ func TestSlotHoldsUnknownFieldsAndUnreadableBody(t *testing.T) {
 	var pending, since int64
 	if err := a.db.R.QueryRow(`SELECT pending, pending_since FROM slot_machines WHERE machine = 'box'`).Scan(&pending, &since); err != nil || pending != 9 || since != 1000 {
 		t.Errorf("machine row: pending %d since %d %v", pending, since, err)
+	}
+}
+
+// One hold with a wrongly typed field does not refuse the batch: it is
+// counted as rejected and the rest are stored (WP-1646).
+func TestSlotHoldsBadHoldRejectedRestStored(t *testing.T) {
+	a := newTranscriptAPI(t)
+	hdr := map[string]string{"Content-Type": "application/json"}
+	body := fmt.Sprintf(`{"holds":[{"id":"ok","name":"tests","class":"short","queued_at":%d},{"id":"bad","name":"tests","class":"short","queued_at":%d,"slot":"x"}]}`,
+		time.Now().UnixMilli(), time.Now().UnixMilli())
+	resp, err := a.req("POST", "/api/v1/slot-holds?machine=box&pending=2", []byte(body), hdr)
+	if err != nil || resp.StatusCode != 200 {
+		t.Fatalf("post: %v %v", resp, err)
+	}
+	var res core.SlotHoldsResult
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil || res.Stored != 1 || res.Rejected != 1 {
+		t.Errorf("result %+v %v", res, err)
+	}
+	var got []core.SlotHold
+	if code := a.human.json("GET", "/api/v1/slot-holds", nil, &got); code != 200 || len(got) != 1 || got[0].ID != "ok" {
+		t.Errorf("stored %d %+v", code, got)
+	}
+}
+
+func TestSlotHoldsBadQueryAndReadOnlyToken(t *testing.T) {
+	a := newTranscriptAPI(t)
+	hdr := map[string]string{"Content-Type": "application/json"}
+	for _, q := range []string{"pending=-1", "oldest=x", "dropped=x"} {
+		resp, err := a.req("POST", "/api/v1/slot-holds?machine=box&"+q, slotHoldBody(t, 1), hdr)
+		if err != nil || resp.StatusCode != 400 {
+			t.Errorf("%s: %v %v", q, resp, err)
+		}
+	}
+	if code := a.human.json("GET", "/api/v1/slot-holds?until=abc", nil, nil); code != 400 {
+		t.Errorf("bad until: %d", code)
+	}
+	u, err := a.svc.CreateUser(context.Background(), core.SystemActor(), core.CreateUserInput{Username: "ro", Email: "ro@example.com", Password: "correct-horse-battery"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _, err := a.svc.CreateAPIToken(context.Background(), &core.Actor{User: u}, "ro", true, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ro := &client{t: t, base: a.ts.URL, http: http.DefaultClient, token: raw}
+	if code := ro.json("POST", "/api/v1/slot-holds?machine=box", json.RawMessage(slotHoldBody(t, 1)), nil); code != 403 {
+		t.Errorf("read-only post: %d", code)
 	}
 }

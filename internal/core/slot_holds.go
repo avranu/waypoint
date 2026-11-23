@@ -83,8 +83,9 @@ type SlotHoldsResult struct {
 	Rejected  int `json:"rejected"`
 }
 
-// slotWriter is who may send holds: a person's own account, through a
-// token that may write, but not a runner job's (scoped to its task).
+// slotWriter is who may send holds: a person's account, through a token that
+// may write. A runner job's or scoped token counts too, as in usage ingest:
+// the holds are the machine's, not a task's, and a job runs tests in slots.
 func slotWriter(actor *Actor) (int64, error) {
 	uid, err := usageUser(actor)
 	if err != nil {
@@ -92,9 +93,6 @@ func slotWriter(actor *Actor) (int64, error) {
 	}
 	if err := actor.canWrite(); err != nil {
 		return 0, err
-	}
-	if actor.RunnerJob != 0 || actor.scope != nil {
-		return 0, forbidden("a runner job's token cannot report slot holds")
 	}
 	return uid, nil
 }
@@ -156,14 +154,18 @@ func (s *Service) RecordSlotHolds(ctx context.Context, actor *Actor, in SlotHold
 		*res = SlotHoldsResult{}
 		// Waiting since the oldest hold the machine still has (its own clock,
 		// never later than now), so a stall is as old as the data that waits.
-		since := now
-		if in.Oldest > 0 && in.Oldest < now {
+		// With no usable oldest, a machine already waiting keeps its earlier
+		// since (it is not newer than it was), else it is now.
+		since, usable := now, in.Oldest > 0 && in.Oldest < now
+		if usable {
 			since = in.Oldest
 		}
+		keep := in.Pending > 0 && !usable
 		if _, err := t.ExecContext(ctx, `INSERT INTO slot_machines(user_id, machine, pending, pending_since, dropped, last_report_at) VALUES (?,?,?,?,?,?)
-			ON CONFLICT(user_id, machine) DO UPDATE SET pending = excluded.pending, pending_since = excluded.pending_since,
+			ON CONFLICT(user_id, machine) DO UPDATE SET pending = excluded.pending,
+				pending_since = CASE WHEN ? THEN COALESCE(slot_machines.pending_since, excluded.pending_since) ELSE excluded.pending_since END,
 				dropped = excluded.dropped, last_report_at = excluded.last_report_at`,
-			uid, in.Machine, in.Pending, nullIf(in.Pending > 0, since), in.Dropped, now); err != nil {
+			uid, in.Machine, in.Pending, nullIf(in.Pending > 0, since), in.Dropped, now, keep); err != nil {
 			return err
 		}
 		if tooMany {
@@ -231,7 +233,8 @@ type SlotHoldsFilter struct {
 }
 
 // SlotHolds reads holds oldest first, as usage machines are read: your own,
-// and an admin may name another person or "all".
+// and an admin may name another person or "all". Over Limit holds in the
+// window it keeps the newest Limit, still oldest first.
 func (s *Service) SlotHolds(ctx context.Context, actor *Actor, f SlotHoldsFilter) ([]SlotHold, error) {
 	uids, everyone, _, err := s.usageWho(ctx, actor, f.User)
 	if err != nil {
@@ -256,10 +259,10 @@ func (s *Service) SlotHolds(ctx context.Context, actor *Actor, f SlotHoldsFilter
 	}
 	args = append(args, limit)
 	// #nosec G202 -- where is built from fixed conditions; values are bound
-	rows, err := s.db.R.QueryContext(ctx, `SELECT u.username, h.machine, h.hold_id, h.name, h.repo, h.tree, h.cmd, h.class, h.median_secs,
+	rows, err := s.db.R.QueryContext(ctx, `SELECT * FROM (SELECT u.username, h.machine, h.hold_id, h.name, h.repo, h.tree, h.cmd, h.class, h.median_secs,
 			h.threshold_secs, h.runs, h.policy, h.slots, h.long_slots, h.slot, h.queued_at, h.wait_ms, h.tree_wait_ms, h.hold_ms, h.gave_up,
-			h.exit_code, h.holders, h.waiters
-		FROM slot_holds h JOIN users u ON u.id = h.user_id WHERE `+strings.Join(where, " AND ")+` ORDER BY h.queued_at, h.id LIMIT ?`, args...)
+			h.exit_code, h.holders, h.waiters, h.id AS rid
+		FROM slot_holds h JOIN users u ON u.id = h.user_id WHERE `+strings.Join(where, " AND ")+` ORDER BY h.queued_at DESC, h.id DESC LIMIT ?) ORDER BY queued_at, rid`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -271,8 +274,9 @@ func (s *Service) SlotHolds(ctx context.Context, actor *Actor, f SlotHoldsFilter
 		var slot, exit sql.NullInt64
 		var gave int
 		var hb, wb string
+		var rid int64
 		if err := rows.Scan(&h.User, &h.Machine, &h.ID, &h.Name, &h.Repo, &h.Tree, &h.Cmd, &h.Class, &median, &h.ThresholdSecs, &h.Runs,
-			&h.Policy, &h.Slots, &h.LongSlots, &slot, &h.QueuedAt, &h.WaitMS, &h.TreeWaitMS, &h.HoldMS, &gave, &exit, &hb, &wb); err != nil {
+			&h.Policy, &h.Slots, &h.LongSlots, &slot, &h.QueuedAt, &h.WaitMS, &h.TreeWaitMS, &h.HoldMS, &gave, &exit, &hb, &wb, &rid); err != nil {
 			return nil, err
 		}
 		if median.Valid {

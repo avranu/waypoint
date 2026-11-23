@@ -1,14 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -305,3 +309,236 @@ type testBuf struct{ b []byte }
 
 func (b *testBuf) Write(p []byte) (int, error) { b.b = append(b.b, p...); return len(p), nil }
 func (b *testBuf) String() string              { return string(b.b) }
+
+// slotEnv turns sending off; ssRecorder is a server that keeps every body it
+// is sent and answers 200.
+type ssRecorder struct {
+	mu     sync.Mutex
+	bodies []string
+	ids    []string
+	hits   int
+}
+
+func ssServer(t *testing.T) (*ssRecorder, string) {
+	t.Helper()
+	rec := &ssRecorder{}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		var body struct {
+			Holds []core.SlotHold `json:"holds"`
+		}
+		_ = json.Unmarshal(b, &body)
+		rec.mu.Lock()
+		rec.hits++
+		rec.bodies = append(rec.bodies, string(b))
+		for _, h := range body.Holds {
+			rec.ids = append(rec.ids, h.ID)
+		}
+		rec.mu.Unlock()
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(ts.Close)
+	return rec, ts.URL
+}
+
+func (r *ssRecorder) seen(id string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Contains(r.ids, id)
+}
+
+func (r *ssRecorder) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.hits
+}
+
+func TestSlotHoldSentToServerHasNoInlineSecrets(t *testing.T) {
+	c, dir := ssEnv(t, ssDown(t))
+	const cmd = "go test --token=abc123secret --password hunter2 ./x"
+	_, rel, err := c.takeSlotFor(context.Background(), "tests", 2, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel()
+	raw, err := os.ReadFile(filepath.Join(dir, slotOutboxFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"abc123secret", "hunter2"} {
+		if strings.Contains(string(raw), secret) {
+			t.Errorf("outbox holds %q: %s", secret, raw)
+		}
+	}
+	if h := ssOutbox(t, dir)[0]; !strings.Contains(h.Cmd, "go test") {
+		t.Errorf("cmd %q", h.Cmd)
+	}
+	// and what is posted
+	rec, url := ssServer(t)
+	t.Setenv("WAYPOINT_SERVER", url)
+	c2, _, _ := sqCLI()
+	deadline := time.Now().Add(5 * time.Second)
+	for len(readOutbox(dir)) > 0 && time.Now().Before(deadline) {
+		_, _, _ = c2.sendSlotHolds(context.Background()) // the earlier background send may still hold the lock
+		time.Sleep(50 * time.Millisecond)
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.bodies) == 0 {
+		t.Fatal("nothing posted")
+	}
+	for _, b := range rec.bodies {
+		if strings.Contains(b, "abc123secret") || strings.Contains(b, "hunter2") {
+			t.Errorf("posted a secret: %s", b)
+		}
+	}
+	// the local key is unchanged (the classifier and waits.jsonl use it)
+	if recs := readWaitRecs(dir); len(recs) != 1 || recs[0].Cmd != cmd {
+		t.Errorf("waits.jsonl %+v", recs)
+	}
+}
+
+func TestRunInSlotThenRecordsExitOnlyWhenTheCommandRan(t *testing.T) {
+	c, dir := ssEnv(t, ssDown(t))
+	var out, errb bytes.Buffer
+	code, err := c.runInSlotThen("tests", 2, []string{"sh", "-c", "exit 7"}, &out, &errb, nil, nil)
+	if code != 7 || err != nil {
+		t.Fatalf("exit 7: %d %v", code, err)
+	}
+	if recs := ssOutbox(t, dir); len(recs) != 1 || recs[0].Exit == nil || *recs[0].Exit != 7 {
+		t.Fatalf("recorded %+v", recs)
+	}
+	if _, err := c.runInSlotThen("tests", 2, []string{"/nonexistent/wp-no-such-command"}, &out, &errb, nil, nil); err == nil {
+		t.Fatal("a missing command ran")
+	}
+	recs := ssOutbox(t, dir)
+	if len(recs) != 2 || recs[1].Exit != nil {
+		t.Errorf("a command that could not start has an exit: %+v", recs)
+	}
+}
+
+func TestSendSlotHoldsStopsWhenTheOutboxCannotBeRewritten(t *testing.T) {
+	var c *cli
+	var dir string
+	var hits int
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		if hits == 1 { // a record arrives meanwhile, so the outbox must be rewritten
+			extra := ssHold(99)
+			appendOutbox(dir, extra)
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer ts.Close()
+	c, dir = ssEnv(t, ts.URL)
+	_ = os.MkdirAll(dir, 0o700)
+	appendOutbox(dir, ssHold(1))
+	old := rewriteOutbox
+	rewriteOutbox = func(string, []byte) bool { return false }
+	t.Cleanup(func() { rewriteOutbox = old })
+	_, _, err := c.sendSlotHolds(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "could not be rewritten") || hits != 1 {
+		t.Errorf("err %v, %d posts", err, hits)
+	}
+}
+
+func TestSlotSendBatchFitsTheServerLimit(t *testing.T) {
+	if slotSendBatch > core.SlotHoldsMax {
+		t.Errorf("batch %d is over what the server takes (%d)", slotSendBatch, core.SlotHoldsMax)
+	}
+}
+
+// slotPolicyVersion names the rules; this pins it to them, so a change to a
+// rule without a bump fails here.
+func TestSlotPolicyVersionPinnedToTheRules(t *testing.T) {
+	var b strings.Builder
+	fmt.Fprintf(&b, "long=%s runs=%d", slotLongRun, slotClassRuns)
+	for _, class := range []string{slotClassShort, slotClassLong} {
+		for n := 1; n <= 8; n++ {
+			fmt.Fprintf(&b, " %s/%d=%v", class, n, slotOrder(class, n))
+		}
+	}
+	const golden = "long=5m0s runs=5 short/1=[0] short/2=[1 0] short/3=[2 1 0] short/4=[3 2 1 0] short/5=[4 3 2 1 0] short/6=[5 4 3 2 1 0] short/7=[6 5 4 3 2 1 0] short/8=[7 6 5 4 3 2 1 0] long/1=[0] long/2=[0] long/3=[0] long/4=[0 1] long/5=[0 1] long/6=[0 1 2] long/7=[0 1 2] long/8=[0 1 2 3]"
+	if b.String() != golden {
+		t.Errorf("the slot rules changed: bump slotPolicyVersion and update this test\ngot %q", b.String())
+	}
+}
+
+func TestEarlierHoldIsPostedWhenASlotIsTaken(t *testing.T) {
+	rec, url := ssServer(t)
+	c, dir := ssEnv(t, url)
+	_ = os.MkdirAll(dir, 0o700)
+	appendOutbox(dir, ssHold(1))
+	_, rel, err := c.takeSlot(context.Background(), "tests", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rel()
+	deadline := time.Now().Add(5 * time.Second)
+	for !rec.seen("id1") && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !rec.seen("id1") {
+		t.Error("the earlier hold was not posted")
+	}
+}
+
+func TestNoRequestWhenSendingIsOff(t *testing.T) {
+	rec, url := ssServer(t)
+	c, dir := ssEnv(t, url)
+	t.Setenv(slotSendEnv, "off")
+	_ = os.MkdirAll(dir, 0o700)
+	appendOutbox(dir, ssHold(1))
+	_, rel, err := c.takeSlot(context.Background(), "tests", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel()
+	time.Sleep(300 * time.Millisecond)
+	if n := rec.count(); n != 0 {
+		t.Errorf("%d requests with sending off", n)
+	}
+}
+
+func TestOutboxSkipsMalformedLinesAndRemoveSentDropsThem(t *testing.T) {
+	_, dir := ssEnv(t, ssDown(t))
+	_ = os.MkdirAll(dir, 0o700)
+	good := func(i int) string { b, _ := json.Marshal(ssHold(i)); return string(b) }
+	body := good(1) + "\nnot json\n" + `{"name":"no id"}` + "\n" + good(2) + "\n" + good(3) + "\n"
+	p := filepath.Join(dir, slotOutboxFile)
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if recs := readOutbox(dir); len(recs) != 3 {
+		t.Fatalf("read %d records", len(recs))
+	}
+	if !removeSent(dir, map[string]bool{"id2": true}) {
+		t.Fatal("removeSent failed")
+	}
+	recs := readOutbox(dir)
+	if len(recs) != 2 || recs[0].ID != "id1" || recs[1].ID != "id3" {
+		t.Errorf("after: %+v", recs)
+	}
+	if b, _ := os.ReadFile(p); strings.Contains(string(b), "not json") || strings.Contains(string(b), "no id") {
+		t.Errorf("a malformed line stayed: %s", b)
+	}
+	if !removeSent(dir, map[string]bool{"id1": true, "id3": true}) {
+		t.Fatal("removeSent failed")
+	}
+	if _, err := os.Stat(p); err == nil {
+		t.Error("an emptied outbox stayed")
+	}
+}
+
+func TestSlotSnapshotLeavesOutDeadAndOwnQueueFiles(t *testing.T) {
+	_, dir := ssEnv(t, ssDown(t))
+	_ = os.MkdirAll(dir, 0o700)
+	q, _ := json.Marshal(queueRec{Since: 5, Class: "short"})
+	for _, pid := range []int{2147483646, os.Getpid(), os.Getppid()} {
+		_ = os.WriteFile(filepath.Join(dir, fmt.Sprintf("tests.%d.queue", pid)), q, 0o600)
+	}
+	_, waiters := slotSnapshot(dir, "tests")
+	if len(waiters) != 1 || waiters[0].PID != os.Getppid() {
+		t.Errorf("waiters %+v", waiters)
+	}
+}

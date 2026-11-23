@@ -225,7 +225,11 @@ func (c *cli) runInSlotThen(name string, n int, argv []string, out, errw io.Writ
 		env = envf(env)
 	}
 	code, err := runSlotCmd(ctx, env, argv, os.Stdin, out, errw)
-	setExit(code)
+	if err == nil {
+		// A command that could not start, or whose wait failed, has no exit
+		// code: the hold's exit stays unknown (WP-1646).
+		setExit(code)
+	}
 	return code, err
 }
 

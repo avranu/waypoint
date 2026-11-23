@@ -35,9 +35,11 @@ func (s *Server) slotHoldsPost(w http.ResponseWriter, r *http.Request) (any, err
 	// Fields this server doesn't know are let through (a wp newer than the
 	// server must not have every batch refused), and a body that can't be
 	// read still records what the machine says is waiting, so it shows in
-	// the collector health instead of failing unseen.
+	// the collector health instead of failing unseen. A hold that does not
+	// decode (a field of the wrong type) becomes an empty one, which is
+	// counted as rejected, so one bad hold does not refuse the batch.
 	var body struct {
-		Holds []core.SlotHold `json:"holds"`
+		Holds []json.RawMessage `json:"holds"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 8<<20)).Decode(&body); err != nil {
 		if _, rerr := s.svc.RecordSlotHolds(r.Context(), actorFrom(r), in); rerr != nil {
@@ -45,7 +47,12 @@ func (s *Server) slotHoldsPost(w http.ResponseWriter, r *http.Request) (any, err
 		}
 		return nil, fmt.Errorf("%w: the body is not {\"holds\":[...]}: %v", errBadRequest, err)
 	}
-	in.Holds = body.Holds
+	in.Holds = make([]core.SlotHold, len(body.Holds))
+	for i, raw := range body.Holds {
+		if err := json.Unmarshal(raw, &in.Holds[i]); err != nil {
+			in.Holds[i] = core.SlotHold{}
+		}
+	}
 	return s.svc.RecordSlotHolds(r.Context(), actorFrom(r), in)
 }
 

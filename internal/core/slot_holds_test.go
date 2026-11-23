@@ -3,6 +3,7 @@ package core
 import (
 	"errors"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -150,14 +151,122 @@ func TestSlotHoldsAreSeparatePerUserAndAccess(t *testing.T) {
 	// who may write
 	ro := *jo
 	ro.ReadOnly = true
-	job := &Actor{User: jo.User, RunnerJob: 5, scope: map[int64]int{1: RoleEditor}}
-	for name, a := range map[string]*Actor{"read-only": &ro, "runner job": job, "nobody": nil} {
+	for name, a := range map[string]*Actor{"read-only": &ro, "nobody": nil} {
 		if _, err := e.s.RecordSlotHolds(e.ctx, a, SlotHoldsIn{Machine: "box"}); err == nil {
 			t.Errorf("%s may send", name)
 		}
 	}
+	rojob := &Actor{User: jo.User, RunnerJob: 5, ReadOnly: true, scope: map[int64]int{1: RoleEditor}}
+	if _, err := e.s.RecordSlotHolds(e.ctx, rojob, SlotHoldsIn{Machine: "box"}); !errors.Is(err, ErrForbidden) {
+		t.Errorf("a read-only job token may send: %v", err)
+	}
 	if _, err := e.s.RecordSlotHolds(e.ctx, jo, SlotHoldsIn{}); !IsInvalid(err) {
 		t.Errorf("no machine: %v", err)
+	}
+}
+
+// A runner job's token stores holds, as it reports usage: its holds are the
+// machine's, and refusing them would lose a job's slot history.
+func TestSlotHoldsRunnerJobStores(t *testing.T) {
+	e := newEnv(t)
+	jo := e.user("jo", false)
+	job := &Actor{User: jo.User, RunnerJob: 5, scope: map[int64]int{1: RoleEditor}}
+	res, err := e.s.RecordSlotHolds(e.ctx, job, SlotHoldsIn{Machine: "box", Holds: []SlotHold{slotHoldIn("j1", e.clockNow().UnixMilli())}})
+	if err != nil || res.Stored != 1 {
+		t.Fatalf("job: %+v %v", res, err)
+	}
+	if got, _ := e.s.SlotHolds(e.ctx, jo, SlotHoldsFilter{}); len(got) != 1 || got[0].ID != "j1" {
+		t.Errorf("stored %+v", got)
+	}
+}
+
+// Pending with no usable oldest keeps the since the machine already had.
+func TestRecordSlotHoldsKeepsPendingSince(t *testing.T) {
+	e := newEnv(t)
+	now := e.clockNow().UnixMilli()
+	report := func(pending, oldest int64) {
+		t.Helper()
+		if _, err := e.s.RecordSlotHolds(e.ctx, e.admin, SlotHoldsIn{Machine: "box", Pending: pending, Oldest: oldest}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report(3, now-5000)
+	if m := slotMachine(t, e, e.admin, "box"); m.since == nil || *m.since != now-5000 {
+		t.Fatalf("first: %+v", m)
+	}
+	e.setClock(e.clockNow().Add(time.Hour))
+	report(3, 0) // oldest not sent
+	if m := slotMachine(t, e, e.admin, "box"); m.since == nil || *m.since != now-5000 {
+		t.Errorf("no oldest: since %v, want %d", m.since, now-5000)
+	}
+	report(3, e.clockNow().UnixMilli()+1000) // not before now: unusable
+	if m := slotMachine(t, e, e.admin, "box"); m.since == nil || *m.since != now-5000 {
+		t.Errorf("oldest in the future: since %v", m.since)
+	}
+	report(3, now-1000) // usable: used
+	if m := slotMachine(t, e, e.admin, "box"); m.since == nil || *m.since != now-1000 {
+		t.Errorf("usable oldest: since %v", m.since)
+	}
+	// a machine with none before gets now
+	if _, err := e.s.RecordSlotHolds(e.ctx, e.admin, SlotHoldsIn{Machine: "new", Pending: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if m := slotMachine(t, e, e.admin, "new"); m.since == nil || *m.since != e.clockNow().UnixMilli() {
+		t.Errorf("new machine: since %v", m.since)
+	}
+}
+
+func TestSlotHoldsReadKeepsNewestOverLimit(t *testing.T) {
+	e := newEnv(t)
+	base := e.clockNow().UnixMilli()
+	var hs []SlotHold
+	for i := range 3 {
+		hs = append(hs, slotHoldIn("h"+strconv.Itoa(i), base+int64(i)*1000))
+	}
+	if _, err := e.s.RecordSlotHolds(e.ctx, e.admin, SlotHoldsIn{Machine: "box", Holds: hs}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := e.s.SlotHolds(e.ctx, e.admin, SlotHoldsFilter{Limit: 2})
+	if err != nil || len(got) != 2 || got[0].ID != "h1" || got[1].ID != "h2" {
+		t.Errorf("limit 2 of 3: %+v %v", got, err)
+	}
+}
+
+// Every way slotHoldRow refuses a hold, and the id clip.
+func TestSlotHoldRowRefusals(t *testing.T) {
+	const now = int64(1_700_000_000_000)
+	ok := func() SlotHold { return slotHoldIn("x", now) }
+	big := slotDurMaxMS + 1
+	neg := -1.0
+	two := func(f func(h *SlotHold)) SlotHold { h := ok(); f(&h); return h }
+	for name, h := range map[string]SlotHold{
+		"queued far ahead":    two(func(h *SlotHold) { h.QueuedAt = now + int64(25*time.Hour/time.Millisecond) }),
+		"negative wait":       two(func(h *SlotHold) { h.WaitMS = -1 }),
+		"negative tree wait":  two(func(h *SlotHold) { h.TreeWaitMS = -1 }),
+		"negative threshold":  two(func(h *SlotHold) { h.ThresholdSecs = -1 }),
+		"negative runs":       two(func(h *SlotHold) { h.Runs = -1 }),
+		"negative slots":      two(func(h *SlotHold) { h.Slots = -1 }),
+		"negative long slots": two(func(h *SlotHold) { h.LongSlots = -1 }),
+		"tree wait too long":  two(func(h *SlotHold) { h.TreeWaitMS = big }),
+		"hold too long":       two(func(h *SlotHold) { h.HoldMS = big }),
+		"negative slot":       two(func(h *SlotHold) { n := -1; h.Slot = &n }),
+		"negative median":     two(func(h *SlotHold) { h.MedianSecs = &neg }),
+		"65 waiters":          two(func(h *SlotHold) { h.Waiters = make([]SlotWaiter, 65) }),
+		"bad class":           two(func(h *SlotHold) { h.Class = "" }),
+	} {
+		if _, _, _, got := slotHoldRow(h, now); got {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	// the edges are accepted, and an id is clipped to 64 characters
+	edge := two(func(h *SlotHold) {
+		h.QueuedAt, h.WaitMS, h.HoldMS, h.TreeWaitMS = now+int64(24*time.Hour/time.Millisecond), slotDurMaxMS, slotDurMaxMS, slotDurMaxMS
+		h.ID = strings.Repeat("i", 70)
+		h.Waiters = make([]SlotWaiter, 64)
+	})
+	got, _, _, accepted := slotHoldRow(edge, now)
+	if !accepted || len(got.ID) != 64 {
+		t.Errorf("edge: accepted %v, id length %d", accepted, len(got.ID))
 	}
 }
 
@@ -215,5 +324,43 @@ func TestSlotHoldsCollector(t *testing.T) {
 	}
 	if c := collectorByName(t, name); c.unit != "machines" || c.group != "machine" {
 		t.Errorf("collector %+v", c)
+	}
+}
+
+// A machine that reported pending holds an hour ago is waiting but not stalled
+// (a stall needs 48 hours); one not heard from for 31 days is not counted.
+func TestSlotHoldsCollectorRecentAndRetired(t *testing.T) {
+	e := newEnv(t)
+	now := time.Now()
+	report := func(machine string, ago time.Duration) {
+		e.setClock(now.Add(-ago))
+		if _, err := e.s.RecordSlotHolds(e.ctx, e.admin, SlotHoldsIn{Machine: machine, Pending: 2, Holds: []SlotHold{{ID: "bad"}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report("old", 31*24*time.Hour)
+	e.setClock(now)
+	e.s.CheckCollectorHealth(e.ctx)
+	health := func() CollectorHealth {
+		got, err := e.s.CollectorHealthList(e.ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, h := range got {
+			if h.Name == "slot holds" {
+				return h
+			}
+		}
+		t.Fatal("no slot holds collector")
+		return CollectorHealth{}
+	}
+	if h := health(); h.Waiting != 0 || h.Stalled {
+		t.Errorf("retired machine counted: %+v", h)
+	}
+	report("recent", time.Hour)
+	e.setClock(now)
+	e.s.CheckCollectorHealth(e.ctx)
+	if h := health(); h.Waiting != 1 || h.Stalled {
+		t.Errorf("recent machine: %+v", h)
 	}
 }

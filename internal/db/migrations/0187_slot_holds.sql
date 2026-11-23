@@ -5,8 +5,9 @@
 -- settings. A machine posts its holds in batches under an id it made, so a
 -- resend stores nothing twice.
 --
--- Nothing prunes slot_holds: simulations need the history (WP-1054), and a
--- machine adds about a hundred rows a day.
+-- Nothing prunes slot_holds: simulations need the history (WP-1054). A
+-- machine is estimated to add about a hundred rows a day; that rate has not
+-- been measured (WP-1655 measures it).
 CREATE TABLE slot_holds (
     id             INTEGER PRIMARY KEY,
     user_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,

@@ -271,7 +271,9 @@ func (c *cli) acquireQueued(ctx context.Context, name string, n int, cmd string)
 	// queued; the rest is filled in as it goes.
 	var full *core.SlotHold
 	if slotSendOn(c) {
-		full = c.newSlotHold(dir, name, repo, slotField(tree), cmdKey, class, median, runs, n, start)
+		// The command goes to the server with inline secrets blanked, before
+		// it is cut (a cut could leave half of one); cmdKey stays local.
+		full = c.newSlotHold(dir, name, repo, slotField(tree), slotField(redactCommand(cmd)), class, median, runs, n, start)
 	}
 	var treeStart, treeEnd time.Time
 	treeWaited := func() int64 {

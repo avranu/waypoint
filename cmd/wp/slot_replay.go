@@ -18,11 +18,20 @@ import (
 // under others, to see how far the model is from what happened and what a
 // different threshold or share would have done.
 
+// replayHistory is how far before the window the holds are read: a run's
+// class comes from the latest runs of its command, which may be older than
+// the window.
+const replayHistory = 14 * 24 * time.Hour
+
+// slotReplayLimit is the most holds asked of the server; a variable for the
+// tests.
+var slotReplayLimit = core.SlotHoldsReadMax
+
 // replayParams are the settings a replay runs under.
 type replayParams struct {
 	Threshold time.Duration
 	LongShare float64 // of the slots long runs may use; the lowest ones
-	Slots     int     // 0: the most the group's holds recorded
+	LongSlots int     // how many slots long runs may use; 0: from LongShare
 }
 
 // replayLongSlots is how many of n slots long runs may use: the share of
@@ -43,24 +52,33 @@ func replayEnd(h core.SlotHold) int64 { return h.QueuedAt + h.WaitMS + h.HoldMS 
 // replayClasses gives each job (of one slot name; gave-up waits left out) the
 // class the rule gives it under threshold: the median of the run times of the
 // latest 5 holds with the same repo and command that ended before it queued.
-func replayClasses(jobs []core.SlotHold, threshold time.Duration) []string {
+// Those come from hist (earlier holds, not replayed) and jobs; only the jobs'
+// classes are returned.
+func replayClasses(jobs, hist []core.SlotHold, threshold time.Duration) []string {
 	type key struct{ repo, cmd string }
+	all := append(append([]core.SlotHold{}, hist...), jobs...)
 	byKey := map[key][]int{}
-	for i, j := range jobs {
+	for i, j := range all {
 		byKey[key{j.Repo, j.Cmd}] = append(byKey[key{j.Repo, j.Cmd}], i)
 	}
 	out := make([]string, len(jobs))
 	for _, idx := range byKey {
-		sort.SliceStable(idx, func(a, b int) bool { return replayEnd(jobs[idx[a]]) < replayEnd(jobs[idx[b]]) })
+		sort.SliceStable(idx, func(a, b int) bool { return replayEnd(all[idx[a]]) < replayEnd(all[idx[b]]) })
 		for _, i := range idx {
-			// the latest first: walk back from the last one that ended in time
+			if i < len(hist) {
+				continue
+			}
+			// the holds are sorted by end: find the first that ended after
+			// the job queued, and walk back from the one before it
+			queued := all[i].QueuedAt
+			pos := sort.Search(len(idx), func(k int) bool { return replayEnd(all[idx[k]]) > queued })
 			var secs []int64
-			for k := len(idx) - 1; k >= 0 && len(secs) < slotClassRuns; k-- {
-				if o := jobs[idx[k]]; idx[k] != i && replayEnd(o) <= jobs[i].QueuedAt {
-					secs = append(secs, int64(math.Round(float64(o.HoldMS)/1000)))
+			for k := pos - 1; k >= 0 && len(secs) < slotClassRuns; k-- {
+				if idx[k] != i {
+					secs = append(secs, int64(math.Round(float64(all[idx[k]].HoldMS)/1000)))
 				}
 			}
-			out[i], _ = slotClassOf(secs, threshold)
+			out[i-len(hist)], _ = slotClassOf(secs, threshold)
 		}
 	}
 	return out
@@ -68,15 +86,19 @@ func replayClasses(jobs []core.SlotHold, threshold time.Duration) []string {
 
 // replaySim runs the jobs (one machine's, one slot name's; none gave up)
 // through n slots as a queue and returns, in the jobs' order, each one's class
-// and wait. Jobs arrive at queued_at and hold a slot for hold_ms. A long job
-// may only use the lowest longSlots slots, taking the lowest free; a short
-// one takes the highest free of all. A long job whose tree (when it has one)
+// and wait. hist is earlier holds that only classes are decided from. Jobs
+// arrive at queued_at and hold a slot for hold_ms. A long job may only use
+// the lowest longSlots slots (p.LongSlots, else p.LongShare of n), taking the
+// lowest free; a short one takes the highest free of all. A long job whose tree (when it has one)
 // already has a long job running waits for it. Among the jobs that could
 // start, the one that queued first does.
-func replaySim(jobs []core.SlotHold, n int, p replayParams) []replayOut {
+func replaySim(jobs, hist []core.SlotHold, n int, p replayParams) []replayOut {
 	n = max(1, n)
 	longSlots := replayLongSlots(n, p.LongShare)
-	classes := replayClasses(jobs, p.Threshold)
+	if p.LongSlots > 0 {
+		longSlots = min(n, p.LongSlots)
+	}
+	classes := replayClasses(jobs, hist, p.Threshold)
 	order := make([]int, len(jobs))
 	for i := range order {
 		order[i] = i
@@ -208,28 +230,57 @@ func replayCell(v []int64) string {
 	return fmt.Sprintf("%s / %s (%d)", replayDur(slotPct(v, 0.5)), replayDur(slotPct(v, 0.95)), len(v))
 }
 
-// replayGroup is one machine's holds of one slot name.
+// replayGroup is one machine's holds of one slot name under one policy
+// version.
 type replayGroup struct {
-	Machine, Name string
-	Jobs          []core.SlotHold // completed holds, by queued_at
-	GaveUp        int
-	Slots         int
-	Tree          bool // whether any job names its worktree
+	Machine, Name, Policy string
+	Jobs                  []core.SlotHold // completed holds in the window, by queued_at
+	Hist                  []core.SlotHold // completed holds queued before the window: classes only
+	GaveUp                int             // in the window
+	Slots                 int
+	ThresholdSecs         int64 // the recorded threshold; 0: slotLongRun
+	LongSlots             int   // the recorded slots for long runs
+	Tree                  bool  // whether any job names its worktree
 }
 
-func replayGroups(holds []core.SlotHold, slotsFlag int) []replayGroup {
-	idx := map[[2]string]int{}
+// threshold is the recorded class threshold of the group.
+func (g replayGroup) threshold() time.Duration {
+	if g.ThresholdSecs > 0 {
+		return time.Duration(g.ThresholdSecs) * time.Second
+	}
+	return slotLongRun
+}
+
+// replayGroups groups holds by machine, slot name and policy. A completed
+// hold queued before since goes to Hist; a wait that gave up before it is
+// left out. The slot count, the long-slot count and the threshold are those
+// the window's holds recorded (the highest slot count, with the long slots of
+// the hold that had it); slotsFlag overrides the count, and a count that
+// was not recorded (or is overridden) has the slot order's long slots.
+func replayGroups(holds []core.SlotHold, slotsFlag int, since time.Time) []replayGroup {
+	idx := map[[3]string]int{}
 	var gs []replayGroup
 	for _, h := range holds {
-		k := [2]string{h.Machine, h.Name}
+		k := [3]string{h.Machine, h.Name, h.Policy}
 		i, ok := idx[k]
 		if !ok {
 			i = len(gs)
 			idx[k] = i
-			gs = append(gs, replayGroup{Machine: h.Machine, Name: h.Name})
+			gs = append(gs, replayGroup{Machine: h.Machine, Name: h.Name, Policy: h.Policy})
 		}
 		g := &gs[i]
-		g.Slots = max(g.Slots, h.Slots)
+		if h.QueuedAt < since.UnixMilli() {
+			if !h.GaveUp {
+				g.Hist = append(g.Hist, h)
+			}
+			continue
+		}
+		if h.Slots > g.Slots {
+			g.Slots, g.LongSlots = h.Slots, h.LongSlots
+		}
+		if h.ThresholdSecs > 0 {
+			g.ThresholdSecs = h.ThresholdSecs
+		}
 		g.Tree = g.Tree || h.Tree != ""
 		if h.GaveUp {
 			g.GaveUp++
@@ -237,24 +288,37 @@ func replayGroups(holds []core.SlotHold, slotsFlag int) []replayGroup {
 			g.Jobs = append(g.Jobs, h)
 		}
 	}
+	kept := gs[:0]
+	for _, g := range gs {
+		if len(g.Jobs) > 0 || g.GaveUp > 0 {
+			kept = append(kept, g)
+		}
+	}
+	gs = kept
 	for i := range gs {
 		sort.SliceStable(gs[i].Jobs, func(a, b int) bool { return gs[i].Jobs[a].QueuedAt < gs[i].Jobs[b].QueuedAt })
 		if slotsFlag > 0 {
-			gs[i].Slots = slotsFlag
+			gs[i].Slots, gs[i].LongSlots = slotsFlag, 0
 		}
 		gs[i].Slots = max(gs[i].Slots, 1)
+		if gs[i].LongSlots == 0 {
+			gs[i].LongSlots = len(slotOrder(slotClassLong, gs[i].Slots))
+		}
 	}
 	sort.Slice(gs, func(a, b int) bool {
 		if gs[a].Machine != gs[b].Machine {
 			return gs[a].Machine < gs[b].Machine
 		}
-		return gs[a].Name < gs[b].Name
+		if gs[a].Name != gs[b].Name {
+			return gs[a].Name < gs[b].Name
+		}
+		return gs[a].Policy < gs[b].Policy
 	})
 	return gs
 }
 
 // replayRows is the three rows printed for a group: what was recorded, the
-// simulation under the recorded policy and the simulation under p.
+// simulation under the group's recorded policy and the simulation under p.
 func replayRows(g replayGroup, p replayParams) (recorded, model, asked replaySummary) {
 	classes, waits := make([]string, len(g.Jobs)), make([]int64, len(g.Jobs))
 	for i, j := range g.Jobs {
@@ -262,15 +326,32 @@ func replayRows(g replayGroup, p replayParams) (recorded, model, asked replaySum
 	}
 	recorded = replaySummarize(classes, waits)
 	run := func(p replayParams) replaySummary {
-		out := replaySim(g.Jobs, g.Slots, p)
+		out := replaySim(g.Jobs, g.Hist, g.Slots, p)
 		for i, o := range out {
 			classes[i], waits[i] = o.Class, o.WaitMS
 		}
 		return replaySummarize(classes, waits)
 	}
-	model = run(replayParams{Threshold: slotLongRun, LongShare: 0.5})
+	model = run(replayParams{Threshold: g.threshold(), LongSlots: g.LongSlots})
 	asked = run(p)
 	return
+}
+
+// replayDistance is how far the recorded short waits are from the model's:
+// the p50 and p95 of recorded minus simulated, "-" when either has none.
+func replayDistance(rec, model replaySummary) string {
+	if len(rec.Short) == 0 || len(model.Short) == 0 {
+		return "-"
+	}
+	d := func(p float64) string {
+		x := slotPct(rec.Short, p) - slotPct(model.Short, p)
+		sign := "+"
+		if x < 0 {
+			sign, x = "-", -x
+		}
+		return sign + replayDur(x)
+	}
+	return fmt.Sprintf("p50 %s, p95 %s", d(0.5), d(0.95))
 }
 
 func cmdSlotReplay(c *cli, args []string) error {
@@ -278,7 +359,7 @@ func cmdSlotReplay(c *cli, args []string) error {
 	days := fs.Int("days", 7, "replay the last `N` days")
 	threshold := fs.Duration("threshold", slotLongRun, "a run is long from this `DURATION` of run time")
 	share := fs.Float64("long-share", 0.5, "the `SHARE` of the slots long runs may use (the lowest ones)")
-	slots := fs.Int("slots", 0, "simulate `N` slots (default: what the holds recorded)")
+	slots := fs.Int("slots", 0, "simulate `N` slots (default: what the holds recorded; with --local, this machine's default)")
 	machine := fs.String("machine", "", "the holds of the machine `NAME` (default: this one)")
 	local := fs.Bool("local", false, "build the holds from this machine's waits.jsonl instead of asking the server")
 	if pos, err := c.parse(fs, args); err != nil {
@@ -289,20 +370,28 @@ func cmdSlotReplay(c *cli, args []string) error {
 	if *days <= 0 || *threshold <= 0 || *share <= 0 || *share > 1 || *slots < 0 {
 		return c.usage("--days and --threshold are positive, --long-share is above 0 up to 1, --slots is not negative")
 	}
+	if *local && *machine != "" && *machine != machineName() {
+		return c.usage("--local reads this machine's waits only")
+	}
 	since := time.Now().Add(-time.Duration(*days) * 24 * time.Hour)
+	from := since.Add(-replayHistory) // earlier holds, for the classes
 	var holds []core.SlotHold
 	if *local {
 		dir, err := slotDir()
 		if err != nil {
 			return err
 		}
-		holds = holdsFromWaits(readWaitRecs(dir), since, machineName(), max(*slots, defaultSlots()))
+		n := *slots
+		if n == 0 {
+			n = defaultSlots()
+		}
+		holds = holdsFromWaits(readWaitRecs(dir), from, machineName(), n)
 	} else {
 		m := *machine
 		if m == "" {
 			m = machineName()
 		}
-		q := url.Values{"since": {strconv.FormatInt(since.UnixMilli(), 10)}, "machine": {m}, "limit": {strconv.Itoa(core.SlotHoldsReadMax)}}
+		q := url.Values{"since": {strconv.FormatInt(from.UnixMilli(), 10)}, "machine": {m}, "limit": {strconv.Itoa(slotReplayLimit)}}
 		b, err := c.call("GET", "/api/v1/slot-holds?"+q.Encode(), nil)
 		if err != nil {
 			return err
@@ -310,15 +399,12 @@ func cmdSlotReplay(c *cli, args []string) error {
 		if err := json.Unmarshal(b, &holds); err != nil {
 			return err
 		}
-		if len(holds) == core.SlotHoldsReadMax {
-			_, _ = fmt.Fprintf(c.err, "wp slot replay: the server returned its limit of %d holds; the window is cut short\n", core.SlotHoldsReadMax)
+		if len(holds) >= slotReplayLimit {
+			_, _ = fmt.Fprintf(c.err, "wp slot replay: the server returned its limit of %d holds; the oldest are missing\n", slotReplayLimit)
 		}
 	}
-	if *local && *machine != "" && *machine != machineName() {
-		return c.usage("--local reads this machine's waits only")
-	}
-	asked := replayParams{Threshold: *threshold, LongShare: *share, Slots: *slots}
-	gs := replayGroups(holds, *slots)
+	asked := replayParams{Threshold: *threshold, LongShare: *share}
+	gs := replayGroups(holds, *slots, since)
 	if len(gs) == 0 {
 		_, _ = fmt.Fprintf(c.out, "no slot holds in the last %d days (%s)\n", *days, map[bool]string{true: "this machine's waits.jsonl", false: "the server"}[*local])
 		return nil
@@ -331,15 +417,24 @@ func cmdSlotReplay(c *cli, args []string) error {
 		} else if !g.Tree {
 			tree = "no worktree recorded, so the worktree rule is skipped"
 		}
-		_, _ = fmt.Fprintf(c.out, "%s on %s: %d holds, %d waits that gave up (left out of the simulation), %d slots, last %d days; %s\n",
-			g.Name, g.Machine, len(g.Jobs), g.GaveUp, g.Slots, *days, tree)
-		_, _ = fmt.Fprintf(c.out, "  waits p50 / p95 (n)\n  %-44s %-24s %-24s %s\n", "", "short", "long", "classed long")
+		slotsNote := fmt.Sprintf("%d slots", g.Slots)
+		if *local && *slots == 0 {
+			slotsNote += " (assumed: this machine's default, waits.jsonl records none; --slots sets it)"
+		}
+		policy := ""
+		if g.Policy != "" {
+			policy = " (policy " + g.Policy + ")"
+		}
+		_, _ = fmt.Fprintf(c.out, "%s on %s%s: %d holds, %d waits that gave up (left out of the simulation), %s, last %d days; classes use up to %d days of earlier holds (%d here); %s\n",
+			g.Name, g.Machine, policy, len(g.Jobs), g.GaveUp, slotsNote, *days, int(replayHistory/(24*time.Hour)), len(g.Hist), tree)
+		_, _ = fmt.Fprintf(c.out, "  waits p50 / p95 (n)\n  %-60s %-24s %-24s %s\n", "", "short", "long", "classed long")
 		row := func(label string, s replaySummary) {
-			_, _ = fmt.Fprintf(c.out, "  %-44s %-24s %-24s %d of %d\n", label, replayCell(s.Short), replayCell(s.Long), s.ClassedLong, s.Jobs)
+			_, _ = fmt.Fprintf(c.out, "  %-60s %-24s %-24s %d of %d\n", label, replayCell(s.Short), replayCell(s.Long), s.ClassedLong, s.Jobs)
 		}
 		row("recorded", rec)
-		row(fmt.Sprintf("simulated, recorded policy (%s, share 0.50)", slotLongRun), model)
+		row(fmt.Sprintf("simulated, recorded policy (%s, %d of %d slots for long)", g.threshold(), g.LongSlots, g.Slots), model)
 		row(fmt.Sprintf("simulated, threshold %s, share %.2f", *threshold, *share), ask)
+		_, _ = fmt.Fprintf(c.out, "  model distance, short waits: %s (recorded minus simulated)\n", replayDistance(rec, model))
 	}
 	_, _ = fmt.Fprintln(c.out, "The real queue is not first come, first served (waiting runs poll for a free slot), so the recorded policy row is the model's distance from what happened.")
 	_, _ = fmt.Fprintln(c.out, "Hold times are taken as recorded, though a run is slower when more runs overlap, so fewer or more slots would change them.")
