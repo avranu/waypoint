@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// 0187 tells the prompts stored before it by their mark, as the code before
+// 0188 tells the prompts stored before it by their mark, as the code before
 // it did, wrapped in Claude Code's paste tag or not (WP-1562): a wrapped row
 // is autopilot's, and anything else, wrapped or not, is a person's.
 func TestTypedPromptsBackfillReadsWrappedRows(t *testing.T) {
@@ -29,7 +29,7 @@ func TestTypedPromptsBackfillReadsWrappedRows(t *testing.T) {
 	var last string
 	for _, n := range names {
 		base := strings.TrimPrefix(n, "migrations/")
-		if base >= "0187" {
+		if base >= "0188" {
 			last = n
 			break
 		}
@@ -38,8 +38,8 @@ func TestTypedPromptsBackfillReadsWrappedRows(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if !strings.Contains(last, "0187_typed_prompts") {
-		t.Fatalf("first migration from 0187 is %q", last)
+	if !strings.Contains(last, "0188_typed_prompts") {
+		t.Fatalf("first migration from 0188 is %q", last)
 	}
 	for _, q := range []string{
 		`INSERT INTO users(id, username, email, created_at, updated_at) VALUES (1, 'robin', 'j@example.com', 0, 0)`,
@@ -64,7 +64,7 @@ func TestTypedPromptsBackfillReadsWrappedRows(t *testing.T) {
 		}
 	}
 	body, _ := migrations.ReadFile(last)
-	if err := apply(ctx, w, "0187_typed_prompts.sql", string(body)); err != nil {
+	if err := apply(ctx, w, "0188_typed_prompts.sql", string(body)); err != nil {
 		t.Fatal(err)
 	}
 	for id, r := range rows {

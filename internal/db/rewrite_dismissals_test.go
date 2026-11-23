@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// 0188 moves the dismissals 0185 kept as a flag on directional evidence rows
+// 0189 moves the dismissals 0185 kept as a flag on directional evidence rows
 // to one row per unordered pair (WP-1370), and drops the flag.
 func TestRewriteDismissalsMigration(t *testing.T) {
 	ctx := context.Background()
@@ -28,7 +28,7 @@ func TestRewriteDismissalsMigration(t *testing.T) {
 	var last string
 	for _, n := range names {
 		base := strings.TrimPrefix(n, "migrations/")
-		if base >= "0188" {
+		if base >= "0189" {
 			last = n
 			break
 		}
@@ -37,8 +37,8 @@ func TestRewriteDismissalsMigration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if !strings.Contains(last, "0188_rewrite_dismissals") {
-		t.Fatalf("first migration from 0188 is %q", last)
+	if !strings.Contains(last, "0189_rewrite_dismissals") {
+		t.Fatalf("first migration from 0189 is %q", last)
 	}
 	for _, q := range []string{
 		`INSERT INTO projects(id, key, name, created_at, updated_at) VALUES (1, 'WP', 'Waypoint', 0, 0)`,
@@ -56,7 +56,7 @@ func TestRewriteDismissalsMigration(t *testing.T) {
 		}
 	}
 	body, _ := migrations.ReadFile(last)
-	if err := apply(ctx, w, "0188_rewrite_dismissals.sql", string(body)); err != nil {
+	if err := apply(ctx, w, "0189_rewrite_dismissals.sql", string(body)); err != nil {
 		t.Fatal(err)
 	}
 	var pairs, live string
