@@ -779,6 +779,7 @@ func (s *Service) shipAudited(ctx context.Context, actor *Actor, g *reviewGate, 
 		for i, f := range todo {
 			ids[i] = f.ID
 		}
+		s.recordShipHold(ctx, actor, g.issueID, a.ID, roundID, holdAudit, len(todo))
 		return false, fmt.Sprintf("%s's adversarial review is audit #%d, with %s still to decide: %s. Read them (`wp audit show %d`), mark each (%s), then run `wp ship --pr` again; or end your turn, and the review gives them to you.",
 			g.key, a.ID, plural1(len(todo), "finding"), strings.Join(ids, ", "), a.ID, markHint(ids[0], "why")), nil
 	}
