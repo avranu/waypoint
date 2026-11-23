@@ -1106,9 +1106,10 @@ func (s *Service) ownReviewRound(ctx context.Context, actor *Actor, g *reviewGat
 // of Waypoint's own, so Waypoint opens the pull request (shipHeld); it says
 // why the review didn't run. It releases skipped and failed rounds; an
 // interrupted one it doesn't, since the session's next ship may ask it
-// again. The sweep (openStrandedRounds) releases that one too once its run
-// or session is over, because nobody is left to ask it again
-// (askAgainAfterInterrupt needs the session's next ship) (WP-1325).
+// again, nor one Waypoint gave up on (roundGaveUp), whose branch the forge
+// can't find. The sweep (openStrandedRounds) releases an interrupted one
+// too once its run or session is over, because nobody is left to ask it
+// again (askAgainAfterInterrupt needs the session's next ship) (WP-1325).
 func (s *Service) heldUnshipped(ctx context.Context, st *stepRow) (why, release string, err error) {
 	if !st.runID.Valid || !st.reviewID.Valid || roundBeforePR(ctx, s.db.R, st.reviewID.Int64) == nil {
 		return "", "", nil
@@ -1142,7 +1143,7 @@ func (s *Service) heldUnshipped(ctx context.Context, st *stepRow) (why, release 
 	if reason != "" && state != RoundDone {
 		what += " (" + reason + ")"
 	}
-	if (state == RoundSkipped || state == RoundFailed) && !strings.HasPrefix(reason, roundCancelledBy) {
+	if (state == RoundSkipped || state == RoundFailed) && !strings.HasPrefix(reason, roundCancelledBy) && !strings.HasPrefix(reason, roundGaveUp) {
 		release = cmp(reason, "its adversarial review didn't run")
 	}
 	return key + " isn't shipped yet: " + what, release, nil

@@ -72,9 +72,10 @@ type Service struct {
 	pushHTTP *http.Client // browser push services: public internet only
 	Hub      *Hub
 
-	// strandedRetry is when a round's pull request may be tried again after
-	// it couldn't be opened (round id to ms; openStrandedRounds, WP-1325).
-	// It is kept in memory: a restart tries once more.
+	// strandedRetry holds, for a round whose pull request couldn't be opened,
+	// a strandedTry: when to try again and how many tries failed (round id to
+	// strandedTry; openStrandedRounds, WP-1325). It is kept in memory: a
+	// restart tries once more.
 	strandedRetry sync.Map
 
 	now func() time.Time
