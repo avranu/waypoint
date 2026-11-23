@@ -833,7 +833,8 @@ func stackedOn(base, branch string) []string {
 // review other pull requests' code (WP-467). With the base merged in, its tip
 // is the only fork point. It runs after the title and summary are worked out,
 // so the merge names neither. A merge that doesn't go through is left to the
-// merge queue, which merges the base in at this pull request's turn.
+// person: the merge line tests candidates and doesn't push to the branch
+// (WP-ADR152).
 func (c *cli) mergeBaseIfForkedTwice(base string) {
 	if name, ok := strings.CutPrefix(base, "origin/"); ok {
 		_, _ = localGit("fetch", "-q", "origin", name) // a stale base can only miss one
@@ -850,7 +851,7 @@ func (c *cli) mergeBaseIfForkedTwice(base string) {
 	}
 	if _, err := localGit("merge", "-q", "--no-edit", base); err != nil {
 		_, _ = localGit("merge", "--abort")
-		_, _ = fmt.Fprintf(c.err, "Notice: this branch forks from %s at %d commits, so its diff will show other pull requests' changes, and merging %s in failed (%v). Resolve that with git merge %s, or leave it for the merge queue.\n", base, n, base, err, base)
+		_, _ = fmt.Fprintf(c.err, "Notice: this branch forks from %s at %d commits, so its diff will show other pull requests' changes, and merging %s in failed (%v). Resolve that with git merge %s.\n", base, n, base, err, base)
 		return
 	}
 	_, _ = fmt.Fprintf(c.err, "Merged %s in: this branch forked from it at %d commits, so its diff would have shown other pull requests' changes.\n", base, n)
