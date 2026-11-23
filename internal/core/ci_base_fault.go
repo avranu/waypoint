@@ -231,6 +231,11 @@ func (s *Service) handleBaseFault(ctx context.Context, cl ForgeActionLogs, f *Fo
 		if len(jobs) == 0 && s.now().Sub(stopped) < 5*time.Minute {
 			return // the forge may not list the jobs of a run that just ended yet; read again next time
 		}
+		// First, whatever else failed: another job's failure ends this pass
+		// for the tip, and the task must not depend on the jobs' order.
+		if slices.ContainsFunc(jobs, func(j ActionJob) bool { return j.Name == advisoriesJob && j.Status == "failure" }) {
+			s.fileAdvisories(ctx, f, repo, branch, st.sha, cur)
+		}
 		hasFault := false
 		for _, j := range jobs {
 			if j.Status != "failure" && j.Status != "cancelled" {
@@ -238,11 +243,7 @@ func (s *Service) handleBaseFault(ctx context.Context, cl ForgeActionLogs, f *Fo
 			}
 			if j.Name == advisoriesJob {
 				// A vulnerability is the dependency's to fix, never a runner
-				// fault, and it mustn't hide one in the same run. Nothing
-				// waits for the job, so one task says someone must (WP-1660).
-				if j.Status == "failure" {
-					s.fileAdvisories(ctx, f, repo, branch, st.sha, cur)
-				}
+				// fault, and it mustn't hide one in the same run (WP-1660).
 				continue
 			}
 			log, err := cl.ActionJobLog(ctx, f, repo, j.ID)

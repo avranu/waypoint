@@ -320,7 +320,14 @@ func TestBaseAdvisoriesFileOneTask(t *testing.T) {
 		se.s.RecordCIHistory(se.ctx)
 	}
 
-	advisories(10, "aaaaaaa")
+	// A job that failed for its code, listed before advisories, ends the
+	// pass for the tip; the task is filed all the same (1479.1).
+	af.add(10, "main", "aaaaaaa", "failure", "", se.clockNow().Add(-10*time.Minute))
+	af.mu.Lock()
+	af.jobs[110] = []ActionJob{{ID: 2010, RunID: 110, Name: "backend shard 1", Status: "failure"}, {ID: 1010, RunID: 110, Name: advisoriesJob, Status: "failure"}}
+	af.logs[2010] = "--- FAIL: TestX\n🏁  Job failed\n"
+	af.logs[1010] = "GO-2026-0001 called\n🏁  Job failed\n"
+	af.mu.Unlock()
 	sweep()
 	got := tasks()
 	if len(got) != 1 || !strings.HasPrefix(got[0], "Fix the advisories on me/app main 4 claude ") || !strings.Contains(got[0], "wp ci log --repo me/app --run 10 --job advisories") {
