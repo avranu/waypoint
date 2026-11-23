@@ -51,8 +51,13 @@ const (
 	// DefaultReviewPrompt is the review round's prompt when the person set
 	// none: short, so the round costs the review and not a briefing. The
 	// round runs before the task's pull request opens, so it ends with wp
-	// ship --pr (WP-688, WP-689).
+	// ship (WP-688, WP-689, WP-1370: --pr is the same as plain wp ship).
 	DefaultReviewPrompt = "Run an adversarial review. Assess and fix any legitimate issues it finds that are consistent with our codebase and goals. " +
+		"If there are any findings, comments, data, or unrelated issues found, file them in waypoint so they aren't lost when the session is over. " +
+		"When you're done, run `wp ship`."
+	// wp688ReviewPrompt was the default from WP-688 to WP-1370, which asked
+	// for --pr; saved with it gets the default too.
+	wp688ReviewPrompt = "Run an adversarial review. Assess and fix any legitimate issues it finds that are consistent with our codebase and goals. " +
 		"If there are any findings, comments, data, or unrelated issues found, file them in waypoint so they aren't lost when the session is over. " +
 		"When you're done, run `wp ship --pr`."
 	// legacyReviewPrompt was the default before WP-689: a person's settings

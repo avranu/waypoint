@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"git.jmann.me/claude/waypoint/internal/core"
 	"git.jmann.me/claude/waypoint/internal/sandbox"
 )
 
@@ -54,7 +55,7 @@ func (s *State) autopilotDriven(session string) bool {
 	return session != "" && ok && time.Since(at) < unattendedMaxAge
 }
 
-// noteAttendance runs on every UserPromptSubmit, before anything that needs
+// noteAttendanceKind runs on every UserPromptSubmit, before anything that needs
 // the server: a prompt autopilot pasted (it starts with autopilotPromptMark,
 // its review prompt too) marks the session unattended; the next prompt a
 // person types clears the mark. Waypoint's other prompts (a keep-warm ping,
@@ -64,7 +65,14 @@ func (s *State) autopilotDriven(session string) bool {
 //
 // The quota guard (WP-932) counts from the same prompts: refusal is set
 // when automation's prompt reaches a session the guard stopped.
-func (c *cli) noteAttendance(in hookEventInput) (refusal string) {
+//
+// typedKind is set for a prompt the hook already matched to a text Waypoint
+// typed (its kind, "" if none or not asked): one of
+// Waypoint's own words, with no person's in it (core.TypedWaypointAlone), is
+// no person's turn, whatever it says. answered says the lookup got an answer:
+// for exactly /compact or /exit, an answer with no match means a person typed
+// it, and no answer (or no lookup) means Waypoint did.
+func (c *cli) noteAttendanceKind(in hookEventInput, typedKind string, answered bool) (refusal string) {
 	id := in.SessionID
 	if id == "" {
 		return ""
@@ -72,6 +80,13 @@ func (c *cli) noteAttendance(in hookEventInput) (refusal string) {
 	p := strings.TrimSpace(in.Prompt)
 	switch {
 	case strings.HasPrefix(p, autopilotPromptMark) || c.isPastedPrompt(id, p):
+		// The mark here only ever tightens: a prompt that starts with it is
+		// treated as automation's, so a person who types it is refused when
+		// the quota guard stopped the session, and the session is marked
+		// unattended (the guard's stricter rules). It grants nothing and
+		// lifts nothing, so it is not told by the server's record (WP-1370):
+		// this runs before the event is sent, and a refused prompt is never
+		// sent.
 		if refusal = c.guardPrompt(id, true); refusal != "" {
 			return refusal
 		}
@@ -86,7 +101,17 @@ func (c *cli) noteAttendance(in hookEventInput) (refusal string) {
 				}
 			}
 		})
-	case strings.HasPrefix(p, keepWarmMark) || p == "/compact" || harnessPromptMark(p) != "":
+	case (p == "/compact" || p == "/exit") && (!answered || typedKind != ""):
+		// Texts Waypoint types with no visible mark, so a person can type
+		// them too. The server's record decides when it answered: a match is
+		// Waypoint's, no match is the person's (the default branch below).
+		// With no answer it is Waypoint's, the side that keeps the unattended
+		// mark and a quota stop.
+	case core.IsKeepWarmPing(p) || harnessPromptMark(p) != "" || core.TypedWaypointAlone(typedKind):
+		// Only the whole ping, not the mark that starts it: a person can type
+		// the mark, and what skips the person's branch below (lifting a stop,
+		// clearing the unattended mark, the refusal in a session nobody types
+		// in) must not be something typing can fake (WP-1370).
 	default:
 		if refusal = c.guardPrompt(id, !personCanType()); refusal != "" {
 			return refusal
@@ -211,7 +236,8 @@ func (g *guard) fileHit(p string) *guardHit {
 // guard's own refusals.
 func hookClaudeGuard(c *cli, stdin io.Reader, stdout io.Writer) {
 	var in hookEventInput
-	if err := json.NewDecoder(io.LimitReader(stdin, 4<<20)).Decode(&in); err != nil {
+	if err := decodeGuardInput(stdin, &in); err != nil {
+		c.refuseUnreadable(stdout, err)
 		return
 	}
 	mode := guardMode()
@@ -249,6 +275,52 @@ func hookClaudeGuard(c *cli, stdin io.Reader, stdout io.Writer) {
 		c.claimWait(in) // a warning only: the call still runs
 	}
 	c.logGuard(in, mode, h, hookCountWait(hookGuardTimeout))
+}
+
+// guardInputMax is the most of a call the guard reads: a Write of a whole
+// file is that large.
+const guardInputMax = 4 << 20
+
+// decodeGuardInput reads one PreToolUse call. A call over guardInputMax or
+// that isn't JSON is an error the caller must answer, not skip: it is exactly
+// what a guard that fails open lets through (a 4.2 MB Write to
+// .claude/settings.json was allowed).
+func decodeGuardInput(stdin io.Reader, in *hookEventInput) error {
+	b, err := io.ReadAll(io.LimitReader(stdin, guardInputMax+1))
+	if err != nil {
+		return fmt.Errorf("it couldn't be read: %w", err)
+	}
+	if len(b) > guardInputMax {
+		return fmt.Errorf("it is over %d MB", guardInputMax>>20)
+	}
+	if err := json.Unmarshal(b, in); err != nil {
+		return fmt.Errorf("it isn't JSON: %w", err)
+	}
+	return nil
+}
+
+// refuseUnreadable answers a call the guard couldn't read. Which session it
+// is can't be known, so the guard counts as active when the environment says
+// so or any session autopilot drives is marked here; a person's own session
+// is let through, as the guard is silent there.
+func (c *cli) refuseUnreadable(stdout io.Writer, why error) {
+	mode := guardMode()
+	if mode == "off" {
+		return
+	}
+	active := c.guardActive("")
+	for id := range c.state.Unattended {
+		active = active || c.state.autopilotDriven(id)
+	}
+	if !active {
+		return
+	}
+	h := hit(ruleGuard, "a call the guard can't read ("+why.Error()+")", "")
+	_, _ = stdout.Write(guardOutput(mode, h))
+	// Logged and counted as a normal refusal is; the call is unknown, so the
+	// input is empty.
+	c.logGuard(hookEventInput{}, mode, h, hookCountWait(hookGuardTimeout))
+	c.countNudge("guard_unreadable", hookCountWait(hookGuardTimeout))
 }
 
 const (

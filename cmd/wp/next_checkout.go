@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/codeindex"
 )
 
 // After taking a task, wp next fetches and prints the checkout's git state
@@ -83,14 +85,22 @@ func fetchRemote(top string) string {
 	if err != nil {
 		return ""
 	}
-	names := strings.Fields(out)
+	names := strings.Split(out, "\n") // a name may hold a space
+	// A remote named like an option (a config's [remote "--upload-pack=CMD"])
+	// is no remote git is told about: fetch would read it as one.
+	usable := names[:0]
 	for _, n := range names {
+		if n != "" && codeindex.CheckRef(n) == nil {
+			usable = append(usable, n)
+		}
+	}
+	for _, n := range usable {
 		if n == "origin" {
 			return n
 		}
 	}
-	if len(names) > 0 {
-		return names[0]
+	if len(usable) > 0 {
+		return usable[0]
 	}
 	return ""
 }

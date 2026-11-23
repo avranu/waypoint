@@ -92,7 +92,7 @@ func TestWarmDecisionsRecordWhatCameAfter(t *testing.T) {
 		t.Fatalf("after the ping: %+v", got)
 	}
 	// The ping's own turn is no use.
-	be.hookEv(HookEvent{Event: "UserPromptSubmit", Prompt: keepWarmBody})
+	be.typed(TypedKeepWarm, keepWarmBody)
 	be.stop(&HookPending{Tasks: []PendingTask{{Type: "shell", Status: "running"}}}, "1h", "ok")
 	if got := be.warmDecisions(); got[0].Next || got[0].Ended {
 		t.Fatalf("the ping's turn counted: %+v", got)

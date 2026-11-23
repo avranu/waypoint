@@ -31,12 +31,21 @@ type shipForge struct {
 	mergeErr      error
 	behindErr     error                 // BehindBase fails with it
 	createErr     error                 // CreatePR fails with it
+	listHides     int                   // the first N ListPRs answer nothing (the forge not showing a pull request yet)
 	defaultBranch string                // what DefaultBranch says: "" main, "-" an error
 	reacts        map[string][]Reaction // comment id → reactions
 	fileAt        map[string]string     // sha:path → content
 	reads         int                   // thread reads
 	replyErr      error                 // ReplyToThread fails with it
 	reactErr      map[string]error      // comment id → CommentReactions fails with it
+
+	tips   map[string]string // branch → what BranchHead says; absent: it can't say
+	tipErr error             // BranchHead fails with it
+	// tipDefault is what BranchHead says for a branch when tips is nil (a test
+	// that sets tips, even empty, says every branch itself).
+	tipDefault string
+	// tipHang: BranchHead doesn't answer until its context ends.
+	tipHang bool
 
 	created    []NewPR           // pull requests opened through CreatePR
 	heads      map[string]string // head branch → the sha a pull request from it starts at
@@ -49,6 +58,10 @@ type shipForge struct {
 	reactedTo  []string // "kind:id:emoji" put on comments
 	titleEdits []string // titles set through EditPRTitle (draft_first_test.go)
 	bodyEdits  []string
+	baseEdits  []string      // "number:base" set through EditPRBase (pr_open_test.go)
+	baseErr    error         // EditPRBase fails with it
+	brs        []ForgeBranch // what Branches lists
+	brErr      error         // Branches fails with it
 	// afterTitleEdit runs once a title edit is made, as the forge's webhook
 	// for it may arrive before the editor's own write.
 	afterTitleEdit func(title string)
@@ -85,9 +98,17 @@ type shipForge struct {
 	cancelled []string // commits whose runs were cancelled
 }
 
+// shippedHead is the commit wp ship says it pushed in the tests, and where the
+// fake forge's branches are unless a test says otherwise.
+const shippedHead = "5h1ppedc0mmit01"
+
+// shippedHeadTime is that commit's time (seconds): wp ship sends both, and the
+// server notes the head of a round it finds with no audit asked from them.
+const shippedHeadTime = 1
+
 func newShipForge() *shipForge {
 	return &shipForge{prForge: newPRForge(), statuses: map[string][]CommitStatusPost{}, checks: map[string][]CommitCheck{},
-		logs: map[string]string{}, reacts: map[string][]Reaction{}, fileAt: map[string]string{}, heads: map[string]string{}}
+		logs: map[string]string{}, reacts: map[string][]Reaction{}, fileAt: map[string]string{}, heads: map[string]string{}, tipDefault: shippedHead}
 }
 
 func (g *shipForge) id() string {
@@ -994,4 +1015,29 @@ func TestSeverityHelpers(t *testing.T) {
 	if got := fmt.Sprintf("%s %s %s", agentFamily("anthropic/claude-opus-5-5"), agentFamily("claude-code"), agentFamily("openai/codex")); got != "claude claude codex" {
 		t.Errorf("agentFamily = %q", got)
 	}
+}
+
+// BranchHead is the forge's word for where a branch is: tips, or tipErr.
+// A branch with no tip set is one the forge can't say.
+func (g *shipForge) BranchHead(ctx context.Context, f *Forge, repo, branch string) (string, error) {
+	if g.tipHang {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	g.sm.Lock()
+	defer g.sm.Unlock()
+	if g.tipErr != nil {
+		return "", g.tipErr
+	}
+	if sha, ok := g.tips[branch]; ok {
+		return sha, nil
+	}
+	if g.tips == nil && g.tipDefault != "" {
+		return g.tipDefault, nil
+	}
+	return "", ErrNotFound
+}
+
+func (g *shipForge) RepoTree(ctx context.Context, f *Forge, repo, sha string) ([]string, error) {
+	return nil, ErrNotFound
 }

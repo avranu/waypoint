@@ -165,7 +165,7 @@ func (s *Service) roundHelpers(ctx context.Context, review *roundRow, roundConte
 	h := &AuditHelpers{Verify: true, CLI: helperCLI, Model: helperModel}
 	for _, c := range panelChecks {
 		if c.every || !once {
-			h.Panel = append(h.Panel, PanelCheck{Name: c.name, Ask: c.ask + panelRules})
+			h.Panel = append(h.Panel, PanelCheck{Name: c.name, Ask: c.ask + s.foundLeads(ctx, c.name, review) + panelRules})
 		}
 	}
 	h.Panel = s.panelOrder(ctx, h.Panel, review.id)
@@ -178,6 +178,46 @@ func (s *Service) roundHelpers(ctx context.Context, review *roundRow, roundConte
 // were handed to the reviewer and none was confirmed or not, so the record
 // before it says nothing of how often a check's problems hold.
 var panelReadsFrom = time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC).UnixMilli()
+
+// foundLeads are the leads Waypoint hands a check from what it knows
+// already (WP-1370): the rewrites of earlier work to the check of work
+// undone, and the task's put-off steps to the completeness check.
+func (s *Service) foundLeads(ctx context.Context, check string, review *roundRow) string {
+	switch check {
+	case "regressions":
+		return leadBlock(s.rewriteLeads(ctx, s.leadActor(ctx, review), review.issueID))
+	case "complete":
+		return leadBlock(s.putOffLeads(ctx, review.issueID))
+	}
+	return ""
+}
+
+// leadActor is who the round acts as when it ships: the person of its
+// session, with the token its ship came with when it came with one
+// (shipAuthority does the same). The leads built for its checks name only
+// what that actor may see. Nil when there is no such actor (no session, the
+// person gone or deactivated, the token revoked or unreadable).
+func (s *Service) leadActor(ctx context.Context, review *roundRow) *Actor {
+	if !review.sessionID.Valid || review.sessionID.Int64 == 0 {
+		return nil
+	}
+	var userID int64
+	if err := s.db.R.QueryRowContext(ctx, `SELECT user_id FROM agent_sessions WHERE id = ?`, review.sessionID.Int64).Scan(&userID); err != nil {
+		return nil
+	}
+	u, err := s.userByID(ctx, s.db.R, userID)
+	if err != nil || u.Disabled {
+		return nil
+	}
+	if bp := roundBeforePR(ctx, s.db.R, review.id); bp != nil && bp.TokenID != 0 {
+		t, err := s.tokenActor(ctx, "", bp.TokenID, false)
+		if err != nil || t.User.ID != u.ID {
+			return nil
+		}
+		return t
+	}
+	return &Actor{User: u}
+}
 
 // panelOrder puts the panel's checks in the order of a draw from each
 // one's record of problems a second read confirmed, Beta(1+confirmed,
@@ -410,7 +450,7 @@ func (s *Service) currentPanelRuns(ctx context.Context, round int64) (runs []Aud
 // panelConfirmed is how many problems the round's Haiku checks confirmed
 // for its current range that no finding of a reviewer holds
 // (currentPanelRuns), and the audit with the most of them: for the notes of
-// a pull request Waypoint opened with no review (shipHeld). 0 when none.
+// a pull request Waypoint opened with no review (shipRound). 0 when none.
 func (s *Service) panelConfirmed(ctx context.Context, round int64) (n int, audit int64) {
 	_, n, audit = s.currentPanelRuns(ctx, round)
 	return n, audit
@@ -438,10 +478,10 @@ func (s *Service) helperContext(ctx context.Context, review *roundRow, roundCont
 }
 
 // personPrompts are a session's prompts after since that a person wrote
-// (not autopilot's or Claude Code's own, isOwnPrompt), oldest first, the
+// (not autopilot's or Claude Code's own, ownPrompt), oldest first, the
 // newest kept when they run past helperPromptsMax.
 func (s *Service) personPrompts(ctx context.Context, sessionID, since int64) string {
-	rows, err := s.db.R.QueryContext(ctx, `SELECT detail FROM session_events WHERE session_id = ? AND kind = 'prompt' AND created_at >= ? ORDER BY created_at DESC, id DESC`, sessionID, since)
+	rows, err := s.db.R.QueryContext(ctx, `SELECT detail, typed_kind FROM session_events WHERE session_id = ? AND kind = 'prompt' AND created_at >= ? ORDER BY created_at DESC, id DESC`, sessionID, since)
 	if err != nil {
 		return ""
 	}
@@ -449,8 +489,8 @@ func (s *Service) personPrompts(ctx context.Context, sessionID, since int64) str
 	var list []string
 	size := 0
 	for rows.Next() {
-		var d string
-		if rows.Scan(&d) != nil || isOwnPrompt(d) || strings.TrimSpace(d) == "" {
+		var d, typed string
+		if rows.Scan(&d, &typed) != nil || ownPrompt(d, typed) || strings.TrimSpace(d) == "" {
 			continue
 		}
 		item := "- " + driftEscape(clipText(strings.TrimSpace(d), 3000)) + "\n"

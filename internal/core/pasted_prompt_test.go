@@ -2,6 +2,7 @@ package core
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -27,7 +28,7 @@ func TestUnwrapPasted(t *testing.T) {
 		{"<pasted_content id=\"1\">unclosed", "<pasted_content id=\"1\">unclosed"},
 		// The closing tag is the opening one's: no other id, none missing.
 		{"<pasted_content id=\"1\">a</pasted_content id=\"2\">", "<pasted_content id=\"1\">a</pasted_content id=\"2\">"},
-		{"<pasted_content id=\"1\">a</pasted_content>", "<pasted_content id=\"1\">a</pasted_content>"},
+		{"<pasted_content id=\"1\">a</pasted_content>", "a"}, // plain close: how the digest rule's tests wrap, still one paste
 		{"<pasted_content>a</pasted_content id=\"1\">", "<pasted_content>a</pasted_content id=\"1\">"},
 		{"<pasted_content id=\"1\">a</pasted_content id=\"1\"> b</pasted_content id=\"2\">", "<pasted_content id=\"1\">a</pasted_content id=\"1\"> b</pasted_content id=\"2\">"},
 		// Claude Code gave every paste the same id (d29a in each of eight
@@ -64,33 +65,6 @@ func noMoreReviews(a *apEnv, key string) {
 	}
 }
 
-// Claude Code wraps the review prompt autopilot pastes in <pasted_content>:
-// it is still autopilot's, so its round runs, and its Stop ends it instead
-// of having the review typed again (WP-1562).
-func TestPastedReviewPromptStartsItsRound(t *testing.T) {
-	a := reviewAPEnv(t)
-	first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude"})
-	a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "Second", Agent: "claude"})
-	a.finish(first.Key)
-	a.linkPR(first.ID, 7, "aaa")
-	a.stopWith("Shipped.")
-	id := a.step().reviewID.Int64
-	a.tick(61 * time.Second)
-	a.prompt(pasted(AutopilotReviewMark + first.Key + ": " + DefaultReviewPrompt))
-	if r := a.round(id); r.state != RoundRunning {
-		t.Fatalf("the pasted review prompt didn't start its round: %+v", r)
-	}
-	if st := a.step(); st.reason == WaitPrompted {
-		t.Fatalf("the pasted review prompt counted as the person's: %+v", st)
-	}
-	a.jobDone(1, AutopilotJobResult{Outcome: "reviewing"})
-	a.stopWith("Reviewed: nothing to fix.")
-	if r := a.round(id); r.state != RoundDone {
-		t.Fatalf("the review's Stop didn't end the round: %+v", r)
-	}
-	noMoreReviews(a, first.Key)
-}
-
 // Whatever the session's hook makes of the review prompt, the runner typed
 // it: a review job that says so starts its round even after a prompt taken
 // for the person's cleared the step's job, so the round is typed only once
@@ -123,25 +97,108 @@ func TestTypedReviewStartsItsRound(t *testing.T) {
 	noMoreReviews(a, first.Key)
 }
 
-// Rows written before WP-1562 kept Claude Code's wrapper, as an excerpt
-// that may have lost its closing tag: still autopilot's, or Waypoint's own.
+// WP-1562 under the digest rule: a text Waypoint recorded and typed, arriving
+// at the hook wrapped exactly as Claude Code 2.1.328 wraps a paste (the id on
+// the closing tag too), is Waypoint's by its kind, on the server's path (the
+// text, as a hook that sends it) and on --no-prompts' (the digest the hook
+// computed over the unwrapped text, or the id of the record it matched).
+func TestWrappedRecordedPromptIsWaypoints(t *testing.T) {
+	review := reviewPromptText("WP-1", DefaultReviewPrompt)
+	for _, tc := range []struct{ kind, text string }{
+		{TypedReview, review},
+		{TypedKeepWarm, KeepWarmPing()},
+		{TypedCompact, "/compact"},
+	} {
+		wrapped := pasted(tc.text)
+		t.Run(tc.kind+" by text", func(t *testing.T) {
+			a := newAPEnv(t)
+			a.record(tc.kind, tc.text)
+			if k := a.recognise(wrapped); k != tc.kind {
+				t.Fatalf("recognised as %q, want %q", k, tc.kind)
+			}
+		})
+		t.Run(tc.kind+" by digest", func(t *testing.T) {
+			a := newAPEnv(t)
+			a.record(tc.kind, tc.text)
+			sum := PromptSum(UnwrapPasted(wrapped)) // what the --no-prompts hook sends, if it sends a digest
+			if k := a.recogniseEv(HookEvent{PromptSum: sum}); k != tc.kind {
+				t.Fatalf("recognised as %q, want %q", k, tc.kind)
+			}
+		})
+		t.Run(tc.kind+" the hook's local match", func(t *testing.T) {
+			// matchTyped compares PromptSums of the text it unwrapped itself
+			// with the pending digests: the wrapped text must reach the record's.
+			want := PromptSum(tc.text)
+			for _, in := range []string{wrapped, UnwrapPasted(wrapped)} {
+				if got := PromptSums(in); !slices.Contains(got, want) {
+					t.Fatalf("PromptSums(%q) = %v lacks the record's %s", in, got, want)
+				}
+			}
+		})
+	}
+	// A person's paste with no record is theirs, wrapped or not.
+	a := newAPEnv(t)
+	if k := a.recognise(pasted("my own notes")); k != "" {
+		t.Fatalf("a person's paste read as %q", k)
+	}
+}
+
+// The review round end to end: the review Waypoint recorded and typed arrives
+// wrapped, starts its round, and the round is typed once (WP-1562).
+func TestPastedRecordedReviewPromptStartsItsRound(t *testing.T) {
+	a := reviewAPEnv(t)
+	first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude"})
+	a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "Second", Agent: "claude"})
+	a.finish(first.Key)
+	a.linkPR(first.ID, 7, "aaa")
+	a.stopWith("Shipped.")
+	id := a.step().reviewID.Int64
+	a.tick(61 * time.Second)
+	text := reviewPromptText(first.Key, DefaultReviewPrompt)
+	a.record(TypedReview, text)
+	a.prompt(pasted(text))
+	if r := a.round(id); r.state != RoundRunning {
+		t.Fatalf("the pasted review prompt didn't start its round: %+v", r)
+	}
+	if st := a.step(); st.reason == WaitPrompted {
+		t.Fatalf("the pasted review prompt counted as the person's: %+v", st)
+	}
+	a.jobDone(1, AutopilotJobResult{Outcome: "reviewing"})
+	a.stopWith("Reviewed: nothing to fix.")
+	if r := a.round(id); r.state != RoundDone {
+		t.Fatalf("the review's Stop didn't end the round: %+v", r)
+	}
+	noMoreReviews(a, first.Key)
+}
+
+// Rows written before WP-1562 kept Claude Code's wrapper, as an excerpt that
+// may have lost its closing tag. Who typed a prompt is what its hook
+// recognised (typed), never how it reads (WP-1370): a harness report is still
+// read through the wrapper, and an autopilot-looking paste with no record is
+// the person's.
 func TestStoredWrappedPromptIsOwn(t *testing.T) {
 	long := pasted(AutopilotPromptMark + " review of WP-1: " + strings.Repeat("finding ", 100))
-	for _, p := range []string{long, excerpt(long, 300), pasted("<task-notification>done</task-notification>")} {
-		if !isOwnPrompt(p) {
-			t.Errorf("isOwnPrompt(%.60q) = false", p)
+	if !ownPrompt(pasted("<task-notification>done</task-notification>"), "") {
+		t.Error("a wrapped harness report is not Waypoint's or Claude Code's")
+	}
+	for _, p := range []string{long, excerpt(long, 300)} {
+		if ownPrompt(p, "") {
+			t.Errorf("ownPrompt(%.60q, no record) = true: a visible mark is no proof", p)
+		}
+		if auto, ok := promptOwner(p, ""); auto || !ok {
+			t.Errorf("promptOwner of an unrecorded autopilot-looking paste = %v, %v", auto, ok)
+		}
+		if auto, ok := promptOwner(p, TypedReview); !auto || !ok {
+			t.Errorf("promptOwner of a recorded review = %v, %v", auto, ok)
 		}
 	}
-	if auto, ok := promptOwner(excerpt(long, 300)); !auto || !ok {
-		t.Errorf("promptOwner of a wrapped autopilot prompt = %v, %v", auto, ok)
+	if _, ok := promptOwner(pasted("<task-notification>done</task-notification>"), ""); ok {
+		t.Error("a wrapped harness report took the session")
 	}
-	if _, ok := promptOwner(pasted(KeepWarmMark + " ping: reply ok")); ok {
-		t.Error("a wrapped keep-warm ping took the session")
-	}
-	if isOwnPrompt(pasted("my own notes")) {
+	if ownPrompt(pasted("my own notes"), "") {
 		t.Error("a person's paste counted as Waypoint's")
 	}
-	if auto, ok := promptOwner(pasted("my own notes")); auto || !ok {
+	if auto, ok := promptOwner(pasted("my own notes"), ""); auto || !ok {
 		t.Errorf("promptOwner of a person's paste = %v, %v", auto, ok)
 	}
 }

@@ -323,7 +323,17 @@ func (c *StepCtx) tellBySocket(x *AgentSession, m *SessionMessage) error {
 // ---- start_session ----
 
 // attachIDRE finds the id `claude --bg` prints ("backgrounded · b50893f0").
-var attachIDRE = lazyre.New(`backgrounded\W+([0-9a-f]{6,36})`)
+var attachIDRE = lazyre.New(`backgrounded\W+(` + AttachIDShape + `)`)
+
+// AttachIDShape is what a Claude Code background session's id looks like
+// (`claude --bg` prints "backgrounded · b50893f0"). It starts with a hex
+// digit, so a stored or relayed id is never read as an option.
+const AttachIDShape = `[0-9a-f]{6,36}`
+
+var attachIDExact = lazyre.New(`^` + AttachIDShape + `$`)
+
+// ValidAttachID reports whether s is an id `claude --bg` could have printed.
+func ValidAttachID(s string) bool { return attachIDExact.MatchString(s) }
 
 func runStartSession(c *StepCtx) error {
 	x, err := c.agentSession()

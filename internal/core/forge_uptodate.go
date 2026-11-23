@@ -305,7 +305,7 @@ func (s *Service) updateIfBehindThen(ctx context.Context, pr *PullRequest, befor
 			return upConflict
 		}
 		s.log.WarnContext(ctx, "update a branch to its base", "repo", pr.Repo, "number", pr.Number, "err", err)
-		s.armNote(ctx, pr.ID, excerpt(fmt.Sprintf("couldn't bring the branch up to date with %s: %s", cmp(pr.BaseRef, "its base"), err), 300))
+		s.armNote(ctx, pr.ID, excerpt(fmt.Sprintf("couldn't bring the branch up to date with %s: %s", cmp(pr.BaseRef, "its base"), forgeSaid(err)), 300))
 		return upFailed
 	}
 	s.baseUpdated.Store(key, baseUpdate{outcome: upUpdated, at: s.now(), from: pr.HeadSHA, n: n})
