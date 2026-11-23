@@ -111,6 +111,8 @@ var claudeHooks = []claudeHook{
 	{event: "PostToolUse", command: hookBurn, opts: hookOpts{timeout: 20}},
 	// The pause copy: async, asks the server at most every 30 s (WP-146).
 	{event: "PostToolUse", command: hookPause, opts: hookOpts{async: true}},
+	// Foreground, since it answers the agent: after a Bash call that starts a wait, the work to do meanwhile (WP-1571); silent for any other call, and fails open.
+	{event: "PostToolUse", command: hookWait, opts: hookOpts{matcher: "Bash", timeout: hookWaitTimeout}},
 }
 
 // hookMarker finds our entries when removing them, whichever of the hooks.
@@ -175,6 +177,11 @@ every Waypoint hook.`,
 			run: func(c *cli, args []string) error {
 				hookClaudeSlash(c, os.Stdin, c.out)
 				return nil // never fails
+			}},
+		{name: "claude-wait", hidden: true, summary: "the wait hook (run by Claude Code): after a slow Bash call, names the work to do meanwhile",
+			run: func(c *cli, args []string) error {
+				hookClaudeWait(c, os.Stdin, c.out)
+				return nil // fails quiet
 			}},
 		{name: "claude-pause", hidden: true, summary: "the pause pull (run by Claude Code): keeps a local copy of the person's session pause",
 			run: func(c *cli, args []string) error {
@@ -253,7 +260,7 @@ func hookClaude(c *cli, args []string) error {
 // usage hooks and the status line. Bump it whenever they change (the test
 // TestHookSchemaFollowsTheHooks fails until it is): hooks that an older wp
 // installed then bring themselves up to date the next time one runs.
-const hookSchema = 19
+const hookSchema = 20
 
 // hookRefreshEvery is how often a hook may try to bring the hooks up to date.
 const hookRefreshEvery = 24 * time.Hour

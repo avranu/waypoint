@@ -28,6 +28,14 @@ func TestRunsAgentsWait(t *testing.T) {
 		"bash -c 'wp agents wait'",
 		`sh -c "cd /x; wp agents wait"`,
 		"wp  agents   wait",
+		"wp agents wait 2>&1 | tail",
+		"echo x 2>&1; wp agents wait",
+		"echo x >&2 && wp agents wait",
+		"cat <&3; wp agents wait",
+		"echo x &>/dev/null; wp agents wait",
+		"echo x &>>log; wp agents wait",
+		"sleep 1 & wp agents wait",
+		"a |& wp agents wait",
 	}
 	no := []string{
 		"",
@@ -40,6 +48,8 @@ func TestRunsAgentsWait(t *testing.T) {
 		"wp agents waiting",
 		"git commit -m 'wp agents wait'",
 		"ls /wp/agents/wait",
+		"echo 2>&1 wp agents wait",
+		"echo x &>log wp agents wait",
 	}
 	for _, c := range yes {
 		if !runsAgentsWait(c) {
