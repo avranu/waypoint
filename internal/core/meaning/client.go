@@ -46,21 +46,24 @@ type NLIPair struct {
 // Batch: texts or pairs in one request (the service takes 256).
 const Batch = 128
 
-// httpModels speaks the meaning service's API.
-type httpModels struct {
+// Client speaks the meaning service's API over HTTP; it is a Models.
+type Client struct {
 	url, token string
 	http       *http.Client
 	breaker    *breaker
 }
 
-func NewHTTP(url, token string, c *http.Client, log *slog.Logger, now func() time.Time) *httpModels {
-	return &httpModels{url: strings.TrimRight(strings.TrimSpace(url), "/"), token: token, http: c, breaker: newBreaker(log, now)}
+// NewHTTP builds a Client for the service at url (a trailing slash is
+// trimmed). Calls go through a circuit breaker that Health reports; now is
+// the clock the breaker uses.
+func NewHTTP(url, token string, c *http.Client, log *slog.Logger, now func() time.Time) *Client {
+	return &Client{url: strings.TrimRight(strings.TrimSpace(url), "/"), token: token, http: c, breaker: newBreaker(log, now)}
 }
 
-// Health is the breaker's view of the service (meaning_breaker.go).
-func (m *httpModels) Health() Health { return m.breaker.health() }
+// Health is the breaker's view of the service (breaker.go).
+func (m *Client) Health() Health { return m.breaker.health() }
 
-func (m *httpModels) Embed(ctx context.Context, texts []string) (string, [][]float32, error) {
+func (m *Client) Embed(ctx context.Context, texts []string) (string, [][]float32, error) {
 	var model string
 	out := make([][]float32, 0, len(texts))
 	for start := 0; start < len(texts); start += Batch {
@@ -94,7 +97,7 @@ func (m *httpModels) Embed(ctx context.Context, texts []string) (string, [][]flo
 	return model, out, nil
 }
 
-func (m *httpModels) Entail(ctx context.Context, pairs []NLIPair) (string, []float64, error) {
+func (m *Client) Entail(ctx context.Context, pairs []NLIPair) (string, []float64, error) {
 	var model string
 	out := make([]float64, 0, len(pairs))
 	for start := 0; start < len(pairs); start += Batch {
@@ -122,10 +125,10 @@ func (m *httpModels) Entail(ctx context.Context, pairs []NLIPair) (string, []flo
 	return model, out, nil
 }
 
-// post sends one request through the breaker (meaning_breaker.go): a
+// post sends one request through the breaker (breaker.go): a
 // failure to reach the service is ErrDown, and while it is down
 // calls fail at once.
-func (m *httpModels) post(ctx context.Context, path string, body, out any) error {
+func (m *Client) post(ctx context.Context, path string, body, out any) error {
 	probe, err := m.breaker.allow()
 	if err != nil {
 		return err
@@ -152,7 +155,7 @@ func (m *httpModels) post(ctx context.Context, path string, body, out any) error
 
 // send makes the request; unanswered is true when the service did not
 // answer it: no connection, a timeout, or a server error (5xx).
-func (m *httpModels) send(ctx context.Context, path string, body, out any) (unanswered bool, err error) {
+func (m *Client) send(ctx context.Context, path string, body, out any) (unanswered bool, err error) {
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return false, err
@@ -178,6 +181,16 @@ func (m *httpModels) send(ctx context.Context, path string, body, out any) (unan
 		return res.StatusCode >= 500, fmt.Errorf("the meaning service answered HTTP %d: %s", res.StatusCode, kernel.Excerpt(string(data), 200))
 	}
 	return false, json.Unmarshal(data, out)
+}
+
+// HealthOf is m's view of the service's health, when m keeps one (a
+// Client does; a test's fake may not).
+func HealthOf(m Models) (Health, bool) {
+	h, ok := m.(interface{ Health() Health })
+	if !ok {
+		return Health{}, false
+	}
+	return h.Health(), true
 }
 
 // Timeout bounds one call to the meaning service: a batch of NLI

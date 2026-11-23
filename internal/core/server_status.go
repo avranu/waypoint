@@ -188,8 +188,7 @@ func (s *Service) ServerStatus(ctx context.Context, actor *Actor) (*ServerStatus
 		s.log.WarnContext(ctx, "server status: agent events", "err", err)
 	}
 	out.AIKeys = s.aiKeyDays(ctx)
-	if m, ok := s.Meaning.(interface{ Health() meaning.Health }); ok {
-		h := m.Health()
+	if h, ok := meaning.HealthOf(s.Meaning); ok {
 		out.Meaning = &h
 	}
 	if s.cfg.Logs != nil {

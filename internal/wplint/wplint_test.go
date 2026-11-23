@@ -24,13 +24,14 @@ func TestAnalyzers(t *testing.T) {
 		"writeclosure":  {"writeclosure/internal/core"},
 		"actorused":     {"actorused/internal/core"},
 		"clock":         {"clock/internal/core"},
-		"logctx":        {"logctx/internal/core"},
-		"blankerr":      {"blankerr/internal/core"},
-		"logmsg":        {"logmsg/internal/core"},
+		"logctx":        {"logctx/internal/core", "logctx/internal/core/sub"},
+		"blankerr":      {"blankerr/internal/core", "blankerr/internal/core/sub"},
+		"logmsg":        {"logmsg/internal/core", "logmsg/internal/core/sub"},
 		"sqlscan":       {"sqlscan/store"},
 		"schemachain":   {"schemachain/internal/core"},
 		"protecteddiff": {"protecteddiff/forge"},
 		"statuscreator": {"statuscreator/internal/core"},
+		"corelayers":    {"corelayers/internal/core", "corelayers/internal/core/kernel", "corelayers/internal/core/forge", "corelayers/internal/core/pr", "corelayers/internal/core/merge"},
 		"testenv":       {"testenv/cli", "testenv/clean", "testenv/notests", "testenv/ranged"},
 	}
 	// These rules need the package's tests (llmSchemas, TestMain), so only

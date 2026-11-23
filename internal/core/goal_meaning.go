@@ -38,7 +38,7 @@ import (
 // shared words (a feature, never the decider on its own unless it wins on
 // held-out labels), an embedding model's cosine (also with each goal's
 // ancestors before it), an NLI model's entailment both ways (the meaning
-// service, meaning_client.go) and a language model asked about the one pair
+// service, package meaning) and a language model asked about the one pair
 // (graded 0-3, through the gateway's extract/judge purpose when there is one). A
 // decider per question turns the scores into yes or no: a fixed prior until
 // labels from what happened pick one on held-out data
@@ -746,10 +746,8 @@ func (s *Service) refreshMeaning(ctx context.Context) bool {
 	s.queueMeaningFeedback(ctx)
 	// A meaning service that is down is tried again when its breaker lets
 	// a call through, not only when a goal changes (WP-1602).
-	if m, ok := s.Meaning.(interface{ Health() meaning.Health }); ok {
-		if h := m.Health(); h.RetryAt != nil {
-			ps.retry(h.RetryAt.UnixMilli())
-		}
+	if h, ok := meaning.HealthOf(s.Meaning); ok && h.RetryAt != nil {
+		ps.retry(h.RetryAt.UnixMilli())
 	}
 	s.meaningRetryLater(ps.retryAt)
 	return ps.more && ps.progress && ctx.Err() == nil
@@ -823,7 +821,7 @@ func (s *Service) meaningModels(ctx context.Context) (embed, nli string) {
 }
 
 // meaningCallFailed logs a failed call: below a warning when the service
-// did not answer, which its breaker reports once (meaning_breaker.go).
+// did not answer, which its breaker reports once (meaning/breaker.go).
 func (s *Service) meaningCallFailed(ctx context.Context, msg string, err error) {
 	if errors.Is(err, meaning.ErrDown) {
 		s.log.InfoContext(ctx, msg, "err", err)

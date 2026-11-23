@@ -127,6 +127,11 @@ func TestMeaningBreakerOneProbeAndRefused(t *testing.T) {
 		http.Error(w, "wedged", http.StatusServiceUnavailable)
 	}))
 	defer srv.Close()
+	// Released before srv.Close (deferred calls run last-in first), so a
+	// failed test doesn't leave held handlers blocking Close.
+	var stopOnce sync.Once
+	releaseHeld := func() { stopOnce.Do(func() { close(stop) }) }
+	defer releaseHeld()
 	now := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
 	var mu sync.Mutex
 	clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
@@ -146,8 +151,15 @@ func TestMeaningBreakerOneProbeAndRefused(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	got := make(chan error, 1)
 	go func() { _, _, err := m.Embed(ctx, []string{"x"}); got <- err }()
+	deadline := time.After(10 * time.Second)
 	for hits.Load() == before {
-		time.Sleep(time.Millisecond)
+		select {
+		case err := <-got:
+			t.Fatalf("the probe ended before it reached the service: %v", err)
+		case <-deadline:
+			t.Fatal("the probe never reached the service")
+		case <-time.After(time.Millisecond):
+		}
 	}
 	for range 10 {
 		if _, _, err := m.Embed(context.Background(), []string{"x"}); !errors.Is(err, ErrDown) {
@@ -165,7 +177,7 @@ func TestMeaningBreakerOneProbeAndRefused(t *testing.T) {
 
 	// The turn came back: the next call probes, and the service is gone.
 	hold.Store(false)
-	close(stop)
+	releaseHeld()
 	srv.CloseClientConnections()
 	srv.Close()
 	if _, _, err := m.Embed(context.Background(), []string{"x"}); !errors.Is(err, ErrDown) {

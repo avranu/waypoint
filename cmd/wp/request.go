@@ -2,8 +2,6 @@ package main
 
 import (
 	"bytes"
-	"crypto/sha1" // #nosec G505 -- git blob ids
-	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -17,6 +15,8 @@ import (
 	"time"
 
 	"encoding/json"
+
+	"git.jmann.me/claude/waypoint/internal/core/udiff"
 )
 
 // Requests (WP-D16): what an agent asks a person while it keeps working.
@@ -631,7 +631,7 @@ func requestChange(c *cli, args []string) error {
 	kept := files[:0:0]
 	var same []string
 	for _, f := range files {
-		if !f.Delete && f.BaseSHA != "" && gitBlobSHAOf(f.Content) == f.BaseSHA {
+		if !f.Delete && f.BaseSHA != "" && udiff.GitBlobSHA(f.Content) == f.BaseSHA {
 			same = append(same, f.Path)
 			continue
 		}
@@ -786,7 +786,7 @@ func outsideBase(p string) (content, sha string) {
 	if err != nil || len(b) > maxChangeFile || bytes.IndexByte(b, 0) >= 0 {
 		return "", ""
 	}
-	return string(b), gitBlobSHAOf(string(b))
+	return string(b), udiff.GitBlobSHA(string(b))
 }
 
 // baseOf is a file at HEAD and its git blob id; empty for a file that
@@ -882,7 +882,7 @@ func changesFromPatch(root, patchFile string) ([]changeFile, string, error) {
 	var modeOnly, modeKept []string
 	for _, f := range files {
 		_, has := modes[f.Path]
-		if has && !f.Delete && f.BaseSHA != "" && gitBlobSHAOf(f.Content) == f.BaseSHA {
+		if has && !f.Delete && f.BaseSHA != "" && udiff.GitBlobSHA(f.Content) == f.BaseSHA {
 			modeOnly = append(modeOnly, f.Path)
 			continue
 		}
@@ -946,13 +946,6 @@ func chmodCommand(modes map[string]bool, paths []string) string {
 		}
 	}
 	return "wp request run \"" + strings.Join(cmds, " && ") + " && git commit -m '…'\" -d WHY"
-}
-
-func gitBlobSHAOf(content string) string {
-	h := sha1.New() // #nosec G401 -- git's blob id, not a security hash
-	fmt.Fprintf(h, "blob %d\x00", len(content))
-	h.Write([]byte(content))
-	return hex.EncodeToString(h.Sum(nil))
 }
 
 // patchPaths are the files a patch touches (git apply --numstat -z).

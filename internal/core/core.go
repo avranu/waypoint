@@ -187,7 +187,7 @@ type Service struct {
 	Forges ForgeClient
 	// language models for AI tasks, swappable in tests
 	LLM LLM
-	// Meaning is the meaning service (meaning_client.go); nil without one.
+	// Meaning is the meaning service (package meaning); nil without one.
 	Meaning     meaning.Models
 	aiSlots     chan struct{}
 	surplusSlot chan struct{} // surplus work, one at a time beside aiSlots: it never waits for normal work nor holds it up (WP-906)
