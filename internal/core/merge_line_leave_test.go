@@ -167,3 +167,33 @@ func TestParkUnderTheQueueLockDoesNotDeadlock(t *testing.T) {
 		t.Fatal("parkBabysit waited on the lock its caller holds")
 	}
 }
+
+// A marker is good only while its holder holds: a context kept past the
+// unlock locks for real.
+func TestQueueLockCtxMarkerEndsWithTheLock(t *testing.T) {
+	se := newStackEnv(t)
+	se.draftGreen(head7s, 5)
+	pr := se.pr(7)
+	stale, unlock := se.s.queueLockCtx(se.ctx, pr)
+	unlock()
+	_, again := se.s.queueLockCtx(stale, pr) // takes the lock
+	got := make(chan func())
+	go func() {
+		_, u := se.s.queueLockCtx(context.Background(), pr)
+		got <- u
+	}()
+	select {
+	case u := <-got:
+		u()
+		again()
+		t.Fatal("a stale marker skipped the lock")
+	case <-time.After(150 * time.Millisecond):
+	}
+	again()
+	select {
+	case u := <-got:
+		u()
+	case <-time.After(5 * time.Second):
+		t.Fatal("unlocking didn't release the lock")
+	}
+}

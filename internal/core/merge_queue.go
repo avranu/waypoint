@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -149,26 +150,38 @@ var queueStates = []string{BabysitWatching, BabysitWaitingReview, BabysitReady, 
 // heldLinesKey keys the line locks a context's goroutine holds.
 type heldLinesKey struct{}
 
+// heldLine is one held line lock: released once its holder unlocks.
+type heldLine struct {
+	key      string
+	released atomic.Bool
+}
+
 // queueLockCtx serializes the decisions about one merge queue. The lock is
-// not reentrant, so the context it returns carries the line's key: pass it to
-// everything called while holding, and a leaveQueue (or another
+// not reentrant, so the context it returns carries a marker for the line:
+// pass it to everything called while holding, and a leaveQueue (or another
 // queueLockCtx) on it passes through instead of waiting on itself (WP-1706).
-// A context that crossed to another goroutine must go through
-// withoutLineLocks, or it would skip a lock nobody there holds.
+// A marker is good only while its holder holds: unlocking marks it released,
+// so a context that outlived the holder locks normally. A context used on
+// another goroutine should still go through withoutLineLocks, because a
+// marker that is live there skips a lock that goroutine doesn't hold.
 func (s *Service) queueLockCtx(ctx context.Context, pr *PullRequest) (context.Context, func()) {
 	key := fmt.Sprintf("queue:%d:%s:%s", pr.ForgeID, strings.ToLower(pr.Repo), pr.BaseRef)
-	held, _ := ctx.Value(heldLinesKey{}).([]string)
-	if slices.Contains(held, key) {
+	held, _ := ctx.Value(heldLinesKey{}).([]*heldLine)
+	if slices.ContainsFunc(held, func(h *heldLine) bool { return h.key == key && !h.released.Load() }) {
 		return ctx, func() {}
 	}
 	unlock := forgeLocks.lock(key)
-	return context.WithValue(ctx, heldLinesKey{}, append(slices.Clone(held), key)), unlock
+	h := &heldLine{key: key}
+	return context.WithValue(ctx, heldLinesKey{}, append(slices.Clone(held), h)), func() {
+		h.released.Store(true)
+		unlock()
+	}
 }
 
 // withoutLineLocks is ctx for work that runs on another goroutine: the
 // holder's locks aren't that goroutine's.
 func withoutLineLocks(ctx context.Context) context.Context {
-	return context.WithValue(ctx, heldLinesKey{}, []string(nil))
+	return context.WithValue(ctx, heldLinesKey{}, []*heldLine(nil))
 }
 
 // lineKey is a pull request's place in its line: when it was armed.
