@@ -5,6 +5,7 @@ import (
 	"context"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -17,6 +18,7 @@ func slotEnv(t *testing.T) {
 	t.Setenv("WAYPOINT_CONFIG_DIR", t.TempDir())
 	t.Setenv("WAYPOINT_SERVER", "https://waypoint.example.com")
 	t.Setenv("WAYPOINT_SLOT_DIR", t.TempDir())
+	t.Setenv(slotSendEnv, "off") // no test spools holds for a server unless it says so (WP-1646)
 }
 
 func TestSlotSerializesWithOneSlot(t *testing.T) {
@@ -124,8 +126,14 @@ func TestSlotNestedRunReusesTheSlot(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("nested run waited on its own slot")
 	}
-	// A different NAME is still taken separately.
+	// Only the outer run is a run: the inner one, inside its slot and time,
+	// recorded nothing.
 	dir, _ := slotDir()
+	b, _ := os.ReadFile(filepath.Join(dir, slotRunsFile))
+	if lines := strings.Split(strings.TrimSpace(string(b)), "\n"); len(lines) != 1 || !strings.HasPrefix(lines[0], `{"name":"tests","cmd":"`+bin+" slot run") {
+		t.Errorf("runs.jsonl after a nested run:\n%s", b)
+	}
+	// A different NAME is still taken separately.
 	t.Setenv(slotHeldEnv, "other="+url.PathEscape(dir)+"@"+strconv.Itoa(os.Getpid()))
 	if !slotHeld("other") || slotHeld("tests") {
 		t.Fatal("slotHeld misreads the list")

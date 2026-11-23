@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"git.jmann.me/claude/waypoint/internal/core/udiff"
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
@@ -348,7 +349,7 @@ func changesNothing(files []storedFile) bool {
 		return false
 	}
 	for _, f := range files {
-		if f.Delete || f.BaseSHA == "" || gitBlobSHA(f.Content) != strings.ToLower(f.BaseSHA) {
+		if f.Delete || f.BaseSHA == "" || udiff.GitBlobSHA(f.Content) != strings.ToLower(f.BaseSHA) {
 			return false
 		}
 	}

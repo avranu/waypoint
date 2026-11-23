@@ -1516,13 +1516,16 @@ func (s *Service) CheckAudits(ctx context.Context) {
 }
 
 // codeAuditEvent: dispatch's part. A queued audit is started; a finished
-// one is posted, handed to Claude if asked, and told to whoever asked.
+// one is posted, handed to Claude if asked, and told to whoever asked; one
+// whose findings were marked takes back news of it nobody needs now.
 func (s *Service) codeAuditEvent(ctx context.Context, e *Event) {
 	id, _ := e.Data["audit"].(int64)
 	if id == 0 {
 		return
 	}
 	switch {
+	case e.Field == "findings":
+		s.withdrawDecidedAuditNews(ctx, id)
 	case e.Field == "fix":
 		// Asked for after the fact: made now, so the caller gets its key.
 		s.auditFixTask(ctx, id)
@@ -1865,10 +1868,12 @@ func writeAuditFinding(b *strings.Builder, f CodeAuditFinding) {
 func (s *Service) tellAudit(ctx context.Context, a *CodeAudit) {
 	text := auditNews(a, s.BaseURL())
 	if a.sessionID != 0 {
-		m, err := s.storeMessage(ctx, a.sessionID, text, fmt.Sprintf("audit:%d:%s", a.ID, a.Status), messageFrom{}, false)
+		m, err := s.storeMessage(ctx, a.sessionID, text, auditNewsKey(a.ID, a.Status), messageFrom{}, false)
 		if err != nil {
 			s.log.WarnContext(ctx, "tell a session about its audit", "audit", a.ID, "err", err)
-		} else if m.State == MessageQueued {
+		} else if m.State == MessageQueued && (a.Status != AuditDone || !s.withdrawDecidedAuditNews(ctx, a.ID)) {
+			// Its findings may all be decided already, marked while the
+			// comment posted: then it is withdrawn as it is stored.
 			s.batchOrTell(ctx, a.sessionID, 0, a.blocking, func(until int64) error {
 				_, err := s.db.W.ExecContext(ctx, `UPDATE session_messages SET batch_until = ?, blocking = ? WHERE id = ? AND state = 'queued'`, until, a.blocking, m.ID)
 				return err
@@ -1891,6 +1896,69 @@ func (s *Service) tellAudit(ctx context.Context, a *CodeAudit) {
 		return
 	}
 	s.notifyURL(ctx, who, nil, NotifyAudit, auditHeadline(a), text, fmt.Sprintf("/audits/%d", a.ID))
+}
+
+// auditNewsKey is the step key of the message telling a session an audit
+// ended (tellAudit).
+func auditNewsKey(id int64, status string) string {
+	return fmt.Sprintf("audit:%d:%s", id, status)
+}
+
+// withdrawDecidedAuditNews withdraws the news that an audit ended, still
+// queued for the session that asked for it, once no finding in it is left
+// to do, and says whether it did: typed in at the session's next Stop, it
+// would be its next task with nothing in it (WP-1525). The news can wait
+// long enough for that: a session that ended before taking it hands it to
+// the next one in its worktree (takeMessages), which may well have found
+// and marked the findings first. Whoever marked them, the asking session, a
+// person or a reviewer, the news has nothing left for the session to do. It
+// runs when findings are marked and when the news is stored. News of an
+// audit with no findings stays: it is the session's answer, not a task.
+// News a runner job is delivering ('sending') is left to it, and withdrawn
+// if the job fails and puts it back in the queue (withdrawRequeuedAuditNews).
+// Withdrawal is one-way: a finding made to do again later (marked open, or
+// its filed issue canceled or deleted) does not queue the news again.
+// Whoever reopened it knows, and the audit's findings list it as to do.
+func (s *Service) withdrawDecidedAuditNews(ctx context.Context, id int64) bool {
+	res, err := s.db.W.ExecContext(ctx, `UPDATE session_messages SET state = 'cancelled' WHERE step_key = ? AND state = ?
+		AND EXISTS (SELECT 1 FROM code_audit_findings f WHERE f.audit_id = ?)
+		AND NOT EXISTS (SELECT 1 FROM code_audit_findings f WHERE f.audit_id = ? AND `+findingToDoSQL+`)`,
+		auditNewsKey(id, AuditDone), MessageQueued, id, id)
+	if err != nil {
+		s.log.WarnContext(ctx, "withdraw an audit's news once its findings are decided", "audit", id, "err", err)
+		return false
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		s.log.InfoContext(ctx, "withdrew an audit's news: every finding is decided", "audit", id)
+		return true
+	}
+	return false
+}
+
+// withdrawRequeuedAuditNews withdraws audit news that a failed batch post
+// put back in the queue if its findings were all decided while it was being
+// posted. Audit news only goes out in batches (tellAudit, batchOrTell).
+func (s *Service) withdrawRequeuedAuditNews(ctx context.Context, batch int64) {
+	rows, err := s.db.R.QueryContext(ctx, `SELECT step_key FROM session_messages WHERE sent_with = ? AND state = ? AND step_key LIKE 'audit:%'`, batch, MessageQueued)
+	if err != nil {
+		s.log.WarnContext(ctx, "find audit news put back in the queue", "batch", batch, "err", err)
+		return
+	}
+	var ids []int64
+	for rows.Next() {
+		var key string
+		var id int64
+		if rows.Scan(&key) != nil {
+			continue
+		}
+		if _, err := fmt.Sscanf(key, "audit:%d:", &id); err == nil && key == auditNewsKey(id, AuditDone) {
+			ids = append(ids, id)
+		}
+	}
+	rows.Close()
+	for _, id := range ids {
+		s.withdrawDecidedAuditNews(ctx, id)
+	}
 }
 
 func auditHeadline(a *CodeAudit) string {

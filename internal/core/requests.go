@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"git.jmann.me/claude/waypoint/internal/core/udiff"
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
@@ -1305,14 +1306,14 @@ func checkChangeFiles(in []RequestFileInput) ([]storedFile, error) {
 		switch {
 		case isNew && f.Base != "":
 			return nil, invalid("%s has base content but no base_sha", p)
-		case !isNew && gitBlobSHA(f.Base) != strings.ToLower(f.BaseSHA):
+		case !isNew && udiff.GitBlobSHA(f.Base) != strings.ToLower(f.BaseSHA):
 			return nil, invalid("%s: base_sha %s isn't the git blob of the base content sent", p, f.BaseSHA)
 		case isNew && f.Delete:
 			return nil, invalid("%s is new, so there is nothing to delete", p)
 		case !f.Delete && f.Content == "" && isNew:
 			return nil, invalid("%s: new files need content", p)
 		}
-		d, add, del := unifiedDiff(p, f.Base, f.Content, isNew, f.Delete)
+		d, add, del := udiff.Unified(p, f.Base, f.Content, isNew, f.Delete)
 		if f.Delete {
 			f.Content = ""
 		}
@@ -1461,18 +1462,7 @@ func terminalAnswer(raw json.RawMessage) string {
 // for other answers) is left for bundled calls, the start of a turn (SessionStart,
 // UserPromptSubmit), and not used to continue an agent at a Stop.
 func (s *Service) takeDecisions(ctx context.Context, t *tx, actor *Actor, x *AgentSession, start, bundled bool) ([]*Request, error) {
-	where := `r.user_id = ? AND r.decided_at IS NOT NULL AND r.delivered_at IS NULL AND r.via = '' AND r.state IN (` + placeholders(len(decidedStates)) + `)`
-	args := []any{actor.id()}
-	for _, st := range decidedStates {
-		args = append(args, st)
-	}
-	if start && x.Cwd != "" {
-		where += ` AND (r.session_id = ? OR r.session_id IN (SELECT id FROM agent_sessions WHERE user_id = ? AND machine = ? AND cwd = ?))`
-		args = append(args, x.ID, actor.id(), x.Machine, x.Cwd)
-	} else {
-		where += ` AND r.session_id = ?`
-		args = append(args, x.ID)
-	}
+	where, args := decisionsWhere(actor, x, start)
 	ids, err := queryIDs(ctx, t, `SELECT r.id FROM requests r WHERE `+where+` ORDER BY r.id LIMIT 50`, args...)
 	if err != nil || len(ids) == 0 {
 		return nil, err
@@ -1514,6 +1504,24 @@ func (s *Service) takeDecisions(ctx context.Context, t *tx, actor *Actor, x *Age
 		return nil, err
 	}
 	return list, nil
+}
+
+// decisionsWhere selects the decisions takeDecisions gives: the session's
+// (at a start, also those of earlier sessions in its worktree) not told yet.
+func decisionsWhere(actor *Actor, x *AgentSession, start bool) (string, []any) {
+	where := `r.user_id = ? AND r.decided_at IS NOT NULL AND r.delivered_at IS NULL AND r.via = '' AND r.state IN (` + placeholders(len(decidedStates)) + `)`
+	args := []any{actor.id()}
+	for _, st := range decidedStates {
+		args = append(args, st)
+	}
+	if start && x.Cwd != "" {
+		where += ` AND (r.session_id = ? OR r.session_id IN (SELECT id FROM agent_sessions WHERE user_id = ? AND machine = ? AND cwd = ?))`
+		args = append(args, x.ID, actor.id(), x.Machine, x.Cwd)
+	} else {
+		where += ` AND r.session_id = ?`
+		args = append(args, x.ID)
+	}
+	return where, args
 }
 
 // checkFollowup validates a request's follow-up setting.

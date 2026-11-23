@@ -361,8 +361,6 @@ func (t *burnTree) recentRate(now time.Time) float64 {
 
 // ---- finding the session ----
 
-var reNonAlnum = lazyre.New(`[^A-Za-z0-9]`)
-
 // transcriptOfSession finds <config>/projects/*/<id>.jsonl.
 func transcriptOfSession(id string) string {
 	m, _ := filepath.Glob(filepath.Join(claudeConfigDir(), "projects", "*", id+".jsonl"))
@@ -409,7 +407,7 @@ func (c *cli) currentTranscript(session, cwd string) (string, error) {
 			break
 		}
 	}
-	dir := filepath.Join(claudeConfigDir(), "projects", reNonAlnum.ReplaceAllString(cwd, "-"))
+	dir := filepath.Join(claudeConfigDir(), "projects", projectDirName(cwd))
 	ents, _ := os.ReadDir(dir)
 	var best string
 	var bt time.Time

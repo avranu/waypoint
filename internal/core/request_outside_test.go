@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"git.jmann.me/claude/waypoint/internal/core/udiff"
 )
 
 // Change requests for files outside any git repository (WP-115).
@@ -11,7 +13,7 @@ import (
 func outsideChange(r *reqEnv, org bool, base, content string) *Request {
 	f := RequestFileInput{Path: "/work/CLAUDE.md", Outside: true, Content: content}
 	if base != "" {
-		f.BaseSHA, f.Base = gitBlobSHA(base), base
+		f.BaseSHA, f.Base = udiff.GitBlobSHA(base), base
 	}
 	return r.ask(RequestInput{Kind: RequestChange, Title: "Update the org CLAUDE.md", Message: "Org rules", Organization: org, Files: []RequestFileInput{f}})
 }
@@ -32,7 +34,7 @@ func TestOutsideRepoChangeIsFiledInTheOrganizationProject(t *testing.T) {
 		t.Fatalf("filed in project %d, want the organization %d", above.projectID.Int64, org.ID)
 	}
 	f := above.Files[0]
-	if !f.Outside || f.Path != "/work/CLAUDE.md" || f.BaseSHA != gitBlobSHA("# Org\n") || !strings.Contains(f.Diff, "+be nice") {
+	if !f.Outside || f.Path != "/work/CLAUDE.md" || f.BaseSHA != udiff.GitBlobSHA("# Org\n") || !strings.Contains(f.Diff, "+be nice") {
 		t.Fatalf("recorded file: %+v", f)
 	}
 	elsewhere := outsideChange(r, false, "", "x\n")
@@ -104,7 +106,7 @@ func TestOutsideRepoChangeAppliesThroughTheRunnerOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	if in.Dir != "/work" || in.Commit != "" || in.Push || len(in.Files) != 1 || in.Files[0].Path != "CLAUDE.md" ||
-		in.Files[0].BaseSHA != gitBlobSHA(base) || in.Files[0].Content != "# Org\nbe nice\n" {
+		in.Files[0].BaseSHA != udiff.GitBlobSHA(base) || in.Files[0].Content != "# Org\nbe nice\n" {
 		t.Fatalf("apply job: %+v", in)
 	}
 }
