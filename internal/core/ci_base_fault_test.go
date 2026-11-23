@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -18,6 +19,8 @@ type baseFaultForge struct {
 	jobs   map[int64][]ActionJob // by run id
 	logs   map[int64]string      // by job id
 	reruns []int64               // run ids
+	// jobReads counts ActionJobs calls.
+	jobReads int
 }
 
 func (a *baseFaultForge) ActionRuns(context.Context, *Forge, string, []string, int, int) ([]ActionRun, error) {
@@ -31,6 +34,7 @@ func (a *baseFaultForge) ActionRuns(context.Context, *Forge, string, []string, i
 func (a *baseFaultForge) ActionJobs(_ context.Context, _ *Forge, _ string, runID int64) ([]ActionJob, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.jobReads++
 	return slices.Clone(a.jobs[runID]), nil
 }
 
@@ -350,6 +354,152 @@ func TestBaseAdvisoriesFileOneTask(t *testing.T) {
 	sweep()
 	if r := af.rerun(); !slices.Equal(r, []int64{112}) {
 		t.Fatalf("a runner fault beside advisories: re-runs %v", r)
+	}
+}
+
+// The advisories job also runs daily from its own workflow (event schedule)
+// and by hand: a failure there files the task whether or not a push run is
+// red, one run is looked at once whatever became of its task, a filing that
+// failed or had nobody to ask is told apart, and each newer failed run files
+// again once the earlier task is closed (WP-1660).
+func TestBaseAdvisoriesScheduledRuns(t *testing.T) {
+	se := newShipEnv(t, "forgejo")
+	af := &baseFaultForge{shipForge: se.sg, jobs: map[int64][]ActionJob{}, logs: map[int64]string{}}
+	se.s.Forges = af
+	// run puts a finished run of main on the forge with the advisories job in
+	// advisories status, then any others.
+	run := func(n int64, event, status, advisories string, others ...ActionJob) {
+		t.Helper()
+		af.add(n, "main", fmt.Sprintf("%07d", n), status, "", se.clockNow().Add(-10*time.Minute))
+		af.mu.Lock()
+		defer af.mu.Unlock()
+		for i := range af.runs {
+			if af.runs[i].Index == n {
+				af.runs[i].Event = event
+			}
+		}
+		af.jobs[100+n] = append([]ActionJob{{ID: 1000 + n, RunID: 100 + n, Name: advisoriesJob, Status: advisories}}, others...)
+		af.logs[1000+n] = "GO-2026-0001 called\n"
+	}
+	open := func() int {
+		t.Helper()
+		var n int
+		if err := se.s.db.R.QueryRowContext(se.ctx, `SELECT count(*) FROM issues i JOIN statuses st ON st.id = i.status_id
+			WHERE i.title LIKE 'Fix the advisories on %' AND st.category NOT IN ('done','canceled')`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	closeTasks := func() {
+		t.Helper()
+		if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE issues SET status_id = (SELECT st.id FROM statuses st WHERE st.project_id = issues.project_id AND st.category = 'done' LIMIT 1)
+			WHERE title LIKE 'Fix the advisories on %'`); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sweep := func() {
+		t.Helper()
+		se.s.Wait()
+		se.setClock(se.clockNow().Add(10 * time.Minute))
+		se.s.RecordCIHistory(se.ctx)
+	}
+	total := func() int {
+		t.Helper()
+		var n int
+		if err := se.s.db.R.QueryRowContext(se.ctx, `SELECT count(*) FROM issues WHERE title LIKE 'Fix the advisories on %'`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	// A scheduled run fails in advisories; no push run is red.
+	run(5, "push", "success", "success")
+	run(6, "schedule", "failure", "failure")
+	sweep()
+	if open() != 1 {
+		t.Fatalf("a failed scheduled run filed %d tasks", open())
+	}
+	// Looked at again: nothing more, also once the task is closed.
+	sweep()
+	closeTasks()
+	sweep()
+	if total() != 1 {
+		t.Fatalf("the same run filed again: %d tasks", total())
+	}
+	// A newer failed run, the next day's, files the next task.
+	run(7, "schedule", "failure", "failure")
+	sweep()
+	if total() != 2 || open() != 1 {
+		t.Fatalf("a newer failed run: %d tasks, %d open", total(), open())
+	}
+	// A push where another job failed too, in either job order: one task.
+	closeTasks()
+	run(8, "push", "failure", "failure", ActionJob{ID: 2008, RunID: 108, Name: "backend shard 1", Status: "failure"})
+	af.mu.Lock()
+	af.logs[2008] = "--- FAIL: TestX\n"
+	af.mu.Unlock()
+	sweep()
+	closeTasks()
+	run(9, "push", "failure", "failure")
+	af.mu.Lock()
+	af.jobs[109] = []ActionJob{{ID: 2009, RunID: 109, Name: "backend shard 1", Status: "failure"}, {ID: 1009, RunID: 109, Name: advisoriesJob, Status: "failure"}}
+	af.logs[2009] = "--- FAIL: TestX\n"
+	af.mu.Unlock()
+	if open() != 0 || total() != 3 {
+		t.Fatalf("after run 8: %d open, %d total", open(), total())
+	}
+	sweep()
+	if open() != 1 || total() != 4 {
+		t.Fatalf("after run 9: %d open, %d total", open(), total())
+	}
+	// A cancelled advisories job found nothing; a passing run makes no read.
+	closeTasks()
+	run(10, "schedule", "failure", "cancelled")
+	sweep()
+	reads := af.jobReads
+	run(11, "schedule", "success", "success")
+	sweep()
+	if total() != 4 || af.jobReads != reads {
+		t.Fatalf("cancelled or passing run: %d tasks, %d job reads (was %d)", total(), af.jobReads, reads)
+	}
+
+	// Nobody to ask: nothing filed and the run is not looked at again; the
+	// next failed run files.
+	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE users SET disabled = 1`); err != nil {
+		t.Fatal(err)
+	}
+	run(12, "schedule", "failure", "failure")
+	sweep()
+	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE users SET disabled = 0`); err != nil {
+		t.Fatal(err)
+	}
+	sweep()
+	if total() != 4 {
+		t.Fatalf("filed with no owner, or retried the run: %d tasks", total())
+	}
+	run(13, "workflow_dispatch", "failure", "failure")
+	sweep()
+	if total() != 5 || open() != 1 {
+		t.Fatalf("the next run after a no-owner one: %d tasks, %d open", total(), open())
+	}
+
+	// A filing that fails is tried again on the next pass.
+	closeTasks()
+	if _, err := se.s.db.W.ExecContext(se.ctx, `CREATE TRIGGER no_advisories_task BEFORE INSERT ON issues
+		WHEN NEW.title LIKE 'Fix the advisories on %' BEGIN SELECT RAISE(ABORT, 'disk full'); END`); err != nil {
+		t.Fatal(err)
+	}
+	run(14, "schedule", "failure", "failure")
+	sweep()
+	if total() != 5 {
+		t.Fatalf("filed through a failing write: %d tasks", total())
+	}
+	if _, err := se.s.db.W.ExecContext(se.ctx, `DROP TRIGGER no_advisories_task`); err != nil {
+		t.Fatal(err)
+	}
+	sweep()
+	if total() != 6 || open() != 1 {
+		t.Fatalf("after the write works: %d tasks, %d open", total(), open())
 	}
 }
 

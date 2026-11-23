@@ -197,10 +197,15 @@ deploy key in a CI job is readable by whatever runs beside it.
    **Advisories (WP-1660).** `npm audit` (high and above) and govulncheck
    (called vulnerabilities) depend on advisory databases, not on the change
    under test, so a new advisory used to fail every branch's full run. What
-   changes is where it fails; no advisory is ignored.
+   changes is where it fails; no advisory is ignored, except the npm ones on
+   `web/scripts/audit.mjs`'s waiver list (each reviewed by a person, with an
+   expiry, and checked again on every run).
    `deploy/advisories.sh` runs the check on the tree under test
    (`lint` for npm, the last `backend shard` for Go); with no findings that is
-   all. With findings it checks origin/main's tip the same way and compares
+   all. The npm check is skipped on a pull request that leaves `web/package.json`
+   and `web/package-lock.json` as they were where it left main: it can't add an
+   advisory. The Go check always runs, since a Go change alone can call
+   vulnerable code. With findings it checks origin/main's tip the same way and compares
    by advisory id: a pull request or merge queue stack fails only for an id
    it adds (and prints it), and when every finding is also on main it
    passes with a `::warning title=Advisory on main::` naming them. An id
@@ -208,11 +213,16 @@ deploy key in a CI job is readable by whatever runs beside it.
    fixed it since): the script checks that commit too (the pull request's
    merge base, `ADVISORIES_BASE_SHA` in CI) and passes with
    `::warning title=Advisory fixed on main::`. An npm advisory the change does
-   add passes when `npm run audit` passes on its tree, which is how a pull
-   request adds a dependency together with its reviewed waiver. Main's own
+   add passes when `npm run audit -- --only IDS` passes on its tree, with just
+   the ids the change adds, so another advisory main has too can't fail them.
+   That is how a pull request adds a dependency together with its reviewed
+   waiver. Main's own
    findings fail the `advisories` job (its npm step is `npm run audit`, which
-   honours the waiver list and expiry rules in `web/scripts/audit.mjs`), which runs on every push to main,
-   on the weekly schedule above (and a manual run), without
+   honours the waiver list and expiry rules in `web/scripts/audit.mjs`), which runs on every push to main
+   and, as a copy of the job in `.forgejo/workflows/advisories.yml`, every day at
+   04:43 and on a manual run (the weekly schedule above is the e2e looks'
+   only; a failed daily run shows as `advisories / advisories (schedule)`),
+   without
    `current`'s skip, because a merge tested on its branch says nothing about
    advisories published since. No other job needs `advisories`, so `release`
    and `deploy` are not held back by it: an advisory in a build tool must not
@@ -224,7 +234,7 @@ deploy key in a CI job is readable by whatever runs beside it.
    job, Waypoint files one urgent task for an agent when it fails ("Fix the
    advisories on REPO main", in the repo's project) and no other while that
    one is open.
-   `make vuln` runs the same script in its pull request mode (it lives in
+   `make vuln` (needs network and `jq`) runs the same script in its pull request mode (it lives in
    `deploy/` because the public mirror has no `.forgejo/`), so locally and on
    the mirror a branch fails govulncheck only for what it adds over
    origin/main. `npm run audit` is unchanged: whole tree, with the waiver list.

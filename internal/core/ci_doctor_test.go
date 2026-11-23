@@ -407,6 +407,54 @@ func TestDoctorMainAdvisories(t *testing.T) {
 	}
 }
 
+// A scheduled run newer than the newest push that failed in its advisories job
+// shows main_advisories naming that run, whatever the push run was (WP-1660).
+func TestDoctorScheduledAdvisories(t *testing.T) {
+	now := time.Now()
+	hist := func(runs ...ActionRun) *ciHistory {
+		h := &ciHistory{runs: map[int64]ActionRun{}, tasks: []ActionTask{{Name: "advisories", RunNumber: 9, Status: "failure"}, {Name: "advisories", RunNumber: 3, Status: "failure"}}}
+		for _, r := range runs {
+			r.PrettyRef, r.Created = "main", now
+			h.runs[r.Index] = r
+		}
+		return h
+	}
+	mains := func(h *ciHistory) CIMain {
+		d := &CIDoctor{}
+		snap := &ciSnapshot{repos: []*ciRepoData{{ref: ciRepoRef{forge: &Forge{ID: 1}, repo: "o/a"}, hist: h}}}
+		doctorMains(d, snap, now, func(int64, string) (string, bool) { return "o/a", true })
+		if len(d.Mains) != 1 {
+			t.Fatalf("mains = %+v", d.Mains)
+		}
+		return d.Mains[0]
+	}
+	m := mains(hist(ActionRun{Index: 7, Event: "push", Status: "success"}, ActionRun{Index: 9, Event: "schedule", Status: "failure", HTMLURL: "https://x/9"}))
+	if m.Run != 7 || m.Status != "success" || m.SchedAdvRun != 9 {
+		t.Fatalf("scheduled run after a green push: %+v", m)
+	}
+	if m := mains(hist(ActionRun{Index: 7, Event: "push", Status: "success"}, ActionRun{Index: 9, Event: "schedule", Status: "running"})); m.SchedAdvRun != 0 {
+		t.Errorf("a running scheduled run: %+v", m)
+	}
+	if m := mains(hist(ActionRun{Index: 10, Event: "push", Status: "success"}, ActionRun{Index: 9, Event: "schedule", Status: "failure"})); m.SchedAdvRun != 0 {
+		t.Errorf("a scheduled run older than the push: %+v", m)
+	}
+	if m := mains(hist(ActionRun{Index: 2, Event: "push", Status: "success"}, ActionRun{Index: 4, Event: "workflow_dispatch", Status: "failure"})); m.SchedAdvRun != 0 {
+		t.Errorf("a run whose advisories job passed: %+v", m)
+	}
+	d := &CIDoctor{Mains: []CIMain{{Repo: "o/a", Branch: "main", Run: 7, Status: "success", SchedAdvRun: 9, SchedAdvEvent: "schedule", SchedAdvURL: "https://x/9"}}}
+	doctorFindings(d, &CIBoard{}, now)
+	if len(d.Findings) != 1 || d.Findings[0].Kind != "main_advisories" || d.Findings[0].Title != "o/a main has known advisories (run #9)" ||
+		!strings.Contains(d.Findings[0].Detail, "Run #9 (schedule) found it.") || d.Findings[0].URL != "https://x/9" {
+		t.Fatalf("findings = %+v", d.Findings)
+	}
+	// A red push beside it is still main_red.
+	d = &CIDoctor{Mains: []CIMain{{Repo: "o/a", Branch: "main", Run: 7, Status: "failure", SchedAdvRun: 9}}}
+	doctorFindings(d, &CIBoard{}, now)
+	if len(d.Findings) != 2 {
+		t.Fatalf("findings = %+v", d.Findings)
+	}
+}
+
 // The advisories job the doctor, the base-fix rule and the runner-fault
 // re-runs know by name is the one ci.yml has (WP-1660).
 func TestAdvisoriesJobIsInWorkflow(t *testing.T) {

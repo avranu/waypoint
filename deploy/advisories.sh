@@ -2,10 +2,11 @@
 # Advisory checks (WP-1660): npm audit and govulncheck fail where someone can
 # act on them. A new advisory used to turn every branch's full run red for code
 # it didn't touch (#500, #501, #504, #506: 8 to 21 hours each, R-411, R-412).
-# This script has no waiver list and doesn't lower the bar of an advisory;
-# what changes is where it fails (main's npm audit is web/scripts/audit.mjs,
-# which keeps its own reviewed waiver list; CI's govulncheck on main is `main`
-# below):
+# This script doesn't lower the bar of an advisory; what changes is where it
+# fails. Its only waivers are web/scripts/audit.mjs's reviewed list (with an
+# expiry, a person's decision), which a pull request that adds a waived npm
+# advisory is judged by, and which main's npm audit (`npm run audit`) keeps;
+# CI's govulncheck on main is `main` below:
 #
 #   advisories.sh check KIND pr    a pull request or merge queue stack: fail only
 #                                  for advisories this change adds (compared
@@ -18,8 +19,15 @@
 #                                  pass with a ::warning:: (main's
 #                                  `advisories` job fails on main's). An npm
 #                                  advisory the change adds passes when
-#                                  `npm run audit` does: the change waives it
-#                                  by web/scripts/audit.mjs's rules.
+#                                  `npm run audit -- --only ID,ID` does, with
+#                                  the ids the change adds and no others: the
+#                                  change waives each by web/scripts/audit.mjs's
+#                                  rules, whatever else the tree has. npm
+#                                  is skipped when web/package.json and
+#                                  web/package-lock.json are unchanged from
+#                                  where the branch left main (nothing it could
+#                                  add); go never is, as govulncheck reports
+#                                  called code, which Go changes alone can add.
 #   advisories.sh check KIND main  fail on any finding.
 #   advisories.sh ids KIND         read a tool's JSON on stdin, print its
 #                                  findings as "ID<TAB>detail" lines.
@@ -31,16 +39,26 @@
 # ADVISORIES_BASE_SHA: the commit the branch left main at, for a checkout too
 # shallow to work it out (CI passes the pull request's merge base).
 #
+# Needs jq, git and (for a scan) npm or govulncheck.
+#
 # For tests: ADVISORIES_TREE_JSON, ADVISORIES_MAIN_JSON and ADVISORIES_BASE_JSON
 # name files holding a tool's JSON output, read instead of running the tool on
 # the tree, on main and on the branch's base (no ADVISORIES_BASE_JSON with
-# ADVISORIES_MAIN_JSON: no base is looked at); ADVISORIES_AUDIT_CMD replaces
-# `npm run audit`.
+# ADVISORIES_MAIN_JSON: no base is looked at; with ADVISORIES_TREE_JSON the
+# unchanged-dependency-files skip is off); ADVISORIES_AUDIT_CMD replaces
+# `npm --prefix web run -s audit` and gets the same `-- --only IDS` appended.
 set -euo pipefail
+
+# Every kind runs jq on the tool's JSON; say so before the first use fails.
+command -v jq >/dev/null 2>&1 || {
+  echo "advisories.sh: jq is needed" >&2
+  exit 2
+}
 
 # Run from the repository root whatever the caller's directory (npm run audit
 # runs in web/). deploy/ is in the public mirror, which has no .forgejo/ (WP-1624):
-# the mirror's `make vuln` and `npm run audit` run this too.
+# the mirror's `make vuln` runs this, and this runs `npm run audit` for an npm
+# advisory a change adds.
 cd "$(git rev-parse --show-toplevel)"
 
 # The Makefile's GOPKGS (internal/cilint checks they agree).
@@ -129,15 +147,24 @@ ref_ids() {
   ref_tree "$1" "$2" "$work/$3" && scan "$1" "$work/$3" "$work/$3.ids"
 }
 
+# base_commit MAIN: the commit the branch left main at: ADVISORIES_BASE_SHA,
+# else the merge base with MAIN (a ref or commit; none when empty), fetched
+# when the checkout lacks it. Fails when it can't be found.
+base_commit() {
+  local main=$1 base
+  base=${ADVISORIES_BASE_SHA:-}
+  if [ -z "$base" ] && [ -n "$main" ]; then base=$(git merge-base HEAD "$main" 2>/dev/null || true); fi
+  [ -n "$base" ] || return 1
+  git cat-file -e "$base^{commit}" 2>/dev/null || git fetch -q --no-tags ${depth:+"$depth"} origin "$base" 2>/dev/null || return 1
+  git rev-parse "$base^{commit}"
+}
+
 # base_sha MAIN: the commit the branch left main at, when it isn't MAIN or
 # HEAD (then main's tip, or the tree, is the base already) and can be read.
 base_sha() {
   local main=$1 base head
   head=$(git rev-parse HEAD)
-  base=${ADVISORIES_BASE_SHA:-$(git merge-base HEAD "$main" 2>/dev/null || true)}
-  [ -n "$base" ] || return 1
-  git cat-file -e "$base^{commit}" 2>/dev/null || git fetch -q --no-tags ${depth:+"$depth"} origin "$base" 2>/dev/null || return 1
-  base=$(git rev-parse "$base^{commit}") || return 1
+  base=$(base_commit "$main") || return 1
   [ "$base" != "$main" ] && [ "$base" != "$head" ] || return 1
   echo "$base"
 }
@@ -145,6 +172,19 @@ base_sha() {
 # only_in A B: the ids of A that B lacks.
 only_in() {
   comm -23 <(cut -f1 "$1" | sort -u) <(cut -f1 "$2" | sort -u)
+}
+
+# deps_unchanged: web/package.json and web/package-lock.json are the same at
+# HEAD as where the branch left main, so an npm audit can't find anything the
+# change added (WP-1660: the check runs "when it changes a dependency file").
+# False when the base can't be found: the scan then runs as it always did.
+# Not for go: govulncheck reports vulnerable code that is called, so a change
+# to Go code alone can add a finding.
+deps_unchanged() {
+  local main='' base
+  if git rev-parse -q --verify refs/remotes/origin/main >/dev/null 2>&1; then main=origin/main; fi
+  base=$(base_commit "$main" 2>/dev/null) || return 1
+  git diff --quiet "$base" HEAD -- web/package.json web/package-lock.json
 }
 
 # details IDS FILE: FILE's lines whose id is one of IDS (one a line).
@@ -155,6 +195,12 @@ details() {
 check() {
   local kind=$1 mode=$2 tree main new known main_sha base depth
   tree="$work/tree.ids" main="$work/main.ids"
+  if [ "$(git rev-parse --is-shallow-repository)" = true ]; then depth=--depth=1; else depth=; fi
+  # ADVISORIES_TREE_JSON stands in for the tree in tests: they test the comparison.
+  if [ "$kind" = npm ] && [ "$mode" = pr ] && [ -z "${ADVISORIES_TREE_JSON:-}" ] && deps_unchanged; then
+    echo "npm advisories: web/package.json and web/package-lock.json unchanged from main; nothing this change could add"
+    return 0
+  fi
   if [ -n "${ADVISORIES_TREE_JSON:-}" ]; then ids "$kind" <"$ADVISORIES_TREE_JSON" >"$tree"; else scan "$kind" . "$tree"; fi
 
   if [ ! -s "$tree" ]; then
@@ -171,7 +217,6 @@ check() {
   if [ -n "${ADVISORIES_MAIN_JSON:-}" ]; then
     ids "$kind" <"$ADVISORIES_MAIN_JSON" >"$main"
   else
-    if [ "$(git rev-parse --is-shallow-repository)" = true ]; then depth=--depth=1; else depth=; fi
     # A fetch that failed must not leave an older FETCH_HEAD to stand in for main.
     if ! git fetch -q --no-tags ${depth:+"$depth"} origin main || ! main_sha=$(git rev-parse FETCH_HEAD) || ! ref_ids "$kind" "$main_sha" main; then
       echo "::error title=Advisories::$kind has findings and main's could not be read to compare; failing as plain $kind would"
@@ -200,8 +245,10 @@ check() {
     fi
   fi
   if [ -n "$new" ] && [ "$kind" = npm ]; then
-    # The change may add an advisory together with its reviewed waiver.
-    if ${ADVISORIES_AUDIT_CMD-npm --prefix web run -s audit}; then
+    # The change may add an advisory together with its reviewed waiver. Only
+    # the ids it adds are judged: another one main has too, and no waiver, must
+    # not fail them.
+    if ${ADVISORIES_AUDIT_CMD-npm --prefix web run -s audit} -- --only "$(paste -sd, - <<<"$new")"; then
       echo "::warning title=Waived advisories::npm: this change adds $(paste -sd, - <<<"$new") over main, waived by web/scripts/audit.mjs"
       new=
     fi

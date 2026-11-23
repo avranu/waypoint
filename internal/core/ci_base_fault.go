@@ -23,7 +23,9 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -77,7 +79,8 @@ type branchDefaulter interface {
 	DefaultBranch(ctx context.Context, f *Forge, repo string) (string, error)
 }
 
-// checkBaseFaults re-runs the runner-fault jobs of the newest push runs of
+// checkBaseFaults files the task about the default branch's advisories
+// (checkBaseAdvisories), and re-runs the runner-fault jobs of the newest push runs of
 // repo's default and release branches, or files a task about them. fresh
 // are the runs the forge listed just now; the kept history (ci_runs) adds
 // a quiet branch's older ones.
@@ -94,7 +97,9 @@ func (s *Service) checkBaseFaults(ctx context.Context, f *Forge, repo string, fr
 			branches = append(branches, b)
 		}
 	}
-	def, defKnown := "", false
+	// Asked of the forge once a pass, and only when a branch needs it.
+	def := sync.OnceValue(func() string { return s.baseDefaultBranch(ctx, f, repo) })
+	s.checkBaseAdvisories(ctx, cl, f, repo, def, fresh) // WP-1660: whether or not the branch has red push runs
 	for _, branch := range branches {
 		key := baseFaultSettingKey(f.ID, repo, branch)
 		old, had := states[branch]
@@ -116,20 +121,7 @@ func (s *Service) checkBaseFaults(ctx context.Context, f *Forge, repo string, fr
 			continue
 		}
 		if !strings.HasPrefix(branch, "release/") {
-			if !defKnown {
-				defKnown = true
-				def = "main"
-				if dc, ok := s.Forges.(branchDefaulter); ok {
-					d, err := dc.DefaultBranch(ctx, f, repo)
-					switch {
-					case err != nil:
-						def = "" // lookup failed: only release branches this pass
-					case d != "":
-						def = d
-					}
-				}
-			}
-			if def == "" || branch != def {
+			if d := def(); d == "" || branch != d {
 				continue
 			}
 		}
@@ -140,30 +132,61 @@ func (s *Service) checkBaseFaults(ctx context.Context, f *Forge, repo string, fr
 	}
 }
 
+// baseDefaultBranch is repo's default branch, "main" when the forge can't
+// name it, or "" when asking failed (the caller skips the default branch).
+func (s *Service) baseDefaultBranch(ctx context.Context, f *Forge, repo string) string {
+	dc, ok := s.Forges.(branchDefaulter)
+	if !ok {
+		return "main"
+	}
+	d, err := dc.DefaultBranch(ctx, f, repo)
+	switch {
+	case err != nil:
+		return ""
+	case d != "":
+		return d
+	}
+	return "main"
+}
+
 // basePushRuns are repo's push runs of the last baseFaultWindow, by branch.
 func (s *Service) basePushRuns(ctx context.Context, forgeID int64, repo string, fresh map[int64]ActionRun) map[string][]ActionRun {
+	return s.baseRuns(ctx, forgeID, repo, fresh, "push")
+}
+
+// baseRuns are repo's runs of the last baseFaultWindow with one of events,
+// by branch. Scheduled and dispatched runs are stored as the forge names
+// their event ("schedule", "workflow_dispatch") and carry the branch's
+// short name as push runs do.
+func (s *Service) baseRuns(ctx context.Context, forgeID int64, repo string, fresh map[int64]ActionRun, events ...string) map[string][]ActionRun {
 	since := s.now().Add(-baseFaultWindow)
 	byNum := map[int64]ActionRun{}
-	rows, err := s.db.R.QueryContext(ctx, `SELECT number, workflow, ref, sha, status, created_at FROM ci_runs
-		WHERE forge_id = ? AND repo = ? AND event = 'push' AND created_at >= ?`, forgeID, repo, since.UnixMilli())
+	args := []any{forgeID, repo, since.UnixMilli()}
+	for _, e := range events {
+		args = append(args, e)
+	}
+	// #nosec G202 -- only placeholders are built; values are bound
+	rows, err := s.db.R.QueryContext(ctx, `SELECT number, workflow, ref, sha, status, created_at, event FROM ci_runs
+		WHERE forge_id = ? AND repo = ? AND created_at >= ? AND event IN (?`+strings.Repeat(",?", len(events)-1)+`)`, args...)
 	if err == nil {
 		for rows.Next() {
 			var r ActionRun
 			var created int64
-			if rows.Scan(&r.Index, &r.WorkflowID, &r.PrettyRef, &r.CommitSHA, &r.Status, &created) == nil {
-				r.Event, r.Created = "push", msTime(created)
+			if rows.Scan(&r.Index, &r.WorkflowID, &r.PrettyRef, &r.CommitSHA, &r.Status, &created, &r.Event) == nil {
+				r.Created = msTime(created)
 				byNum[r.Index] = r
 			}
 		}
 		rows.Close()
 	}
 	for _, r := range fresh {
-		if r.Event == "push" && validTime(r.Created) && r.Created.After(since) {
+		if slices.Contains(events, r.Event) && validTime(r.Created) && r.Created.After(since) {
 			byNum[r.Index] = r
 		}
 	}
 	out := map[string][]ActionRun{}
 	for _, r := range byNum {
+		r.PrettyRef = strings.TrimPrefix(r.PrettyRef, "refs/heads/") // a forge that names a scheduled run's ref in full
 		if r.PrettyRef != "" && r.CommitSHA != "" {
 			out[r.PrettyRef] = append(out[r.PrettyRef], r)
 		}
@@ -231,11 +254,6 @@ func (s *Service) handleBaseFault(ctx context.Context, cl ForgeActionLogs, f *Fo
 		if len(jobs) == 0 && s.now().Sub(stopped) < 5*time.Minute {
 			return // the forge may not list the jobs of a run that just ended yet; read again next time
 		}
-		// First, whatever else failed: another job's failure ends this pass
-		// for the tip, and the task must not depend on the jobs' order.
-		if slices.ContainsFunc(jobs, func(j ActionJob) bool { return j.Name == advisoriesJob && j.Status == "failure" }) {
-			s.fileAdvisories(ctx, f, repo, branch, st.sha, cur)
-		}
 		hasFault := false
 		for _, j := range jobs {
 			if j.Status != "failure" && j.Status != "cancelled" {
@@ -243,7 +261,8 @@ func (s *Service) handleBaseFault(ctx context.Context, cl ForgeActionLogs, f *Fo
 			}
 			if j.Name == advisoriesJob {
 				// A vulnerability is the dependency's to fix, never a runner
-				// fault, and it mustn't hide one in the same run (WP-1660).
+				// fault, and it mustn't hide one in the same run; its task is
+				// checkBaseAdvisories's (WP-1660).
 				continue
 			}
 			log, err := cl.ActionJobLog(ctx, f, repo, j.ID)
@@ -444,36 +463,112 @@ func advisoriesTaskTitle(repo, branch string) string {
 	return excerpt("Fix the advisories on "+repo+" "+branch, 200)
 }
 
+// baseAdvisoriesSeenKey is the setting that remembers the newest run of a base
+// branch whose advisories job was already looked at (WP-1660).
+func baseAdvisoriesSeenKey(forgeID int64, repo, branch string) string {
+	return fmt.Sprintf("ci_advisories_seen:%d:%s:%s", forgeID, strings.ToLower(repo), branch)
+}
+
+// checkBaseAdvisories files the task about repo's default branch when the
+// newest finished run of it (push, schedule or workflow_dispatch) failed in
+// its advisories job (WP-1660). It is apart from the runner-fault state
+// machine: a scheduled run on a quiet branch has no push to fault-check, and
+// a tip marked ended there must still be able to ask again. A run is looked
+// at once: its index is remembered once its jobs are read and there was
+// nothing to file or the matter is settled; a read or write failure leaves
+// it to the next pass. A branch other than the default one (def; "" when
+// the lookup failed) has no advisories job.
+func (s *Service) checkBaseAdvisories(ctx context.Context, cl ForgeActionLogs, f *Forge, repo string, def func() string, fresh map[int64]ActionRun) {
+	// Which branch is the default one is asked only when some branch's newest
+	// finished run failed and wasn't looked at yet: most passes ask nothing.
+	var newest *ActionRun
+	var key string
+	for b, runs := range s.baseRuns(ctx, f.ID, repo, fresh, "push", "schedule", "workflow_dispatch") {
+		var n *ActionRun
+		for _, r := range runs {
+			if (r.Status == "success" || r.Status == "failure") && (n == nil || r.Index > n.Index) {
+				n = &r
+			}
+		}
+		if n == nil || n.Status != "failure" {
+			continue
+		}
+		k := baseAdvisoriesSeenKey(f.ID, repo, b)
+		if v, err := s.serverSetting(ctx, s.db.R, k); err != nil || v == strconv.FormatInt(n.Index, 10) {
+			continue
+		}
+		if b == def() {
+			newest, key = n, k
+		}
+	}
+	if newest == nil {
+		return
+	}
+	branch := newest.PrettyRef
+	cur, err := cl.ActionRunNumber(ctx, f, repo, newest.Index) // the forge's run id, and whether a re-run is under way
+	if err != nil || ciPending(cur.Status) || cur.Status != "failure" {
+		return
+	}
+	jobs, err := cl.ActionJobs(ctx, f, repo, cur.ID)
+	if err != nil {
+		return
+	}
+	stopped := cur.Stopped
+	if !validTime(stopped) {
+		stopped = newest.Created
+	}
+	if len(jobs) == 0 && s.now().Sub(stopped) < 5*time.Minute {
+		return // the forge may not list the jobs of a run that just ended yet
+	}
+	if slices.ContainsFunc(jobs, func(j ActionJob) bool { return j.Name == advisoriesJob && j.Status == "failure" }) &&
+		!s.fileAdvisories(ctx, f, repo, branch, cur.CommitSHA, cur) {
+		return
+	}
+	s.putSetting(ctx, key, strconv.FormatInt(newest.Index, 10))
+}
+
 // fileAdvisories files the one urgent task about a base branch whose
 // advisories job failed (WP-1660): no release, deploy or pull request waits
 // for that job, so without a task nobody is asked to act. While one is open
 // nothing more is filed; a later failure after it closed files the next.
-func (s *Service) fileAdvisories(ctx context.Context, f *Forge, repo, branch, sha string, run *ActionRun) {
+// It reports whether the matter is settled: a task is open or was filed, or
+// there is nothing to file into or nobody to file as. False means a read or
+// write failed and the next pass should try again.
+func (s *Service) fileAdvisories(ctx context.Context, f *Forge, repo, branch, sha string, run *ActionRun) (settled bool) {
 	title := advisoriesTaskTitle(repo, branch)
 	var open string
 	err := s.db.R.QueryRowContext(ctx, `SELECT p.key || '-' || i.number FROM issues i JOIN projects p ON p.id = i.project_id JOIN statuses st ON st.id = i.status_id
 		WHERE i.title = ? AND st.category NOT IN ('done','canceled') LIMIT 1`, title).Scan(&open)
 	if err == nil {
-		return
+		return true
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		s.log.WarnContext(ctx, "look for the open task about a branch's advisories", "repo", repo, "branch", branch, "err", err)
-		return
+		return false
 	}
 	projectID, err := s.attachedProject(ctx, s.db.R, f.ID, repo)
 	if err != nil || projectID == 0 {
 		if readFault(err) {
 			s.log.WarnContext(ctx, "read the project of a repo with advisories", "repo", repo, "err", err)
+			return false
 		}
-		return
+		return true // no project is attached: nothing to file into
 	}
 	ownerID := s.baseFaultOwner(ctx, f.ID, repo, branch, sha)
+	noOwner := func() bool {
+		s.log.WarnContext(ctx, "a base branch's advisories job failed and no enabled owner can be asked; nobody will be asked until the next run", "repo", repo, "branch", branch)
+		return true
+	}
 	if ownerID == 0 {
-		return
+		return noOwner()
 	}
 	owner, err := s.userByID(ctx, s.db.R, ownerID)
-	if err != nil || owner.Disabled {
-		return
+	if err != nil {
+		s.log.WarnContext(ctx, "read the owner to file the task about a branch's advisories", "repo", repo, "branch", branch, "err", err)
+		return false
+	}
+	if owner.Disabled {
+		return noOwner()
 	}
 	writer := Actor{User: owner}
 	writer.textAgent = "waypoint"
@@ -487,7 +582,8 @@ func (s *Service) fileAdvisories(ctx context.Context, f *Forge, repo, branch, sh
 	made, err := s.CreateIssue(ctx, &writer, IssueInput{Project: itoa64(projectID), Type: "bug", Agent: "claude", Priority: "urgent", Labels: []string{"ci"}, Title: title, Description: text})
 	if err != nil {
 		s.log.WarnContext(ctx, "file the task about a branch's advisories", "repo", repo, "branch", branch, "err", err)
-		return
+		return false
 	}
 	s.log.Info("a base branch's advisories job failed; filed a task", "repo", repo, "branch", branch, "task", made.Key)
+	return true
 }

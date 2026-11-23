@@ -289,6 +289,13 @@ type CIMain struct {
 	// deploy waits for (WP-1660): the tip is released and deployed.
 	OnlyAdvisories bool `json:"only_advisories,omitempty"`
 	Runs           int  `json:"runs_24h"`
+	// SchedAdvRun is the newest finished schedule or workflow_dispatch run of
+	// the branch, when it is newer than Run and its advisories job failed:
+	// the daily run is the one that finds a new advisory on a quiet branch
+	// (WP-1660).
+	SchedAdvRun   int64  `json:"scheduled_advisories_run,omitempty"`
+	SchedAdvEvent string `json:"scheduled_advisories_event,omitempty"`
+	SchedAdvURL   string `json:"scheduled_advisories_url,omitempty"`
 }
 
 // CIDoctorJob is a job worth knowing: unreliable, or among a repo's slowest
@@ -1560,7 +1567,12 @@ func doctorMains(d *CIDoctor, snap *ciSnapshot, now time.Time, visible func(int6
 		for branch := range want {
 			m := CIMain{Repo: r.ref.repo, Branch: branch}
 			found := false
+			var sched ActionRun // newest finished schedule or workflow_dispatch run
 			for _, run := range r.hist.runs {
+				if run.PrettyRef == branch && (run.Event == "schedule" || run.Event == "workflow_dispatch") &&
+					(run.Status == "success" || run.Status == "failure") && run.Index > sched.Index {
+					sched = run
+				}
 				if run.Event != "push" || run.PrettyRef != branch {
 					continue
 				}
@@ -1583,6 +1595,11 @@ func doctorMains(d *CIDoctor, snap *ciSnapshot, now time.Time, visible func(int6
 					tasks = append(tasks, k.ActionTask)
 				}
 				m.OnlyAdvisories = m.Status == "failure" && onlyAdvisoriesFailed(tasks, m.Run)
+				if sched.Index > m.Run && slices.ContainsFunc(tasks, func(t ActionTask) bool {
+					return t.RunNumber == sched.Index && t.Name == advisoriesJob && t.Status == "failure"
+				}) {
+					m.SchedAdvRun, m.SchedAdvEvent, m.SchedAdvURL = sched.Index, sched.Event, sched.HTMLURL
+				}
 				d.Mains = append(d.Mains, m)
 			}
 		}
@@ -1834,12 +1851,20 @@ func doctorFindings(d *CIDoctor, b *CIBoard, now time.Time, extra ...CIFinding) 
 		}
 	}
 	for _, m := range d.Mains {
-		if m.OnlyAdvisories {
+		if m.OnlyAdvisories || m.SchedAdvRun != 0 {
+			run, url, found := m.Run, m.URL, ""
+			if m.SchedAdvRun != 0 {
+				run, url, found = m.SchedAdvRun, m.SchedAdvURL, fmt.Sprintf("Run #%d (%s) found it. ", m.SchedAdvRun, m.SchedAdvEvent)
+			}
 			add(CIFinding{Level: "warn", Kind: "main_advisories", Repo: m.Repo,
-				Title:  fmt.Sprintf("%s %s has known advisories (run #%d)", m.Repo, m.Branch, m.Run),
-				Detail: fmt.Sprintf("npm audit or govulncheck found a vulnerability on %s. It is still released and deployed; pull requests fail only for advisories they add. Waypoint files one urgent task for it (%q): upgrade or replace the dependency there.", m.Branch, advisoriesTaskTitle(m.Repo, m.Branch)),
-				Next:   fmt.Sprintf("wp ci log --repo %s --run %d --job advisories", m.Repo, m.Run), URL: m.URL})
-		} else if m.Status == "failure" || m.Status == "cancelled" {
+				Title:  fmt.Sprintf("%s %s has known advisories (run #%d)", m.Repo, m.Branch, run),
+				Detail: fmt.Sprintf("%snpm audit or govulncheck found a vulnerability on %s. It is still released and deployed; pull requests fail only for advisories they add. Waypoint files one urgent task for it (%q): upgrade or replace the dependency there.", found, m.Branch, advisoriesTaskTitle(m.Repo, m.Branch)),
+				Next:   fmt.Sprintf("wp ci log --repo %s --run %d --job advisories", m.Repo, run), URL: url})
+		}
+		if m.OnlyAdvisories {
+			continue
+		}
+		if m.Status == "failure" || m.Status == "cancelled" {
 			add(CIFinding{Level: "problem", Kind: "main_red", Repo: m.Repo,
 				Title:  fmt.Sprintf("%s %s's latest push run #%d (%s) ended %s %s ago", m.Repo, m.Branch, m.Run, short(m.SHA), m.Status, ShortDuration(now.Sub(m.At))),
 				Detail: mainRedDetail(m),
