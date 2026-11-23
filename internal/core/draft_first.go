@@ -207,6 +207,15 @@ func (s *Service) markReady(ctx context.Context, pr *PullRequest) error {
 // recorded as the draft tier's, so none newer have to pass, and the run for
 // the edit skips its checks (the head has waypoint/stack).
 func (s *Service) markReadyOn(ctx context.Context, pr *PullRequest, st *queueStack) error {
+	if st != nil && pr.State == "open" {
+		// Already ready (marked at an earlier head, or by hand): its title
+		// stays, and the candidate's run is the full run at this head.
+		return s.write(ctx, SystemActor(), func(t *tx) error {
+			_, err := t.ExecContext(ctx, `UPDATE pull_requests SET ready_at = coalesce(ready_at, ?), ready_sha = ?, ready_status_id = 0, ready_checks = '[]', ready_skipped = '[]' WHERE id = ? AND state = 'open'`,
+				s.nowMS(), pr.HeadSHA, pr.ID)
+			return err
+		})
+	}
 	ed, ok := s.Forges.(ForgePREditor)
 	cl, ok2 := s.Forges.(ForgeChecks)
 	if !ok || !ok2 {

@@ -1,6 +1,8 @@
 package core
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -256,7 +258,7 @@ func TestStrandedRoundLeftAloneWhenRestarted(t *testing.T) {
 }
 
 // A failed attempt backs off for twice as long each time, and the memory of
-// it is dropped once the round is no longer a candidate.
+// it is dropped once the round has not been a candidate for a whole window.
 func TestStrandedRoundBackoffDoublesAndIsPruned(t *testing.T) {
 	a, g, id := strandedEnv(t)
 	if _, err := a.s.db.W.Exec(`UPDATE work_log SET state = ?, reason = 'no report came back', ended_at = ?, before_pr = ? WHERE id = ?`,
@@ -286,10 +288,16 @@ func TestStrandedRoundBackoffDoublesAndIsPruned(t *testing.T) {
 	if n := a.opened(g); n != 0 {
 		t.Fatalf("opened %d", n)
 	}
-	// The round is cancelled by a person: no longer a candidate, so dropped.
+	// The round is cancelled by a person: no longer a candidate, so its tries
+	// are kept for a while and then dropped.
 	if _, err := a.s.db.W.Exec(`UPDATE work_log SET reason = 'Cancelled by Robin.' WHERE id = ?`, id); err != nil {
 		t.Fatal(err)
 	}
+	a.s.sweepRounds(a.ctx)
+	if _, ok := a.s.strandedRetry.Load(id); !ok {
+		t.Error("a round the query skips briefly lost its tries")
+	}
+	a.lapse(strandedShipWindow + time.Hour)
 	a.s.sweepRounds(a.ctx)
 	if _, ok := a.s.strandedRetry.Load(id); ok {
 		t.Error("the back-off of a round that is no longer a candidate was kept")
@@ -354,5 +362,189 @@ func TestAskAgainAfterInterruptSkipsReplacedAndRestarted(t *testing.T) {
 	add("a person's prompt", reviewInterruptsMax)
 	if again() {
 		t.Fatal("interruptions past the max didn't stop asking")
+	}
+}
+
+// strandedGone is the body of the 404 Forgejo answered to every open of a
+// stranded round's pull request in server problem #1005 (matched against the
+// real response; host, project and branch names changed).
+const strandedGone = `{"message":"The target couldn't be found.","url":"https://git.example.com/api/swagger","errors":["could not find 'jobh-504' to be a commit, branch or tag in the head repository Assistant/JobHunt"]}`
+
+// A round whose head branch is gone from the forge is given up at once, with
+// the reason recorded, and isn't tried again.
+func TestStrandedRoundBranchGoneIsGivenUp(t *testing.T) {
+	a, g, id := strandedEnv(t)
+	if _, err := a.s.db.W.Exec(`UPDATE work_log SET state = ?, reason = 'no report came back', ended_at = ? WHERE id = ?`, RoundFailed, a.clockNow().UnixMilli(), id); err != nil {
+		t.Fatal(err)
+	}
+	g.sm.Lock()
+	g.createErr = &forgeAPIError{method: "POST", path: "/repos/a/b/pulls", status: 404,
+		body: strandedGone}
+	g.sm.Unlock()
+	a.lapse(heldStopLost + time.Minute)
+	a.s.sweepRounds(a.ctx)
+	if r := a.reason(id); !strings.HasPrefix(r, roundGaveUp) || !strings.Contains(r, "could not find 'jobh-504'") {
+		t.Fatalf("reason = %q", r)
+	}
+	if _, ok := a.s.strandedRetry.Load(id); ok {
+		t.Error("a given-up round is still backing off")
+	}
+	g.sm.Lock()
+	g.createErr = nil
+	g.sm.Unlock()
+	a.lapse(strandedBackoffMax + time.Minute)
+	a.s.sweepRounds(a.ctx)
+	if n := a.opened(g); n != 0 {
+		t.Fatalf("a given-up round was tried again: opened %d", n)
+	}
+}
+
+// The give-up keeps the round's earlier reason after its own, tells the
+// person, and tells the issue page.
+func TestStrandedRoundGiveUpRecordsAndTells(t *testing.T) {
+	a, g, id := strandedEnv(t)
+	if _, err := a.s.db.W.Exec(`UPDATE work_log SET state = ?, reason = 'no report came back', ended_at = ? WHERE id = ?`, RoundFailed, a.clockNow().UnixMilli(), id); err != nil {
+		t.Fatal(err)
+	}
+	g.sm.Lock()
+	g.createErr = &forgeAPIError{method: "POST", path: "/repos/a/b/pulls", status: 404, body: strandedGone}
+	g.sm.Unlock()
+	a.lapse(heldStopLost + time.Minute)
+	a.s.sweepRounds(a.ctx)
+	r := a.reason(id)
+	if !strings.HasPrefix(r, roundGaveUp) || !strings.Contains(r, "the forge can't find a branch it needs") ||
+		!strings.Contains(r, "(before that: no report came back)") || len(r) > 300 {
+		t.Fatalf("reason = %q", r)
+	}
+	var title, body string
+	if err := a.s.db.R.QueryRow(`SELECT title, body FROM notifications WHERE user_id = ? AND kind = ?`, a.admin.User.ID, NotifyAutopilot).Scan(&title, &body); err != nil {
+		t.Fatalf("no notice: %v", err)
+	}
+	if !strings.HasSuffix(title, "'s pull request was not opened") || !strings.Contains(body, "could not find 'jobh-504'") {
+		t.Errorf("notice = %q / %q", title, body)
+	}
+}
+
+// Only a forge saying a branch can't be found is permanent.
+func TestStrandedPermanent(t *testing.T) {
+	gone := &forgeAPIError{status: 404, body: strandedGone}
+	for name, tc := range map[string]struct {
+		err  error
+		want bool
+	}{
+		"404 naming the branch": {gone, true},
+		"404 without it":        {&forgeAPIError{status: 404, body: `{"message":"Not Found"}`}, false},
+		"422 with it":           {&forgeAPIError{status: 422, body: strandedGone}, false},
+		"wrapped":               {fmt.Errorf("open the pull request: %w", gone), true},
+		"a plain error":         {errors.New("the forge is unwell"), false},
+		"500":                   {&forgeAPIError{status: 500, body: strandedGone}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := strandedPermanent(tc.err); got != tc.want {
+				t.Errorf("strandedPermanent = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// Any other failure is tried again with longer waits, however many failures, for
+// as long as the round is in the window.
+func TestStrandedRoundOtherErrorsKeepBackingOff(t *testing.T) {
+	a, g, id := strandedEnv(t)
+	if _, err := a.s.db.W.Exec(`UPDATE work_log SET state = ?, reason = 'no report came back', ended_at = ? WHERE id = ?`, RoundFailed, a.clockNow().UnixMilli(), id); err != nil {
+		t.Fatal(err)
+	}
+	g.sm.Lock()
+	g.createErr = errors.New("the forge is unwell")
+	g.sm.Unlock()
+	a.lapse(heldStopLost + time.Minute)
+	var last int64
+	for i := 1; i <= 8; i++ {
+		a.s.sweepRounds(a.ctx)
+		v, ok := a.s.strandedRetry.Load(id)
+		if !ok || v.(strandedTry).tries != i {
+			t.Fatalf("after %d failures: %v %v", i, v, ok)
+		}
+		wait := v.(strandedTry).next - a.clockNow().UnixMilli()
+		if want := min(strandedBackoff<<(i-1), strandedBackoffMax).Milliseconds(); wait != want || wait < last {
+			t.Fatalf("after %d failures waits %d, want %d (last %d)", i, wait, want, last)
+		}
+		last = wait
+		if strings.HasPrefix(a.reason(id), roundGaveUp) {
+			t.Fatalf("given up after %d tries", i)
+		}
+		a.lapse(time.Duration(wait)*time.Millisecond + time.Second)
+	}
+	g.sm.Lock()
+	g.createErr = nil
+	g.sm.Unlock()
+	a.s.sweepRounds(a.ctx)
+	if n := a.opened(g); n != 1 {
+		t.Fatalf("opened %d once the forge was well", n)
+	}
+}
+
+// A backing-off round the sweep still finds is refreshed, so its tries
+// outlive the window only for a round the sweep no longer finds; the prune
+// keeps one seen exactly a window ago and drops one seen before that.
+func TestStrandedRoundSeenRefreshAndPrune(t *testing.T) {
+	a, _, id := strandedEnv(t)
+	if _, err := a.s.db.W.Exec(`UPDATE work_log SET state = ?, reason = 'no report came back', ended_at = ? WHERE id = ?`, RoundFailed, a.clockNow().UnixMilli(), id); err != nil {
+		t.Fatal(err)
+	}
+	a.lapse(heldStopLost + time.Minute)
+	now := a.clockNow().UnixMilli()
+	a.s.strandedRetry.Store(id, strandedTry{next: now + time.Hour.Milliseconds(), tries: 3, seen: now - 1000})
+	a.s.sweepRounds(a.ctx)
+	if v, _ := a.s.strandedRetry.Load(id); v.(strandedTry).seen != now || v.(strandedTry).tries != 3 {
+		t.Errorf("a candidate's entry = %+v, want seen %d", v, now)
+	}
+	// No longer a candidate.
+	if _, err := a.s.db.W.Exec(`UPDATE work_log SET reason = 'Cancelled by Robin.' WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	win := strandedShipWindow.Milliseconds()
+	a.s.strandedRetry.Store(id, strandedTry{tries: 3, seen: now - win})
+	a.s.sweepRounds(a.ctx)
+	if _, ok := a.s.strandedRetry.Load(id); !ok {
+		t.Error("an entry seen exactly a window ago was dropped")
+	}
+	a.s.strandedRetry.Store(id, strandedTry{tries: 3, seen: now - win - 1})
+	a.s.sweepRounds(a.ctx)
+	if _, ok := a.s.strandedRetry.Load(id); ok {
+		t.Error("an entry seen over a window ago was kept")
+	}
+}
+
+// A round whose session row is gone is given up too, and no one is told.
+func TestStrandedRoundGiveUpWithoutASession(t *testing.T) {
+	a, _, id := strandedEnv(t)
+	if _, err := a.s.db.W.Exec(`PRAGMA foreign_keys = OFF`); err != nil {
+		t.Skip("can't drop the session row: ", err)
+	}
+	if _, err := a.s.db.W.Exec(`UPDATE work_log SET state = ?, reason = 'no report came back', session_id = 987654 WHERE id = ?`, RoundSkipped, id); err != nil {
+		t.Skip("can't orphan the round: ", err)
+	}
+	a.s.strandedFailed(a.ctx, id, a.clockNow().UnixMilli(), "read the session of a round that never ran", &forgeAPIError{status: 404, body: strandedGone})
+	if r := a.reason(id); !strings.HasPrefix(r, roundGaveUp) {
+		t.Fatalf("reason = %q", r)
+	}
+	var n int
+	_ = a.s.db.R.QueryRow(`SELECT count(*) FROM notifications WHERE kind = ?`, NotifyAutopilot).Scan(&n)
+	if n != 0 {
+		t.Errorf("%d notices for a round with no session", n)
+	}
+}
+
+// strandedForgeWords reads a 404 body of any length the forge client keeps,
+// and ignores a 404 that isn't about a branch.
+func TestStrandedForgeWords(t *testing.T) {
+	long := &forgeAPIError{status: 404, body: strings.Repeat("x", 600) + "could not find 'gone' to be a commit, branch or tag"}
+	if strandedForgeWords(long) == "" {
+		t.Error("a long 404 body naming a missing branch wasn't matched")
+	}
+	other := &forgeAPIError{status: 404, body: "repository not found"}
+	if strandedForgeWords(other) != "" {
+		t.Error("an unrelated 404 was matched")
 	}
 }

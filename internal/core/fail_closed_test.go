@@ -105,6 +105,9 @@ func TestArmedMergeHoldsOnUnreadableMergePolicy(t *testing.T) {
 	const head = "1111111aaaa"
 	se.pullHook("opened", testPR)
 	se.drain()
+	// What the runs started is done before the checks pass: a late pass
+	// would read them and merge while the table is still there.
+	se.s.Wait()
 	se.sg.setChecks(head, CommitCheck{Name: "ci / backend (pull_request)", State: CheckSuccess})
 	id := se.pr(5).ID
 	defer se.breakTable("project_repos")()

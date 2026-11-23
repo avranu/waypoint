@@ -42,6 +42,15 @@ type beforePR struct {
 	Repo    string `json:"repo"`
 	Branch  string `json:"branch"`
 	Base    string `json:"base"`
+	// Asked is the base wp ship named, if it did. Base was worked out at
+	// the time and can go stale, so only this one outlives the round
+	// (WP-1670).
+	Asked string `json:"asked,omitempty"`
+	// Stacked is the branch Base was, when it was the head of an open pull
+	// request this one is built on rather than a base asked for. A held
+	// replay reads again whether that one is still open, as a live ship
+	// does, and opens into the default branch if it isn't (WP-1670).
+	Stacked string `json:"stacked,omitempty"`
 	// What wp ship asked for, so Waypoint can open it if the review can't
 	// run and the session never ships (WP-752). Urgent is only for a pull
 	// request not open yet: one already open is labelled by the held ship
@@ -59,6 +68,28 @@ type beforePR struct {
 	// of the same second apart.
 	HeadTime int64  `json:"head_time,omitempty"`
 	HeadSHA  string `json:"head_sha,omitempty"`
+}
+
+// askedBase is the base wp ship named when the branch's latest round was
+// scheduled: the wp ship --pr that follows the review doesn't repeat it.
+func (s *Service) askedBase(ctx context.Context, actor *Actor, task, head string) string {
+	if task == "" {
+		return ""
+	}
+	i, _, err := s.getIssueFor(ctx, s.db.R, actor, task, RoleViewer, false)
+	if err != nil {
+		return ""
+	}
+	issue := i.ID
+	var raw string
+	if s.db.R.QueryRowContext(ctx, `SELECT before_pr FROM work_log WHERE kind = 'review' AND issue_id = ? AND before_pr != '' ORDER BY id DESC LIMIT 1`, issue).Scan(&raw) != nil {
+		return ""
+	}
+	var b beforePR
+	if json.Unmarshal([]byte(raw), &b) != nil || b.Branch != head {
+		return ""
+	}
+	return b.Asked
 }
 
 // roundBeforePR is the round's branch when it runs before its pull
@@ -434,7 +465,11 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return false, "", "", err
 	}
-	bp := beforePR{Project: p.Key, Repo: repo, Branch: head, Base: base, Title: in.Title, Body: in.Body, Draft: in.Draft, Ready: in.Ready, Urgent: in.Urgent && !existing, HeadTime: in.HeadTime, HeadSHA: in.HeadSHA}
+	asked, stacked := strings.TrimSpace(in.Base), ""
+	if asked == "" && slices.ContainsFunc(in.StackedOn, func(b string) bool { return strings.TrimSpace(b) == base }) {
+		stacked = base
+	}
+	bp := beforePR{Project: p.Key, Repo: repo, Branch: head, Base: base, Asked: asked, Stacked: stacked, Title: in.Title, Body: in.Body, Draft: in.Draft, Ready: in.Ready, Urgent: in.Urgent && !existing, HeadTime: in.HeadTime, HeadSHA: in.HeadSHA}
 	// wait is what the session is told when the round is before its pull
 	// request. It is built when a return needs it, after the scheduling it
 	// describes, as scheduling the round starts its reviewer (WP-1325).
@@ -1106,9 +1141,10 @@ func (s *Service) ownReviewRound(ctx context.Context, actor *Actor, g *reviewGat
 // of Waypoint's own, so Waypoint opens the pull request (shipHeld); it says
 // why the review didn't run. It releases skipped and failed rounds; an
 // interrupted one it doesn't, since the session's next ship may ask it
-// again. The sweep (openStrandedRounds) releases that one too once its run
-// or session is over, because nobody is left to ask it again
-// (askAgainAfterInterrupt needs the session's next ship) (WP-1325).
+// again, nor one Waypoint gave up on (roundGaveUp), whose branch the forge
+// can't find. The sweep (openStrandedRounds) releases an interrupted one
+// too once its run or session is over, because nobody is left to ask it
+// again (askAgainAfterInterrupt needs the session's next ship) (WP-1325).
 func (s *Service) heldUnshipped(ctx context.Context, st *stepRow) (why, release string, err error) {
 	if !st.runID.Valid || !st.reviewID.Valid || roundBeforePR(ctx, s.db.R, st.reviewID.Int64) == nil {
 		return "", "", nil
@@ -1142,7 +1178,7 @@ func (s *Service) heldUnshipped(ctx context.Context, st *stepRow) (why, release 
 	if reason != "" && state != RoundDone {
 		what += " (" + reason + ")"
 	}
-	if (state == RoundSkipped || state == RoundFailed) && !strings.HasPrefix(reason, roundCancelledBy) {
+	if (state == RoundSkipped || state == RoundFailed) && !strings.HasPrefix(reason, roundCancelledBy) && !strings.HasPrefix(reason, roundGaveUp) {
 		release = cmp(reason, "its adversarial review didn't run")
 	}
 	return key + " isn't shipped yet: " + what, release, nil

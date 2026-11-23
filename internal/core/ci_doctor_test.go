@@ -1,7 +1,6 @@
 package core
 
 import (
-	"fmt"
 	"os"
 	"slices"
 	"strings"
@@ -265,30 +264,6 @@ func TestCIDoctorStacksFailing(t *testing.T) {
 	}
 }
 
-// A line whose stacks are paused (WP-386) says so, and until when.
-func TestCIDoctorStacksPaused(t *testing.T) {
-	be, pr := armedBabysit(t)
-	now := be.s.now()
-	for i := range stackPauseRuns {
-		if _, err := be.s.db.W.ExecContext(be.ctx, `INSERT INTO queue_stacks(forge_id, repo, base_ref, pr_id, base_sha, branch, state, created_at, ended_at)
-			VALUES (?,?,?,?,'b',?,'cancelled',?,?)`, pr.ForgeID, pr.Repo, pr.BaseRef, pr.ID, fmt.Sprintf("wp-queue/main/%d", i),
-			now.Add(-time.Hour).UnixMilli(), now.Add(-time.Duration(10+i)*time.Minute).UnixMilli()); err != nil {
-			t.Fatal(err)
-		}
-	}
-	d, err := be.s.CIDoctor(be.ctx, be.admin)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if st := d.Lines[0].Stacks; st.PausedUntil == nil || !st.PausedUntil.Equal(time.UnixMilli(now.Add(-10*time.Minute).UnixMilli()).Add(stackPauseFor)) {
-		t.Fatalf("stacks = %+v", st)
-	}
-	i := slices.IndexFunc(d.Findings, func(f CIFinding) bool { return f.Kind == "stacks_paused" })
-	if i < 0 || !strings.Contains(d.Findings[i].Title, "paused for 1h50m") || !strings.Contains(d.Findings[i].Detail, "last 10 stack or batch runs") {
-		t.Errorf("findings = %+v", d.Findings)
-	}
-}
-
 // The urgent lane is suggested only where CI is stuck, once a place, and
 // not while a pull request about CI there is urgent already (WP-544).
 func TestDoctorUrgentLane(t *testing.T) {
@@ -327,6 +302,41 @@ func TestDoctorUrgentLane(t *testing.T) {
 	d = &CIDoctor{Lines: []CILine{{Repo: "o/a", Moving: 5}}, CIWork: []CIWorkPR{{Repo: "o/a", Number: 2, Position: 3}}}
 	if doctorUrgentLane(d); len(d.UrgentLane) != 0 {
 		t.Errorf("not stuck: %+v", d.UrgentLane)
+	}
+}
+
+// stacks_paused shows only while the line's fallback is on, with when it
+// ends and what it means.
+func TestCIDoctorStacksPaused(t *testing.T) {
+	be, pr := armedBabysit(t)
+	now := be.clockNow()
+	if _, err := be.s.db.W.ExecContext(be.ctx, `INSERT INTO queue_stacks(forge_id, repo, base_ref, pr_id, base_sha, branch, commit_sha, state, end_reason, created_at, ended_at)
+		VALUES (?,?,?,?,'b','wp-queue/main/1','c','cancelled',?,?,?)`, pr.ForgeID, pr.Repo, pr.BaseRef, pr.ID, endNoRun, now.UnixMilli(), now.UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	finding := func() (CIFinding, *CILine) {
+		t.Helper()
+		d, err := be.s.CIDoctor(be.ctx, be.admin)
+		if err != nil {
+			t.Fatal(err)
+		}
+		i := slices.IndexFunc(d.Findings, func(f CIFinding) bool { return f.Kind == "stacks_paused" })
+		if i < 0 {
+			return CIFinding{}, &d.Lines[0]
+		}
+		return d.Findings[i], &d.Lines[0]
+	}
+	f, l := finding()
+	until := now.Add(lineFallbackFor)
+	if f.Kind != "stacks_paused" || l.Stacks.PausedUntil == nil || !l.Stacks.PausedUntil.Equal(until.Truncate(time.Millisecond)) {
+		t.Fatalf("finding %+v, paused until %v, want %v", f, l.Stacks.PausedUntil, until)
+	}
+	if f.Detail != stacksPausedNote(until, now) {
+		t.Errorf("detail %q", f.Detail)
+	}
+	be.setClock(now.Add(lineFallbackFor + time.Minute))
+	if f, l := finding(); f.Kind != "" || l.Stacks.PausedUntil != nil {
+		t.Errorf("after the fallback: %+v, %v", f, l.Stacks.PausedUntil)
 	}
 }
 

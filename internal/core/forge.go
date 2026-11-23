@@ -473,8 +473,11 @@ type ProjectRepo struct {
 	GateSeverity string `json:"gate_severity"`
 	// DeleteMergedBranches: Waypoint deletes the repo's merged branches on
 	// the forge (WP-140).
-	DeleteMergedBranches bool       `json:"delete_merged_branches"`
-	LastSyncedAt         *time.Time `json:"last_synced_at"`
+	DeleteMergedBranches bool `json:"delete_merged_branches"`
+	// LineCandidates: the merge line builds a candidate branch and tests
+	// pull requests on it; off, each is tested on its own branch (ADR152).
+	LineCandidates bool       `json:"line_candidates"`
+	LastSyncedAt   *time.Time `json:"last_synced_at"`
 	// Merge automatically and the rules every armed merge waits for (WP-133).
 	MergePolicy
 	// HookState is the forge webhook Waypoint added: pending, installed or
@@ -525,7 +528,7 @@ func (s *Service) ListProjectRepos(ctx context.Context, actor *Actor, projectRef
 	}
 	rows, err := s.db.R.QueryContext(ctx, `SELECT r.id, r.forge_id, f.name, r.repo, r.sync_issues, r.post_comments, r.bots, r.review_gate, r.gate_severity, r.last_synced_at,
 		r.hook_state, r.hook_note, r.hook_checked_at, r.hook_seen_at,
-		r.auto_merge, r.auto_merge_into, r.auto_merge_bases, r.required_checks, r.review_wait_minutes, r.quiet_minutes, r.external_reviewers, r.delete_merged_branches
+		r.auto_merge, r.auto_merge_into, r.auto_merge_bases, r.required_checks, r.review_wait_minutes, r.quiet_minutes, r.external_reviewers, r.delete_merged_branches, r.line_candidates
 		FROM project_repos r JOIN forges f ON f.id = r.forge_id WHERE r.project_id = ? ORDER BY r.repo`, p.ID)
 	if err != nil {
 		return nil, err
@@ -540,7 +543,7 @@ func (s *Service) ListProjectRepos(ctx context.Context, actor *Actor, projectRef
 		var wait, quiet int
 		var reviewers sql.NullString
 		if err := rows.Scan(&r.ID, &r.ForgeID, &r.ForgeName, &r.Repo, &r.SyncIssues, &r.PostComments, &r.Bots, &r.ReviewGate, &r.GateSeverity, &last,
-			&r.HookState, &r.HookNote, &checked, &seen, &auto, &into, &bases, &required, &wait, &quiet, &reviewers, &r.DeleteMergedBranches); err != nil {
+			&r.HookState, &r.HookNote, &checked, &seen, &auto, &into, &bases, &required, &wait, &quiet, &reviewers, &r.DeleteMergedBranches, &r.LineCandidates); err != nil {
 			return nil, err
 		}
 		r.MergePolicy = readPolicy(auto, into, bases, required, wait, quiet, reviewers)
@@ -1817,7 +1820,7 @@ func (c *httpForgeClient) do(ctx context.Context, f *Forge, method, path string,
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return &forgeAPIError{method: method, path: path, status: resp.StatusCode, body: strings.TrimSpace(string(b))}
 	}
 	if out == nil {
