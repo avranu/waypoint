@@ -302,10 +302,15 @@ func TestLineNeedsPersonStaysOut(t *testing.T) {
 	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE pull_requests SET queued_at = NULL WHERE id = ?`, id); err != nil {
 		t.Fatal(err)
 	}
-	before := se.sg.updated()
-	se.s.maybeAutoMerge(se.ctx, id)
-	se.s.Wait()
-	if pr := se.pr(5); pr.QueuedAt != nil || se.sg.updated() != before {
-		t.Fatalf("a pull request that needs a person is in the line: %v, updates %d", pr.QueuedAt, se.sg.updated())
+	pr, err := se.s.prByID(se.ctx, se.s.db.R, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if se.s.joinUnbabysat(se.ctx, pr) || pr.QueuedAt != nil {
+		t.Fatalf("a pull request that needs a person joined the line")
+	}
+	members, err := se.s.lineMembers(se.ctx, lineOf(pr))
+	if err != nil || len(members) != 0 {
+		t.Fatalf("members %v, %v", members, err)
 	}
 }
