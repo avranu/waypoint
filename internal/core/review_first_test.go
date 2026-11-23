@@ -941,6 +941,23 @@ func TestReviewBeforePRUnshipped(t *testing.T) {
 			t.Errorf("notice = %q", body)
 		}
 	})
+	t.Run("a round Waypoint gave up on isn't shipped by the step", func(t *testing.T) {
+		a, _, _ := heldEnv(t)
+		a.stopWith("Waiting for the review.")
+		id := a.heldRound()
+		if _, err := a.s.db.W.Exec(`UPDATE work_log SET state = 'failed', reason = ? WHERE id = ?`, roundGaveUp+"the forge can't find a branch it needs", id); err != nil {
+			t.Fatal(err)
+		}
+		var run int64
+		if err := a.s.db.R.QueryRow(`SELECT id FROM agent_runs WHERE ended_at IS NULL`).Scan(&run); err != nil {
+			t.Fatal(err)
+		}
+		st := &stepRow{runID: sql.NullInt64{Int64: run, Valid: true}, reviewID: sql.NullInt64{Int64: id, Valid: true}}
+		why, release, err := a.s.heldUnshipped(a.ctx, st)
+		if err != nil || why == "" || release != "" {
+			t.Fatalf("why %q, release %q, err %v", why, release, err)
+		}
+	})
 	t.Run("no round held before the pull request", func(t *testing.T) {
 		a, _, _ := introEnv(t)
 		var run int64
