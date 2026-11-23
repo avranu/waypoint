@@ -535,3 +535,16 @@ func TestStrandedRoundGiveUpWithoutASession(t *testing.T) {
 		t.Errorf("%d notices for a round with no session", n)
 	}
 }
+
+// strandedForgeWords reads a 404 body of any length the forge client keeps,
+// and ignores a 404 that isn't about a branch.
+func TestStrandedForgeWords(t *testing.T) {
+	long := &forgeAPIError{status: 404, body: strings.Repeat("x", 600) + "could not find 'gone' to be a commit, branch or tag"}
+	if strandedForgeWords(long) == "" {
+		t.Error("a long 404 body naming a missing branch wasn't matched")
+	}
+	other := &forgeAPIError{status: 404, body: "repository not found"}
+	if strandedForgeWords(other) != "" {
+		t.Error("an unrelated 404 was matched")
+	}
+}
