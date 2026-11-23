@@ -57,6 +57,26 @@ func TestStackBranchesNearest(t *testing.T) {
 	}
 }
 
+// Branches at the same distance keep the order they were given in.
+func TestStackBranchesEqualCountKeepsOrder(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	sh(t, dir, "init", "-q", "-b", "main")
+	sh(t, dir, "config", "user.email", "t@example.com")
+	sh(t, dir, "config", "user.name", "T")
+	sh(t, dir, "commit", "-q", "--allow-empty", "-m", "root")
+	sh(t, dir, "branch", "twin-a")
+	sh(t, dir, "branch", "twin-b")
+	sh(t, dir, "checkout", "-q", "-b", "child")
+	sh(t, dir, "commit", "-q", "--allow-empty", "-m", "c0")
+	if got := stackBranches([]string{"refs/heads/twin-a", "refs/heads/twin-b"}); !slices.Equal(got, []string{"twin-a", "twin-b"}) {
+		t.Errorf("a, b: %v", got)
+	}
+	if got := stackBranches([]string{"refs/heads/twin-b", "refs/heads/twin-a"}); !slices.Equal(got, []string{"twin-b", "twin-a"}) {
+		t.Errorf("b, a: %v", got)
+	}
+}
+
 // openForge is a forge that opens pull requests and nothing else.
 type openForge struct {
 	core.ForgeClient

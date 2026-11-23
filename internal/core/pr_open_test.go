@@ -209,6 +209,14 @@ func TestOpenPullRequestStackAndBase(t *testing.T) {
 	if child.Pull.BaseRef != "gate-go" || !strings.Contains(child.Notice, "#"+fmt.Sprint(parent.Pull.Number)) || !strings.Contains(child.Notice, "--base main") {
 		t.Errorf("stacked: base %q notice %q", child.Pull.BaseRef, child.Notice)
 	}
+	var detail string
+	if err := e.s.db.R.QueryRowContext(e.ctx, `SELECT detail FROM audit_log WHERE action = 'pr.open' AND target_id = ?`, child.Pull.ID).Scan(&detail); err != nil ||
+		detail != fmt.Sprintf("opened “upgrade” into gate-go (stacked on #%d)", parent.Pull.Number) {
+		t.Errorf("audit detail %q %v", detail, err)
+	}
+	if err := e.s.db.R.QueryRowContext(e.ctx, `SELECT detail FROM audit_log WHERE action = 'pr.open' AND target_id = ?`, parent.Pull.ID).Scan(&detail); err != nil || detail != "opened “gate-go” into main" {
+		t.Errorf("audit detail %q %v", detail, err)
+	}
 	// Given a base, it is used as given.
 	if all := open(OpenPRInput{Head: "together", Base: "main", StackedOn: []string{"gate-go"}}); all.Pull.BaseRef != "main" || all.Notice != "" {
 		t.Errorf("--base main: base %q notice %q", all.Pull.BaseRef, all.Notice)
@@ -434,11 +442,18 @@ func TestOpenWithBaseFailsWhenForgeCannotMove(t *testing.T) {
 // branch, both with green CI, and arms the child (WP-1670).
 func stackedPair(t *testing.T) (se *shipEnv, parent, child ForgePR) {
 	t.Helper()
+	return stackedPairWith(t, "open", true)
+}
+
+// stackedPairWith is stackedPair with the parent in state (open or draft),
+// and the child armed or not.
+func stackedPairWith(t *testing.T, state string, arm bool) (se *shipEnv, parent, child ForgePR) {
+	t.Helper()
 	se = newShipEnv(t, "forgejo")
 	se.policy(MergePolicyInput{AutoMerge: ptr(false), ReviewWaitMinutes: ptr(0), QuietMinutes: ptr(0)})
 	se.llm.answers["opencode/muse-spark-1.3-contributor-free"] = noFindings
 	parent, child = testPR, testPR
-	parent.BaseRef = "main"
+	parent.BaseRef, parent.State = "main", state
 	child.Number, child.HeadRef, child.HeadSHA, child.BaseRef = 6, "on-login", "2222222bbbb", parent.HeadRef
 	se.pullHook("opened", parent)
 	se.pullHook("opened", child)
@@ -449,8 +464,10 @@ func stackedPair(t *testing.T) (se *shipEnv, parent, child ForgePR) {
 	se.sg.setChecks(parent.HeadSHA, CommitCheck{Name: "ci / web", State: CheckSuccess})
 	se.sg.setChecks(child.HeadSHA, CommitCheck{Name: "ci / web", State: CheckSuccess})
 	se.poll()
-	if res, err := se.s.MergePR(se.ctx, se.admin, se.pr(6).ID, MergeInput{WhenReady: true}); err != nil || !res.Armed {
-		t.Fatalf("arm the child: %+v %v", res, err)
+	if arm {
+		if res, err := se.s.MergePR(se.ctx, se.admin, se.pr(6).ID, MergeInput{WhenReady: true}); err != nil || !res.Armed {
+			t.Fatalf("arm the child: %+v %v", res, err)
+		}
 	}
 	return se, parent, child
 }
@@ -494,8 +511,12 @@ func TestStackedChildWaitsForParent(t *testing.T) {
 	if rd, err = se.s.readinessFor(se.ctx, c, true); err != nil || mergeWaitIn(rd.Reasons) != "" {
 		t.Errorf("still waits: %+v %v", rd, err)
 	}
-	if parent.HeadRef == c.BaseRef {
-		t.Error("test setup")
+	// The move was made on the forge and audited.
+	if !slices.Equal(se.sg.baseEdits, []string{"6:main"}) {
+		t.Errorf("base edits %v", se.sg.baseEdits)
+	}
+	if n := se.auditCount("pr.edit", "moved the base from "+parent.HeadRef+" to main of"); n != 1 {
+		t.Errorf("%d audit entries for the move", n)
 	}
 }
 
@@ -532,10 +553,10 @@ func TestArmClosedPullRequestFails(t *testing.T) {
 	se.drain()
 	// Closed on the forge, its webhook not in yet: the record says open.
 	se.sg.setForgeState(se.f, "me/app", 5, "closed")
-	if res, err := se.s.MergePR(se.ctx, se.admin, se.pr(5).ID, MergeInput{WhenReady: true}); err == nil {
-		t.Fatalf("armed a closed pull request: %+v", res)
+	if res, err := se.s.MergePR(se.ctx, se.admin, se.pr(5).ID, MergeInput{WhenReady: true}); err == nil || !strings.Contains(err.Error(), "this pull request is closed") {
+		t.Fatalf("armed a closed pull request: %+v %v", res, err)
 	}
-	if se.pr(5).ArmedAt != nil {
-		t.Error("armed")
+	if pr := se.pr(5); pr.ArmedAt != nil || pr.State != "closed" {
+		t.Errorf("armed %v, recorded %q", pr.ArmedAt, pr.State)
 	}
 }

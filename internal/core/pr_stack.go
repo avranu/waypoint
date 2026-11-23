@@ -49,7 +49,7 @@ func (s *Service) moveToBase(ctx context.Context, actor *Actor, prID int64, base
 	if err != nil {
 		return "", err
 	}
-	if strings.EqualFold(pr.BaseRef, want) {
+	if pr.BaseRef == want { // branch names are case-sensitive
 		return "", nil
 	}
 	if others := s.otherTasks(ctx, actor, prID, task); others != nil {
@@ -114,8 +114,9 @@ func (s *Service) forgeStillOpen(ctx, forgeCtx context.Context, prID int64) bool
 }
 
 // forgeEnded asks the forge whether the pull request recorded open has been
-// closed or merged there, and records that if so. It changes nothing else
-// of the record, and a forge that doesn't answer says false.
+// closed or merged there, and records that if so: the record is then the
+// forge's whole read of it (recordPR), not only the state. A forge that
+// doesn't answer says false.
 func (s *Service) forgeEnded(ctx context.Context, prID int64) bool {
 	pr, err := s.prByID(ctx, s.db.R, prID)
 	prc, ok := s.Forges.(ForgePRs)
@@ -140,9 +141,10 @@ func (s *Service) forgeEnded(ctx context.Context, prID int64) bool {
 
 // stackBase is the base for a branch built on others (nearest first): the
 // first of them with a pull request open, else def. The note says so, in
-// one line, and how to choose def. However tall the stack, the forge gets
+// one line, and how to choose def, and the number of the pull request it is
+// stacked on (0 when def). However tall the stack, the forge gets
 // one stillOpenBudget to confirm them; past it the records stand.
-func (s *Service) stackBase(ctx, forgeCtx context.Context, repo *ProjectRepo, head, def string, stackedOn []string) (string, string) {
+func (s *Service) stackBase(ctx, forgeCtx context.Context, repo *ProjectRepo, head, def string, stackedOn []string) (string, string, int) {
 	fctx, cancel := context.WithTimeout(forgeCtx, stillOpenBudget)
 	defer cancel()
 	for _, b := range stackedOn {
@@ -159,9 +161,9 @@ func (s *Service) stackBase(ctx, forgeCtx context.Context, repo *ProjectRepo, he
 			continue
 		}
 		return b, fmt.Sprintf("%s is built on %s, whose pull request #%d is open, so this one opens into %s and shows only its own change. To open it into %s instead: --base %s.",
-			head, b, pr.Number, b, def, def)
+			head, b, pr.Number, b, def, def), pr.Number
 	}
-	return def, ""
+	return def, "", 0
 }
 
 // joinNotes joins notices, skipping empty ones.
@@ -198,39 +200,122 @@ func (s *Service) prsStackedOn(ctx context.Context, pr *PullRequest) ([]*PullReq
 	return out, rows.Err()
 }
 
-// longLivedBranch says whether pr's head branch is one the repo keeps: its
-// default branch, or a protected one that still exists. Pull requests open
-// into such a branch aren't stacked on the merged one (a develop that
-// merges into main keeps its own pull requests; WP-760). When the forge
-// can't say, it counts as one: nothing is moved on a guess.
-func (s *Service) longLivedBranch(ctx context.Context, f *Forge, pr *PullRequest) bool {
+// keptBranchKey is the setting that remembers the forge said a branch is
+// one the repo keeps.
+func keptBranchKey(forgeID int64, repo, branch string) string {
+	return fmt.Sprintf("kept_branch:%d:%s:%s", forgeID, strings.ToLower(repo), branch)
+}
+
+// branchKept says, from what is recorded, whether a branch is one the repo
+// keeps (WP-ADR153): a pull request was merged into it (develop), or the
+// forge once said it is the default or a protected branch. Pull requests
+// open into such a branch aren't stacked on a parent's. No forge read.
+func (s *Service) branchKept(ctx context.Context, q queryer, forgeID int64, repo, branch string) (bool, error) {
+	var merged bool
+	if err := q.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pull_requests WHERE forge_id = ? AND repo = ? COLLATE NOCASE AND base_ref = ? AND state = 'merged')`,
+		forgeID, repo, branch).Scan(&merged); err != nil || merged {
+		return merged, err
+	}
+	v, err := s.serverSetting(ctx, q, keptBranchKey(forgeID, repo, branch))
+	return v != "", err
+}
+
+// branchLister lists a repo's branches (the part of ForgeBranches this
+// needs, as branchDeleter is of deleting).
+type branchLister interface {
+	Branches(ctx context.Context, f *Forge, repo string) ([]ForgeBranch, error)
+}
+
+// longLivedBranch says whether pr's head branch is one the repo keeps, and
+// whether that is known. Kept: recorded as such, or the forge says it is the
+// default branch or a protected one that still exists, which is remembered.
+// Pull requests open into a kept branch aren't stacked on the merged one (a
+// develop that merges into main keeps its own pull requests; WP-760). When
+// the forge can't say, it isn't known: nothing is moved on a guess.
+func (s *Service) longLivedBranch(ctx context.Context, f *Forge, pr *PullRequest) (kept, known bool) {
+	if k, err := s.branchKept(ctx, s.db.R, pr.ForgeID, pr.Repo, pr.HeadRef); err != nil {
+		s.log.WarnContext(ctx, "read whether a branch is kept", "repo", pr.Repo, "branch", pr.HeadRef, "err", err)
+	} else if k {
+		return true, true
+	}
+	key := keptBranchKey(pr.ForgeID, pr.Repo, pr.HeadRef)
 	if dc, ok := s.Forges.(ForgeCommitter); ok {
 		def, err := dc.DefaultBranch(ctx, f, pr.Repo)
 		if err != nil {
 			s.log.WarnContext(ctx, "read the default branch before moving stacked pull requests", "repo", pr.Repo, "err", err)
-			return true
+			return false, false
 		}
 		if def == pr.HeadRef {
-			return true
+			s.putSetting(ctx, key, "1")
+			return true, true
 		}
 	}
-	bl, ok := s.Forges.(interface {
-		Branches(ctx context.Context, f *Forge, repo string) ([]ForgeBranch, error)
-	})
+	bl, ok := s.Forges.(branchLister)
 	if !ok {
-		return false
+		return false, true
 	}
 	list, err := bl.Branches(ctx, f, pr.Repo)
 	if err != nil {
 		s.log.WarnContext(ctx, "list branches before moving stacked pull requests", "repo", pr.Repo, "err", err)
-		return true
+		return false, false
 	}
 	for _, b := range list {
-		if b.Name == pr.HeadRef {
-			return b.Protected
+		if b.Name == pr.HeadRef && b.Protected {
+			s.putSetting(ctx, key, "1")
+			return true, true
 		}
 	}
-	return false // gone
+	s.dropSetting(ctx, key) // not kept, or gone
+	return false, true
+}
+
+// settleStack reads the forge where the record can't tell what a stacked
+// pull request waits for (WP-1670): a merged parent whose children weren't
+// moved is moved now, and a parent's branch the repo keeps is remembered, so
+// the plain reads of the wait (branchKept) are right. It is called where a
+// pull request is armed, merged or opened, and for a merged parent again
+// from the armed one's pass (mergedOnly), which retries a move that was left.
+func (s *Service) settleStack(ctx context.Context, pr *PullRequest, mergedOnly bool) {
+	parent, err := s.stackParent(ctx, s.db.R, pr)
+	if err != nil || parent == nil || parent.HeadRef == "" {
+		return
+	}
+	if kept, err := s.branchKept(ctx, s.db.R, pr.ForgeID, pr.Repo, pr.BaseRef); err != nil || kept {
+		return
+	}
+	if endedBefore(parent, pr) || (mergedOnly && parent.State != "merged") {
+		return
+	}
+	f, err := s.forgeByID(ctx, pr.ForgeID)
+	if err != nil {
+		return
+	}
+	if parent.State == "merged" {
+		s.moveOffMerged(ctx, f, parent)
+		return
+	}
+	s.longLivedBranch(ctx, f, parent)
+}
+
+// moveOffMerged moves the pull requests open into a merged pull request's
+// branch onto its base, unless the branch is one the repo keeps. When the
+// forge can't say, they stay, held as stacked on a merged pull request until
+// it can (settleStack tries again).
+func (s *Service) moveOffMerged(ctx context.Context, f *Forge, pr *PullRequest) {
+	if pr.State != "merged" || pr.BaseRef == "" {
+		return
+	}
+	stacked, err := s.prsStackedOn(ctx, pr)
+	if err != nil {
+		s.log.WarnContext(ctx, "list pull requests stacked on a merged branch", "repo", pr.Repo, "branch", pr.HeadRef, "err", err)
+		return
+	}
+	if len(stacked) == 0 {
+		return
+	}
+	if kept, known := s.longLivedBranch(ctx, f, pr); known && !kept {
+		s.moveStackOff(ctx, f, pr, stacked)
+	}
 }
 
 // moveStackChild moves a pull request open into its merged parent's branch
@@ -264,11 +349,15 @@ func (s *Service) moveStackChild(ctx context.Context, f *Forge, parent, child *P
 		t.emit(&Event{Kind: EvPRActivity, ProjectID: projectID, New: "edited", Data: map[string]any{"pr_id": cur.ID}})
 		return nil
 	})
-	if err == nil {
-		// Its stack wait ended with the move: it joins the new base's line.
-		s.nudgeBabysit(cur.ID, false)
+	if err != nil {
+		// The forge moved it, which is what the move is: the record catches
+		// up from the forge's next read, and a disarm would be for nothing.
+		s.log.WarnContext(ctx, "record the move of a stacked pull request", "repo", cur.Repo, "number", cur.Number, "err", err)
+		return nil
 	}
-	return err
+	// Its stack wait ended with the move: it joins the new base's line.
+	s.nudgeBabysit(cur.ID, false)
+	return nil
 }
 
 // moveStackOff moves every pull request in stacked onto the merged pr's
@@ -301,9 +390,7 @@ func (s *Service) afterStackMerge(ctx context.Context, f *Forge, pr *PullRequest
 	if len(stacked) == 0 || !s.moveStackOff(ctx, f, pr, stacked) {
 		return
 	}
-	cl, ok := s.Forges.(interface {
-		DeleteBranch(ctx context.Context, f *Forge, repo, branch string) error
-	})
+	cl, ok := s.Forges.(branchDeleter)
 	if !ok {
 		return
 	}
@@ -322,21 +409,13 @@ func (s *Service) onStackParentMerged(ctx context.Context, e *Event) {
 	}
 	s.goBG(func() {
 		pr, err := s.prByID(ctx, s.db.R, e.stackParent)
-		if err != nil || pr.State != "merged" || pr.BaseRef == "" {
-			return
-		}
-		stacked, err := s.prsStackedOn(ctx, pr)
 		if err != nil {
-			s.log.WarnContext(ctx, "list pull requests stacked on a merged branch", "repo", pr.Repo, "branch", pr.HeadRef, "err", err)
-			return
-		}
-		if len(stacked) == 0 {
 			return
 		}
 		f, err := s.forgeByID(ctx, pr.ForgeID)
-		if err != nil || s.longLivedBranch(ctx, f, pr) {
+		if err != nil {
 			return
 		}
-		s.moveStackOff(ctx, f, pr, stacked)
+		s.moveOffMerged(ctx, f, pr)
 	})
 }

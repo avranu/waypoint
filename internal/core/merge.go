@@ -652,6 +652,7 @@ func (s *Service) MergePR(ctx context.Context, actor *Actor, prID int64, in Merg
 			}
 			return nil, invalid("this pull request is %s", cur.State)
 		}
+		s.settleStack(ctx, pr, false) // so its stack wait is read right
 		if pr.Outside {
 			return nil, errPROutside(pr) // a head no person approved never merges by itself (WP-281)
 		}
@@ -688,6 +689,7 @@ func (s *Service) MergePR(ctx context.Context, actor *Actor, prID int64, in Merg
 		}
 		return s.armMerge(ctx, actor, pr, in.Style)
 	}
+	s.settleStack(ctx, pr, false)
 	sha, err := s.mergeNow(ctx, actor, pr, in, "from the pull request page")
 	if err != nil {
 		return nil, err
@@ -819,6 +821,10 @@ func (s *Service) maybeAutoMerge(ctx context.Context, prID int64) {
 		return // a head from outside waits for a person's approval first (WP-281)
 	}
 	s.ensureArmedBabysit(ctx, pr) // an armed pull request is always babysat (WP-188)
+	s.settleStack(ctx, pr, true)  // a move off a merged parent that was left is made now (WP-1670)
+	if cur, err := s.prByID(ctx, s.db.R, pr.ID); err == nil {
+		pr = cur // a move changed its base
+	}
 	rd, err := s.readiness(ctx, pr)
 	if err != nil {
 		s.armedMergeUnread(ctx, pr, "read whether an armed pull request is ready", "whether it is ready couldn't be read", err)
@@ -1022,18 +1028,26 @@ func (s *Service) mergeNow(ctx context.Context, actor *Actor, pr *PullRequest, i
 	if in.DeleteBranch != nil {
 		del = *in.DeleteBranch
 	}
-	// A forge deletes the branch inside the merge call, and Forgejo then
-	// closes the pull requests open into it. So when some are, the merge
-	// doesn't ask for that: they move off the branch, then it goes
-	// (afterStackMerge; WP-ADR153).
+	// A forge may delete the branch inside the merge call and close (or
+	// retarget itself) the pull requests open into it. So when some are, the
+	// merge doesn't ask for that: they move off the branch first, then it
+	// goes (afterStackMerge; WP-ADR153). Where the forge can't say whether
+	// the branch is one the repo keeps, nothing is deleted or moved: they
+	// hold as stacked on a merged pull request, and settleStack moves them.
 	var stacked []*PullRequest
 	if del {
 		if stacked, err = s.prsStackedOn(ctx, cur); err != nil {
 			// Before anything merges, as the project read below.
 			return "", s.heldRead(ctx, pr, "list the pull requests stacked on the branch being merged", "the pull requests stacked on it couldn't be read", err)
 		}
-		if len(stacked) > 0 && s.longLivedBranch(ctx, f, cur) {
-			stacked = nil // not a branch that goes: they are not stacked on it
+		if len(stacked) > 0 {
+			switch kept, known := s.longLivedBranch(ctx, f, cur); {
+			case !known:
+				del, stacked = false, nil
+				s.log.WarnContext(ctx, "left a merged branch for the pull requests stacked on it", "repo", cur.Repo, "branch", cur.HeadRef)
+			case kept:
+				stacked = nil // not a branch that goes: they are not stacked on it
+			}
 		}
 	}
 	style := cmp(in.Style, cur.ArmedStyle)

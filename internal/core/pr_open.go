@@ -218,13 +218,13 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 		if strings.TrimSpace(in.Base) == "" {
 			in.Base = s.askedBase(ctx, task, in.Head)
 		}
-		base, stackNote := strings.TrimSpace(in.Base), ""
+		base, stackNote, stackedOn := strings.TrimSpace(in.Base), "", 0
 		if base == "" {
 			start := time.Now()
 			if base, err = cl.DefaultBranch(fctx, f, pick.Repo); err != nil {
 				return nil, s.forgeUnanswered(f, time.Since(start), err)
 			}
-			base, stackNote = s.stackBase(ctx, fctx, pick, in.Head, base, in.StackedOn)
+			base, stackNote, stackedOn = s.stackBase(ctx, fctx, pick, in.Head, base, in.StackedOn)
 		}
 		if base == in.Head {
 			return nil, invalid("%s is the base branch; open the pull request from a feature branch", base)
@@ -276,13 +276,19 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 			}
 		}
 		if fp != nil {
-			if existing, err = s.recordOpened(ctx, actor, p.ID, f, pick.Repo, fp); err != nil {
+			if existing, err = s.recordOpened(ctx, actor, p.ID, f, pick.Repo, fp, stackedOn); err != nil {
 				return nil, err
 			}
 			if !res.Existing {
 				s.queuePRBody(ctx, existing, in.Issue, in.Body, in.BodyInputs)
 			}
 		}
+	}
+	if pr, err := s.prByID(ctx, s.db.R, existing); err == nil {
+		// Opened into another pull request's branch: the forge says whether
+		// that is a branch the repo keeps, so its stack wait reads right
+		// (WP-1670). Within the forge budget, and nothing for the default.
+		s.settleStack(fctx, pr, false)
 	}
 	if in.Urgent {
 		pr, err := s.prByID(ctx, s.db.R, existing)
@@ -351,18 +357,25 @@ func (s *Service) openOnForge(ctx context.Context, f *Forge, repo, head, base st
 
 // recordOpened stores a pull request just opened and remembers an agent as
 // its author.
-func (s *Service) recordOpened(ctx context.Context, actor *Actor, projectID int64, f *Forge, repo string, fp *ForgePR) (int64, error) {
+func (s *Service) recordOpened(ctx context.Context, actor *Actor, projectID int64, f *Forge, repo string, fp *ForgePR, stackedOn int) (int64, error) {
 	pr, err := s.recordPR(ctx, f, repo, fp, true)
 	if err != nil {
 		return 0, err
 	}
 	if agent := actor.agentName(); agent != "" {
+		detail := "opened “" + excerpt(pr.Title, 120) + "”"
+		if pr.BaseRef != "" {
+			detail += " into " + pr.BaseRef
+			if stackedOn != 0 { // stackBase chose the base (WP-1670)
+				detail += fmt.Sprintf(" (stacked on #%d)", stackedOn)
+			}
+		}
 		err = s.write(ctx, actor, func(t *tx) error {
 			if _, err := t.ExecContext(ctx, `UPDATE pull_requests SET agent = ? WHERE id = ? AND agent = ''`, agent, pr.ID); err != nil {
 				return err
 			}
 			t.audit(AuditEntry{Action: "pr.open", Category: AuditControl, ProjectID: projectID, TargetType: "pr", TargetID: pr.ID,
-				Target: fmt.Sprintf("%s#%d", pr.Repo, pr.Number), URL: pr.URL, Detail: "opened “" + excerpt(pr.Title, 120) + "”", About: agent})
+				Target: fmt.Sprintf("%s#%d", pr.Repo, pr.Number), URL: pr.URL, Detail: detail, About: agent})
 			return nil
 		})
 		if err != nil {

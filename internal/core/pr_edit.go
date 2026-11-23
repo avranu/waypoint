@@ -54,9 +54,12 @@ func (s *Service) EditPullRequest(ctx context.Context, actor *Actor, prID int64,
 	if in.Title == nil && in.Body == nil && rb == nil {
 		return nil // already into that base
 	}
-	ed, ok := s.Forges.(ForgePREditor)
-	if !ok {
-		return invalid("this forge client can't edit pull requests")
+	var ed ForgePREditor
+	if in.Title != nil || in.Body != nil { // a base alone needs only ForgePRRetargeter
+		var ok bool
+		if ed, ok = s.Forges.(ForgePREditor); !ok {
+			return invalid("this forge client can't edit pull requests")
+		}
 	}
 	f, err := s.forgeByID(ctx, pr.ForgeID)
 	if err != nil {
@@ -65,7 +68,11 @@ func (s *Service) EditPullRequest(ctx context.Context, actor *Actor, prID int64,
 	if f.token == "" {
 		return invalid("the forge has no API token; add one in Admin → Forges")
 	}
-	title := ""
+	// The edits are made one by one on the forge. One that fails after an
+	// earlier one succeeded still leaves the record and the audit what was
+	// applied, then the error comes back (WP-1670).
+	title, applied := "", []string{}
+	var ferr error
 	if in.Title != nil {
 		if title = stripWIP(*in.Title); title == "" {
 			return invalid("the title can't be empty")
@@ -74,19 +81,22 @@ func (s *Service) EditPullRequest(ctx context.Context, actor *Actor, prID int64,
 		if pr.State == "draft" {
 			forgeTitle = wipPrefix + title
 		}
-		if err := ed.EditPRTitle(ctx, f, pr.Repo, pr.Number, forgeTitle); err != nil {
-			return err
+		if ferr = ed.EditPRTitle(ctx, f, pr.Repo, pr.Number, forgeTitle); ferr == nil {
+			applied = append(applied, "title")
 		}
 	}
-	if in.Body != nil {
-		if err := ed.EditPRBody(ctx, f, pr.Repo, pr.Number, *in.Body); err != nil {
-			return err
+	if in.Body != nil && ferr == nil {
+		if ferr = ed.EditPRBody(ctx, f, pr.Repo, pr.Number, *in.Body); ferr == nil {
+			applied = append(applied, "body")
 		}
 	}
-	if rb != nil {
-		if err := rb.EditPRBase(ctx, f, pr.Repo, pr.Number, base); err != nil {
-			return err
+	if rb != nil && ferr == nil {
+		if ferr = rb.EditPRBase(ctx, f, pr.Repo, pr.Number, base); ferr == nil {
+			applied = append(applied, "base")
 		}
+	}
+	if len(applied) == 0 {
+		return ferr
 	}
 	projectID, rerr := s.prAuthority(ctx, actor, pr, RoleViewer)
 	if rerr != nil {
@@ -94,25 +104,37 @@ func (s *Service) EditPullRequest(ctx context.Context, actor *Actor, prID int64,
 			s.log.WarnContext(ctx, "pr authority failed", "pr", prID, "err", rerr)
 		}
 	}
-	return s.write(ctx, actor, func(t *tx) error {
-		detail := "edited the description of"
-		if in.Title != nil {
-			if _, err := t.ExecContext(ctx, `UPDATE pull_requests SET title = ? WHERE id = ?`, excerpt(title, 300), pr.ID); err != nil {
-				return err
+	werr := s.write(ctx, actor, func(t *tx) error {
+		var parts []string
+		for _, a := range applied {
+			switch a {
+			case "title":
+				if _, err := t.ExecContext(ctx, `UPDATE pull_requests SET title = ? WHERE id = ?`, excerpt(title, 300), pr.ID); err != nil {
+					return err
+				}
+				parts = append(parts, "retitled")
+			case "body":
+				parts = append(parts, "edited the description of")
+			case "base":
+				if err := setPRBase(ctx, t, pr.ID, base); err != nil {
+					return err
+				}
+				parts = append(parts, "moved the base from "+pr.BaseRef+" to "+base+" of")
 			}
-			detail = "retitled"
 		}
-		if rb != nil {
-			if err := setPRBase(ctx, t, pr.ID, base); err != nil {
-				return err
-			}
-			detail = "moved the base from " + pr.BaseRef + " to " + base + " of"
+		detail := parts[0]
+		if len(parts) > 1 { // "retitled and moved the base from X to Y of"
+			detail = strings.Join(parts[:len(parts)-1], ", ") + " and " + parts[len(parts)-1]
 		}
 		t.audit(AuditEntry{Action: "pr.edit", Category: AuditControl, ProjectID: projectID, TargetType: "pr", TargetID: pr.ID,
 			Target: fmt.Sprintf("%s#%d", pr.Repo, pr.Number), URL: pr.URL, Detail: detail + " “" + excerpt(pr.Title, 120) + "”"})
 		t.emit(&Event{Kind: EvPRActivity, ProjectID: projectID, New: "edited", Data: map[string]any{"pr_id": pr.ID}})
 		return nil
 	})
+	if ferr != nil {
+		return ferr
+	}
+	return werr
 }
 
 // setPRBase records a pull request's new base. Each base has its own merge
