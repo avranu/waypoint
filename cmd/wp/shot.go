@@ -209,7 +209,7 @@ func (c *cli) shoot(key string, urls []string, o shotOpts) error {
 	if dir == "" {
 		// Under a "wp-shots" directory, so looking at them doesn't attach
 		// them again as screenshots seen while working (hook_shots.go).
-		base := filepath.Join(os.TempDir(), "wp-shots")
+		base := filepath.Join(os.TempDir(), shotsDirName)
 		if err := os.MkdirAll(base, 0o700); err != nil {
 			return err
 		}
@@ -219,7 +219,7 @@ func (c *cli) shoot(key string, urls []string, o shotOpts) error {
 		}
 		dir = d
 	} else {
-		dir = filepath.Join(dir, "wp-shots") // still not attached again when looked at
+		dir = filepath.Join(dir, shotsDirName) // still not attached again when looked at
 		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return err
 		}

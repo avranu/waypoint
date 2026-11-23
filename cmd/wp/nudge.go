@@ -11,9 +11,11 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Nudges (ADR2 §5, WP-47): a PreToolUse(Bash) hook that names the better
-// tool in one line when an agent reaches for a worse one. It is a note added
-// to what the agent sees, never a refusal: the four refusals that used to
+// Nudges (ADR2 §5, WP-47): a PreToolUse(Bash|Read|Monitor) hook that names
+// the better tool in one line when an agent reaches for a worse one, and
+// lets a Read of a picture the session may look at through unasked
+// (WP-1137, read_pictures.go). It adds notes and that one "allow", never a
+// refusal: the four refusals that used to
 // live here (task-wait, nudge_wait.go; a Grok review that would be cut short,
 // nudge_grok.go; pgrep-self; worktree-place) are emitted by the guard hook
 // (refuse.go, WP-1411), because Claude Code lets a call through when a hook
@@ -131,22 +133,41 @@ func remoteHost(remote string) string {
 }
 
 // nudgeOutput is the PreToolUse reply: the note as context, no decision.
-func nudgeOutput(text string) []byte { return nudgeReply(text, false) }
+func nudgeOutput(text string) []byte { return preToolReply("", "", text) }
 
-// nudgeReply is the PreToolUse reply: the note as context, if any, and
-// "allow" for a picture the session may look at unasked (WP-1137); never a
-// refusal.
+// nudgeReply is nudgeOutput, with "allow" for a picture the session may look
+// at unasked (WP-1137); never a refusal.
 func nudgeReply(text string, allow bool) []byte {
-	o := map[string]string{"hookEventName": "PreToolUse"}
-	if text != "" {
-		o["additionalContext"] = text
+	if !allow {
+		return nudgeOutput(text)
 	}
-	if allow {
-		o["permissionDecision"] = "allow"
-		o["permissionDecisionReason"] = "a picture from this project, its tasks or this session (WP-1137)"
+	return preToolReply("allow", "a picture from this project's checkouts or scratchpads, a task's attachments, or wp shot (WP-1137)", text)
+}
+
+// preToolReply is a PreToolUse hook's reply: a decision ("allow", "deny" or
+// none) with its reason, and context for the agent, each left out when "".
+func preToolReply(decision, reason, context string) []byte {
+	o := map[string]string{"hookEventName": "PreToolUse"}
+	if decision != "" {
+		o["permissionDecision"] = decision
+		o["permissionDecisionReason"] = reason
+	}
+	if context != "" {
+		o["additionalContext"] = context
 	}
 	b, _ := json.Marshal(map[string]any{"hookSpecificOutput": o})
 	return append(b, '\n')
+}
+
+// picturePermit: a Read the session may make unasked (WP-1137). Not in a
+// runner's job (runnerJobEnv), nor where Claude Code asks nothing: a
+// session told to refuse what it wasn't granted (dontAsk, a read-only job)
+// or one that skips every ask.
+func picturePermit(in hookEventInput, cwd, path string) bool {
+	if in.ToolName != "Read" || os.Getenv(runnerJobEnv) != "" || in.PermissionMode == "dontAsk" || in.PermissionMode == "bypassPermissions" {
+		return false
+	}
+	return pictureReadAllowed(cwd, path)
 }
 
 // nudgeStat counts a nudge in the state file: how often each kind was shown.
@@ -218,7 +239,7 @@ func hookClaudeNudge(c *cli, stdin io.Reader, stdout io.Writer) {
 	}
 	rk, _ := hookRefusalWith(in, task, func() string { return c.noopRefusalText(in) })
 	refused := rk != ""
-	allow := !refused && in.ToolName == "Read" && pictureReadAllowed(cwd, ti.FilePath)
+	allow := !refused && picturePermit(in, cwd, ti.FilePath)
 	// A person's pause (WP-146): told on the first call it reaches, then
 	// every few minutes, ahead of any other nudge.
 	// Not a subagent's call: it would use up the parent's slot, and the

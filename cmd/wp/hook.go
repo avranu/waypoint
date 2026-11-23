@@ -103,7 +103,7 @@ var claudeHooks = []claudeHook{
 	{event: "ConfigChange", command: hookEvent, opts: hookOpts{async: true}},
 	{event: "InstructionsLoaded", command: hookEvent, opts: hookOpts{async: true}},
 	{event: "PostModelSwitch", command: hookEvent, opts: hookOpts{async: true}},
-	{event: "PreToolUse", command: hookNudge, opts: hookOpts{matcher: "Bash|Read|Monitor", timeout: hookNudgeTimeout}}, // no network; Read for big whole-file reads (WP-145) and task output (WP-191); Monitor by name, or a Bash matcher gets it as a Bash call (WP-1443)
+	{event: "PreToolUse", command: hookNudge, opts: hookOpts{matcher: "Bash|Read|Monitor", timeout: hookNudgeTimeout}}, // no network; Read for big whole-file reads (WP-145), task output (WP-191) and the pictures it lets through unasked (WP-1137); Monitor by name, or a Bash matcher gets it as a Bash call (WP-1443)
 	{event: "PreToolUse", command: hookGate, opts: hookOpts{matcher: "Agent|Task", timeout: hookGateTimeout}},          // local only; refuses in every session
 	// The guard: local only, no subprocess; refuses risky calls in unattended sessions (WP-270, WP-ADR10) and the nudge refusals in every session (WP-1411).
 	{event: "PreToolUse", command: hookGuard, opts: hookOpts{matcher: "Bash|Write|Edit|MultiEdit|NotebookEdit", timeout: hookGuardTimeout}},
@@ -151,7 +151,7 @@ every Waypoint hook.`,
 			}},
 		{name: "claude-push", hidden: true, summary: "pushes an ended session's commits (its SessionEnd hook starts it, WP-843)",
 			run: hookClaudePush},
-		{name: "claude-nudge", hidden: true, summary: "the Bash nudges (run by Claude Code): names the better tool in one line",
+		{name: "claude-nudge", hidden: true, summary: "the Bash and Read nudges (run by Claude Code): names the better tool in one line; lets a Read of the project's pictures through unasked",
 			run: func(c *cli, args []string) error {
 				hookClaudeNudge(c, os.Stdin, c.out)
 				return nil // never blocks, never fails

@@ -44,7 +44,7 @@ func (c *cli) keepScreenshot(in hookEventInput) {
 	}
 	// Someone's attachment fetched with wp files, or a picture wp shot
 	// attached already (WP-245).
-	if parts := strings.Split(filepath.ToSlash(ti.FilePath), "/"); slices.Contains(parts, "wp-files") || slices.Contains(parts, "wp-shots") {
+	if parts := strings.Split(filepath.ToSlash(ti.FilePath), "/"); slices.Contains(parts, filesDirName) || slices.Contains(parts, shotsDirName) {
 		return
 	}
 	cl := c.state.sessionClaim(in.Cwd, in.SessionID)
