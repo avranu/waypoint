@@ -1,6 +1,7 @@
 package core
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -291,6 +292,11 @@ func TestStrandedRoundBackoffDoublesAndIsPruned(t *testing.T) {
 		t.Fatal(err)
 	}
 	a.s.sweepRounds(a.ctx)
+	if _, ok := a.s.strandedRetry.Load(id); !ok {
+		t.Error("a round the query skips briefly lost its tries")
+	}
+	a.lapse(strandedShipWindow + time.Hour)
+	a.s.sweepRounds(a.ctx)
 	if _, ok := a.s.strandedRetry.Load(id); ok {
 		t.Error("the back-off of a round that is no longer a candidate was kept")
 	}
@@ -354,5 +360,80 @@ func TestAskAgainAfterInterruptSkipsReplacedAndRestarted(t *testing.T) {
 	add("a person's prompt", reviewInterruptsMax)
 	if again() {
 		t.Fatal("interruptions past the max didn't stop asking")
+	}
+}
+
+func (a *apEnv) roundReason(id int64) string {
+	var r string
+	_ = a.s.db.R.QueryRow(`SELECT coalesce(reason, '') FROM work_log WHERE id = ?`, id).Scan(&r)
+	return r
+}
+
+// A round whose head branch is gone from the forge is given up at once, with
+// the reason recorded, and isn't tried again.
+func TestStrandedRoundBranchGoneIsGivenUp(t *testing.T) {
+	a, g, id := strandedEnv(t)
+	if _, err := a.s.db.W.Exec(`UPDATE work_log SET state = ?, reason = 'no report came back', ended_at = ? WHERE id = ?`, RoundFailed, a.clockNow().UnixMilli(), id); err != nil {
+		t.Fatal(err)
+	}
+	g.sm.Lock()
+	g.createErr = &forgeAPIError{method: "POST", path: "/repos/a/b/pulls", status: 404,
+		body: `{"message":"The target couldn't be found.","errors":["could not find 'gone' to be a commit, branch or tag in the head repository a/b"]}`}
+	g.sm.Unlock()
+	a.lapse(heldStopLost + time.Minute)
+	a.s.sweepRounds(a.ctx)
+	if r := a.roundReason(id); !strings.HasPrefix(r, roundGaveUp) || !strings.Contains(r, "branch is gone") {
+		t.Fatalf("reason = %q", r)
+	}
+	if _, ok := a.s.strandedRetry.Load(id); ok {
+		t.Error("a given-up round is still backing off")
+	}
+	g.sm.Lock()
+	g.createErr = nil
+	g.sm.Unlock()
+	a.lapse(strandedBackoffMax + time.Minute)
+	a.s.sweepRounds(a.ctx)
+	if n := a.opened(g); n != 0 {
+		t.Fatalf("a given-up round was tried again: opened %d", n)
+	}
+}
+
+// Another failure is tried again with a back-off, and given up after
+// strandedMaxTries, even when the round drops out of the query in between.
+func TestStrandedRoundGivenUpAfterTheLimit(t *testing.T) {
+	a, g, id := strandedEnv(t)
+	if _, err := a.s.db.W.Exec(`UPDATE work_log SET state = ?, reason = 'no report came back', ended_at = ? WHERE id = ?`, RoundFailed, a.clockNow().UnixMilli(), id); err != nil {
+		t.Fatal(err)
+	}
+	g.sm.Lock()
+	g.createErr = errors.New("the forge is unwell")
+	g.sm.Unlock()
+	a.lapse(heldStopLost + time.Minute)
+	for i := 1; i < strandedMaxTries; i++ {
+		a.s.sweepRounds(a.ctx)
+		v, ok := a.s.strandedRetry.Load(id)
+		if !ok || v.(strandedTry).tries != i {
+			t.Fatalf("after %d failures: %v %v", i, v, ok)
+		}
+		if strings.HasPrefix(a.roundReason(id), roundGaveUp) {
+			t.Fatalf("given up after %d tries", i)
+		}
+		// The round drops out of the query for a while (another run holds
+		// its task), which doesn't reset its count.
+		a.lapse(strandedBackoffMax + time.Minute)
+		if _, err := a.s.db.W.Exec(`UPDATE work_log SET reason = 'Cancelled by Robin.' WHERE id = ?`, id); err != nil {
+			t.Fatal(err)
+		}
+		a.s.sweepRounds(a.ctx)
+		if _, err := a.s.db.W.Exec(`UPDATE work_log SET reason = 'no report came back', updated_at = ? WHERE id = ?`, a.clockNow().UnixMilli(), id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.s.sweepRounds(a.ctx)
+	if r := a.roundReason(id); !strings.HasPrefix(r, roundGaveUp) || !strings.Contains(r, "the forge is unwell") {
+		t.Fatalf("reason = %q", r)
+	}
+	if n := a.opened(g); n != 0 {
+		t.Fatalf("opened %d", n)
 	}
 }
