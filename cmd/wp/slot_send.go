@@ -144,7 +144,7 @@ func appendOutbox(dir string, h core.SlotHold) {
 // addDropped adds n to the counter of holds dropped from a full outbox.
 func addDropped(dir string, n int) {
 	p := filepath.Join(dir, slotDroppedFile)
-	_ = os.WriteFile(p, []byte(strconv.FormatInt(readDropped(dir)+int64(n), 10)+"\n"), 0o600)
+	_ = os.WriteFile(p, []byte(strconv.FormatInt(readDropped(dir)+int64(n), 10)+"\n"), 0o600) // #nosec G703 -- our own directory
 }
 
 func readDropped(dir string) int64 {

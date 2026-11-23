@@ -253,7 +253,7 @@ func (c *cli) acquireQueued(ctx context.Context, name string, n int, cmd string)
 		// Earlier runs' holds go while this one waits and runs; it never
 		// waits for this, and a request cut by the process ending is sent
 		// again later (the server keeps an id once). WP-1646.
-		go func() { _, _, _ = c.sendSlotHolds(context.Background()) }()
+		go func() { _, _, _ = c.sendSlotHolds(context.Background()) }() // #nosec G118 -- the send has its own time budget and must not end with the wait
 	}
 	wd, _ := os.Getwd()
 	tree := slotGit(ctx, "rev-parse", "--show-toplevel")

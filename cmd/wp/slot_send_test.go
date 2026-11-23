@@ -250,7 +250,10 @@ func TestSendSlotHoldsAcksOnlyWhatWasSent(t *testing.T) {
 
 func TestSendSlotHoldsFailureLeavesOutboxAndIsFast(t *testing.T) {
 	var hits int
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits++; http.Error(w, "boom", 503) }))
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		http.Error(w, "boom", http.StatusServiceUnavailable)
+	}))
 	defer ts.Close()
 	c, dir := ssEnv(t, ts.URL)
 	_ = os.MkdirAll(dir, 0o700)

@@ -275,11 +275,11 @@ func replayRows(g replayGroup, p replayParams) (recorded, model, asked replaySum
 
 func cmdSlotReplay(c *cli, args []string) error {
 	fs := c.flags()
-	days := fs.Int("days", 7, "how many days back to replay")
-	threshold := fs.Duration("threshold", slotLongRun, "run time from which a run is long")
-	share := fs.Float64("long-share", 0.5, "share of the slots long runs may use (the lowest ones)")
-	slots := fs.Int("slots", 0, "slots to simulate (default: what the holds recorded)")
-	machine := fs.String("machine", "", "which machine's holds (default: this one)")
+	days := fs.Int("days", 7, "replay the last `N` days")
+	threshold := fs.Duration("threshold", slotLongRun, "a run is long from this `DURATION` of run time")
+	share := fs.Float64("long-share", 0.5, "the `SHARE` of the slots long runs may use (the lowest ones)")
+	slots := fs.Int("slots", 0, "simulate `N` slots (default: what the holds recorded)")
+	machine := fs.String("machine", "", "the holds of the machine `NAME` (default: this one)")
 	local := fs.Bool("local", false, "build the holds from this machine's waits.jsonl instead of asking the server")
 	if pos, err := c.parse(fs, args); err != nil {
 		return err
