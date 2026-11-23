@@ -637,14 +637,17 @@ func (s *Service) visibleMergeAfter(ctx context.Context, actor *Actor, id int64)
 		if n == 0 {
 			continue
 		}
-		if !w.Set && !w.Stack {
+		// A wait from task links names its tasks, even one that is also
+		// the stack wait (withStackWait replaces that Why, and this holds
+		// however a later change words it).
+		if !w.Set && w.tasks != [2]int64{} {
 			pv, pargs := visibleSQL("id", actor)
 			// #nosec G202 -- pv is a fixed condition; values are bound
 			if err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM projects WHERE id IN (?, ?) AND `+pv, append([]any{w.tasks[0], w.tasks[1]}, pargs...)...).Scan(&n); err != nil {
 				return nil, err
 			}
 			if n < len(slices.Compact([]int64{w.tasks[0], w.tasks[1]})) {
-				w.Why = taskWaitWhy
+				w.Why = w.said()
 			}
 		}
 		out = append(out, w)

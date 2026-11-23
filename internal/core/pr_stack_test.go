@@ -70,6 +70,21 @@ func TestStackWaitKeepsItsWhy(t *testing.T) {
 	}
 }
 
+// A wait from task links that is also the stack wait doesn't carry its
+// task keys: withStackWait words it as the stack wait, and
+// visibleMergeAfter still checks the tasks for one it didn't (c6408).
+func TestTaskWaitOverlappingTheStackWaitHidesItsTasks(t *testing.T) {
+	se, _, _ := stackedPair(t)
+	task := PRMergeWait{PRID: se.pr(5).ID, Repo: se.pr(5).Repo, Number: 5, State: "open", Why: "SECRET-1 blocks SECRET-2", tasks: [2]int64{1, 2}}
+	out, err := se.s.withStackWait(se.ctx, se.s.db.R, se.pr(6), []PRMergeWait{task})
+	if err != nil || len(out) != 1 || !out[0].Stack {
+		t.Fatalf("%+v %v", out, err)
+	}
+	if strings.Contains(out[0].Why, "SECRET") || out[0].Why != "its base is that pull request's branch" {
+		t.Errorf("why %q", out[0].Why)
+	}
+}
+
 // A wait set by a user on the parent too: the reason says so, dropping it
 // succeeds, and the stack wait stays (finding 11).
 func TestSetAndStackWait(t *testing.T) {
