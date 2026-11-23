@@ -20,8 +20,8 @@ import (
 // What a wait returns (ShipNews.Outcome).
 const (
 	ShipNewsFindings = "findings" // the round's news: Text, IDs
-	ShipNewsPull     = "pull"     // Waypoint opened the pull request: Pull
-	ShipNewsEnded    = "ended"    // the round ended or was released: Text says why
+	ShipNewsPull     = "pull"     // Waypoint shipped the round's pull request: Pull
+	ShipNewsEnded    = "ended"    // the round is over and Waypoint does nothing more: Text says why
 	ShipNewsWaiting  = "waiting"  // nothing yet: ask again
 	ShipNewsNone     = "none"     // the session has no round for the task
 )
@@ -210,8 +210,8 @@ func (s *Service) shipWaitTarget(ctx context.Context, actor *Actor, cliID, machi
 
 // AwaitShipNews holds a wp ship that was held for its task's review round
 // (up to wait, at most prWaitMax) until the round has something for the
-// agent: its audit or check news (taken, so nothing types it again), the pull
-// request Waypoint opened, or the round's end. Neither in time: waiting.
+// agent: its audit or check news (delivered once the client acks it:
+// AckShipNews), the pull request Waypoint shipped, or the round's end. Neither in time: waiting.
 func (s *Service) AwaitShipNews(ctx context.Context, actor *Actor, cliID, machine, taskKey string, wait time.Duration) (*ShipNews, error) {
 	session, task, err := s.shipWaitTarget(ctx, actor, cliID, machine, taskKey)
 	if err != nil {
