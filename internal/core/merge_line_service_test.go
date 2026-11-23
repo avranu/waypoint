@@ -471,11 +471,12 @@ func (se *stackEnv) redBase(names ...string) {
 	}
 }
 
-// A job that runs only on main (advisories) fails on its tip: no head can
-// pass it, so the line tests the front alone and merges it on a pass.
+// A job that runs only on main fails on its tip: no head can pass it, so the
+// line tests the front alone and merges it on a pass. (Not advisories: its
+// failure doesn't make the base red at all, WP-1660.)
 func TestLineBaseRedTestsTheFrontAlone(t *testing.T) {
 	se := newStackEnv(t)
-	se.redBase("ci / advisories (push)")
+	se.redBase("ci / nightly (push)")
 	se.draftGreen(head7s, 5)
 	se.draftGreen(head8s, 7)
 	se.step()
