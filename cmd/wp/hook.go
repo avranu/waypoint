@@ -27,7 +27,7 @@ const (
 	hookResume  = "hook claude-resume" // UserPromptSubmit: restart the clock
 	hookEvent   = "hook claude-event"  // everything else: sessions and requests (WP-D16)
 	hookNudge   = "hook claude-nudge"  // PreToolUse(Bash|Read): the better tool, in one line (WP-47); notes a poll of a running background task (WP-191); lets a Read of a project, task or scratchpad picture through unasked (WP-1137); never refuses (WP-1411)
-	hookGate    = "hook claude-gate"   // PreToolUse(Agent): forks, depth, width, model (WP-143); holds a start while Claude Code's agent limit is reached (WP-1443)
+	hookGate    = "hook claude-gate"   // PreToolUse(Agent): forks and model (WP-143); holds a start while Claude Code's agent limit is reached (WP-1443)
 	hookBurn    = "hook claude-burn"   // PostToolUse(all): silent unless the tree burns above $100/h (WP-144)
 	hookGuard   = "hook claude-guard"  // PreToolUse(Bash|Write|Edit|web): refuses risky calls in unattended sessions (WP-270), and the nudge refusals in every session (WP-1411)
 	hookPause   = "hook claude-pause"  // PostToolUse(all), async: pulls the person's session pause to a local file (WP-146)
@@ -163,7 +163,7 @@ every Waypoint hook.`,
 				hookClaudeBurn(c, os.Stdin, c.out)
 				return nil // never blocks, never fails
 			}},
-		{name: "claude-gate", hidden: true, summary: "the Agent-call gate (run by Claude Code): forks, depth, width and model",
+		{name: "claude-gate", hidden: true, summary: "the Agent-call gate (run by Claude Code): forks and model",
 			run: func(c *cli, args []string) error {
 				hookClaudeGate(c, os.Stdin, c.out)
 				return nil // fails open

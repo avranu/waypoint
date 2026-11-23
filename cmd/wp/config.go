@@ -52,7 +52,7 @@ type State struct {
 	// tidy hint's daily count by repo (WP-136).
 	Nudges map[string]*nudgeStat `json:"nudges,omitempty"`
 	Tidy   map[string]*tidyCache `json:"tidy,omitempty"`
-	// Live subagents by session, for the fan-out gate (WP-143).
+	// Live subagents by session: the fan-out gate records each agent's model here and the slot queue (WP-1443) counts them.
 	Agents map[string]map[string]liveAgent `json:"agents,omitempty"`
 	// Who started each background subagent, by session and agent id, for wp
 	// agents wait; Agent calls the gate let through that no SubagentStart has

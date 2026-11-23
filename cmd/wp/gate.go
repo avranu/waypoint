@@ -22,7 +22,7 @@ import (
 // before every Agent call. It refuses in every session, interactive ones
 // included; WP_GATE=warn|deny|off overrides, except for a fork, which is
 // refused in every mode. Haiku agents are exempt from all but the fork rule
-// (see resolveModel). Free models run as Bash calls (llm-task), never as
+// (see gateProblems). Free models run as Bash calls (llm-task), never as
 // Agent calls, so the gate never sees them.
 
 const (
@@ -263,22 +263,27 @@ func hookClaudeGate(c *cli, stdin io.Reader, stdout io.Writer) {
 		return
 	}
 	f := gateFacts{nested: in.AgentID != "", agent: ti.Type}
+	// The model a no-model agent inherits. The transcript is the main
+	// session's; a nested caller's model is the one recorded when it started.
+	// When that isn't recorded, the session's model stands in, since an agent
+	// inherits it unless a call or definition on the way said otherwise, so an
+	// unknown caller under a premium session is treated as premium rather than
+	// waved through.
 	parent := in.Model
 	if in.TranscriptPath != "" {
 		if fh, err := os.Open(in.TranscriptPath); err == nil { // #nosec G304 -- the hook's own transcript, named by Claude Code
 			var m string
 			f.context, m = transcriptTail(fh)
-			if m != "" && !f.nested {
+			if m != "" {
 				parent = m
 			}
 			_ = fh.Close()
 		}
 	}
 	if f.nested {
-		// The transcript is the main session's, so its model is not the
-		// caller's: an agent started with no model inherits its caller's, the
-		// one recorded when the caller was started ("" when not known).
-		parent = c.subagentModel(in)
+		if m := c.subagentModel(in); m != "" {
+			parent = m
+		}
 	}
 	dirs := agentDirs(in.Cwd)
 	eff := resolveModel(ti.Model, ti.Type, parent, dirs)
@@ -321,7 +326,8 @@ func isModel(m, family string) bool { return strings.Contains(strings.ToLower(m)
 // resolveModel is the model an Agent call will run on: the call's model, the
 // agent definition's model: frontmatter, CLAUDE_CODE_SUBAGENT_MODEL, then the
 // parent's model. A fork always uses the parent's. Built-in types without a
-// definition file fall through to the env var or the parent.
+// definition file fall through to the env var or the parent, and so does a
+// definition that says inherit: it says nothing.
 func resolveModel(call, agent, parent string, dirs []string) string {
 	if agent == "fork" {
 		return parent
@@ -329,7 +335,7 @@ func resolveModel(call, agent, parent string, dirs []string) string {
 	if call != "" {
 		return call
 	}
-	if m := agentDefModel(dirs, agent); m != "" {
+	if m := agentDefModel(dirs, agent); m != "" && !strings.EqualFold(m, "inherit") {
 		return m
 	}
 	if m := subagentModelEnv(); m != "" {
@@ -339,17 +345,14 @@ func resolveModel(call, agent, parent string, dirs []string) string {
 }
 
 // subagentModel is the model a sub-agent that just started runs on: what the
-// gate resolved for its Agent call (the call's model, its definition's, the
+// gate recorded for its Agent call (the call's model, its definition's, the
 // env setting, its parent's), else its definition's or the env setting. ""
 // when neither says: unknown, never a guess (ADR146).
 func (c *cli) subagentModel(in hookEventInput) string {
 	if a, ok := c.loadState().Agents[in.SessionID][in.AgentID]; ok && a.Model != "" {
 		return a.Model
 	}
-	if m := resolveModel("", in.AgentType, "", agentDirs(in.Cwd)); !strings.EqualFold(m, "inherit") {
-		return m
-	}
-	return "" // its parent's, which this hook isn't told
+	return resolveModel("", in.AgentType, "", agentDirs(in.Cwd))
 }
 
 // subagentModelEnv reads CLAUDE_CODE_SUBAGENT_MODEL from the process

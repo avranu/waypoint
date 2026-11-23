@@ -207,11 +207,71 @@ func TestHookClaudeGateNestedInherits(t *testing.T) {
 		hookClaudeGate(c, bytes.NewReader(in), &out)
 		return out.String()
 	}
+	// The session is Fable, so this passes only by the caller's recorded model.
 	if got := run("w"); got != "" {
 		t.Errorf("sonnet worker starting general-purpose: %s", got)
 	}
 	if got := run(""); !strings.Contains(got, "Fable") {
 		t.Errorf("the Fable main session starting general-purpose: %s", got)
+	}
+}
+
+// A nested no-model call takes its caller's recorded model; with none
+// recorded, the session's model stands in.
+func TestHookClaudeGateNestedParent(t *testing.T) {
+	t.Setenv("WP_TASK", "")
+	t.Setenv("WP_GATE", "")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CLAUDE_CODE_SUBAGENT_MODEL", "")
+	c := &cli{dir: t.TempDir()}
+	c.trackSubagent(hookEventInput{SessionID: "p1", AgentID: "rec", AgentType: "x", HookEventName: "SubagentStart"})
+	c.trackSubagent(hookEventInput{SessionID: "p1", AgentID: "unk", AgentType: "x", HookEventName: "SubagentStart"})
+	_ = c.updateState(func(s *State) {
+		a := s.Agents["p1"]["rec"]
+		a.Model = "opus"
+		s.Agents["p1"]["rec"] = a
+	})
+	run := func(agentID, session string) string {
+		tr := filepath.Join(t.TempDir(), "t.jsonl")
+		line := `{"type":"assistant","message":{"model":"` + session + `","usage":{"input_tokens":10}}}` + "\n"
+		if err := os.WriteFile(tr, []byte(line), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		in, _ := json.Marshal(map[string]any{"session_id": "p1", "tool_name": "Agent", "transcript_path": tr, "cwd": t.TempDir(), "agent_id": agentID, "tool_input": json.RawMessage(`{"subagent_type":"general-purpose"}`)})
+		var out bytes.Buffer
+		hookClaudeGate(c, bytes.NewReader(in), &out)
+		return out.String()
+	}
+	if got := run("rec", "claude-sonnet-5-5"); !strings.Contains(got, "can't start an agent on Opus") {
+		t.Errorf("caller recorded as Opus: %s", got)
+	}
+	if got := run("unk", "claude-fable-5-2"); !strings.Contains(got, "Fable") {
+		t.Errorf("unknown caller under a Fable session: %s", got)
+	}
+	if got := run("unk", "claude-sonnet-5-5"); got != "" {
+		t.Errorf("unknown caller under a Sonnet session: %s", got)
+	}
+}
+
+// A definition that says model: inherit says nothing: the call inherits.
+func TestHookClaudeGateInheritDefinition(t *testing.T) {
+	t.Setenv("WP_TASK", "")
+	t.Setenv("WP_GATE", "")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CODE_SUBAGENT_MODEL", "")
+	ad := filepath.Join(home, ".claude", "agents")
+	if err := os.MkdirAll(ad, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ad, "i.md"), []byte("---\nname: inheriter\nmodel: Inherit\n---\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := &cli{dir: t.TempDir()}
+	var out bytes.Buffer
+	hookClaudeGate(c, strings.NewReader(`{"session_id":"s1","tool_name":"Agent","tool_input":{"subagent_type":"inheriter"},"model":"claude-opus-5-5"}`), &out)
+	if !strings.Contains(out.String(), "would run on Opus") {
+		t.Errorf("inherit definition under Opus: %q", out.String())
 	}
 }
 
@@ -226,7 +286,7 @@ func TestResolveModel(t *testing.T) {
 	}
 	rd := filepath.Join(repo, ".claude", "agents")
 	for dir, files := range map[string]map[string]string{
-		ad: {"h.md": "---\nname: haiku-worker\nmodel: haiku\n---\nbody model: opus\n", "n.md": "---\nname: plain\n---\n"},
+		ad: {"h.md": "---\nname: haiku-worker\nmodel: haiku\n---\nbody model: opus\n", "n.md": "---\nname: plain\n---\n", "i.md": "---\nname: inheriter\nmodel: Inherit\n---\n"},
 		rd: {"r.md": "---\nname: repo-agent\nmodel: \"opus\"\n---\n"},
 	} {
 		if err := os.MkdirAll(dir, 0o750); err != nil {
@@ -247,6 +307,8 @@ func TestResolveModel(t *testing.T) {
 		{"definition", "", "haiku-worker", "opus", "sonnet", "haiku"},
 		{"repo definition", "", "repo-agent", "sonnet", "", "opus"},
 		{"definition without model falls to env", "", "plain", "opus", "sonnet", "sonnet"},
+		{"inherit definition falls to env", "", "inheriter", "opus", "sonnet", "sonnet"},
+		{"inherit definition falls to parent", "", "inheriter", "opus", "", "opus"},
 		{"built-in uses env", "", "general-purpose", "opus", "sonnet", "sonnet"},
 		{"built-in uses parent", "", "Explore", "opus", "", "opus"},
 		{"fork uses parent", "haiku", "fork", "opus", "sonnet", "opus"},
@@ -298,5 +360,35 @@ func TestHookClaudeGateForkIgnoresMode(t *testing.T) {
 	t.Setenv("WP_GATE", "warn")
 	if got := run(opus); strings.Contains(got, "permissionDecision") || !strings.Contains(got, "Opus") {
 		t.Errorf("warn only advises on the other rules: %q", got)
+	}
+}
+
+// A nested premium call follows the mode like a main-thread one; a nested
+// fork is refused in every mode.
+func TestHookClaudeGateNestedModes(t *testing.T) {
+	t.Setenv("WP_TASK", "")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CLAUDE_CODE_SUBAGENT_MODEL", "")
+	c := &cli{dir: t.TempDir()}
+	run := func(in string) string {
+		var out bytes.Buffer
+		hookClaudeGate(c, strings.NewReader(in), &out)
+		return out.String()
+	}
+	opus := `{"session_id":"s1","agent_id":"z","tool_name":"Agent","tool_input":{"subagent_type":"general-purpose","model":"opus"}}`
+	fork := `{"session_id":"s1","agent_id":"z","tool_name":"Agent","tool_input":{"subagent_type":"fork"},"model":"claude-sonnet-5-5"}`
+	t.Setenv("WP_GATE", "warn")
+	if got := run(opus); strings.Contains(got, `"permissionDecision":"deny"`) || !strings.Contains(got, "can't start an agent on Opus") {
+		t.Errorf("warn, nested opus: %q", got)
+	}
+	t.Setenv("WP_GATE", "off")
+	if got := run(opus); got != "" {
+		t.Errorf("off, nested opus: %q", got)
+	}
+	for _, mode := range []string{"off", "warn", "deny"} {
+		t.Setenv("WP_GATE", mode)
+		if got := run(fork); !strings.Contains(got, `"permissionDecision":"deny"`) || !strings.Contains(got, "Forks are never allowed") {
+			t.Errorf("WP_GATE=%s nested fork: %q", mode, got)
+		}
 	}
 }

@@ -203,7 +203,7 @@ func TestGateQueue(t *testing.T) {
 			t.Errorf("waited %s", g.f.t.Sub(time.Unix(1000, 0)))
 		}
 	})
-	t.Run("Haiku counts here, and still not toward the width rule", func(t *testing.T) {
+	t.Run("Haiku counts toward Claude Code's limit", func(t *testing.T) {
 		g := newGateFixture(t)
 		t.Setenv("CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS", "6")
 		for _, id := range []string{"a", "b", "c", "d", "e", "f"} {
@@ -212,8 +212,18 @@ func TestGateQueue(t *testing.T) {
 		g.c.trackSubagent(hookEventInput{SessionID: "s1", AgentID: "a", AgentType: "general-purpose", HookEventName: "SubagentStart"})
 		t.Setenv("CLAUDE_CODE_SUBAGENT_MODEL", "haiku")
 		out := g.run(haikuCall)
-		if !strings.Contains(out, "6 agents are running") || strings.Contains(out, "already live") || strings.Contains(out, "permissionDecision") {
+		if !strings.Contains(out, "6 agents are running") || strings.Contains(out, "permissionDecision") {
 			t.Errorf("out %q", out)
+		}
+	})
+	t.Run("a nested Sonnet start waits for a slot like a main-thread one", func(t *testing.T) {
+		g := newGateFixture(t)
+		t.Setenv("CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS", "2")
+		g.start("s1", "a", "general-purpose")
+		g.start("s1", "b", "general-purpose")
+		out := g.run(`{"session_id":"s1","tool_use_id":"tu1","tool_name":"Agent","agent_id":"a","tool_input":{"subagent_type":"general-purpose","model":"sonnet"}}`)
+		if !strings.Contains(out, "2 agents are running") || strings.Contains(out, "permissionDecision") || g.f.sleeps == 0 {
+			t.Errorf("out %q sleeps %d", out, g.f.sleeps)
 		}
 	})
 	t.Run("WP_GATE=off skips the queue", func(t *testing.T) {
@@ -238,6 +248,8 @@ func TestGateQueue(t *testing.T) {
 		g := newGateFixture(t)
 		t.Setenv("CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS", "1")
 		g.start("s1", "a", "general-purpose")
+		// Opus: a nested premium start is the rule a nested call can still
+		// break; a nested Sonnet start is allowed, and queued (next test).
 		out := g.run(`{"session_id":"s1","tool_name":"Agent","agent_id":"z","tool_input":{"subagent_type":"general-purpose","model":"opus"}}`)
 		if !strings.Contains(out, "coordinator") || g.f.sleeps != 0 {
 			t.Errorf("out %q sleeps %d", out, g.f.sleeps)
