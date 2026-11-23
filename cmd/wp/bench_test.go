@@ -56,7 +56,7 @@ func TestBenchBaseRunsTheOtherTreeAndKeepsResults(t *testing.T) {
 	if err := os.Mkdir("sub", 0o755); err != nil {
 		t.Fatal(err)
 	}
-	write(t, "sub/d.txt", "0.08\n")
+	write(t, "sub/d.txt", "0.3\n") // far apart: a loaded CI machine must not make the sides overlap
 	gitDo(t, "add", "-A")
 	gitDo(t, "commit", "-q", "-m", "slow")
 	write(t, "sub/d.txt", "0.001\n") // this tree, uncommitted: faster
@@ -75,7 +75,7 @@ func TestBenchBaseRunsTheOtherTreeAndKeepsResults(t *testing.T) {
 		t.Fatalf("no base side: %s", out.String())
 	}
 	if res.Head.Wall.Median >= res.Base.Wall.Median || res.Change.Wall >= 0 {
-		t.Errorf("this tree (sleep 1ms) should beat the base (sleep 80ms): %+v vs %+v", res.Head.Wall, res.Base.Wall)
+		t.Errorf("this tree (sleep 1ms) should beat the base (sleep 300ms): %+v vs %+v", res.Head.Wall, res.Base.Wall)
 	}
 	if res.Change.WallP == nil || *res.Change.WallP > 0.05 {
 		t.Errorf("wall p = %v, want < 0.05 for 4 runs a side that never overlap", res.Change.WallP)
