@@ -15,6 +15,10 @@ func (g *shipForge) BehindBase(ctx context.Context, f *Forge, repo, baseRef, hea
 	if g.behindErr != nil {
 		return "", false, g.behindErr
 	}
+	g.tipReads++
+	if g.tipThen != "" && g.tipReads > 1 {
+		return g.tipThen, g.behind[headSHA], nil
+	}
 	return cmp(g.baseTip, "tip-1"), g.behind[headSHA], nil
 }
 

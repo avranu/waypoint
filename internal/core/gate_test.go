@@ -60,7 +60,9 @@ type shipForge struct {
 
 	behind    map[string]bool // head sha → lacks the base's tip (forge_uptodate_test.go)
 	baseTip   string
-	updates   []int // pull requests whose branch was updated
+	tipReads  int    // BehindBase calls answered
+	tipThen   string // the base's tip from the second BehindBase on, when set
+	updates   []int  // pull requests whose branch was updated
 	updateErr error
 	// updateErrs: per pull request number, over updateErr.
 	updateErrs map[int]error

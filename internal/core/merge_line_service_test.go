@@ -644,6 +644,40 @@ func TestLineGatherReadsTheForgesTip(t *testing.T) {
 	})
 }
 
+// The base moves between the read for the first pull request and the read
+// for the one that fixes it, now the front: the failing jobs are the new
+// tip's, the one the candidates are built on (audit 1507.1).
+func TestLineGatherFailingIsOfTheTipItBuildsOn(t *testing.T) {
+	se := newStackEnv(t)
+	se.redBase("ci / lint (push)") // tip-1
+	se.draftGreen(head7s, 5)
+	se.sg.setChecks(head8s,
+		CommitCheck{Name: "ci / backend (pull_request)", State: CheckSuccess, ID: 7, Description: "Successful in 4m"},
+		CommitCheck{Name: "ci / e2e (pull_request)", State: CheckSuccess, ID: 8, Description: "Has been skipped"},
+		CommitCheck{Name: "ci / lint (pull_request)", State: CheckSuccess, ID: 9, Description: "Successful in 1m"})
+	se.poll()
+	se.s.Wait()
+	pr := se.pr(7)
+	ref := lineRef{forge: pr.ForgeID, repo: pr.Repo, base: "main"}
+	ls, err := se.s.lineGather(se.ctx, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ls.order) == 0 || ls.order[0].Number != 8 || !ls.snap.FrontFixes || !ls.snap.BaseRed {
+		t.Fatalf("#8 fixes the red base and goes first: %+v %+v", ls.order, ls.snap)
+	}
+	se.sg.sm.Lock()
+	se.sg.tipReads, se.sg.tipThen = 0, "tip-2" // green: no failed check stored for it
+	se.sg.sm.Unlock()
+	ls, err = se.s.lineGather(se.ctx, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ls.tip != "tip-2" || ls.snap.BaseRed || len(ls.failing) != 0 || ls.snap.FrontFixes {
+		t.Errorf("tip %q with tip-1's failures: red %v, failing %v, front fixes %v", ls.tip, ls.snap.BaseRed, ls.failing, ls.snap.FrontFixes)
+	}
+}
+
 // F15: a line whose babysits can't be read acts on nothing: a live candidate
 // isn't ended, nothing merges and no pull request is dropped.
 func TestLineStepActsOnNothingWithUnreadableBabysits(t *testing.T) {

@@ -229,6 +229,13 @@ func (s *Service) lineGather(ctx context.Context, ref lineRef) (*lineState, erro
 			ls.tip, ls.frontBehind, ls.snap.TipStale = askedTip, askedBehind, askedStale
 		} else {
 			ls.tip, ls.frontBehind, ls.snap.TipStale = s.behindBase(ctx, front)
+			// The base moved between the two reads: what fails on it is
+			// read again, for the tip the candidates are built on.
+			if ls.tip != "" && ls.tip != askedTip {
+				ls.failing = s.baseFailingAt(ctx, front, ls.tip)
+				ls.snap.BaseRed = len(ls.failing) > 0
+				ls.snap.FrontFixes = ls.snap.BaseRed && front.ID == fixer && s.fixesBase(ctx, front, ls.tip, ls.failing)
+			}
 		}
 	}
 	// The line's rules for building candidates.
