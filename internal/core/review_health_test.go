@@ -85,7 +85,7 @@ func TestReviewHealthIssues(t *testing.T) {
 		{name: "verify has no leads condition", helpers: []AgainHelperStat{{Check: helperVerify, Runs: 20, Done: 20, Raised: 0}}},
 	}
 	for _, c := range cases {
-		got := reviewHealthIssues(c.by, c.agree, c.helpers)
+		got := reviewHealthIssues(c.by, c.agree, c.helpers, nil)
 		if c.want == "" {
 			if len(got) != 0 {
 				t.Errorf("%s: tripped %q", c.name, healthTitles(got))

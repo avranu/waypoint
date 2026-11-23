@@ -26,6 +26,11 @@ var (
 	webhookDeliveries = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "waypoint_webhook_deliveries_total", Help: "Outbound webhook deliveries by result.",
 	}, []string{"result"})
+	// A queued babysitting round taken back because the pull request's
+	// head moved before a runner took it (WP-1618).
+	babysitRoundsWithdrawn = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "waypoint_babysit_rounds_withdrawn_total", Help: "Queued babysitting rounds withdrawn because the pull request was pushed to before a runner took them.",
+	})
 	aiRequests = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "waypoint_ai_requests_total", Help: "AI model requests by task and result.",
 	}, []string{"task", "result"})
