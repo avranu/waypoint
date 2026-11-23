@@ -42,6 +42,10 @@ type beforePR struct {
 	Repo    string `json:"repo"`
 	Branch  string `json:"branch"`
 	Base    string `json:"base"`
+	// Asked is the base wp ship named, if it did. Base was worked out at
+	// the time and can go stale, so only this one outlives the round
+	// (WP-1670).
+	Asked string `json:"asked,omitempty"`
 	// What wp ship asked for, so Waypoint can open it if the review can't
 	// run and the session never ships (WP-752). Urgent is only for a pull
 	// request not open yet: one already open is labelled by the held ship
@@ -59,6 +63,27 @@ type beforePR struct {
 	// of the same second apart.
 	HeadTime int64  `json:"head_time,omitempty"`
 	HeadSHA  string `json:"head_sha,omitempty"`
+}
+
+// askedBase is the base wp ship named when the branch's latest round was
+// scheduled: the wp ship --pr that follows the review doesn't repeat it.
+func (s *Service) askedBase(ctx context.Context, task, head string) string {
+	if task == "" {
+		return ""
+	}
+	issue, err := s.resolveIssueID(ctx, s.db.R, task)
+	if err != nil {
+		return ""
+	}
+	var raw string
+	if s.db.R.QueryRowContext(ctx, `SELECT before_pr FROM work_log WHERE kind = 'review' AND issue_id = ? AND before_pr != '' ORDER BY id DESC LIMIT 1`, issue).Scan(&raw) != nil {
+		return ""
+	}
+	var b beforePR
+	if json.Unmarshal([]byte(raw), &b) != nil || b.Branch != head {
+		return ""
+	}
+	return b.Asked
 }
 
 // roundBeforePR is the round's branch when it runs before its pull
@@ -434,7 +459,7 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return false, "", "", err
 	}
-	bp := beforePR{Project: p.Key, Repo: repo, Branch: head, Base: base, Title: in.Title, Body: in.Body, Draft: in.Draft, Ready: in.Ready, Urgent: in.Urgent && !existing, HeadTime: in.HeadTime, HeadSHA: in.HeadSHA}
+	bp := beforePR{Project: p.Key, Repo: repo, Branch: head, Base: base, Asked: strings.TrimSpace(in.Base), Title: in.Title, Body: in.Body, Draft: in.Draft, Ready: in.Ready, Urgent: in.Urgent && !existing, HeadTime: in.HeadTime, HeadSHA: in.HeadSHA}
 	// wait is what the session is told when the round is before its pull
 	// request. It is built when a return needs it, after the scheduling it
 	// describes, as scheduling the round starts its reviewer (WP-1325).

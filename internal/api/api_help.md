@@ -961,6 +961,8 @@ steers or clears one in effect.
         tokens and cost on those issues; plus totals {opened, merged, closed, open_now,
         median_hours_to_merge, bot_reviews, findings, human_approvals}. agent matches as
         delegation does ("claude" matches anthropic/claude-code), or a run's model
+    PATCH /pulls/{id} {title, body, base}  change an open pull request's title, description or base; a
+                                     base the forge can't move to is an error, never a success with the old one
     GET /pulls/{id}                  one with its timeline (forge history, bot reviews, agent
                                      runs, linked issues' moves), agent_time and bot_runs
 
@@ -1002,8 +1004,12 @@ steers or clears one in effect.
     past lag_alert_m minutes); env.updated is live-only. Webhooks can subscribe to env.*.
 ## Review gate, CI and merging (WP-D21)
 
-    POST /projects/{key}/pulls {repo, head, base, title, body, draft, ready, issue, for, urgent, review, reason, force, head_time}
-                                     open a pull request from a pushed branch (wp pr open, wp ship). review is
+    POST /projects/{key}/pulls {repo, head, base, title, body, draft, ready, issue, for, urgent, review, reason, force, head_time, stacked_on}
+                                     open a pull request from a pushed branch (wp pr open, wp ship). Without
+                                     base, the first of stacked_on (the branches head was built on, nearest
+                                     first) with a pull request open is the base, else the default branch; the
+                                     notice says so. With base, one already open for head is moved to it on the
+                                     forge, or the call fails (WP-1670). review is
                                      what to do about the task's adversarial review when the caller's autopilot
                                      reviews first (WP-688): auto, review (schedule it; force: again), pr, or
                                      skip (reason says why); head_time is the head's commit time (unix s). A

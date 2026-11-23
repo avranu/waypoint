@@ -1013,6 +1013,20 @@ func (s *Service) mergeNow(ctx context.Context, actor *Actor, pr *PullRequest, i
 	if in.DeleteBranch != nil {
 		del = *in.DeleteBranch
 	}
+	// A forge deletes the branch inside the merge call, and Forgejo then
+	// closes the pull requests open into it. So when some are, the merge
+	// doesn't ask for that: they move off the branch, then it goes
+	// (afterStackMerge; WP-ADR153).
+	var stacked []*PullRequest
+	if del {
+		if stacked, err = s.prsStackedOn(ctx, cur); err != nil {
+			// Before anything merges, as the project read below.
+			return "", s.heldRead(ctx, pr, "list the pull requests stacked on the branch being merged", "the pull requests stacked on it couldn't be read", err)
+		}
+		if len(stacked) > 0 && s.longLivedBranch(ctx, f, cur) {
+			stacked = nil // not a branch that goes: they are not stacked on it
+		}
+	}
 	style := cmp(in.Style, cur.ArmedStyle)
 	projectID, err := s.attachedProjectFor(ctx, actor, cur)
 	if err != nil {
@@ -1027,7 +1041,7 @@ func (s *Service) mergeNow(ctx context.Context, actor *Actor, pr *PullRequest, i
 	// the next in the queue isn't updated with that read (WP-316).
 	s.noteMerging(cur)
 	start = time.Now()
-	err = cl.MergePR(ctx, f, pr.Repo, fp, MergeOptions{Style: style, HeadSHA: fp.HeadSHA, DeleteBranch: del, Title: in.Title, Message: in.Message})
+	err = cl.MergePR(ctx, f, pr.Repo, fp, MergeOptions{Style: style, HeadSHA: fp.HeadSHA, DeleteBranch: del && len(stacked) == 0, Title: in.Title, Message: in.Message})
 	var kept *branchNotDeleted
 	if err != nil && !errors.As(err, &kept) {
 		if down := s.forgeUnanswered(f, time.Since(start), err); errors.Is(down, ErrUnavailable) {
@@ -1082,6 +1096,7 @@ func (s *Service) mergeNow(ctx context.Context, actor *Actor, pr *PullRequest, i
 			}
 		}
 	}
+	s.afterStackMerge(ctx, f, cur, stacked)
 	if rd.stack != nil {
 		s.stackMerged(ctx, f, cur, rd.stack, sha)
 	} else {

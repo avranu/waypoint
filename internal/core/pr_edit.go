@@ -1,22 +1,26 @@
 package core
 
-// wp pr edit: change a pull request's title or description on the forge.
+// wp pr edit: change a pull request's title, description or base on the forge.
 
 import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 // EditPRInput is what wp pr edit changes; nil leaves a field.
 type EditPRInput struct {
 	Title *string
 	Body  *string
+	// Base retargets it: a wrong base is fixed without closing it, which
+	// would lose its number and review history (WP-634).
+	Base *string
 }
 
-// EditPullRequest changes a pull request's title or description on the forge.
-// A draft keeps its "WIP: " prefix; Waypoint's record keeps the clean title.
-// Whoever may merge it may edit it.
+// EditPullRequest changes a pull request's title, description or base on
+// the forge. A draft keeps its "WIP: " prefix; Waypoint's record keeps the
+// clean title. Whoever may merge it may edit it.
 func (s *Service) EditPullRequest(ctx context.Context, actor *Actor, prID int64, in EditPRInput) error {
 	pr, err := s.prByID(ctx, s.db.R, prID)
 	if err != nil {
@@ -28,8 +32,27 @@ func (s *Service) EditPullRequest(ctx context.Context, actor *Actor, prID int64,
 	if pr.State != "open" && pr.State != "draft" {
 		return invalid("it is %s", pr.State)
 	}
-	if in.Title == nil && in.Body == nil {
-		return invalid("say what to change: a title or a description")
+	if in.Title == nil && in.Body == nil && in.Base == nil {
+		return invalid("say what to change: a title, a description or a base")
+	}
+	base := ""
+	if in.Base != nil {
+		if base = strings.TrimSpace(*in.Base); base == "" {
+			return invalid("the base can't be empty")
+		}
+		if base == pr.HeadRef {
+			return invalid("%s is the pull request's own branch; its base is another", base)
+		}
+	}
+	var rb ForgePRRetargeter
+	if base != "" && base != pr.BaseRef {
+		var ok bool
+		if rb, ok = s.Forges.(ForgePRRetargeter); !ok {
+			return invalid("this forge client can't change a pull request's base")
+		}
+	}
+	if in.Title == nil && in.Body == nil && rb == nil {
+		return nil // already into that base
 	}
 	ed, ok := s.Forges.(ForgePREditor)
 	if !ok {
@@ -60,6 +83,11 @@ func (s *Service) EditPullRequest(ctx context.Context, actor *Actor, prID int64,
 			return err
 		}
 	}
+	if rb != nil {
+		if err := rb.EditPRBase(ctx, f, pr.Repo, pr.Number, base); err != nil {
+			return err
+		}
+	}
 	projectID, rerr := s.prAuthority(ctx, actor, pr, RoleViewer)
 	if rerr != nil {
 		if readFault(rerr) && !missingOrDenied(rerr) {
@@ -74,6 +102,12 @@ func (s *Service) EditPullRequest(ctx context.Context, actor *Actor, prID int64,
 			}
 			detail = "retitled"
 		}
+		if rb != nil {
+			if err := setPRBase(ctx, t, pr.ID, base); err != nil {
+				return err
+			}
+			detail = "moved the base from " + pr.BaseRef + " to " + base + " of"
+		}
 		t.audit(AuditEntry{Action: "pr.edit", Category: AuditControl, ProjectID: projectID, TargetType: "pr", TargetID: pr.ID,
 			Target: fmt.Sprintf("%s#%d", pr.Repo, pr.Number), URL: pr.URL, Detail: detail + " “" + excerpt(pr.Title, 120) + "”"})
 		t.emit(&Event{Kind: EvPRActivity, ProjectID: projectID, New: "edited", Data: map[string]any{"pr_id": pr.ID}})
@@ -81,9 +115,30 @@ func (s *Service) EditPullRequest(ctx context.Context, actor *Actor, prID int64,
 	})
 }
 
+// setPRBase records a pull request's new base. Each base has its own merge
+// queue: its place in the old one means nothing in the new one, where it
+// joins again.
+func setPRBase(ctx context.Context, t *tx, prID int64, base string) error {
+	_, err := t.ExecContext(ctx, `UPDATE pull_requests SET base_ref = ?, queued_at = NULL WHERE id = ?`, base, prID)
+	return err
+}
+
 func (c *httpForgeClient) EditPRBody(ctx context.Context, f *Forge, repo string, number int, body string) error {
 	if f.Kind == "gitlab" {
 		return c.do(ctx, f, http.MethodPut, fmt.Sprintf("%s/merge_requests/%d", glProject(repo), number), map[string]string{"description": body}, nil)
 	}
 	return c.do(ctx, f, http.MethodPatch, fmt.Sprintf("/repos/%s/pulls/%d", repo, number), map[string]string{"body": body}, nil)
+}
+
+// ForgePRRetargeter changes the branch a pull request merges into
+// (httpForgeClient has it).
+type ForgePRRetargeter interface {
+	EditPRBase(ctx context.Context, f *Forge, repo string, number int, base string) error
+}
+
+func (c *httpForgeClient) EditPRBase(ctx context.Context, f *Forge, repo string, number int, base string) error {
+	if f.Kind == "gitlab" {
+		return c.do(ctx, f, http.MethodPut, fmt.Sprintf("%s/merge_requests/%d", glProject(repo), number), map[string]string{"target_branch": base}, nil)
+	}
+	return c.do(ctx, f, http.MethodPatch, fmt.Sprintf("/repos/%s/pulls/%d", repo, number), map[string]string{"base": base}, nil)
 }

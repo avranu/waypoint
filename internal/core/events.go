@@ -96,6 +96,9 @@ type Event struct {
 	repoHook *repoHookJob
 	// pullLinked: a pull request's own text made this link (WP-697).
 	pullLinked *pullRef
+	// stackParent: this pull request (id) merged, so those open into its
+	// branch move onto its base (WP-ADR153, WP-760).
+	stackParent int64
 	// permRule: an approved permission request's allow rule to add by pull
 	// request (WP-233).
 	permRule *permRuleJob
@@ -317,6 +320,7 @@ func (s *Service) dispatch(ctx context.Context, actor *Actor, events []*Event) {
 	for _, e := range events {
 		s.Hub.Publish(e)
 		s.prWait.wake(e) // wp pr wait (WP-132)
+		s.onStackParentMerged(ctx, e)
 	}
 	// An autosave folded into the history entry before it sets nothing off.
 	events = slices.DeleteFunc(slices.Clone(events), func(e *Event) bool { return e.merged || e.quiet })
