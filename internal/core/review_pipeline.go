@@ -109,7 +109,17 @@ func (s *Service) reviewOnce(ctx context.Context, chain []ChainModel, prompt str
 		Findings []Finding `json:"findings"`
 	}
 	ctx, note := withSalvage(withMaxTokens(ctx, reviewMaxTokens))
-	used, attempts, err := s.runChain(ctx, chain, reviewSystem, prompt, reviewSchema, &ans, 5*time.Minute)
+	used, attempts, err := s.runChain(ctx, chain, reviewSystem, prompt, reviewSchema, &ans, reviewCallTimeout)
+	// The gateway can't fall back once a model's stream has started, so one
+	// that then fails or outlasts the call (Grok on Cursor reasons for over
+	// ten minutes on a large diff) ends the request, and the round's retry
+	// may get the same model. Ask once more with it left out (WP-1709).
+	if slow := failedMidStream(chain, attempts); err != nil && ctx.Err() == nil && slow != "" && s.asksExcludingGateway(ctx, chain) {
+		s.log.InfoContext(ctx, "a review's model failed after it started; asking again without it", "model", slow)
+		var more []ModelAttempt
+		used, more, err = s.runChain(withGatewayExclude(ctx, append(slices.Clone(gatewayExcludeOf(ctx)), slow)), chain, reviewSystem, prompt, reviewSchema, &ans, reviewCallTimeout)
+		attempts = append(attempts, more...)
+	}
 	out := reviewerAnswer{findings: ans.Findings, model: used.Model, log: attempts, err: err}
 	if err == nil {
 		note.mu.Lock()
@@ -120,6 +130,34 @@ func (s *Service) reviewOnce(ctx context.Context, chain []ChainModel, prompt str
 		out.requestID = attempts[len(attempts)-1].RequestID
 	}
 	return out
+}
+
+// reviewCallTimeout is one model's time for a review; a gateway request
+// that names fallbacks gets a few of them (maxCallsPerRequest).
+const reviewCallTimeout = 5 * time.Minute
+
+// failedMidStream is the model a gateway's route was serving when the last
+// request of attempts timed out or failed: a model the chain did not name,
+// so the gateway chose it and will again; "" otherwise.
+func failedMidStream(chain []ChainModel, attempts []ModelAttempt) string {
+	if len(attempts) == 0 {
+		return ""
+	}
+	a := attempts[len(attempts)-1]
+	if a.Model == "" || (a.Outcome != "timeout" && a.Outcome != "error") {
+		return ""
+	}
+	if slices.ContainsFunc(chain, func(c ChainModel) bool { return c.Model == a.Model }) {
+		return ""
+	}
+	return a.Model
+}
+
+// asksExcludingGateway is whether chain asks the gateway that takes
+// exclude: only there does asking again without a model mean anything.
+func (s *Service) asksExcludingGateway(ctx context.Context, chain []ChainModel) bool {
+	id := s.gatewayWith(ctx, GatewayExclude)
+	return id != 0 && slices.ContainsFunc(chain, func(c ChainModel) bool { return c.CLI == "" && c.ProviderID == id })
 }
 
 // mergeReviewers folds reviewers' findings together: a finding another

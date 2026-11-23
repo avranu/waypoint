@@ -189,10 +189,14 @@ func TestGatewayClient(t *testing.T) {
 
 	// An error after the stream started is the model's.
 	g.midError = true
-	_, _, err = c.Complete(ctx, p, "free", "sys", "prompt", estimateSchema)
+	_, served, err = c.Complete(ctx, p, "free", "sys", "prompt", estimateSchema)
 	var me *modelError
 	if !errors.As(err, &me) || !strings.Contains(me.msg, "went away") {
 		t.Errorf("mid-stream error: %v", err)
+	}
+	// The failure is the model's that was serving, not the route's (WP-1709).
+	if served != "opencode/space-bunny-free" {
+		t.Errorf("mid-stream error served by %q, want the model in the header", served)
 	}
 }
 
