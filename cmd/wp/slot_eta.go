@@ -207,7 +207,8 @@ func slotRecordRun(dir string, r slotRunRec) {
 	// Appends and the trim (read, then rename over) take one lock, so a trim
 	// can't drop a line another process appends meanwhile. Without the lock a
 	// run is still appended (one write to an O_APPEND file), but the record
-	// isn't trimmed (audit #1372.10).
+	// isn't trimmed (audit #1372.10); a run appended without the lock while another
+	// process trims can still be lost, which a best-effort estimate record accepts.
 	locked := false
 	if lf, err := os.OpenFile(filepath.Join(dir, slotRunsLock), os.O_CREATE|os.O_RDWR, 0o600); err == nil { // #nosec G304 -- our own directory
 		defer func() { _ = lf.Close() }()
@@ -260,20 +261,26 @@ func slotHolders(dir, name string) []slotHolder {
 		buf := make([]byte, 4096)
 		n, _ := f.Read(buf)
 		_ = f.Close()
-		parts := strings.SplitN(strings.TrimSpace(string(buf[:n])), "\t", 5)
+		parts := strings.SplitN(strings.TrimSpace(string(buf[:n])), "\t", 6)
 		if len(parts) < 4 {
 			continue
 		}
 		session := ""
-		if len(parts) == 5 {
+		if len(parts) >= 5 {
 			session = parts[4]
+		}
+		// The run key the holder recorded; a lock file without one (an older wp)
+		// is read from its arguments.
+		cmd := slotCmdKey(parts[3])
+		if len(parts) == 6 && parts[5] != "" {
+			cmd = parts[5]
 		}
 		ts, err := strconv.ParseInt(parts[1], 10, 64)
 		if err != nil {
 			continue
 		}
 		pid, _ := strconv.Atoi(parts[0])
-		out = append(out, slotHolder{Pid: pid, Cmd: slotCmdKey(parts[3]), Session: session, Elapsed: time.Since(time.Unix(ts, 0))})
+		out = append(out, slotHolder{Pid: pid, Cmd: cmd, Session: session, Elapsed: time.Since(time.Unix(ts, 0))})
 	}
 	return out
 }

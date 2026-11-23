@@ -117,7 +117,7 @@ func acquireSlotIn(ctx context.Context, name string, order []int, notify, firstM
 				_ = f.Truncate(0)
 				// The session last, so a wp from before it was recorded still
 				// reads the command (audit #1382.1).
-				_, _ = f.WriteAt([]byte(fmt.Sprintf("%d\t%d\t%s\t%s\t%s\n", os.Getpid(), time.Now().Unix(), slotField(wd), slotField(strings.Join(os.Args[1:], " ")), slotField(slotSession()))), 0)
+				_, _ = f.WriteAt([]byte(fmt.Sprintf("%d\t%d\t%s\t%s\t%s\t%s\n", os.Getpid(), time.Now().Unix(), slotField(wd), slotField(strings.Join(os.Args[1:], " ")), slotField(slotSession()), slotField(slotCtxKey(ctx)))), 0)
 				return &slotHold{f}, nil
 			}
 			_ = f.Close()
@@ -142,6 +142,14 @@ func acquireSlotIn(ctx context.Context, name string, order []int, notify, firstM
 		case <-time.After(slotPoll):
 		}
 	}
+}
+
+type slotCtxKeyT struct{}
+
+// slotCtxKey is the run key (slotRunKey) the slot is taken for, "" when none.
+func slotCtxKey(ctx context.Context) string {
+	k, _ := ctx.Value(slotCtxKeyT{}).(string)
+	return k
 }
 
 // slotField flattens s onto one tab-free line of at most 200 bytes, so a

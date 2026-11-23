@@ -291,7 +291,7 @@ func (c *cli) acquireQueued(ctx context.Context, name string, n int, cmd, etaCmd
 		}
 	}
 
-	hold, err := acquireSlotIn(ctx, name, slotOrder(class, n), func() {
+	hold, err := acquireSlotIn(context.WithValue(ctx, slotCtxKeyT{}, etaCmd), name, slotOrder(class, n), func() {
 		_, _ = fmt.Fprintf(c.err, "wp slot: waiting for a free %q slot (%d on this host; wp slot ls shows who has them)\n", name, n)
 		if etaCmd == "" {
 			return

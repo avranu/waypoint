@@ -560,3 +560,19 @@ func TestSlotRunKey(t *testing.T) {
 		t.Errorf("hook key %q, command key %q", cmd, want)
 	}
 }
+
+// A holder records the run key it was taken for, so a wp started without
+// "--" (or a go test -json) still finds its history.
+func TestSlotHolderRecordsItsRunKey(t *testing.T) {
+	slotEnv(t)
+	dir, _ := slotDir()
+	ctx := context.WithValue(t.Context(), slotCtxKeyT{}, "go test ./...")
+	h, err := acquireSlot(ctx, "tests", 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.release()
+	if hs := slotHolders(dir, "tests"); len(hs) != 1 || hs[0].Cmd != "go test ./..." {
+		t.Errorf("holders = %+v", hs)
+	}
+}
