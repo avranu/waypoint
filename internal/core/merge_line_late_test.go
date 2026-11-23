@@ -117,7 +117,7 @@ func TestLineCandidateModeDoesNotUpdateFrontBehindWithPendingChecks(t *testing.T
 
 // WP-686: a pull request labelled urgent after it joined goes ahead of the
 // ones not marked ready, and a later urgent one goes behind the one already
-// marked ready (lineSort: holder, urgent, fixer, armed order).
+// marked ready (lineSort: holder, fixer, urgent, armed order).
 func TestLineLateUrgentLabelOrder(t *testing.T) {
 	se := newStackEnv(t)
 	se.branchMode()
