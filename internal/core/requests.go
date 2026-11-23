@@ -1461,18 +1461,7 @@ func terminalAnswer(raw json.RawMessage) string {
 // for other answers) is left for bundled calls, the start of a turn (SessionStart,
 // UserPromptSubmit), and not used to continue an agent at a Stop.
 func (s *Service) takeDecisions(ctx context.Context, t *tx, actor *Actor, x *AgentSession, start, bundled bool) ([]*Request, error) {
-	where := `r.user_id = ? AND r.decided_at IS NOT NULL AND r.delivered_at IS NULL AND r.via = '' AND r.state IN (` + placeholders(len(decidedStates)) + `)`
-	args := []any{actor.id()}
-	for _, st := range decidedStates {
-		args = append(args, st)
-	}
-	if start && x.Cwd != "" {
-		where += ` AND (r.session_id = ? OR r.session_id IN (SELECT id FROM agent_sessions WHERE user_id = ? AND machine = ? AND cwd = ?))`
-		args = append(args, x.ID, actor.id(), x.Machine, x.Cwd)
-	} else {
-		where += ` AND r.session_id = ?`
-		args = append(args, x.ID)
-	}
+	where, args := decisionsWhere(actor, x, start)
 	ids, err := queryIDs(ctx, t, `SELECT r.id FROM requests r WHERE `+where+` ORDER BY r.id LIMIT 50`, args...)
 	if err != nil || len(ids) == 0 {
 		return nil, err
@@ -1514,6 +1503,24 @@ func (s *Service) takeDecisions(ctx context.Context, t *tx, actor *Actor, x *Age
 		return nil, err
 	}
 	return list, nil
+}
+
+// decisionsWhere selects the decisions takeDecisions gives: the session's
+// (at a start, also those of earlier sessions in its worktree) not told yet.
+func decisionsWhere(actor *Actor, x *AgentSession, start bool) (string, []any) {
+	where := `r.user_id = ? AND r.decided_at IS NOT NULL AND r.delivered_at IS NULL AND r.via = '' AND r.state IN (` + placeholders(len(decidedStates)) + `)`
+	args := []any{actor.id()}
+	for _, st := range decidedStates {
+		args = append(args, st)
+	}
+	if start && x.Cwd != "" {
+		where += ` AND (r.session_id = ? OR r.session_id IN (SELECT id FROM agent_sessions WHERE user_id = ? AND machine = ? AND cwd = ?))`
+		args = append(args, x.ID, actor.id(), x.Machine, x.Cwd)
+	} else {
+		where += ` AND r.session_id = ?`
+		args = append(args, x.ID)
+	}
+	return where, args
 }
 
 // checkFollowup validates a request's follow-up setting.
