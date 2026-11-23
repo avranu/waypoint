@@ -100,6 +100,15 @@ var AutomationTemplates = []AutomationTemplate{
 		Rule:        Rule{Trigger: Trigger{Event: "pr_comment"}, Actions: []Action{{Type: "reply"}}},
 	},
 	{
+		// WP-1599. Not on pushes: CodeRabbit reviews the twin again on each
+		// request, all on the one account forge-sync opens twins with, and
+		// every review starts a babysitting round; twins had 1 to 20 commits.
+		Name:        "Ask CodeRabbit to review",
+		Description: "Each new pull request, or draft marked ready, gets \"@coderabbitai review\" from the bot account, once, not on pushes. For repos a mirror copies to GitHub, where CodeRabbit reviews the twin: forge-sync passes the command on when the bot account is one of its command_authors. Added on, by migration, to projects with a repo on a forge that has a mirror account.",
+		Rule: Rule{Trigger: Trigger{Event: "pr_updated", Extra: map[string]any{"on": "new"}}, PR: reviewFilter,
+			Actions: []Action{{Type: "pr_comment", Message: "@coderabbitai review"}}},
+	},
+	{
 		Name:        "Security review of pull requests",
 		Description: "A second review of each pull request that looks only for security problems: injection, auth, secrets, unsafe input.",
 		Rule: Rule{Trigger: Trigger{Event: "pr_updated"}, PR: reviewFilter, Actions: []Action{{Type: "review", Force: true, MaxFindings: 5,
