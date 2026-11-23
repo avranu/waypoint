@@ -120,7 +120,11 @@ func init() {
 
 	// ---- pull requests ----
 	registerTrigger(TriggerDef{Name: "pr_updated", Label: "Pull request opened or pushed to", Group: "Pull requests", Event: EvPRUpdated, PR: true,
-		Phrase: "a pull request is opened, pushed to, marked ready or reopened"})
+		Phrase: "a pull request is opened, pushed to, marked ready or reopened",
+		Params: []ParamDef{{Name: "on", Label: "Changes", Type: PSelect, Advanced: true, Default: "",
+			Options: opts("", "Opened, pushed to, marked ready or reopened", "new", "Opened, marked ready or reopened, not pushes"),
+			Help:    "Not pushes: once per pull request rather than once per commit, for a reviewer that is asked once and limits how often it reviews."}},
+		Match: func(tr Trigger, e *Event) bool { return tr.str("on") != "new" || e.New != "pushed" }})
 	registerTrigger(TriggerDef{Name: "pr_command", Label: "Review asked for", Group: "Pull requests", Event: EvPRCommand, PR: true,
 		Phrase: "someone comments “@waypoint {command}” on a pull request",
 		Params: []ParamDef{{Name: "command", Label: "Command", Type: PText, Placeholder: "review", Help: "Empty is any command."}},
