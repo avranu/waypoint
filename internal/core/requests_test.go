@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core/udiff"
 )
 
 // reqEnv is a project with ana (editor), her agent's session in it, and
@@ -513,7 +515,7 @@ func TestRequestValidation(t *testing.T) {
 		{Kind: RequestChange, Title: "x", Files: []RequestFileInput{{Path: "../etc/passwd", Content: "x"}}},
 		{Kind: RequestChange, Title: "x", Files: []RequestFileInput{{Path: "/abs", Content: "x"}}},
 		{Kind: RequestChange, Title: "x", Files: []RequestFileInput{{Path: ".git/config", Content: "x"}}},
-		{Kind: RequestChange, Title: "x", Files: []RequestFileInput{{Path: "a.txt", BaseSHA: gitBlobSHA("one"), Base: "two", Content: "x"}}},
+		{Kind: RequestChange, Title: "x", Files: []RequestFileInput{{Path: "a.txt", BaseSHA: udiff.GitBlobSHA("one"), Base: "two", Content: "x"}}},
 		{Kind: RequestChange, Title: "x", Files: []RequestFileInput{{Path: "a.txt", Base: "no sha", Content: "x"}}},
 		{Kind: RequestChange, Title: "x", Files: []RequestFileInput{{Path: "a.txt", Content: "x"}, {Path: "./a.txt", Content: "y"}}},
 		{Kind: RequestChange, Title: "x", Files: []RequestFileInput{{Path: "bin", Content: "a\x00b"}}},
@@ -539,9 +541,9 @@ func TestChangeRequestDiffIsComputedHere(t *testing.T) {
 	r := newReqEnv(t)
 	base := "# Rules\nbe nice\n"
 	q := r.ask(RequestInput{Kind: RequestChange, Title: "Update CLAUDE.md", Message: "docs: tighten rules", Files: []RequestFileInput{
-		{Path: "CLAUDE.md", BaseSHA: gitBlobSHA(base), Base: base, Content: "# Rules\nbe nice\nbe brief\n"},
+		{Path: "CLAUDE.md", BaseSHA: udiff.GitBlobSHA(base), Base: base, Content: "# Rules\nbe nice\nbe brief\n"},
 		{Path: "docs/new.md", Content: "hello\n"},
-		{Path: "old.txt", BaseSHA: gitBlobSHA("bye\n"), Base: "bye\n", Delete: true},
+		{Path: "old.txt", BaseSHA: udiff.GitBlobSHA("bye\n"), Base: "bye\n", Delete: true},
 	}})
 	got, err := r.s.GetRequest(r.ctx, r.ana, q.Ref, 0)
 	if err != nil {
@@ -631,7 +633,7 @@ func (r *reqEnv) forgejo(blobs map[string]string) *fakeForgejo {
 
 func claudeMDChange(r *reqEnv, base, content string) *Request {
 	return r.ask(RequestInput{Kind: RequestChange, Title: "Update CLAUDE.md", Body: "A hook blocks me editing it.", Message: "Tighten the rules", Files: []RequestFileInput{
-		{Path: "CLAUDE.md", BaseSHA: gitBlobSHA(base), Base: base, Content: content},
+		{Path: "CLAUDE.md", BaseSHA: udiff.GitBlobSHA(base), Base: base, Content: content},
 		{Path: "docs/new.md", Content: "hello\n"},
 	}})
 }
@@ -639,7 +641,7 @@ func claudeMDChange(r *reqEnv, base, content string) *Request {
 func TestApproveChangeThroughTheForge(t *testing.T) {
 	r := newReqEnv(t)
 	base := "# Rules\n"
-	fake := r.forgejo(map[string]string{"CLAUDE.md": gitBlobSHA(base)})
+	fake := r.forgejo(map[string]string{"CLAUDE.md": udiff.GitBlobSHA(base)})
 	q := claudeMDChange(r, base, "# Rules\nbe brief\n")
 
 	// Agents can't approve; a viewer can't either.
@@ -669,7 +671,7 @@ func TestApproveChangeThroughTheForge(t *testing.T) {
 	}
 	first := files[0].(map[string]any)
 	second := files[1].(map[string]any)
-	if first["operation"] != "update" || first["sha"] != gitBlobSHA(base) || second["operation"] != "create" {
+	if first["operation"] != "update" || first["sha"] != udiff.GitBlobSHA(base) || second["operation"] != "create" {
 		t.Fatalf("operations: %+v %+v", first, second)
 	}
 	pr := fake.prs[0]
@@ -699,7 +701,7 @@ func TestApproveChangeThroughTheForge(t *testing.T) {
 func TestApproveChangeWithoutAPRIsNotApplied(t *testing.T) {
 	r := newReqEnv(t)
 	base := "# Rules\n"
-	fake := r.forgejo(map[string]string{"CLAUDE.md": gitBlobSHA(base)})
+	fake := r.forgejo(map[string]string{"CLAUDE.md": udiff.GitBlobSHA(base)})
 	fake.failPR = true
 	q := claudeMDChange(r, base, "# Rules\nbe brief\n")
 	got, err := r.s.DecideRequest(r.ctx, r.ana, q.Ref, RequestDecision{Decision: "approve", ApplyPath: "pr"})
@@ -721,7 +723,7 @@ func TestApproveChangeConflictWritesNothing(t *testing.T) {
 	base := "# Rules\n"
 	// The file changed on the forge since the agent made its change; the
 	// other file already exists though the agent thought it new.
-	fake := r.forgejo(map[string]string{"CLAUDE.md": gitBlobSHA("# Rules\nsomeone else's edit\n"), "docs/new.md": "abc"})
+	fake := r.forgejo(map[string]string{"CLAUDE.md": udiff.GitBlobSHA("# Rules\nsomeone else's edit\n"), "docs/new.md": "abc"})
 	q := claudeMDChange(r, base, "# Rules\nbe brief\n")
 	got, err := r.s.DecideRequest(r.ctx, r.ana, q.Ref, RequestDecision{Decision: "approve", ApplyPath: "pr"})
 	if err != nil {
@@ -745,12 +747,12 @@ func TestApproveChangeConflictWritesNothing(t *testing.T) {
 
 func TestApproveChangeAuthorisation(t *testing.T) {
 	r := newReqEnv(t)
-	fake := r.forgejo(map[string]string{"CLAUDE.md": gitBlobSHA("x")})
+	fake := r.forgejo(map[string]string{"CLAUDE.md": udiff.GitBlobSHA("x")})
 	// bob is only a viewer of the project: his agent may ask, but approving
 	// would write to the repository with the forge's token.
 	bobAgent := agentActor(r.bob, "anthropic/claude-code")
 	q, _, err := r.s.CreateRequest(r.ctx, bobAgent, RequestInput{Kind: RequestChange, Title: "Edit", Project: r.p.Key,
-		Files: []RequestFileInput{{Path: "CLAUDE.md", BaseSHA: gitBlobSHA("x"), Base: "x", Content: "y"}}})
+		Files: []RequestFileInput{{Path: "CLAUDE.md", BaseSHA: udiff.GitBlobSHA("x"), Base: "x", Content: "y"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -836,7 +838,7 @@ func TestApproveChangeOnTheRunner(t *testing.T) {
 		t.Fatal(err)
 	}
 	if j.Kind != JobApply || j.OwnerID != r.ana.id() || j.Label != "box" || j.Source != "request_apply" || j.SourceID != q.ID ||
-		apply.Dir != "/work/app" || apply.Commit != "Tighten the rules" || len(apply.Files) != 2 || apply.Files[0].BaseSHA != gitBlobSHA(base) || apply.Files[0].Content != "# Rules\nbe brief\n" || apply.Push {
+		apply.Dir != "/work/app" || apply.Commit != "Tighten the rules" || len(apply.Files) != 2 || apply.Files[0].BaseSHA != udiff.GitBlobSHA(base) || apply.Files[0].Content != "# Rules\nbe brief\n" || apply.Push {
 		t.Fatalf("job: %+v apply %+v", j, apply)
 	}
 	// Nothing delivered while it is being applied.
@@ -916,7 +918,7 @@ func TestNoRunnerOnTheMachine(t *testing.T) {
 		t.Fatalf("explicit runner: %s %q", got.State, got.Error)
 	}
 	// By default, with no runner online, a pull request is opened.
-	fake := r.forgejo(map[string]string{"CLAUDE.md": gitBlobSHA("# a\n")})
+	fake := r.forgejo(map[string]string{"CLAUDE.md": udiff.GitBlobSHA("# a\n")})
 	q2 := claudeMDChange(r, "# a\n", "# c\n")
 	got, err = r.s.DecideRequest(r.ctx, r.ana, q2.Ref, RequestDecision{Decision: "approve"})
 	if err != nil {
@@ -1129,12 +1131,12 @@ func TestRequestEventsReachOnlyThoseWhoCanDecide(t *testing.T) {
 // An approved change that alters no file must not read as an ordinary
 // "applied" (WP-948).
 func TestNoChangeApplyIsSaidPlainly(t *testing.T) {
-	same := storedFile{RequestFile: RequestFile{Path: "a.txt", BaseSHA: gitBlobSHA("x\n")}, Content: "x\n"}
-	edit := storedFile{RequestFile: RequestFile{Path: "b.txt", BaseSHA: gitBlobSHA("x\n")}, Content: "y\n"}
+	same := storedFile{RequestFile: RequestFile{Path: "a.txt", BaseSHA: udiff.GitBlobSHA("x\n")}, Content: "x\n"}
+	edit := storedFile{RequestFile: RequestFile{Path: "b.txt", BaseSHA: udiff.GitBlobSHA("x\n")}, Content: "y\n"}
 	if !changesNothing([]storedFile{same}) || changesNothing([]storedFile{same, edit}) || changesNothing(nil) {
 		t.Fatal("changesNothing")
 	}
-	if changesNothing([]storedFile{{RequestFile: RequestFile{Path: "n", Delete: true, BaseSHA: gitBlobSHA("")}}}) {
+	if changesNothing([]storedFile{{RequestFile: RequestFile{Path: "n", Delete: true, BaseSHA: udiff.GitBlobSHA("")}}}) {
 		t.Fatal("a delete is a change")
 	}
 	res := noChangeResult()
@@ -1154,7 +1156,7 @@ func TestApproveNoOpChangeGoesNowhere(t *testing.T) {
 	run := r.runner()
 	base := "# Rules\n"
 	q := r.ask(RequestInput{Kind: RequestChange, Title: "Same", Message: "Same", Files: []RequestFileInput{
-		{Path: "CLAUDE.md", BaseSHA: gitBlobSHA(base), Base: base, Content: base},
+		{Path: "CLAUDE.md", BaseSHA: udiff.GitBlobSHA(base), Base: base, Content: base},
 	}})
 	got, err := r.s.DecideRequest(r.ctx, r.ana, q.Ref, RequestDecision{Decision: "approve"})
 	if err != nil {

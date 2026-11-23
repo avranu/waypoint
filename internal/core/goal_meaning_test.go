@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core/meaning"
 )
 
 // judgeLLM answers each prompt with fn, and keeps the prompts it was asked.
@@ -113,7 +115,7 @@ func (e *goalCtxEnv) quiet() {
 }
 
 // useMeaning gives the goals task the meaning service m.
-func (e *goalCtxEnv) useMeaning(m MeaningModels) {
+func (e *goalCtxEnv) useMeaning(m meaning.Models) {
 	e.quiet()
 	e.s.Meaning = m
 }
@@ -155,7 +157,7 @@ func (f *fakeMeaning) Embed(ctx context.Context, texts []string) (string, [][]fl
 	return "e5@test", out, nil
 }
 
-func (f *fakeMeaning) Entail(ctx context.Context, pairs []NLIPair) (string, []float64, error) {
+func (f *fakeMeaning) Entail(ctx context.Context, pairs []meaning.NLIPair) (string, []float64, error) {
 	out := make([]float64, len(pairs))
 	for i, p := range pairs {
 		out[i] = 0.1
