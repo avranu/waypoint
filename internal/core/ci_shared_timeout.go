@@ -236,7 +236,15 @@ func (s *Service) waitOnSharedTimeout(ctx context.Context, b *Babysit, pr *PullR
 			return true
 		}
 		defer s.queueLock(pr)()
-		if ahead, err := s.queueAhead(ctx, pr); err == nil && len(ahead) > 0 {
+		// Who is ahead unread: wait, as the line's other reads do, rather than
+		// update a head that may be under test behind another front.
+		ahead, err := s.queueAhead(ctx, pr)
+		if err != nil {
+			s.log.WarnContext(ctx, "read the merge queue", "pr", pr.ID, "err", err)
+			s.setState(ctx, b, pr, BabysitWatching, fmt.Sprintf("%s; %s moved on, so it is tried again on it at its turn", what, base))
+			return true
+		}
+		if len(ahead) > 0 {
 			s.setState(ctx, b, pr, BabysitWatching, fmt.Sprintf("%s; %s moved on, so it is tried again on it at its turn, behind #%d", what, base, ahead[0].Number))
 			return true
 		}
