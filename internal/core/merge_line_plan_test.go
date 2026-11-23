@@ -105,6 +105,25 @@ func TestPlanLine(t *testing.T) {
 		{name: "depth 3 cap", snap: lineSnap{Entries: []lineEntry{e(1), e(2), e(3), e(4)}}, want: []lineAction{start(1), start(1, 2), start(1, 2, 3)}},
 		{name: "front on the tip with its full run going gets no place-1 candidate", snap: lineSnap{
 			Entries: []lineEntry{onTip(e(1), false, true), e(2), e(3)}}, want: []lineAction{start(1, 2), start(1, 2, 3)}},
+		// A red base (WP-1659): nothing in the line is ejected for it.
+		{name: "red base nothing fixes: no candidates started", snap: lineSnap{BaseRed: true, Entries: []lineEntry{e(1), e(2)}}},
+		{name: "red base nothing fixes: a failed candidate ends and nobody is rerun or ejected", snap: lineSnap{BaseRed: true,
+			Entries: []lineEntry{e(1), e(2)}, Cands: []lineCand{cand(5, candFailed, 1), rerun(cand(6, candFailed, 1, 2))}}, want: []lineAction{ends(5), ends(6)}},
+		{name: "red base nothing fixes: a running candidate is left and a pass still merges", snap: lineSnap{BaseRed: true,
+			Entries: []lineEntry{e(1), e(2)}, Cands: []lineCand{cand(5, candRunning, 1), cand(6, candPassed, 1, 2)}}, want: []lineAction{merge(1, 6)}},
+		{name: "red base nothing fixes: a branch front isn't updated", snap: lineSnap{BaseRed: true, Entries: []lineEntry{branch(e(1)), e(2)}}},
+		{name: "red base nothing fixes: a head that doesn't merge is still ejected", snap: lineSnap{BaseRed: true,
+			Entries: []lineEntry{e(1), e(2)},
+			Cands:   []lineCand{func() lineCand { c := cand(6, candConflict, 1, 2); c.ConflictPR = 20; return c }()}}, want: []lineAction{eject(2, 6, true)}},
+		{name: "red base the front fixes: only place 1 gets a candidate", snap: lineSnap{BaseRed: true, FrontFixes: true,
+			Entries: []lineEntry{e(1), e(2), e(3)}}, want: []lineAction{start(1)}},
+		{name: "red base the front fixes: saturated starts the front alone", snap: lineSnap{BaseRed: true, FrontFixes: true, Saturated: true, BatchDepth: 3,
+			Entries: []lineEntry{e(1), e(2), e(3)}}, want: []lineAction{start(1)}},
+		{name: "red base the front fixes: a branch front is updated", snap: lineSnap{BaseRed: true, FrontFixes: true, Entries: []lineEntry{branch(e(1)), e(2)}}, want: []lineAction{{Kind: lineUpdate, PR: 10}}},
+		{name: "red base the front fixes: its failure ejects as usual", snap: lineSnap{BaseRed: true, FrontFixes: true,
+			Entries: []lineEntry{e(1), e(2)}, Cands: []lineCand{rerun(cand(5, candFailed, 1))}}, want: []lineAction{eject(1, 5, false)}},
+		{name: "red base the front fixes: its failed candidate is rerun once", snap: lineSnap{BaseRed: true, FrontFixes: true,
+			Entries: []lineEntry{e(1)}, Cands: []lineCand{cand(5, candFailed, 1)}}, want: []lineAction{{Kind: lineRerun, Cand: 5}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -119,5 +138,14 @@ func TestPlanLine(t *testing.T) {
 				t.Errorf("planLine:\n got  %+v\n want %+v", got, tt.want)
 			}
 		})
+	}
+}
+
+// A candidate that fails on a red base nothing fixes ends as base_red, which
+// isn't counted against its heads.
+func TestPlanLineBaseRedEndReason(t *testing.T) {
+	got := planLine(lineSnap{BaseRed: true, Entries: []lineEntry{e(1)}, Cands: []lineCand{cand(5, candFailed, 1)}})
+	if len(got) != 1 || got[0].Kind != lineEnd || got[0].End != endBaseRed {
+		t.Fatalf("got %+v", got)
 	}
 }

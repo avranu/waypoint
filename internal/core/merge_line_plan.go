@@ -70,6 +70,10 @@ type lineSnap struct {
 	// for its first BatchDepth places instead of one per place.
 	Saturated  bool
 	BatchDepth int
+	// BaseRed: jobs fail on the base's tip. FrontFixes: the front is the
+	// pull request that fixes them (lineFixer's).
+	BaseRed    bool
+	FrontFixes bool
 	// Tried: candKey of every (heads) set whose candidate ended on the
 	// heads' account (failed, conflict). The same heads aren't run again.
 	Tried map[string]bool
@@ -90,6 +94,7 @@ const (
 	endDuplicate   = "duplicate"
 	endBatchSplit  = "batch_split"
 	endLeft        = "left"
+	endBaseRed     = "base_red" // failed because the base's tip fails: not the heads' account
 )
 
 type lineActionKind string
@@ -157,6 +162,10 @@ func planLine(s lineSnap) []lineAction {
 		return nil
 	}
 	var acts []lineAction
+	// A base whose tip fails and that nothing in the line fixes: candidates
+	// would all fail for its reason. Nothing is started, rerun or ejected for
+	// a failure; running candidates finish (a pass still merges).
+	redHold := s.BaseRed && !s.FrontFixes
 	// by[n]: the live candidate that tests exactly the first n places.
 	by := map[int]lineCand{}
 	for _, c := range s.Cands {
@@ -166,6 +175,10 @@ func planLine(s lineSnap) []lineAction {
 			acts = append(acts, lineAction{Kind: lineEnd, Cand: c.ID, Why: "the line or the base changed under it", End: endLineChanged})
 		case c.State == candLost:
 			acts = append(acts, lineAction{Kind: lineEnd, Cand: c.ID, Why: "its run never came or never ended", End: endLost})
+		case c.State == candFailed && redHold:
+			// It failed for the base's reason: nobody is ejected for it, and
+			// it isn't counted against its heads.
+			acts = append(acts, lineAction{Kind: lineEnd, Cand: c.ID, Why: "the base's tip fails and nothing in the line fixes it", End: endBaseRed})
 		default:
 			if _, dup := by[n]; dup {
 				acts = append(acts, lineAction{Kind: lineEnd, Cand: c.ID, Why: "another candidate tests the same places", End: endDuplicate})
@@ -189,6 +202,16 @@ func planLine(s lineSnap) []lineAction {
 		if c, ok := by[n]; ok && c.State == candPassed {
 			return append(acts, lineAction{Kind: lineMerge, PR: front.PRID, Cand: c.ID})
 		}
+	}
+
+	if redHold {
+		// A head that doesn't merge is its own fault, base red or not.
+		for n := 1; n <= len(s.Entries); n++ {
+			if c, ok := by[n]; ok && c.State == candConflict {
+				return append(acts, lineAction{Kind: lineEject, PR: c.ConflictPR, Cand: c.ID, Conflict: true, Why: "its head doesn't merge onto the pull requests ahead of it or the base"})
+			}
+		}
+		return acts
 	}
 
 	// A candidate that failed or didn't merge says who leaves. Only the
@@ -248,6 +271,9 @@ func planLine(s lineSnap) []lineAction {
 			places = i
 			break
 		}
+	}
+	if s.BaseRed {
+		places = min(places, 1) // the fix alone: a failure on it is its own
 	}
 	start := func(n int) bool {
 		heads := entryHeads(s.Entries, n)

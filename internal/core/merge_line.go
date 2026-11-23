@@ -76,8 +76,13 @@ type lineState struct {
 	held    map[int64]string       // members held out of the line, with why
 	rows    map[int64]*queueStack
 	polls   map[int64]candPoll
-	tip     string
-	dropped []*PullRequest
+	// tip, frontBehind: the base's tip and whether the front's head lacks
+	// it, read once per step.
+	tip         string
+	frontBehind bool
+	dropped     []*PullRequest
+	// red: the checks failing on the base's tip, while nothing fixes it.
+	red string
 }
 
 // lineMembers are the armed pull requests that hold a place in the line,
@@ -136,20 +141,20 @@ func lineSort(prs []*PullRequest, fixer int64) {
 
 // lineFixer is the pull request that fixes what fails on the base's tip (at
 // most one per tip: the first by order that does).
-func (s *Service) lineFixer(ctx context.Context, prs []*PullRequest) int64 {
+func (s *Service) lineFixer(ctx context.Context, prs []*PullRequest) (fixer int64, failing map[string]bool) {
 	if len(prs) == 0 {
-		return 0
+		return 0, nil
 	}
 	tip, failing := s.baseFailing(ctx, prs[0])
 	if len(failing) == 0 {
-		return 0
+		return 0, nil
 	}
 	for _, p := range prs {
 		if !queueHolder(p) && !p.urgent() && p.HeadSHA != "" && s.fixesBase(ctx, p, tip, failing) {
-			return p.ID
+			return p.ID, failing
 		}
 	}
-	return 0
+	return 0, failing
 }
 
 // lineGather reads the line once: its entries in order, the live
@@ -180,7 +185,8 @@ func (s *Service) lineGather(ctx context.Context, ref lineRef) (*lineState, erro
 	}
 	// Order, then hold out the ones known not to merge onto those ahead.
 	lineSort(keep, 0)
-	lineSort(keep, s.lineFixer(ctx, keep))
+	fixer, failing := s.lineFixer(ctx, keep)
+	lineSort(keep, fixer)
 	for i, p := range keep {
 		if why := s.lineConflictAhead(ctx, p); why != "" && i > 0 {
 			ls.held[p.ID] = why
@@ -190,11 +196,15 @@ func (s *Service) lineGather(ctx context.Context, ref lineRef) (*lineState, erro
 	}
 	ls.snap.TipStale = false
 	if len(ls.order) > 0 {
+		ls.snap.BaseRed = len(failing) > 0
+		ls.snap.FrontFixes = fixer != 0 && ls.order[0].ID == fixer
+		if ls.snap.BaseRed && !ls.snap.FrontFixes {
+			ls.red = failingJobs(failing)
+		}
+	}
+	if len(ls.order) > 0 {
 		front := ls.order[0]
-		tip, behind, stale := s.behindBase(ctx, front)
-		ls.tip = tip
-		ls.snap.TipStale = stale
-		_ = behind
+		ls.tip, ls.frontBehind, ls.snap.TipStale = s.behindBase(ctx, front)
 	}
 	// The line's rules for building candidates.
 	if len(ls.order) > 0 {
@@ -289,8 +299,7 @@ func (s *Service) lineConflictAhead(ctx context.Context, p *PullRequest) string 
 // lineFrontFacts reads what only the front's entry needs: whether its head
 // holds the base's tip and where its full run stands.
 func (s *Service) lineFrontFacts(ctx context.Context, ls *lineState, p *PullRequest, e *lineEntry) {
-	_, behind, stale := s.behindBase(ctx, p)
-	e.OnTip = !behind && !stale
+	e.OnTip = !ls.frontBehind && !ls.snap.TipStale
 	if !queueHolder(p) || !e.OnTip {
 		return
 	}
@@ -577,11 +586,7 @@ func (s *Service) candEnd(ctx context.Context, f *Forge, st *queueStack, state, 
 			}
 		}
 	}
-	if state != stackMerged || was != stackReady {
-		s.deleteStackBranch(ctx, f, st)
-	} else {
-		s.deleteStackBranch(ctx, f, st)
-	}
+	s.deleteStackBranch(ctx, f, st)
 }
 
 // candDiscardReady takes back the readiness a pull request got from st: the
@@ -792,11 +797,7 @@ func (s *Service) candStart(ctx context.Context, ls *lineState, heads []stackHea
 	if last == nil || !ok || ls.tip == "" || ls.snap.TipStale {
 		return
 	}
-	tip, behind, stale := s.behindBase(ctx, ls.order[0])
-	_ = behind
-	if stale || tip == "" {
-		return
-	}
+	tip := ls.tip // the one read of this step
 	var body strings.Builder
 	body.WriteString("# Waypoint's merge line (WP-1659): the run on this branch merges these pull\n# request heads, in order, into this commit's parent and tests the result.\n")
 	for _, h := range heads {
@@ -1020,6 +1021,8 @@ func lineWait(ls *lineState, i int, base string) string {
 		if i == 0 {
 			what = "tested on a candidate (" + cand.name() + "): passed; merging"
 		}
+	case ls.red != "":
+		what = base + " is failing (" + ls.red + "); waiting for a fix to merge"
 	case cand != nil:
 		what = "tested on a candidate (" + cand.name() + "): its run is going"
 	case i == 0 && ls.snap.Entries[0].FullPassed && ls.snap.Entries[0].OnTip:
@@ -1142,4 +1145,14 @@ func (s *Service) inCandidate(ctx context.Context, prID int64) bool {
 	var n int
 	_ = s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM queue_stacks WHERE ended_at IS NULL AND heads LIKE ?`, fmt.Sprintf(`%%"pr_id":%d,%%`, prID)).Scan(&n)
 	return n > 0
+}
+
+// failingJobs names the failing jobs of a base's tip, in order.
+func failingJobs(failing map[string]bool) string {
+	names := make([]string, 0, len(failing))
+	for j := range failing {
+		names = append(names, checkJobName(j))
+	}
+	slices.Sort(names)
+	return strings.Join(names, ", ")
 }
