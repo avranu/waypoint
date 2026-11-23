@@ -42,8 +42,10 @@ func pictureReadAllowed(cwd, path string) bool {
 	if !filepath.IsAbs(path) || !isPicture(path) {
 		return false
 	}
+	// Only the exact file the Read will open: a path with a link in it could
+	// be re-pointed between this check and the Read.
 	p := realPath(path)
-	if !isPicture(p) { // a link to something else
+	if p != filepath.Clean(path) {
 		return false
 	}
 	fi, err := os.Stat(p)
