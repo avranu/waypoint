@@ -139,9 +139,7 @@ func (s *Service) tellUnpushed(ctx context.Context, t *tx, x *AgentSession, ws w
 	}
 	sys := SystemActor()
 	for _, u := range found {
-		var told bool
-		if err := t.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM session_events WHERE session_id = ? AND kind = 'unpushed' AND label = ?)`,
-			x.ID, u.c.Branch).Scan(&told); err != nil || told {
+		if told, err := s.sessionTold(ctx, t, x.ID, "unpushed", "", u.c.Branch); err != nil || told {
 			if err != nil {
 				return err
 			}
