@@ -138,3 +138,40 @@ func TestSlotHoldsBadQueryAndReadOnlyToken(t *testing.T) {
 		t.Errorf("read-only post: %d", code)
 	}
 }
+
+// A runner job's token may send holds through the route, as it sends usage
+// (WP-1646): the permission is checked here at the HTTP layer, not only in core.
+func TestSlotHoldsRunnerJobTokenPosts(t *testing.T) {
+	ts, svc := setup(t)
+	ctx := context.Background()
+	u, err := svc.CreateUser(ctx, core.SystemActor(), core.CreateUserInput{Username: "robin", Email: "robin@example.com", Password: "correct horse battery", IsAdmin: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	robin := &core.Actor{User: u}
+	r, err := svc.RegisterRunner(ctx, robin, core.RunnerRegistration{Name: "box", Hostname: "box", OS: "linux", Arch: "amd64", Version: "test",
+		AllowedDirs: []string{"/work"}, CLIs: []core.RunnerCLI{{Name: "claude"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := `{"cli":"claude","prompt":"hi","repo":"https://x.test/a/b.git","permission":"edit_run"}`
+	if _, err := svc.EnqueueRunnerJob(ctx, robin, core.RunnerJobInput{Kind: core.JobAgent, Input: []byte(input)}); err != nil {
+		t.Fatal(err)
+	}
+	zero := 0.0
+	w, err := svc.RunnerPoll(ctx, robin, core.RunnerPoll{Runner: r.ID, Wait: &zero})
+	if err != nil || w.Job == nil || w.Job.Token == "" {
+		t.Fatalf("poll: %v %+v", err, w)
+	}
+	job := &client{t: t, base: ts.URL, http: http.DefaultClient, token: w.Job.Token}
+	body := map[string]any{"holds": []map[string]any{{"id": "j1", "name": "tests", "class": "short", "queued_at": time.Now().UnixMilli()}}}
+	code, b := job.do("POST", "/api/v1/slot-holds?machine=box&pending=1", body)
+	var res core.SlotHoldsResult
+	if code != 200 || json.Unmarshal(b, &res) != nil || res.Stored != 1 {
+		t.Fatalf("a job's token could not send a hold: %d %s", code, b)
+	}
+	got, err := svc.SlotHolds(ctx, robin, core.SlotHoldsFilter{})
+	if err != nil || len(got) != 1 || got[0].ID != "j1" {
+		t.Errorf("stored %+v %v", got, err)
+	}
+}
