@@ -88,17 +88,36 @@ var cursorAuditChain = []AgentModel{{CLI: "cursor", Model: "grok-4.7-high"}, {CL
 
 // defaultAuditChain is the models of an audit nobody named any for: a pull
 // request's own audit, an automation's, a review round's, wp audit by hand.
-// It is the gateway's audit purpose alone (WP-871, WP-ADR84): the
-// gateway chooses the model, moves to its next when one fails, and knows
-// which of its upstreams has usage left, so Waypoint keeps no order of its
-// own behind it and calls no coding plan's CLI to find out that it is spent.
-// Grok is the gateway's to serve too. Only a Waypoint with no
-// gateway asks Cursor on the runner.
+// With an LLM gateway it is Grok 4.7 through Cursor on a runner (high effort,
+// then medium), then the gateway's audit purpose. The gateway serves Grok as
+// text only until OPEN-153, so it cannot give Grok an audit, and the Cursor
+// plan is to be spent on adversarial audits (WP-1725, WP-ADR155); advanceAudit passes
+// the Cursor entries over when no runner with Cursor is online, so the
+// gateway (WP-871, WP-ADR84) still runs the audit then. When the gateway
+// heads its audit purpose with Grok, the default goes back to the gateway
+// alone. A Waypoint with no gateway asks Cursor on the runner alone.
 func (s *Service) defaultAuditChain(ctx context.Context) []AgentModel {
 	if _, _, why := s.gatewayTasksLLM(ctx); why == "" {
-		return []AgentModel{{CLI: GatewayCLI, Model: gatewayAuditModel}}
+		chain := make([]AgentModel, 0, len(cursorAuditChain)+1)
+		chain = append(chain, cursorAuditChain...)
+		return append(chain, AgentModel{CLI: GatewayCLI, Model: gatewayAuditModel})
 	}
 	return cursorAuditChain
+}
+
+// hasOnlineRunner: one of the owner's runners that is online could take the
+// job in. It is true too when that can't be told: a read that failed is not
+// a reason to pass a model over.
+func (s *Service) hasOnlineRunner(ctx context.Context, ownerID int64, kind string, in json.RawMessage) bool {
+	needs, _, _, err := checkRunnerInput(kind, in)
+	if err != nil {
+		return true
+	}
+	all, err := s.ownerRunners(ctx, ownerID)
+	if err != nil {
+		return true
+	}
+	return slices.ContainsFunc(all, func(r *Runner) bool { return r.Online && runnerCanTake(r, needs) })
 }
 
 // CodeAudit is an audit as callers see it.
@@ -950,6 +969,14 @@ func (s *Service) advanceAudit(ctx context.Context, id int64) {
 			}
 		}
 		raw, _ := json.Marshal(in)
+		// A runner that is registered but offline would hold the job for a
+		// day and its expiry would fail the audit, where a later entry could
+		// have run it: only the chain's last entry waits for one.
+		if m.CLI != GatewayCLI && a.Slot < len(a.chain)-1 && !s.hasOnlineRunner(ctx, a.ownerID, JobAudit, raw) {
+			a.Attempts = append(a.Attempts, AuditAttempt{Model: auditModelName(m), Round: a.Retries, Outcome: "unavailable", Error: "no runner with " + m.CLI + " is online", At: s.nowMS()})
+			a.Slot++
+			continue
+		}
 		job, err := s.EnqueueRunnerJob(ctx, SystemActor(), RunnerJobInput{Kind: JobAudit, OwnerID: a.ownerID, Input: raw, Source: auditSource, SourceID: a.ID,
 			Timeout: timeout})
 		if err == nil {

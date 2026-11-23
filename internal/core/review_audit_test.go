@@ -11,14 +11,15 @@ import (
 // the LLM gateway alone and never a coding plan's CLI (WP-871).
 
 // auditAPEnv is reviewAPEnv with the LLM gateway set up and a runner of
-// the person's that sends audits to it. The runner has Claude Code and
-// Cursor signed in too, which a round never asks.
+// the person's that sends audits to it. The runner has Claude Code signed in
+// too, which a round never asks; it has no Cursor, so a round's audit goes to
+// the gateway (with Cursor online it would go to Grok first, WP-1725).
 func auditAPEnv(t *testing.T) (*apEnv, *Runner) {
 	t.Helper()
 	a := reviewAPEnv(t)
 	taskGateway(t, a.s)
 	box := a.runner(a.admin, "auditbox", func(r *RunnerRegistration) {
-		r.CLIs = []RunnerCLI{{Name: "claude"}, {Name: "cursor"}}
+		r.CLIs = []RunnerCLI{{Name: "claude"}}
 		r.Features = []string{FeatureConfine, FeatureAudit, FeatureGatewayAudit}
 	})
 	a.s.Forges = newPRForge()
@@ -127,9 +128,11 @@ func (a *apEnv) finishAudit(j *RunnerClaim, state string, titles ...string) {
 // own prompt; the merge stays held meanwhile.
 func TestReviewRoundAuditFirst(t *testing.T) {
 	a, box := auditAPEnv(t)
-	// Cursor is signed in on a runner too: the round doesn't call it.
+	// Cursor is on a runner too, but signed out: the round's Grok entries have
+	// nowhere to run, so its audit goes to the gateway, and Cursor isn't called.
 	cursor := a.runner(a.admin, "cursorbox", func(r *RunnerRegistration) {
-		r.CLIs = []RunnerCLI{{Name: "cursor"}}
+		out := false
+		r.CLIs = []RunnerCLI{{Name: "cursor", SignedIn: &out}}
 		r.Features = []string{FeatureConfine, FeatureAudit}
 	})
 	first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude", Priority: "urgent"})
@@ -149,7 +152,7 @@ func TestReviewRoundAuditFirst(t *testing.T) {
 		t.Fatalf("step = %+v", st)
 	}
 	ra, au := a.roundAuditRow(roundID)
-	if got := strings.Join(au.Models, " "); got != "gateway/audit" {
+	if got := strings.Join(au.Models, " "); got != "cursor/grok-4.7-high cursor/grok-4.7-medium gateway/audit" {
 		t.Fatalf("the round's audit asks %s", got)
 	}
 	a.s.Wait()
@@ -387,7 +390,8 @@ func TestReviewRoundGatewayFails(t *testing.T) {
 	}
 	a.tick(time.Second)
 	ra, au := a.roundAuditRow(id)
-	if au.Status != AuditFailed || len(au.Attempts) != 1 || ra.alt != "" || !strings.Contains(ra.note, "Another model's audit #") {
+	// Attempts: the two Cursor entries passed over (no runner with it), then the gateway's.
+	if au.Status != AuditFailed || len(au.Attempts) != 3 || ra.alt != "" || !strings.Contains(ra.note, "Another model's audit #") {
 		t.Fatalf("round = %+v, audit = %s %+v", ra, au.Status, au.Attempts)
 	}
 	if len(a.jobs) != 0 {
@@ -851,7 +855,7 @@ func TestReviewRoundAfterACursorAudit(t *testing.T) {
 	a.tick(reviewAuditRecheck + time.Second)
 	ra, au := a.roundAuditRow(id)
 	if ra.id == grok || ra.note != "" || !strings.Contains(ra.alt, "Grok's audit #") || !strings.Contains(ra.alt, "the Cursor plan's pool") ||
-		au == nil || au.Purpose != AuditReview || au.Models[0] != "gateway/audit" {
+		au == nil || au.Purpose != AuditReview || au.Models[len(au.Models)-1] != "gateway/audit" {
 		t.Fatalf("round = %+v, audit = %+v", ra, au)
 	}
 	// That one failing too is the end of it: the session reviews.

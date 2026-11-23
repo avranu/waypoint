@@ -353,6 +353,7 @@ func TestGatewayTaskKeepsItsBar(t *testing.T) {
 	ae := newAgentEnv(t)
 	taskGateway(t, ae.s)
 	box := ae.gatewayBox()
+	ae.runnerSeen(ae.box, false) // no Cursor online: the default audit is the gateway's
 	if _, err := ae.s.RequestAudit(ae.ctx, ae.admin, AuditInput{Project: ae.p.Key}); err != nil {
 		t.Fatal(err)
 	}

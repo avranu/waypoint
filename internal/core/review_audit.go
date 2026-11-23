@@ -506,7 +506,11 @@ func (s *Service) planReview(ctx context.Context, st *stepRow, review *roundRow,
 	if err != nil {
 		return reviewPlan{}, err
 	}
-	tried := slices.Equal(a.Models, auditModelNames(s.defaultAuditChain(ctx))) && a.Weakest == stakes.barFor(reviewOtherAuditKey)
+	// (An audit that went through the gateway has asked the gateway whatever else
+	// it asked: the default's Cursor entries in front of it don't make a second
+	// audit a different one.)
+	gateway := auditModelName(AgentModel{CLI: GatewayCLI, Model: gatewayAuditModel})
+	tried := (slices.Equal(a.Models, auditModelNames(s.defaultAuditChain(ctx))) || slices.Contains(a.Models, gateway)) && a.Weakest == stakes.barFor(reviewOtherAuditKey)
 	who := reviewAuditWho(a)
 	switch a.Status {
 	case AuditDone:
@@ -608,7 +612,7 @@ func (s *Service) planReview(ctx context.Context, st *stepRow, review *roundRow,
 		why := fmt.Sprintf("%s audit #%d ended %s", upperFirst(who), a.ID, a.Status)
 		if a.Status == AuditLimited {
 			why = fmt.Sprintf("%s audit #%d stopped at a usage limit", upperFirst(who), a.ID)
-			if grokAudit(a) {
+			if cursorSpent(a) {
 				why += " (the Cursor plan's pool)"
 			}
 		}
@@ -1075,12 +1079,32 @@ func reviewAuditWho(a *CodeAudit) string {
 }
 
 // grokAudit: the audit is one Cursor runs or ran: one a person named Cursor
-// for, one asked before WP-871, or any on a Waypoint with no gateway.
+// for, one asked before WP-871, or a default one on a Waypoint with no
+// gateway. One not answered yet is judged by the model of its chain it is at,
+// so a default audit the gateway took after Cursor was passed over is
+// another model's.
 func grokAudit(a *CodeAudit) bool {
 	if a.Model != "" {
 		return strings.HasPrefix(a.Model, "cursor/")
 	}
-	return len(a.Models) > 0 && strings.HasPrefix(a.Models[0], "cursor/")
+	if len(a.Models) == 0 {
+		return false
+	}
+	return strings.HasPrefix(a.Models[min(max(a.Slot, 0), len(a.Models)-1)], "cursor/")
+}
+
+// cursorSpent: a Cursor model of the audit's last pass of its chain hit a
+// usage limit, so the limit was the Cursor plan's pool. A chain that also
+// went through the gateway (the default) says nothing of the pool when only
+// the gateway was spent. An audit with no attempts recorded is judged by
+// grokAudit.
+func cursorSpent(a *CodeAudit) bool {
+	if len(a.Attempts) == 0 {
+		return grokAudit(a)
+	}
+	return slices.ContainsFunc(a.Attempts, func(x AuditAttempt) bool {
+		return x.Round == a.Retries && x.Outcome == "spent" && strings.HasPrefix(x.Model, "cursor/")
+	})
 }
 
 // auditJobInfo is the runner job of an audit; nil when it has none (or the
@@ -1362,6 +1386,10 @@ func gatewayExcludes(globs []string, name string) bool {
 func (s *Service) requestRoundAudit(ctx context.Context, review *roundRow, in AuditInput) (int64, error) {
 	a, err := s.RequestAudit(ctx, SystemActor(), in)
 	if err == nil {
+		// Started now, not when the event is handled: which model of its chain
+		// it is at (Cursor's, or the gateway's after Cursor was passed over)
+		// is what the round's wait says and reads the odds of.
+		s.advanceAudit(ctx, a.ID)
 		return a.ID, nil
 	}
 	var id int64
