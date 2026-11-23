@@ -37,59 +37,61 @@ func TestDecideRoundNeverStrands(t *testing.T) {
 														}
 														out := decideRound(in)
 														n++
-														name := fmt.Sprintf("%+v -> %+v", in, out)
+														// Formatted only on a failure: built for each of the
+														// million combinations, it was most of the test's time.
+														name := func() string { return fmt.Sprintf("%+v -> %+v", in, out) }
 														over := state == RoundFailed || state == RoundSkipped || state == RoundInterrupted
 														waypoints := runOpen && !prOpen // an open run with no pull request: Waypoint's to carry on
 														if out.Do == doEnd && (out.To == "" || out.Why == "" || (state != RoundPending && state != RoundRunning && out.Told == "")) {
-															t.Fatalf("an end says nothing or ends a round that isn't going: %s", name)
+															t.Fatalf("an end says nothing or ends a round that isn't going: %s", name())
 														}
 														if out.Do == doEnd && state == RoundRunning && runOpen && check != checkAbsent {
-															t.Fatalf("ended a round Waypoint's check is on: %s", name)
+															t.Fatalf("ended a round Waypoint's check is on: %s", name())
 														}
 														if state == RoundRunning && ended && (!runOpen || (check == checkAbsent && !prOpen)) && out.Do != doEnd {
-															t.Fatalf("a running round of an ended session isn't ended: %s", name)
+															t.Fatalf("a running round of an ended session isn't ended: %s", name())
 														}
 														if state == RoundPending && !carried && (!runOpen || !prOpen) && out.Do != doEnd {
-															t.Fatalf("a pending round nobody carries isn't ended: %s", name)
+															t.Fatalf("a pending round nobody carries isn't ended: %s", name())
 														}
 														if waypoints && (out.Do == doNothing || out.Do == doFinish) {
-															t.Fatalf("an open run with no pull request is left alone or finished: %s", name)
+															t.Fatalf("an open run with no pull request is left alone or finished: %s", name())
 														}
 														if unshipped && !runOpen && (state == RoundPending || state == RoundRunning) && out.Do != doEnd {
-															t.Fatalf("a round of a held ship whose run ended stays %s: %s", state, name)
+															t.Fatalf("a round of a held ship whose run ended stays %s: %s", state, name())
 														}
 														if !runOpen && (over || (state == RoundDone && in.reviewed())) && unshipped && !prOpen && out.Do != doReleaseAfterRunEnded {
-															t.Fatalf("a round the ended run left unshipped isn't named for release: %s", name)
+															t.Fatalf("a round the ended run left unshipped isn't named for release: %s", name())
 														}
 														if out.Do == doReleaseAfterRunEnded && (runOpen || prOpen || !unshipped || (!over && state != RoundDone)) {
-															t.Fatalf("released after the run ended when it hadn't, or shipped: %s", name)
+															t.Fatalf("released after the run ended when it hadn't, or shipped: %s", name())
 														}
 														if runOpen && out.Do == doNothing {
-															t.Fatalf("an open run is left alone: %s", name)
+															t.Fatalf("an open run is left alone: %s", name())
 														}
 														if runOpen && prOpen && out.Do != doFinish {
-															t.Fatalf("an open pull request with an open run isn't finished: %s", name)
+															t.Fatalf("an open pull request with an open run isn't finished: %s", name())
 														}
 														if runOpen && !prOpen && out.Do == doFinish {
-															t.Fatalf("finished with no pull request: %s", name)
+															t.Fatalf("finished with no pull request: %s", name())
 														}
 														if out.Do == doTell && !session {
-															t.Fatalf("told a session that isn't there: %s", name)
+															t.Fatalf("told a session that isn't there: %s", name())
 														}
 														if (out.Do == doTell || out.Do == doWait) && out.Until <= 0 {
-															t.Fatalf("a wait or a tell with no time left that doesn't end: %s", name)
+															t.Fatalf("a wait or a tell with no time left that doesn't end: %s", name())
 														}
 														if (out.Do == doRelease || out.Do == doShipCarried) && out.Why == "" {
-															t.Fatalf("a release says nothing: %s", name)
+															t.Fatalf("a release says nothing: %s", name())
 														}
 														if check == checkDisagreed && (out.Do == doShip) {
-															t.Fatalf("shipped clean around a disagreeing check: %s", name)
+															t.Fatalf("shipped clean around a disagreeing check: %s", name())
 														}
 														if (check == checkQueued || check == checkRunning) && (out.Do == doShip || out.Do == doRelease) && since < 48*time.Hour {
-															t.Fatalf("ended a round whose check is going: %s", name)
+															t.Fatalf("ended a round whose check is going: %s", name())
 														}
 														if state == RoundDone && undecided > 0 && audit == AuditDone && read == readDone && (check == checkAbsent || check == checkAgreed) && out.Do == doShip {
-															t.Fatalf("shipped clean with findings undecided: %s", name)
+															t.Fatalf("shipped clean with findings undecided: %s", name())
 														}
 													}
 												}
@@ -258,23 +260,26 @@ func TestDecideEndedRoundNeverStrands(t *testing.T) {
 								}
 								out := decideRound(in)
 								n++
-								name := fmt.Sprintf("%+v -> %+v", in, out)
+								// Formatted only on a failure: built for each of the
+								// seven million combinations, it was nearly all of the
+								// test's time (10 to 15 minutes under -race in CI).
+								name := func() string { return fmt.Sprintf("%+v -> %+v", in, out) }
 								switch out.Do {
 								case doNothing:
 									if out.Settled == "" {
-										t.Fatalf("left alone with no reason: %s", name)
+										t.Fatalf("left alone with no reason: %s", name())
 									}
 								case doWait, doTell:
 									if out.For == "" || out.Until <= 0 {
-										t.Fatalf("waits on nothing or with no time left: %s", name)
+										t.Fatalf("waits on nothing or with no time left: %s", name())
 									}
 								case doEnd:
 									if out.To == "" || out.Why == "" {
-										t.Fatalf("an end that says nothing: %s", name)
+										t.Fatalf("an end that says nothing: %s", name())
 									}
 								case doReleaseAfterRunEnded:
 									if !in.Unshipped || in.PROpen || in.PRGone || in.Linked || in.Resolved || in.Superseded || in.Newer || in.Taken || in.SinceEnd > strandedShipWindow || out.Why == "" {
-										t.Fatalf("released a round that is left alone: %s", name)
+										t.Fatalf("released a round that is left alone: %s", name())
 									}
 								}
 								// Nothing the exclusions leave a round for may be released, and
@@ -284,10 +289,10 @@ func TestDecideEndedRoundNeverStrands(t *testing.T) {
 								over := state == RoundSkipped || state == RoundFailed || state == RoundInterrupted
 								unreviewed := state == RoundDone && !in.reviewed() // asked for its report, or ended and told (WP-1370), never opened
 								if free && out.Do != doEnd && (!unreviewed || (out.Do != doTell && out.Do != doWait)) && (state == RoundDone || (over && in.Release != "")) && out.Do != doReleaseAfterRunEnded {
-									t.Fatalf("an unshipped round of an ended run isn't released: %s", name)
+									t.Fatalf("an unshipped round of an ended run isn't released: %s", name())
 								}
 								if free && (state == RoundPending || state == RoundRunning) && out.Do != doEnd {
-									t.Fatalf("an unshipped round of an ended run keeps going: %s", name)
+									t.Fatalf("an unshipped round of an ended run keeps going: %s", name())
 								}
 								_ = bools
 							}
