@@ -645,7 +645,7 @@ func (s *Service) MergePR(ctx context.Context, actor *Actor, prID int64, in Merg
 	if in.WhenReady {
 		// The record can lag the forge: one closed or merged there isn't
 		// armed (WP-1670). A forge that doesn't answer leaves the record.
-		if !s.forgeStillOpen(ctx, ctx, pr.ID) {
+		if s.forgeEnded(ctx, pr.ID) {
 			cur, err := s.prByID(ctx, s.db.R, pr.ID)
 			if err != nil {
 				return nil, err

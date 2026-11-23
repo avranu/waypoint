@@ -113,6 +113,31 @@ func (s *Service) forgeStillOpen(ctx, forgeCtx context.Context, prID int64) bool
 	return open
 }
 
+// forgeEnded asks the forge whether the pull request recorded open has been
+// closed or merged there, and records that if so. It changes nothing else
+// of the record, and a forge that doesn't answer says false.
+func (s *Service) forgeEnded(ctx context.Context, prID int64) bool {
+	pr, err := s.prByID(ctx, s.db.R, prID)
+	prc, ok := s.Forges.(ForgePRs)
+	if err != nil || !ok {
+		return false
+	}
+	f, err := s.forgeByID(ctx, pr.ForgeID)
+	if err != nil {
+		return false
+	}
+	fctx, cancel := context.WithTimeout(ctx, stillOpenBudget)
+	defer cancel()
+	fp, err := prc.GetPR(fctx, f, pr.Repo, pr.Number)
+	if err != nil || (fp.State != "closed" && fp.State != "merged") {
+		return false
+	}
+	if _, err := s.recordPR(ctx, f, pr.Repo, fp, true); err != nil {
+		s.log.WarnContext(ctx, "record a pull request read before arming it", "repo", pr.Repo, "number", pr.Number, "err", err)
+	}
+	return true
+}
+
 // stackBase is the base for a branch built on others (nearest first): the
 // first of them with a pull request open, else def. The note says so, in
 // one line, and how to choose def. However tall the stack, the forge gets
