@@ -437,7 +437,7 @@ func TestAuditNewsWithdrawnOnceDecided(t *testing.T) {
 		t.Fatalf("with a finding still to do the news is %q", st)
 	}
 	mark(a.Findings[1].ID, "rejected")
-	if st := news(a.ID); st != "cancelled" {
+	if st := news(a.ID); st != MessageWithdrawn {
 		t.Fatalf("with every finding decided the news is %q", st)
 	}
 
@@ -455,7 +455,7 @@ func TestAuditNewsWithdrawnOnceDecided(t *testing.T) {
 	c := audit()
 	mark(high(c), "fixed")
 	markOn(low(c), "confirmed", later.Key)
-	if st := news(c.ID); st != "cancelled" {
+	if st := news(c.ID); st != MessageWithdrawn {
 		t.Fatalf("with the low finding filed and the high one fixed the news is %q", st)
 	}
 	d := audit()
@@ -474,7 +474,7 @@ func TestAuditNewsWithdrawnOnceDecided(t *testing.T) {
 		t.Fatal(err)
 	}
 	ae.s.auditEnded(ae.ctx, e.ID)
-	if st := news(e.ID); st != "cancelled" {
+	if st := news(e.ID); st != MessageWithdrawn {
 		t.Fatalf("news stored after every finding was decided is %q", st)
 	}
 	// News delivered already is left as it is.
@@ -503,7 +503,51 @@ func TestAuditNewsWithdrawnOnceDecided(t *testing.T) {
 		t.Fatalf("news being posted became %q", st)
 	}
 	ae.s.sessionMessageJobFinished(ae.ctx, &Event{Data: map[string]any{"source": sessionBatchSource, "source_id": batch, "state": "failed"}})
-	if st := news(g.ID); st != "cancelled" {
+	if st := news(g.ID); st != MessageWithdrawn {
 		t.Fatalf("news whose post failed after every finding was decided is %q", st)
+	}
+
+	// Withdrawn news goes back in the queue once a finding is to do again
+	// (1433.1): marked open again, or its filing undone by its issue being
+	// canceled or deleted, which emit no audit event (1433.8). It is
+	// withdrawn again once the finding is decided again. Here every mark is
+	// a person's, not the asking session's (1433.10): the news is the
+	// session's, whoever decides its findings.
+	mark(low(a), "open")
+	if st := news(a.ID); st != MessageQueued {
+		t.Fatalf("with a finding reopened the withdrawn news is %q", st)
+	}
+	mark(low(a), "rejected")
+	if st := news(a.ID); st != MessageWithdrawn {
+		t.Fatalf("with the reopened finding decided again the news is %q", st)
+	}
+	var canceled string
+	if err := ae.s.db.R.QueryRow(`SELECT name FROM statuses WHERE project_id = ? AND category = ? LIMIT 1`, ae.p.ID, CatCanceled).Scan(&canceled); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ae.s.UpdateIssue(ae.ctx, ae.admin, later.Key, IssuePatch{Status: &canceled}); err != nil {
+		t.Fatal(err)
+	}
+	ae.work()
+	if st := news(c.ID); st != MessageQueued {
+		t.Fatalf("with the low finding's issue canceled the withdrawn news is %q", st)
+	}
+	h := audit()
+	gone := ae.issue(ae.admin, IssueInput{Project: ae.p.Key, Title: "Fix the log typo some day"})
+	mark(high(h), "fixed")
+	markOn(low(h), "confirmed", gone.Key)
+	if st := news(h.ID); st != MessageWithdrawn {
+		t.Fatalf("with the low finding filed and the high one fixed the news is %q", st)
+	}
+	if err := ae.s.DeleteIssue(ae.ctx, ae.admin, gone.Key, false); err != nil {
+		t.Fatal(err)
+	}
+	ae.work()
+	if st := news(h.ID); st != MessageQueued {
+		t.Fatalf("with the low finding's issue deleted the withdrawn news is %q", st)
+	}
+	// Settling another audit's news leaves this one's, still all decided.
+	if st := news(e.ID); st != MessageWithdrawn {
+		t.Fatalf("news of an audit whose findings are all still decided became %q", st)
 	}
 }

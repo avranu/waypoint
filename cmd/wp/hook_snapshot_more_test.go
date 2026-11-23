@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // invOf decodes a snapshot's inventory.
@@ -320,6 +321,11 @@ func TestSnapshotSkipsAFileOverTheSizeLimit(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	// The size limit is under test, not the time budget, which a loaded CI
+	// runner under -race spent before reaching .claude.json.
+	old := snapshotBudget
+	snapshotBudget = time.Minute
+	t.Cleanup(func() { snapshotBudget = old })
 	writeFile(t, filepath.Join(home, ".claude", "settings.json"), `{"model":"`+strings.Repeat("x", snapshotMaxFileBytes)+`"}`)
 	writeFile(t, filepath.Join(home, ".claude.json"), strings.Repeat(" ", snapshotMaxFileBytes+1))
 	sn := buildSnapshot(hookEventInput{HookEventName: "SessionStart", Cwd: repo}, gitFacts{})

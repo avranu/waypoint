@@ -1721,6 +1721,10 @@ func (s *Service) afterDispatch(ctx context.Context, actor *Actor, events []*Eve
 		case EvSessionFinished, EvRequestUpdated:
 			s.followUpEvents(ctx, e) // WP-D22
 		}
+		if e.Kind == EvIssueStatus || e.Kind == EvIssueDeleted || (e.Kind == EvIssueUpdated && e.Field == "relation") {
+			// A finding's filing turns on its issue (findingFiledSQL).
+			s.settleAuditNews(ctx, 0)
+		}
 	}
 	if actor != nil && actor.Session != 0 {
 		s.recordSessionEvents(ctx, actor, events)

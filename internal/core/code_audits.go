@@ -1525,7 +1525,7 @@ func (s *Service) codeAuditEvent(ctx context.Context, e *Event) {
 	}
 	switch {
 	case e.Field == "findings":
-		s.withdrawDecidedAuditNews(ctx, id)
+		s.settleAuditNews(ctx, id)
 	case e.Field == "fix":
 		// Asked for after the fact: made now, so the caller gets its key.
 		s.auditFixTask(ctx, id)
@@ -1910,17 +1910,19 @@ func auditNewsKey(id int64, status string) string {
 // would be its next task with nothing in it (WP-1525). The news can wait
 // long enough for that: a session that ended before taking it hands it to
 // the next one in its worktree (takeMessages), which may well have found
-// and marked the findings first. It runs when findings are marked and when
-// the news is stored. News of an audit with no findings stays: it is the
-// session's answer, not a task. News a runner job is delivering ('sending')
-// is left to it, and withdrawn if the job fails and puts it back in the
-// queue (withdrawRequeuedAuditNews). Withdrawn news stays withdrawn if a
-// finding is marked open again: whoever reopened it knows.
+// and marked the findings first. Whoever marked them, the asking session, a
+// person or a reviewer, the news has nothing left for the session to do.
+// News of an audit with no findings stays: it is the session's answer, not
+// a task. News a runner job is delivering ('sending') is left to it, and
+// withdrawn if the job fails and puts it back in the queue
+// (withdrawRequeuedAuditNews). Withdrawn news is not gone: once a finding
+// is to do again (reopened, or its issue deleted or canceled) it goes back
+// in the queue (settleAuditNews).
 func (s *Service) withdrawDecidedAuditNews(ctx context.Context, id int64) bool {
-	res, err := s.db.W.ExecContext(ctx, `UPDATE session_messages SET state = 'cancelled' WHERE step_key = ? AND state = ?
+	res, err := s.db.W.ExecContext(ctx, `UPDATE session_messages SET state = ? WHERE step_key = ? AND state = ?
 		AND EXISTS (SELECT 1 FROM code_audit_findings f WHERE f.audit_id = ?)
 		AND NOT EXISTS (SELECT 1 FROM code_audit_findings f WHERE f.audit_id = ? AND `+findingToDoSQL+`)`,
-		auditNewsKey(id, AuditDone), MessageQueued, id, id)
+		MessageWithdrawn, auditNewsKey(id, AuditDone), MessageQueued, id, id)
 	if err != nil {
 		s.log.WarnContext(ctx, "withdraw an audit's news once its findings are decided", "audit", id, "err", err)
 		return false
@@ -1930,6 +1932,83 @@ func (s *Service) withdrawDecidedAuditNews(ctx context.Context, id int64) bool {
 		return true
 	}
 	return false
+}
+
+// restoreAuditNews puts withdrawn news that an audit ended back in the
+// queue of the session that asked for it once a finding in it is to do
+// again, and holds it for the session's batch as tellAudit does.
+func (s *Service) restoreAuditNews(ctx context.Context, id int64) {
+	res, err := s.db.W.ExecContext(ctx, `UPDATE session_messages SET state = ? WHERE step_key = ? AND state = ?
+		AND EXISTS (SELECT 1 FROM code_audit_findings f WHERE f.audit_id = ? AND `+findingToDoSQL+`)`,
+		MessageQueued, auditNewsKey(id, AuditDone), MessageWithdrawn, id)
+	if err != nil {
+		s.log.WarnContext(ctx, "restore an audit's news once a finding is to do again", "audit", id, "err", err)
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return
+	}
+	s.log.InfoContext(ctx, "restored an audit's news: a finding is to do again", "audit", id)
+	var msg, session int64
+	var blocking bool
+	if err := s.db.W.QueryRowContext(ctx, `SELECT id, session_id, blocking FROM session_messages WHERE step_key = ?`,
+		auditNewsKey(id, AuditDone)).Scan(&msg, &session, &blocking); err != nil {
+		s.log.WarnContext(ctx, "read an audit's restored news", "audit", id, "err", err)
+		return
+	}
+	s.batchOrTell(ctx, session, 0, blocking, func(until int64) error {
+		_, err := s.db.W.ExecContext(ctx, `UPDATE session_messages SET batch_until = ? WHERE id = ? AND state = 'queued'`, until, msg)
+		return err
+	})
+}
+
+// settleAuditNews brings the news that an audit ended in line with its
+// findings: withdrawn while none is to do, queued again once one is. An
+// audit's findings are marked with an event naming it (audit != 0). A
+// filing also turns on its issue, which changes with no audit event: when
+// it is canceled or deleted, or its duplicate link goes, the finding is to
+// do again (findingFiledSQL). Those changes settle every audit whose news
+// a live session may still take (audit == 0), which is few.
+func (s *Service) settleAuditNews(ctx context.Context, audit int64) {
+	ids := []int64{audit}
+	if audit == 0 {
+		var err error
+		ids, err = s.liveAuditNews(ctx)
+		if err != nil {
+			s.log.WarnContext(ctx, "find audit news to settle", "err", err)
+			return
+		}
+	}
+	for _, id := range ids {
+		if !s.withdrawDecidedAuditNews(ctx, id) {
+			s.restoreAuditNews(ctx, id)
+		}
+	}
+}
+
+// liveAuditNews lists the audits whose news is queued or withdrawn for a
+// session that may still take it: one not ended, or ended recently enough
+// to hand its messages to the next in its worktree (takeMessages).
+func (s *Service) liveAuditNews(ctx context.Context) ([]int64, error) {
+	rows, err := s.db.R.QueryContext(ctx, `SELECT m.step_key FROM session_messages m JOIN agent_sessions x ON x.id = m.session_id
+		WHERE m.state IN (?, ?) AND m.step_key LIKE 'audit:%' AND (x.state != 'ended' OR x.ended_at > ?)`,
+		MessageQueued, MessageWithdrawn, s.nowMS()-orphanMessageAge.Milliseconds())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var key string
+		var id int64
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		if _, err := fmt.Sscanf(key, "audit:%d:", &id); err == nil && key == auditNewsKey(id, AuditDone) {
+			ids = append(ids, id)
+		}
+	}
+	return ids, rows.Err()
 }
 
 // withdrawRequeuedAuditNews withdraws audit news that a failed batch post

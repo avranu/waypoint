@@ -44,6 +44,9 @@ const (
 	MessageQueued    = "queued"
 	MessageSending   = "sending" // a runner job has it
 	MessageDelivered = "delivered"
+	// MessageWithdrawn is audit news held back while nothing in it is left
+	// to do; it is queued again if that changes (settleAuditNews).
+	MessageWithdrawn = "withdrawn"
 )
 
 // FollowUp is a session's queued steps as its person sees them.
@@ -509,7 +512,7 @@ func (s *Service) ClearFollowUp(ctx context.Context, actor *Actor, sessionID int
 		}
 	}
 	err = s.write(ctx, actor, func(t *tx) error {
-		if _, err := t.ExecContext(ctx, `UPDATE session_messages SET state = 'cancelled' WHERE session_id = ? AND state IN ('queued','sending')`, x.ID); err != nil {
+		if _, err := t.ExecContext(ctx, `UPDATE session_messages SET state = 'cancelled' WHERE session_id = ? AND state IN ('queued','sending','withdrawn')`, x.ID); err != nil {
 			return err
 		}
 		_, err := t.ExecContext(ctx, `DELETE FROM automations WHERE id = ?`, a.ID)
