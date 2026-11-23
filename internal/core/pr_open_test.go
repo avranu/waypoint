@@ -2,11 +2,13 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestOpenPullRequest(t *testing.T) {
@@ -93,6 +95,14 @@ func TestOpenPullRequest(t *testing.T) {
 
 // EditPRBase makes the shipping fake retarget pull requests, as the forge
 // does.
+// Branches lists g.brs: the shipping fake is a forge that lists branches (none
+// by default, so none is protected).
+func (g *shipForge) Branches(context.Context, *Forge, string) ([]ForgeBranch, error) {
+	g.sm.Lock()
+	defer g.sm.Unlock()
+	return g.brs, g.brErr
+}
+
 func (g *shipForge) EditPRBase(ctx context.Context, f *Forge, repo string, number int, base string) error {
 	g.sm.Lock()
 	if g.baseErr != nil {
@@ -558,5 +568,62 @@ func TestArmClosedPullRequestFails(t *testing.T) {
 	}
 	if pr := se.pr(5); pr.ArmedAt != nil || pr.State != "closed" {
 		t.Errorf("armed %v, recorded %q", pr.ArmedAt, pr.State)
+	}
+}
+
+// The base a ship asked for in its review round is the one a later open of
+// that branch uses without --base, even when --stacked-on names an open
+// parent (the asked base wins; WP-1670). A round for another branch of the
+// task doesn't apply, and no task has no asked base.
+func TestAskedBaseRound(t *testing.T) {
+	e := newEnv(t)
+	g := newShipForge()
+	e.s.Forges = g
+	p := e.project(e.admin, "App", "")
+	f, err := e.s.CreateForge(e.ctx, e.admin, ForgeInput{Kind: str("forgejo"), BaseURL: str("https://git.example.com"), Token: str("t")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.forgePeople(f, "wp-bot")
+	if _, err := e.s.AddProjectRepo(e.ctx, e.admin, p.Key, f.ID, "acme/app", false); err != nil {
+		t.Fatal(err)
+	}
+	agent := &Actor{User: e.admin.User, Agent: "anthropic/claude-opus-5-5"}
+	task := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Work"})
+	round := func(branch, asked string) {
+		t.Helper()
+		bp, _ := json.Marshal(beforePR{Project: p.Key, Repo: "acme/app", Branch: branch, Base: "main", Asked: asked})
+		now := time.Now().UnixMilli()
+		if _, err := e.s.db.W.ExecContext(e.ctx, `INSERT INTO work_log(issue_id, kind, state, before_pr, created_at, updated_at) VALUES (?, 'review', 'done', ?, ?, ?)`, e.issueID(task.Key), string(bp), now, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := e.s.askedBase(e.ctx, "", "upgrade"); got != "" {
+		t.Errorf("no task: %q", got)
+	}
+	round("upgrade", "release")
+	if got := e.s.askedBase(e.ctx, task.Key, "elsewhere"); got != "" {
+		t.Errorf("another branch's round applied: %q", got)
+	}
+	if got := e.s.askedBase(e.ctx, task.Key, "upgrade"); got != "release" {
+		t.Errorf("asked base %q", got)
+	}
+	open := func(head string, stacked []string) *OpenPRResult {
+		t.Helper()
+		res, err := e.s.OpenPullRequest(e.ctx, agent, OpenPRInput{Project: p.Key, Ready: true, Head: head, Title: head, For: task.Key, StackedOn: stacked})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	// The task's own parent, open: a branch of another task would be left alone.
+	if _, err := e.s.OpenPullRequest(e.ctx, agent, OpenPRInput{Project: p.Key, Ready: true, Head: "gate-go", Title: "gate-go", Base: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	if res := open("upgrade", []string{"gate-go"}); res.Pull.BaseRef != "release" {
+		t.Errorf("stacked on an open parent, asked for release: base %q", res.Pull.BaseRef)
+	}
+	if res := open("other-branch", []string{"gate-go"}); res.Pull.BaseRef != "gate-go" {
+		t.Errorf("another branch: base %q", res.Pull.BaseRef)
 	}
 }

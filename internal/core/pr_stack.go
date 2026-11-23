@@ -102,6 +102,7 @@ func (s *Service) forgeStillOpen(ctx, forgeCtx context.Context, prID int64) bool
 	defer cancel()
 	fp, err := prc.GetPR(fctx, f, pr.Repo, pr.Number)
 	if err != nil {
+		s.log.WarnContext(ctx, "read a pull request from the forge while opening one; the recorded one is reused", "repo", pr.Repo, "number", pr.Number, "err", err)
 		return true
 	}
 	open := fp.State == "open" || fp.State == "draft"
@@ -144,10 +145,10 @@ func (s *Service) forgeEnded(ctx context.Context, prID int64) bool {
 // one line, and how to choose def, and the number of the pull request it is
 // stacked on (0 when def). However tall the stack, the forge gets
 // one stillOpenBudget to confirm them; past it the records stand.
-func (s *Service) stackBase(ctx, forgeCtx context.Context, repo *ProjectRepo, head, def string, stackedOn []string) (string, string, int) {
+func (s *Service) stackBase(ctx, forgeCtx context.Context, repo *ProjectRepo, head, def string, builtOn []string) (string, string, int) {
 	fctx, cancel := context.WithTimeout(forgeCtx, stillOpenBudget)
 	defer cancel()
-	for _, b := range stackedOn {
+	for _, b := range builtOn {
 		b = strings.TrimSpace(b)
 		if b == "" || b == head || b == def {
 			continue
@@ -211,13 +212,20 @@ func keptBranchKey(forgeID int64, repo, branch string) string {
 // forge once said it is the default or a protected branch. Pull requests
 // open into such a branch aren't stacked on a parent's. No forge read.
 func (s *Service) branchKept(ctx context.Context, q queryer, forgeID int64, repo, branch string) (bool, error) {
-	var merged bool
-	if err := q.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pull_requests WHERE forge_id = ? AND repo = ? COLLATE NOCASE AND base_ref = ? AND state = 'merged')`,
-		forgeID, repo, branch).Scan(&merged); err != nil || merged {
+	if merged, err := s.mergedInto(ctx, q, forgeID, repo, branch); err != nil || merged {
 		return merged, err
 	}
 	v, err := s.serverSetting(ctx, q, keptBranchKey(forgeID, repo, branch))
 	return v != "", err
+}
+
+// mergedInto says whether a pull request was merged into a branch: the
+// record's half of branchKept, which the forge's word can't undo.
+func (s *Service) mergedInto(ctx context.Context, q queryer, forgeID int64, repo, branch string) (bool, error) {
+	var merged bool
+	err := q.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pull_requests WHERE forge_id = ? AND repo = ? COLLATE NOCASE AND base_ref = ? AND state = 'merged')`,
+		forgeID, repo, branch).Scan(&merged)
+	return merged, err
 }
 
 // branchLister lists a repo's branches (the part of ForgeBranches this
@@ -227,23 +235,29 @@ type branchLister interface {
 }
 
 // longLivedBranch says whether pr's head branch is one the repo keeps, and
-// whether that is known. Kept: recorded as such, or the forge says it is the
-// default branch or a protected one that still exists, which is remembered.
-// Pull requests open into a kept branch aren't stacked on the merged one (a
-// develop that merges into main keeps its own pull requests; WP-760). When
-// the forge can't say, it isn't known: nothing is moved on a guess.
+// whether that is known. Kept: a pull request was merged into it, or the
+// forge says it is the default branch or a protected one that still exists;
+// that is remembered, and asked again each time, so a branch that stopped
+// being kept is forgotten. Pull requests open into a kept branch aren't
+// stacked on the merged one (a develop that merges into main keeps its own
+// pull requests; WP-760). When the forge can't say, the last answer stands,
+// and with none it isn't known: nothing is moved on a guess.
 func (s *Service) longLivedBranch(ctx context.Context, f *Forge, pr *PullRequest) (kept, known bool) {
-	if k, err := s.branchKept(ctx, s.db.R, pr.ForgeID, pr.Repo, pr.HeadRef); err != nil {
-		s.log.WarnContext(ctx, "read whether a branch is kept", "repo", pr.Repo, "branch", pr.HeadRef, "err", err)
-	} else if k {
+	if m, err := s.mergedInto(ctx, s.db.R, pr.ForgeID, pr.Repo, pr.HeadRef); err != nil {
+		s.log.WarnContext(ctx, "read whether a branch is merged into", "repo", pr.Repo, "branch", pr.HeadRef, "err", err)
+	} else if m {
 		return true, true
 	}
 	key := keptBranchKey(pr.ForgeID, pr.Repo, pr.HeadRef)
+	unknown := func() (bool, bool) {
+		v, err := s.serverSetting(ctx, s.db.R, key)
+		return err == nil && v != "", err == nil && v != ""
+	}
 	if dc, ok := s.Forges.(ForgeCommitter); ok {
 		def, err := dc.DefaultBranch(ctx, f, pr.Repo)
 		if err != nil {
 			s.log.WarnContext(ctx, "read the default branch before moving stacked pull requests", "repo", pr.Repo, "err", err)
-			return false, false
+			return unknown()
 		}
 		if def == pr.HeadRef {
 			s.putSetting(ctx, key, "1")
@@ -252,20 +266,28 @@ func (s *Service) longLivedBranch(ctx context.Context, f *Forge, pr *PullRequest
 	}
 	bl, ok := s.Forges.(branchLister)
 	if !ok {
-		return false, true
+		return unknown()
 	}
 	list, err := bl.Branches(ctx, f, pr.Repo)
 	if err != nil {
 		s.log.WarnContext(ctx, "list branches before moving stacked pull requests", "repo", pr.Repo, "err", err)
-		return false, false
+		return unknown()
 	}
 	for _, b := range list {
-		if b.Name == pr.HeadRef && b.Protected {
-			s.putSetting(ctx, key, "1")
-			return true, true
+		if b.Name == pr.HeadRef {
+			if b.Protected {
+				s.putSetting(ctx, key, "1")
+				return true, true
+			}
+			s.dropSetting(ctx, key)
+			return false, true
 		}
 	}
-	s.dropSetting(ctx, key) // not kept, or gone
+	if len(list) >= maxForgeBranches { // cut short: it may be past the end
+		s.log.WarnContext(ctx, "branch listing is at its cap; not saying the branch isn't kept", "repo", pr.Repo, "branch", pr.HeadRef)
+		return unknown()
+	}
+	s.dropSetting(ctx, key) // gone
 	return false, true
 }
 
@@ -280,7 +302,7 @@ func (s *Service) settleStack(ctx context.Context, pr *PullRequest, mergedOnly b
 	if err != nil || parent == nil || parent.HeadRef == "" {
 		return
 	}
-	if kept, err := s.branchKept(ctx, s.db.R, pr.ForgeID, pr.Repo, pr.BaseRef); err != nil || kept {
+	if merged, err := s.mergedInto(ctx, s.db.R, pr.ForgeID, pr.Repo, pr.BaseRef); err != nil || merged {
 		return
 	}
 	if endedBefore(parent, pr) || (mergedOnly && parent.State != "merged") {

@@ -554,6 +554,24 @@ type MergeInput struct {
 	// head moved since (wp pr wait --merge waited on it), it isn't merged.
 	Head  string
 	armed bool // merging because it was armed: it waits for reviews to settle
+	// notice, when set, is told what the merge did instead of what was asked.
+	notice *string
+}
+
+// say tells the caller of a merge a notice, when they asked for it.
+func (in MergeInput) say(asked bool, text string) {
+	if asked && in.notice != nil {
+		*in.notice = text
+	}
+}
+
+// afterSettle is pr as the record has it once settleStack may have moved its
+// base; pr itself when that can't be read.
+func (s *Service) afterSettle(ctx context.Context, pr *PullRequest) *PullRequest {
+	if cur, err := s.prByID(ctx, s.db.R, pr.ID); err == nil {
+		return cur
+	}
+	return pr
 }
 
 // MergeResult is what a merge request did.
@@ -633,11 +651,12 @@ func (s *Service) MergePR(ctx context.Context, actor *Actor, prID int64, in Merg
 	// Read first, as merging releases the claim the warning is about. The
 	// claim itself waits for an arm that worked (WP-117).
 	warning := s.prClaimWarning(ctx, actor, pr.ID)
+	var notice string // what the merge did differently from what was asked
 	defer func() {
 		if err != nil || res == nil || (!res.Merged && !res.Armed) {
 			return
 		}
-		res.Warning = warning
+		res.Warning = joinNotes(warning, notice)
 		if !res.Merged {
 			s.claimPR(ctx, actor, pr.ID)
 		}
@@ -653,6 +672,7 @@ func (s *Service) MergePR(ctx context.Context, actor *Actor, prID int64, in Merg
 			return nil, invalid("this pull request is %s", cur.State)
 		}
 		s.settleStack(ctx, pr, false) // so its stack wait is read right
+		pr = s.afterSettle(ctx, pr)   // and the base it moved to is the one the policy reads
 		if pr.Outside {
 			return nil, errPROutside(pr) // a head no person approved never merges by itself (WP-281)
 		}
@@ -690,6 +710,8 @@ func (s *Service) MergePR(ctx context.Context, actor *Actor, prID int64, in Merg
 		return s.armMerge(ctx, actor, pr, in.Style)
 	}
 	s.settleStack(ctx, pr, false)
+	pr = s.afterSettle(ctx, pr)
+	in.notice = &notice
 	sha, err := s.mergeNow(ctx, actor, pr, in, "from the pull request page")
 	if err != nil {
 		return nil, err
@@ -1028,6 +1050,7 @@ func (s *Service) mergeNow(ctx context.Context, actor *Actor, pr *PullRequest, i
 	if in.DeleteBranch != nil {
 		del = *in.DeleteBranch
 	}
+	askedDelete := in.DeleteBranch != nil && *in.DeleteBranch
 	// A forge may delete the branch inside the merge call and close (or
 	// retarget itself) the pull requests open into it. So when some are, the
 	// merge doesn't ask for that: they move off the branch first, then it
@@ -1045,10 +1068,13 @@ func (s *Service) mergeNow(ctx context.Context, actor *Actor, pr *PullRequest, i
 			case !known:
 				del, stacked = false, nil
 				s.log.WarnContext(ctx, "left a merged branch for the pull requests stacked on it", "repo", cur.Repo, "branch", cur.HeadRef)
+				in.say(askedDelete, cur.HeadRef+" was not deleted: pull requests are open into it and the forge didn't say whether the repo keeps it")
 			case kept:
 				// A branch the repo keeps: they are not stacked on it, and
 				// it isn't deleted under them.
 				del, stacked = false, nil
+				s.log.WarnContext(ctx, "left a kept branch with pull requests open into it", "repo", cur.Repo, "branch", cur.HeadRef)
+				in.say(askedDelete, cur.HeadRef+" was not deleted: pull requests are open into it and the repo keeps it")
 			}
 		}
 	}

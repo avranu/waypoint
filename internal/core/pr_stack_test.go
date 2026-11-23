@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -253,7 +254,7 @@ func TestForkBranchIsNotAParent(t *testing.T) {
 		t.Fatal(err)
 	}
 	se.s.Wait()
-	if m := se.sg.merged(); len(m) != 1 || m[0].DeleteBranch || len(se.sg.baseEdits) != 0 {
+	if m := se.sg.merged(); len(m) != 1 || len(se.sg.baseEdits) != 0 { // nothing moves; the fork's branch isn't one a pull request is stacked on
 		t.Errorf("merges %+v edits %v", m, se.sg.baseEdits)
 	}
 }
@@ -363,8 +364,54 @@ func TestEditKeepsWhatWasApplied(t *testing.T) {
 	if err := se.s.EditPullRequest(se.ctx, se.admin, id, EditPRInput{Title: &title, Base: &base}); err != nil {
 		t.Fatal(err)
 	}
-	if n := se.auditCount("pr.edit", "retitled and moved the base from main to release of"); n != 1 {
+	if n := se.auditCount("pr.edit", "edited “New title”: retitled and moved the base from main to release"); n != 1 {
 		t.Errorf("%d audit entries naming both", n)
+	}
+}
+
+// The audit entry of an edit reads as a sentence for every set of edits.
+func TestEditAuditWording(t *testing.T) {
+	se := newShipEnv(t, "forgejo")
+	se.llm.answers["opencode/muse-spark-1.3-contributor-free"] = noFindings
+	se.pullHook("opened", testPR)
+	se.drain()
+	id := se.pr(5).ID
+	title, body := "T1", "text"
+	for _, tc := range []struct {
+		in   EditPRInput
+		want string
+	}{
+		{EditPRInput{Body: &body}, "edited the description of “"},
+		{EditPRInput{Title: &title, Body: &body}, "edited “Fix login”: retitled and edited the description"},
+		{EditPRInput{Base: ptr("release")}, "moved the base from main to release of “T1”"},
+		{EditPRInput{Title: ptr("T2"), Body: &body, Base: ptr("main")}, "edited “T1”: retitled, edited the description and moved the base from release to main"},
+	} {
+		if err := se.s.EditPullRequest(se.ctx, se.admin, id, tc.in); err != nil {
+			t.Fatal(err)
+		}
+		if n := se.auditCount("pr.edit", tc.want); n != 1 {
+			t.Errorf("%d audit entries with %q", n, tc.want)
+		}
+	}
+}
+
+// The forge took the base but the record couldn't be written: the error says
+// so, and doesn't read as the forge's refusal.
+func TestEditWhoseRecordWriteFailsSaysTheForgeChanged(t *testing.T) {
+	se := newShipEnv(t, "forgejo")
+	se.llm.answers["opencode/muse-spark-1.3-contributor-free"] = noFindings
+	se.pullHook("opened", testPR)
+	se.drain()
+	if _, err := se.s.db.W.ExecContext(se.ctx, `CREATE TRIGGER no_base_move BEFORE UPDATE OF base_ref ON pull_requests WHEN NEW.base_ref != OLD.base_ref BEGIN SELECT RAISE(ABORT, 'no'); END`); err != nil {
+		t.Fatal(err)
+	}
+	base := "release"
+	err := se.s.EditPullRequest(se.ctx, se.admin, se.pr(5).ID, EditPRInput{Base: &base})
+	if err == nil || !strings.Contains(err.Error(), "the forge was changed") || !strings.Contains(err.Error(), "recording it failed") {
+		t.Fatalf("error %v", err)
+	}
+	if !slices.Equal(se.sg.baseEdits, []string{"5:release"}) {
+		t.Errorf("edits %v", se.sg.baseEdits)
 	}
 }
 
@@ -389,5 +436,177 @@ func TestBaseEditNeedsOnlyARetargeter(t *testing.T) {
 	}
 	if err := se.s.EditPullRequest(se.ctx, se.admin, se.pr(5).ID, EditPRInput{Title: &title}); err == nil {
 		t.Error("a title edit on a client that can't")
+	}
+}
+
+// noBranchList is a forge client that can't list branches.
+type noBranchList struct{ ForgeClient }
+
+// keptSetting reads whether the kept-branch setting of pr's head is set.
+func (se *shipEnv) keptSetting(pr *PullRequest) bool {
+	se.t.Helper()
+	v, err := se.s.serverSetting(se.ctx, se.s.db.R, keptBranchKey(pr.ForgeID, pr.Repo, pr.HeadRef))
+	if err != nil {
+		se.t.Fatal(err)
+	}
+	return v != ""
+}
+
+// Finding 10: what the forge said of a branch is asked again, so a branch
+// that stopped being protected stops being kept, and its child waits again.
+func TestKeptBranchSettingFollowsTheForge(t *testing.T) {
+	se, parent, _ := stackedPair(t)
+	p := se.pr(5)
+	se.sg.brs = []ForgeBranch{{Name: parent.HeadRef, Protected: true}}
+	if k, known := se.s.longLivedBranch(se.ctx, se.f, p); !k || !known || !se.keptSetting(p) {
+		t.Fatalf("protected: kept %v known %v setting %v", k, known, se.keptSetting(p))
+	}
+	if r := se.reasonsOf(6, true); slices.ContainsFunc(r, isStackWait) {
+		t.Fatalf("a stack wait on a protected branch: %q", r)
+	}
+	// The forge can't say now: the last answer holds.
+	se.sg.brErr = errors.New("forge down")
+	if k, known := se.s.longLivedBranch(se.ctx, se.f, p); !k || !known {
+		t.Errorf("unreadable: kept %v known %v", k, known)
+	}
+	se.sg.brErr = nil
+	se.sg.brs = []ForgeBranch{{Name: parent.HeadRef}}
+	if k, known := se.s.longLivedBranch(se.ctx, se.f, p); k || !known || se.keptSetting(p) {
+		t.Fatalf("unprotected: kept %v known %v setting %v", k, known, se.keptSetting(p))
+	}
+	if r := se.reasonsOf(6, true); !slices.ContainsFunc(r, isStackWait) {
+		t.Errorf("no stack wait once the branch isn't kept: %q", r)
+	}
+}
+
+// Finding 11: a listing cut at the cap that lacks the branch doesn't say the
+// branch isn't kept.
+func TestCappedBranchListIsUnknown(t *testing.T) {
+	se, parent, _ := stackedPair(t)
+	p := se.pr(5)
+	for i := range maxForgeBranches {
+		se.sg.brs = append(se.sg.brs, ForgeBranch{Name: fmt.Sprintf("b%d", i)})
+	}
+	if k, known := se.s.longLivedBranch(se.ctx, se.f, p); k || known {
+		t.Fatalf("full list without the branch: kept %v known %v", k, known)
+	}
+	se.s.putSetting(se.ctx, keptBranchKey(p.ForgeID, p.Repo, parent.HeadRef), "1")
+	if k, known := se.s.longLivedBranch(se.ctx, se.f, p); !k || !known {
+		t.Errorf("remembered: kept %v known %v", k, known)
+	}
+	// Found in a full list, protected: kept. A short list without it: not.
+	se.sg.brs[0] = ForgeBranch{Name: parent.HeadRef, Protected: true}
+	if k, known := se.s.longLivedBranch(se.ctx, se.f, p); !k || !known {
+		t.Errorf("found: kept %v known %v", k, known)
+	}
+}
+
+// Finding 33: a forge client that can't list branches can't say.
+func TestNoBranchListIsUnknown(t *testing.T) {
+	se, _, _ := stackedPair(t)
+	p := se.pr(5)
+	se.s.Forges = noBranchList{se.s.Forges}
+	if k, known := se.s.longLivedBranch(se.ctx, se.f, p); k || known {
+		t.Errorf("kept %v known %v", k, known)
+	}
+}
+
+// Finding 2: the arm's policy check reads the base the move left, not the
+// one the record had: a merged parent's child moves onto main first, and
+// the policy that arms only the default branch arms it.
+func TestAgentArmOfMergedParentsChildReadsTheMovedBase(t *testing.T) {
+	se, _, _ := stackedPair(t)
+	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE pull_requests SET state = 'merged', merged_at = ? WHERE number = 5`, time.Now().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE pull_requests SET agent = 'anthropic/claude-opus-5-5' WHERE number = 6`); err != nil {
+		t.Fatal(err)
+	}
+	se.sg.baseErr = errors.New("forge down") // the sweep the policy starts can't move it
+	se.policy(MergePolicyInput{AutoMerge: ptr(true), AutoMergeInto: ptr(IntoDefault)})
+	se.sg.baseErr = nil
+	if c := se.pr(6); c.BaseRef != "fix-login" {
+		t.Fatalf("setup: base %q", c.BaseRef)
+	}
+	claude := agentActorFor(se.admin, "anthropic/claude-opus-5-5")
+	res, err := se.s.MergePR(se.ctx, claude, se.pr(6).ID, MergeInput{WhenReady: true})
+	if err != nil || res.ByHand || !(res.Armed || res.Merged) { // armed, or merged at once as it is ready
+		t.Fatalf("arm: %+v %v", res, err)
+	}
+	if c := se.pr(6); c.BaseRef != "main" {
+		t.Errorf("base %q", c.BaseRef)
+	}
+}
+
+// Finding 4: a deletion asked for and not made is said so.
+func TestMergeSaysWhenAskedDeletionIsNotMade(t *testing.T) {
+	const kept = "fix-login was not deleted: pull requests are open into it and the repo keeps it"
+	const unknown = "fix-login was not deleted: pull requests are open into it and the forge didn't say whether the repo keeps it"
+	for _, tc := range []struct {
+		name   string
+		setup  func(se *shipEnv)
+		ask    *bool
+		notice string
+	}{
+		{"kept, asked", func(se *shipEnv) { se.sg.brs = []ForgeBranch{{Name: "fix-login", Protected: true}} }, ptr(true), kept},
+		{"kept, not asked", func(se *shipEnv) { se.sg.brs = []ForgeBranch{{Name: "fix-login", Protected: true}} }, nil, ""},
+		{"unknown, asked", func(se *shipEnv) { se.sg.defaultBranch = "-" }, ptr(true), unknown},
+		{"unknown, not asked", func(se *shipEnv) { se.sg.defaultBranch = "-" }, nil, ""},
+		{"not kept, asked", func(se *shipEnv) {}, ptr(true), ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			se, _, _ := stackedPair(t)
+			tc.setup(se)
+			res, err := se.s.MergePR(se.ctx, se.admin, se.pr(5).ID, MergeInput{DeleteBranch: tc.ask})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.notice == "" && strings.Contains(res.Warning, "was not deleted") || tc.notice != "" && !strings.Contains(res.Warning, tc.notice) {
+				t.Errorf("warning %q, want %q", res.Warning, tc.notice)
+			}
+		})
+	}
+}
+
+// noRetarget is the shipping fake with an EditPRBase that isn't the forge
+// client's, so it can't change a pull request's base.
+type noRetarget struct{ *shipForge }
+
+func (noRetarget) EditPRBase() {}
+
+// Finding 15: a forge client that can't change a base can't move a child: the
+// parent's merge still goes through, the child stays where it is.
+func TestMergeWithClientThatCannotRetarget(t *testing.T) {
+	se, _, _ := stackedPair(t)
+	se.s.Forges = noRetarget{se.sg}
+	if _, ok := se.s.Forges.(ForgePRRetargeter); ok {
+		t.Fatal("setup: it retargets")
+	}
+	if _, err := se.s.MergePR(se.ctx, se.admin, se.pr(5).ID, MergeInput{}); err != nil {
+		t.Fatal(err)
+	}
+	se.s.Wait()
+	if m := se.sg.merged(); len(m) == 0 || m[0].DeleteBranch {
+		t.Errorf("merge options %+v", m)
+	}
+	if c := se.pr(6); c.BaseRef != "fix-login" || len(se.sg.baseEdits) != 0 || len(se.sg.deleted) != 0 {
+		t.Errorf("child base %q edits %v deleted %v", c.BaseRef, se.sg.baseEdits, se.sg.deleted)
+	}
+}
+
+func TestJoinNotes(t *testing.T) {
+	for _, tc := range []struct {
+		in   []string
+		want string
+	}{
+		{nil, ""},
+		{[]string{"", ""}, ""},
+		{[]string{"  ", "\n"}, ""},
+		{[]string{"a"}, "a"},
+		{[]string{"", " a ", "  ", "b"}, "a b"},
+	} {
+		if got := joinNotes(tc.in...); got != tc.want {
+			t.Errorf("joinNotes(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }

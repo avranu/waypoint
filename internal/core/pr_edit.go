@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 )
 
@@ -105,7 +106,7 @@ func (s *Service) EditPullRequest(ctx context.Context, actor *Actor, prID int64,
 		}
 	}
 	werr := s.write(ctx, actor, func(t *tx) error {
-		var parts []string
+		var parts []string // "retitled", "edited the description", "moved the base from X to Y"
 		for _, a := range applied {
 			switch a {
 			case "title":
@@ -114,25 +115,42 @@ func (s *Service) EditPullRequest(ctx context.Context, actor *Actor, prID int64,
 				}
 				parts = append(parts, "retitled")
 			case "body":
-				parts = append(parts, "edited the description of")
+				parts = append(parts, "edited the description")
 			case "base":
 				if err := setPRBase(ctx, t, pr.ID, base); err != nil {
 					return err
 				}
-				parts = append(parts, "moved the base from "+pr.BaseRef+" to "+base+" of")
+				parts = append(parts, "moved the base from "+pr.BaseRef+" to "+base)
 			}
 		}
-		detail := parts[0]
-		if len(parts) > 1 { // "retitled and moved the base from X to Y of"
-			detail = strings.Join(parts[:len(parts)-1], ", ") + " and " + parts[len(parts)-1]
+		// One edit reads "retitled “T”" (the description and the base add
+		// "of": "moved the base from X to Y of “T”"); several, "edited “T”:
+		// retitled, edited the description and moved the base from X to Y".
+		name := " “" + excerpt(pr.Title, 120) + "”"
+		detail := ""
+		switch len(parts) {
+		case 0:
+		case 1:
+			detail = parts[0] + name
+			if applied[0] != "title" {
+				detail = parts[0] + " of" + name
+			}
+		default:
+			detail = "edited" + name + ": " + strings.Join(parts[:len(parts)-1], ", ") + " and " + parts[len(parts)-1]
 		}
 		t.audit(AuditEntry{Action: "pr.edit", Category: AuditControl, ProjectID: projectID, TargetType: "pr", TargetID: pr.ID,
-			Target: fmt.Sprintf("%s#%d", pr.Repo, pr.Number), URL: pr.URL, Detail: detail + " “" + excerpt(pr.Title, 120) + "”"})
+			Target: fmt.Sprintf("%s#%d", pr.Repo, pr.Number), URL: pr.URL, Detail: detail})
 		t.emit(&Event{Kind: EvPRActivity, ProjectID: projectID, New: "edited", Data: map[string]any{"pr_id": pr.ID}})
 		return nil
 	})
 	if ferr != nil {
+		if werr != nil { // the refusal is what comes back; the record's failure isn't lost
+			s.log.WarnContext(ctx, "record the edits of a pull request made before the forge refused one", "pr", prID, "err", werr)
+		}
 		return ferr
+	}
+	if werr != nil && slices.Contains(applied, "base") {
+		return fmt.Errorf("the forge was changed (the base is now %s) and recording it failed: %w", base, werr)
 	}
 	return werr
 }

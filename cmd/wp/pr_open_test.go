@@ -55,6 +55,10 @@ func TestStackBranchesNearest(t *testing.T) {
 	if got := stackBranches([]string{"refs/heads/side", "refs/heads/parent"}); !slices.Equal(got, []string{"parent", "side"}) {
 		t.Errorf("side branch merged in: %v", got)
 	}
+	// A ref git can't resolve is skipped, not an error for the rest.
+	if got := stackBranches([]string{"origin/gone", "refs/heads/parent"}); !slices.Equal(got, []string{"parent"}) {
+		t.Errorf("an unresolvable ref: %v", got)
+	}
 }
 
 // Branches at the same distance keep the order they were given in.
