@@ -139,17 +139,18 @@ func (s *Service) lineMembers(ctx context.Context, ref lineRef) ([]*PullRequest,
 }
 
 // lineSort is the line's one ordering: the pull request Waypoint marked
-// ready, then ci-urgent ones, then the one that fixes a red base, then the
-// order they were armed in, then number. fixer is the pull request that
-// fixes the base, 0 for none.
+// ready, then the one that fixes a red base, then ci-urgent ones, then the
+// order they were armed in, then number. The fixer goes ahead of urgent ones:
+// on a red base an urgent pull request's run fails with the base (WP-1700).
+// fixer is the pull request that fixes the base, 0 for none.
 func lineSort(prs []*PullRequest, fixer int64) {
 	rank := func(p *PullRequest) int {
 		switch {
 		case queueHolder(p):
 			return 0
-		case p.urgent():
-			return 1
 		case p.ID == fixer:
+			return 1
+		case p.urgent():
 			return 2
 		}
 		return 3
@@ -393,18 +394,28 @@ func (s *Service) lineFrontFacts(ctx context.Context, ls *lineState, p *PullRequ
 
 // lineFallbackUntil: when the base's candidates ended without a run or a
 // merge, or were refused, within lineFallbackFor, the time they come back.
-func (s *Service) lineFallbackUntil(ctx context.Context, ref lineRef) (time.Time, bool) {
+// An unread answer is an error, not "no" (WP-1700).
+func (s *Service) lineFallbackUntil(ctx context.Context, ref lineRef) (time.Time, bool, error) {
 	var at int64
 	if err := s.db.R.QueryRowContext(ctx, `SELECT coalesce(max(ended_at), 0) FROM queue_stacks WHERE forge_id = ? AND repo = ? COLLATE NOCASE AND base_ref = ?
 		AND end_reason IN (?, ?, ?) AND ended_at > ?`, ref.forge, ref.repo, ref.base, endNoRun, endNoMerge, endRefused,
-		s.now().Add(-lineFallbackFor).UnixMilli()).Scan(&at); err != nil || at == 0 {
-		return time.Time{}, false
+		s.now().Add(-lineFallbackFor).UnixMilli()).Scan(&at); err != nil {
+		return time.Time{}, false, err
 	}
-	return msTime(at).Add(lineFallbackFor), true
+	if at == 0 {
+		return time.Time{}, false, nil
+	}
+	return msTime(at).Add(lineFallbackFor), true, nil
 }
 
+// lineFallback: the line builds no candidates now. Unread, it says yes, as
+// lineCandidatesOn fails closed (WP-1700).
 func (s *Service) lineFallback(ctx context.Context, ref lineRef) bool {
-	_, on := s.lineFallbackUntil(ctx, ref)
+	_, on, err := s.lineFallbackUntil(ctx, ref)
+	if err != nil {
+		s.log.WarnContext(ctx, "read whether a line's candidates are paused", "repo", ref.repo, "base", ref.base, "err", err)
+		return true
+	}
 	return on
 }
 
@@ -459,11 +470,18 @@ func (s *Service) lineCands(ctx context.Context, ls *lineState) error {
 	if err != nil {
 		return err
 	}
+	defer rows.Close()
 	var live []*queueStack
 	for rows.Next() {
-		if st, err := scanStack(rows); err == nil {
-			live = append(live, st)
+		st, err := scanStack(rows)
+		if err != nil {
+			s.log.WarnContext(ctx, "read a live candidate", "err", err)
+			continue
 		}
+		live = append(live, st)
+	}
+	if err := rows.Err(); err != nil {
+		return err
 	}
 	rows.Close()
 	byCommit := map[string]int{}
@@ -983,6 +1001,7 @@ func (s *Service) candRerun(ctx context.Context, ls *lineState, a lineAction) {
 	if err == nil && !can {
 		return
 	}
+	asked := err == nil
 	n := 0
 	if err == nil {
 		n, err = cl.RetryChecks(ctx, ls.f, st.Repo, st.CommitSHA)
@@ -990,7 +1009,12 @@ func (s *Service) candRerun(ctx context.Context, ls *lineState, a lineAction) {
 	if err == nil {
 		return
 	}
-	s.log.WarnContext(ctx, "run a candidate's failed jobs again", "candidate", st.ID, "err", err)
+	// What failed is what is logged, as it is told apart (WP-1700).
+	if asked {
+		s.log.WarnContext(ctx, "run a candidate's failed jobs again", "candidate", st.ID, "err", err)
+	} else {
+		s.log.WarnContext(ctx, "ask whether a candidate's failed jobs can run again", "candidate", st.ID, "err", err)
+	}
 	if n > 0 || s.now().Sub(st.CreatedAt) >= stackRunMax {
 		return // some of it is running again, or it was asked for long enough
 	}
@@ -1325,10 +1349,14 @@ func (s *Service) joinLine(ctx context.Context, pr *PullRequest) {
 	s.log.InfoContext(ctx, "pull request joined the line", "repo", pr.Repo, "base", pr.BaseRef, "pr", pr.Number, "head", short(pr.HeadSHA))
 }
 
-// inCandidate: a live candidate merges pr's head.
+// inCandidate: a live candidate merges pr's head. Unread, it says yes, so a
+// branch isn't updated under a candidate that may hold it (WP-1700).
 func (s *Service) inCandidate(ctx context.Context, prID int64) bool {
 	var n int
-	_ = s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM queue_stacks WHERE ended_at IS NULL AND heads LIKE ?`, fmt.Sprintf(`%%"pr_id":%d,%%`, prID)).Scan(&n)
+	if err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM queue_stacks WHERE ended_at IS NULL AND heads LIKE ?`, fmt.Sprintf(`%%"pr_id":%d,%%`, prID)).Scan(&n); err != nil {
+		s.log.WarnContext(ctx, "read whether a live candidate holds a pull request", "pr", prID, "err", err)
+		return true
+	}
 	return n > 0
 }
 

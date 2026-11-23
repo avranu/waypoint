@@ -161,8 +161,8 @@ func TestPlanLineBaseRedEndReason(t *testing.T) {
 	}
 }
 
-// F14: the line's one order: the marked-ready holder, ci-urgent ones, the
-// base's fixer, then the time armed, then the number.
+// F14: the line's one order: the marked-ready holder, the
+// base's fixer, ci-urgent ones, then the time armed, then the number.
 func TestLineSortOrder(t *testing.T) {
 	at := func(m int) *time.Time { v := time.Date(2026, 11, 1, 0, m, 0, 0, time.UTC); return &v }
 	mk := func(n int, armed int) *PullRequest {
@@ -182,7 +182,7 @@ func TestLineSortOrder(t *testing.T) {
 	for _, p := range prs {
 		got = append(got, p.Number)
 	}
-	if want := []int{9, 8, 7, 6, 4, 5}; !reflect.DeepEqual(got, want) {
+	if want := []int{9, 7, 8, 6, 4, 5}; !reflect.DeepEqual(got, want) {
 		t.Errorf("order %v, want %v", got, want)
 	}
 	// With no fixer the armed time decides among the rest.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -922,33 +923,53 @@ func TestLineCandidateWithUnreadableChecksIsLostAtTheLimit(t *testing.T) {
 }
 
 // The front left the line after the step read it: its branch isn't brought
-// up to date and its draft isn't marked ready (as for a merge).
+// up to date and its draft isn't marked ready (as for a merge). Staying, it
+// is updated, so a lineHolds that always said no would fail (WP-1700).
 func TestLineUpdateActSkipsAFrontThatLeft(t *testing.T) {
-	se := newStackEnv(t)
-	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE project_repos SET line_candidates = 0`); err != nil {
-		t.Fatal(err)
-	}
-	se.sg.behind = map[string]bool{head7s: true}
-	se.draftGreen(head7s, 5)
-	pr := se.pr(7)
-	if pr.QueuedAt == nil {
-		se.s.joinLine(se.ctx, pr)
-		pr = se.pr(7)
-	}
-	ls, err := se.s.lineGather(se.ctx, lineOf(pr))
-	if err != nil {
-		t.Fatal(err)
-	}
-	acts := planLine(ls.snap)
-	if len(acts) != 1 || acts[0].Kind != lineUpdate {
-		t.Fatalf("plan: %+v", acts)
-	}
-	before := len(se.sg.updatedPRs()) // the step that read its checks updated it once
-	se.s.leaveQueue(se.ctx, pr.ID)
-	se.s.lineAct(se.ctx, ls, acts[0])
-	se.s.Wait()
-	if u := se.sg.updatedPRs(); len(u) != before {
-		t.Errorf("updated after it left the line: %v", u)
+	for _, leaves := range []bool{true, false} {
+		t.Run(fmt.Sprintf("leaves=%v", leaves), func(t *testing.T) {
+			se := newStackEnv(t)
+			if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE project_repos SET line_candidates = 0`); err != nil {
+				t.Fatal(err)
+			}
+			se.sg.behind = map[string]bool{head7s: true}
+			se.draftGreen(head7s, 5)
+			pr := se.pr(7)
+			if pr.QueuedAt == nil {
+				se.s.joinLine(se.ctx, pr)
+				pr = se.pr(7)
+			}
+			ls, err := se.s.lineGather(se.ctx, lineOf(pr))
+			if err != nil {
+				t.Fatal(err)
+			}
+			acts := planLine(ls.snap)
+			if len(acts) != 1 || acts[0].Kind != lineUpdate {
+				t.Fatalf("plan: %+v", acts)
+			}
+			before := len(se.sg.updatedPRs()) // the step that read its checks updated it once
+			// The base moved again, so an act that runs updates it (an update is
+			// tried once per tip).
+			se.sg.baseTip = "tip-9"
+			se.sg.behind = map[string]bool{head7s: true}
+			stateBefore := se.pr(7).State
+			if leaves {
+				se.s.leaveQueue(se.ctx, pr.ID)
+			}
+			se.s.lineAct(se.ctx, ls, acts[0])
+			se.s.Wait()
+			u := se.sg.updatedPRs()
+			if leaves {
+				if len(u) != before {
+					t.Errorf("updated after it left the line: %v", u)
+				}
+				if p := se.pr(7); p.State != stateBefore {
+					t.Errorf("state %s after it left the line, was %s", p.State, stateBefore)
+				}
+			} else if len(u) != before+1 {
+				t.Errorf("not updated though it holds its place: %v (before %d)", u, before)
+			}
+		})
 	}
 }
 
@@ -997,34 +1018,50 @@ func TestQueueAheadPutsTheFixerFirst(t *testing.T) {
 
 // The front left the line after the step read it (its babysit asked a person
 // about a round's held change): the step doesn't mark it ready on its passed
-// candidate or merge it (c6384 of #569).
+// candidate or merge it (c6384 of #569). Staying, the same step acts on it
+// (WP-1700).
 func TestLineMergeActSkipsAFrontThatLeft(t *testing.T) {
-	se := newStackEnv(t)
-	se.draftGreen(head7s, 5)
-	se.step()
-	se.line()
-	se.stackRun(0, CheckSuccess, treeA, "7 "+head7s)
-	se.sg.trees = map[string]string{"3e7000000": treeA}
-	pr := se.pr(7)
-	ls, err := se.s.lineGather(se.ctx, lineOf(pr))
-	if err != nil {
-		t.Fatal(err)
-	}
-	acts := planLine(ls.snap)
-	if len(acts) != 1 || acts[0].Kind != lineMerge {
-		t.Fatalf("plan: %+v", acts)
-	}
-	se.s.leaveQueue(se.ctx, pr.ID) // as heldWait does, outside the line's lock
-	se.s.lineAct(se.ctx, ls, acts[0])
-	se.s.Wait()
-	if m := se.sg.merged(); len(m) != 0 {
-		t.Errorf("merged after it left the line: %+v", m)
-	}
-	if p := se.pr(7); p.State != "draft" {
-		t.Errorf("marked ready after it left the line: %s", p.State)
-	}
-	if sts := se.stacks(); sts[0].State == stackReady {
-		t.Errorf("its candidate was recorded ready")
+	for _, leaves := range []bool{true, false} {
+		t.Run(fmt.Sprintf("leaves=%v", leaves), func(t *testing.T) {
+			se := newStackEnv(t)
+			se.draftGreen(head7s, 5)
+			se.step()
+			se.line()
+			se.stackRun(0, CheckSuccess, treeA, "7 "+head7s)
+			se.sg.trees = map[string]string{"3e7000000": treeA}
+			pr := se.pr(7)
+			ls, err := se.s.lineGather(se.ctx, lineOf(pr))
+			if err != nil {
+				t.Fatal(err)
+			}
+			acts := planLine(ls.snap)
+			if len(acts) != 1 || acts[0].Kind != lineMerge {
+				t.Fatalf("plan: %+v", acts)
+			}
+			if leaves {
+				se.s.leaveQueue(se.ctx, pr.ID) // as heldWait does, outside the line's lock
+			}
+			se.s.lineAct(se.ctx, ls, acts[0])
+			se.s.Wait()
+			if !leaves {
+				if p := se.pr(7); p.State == "draft" {
+					t.Errorf("not marked ready though it holds its place: %s", p.State)
+				}
+				if sts := se.stacks(); sts[0].State != stackReady {
+					t.Errorf("its candidate was not recorded ready: %s", sts[0].State)
+				}
+				return
+			}
+			if m := se.sg.merged(); len(m) != 0 {
+				t.Errorf("merged after it left the line: %+v", m)
+			}
+			if p := se.pr(7); p.State != "draft" {
+				t.Errorf("marked ready after it left the line: %s", p.State)
+			}
+			if sts := se.stacks(); sts[0].State == stackReady {
+				t.Errorf("its candidate was recorded ready")
+			}
+		})
 	}
 }
 
@@ -1060,5 +1097,50 @@ func TestLineBaseRedIsRecordedOnTheTipItEndedOn(t *testing.T) {
 	}
 	if tried := se.s.lineTried(se.ctx, ref, "tip-9", true); tried[candKey(rest)] {
 		t.Error("remembered on another tip too")
+	}
+}
+
+// Unread, the line's pause and a live candidate fail closed: no candidates
+// are built, and a branch isn't updated under a candidate (WP-1700).
+func TestLineFallbackAndInCandidateFailClosedWhenUnread(t *testing.T) {
+	se := newStackEnv(t)
+	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE project_repos SET line_candidates = 0`); err != nil {
+		t.Fatal(err)
+	}
+	se.draftGreen(head7s, 5)
+	pr := se.pr(7)
+	ref := lineOf(pr)
+	if se.s.lineFallback(se.ctx, ref) || se.s.inCandidate(se.ctx, pr.ID) {
+		t.Fatal("no candidate rows, yet the line is paused or a candidate holds #7")
+	}
+	restore := se.breakTable("queue_stacks")
+	defer restore()
+	if !se.s.lineFallback(se.ctx, ref) {
+		t.Error("an unread pause isn't taken as paused")
+	}
+	if !se.s.inCandidate(se.ctx, pr.ID) {
+		t.Error("an unread candidate list isn't taken as holding #7")
+	}
+}
+
+// A live candidate row that can't be read is left out of the line's reading,
+// and the rest is read (WP-1700).
+func TestLineGatherSkipsAnUnreadableLiveCandidate(t *testing.T) {
+	se := newStackEnv(t)
+	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE project_repos SET line_candidates = 0`); err != nil {
+		t.Fatal(err)
+	}
+	se.draftGreen(head7s, 5)
+	pr := se.pr(7)
+	if _, err := se.s.db.W.ExecContext(se.ctx, `INSERT INTO queue_stacks(forge_id, repo, base_ref, pr_id, base_sha, heads, branch, created_at)
+		VALUES (?, ?, ?, ?, 'x', '[]', 'wp-queue/main/bad', 1)`, pr.ForgeID, pr.Repo, pr.BaseRef, pr.ID); err != nil {
+		t.Fatal(err)
+	}
+	ls, err := se.s.lineGather(se.ctx, lineOf(pr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ls.snap.Cands) != 0 || len(ls.rows) != 0 {
+		t.Errorf("the unreadable row is in the snapshot: %+v", ls.snap.Cands)
 	}
 }

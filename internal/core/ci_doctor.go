@@ -763,7 +763,9 @@ func (s *Service) lineStacks(ctx context.Context, ref lineRef, since time.Time) 
 	if err := rows.Err(); err != nil {
 		return st, err
 	}
-	if until, paused := s.lineFallbackUntil(ctx, ref); paused {
+	if until, paused, err := s.lineFallbackUntil(ctx, ref); err != nil {
+		s.log.WarnContext(ctx, "read whether a line's candidates are paused", "repo", ref.repo, "base", ref.base, "err", err)
+	} else if paused {
 		st.PausedUntil = &until
 	}
 	return st, nil

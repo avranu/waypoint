@@ -93,6 +93,7 @@ func (s *Service) shaChecks(ctx context.Context, forgeID int64, repo, sha string
 func (s *Service) fixesBase(ctx context.Context, pr *PullRequest, tip string, failing map[string]bool) bool {
 	checks, err := s.shaChecks(ctx, pr.ForgeID, pr.Repo, pr.HeadSHA)
 	if err != nil {
+		s.log.WarnContext(ctx, "read a head's checks to see whether it fixes the base", "pr", pr.ID, "err", err)
 		return false
 	}
 	passed := false
@@ -124,6 +125,7 @@ func (s *Service) fixesBase(ctx context.Context, pr *PullRequest, tip string, fa
 	}
 	holds, err := cl.Contains(ctx, f, pr.Repo, tip, pr.HeadSHA)
 	if err != nil {
+		s.log.WarnContext(ctx, "ask whether a head holds the base's tip", "pr", pr.ID, "err", err)
 		return false
 	}
 	s.baseRed.Store(key, holds)
