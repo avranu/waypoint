@@ -226,7 +226,7 @@ func (p *runnerProc) execAutopilot(ctx context.Context, run *jobRun, in autopilo
 	if draft, found := promptInput(screen); !found {
 		return held("screen", "its input box isn't on the screen (a dialog or a scrolled pane?)")
 	} else if draft != "" {
-		return held("draft", "someone has typed into its input box (%q): it waits until that is sent or cleared", truncRunes(draft, 40))
+		return held("draft", "%s: it waits until that is sent or cleared", draftHeldWhy(draft, in.Review))
 	}
 	var rl *relaunch
 	var why string
@@ -310,7 +310,7 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 	} else if !box.found {
 		return held("screen", "its input box isn't on the screen (a dialog or a scrolled pane?)")
 	} else if box.text != "" {
-		return held("draft", "someone has typed into its input box (%q): it waits until that is sent or cleared", truncRunes(box.text, 40))
+		return held("draft", "%s: it waits until that is sent or cleared", draftHeldWhy(box.text, in.Review))
 	}
 	// Asked again right before the paste (WP-1572): a person who prompted
 	// since the last ask has an empty box and a busy session, which the box
@@ -326,12 +326,25 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 	if _, err := runTmux(ctx, socket, nil, "paste-buffer", "-p", "-d", "-b", buf, "-t", pane); err != nil {
 		return held("screen", "the review prompt couldn't be pasted: %v", err)
 	}
-	sleepCtx(ctx, reviewPasteSettle(len(in.Review)))
+	settle := reviewPasteSettle(len(in.Review))
+	sleepCtx(ctx, settle)
+	// readDrawn reads the box, and reads an empty one again for up to
+	// another settle: a long paste can be drawn after the settle (WP-1572).
+	// Every look that decides what the paste did goes through it, so a paste
+	// drawn late is never taken for one that is gone.
+	readDrawn := func() (penBox, error) {
+		box, err := readPenBox(ctx, socket, pane)
+		for wait := time.Now().Add(settle); err == nil && box.found && box.text == "" && time.Now().Before(wait) && ctx.Err() == nil; {
+			sleepCtx(ctx, autopilotPoll)
+			box, err = readPenBox(ctx, socket, pane)
+		}
+		return box, err
+	}
 	// ours is Claude Code's placeholder for this paste ([Pasted text #3 +40
-	// lines]) as first read, right after it settled: a placeholder seen later
-	// is ours only if it is the same, since a person's own paste gets the
-	// next number (audit #1350.1). A person who swaps the paste for their
-	// own within the settle, or before a paste drawn late is first seen, can
+	// lines]) as first read, once it is drawn: a placeholder seen later is
+	// ours only if it is the same, since a person's own paste gets the next
+	// number (audit #1350.1). A person who swaps the paste for their own
+	// within the settle, or before a paste drawn late is first seen, can
 	// still be taken for it; so can one whose paste Claude Code numbers and
 	// counts the same as ours.
 	var ours string
@@ -347,14 +360,15 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 		}
 		return text == ours
 	}
-	if box, err := readPenBox(ctx, socket, pane); err == nil && box.found && box.text != "" {
+	if box, err := readDrawn(); err == nil && box.found && box.text != "" {
 		mine(box.text)
 	}
 	// unpaste takes the review back out of the box when the box holds only
 	// it (C-u), so nothing is left for a person to clear and a retry finds
-	// the box empty; it says whether the box is empty now.
+	// the box empty; it says whether the box is empty now. An empty box is
+	// given a settle to show a paste drawn late, which is then taken out too.
 	unpaste := func() bool {
-		box, err := readPenBox(ctx, socket, pane)
+		box, err := readDrawn()
 		if err != nil || !box.found || box.text == "" || !mine(box.text) {
 			return err == nil && box.found && box.text == ""
 		}
@@ -364,57 +378,52 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 		box, err = readPenBox(ctx, socket, pane)
 		return err == nil && box.found && box.text == ""
 	}
-	// A person who prompted while it settled keeps the turn: no Enter, so the
-	// review isn't sent into it, and the paste is taken back out (WP-1572).
-	// Only a no from Waypoint is unwanted (the step is over); an answer it
-	// can't give holds the step, which retries, as the step still waits on
-	// this job: a send into a person's turn can't be undone.
-	askAgain := func() (outcome, bool) {
-		wanted, werr := p.stepWantedAsk(ctx, in.Step, run.id)
-		if werr == nil && !wanted {
-			res := autopilotResult{Outcome: "unwanted"}
-			if !unpaste() {
-				res.Warning = "the review prompt was pasted and not sent, since the session was taken while it settled: clear it from the input box if it is still there"
-			}
-			say("the step no longer wants this job: the review was pasted and not sent")
-			return outcome{State: "done", Result: res}, true
+	// A person who prompted while it settled, or pressed Stop, keeps the
+	// turn: no Enter, so the review isn't sent into it, and the paste is
+	// taken back out (WP-1572). Asked once the paste is drawn (or the wait
+	// for it ran out), so nothing slow comes between this ask and Enter but
+	// the reads of the box. Only a no from Waypoint is unwanted (the step is
+	// over); an answer it can't give holds the step, which retries, as the
+	// step still waits on this job: a send into a person's turn can't be
+	// undone.
+	wanted, werr := p.stepWantedAsk(ctx, in.Step, run.id)
+	if werr == nil && !wanted {
+		res := autopilotResult{Outcome: "unwanted"}
+		if !unpaste() {
+			res.Warning = "the review prompt was pasted and not sent, since the session was taken while it settled: clear it from the input box if it is still there"
 		}
-		if werr != nil {
-			left := ""
-			if !unpaste() {
-				left = "; it may still be in the input box"
-			}
-			return held("screen", "the review prompt was pasted and not sent, since Waypoint couldn't say whether the step still wants it (%v)%s", werr, left), true
-		}
-		return outcome{}, false
+		say("the step no longer wants this job: the review was pasted and not sent")
+		return outcome{State: "done", Result: res}
 	}
-	if o, stop := askAgain(); stop {
-		return o
+	if werr != nil {
+		left := ""
+		if !unpaste() {
+			left = "; it may still be in the input box"
+		}
+		return held("screen", "the review prompt was pasted and not sent, since Waypoint couldn't say whether the step still wants it (%v)%s", werr, left)
 	}
 	// The last look, right before Enter (WP-1572): only the pasted review
-	// may be in the box. Anything typed with it would go along. An empty box
-	// is a paste not shown yet (a long one renders slowly) or one a person's
-	// own Enter already sent: it is read again for up to another settle.
+	// may be in the box. Anything typed with it would go along. It is read
+	// after the ask, which is a round trip that can be slow: what decides
+	// Enter is the box as it is now.
 	box, err := readPenBox(ctx, socket, pane)
-	for wait := time.Now().Add(reviewPasteSettle(len(in.Review))); err == nil && box.found && box.text == "" && time.Now().Before(wait); {
-		sleepCtx(ctx, autopilotPoll)
-		box, err = readPenBox(ctx, socket, pane)
-	}
-	// The wait above can take a settle period: ask once more, so a Stop in it
-	// is seen before Enter. The ask is a round trip that can be slow, so the
-	// box is read again after it: what decides Enter is the box as it is now.
-	if o, stop := askAgain(); stop {
-		return o
-	}
-	if err == nil && box.found && box.text != "" {
-		box, err = readPenBox(ctx, socket, pane)
-	}
 	switch {
 	case err != nil || !box.found:
 		return held("screen", "the review prompt was pasted and not sent, since its input box couldn't be read just before Enter; it may still be in the input box")
 	case box.text == "":
-		say("the input box is empty: the paste was already sent, no Enter")
-		return outcome{State: "done", Result: autopilotResult{Outcome: "reviewing", Warning: "the review prompt's paste was already gone from the input box before Enter (someone sent it?): no Enter was sent; check the session"}}
+		// Empty after a settle and another: a person's Enter sent the
+		// paste, or it was never drawn (lost, or the session cleared). Only
+		// a turn the session took shows the first; anything else isn't a
+		// review running, so the step is held and retries.
+		if waitTook(ctx, ccDir, pid, socket, pane, byScreen, settle) {
+			say("the input box is empty and the session took a turn: the paste was already sent, no Enter")
+			return outcome{State: "done", Result: autopilotResult{Outcome: "reviewing", Warning: "the review prompt's paste was already gone from the input box before Enter, and the session took a turn (someone sent it?): no Enter was sent; check the session"}}
+		}
+		left := ""
+		if !unpaste() {
+			left = "; it may still show in the input box"
+		}
+		return held("screen", "the review prompt was pasted and not sent, since it never showed in the input box and the session took no turn%s", left)
 	case !mine(box.text):
 		return held("draft", "the review prompt was pasted and not sent, since text was typed or pasted into the input box with or over it (%q): it waits until that is sent or cleared", truncRunes(box.text, 40))
 	}
@@ -439,6 +448,22 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 	}
 	say("asked session %s for the adversarial review of %s", in.CLIID, in.ReviewOf)
 	return outcome{State: "done", Result: res}
+}
+
+// draftHeldWhy says what is in an input box that holds a job up. A review
+// prompt an earlier try pasted and couldn't take back out reads as that, not
+// as a person's draft (WP-1572), so whoever clears it knows what it is. A
+// placeholder doesn't say whose paste it is; review is "" where no review
+// prompt was ever pasted by this job.
+func draftHeldWhy(draft, review string) string {
+	q := truncRunes(draft, 40)
+	switch {
+	case pastedPlaceholderRE.MatchString(draft):
+		return fmt.Sprintf("its input box holds a paste (%q): a person's, or a review prompt autopilot pasted and couldn't take back out", q)
+	case review != "" && pastedOnly(draft, review):
+		return fmt.Sprintf("its input box still holds the review prompt an earlier try pasted and couldn't take back out (%q)", q)
+	}
+	return fmt.Sprintf("someone has typed into its input box (%q)", q)
 }
 
 // penBox is what readPenBox saw of Claude Code's input box.

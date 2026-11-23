@@ -351,13 +351,40 @@ func TestAutopilotReviewUnwantedBeforePaste(t *testing.T) {
 // (WP-1572): the paste is taken back out, no Enter.
 func TestAutopilotReviewUnwantedAfterLateRenderWait(t *testing.T) {
 	after := screenEmpty
-	f, r, _ := reviewTypingFixture(t, &after, func(n int) (bool, bool) { return n <= 3, true }, func(n int, f *fakeTmux) {
+	f, r, _ := reviewTypingFixture(t, &after, func(n int) (bool, bool) { return n <= 2, true }, func(n int, f *fakeTmux) {
 		if n == 1 {
 			f.lateRender = 3 // the capture right after the settle takes one
 		}
 	})
-	if r.Outcome != "unwanted" || strings.Contains(strings.Join(f.typed, " "), "Enter") {
+	if r.Outcome != "unwanted" || r.Warning != "" || strings.Join(f.typed, " ") != "C-u" {
 		t.Errorf("%+v typed %q", r, f.typed)
+	}
+}
+
+// A paste drawn only after the wait for it ran out is still taken back out
+// when the step is over or can't be asked: the look that says the box is
+// clean waits for it too, so it isn't left in a person's session, nor read
+// as their draft by a retry.
+func TestAutopilotReviewPasteDrawnAfterTheWait(t *testing.T) {
+	after := screenEmpty
+	drawLate := func(n int, f *fakeTmux) {
+		if n == 3 { // the ask once the wait ran out with the box empty
+			f.lateRender = 2
+		}
+	}
+	f, r, _ := reviewTypingFixture(t, &after, func(n int) (bool, bool) { return n <= 2, true }, drawLate)
+	if r.Outcome != "unwanted" || r.Warning != "" || strings.Join(f.typed, " ") != "C-u" || f.screen != screenEmpty {
+		t.Errorf("unwanted: %+v typed %q", r, f.typed)
+	}
+	f, r, _ = reviewTypingFixture(t, &after, func(n int) (bool, bool) { return true, n <= 2 }, drawLate)
+	if r.Outcome != "held" || strings.Contains(r.Detail, "may still be") || strings.Join(f.typed, " ") != "C-u" || f.screen != screenEmpty {
+		t.Errorf("unknown: %+v typed %q", r, f.typed)
+	}
+	// Drawn after the box was found empty just before Enter: held, and
+	// taken out, not sent.
+	f, r, _ = reviewTypingFixture(t, &after, always, drawLate)
+	if r.Outcome != "held" || r.Reason != "screen" || strings.Contains(r.Detail, "may still") || strings.Join(f.typed, " ") != "C-u" {
+		t.Errorf("wanted: %+v typed %q", r, f.typed)
 	}
 }
 
@@ -430,7 +457,7 @@ func TestAutopilotReviewPersonsPasteOverTheReview(t *testing.T) {
 // read again after it, so the review isn't sent along with that text.
 func TestAutopilotReviewTypedDuringTheLastAsk(t *testing.T) {
 	f, r, _ := reviewTypingFixture(t, nil, always, func(n int, f *fakeTmux) {
-		if n == 4 {
+		if n == 3 {
 			f.screen = "────────\n❯ [Pasted text #1 +3 lines] and also do X\n────────\n"
 		}
 	})
@@ -439,13 +466,43 @@ func TestAutopilotReviewTypedDuringTheLastAsk(t *testing.T) {
 	}
 }
 
-// An empty box after the settle: the paste was already sent (their own
-// Enter); a second Enter would be a stray one (WP-1572).
+// An empty box after the settle and the wait for a late paste: no Enter,
+// which would be a stray one (WP-1572). It reads as a review running only
+// when the session took a turn (someone's Enter sent the paste); a paste
+// that never showed is no review, so the step is held and retries.
 func TestAutopilotReviewBoxEmptyAfterPaste(t *testing.T) {
 	after := screenEmpty
 	f, r, _ := reviewTypingFixture(t, &after, always, nil)
-	if r.Warning == "" || len(f.typed) != 0 {
-		t.Errorf("%+v typed %q", r, f.typed)
+	if r.Outcome != "held" || r.Reason != "screen" || !strings.Contains(r.Detail, "never showed") || len(f.typed) != 0 {
+		t.Errorf("never shown: %+v typed %q", r, f.typed)
+	}
+	f, r, _ = reviewTypingFixture(t, &after, always, func(n int, f *fakeTmux) {
+		if n == 3 { // someone's Enter sent it: the session is busy
+			b, _ := json.Marshal(map[string]any{"pid": os.Getpid(), "sessionId": "old-123", "status": "busy", "tmux": "w:@1.%7"})
+			_ = os.WriteFile(f.file, b, 0o600)
+		}
+	})
+	if r.Outcome != "reviewing" || r.Warning == "" || len(f.typed) != 0 {
+		t.Errorf("sent by someone: %+v typed %q", r, f.typed)
+	}
+}
+
+// A paste an earlier try couldn't take back out is named as what it may be,
+// not as a person's typing, when it holds the next try.
+func TestAutopilotReviewLeftoverPasteNamed(t *testing.T) {
+	_, r, _ := reviewTypingFixture(t, nil, always, func(n int, f *fakeTmux) {
+		if n == 1 {
+			f.screen = screenPasted
+		}
+	})
+	if r.Outcome != "held" || r.Reason != "draft" || !strings.Contains(r.Detail, "review prompt autopilot pasted") {
+		t.Errorf("placeholder: %+v", r)
+	}
+	if got := draftHeldWhy(autopilotReviewMark+"APP-1:  Grok's\nfindings.", autopilotReviewMark+"APP-1: Grok's findings."); !strings.Contains(got, "earlier try pasted") {
+		t.Errorf("whole text: %q", got)
+	}
+	if got := draftHeldWhy("my draft", autopilotReviewMark+"APP-1: Grok's findings."); !strings.Contains(got, "someone has typed") {
+		t.Errorf("a draft: %q", got)
 	}
 }
 
