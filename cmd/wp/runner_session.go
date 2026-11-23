@@ -352,7 +352,7 @@ func idlePane(ctx context.Context, run *jobRun, s *ccSession) (socket, pane stri
 	if draft, found := promptInput(screen); !found {
 		return hold("its input box isn't on the screen (a dialog or a scrolled pane?)")
 	} else if draft != "" {
-		return hold("%s", draftHeldWhy(draft, ""))
+		return hold("someone has typed into its input box (%q)", truncRunes(draft, 40))
 	}
 	return socket, pane, nil
 }
