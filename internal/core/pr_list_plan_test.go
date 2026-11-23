@@ -123,8 +123,8 @@ func TestPRLinksUseIndexes(t *testing.T) {
 		SELECT ?, 'me/app', i, 'https://x/me/app/pull/' || i, 'merged', ?, ?, ? FROM n`, pe.f.ID, now, now, now)
 	// The list shows the 300 most recently updated: make 7 and 8 among them.
 	exec(`UPDATE pull_requests SET updated_at = ? WHERE number IN (7, 8)`, now+1000)
-	// Pull request 7 is linked by URL; 8 by repo and number in another spelling.
-	exec(`INSERT INTO external_links(issue_id, kind, url, repo, number, created_at) VALUES (?, 'pull', 'https://x/me/app/pull/7', 'me/app', 7, 0)`, linked.ID)
+	// Pull request 7 is linked by URL alone (its repo and number match nothing); 8 by repo and number in another spelling.
+	exec(`INSERT INTO external_links(issue_id, kind, url, repo, number, created_at) VALUES (?, 'pull', 'https://x/me/app/pull/7', 'no/match', 99999, 0)`, linked.ID)
 	exec(`INSERT INTO external_links(issue_id, kind, url, repo, number, created_at) VALUES (?, 'pull', 'https://mirror/ME/App/pulls/8', 'ME/App', 8, 0)`, linked.ID)
 	// Links to pull requests of another repo with the same numbers, and a
 	// link of another kind that matches PR 7 by URL and PR 8 by repo and number.
