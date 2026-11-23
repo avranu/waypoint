@@ -3,6 +3,7 @@ package core
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -411,12 +412,20 @@ func TestAuditNewsWithdrawnOnceDecided(t *testing.T) {
 		}
 		return state
 	}
-	mark := func(id, state string) {
+	markOn := func(id, state, issue string) {
 		t.Helper()
-		if _, err := ae.s.MarkAuditFindings(ae.ctx, ae.admin, MarkFindings{IDs: []string{id}, State: state, Note: "checked"}); err != nil {
+		if _, err := ae.s.MarkAuditFindings(ae.ctx, ae.admin, MarkFindings{IDs: []string{id}, State: state, Note: "checked", Issue: issue}); err != nil {
 			t.Fatal(err)
 		}
 		ae.work()
+	}
+	mark := func(id, state string) { t.Helper(); markOn(id, state, "") }
+	// high and low are an audit's high and low findings.
+	high := func(a *CodeAudit) string {
+		return a.Findings[slices.IndexFunc(a.Findings, func(f CodeAuditFinding) bool { return f.Severity == "high" })].ID
+	}
+	low := func(a *CodeAudit) string {
+		return a.Findings[slices.IndexFunc(a.Findings, func(f CodeAuditFinding) bool { return f.Severity == "low" })].ID
 	}
 
 	a := audit()
@@ -438,5 +447,42 @@ func TestAuditNewsWithdrawnOnceDecided(t *testing.T) {
 	mark(b.Findings[1].ID, "confirmed")
 	if st := news(b.ID); st != MessageQueued {
 		t.Fatalf("with a finding confirmed the news is %q", st)
+	}
+
+	// Filed (confirmed with an issue) is decided below high; a high one
+	// filed is still to do.
+	later := ae.issue(ae.admin, IssueInput{Project: ae.p.Key, Title: "Fix the log typo later"})
+	c := audit()
+	mark(high(c), "fixed")
+	markOn(low(c), "confirmed", later.Key)
+	if st := news(c.ID); st != "cancelled" {
+		t.Fatalf("with the low finding filed and the high one fixed the news is %q", st)
+	}
+	d := audit()
+	mark(low(d), "rejected")
+	markOn(high(d), "confirmed", later.Key)
+	if st := news(d.ID); st != MessageQueued {
+		t.Fatalf("with the high finding filed the news is %q", st)
+	}
+
+	// Findings decided before the news is stored (marked while the audit's
+	// comment posts): the news is withdrawn as it is stored.
+	e := audit()
+	mark(high(e), "fixed")
+	mark(low(e), "rejected")
+	if _, err := ae.s.db.W.Exec(`DELETE FROM session_messages WHERE step_key = ?`, auditNewsKey(e.ID, AuditDone)); err != nil {
+		t.Fatal(err)
+	}
+	ae.s.auditEnded(ae.ctx, e.ID)
+	if st := news(e.ID); st != "cancelled" {
+		t.Fatalf("news stored after every finding was decided is %q", st)
+	}
+	// News delivered already is left as it is.
+	if _, err := ae.s.db.W.Exec(`UPDATE session_messages SET state = ? WHERE step_key = ?`, MessageDelivered, auditNewsKey(b.ID, AuditDone)); err != nil {
+		t.Fatal(err)
+	}
+	mark(low(b), "fixed")
+	if st := news(b.ID); st != MessageDelivered {
+		t.Fatalf("delivered news became %q", st)
 	}
 }
