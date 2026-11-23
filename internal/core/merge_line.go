@@ -1173,10 +1173,11 @@ func (s *Service) lineEjectAct(ctx context.Context, ls *lineState, a lineAction)
 		// Who conflicted goes on the row before it ends: an ended candidate
 		// without it can't be acted on again, and lineConflictAhead (which
 		// reads only ended ones) would never hold the pull request out. If
-		// this write fails the candidate stays live and the next step ejects.
+		// this write fails the candidate stays live, so the rest of the plan
+		// must not run (its error stops the step), and the next step ejects.
 		if _, err := s.db.W.ExecContext(ctx, `UPDATE queue_stacks SET conflict_pr = ?, conflict_ahead = ? WHERE id = ? AND ended_at IS NULL`, pr.ID, ahead, st.ID); err != nil {
 			s.log.WarnContext(ctx, "record a candidate's conflict", "candidate", st.ID, "err", err)
-			return nil
+			return fmt.Errorf("record a candidate's conflict: %w", err)
 		}
 		if err := s.candEnd(ctx, ls.f, st, stackConflict, endConflict, p.note); err != nil {
 			return err
