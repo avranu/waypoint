@@ -19,6 +19,8 @@ func (s *Server) sessionRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/sessions/pause", a(s.sessionPause))
 	mux.HandleFunc("POST /api/v1/sessions/pulse", a(s.sessionPulse))
 	mux.HandleFunc("GET /api/v1/sessions/current", a(s.currentAgentSession))
+	mux.HandleFunc("POST /api/v1/sessions/outstanding", a(s.sessionOutstanding))
+	mux.HandleFunc("POST /api/v1/sessions/outstanding/told", a(s.sessionOutstandingTold))
 	mux.HandleFunc("GET /api/v1/sessions/{id}", a(s.getAgentSession))
 	// Follow-ups (WP-D22): steps that run when the agent truly finishes.
 	mux.HandleFunc("GET /api/v1/sessions/{id}/follow-up", a(s.getFollowUp))
@@ -48,6 +50,28 @@ func (s *Server) getAgentSession(w http.ResponseWriter, r *http.Request) (any, e
 func (s *Server) currentAgentSession(w http.ResponseWriter, r *http.Request) (any, error) {
 	v := r.URL.Query()
 	return s.svc.CurrentAgentSession(r.Context(), actorFrom(r), v.Get("cli_id"), v.Get("machine"))
+}
+
+// sessionOutstanding is the work the calling session can do while it waits on
+// something slow (WP-1571): the PostToolUse hook asks for it.
+func (s *Server) sessionOutstanding(w http.ResponseWriter, r *http.Request) (any, error) {
+	return s.svc.SessionOutstanding(r.Context(), actorFrom(r), core.OutstandingAtWait)
+}
+
+// sessionOutstandingTold: the wait hook has given the decisions it was sent
+// (request_ids), so they are marked told.
+func (s *Server) sessionOutstandingTold(w http.ResponseWriter, r *http.Request) (any, error) {
+	var in struct {
+		Requests []int64  `json:"requests"`
+		Findings []string `json:"findings"`
+	}
+	if err := decode(r, &in); err != nil {
+		return nil, err
+	}
+	if err := s.svc.SessionFindingsNamed(r.Context(), actorFrom(r), in.Findings); err != nil {
+		return nil, err
+	}
+	return nil, s.svc.SessionDecisionsTold(r.Context(), actorFrom(r), in.Requests)
 }
 
 // sessionHook takes the events an agent's CLI hooks report, one call for a

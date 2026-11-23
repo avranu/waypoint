@@ -770,8 +770,9 @@ func (s *Service) GetAgentSession(ctx context.Context, actor *Actor, id int64) (
 		refusedText = role >= RoleEditor
 	}
 	refusedText = refusedText && !actor.HidesCommandText()
-	// The latest entries; a long session keeps its newest 1,000.
-	rows, err := s.db.R.QueryContext(ctx, `SELECT id, kind, ref_type, label, url, detail, data, created_at FROM session_events WHERE session_id = ? ORDER BY id DESC LIMIT 1000`, id)
+	// The latest entries; a long session keeps its newest 1,000. What was
+	// named to it as outstanding (session_outstanding.go) is bookkeeping.
+	rows, err := s.db.R.QueryContext(ctx, `SELECT id, kind, ref_type, label, url, detail, data, created_at FROM session_events WHERE session_id = ? AND kind != ? ORDER BY id DESC LIMIT 1000`, id, outstandingKind)
 	if err != nil {
 		return nil, err
 	}
@@ -1064,6 +1065,22 @@ func (s *Service) SessionHook(ctx context.Context, actor *Actor, evs []HookEvent
 	res.Text = joinText(DecisionsText(res.Deliver), MessagesText(res.Messages))
 	if evs[len(evs)-1].Event == "SessionStart" && !lastQuiet {
 		res.Text = joinText(res.Text, s.autopilotSessionNote(ctx, res.Session, 0))
+	}
+	// A Stop that leaves a background run going: Claude Code says so, and the
+	// work that doesn't need its result is named once, so the turn doesn't end
+	// idle (WP-1571). The stop it continues is let through, and a follow-up
+	// with something to tell the agent goes first: its wait below needs a
+	// Stop that says nothing.
+	if last := evs[len(evs)-1]; last.Event == "Stop" && !last.StopHookActive && !lastQuiet && !pausedStop && !leftStop && res.Text == "" && res.Session != 0 {
+		if running := runningTasks(last.Pending); len(running) > 0 && !s.followUpTalks(ctx, res.Session) {
+			ac := *actor
+			ac.Session = res.Session
+			if o, err := s.SessionOutstanding(ctx, &ac, OutstandingAtStop); err != nil {
+				s.log.WarnContext(ctx, "outstanding work at stop", "session", res.Session, "err", err)
+			} else {
+				res.Text = o.stopText(running)
+			}
+		}
 	}
 	if last := evs[len(evs)-1]; (last.Event == "SessionStart" || last.Event == "UserPromptSubmit") && last.Repo != "" {
 		// Each prompt too, so a vouch a person answers mid-session reaches
@@ -1561,8 +1578,12 @@ func (s *Service) applyHookEvent(ctx context.Context, t *tx, actor *Actor, x *Ag
 		if err := s.recordTaskSummary(ctx, t, actor, x, ev.LastMessage, at); err != nil { // WP-194: never fails the Stop
 			s.log.WarnContext(ctx, "task summary", "session", x.ID, "err", err)
 		}
-		// Keep the timeline bounded.
-		res, err := t.ExecContext(ctx, `DELETE FROM session_events WHERE session_id = ? AND id < (SELECT id FROM session_events WHERE session_id = ? ORDER BY id DESC LIMIT 1 OFFSET ?)`, x.ID, x.ID, sessionEventsKept)
+		// Keep the timeline bounded. The record of what was named as
+		// outstanding is bookkeeping, one row per item and way: it neither
+		// counts toward the events kept nor goes, or an item would be named
+		// again (session_outstanding.go).
+		res, err := t.ExecContext(ctx, `DELETE FROM session_events WHERE session_id = ? AND kind != ? AND id < (SELECT id FROM session_events WHERE session_id = ? AND kind != ? ORDER BY id DESC LIMIT 1 OFFSET ?)`,
+			x.ID, outstandingKind, x.ID, outstandingKind, sessionEventsKept)
 		if err != nil {
 			return err
 		}
