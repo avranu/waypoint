@@ -2,12 +2,18 @@
 -- branch (WP-1659, WP-ADR152). One queue_stacks row is now one candidate
 -- (its pr_id is the last head's pull request).
 -- reran: the candidate's failed jobs were run again once.
+-- conflict_pr, conflict_ahead: for a candidate that ended as a conflict, the
+-- pull request whose head didn't merge, and whether it merges onto the base
+-- alone but not onto the heads ahead of it (1: it waits for them; 0: it
+-- conflicts with the base, which a round resolves).
 -- end_reason: one machine word for how it ended (merged, failed, conflict,
--- lost, line_changed, base_moved, head_moved, refused, duplicate,
--- batch_split), beside the note's human text; '' while live and for rows
+-- lost, no_run, no_merge, line_changed, base_moved, head_moved, refused,
+-- duplicate, batch_split, left), beside the note's human text; '' while live and for rows
 -- from before.
 ALTER TABLE queue_stacks ADD COLUMN reran INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE queue_stacks ADD COLUMN end_reason TEXT NOT NULL DEFAULT '';
+ALTER TABLE queue_stacks ADD COLUMN conflict_pr INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE queue_stacks ADD COLUMN conflict_ahead INTEGER NOT NULL DEFAULT 0;
 -- line_candidates: a repo's merge line builds candidates (on by default); off,
 -- every pull request is tested on its own branch, as for a line that can't
 -- build them.

@@ -102,6 +102,16 @@ type queueStack struct {
 	Note      string
 	CreatedAt time.Time
 	Ended     bool
+	// Reran: its failed jobs were run again once. EndReason: one word for
+	// how it ended. ConflictPR, ConflictAhead: the head that didn't merge,
+	// and whether it only conflicts with the heads ahead of it (WP-1659).
+	Reran         bool
+	EndReason     string
+	ConflictPR    int64
+	ConflictAhead bool
+	// Merged is read with the base's tip, not stored: how many of Heads the
+	// tip already holds (lineGather).
+	Merged int
 }
 
 func (st *queueStack) live() bool {
@@ -124,14 +134,14 @@ func (st *queueStack) name() string {
 	return strings.Join(parts, " + ")
 }
 
-const stackCols = `id, forge_id, repo, base_ref, pr_id, base_sha, heads, pos, branch, commit_sha, state, tree, run_url, note, created_at, ended_at IS NOT NULL`
+const stackCols = `id, forge_id, repo, base_ref, pr_id, base_sha, heads, pos, branch, commit_sha, state, tree, run_url, note, created_at, ended_at IS NOT NULL, reran, end_reason, conflict_pr, conflict_ahead`
 
 func scanStack(row interface{ Scan(...any) error }) (*queueStack, error) {
 	var st queueStack
 	var heads string
 	var created int64
 	if err := row.Scan(&st.ID, &st.ForgeID, &st.Repo, &st.BaseRef, &st.PRID, &st.BaseSHA, &heads, &st.Pos, &st.Branch, &st.CommitSHA,
-		&st.State, &st.Tree, &st.RunURL, &st.Note, &created, &st.Ended); err != nil {
+		&st.State, &st.Tree, &st.RunURL, &st.Note, &created, &st.Ended, &st.Reran, &st.EndReason, &st.ConflictPR, &st.ConflictAhead); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal([]byte(heads), &st.Heads); err != nil || len(st.Heads) == 0 {
