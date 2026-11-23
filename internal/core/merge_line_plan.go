@@ -188,10 +188,12 @@ func planLine(s lineSnap) []lineAction {
 			acts = append(acts, lineAction{Kind: lineRerun, Cand: c.ID})
 			by[n] = lineCand{ID: c.ID, State: candRunning}
 		case c.State == candFailed:
-			below, has := by[n-1]
+			// A passed candidate below would have merged the front above, so
+			// one below is still going or failed itself.
+			_, has := by[n-1]
 			switch {
-			case n == 1 || (has && below.State == candPassed):
-				acts = append(acts, lineAction{Kind: lineEject, PR: s.Entries[n-1].PRID, Cand: c.ID, Why: "the line's candidate failed with it and passed without it"})
+			case n == 1:
+				acts = append(acts, lineAction{Kind: lineEject, PR: s.Entries[n-1].PRID, Cand: c.ID, Why: "the line's candidate failed on the base's tip with only its head merged"})
 				ejected = true
 			case has:
 				// The one below is still going: it says whether this failure
