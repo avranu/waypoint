@@ -3,6 +3,7 @@ package core
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -372,5 +373,137 @@ func TestAPullRequestsAuditGoesBeforeOtherAudits(t *testing.T) {
 	second := ae.take()
 	if a, b := ae.audit(pr.ID), ae.audit(repo.ID); a.JobID == nil || *a.JobID != first.ID || b.JobID == nil || *b.JobID != second.ID {
 		t.Errorf("took jobs %d then %d; the pull request's audit has job %v, the repository's %v", first.ID, second.ID, a.JobID, b.JobID)
+	}
+}
+
+// The news that an audit ended, queued for the session that asked for it,
+// is withdrawn once every finding in it is decided before it is typed in:
+// it would be the session's next task with nothing left to do (WP-1525).
+// News of an audit with a finding still to do stays.
+func TestAuditNewsWithdrawnOnceDecided(t *testing.T) {
+	ae := newAgentEnv(t)
+	ae.prHook("opened", ForgePR{Number: 7, Title: "Export the board", HeadRef: "export", HeadSHA: "abc1234def", HeadRepo: "me/app", Author: ae.admin.User.Username})
+	res, err := ae.s.db.W.Exec(`INSERT INTO agent_sessions(user_id, machine, cli_id, started_at, last_seen_at) VALUES (?, 'devhost', 'claude', 5, 5)`, ae.admin.User.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _ := res.LastInsertId()
+	audit := func() *CodeAudit {
+		t.Helper()
+		a, err := ae.s.RequestAudit(ae.ctx, ae.admin, AuditInput{PRID: ae.pr(7).ID, Via: "cli"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ae.s.db.W.Exec(`UPDATE code_audits SET session_id = ? WHERE id = ?`, session, a.ID); err != nil {
+			t.Fatal(err)
+		}
+		ae.work()
+		ae.finish(ae.take().ID, "done", auditResult("Read it.",
+			map[string]any{"title": "Export skips the project check", "path": "internal/api/export.go", "line": 42, "severity": "high", "problem": "Any user exports any board."},
+			map[string]any{"title": "A typo in a log line", "path": "internal/log.go", "line": 9, "severity": "low", "problem": "It says recieve."},
+		), "")
+		return ae.audit(a.ID)
+	}
+	news := func(id int64) string {
+		t.Helper()
+		var state string
+		if err := ae.s.db.R.QueryRow(`SELECT state FROM session_messages WHERE session_id = ? AND step_key = ?`, session, auditNewsKey(id, AuditDone)).Scan(&state); err != nil {
+			t.Fatalf("news of audit %d: %v", id, err)
+		}
+		return state
+	}
+	markOn := func(id, state, issue string) {
+		t.Helper()
+		if _, err := ae.s.MarkAuditFindings(ae.ctx, ae.admin, MarkFindings{IDs: []string{id}, State: state, Note: "checked", Issue: issue}); err != nil {
+			t.Fatal(err)
+		}
+		ae.work()
+	}
+	mark := func(id, state string) { t.Helper(); markOn(id, state, "") }
+	// high and low are an audit's high and low findings.
+	high := func(a *CodeAudit) string {
+		return a.Findings[slices.IndexFunc(a.Findings, func(f CodeAuditFinding) bool { return f.Severity == "high" })].ID
+	}
+	low := func(a *CodeAudit) string {
+		return a.Findings[slices.IndexFunc(a.Findings, func(f CodeAuditFinding) bool { return f.Severity == "low" })].ID
+	}
+
+	a := audit()
+	if st := news(a.ID); st != MessageQueued {
+		t.Fatalf("news of the audit = %q, want queued", st)
+	}
+	mark(a.Findings[0].ID, "fixed")
+	if st := news(a.ID); st != MessageQueued {
+		t.Fatalf("with a finding still to do the news is %q", st)
+	}
+	mark(a.Findings[1].ID, "rejected")
+	if st := news(a.ID); st != "cancelled" {
+		t.Fatalf("with every finding decided the news is %q", st)
+	}
+
+	// Confirmed is still to do: the news stays.
+	b := audit()
+	mark(b.Findings[0].ID, "rejected")
+	mark(b.Findings[1].ID, "confirmed")
+	if st := news(b.ID); st != MessageQueued {
+		t.Fatalf("with a finding confirmed the news is %q", st)
+	}
+
+	// Filed (confirmed with an issue) is decided below high; a high one
+	// filed is still to do.
+	later := ae.issue(ae.admin, IssueInput{Project: ae.p.Key, Title: "Fix the log typo later"})
+	c := audit()
+	mark(high(c), "fixed")
+	markOn(low(c), "confirmed", later.Key)
+	if st := news(c.ID); st != "cancelled" {
+		t.Fatalf("with the low finding filed and the high one fixed the news is %q", st)
+	}
+	d := audit()
+	mark(low(d), "rejected")
+	markOn(high(d), "confirmed", later.Key)
+	if st := news(d.ID); st != MessageQueued {
+		t.Fatalf("with the high finding filed the news is %q", st)
+	}
+
+	// Findings decided before the news is stored (marked while the audit's
+	// comment posts): the news is withdrawn as it is stored.
+	e := audit()
+	mark(high(e), "fixed")
+	mark(low(e), "rejected")
+	if _, err := ae.s.db.W.Exec(`DELETE FROM session_messages WHERE step_key = ?`, auditNewsKey(e.ID, AuditDone)); err != nil {
+		t.Fatal(err)
+	}
+	ae.s.auditEnded(ae.ctx, e.ID)
+	if st := news(e.ID); st != "cancelled" {
+		t.Fatalf("news stored after every finding was decided is %q", st)
+	}
+	// News delivered already is left as it is.
+	if _, err := ae.s.db.W.Exec(`UPDATE session_messages SET state = ? WHERE step_key = ?`, MessageDelivered, auditNewsKey(b.ID, AuditDone)); err != nil {
+		t.Fatal(err)
+	}
+	mark(low(b), "fixed")
+	if st := news(b.ID); st != MessageDelivered {
+		t.Fatalf("delivered news became %q", st)
+	}
+
+	// News being posted in a batch when its findings are decided, whose
+	// post then fails: it is withdrawn as it goes back to the queue.
+	g := audit()
+	res, err = ae.s.db.W.Exec(`INSERT INTO message_batches(session_id, created_at) VALUES (?, 5)`, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch, _ := res.LastInsertId()
+	if _, err := ae.s.db.W.Exec(`UPDATE session_messages SET state = 'sending', sent_with = ? WHERE step_key = ?`, batch, auditNewsKey(g.ID, AuditDone)); err != nil {
+		t.Fatal(err)
+	}
+	mark(high(g), "fixed")
+	mark(low(g), "rejected")
+	if st := news(g.ID); st != "sending" {
+		t.Fatalf("news being posted became %q", st)
+	}
+	ae.s.sessionMessageJobFinished(ae.ctx, &Event{Data: map[string]any{"source": sessionBatchSource, "source_id": batch, "state": "failed"}})
+	if st := news(g.ID); st != "cancelled" {
+		t.Fatalf("news whose post failed after every finding was decided is %q", st)
 	}
 }
