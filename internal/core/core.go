@@ -378,35 +378,6 @@ func (s *Service) goBG(f func()) {
 	}()
 }
 
-// ---- errors ----
-
-var (
-	ErrNotFound     = errors.New("not found")
-	ErrForbidden    = errors.New("forbidden")
-	ErrUnauthorized = errors.New("unauthorized")
-	ErrConflict     = errors.New("conflict")
-	// ErrUnavailable: a service Waypoint stands in front of (an assistant's
-	// door) didn't answer; a 502.
-	ErrUnavailable = errors.New("unavailable")
-)
-
-// InvalidError is a validation failure with a message safe to show users.
-type InvalidError struct{ Msg string }
-
-func (e *InvalidError) Error() string { return e.Msg }
-
-func invalid(format string, args ...any) error {
-	return &InvalidError{Msg: fmt.Sprintf(format, args...)}
-}
-
-// IsInvalid reports whether err is a validation error.
-func IsInvalid(err error) bool {
-	var ie *InvalidError
-	return errors.As(err, &ie)
-}
-
-func notFound(what string) error { return fmt.Errorf("%s %w", what, ErrNotFound) }
-
 // ---- actors ----
 
 // Actor is who is performing an operation.
