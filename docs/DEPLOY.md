@@ -202,8 +202,14 @@ deploy key in a CI job is readable by whatever runs beside it.
    (`lint` for npm, the last `backend shard` for Go); with no findings that is
    all. With findings it checks origin/main's tip the same way and compares
    by advisory id: a pull request or merge queue stack fails only for an id
-   main lacks (and prints it), and when every finding is also on main it
-   passes with a `::warning title=Advisory on main::` naming them. Main's own
+   it adds (and prints it), and when every finding is also on main it
+   passes with a `::warning title=Advisory on main::` naming them. An id
+   main's tip lacks isn't added by a branch that had it when it left main (main
+   fixed it since): the script checks that commit too (the pull request's
+   merge base, `ADVISORIES_BASE_SHA` in CI) and passes with
+   `::warning title=Advisory fixed on main::`. An npm advisory the change does
+   add passes when `npm run audit` passes on its tree, which is how a pull
+   request adds a dependency together with its reviewed waiver. Main's own
    findings fail the `advisories` job (its npm step is `npm run audit`, which
    honours the waiver list and expiry rules in `web/scripts/audit.mjs`), which runs on every push to main,
    on the weekly schedule above (and a manual run), without
@@ -214,7 +220,10 @@ deploy key in a CI job is readable by whatever runs beside it.
    dependency. A red `advisories` makes main's push run red; when it is the only
    job that failed, the CI doctor says so as a `main_advisories` warning ("still
    released and deployed") instead of `main_red`, and the base-fix-first and
-   runner-fault re-run logic ignore the job. No task is filed for it.
+   runner-fault re-run logic ignore the job. Because nothing waits for the
+   job, Waypoint files one urgent task for an agent when it fails ("Fix the
+   advisories on REPO main", in the repo's project) and no other while that
+   one is open.
    `make vuln` runs the same script in its pull request mode (it lives in
    `deploy/` because the public mirror has no `.forgejo/`), so locally and on
    the mirror a branch fails govulncheck only for what it adds over

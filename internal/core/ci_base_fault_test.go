@@ -280,3 +280,97 @@ func TestBaseFaultUnrecordedIsNotRerun(t *testing.T) {
 		t.Fatalf("recorded: %v %+v", got, st)
 	}
 }
+
+// A base branch whose advisories job failed gets one urgent task, and no
+// other while that one is open (priority 4 is urgent); the job is never a runner fault and doesn't
+// hide one in the same run (WP-1660).
+func TestBaseAdvisoriesFileOneTask(t *testing.T) {
+	se := newShipEnv(t, "forgejo")
+	af := &baseFaultForge{shipForge: se.sg, jobs: map[int64][]ActionJob{}, logs: map[int64]string{}}
+	se.s.Forges = af
+	advisories := func(n int64, sha string, also ...ActionJob) {
+		af.add(n, "main", sha, "failure", "", se.clockNow().Add(-10*time.Minute))
+		af.mu.Lock()
+		af.jobs[100+n] = append([]ActionJob{{ID: 1000 + n, RunID: 100 + n, Name: advisoriesJob, Status: "failure"}}, also...)
+		af.logs[1000+n] = "GO-2026-0001 called\n🏁  Job failed\n"
+		af.mu.Unlock()
+	}
+	tasks := func() []string {
+		t.Helper()
+		rows, err := se.s.db.R.QueryContext(se.ctx, `SELECT i.title || ' ' || i.priority || ' ' || coalesce(i.agent, '') || ' ' || i.description FROM issues i JOIN statuses st ON st.id = i.status_id
+			WHERE i.title LIKE 'Fix the advisories on %' AND st.category NOT IN ('done','canceled') ORDER BY i.id`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			var s string
+			if err := rows.Scan(&s); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, s)
+		}
+		return out
+	}
+	sweep := func() {
+		t.Helper()
+		se.s.Wait()
+		se.setClock(se.clockNow().Add(10 * time.Minute))
+		se.s.RecordCIHistory(se.ctx)
+	}
+
+	advisories(10, "aaaaaaa")
+	sweep()
+	got := tasks()
+	if len(got) != 1 || !strings.HasPrefix(got[0], "Fix the advisories on me/app main 4 claude ") || !strings.Contains(got[0], "wp ci log --repo me/app --run 10 --job advisories") {
+		t.Fatalf("tasks after an advisories failure: %q", got)
+	}
+	if r := af.rerun(); len(r) != 0 {
+		t.Fatalf("an advisories failure was re-run as a runner fault: %v", r)
+	}
+	// The next push fails the same way: the open task stands, alone.
+	advisories(11, "bbbbbbb")
+	sweep()
+	if got := tasks(); len(got) != 1 {
+		t.Fatalf("tasks after a second failure: %q", got)
+	}
+	// With a runner fault beside it, the fault's job is still re-run.
+	advisories(12, "ccccccc", ActionJob{ID: 2012, RunID: 112, Name: "validate", Status: "failure"})
+	af.mu.Lock()
+	af.logs[2012] = dnsCheckoutLog
+	af.mu.Unlock()
+	sweep()
+	if r := af.rerun(); !slices.Equal(r, []int64{112}) {
+		t.Fatalf("a runner fault beside advisories: re-runs %v", r)
+	}
+}
+
+// The advisories job runs only on the base, so its failure there isn't one a
+// pull request can fix first (WP-1660).
+func TestBaseFailingSkipsAdvisories(t *testing.T) {
+	se := newShipEnv(t, "forgejo")
+	pr := &PullRequest{ForgeID: se.f.ID, Repo: "me/app", BaseRef: "main"}
+	const tip = "b0b0b0b0b0b"
+	if _, err := se.s.db.W.ExecContext(se.ctx, `INSERT INTO branch_activity(forge_id, repo, branch, head_sha, pushed_at) VALUES (?,?,?,?,?)`, pr.ForgeID, pr.Repo, "main", tip, se.s.nowMS()); err != nil {
+		t.Fatal(err)
+	}
+	headID, err := se.s.trackHead(se.ctx, pr.ForgeID, pr.Repo, tip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	add := func(name string) {
+		t.Helper()
+		if _, err := se.s.db.W.ExecContext(se.ctx, `INSERT INTO ci_checks(head_id, name, state, description, updated_at) VALUES (?,?,?,?,?)`, headID, name, CheckFailed, "Failing after 3m", se.s.nowMS()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add("ci / advisories (push)")
+	if _, failing := se.s.baseFailing(se.ctx, pr); len(failing) != 0 {
+		t.Fatalf("advisories alone: failing = %v", failing)
+	}
+	add("ci / backend (push)")
+	if _, failing := se.s.baseFailing(se.ctx, pr); len(failing) != 1 {
+		t.Fatalf("advisories and backend: failing = %v", failing)
+	}
+}

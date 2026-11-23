@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -339,7 +340,8 @@ func TestDoctorMainAdvisories(t *testing.T) {
 		for _, n := range names {
 			ts = append(ts, ActionTask{Name: n, RunNumber: run, Status: "failure"})
 		}
-		return append(ts, ActionTask{Name: "lint", RunNumber: run, Status: "success"}, ActionTask{Name: "advisories", RunNumber: run + 1, Status: "failure"})
+		// Another run's failed shard says nothing about this one.
+		return append(ts, ActionTask{Name: "lint", RunNumber: run, Status: "success"}, ActionTask{Name: "backend shard 1", RunNumber: run + 1, Status: "failure"})
 	}
 	if !onlyAdvisoriesFailed(fail(7, "advisories"), 7) {
 		t.Error("only advisories failed: want true")
@@ -349,6 +351,31 @@ func TestDoctorMainAdvisories(t *testing.T) {
 	}
 	if onlyAdvisoriesFailed(nil, 7) {
 		t.Error("no jobs on record: want false")
+	}
+	if onlyAdvisoriesFailed([]ActionTask{{Name: "advisories", RunNumber: 7, Status: "cancelled"}}, 7) {
+		t.Error("advisories cancelled: it found nothing, want false")
+	}
+
+	// doctorMains reads it from the run's jobs, the kept ones too: a failed
+	// shard the forge's capped read left out still makes main red.
+	main := func(status string, h *ciHistory) CIMain {
+		h.runs = map[int64]ActionRun{7: {Index: 7, Event: "push", PrettyRef: "main", Status: status, Created: now}}
+		d := &CIDoctor{}
+		snap := &ciSnapshot{repos: []*ciRepoData{{ref: ciRepoRef{forge: &Forge{ID: 1}, repo: "o/a"}, hist: h}}}
+		doctorMains(d, snap, now, func(int64, string) (string, bool) { return "o/a", true })
+		if len(d.Mains) != 1 {
+			t.Fatalf("mains = %+v", d.Mains)
+		}
+		return d.Mains[0]
+	}
+	if m := main("failure", &ciHistory{tasks: fail(7, "advisories")}); !m.OnlyAdvisories {
+		t.Errorf("read from the run's jobs: %+v", m)
+	}
+	if m := main("failure", &ciHistory{tasks: fail(7, "advisories"), kept: []ciKeptJob{{ActionTask: ActionTask{Name: "backend shard 2", RunNumber: 7, Status: "failure"}}}}); m.OnlyAdvisories {
+		t.Errorf("a kept failed shard: %+v", m)
+	}
+	if m := main("cancelled", &ciHistory{tasks: fail(7, "advisories")}); m.OnlyAdvisories {
+		t.Errorf("a cancelled run: %+v", m)
 	}
 
 	kinds := func(only bool) []CIFinding {
@@ -365,6 +392,9 @@ func TestDoctorMainAdvisories(t *testing.T) {
 	if f.Level != "warn" || f.Title != "o/a main has known advisories (run #7)" || !strings.Contains(f.Detail, "still released and deployed") || f.Next != "wp ci log --repo o/a --run 7 --job advisories" {
 		t.Errorf("finding = %+v", f)
 	}
+	if !strings.Contains(f.Detail, advisoriesTaskTitle("o/a", "main")) {
+		t.Errorf("the finding doesn't name its task: %s", f.Detail)
+	}
 	got = kinds(false)
 	if len(got) != 1 || got[0].Kind != "main_red" || got[0].Level != "problem" {
 		t.Errorf("advisories and another job: findings = %+v", got)
@@ -374,5 +404,20 @@ func TestDoctorMainAdvisories(t *testing.T) {
 	d := &CIDoctor{Mains: []CIMain{{Repo: "o/a", Branch: "main", Status: "failure", OnlyAdvisories: true}}}
 	if doctorUrgentLane(d); len(d.UrgentLane) != 0 {
 		t.Errorf("urgent lane for advisories: %+v", d.UrgentLane)
+	}
+}
+
+// The advisories job the doctor, the base-fix rule and the runner-fault
+// re-runs know by name is the one ci.yml has (WP-1660).
+func TestAdvisoriesJobIsInWorkflow(t *testing.T) {
+	src, err := os.ReadFile("../../.forgejo/workflows/ci.yml")
+	if os.IsNotExist(err) {
+		t.Skip("the mirror's checkout has no .forgejo/ (WP-1624)")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(src), "\n  "+advisoriesJob+":\n") {
+		t.Errorf("ci.yml has no job %q: advisoriesJob and the workflow disagree", advisoriesJob)
 	}
 }

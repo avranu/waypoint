@@ -1576,7 +1576,13 @@ func doctorMains(d *CIDoctor, snap *ciSnapshot, now time.Time, visible func(int6
 				}
 			}
 			if found {
-				m.OnlyAdvisories = onlyAdvisoriesFailed(r.hist.tasks, m.Run)
+				// The forge's read is capped (ciTaskPages); the jobs it left
+				// out are the kept ones.
+				tasks := slices.Clone(r.hist.tasks)
+				for _, k := range r.hist.kept {
+					tasks = append(tasks, k.ActionTask)
+				}
+				m.OnlyAdvisories = m.Status == "failure" && onlyAdvisoriesFailed(tasks, m.Run)
 				d.Mains = append(d.Mains, m)
 			}
 		}
@@ -1828,10 +1834,10 @@ func doctorFindings(d *CIDoctor, b *CIBoard, now time.Time, extra ...CIFinding) 
 		}
 	}
 	for _, m := range d.Mains {
-		if m.OnlyAdvisories && m.Status == "failure" {
+		if m.OnlyAdvisories {
 			add(CIFinding{Level: "warn", Kind: "main_advisories", Repo: m.Repo,
 				Title:  fmt.Sprintf("%s %s has known advisories (run #%d)", m.Repo, m.Branch, m.Run),
-				Detail: fmt.Sprintf("npm audit or govulncheck found a vulnerability on %s. It is still released and deployed; pull requests fail only for advisories they add. Upgrade or replace the dependency.", m.Branch),
+				Detail: fmt.Sprintf("npm audit or govulncheck found a vulnerability on %s. It is still released and deployed; pull requests fail only for advisories they add. Waypoint files one urgent task for it (%q): upgrade or replace the dependency there.", m.Branch, advisoriesTaskTitle(m.Repo, m.Branch)),
 				Next:   fmt.Sprintf("wp ci log --repo %s --run %d --job advisories", m.Repo, m.Run), URL: m.URL})
 		} else if m.Status == "failure" || m.Status == "cancelled" {
 			add(CIFinding{Level: "problem", Kind: "main_red", Repo: m.Repo,
@@ -2059,18 +2065,20 @@ func doctorUrgentLane(d *CIDoctor) {
 }
 
 // advisoriesJob is the ci.yml job that runs npm audit and govulncheck on main.
+// TestAdvisoriesJobIsInWorkflow checks ci.yml has it.
 const advisoriesJob = "advisories"
 
-// onlyAdvisoriesFailed: run has a failed or cancelled job and every one is
-// the advisories job. With no job of the run on record it is false: a red run
-// nobody can explain is main_red.
+// onlyAdvisoriesFailed: the advisories job failed in run and no other job
+// failed or was cancelled. A cancelled advisories job found nothing, and with
+// no job of the run on record it is false: a red run nobody can explain is
+// main_red.
 func onlyAdvisoriesFailed(tasks []ActionTask, run int64) bool {
 	failed := false
 	for _, t := range tasks {
 		if t.RunNumber != run || (t.Status != "failure" && t.Status != "cancelled") {
 			continue
 		}
-		if t.Name != advisoriesJob {
+		if t.Name != advisoriesJob || t.Status != "failure" {
 			return false
 		}
 		failed = true

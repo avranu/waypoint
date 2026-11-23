@@ -237,7 +237,13 @@ func (s *Service) handleBaseFault(ctx context.Context, cl ForgeActionLogs, f *Fo
 				continue
 			}
 			if j.Name == advisoriesJob {
-				continue // a vulnerability is the dependency's to fix, never a runner fault, and it mustn't hide one in the same run (WP-1660)
+				// A vulnerability is the dependency's to fix, never a runner
+				// fault, and it mustn't hide one in the same run. Nothing
+				// waits for the job, so one task says someone must (WP-1660).
+				if j.Status == "failure" {
+					s.fileAdvisories(ctx, f, repo, branch, st.sha, cur)
+				}
+				continue
 			}
 			log, err := cl.ActionJobLog(ctx, f, repo, j.ID)
 			if err != nil {
@@ -429,4 +435,58 @@ func (s *Service) dropSetting(ctx context.Context, key string) {
 	if _, err := s.db.W.ExecContext(ctx, `DELETE FROM server_settings WHERE key = ?`, key); err != nil {
 		s.log.WarnContext(ctx, "drop a setting", "key", key, "err", err)
 	}
+}
+
+// advisoriesTaskTitle is the task about the advisories on a base branch, and
+// how a later failure finds the open one.
+func advisoriesTaskTitle(repo, branch string) string {
+	return excerpt("Fix the advisories on "+repo+" "+branch, 200)
+}
+
+// fileAdvisories files the one urgent task about a base branch whose
+// advisories job failed (WP-1660): no release, deploy or pull request waits
+// for that job, so without a task nobody is asked to act. While one is open
+// nothing more is filed; a later failure after it closed files the next.
+func (s *Service) fileAdvisories(ctx context.Context, f *Forge, repo, branch, sha string, run *ActionRun) {
+	title := advisoriesTaskTitle(repo, branch)
+	var open string
+	err := s.db.R.QueryRowContext(ctx, `SELECT p.key || '-' || i.number FROM issues i JOIN projects p ON p.id = i.project_id JOIN statuses st ON st.id = i.status_id
+		WHERE i.title = ? AND st.category NOT IN ('done','canceled') LIMIT 1`, title).Scan(&open)
+	if err == nil {
+		return
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		s.log.WarnContext(ctx, "look for the open task about a branch's advisories", "repo", repo, "branch", branch, "err", err)
+		return
+	}
+	projectID, err := s.attachedProject(ctx, s.db.R, f.ID, repo)
+	if err != nil || projectID == 0 {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read the project of a repo with advisories", "repo", repo, "err", err)
+		}
+		return
+	}
+	ownerID := s.baseFaultOwner(ctx, f.ID, repo, branch, sha)
+	if ownerID == 0 {
+		return
+	}
+	owner, err := s.userByID(ctx, s.db.R, ownerID)
+	if err != nil || owner.Disabled {
+		return
+	}
+	writer := Actor{User: owner}
+	writer.textAgent = "waypoint"
+	text := fmt.Sprintf("The `%s` job (npm audit, govulncheck) failed on %s %s at %s (%s): a dependency there has a known vulnerability. "+
+		"No release, deploy or pull request waits for that job, so this task is what asks for the fix.\n\n"+
+		"1. Read what it found: `wp ci log --repo %s --run %d --job %s`.\n"+
+		"2. Upgrade or replace the dependency in a pull request, and check the job's commands pass on it (`deploy/advisories.sh check go main`, `npm run audit` in web/).\n"+
+		"3. No fixed release exists: say so here with the evidence and ask a person (`wp request ask`). An exception to an advisory is a person's decision, never an agent's.\n\n"+
+		"While this task is open Waypoint files no other for the same branch.\n",
+		advisoriesJob, faultCode(repo), faultCode(branch), faultCode(short(sha)), faultCode(run.HTMLURL), repo, run.Index, advisoriesJob)
+	made, err := s.CreateIssue(ctx, &writer, IssueInput{Project: itoa64(projectID), Type: "bug", Agent: "claude", Priority: "urgent", Labels: []string{"ci"}, Title: title, Description: text})
+	if err != nil {
+		s.log.WarnContext(ctx, "file the task about a branch's advisories", "repo", repo, "branch", branch, "err", err)
+		return
+	}
+	s.log.Info("a base branch's advisories job failed; filed a task", "repo", repo, "branch", branch, "task", made.Key)
 }
