@@ -34,11 +34,19 @@ func ciLineText(rep *core.CILineReport) string {
 		}
 		return fmt.Sprint(v)
 	}
+	seen := map[string]int{}
+	for _, l := range rep.Lines {
+		seen[l.Repo+" "+l.Base]++
+	}
 	for i, l := range rep.Lines {
 		if i > 0 {
 			o.WriteString("\n")
 		}
-		fmt.Fprintf(&o, "%s %s\n", l.Repo, l.Base)
+		if seen[l.Repo+" "+l.Base] > 1 {
+			fmt.Fprintf(&o, "%s %s (forge %d)\n", l.Repo, l.Base, l.ForgeID)
+		} else {
+			fmt.Fprintf(&o, "%s %s\n", l.Repo, l.Base)
+		}
 		if len(l.Armed) == 0 {
 			o.WriteString("  no armed pull requests\n")
 		}

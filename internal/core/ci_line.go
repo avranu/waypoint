@@ -322,7 +322,7 @@ func (s *Service) CILine(ctx context.Context, actor *Actor, in CILineInput) (*CI
 			continue
 		}
 		stacks = append(stacks, r)
-		rowsOf[strconv.FormatInt(r.forge, 10)+"|"+r.branch]++
+		rowsOf[strconv.FormatInt(r.forge, 10)+"|"+r.repo+"|"+r.branch]++
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -339,7 +339,7 @@ func (s *Service) CILine(ctx context.Context, actor *Actor, in CILineInput) (*CI
 					name += fmt.Sprintf(" + #%d", h.Number)
 				}
 				p.Stack = &CILineLive{Branch: r.branch, Heads: name, State: r.state, AgeSec: max(0, int64(now.Sub(created).Seconds())),
-					Batch: rowsOf[strconv.FormatInt(r.forge, 10)+"|"+r.branch] > 1}
+					Batch: rowsOf[strconv.FormatInt(r.forge, 10)+"|"+r.repo+"|"+r.branch] > 1}
 			}
 		}
 		if created.Before(from) {
