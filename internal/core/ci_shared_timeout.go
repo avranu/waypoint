@@ -248,6 +248,12 @@ func (s *Service) waitOnSharedTimeout(ctx context.Context, b *Babysit, pr *PullR
 			s.saveSharedTimeout(ctx, b, st)
 			fallthrough
 		case upWaiting:
+			// Its turn in the line comes from the line, not from here: a pull
+			// request held out of the queue isn't "back" in it.
+			if pr.QueuedAt == nil {
+				s.setState(ctx, b, pr, BabysitWatching, what+"; tried again on the new "+base+": merged "+base+" into it")
+				return true
+			}
 			s.setState(ctx, b, pr, BabysitWatching, what+"; front of the merge queue again: merged "+base+" into it to try it on the new base")
 			return true
 		case upToDate:

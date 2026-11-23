@@ -99,7 +99,7 @@ const faultFrontHold = 15 * time.Minute
 // failed on the CI runner for faultFrontHold, and moves the queue on: the
 // pull request behind it gets its turn. pr's babysit goes on waiting for
 // the re-run or the fix, and joins again at its place in the line
-// (queueTurn) once its checks pass, as after a round. Its first failure on
+// (the line takes it back) once its checks pass, as after a round. Its first failure on
 // this head is in its fault re-run record (rerunRunnerFaults).
 func (s *Service) yieldToRunnerFault(ctx context.Context, b *Babysit, pr *PullRequest) {
 	if pr.QueuedAt == nil {
@@ -177,10 +177,12 @@ var lineFrontPR = `(p.armed_at IS NOT NULL AND p.outside = 0 AND p.state IN ('op
 
 // nudgeLine has the line look again after pr left it (merged, closed, sent to
 // a round): the next goes without waiting for the sweep. A merge also has the
-// forge read the drafts behind it again (rereadQueue).
+// forge read the drafts behind it again (rereadQueue). The line looks in the
+// background: callers may hold the base's queue lock (readyCatchUp, the
+// shared timeout), which a step of the line takes too.
 func (s *Service) nudgeLine(ctx context.Context, pr *PullRequest) {
 	s.rereadQueue(ctx, pr)
-	s.lineChanged(ctx, lineOf(pr))
+	s.lineChangedAsync(lineOf(pr))
 }
 
 // rereadQueueMax bounds the pull requests rereadQueue reads after a merge.

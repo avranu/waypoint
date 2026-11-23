@@ -9,8 +9,10 @@ package core
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strconv"
 	"strings"
@@ -41,14 +43,17 @@ const (
 
 // lineCandidatesOn: the repo's line builds candidates unless its policy says
 // off (a pull request is then tested on its own branch, as when the forge
-// can't build candidates).
+// can't build candidates). A repo attached to several projects is off when
+// any of its rows says off; no row at all is on. A read that fails is off:
+// testing on the pull request's own branch is the safe mode.
 func (s *Service) lineCandidatesOn(ctx context.Context, ref lineRef) bool {
-	var v int
-	if err := s.db.R.QueryRowContext(ctx, `SELECT line_candidates FROM project_repos WHERE forge_id = ? AND repo = ? COLLATE NOCASE ORDER BY project_id LIMIT 1`,
+	var v sql.NullInt64
+	if err := s.db.R.QueryRowContext(ctx, `SELECT min(line_candidates) FROM project_repos WHERE forge_id = ? AND repo = ? COLLATE NOCASE`,
 		ref.forge, ref.repo).Scan(&v); err != nil {
-		return true
+		slog.Warn("read line_candidates of a repo", "forge", ref.forge, "repo", ref.repo, "err", err)
+		return false
 	}
-	return v != 0
+	return !v.Valid || v.Int64 != 0
 }
 
 // candPoll is what a candidate's run says now. Reading it changes nothing
@@ -146,12 +151,18 @@ func lineSort(prs []*PullRequest, fixer int64) {
 }
 
 // lineFixer is the pull request that fixes what fails on the base's tip (at
-// most one per tip: the first by order that does).
-func (s *Service) lineFixer(ctx context.Context, prs []*PullRequest) (fixer int64, failing map[string]bool) {
+// most one per tip: the first by order that does). tip is the base's tip as
+// the forge says it, so the line reads one tip for its fixer, its red test
+// and its candidates; "" reads the tip Waypoint last stored.
+func (s *Service) lineFixer(ctx context.Context, prs []*PullRequest, tip string) (fixer int64, failing map[string]bool) {
 	if len(prs) == 0 {
 		return 0, nil
 	}
-	tip, failing := s.baseFailing(ctx, prs[0])
+	if tip == "" {
+		tip, failing = s.baseFailing(ctx, prs[0])
+	} else {
+		failing = s.baseFailingAt(ctx, prs[0], tip)
+	}
 	if len(failing) == 0 {
 		return 0, nil
 	}
@@ -191,7 +202,14 @@ func (s *Service) lineGather(ctx context.Context, ref lineRef) (*lineState, erro
 	}
 	// Order, then hold out the ones known not to merge onto those ahead.
 	lineSort(keep, 0)
-	fixer, failing := s.lineFixer(ctx, keep)
+	var asked *PullRequest
+	var askedTip string
+	var askedBehind, askedStale bool
+	if len(keep) > 0 {
+		asked = keep[0]
+		askedTip, askedBehind, askedStale = s.behindBase(ctx, asked)
+	}
+	fixer, failing := s.lineFixer(ctx, keep, askedTip)
 	lineSort(keep, fixer)
 	for i, p := range keep {
 		if why := s.lineConflictAhead(ctx, p); why != "" && i > 0 {
@@ -208,7 +226,11 @@ func (s *Service) lineGather(ctx context.Context, ref lineRef) (*lineState, erro
 	}
 	if len(ls.order) > 0 {
 		front := ls.order[0]
-		ls.tip, ls.frontBehind, ls.snap.TipStale = s.behindBase(ctx, front)
+		if front == asked {
+			ls.tip, ls.frontBehind, ls.snap.TipStale = askedTip, askedBehind, askedStale
+		} else {
+			ls.tip, ls.frontBehind, ls.snap.TipStale = s.behindBase(ctx, front)
+		}
 	}
 	// The line's rules for building candidates.
 	if len(ls.order) > 0 {
@@ -533,11 +555,15 @@ func (s *Service) pollCand(ctx context.Context, f *Forge, st *queueStack) candPo
 		ran = ran || !skippedCheck(c)
 	}
 	if al, ok := s.Forges.(ForgeActionLogs); ok {
-		if runs, err := al.ActionRunsAt(ctx, f, st.Repo, st.CommitSHA); err == nil {
-			for _, r := range runs {
-				if !runDone(r.Status) {
-					return overdue("its run hasn't ended")
-				}
+		// Unread, a run may be unfinished: green checks alone don't pass it.
+		runs, err := al.ActionRunsAt(ctx, f, st.Repo, st.CommitSHA)
+		if err != nil {
+			s.log.WarnContext(ctx, "read the runs of a candidate", "candidate", st.ID, "err", err)
+			return overdue("its runs couldn't be read")
+		}
+		for _, r := range runs {
+			if !runDone(r.Status) {
+				return overdue("its run hasn't ended")
 			}
 		}
 	}
@@ -546,7 +572,8 @@ func (s *Service) pollCand(ctx context.Context, f *Forge, st *queueStack) candPo
 	}
 	pol, attached, err := s.repoMergePolicy(ctx, st.ForgeID, st.Repo)
 	if err != nil {
-		return running
+		s.log.WarnContext(ctx, "read the merge policy of a candidate's repo", "candidate", st.ID, "err", err)
+		return overdue("the repo's merge policy couldn't be read")
 	}
 	if attached {
 		for _, name := range pol.RequiredChecks {
@@ -822,6 +849,12 @@ func (s *Service) candStart(ctx context.Context, ls *lineState, heads []stackHea
 	last := ls.prs[heads[len(heads)-1].PRID]
 	cm, ok := s.Forges.(ForgeCommitter)
 	if last == nil || !ok || ls.tip == "" || ls.snap.TipStale {
+		return
+	}
+	// The fallback was read at the start of the step; a candidate that
+	// ended in it (no run, no merge, refused) turned it on, and isn't
+	// replaced by the next one made in the same step.
+	if s.lineFallback(ctx, ls.ref) {
 		return
 	}
 	tip := ls.tip // the one read of this step

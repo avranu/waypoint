@@ -23,9 +23,14 @@ func (s *Service) baseFailing(ctx context.Context, pr *PullRequest) (string, map
 		pr.ForgeID, pr.Repo, pr.BaseRef).Scan(&tip); err != nil || tip == "" {
 		return "", nil
 	}
+	return tip, s.baseFailingAt(ctx, pr, tip)
+}
+
+// baseFailingAt is baseFailing for a tip the caller already chose.
+func (s *Service) baseFailingAt(ctx context.Context, pr *PullRequest, tip string) map[string]bool {
 	checks, err := s.shaChecks(ctx, pr.ForgeID, pr.Repo, tip)
 	if err != nil {
-		return "", nil
+		return nil
 	}
 	failing := map[string]bool{}
 	for _, c := range dropSuperseded(checks) {
@@ -33,7 +38,7 @@ func (s *Service) baseFailing(ctx context.Context, pr *PullRequest) (string, map
 			failing[checkJob(c.Name)] = true
 		}
 	}
-	return tip, failing
+	return failing
 }
 
 // checkJob is a check's job, the same on a push and on a pull request.

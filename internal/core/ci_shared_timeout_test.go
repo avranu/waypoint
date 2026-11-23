@@ -121,7 +121,7 @@ func TestSharedTimeoutGivesUpTheFront(t *testing.T) {
 	if u := be.sg.updatedPRs(); len(u) != 1 || u[0] != 7 {
 		t.Fatalf("updates %v", u)
 	}
-	if w := be.babysitOf(7).Wait; !strings.Contains(w, "front of the merge queue again: merged main into it") {
+	if w := be.babysitOf(7).Wait; !strings.Contains(w, "tried again on the new main: merged main into it") || strings.Contains(w, "front of the merge queue") {
 		t.Fatalf("#7 waits %q", w)
 	}
 	if st := be.s.sharedTimeoutState(be.ctx, be.babysitOf(7)); st.Tries != 1 || st.Retry || st.Tip != "tip-2" {

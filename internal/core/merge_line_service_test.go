@@ -1,6 +1,9 @@
 package core
 
 import (
+	"context"
+	"database/sql"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -232,6 +235,37 @@ func TestLineCandidatesOnAccessor(t *testing.T) {
 	}
 }
 
+// F8: a repo attached to several projects is off when any of its rows says
+// off, and a read that fails is off (own-branch testing is the safe mode).
+func TestLineCandidatesOnWithSeveralProjects(t *testing.T) {
+	se := newStackEnv(t)
+	pr := se.pr(7)
+	ref := lineRef{forge: pr.ForgeID, repo: pr.Repo, base: "main"}
+	name := "Second"
+	p2, err := se.s.CreateProject(se.ctx, se.admin, ProjectInput{Name: &name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2, err := se.s.AddProjectRepo(se.ctx, se.admin, p2.Key, pr.ForgeID, pr.Repo, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !se.s.lineCandidatesOn(se.ctx, ref) {
+		t.Fatal("off with both on")
+	}
+	off := false
+	if err := se.s.SetRepoMergePolicy(se.ctx, se.admin, p2.Key, r2.ID, MergePolicyInput{LineCandidates: &off}); err != nil {
+		t.Fatal(err)
+	}
+	if se.s.lineCandidatesOn(se.ctx, ref) {
+		t.Error("on though the second project's row says off")
+	}
+	defer se.breakTable("project_repos")()
+	if se.s.lineCandidatesOn(se.ctx, ref) {
+		t.Error("on though the read failed")
+	}
+}
+
 // inLine has the line look at armed pull request id as production does once
 // its babysit calls it settled: it joins, and the line acts (here, with no
 // candidates possible: it updates the front's branch).
@@ -307,11 +341,16 @@ func TestLineNeedsPersonStaysOut(t *testing.T) {
 		}
 		se.s.Wait()
 	}
-	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE babysits SET state = ? WHERE pr_id = ? AND ended_at IS NULL`, BabysitNeedsPerson, id); err != nil {
-		t.Fatal(err)
-	}
 	pr, err := se.s.prByID(se.ctx, se.s.db.R, id)
 	if err != nil {
+		t.Fatal(err)
+	}
+	// A member of the line while it waits its turn; only the state below
+	// takes it out.
+	if members, err := se.s.lineMembers(se.ctx, lineOf(pr)); err != nil || len(members) != 1 || members[0].ID != id {
+		t.Fatalf("members before it needs a person: %v, %v", members, err)
+	}
+	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE babysits SET state = ? WHERE pr_id = ? AND ended_at IS NULL`, BabysitNeedsPerson, id); err != nil {
 		t.Fatal(err)
 	}
 	if b, _ := se.s.activeBabysit(se.ctx, se.s.db.R, id); b == nil || b.State != BabysitNeedsPerson {
@@ -339,6 +378,74 @@ func TestLineCandidateWithNoRunIsEnded(t *testing.T) {
 	sts := se.stacks()
 	if sts[0].EndReason != endNoRun || sts[1].EndReason != endNoRun {
 		t.Fatalf("ended %q and %q, want no_run", sts[0].EndReason, sts[1].EndReason)
+	}
+	// The two are the step's places 1 and 2: the end turned the fallback on,
+	// so nothing replaced them in the same step.
+	if len(sts) != 2 || len(se.made) != 2 {
+		t.Errorf("candidates: %d stacks, %d made", len(sts), len(se.made))
+	}
+}
+
+// The fallback after a candidate ended: the front is tested on its own
+// branch, no candidate is built for lineFallbackFor, and then they are.
+func TestLineFallbackAfterNoRun(t *testing.T) {
+	se := newStackEnv(t)
+	se.draftGreen(head7s, 5)
+	se.draftGreen(head8s, 7)
+	se.step()
+	se.line()
+	se.setClock(se.clockNow().Add(stackStartWait + time.Minute))
+	se.line()
+	se.line()
+	if len(se.made) != 2 {
+		t.Fatalf("a candidate was built in the fallback: %v", se.madeHeads())
+	}
+	se.sg.behind = map[string]bool{head7s: true}
+	se.line()
+	if se.sg.updated() < 1 {
+		t.Errorf("the front wasn't brought up to date on its own branch (updates %d)", se.sg.updated())
+	}
+	if len(se.made) != 2 {
+		t.Errorf("candidates made in the fallback: %v", se.madeHeads())
+	}
+	se.setClock(se.clockNow().Add(lineFallbackFor + time.Minute))
+	se.sg.behind = nil
+	se.line()
+	if len(se.made) <= 2 {
+		t.Errorf("no candidate built once the fallback was over: %v", se.madeHeads())
+	}
+}
+
+// The no_merge and refused ends turn the fallback on too, and a merge the
+// forge refused ends its candidate as refused.
+func TestLineFallbackAfterNoMergeAndRefused(t *testing.T) {
+	for _, reason := range []string{endNoMerge, endRefused} {
+		t.Run(reason, func(t *testing.T) {
+			se := newStackEnv(t)
+			pr := se.pr(7)
+			now := se.clockNow().UnixMilli()
+			if _, err := se.s.db.W.ExecContext(se.ctx, `INSERT INTO queue_stacks(forge_id, repo, base_ref, pr_id, base_sha, branch, commit_sha, state, end_reason, created_at, ended_at)
+				VALUES (?,?,?,?,'b','wp-queue/main/1','c','cancelled',?,?,?)`, pr.ForgeID, pr.Repo, pr.BaseRef, pr.ID, reason, now, now); err != nil {
+				t.Fatal(err)
+			}
+			se.draftGreen(head7s, 5)
+			se.draftGreen(head8s, 7)
+			se.step() // the sweep looks at the line too
+			se.line()
+			if len(se.made) != 0 {
+				t.Fatalf("a candidate in the fallback: %v", se.madeHeads())
+			}
+		})
+	}
+	se := newStackEnv(t)
+	se.draftGreen(head7s, 5)
+	se.step()
+	se.line()
+	st := se.stacks()[0]
+	se.s.candRefused(se.ctx, se.pr(7), st, "protected branch")
+	se.s.Wait()
+	if got := se.stacks()[0]; got.EndReason != endRefused || !got.Ended {
+		t.Errorf("refused candidate: %+v", got)
 	}
 }
 
@@ -424,5 +531,260 @@ func TestLineBaseRedFailureOfTheBaseOnly(t *testing.T) {
 	}
 	if w := se.babysitOf(7).Wait; !strings.Contains(w, "is failing") || !strings.Contains(w, "lint") {
 		t.Errorf("#7 waits %q", w)
+	}
+}
+
+// F1: callers that hold the base's queue lock (readyCatchUp, the shared
+// timeout) reach nudgeLine; it mustn't step the line in their goroutine, as
+// lineStep takes the same lock.
+func TestNudgeLineWhileHoldingTheQueueLock(t *testing.T) {
+	se := newStackEnv(t)
+	se.draftGreen(head7s, 5)
+	pr := se.pr(7)
+	unlock := se.s.queueLock(pr)
+	done := make(chan struct{})
+	go func() {
+		se.s.nudgeLine(se.ctx, pr)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		unlock()
+		<-done
+		t.Fatal("nudgeLine waited on the queue lock its caller holds")
+	}
+	unlock()
+	se.s.Wait()
+}
+
+// runsErrForge can't list a commit's runs.
+type runsErrForge struct{ *runsAtForge }
+
+func (runsErrForge) ActionRunsAt(context.Context, *Forge, string, string) ([]ActionRun, error) {
+	return nil, errors.New("forge down")
+}
+
+// F6: green checks without a read of the commit's runs don't pass the
+// candidate (a run may be unfinished); it is lost at the run limit.
+func TestLineCandidateWithUnreadableRunsDoesNotPass(t *testing.T) {
+	se := newStackEnv(t)
+	se.s.Forges = runsErrForge{newRunsAtForge(se.sg)}
+	se.draftGreen(head7s, 5)
+	se.step()
+	se.line()
+	if len(se.made) == 0 {
+		t.Fatal("no candidate")
+	}
+	se.stackRun(0, CheckSuccess, treeA, "7 "+head7s)
+	se.sg.trees = map[string]string{"3e7000000": treeA}
+	se.line()
+	if st := se.stacks()[0]; st.State != stackRunning || st.Ended {
+		t.Fatalf("candidate %s ended %v", st.State, st.Ended)
+	}
+	se.setClock(se.clockNow().Add(stackRunMax + time.Minute))
+	se.line()
+	if st := se.stacks()[0]; !st.Ended || st.EndReason != endLost {
+		t.Errorf("after the run limit: %s %q", st.State, st.EndReason)
+	}
+}
+
+// F7: a policy that can't be read leaves the candidate running, and lost at
+// the run limit.
+func TestLineCandidateWithUnreadablePolicyIsLostAtTheLimit(t *testing.T) {
+	se := newStackEnv(t)
+	se.draftGreen(head7s, 5)
+	se.step()
+	se.line()
+	se.stackRun(0, CheckSuccess, treeA, "7 "+head7s)
+	se.sg.trees = map[string]string{"3e7000000": treeA}
+	defer se.breakTable("project_repos")()
+	st := se.stacks()[0]
+	if got := se.s.pollCand(se.ctx, se.f, st); got.state != candRunning {
+		t.Fatalf("poll %+v", got)
+	}
+	se.setClock(se.clockNow().Add(stackRunMax + time.Minute))
+	if got := se.s.pollCand(se.ctx, se.f, st); got.state != candLost || got.reason != endLost {
+		t.Errorf("after the run limit: %+v", got)
+	}
+}
+
+// F11: the line reads one tip of its base, the forge's, for the fixer and the
+// red test as for the candidates; Waypoint's stored tip may be older.
+func TestLineGatherReadsTheForgesTip(t *testing.T) {
+	gather := func(se *stackEnv) *lineState {
+		t.Helper()
+		pr := se.pr(7)
+		ls, err := se.s.lineGather(se.ctx, lineRef{forge: pr.ForgeID, repo: pr.Repo, base: "main"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ls
+	}
+	t.Run("stored tip red, forge tip green", func(t *testing.T) {
+		se := newStackEnv(t)
+		se.redBase("ci / lint (push)") // on tip-1, which the database still holds
+		se.draftGreen(head7s, 5)
+		se.sg.baseTip = "tip-2" // green: no failed check stored for it
+		if ls := gather(se); ls.snap.BaseRed || len(ls.failing) != 0 {
+			t.Errorf("red on the old tip: %+v %v", ls.snap.BaseRed, ls.failing)
+		}
+	})
+	t.Run("stored tip green, forge tip red", func(t *testing.T) {
+		se := newStackEnv(t)
+		se.sg.baseTip = "tip-2"
+		se.redBase("ci / lint (push)")
+		if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE branch_activity SET head_sha = 'tip-1'`); err != nil {
+			t.Fatal(err)
+		}
+		se.draftGreen(head7s, 5)
+		if ls := gather(se); !ls.snap.BaseRed || !ls.failing["ci / lint (push)"] && len(ls.failing) == 0 {
+			t.Errorf("green on the old tip: %+v %v", ls.snap.BaseRed, ls.failing)
+		}
+	})
+}
+
+// F15: a line whose babysits can't be read acts on nothing: a live candidate
+// isn't ended, nothing merges and no pull request is dropped.
+func TestLineStepActsOnNothingWithUnreadableBabysits(t *testing.T) {
+	se := newStackEnv(t)
+	se.draftGreen(head7s, 5)
+	se.draftGreen(head8s, 7)
+	se.step()
+	se.line()
+	se.stackRun(0, CheckSuccess, treeA, "7 "+head7s)
+	se.sg.trees = map[string]string{"3e7000000": treeA}
+	states, waits := map[int]string{}, map[int]string{}
+	for _, n := range []int{7, 8} {
+		b := se.babysitOf(n)
+		states[n], waits[n] = b.State, b.Wait
+	}
+	before := len(se.stacks())
+	madeBefore := len(se.made)
+	restore := se.breakTable("babysits")
+	se.line()
+	se.s.sweepLines(se.ctx)
+	se.s.Wait()
+	restore()
+	sts := se.stacks()
+	if len(sts) != before || len(se.made) != madeBefore {
+		t.Errorf("candidates changed: %d -> %d rows, %d -> %d made", before, len(sts), madeBefore, len(se.made))
+	}
+	for _, st := range sts {
+		if st.Ended {
+			t.Errorf("candidate %d ended (%q)", st.ID, st.EndReason)
+		}
+	}
+	if m := se.sg.merged(); len(m) != 0 {
+		t.Errorf("merged %+v", m)
+	}
+	for _, n := range []int{7, 8} {
+		if b := se.babysitOf(n); b == nil || b.State != states[n] || b.Wait != waits[n] {
+			t.Errorf("#%d changed: %+v (was %q %q)", n, b, states[n], waits[n])
+		}
+	}
+}
+
+// F31: a commit's live candidate names its line, and a forge's webhook for
+// that commit steps the line (it doesn't read the checks as a branch's).
+func TestCandLineByCommit(t *testing.T) {
+	se := newStackEnv(t)
+	se.draftGreen(head7s, 5)
+	se.step()
+	se.line()
+	st := se.stacks()[0]
+	pr := se.pr(7)
+	if ref, ok := se.s.candLineByCommit(se.ctx, pr.ForgeID, strings.ToUpper(pr.Repo), strings.ToUpper(st.CommitSHA)); !ok || ref.repo != pr.Repo || ref.base != "main" || ref.forge != pr.ForgeID {
+		t.Errorf("a live candidate's commit: %+v %v", ref, ok)
+	}
+	if _, ok := se.s.candLineByCommit(se.ctx, pr.ForgeID+1, pr.Repo, st.CommitSHA); ok {
+		t.Error("another forge's")
+	}
+	if _, ok := se.s.candLineByCommit(se.ctx, pr.ForgeID, "other/repo", st.CommitSHA); ok {
+		t.Error("another repo's")
+	}
+	if _, ok := se.s.candLineByCommit(se.ctx, pr.ForgeID, pr.Repo, ""); ok {
+		t.Error("no commit")
+	}
+	if _, ok := se.s.candLineByCommit(se.ctx, pr.ForgeID, pr.Repo, head7s); ok {
+		t.Error("a pull request's head isn't a candidate")
+	}
+	// The webhook for the commit: the run passed, so the line records it.
+	se.stackRun(0, CheckSuccess, treeA, "7 "+head7s)
+	se.sg.trees = map[string]string{"3e7000000": treeA}
+	se.s.onForgeCI(se.ctx, se.f, pr.Repo, st.CommitSHA)
+	se.s.Wait()
+	if got := se.stacks()[0]; got.State == stackRunning {
+		t.Errorf("the line didn't step on its candidate's webhook: %+v", got)
+	}
+	// An ended candidate is no longer one.
+	se.s.candEnd(se.ctx, se.f, se.stacks()[0], stackFailed, endFailed, "x")
+	if _, ok := se.s.candLineByCommit(se.ctx, pr.ForgeID, pr.Repo, st.CommitSHA); ok {
+		t.Error("an ended candidate's commit")
+	}
+}
+
+// F32: an open pull request marked ready on a candidate keeps its title and
+// the time it was marked, and the candidate's run is its full run at this head.
+func TestMarkReadyOnACandidateForAnOpenPR(t *testing.T) {
+	se := newStackEnv(t)
+	se.draftGreen(head7s, 5)
+	se.step()
+	se.line()
+	st := se.stacks()[0]
+	read := func() (readyAt int64, sha, checks string) {
+		t.Helper()
+		var at sql.NullInt64
+		if err := se.s.db.R.QueryRowContext(se.ctx, `SELECT ready_at, ready_sha, ready_checks FROM pull_requests WHERE number = 7`).Scan(&at, &sha, &checks); err != nil {
+			t.Fatal(err)
+		}
+		return at.Int64, sha, checks
+	}
+	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE pull_requests SET state = 'open', ready_at = NULL, ready_sha = '', ready_checks = '["x"]' WHERE number = 7`); err != nil {
+		t.Fatal(err)
+	}
+	pr := se.pr(7)
+	if err := se.s.markReadyOn(se.ctx, pr, st); err != nil {
+		t.Fatal(err)
+	}
+	at, sha, checks := read()
+	if at == 0 || !sameSHA(sha, head7s) || checks != "[]" {
+		t.Fatalf("after marking: ready_at %d ready_sha %q ready_checks %q", at, sha, checks)
+	}
+	if got := se.pr(7).Title; got != pr.Title {
+		t.Errorf("title changed: %q -> %q", pr.Title, got)
+	}
+	// Marked at an earlier head: the time stays, the head is this one's.
+	se.setClock(se.clockNow().Add(time.Hour))
+	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE pull_requests SET ready_sha = 'old' WHERE number = 7`); err != nil {
+		t.Fatal(err)
+	}
+	if err := se.s.markReadyOn(se.ctx, se.pr(7), st); err != nil {
+		t.Fatal(err)
+	}
+	if at2, sha2, _ := read(); at2 != at || !sameSHA(sha2, head7s) {
+		t.Errorf("again: ready_at %d (was %d) ready_sha %q", at2, at, sha2)
+	}
+}
+
+// F33: a head that failed on a candidate with heads ahead of it says so, and
+// names them; the first place has none to name.
+func TestCandEjectTextNamesTheHeadsAhead(t *testing.T) {
+	se := newStackEnv(t)
+	se.draftGreen(head7s, 5)
+	se.draftGreen(head8s, 7)
+	se.step()
+	se.line()
+	sts := se.stacks()
+	if len(sts) != 2 {
+		t.Fatalf("candidates: %d", len(sts))
+	}
+	se.s.candEnd(se.ctx, se.f, sts[0], stackFailed, endFailed, "lint failed")
+	se.s.candEnd(se.ctx, se.f, sts[1], stackFailed, endFailed, "lint failed")
+	if got := se.s.candEjectText(se.ctx, se.pr(8)); !strings.Contains(got, "and the heads ahead of it (#7)") || !strings.Contains(got, "main at "+short(sts[1].BaseSHA)) {
+		t.Errorf("#8: %q", got)
+	}
+	if got := se.s.candEjectText(se.ctx, se.pr(7)); got == "" || strings.Contains(got, "heads ahead") {
+		t.Errorf("#7: %q", got)
 	}
 }
