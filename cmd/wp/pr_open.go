@@ -875,12 +875,22 @@ func (c *cli) mergeBaseIfForkedTwice(base string) {
 // from the nearer.
 func stackBranches(refs []string) []string {
 	type near struct {
-		name string
-		n    int
+		name   string
+		n      int
+		onLine bool // its tip is on HEAD's first-parent line, not merged in from aside
+	}
+	line := map[string]bool{}
+	if out, err := localGit("rev-list", "--first-parent", "HEAD"); err == nil {
+		for _, h := range strings.Fields(out) {
+			line[h] = true
+		}
 	}
 	var bs []near
 	for _, r := range refs {
-		name := strings.TrimPrefix(strings.TrimPrefix(r, "refs/heads/"), "origin/")
+		name := strings.TrimPrefix(r, "origin/")
+		if strings.HasPrefix(r, "refs/heads/") {
+			name = strings.TrimPrefix(r, "refs/heads/") // a local branch may itself be named origin/x
+		}
 		out, err := localGit("rev-list", "--count", "--first-parent", r+"..HEAD")
 		if err != nil {
 			continue
@@ -889,13 +899,31 @@ func stackBranches(refs []string) []string {
 		if err != nil {
 			continue
 		}
+		on := false
+		if tip, err := localGit("rev-parse", "-q", "--verify", r+"^{commit}"); err == nil {
+			on = line[strings.TrimSpace(tip)]
+		}
 		if i := slices.IndexFunc(bs, func(b near) bool { return b.name == name }); i >= 0 {
-			bs[i].n = min(bs[i].n, n)
+			if n < bs[i].n {
+				bs[i].n = n
+			}
+			bs[i].onLine = bs[i].onLine || on
 			continue
 		}
-		bs = append(bs, near{name, n})
+		bs = append(bs, near{name, n, on})
 	}
-	slices.SortStableFunc(bs, func(a, b near) int { return a.n - b.n })
+	slices.SortStableFunc(bs, func(a, b near) int {
+		if a.n != b.n {
+			return a.n - b.n
+		}
+		if a.onLine != b.onLine { // equal counts: the branch HEAD grew from, not one merged in
+			if a.onLine {
+				return -1
+			}
+			return 1
+		}
+		return 0
+	})
 	names := make([]string, len(bs))
 	for i, b := range bs {
 		names[i] = b.name
