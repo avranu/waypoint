@@ -193,7 +193,7 @@ func (s *Service) lineFixer(ctx context.Context, prs []*PullRequest, tip string)
 		return 0, nil, nil
 	}
 	for _, p := range prs {
-		if queueHolder(p) || p.urgent() || p.HeadSHA == "" {
+		if queueHolder(p) || p.HeadSHA == "" {
 			continue
 		}
 		fixes, err := s.fixesBase(ctx, p, tip, failing)
@@ -282,15 +282,19 @@ func (s *Service) lineGather(ctx context.Context, ref lineRef) (*lineState, erro
 			// The base moved between the two reads: what fails on it is
 			// read again, for the tip the candidates are built on.
 			if ls.tip != "" && ls.tip != askedTip {
-				if ls.failing, err = s.baseFailingAt(ctx, front, ls.tip); err != nil {
-					return nil, fmt.Errorf("read what fails on the base's tip: %w", err)
+				// The fixer and the order were worked out for the old tip:
+				// do them again for this one. A different front means its
+				// facts are for another tip, so nothing is decided now.
+				order := slices.Clone(ls.order)
+				nf, failing, err := s.lineOrder(ctx, order, ls.tip)
+				if err != nil {
+					return nil, err
 				}
-				ls.snap.BaseRed = len(ls.failing) > 0
-				ls.snap.FrontFixes = false // asked again for this tip
-				if ls.snap.BaseRed && front.ID == fixer {
-					if ls.snap.FrontFixes, err = s.fixesBase(ctx, front, ls.tip, ls.failing); err != nil {
-						return nil, err
-					}
+				ls.failing = failing
+				ls.snap.BaseRed = len(failing) > 0
+				ls.snap.FrontFixes = nf != 0 && order[0].ID == nf
+				if order[0] != front {
+					ls.snap.TipStale = true
 				}
 			}
 		}
@@ -496,7 +500,10 @@ func (s *Service) lineCands(ctx context.Context, ls *lineState) error {
 			// them again every step: end it. Not a reason that pauses the line,
 			// as it says nothing about the forge (WP-1700).
 			if st != nil && st.ID != 0 {
-				s.candEnd(ctx, ls.f, st, stackCancelled, endUnreadable, "its row could not be read")
+				if err := s.candEnd(ctx, ls.f, st, stackCancelled, endUnreadable, "its row could not be read"); err != nil {
+					// Still live on the forge: planning now could start a second one.
+					return fmt.Errorf("end an unreadable candidate: %w", err)
+				}
 			}
 			continue
 		}
@@ -703,15 +710,35 @@ func headNumbers(heads []stackHead) string {
 
 // candEnd ends st: its unfinished run is cancelled and its branch deleted.
 // The pull request marked ready on it goes back to draft, unless it merged.
-func (s *Service) candEnd(ctx context.Context, f *Forge, st *queueStack, state, reason, note string) {
-	res, err := s.db.W.ExecContext(ctx, `UPDATE queue_stacks SET state = ?, note = ?, end_reason = ?, ended_at = ? WHERE id = ? AND ended_at IS NULL`,
-		state, excerpt(note, 300), reason, s.nowMS(), st.ID)
+func (s *Service) candEnd(ctx context.Context, f *Forge, st *queueStack, state, reason, note string) error {
+	return s.candEndAs(ctx, f, st, state, reason, note, nil)
+}
+
+// candRekey is what a candidate that ends base_red is recorded as, in the
+// same write that ends it: the tip it was tested on and the heads left.
+type candRekey struct {
+	base  string
+	heads string
+	pos   int
+}
+
+// candEndAs is candEnd with rekey, when set, written in the one statement
+// that ends the row. The forge's side is cleaned up only once that write
+// succeeded; its error is returned.
+func (s *Service) candEndAs(ctx context.Context, f *Forge, st *queueStack, state, reason, note string, rk *candRekey) error {
+	q := `UPDATE queue_stacks SET state = ?, note = ?, end_reason = ?, ended_at = ?`
+	args := []any{state, excerpt(note, 300), reason, s.nowMS()}
+	if rk != nil {
+		q += `, base_sha = ?, heads = ?, pos = ?`
+		args = append(args, rk.base, rk.heads, rk.pos)
+	}
+	res, err := s.db.W.ExecContext(ctx, q+` WHERE id = ? AND ended_at IS NULL`, append(args, st.ID)...)
 	if err != nil {
 		s.log.WarnContext(ctx, "end a candidate", "candidate", st.ID, "err", err)
-		return
+		return err
 	}
 	if n, err := res.RowsAffected(); err == nil && n == 0 {
-		return
+		return nil
 	}
 	was := st.State
 	st.State, st.Ended, st.Note, st.EndReason = state, true, note, reason
@@ -730,6 +757,7 @@ func (s *Service) candEnd(ctx context.Context, f *Forge, st *queueStack, state, 
 		}
 	}
 	s.deleteStackBranch(ctx, f, st)
+	return nil
 }
 
 // candDiscardReady takes back the readiness a pull request got from st: the
@@ -897,10 +925,12 @@ func (s *Service) lineAct(ctx context.Context, ls *lineState, a lineAction) {
 				}
 			case endBatchSplit:
 				state = stackFailed
-			case endBaseRed:
-				s.candRedOnTip(ctx, ls, st)
 			}
-			s.candEnd(ctx, ls.f, st, state, reason, a.Why)
+			var rk *candRekey
+			if reason == endBaseRed {
+				rk = s.candRedOnTip(ls, st)
+			}
+			s.candEndAs(ctx, ls.f, st, state, reason, a.Why, rk)
 		}
 	case lineRerun:
 		s.candRerun(ctx, ls, a)
@@ -917,17 +947,15 @@ func (s *Service) lineAct(ctx context.Context, ls *lineState, a lineAction) {
 // the base's tip now: built on X with heads [A,B], once A merged it tested B
 // on the tip that holds A, and that is what lineTried must find to keep B
 // from being started again on the same red tip. The row's base and heads
-// become the tip and the heads left; its branch and commit stay.
-func (s *Service) candRedOnTip(ctx context.Context, ls *lineState, st *queueStack) {
+// become the tip and the heads left, written with the end (candEndAs); its
+// branch and commit stay.
+func (s *Service) candRedOnTip(ls *lineState, st *queueStack) *candRekey {
 	if st.Merged <= 0 || st.Merged >= len(st.Heads) || ls.tip == "" || sameSHA(ls.tip, st.BaseSHA) {
-		return
+		return nil
 	}
 	rest := st.Heads[st.Merged:]
 	hj, _ := json.Marshal(rest)
-	if _, err := s.db.W.ExecContext(ctx, `UPDATE queue_stacks SET base_sha = ?, heads = ?, pos = ? WHERE id = ? AND ended_at IS NULL`,
-		ls.tip, string(hj), len(rest)-1, st.ID); err != nil {
-		s.log.WarnContext(ctx, "record a base_red candidate on the base's tip", "candidate", st.ID, "err", err)
-	}
+	return &candRekey{base: ls.tip, heads: string(hj), pos: len(rest) - 1}
 }
 
 // restMerged: every head of st not yet seen on the base is a merged pull
