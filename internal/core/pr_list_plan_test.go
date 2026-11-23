@@ -44,8 +44,13 @@ func (e *env) explainPlan(q string, args ...any) []string {
 // a probe missing (it must find links by url and by number).
 func prLinksPlanProblems(plan []string) []string {
 	var out []string
-	var url, number bool
+	var url, number, issuePK bool
 	for _, d := range plan {
+		// Issues come from the links by primary key, not by walking a project's.
+		if scansAny(d, "i", "issues") || strings.HasPrefix(d, "SEARCH i USING INDEX") {
+			out = append(out, "issues not reached by primary key: "+d)
+		}
+		issuePK = issuePK || strings.HasPrefix(d, "SEARCH i USING INTEGER PRIMARY KEY")
 		if scansBigTable(d) {
 			out = append(out, "full scan: "+d)
 		}
@@ -54,6 +59,9 @@ func prLinksPlanProblems(plan []string) []string {
 		}
 		url = url || strings.Contains(d, "external_links_url")
 		number = number || strings.Contains(d, "external_links_number")
+	}
+	if !issuePK {
+		out = append(out, "no issue lookup by primary key")
 	}
 	if !url {
 		out = append(out, "no probe on external_links_url")
@@ -65,15 +73,18 @@ func prLinksPlanProblems(plan []string) []string {
 }
 
 func TestPRLinksPlanProblems(t *testing.T) {
-	good := []string{"SEARCH el USING INDEX external_links_url (url=?)", "SEARCH el USING INDEX external_links_number (number=?)", "SEARCH p USING INTEGER PRIMARY KEY (rowid=?)"}
+	good := []string{"SEARCH i USING INTEGER PRIMARY KEY (rowid=?)", "SEARCH el USING INDEX external_links_url (url=?)", "SEARCH el USING INDEX external_links_number (number=?)", "SEARCH p USING INTEGER PRIMARY KEY (rowid=?)"}
 	if p := prLinksPlanProblems(good); len(p) != 0 {
 		t.Errorf("good plan flagged: %v", p)
 	}
 	for name, plan := range map[string][]string{
-		"scan":      append(slices.Clone(good), "SCAN el"),
-		"automatic": append(slices.Clone(good), "SEARCH el USING AUTOMATIC PARTIAL COVERING INDEX (kind=?)"),
-		"no url":    good[1:],
-		"no number": good[:1],
+		"scan":       append(slices.Clone(good), "SCAN el"),
+		"automatic":  append(slices.Clone(good), "SEARCH el USING AUTOMATIC PARTIAL COVERING INDEX (kind=?)"),
+		"issue walk": append(slices.Clone(good), "SEARCH i USING INDEX issues_project_updated (project_id=?)"),
+		"issue scan": append(slices.Clone(good), "SCAN i"),
+		"no pk":      good[1:],
+		"no url":     append(slices.Clone(good[:1]), good[2:]...),
+		"no number":  append(slices.Clone(good[:2]), good[3:]...),
 	} {
 		if len(prLinksPlanProblems(plan)) == 0 {
 			t.Errorf("%s plan not flagged", name)
@@ -121,6 +132,15 @@ func TestPRLinksUseIndexes(t *testing.T) {
 		WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 2000)
 		SELECT ?, 'pull', 'https://other/' || i, 'o/r', i, 0 FROM n`, other.ID)
 	exec(`INSERT INTO external_links(issue_id, kind, url, repo, number, created_at) VALUES (?, 'issue', 'https://x/me/app/pull/7', 'me/app', 8, 0)`, other.ID)
+	// Thousands of issues over a few projects, as on a real instance: a plan
+	// that walks issues per pull request shows up only with them.
+	for _, name := range []string{"Beta", "Gamma"} {
+		pe.project(pe.admin, name, "")
+	}
+	exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 4000)
+		INSERT INTO issues(project_id, number, title, status_id, created_at, updated_at)
+		SELECT pr.id, 1000 + n.i, 'filler', (SELECT status_id FROM issues WHERE id = ?), ?, ?
+		FROM n JOIN projects pr ON pr.id = 1 + n.i % 3`, linked.ID, now, now)
 	exec(`ANALYZE`)
 
 	ids := make([]any, 300)

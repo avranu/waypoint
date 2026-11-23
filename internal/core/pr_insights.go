@@ -506,17 +506,25 @@ func (s *Service) prLinks(ctx context.Context, actor *Actor, ids []any) ([]prLin
 // prLinksSQL is prLinks' query: for each pull request, the links that name
 // it, by URL or by repo and number, then their issues. Joining links on
 // "el.url = p.url OR (repo and number match)" can't use one index, so SQLite
-// builds an automatic index over all of external_links on every call.
-// pullLinkFromPullSQL instead finds the link ids with two UNIONed probes, on
-// external_links_url and external_links_number.
+// builds an automatic index over all of external_links on every call. Here
+// the two ways are two UNIONed probes, each on its own index
+// (external_links_url, external_links_number), and the join goes on from the
+// link ids they find, reaching each issue by primary key. It is not
+// pullLinkFromPullSQL: as a correlated IN in the ON clause, that makes SQLite
+// drive from issues and walk every issue for each pull request.
 func prLinksSQL(actor *Actor, ids []any) (string, []any) {
 	vis, vargs := visibleSQL("i.project_id", actor)
+	in := idList(len(ids))
 	// #nosec G202 -- vis is a fixed condition and the rest placeholders; values are bound
-	q := `SELECT DISTINCT p.id, i.id, el.id, pj.key || '-' || i.number, i.title, st.name, st.category, el.created_agent
-		FROM pull_requests p CROSS JOIN external_links el ON ` + pullLinkFromPullSQL + `
+	q := `SELECT DISTINCT m.pid, i.id, el.id, pj.key || '-' || i.number, i.title, st.name, st.category, el.created_agent
+		FROM (SELECT p.id AS pid, el.id AS elid FROM pull_requests p JOIN external_links el ON el.url = p.url AND el.kind = 'pull' WHERE p.id IN (` + in + `)
+			UNION
+			SELECT p.id, el.id FROM pull_requests p JOIN external_links el ON el.number = p.number AND el.repo = p.repo COLLATE NOCASE AND el.kind = 'pull' WHERE p.id IN (` + in + `)) m
+		JOIN external_links el ON el.id = m.elid
 		JOIN issues i ON i.id = el.issue_id JOIN projects pj ON pj.id = i.project_id JOIN statuses st ON st.id = i.status_id
-		WHERE p.id IN (` + idList(len(ids)) + `) AND ` + vis + ` AND ` + draftsHidden(actor, "i") + ` ORDER BY i.id`
-	return q, append(slices.Clone(ids), vargs...)
+		WHERE ` + vis + ` AND ` + draftsHidden(actor, "i") + ` ORDER BY i.id`
+	args := append(slices.Clone(ids), ids...)
+	return q, append(args, vargs...)
 }
 
 // prMentions adds the issues the pull requests' text names but which aren't
