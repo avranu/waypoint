@@ -15,8 +15,8 @@ func ownedByMe(fi os.FileInfo) bool {
 	return ok && int(st.Uid) == os.Getuid()
 }
 
-// pathPrivate: no one but the user and root can change what p, a link-free
-// path to fi, names until Claude Code's Read opens it. Every directory above
+// pathPrivate: no one but the user and root can change what p, a path to fi
+// with no link above it (fixedPath), names until Claude Code's Read opens it. Every directory above
 // it is the user's or root's, and no one else may write in it, unless it is
 // sticky (a shared temp directory) and what p goes through in it is the
 // user's or root's, so it can't be renamed or replaced. Otherwise someone

@@ -71,6 +71,14 @@ func TestPictureReadAllowed(t *testing.T) {
 	must(os.Symlink(outside, link3))
 	dirPic := filepath.Join(repo, "dir.png")
 	must(os.MkdirAll(dirPic, 0o750))
+	// "..": taken where a link led, as the Read will. Written out,
+	// wp-files/WP-4/up/../a.png is wp-files/WP-4/a.png; the Read opens
+	// base/a.png.
+	up := filepath.Join(tmp, filesDirName, "WP-4", "up")
+	must(os.MkdirAll(filepath.Dir(up), 0o750))
+	must(os.Symlink(filepath.Dir(outside), up))
+	write(filepath.Join(tmp, filesDirName, "WP-4", "a.png"))
+	write(filepath.Join(base, "a.png"))
 	pad := func(dir, name string) string {
 		return write(filepath.Join(tmp, uid, projectDirName(dir), "s1", "scratchpad", name))
 	}
@@ -92,7 +100,8 @@ func TestPictureReadAllowed(t *testing.T) {
 		{wt, write(filepath.Join(base, "out", shotsDirName, "e2.png")), false}, // wp shot --out elsewhere: left to Claude Code
 		{wt, write(filepath.Join(other, shotsDirName, "e3.png")), false},       // another project's wp-shots
 		{wt, write(filepath.Join(other, filesDirName, "WP-1", "e4.png")), false},
-		{wt, filepath.Join(tmp, filesDirName, "..", "f.png"), false},
+		{wt, filepath.Join(tmp, filesDirName) + "/../f.png", false},
+		{wt, up + "/../a.png", false},
 		{wt, write(filepath.Join(tmp, "f.png")), false},
 		{wt, write(filepath.Join(tmp, "else", filesDirName, "g.png")), false},      // a wp-files of no one's making
 		{outside, write(filepath.Join(tmp, filesDirName, "WP-3", "g2.png")), true}, // outside a repository too
@@ -118,6 +127,36 @@ func TestPictureReadAllowed(t *testing.T) {
 			t.Errorf("from %s, %s: %v, want %v", strings.TrimPrefix(c.cwd, base), strings.TrimPrefix(c.path, base), got, c.want)
 		}
 	}
+
+	// Through the user's own links: the temp directory as os.TempDir names it
+	// (macOS's /var/folders is /private/var/folders) and a checkout reached
+	// through one. Not through a link someone else could re-point.
+	tmpLink := filepath.Join(base, "tmplink")
+	must(os.Symlink(tmp, tmpLink))
+	repoLink := filepath.Join(base, "repolink")
+	must(os.Symlink(repo, repoLink))
+	open := filepath.Join(base, "open")
+	must(os.MkdirAll(open, 0o750))
+	must(os.Symlink(tmp, filepath.Join(open, "t")))
+	must(os.Chmod(open, 0o777)) // #nosec G302 -- a directory others may write in, on purpose
+	guardTempDirs = func() []string { return []string{tmpLink} }
+	for _, c := range []struct {
+		cwd, path string
+		want      bool
+	}{
+		{wt, filepath.Join(tmpLink, filesDirName, "WP-1", "d.jpg"), true},
+		{wt, filepath.Join(tmpLink, shotsDirName, "wp-1-x", "e.webp"), true},
+		{repoLink, filepath.Join(repoLink, "e2e", "out", "a.png"), true},
+		{wt, filepath.Join(repoLink, "e2e", "out", "a.png"), true},
+		{repoLink, pad(repoLink, "p.png"), true}, // the scratchpad of a session started through the link
+		{wt, filepath.Join(open, "t", filesDirName, "WP-1", "d.jpg"), false},
+	} {
+		if got := pictureReadAllowed(c.cwd, c.path); got != c.want {
+			t.Errorf("through a link, from %s, %s: %v, want %v", strings.TrimPrefix(c.cwd, base), strings.TrimPrefix(c.path, base), got, c.want)
+		}
+	}
+	must(os.Chmod(open, 0o700))
+	guardTempDirs = func() []string { return []string{tmp} }
 
 	// Only where no one else can swap the picture for another file before the
 	// Read: not in a directory others may write in, unless it is sticky and
