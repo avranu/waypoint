@@ -1871,7 +1871,7 @@ func (s *Service) tellAudit(ctx context.Context, a *CodeAudit) {
 		m, err := s.storeMessage(ctx, a.sessionID, text, auditNewsKey(a.ID, a.Status), messageFrom{}, false)
 		if err != nil {
 			s.log.WarnContext(ctx, "tell a session about its audit", "audit", a.ID, "err", err)
-		} else if m.State == MessageQueued && !(a.Status == AuditDone && s.withdrawDecidedAuditNews(ctx, a.ID)) {
+		} else if m.State == MessageQueued && (a.Status != AuditDone || !s.withdrawDecidedAuditNews(ctx, a.ID)) {
 			// Its findings may all be decided already, marked while the
 			// comment posted: then it is withdrawn as it is stored.
 			s.batchOrTell(ctx, a.sessionID, 0, a.blocking, func(until int64) error {
