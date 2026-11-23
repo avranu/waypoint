@@ -236,29 +236,13 @@ func (s *Service) waitOnSharedTimeout(ctx context.Context, b *Babysit, pr *PullR
 			return true
 		}
 		defer s.queueLock(pr)()
-		if pr.QueuedAt == nil {
-			if h := s.queueHolderBut(ctx, pr); h != nil {
-				s.setState(ctx, b, pr, BabysitWatching, fmt.Sprintf("%s; %s moved on, so it is tried again on it after #%d's full run", what, base, h.Number))
-				return true
-			}
-			at := s.now()
-			if _, err := s.db.W.ExecContext(ctx, `UPDATE pull_requests SET queued_at = coalesce(queued_at, ?) WHERE id = ?`, at.UnixMilli(), pr.ID); err != nil {
-				s.log.WarnContext(ctx, "join the merge queue", "pr", pr.ID, "err", err)
-				return false
-			}
-			pr.QueuedAt = &at
-		}
-		if wait := s.queueTurn(ctx, pr); wait != "" {
-			s.setState(ctx, b, pr, BabysitWatching, what+"; "+base+" moved on, so it is tried again on it at its turn, "+wait)
+		if ahead, err := s.queueAhead(ctx, pr); err == nil && len(ahead) > 0 {
+			s.setState(ctx, b, pr, BabysitWatching, fmt.Sprintf("%s; %s moved on, so it is tried again on it at its turn, behind #%d", what, base, ahead[0].Number))
 			return true
-		}
-		if s.stackHolds(ctx, pr) {
-			s.setState(ctx, b, pr, BabysitWatching, what+"; "+base+" moved on, and its merge-queue stack is tested first")
-			return true // an update would change the head its stack tests (WP-404)
 		}
 		// Marked ready first, as at the front of the queue, so the update's
 		// push runs the full tier once (WP-456).
-		switch s.updateIfBehindThen(ctx, pr, func() { s.readyForFullRun(ctx, pr) }) {
+		switch s.updateIfBehindThen(ctx, pr, func() { s.readyForUpdate(ctx, pr) }) {
 		case upUpdated:
 			st.Retry, st.Tip, st.Tries = false, tip, st.Tries+1
 			s.saveSharedTimeout(ctx, b, st)
@@ -287,7 +271,7 @@ func (s *Service) waitOnSharedTimeout(ctx context.Context, b *Babysit, pr *PullR
 		s.leaveQueue(ctx, pr.ID)
 		pr.QueuedAt = nil
 		s.log.Info("a pull request whose tests timed out like the others' gave up its turn in the merge queue", "pr", pr.ID, "head", pr.HeadSHA)
-		s.nudgeQueue(ctx, pr)
+		s.nudgeLine(ctx, pr)
 	}
 	key := "timeout@" + pr.HeadSHA
 	task := s.ciLimitsTask(ctx, pr.ForgeID, pr.Repo)
@@ -331,24 +315,6 @@ func (s *Service) waitOnSharedTimeout(ctx context.Context, b *Babysit, pr *PullR
 	}
 	s.setState(ctx, b, pr, BabysitWatching, wait)
 	return true
-}
-
-// queueHolderBut is the pull request in its full run at the front of pr's
-// merge queue, other than pr; nil when there is none. Marked ready before
-// it, pr would go ahead of it on rejoining (queueAhead).
-func (s *Service) queueHolderBut(ctx context.Context, pr *PullRequest) *PullRequest {
-	out := *pr
-	out.ReadyAt, out.QueuedAt = nil, nil // so every queued one is listed
-	ahead, err := s.queueAhead(ctx, &out)
-	if err != nil {
-		return nil
-	}
-	for _, p := range ahead {
-		if queueHolder(p) {
-			return p
-		}
-	}
-	return nil
 }
 
 // ciLimitsForPR is the limits of pr's repo, for the task's comment.

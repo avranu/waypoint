@@ -1,7 +1,6 @@
 package core
 
 import (
-	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -260,30 +259,6 @@ func TestCIDoctorStacksFailing(t *testing.T) {
 	}
 	i := slices.IndexFunc(d.Findings, func(f CIFinding) bool { return f.Kind == "stacks_failing" })
 	if i < 0 || !strings.Contains(d.Findings[i].Title, "2 conflicts, 1 failed, 1 cancelled") {
-		t.Errorf("findings = %+v", d.Findings)
-	}
-}
-
-// A line whose stacks are paused (WP-386) says so, and until when.
-func TestCIDoctorStacksPaused(t *testing.T) {
-	be, pr := armedBabysit(t)
-	now := be.s.now()
-	for i := range stackPauseRuns {
-		if _, err := be.s.db.W.ExecContext(be.ctx, `INSERT INTO queue_stacks(forge_id, repo, base_ref, pr_id, base_sha, branch, state, created_at, ended_at)
-			VALUES (?,?,?,?,'b',?,'cancelled',?,?)`, pr.ForgeID, pr.Repo, pr.BaseRef, pr.ID, fmt.Sprintf("wp-queue/main/%d", i),
-			now.Add(-time.Hour).UnixMilli(), now.Add(-time.Duration(10+i)*time.Minute).UnixMilli()); err != nil {
-			t.Fatal(err)
-		}
-	}
-	d, err := be.s.CIDoctor(be.ctx, be.admin)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if st := d.Lines[0].Stacks; st.PausedUntil == nil || !st.PausedUntil.Equal(time.UnixMilli(now.Add(-10*time.Minute).UnixMilli()).Add(stackPauseFor)) {
-		t.Fatalf("stacks = %+v", st)
-	}
-	i := slices.IndexFunc(d.Findings, func(f CIFinding) bool { return f.Kind == "stacks_paused" })
-	if i < 0 || !strings.Contains(d.Findings[i].Title, "paused for 1h50m") || !strings.Contains(d.Findings[i].Detail, "last 10 stack or batch runs") {
 		t.Errorf("findings = %+v", d.Findings)
 	}
 }

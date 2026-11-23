@@ -64,7 +64,7 @@ func TestArmedMergeWaitsForUpToDateHead(t *testing.T) {
 	if r := se.reasons(5); !strings.Contains(r, "behind main") {
 		t.Fatalf("reasons = %q", r)
 	}
-	se.s.maybeAutoMerge(se.ctx, id)
+	se.inLine(id)
 	if len(se.sg.merged()) != 0 || se.sg.updated() != 1 {
 		t.Fatalf("merges %+v, updates %d", se.sg.merged(), se.sg.updated())
 	}
@@ -72,13 +72,13 @@ func TestArmedMergeWaitsForUpToDateHead(t *testing.T) {
 		t.Errorf("note = %q", n)
 	}
 	// Looking again for the same tip updates nothing more.
-	se.s.maybeAutoMerge(se.ctx, id)
+	se.inLine(id)
 	if len(se.sg.merged()) != 0 || se.sg.updated() != 1 {
 		t.Fatalf("looped: merges %+v, updates %d", se.sg.merged(), se.sg.updated())
 	}
 	// The base moved again: one more update.
 	se.sg.baseTip = "tip-2"
-	se.s.maybeAutoMerge(se.ctx, id)
+	se.inLine(id)
 	if se.sg.updated() != 2 {
 		t.Fatalf("updates = %d", se.sg.updated())
 	}
@@ -104,8 +104,8 @@ func TestUpdateBranchConflict(t *testing.T) {
 	se.sg.setChecks(head, CommitCheck{Name: "ci / backend (pull_request)", State: CheckSuccess})
 	se.poll()
 	id := se.pr(5).ID
-	se.s.maybeAutoMerge(se.ctx, id)
-	se.s.maybeAutoMerge(se.ctx, id)
+	se.inLine(id)
+	se.inLine(id)
 	if se.sg.updated() != 1 || len(se.sg.merged()) != 0 {
 		t.Fatalf("updates %d, merges %+v", se.sg.updated(), se.sg.merged())
 	}
@@ -117,12 +117,26 @@ func TestUpdateBranchConflict(t *testing.T) {
 	if todo, err := se.s.PRWorkPacket(se.ctx, SystemActor(), id); err != nil || !todo.Conflict || !strings.Contains(todo.Text, "Conflicts with main") {
 		t.Errorf("work packet = %+v, %v", todo, err)
 	}
-	se.sg.baseTip = "tip-2"
+}
+
+// An update the forge fails to make is said on the pull request, and tried
+// again by the line's sweep.
+func TestUpdateBranchFailureIsSaid(t *testing.T) {
+	se := newShipEnv(t, "forgejo")
+	se.llm.answers["opencode/muse-spark-1.3-contributor-free"] = noFindings
+	se.noWaits()
+	const head = "1111111aaaa"
+	se.sg.behind = map[string]bool{head: true}
 	se.sg.updateErr = errors.New("HTTP 502")
-	se.s.maybeAutoMerge(se.ctx, id)
-	se.s.maybeAutoMerge(se.ctx, id)
-	if se.sg.updated() != 3 {
-		t.Fatalf("updates %d", se.sg.updated())
+	se.pullHook("opened", testPR)
+	se.drain()
+	se.sg.setChecks(head, CommitCheck{Name: "ci / backend (pull_request)", State: CheckSuccess})
+	se.poll()
+	id := se.pr(5).ID
+	se.inLine(id)
+	se.inLine(id)
+	if se.sg.updated() < 1 || len(se.sg.merged()) != 0 {
+		t.Fatalf("updates %d, merges %+v", se.sg.updated(), se.sg.merged())
 	}
 	if n := se.pr(5).armedNote; !strings.Contains(n, "couldn't bring the branch up to date") {
 		t.Errorf("note = %q", n)

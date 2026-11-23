@@ -89,65 +89,6 @@ const urgentPR = `p.labels LIKE '%"` + CIUrgentLabel + `"%'`
 const urgentRoundJob = `(source = '` + babysitSource + `' AND source_id IN (SELECT b.id FROM babysits b JOIN pull_requests p ON p.id = b.pr_id
 	WHERE b.ended_at IS NULL AND ` + urgentPR + `))`
 
-// urgentFirst moves pr, queued and urgent, ahead of every pull request in
-// its line that isn't urgent and stands at its own place: placed just before
-// the first of those. What stands ahead of its place stays ahead: the front
-// marked ready (queueAhead puts it first), a base fix fixFirst moved up, an
-// urgent one placed earlier (a tie goes by number). Taking the label off
-// later leaves the place it has; it goes when the pull request leaves the
-// queue.
-func (s *Service) urgentFirst(ctx context.Context, pr *PullRequest) {
-	if pr.QueuedAt == nil || pr.Outside || queueHolder(pr) || !pr.urgent() {
-		return
-	}
-	// "At its own place": joined when armed (queueTurn). One that joined
-	// ahead of that was moved up, or kept an older place when armed again.
-	var first int64
-	// #nosec G202 -- fixed SQL fragments; values are bound
-	if err := s.db.R.QueryRowContext(ctx, `SELECT coalesce(min(coalesce(p.queued_at, p.armed_at)), 0) FROM pull_requests p
-		WHERE p.forge_id = ? AND p.repo = ? COLLATE NOCASE AND p.base_ref = ? AND p.id != ? AND p.state IN ('open','draft')
-		  AND p.armed_at IS NOT NULL AND p.outside = 0 AND NOT `+urgentPR+`
-		  AND NOT (p.wip_auto = 1 AND p.state = 'open' AND p.ready_at IS NOT NULL)
-		  AND (p.queued_at IS NULL OR p.queued_at >= p.armed_at)
-		  AND EXISTS (SELECT 1 FROM babysits b WHERE b.pr_id = p.id AND b.ended_at IS NULL AND b.state IN (?, ?, ?, ?))`,
-		pr.ForgeID, pr.Repo, pr.BaseRef, pr.ID, queueStates[0], queueStates[1], queueStates[2], queueStates[3]).Scan(&first); err != nil {
-		s.log.WarnContext(ctx, "read the merge line", "pr", pr.ID, "err", err)
-		return
-	}
-	if first == 0 || first > pr.QueuedAt.UnixMilli() {
-		return // ahead of them already
-	}
-	// A base fix moved up (queued before it was armed) stays ahead of an urgent
-	// one: never go to or before its place.
-	var fix int64
-	// #nosec G202 -- fixed SQL fragments; values are bound
-	if err := s.db.R.QueryRowContext(ctx, `SELECT coalesce(max(p.queued_at), 0) FROM pull_requests p
-		WHERE p.forge_id = ? AND p.repo = ? COLLATE NOCASE AND p.base_ref = ? AND p.id != ? AND p.state IN ('open','draft')
-		  AND p.armed_at IS NOT NULL AND p.outside = 0 AND NOT `+urgentPR+`
-		  AND NOT (p.wip_auto = 1 AND p.state = 'open' AND p.ready_at IS NOT NULL)
-		  AND p.queued_at < p.armed_at
-		  AND EXISTS (SELECT 1 FROM babysits b WHERE b.pr_id = p.id AND b.ended_at IS NULL AND b.state IN (?, ?, ?, ?))`,
-		pr.ForgeID, pr.Repo, pr.BaseRef, pr.ID, queueStates[0], queueStates[1], queueStates[2], queueStates[3]).Scan(&fix); err != nil {
-		s.log.WarnContext(ctx, "read the merge line", "pr", pr.ID, "err", err)
-		return
-	}
-	at0 := first - 1
-	if fix >= at0 {
-		at0 = fix + 1
-	}
-	if at0 >= pr.QueuedAt.UnixMilli() {
-		return // already behind the base fix and ahead of the rest as far as it can be
-	}
-	first = at0 + 1
-	if _, err := s.db.W.ExecContext(ctx, `UPDATE pull_requests SET queued_at = ? WHERE id = ? AND queued_at IS NOT NULL`, first-1, pr.ID); err != nil {
-		s.log.WarnContext(ctx, "put an urgent pull request first", "pr", pr.ID, "err", err)
-		return
-	}
-	at := msTime(first - 1)
-	pr.QueuedAt = &at
-	s.log.Info("an urgent pull request goes ahead in its merge queue", "pr", pr.ID, "repo", pr.Repo, "base", pr.BaseRef)
-}
-
 // urgentRound starts the round for what the reviews left on an urgent pull
 // request's head while its checks still run, and reports whether it did
 // (WP-686). The round's push starts the full run again anyway, so waiting

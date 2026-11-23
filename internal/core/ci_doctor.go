@@ -188,8 +188,7 @@ type CIStackStats struct {
 	Cancelled int    `json:"cancelled"` // what it was built on changed
 	LastFail  string `json:"last_fail,omitempty"`
 	LastRun   string `json:"last_run,omitempty"` // the run of the latest that failed
-	// PausedUntil: the line gets no stacks or batches until then, as none
-	// of its last stackPauseRuns passed (WP-386).
+	// PausedUntil: the line builds no candidates until then (lineFallbackUntil).
 	PausedUntil *time.Time `json:"paused_until,omitempty"`
 }
 
@@ -764,15 +763,15 @@ func (s *Service) lineStacks(ctx context.Context, ref lineRef, since time.Time) 
 	if err := rows.Err(); err != nil {
 		return st, err
 	}
-	if until, paused := s.stacksPaused(ctx, &PullRequest{ForgeID: ref.forge, Repo: ref.repo, BaseRef: ref.base}); paused {
+	if until, paused := s.lineFallbackUntil(ctx, ref); paused {
 		st.PausedUntil = &until
 	}
 	return st, nil
 }
 
 func stacksPausedNote(until, now time.Time) string {
-	return fmt.Sprintf("None of the line's last %d stack or batch runs passed, so it gets none for %s (until %s UTC); then one is tried again (WP-386).",
-		stackPauseRuns, ShortDuration(until.Sub(now)), until.UTC().Format("15:04"))
+	return fmt.Sprintf("A candidate of this line found no run, no merge of its heads, or was refused its merge, so it builds none for %s (until %s UTC): each pull request is tested on its own branch meanwhile (WP-1659).",
+		ShortDuration(until.Sub(now)), until.UTC().Format("15:04"))
 }
 
 // stacksFailing: enough of a line's stacks ended on a failure or conflict

@@ -102,7 +102,7 @@ func TestSharedTimeoutGivesUpTheFront(t *testing.T) {
 	if pr := be.pr(7); pr.QueuedAt != nil {
 		t.Fatalf("#7 back in the line ahead of #8's full run: %+v", pr)
 	}
-	if w := be.babysitOf(7).Wait; !strings.Contains(w, "main moved on, so it is tried again on it after #8's full run") {
+	if w := be.babysitOf(7).Wait; !strings.Contains(w, "main moved on, so it is tried again on it at its turn, behind #8") {
 		t.Fatalf("#7 waits %q", w)
 	}
 	if w := be.babysitOf(8).Wait; strings.Contains(w, "behind #7") {

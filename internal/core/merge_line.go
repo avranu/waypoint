@@ -77,7 +77,6 @@ type lineState struct {
 	rows    map[int64]*queueStack
 	polls   map[int64]candPoll
 	tip     string
-	freed   bool // gather changed what the babysits see
 	dropped []*PullRequest
 }
 
@@ -125,11 +124,11 @@ func lineSort(prs []*PullRequest, fixer int64) {
 		if ra, rb := rank(a), rank(b); ra != rb {
 			return ra - rb
 		}
-		if a.ArmedAt != nil && b.ArmedAt != nil && !a.ArmedAt.Equal(*b.ArmedAt) {
-			return a.ArmedAt.Compare(*b.ArmedAt)
-		}
 		if queueHolder(a) && queueHolder(b) && !a.ReadyAt.Equal(*b.ReadyAt) {
 			return a.ReadyAt.Compare(*b.ReadyAt)
+		}
+		if a.ArmedAt != nil && b.ArmedAt != nil && !a.ArmedAt.Equal(*b.ArmedAt) {
+			return a.ArmedAt.Compare(*b.ArmedAt)
 		}
 		return a.Number - b.Number
 	})
@@ -305,16 +304,21 @@ func (s *Service) lineFrontFacts(ctx context.Context, ls *lineState, p *PullRequ
 	e.FullRunning = !e.FullPassed && p.CIState != CIFailed
 }
 
-// lineFallback: the base's candidates ended without a run or a merge, or
-// were refused, within lineFallbackFor.
-func (s *Service) lineFallback(ctx context.Context, ref lineRef) bool {
-	var n int
-	if err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM queue_stacks WHERE forge_id = ? AND repo = ? COLLATE NOCASE AND base_ref = ?
+// lineFallbackUntil: when the base's candidates ended without a run or a
+// merge, or were refused, within lineFallbackFor, the time they come back.
+func (s *Service) lineFallbackUntil(ctx context.Context, ref lineRef) (time.Time, bool) {
+	var at int64
+	if err := s.db.R.QueryRowContext(ctx, `SELECT coalesce(max(ended_at), 0) FROM queue_stacks WHERE forge_id = ? AND repo = ? COLLATE NOCASE AND base_ref = ?
 		AND end_reason IN (?, ?, ?) AND ended_at > ?`, ref.forge, ref.repo, ref.base, endNoRun, endNoMerge, endRefused,
-		s.now().Add(-lineFallbackFor).UnixMilli()).Scan(&n); err != nil {
-		return false
+		s.now().Add(-lineFallbackFor).UnixMilli()).Scan(&at); err != nil || at == 0 {
+		return time.Time{}, false
 	}
-	return n > 0
+	return msTime(at).Add(lineFallbackFor), true
+}
+
+func (s *Service) lineFallback(ctx context.Context, ref lineRef) bool {
+	_, on := s.lineFallbackUntil(ctx, ref)
+	return on
 }
 
 // lineBatchDepth is how many places a batch covers: one more than the last
@@ -723,6 +727,12 @@ func (s *Service) lineAct(ctx context.Context, ls *lineState, a lineAction) {
 			}
 			state := stackCancelled
 			switch reason {
+			case endLineChanged, endHeadMoved, endBaseMoved:
+				// The merge of the last head can land before the merge path
+				// has ended the candidate: that is a merge, not a change.
+				if s.restMerged(ctx, st) {
+					reason, state = endMerged, stackMerged
+				}
 			case endLost:
 				state = stackCancelled
 				if p, ok := ls.polls[st.ID]; ok && p.reason != "" {
@@ -743,6 +753,21 @@ func (s *Service) lineAct(ctx context.Context, ls *lineState, a lineAction) {
 	case lineUpdate:
 		s.lineUpdateAct(ctx, ls, a)
 	}
+}
+
+// restMerged: every head of st not yet seen on the base is a merged pull
+// request now.
+func (s *Service) restMerged(ctx context.Context, st *queueStack) bool {
+	if st.Merged < 0 || st.Merged >= len(st.Heads) {
+		return false
+	}
+	for _, h := range st.Heads[st.Merged:] {
+		var state string
+		if err := s.db.R.QueryRowContext(ctx, `SELECT state FROM pull_requests WHERE id = ?`, h.PRID).Scan(&state); err != nil || state != "merged" {
+			return false
+		}
+	}
+	return true
 }
 
 // lineChangedWhy says which of a candidate's reasons for ending fit: the
@@ -926,11 +951,15 @@ func (s *Service) lineUpdateAct(ctx context.Context, ls *lineState, a lineAction
 	// the full tier once (WP-456).
 	before := func() { s.readyForUpdate(ctx, pr) }
 	switch s.updateIfBehindThen(ctx, pr, before) {
+	case upToDate:
+		before() // already on the tip: ready is all it needs for its full run
 	case upConflict:
 		s.lineDrop(ctx, ls.ref, pr, reasonConflict(pr.BaseRef)+"; a round resolves it")
 	case upFailed:
 		if b, err := s.activeBabysit(ctx, s.db.R, pr.ID); err == nil && b != nil {
-			s.setState(ctx, b, pr, BabysitNeedsPerson, "couldn't bring the branch up to date with "+cmp(pr.BaseRef, "its base")+"; the note on the pull request says why")
+			// A forge that fails to update may be having a moment: the sweep
+			// tries again, and the note on the pull request says why.
+			s.setState(ctx, b, pr, BabysitWatching, "in the merge line for "+cmp(pr.BaseRef, "its base")+": couldn't bring the branch up to date; trying again")
 		}
 	}
 }
@@ -1092,4 +1121,25 @@ func (s *Service) sweepLines(ctx context.Context) {
 		}
 		s.lineChanged(ctx, r)
 	}
+}
+
+// joinLine puts a settled armed pull request in the line.
+func (s *Service) joinLine(ctx context.Context, pr *PullRequest) {
+	if pr.QueuedAt != nil {
+		return
+	}
+	at := s.now()
+	if _, err := s.db.W.ExecContext(ctx, `UPDATE pull_requests SET queued_at = coalesce(queued_at, ?) WHERE id = ?`, at.UnixMilli(), pr.ID); err != nil {
+		s.log.WarnContext(ctx, "join the merge line", "pr", pr.ID, "err", err)
+		return
+	}
+	pr.QueuedAt = &at
+	s.log.InfoContext(ctx, "pull request joined the line", "repo", pr.Repo, "base", pr.BaseRef, "pr", pr.Number, "head", short(pr.HeadSHA))
+}
+
+// inCandidate: a live candidate merges pr's head.
+func (s *Service) inCandidate(ctx context.Context, prID int64) bool {
+	var n int
+	_ = s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM queue_stacks WHERE ended_at IS NULL AND heads LIKE ?`, fmt.Sprintf(`%%"pr_id":%d,%%`, prID)).Scan(&n)
+	return n > 0
 }

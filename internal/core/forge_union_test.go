@@ -86,7 +86,7 @@ func unionEnv(t *testing.T, headRepo string, prFiles string, tune func(*shipForg
 
 func TestUnionUpdateThroughQueue(t *testing.T) {
 	se, id := unionEnv(t, "me/app", unionDiff, nil)
-	se.s.maybeAutoMerge(se.ctx, id)
+	se.inLine(id)
 	want := []string{
 		"update",
 		"commit: Merge queue: take main's e2e/weights.txt to update the branch (union merge, WP-594)",
@@ -103,15 +103,16 @@ func TestUnionUpdateThroughQueue(t *testing.T) {
 		t.Errorf("note = %q", n)
 	}
 	// Once per tip: looking again changes nothing.
-	se.s.maybeAutoMerge(se.ctx, id)
+	se.inLine(id)
 	if len(se.sg.union.log) != len(want) {
 		t.Errorf("looped: %q", se.sg.union.log)
 	}
 }
 
 func TestUnionUpdateLeavesRealConflict(t *testing.T) {
-	se, _ := unionEnv(t, "me/app", unionDiff+"diff --git a/app/login.go b/app/login.go\n--- a/app/login.go\n+++ b/app/login.go\n@@ -1 +1 @@\n-a\n+b\n",
+	se, id := unionEnv(t, "me/app", unionDiff+"diff --git a/app/login.go b/app/login.go\n--- a/app/login.go\n+++ b/app/login.go\n@@ -1 +1 @@\n-a\n+b\n",
 		func(g *shipForge) { g.union.changed = []string{"e2e/weights.txt", "app/login.go"} })
+	se.inLine(id)
 	if !reflect.DeepEqual(se.sg.union.log, []string{"update"}) {
 		t.Fatalf("calls = %q", se.sg.union.log)
 	}
@@ -134,10 +135,11 @@ func TestUnionUpdateSkipsForks(t *testing.T) {
 
 // When the update still conflicts after the drop, the branch's own file comes back.
 func TestUnionUpdateRestoresWhenStillConflicting(t *testing.T) {
-	se, _ := unionEnv(t, "me/app", unionDiff, func(g *shipForge) {
+	se, id := unionEnv(t, "me/app", unionDiff, func(g *shipForge) {
 		g.union.conflictUntilDrop = false
 		g.updateErr = &forgeAPIError{method: "POST", path: "/pulls/update", status: 409, body: "conflict"}
 	})
+	se.inLine(id)
 	log := se.sg.union.log
 	if len(log) != 4 || !strings.Contains(log[3], "put back") || se.sg.union.head["e2e/weights.txt"] != "10 a\n20 b\n30 mine\n" {
 		t.Fatalf("calls = %q, head %q", log, se.sg.union.head)

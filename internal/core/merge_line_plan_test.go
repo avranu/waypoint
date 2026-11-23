@@ -99,6 +99,8 @@ func TestPlanLine(t *testing.T) {
 		{name: "branch front not on the tip is updated", snap: lineSnap{Entries: []lineEntry{branch(e(1)), e(2)}}, want: []lineAction{{Kind: lineUpdate, PR: 10}}},
 		{name: "branch front on the tip and running: nothing, no candidates behind", snap: lineSnap{
 			Entries: []lineEntry{branch(onTip(e(1), false, true)), e(2)}}},
+		{name: "branch front on the tip with no run is updated: a held draft is marked ready, which runs the full tier", snap: lineSnap{
+			Entries: []lineEntry{branch(onTip(e(1), false, false)), e(2)}}, want: []lineAction{{Kind: lineUpdate, PR: 10}}},
 		{name: "branch entry at place 2 limits candidates to place 1", snap: lineSnap{Entries: []lineEntry{e(1), branch(e(2)), e(3)}}, want: []lineAction{start(1)}},
 		{name: "depth 3 cap", snap: lineSnap{Entries: []lineEntry{e(1), e(2), e(3), e(4)}}, want: []lineAction{start(1), start(1, 2), start(1, 2, 3)}},
 		{name: "front on the tip with its full run going gets no place-1 candidate", snap: lineSnap{

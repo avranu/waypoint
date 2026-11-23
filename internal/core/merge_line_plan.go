@@ -230,9 +230,11 @@ func planLine(s lineSnap) []lineAction {
 		return acts // the line is read again without it
 	}
 
-	// The front on its own branch: brought up to date, then its run.
+	// The front on its own branch: brought up to date, then its run. A draft
+	// Waypoint holds that already holds the tip is marked ready by the same
+	// action, which runs the full tier.
 	if front.Branch {
-		if !front.OnTip {
+		if !front.OnTip || !front.FullRunning {
 			acts = append(acts, lineAction{Kind: lineUpdate, PR: front.PRID})
 		}
 		return acts
