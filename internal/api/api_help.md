@@ -1091,7 +1091,8 @@ steers or clears one in effect.
                                      state,gate,armed}}
     PATCH /projects/{key}/repos/{id} {review_gate: bool, gate_severity: "P0".."P3"|critical..low} (owners)
     PATCH /projects/{key}/repos/{id} {auto_merge: bool, required_checks: [..], review_wait_minutes: 0..1440,
-                                     quiet_minutes: 0..1440, external_reviewers: [login|context]} (owners;
+                                     quiet_minutes: 0..1440, external_reviewers: [login|context],
+                                     line_candidates: bool (the merge line tests on a candidate branch)} (owners;
                                      WP-133). auto_merge arms every open non-draft pull request (not forks,
                                      release PRs, do-not-merge or wip); off takes off only its own arming.
                                      The repo list returns the same fields
