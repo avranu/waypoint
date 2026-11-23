@@ -10,9 +10,6 @@ import (
 )
 
 func TestGateProblems(t *testing.T) {
-	live := func(n int) []liveAgent {
-		return make([]liveAgent, n)
-	}
 	for _, c := range []struct {
 		name string
 		f    gateFacts
@@ -23,17 +20,16 @@ func TestGateProblems(t *testing.T) {
 		{"fork of a small context", gateFacts{agent: "fork", context: 20_000}, []string{"never allowed here (a fork would copy this 20k-token context onto this session's model): start a fresh sonnet-worker or haiku-worker"}},
 		{"fork of an unknown context", gateFacts{agent: "fork"}, []string{"fresh sonnet-worker"}},
 		{"fork from Haiku", gateFacts{agent: "fork", context: 20_000, haiku: true}, []string{"never allowed"}},
-		{"fork from Haiku, nested and wide", gateFacts{agent: "fork", haiku: true, nested: true, live: live(6)}, []string{"never allowed"}},
+		{"fork from Haiku, nested", gateFacts{agent: "fork", haiku: true, nested: true}, []string{"never allowed"}},
 		{"resolves to Fable", gateFacts{context: 20_000, premium: "Fable"}, []string{"run on Fable: pass model: sonnet"}},
 		{"resolves to Mythos", gateFacts{context: 20_000, premium: "Mythos"}, []string{"run on Mythos: pass model: sonnet"}},
 		{"unnamed type is general-purpose, not a fork", gateFacts{context: 150_000}, nil},
 		{"resolves to Opus", gateFacts{context: 150_000, premium: "Opus"}, []string{"run on Opus: pass model: sonnet"}},
-		{"nested call", gateFacts{agent: "sonnet-worker", nested: true}, []string{"coordinator decide"}},
-		{"fifth agent", gateFacts{agent: "sonnet-worker", live: live(4)}, []string{"4 agents are already live"}},
-		{"third agent", gateFacts{agent: "sonnet-worker", live: live(3)}, nil},
+		{"nested sonnet", gateFacts{agent: "sonnet-worker", nested: true}, nil},
+		{"nested premium", gateFacts{agent: "general-purpose", nested: true, premium: "Fable"}, []string{"An agent can't start an agent on Fable here: pass model: sonnet or haiku"}},
+		{"nested fork", gateFacts{agent: "fork", nested: true, context: 20_000}, []string{"never allowed"}},
 		{"haiku nested", gateFacts{agent: "haiku-worker", nested: true, haiku: true}, nil},
-		{"haiku past the width cap", gateFacts{agent: "haiku-worker", haiku: true, live: live(6)}, nil},
-		{"all at once", gateFacts{agent: "fork", nested: true, context: 200_000, premium: "Opus", live: live(5)}, []string{"fresh", "coordinator", "already live", "model: sonnet"}},
+		{"all at once", gateFacts{agent: "fork", nested: true, context: 200_000, premium: "Opus"}, []string{"fresh", "can't start an agent on Opus"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			got := gateProblems(c.f)
@@ -152,18 +148,21 @@ func TestHookClaudeGate(t *testing.T) {
 		hookClaudeGate(c, strings.NewReader(in), &out)
 		return out.String()
 	}
-	got := run(`{"session_id":"s1","tool_name":"Agent","tool_input":{"subagent_type":"sonnet-worker","model":"sonnet"}}`)
-	if !strings.Contains(got, `"permissionDecision":"deny"`) || !strings.Contains(got, "already live") {
+	// Four live agents are no cap: a fifth, main-thread or nested, is let through.
+	if got := run(`{"session_id":"s1","tool_name":"Agent","tool_input":{"subagent_type":"sonnet-worker","model":"sonnet"}}`); got != "" {
 		t.Errorf("fifth agent: %s", got)
 	}
-	if got := run(`{"session_id":"s2","tool_name":"Task","tool_input":{"subagent_type":"sonnet-worker"},"agent_id":"z"}`); !strings.Contains(got, "coordinator") {
-		t.Errorf("nested via Task: %s", got)
+	if got := run(`{"session_id":"s1","tool_name":"Agent","tool_input":{"subagent_type":"sonnet-worker","model":"sonnet"},"agent_id":"a"}`); got != "" {
+		t.Errorf("fifth agent, nested: %s", got)
+	}
+	if got := run(`{"session_id":"s2","tool_name":"Task","tool_input":{"subagent_type":"sonnet-worker","model":"sonnet"},"agent_id":"z"}`); got != "" {
+		t.Errorf("nested sonnet via Task: %s", got)
+	}
+	if got := run(`{"session_id":"s2","tool_name":"Agent","tool_input":{"subagent_type":"general-purpose","model":"opus"},"agent_id":"z"}`); !strings.Contains(got, "can't start an agent on Opus") {
+		t.Errorf("nested opus: %s", got)
 	}
 	if got := run(`{"session_id":"s2","tool_name":"Agent","tool_input":{"subagent_type":"haiku-worker","model":"haiku"},"agent_id":"z"}`); got != "" {
 		t.Errorf("haiku nested: %s", got)
-	}
-	if got := run(`{"session_id":"s1","tool_name":"Agent","tool_input":{"subagent_type":"general-purpose","model":"haiku"}}`); got != "" {
-		t.Errorf("haiku past width: %s", got)
 	}
 	if got := run(`{"session_id":"s2","tool_name":"Agent","tool_input":{"subagent_type":"general-purpose"},"model":"claude-opus-4"}`); !strings.Contains(got, "Opus") {
 		t.Errorf("inherits Opus: %s", got)
@@ -180,6 +179,39 @@ func TestHookClaudeGate(t *testing.T) {
 	c.trackSubagent(hookEventInput{SessionID: "s1", AgentID: "e", AgentType: "fork", HookEventName: "SubagentStart"})
 	if n := len(c.loadState().Agents["s1"]); n != 4 {
 		t.Errorf("tracked %d, want 4", n)
+	}
+}
+
+// A nested call with no model inherits its caller's model, not the main
+// session's: a Sonnet worker starting general-purpose under a Fable session
+// is a Sonnet agent.
+func TestHookClaudeGateNestedInherits(t *testing.T) {
+	t.Setenv("WP_TASK", "")
+	t.Setenv("WP_GATE", "")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CLAUDE_CODE_SUBAGENT_MODEL", "")
+	c := &cli{dir: t.TempDir()}
+	tr := filepath.Join(t.TempDir(), "t.jsonl")
+	if err := os.WriteFile(tr, []byte(`{"type":"assistant","message":{"model":"claude-fable-5-2","usage":{"input_tokens":10}}}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c.trackSubagent(hookEventInput{SessionID: "n1", AgentID: "w", AgentType: "x", HookEventName: "SubagentStart"})
+	_ = c.updateState(func(s *State) {
+		a := s.Agents["n1"]["w"]
+		a.Model = "sonnet"
+		s.Agents["n1"]["w"] = a
+	})
+	run := func(agentID string) string {
+		in, _ := json.Marshal(map[string]any{"session_id": "n1", "tool_name": "Agent", "transcript_path": tr, "cwd": t.TempDir(), "agent_id": agentID, "model": "claude-fable-5-2", "tool_input": json.RawMessage(`{"subagent_type":"general-purpose"}`)})
+		var out bytes.Buffer
+		hookClaudeGate(c, bytes.NewReader(in), &out)
+		return out.String()
+	}
+	if got := run("w"); got != "" {
+		t.Errorf("sonnet worker starting general-purpose: %s", got)
+	}
+	if got := run(""); !strings.Contains(got, "Fable") {
+		t.Errorf("the Fable main session starting general-purpose: %s", got)
 	}
 }
 

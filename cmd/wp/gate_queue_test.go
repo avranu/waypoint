@@ -238,7 +238,7 @@ func TestGateQueue(t *testing.T) {
 		g := newGateFixture(t)
 		t.Setenv("CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS", "1")
 		g.start("s1", "a", "general-purpose")
-		out := g.run(`{"session_id":"s1","tool_name":"Agent","agent_id":"z","tool_input":{"subagent_type":"general-purpose","model":"sonnet"}}`)
+		out := g.run(`{"session_id":"s1","tool_name":"Agent","agent_id":"z","tool_input":{"subagent_type":"general-purpose","model":"opus"}}`)
 		if !strings.Contains(out, "coordinator") || g.f.sleeps != 0 {
 			t.Errorf("out %q sleeps %d", out, g.f.sleeps)
 		}

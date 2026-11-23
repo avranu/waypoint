@@ -14,14 +14,18 @@ import (
 )
 
 // The fan-out gate (WP-143, X6): a PreToolUse hook on the Agent tool that
-// refuses forks and checks depth, width and model before an agent is
-// started. Local only, no network: it runs before every Agent call. It
-// refuses in every session, interactive ones included; WP_GATE=warn|deny|off
-// overrides, except for a fork, which is refused in every mode. Haiku agents are exempt from all but the fork rule (see resolveModel). Free models run as
-// Bash calls (llm-task), never as Agent calls, so the gate never sees them.
+// refuses forks and checks the model before an agent is started. An agent may
+// start Sonnet and Haiku agents; a definition that must not start agents
+// leaves the Agent tool out of its tools. A premium model (Opus, Fable,
+// Mythos) is questioned from the main session and from inside an agent.
+// There is no cap on live agents (WP-1716). Local only, no network: it runs
+// before every Agent call. It refuses in every session, interactive ones
+// included; WP_GATE=warn|deny|off overrides, except for a fork, which is
+// refused in every mode. Haiku agents are exempt from all but the fork rule
+// (see resolveModel). Free models run as Bash calls (llm-task), never as
+// Agent calls, so the gate never sees them.
 
 const (
-	gateMaxLive   = 4 // live agents of one session tree
 	gateTailBytes = 256 << 10
 	gateLiveTTL   = 3 * time.Hour // a SubagentStop that never came
 )
@@ -58,12 +62,11 @@ func gateMode() string {
 
 // gateFacts is what the checks need.
 type gateFacts struct {
-	nested  bool        // called from inside a subagent
-	agent   string      // subagent_type; "fork" is a fork, "" is general-purpose
-	context int64       // the caller's current context, tokens
-	premium string      // the family the effective model resolves to when premium ("Opus", "Fable", "Mythos"), else ""
-	haiku   bool        // the effective model is Haiku: exempt from every rule
-	live    []liveAgent // live agents of the session that are not Haiku
+	nested  bool   // called from inside a subagent
+	agent   string // subagent_type; "fork" is a fork, "" is general-purpose
+	context int64  // the caller's current context, tokens
+	premium string // the family the effective model resolves to when premium ("Opus", "Fable", "Mythos"), else ""
+	haiku   bool   // the effective model is Haiku: exempt from every rule
 }
 
 // gateProblems returns one short message per check that fails.
@@ -85,21 +88,9 @@ func gateProblems(f gateFacts) []string {
 	if f.haiku {
 		return nil
 	}
-	if f.nested {
-		out = append(out, "Agents can't start agents here: report back and let the coordinator decide.")
-	}
-	if len(f.live) >= gateMaxLive {
-		var names []string
-		for _, a := range f.live {
-			t := a.Type
-			if t == "" {
-				t = "fork"
-			}
-			names = append(names, t)
-		}
-		out = append(out, fmt.Sprintf("%d agents are already live (%s): wait for one to finish, or run the rest as budgeted task sessions with `wp fanout PLAN.toml`.", len(f.live), strings.Join(names, ", ")))
-	}
-	if f.premium != "" {
+	if f.premium != "" && f.nested {
+		out = append(out, "An agent can't start an agent on "+f.premium+" here: pass model: sonnet or haiku, or report back and let the coordinator decide.")
+	} else if f.premium != "" {
 		out = append(out, "This agent would run on "+f.premium+": pass model: sonnet unless it needs design-level judgment.")
 	}
 	return out
@@ -277,26 +268,22 @@ func hookClaudeGate(c *cli, stdin io.Reader, stdout io.Writer) {
 		if fh, err := os.Open(in.TranscriptPath); err == nil { // #nosec G304 -- the hook's own transcript, named by Claude Code
 			var m string
 			f.context, m = transcriptTail(fh)
-			if m != "" {
+			if m != "" && !f.nested {
 				parent = m
 			}
 			_ = fh.Close()
 		}
 	}
+	if f.nested {
+		// The transcript is the main session's, so its model is not the
+		// caller's: an agent started with no model inherits its caller's, the
+		// one recorded when the caller was started ("" when not known).
+		parent = c.subagentModel(in)
+	}
 	dirs := agentDirs(in.Cwd)
 	eff := resolveModel(ti.Model, ti.Type, parent, dirs)
 	f.haiku = isModel(eff, "haiku")
 	f.premium = premiumFamily(eff)
-	now := time.Now()
-	for _, a := range c.loadState().Agents[in.SessionID] {
-		if now.Sub(a.Since) > gateLiveTTL {
-			continue
-		}
-		if a.Type != "" && a.Type != "fork" && isModel(resolveModel("", a.Type, "", dirs), "haiku") {
-			continue // Haiku does not count toward the width cap
-		}
-		f.live = append(f.live, a)
-	}
 	problems := gateProblems(f)
 	if fork {
 		if mode == "off" {
