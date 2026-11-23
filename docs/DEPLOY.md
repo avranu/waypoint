@@ -190,9 +190,31 @@ deploy key in a CI job is readable by whatever runs beside it.
    `matrix.shard` list must agree; `internal/cilint/repo_test.go` checks.
    A pull request or main run does each browser suite at one viewport and
    theme (`E2E_LOOKS=one`); a weekly schedule (Sundays 03:17 UTC, or "Run
-   workflow" with looks `all`) runs the e2e jobs alone at all four looks. Its
+   workflow" with looks `all`) runs the e2e jobs alone at all four looks (plus `advisories`, below). Its
    failure is the red `ci / e2e (schedule)` on main's tip commit and in the
    repository's Actions list; nothing else waits for it.
+
+   **Advisories (WP-1660).** `npm audit` (high and above) and govulncheck
+   (called vulnerabilities) depend on advisory databases, not on the change
+   under test, so a new advisory used to fail every branch's full run. Nothing
+   waives or ignores an advisory; what changes is where it fails.
+   `.forgejo/scripts/advisories.sh` runs the check on the tree under test
+   (`lint` for npm, the last `backend shard` for Go); with no findings that is
+   all. With findings it checks origin/main's tip the same way and compares
+   by advisory id: a pull request or merge queue stack fails only for an id
+   main lacks (and prints it), and when every finding is also on main it
+   passes with a `::warning title=Advisory on main::` naming them. Main's own
+   findings fail the `advisories` job, which runs on every push to main and
+   daily (Sunday's schedule above, Monday to Saturday 04:43 UTC), without
+   `current`'s skip, because a merge tested on its branch says nothing about
+   advisories published since. No other job needs `advisories`, so `release`
+   and `deploy` are not held back by it: an advisory in a build tool must not
+   stop the release of an unrelated fix, or of the fix for its own
+   dependency. A red `advisories` makes main's push run red, so the CI doctor
+   lists it as a red base branch (its "until one passes, its tip isn't
+   released" line does not apply to this job); no task is filed for it.
+   `make vuln` and `npm run audit` (which keeps its own waiver list) are
+   unchanged and still check the whole tree.
 2. `release` (needs all three to pass, or `current` to say the merge was already tested) runs `deploy/release.sh --publish`. It picks the
    next version from the commits since the last `v*` tag: the first release is
    `v0.1.0`; a breaking change (`type!:` subject or a `BREAKING CHANGE:` line)
