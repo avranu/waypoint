@@ -284,9 +284,32 @@ func (se *stackEnv) stackConflictOn(i int, n, base string, heads ...string) {
 	se.sg.sm.Unlock()
 }
 
-// An early conflict round doesn't start while its owner's usage limit is
-// spent: the round would have to wait, and waiting costs the place in the
-// queue that a conflict alone keeps (WP-457).
+// candEndingAt is the index of the candidate whose last head is pull request
+// n (stackConflict puts a log on a candidate by index: it has to be the one
+// that names that head, or no conflict is read from it).
+func (se *stackEnv) candEndingAt(n int) int {
+	se.t.Helper()
+	for i, st := range se.stacks() {
+		if !st.Ended && len(st.Heads) > 0 && st.Heads[len(st.Heads)-1].Number == n && len(st.Heads) > 1 {
+			return i
+		}
+	}
+	se.t.Fatalf("no live candidate ends at #%d", n)
+	return -1
+}
+
+// conflictEnded checks that candidate i ended as a conflict about #n, and
+// whether it conflicts with the heads ahead only.
+func (se *stackEnv) conflictEnded(i, n int, ahead bool) {
+	se.t.Helper()
+	st := se.stacks()[i]
+	if !st.Ended || st.EndReason != endConflict || st.ConflictPR != se.pr(n).ID || st.ConflictAhead != ahead {
+		se.t.Fatalf("candidate %d: ended %v %q conflict_pr %d ahead %v; want a conflict about #%d (ahead %v)", i, st.Ended, st.EndReason, st.ConflictPR, st.ConflictAhead, n, ahead)
+	}
+}
+
+// A conflict round doesn't start while its owner's usage limit is spent: it
+// waits for the limit, with the pull request still armed (WP-457).
 func TestStackedQueueBaseConflictWaitsOutALimit(t *testing.T) {
 	se := newStackEnv(t)
 	se.queueAll()
@@ -298,14 +321,19 @@ func TestStackedQueueBaseConflictWaitsOutALimit(t *testing.T) {
 		se.s.nowMS()+time.Hour.Milliseconds(), se.babysitOf(8).ID); err != nil {
 		t.Fatal(err)
 	}
-	se.stackConflictOn(0, "8 "+head8s, se.stacks()[0].BaseSHA, "7 "+head7s)
+	i := se.candEndingAt(8)
+	se.stackConflictOn(i, "8 "+head8s, se.stacks()[i].BaseSHA, "7 "+head7s)
 	se.runnerOnline()
 	se.step()
+	se.conflictEnded(i, 8, false)
 	if b := se.babysitOf(8); b.Round != 0 || b.JobID != 0 {
 		t.Fatalf("#8 got a round with its owner's limit spent: %+v", b)
 	}
-	if pr := se.pr(8); pr.QueuedAt == nil {
-		t.Errorf("#8 lost its place: %+v", pr)
+	// The line drops a head that conflicts with the base from its places (a
+	// round resolves it); with the limit spent the round waits, and the pull
+	// request stays armed.
+	if pr := se.pr(8); pr.ArmedAt == nil {
+		t.Errorf("#8 was disarmed: %+v", pr)
 	}
 }
 
@@ -320,10 +348,27 @@ func (se *stackEnv) stackBaseConflictNoRunner() {
 	se.draftGreen(head9s, 9)
 	se.step()
 	se.runnersOffline()
-	se.stackConflictOn(0, "8 "+head8s, se.stacks()[0].BaseSHA, "7 "+head7s)
+	i := se.candEndingAt(8)
+	se.stackConflictOn(i, "8 "+head8s, se.stacks()[i].BaseSHA, "7 "+head7s)
 	se.step()
+	se.conflictEnded(i, 8, false)
+	if !se.s.conflictOnTip(se.ctx, se.pr(8)) {
+		se.t.Fatal("the line didn't record #8's conflict with the base's tip")
+	}
 	if b := se.babysitOf(8); b.Round != 0 || b.JobID != 0 {
 		se.t.Fatalf("#8 got a round with no runner: %+v", b)
+	}
+}
+
+// With a runner, a conflict with the base's tip gets #8 its round at once,
+// whatever its place in the line (stackBaseConflict).
+func TestStackBaseConflictStartsARound(t *testing.T) {
+	se := newStackEnv(t)
+	se.stackBaseConflictNoRunner()
+	se.runnerOnline()
+	se.step()
+	if b := se.babysitOf(8); b.JobID == 0 {
+		t.Fatalf("#8 got no round for its conflict with the base: %+v", b)
 	}
 }
 
@@ -400,10 +445,15 @@ func TestStackedQueueHeadConflictWaits(t *testing.T) {
 	se.draftGreen(head8s, 7)
 	se.draftGreen(head9s, 9)
 	se.step()
-	se.stackConflict(0, "8 "+head8s, "7 "+head7s)
+	i := se.candEndingAt(8)
+	se.stackConflict(i, "8 "+head8s, "7 "+head7s)
 	se.runnerOnline()
 	se.step()
 	se.step()
+	se.conflictEnded(i, 8, true)
+	if se.s.conflictOnTip(se.ctx, se.pr(8)) {
+		t.Error("a conflict with #7 alone was taken for one with the base")
+	}
 	if b := se.babysitOf(8); b.Round != 0 {
 		t.Fatalf("#8 got a round on a conflict with #7: %+v", b)
 	}
@@ -425,5 +475,34 @@ func TestParseConflictLog(t *testing.T) {
 	onBase := log + "::error title=Merge queue stack::#8 (" + head8s + "00) doesn't merge cleanly onto the base (" + base + ") itself\n"
 	if !onBaseLog(onBase, heads[1], base) || onBaseLog(log, heads[1], base) || onBaseLog(onBase, heads[1], "1111111") || onBaseLog(onBase, heads[0], base) {
 		t.Error("onBaseLog")
+	}
+}
+
+// F30: a refused update (or candidate) on the base's current tip, from the
+// pull request's head, is a conflict round for it; one on a tip the base has
+// left, or for another head, is none.
+func TestConflictOnTipStartsARoundThroughTheBabysit(t *testing.T) {
+	for _, tc := range []struct {
+		name, tip, from string
+		round           bool
+	}{
+		{"current tip and head", "tip-1", head8s, true},
+		{"an old tip", "tip-0", head8s, false},
+		{"another head", "tip-1", "aaaaaaa1111", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			se := newStackEnv(t)
+			se.queueAll()
+			se.draftGreen(head7s, 5)
+			se.draftGreen(head8s, 7)
+			se.step()
+			se.runnerOnline()
+			se.s.baseUpdated.Store(fmt.Sprintf("%d@%s", se.pr(8).ID, tc.tip), baseUpdate{outcome: upConflict, at: se.s.now(), from: tc.from, n: 1})
+			se.step()
+			se.step()
+			if b := se.babysitOf(8); (b.JobID != 0) != tc.round {
+				t.Errorf("#8 round started %v, want %v: %+v", b.JobID != 0, tc.round, b)
+			}
+		})
 	}
 }

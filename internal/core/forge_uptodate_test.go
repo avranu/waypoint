@@ -133,10 +133,14 @@ func TestUpdateBranchFailureIsSaid(t *testing.T) {
 	se.sg.setChecks(head, CommitCheck{Name: "ci / backend (pull_request)", State: CheckSuccess})
 	se.poll()
 	id := se.pr(5).ID
+	se.s.Wait()
+	before := se.sg.updated() // what the poll's own look at the line did
 	se.inLine(id)
 	se.inLine(id)
-	if se.sg.updated() < 1 || len(se.sg.merged()) != 0 {
-		t.Fatalf("updates %d, merges %+v", se.sg.updated(), se.sg.merged())
+	// Joining the line steps it once, the look asked for is another, and the
+	// second inLine one more: each asks the forge, which fails.
+	if n := se.sg.updated() - before; n != 3 || len(se.sg.merged()) != 0 {
+		t.Fatalf("updates %d since the poll, merges %+v", n, se.sg.merged())
 	}
 	if n := se.pr(5).armedNote; !strings.Contains(n, "couldn't bring the branch up to date") {
 		t.Errorf("note = %q", n)
