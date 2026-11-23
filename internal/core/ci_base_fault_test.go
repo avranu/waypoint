@@ -531,3 +531,50 @@ func TestBaseFailingSkipsAdvisories(t *testing.T) {
 		t.Fatalf("advisories and backend: failing = %v", failing)
 	}
 }
+
+// A read that fails while looking for whom to ask isn't "nobody to ask":
+// the run stays unseen and the next pass files the task (audit #1485).
+func TestBaseAdvisoriesOwnerReadFails(t *testing.T) {
+	se := newShipEnv(t, "forgejo")
+	af := &baseFaultForge{shipForge: se.sg, jobs: map[int64][]ActionJob{}, logs: map[int64]string{}}
+	se.s.Forges = af
+	af.add(6, "main", "0000006", "failure", "", se.clockNow().Add(-10*time.Minute))
+	af.mu.Lock()
+	for i := range af.runs {
+		af.runs[i].Event = "schedule"
+	}
+	af.jobs[106] = []ActionJob{{ID: 1006, RunID: 106, Name: advisoriesJob, Status: "failure"}}
+	af.logs[1006] = "GO-2026-0001 called\n"
+	af.mu.Unlock()
+	tasks := func() int {
+		t.Helper()
+		var n int
+		if err := se.s.db.R.QueryRowContext(se.ctx, `SELECT count(*) FROM issues WHERE title LIKE 'Fix the advisories on %'`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	sweep := func() {
+		t.Helper()
+		se.s.Wait()
+		se.setClock(se.clockNow().Add(10 * time.Minute))
+		se.s.RecordCIHistory(se.ctx)
+		se.s.Wait()
+	}
+	rename := func(from, to string) {
+		t.Helper()
+		if _, err := se.s.db.W.ExecContext(se.ctx, `ALTER TABLE `+from+` RENAME TO `+to); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rename("project_members", "project_members_gone")
+	sweep()
+	rename("project_members_gone", "project_members")
+	if tasks() != 0 {
+		t.Fatalf("filed %d tasks with the owner unreadable", tasks())
+	}
+	sweep()
+	if tasks() != 1 {
+		t.Fatalf("after the read works again: %d tasks, want 1", tasks())
+	}
+}

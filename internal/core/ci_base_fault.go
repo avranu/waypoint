@@ -393,27 +393,30 @@ func (s *Service) baseFaultOwner(ctx context.Context, forgeID int64, repo, branc
 	return s.repoProjectOwner(ctx, forgeID, repo)
 }
 
-// repoProjectOwner is an owner of the repo's project (0: none).
+// repoProjectOwner is an owner of the repo's project (0: none, or not read
+// this pass).
 func (s *Service) repoProjectOwner(ctx context.Context, forgeID int64, repo string) int64 {
-	projectID, err := s.attachedProject(ctx, s.db.R, forgeID, repo)
-	if err != nil {
-		if readFault(err) {
-			s.log.WarnContext(ctx, "read the project to find its owner", "repo", repo, "err", err) // 0: nobody this pass
-		}
-		return 0
-	}
-	var id int64
-	switch err := s.db.R.QueryRowContext(ctx, `SELECT u.id FROM project_members m JOIN users u ON u.id = m.user_id
-		WHERE m.project_id = ? AND m.role = 'owner' AND u.disabled = 0 ORDER BY m.user_id LIMIT 1`, projectID).Scan(&id); {
-	case errors.Is(err, sql.ErrNoRows):
-		return 0
-	case err != nil:
-		if readFault(err) {
-			s.log.WarnContext(ctx, "read the owner of a repo's project", "repo", repo, "err", err)
-		}
-		return 0
+	id, err := s.repoProjectOwnerRead(ctx, forgeID, repo)
+	if readFault(err) {
+		s.log.WarnContext(ctx, "read the owner of a repo's project", "repo", repo, "err", err) // 0: nobody this pass
 	}
 	return id
+}
+
+// repoProjectOwnerRead is repoProjectOwner with the read's error, for a
+// caller that must tell "no owner" from "not read".
+func (s *Service) repoProjectOwnerRead(ctx context.Context, forgeID int64, repo string) (int64, error) {
+	projectID, err := s.attachedProject(ctx, s.db.R, forgeID, repo)
+	if err != nil {
+		return 0, err
+	}
+	var id int64
+	err = s.db.R.QueryRowContext(ctx, `SELECT u.id FROM project_members m JOIN users u ON u.id = m.user_id
+		WHERE m.project_id = ? AND m.role = 'owner' AND u.disabled = 0 ORDER BY m.user_id LIMIT 1`, projectID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	return id, err
 }
 
 // baseFaults are repo's kept base-branch fault states, by branch.
@@ -560,6 +563,10 @@ func (s *Service) fileAdvisories(ctx context.Context, f *Forge, repo, branch, sh
 		return true
 	}
 	if ownerID == 0 {
+		// Nobody, or the read of who failed: only the first is settled.
+		if _, err := s.repoProjectOwnerRead(ctx, f.ID, repo); readFault(err) {
+			return false
+		}
 		return noOwner()
 	}
 	owner, err := s.userByID(ctx, s.db.R, ownerID)
