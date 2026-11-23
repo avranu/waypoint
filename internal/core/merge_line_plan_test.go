@@ -108,7 +108,7 @@ func TestPlanLine(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := planLine(tt.snap)
 			for i := range got {
-				got[i].Why = "" // the wording is not a rule
+				got[i].Why, got[i].End = "", "" // the wording is not a rule
 			}
 			if len(got) == 0 && len(tt.want) == 0 {
 				return

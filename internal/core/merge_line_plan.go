@@ -75,6 +75,23 @@ type lineSnap struct {
 	Tried map[string]bool
 }
 
+// end_reason words of a candidate's row (migration 0187).
+const (
+	endMerged      = "merged"
+	endFailed      = "failed"
+	endConflict    = "conflict"
+	endLost        = "lost"
+	endNoRun       = "no_run"
+	endNoMerge     = "no_merge"
+	endLineChanged = "line_changed"
+	endBaseMoved   = "base_moved"
+	endHeadMoved   = "head_moved"
+	endRefused     = "refused"
+	endDuplicate   = "duplicate"
+	endBatchSplit  = "batch_split"
+	endLeft        = "left"
+)
+
 type lineActionKind string
 
 const (
@@ -93,6 +110,8 @@ type lineAction struct {
 	Heads    []stackHead
 	Conflict bool // lineEject: its head didn't merge
 	Why      string
+	// End: lineEnd's end_reason word.
+	End string
 }
 
 // candKey names a set of heads in order.
@@ -144,12 +163,12 @@ func planLine(s lineSnap) []lineAction {
 		n := c.covers(s.Entries)
 		switch {
 		case n == 0:
-			acts = append(acts, lineAction{Kind: lineEnd, Cand: c.ID, Why: "the line or the base changed under it"})
+			acts = append(acts, lineAction{Kind: lineEnd, Cand: c.ID, Why: "the line or the base changed under it", End: endLineChanged})
 		case c.State == candLost:
-			acts = append(acts, lineAction{Kind: lineEnd, Cand: c.ID, Why: "its run never came or never ended"})
+			acts = append(acts, lineAction{Kind: lineEnd, Cand: c.ID, Why: "its run never came or never ended", End: endLost})
 		default:
 			if _, dup := by[n]; dup {
-				acts = append(acts, lineAction{Kind: lineEnd, Cand: c.ID, Why: "another candidate tests the same places"})
+				acts = append(acts, lineAction{Kind: lineEnd, Cand: c.ID, Why: "another candidate tests the same places", End: endDuplicate})
 				continue
 			}
 			by[n] = c
@@ -202,7 +221,7 @@ func planLine(s lineSnap) []lineAction {
 				// A batch: nothing says which head failed it. It ends, and
 				// each place gets a candidate of its own (Tried keeps the
 				// same batch from starting again).
-				acts = append(acts, lineAction{Kind: lineEnd, Cand: c.ID, Why: "the batch failed; its places are tested one by one"})
+				acts = append(acts, lineAction{Kind: lineEnd, Cand: c.ID, Why: "the batch failed; its places are tested one by one", End: endBatchSplit})
 				delete(by, n)
 			}
 		}

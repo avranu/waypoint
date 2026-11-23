@@ -1,7 +1,7 @@
 -- The merge line tests candidates and never pushes to a pull request's
 -- branch (WP-1659, WP-ADR152). One queue_stacks row is now one candidate
 -- (its pr_id is the last head's pull request).
--- reran: the candidate's failed jobs were run again once.
+-- reran: when (ms) the candidate's failed jobs were run again, once; 0: not yet.
 -- conflict_pr, conflict_ahead: for a candidate that ended as a conflict, the
 -- pull request whose head didn't merge, and whether it merges onto the base
 -- alone but not onto the heads ahead of it (1: it waits for them; 0: it

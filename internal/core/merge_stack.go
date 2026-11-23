@@ -102,10 +102,11 @@ type queueStack struct {
 	Note      string
 	CreatedAt time.Time
 	Ended     bool
-	// Reran: its failed jobs were run again once. EndReason: one word for
-	// how it ended. ConflictPR, ConflictAhead: the head that didn't merge,
-	// and whether it only conflicts with the heads ahead of it (WP-1659).
-	Reran         bool
+	// RerunAt: when its failed jobs were run again (ms; 0: not yet, once
+	// only). EndReason: one word for how it ended. ConflictPR, ConflictAhead:
+	// the head that didn't merge, and whether it only conflicts with the
+	// heads ahead of it (WP-1659).
+	RerunAt       int64
 	EndReason     string
 	ConflictPR    int64
 	ConflictAhead bool
@@ -141,7 +142,7 @@ func scanStack(row interface{ Scan(...any) error }) (*queueStack, error) {
 	var heads string
 	var created int64
 	if err := row.Scan(&st.ID, &st.ForgeID, &st.Repo, &st.BaseRef, &st.PRID, &st.BaseSHA, &heads, &st.Pos, &st.Branch, &st.CommitSHA,
-		&st.State, &st.Tree, &st.RunURL, &st.Note, &created, &st.Ended, &st.Reran, &st.EndReason, &st.ConflictPR, &st.ConflictAhead); err != nil {
+		&st.State, &st.Tree, &st.RunURL, &st.Note, &created, &st.Ended, &st.RerunAt, &st.EndReason, &st.ConflictPR, &st.ConflictAhead); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal([]byte(heads), &st.Heads); err != nil || len(st.Heads) == 0 {
