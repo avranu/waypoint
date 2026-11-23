@@ -309,7 +309,7 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 		// Writing it costs tokens Waypoint saves (WP-55): say so, use it.
 		c.println("Notice: Waypoint writes the description from -m, the commits, the task and the recorded tests; your -f/--body replaces it. Next time leave it out.")
 	}
-	o, raw, err := c.openPR(f)
+	o, raw, err := reopenPR(c, f)
 	if err != nil {
 		return false, err
 	}

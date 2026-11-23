@@ -37,9 +37,6 @@ func waitMaxText() string {
 // shipChunk is what one request asks the server to hold; tests shorten it.
 var shipChunk = waitChunk
 
-// shipSleep waits between retries (replaced in tests).
-var shipSleep = time.Sleep
-
 // shipNews is the server's answer to a wait.
 type shipNews struct {
 	Outcome string  `json:"outcome"` // findings, pull, ended, waiting, none
@@ -76,9 +73,6 @@ const (
 // before the wait existed. announce runs once the server has said it is
 // waiting.
 func (c *cli) waitShipNews(task string, bound time.Duration, announce func()) (*shipNews, waitStop, error) {
-	deadline := time.Now().Add(bound)
-	chunk, failures := shipChunk, 0
-	probe := true // the first request holds nothing: it says whether the server knows the wait
 	announced := false
 	// quit is how a stop reads: silent until the wait was announced.
 	quit := func(why waitStop, err error) (*shipNews, waitStop, error) {
@@ -87,47 +81,39 @@ func (c *cli) waitShipNews(task string, bound time.Duration, announce func()) (*
 		}
 		return nil, why, err
 	}
-	for {
-		hold := min(chunk, time.Until(deadline))
-		if probe {
-			hold = 0
-		} else if hold < time.Second {
-			return quit(stopBound, nil)
-		}
+	var news *shipNews
+	err := longPoll(shipChunk, time.Second, time.Now().Add(bound), func(hold time.Duration, probe bool) (bool, error) {
 		n, err := c.shipNewsOnce(task, hold)
 		if err != nil {
 			var ae *apiError
 			if errors.As(err, &ae) && (ae.status == http.StatusNotFound || ae.status == http.StatusMethodNotAllowed) {
-				return nil, stopQuiet, nil // an older server
+				return true, nil // an older server
 			}
-			if !transientErr(err) || failures >= len(waitRetry) {
-				return quit(stopLost, err)
-			}
-			if hold > 0 {
-				chunk = min(chunk, waitShortChunk) // a proxy may have cut it short: ask for less
-			}
-			shipSleep(waitRetry[failures])
-			failures++
-			continue
+			return false, err
 		}
-		failures = 0
-		wasProbe := probe
-		probe = false
 		switch n.Outcome {
 		case "findings":
 			c.ackShipNews(task, n.IDs)
-			return n, stopQuiet, nil
+			news = n
 		case "pull", "ended":
-			return n, stopQuiet, nil
+			news = n
 		case "waiting":
-			if wasProbe {
+			if probe {
 				announced = true
 				announce()
 			}
-		default: // "none", or one this client doesn't know: stop
-			return nil, stopQuiet, nil
+			return false, nil
 		}
+		// "none", or one this client doesn't know: stop
+		return true, nil
+	})
+	switch {
+	case errors.Is(err, errPollBound):
+		return quit(stopBound, nil)
+	case err != nil:
+		return quit(stopLost, err)
 	}
+	return news, stopQuiet, nil
 }
 
 // ackShipNews tells the server the findings were received, so it delivers
@@ -145,7 +131,7 @@ func (c *cli) ackShipNews(task string, ids []int64) {
 		if err == nil || !transientErr(err) || try >= 2 {
 			return
 		}
-		shipSleep(waitRetry[try])
+		pollSleep(waitRetry[try])
 	}
 }
 

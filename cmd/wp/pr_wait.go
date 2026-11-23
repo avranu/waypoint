@@ -215,39 +215,24 @@ func cmdPRWait(c *cli, args []string) error {
 	}
 	head := pushedHead(d.HeadRef)
 	start := time.Now()
-	deadline := start.Add(*timeout)
 	var w *prWaitResult
 	var raw []byte
-	// The first request says where it stands now; the next ones are held.
-	hold, chunk, failures := time.Duration(0), waitChunk, 0
-	for {
+	err = longPoll(waitChunk, time.Nanosecond, start.Add(*timeout), func(hold time.Duration, _ bool) (bool, error) {
 		if time.Since(start) > waitHeadFor {
 			head = "" // someone else pushed since, or this checkout is behind: wait on the pull request's head
 		}
 		next, nraw, err := c.waitOnce(d.ID, head, hold)
 		if err != nil {
-			if !transientErr(err) || failures >= len(waitRetry) {
-				return err
-			}
-			if hold > 0 {
-				chunk = waitShortChunk // a proxy may have cut it short: ask for less
-			}
-			time.Sleep(waitRetry[failures])
-			failures++
-			if w != nil {
-				hold = min(chunk, max(time.Until(deadline), 0))
-			}
-			continue
+			return false, err
 		}
 		if w == nil && next.Verdict == "waiting" && *timeout > 0 && !*quiet {
 			_, _ = fmt.Fprintf(c.err, "Waiting for %s (%s)…\n", next.at(), next.Why)
 		}
-		w, raw, failures = next, nraw, 0
-		left := time.Until(deadline)
-		if w.Verdict != "waiting" || left <= 0 {
-			break
-		}
-		hold = min(chunk, left)
+		w, raw = next, nraw
+		return w.Verdict != "waiting", nil
+	})
+	if err != nil && !errors.Is(err, errPollBound) {
+		return err
 	}
 	return c.waitVerdict(w, raw, *merge, *timeout)
 }

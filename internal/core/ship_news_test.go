@@ -159,6 +159,22 @@ func TestAwaitShipNewsShippedPullMergedEnds(t *testing.T) {
 	}
 }
 
+// A shipped round with no pull request of the branch's own repo recorded
+// (Waypoint's open records it before the ship is done, so none will come) is
+// over, not a wait to the client's bound.
+func TestAwaitShipNewsShippedWithoutPullEnds(t *testing.T) {
+	a, held, round := shipNewsEnv(t)
+	bp := roundBeforePR(a.ctx, a.s.db.R, round)
+	if _, err := a.s.db.W.Exec(`INSERT INTO pull_requests(forge_id, repo, number, url, head_sha, head_ref, head_repo, state, created_at, updated_at) VALUES ((SELECT id FROM forges LIMIT 1), ?, 12, 'https://git.example/acme/app/pulls/12', 'abc', ?, 'fork/app', 'open', 0, 0)`, bp.Repo, bp.Branch); err != nil {
+		t.Fatal(err)
+	}
+	a.shipDone(t, round)
+	got := a.await(held.Key, time.Second)
+	if got.Outcome != ShipNewsEnded || !strings.Contains(got.Text, "over") || !strings.Contains(got.Text, bp.Branch) {
+		t.Fatalf("got %+v", got)
+	}
+}
+
 // A skipped round nobody will release is over.
 func TestAwaitShipNewsSkippedRoundEnds(t *testing.T) {
 	a, held, round := shipNewsEnv(t)

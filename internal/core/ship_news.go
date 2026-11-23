@@ -298,7 +298,10 @@ func (s *Service) shipNewsNow(ctx context.Context, session, task int64) (*ShipNe
 			}
 			return &ShipNews{Outcome: ShipNewsEnded, Text: fmt.Sprintf("Waypoint's review round for this task is over, and its pull request, PR %d, is %s. Nothing more is waiting on you here.", p.Number, p.State)}, nil
 		case errors.Is(err, sql.ErrNoRows):
-			return nil, nil // not recorded yet: the recheck finds it
+			// OpenPullRequest records the pull request it opens or adopts
+			// (only one whose head is the repo's own) before shipRecord sets
+			// ship_done, so none is coming: the round is over.
+			return &ShipNews{Outcome: ShipNewsEnded, Text: fmt.Sprintf("Waypoint's review round for this task is over and it shipped the round, but no pull request from %s in %s is recorded. Nothing more is waiting on you here.", bp.Branch, bp.Repo)}, nil
 		default:
 			return nil, err
 		}

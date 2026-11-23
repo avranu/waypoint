@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"flag"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -60,9 +62,9 @@ func waitEnvReqs(t *testing.T, answers ...func(w http.ResponseWriter)) (*cli, *b
 	t.Setenv("WAYPOINT_TOKEN", "wpt_x")
 	t.Setenv("WAYPOINT_AGENT", "claude")
 	t.Setenv("WAYPOINT_SESSION", "sess-wait")
-	oldSleep, oldChunk := shipSleep, shipChunk
-	shipSleep, shipChunk = func(time.Duration) {}, 2*time.Second
-	t.Cleanup(func() { shipSleep, shipChunk = oldSleep, oldChunk })
+	oldSleep, oldChunk := pollSleep, shipChunk
+	pollSleep, shipChunk = func(time.Duration) {}, 2*time.Second
+	t.Cleanup(func() { pollSleep, shipChunk = oldSleep, oldChunk })
 	var out bytes.Buffer
 	c, err := newCLI(&out, &out)
 	if err != nil {
@@ -297,5 +299,68 @@ func TestHeldShipBoundShrinksByTimeSpent(t *testing.T) {
 	o, _, done, err := heldShip(t, c, false)
 	if err != nil || done || o.Held == "" || calls.Load() != 1 || !strings.Contains(out.String(), "stopped waiting here") {
 		t.Fatalf("done %v err %v after %d calls:\n%s", done, err, calls.Load(), out.String())
+	}
+}
+
+// shipWorkHeld drives shipWork for a held ship: the first reopenPR answer is
+// the held one, later ones are what the wait's "pull" outcome finds.
+func shipWorkHeld(t *testing.T, c *cli, answers ...*openedPR) (other bool, err error) {
+	t.Helper()
+	dir := t.TempDir()
+	for _, args := range [][]string{{"init", "-q"}, {"config", "user.email", "t@t"}, {"config", "user.name", "t"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if b, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, b)
+		}
+	}
+	t.Chdir(dir)
+	var n int
+	old := reopenPR
+	reopenPR = func(*cli, prOpenFlags) (*openedPR, []byte, error) {
+		o := answers[min(n, len(answers)-1)]
+		n++
+		return o, []byte(`{}`), nil
+	}
+	t.Cleanup(func() { reopenPR = old })
+	fs := flag.NewFlagSet("ship", flag.ContinueOnError)
+	f := addPROpenFlags(fs)
+	so := addShipFlags(fs)
+	if err := fs.Parse([]string{"--no-arm", "--no-babysit", "--no-move", "--wait-timeout=5s"}); err != nil {
+		t.Fatal(err)
+	}
+	return c.shipWork(f, so, "", false, "WP-9", true)
+}
+
+// The wait ends with findings: shipWork returns after printing them, without
+// the held path's text or marker.
+func TestShipWorkStopsWhenTheHeldWaitPrintsFindings(t *testing.T) {
+	c, out, calls := waitEnv(t, waitingAnswer(), say(map[string]any{"outcome": "findings", "text": "Audit: 1 finding\nfix the nil check"}))
+	held := &openedPR{Held: "HELD-TEXT end your turn", HeldNeedsAgent: new(bool)}
+	if _, err := shipWorkHeld(t, c, held); err != nil {
+		t.Fatal(err)
+	}
+	s := out.String()
+	if !strings.Contains(s, "fix the nil check") || strings.Contains(s, "HELD-TEXT") || calls.Load() != 2 {
+		t.Errorf("output after %d calls:\n%s", calls.Load(), s)
+	}
+	c2, _ := newCLI(new(bytes.Buffer), new(bytes.Buffer))
+	if e := c2.state.ShipEnds["sess-wait"]; e != nil && !e.Ready.IsZero() {
+		t.Errorf("a marker was written: %+v", e)
+	}
+}
+
+// The wait ends with "pull": shipWork carries on with the reopened pull
+// request, not the held answer.
+func TestShipWorkContinuesWithTheReopenedPullRequest(t *testing.T) {
+	c, out, _ := waitEnv(t, waitingAnswer(), say(map[string]any{"outcome": "pull", "text": "Waypoint shipped it: PR 5", "pull": map[string]any{"number": 5}}))
+	held := &openedPR{Held: "HELD-TEXT end your turn", HeldNeedsAgent: new(bool)}
+	opened := &openedPR{Pull: &prDetail{Number: 5, Repo: "a/b", URL: "https://git.example/a/b/pulls/5"}}
+	if _, err := shipWorkHeld(t, c, held, opened); err != nil {
+		t.Fatal(err)
+	}
+	s := out.String()
+	if strings.Contains(s, "HELD-TEXT") || !strings.Contains(s, "https://git.example/a/b/pulls/5") {
+		t.Errorf("output:\n%s", s)
 	}
 }
