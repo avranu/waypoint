@@ -753,7 +753,7 @@ func (s *Service) CheckBabysits(ctx context.Context) {
 		}
 		s.babysitStep(ctx, x.pr, s.nowMS()-x.synced >= babysitResyncEvery.Milliseconds())
 	}
-	s.sweepStacks(ctx)         // WP-404
+	s.sweepLines(ctx)          // WP-1659
 	s.watchLines(ctx)          // WP-431
 	s.reviveStaleBabysits(ctx) // WP-750
 }
@@ -900,13 +900,13 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 		s.flakeProven(ctx, b, pr)
 		at := cmp(short(s.mergedSHA(ctx, pr)), short(pr.HeadSHA))
 		if err := s.endBabysit(ctx, b, pr, BabysitMerged, "merged as "+at); err == nil {
-			s.nudgeQueue(ctx, pr) // the next in its merge queue goes (WP-222)
+			s.nudgeLine(ctx, pr) // the next in its merge queue goes (WP-222)
 			s.babysitTell(ctx, b, pr, "merged", fmt.Sprintf("%s#%d merged (%s) after %d babysitting round%s. Nothing more to do.", pr.Repo, pr.Number, at, b.Round, plural(b.Round)))
 		}
 		return
 	case "closed":
 		if err := s.endBabysit(ctx, b, pr, BabysitStopped, "closed without merging"); err == nil {
-			s.nudgeQueue(ctx, pr)
+			s.nudgeLine(ctx, pr)
 			s.babysitTell(ctx, b, pr, "closed", fmt.Sprintf("%s#%d was closed without merging; Waypoint stopped babysitting it.", pr.Repo, pr.Number))
 		}
 		return
@@ -979,7 +979,7 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 		}
 		if pr.QueuedAt != nil {
 			s.leaveQueue(ctx, pr.ID)
-			s.nudgeQueue(ctx, pr)
+			s.nudgeLine(ctx, pr)
 		}
 		return
 	}
@@ -988,17 +988,18 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 		return
 	}
 	if pr.ciSHA != pr.HeadSHA || pr.CIState == "" || pr.CIState == CIPending {
-		// A front that fell behind its base is brought up to date now, not
-		// after a full run on a head that can't merge (WP-316).
-		if s.catchUpFront(ctx, b, pr) {
-			return
-		}
 		if s.urgentRound(ctx, b, pr) {
 			return // an urgent one's review findings don't wait for its run (WP-686)
 		}
 		if stalled := s.fullRunStalled(ctx, pr); stalled != "" {
 			s.setState(ctx, b, pr, BabysitNeedsPerson, stalled)
 			s.babysitTell(ctx, b, pr, "fullrun@"+pr.HeadSHA, fmt.Sprintf("%s#%d: %s (%s).", pr.Repo, pr.Number, stalled, pr.URL))
+			return
+		}
+		if pr.QueuedAt != nil && pr.ArmedAt != nil && queueHolder(pr) {
+			// Its full run is the line's to say (it may be tested on a
+			// candidate meanwhile).
+			s.lineChanged(ctx, lineOf(pr))
 			return
 		}
 		s.setState(ctx, b, pr, BabysitWatching, "checks running on "+short(pr.HeadSHA))
@@ -1018,7 +1019,7 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 		return
 	}
 	if going {
-		s.reviewWait(ctx, b, pr, true, why)
+		s.reviewWait(ctx, b, pr, why)
 		return
 	}
 	checks, err := s.prChecks(ctx, pr)
@@ -1036,7 +1037,7 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 			return
 		}
 		if len(waits) > 0 {
-			s.reviewWait(ctx, b, pr, false, waits[0])
+			s.reviewWait(ctx, b, pr, waits[0])
 			return
 		}
 	}
@@ -1078,6 +1079,12 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 	if checking {
 		s.scheduleMergeRecheck(ctx, pr.ID)
 	}
+	// A head the line found not to merge onto the base (a candidate's run, an
+	// update the forge refused) is a conflict even where the forge's flag is
+	// muted for work-in-progress drafts (WP-171).
+	if !conflict && pr.ArmedAt != nil && s.conflictOnTip(ctx, pr) {
+		conflict = true
+	}
 	// Audit findings still to do are work like review comments (WP-355).
 	findings := s.auditRoundWork(ctx, b, pr.ID)
 	// A green build answers a bot's claim that the code doesn't compile
@@ -1095,12 +1102,6 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 		// Nothing else will come to carry them and no merge queue pays for
 		// the round's push, so they get one closing round each (WP-750).
 		work = unoffered(b, late)
-	}
-	if conflict && len(failed) == 0 && len(work) == 0 && len(findings) == 0 && pr.ArmedAt != nil {
-		// An armed pull request's conflict waits for its turn at the front of
-		// the merge queue: resolved earlier, the base moves on and it
-		// conflicts again (WP-222).
-		conflict = false
 	}
 	if len(failed) > 0 && !conflict && len(work) == 0 {
 		faults := s.headRunnerFaults(ctx, pr)
@@ -1121,15 +1122,6 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 		// round; a pass proves a flaky test (WP-392). A job's own time limit
 		// has had its re-runs already.
 		if faults == nil && s.rerunForFlake(ctx, b, pr, failed) {
-			return
-		}
-	}
-	if (len(failed) > 0 || len(work) > 0 || len(findings) > 0) && !sameSHA(b.RoundSHA, pr.HeadSHA) {
-		// A round's push costs a draft run and a review, and the pull
-		// request will be brought up to date before it merges: far back in
-		// its line, the round waits (WP-428).
-		if wait := s.roundTurn(ctx, pr); wait != "" {
-			s.setState(ctx, b, pr, BabysitWatching, wait)
 			return
 		}
 	}
@@ -1166,7 +1158,14 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 	}
 	switch {
 	case queueable(pr, rd.Reasons):
-		s.queueStep(ctx, b, pr, rd)
+		if why := s.lineLeft(ctx, pr); why != "" {
+			// Not an entry yet: it joins when this is over, and the event that
+			// ends it brings the babysit back.
+			s.setState(ctx, b, pr, BabysitWatching, "waiting to join the merge line for "+cmp(pr.BaseRef, "its base")+": "+why)
+			return
+		}
+		s.joinLine(ctx, pr)
+		s.lineChanged(ctx, lineOf(pr))
 	case pr.ArmedAt != nil && rd.Ready && strings.HasPrefix(pr.armedNote, mergeFailedNote):
 		// Tried and refused: a person's call, and it gives up its place at
 		// the front of the merge queue meanwhile (WP-222). Each event still
@@ -1190,7 +1189,7 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 		if pr.QueuedAt != nil {
 			s.leaveQueue(ctx, pr.ID)
 			pr.QueuedAt = nil
-			s.nudgeQueue(ctx, pr)
+			s.nudgeLine(ctx, pr)
 		}
 		s.setState(ctx, b, pr, BabysitWatching, mergeWaitIn(rd.Reasons))
 	case pr.ArmedAt != nil:
@@ -1237,184 +1236,11 @@ func (s *Service) commentWork(ctx context.Context, pr *PullRequest, b *Babysit, 
 	return work, late, person
 }
 
-// queueStep moves on an armed pull request that only waits for its turn in
-// the merge queue (WP-222): behind the front it waits as it is, but for a
-// known conflict with its base near the front (earlyConflict); at the front
-// its conflict goes to a round, it is brought up to date with its base, and
-// a draft whose draft tier is green on the base's tip is marked ready, so
-// the full run starts (WP-158) on the head that will merge.
-func (s *Service) queueStep(ctx context.Context, b *Babysit, pr *PullRequest, rd *PRReadiness) {
-	// One decision at a time per queue, so two can't both find themselves
-	// at the front and both be marked ready.
-	defer s.queueLock(pr)()
-	if wait := s.queueTurn(ctx, pr); wait != "" {
-		// Resolved against the base while the front's run goes (WP-457).
-		if s.earlyConflict(ctx, b, pr, rd) && !s.babysitRoundBy(ctx, b, pr, nil, true, nil, nil, nil, true) {
-			return
-		}
-		s.setState(ctx, b, pr, BabysitWatching, s.behindFront(ctx, pr, rd, wait))
-		return
-	}
-	// A passed stack stands in for the update and the full run (WP-404).
-	if s.stackFront(ctx, b, pr, rd) {
-		return
-	}
-	base := cmp(pr.BaseRef, "its base")
-	if slices.Contains(rd.Reasons, reasonConflict(pr.BaseRef)) {
-		s.babysitRound(ctx, b, pr, nil, true, nil, nil)
-		return
-	}
-	// A draft at the front whose draft tier passed is marked ready before
-	// its branch is brought up to date, so the update's push runs the full
-	// tier once, not the draft tier and then the full run one after the
-	// other (WP-456). The run the edit starts on the old head is cancelled
-	// by the push. Should the update meet a conflict, the round for it keeps
-	// the pull request ready (babysitRound), and its push runs the full tier.
-	marked := false
-	before := func() { marked = s.readyForFullRun(ctx, pr) }
-	switch s.updateIfBehindThen(ctx, pr, before) {
-	case upUpdated:
-		if marked {
-			s.setState(ctx, b, pr, BabysitWatching, "front of the merge queue: marked ready and merged "+base+" into it, waiting for the full run")
-			return
-		}
-		s.setState(ctx, b, pr, BabysitWatching, "front of the merge queue: merged "+base+" into it, waiting for its checks")
-		return
-	case upStale:
-		s.setState(ctx, b, pr, BabysitWatching, "front of the merge queue: waiting for "+base+" to show the merge just made into it")
-		return
-	case upLanded:
-		s.setState(ctx, b, pr, BabysitWatching, "its work is already on "+base+"; finishing it")
-		return
-	case upConflict:
-		s.babysitRound(ctx, b, pr, nil, true, nil, nil)
-		return
-	case upWaiting:
-		s.setState(ctx, b, pr, BabysitWatching, "front of the merge queue: waiting for its branch to be brought up to date with "+base)
-		return
-	case upFailed:
-		// Not holding the queue for it: tried again at the next step.
-		s.setState(ctx, b, pr, BabysitNeedsPerson, "couldn't bring the branch up to date with "+base+"; the note on the pull request says why")
-		return
-	}
-	if pr.State != "draft" {
-		s.setState(ctx, b, pr, BabysitWatching, "front of the merge queue: up to date with "+base)
-		return
-	}
-	if err := s.markReady(ctx, pr); err != nil {
-		s.log.WarnContext(ctx, "mark a draft ready", "pr", pr.ID, "err", err)
-		s.setState(ctx, b, pr, BabysitNeedsPerson, "couldn't mark it ready: "+excerpt(err.Error(), 120))
-		return
-	}
-	s.setState(ctx, b, pr, BabysitWatching, "front of the merge queue: marked ready; waiting for the full run")
-}
-
-// catchUpFront brings the front of a merge queue up to date with its base
-// while its checks run (WP-316). A merge into the base supersedes the head it
-// is testing; the forge cancels the superseded run, and the update's head
-// starts the right one. Checked on every step of the front only, so a queue
-// costs one forge read a step. The drafts behind it aren't brought up to
-// date (WP-510): the front's merge would move the base again before their
-// turn, so their runs were stale by construction. It reports whether the
-// step is done.
-func (s *Service) catchUpFront(ctx context.Context, b *Babysit, pr *PullRequest) bool {
-	if pr.ArmedAt == nil || pr.QueuedAt == nil || pr.Outside || (pr.State != "open" && pr.State != "draft") || !slices.Contains(queueStates, b.State) {
-		return false
-	}
-	defer s.queueLock(pr)()
-	ahead, err := s.queueAhead(ctx, pr)
-	if err != nil {
-		return false
-	}
-	if len(ahead) > 0 {
-		return false // behind the front it waits as it is (WP-510)
-	}
-	if s.stackHolds(ctx, pr) {
-		return false // an update would change the head its stack tests (WP-404)
-	}
-	if s.updateIfBehind(ctx, pr) != upUpdated {
-		return false // nothing to do, or the usual messages say why
-	}
-	s.setState(ctx, b, pr, BabysitWatching, "front of the merge queue: merged "+cmp(pr.BaseRef, "its base")+" into it, waiting for its checks")
-	return true
-}
-
-// readyForFullRun marks pr's draft ready before an update at the front of
-// the merge queue, when Waypoint made it a draft, so the update's push runs
-// the full tier once (WP-456); true when it did.
-func (s *Service) readyForFullRun(ctx context.Context, pr *PullRequest) bool {
-	if pr.State != "draft" || !pr.WipAuto {
-		return false
-	}
-	if err := s.markReady(ctx, pr); err != nil {
-		s.log.WarnContext(ctx, "mark a draft ready", "pr", pr.ID, "err", err)
-		return false // brought up to date as a draft, marked ready after its draft tier
-	}
-	if p, err := s.prByID(ctx, s.db.R, pr.ID); err == nil {
-		pr.State, pr.Title, pr.ReadyAt = p.State, p.Title, p.ReadyAt
-		pr.readySHA, pr.readyStatusID, pr.readyChecks, pr.readySkipped = p.readySHA, p.readyStatusID, p.readyChecks, p.readySkipped
-	}
-	return true
-}
-
 // reviewWait is the step of a pull request whose checks passed and whose
-// reviews are still to come (why says which): the front's draft is marked
-// ready early, and a draft waiting behind it follows its live stack, if it
-// has one (none is made while its reviews go: WP-ADR51, undoing WP-489).
-func (s *Service) reviewWait(ctx context.Context, b *Babysit, pr *PullRequest, reviewing bool, why string) {
-	done, stack := s.readyEarly(ctx, b, pr, reviewing)
-	if done {
-		return
-	}
-	if stack != "" {
-		why += "; " + stack
-	}
+// reviews are still to come (why says which). It isn't in the merge line
+// until they are over (WP-ADR51): no candidate is made while its reviews go.
+func (s *Service) reviewWait(ctx context.Context, b *Babysit, pr *PullRequest, why string) {
 	s.setState(ctx, b, pr, BabysitWaitingReview, why)
-}
-
-// readyEarly marks a draft ready while its reviews are still to come
-// (WP-316): the full run and the review don't depend on each other, and the
-// merge waits for both, so the full run needn't wait for the review. Only
-// the front of the queue, on a head that holds the base's tip, whose draft
-// tier is green, with nothing else keeping it from being ready. A finding
-// the review brings still gets its round; if that pushes, the full run
-// reruns. reviewing: the wait is a review still to come (so the gate not
-// being green yet is no reason against). It reports whether the step is
-// done; a draft that qualifies but waits behind the front takes its stack
-// step instead, and stack says what its stack is doing.
-func (s *Service) readyEarly(ctx context.Context, b *Babysit, pr *PullRequest, reviewing bool) (done bool, stack string) {
-	if pr.State != "draft" || !pr.WipAuto || pr.ArmedAt == nil || pr.Outside || pr.CIState != CIPassed {
-		return false, ""
-	}
-	rd, err := s.readinessFor(ctx, pr, false)
-	if err != nil {
-		if readFault(err) {
-			s.log.WarnContext(ctx, "read whether a draft is ready to leave draft", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "err", err)
-		}
-		return false, ""
-	}
-	var rest []string
-	for _, r := range rd.Reasons {
-		if reviewing && (strings.HasPrefix(r, "review gate: ") || strings.HasPrefix(r, "the review gate hasn't")) {
-			continue
-		}
-		rest = append(rest, r)
-	}
-	if len(rest) != 1 || rest[0] != reasonDraft {
-		return false, ""
-	}
-	unlock := s.queueLock(pr)
-	wait := s.queueTurn(ctx, pr)
-	if wait != "" {
-		// Behind others it stays a draft, tested on a stack if it can be.
-		stack = s.stackBehind(ctx, pr)
-	}
-	unlock()
-	if wait != "" {
-		return false, stack
-	}
-	s.queueStep(ctx, b, pr, rd)
-	return true, ""
 }
 
 // babysitRound hands out a round for the pull request's head: to a fresh
@@ -1424,17 +1250,13 @@ func (s *Service) readyEarly(ctx context.Context, b *Babysit, pr *PullRequest, r
 // it was given (a conflict after the base moved, a check or a review comment
 // none of them carried); at the top it parks for a person's answer (WP-439).
 func (s *Service) babysitRound(ctx context.Context, b *Babysit, pr *PullRequest, failed []string, conflict bool, comments, findings []string) {
-	s.babysitRoundBy(ctx, b, pr, failed, conflict, comments, findings, nil, false)
+	s.babysitRoundBy(ctx, b, pr, failed, conflict, comments, findings, nil)
 }
 
 // babysitRoundBy is babysitRound with the rung chosen by the caller, if
 // forced isn't nil: the watchdog sends the assessor to a babysit that has
-// rested too long, whatever its rounds so far would have called for. early
-// is a conflict's round ahead of its turn at the front (earlyConflict): a
-// runner takes it now or it never happened, so unstarted says none did: no
-// round is counted, no person is called and its place in the queue stands,
-// for its next step to try again.
-func (s *Service) babysitRoundBy(ctx context.Context, b *Babysit, pr *PullRequest, failed []string, conflict bool, comments, findings []string, forced *roundPlan, early bool) (unstarted bool) {
+// rested too long, whatever its rounds so far would have called for.
+func (s *Service) babysitRoundBy(ctx context.Context, b *Babysit, pr *PullRequest, failed []string, conflict bool, comments, findings []string, forced *roundPlan) {
 	if pr.Outside {
 		s.setState(ctx, b, pr, BabysitWatching, "waiting for a person to approve this pull request from outside (WP-281)")
 		return
@@ -1466,7 +1288,7 @@ func (s *Service) babysitRoundBy(ctx context.Context, b *Babysit, pr *PullReques
 				s.protectedHandoff(ctx, b, pr, &b.Rounds[n-1], files, what)
 				if pr.QueuedAt != nil {
 					s.leaveQueue(ctx, pr.ID)
-					s.nudgeQueue(ctx, pr)
+					s.nudgeLine(ctx, pr)
 				}
 				return
 			}
@@ -1542,17 +1364,13 @@ func (s *Service) babysitRoundBy(ctx context.Context, b *Babysit, pr *PullReques
 			wait = s.runnerWaitFor(b)
 		}
 	}
-	if early && jobID == 0 {
-		s.log.WarnContext(ctx, "start an early conflict round", "pr", pr.ID, "wait", wait, "why", why)
-		return true
-	}
 	keepFront = keepFront && wait == "" && jobID != 0
 	if !keepFront && (wait != "" || len(failed) > 0 || len(comments) > 0 || len(findings) > 0) {
 		// It has work to do before it can merge: out of the merge queue, and
 		// back in at its place in the line once it is done (WP-222, WP-428).
 		// A conflict alone is its turn at the front, so it keeps its place.
 		s.leaveQueue(ctx, pr.ID)
-		s.nudgeQueue(ctx, pr)
+		s.nudgeLine(ctx, pr)
 	}
 	if !keepFront && pr.WipAuto && pr.State == "open" {
 		// Back to draft with this round: its push gets the fast tier (WP-158).
@@ -1603,7 +1421,6 @@ func (s *Service) babysitRoundBy(ctx context.Context, b *Babysit, pr *PullReques
 	s.babysitTell(ctx, b, pr, fmt.Sprintf("handed@%d", round.N), fmt.Sprintf(
 		"%s#%d needs work (round %d: %s), and Waypoint can't hand it to an agent on a runner: %s. `wp pr todo %d` has the work packet; Waypoint carries on from the next push.",
 		pr.Repo, pr.Number, round.N, what, why, pr.Number))
-	return false
 }
 
 // lastRoundPushed: the babysit's last round pushed commits, so the head (or

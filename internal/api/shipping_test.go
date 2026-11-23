@@ -101,6 +101,18 @@ func TestShippingAPI(t *testing.T) {
 		fmt.Sprint(repos[0]["required_checks"]) != "[local-ci]" || repos[0]["quiet_minutes"] != float64(5) || repos[0]["review_wait_minutes"] != float64(30) {
 		t.Errorf("policy: %d %v", code, repos[0])
 	}
+	// Whether the merge line builds candidates (WP-1659): on by default.
+	if repos[0]["line_candidates"] != true {
+		t.Errorf("line_candidates default: %v", repos[0])
+	}
+	for _, want := range []bool{false, true} {
+		if code, b := robin.do("PATCH", fmt.Sprintf("/api/v1/projects/%s/repos/%d", p.Key, repo.ID), map[string]any{"line_candidates": want}); code != 200 && code != 204 {
+			t.Fatalf("set line_candidates %v: %d %s", want, code, b)
+		}
+		if code := robin.json("GET", fmt.Sprintf("/api/v1/projects/%s/repos", p.Key), nil, &repos); code != 200 || repos[0]["line_candidates"] != want {
+			t.Errorf("line_candidates %v read back: %d %v", want, code, repos[0]["line_candidates"])
+		}
+	}
 
 	// A pull request by number, with how it stands for merging.
 	var d struct {

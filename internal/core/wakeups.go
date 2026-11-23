@@ -343,6 +343,7 @@ func (s *Service) postToSession(ctx context.Context, sessionID int64, waiting bo
 func (s *Service) unsendBatch(ctx context.Context, batch int64) {
 	_, _ = s.db.W.ExecContext(ctx, `UPDATE session_messages SET state = 'queued' WHERE sent_with = ? AND state = 'sending'`, batch)
 	_, _ = s.db.W.ExecContext(ctx, `UPDATE requests SET delivered_at = NULL WHERE sent_with = ?`, batch)
+	s.withdrawRequeuedAuditNews(ctx, batch)
 }
 
 // sessionMessageJobFinished records how posting to an idle session went:

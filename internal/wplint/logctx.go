@@ -20,7 +20,7 @@ var LogCtx = &analysis.Analyzer{
 }
 
 func runLogCtx(pass *analysis.Pass) (any, error) {
-	if !inPkg(pass.Pkg.Path(), "internal/core") && !inPkg(pass.Pkg.Path(), "internal/api") {
+	if !underPkg(pass.Pkg.Path(), "internal/core") && !inPkg(pass.Pkg.Path(), "internal/api") {
 		return nil, nil
 	}
 	r := newReporter(pass)

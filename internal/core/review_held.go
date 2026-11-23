@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 )
@@ -45,6 +46,10 @@ const (
 	sessionReviewShown = 6 * time.Hour
 	// roundCancelledBy starts the reason of a round a person cancelled.
 	roundCancelledBy = "Cancelled by "
+	// roundGaveUp starts the reason of a stranded round whose pull request
+	// Waypoint stopped trying to open (strandedGiveUp); openStrandedRounds
+	// leaves it alone after that.
+	roundGaveUp = "Waypoint stopped trying to open its pull request: "
 )
 
 // runHeldForReview is true of an agent_runs row with a review before its
@@ -420,8 +425,10 @@ func (s *Service) liveStepRound(ctx context.Context, q queryer, sessionID int64)
 const strandedShipWindow = 24 * time.Hour
 
 // strandedBackoff is how long a round whose pull request couldn't be opened
-// (the branch is gone, the forge refuses) waits before the next try; each
-// further failure doubles it, up to strandedBackoffMax.
+// (the forge is down or refuses) waits before the next try; each further
+// failure doubles it, up to strandedBackoffMax. The window
+// (strandedShipWindow) is what ends the tries; only a forge saying a branch
+// can't be found ends them sooner (strandedPermanent).
 const (
 	strandedBackoff    = 10 * time.Minute
 	strandedBackoffMax = 6 * time.Hour
@@ -437,20 +444,91 @@ var strandedBatch = 5
 type strandedTry struct {
 	next  int64
 	tries int
+	seen  int64 // the last sweep that found the round a candidate
 }
 
-// strandedFailed records a failed try of round and logs why.
+// strandedForgeWords is what the forge said when it answered 404 that it
+// can't find a branch (a head branch deleted, or a base that isn't there),
+// which trying again will not change; "" for any other error. Forgejo words
+// it "could not find 'x' to be a commit, branch or tag in the head
+// repository" (server problem #1005); a forge that words it otherwise isn't
+// matched and keeps backing off until the window ends.
+func strandedForgeWords(err error) string {
+	var ae *forgeAPIError
+	if !isStatus(err, http.StatusNotFound) || !errors.As(err, &ae) {
+		return ""
+	}
+	b := strings.ToLower(ae.body)
+	if strings.Contains(b, "could not find") && strings.Contains(b, "branch or tag") {
+		return strings.TrimSpace(ae.body)
+	}
+	return ""
+}
+
+// strandedPermanent reports whether err says the round's pull request can
+// never be opened by trying again (strandedForgeWords).
+func strandedPermanent(err error) bool { return strandedForgeWords(err) != "" }
+
+// strandedFailed records a failed try of round and logs why. A forge that
+// can't find a branch gives the round up (strandedGiveUp); any other failure
+// backs off, doubling up to strandedBackoffMax.
 func (s *Service) strandedFailed(ctx context.Context, round, now int64, what string, err error) {
 	tries := 1
 	if prev, ok := s.strandedRetry.Load(round); ok {
 		tries = prev.(strandedTry).tries + 1
 	}
+	if words := strandedForgeWords(err); words != "" {
+		s.strandedGiveUp(ctx, round, now, what, tries, words, err)
+		return
+	}
 	wait := strandedBackoffMax
 	if tries <= 16 {
 		wait = min(strandedBackoff<<(tries-1), strandedBackoffMax)
 	}
-	s.strandedRetry.Store(round, strandedTry{next: now + wait.Milliseconds(), tries: tries})
+	s.strandedRetry.Store(round, strandedTry{next: now + wait.Milliseconds(), tries: tries, seen: now})
 	s.log.WarnContext(ctx, "review round: a stranded round was not opened", "what", what, "round", round, "tries", tries, "err", err)
+}
+
+// strandedGiveUp records on the round, ahead of its earlier reason, what the
+// forge said, so the sweep stops choosing it (the roundGaveUp prefix is what
+// its query tests), and tells the session's user. updated_at moves on
+// purpose: the round has new information, and the issue page shows it.
+func (s *Service) strandedGiveUp(ctx context.Context, round, now int64, what string, tries int, words string, err error) {
+	var issue, user int64
+	var key, old, state string
+	// A round whose session is gone is given up too, with no one to tell.
+	if qerr := s.db.R.QueryRowContext(ctx, `SELECT w.issue_id, coalesce(x.user_id, 0), p.key || '-' || i.number, coalesce(w.reason, ''), w.state
+		FROM work_log w JOIN issues i ON i.id = w.issue_id JOIN projects p ON p.id = i.project_id LEFT JOIN agent_sessions x ON x.id = w.session_id
+		WHERE w.id = ?`, round).Scan(&issue, &user, &key, &old, &state); qerr != nil {
+		s.strandedRetry.Store(round, strandedTry{next: now + strandedBackoffMax.Milliseconds(), tries: tries, seen: now})
+		s.log.WarnContext(ctx, "review round: reading a stranded round to give it up", "round", round, "err", qerr)
+		return
+	}
+	why := "the forge can't find a branch it needs: " + clipText(words, 150)
+	if strings.TrimSpace(old) != "" {
+		why += " (before that: " + strings.TrimSpace(old) + ")"
+	}
+	reason := clipText(roundGaveUp+why, 300)
+	if werr := s.write(ctx, SystemActor(), func(t *tx) error {
+		if _, err := t.ExecContext(ctx, `UPDATE work_log SET reason = ?, updated_at = ? WHERE id = ?`, reason, now, round); err != nil {
+			return err
+		}
+		s.emitWorkLog(ctx, t, issue, round, state)
+		return nil
+	}); werr != nil {
+		// Not recorded: keep it backing off, so it is tried again later.
+		s.strandedRetry.Store(round, strandedTry{next: now + strandedBackoffMax.Milliseconds(), tries: tries, seen: now})
+		s.log.WarnContext(ctx, "review round: recording that a stranded round was given up", "round", round, "err", werr)
+		return
+	}
+	s.strandedRetry.Delete(round)
+	s.log.WarnContext(ctx, "review round: gave up opening a stranded round's pull request", "what", what, "round", round, "tries", tries, "err", err)
+	if user == 0 {
+		return
+	}
+	s.notifyURL(ctx, user, nil, NotifyAutopilot, key+"'s pull request was not opened",
+		fmt.Sprintf("Waypoint stopped trying to open %s's pull request: the forge can't find a branch it needs (%s). The branch may have been deleted; ship the task again from its session.", key, clipText(words, 150)),
+		"/agents?tab=autopilot")
 }
 
 // openStrandedRounds opens the pull request of a task whose review before it
@@ -478,16 +556,20 @@ func (s *Service) strandedFailed(ctx context.Context, round, now int64, what str
 // on another task, so a round that ended long before its session did is
 // still opened. A round whose pull request can't be opened, or whose
 // session or user can't be read, waits strandedBackoff, doubling with each
-// failure; the batch is chosen from the rounds not backing off, so failing
-// ones don't starve the rest. The back-off of a round the query no longer
-// returns (opened, resolved, aged out) is forgotten, so the map holds no
-// more than the rounds in the window.
+// failure up to strandedBackoffMax, until the window ends; the batch is
+// chosen from the rounds not backing off, so failing ones don't starve the
+// rest. A round the forge answers 404 for a branch it can't find is given up
+// (strandedGiveUp): its reason then starts with roundGaveUp, which the query
+// leaves out. The tries of a round the query hasn't returned for a whole
+// window (opened, resolved, aged out) are forgotten, so the map holds no
+// more than the rounds of about two windows; a round skipped for a shorter
+// while (another run holds its task) keeps them.
 func (s *Service) openStrandedRounds(ctx context.Context) {
 	now := s.nowMS()
 	rows, err := s.db.R.QueryContext(ctx, `SELECT w.id, w.session_id, w.run_id, w.state, w.reason, r.agent, coalesce(x.project_id, i.project_id)
 		FROM work_log w JOIN agent_runs r ON r.id = w.run_id JOIN agent_sessions x ON x.id = w.session_id JOIN issues i ON i.id = w.issue_id
 		WHERE w.kind = 'review' AND w.before_pr != '' AND w.state IN (?, ?, ?)
-			AND coalesce(w.reason, '') NOT LIKE ? AND coalesce(w.reason, '') NOT IN (?, ?)
+			AND coalesce(w.reason, '') NOT LIKE ? AND coalesce(w.reason, '') NOT LIKE ? AND coalesce(w.reason, '') NOT IN (?, ?)
 			AND (r.ended_at IS NOT NULL OR x.ended_at IS NOT NULL
 				OR EXISTS (SELECT 1 FROM agent_runs o WHERE o.session_id = w.session_id AND o.id > w.run_id AND o.issue_id != w.issue_id)) AND i.resolved_at IS NULL
 			AND max(w.updated_at, coalesce(r.ended_at, 0), coalesce(x.ended_at, 0),
@@ -496,7 +578,7 @@ func (s *Service) openStrandedRounds(ctx context.Context) {
 			AND NOT EXISTS (SELECT 1 FROM external_links l WHERE l.issue_id = w.issue_id AND l.kind = 'pull')
 			AND NOT EXISTS (SELECT 1 FROM agent_runs o WHERE o.issue_id = w.issue_id AND o.id != w.run_id AND o.ended_at IS NULL)
 		ORDER BY w.id`,
-		RoundSkipped, RoundFailed, RoundInterrupted, roundCancelledBy+"%", roundReplaced, roundRestarted, now-strandedShipWindow.Milliseconds())
+		RoundSkipped, RoundFailed, RoundInterrupted, roundCancelledBy+"%", roundGaveUp+"%", roundReplaced, roundRestarted, now-strandedShipWindow.Milliseconds())
 	if err != nil {
 		s.log.WarnContext(ctx, "review round: reading the rounds that never ran", "err", err)
 		return
@@ -514,8 +596,13 @@ func (s *Service) openStrandedRounds(ctx context.Context) {
 			continue
 		}
 		inWindow[l.round] = true
-		if next, ok := s.strandedRetry.Load(l.round); ok && next.(strandedTry).next > now {
-			continue // its last try failed a short while ago
+		if prev, ok := s.strandedRetry.Load(l.round); ok {
+			t := prev.(strandedTry)
+			t.seen = now
+			s.strandedRetry.Store(l.round, t)
+			if t.next > now {
+				continue // its last try failed a short while ago
+			}
 		}
 		if len(list) < strandedBatch {
 			list = append(list, l)
@@ -527,8 +614,10 @@ func (s *Service) openStrandedRounds(ctx context.Context) {
 		s.log.WarnContext(ctx, "review round: reading the rounds that never ran", "err", err)
 		return // the window is only partly known: nothing is forgotten
 	}
-	s.strandedRetry.Range(func(k, _ any) bool {
-		if !inWindow[k.(int64)] {
+	// A round the query skips for a while (another run holds its task) keeps
+	// its tries; one not seen for the whole window is forgotten.
+	s.strandedRetry.Range(func(k, v any) bool {
+		if !inWindow[k.(int64)] && now-v.(strandedTry).seen > strandedShipWindow.Milliseconds() {
 			s.strandedRetry.Delete(k)
 		}
 		return true
@@ -556,7 +645,10 @@ func (s *Service) openStrandedRounds(ctx context.Context) {
 			s.strandedFailed(ctx, l.round, now, "open the pull request of a round that never ran", err)
 			continue
 		}
-		s.strandedRetry.Delete(l.round)
-		s.log.Info("review round: opened the pull request of a round that never ran", "round", l.round, "why", why)
+		tries := 0
+		if prev, ok := s.strandedRetry.LoadAndDelete(l.round); ok {
+			tries = prev.(strandedTry).tries
+		}
+		s.log.Info("review round: opened the pull request of a round that never ran", "round", l.round, "why", why, "failed tries before", tries)
 	}
 }

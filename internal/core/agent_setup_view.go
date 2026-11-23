@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"git.jmann.me/claude/waypoint/internal/core/udiff"
 )
 
 // SetupCheck is one of Waypoint's checks on a repo or machine.
@@ -558,7 +560,7 @@ func (s *Service) GetAgentFile(ctx context.Context, actor *Actor, forgeID int64,
 	}
 	out := &AgentFileContent{AgentFile: AgentFile{Path: fl.path, Kind: fl.kind, Size: fl.size, Lines: lineCount(fl.content), Truncated: fl.truncated, Content: fl.content}, Repo: r.repo}
 	if !fl.truncated {
-		out.SHA = gitBlobSHA(fl.content)
+		out.SHA = udiff.GitBlobSHA(fl.content)
 	}
 	if b, has := sharedBlock(fl.content); has {
 		out.Shared = b

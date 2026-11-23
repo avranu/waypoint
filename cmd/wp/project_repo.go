@@ -22,7 +22,7 @@ func init() {
 	projectRepoCmd.subs = []*command{
 		{name: "ls", aliases: []string{"list"}, args: "[-p PROJECT]", summary: "list the project's repos with their merge policy",
 			examples: nil, run: projectRepoLs},
-		{name: "set", args: "[REPO] [--auto-merge on|off] [--into any|default|others|GLOB…] [--required-check C]… [--review-wait 30m] [--quiet 10m] [--reviewer LOGIN]…",
+		{name: "set", args: "[REPO] [--auto-merge on|off] [--into any|default|others|GLOB…] [--required-check C]… [--review-wait 30m] [--quiet 10m] [--reviewer LOGIN]… [--line-candidates on|off]",
 			summary: "change a repo's merge policy (project owners)",
 			about: `REPO is owner/name or its name; default: the git repo here, or the
 project's only repo. An armed merge waits for required checks, then for
@@ -63,6 +63,7 @@ type repoPolicy struct {
 	AutoMergeInto     string   `json:"auto_merge_into"`
 	AutoMergeBases    []string `json:"auto_merge_bases"`
 	DefaultBranch     string   `json:"default_branch"`
+	LineCandidates    bool     `json:"line_candidates"`
 }
 
 // intoText says which base branches Merge automatically arms into.
@@ -84,8 +85,9 @@ func (r repoPolicy) text() string {
 		onOff += " (" + into + ")"
 	}
 	list := func(l []string) string { return cmpStr(strings.Join(l, ", "), "none") }
-	return fmt.Sprintf("%s on %s\n  merge automatically: %s · required checks: %s · review wait %s · quiet %s · external reviewers: %s\n",
-		r.Repo, r.ForgeName, onOff, list(r.RequiredChecks), minutesText(r.ReviewWaitMinutes), minutesText(r.QuietMinutes), list(r.ExternalReviewers))
+	line := map[bool]string{true: "on", false: "off"}[r.LineCandidates]
+	return fmt.Sprintf("%s on %s\n  merge automatically: %s · required checks: %s · review wait %s · quiet %s · external reviewers: %s · line candidates: %s\n",
+		r.Repo, r.ForgeName, onOff, list(r.RequiredChecks), minutesText(r.ReviewWaitMinutes), minutesText(r.QuietMinutes), list(r.ExternalReviewers), line)
 }
 
 // minutesText: 30 → "30m", 60 → "1h", 90 → "1h30m", 0 → "none".
@@ -171,6 +173,7 @@ func projectRepoSet(c *cli, args []string) error {
 	quiet := fs.String("quiet", "", "quiet period before merge (`10m`; 0: none)")
 	fs.Var(&reviewers, "reviewer", "external reviewer bot `LOGIN` or status (repeat; replaces)")
 	noReviewers := fs.Bool("no-reviewers", false, "clear the reviewers")
+	lineCand := fs.String("line-candidates", "", "the merge line tests pull requests on a candidate branch: `on` or off")
 	pos, err := c.parse(fs, args)
 	if err != nil {
 		return err
@@ -199,6 +202,15 @@ func projectRepoSet(c *cli, args []string) error {
 		body["auto_merge"] = false
 	default:
 		return c.usage("--auto-merge is on or off")
+	}
+	switch strings.ToLower(*lineCand) {
+	case "":
+	case "on", "true", "yes":
+		body["line_candidates"] = true
+	case "off", "false", "no":
+		body["line_candidates"] = false
+	default:
+		return c.usage("--line-candidates is on or off")
 	}
 	keyword := func(x string) bool { return slices.Contains([]string{"any", "default", "others"}, strings.ToLower(x)) }
 	switch {
@@ -229,7 +241,7 @@ func projectRepoSet(c *cli, args []string) error {
 		body[flagName] = n
 	}
 	if len(body) == 0 {
-		return c.usage("say what to change: --auto-merge, --into, --required-check, --review-wait, --quiet or --reviewer")
+		return c.usage("say what to change: --auto-merge, --into, --required-check, --review-wait, --quiet, --reviewer or --line-candidates")
 	}
 	if _, err := c.call("PATCH", fmt.Sprintf("/api/v1/projects/%s/repos/%d", esc(key), r.ID), body); err != nil {
 		return err

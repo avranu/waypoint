@@ -403,9 +403,9 @@ func (s *Service) onForgeCI(ctx context.Context, f *Forge, repo, sha string) {
 		return
 	}
 	if sha != "" {
-		// A merge queue stack's commit (WP-404): its pull request's step reads it.
-		if id := s.stackPRByCommit(ctx, f.ID, repo, sha); id != 0 {
-			s.nudgeBabysit(id, false)
+		// A candidate's commit (WP-404, WP-1659): its line reads the run.
+		if ref, ok := s.candLineByCommit(ctx, f.ID, repo, sha); ok {
+			s.lineChangedAsync(ref)
 			return
 		}
 		if err := s.refreshHead(ctx, f, repo, sha); err != nil {

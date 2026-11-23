@@ -547,3 +547,29 @@ func TestMergeAutomaticallyByBaseArms(t *testing.T) {
 		t.Errorf("forge can't say the default: #7 (do-not-merge) armed %v, #8 armed %v", armed(7), armed(8))
 	}
 }
+
+// The line's candidate switch is part of the repo merge policy: listed, set
+// by an owner with an audit entry, and read by the line.
+func TestMergePolicyLineCandidates(t *testing.T) {
+	se := newShipEnv(t, "forgejo")
+	repos, err := se.s.ListProjectRepos(se.ctx, se.admin, se.p.Key)
+	if err != nil || len(repos) != 1 || !repos[0].LineCandidates {
+		t.Fatalf("default = %+v %v", repos, err)
+	}
+	off := false
+	se.policy(MergePolicyInput{LineCandidates: &off})
+	repos, _ = se.s.ListProjectRepos(se.ctx, se.admin, se.p.Key)
+	if repos[0].LineCandidates || se.s.lineCandidatesOn(se.ctx, lineRef{forge: repos[0].ForgeID, repo: repos[0].Repo, base: "main"}) {
+		t.Errorf("still on: %+v", repos[0])
+	}
+	var n int
+	if err := se.s.db.R.QueryRowContext(se.ctx, `SELECT count(*) FROM audit_log WHERE action = 'repo.merge_policy' AND detail LIKE '%turned off merge line candidates%'`).Scan(&n); err != nil || n != 1 {
+		t.Errorf("audit rows = %d %v", n, err)
+	}
+	on := true
+	se.policy(MergePolicyInput{LineCandidates: &on})
+	repos, _ = se.s.ListProjectRepos(se.ctx, se.admin, se.p.Key)
+	if !repos[0].LineCandidates {
+		t.Error("not back on")
+	}
+}

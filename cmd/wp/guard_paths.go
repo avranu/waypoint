@@ -240,10 +240,22 @@ func (s guardSite) foreign(p string) bool {
 // variable so a test, whose own fixtures live in one, can narrow it.
 var guardTempDirs = func() []string { return []string{os.TempDir(), "/tmp", "/var/tmp"} }
 
+// ownRepo: p is in the session's repository or another worktree of it.
+func (s guardSite) ownRepo(p string) bool {
+	if !s.has {
+		return false
+	}
+	if within(s.repo.root, p) {
+		return true
+	}
+	r, ok := findRepo(p)
+	return ok && r.common == s.repo.common
+}
+
 // confined: a write to p stays where the session may write.
 func (s guardSite) confined(p string) bool {
 	if s.has {
-		if within(s.repo.root, p) {
+		if s.ownRepo(p) {
 			return true
 		}
 	} else if within(s.cwd, p) {
@@ -262,9 +274,6 @@ func (s guardSite) confined(p string) bool {
 				return true
 			}
 		}
-	}
-	if r, ok := findRepo(p); ok && s.has && r.common == s.repo.common {
-		return true // another worktree of the same repository
 	}
 	return false
 }

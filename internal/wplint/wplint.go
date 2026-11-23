@@ -42,6 +42,7 @@ var Analyzers = []*analysis.Analyzer{
 	LogCtx,
 	BlankErr,
 	LogMsg,
+	CoreLayers,
 }
 
 var ignoreRE = regexp.MustCompile(`^//\s*wplint:ignore\s+([\w-]+)[ \t]*(.*)$`)
@@ -119,6 +120,15 @@ func reach(pass *analysis.Pass, c *ast.Comment) waiver {
 func inPkg(p, suffix string) bool {
 	p = strings.TrimSuffix(p, "_test")
 	return p == suffix || strings.HasSuffix(p, "/"+suffix)
+}
+
+// underPkg says whether p is that package or one below it, such as
+// "internal/core/kernel": the rules that are about how code in core is
+// written, not about core.Service, follow code that moves into a package
+// under core (WP-ADR151).
+func underPkg(p, suffix string) bool {
+	p = strings.TrimSuffix(p, "_test")
+	return inPkg(p, suffix) || strings.HasPrefix(p, suffix+"/") || strings.Contains(p, "/"+suffix+"/")
 }
 
 func isTestFile(pass *analysis.Pass, f *ast.File) bool {
