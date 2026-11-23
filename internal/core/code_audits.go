@@ -17,8 +17,8 @@ import (
 // Audits (WP-348, WP-ADR20): an adversarial review a person, an agent or an
 // automation asks for, of a repository, a branch, a commit, a range of
 // commits or a pull request. A model reads the requester's runner's checkout
-// read-only (by default the one the LLM gateway picks, defaultAuditChain;
-// a named CLI's model runs on the runner) and reports findings in a fixed
+// read-only (by default Grok through Cursor on the runner, then the one the
+// LLM gateway picks, defaultAuditChain) and reports findings in a fixed
 // form, which Waypoint keeps.
 // The model never changes anything. A pull request's audit is posted on it;
 // a task for Claude to check and fix the findings is made only when someone
@@ -91,19 +91,28 @@ var cursorAuditChain = []AgentModel{{CLI: "cursor", Model: "grok-4.7-high"}, {CL
 // With an LLM gateway it is Grok 4.7 through Cursor on a runner (high effort,
 // then medium), then the gateway's audit purpose. The gateway serves Grok as
 // text only until OPEN-153, so it cannot give Grok an audit, and the Cursor
-// plan is to be spent on adversarial audits (WP-1725, WP-ADR155); advanceAudit passes
-// the Cursor entries over when no runner with Cursor is online, so the
-// gateway (WP-871, WP-ADR84) still runs the audit then. When the gateway
-// heads its audit purpose with Grok, the default goes back to the gateway
-// alone. A Waypoint with no gateway asks Cursor on the runner alone.
+// plan is to be spent on adversarial audits (WP-1725, WP-ADR155). The
+// gateway (WP-871, WP-ADR84) still runs the audit when Cursor can't:
+// advanceAudit passes a Cursor entry over when no runner with Cursor is
+// online, CheckAudits when none took its job in auditRunnerWait, and
+// settleAudit goes on after any failure of one. Nothing here reads what the
+// gateway's audit purpose serves: taking the Cursor entries out again once
+// the gateway gives Grok an audit is an edit of this function (WP-ADR155).
+// A Waypoint with no gateway asks Cursor on the runner alone.
 func (s *Service) defaultAuditChain(ctx context.Context) []AgentModel {
 	if _, _, why := s.gatewayTasksLLM(ctx); why == "" {
 		chain := make([]AgentModel, 0, len(cursorAuditChain)+1)
 		chain = append(chain, cursorAuditChain...)
 		return append(chain, AgentModel{CLI: GatewayCLI, Model: gatewayAuditModel})
 	}
-	return cursorAuditChain
+	return slices.Clone(cursorAuditChain)
 }
+
+// auditRunnerWait is how long a model that isn't its chain's last waits for
+// a runner to take its job before the next model is asked. An audit runs in
+// a runner's light lane, beside its sessions, so a job nobody took in this
+// long is one whose runner went away or is full of audits.
+const auditRunnerWait = 20 * time.Minute
 
 // hasOnlineRunner: one of the owner's runners that is online could take the
 // job in. It is true too when that can't be told: a read that failed is not
@@ -970,8 +979,9 @@ func (s *Service) advanceAudit(ctx context.Context, id int64) {
 		}
 		raw, _ := json.Marshal(in)
 		// A runner that is registered but offline would hold the job for a
-		// day and its expiry would fail the audit, where a later entry could
-		// have run it: only the chain's last entry waits for one.
+		// day, where a later entry could have run the audit: only the
+		// chain's last entry waits for one (passQueuedAudit is the same rule
+		// for a runner that went away after the job was queued).
 		if m.CLI != GatewayCLI && a.Slot < len(a.chain)-1 && !s.hasOnlineRunner(ctx, a.ownerID, JobAudit, raw) {
 			a.Attempts = append(a.Attempts, AuditAttempt{Model: auditModelName(m), Round: a.Retries, Outcome: "unavailable", Error: "no runner with " + m.CLI + " is online", At: s.nowMS()})
 			a.Slot++
@@ -1191,8 +1201,12 @@ func (s *Service) settleAudit(ctx context.Context, id, jobID int64) {
 			rounds = true
 		}
 	}
+	// The gateway reads the checkout its own way and costs no plan: a
+	// runner's CLI failing, or no runner taking its job, is no reason to
+	// leave it unasked (the default chain, WP-1725).
+	toGateway := m.CLI != GatewayCLI && next < len(a.chain) && slices.ContainsFunc(a.chain[next:], func(x AgentModel) bool { return x.CLI == GatewayCLI })
 	switch {
-	case j.State == "expired", att.Outcome == "error" && (next >= len(a.chain) || !rounds):
+	case (j.State == "expired" || att.Outcome == "error" && (next >= len(a.chain) || !rounds)) && !toGateway:
 		// A review round's chain goes on after any failure (WP-820): an
 		// error text no list knows mustn't end it with models still to try.
 		// So does one handed from its round to the pull request (WP-1059),
@@ -1510,19 +1524,19 @@ func cleanAuditPath(p string, line int) (string, int) {
 // CheckAudits moves audits along: a queued one whose wait is over, and a
 // running one whose job ended while nothing was listening (a restart).
 func (s *Service) CheckAudits(ctx context.Context) {
-	rows, err := s.db.R.QueryContext(ctx, `SELECT a.id, a.status, coalesce(a.job_id, 0), coalesce(a.retry_at, 0), coalesce(j.state, '')
+	rows, err := s.db.R.QueryContext(ctx, `SELECT a.id, a.status, coalesce(a.job_id, 0), coalesce(a.retry_at, 0), coalesce(j.state, ''), coalesce(j.created_at, 0)
 		FROM code_audits a LEFT JOIN runner_jobs j ON j.id = a.job_id WHERE a.status IN ('queued','running')`)
 	if err != nil {
 		return
 	}
 	type row struct {
-		id, job, retryAt int64
-		status, state    string
+		id, job, retryAt, queuedAt int64
+		status, state              string
 	}
 	var list []row
 	for rows.Next() {
 		var r row
-		if rows.Scan(&r.id, &r.status, &r.job, &r.retryAt, &r.state) == nil {
+		if rows.Scan(&r.id, &r.status, &r.job, &r.retryAt, &r.state, &r.queuedAt) == nil {
 			list = append(list, r)
 		}
 	}
@@ -1538,8 +1552,32 @@ func (s *Service) CheckAudits(ctx context.Context) {
 			}
 		case r.status == AuditRunning && slices.Contains([]string{"done", "failed", "cancelled", "expired"}, r.state):
 			s.settleAudit(ctx, r.id, r.job)
+		case r.status == AuditRunning && r.state == "queued" && now-r.queuedAt >= auditRunnerWait.Milliseconds():
+			s.passQueuedAudit(ctx, r.id, r.job)
 		}
 	}
+}
+
+// passQueuedAudit moves an audit on to its chain's next model when no runner
+// took the job of its current one in auditRunnerWait. The chain's last model
+// keeps waiting, as does the gateway's job, which a runner only relays.
+func (s *Service) passQueuedAudit(ctx context.Context, id, jobID int64) {
+	unlock := s.auditLocks.lock(id)
+	a, err := s.auditRow(ctx, id)
+	if err != nil || a.Status != AuditRunning || a.JobID == nil || *a.JobID != jobID || a.Slot >= len(a.chain)-1 || a.chain[a.Slot].CLI == GatewayCLI {
+		unlock()
+		return
+	}
+	if j, err := s.stepJobByID(ctx, jobID); err != nil || j == nil || j.State != "queued" {
+		unlock()
+		return
+	}
+	a.Attempts = append(a.Attempts, AuditAttempt{Model: auditModelName(a.chain[a.Slot]), Job: jobID, Round: a.Retries, Outcome: "unavailable",
+		Error: "no runner took it in " + ShortDuration(auditRunnerWait), At: s.nowMS()})
+	s.requeueAudit(ctx, a, a.Slot+1, a.Retries, nil)
+	unlock()
+	// After the audit left the job: its cancelling isn't the audit's.
+	s.cancelStepJob(ctx, jobID, "The audit went on to its next model.")
 }
 
 // codeAuditEvent: dispatch's part. A queued audit is started; a finished
@@ -2448,9 +2486,14 @@ func (s *Service) RerunAudit(ctx context.Context, actor *Actor, id int64, via st
 	comment := a.PostComment
 	in := AuditInput{Project: a.Project, Repo: a.Repo, Target: a.Target, Instructions: a.Instructions, Models: a.Models, Comment: &comment, Fix: a.Fix, Via: via,
 		Focus: a.Focus, Paths: a.Paths, Exclude: a.Exclude, MinSeverity: a.MinSeverity, MaxFindings: a.MaxFindings, weakest: a.Weakest}
-	if slices.Equal(a.Models, auditModelNames(cursorAuditChain)) {
-		// The default of before the gateway ran audits (WP-871), which is
-		// stored as if it had been named: a rerun asks today's default.
+	cursor := auditModelNames(cursorAuditChain)
+	if slices.Equal(a.Models, cursor) || slices.Equal(a.Models, append(cursor, auditModelName(AgentModel{CLI: GatewayCLI, Model: gatewayAuditModel}))) {
+		// A default is stored as if it had been named: today's, or the one
+		// of a Waypoint with no gateway (and of before the gateway ran
+		// audits, WP-871). A rerun asks today's default, which a change of
+		// the default or a gateway that is gone would otherwise leave it
+		// without. (The gateway alone, the default between WP-871 and
+		// WP-1725, can't be told from a person's naming it, and stays.)
 		in.Models = nil
 	}
 	if a.Agent == leftoverAgent {

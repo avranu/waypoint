@@ -65,8 +65,9 @@ func auditSteps(target, ref, focus string, fix bool) []Action {
 }
 
 // auditTemplateModel says which model a card's audit gets.
-const auditTemplateModel = "The model is the one the gateway picks for audits (Grok 4.7 when it has it), on the gateway from a checkout your runner sends; " +
-	"on a Waypoint with no LLM gateway it is Grok 4.7 through cursor-agent on your runner, on your Cursor plan."
+const auditTemplateModel = "The model is Grok 4.7 through cursor-agent on your runner, on your Cursor plan. " +
+	"When Cursor can't run it (no runner with Cursor online, the plan out of usage, a failure), the model the LLM gateway picks for audits runs it instead, from a checkout your runner sends; " +
+	"a Waypoint with no LLM gateway has Cursor alone."
 
 var cursorTemplates = []AutomationTemplate{
 	{

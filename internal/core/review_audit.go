@@ -19,13 +19,12 @@ import (
 // that model's findings to check and fix instead of asking it for a review of
 // its own, which spends Claude tokens on a Sonnet reviewer.
 //
-// The audit is the gateway's to run (WP-617, WP-ADR84; WP-871): the
-// round asks its audit purpose and nothing else (defaultAuditChain). The
-// gateway chooses the model, moves to its next when one fails, knows which of
-// its upstreams has usage left, and leaves out the session's family. A round
-// calls no coding plan's CLI itself and keeps no order of models behind the
-// gateway: Grok is the gateway's to serve as the audit purpose's first
-// choice.
+// The round asks the default audit (defaultAuditChain): Grok through Cursor
+// on a runner first (WP-1725, WP-ADR155), then the gateway's audit purpose
+// (WP-617, WP-ADR84; WP-871). Behind its purpose the gateway chooses the
+// model, moves to its next when one fails, knows which of its upstreams has
+// usage left, and leaves out the session's family; a round keeps no order of
+// models behind the gateway.
 //
 // When the gateway's audit can't be had (it failed, no runner that could
 // send it was online for reviewAuditQueueWait, or it ran past
@@ -506,11 +505,9 @@ func (s *Service) planReview(ctx context.Context, st *stepRow, review *roundRow,
 	if err != nil {
 		return reviewPlan{}, err
 	}
-	// (An audit that went through the gateway has asked the gateway whatever else
-	// it asked: the default's Cursor entries in front of it don't make a second
-	// audit a different one.)
-	gateway := auditModelName(AgentModel{CLI: GatewayCLI, Model: gatewayAuditModel})
-	tried := (slices.Equal(a.Models, auditModelNames(s.defaultAuditChain(ctx))) || slices.Contains(a.Models, gateway)) && a.Weakest == stakes.barFor(reviewOtherAuditKey)
+	// (Every model of today's default among the audit's, in whatever company:
+	// one a person named the gateway and another model for hasn't asked Grok.)
+	tried := a.Weakest == stakes.barFor(reviewOtherAuditKey) && !slices.ContainsFunc(auditModelNames(s.defaultAuditChain(ctx)), func(m string) bool { return !slices.Contains(a.Models, m) })
 	who := reviewAuditWho(a)
 	switch a.Status {
 	case AuditDone:

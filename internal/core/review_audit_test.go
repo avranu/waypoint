@@ -7,8 +7,10 @@ import (
 	"time"
 )
 
-// Another model's audit first in adversarial review rounds (WP-687), through
-// the LLM gateway alone and never a coding plan's CLI (WP-871).
+// Another model's audit first in adversarial review rounds (WP-687): the
+// default audit, which is Grok through Cursor on a runner and then the LLM
+// gateway (WP-871, WP-1725). Most rounds here have no runner with Cursor, so
+// the gateway runs theirs.
 
 // auditAPEnv is reviewAPEnv with the LLM gateway set up and a runner of
 // the person's that sends audits to it. The runner has Claude Code signed in
@@ -866,6 +868,103 @@ func TestReviewRoundAfterACursorAudit(t *testing.T) {
 	}
 }
 
+// todaysDefaultModels is a stored audit's models when nobody named any, on a
+// Waypoint with a gateway (WP-1725).
+const todaysDefaultModels = `[{"cli":"cursor","model":"grok-4.7-high"},{"cli":"cursor","model":"grok-4.7-medium"},{"cli":"gateway","model":"audit"}]`
+
+// Whether a pull request's own audit that failed is followed by the round's
+// own: not when it asked every model the round's would, at the round's bar;
+// it is when a person named other models beside the gateway (Grok wasn't
+// asked).
+func TestReviewRoundAsksItsOwnAuditAfterAnother(t *testing.T) {
+	for name, c := range map[string]struct {
+		models, weakest string
+		again           bool
+	}{
+		"today's default at the round's bar": {todaysDefaultModels, reviewFloorBar, false},
+		"the gateway beside a named model":   {`[{"cli":"claude","model":"sonnet"},{"cli":"gateway","model":"audit"}]`, reviewFloorBar, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			a, _ := auditAPEnv(t)
+			first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude", Priority: "urgent"})
+			a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "Second", Agent: "claude"})
+			a.finish(first.Key)
+			a.grokPR(first.ID, 7, "aaa")
+			var prID, forge int64
+			if err := a.s.db.R.QueryRow(`SELECT id, forge_id FROM pull_requests WHERE number = 7`).Scan(&prID, &forge); err != nil {
+				t.Fatal(err)
+			}
+			res, err := a.s.db.W.Exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, pr_id, pr_number, ref, status, model, models, author_model, title, owner_id, created_at, weakest)
+				VALUES (?, ?, 'acme/app', 'pr', ?, 7, 'aaa', 'queued', '', ?, 'anthropic/claude-code', 'acme/app#7', ?, ?, ?)`, a.p.ID, forge, prID, c.models, a.admin.User.ID, a.clockNow().UnixMilli(), c.weakest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			theirs, _ := res.LastInsertId()
+			a.stopWith("Shipped as #7.")
+			id := a.step().reviewID.Int64
+			a.askedAsRound(theirs)
+			a.tick(61 * time.Second)
+			if ra, _ := a.roundAuditRow(id); ra.id != theirs {
+				t.Fatalf("the pull request's audit isn't the round's: %+v", ra)
+			}
+			if _, err := a.s.db.W.Exec(`UPDATE code_audits SET status = 'failed', error = 'no model could take the task' WHERE id = ?`, theirs); err != nil {
+				t.Fatal(err)
+			}
+			a.tick(reviewAuditRecheck + time.Second)
+			ra, au := a.roundAuditRow(id)
+			if again := ra.id != theirs; again != c.again {
+				t.Fatalf("the round's own audit asked: %v, want %v (round %+v)", again, c.again, ra)
+			}
+			if c.again && (au == nil || au.Purpose != AuditReview || strings.Join(au.Models, " ") != "cursor/grok-4.7-high cursor/grok-4.7-medium gateway/audit") {
+				t.Fatalf("the round's own audit = %+v", au)
+			}
+		})
+	}
+}
+
+// With a gateway and a runner with Cursor online, a round's audit is Grok's
+// through Cursor first, and the gateway's when the Cursor plan is out of usage
+// (WP-1725).
+func TestReviewRoundAsksCursorFirst(t *testing.T) {
+	a, box := auditAPEnv(t)
+	cursor := a.runner(a.admin, "cursorbox", func(r *RunnerRegistration) {
+		r.CLIs = []RunnerCLI{{Name: "cursor"}}
+		r.Features = []string{FeatureConfine, FeatureAudit}
+	})
+	first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude", Priority: "urgent"})
+	a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "Second", Agent: "claude"})
+	a.finish(first.Key)
+	a.grokPR(first.ID, 7, "aaa")
+	a.stopWith("Shipped as #7.")
+	id := a.step().reviewID.Int64
+	a.tick(61 * time.Second)
+	a.s.Wait()
+	if st := a.step(); st.reason != WaitAudit || !strings.Contains(st.detail, "Grok's audit") {
+		t.Fatalf("step = %+v", st)
+	}
+	for _, want := range []string{"grok-4.7-high", "grok-4.7-medium"} {
+		w := a.poll(a.admin, cursor, RunnerPoll{})
+		if w.Job == nil || w.Job.Kind != JobAudit {
+			t.Fatalf("no audit job for Cursor (%s): %+v", want, w.Job)
+		}
+		if job := agentJobOf(t, w.Job); job.CLI != "cursor" || job.Model != want {
+			t.Fatalf("the round's job = %s/%s, want cursor/%s", job.CLI, job.Model, want)
+		}
+		if _, err := a.s.FinishRunnerJob(a.ctx, a.admin, w.Job.ID, RunnerFinish{State: "failed", Error: "You've hit your usage limit"}); err != nil {
+			t.Fatal(err)
+		}
+		a.s.Wait()
+		a.s.Wait()
+	}
+	w := a.poll(a.admin, box, RunnerPoll{})
+	if w.Job == nil || agentJobOf(t, w.Job).CLI != GatewayCLI {
+		t.Fatalf("the gateway wasn't asked after Cursor: %+v", w.Job)
+	}
+	if _, au := a.roundAuditRow(id); au.Status != AuditRunning || len(au.Attempts) != 2 || au.Attempts[0].Outcome != "spent" {
+		t.Fatalf("audit = %s %+v", au.Status, au.Attempts)
+	}
+}
+
 // The pull request's own audit by the gateway failing is the gateway having
 // failed: the round asks it no second time; the Sonnet reviewer does.
 func TestReviewRoundAfterThePRsGatewayAudit(t *testing.T) {
@@ -879,7 +978,7 @@ func TestReviewRoundAfterThePRsGatewayAudit(t *testing.T) {
 		t.Fatal(err)
 	}
 	res, err := a.s.db.W.Exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, pr_id, pr_number, ref, status, model, models, author_model, title, owner_id, created_at, weakest)
-		VALUES (?, ?, 'acme/app', 'pr', ?, 7, 'aaa', 'queued', '', '[{"cli":"gateway","model":"audit"}]', 'anthropic/claude-code', 'acme/app#7', ?, ?, 'deepseek-v4.1-flash')`, a.p.ID, forge, prID, a.admin.User.ID, a.clockNow().UnixMilli())
+		VALUES (?, ?, 'acme/app', 'pr', ?, 7, 'aaa', 'queued', '', ?, 'anthropic/claude-code', 'acme/app#7', ?, ?, 'deepseek-v4.1-flash')`, a.p.ID, forge, prID, todaysDefaultModels, a.admin.User.ID, a.clockNow().UnixMilli())
 	if err != nil {
 		t.Fatal(err)
 	}
