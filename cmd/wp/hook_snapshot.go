@@ -821,7 +821,7 @@ func (b *snapshotBuilder) memory() {
 	if root == "" {
 		root = cwd
 	}
-	dir := filepath.Join(b.cfgDir, "projects", memorySlug(root), "memory")
+	dir := filepath.Join(b.cfgDir, "projects", projectDirName(root), "memory")
 	if b.expired() {
 		b.missing("memory_files", budgetSkipped)
 		return
@@ -859,10 +859,6 @@ func (b *snapshotBuilder) memory() {
 		b.missing("memory_index_bytes", "the memory directory has no MEMORY.md")
 	}
 }
-
-var slugRE = regexp.MustCompile(`[^A-Za-z0-9]`)
-
-func memorySlug(path string) string { return slugRE.ReplaceAllString(path, "-") }
 
 // skills lists skill directory names: the user's and this project's.
 func (b *snapshotBuilder) skills() {
