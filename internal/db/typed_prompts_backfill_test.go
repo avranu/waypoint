@@ -3,10 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
-	"io/fs"
 	"path/filepath"
-	"sort"
-	"strings"
 	"testing"
 )
 
@@ -21,26 +18,7 @@ func TestTypedPromptsBackfillReadsWrappedRows(t *testing.T) {
 	}
 	defer func() { _ = w.Close() }()
 	w.SetMaxOpenConns(1)
-	if _, err := w.ExecContext(ctx, `CREATE TABLE schema_migrations (name TEXT PRIMARY KEY, applied_at INTEGER NOT NULL DEFAULT (unixepoch()))`); err != nil {
-		t.Fatal(err)
-	}
-	names, _ := fs.Glob(migrations, "migrations/*.sql")
-	sort.Strings(names)
-	var last string
-	for _, n := range names {
-		base := strings.TrimPrefix(n, "migrations/")
-		if base >= "0187" {
-			last = n
-			break
-		}
-		body, _ := migrations.ReadFile(n)
-		if err := apply(ctx, w, base, string(body)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if !strings.Contains(last, "0187_typed_prompts") {
-		t.Fatalf("first migration from 0187 is %q", last)
-	}
+	body := migrateBefore(ctx, t, w, "0187_typed_prompts.sql")
 	for _, q := range []string{
 		`INSERT INTO users(id, username, email, created_at, updated_at) VALUES (1, 'robin', 'j@example.com', 0, 0)`,
 		`INSERT INTO agent_sessions(id, user_id, machine, cli_id, started_at, last_seen_at) VALUES (1, 1, 'box', 's1', 0, 0)`,
@@ -63,8 +41,7 @@ func TestTypedPromptsBackfillReadsWrappedRows(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	body, _ := migrations.ReadFile(last)
-	if err := apply(ctx, w, "0187_typed_prompts.sql", string(body)); err != nil {
+	if err := apply(ctx, w, "0187_typed_prompts.sql", body); err != nil {
 		t.Fatal(err)
 	}
 	for id, r := range rows {
