@@ -30,7 +30,9 @@ func (s *Service) baseFailing(ctx context.Context, pr *PullRequest) (string, map
 	}
 	failing := map[string]bool{}
 	for _, c := range dropSuperseded(checks) {
-		if c.State == CheckFailed && !ownCheck(c.Name) {
+		// The advisories job runs only on the base: no pull request can pass it,
+		// so it can't make one fix the base (WP-1660).
+		if c.State == CheckFailed && !ownCheck(c.Name) && checkJobName(c.Name) != advisoriesJob {
 			failing[checkJob(c.Name)] = true
 		}
 	}
