@@ -322,3 +322,22 @@ func TestLineNeedsPersonStaysOut(t *testing.T) {
 		t.Fatalf("members %v, %v", members, err)
 	}
 }
+
+// A candidate whose branch gets no CI run is ended as no_run after the start
+// wait, and the line builds the places again.
+func TestLineCandidateWithNoRunIsEnded(t *testing.T) {
+	se := newStackEnv(t)
+	se.draftGreen(head7s, 5)
+	se.draftGreen(head8s, 7)
+	se.step()
+	se.line()
+	if got := strings.Join(se.madeHeads(), " "); got != "7 7,8" {
+		t.Fatalf("candidates made: %q", got)
+	}
+	se.setClock(se.clockNow().Add(stackStartWait + time.Minute))
+	se.line()
+	sts := se.stacks()
+	if sts[0].EndReason != endNoRun || sts[1].EndReason != endNoRun {
+		t.Fatalf("ended %q and %q, want no_run", sts[0].EndReason, sts[1].EndReason)
+	}
+}
