@@ -1,5 +1,6 @@
 Waypoint: self-hosted issue tracker. Go backend (internal/), React app in web/ embedded via web/embed.go.
 - All reads/writes go through internal/core.Service with an *Actor; it does access checks. Never query the DB from internal/api.
+- internal/core is being split into layers (WP-ADR151): internal/core/kernel holds what every domain needs and imports no domain; a domain is internal/core/<domain>, importing only kernel and domains below it; core.Service stays the facade. Code that needs nothing from package core goes in such a package, not in core; in core, use kernel's names for new code (kernel_shims.go keeps the old ones for existing code).
 - Mutations: Service.write + t.emit(Event); side effects happen in dispatch (events.go), not inline.
 - Schema changes: add internal/db/migrations/000N_*.sql (forward-only).
 - Frontend data: add a factory to web/src/lib/queries.ts; reuse components/ui primitives; Tailwind tokens from index.css.
