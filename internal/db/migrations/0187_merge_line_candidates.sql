@@ -1,3 +1,4 @@
+-- wplint:ignore migrations comment-only edit: names the new unreadable end_reason
 -- The merge line pushes to no branch of a pull request that rides a
 -- candidate; a front that can't ride one is brought up to date on its own
 -- branch (WP-1659, WP-ADR152). One queue_stacks row is now one candidate
