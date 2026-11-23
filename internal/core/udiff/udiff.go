@@ -1,4 +1,6 @@
-package core
+// Package udiff renders unified diffs and computes git blob ids, for the
+// change requests that propose edits to files in a repo.
+package udiff
 
 import (
 	"crypto/sha1" // #nosec G505 -- git names blobs by SHA-1; this is not a security use
@@ -7,9 +9,9 @@ import (
 	"strings"
 )
 
-// gitBlobSHA is the id git gives a file's content, so a change request can
+// GitBlobSHA is the id git gives a file's content, so a change request can
 // say which version of a file it was made against.
-func gitBlobSHA(content string) string {
+func GitBlobSHA(content string) string {
 	h := sha1.New() // #nosec G401 -- see the import
 	fmt.Fprintf(h, "blob %d\x00", len(content))
 	h.Write([]byte(content))
@@ -147,11 +149,11 @@ rounds:
 	return out
 }
 
-// unifiedDiff renders the change from old to new for one file with three
+// Unified renders the change from old to new for one file with three
 // lines of context, in the format git and patch use. Paths are shown as a/
 // and b/; an empty old side is a new file, an empty new side with deleted
 // set is a deleted one. The numbers are lines added and removed.
-func unifiedDiff(path, old, new string, isNew, deleted bool) (diff string, added, removed int) {
+func Unified(path, old, new string, isNew, deleted bool) (diff string, added, removed int) {
 	a, b := splitLines(old), splitLines(new)
 	ops := diffLines(a, b)
 	var sb strings.Builder

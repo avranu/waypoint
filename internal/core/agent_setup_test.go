@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"git.jmann.me/claude/waypoint/internal/core/udiff"
 )
 
 func TestAgentFileKinds(t *testing.T) {
@@ -292,7 +294,7 @@ func (f *fakeSetupForge) set(repo, p, content string) {
 		f.repos[repo] = r
 	}
 	r.files[p] = content
-	r.head = gitBlobSHA(fmt.Sprint(len(r.files), r.head, p, content)) // a new commit
+	r.head = udiff.GitBlobSHA(fmt.Sprint(len(r.files), r.head, p, content)) // a new commit
 }
 
 func (f *fakeSetupForge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -339,7 +341,7 @@ func (f *fakeSetupForge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(404)
 	case r.Method == "GET" && strings.HasPrefix(path, "/contents/"):
 		if c, ok := repo.files[strings.TrimPrefix(path, "/contents/")]; ok {
-			_, _ = fmt.Fprintf(w, `{"sha":%q,"type":"file"}`, gitBlobSHA(c))
+			_, _ = fmt.Fprintf(w, `{"sha":%q,"type":"file"}`, udiff.GitBlobSHA(c))
 			return
 		}
 		w.WriteHeader(404)
@@ -352,7 +354,7 @@ func (f *fakeSetupForge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			p := fmt.Sprint(m["path"])
 			raw, _ := base64.StdEncoding.DecodeString(fmt.Sprint(m["content"]))
 			c.files[p], c.ops[p] = string(raw), fmt.Sprint(m["operation"])
-			if sha, _ := m["sha"].(string); c.ops[p] == "update" && sha != gitBlobSHA(repo.files[p]) {
+			if sha, _ := m["sha"].(string); c.ops[p] == "update" && sha != udiff.GitBlobSHA(repo.files[p]) {
 				w.WriteHeader(409)
 				return
 			}
@@ -541,7 +543,7 @@ func TestAgentSetupReadsRepos(t *testing.T) {
 		t.Fatalf("sam read another project's file: %v", err)
 	}
 	fc, err := se.s.GetAgentFile(se.ctx, sam, se.forgeID, "acme/one", "CLAUDE.md")
-	if err != nil || fc.Content != "# One\n\nOur rules.\n" || fc.Editable || fc.SHA != gitBlobSHA(fc.Content) || !strings.Contains(fc.URL, "/acme/one/src/branch/main/CLAUDE.md") {
+	if err != nil || fc.Content != "# One\n\nOur rules.\n" || fc.Editable || fc.SHA != udiff.GitBlobSHA(fc.Content) || !strings.Contains(fc.URL, "/acme/one/src/branch/main/CLAUDE.md") {
 		t.Fatalf("sam's read: %+v %v", fc, err)
 	}
 

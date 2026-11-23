@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"git.jmann.me/claude/waypoint/internal/core/udiff"
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
@@ -1305,14 +1306,14 @@ func checkChangeFiles(in []RequestFileInput) ([]storedFile, error) {
 		switch {
 		case isNew && f.Base != "":
 			return nil, invalid("%s has base content but no base_sha", p)
-		case !isNew && gitBlobSHA(f.Base) != strings.ToLower(f.BaseSHA):
+		case !isNew && udiff.GitBlobSHA(f.Base) != strings.ToLower(f.BaseSHA):
 			return nil, invalid("%s: base_sha %s isn't the git blob of the base content sent", p, f.BaseSHA)
 		case isNew && f.Delete:
 			return nil, invalid("%s is new, so there is nothing to delete", p)
 		case !f.Delete && f.Content == "" && isNew:
 			return nil, invalid("%s: new files need content", p)
 		}
-		d, add, del := unifiedDiff(p, f.Base, f.Content, isNew, f.Delete)
+		d, add, del := udiff.Unified(p, f.Base, f.Content, isNew, f.Delete)
 		if f.Delete {
 			f.Content = ""
 		}
