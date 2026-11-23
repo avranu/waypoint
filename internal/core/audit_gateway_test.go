@@ -1429,6 +1429,34 @@ func TestDefaultAuditDoesNotWaitOnCursorsRunner(t *testing.T) {
 	}
 }
 
+// A Cursor job a runner claimed just as its wait ran out isn't passed over:
+// the job runs on as the audit's, uncancelled, and the audit waits for it.
+func TestPassQueuedAuditLeavesAClaimedJob(t *testing.T) {
+	ae := newAgentEnv(t)
+	taskGateway(t, ae.s)
+	a, err := ae.s.RequestAudit(ae.ctx, ae.admin, AuditInput{Project: ae.p.Key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ae.work()
+	first := ae.audit(a.ID)
+	if first.Status != AuditRunning || first.JobID == nil {
+		t.Fatalf("audit = %+v", first)
+	}
+	ae.setClock(ae.clockNow().Add(auditRunnerWait + time.Minute))
+	// CheckAudits read the job as queued; the claim lands before the pass.
+	if _, err := ae.s.db.W.Exec(`UPDATE runner_jobs SET state = 'running', started_at = ? WHERE id = ?`, ae.clockNow().UnixMilli(), *first.JobID); err != nil {
+		t.Fatal(err)
+	}
+	ae.s.passQueuedAudit(ae.ctx, a.ID, *first.JobID)
+	if got := ae.audit(a.ID); got.Status != AuditRunning || got.JobID == nil || *got.JobID != *first.JobID || len(got.Attempts) != 0 {
+		t.Fatalf("audit = %s %v %+v", got.Status, got.JobID, got.Attempts)
+	}
+	if info, err := ae.s.GetRunnerJob(ae.ctx, ae.admin, *first.JobID, -1); err != nil || info.State != "running" {
+		t.Fatalf("Cursor's job = %+v %v", info, err)
+	}
+}
+
 // A default audit stored with today's three names is a default still when it
 // is run again: with the gateway gone it asks Cursor alone instead of being
 // refused for naming a gateway.

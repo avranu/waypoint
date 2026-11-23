@@ -1285,40 +1285,38 @@ func auditLimitAdvice(chain []AgentModel) string {
 // with at, the whole chain again later). The audit is running, or queued
 // still when the chain's last entries were passed over (advanceAudit).
 func (s *Service) requeueAudit(ctx context.Context, a *CodeAudit, slot, retries int, at *time.Time) {
-	_ = s.requeueAuditErr(ctx, a, slot, retries, at)
+	err := s.write(ctx, SystemActor(), func(t *tx) error { return s.requeueAuditTx(ctx, t, a, slot, retries, at) })
+	if err != nil {
+		s.log.WarnContext(ctx, "queue an audit's next model", "audit", a.ID, "err", err)
+	}
 }
 
-// requeueAuditErr is requeueAudit that says whether the write held.
-func (s *Service) requeueAuditErr(ctx context.Context, a *CodeAudit, slot, retries int, at *time.Time) error {
+// requeueAuditTx is requeueAudit's write, for a caller that has more to do
+// in the same transaction (passQueuedAudit).
+func (s *Service) requeueAuditTx(ctx context.Context, t *tx, a *CodeAudit, slot, retries int, at *time.Time) error {
 	var retryAt any
 	if at != nil {
 		retryAt = at.UnixMilli()
 	}
-	err := s.write(ctx, SystemActor(), func(t *tx) error {
-		res, err := t.ExecContext(ctx, `UPDATE code_audits SET status = ?, job_id = NULL, slot = ?, retries = ?, retry_at = ?, attempts = ?, answer = ? WHERE id = ? AND status IN (?, ?)`,
-			AuditQueued, slot, retries, retryAt, attemptsJSON(a.Attempts), a.Answer, a.ID, AuditRunning, AuditQueued)
-		if err != nil {
-			return err
-		}
-		// The attempt's helpers ran and cost what they cost though its
-		// reviewer didn't answer (WP-1320's live round 6): kept, unanswered.
-		n, err := res.RowsAffected()
-		if err != nil {
-			return err
-		}
-		if n > 0 && len(a.HelperRuns) > 0 {
-			if err := s.insertHelperRuns(ctx, t, a.ID, a.HelperRuns, false, s.nowMS()); err != nil {
-				return err
-			}
-			t.emit(&Event{Kind: EvReviewLoopRecorded, ProjectID: a.projectID})
-		}
-		t.emit(&Event{Kind: EvCodeAudit, ProjectID: a.projectID, Old: AuditRunning, New: AuditQueued, Data: map[string]any{"audit": a.ID}})
-		return nil
-	})
+	res, err := t.ExecContext(ctx, `UPDATE code_audits SET status = ?, job_id = NULL, slot = ?, retries = ?, retry_at = ?, attempts = ?, answer = ? WHERE id = ? AND status IN (?, ?)`,
+		AuditQueued, slot, retries, retryAt, attemptsJSON(a.Attempts), a.Answer, a.ID, AuditRunning, AuditQueued)
 	if err != nil {
-		s.log.WarnContext(ctx, "queue an audit's next model", "audit", a.ID, "err", err)
+		return err
 	}
-	return err
+	// The attempt's helpers ran and cost what they cost though its
+	// reviewer didn't answer (WP-1320's live round 6): kept, unanswered.
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n > 0 && len(a.HelperRuns) > 0 {
+		if err := s.insertHelperRuns(ctx, t, a.ID, a.HelperRuns, false, s.nowMS()); err != nil {
+			return err
+		}
+		t.emit(&Event{Kind: EvReviewLoopRecorded, ProjectID: a.projectID})
+	}
+	t.emit(&Event{Kind: EvCodeAudit, ProjectID: a.projectID, Old: AuditRunning, New: AuditQueued, Data: map[string]any{"audit": a.ID}})
+	return nil
 }
 
 // runnerStoppedError is the error of a job whose runner was stopped under it
@@ -1574,31 +1572,35 @@ func (s *Service) passQueuedAudit(ctx context.Context, id, jobID int64) {
 		unlock()
 		return
 	}
-	if j, err := s.stepJobByID(ctx, jobID); err != nil || j == nil || j.State != "queued" {
-		unlock()
-		return
-	}
 	a.Attempts = append(a.Attempts, AuditAttempt{Model: auditModelName(a.chain[a.Slot]), Job: jobID, Round: a.Retries, Outcome: "unavailable",
 		Error: "no runner took it in " + ShortDuration(auditRunnerWait), At: s.nowMS()})
-	if err := s.requeueAuditErr(ctx, a, a.Slot+1, a.Retries, nil); err != nil {
-		// Still on its job: the next check looks again.
-		unlock()
-		return
-	}
-	unlock()
-	// After the audit left the job: its cancelling isn't the audit's. Only a
-	// job still queued: one a runner claimed since runs on, unheeded.
+	// The job's state is read, the job cancelled and the audit sent on in
+	// one write, which a runner's claim (also a write) can't come between:
+	// a job claimed since runs on as the audit's, and the audit waits for it.
+	var taken bool
 	err = s.write(ctx, SystemActor(), func(t *tx) error {
 		var state string
-		if err := t.QueryRowContext(ctx, `SELECT state FROM runner_jobs WHERE id = ?`, jobID).Scan(&state); err != nil || state != "queued" {
+		if err := t.QueryRowContext(ctx, `SELECT state FROM runner_jobs WHERE id = ?`, jobID).Scan(&state); err != nil {
+			return err
+		}
+		if state != "queued" {
+			taken = true
 			return nil
 		}
-		return t.finishRunnerJob(ctx, jobID, "cancelled", nil, nil, "The audit went on to its next model.")
+		if err := t.finishRunnerJob(ctx, jobID, "cancelled", nil, nil, "The audit went on to its next model."); err != nil {
+			return err
+		}
+		return s.requeueAuditTx(ctx, t, a, a.Slot+1, a.Retries, nil)
 	})
-	if err != nil {
-		s.log.WarnContext(ctx, "cancel an audit's passed-over job", "job", jobID, "err", err)
+	unlock()
+	switch {
+	case err != nil:
+		// Nothing was written: the audit is still on its job, and the next
+		// check looks again.
+		s.log.WarnContext(ctx, "pass over an audit's unclaimed job", "audit", id, "job", jobID, "err", err)
+	case !taken:
+		s.kickRunners()
 	}
-	s.kickRunners()
 }
 
 // codeAuditEvent: dispatch's part. A queued audit is started; a finished
