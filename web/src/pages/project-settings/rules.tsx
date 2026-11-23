@@ -613,7 +613,12 @@ export function describeTrigger(r: Rule, statuses: Status[], cat?: Catalog): Rea
         When someone gives <B>@waypoint</B> a command on a pull request
       </>
     )
-  if (t.event === 'pr_updated') return <>When a pull request is opened or pushed to</>
+  if (t.event === 'pr_updated')
+    return t.on === 'new' ? (
+      <>When a pull request is opened, marked ready or reopened</>
+    ) : (
+      <>When a pull request is opened or pushed to</>
+    )
   const def = cat?.triggers.find((d) => d.name === t.event)
   if (def) return <>When {phraseNode(def.phrase, def.params, t, statuses)}</>
   return <>When {triggerMeta(t.event).phrase}</>
