@@ -12,7 +12,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"slices"
 	"strconv"
 	"strings"
@@ -50,7 +49,7 @@ func (s *Service) lineCandidatesOn(ctx context.Context, ref lineRef) bool {
 	var v sql.NullInt64
 	if err := s.db.R.QueryRowContext(ctx, `SELECT min(line_candidates) FROM project_repos WHERE forge_id = ? AND repo = ? COLLATE NOCASE`,
 		ref.forge, ref.repo).Scan(&v); err != nil {
-		slog.Warn("read line_candidates of a repo", "forge", ref.forge, "repo", ref.repo, "err", err)
+		s.log.WarnContext(ctx, "read line_candidates of a repo", "forge", ref.forge, "repo", ref.repo, "err", err)
 		return false
 	}
 	return !v.Valid || v.Int64 != 0
