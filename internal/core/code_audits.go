@@ -1966,15 +1966,23 @@ func auditNewsKey(id int64, status string) string {
 // its filed issue canceled or deleted) does not queue the news again.
 // Whoever reopened it knows, and the audit's findings list it as to do.
 func (s *Service) withdrawDecidedAuditNews(ctx context.Context, id int64) bool {
-	res, err := s.db.W.ExecContext(ctx, `UPDATE session_messages SET state = 'cancelled' WHERE step_key = ? AND state = ?
+	var n int64
+	err := s.write(ctx, SystemActor(), func(t *tx) error {
+		res, err := t.ExecContext(ctx, `UPDATE session_messages SET state = 'cancelled' WHERE step_key = ? AND state = ?
 		AND EXISTS (SELECT 1 FROM code_audit_findings f WHERE f.audit_id = ?)
 		AND NOT EXISTS (SELECT 1 FROM code_audit_findings f WHERE f.audit_id = ? AND `+findingToDoSQL+`)`,
-		auditNewsKey(id, AuditDone), MessageQueued, id, id)
+			auditNewsKey(id, AuditDone), MessageQueued, id, id)
+		if err != nil {
+			return err
+		}
+		n, _ = res.RowsAffected()
+		return nil
+	})
 	if err != nil {
 		s.log.WarnContext(ctx, "withdraw an audit's news once its findings are decided", "audit", id, "err", err)
 		return false
 	}
-	if n, _ := res.RowsAffected(); n > 0 {
+	if n > 0 {
 		s.log.InfoContext(ctx, "withdrew an audit's news: every finding is decided", "audit", id)
 		return true
 	}
