@@ -448,7 +448,7 @@ type strandedTry struct {
 // matched and keeps backing off until the window ends.
 func strandedForgeWords(err error) string {
 	var ae *forgeAPIError
-	if !errors.As(err, &ae) || ae.status != http.StatusNotFound {
+	if !isStatus(err, http.StatusNotFound) || !errors.As(err, &ae) {
 		return ""
 	}
 	b := strings.ToLower(ae.body)

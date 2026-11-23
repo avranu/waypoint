@@ -447,7 +447,7 @@ func TestStrandedPermanent(t *testing.T) {
 	}
 }
 
-// Any other failure is tried again with longer waits, after 8 failures, for
+// Any other failure is tried again with longer waits, however many failures, for
 // as long as the round is in the window.
 func TestStrandedRoundOtherErrorsKeepBackingOff(t *testing.T) {
 	a, g, id := strandedEnv(t)
