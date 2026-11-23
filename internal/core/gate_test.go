@@ -49,6 +49,10 @@ type shipForge struct {
 	reactedTo  []string // "kind:id:emoji" put on comments
 	titleEdits []string // titles set through EditPRTitle (draft_first_test.go)
 	bodyEdits  []string
+	baseEdits  []string      // "number:base" set through EditPRBase (pr_open_test.go)
+	baseErr    error         // EditPRBase fails with it
+	brs        []ForgeBranch // what Branches lists
+	brErr      error         // Branches fails with it
 	// afterTitleEdit runs once a title edit is made, as the forge's webhook
 	// for it may arrive before the editor's own write.
 	afterTitleEdit func(title string)

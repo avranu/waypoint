@@ -226,6 +226,37 @@ func (a *apEnv) newestRoundID() int64 {
 	return id
 }
 
+// The --base of a ship held for its review counts: the wp ship that follows
+// the review doesn't repeat it, and a pull request already open moves
+// before the hold (WP-1670).
+func TestReviewBeforePRKeepsBase(t *testing.T) {
+	a, _, g := firstEnv(t)
+	if _, err := a.s.SetAutopilot(a.ctx, a.admin, a.p.Key, AutopilotSettingInput{Merge: true,
+		Limits: AutopilotLimits{Review: ptrOf(true), SpacingMinutes: ptrOf(120)}}); err != nil {
+		t.Fatal(err)
+	}
+	first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude", Priority: "urgent"})
+	if _, err := a.s.AgentTake(a.ctx, a.ag, first.Key, ""); err != nil {
+		t.Fatal(err)
+	}
+	a.clock = a.clock.Add(time.Minute)
+	res, err := a.ship(first.Key, ShipReview, func(in *OpenPRInput) { in.Base = "release" })
+	if err != nil || res.Held == "" || len(g.created) != 0 {
+		t.Fatalf("held: %+v %v (opened %d)", res, err, len(g.created))
+	}
+	res, err = a.ship(first.Key, ShipSkip, func(in *OpenPRInput) { in.Reason = "not needed" })
+	if err != nil || res.Pull == nil || res.Pull.BaseRef != "release" {
+		t.Fatalf("after the review: %+v %v", res, err)
+	}
+	res, err = a.ship(first.Key, ShipReview, func(in *OpenPRInput) { in.Base = "main" })
+	if err != nil || res.Held == "" || !strings.Contains(res.Notice, "is now open into main") {
+		t.Fatalf("held on an open pull request: %+v %v", res, err)
+	}
+	if !slices.Equal(g.baseEdits, []string{"101:main"}) {
+		t.Errorf("base edits %v", g.baseEdits)
+	}
+}
+
 // A session that stops after its review without wp ship: the round ends
 // with that Stop as its report and autopilot stops there.
 func TestReviewBeforePRNotShipped(t *testing.T) {

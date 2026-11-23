@@ -9,7 +9,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"git.jmann.me/claude/waypoint/internal/core"
@@ -229,5 +231,113 @@ func TestShippingAPI(t *testing.T) {
 	}
 	if code := stranger.json("GET", "/api/v1/branches", nil, &branches); code != 200 || len(branches) != 0 {
 		t.Errorf("branches of nothing the user sees: %d %+v", code, branches)
+	}
+}
+
+// PATCH /pulls/{id} carries a base to the service and the open body's
+// stacked_on is decoded: against a fake forge that records what it is told
+// (WP-1670).
+func TestPullBaseAndStackedOnAPI(t *testing.T) {
+	ts, svc := setup(t)
+	ctx := context.Background()
+	admin, err := svc.CreateUser(ctx, core.SystemActor(), core.CreateUserInput{Username: "robin", Email: "robin@example.com", Password: "correct-horse-battery", IsAdmin: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &core.Actor{User: admin}
+	tok, _, _ := svc.CreateAPIToken(ctx, a, "robin", false, 0)
+	robin := &client{t: t, base: ts.URL, http: http.DefaultClient, token: tok}
+
+	var mu sync.Mutex
+	var patched, created []map[string]any
+	prJSON := func(n int, head, base string) map[string]any {
+		return map[string]any{"number": n, "title": head, "state": "open", "html_url": fmt.Sprintf("https://forge.test/me/app/pulls/%d", n),
+			"user": map[string]string{"login": "robin"}, "head": map[string]string{"ref": head, "sha": "abc1234"}, "base": map[string]string{"ref": base}}
+	}
+	forge := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		defer mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method + " " + r.URL.Path {
+		case "GET /api/v1/repos/me/app":
+			_ = json.NewEncoder(w).Encode(map[string]any{"default_branch": "main"})
+		case "GET /api/v1/repos/me/app/pulls/7":
+			_ = json.NewEncoder(w).Encode(prJSON(7, "fix", "main"))
+		case "PATCH /api/v1/repos/me/app/pulls/7":
+			patched = append(patched, body)
+			_ = json.NewEncoder(w).Encode(prJSON(7, "fix", "release"))
+		case "POST /api/v1/repos/me/app/pulls":
+			created = append(created, body)
+			_ = json.NewEncoder(w).Encode(prJSON(8, "child", fmt.Sprint(body["base"])))
+		default:
+			t.Logf("fake forge: unhandled %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(forge.Close)
+
+	kind := "forgejo"
+	tokn := "t"
+	f, err := svc.CreateForge(ctx, a, core.ForgeInput{Kind: &kind, BaseURL: &forge.URL, Token: &tokn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := "App"
+	p, err := svc.CreateProject(ctx, a, core.ProjectInput{Name: &name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.AddProjectRepo(ctx, a, p.Key, f.ID, "me/app", false); err != nil {
+		t.Fatal(err)
+	}
+	secret, _ := svc.ForgeSecret(ctx, a, f.ID)
+	body, _ := json.Marshal(map[string]any{"action": "opened", "repository": map[string]any{"full_name": "me/app"}, "pull_request": prJSON(7, "fix", "main")})
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	req, _ := http.NewRequest("POST", fmt.Sprintf("%s/api/v1/hooks/forge/%d", ts.URL, f.ID), bytes.NewReader(body))
+	req.Header.Set("X-Forgejo-Event", "pull_request")
+	req.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+	if resp, err := http.DefaultClient.Do(req); err != nil || resp.StatusCode != 200 {
+		t.Fatalf("webhook: %v %v", resp, err)
+	} else {
+		resp.Body.Close()
+	}
+	svc.Wait()
+	var d struct {
+		ID int64 `json:"id"`
+	}
+	if code := robin.json("GET", fmt.Sprintf("/api/v1/projects/%s/pulls/7", p.Key), nil, &d); code != 200 || d.ID == 0 {
+		t.Fatalf("pull: %d %+v", code, d)
+	}
+	pull := fmt.Sprintf("/api/v1/pulls/%d", d.ID)
+
+	// Edits that say nothing, or an empty or own-branch base, are the caller's mistake.
+	for _, in := range []map[string]any{{}, {"base": "  "}, {"base": "fix"}} {
+		if code, b := robin.do("PATCH", pull, in); code != 400 {
+			t.Errorf("edit %v: %d %s", in, code, b)
+		}
+	}
+	if len(patched) != 0 {
+		t.Fatalf("the forge was told %v of a refused edit", patched)
+	}
+	if code, b := robin.do("PATCH", pull, map[string]any{"base": "release"}); code != 200 && code != 204 {
+		t.Fatalf("edit the base: %d %s", code, b)
+	}
+	mu.Lock()
+	if len(patched) != 1 || patched[0]["base"] != "release" {
+		t.Errorf("forge was told %v", patched)
+	}
+	mu.Unlock()
+
+	// stacked_on: open into the nearest parent with a pull request open.
+	if code, b := robin.do("POST", fmt.Sprintf("/api/v1/projects/%s/pulls", p.Key), map[string]any{"repo": "me/app", "head": "child", "title": "child", "ready": true, "stacked_on": []string{"scratch", "fix"}}); code != 200 && code != 201 {
+		t.Fatalf("open: %d %s", code, b)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(created) != 1 || created[0]["base"] != "fix" {
+		t.Errorf("the forge was asked to open %v", created)
 	}
 }
