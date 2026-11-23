@@ -178,8 +178,10 @@ func TestMergeNowReadFaultRetries(t *testing.T) {
 	se.drain()
 	se.sg.setChecks(head, CommitCheck{Name: "ci / backend (pull_request)", State: CheckSuccess})
 	pr := se.pr(5)
+	se.s.Wait()
 	for _, table := range []string{"project_repos", "pull_requests", "forge_people"} {
 		t.Run(table, func(t *testing.T) {
+			before := len(se.sg.merged())
 			restore := se.breakTable(table)
 			_, err := se.s.mergeNow(se.ctx, se.admin, pr, MergeInput{armed: true}, "")
 			restore()
@@ -189,7 +191,7 @@ func TestMergeNowReadFaultRetries(t *testing.T) {
 			if !errors.Is(err, ErrUnavailable) || IsInvalid(err) {
 				t.Errorf("a read that failed is a plain error: %v", err)
 			}
-			if len(se.sg.merged()) != 0 {
+			if len(se.sg.merged()) != before {
 				t.Errorf("merged: %+v", se.sg.merged())
 			}
 		})
