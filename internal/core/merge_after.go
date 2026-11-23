@@ -121,11 +121,11 @@ func mergeWaitReason(pr *PullRequest, w PRMergeWait) string {
 
 // stackClosedPrefix starts the merge check reason of a pull request whose
 // base is the branch of one closed without merging: a person's call.
-const stackClosedPrefix = "its base "
+const stackClosedPrefix = "stacked on a pull request closed without merging"
 
 // stackClosedReason is that reason (WP-1670).
 func stackClosedReason(pr *PullRequest, w PRMergeWait) string {
-	return fmt.Sprintf("%s%s is %s's branch, which was closed without merging; move it with `wp pr edit %d --base %s`",
+	return fmt.Sprintf("%s: its base %s is %s's branch; move it with `wp pr edit %d --base %s`",
 		stackClosedPrefix, pr.BaseRef, w.ref(pr), pr.Number, cmp(w.onto, "BRANCH"))
 }
 
@@ -427,8 +427,8 @@ func (s *Service) SetPRMergeAfter(ctx context.Context, actor *Actor, prID int64,
 		if waits, err := s.mergeAfter(ctx, s.db.R, pr); err == nil {
 			for _, w := range waits {
 				if w.PRID == other.ID && w.Stack {
-					return nil, invalid("#%d waits for #%d because its base %s is that pull request's branch; Waypoint moves it onto %s when #%d merges. To merge it into %s without that: wp pr edit %d --base %s",
-						pr.Number, other.Number, pr.BaseRef, cmp(w.onto, "its base"), other.Number, pr.BaseRef, pr.Number, pr.BaseRef)
+					return nil, invalid("#%d waits for #%d because its base %s is that pull request's branch; Waypoint moves it onto %s when #%d merges. To land it without waiting for #%d, move it yourself: wp pr edit %d --base %s",
+						pr.Number, other.Number, pr.BaseRef, cmp(w.onto, "BRANCH"), other.Number, other.Number, pr.Number, cmp(w.onto, "BRANCH"))
 				}
 			}
 		}

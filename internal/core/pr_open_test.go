@@ -479,7 +479,7 @@ func TestStackedChildWaitsForParent(t *testing.T) {
 		t.Error("ready while its parent is open")
 	}
 	// Not set, so it can't be dropped like a set wait: the way out is --base.
-	if _, err := se.s.SetPRMergeAfter(se.ctx, se.admin, se.pr(6).ID, "", 5, false); err == nil || !strings.Contains(err.Error(), "wp pr edit 6 --base fix-login") {
+	if _, err := se.s.SetPRMergeAfter(se.ctx, se.admin, se.pr(6).ID, "", 5, false); err == nil || !strings.Contains(err.Error(), "wp pr edit 6 --base main") {
 		t.Errorf("off: %v", err)
 	}
 
@@ -519,7 +519,7 @@ func TestStackedChildOfClosedParentNeedsPerson(t *testing.T) {
 		t.Fatal(err)
 	}
 	why := personal(c, rd.Reasons)
-	if rd.Ready || !strings.Contains(why, "closed without merging; move it with `wp pr edit 6 --base main`") {
+	if rd.Ready || !strings.Contains(why, "stacked on a pull request closed without merging: its base fix-login is #5's branch; move it with `wp pr edit 6 --base main`") {
 		t.Fatalf("ready %v reasons %q", rd.Ready, rd.Reasons)
 	}
 }
