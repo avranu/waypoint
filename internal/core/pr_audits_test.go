@@ -279,6 +279,40 @@ func TestPRAuditLowFindingsStartNoRound(t *testing.T) {
 	}
 }
 
+// Medium and low findings the session rejected, that nothing checked, are
+// listed in the pull request's todo (so the packet shows them) and hold
+// nothing: no round starts for them and the merge isn't held (WP-1370).
+func TestPRAuditUncheckedRejectionsAreListedAndHoldNothing(t *testing.T) {
+	be := newBabysitEnv(t)
+	be.runnerOnline()
+	box := be.auditBox()
+	be.auditOn()
+	pr := be.openMine()
+	be.start(pr)
+	be.endAudit(box, "done", [2]string{"medium", "No limit on rows"}, [2]string{"low", "A typo"})
+	id := be.auditID()
+	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE code_audit_findings SET state = 'rejected', note = ? WHERE audit_id = ?`, uncheckedNote+"it is intended", id); err != nil {
+		t.Fatal(err)
+	}
+	todo, err := be.s.auditTodoErr(be.ctx, pr.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, f := range todo {
+		got[f.Title] = f.Unchecked
+	}
+	if len(todo) != 2 || !got["No limit on rows"] || !got["A typo"] {
+		t.Errorf("the todo should list both unchecked rejections as unchecked: %+v", todo)
+	}
+	if work := be.s.auditRoundWork(be.ctx, &Babysit{}, pr.ID); len(work) != 0 {
+		t.Errorf("unchecked rejections start a round: %v", work)
+	}
+	if r := be.reasons(7); strings.Contains(r, "audit #") {
+		t.Errorf("unchecked rejections hold the merge: %q", r)
+	}
+}
+
 // The setting's audit posts its findings on the pull request, and nothing
 // when it found none (WP-867): agents would only read and answer it.
 func TestPRAuditPostsOnlyFindings(t *testing.T) {

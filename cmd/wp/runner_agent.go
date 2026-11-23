@@ -219,7 +219,7 @@ func (p *runnerProc) resolveBase(ctx context.Context, bare, base string, env []s
 // starting with "-" such as --upload-pack=...) or that isn't a ref name at
 // all. The server checks too; the runner doesn't rely on that.
 func (p *runnerProc) checkJobRefs(ctx context.Context, in agentJob) error {
-	for _, r := range []struct{ what, v string }{{"base", in.Base}, {"branch", in.Branch}, {"diff start", in.DiffFrom}} {
+	for _, r := range []struct{ what, v string }{{"base", in.Base}, {"branch", in.Branch}, {"diff start", in.DiffFrom}, {"target", in.Target}} {
 		if r.v == "" {
 			continue
 		}

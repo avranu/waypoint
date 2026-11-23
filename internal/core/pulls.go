@@ -266,6 +266,11 @@ func (s *Service) onForgePull(ctx context.Context, f *Forge, repo string, fp *Fo
 // Without it, only a new head of a live pull request that had one does, so
 // the bots hear of a push once, whoever reads it first (WP-129).
 func (s *Service) recordPR(ctx context.Context, f *Forge, repo string, fp *ForgePR, fire bool) (*PullRequest, error) {
+	if fp == nil || fp.Number <= 0 {
+		// A forge's 200 with no number isn't a pull request: it would be
+		// recorded as #0 and armed.
+		return nil, fmt.Errorf("the forge answered with no pull request number for %s", repo)
+	}
 	var out *PullRequest
 	var later []*Event // a push a non-firing read saw first (WP-129)
 	var ended bool     // it merged or closed just now

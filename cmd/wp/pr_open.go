@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"text/template"
 	"time"
 
+	"git.jmann.me/claude/waypoint/internal/codeindex"
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
@@ -46,12 +48,14 @@ there first (the forge must allow that, else it fails).
 When your autopilot settings review before pull requests (whether
 autopilot is on or off), say what you want: --review pushes and schedules
 the task's adversarial review (the pull request opens after it; --review
-asks for one even with reviews off), --pr opens the pull request once the
-review ran, --skip-review WHY opens it without one. With none, it does
-whichever fits: the review if none ran yet, else the pull request. Where
+asks for one even with reviews off), --skip-review WHY opens it without
+one. With neither, it does whichever fits: the review if none ran yet, else
+the pull request (--pr says the same, and is kept for older prompts). Where
 that can't be done, it does the next step and a notice says how to
 override it: a review that can't be scheduled opens the pull request
-without it (WP-688, WP-1007).`
+without it (WP-688, WP-1007). Run it once: Waypoint carries the rest of the
+review on, and opens the pull request itself when the review leaves nothing
+for you to do (WP-1370).`
 
 var prOpenCmd = &command{
 	name: "open", aliases: []string{"create", "new"}, args: "[--draft] [--urgent] [--base BRANCH] [--title T] [-f FILE]",
@@ -69,6 +73,8 @@ type prOpenFlags struct {
 	skipGiven                                   *bool  // --skip-review was given, even empty
 	finishing                                   string // the task wp ship finishes, when held (not a flag)
 	summary                                     string // wp ship's -m, checked for claims (not a flag)
+	shipSummary                                 string // wp ship's --summary, kept by the server with a held ship (not a flag)
+	messageGiven, shipSummaryGiven              bool   // -m / --summary were on the command line, even empty (not flags)
 }
 
 func addPROpenFlags(fs *flag.FlagSet) prOpenFlags {
@@ -89,7 +95,7 @@ func addPROpenFlags(fs *flag.FlagSet) prOpenFlags {
 		noPush:     fs.Bool("no-push", false, "don't push the branch first"),
 		urgent:     fs.Bool("urgent", false, "skip the CI line, which slows every repo's CI on that machine: almost never; for cases like a fix to stuck CI, not an issue's priority"),
 		review:     fs.Bool("review", false, "push and schedule the task's adversarial review; the pull request opens after it"),
-		pr:         fs.Bool("pr", false, "open the pull request: the task's review ran (or is scheduled first)"),
+		pr:         fs.Bool("pr", false, "same as plain wp ship (kept for older prompts)"),
 		force:      fs.Bool("force", false, "with --review: review again, even with nothing committed since the last review"),
 		skipReview: skip,
 		skipGiven:  skipGiven,
@@ -112,6 +118,12 @@ type openedPR struct {
 	// done that wasn't asked for, and how to override it.
 	Held   string `json:"held"`
 	Notice string `json:"notice"`
+	// HeldNeedsAgent and NoticeNeedsAgent: Held or Notice asks the agent to
+	// act, so a --summary doesn't end its turn (WP-1370). The server says it
+	// where it writes the text; a server from before them says nothing, and
+	// that counts as asking.
+	HeldNeedsAgent   *bool `json:"held_needs_agent"`
+	NoticeNeedsAgent *bool `json:"notice_needs_agent"`
 	// UrgentHeld: the wp ship --urgent its review held asked for the lane.
 	UrgentHeld bool `json:"urgent_held"`
 	// UrgentPR: the open pull request a held wp ship --urgent put on the
@@ -206,22 +218,20 @@ func noticed(notice, s string) string {
 // reviewIntent is what the flags say about the task's review before its
 // pull request (core.ShipAuto and the rest).
 func (f prOpenFlags) reviewIntent() (string, error) {
-	n := 0
+	// --pr is plain wp ship, kept for older prompts (WP-1370): beside
+	// --skip-review the skip wins, beside --review the review does.
 	intent := "auto"
 	if *f.review {
-		n, intent = n+1, "review"
-	}
-	if *f.pr {
-		n, intent = n+1, "pr"
+		intent = "review"
 	}
 	if *f.skipGiven {
-		n, intent = n+1, "skip"
+		intent = "skip"
 	}
 	switch {
 	case *f.skipGiven && strings.TrimSpace(*f.skipReview) == "":
 		return "", errors.New(`--skip-review says why: --skip-review "WHY"`)
-	case n > 1:
-		return "", errors.New("--review, --pr and --skip-review each say what to do: give one")
+	case *f.review && *f.skipGiven:
+		return "", errors.New("--review and --skip-review say opposite things: give one")
 	case *f.force && intent != "review":
 		return "", errors.New("--force goes with --review: review again")
 	}
@@ -282,7 +292,10 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 			return false, c.usage("nothing is staged but the tree has changes: git add them and run wp ship -m again, or drop -m to ship the commits as they are")
 		}
 	}
-	f.summary = msg
+	f.summary, f.messageGiven = msg, msgGiven
+	if so.summaryGiven {
+		f.shipSummary, f.shipSummaryGiven = *so.summary, true
+	}
 	if (*f.body != "" || *f.file != "") && c.agentHeader() != "" && !c.asJSON {
 		// Writing it costs tokens Waypoint saves (WP-55): say so, use it.
 		c.println("Notice: Waypoint writes the description from -m, the commits, the task and the recorded tests; your -f/--body replaces it. Next time leave it out.")
@@ -316,9 +329,6 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 		if summary != "" && keptWhy == "" {
 			// Only once the output is written: a failed emit must not end the turn.
 			c.endTurnAfterShip(cmpStr(key, o.key), heldSummary(summary)) // its notice says when it can't
-		}
-		if keptWhy != "" && c.agentHeader() != "" && !c.asJSON {
-			c.println(summaryKeptNote(keptWhy))
 		}
 		return false, nil
 	}
@@ -441,9 +451,6 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 				c.println("Waypoint ends the turn here and shows the person your --summary as the reply (should the turn go on, end it with that summary).")
 				return false, nil
 			}
-			if why != "" {
-				c.println(summaryKeptNote(why))
-			}
 		}
 		c.println(shipReply(o.ShipReply, o.key, d, dirty != ""))
 	} else if summary != "" {
@@ -460,8 +467,10 @@ func shipNeedsAgent(o *openedPR, before string, wrong []string, putOff string, d
 	switch {
 	case before != "":
 		return before
-	case o.Notice != "":
+	case o.Notice != "" && factAsks(o.NoticeNeedsAgent):
 		return "there is a notice"
+	case o.Held != "" && factAsks(o.HeldNeedsAgent):
+		return "the review waits on your marks"
 	case len(wrong) > 0 || o.ClaimWarning != "" || o.Warning != "":
 		return "there is a warning"
 	case o.UrgentPR != 0:
@@ -571,9 +580,25 @@ const defaultShipReply = `Reply template (adapt it where it doesn't fit):
   The session can be cleared without losing work.`
 
 // openPR pushes the branch and has Waypoint open the pull request.
+// checkBase refuses a --base git would read as an option (--output=FILE,
+// --upload-pack=CMD) or that holds a control character, before any git
+// command is run with it.
+func (f prOpenFlags) checkBase() error {
+	if err := codeindex.CheckRef(*f.base); err != nil {
+		return fmt.Errorf("--base: %w", err)
+	}
+	return nil
+}
+
 func (c *cli) openPR(f prOpenFlags) (*openedPR, []byte, error) {
+	if err := f.checkBase(); err != nil {
+		return nil, nil, c.usage("%s", err)
+	}
 	intent, err := f.reviewIntent()
 	if err != nil {
+		return nil, nil, c.usage("%s", err)
+	}
+	if err := f.checkShipWords(); err != nil {
 		return nil, nil, c.usage("%s", err)
 	}
 	branch, err := localGit("rev-parse", "--abbrev-ref", "HEAD")
@@ -672,17 +697,17 @@ func (c *cli) openPR(f prOpenFlags) (*openedPR, []byte, error) {
 			bodyInputs.Tested = tested.Line
 		}
 	}
-	if !*f.noPush {
-		if _, err := localGit("push", "--set-upstream", "origin", branch); err != nil {
-			return nil, nil, err
-		}
-	}
 	stacked := []string(nil)
 	if *f.base == "" {
 		stacked = stackBranches(parents)
 	}
 	req := map[string]any{"stacked_on": stacked, "head": branch, "base": *f.base, "title": text, "body": body, "draft": *f.draft, "ready": *f.ready, "issue": key, "for": f.finishing, "repo": repo, "urgent": *f.urgent,
 		"review": intent, "reason": strings.TrimSpace(*f.skipReview), "force": *f.force}
+	// What a pull request Waypoint opens for a held ship carries: the newest
+	// ship's words win (WP-1370). A key is sent only when its flag was given
+	// (given empty clears; left out keeps), which also keeps a ship against a
+	// server from before them working.
+	f.addShipWords(req)
 	if ct, err := localGit("log", "-1", "--format=%ct", "HEAD"); err == nil {
 		if t, err := strconv.ParseInt(strings.TrimSpace(ct), 10, 64); err == nil {
 			req["head_time"] = t
@@ -701,18 +726,16 @@ func (c *cli) openPR(f prOpenFlags) (*openedPR, []byte, error) {
 	if bodyInputs != nil {
 		req["body_inputs"] = bodyInputs
 	}
-	// Opening is idempotent (the pull request open from the branch comes
-	// back), so a forge that didn't answer is asked again (WP-265).
-	var raw []byte
-	for i := 0; ; i++ {
-		raw, err = c.call("POST", "/api/v1/projects/"+esc(project)+"/pulls", req)
-		var ae *apiError
-		if err == nil || i >= len(prOpenRetries) || !errors.As(err, &ae) || !ae.transient() {
-			break
-		}
-		_, _ = fmt.Fprintf(c.err, "wp: %v; trying again in %s\n", err, prOpenRetries[i])
-		prOpenSleep(prOpenRetries[i])
+	// What the server would refuse for size is refused before the push.
+	if b, err := json.Marshal(req); err == nil && len(b) > maxOpenRequest {
+		return nil, nil, c.usage("the pull request is too large to send (%d bytes with its description; the server takes at most %d): shorten the description or leave -f/--body out and let Waypoint write it", len(b), maxOpenRequest)
 	}
+	if !*f.noPush {
+		if _, err := localGit("push", "--set-upstream", "origin", branch); err != nil {
+			return nil, nil, err
+		}
+	}
+	raw, _, err := c.postOpen(project, req)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -725,6 +748,88 @@ func (c *cli) openPR(f prOpenFlags) (*openedPR, []byte, error) {
 	}
 	o.key, o.why, o.tested = key, why, tested
 	return &o, raw, nil
+}
+
+// maxShipWordLen mirrors the server's bound on -m and --summary
+// (maxCommentLen, internal/core/issues.go; checked in OpenPullRequest,
+// internal/core/pr_open.go): a ship over it is refused, so it is refused here
+// before the branch is pushed.
+const maxShipWordLen = 50_000
+
+// maxOpenRequest mirrors the server's bound on a JSON request body
+// (decodeBody's 2<<20, internal/api/server.go), which the pull request's
+// description rides in.
+const maxOpenRequest = 2 << 20
+
+// checkShipWords refuses -m or --summary over what the server keeps.
+func (f prOpenFlags) checkShipWords() error {
+	for _, w := range []struct {
+		flag  string
+		v     string
+		given bool
+	}{{"-m", f.summary, f.messageGiven}, {"--summary", f.shipSummary, f.shipSummaryGiven}} {
+		if n := len(strings.TrimSpace(w.v)); w.given && n > maxShipWordLen {
+			return fmt.Errorf("%s is too long (%d bytes; at most %d)", w.flag, n, maxShipWordLen)
+		}
+	}
+	return nil
+}
+
+// addShipWords puts the ship's -m and --summary in the request, each only
+// when it was given.
+func (f prOpenFlags) addShipWords(req map[string]any) {
+	if f.messageGiven {
+		req["message"] = strings.TrimSpace(f.summary)
+	}
+	if f.shipSummaryGiven {
+		req["summary"] = strings.TrimSpace(f.shipSummary)
+	}
+}
+
+// postOpen asks the server to open the pull request. Opening is idempotent
+// (the pull request open from the branch comes back), so a forge that didn't
+// answer is asked again (WP-265). A server from before -m and --summary went
+// with the ship rejects their keys as unknown: it is asked again without
+// them, once, and the line says so; the --summary stays kept here, as it was
+// before they went to the server (WP-1370).
+func (c *cli) postOpen(project string, req map[string]any) (raw []byte, oldServer bool, err error) {
+	send := func() ([]byte, error) {
+		for i := 0; ; i++ {
+			raw, err := c.call("POST", "/api/v1/projects/"+esc(project)+"/pulls", req)
+			var ae *apiError
+			if err == nil || i >= len(prOpenRetries) || !errors.As(err, &ae) || !ae.transient() {
+				return raw, err
+			}
+			_, _ = fmt.Fprintf(c.err, "wp: %v; trying again in %s\n", err, prOpenRetries[i])
+			prOpenSleep(prOpenRetries[i])
+		}
+	}
+	raw, err = send()
+	_, m := req["message"]
+	_, sm := req["summary"]
+	if err != nil && (m || sm) && unknownShipWords(err) {
+		delete(req, "message")
+		delete(req, "summary")
+		raw, err = send()
+		if err != nil {
+			return raw, false, err // its own failure, not news about the server
+		}
+		_, _ = fmt.Fprintln(c.err, droppedShipWordsNote(m, sm))
+		return raw, true, nil
+	}
+	return raw, false, err
+}
+
+// droppedShipWordsNote says what an older server couldn't keep: only the words
+// the ship gave.
+func droppedShipWordsNote(message, summary bool) string {
+	switch {
+	case message && summary:
+		return "Note: this server is older and can't keep your -m and --summary for a pull request it opens itself; your --summary stays kept here and shows when the turn ends."
+	case summary:
+		return "Note: this server is older and can't keep your --summary for a pull request it opens itself; it stays kept here and shows when the turn ends."
+	}
+	return "Note: this server is older and can't keep your -m for a pull request it opens itself."
 }
 
 // prOpenRetries are the waits before asking again to open a pull request
@@ -768,6 +873,9 @@ func isExit(err error, code int) bool {
 // --base, origin's HEAD, else origin/main or origin/master.
 func baseRef(flag string) string {
 	if flag != "" {
+		if codeindex.CheckRef(flag) != nil {
+			return "" // git would read it as an option: never given to it
+		}
 		if _, err := localGit("rev-parse", "--verify", "-q", "origin/"+flag); err == nil {
 			return "origin/" + flag
 		}
@@ -849,7 +957,7 @@ func stackedOn(base, branch string) []string {
 // candidate, and brings a front that can't ride one up to date on its own
 // branch (WP-ADR152).
 func (c *cli) mergeBaseIfForkedTwice(base string) {
-	if name, ok := strings.CutPrefix(base, "origin/"); ok {
+	if name, ok := strings.CutPrefix(base, "origin/"); ok && codeindex.CheckRef(name) == nil {
 		_, _ = localGit("fetch", "-q", "origin", name) // a stale base can only miss one
 	}
 	out, err := localGit("merge-base", "--all", base, "HEAD")
@@ -1186,3 +1294,62 @@ func readAll(f *os.File) (string, error) {
 	_, err := b.ReadFrom(f)
 	return b.String(), err
 }
+
+// unknownShipWords is the old server's answer to a ship that sends -m or
+// --summary: its strict decoder doesn't know those keys (WP-1370). It is a 400
+// or a 422 whose text, in {"error":...}, in another JSON key or as plain text,
+// says unknown field "message" or "summary". A page (HTML, a proxy's) or any
+// other field is not it.
+func unknownShipWords(err error) bool {
+	var ae *apiError
+	if !errors.As(err, &ae) || (ae.status != http.StatusBadRequest && ae.status != http.StatusUnprocessableEntity) {
+		return false
+	}
+	texts := []string{ae.msg}
+	if body := strings.TrimSpace(ae.body); body != "" {
+		if strings.Contains(strings.ToLower(ae.ctype), "html") || strings.HasPrefix(body, "<") {
+			return ae.msg != "" && namesShipWords(ae.msg)
+		}
+		var v any
+		if json.Unmarshal([]byte(body), &v) == nil {
+			texts = append(texts, jsonStrings(v)...)
+		} else {
+			texts = append(texts, body)
+		}
+	}
+	for _, t := range texts {
+		if namesShipWords(t) {
+			return true
+		}
+	}
+	return false
+}
+
+func namesShipWords(s string) bool {
+	return strings.Contains(s, `unknown field "message"`) || strings.Contains(s, `unknown field "summary"`)
+}
+
+// jsonStrings are the string values anywhere in a decoded JSON value.
+func jsonStrings(v any) []string {
+	switch v := v.(type) {
+	case string:
+		return []string{v}
+	case []any:
+		var out []string
+		for _, x := range v {
+			out = append(out, jsonStrings(x)...)
+		}
+		return out
+	case map[string]any:
+		var out []string
+		for _, x := range v {
+			out = append(out, jsonStrings(x)...)
+		}
+		return out
+	}
+	return nil
+}
+
+// factAsks reads a needs-the-agent fact from the server: unsaid (a server from
+// before the facts) is asking, the safe answer (WP-1370).
+func factAsks(b *bool) bool { return b == nil || *b }

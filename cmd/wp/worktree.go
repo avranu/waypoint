@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"git.jmann.me/claude/waypoint/internal/codeindex"
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
@@ -59,6 +60,10 @@ func init() {
 // worktreeMoveQuiet is how long nothing in a worktree must have changed
 // before move takes it: someone may still be working there.
 const worktreeMoveQuiet = 24 * time.Hour
+
+// worktreeAddHook runs just before a worktree is added (a seam for tests of
+// two agents making the same worktree at once).
+var worktreeAddHook = func() {}
 
 // worktreeNow is move's clock (a seam for tests).
 var worktreeNow = time.Now
@@ -154,12 +159,31 @@ func movedName(root, path string) string {
 // freePath is home/name, or home/name-2 and on when that is taken, on disk
 // or in claimed (destinations already handed out in this run).
 func freePath(home, name string, claimed map[string]bool) string {
-	p := filepath.Join(home, name)
+	// name is one folder directly under home: a name with a separator or a
+	// "..", from a branch or folder a person named, would be probed (and
+	// returned) outside it.
+	if !filepath.IsLocal(name) || filepath.Base(name) != name {
+		return ""
+	}
+	// The probes go through a root on home, which cannot name anything
+	// outside it. No home yet: nothing there is taken.
+	root, err := os.OpenRoot(home)
+	if err == nil {
+		defer func() { _ = root.Close() }()
+	}
+	taken := func(n string) bool {
+		if root == nil {
+			return false
+		}
+		_, err := root.Lstat(n)
+		return !errors.Is(err, fs.ErrNotExist)
+	}
+	n := name
 	for i := 2; i < 100; i++ {
-		if _, err := os.Lstat(p); errors.Is(err, fs.ErrNotExist) && !claimed[p] {
+		if p := filepath.Join(home, n); !taken(n) && !claimed[p] {
 			return p
 		}
-		p = filepath.Join(home, fmt.Sprintf("%s-%d", name, i))
+		n = fmt.Sprintf("%s-%d", name, i)
 	}
 	return ""
 }
@@ -206,6 +230,14 @@ func cmdWorktreeAdd(c *cli, args []string) error {
 	noSetup := fs.Bool("no-setup", false, "don't copy .worktreeinclude files or run .waypoint/worktree-setup")
 	short(fs, "b", "branch")
 	pos, err := c.parse(fs, args)
+	for _, v := range []struct{ what, ref string }{{"--branch", *branch}, {"--from", *from}} {
+		if err == nil {
+			err = codeindex.CheckRef(v.ref)
+			if err != nil {
+				err = fmt.Errorf("%s: %w", v.what, err)
+			}
+		}
+	}
 	if err != nil {
 		return err
 	}
@@ -239,6 +271,12 @@ func cmdWorktreeAdd(c *cli, args []string) error {
 	if w.made != "" && !*noSetup {
 		w.notes = append(w.notes, setupWorktree(ctx, repo.root, w.path)...)
 	}
+	for _, t := range w.took {
+		c.println("Took over " + t + ": the agent that locked it is gone, so the lock was stale.")
+	}
+	if w.cont != nil {
+		c.println(w.cont.explain())
+	}
 	switch {
 	case w.made == "" && w.branchOut:
 		c.println(fmt.Sprintf("%s is already checked out in %s\ncd %s", w.what, w.path, w.path))
@@ -264,6 +302,8 @@ type madeWorktree struct {
 	path, made, what string
 	branchOut        bool
 	notes            []string
+	took             []string      // stale locks taken over on the way, one line each
+	cont             *continuation // set when the branch asked for is held by a live lock: this is its continuation
 }
 
 // makeWorktree makes the worktree slug (or one for branch) under the repo's
@@ -271,6 +311,44 @@ type madeWorktree struct {
 // fetch is set; setupWorktree prepares it. A worktree that already holds the
 // branch, or is at that path, is answered as it is.
 func makeWorktree(ctx context.Context, repo *worktreeRepo, slug, branch, from string, fetch bool, note func(string, ...any)) (madeWorktree, error) {
+	for _, v := range []struct{ what, ref string }{{"--branch", branch}, {"--from", from}} {
+		if err := codeindex.CheckRef(v.ref); err != nil {
+			return madeWorktree{}, fmt.Errorf("%s: %w", v.what, err)
+		}
+	}
+	// The one rule for a worktree that holds what is asked for (WP-1370): a
+	// lock whose owner is gone is taken over; a live one (or one that can't be
+	// shown gone) is left, and the work goes on a branch cut from it, named so
+	// Waypoint still maps it.
+	var took []string
+	var cont *continuation
+	if branch != "" {
+		var held lockedFor
+		repo, held = reclaimWhere(ctx, repo, "", func(w tidyWorktree) bool { return w.branch == branch }, "")
+		took = held.taken
+		if b := held.blocked; b != nil && !b.main {
+			c := continueFrom(ctx, repo, b, held.why, slug)
+			if c.branch == "" {
+				return madeWorktree{}, fmt.Errorf("%s is held (%s) and no free branch name follows it", branch, held.why)
+			}
+			branch, from, slug, cont = c.branch, c.from, c.slug, &c
+		}
+	}
+	path := filepath.Join(repo.home(), slug)
+	var held lockedFor
+	repo, held = reclaimWhere(ctx, repo, "", func(w tidyWorktree) bool { return tidyReal(w.path) == tidyReal(path) }, "")
+	took = append(took, held.taken...)
+	if held.blocked != nil && !held.blocked.main && cont == nil {
+		// The folder is another's and locked: the next free one is ours.
+		slug = filepath.Base(freePath(repo.home(), slug, nil))
+		note("note: %s is %s; making %s instead", path, held.why, slug)
+	}
+	m, err := makeWorktreeIn(ctx, repo, slug, branch, from, fetch, note)
+	m.took, m.cont = took, cont
+	return m, err
+}
+
+func makeWorktreeIn(ctx context.Context, repo *worktreeRepo, slug, branch, from string, fetch bool, note func(string, ...any)) (madeWorktree, error) {
 	if branch != "" {
 		for _, w := range repo.wts {
 			if w.branch == branch {
@@ -320,6 +398,7 @@ func makeWorktree(ctx context.Context, repo *worktreeRepo, slug, branch, from st
 	if err := repo.excludeHome(ctx); err != nil {
 		note("note: couldn't keep %s out of git status: %v", autopilotWorktrees, err)
 	}
+	worktreeAddHook()
 	if _, err := tidyGit(ctx, repo.root, gitArgs...); err != nil {
 		return madeWorktree{}, err
 	}

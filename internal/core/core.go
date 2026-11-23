@@ -73,12 +73,6 @@ type Service struct {
 	pushHTTP *http.Client // browser push services: public internet only
 	Hub      *Hub
 
-	// strandedRetry holds, for a round whose pull request couldn't be opened,
-	// a strandedTry: when to try again and how many tries failed (round id to
-	// strandedTry; openStrandedRounds, WP-1325). It is kept in memory: a
-	// restart tries once more.
-	strandedRetry sync.Map
-
 	now func() time.Time
 
 	// afterTranscriptFile is a test hook: it runs after a transcript piece's
@@ -127,6 +121,11 @@ type Service struct {
 	// tracesLanded, when set, sees the tasks whose navigation traces an
 	// upload changed (WP-250); tests set it.
 	tracesLanded func(issueIDs []int64)
+
+	// beforeRoundWrite, when set, runs once just before a ship writes its
+	// review round, after it read the run's newest round: a test makes
+	// another ship go first, so the write meets the conflict (WP-1370).
+	beforeRoundWrite func(ctx context.Context)
 
 	// failFanoutItems, when set, fails the write of a new fan-out's
 	// packages; tests use it for the half-made path.
@@ -273,6 +272,11 @@ type Service struct {
 	stopWaits stopWaits
 	// babysitLocks: one babysit step at a time per pull request (WP-134).
 	babysitLocks keyedLocks
+	// shipLocks: one server-side ship at a time per review round (WP-1370).
+	shipLocks keyedLocks
+	// branchLocks: one open of a pull request per branch at a time, so the
+	// session's ship and Waypoint's own can't both open one (WP-1370).
+	branchLocks namedLocks
 	// objectiveLocks: one step of an objective's reading at a time
 	// (WP-ADR111); objectiveWatched: when objectiveWatch last looked.
 	objectiveLocks   keyedLocks

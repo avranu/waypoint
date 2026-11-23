@@ -64,6 +64,7 @@ func TestFanoutRunsPackagesAsTaskSessions(t *testing.T) {
 	git(t, s.repo, "commit", "--allow-empty", "-q", "-m", "first")
 	rec := fakeCLI(t, "claude", fakeClaudeLaunches)
 	nexts := stubStartNext(s)
+	bodies := recordRequests(t)
 	var detached [][]string
 	old := backgroundStart
 	t.Cleanup(func() { backgroundStart = old })
@@ -115,6 +116,10 @@ title = "Document it"
 	// Each package session's first prompt is its task, taken for it (WP-1037).
 	if len(*nexts) != 2 || !strings.Contains((*nexts)[0], "started this session for "+a.Key) {
 		t.Errorf("wp next answers: %q", *nexts)
+	}
+	// The text each session is started with is noted as Waypoint's (WP-1370).
+	if got := bodies(); !strings.Contains(got, "started this session for "+a.Key) {
+		t.Errorf("the package's kickoff was not noted as typed by Waypoint:\n%s", got)
 	}
 	if br := git(t, filepath.Join(s.repo, ".claude", "worktrees", a.Branch), "branch", "--show-current"); br != a.Branch {
 		t.Errorf("worktree on %q", br)

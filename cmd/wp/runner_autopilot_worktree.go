@@ -158,7 +158,13 @@ func worktreeName(ctx context.Context, root, key string) string {
 		if i > 1 {
 			name = fmt.Sprintf("%s-%d", slug, i)
 		}
-		if dirExists(filepath.Join(root, autopilotWorktrees, name)) {
+		if p := filepath.Join(root, autopilotWorktrees, name); dirExists(p) {
+			// A folder whose lock is held by a live owner (or one wp can't judge)
+			// isn't ours to carry on in: the next name (WP-1370). A stale lock is
+			// taken over by freeStaleLocks.
+			if lockedByOther(ctx, root, p) {
+				continue
+			}
 			return name
 		}
 		// rev-parse -q --verify exits 1 when the ref is missing; any other
@@ -313,4 +319,22 @@ func keepWorktreeDialog(screen string) bool {
 		keep = keep || strings.HasPrefix(l, "❯ 1. Keep worktree")
 	}
 	return asked && keep
+}
+
+// freeStaleLocks takes over the task's worktrees that an agent left locked
+// and is gone (WP-1370) before a session starts in the task's worktree: Claude
+// Code's --worktree would otherwise meet a lock nobody will ever lift. A lock
+// whose owner is alive or can't be shown gone is left, and said.
+func freeStaleLocks(ctx context.Context, root, key string, say func(format string, a ...any)) {
+	repo, err := worktreeRepoAt(ctx, root)
+	if err != nil {
+		return
+	}
+	_, held := reclaimTask(ctx, repo, key, root)
+	for _, t := range held.taken {
+		say("took over %s: the agent that locked it is gone", t)
+	}
+	if b := held.blocked; b != nil && !b.main {
+		say("%s's branch %s stays in %s, which is %s", key, b.branch, b.path, held.why)
+	}
 }

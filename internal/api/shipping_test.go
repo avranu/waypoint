@@ -234,6 +234,86 @@ func TestShippingAPI(t *testing.T) {
 	}
 }
 
+// The ship's -m and --summary go with it only when given: the request from
+// before they existed is still decoded, and the ones with them are not
+// refused as unknown fields (WP-1370).
+func TestOpenPullShipWordsDecode(t *testing.T) {
+	// Absent stays nil (keep what the round holds); "" is a value (clear it).
+	for name, tc := range map[string]struct {
+		raw          string
+		msg, summary *string
+	}{
+		"absent": {`{"head":"b"}`, nil, nil},
+		"empty":  {`{"head":"b","message":"","summary":""}`, ptrS(""), ptrS("")},
+		"given":  {`{"head":"b","message":"m","summary":"s"}`, ptrS("m"), ptrS("s")},
+	} {
+		var in openPullBody
+		if err := json.Unmarshal([]byte(tc.raw), &in); err != nil {
+			t.Fatal(err)
+		}
+		same := func(a, b *string) bool { return (a == nil) == (b == nil) && (a == nil || *a == *b) }
+		if !same(in.Message, tc.msg) || !same(in.Summary, tc.summary) {
+			t.Errorf("%s: decoded message %v summary %v", name, in.Message, in.Summary)
+		}
+	}
+	ts, svc := setup(t)
+	ctx := context.Background()
+	u, err := svc.CreateUser(ctx, core.SystemActor(), core.CreateUserInput{Username: "robin", Email: "robin@example.com", Password: "correct-horse-battery", IsAdmin: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, _, _ := svc.CreateAPIToken(ctx, &core.Actor{User: u}, "robin", false, 0)
+	c := &client{t: t, base: ts.URL, http: http.DefaultClient, token: tok}
+	for name, body := range map[string]map[string]any{
+		"old cli":    {"head": "b", "review": "auto"},
+		"new cli":    {"head": "b", "review": "auto", "message": "m", "summary": "s"},
+		"given none": {"head": "b", "message": "", "summary": ""},
+	} {
+		code, raw := c.do("POST", "/api/v1/projects/NOPE/pulls", body)
+		if strings.Contains(string(raw), "unknown field") {
+			t.Errorf("%s: %d %s", name, code, raw)
+		}
+	}
+	if code, raw := c.do("POST", "/api/v1/projects/NOPE/pulls", map[string]any{"head": "b", "nonsense": 1}); code != http.StatusBadRequest || !strings.Contains(string(raw), "unknown field") {
+		t.Errorf("a key nobody knows should still be refused: %d %s", code, raw)
+	}
+}
+
+// After a reviewed round the completeness check had the put-off notes as
+// leads, so the open doesn't print them again; the open subtasks no check
+// reads stay, and a direct open keeps everything (WP-1370).
+func TestPutOffAfterOpenSkipsNotesAfterAReviewedRound(t *testing.T) {
+	_, svc := setup(t)
+	ctx := context.Background()
+	admin, err := svc.CreateUser(ctx, core.SystemActor(), core.CreateUserInput{Username: "robin", Email: "robin@example.com", Password: "correct-horse-battery", IsAdmin: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &core.Actor{User: admin}
+	name := "App"
+	p, err := svc.CreateProject(ctx, a, core.ProjectInput{Name: &name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent, err := svc.CreateIssue(ctx, a, core.IssueInput{Project: p.Key, Title: "Speed up the parser", Description: "Step 2 only if the first pass is still slow."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CreateIssue(ctx, a, core.IssueInput{Parent: parent.Key, Type: "subtask", Title: "Measure it"}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{svc: svc}
+
+	direct := s.putOffAfterOpen(ctx, a, parent.Key, false)
+	if direct == nil || len(direct.Notes) == 0 || len(direct.Open) != 1 {
+		t.Fatalf("a direct open should show the notes and the open subtask: %+v", direct)
+	}
+	reviewed := s.putOffAfterOpen(ctx, a, parent.Key, true)
+	if reviewed == nil || len(reviewed.Notes) != 0 || reviewed.More != 0 || len(reviewed.Open) != 1 {
+		t.Fatalf("after a reviewed round only the open subtask should stay: %+v", reviewed)
+	}
+}
+
 // PATCH /pulls/{id} carries a base to the service and the open body's
 // stacked_on is decoded: against a fake forge that records what it is told
 // (WP-1670).

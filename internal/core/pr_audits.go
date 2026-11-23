@@ -286,6 +286,18 @@ func (s *Service) newestOf(ctx context.Context, prID int64, purpose string) (int
 	return id, status, nil
 }
 
+// carriedAudits are the finished audits a review round's release carried to
+// the pull request: the round's own and its check of the session's marks.
+// They hold its merge and show in its work packet beside the newest audit,
+// which would otherwise shadow them (WP-1370).
+func (s *Service) carriedAudits(ctx context.Context, prID int64) ([]int64, error) {
+	rows, err := s.db.R.QueryContext(ctx, `SELECT id FROM code_audits WHERE pr_id = ? AND purpose = '' AND status = ? AND request_key LIKE 'review-round:%' ORDER BY id`, prID, AuditDone)
+	if err != nil {
+		return nil, err
+	}
+	return scanIDs(rows)
+}
+
 // auditTodo is the findings still to do (findingsToDo), worst first, of
 // the pull request's newest finished audit and newest footprint check
 // (WP-440), each when it is done.
@@ -305,6 +317,7 @@ func (s *Service) auditTodo(ctx context.Context, prID int64) []TodoFinding {
 // auditTodoErr is auditTodo, also reporting a failed read.
 func (s *Service) auditTodoErr(ctx context.Context, prID int64) ([]TodoFinding, error) {
 	var out []TodoFinding
+	seen := map[int64]bool{}
 	for _, purpose := range []string{"", AuditFootprint} {
 		id, status, err := s.newestOf(ctx, prID, purpose)
 		if err != nil {
@@ -313,12 +326,58 @@ func (s *Service) auditTodoErr(ctx context.Context, prID int64) ([]TodoFinding, 
 		if id == 0 || status != AuditDone {
 			continue
 		}
+		seen[id] = true
 		todo, err := s.findingsToDo(ctx, id, purpose == AuditFootprint)
 		if err != nil {
 			return out, err
 		}
 		for _, f := range todo {
 			out = append(out, TodoFinding{CodeAuditFinding: f, Audit: id, Footprint: purpose == AuditFootprint})
+		}
+		if purpose == "" {
+			un, err := s.uncheckedRejections(ctx, id)
+			if err != nil {
+				return out, err
+			}
+			out = append(out, un...)
+		}
+	}
+	carried, err := s.carriedAudits(ctx, prID)
+	if err != nil {
+		return out, err
+	}
+	for _, id := range carried {
+		if seen[id] {
+			continue
+		}
+		todo, err := s.findingsToDo(ctx, id, false)
+		if err != nil {
+			return out, err
+		}
+		for _, f := range todo {
+			out = append(out, TodoFinding{CodeAuditFinding: f, Audit: id})
+		}
+		un, err := s.uncheckedRejections(ctx, id)
+		if err != nil {
+			return out, err
+		}
+		out = append(out, un...)
+	}
+	return out, nil
+}
+
+// uncheckedRejections are the findings of an audit the session rejected and
+// nothing checked that reopenUnverified left rejected (medium and low): the
+// packet lists them, and they hold nothing.
+func (s *Service) uncheckedRejections(ctx context.Context, id int64) ([]TodoFinding, error) {
+	a := &CodeAudit{ID: id}
+	if err := s.loadFindings(ctx, a); err != nil {
+		return nil, err
+	}
+	var out []TodoFinding
+	for _, f := range a.Findings {
+		if f.State == "rejected" && strings.HasPrefix(f.Note, uncheckedNote) {
+			out = append(out, TodoFinding{CodeAuditFinding: f, Audit: id, Unchecked: true})
 		}
 	}
 	return out, nil
@@ -396,31 +455,74 @@ func (s *Service) auditHolds(ctx context.Context, prID, going int64) ([]string, 
 				id, len(ids), plural(len(ids)), strings.Join(ids, ", ")))
 		}
 	}
+	// What a review round's release carried to the pull request holds it as
+	// its own audit's findings do, whichever audit finished last (WP-1370).
 	id, status, err := s.newestAudit(ctx, prID)
 	if err != nil {
 		return nil, "", err
 	}
-	switch {
-	case id == 0:
-		return reasons, "", nil
-	case status != AuditDone:
-		return reasons, fmt.Sprintf("audit #%d ended %s: not holding the merge", id, status), nil
+	var held []string
+	if id != 0 && status == AuditDone {
+		var ids []string
+		todo, err := s.findingsToDo(ctx, id, false)
+		if err != nil {
+			return nil, "", err
+		}
+		// A check of the session's marks that is the newest audit holds on
+		// whatever it still disagrees with, of any severity: its findings
+		// are marks nobody has settled.
+		check := s.isCheckAudit(ctx, id)
+		for _, f := range todo {
+			if auditHoldsMerge(f.Severity) || check {
+				ids = append(ids, f.ID)
+			}
+		}
+		if len(ids) > 0 {
+			what := "critical or high finding%s still to do"
+			if check {
+				what = "finding%s of the check of the session's marks nobody decided"
+			}
+			held = append(held, fmt.Sprintf("audit #%d has %d "+what+" (%s): fix, or close with wp audit mark ID fixed|rejected -m WHY",
+				id, len(ids), plural(len(ids)), strings.Join(ids, ", ")))
+		}
 	}
-	var ids []string
-	todo, err := s.findingsToDo(ctx, id, false)
+	carried, err := s.carriedAudits(ctx, prID)
 	if err != nil {
 		return nil, "", err
 	}
-	for _, f := range todo {
-		if auditHoldsMerge(f.Severity) {
-			ids = append(ids, f.ID)
+	for _, cid := range carried {
+		if cid == id {
+			continue
+		}
+		var ids []string
+		todo, err := s.findingsToDo(ctx, cid, false)
+		if err != nil {
+			return nil, "", err
+		}
+		for _, f := range todo {
+			if auditHoldsMerge(f.Severity) || s.isCheckAudit(ctx, cid) {
+				ids = append(ids, f.ID)
+			}
+		}
+		if len(ids) > 0 {
+			held = append(held, fmt.Sprintf("audit #%d, carried from the review before the pull request opened, has %d finding%s nobody decided (%s): fix, or close with wp audit mark ID fixed|rejected -m WHY",
+				cid, len(ids), plural(len(ids)), strings.Join(ids, ", ")))
 		}
 	}
-	if len(ids) == 0 {
-		return reasons, "", nil
+	switch {
+	case len(held) > 0:
+		return append(held, reasons...), "", nil
+	case id != 0 && status != AuditDone:
+		return reasons, fmt.Sprintf("audit #%d ended %s: not holding the merge", id, status), nil
 	}
-	return append([]string{fmt.Sprintf("audit #%d has %d critical or high finding%s still to do (%s): fix, or close with wp audit mark ID fixed|rejected -m WHY",
-		id, len(ids), plural(len(ids)), strings.Join(ids, ", "))}, reasons...), "", nil
+	return reasons, "", nil
+}
+
+// isCheckAudit: the audit is a review round's check of the session's marks
+// (its findings are marks the check disagrees with, whatever their severity).
+func (s *Service) isCheckAudit(ctx context.Context, id int64) bool {
+	var n int
+	return s.db.R.QueryRowContext(ctx, `SELECT 1 FROM code_audits WHERE id = ? AND request_key LIKE 'review-round:%:check'`, id).Scan(&n) == nil
 }
 
 // auditHoldReason: a readiness reason an audit gave (only a fix or a verdict
@@ -434,10 +536,16 @@ type TodoFinding struct {
 	// Footprint: a footprint check named it, a change beyond the task
 	// (WP-440). Every one is work for a round, whatever its severity.
 	Footprint bool `json:"footprint,omitempty"`
+	// Unchecked: the session rejected it and the check of its marks never
+	// ran. Listed for whoever reads the packet; it holds nothing and starts
+	// no round.
+	Unchecked bool `json:"unchecked,omitempty"`
 }
 
 // startsRound: still to do, it is work for a babysitting round.
-func (f TodoFinding) startsRound() bool { return f.Footprint || auditStartsRound(f.Severity) }
+func (f TodoFinding) startsRound() bool {
+	return !f.Unchecked && (f.Footprint || auditStartsRound(f.Severity))
+}
 
 // todoFindings are the findings still to do in the pull request's newest
 // finished audit and footprint check, for its work packet.
@@ -483,7 +591,9 @@ func writeFindings(b *strings.Builder, list []TodoFinding) {
 			}
 		}
 		state := ""
-		if f.State != "open" {
+		if f.Unchecked {
+			state = " [rejected by the session, unchecked]"
+		} else if f.State != "open" {
 			state = " [" + f.State + "]"
 		}
 		fmt.Fprintf(b, "\n### %s %s%s%s\n", f.ID, f.Severity, where, state)

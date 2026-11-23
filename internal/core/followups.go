@@ -233,11 +233,11 @@ func (s *Service) fireFollowUp(ctx context.Context, sessionID int64, e *Event, f
 	if err != nil || a == nil {
 		return nil, err
 	}
-	res, err := s.db.W.ExecContext(ctx, `UPDATE automations SET enabled = 0 WHERE id = ? AND (enabled = 1 OR ?)`, a.ID, force)
+	n, err := s.writeRows(ctx, `UPDATE automations SET enabled = 0 WHERE id = ? AND (enabled = 1 OR ?)`, a.ID, force)
 	if err != nil {
 		return nil, err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if n == 0 {
 		return nil, nil // spent
 	}
 	owner := cmpID(a.savedBy, a.createdBy)
@@ -280,7 +280,7 @@ func (a *Automation) ownedBy(actor *Actor) bool {
 // cancelRunMessages withdraws the messages a run queued for agents and
 // hasn't delivered: a run that ended doesn't speak any more.
 func (s *Service) cancelRunMessages(ctx context.Context, runID int64) {
-	if _, err := s.db.W.ExecContext(ctx, `UPDATE session_messages SET state = 'cancelled' WHERE step_key LIKE ? AND state IN ('queued','sending')`,
+	if _, err := s.writeRows(ctx, `UPDATE session_messages SET state = 'cancelled' WHERE step_key LIKE ? AND state IN ('queued','sending')`,
 		itoa64(runID)+":%"); err != nil {
 		s.log.WarnContext(ctx, "cancel a run's messages", "run", runID, "err", err)
 	}
@@ -593,7 +593,7 @@ func (s *Service) queueMessage(ctx context.Context, sessionID int64, body, stepK
 // storeMessage queues text for a session, once per step key, waking no one:
 // babysit news decides first whether to wait in a batch (WP-209).
 func (s *Service) storeMessage(ctx context.Context, sessionID int64, body, stepKey string, from messageFrom, passive bool) (*SessionMessage, error) {
-	if _, err := s.db.W.ExecContext(ctx, `INSERT OR IGNORE INTO session_messages(session_id, body, step_key, created_by, created_at, passive, agent, automation_id) VALUES (?,?,?,?,?,?,?,?)`,
+	if _, err := s.writeRows(ctx, `INSERT OR IGNORE INTO session_messages(session_id, body, step_key, created_by, created_at, passive, agent, automation_id) VALUES (?,?,?,?,?,?,?,?)`,
 		sessionID, body, stepKey, nullUser(from.by), s.nowMS(), passive, from.agent, nullID(from.automation)); err != nil {
 		return nil, err
 	}
@@ -634,13 +634,7 @@ const orphanMessageAge = 24 * time.Hour
 // because the agent needn't see it quickly doesn't continue a stop alone.
 func (s *Service) takeMessages(ctx context.Context, t *tx, x *AgentSession, via string) ([]*SessionMessage, error) {
 	if via == "start" && x.Cwd != "" {
-		// What was queued for a session that ended before taking it (a paused
-		// stop, a closed terminal) goes to the next one in the same worktree,
-		// as a request's answer does (WP-579). Babysit news stays with its
-		// babysit, which only /clear hands on (carryOverClear).
-		if _, err := t.ExecContext(ctx, `UPDATE session_messages SET session_id = ? WHERE state = 'queued' AND step_key NOT LIKE 'babysit:%'
-			AND session_id IN (SELECT id FROM agent_sessions WHERE user_id = ? AND machine = ? AND cwd = ? AND id != ? AND state = 'ended' AND ended_at > ?)`,
-			x.ID, x.userID, x.Machine, x.Cwd, x.ID, s.nowMS()-orphanMessageAge.Milliseconds()); err != nil {
+		if err := s.moveOrphanMessages(ctx, t, x); err != nil {
 			return nil, err
 		}
 	}
@@ -672,6 +666,7 @@ func (s *Service) takeMessages(ctx context.Context, t *tx, x *AgentSession, via 
 			return nil, err
 		}
 		m.State, m.Via = MessageDelivered, via
+		s.log.InfoContext(ctx, "session message delivered by the hook", "message", m.ID, "session", x.ID, "via", via, "step_key", m.stepKey)
 		m.deliveredAt = sql.NullInt64{Int64: now, Valid: true}
 		// For the step waiting on it.
 		t.emit(sessionEvent(EvSessionMessage, x, map[string]any{"message": m.ID, "via": via}))
@@ -701,6 +696,26 @@ func MessagesText(list []*SessionMessage) string {
 		if strings.HasPrefix(m.stepKey, "stalled:") {
 			// A background job that made no progress (WP-605, WP-1045).
 			parts = append(parts, "Waypoint, news of your background job (act on it if it is stuck):\n\n"+m.Body)
+			continue
+		}
+		if strings.HasPrefix(m.stepKey, "audit:") {
+			// An audit this session asked for ended (WP-1370): news, not a task.
+			parts = append(parts, "Waypoint, news of an audit you asked for (act on it only if it changes your plans):\n\n"+m.Body)
+			continue
+		}
+		if strings.HasPrefix(m.stepKey, "check:") {
+			// The check of this session's marks on its review's findings.
+			parts = append(parts, "Waypoint, the check of your marks on the adversarial review's findings:\n\n"+m.Body)
+			continue
+		}
+		if strings.HasPrefix(m.stepKey, "shipped:") {
+			// Waypoint opened the session's pull request (WP-1370).
+			parts = append(parts, "Waypoint, news of your task's pull request (for your information; there is nothing to run):\n\n"+m.Body)
+			continue
+		}
+		if head, ok := newsHead(m.stepKey); ok {
+			// News, not tasks (WP-1370).
+			parts = append(parts, head+":\n\n"+m.Body)
 			continue
 		}
 		head := "Waypoint: your next task, queued for when you finished"
@@ -869,4 +884,170 @@ func (s *Service) linkSpawned(ctx context.Context, t *tx, actor *Actor, x *Agent
 		return 0
 	}
 	return job
+}
+
+// moveOrphanMessages hands what was queued for a session that ended before
+// taking it (a paused stop, a closed terminal) to the next one in the same
+// worktree, as a request's answer goes (WP-579), when it is for that
+// session: a message about a task goes only to a session whose open run is
+// on that task, whoever else started in the directory since (WP-1370). News
+// of another task (an audit's, a check's, a ship's) stays with its session
+// and is dropped by expireOrphanNews when no one takes it up. Babysit news
+// stays with its babysit, which only /clear hands on (carryOverClear).
+func (s *Service) moveOrphanMessages(ctx context.Context, t *tx, x *AgentSession) error {
+	rows, err := t.QueryContext(ctx, `SELECT m.id, m.step_key, m.session_id FROM session_messages m
+		WHERE m.state = 'queued' AND m.step_key NOT LIKE 'babysit:%'
+		AND m.session_id IN (SELECT id FROM agent_sessions WHERE user_id = ? AND machine = ? AND cwd = ? AND id != ? AND state = 'ended' AND ended_at > ?)`,
+		x.userID, x.Machine, x.Cwd, x.ID, s.nowMS()-orphanMessageAge.Milliseconds())
+	if err != nil {
+		return err
+	}
+	type cand struct {
+		id, from int64
+		key      string
+	}
+	var list []cand
+	for rows.Next() {
+		var c cand
+		if err := rows.Scan(&c.id, &c.key, &c.from); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		list = append(list, c)
+	}
+	err = rows.Err()
+	_ = rows.Close()
+	if err != nil {
+		return err
+	}
+	var mine sql.NullInt64 // the new session's task, if it has one yet
+	if err := t.QueryRowContext(ctx, `SELECT issue_id FROM agent_runs WHERE session_id = ? AND ended_at IS NULL ORDER BY started_at DESC, id DESC LIMIT 1`, x.ID).Scan(&mine); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	for _, c := range list {
+		if task, bound := messageTask(ctx, t, c.key); bound && (!mine.Valid || task != mine.Int64) {
+			s.log.InfoContext(ctx, "session message stays with its task", "message", c.id, "key", c.key, "from_session", c.from, "to_session", x.ID, "its_task", task, "session_task", mine.Int64)
+			continue
+		}
+		if _, err := t.ExecContext(ctx, `UPDATE session_messages SET session_id = ? WHERE id = ? AND state = 'queued'`, x.ID, c.id); err != nil {
+			return err
+		}
+		s.log.InfoContext(ctx, "session message moved to the next session", "message", c.id, "key", c.key, "from_session", c.from, "to_session", x.ID)
+	}
+	return nil
+}
+
+// messageTask is the task a message is news of: bound is whether the
+// message is about a task at all (an audit's, a check's, a ship's), and task
+// the issue it is about (0: it can't be told).
+func messageTask(ctx context.Context, q queryer, stepKey string) (task int64, bound bool) {
+	kind, rest, _ := strings.Cut(stepKey, ":")
+	id, _, _ := strings.Cut(rest, ":")
+	n, err := strconv.ParseInt(id, 10, 64)
+	switch kind {
+	case "shipped":
+		bound = true
+		if err == nil {
+			_ = q.QueryRowContext(ctx, `SELECT issue_id FROM work_log WHERE id = ?`, n).Scan(&task)
+		}
+	case "audit", "check":
+		bound = true
+		if err == nil {
+			var asked int
+			if kind == "audit" && q.QueryRowContext(ctx, `SELECT count(*) FROM code_audits WHERE id = ? AND request_key NOT LIKE 'review-round:%' AND pr_id IS NULL`, n).Scan(&asked) == nil && asked > 0 {
+				// An audit somebody asked for that no round or pull request
+				// carries is news of no task: it is the asker's.
+				return 0, false
+			}
+			_ = q.QueryRowContext(ctx, `SELECT coalesce(
+				(SELECT w.issue_id FROM code_audits c JOIN work_log w ON c.request_key IN ('review-round:' || w.id, 'review-round:' || w.id || ':check') WHERE c.id = ? LIMIT 1),
+				(SELECT el.issue_id FROM code_audits c JOIN pull_requests p ON p.id = c.pr_id
+					JOIN external_links el ON el.kind = 'pull' AND (el.url = p.url OR (el.repo = p.repo COLLATE NOCASE AND el.number = p.number)) WHERE c.id = ? LIMIT 1), 0)`, n, n).Scan(&task)
+		}
+	}
+	return task, bound
+}
+
+// expireOrphanNews drops the news of a task that stayed with a session that
+// ended, once orphanMessageAge has passed since the session ended (the age
+// moveOrphanMessages goes by) with no session of that task to take it: it is
+// no use then, and it says so in the log. An audit nobody tied to a task,
+// that no next session took, is told to the person who asked, in the write
+// that drops it (no event: the notice is the news, delivered by dispatch).
+func (s *Service) expireOrphanNews(ctx context.Context) {
+	rows, err := s.db.R.QueryContext(ctx, `SELECT m.id, m.step_key, m.session_id FROM session_messages m JOIN agent_sessions x ON x.id = m.session_id
+		WHERE m.state = 'queued' AND x.ended_at IS NOT NULL AND x.ended_at < ?
+		AND (m.step_key LIKE 'audit:%' OR m.step_key LIKE 'check:%' OR m.step_key LIKE 'shipped:%') LIMIT 100`, s.nowMS()-orphanMessageAge.Milliseconds())
+	if err != nil {
+		s.log.WarnContext(ctx, "orphan news to expire", "err", err)
+		return
+	}
+	type cand struct {
+		id, session int64
+		key         string
+	}
+	var list []cand
+	for rows.Next() {
+		var c cand
+		if err := rows.Scan(&c.id, &c.key, &c.session); err != nil {
+			_ = rows.Close()
+			s.log.WarnContext(ctx, "orphan news to expire: read one", "err", err)
+			return
+		}
+		list = append(list, c)
+	}
+	err = rows.Err()
+	_ = rows.Close()
+	if err != nil {
+		s.log.WarnContext(ctx, "orphan news to expire: read them", "err", err)
+		return
+	}
+	for _, c := range list {
+		var expired bool
+		err := s.write(ctx, SystemActor(), func(t *tx) error {
+			expired = false
+			res, err := t.ExecContext(ctx, `UPDATE session_messages SET state = 'cancelled' WHERE id = ? AND state = 'queued'`, c.id)
+			if err != nil {
+				return err
+			}
+			n, _ := res.RowsAffected()
+			if expired = n > 0; !expired {
+				return nil
+			}
+			if _, bound := messageTask(ctx, t, c.key); bound || !strings.HasPrefix(c.key, "audit:") {
+				return nil
+			}
+			id, _ := strconv.ParseInt(strings.SplitN(c.key, ":", 3)[1], 10, 64)
+			var who int64
+			var title, status string
+			if err := t.QueryRowContext(ctx, `SELECT coalesce(requested_by, 0), title, status FROM code_audits WHERE id = ?`, id).Scan(&who, &title, &status); err != nil || who == 0 {
+				return nil
+			}
+			_, err = t.storeNotice(ctx, who, NotifyAudit, fmt.Sprintf("Audit #%d of %s ended (%s) after its session did", id, title, status),
+				"The session that asked for it ended before it could be told, and no later session in its worktree took it up. Read it at the audit's page.", fmt.Sprintf("/audits/%d", id))
+			return err
+		})
+		if err != nil {
+			s.log.WarnContext(ctx, "expire orphan news", "message", c.id, "err", err)
+			continue
+		}
+		if expired {
+			s.log.InfoContext(ctx, "session message expired with its ended session", "message", c.id, "key", c.key, "session", c.session, "after", orphanMessageAge.String())
+		}
+	}
+}
+
+// newsHead is the head of a message that is news and not a task, by its
+// key: unpushed commits in a checkout, unfinished work an earlier session
+// left here, and a fan-out's report.
+func newsHead(key string) (string, bool) {
+	switch {
+	case strings.HasPrefix(key, "unpushed:"):
+		return "Waypoint, news from the start of this session (commits in a checkout that aren't pushed; push them if they are yours)", true
+	case strings.HasPrefix(key, "stranded:"):
+		return "Waypoint, news from the start of this session (unfinished work an earlier session left here; take it up only if it is yours to)", true
+	case strings.HasPrefix(key, "fanout:"):
+		return "Waypoint, news of the fan-out you coordinate (act on it if it needs you)", true
+	}
+	return "", false
 }

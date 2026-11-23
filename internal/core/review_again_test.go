@@ -96,6 +96,15 @@ func TestReviewAgainBeforePR(t *testing.T) {
 				a.tick(61 * time.Second)
 				a.endAudit(box, "done", titles...)
 				a.tick(time.Second)
+				if len(titles) == 0 {
+					// Nothing found: no prompt is typed, the round is done and
+					// Waypoint opens the pull request itself (heldUnshipped).
+					a.s.Wait()
+					if r := a.round(round); r.state != RoundDone {
+						t.Fatalf("clean round %d: %+v", round, r)
+					}
+					return round
+				}
 				if len(a.jobs) == 0 {
 					t.Fatal("no review job")
 				}
@@ -243,7 +252,7 @@ func TestReviewAgainBeforePR(t *testing.T) {
 				if qerr := a.s.db.R.QueryRow(`SELECT count(*) FROM review_again_decisions`).Scan(&n); qerr != nil {
 					t.Fatal(qerr)
 				}
-				if !errors.Is(err, errAgainRead) || !strings.Contains(err.Error(), "database is locked") || !strings.Contains(err.Error(), "--skip-review") || len(g.created) != 0 || n != 0 {
+				if !errors.Is(err, errAgainRead) || !strings.Contains(err.Error(), "database is locked") || len(g.created) != 0 || n != 0 {
 					t.Fatalf("record unreadable: %+v, %v (opened %d, %d decisions)", res, err, len(g.created), n)
 				}
 				// Read again once the record can be, the round is decided.
@@ -308,15 +317,20 @@ func TestReviewAgainBeforePR(t *testing.T) {
 				}
 				return
 			}
-			if !strings.Contains(res.Held, "adversarial review round 2") || !strings.Contains(res.Notice, "--skip-review") || res.Pull != nil || len(g.created) != 0 {
+			// Waypoint scheduled round 2 itself when the check agreed
+			// (shipReviewed), so the session's ship only finds the round
+			// pending: no pull request, and no skip-review advert.
+			if res.Held == "" || strings.Contains(res.Held+res.Notice, "--skip-review") || res.Pull != nil || len(g.created) != 0 {
 				t.Fatalf("held = %+v (opened %d)", res, len(g.created))
 			}
 			if arm != AgainReview || !next.Valid {
 				t.Fatalf("decision %s, next %v", arm, next)
 			}
-			// The next round's reviewer was asked for at this ship, and the
-			// text says it is under way (WP-1325).
-			if n := a.auditsOfRound(next.Int64); n != 1 || !strings.Contains(res.Held, "the review is under way") {
+			// The next round's step is made at the session's Stop, and its tick
+			// asks the reviewer; the text says nothing more is to be run (WP-1370).
+			a.stopWith("Pushed; the review comes first.")
+			a.tick(61 * time.Second)
+			if n := a.auditsOfRound(next.Int64); n != 1 || !strings.Contains(res.Held, "Nothing more to run") {
 				t.Fatalf("next round's audits %d, held %q", n, res.Held)
 			}
 			if _, err := a.s.db.W.Exec(`DELETE FROM work_log WHERE id = ?`, pastRound); err != nil {
@@ -356,9 +370,10 @@ func TestReviewAgainBeforePR(t *testing.T) {
 	}
 }
 
-// shipChecked is wp ship --pr, with the check of the round's marks
+// shipChecked is wp ship, with the check of the round's marks
 // (checkMarks), when one is asked, run on box and finding every mark
-// right.
+// right. Waypoint carries on from the check's end itself (shipReviewed),
+// so the helper's last ship only reads where the run has got to.
 func (a *apEnv) shipChecked(box *Runner, key string) (*OpenPRResult, error) {
 	a.t.Helper()
 	res, err := a.ship(key, ShipPR)
@@ -367,25 +382,8 @@ func (a *apEnv) shipChecked(box *Runner, key string) (*OpenPRResult, error) {
 	}
 	a.stopWith("Waiting for the check of my marks.")
 	a.endCheck(box, "done")
-	a.deliverNews()
-	return a.ship(key, ShipPR)
-}
-
-// deliverNews ends the newest job that types news into the session (a
-// session message or batch) as delivered.
-func (a *apEnv) deliverNews() {
-	a.t.Helper()
 	a.s.Wait()
-	for n := len(a.jobs); n >= 1; n-- {
-		in := a.jobs[n-1]
-		if in.Kind != JobMessage || (in.Source != sessionMessageSource && in.Source != sessionBatchSource) {
-			continue
-		}
-		a.s.sessionMessageJobFinished(a.ctx, &Event{Kind: EvRunnerJobFinished, Data: map[string]any{"job": int64(n), "kind": JobMessage, "state": "done", "source": in.Source, "source_id": in.SourceID}})
-		a.s.Wait()
-		return
-	}
-	a.t.Fatalf("no message job in %d jobs", len(a.jobs))
+	return a.ship(key, ShipPR)
 }
 
 // endCheck runs a round's check of its marks, a Claude Code Haiku job
@@ -420,4 +418,21 @@ func (a *apEnv) endCheckText(box *Runner, text string) {
 	}
 	a.s.Wait()
 	a.s.Wait()
+}
+
+// deliverNews ends the newest job that types news into the session (a
+// session message or batch) as delivered.
+func (a *apEnv) deliverNews() {
+	a.t.Helper()
+	a.s.Wait()
+	for n := len(a.jobs); n >= 1; n-- {
+		in := a.jobs[n-1]
+		if in.Kind != JobMessage || (in.Source != sessionMessageSource && in.Source != sessionBatchSource) {
+			continue
+		}
+		a.s.sessionMessageJobFinished(a.ctx, &Event{Kind: EvRunnerJobFinished, Data: map[string]any{"job": int64(n), "kind": JobMessage, "state": "done", "source": in.Source, "source_id": in.SourceID}})
+		a.s.Wait()
+		return
+	}
+	a.t.Fatalf("no message job in %d jobs", len(a.jobs))
 }

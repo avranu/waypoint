@@ -6,9 +6,10 @@ import (
 	"time"
 )
 
-// A requested review starts when it is asked (WP-1325): wp ship asks for
-// the round's audit, which reads the pushed branch, without waiting for the
-// session's Stop and the tick after it. The planning at the Stop and the
+// A requested review starts when it is asked (WP-1325): the round's step is
+// made due at the ship (scheduleRound) and asks for the round's audit, which
+// reads the pushed branch, at the next tick, without waiting for the
+// session's Stop. The planning at the Stop and the
 // tick finds that audit and goes on as before.
 
 // auditsOfRound counts the audits asked for under the round's request keys
@@ -42,17 +43,17 @@ func startEnv(t *testing.T) (*apEnv, *Runner, *shipForge, string) {
 
 func TestReviewStartsAtShip(t *testing.T) {
 	a, box, _, key := startEnv(t)
-	res, err := a.ship(key, ShipAuto)
+	res, err := a.shipStarted(key, ShipAuto)
 	if err != nil || res.Held == "" {
 		t.Fatalf("ship = %+v, %v", res, err)
 	}
 	roundID := a.newestRoundID()
-	// Asked at the ship: no Stop, no tick yet.
+	// Asked by the round's step at the tick after the ship: no Stop yet.
 	ra, au := a.roundAuditRow(roundID)
 	if au == nil || au.Target != "branch" || au.Ref != "wp-1-first" || au.Purpose != AuditReview || ra.note != "" {
 		t.Fatalf("no audit at the ship: %+v %+v", ra, au)
 	}
-	if !strings.Contains(res.Held, "under way") || strings.Contains(res.Held, "starts after") {
+	if !strings.Contains(res.Held, "Nothing more to run") {
 		t.Errorf("held = %q", res.Held)
 	}
 	if r := a.round(roundID); r.state != RoundPending || r.startedAt.Valid {
@@ -86,7 +87,7 @@ func TestReviewDoesNotStartForSessionSetting(t *testing.T) {
 		Limits: AutopilotLimits{Review: ptrOf(true), ReviewModel: ptrOf(ReviewModelSession)}}); err != nil {
 		t.Fatal(err)
 	}
-	res, err := a.ship(key, ShipAuto)
+	res, err := a.shipStarted(key, ShipAuto)
 	if err != nil || res.Held == "" {
 		t.Fatalf("ship = %+v, %v", res, err)
 	}
@@ -102,14 +103,14 @@ func TestReviewDoesNotStartForSessionSetting(t *testing.T) {
 // for nothing; it goes on as the pull request's.
 func TestReviewSkippedAfterItStarted(t *testing.T) {
 	a, _, g, key := startEnv(t)
-	if _, err := a.ship(key, ShipAuto); err != nil {
+	if _, err := a.shipStarted(key, ShipAuto); err != nil {
 		t.Fatal(err)
 	}
 	roundID := a.newestRoundID()
 	if n := a.auditsOfRound(roundID); n != 1 {
 		t.Fatalf("%d audits", n)
 	}
-	res, err := a.ship(key, ShipSkip, func(in *OpenPRInput) { in.Reason = "a one-line doc fix" })
+	res, err := a.shipStarted(key, ShipSkip, func(in *OpenPRInput) { in.Reason = "a one-line doc fix" })
 	if err != nil || res.Pull == nil || len(g.created) != 1 {
 		t.Fatalf("skip = %+v, %v", res, err)
 	}
@@ -139,6 +140,7 @@ func TestReviewStartTwoShips(t *testing.T) {
 	if err := a.s.scheduleRound(a.ctx, a.ag, g, bp, 0, 0, "", "", nil); err == nil {
 		t.Fatal("second schedule went ahead")
 	}
+	a.tick(0)
 	var n int
 	_ = a.s.db.R.QueryRow(`SELECT count(*) FROM code_audits WHERE request_key LIKE 'review-round:%'`).Scan(&n)
 	if n != 1 {
@@ -161,11 +163,23 @@ func TestReviewDoesNotStartWhilePaused(t *testing.T) {
 		a.admin.User.ID, hour, "box", "s", "", "claude-opus-5-5", 50_000_000); err != nil {
 		t.Fatal(err)
 	}
-	res, err := a.ship(key, ShipAuto)
+	res, err := a.shipStarted(key, ShipAuto)
 	if err != nil || res.Held == "" {
 		t.Fatalf("ship = %+v, %v", res, err)
 	}
 	if n := a.auditsOfRound(a.newestRoundID()); n != 0 {
 		t.Fatalf("%d audits asked while paused", n)
 	}
+}
+
+// shipStarted is a ship followed by the autopilot's next tick, which makes
+// the round's step plan it: the round's audit is asked for then, not in the
+// ship's own request (the step is made due at the ship, scheduleRound).
+func (a *apEnv) shipStarted(key, review string, more ...func(*OpenPRInput)) (*OpenPRResult, error) {
+	a.t.Helper()
+	res, err := a.ship(key, review, more...)
+	if err == nil {
+		a.tick(0)
+	}
+	return res, err
 }

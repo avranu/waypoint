@@ -275,7 +275,8 @@ func shipEndsTurn(t *testing.T, e *env, me *core.Actor, key string) {
 	c.shipSession("sess-ship", func(e *shipEnd) { e.Ready, e.Text = time.Now(), "A subagent's." })
 	out = e.wp("ship", "--check", "true")
 	if !strings.Contains(out, "Check passed: true") || !strings.Contains(out, "Using the --summary you gave this task's last wp ship") ||
-		!strings.Contains(out, "Your --summary was kept, not shown (the task has notes put off)") || !strings.Contains(out, "Done: "+key) {
+		strings.Contains(out, "kept, not shown") || !strings.Contains(out, "Done: "+key) {
+		// (WP-1370: the line saying the summary was kept is gone.)
 		t.Errorf("ship with a reason to go on:\n%s", out)
 	}
 	if s := state(); s.Summaries[key] == nil || s.ShipEnds["sess-ship"] != nil {
@@ -292,8 +293,18 @@ func shipEndsTurn(t *testing.T, e *env, me *core.Actor, key string) {
 			}
 		}
 	}
-	// Nothing needs the agent: the turn ends with the summary, filled in.
+	// Nothing needs the agent: the turn ends with the summary, filled in,
+	// even when Waypoint tells it which tasks' recent work the change
+	// replaces (WP-1370: information, not a reason to go on).
+	oldFn := rewrittenTasksFn
+	rewrittenTasksFn = func(*cli, string, string) []rewrittenTask {
+		return []rewrittenTask{{Key: "WP-2", Title: "Earlier", PR: 3, Lines: 20, Share: 0.5}}
+	}
 	out = e.wp("ship", "--check", "true", "--summary", "{task} is in PR #{pr}. Tests: true.")
+	rewrittenTasksFn = oldFn
+	if !strings.Contains(out, "WP-2") || !strings.Contains(out, "Earlier") {
+		t.Errorf("the rewrite line wasn't printed:\n%s", out)
+	}
 	if !strings.Contains(out, "Check: true already passed on this tree; not run again.") || !strings.Contains(out, "Waypoint ends the turn here") ||
 		strings.Contains(out, "Done: ") || strings.Contains(out, "Reply template") {
 		t.Errorf("ship that ends the turn: %q", out)

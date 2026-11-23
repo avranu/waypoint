@@ -707,6 +707,10 @@ func (s *Service) MergePR(ctx context.Context, actor *Actor, prID int64, in Merg
 				return &MergeResult{ByHand: true, Reasons: []string{byHand}}, nil
 			}
 		}
+		if in.Head != "" && !sameSHA(pr.HeadSHA, in.Head) {
+			// Armed for the head that was reviewed, not whatever it moved to.
+			return nil, invalid("its head is %s, not %s; not armed", short(pr.HeadSHA), short(in.Head))
+		}
 		return s.armMerge(ctx, actor, pr, in.Style)
 	}
 	s.settleStack(ctx, pr, false)

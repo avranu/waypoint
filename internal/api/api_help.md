@@ -68,11 +68,15 @@ stateless, same bearer token).
     POST  /issues/{key}/relations/suggested/dismiss {"issue": "WAY-9"[, "undo": true]}  a person says a suggestion
           isn't related: it isn't suggested between the two again, from either end; undo takes that back (people
           only, not agents)
-    POST  /issues/{key}/rewritten {"repo": "owner/name", "prs": [{number, lines, share, at}]}  other tasks whose
-          recent work the change for {key} replaces, from the pull requests that last touched those lines (wp ship
-          sends it and prints `wp relate` commands for the result): [{key,title,pr,...}]; leaves out the task itself,
-          its parent and subtasks, tasks already related to it, tasks you can't see, and small overlaps; nothing is
-          linked
+    POST  /issues/{key}/rewritten {"repo": "owner/name", "head": "<commit>", "prs": [{number, lines, share, at}]}
+          other tasks whose recent work the change for {key} replaces, from the pull requests that last touched
+          those lines (wp ship sends it and prints `wp relate` commands for the result): [{key,title,pr,...}];
+          leaves out the task itself, its parent and subtasks, tasks already related to it, tasks you can't see,
+          and small overlaps. An editor's call also relates {key} to each task it names (inferred) and keeps what
+          it saw for the review round; a pair someone removed the relation of isn't related again. repo and prs
+          are required (prs: [] says the change replaces nothing, and drops what an earlier call recorded for
+          that repo); a call without them is refused and drops nothing, as is one past the limits (repo owner/name of
+          at most 255 characters, head a commit of at most 64, at most 50 prs)
     PATCH|DELETE /comments/{id}    your own comments
     DELETE /issues/{key}/relations/{id} | /links/{id}
     POST  /issues/{key}/links/refresh  re-read PR/issue state from the forge
@@ -1014,17 +1018,23 @@ steers or clears one in effect.
     past lag_alert_m minutes); env.updated is live-only. Webhooks can subscribe to env.*.
 ## Review gate, CI and merging (WP-D21)
 
-    POST /projects/{key}/pulls {repo, head, base, title, body, draft, ready, issue, for, urgent, review, reason, force, head_time, stacked_on}
+    POST /projects/{key}/pulls {repo, head, base, title, body, body_inputs, draft, ready, issue, for, urgent, review, reason, force, head_time, message, summary, stacked_on}
                                      open a pull request from a pushed branch (wp pr open, wp ship). Without
                                      base, the first of stacked_on (the branches head was built on, nearest
                                      first) with a pull request open is the base, else the default branch; the
                                      notice says so. With base, one already open for head is moved to it on the
                                      forge, or the call fails (WP-1670). review is
                                      what to do about the task's adversarial review when the caller's autopilot
-                                     reviews first (WP-688): auto, review (schedule it; force: again), pr, or
-                                     skip (reason says why); head_time is the head's commit time (unix s). A
-                                     held pull request answers {held: what to tell the agent}; notice says what
-                                     was done instead of the intent. Without review, held is a 400 error.
+                                     reviews first (WP-688): auto (the default; pr is the same), review
+                                     (schedule it; force: again), or skip (reason says why); head_time is the
+                                     head's commit time (unix s). message (wp ship -m) and summary (--summary,
+                                     the reply to the person) go only when given: left out keeps what a held
+                                     round has, "" clears it, and over 50000 bytes is refused. A held pull
+                                     request answers {held: what to tell the agent, held_needs_agent}; notice
+                                     says what was done instead of the intent, notice_needs_agent whether it
+                                     needs acting on. When held_needs_agent and notice_needs_agent are false
+                                     there is nothing for the agent to run: it ends its turn and Waypoint
+                                     opens the pull request itself. Without review, held is a 400 error.
     GET /projects/{key}/pulls/{number}?repo=owner/name   a pull request by number: the detail above plus
                                      "shipping": {ci, checks[{name,state,url,description,has_log}],
                                      gate{enabled,severity,state,note,open,below}, findings[{id,path,line,
@@ -1135,7 +1145,9 @@ someone checks them. Not the audit log above.
                                      ones); it is not a limit. The model is told no
                                      number and every finding it reports is kept (the guard is 100: past it the
                                      summary says how many were cut). GET returns all of them.
-                                     The asking session is told when it ends
+                                     The asking session is told the result when it ends, a clean
+                                     one too ("found nothing"); one Waypoint started itself (a review round,
+                                     a pull request's audit) tells only of findings
     GET /audits?project=KEY&pr_id=N&status=queued|running|done|failed|limited|cancelled|active&limit=50
                                      newest first, each with counts {total, open, critical, high, medium, low}
     GET /audits/defaults             {instructions, models, targets, severities, states, clis}

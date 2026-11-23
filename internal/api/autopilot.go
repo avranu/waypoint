@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -17,6 +18,7 @@ func (s *Server) autopilotRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/autopilot/off", a(s.turnOffAutopilot))
 	mux.HandleFunc("POST /api/v1/autopilot/steps/{id}/{action}", a(s.autopilotStepAction))
 	mux.HandleFunc("GET /api/v1/autopilot/steps/{id}/wanted", a(s.autopilotStepWanted))
+	mux.HandleFunc("POST /api/v1/autopilot/steps/{id}/typed", a(s.autopilotStepTyped))
 	mux.HandleFunc("POST /api/v1/autopilot/sessions/{id}/start", a(s.autopilotStartSession))
 	mux.HandleFunc("GET /api/v1/autopilot/activity", a(s.autopilotActivity))
 	mux.HandleFunc("GET /api/v1/autopilot/summaries", a(s.taskSummaries))
@@ -127,6 +129,26 @@ func (s *Server) autopilotStepWanted(w http.ResponseWriter, r *http.Request) (an
 	job, _ := strconv.ParseInt(r.URL.Query().Get("job"), 10, 64)
 	ok, err := s.svc.AutopilotStepWanted(r.Context(), actorFrom(r), id, job)
 	return map[string]bool{"wanted": ok}, err
+}
+
+// autopilotStepTyped: the runner's note of the prompt it made itself and is
+// about to type into session cli_id for job ?job=N (WP-1370).
+func (s *Server) autopilotStepTyped(w http.ResponseWriter, r *http.Request) (any, error) {
+	id, err := pathID(r, "id")
+	if err != nil {
+		return nil, err
+	}
+	job, _ := strconv.ParseInt(r.URL.Query().Get("job"), 10, 64)
+	var in struct {
+		CLIID string `json:"cli_id"`
+		Text  string `json:"text"`
+	}
+	if empty, err := decodeBody(r, &in); err != nil {
+		return nil, err
+	} else if empty {
+		return nil, fmt.Errorf("%w: request body is empty", errBadRequest)
+	}
+	return nil, s.svc.AutopilotTyped(r.Context(), actorFrom(r), id, job, in.CLIID, in.Text)
 }
 
 func (s *Server) autopilotActivity(w http.ResponseWriter, r *http.Request) (any, error) {

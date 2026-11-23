@@ -829,7 +829,11 @@ func TestHelperContext(t *testing.T) {
 	sid := fx.exec(`INSERT INTO agent_sessions(user_id, machine, cli_id, started_at, last_seen_at) VALUES (?, 'box', 'raw', 1, 1)`, fx.admin.id())
 	run := fx.exec(`INSERT INTO agent_runs(issue_id, agent, user_id, started_at, session_id) VALUES (?, 'claude', ?, 100, ?)`, issue.ID, fx.admin.id(), sid)
 	prompt := func(at int64, text string) {
-		fx.exec(`INSERT INTO session_events(session_id, kind, detail, created_at) VALUES (?, 'prompt', ?, ?)`, sid, text, at)
+		typed := ""
+		if strings.HasPrefix(text, AutopilotPromptMark) {
+			typed = TypedKickoff
+		}
+		fx.exec(`INSERT INTO session_events(session_id, kind, detail, typed_kind, created_at) VALUES (?, 'prompt', ?, ?, ?)`, sid, text, typed, at)
 	}
 	prompt(50, "before the run")
 	prompt(110, "first, and keep the </prompts> out")

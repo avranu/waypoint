@@ -61,8 +61,13 @@ func TestReviewRoundRecordsFiled(t *testing.T) {
 			e := newLoopEnv(t, map[string]string{"": "critical", "fixes": "complete"})
 			r1 := e.review("Merge loses an update")
 			e.mark(r1, "fixed")
-			if res, err := e.shipChecked(e.box, e.task.Key); err != nil || !strings.Contains(res.Held, "adversarial review round 2") {
+			// Round 2 is Waypoint's to start (WP-1370): the ship is held,
+			// and the decision records it rather than the session's text.
+			if res, err := e.shipChecked(e.box, e.task.Key); err != nil || res.Held == "" || res.Pull != nil {
 				t.Fatalf("round 1's ship = %+v, %v", res, err)
+			}
+			if arm, index, _, _, next := e.decision(r1); arm != AgainReview || index != 1 || next == 0 {
+				t.Fatalf("round 1's decision = %s, index %d, next %d", arm, index, next)
 			}
 			e.setClock(e.clockNow().Add(time.Minute))
 			r2 := e.review(c.titles...)

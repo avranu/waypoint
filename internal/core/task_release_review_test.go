@@ -147,6 +147,7 @@ func TestAGiveBackInALaterTurnIsWhatTheStopSays(t *testing.T) {
 	if _, err := a.s.storeMessage(a.ctx, a.session, next, "test:next", messageFrom{by: a.admin.User.ID}, true); err != nil {
 		t.Fatal(err)
 	}
+	a.record(TypedKickoff, next)
 	a.prompt(next)
 	a.takeTask(second.Key)
 	a.setClock(a.clockNow().Add(time.Minute))
