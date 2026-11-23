@@ -9,3 +9,6 @@ import "os"
 // are compared with "/", and where Claude Code keeps a scratchpad on Windows
 // isn't known. Claude Code's own rules decide.
 func ownedByMe(os.FileInfo) bool { return false }
+
+// pathPrivate: not known on Windows either (ownedByMe).
+func pathPrivate(string, os.FileInfo) bool { return false }

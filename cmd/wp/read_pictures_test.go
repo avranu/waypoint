@@ -82,12 +82,15 @@ func TestPictureReadAllowed(t *testing.T) {
 		{wt, write(filepath.Join(base, "out", shotsDirName, "e.png")), true}, // wp shot --out
 		{wt, filepath.Join(tmp, filesDirName, "..", "f.png"), false},
 		{wt, write(filepath.Join(tmp, "f.png")), false},
-		{wt, write(filepath.Join(tmp, "else", filesDirName, "g.png")), false},
+		{wt, write(filepath.Join(tmp, "else", filesDirName, "g.png")), true},       // wp files --dir under a wp-files directory
+		{outside, write(filepath.Join(tmp, filesDirName, "WP-3", "g2.png")), true}, // outside a repository too
 		{wt, pad(repo, "h.png"), true},
 		{repo, pad(wt, "i.png"), true}, // a scratchpad of a worktree, from the main checkout
 		{wt, pad(other, "j.png"), false},
-		{wt, pad(repo+"-old", "j2.png"), false},                // a project whose name starts with this one's
-		{wt, pad(filepath.Join(repo, "web"), "j3.png"), false}, // a session started in a subdirectory: left to Claude Code
+		{wt, pad(repo+"-old", "j2.png"), false},                                        // a project whose name starts with this one's
+		{wt, pad(filepath.Join(repo, "web"), "j3.png"), false},                         // a session started in a subdirectory: left to Claude Code
+		{filepath.Join(repo, "web"), pad(filepath.Join(repo, "web"), "j4.png"), false}, // even from that subdirectory
+		{outside, pad(filepath.Dir(outside), "j5.png"), false},                         // or outside any repository
 		{wt, write(filepath.Join(tmp, uid, projectDirName(repo), "s1", "tasks", "k.png")), false},
 		{wt, write(filepath.Join(tmp, "claude-"+strconv.Itoa(os.Getuid()+1), projectDirName(repo), "s1", "scratchpad", "l.png")), false}, // another user's
 		{wt, filepath.Join(tmp, filesDirName, "WP-1", "missing.png"), false},
@@ -104,6 +107,30 @@ func TestPictureReadAllowed(t *testing.T) {
 		}
 	}
 
+	// Only where no one else can swap the picture for another file before the
+	// Read: not in a directory others may write in, unless it is sticky and
+	// what the path goes through in it is the user's.
+	must(os.MkdirAll(filepath.Join(repo, "web"), 0o750))
+	shared := filepath.Join(tmp, shotsDirName, "shared")
+	sharedPic := write(filepath.Join(shared, "m.png"))
+	deep := write(filepath.Join(shared, "sub", "n.png"))
+	inRepo := write(filepath.Join(repo, "shared", "o.png"))
+	for _, d := range []string{shared, filepath.Dir(inRepo)} {
+		must(os.Chmod(d, 0o777)) // #nosec G302 -- a directory others may write in, on purpose
+	}
+	for _, p := range []string{sharedPic, deep, inRepo} {
+		if pictureReadAllowed(wt, p) {
+			t.Errorf("%s, under a directory others may write in, was let through", strings.TrimPrefix(p, base))
+		}
+	}
+	must(os.Chmod(shared, 0o777|os.ModeSticky)) // #nosec G302 -- a shared temp directory
+	for _, p := range []string{sharedPic, deep} {
+		if !pictureReadAllowed(wt, p) {
+			t.Errorf("%s, the user's own in a sticky directory, was not let through", strings.TrimPrefix(p, base))
+		}
+	}
+	must(os.Chmod(shared, 0o700))
+
 	// A repository that holds the home directory (dotfiles) is not a project:
 	// the pictures under home are not let through.
 	home := filepath.Join(base, "home")
@@ -117,11 +144,12 @@ func TestPictureReadAllowed(t *testing.T) {
 	// The hook answers allow, and only that, for one of them.
 	t.Setenv("WAYPOINT_CONFIG_DIR", t.TempDir())
 	t.Setenv(runnerJobEnv, "")
+	hc := &cli{}
 	run := func(tool, mode, path string) string {
 		in, _ := json.Marshal(map[string]any{"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": tool, "cwd": repo,
 			"permission_mode": mode, "tool_input": map[string]string{"file_path": path, "command": map[string]string{"Bash": "ls"}[tool]}})
 		var out bytes.Buffer
-		hookClaudeNudge(&cli{}, bytes.NewReader(in), &out)
+		hookClaudeNudge(hc, bytes.NewReader(in), &out)
 		return out.String()
 	}
 	allowed := func(out string) bool {
@@ -144,6 +172,26 @@ func TestPictureReadAllowed(t *testing.T) {
 	must(os.WriteFile(big, bytes.Repeat([]byte("\n"), 5000), 0o600))
 	if out := run("Read", "default", big); !allowed(out) {
 		t.Errorf("big picture: %q", out)
+	}
+	// Counted, so the state file shows the prompts saved.
+	if st := hc.state.Nudges[pictureAllowKind]; st == nil || st.Shown != 2 {
+		t.Errorf("allows counted: %+v, want the 2 above", st)
+	}
+	// A note and the allow together: a person's pause told on a picture Read.
+	c := &cli{dir: t.TempDir()}
+	c.savePause(json.RawMessage(testPause))
+	in, _ := json.Marshal(map[string]any{"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "Read", "cwd": repo,
+		"permission_mode": "default", "tool_input": map[string]string{"file_path": pic}})
+	var out bytes.Buffer
+	hookClaudeNudge(c, bytes.NewReader(in), &out)
+	var o struct {
+		Specific struct {
+			Decision string `json:"permissionDecision"`
+			Context  string `json:"additionalContext"`
+		} `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &o); err != nil || o.Specific.Decision != "allow" || o.Specific.Context == "" {
+		t.Errorf("a note with the allow: %q", out.String())
 	}
 	for name, out := range map[string]string{
 		"a picture elsewhere":           run("Read", "default", filepath.Join(tmp, "f.png")),

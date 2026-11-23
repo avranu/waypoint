@@ -30,14 +30,17 @@ const (
 // may look at unasked:
 //   - in the session's repository or another worktree of it, unless that
 //     repository holds the home directory (dotfiles are not a project);
-//   - in a wp-shots directory (wp shot, with or without --out);
-//   - under a temp directory, in wp-files (wp files: any task's
-//     attachments), or in a scratchpad of a Claude Code session started in
-//     one of the repository's checkouts (claude-UID/PROJECT/SESSION/scratchpad,
-//     the path Claude Code names to each session as its scratchpad).
+//   - in a wp-shots or wp-files directory (wpPictureDir: wp shot, with or
+//     without --out; wp files, any task's attachments);
+//   - under a temp directory, in a scratchpad of a Claude Code session
+//     started at the top of one of the repository's checkouts
+//     (claude-UID/PROJECT/SESSION/scratchpad, the path Claude Code names to
+//     each session as its scratchpad).
 //
-// Outside any repository nothing is: Claude Code already lets a session read
-// its own directory. Windows is left to Claude Code (ownedByMe).
+// And only where no one else can swap it for another file before the Read
+// (pathPrivate). Outside any repository only the wp directories are: Claude
+// Code already lets a session read its own directory. Windows is left to
+// Claude Code (ownedByMe).
 func pictureReadAllowed(cwd, path string) bool {
 	if !filepath.IsAbs(path) || !isPicture(path) {
 		return false
@@ -49,14 +52,17 @@ func pictureReadAllowed(cwd, path string) bool {
 		return false
 	}
 	fi, err := os.Stat(p)
-	if err != nil || !fi.Mode().IsRegular() || !ownedByMe(fi) {
+	if err != nil || !fi.Mode().IsRegular() || !ownedByMe(fi) || !pathPrivate(p, fi) {
 		return false
 	}
-	s := newGuardSite(cwd)
-	if s.has && !s.repoHoldsHome() && s.ownRepo(p) {
+	if wpPictureDir(p) {
 		return true
 	}
-	if slices.Contains(strings.Split(filepath.Dir(p), "/"), shotsDirName) {
+	s := newGuardSite(cwd)
+	if !s.has {
+		return false
+	}
+	if !s.repoHoldsHome() && s.ownRepo(p) {
 		return true
 	}
 	for _, t := range guardTempDirs() {
@@ -65,9 +71,6 @@ func pictureReadAllowed(cwd, path string) bool {
 			continue
 		}
 		parts := strings.Split(rel, "/")
-		if len(parts) >= 2 && parts[0] == filesDirName {
-			return true
-		}
 		if len(parts) >= 5 && parts[0] == "claude-"+strconv.Itoa(os.Getuid()) && parts[3] == "scratchpad" && s.ownsScratchpad(parts[1]) {
 			return true
 		}
@@ -77,15 +80,25 @@ func pictureReadAllowed(cwd, path string) bool {
 
 func isPicture(p string) bool { return shotExts[strings.ToLower(filepath.Ext(p))] }
 
+// wpPictureDir: p is in a directory wp made for pictures: wp shot's
+// (wp-shots, also under --out) or wp files' downloads (wp-files). The one
+// rule for both the allow here and the screenshot hook, which doesn't attach
+// them again (hook_shots.go).
+func wpPictureDir(p string) bool {
+	parts := strings.Split(filepath.ToSlash(filepath.Dir(p)), "/")
+	return slices.Contains(parts, filesDirName) || slices.Contains(parts, shotsDirName)
+}
+
 // repoHoldsHome: the session's repository is the home directory or above it.
 func (s guardSite) repoHoldsHome() bool {
 	return s.home != "" && within(s.repo.root, realPath(s.home))
 }
 
 // ownsScratchpad: dir, Claude Code's name for the directory a session started
-// in (projectDirName), is one of this session's checkouts. A session started
-// in a subdirectory of one is left to Claude Code: its name can't be told
-// from a sibling project's (/x/app/web and /x/app-web are both -x-app-web).
+// in (projectDirName), is the top of one of this session's checkouts. A
+// session started in a subdirectory of one, this one included, is left to
+// Claude Code: its name can't be told from a sibling project's (/x/app/web
+// and /x/app-web are both -x-app-web).
 func (s guardSite) ownsScratchpad(dir string) bool {
 	for _, r := range s.checkouts() {
 		if dir == projectDirName(r) {
@@ -95,15 +108,15 @@ func (s guardSite) ownsScratchpad(dir string) bool {
 	return false
 }
 
-// checkouts are the session's directory and, in a repository, its top-level,
-// the main checkout and every worktree git has registered, read from the
-// common git directory without running git.
+// checkouts are, in a repository, its top-level, the main checkout and every
+// worktree git has registered, read from the common git directory without
+// running git; outside one, none. Not the session's own directory: below
+// the top-level it is a subdirectory (ownsScratchpad).
 func (s guardSite) checkouts() []string {
-	out := []string{s.cwd}
 	if !s.has {
-		return out
+		return nil
 	}
-	out = append(out, s.repo.root)
+	out := []string{s.repo.root}
 	if filepath.Base(s.repo.common) == ".git" {
 		out = append(out, filepath.Dir(s.repo.common))
 	}
