@@ -269,7 +269,9 @@ let auditID;
   await page.getByRole("radio", { name: /To do/ }).click();
 
   // An agent's rejection carries evidence and the model and effort it ran as
-  // (WP-1825). Only an agent's mark sets the decided_* columns, so write them.
+  // (WP-1825). Only an agent's mark sets the decided_* columns, so write them:
+  // this checks the page shows them; the rule an agent's mark is held to is
+  // internal/core's tests (audit_rejection_test.go).
   const db = new DatabaseSync(`${process.env.DIR}/wp.db`);
   db.exec("PRAGMA busy_timeout = 5000");
   const res = db
@@ -279,7 +281,7 @@ let auditID;
     )
     .run(EVIDENCE, "at_least: sonnet 5.5 (high) is as strong as sonnet", auditID);
   db.close();
-  ok(res.changes === 1, "the rejected finding got evidence and the model it was rejected as");
+  ok(res.changes === 1, "the rejected finding to show has evidence and the model it was rejected as written");
 }
 
 // ---- look at it, at each width ----
@@ -345,7 +347,10 @@ for (const width of [1280, 390]) {
     const rej = p.locator('li[id^="finding-"]', { hasText: "The export" });
     await rej.getByText(/evidence: Read internal\/core/).waitFor();
     ok(await rej.getByText(EVIDENCE, { exact: false }).isVisible(), `${width} the rejection's evidence is shown`);
-    ok(await rej.getByText("as claude-sonnet-5-5 (high)", { exact: false }).isVisible(), `${width} the rejection shows the model and effort`);
+    ok(
+      await rej.getByText("as claude-sonnet-5-5 (high), at least: sonnet 5.5 (high) is as strong as sonnet", { exact: false }).isVisible(),
+      `${width} the rejection shows the model, effort and how it compared with the finder`,
+    );
     ok(!(await p.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)), `${width} the rejected finding: no sideways scroll`);
     const clipped = await rej.getByText(/evidence: Read internal\/core/).evaluate((el) => el.scrollWidth > el.clientWidth);
     ok(!clipped, `${width} the long path in the evidence wraps, not clipped`);
