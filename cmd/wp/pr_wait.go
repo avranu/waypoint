@@ -231,8 +231,8 @@ func cmdPRWait(c *cli, args []string) error {
 		w, raw = next, nraw
 		return w.Verdict != "waiting", nil
 	})
-	if err != nil && !errors.Is(err, errPollBound) {
-		return err
+	if err != nil && (w == nil || !errors.Is(err, errPollBound)) {
+		return err // no verdict to print without an answer
 	}
 	return c.waitVerdict(w, raw, *merge, *timeout)
 }

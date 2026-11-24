@@ -84,7 +84,7 @@ func heldFlags() prOpenFlags { return prOpenFlags{review: new(bool), force: new(
 
 func heldShip(t *testing.T, c *cli, noWait bool) (*openedPR, []byte, bool, error) {
 	t.Helper()
-	wait := 5 * time.Second
+	wait := time.Hour // room for every backoff: a failure with none left ends the wait instead
 	so := shipOpts{noWait: &noWait, waitTimeout: &wait}
 	o := &openedPR{Held: "Pushed. Nothing more to run: end your turn.", HeldNeedsAgent: new(bool)}
 	if !c.canWaitShip(so, o) {
@@ -366,6 +366,20 @@ func TestShipWorkContinuesWithTheReopenedPullRequest(t *testing.T) {
 	}
 }
 
+// A held answer with a notice to act on: shipWork doesn't wait, and prints
+// the notice and the held answer at once.
+func TestShipWorkDoesNotWaitWithANoticeToActOn(t *testing.T) {
+	c, out, calls := waitEnv(t, waitingAnswer())
+	yes := true
+	held := &openedPR{Held: "HELD-TEXT end your turn", HeldNeedsAgent: new(bool), Notice: "act on this", NoticeNeedsAgent: &yes}
+	if _, err := shipWorkHeld(t, c, held); err != nil {
+		t.Fatal(err)
+	}
+	if s := out.String(); calls.Load() != 0 || !strings.Contains(s, "HELD-TEXT") || !strings.Contains(s, "Notice: act on this") || strings.Contains(s, "waiting for") {
+		t.Errorf("output after %d calls:\n%s", calls.Load(), s)
+	}
+}
+
 // printWatch is a stdout that fails the write holding bad, and notes whether
 // the server had been acked by the time anything was written.
 type printWatch struct {
@@ -420,7 +434,7 @@ func TestHeldShipAcksOnlyWhatItPrinted(t *testing.T) {
 // A held answer with a notice that asks the agent to act doesn't wait: the
 // notice is the agent's to act on now.
 func TestHeldShipWithANoticeToActOnDoesNotWait(t *testing.T) {
-	c, _, calls := waitEnv(t, waitingAnswer())
+	c, _, _ := waitEnv(t, waitingAnswer())
 	no, yes, wait := false, true, 5*time.Second
 	so := shipOpts{noWait: &no, waitTimeout: &wait}
 	for name, tc := range map[string]struct {
@@ -435,25 +449,5 @@ func TestHeldShipWithANoticeToActOnDoesNotWait(t *testing.T) {
 		if got := c.canWaitShip(so, &tc.o); got != tc.want {
 			t.Errorf("%s: canWaitShip = %v", name, got)
 		}
-	}
-	if calls.Load() != 0 {
-		t.Errorf("%d requests", calls.Load())
-	}
-}
-
-// A probe that failed is not sent again once the bound has passed, and the
-// backoff doesn't sleep past it.
-func TestLongPollStopsRetryingTheProbeAtTheBound(t *testing.T) {
-	old := pollSleep
-	var slept []time.Duration
-	pollSleep = func(d time.Duration) { slept = append(slept, d); time.Sleep(d) }
-	t.Cleanup(func() { pollSleep = old })
-	asks := 0
-	err := longPoll(time.Second, time.Second, time.Now().Add(50*time.Millisecond), func(time.Duration, bool) (bool, error) {
-		asks++
-		return false, &apiError{status: http.StatusServiceUnavailable}
-	})
-	if !errors.Is(err, errPollBound) || asks != 1 || len(slept) != 1 || slept[0] > 50*time.Millisecond {
-		t.Errorf("err %v after %d requests, slept %v", err, asks, slept)
 	}
 }

@@ -336,20 +336,9 @@ func TestShipNewsNeedsTheTaskToBeReadable(t *testing.T) {
 	}
 }
 
-// What a wait holds doesn't use up the 20 a hook takes at once: a message
-// queued behind 20 held ones still goes.
-func TestHeldShipNewsDoesNotCrowdOutOtherMessages(t *testing.T) {
-	a, held, round := shipNewsEnv(t)
-	defer a.s.openShipWait(a.session, held.ID)()
-	key := strings.TrimSuffix(newsKey(t, a, "audit:", round), "done")
-	for n := range 20 {
-		if _, err := a.s.storeMessage(a.ctx, a.session, "held findings", key+itoa64(int64(n)), messageFrom{}, false); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := a.s.storeMessage(a.ctx, a.session, "do this next", "", messageFrom{}, false); err != nil {
-		t.Fatal(err)
-	}
+// takeStop is what a Stop hook takes for the session.
+func (a *apEnv) takeStop(t *testing.T) []*SessionMessage {
+	t.Helper()
 	var taken []*SessionMessage
 	err := a.s.write(a.ctx, a.ag, func(tx *tx) error {
 		x, err := scanSession(tx.QueryRowContext(a.ctx, `SELECT `+sessionCols+` FROM agent_sessions s WHERE s.id = ?`, a.session), a.s.nowMS())
@@ -362,7 +351,43 @@ func TestHeldShipNewsDoesNotCrowdOutOtherMessages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(taken) != 1 || taken[0].Body != "do this next" {
+	return taken
+}
+
+// What a wait holds doesn't use up the messages a hook takes at once, however
+// many it holds: a message queued behind more held ones than one read of the
+// queue covers still goes.
+func TestHeldShipNewsDoesNotCrowdOutOtherMessages(t *testing.T) {
+	a, held, round := shipNewsEnv(t)
+	defer a.s.openShipWait(a.session, held.ID)()
+	key := strings.TrimSuffix(newsKey(t, a, "audit:", round), "done")
+	for n := range hookTakePage + 1 {
+		if _, err := a.s.storeMessage(a.ctx, a.session, "held findings", key+itoa64(int64(n)), messageFrom{}, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := a.s.storeMessage(a.ctx, a.session, "do this next", "", messageFrom{}, false); err != nil {
+		t.Fatal(err)
+	}
+	if taken := a.takeStop(t); len(taken) != 1 || taken[0].Body != "do this next" {
 		t.Fatalf("took %d messages: %+v", len(taken), taken)
+	}
+}
+
+// A hook takes hookTakeMax messages at once, oldest first; the rest go with
+// the next.
+func TestHookTakesAtMostItsCapOfMessages(t *testing.T) {
+	a, _, _ := shipNewsEnv(t)
+	for n := range hookTakeMax + 5 {
+		if _, err := a.s.storeMessage(a.ctx, a.session, "message "+itoa64(int64(n)), "", messageFrom{}, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first := a.takeStop(t)
+	if len(first) != hookTakeMax || first[0].Body != "message 0" {
+		t.Fatalf("took %d messages first", len(first))
+	}
+	if rest := a.takeStop(t); len(rest) != 5 || rest[0].Body != "message "+itoa64(hookTakeMax) {
+		t.Fatalf("took %d messages next", len(rest))
 	}
 }

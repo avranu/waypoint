@@ -625,6 +625,14 @@ func (s *Service) messageByID(ctx context.Context, id int64) (*SessionMessage, e
 // ended undelivered waits for the next session in its worktree.
 const orphanMessageAge = 24 * time.Hour
 
+// hookTakeMax is how many messages one hook call hands the agent;
+// hookTakePage is how many queued rows takeMessages reads at a time while it
+// looks for them.
+const (
+	hookTakeMax  = 20
+	hookTakePage = 200
+)
+
 // takeMessages delivers a session's queued messages through a hook: they are
 // marked delivered by being returned, and the agent counts as working.
 // Passive ones (news) are taken when the agent starts a turn (via start or
@@ -640,29 +648,38 @@ func (s *Service) takeMessages(ctx context.Context, t *tx, x *AgentSession, via 
 		}
 	}
 	passiveOK, activeOK := true, via != "prompt"
-	rows, err := t.QueryContext(ctx, `SELECT `+messageCols+` FROM session_messages m LEFT JOIN users u ON u.id = m.created_by
-		WHERE m.session_id = ? AND m.state = 'queued' AND ((m.passive = 0 AND ?) OR (m.passive = 1 AND ?)) ORDER BY m.id LIMIT 200`, x.ID, activeOK, passiveOK)
-	if err != nil {
-		return nil, err
-	}
+	// The round's news a wp ship waits for is that wait's (WP-1669), and is
+	// left out before the count, so what a wait holds doesn't keep the
+	// messages behind it back: the queue is read on until hookTakeMax others
+	// are found or it ends.
+	held := s.shipWaits.holder(ctx, t, s.now(), x.ID)
 	var out []*SessionMessage
-	for rows.Next() {
-		m, err := scanMessage(rows)
+	for after, more := int64(0), true; more && len(out) < hookTakeMax; {
+		rows, err := t.QueryContext(ctx, `SELECT `+messageCols+` FROM session_messages m LEFT JOIN users u ON u.id = m.created_by
+			WHERE m.session_id = ? AND m.state = 'queued' AND ((m.passive = 0 AND ?) OR (m.passive = 1 AND ?)) AND m.id > ? ORDER BY m.id LIMIT ?`, x.ID, activeOK, passiveOK, after, hookTakePage)
 		if err != nil {
-			rows.Close()
 			return nil, err
 		}
-		out = append(out, m)
+		var page []*SessionMessage
+		for rows.Next() {
+			m, err := scanMessage(rows)
+			if err != nil {
+				rows.Close()
+				return nil, err
+			}
+			page = append(page, m)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		for _, m := range page {
+			if after = m.ID; len(out) < hookTakeMax && !held(m) {
+				out = append(out, m)
+			}
+		}
+		more = len(page) == hookTakePage
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	// The round's news a wp ship waits for is that wait's (WP-1669). At most
-	// 20 go at once, counted after those are left out, so what a wait holds
-	// doesn't keep the messages behind it back.
-	out = slices.DeleteFunc(out, func(m *SessionMessage) bool { return s.shipWaits.holds(ctx, t, s.now(), x.ID, m) })
-	out = out[:min(len(out), 20)]
 	if len(out) == 0 {
 		return nil, nil
 	}
@@ -680,7 +697,7 @@ func (s *Service) takeMessages(ctx context.Context, t *tx, x *AgentSession, via 
 		// For the step waiting on it.
 		t.emit(sessionEvent(EvSessionMessage, x, map[string]any{"message": m.ID, "via": via}))
 	}
-	_, err = t.ExecContext(ctx, `UPDATE agent_sessions SET state = 'working', wait_reason = '', pending = '', finished_at = NULL WHERE id = ?`, x.ID)
+	_, err := t.ExecContext(ctx, `UPDATE agent_sessions SET state = 'working', wait_reason = '', pending = '', finished_at = NULL WHERE id = ?`, x.ID)
 	return out, err
 }
 

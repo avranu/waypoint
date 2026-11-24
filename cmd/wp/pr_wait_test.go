@@ -158,6 +158,13 @@ func TestCLIPRWait(t *testing.T) {
 		}
 	}
 
+	// A first request that fails with no time to ask again is an error, not a
+	// verdict (there is none to print).
+	fake.set(func(f *waitFake) { f.verdicts, f.fail, f.waits = []string{"ready"}, map[int]bool{1: true}, nil })
+	if out, code := e.run("pr", "wait", "3", "--timeout", "0"); code != 1 || !strings.Contains(out, "502") {
+		t.Errorf("a failed first request: exit %d %q", code, out)
+	}
+
 	// It waits on the server, quietly: one line when it starts. A 502 (a
 	// proxy, a restart) is asked again.
 	fake.set(func(f *waitFake) {
