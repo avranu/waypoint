@@ -522,7 +522,7 @@ func (s *Service) refreshPR(ctx context.Context, f *Forge, repo string, fp *Forg
 	if err == nil && !settled && old.ArmedAt == nil && s.autoArm(ctx, old.ID) {
 		// Merge automatically armed it (WP-133): an open pull request whose
 		// webhook came before the setting did.
-		bg := context.WithoutCancel(ctx)
+		bg := withoutLineLocks(context.WithoutCancel(ctx))
 		s.goBG(func() { s.maybeAutoMerge(bg, old.ID) })
 	}
 	if err == nil && !settled && fp.mergeMute && old.Mergeable != nil {
@@ -538,7 +538,7 @@ func (s *Service) refreshPR(ctx context.Context, f *Forge, repo string, fp *Forg
 		return err
 	}
 	if *fp.Mergeable && (old.Mergeable == nil || !*old.Mergeable) && old.ArmedAt != nil {
-		bg := context.WithoutCancel(ctx)
+		bg := withoutLineLocks(context.WithoutCancel(ctx))
 		s.goBG(func() { s.maybeAutoMerge(bg, old.ID) })
 	}
 	if !*fp.Mergeable {

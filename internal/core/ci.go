@@ -304,7 +304,7 @@ func (s *Service) refreshHead(ctx context.Context, f *Forge, repo, sha string) e
 	for _, p := range prs {
 		if p.old != state && (state == CIPassed || state == CINone) {
 			id := p.id
-			s.goBG(func() { s.maybeAutoMerge(context.WithoutCancel(ctx), id) })
+			s.goBG(func() { s.maybeAutoMerge(withoutLineLocks(context.WithoutCancel(ctx)), id) })
 		}
 	}
 	return nil
@@ -449,7 +449,7 @@ func (s *Service) afterPRRecorded(ctx context.Context, f *Forge, pr *PullRequest
 	if pr == nil || (pr.State != "open" && pr.State != "draft") {
 		return
 	}
-	bg := context.WithoutCancel(ctx)
+	bg := withoutLineLocks(context.WithoutCancel(ctx))
 	if _, ok := s.Forges.(ForgeChecks); ok && pr.HeadSHA != "" && f.token != "" {
 		if _, err := s.trackHead(ctx, f.ID, pr.Repo, pr.HeadSHA); err == nil {
 			s.goBG(func() {
