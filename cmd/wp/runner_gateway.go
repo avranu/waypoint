@@ -22,8 +22,11 @@ import (
 	"net/textproto"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"git.jmann.me/claude/waypoint/internal/core"
 )
@@ -313,8 +316,22 @@ func leftOutHeader(left []leftOut) string {
 	if slices.ContainsFunc(left, func(l leftOut) bool { return l.Reason != "binary" && l.Reason != "large" && l.Reason != leftListsName }) {
 		b.WriteString("The whole checkout was too big for the gateway, so files over a size or outside the audit's paths were left out too.\n")
 	}
-	b.WriteString("Their absence is not a finding. Columns: path, bytes, reason.\n")
+	b.WriteString("Their absence is not a finding. Columns, one file a line: path, bytes, reason, tab-separated.\n")
+	b.WriteString("A path in double quotes has a tab, newline or other odd character in it, escaped as in a Go string.\n")
 	return b.String()
+}
+
+// listPath is a repository path as the left-out list and the job's log write
+// it: as it is, unless it has a character that doesn't print (a tab or
+// newline would add or split the list's rows; a line separator or a bidi
+// control could pass for one), isn't UTF-8 or starts with a double quote,
+// when it is quoted as a Go string. A row is then always one line of three
+// fields, whatever the repository names its files.
+func listPath(p string) string {
+	if strings.HasPrefix(p, `"`) || !utf8.ValidString(p) || strings.ContainsFunc(p, func(r rune) bool { return !unicode.IsPrint(r) }) {
+		return strconv.Quote(p)
+	}
+	return p
 }
 
 // gatewayTier is one stricter way to pack a checkout that was too large:
@@ -401,7 +418,7 @@ func (r packResult) sample(n int) string {
 	slices.SortStableFunc(left, func(a, b leftOut) int { return cmp.Compare(b.Size, a.Size) })
 	var names []string
 	for _, l := range left[:min(n, len(left))] {
-		names = append(names, l.Path)
+		names = append(names, listPath(l.Path))
 	}
 	return strings.Join(names, ", ")
 }
@@ -608,7 +625,7 @@ func packCheckout(work string, w io.Writer, opt packOptions) (res packResult, er
 		var list strings.Builder
 		list.WriteString(leftOutHeader(res.Left))
 		for _, l := range res.Left {
-			fmt.Fprintf(&list, "%s\t%d\t%s\n", l.Path, l.Size, l.Reason)
+			fmt.Fprintf(&list, "%s\t%d\t%s\n", listPath(l.Path), l.Size, l.Reason)
 		}
 		err = tw.WriteHeader(&tar.Header{Typeflag: tar.TypeReg, Name: listName, Mode: 0o644, Size: int64(list.Len())})
 		if err == nil {

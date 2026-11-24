@@ -16,6 +16,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -557,6 +559,57 @@ func TestPackCheckoutListsItsOwnName(t *testing.T) {
 	}
 }
 
+// A path with a newline or tab in it can't add or split rows of the
+// left-out list: each left-out file is one row of three fields, and a path
+// that needs it is quoted so it reads back as the file's own name.
+func TestPackCheckoutListQuotesOddPaths(t *testing.T) {
+	work := t.TempDir()
+	odd := []string{
+		"evil\nauth.go\t1\tbinary.bin",
+		"tab\there.bin",
+		`"quoted".bin`,
+		"sep line.bin",
+		"plain name.bin",
+	}
+	for _, p := range odd {
+		if err := os.WriteFile(filepath.Join(work, p), []byte("a\x00b"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var buf bytes.Buffer
+	res, err := packCheckout(work, &buf, packOptions{ArchiveMax: gatewayArchiveFallback, FileMax: gatewayFileFallback})
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := unpack(t, buf.Bytes())[auditChangeDir+"/"+leftOutName]
+	_, rows, ok := strings.Cut(list, "escaped as in a Go string.\n")
+	if !ok || len(res.Left) != len(odd) {
+		t.Fatalf("left %v, list %q", res.Left, list)
+	}
+	var got []string
+	for _, row := range strings.Split(strings.TrimSuffix(rows, "\n"), "\n") {
+		f := strings.Split(row, "\t")
+		if len(f) != 3 || f[1] != "3" || f[2] != "binary" {
+			t.Fatalf("row %q of\n%s", row, list)
+		}
+		p := f[0]
+		if strings.HasPrefix(p, `"`) {
+			if p, err = strconv.Unquote(p); err != nil {
+				t.Fatalf("row %q: %v", row, err)
+			}
+		}
+		got = append(got, p)
+	}
+	slices.Sort(odd)
+	slices.Sort(got)
+	if !slices.Equal(got, odd) {
+		t.Errorf("paths %q, want %q", got, odd)
+	}
+	if !strings.Contains(list, "\nplain name.bin\t3\tbinary\n") {
+		t.Errorf("a plain path is quoted:\n%s", list)
+	}
+}
+
 // A checkout too large for the gateway is packed again with stricter limits,
 // each only when the one before didn't fit.
 func TestPackForGatewayTiers(t *testing.T) {
@@ -810,7 +863,7 @@ func TestLeftOutHeader(t *testing.T) {
 	plain := leftOutHeader([]leftOut{{"a", 1, "binary"}, {"b", 1, "large"}})
 	tight := leftOutHeader([]leftOut{{"a", 1, "binary"}, {"b", 1, "over 256 KiB"}, {"c", 1, "out of scope"}})
 	for name, h := range map[string]string{"plain": plain, "tight": tight} {
-		for _, want := range []string{"binary", "per-file limit", "Their absence is not a finding. Columns: path, bytes, reason.\n"} {
+		for _, want := range []string{"binary", "per-file limit", "Their absence is not a finding.", "path, bytes, reason, tab-separated", "escaped as in a Go string"} {
 			if !strings.Contains(h, want) {
 				t.Errorf("%s header lacks %q:\n%s", name, want, h)
 			}
