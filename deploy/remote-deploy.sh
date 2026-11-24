@@ -52,8 +52,7 @@ valid_version() {
 compose() {
   local dir=$1
   shift
-  # fd 9 is the deploy lock, held by this script; docker gets no copy of it.
-  (cd "$dir" && "$DOCKER" compose -p "$PROJECT" -f deploy/compose.yaml "$@" 9>&-)
+  (cd "$dir" && "$DOCKER" compose -p "$PROJECT" -f deploy/compose.yaml "$@")
 }
 
 # env_get DIR KEY DEFAULT: a value from DIR/deploy/.env, read without sourcing.
