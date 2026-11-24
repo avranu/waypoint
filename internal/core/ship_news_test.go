@@ -394,6 +394,30 @@ func TestHookTakesAtMostItsCapOfMessages(t *testing.T) {
 	}
 }
 
+// Behind exactly a page of held news, a hook still takes hookTakeMax others,
+// then the rest: the cap counts only what it hands over.
+func TestHookCapCountsOnlyWhatIsntHeld(t *testing.T) {
+	a, held, round := shipNewsEnv(t)
+	defer a.s.openShipWait(a.session, held.ID)()
+	key := strings.TrimSuffix(newsKey(t, a, "audit:", round), "done")
+	for n := range hookTakePage {
+		if _, err := a.s.storeMessage(a.ctx, a.session, "held findings", key+itoa64(int64(n)), messageFrom{}, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for n := range hookTakeMax + 5 {
+		if _, err := a.s.storeMessage(a.ctx, a.session, "message "+itoa64(int64(n)), "", messageFrom{}, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if first := a.takeStop(t); len(first) != hookTakeMax || first[0].Body != "message 0" || first[hookTakeMax-1].Body != "message "+itoa64(hookTakeMax-1) {
+		t.Fatalf("took %d messages first", len(first))
+	}
+	if rest := a.takeStop(t); len(rest) != 5 || rest[0].Body != "message "+itoa64(hookTakeMax) {
+		t.Fatalf("took %d messages next", len(rest))
+	}
+}
+
 // A full take of news on a stop doesn't keep back the task queued behind it:
 // the task takes the newest one's place, so the stop continues, and the news
 // left over waits for a turn (a stop never continues for news alone).
