@@ -266,6 +266,24 @@ async function run(width, scheme) {
   ok((await page.getByText("Applying failed").count()) === 0, `${tag} and doesn't read as a failed change`);
   await shot("command-sent-back");
   await overflow("command sent back");
+  // A run from elsewhere (another tab) doesn't overwrite what the person typed and hasn't run…
+  await cell.fill("make migrate ARGS=--verbose");
+  await api("POST", "/requests/RQ:R-3/cells/1/run", { command: "make migrate ARGS=--elsewhere" });
+  await page.getByRole("button", { name: "3 earlier runs" }).waitFor();
+  ok((await cell.inputValue()) === "make migrate ARGS=--verbose", `${tag} a run from elsewhere keeps what the person is typing`);
+  // …but an editor the person hasn't touched shows it.
+  await page.reload();
+  ok((await cell.inputValue()) === "make migrate ARGS=--elsewhere", `${tag} a reload shows the run from elsewhere`);
+  await api("POST", "/requests/RQ:R-3/cells/1/run", { command: "make migrate ARGS=--again" });
+  await page.getByRole("button", { name: "4 earlier runs" }).waitFor();
+  ok((await cell.inputValue()) === "make migrate ARGS=--again", `${tag} and an untouched editor follows a later run`);
+  // Those runs reopened it: back to sent back, so it doesn't wait on robin in the checks below.
+  {
+    const back = new DatabaseSync(`${process.env.DIR}/wp.db`);
+    back.exec("PRAGMA busy_timeout = 5000");
+    back.prepare("UPDATE requests SET state = 'failed', decision = 'ran', note = '', error = 'exit 2', decided_by = 1, decided_at = ?, delivered_at = NULL WHERE number = 3").run(Date.now());
+    back.close();
+  }
 
   // ---- a refused tool call ----
   await page.goto(base + "/requests/RQ:R-4");
