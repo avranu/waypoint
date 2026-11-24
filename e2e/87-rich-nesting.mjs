@@ -228,8 +228,15 @@ for (const [width, scheme] of looks(
     await press("Enter");
     await type("a");
     await press("Tab");
-    const h = await html();
-    ok(/a(&nbsp;| ){2}/.test(h) && (await focused()), `${tag} Tab in a code block inserts two spaces (${h.slice(0, 120)})`);
+    // The code is "a" and two spaces, no tab character, and the caret after them.
+    const code = await richBox.evaluate((el) => {
+      const c = el.querySelector("pre code");
+      const s = getSelection();
+      const at = s.rangeCount ? s.getRangeAt(0).cloneRange() : null;
+      if (at && c) at.setStart(c, 0);
+      return { text: c?.textContent.replace(/\u00a0/g, " ").replace(/\ufeff/g, ""), before: at && c?.contains(at.endContainer) ? at.toString().replace(/\u00a0/g, " ").replace(/\ufeff/g, "") : null };
+    });
+    ok(/^a {2}\n?$/.test(code.text ?? "") && code.before === "a  " && (await focused()), `${tag} Tab in a code block inserts two spaces (${JSON.stringify(code)})`);
     await done.click();
     await richBox.waitFor({ state: "detached" });
   }
@@ -468,10 +475,16 @@ for (const [width, scheme] of looks(
     await press("Tab");
     const fit = await richBox.evaluate((el) => {
       const box = el.getBoundingClientRect();
-      const li = Array.from(el.querySelectorAll("li")).find((l) => l.textContent.startsWith("third"));
+      const item = (t) => Array.from(el.querySelectorAll("li")).find((l) => l.textContent.startsWith(t));
+      const li = item("third");
       const r = li.getBoundingClientRect();
-      return { box: [box.left, box.right], li: [r.left, r.right] };
+      // Lists around the item, up to the editor: three for an item nested twice.
+      let depth = 0;
+      for (let n = li.parentElement; n && n !== el; n = n.parentElement) if (n.tagName === "UL" || n.tagName === "OL") depth++;
+      const lefts = ["a very long", "second", "third"].map((t) => item(t)?.getBoundingClientRect().left);
+      return { box: [box.left, box.right], li: [r.left, r.right], depth, lefts };
     });
+    ok(fit.depth === 3 && fit.lefts[0] < fit.lefts[1] && fit.lefts[1] < fit.lefts[2], `${tag} the third item is nested twice, each level further in (${JSON.stringify(fit)})`);
     ok(
       fit.li[0] > fit.box[0] && fit.li[1] <= fit.box[1] + 0.5,
       `${tag} the twice-nested item is inside the editor box (${JSON.stringify(fit)})`,

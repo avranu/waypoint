@@ -398,11 +398,14 @@ for (const [width, scheme] of looks(
     await openSmall("Typed mention", "Start");
     await press("Control+End");
     await type(" and @robin.");
+    // Two frames on, so a conversion put off to the next frame would show.
+    await richBox.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
     ok((await pieceCount()) === 0, `${tag} a name followed by "." is not converted yet (it may go on: @a.b)`);
     await type(" ");
     ok((await pieceCount()) === 1, `${tag} a space after it converts the mention (${await pieceCount()})`);
     await press("Control+z");
-    ok((await pieceCount()) === 0, `${tag} one undo gives back the typed mention`);
+    const back = await richBox.evaluate((el) => el.textContent.replace(/[\ufeff\u00a0]/g, " ").trim());
+    ok((await pieceCount()) === 0 && back === "Start and @robin.", `${tag} one undo gives back the typed mention as text (${JSON.stringify(back)})`);
   }
 
   // What follows a piece is not part of it: no "]" is escaped between them.
