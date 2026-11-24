@@ -534,7 +534,7 @@ for (const [width, scheme] of looks(
       await press("Control+z");
     },
     null,
-    (h) => /<li>\ufeff?<input[^>]*class="task"/.test(h) && !/\./.test(h.replace(/<[^>]*>/g, "")),
+    (h) => /<li>\ufeff?<input[^>]*class="task"/.test(h) && !/>[^<]*\.[^<]*</.test(h),
   );
   await typed(
     "a second backspace in an emptied task leaves the empty bullet item",
