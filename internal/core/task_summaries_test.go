@@ -1,6 +1,7 @@
 package core
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -57,7 +58,9 @@ func TestTaskSummariesAndUnfiledAsks(t *testing.T) {
 	}
 	stopMsg("Working on it.") // not finished: no summary
 	var n int
-	_ = te.s.db.R.QueryRow(`SELECT count(*) FROM task_summaries`).Scan(&n)
+	if err := te.s.db.R.QueryRow(`SELECT count(*) FROM task_summaries`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
 	if n != 0 {
 		t.Fatalf("a summary before the task was done: %d", n)
 	}
@@ -80,7 +83,9 @@ func TestTaskSummariesAndUnfiledAsks(t *testing.T) {
 	// The trailing-question rule (WP-96) filed this Stop's ask already, quoting
 	// the message: the summary points at that, nothing is filed twice.
 	var title, body, source string
-	_ = te.s.db.R.QueryRow(`SELECT title, body, source FROM requests WHERE id = (SELECT request_id FROM task_summaries)`).Scan(&title, &body, &source)
+	if err := te.s.db.R.QueryRow(`SELECT title, body, source FROM requests WHERE id = (SELECT request_id FROM task_summaries)`).Scan(&title, &body, &source); err != nil {
+		t.Fatal(err)
+	}
 	if source != requestAuto || !strings.Contains(body, "Rotate the forge token") {
 		t.Errorf("linked request %q (%s): %q", title, source, body)
 	}
@@ -165,15 +170,20 @@ func TestTaskSummaryWithMoreAsksThanARequestHolds(t *testing.T) {
 	if len(asks) != 9 {
 		t.Fatalf("a summary with 9 asks reads %d, want 9", len(asks))
 	}
-	asks = asks[:maxRequestQuestions]
-	err := te.s.write(te.ctx, te.ag, func(tx *tx) error {
-		x, err := te.s.sessionByID(te.ctx, tx, te.ag, te.session)
-		if err != nil {
-			return err
-		}
-		return te.s.fileSummaryAsks(te.ctx, tx, te.ag, x, 0, "WP-1", asks, te.s.nowMS())
-	})
-	if err != nil {
+	file := func(asks []string) error {
+		return te.s.write(te.ctx, te.ag, func(tx *tx) error {
+			x, err := te.s.sessionByID(te.ctx, tx, te.ag, te.session)
+			if err != nil {
+				return err
+			}
+			return te.s.fileSummaryAsks(te.ctx, tx, te.ag, x, 0, "WP-1", asks, te.s.nowMS())
+		})
+	}
+	// A refusal other than the open cap is returned, not swallowed.
+	if err := file(asks); !IsInvalid(err) || errors.Is(err, errRequestsFull) {
+		t.Fatalf("filing more asks than a request holds: %v, want the refusal", err)
+	}
+	if err := file(asks[:maxRequestQuestions]); err != nil {
 		t.Fatalf("filing a summary's asks: %v", err)
 	}
 	var n, questions int
@@ -197,13 +207,17 @@ func TestTaskSummaryAsksAtTheOpenRequestCap(t *testing.T) {
 	}
 	stopWithSummary(t, te, "Shipped it.\n\nWaiting on you:\n- Rotate the forge token before Friday\n")
 	var n int
-	_ = te.s.db.R.QueryRow(`SELECT count(*) FROM requests WHERE source = ?`, requestAuto).Scan(&n)
+	if err := te.s.db.R.QueryRow(`SELECT count(*) FROM requests WHERE source = ?`, requestAuto).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
 	if n != 0 {
 		t.Errorf("auto requests = %d at the cap, want 0", n)
 	}
-	var summaries int
-	_ = te.s.db.R.QueryRow(`SELECT count(*) FROM task_summaries`).Scan(&summaries)
-	if summaries != 1 {
-		t.Errorf("summaries = %d, want 1", summaries)
+	var summaries, linked int
+	if err := te.s.db.R.QueryRow(`SELECT count(*), count(request_id) FROM task_summaries`).Scan(&summaries, &linked); err != nil {
+		t.Fatal(err)
+	}
+	if summaries != 1 || linked != 0 {
+		t.Errorf("summaries = %d with %d linked to a request, want 1 with none", summaries, linked)
 	}
 }
