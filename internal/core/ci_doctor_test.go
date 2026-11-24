@@ -463,6 +463,27 @@ func TestDoctorMainAdvisories(t *testing.T) {
 		t.Errorf("advisories and another job: findings = %+v", got)
 	}
 
+	// main_red says what the red base cost that base's merge line, and only it.
+	red := func(lines ...CILine) string {
+		d := &CIDoctor{Lines: lines, Mains: []CIMain{{Repo: "o/a", Branch: "main", Run: 7, Status: "failure"}}}
+		doctorFindings(d, &CIBoard{}, now)
+		i := slices.IndexFunc(d.Findings, func(f CIFinding) bool { return f.Kind == "main_red" })
+		if i < 0 {
+			t.Fatalf("no main_red: %+v", d.Findings)
+		}
+		return d.Findings[i].Detail
+	}
+	ended := CIStackStats{Reasons: map[string]int{endBaseRed: 2, endBaseMoved: 4}}
+	if got := red(CILine{Repo: "o/a", Base: "main", Stacks: ended}); !strings.Contains(got, "Merge line: 2 candidates in the last "+ShortDuration(doctorTrend)+" failed only what main fails") {
+		t.Errorf("detail = %q", got)
+	}
+	for _, l := range []CILine{{Repo: "o/a", Base: "release", Stacks: ended}, {Repo: "o/b", Base: "main", Stacks: ended},
+		{Repo: "o/a", Base: "main", Stacks: CIStackStats{Reasons: map[string]int{endBaseMoved: 4}}}} {
+		if got := red(l); strings.Contains(got, "Merge line") {
+			t.Errorf("line %s %s: detail = %q", l.Repo, l.Base, got)
+		}
+	}
+
 	// Not stuck: an advisories-only red main doesn't suggest the urgent lane.
 	d := &CIDoctor{Mains: []CIMain{{Repo: "o/a", Branch: "main", Status: "failure", OnlyAdvisories: true}}}
 	if doctorUrgentLane(d); len(d.UrgentLane) != 0 {

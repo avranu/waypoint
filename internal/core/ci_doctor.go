@@ -1889,9 +1889,20 @@ func doctorFindings(d *CIDoctor, b *CIBoard, now time.Time, extra ...CIFinding) 
 			continue
 		}
 		if m.Status == "failure" || m.Status == "cancelled" {
+			detail := mainRedDetail(m)
+			// What it cost the merge line: candidates that failed only
+			// what the base fails (WP-1707). Not a finding of its own:
+			// the cause and what to do are this one's.
+			for _, l := range d.Lines {
+				if n := l.Stacks.Reasons[endBaseRed]; n > 0 && strings.EqualFold(l.Repo, m.Repo) && l.Base == m.Branch {
+					detail += fmt.Sprintf("\nMerge line: %d candidate%s in the last %s failed only what %s fails, a full run each; the line tests one place at a time and the front waits until %s is fixed.",
+						n, plural(n), ShortDuration(doctorTrend), m.Branch, m.Branch)
+					break
+				}
+			}
 			add(CIFinding{Level: "problem", Kind: "main_red", Repo: m.Repo,
 				Title:  fmt.Sprintf("%s %s's latest push run #%d (%s) ended %s %s ago", m.Repo, m.Branch, m.Run, short(m.SHA), m.Status, ShortDuration(now.Sub(m.At))),
-				Detail: mainRedDetail(m),
+				Detail: detail,
 				Next:   fmt.Sprintf("wp ci log --repo %s --run %d", m.Repo, m.Run), URL: m.URL})
 		}
 	}
