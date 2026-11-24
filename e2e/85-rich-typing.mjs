@@ -2,12 +2,16 @@
 // "[ ] ", "> ", fences, rules and `code`, **bold**, *italic*, ~~strike~~ and
 // [links](url) apply as they are typed, undo gives back the typed characters,
 // and opening the editor with a click moves nothing on the page.
-// Run after 01-signup-flow (user robin). RICH_TYPING_BROWSER=firefox (or
-// webkit) runs it under that browser, which the other suites don't use. There
-// the typed-markdown rules are switched off (richdom.ts, WP-1758), so the
-// cases that expect a conversion FAIL by design: that mode exists to measure
-// them for WP-1758, not to pass. Only Chromium is expected to pass.
-import { chromium, firefox, webkit } from "playwright";
+// Run after 01-signup-flow (user robin). RICH_TYPING_BROWSER=firefox|webkit
+// runs it under that engine (engine.mjs; `make e2e-webkit` runs WebKit in
+// Docker). Measured with E2E_LOOKS=one, 315 checks: Chromium and Firefox pass
+// all of them, and richdom.ts turns the rules on in both. With the rules
+// forced on, Playwright's WebKit fails 63 (among them the click checks: the
+// page scrolls to the top when the editor opens), plus page errors from
+// fetches a navigation cancels. So the rules stay off there (richdom.ts SUPPORTED, WP-1758)
+// and under WebKit the conversion cases FAIL by design: that mode measures
+// them, it does not pass.
+import { launchEngine } from "./engine.mjs";
 import fs from "node:fs";
 import { looks } from "./looks.mjs";
 const [base, out] = process.argv.slice(2);
@@ -16,9 +20,7 @@ const errors = [];
 const fail = (m) => (console.log("FAIL", m), errors.push(m));
 const ok = (c, m) => (c ? console.log("ok  ", m) : fail(m));
 const H = { "X-Waypoint-Client": "web" };
-const browser = await (
-  { firefox, webkit }[process.env.RICH_TYPING_BROWSER ?? ""] ?? chromium
-).launch();
+const browser = await launchEngine();
 // Milliseconds between key presses. Found by trial, not derived: with no delay
 // the typing outran the editor's input handling and cases flaked; 12 was the
 // smallest value that did not, and still keeps the suite short.

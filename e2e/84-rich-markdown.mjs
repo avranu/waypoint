@@ -3,7 +3,7 @@
 // (raw HTML, comments) opens as markdown; lists, code fences and emphasis
 // are written in a form that renders back the same.
 // Run after 01-signup-flow (user robin).
-import { chromium } from "playwright";
+import { launchEngine } from "./engine.mjs";
 import fs from "node:fs";
 import { looks } from "./looks.mjs";
 const [base, out] = process.argv.slice(2);
@@ -12,7 +12,7 @@ const errors = [];
 const fail = (m) => (console.log("FAIL", m), errors.push(m));
 const ok = (c, m) => (c ? console.log("ok  ", m) : fail(m));
 const H = { "X-Waypoint-Client": "web" };
-const browser = await chromium.launch();
+const browser = await launchEngine();
 
 async function login(ctx) {
   const page = await ctx.newPage();
@@ -47,6 +47,9 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
   });
   const page = await login(ctx);
   page.on("pageerror", (e) => fail(`${tag} pageerror: ${e.message}`));
+  // The description is on the Details tab, which a fresh browser may not show.
+  const details = () =>
+    page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {});
   const make = async (title, description) =>
     (
       await page.request.post(base + "/api/v1/issues", {
@@ -80,6 +83,7 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
   const open = async (title, description) => {
     const issue = await make(title, description);
     await page.goto(`${base}/issue/${issue.key}`);
+    await details();
     if (description === undefined) {
       const add = page.getByRole("button", { name: "Add a description…" });
       await add.waitFor().catch(async (e) => {

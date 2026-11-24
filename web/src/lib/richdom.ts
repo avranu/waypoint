@@ -139,7 +139,7 @@ function caretAtStart(node: Element) {
   if (box && (!t || t.compareDocumentPosition(box) & Node.DOCUMENT_POSITION_PRECEDING)) {
     // Past the box; a text node right after it may start with its space.
     const after = box.nextSibling
-    if (after?.nodeType === Node.TEXT_NODE && (after as Text).data.startsWith(' '))
+    if (after?.nodeType === Node.TEXT_NODE && (after as Text).data.startsWith(GAP))
       return caretAt(after, 1)
     return caretAt(box.parentNode!, indexIn(box) + 1)
   }
@@ -155,13 +155,35 @@ function html(frag: DocumentFragment): string {
 
 const exec = (cmd: string, arg?: string) => document.execCommand(cmd, false, arg)
 
-// The rules are written against Blink's execCommand and are on only there.
-// Firefox builds different markup for the same calls (Enter after a typed
-// heading stays in the heading, quotes and fences come out wrong), and WebKit
-// (Safari, every iOS browser) has not been run at all. In both, typed markdown
-// is literal text, as it was before WP-1749, until the rules are shown to
-// work there (WP-1758).
-const SUPPORTED = typeof navigator === 'undefined' || /Chrome\//.test(navigator.userAgent)
+// Firefox keeps a <br> inserted into an empty block as a real line break
+// (typing then lands after it) and supplies its own placeholder; Blink and
+// WebKit need the <br> for the empty block to have a line.
+const GECKO = typeof navigator !== 'undefined' && /Firefox\//.test(navigator.userAgent)
+const EMPTY_LINE = GECKO ? '' : '<br>'
+// The space after a task box. Firefox drops a plain one at the end of inserted
+// markup, and then the caret has no place after the box; a no-break one stays.
+const GAP = GECKO ? '\u00a0' : ' '
+
+const nodeRange = (n: Node) => {
+  const r = document.createRange()
+  r.selectNode(n)
+  return r
+}
+
+// A paragraph or div directly in the editor, which a block rule replaces whole.
+const wholeOrContents = (b: Block) => (replaceBlock(b) ? nodeRange(b.node!) : contentOf(b))
+const replaceBlock = (b: Block) => b.node?.tagName === 'P' || b.node?.tagName === 'DIV'
+
+// On in Blink and Gecko, where e2e/85-rich-typing.mjs passes all its checks
+// (WP-1758). Off in WebKit (Safari, every iOS browser), where typed markdown
+// stays literal text, as before WP-1749: in Playwright's WebKit that suite
+// fails 63 of its checks beyond the "access control checks" page errors WebKit
+// raises when a navigation cancels a fetch (undo takes two steps after a
+// rule, insertHTML at the end of a paragraph adds inline styles and style
+// spans, Enter in code splits the <pre>, the task box loses
+// contenteditable=false, outdent leaves a <font>). Firefox on iOS is WebKit
+// and says "FxiOS", not "Firefox/".
+const SUPPORTED = typeof navigator === 'undefined' || /Chrome\/|Firefox\//.test(navigator.userAgent)
 
 /**
  * Called after a character was typed. Converts "# ", "- ", "[ ] " and the
@@ -200,8 +222,8 @@ function convert(el: HTMLElement, b: Block, caret: Range, rule: BlockRule): bool
   tail.setStart(caret.startContainer, caret.startOffset)
   tail.setEnd(content.endContainer, content.endOffset)
   const rest = html(tail.cloneContents())
-  const body = rest || '<br>'
-  const box = (checked: boolean) => `${TASK_BOX.replace('>', checked ? ' checked>' : '>')} `
+  const body = rest || EMPTY_LINE
+  const box = (checked: boolean) => `${TASK_BOX.replace('>', checked ? ' checked>' : '>')}${GAP}`
   let out: string
   switch (rule.kind) {
     case 'heading':
@@ -221,7 +243,9 @@ function convert(el: HTMLElement, b: Block, caret: Range, rule: BlockRule): bool
       if (b.node?.tagName !== 'LI') out = `<ul><li>${out}</li></ul>`
       break
   }
-  select(content)
+  // A whole paragraph is replaced as a node: insertHTML over a paragraph's
+  // contents leaves an empty <p> behind in Firefox.
+  select(replaceBlock(b) ? nodeRange(b.node!) : content)
   exec('insertHTML', out)
   const now = caretIn(el)
   const nb = now && blockAt(el, now)
@@ -230,9 +254,9 @@ function convert(el: HTMLElement, b: Block, caret: Range, rule: BlockRule): bool
 }
 
 function codeBlock(el: HTMLElement, b: Block, lang: string): boolean {
-  select(contentOf(b))
+  select(wholeOrContents(b))
   const cls = lang ? ` class="language-${escAttr(lang)}"` : ''
-  exec('insertHTML', `<pre><code${cls}><br></code></pre>`)
+  exec('insertHTML', `<pre><code${cls}>${EMPTY_LINE}</code></pre>`)
   const now = caretIn(el)
   const code = now && elementOf(now.startContainer)?.closest('pre')?.querySelector('code')
   if (code) caretAt(code, 0)
@@ -293,7 +317,20 @@ function paragraphAfter(node: Node) {
   r.setStart(node.parentNode!, indexIn(node) + 1)
   r.collapse(true)
   select(r)
-  exec('insertHTML', '<p><br></p>')
+  exec('insertHTML', `<p>${EMPTY_LINE}</p>`)
+}
+
+// Moves the caret over a task box right beside it; false if there is none.
+function stepOverBox(caret: Range, forward: boolean): boolean {
+  const { startContainer: c, startOffset: o } = caret
+  let next: Node | null | undefined
+  if (c.nodeType === Node.TEXT_NODE) {
+    if (forward ? o === (c as Text).length : o === 0)
+      next = forward ? c.nextSibling : c.previousSibling
+  } else next = c.childNodes[forward ? o : o - 1]
+  if (!(next instanceof HTMLInputElement) || !next.matches('input.task')) return false
+  caretAt(next.parentNode!, indexIn(next) + (forward ? 1 : 0))
+  return true
 }
 
 function eraseBack(n: number) {
@@ -353,6 +390,12 @@ export function keyRules(el: HTMLElement, e: KeyboardEvent): boolean {
     return backspace(el, e, caret)
   }
   if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && plain(e)) {
+    // Firefox leaves the caret where it is when the next thing is a task box;
+    // Blink steps over the box itself, and doing it here would move it twice.
+    if (GECKO && stepOverBox(caret, e.key === 'ArrowRight')) {
+      e.preventDefault()
+      return true
+    }
     // Only the step over a parking character is the editor's: it takes two
     // moves to get past it. Every other arrow press is the browser's.
     // Without one in the editor there is nothing to look for, and looking
@@ -402,8 +445,8 @@ export function keyRules(el: HTMLElement, e: KeyboardEvent): boolean {
   }
   if (ruleLine(s.before)) {
     e.preventDefault()
-    select(contentOf(b))
-    exec('insertHTML', '<hr><p><br></p>')
+    select(wholeOrContents(b))
+    exec('insertHTML', `<hr><p>${EMPTY_LINE}</p>`)
     return true
   }
   return false
@@ -489,7 +532,7 @@ function quoteEnter(el: HTMLElement, e: KeyboardEvent, p: Element): boolean {
     const r = document.createRange()
     r.selectNode(bare)
     select(r)
-    exec('insertHTML', '<p><br></p>')
+    exec('insertHTML', `<p>${EMPTY_LINE}</p>`)
   }
   return true
 }
@@ -512,9 +555,26 @@ function taskEnter(el: HTMLElement, e: KeyboardEvent, li: Element, caret: Range)
   // The new item starts with a box in front of what followed the caret, which
   // stays; with nothing after the caret the item is only the box.
   if (next.node.textContent === '') select(contentOf(next))
-  exec('insertHTML', `${TASK_BOX} `)
+  exec('insertHTML', `${TASK_BOX}${GAP}`)
   caretAtStart(next.node)
+  if (GECKO) dropStrandedGap(next.node.previousElementSibling)
   return true
+}
+
+// Firefox splits a task between its box and its text with the gap left behind
+// in the first item; Chromium collapses it. An item of only box and gap is an
+// empty task, so the gap goes too (through execCommand, so undo sees it).
+function dropStrandedGap(li: Element | null) {
+  const box = li && Array.from(li.children).find((c) => c.matches('input.task'))
+  const gap = box?.nextSibling
+  if (!li || gap?.nodeType !== Node.TEXT_NODE || (gap as Text).data !== GAP || gap.nextSibling)
+    return
+  const keep = caretIn(li.parentElement!.closest('[contenteditable]') as HTMLElement)
+  const r = document.createRange()
+  r.selectNode(gap)
+  select(r)
+  exec('delete')
+  if (keep) select(keep)
 }
 
 function removeBox(li: Element) {
@@ -523,7 +583,7 @@ function removeBox(li: Element) {
   const r = document.createRange()
   r.setStartBefore(box)
   const next = box.nextSibling
-  if (next?.nodeType === Node.TEXT_NODE && (next as Text).data.startsWith(' ')) r.setEnd(next, 1)
+  if (next?.nodeType === Node.TEXT_NODE && (next as Text).data.startsWith(GAP)) r.setEnd(next, 1)
   else r.setEndAfter(box)
   select(r)
   exec('delete')
