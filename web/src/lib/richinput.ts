@@ -89,6 +89,9 @@ export function inlineRule(before: string, after: string): InlineMatch | null {
     if (before[end - 2] === '`' || after[0] === '`') return null
     const i = before.lastIndexOf('`', end - 2)
     if (i < 0 || before[i - 1] === '`' || before[i + 1] === '`') return null
+    // A backslash makes the opening backtick literal; inside a code span it
+    // escapes nothing, so the closing one closes whatever precedes it.
+    if (backslashed(before, i)) return null
     return wrapped('code', before, i, 1, end - 1)
   }
   if (c !== '*' && c !== '_' && c !== '~') return null
@@ -156,7 +159,10 @@ function opener(
 
 function linkRule(before: string): InlineMatch | null {
   const m = /\[([^[\]]+)\]\(([^()\s]+)\)$/.exec(before)
-  if (!m || before[m.index - 1] === '!' || before[m.index - 1] === '\\') return null
+  if (!m || before[m.index - 1] === '!') return null
+  // Each of "[", "]" and ")" is literal after an odd run of backslashes.
+  const close = m.index + 1 + m[1].length
+  if ([m.index, close, before.length - 1].some((i) => backslashed(before, i))) return null
   if (!SAFE_HREF.test(m[2]) || !m[1].trim()) return null
   const contentFrom = m.index + 1
   return {
