@@ -392,7 +392,7 @@ func TestRunnerGatewayRoutes(t *testing.T) {
 // against (its input says it), not the default: a body between the default
 // 20 MiB and a raised 64 MiB is read, not cut off.
 func TestRunnerGatewayBodyCapIsTheJobs(t *testing.T) {
-	ts, svc := setup(t)
+	ts, svc, d := setupServerDB(t, nil)
 	ctx := context.Background()
 	u, err := svc.CreateUser(ctx, core.SystemActor(), core.CreateUserInput{Username: "robin", Email: "robin@example.com", Password: "correct horse battery", IsAdmin: true})
 	if err != nil {
@@ -409,8 +409,14 @@ func TestRunnerGatewayBodyCapIsTheJobs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.EnqueueRunnerJob(ctx, robin, core.RunnerJobInput{Kind: core.JobAudit, Source: "audit", SourceID: 1,
-		Input: []byte(`{"cli":"gateway","model":"audit","prompt":"hi","repo":"https://x.test/a/b.git","gateway_archive_max":67108864,"gateway_file_max":8388608}`)}); err != nil {
+	job, err := svc.EnqueueRunnerJob(ctx, robin, core.RunnerJobInput{Kind: core.JobAudit, Source: "audit", SourceID: 1,
+		Input: []byte(`{"cli":"gateway","model":"audit","prompt":"hi","repo":"https://x.test/a/b.git"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The limits Waypoint writes into the job as it queues it are the
+	// gateway's (a caller can't set them): as if it had said 64 MiB then.
+	if _, err := d.W.ExecContext(ctx, `UPDATE runner_jobs SET input = json_set(input, '$.gateway_archive_max', 67108864, '$.gateway_file_max', 8388608) WHERE id = ?`, job.ID); err != nil {
 		t.Fatal(err)
 	}
 	zero := 0.0
