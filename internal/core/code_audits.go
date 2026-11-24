@@ -2773,10 +2773,10 @@ func (s *Service) MarkAuditFindings(ctx context.Context, actor *Actor, in MarkFi
 			return nil, invalid("%s is canceled and isn't a duplicate of an open issue, so filing into it would drop the finding: fix it, reject it with why (-m), or file it in an open issue", strings.TrimSpace(in.Issue))
 		}
 	}
-	var weights map[ref]rejectionWeight
+	var records map[ref]rejectionRecord
 	if state == "rejected" && actor.IsAgent() {
 		var err error
-		if weights, err = s.weighRejections(ctx, actor, evidence, refs); err != nil {
+		if records, err = s.weighRejections(ctx, actor, evidence, refs); err != nil {
 			return nil, err
 		}
 	}
@@ -2796,7 +2796,7 @@ func (s *Service) MarkAuditFindings(ctx context.Context, actor *Actor, in MarkFi
 			// unfiles a finding filed before (findingFiled).
 			res, err := t.ExecContext(ctx, `UPDATE code_audit_findings SET state = ?, note = CASE WHEN ? = '' THEN note ELSE ? END, issue_id = CASE WHEN ? IS NOT NULL THEN ? WHEN ? = 'confirmed' THEN NULL ELSE issue_id END,
 				decided_by = ?, decided_agent = ?, decided_at = ?, evidence = ?, decided_model = ?, decided_effort = ?, decided_strength = ? WHERE audit_id = ? AND ordinal = ?`,
-				state, note, note, issueID, issueID, state, by, actor.agentName(), s.nowMS(), evidence, weights[r].model, weights[r].effort, weights[r].strength, r.audit, r.n)
+				state, note, note, issueID, issueID, state, by, actor.agentName(), s.nowMS(), evidence, records[r].model, records[r].effort, records[r].strength, r.audit, r.n)
 			if err != nil {
 				return err
 			}

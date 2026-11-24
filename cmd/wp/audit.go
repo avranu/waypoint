@@ -66,7 +66,7 @@ func init() {
 		{name: "mark", args: "FINDING... open|confirmed|fixed|rejected [-m NOTE] [--issue KEY] [--evidence TEXT]", summary: "record your verdict on findings (12.3: audit 12, finding 3)",
 			about: `confirmed is real but unfixed; rejected needs -m why. An agent rejecting a
 finding of a pull request it isn't working on (outside its own review round)
-also gives --evidence TEXT (a file and line, or a command's output, up to 4000
+also gives --evidence TEXT (a file and line, or a command's output, up to ` + strconv.Itoa(core.MaxRejectionEvidence) + `
 characters), and must run as strong a model as the one that found it: not a
 haiku session for a sonnet's finding, a low effort one for a high effort one's,
 or an older version for a newer one's. If it can't, leave it (a medium or low

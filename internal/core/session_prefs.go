@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strings"
 
+	"git.jmann.me/claude/waypoint/internal/core/strength"
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
@@ -42,10 +43,10 @@ type SessionPrefs struct {
 }
 
 // SessionEfforts and SessionPermissionModes are the values the settings
-// take. bypassPermissions is left out: a setting that turns every check off
+// take: the efforts are strength's, the order a rejection is weighed in. bypassPermissions is left out: a setting that turns every check off
 // for every unattended session is one a person passes by hand, per session.
 var (
-	SessionEfforts         = []string{"low", "medium", "high", "xhigh", "max"}
+	SessionEfforts         = slices.Clone(strength.Efforts)
 	SessionPermissionModes = []string{"acceptEdits", "auto", "dontAsk", "manual", "plan"}
 )
 

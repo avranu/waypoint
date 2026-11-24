@@ -14,13 +14,13 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core/strength"
 )
 
-// maxRejectionEvidence is how long the evidence for rejecting an audit
+// MaxRejectionEvidence is how long the evidence for rejecting an audit
 // finding may be, in characters.
-const maxRejectionEvidence = 4000
+const MaxRejectionEvidence = 4000
 
-// rejectionWeight is what is kept with an agent's rejection of a finding: the
+// rejectionRecord is what is kept with an agent's rejection of a finding: the
 // model and effort it ran as, and how that compared with the finder.
-type rejectionWeight struct {
+type rejectionRecord struct {
 	model, effort, strength string
 }
 
@@ -115,8 +115,8 @@ func (s *Service) rejecterModel(ctx context.Context, actor *Actor) strength.Mode
 // decided (WP-1825): outside the round's own, it gives evidence and is as
 // strong as the model that found each finding. It returns what to keep with
 // each verdict.
-func (s *Service) weighRejections(ctx context.Context, actor *Actor, evidence string, refs []findingRef) (map[findingRef]rejectionWeight, error) {
-	out := map[findingRef]rejectionWeight{}
+func (s *Service) weighRejections(ctx context.Context, actor *Actor, evidence string, refs []findingRef) (map[findingRef]rejectionRecord, error) {
+	out := map[findingRef]rejectionRecord{}
 	var rejecter *strength.Model
 	for _, r := range refs {
 		var key string
@@ -152,14 +152,14 @@ func (s *Service) weighRejections(ctx context.Context, actor *Actor, evidence st
 			}
 			return nil, kernel.Forbidden("%s reject %s, found by %s: leave it for a stronger agent or a person (a medium or low one can be filed: wp audit mark %s confirmed --issue KEY)", who, id, finder, id)
 		}
-		out[r] = rejectionWeight{model: rejecter.Name, effort: rejecter.Effort, strength: string(verdict) + ": " + reason}
+		out[r] = rejectionRecord{model: rejecter.Name, effort: rejecter.Effort, strength: string(verdict) + ": " + reason}
 	}
 	return out, nil
 }
 
 func checkEvidence(evidence string) error {
-	if utf8.RuneCountInString(evidence) > maxRejectionEvidence {
-		return kernel.Invalid("evidence is at most %d characters", maxRejectionEvidence)
+	if utf8.RuneCountInString(evidence) > MaxRejectionEvidence {
+		return kernel.Invalid("evidence is at most %d characters", MaxRejectionEvidence)
 	}
 	return nil
 }

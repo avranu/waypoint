@@ -14,10 +14,22 @@ import (
 // Efforts are the reasoning levels, weakest first.
 var Efforts = []string{"low", "medium", "high", "xhigh", "max"}
 
-// rank is a family's place in the order; fable and mythos share one.
-var rank = map[string]int{"haiku": 1, "sonnet": 2, "opus": 3, "fable": 4, "mythos": 4}
+// tiers are the families, weakest first; fable and mythos share one.
+var tiers = [][]string{{"haiku"}, {"sonnet"}, {"opus"}, {"fable", "mythos"}}
 
-var families = []string{"haiku", "sonnet", "opus", "fable", "mythos"}
+// families are the names Parse looks for, and rank a family's place in the
+// order: both made from tiers, so a family is never in one and not the other.
+var families, rank = func() ([]string, map[string]int) {
+	var fs []string
+	r := map[string]int{}
+	for i, tier := range tiers {
+		for _, f := range tier {
+			fs = append(fs, f)
+			r[f] = i + 1
+		}
+	}
+	return fs, r
+}()
 
 // Model is what is known of a model: its family ("" when not one of the
 // Claude families), version (Major 0 when unknown) and effort ("" when

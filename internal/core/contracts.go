@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core/strength"
 )
 
 // Shared names for WP-D16 to WP-D21, so the parts built in parallel agree.
@@ -174,7 +176,7 @@ type MessageJob struct {
 var sessionPermissionModes = []string{"", "default", "acceptEdits", "auto", "plan"}
 
 // Effort levels a session job may start with.
-var sessionEfforts = []string{"", "low", "medium", "high", "xhigh", "max"}
+var sessionEfforts = append([]string{""}, strength.Efforts...)
 
 // FileChange is one file an apply job (or a forge commit) writes.
 type FileChange struct {

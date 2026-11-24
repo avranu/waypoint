@@ -113,7 +113,11 @@ func (be *bsEnv) markFinding(id, state string) {
 	if _, err := be.s.db.W.Exec(`UPDATE agent_sessions SET model = 'claude-opus-5-5' WHERE id = ?`, be.agent.Session); err != nil {
 		be.t.Fatal(err)
 	}
-	if _, err := be.s.MarkAuditFindings(be.ctx, be.agent, MarkFindings{IDs: []string{id}, State: state, Note: "checked", Evidence: "checked"}); err != nil {
+	in := MarkFindings{IDs: []string{id}, State: state, Note: "checked"}
+	if state == "rejected" {
+		in.Evidence = "checked"
+	}
+	if _, err := be.s.MarkAuditFindings(be.ctx, be.agent, in); err != nil {
 		be.t.Fatal(err)
 	}
 	be.s.Wait()
