@@ -160,7 +160,6 @@ func escapeListText(list []*core.Escape) string {
 		if e.Proof != "" {
 			fmt.Fprintf(&o, "  %s\n", core.ProofText(e.Proof, e.ProofFailed, e.ProofIntro, e.IntroCheck, e.ProofNote))
 			if e.ProofNote != "" && e.Proof != "none" {
-				// Test output: the repo's code wrote it.
 				fmt.Fprintf(&o, "  proof note: <untrusted>%s</untrusted>\n", oneLine(e.ProofNote))
 			}
 		}

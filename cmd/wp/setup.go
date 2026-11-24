@@ -103,7 +103,7 @@ func cmdSetup(c *cli, args []string) error {
 	} else if len(pos) > 0 {
 		return c.usage("unexpected %q", joinArgs(pos))
 	}
-	c.agent = "none" // the runner and the sign-in are the person's, never an agent's
+	c.agent = "none"
 
 	ask := func(question string) (string, bool) {
 		r := openAnswers()

@@ -7,8 +7,6 @@ import (
 	"strings"
 )
 
-// Agents never record read addresses themselves: their call files a question, and only a person's "Allow reads" answer records them, exactly as the question showed them.
-
 // EnvReadAllow is the choice of an environment read request that vouches.
 const EnvReadAllow = "Allow reads"
 
@@ -67,7 +65,7 @@ func envReadAllows(answers []Answer) bool {
 	if len(answers) != 1 {
 		return false
 	}
-	return containsStr(answers[0].Choices, EnvReadAllow) // Only a picked choice allows reads; typed text never does.
+	return containsStr(answers[0].Choices, EnvReadAllow)
 }
 
 // EnvVouchInput: the addresses to vouch for; nil keeps the environment's
@@ -138,7 +136,6 @@ func (s *Service) VouchEnvironment(ctx context.Context, actor *Actor, projectRef
 		return nil, invalid("%s is stopped, so agents don't read from it; start it again first (wp env up %s)", name, name)
 	}
 	if ask.VersionURL != "" && (cur == nil || cur.CommitField == "" && cur.VersionField == "") {
-		// Refuse a version address with no field to read it from here: the save that Allow reads makes would fail validEnvSettings, leaving a question the person can't allow.
 		return nil, invalid("a version address needs the field to read from it, which a person sets on the environment in the web; leave --version out")
 	}
 	res := &EnvVouchResult{Hosts: ask.hosts()}
@@ -159,7 +156,6 @@ func (s *Service) VouchEnvironment(ctx context.Context, actor *Actor, projectRef
 			return nil, err
 		}
 		if !created && !s.mayDecideOrOwn(ctx, actor, req) {
-			// An agent that can't decide someone else's open ask sees only its identity and state, never that person's reason.
 			req = &Request{ID: req.ID, Code: req.Code, Ref: req.Ref, Number: req.Number, Project: req.Project,
 				Kind: req.Kind, Title: req.Title, State: req.State, EnvRead: req.EnvRead}
 		}

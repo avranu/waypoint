@@ -1,7 +1,5 @@
 package core
 
-// A runner fault is re-run until its checks pass or the head moves on, backing off, with a host waited for first and a job's own time limit stopping after 3 re-runs.
-
 import (
 	stdcmp "cmp"
 	"context"
@@ -213,7 +211,7 @@ func (s *Service) rerunRunnerFaults(ctx context.Context, b *Babysit, pr *PullReq
 		return nil
 	}
 	if st.begin(pr.HeadSHA, now.UnixMilli()) {
-		_ = save() // logged; the next pass begins again
+		_ = save()
 	}
 	if st.noteKinds(faultKinds(faults)) {
 		_ = save()
@@ -250,7 +248,6 @@ func (s *Service) rerunRunnerFaults(ctx context.Context, b *Babysit, pr *PullReq
 	if limit && st.streak >= faultTimeLimitReruns {
 		return "", false
 	}
-	// A job's own time limit is no runner's fault, so it is never tracked in a task.
 	if !limit && st.n >= faultReportAfter {
 		report = faultReportWhy(st, now)
 	}
@@ -270,7 +267,6 @@ func (s *Service) rerunRunnerFaults(ctx context.Context, b *Babysit, pr *PullReq
 		wait("Waypoint re-runs it shortly")
 		return report, true
 	}
-	// Record the attempt before asking the forge: an unrecorded back-off gets re-asked every pass, loading the sick runner it protects.
 	st.n++
 	st.streak++
 	st.last = now.UnixMilli()
@@ -284,7 +280,6 @@ func (s *Service) rerunRunnerFaults(ctx context.Context, b *Babysit, pr *PullReq
 		s.log.WarnContext(ctx, "re-run a head's runner-fault jobs", "repo", pr.Repo, "pr", pr.Number, "err", err)
 		wait(fmt.Sprintf("the forge refused the re-run; Waypoint tries again at %s", st.nextTry().UTC().Format("15:04 UTC")))
 	case n == 0:
-		// Nothing left to re-run still counts as an attempt, so a forge that never posts results backs off.
 		wait(fmt.Sprintf("waiting for the forge's new results (attempt %d)", st.n))
 	default:
 		wait(fmt.Sprintf("Waypoint re-ran %d job%s (attempt %d)", n, plural(n), st.n))

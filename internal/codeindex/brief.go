@@ -12,8 +12,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Everything here is the index's own data; the task and the records that govern it belong to the client.
-
 const (
 	DefaultBriefBudget  = 3000
 	CompactBriefBudget  = 900
@@ -326,7 +324,7 @@ func (ix *Index) Brief(ctx context.Context, text string, o BriefOptions) (*Brief
 				}
 			}
 		}
-		if in, _, err := ix.Imports(f.Path); err == nil && !strings.HasSuffix(f.Path, ".go") { // Go imports name packages, not files
+		if in, _, err := ix.Imports(f.Path); err == nil && !strings.HasSuffix(f.Path, ".go") {
 			for _, p := range firstN(in, 4) {
 				add(p, 6, "imported by "+base)
 			}
@@ -705,7 +703,7 @@ func (o *Outline) briefRender(budget int) string {
 // time someone did something like this, these changed. Commits that name
 // key are the task's own work, not precedent.
 func (ix *Index) precedent(ctx context.Context, title, text, key string) map[string]float64 {
-	rows, err := ix.db.QueryContext(ctx, `SELECT id, subject FROM commits WHERE nfiles <= 25`) // The commits table is capped at maxCommits by history.go at ingest, so this query has no LIMIT.
+	rows, err := ix.db.QueryContext(ctx, `SELECT id, subject FROM commits WHERE nfiles <= 25`)
 	if err != nil {
 		return nil
 	}

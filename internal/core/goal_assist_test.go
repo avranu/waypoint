@@ -78,7 +78,7 @@ func TestSuggestTaskGoal(t *testing.T) {
 		t.Fatalf("no model: %v", err)
 	}
 	llm := &fakeLLM{}
-	e.s.quiesceGoals(t) // Queued goal passes read the model; quiesce before swapping its answer.
+	e.s.quiesceGoals(t)
 	e.s.LLM = llm
 	if err := e.s.EnsureDefaultAI(e.ctx, "http://opencode:4096", "", "opencode/big-pickle"); err != nil {
 		t.Fatal(err)

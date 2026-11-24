@@ -10,8 +10,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Nothing here carries a prompt, an output or an argument: only command names from wp's own list, flag-shaped words, and a fixed set of error classes and labels.
-
 // Row kinds. The server keeps to this list.
 const (
 	usageCLIFile           = "file"
@@ -381,7 +379,7 @@ func classifyCLIErrors(text string, heads []string) []cliError {
 			continue
 		}
 		if !generic && len(heads) == 1 && i >= cliGenericLines {
-			continue // Past the first lines, a named error is quoted task text (wp show), not this call's failure.
+			continue
 		}
 		if cm := cliNoCommandRE.FindStringSubmatch(msg); cm != nil {
 			full := head + " " + cm[1]

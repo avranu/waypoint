@@ -176,7 +176,6 @@ func (s *Service) verifyFindings(ctx context.Context, r *BotRun, f *Forge, cl Fo
 		s.log.ErrorContext(ctx, "record the checks of earlier findings", "run", r.ID, "err", err)
 		return verifyOutcome{log: out.log}
 	}
-	// The forge hears of a fix only after the checks are recorded; it never hears of a fix the database does not have.
 	for _, v := range verdicts {
 		if v.to == FindingFixed {
 			v.f.State = v.to

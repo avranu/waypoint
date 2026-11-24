@@ -51,8 +51,7 @@ type logRule struct {
 	before, after int
 	back          func(lines []string, i int) int
 	block         func(lines []string, i int) int
-	// A closing line alone only says the job ended badly; the lines before it are shown instead.
-	closing bool
+	closing       bool
 }
 
 func indented(l string) bool { return l != "" && (l[0] == ' ' || l[0] == '\t') }

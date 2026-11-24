@@ -116,7 +116,7 @@ func cpuJiffies(stat string) (busy, all uint64) {
 		return 0, 0
 	}
 	for i, x := range f[1:] {
-		if i >= 8 { // guest time is already in user
+		if i >= 8 {
 			break
 		}
 		v, _ := strconv.ParseUint(x, 10, 64)

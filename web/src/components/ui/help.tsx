@@ -168,7 +168,6 @@ export function Tip({
         aria-label={label}
         aria-expanded={pop.open}
         onClick={(e) => {
-          // Inside a <label>, a click would otherwise focus its input.
           e.preventDefault()
           e.stopPropagation()
           pop.toggle()

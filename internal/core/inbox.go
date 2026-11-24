@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-// Sorting never deletes or marks read: stale items wait, collapsed, until the person clears them.
-
 // Inbox sections.
 const (
 	InboxLive    = "live"
@@ -105,7 +103,6 @@ func groupKey(n *Notification) string {
 	case n.URL != "":
 		return "u:" + n.URL
 	}
-	// Without a link, notifications group by kind and title.
 	return "k:" + n.Kind + ":" + n.Title
 }
 
@@ -138,7 +135,6 @@ func classifyInbox(n *Notification, now time.Time, openReq map[string]bool, cate
 	if ephemeralKinds[n.Kind] && age > inboxEphemeralDays*24*time.Hour {
 		return InboxStale, fmt.Sprintf("Over %d days old", inboxEphemeralDays)
 	}
-	// An ask on an open issue stays owed however old; only closing, handing on or reading clears it.
 	owed := n.IssueKey != "" && tierOf[n.Kind] == TierYou
 	if age > inboxOldDays*24*time.Hour && !owed {
 		return InboxStale, "Over 30 days old"
@@ -171,7 +167,6 @@ func (s *Service) loadInbox(ctx context.Context, actor *Actor) (out []inboxRow, 
 	rr.Close()
 
 	where := "n.user_id = ?"
-	// Notifications about issues the person can no longer read are hidden, whatever their text.
 	vis, vargs := visibleSQL("i.project_id", actor)
 	where += " AND " + vis
 	if actor.HidesDrafts() {

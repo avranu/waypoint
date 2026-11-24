@@ -203,7 +203,6 @@ func cmdBench(c *cli, args []string) error {
 		return err
 	}
 	defer release()
-	// The trees are read after the slot is held and again after the timed runs; a change between the reads sets Moved, so the result says no one tree was timed.
 	var warmTree string
 	if l, ok := hostLoad(); ok {
 		res.Load = append(res.Load, l)
@@ -220,9 +219,6 @@ func cmdBench(c *cli, args []string) error {
 		}
 	}
 
-	// One untimed run each warms caches, then the trees take turns, each
-	// round starting with the tree the last one ended with (B H | H B | B H),
-	// so a host getting busier or quieter meanwhile falls on both alike.
 	sides := []*benchSide{&res.Head}
 	dirs := []string{headDir}
 	if res.Base != nil {
@@ -333,9 +329,6 @@ func (c *cli) benchFailed(ctx context.Context, what, dir string, code int, tail 
 // the exit code and the end of the command's output.
 func benchExec(ctx context.Context, dir string, env, argv []string, s *benchSample) (int, []byte, error) {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) // #nosec G204 G702 -- running the command is the point
-	// CMD gets its own process group and a stop ends the whole group, as for
-	// runner jobs, so a go test's test binaries or a make's jobs stop too
-	// instead of holding the output pipe (and the slot) until they finish.
 	setProcGroup(cmd)
 	killOnCancel(cmd)
 	cmd.Dir, cmd.Env = dir, env
@@ -345,8 +338,6 @@ func benchExec(ctx context.Context, dir string, env, argv []string, s *benchSamp
 	err := cmd.Run()
 	wall := time.Since(start)
 	procExited(cmd)
-	// Whatever CMD left running in its group would keep using the host
-	// through the next timed runs (and after the slot is released).
 	killGroup(cmd)
 	if ctx.Err() != nil {
 		return 0, nil, ctx.Err()

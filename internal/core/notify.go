@@ -77,8 +77,6 @@ func dataInt(e *Event, key string) int64 {
 // notifyFor creates notifications for an event.
 func (s *Service) notifyFor(ctx context.Context, actor *Actor, e *Event) {
 	if e.Kind == EvTokenCreated {
-		// Always, even though the person approved it themselves: it's the
-		// trail that shows up a login they were tricked into approving.
 		body := "From " + fmt.Sprint(e.Data["ip"]) + ". If this wasn't you, revoke it in Settings → Tokens."
 		if a, _ := e.Data["agent"].(string); a != "" {
 			body = "Acting as agent " + a + ". " + body
@@ -399,7 +397,6 @@ func (s *Service) ListNotifications(ctx context.Context, actor *Actor, unreadOnl
 		}
 		out = append(out, n)
 	}
-	// Requests that wait on you are counted as such (Waiting on you), not twice.
 	var unread int
 	if err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM notifications WHERE user_id = ? AND read_at IS NULL AND kind != 'request'`, actor.id()).Scan(&unread); err != nil {
 		return nil, 0, err

@@ -1,5 +1,3 @@
-// Attachment targets are written 'kind:id', e.g. 'page:12', 'issue:WP-12'.
-
 import { queryOptions, type QueryClient } from '@tanstack/react-query'
 import { api, qs } from './api'
 import type { Attachment } from './types'

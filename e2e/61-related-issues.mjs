@@ -46,7 +46,6 @@ async function run(width, scheme) {
   const src = await api("POST", "/issues", { project: key, title: "Sanborn walk: campus towns",
     description: `Production's weekly Sanborn walk reaches a campus town and never resumes. Blocked by ${waits.key}.` });
 
-  // The description names a task, so the Relations section is already showing.
   await page.goto(`${base}/issue/${src.key}`);
   await page.getByRole("button", { name: "Find related" }).click();
   const dialog = page.getByRole("dialog", { name: "Related issues" });

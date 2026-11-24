@@ -50,7 +50,6 @@ func (g *Gateway) forward(ctx context.Context, m *mirror, in *incoming, st *repo
 		}
 	}
 	if err := g.migrate(m, in); err != nil {
-		// A failed mirror migration does not fail the push: the forge has it, and the mirror catches up on the next fetch.
 		return result{}
 	}
 	var upd bytes.Buffer
@@ -261,7 +260,6 @@ func (g *Gateway) Forward(ctx context.Context, id string) error {
 	}
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	// A Drop or another Forward may have run while this call waited.
 	if h, err = g.loadHeld(id); err != nil {
 		return err
 	}
@@ -306,7 +304,6 @@ func (g *Gateway) Drop(id string) error {
 		return err
 	}
 	if st := g.repos[strings.ToLower(h.Repo)]; st != nil {
-		// Take the repo lock, then recheck: Forward may have sent this push since it was loaded.
 		st.mu.Lock()
 		defer st.mu.Unlock()
 		if _, err := g.loadHeld(id); err != nil {

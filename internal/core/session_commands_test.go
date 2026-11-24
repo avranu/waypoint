@@ -42,7 +42,6 @@ func TestWpNextSkipsTheIdleHold(t *testing.T) {
 	a.finish(first.Key)
 	a.stopWith("Done.")
 	a.prompt("Also fix the typo")
-	// A session its person typed into is theirs: its Stop gets no autopilot note.
 	if res := a.stopWith("Fixed the typo."); strings.Contains(res.Note, "Autopilot") {
 		t.Fatalf("note = %q", res.Note)
 	}
@@ -82,7 +81,6 @@ func TestWpNextWithNoStep(t *testing.T) {
 	if _, err := a.s.AgentDone(a.ctx, a.ag, second.Key, AgentDoneInput{Comment: "done"}); err != nil {
 		t.Fatal(err)
 	}
-	// A session its person kept is theirs: its Stop makes no autopilot step.
 	if res := a.stopWith("Done."); strings.Contains(res.Note, "Autopilot") {
 		t.Fatalf("note = %q", res.Note)
 	}

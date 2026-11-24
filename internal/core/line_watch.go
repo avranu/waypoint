@@ -1,7 +1,5 @@
 package core
 
-// How long a line has been quiet is read from the database, not kept in memory, so a deploy doesn't restart the count.
-
 import (
 	"context"
 	"fmt"
@@ -68,8 +66,6 @@ func (s *Service) resumeBabysit(ctx context.Context, prID int64) bool {
 	b, pr, ok := s.resumable(ctx, prID)
 	var owner int64
 	if ok {
-		// Everything a start can refuse is checked before the waiting
-		// babysit ends, so a refusal leaves it waiting as it was.
 		if owner = b.ownerID; owner == 0 {
 			owner = s.babysitOwnerFor(ctx, pr)
 		}
@@ -83,7 +79,7 @@ func (s *Service) resumeBabysit(ctx context.Context, prID int64) bool {
 		return false
 	}
 	model := b.Model
-	if planningModel(model) { // A stored planning model can't start a babysit, so a resume uses the default model.
+	if planningModel(model) {
 		model = ""
 	}
 	if _, err := s.startBabysit(ctx, SystemActor(), pr, owner, model, viaResume, b.Notify, false); err != nil {
@@ -108,13 +104,12 @@ func (s *Service) resumable(ctx context.Context, prID int64) (*Babysit, *PullReq
 		if b.EndReason != resumeEnded {
 			return nil, nil, false
 		}
-		// A stop that ended a resume whose start failed is resumed again.
 	case BabysitNeedsPerson:
 		if n := len(b.Rounds); n > 0 && b.Rounds[n-1].To == "session" {
-			return nil, nil, false // handed to a session: its push carries it on
+			return nil, nil, false
 		}
 		if parkedOn(b, pr.HeadSHA) {
-			return nil, nil, false // parked for a person's answer: that, or a push, carries it on (WP-439)
+			return nil, nil, false
 		}
 		if n := len(b.Rounds); n > 0 && sameSHA(b.Rounds[n-1].SHA, pr.HeadSHA) {
 			if _, refused := protectedRefusal(b.Rounds[n-1]); refused {
@@ -186,7 +181,7 @@ func (s *Service) watchLines(ctx context.Context) {
 	rows.Close()
 	if err != nil {
 		s.log.WarnContext(ctx, "watch merge lines", "err", err)
-		return // a partial view could expire a stalled line's request
+		return
 	}
 	stalled := map[string]bool{}
 	for _, l := range lines {

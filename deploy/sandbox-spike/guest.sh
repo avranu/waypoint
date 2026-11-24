@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# Lines starting SPIKE_ on the serial console are the protocol that spike.sh on the host parses.
 set -u
 
 tty=/dev/ttyS0
 out() { printf '%s\n' "$*" >"$tty"; }
 param() { tr ' ' '\n' </proc/cmdline | sed -n "s/^spike\.$1=//p"; }
-mark() { # Pause so the host can sample QEMU memory before the guest goes on.
+mark() {
 	out "SPIKE_MARK $1"
 	sleep 8
 }
@@ -43,7 +42,6 @@ idle)
 		if (NR > 1 && t - p >= 0.2) printf "%.2fs>%s; ", t - p, substr(m, 1, 70)
 		p = t
 	}' | head -c 900)"
-	# Needs initcall_debug on the kernel command line.
 	out "SPIKE_RESULT guest_slow_initcalls $(dmesg 2>/dev/null | awk '/initcall .* returned .* after [0-9]+ usecs/ {
 		for (i = 1; i <= NF; i++) if ($i == "after") u = $(i + 1)
 		for (i = 1; i <= NF; i++) if ($i == "initcall") f = $(i + 1)
@@ -59,7 +57,6 @@ idle)
 	;;
 
 hold)
-	# Drops its cache as the guest agent will after 5 idle minutes, so the idle state matches the real one.
 	sleep 60
 	drop_caches
 	mark held
@@ -121,7 +118,6 @@ virtiofs)
 		for where in /mnt/share/waypoint /home/agent/waypoint; do
 			label=$([ "$where" = /home/agent/waypoint ] && echo disk || echo virtiofs)
 			start=$(date +%s.%N)
-			# Each build gets its own empty GOCACHE, so only where the sources live differs between builds.
 			as_agent bash -c "rm -rf ~/.cache/go-build-$label && cd $where && find . -type f | wc -l >/dev/null && GOCACHE=~/.cache/go-build-$label GOTOOLCHAIN=local GOFLAGS=-mod=readonly go build -o /dev/null ./cmd/... ./internal/..." >/dev/null 2>&1
 			rc=$?
 			out "SPIKE_RESULT virtiofs_build_${label}_rc $rc"

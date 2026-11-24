@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-// A read that fails is never the permissive answer.
-
 // failingQueryer fails every read, as a database that went away does.
 type failingQueryer struct{ queryer }
 
@@ -61,7 +59,6 @@ func TestBehindBaseForgeFaultHolds(t *testing.T) {
 		t.Errorf("no Warn naming the pull request:\n%s", logs.String())
 	}
 
-	// A 404 for the base is an answer, not an error: no reason to wait.
 	se.sg.behindErr = &forgeAPIError{method: "GET", path: "/branches/main", status: 404, body: "not found"}
 	if _, behind, stale, err := se.s.behindBaseErr(se.ctx, pr); err != nil || behind || stale {
 		t.Errorf("a 404: behind=%v stale=%v err=%v, want no reason to wait", behind, stale, err)
@@ -78,7 +75,6 @@ func TestArmedMergeHeldWhenBaseUnreadable(t *testing.T) {
 	se.sg.behindErr = &forgeAPIError{method: "GET", path: "/branches/main", status: 502, body: "bad gateway"}
 	se.pullHook("opened", testPR)
 	se.drain()
-	// Wait for the hook's background follow-ups, or one could merge the pull request before the table is broken.
 	se.s.Wait()
 	se.sg.setChecks(head, CommitCheck{Name: "ci / backend (pull_request)", State: CheckSuccess})
 	se.poll()
@@ -178,7 +174,6 @@ func TestMergeNowReadFaultRetries(t *testing.T) {
 	const head = "1111111aaaa"
 	se.pullHook("opened", testPR)
 	se.drain()
-	// Wait for the hook's background follow-ups, or one could merge the pull request before the table is broken.
 	se.s.Wait()
 	se.sg.setChecks(head, CommitCheck{Name: "ci / backend (pull_request)", State: CheckSuccess})
 	pr := se.pr(5)

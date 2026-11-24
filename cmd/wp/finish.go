@@ -115,7 +115,6 @@ func cmdFinish(c *cli, args []string) error {
 		return c.usage("a pull request ships one task: give one KEY (the others finish with wp ship KEY once it is open)")
 	}
 	if shipping {
-		// Refuse before anything is committed or pushed.
 		if err := c.refuseDiagnoseRound(keys); err != nil {
 			return err
 		}
@@ -143,7 +142,6 @@ func cmdFinish(c *cli, args []string) error {
 		if !so.summaryGiven {
 			return
 		}
-		// The kept summary goes to the task the next wp ship links: the one named or taken, else the branch's.
 		switch {
 		case len(keys) == 1:
 			c.keepSummary(keys[0], *so.summary)
@@ -171,7 +169,7 @@ func cmdFinish(c *cli, args []string) error {
 		c.objectiveShipNote(k)
 	}
 	if shipping {
-		c.noteRewrites(shipKey(keys), *f.base) // Information only: it keeps no turn open.
+		c.noteRewrites(shipKey(keys), *f.base)
 	}
 	if len(shots) > 0 {
 		if len(keys) != 1 {
@@ -181,7 +179,6 @@ func cmdFinish(c *cli, args []string) error {
 		if err != nil {
 			return c.usage("%s", err)
 		}
-		// The pictures go first: a failed shot leaves the task open to retry.
 		if err := c.shoot(keys[0], shots, o); err != nil {
 			keepSummary()
 			return fmt.Errorf("%w (the task is still open: fix the page or drop --shot, then run this again)", err)
@@ -199,7 +196,6 @@ func cmdFinish(c *cli, args []string) error {
 		if err != nil || !other || len(keys) == 0 {
 			return err
 		}
-		// A branch's pull request that belongs to another task ships nothing for this one; this task still finishes.
 	}
 	if err := c.finishDone(keys, *msg, u); err != nil {
 		if len(shots) > 0 {
@@ -257,8 +253,6 @@ func (c *cli) codeToShip(f prOpenFlags, keys []string) (bool, error) {
 			return true, nil
 		}
 	}
-	// One task only: a pull request ships one, and a mention shouldn't stop
-	// wp done A B finishing both.
 	if len(keys) == 1 && commitsAllName(base, branch, keys[0]) {
 		closed, err := c.taskClosed(keys[0])
 		if err != nil {

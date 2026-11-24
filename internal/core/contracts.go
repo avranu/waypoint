@@ -14,7 +14,7 @@ const (
 	EvSessionStarted = "session.started"
 	EvSessionEnded   = "session.ended"
 	EvSessionWaiting = "session.waiting"
-	EvSessionUpdated = "session.updated" // Not stored in the events table, so a reader who catches up later never sees it.
+	EvSessionUpdated = "session.updated"
 	// The agent truly finished (WP-D22): a Stop with no background tasks,
 	// crons or wakeups, nothing delivered and no open request. + at (ms).
 	EvSessionFinished = "session.finished"
@@ -42,7 +42,7 @@ const (
 	EvRunnerStatus = "runner.status"
 	// Data: job (id), kind, state, source (request_cell, automation_step, bot_run), source_id.
 	EvRunnerJobFinished = "runner.job_finished"
-	EvRunnerJobUpdated  = "runner.job_updated" // Not stored in the events table, so a reader who catches up later never sees it.
+	EvRunnerJobUpdated  = "runner.job_updated"
 
 	// Automation runs (WP-D18). Data: automation (id), run (id), status.
 	EvAutomationRunFinished = "automation.run_finished"

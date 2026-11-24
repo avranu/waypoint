@@ -202,7 +202,6 @@ func TestObjectiveJobKeepPassingInAMissingFolderFails(t *testing.T) {
 	r := newObjRepo(t)
 	r.commit(map[string]string{"a": ""})
 	p := newTestProc(t)
-	// At the root, test -f a would pass: the folder must not fall back to it.
 	j := r.job(core.ObjectiveJob{Dir: "gone", KeepPassing: []string{"test -f a"}})
 	o, res := readObjective(t, p, newRun(time.Minute), j)
 	if o.State != "failed" || !strings.Contains(o.Error, "gone") || res != nil {

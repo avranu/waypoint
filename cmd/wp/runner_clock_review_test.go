@@ -32,7 +32,6 @@ func TestSlotWaitReaderIsSafeFromSeveralGoroutines(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				// A wait ends when its pid is first seen gone, not when it is read.
 				if total, since := r.read(base.Add(time.Duration(g+1) * time.Second)); total < time.Second || total > 8*time.Second || !since.IsZero() {
 					t.Errorf("read: %v since %v", total, since)
 				}
@@ -290,7 +289,7 @@ func TestSlotWaitReaderLivePidIsAnotherProcess(t *testing.T) {
 	if total, since := r.read(at(10)); total != 10*time.Second || !since.Equal(at(0)) {
 		t.Fatalf("the waiter itself: %v since %v", total, since)
 	}
-	started = "999" // A pid whose process started at another time is a different process, so its wait is not this one's.
+	started = "999"
 	for _, now := range []int{20, 60} {
 		if total, since := r.read(at(now)); total != 20*time.Second || !since.IsZero() {
 			t.Errorf("at +%ds, another process with the pid: %v since %v, want 20s and not waiting", now, total, since)

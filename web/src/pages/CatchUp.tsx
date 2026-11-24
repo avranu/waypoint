@@ -44,7 +44,6 @@ export function CatchUpPage() {
   const [dialog, setDialog] = useState<'' | 'not-finished' | 'problem'>('')
   const prev = () => setIndex(Math.max(at - 1, 0))
   const next = () => setIndex(Math.min(at + 1, n - 1))
-  // Ask the DOM whether a dialog is open, not state: state set as a lightbox closes enables the arrow shortcut a render late, dropping keys pressed in between.
   const free = () => !document.querySelector('[role="dialog"]')
   useHotkey('ArrowLeft', () => free() && prev(), { enabled: n > 1 })
   useHotkey('ArrowRight', () => free() && next(), { enabled: n > 1 })
@@ -576,7 +575,6 @@ async function grabScreen(): Promise<File | null> {
     video.muted = true
     video.srcObject = stream
     await video.play()
-    // The first frame can be blank until the stream has one to show.
     await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
     const canvas = document.createElement('canvas')
     canvas.width = video.videoWidth

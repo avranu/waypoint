@@ -7,8 +7,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// settings are the person's own, not a project's: what runs on a person's machine is that person's decision; a repo set overrides field by field
-
 // SessionSettings are the Claude Code options a session starts with. Unset
 // (nil, "") leaves the choice to the launch, then to Claude Code.
 type SessionSettings struct {

@@ -84,7 +84,6 @@ func TestQuiesceGoalsOutwaitsSettleCap(t *testing.T) {
 	g.mu.Lock()
 	g.running, g.idle = true, recompute
 	g.mu.Unlock()
-	// Free the release on every exit, so a failed check does not leave a goroutine blocked on it.
 	freed := sync.OnceFunc(func() { close(release) })
 	defer freed()
 	var over atomic.Bool
@@ -96,7 +95,7 @@ func TestQuiesceGoalsOutwaitsSettleCap(t *testing.T) {
 		g.mu.Unlock()
 		close(recompute)
 		time.Sleep(50 * time.Millisecond)
-		over.Store(true) // before the flag clears, so a re-check never sees it idle first
+		over.Store(true)
 		g.mu.Lock()
 		g.judging = false
 		g.mu.Unlock()
@@ -105,7 +104,6 @@ func TestQuiesceGoalsOutwaitsSettleCap(t *testing.T) {
 
 	start := time.Now()
 	e.s.goalsSettle(e.ctx)
-	// The 1s bound sits far above the 20ms cap, so a loaded race run does not flake.
 	if took := time.Since(start); took > time.Second {
 		t.Fatalf("goalsSettle took %s, not its 20ms cap", took)
 	}
@@ -270,7 +268,7 @@ func TestQuiesceGoalsCancelsABackOffPass(t *testing.T) {
 		t.Fatal("no back-off pass armed")
 	}
 	e.s.quiesceGoals(t)
-	e.s.judgeTimerFired(gen) // Fires the timer's callback after quiesce with a stale generation, which must start nothing.
+	e.s.judgeTimerFired(gen)
 	g.mu.Lock()
 	timer, judging := g.judgeTimer, g.judging
 	g.mu.Unlock()

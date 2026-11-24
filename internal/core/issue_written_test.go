@@ -62,7 +62,6 @@ func TestIssueWritten(t *testing.T) {
 		t.Fatalf("written against what runs now: %+v", w)
 	}
 
-	// Legacy rows without written_* columns are backfilled from deployment history.
 	if _, err := x.s.db.W.ExecContext(x.ctx, `UPDATE issues SET written_env = NULL, written_version = '', written_commit = ''`); err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +90,6 @@ func TestIssueWritten(t *testing.T) {
 	if w := get(first.Key); w == nil || w.Environment != "production" || w.Version != "1.0.0" || w.Releases != 2 {
 		t.Fatalf("backfill: written against 1.0.0: %+v", w)
 	}
-	// Backfill reads only environments deployed before the issue was written.
 	if w := get(onStaging.Key); w != nil {
 		t.Fatalf("backfill: production had nothing yet: %+v", w)
 	}

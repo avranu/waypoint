@@ -8,8 +8,6 @@ import (
 	"time"
 )
 
-// A held wp ship waits for the review round's next step and prints it, rather than exiting (each exit costs the agent a turn end and a prompt); run it in the background so the agent is woken when it exits.
-
 // shipWaitDefault bounds the wait. shipWaitMax is the longest it may run
 // from the start of the wp ship process: it stays under shipBgFresh so a
 // marker written at its end still counts for the background call. Claude Code
@@ -83,7 +81,7 @@ func (c *cli) waitShipNews(task string, bound time.Duration, announce func()) (*
 		if err != nil {
 			var ae *apiError
 			if errors.As(err, &ae) && (ae.status == http.StatusNotFound || ae.status == http.StatusMethodNotAllowed) {
-				return true, nil // an older server
+				return true, nil
 			}
 			return false, err
 		}
@@ -176,7 +174,7 @@ func (c *cli) waitHeldShip(f prOpenFlags, so shipOpts, o *openedPR, raw []byte, 
 		return o, raw, false, nil
 	case n.Outcome == "pull":
 		c.println(cmpStr(n.Text, n.pullLine()))
-		*f.review, *f.force = false, false // the round ran: this only finds its pull request
+		*f.review, *f.force = false, false
 		o2, raw2, err := reopenPR(c, f)
 		if err != nil {
 			return nil, nil, true, err
@@ -186,8 +184,6 @@ func (c *cli) waitHeldShip(f prOpenFlags, so shipOpts, o *openedPR, raw []byte, 
 	if notes := o.heldNotes(); notes != "" {
 		c.println(notes)
 	}
-	// Acked only once written: a ship that dies or can't write before this
-	// leaves the findings queued, and they are typed as before.
 	if _, err := fmt.Fprintln(c.out, n.Text); err != nil {
 		return nil, nil, true, fmt.Errorf("printing the review's findings: %w", err)
 	}

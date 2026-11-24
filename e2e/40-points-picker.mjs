@@ -66,7 +66,6 @@ for (const vp of looks([
   const issue = await api.post("/issues", { project: key, title: "Points label" });
 
   await page.goto(`${base}/issue/${issue.key}`);
-  // Picking a field from More opens its picker at once; this closes it before the face is checked.
   const more = page.locator('[aria-label="More fields"]:visible');
   if (await more.count()) {
     await more.first().click();
@@ -78,7 +77,6 @@ for (const vp of looks([
   await points.waitFor();
   const estimate = page.getByRole("button", { name: /Estimate with AI/ });
 
-  // The strip reads "Points"; the side panel's labelled row reads "None".
   const face = (await points.textContent()).trim();
   ok(face === "Points" || face === "None", `${tag}: unset reads short (${face})`);
   ok((await estimate.count()) === 0, `${tag}: no Estimate button beside the control`);
@@ -92,7 +90,6 @@ for (const vp of looks([
   await page.screenshot({ path: `${out}/${tag}-picker-result.png` });
   await use.click();
   await page.locator('[title="Story points"]:visible').getByText("5 pts").waitFor();
-  // The label updates before the save lands, so the stored value is polled.
   let saved = null;
   for (let i = 0; i < 20; i++) {
     saved = (await api.get("/issues/" + issue.key)).points;

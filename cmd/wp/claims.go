@@ -164,8 +164,6 @@ func cmdClaims(c *cli, args []string) error {
 		if err := c.updateState(func(s *State) {
 			dropped = 0
 			for _, r := range dead {
-				// Only the claim that was read: another command may have
-				// replaced it since.
 				if cl := s.Claims[r.Dir]; cl != nil && cl.Key == r.Key && cl.ClaimedAt.Equal(r.Since) {
 					delete(s.Claims, r.Dir)
 					dropped++
@@ -317,9 +315,6 @@ func cmdPRUnlink(c *cli, args []string) error {
 		}
 		want[strings.ToUpper(k)] = true
 	}
-	// missing tracks the named keys not found yet; want stays whole, so
-	// unlinking the first named key doesn't open the filter to the rest
-	// (WP-487).
 	missing := maps.Clone(want)
 	removed := 0
 	for _, is := range d.Issues {

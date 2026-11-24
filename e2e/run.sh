@@ -1,29 +1,20 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")"
-# PORT defaults to a free one picked by the OS: CI runners host several jobs at
-# once, and a fixed port let one job's suites talk to another job's server.
 free_port() { node -e 'const s=require("net").createServer().listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})'; }
 export BIN=${BIN:-$(realpath ../bin/waypoint)}
 export DIR=${DIR:-$PWD/out}
 rm -rf "$DIR" && mkdir -p "$DIR"
 [ -d node_modules/playwright ] || npm ci --no-audit --no-fund
-# a --shard lane runs after its parent installed: two installs side by side
-# into ~/.cache/ms-playwright could race
 [ -n "${E2E_LANE:-}" ] || npx playwright install chromium >/dev/null
 if [ "${1:-}" = --shard ]; then
-  # Each lane is its own run.sh with its own server, database and port, so lanes can run side by side.
   lanes=${E2E_LANES:-2}
   [[ $lanes =~ ^[1-9][0-9]*$ ]] || { echo "E2E_LANES=$lanes?" >&2; exit 2; }
   [[ ${2:-} =~ ^([0-9]+)/([0-9]+)$ ]] || { echo "--shard I/N, not '${2:-}'" >&2; exit 2; }
   i=${BASH_REMATCH[1]} n=${BASH_REMATCH[2]}
   pids=() ports=" "
-  # a cancelled run takes its lanes, their browsers and servers with it
-  # (all in this process group)
   trap 'trap - TERM INT; kill 0 2>/dev/null; exit 143' TERM INT
   for j in $(seq 1 "$lanes"); do
-    # a later lane's failure must not leave the earlier lanes running: kill
-    # the group, but not through the TERM trap, which would exit 143
     list=$(node shard.mjs "$(((i - 1) * lanes + j))/$((n * lanes))") || { trap '' TERM INT; kill 0 2>/dev/null; exit 2; }
     mapfile -t picked <<<"$list"
     [ -n "$list" ] || picked=()

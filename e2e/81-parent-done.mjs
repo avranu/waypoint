@@ -40,7 +40,6 @@ async function run(width, scheme) {
   const refused = await api("PATCH", `/issues/${parent.key}`, { status: "done" });
   ok(refused.status === 400 && JSON.stringify(refused.body).includes(a.key) && !JSON.stringify(refused.body).includes(b.key), `${tag} the API refuses and names only the open sub-task: ${refused.status} ${JSON.stringify(refused.body)}`);
 
-  // The sub-task is In Progress, so the only "To Do" button is the parent's.
   await page.goto(`${base}/issue/${parent.key}`);
   await page.locator('button[title="To Do"] >> visible=true').first().click();
   const done = page.getByRole("option", { name: /^Done/ }).filter({ hasText: "1 sub-task open" });

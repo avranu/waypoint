@@ -49,7 +49,6 @@ func TestAuditDiffWritesTheWholeChange(t *testing.T) {
 	write("internal/core/big.go", "package core\n\n"+big.String())
 	write("web/src/zebra.ts", "export const zebraQuokka = 4177;\n")
 	write("go.sum", "noise\n")
-	// Paths a pull request review leaves out (generated, vendored, snapshots) are noise to the audit too.
 	noise := []string{"web/dist/app.js", "api/zz_generated.deepcopy.go", "deploy/prod.sops.env", "web/src/__snapshots__/a.snap", "web/public/icon.svg", "vendor/x/y.go"}
 	for _, n := range noise {
 		write(n, "noise\n")

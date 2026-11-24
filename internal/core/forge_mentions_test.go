@@ -33,7 +33,6 @@ func (pe *prEnv) mentionOf(key, url string) *ForgeMention {
 // edit, a comment or a merge treat as such (WP-379).
 func TestForgeMentionsLinkOwnWorkOnly(t *testing.T) {
 	pe := newPREnv(t, "github")
-	// Opening a pull request doesn't move its issue; a link that did move it is not undone when the text drops the link.
 	autos, err := pe.s.ListAutomations(pe.ctx, pe.admin, pe.p.Key)
 	if err != nil {
 		t.Fatal(err)

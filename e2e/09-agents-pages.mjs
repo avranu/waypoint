@@ -32,7 +32,6 @@ async function run(width, scheme) {
     (r) =>
       r.status() >= 400 &&
       r.url().includes("/api/") &&
-      // a used-up device code is expected to 404 once approved
       !r.url().includes("/cli/login/") &&
       fail(`${tag} http ${r.status()} ${r.request().method()} ${r.url()}`),
   );
@@ -40,7 +39,6 @@ async function run(width, scheme) {
     page.request
       .fetch(base + "/api/v1" + p, { method: m, headers: H, data: d })
       .then((r) => (r.status() === 204 ? null : r.json()));
-  // Poll the API until a saved change shows up (picker clicks save asynchronously).
   const until = async (get, done) => {
     let v;
     for (let i = 0; i < 100; i++) {
@@ -190,8 +188,6 @@ async function run(width, scheme) {
   await page.getByRole("menuitem", { name: "New sub-page" }).click();
   await page.waitForURL((u) => !u.pathname.endsWith(`/${id}`));
   const child = Number(page.url().split("/").pop());
-  // The new page's data must be loaded before its actions menu opens: a menu
-  // opened on the still-loading view is torn down when the page swaps in.
   await page.waitForFunction(
     () =>
       document.querySelector('[aria-label="Page title"]')?.value === "Untitled",

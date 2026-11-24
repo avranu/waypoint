@@ -167,7 +167,7 @@ func saDiscover(projects string, names, only []string, since time.Duration) []sa
 				if have[key] && gz {
 					return nil
 				}
-				if !gz && have[key] { // a plain transcript replaces a .gz copy of the same subagent
+				if !gz && have[key] {
 					for i := range out {
 						if filepath.Join(filepath.Dir(out[i].Path), saStem(out[i].Path)) == key {
 							out[i] = saFile{p, s.Name(), false}
@@ -435,7 +435,6 @@ func measureSubagents(files []saFile) (*saReport, error) {
 			}
 			rep.spans = append(rep.spans, saSpan{a.Session, a.ID, c.Pattern, c.Sub, c.Name, c.Cmd, a.Path, c.Line, c.TS, c.Mins})
 		}
-		// post-handback work is counted even when the call was also counted as another pattern
 		for k, s := range a.PostHandbackByKind {
 			r := rows["post:"+k]
 			r.agentSet[key] = true

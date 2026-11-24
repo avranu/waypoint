@@ -24,7 +24,6 @@ func TestNextShowsKeylessDoneForTheOnlyTask(t *testing.T) {
 	if out = s.wp("next", first, "--no-brief"); !strings.Contains(out, "`wp ship -m") {
 		t.Errorf("asked again, still the one:\n%s", out)
 	}
-	// While a session holds more than one task, commands name the key, so neither is finished by mistake.
 	if out = s.wp("next", second, "--no-brief"); !strings.Contains(out, "`wp ship "+second+" -m") {
 		t.Errorf("second task:\n%s", out)
 	}

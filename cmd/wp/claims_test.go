@@ -47,7 +47,7 @@ func TestClaimForCheckoutBoundary(t *testing.T) {
 	plain := mkdir(t, root, "parent", "plain", "deeper")
 	parent := filepath.Join(root, "parent")
 
-	for _, recorded := range []bool{false, true} { // Claims from before checkouts were recorded must still resolve.
+	for _, recorded := range []bool{false, true} {
 		mk := func(key, dir string) *claim {
 			cl := &claim{Key: key}
 			if recorded {

@@ -14,8 +14,6 @@ import (
 	"time"
 )
 
-// A resource crossing into low fires system.resources_low once, not again within an hour however it flaps.
-
 // ResourceLimits are the thresholds; zero turns a check off.
 type ResourceLimits struct {
 	DiskFreeMB    int `json:"disk_free_mb"`   // free space on the data disk

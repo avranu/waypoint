@@ -24,7 +24,7 @@ func queueable(pr *PullRequest, reasons []string) bool {
 		case reasonBehind(pr.BaseRef):
 		case reasonDraft:
 			if !pr.WipAuto {
-				return false // Only a draft Waypoint itself opened (WipAuto) is one the line may mark ready.
+				return false
 			}
 		default:
 			return false

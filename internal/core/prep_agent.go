@@ -180,8 +180,6 @@ func (s *Service) queuePrepAgent(ctx context.Context) {
 		case err == nil:
 			return
 		case errors.Is(err, errPrepAgentNever), errors.Is(err, errPrepTextChanged):
-			// A done task's text won't change back: what was said since may
-			// give the answer away, so it is never a backtest.
 			s.keepPrepAgentTrial(ctx, c.issue, c.hash, 0, "", "", "", "not queued: "+err.Error())
 		default:
 			s.log.Info("prep agent: backtest not queued yet", "issue", c.issue, "err", err)
@@ -277,8 +275,6 @@ func (s *Service) startPrepAgent(ctx context.Context, issueID, projectID int64, 
 	if repo == nil {
 		return fmt.Errorf("%w: no repository of the project is %q", errPrepAgentNever, repoName)
 	}
-	// The task and repo go only to the runner that made the prep: a name
-	// that more than one person's runners hold doesn't say whose it was.
 	var owner int64
 	var owners int
 	if err := s.db.R.QueryRowContext(ctx, `SELECT coalesce(MIN(owner_id), 0), COUNT(DISTINCT owner_id) FROM runners WHERE name = ? COLLATE NOCASE`, machine).Scan(&owner, &owners); err != nil {

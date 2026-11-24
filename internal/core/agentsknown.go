@@ -9,8 +9,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Only identities with work visible to the actor's projects are listed.
-
 // KnownAgent is an agent identity seen at work.
 type KnownAgent struct {
 	Identity string `json:"identity"` // provider/model, as agents say it

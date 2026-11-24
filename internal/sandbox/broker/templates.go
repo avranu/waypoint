@@ -5,8 +5,6 @@ import (
 	"strings"
 )
 
-// the server, not this file, picks a session's templates and adds a person's exceptions.
-
 var readOnly = []string{"GET", "HEAD"}
 
 func getAnywhere(template string, hosts ...string) []Rule {

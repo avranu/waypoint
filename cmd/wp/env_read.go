@@ -19,8 +19,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Credentials are named by variable and never printed; redirects stay on the environment's host; agents read only environments a person vouched for.
-
 var envVouchCmd = &command{
 	name: "vouch", args: "NAME [--url ADDRESS] [FLAGS]", aliases: []string{"allow"},
 	summary: "let agents read from an environment (a person does it; an agent asks one)",
@@ -249,7 +247,7 @@ func (c *cli) envReadHere(project string) error {
 	repo, inRepo := gitRepoHere()
 	if inRepo && repo != "" {
 		if sc, err := c.repoScope(repo); err == nil && !sc.all() {
-			for _, p := range sc.direct() { // Same scope as the guard's env_hosts: only the repo's own projects.
+			for _, p := range sc.direct() {
 				if strings.EqualFold(p.Key, project) {
 					return nil
 				}
@@ -378,7 +376,6 @@ func envReadRequest(u *url.URL, bearer string, headers []string, getenv func(str
 		req.Header.Set("Authorization", "Bearer "+v)
 	}
 	for _, h := range headers {
-		// Some servers honor method-override headers and turn a GET into a write, so any header naming a method is refused.
 		if name, val, ok := strings.Cut(h, ":"); ok {
 			if methodHeader(strings.TrimSpace(name)) {
 				return nil, nil, errors.New("wp env read only reads (GET): no header naming a method")

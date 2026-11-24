@@ -45,7 +45,7 @@ type keyUsageLLM interface {
 // Nothing was sent, so callers don't count it as a failed try.
 type aiWaitError struct {
 	until time.Time
-	why   string // surplus: no spare capacity for optional work
+	why   string
 }
 
 func (e *aiWaitError) Error() string {
@@ -165,9 +165,6 @@ func (s *Service) noteWait(ctx context.Context, pid int64, names string, err err
 	if le.dailyQuota() {
 		until := nextUTCMidnight(now)
 		if s.gatewayWith(ctx, GatewayKey) != pid {
-			// No GET /key to see the limit raised, and on a stock
-			// endpoint insufficient_quota is spent credit, which a top-up
-			// ends: look again in a while, not at midnight.
 			until = now.Add(stockQuotaWait)
 		}
 		if wait > 0 {

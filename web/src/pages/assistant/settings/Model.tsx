@@ -1,5 +1,3 @@
-// The deploy pins the provider and its endpoint (both point at the gate); the picker disables every other provider.
-
 import { useId, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'

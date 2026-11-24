@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// an arm is drawn for agents only after prepOfflineMin tasks scored beside the chat prep; agentic offline picks use the prep's commit and the task's text as it was
-
 const (
 	// prepOfflineMin: tasks scored beside the chat prep before an arm is
 	// drawn for agents.
@@ -192,7 +190,6 @@ func (s *Service) prepOffline(ctx context.Context, rows []*prepRow) ([]PrepOffli
 			}
 			key := f.Path
 			if f.Repo != "" && repo != "" && !strings.EqualFold(f.Repo, repo) {
-				// a file in a repository the prep didn't read is keyed by repo: no pick of this prep can name it
 				key = f.Repo + "\x00" + f.Path
 			}
 			opened[key] = true

@@ -11,8 +11,6 @@ import (
 	"time"
 )
 
-// Computed from hourly buckets so months of data stay fast; a person sees only their own usage, and admins anyone's.
-
 // UsageQuery narrows the usage shown.
 type UsageQuery struct {
 	Days     int    // the period, ending now (default 30, at most 365)
@@ -399,7 +397,7 @@ func (s *Service) repoProjects(ctx context.Context, actor *Actor) (map[string]st
 		if err := rows.Scan(&repo, &key); err != nil {
 			return nil, err
 		}
-		out[repo] = key // the lowest project id wins: the loop ends on it
+		out[repo] = key
 	}
 	return out, rows.Err()
 }
@@ -572,8 +570,6 @@ func (s *Service) usageMachines(ctx context.Context, sc *usageScope) ([]UsageMac
 	default:
 		where = "0"
 	}
-	// One row per person's machine, merged by name here: a name two people
-	// share is one line, with each person's unknown-kind counts added up.
 	// #nosec G202 -- where is built from fixed conditions; values are bound
 	rows, err := s.db.R.QueryContext(ctx, `SELECT machine, last_sync_at, last_status_at, wp_version, parsed, skipped, unknown,
 			transcript_pending_bytes, transcript_pending_files, transcript_dropped, transcript_status_at, transcript_piece_at,
@@ -625,7 +621,7 @@ func (s *Service) usageMachines(ctx context.Context, sc *usageScope) ([]UsageMac
 		for k, v := range m.Unknown {
 			o.Unknown[k] += v
 		}
-		o.Version = cmp(m.Version, o.Version) // rows come oldest sync first: the newest version wins
+		o.Version = cmp(m.Version, o.Version)
 		if m.LastSyncAt != nil && (o.LastSyncAt == nil || m.LastSyncAt.After(*o.LastSyncAt)) {
 			o.LastSyncAt = m.LastSyncAt
 		}
@@ -723,7 +719,6 @@ func (s *Service) usageTokens(ctx context.Context, sc *usageScope, book *priceBo
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	// The daily series: hour buckets into the person's days.
 	// #nosec G202 -- as above
 	rows, err = s.db.R.QueryContext(ctx, `SELECT hour, model, sum(messages), sum(input), sum(output), sum(cache_write_5m), sum(cache_write_1h), sum(cache_read)
 		FROM usage_hours WHERE `+where+` GROUP BY hour, model`, args...)

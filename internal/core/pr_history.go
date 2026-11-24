@@ -1,7 +1,5 @@
 package core
 
-// The periodic refresh fills in missed events but never sets bots off on old pull requests.
-
 import (
 	"context"
 	"crypto/sha256"
@@ -98,8 +96,6 @@ func parsePRReview(event, action string, number int, sender, commit string, rv *
 	if rv != nil {
 		body = rv.Content
 	}
-	// Forgejo gives reviews no id: one review is one person's kind of review
-	// with this text at this head.
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%s|%d|%s", out.kind, sender, commit, number, body)))
 	out.ForgeComment = ForgeComment{ID: "fr" + hex.EncodeToString(sum[:8]), Author: sender, Body: body}
 	return out
@@ -480,8 +476,6 @@ func (s *Service) refreshPR(ctx context.Context, f *Forge, repo string, fp *Forg
 	settled := fp.State == "closed" || fp.State == "merged"
 	switch {
 	case old != nil && old.HeadSHA == "" && !settled && fp.HeadSHA != "":
-		// Recorded headless a sync ago and its webhook never came: take it
-		// as that webhook, or it never gets reviewed, followed or merged.
 		s.onForgePull(ctx, f, repo, fp)
 		return nil
 	case old == nil && !settled:
@@ -503,8 +497,6 @@ func (s *Service) refreshPR(ctx context.Context, f *Forge, repo string, fp *Forg
 		codingAgent(fp.Body, fp.Author), codingAgent(fp.Body, fp.Author),
 		nullIntP(fp.Additions), nullIntP(fp.Deletions), nullIntP(fp.ChangedFiles), nullIntP(fp.Commits), headRepoOf(fp, repo), headRepoOf(fp, repo), old.ID)
 	if err == nil && !settled && old.ArmedAt == nil && s.autoArm(ctx, old.ID) {
-		// Merge automatically armed it (WP-133): an open pull request whose
-		// webhook came before the setting did.
 		bg := context.WithoutCancel(ctx)
 		s.goBG(func() { s.maybeAutoMerge(bg, old.ID) })
 	}
@@ -514,9 +506,6 @@ func (s *Service) refreshPR(ctx context.Context, f *Forge, repo string, fp *Forg
 	if err != nil || fp.Mergeable == nil || settled {
 		return err
 	}
-	// Whether it merges cleanly changes with no webhook: the base moved, or
-	// the forge finished working it out after a push (it says "no" while it
-	// checks). An armed pull request that now merges may be ready.
 	if err := s.noteMergeable(ctx, s.db.W, old, false, fp.Mergeable); err != nil {
 		return err
 	}

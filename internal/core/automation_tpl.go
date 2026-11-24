@@ -97,7 +97,6 @@ var templateFuncs = template.FuncMap{
 		}
 		return string(b)
 	},
-	// Text from outside (forge comments, webhooks, issues) is data a model reads, never instructions; its closing tags are stripped so it cannot end the wrapper.
 	"untrusted": func(v any) string { return untrustedText(anyString(v)) },
 	"truncate": func(n int, v any) string {
 		r := []rune(anyString(v))

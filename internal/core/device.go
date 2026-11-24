@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// The token is minted only when the CLI collects it, so no usable token sits in the database while the login waits.
-
 // EvTokenCreated is a CLI token being handed out; it reaches only its owner.
 const EvTokenCreated = "token.created"
 
@@ -80,9 +78,6 @@ func (s *Service) StartDeviceLogin(ctx context.Context, name, agent, ip, userAge
 	if err != nil {
 		return nil, err
 	}
-	// A few waiting logins per address, so one client can't crowd out the
-	// rest. Counting and inserting is one statement, so a burst of
-	// concurrent starts can't all pass the count.
 	now := s.nowMS()
 	res, err := s.db.W.ExecContext(ctx, `INSERT INTO device_logins(device_hash, user_code, name, agent, ip, user_agent, created_at, expires_at)
 		SELECT ?,?,?,?,?,?,?,? WHERE
@@ -183,7 +178,6 @@ func (s *Service) PollDeviceLogin(ctx context.Context, deviceCode string) (strin
 		if uid == 0 {
 			return nil
 		}
-		// Reading and deleting share one write transaction, so two polls can't both collect the same login.
 		if _, err := t.ExecContext(ctx, `DELETE FROM device_logins WHERE device_hash = ?`, hash); err != nil {
 			return err
 		}

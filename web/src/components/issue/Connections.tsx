@@ -223,8 +223,6 @@ export function parseRelation(text: string): {
   const t = text.trimStart()
   for (const [re, kind, subkind] of PHRASES) {
     const m = re.exec(t)
-    // A phrase alone is still being typed ("dup" may become "duplicates"); it
-    // counts once a space follows it.
     if (m && t.length > m[0].length && /[\s:]/.test(t[m[0].length]))
       return { kind, subkind, rest: t.slice(m[0].length).replace(/^[\s:]+/, '') }
   }
@@ -250,8 +248,6 @@ function AddRelation({
   const [text, setText] = useState('')
   const [active, setActive] = useState(0)
   const [moved, setMoved] = useState(false)
-  // Enter before the search answers waits for it, then takes the top match,
-  // never a row the list still shows for the words before.
   const [waiting, setWaiting] = useState(false)
   const [busy, setBusy] = useState(false)
   const typed = parseRelation(text)
@@ -259,7 +255,6 @@ function AddRelation({
   const subkind = typed.kind ? (typed.subkind ?? '') : pickedSub
   const query = typed.rest.trim()
   const d = useDebounced(query, 150)
-  // A related pair stays a candidate: it can still become a duplicate or blocker, so the search asks for more.
   const linked = new Set([
     issue.key,
     ...issue.relations
@@ -458,7 +453,6 @@ export function LinksBlock({
       setUrl('')
       box.current?.focus()
       refresh()
-      // Titles/states are fetched in the background; look again shortly.
       setTimeout(refresh, 1500)
     },
     onError: toastError,

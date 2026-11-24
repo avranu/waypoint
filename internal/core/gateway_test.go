@@ -250,7 +250,6 @@ func TestEnsureLLMGateway(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The gateway's root is given; Waypoint appends /v1 for its OpenAI API (gatewayBase).
 	if err := e.s.EnsureLLMGateway(e.ctx, GatewaySetup{BaseURL: gw.URL, APIKey: "olm_test", Extensions: GatewayExtensions}); err != nil {
 		t.Fatal(err)
 	}
@@ -466,7 +465,6 @@ func TestStockGateway(t *testing.T) {
 		t.Error("extensions not taken up")
 	}
 	leads("routes declared", gatewayModels)
-	// Dropping routes hands the tasks back to a model, since a gateway without routes doesn't answer route requests.
 	if err := e.s.EnsureLLMGateway(e.ctx, GatewaySetup{APIKey: "olm_test"}); err != nil || e.s.gatewayWith(e.ctx, GatewayExtensions...) != pid {
 		t.Errorf("unset extensions = %v, provider %d", err, e.s.gatewayWith(e.ctx, GatewayExtensions...))
 	}
@@ -641,7 +639,6 @@ func TestOpenLLMsSiteCarriesOver(t *testing.T) {
 		}
 	}
 	same("legacy start")
-	// Dropping routes needs a model: otherwise chains keep routes the gateway is said not to answer.
 	if err := e.s.EnsureLLMGateway(e.ctx, GatewaySetup{APIKey: "olm_test", Extensions: []string{GatewayKey}}); err == nil {
 		t.Error("routes dropped without a model")
 	}

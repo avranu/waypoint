@@ -10,8 +10,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Mentions are automatic links rebuilt on every save, kept apart from deliberate links.
-
 // termLinkCap is the most glossary terms one issue's text links on their
 // own; [[term]] is never counted.
 const termLinkCap = 10
@@ -179,7 +177,6 @@ func (s *Service) mentionTargets(ctx context.Context, q queryer, projectID, issu
 			add(typ, id)
 		}
 	}
-	// Glossary terms come from the description only: comment saves pass an empty one, so they skip the glossary query.
 	words := wordTokens(unscannedRE.ReplaceAllString(proseOnly(desc), " "))
 	if len(words) == 0 {
 		return out
@@ -222,7 +219,6 @@ func (s *Service) syncIssueMentions(ctx context.Context, t *tx, actor *Actor, is
 	if err := t.QueryRowContext(ctx, `SELECT project_id, title, description FROM issues WHERE id = ?`, issueID).Scan(&projectID, &title, &desc); err != nil {
 		return 0, 0, err
 	}
-	// a link is credited to whoever wrote the text naming it; a person's text beats an agent's for the same target
 	want := map[autoEnd]autoCredit{}
 	credit := func(c autoCredit, ends []autoEnd) {
 		for _, e := range ends {

@@ -100,7 +100,6 @@ for (const [width, scheme] of looks(
     ok((await summary.innerText()).includes(String(liveCount)) && /Oldest waiting/.test(await summary.innerText()), `${tag} the summary counts ${liveCount} and says what waited longest`);
     ok(/comments/.test(await summary.getByRole("list", { name: "By kind" }).innerText()), `${tag} the summary counts by kind`);
     const badge = await page.locator("aside a[href='/inbox'], nav a[href='/inbox']").filter({ visible: true }).first().innerText();
-    // Other suites leave requests waiting on you open, so the badge expectation adds them.
     const waitingTotal = (await api("/waiting")).total ?? 0;
     ok(badge.match(/\d+/)?.[0] === String(liveCount + waitingTotal), `${tag} the badge counts what matters (${JSON.stringify(badge)}: ${liveCount} live + ${waitingTotal} waiting), not the ${inbox.summary.unread} unread`);
     ok(await page.getByRole("heading", { name: "Asked of you" }).isVisible(), `${tag} sorted into tiers`);
@@ -168,7 +167,6 @@ for (const [width, scheme] of looks(
     ok(lateGroup()?.unread === 1, `${tag} a notification that arrived after the view stays unread (${lateGroup()?.unread})`);
     ok((await api("/inbox/counts")).live_unread === late.summary.live_unread, `${tag} the badge's counts match the page's`);
 
-    // Mark all read marks only what the view showed; a row that lands while the request is in flight stays unread.
     await page.reload();
     await page.getByRole("button", { name: "Mark all read" }).waitFor();
     await page.route("**/api/v1/notifications/read", async (r) => {

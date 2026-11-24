@@ -30,7 +30,7 @@ func (se *shipEnv) prHook(action string, pr ForgePR) {
 	se.t.Helper()
 	se.fg.setPR(se.f, "me/app", pr, sampleDiff)
 	head := map[string]any{"ref": pr.HeadRef, "sha": pr.HeadSHA, "repo": map[string]any{"full_name": cmp(pr.HeadRepo, "me/app")}}
-	if pr.HeadRepo == "-" { // a HeadRepo of "-" makes the forge omit the head's repository
+	if pr.HeadRepo == "-" {
 		delete(head, "repo")
 	}
 	labels := []map[string]string{}
@@ -129,7 +129,6 @@ func TestMergeAutomaticallyArms(t *testing.T) {
 		t.Error("the setting armed again what a person disarmed")
 	}
 
-	// Pull requests open before the setting existed are marked by the migration, so an edit doesn't arm them and their next push does.
 	se.prHook("opened", pr(16, "Old work", "o"))
 	se.prHook("opened", pr(17, "Older work", "o2"))
 	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE pull_requests SET armed_at = NULL, armed_agent = '', arm_declined = 2 WHERE number IN (16, 17)`); err != nil {
@@ -205,7 +204,6 @@ func TestDisarmStopsAnArmedMerge(t *testing.T) {
 	se.sg.setChecks("1111111aaaa", CommitCheck{Name: "ci / backend (pull_request)", State: CheckSuccess})
 	se.poll()
 	pr := se.pr(5)
-	// The armed merge acted on a read taken before a person disarmed it, so the merge must re-read and refuse.
 	_, err := se.s.mergeNow(se.ctx, se.admin, pr, MergeInput{armed: true}, "armed by test")
 	if !IsInvalid(err) || !strings.Contains(err.Error(), "taken off") || len(se.sg.merged()) != 0 {
 		t.Fatalf("merged a disarmed pull request: %v %+v", err, se.sg.merged())
@@ -490,7 +488,6 @@ func TestMergeAutomaticallyByBaseArms(t *testing.T) {
 		t.Error("an agent's arming stayed after a retarget into the default branch")
 	}
 
-	// The default branch remembered as main may be stale: arming uses it, but the merge asks the forge afresh and takes the arming off.
 	setDefault("trunk")
 	se.prHook("opened", pr(5, "trunk"))
 	se.prHook("opened", pr(6, "release/v1"))

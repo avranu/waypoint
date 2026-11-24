@@ -2,19 +2,6 @@ package core
 
 import "fmt"
 
-// The merge line's planner (WP-1659, WP-ADR152). A line is the armed pull
-// requests of one base of one repo whose heads are settled, in order. The
-// line pushes to no branch of a pull request that rides a candidate: it tests
-// candidates, each a branch whose run merges the base's tip and the heads of the line's first
-// places in order and runs the full tier on the result, and merges the
-// front on a candidate that passed. A front that can't ride one is brought up
-// to date on its own branch.
-//
-// planLine is the only place that decides what a line does. It reads one
-// snapshot and returns actions; lineStep gathers the snapshot and carries
-// them out. It reads no clock, database or forge, so every rule has a table
-// test.
-
 // lineDepth: the places that get a candidate of their own.
 const lineDepth = 3
 
@@ -24,7 +11,7 @@ const (
 	candPassed   = "passed"
 	candFailed   = "failed"
 	candConflict = "conflict"
-	candLost     = "lost" // no run came, or it never ended: not the heads' fault
+	candLost     = "lost"
 )
 
 // lineEntry is a settled pull request in the line.
@@ -99,8 +86,8 @@ const (
 	endRefused     = "refused"
 	endDuplicate   = "duplicate"
 	endBatchSplit  = "batch_split"
-	endUnreadable  = "unreadable" // a live row that could not be read; it says nothing about the forge
-	endBaseRed     = "base_red"   // failed only what the base's tip fails: not the heads' account, tried again once the tip moves or turns green
+	endUnreadable  = "unreadable"
+	endBaseRed     = "base_red"
 )
 
 type lineActionKind string
@@ -168,14 +155,6 @@ func planLine(s lineSnap) []lineAction {
 		return nil
 	}
 	var acts []lineAction
-	// While the base's tip fails, the line tests one place at a time and the
-	// candidate's own run says whether the base's failure matters: a pass
-	// merges, a failure of only what fails on the base ends as base_red (no
-	// one is ejected) and the line waits for the base. No hold is placed on
-	// the base's status alone: jobs that run only on the base (advisories,
-	// scheduled runs) can't be passed by any head, so such a hold would
-	// never lift.
-	// by[n]: the live candidate that tests exactly the first n places.
 	by := map[int]lineCand{}
 	for _, c := range s.Cands {
 		n := c.covers(s.Entries)
@@ -197,9 +176,6 @@ func planLine(s lineSnap) []lineAction {
 	}
 	front := s.Entries[0]
 
-	// The front merges: on its own head when that holds the tip and passed
-	// the full tier, else on any passed candidate that starts with it (a
-	// candidate vouches for all its heads merged in order).
 	if front.OnTip && front.FullPassed {
 		return append(acts, lineAction{Kind: lineMerge, PR: front.PRID})
 	}
@@ -209,8 +185,6 @@ func planLine(s lineSnap) []lineAction {
 		}
 	}
 
-	// A candidate that failed or didn't merge says who leaves. Only the
-	// lowest one is read: those above it tested the same heads and more.
 	ejected := false
 	redEnded := map[string]bool{}
 	for n := 1; n <= len(s.Entries) && !ejected; n++ {
@@ -223,20 +197,13 @@ func planLine(s lineSnap) []lineAction {
 			acts = append(acts, lineAction{Kind: lineEject, PR: c.ConflictPR, Cand: c.ID, Conflict: true, Why: "its head doesn't merge onto the pull requests ahead of it or the base"})
 			ejected = true
 		case c.State == candFailed && c.BaseOnly && s.BaseRed && !s.FrontFixes:
-			// Only what fails on the base failed: not the heads' account. It
-			// ends, the same heads aren't started again on this tip, and the
-			// line waits for the base.
 			acts = append(acts, lineAction{Kind: lineEnd, Cand: c.ID, Why: "it failed only what fails on the base's tip", End: endBaseRed})
 			delete(by, n)
-			// The heads it still tests: those before them merged, and the
-			// same test on this tip is these alone (lineAct records it so).
 			redEnded[candKey(c.Heads[c.Merged:])] = true
 		case c.State == candFailed && !c.Reran:
 			acts = append(acts, lineAction{Kind: lineRerun, Cand: c.ID})
 			by[n] = lineCand{ID: c.ID, State: candRunning}
 		case c.State == candFailed:
-			// A passed candidate below would have merged the front above, so
-			// one below is still going or failed itself.
 			_, has := by[n-1]
 			switch {
 			case n == 1:
@@ -244,9 +211,6 @@ func planLine(s lineSnap) []lineAction {
 				ejected = true
 			case has:
 			default:
-				// A batch: nothing says which head failed it. It ends, and
-				// each place gets a candidate of its own (Tried keeps the
-				// same batch from starting again).
 				acts = append(acts, lineAction{Kind: lineEnd, Cand: c.ID, Why: "the batch failed; its places are tested one by one", End: endBatchSplit})
 				delete(by, n)
 			}
@@ -271,7 +235,7 @@ func planLine(s lineSnap) []lineAction {
 		}
 	}
 	if s.BaseRed {
-		places = min(places, 1) // while the base is red only the front gets a candidate: a batch is the front alone
+		places = min(places, 1)
 	}
 	start := func(n int) bool {
 		heads := entryHeads(s.Entries, n)
@@ -292,7 +256,7 @@ func planLine(s lineSnap) []lineAction {
 	}
 	for n := 1; n <= places; n++ {
 		if n == 1 && front.OnTip && front.FullRunning {
-			continue // the front's own full run is its test
+			continue
 		}
 		start(n)
 	}

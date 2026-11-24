@@ -125,7 +125,6 @@ async function run(width, scheme, key) {
     `${tag} Pick another over an automatic look asks nothing`,
   );
 
-  // The generated color can itself be #ef4444, which would change nothing.
   const swatch = (await project()).color === "#ef4444" ? "#f97316" : "#ef4444";
   await page.getByRole("button", { name: swatch }).first().click();
   ok(

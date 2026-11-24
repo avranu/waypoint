@@ -156,7 +156,6 @@ let api, forgeID;
   const page = await signIn(ctx);
   api = (m, p, d) => page.request.fetch(base + "/api/v1" + p, { method: m, headers: H, data: d }).then((r) => (r.status() === 204 ? null : r.json()));
   await api("POST", "/projects", { name: "CI board", key: KEY });
-  // Other suites leave their own forges and pools on this board; filter by this forge's id.
   const forge = await api("POST", "/forges", { kind: "forgejo", name: "CI board forge", base_url: fake, token: "tok", webhook_secret: "e2e-ci" });
   forgeID = forge.id;
   for (const repo of Object.keys(repos)) await api("POST", `/projects/${KEY}/repos`, { forge_id: forge.id, repo, sync_issues: false });
@@ -167,7 +166,6 @@ let api, forgeID;
   const pool = b.pools.find((p) => p.forge_id === forgeID);
   ok(pool?.source === "runners" && pool.forge_runners.length === 2, `the pool comes from the forge's runners: ${pool?.source}`);
   ok(b.recent.length > 10 && b.stats.length >= 5, `a day of history: ${b.recent.length} finished, ${b.stats.length} jobs`);
-  // Do not close this context: api calls later in the suite use its page's session.
 }
 
 async function look(width, scheme, edit) {
@@ -178,7 +176,6 @@ async function look(width, scheme, edit) {
   page.on("console", (m) => {
     if (m.type() === "error") fail(`${tag} console: ${m.text().slice(0, 300)}`);
   });
-  // The app shell scrolls inside itself, so a fullPage shot misses content unless it is made to grow.
   const shot = async (name) => {
     await page.addStyleTag({ content: "html, body, #root, #root * { overflow: visible !important; } #root, #root > div { height: auto !important; }" });
     await page.screenshot({ path: `${out}/${name}-${width}-${scheme}.png`, fullPage: true });
@@ -283,7 +280,6 @@ async function lookHistory(width, scheme) {
 }
 
 try {
-  // Under E2E_LOOKS=one only this look runs (keep index 3), so it must be the look that sets the pool.
   for (const [w, s, e] of looks([[1280, "dark", false], [390, "light", false], [390, "dark", false], [1280, "light", true]], 3)) await look(w, s, e);
   const ack = await api("POST", "/ci/report", { forge: "CI board forge", host: "e2e-host", labels: ["forgejo-ci"], capacity: 4, cpus: 8,
     memory: 17179869184, disk_total: 107374182400, disk_free: 5368709120, containers: [] });

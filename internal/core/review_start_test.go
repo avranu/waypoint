@@ -6,8 +6,6 @@ import (
 	"time"
 )
 
-// A requested review's audit is asked at the tick after the ship, not at the session's Stop; planning at the Stop finds it.
-
 // auditsOfRound counts the audits asked for under the round's request keys
 // (the exact ones: round 1's don't include round 10's).
 func (a *apEnv) auditsOfRound(round int64) int {

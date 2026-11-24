@@ -93,8 +93,6 @@ func (s *Service) ListAutomations(ctx context.Context, actor *Actor, projectRef 
 	if err != nil {
 		return nil, err
 	}
-	// Rules can carry credentials (Gotify tokens, webhook URLs with keys in
-	// them). Only owners, who manage automations, see them.
 	owner := s.requireProjectRole(ctx, s.db.R, actor, p.ID, RoleOwner) == nil
 	for _, a := range list {
 		s.fillOwner(ctx, a)

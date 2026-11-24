@@ -590,7 +590,7 @@ func (st *roundStats) nitpickText() string {
 				}
 				line := fmt.Sprintf("%s %d", h.Issue, h.Repeats)
 				switch len(codes) {
-				case 0: // a server from before the audits were sent
+				case 0:
 				case 1:
 					line += " (audit " + codes[0] + ")"
 				default:

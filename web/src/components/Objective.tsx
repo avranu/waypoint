@@ -1,5 +1,3 @@
-// Waypoint reads each round itself; what the worker measures is shown and decides nothing.
-
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ExternalLink, Plus, Repeat, Target, X } from 'lucide-react'
@@ -542,8 +540,6 @@ export function ObjectiveDialog({
   const [rounds, setRounds] = useState('')
   const [diagnoseAfter, setDiagnoseAfter] = useState('2')
   const [tried, setTried] = useState(false)
-  // Filled in as the dialog opens; a refetch of the objective while it is
-  // open (a reading coming in) mustn't wipe what is being typed.
   const latest = useRef(o)
   latest.current = o
   useEffect(() => {
@@ -603,7 +599,6 @@ export function ObjectiveDialog({
       pace,
       max_rounds: Math.max(0, parseInt(rounds, 10) || 0),
     }
-    // A blank diagnose-after is left out so the server's default of 2 applies; a loop sends none.
     if (verified && diagnoseAfter.trim()) {
       const diagnoseN = Number(diagnoseAfter)
       if (!Number.isInteger(diagnoseN) || diagnoseN < 0 || diagnoseN > 20) {
@@ -612,9 +607,7 @@ export function ObjectiveDialog({
       }
       set.diagnose_after = diagnoseN
     }
-    // Blank or unchanged every is left out so the server gives each kind its own default gap.
     if (every.trim() && !(o && every.trim() === everyText(o.every))) set.every = every.trim()
-    // A change of an agent's proposal builds on the one that was read.
     if (proposed) set.rev = o!.rev
     save.mutate(
       { set },

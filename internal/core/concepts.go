@@ -10,8 +10,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/semantic"
 )
 
-// Boilerplate runs are left out of similarity counts; the latent model trains in the background and is retrained at most daily.
-
 // boilerShingle words in a row, in boilerMinDocs issues or more, are
 // boilerplate. Measured on 3,115 issues (WP-779): with these, pairs
 // scoring as related were judged related 83% of the time, against 36%

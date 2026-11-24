@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# go is never skipped, since Go changes alone can add a called-code finding; npm is skipped when the dependency files are unchanged.
 set -euo pipefail
 
 command -v jq >/dev/null 2>&1 || {
@@ -7,7 +6,6 @@ command -v jq >/dev/null 2>&1 || {
   exit 2
 }
 
-# deploy/ ships in the public mirror, which has no .forgejo/, so this must not depend on CI files.
 cd "$(git rev-parse --show-toplevel)"
 
 govuln_pkgs=(./cmd/... ./internal/... ./web)
@@ -24,17 +22,12 @@ trap cleanup EXIT
 ids() {
   case "$1" in
     npm)
-      # A string in `via` names another vulnerable package; its advisories are
-      # listed under that package.
       jq -r 'if .error then error("npm audit failed: " + (.error | tostring)) else . end
         | (.vulnerabilities // {}) | to_entries[].value.via[]
         | select(type == "object" and (.severity == "high" or .severity == "critical"))
         | "\((.url // .title) | split("/") | last)\t\(.name) \(.range): \(.title)"' | sort -u
       ;;
     go)
-      # govulncheck -format json is a stream of objects. A finding whose first
-      # trace frame has a function is called code; module and package level
-      # findings are imported-only and don't fail the plain run.
       jq -rs '(map(select(.osv) | .osv | {key: .id, value: (.summary // "")}) | from_entries) as $sum
         | .[] | select(.finding) | .finding | select(.trace[0].function != null)
         | "\(.osv)\t\($sum[.osv] // "")"' | sort -u
@@ -51,14 +44,12 @@ scan() {
   raw=$(mktemp -p "$work")
   case "$kind" in
     npm)
-      # npm audit exits 1 when it finds anything; the JSON is on stdout either way.
       (cd "$dir/web" && npm audit --json >"$raw") || [ -s "$raw" ] || {
         echo "advisories.sh: npm audit produced no output in $dir/web" >&2
         return 2
       }
       ;;
     go)
-      # -format json exits 0 whatever it finds; a non-zero status is a failed run.
       (cd "$dir" && govulncheck -format json "${govuln_pkgs[@]}" >"$raw") || {
         echo "advisories.sh: govulncheck failed in $dir" >&2
         return 2
@@ -108,7 +99,6 @@ only_in() {
   comm -23 <(cut -f1 "$1" | sort -u) <(cut -f1 "$2" | sort -u)
 }
 
-# Not for go: govulncheck reports called code, which Go changes alone can add.
 deps_unchanged() {
   local main='' base
   if git rev-parse -q --verify refs/remotes/origin/main >/dev/null 2>&1; then main=origin/main; fi
@@ -153,7 +143,6 @@ check() {
   fi
 
   new=$(only_in "$tree" "$main")
-  # An id main's tip lacks is the branch's own only if the commit the branch left main at lacks it too.
   if [ -n "$new" ]; then
     if [ -n "${ADVISORIES_BASE_JSON:-}" ]; then
       ids "$kind" <"$ADVISORIES_BASE_JSON" >"$work/base.ids"
@@ -170,9 +159,6 @@ check() {
     fi
   fi
   if [ -n "$new" ] && [ "$kind" = npm ]; then
-    # The change may add an advisory together with its reviewed waiver. Only
-    # the ids it adds are judged: another one main has too, and no waiver, must
-    # not fail them.
     if ${ADVISORIES_AUDIT_CMD-npm --prefix web run -s audit} -- --only "$(paste -sd, - <<<"$new")"; then
       echo "::warning title=Waived advisories::npm: this change adds $(paste -sd, - <<<"$new") over main, waived by web/scripts/audit.mjs"
       new=

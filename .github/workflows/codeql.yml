@@ -1,5 +1,4 @@
 # CodeQL on GitHub's runners (WP-1624), for main: findings land in the
-# A finding triaged in Forgejo's .forgejo/codeql/ is unknown here, so it must be dismissed by hand in the Security tab.
 name: github-codeql
 
 on:

@@ -68,14 +68,12 @@ func (p *runnerProc) execSession(ctx context.Context, run *jobRun, in sessionJob
 	if c := p.cliInfo("claude"); c == nil {
 		return failed("Claude Code isn't installed on this runner")
 	}
-	// taskLaunch is built the same way by wp start (tasksession.go) and fanout, so a field change reaches them all.
 	l := taskLaunch{bg: true, prompt: in.Prompt, model: in.Model, permissionMode: in.PermissionMode, effort: in.Effort, tasks: tasks, name: in.Name}
 	run.launch.forDir(dir).fill(&l)
 	ctx, cancel := context.WithTimeout(ctx, run.timeout)
 	defer cancel()
 	env := l.sessionEnv(bgSessionEnv(os.Environ()))
 	if kickoff {
-		// wp next in the kickoff runs with the job's own token and server; the session keeps the runner's environment.
 		kenv := slices.Clip(env)
 		if run.token != "" {
 			kenv = append(kenv, "WAYPOINT_SERVER="+p.c.server(), "WAYPOINT_TOKEN="+run.token)
@@ -113,7 +111,6 @@ func (p *runnerProc) execSession(ctx context.Context, run *jobRun, in sessionJob
 // runner was started from (WAYPOINT_SESSION, CLAUDECODE, CLAUDE_CODE_*).
 func bgSessionEnv(base []string) []string {
 	env := jobEnv(base, nil, false)
-	// The session is the person's own: its hooks need their config directory.
 	for _, kv := range base {
 		if k, _, _ := strings.Cut(kv, "="); strings.EqualFold(k, "WAYPOINT_CONFIG_DIR") {
 			env = append(env, kv)
@@ -309,14 +306,14 @@ func (p *runnerProc) execTypeBody(ctx context.Context, run *jobRun, in messageJo
 	if held != nil {
 		return *held
 	}
-	buf := fmt.Sprintf("wp-message-%d", run.id) // one per job: two jobs never paste each other's
+	buf := fmt.Sprintf("wp-message-%d", run.id)
 	if _, err := runTmux(ctx, socket, []byte(in.Body), "load-buffer", "-b", buf, "-"); err != nil {
 		return failed("the text couldn't be loaded: %v", err)
 	}
 	if _, err := runTmux(ctx, socket, nil, "paste-buffer", "-p", "-d", "-b", buf, "-t", pane); err != nil {
 		return failed("the text couldn't be pasted: %v", err)
 	}
-	sleepCtx(ctx, 400*time.Millisecond) // let it take the paste in before Enter
+	sleepCtx(ctx, 400*time.Millisecond)
 	if _, err := runTmux(ctx, socket, nil, "send-keys", "-t", pane, "Enter"); err != nil {
 		return failed("the text was pasted and not sent (press Enter there): %v", err)
 	}

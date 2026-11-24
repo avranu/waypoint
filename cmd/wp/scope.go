@@ -270,8 +270,6 @@ func gitRepoHere() (repo string, inRepo bool) {
 		if _, err := exec.LookPath("git"); err != nil {
 			return "", false
 		}
-		// Not a work tree, or git refused to say (e.g. "dubious
-		// ownership"): only the first is "not in a repo".
 		if err == nil {
 			return "", false
 		}

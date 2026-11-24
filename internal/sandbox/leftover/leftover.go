@@ -63,7 +63,6 @@ func Bundle(ctx context.Context, o Options, out io.Writer) (*Result, error) {
 		}
 	}
 	git := func(stdin []byte, w io.Writer, args ...string) (string, error) {
-		// hooks are off: a hook that waited would stall the job's end, and checks are the agent's to run.
 		cmd := exec.CommandContext(ctx, bin, append([]string{"-c", "core.hooksPath=/dev/null"}, args...)...) // #nosec G204 -- fixed binary; args are ours or a checked commit id
 		cmd.Dir = o.Dir
 		var buf, errb bytes.Buffer
@@ -107,7 +106,6 @@ func Bundle(ctx context.Context, o Options, out io.Writer) (*Result, error) {
 		}
 		res.Committed = true
 	}
-	// HEAD must descend from Base, or the Base..HEAD bundle range is a different one.
 	if _, err := git(nil, nil, "merge-base", "--is-ancestor", o.Base, "HEAD"); err != nil {
 		return nil, fmt.Errorf("HEAD doesn't build on the base %.12s: %w", o.Base, err)
 	}

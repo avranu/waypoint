@@ -434,12 +434,9 @@ export function InboxPage() {
     onError: toastError,
   })
   const read = useMutation({
-    // Only what was on screen is marked: the server stops at the newest id this
-    // view saw, so a notification that arrives meanwhile stays unread.
     mutationFn: (v: { section: Section; group?: string }) =>
       api.post('/inbox/read', { ...v, upto: data?.summary.as_of ?? 0 }),
     onMutate: async (v) => {
-      // An in-flight refetch would put the row back over the update below.
       await qc.cancelQueries({ queryKey: ['notifications'] })
       qc.setQueryData<InboxView>(q.inbox().queryKey, (d) => {
         if (!d) return d

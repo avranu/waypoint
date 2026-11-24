@@ -8,8 +8,6 @@ import (
 	"time"
 )
 
-// The quiet time is the shortest of 1-4x the setting reaching stallPrecisionNeeds; spells that end by themselves count at any length, so a longer time keeps its evidence.
-
 const (
 	stallEvidenceDays   = 28
 	stallEvidenceMin    = 10
@@ -165,7 +163,7 @@ func jobClass(cmd string) string {
 			w := words[0]
 			switch {
 			case w == "cd" || w == "export" || w == "source" || w == ".":
-				words = nil // the whole part only sets up
+				words = nil
 			case w == "env" || w == "nohup" || w == "time" || w == "nice" || w == "exec" || w == "command" || strings.Contains(w, "=") && !strings.HasPrefix(w, "="):
 				words = words[1:]
 			case w == "timeout":

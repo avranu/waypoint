@@ -4,8 +4,6 @@ import (
 	"strings"
 )
 
-// a session reaches only its go.mod's modules and the toolchain; other module paths could leak data through their names.
-
 // ToolchainModule is what `go` fetches to switch toolchains.
 const ToolchainModule = "golang.org/toolchain"
 

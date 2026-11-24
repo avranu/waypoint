@@ -150,7 +150,6 @@ export function Links({
   const pop = usePopover()
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ['links'] })
-    // Page↔issue links also show on the issue and the page.
     if (at.type === 'issue' || at.type === 'page') {
       qc.invalidateQueries({ queryKey: ['issue'] })
       qc.invalidateQueries({ queryKey: ['page'] })
@@ -363,7 +362,6 @@ function LinkPicker({
   const debounced = useDebounced(t, 180)
   const isURL = URL_RE.test(t)
   const results = useQuery({
-    // Fetches more than are shown, since already-linked hits are dropped after the search.
     ...searchAllQuery({
       q: debounced,
       kinds: 'issues,design,glossary,pages',
@@ -441,8 +439,6 @@ function LinkPicker({
     return out
   }, [t, isURL, debounced, results.data, rel, existing]) // eslint-disable-line react-hooks/exhaustive-deps
   const pick = (c?: Choice) => c && !add.isPending && add.mutate(c)
-  // Until the search for what is typed answers, the rows are the last
-  // search's: Enter waits for the answer rather than linking one of those.
   const settled = !t || isURL || (debounced === t && !results.isPlaceholderData)
   const listId = useId()
   const enterLater = useRef(false)

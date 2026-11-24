@@ -507,7 +507,6 @@ func TestVerifyFindings(t *testing.T) {
 		t.Errorf("verdicts = %v", verdicts)
 	}
 
-	// Past the cap the server keeps the first 30 findings with a title or problem, worst first, not the first 30 in the answer's order.
 	findings = []string{`{"title":"","problem":"  "}`}
 	for i := range helperVerifyMax {
 		findings = append(findings, fmt.Sprintf(`{"title":"m%d","severity":"medium"}`, i))
@@ -740,8 +739,6 @@ func TestVerifyReasksRefuted(t *testing.T) {
 	if asks["twice"] != 2 || asks["flip"] != 2 || asks["fails"] != 2 || asks["real"] != 1 {
 		t.Errorf("asks = %v", asks)
 	}
-	// Every finding's first ask comes before any second one, so a second
-	// ask never takes a first one's time.
 	if !slices.IsSorted(order) {
 		t.Errorf("asks in order %v", order)
 	}

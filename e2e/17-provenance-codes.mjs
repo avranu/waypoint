@@ -106,8 +106,6 @@ async function run(width, scheme) {
   await shot("agent-issue");
   await page.getByRole("button", { name: "Mark reviewed" }).first().click();
   await page.getByText("Reviewed by").first().waitFor();
-  // The issue and its comments refetch separately; "Reviewed by" shows as
-  // soon as the issue does, so wait for the comments' marks to clear too.
   await page.getByText("Not reviewed").first().waitFor({ state: "hidden" });
   ok(
     (await page.getByText("Not reviewed").count()) === 0,

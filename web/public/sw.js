@@ -17,7 +17,7 @@ self.addEventListener('activate', (e) => {
 })
 
 async function trim(cache) {
-  const keys = await cache.keys() // insertion order: oldest first
+  const keys = await cache.keys()
   await Promise.all(keys.slice(0, Math.max(0, keys.length - MAX_ASSETS)).map((k) => cache.delete(k)))
 }
 

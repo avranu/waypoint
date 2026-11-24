@@ -1,5 +1,3 @@
-// The gate never hands header values back, so a change sends the whole header set again: every value must be asked for.
-
 import { useId, useMemo, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Ban, Check, Globe, MessageSquareText, Plug, Plus, ShieldQuestion, X } from 'lucide-react'

@@ -17,7 +17,7 @@ type searchCode struct {
 	Word   string   // as typed
 	Tokens []string // what it could be, in the canonical spelling resolveRef reads
 	Phrase []string // the ways text writes it, as FTS phrases: "r 28", "r28"
-	strict bool     // only a code can be meant, so it counts as a code even when no ref matches
+	strict bool
 }
 
 var phraseRE = lazyre.New(`"([^"]+)"`)

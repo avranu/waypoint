@@ -18,12 +18,10 @@ import (
 // file not listed may hold none. Lower a count when a file loses some; the
 // test only fails when one gains.
 var siteBaseline = map[string]int{
-	"AGENTS.md": 1,
-	// the Dockerfile's count waits: editing it changes CI's image tag (build.sh hashes it).
+	"AGENTS.md":                    1,
 	".forgejo/ci-image/Dockerfile": 1,
-	// the runbook's gh commands (-R) must name this public mirror repo.
-	".github/workflows/ci.yml": 1,
-	"docs/DEPLOY.md":           4,
+	".github/workflows/ci.yml":     1,
+	"docs/DEPLOY.md":               4,
 }
 
 var siteWordRE = regexp.MustCompile(`[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*`)
@@ -113,7 +111,7 @@ func newSiteChecker(names map[string]bool) *siteChecker {
 		n = strings.TrimLeft(n, "-")
 		switch stem := strings.TrimRight(n, "-"); {
 		case stem == "":
-		case stem != n: // a name ending in a hyphen (my-app-) is a key, matched with its number.
+		case stem != n:
 			keys = append(keys, regexp.QuoteMeta(stem))
 		case strings.Contains(n, "-"):
 			phrases = append(phrases, regexp.QuoteMeta(n))
@@ -125,7 +123,6 @@ func newSiteChecker(names map[string]bool) *siteChecker {
 	sort.Strings(phrases)
 	var alts []string
 	if len(keys) > 0 {
-		// the colon form is narrow so style names like group-open:rotate-90 aren't codes.
 		alts = append(alts, `(?:`+strings.Join(keys, "|")+`)(?:[-#]?[0-9]+|-?(?:adr-?|[a-z]{1,2})[0-9]+|:[a-z]{1,3}-?[0-9]+)`)
 	}
 	if len(phrases) > 0 {
@@ -242,7 +239,6 @@ func TestNoSiteNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// the module path is stripped before scanning: every import begins with it.
 	module := strings.TrimSpace(strings.TrimPrefix(strings.SplitN(string(mod), "\n", 2)[0], "module"))
 	check := newSiteChecker(names)
 	counts := map[string]int{}

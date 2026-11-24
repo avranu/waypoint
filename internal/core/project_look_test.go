@@ -161,7 +161,6 @@ func TestProjectLookCustomRegenerateReset(t *testing.T) {
 	if cur.Look != LookGenerated {
 		t.Fatal("not generated")
 	}
-	// the form sends the look on every save, so an unchanged save must keep it generated
 	if got, err := e.s.UpdateProject(e.ctx, e.admin, p.Key, ProjectInput{Icon: &cur.Icon, Color: &cur.Color, Background: &cur.Background}); err != nil || got.Look != LookGenerated {
 		t.Fatalf("resaving the same look: %v %q", err, got.Look)
 	}

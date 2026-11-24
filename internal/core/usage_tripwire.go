@@ -68,7 +68,6 @@ func (s *Service) checkQuotaJump(ctx context.Context, t *tx, uid, at int64, pct 
 		mins = 1
 	}
 	text := fmt.Sprintf("+%.0f%% of your week in %d min", rise, mins)
-	// usage_hours keeps hourly rows, so the busiest machine and repo since the low reading is the nearest cheap answer, not an exact one.
 	var machine, repo string
 	hour := lowAt - lowAt%3_600_000
 	if t.QueryRowContext(ctx, `SELECT machine, repo FROM usage_hours WHERE user_id = ? AND hour >= ?

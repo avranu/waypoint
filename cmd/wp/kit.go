@@ -309,7 +309,7 @@ func (c *cli) syncKitDir(ctx context.Context, dir string, resolved *kitResolved,
 	res.failed = len(res.Errors) > 0
 	applied := r.Commit
 	if res.failed && st != nil {
-		applied = st.Commit // On failure keep the last applied commit, so the next run sees the checkout as behind and retries.
+		applied = st.Commit
 	} else if res.failed {
 		applied = ""
 	}
@@ -527,7 +527,7 @@ func kitStatus(c *cli, args []string) error {
 		c.printf("Drift: %s %s\n", d.Plugin, d.What)
 	}
 	if notes := c.kitNotesFor(r, top); len(notes) > 0 && c.agentHeader() != "" {
-		c.printf("Notes: %d, added at session start\n", len(notes)) // An agent shell already got these notes from the session-start hook, so only the count is printed.
+		c.printf("Notes: %d, added at session start\n", len(notes))
 	} else if len(notes) > 0 {
 		c.printf("Notes (added at session start):\n")
 		for _, n := range notes {

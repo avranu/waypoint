@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-// The wall timeout caps the whole run; work_timeout excludes slot waits recorded in the WAYPOINT_SLOT_WAITS file.
-
 // clockEvery is how often the clock looks at the waits file.
 var clockEvery = 5 * time.Second
 
@@ -56,7 +54,6 @@ func (p *runnerProc) jobClock(ctx context.Context, run *jobRun, workTimeout int)
 	}
 	err := os.MkdirAll(filepath.Join(p.cacheDir(), "work"), 0o750)
 	if err == nil {
-		// outside the job's checkout, so a job that could write its own wait record couldn't credit itself time against its work limit
 		c.path = filepath.Join(p.cacheDir(), "work", fmt.Sprintf("job%d.slotwaits", run.id))
 		if err = os.WriteFile(c.path, nil, 0o600); err == nil {
 			_ = os.Chmod(c.path, 0o666) // #nosec G302 -- holds only wait and got lines
@@ -76,8 +73,6 @@ func (p *runnerProc) jobClock(ctx context.Context, run *jobRun, workTimeout int)
 			close(end)
 			stop(nil)
 			wcancel()
-			// The watcher is done before the job stops counting as
-			// waiting, or its last look could say it waits again.
 			<-watched
 			if c.r != nil {
 				if total, _ := c.r.read(c.now()); total >= time.Minute {

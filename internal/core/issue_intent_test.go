@@ -82,7 +82,6 @@ func TestIssueIntent(t *testing.T) {
 	if _, err := e.s.UpdateIssue(e.ctx, e.admin, i.Key, IssuePatch{Intent: str(strings.Repeat("x", maxIntentLen+1))}); err == nil {
 		t.Fatal("an intent longer than the limit should be refused")
 	}
-	// The limit counts characters, as the editor does, not bytes.
 	if _, err := e.s.UpdateIssue(e.ctx, e.admin, i.Key, IssuePatch{Intent: str(strings.Repeat("é", maxIntentLen))}); err != nil {
 		t.Fatalf("an intent at the limit in accented letters should be kept: %v", err)
 	}

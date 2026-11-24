@@ -12,7 +12,7 @@ import (
 func TestParseObjectiveTarget(t *testing.T) {
 	for _, c := range []struct {
 		until, measure, better string
-		want                   string // The want string is measure|until|op|better, pipe-separated; "" means an error.
+		want                   string
 		target, factor         float64
 	}{
 		{"", "", "", " |||", 0, 0},
@@ -328,7 +328,6 @@ func TestObjectiveInputIsChecked(t *testing.T) {
 	if ob = o.set(task.Key, ObjectiveInput{Pace: ptrOf("spare")}); ob.Until != "< 90s" || ob.Check != "go test ./..." || ob.Pace != PaceSpare || ob.Every != 3*24*3600 || len(ob.KeepPassing) != 2 || ob.Branch != "release/1.x" {
 		t.Fatalf("after a change: %+v", ob)
 	}
-	// Judge models are named the way the audit names them; repeats and blanks are dropped.
 	ob = o.set(task.Key, ObjectiveInput{Judge: ptrOf("It reads well."), JudgeBar: ptrOf(" HIGH "), JudgeModels: &[]string{"claude/opus", " ", "claude/opus", "grok-4.7-high"}})
 	if ob.Judge != "It reads well." || ob.JudgeBar != "high" || len(ob.JudgeModels) != 2 || ob.Kind != "until" || ob.Check != "go test ./..." {
 		t.Fatalf("with a judge: %+v", ob)

@@ -262,7 +262,7 @@ func riskScore(f FileRisk) float64 {
 	case f.Importers >= 5:
 		s += 1
 	}
-	s += f.HotPct // 0..1 breaks ties by churn
+	s += f.HotPct
 	return s
 }
 
@@ -284,8 +284,6 @@ func (ix *Index) testsFor(p string, importers []string) []string {
 	dir := path.Dir(p)
 	stem := strings.TrimSuffix(path.Base(p), path.Ext(p))
 	if strings.HasSuffix(p, ".go") {
-		// One query or the other: a second one while the first's rows are
-		// open waits forever on the index's single connection.
 		var rows *sql.Rows
 		var err error
 		if dir == "." {

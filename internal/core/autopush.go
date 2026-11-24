@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-// Only committed work is pushed; uncommitted files stay on the machine and keep being reported.
-
 // AutoPushInput is what a machine's wp pushed (or failed to push).
 type AutoPushInput struct {
 	// Keys are the tasks the work is for; none: those the branch names.
@@ -147,7 +145,6 @@ func (s *Service) recordPush(ctx context.Context, t *tx, actor *Actor, i *Issue,
 		ORDER BY at DESC LIMIT 1`, i.ID, in.Machine, in.Top, now-strandedShowDays*24*time.Hour.Milliseconds()).Scan(&id, &head, &pushErr)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		// The row names no session, so a session starting in the same terminal isn't handed a task its agent gave back.
 		why := cmp(in.Why, "other")
 		if _, err := t.ExecContext(ctx, `INSERT INTO stranded_work(issue_id, agent, machine, top, branch, unpushed, why, at, pushed, pushed_head, push_error)
 			VALUES (?,?,?,?,?,?,?,?,?,?,?)`, i.ID, actor.Agent, in.Machine, in.Top, in.Branch, in.Commits, why, now,
@@ -160,7 +157,6 @@ func (s *Service) recordPush(ctx context.Context, t *tx, actor *Actor, i *Issue,
 		if in.Head != "" && head == in.Head && (pushErr == "") == (in.Error == "") {
 			return false, nil
 		}
-		// pushed keeps the branch an earlier push went to; push_error says the latest commits didn't follow.
 		if _, err := t.ExecContext(ctx, `UPDATE stranded_work SET pushed = coalesce(nullif(?, ''), pushed), pushed_head = ?, push_error = ?,
 			unpushed = coalesce(nullif(?, 0), unpushed) WHERE id = ?`,
 			pushedBranch(in), in.Head, in.Error, in.Commits, id); err != nil {

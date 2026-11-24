@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Run by hand as the forge administrator; each step checks first and skips what is already in place.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -66,7 +65,6 @@ for v in FORGE_URL REPO DEPLOY_HOST_ALIAS WAYPOINT_URL; do
 done
 [[ -n $DEPLOY_USER ]] || DEPLOY_USER=$(ssh -n -G "$DEPLOY_HOST_ALIAS" 2>/dev/null | sed -n 's/^user //p')
 
-# Token goes to curl via a config on stdin, never argv (process lists).
 TOKEN=${FORGEJO_ADMIN_TOKEN:-}
 SIGNED=0
 BODY=$(mktemp)
@@ -76,7 +74,7 @@ forge() {
   local method=$1 path=$2 json=${3:-}
   local -a args=(-sS -K - -o "$BODY" -w '%{http_code}' -X "$method" -H 'Accept: application/json')
   if [[ -n $json ]]; then
-    printf '%s' "$json" >"$PAYLOAD" # a file, not argv: it may hold a secret
+    printf '%s' "$json" >"$PAYLOAD"
     args+=(-H 'Content-Type: application/json' --data-binary @"$PAYLOAD")
   fi
   printf 'header = "Authorization: token %s"\n' "$TOKEN" | curl "${args[@]}" "$FORGE_URL/api/v1$path"
@@ -171,7 +169,6 @@ say "  remote-deploy.sh builds, checks health and rolls back by itself, touching
 for f in pull-deploy.sh remote-deploy.sh record-deployment.sh systemd/waypoint-deployer.service systemd/waypoint-deployer.timer; do
   [[ -f $HERE/$f ]] || fail "$HERE/$f is missing"
 done
-# Copies by rename (write .new, then mv), so a running copy keeps its file.
 put() {
   # shellcheck disable=SC2029 # the paths are ours and expand on the host on purpose
   ssh "$DEPLOY_HOST_ALIAS" "set -eu; mkdir -p \"\$(dirname $2)\"; cat > $2.new; chmod $3 $2.new; mv $2.new $2" <"$HERE/$1"

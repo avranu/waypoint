@@ -10,8 +10,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Read and Bash nudges are notes only, never refusals, and make no network calls.
-
 const (
 	bigReadLines  = 800
 	bigSedLines   = 400

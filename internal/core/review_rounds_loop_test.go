@@ -370,7 +370,6 @@ func TestReviewRoundsProbe(t *testing.T) {
 		{"rounds after them weren't scored", "unscored", "fixed", "", 0, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			// With the floor at 9, only a critical finding is a signal: a high one is left to the scores, which put it under the bar, and so to the probe.
 			withFloor(t, 9)
 			e := newLoopEnv(t, map[string]string{"": "cosmetic", "fixes": "complete"})
 			r1 := e.review("Merge loses an update")
@@ -498,7 +497,6 @@ func TestReviewAgainScore(t *testing.T) {
 	if d.worst != 7.25 || d.worstAll != 7.25 || d.fixesMean != 3.5 || d.novel != 2 || d.reworked != 2 || d.repeats != 1 || d.issues != 7 || d.fixes != 4 {
 		t.Fatalf("decision = %+v", d)
 	}
-	// A refuted finding that was fixed stands nowhere in the worst severity but still counts as reworked ground for the fixes gate.
 	refuted := slices.Clone(findings)
 	refuted[0].verdict = VerdictRefuted
 	d = againDecision{index: 2}
@@ -602,7 +600,6 @@ func TestReviewRoundsReviewerFindingsLoop(t *testing.T) {
 	if err := e.s.db.R.QueryRow(`SELECT audit_id FROM review_again_decisions WHERE round_id = ?`, r1).Scan(&audit); err != nil || audit != reviewer {
 		t.Fatalf("decided on audit %d (%v), want the reviewer's %d", audit, err, reviewer)
 	}
-	// Reviewer text can't close the task block: a literal </task> is escaped.
 	e.setClock(e.clockNow().Add(time.Minute))
 	if res, err := e.ship(e.task.Key, ShipAuto); err != nil || res.Held == "" {
 		t.Fatalf("round 2's ship = %+v, %v", res, err)
@@ -683,7 +680,6 @@ func TestReviewRoundsCheckMarks(t *testing.T) {
 			if res, err := e.ship(e.task.Key, ShipPR); err != nil || !strings.Contains(res.Held, fmt.Sprintf("audit #%d", check)) {
 				t.Fatalf("ship while checking = %+v, %v", res, err)
 			}
-			// A Stop while a check runs doesn't end the round; the check's end wakes the session.
 			e.stopWith("Waiting for the check of my marks.")
 			if rs := e.rounds(); !strings.HasPrefix(rs[len(rs)-1], RoundRunning) {
 				t.Fatalf("a Stop while the check runs ended the round: %v", rs)
@@ -697,7 +693,6 @@ func TestReviewRoundsCheckMarks(t *testing.T) {
 					t.Errorf("the session was told %d times of the cancelled check, %v", told, err)
 				}
 			case "unreadable", "unreadable once":
-				// A check answered out of form is asked once more.
 				e.endCheckText(e.box, "**Findings: none.** None of the marks was wrong.")
 				var status string
 				var attempts int
@@ -735,7 +730,6 @@ func TestReviewRoundsCheckMarks(t *testing.T) {
 				t.Fatal(err)
 			}
 			if tc.check == "slow" {
-				// A slow check that is passed over is cancelled.
 				var status string
 				if err := e.s.db.R.QueryRow(`SELECT status FROM code_audits WHERE id = ?`, check).Scan(&status); err != nil || status != AuditCancelled {
 					t.Errorf("the slow check is %q, %v", status, err)
@@ -884,7 +878,6 @@ func TestReviewRoundsUnscoredLater(t *testing.T) {
 				t.Fatalf("round 2: labels %d next %d, ship %+v", labels, next, res)
 			}
 
-			// A run has one round read by labels; once it is spent, the pull request opens.
 			e.setClock(e.clockNow().Add(time.Minute))
 			r3 := e.review("A retry drops the second save")
 			e.mark(r3, "fixed")
@@ -966,7 +959,6 @@ func TestReviewRoundFiledFindingNotHeld(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Waypoint starts the next round from the check's end; the ship after it only reads where the run has got to.
 	var rounds int
 	if err := e.s.db.R.QueryRow(`SELECT count(*) FROM work_log WHERE kind = 'review' AND id <> ? AND issue_id = ?`, r1, e.task.ID).Scan(&rounds); err != nil || rounds != 1 {
 		t.Fatalf("%d later rounds, %v", rounds, err)

@@ -11,8 +11,6 @@ import (
 	"time"
 )
 
-// Prints figures only, no verdict; everything stays on this machine and no model is involved.
-
 var usageCompactCmd = &command{
 	name: "compact", args: "[--since 14d] [--dir CLAUDE_CONFIG_DIR]",
 	summary: "what compactions cost, what agents did after them, what one could carry over",
@@ -665,7 +663,6 @@ func (a *cmpAcc) compaction(ev []cmpEvent, from, at, to int, before, after []int
 		row, full, placebo = cmpAfterManual, cmpAfterManualFull, cmpBeforeManual
 	}
 	if len(before) >= cmpPlaceboCalls {
-		// the window starts just before the call 30 back, so that call's tools are included
 		a.rows[placebo].add(cmpFollow(ev, before[len(before)-cmpWindowCalls]-1, at, seen, usd))
 	}
 

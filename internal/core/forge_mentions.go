@@ -12,8 +12,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Only own work (a branch or title naming the key, a commit subject, or a closing verb) becomes a link; any other key is recorded as a mention only.
-
 // keyRef is one issue key found in a piece of forge text.
 type keyRef struct {
 	Key   string
@@ -132,7 +130,6 @@ func around(line string, start, n int) string {
 	if len(r) <= n {
 		return line
 	}
-	// start is a byte offset into the untrimmed line, so after TrimSpace the window is approximate.
 	s := len([]rune(line[:min(start, len(line))]))
 	from := max(0, s-n/2)
 	to := min(len(r), from+n)
@@ -149,15 +146,14 @@ func around(line string, start, n int) string {
 
 // forgeText is one piece of forge text to record the mentions of.
 type forgeText struct {
-	f         *Forge
-	repo      string
-	kind      string
-	item      *ForgeItem
-	sourceURL string
-	places    []string // Rows at these places that this text no longer names are marked gone; rows at other places are left alone.
-	trusted   bool     // Only text a Waypoint person wrote keeps its quoted line (excerpt); outside text stores none.
-	author    string
-	// Only live text (an open pull request, a forge issue, a pushed commit) links own work and removes links it no longer makes; a sync reading a closed pull request does neither.
+	f              *Forge
+	repo           string
+	kind           string
+	item           *ForgeItem
+	sourceURL      string
+	places         []string
+	trusted        bool
+	author         string
 	link, takeBack bool
 }
 
@@ -450,7 +446,7 @@ func (s *Service) scanCommit(ctx context.Context, f *Forge, repo string, c forge
 	trusted := !s.prVoice(ctx, f).outside(ctx, s.db.R, c.author)
 	title := ""
 	if trusted {
-		title = excerpt(subject, 200) // Text from outside the team never supplies the title, so a stranger's commit subject is not shown.
+		title = excerpt(subject, 200)
 	}
 	refs := append(scanKeyRefs("commit", "subject", subject), scanKeyRefs("commit", "message", body)...)
 	return s.recordForgeMentions(ctx, forgeText{f: f, repo: repo, kind: "commit", item: &ForgeItem{Title: title, URL: c.url, State: "pushed"},
@@ -629,7 +625,7 @@ func (s *Service) BackfillForgeMentions(ctx context.Context, force bool) (ForgeM
 		}
 		if raw.URL != it.url {
 			c := *raw
-			c.URL = it.url // Keep the linked URL, not the forge's spelling: external_links and forge_mentions match rows on that URL.
+			c.URL = it.url
 			raw = &c
 		}
 		res.Items++
@@ -656,8 +652,6 @@ func (s *Service) BackfillForgeMentions(ctx context.Context, force bool) (ForgeM
 		res.Demoted += demoted
 	}
 	if res.Failed > 0 {
-		// Read again at the next start: a forge that was down or rate-limited
-		// must not keep its legacy links for good.
 		s.log.WarnContext(ctx, "backfill forge mentions incomplete", "failed", res.Failed)
 		return res, nil
 	}

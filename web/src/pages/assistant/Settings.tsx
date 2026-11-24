@@ -31,7 +31,6 @@ export function SettingsTab({ assistant }: { assistant: Assistant }) {
       search: (s: AssistantSearch) => ({ ...s, view: v === 'model' ? undefined : v }),
       replace: true,
     })
-  // Unsaved form changes outlive a visit to another section.
   const [draft, setDraft] = useState<Record<string, unknown>>({})
   const id = assistant.id
   return (

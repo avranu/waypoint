@@ -116,7 +116,6 @@ func (s *Service) SessionOutstanding(ctx context.Context, actor *Actor, via stri
 			break
 		}
 	}
-	// named once per via, so an agent holding findings while a worker fixes them is not re-prompted at each stop
 	fresh := 0
 	err = s.write(ctx, actor, func(t *tx) error {
 		for _, it := range out.Findings {
@@ -127,8 +126,6 @@ func (s *Service) SessionOutstanding(ctx context.Context, actor *Actor, via stri
 			if told {
 				continue
 			}
-			// At the wait the hook records them (SessionFindingsNamed) once it
-			// has printed them, so a print that fails names nothing.
 			if via != OutstandingAtWait {
 				if err := s.sessionTimeline(ctx, t, actor.Session, s.nowMS(), outstandingKind, via, 0, it, "", "named while a run was going", sql.NullInt64{}, nil); err != nil {
 					return err
@@ -158,8 +155,6 @@ func (s *Service) SessionOutstanding(ctx context.Context, actor *Actor, via stri
 		if err != nil {
 			return nil, err
 		}
-		// A quiet dismissal is marked told unsaid, as takeDecisions does, so
-		// fifty of them don't hide an answer behind them.
 		var quiet []int64
 		list = slices.DeleteFunc(list, func(r *Request) bool {
 			if r.quiet() {

@@ -1,5 +1,3 @@
-// The gate's approvals are answered on Signal, not in this view.
-
 import { useState } from 'react'
 import clsx from 'clsx'
 import { HelpCircle, ShieldQuestion } from 'lucide-react'

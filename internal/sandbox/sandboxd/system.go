@@ -98,7 +98,6 @@ func (OS) AddUser(name string, uid, gid int, home, gecos string) error {
 }
 
 func (OS) DelUser(name string) error {
-	// No -r: the home is in the store, which the helper archives.
 	return run("/usr/sbin/userdel", name)
 }
 

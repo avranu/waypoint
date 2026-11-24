@@ -63,7 +63,6 @@ func enqueueOnMachine(ctx context.Context, s *Service, a *Actor, in RunnerJobInp
 // lookupRunnerJob reads a finished job (its output, exit code and result):
 // the finish event carries only its id and state (tests replace it).
 var lookupRunnerJob = func(ctx context.Context, s *Service, id int64) (*RunnerJob, error) {
-	// Read as the job's owner: anyone else, admins too, would get it redacted (jobAccess).
 	var owner int64
 	if err := s.db.R.QueryRowContext(ctx, `SELECT owner_id FROM runner_jobs WHERE id = ?`, id).Scan(&owner); err != nil {
 		return nil, err
@@ -109,13 +108,11 @@ func (s *Service) applyChange(ctx context.Context, actor *Actor, id int64, choic
 		machine, cwd = r.Session.Machine, r.Session.Cwd
 	}
 	if changesNothing(r.files) {
-		// The no-change check comes before any path: a runner job would write nothing (or conflict) and a PR would be empty.
 		s.finishApply(ctx, actor, r, RequestApplied, "", noChangeResult(), "")
 		return
 	}
 	outside := len(r.files) > 0 && r.files[0].Outside
 	if outside {
-		// Files outside any repo are written by the runner into their one shared directory, with no commit and no PR.
 		s.applyOutside(ctx, actor, r, files, machine, choice)
 		return
 	}
@@ -154,7 +151,6 @@ func (s *Service) applyChange(ctx context.Context, actor *Actor, id int64, choic
 			job, err := enqueueRunnerJob(ctx, s, actor, RunnerJobInput{Kind: JobApply, OwnerID: actor.id(), Label: machine, Input: b, Source: "request_apply", SourceID: r.ID})
 			switch {
 			case err == nil:
-				// Update only while still applying: a job that finished at once has already recorded its end.
 				upd, _ := s.db.W.ExecContext(ctx, `UPDATE requests SET apply_path = 'runner', result = ?, updated_at = ? WHERE id = ? AND state = 'applying'`,
 					mustJSON(RequestResult{Reason: fmt.Sprintf("job %d queued on %s", job.ID, machine)}), s.nowMS(), r.ID)
 				if n, _ := upd.RowsAffected(); n > 0 {
@@ -183,7 +179,6 @@ func (s *Service) applyChange(ctx context.Context, actor *Actor, id int64, choic
 	case err == nil:
 		s.finishApply(ctx, actor, r, RequestApplied, "pr", *res, "")
 	case errors.As(err, &np):
-		// A pushed branch with no PR is failed, not applied, whatever the forge later holds.
 		s.log.WarnContext(ctx, "open the pull request for a change", "request", r.ID, "err", np.err)
 		s.finishApply(ctx, actor, r, RequestFailed, "pr", *res, res.Reason)
 	case errors.As(err, &cc):
@@ -411,7 +406,6 @@ func (s *Service) RunCell(ctx context.Context, actor *Actor, ref string, n int, 
 		if !s.canDecide(ctx, actor, r, map[int64]int{}) {
 			return ErrForbidden
 		}
-		// A command sent back by a failed run can be run again; that reopens the request so the agent hears the new outcome.
 		rerun := r.State == RequestFailed && r.Kind == RequestCommand
 		if r.State != RequestOpen && !rerun {
 			return invalid("%s is already %s; commands can be run while it is open", r.Code, r.State)
@@ -628,7 +622,7 @@ func (s *Service) finishApplyJob(ctx context.Context, reqID int64, job *RunnerJo
 		s.finishApply(ctx, SystemActor(), r, RequestApplied, "runner", res, "")
 	case job.State == "done":
 		s.finishApply(ctx, SystemActor(), r, RequestApplied, "runner", res, "")
-	case raw.Conflict || len(raw.Conflicts) > 0: // Conflicts come from the runner's result fields, not from parsing its error text.
+	case raw.Conflict || len(raw.Conflicts) > 0:
 		res.Reason = cmp(job.Error, "the files changed since the agent made the change")
 		if len(why) > 0 {
 			res.Reason = "Nothing was written: " + strings.Join(why, ", ") + " no longer match what the agent changed."

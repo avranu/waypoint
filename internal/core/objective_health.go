@@ -11,8 +11,6 @@ import (
 	"time"
 )
 
-// Every way an objective can stop moving is either put right by this file or put to its person.
-
 // NotifyObjective is the notification kind of news of an objective.
 const NotifyObjective = "objective"
 
@@ -84,9 +82,6 @@ func (s *Service) onObjectiveEvent(ctx context.Context, e *Event) {
 			}
 		})
 	case e.Kind == EvExternalPRMerged && e.IssueID != 0:
-		// Here, and not in the background: a rule of the project that
-		// closes the task on this merge runs after, and finds the merge
-		// taken account of.
 		if err := s.objectiveMerged(ctx, e.IssueID, e.New); err != nil {
 			s.log.WarnContext(ctx, "read a merge for an objective", "issue", e.IssueKey, "err", err)
 		}
@@ -102,8 +97,6 @@ func (s *Service) onObjectiveEvent(ctx context.Context, e *Event) {
 // objectiveSweepAudits cancels the judge's audits of a task that nothing
 // waits for any more: every one but the audit of the reading under way.
 func (s *Service) objectiveSweepAudits(ctx context.Context, issueID int64) {
-	// Not while a step asks for one: its audit exists before the objective
-	// says so.
 	unlock := s.objectiveLocks.lock(issueID)
 	defer unlock()
 	s.objectiveSweep(ctx, issueID)
@@ -215,7 +208,6 @@ func (s *Service) objectiveTell(ctx context.Context, e *Event, what string) {
 		case told == 0 || o.Stalled >= 2*told:
 			told = o.Stalled
 			title = fmt.Sprintf("%s: %s without getting nearer its objective", o.Key, plural1(o.Stalled, "round"))
-			// Count rounds since a diagnosis by no_better, not stalled: a round that landed nothing was never read, so it is no evidence the diagnosis failed.
 			if did := eventInt64(e.Data["diagnosis"]); did != 0 {
 				var dround int
 				if err := s.db.R.QueryRowContext(ctx, `SELECT round_no FROM objective_rounds WHERE id = ?`, did).Scan(&dround); err == nil {

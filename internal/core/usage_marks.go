@@ -1,7 +1,5 @@
 package core
 
-// Records commits to a repo's default branch that change what agents are told (CLAUDE.md, AGENTS.md, anything under .claude/): pushes record them as they arrive, and the forge's history backfills earlier ones once per repo.
-
 import (
 	"context"
 	"encoding/json"

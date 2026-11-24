@@ -61,9 +61,9 @@ type PullRequest struct {
 	ArmedLabel bool       `json:"armed_label,omitempty"`
 	// Outside: from someone who isn't a Waypoint person, waiting for a
 	// person to approve it (WP-281); agents and bots leave it alone.
-	Outside        bool   `json:"outside,omitempty"`
-	forgeAuthor    string // who the forge says opened it (Author may name a mirror's copy's original author)
-	labelOff       bool   // the automerge label is on, but a person disarmed it
+	Outside        bool `json:"outside,omitempty"`
+	forgeAuthor    string
+	labelOff       bool
 	armedNote      string
 	armedBy        *int64
 	gateNote       string
@@ -74,14 +74,13 @@ type PullRequest struct {
 	files          []string
 	filesKnown     bool
 	tooLarge       bool
-	// armDeclined 1: a person took merge when ready off; 2: open before the setting existed (migration 0049), until its next push.
-	headRepo      string
-	headAt        *time.Time
-	armDeclined   int
-	mergeReadAt   *time.Time
-	mergeSince    *time.Time
-	mergeRetryN   int
-	mergeRetrySHA string
+	headRepo       string
+	headAt         *time.Time
+	armDeclined    int
+	mergeReadAt    *time.Time
+	mergeSince     *time.Time
+	mergeRetryN    int
+	mergeRetrySHA  string
 	// Draft-first (WP-158): Waypoint holds it as a draft and marks it ready;
 	// when, at which head, and the status id and checks that head had then.
 	WipAuto       bool       `json:"wip_auto,omitempty"`
@@ -89,8 +88,7 @@ type PullRequest struct {
 	readySHA      string
 	readyStatusID int64
 	readyChecks   []string
-	// Checks the full run skipped that the draft tier ran; kept only while the ready mark they were read for is still current.
-	readySkipped []string
+	readySkipped  []string
 	// The merge queue (WP-222): when it joined its base's queue.
 	QueuedAt *time.Time `json:"queued_at,omitempty"`
 	// MergeSHA is the commit it became when merged: a squash or merge commit
@@ -274,8 +272,6 @@ func (s *Service) recordPR(ctx context.Context, f *Forge, repo string, fp *Forge
 		if err != nil {
 			return err
 		}
-		// A re-read that is older than the webhook it lost the race to
-		// brings back a head the pull request already had: no push (WP-129).
 		var headBefore bool
 		if !fire && old != nil && old.HeadSHA != "" && fp.HeadSHA != "" && fp.HeadSHA != old.HeadSHA {
 			var n int
@@ -291,7 +287,7 @@ func (s *Service) recordPR(ctx context.Context, f *Forge, repo string, fp *Forge
 		lb, _ := json.Marshal(labels)
 		author := effectiveAuthor(fp.Author, fp.Body)
 		if fp.Author == "" || voice.outside(ctx, t, fp.Author) {
-			author = fp.Author // only a Waypoint person's copy names another author (WP-281)
+			author = fp.Author
 		}
 		now := s.nowMS()
 		live := fp.State == "open" || fp.State == "draft"
@@ -340,8 +336,6 @@ func (s *Service) recordPR(ctx context.Context, f *Forge, repo string, fp *Forge
 		if err != nil || pr == nil {
 			return cmpErr(err, notFound("pull request"))
 		}
-		// From outside, it waits for a person; nothing else hears of it
-		// meanwhile (WP-281).
 		if err := s.screenPull(ctx, t, voice, pr, fp); err != nil {
 			return err
 		}
@@ -399,11 +393,6 @@ func (s *Service) recordPR(ctx context.Context, f *Forge, repo string, fp *Forge
 			reason = "opened"
 		}
 		if !fire {
-			// A new head is news whoever reads it first: a merge check or a
-			// wait that re-reads the pull request before the push webhook
-			// arrives stores the head, and the webhook then sees nothing new
-			// (WP-129). First sightings stay quiet, and so does a stale read
-			// bringing back a head it had before.
 			if reason == "pushed" && !headBefore {
 				for _, pid := range projects {
 					later = append(later, &Event{Kind: EvPRUpdated, ProjectID: pid, New: reason, Data: prEventData(pr, map[string]any{"reason": reason})})
@@ -420,9 +409,6 @@ func (s *Service) recordPR(ctx context.Context, f *Forge, repo string, fp *Forge
 		return nil
 	})
 	if err == nil && len(later) > 0 {
-		// Not under the caller's locks: a rule the push sets off may merge
-		// the pull request, and the merge path re-reads it holding its
-		// merge lock.
 		at := s.now().UTC()
 		for _, e := range later {
 			e.At = at
@@ -452,7 +438,7 @@ func prChange(old, cur *PullRequest) string {
 	switch {
 	case !live || cur.HeadSHA == "":
 		return ""
-	case old == nil, old.HeadSHA == "": // a refresh saw it first, without its head
+	case old == nil, old.HeadSHA == "":
 		return "opened"
 	case old.State == "closed" || old.State == "merged":
 		return "reopened"
@@ -813,7 +799,6 @@ func (s *Service) cancelRun(ctx context.Context, actor *Actor, r *BotRun) (*BotR
 	if actor.writesAsAgent() && r.Kind == "review" && sameSHA(r.HeadSHA, r.PR.HeadSHA) && (r.PR.State == "open" || r.PR.State == "draft") {
 		return nil, forbidden("agents can't cancel the review of a pull request's head: a cancelled review counts as done, so it would merge unreviewed; a person can cancel it")
 	}
-	// The row first: a run that finished meanwhile stays as it ended.
 	ended, err := s.endBotRun(ctx, r.ID, "cancelled", "Cancelled by "+actor.User.DisplayName+".", "", nil, "")
 	if err != nil {
 		return nil, err
@@ -916,8 +901,6 @@ func (s *Service) endBotRun(ctx context.Context, id int64, status, summary, errT
 	var kind string
 	err := s.write(ctx, SystemActor(), func(t *tx) error {
 		var projectID int64
-		// Stamped under the write lock, so finished_at follows commit order
-		// for the review streak (reviewsDownCheck).
 		args[3] = s.nowMS()
 		// #nosec G202 -- fixed column names only; values are bound
 		err := t.QueryRowContext(ctx, `UPDATE bot_runs SET `+sets+` WHERE id = ? AND status IN ('queued','running') RETURNING project_id, pr_id, kind`, append(args, id)...).Scan(&projectID, &prID, &kind)
@@ -927,7 +910,6 @@ func (s *Service) endBotRun(ctx context.Context, id int64, status, summary, errT
 			return err
 		}
 		t.emit(&Event{Kind: EvBotRun, ProjectID: projectID, New: status, Data: map[string]any{"run_id": id, "bot_run": id}})
-		// Other failures skip the streak check: it re-emits its notice whenever the streak has a state.
 		if kind == "review" && (status == "done" || (status == "failed" && strings.HasPrefix(errText, providersDownText))) {
 			s.reviewsDownCheck(ctx, t, projectID, prID, id)
 		}
@@ -936,11 +918,8 @@ func (s *Service) endBotRun(ctx context.Context, id int64, status, summary, errT
 	if err == nil && (kind == "review" || kind == "reply") {
 		if gerr := s.evalGate(context.WithoutCancel(ctx), prID); gerr != nil {
 			s.log.WarnContext(ctx, "review gate", "pull request", prID, "err", gerr)
-			// No merge on a stale gate, but not stuck either: CheckGates
-			// picks a pending gate up again.
 			s.markGatePending(context.WithoutCancel(ctx), prID)
 		} else {
-			// Not when the gate couldn't be read: the stored state may be stale.
 			s.maybeAutoMerge(context.WithoutCancel(ctx), prID)
 		}
 	}
@@ -949,7 +928,7 @@ func (s *Service) endBotRun(ctx context.Context, id int64, status, summary, errT
 
 // Bot run limits.
 const (
-	botWorkers     = 4 // the gateway key allows 6 at once; the screen and other AI work use the rest
+	botWorkers     = 4
 	botMaxAttempts = 3
 	botRetryAfter  = 10 * time.Minute
 	botRunTimeout  = 40 * time.Minute
@@ -1090,7 +1069,7 @@ func runErrorText(err error, log []ModelAttempt) string {
 	case sum != "" && errors.As(err, &down):
 		return providersDownText + "was unavailable: " + sum + "; not retrying, ask for a review again later"
 	case errors.As(err, &down):
-		return down.Error() // its own text, which the streak looks for (reviewsDownCheck)
+		return down.Error()
 	case sum != "" && (errors.Is(err, errAllModelsFailed) || strings.HasPrefix(err.Error(), "every model failed")):
 		return "every model failed: " + sum
 	}
@@ -1177,7 +1156,6 @@ func (s *Service) carryOut(ctx context.Context, r *BotRun) {
 	case err == nil:
 		err = s.finishRun(done, r.ID, "done", res.summary, "", res.log, res.reviewURL)
 	case errors.As(err, &wait) && wait.why == "quota":
-		// Tries before the reset each fail and spend a request, so the run waits for the reset; the wait is not an attempt.
 		s.log.WarnContext(ctx, "bot run waits for the AI key's daily limit to reset", "run", r.ID, "until", wait.until)
 		lb, _ := json.Marshal(res.log)
 		not := wait.until.Add(time.Duration(r.ID%20) * 30 * time.Second)
@@ -1189,9 +1167,9 @@ func (s *Service) carryOut(ctx context.Context, r *BotRun) {
 		}
 		err = s.finishRun(done, r.ID, "skipped", skip.why, "", res.log, "")
 	case errors.Is(ctx.Err(), context.Canceled) && s.bgCtx.Err() == nil:
-		return // cancelled by a person; CancelBotRun recorded it
+		return
 	case s.bgCtx.Err() != nil:
-		return // shutting down: RunBots queues it again on start
+		return
 	case errors.As(err, &down):
 		s.log.WarnContext(ctx, "bot run failed; every model unavailable", "run", r.ID)
 		s.botFailedReaction(done, r)
@@ -1355,7 +1333,7 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 	}
 	noise, err := newGlobSet(append(slices.Clone(noisePaths), opts.SkipFiles...))
 	if err != nil {
-		noise, _ = newGlobSet(noisePaths) // noisePaths is a fixed list that always parses, so only SkipFiles can fail; the fallback then drops SkipFiles.
+		noise, _ = newGlobSet(noisePaths)
 	}
 	var files []fileDiff
 	o := reviewOutcome{private: private}
@@ -1399,7 +1377,6 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 	hf := newHeadFiles(ctx, cl, f, pr.Repo, fp.HeadSHA)
 	budget := s.reviewFileBudget(ctx).Chars
 	var noEvidence []droppedFinding
-	// MaxFindings caps what is posted; the rest are kept, and only findingsGuard limits what is kept.
 	show := opts.MaxFindings
 	if show <= 0 || show > findingsGuard {
 		show = reviewDefaultShown
@@ -1507,7 +1484,6 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 		}
 		found, o.verifiers = v.kept, v.models
 		o.unverified = v.unchecked
-		// Some of what it dropped is posted anyway, so its drops can be judged.
 		dropPost := s.serverNumber(ctx, settingDropPost, defaultDropPost)
 		for _, d := range v.dropped {
 			if s.draw() < dropPost {
@@ -1545,11 +1521,9 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 		}
 	}
 	o.rule = ruleTag(r.AutomationID)
-	// A review with nothing to act on isn't posted; the 👍 marks the head reviewed instead.
 	if !signOff(o) {
 		posted, err := cl.PostReview(ctx, bf, pr.Repo, fp, reviewBody(fp.HeadSHA, o), comments)
 		if err != nil && len(comments) > 0 && ctx.Err() == nil {
-			// Private files' text never goes in the review body, even when the forge refuses their line comments.
 			s.log.WarnContext(ctx, "forge refused line comments; folding them into the review", "repo", pr.Repo, "number", pr.Number, "err", err)
 			for n, p := range o.placed {
 				if p.placement == "inline" {
@@ -1570,7 +1544,7 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 	if err := s.saveFindings(ctx, r, fp.HeadSHA, o.placed, append(slices.Clone(o.verifyDropped), noEvidence...), o.emptyRequests, private); err != nil {
 		s.log.ErrorContext(ctx, "save findings", "run", r.ID, "err", err)
 	} else if _, err := s.syncFindings(ctx, f, pr, false); err != nil {
-		s.log.WarnContext(ctx, "link findings to their threads", "run", r.ID, "err", err) // the next sync does
+		s.log.WarnContext(ctx, "link findings to their threads", "run", r.ID, "err", err)
 	}
 	shown := 0
 	for _, p := range o.placed {

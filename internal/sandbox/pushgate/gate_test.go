@@ -324,7 +324,6 @@ func TestOtherRepoNotServed(t *testing.T) {
 func TestProtectedPushIsHeldThenForwarded(t *testing.T) {
 	e := newEnv(t)
 	mustGit(t, e.work, "checkout", "--quiet", "-b", "agent/ci")
-	// A rename away from a protected path counts as touching it.
 	mustGit(t, e.work, "mv", ".forgejo/workflows/ci.yml", "notes.txt")
 	c := e.commit("move ci away", nil)
 	out, err := e.push("agent/ci")

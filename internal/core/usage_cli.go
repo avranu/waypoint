@@ -1,7 +1,5 @@
 package core
 
-// The upload holds command names, flag names and fixed labels only; ingest keeps to those shapes whatever a client sends.
-
 import (
 	"context"
 	"slices"
@@ -437,7 +435,7 @@ func (s *Service) cliDetails(ctx context.Context, sc *usageScope, o *UsageCLIRep
 	cmds := make([]UsageCLICommand, 0, len(by))
 	for _, a := range by {
 		if a.Calls == 0 {
-			continue // only counted a follow-up, in a period that began after the call
+			continue
 		}
 		cliByCount(a.flags)
 		a.Flags = append(a.Flags, a.flags[:min(len(a.flags), cliTopDetails)]...)

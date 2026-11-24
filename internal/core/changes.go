@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// Built from the records' own history, updated time and author; no separate change log to keep in step.
-
 // Change kinds, in the order people read them.
 const (
 	ChangeIssue    = "issue"
@@ -187,7 +185,6 @@ func (s *Service) issueChanges(ctx context.Context, actor *Actor, project int64,
 }
 
 func (s *Service) pageChanges(ctx context.Context, actor *Actor, project int64, agentOnly bool, before int64, limit int, cache map[int64]*UserRef) ([]Change, error) {
-	// A job's token sees no personal pages.
 	member, margs := actor.memberProjects(RoleViewer)
 	where := `((pg.project_id IS NULL AND pg.owner_id = ? AND ?) OR (pg.project_id IS NOT NULL AND (? OR pg.project_id IN ` + member + `)))`
 	args := append([]any{actor.id(), actor.scope == nil, actor.isAdmin()}, margs...)
@@ -270,8 +267,6 @@ func (s *Service) designChanges(ctx context.Context, actor *Actor, project int64
 	if agentOnly {
 		where += ` AND r.agent != ''`
 	}
-	// Every note has a revision for each change to it, its first included, a
-	// proposal waiting for a person too.
 	// #nosec G202 -- where is fixed conditions; values are bound
 	rows, err := s.db.R.QueryContext(ctx, `SELECT r.id, n.id, n.title, r.kind, r.state, r.created_at, n.created_at, r.user_id, r.agent, coalesce(p.key, '')
 		FROM design_revisions r JOIN design_notes n ON n.id = r.note_id LEFT JOIN projects p ON p.id = n.project_id

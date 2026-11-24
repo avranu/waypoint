@@ -11,8 +11,6 @@ import (
 	"time"
 )
 
-// The API maps each route and MCP tool to a permission, but core re-checks the dangerous ones with Actor.need, so a route mapped too loosely still can't start a session or run a command.
-
 // Permission names one thing a permission token may do, e.g. "issues.edit".
 type Permission string
 
@@ -293,7 +291,7 @@ func parsePermissions(v sql.NullString) []Permission {
 	}
 	out := []Permission{}
 	if err := json.Unmarshal([]byte(v.String), &out); err != nil {
-		return []Permission{} // unreadable: grant nothing rather than everything
+		return []Permission{}
 	}
 	return out
 }
@@ -472,7 +470,7 @@ func (s *Service) UpdateAPIToken(ctx context.Context, actor *Actor, id int64, p 
 		t.ReadOnly = *p.ReadOnly
 	}
 	if t.Permissions != nil {
-		t.ReadOnly = false // the permissions say what it may do
+		t.ReadOnly = false
 	}
 	if _, err := s.db.W.ExecContext(ctx, `UPDATE api_tokens SET name = ?, read_only = ?, permissions = ? WHERE id = ? AND user_id = ?`,
 		t.Name, boolInt(t.ReadOnly), permissionsJSON(t.Permissions), id, actor.id()); err != nil {

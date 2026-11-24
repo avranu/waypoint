@@ -20,7 +20,7 @@ var refusedPrefixes = func() []netip.Prefix {
 	var ps []netip.Prefix
 	for _, s := range []string{
 		"0.0.0.0/8",
-		"100.64.0.0/10", // 100.64.0.0/10 includes the Tailscale tailnet, which the broker must not reach.
+		"100.64.0.0/10",
 		"192.0.0.0/24",
 		"192.0.2.0/24",
 		"198.18.0.0/15",
@@ -28,7 +28,7 @@ var refusedPrefixes = func() []netip.Prefix {
 		"203.0.113.0/24",
 		"240.0.0.0/4",
 		"2001:db8::/32",
-		"fec0::/10", // fec0::/10 is deprecated site-local, but some networks still route it.
+		"fec0::/10",
 		"100::/64",
 	} {
 		ps = append(ps, netip.MustParsePrefix(s))
@@ -65,7 +65,6 @@ func publicAddr(ip netip.Addr) bool {
 		case sixToFour.Contains(ip):
 			return publicAddr(netip.AddrFrom4([4]byte{b[2], b[3], b[4], b[5]}))
 		case teredo.Contains(ip):
-			// The client's address is the last 32 bits, inverted.
 			return publicAddr(netip.AddrFrom4([4]byte{^b[12], ^b[13], ^b[14], ^b[15]}))
 		}
 	}

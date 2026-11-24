@@ -334,7 +334,6 @@ function Columns({
     const overId = over.id
     throttle(() =>
       setCells((c) => {
-        // Work from the latest state: drag-over events can outpace renders.
         const src = findCell(a.id, c)
         const item = src !== null ? c[src].find((i) => i.key === a.id) : undefined
         if (src === null || !item || src === to || !c[to]) return c
@@ -377,8 +376,6 @@ function Columns({
     if (!over || origin === null) return setCells(fromServer)
     let cell = findCell(a.id)
     if (cell === null) return setCells(fromServer)
-    // The last drag-over can be throttled away or not rendered yet: land in
-    // the cell under the pointer regardless.
     let base = cells
     const overCell = findCell(over.id)
     if (overCell !== null && overCell !== cell && base[overCell]) {
@@ -390,8 +387,6 @@ function Columns({
       cell = overCell
     }
     setCrossed(cell !== origin)
-    // A subtask is dropped "on" its parent's card whenever it is let go in place:
-    // that means no move, not "take the parent's place".
     const parentKey = base[cell].find((i) => i.key === a.id)?.parent?.key
     const overKey = nest && over.id === parentKey && findCell(over.id) === cell ? a.id : over.id
     let list = base[cell]
@@ -410,7 +405,6 @@ function Columns({
     const statusChanged = from.status !== to.status
     const laneChanged = from.lane !== to.lane
     const lane = laneChanged ? lanePatch(to.lane) : { patch: {}, optimistic: {} }
-    // Before and after keys come from the list the server also orders.
     const before = list[idx + 1]?.key
     const after = list[idx - 1]?.key
     const moved = statusChanged || laneChanged || oldIdx !== idx
@@ -771,7 +765,6 @@ function Subtasks({
         aria-expanded={shown}
         aria-controls={id}
         onClick={() => toggle(parent.key)}
-        // Space and Enter belong to this button, not to the card's drag handle around it.
         onKeyDown={(e) => e.stopPropagation()}
         className="flex h-6 max-w-full items-center gap-1 rounded-md px-1 text-[11px] text-muted hover:bg-hover hover:text-fg"
       >
@@ -842,8 +835,6 @@ function QuickAdd({
   sprint?: string
 }) {
   const add = useQuickAdd(quickAddKey(project.key, status))
-  // The issue just added is the new top until the board reloads, so a quick
-  // second Enter lands above it rather than beside it.
   const added = useRef<string | undefined>(undefined)
   useEffect(() => {
     added.current = undefined

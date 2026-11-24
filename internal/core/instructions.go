@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-// Only the approved revision is delivered: an agent's edit waits for a person's review.
-
 const (
 	InstrScopeAny      = "any"
 	InstrScopeMain     = "main"
@@ -474,10 +472,6 @@ func (s *Service) UpdateInstruction(ctx context.Context, actor *Actor, id int64,
 	err = s.write(ctx, actor, func(t *tx) error {
 		state := ""
 		if content {
-			// An agent builds on the newest revision that is not rejected, so a
-			// second proposal builds on the first. A person's edit is approved
-			// as written, so it builds on the delivered revision only: an
-			// agent's pending text must not ride in unreviewed.
 			var b instrContent
 			var models, types string
 			q, args := `SELECT title, body, scope, models, agent_types, moment FROM agent_instruction_revisions

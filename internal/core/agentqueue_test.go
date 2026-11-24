@@ -318,7 +318,6 @@ func TestAgentQueueOrderAndPins(t *testing.T) {
 	if d := e.get(e.admin, late.Key); d.AgentOrder != nil {
 		t.Error("a closed issue kept its pin")
 	}
-	// Closing a pin leaves no gap: the pins below it keep their places, and the automatic order does not fill it.
 	order(newer.Key, high.Key, urgent.Key, low.Key)
 	none := "none"
 	if _, err := e.s.UpdateIssue(e.ctx, e.admin, high.Key, IssuePatch{Agent: &none}); err != nil {

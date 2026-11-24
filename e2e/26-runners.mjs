@@ -245,7 +245,7 @@ async function run(width, scheme, first, last) {
 
   await page.goto(`${base}/admin?tab=runners`);
   await page.getByText("Everyone's runners").waitFor();
-  await page.getByTestId("runner").first().waitFor(); // count() does not wait, and the list loads after its heading.
+  await page.getByTestId("runner").first().waitFor();
   ok((await page.getByTestId("runner").count()) >= 1, `${tag} Admin → Runners lists runners`);
   ok((await page.getByRole("button", { name: /Run a command/ }).count()) === 0, `${tag} the admin view runs nothing`);
   await shot("runners-admin");

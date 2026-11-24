@@ -7,8 +7,6 @@ import (
 	"strings"
 )
 
-// SessionStart reports only its own checkout: a git status of every worktree of a repo with dozens takes seconds
-
 // hookCheckout is core.HookCheckout: one checkout's git state.
 type hookCheckout struct {
 	Top       string   `json:"top"`
@@ -42,7 +40,6 @@ func checkoutState(top string) *hookCheckout {
 		c.FileCount = len(lines)
 		c.Files = lines[:min(len(lines), checkoutFiles)]
 	}
-	// with no remote-tracking refs, skip the count: every commit would read as unpushed
 	if remote := fetchRemote(top); remote != "" {
 		if refs, err := gitIn(top, "for-each-ref", "--count=1", "--format=%(refname)", "refs/remotes"); err == nil && refs != "" {
 			if out, err := gitIn(top, "rev-list", "--count", "HEAD", "--not", "--remotes"); err == nil {

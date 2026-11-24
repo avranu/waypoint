@@ -1,7 +1,5 @@
 package core
 
-// It is a prompt for the agent, not a verdict: it never says whether the session can be cleared.
-
 import (
 	"context"
 	"fmt"

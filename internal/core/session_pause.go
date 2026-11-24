@@ -5,8 +5,6 @@ import (
 	"strings"
 )
 
-// hooks read the pause locally and wind sessions down; Waypoint itself stops waking them: no news, no keep-warm ping, no Stop carried on
-
 // SessionPauseState is what a session's hooks pull: the pause covering it,
 // or none.
 type SessionPauseState struct {

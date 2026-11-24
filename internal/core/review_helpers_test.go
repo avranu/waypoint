@@ -23,7 +23,6 @@ type helperFixture struct {
 func newHelperFixture(t *testing.T) *helperFixture {
 	t.Helper()
 	fx := &helperFixture{newEnv(t)}
-	// db.W is a single connection, so this holds for the whole test.
 	fx.exec(`PRAGMA foreign_keys = OFF`)
 	return fx
 }
@@ -642,7 +641,6 @@ func TestEndAuditKeepsHelperResults(t *testing.T) {
 		t.Errorf("answered = %v", got)
 	}
 
-	// An attempt that ends unanswered keeps its helper runs, which ran and cost money.
 	c := fx.exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, owner_id, created_at, request_key, status) VALUES (0, 0, '', 'repo', 0, 1, 'z', 'running')`)
 	fx.s.requeueAudit(fx.ctx, &CodeAudit{ID: c, Status: AuditRunning, HelperRuns: a.HelperRuns}, 1, 0, nil)
 	fx.exec(`UPDATE code_audits SET status = 'running' WHERE id = ?`, c)
@@ -828,8 +826,6 @@ func TestHelperContext(t *testing.T) {
 	own := goal("Own goal", "active", true)
 	goal("Unapproved goal", "active", false)
 	goal("Retired goal", "retired", true)
-	// The issue's creation traces it in the background, which may have
-	// written its row already: this one takes its place.
 	fx.s.Wait()
 	fx.exec(`INSERT OR REPLACE INTO goal_traces(item_type, item_id, project_id, grounding, goal_id, scoped, computed_at) VALUES ('issue', ?, ?, 'goal', ?, 1, 1)`, issue.ID, p.ID, own)
 

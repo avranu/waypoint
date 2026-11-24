@@ -9,8 +9,6 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-// These checks apply to .github/ only: wp ci lint does not run them; TestRepoGitHubWorkflows does.
-
 var (
 	// GitHub reads context names in any case, so SECRETS.X is a secret too.
 	// This strict check runs on the lines that are not comments: the word

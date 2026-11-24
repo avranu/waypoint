@@ -163,7 +163,6 @@ func TestCIDoctorStalledLine(t *testing.T) {
 	}
 	exec(`UPDATE pull_requests SET labels = '[]' WHERE id = ?`, p10.ID)
 
-	// A task in a project the viewer cannot open must say nothing about the pull request.
 	other := be.project(be.admin, "Secret", "")
 	hidden := be.issue(be.admin, IssueInput{Project: other.Key, Title: "Speed up the merge queue"})
 	exec(`INSERT INTO external_links(issue_id, provider, kind, url, repo, number, state, created_at) VALUES (?, 'github', 'pull', ?, ?, 11, 'open', 0)`, hidden.ID, "https://x.test/pull/11", p10.Repo)
@@ -352,7 +351,6 @@ func TestDoctorMainAdvisories(t *testing.T) {
 		t.Error("advisories cancelled: it found nothing, want false")
 	}
 
-	// The run's kept jobs count too: the forge's capped read can leave out a failed shard that still makes main red.
 	main := func(status string, h *ciHistory) CIMain {
 		h.runs = map[int64]ActionRun{7: {Index: 7, Event: "push", PrettyRef: "main", Status: status, Created: now}}
 		d := &CIDoctor{}

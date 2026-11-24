@@ -239,7 +239,6 @@ func (s *Service) lineGather(ctx context.Context, ref lineRef) (*lineState, erro
 		asked = keep[0]
 		askedTip, askedBehind, askedStale = s.behindBase(ctx, asked)
 	}
-	// A candidate's failure can't be told from the base's, so what fails on the base is read before anything is decided.
 	fixer, failing, err := s.lineOrder(ctx, keep, askedTip)
 	if err != nil {
 		return nil, err
@@ -264,7 +263,6 @@ func (s *Service) lineGather(ctx context.Context, ref lineRef) (*lineState, erro
 		} else {
 			ls.tip, ls.frontBehind, ls.snap.TipStale = s.behindBase(ctx, front)
 			if ls.tip != "" && ls.tip != askedTip {
-				// The fixer and order were worked out for the old tip: redo them; a different front's facts are for another tip, so decide nothing now.
 				order := slices.Clone(ls.order)
 				nf, failing, err := s.lineOrder(ctx, order, ls.tip)
 				if err != nil {
@@ -299,7 +297,6 @@ func (s *Service) lineGather(ctx context.Context, ref lineRef) (*lineState, erro
 		return nil, err
 	}
 	if ls.snap.BaseRed && len(ls.snap.Entries) > 0 {
-		// Front heads that ended base_red on this tip wait for the base, not for a candidate.
 		ls.red = failingJobs(ls.failing)
 		ls.redWaits = ls.snap.Tried[candKey(entryHeads(ls.snap.Entries, 1))]
 	}
@@ -315,7 +312,7 @@ func (s *Service) lineLeft(ctx context.Context, p *PullRequest) string {
 	}
 	if failedOn(p, p.HeadSHA) {
 		if queueHolder(p) {
-			return "" // A queue holder whose checks failed keeps its place through the round.
+			return ""
 		}
 		return "its checks failed"
 	}
@@ -485,16 +482,10 @@ func (s *Service) lineCands(ctx context.Context, ls *lineState) error {
 		st, err := scanStack(rows)
 		if err != nil {
 			s.log.WarnContext(ctx, "read a live candidate", "err", err)
-			// Left live, the planner has no candidate for its heads and starts
-			// them again every step: end it. Not a reason that pauses the line,
-			// as it says nothing about the forge (WP-1700).
 			if st == nil || st.ID == 0 {
-				// A row that can't even be told can't be ended: planning now
-				// could start its heads a second time.
 				return fmt.Errorf("read a live candidate: %w", err)
 			}
 			if err := s.candEnd(ctx, ls.f, st, stackCancelled, endUnreadable, "its row could not be read"); err != nil {
-				// If its end failed the row is still live: skipping it would let planning start its heads a second time.
 				return fmt.Errorf("end an unreadable candidate: %w", err)
 			}
 			continue
@@ -511,9 +502,7 @@ func (s *Service) lineCands(ctx context.Context, ls *lineState) error {
 	}
 	for _, st := range live {
 		if byCommit[st.CommitSHA] > 1 {
-			// Rows sharing one commit are batches of an older format: end them; the line starts its own.
 			if err := s.candEnd(ctx, ls.f, st, stackCancelled, endLineChanged, "a batch of the old kind"); err != nil {
-				// Still live: planning now could start its heads a second time.
 				return fmt.Errorf("end a batch of the old kind: %w", err)
 			}
 			continue
@@ -599,8 +588,6 @@ func (s *Service) pollCand(ctx context.Context, f *Forge, st *queueStack) candPo
 	}
 	all, err := cl.CommitChecks(ctx, f, st.Repo, st.CommitSHA)
 	if err != nil {
-		// Unread, it is still running, but not for ever: a forge that never
-		// answers for this commit would hold the line behind it.
 		s.log.WarnContext(ctx, "read a candidate's checks", "candidate", st.ID, "err", err)
 		return overdue("its checks couldn't be read")
 	}
@@ -647,7 +634,6 @@ func (s *Service) pollCand(ctx context.Context, f *Forge, st *queueStack) candPo
 		ran = ran || !skippedCheck(c)
 	}
 	if al, ok := s.Forges.(ForgeActionLogs); ok {
-		// green checks alone don't pass: a run may still be unfinished
 		runs, err := al.ActionRunsAt(ctx, f, st.Repo, st.CommitSHA)
 		if err != nil {
 			s.log.WarnContext(ctx, "read the runs of a candidate", "candidate", st.ID, "err", err)
@@ -840,7 +826,7 @@ func (s *Service) candMergedOn(ctx context.Context, f *Forge, pr *PullRequest, s
 			desc = fmt.Sprintf("step %d of %d of the merge line's candidate %s, which passed every check", st.Merged+1, len(st.Heads), st.name())
 		}
 		if mt, err := tr.CommitTree(ctx, f, pr.Repo, merged); err != nil || !strings.EqualFold(mt, st.Tree) {
-			return // not what the candidate tested: the base's push run tests it
+			return
 		}
 	} else {
 		if ok, err := s.stackChainN(ctx, f, st, merged, st.Merged+1); err != nil || !ok {
@@ -885,9 +871,6 @@ func (s *Service) lineStep(ctx context.Context, ref lineRef) {
 			return
 		}
 		if err := s.lineAct(ctx, ls, a); err != nil {
-			// A candidate the plan ended is still live: what the plan does
-			// next (start its heads again, drop a pull request) assumed it
-			// gone. The line is read again and the next step plans anew.
 			break
 		}
 	}
@@ -914,8 +897,6 @@ func (s *Service) lineAct(ctx context.Context, ls *lineState, a lineAction) erro
 			state := stackCancelled
 			switch reason {
 			case endLineChanged, endHeadMoved, endBaseMoved:
-				// The merge of the last head can land before the merge path
-				// has ended the candidate: that is a merge, not a change.
 				if s.restMerged(ctx, st) {
 					reason, state = endMerged, stackMerged
 				}
@@ -998,7 +979,6 @@ func (s *Service) candStart(ctx context.Context, ls *lineState, heads []stackHea
 	if last == nil || !ok || ls.tip == "" || ls.snap.TipStale {
 		return
 	}
-	// A candidate that ended in the fallback (no run, no merge, refused) turns it on, so no next candidate is cut in the same step.
 	if s.lineFallback(ctx, ls.ref) {
 		return
 	}
@@ -1017,8 +997,6 @@ func (s *Service) candStart(ctx context.Context, ls *lineState, heads []stackHea
 		return
 	}
 	st.CommitSHA = strings.ToLower(c.SHA)
-	// The base may have moved since its tip was read: the candidate must sit
-	// on the tip its heads were checked against.
 	if ps, err := s.stackParents(ctx, ls.f, ls.ref.repo, st.CommitSHA); err != nil || len(ps) != 1 || !sameSHA(ps[0], tip) {
 		s.deleteStackBranch(ctx, ls.f, st)
 		return
@@ -1150,11 +1128,6 @@ func (s *Service) lineEjectAct(ctx context.Context, ls *lineState, a lineAction)
 	s.log.InfoContext(ctx, "pull request ejected", "repo", pr.Repo, "base", pr.BaseRef, "pr", pr.Number, "candidate", st.ID, "why", excerpt(cmp(p.note, a.Why), 160))
 	if a.Conflict {
 		ahead := !p.onBase && p.k > 0
-		// Who conflicted goes on the row before it ends: an ended candidate
-		// without it can't be acted on again, and lineConflictAhead (which
-		// reads only ended ones) would never hold the pull request out. If
-		// this write fails the candidate stays live, so the rest of the plan
-		// must not run (its error stops the step), and the next step ejects.
 		if _, err := s.db.W.ExecContext(ctx, `UPDATE queue_stacks SET conflict_pr = ?, conflict_ahead = ? WHERE id = ? AND ended_at IS NULL`, pr.ID, ahead, st.ID); err != nil {
 			s.log.WarnContext(ctx, "record a candidate's conflict", "candidate", st.ID, "err", err)
 			return fmt.Errorf("record a candidate's conflict: %w", err)
@@ -1169,10 +1142,6 @@ func (s *Service) lineEjectAct(ctx context.Context, ls *lineState, a lineAction)
 		s.lineDrop(ctx, ls.ref, pr, reasonConflict(pr.BaseRef)+"; a round resolves it")
 		return nil
 	}
-	// A failure of its candidate's run is a failure of its head: said as one
-	// on the head, so its babysit reads the failed check's log and a round
-	// fixes it. (waypoint/ statuses are ignored by CI state, so the check
-	// keeps its own name.)
 	if err := s.candEnd(ctx, ls.f, st, stackFailed, endFailed, p.note); err != nil {
 		return err
 	}
@@ -1200,8 +1169,6 @@ func (s *Service) lineUpdateAct(ctx context.Context, ls *lineState, a lineAction
 		s.log.InfoContext(ctx, "the front left the line before its update", "repo", pr.Repo, "base", pr.BaseRef, "pr", pr.Number)
 		return
 	}
-	// A draft Waypoint holds is marked ready first, so the update's push runs
-	// the full tier once (WP-456).
 	before := func() { s.readyForUpdate(ctx, pr) }
 	switch s.updateIfBehindThen(ctx, pr, before) {
 	case upToDate:
@@ -1210,7 +1177,6 @@ func (s *Service) lineUpdateAct(ctx context.Context, ls *lineState, a lineAction
 		s.lineDrop(ctx, ls.ref, pr, reasonConflict(pr.BaseRef)+"; a round resolves it")
 	case upFailed:
 		if b, err := s.activeBabysit(ctx, s.db.R, pr.ID); err == nil && b != nil {
-			// a failed update is retried by the sweep; the note on the pull request says why
 			s.setState(ctx, b, pr, BabysitWatching, "in the merge line for "+cmp(pr.BaseRef, "its base")+": couldn't bring the branch up to date; trying again")
 		}
 	}

@@ -17,7 +17,7 @@ const testPause = `{"id":3,"spec":"any","note":"Quota alert: 41% of the week in 
 // copy; a stale copy is ignored; null clears it (WP-146).
 func TestSessionPauseHooks(t *testing.T) {
 	t.Setenv("WP_TASK", "")
-	t.Setenv("WP_GATE", "off") // the pause refuses agents whatever the gate's mode
+	t.Setenv("WP_GATE", "off")
 	t.Setenv("HOME", t.TempDir())
 	c := &cli{dir: t.TempDir()}
 	gate := func() string {

@@ -58,15 +58,11 @@ func hookRefusalWith(in hookEventInput, task func(cmd string) (kind, text string
 	if text := worktreePlaceNudge(ti.Command, cwd); text != "" {
 		return "worktree-place", text
 	}
-	// Only a sleep before the read is refused here; other commands skip the costly /proc scan.
 	if !ti.Bg && reSleep.MatchString(ti.Command) {
 		if k, text, deny := task(ti.Command); k != "" && deny {
 			return k, text
 		}
 	}
-	// A background call is a timer or a waiter, however little it prints.
-	// A foreground one that only prints is refused only when the caller has
-	// something to wait for: noop returns "" when it has not.
 	if !ti.Bg && pureNoop(ti.Command) {
 		if text := noop(); text != "" {
 			return "noop-poll", text

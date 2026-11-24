@@ -7,8 +7,6 @@ import (
 	"strings"
 )
 
-// Grants reads of pictures in wp's own locations only; it never runs anything.
-
 const (
 	shotsDirName = "wp-shots"
 	filesDirName = "wp-files"

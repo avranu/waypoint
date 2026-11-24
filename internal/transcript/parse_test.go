@@ -8,8 +8,6 @@ import (
 	"time"
 )
 
-// Fixtures are synthetic lines in Claude Code's shape; none is copied from a real transcript.
-
 func j(v any) string {
 	b, err := json.Marshal(v)
 	if err != nil {

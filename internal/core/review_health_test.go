@@ -179,7 +179,6 @@ func TestReviewHealthOnEvent(t *testing.T) {
 	if n != 0 || len(open()) != before {
 		t.Fatalf("runs outside the window filed %d", n)
 	}
-	// The event checks only its own project; a record that can't be read files nothing, and the next event reads it again.
 	other := pe.project(pe.admin, "Other", "")
 	otherAudit := pe.mexec(`INSERT INTO code_audits(project_id, forge_id, repo, target, owner_id, created_at) VALUES (?, ?, 'me/other', 'repo', ?, ?)`, other.ID, pe.f.ID, pe.admin.User.ID, now)
 	for range 20 {

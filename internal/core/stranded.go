@@ -12,8 +12,6 @@ import (
 	"time"
 )
 
-// Agents aren't asked to behave differently: each Stop records the checkouts' git state and running background commands, and stranded work is recovered after the session ends.
-
 // HookCheckout is one checkout's git state, as a Stop or SessionStart
 // reports it.
 type HookCheckout struct {
@@ -265,8 +263,6 @@ func (w *StrandedWork) ResumeText(key string) string {
 func trimStatus(lines []string) []string {
 	out := make([]string, len(lines))
 	for n, l := range lines {
-		// The code is one or two letters (its leading space is often trimmed
-		// on the way: " M a.go" arrives as "M a.go").
 		l = strings.TrimSpace(l)
 		if sp := strings.IndexByte(l, ' '); sp == 1 || sp == 2 {
 			l = strings.TrimSpace(l[sp:])
@@ -410,7 +406,7 @@ func (s *Service) strandOnEnd(ctx context.Context, t *tx, x *AgentSession, ev *H
 			continue
 		}
 		if handed, err := s.handedOn(ctx, t, i); handed || err != nil {
-			continue // If it can't be told whether the task moved on, skip it this pass rather than strand it.
+			continue
 		}
 		if i.ClaimedBy != "" && i.ClaimedBy != h.agent && i.ClaimedUntil != nil && i.ClaimedUntil.UnixMilli() > now {
 			continue
@@ -482,11 +478,11 @@ func (s *Service) taskExists(ctx context.Context, q interface {
 }, key string) bool {
 	n := strings.LastIndexByte(key, '-')
 	if n <= 0 {
-		return true // unknown: don't claim the checkout
+		return true
 	}
 	var ok bool
 	if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM issues i JOIN projects p ON p.id = i.project_id WHERE p.key = ? AND i.number = ?)`, key[:n], key[n+1:]).Scan(&ok); err != nil {
-		return true // unknown: don't claim the checkout
+		return true
 	}
 	return ok
 }
@@ -522,8 +518,6 @@ func (s *Service) strand(ctx context.Context, t *tx, i *Issue, agent string, ope
 	sys := SystemActor()
 	moved := false
 	if i.WorkflowID == nil || i.Step == "" {
-		// A workflow's steps hand the task on themselves; outside one, To Do
-		// is where an agent picks it up again.
 		st := CatTodo
 		if err := s.applyPatch(ctx, t, sys, i, IssuePatch{Status: &st}); err != nil && !IsInvalid(err) {
 			return err
@@ -533,7 +527,6 @@ func (s *Service) strand(ctx context.Context, t *tx, i *Issue, agent string, ope
 	}
 	body := w.strandComment(i.Key, moved)
 	if i.Hold.on(s.now()) {
-		// wp next won't hand out a held task, so the strand note must say what it waits for, not promise a handout.
 		body = strings.Replace(body, fmt.Sprintf("`wp next %s` hands it out again and shows where to resume.", i.Key),
 			fmt.Sprintf("It is on hold %s; it is handed out again once that ends.", holdWaits(i.Hold, time.UTC)), 1)
 	}
@@ -621,7 +614,7 @@ func (s *Service) noteStrandedHere(ctx context.Context, t *tx, actor *Actor, x *
 				continue
 			}
 			if handed, err := s.handedOn(ctx, t, i); handed || err != nil {
-				continue // If it can't be told whether the task moved on, skip it this pass rather than strand it.
+				continue
 			}
 			if i.ClaimedBy != "" && i.ClaimedUntil != nil && i.ClaimedUntil.UnixMilli() > now {
 				continue
@@ -724,7 +717,7 @@ func (s *Service) sweepStranded(ctx context.Context) error {
 					return nil
 				}
 				if handed, err := s.handedOn(ctx, t, i); handed || err != nil {
-					return nil // If it can't be told whether the task moved on, skip it this pass rather than strand it.
+					return nil
 				}
 				if i.Draft || i.Agent == AgentHumans || i.UpdatedAt.UnixMilli() >= cut {
 					return nil
@@ -753,14 +746,14 @@ func (s *Service) sweepStranded(ctx context.Context) error {
 					var seen int64
 					if err := t.QueryRowContext(ctx, `SELECT state, last_seen_at, cwd, branch, machine FROM agent_sessions WHERE id = ?`, session.Int64).
 						Scan(&state, &seen, &cwd, &branch, &machine); err != nil && !errors.Is(err, sql.ErrNoRows) {
-						return err // can't tell whether the session is live: don't strand
+						return err
 					} else if err == nil {
 						if sessionStillAbout(state, seen, now) {
 							return nil
 						}
 						w.Machine, w.Top, w.Branch = machine, cwd, branch
 						ws := s.loadWorkState(ctx, t, session.Int64)
-						ws.Background = nil // long gone, and nothing says they died with it
+						ws.Background = nil
 						if p := pickWork(i.Key, 1, ws, func(k string) bool { return s.taskExists(ctx, t, k) }); p != nil {
 							w.Top, w.Branch, w.Files, w.FileCount, w.Unpushed = p.Top, p.Branch, p.Files, p.FileCount, p.Unpushed
 						}

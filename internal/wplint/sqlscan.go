@@ -124,8 +124,6 @@ func countColumns(sql string, complete bool) (int, bool) {
 			start, prev = w.end, ""
 			continue
 		}
-		// IS [NOT] DISTINCT FROM is a comparison inside a select item, not
-		// the list's end.
 		if start >= 0 && isListEnd(w.word) && (!strings.EqualFold(w.word, "FROM") || !strings.EqualFold(prev, "DISTINCT")) {
 			end = w.start
 			break
@@ -319,7 +317,7 @@ func helperScans(pass *analysis.Pass, decls map[*types.Func]*ast.FuncDecl) map[*
 			if n, ok := scanCount(call); ok {
 				counts[idx] = n
 			} else {
-				seen[idx] = 2 // 2 is a sentinel: a spread's count is unknown, so the parameter is skipped below.
+				seen[idx] = 2
 			}
 			return true
 		})
@@ -368,9 +366,6 @@ func fileOf(pass *analysis.Pass, fd *ast.FuncDecl) *ast.File {
 func checkScans(pass *analysis.Pass, r *reporter, helpers map[*types.Func]map[int]int, fd *ast.FuncDecl) {
 	locals := singleAssignments(pass, fd)
 	binds := map[types.Object][]queryBind{}
-	// bindAt is the query obj holds at pos: the latest assignment before
-	// pos, back to one whose block holds pos (so every path passes it).
-	// Assignments in branches between must agree, or no width is known.
 	bindAt := func(obj types.Object, pos token.Pos) (queryBind, bool) {
 		var before []queryBind
 		for _, b := range binds[obj] {
@@ -536,7 +531,7 @@ func runSchemaChain(pass *analysis.Pass) (any, error) {
 		}
 	}
 	if !hasTests {
-		return nil, nil // the package's test variant has the map; this pass runs on that too
+		return nil, nil
 	}
 	listed := map[types.Object]bool{}
 	if mapDecl != nil {

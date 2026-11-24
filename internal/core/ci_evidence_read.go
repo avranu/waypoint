@@ -1,7 +1,5 @@
 package core
 
-// Anyone who can see a project the repo is attached to may read its CI evidence.
-
 import (
 	stdcmp "cmp"
 	"context"
@@ -548,7 +546,6 @@ func (s *Service) coverageTrend(ctx context.Context, r *ciRepoRef, c *CICoverage
 	c.Trend = []CICoveragePoint{}
 	for _, p := range pts {
 		if c.Path != "" {
-			// Must count as coverageRows does: a package alone, or a directory's packages.
 			p.Stmts, p.Covered = 0, 0
 			var own *CICoveragePoint
 			prows, err := s.db.R.QueryContext(ctx, `SELECT package, stmts, covered FROM ci_coverage_pkgs WHERE forge_id = ? AND repo = ? AND sha = ?`,
@@ -728,7 +725,6 @@ func (s *Service) CISuppressions(ctx context.Context, actor *Actor, in CISuppres
 		for _, rule := range c.Rules {
 			counts[[2]string{c.Kind, rule}]++
 		}
-		// Files already present at the first scan are a baseline, not additions.
 		if first >= since && first > firstScan {
 			out.Added = append(out.Added, c)
 		}

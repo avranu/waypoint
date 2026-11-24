@@ -1,7 +1,5 @@
 package core
 
-// Holds only the DB-free parts of agent setup: agent-file paths, what a file set holds, and the shared block.
-
 import (
 	"encoding/json"
 	"net/url"
@@ -372,8 +370,6 @@ func redactSettings(raw string) (string, bool) {
 		case []any:
 			for i := range t {
 				if under == "hooks" {
-					// An entry isn't an event name: its secret-named fields
-					// are blanked like any other.
 					t[i] = walk(t[i], "hook")
 				} else {
 					t[i] = walk(t[i], under)
@@ -462,7 +458,7 @@ func redactArgs(args []any) []any {
 func redactSetupURL(s string) string {
 	u, err := url.Parse(s)
 	if err != nil {
-		return redacted // can't tell what is in it
+		return redacted
 	}
 	if u.RawQuery == "" && u.Fragment == "" && u.RawFragment == "" && u.User == nil && (u.Path == "" || u.Path == "/") {
 		return s

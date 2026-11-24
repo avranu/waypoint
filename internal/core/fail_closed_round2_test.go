@@ -37,7 +37,6 @@ func TestReviewHoldsNoRowsHoldNothing(t *testing.T) {
 		t.Errorf("auditGoingErr with no audits: %v", err)
 	}
 	for _, l := range strings.Split(logs.String(), "\n") {
-		// Forge-webhook warnings come from the fake forge fixture, not from a hold.
 		if strings.Contains(l, "WARN") && !strings.Contains(l, "forge webhook") {
 			t.Errorf("a normal outcome was logged as a warning: %s", l)
 		}

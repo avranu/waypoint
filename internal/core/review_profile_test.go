@@ -60,8 +60,6 @@ func TestReviewProfileLimits(t *testing.T) {
 	if p := ownReviewBrief("Review it.", AutopilotLimits{ReviewText: ptrOf("Check the locks.")}); !strings.Contains(p, "<brief>\nCheck the locks.\n</brief>") {
 		t.Fatalf("brief: %q", p)
 	}
-	// A brief may hold tabs (a code sample); the session's prompt can't, or
-	// its runner job is refused.
 	if p := ownReviewBrief("Review it.", AutopilotLimits{ReviewText: ptrOf("Check:\n\tthe locks")}); strings.ContainsRune(p, '\t') || !strings.Contains(p, "\n the locks") {
 		t.Fatalf("a brief with a tab: %q", p)
 	}
@@ -114,7 +112,6 @@ func TestReviewProfileSettings(t *testing.T) {
 	if _, err := a.s.ReviewModelOptions(a.ctx, a.ag); err != nil {
 		t.Fatalf("an agent reads the options: %v", err)
 	}
-	// The audit log records a brief by its length and hash, never its text.
 	page, err := a.s.ListAudit(a.ctx, a.admin, AuditQuery{Category: AuditControl})
 	if err != nil {
 		t.Fatal(err)

@@ -1,7 +1,5 @@
-# Upstream gosec's bundled x/tools cannot read Go 1.27 export data, so make tools builds it against a newer one; misspell stays off because "cancelled" is a user-facing status alias.
 version: "2"
 
-# v2 formatters (gofmt, goimports) apply only under run --fix, which the pre-commit hook passes
 formatters:
   enable:
     - gofmt
@@ -11,7 +9,6 @@ formatters:
       local-prefixes: [git.jmann.me/claude/waypoint]
 
 linters:
-  # `enable` alone only adds to golangci's default linters; `default: none` makes this list the whole gate.
   default: none
   enable:
     - errcheck
@@ -35,9 +32,6 @@ linters:
     rules:
       - path: _test\.go
         linters: [errcheck]
-    # Backstop: npm deps can ship third-party Go code under web/node_modules
-    # (e.g. eslint's flatted dep). Make targets scope packages explicitly,
-    # but a bare `./...` invocation must never lint third-party code.
     paths:
       - web/node_modules
 

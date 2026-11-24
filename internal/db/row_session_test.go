@@ -71,7 +71,6 @@ func TestCommentSessionBackfill(t *testing.T) {
 	if want := "1:7:1:null 2:null:0:null 3:null:0:null 4:null:0:null 5:null:0:null 6:null:0:null 7:7:1:null"; got != want {
 		t.Errorf("comments = %q, want %q", got, want)
 	}
-	// Take the session of an issue.created event only if the event is no older than the issue: a reused issue id can outlive its old event.
 	if err := d.W.QueryRowContext(ctx, `SELECT group_concat(id || ':' || coalesce(session_id, 'null') || ':' || session_backfilled, ' ') FROM (SELECT * FROM issues ORDER BY id)`).Scan(&got); err != nil {
 		t.Fatal(err)
 	}

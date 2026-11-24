@@ -226,7 +226,6 @@ func TestShippingAPI(t *testing.T) {
 // before they existed is still decoded, and the ones with them are not
 // refused as unknown fields (WP-1370).
 func TestOpenPullShipWordsDecode(t *testing.T) {
-	// Absent keeps the stored value; "" clears it.
 	for name, tc := range map[string]struct {
 		raw          string
 		msg, summary *string

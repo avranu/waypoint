@@ -14,8 +14,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Related issues come from the issues' own text (tf-idf cosine plus the dependencies it states), not from a model.
-
 // Similarity bands, from an offline check over 1,410 issues in October
 // 2026: every open pair at simHigh or more was related, most between
 // simMedium and simHigh were, and many between simLow and simMedium.
@@ -113,7 +111,7 @@ func (s *Service) suggestRelations(ctx context.Context, actor *Actor, ref string
 	for _, dep := range statedDependencies(i.Title + "\n" + i.Description) {
 		if id, err := s.resolveIssueID(ctx, s.db.R, dep.key); err == nil {
 			if named[id] {
-				delete(skip, id) // the plain link from its text can still become what the text states
+				delete(skip, id)
 			}
 			confidence := "medium"
 			if dep.sure {
@@ -130,7 +128,6 @@ func (s *Service) suggestRelations(ctx context.Context, actor *Actor, ref string
 	}
 	src, concept := idx.vector(i.Title, i.Description), idx.meaning(i.Title, i.Description)
 	matches := idx.related(src, concept, i.ID)
-	// The learned ranker is used only if it beat the blend on the held-out month; otherwise the blend ranks.
 	var probs map[int64]float64
 	if r := s.relationRanker(ctx); r != nil {
 		var pool []simMatch
@@ -165,7 +162,6 @@ func (s *Service) suggestRelations(ctx context.Context, actor *Actor, ref string
 	if len(out.Suggestions) > maxRelationSuggestions {
 		out.Suggestions = out.Suggestions[:maxRelationSuggestions]
 	}
-	// Only a person who could add or dismiss a suggestion is recorded as shown, so a look without a choice is not counted as ignoring it.
 	if actor.actsAsPerson() && !actor.ReadOnly && len(out.Suggestions) > 0 {
 		if role, err := s.issueRole(ctx, s.db.R, actor, i); err == nil && role >= RoleEditor {
 			s.noteShown(ctx, actor, idx, i, src, concept, out.Suggestions, probs)
@@ -357,7 +353,7 @@ func (s *Service) dropUnnamedRelations(ctx context.Context, t *tx, i *Issue, nam
 		}
 		holder := i
 		if o.Draft && !i.Draft {
-			holder = o // a draft's key stays out of the published issue's history (WP-42)
+			holder = o
 		}
 		old, data, err := s.relationGone(ctx, t, holder, l.id, "automatic", "the text no longer names the other issue")
 		if err != nil {
@@ -581,7 +577,6 @@ func (s *Service) similarityIndex(ctx context.Context) (*simIndex, error) {
 	if s.similar.idx != nil && s.similar.idx.key == key {
 		return s.similar.idx, nil
 	}
-	// Drafts and outside text stay out of the index: their words would show up in suggested reasons.
 	rows, err := s.db.R.QueryContext(ctx, `SELECT i.id, i.project_id, i.title, i.description, st.category NOT IN ('done','canceled')
 		FROM issues i JOIN statuses st ON st.id = i.status_id WHERE i.draft = 0 AND i.outside = 0 ORDER BY i.id`)
 	if err != nil {
@@ -589,8 +584,6 @@ func (s *Service) similarityIndex(ctx context.Context) (*simIndex, error) {
 	}
 	defer rows.Close()
 	idx := &simIndex{key: key, df: map[string]int{}, docs: map[int64]*simDoc{}, words: map[string]string{}, model: model}
-	// The cache is detached while it's updated: a failed pass leaves none,
-	// and the next one starts over.
 	old, bc := s.similar.texts, s.similar.boiler
 	s.similar.texts, s.similar.boiler = nil, nil
 	if bc == nil {

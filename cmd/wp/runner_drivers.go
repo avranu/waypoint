@@ -20,8 +20,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// The repo's project settings, hooks and MCP servers are left out, since the code may be someone's pull request.
-
 func (p *runnerProc) buildDriver(ctx context.Context, in agentJob, path, work string) (*cliDriver, error) {
 	prompt := in.Prompt
 	if in.Confine && !confinedCLIs[in.CLI] {
@@ -71,7 +69,6 @@ func removeEscapingLinks(work string) ([]string, error) {
 		if rerr == nil && (target == root || strings.HasPrefix(target, root+string(filepath.Separator))) {
 			return nil
 		}
-		// nothing runs in the checkout yet, so no process can swap a directory for a link during the walk; os.Remove takes the link, not its target
 		if err := os.Remove(path); err != nil { // #nosec G122
 			return err
 		}
@@ -93,7 +90,7 @@ func claudeReadArgs(work string) ([]string, error) {
 	if strings.ContainsAny(dir, "()*?[]{}!\\") {
 		return nil, fmt.Errorf("the checkout's path %q has characters Claude Code's permission rules treat as patterns", dir)
 	}
-	rule := func(tool string) string { return tool + "(/" + dir + "/**)" } // Claude Code reads a leading // as an absolute path; a single / is relative to the project
+	rule := func(tool string) string { return tool + "(/" + dir + "/**)" }
 	return []string{"--tools", "Read,Grep,Glob", "--permission-mode", "dontAsk",
 		"--allowedTools", rule("Read"), rule("Grep"), rule("Glob")}, nil
 }
@@ -275,7 +272,6 @@ type claudeEvent struct {
 }
 
 func claudeDriver(in agentJob, prompt, work string) (*cliDriver, error) {
-	// Don't add --no-session-persistence: it leaves no transcript for the archive or for a timed-out round.
 	args := []string{"-p", "--output-format", "stream-json", "--verbose",
 		"--setting-sources", "user", "--strict-mcp-config", "--settings", unattendedSettings}
 	if in.Model != "" {
@@ -422,7 +418,7 @@ func codexDriver(in agentJob, prompt, work string) (*cliDriver, error) {
 			tokens.add(tokenUse{Input: ev.Usage.Input - ev.Usage.Cached, Output: ev.Usage.Output, CacheRead: ev.Usage.Cached})
 		case "turn.failed", "error":
 			msg := orStr(ev.Error.Message, ev.Message)
-			if msg != "" && msg != failure { // codex can send an error and a turn.failed event for one failure, so the same message can arrive twice
+			if msg != "" && msg != failure {
 				fmt.Fprintf(out, "error: %s\n", msg)
 			}
 			failure = orStr(msg, failure)
@@ -490,7 +486,6 @@ func opencodeOutOfUsage(line []byte) error {
 var opencodeUsageWords = []string{"usage limit", "quota", "out of usage", "spend limit", "credit balance", "insufficient balance", "insufficient credits"}
 
 func (p *runnerProc) opencodeDriver(ctx context.Context, in agentJob, prompt, path, work string) *cliDriver {
-	// opencode doesn't take its directory from the process's working directory, so --dir is what keeps a review in the checkout
 	args := []string{"run", "--dir", work}
 	if in.Model != "" {
 		args = append(args, "--model", in.Model)
@@ -602,7 +597,7 @@ func cursorReadRules(work string) ([]byte, error) {
 	if runtime.GOOS == "windows" {
 		return nil, errors.New("reads can't be limited on Windows, where other drives can't be listed and rules use backslashes")
 	}
-	abs, err := filepath.Abs(work) // Cursor compares absolute paths, so a relative rule would refuse nothing.
+	abs, err := filepath.Abs(work)
 	if err != nil {
 		return nil, err
 	}
@@ -617,7 +612,6 @@ func cursorReadRules(work string) ([]byte, error) {
 	}
 	deny = append(deny, others...)
 	for child, dir := real, filepath.Dir(real); child != dir; child, dir = dir, filepath.Dir(dir) {
-		// A level that can't be listed fails the job: what it holds couldn't be named.
 		names, err := os.ReadDir(dir)
 		if err != nil {
 			return nil, err
@@ -627,12 +621,9 @@ func cursorReadRules(work string) ([]byte, error) {
 				continue
 			}
 			p := filepath.Join(dir, e.Name())
-			// Cursor has no escape for *, so the rule would be a wildcard that
-			// could refuse the checkout itself and the audit would find nothing.
 			if strings.Contains(e.Name(), "*") {
 				return nil, fmt.Errorf("%s has a * in its name, which a rule can't say", p)
 			}
-			// Not p+"*", which would also match a neighbour on the way to the checkout.
 			deny = append(deny, "Read("+p+")", "Read("+p+"/**)")
 		}
 	}
@@ -655,7 +646,6 @@ var jobCheckoutName = lazyre.New(`^job([0-9]+)-`)
 func cursorOtherJobs(real string) ([]string, error) {
 	m := jobCheckoutName.FindStringSubmatch(filepath.Base(real))
 	if m == nil {
-		// Failing is safer than silently dropping the rule if execAgent's naming changes.
 		return nil, fmt.Errorf("%s isn't named job<id>-…, so other jobs' checkouts can't be refused", real)
 	}
 	id := m[1]
@@ -680,8 +670,6 @@ func cursorDriver(in agentJob, prompt, work string) (*cliDriver, error) {
 			return nil, fmt.Errorf("can't limit cursor-agent to reading: %w", err)
 		}
 	}
-	// The checkout is a fresh work tree of ours: without --trust (or --force)
-	// print mode stops at "Workspace Trust Required".
 	args := []string{"-p", "--output-format", "json", "--trust"}
 	if in.Model != "" {
 		args = append(args, "--model", in.Model)
@@ -691,7 +679,6 @@ func cursorDriver(in agentJob, prompt, work string) (*cliDriver, error) {
 	} else {
 		args = append(args, "--force")
 	}
-	// -- ends the options, so a prompt that starts with a dash is not read as a flag
 	args = append(args, "--", prompt)
 	d := &cliDriver{args: args}
 	d.finish = func(stdout []byte) (string, json.RawMessage, tokenUse, error) {

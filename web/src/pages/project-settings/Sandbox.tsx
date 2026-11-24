@@ -1,5 +1,3 @@
-// Only a person signed in to the Waypoint UI changes a project's sandbox: no token, agent or automation can.
-
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ShieldAlert } from 'lucide-react'

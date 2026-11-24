@@ -8,8 +8,6 @@ import (
 	"strings"
 )
 
-// A project's own wording overrides the admins' wording, which overrides the built-in default.
-
 // DefaultAutopilotPrompt is the prompt until someone words their own. The
 // runner fills in {key} (the task), {title} (its title), {done} (the task
 // the session finished before, or nothing) and {next} (what wp next

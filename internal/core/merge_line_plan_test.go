@@ -107,12 +107,10 @@ func TestPlanLine(t *testing.T) {
 		{name: "depth 3 cap", snap: lineSnap{Entries: []lineEntry{e(1), e(2), e(3), e(4)}}, want: []lineAction{start(1), start(1, 2), start(1, 2, 3)}},
 		{name: "front on the tip with its full run going gets no place-1 candidate", snap: lineSnap{
 			Entries: []lineEntry{onTip(e(1), false, true), e(2), e(3)}}, want: []lineAction{start(1, 2), start(1, 2, 3)}},
-		// the candidate's own run decides whether the base's failure matters
 		{name: "red base: the front alone is started", snap: lineSnap{BaseRed: true, Entries: []lineEntry{e(1), e(2), e(3)}}, want: []lineAction{start(1)}},
 		{name: "red base saturated: the front alone", snap: lineSnap{BaseRed: true, Saturated: true, BatchDepth: 3, Entries: []lineEntry{e(1), e(2), e(3)}}, want: []lineAction{start(1)}},
 		{name: "red base, a candidate failed only what the base fails: it ends base_red and nothing else", snap: lineSnap{BaseRed: true,
 			Entries: []lineEntry{e(1), e(2)}, Cands: []lineCand{baseOnly(cand(5, candFailed, 1))}}, want: []lineAction{ends(5, endBaseRed)}},
-		// a candidate built before #1 merged tests #2 alone on the tip that holds #1; #2 isn't started again in the plan that ends it
 		{name: "red base, a candidate whose first head merged failed only what the base fails: the head left isn't started again", snap: lineSnap{BaseRed: true,
 			Entries: []lineEntry{e(2), e(3)}, Cands: []lineCand{withMerged(baseOnly(cand(5, candFailed, 1, 2)), 1)}}, want: []lineAction{ends(5, endBaseRed)}},
 		{name: "red base, a candidate failed its own: rerun once", snap: lineSnap{BaseRed: true,
@@ -173,7 +171,7 @@ func TestLineSortOrder(t *testing.T) {
 	fixer := mk(7, 30)
 	early := mk(6, 5)
 	late := mk(5, 10)
-	tie := mk(4, 10) // ties on armed time go to the lower PR number
+	tie := mk(4, 10)
 	prs := []*PullRequest{late, tie, fixer, urgent, holder, early}
 	lineSort(prs, fixer.ID)
 	var got []int

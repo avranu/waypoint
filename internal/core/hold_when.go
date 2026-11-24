@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// A minute job lifts a hold once its conditions are met, so the queue only checks whether a task is on hold.
-
 // HoldWhen is what a hold waits for. References are stored by id, checked
 // against what the placer may see when the hold is placed.
 type HoldWhen struct {
@@ -112,7 +110,6 @@ func (s *Service) holdWhenFor(ctx context.Context, t *tx, actor *Actor, i *Issue
 		w.Requests = append(w.Requests, HoldRef{id, requestRef(key.String, number)})
 	}
 	if w.Reviewed {
-		// With nothing awaiting review, marking reviewed records nothing, so a person must lift the hold instead.
 		waiting, err := reviewWaiting(ctx, t, i.ID)
 		if err != nil {
 			return nil, err

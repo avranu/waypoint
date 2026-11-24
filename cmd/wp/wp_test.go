@@ -31,34 +31,20 @@ func TestMain(m *testing.M) {
 	if os.Getenv("WP_TEST_MAIN") == "1" {
 		os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 	}
-	// A test binary lives long: with its real age every hook run would count
-	// as late and keep its once-only notes (hookLate, WP-1398).
 	processAge = func() time.Duration { return 0 }
-	// No snapshot test may depend on the real process tree (a claude may sit
-	// above the test binary); those that need one build a fake (WP-1468).
 	snapshotProc = func() (string, int) { return "", 0 }
-	// The snapshot budget is a minute so a slow -race CI runner can't run out before a test's file is read.
 	snapshotBudget = time.Minute
 	for _, k := range []string{"CLAUDECODE", "CLAUDE_PID", "GEMINI_CLI", "OPENCODE", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "WAYPOINT_AGENT", noWorktreeEnv} {
 		_ = os.Unsetenv(k)
 	}
-	// A runner job's environment names the real server and a token; tests that expect no server must unset them.
 	for _, k := range []string{"WAYPOINT_SERVER", "WAYPOINT_TOKEN"} {
 		_ = os.Unsetenv(k)
 	}
-	// Test repos name remotes that don't exist: wp next fetches none of them
-	// (next_checkout_test.go turns it back on against a local one).
 	_ = os.Setenv("WP_NO_GIT", "1")
-	// The daily upload re-runs os.Executable() detached; in a test binary that is the test run itself.
 	_ = os.Setenv("WP_CODE_UPLOAD", "off")
-	// A test that takes a slot outside slotEnv must not spool its hold for
-	// the real server (WP-1646); the send tests turn it back on.
 	_ = os.Setenv(slotSendEnv, "off")
-	// The host's sandbox helper is root's; a test asks its own socket.
 	sandboxHelperSocket = "/nonexistent/waypoint-sandboxd.sock"
 	testnet.Guard()
-	// The launchers' wp next would run this test binary, which runs every
-	// test again: a test that wants an answer stubs it (stubStartNext).
 	runWpNext = func(context.Context, string, []string, string, string) (string, error) {
 		return "", errors.New("wp next isn't run in tests")
 	}
@@ -173,7 +159,6 @@ func TestTranscriptUsage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Cache reads don't count as input; cache creation does.
 	if u.input != 10+100+3 || u.output != 5+7 || u.model != "claude-opus-5-5" || u.offset != int64(len(tr)) {
 		t.Errorf("usage = %+v", u)
 	}
@@ -463,7 +448,6 @@ func TestCLIAgainstServer(t *testing.T) {
 	}
 	e.wp("page", "edit", m[1], "--title", "Parser plan v2")
 
-	// It counts only sessions in (or below) the directory the task was taken in.
 	cwd, _ := os.Getwd()
 	tr := filepath.Join(t.TempDir(), "t.jsonl")
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -517,7 +501,6 @@ func TestHookInstall(t *testing.T) {
 	path := filepath.Join(dir, "settings.json")
 	t.Setenv("WP_CLAUDE_SETTINGS", path)
 	t.Setenv("WAYPOINT_CONFIG_DIR", t.TempDir())
-	// settings.json is a dotfile manager's symlink: it must stay one.
 	target := filepath.Join(dir, "dotfiles", "settings.json")
 	_ = os.MkdirAll(filepath.Dir(target), 0o700)
 	_ = os.WriteFile(target, []byte(`{"model":"opus","hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"x"}]}]}}`), 0o600)

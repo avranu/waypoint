@@ -316,7 +316,7 @@ func (s *Service) CumulativeFlow(ctx context.Context, actor *Actor, projectRef s
 			New string `json:"new_category"`
 		}
 		if err := json.Unmarshal([]byte(data), &d); err != nil {
-			continue // corrupt history row: skip rather than record an empty change
+			continue
 		}
 		h.changes = append(h.changes, change{at: at, old: d.Old, new: d.New})
 	}
@@ -483,7 +483,6 @@ func (s *Service) forecast(all []flowIssue, inScope func(flowIssue) bool, settin
 		fc.Message = "No work finished in the last " + itoa(weeks) + " weeks, so there's nothing to project from yet."
 		return fc
 	}
-	// The seed is fixed so identical inputs give identical forecasts; this is sampling, not cryptography.
 	rng := rand.New(rand.NewPCG(42, uint64(len(all)))) // #nosec G404 -- deterministic forecast seed by design
 	const runs = 2000
 	results := make([]int, runs)
@@ -705,8 +704,6 @@ func (s *Service) agentTime(ctx context.Context, actor *Actor, fromMS, toMS int6
 		cond, arg = "i.project_id = ?", p.ID
 	}
 	now := s.nowMS()
-	// A run still open counts until now, or until its lease ran out if the
-	// agent went quiet (the sweep hasn't closed it yet).
 	// #nosec G202 -- cond is one of two fixed conditions
 	rows, err := s.db.R.QueryContext(ctx, `SELECT agent, start, stop FROM (
 			SELECT r.agent AS agent, max(r.started_at, ?) AS start, min(coalesce(r.ended_at, min(?, coalesce(
@@ -718,7 +715,6 @@ func (s *Service) agentTime(ctx context.Context, actor *Actor, fromMS, toMS int6
 		return nil, err
 	}
 	defer rows.Close()
-	// Overlapping runs by one agent (a batch) merge into one span, so their time is not counted twice.
 	out := map[string]int64{}
 	var agent string
 	var curStart, curEnd int64

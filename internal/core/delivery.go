@@ -1,7 +1,5 @@
 package core
 
-// Merges land in order on one base branch, so whether a deployed commit has a merge is a prefix, found by binary search.
-
 import (
 	"context"
 	"database/sql"
@@ -20,7 +18,7 @@ const (
 	StageReview    = "review"
 	StageStuck     = "stuck"
 	StageMerged    = "merged"
-	StageLive      = "live" // live means production, or staging for a repo that has no production.
+	StageLive      = "live"
 	StageUntracked = "untracked"
 )
 
@@ -250,7 +248,6 @@ func (s *Service) stageMerged(ctx context.Context, out *Delivery, envs []*Enviro
 	type result struct{ in, unknown bool }
 	runs := map[[2]int64]result{}
 	for _, e := range envs {
-		// Merges land in order only within one base branch.
 		byBase := map[string][]*PRSummary{}
 		for _, p := range merged {
 			if strings.EqualFold(p.Repo, e.Repo) && (e.Branch == "" || e.Branch == p.BaseRef) {
@@ -261,7 +258,6 @@ func (s *Service) stageMerged(ctx context.Context, out *Delivery, envs []*Enviro
 			sort.SliceStable(mine, func(a, b int) bool { return mine[a].MergedAt.Before(*mine[b].MergedAt) })
 			in := func(p *PRSummary) (bool, error) { return s.commitHas(fctx, e, p) }
 			lo, hi := 0, len(mine)
-			// Usually CI deploys each merge, so a deployed merge commit fixes the boundary with no forge call.
 			for n, p := range mine {
 				if p.MergeSHA != "" && sameCommit(e.Commit, p.MergeSHA) {
 					lo, hi = n+1, n+1
@@ -367,7 +363,6 @@ func (s *Service) commitHas(ctx context.Context, e *Environment, p *PRSummary) (
 	head := p.MergeSHA
 	fromHead := false
 	if head == "" {
-		// A squash merge has no head commit, so a 'no' from the head fallback means unknown, not absent.
 		head = p.HeadSHA
 		fromHead = true
 	}

@@ -154,7 +154,7 @@ func TestBriefQuestionMode(t *testing.T) {
 	update(t, ix)
 	for _, q := range []string{"how does merging work", "where does the handler check merge readiness", "why does run_all use os.system", "where do retries back off", "where does the babysitter mark a draft ready"} {
 		b := brief(t, ix, "", q, BriefOptions{})
-		_ = ix.RenderBrief(b, 1500) // Prose queries whose words never share a line must not make RenderBrief hang or panic.
+		_ = ix.RenderBrief(b, 1500)
 	}
 	b := brief(t, ix, "", "where do retries back off", BriefOptions{})
 	if len(b.Files) == 0 || b.Files[0].Path != "README.md" {

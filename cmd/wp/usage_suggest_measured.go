@@ -7,8 +7,6 @@ import (
 	"strings"
 )
 
-// Session-start snapshots are measured; disk sizes are only an estimate of what a session read.
-
 // sugMeasuredMax is the most sessions looked up (the newest first), so a long
 // window is a bounded number of calls.
 const sugMeasuredMax = 30

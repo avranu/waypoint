@@ -1,7 +1,5 @@
 package main
 
-// The build's time budget bounds git calls and file reads that start in time, but a read that blocks (a hung network mount) cannot be interrupted, so the build can overrun it.
-
 import (
 	"context"
 	"crypto/sha256"
@@ -26,7 +24,7 @@ const (
 	snapshotMaxMemoryFiles = 2000
 	snapshotMaxFileBytes   = 4 << 20
 	snapshotMaxNames       = 200
-	snapshotMaxInventory   = 64 << 10 // the server's snapshotMaxBytes (internal/core): it discards a larger inventory whole
+	snapshotMaxInventory   = 64 << 10
 )
 
 // snapshotBudget is the build's time budget, snapshotBudgetReal as a hook
@@ -275,7 +273,6 @@ func (b *snapshotBuilder) fromEnvironment() {
 	} else {
 		b.missing("entrypoint", "CLAUDE_CODE_ENTRYPOINT is not set in the hook's environment")
 	}
-	// CLAUDE_CODE_EXECPATH is only a fallback: a nested session inherits it from its parent and can name another version.
 	if v, ok := versionFromPath(b.claudeExe()); ok {
 		b.sn.HarnessVersion, b.src["harness_version"] = sp(v), "process:exe"
 	} else if v, ok := versionFromPath(os.Getenv("CLAUDE_CODE_EXECPATH")); ok {
@@ -325,7 +322,6 @@ func (b *snapshotBuilder) fromPayload(hookSrc string) {
 	} else {
 		b.missing("permission_mode", hookSrc+" carries no permission_mode")
 	}
-	// Effort comes from the payload only: CLAUDE_EFFORT is absent under --effort low and a nested session inherits its parent's level, so it can be wrong.
 	switch {
 	case in.effortLevel() != "":
 		b.sn.Effort, b.src["effort"] = sp(in.effortLevel()), hookSrc
@@ -448,7 +444,6 @@ func findClaudeProc(root string, pid int) *claudeProc {
 		if err != nil {
 			return nil
 		}
-		// "pid (comm) S ppid ...": comm may hold spaces and parentheses.
 		s := string(stat)
 		i := strings.LastIndex(s, ")")
 		if i < 0 {
@@ -534,7 +529,6 @@ func managedSettingsPath(goos string) string {
 func (b *snapshotBuilder) settings() {
 	var files []snapSettingsFile
 	add := func(scope, path string) { files = append(files, b.readSettingsFile(scope, path)) }
-	// Reads Claude Code's user settings (CLAUDE_CONFIG_DIR), not WP_CLAUDE_SETTINGS: the snapshot must record what Claude Code reads.
 	if b.cfgDir != "" {
 		add("user", filepath.Join(b.cfgDir, "settings.json"))
 	} else {

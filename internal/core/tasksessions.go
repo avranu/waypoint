@@ -12,8 +12,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Nothing here blocks, ends or steers a session: wp next warns, and the Stop hook's line goes to the person, never the model.
-
 // Session kinds.
 const (
 	SessionTask  = "task"

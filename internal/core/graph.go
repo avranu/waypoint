@@ -17,8 +17,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/semantic"
 )
 
-// Passing through a hub costs more, so a release PR or a shared goal doesn't make everything near everything; guesses and agents' links count longer than people's.
-
 // Kinds of node beyond the knowledge kinds.
 const (
 	KSession = "session"
@@ -405,7 +403,6 @@ func loadRelGraph(ctx context.Context, q queryer) (*relGraph, error) {
 	}); err != nil {
 		return nil, err
 	}
-	// A file is known within the project of the links that name it.
 	if err := each(`SELECT src_type, src_id, dst_type, coalesce(dst_id, 0), dst_ref, rel, auto, basis, coalesce(score, 0),
 		coalesce(created_by, 0), created_agent, coalesce(confirmed_by, 0)
 		FROM knowledge_links WHERE dst_type != 'url' ORDER BY id`, func(r *sql.Rows) error {
@@ -446,7 +443,6 @@ func loadRelGraph(ctx context.Context, q queryer) (*relGraph, error) {
 		return nil, err
 	}
 
-	// A pull request naming many tasks (a release, a sweep) relates only to its own task, or it would connect them all.
 	repoProj := map[string]int64{}
 	if err := each(`SELECT lower(repo), project_id FROM project_repos ORDER BY id`, func(r *sql.Rows) error {
 		var repo string
@@ -546,7 +542,6 @@ func loadRelGraph(ctx context.Context, q queryer) (*relGraph, error) {
 		if u.verb != "" {
 			why = "its text says " + strings.ReplaceAll(strings.Trim(u.verb, ","), ",", ", ")
 		}
-		// Forge mentions always weigh as an agent's; external links weigh as an agent's only when an agent added them.
 		b := basisPerson
 		if u.agent {
 			b = basisAgent
@@ -747,7 +742,6 @@ func (w *graphWalk) visible(n int32) bool {
 		return true
 	}
 	if r.project == 0 {
-		// Global notes and terms are everyone's; a session with no project is visible only to its person and to admins.
 		return r.typ != KSession || w.actor.isAdmin()
 	}
 	ok, seen := w.roles[r.project]
@@ -903,7 +897,6 @@ func (idx *simIndex) nearest(id int64, n int) []simMatch {
 		for i := 0; i < len(best) && i < graphSimCands; i++ {
 			cands = append(cands, best[i].id)
 		}
-		// Issues with no concept vector can't be ranked by concept, so words alone make them candidates.
 		for oid, o := range idx.docs {
 			if oid != id && o.concept == nil {
 				cands = append(cands, oid)
@@ -1205,7 +1198,6 @@ func (s *Service) Neighbourhood(ctx context.Context, actor *Actor, q GraphQuery)
 		shown[n], listed = true, append(listed, n)
 		view.Nodes = append(view.Nodes, GraphHit{GraphNode: w.graphNode(n), Distance: round2(r.dist[n]), Hops: r.hops[n], Path: w.edgesOf(src, r.path(n))})
 	}
-	// Likeness edges are drawn only where a route used them.
 	seen := map[string]bool{}
 	add := func(e GraphEdge) {
 		k := e.From + "|" + e.To + "|" + e.Kind
@@ -1225,7 +1217,7 @@ func (s *Service) Neighbourhood(ctx context.Context, actor *Actor, q GraphQuery)
 	for _, n := range listed {
 		at := src
 		for _, st := range r.path(n) {
-			add(w.edgeOut(st, at, 0)) // Drawn edges take no hub cost: hub cost depends on the route that reached them, so an edge would otherwise differ by route.
+			add(w.edgeOut(st, at, 0))
 			at = st.to
 		}
 	}

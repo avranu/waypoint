@@ -1,5 +1,3 @@
-// An agent's note stays proposed until a person approves it; only a person can approve.
-
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
@@ -695,7 +693,6 @@ function NoteView({ note: n }: { note: DesignNote }) {
     mutationFn: () => designApi.remove(n.id),
     onSuccess: async () => {
       toast(`Deleted “${n.title}”`)
-      // Leave first, so nothing on this page asks for the note again.
       await navigate(
         n.project_key
           ? { to: '/p/$key/design', params: { key: n.project_key } }

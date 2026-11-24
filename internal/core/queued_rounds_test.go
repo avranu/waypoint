@@ -180,7 +180,6 @@ func TestBabysitWaitSaysQueuedRound(t *testing.T) {
 		t.Fatalf("wait %q, want it to contain %q", b.Wait, want)
 	}
 	be.enqueue(be.admin, RunnerJobInput{Kind: JobCommand, Input: cmdInput("a", "/work")})
-	// An older job of the owner is ahead of a round by id only; a round at the front of its line is not held behind it.
 	runners, _ := be.s.ownerRunners(be.ctx, be.admin.User.ID)
 	be.env.poll(be.admin, runners[0], RunnerPoll{})
 	be.step()

@@ -8,8 +8,6 @@ import (
 	"time"
 )
 
-// A caller acts on a decision answer only when it is sure enough; otherwise, and on any failure, it asks the chat model as before.
-
 // jevModel is the decision model asked for; the gateway resolves it.
 const jevModel = "jev-latest"
 

@@ -17,8 +17,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core/meaning"
 )
 
-// Admins only and read-only; a permission token also needs server.read.
-
 // canReadServer is the access check of every server read.
 func (a *Actor) canReadServer() error {
 	if err := a.need(PermServerRead); err != nil {
@@ -439,8 +437,7 @@ func agoDuration(s string) (time.Duration, bool) {
 		unit, s = 7*24*time.Hour, s[:len(s)-1]
 	}
 	n, err := strconv.ParseFloat(s, 64)
-	if err != nil || !(n >= 0 && n <= 24*366) { // NaN fails both
-
+	if err != nil || !(n >= 0 && n <= 24*366) {
 		return 0, false
 	}
 	return time.Duration(n * float64(unit)), true

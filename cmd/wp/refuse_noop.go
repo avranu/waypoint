@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// A no-op Bash call costs a turn, and an agent told not to end its turn loops on such calls, so they are refused.
-
 var reSleepArg = regexp.MustCompile(`^\d+(\.\d+)?[smhd]?$`)
 
 // pureNoop says whether cmd does nothing but print literal text or succeed:
@@ -174,7 +172,7 @@ var bgTaskRunning = func(session string) bool {
 	var fs []f
 	for _, p := range files {
 		fi, err := os.Lstat(p)
-		if err != nil || fi.Mode()&os.ModeSymlink != 0 { // A symlink here is a sub-agent's transcript, not a background command's output.
+		if err != nil || fi.Mode()&os.ModeSymlink != 0 {
 			continue
 		}
 		fs = append(fs, f{p, fi.ModTime().UnixNano()})

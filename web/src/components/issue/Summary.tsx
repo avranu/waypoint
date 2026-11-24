@@ -152,8 +152,6 @@ function Intent({
   const saved = issue.intent ?? ''
   const [text, setText] = useState(saved)
   const [focused, setFocused] = useState(false)
-  // Typed words stay while they save, and after a failed save (the error
-  // shows as a toast), so leaving the box never throws them away.
   const [held, setHeld] = useState(false)
   const ref = useRef<HTMLTextAreaElement>(null)
   useEffect(() => {
@@ -165,8 +163,6 @@ function Intent({
     el.style.height = 'auto'
     el.style.height = el.scrollHeight + 'px'
   }, [text])
-  // The server counts characters (runes); a textarea's maxLength counts
-  // UTF-16 units, so an emoji would count twice. Count the same way here.
   const over = [...text.trim()].length - MAX_INTENT
   const commit = () => {
     const t = text.trim()

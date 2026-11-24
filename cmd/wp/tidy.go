@@ -15,8 +15,6 @@ import (
 	"time"
 )
 
-// Squash and rebase merges count as merged when the branch's pull request merged on the head the branch still has.
-
 // Verdicts.
 const (
 	tidyRemovable = "removable"
@@ -86,7 +84,7 @@ type tidyRow struct {
 	Action    string   `json:"action,omitempty"`    // after --apply
 	idle      time.Duration
 	prunable  bool
-	staleLock string // The lock reason of a worktree whose lock owner is gone; it is unlocked before removal.
+	staleLock string
 	stays     string
 	dirty     string
 	unpushed  int
@@ -125,14 +123,11 @@ type tidyOpts struct {
 	worktrees, branches bool
 	now                 time.Time
 	quick               bool
-	// The just-ended session's worktree may go unmerged and not quiet; a removed worktree's branch is deleted only when merged.
-	ended            string
-	worktreeBranches bool
-	// Skip git worktree prune: it would drop the record of a kept worktree whose folder is missing.
-	noPrune bool
-	// Never use with quick, which counts no unpushed commits this rule needs.
-	sessionEnded func(path, branch string) bool
-	intoDefault  bool
+	ended               string
+	worktreeBranches    bool
+	noPrune             bool
+	sessionEnded        func(path, branch string) bool
+	intoDefault         bool
 }
 
 // tidyGit runs git in dir; stdout trimmed.
@@ -144,7 +139,7 @@ func tidyGit(ctx context.Context, dir string, args ...string) (string, error) {
 func tidyGitEnv(ctx context.Context, dir string, env []string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...) // #nosec G204 G702 -- fixed git subcommands; dir is the user's repo
 	cmd.Env = append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C", "GIT_OPTIONAL_LOCKS=0"), env...)
-	cmd.WaitDelay = 2 * time.Second // ssh or credential helpers may hold the pipes open past a timeout's kill
+	cmd.WaitDelay = 2 * time.Second
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
@@ -265,13 +260,12 @@ func tidyScan(ctx context.Context, dir string, merged []tidyPR, o tidyOpts) (*ti
 	sort.Strings(names)
 
 	isAncestor := func(a, b string) bool {
-		if strings.HasPrefix(a, "-") || strings.HasPrefix(b, "-") { // a forge's head sha is a sha, not an option
+		if strings.HasPrefix(a, "-") || strings.HasPrefix(b, "-") {
 			return false
 		}
 		_, err := g("merge-base", "--is-ancestor", a, b)
 		return err == nil
 	}
-	// A detached HEAD is not under refs/heads, so the one call above does not cover it.
 	inBase := map[string]bool{}
 	if out, err := g("for-each-ref", "--merged="+base, "--format=%(refname:short)", "refs/heads"); err == nil && out != "" {
 		for _, n := range strings.Split(out, "\n") {
@@ -342,7 +336,7 @@ func tidyScan(ctx context.Context, dir string, merged []tidyPR, o tidyOpts) (*ti
 		unpushedN        int
 		checkedOutIn     string
 		detachedUnmerged bool
-		touched          time.Duration // time since a ref or HEAD moved; negative means unknown
+		touched          time.Duration
 		ended            bool
 	}
 	decide := func(f facts) (verdict, reason string) {
@@ -358,7 +352,6 @@ func tidyScan(ctx context.Context, dir string, merged []tidyPR, o tidyOpts) (*ti
 		case f.checkedOutIn != "":
 			return tidyKeep, "checked out in " + f.checkedOutIn
 		case f.by != "" && !f.ended && f.touched >= 0 && f.touched < tidyQuiet:
-			// A branch just cut from the default branch is "merged" too.
 			return tidyKeep, fmt.Sprintf("active: moved %d min ago", int(f.touched.Minutes()))
 		case f.by != "":
 			return tidyRemovable, "merged (" + f.by + "), clean, nothing unpushed"
@@ -398,11 +391,10 @@ func tidyScan(ctx context.Context, dir string, merged []tidyPR, o tidyOpts) (*ti
 			if tidyReal(w.path) == top {
 				f.inUse = "the worktree you are in"
 			}
-			if w.prunable || (w.locked && !dirExists(w.path)) { // git doesn't call a locked one prunable
+			if w.prunable || (w.locked && !dirExists(w.path)) {
 				row.prunable = true
 				row.Verdict, row.Reason = tidyRemovable, "the directory is gone (git worktree prune)"
 				row.Checks = []string{"directory: missing, nothing to lose"}
-				// The row names the branch, so --explain BRANCH finds this worktree.
 				if locked {
 					row.Verdict, row.Reason = tidyKeep, "worktree is locked"
 				} else if staleWhy != "" {
@@ -613,7 +605,7 @@ func tidyApply(ctx context.Context, dir string, rep *tidyReport, o tidyOpts) {
 			if o.noPrune {
 				continue
 			}
-			if r.staleLock != "" { // git worktree prune skips a locked one
+			if r.staleLock != "" {
 				if _, err := unlockJudged(ctx, dir, r.Path, r.staleLock); err != nil {
 					r.Action = "kept: " + err.Error()
 					continue
@@ -621,7 +613,6 @@ func tidyApply(ctx context.Context, dir string, rep *tidyReport, o tidyOpts) {
 			}
 			r.Action = "pruned"
 		case r.Kind == "worktree":
-			// The reclaim lock is held from unlocking through a relock.
 			release := func() {}
 			if r.staleLock != "" {
 				rel, common, err := holdReclaim(ctx, dir)

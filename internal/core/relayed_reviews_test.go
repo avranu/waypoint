@@ -142,7 +142,6 @@ func TestNoteParts(t *testing.T) {
 func TestRelayedReviewComments(t *testing.T) {
 	be := newBabysitEnv(t)
 	at := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
-	// The mirror's account is an agent's, so its copies aren't held.
 	if _, err := be.s.db.W.ExecContext(be.ctx, `INSERT OR IGNORE INTO forge_people(forge_id, login, user_id) VALUES (?, 'mirror', NULL)`, be.f.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -199,14 +198,12 @@ func TestRelayedReviewComments(t *testing.T) {
 		}
 	}
 
-	// CodeRabbit marking its comment addressed changes nothing it asks.
 	addressed := strings.Replace(crReview, "The promise rejection escapes.", "The promise rejection escapes.\n\n<!-- <review_comment_addressed> -->\n✅ Addressed in commit 1a2b3c4", 1)
 	be.sg.setNotes(PRNote{ID: "702", Kind: "comment", Author: "mirror", Body: addressed, At: at, UpdatedAt: at.Add(time.Minute)})
 	be.step()
 	if c := be.comment(relayedID("702", "`app/a.go` line 12")); c.Verdict != VerdictRejected {
 		t.Errorf("after CodeRabbit marked it addressed = %+v", c)
 	}
-	// CodeRabbit rewrites its comments in place; an edit that changes the ask reopens the comment.
 	be.sg.setNotes(PRNote{ID: "702", Kind: "comment", Author: "mirror", Body: strings.Replace(crReview, "escapes", "escapes the handler", 1), At: at, UpdatedAt: at.Add(2 * time.Minute)})
 	be.step()
 	if c := be.comment(relayedID("702", "`app/a.go` line 12")); c.Verdict != VerdictNew || c.Dealt || !strings.Contains(c.Body, "escapes the handler") {

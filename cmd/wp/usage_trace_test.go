@@ -22,7 +22,6 @@ type traceTx struct {
 }
 
 func newTraceTx(t *testing.T) *traceTx {
-	// a test root under /tmp would count as scratch space (traceScratch), so the fixed /work/app root is used
 	return &traceTx{t: t, root: "/work/app", ts: time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC), ctx: 40000}
 }
 
@@ -436,7 +435,7 @@ func TestTraceKeptScripts(t *testing.T) {
 	for cmd, want := range map[string]bool{
 		"cat > internal/new.go <<'EOF'\nx\nEOF":                        true,
 		"cp internal/a.go internal/b.go":                               true,
-		"git mv internal/a.go internal/b.go":                           false, // A move also changes its source, which was there before: an edit, not a whole-file write.
+		"git mv internal/a.go internal/b.go":                           false,
 		"echo x >> internal/a.go":                                      false,
 		"sed -i s/a/b/ internal/a.go":                                  false,
 		"python3 - <<'EOF'\nopen('internal/a.go','w').write('x')\nEOF": false,

@@ -122,7 +122,7 @@ func TestTryEgressVerdicts(t *testing.T) {
 		{"", "http://example.com/", Allowed},
 		{"denied", "https://example.com/", Refused},
 		{"upstream", "https://example.com/", Allowed},
-		{"", "https://example.com/", Inconclusive}, // a 200 to CONNECT followed by no TLS is inconclusive.
+		{"", "https://example.com/", Inconclusive},
 	} {
 		answer, r.URL = c.answer, c.url
 		if got := TryEgress(context.Background(), proxy.URL, r, nil); got.Got != c.want {
@@ -146,7 +146,6 @@ func TestJudges(t *testing.T) {
 		{strings.Repeat("started 9\n", 2) + "done\n", nil, Allowed},
 		{"started 1\nstarted 2\n", nil, Inconclusive},
 		{"started 1\nstopped: cannot allocate memory\n", nil, Inconclusive},
-		// a refusal past TasksMax means something else held the slot, so it is inconclusive.
 		{"started 40\nstopped: resource temporarily unavailable\n", nil, Inconclusive},
 		{"", nil, Inconclusive},
 		{"", errors.New("not installed"), Inconclusive},
@@ -164,7 +163,6 @@ func TestJudges(t *testing.T) {
 	}{
 		{"started 0\n", limit + time.Second, nil, Refused},
 		{"started 0\ndone\n", TimeSleep * time.Second, nil, Allowed},
-		// a run that ends before the limit could have is inconclusive.
 		{"started 0\n", time.Second, nil, Inconclusive},
 		{"started 0\n", TimeSleep * time.Second, nil, Inconclusive},
 		{"", limit, nil, Inconclusive},

@@ -1,7 +1,5 @@
 package core
 
-// Flags Go packages and CI jobs running close to their timeouts (workflow timeout-minutes and go test -timeout) before they pass them.
-
 import (
 	"context"
 	"encoding/json"
@@ -226,8 +224,6 @@ func parseWorkflowLimits(body string) []workflowJobLimit {
 			}
 			goTest = goTest || goTestRunRE.MatchString(st.Run)
 		}
-		// go test's own default, unless it was set to one this can't read
-		// (an expression) or turned off (-timeout 0).
 		if l.testMs == 0 && goTest && !ownTimeout {
 			l.testMs = (10 * time.Minute).Milliseconds()
 		}
@@ -458,7 +454,6 @@ func (s *Service) ciLimitsOf(ctx context.Context, f *Forge, repo string) ([]ciLi
 			continue
 		}
 		kind := evidenceKind(name)
-		// A job the forge stopped at its timeout ends a little past it.
 		add("j|"+kind+"|"+tier, ciLimit{Job: kind, Tier: tier, Limit: time.Duration(lim) * time.Millisecond}, ms, ms >= lim-30_000 && status != "success", "")
 	}
 	jobs.Close()
@@ -641,8 +636,6 @@ func (s *Service) fileCILimits(ctx context.Context, forgeID int64, repo, level s
 		}
 		b.WriteString(seen)
 	}
-	// One task at a time: babysits and the hourly watch file from their own
-	// goroutines.
 	defer forgeLocks.lock(fmt.Sprintf("cilimits:%d:%s", forgeID, strings.ToLower(repo)))()
 	owner := s.repoProjectOwner(ctx, forgeID, repo)
 	project, err := s.attachedProject(ctx, s.db.R, forgeID, repo)
@@ -659,7 +652,6 @@ func (s *Service) fileCILimits(ctx context.Context, forgeID int64, repo, level s
 	writer := Actor{User: u}
 	writer.textAgent = "waypoint"
 	open := s.ciLimitsTask(ctx, forgeID, repo)
-	// Urged once per spell: a tag a person removed stays off until a new spell starts.
 	urge := level == "problem" && (open == "" || s.ciLimitUrged(ctx, forgeID, repo) != open)
 	if urge {
 		b.WriteString("\n" + ciLimitUrgeNote)

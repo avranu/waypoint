@@ -8,30 +8,6 @@ import (
 	"time"
 )
 
-// Text from outside (WP-279, WP-ADR11). Anyone who can open an issue on a
-// forge can write the issues and comments Waypoint imports from it. What
-// someone who isn't a Waypoint person wrote reaches no agent, automation or
-// model until a person has read and approved it, and that holds by
-// construction rather than by every reader remembering to check:
-//
-//   - an issue imported from outside is a draft (WP-42), which only people
-//     can see and which sets nothing off, marked outside (who wrote it, on
-//     which forge); approving it is publishing it;
-//   - a comment from outside, or a new text for an approved comment or
-//     issue, waits in outside_text, apart from issues and comments, and only
-//     the person-facing calls in this file read it. Approving it writes it
-//     where everything else reads.
-//
-// A forge login is a Waypoint person's when an admin maps it to them on the
-// forge (forge_people); the login of the forge's own token is mapped to
-// whoever connected the forge. Their text syncs as before, and mapping a
-// login releases what was waiting from it. Agents can hold a person's forge
-// credentials and write as them, though, so a person's login writes
-// unreviewed agent text (WP-282, WP-ADR13), screened before agents take it
-// (WP-ADR10), unless an admin says only that person writes as it. An
-// agent's own account is listed with no person (WP-283): its text is
-// agent text too, and can't be anyone's own.
-
 // errOutsideByPerson refuses anything that can't see drafts: reading and
 // approving outside text is a person's act.
 var errOutsideByPerson = forbidden("text from outside is for a person to read and approve: in the web app or your own terminal, not as or inside an agent")

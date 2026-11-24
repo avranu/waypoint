@@ -122,7 +122,7 @@ func TestGateOutputAndMode(t *testing.T) {
 }
 
 func TestTranscriptTail(t *testing.T) {
-	big := strings.Repeat(`{"type":"user","message":{"content":"`+strings.Repeat("x", 900)+`"}}`+"\n", 400) // The test data must be larger than the transcript tail window, so the read sees only the file's end.
+	big := strings.Repeat(`{"type":"user","message":{"content":"`+strings.Repeat("x", 900)+`"}}`+"\n", 400)
 	tr := big +
 		`{"type":"assistant","message":{"model":"claude-opus-4","usage":{"input_tokens":5,"cache_read_input_tokens":60000,"cache_creation_input_tokens":1000}}}` + "\n" +
 		`{"type":"assistant","isSidechain":true,"message":{"model":"x","usage":{"input_tokens":999999}}}` + "\n" +

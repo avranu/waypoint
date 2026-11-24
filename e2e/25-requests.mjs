@@ -146,7 +146,6 @@ async function run(width, scheme) {
   ok(await section.getByText("Which database should the new tests use?").isVisible(), `${tag} the question is listed`);
   ok(await section.getByText(/File change · claude-code · box · RQ/).isVisible(), `${tag} each row says who, where and which project`);
   const badge = await page.locator("aside a[href='/inbox'], nav a[href='/inbox']").filter({ visible: true }).first().innerText();
-  // Other suites leave unread notifications behind, so compare the badge with the API, not a fixed 5.
   const unread = (await api("GET", "/inbox")).summary.live_unread;
   const expected = waiting.total + unread;
   ok(
@@ -159,7 +158,6 @@ async function run(width, scheme) {
   await section.getByText("Which database should the new tests use?").click();
   const sheet = page.getByRole("dialog", { name: /Request RQ:R-1/ });
   await sheet.waitFor();
-  // The sheet opens before the request has loaded: wait for its title.
   ok(
     await sheet
       .getByRole("heading", { name: "Which database should the new tests use?" })
@@ -180,7 +178,6 @@ async function run(width, scheme) {
   ok(got.state === "answered" && got.answer === "postgres" && got.decided_by?.username === "robin", `${tag} the answer reached the server: ${got.state} ${got.answer}`);
   await page.keyboard.press("Escape");
   await sheet.waitFor({ state: "hidden" });
-  // Count only button rows: other suites' design notes and unreviewed text add link rows.
   await page.waitForFunction(() => document.querySelectorAll("section[aria-label='Waiting on you'] li button").length === 4);
   ok(true, `${tag} the answered request left the waiting list at once`);
 

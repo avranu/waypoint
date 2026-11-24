@@ -43,7 +43,7 @@ func (c *httpForgeClient) ForkedTwice(ctx context.Context, f *Forge, repo, tip, 
 		}
 		own += len(list)
 	}
-	return own > 0 && own < shown, nil // none listed: the forge didn't answer the question
+	return own > 0 && own < shown, nil
 }
 
 // mergeBaseBehindFront brings an armed pull request behind the front of its
@@ -100,7 +100,6 @@ func (s *Service) forkedTwice(ctx context.Context, f *Forge, pr *PullRequest, ti
 	}
 	twice, err := cl.ForkedTwice(ctx, f, pr.Repo, tip, pr.HeadSHA)
 	if err != nil {
-		// An error here counts as not forked twice: GitHub and GitLab cannot say, and a read fault is logged, not returned.
 		if readFault(err) && !errors.Is(err, ErrUnsupported) && !isStatus(err, http.StatusNotFound) {
 			s.log.WarnContext(ctx, "tell whether a head forks from its base twice", "repo", pr.Repo, "number", pr.Number, "err", err)
 		}

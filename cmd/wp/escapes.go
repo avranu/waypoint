@@ -15,8 +15,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/codeindex"
 )
 
-// Runners trace merged fixes here because only they have the repositories.
-
 const traceEvery = 15 * time.Minute
 
 var escapesCmd = &command{name: "escapes", args: "[-p KEY] [--repo R] [--days N]", group: "Code and CI",
@@ -120,7 +118,6 @@ type escapeDue struct {
 func fetchOrigin(ctx context.Context, dir string) error {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	// Jobs share this checkout, and nothing here reads FETCH_HEAD.
 	// #nosec G204 -- dir is a checkout this runner is configured to use; the arguments are fixed
 	out, err := exec.CommandContext(ctx, "git", "-C", dir, "fetch", "--quiet", "--no-write-fetch-head", "origin").CombinedOutput()
 	if err != nil {
@@ -239,8 +236,6 @@ func (p *runnerProc) traceFixes(ctx context.Context) {
 		}
 	}
 }
-
-// A proof runs tests for minutes and holds a test slot, so each round proves only a couple of fixes.
 
 const (
 	proveEvery = 15 * time.Minute
@@ -395,7 +390,7 @@ func (p *runnerProc) proveFixes(ctx context.Context) {
 		var due []proofDue
 		err := p.c.callInto(ctx, "GET", "/api/v1/escapes/proofs/due?limit="+strconv.Itoa(proveAsk)+"&machine="+url.QueryEscape(p.opts.Name), nil, &due)
 		if err != nil && isNotFound(err) {
-			continue // an older server
+			continue
 		}
 		due = pickProofs(due, held, time.Now(), proveRound)
 		if err == nil && len(due) > 0 {

@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// With nothing said, a released task still waits, longer each time it comes back, so one task cannot take every session.
-
 const (
 	releaseBaseWait = 30 * time.Minute
 	releaseMaxWait  = 24 * time.Hour

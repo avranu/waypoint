@@ -1,5 +1,3 @@
-// This is Claude Code usage, not knowledge use (that is usage.ts).
-
 import { infiniteQueryOptions, queryOptions } from '@tanstack/react-query'
 import { api, qs } from './api'
 import { viz } from '@/components/charts'

@@ -96,7 +96,6 @@ for (const [n, [width, scheme]] of runs.entries()) {
     ok(/Reviewers \(model/.test(text) && /drops right/.test(text), `the text form reads: ${text.slice(0, 200)}`);
   }
 
-  // A suite sharing this server may seed reviews, so totals are checked against the API and this suite's reviewer model rows.
   const totalsLine = async (days) => {
     const { totals: t } = await (await api("GET", `/reviews/stats?days=${days}`)).json();
     return `${t.findings} findings from ${t.runs} reviews`;

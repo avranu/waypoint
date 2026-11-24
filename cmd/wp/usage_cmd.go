@@ -58,7 +58,7 @@ func cmdUsageSync(c *cli, args []string) error {
 	}
 	if *hook {
 		usageHook(c, os.Stdin, *dir)
-		return nil // a hook must never fail the session
+		return nil
 	}
 	o := usageSyncOptions{All: *all, DryRun: *dry, Dir: *dir, Inventory: !*noInv, NoArchive: *noArchive, Out: c.out}
 	switch {

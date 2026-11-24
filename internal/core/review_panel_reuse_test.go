@@ -443,7 +443,6 @@ func TestWithPriorPanelLeavesInput(t *testing.T) {
 	if got := string(fx.s.withPriorPanel(fx.ctx, json.RawMessage(withPanel), lone)); got != withPanel {
 		t.Errorf("with nothing finished, input %s became %s", withPanel, got)
 	}
-	// A job is an audit's only by its source: another source's job can carry an audit's id.
 	ar := fx.runner(fx.admin, "audithost", func(r *RunnerRegistration) {
 		r.CLIs = []RunnerCLI{{Name: "cursor"}}
 		r.Features = []string{FeatureAudit}

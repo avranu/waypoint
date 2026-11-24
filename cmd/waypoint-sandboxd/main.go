@@ -35,7 +35,6 @@ var version = "dev"
 
 func main() {
 	err := func() error {
-		// Session units re-run this binary with a subcommand, and inside them only /usr is visible
 		if len(os.Args) > 1 {
 			switch os.Args[1] {
 			case "broker":

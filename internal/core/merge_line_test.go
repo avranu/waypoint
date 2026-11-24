@@ -19,7 +19,6 @@ func TestCommentSeverity(t *testing.T) {
 		{author: "mirror", body: "**coderabbitai[bot]** reviewed on GitHub: _⚠️ Potential issue_ | _🟡 Minor_\n\nTrim it.", want: "medium"},
 		{author: "mirror", body: "**coderabbitai[bot]** commented on GitHub: <picture><img></picture> Minor <picture><img></picture> Major", want: "high"},
 		{author: "mirror", body: "**coderabbitai[bot]** reviewed on GitHub: <details><summary>🧹 Nitpick comments (2)</summary>", want: "low"},
-		// CodeRabbit's markers as tidyBotText stores them, pictures stripped
 		{author: "mirror", body: "**coderabbitai[bot]** reviewed on `a.go` line 3: ** Minor** · **Functional Correctness** · **Quick win** **Close the file.**", want: "medium"},
 		{author: "mirror", body: "**coderabbitai[bot]** reviewed on `a.go` line 3: **Major** · Guard the nil map.", want: "high"},
 		{author: "mirror", body: "**coderabbitai[bot]** reviewed on GitHub: **Actionable comments posted: 2** ** Trivial** · a. ** Minor** · b.", want: "medium"},
@@ -103,7 +102,6 @@ func TestBabysitLateMinorFindings(t *testing.T) {
 			be.setClock(be.clockNow().Add(10 * time.Minute))
 			be.sg.setNotes(carol, PRNote{ID: "602", Kind: "comment", Author: "mirror", At: be.clockNow(),
 				Body: "**coderabbitai[bot]** commented on GitHub:\n\n" + tc.marker + "\n\nTrim the name before comparing.\n\n<!-- mirror:comment github 9 -->"})
-			// a runner that holds the round keeps it through a push
 			if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE runner_jobs SET state = 'running' WHERE id = ?`, jobs[0]); err != nil {
 				t.Fatal(err)
 			}

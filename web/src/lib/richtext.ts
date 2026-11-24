@@ -1,5 +1,3 @@
-// Only the tags a contenteditable editor makes are converted; anything else falls back to its text, so pasted markup can't smuggle itself into the source.
-
 import { renderMarkdownForEdit, hasRawHtml } from '@/lib/markdown'
 
 // `label`: text inside a link label or image alt, where any bracket would end
@@ -199,8 +197,6 @@ function serialize(node: Node, opts: Opts = {}): string {
     case 'h4':
     case 'h5':
     case 'h6':
-      // A trailing run of "#" after a space would be read as the heading's
-      // closing sequence and dropped.
       return `\n${'#'.repeat(Number(tag[1]))} ${oneLine(inner()).replace(/(^|\s)(#+)$/, '$1\\$2')}\n`
     case 'p':
     case 'div':
@@ -221,8 +217,6 @@ function serialize(node: Node, opts: Opts = {}): string {
       if (!href) return inner().trim()
       const own = escapeText(href, { label: true })
       const label = inner({ ...opts, label: true }).trim() || own
-      // One that reads as its own address is an autolink; autolinks() picks
-      // its form once its neighbours are known.
       if (label === own && AUTOLINK.test(href)) return `\0${href}\0`
       return `[${label}](${target(href)})`
     }
@@ -294,9 +288,6 @@ function blocksOf(nodes: Node[], opts: Opts = {}) {
   let out = ''
   let run = ''
   let afterBlock = false
-  // Inline text gets a blank line from a block on either side, so neither
-  // joins the other: text right above a rule would become a setext heading,
-  // and text right under a paragraph, quote or list would continue it.
   const text = (beforeBlock: boolean) =>
     run.trim()
       ? `${afterBlock ? '\n' : ''}${escapeLineStarts(run)}${beforeBlock ? '\n' : ''}`
@@ -339,11 +330,9 @@ function list(el: HTMLElement, opts: Opts = {}): string {
       own.push(c)
     }
     let body = blocksOf(own, opts).trim()
-    // A literal "[ ]" opening a bullet would become a task box.
     if (!box && /^\[[ xX]\]/.test(body)) body = `\\${body}`
     const bare = ordered ? `${n++}.` : '-'
     const marker = box ? `${bare} [${box.checked ? 'x' : ' '}]` : bare
-    // Continuation lines need the marker-width indent, or a second paragraph or code block would end the item.
     const pad = ' '.repeat(bare.length + 1)
     body = body
       .split('\n')

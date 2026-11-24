@@ -1,7 +1,5 @@
 package core
 
-// Programs that run code, reach other machines or delete get only exact rules: a prefix would grant more than the call the person read.
-
 import (
 	"bytes"
 	"encoding/json"
@@ -124,7 +122,7 @@ func permissionRules(tool string, input json.RawMessage) []PermissionRule {
 type shellWord struct {
 	text  string
 	plain bool
-	meta  bool // an unquoted > or a leading unquoted #, even in a word that has quotes too
+	meta  bool
 }
 
 // splitShell splits a command into its simple commands (at &&, ||, ; and |
@@ -182,9 +180,6 @@ func splitShell(cmd string) (parts [][]shellWord, ok bool) {
 		case '&', '|':
 			double := i+1 < len(cmd) && cmd[i+1] == c
 			if c == '&' && !double {
-				// "2>&1" is a redirect, read below; a lone & backgrounds.
-				// The > must be the shell's, just before: a quoted '>'
-				// followed by & is text, then backgrounding.
 				if i > 0 && cmd[i-1] == '>' {
 					w.WriteByte(c)
 					continue
@@ -223,7 +218,6 @@ func bashRules(cmd string) []PermissionRule {
 	if !ok {
 		return nil
 	}
-	// A leading cd is dropped, since Claude Code judges it on its own; any other chain gets no rules, so one approval can't grow into several.
 	var words []shellWord
 	for _, p := range parts {
 		if p[0].text == "cd" && p[0].plain {
@@ -248,7 +242,7 @@ func bashRules(cmd string) []PermissionRule {
 	var out []PermissionRule
 	exact := joinWords(words)
 	if len(parts) == 1 {
-		exact = cmd // as the agent wrote it, quotes and all, so the rule matches the retry
+		exact = cmd
 	}
 	if exact != "" {
 		out = append(out, PermissionRule{Rule: "Bash(" + exact + ")", Covers: "only this exact command"})
@@ -348,7 +342,6 @@ func checkPermissionRule(tool, rule string) error {
 	default:
 		return invalid("Waypoint adds rules for Bash, WebFetch and MCP tools only; add others in the settings yourself")
 	}
-	// A wildcard follows a space or a colon: "wp ls*" would match "wp lsx" too.
 	cmd, wild := strings.CutSuffix(body, ":*")
 	if !wild {
 		cmd, wild = strings.CutSuffix(body, " *")

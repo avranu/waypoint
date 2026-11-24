@@ -17,8 +17,6 @@ import (
 	"unicode/utf8"
 )
 
-// Covered parents are saved with the task's draw, so a later judgement doesn't change what an agent is shown; a person's goal text is never reworded.
-
 const (
 	goalArmGoal   = "goal"
 	goalArmChain  = "chain"
@@ -234,9 +232,6 @@ func (s *Service) goalContextRead(ctx context.Context, q queryer, actor *Actor, 
 	case err == nil:
 		arm = got
 	case errors.Is(err, sql.ErrNoRows):
-		// Before the task's own draw only a person sees the favoured arm;
-		// an agent reading it (wp show, wp next --peek) must not learn
-		// the arm it may later be drawn.
 		if pol := s.goalPol.peek(); pol != nil && actor.actsAsPerson() {
 			arm = pol.best()
 		}
@@ -268,11 +263,9 @@ func (s *Service) goalContextDraw(ctx context.Context, actor *Actor, d *IssueDet
 	if !errors.Is(err, sql.ErrNoRows) {
 		return "", err
 	}
-	// Only a fresh claim draws; peeks, resumes and work done before the claim stay out.
 	if via == "" || i.ClaimedAt == nil || s.now().Sub(*i.ClaimedAt) > goalCtxClaimFresh {
 		return "", nil
 	}
-	// A renewed claim restarts ClaimedAt, so earlier runs or log lines mean prior work.
 	var earlier bool
 	if err := s.db.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM agent_runs WHERE issue_id = ?1 AND started_at < ?2)
 		OR EXISTS (SELECT 1 FROM work_log WHERE issue_id = ?1 AND created_at < ?2)`, i.ID, i.ClaimedAt.UnixMilli()).Scan(&earlier); err != nil {
@@ -288,7 +281,6 @@ func (s *Service) goalContextDraw(ctx context.Context, actor *Actor, d *IssueDet
 		return "", nil
 	}
 	names := []string{goalArmGoal, goalArmChain}
-	// Pruned is a candidate if it left a parent out or clipped a title, even when every parent is out (the count still differs from goal's).
 	if cut, above := goalChain(goalArmPruned, parents, covered); above > 0 || !samePlain(cut, full) {
 		names = append(names, goalArmPruned)
 	}
@@ -305,7 +297,6 @@ func (s *Service) goalContextDraw(ctx context.Context, actor *Actor, d *IssueDet
 	}
 	at := prepPick(sh, goalDraw(i.ID))
 	raw, _ := json.Marshal(shares)
-	// Judged parents are stored with the draw, so a later judgement doesn't change what the task shows.
 	var recorded sql.NullString
 	if judged {
 		recorded = sql.NullString{String: coveredJSON(covered), Valid: true}
@@ -668,8 +659,6 @@ func goalPolicyFrom(rows []*goalRow, now time.Time) *goalPolicy {
 			}
 		}
 	}
-	// The draws are made now: the policy is shared by concurrent takes and
-	// reports, and sample fills them in lazily.
 	fits := slices.Clone(pol.primary.Fits)
 	for _, g := range pol.guards {
 		fits = append(fits, g.fit.Fits...)

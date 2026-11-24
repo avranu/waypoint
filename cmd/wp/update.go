@@ -21,8 +21,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// The download replaces this binary only after the new one has run here and reported the version the server named.
-
 var updateCmd = &command{
 	name: "upgrade", aliases: []string{"self-update"}, group: "Setup", args: "[--check] [--force]",
 	summary: "replace this wp with the version your Waypoint serves",
@@ -152,7 +150,6 @@ func (c *cli) selfUpdate(ctx context.Context, want string) (got, exe string, err
 	if runtime.GOOS == "windows" {
 		ext = ".exe"
 	}
-	// Next to the binary, so putting it in place is a rename.
 	tmp, err := os.CreateTemp(filepath.Dir(exe), ".wp-update-*"+ext)
 	if err != nil {
 		return "", exe, fmt.Errorf("can't write next to %s (%w); reinstall with curl -fsSL %s/cli | sh", exe, err, orDash(c.server()))
@@ -215,7 +212,7 @@ func replaceExe(exe, next string) error {
 		return os.Rename(next, exe)
 	}
 	old := exe + ".old"
-	_ = os.Remove(old) // A previous update's .old can survive while that binary still runs; then a unique name is used.
+	_ = os.Remove(old)
 	if _, err := os.Stat(old); err == nil {
 		old = fmt.Sprintf("%s.old-%d", exe, time.Now().UnixNano())
 	}
@@ -307,7 +304,7 @@ func (c *cli) autoUpdate(ctx context.Context, sv string, err error) {
 // at most once a day (the SessionStart hook calls it), so the hook never
 // waits for the download.
 func (c *cli) autoUpdateInBackground() {
-	defer func() { _ = recover() }() // a hook must never fail the session
+	defer func() { _ = recover() }()
 	if autoUpdateOff() || !isRelease(version) {
 		return
 	}

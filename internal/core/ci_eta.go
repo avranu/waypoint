@@ -1,7 +1,5 @@
 package core
 
-// Arithmetic over what was read; only keptDurations queries the database.
-
 import (
 	"context"
 	"math"
@@ -99,7 +97,6 @@ func (s *Service) keptDurations(ctx context.Context, durs *ciDurations, repos []
 				failed := rows.Err() != nil
 				_ = rows.Close()
 				if failed {
-					// A read that broke partway gives a skewed sample, so the job falls back to the estimates.
 					continue
 				}
 				for i, tier := range tiers {
@@ -258,7 +255,7 @@ func simulate(now time.Time, pool []CIPoolRunner, jobs []simJob) {
 				best = k
 			}
 		}
-		if best >= 0 { // No free slot means more is running than the pool model holds, so nothing is booked.
+		if best >= 0 {
 			slots[best].free = j.end
 		}
 	}
@@ -331,7 +328,7 @@ func peakConcurrency(spans [][2]time.Time) int {
 		if c := a.at.Compare(b.at); c != 0 {
 			return c
 		}
-		return cmpInt64(int64(a.d), int64(b.d)) // Ends sort before starts at one instant, so back-to-back jobs do not count as overlapping.
+		return cmpInt64(int64(a.d), int64(b.d))
 	})
 	n, peak := 0, 0
 	for _, e := range evs {

@@ -1,10 +1,5 @@
 package core
 
-// Pull request reviews (WP-D14): the diff is split per file, noise is left
-// out, the rest is cut into chunks a model can read, each new-side line is
-// numbered, and the model's findings are kept only where they point at a
-// line the diff shows, so line comments always land.
-
 import (
 	"fmt"
 	"regexp"
@@ -17,7 +12,7 @@ import (
 
 // fileDiff is one file's part of a unified diff.
 type fileDiff struct {
-	path         string // new path (old path for a deletion)
+	path         string
 	oldPath      string
 	text         string
 	right        map[int]bool
@@ -58,10 +53,8 @@ func splitDiff(diff string) []fileDiff {
 		case !inHunk && strings.HasPrefix(l, "rename from "):
 			cur.oldPath = strings.TrimPrefix(l, "rename from ")
 		case !inHunk && strings.HasPrefix(l, "rename to "):
-			// A pure rename has no ---/+++ lines; git quotes an unusual new path.
 			cur.path = strings.TrimPrefix(l, "rename to ")
 		case !inHunk && strings.HasPrefix(l, "--- "):
-			// git ends the name with a tab when it contains a space.
 			oldPath = strings.TrimPrefix(strings.TrimRight(strings.TrimPrefix(l, "--- "), "\t"), "a/")
 			if oldPath != "/dev/null" {
 				cur.oldPath = oldPath
@@ -285,7 +278,7 @@ func tomlStrings(s string) ([]string, error) {
 
 // Review limits.
 const (
-	reviewChunkChars   = 35_000 // what free models answer within a few minutes
+	reviewChunkChars   = 35_000
 	reviewMaxChunks    = 4
 	reviewMaxChunk     = 60_000
 	reviewDefaultShown = 8
@@ -385,7 +378,7 @@ var reviewSchema = map[string]any{
 					"severity":   map[string]any{"type": "string", "enum": severities},
 					"claim":      map[string]any{"type": "string"},
 					"suggestion": map[string]any{"type": "string"},
-					"evidence":   map[string]any{"type": "string"}, // may be left out: see answerMayOmit
+					"evidence":   map[string]any{"type": "string"},
 				},
 				"required":             []string{"file", "line", "severity", "claim", "suggestion", "evidence"},
 				"additionalProperties": false,
@@ -698,9 +691,6 @@ func reviewedSHAs(posts []ForgeComment, rule string, ours posters) map[string]bo
 			continue
 		}
 		for _, m := range reviewMarkerRE.FindAllStringSubmatch(c.Body, -1) {
-			// Another bot's account counts only for the llm-review marker it
-			// leaves; Waypoint's own marker needs Waypoint's account, since
-			// anyone can register an app named [bot].
 			if !mine && m[1] != "llm-review:v1" {
 				continue
 			}
@@ -734,12 +724,9 @@ type reviewOutcome struct {
 	verifyDropped    []droppedFinding
 	unverified       int
 	trusted          int
-	// doubted: dropped by the verifier but posted anyway, to judge its
-	// drops (WP-363); noEvidence: dropped before the verifier, their quoted
-	// line not being in the file.
-	doubted       int
-	noEvidence    int
-	emptyRequests []string
+	doubted          int
+	noEvidence       int
+	emptyRequests    []string
 }
 
 // doubtNote says a finding is one the verifier would have dropped.
@@ -827,8 +814,6 @@ func reviewBody(sha string, o reviewOutcome) string {
 		notes = append(notes, s)
 	}
 	if n := o.later; n > 0 {
-		// Not "the least severe": a finding on a private file is posted past
-		// the number whatever its severity (WP-1421).
 		s := fmt.Sprintf("%d more finding%s past the %d posted, kept in Waypoint and not posted here", n, plural(n), inline+len(loose))
 		if o.readAt != "" {
 			s += ": " + o.readAt

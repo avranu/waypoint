@@ -18,8 +18,6 @@ import (
 	"time"
 )
 
-// Secrets learnt after a record was written are blanked when a day file is read, and the files are as private as the database.
-
 // Bounds of the log directory.
 const (
 	DefaultLogDays     = 30
@@ -48,7 +46,7 @@ type logStore struct {
 	done    chan struct{}
 	closing sync.Once
 
-	mu      sync.Mutex // the open file, against a reader's flush
+	mu      sync.Mutex
 	f       *os.File
 	w       *bufio.Writer
 	day     string
@@ -160,7 +158,7 @@ func (st *logStore) write(rec LogRecord) {
 			st.tidy(day)
 		}
 		if !st.open(day) {
-			st.day = day // so the next record doesn't tidy again, and close knows the day
+			st.day = day
 			st.dropped.Add(1)
 			return
 		}
@@ -210,8 +208,6 @@ func (st *logStore) open(day string) bool {
 // buffer: a bufio.Writer keeps its first error, so the next record opens
 // the file afresh instead. The day stays, so it is the same file. Under mu.
 func (st *logStore) drop() {
-	// What the buffer held is gone: count it (an upper bound, as bufio may
-	// have written some of it out), so the next flush marks the gap.
 	st.dropped.Add(st.pending)
 	st.pending = 0
 	if st.f != nil {
@@ -252,7 +248,7 @@ func (st *logStore) closeFile() {
 		return
 	}
 	st.flush()
-	if st.f != nil { // a failed flush has closed it already
+	if st.f != nil {
 		if err := st.f.Close(); err != nil {
 			st.fail(err)
 		}
@@ -436,8 +432,6 @@ func (st *logStore) read(q LogQuery, before time.Time, limit int, secrets []stri
 	st.flush()
 	st.mu.Unlock()
 	var out storeMatch
-	// A record's file is the day it was written, which may be the day after
-	// its time (just before midnight): a day of slack each side.
 	from, to := "", ""
 	if !q.Since.IsZero() {
 		from = q.Since.UTC().AddDate(0, 0, -1).Format(logDayLayout)
@@ -479,7 +473,6 @@ func (st *logStore) read(q LogQuery, before time.Time, limit int, secrets []stri
 func (st *logStore) readFile(f logFile, fn func(LogRecord) bool) {
 	fh, err := os.Open(f.path) // #nosec G304 -- a file of the server's own log directory
 	if errors.Is(err, os.ErrNotExist) && !f.gz {
-		// The writer's rollover gzipped it after the listing.
 		f.gz = true
 		fh, err = os.Open(f.path + ".gz") // #nosec G304 -- likewise
 	}
@@ -500,7 +493,6 @@ func (st *logStore) readFile(f logFile, fn func(LogRecord) bool) {
 	var line []byte
 	long := false
 	for {
-		// a crash-garbled line over logLineMax is skipped to its newline, so only that line is lost
 		chunk, err := br.ReadSlice('\n')
 		if len(line)+len(chunk) > logLineMax {
 			long, line = true, line[:0]

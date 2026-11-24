@@ -280,7 +280,7 @@ func (p *parser) line(b []byte) {
 	var r rec
 	if err := json.Unmarshal(b, &r); err != nil {
 		var te *json.UnmarshalTypeError
-		if !errors.As(err, &te) { // a wrong-typed field leaves the rest filled in
+		if !errors.As(err, &te) {
 			p.unknown("(unreadable)")
 			return
 		}
@@ -354,9 +354,6 @@ func (p *parser) observe(name, value, source string, r *rec, ts *int64) {
 	if at != nil {
 		when = *at
 	}
-	// A setting can return to an earlier value with no timed record between
-	// (permission modes have none), so name=value@when can repeat: the n-th
-	// change with it gets "#n", which is the same for the same bytes.
 	uid := fmt.Sprintf("%s=%s@%d", name, value, when)
 	p.settingUID[uid]++
 	if n := p.settingUID[uid]; n > 1 {
@@ -408,7 +405,7 @@ func (p *parser) assistant(r *rec, ts *int64, thread string, main bool) {
 			p.msgs[uid] = idx
 		}
 	}
-	if r.RequestRef != "" && p.reqRef[idx] == "" { // joined in finish, so the order of the two records does not matter
+	if r.RequestRef != "" && p.reqRef[idx] == "" {
 		p.reqRef[idx] = r.RequestRef
 	}
 	c := &p.res.ModelCalls[idx]
@@ -423,7 +420,7 @@ func (p *parser) assistant(r *rec, ts *int64, thread string, main bool) {
 	if r.ThinkingMs != nil {
 		c.ThinkingMS = ptr(valOr(c.ThinkingMS) + *r.ThinkingMs)
 	}
-	if u := m.Usage; u != nil { // the last line of a message has its final usage
+	if u := m.Usage; u != nil {
 		c.Input, c.Output, c.CacheRead, c.CacheWrite = u.Input, u.Output, u.CacheRead, u.CacheCreation
 		c.Thinking, c.CacheW5m, c.CacheW1h = nil, nil, nil
 		if u.Details != nil {
@@ -512,7 +509,7 @@ func (p *parser) toolUse(bl *block, r *rec, ts *int64, thread, msgID string) {
 		return
 	}
 	var in toolInput
-	if err := json.Unmarshal(bl.Input, &in); err != nil { // a wrong-typed field leaves the rest filled in
+	if err := json.Unmarshal(bl.Input, &in); err != nil {
 		p.undecoded("tool_input")
 	}
 	t := ToolCall{Row: p.row(bl.ID, ts, thread), ToolUseID: bl.ID, MsgID: strp(msgID), PromptID: p.prompt, Tool: bl.Name}
@@ -614,7 +611,7 @@ func (p *parser) user(r *rec, ts *int64, thread string, main bool) {
 		p.ignored("user/compact_summary")
 		return
 	case !main:
-		p.ignored("user/sidechain_prompt") // what a sub-agent was asked: its spawn row has the purpose
+		p.ignored("user/sidechain_prompt")
 		return
 	case strings.HasPrefix(text, "<local-command-"):
 		p.ignored("user/local_command_output")
@@ -694,7 +691,6 @@ func (p *parser) results(blocks []block, r *rec, ts *int64, n int) {
 		}
 		t := &p.res.ToolCalls[idx]
 		size, text := p.resultSize(bl.Content)
-		// An omitted is_error is false by the Messages API default, so absent is a known success, not NULL; result_bytes has no such default and is nil without a content key.
 		t.ResultAt, t.ResultBytes, t.IsError = ts, size, ptr(bl.IsError)
 		if ts != nil && t.At != nil && *ts >= *t.At {
 			t.DurationMS = ptr(*ts - *t.At)
@@ -903,8 +899,6 @@ func (p *parser) finish() {
 			if c.CacheWrite != nil {
 				c.ColdInferred = coldInferred(*c.CacheWrite, *c.GapMS, pv.long, pv.split)
 				if pv.held > 0 && valOr(c.CacheRead) >= pv.held {
-					// All the previous call left cached was read back, so it
-					// had not expired, whatever the gap says.
 					c.ColdInferred = ptr(false)
 				}
 			}

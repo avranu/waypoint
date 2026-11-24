@@ -20,7 +20,6 @@ import (
 func TestMain(m *testing.M) {
 	Guard()
 	code := m.Run()
-	// Only a whole run makes every try; -run picks some of them.
 	whole := flag.Lookup("test.run").Value.String() == ""
 	if want := []string{"DNS wp1065-nowhere.nohost-wp.org", "api.github.com:443"}; whole && code == 0 && !slices.Equal(Tried(), want) {
 		fmt.Fprintf(os.Stderr, "tried %q, want %q\n", Tried(), want)
@@ -90,8 +89,6 @@ func TestReport(t *testing.T) {
 	if Report(3) != 3 {
 		t.Error("a failed run keeps its code")
 	}
-	// Make a try of our own (api.github.com is already in TestMain's list), so
-	// this holds when the test runs alone.
 	_, _ = http.Get("https://api.github.com/")
 	if Report(0) != 1 {
 		t.Error("a passing run that went out fails")

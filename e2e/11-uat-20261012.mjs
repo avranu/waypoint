@@ -55,7 +55,6 @@ async function run(width, scheme) {
   await settings("WAYP", "workflow");
   const note = page.getByRole("note");
   const showHelp = page.getByRole("button", { name: "Show help: Statuses" });
-  // Explainers start folded (an earlier viewport's run may have left it open).
   await showHelp.or(note).waitFor();
   if ((await note.count()) > 0) {
     await note.getByRole("button", { name: "Hide this help" }).click();
@@ -72,7 +71,7 @@ async function run(width, scheme) {
   await note.getByRole("button", { name: "Hide this help" }).click();
   await showHelp.waitFor();
   ok((await note.count()) === 0, `${tag} explainer folded away`);
-  await page.waitForTimeout(400); // Wait for the preference save before reloading; the reload cancels it.
+  await page.waitForTimeout(400);
   await page.reload();
   await showHelp.waitFor();
   ok((await note.count()) === 0, `${tag} still folded after a reload`);

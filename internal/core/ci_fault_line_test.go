@@ -68,7 +68,6 @@ func TestRunnerFaultGivesUpTheFront(t *testing.T) {
 		t.Fatal("#7 rejoined while failing")
 	}
 
-	// A re-run's first status puts the head back to pending, which the poll follows.
 	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE ci_heads SET state = 'pending', checked_at = 0 WHERE sha = ?`, head7); err != nil {
 		t.Fatal(err)
 	}

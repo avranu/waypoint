@@ -376,8 +376,6 @@ function GoalPick({
   const pick = usePopover()
   const goals = useQuery({ ...designQuery({ project, kind: 'goal' }), enabled: pick.open })
   const [hint, setHint] = useState<TaskGoalSuggestion | null>(null)
-  // Goals this made, by title: when the link after it fails, a retry links
-  // the goal instead of making a second one.
   const made = useRef(new Map<string, number>())
   const item = { type: 'issue' as const, key: issueKey }
   const link = useMutation({

@@ -29,8 +29,6 @@ export function startLive(qc: QueryClient): () => void {
     if (timer === undefined) timer = window.setTimeout(flush, 120)
   }
 
-  // The Agents overview is built from nearly everything: sessions, requests,
-  // pull requests, environments, issues and knowledge.
   const OVERVIEW = ['agents', 'overview']
 
   const handle = (kind: string, e: WEvent) => {
@@ -102,7 +100,6 @@ export function startLive(qc: QueryClient): () => void {
       return
     }
     if (kind === 'goals.traced') {
-      // The issue page's goal line and risk also read traces, so they refresh too.
       mark(['goals'], ['trace'], ['issue'])
       return
     }
@@ -166,18 +163,15 @@ export function startLive(qc: QueryClient): () => void {
         ['sprints', pk],
       )
     else mark(['board'], ['backlog'], ['project'])
-    // The agent queue reads nearly every issue field: order, status, claims.
     mark(['search'], ['projects'], ['agents', 'queue'], ['agents', 'activity'], OVERVIEW, [
       'changes',
     ])
-    // Objective changes arrive as issue.updated events with field 'objective'.
     if (e.field === 'objective' || kind === 'issue.status_changed') mark(['objectives'])
     if (e.issue_key) {
       mark(['issue', e.issue_key], ['history', e.issue_key], ['links', 'issue', e.issue_key])
       if (kind === 'issue.commented' || kind === 'project.updated')
         mark(['comments', e.issue_key], ['outside', e.issue_key])
     }
-    // Parent issues show child progress, so child changes refresh the open issue page.
     if (
       kind === 'issue.status_changed' ||
       kind === 'issue.created' ||
@@ -249,9 +243,6 @@ export function startLive(qc: QueryClient): () => void {
     'agent_setup.updated',
   ]
 
-  // EventSource retries network drops itself, but gives up for good on an
-  // HTTP error (a proxy 502 during a restart, or 401 once the session ends).
-  // Check the session (a 401 sends us to sign in), then try again, backing off.
   const reconnect = () => {
     if (closed || retry !== undefined || document.visibilityState !== 'visible') return
     retry = window.setTimeout(() => {
@@ -270,7 +261,6 @@ export function startLive(qc: QueryClient): () => void {
     }
     es.addEventListener('hello', () => {
       backoff = 2000
-      // Events sent while disconnected are not replayed, so a reconnect refreshes everything.
       if (connectedOnce) qc.invalidateQueries()
       connectedOnce = true
     })

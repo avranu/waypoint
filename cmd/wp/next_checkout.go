@@ -36,7 +36,7 @@ func startFetch(dir string) func() error {
 		defer cancel()
 		cmd := exec.CommandContext(ctx, "git", "-C", top, "fetch", "--quiet", remote) // #nosec G204 -- fixed subcommand; the remote name comes from git itself
 		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-		cmd.WaitDelay = 2 * time.Second // ssh or credential helpers may hold stderr open past the kill
+		cmd.WaitDelay = 2 * time.Second
 		var errb bytes.Buffer
 		cmd.Stderr = &errb
 		err := cmd.Run()
@@ -79,8 +79,6 @@ func fetchRemote(top string) string {
 		return ""
 	}
 	names := strings.Split(out, "\n")
-	// A remote named like an option (a config's [remote "--upload-pack=CMD"])
-	// is no remote git is told about: fetch would read it as one.
 	usable := names[:0]
 	for _, n := range names {
 		if n != "" && codeindex.CheckRef(n) == nil {

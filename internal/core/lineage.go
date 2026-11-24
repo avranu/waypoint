@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// An agent's text is one level deeper than the task it was written under (a person's is 0); at lineageHold the screen holds it by rule, depth read live, origin_depth standing in once the origin is deleted.
-
 // lineageHold is the depth from which the screen holds a task: a chain of
 // three agents' tasks with no person's review anywhere in it.
 const lineageHold = 3
@@ -144,7 +142,7 @@ func (s *Service) sessionTasks(ctx context.Context, q queryer, actor *Actor) ([]
 			continue
 		}
 		if err != nil {
-			return nil, err // a database failure must not read as "no task"
+			return nil, err
 		}
 		ids = append(ids, id)
 	}

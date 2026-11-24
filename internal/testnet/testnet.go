@@ -59,8 +59,6 @@ func Guard() {
 }
 
 func guard() {
-	// Set even when the caller had one: theirs may carry a real key. A test
-	// that sets GIT_SSH_COMMAND itself afterwards still wins.
 	_ = os.Setenv("GIT_SSH_COMMAND", "false")
 	search = searchDomains("/etc/resolv.conf")
 	net.DefaultResolver.PreferGo = true
@@ -68,7 +66,6 @@ func guard() {
 		return &dnsConn{}, nil
 	}
 	if tr, ok := http.DefaultTransport.(*http.Transport); ok {
-		// The proxy, when one is set, would hide the host from the check.
 		tr.Proxy = nil
 		dial := tr.DialContext
 		tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -95,7 +92,6 @@ func Local(addr string) bool {
 		return true
 	}
 	ip := net.ParseIP(host)
-	// 0.0.0.0 and :: reach this machine's own listeners.
 	return ip != nil && (ip.IsLoopback() || ip.IsUnspecified())
 }
 

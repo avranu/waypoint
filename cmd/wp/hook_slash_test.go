@@ -151,7 +151,6 @@ func keptTranscript(t *testing.T, at time.Time) string {
 // /wp exe runs the command in the session's directory and shows its end;
 // a long one goes on running into its log.
 func TestWpExe(t *testing.T) {
-	// Agent sessions set these variables; clear them so the test sees a person's session.
 	for _, k := range []string{"WP_TASK", "WAYPOINT_FOLLOWUP", "WAYPOINT_UNATTENDED"} {
 		t.Setenv(k, "")
 	}

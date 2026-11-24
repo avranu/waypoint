@@ -13,8 +13,6 @@ import (
 	"time"
 )
 
-// a call is counted in at most one wait/retry pattern
-
 // saCallCap is the longest gap charged to a call: an agent idle for longer
 // was parked, not working.
 const saCallCap = 30 * time.Minute
@@ -217,8 +215,6 @@ func saLine(a *saAgent, b []byte, ln int, byID map[string]*saCall, events *[]saE
 			a.Calls = append(a.Calls, c)
 		case l.Type == "user" && bl.Type == "tool_result":
 			hasResult = true
-			// only the block for its own id counts, and only the first: later
-			// entries can echo a result
 			if c := byID[bl.ToolUseID]; c != nil && !c.HasResult {
 				c.HasResult, c.IsError, c.ResLine, c.ResTS = true, bl.IsError, ln, ts
 				c.Head = resultText(bl.Content, 600)

@@ -144,7 +144,6 @@ async function run(width, scheme) {
   ok(!(await overflow()), `${tag} issue page has no sideways scroll`);
   await shot("issue-reviewed");
 
-  // Closed issues show in the list only with done=true.
   await page.goto(`${base}/p/${key}/list?group=none&done=true`);
   const target = page
     .locator("div.group\\/sel")

@@ -1,7 +1,5 @@
 package core
 
-// Only one pull request per base tip jumps the queue: one whose head holds that tip and passes every job that fails there.
-
 import (
 	"context"
 	"database/sql"
@@ -36,7 +34,6 @@ func (s *Service) baseFailingAt(ctx context.Context, pr *PullRequest, tip string
 	}
 	failing := map[string]bool{}
 	for _, c := range dropSuperseded(checks) {
-		// The advisories job runs only on main, so no pull request can pass it and none can fix the base.
 		if c.State == CheckFailed && !ownCheck(c.Name) && checkJobName(c.Name) != advisoriesJob {
 			failing[checkJob(c.Name)] = true
 		}

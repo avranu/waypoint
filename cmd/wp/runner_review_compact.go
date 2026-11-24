@@ -8,8 +8,6 @@ import (
 	"os"
 )
 
-// The server's compacted flag is checked against the transcript: a session that worked after its compaction is not compacted.
-
 // transcriptCompaction is what a session's transcript says about its last
 // compaction.
 type transcriptCompaction struct {
@@ -52,7 +50,6 @@ func readCompaction(path string) (transcriptCompaction, error) {
 			out.compacted, out.replies = true, 0
 			clear(seen)
 		case e.Type == "assistant":
-			// Each content block of one reply is its own transcript line with the same message id: count the reply once.
 			if e.Message.ID == "" || !seen[e.Message.ID] {
 				out.replies++
 				seen[e.Message.ID] = e.Message.ID != ""

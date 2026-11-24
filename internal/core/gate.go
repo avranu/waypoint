@@ -1,7 +1,5 @@
 package core
 
-// Posts a waypoint/review commit status that the forge's branch protection requires: pending while queued, failing while open findings meet the gate severity.
-
 import (
 	"context"
 	"database/sql"
@@ -21,7 +19,7 @@ const (
 
 const (
 	gateRecheck   = 2 * time.Minute
-	gateNoteLimit = 140 // GitHub's limit for a status description
+	gateNoteLimit = 140
 )
 
 // PRGate is a pull request's review gate as last posted.
@@ -133,7 +131,7 @@ func (s *Service) computeGate(ctx context.Context, pr *PullRequest, sev string) 
 		items := make([]string, 0, open)
 		for _, f := range blocking {
 			if f.private {
-				items = append(items, priority(f.Severity)+" (a private file)") // Private-file findings show no text: commit statuses can reach GitHub.
+				items = append(items, priority(f.Severity)+" (a private file)")
 			} else {
 				items = append(items, priority(f.Severity)+" "+shortClaim(f.Claim, 32))
 			}
@@ -166,7 +164,7 @@ func (s *Service) evalGate(ctx context.Context, prID int64) error {
 	}
 	enabled, sev, err := s.gateConfigErr(ctx, pr.ForgeID, pr.Repo)
 	if err != nil {
-		return err // an unreadable setting must not read as "gate off" and post success
+		return err
 	}
 	if !enabled {
 		return s.gateOff(ctx, pr)
@@ -180,8 +178,6 @@ func (s *Service) evalGate(ctx context.Context, prID int64) error {
 		_, err = s.db.W.ExecContext(ctx, `UPDATE pull_requests SET gate_checked_at = ? WHERE id = ?`, now, pr.ID)
 		return err
 	}
-	// Read before the status is posted: a failed read after it would record
-	// the change without the event that tells the projects.
 	projects, err := s.projectsOfRepo(ctx, pr.ForgeID, pr.Repo)
 	if err != nil {
 		return fmt.Errorf("read the projects of %s: %w", pr.Repo, err)
@@ -280,8 +276,6 @@ func (s *Service) checkPRErr(ctx context.Context, prID int64, why string) error 
 			_, err = s.syncFindings(ctx, f, pr, true)
 		}
 		if err != nil {
-			// Stale threads could pass a gate they would fail: the gate is
-			// still evaluated (and posted), but the caller hears of it.
 			s.log.WarnContext(ctx, "sync review threads", "repo", pr.Repo, "number", pr.Number, "why", why, "err", err)
 			if gerr := s.evalGate(ctx, pr.ID); gerr != nil {
 				return gerr

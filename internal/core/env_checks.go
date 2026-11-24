@@ -119,7 +119,6 @@ func (s *Service) runDueEnvChecks(ctx context.Context) int {
 			wg.Wait()
 			return ran
 		}
-		// Move next_check_at forward before the check runs, so a slow check isn't picked up and started again by the next tick.
 		next := s.now().Add(jitter(time.Duration(d.interval) * time.Second)).UnixMilli()
 		if _, err := s.db.W.ExecContext(ctx, `UPDATE environments SET next_check_at = ? WHERE id = ?`, next, d.id); err != nil {
 			<-sem
@@ -345,7 +344,6 @@ func (s *Service) applyProbe(t *tx, id int64, res probeResult) error {
 	lat := int(res.latency.Milliseconds())
 	ok := boolInt(res.ok)
 
-	// Minute samples: a failure within the minute wins over later successes.
 	minute := nowT.Truncate(time.Minute).UnixMilli()
 	if _, err := t.ExecContext(ctx, `INSERT INTO environment_checks(environment_id, at, ok, latency_ms, code, error) VALUES (?,?,?,?,?,?)
 		ON CONFLICT(environment_id, at) DO UPDATE SET ok = ok AND excluded.ok, latency_ms = max(latency_ms, excluded.latency_ms),

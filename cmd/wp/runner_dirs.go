@@ -9,8 +9,6 @@ import (
 	"strings"
 )
 
-// The runner has the last word on where a job may act: it resolves symlinks and refuses "..".
-
 // parseAllowed turns --allow values into absolute, symlink-resolved
 // directories that exist. "~" is the home directory.
 func parseAllowed(list []string) ([]string, error) {

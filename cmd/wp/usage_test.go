@@ -84,7 +84,6 @@ func TestUsageParseFixture(t *testing.T) {
 	hour10 := time.Date(2026, 10, 5, 10, 0, 0, 0, time.UTC).UnixMilli()
 	hour11 := hour10 + 3_600_000
 
-	// One row per message id, from its last line's usage; the [1m] model suffix is dropped.
 	want := []usageMsgRow{
 		{Hour: hour10, Session: "sess1", Repo: "owner/app", Model: "claude-opus-5-5", Kind: "main", N: 1, Input: 10, Output: 50, CW5: 60, CW1: 40, CR: 1000},
 		{Hour: hour11, Session: "sess1", Repo: "owner/app", Model: "claude-opus-5-5", Kind: "main", N: 1, Input: 3, Output: 20, CR: 1200},
@@ -120,7 +119,6 @@ func TestUsageParseFixture(t *testing.T) {
 		t.Errorf("command: %+v", r)
 	}
 
-	// Refusal excerpts are stored with secrets redacted.
 	if len(p.Chunk.Refusals) != 2 {
 		t.Fatalf("refusals: %+v", p.Chunk.Refusals)
 	}
@@ -141,8 +139,6 @@ func TestUsageParseFixture(t *testing.T) {
 		t.Errorf("session: %+v", s)
 	}
 
-	// Unknown and unreadable lines are skipped and counted; the cut-off last
-	// line is left for next time.
 	if p.Stats.Skipped != 2 || p.Stats.Unknown["weird-new-thing"] != 1 || p.Stats.Unknown["(no type)"] != 1 || p.Stats.Ignored != 2 {
 		t.Errorf("stats: %+v", p.Stats)
 	}
@@ -156,7 +152,6 @@ func TestUsageParseIncremental(t *testing.T) {
 	dir := fixtureDir(t)
 	first := parseMain(t, dir, usageFileState{})
 	path := filepath.Join(dir, "projects", "-work-app", "sess1.jsonl")
-	// A message cut off at a run's end is counted again when it finishes; its tool result can arrive in a later run.
 	more := `,"output_tokens":4,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"timestamp":"2026-10-05T12:00:00.000Z"}` + "\n" +
 		`{"type":"assistant","message":{"id":"m1","model":"claude-opus-5-5","content":[],"usage":{"input_tokens":10,"output_tokens":60,"cache_creation_input_tokens":100,"cache_read_input_tokens":1000,"cache_creation":{"ephemeral_5m_input_tokens":60,"ephemeral_1h_input_tokens":40}}},"timestamp":"2026-10-05T10:00:06.500Z"}` + "\n" +
 		`{"type":"assistant","message":{"id":"m4","model":"claude-opus-5-5","content":[{"type":"tool_use","id":"t9","name":"Bash","input":{"command":"make check"}}],"usage":{"input_tokens":2,"output_tokens":2}},"timestamp":"2026-10-05T12:01:00.000Z"}` + "\n"
@@ -376,7 +371,7 @@ func TestUsageSyncEndToEnd(t *testing.T) {
 	if ov, _ = e.svc.UsageOverview(context.Background(), me, e2); ov.Totals.Messages != 3 {
 		t.Errorf("after the hook: %+v", ov.Totals)
 	}
-	usageHook(c, strings.NewReader("not json"), dir) // A hook must never fail, even on input that is not JSON.
+	usageHook(c, strings.NewReader("not json"), dir)
 }
 
 func TestUsageSyncDryRunChangesNothing(t *testing.T) {
@@ -528,7 +523,6 @@ func TestStatuslinePostBody(t *testing.T) {
 		seven["percent"] != 63.2 || seven["resets_at"] != float64(time.Date(2026, 10, 17, 15, 0, 0, 0, time.UTC).UnixMilli()) {
 		t.Errorf("windows: %v %v", five, seven)
 	}
-	// The report carries only quota and session fields: no prompt, path or cost.
 	for k := range got {
 		switch k {
 		case "machine", "session", "model", "context_pct", "five_hour", "seven_day":
@@ -539,7 +533,6 @@ func TestStatuslinePostBody(t *testing.T) {
 }
 
 func TestStatuslineDoesNotWait(t *testing.T) {
-	// The status line must not wait on the server: the report goes to a detached process.
 	var hits atomic.Int32
 	hold := make(chan struct{})
 	ts := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -547,7 +540,7 @@ func TestStatuslineDoesNotWait(t *testing.T) {
 		<-hold
 	}))
 	t.Cleanup(ts.Close)
-	t.Cleanup(func() { close(hold) }) // ts.Close waits for the held handler, so this must run first (Cleanup is last-in, first-out)
+	t.Cleanup(func() { close(hold) })
 	t.Setenv("WAYPOINT_SERVER", ts.URL)
 	t.Setenv("WAYPOINT_TOKEN", "wpt_x")
 	old := statuslineSpawn

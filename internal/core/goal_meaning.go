@@ -19,8 +19,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Scoring runs outside any read or write transaction; with no judgement, nothing is left out or flagged.
-
 const (
 	judgeOverlap  = "overlap"
 	judgeRestates = "restates"
@@ -102,7 +100,7 @@ func (p *meaningPair) key() [3]string { return [3]string{p.judgement, p.aHash, p
 // meaningGoal is an active goal.
 type meaningGoal struct {
 	id, parent int64
-	rawParent  int64 // parent_id as it is, 0 none (a move changes it)
+	rawParent  int64
 	project    int64
 	title      string
 	hash       string
@@ -537,7 +535,7 @@ func (s *Service) askMeaning(ctx context.Context, ch *meaningChain, p *meaningPa
 		}
 		var wait *aiWaitError
 		if errors.As(err, &wait) {
-			return nil, err // nothing was sent: not a try
+			return nil, err
 		}
 		sc.tries = 1
 		if prev != nil {
@@ -673,7 +671,6 @@ func (s *Service) refreshMeaning(ctx context.Context) bool {
 	all := append(slices.Clone(pairs), labelled...)
 	s.meaningNLI(ctx, ps, all)
 
-	// Labelled pairs take up to half the call budget first, because the evaluator needs them scored; the rest goes to current pairs.
 	if ps.ch != nil {
 		rest := ps.budget - ps.budget/2
 		ps.budget /= 2
@@ -709,8 +706,6 @@ func (s *Service) refreshMeaning(ctx context.Context) bool {
 		ps.more, ps.progress = true, true
 	}
 	s.queueMeaningFeedback(ctx)
-	// A meaning service that is down is tried again when its breaker lets
-	// a call through, not only when a goal changes (WP-1602).
 	if h, ok := meaning.HealthOf(s.Meaning); ok && h.RetryAt != nil {
 		ps.retry(h.RetryAt.UnixMilli())
 	}
@@ -859,7 +854,7 @@ func (s *Service) meaningEmbed(ctx context.Context, ps *meaningPass, texts map[s
 			if err != nil {
 				s.meaningCallFailed(ctx, "goal meaning: embed", err)
 			}
-			return // a model that changed mid-pass is taken up by the next pass
+			return
 		}
 		err = s.write(ctx, SystemActor(), func(t *tx) error {
 			for i, h := range part {

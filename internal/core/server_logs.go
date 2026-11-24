@@ -16,15 +16,13 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Secrets are blanked as a record is written, not on the way out; a secret learnt later also blanks the records already in the ring.
-
 // Bounds of the log ring: whichever is reached first drops the oldest.
 const (
 	DefaultLogRecords = 50000
 	DefaultLogAge     = 48 * time.Hour
 	logMsgMax         = 2000
 	logAttrsMax       = 4000
-	minSecretLen      = 8 // shorter values are too likely to be words
+	minSecretLen      = 8
 )
 
 // LogRecord is one log record as the ring keeps it.
@@ -38,17 +36,15 @@ type LogRecord struct {
 
 // LogRing keeps the server's recent log records, redacted.
 type LogRing struct {
-	mu      sync.Mutex
-	buf     []LogRecord
-	next    int
-	full    bool
-	maxAge  time.Duration
-	secrets map[string]bool
-	sorted  []string
-	store   *logStore
-	now     func() time.Time
-	// onSecret is told of each secret added, after the ring's lock is
-	// released: what job health holds in memory blanks it too.
+	mu       sync.Mutex
+	buf      []LogRecord
+	next     int
+	full     bool
+	maxAge   time.Duration
+	secrets  map[string]bool
+	sorted   []string
+	store    *logStore
+	now      func() time.Time
 	onSecret []func(secret string)
 }
 
@@ -88,13 +84,9 @@ func (r *LogRing) addSecret(s string) bool {
 		return false
 	}
 	r.secrets[s] = true
-	// A new slice: redact reads the old one without the lock. Longest
-	// first, so a secret that contains another goes whole.
 	sorted := append(slices.Clone(r.sorted), s)
 	slices.SortStableFunc(sorted, func(a, b string) int { return len(b) - len(a) })
 	r.sorted = sorted
-	// Records kept before the secret was known lose it too. Attrs hold
-	// quoted values, so the escaped form is blanked as well.
 	quoted := strconv.Quote(s)
 	quoted = quoted[1 : len(quoted)-1]
 	for i := range r.buf {
@@ -148,7 +140,7 @@ var logKeyRE = lazyre.New(`(?i)(token|secret|password|passwd|api[_-]?key|apikey|
 var logValueREs = []*lazyre.Regexp{
 	lazyre.New(`(?i)\b((?:bearer|basic)\s+)[A-Za-z0-9._~+/=:-]{8,}`),
 	lazyre.New(`(?i)\b(authorization:\s*(?:[A-Za-z]+\s+)?)[A-Za-z0-9._~+/=:-]{8,}`),
-	lazyre.New(`(?i)\b(token\s+)[0-9a-f]{20,}\b`), // Forgejo's bare 'token <hex>' form, which the Authorization pattern above does not match
+	lazyre.New(`(?i)\b(token\s+)[0-9a-f]{20,}\b`),
 	lazyre.New(`()\bwp[dst]_[A-Za-z0-9_-]{8,}`),
 	lazyre.New(`()\bsk-[A-Za-z0-9_-]{16,}`),
 	lazyre.New(`()\b(?:gh[opsu]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{16,})`),
@@ -222,8 +214,6 @@ func (r *LogRing) add(at time.Time, level slog.Level, msg, attrs string) {
 	if at.IsZero() {
 		at = r.now()
 	}
-	// Redact under the lock that stores the record, so a secret added
-	// meanwhile (AddSecret rewrites the buffer) can't miss it.
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	attrs = redactKnownWith(attrs, r.sorted)
@@ -386,7 +376,7 @@ func (h *ringHandler) Enabled(ctx context.Context, l slog.Level) bool { return h
 
 func (h *ringHandler) Handle(ctx context.Context, rec slog.Record) error {
 	var b strings.Builder
-	b.WriteString(h.ring.redactKnown(h.attrs)) // a secret learnt since With
+	b.WriteString(h.ring.redactKnown(h.attrs))
 	rec.Attrs(func(a slog.Attr) bool {
 		h.ring.appendAttr(&b, h.group, a)
 		return true

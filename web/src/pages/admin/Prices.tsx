@@ -1,5 +1,3 @@
-// Matched to a model id by prefix; the costs are API-equivalent, not an invoice, since subscriptions aren't billed per token.
-
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Pencil, Plus, Trash2 } from 'lucide-react'

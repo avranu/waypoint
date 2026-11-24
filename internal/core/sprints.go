@@ -256,7 +256,6 @@ func (s *Service) StartSprint(ctx context.Context, actor *Actor, id int64) (*Spr
 		return nil, invalid("only a planned sprint can be started")
 	}
 	err = s.write(ctx, actor, func(t *tx) error {
-		// Re-check inside the transaction: two starts can race.
 		var state string
 		var active int
 		if err := t.QueryRowContext(ctx, `SELECT state, (SELECT count(*) FROM sprints WHERE project_id = ? AND state = 'active') FROM sprints WHERE id = ?`,
@@ -288,8 +287,6 @@ func (s *Service) StartSprint(ctx context.Context, actor *Actor, id int64) (*Spr
 			e := d.AddDate(0, 0, p.Settings.SprintDays-1).Format(dateLayout)
 			end = &e
 		}
-		// Anything still sitting in a backlog status joins the board, as a
-		// normal status change (history, flow reports and automations see it).
 		if todo, err := s.firstStatusIn(ctx, t, sp.ProjectID, CatTodo); err == nil {
 			ids, err := queryIDs(ctx, t, `SELECT i.id FROM issues i JOIN statuses st ON st.id = i.status_id WHERE i.sprint_id = ? AND st.category = 'backlog'`, id)
 			if err != nil {

@@ -394,7 +394,6 @@ func TestPlanCompact(t *testing.T) {
 		}
 		return out
 	}
-	// A per-model "auto" window in the same settings file replaces the top-level window for that model.
 	acts, drift := planCompact(200000, compactHave{Files: []compactFile{file("~/.claude/settings.json", 200000, map[string]int{"claude-opus-5-5": compactAuto, "claude-sonnet-5-5": 150000})}})
 	if got := settings(acts); !slices.Equal(got, []string{"modelSettings.claude-opus-5-5.autoCompactWindow"}) || len(drift) != 0 ||
 		!strings.Contains(acts[0].Why, `"auto" in ~/.claude/settings.json`) {

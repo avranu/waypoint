@@ -2,8 +2,6 @@ package core
 
 import "context"
 
-// Runner steps use the runners of whoever last saved the automation, never the trigger's, so an editable rule can't run commands on another person's machine.
-
 // AutomationRunners is what the editor says about the runners an automation
 // will use.
 type AutomationRunners struct {

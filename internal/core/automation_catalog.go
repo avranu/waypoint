@@ -15,8 +15,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/wql"
 )
 
-// Validation, the sentence editor, run recording and dry runs all read these definitions, so a new trigger or action needs only its definition and code.
-
 // Parameter types. The editor has a field for each; hand-made renderers
 // (status pickers, the PR filter) stay as renderers for their type.
 const (

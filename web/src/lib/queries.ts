@@ -1,5 +1,3 @@
-// Every read is a queryOptions factory so route loaders can prefetch what components render.
-
 import {
   infiniteQueryOptions,
   queryOptions,
@@ -218,7 +216,6 @@ export const q = {
       queryKey: ['time', from, to],
       queryFn: () => api.get<TimeEntry[]>(`/time${qs({ from, to })}`),
     }),
-  // Under the notifications key, so whatever refreshes notifications also refreshes the inbox.
   inbox: () =>
     queryOptions({
       queryKey: ['notifications', 'inbox'],
@@ -304,16 +301,12 @@ export const q = {
         api.get<Objective[]>(
           `/objectives${qs({ project: opts.project || undefined, all: opts.all ? 1 : undefined })}`,
         ),
-      // A wait runs out and a reading is taken without an event for either.
       refetchInterval: MIN,
     }),
   repos: (key: string) =>
     queryOptions({
       queryKey: ['repos', key],
       queryFn: () => api.get<ProjectRepo[]>(`/projects/${enc(key)}/repos`),
-      // Waypoint adds a repo's forge webhook in the background; check back
-      // until it has, and briefly after for the forge's first delivery
-      // (GitHub pings a new webhook).
       refetchInterval: (query) =>
         query.state.data?.some(
           (r) =>
@@ -435,8 +428,6 @@ export const q = {
     queryOptions({
       queryKey: ['orgHooks', forgeId],
       queryFn: () => api.get<OrgHook[]>(`/forges/${forgeId}/org-hooks`),
-      // Added in the background: check back until the forge has answered,
-      // and briefly after for its first delivery (the ping), as for repos.
       refetchInterval: (query) =>
         query.state.data?.some(
           (h) =>
@@ -726,7 +717,7 @@ export function useCreateIssue() {
         ? {
             ...in_,
             title,
-            title_is_text: true, // The server may replace a typed title with a shorter one and keep the typed text as the description.
+            title_is_text: true,
             description: in_.description?.trim()
               ? `${description}\n\n${in_.description}`
               : description,
@@ -748,7 +739,7 @@ export function usePublishIssue() {
     mutationFn: (key: string) => api.post<IssueDetail>(`/issues/${enc(key)}/publish`),
     onSuccess: (d) => {
       qc.setQueryData(['issue', d.key], d)
-      qc.invalidateQueries({ queryKey: ['issue'] }) // Publishing also publishes sub-issues, so every cached issue is refreshed.
+      qc.invalidateQueries({ queryKey: ['issue'] })
       invalidateProject(qc, d.project_key)
     },
   })
@@ -792,7 +783,6 @@ export function useObjective(key: string) {
         : 'confirm' in v
           ? api.post<Objective>(path + '/confirm', { rev: v.confirm })
           : api.del<void>(path),
-    // On error too: a stale-rev confirm, or a control the server's state no longer allows, shows what is there now.
     onSettled: () => {
       qc.invalidateQueries({ queryKey: ['issue', key] })
       qc.invalidateQueries({ queryKey: ['objectives'] })
@@ -810,7 +800,6 @@ export function useObjectiveGo(key: string) {
   return useMutation({
     mutationFn: (action: ObjectiveAction) =>
       api.post<Objective>(`/issues/${enc(key)}/objective/go`, { action }),
-    // On error too: a stale-rev confirm, or a control the server's state no longer allows, shows what is there now.
     onSettled: () => {
       qc.invalidateQueries({ queryKey: ['issue', key] })
       qc.invalidateQueries({ queryKey: ['objectives'] })
@@ -1038,7 +1027,6 @@ export function usePrefetch<T, K extends QueryKey>(
     }
     const t = setTimeout(run, 300)
     return () => clearTimeout(t)
-    // The key stands in for the options object, which is new each render.
   }, [qc, key, enabled]) // eslint-disable-line react-hooks/exhaustive-deps
 }
 
@@ -1147,7 +1135,6 @@ export function useSetAutopilot() {
         body,
       ),
     onSuccess: (o) => qc.setQueryData(['autopilot'], o),
-    // Saves from different forms can answer out of order: read it again after.
     onSettled: () => qc.invalidateQueries({ queryKey: ['autopilot'] }),
   })
 }

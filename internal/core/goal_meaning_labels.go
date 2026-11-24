@@ -13,8 +13,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// A passing agent pull request is never a yes: hiding the goal from the agent would make the pass confirm itself.
-
 const (
 	labelActed       = "acted"
 	labelIgnored     = "ignored"
@@ -135,7 +133,7 @@ func (s *Service) meaningShownLabels(ctx context.Context, goals map[int64]*meani
 			if m[2] == "repeats its parent goal" {
 				dismissed[pk{judgeRestates, note, other}] = k
 			} else {
-				dismissed[pk{judgeOverlap, other, note}] = k // Overlap pairs are keyed with the lower id as a, so the warning sits on the higher id.
+				dismissed[pk{judgeOverlap, other, note}] = k
 			}
 		}
 	}

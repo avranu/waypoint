@@ -28,7 +28,6 @@ export const MarkdownInput = forwardRef<HTMLTextAreaElement, Props>(function Mar
   const ref = useRef<HTMLTextAreaElement | null>(null)
   const latest = useRef(value)
   latest.current = value
-  // Uploads finish later; always build on the newest text, even between renders.
   const setValue = (v: string) => {
     latest.current = v
     onValueChange(v)

@@ -4,8 +4,6 @@ import { api, enc, qs } from './api'
 import { readLocal } from './hooks'
 import type { Workflow } from './types'
 
-// Issues agents make for their own tracking are hidden unless a viewer asks; work people delegate stays visible.
-
 const subs = new Set<() => void>()
 const storeKey = (project: string) => `agent-made-${project}`
 
@@ -56,8 +54,6 @@ export const AGENT_SUGGESTIONS = [
   'grok',
   'gemini',
 ]
-
-// issue.agent: '' is Anyone (default); 'none' is Humans only; 'any' or a family/model spec is Agents.
 
 export type Who = 'anyone' | 'humans' | 'agents'
 

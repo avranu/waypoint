@@ -23,7 +23,6 @@ func TestScreenTrustsWaypointTemplates(t *testing.T) {
 		t.Helper()
 		w := *e.admin
 		w.textAgent = "waypoint"
-		// The template stamp goes in the task's own transaction (issues.go:1117), so a failed second write cannot leave the task screened as an agent's.
 		made, err := e.s.CreateIssue(e.ctx, &w, IssueInput{Project: p.Key, Agent: "claude", Priority: "high", Title: "Settle the protected-file conflict babysitting can't on me/app#7", Description: body, template: trust})
 		if err != nil {
 			t.Fatal(err)

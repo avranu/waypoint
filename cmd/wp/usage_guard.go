@@ -180,7 +180,7 @@ func cmdUsageGuard(c *cli, args []string) error {
 	live, err := c.call("GET", "/api/v1/usage/guard/live?"+lq.Encode(), nil)
 	var ae *apiError
 	if err != nil && (!errors.As(err, &ae) || ae.status != http.StatusNotFound) {
-		return err // a server from before the live guard answers 404: the daily checks alone
+		return err
 	}
 	if len(live) == 0 {
 		live = []byte("null")

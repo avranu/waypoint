@@ -88,7 +88,6 @@ func TestBabysitProtectedFileHandoff(t *testing.T) {
 			t.Errorf("task body lacks %q:\n%s", want, body)
 		}
 	}
-	// The round's agent words and diff are not on the task (they may edit protected files and run sudo); wp pr todo shows them as untrusted text.
 	if strings.Contains(body, "atexit.register") {
 		t.Errorf("the refused diff is in the template body:\n%s", body)
 	}

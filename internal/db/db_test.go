@@ -31,7 +31,6 @@ func TestOpenOddPathAndBackup(t *testing.T) {
 	if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o600 {
 		t.Errorf("database mode %v", fi.Mode().Perm())
 	}
-	// Backups run on the read pool while a write transaction is open.
 	tx, err := d.W.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -379,7 +378,6 @@ func TestMergeAutomaticallyDefaults(t *testing.T) {
 			t.Errorf("%s: auto_merge %d (want 1), wait %d, quiet %d, required %s, reviewers %v", repo, got, wait, quiet, required, reviewers)
 		}
 	}
-	// Pull requests open before the migration wait for their next push; merged ones don't matter.
 	for n, state := range map[int]string{1: "open", 2: "draft", 3: "merged"} {
 		if _, err := d.W.ExecContext(ctx, `INSERT INTO pull_requests(forge_id, repo, number, state, created_at, updated_at) VALUES (1, 'Harbor/Quarry', ?, ?, 0, 0)`, n, state); err != nil {
 			t.Fatal(err)
@@ -637,7 +635,6 @@ func TestMigrationsKeepAddedColumns(t *testing.T) {
 					added[col{m[5], m[7]}] = by
 				}
 			case m[8] != "" && regexp.MustCompile(`\bcreate\s+table\s+(?:if\s+not\s+exists\s+)?`+m[8]+`\b`).MatchString(lower):
-				// A table moved aside and recreated under its name keeps the columns added to it owed by that name.
 			case m[8] != "":
 				for c, by := range added {
 					if c.table == m[8] {
@@ -646,7 +643,6 @@ func TestMigrationsKeepAddedColumns(t *testing.T) {
 					}
 				}
 			case m[10] != "":
-				// A drop ends the columns owed by a table, unless a later statement gives its name to a new table.
 				rebuilt := false
 				for _, later := range ms[i+1:] {
 					rebuilt = rebuilt || later[9] == m[10]

@@ -229,8 +229,6 @@ func shipEndsTurn(t *testing.T, e *env, me *core.Actor, key string) {
 	t.Helper()
 	ctx := context.Background()
 	t.Setenv("WAYPOINT_SESSION", "sess-ship")
-	// The test's untracked pr-checks.md would put the check's tree off the
-	// commit's.
 	if err := os.WriteFile(filepath.Join(".git", "info", "exclude"), []byte(".waypoint/\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +246,6 @@ func shipEndsTurn(t *testing.T, e *env, me *core.Actor, key string) {
 	if k := state().Summaries[key]; k == nil || k.Text != "{task} is in PR #{pr}." {
 		t.Errorf("summary not kept after a failed check: %+v", k)
 	}
-	// A marker this ship didn't write (a subagent's wp ship in this session) is cleared when the ship starts, so it can't end the turn.
 	c, _ := newCLI(new(bytes.Buffer), new(bytes.Buffer))
 	c.shipSession("sess-ship", func(e *shipEnd) { e.Ready, e.Text = time.Now(), "A subagent's." })
 	out = e.wp("ship", "--check", "true")
@@ -270,7 +267,6 @@ func shipEndsTurn(t *testing.T, e *env, me *core.Actor, key string) {
 			}
 		}
 	}
-	// Information that a change replaces other tasks' recent work is not a reason to keep the turn going.
 	oldFn := rewrittenTasksFn
 	rewrittenTasksFn = func(*cli, string, string) []rewrittenTask {
 		return []rewrittenTask{{Key: "WP-2", Title: "Earlier", PR: 3, Lines: 20, Share: 0.5}}

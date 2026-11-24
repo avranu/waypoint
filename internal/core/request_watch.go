@@ -16,12 +16,10 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// A request closes itself when a condition it watches holds, checked deterministically with no model.
-
 // Watch kinds.
 const (
 	WatchPRMerged  = "pr-merged"
-	WatchIssueDone = "issue-done" // A canceled issue counts as done too.
+	WatchIssueDone = "issue-done"
 	WatchURLOK     = "url-ok"
 	WatchCmdOK     = "cmd-ok"
 )
@@ -138,7 +136,6 @@ func (s *Service) checkWatch(ctx context.Context, t *tx, actor *Actor, sess *Age
 		}
 		w.every = clampEvery(every, watchURLEvery, watchMinURLEvery)
 	case WatchCmdOK:
-		// A command runs on a person's machine: only a person sets one.
 		if actor.IsAgent() {
 			return nil, invalid("a command poll runs on your person's machine, so only a person can set one; use pr-merged, issue-done or url-ok, or ask them")
 		}

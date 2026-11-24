@@ -74,7 +74,7 @@ func TestBabysitTellsAnIdleSession(t *testing.T) {
 	be := newBabysitEnv(t)
 	be.runner(be.admin, "m1", nil)
 	pr := be.open()
-	if _, err := be.s.StartBabysit(be.ctx, be.agent, pr.ID, BabysitInput{Blocking: true}); err != nil { // A blocking babysit holds up the session's other work.
+	if _, err := be.s.StartBabysit(be.ctx, be.agent, pr.ID, BabysitInput{Blocking: true}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := be.s.SessionHook(be.ctx, be.agent, []HookEvent{{Event: "Stop", SessionID: "cli-1", Machine: "m1", CLI: "claude"}}); err != nil {

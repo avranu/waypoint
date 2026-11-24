@@ -8,8 +8,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Claude Code's plan-limit line has several forms ("5-hour limit reached ∙ resets 3am", "Claude AI usage limit reached|1762534800"); match them all, not only "hit your limit".
-
 // limitPhrase matches a plan's usage limit in any of Claude Code's forms,
 // and not its "Context limit reached", which is the conversation's length;
 // and HTTP 429 as a status ("API Error: 429", "returned error: 429"), not
@@ -93,11 +91,9 @@ func limitResetIn(text string, now time.Time) (time.Time, bool) {
 		}
 		t := time.Date(local.Year(), month, day, hour, minute, 0, 0, loc)
 		if t.Before(now.Add(-24 * time.Hour)) {
-			t = t.AddDate(1, 0, 0) // A reset named by month and day, read late in the year, is next year's date.
+			t = t.AddDate(1, 0, 0)
 		}
 		if !t.After(now) {
-			// Already past (a wrong zone, a late read): it says nothing of
-			// when the limit lifts, and a past time would retry at once.
 			return time.Time{}, false
 		}
 		return t.UTC(), true

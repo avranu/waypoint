@@ -1,5 +1,3 @@
-// Every key sits under 'cron/jobs', the prefix the cron.changed live event refetches by.
-
 import { useSyncExternalStore } from 'react'
 import type { QueryClient } from '@tanstack/react-query'
 import { enc } from '@/lib/api'
@@ -144,8 +142,6 @@ export const refreshJobs = (qc: QueryClient, id: number) =>
       q.queryKey[1] === id &&
       String(q.queryKey[2]).startsWith('cron/jobs'),
   })
-
-// The trigger POST runs the job inside the request, which can take minutes; running jobs are tracked outside React so they still show as running after leaving the tab.
 
 const running = new Map<string, number>()
 let snapshot: ReadonlyMap<string, number> = new Map()

@@ -48,16 +48,15 @@ type Config struct {
 
 // Server is the HTTP front end.
 type Server struct {
-	done        chan struct{}
-	doneOnce    sync.Once
-	svc         *core.Service
-	cfg         Config
-	log         *slog.Logger
-	limiter     *rateLimiter
-	userLimiter *rateLimiter
-	jobLimiter  *rateLimiter
-	static      *staticFiles
-	// Ten seconds separates a page left on a list (noise) from a CLI timing out at about 60s (a real signal).
+	done           chan struct{}
+	doneOnce       sync.Once
+	svc            *core.Service
+	cfg            Config
+	log            *slog.Logger
+	limiter        *rateLimiter
+	userLimiter    *rateLimiter
+	jobLimiter     *rateLimiter
+	static         *staticFiles
 	abandonedAfter time.Duration
 }
 
@@ -103,9 +102,8 @@ const (
 // requestNote is what a handler leaves for the middleware's one record about
 // the request.
 type requestNote struct {
-	err   error
-	waits bool
-	// Counted only once the write succeeds, so refused writes are not counted.
+	err          error
+	waits        bool
 	unregistered *unregisteredWrite
 }
 
@@ -205,10 +203,6 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 				s.svc.CountUnregisteredWrite(context.WithoutCancel(r.Context()), u.user, u.machine)
 			}
 			if abort {
-				// A handler that fails after bytes went out ends the transfer
-				// as broken: net/http aborts the connection (and logs
-				// nothing) only for this panic, so a client sees an error,
-				// not a body that ended as if it were whole.
 				panic(http.ErrAbortHandler)
 			}
 		}()
@@ -343,7 +337,7 @@ func (s *Server) clientIP(r *http.Request) string {
 	}
 	for i := len(hops) - 1; i >= 0; i-- {
 		if _, err := netip.ParseAddr(hops[i]); err != nil {
-			return peer // garbage from a proxy we trust: don't guess
+			return peer
 		}
 		if !s.trusted(hops[i]) || i == 0 {
 			return hops[i]
@@ -375,27 +369,22 @@ func (s *Server) authenticate(r *http.Request) (*core.Actor, error) {
 		if err != nil {
 			return nil, err
 		}
-		// The header names the agent only when the token has no agent identity, so a token cannot be relabelled.
 		if ag := strings.TrimSpace(r.Header.Get("X-Waypoint-Agent")); ag != "" && len(ag) <= 100 && a.Agent == "" {
 			a.Agent = ag
 		}
-		// Agent-shell env is recorded even when the caller says it is a person: drafts stay out of an agent's context either way.
 		if env := strings.TrimSpace(r.Header.Get("X-Waypoint-Agent-Env")); env != "" && len(env) <= 100 {
 			a.AgentEnv = env
 		}
 		a.Prestart = r.Header.Get("X-Waypoint-Prestart") == "1"
-		// Counted before the permission check, so refused requests use the job's budget too.
 		if a.RunnerJob != 0 && !s.jobLimiter.allow(fmt.Sprint("job:", a.RunnerJob)) {
 			return nil, errJobTooMany
 		}
-		// Permission check runs before the session header is recorded, so a refused request leaves no session trace.
 		if err := s.checkPermission(r, a); err != nil {
 			return nil, err
 		}
 		if sid := strings.TrimSpace(r.Header.Get("X-Waypoint-Session")); sid != "" && a.User != nil {
 			machine := strings.TrimSpace(r.Header.Get("X-Waypoint-Machine"))
 			a.Session = s.svc.SessionForHeader(r.Context(), a.User.ID, sid, machine)
-			// The hook's own calls register sessions, and the wait hook's outstanding-work calls write nothing without one: neither is counted.
 			if a.Session == 0 && r.Method != http.MethodGet && r.Method != http.MethodHead && !strings.HasPrefix(r.URL.Path, "/api/v1/sessions/hook") &&
 				!strings.HasPrefix(r.URL.Path, "/api/v1/sessions/outstanding") {
 				if n := noteFrom(r); n != nil {
@@ -431,8 +420,6 @@ func (s *Server) authed(f apiFunc) http.HandlerFunc {
 			s.writeError(w, r, err)
 			return
 		}
-		// Every non-GET route changes something; read-only tokens stop here
-		// (core checks again, so a missed route still fails closed).
 		if a.ReadOnly && r.Method != http.MethodGet && r.Method != http.MethodHead {
 			s.writeError(w, r, fmt.Errorf("read-only token: %w", core.ErrForbidden))
 			return
@@ -496,8 +483,6 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 	var ie *core.InvalidError
 	switch {
 	case errors.Is(err, context.Canceled) && (r.Context().Err() != nil || s.shuttingDown()):
-		// The caller hung up, or the server is going down: not a failure of
-		// the server's. A deadline is not this and stays a 500.
 		status, msg = statusClientClosed, "the request was cancelled"
 	case errors.As(err, &ie):
 		status, msg = http.StatusBadRequest, ie.Msg
@@ -518,12 +503,10 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, errTooMany):
 		status, msg = http.StatusTooManyRequests, err.Error()
 	case errors.Is(err, core.ErrTranscriptQuota):
-		// 507 marks a full archive, not a server fault: the 5xx log check skips it.
 		status, msg = http.StatusInsufficientStorage, core.TranscriptQuotaRefusal
 	case errors.Is(err, core.ErrTranscriptDiskLow):
 		status, msg = http.StatusInsufficientStorage, core.TranscriptDiskLowRefusal
 	case errors.Is(err, core.ErrTranscriptsOff):
-		// a setting, not a fault: the client reads it as "this server keeps no archive"
 		status, msg = http.StatusNotImplemented, err.Error()
 	}
 	if status >= 500 && status != http.StatusInsufficientStorage && status != http.StatusNotImplemented {
@@ -538,7 +521,7 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, core.ErrReauth):
 		body["code"] = "reauth"
 	case errors.Is(err, core.ErrTranscriptQuota), errors.Is(err, core.ErrTranscriptDiskLow):
-		body["code"] = "transcript_full" // Clients key on this code: the message may change, the code may not.
+		body["code"] = "transcript_full"
 	case errors.Is(err, core.ErrTranscriptJob):
 		body["code"] = "transcript_job"
 	}
@@ -637,8 +620,6 @@ func decodeBodyLarge(r *http.Request, v any, max int64, tooLarge string) error {
 }
 
 func decodeBodyMax(r *http.Request, v any, max int64) (empty bool, err error) {
-	// One byte over the limit tells a body that was cut from one that was
-	// never longer: the first would read as broken JSON.
 	b, err := io.ReadAll(io.LimitReader(r.Body, max+1))
 	if err != nil {
 		return false, fmt.Errorf("%w: %v", errBadRequest, err)

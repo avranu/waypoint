@@ -104,7 +104,6 @@ func TestCountSignals(t *testing.T) {
 		{"a refuted repeat is neither", 5, []againFinding{f(round, 1, func(x *againFinding) { repeat(x); refuted(x) })}, 0, 0},
 		{"a signal and a repeat", 5, []againFinding{f(round, 1, nil), f(round, 2, repeat)}, 1, 1},
 		{"unsupported counts", 5, []againFinding{f(round, 1, func(x *againFinding) { x.verdict = VerdictUnsupported })}, 1, 0},
-		// A check's finding that names a signal finding of the round is the same problem, counted once.
 		{"check finding naming a standing finding counts once", 5,
 			[]againFinding{f(round, 1, nil), f(check, 1, refs("[10.1]"))}, 1, 0},
 		{"check first in the list, same", 5,
@@ -168,7 +167,6 @@ func TestCountUnchecked(t *testing.T) {
 		{"unsupported still counts", 5, []againFinding{f(round, "rejected", "high", func(x *againFinding) { x.verdict = VerdictUnsupported })}, 1},
 		{"a repeat of an earlier round's", 5, []againFinding{f(round, "rejected", "high", repeat)}, 0},
 		{"fixed and open are not rejections", 5, []againFinding{f(round, "fixed", "high", nil), f(round, "open", "high", nil)}, 0},
-		// A check's finding that the session rejects counts: two readers against the author's word.
 		{"the check's finding, rejected in turn", 5, []againFinding{f(check, "rejected", "high", nil)}, 1},
 		{"the check's finding under the floor", 8, []againFinding{f(check, "rejected", "medium", nil)}, 0},
 		{"the check's finding, a repeat", 5, []againFinding{f(check, "rejected", "high", repeat)}, 0},
@@ -181,7 +179,6 @@ func TestCountUnchecked(t *testing.T) {
 			t.Errorf("%s: unchecked %d, want %d", tc.name, d.unchecked, tc.want)
 		}
 	}
-	// Once the check has answered, the round's own rejections were checked, so only the check's rejected findings count.
 	d := &againDecision{audit: round}
 	d.countUnchecked([]againFinding{f(round, "rejected", "critical", nil), f(check, "rejected", "high", nil), f(check, "fixed", "high", nil)}, 5, false)
 	if d.unchecked != 1 {

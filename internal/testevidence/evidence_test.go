@@ -169,8 +169,6 @@ func TestTextSuppressions(t *testing.T) {
 		t.Fatalf("got  %+v\nwant %+v", got, want)
 	}
 
-	// The ledger reads e2e scripts as wplint does: a quote in a regex
-	// doesn't open a string, and a template that spans lines does.
 	mjs2 := strings.Join([]string{
 		`s.replace(/'/g, ""); await page.waitForTimeout(1); // wplint:ignore e2e-wait after a regex`,
 		"const html = `",
@@ -185,8 +183,6 @@ func TestTextSuppressions(t *testing.T) {
 		t.Errorf("e2e waivers on lines %v, want [1 4]", lines)
 	}
 
-	// A backslash is a plain character in a SQL string: the quote after it
-	// closes the string, so the trailing waiver is a comment.
 	sql2 := "ALTER TABLE x ADD b TEXT DEFAULT 'a\\'; -- wplint:ignore migrations after a backslash\n" +
 		"ALTER TABLE x ADD c TEXT DEFAULT 'it''s -- not a comment';\n"
 	lines = nil

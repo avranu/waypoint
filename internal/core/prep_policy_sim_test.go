@@ -9,8 +9,6 @@ import (
 	"testing"
 )
 
-// outcomes are seen a day after each task arrives, so the constants' cost shows here (worse-arm tasks, speed of following a change)
-
 // simPerDay is exposed tasks a day: 29 a day were measured over the prep
 // experiment's 16 days (page WP-X19). WP_PREP_SIM_PER_DAY sets another, for
 // when only some of the takers send traces.
@@ -100,7 +98,7 @@ type simMix struct {
 	halfLives []float64
 	window    int
 	fits      [][]*prepFit
-	score     [][]float64 // each day's tasks are scored under that morning's fits, so no score uses later data
+	score     [][]float64
 }
 
 func (p *simMix) shares(day int, tasks []simTask) []float64 {
@@ -194,7 +192,7 @@ type simResult struct {
 	regret   float64
 	worse    float64
 	last     []float64
-	afterAt  int // -1 if the best arm never holds half the tasks after day 60
+	afterAt  int
 	shareSum []float64
 }
 

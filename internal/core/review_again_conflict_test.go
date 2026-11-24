@@ -51,7 +51,6 @@ func TestReviewAgainConflictReturns(t *testing.T) {
 				return ""
 			}
 			res, err := e.shipChecked(e.box, e.task.Key)
-			// The losing ship is never told to run its command again: it finds the pull request opened or is told Waypoint moved on.
 			if err != nil || res == nil || res.HeldNeedsAgent || (res.Pull == nil && !strings.Contains(res.Held, "Waypoint moved")) {
 				t.Fatalf("ship = %+v, %v, want what Waypoint did, nothing to run", res, err)
 			}

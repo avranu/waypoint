@@ -1,7 +1,5 @@
 package core
 
-// Counts only judged findings: verified if fixed or taken by an agent in its thread; false positive if dismissed, withdrawn, or quoting code not in the file; the verifier's drops are not reported.
-
 import (
 	"context"
 	"crypto/rand"
@@ -268,7 +266,6 @@ func (s *Service) sendFeedback(ctx context.Context, fl feedbackLLM, p *AIProvide
 		unknown := errors.As(err, &le) && le.status == http.StatusNotFound && strings.Contains(le.body, "request_not_found")
 		next := s.now().Add(min(feedbackRetryMin<<min(d.tries, 10), feedbackRetryMax)).UnixMilli()
 		if unknown && s.now().Sub(msTime(d.createdAt)) > feedbackUnknownAfter {
-			// A request the gateway still doesn't know is retried only until its window closes (created_at + feedbackWindow), then never.
 			window := st.window
 			if window == 0 {
 				window = feedbackWindow

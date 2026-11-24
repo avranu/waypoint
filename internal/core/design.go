@@ -11,16 +11,6 @@ import (
 	"unicode/utf8"
 )
 
-// Design notes (WP-D10): what people intend for a project: goals,
-// principles, features, screens, decisions. People's notes and edits are
-// approved as they're saved. Agents' notes are proposed until a person
-// approves them; after that agents can only add (additions) or propose
-// edits, which wait for a person. Every change is kept as a revision.
-// An agent's note written for a task a person filed (--for) counts as
-// carrying out that request instead (WP-189), and so do its later edits.
-// Nobody approved it: it records the task and who filed it, never that
-// person as its approver or reviewer (WP-409, WP-ADR96).
-
 // DesignKinds are the kinds of note, in the order they're listed.
 var DesignKinds = []string{"goal", "principle", "feature", "screen", "decision", "requirement", "note"}
 
@@ -33,7 +23,7 @@ const (
 	RevPending  = "pending"
 	RevRejected = "rejected"
 	RevMerged   = "merged"
-	RevApplied  = "applied" // an agent's change that took effect without a person: to its unapproved note, or one written on a request
+	RevApplied  = "applied"
 )
 
 // DesignRequest says an agent's note was written for a task a person filed:
@@ -605,12 +595,9 @@ func (s *Service) CreateDesign(ctx context.Context, actor *Actor, in DesignInput
 		agent := actor.creditAgent()
 		switch {
 		case goalProposal:
-			// An agent's goal is never approved, even one written for a person's filed task; this empty case must stay ahead of the request case.
 		case !actor.writesAsAgent():
 			approvedBy, approvedAt, state = nullUser(actor.id()), now, RevApproved
 		case req.accepts():
-			// It counts, but nobody approved it: the request is its
-			// provenance, not the person's verdict (WP-409, WP-ADR96).
 			approvedAt, reqIssue, reqBy = now, req.issue, req.by
 		}
 		res, err := t.ExecContext(ctx, `INSERT INTO design_notes(project_id, parent_id, kind, title, body, status, approved_by, approved_at,
@@ -626,7 +613,6 @@ func (s *Service) CreateDesign(ctx context.Context, actor *Actor, in DesignInput
 		if err := s.codeDesign(ctx, t, id, want); err != nil {
 			return err
 		}
-		// The title is read back after codeDesign, which strips a code prefix from an imported title.
 		if err := t.QueryRowContext(ctx, `SELECT title FROM design_notes WHERE id = ?`, id).Scan(&title); err != nil {
 			return err
 		}
@@ -858,7 +844,6 @@ func (s *Service) UpdateDesign(ctx context.Context, actor *Actor, id int64, in D
 				sets, args = append(sets, "status = ?"), append(args, st)
 			}
 		}
-		// Its parent must live in the project it ends up in.
 		to := n.ProjectID
 		if in.Project != nil {
 			if to, err = s.scopeFor(ctx, t, actor, *in.Project); err != nil {
@@ -903,7 +888,7 @@ func (s *Service) UpdateDesign(ctx context.Context, actor *Actor, id int64, in D
 				UPDATE design_notes SET project_id = ? WHERE id IN (SELECT id FROM d)`, id, nullInt(to)); err != nil {
 				return err
 			}
-			sets = append(sets, "project_id = project_id") // A no-op SET keeps the update from returning early when only the project moves.
+			sets = append(sets, "project_id = project_id")
 			scope = to
 		}
 		if actor.writesAsAgent() && !n.agentsEdit() {
@@ -1079,7 +1064,6 @@ func (s *Service) ReviewDesign(ctx context.Context, actor *Actor, revID int64, a
 			title, body = r.Title, r.Body
 		case action == "merge":
 			title, body = n.Title, strings.TrimSpace(n.Body+"\n\n"+r.Body)
-			// The merged text is the addition's author's, approved by this person.
 			if _, err := t.ExecContext(ctx, `INSERT INTO design_revisions(note_id, kind, title, body, base_id, state, user_id, agent, created_at, reviewed_by, reviewed_at, review_note, session_id, session_issue_id)
 				SELECT note_id, 'edit', ?, ?, ?, 'approved', user_id, agent, ?, ?, ?, 'merged addition #' || id, session_id, session_issue_id FROM design_revisions WHERE id = ?`,
 				title, body, nullInt(latestEdit(ctx, t, n.ID)), now, nullUser(actor.id()), now, revID); err != nil {

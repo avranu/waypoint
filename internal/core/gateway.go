@@ -14,8 +14,6 @@ import (
 	"unicode"
 )
 
-// Requests use only standard OpenAI endpoints unless LLM_GATEWAY_EXTENSIONS declares an extension; a feature needing one the gateway lacks is skipped silently.
-
 // The extensions of the OpenAI API a gateway may declare. Each is one
 // gateway's protocol; OpenLLMs is one gateway that implements them all.
 const (
@@ -438,7 +436,7 @@ func (s *Service) setGatewayChain(ctx context.Context, pid int64, task string, l
 	}
 	for _, cm := range rest {
 		if _, err := s.aiProvider(ctx, cm.ProviderID); err == nil || !errors.Is(err, ErrNotFound) {
-			chain = append(chain, cm) // Only a removed provider drops a fallback; a lookup error keeps it.
+			chain = append(chain, cm)
 		}
 	}
 	chain = chain[:min(len(chain), 11)]

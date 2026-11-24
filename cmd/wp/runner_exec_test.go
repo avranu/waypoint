@@ -727,7 +727,7 @@ exec sleep 60
 func TestOpencodeOutOfUsage(t *testing.T) {
 	for line, want := range map[string]bool{
 		`level=ERROR message="stream error" small=false error.error="AI_APICallError: Free usage limit reached. Subscribe."`: true,
-		`level=ERROR message="stream error" small=true error.error="AI_RetryError: Free usage limit reached."`:               false, // small=true is opencode's small-model call, so its quota error is not the job's own model refusing
+		`level=ERROR message="stream error" small=true error.error="AI_RetryError: Free usage limit reached."`:               false,
 		`level=ERROR message="stream error" small=false error.error="AI_APICallError: 429 Too Many Requests"`:                false,
 		`level=WARN message="stream error" small=false error.error="quota exceeded"`:                                         false,
 		`level=ERROR message="stream error" small=false error.error="You exceeded your current quota"`:                       true,
@@ -895,7 +895,7 @@ func TestInstallWritesTheUnitAndStartsIt(t *testing.T) {
 	}
 	cfg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", cfg)
-	t.Setenv("XDG_RUNTIME_DIR", cfg) // set so ensureUserBus returns early; otherwise it would look at this host's /run/user bus and the test would depend on the host
+	t.Setenv("XDG_RUNTIME_DIR", cfg)
 	var calls []string
 	old, oldWait := sysRun, onlineWait
 	sysRun = func(name string, args ...string) (string, error) {
@@ -947,7 +947,6 @@ func alive(pid int) bool {
 	if err != nil {
 		return true
 	}
-	// the command name can contain ')', so the state follows the last one
 	if i := strings.LastIndexByte(string(b), ')'); i >= 0 && i+2 < len(b) {
 		return b[i+2] != 'Z'
 	}

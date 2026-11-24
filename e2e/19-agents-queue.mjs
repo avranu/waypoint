@@ -48,7 +48,6 @@ async function run(width, scheme) {
       )),
       `${tag} no sideways scroll (${where})`,
     );
-  // The app scrolls inside its own panel, not the window, so the helper resets that panel to the top.
   const shot = async (name, top = true) => {
     if (top)
       await page.evaluate(() =>
@@ -178,7 +177,6 @@ async function run(width, scheme) {
   await shot("queue-all");
   await overflow("queue");
 
-  // Automatic order holds until a person places a task; placing one pins only that task and the rest keep the automatic order.
   const keys = async () =>
     (await api("GET", `/agents/queue?project=${key}`)).next.map(
       (i) => i.issue.key,
@@ -236,7 +234,6 @@ async function run(width, scheme) {
     `${tag} pinning one task leaves the others in the automatic order: ${await keys()}`,
   );
 
-  // A task moved to the spot the automatic order would already give it is unpinned.
   if (width >= 1024) {
     const from = await rows
       .filter({ hasText: parser.key })
@@ -570,7 +567,6 @@ async function run(width, scheme) {
   ok(true, `${tag} a paused project's work waits`);
   await shot("queue-project-paused");
   await overflow("paused project");
-  // Moving a task must keep the page's scroll position, not follow the moved task.
   const long = key + "L";
   await api("POST", "/projects", { name: `Long queue ${tag}`, key: long });
   for (let n = 0; n < 12; n++)

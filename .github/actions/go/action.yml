@@ -1,4 +1,3 @@
-# GitHub never overwrites a cache key, so the key ends in the day: a kind of job saves once a day and otherwise restores the closest older cache.
 name: go
 description: Set up Go at go.mod's version with a cache per kind of job, and download the modules.
 inputs:

@@ -8,8 +8,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Runs after the issue is saved, as an event side effect, so creating never waits on a model; a missing or failed model leaves the typed title.
-
 const (
 	// titleGenMin: a title longer than this many characters is text, not a title.
 	titleGenMin = 100
@@ -121,7 +119,6 @@ func (s *Service) retitle(ctx context.Context, projectID, id int64, was string) 
 	if title == "" || title == i.Title {
 		return invalid("the AI model didn't give a usable title")
 	}
-	// Re-read after the model call: the issue may have changed while it ran.
 	cur, err := s.issueByID(ctx, s.db.R, id, true)
 	if err != nil || cur.Title != was {
 		return err

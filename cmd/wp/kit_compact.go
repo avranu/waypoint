@@ -11,8 +11,6 @@ import (
 	"strings"
 )
 
-// Claude Code reads autoCompactWindow from user, project and local settings (higher wins), and modelSettings.<model> replaces it per model; sync caps only values above the ceiling in settings.local.json.
-
 // compactAuto is a window of "auto".
 const compactAuto = -1
 

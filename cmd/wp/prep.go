@@ -13,8 +13,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/codeindex"
 )
 
-// The model gives no plan or advice (a weak model's steer misleads a strong one); its code picks are resolved against the live index, so shown code is never the model's.
-
 var prepCmd = &command{
 	name: "prep", group: "Knowledge", args: "KEY… | show KEY…",
 	summary: "prepare a queued task: a free model points at where to look",
@@ -315,7 +313,7 @@ func (p *runnerProc) prepTasks(ctx context.Context) {
 	for wait := 2 * time.Minute; sleepCtx(ctx, wait); wait = prepEvery {
 		var due []prepDue
 		if err := p.c.callInto(ctx, "GET", "/api/v1/prep/due?machine="+url.QueryEscape(p.opts.Name), nil, &due); err != nil {
-			if msg := err.Error(); msg != lastErr[""] && !isNotFound(err) { // An older server has no prep endpoint, so its 404 is expected and not reported.
+			if msg := err.Error(); msg != lastErr[""] && !isNotFound(err) {
 				p.logf("Task prep: %v", err)
 				lastErr[""] = msg
 			}

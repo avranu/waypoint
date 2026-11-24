@@ -1,5 +1,3 @@
-// Every field is the agent's or the gate's text: render it as text, never HTML.
-
 import type { ReactNode } from 'react'
 import {
   Ban,

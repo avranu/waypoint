@@ -359,7 +359,6 @@ func TestBranchCallsPerForge(t *testing.T) {
 	if b := a.call("POST", "/repos/me/app/pulls/5/merge").body; b["Do"] != "manually-merged" || b["merge_commit_id"] != "abc" {
 		t.Errorf("manual merge = %+v", b)
 	}
-	// GitHub and GitLab mark such pull requests merged themselves.
 	a, f, c = newAPIFake(t, "github")
 	if err := c.MarkMerged(ctx, f, "me/app", 5, "abc"); !errors.Is(err, ErrUnsupported) {
 		t.Errorf("github manual merge: %v", err)
@@ -466,7 +465,6 @@ func TestFrontWhoseHeadLandedIsFinishedNotUpdated(t *testing.T) {
 	if n := se.sg.updated(); n != 1 {
 		t.Fatalf("updates before = %d", n)
 	}
-	// A pull request can stay "behind" after the base moves to a commit that holds its head: the forge counts base commits the head lacks.
 	se.sg.sm.Lock()
 	se.sg.baseTip = "tip-2"
 	se.sg.sm.Unlock()

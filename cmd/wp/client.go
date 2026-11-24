@@ -101,8 +101,6 @@ func (c *cli) newRequest(ctx context.Context, method, path, contentType string, 
 	if rd != nil {
 		req.Header.Set("Content-Type", contentType)
 	}
-	// Logging in needs no credentials, and the old token may belong to
-	// another server, so none are sent.
 	if !strings.HasPrefix(path, "/api/v1/cli/login") {
 		if t := c.token(); t != "" {
 			req.Header.Set("Authorization", "Bearer "+t)
@@ -110,10 +108,6 @@ func (c *cli) newRequest(ctx context.Context, method, path, contentType string, 
 		if a := c.agentHeader(); a != "" {
 			req.Header.Set("X-Waypoint-Agent", a)
 		}
-		// In a coding agent's shell, say so even when told we're a person
-		// (WAYPOINT_AGENT=none, or a config set for your own terminal):
-		// what we print lands in the agent's context, so the server keeps
-		// drafts out of it (WP-42).
 		if env := detectAgent(os.Getenv); env != "" {
 			req.Header.Set("X-Waypoint-Agent-Env", env)
 		}

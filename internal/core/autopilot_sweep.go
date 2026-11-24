@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// A start is a step with no session (session_id NULL) that holds the cap until its job is out; a person's own sessions are never used or interrupted.
-
 const (
 	// autopilotOwnAgent is who a session of autopilot's own takes tasks as
 	// when the person has no earlier session in the project to go by.
@@ -51,7 +49,7 @@ func (s *Service) sweepAutopilot(ctx context.Context) {
 			s.log.WarnContext(ctx, "autopilot sweep", "user", o.user, "project", o.project, "err", err)
 		}
 		if spent {
-			plan.Start = false // The plan is shared by the user's projects in this sweep, so after one start it allows no more starts.
+			plan.Start = false
 		}
 	}
 }
@@ -300,7 +298,6 @@ func (s *Service) startOwnSession(ctx context.Context, st *stepRow, actor *Actor
 	res, err := s.db.W.ExecContext(ctx, `UPDATE autopilot_steps SET reason = '', detail = ?, next_issue = ?, job_id = ?, agent = ?, updated_at = ? WHERE id = ? AND state = ?`,
 		"starting a session of its own for "+next.Key+spendWords(st.spend), next.ID, job.ID, actor.Agent, now, st.id, StepStarting)
 	if err != nil {
-		// A job already queued finds the step unwanted (AutopilotStepWanted), so releasing the task here is safe.
 		s.releaseReserved(ctx, next.ID, actor.Agent)
 		s.ownStartFailed(ctx, st, WaitRunner, next.Key, "couldn't record the runner job: "+err.Error())
 		return err
@@ -350,7 +347,6 @@ func (s *Service) ownStartFinished(ctx context.Context, st *stepRow, job *Runner
 			}
 		}
 	case job.State == "done" && res.Outcome == "unwanted":
-		// Stopped while the job was on its way: stopping released the task.
 	default:
 		_ = releaseOwnTask(ctx, s.db.W, st.id)
 		reason := WaitJob

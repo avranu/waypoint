@@ -6,8 +6,6 @@ import (
 	"time"
 )
 
-// An audit reads the head as it was when asked; commits pushed since need a fresh review, not its verdict.
-
 func (a *apEnv) auditStatus(id int64) string {
 	a.t.Helper()
 	var st string

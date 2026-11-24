@@ -58,7 +58,6 @@ interface Layout {
 /** The card order and what's hidden, kept per browser; cards added later show at the end. */
 function useLayout() {
   const [saved, setSaved] = useLocal<Layout>('dash-cards', { order: [], hidden: [] })
-  // Stored by hand or by an older build, it may be any shape.
   const known = (v: unknown) =>
     Array.isArray(v) ? v.filter((id): id is CardID => CARDS.some((c) => c.id === id)) : []
   const kept = known(saved?.order)

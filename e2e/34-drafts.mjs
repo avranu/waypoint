@@ -42,8 +42,6 @@ async function run(width, scheme) {
   await page.waitForURL(base + "/");
 
   await page.goto(`${base}/p/WAYP/list`);
-  // D is bound once the app shell has mounted; on a slow runner a key
-  // pressed straight after goto lands before that.
   await page.getByRole("button", { name: "Filter (F)" }).waitFor();
   await page.locator("body").press("d");
   const dialog = page.getByRole("dialog");

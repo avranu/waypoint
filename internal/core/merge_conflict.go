@@ -1,7 +1,5 @@
 package core
 
-// A head that conflicts with heads ahead of it yields its place: those behind go past, and it gets its turn at the front once they merge.
-
 import (
 	"context"
 	"fmt"

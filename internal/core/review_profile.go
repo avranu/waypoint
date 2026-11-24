@@ -1,7 +1,5 @@
 package core
 
-// A named review model replaces the stakes bar for a round's first audit; when it fails, the round falls back as an auto round would.
-
 import (
 	"context"
 	"crypto/sha256"
@@ -264,7 +262,6 @@ func (s *Service) roundContext(ctx context.Context, review *roundRow) string {
 	if !review.runID.Valid {
 		return b.String()
 	}
-	// An earlier round's findings are its Claude reviewer's when that brought any, not the audit it replaced; newest rounds first.
 	loop, err := s.againLoopOf(ctx, review.id, review.runID.Int64)
 	if err != nil || loop == nil {
 		if err != nil {

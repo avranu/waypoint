@@ -1,7 +1,5 @@
 package core
 
-// A "no" from Forgejo or Gitea is not a conflict until a read at least 90s after the head or base changed repeats it (or 15 minutes pass); a merge tried meanwhile is refused as "try again later".
-
 import (
 	"context"
 	"errors"

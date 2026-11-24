@@ -163,8 +163,6 @@ export function Lifecycle({ issue, project }: { issue: IssueDetail; project: Pro
   )
   const width = end - start
   const pct = (t: number) => Math.min(100, Math.max(0, ((t - start) / width) * 100))
-  // A long history comes back cut to its newest events: the track before the
-  // oldest one stays blank rather than guess the status it was in.
   const known =
     events.length >= HISTORY_LIMIT
       ? Math.min(end, Math.max(start, Math.min(...events.map((e) => Date.parse(e.at)))))
@@ -209,8 +207,6 @@ export function Lifecycle({ issue, project }: { issue: IssueDetail; project: Pro
     ? `${w.environment ?? 'Production'} ran ${[w.version, w.commit?.slice(0, 7)].filter(Boolean).join(' at ')} when this was written` +
       (since ? `; it runs ${live} now` : w.environment && live ? '; still live' : '')
     : ''
-  // Until the history answers, the statuses it passed through aren't known:
-  // the track waits rather than paint its whole life in today's status.
   const loading = history.isPending
   const failed = history.isError
   const asker = issue.reporter_agent

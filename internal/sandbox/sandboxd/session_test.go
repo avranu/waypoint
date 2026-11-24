@@ -546,7 +546,6 @@ func TestServeStart(t *testing.T) {
 		t.Errorf("stderr %q", e)
 	}
 
-	// A directory's descriptor would be a way out: refused.
 	dir, _ := os.Open(t.TempDir())
 	defer func() { _ = dir.Close() }()
 	if resp, err := sandbox.Start(context.Background(), sock, r.startSpec(newSession("v2")), dir, outR, errR); err == nil || !strings.Contains(err.Error(), "descriptor 0") {

@@ -1,5 +1,3 @@
-// Numbers come from Claude Code's transcripts, hooks and status line, read by wp; the model never reports them.
-
 import clsx from 'clsx'
 import { useQuery } from '@tanstack/react-query'
 import { Gauge, TriangleAlert, X } from 'lucide-react'

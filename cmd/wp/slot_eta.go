@@ -33,7 +33,7 @@ type slotHolder struct {
 
 const (
 	slotRunsFile   = "runs.jsonl"
-	slotRunsLock   = "runs.jsonl.flock" // not *.lock: wp slot ls would list it as a slot
+	slotRunsLock   = "runs.jsonl.flock"
 	slotRunsRecent = 10
 	slotRunsKeep   = 200
 	slotETAPad     = 1.2
@@ -198,7 +198,6 @@ func slotRecordRun(dir string, r slotRunRec) {
 	if err != nil {
 		return
 	}
-	// The trim runs only under the lock, so it can't drop a run another process appends meanwhile.
 	locked := false
 	if lf, err := os.OpenFile(filepath.Join(dir, slotRunsLock), os.O_CREATE|os.O_RDWR, 0o600); err == nil { // #nosec G304 -- our own directory
 		defer func() { _ = lf.Close() }()
@@ -258,8 +257,6 @@ func slotHolders(dir, name string) []slotHolder {
 		if len(parts) >= 5 {
 			session = parts[4]
 		}
-		// The run key the holder recorded; a lock file without one (an older wp)
-		// is read from its arguments.
 		cmd := slotCmdKey(parts[3])
 		if len(parts) == 6 && parts[5] != "" {
 			cmd = parts[5]
@@ -273,11 +270,6 @@ func slotHolders(dir, name string) []slotHolder {
 	}
 	return out
 }
-
-// A waiter leaves NAME.PID.wait holding the time it began to wait and its
-// session, so those who come later can count who is ahead of them, and holds
-// the file's lock while it waits: a file whose lock can be taken is one a
-// killed waiter left, whoever has its pid now (audit #1382.2).
 
 func slotWaiterPath(dir, name string) string {
 	return filepath.Join(dir, fmt.Sprintf("%s.%d.wait", name, os.Getpid()))
@@ -376,8 +368,6 @@ func slotQueuedAheadOf(dir, name, session string) int {
 			continue
 		}
 		if ok, err := slotTryLock(f); err == nil && ok {
-			// No waiter holds it: one killed before it could remove it left
-			// it, and its pid may be another process's now.
 			_ = os.Remove(p)
 			_ = f.Close()
 			continue

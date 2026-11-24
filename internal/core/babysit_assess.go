@@ -325,7 +325,6 @@ func (s *Service) takeUpHeldComments(ctx context.Context, b *Babysit, pr *PullRe
 		case r.To == "session" && !stale:
 			return true
 		case r.To == "session":
-			// Empty on purpose: a stale hand-off to a resting session falls through to the assessor, not to nothing.
 		case r.Pushed:
 			s.setState(ctx, b, pr, BabysitWatching, fmt.Sprintf("waiting for round %d's push to arrive", b.Round))
 			return true
@@ -392,7 +391,7 @@ func (s *Service) parkBabysit(ctx context.Context, b *Babysit, pr *PullRequest, 
 		r.WaitsOn = s.sharedWaits(ctx, pr, failed)
 	}
 	if r.Pushed && r.PushSHA != "" && sameSHA(r.SHA, pr.HeadSHA) {
-		r.ParkSHA = r.PushSHA // The head is still the pre-push one here: park on the pushed SHA so the park still holds when the push lands.
+		r.ParkSHA = r.PushSHA
 	}
 	rest := len(r.WaitsOn) == 0 && !asksPerson(r)
 	if rest {
@@ -515,8 +514,6 @@ func (s *Service) restOver(ctx context.Context, b *Babysit, pr *PullRequest) boo
 			return false
 		}
 		if answer := s.parkAnswer(ctx, b, r); answer != "" {
-			// Its owner answered and the answer's event never reached the
-			// babysit (a restart): the answer stands, not a rest.
 			r.Reply = capText(answer, 4000)
 			if !save() {
 				r.Reply = ""
@@ -536,7 +533,6 @@ func (s *Service) restOver(ctx context.Context, b *Babysit, pr *PullRequest) boo
 		if now.Sub(r.RerunAt) < faultRerunSettle {
 			return false
 		}
-		// Judge the head as the forge has it after the re-run, not as this step read it before the re-run.
 		s.rereadHead(ctx, pr, faultRerunSettle)
 		fresh, err := s.prByID(ctx, s.db.R, pr.ID)
 		if err != nil || !sameSHA(fresh.HeadSHA, pr.HeadSHA) {
@@ -551,8 +547,6 @@ func (s *Service) restOver(ctx context.Context, b *Babysit, pr *PullRequest) boo
 			}
 		}
 		if len(r.ParkedChecks) > 0 {
-			// Stored before it is sent, so a write that fails can't send it
-			// again on every step.
 			r.RerunAt = now
 			if !save() {
 				r.RerunAt = time.Time{}
@@ -594,7 +588,6 @@ func (s *Service) restChange(ctx context.Context, b *Babysit, pr *PullRequest, r
 		return ""
 	}
 	for _, name := range r.ParkedChecks {
-		// updated_at is when a status was last read, not when its pass ran: a pass read before the rest still counts, at the cost of one re-run.
 		var one int
 		if s.db.R.QueryRowContext(ctx, `SELECT 1 FROM ci_checks c JOIN ci_heads h ON h.id = c.head_id
 			WHERE h.forge_id = ? AND h.repo = ? COLLATE NOCASE AND h.sha != ? AND c.name = ? AND c.state = ? AND c.updated_at > ? LIMIT 1`,
@@ -619,7 +612,7 @@ func (s *Service) rerunParkedChecks(ctx context.Context, pr *PullRequest) bool {
 	if can, err := cl.CanRetryChecks(ctx, f); err != nil || !can {
 		return false
 	}
-	s.keepFailedEvidence(ctx, f, pr.Repo, pr.HeadSHA) // Save the failed checks' logs before the re-run, which replaces them.
+	s.keepFailedEvidence(ctx, f, pr.Repo, pr.HeadSHA)
 	n, err := cl.RetryChecks(ctx, f, pr.Repo, pr.HeadSHA)
 	if err != nil {
 		if readFault(err) {
@@ -680,7 +673,6 @@ func (s *Service) askAboutPark(ctx context.Context, b *Babysit, pr *PullRequest,
 		"Answer in plain words and Waypoint carries it out, or close the pull request to drop it.\n\n" + pr.URL)
 	in := RequestInput{Kind: RequestQuestion, Title: fmt.Sprintf("%s#%d: %s", pr.Repo, pr.Number, excerpt(question, 120)), Body: body.String(),
 		Questions: []Question{{Question: question}}, ToolUseID: key, Followup: "never"}
-	// The person is asked all the same: a project that couldn't be read files it with none.
 	projectKey, err := s.attachedProjectKey(ctx, pr.ForgeID, pr.Repo)
 	if readFault(err) {
 		s.log.WarnContext(ctx, "read the project to ask about a parked pull request", "repo", pr.Repo, "number", pr.Number, "err", err)
@@ -1142,7 +1134,6 @@ func (s *Service) writeIntent(ctx context.Context, p *strings.Builder, b *Babysi
 			fmt.Fprintf(p, "\nTask %s: %s\n<untrusted>\n%s\n</untrusted>\n", l.issue.Key, is.Title, capText(is.Description, assessorIssueChars))
 		}
 	}
-	// Use the description as shipped, not today's: rounds may have edited today's since.
 	label, body := "The pull request's description when it shipped", ""
 	if fp := s.footprintOf(ctx, pr.ID); fp.Ship != nil {
 		body = fp.Ship.Body
@@ -1153,7 +1144,6 @@ func (s *Service) writeIntent(ctx context.Context, p *strings.Builder, b *Babysi
 		fmt.Fprintf(p, "\n%s:\n<untrusted>\n%s\n</untrusted>\n", label, untrusted(capText(body, assessorIssueChars)))
 	}
 	if len(issueIDs) > 0 {
-		// The approved decisions asked for in those tasks or linked to them.
 		// #nosec G202 -- a fixed column list and placeholders; values are bound
 		rows, err := s.db.R.QueryContext(ctx, designSelect(true)+` WHERE n.kind = 'decision' AND n.status = 'active' AND n.approved_at IS NOT NULL
 			AND (n.requested_issue_id IN (`+idList(len(issueIDs))+`) OR n.id IN (SELECT src_id FROM knowledge_links WHERE src_type = ? AND dst_type = ? AND dst_id IN (`+idList(len(issueIDs))+`)))

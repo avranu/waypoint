@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// Run in the background: a background Bash of the agent's own keeps Claude Code from asking it for its report while it waits.
-
 const (
 	// 9 minutes, so a call made in the foreground fits in a Bash call of
 	// 600000 ms, the longest there is; calling it again continues the wait.
@@ -103,9 +101,6 @@ func cmdAgentsWait(c *cli, args []string) error {
 		}
 		who, found := c.takeWaitClaim(session)
 		if !found {
-			// The guard hook records a claim for every call, the main
-			// thread's too, so none means the hooks didn't see this one:
-			// guessing would make a subagent wait on itself.
 			c.println("wp: can't tell which agent is asking (the Waypoint hooks didn't see this call), so nothing was waited on: name the agents, `wp agents wait ID...`")
 			return exitCode(2)
 		}

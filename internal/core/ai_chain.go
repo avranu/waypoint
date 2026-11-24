@@ -147,7 +147,6 @@ func classifyModelError(err error) string {
 		case strings.Contains(m, "not found") || strings.Contains(m, "unknown model") || strings.Contains(m, "no such model"),
 			strings.Contains(m, "unavailable"), strings.Contains(m, "overloaded"), strings.Contains(m, "upstream request failed"),
 			strings.Contains(m, "capacity"), strings.Contains(m, "bad gateway"):
-			// A bad answer is a badOutputError, not unavailable.
 			return "unavailable"
 		}
 	}
@@ -170,7 +169,7 @@ func (e *badOutputError) Error() string { return "the answer didn't fit: " + e.e
 // allowed value.
 func checkAnswer(schema map[string]any, raw json.RawMessage) error {
 	var sch, v any
-	b, err := json.Marshal(schema) // Go-typed ([]string) to plain JSON values
+	b, err := json.Marshal(schema)
 	if err != nil {
 		return err
 	}
@@ -278,7 +277,6 @@ func (s *Service) runChainAt(ctx context.Context, chain []ChainModel, system, pr
 	if len(chain) == 0 {
 		return none, 0, nil, errNoModel
 	}
-	// The gateway's key may be parked and its answers may ask a wait; an ID of 0 means the gateway doesn't offer that feature.
 	gwID := s.gatewayID(ctx)
 	gw, _ := s.LLM.(gatewayLLM)
 	var fbID, routeID, exID int64
@@ -290,7 +288,6 @@ func (s *Service) runChainAt(ctx context.Context, chain []ChainModel, system, pr
 		exID = s.gatewayWith(ctx, GatewayExclude)
 	}
 	routing := gatewayRoutingOf(ctx)
-	// Surplus work uses only the gateway's free entries; a runner, another provider or a paid model would spend what normal work needs.
 	surplus := routing != nil && routing.priority == prioritySurplus
 	var surplusID int64
 	if surplus {
@@ -327,7 +324,6 @@ func (s *Service) runChainAt(ctx context.Context, chain []ChainModel, system, pr
 			continue
 		}
 		if p.ID == gwID {
-			// A key out of requests answers 429 to every one, and counts each.
 			if w := s.gatewayParked(ctx, p.ID); w != nil {
 				attempts = append(attempts, ModelAttempt{Model: cm.Model, Outcome: "quota", Error: w.Error()})
 				last, spent = w, w
@@ -371,7 +367,6 @@ func (s *Service) runChainAt(ctx context.Context, chain []ChainModel, system, pr
 			}
 		}
 		start := time.Now()
-		// The gateway walks its fallbacks itself, so the timeout covers at most maxCallsPerRequest calls, not every candidate.
 		cctx, cancel := context.WithTimeout(ctx, perCall*time.Duration(min(len(asked), maxCallsPerRequest)))
 		cctx, usage := withUsageSink(cctx)
 		var requestID string
@@ -435,13 +430,11 @@ func (s *Service) runChainAt(ctx context.Context, chain []ChainModel, system, pr
 				i = at[k]
 				continue
 			}
-			// Rate limits or outages on the gateway's free entries say nothing about its paid ones, so skip only the free rest of this provider.
 			if len(fallbacks) > 0 && p.ID == gwID && (a.Outcome == "quota" || a.Outcome == "rate_limit" || a.Outcome == "server" || a.Outcome == "unavailable") {
 				for i+1 < len(chain) && chain[i+1].CLI == "" && chain[i+1].ProviderID == p.ID && !chain[i+1].Paid {
 					i++
 				}
 			}
-			// Later free entries on this gateway share the bar, so they are skipped; other providers, CLIs and paid entries stay reachable, and no request goes out without the bar (WP-1440).
 			if a.Outcome == "no_model_at_bar" && p.ID == gwID {
 				for i+1 < len(chain) && chain[i+1].CLI == "" && chain[i+1].ProviderID == p.ID && !chain[i+1].Paid {
 					i++
@@ -458,7 +451,7 @@ func (s *Service) runChainAt(ctx context.Context, chain []ChainModel, system, pr
 		return ChainModel{ProviderID: p.ID, Model: model, Paid: cm.Paid}, next, append(attempts, a), nil
 	}
 	if spent != nil {
-		last = spent // what to wait for, whatever the other entries said
+		last = spent
 	}
 	if last == nil {
 		return none, len(chain), attempts, errNoModel
@@ -609,7 +602,7 @@ func (s *Service) EnsureReviewModels(ctx context.Context) error {
 	var pid int64
 	err = s.db.R.QueryRowContext(ctx, `SELECT id FROM ai_providers WHERE kind = 'opencode' ORDER BY id LIMIT 1`).Scan(&pid)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil // No provider yet: return without the marker, so a later start still seeds the chain.
+		return nil
 	} else if err != nil {
 		return err
 	}

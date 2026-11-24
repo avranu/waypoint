@@ -24,7 +24,6 @@ export interface AutopilotLimits {
   review_text?: string
   /** who reviews a round: auto, session, or a model as cli/model (gateway/MODEL, claude/sonnet) */
   review_model?: string
-  // Every criterion set must hold for a task to be taken.
   /** low, medium, high or urgent; '' any */
   min_priority?: Priority | ''
   /** due within so many days, or overdue; 0 off */

@@ -20,8 +20,6 @@ import (
 	"time"
 )
 
-// The SMTP password is stored like AI provider keys and never returned.
-
 const emailSettingsKey = "smtp"
 
 // Ways to secure the connection to the SMTP server.

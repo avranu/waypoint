@@ -11,8 +11,6 @@ import (
 	"testing"
 )
 
-// The live check with the real CLIs is in runner_confine_live_test.go; these pin the arguments.
-
 func TestClaudeReadIsConfinedToTheCheckout(t *testing.T) {
 	work := t.TempDir()
 	real, _ := filepath.EvalSymlinks(work)
@@ -95,7 +93,6 @@ func TestCursorReadRulesCoverAllButTheCheckout(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Reached through a link, as a temporary directory can be.
 	link := filepath.Join(t.TempDir(), "link")
 	if err := os.Symlink(work, link); err != nil {
 		t.Fatal(err)

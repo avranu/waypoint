@@ -1,5 +1,4 @@
 #!/bin/sh
-# WP_TARGETS narrows the target list; cross-compiling every target is slow.
 set -eu
 out=${1:?usage: build-all.sh OUTDIR [VERSION]}
 version=${2:-dev}

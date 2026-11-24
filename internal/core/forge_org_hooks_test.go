@@ -145,7 +145,6 @@ func TestOrgHookLifecycle(t *testing.T) {
 			if len(hooks) != 1 || hooks[0].State != hookInstalled || hooks[0].ID != oh.ID {
 				t.Fatalf("org hooks: %+v", hooks)
 			}
-			// Only GitLab is asked to test an organisation hook; Forgejo cannot test one.
 			if got, want := slices.Contains(fake.tested(), "org:Acme"), kind == "gitlab"; got != want {
 				t.Errorf("org test delivery requested: %v, want %v (%v)", got, want, fake.tested())
 			}
@@ -203,7 +202,7 @@ func asString(v any) string {
 func TestOrgHookFailureKeepsRepoHooks(t *testing.T) {
 	e := newEnv(t)
 	fake, srv := newHookForge(t, "gitlab")
-	fake.refuse["org:grp"] = 404 // a group webhook on GitLab Free
+	fake.refuse["org:grp"] = 404
 	f, _ := e.s.CreateForge(e.ctx, e.admin, ForgeInput{Kind: ptr("gitlab"), BaseURL: ptr(srv.URL), Token: ptr("tok")})
 	p := e.project(e.admin, "Alpha", "kanban")
 	r, _ := e.s.AddProjectRepo(e.ctx, e.admin, p.Key, f.ID, "grp/sub/app", false)

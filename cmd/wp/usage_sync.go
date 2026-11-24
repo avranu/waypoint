@@ -116,7 +116,7 @@ type usageState struct {
 func loadUsageState(dir string) usageState {
 	var s usageState
 	if err := readJSON(filepath.Join(dir, usageStateFile), &s); err != nil {
-		return usageState{Files: map[string]*usageFileState{}} // state is a cache: an unreadable file starts over, which is safe because the server counts re-sent ranges once
+		return usageState{Files: map[string]*usageFileState{}}
 	}
 	if s.Files == nil {
 		s.Files = map[string]*usageFileState{}
@@ -177,7 +177,6 @@ func discoverTranscripts(root string, since time.Duration, only []string) ([]usa
 		cut = time.Now().Add(-since)
 	}
 	add := func(f usageFile) {
-		// a symlink named as a transcript is skipped, since what is read from it is sent to the server
 		if fi, err := os.Lstat(f.Path); err == nil && fi.Mode().IsRegular() && (cut.IsZero() || fi.ModTime().After(cut)) {
 			files = append(files, f)
 		}
@@ -233,7 +232,7 @@ func outdatedTranscripts(root string, st *usageState, have []usageFile) []usageF
 	old := map[string]bool{}
 	for p, s := range st.Files {
 		if s != nil && s.outdated() && strings.HasPrefix(p, under) {
-			if fi, err := os.Lstat(p); err == nil && fi.Mode().IsRegular() { // a deleted file is left out so it does not force a full transcript walk on every hook
+			if fi, err := os.Lstat(p); err == nil && fi.Mode().IsRegular() {
 				old[p] = true
 			}
 		}
@@ -273,7 +272,7 @@ func subagentFiles(dir string) []string {
 // subagentType reads agent-<id>.meta.json beside a subagent transcript.
 func subagentType(path string) string {
 	meta := strings.TrimSuffix(path, ".jsonl") + ".meta.json"
-	fh, err := openRegularTranscript(meta) // the agent type is sent to the server, so a symlinked meta file is refused
+	fh, err := openRegularTranscript(meta)
 	if err != nil {
 		return "subagent"
 	}
@@ -363,7 +362,7 @@ func usageSync(c *cli, o usageSyncOptions) (*usageSyncResult, error) {
 		defer release()
 	}
 	var files []usageFile
-	if !o.OnlyFiles || len(o.Files) > 0 { // no files named is not every file
+	if !o.OnlyFiles || len(o.Files) > 0 {
 		var err error
 		if files, err = discoverTranscripts(root, o.Since, o.Files); err != nil {
 			return nil, err
@@ -388,7 +387,6 @@ func usageSync(c *cli, o usageSyncOptions) (*usageSyncResult, error) {
 	if o.DryRun {
 		shared = &idSet{seen: map[uint64]struct{}{}}
 	}
-	// the workers read these while the main loop updates st.Files
 	prevs := make(map[string]usageFileState, len(files))
 	for _, f := range files {
 		if p := st.Files[f.Path]; p != nil {
@@ -459,7 +457,6 @@ func usageSync(c *cli, o usageSyncOptions) (*usageSyncResult, error) {
 			}
 			ctx, cancel := o.ctx(), context.CancelFunc(func() {})
 			if o.Hook {
-				// A failed upload leaves the state unsaved, so the next pass offers these hours again.
 				left := usageHookUploadBudget - time.Since(started)
 				if left <= 0 {
 					flushErr = fmt.Errorf("the hook's %v budget for the hour counts' upload is spent; the rest goes next time", usageHookUploadBudget)
@@ -565,7 +562,7 @@ func usageSync(c *cli, o usageSyncOptions) (*usageSyncResult, error) {
 	if flushErr != nil && inv != nil {
 		st.InventorySum, st.InventoryAt = "", 0
 	}
-	release() // release before the archive pass: it has its own lock, and a long backfill must not hold up the next hook's counts
+	release()
 	if !o.NoArchive && archiveEnabled() {
 		ar, aerr := usageArchive(c, o, root, started)
 		res.Archive = ar
@@ -620,7 +617,7 @@ func cloneFileState(s usageFileState) usageFileState {
 func chunkID(machine string, p *usageParsed) string {
 	key := fmt.Sprintf("%s|%s|%s|%d-%d", machine, p.File.Path, p.State.FP, p.From, p.To)
 	if p.LedgerOnly {
-		key += "|ledger" // without this suffix the server would count these rows as a duplicate of the earlier range
+		key += "|ledger"
 	}
 	if p.RiskyOnly {
 		key += "|risky"
@@ -629,7 +626,7 @@ func chunkID(machine string, p *usageParsed) string {
 		key += "|cli"
 	}
 	if p.TraceOnly {
-		key += fmt.Sprintf("|trace%d", usageTraceVersion) // a new trace version must send the range under a new id, or the server drops it as a duplicate
+		key += fmt.Sprintf("|trace%d", usageTraceVersion)
 	}
 	sum := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(sum[:12])

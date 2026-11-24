@@ -13,8 +13,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// The policy is read from a local copy in paused.json, which every hook reply and pulse keeps current.
-
 // guardPolicyCopy is the server's GuardPolicy.
 type guardPolicyCopy struct {
 	ChurnUSD   float64           `json:"churn_usd"`
@@ -189,7 +187,6 @@ func (g *guardLocal) decide(l guardLook) (text, stop string, trip *guardTrip) {
 	delta := max(0, l.cost-g.LastCost)
 	g.LastCost = l.cost
 	if g.Stopped != "" {
-		// A stopped session can keep running (a background task's report, a hook that didn't take), so it is stopped again.
 		if g.stopStands(l.policy, l.hold, l.now, l.cost) {
 			return "", "Quota guard: this session was stopped (" + g.Stopped + ") and stays stopped." + guardStopTail, nil
 		}
@@ -248,7 +245,6 @@ func (g *guardLocal) decide(l guardLook) (text, stop string, trip *guardTrip) {
 			return "", r.halt + guardStopTail, &guardTrip{Rule: r.name, Action: "stopped", Cost: l.cost, Detail: r.halt, At: l.now}
 		}
 	}
-	// A hold tells the session once, then stops it 10 minutes or $2 later so the step in hand can be put down.
 	if h := l.hold; h != nil {
 		if g.HoldAt.IsZero() || g.HoldAt.Before(h.Since) {
 			g.HoldAt, g.HoldTold, g.HoldCost = h.Since, l.now, l.cost
@@ -367,8 +363,6 @@ func (c *cli) guardBurn(in *hookEventInput, st *burnState, prices []burnPrice) (
 	c.writeGuardLive(in.SessionID, guardLive{Cost: t.Cost, Auto: auto && !st.Guard.Person, Model: model, At: now})
 	policy, hold := c.guardNow(now)
 	if policy == nil {
-		// Off: keep the cost mark current, so spend made meanwhile isn't
-		// counted against the model rule when the guard comes back on.
 		moved := st.Guard.LastCost != t.Cost
 		st.Guard.LastCost = t.Cost
 		return "", "", fresh || moved
@@ -543,7 +537,6 @@ func (c *cli) guardPrompt(session string, byAutomation bool) (refusal string) {
 				}
 				g.Stopped, g.StopModel = "", ""
 			}
-			// Automation's counts start when it takes the session over; its later prompts do not restart them.
 			if g.AutoAt.IsZero() || g.Person {
 				g.AutoAt, g.AutoCost, g.ProgAt, g.ProgCost, g.ModelCost, g.Told = now, cost, now, cost, 0, nil
 			}

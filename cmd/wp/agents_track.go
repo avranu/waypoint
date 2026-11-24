@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	reserveTTL   = 30 * time.Second // an admitted Agent call whose SubagentStart never came (refused by Claude Code, or by another hook)
+	reserveTTL   = 30 * time.Second
 	waitClaimTTL = 2 * time.Minute
 )
 
@@ -110,7 +110,6 @@ func (s *State) agentRunning(session string, a liveAgent, now time.Time, depth i
 	if !a.Waiting || s.tasksRunning(session, a, now, depth) {
 		return true
 	}
-	// a waiting agent with nothing left to wait for still counts as running for waitGrace, so its wake can land
 	last := a.WaitAt
 	if a.Seen.After(last) {
 		last = a.Seen
@@ -311,15 +310,12 @@ func (c *cli) trackAgentParent(in hookEventInput) {
 		}
 		s.AgentParents[in.SessionID][r.AgentID] = ap
 		if a, ok := s.Agents[in.SessionID][r.AgentID]; ok {
-			a.Mode = mode // the call is a better witness than the order of starts
+			a.Mode = mode
 			if a.Model == "" {
 				a.Model = ap.Model
 			}
 			s.Agents[in.SessionID][r.AgentID] = a
 		} else if r.Status == "async_launched" {
-			// Launched, and its SubagentStart not here yet: it exists now
-			// (a foreground call returns only when its agent is over, so
-			// only an async launch makes one).
 			if s.Agents == nil {
 				s.Agents = map[string]map[string]liveAgent{}
 			}
@@ -338,7 +334,7 @@ func (c *cli) forgetSessionAgents(sid string) {
 	if sid == "" {
 		return
 	}
-	_ = c.updateStateWithin(time.Second, func(s *State) { // SessionEnd is time-limited, so the state update gets at most 1 s
+	_ = c.updateStateWithin(time.Second, func(s *State) {
 		delete(s.Agents, sid)
 		delete(s.AgentParents, sid)
 		delete(s.Reserved, sid)
@@ -350,7 +346,7 @@ func (c *cli) forgetSessionAgents(sid string) {
 func (c *cli) trackAgentsLocally(in hookEventInput) {
 	switch in.HookEventName {
 	case "SessionStart":
-		if in.Source != "compact" { // a compact keeps this process and its agents; other sources start a new process with none still running
+		if in.Source != "compact" {
 			c.forgetSessionAgents(in.SessionID)
 		}
 	case "SessionEnd":
@@ -425,7 +421,7 @@ type caller int
 
 const (
 	callerMain caller = iota
-	callerFg          // an agent whose start is unknown counts as foreground
+	callerFg
 	callerBg
 )
 

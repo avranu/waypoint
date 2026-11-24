@@ -20,8 +20,8 @@ const (
 )
 
 const (
-	waitChunk      = 290 * time.Second // what one request asks the server to hold (it holds at most 300 s)
-	waitShortChunk = 55 * time.Second  // after a proxy cut a held request short
+	waitChunk      = 290 * time.Second
+	waitShortChunk = 55 * time.Second
 	// waitHeadFor is how long the wait insists on the commit pushed from
 	// here: long enough for the forge's webhook to reach Waypoint.
 	waitHeadFor = 3 * time.Minute
@@ -214,7 +214,7 @@ func cmdPRWait(c *cli, args []string) error {
 	var raw []byte
 	err = longPoll(waitChunk, time.Nanosecond, start.Add(*timeout), func(hold time.Duration, _ bool) (bool, error) {
 		if time.Since(start) > waitHeadFor {
-			head = "" // someone else pushed since, or this checkout is behind: wait on the pull request's head
+			head = ""
 		}
 		next, nraw, err := c.waitOnce(d.ID, head, hold)
 		if err != nil {

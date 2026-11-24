@@ -8,8 +8,6 @@ import (
 	"strings"
 )
 
-// Batching several targets per call exists because each tool call re-reads an agent's whole context.
-
 // listArgs splits arguments on commas as well as spaces, and gives a bare
 // number the prefix of the code before it: "R-5," "6" is R-5 and R-6,
 // WP-12,15 is WP-12 and WP-15. Only a prefix ending in a dash carries: a
@@ -52,7 +50,6 @@ func (c *cli) each(targets []string, gap bool, do func(target string) error) err
 		return do(targets[0])
 	}
 	failed := 0
-	// With --json the batch is one JSON array, one element per target that printed output, whether it failed or not.
 	var results []json.RawMessage
 	realOut := c.out
 	if c.asJSON {

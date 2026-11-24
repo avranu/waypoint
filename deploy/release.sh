@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Re-running on an already released commit only completes what is missing (release record, binaries).
 set -euo pipefail
 
 mode=dry
@@ -40,7 +39,6 @@ if [[ $(git rev-parse --is-shallow-repository) == true ]]; then
   die "shallow clone: fetch the full history and tags (checkout with fetch-depth: 0)"
 fi
 
-# Other runs may have tagged since this checkout.
 [[ $mode != publish ]] || git fetch --quiet --tags --force origin 2>/dev/null || true
 
 current=$(git tag --points-at HEAD --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)
@@ -108,7 +106,6 @@ else
   [[ $bump == patch ]] || bump="$bump: ${reason:-}"
 fi
 
-# Release notes walk first-parent history, so a merged PR appears by its title, not its merge commit.
 declare -a feats=() fixes=() others=() breaks=() flat=()
 conventional=0
 while IFS= read -r -d $'\x1e' rec; do
@@ -196,7 +193,6 @@ fi
 
 out() { [[ -z ${GITHUB_OUTPUT:-} ]] || echo "$1" >>"$GITHUB_OUTPUT"; }
 
-# The token goes through a curl config on stdin, so it never shows in a process list.
 api() {
   local method=$1 path=$2
   shift 2
@@ -209,8 +205,6 @@ api_code() {
   api "$@" -o "$body" -w '%{http_code}'
 }
 
-# Is the tag taken by a different commit? Then main moved on and a newer run
-# owns this version: do nothing (deploying this one would go backwards).
 if [[ -z $current ]]; then
   if git rev-parse -q --verify "refs/tags/$version" >/dev/null; then
     other=$(git rev-parse "$version^{commit}")

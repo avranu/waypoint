@@ -1,7 +1,5 @@
 package core
 
-// A candidate holds only while the heads it was built on are unchanged; any other change ends it and the candidates built on it.
-
 import (
 	"context"
 	"encoding/json"
@@ -108,13 +106,13 @@ func scanStack(row interface{ Scan(...any) error }) (*queueStack, error) {
 	var created int64
 	if err := row.Scan(&st.ID, &st.ForgeID, &st.Repo, &st.BaseRef, &st.PRID, &st.BaseSHA, &heads, &st.Pos, &st.Branch, &st.CommitSHA,
 		&st.State, &st.Tree, &st.RunURL, &st.Note, &created, &st.Ended, &st.RerunAt, &st.EndReason, &st.ConflictPR, &st.ConflictAhead); err != nil {
-		return &st, err // Returns the row as far as it was read, so the caller can name the stack in its error.
+		return &st, err
 	}
 	if err := json.Unmarshal([]byte(heads), &st.Heads); err != nil || len(st.Heads) == 0 {
 		return &st, fmt.Errorf("stack %d lists no heads", st.ID)
 	}
 	if st.Pos < 0 || st.Pos >= len(st.Heads) {
-		st.Pos = len(st.Heads) - 1 // An out-of-range position counts as the stack's last head.
+		st.Pos = len(st.Heads) - 1
 	}
 	st.CreatedAt = time.UnixMilli(created)
 	return &st, nil
@@ -222,8 +220,6 @@ func (c *httpForgeClient) StackRules(ctx context.Context, f *Forge, repo, base s
 	}
 	err := c.do(ctx, f, http.MethodGet, fmt.Sprintf("/repos/%s/branch_protections", repo), nil, &rules)
 	if isStatus(err, http.StatusForbidden) || isStatus(err, http.StatusNotFound) {
-		// Read only by a repo admin. A refusal of a stacked merge turns
-		// stacks off for a day, so not knowing costs a run at most.
 		return r.Style, false, nil
 	}
 	if err != nil {
@@ -374,8 +370,6 @@ func (s *Service) unsettled(ctx context.Context, pr *PullRequest) string {
 	if len(holds) > 0 {
 		return holds[0]
 	}
-	// A pull request that merges after another (WP-912) can't merge yet, so
-	// it holds no place in the line: a candidate for it would be CI for nothing.
 	if after, _ := s.mergeWaitReasons(ctx, pr); len(after) > 0 {
 		return after[0]
 	}
@@ -446,7 +440,6 @@ func (s *Service) stackTree(ctx context.Context, f *Forge, st *queueStack, check
 			try = append(try, c)
 		}
 	}
-	// Any job that ran builds the stack, so the lint job is tried first.
 	slices.SortStableFunc(try, func(a, b CommitCheck) int {
 		return boolRank(!strings.Contains(a.Name, "lint")) - boolRank(!strings.Contains(b.Name, "lint"))
 	})

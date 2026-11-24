@@ -114,7 +114,6 @@ func TestRepoHeavyJobImage(t *testing.T) {
 	if err := yaml.Unmarshal(src, &wf); err != nil {
 		t.Fatal(err)
 	}
-	// The image repository is read from build.sh, not written here, since it names the site's registry.
 	script, err := os.ReadFile("../../.forgejo/ci-image/build.sh")
 	if err != nil {
 		t.Fatal(err)
@@ -127,7 +126,6 @@ func TestRepoHeavyJobImage(t *testing.T) {
 	pinned := regexp.MustCompile(`^` + regexp.QuoteMeta(repo) + `:[0-9a-f]{12}@sha256:[0-9a-f]{64}$`)
 	image, heavy := "", 0
 	for id, j := range wf.Jobs {
-		// runs-on can be an expression that picks the label, so the label is matched as a substring.
 		if !strings.Contains(j.RunsOn, "forgejo-ci-heavy") {
 			continue
 		}
@@ -164,7 +162,6 @@ func repoModes(t *testing.T) ModeFunc {
 // Makefiles run by path is committed executable (WP-950).
 func TestRepoScriptsExecutable(t *testing.T) {
 	mode := repoModes(t)
-	// The public mirror has no .forgejo/, so that glob can come back empty and the test must still pass.
 	files, _ := filepath.Glob("../../.forgejo/workflows/*.y*ml")
 	gh, _ := filepath.Glob("../../.github/workflows/*.y*ml")
 	files = append(files, gh...)

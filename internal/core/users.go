@@ -330,7 +330,6 @@ func (s *Service) createSession(ctx context.Context, userID int64, userAgent, ip
 	if len(userAgent) > 300 {
 		userAgent = userAgent[:300]
 	}
-	// A password login starts its session already re-authenticated (reauth_at is set), so loosening the sandbox right after sign-in asks nothing more.
 	_, err := s.db.W.ExecContext(ctx, `INSERT INTO sessions(token_hash, user_id, created_at, last_seen_at, expires_at, user_agent, ip, reauth_at)
 		VALUES (?,?,?,?,?,?,?,?)`, hashToken(tok), userID, now, now, now+sessionTTL.Milliseconds(), userAgent, ip, now)
 	return tok, err
@@ -600,7 +599,6 @@ func (s *Service) tokenActor(ctx context.Context, hash string, tokenID int64, to
 	}
 	ps := permissionSet(parsePermissions(perms))
 	if ps != nil && agent == "" {
-		// A permission token writes as agent token/NAME; the agent guards apply through Permissions either way.
 		agent = "token/" + name
 	}
 	a := &Actor{User: u, ReadOnly: ro, Agent: agent, Permissions: ps, TokenID: id, RunnerJob: job.Int64}
@@ -608,7 +606,6 @@ func (s *Service) tokenActor(ctx context.Context, hash string, tokenID int64, to
 		if a.scope, err = s.jobScope(ctx, job.Int64, u); err != nil {
 			return nil, err
 		}
-		// Job actors get a copy of the user with IsAdmin cleared, for code that reads the flag directly rather than through isAdmin().
 		nu := *u
 		nu.IsAdmin = false
 		a.User = &nu
@@ -1202,7 +1199,6 @@ func (s *Service) DeleteUser(ctx context.Context, actor *Actor, id int64) error 
 		}
 		detail := "deleted the account; their issues stay"
 		if s.cfg.TranscriptDir != "" {
-			// The audit detail promises dispatch's next step; if that fails, it gets its own audit entry.
 			detail += "; their archived transcripts are removed from the disk next"
 		}
 		t.audit(AuditEntry{Action: "user.delete", Category: AuditAccess, TargetType: "user", TargetID: id, Target: name, Detail: detail})

@@ -1,7 +1,5 @@
 package core
 
-// Runner health is judged from the jobs each host ran over time, not from the board of what is running now.
-
 import (
 	"context"
 	"fmt"
@@ -32,8 +30,6 @@ type ciHostRun struct {
 	repo, workflow, name     string
 	started, ended, reported int64
 }
-
-// Jobs still running count whenever they started, so a job hung for days stays visible.
 
 func (s *Service) ciHostRuns(ctx context.Context, since time.Time) ([]ciHostRun, error) {
 	rows, err := s.db.R.QueryContext(ctx, `SELECT forge_id, host, job, repo, workflow, name, started_at, coalesce(ended_at, 0), reported_at
@@ -261,9 +257,6 @@ func (s *Service) timeLimitFindings(ctx context.Context, now time.Time, show fun
 		}
 	}
 	rows.Close()
-	// show and nameFaultHost query too, so only once the rows are closed: a
-	// query while they are open holds a second reader, and with every reader
-	// held so, none is left for it.
 	var order []string
 	groups := map[string]*seen{}
 	var faults []*RunnerFault

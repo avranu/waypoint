@@ -222,7 +222,6 @@ func (c *cli) embedMarkdown(typ, spec, md string, asComment bool) (string, error
 			}
 			return "Commented on " + ref + ".", nil
 		}
-		// The server appends in one transaction: no edit made meanwhile is lost.
 		if _, err := c.call("PATCH", "/api/v1/issues/"+esc(ref), map[string]string{"append_description": md}); err != nil {
 			return "", err
 		}

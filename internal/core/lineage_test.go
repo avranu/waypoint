@@ -70,7 +70,6 @@ func TestLineageChainsAndHolds(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.s.bg.Wait()
-	// A session's depth is the deepest task it holds, not the latest one taken.
 	b := in("anthropic/claude-sonnet-5-5", t1.Key, false)
 	if _, err := e.s.AgentTake(e.ctx, b, person.Key, ""); err != nil {
 		t.Fatal(err)
@@ -129,7 +128,6 @@ func TestLineageChainsAndHolds(t *testing.T) {
 		t.Errorf("is:held after the review = %v", got)
 	}
 
-	// An edit from a shallower task never shortens a task's chain; editing from its own task keeps it.
 	a2 := in("anthropic/claude-opus-5-5", person.Key, false)
 	desc := "Drop it after the new one is live."
 	if _, err := e.s.UpdateIssue(e.ctx, a2, t3.Key, IssuePatch{Description: &desc}); err != nil {
@@ -161,7 +159,6 @@ func TestLineageChainsAndHolds(t *testing.T) {
 	if err := e.s.DeleteIssue(e.ctx, e.admin, t2.Key, false); err != nil {
 		t.Fatal(err)
 	}
-	// Once a task up the chain is deleted, its stored depth at write time stands in; later reviews don't shorten it.
 	d3 := e.get(e.admin, t3.Key)
 	if d3.Lineage == nil || d3.Lineage.Depth != 3 || len(d3.Lineage.Chain) != 1 || !d3.Lineage.Chain[0].Gone || d3.Lineage.Chain[0].Depth != 2 {
 		t.Errorf("t3 lineage after t2's deletion = %+v", d3.Lineage)

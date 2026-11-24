@@ -351,7 +351,6 @@ func TestPageTextStory(t *testing.T) {
 		t.Error("the story should come before the plan")
 	}
 
-	// A line-by-line review approves the text, whatever happens to the story after.
 	p.StoryAgent, p.StoryBy, p.StoryAt, p.ReviewedBy, p.ReviewedAt, p.StoryStale, p.Prompt = "", robin, &at, robin, &at, true, nil
 	if got = pageText(p); strings.Contains(got, "approved its story") {
 		t.Errorf("a line-by-line review read as a story's:\n%s", got)

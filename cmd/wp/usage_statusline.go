@@ -14,8 +14,6 @@ import (
 	"time"
 )
 
-// quota windows are reported at most once a minute, never delaying the status line
-
 var statuslineCmd = &command{
 	name: "statusline", group: "Hooks", args: "[-- COMMAND [ARGS…]]",
 	summary: "Claude Code status line; reports your quota to Waypoint",
@@ -116,7 +114,7 @@ func epochMS(f float64) int64 {
 	switch {
 	case f <= 0:
 		return 0
-	case f < 1e11: // values below 1e11 are epoch seconds, not milliseconds
+	case f < 1e11:
 		return int64(f * 1000)
 	}
 	return int64(f)
@@ -190,7 +188,7 @@ func spawnStatusPost(payload []byte) {
 	}
 	if _, err := in.Write(payload); err != nil {
 		_ = in.Close()
-		_ = cmd.Process.Kill() // after a failed write the child would act on a truncated payload, so it is killed
+		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 		return
 	}
@@ -250,7 +248,6 @@ func (c *cli) boundTask(info *statusInfo) string {
 		cl = c.state.sessionClaim("", info.SessionID)
 	}
 	if cl == nil && filepath.IsAbs(info.Cwd) {
-		// no parent walk: finding a checkout runs git, and the status line must not wait on a process
 		if here := c.state.Claims[filepath.Clean(info.Cwd)]; here != nil && (here.Session == "" || here.Session == info.SessionID) {
 			cl = here
 		}

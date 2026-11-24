@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// Waypoint's own kinds (session, files, after) are guesses; the data serves later review of what the first work should have caught.
-
 // followFoundAfter is found on a follow-up Waypoint recorded because
 // someone related a task to one done before it was filed (WP-1003).
 const followFoundAfter = "after"
@@ -111,8 +109,6 @@ func (s *Service) noteFollowUpsByFiles(ctx context.Context, issueID int64, linkU
 		return nil
 	}
 	merged := pr.MergedAt.UnixMilli()
-	// Only files read before: a pull request nobody read the diff of
-	// isn't worth a forge call per candidate.
 	rows, err := s.db.R.QueryContext(ctx, `SELECT p.id, p.files, el.issue_id
 		FROM pull_requests p JOIN external_links el ON `+pullLinkSQL+`
 		JOIN issues i ON i.id = el.issue_id JOIN statuses st ON st.id = i.status_id

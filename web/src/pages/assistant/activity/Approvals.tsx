@@ -1,5 +1,3 @@
-// Deciding is Signal's alone: the gate keeps it off its API, so this view only shows.
-
 import { useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'

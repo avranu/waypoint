@@ -13,8 +13,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/hermes"
 )
 
-// Only the methods and paths listed here reach Hermes from the owner's browser; nothing that hands out credentials or reaches past the agent is listed.
-
 // assistantMethods are the gateway methods the owner's browser may call:
 // chatting, its sessions and attachments, models, slash commands,
 // questions, background work. Prefixes end with a dot.
@@ -53,8 +51,6 @@ var assistantPathsRefused = []string{
 }
 
 func assistantPathAllowed(p string) bool {
-	// No dot or empty segments: the prefix rules below must see the path
-	// Hermes will serve (%2e arrives here decoded).
 	for _, seg := range strings.Split(p, "/") {
 		if seg == "" || seg == "." || seg == ".." {
 			return false
@@ -138,7 +134,7 @@ func (s *Service) AssistantAPI(ctx context.Context, actor *Actor, id int64, meth
 	do := c.Do
 	if strings.HasPrefix(path, "files") || strings.HasPrefix(path, "fs/") || strings.HasSuffix(path, "/export") ||
 		strings.HasSuffix(path, "/trigger") || strings.HasPrefix(path, "ops/backup/download") {
-		do = c.DoLong // big files, and cron's run-now, which runs the job inside the request
+		do = c.DoLong
 	}
 	resp, err := do(ctx, method, "/api/"+path, q, body, ctype, extra)
 	return resp, AssistantError(err)

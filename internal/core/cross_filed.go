@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-// wp decline must not file anything back to the filer: a task sent back would loop between the two repos' agents.
-
 // FiledFrom says where a task an agent filed from another repo came from.
 type FiledFrom struct {
 	Project string `json:"project,omitempty"` // key, when the reader can see it
@@ -131,8 +129,6 @@ func (s *Service) filedFrom(ctx context.Context, q queryer, actor *Actor, i *Iss
 		if err := q.QueryRowContext(ctx, `SELECT project_id, repo FROM agent_sessions WHERE id = ?`, actor.Session).Scan(&sp, &repo); err == nil && (!sp.Valid || sp.Int64 != i.ProjectID) {
 			f.Here = sp.Valid && r.projectID.Valid && sp.Int64 == r.projectID.Int64 ||
 				!r.projectID.Valid && r.repo != "" && strings.EqualFold(repo, r.repo)
-			// In the background: a read may run inside a write, which holds
-			// the one writer connection.
 			sess, id, key, at := actor.Session, i.ID, i.Key, s.nowMS()
 			bg := context.WithoutCancel(ctx)
 			s.goBG(func() {
@@ -244,7 +240,6 @@ func (s *Service) DeclineIssue(ctx context.Context, actor *Actor, ref, agent, wh
 func (s *Service) crossFiledEvent(ctx context.Context, e *Event) {
 	switch e.Kind {
 	case EvIssueReopened:
-		// Reopening clears the told and decline state so the next outcome is announced again.
 		if _, err := s.db.W.ExecContext(ctx, `UPDATE cross_filed SET told = '', declined_at = NULL, declined_by = '', declined_why = '' WHERE issue_id = ?`, e.IssueID); err != nil {
 			s.log.WarnContext(ctx, "reopen cross-filed task", "issue", e.IssueKey, "err", err)
 		}
@@ -331,7 +326,6 @@ func (s *Service) tellCrossFiled(ctx context.Context, issueID int64, cat string)
 		}
 		delivered++
 		if l.blocked && m.State == MessageQueued {
-			// A blocked session's news is batched to the prompt-cache edge and set non-blocking, so it does not wake the agent early.
 			s.batchOrTell(ctx, l.id, 0, false, func(until int64) error {
 				_, err := s.db.W.ExecContext(ctx, `UPDATE session_messages SET batch_until = ?, blocking = 0 WHERE id = ? AND state = 'queued'`, until, m.ID)
 				return err
@@ -355,7 +349,6 @@ func (s *Service) tellCrossFiled(ctx context.Context, issueID int64, cat string)
 		note += "."
 		sys := SystemActor()
 		if outcome == "declined" && r.why != "" {
-			// A declined reason may be an agent's, so it is recorded as agent text whoever declined.
 			sys.textAgent = cmp(r.declinedBy, "declining-agent")
 		}
 		err := s.write(ctx, sys, func(t *tx) error {

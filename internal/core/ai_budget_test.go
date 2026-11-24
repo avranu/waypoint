@@ -114,7 +114,6 @@ func TestDailyQuotaParksTheGateway(t *testing.T) {
 	if !errors.As(err, &wait) || wait.why != "quota" || !IsInvalid(err) {
 		t.Fatalf("first ask: %v", err)
 	}
-	// The daily quota resets at 00:00 UTC (nextUTCMidnight).
 	if want := e.clockNow().Add(12 * time.Hour); !wait.until.Equal(want) {
 		t.Errorf("resets at %v, want %v", wait.until, want)
 	}

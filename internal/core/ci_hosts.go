@@ -1,7 +1,5 @@
 package core
 
-// Runners post usage through bin/ci-usage-reporter.py in the infrastructure repo; the pool is whichever hosts report, so no pool is set by hand.
-
 import (
 	"context"
 	"database/sql"
@@ -394,7 +392,7 @@ func (s *Service) ciUsage(ctx context.Context, since time.Time) (map[string]*CIU
 			order = append(order, k)
 		}
 		t.cpu += cpu
-		t.mem += mem // Service peaks are added to the job's, so the figure is an upper bound on what the job needed of its host.
+		t.mem += mem
 		if role == "job" {
 			t.host, t.repo, t.workflow, t.name = host, repo, wf, name
 			t.started, t.ended = started, ended.Int64

@@ -6,8 +6,6 @@ import (
 	"testing"
 )
 
-// every redaction pattern alternative needs a prefilter hint; derived from the patterns, so a new alternative without one fails this test
-
 // samples are strings that match re, at least one for each alternative, and
 // one for each member of a small character class and each side of an
 // optional part.

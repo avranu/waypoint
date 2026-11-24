@@ -131,7 +131,6 @@ func issueText(d *core.IssueDetail, comments []core.Comment) string {
 // files and that wp files saves them (for the CLI's wp show).
 func issueTextHint(d *core.IssueDetail, comments []core.Comment, withHint bool) string {
 	var b strings.Builder
-	// The reporter goes in as author, so issueAttrs does not repeat that name.
 	b.WriteString(issueHead(d.Issue))
 	issueAttrs(&b, d.Issue, d.ReporterAgent)
 	b.WriteString(" " + provenance(d, true) + "\n")
@@ -162,7 +161,6 @@ func issueTextHint(d *core.IssueDetail, comments []core.Comment, withHint bool) 
 	if n := fileCount(d, comments); withHint && n > 0 {
 		fmt.Fprintf(&b, "Attachments: %d — wp files %s saves them to view\n", n, d.Key)
 	}
-	// An intent an agent suggested is labelled as such; it is not the person's intent.
 	if d.Intent != "" {
 		by := ""
 		if d.IntentAgent != "" {
@@ -173,7 +171,6 @@ func issueTextHint(d *core.IssueDetail, comments []core.Comment, withHint bool) 
 	if d.Description != "" {
 		b.WriteString("\n" + d.Description + "\n")
 	}
-	// Comments come before the lists, which can run long, so a reader who stops early still sees them.
 	if len(comments) > 0 {
 		b.WriteString("\nComments:\n")
 		for _, c := range comments {
@@ -436,7 +433,7 @@ func relationNote(r core.Relation) string {
 
 const (
 	titleLong = 120
-	titleMax  = 160 // Counted in bytes, not characters.
+	titleMax  = 160
 	// titleSentenceMin is the shortest first sentence that stands for a title:
 	// a stop before it is a list number or "Dr.", or says too little to keep.
 	titleSentenceMin = 40
@@ -661,7 +658,7 @@ func agentShort(identity string) string {
 		switch {
 		case p == "" || strings.Trim(p, "0123456789") != "":
 			numeric = false
-		case len(p) < 6: // A date stamp such as 20250805 is not a version part.
+		case len(p) < 6:
 			ver = append(ver, p)
 		}
 	}

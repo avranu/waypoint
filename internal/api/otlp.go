@@ -145,7 +145,6 @@ func (s *Server) otlpMetrics(w http.ResponseWriter, r *http.Request) (any, error
 		s.otlpFail(w, r, otlpBadRequest("invalid OTLP JSON"))
 		return handled{}, nil
 	}
-	// Metrics duplicate data that arrives as log events, so they are accepted and dropped.
 	otlpReply(w, isProto, "", 0)
 	return handled{}, nil
 }

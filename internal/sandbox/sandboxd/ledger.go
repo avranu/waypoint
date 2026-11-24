@@ -14,8 +14,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/sandbox"
 )
 
-// Paths and users come from the ledger, never from a tree a sandbox could write.
-
 // UIDs come from sandbox.FirstUID..LastUID and are never handed out twice.
 const (
 	firstUID = sandbox.FirstUID

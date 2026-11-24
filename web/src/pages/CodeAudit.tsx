@@ -298,7 +298,6 @@ function StatusCard({ audit: a }: { audit: CodeAudit }) {
         {summary && (
           <div
             className="prose-wp break-words text-[14px] leading-relaxed"
-            // sanitised by renderMarkdown; the model's words, so untrusted
             dangerouslySetInnerHTML={{ __html: summary }}
           />
         )}
@@ -340,7 +339,6 @@ function Findings({ audit: a }: { audit: CodeAudit }) {
   const [all, setAll] = useState(false)
   if (a.status !== 'done') return null
   const list = show === 'open' ? open : findings
-  // The To do tab must match findingToDo in lib/code-audits.ts, which reads filing_void.
   const listed = all || !a.shown ? list : list.slice(0, a.shown)
   const more = list.length - listed.length
   return (
@@ -569,7 +567,6 @@ function Verdict({
 }
 
 function Asked({ audit: a }: { audit: CodeAudit }) {
-  // max_findings is named only when it limited this audit; check and review-round audits list every finding.
   const showsSet = !!a.max_findings && (!a.shown || a.shown === a.max_findings)
   const target = TARGETS.find((t) => t.value === a.target)
   const focusAreas = useQuery({ ...auditDefaultsQuery(), enabled: !!a.focus?.length }).data?.focus

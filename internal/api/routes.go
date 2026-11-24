@@ -384,7 +384,6 @@ func (s *Server) routes(mux *http.ServeMux) {
 
 func (s *Server) setSession(w http.ResponseWriter, r *http.Request, tok string) {
 	// #nosec G124 -- Secure is set whenever the site is served over https;
-	// plain-http LAN and dev setups need the cookie too.
 	http.SetCookie(w, &http.Cookie{
 		Name: sessionCookie, Value: tok, Path: "/", HttpOnly: true, Secure: s.secureCookies(r),
 		SameSite: http.SameSiteLaxMode, MaxAge: 60 * 24 * 3600,
@@ -1034,7 +1033,6 @@ func (s *Server) forgeHook(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	// GitHub caps payloads at 25 MB; a cut-off body would fail its signature.
 	const maxHook = 25 << 20
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxHook+1))
 	if err != nil {
@@ -1412,9 +1410,6 @@ func (s *Server) updateRepo(w http.ResponseWriter, r *http.Request) (any, error)
 	if err := decode(r, &in); err != nil {
 		return nil, err
 	}
-	// The gate and the merge policy are saved first: they are the parts a
-	// bad request can fail on (an unknown severity, minutes out of range),
-	// and that must leave the other switches untouched.
 	if in.ReviewGate != nil || in.GateSeverity != nil {
 		if err := s.svc.SetRepoGate(r.Context(), actorFrom(r), r.PathValue("key"), id, in.ReviewGate, in.GateSeverity); err != nil {
 			return nil, err

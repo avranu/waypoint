@@ -392,7 +392,6 @@ func TestMergeAgentsAndLabels(t *testing.T) {
 	if pr := se.pr(8); pr.ArmedAt == nil {
 		t.Error("a new label doesn't arm")
 	}
-	// The merge reads the pull request afresh from the forge, so the label has to be set there.
 	labelled.Labels = []string{"automerge"}
 	se.fg.setPR(se.f, "me/app", labelled, sampleDiff)
 	se.sg.setChecks("5555555eeee", CommitCheck{Name: "ci / web", State: CheckSuccess})

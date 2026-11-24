@@ -1,7 +1,5 @@
 package core
 
-// Bytes stay on disk, never in SQLite; pieces are stored as sent, offset-checked so retries neither duplicate nor leave holes, and never inspected or redacted server-side.
-
 import (
 	"bytes"
 	"compress/gzip"
@@ -182,7 +180,6 @@ func decideTranscript(h transcriptHead, in TranscriptPieceIn, shaHex string, sam
 		return nil, true, 0, nil
 	case in.FP == h.fp:
 	case in.From == 0:
-		// A lower generation on the same base is a client that lost its state, not a rewrite: it is told where our copy ends.
 		hb, hg := fpSplit(h.fp)
 		ib, ig := fpSplit(in.FP)
 		if ib == hb && ig < hg {
@@ -271,10 +268,6 @@ func (s *Service) IngestTranscript(ctx context.Context, actor *Actor, in Transcr
 			return n > 0, err
 		}
 	}
-	// What the piece becomes is decided on the read connection first: a piece
-	// that stores nothing never takes the writer, and the one that is stored
-	// has its file written and synced before the write transaction begins,
-	// so no disk wait holds up every other write (the database has one writer).
 	head, err := transcriptHeadOf(ctx, s.db.R, uid, in.Machine, in.Session, in.File)
 	if err != nil {
 		return nil, err
@@ -283,8 +276,6 @@ func (s *Service) IngestTranscript(ctx context.Context, actor *Actor, in Transcr
 	if err != nil || !store {
 		return res, err
 	}
-	// The cap is checked here against the kept total, so a refused piece never
-	// writes its file, and again in the transaction, where writes are serial.
 	if err := s.transcriptRoom(ctx, s.db.R, len(in.Gzip)); err != nil {
 		s.countQuotaRefusal(ctx)
 		return nil, err
@@ -454,7 +445,6 @@ func (s *Service) dropUserTranscripts(e *Event) {
 			return
 		}
 		s.log.Warn("removing a deleted account's transcripts", "user", uid, "err", err)
-		// The user.delete audit entry already said removal would follow; record that it did not.
 		entry := AuditEntry{Action: "user.transcripts.remove_failed", Category: AuditAccess, TargetType: "user", TargetID: uid, Target: name,
 			Detail: "their archived transcripts could not be removed from the disk: " + err.Error()}
 		if by == 0 {

@@ -582,7 +582,6 @@ function SettingsForm({ env, canEdit }: { env: EnvironmentDetail; canEdit: boole
       branch_field: f.branch_field.trim(),
       version_field: f.version_field.trim(),
       ephemeral: f.ephemeral,
-      // An unchanged lag limit is left out of the request, so the server moves it with a change of kind.
       lag_alert_m: f.lag_alert_m === env.lag_alert_m ? undefined : f.lag_alert_m,
     }
     update.mutate(body, {

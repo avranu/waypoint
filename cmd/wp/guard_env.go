@@ -7,8 +7,6 @@ import (
 	"strings"
 )
 
-// Only hosts the server listed at SessionStart count; they are kept in state.json, which agents cannot write, and anything but a plain read there still needs a person.
-
 // allowedHostsText names what a fetch may reach, for refusals.
 const allowedHostsText = "this machine, the Waypoint server, the repo's forge or one of the environments a person recorded for its project"
 

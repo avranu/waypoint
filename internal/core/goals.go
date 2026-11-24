@@ -75,7 +75,6 @@ func (s *Service) newGoalMatcher(ctx context.Context) (*goalMatcher, error) {
 	if m.idx, err = s.similarityIndex(ctx); err != nil {
 		return nil, err
 	}
-	// A goal's meaning is learned only from person-backed links and approved notes; agent links would teach the matcher to guess more of the agent's own links.
 	work := map[int64][]int64{}
 	rows, err = s.db.R.QueryContext(ctx, `SELECT goal_id, item_id FROM goal_traces WHERE item_type = 'issue' AND goal_id IS NOT NULL AND grounding = 'person_goal'`)
 	if err != nil {
@@ -415,7 +414,6 @@ func goalWording(title string) []string {
 	} else if m := goalTaskObjRE.FindStringSubmatch(title); m != nil {
 		add(fmt.Sprintf("reads as a task (%q): say what people can do or have once it's done", m[1]))
 	}
-	// A colon then one list is one outcome; only two or more commas after the colon read as several goals.
 	words := len(strings.Fields(title))
 	if head, rest, ok := strings.Cut(title, ": "); ok && strings.Count(rest, ",") >= 2 {
 		add(fmt.Sprintf("lists several things (“%s: …”): a goal is one outcome; make the parts goals under it, or put them in its body", clipText(head, 40)))
@@ -568,7 +566,6 @@ func (s *Service) ListGoals(ctx context.Context, actor *Actor, project string) (
 	if role == RoleNone {
 		return nil, notFound("project")
 	}
-	// The first view after a restart, or of an instance's first goal, can precede the traces, so settle them first.
 	s.goalsSettle(ctx)
 	s.goals.mu.Lock()
 	fresh := s.goals.checked
@@ -602,7 +599,6 @@ func (s *Service) ListGoals(ctx context.Context, actor *Actor, project string) (
 		return nil, err
 	}
 	if actor.actsAsPerson() {
-		// Record what a person was shown, so their next action labels whether the suggestion was right.
 		s.recordMeaningShown(ctx, shown)
 	}
 	subtree, err := s.projectSubtree(ctx, p.ID)
@@ -923,8 +919,6 @@ func (s *Service) goalTotals(ctx context.Context, actor *Actor, subtree []int64,
 	if !out.Scoped {
 		return nil
 	}
-	// Tasks the background trace hasn't reached yet: the page says so
-	// rather than leaving them out of the counts unexplained.
 	// #nosec G202 -- as above
 	return s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM issues i JOIN statuses st ON st.id = i.status_id
 		WHERE st.category NOT IN ('done', 'canceled') AND i.project_id IN (`+idList(len(subtree))+`) AND `+vis+` AND `+draftsHidden(actor, "i")+`
@@ -987,10 +981,6 @@ func (s *Service) goalDrift(ctx context.Context, actor *Actor, subtree []int64) 
 		vis, vargs = visibleSQL("i.project_id", actor)
 		vis += " AND " + draftsHidden(actor, "i")
 	}
-	// A task counts as it traced when it was finished (goal_finished),
-	// not as it traces now: a goal approved or retired later doesn't
-	// rewrite last week. One finished since the last recompute counts as
-	// it traces now.
 	// #nosec G202 -- vis is a fixed condition and the rest placeholders; values are bound
 	rows, err := s.db.R.QueryContext(ctx, `SELECT CASE WHEN gf.resolved_at = i.resolved_at THEN gf.grounding ELSE gt.grounding END, i.resolved_at >= ?, count(*)
 		FROM goal_traces gt JOIN issues i ON i.id = gt.item_id JOIN statuses st ON st.id = i.status_id
@@ -1017,7 +1007,6 @@ func (s *Service) goalDrift(ctx context.Context, actor *Actor, subtree []int64) 
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	// Only person or agent links to an approved goal count as grounded; Waypoint's guesses count apart, since a guess is no one's intent.
 	share := func(m map[string]int, which ...string) (float64, int) {
 		var at, all int
 		for g, n := range m {
@@ -1424,7 +1413,6 @@ func (tr *tracer) commit(ctx context.Context, q TraceQuery) (*ItemTrace, error) 
 	}
 	short := sha[:min(len(sha), 10)]
 	item := KItem{Type: KURL, Kind: "commit", Title: "commit " + short, Repo: q.Repo}
-	// A known pull request carrying the commit is consulted before the message; a message's keys are only what it says.
 	vis, args := prVisible(tr.actor, 0)
 	var prID int64
 	// #nosec G202 -- vis is a fixed condition; values are bound
@@ -1515,7 +1503,6 @@ func (s *Service) DismissGoalLink(ctx context.Context, actor *Actor, id int64) e
 			return err
 		}
 		if auto {
-			// An agent's [[wikilink]] can be turned down, which keeps it out of the trace; a person's own wikilink can't, only be edited out of the text.
 			if personText || dstType != KDesign || !dstID.Valid {
 				return invalid("a person's [[wikilink]] in the text makes this link; edit the text to remove it")
 			}
@@ -1525,7 +1512,6 @@ func (s *Service) DismissGoalLink(ctx context.Context, actor *Actor, id int64) e
 			}
 			return s.recordGoalDismissal(ctx, t, actor, src.Type, src.ID, dstID.Int64, was)
 		}
-		// Read the link before it goes: the dismissal keeps its score and author.
 		was, err := readDismissedLink(ctx, t, id)
 		if err != nil {
 			return err
@@ -1635,8 +1621,6 @@ func (s *Service) goalRewordings(ctx context.Context, ids []any, byID map[int64]
 	if len(ids) == 0 {
 		return nil
 	}
-	// The suggested goals' reasons first: a second query while the
-	// revision rows are open would hold two read connections.
 	for _, g := range byID {
 		if g.Note.Approved || g.Note.CreatedAgent != goalSuggestAgent {
 			continue
@@ -1662,7 +1646,7 @@ func (s *Service) goalRewordings(ctx context.Context, ids []any, byID map[int64]
 			return err
 		}
 		if g := byID[note]; g != nil {
-			g.Rewording = &rw // Later rows overwrite earlier ones: revisions come in id order, so the newest wins.
+			g.Rewording = &rw
 		}
 	}
 	return rows.Err()

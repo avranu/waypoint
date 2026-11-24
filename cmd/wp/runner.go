@@ -20,8 +20,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/sandbox"
 )
 
-// Dials out to the server (no inbound port) and acts as its owner.
-
 var runnerCmd = &command{
 	name: "runner", group: "Setup", args: "[install|uninstall|status] [FLAGS]",
 	summary: "run Waypoint's jobs on this machine",
@@ -202,15 +200,14 @@ type runnerProc struct {
 	ocFormatKnown bool
 	ocLogs        bool
 	logMu         sync.Mutex
-	sb            sandboxState // guarded by mu
+	sb            sandboxState
 }
 
 type activeJob struct {
-	id        int64
-	lane      string
-	cancel    context.CancelFunc
-	cancelled atomic.Bool
-	// Guarded by runnerProc.mu; zero means no command of the job is waiting for a slot.
+	id            int64
+	lane          string
+	cancel        context.CancelFunc
+	cancelled     atomic.Bool
 	slotWaitSince time.Time
 }
 
@@ -289,7 +286,6 @@ func (p *runnerProc) register(ctx context.Context) error {
 	body := map[string]any{
 		"name": p.opts.Name, "hostname": p.host, "os": runtime.GOOS, "arch": runtime.GOARCH, "version": version,
 		"labels": orEmpty(p.opts.Labels), "allowed_dirs": toSlash(p.allowed), "clis": p.snapshotCLIs(), "max_jobs": p.opts.MaxJobs,
-		// Feature names the server reads: "confine" limits a review's CLI to its checkout; "autopilot" runs autopilot jobs.
 		"features": runnerFeatureList(),
 	}
 	delay := time.Second
@@ -378,7 +374,6 @@ func (p *runnerProc) poll(ctx context.Context, free int, lanes []string) (*pollA
 	case p.opts.PollWait >= 0:
 		body["wait"] = p.opts.PollWait
 	case len(lanes) > 0 && (p.gov != nil || !slices.Contains(lanes, laneHeavy)):
-		// While a lane is open the poll is short: the server reads lanes once per poll, so a long hold could claim a heavy job after the machine got busy.
 		body["wait"] = 5
 	}
 	p.mu.Lock()
@@ -440,7 +435,7 @@ func (p *runnerProc) run(ctx context.Context, reportStop context.CancelFunc) err
 		go p.watchStalled(ctx)
 	}
 	if !p.opts.Once {
-		p.reapInterruptedStarts(ctx) // Reap before taking any job: this run's own starts must not be reaped as interrupted.
+		p.reapInterruptedStarts(ctx)
 	}
 	if p.opts.MaxJobs > 1 {
 		p.watchLoad(ctx)
@@ -456,7 +451,6 @@ func (p *runnerProc) run(ctx context.Context, reportStop context.CancelFunc) err
 			}
 		}
 		lanes, free := p.slotsNow()
-		// While full, the poll only listens for cancels and ends when a slot frees; it cannot have taken a job, so ending it loses nothing.
 		pctx, pcancel := context.WithCancel(ctx)
 		if free <= 0 {
 			go func() {
@@ -509,7 +503,6 @@ func (p *runnerProc) run(ctx context.Context, reportStop context.CancelFunc) err
 			p.start(ctx, ans.Job)
 			continue
 		}
-		// Only an empty poll that asked for jobs of every kind means the queue is empty; a heartbeat taken while full, or a poll for request jobs only, says nothing.
 		if p.opts.Once && free > 0 && slices.Contains(lanes, laneHeavy) && slices.Contains(lanes, laneLight) && len(p.activeIDs()) == 0 {
 			break
 		}
@@ -714,7 +707,7 @@ func settleOutcome(ctx context.Context, cancelled *atomic.Bool, o outcome) outco
 	if cancelled != nil && cancelled.Load() && o.State != "done" {
 		o.State, o.Error = "cancelled", "Cancelled by a person."
 	} else if ctx.Err() != nil && o.State == "cancelled" && o.Error == "Stopped." {
-		o.Error = "The runner was stopped." // Must match internal/core's runnerStoppedError: an audit whose job ends with it is run again.
+		o.Error = "The runner was stopped."
 	}
 	return o
 }
@@ -837,7 +830,6 @@ func (p *runnerProc) finish(id int64, o outcome) {
 		if err == nil {
 			return
 		}
-		// The estimate here can miss what the server measures: a result it finds too large is sent once more with helper runs cut to their kept leads.
 		var ae *apiError
 		if !reduced && errors.As(err, &ae) && ae.status == 400 && strings.Contains(ae.msg, core.RunnerResultTooLarge) {
 			reduced = true

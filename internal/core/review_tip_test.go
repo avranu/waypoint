@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-// Waypoint opens a reviewed round's pull request only for the commit the review read: a push after the audit means the review didn't see what would open.
-
 const (
 	tipAudited = "aaaaaaa1111111"
 	tipPushed  = "bbbbbbb2222222"

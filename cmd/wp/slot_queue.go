@@ -309,9 +309,6 @@ func (c *cli) acquireQueued(ctx context.Context, name string, n int, run slotRun
 		return nil, err
 	}
 	if slotSendOn(c) {
-		// Earlier runs' holds go while this one waits and runs; it never
-		// waits for this, and a request cut by the process ending is sent
-		// again later (the server keeps an id once). WP-1646.
 		go func() { _, _, _ = c.sendSlotHolds(context.Background()) }() // #nosec G118 -- the send has its own time budget and must not end with the wait
 	}
 	wd, _ := os.Getwd()
@@ -328,8 +325,6 @@ func (c *cli) acquireQueued(ctx context.Context, name string, n int, run slotRun
 	waited := func() int64 { return int64(time.Since(start).Round(time.Second) / time.Second) }
 	var full *core.SlotHold
 	if slotSendOn(c) {
-		// The command goes to the server with secrets blanked per argument,
-		// before it is cut (a cut could leave half of one); cmdKey stays local.
 		full = c.newSlotHold(dir, name, repo, slotField(tree), slotField(run.shown), class, median, runs, n, start)
 	}
 	var treeStart, treeEnd time.Time
@@ -396,8 +391,6 @@ func (c *cli) acquireQueued(ctx context.Context, name string, n int, run slotRun
 			}
 			holder := slotHolderLine(tf)
 			if pid, _ := strconv.Atoi(holder[0]); pid > 0 && slotIsAncestor(pid) {
-				// Waiting on the run that started this one would never end
-				// (WAYPOINT_SLOTS_HELD was lost on the way): take a slot instead.
 				_ = tf.Close()
 				tf = nil
 				break
@@ -472,7 +465,6 @@ func slotIsAncestor(pid int) bool {
 		if err != nil {
 			return false
 		}
-		// pid (comm) state ppid ...: comm may hold spaces and parentheses.
 		s := string(b)
 		j := strings.LastIndex(s, ")")
 		if j < 0 {

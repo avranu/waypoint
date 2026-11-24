@@ -431,7 +431,6 @@ func exists(p string) bool {
 	}
 	if fi.IsDir() {
 		ents, err := os.ReadDir(p)
-		// a directory the runner can't list counts as non-empty, since it may hold something to hide.
 		return err != nil || len(ents) > 0
 	}
 	return true

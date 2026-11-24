@@ -572,7 +572,6 @@ func TestOwnReportCheckedAgainstReviewer(t *testing.T) {
 		}
 	})
 
-	// After a check has read the marks, an agent may only mark a finding fixed; a person may mark any.
 	t.Run("marks after the check", func(t *testing.T) {
 		a, _, _, key := start(t)
 		rep, err := a.report(key, `[{"title": "Save writes to a nil map", "path": "internal/x.go", "line": 12, "severity": "low", "problem": "The map is nil on a new store.", "outcome": "fixed", "note": "Made in New."}]`)
@@ -626,7 +625,6 @@ func TestOwnReportCheckedAgainstReviewer(t *testing.T) {
 		}
 	})
 
-	// A cancelled check passes the round, so only a person may cancel one.
 	t.Run("the check is cancelled by a person", func(t *testing.T) {
 		for who, c := range map[string]struct {
 			actor func(a *apEnv) *Actor
@@ -659,7 +657,6 @@ func TestOwnReportCheckedAgainstReviewer(t *testing.T) {
 		}
 	})
 
-	// A reviewer's read that found something after a report of nothing disagrees with it, so the ship waits for the check instead of opening.
 	t.Run("nothing reported, a read that found something", func(t *testing.T) {
 		a, _, _, key := start(t)
 		if _, err := a.reportNone(key, "The subagent read the diff; nothing stood."); err != nil {
@@ -745,7 +742,6 @@ func TestFailedRoundDecidedAtShip(t *testing.T) {
 		}
 	})
 
-	// A decided round that failed after it started still counts in the loop, so failing can't take it out of the cap and the repeat guard.
 	t.Run("a decided round that failed is in the loop", func(t *testing.T) {
 		var run int64
 		if err := e.s.db.R.QueryRow(`SELECT run_id FROM work_log WHERE id = ?`, r1).Scan(&run); err != nil {

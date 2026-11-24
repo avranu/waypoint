@@ -13,8 +13,6 @@ import (
 	"time"
 )
 
-// Runs before every Agent call, so it stays local and never blocks on its own doubt; WP_GATE relaxes the rules of thumb but never the fork refusal.
-
 const (
 	gateTailBytes = 256 << 10
 	gateLiveTTL   = 3 * time.Hour
@@ -56,7 +54,7 @@ type gateFacts struct {
 	agent   string
 	context int64
 	premium string
-	haiku   bool // the effective model is Haiku: exempt from every rule but the fork rule
+	haiku   bool
 }
 
 // gateProblems returns one short message per check that fails.
@@ -174,7 +172,6 @@ func (c *cli) trackSubagent(in hookEventInput) {
 		if s.Agents[in.SessionID] == nil {
 			s.Agents[in.SessionID] = map[string]liveAgent{}
 		}
-		// A resumed agent starts a new run under its old id; only a wake from Waiting or an adopted Provisional record continues the same run.
 		la := liveAgent{Type: in.AgentType, Since: now}
 		old, ok := s.Agents[in.SessionID][in.AgentID]
 		sameRun := ok && (old.Waiting || old.Provisional)
@@ -193,7 +190,6 @@ func (c *cli) trackSubagent(in hookEventInput) {
 			p.At = now
 			s.AgentParents[in.SessionID][in.AgentID] = p
 		}
-		// Only a first start takes a reservation: a wake or resume that took one would free a slot Claude Code still holds for a pending start.
 		if !sameRun && !p.Taken {
 			if r, ok := s.takeReservation(in.SessionID, "", p.Parent, hasParent, in.AgentType); ok {
 				la.Model = r.Model
@@ -202,7 +198,7 @@ func (c *cli) trackSubagent(in hookEventInput) {
 				}
 			}
 			if hasParent {
-				p.Taken = true // Marks the reservation taken, so a resumed start of this id doesn't take a second slot.
+				p.Taken = true
 				s.AgentParents[in.SessionID][in.AgentID] = p
 			}
 		}
@@ -217,7 +213,6 @@ func hookClaudeGate(c *cli, stdin io.Reader, stdout io.Writer) {
 	if err := json.NewDecoder(io.LimitReader(stdin, 4<<20)).Decode(&in); err != nil || (in.ToolName != "Agent" && in.ToolName != "Task") {
 		return
 	}
-	// A pause refuses every agent, Haiku included: it is checked before the WP_GATE mode and the Haiku exemption.
 	if p := c.activePause(); p != nil {
 		_, _ = stdout.Write(gateOutput("deny", []string{pauseGateText(p)}))
 		return
@@ -238,7 +233,6 @@ func hookClaudeGate(c *cli, stdin io.Reader, stdout io.Writer) {
 		return
 	}
 	f := gateFacts{nested: in.AgentID != "", agent: ti.Type}
-	// A nested caller's model is the one recorded at its start; an unknown caller inherits the session model, so under a premium session it is judged premium.
 	parent := in.Model
 	if in.TranscriptPath != "" {
 		if fh, err := os.Open(in.TranscriptPath); err == nil { // #nosec G304 -- the hook's own transcript, named by Claude Code
@@ -262,7 +256,7 @@ func hookClaudeGate(c *cli, stdin io.Reader, stdout io.Writer) {
 	problems := gateProblems(f)
 	if fork {
 		if mode == "off" {
-			problems = problems[:1] // gateProblems puts the fork message first: it alone, off silences the rest
+			problems = problems[:1]
 		}
 		mode = "deny"
 	}

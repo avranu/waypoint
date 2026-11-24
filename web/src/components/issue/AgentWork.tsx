@@ -31,7 +31,6 @@ export function AgentRuns({ runs }: { runs: AgentRun[] }) {
     }),
     { s: 0, i: 0, o: 0, c: 0 },
   )
-  // The server returns at most the latest 100 runs, so totals may be partial.
   const capped = runs.length >= RUNS_MAX
   const shown = all ? runs : runs.slice(0, 5)
   return (

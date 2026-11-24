@@ -1,7 +1,5 @@
 package core
 
-// A mirror turns a review-verdict github marker (id, answer, optional commit) into a GitHub reply; replies go to the comment's GitHub author, and a fixed thread closes only once GitHub has the commit.
-
 import (
 	"strings"
 

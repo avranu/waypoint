@@ -305,7 +305,7 @@ func ruleNoCache(w *workflow) []Finding {
 			a := action(s.uses)
 			var bad bool
 			switch a {
-			case "actions/setup-go": // caches by default since v4; only an explicit off is waste
+			case "actions/setup-go":
 				bad = s.with["cache"] == "false"
 			case "actions/setup-node", "actions/setup-python":
 				bad = s.with["cache"] == ""

@@ -8,17 +8,6 @@ import (
 	"time"
 )
 
-// The slot queue (WP-1443). Claude Code refuses an Agent call once its
-// session tree runs CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS agents (20 unless
-// set), with "Do not retry" in the text. PreToolUse hooks run before that
-// check, so the gate holds the call until a slot is free: the agent never
-// sees a refusal, and the call launches when one stops.
-//
-// The wait reads the live table without the state lock and takes the lock
-// only to claim a slot. The table can be stale (a SubagentStop lost in a
-// crash), so the wait is bounded and past the bound the call goes through
-// with a note and no decision: Claude Code then arbitrates.
-
 const (
 	claudeSubagentLimit = 20
 	gateQueueBound      = 4 * time.Minute
@@ -163,7 +152,7 @@ func (s *State) onlyHeldBy(session string, chain map[string]bool, now time.Time)
 func (s *State) slotsUsed(session string, now time.Time) int {
 	n := 0
 	for _, a := range s.liveIDs(session, now) {
-		if !a.Waiting { // A waiting agent may not hold a Claude Code slot, so it is not counted.
+		if !a.Waiting {
 			n++
 		}
 	}
@@ -185,7 +174,7 @@ func (c *cli) admitSlot(session string, res reservation, limit int) (int, bool) 
 		n = s.slotsUsed(session, now)
 		for _, r := range s.Reserved[session] {
 			if res.ID != "" && r.ID == res.ID {
-				return // The hook can run twice for one call; a reservation already made is not added again.
+				return
 			}
 		}
 		if n >= limit {

@@ -110,7 +110,7 @@ for (const [width, scheme] of looks([
   ok((await note.count()) === 0, `${tag} mixed markdown opens in the rich editor`);
   await page.screenshot({ path: `${out}/rich-open-${tag}.png` });
   // wplint:ignore e2e-wait polling a value or proving a negative: there is nothing to wait on
-  await page.waitForTimeout(2200); // longer than the autosave pause: it would have gone out
+  await page.waitForTimeout(2200);
   await settleClose();
   ok((await desc(a.key)) === MIXED, `${tag} an untouched open and close keeps the text byte for byte`);
 
@@ -296,7 +296,6 @@ for (const [width, scheme] of looks([
   await settleClose();
   await page.evaluate(() => localStorage.setItem("wp.editor.mode", "rich"));
 
-  // If the editor closes mid-upload, the finished link (or the failed upload's cleanup) must still be saved, not the placeholder.
   const ue = await make("Upload escape", "pic");
   await openRich(ue.key, "pic");
   await slow(1500);
@@ -320,7 +319,6 @@ for (const [width, scheme] of looks([
   });
   await pastePng("bad.png");
   await field.press("Escape");
-  // Escape saves the placeholder first, so the failed upload's cleanup has to remove it from what was saved.
   await waitDesc(uf.key, (d) => d.includes("Uploading bad.png"));
   const ufd = await waitDesc(uf.key, (d) => !d.includes("Uploading"));
   ok(!ufd.includes("Uploading") && !ufd.includes("bad.png"), `${tag} an upload failing after Escape leaves no placeholder saved: ${JSON.stringify(ufd)}`);
@@ -340,7 +338,6 @@ for (const [width, scheme] of looks([
   await page.unrouteAll({ behavior: "ignoreErrors" });
   await settleClose();
 
-  // The placeholder text node can be replaced mid-upload, so the link must reach the editor as well as the draft, or the next keystroke writes the editor's stale text back.
   const ur = await make("Upload remade", "pic");
   await openRich(ur.key, "pic");
   await slow(1200);

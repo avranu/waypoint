@@ -51,10 +51,7 @@ func TestReviewAgainBeforePR(t *testing.T) {
 		{name: "a runner's short name", issues: "critical", fixes: "complete", arm: AgainReview, model: "claude/sonnet"},
 		{name: "every finding rejected", issues: "critical", fixes: "risky", arm: AgainRejected, model: trusted, allRejected: true},
 		{name: "untrusted reviewer", issues: "critical", fixes: "partial", arm: AgainUntrusted, model: untrusted, belowFloor: true},
-		// A record the rule needs and can't read refuses the ship: nothing
-		// is decided, and no pull request opens on a rule not applied.
 		{name: "the reviewer's record unreadable", issues: "critical", fixes: "partial", model: untrusted, belowFloor: true, trustFails: true},
-		// One it doesn't need (a signal calls the round) stops nothing.
 		{name: "the reviewer's record unreadable, a signal", issues: "critical", fixes: "complete", arm: AgainReview, model: untrusted, trustFails: true},
 		{name: "untrusted reviewer, risky fixes", issues: "minor", fixes: "risky", arm: AgainReview, model: untrusted},
 		{name: "a seed whose findings didn't hold", issues: "critical", fixes: "partial", arm: AgainUntrusted, model: trusted, record: record{n: 20, state: "rejected"}, belowFloor: true},
@@ -189,7 +186,6 @@ func TestReviewAgainBeforePR(t *testing.T) {
 			}
 
 			if tc.afterPR {
-				// A ship on a round after a closed pull request is not a first round's, so nothing is scored.
 				var cols []string
 				rows, err := a.s.db.R.Query(`SELECT name FROM pragma_table_info('work_log') WHERE name != 'id'`)
 				if err != nil {

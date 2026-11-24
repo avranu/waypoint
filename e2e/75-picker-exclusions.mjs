@@ -67,7 +67,6 @@ for (const width of [1280, 390]) {
     seed = { main, linked, unlinked, doc };
   }
   const { main, linked, unlinked, doc } = seed;
-  // Find this picker's rows through its search box; the page shows the same issues and goals in its own buttons.
   let box;
   const row = (title) =>
     box.locator("xpath=ancestor::div[2]").getByRole("option", { name: new RegExp(title) });

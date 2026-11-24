@@ -1,5 +1,3 @@
-// The automatic order is the one wp next reads (WP-997); a task dragged to a place is pinned alone and the rest flow around it.
-
 import { useMemo, useState, type ReactNode } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -447,9 +445,7 @@ function UpNext({
     const out: MenuItem[] = []
     if (n > 0 && narrow)
       out.push({ label: 'Move to top', icon: <ArrowUpToLine />, onSelect: () => toTop(key, n) })
-    // A pinned row has n pins ahead of it; an unpinned row has all pinsAtTop ahead of it.
     const after = n < pinsAtTop ? n : pinsAtTop
-    // On a phone with no pins, Move to top says the same thing.
     const moves = n > after || (n === after && !it.pinned)
     if (moves && !(narrow && after === 0 && n > 0))
       out.push({
@@ -479,8 +475,6 @@ function UpNext({
           onDragCancel={() => setActive(null)}
         >
           <SortableContext items={ids} strategy={verticalListSortingStrategy}>
-            {/* No scroll anchoring in the list: the browser would keep the
-                task you just moved in view and scroll the page after it (WP-753). */}
             <ol aria-label="Up next, in order" className="[overflow-anchor:none]">
               {items.map((it, n) => {
                 const can = editable(it.issue.project_key)
@@ -562,8 +556,6 @@ function QueueRow({
     id: item.issue.key,
     disabled: !editable,
   })
-  // The whole row drags by pointer or touch; the keyboard drags from the
-  // grip, so Enter and Space still reach the links and buttons in the row.
   return (
     <li
       ref={setNodeRef}

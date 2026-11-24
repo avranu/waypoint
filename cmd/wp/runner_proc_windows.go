@@ -13,7 +13,6 @@ import (
 
 func shellCommand(ctx context.Context, command string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "cmd") // #nosec G204 -- running the command is the point; the job came from the runner's owner
-	// cmd.exe parses its own command line; Go's argument quoting would mangle it.
 	cmd.SysProcAttr = &syscall.SysProcAttr{CmdLine: "cmd /c " + command}
 	return cmd
 }

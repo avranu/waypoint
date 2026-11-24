@@ -11,8 +11,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// A transcript that has run wp code or wp brief is never told.
-
 const (
 	chainFinds = 2
 	chainCalls = 5
@@ -142,9 +140,6 @@ func (c *cli) chainNudge(in *hookEventInput, cwd, step string, canTell bool) boo
 	if path == "" {
 		return false
 	}
-	// The wait is bounded by the time left before the late point (at least
-	// hookLockFloor, so a lock held for a moment does not drop the count), so a
-	// held lock cannot carry the run far past it: no lock, no count, no note.
 	unlock, err := lockFileWithin(path+".lock", hookLockWait(hookLateAfter(hookNudgeTimeout)))
 	if err != nil {
 		return false
@@ -169,7 +164,6 @@ func (c *cli) chainNudge(in *hookEventInput, cwd, step string, canTell bool) boo
 	case stepLook:
 		st.Looks++
 	}
-	// A run Claude Code cancels would lose its told mark, so a late run tells anyway and marks it only on its lateTellsMax-th try.
 	if !st.Done && canTell && st.Finds >= chainFinds && st.Finds+st.Looks >= chainCalls {
 		tell = true
 		if hookLate(hookLateAfter(hookNudgeTimeout)) {
@@ -180,7 +174,7 @@ func (c *cli) chainNudge(in *hookEventInput, cwd, step string, canTell bool) boo
 		}
 	}
 	if writeJSON(path, st) != nil {
-		return false // not saved: telling now could tell again on every call
+		return false
 	}
 	return tell
 }

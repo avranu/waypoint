@@ -176,7 +176,6 @@ export function CreateTokenDialog({ open, onClose }: { open: boolean; onClose: (
     setDays('')
     setSecret(null)
   }
-  // Anything but blank must be a whole number of days, so a typo can't mint a token that never expires.
   const n = days.trim() ? Number(days) : null
   const badDays = n !== null && !(Number.isInteger(n) && n > 0 && n <= 3650)
   const create = useMutation({

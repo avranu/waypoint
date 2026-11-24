@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# The deploy key is pinned by command= to this file: SSH_ORIGINAL_COMMAND is validated strictly and never reaches a shell.
 set -euo pipefail
 
 ROOT=${WAYPOINT_DEPLOY_ROOT:-$HOME}
@@ -28,7 +27,6 @@ compose() {
   (cd "$dir" && "$DOCKER" compose -p "$PROJECT" -f deploy/compose.yaml "$@")
 }
 
-# Read without sourcing: a .env value never runs as shell.
 env_get() {
   local v
   v=$(grep -E "^$2=" "$1/deploy/.env" 2>/dev/null | tail -n 1 | cut -d= -f2- || true)
@@ -53,7 +51,6 @@ running_version() {
 
 tree_version() { cat "$1/.deployed-version" 2>/dev/null || true; }
 
-# Two healthy answers in a row, so a crash loop that answers once does not pass.
 wait_healthy() {
   local want=$1 deadline got streak=0
   deadline=$((SECONDS + HEALTH_WAIT))
@@ -188,8 +185,6 @@ do_status() {
   [[ -n $got ]]
 }
 
-# The services restart may touch: the helpers beside Waypoint, which keep
-# no state a restart loses. Waypoint itself restarts by a deploy.
 RESTARTABLE=(meaning opencode)
 
 do_restart() {
@@ -225,7 +220,6 @@ main() {
       words=("${words[@]:0:2}")
     fi
   fi
-  # One deploy at a time (a second would swap directories under the first).
   mkdir -p "$ROOT"
   exec 9>"$ROOT/.waypoint-deploy.lock"
   flock -n 9 || die "another deploy is running"

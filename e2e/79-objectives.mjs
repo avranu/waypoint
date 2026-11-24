@@ -130,7 +130,6 @@ async function run(width, scheme) {
   const newIssue = async (title) => (await json(await web("POST", "/issues", { project: "WAYP", title, agent: "claude", status: "todo" }))).key;
   const banner = page.getByRole("note", { name: "Objective" });
   const has = async (text, what) => {
-    // Playwright's string hasText is case-insensitive, so a RegExp is needed for an exact-case match.
     const exact = new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
     await banner.filter({ hasText: exact }).waitFor({ timeout: 15000 }).catch(() => {});
     const t = (await banner.textContent().catch(() => "")) ?? "";

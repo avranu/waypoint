@@ -32,8 +32,6 @@ interface GraphSearch {
   to?: string
 }
 
-// Four groups only: the validated categorical palette has four slots.
-
 type Group = 'work' | 'knowledge' | 'code' | 'session'
 
 const groupOf: Record<GraphNodeType, Group> = {

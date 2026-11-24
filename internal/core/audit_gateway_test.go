@@ -16,18 +16,16 @@ import (
 	"time"
 )
 
-// Audits the LLM gateway runs as agent tasks (WP-617).
-
 // taskLLM is a gateway that takes agent tasks and reports on them, over
 // whatever LLM the environment had.
 type taskLLM struct {
 	LLM
 	mu      sync.Mutex
 	specs   []gatewayTaskSpec
-	sizes   []int64 // the archive bytes each task came with
-	refuse  []error // what the next CreateTask calls answer instead of a task
+	sizes   []int64
+	refuse  []error
 	tasks   map[string]*gatewayTask
-	taskErr error // what Task answers instead
+	taskErr error
 	cancels []string
 	reports []feedbackReport
 	report  error
@@ -45,7 +43,7 @@ func (l *taskLLM) CreateTask(ctx context.Context, p *AIProvider, spec gatewayTas
 	}
 	t := &gatewayTask{ID: fmt.Sprintf("task_%d", len(l.tasks)+1), Status: "queued"}
 	if spec.Weakest != "" {
-		t.Bar = "weakest=" + spec.Weakest + ";from=request" // the header a bar gets
+		t.Bar = "weakest=" + spec.Weakest + ";from=request"
 	}
 	l.tasks[t.ID] = t
 	return t, nil
@@ -218,19 +216,15 @@ func TestAuditThroughGateway(t *testing.T) {
 		t.Fatalf("models = %v", a.Models)
 	}
 	ae.work()
-	// The runner with the CLIs has no wp for it; the one without a CLI does.
 	if w := ae.rpoll(ae.admin, ae.box); w.Job != nil {
 		t.Fatalf("a runner without the feature took %+v", w.Job)
 	}
 	claim := ae.takeOn(box)
 	in := agentJobOf(t, claim)
-	// The job's time is the gateway's four hours and more, and the
-	// helpers' own (their panel runs beside the model, in the runner).
 	if claim.Kind != JobAudit || claim.Timeout <= gatewayAuditTimeout || claim.Timeout > runnerAuditMaxTimeout || in.CLI != GatewayCLI || in.Model != "audit" || in.JSONSchema == "" || len(in.GatewayExclude) != 0 || !in.ReadOnly {
 		t.Fatalf("job = %s %ds %+v", claim.Kind, claim.Timeout, in)
 	}
 
-	// Another person's runner can't speak for the job.
 	sam := ae.user("sam", true)
 	if _, err := ae.s.StartGatewayTask(ae.ctx, sam, claim.ID, "x", strings.NewReader("x"), 1); !errors.Is(err, ErrNotFound) {
 		t.Errorf("another person's job: %v", err)
@@ -270,7 +264,6 @@ func TestAuditThroughGateway(t *testing.T) {
 	if v.Status != GatewayTaskSucceeded || v.Model != "deepseek/deepseek-v4.1-flash" || !strings.Contains(string(v.JSON), "nil map") || v.InputTokens != 9000 || v.OutputTokens != 700 {
 		t.Fatalf("succeeded = %+v", v)
 	}
-	// What the runner reports of it (cmd/wp execGatewayAudit).
 	var structured any
 	_ = json.Unmarshal(v.JSON, &structured)
 	ae.finish(claim.ID, "done", map[string]any{"answer": v.Text, "model": v.Model, "gateway_task": v.ID, "structured": structured,
@@ -283,7 +276,6 @@ func TestAuditThroughGateway(t *testing.T) {
 		t.Errorf("label = %q", label)
 	}
 
-	// Nothing is reported until a finding is decided; then each change once.
 	ae.s.ReportReviewFeedback(ae.ctx)
 	if r := gw.reported(); len(r) != 0 {
 		t.Fatalf("reported undecided findings: %+v", r)
@@ -307,7 +299,6 @@ func TestAuditThroughGateway(t *testing.T) {
 	if r := gw.reported(); len(r) != 1 || r[0] != (feedbackReport{"task_1", 1, 1, false}) {
 		t.Fatalf("after a rejection: %+v", r)
 	}
-	// A gateway that doesn't know the task yet is asked again later.
 	gw.report = &llmError{status: http.StatusNotFound, body: `{"error":{"code":"request_not_found"}}`}
 	mark(1, "confirmed")
 	gw.report = nil
@@ -343,8 +334,6 @@ func TestGatewayAuditFailures(t *testing.T) {
 		ae.finish(job, "failed", map[string]any{"gateway_error": kind, "answer": "not in the form"}, "The audit through the gateway failed ("+kind+")")
 	}
 
-	// Busy at the gateway: its other name isn't tried, the next CLI is, and
-	// the whole chain goes again later.
 	a := request("gateway", "gateway/free", "claude/opus")
 	claim := ae.takeOn(box)
 	if v := ae.startTask(claim.ID); v.Status != "queued" {
@@ -362,8 +351,6 @@ func TestGatewayAuditFailures(t *testing.T) {
 		t.Fatalf("waiting audit = %s retries %d %+v", got.Status, got.Retries, got.Attempts)
 	}
 
-	// The second pass: the gateway has no such model for this key, which is
-	// remembered; its free models are out of allowance; Claude answers.
 	ae.setClock(ae.clockNow().Add(16 * time.Minute))
 	ae.s.CheckAudits(ae.ctx)
 	claim = ae.takeOn(box)
@@ -396,7 +383,6 @@ func TestGatewayAuditFailures(t *testing.T) {
 		t.Errorf("a task that gave no findings was reported on: %+v", r)
 	}
 
-	// Within the hour the refused model is passed over without a job.
 	b := request("gateway", "claude/opus")
 	if in := agentJobOf(t, ae.takeOn(ae.box)); in.CLI != "claude" {
 		t.Fatalf("after a refused model = %+v", in)
@@ -409,7 +395,6 @@ func TestGatewayAuditFailures(t *testing.T) {
 	}
 	ae.setClock(ae.clockNow().Add(gatewayRefusedFor + time.Minute))
 
-	// With only the gateway in the chain, busy still means later, not failed.
 	c := request("gateway", "gateway/free")
 	claim = ae.takeOn(box)
 	fail(claim.ID, "queue_full")
@@ -420,8 +405,6 @@ func TestGatewayAuditFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// An answer out of form is asked once more, then kept, and the limit's
-	// advice doesn't speak of Cursor when Cursor wasn't asked.
 	d := request("gateway")
 	claim = ae.takeOn(box)
 	fail(claim.ID, "invalid_output")
@@ -447,7 +430,6 @@ func TestGatewayTaskRelay(t *testing.T) {
 	ae := newAgentEnv(t)
 	gw := taskGateway(t, ae.s)
 	box := ae.gatewayBox()
-	// As a review round asks: the session's model wrote the code.
 	a, err := ae.s.RequestAudit(ae.ctx, ae.admin, AuditInput{Project: ae.p.Key, Via: "system", purpose: AuditReview,
 		chain: []AgentModel{{CLI: GatewayCLI, Model: gatewayAuditModel}}, authorModel: "claude-opus-5-5"})
 	if err != nil {
@@ -457,8 +439,6 @@ func TestGatewayTaskRelay(t *testing.T) {
 	if in := agentJobOf(t, claim); strings.Join(in.GatewayExclude, ",") != "*claude*" {
 		t.Fatalf("exclude = %v", in.GatewayExclude)
 	}
-	// An audit held to the high-stakes bar sends no exclude (WP-1752); one
-	// held to the elevated bar still keeps the author's family out.
 	for _, c := range []struct{ weakest, want string }{{trustedAuditBar, ""}, {elevatedAuditBar, "*claude*"}} {
 		if _, err := ae.s.RequestAudit(ae.ctx, ae.admin, AuditInput{Project: ae.p.Key, Via: "system", purpose: AuditReview, weakest: c.weakest,
 			chain: []AgentModel{{CLI: GatewayCLI, Model: gatewayAuditModel}}, authorModel: "claude-opus-5-5"}); err != nil {
@@ -468,7 +448,6 @@ func TestGatewayTaskRelay(t *testing.T) {
 			t.Fatalf("bar %q: exclude = %v, want %q", c.weakest, in.GatewayExclude, c.want)
 		}
 	}
-	// A job of another kind isn't the gateway's.
 	other, err := ae.s.RequestAudit(ae.ctx, ae.admin, AuditInput{Project: ae.p.Key, Models: []string{"claude/opus"}})
 	if err != nil {
 		t.Fatal(err)
@@ -482,7 +461,6 @@ func TestGatewayTaskRelay(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Busy answers say how long to wait; a gateway that is away, 30 s.
 	gw.refuse = []error{
 		&gatewayRefusal{status: http.StatusTooManyRequests, code: "queue_full", msg: "2 tasks are waiting", retryAfter: 45 * time.Second},
 		&gatewayRefusal{status: http.StatusBadGateway},
@@ -499,7 +477,6 @@ func TestGatewayTaskRelay(t *testing.T) {
 			t.Errorf("refusal %d = %+v", i, v)
 		}
 	}
-	// The refusal of the key is remembered for the model; forget it here.
 	if why := ae.s.gatewayAuditWhy(ae.ctx, "audit"); !strings.Contains(why, "can't run tasks") {
 		t.Errorf("remembered = %q", why)
 	}
@@ -509,7 +486,6 @@ func TestGatewayTaskRelay(t *testing.T) {
 	if _, spec := gw.sent(); v.ID != "task_1" || strings.Join(spec.Exclude, ",") != "*claude*" {
 		t.Fatalf("view = %+v, spec %+v", v, spec)
 	}
-	// It ran on the author's family all the same: not an answer.
 	gw.ends("task_1", "succeeded", "anthropic-credits/claude-haiku-5-5", "", map[string]any{"summary": "Fine.", "findings": []any{}})
 	if v := ae.task(claim.ID); v.Status != GatewayTaskFailed || v.ErrorKind != "excluded_model" || v.JSON != nil || v.Text != "" || !strings.Contains(v.Error, "claude-haiku-5-5") {
 		t.Fatalf("an excluded model's answer = %+v", v)
@@ -517,13 +493,10 @@ func TestGatewayTaskRelay(t *testing.T) {
 	if gatewayOutcome("excluded_model") != "model" {
 		t.Error("an excluded model's answer should send the chain on")
 	}
-	// A task the gateway restarted under: failed there, and sent again.
 	gw.ends("task_1", "failed", "", "interrupted", nil)
 	if v := ae.task(claim.ID); v.Status != GatewayTaskFailed || v.ErrorKind != "interrupted" {
 		t.Fatalf("interrupted = %+v", v)
 	}
-	// Its sandbox stopped under it (a deploy, WP-994): failed "cancelled"
-	// is sent again like a restart; a task called off stays cancelled.
 	gw.ends("task_1", "failed", "", "cancelled", nil)
 	if v := ae.task(claim.ID); v.Status != GatewayTaskFailed || v.ErrorKind != "interrupted" || !strings.Contains(v.Error, "safe to send again") {
 		t.Fatalf("sandbox stopped = %+v", v)
@@ -535,8 +508,6 @@ func TestGatewayTaskRelay(t *testing.T) {
 	if v := ae.startTask(claim.ID); v.ID != "task_2" {
 		t.Fatalf("sent again = %+v", v)
 	}
-	// The latest task is the job's; a state Waypoint doesn't know, a gateway
-	// that can't be asked and a task it lost.
 	gw.ends("task_2", "paused", "", "", nil)
 	if v := ae.task(claim.ID); v.ID != "task_2" || v.Status != GatewayTaskUnknown || v.RetryAfter == 0 {
 		t.Fatalf("an unknown state = %+v", v)
@@ -554,10 +525,6 @@ func TestGatewayTaskRelay(t *testing.T) {
 		t.Fatalf("cancel: %v %v", err, gw.cancels)
 	}
 
-	// The task may run for what is left of the job's time, less the slack;
-	// with too little left none is started, and a job starts four at most.
-	// A review round's audit has its findings checked after the model
-	// (WP-1320), which adds to the job's time.
 	jobTime := gatewayAuditTimeout + (&AuditHelpers{Verify: true}).extraTimeout()
 	ae.setClock(ae.clockNow().Add(20 * time.Minute))
 	if v := ae.startTask(claim.ID); v.ID != "task_3" {
@@ -575,11 +542,10 @@ func TestGatewayTaskRelay(t *testing.T) {
 	if _, err := ae.s.db.W.Exec(`DELETE FROM gateway_tasks WHERE task_id != 'task_1'`); err != nil {
 		t.Fatal(err)
 	}
-	ae.setClock(ae.clockNow().Add(time.Duration(jobTime-20*60-100) * time.Second)) // 100 s of the job left
+	ae.setClock(ae.clockNow().Add(time.Duration(jobTime-20*60-100) * time.Second))
 	if v := ae.startTask(claim.ID); v.Status != GatewayTaskRefused || v.ErrorKind != "too_late" {
 		t.Fatalf("late = %+v", v)
 	}
-	// The job over, nothing more is sent for it.
 	ae.finish(claim.ID, "failed", map[string]any{"gateway_error": "timeout"}, "timed out")
 	if _, err := ae.s.StartGatewayTask(ae.ctx, ae.admin, claim.ID, "x", strings.NewReader("x"), 1); !errors.As(err, &inv) {
 		t.Errorf("a finished job: %v", err)
@@ -608,8 +574,6 @@ func TestGatewayAuditNames(t *testing.T) {
 			t.Errorf("exclude for %q = %q, want %q", author, got, want)
 		}
 	}
-	// An audit held to the high-stakes bar excludes no family (WP-1752); at
-	// every other bar, and with none, the author's family is kept out.
 	for _, c := range []struct{ weakest, author, want string }{
 		{trustedAuditBar, "claude-opus-5-5", ""},
 		{trustedAuditBar, "grok-4.7-high", ""},
@@ -662,8 +626,6 @@ func TestGatewayAuditNames(t *testing.T) {
 		t.Error("the advice names Cursor only for a chain through it")
 	}
 
-	// The job's input: the gateway only for an audit, with a model; the
-	// exclusions checked, and dropped from any other job.
 	job := func(kind string, in AgentJob) (AgentJob, error) {
 		in.Prompt, in.Repo, in.Base = "Audit it.", "https://git.example.com/me/app.git", "main"
 		raw, _ := json.Marshal(in)
@@ -743,7 +705,6 @@ func TestGatewayTaskClient(t *testing.T) {
 	spec := gatewayTaskSpec{Model: "audit", Prompt: `Audit "this".`, Schema: auditSchema, Timeout: 14400, Exclude: []string{"*claude*"}}
 
 	archive := bytes.Repeat([]byte("tar\x00\x1f\x8b"), 1000)
-	// The reader may hold more than the size says: only size bytes go.
 	task, err := c.CreateTask(ctx, p, spec, io.MultiReader(bytes.NewReader(archive), strings.NewReader("more")), int64(len(archive)))
 	if err != nil || task.ID != "task_abc" || task.Status != "queued" {
 		t.Fatalf("task = %+v %v", task, err)
@@ -776,7 +737,6 @@ func TestGatewayTaskClient(t *testing.T) {
 		t.Errorf("request = %s %s %q %q length %d of %d: %+v (archive %d bytes)", r.method, r.path, r.auth, r.ctype, r.length, len(r.body), body, len(sent))
 	}
 
-	// Plain text asked for, nothing left out: neither field is sent.
 	if _, err := c.CreateTask(ctx, p, gatewayTaskSpec{Model: "free", Prompt: "x", Timeout: 60}, bytes.NewReader(archive), int64(len(archive))); err != nil {
 		t.Fatal(err)
 	}
@@ -786,7 +746,6 @@ func TestGatewayTaskClient(t *testing.T) {
 		t.Errorf("a plain task = %v", plain)
 	}
 
-	// A quality bar goes as routing.weakest, beside paid (WP-916).
 	barred := spec
 	barred.Weakest = "sonnet"
 	if _, err := c.CreateTask(ctx, p, barred, bytes.NewReader(archive), int64(len(archive))); err != nil {
@@ -798,7 +757,6 @@ func TestGatewayTaskClient(t *testing.T) {
 		t.Errorf("a barred task's routing = %v", withBar["routing"])
 	}
 
-	// A prep trial asks at surplus, never paid, under its arm (WP-ADR104).
 	prep := spec
 	prep.Priority, prep.Paid, prep.Arm, prep.Name = prioritySurplus, "never", prepAgentArm, "prep"
 	if _, err := c.CreateTask(ctx, p, prep, bytes.NewReader(archive), int64(len(archive))); err != nil {
@@ -813,7 +771,6 @@ func TestGatewayTaskClient(t *testing.T) {
 		t.Errorf("a prep trial's task = routing %v, arm %v, form %v", rt, asPrep["arm"], schema["name"])
 	}
 
-	// Past what the JSON body holds as base64: an upload.
 	big := bytes.Repeat([]byte{0x1f, 0x8b, 7, 0}, gatewayJSONArchiveMax/4+1)
 	if _, err := c.CreateTask(ctx, p, spec, bytes.NewReader(big), int64(len(big))); err != nil {
 		t.Fatal(err)
@@ -847,7 +804,6 @@ func TestGatewayTaskClient(t *testing.T) {
 		t.Errorf("after the repo: %v", err)
 	}
 
-	// Reading and stopping a task; an id that isn't one never leaves.
 	if task, err := c.Task(ctx, p, "task_abc"); err != nil || task.ID != "task_abc" || last().method != "GET" || last().path != "/v1/tasks/task_abc" {
 		t.Errorf("task = %+v %v (%s %s)", task, err, last().method, last().path)
 	}
@@ -862,7 +818,6 @@ func TestGatewayTaskClient(t *testing.T) {
 		t.Errorf("a path was taken for a task id: %v (%d requests)", err, len(reqs)-n)
 	}
 
-	// Refusals: the envelope's code and message, and how long to wait.
 	answer = func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", "30")
 		w.WriteHeader(http.StatusTooManyRequests)
@@ -876,8 +831,6 @@ func TestGatewayTaskClient(t *testing.T) {
 	if v := gatewayRefusedView(err); v.Status != GatewayTaskRefused || v.ErrorKind != "queue_full" || v.RetryAfter != 30 {
 		t.Errorf("view = %+v", v)
 	}
-	// The gateway's intake timing out on the body is busy, not the model
-	// (WP-1078): sent again after a while.
 	answer = func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusRequestTimeout)
 		_, _ = w.Write([]byte(`{"error":{"message":"the request body did not arrive within 1m0s","type":"invalid_request_error","param":null,"code":null}}`))
@@ -894,8 +847,6 @@ func TestGatewayTaskClient(t *testing.T) {
 		t.Errorf("a proxy's error = %+v (%v)", ref, err)
 	}
 
-	// No model at a task's bar: with none at all, sending it again can't
-	// help; with some busy, the gateway says when to (WP-916).
 	atBar := ""
 	answer = func(w http.ResponseWriter, r *http.Request) {
 		if atBar != "" {
@@ -937,7 +888,6 @@ func TestReviewRoundThroughGateway(t *testing.T) {
 	a.tick(61 * time.Second)
 	a.s.Wait()
 
-	// A runner that can't reach the gateway gets nothing, whatever CLIs it has.
 	if w := a.poll(a.admin, box, RunnerPoll{}); w.Job != nil {
 		t.Fatalf("a runner's CLI was asked: %+v", agentJobOf(t, w.Job))
 	}
@@ -985,7 +935,6 @@ func TestReviewRoundThroughGateway(t *testing.T) {
 	if ra.note != "" || ra.alt != "" || au.Status != AuditDone || au.Model != "gateway/deepseek/deepseek-v4.1-flash" {
 		t.Errorf("round = %+v, audit = %s by %q", ra, au.Status, au.Model)
 	}
-	// How the session marks the finding reaches the gateway by task id.
 	full, err := a.s.GetAudit(a.ctx, a.admin, au.ID)
 	if err != nil || len(full.Findings) != 1 {
 		t.Fatalf("audit = %+v %v", full, err)
@@ -1008,18 +957,13 @@ func TestGatewayAuditNoFindings(t *testing.T) {
 		name     string
 		floor    string
 		findings []any
-		text     string // an answer that isn't the JSON asked for
+		text     string
 		reported bool
 	}{
 		{"raised none", "", []any{}, "", true},
 		{"says no findings", "", nil, "**No findings.**", true},
-		// Findings a severity floor left out, or the model wrote blank,
-		// were raised: the answer didn't find nothing (WP-1230).
 		{"below the floor", "critical", []any{low}, "", false},
 		{"blank findings", "", []any{blank}, "", false},
-		// Free text that says more than "no findings" may name a problem,
-		// or be cut short (WP-1253): it is no answer at all, so the model
-		// is asked again rather than the audit ending clean (WP-1320).
 		{"free text", "", nil, "No findings in a.go, but b.go has a nil deref on line 4.", false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -1080,7 +1024,6 @@ func TestAuditDefaultIsCursorThenTheGateway(t *testing.T) {
 	if d := ae.s.AuditDefaults(ae.ctx); strings.Join(d.Models, " ") != withGateway || !d.Gateway {
 		t.Fatalf("with the gateway the default is %s (gateway offered: %v)", d.Models, d.Gateway)
 	}
-	// The runner has every CLI signed in as well.
 	box := ae.runner(ae.admin, "allbox", func(r *RunnerRegistration) {
 		r.CLIs = []RunnerCLI{{Name: "cursor"}, {Name: "claude"}, {Name: "opencode"}}
 		r.Features = []string{FeatureConfine, FeatureAudit, FeatureGatewayAudit}
@@ -1093,9 +1036,6 @@ func TestAuditDefaultIsCursorThenTheGateway(t *testing.T) {
 	if job := agentJobOf(t, claim); claim.Kind != JobAudit || job.CLI != "cursor" || job.Model != "grok-4.7-high" {
 		t.Fatalf("job = %s %+v", claim.Kind, job)
 	}
-	// A failure that isn't about the model still leaves the gateway to ask
-	// (TestDefaultAuditReachesTheGatewayAfterACursorError); the gateway failing
-	// that way ends the audit.
 	ae.finish(claim.ID, "failed", map[string]any{}, "the checkout could not be read")
 	ae.finish(ae.takeOn(box).ID, "failed", map[string]any{}, "the checkout could not be read")
 	last := ae.takeOn(box)
@@ -1113,7 +1053,6 @@ func TestAuditDefaultIsCursorThenTheGateway(t *testing.T) {
 		t.Fatalf("audit = %+v %v", got, err)
 	}
 
-	// With no runner online that has Cursor, the template's audit is the gateway's.
 	ae.runnerSeen(box, false)
 	ae.runnerSeen(ae.box, false)
 	card := ae.addAuto(ae.p, "Ask Grok", templateRule(t, "Ask Grok to audit"))
@@ -1249,8 +1188,6 @@ func TestWpReviewProgress(t *testing.T) {
 	if _, err := a.s.GatewayTask(a.ctx, a.admin, w.Job.ID); err != nil {
 		t.Fatal(err)
 	}
-	// Recent history: three audits through the gateway of 10 minutes, three
-	// rounds of 15.
 	now := a.clockNow().UnixMilli()
 	for i, q := range []string{
 		`CREATE TEMP TABLE j AS SELECT * FROM runner_jobs WHERE id = ?`,
@@ -1273,7 +1210,7 @@ func TestWpReviewProgress(t *testing.T) {
 			t.Fatalf("%s: %v", q, err)
 		}
 	}
-	a.tick(time.Minute) // a minute into the audit
+	a.tick(time.Minute)
 	got := a.command("/wp review").Block
 	has(got, "Audit #1 (model 3 of 3 in its chain): running 1m", "At the gateway: sent 1m ago, running; 41k tokens in, 1k out, last grew 1m ago; the runner last asked 1m ago",
 		"Audits like it: median 10m", "The session's part, once it starts: median 15m",
@@ -1416,7 +1353,6 @@ func TestDefaultAuditDoesNotWaitOnCursorsRunner(t *testing.T) {
 	}
 	ae.setClock(ae.clockNow().Add(2 * time.Minute))
 	ae.s.CheckAudits(ae.ctx)
-	// By now the runner with Cursor hasn't polled for 20 minutes: medium is passed over too.
 	if job := agentJobOf(t, ae.takeOn(gw)); job.CLI != GatewayCLI {
 		t.Fatalf("job = %+v", job)
 	}
@@ -1428,7 +1364,6 @@ func TestDefaultAuditDoesNotWaitOnCursorsRunner(t *testing.T) {
 	if info, err := ae.s.GetRunnerJob(ae.ctx, ae.admin, *first.JobID, -1); err != nil || info.State != "cancelled" {
 		t.Fatalf("Cursor's job = %+v %v", info, err)
 	}
-	// The gateway's job is the chain's last: it waits.
 	ae.setClock(ae.clockNow().Add(2 * auditRunnerWait))
 	ae.s.CheckAudits(ae.ctx)
 	if got := ae.audit(a.ID); got.Status != AuditRunning || len(got.Attempts) != 2 {
@@ -1470,7 +1405,6 @@ func TestPassQueuedAuditLeavesAClaimedJob(t *testing.T) {
 		t.Fatalf("audit = %+v", first)
 	}
 	ae.setClock(ae.clockNow().Add(auditRunnerWait + time.Minute))
-	// CheckAudits read the job as queued; the claim lands before the pass.
 	if _, err := ae.s.db.W.Exec(`UPDATE runner_jobs SET state = 'running', started_at = ? WHERE id = ?`, ae.clockNow().UnixMilli(), *first.JobID); err != nil {
 		t.Fatal(err)
 	}

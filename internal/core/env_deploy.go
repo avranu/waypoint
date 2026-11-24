@@ -304,7 +304,6 @@ func (s *Service) recordDeployTx(t *tx, e *Environment, in DeployInput) (*Deploy
 			expires = s.now().Add(time.Duration(e.TTLS) * time.Second).UnixMilli()
 		}
 		if status == DeploySucceeded {
-			// A different commit without a branch or version drops the old ones.
 			newCommit, newBranch, newVersion := d.Commit, d.Branch, d.Version
 			if d.Commit != "" && sameCommit(d.Commit, e.Commit) {
 				newCommit, newBranch, newVersion = longer(d.Commit, e.Commit), cmp(newBranch, e.Branch), cmp(newVersion, e.Version)

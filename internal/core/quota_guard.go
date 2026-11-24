@@ -12,8 +12,6 @@ import (
 	"time"
 )
 
-// Points are shared out per hour by cost; a session's hour belongs to whoever wrote its last prompt; the check reports and never stops anything.
-
 // EvQuotaGuard: a daily check found automation used quota its limits should
 // have held back (WP-932). It reaches only its user.
 const EvQuotaGuard = "usage.quota_guard"
@@ -362,7 +360,6 @@ func (s *Service) quotaGuardCheck(ctx context.Context, uid int64, from, to time.
 	}
 	hourMS := time.Hour.Milliseconds()
 	fromMS, toMS := from.UnixMilli(), to.UnixMilli()
-	// Readings after the window still share their rise with its last hours.
 	until := max(toMS, s.nowMS())
 	weeks, err := s.quotaWeekLines(ctx, uid, fromMS-quotaWeek.Milliseconds(), until)
 	if err != nil {
@@ -379,8 +376,6 @@ func (s *Service) quotaGuardCheck(ctx context.Context, uid int64, from, to time.
 	if err != nil {
 		return nil, err
 	}
-	// A rise between two readings is shared over the hours between them,
-	// so usage is read from the first of them.
 	first := fromMS
 	for _, w := range weeks {
 		first = min(first, w.start)
@@ -690,7 +685,7 @@ func (s *Service) guardSpending(ctx context.Context, uid, first, before, from, t
 			return nil, err
 		}
 		if sid == 0 {
-			continue // A session with no row has no prompts to go by, so its cost stays the person's.
+			continue
 		}
 		key := fmt.Sprintf("session:%d", sid)
 		for _, sh := range list {
@@ -704,7 +699,6 @@ func (s *Service) guardSpending(ctx context.Context, uid, first, before, from, t
 			g.models[sh.model] += sh.cost * share
 		}
 	}
-	// Runner jobs that run Claude for automation count as automation's by the cost they report over their run time, unless a person queued them.
 	jrows, err := s.db.R.QueryContext(ctx, `SELECT id, started_at, finished_at, coalesce(json_extract(result, '$.tokens.cost_usd'), 0) FROM runner_jobs
 		WHERE owner_id = ? AND cli = 'claude' AND kind IN (?,?,?) AND source != 'manual'
 		AND started_at IS NOT NULL AND finished_at IS NOT NULL AND started_at < ? AND finished_at >= ?`,

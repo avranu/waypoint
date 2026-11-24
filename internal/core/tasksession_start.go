@@ -6,8 +6,6 @@ import (
 	"strings"
 )
 
-// Waypoint knows no project's checkout, so a session starts where the person last worked on the project, on a machine their runner is on.
-
 // TaskSessionPlace is where a task session for a project can start: a
 // runner of the person's and the checkout they last worked in on its
 // machine.
@@ -66,7 +64,6 @@ func (s *Service) sessionPlaces(ctx context.Context, userID int64, need jobNeeds
 	if err != nil || len(runners) == 0 {
 		return out, err
 	}
-	// Worktree sessions are left out: their directory is usually gone.
 	rows, err := s.db.R.QueryContext(ctx, `SELECT p.key, x.machine, x.cwd FROM agent_sessions x
 		JOIN (SELECT id AS sid, project_id AS pid FROM agent_sessions WHERE user_id = ? AND project_id IS NOT NULL
 			UNION SELECT r.session_id, i.project_id FROM agent_runs r JOIN agent_sessions y ON y.id = r.session_id JOIN issues i ON i.id = r.issue_id
@@ -103,7 +100,7 @@ func (s *Service) sessionPlaces(ctx context.Context, userID int64, need jobNeeds
 				best[key] = &p
 				out = append(out, &p)
 			case r.Online && !b.Online:
-				*b = p // out holds b
+				*b = p
 			}
 		}
 	}

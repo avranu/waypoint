@@ -32,7 +32,6 @@ func TestProtectedFiles(t *testing.T) {
 	if protectedFiles(nil, files) != nil {
 		t.Error("no globs protect something")
 	}
-	// A "!" pattern exempts a file from broader rules wherever it sits in the list.
 	globs = []string{"!**/.env.example", "**/.env", "**/.env.*", "!**/.env.sample"}
 	files = []string{"deploy/.env.example", ".env.sample", "deploy/.env", ".env.production", "deploy/.env.example.bak", "main.go"}
 	got = protectedFiles(globs, files)
@@ -184,12 +183,10 @@ func TestAgentJobProtectedTakesACleanMerge(t *testing.T) {
 	}{
 		{"ci.yml merged by git", apart, merge + "echo both > work.txt\n" + commit, true, false, false},
 		{"and edited too", apart, merge + "echo both > work.txt\necho '  e: five' >> .github/workflows/ci.yml\n" + commit, true, true, false},
-		// An agent's own line on a shared conflicted line can't be split from the merge, so the whole round is held.
 		{"ci.yml conflicted, a new line", same, merge + conflictCI("FOUR 4") + commit, false, true, true},
 		{"ci.yml conflicted, both kept", same, merge + conflictCI(`4\n  d: FOUR`) + commit, true, false, false},
 		{"ci.yml conflicted, both kept, theirs first", same, merge + conflictCI(`FOUR\n  d: 4`) + commit, true, false, false},
 		{"ci.yml conflicted, theirs taken", same, merge + conflictCI("FOUR") + commit, true, false, false},
-		// A branch file taken whole, outside the round's diff, can still drop the target's change to it, so it is held like any settling that drops a side's line.
 		{"ci.yml conflicted, ours taken", same, merge + conflictCI("4") + commit, false, true, true},
 		{"ci.yml merged by git, main's change undone", apart, merge + "echo both > work.txt\nprintf 'on: push\\njobs:\\n  a: ONE\\n  b: two\\n  c: three\\n  d: four\\n' > .github/workflows/ci.yml\n" + commit, true, true, false},
 		{"ci.yml conflicted, a shared line deleted", same, merge + `echo both > work.txt
@@ -473,7 +470,6 @@ func TestResolutionIsTheMerge(t *testing.T) {
 	if !resolutionIsTheMerge("a\nmine\ntheirs\nb\n", diff3) || resolutionIsTheMerge("a\nold\nb\n", diff3) {
 		t.Error("diff3 style")
 	}
-	// A conflict with no markers (modify/delete) counts as the merge only if the file matches what git left.
 	if !resolutionIsTheMerge("kept\n", "kept\n") || resolutionIsTheMerge("", "kept\n") {
 		t.Error("modify/delete")
 	}
@@ -524,7 +520,6 @@ func TestExecPatch(t *testing.T) {
 			}
 		})
 	}
-	// Only the branch guard stops a held patch pushing elsewhere; this test remote would accept that push.
 	remote := newGitRepo(t)
 	gitOut(t, remote, "config", "receive.denyCurrentBranch", "ignore")
 	gitOut(t, remote, "branch", "fix/x")

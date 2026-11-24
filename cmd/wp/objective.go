@@ -17,8 +17,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/codeindex"
 )
 
-// The worker's own check reading is kept and shown but decides nothing; Waypoint re-reads each round itself on the runner, in fresh checkouts.
-
 var objectiveCmd = &command{
 	name: "objective", group: "Agent work", args: "[set|show|check|diagnose|ls|confirm|clear|retry|next|accept|end …]",
 	summary: "work a task in rounds until Waypoint's own reading says it is done: a check, an amount, a judge, or a loop",
@@ -432,8 +430,6 @@ func cmdObjectiveConfirm(c *cli, args []string) error {
 	if len(pos) != 1 {
 		return c.usage("say which task: wp objective confirm KEY")
 	}
-	// The proposal as it stands is the one confirmed: the server refuses
-	// if an agent writes another over it in between.
 	path := "/api/v1/issues/" + esc(normalKey(pos[0])) + "/objective"
 	raw, err := c.call("GET", path, nil)
 	if err != nil {

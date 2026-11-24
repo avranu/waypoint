@@ -104,7 +104,6 @@ const draftOf = (l: AutopilotLimits): LimitsDraft => ({
   spacing_minutes: l.spacing_minutes?.toString() ?? '',
   at_once: l.at_once?.toString() ?? '',
   merge_wait_hours: l.merge_wait_hours?.toString() ?? '',
-  // Set but empty overrides an inherited window with any time, every day.
   hours: l.hours === undefined ? '' : l.hours || 'any',
   days: l.days === undefined ? '' : l.days || 'all',
 })
@@ -155,7 +154,6 @@ function limitsOf(d: LimitsDraft): { limits: AutopilotLimits; error?: string } {
   if (prompt) limits.review_prompt = prompt
   const brief = d.review_text.trim()
   if (brief) limits.review_text = brief
-  // Set but empty: the built-in brief, over a custom one inherited.
   else if (d.review_builtin) limits.review_text = ''
   const query = d.query.trim()
   if (query) limits.query = query
@@ -225,7 +223,6 @@ export function LimitsForm({
   if (seen !== JSON.stringify(initial)) {
     const before = JSON.parse(seen) as LimitsDraft
     setSeen(JSON.stringify(initial))
-    // The server may respell a saved value ("9-18" comes back "09:00-18:00"), so a change from elsewhere replaces only the fields not typed since.
     if (!sent.mine(JSON.stringify(limitsOf(initial).limits)))
       setDraft((d) => {
         const next = { ...d }
@@ -247,7 +244,6 @@ export function LimitsForm({
       const was = draft
       return onSave(limits).then((back) => {
         if (!back) return
-        // A saved field shows the server's form only if it wasn't edited again meanwhile, so newer typing isn't overwritten.
         const kept = draftOf(back)
         sent.add(JSON.stringify(limitsOf(kept).limits))
         setDraft((d) => {
@@ -315,7 +311,6 @@ export function LimitsForm({
     <form
       className="space-y-3"
       onBlur={flush}
-      // Enter in a field saves (a form of several fields doesn't submit on it).
       onKeyDown={(e) => e.key === 'Enter' && e.target instanceof HTMLInputElement && flush()}
       onSubmit={(e) => e.preventDefault()}
     >
@@ -515,7 +510,6 @@ export function LimitsForm({
               id={`${idPrefix}-review_text`}
               rows={8}
               autoGrow
-              // Set past the limit so an over-long paste is flagged, not cut; doubled because the browser counts an emoji as two.
               maxLength={2 * MAX_REVIEW_TEXT + 100}
               value={draft.review_text}
               placeholder={shownBrief}

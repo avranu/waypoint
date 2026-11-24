@@ -13,8 +13,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// No person's session is involved: at its Stop, autopilot can move this session on.
-
 // autopilotStartWait is how long a new session has to show up.
 var autopilotStartWait = time.Minute
 
@@ -31,13 +29,11 @@ var launchTmux = func(ctx context.Context, args ...string) (string, error) {
 	if os.Getenv("INVOCATION_ID") != "" {
 		if sr, err := exec.LookPath("systemd-run"); err == nil {
 			argv := append([]string{"--user", "--scope", "--collect", "--quiet", "--", bin}, args...)
-			cmd := exec.CommandContext(ctx, sr, argv...)                                 // #nosec G204 -- tmux with a fixed subcommand; the task key is checked against keyRE
-			cmd.Env = withRunnerVars(env, "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS") // what systemd-run --user needs to reach the bus
+			cmd := exec.CommandContext(ctx, sr, argv...) // #nosec G204 -- tmux with a fixed subcommand; the task key is checked against keyRE
+			cmd.Env = withRunnerVars(env, "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS")
 			if out, err := cmd.CombinedOutput(); err == nil {
 				return string(out), nil
 			}
-			// The scope may have started tmux before failing: end that session
-			// so the direct start below doesn't leave a second one.
 			for i, a := range args {
 				if a == "-s" && i+1 < len(args) {
 					kill := exec.CommandContext(ctx, bin, "kill-session", "-t", args[i+1]) // #nosec G204 -- the session name this start chose
@@ -156,7 +152,7 @@ func (p *runnerProc) execAutopilotStart(ctx context.Context, run *jobRun, in aut
 	} else if !rl.worktree {
 		return held("no_worktree", "no worktree can be made in %s", dir)
 	}
-	rl.ended = "" // A new checkout clears the old session's end mark, so tidy won't remove a worktree it is using.
+	rl.ended = ""
 	name := worktreeName(ctx, rl.root, in.Key)
 	if name == "" {
 		return held("no_worktree", "no worktree for this session: every name for %s is taken", in.Key)

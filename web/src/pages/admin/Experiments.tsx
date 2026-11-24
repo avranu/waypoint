@@ -1,5 +1,3 @@
-// The first arm is the control: today's behaviour.
-
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { CircleCheck, FlaskConical, List } from 'lucide-react'

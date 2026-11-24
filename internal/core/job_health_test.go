@@ -654,7 +654,7 @@ func TestProblemCaps(t *testing.T) {
 		for i := range maxProblemsPerSource + 50 {
 			e.s.log.WarnContext(ctx, fmt.Sprintf("failed on item %d", i), "err", errors.New("x"))
 		}
-		e.s.log.WarnContext(ctx, "failed on item 0", "err", errors.New("x")) // A problem already listed still counts, even past the per-source cap.
+		e.s.log.WarnContext(ctx, "failed on item 0", "err", errors.New("x"))
 	})
 	e.s.saveJobHealth(e.ctx)
 	if r := e.one(`SELECT count(*) || '|' || sum(count) FROM job_problems WHERE source = 'chatty'`); r != fmt.Sprintf("%d|%d", maxProblemsPerSource+1, maxProblemsPerSource+51) {
@@ -862,9 +862,9 @@ func TestScheduleIsSound(t *testing.T) {
 		t.Errorf("%q is not a self-timed job", healthWatchdogName)
 	}
 	for _, order := range [][2]string{
-		{"quota guard watch", "autopilot"}, // the guard holds before autopilot starts (WP-932)
+		{"quota guard watch", "autopilot"},
 		{"quota guard", "quota guard baselines"},
-		{"audits", "objectives"}, // a judge's audit is moved on before the objective that reads it (WP-ADR142)
+		{"audits", "objectives"},
 		{"forge sync", "armed heads"},
 		{"backup", "timed automations"},
 		{"timed automations", "runners"},

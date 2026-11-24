@@ -43,7 +43,6 @@ func (s *Service) insertRelation(ctx context.Context, t *tx, r newRelation) (boo
 			return false, nil
 		}
 	}
-	// Inverse kinds cannot hold both directions (A blocks B and B blocks A), so the reverse pair is refused.
 	if k, _, ok := storedRelation(r.Kind); ok {
 		var back bool
 		if err := t.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM issue_relations WHERE kind = ? AND source_id = ? AND target_id = ?)`,

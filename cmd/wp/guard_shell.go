@@ -2,12 +2,10 @@ package main
 
 import "strings"
 
-// Not a shell: what it can't read is skipped, and a command it can't make sense of matches no rule.
-
 // guardCmd is one simple command.
 type guardCmd struct {
 	words   []string
-	open    []bool // per word: the shell may make other words of it (word.open)
+	open    []bool
 	subs    [][]*guardCmd
 	redirs  []string
 	heredoc string
@@ -119,7 +117,7 @@ func (p *guardParser) list(end byte) []*guardCmd {
 			listStart = len(out)
 		case c == '&' && p.peek(1) == '&':
 			p.i += 2
-			and = flush(false) // not after a ( group ): what ran in it is gone
+			and = flush(false)
 		case c == '&' && p.peek(1) == '>':
 			p.i++
 			p.redirect(cur)
@@ -151,7 +149,7 @@ func (p *guardParser) list(end byte) []*guardCmd {
 			p.i++
 			flush(false)
 			if n := len(groups); n > 0 {
-				listStart, groups = groups[n-1], groups[:n-1] // a & after it covers the whole group
+				listStart, groups = groups[n-1], groups[:n-1]
 			} else if end == ')' {
 				return out
 			}
@@ -299,7 +297,7 @@ func (p *guardParser) word(cur *guardCmd) (string, bool) {
 			b.WriteString(subPlaceholder)
 			open = true
 		case c == '$' && p.peek(1) == '\'':
-			p.i++ // $'...': read as '...'
+			p.i++
 		case c == '`' && p.end != '`':
 			p.i++
 			cur.subs = append(cur.subs, p.list('`'))

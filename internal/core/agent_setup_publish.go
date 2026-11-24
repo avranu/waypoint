@@ -1,7 +1,5 @@
 package core
 
-// Shared-block and non-.claude/ pull requests automerge once CI and review pass; agent-run files (hooks, settings, MCP, agents, skills) wait for a person to merge.
-
 import (
 	"context"
 	"crypto/sha256"
@@ -220,20 +218,18 @@ const (
 	sharedCurrent = "current"
 	sharedMissing = "missing"
 	sharedBehind  = "behind"
-	sharedEdited  = "edited" // Edited: the block's text matches no saved version.
+	sharedEdited  = "edited"
 	sharedUnread  = "unread"
 	sharedNone    = "none"
 )
 
 type sharedStatus struct {
-	state       string
-	file        string
-	version     int
-	openPR      int
-	openURL     string
-	openVersion int
-	// triedVersion: the newest version a pull request was opened (or
-	// tried) for on this repo, whatever became of it.
+	state        string
+	file         string
+	version      int
+	openPR       int
+	openURL      string
+	openVersion  int
 	triedVersion int
 	lastError    string
 }
@@ -276,7 +272,7 @@ func (s *Service) sharedState(ctx context.Context, r setupRepo, v SharedVersion)
 	st.file = rootInstructionFile(claude.content, hasC, agents.content, hasA)
 	block, has := sharedBlock(files[st.file].content)
 	if !has && st.file == "AGENTS.md" && hasC {
-		block, has = sharedBlock(claude.content) // put in CLAUDE.md by hand
+		block, has = sharedBlock(claude.content)
 	}
 	switch {
 	case v.Text == "" && !has:
@@ -400,8 +396,6 @@ var sharedPublishLocks sync.Map
 // read fresh at its default branch, and closes the older one it replaces.
 // A failure is recorded on the repo (and returned).
 func (s *Service) publishSharedTo(ctx context.Context, actor *Actor, r setupRepo, v SharedVersion) error {
-	// One publish per repo at a time: a person's and the hourly one for the
-	// same version would otherwise both open a pull request.
 	lk, _ := sharedPublishLocks.LoadOrStore(fmt.Sprintf("%d/%s", r.forgeID, strings.ToLower(r.repo)), &sync.Mutex{})
 	lk.(*sync.Mutex).Lock()
 	defer lk.(*sync.Mutex).Unlock()
@@ -662,8 +656,6 @@ func (s *Service) EditAgentFile(ctx context.Context, actor *Actor, in AgentFileE
 	var labels []string
 	switch agentFileKind(in.Path) {
 	case fileHookScript, fileSettings, fileMCP, fileAgent, fileSkill:
-		// These run commands on agents' machines (agents and skills can carry
-		// hooks in their frontmatter): a person merges them.
 	default:
 		if !strings.Contains("/"+strings.TrimPrefix(in.Path, "./"), "/.claude/") {
 			labels = []string{automergeLabel}
@@ -686,7 +678,6 @@ type agentFilePR struct {
 // permission request approved with a rule, WP-233).
 func (s *Service) openAgentFilePR(ctx context.Context, actor *Actor, r *setupRepo, af *agentForge, in agentFilePR) (*AgentFileEditResult, error) {
 	rec := &agentPRRecord{forgeID: r.forgeID, repo: r.repo, kind: agentPREdit, paths: []string{in.path}, by: actor.id()}
-	// The branch suffix hashes the change and message, so rules whose names slug alike still get separate branches.
 	sum := sha256.Sum256(fmt.Appendf(nil, "%d:%s:%s:%d:%s:%s", actor.id(), r.repo, in.path, s.nowMS(), in.message, in.content))
 	rec.branch = fmt.Sprintf("waypoint/%s-%s", in.branch, hex.EncodeToString(sum[:])[:5])
 	if _, err := af.commit.CommitFiles(ctx, af.f, r.repo, CommitInput{Base: in.base, Branch: rec.branch, Message: in.message,

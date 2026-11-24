@@ -136,7 +136,6 @@ func TestHeldReviewWatchdogLeavesAWorkingSession(t *testing.T) {
 	a.prompt("one more thing")
 	a.setClock(a.clockNow().Add(heldStopLost + time.Minute))
 	a.s.sweepRounds(a.ctx)
-	// The watchdog must not add a second step or start the review under a working session.
 	var n, started int
 	_ = a.s.db.R.QueryRow(`SELECT count(*), count(CASE WHEN state IN ('starting','started') THEN 1 END) FROM autopilot_steps WHERE session_id = ?`, a.session).Scan(&n, &started)
 	if n != 1 || started != 0 {
@@ -517,7 +516,6 @@ func TestHeldReviewWaitsCountFromTheTrouble(t *testing.T) {
 			t.Fatalf("opened %+v", created)
 		}
 	})
-	// Time an audit spent queued doesn't count as the session's screen being busy.
 	t.Run("a busy screen after a long audit queue", func(t *testing.T) {
 		a, box, _ := firstEnv(t)
 		first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude"})
@@ -539,7 +537,6 @@ func TestHeldReviewWaitsCountFromTheTrouble(t *testing.T) {
 			t.Fatalf("the queue used up the screen's wait: %+v %q", r, a.reason(id))
 		}
 	})
-	// The screen's wait counts from when the round stopped waiting; a review that ended with findings the screen never took is reported as ended, not unstarted.
 	t.Run("a busy screen after the review ended", func(t *testing.T) {
 		a, box, g := firstEnv(t)
 		first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude"})
@@ -584,7 +581,6 @@ func TestHeldReviewWaitsCountFromTheTrouble(t *testing.T) {
 		}
 		a.stopWith("Waiting for the review.")
 		id := a.heldRound()
-		// A high-provenance round gets the Sonnet reviewer when its audit is slow.
 		if _, err := a.s.db.W.Exec(`UPDATE review_triage SET features = json_set(features, '$.provenance', 'high') WHERE round_id = ?`, id); err != nil {
 			t.Fatal(err)
 		}
@@ -941,7 +937,6 @@ func TestReviewOwedAutopilotOffOtherTaskStop(t *testing.T) {
 	if in.ReviewOf != first.Key {
 		t.Fatalf("job reviews %q, want %s", in.ReviewOf, first.Key)
 	}
-	// The report is the session's next Stop, though the last task it finished is the second one.
 	a.prompt(in.Review)
 	a.jobDone(1, AutopilotJobResult{Outcome: "reviewing"})
 	a.stopWith("Reviewed: nothing to fix.")

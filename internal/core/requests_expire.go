@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 )
 
-// Hook-filed requests (one tool call, or a turn's end) expire once the agent moves on or its session ends; agent-filed requests never expire.
-
 // Why a request expired, as people read it.
 const (
 	expiredNewPrompt = "The agent moved on: a new prompt started a later turn in its session, so a decision would reach it out of context."

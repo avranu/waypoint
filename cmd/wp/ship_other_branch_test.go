@@ -146,7 +146,6 @@ func TestShipOnBranchNamedForAnotherTask(t *testing.T) {
 		t.Errorf("a finished task's commit shipped again (%d opened, exit %d):\n%s", len(fg.created), code, out)
 	}
 
-	// A task that can't be read may be finished, so its commits are neither shipped nor left behind; --no-ship still works.
 	unread := task("Can't be read")
 	pushed("The work (" + unread + ")")
 	unreadable.Store(unread)
@@ -165,7 +164,6 @@ func TestShipOnBranchNamedForAnotherTask(t *testing.T) {
 		t.Errorf("--no-ship didn't finish it:\n%s", show)
 	}
 
-	// One matching commit must not make the branch's other commits ship under this task.
 	mixed := task("One commit of several")
 	pushed("Add the parser (" + other + ")")
 	sh(t, dir, "commit", "-q", "--allow-empty", "-m", "Fix the redirect ("+mixed+")")

@@ -52,8 +52,6 @@ export function Attachments({
 }) {
   const qc = useQueryClient()
   const input = useRef<HTMLInputElement>(null)
-  // Only when just asked: the click that asked still counts as the person's,
-  // so the browser allows it.
   const asked = useRef(startAdding)
   useEffect(() => {
     if (startAdding && !asked.current && editable) input.current?.click()

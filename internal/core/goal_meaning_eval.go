@@ -11,8 +11,6 @@ import (
 	"sort"
 )
 
-// Drift is judged against the held-out error rates stored with the fit, and only on labels after its LabelThrough.
-
 const (
 	meaningEvalMin   = 40
 	meaningEvalClass = 10

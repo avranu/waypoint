@@ -6,8 +6,6 @@ import (
 	"strings"
 )
 
-// only sessions Waypoint started for tasks are ended, and only once truly finished (no background work, no open request); a person's own sessions are never ended
-
 // taskSessionDone reports whether a task session is done for good: it truly
 // finished at this Stop, holds no unfinished run, and finished at least one
 // task with wp done.
@@ -31,8 +29,6 @@ func (s *Service) taskSessionDone(ctx context.Context, q queryer, sessionID int6
 	if rem, err := s.boundRemaining(ctx, q, sessionID); err != nil || len(rem) > 0 {
 		return false, err
 	}
-	// Its last wp done must have handed off, or found nothing to hand to:
-	// a ready task it could not start, or --no-next, keeps the session open.
 	var ended sql.NullInt64
 	if err := q.QueryRowContext(ctx, `SELECT ended_at FROM agent_runs WHERE id = ?`, run).Scan(&ended); err != nil {
 		return false, err

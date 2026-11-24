@@ -1,7 +1,5 @@
 package core
 
-// Features are recorded per run as it happens, since a release date cannot say what an agent had (merged but undeployed, an older wp, or a session still holding old hooks); recording never blocks the work.
-
 import (
 	"context"
 	"database/sql"
@@ -18,11 +16,11 @@ import (
 const (
 	featureServer        = "server"
 	featureWP            = "wp"
-	featureSessionServer = "session_server" // the server this session started on; its hooks and instructions stay as they were then
+	featureSessionServer = "session_server"
 	featureSessionWP     = "session_wp"
 	featureKit           = "kit"
 	featureKitDrift      = "kit_drift"
-	featureCLIVersion    = "cli_version" // Claude Code's, as far as the session had reported
+	featureCLIVersion    = "cli_version"
 
 	featureServerEnd        = "server_end"
 	featureWPEnd            = "wp_end"

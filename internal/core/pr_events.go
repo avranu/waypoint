@@ -8,8 +8,6 @@ import (
 	"time"
 )
 
-// pr.labeled is derived by diffing the labels a forge reports against those recorded, not from label events, so it works the same on every forge.
-
 // addedLabels are cur's labels that old didn't have (all of them for a pull
 // request seen for the first time).
 func addedLabels(old, cur *PullRequest) []string {
@@ -100,8 +98,7 @@ func (s *Service) tokenLogin(ctx context.Context, f *Forge, bot bool) string {
 // and one in a person's comment made it a bot's finding, with a bot's
 // severity, and took their review out of the people's (WP-934).
 type posters struct {
-	logins []string
-	// If a token's account can't be read, its posts count as a person's: a bot marker is trusted only from an account known to be Waypoint's.
+	logins  []string
 	unknown bool
 }
 

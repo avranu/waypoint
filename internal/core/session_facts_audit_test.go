@@ -265,7 +265,6 @@ func TestFactsFailureTextCutOnARuneBoundary(t *testing.T) {
 	e := transcriptEnv(t)
 	jo := e.user("jo", false)
 	f := factFile{userID: jo.User.ID, machine: "box", session: "s1", file: "main", end: 5}
-	// Truncated error text must not split a multi-byte rune.
 	if err := e.s.recordFactFailure(e.ctx, f, errors.New("a"+strings.Repeat("€", 400))); err != nil {
 		t.Fatal(err)
 	}

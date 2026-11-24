@@ -442,7 +442,6 @@ function EntryView({ entry: e }: { entry: GlossaryEntry }) {
     mutationFn: () => glossaryApi.remove(e.id),
     onSuccess: async () => {
       toast(`Deleted “${e.term}”`)
-      // Leave first, so nothing on this page asks for the entry again.
       await navigate(
         e.project_key
           ? { to: '/p/$key/glossary', params: { key: e.project_key } }

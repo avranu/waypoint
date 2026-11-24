@@ -101,16 +101,13 @@ type Service struct {
 
 	failFanoutItems func() error
 
-	// A pull request's base update is recorded per base tip, so a branch is updated once per tip and automation cannot loop.
 	baseUpdated     sync.Map
 	gatewayRefused  sync.Map
 	staleChecksRead sync.Map
 
-	// A read of the base that doesn't show the last Waypoint merge yet is stale.
 	baseMerged     sync.Map
 	baseRed        sync.Map
 	rerunRefusedAt sync.Map
-	// A commit's parents don't change, so that cache never goes stale.
 	stackOpt       sync.Map
 	stackCommits   sync.Map
 	poolSat        sync.Map
@@ -118,7 +115,6 @@ type Service struct {
 	workLogReading atomic.Bool
 	prBodyWriting  atomic.Bool
 
-	// Commits don't change, so the cached answer never goes stale.
 	contains sync.Map
 
 	bg sync.WaitGroup
@@ -130,22 +126,21 @@ type Service struct {
 	// language models for AI tasks, swappable in tests
 	LLM LLM
 	// Meaning is the meaning service (package meaning); nil without one.
-	Meaning      meaning.Models
-	aiSlots      chan struct{}
-	surplusSlot  chan struct{}
-	aiMu         sync.Mutex
-	aib          aiBudget
-	aiQueued     map[int64]bool
-	relating     int                     // guarded by aiMu
-	titling      int                     // guarded by aiMu
-	storying     map[int64]bool          // guarded by aiMu
-	prepping     int                     // guarded by aiMu
-	prepAhead    map[int64]prepAheadMark // guarded by aiMu
-	trialing     bool                    // guarded by aiMu
-	prepPolMu    sync.Mutex
-	prepPol      *prepPolicy
-	prepPolStale bool
-	// delegPolMu guards the fields; delegPolComp lets one compute run at a time.
+	Meaning       meaning.Models
+	aiSlots       chan struct{}
+	surplusSlot   chan struct{}
+	aiMu          sync.Mutex
+	aib           aiBudget
+	aiQueued      map[int64]bool
+	relating      int
+	titling       int
+	storying      map[int64]bool
+	prepping      int
+	prepAhead     map[int64]prepAheadMark
+	trialing      bool
+	prepPolMu     sync.Mutex
+	prepPol       *prepPolicy
+	prepPolStale  bool
 	delegPolMu    sync.Mutex
 	delegPolComp  sync.Mutex
 	delegPol      *delegPolicy
@@ -153,9 +148,9 @@ type Service struct {
 	delegPolRetry time.Time
 	delegPolErr   error
 	goalPol       goalCtxCache
-	screening     map[int64]bool // guarded by aiMu
-	drilling      bool           // guarded by aiMu
-	driftChecks   map[int64]bool // guarded by aiMu
+	screening     map[int64]bool
+	drilling      bool
+	driftChecks   map[int64]bool
 
 	botKick         chan struct{}
 	botMu           sync.Mutex
@@ -182,12 +177,11 @@ type Service struct {
 	ranker  rankerState
 	goals   goalState
 
-	sessCache    sessionCache
-	stopWaits    stopWaits
-	shipWaits    shipWaits
-	babysitLocks keyedLocks
-	shipLocks    keyedLocks
-	// Opening a pull request is serialized per forge, repo and head branch, so a session's ship and Waypoint's own cannot both open one.
+	sessCache        sessionCache
+	stopWaits        stopWaits
+	shipWaits        shipWaits
+	babysitLocks     keyedLocks
+	shipLocks        keyedLocks
 	branchLocks      namedLocks
 	objectiveLocks   keyedLocks
 	objectiveWatched atomic.Int64
@@ -218,11 +212,9 @@ func New(d *db.DB, cfg Config, log *slog.Logger) *Service {
 	s.started = s.now()
 	s.jobs = newJobLedger(cfg.Logs, func() time.Time { return s.now() })
 	s.log = slog.New(&sourceHandler{ledger: s.jobs, next: log.Handler()})
-	// Forges are configured by admins and may run on the same host.
 	forgeEgress := cfg.Egress
 	forgeEgress.AllowLoopback = true
 	s.Forges = &httpForgeClient{http: forgeEgress.client(forgeTimeout), patient: forgeEgress.client(forgePatientTimeout)}
-	// Each call's context sets its limit; the client only bounds the wait for the headers, which a provider that doesn't stream sends with the whole answer.
 	s.LLM = &httpLLM{http: forgeEgress.streamClient(llmHeaderTimeout)}
 	if strings.TrimSpace(cfg.MeaningURL) != "" {
 		s.Meaning = meaning.NewHTTP(cfg.MeaningURL, cfg.MeaningToken, forgeEgress.client(meaning.Timeout), s.log, func() time.Time { return s.now() })
@@ -289,8 +281,7 @@ type Actor struct {
 	// RunnerJob is the runner job whose own token (WP-418) is behind the
 	// request, if any.
 	RunnerJob int64
-	// A runner job's token reaches its project and sub-projects at most at editor.
-	scope map[int64]int
+	scope     map[int64]int
 	// Agent is the acting LLM's identity ("anthropic/claude-opus-5-5"), from
 	// an agent token or the X-Waypoint-Agent header; empty for people.
 	Agent string
@@ -316,12 +307,9 @@ type Actor struct {
 	// ClientVersion is the wp that made the request, from its User-Agent
 	// (WP-256); "" for anything else.
 	ClientVersion string
-	// budget is shared by every automation one change sets off, so rules
-	// that trigger each other can't multiply without bound.
-	budget    *int
-	forgeSync bool
-	// Text this actor writes counts as written by textAgent: unreviewed agent text, as if that agent had written it here.
-	textAgent string
+	budget        *int
+	forgeSync     bool
+	textAgent     string
 }
 
 func (a *Actor) id() int64 {
@@ -453,9 +441,8 @@ func SystemActor() *Actor {
 // tx wraps a write transaction and collects events to dispatch on commit.
 type tx struct {
 	*sql.Tx
-	s     *Service
-	actor *Actor
-	// Statements run on the transaction, not on this context.
+	s       *Service
+	actor   *Actor
 	ctx     context.Context
 	events  []*Event
 	pending []func()
@@ -489,7 +476,6 @@ func (s *Service) write(ctx context.Context, actor *Actor, f func(t *tx) error) 
 		span.SetAttributes(attribute.Int64("db.wait_ms", time.Since(queued).Milliseconds()))
 	}
 	t := &tx{Tx: sqlTx, s: s, actor: actor, ctx: ctx}
-	// A panic must not leave the only write connection inside a transaction.
 	defer func() {
 		if p := recover(); p != nil {
 			_ = sqlTx.Rollback()

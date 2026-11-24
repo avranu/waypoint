@@ -83,7 +83,6 @@ func (p *runnerProc) planWorktree(ctx context.Context, rl *relaunch) string {
 	if !claudeTrusts(root) {
 		return "no worktree for this session: Claude Code hasn't been trusted in " + root + " (run claude there once and accept)"
 	}
-	// the sweep may remove this worktree only when the new session doesn't start in it (worktreeInUse's spare check)
 	if top := gitTop(rl.dir); top != "" {
 		top = tidyReal(top)
 		if base := filepath.Join(root, autopilotWorktrees); top != base && inside(top, base) {
@@ -95,7 +94,6 @@ func (p *runnerProc) planWorktree(ctx context.Context, rl *relaunch) string {
 	if rl.respawn {
 		return ""
 	}
-	// claude --worktree works from the folder it starts in, and a pane's shell may be elsewhere, so cd to the repo root first
 	if rl.shellDir == "" || tidyReal(rl.shellDir) != root {
 		rl.cdTo = root
 	}
@@ -155,8 +153,6 @@ func worktreeName(ctx context.Context, root, key string) string {
 			}
 			return name
 		}
-		// rev-parse -q --verify exits 1 when the ref is missing; any other
-		// failure says nothing about the branch, so the name isn't free.
 		out, err := exec.CommandContext(ctx, "git", "-C", root, "rev-parse", "-q", "--verify", "refs/heads/"+autopilotWorktreeBranch(name)).CombinedOutput() // #nosec G204 G702 -- fixed git subcommand
 		_ = out
 		var ee *exec.ExitError
@@ -181,7 +177,7 @@ func (p *runnerProc) sweepWorktrees(ctx context.Context, run *jobRun, in autopil
 	if _, err := tidyGit(ctx, rl.root, "fetch", "--prune", "--quiet"); err != nil {
 		say("worktree sweep: fetch failed (%v); judging by the refs as they are", err)
 	}
-	p.sweepPushEnded(ctx, run, rl) // The ended session's commits are pushed before its worktree is judged.
+	p.sweepPushEnded(ctx, run, rl)
 	repo, _, _ := gitInfo(rl.root)
 	merged, err := p.c.tidyMergedPRs(repo)
 	if err != nil {

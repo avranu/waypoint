@@ -201,7 +201,6 @@ func TestNoteRewritesBoundsItsInput(t *testing.T) {
 	if f.evidenceRows(t) != 0 || f.relationRows(t) != 0 {
 		t.Error("a refused call wrote something")
 	}
-	// wp sends HEAD when it cannot read the commit (cmd/wp/rewrites.go:93-95), so core must accept it.
 	for _, head := range []string{"", "HEAD", strings.Repeat("f", 40), strings.Repeat("F", 64), "refs/heads/x"} {
 		if _, err := f.s.NoteRewrites(f.ctx, f.admin, f.b.Key, "o/r", head, f.prs); err != nil {
 			t.Errorf("head %q: %v", head, err)
@@ -287,7 +286,6 @@ func TestInsertRelationIsIdempotent(t *testing.T) {
 			t.Errorf("%s: inserted = %v, %v; want %v, nil", st.name, got, err, st.want)
 		}
 	}
-	// A relation whose kind has an inverse, said the other way round, is refused: it contradicts the one that stands.
 	if got, err := put(f.b.ID, f.a.ID, "blocks", false); got || !IsInvalid(err) {
 		t.Errorf("blocks the other way: inserted = %v, %v; want refused as invalid", got, err)
 	}

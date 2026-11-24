@@ -17,13 +17,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// Fan-outs (WP-148, X6): parallel work as budgeted task sessions, not
-// ad-hoc agents in one session. wp fanout PLAN.toml files a task per work
-// package and starts them as background task sessions here, a few at a
-// time, each in its own worktree with its own model and budget. Each
-// session's wp done (or its end) starts the next; the coordinator hears one
-// line per finish.
-
 var fanoutCmd = &command{
 	name: "fanout", group: "Code and CI", args: "PLAN.toml [--dry-run] | status|start|stop …",
 	summary: "run work packages as budgeted background task sessions",

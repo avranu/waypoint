@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# CI holds no key to production: the deployer deploys the newest vX.Y.Z tag only if it is on main, descends from the live commit, is published, and was not tried before.
 set -euo pipefail
 
 CONF=${WAYPOINT_DEPLOYER_CONF:-$HOME/.config/waypoint-deployer}
@@ -13,7 +12,6 @@ TRIED=$STATE/tried
 LOG=$STATE/deployer.log
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-# Read, never sourced, so the settings file cannot run code.
 setting() {
   [[ -r $2 ]] || return 0
   sed -n "s/^$1=//p" "$2" | tail -n 1 | sed "s/^[\"']//; s/[\"']\$//"
@@ -21,8 +19,6 @@ setting() {
 FORGE_URL=${FORGE_URL:-$(setting FORGE_URL "$CONF/settings")}
 REPO=${REPO:-$(setting REPO "$CONF/settings")}
 WAYPOINT_URL=${WAYPOINT_URL:-$(setting WAYPOINT_URL "$CONF/settings")}
-# Only an origin URL (scheme://host[/path]/owner/name) names the forge's root:
-# an ssh one (git@host:owner/name) names no URL the API answers on.
 if [[ -z $FORGE_URL || -z $REPO ]] && origin=$(git --git-dir="$MIRROR" remote get-url origin 2>/dev/null) &&
   [[ ${origin%.git} =~ ^[a-z][a-z0-9+.-]*://[^/]+(/[^/]+)*/[^/]+/[^/]+$ ]]; then
   origin=${origin%.git}
@@ -50,7 +46,6 @@ forge_token() {
   tr -d '[:space:]' <"$CONF/forge-token"
 }
 
-# The token travels in the environment, never argv; no token, no fetch.
 mgit() {
   local token
   token=$(forge_token) || exit 1
@@ -119,7 +114,6 @@ decide() {
   elif ! git --git-dir="$MIRROR" merge-base --is-ancestor "$SHA" refs/heads/main; then
     REASON="REFUSED: $TAG ($SHA) is not on main"
   elif live=$(live_commit) && [[ -n $(live_tag) && -z $live ]]; then
-    # A live commit the mirror doesn't have can't be shown to be in the tag, so refuse until it is on main.
     REASON="REFUSED: the live $(live_tag) is not on main yet, so $TAG may not contain it; merge it to main (or deploy a release by hand)"
   elif [[ -n $live ]] && ! git --git-dir="$MIRROR" merge-base --is-ancestor "$live" "$SHA"; then
     REASON="REFUSED: $TAG ($SHA) does not descend from the live $(live_tag) ($live)"
@@ -143,7 +137,6 @@ record() {
     RUN_URL="$FORGE_URL/$REPO/releases/tag/$TAG" "$RECORD" "$@" || say "recording '$1' in Waypoint failed (the deploy stands)"
 }
 
-# Installs by rename: a running bash script must not be overwritten in place.
 self_update() {
   local pair path dest tmp
   for pair in deploy/pull-deploy.sh:waypoint-deployer deploy/remote-deploy.sh:waypoint-deploy deploy/record-deployment.sh:waypoint-record-deployment; do

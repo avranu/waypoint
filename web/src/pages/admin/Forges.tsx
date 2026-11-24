@@ -47,7 +47,6 @@ const DEFAULT_URL: Partial<Record<Kind, string>> = {
 export function ForgesTab() {
   const qc = useQueryClient()
   const forges = useQuery(q.forges())
-  // Turning on automatic projects runs discovery first: with more than a few new projects, the admin picks which repos get one.
   const [picking, setPicking] = useState<{
     forge: Forge
     repos: DiscoveredRepo[]
@@ -729,8 +728,6 @@ function ForgeDialog({
     setMirror((existing?.mirror_private ?? []).join('\n'))
     setMirrorAccount(existing?.mirror_account ?? '')
   }, [forge]) // eslint-disable-line react-hooks/exhaustive-deps
-  // Turning automatic projects on with a token: saved off, then on once
-  // the admin has seen what discovery would make.
   const turningOn = auto && !existing?.auto_projects && !!(token.trim() || existing?.has_token)
   const mirrorPrivate = mirror.split(/\s+/).filter(Boolean)
   const save = useMutation({

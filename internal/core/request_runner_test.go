@@ -9,8 +9,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core/udiff"
 )
 
-// The wp runner's own side of these jobs is tested in cmd/wp.
-
 // runnersFor sets up ana's runner on the session's machine, another of hers
 // on a different machine, and the admin's on the same machine name.
 func (r *reqEnv) runnersFor() (box, other, adminBox *Runner) {
@@ -131,7 +129,6 @@ func TestApprovedChangeAppliesThroughARealRunnerJob(t *testing.T) {
 	if res := r.stop(); len(res.Deliver) != 0 {
 		t.Fatal("told the agent before it was applied")
 	}
-	// Shaped like cmd/wp's apply executor output; the two must stay in step.
 	if _, err := r.s.FinishRunnerJob(r.ctx, r.ana, w.Job.ID, RunnerFinish{State: "done", Result: json.RawMessage(`{"files":["CLAUDE.md","docs/new.md"],"commit":"abcdef0123456789"}`)}); err != nil {
 		t.Fatal(err)
 	}

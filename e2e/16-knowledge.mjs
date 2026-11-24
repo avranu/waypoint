@@ -104,8 +104,6 @@ async function run(width, scheme) {
   await page.getByRole("link", { name: /Lease/ }).first().click();
   await page.waitForURL(/\/glossary\/\d+$/);
   await page.getByRole("button", { name: "Add an alias" }).click();
-  // Both changes show at once (optimistically); wait for the server to have
-  // taken each before reading it back or asking as the agent.
   const saved = () =>
     page.waitForResponse(
       (r) =>
@@ -224,7 +222,7 @@ async function run(width, scheme) {
     .fill("https://github.com/acme/rocket/pull/7");
   await page.getByRole("option", { name: /Link https/ }).click();
   await page.getByText("acme/rocket PR #7").waitFor();
-  await page.keyboard.press("Escape"); // The link box stays open after an add, so Escape closes it.
+  await page.keyboard.press("Escape");
   let links = await api("GET", `/links?type=design&id=${note.id}`);
   ok(
     links.some((l) => l.item.key === issue.key) &&
@@ -265,7 +263,6 @@ async function run(width, scheme) {
   await shot("review");
   await card.getByRole("button", { name: "Approve" }).click();
   await card.waitFor({ state: "detached" });
-  // The card leaves optimistically, before the server answers: poll for it.
   let approved = false;
   for (let i = 0; i < 25 && !approved; i++) {
     if (i) await page.waitForTimeout(200);

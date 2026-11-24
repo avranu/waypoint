@@ -31,7 +31,6 @@ func (s *Server) ciBoardRoutes(mux *http.ServeMux) {
 }
 
 func (s *Server) ciReport(w http.ResponseWriter, r *http.Request) (any, error) {
-	// Fields a newer reporter adds are ignored, not refused.
 	var in core.CIHostReport
 	if err := json.NewDecoder(io.LimitReader(r.Body, 2<<20)).Decode(&in); err != nil {
 		return nil, fmt.Errorf("%w: %v", errBadRequest, err)

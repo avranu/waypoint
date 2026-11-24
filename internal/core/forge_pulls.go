@@ -39,16 +39,13 @@ type ForgePR struct {
 	Mergeable *bool  `json:"mergeable,omitempty"`
 	HeadRepo  string `json:"head_repo,omitempty"`
 	// MergeSHA is the commit a merged pull request became (WP-132).
-	MergeSHA string `json:"merge_sha,omitempty"`
-	// GitLab positions line comments against these.
+	MergeSHA          string `json:"merge_sha,omitempty"`
 	baseSHA, startSHA string
-	// sameRepo: the forge says the head is in the repo itself without
-	// naming it (GitLab's project ids).
-	sameRepo  bool
-	actor     string
-	requested []string
-	wipAuto   bool
-	mergeMute bool
+	sameRepo          bool
+	actor             string
+	requested         []string
+	wipAuto           bool
+	mergeMute         bool
 }
 
 // LineComment is one line comment of a review, on the new side of the diff.
@@ -237,7 +234,6 @@ func (a apiPR) pr() *ForgePR {
 	p := &ForgePR{Number: a.Number, Title: a.Title, Body: a.Body, URL: a.HTMLURL, State: a.State,
 		Author: cmp(a.User.Login, a.User.Username), BaseRef: a.Base.Ref, HeadRef: a.Head.Ref, HeadSHA: a.Head.SHA}
 	switch {
-	// GitHub's pull request list has merged_at but no merged flag.
 	case a.Merged || (a.State == "closed" && a.MergedAt != nil):
 		p.State = "merged"
 	case a.State == "open" && (a.Draft || draftTitle(a.Title)):
@@ -253,12 +249,10 @@ func (a apiPR) pr() *ForgePR {
 	p.Additions, p.Deletions, p.ChangedFiles, p.Commits = a.Additions, a.Deletions, a.ChangedFiles, a.Commits
 	p.Mergeable = a.Mergeable
 	if draftTitle(a.Title) {
-		// Forgejo and Gitea answer mergeable=false for any pull request
-		// titled work in progress, conflict or not (WP-171).
 		p.Mergeable, p.mergeMute = nil, true
 	}
 	if p.State == "merged" {
-		p.MergeSHA = a.MergeCommitSHA // GitHub fills merge_commit_sha before the merge too (a test merge), so it is read only once merged.
+		p.MergeSHA = a.MergeCommitSHA
 	}
 	if a.Head.Repo != nil {
 		p.HeadRepo = a.Head.Repo.FullName
@@ -393,7 +387,6 @@ func (c *httpForgeClient) React(ctx context.Context, f *Forge, repo string, numb
 		}
 		return strconv.FormatInt(res.ID, 10), nil
 	}
-	// Forgejo answers 500 to a reaction this account already made, so clear it before reacting again (GitHub answers a repeat itself).
 	if f.Kind != "github" {
 		_ = c.Unreact(ctx, f, repo, number, commentID, emoji, "")
 	}
@@ -425,7 +418,6 @@ func (c *httpForgeClient) Unreact(ctx context.Context, f *Forge, repo string, nu
 		}
 		return c.do(ctx, f, http.MethodDelete, path, nil, nil)
 	}
-	// Forgejo removes the caller's reaction by its content.
 	path := fmt.Sprintf("/repos/%s/issues/%d/reactions", repo, number)
 	if commentID != "" {
 		path = fmt.Sprintf("/repos/%s/issues/comments/%s/reactions", repo, url.PathEscape(commentID))

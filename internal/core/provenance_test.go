@@ -428,8 +428,6 @@ func TestReviewFindings(t *testing.T) {
 	bobAgent := asAgent(bob, "anthropic/claude-opus-5-5")
 	e.issue(bobAgent, IssueInput{Project: mine.Key, Title: "Bob's agent work"})
 	for range 3 {
-		// Agent-written issues start a safety screen in the background, which
-		// reads the clock: let it finish before moving the clock on.
 		e.s.Wait()
 		e.setClock(e.clockNow().Add(time.Minute))
 		e.issue(agent, IssueInput{Project: hidden.Key, Title: "Newer, hidden"})
@@ -499,7 +497,6 @@ func TestLooseReferences(t *testing.T) {
 	if keys := e.search(e.admin, "app1"); len(keys) != 1 || keys[0] != i.Key {
 		t.Errorf("search app1: %v", keys)
 	}
-	// A key ending in a digit, run into the number, is ambiguous (AB2 plus 1 reads as AB21).
 	ab, ab2 := "AB", "AB2"
 	for _, k := range []*string{&ab, &ab2} {
 		if _, err := e.s.CreateProject(e.ctx, e.admin, ProjectInput{Name: k, Key: k}); err != nil {
@@ -612,7 +609,7 @@ func TestAgentCloseWaitsForReview(t *testing.T) {
 // close and waits for review; closing a person's work needs none (WP-500).
 func TestAutomationCloseOfAgentWorkWaitsForReview(t *testing.T) {
 	e := newEnv(t)
-	e.s.Forges = newMemForge() // The in-memory forge keeps the GitHub link refresh off the real forge API.
+	e.s.Forges = newMemForge()
 	p := e.project(e.admin, "Merges", "")
 	agent := asAgent(e.admin, "anthropic/claude-opus-5-5")
 	worked := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Agent's work"})

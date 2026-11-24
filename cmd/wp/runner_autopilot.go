@@ -19,8 +19,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// Claude Code has no outside restart, so /exit is typed into its tmux pane; nothing is typed over a draft, into a busy session, or a dialog.
-
 type autopilotJob struct {
 	CLIID string `json:"cli_id"`
 	Dir   string `json:"dir"`
@@ -159,15 +157,8 @@ func (p *runnerProc) execAutopilot(ctx context.Context, run *jobRun, in autopilo
 			pane, socket = pn, tmuxSocketOf(s.PID)
 		}
 	}
-	// byScreen: the registry says busy and the screen shows the main thread
-	// at its prompt (background agents or tasks keep the status "busy":
-	// WP-1325), so the registry proves nothing about whether the session took
-	// what is typed, and the screen is read instead.
 	byScreen := false
-	// A task's start clears or restarts the session, which would end a shell
-	// it still runs, so only a review is typed beside one.
 	if s.Status != "idle" && (in.ReviewOf == "" || !atPrompt(s.Status)) {
-		// A review waits for the session's turn to end and goes on once it is idle; a person's turn is not waited out, since their prompt takes the job off the step.
 		if in.ReviewOf != "" && !p.stepWanted(ctx, in.Step, run.id) {
 			say("the step no longer wants this job: nothing typed")
 			return outcome{State: "done", Result: autopilotResult{Outcome: "unwanted"}}
@@ -178,9 +169,6 @@ func (p *runnerProc) execAutopilot(ctx context.Context, run *jobRun, in autopilo
 		if in.ReviewOf == "" {
 			return held("busy", "the session is %s, not idle", cmpStr(s.Status, "in an unknown state"))
 		}
-		// Typing a review beside running work is as safe as at a prompt:
-		// the registry's "busy" isn't the last word when the screen shows
-		// the main thread at its prompt.
 		if !waitUntil(ctx, autopilotIdleWait, func() bool {
 			if cur, err := readCCSession(ccDir, s.PID); err == nil && atPrompt(cur.Status) {
 				return true
@@ -224,12 +212,9 @@ func (p *runnerProc) execAutopilot(ctx context.Context, run *jobRun, in autopilo
 		rl, why = planRelaunch(ctx, socket, pane, s.PID)
 	}
 	if rl != nil {
-		// Relaunch uses the person's current session settings, not those the old session started with.
 		set := run.launch.forDir(rl.dir)
 		rl.args, rl.env = set.applyTo(rl.args), set.env()
 	}
-	// The last word before typing: a person who prompted the session, pressed
-	// Stop or turned autopilot off since the job was queued keeps it.
 	if !p.stepWanted(ctx, in.Step, run.id) {
 		say("the step no longer wants this job: nothing typed")
 		return outcome{State: "done", Result: autopilotResult{Outcome: "unwanted"}}
@@ -240,8 +225,6 @@ func (p *runnerProc) execAutopilot(ctx context.Context, run *jobRun, in autopilo
 	if rl != nil {
 		return p.restartSession(ctx, run, in, dir, s, socket, pane, rl)
 	}
-	// No /clear instead: the session would stay in this folder, and every
-	// task is to start in its own worktree (WP-ADR57).
 	return held("no_tmux", "it can't be restarted from outside (%s): start it as plain claude in tmux (tmux new -s NAME claude) to use autopilot", why)
 }
 
@@ -265,7 +248,6 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 		return outcome{State: "done", Result: autopilotResult{Outcome: "held", Reason: reason, Detail: d}}
 	}
 	ccDir := claudeConfigDir()
-	// The session's transcript, not the server, decides whether it is still compacted.
 	compact, why := reviewCompaction(transcriptOfSession(in.CLIID), in.Compacted)
 	if !compact {
 		say("session %s isn't compacted again before the review of %s: %s", in.CLIID, in.ReviewOf, why)
@@ -277,20 +259,15 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 		if _, err := runTmux(ctx, socket, nil, "send-keys", "-t", pane, "Enter"); err != nil {
 			return failed("%v", err)
 		}
-		// Compaction shows as busy; a session too small to compact may never
-		// look busy, which is fine: ready is what counts.
 		waitTook(ctx, ccDir, pid, socket, pane, byScreen, autopilotCompactStart)
 		if !waitReady(ctx, ccDir, socket, pane, pid, autopilotCompactWait, byScreen) {
 			return held("screen", "it wasn't ready for the review within %s of /compact (still compacting, a dialog, or someone typing there?)", autopilotCompactWait)
 		}
-		// A person may have taken the session while it compacted.
 		if !p.stepWanted(ctx, in.Step, run.id) {
 			say("the step no longer wants this job: compacted, review not typed")
 			return outcome{State: "done", Result: autopilotResult{Outcome: "unwanted"}}
 		}
 	}
-	// A person may have started typing while it compacted (minutes), or a
-	// dialog may have opened: paste nothing over that (WP-1572).
 	if box, err := readPenBox(ctx, socket, pane); err != nil {
 		return held("screen", "can't read its tmux pane: %v", err)
 	} else if !box.found {
@@ -298,9 +275,6 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 	} else if box.text != "" {
 		return held("draft", "%s: it waits until that is sent or cleared", draftHeldWhy(box.text, in.Review))
 	}
-	// Asked again right before the paste (WP-1572): a person who prompted
-	// since the last ask has an empty box and a busy session, which the box
-	// alone doesn't show.
 	if !p.stepWanted(ctx, in.Step, run.id) {
 		say("the step no longer wants this job: review not pasted")
 		return outcome{State: "done", Result: autopilotResult{Outcome: "unwanted"}}
@@ -314,10 +288,6 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 	}
 	settle := reviewPasteSettle(len(in.Review))
 	sleepCtx(ctx, settle)
-	// readDrawn reads the box, and reads an empty one again for up to
-	// another settle: a long paste can be drawn after the settle (WP-1572).
-	// Every look that decides what the paste did goes through it, so a paste
-	// drawn late is never taken for one that is gone.
 	readDrawn := func() (penBox, error) {
 		box, err := readPenBox(ctx, socket, pane)
 		for wait := time.Now().Add(settle); err == nil && box.found && box.text == "" && time.Now().Before(wait) && ctx.Err() == nil; {
@@ -326,13 +296,6 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 		}
 		return box, err
 	}
-	// ours is Claude Code's placeholder for this paste ([Pasted text #3 +40
-	// lines]) as first read, once it is drawn: a placeholder seen later is
-	// ours only if it is the same, since a person's own paste gets the next
-	// number (audit #1350.1). A person who swaps the paste for their own
-	// within the settle, or before a paste drawn late is first seen, can
-	// still be taken for it; so can one whose paste Claude Code numbers and
-	// counts the same as ours.
 	var ours string
 	mine := func(text string) bool {
 		if !pastedOnly(text, in.Review) {
@@ -349,7 +312,6 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 	if box, err := readDrawn(); err == nil && box.found && box.text != "" {
 		mine(box.text)
 	}
-	// Takes the review back out only when the box holds nothing else, so a person's typed text is never cleared.
 	unpaste := func() bool {
 		box, err := readDrawn()
 		if err != nil || !box.found || box.text == "" || !mine(box.text) {
@@ -361,14 +323,6 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 		box, err = readPenBox(ctx, socket, pane)
 		return err == nil && box.found && box.text == ""
 	}
-	// A person who prompted while it settled, or pressed Stop, keeps the
-	// turn: no Enter, so the review isn't sent into it, and the paste is
-	// taken back out (WP-1572). Asked once the paste is drawn (or the wait
-	// for it ran out), so nothing slow comes between this ask and Enter but
-	// the reads of the box. Only a no from Waypoint is unwanted (the step is
-	// over); an answer it can't give holds the step, which retries, as the
-	// step still waits on this job: a send into a person's turn can't be
-	// undone.
 	wanted, werr := p.stepWantedAsk(ctx, in.Step, run.id)
 	if werr == nil && !wanted {
 		res := autopilotResult{Outcome: "unwanted"}
@@ -385,19 +339,11 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 		}
 		return held("screen", "the review prompt was pasted and not sent, since Waypoint couldn't say whether the step still wants it (%v)%s", werr, left)
 	}
-	// The last look, right before Enter (WP-1572): only the pasted review
-	// may be in the box. Anything typed with it would go along. It is read
-	// after the ask, which is a round trip that can be slow: what decides
-	// Enter is the box as it is now.
 	box, err := readPenBox(ctx, socket, pane)
 	switch {
 	case err != nil || !box.found:
 		return held("screen", "the review prompt was pasted and not sent, since its input box couldn't be read just before Enter; it may still be in the input box")
 	case box.text == "":
-		// Empty after a settle and another: a person's Enter sent the
-		// paste, or it was never drawn (lost, or the session cleared). Only
-		// a turn the session took shows the first; anything else isn't a
-		// review running, so the step is held and retries.
 		if waitTook(ctx, ccDir, pid, socket, pane, byScreen, settle) {
 			say("the input box is empty and the session took a turn: the paste was already sent, no Enter")
 			return outcome{State: "done", Result: autopilotResult{Outcome: "reviewing", Warning: "the review prompt's paste was already gone from the input box before Enter, and the session took a turn (someone sent it?): no Enter was sent; check the session"}}
@@ -411,8 +357,6 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 		return held("draft", "the review prompt was pasted and not sent, since text was typed or pasted into the input box with or over it (%q): it waits until that is sent or cleared", truncRunes(box.text, 40))
 	}
 	if _, err := runTmux(ctx, socket, nil, "send-keys", "-t", pane, "Enter"); err != nil {
-		// Pasted and not sent: the box now holds a draft, which a person
-		// sees; the round reads as running and ends at the next Stop.
 		return outcome{State: "done", Result: autopilotResult{Outcome: "reviewing", Warning: "the review prompt was pasted and not sent (press Enter there): " + err.Error()}}
 	}
 	res := autopilotResult{Outcome: "reviewing"}
@@ -496,13 +440,12 @@ func (p *runnerProc) promptSession(ctx context.Context, run *jobRun, in autopilo
 		return cleared("it wasn't ready for its prompt within %s (a dialog on its screen, or someone typing there?)", autopilotReadyWait)
 	}
 	p.waitRegistered(ctx, newID, 20*time.Second)
-	if !p.stepWanted(ctx, in.Step, run.id) { // the wait above can be minutes: a person may have pressed Stop
+	if !p.stepWanted(ctx, in.Step, run.id) {
 		say("the step no longer wants this job: the new session gets no task")
 		r := base
 		r.Outcome = "unwanted"
 		return outcome{State: "done", Result: r}
 	}
-	// wp next runs with the job's own token, never the runner's (a person's); a server that sends none makes it read the machine config.
 	env := autopilotEnv(os.Environ(), newID, in.Agent, p.c.server(), run.token)
 	nctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	answer, nextErr := runWpNext(nctx, dir, env, in.Key, "--assigned")
@@ -515,22 +458,18 @@ func (p *runnerProc) promptSession(ctx context.Context, run *jobRun, in autopilo
 		say("%s", w)
 	}
 	prompt := autopilotPrompt(in, answer, nextErr)
-	// The session's hook knows this prompt for autopilot's own, whatever its
-	// wording (WP-308), so it never counts as the person's.
 	p.c.notePastedPrompt(newID, in.Key, prompt)
-	// The server recognises it by this note, made before it is typed
-	// (WP-1370): nothing is typed that Waypoint can't tell for its own.
 	if err := p.noteTyped(ctx, in.Step, run.id, newID, prompt); err != nil {
 		return cleared("its prompt couldn't be recorded with Waypoint, so it wasn't typed: %v", err)
 	}
-	buf := fmt.Sprintf("wp-autopilot-%d", run.id) // one per job: two jobs never paste each other's
+	buf := fmt.Sprintf("wp-autopilot-%d", run.id)
 	if _, err := runTmux(ctx, socket, []byte(prompt), "load-buffer", "-b", buf, "-"); err != nil {
 		return cleared("its prompt couldn't be loaded: %v", err)
 	}
 	if _, err := runTmux(ctx, socket, nil, "paste-buffer", "-p", "-d", "-b", buf, "-t", pane); err != nil {
 		return cleared("its prompt couldn't be pasted: %v", err)
 	}
-	sleepCtx(ctx, 400*time.Millisecond) // let it take the paste in before Enter
+	sleepCtx(ctx, 400*time.Millisecond)
 	if _, err := runTmux(ctx, socket, nil, "send-keys", "-t", pane, "Enter"); err != nil {
 		return cleared("its prompt was pasted and not sent (press Enter there): %v", err)
 	}

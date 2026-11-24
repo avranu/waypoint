@@ -111,7 +111,7 @@ func TestBabysitCancelledMixedRound(t *testing.T) {
 	if got := b.Rounds[0].Checks; !slices.Equal(got, []string{"ci / lint"}) {
 		t.Errorf("the round's checks: %v", got)
 	}
-	if len(be.retries()) != 1 { // The one retry is for a flaky lint check, not the cancelled one.
+	if len(be.retries()) != 1 {
 		t.Errorf("re-ran: %v", be.retries())
 	}
 }

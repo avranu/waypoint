@@ -517,7 +517,6 @@ function RecentFields({
 }) {
   const named = periods.some((x) => x.value === since)
   const [custom, setCustom] = useState(periods.length > 0 && !named)
-  // The defaults load after a prefill's period: one not offered is custom.
   useEffect(() => {
     if (periods.length && !named) setCustom(true)
   }, [periods.length, named])
@@ -897,7 +896,6 @@ function ResetLink({ onClick }: { onClick: () => void }) {
     <button
       type="button"
       onClick={(e) => {
-        // Inside a <summary>: don't fold the section too.
         e.preventDefault()
         onClick()
       }}

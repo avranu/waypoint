@@ -165,7 +165,6 @@ func TestQuotaGuardWithinLimits(t *testing.T) {
 		t.Errorf("ahead: breach %v by phase %v", c.Breach, c.ByPhase)
 	}
 
-	// The loosest limit among the projects autopilot is on in is the one that counts.
 	g = newGuardEnv(t)
 	g.lay(50)
 	g.exec(`INSERT INTO autopilot_settings(user_id, project_id, enabled, limits, updated_at) VALUES (?,?,1,?,0)`, g.me.User.ID, g.p.ID, `{"week_ahead":30}`)
@@ -225,7 +224,7 @@ func TestPromptOwner(t *testing.T) {
 		{KeepWarmMark + " ping", TypedKeepWarm, false, false},
 		{"/compact", TypedCompact, false, false},
 		{"please fix it", "", false, true},
-		{"Waypoint autopilot: a person wrote this", "", false, true}, // The prompt mark alone does not make a prompt automation's; the recogniser's typed kind decides.
+		{"Waypoint autopilot: a person wrote this", "", false, true},
 	} {
 		if auto, ok := promptOwner(tc.detail, tc.typed); auto != tc.auto || ok != tc.ok {
 			t.Errorf("%q (%q): %v %v", tc.detail, tc.typed, auto, ok)

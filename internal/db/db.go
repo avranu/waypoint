@@ -50,8 +50,6 @@ func dsn(path string, readOnly bool) string {
 	} else {
 		q.Set("_txlock", "immediate")
 	}
-	// SQLite URI filenames are percent-decoded, so characters that would end
-	// the path early are escaped.
 	esc := strings.NewReplacer("%", "%25", "?", "%3f", "#", "%23").Replace(path)
 	return "file:" + esc + "?" + q.Encode()
 }
@@ -83,7 +81,6 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	n := max(4, runtime.NumCPU())
 	r.SetMaxOpenConns(n)
 	r.SetMaxIdleConns(n)
-	// The DB holds password hashes and tokens; the chmod is best effort and its errors are ignored, since a mounted volume may refuse it.
 	for _, f := range []string{path, path + "-wal", path + "-shm"} {
 		_ = os.Chmod(f, 0o600)
 	}

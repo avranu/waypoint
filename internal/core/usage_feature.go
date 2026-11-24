@@ -1,7 +1,5 @@
 package core
 
-// Compares tasks whose runs recorded a release against those whose runs did not, judged from each run's run_features rather than the release's date.
-
 import (
 	"context"
 	"database/sql"
@@ -256,7 +254,6 @@ func (s *Service) featureRelease(ctx context.Context, actor *Actor, ref string) 
 		}
 		return nil, 0, err
 	}
-	// The earliest merge shipped the work; later merges are follow-ups.
 	var merged sql.NullInt64
 	if err := s.db.R.QueryRowContext(ctx, `SELECT min(p.merged_at) FROM external_links el
 		JOIN pull_requests p ON el.kind = 'pull' AND (el.url = p.url OR (el.repo = p.repo COLLATE NOCASE AND el.number = p.number))
@@ -267,7 +264,6 @@ func (s *Service) featureRelease(ctx context.Context, actor *Actor, ref string) 
 		return nil, 0, invalid("%s has no merged pull request, so no release contains it", i.Key)
 	}
 	var at int64
-	// A rollout that started before the merge was built without it.
 	err = s.db.R.QueryRowContext(ctx, `SELECT version, coalesce(finished_at, started_at) FROM deployments
 		WHERE environment_id = ? AND status IN ('succeeded', 'detected') AND version != '' AND started_at >= ?
 		ORDER BY 2, id LIMIT 1`, env, merged.Int64).Scan(&o.Release, &at)
@@ -490,7 +486,6 @@ func (s *Service) UsageForTask(ctx context.Context, actor *Actor, uq UsageQuery,
 	if o.Runs, from, to, o.RunMinutes, err = s.taskRuns(ctx, i.ID); err != nil {
 		return nil, err
 	}
-	// Which arm a task was in unblinds an experiment: admins only, as there.
 	if actor.canReadExperiments() == nil {
 		if err := s.taskArms(ctx, i.ID, o); err != nil {
 			return nil, err

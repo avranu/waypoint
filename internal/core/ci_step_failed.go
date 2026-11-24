@@ -1,7 +1,5 @@
 package core
 
-// A fast-failing workflow cancels its other jobs on the forge; only a job's log tells its own failure from a real stop, and check recording reads logs only for heads it still follows, so a scheduled pass reads each recent cancelled job's log once.
-
 import (
 	"context"
 	"errors"

@@ -63,9 +63,8 @@ type Helper struct {
 	reconcileDrift []string
 	chown          func(fd, uid, gid int) error
 	ca             *broker.CA
-	// Guarded by mu: the sessions running or being cleared now.
-	sessions    map[string]*session
-	sessionWait time.Duration
+	sessions       map[string]*session
+	sessionWait    time.Duration
 }
 
 // New makes a helper; Open loads its ledger and store.
@@ -259,7 +258,7 @@ func (h *Helper) ensureUsers(sd *sandbox.Signed) ([]sandbox.User, error) {
 	for _, r := range s.Repos {
 		repoUser, err := h.ensureUser(sandbox.KindRepo, r.ID, r.Slug, s.Runner)
 		if err != nil {
-			_ = h.led.save(h.ledgerPath()) // keep the nonce and what was made
+			_ = h.led.save(h.ledgerPath())
 			return nil, err
 		}
 		out = append(out, repoUser)
@@ -438,7 +437,7 @@ func (h *Helper) ensureUser(kind, key, slug string, runner int64) (sandbox.User,
 			return sandbox.User{}, err
 		}
 		if err := h.create(u, runner); err != nil {
-			return sandbox.User{}, err // the intent stays: the next start finishes it
+			return sandbox.User{}, err
 		}
 		h.led.Users = append(h.led.Users, u)
 		h.led.dropIntent(in.ID)

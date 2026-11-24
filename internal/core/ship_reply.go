@@ -7,8 +7,6 @@ import (
 	"strings"
 )
 
-// The CLI fills in {task}, {pr} and {url}; admins word the default under Admin → AI.
-
 // DefaultShipReply is the template until an admin words their own.
 const DefaultShipReply = `Reply template (adapt it where it doesn't fit):
   {task} shipped in PR #{pr} ({url}): <what it does, one or two sentences>.

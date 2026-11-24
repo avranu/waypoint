@@ -5,8 +5,6 @@ import (
 	"slices"
 )
 
-// A task session ends once wp done reports nothing follows and the server confirms no bound task is left; a fan-out package session tells its coordinator instead.
-
 // reportHandoff tells the server what this task session's wp done did about
 // the next task: only "started" and "none" let it end the session (WP-97).
 func (c *cli) reportHandoff(outcome, detail string) {

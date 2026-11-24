@@ -233,7 +233,7 @@ func TestWIPTitleMergeableSaysNothing(t *testing.T) {
 	}{
 		{"WIP: tidy", true, true},
 		{"[WIP] tidy", false, true},
-		{"tidy", true, false}, // GitHub's draft flag is not work in progress: its mergeable answer is real.
+		{"tidy", true, false},
 		{"tidy", false, false},
 	} {
 		fp := apiPR{Number: 1, Title: c.title, State: "open", Draft: c.draft, Mergeable: no}.pr()

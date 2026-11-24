@@ -15,7 +15,6 @@ export function storedTheme(): Theme {
 export function applyTheme(t: Theme) {
   const dark = t === 'dark' || (t === '' && media().matches)
   document.documentElement.classList.toggle('dark', dark)
-  // Both media-specific tags, so an explicit choice wins over the system scheme.
   for (const m of document.querySelectorAll('meta[name=theme-color]'))
     m.setAttribute('content', dark ? '#15171b' : '#ffffff')
 }

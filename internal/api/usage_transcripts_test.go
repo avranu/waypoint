@@ -261,7 +261,6 @@ func TestTranscriptQueryAndNumbers(t *testing.T) {
 		}
 		_ = resp.Body.Close()
 	}
-	// A new fingerprint base starts a new generation.
 	put("box", "s1", "h#0", 0, "gen0\n")
 	put("box", "s1", "h#1", 0, "gen1\n")
 	put("lap", "s1", "h#0", 0, "lap0\n")

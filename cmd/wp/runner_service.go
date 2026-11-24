@@ -16,8 +16,6 @@ import (
 	"time"
 )
 
-// The service gets the PATH of the installing shell, because the agent CLIs are on it.
-
 const (
 	unitName     = "waypoint-runner.service"
 	launchdLabel = "org.waypoint.runner"
@@ -88,7 +86,6 @@ func systemdUnit(exe string, args []string, env map[string]string, server string
 			b.WriteString("Environment=" + systemdQuote(k+"="+v) + "\n")
 		}
 	}
-	// A runner removed in Waypoint returns nil (exit 0), which Restart=on-failure does not restart.
 	b.WriteString("Restart=on-failure\nRestartSec=10\n\n[Install]\nWantedBy=default.target\n")
 	return b.String()
 }
@@ -379,7 +376,7 @@ func prepareRunnerInstall(c *cli, o *runnerOpts) (string, error) {
 	}
 	for i, d := range o.Allow {
 		if d == "~" || strings.HasPrefix(d, "~/") {
-			continue // Leave ~ unexpanded: the runner expands it at start (runner_dirs.go:22), against the service user's home.
+			continue
 		}
 		if abs, err := filepath.Abs(d); err == nil {
 			o.Allow[i] = abs
@@ -488,7 +485,6 @@ func installSystemd(c *cli, exe string, o runnerOpts, env map[string]string) err
 		return err
 	}
 	unit := systemdUnit(exe, runnerArgs(o), env, c.server())
-	// Restarting would stop the runner's jobs, so an unchanged, active unit is left alone.
 	if old, err := os.ReadFile(path); err == nil && string(old) == unit { // #nosec G304 -- our own unit file
 		if out, _ := sysRun("systemctl", "--user", "is-active", unitName); out == "active" {
 			c.println("The runner is installed and running already (systemd user unit " + unitName + ", unchanged).")
@@ -558,7 +554,7 @@ func installLaunchd(c *cli, exe string, o runnerOpts, env map[string]string) err
 		return err
 	}
 	c.println("Wrote", path)
-	_, _ = sysRun("launchctl", "bootout", launchdDomain()+"/"+launchdLabel) // not loaded yet is fine
+	_, _ = sysRun("launchctl", "bootout", launchdDomain()+"/"+launchdLabel)
 	if out, err := sysRun("launchctl", "bootstrap", launchdDomain(), path); err != nil {
 		return fmt.Errorf("launchctl bootstrap: %v %s", err, out)
 	}

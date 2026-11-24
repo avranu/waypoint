@@ -11,8 +11,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// Only a person in the Waypoint UI changes sandbox settings (tokens may read them); core enforces that for every caller.
-
 // errPersonUI is what a token hears on a personUI route.
 var errPersonUI = fmt.Errorf("sandbox settings are changed in the Waypoint UI: %w", core.ErrForbidden)
 

@@ -11,7 +11,6 @@ import (
 func TestUnwrapPasted(t *testing.T) {
 	review := AutopilotReviewMark + "WP-1: the findings"
 	for _, tc := range []struct{ in, want string }{
-		// The form Claude Code 2.1.328 hands the hook for a bracketed paste.
 		{"\n\n<pasted_content id=\"d29a\">\n" + review + "\n</pasted_content id=\"d29a\">\n", review},
 		{"<pasted_content>" + review + "</pasted_content>", review},
 		{"<pasted_content id=\"7f\">" + review + ` <pasted_content id="1">x</pasted_content id="1"> and "<pasted_content id=\"9\">"` + "</pasted_content id=\"7f\">", review + ` <pasted_content id="1">x</pasted_content id="1"> and "<pasted_content id=\"9\">"`},
@@ -27,7 +26,6 @@ func TestUnwrapPasted(t *testing.T) {
 		{"<pasted_content id=\"1\">a</pasted_content>", "a"},
 		{"<pasted_content>a</pasted_content id=\"1\">", "<pasted_content>a</pasted_content id=\"1\">"},
 		{"<pasted_content id=\"1\">a</pasted_content id=\"1\"> b</pasted_content id=\"2\">", "<pasted_content id=\"1\">a</pasted_content id=\"1\"> b</pasted_content id=\"2\">"},
-		// Claude Code can give every paste the same id; two pastes sharing one id are still two.
 		{"<pasted_content id=\"d29a\">a</pasted_content id=\"d29a\"> <pasted_content id=\"d29a\">b</pasted_content id=\"d29a\">", "<pasted_content id=\"d29a\">a</pasted_content id=\"d29a\"> <pasted_content id=\"d29a\">b</pasted_content id=\"d29a\">"},
 		{"", ""},
 	} {

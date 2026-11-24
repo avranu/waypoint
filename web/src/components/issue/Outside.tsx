@@ -1,5 +1,3 @@
-// Outside text is untrusted: agents and models don't see it until a person approves it, and it is shown as plain text only.
-
 import { useQuery } from '@tanstack/react-query'
 import { ExternalLink, Globe } from 'lucide-react'
 import { q, useDecideOutside } from '@/lib/queries'

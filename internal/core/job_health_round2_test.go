@@ -245,8 +245,6 @@ func TestUncleanStopIsFound(t *testing.T) {
 			s2.jobs.declare("slow job", time.Hour, "")
 			s2.beginServerRun(e.ctx)
 			s2.saveJobHealth(e.ctx)
-			// The old process is gone; letting its goroutine end now would
-			// save into the database as if it still lived.
 			t.Cleanup(func() { close(release); <-done })
 
 			j := e.jobOf("slow job")

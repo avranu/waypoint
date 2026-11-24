@@ -315,7 +315,6 @@ func goalGapsText(o *core.GoalsOverview) string {
 			b.WriteString("  - " + q + "\n")
 		}
 	}
-	// Agent-made or inferred goal links are not gaps to fix, and no person vouches for them.
 	if n := o.Totals[core.GroundAgentGoal] + o.Totals[core.GroundInferredGoal]; n > 0 {
 		fmt.Fprintf(&b, "\nOpen tasks that reach a goal only through links no person made or confirmed: %d (%s).\n", n,
 			groundingCounts(map[string]int{core.GroundAgentGoal: o.Totals[core.GroundAgentGoal], core.GroundInferredGoal: o.Totals[core.GroundInferredGoal]}))

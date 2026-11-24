@@ -10,8 +10,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// A seatbelt against an agent following bad instructions, not a sandbox: Bash can always be phrased past a pattern.
-
 // Rule ids, as they appear in guard.log.
 const (
 	ruleRoot     = "root"
@@ -42,20 +40,14 @@ func hit(rule, reason string, words ...string) *guardHit {
 // guard is one call's check. dir follows `cd` through the command; lost is
 // set once a `cd` goes where the guard can't tell ($DIR, -).
 type guard struct {
-	site   guardSite
-	dir    string
-	server string
-	origin func() string
-	orig   *string
-	lost   bool
-	// installs: the call installs the lockfile's packages (npm ci) before
-	// what comes after it, so the guard can't tell what node_modules holds.
-	installs bool
-	// inherit: the script being checked is a child's, whose first command
-	// runs where the install did, so it keeps installs.
-	inherit bool
-	// contained: the session runs in a Contained sandbox (WP-473), whose
-	// walls already stop what the walled rules guard against.
+	site      guardSite
+	dir       string
+	server    string
+	origin    func() string
+	orig      *string
+	lost      bool
+	installs  bool
+	inherit   bool
 	contained bool
 	envHosts  func() []string
 	open      []bool
@@ -128,7 +120,7 @@ func (g *guard) script(cmds []*guardCmd, depth int) *guardHit {
 			fetch = false
 		}
 		if !c.andIn && (!g.inherit || !first) {
-			g.installs = false // npm ci || npx tsc: npx runs when the install failed
+			g.installs = false
 		}
 		for _, sub := range c.subs {
 			if h := g.child(sub, depth+1); h != nil {
@@ -478,7 +470,6 @@ func (g *guard) simple(c *guardCmd, name string, args []string, depth int) *guar
 	if name == "" {
 		return nil
 	}
-	// Only a shell's heredoc is read as code here; an interpreter given a heredoc on stdin (python3 <<EOF) is not.
 	if shellNames[name] && c.heredoc != "" {
 		if h := g.child(parseShell(c.heredoc), depth+1); h != nil {
 			return h
@@ -494,7 +485,7 @@ func (g *guard) simple(c *guardCmd, name string, args []string, depth int) *guar
 		}
 	}
 	if name == "wp" {
-		return g.keep(wpHit(args)) // what follows wp is data (a request's text, a comment)
+		return g.keep(wpHit(args))
 	}
 	for _, rule := range []func(string, []string) *guardHit{rootHit, g.installHit, remoteHit, hostHit, g.looseHit, g.downloadHit} {
 		if h := g.keep(rule(name, args)); h != nil {
@@ -537,7 +528,7 @@ func (g *guard) findExec(args []string, depth int) *guardHit {
 			}
 			c := &guardCmd{words: args[i+1 : j]}
 			if len(g.open) == len(args) {
-				c.open = g.open[i+1 : j] // the shell expanded them before find saw them
+				c.open = g.open[i+1 : j]
 			}
 			if h := g.child([]*guardCmd{c}, depth+1); h != nil {
 				return h
@@ -549,7 +540,7 @@ func (g *guard) findExec(args []string, depth int) *guardHit {
 }
 
 func (g *guard) chdir(args []string) {
-	g.installs = false // the install was for the directory we leave
+	g.installs = false
 	sc := scanArgs(args, "")
 	target := g.site.home
 	if len(sc.pos) > 0 {
@@ -590,8 +581,6 @@ func wpHit(args []string) *guardHit {
 // wp env read|get -o FILE (Go flags: -o F, -o=F, --o F, --o=F), checked
 // like curl -o's.
 func wpWriteTargets(args []string) []string {
-	// An earlier argument may itself be "env" (a flag value: wp -p env env read),
-	// so try each one as the subcommand.
 	i := -1
 	for k := 0; k+1 < len(args); k++ {
 		if args[k] == "env" && (args[k+1] == "read" || args[k+1] == "get") {
@@ -708,7 +697,7 @@ func (g *guard) installHit(name string, args []string) *guardHit {
 			return h()
 		}
 		if lockfileInstall(name, args) {
-			g.installs = true // the lockfile's packages, so npx after it (&&) finds them
+			g.installs = true
 		}
 		if rest, where, ok := pmExec(name, args); ok {
 			verb := " exec"
@@ -813,9 +802,9 @@ func pmInstalls(name string, args []string) bool {
 	case "update", "upgrade", "up", "uninstall", "remove", "rm", "link", "ln":
 		return global
 	case "dlx", "create":
-		return true // pnpm dlx, yarn dlx; npm create X runs the package create-X
+		return true
 	case "init", "innit":
-		return name == "npm" && len(pkgs) > 0 // npm init X: npm exec create-X
+		return name == "npm" && len(pkgs) > 0
 	case "global":
 		return name == "yarn"
 	}
@@ -932,10 +921,10 @@ func readNpmOpt(a string, cli string) npmOpt {
 		}
 	}
 	if npx && key == "no-install" {
-		name, ok = "no", true // npx rewrites it; npm exec doesn't know it
+		name, ok = "no", true
 	}
 	if npx && key == "n" {
-		name, ok = "removed=", true // npx drops its old -n and the word after it
+		name, ok = "removed=", true
 	}
 	var parts []string
 	switch {
@@ -1031,12 +1020,12 @@ func (g *guard) npxHit(name string, args []string) *guardHit {
 			case contains(pmValueFlags, flag) && !hasVal:
 				i++
 			case !strings.HasPrefix(a, "--") && strings.ContainsAny(a[1:], "yp"):
-				return h // npm may read a short-option cluster holding y or p as -y or -p, so an unknown one is refused, not skipped.
+				return h
 			}
 			continue
 		}
 		if o.split && o.follow {
-			return h // -Cy DIR: npm gives -C the word --yes; the guard can't follow it
+			return h
 		}
 		for j, n := range o.names {
 			last := j == len(o.names)-1
@@ -1071,17 +1060,12 @@ func (g *guard) npxHit(name string, args []string) *guardHit {
 	if npmLocal(dir, cmd) {
 		return nil
 	}
-	// npm exec -w web tsc also looks in the workspace's own node_modules. A
-	// workspace given by its package's name, not its directory, can't be
-	// told from here.
 	for _, w := range workspaces {
 		wd := g.site.resolve(dir, w)
 		if fi, err := os.Stat(wd); wd == "" || err != nil || !fi.IsDir() || npmLocal(wd, cmd) {
 			return nil
 		}
 	}
-	// npx never looks on PATH, only in npm's own global bin: npx ls fetches
-	// the package "ls".
 	h.way = "There is no node_modules/.bin/" + cmd + " here, so " + name + " would download a package named `" + cmd +
 		"` from the registry. Install the repository's own packages first (`npm ci` runs unattended), then run it again"
 	return h

@@ -13,8 +13,6 @@ import (
 	"unicode/utf8"
 )
 
-// a task's arm is drawn once, at its first take with a ready prep; the estimate is recomputed when traces land, not polled
-
 const (
 	prepArmNone  = "none"
 	prepArmChat  = "chat"
@@ -128,9 +126,9 @@ type prepGuardFit struct {
 // prepPolicy is the estimate as last worked out.
 type prepPolicy struct {
 	at       time.Time
-	arms     []string // defined arms first (prepArmDefs order), then any others drawn
+	arms     []string
 	primary  *prepMix
-	allTime  *prepFit // the fit with no task aged; where it and primary differ, something changed
+	allTime  *prepFit
 	guards   []prepGuardFit
 	blocked  map[string]string
 	offline  []PrepOfflineArm
@@ -279,7 +277,6 @@ func prepValue(o *prepOutcome, r *prepRow, now time.Time) (float64, bool) {
 	case "nav":
 		return math.Log1p(r.nav), r.traced && r.closed
 	case "undone":
-		// undone counts only tasks an agent took: an untaken task says nothing of what the pointers did
 		if !r.traced {
 			return 0, false
 		}
@@ -379,7 +376,6 @@ func (s *Service) prepPolicyCompute(ctx context.Context, now time.Time) (*prepPo
 	for i := range prepGuards {
 		g := prepGuards[i]
 		obs, used := prepObservations(&g, pol.arms, rows, now)
-		// guards use the primary outcome's aging weights, not their own
 		gf := prepGuardFit{prepOutcome: g, fit: fitPrepMix(pol.arms, obs, g.Spread, pol.primary.W), tasks: len(used)}
 		pol.guards = append(pol.guards, gf)
 		for j, arm := range pol.arms {
@@ -630,7 +626,6 @@ func (s *Service) prepPolicyApply(ctx context.Context, a *Actor, i *Issue, p *Ta
 		}
 	}
 	if got == nil && p.HeldOut {
-		// a task held out by the prep experiment is logged as arm none at that experiment's 0.2 share
 		if _, err := s.db.W.ExecContext(ctx, `INSERT INTO prep_assignments(issue_id, arm, policy, propensity, text_len, assigned_at)
 			VALUES (?,?,?,?,?,?) ON CONFLICT(issue_id) DO NOTHING`, i.ID, prepArmNone, "import", 0.2, prepTextLen(i), s.nowMS()); err != nil {
 			s.log.WarnContext(ctx, "prep policy: keep a held-out task's arm", "issue", i.ID, "err", err)
@@ -650,8 +645,6 @@ func (s *Service) prepPolicyApply(ctx context.Context, a *Actor, i *Issue, p *Ta
 	case prepArmNone:
 		p.Notes, p.HeldOut = nil, true
 	case prepArmAgent:
-		// Picks of an earlier text are not shown: the chat prep's stand in,
-		// and the task still counts for the arm it drew.
 		if agent == nil || p.Notes == nil || len(prepPickFiles(agent)) == 0 {
 			return
 		}

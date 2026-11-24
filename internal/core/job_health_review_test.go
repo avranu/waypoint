@@ -255,7 +255,7 @@ func TestLogSecretsReadFailureWarnsTheJob(t *testing.T) {
 	e.s.cfg.Logs = e.s.jobs.ring
 	e.s.jobs.declare("log secrets", time.Minute, "")
 	e.runJob("log secrets", time.Minute, func(ctx context.Context) {
-		rows, err := e.s.db.R.QueryContext(ctx, `SELECT NULL`) // does not scan into a string
+		rows, err := e.s.db.R.QueryContext(ctx, `SELECT NULL`)
 		if err != nil {
 			t.Error(err)
 			return

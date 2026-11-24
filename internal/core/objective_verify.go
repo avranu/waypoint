@@ -11,8 +11,6 @@ import (
 	"time"
 )
 
-// Each step writes only if the objective still stands where it was read, so calls are safe at any time, from anything, any number of times; nothing here closes a task on a guess.
-
 const (
 	// AuditObjective is the purpose of a judge's audit.
 	AuditObjective = "objective"
@@ -116,7 +114,6 @@ func (s *Service) objectiveStep(ctx context.Context, issueID int64) (again bool,
 		return false, err
 	}
 	if o.issueClosed {
-		// A task closed by something that asked no objective (a status change, a move to another project) still ends it.
 		return false, s.objectiveTaskClosed(ctx, issueID)
 	}
 	if o.Phase != PhaseBaseline && o.Phase != PhaseVerdict {
@@ -213,8 +210,6 @@ func (s *Service) objectiveQueue(ctx context.Context, seen *Objective) (bool, er
 			return s.objectiveBlock(ctx, t, o, BlockedRepo, objectiveRepoNote(o), o.Phase)
 		}
 		if !slices.ContainsFunc(runners, func(r *Runner) bool { return runnerCanTake(r, jobNeeds{kind: JobObjective}) }) {
-			// Not a failed try: nothing ran. The watchdog tells its person
-			// when this has gone on (objective_health.go).
 			note := who + " has no runner that can read it: connect one with wp runner (Settings → Runners), or bring its wp up to date (wp upgrade). Waypoint looks again every few minutes."
 			return s.objSet(ctx, t, o.IssueID, "verify_at", now+objectiveRunnerWait.Milliseconds(), "phase_note", note)
 		}
@@ -398,15 +393,12 @@ func (s *Service) objectiveApply(ctx context.Context, seen *Objective, job int64
 				ok := r.BaseReading.OK
 				m.BaseOK, m.BaseValue, m.BaseSHA, m.P = &ok, r.BaseReading.Value, r.Base, r.P
 			case !baseline && o.Check != "" && o.BaseSHA != "" && o.baseOK != nil && o.Measure != MeasureTime:
-				// A time is compared only with a base reading taken in the same run, on the same machine.
 				m.BaseOK, m.BaseValue, m.BaseSHA = o.baseOK, o.baseValue, o.BaseSHA
 			}
 			if m, err = s.objectiveKeep(ctx, t, o, m); err != nil {
 				return err
 			}
 			if baseline && numbered && (!m.OK || m.Value == nil) {
-				// A check that has never given a number most likely can't:
-				// a person looks before rounds are spent on it.
 				var read int
 				if err := t.QueryRowContext(ctx, `SELECT count(*) FROM objective_measurements WHERE issue_id = ? AND rev = ? AND source != ? AND ok AND value IS NOT NULL`,
 					o.IssueID, o.measuredRev(), SourceAgent).Scan(&read); err != nil {
@@ -593,8 +585,6 @@ func (s *Service) objectiveAskJudge(ctx context.Context, seen *Objective) (bool,
 	if err != nil {
 		return false, err
 	}
-	// The judge is never of the family of the model that did the work,
-	// where the audit has the choice (the gateway's models).
 	var model string
 	if err := s.db.R.QueryRowContext(ctx, `SELECT model FROM agent_runs WHERE issue_id = ? AND model != '' ORDER BY id DESC LIMIT 1`, seen.IssueID).Scan(&model); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return false, err
@@ -606,10 +596,6 @@ func (s *Service) objectiveAskJudge(ctx context.Context, seen *Objective) (bool,
 		if !IsInvalid(err) && !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrForbidden) {
 			return s.objectiveReadFailed(ctx, seen, "the judge couldn't be asked: "+PublicError(err), objectiveReadRetry)
 		}
-		// Something a person puts right (no runner that runs the judge's
-		// model, a model that isn't offered any more): nothing ran, so it
-		// isn't a failed try. The watchdog tells its person when this has
-		// gone on.
 		return false, s.write(ctx, SystemActor(), func(t *tx) error {
 			o, werr := s.objectiveRow(ctx, t, seen.IssueID)
 			if werr != nil || !sameReading(seen, o) {

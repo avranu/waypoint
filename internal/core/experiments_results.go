@@ -190,7 +190,6 @@ func (s *Service) experimentTasks(ctx context.Context, actor *Actor, run *Experi
 	if len(byKey) == 0 {
 		return out, nil
 	}
-	// Usage runs to today, not to the stop: work on a task goes on after the run stops while its units are fixed.
 	days := int(math.Ceil(float64(s.nowMS()-run.StartedAt.UnixMilli())/float64(24*hourMillis))) + 1
 	tr, err := s.UsageTrends(ctx, actor, UsageQuery{Days: min(days, 365), User: "all", allTasks: true})
 	if err != nil {
@@ -274,7 +273,6 @@ func experimentCompare(d *ExperimentDef, run *ExperimentRun, tasks map[string][]
 		return v
 	}
 	ctl := d.control()
-	// Seeded by the run so a page shows the same interval on every read.
 	rng := rand.New(rand.NewPCG(uint64(run.ID), 0x5eed)) // #nosec G404 G115 -- not for secrets; run ids are positive
 	type pref struct{ arm, metric int }
 	var ps []float64

@@ -153,7 +153,6 @@ async function run(width, scheme) {
   const call = (m, p, d, headers = H) =>
     page.request.fetch(base + "/api/v1" + p, { method: m, headers, data: d });
   const api = (m, p, d) => call(m, p, d).then((r) => (r.status() === 204 ? null : r.json()));
-  // The app scrolls inside the app shell, not the window, so the window is resized to fit the whole page.
   const shot = async (name) => {
     await page.waitForTimeout(300);
     const tall = await page.evaluate(() => {

@@ -1,7 +1,5 @@
 package core
 
-// Reviewers can always find more, so each round's packet is anchored to what the pull request is for; findings outside that are deferred, not fixed.
-
 import (
 	"context"
 	"encoding/json"
@@ -449,7 +447,6 @@ func (s *Service) footprintNow(ctx context.Context, b *Babysit, pr *PullRequest)
 	if b == nil || fp.Ship == nil || !fp.Ship.Known || pr.HeadSHA == "" {
 		return fp, "", false
 	}
-	// Growth is measured from the last audited check; a skipped check only moves the seen head, so growth since shipping isn't forgotten.
 	ref, audited, seen := fp.Ship.footprintAt, 0, fp.Ship.SHA
 	for _, c := range fp.Checks {
 		seen = c.SHA
@@ -510,7 +507,6 @@ func (s *Service) footprintStep(ctx context.Context, b *Babysit, pr *PullRequest
 	var a *CodeAudit
 	err := errors.New("no member's runner to run it on")
 	if owner := s.babysitOwnerFor(ctx, pr); owner != 0 {
-		// The scope check runs on the default audit chain, not Opus: it only reads a few round diffs against the task.
 		a, err = s.RequestAudit(ctx, SystemActor(), AuditInput{PRID: pr.ID, Via: "system", owner: owner,
 			requestKey: fmt.Sprintf("pr-footprint:%d:%s", pr.ID, strings.ToLower(pr.HeadSHA)), purpose: AuditFootprint,
 			Instructions: footprintInstructions, prContext: s.footprintContext(ctx, b, pr, fp, why)})

@@ -26,8 +26,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// A fix is proven only when its tests fail before it and pass after; a test that doesn't build without the fix proves nothing.
-
 // Proof outcomes.
 const (
 	ProofProven      = "proven"
@@ -104,7 +102,6 @@ func ProveFix(ctx context.Context, root string, in ProveInput) (*FixProof, error
 		return nil, err
 	}
 	if note != "" {
-		// Recording "none" would end this fix's proofs for good, so return the error instead.
 		return nil, fmt.Errorf("can't place the fix: %s", note)
 	}
 	res.Commit, res.Base = to, from
@@ -440,7 +437,7 @@ func (r *fixRepo) addedLines(from, to string, files []string) (map[string][]int,
 			for i := 0; i < n; i++ {
 				res[cur] = append(res[cur], start+i)
 			}
-			if n == 0 { // only removed lines: they were between start and start+1
+			if n == 0 {
 				res[cur] = append(res[cur], start, start+1)
 			}
 		}
@@ -567,7 +564,7 @@ func (r *fixRepo) overlayTests(fix, pkg, dir string) error {
 	}
 	pathspec := prefix
 	if pathspec == "" {
-		pathspec = "." // git refuses an empty pathspec
+		pathspec = "."
 	}
 	out, err := r.git("ls-tree", "-r", "-z", "--full-tree", fix, "--", pathspec)
 	if err != nil {

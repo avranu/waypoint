@@ -11,8 +11,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/codeindex"
 )
 
-// the automatic upload runs in a detached child; its failures go only to upload.log beside the index, never the terminal
-
 const (
 	uploadEvery    = 24 * time.Hour
 	uploadRetry    = time.Hour
@@ -93,7 +91,7 @@ func (c *cli) maybeUpload(ix *codeindex.Index) {
 	if err != nil {
 		return
 	}
-	writeUploadStamp(stamp, uploadStamp{At: time.Now(), OK: true})                                                             // the child corrects it; this stops a stampede
+	writeUploadStamp(stamp, uploadStamp{At: time.Now(), OK: true})
 	logf, err := os.OpenFile(filepath.Join(filepath.Dir(ix.DBPath), "upload.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) // #nosec G304 -- git dir
 	if err != nil {
 		return

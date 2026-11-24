@@ -153,7 +153,7 @@ func (c *httpForgeClient) statusHistory(ctx context.Context, f *Forge, repo, sha
 	at := map[job]int{}
 	var out []CommitCheck
 	const per = 50
-	for page := 1; page <= maxForgePages+1; page++ { // one past the cap: a full history ends on an empty page
+	for page := 1; page <= maxForgePages+1; page++ {
 		//wplint:ignore statuscreator fgRunChecks only follows these to a job in the run that counts, and the job's own state decides (its job-index check: WP-1339)
 		var list []struct {
 			ID          int64  `json:"id"`
@@ -180,7 +180,7 @@ func (c *httpForgeClient) statusHistory(ctx context.Context, f *Forge, repo, sha
 			}
 		}
 		if len(list) == 0 {
-			return out, nil // only an empty page ends it: a forge may cap pages below per
+			return out, nil
 		}
 	}
 	return nil, fmt.Errorf("status history of %s@%s has more than %d pages", repo, sha, maxForgePages)
@@ -221,7 +221,6 @@ func (c *httpForgeClient) commitChecks(ctx context.Context, f *Forge, repo, sha 
 		c.gitlabJobAuthors(ctx, f, repo, out, pipelines)
 		return out, nil
 	}
-	// The combined status gives only the latest status per context, so earlier statuses of the same context are not in this list.
 	size, per := "limit", 50
 	if f.Kind == "github" {
 		size, per = "per_page", 100
@@ -356,7 +355,6 @@ func (c *httpForgeClient) gitlabIsJob(ctx context.Context, f *Forge, repo string
 	case !errors.As(err, &ae) || ae.status != http.StatusNotFound:
 		return false, err
 	}
-	// Not a job: a trigger job (bridge) is looked up in its pipeline.
 	if pipeline != 0 {
 		for page := 1; page <= maxForgePages; page++ {
 			var list []struct {
@@ -445,7 +443,7 @@ func (c *httpForgeClient) tailMarked(ctx context.Context, f *Forge, path string,
 	marked := make([]string, len(marks))
 	for total < 32<<20 {
 		n, err := resp.Body.Read(chunk)
-		from := max(0, len(buf)-512) // what was read, and a line split by the read before it
+		from := max(0, len(buf)-512)
 		buf = append(buf, chunk[:n]...)
 		total += int64(n)
 		for i, mark := range marks {
@@ -513,7 +511,6 @@ var errNoJobLog = fmt.Errorf("%w: this check has no job log on the forge", ErrNo
 func (c *httpForgeClient) jobLog(ctx context.Context, f *Forge, repo, sha string, ch CommitCheck, keep int, runs *fgRuns) (string, error) {
 	switch f.Kind {
 	case "github":
-		// Only Actions jobs have logs; other apps' check runs answer 404.
 		if ch.Source != "check_run" || ch.JobID == "" {
 			return "", errNoJobLog
 		}
@@ -561,8 +558,6 @@ type fgJob struct {
 // (pull_request)" is job "backend".
 func (c *httpForgeClient) fgJobID(ctx context.Context, f *Forge, repo, sha string, ch CommitCheck, runs *fgRuns) (string, int64, error) {
 	if m := fgActionsURL.FindStringSubmatch(ch.URL); m != nil {
-		// Only this repo's runs: a status may point anywhere, and the
-		// token may read repos the pull request's viewers can't.
 		if !strings.EqualFold(m[1], repo) {
 			return "", 0, fmt.Errorf("%w: the check's job is in %s, not %s", ErrNotFound, m[1], repo)
 		}

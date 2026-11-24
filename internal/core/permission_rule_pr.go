@@ -1,7 +1,5 @@
 package core
 
-// Only a person's pick adds a rule, by pull request; an approval without a rule changes nothing and is not replayed later.
-
 import (
 	"context"
 	"encoding/json"
@@ -77,8 +75,6 @@ func (s *Service) addPermissionRule(ctx context.Context, actor *Actor, j *permRu
 	}
 	b, _ := json.Marshal(res)
 	if _, err := s.db.W.ExecContext(ctx, `UPDATE requests SET result = ?, updated_at = ? WHERE id = ?`, string(b), s.nowMS(), r.ID); err != nil {
-		// The pull request, if one opened, is still recorded as an agent PR
-		// (openAgentFilePR); the log names it so it can be found.
 		s.log.ErrorContext(ctx, "record a permission rule", "request", r.ID, "rule", j.rule, "pr", res.PRURL, "err", err)
 	}
 }
@@ -120,10 +116,6 @@ func (s *Service) openRulePR(ctx context.Context, actor *Actor, tool *ToolCall, 
 	body := fmt.Sprintf("Adds `%s` to `permissions.allow` in %s, so agents' sessions in this repo run it without asking Claude Code's auto-mode classifier.\n\n"+
 		"%s picked it in Waypoint %s (WP-233):\n\n%s\n%s\n%s",
 		rule, settingsPath, actor.User.DisplayName, from, fence, text, fence)
-	// Labelled automerge although it is under .claude/ (EditAgentFile leaves
-	// those for a person to merge): a person approved this exact line, and
-	// it passed checkPermissionRule, the same checks a suggestion does
-	// (WP-ADR114).
 	return s.openAgentFilePR(ctx, actor, repo, af, agentFilePR{base: base, path: settingsPath, baseSHA: cur, content: content,
 		branch: "allow-" + slug(rule, 30), message: title + "\n\n" + body, title: title, body: body, labels: []string{automergeLabel}})
 }

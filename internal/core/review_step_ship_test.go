@@ -75,8 +75,6 @@ func TestRoundAuditStartsBeforeTheStop(t *testing.T) {
 func TestRoundStepSurvivesRevive(t *testing.T) {
 	a, _, _, _ := shippedWithBox(t)
 	a.setClock(a.clockNow().Add(heldStopLost + time.Minute))
-	// The session reads idle (its turn has gone quiet), so the revive does
-	// look at the round; only its step keeps it from picking the round up.
 	if _, err := a.s.db.W.Exec(`UPDATE agent_sessions SET state = ? WHERE id = ?`, SessionIdle, a.session); err != nil {
 		t.Fatal(err)
 	}
@@ -85,8 +83,6 @@ func TestRoundStepSurvivesRevive(t *testing.T) {
 	if a.stepCount() != 1 {
 		t.Fatalf("%d steps", a.stepCount())
 	}
-	// One step by session is upserted: a revive that picked the round up
-	// anyway would leave the one step, put back to due, so compare the step.
 	if after := *a.step(); after != before {
 		t.Fatalf("the revive touched the round's step:\n before %+v\n after  %+v", before, after)
 	}
@@ -106,7 +102,6 @@ func TestRoundInterruptedForTheLastTimeIsReleased(t *testing.T) {
 		var in AutopilotJob
 		_ = json.Unmarshal(a.jobs[before].Input, &in)
 		a.prompt(in.Review)
-		// A person's prompt alone does not end a review; the session has to leave it for another task.
 		if err := a.s.write(a.ctx, SystemActor(), func(t *tx) error {
 			return a.s.stopStep(a.ctx, t, a.session, "working", "it took another task itself")
 		}); err != nil {

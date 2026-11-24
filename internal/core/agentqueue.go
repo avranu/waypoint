@@ -13,8 +13,6 @@ import (
 	"time"
 )
 
-// next and the Agents page both read the queue from agentWork, so what the page shows is what an agent gets.
-
 // Why delegated work isn't in an agent's queue right now.
 const (
 	WaitStep          = "step"
@@ -204,7 +202,6 @@ func (s *Service) agentWorkAuto(ctx context.Context, actor *Actor, ids []string,
 		case released[i.ID] != 0:
 			qi.reason, qi.detail = WaitReleased, "An agent gave it back; it goes out again at "+s.clock(msTime(released[i.ID]))+". Only a person can end the wait, with a comment or wp hold "+i.Key+" --off; wp next "+i.Key+" takes it by name."
 		case hasWait(rounds, i.ID):
-			// Checked before the status-based waits, since a project with no To Do status leaves a task where its round ended.
 			qi.reason, qi.detail = WaitObjective, rounds[i.ID].detail()
 		case shipped[i.ID] != nil:
 			pr := shipped[i.ID]
@@ -235,7 +232,6 @@ func (s *Service) agentWorkAuto(ctx context.Context, actor *Actor, ids []string,
 		case qi.held:
 			waiting = append(waiting, qi)
 		case !i.Delegated() && qi.reason != WaitReleased && (!q.ScreenWaits || (qi.reason != WaitSafety && qi.reason != WaitHold)):
-			// Work anyone may take shows once it is ready; listing every backlog or blocked one as waiting would bury the delegated work.
 		default:
 			waiting = append(waiting, qi)
 		}
@@ -1170,8 +1166,6 @@ func (s *Service) MoveInQueue(ctx context.Context, actor *Actor, m QueueMove) er
 		}
 		was, wasPinned := pins[i.ID]
 		placed := placePin(order, pins, i.ID, m.Position)
-		// The pins it passed keep their places in the order shown, but only
-		// where the person may edit them; the rest stay as they are.
 		shown := slices.SortedFunc(maps.Keys(placed), func(a, b int64) int {
 			return cmpInt(int64(placed[a].rank), int64(placed[b].rank))
 		})
@@ -1314,7 +1308,6 @@ func (s *Service) ReleaseClaim(ctx context.Context, actor *Actor, ref string) er
 		}
 		agent := i.ClaimedBy
 		now := s.nowMS()
-		// The agent's clock on it stops, whoever's token it ran under.
 		if _, err := t.ExecContext(ctx, `UPDATE time_entries SET ended_at = ? WHERE agent = ? AND issue_id = ? AND ended_at IS NULL`, now, agent, i.ID); err != nil {
 			return err
 		}

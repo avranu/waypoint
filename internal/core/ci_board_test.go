@@ -64,7 +64,7 @@ func TestCIEstimates(t *testing.T) {
 	}
 	at := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
 	spans := [][2]time.Time{{at, at.Add(time.Hour)}, {at.Add(30 * time.Minute), at.Add(2 * time.Hour)}, {at.Add(time.Hour), at.Add(3 * time.Hour)}}
-	if p := peakConcurrency(spans); p != 2 { // a span ending as another starts is not concurrent with it.
+	if p := peakConcurrency(spans); p != 2 {
 		t.Errorf("peak = %d", p)
 	}
 	d := newCIDurations()
@@ -80,7 +80,6 @@ func TestCIEstimates(t *testing.T) {
 		t.Errorf("by repo: %s", p50)
 	}
 
-	// Draft-tier runs of a full-run-only shard end in seconds, so they don't measure its full run.
 	for range 6 {
 		d.add("a/b", "ci.yml", "e2e 1", ciDraftTier, 10)
 	}
@@ -375,7 +374,6 @@ func TestCIBoardDayBeyondPageCap(t *testing.T) {
 
 	t.Run("hole in the kept jobs", func(t *testing.T) {
 		e, f := setup(t)
-		// Last read two days ago: a gap longer than a read reaches, so only this read's jobs count.
 		if _, err := e.s.db.W.ExecContext(e.ctx, `INSERT INTO server_settings(key, value) VALUES (?, ?)`,
 			fmt.Sprintf("%s%d|acme/app", ciWholeKey, f.ID), fmt.Sprintf("0|%d", now.Add(-48*time.Hour).UnixMilli())); err != nil {
 			t.Fatal(err)

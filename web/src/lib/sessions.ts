@@ -164,7 +164,7 @@ export interface TimelineEntry {
   kind: string
   label?: string
   detail?: string
-  text?: string // The whole prompt, when it is longer than detail.
+  text?: string
   url?: string
   at: string
 }

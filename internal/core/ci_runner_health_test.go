@@ -72,7 +72,6 @@ func TestFaultBackoff(t *testing.T) {
 	if !r.noteKinds("dns") || r.streak != 0 || r.n != 4 || !r.nextTry().IsZero() || r.kinds != "disk,dns" {
 		t.Fatalf("new kinds: %+v", r)
 	}
-	// Kinds seen earlier in the streak do not reset it, so alternating kinds cannot re-run every few minutes.
 	r.streak = 2
 	if r.noteKinds("disk") || r.noteKinds("dns,disk") || r.streak != 2 || !r.coversKinds("disk") || r.coversKinds("disk,lost") {
 		t.Fatalf("seen kinds: %+v", r)

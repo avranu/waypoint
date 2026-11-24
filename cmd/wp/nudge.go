@@ -11,8 +11,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Notes only, never refusals: Claude Code lets a call through when a hook outlasts its timeout; no network, since it runs before every Bash call.
-
 // nudgeRule is one substitution. match gets the command (and the git remote's
 // host, looked up only by rules that set needsRemote).
 type nudgeRule struct {
@@ -193,7 +191,6 @@ func hookClaudeNudge(c *cli, stdin io.Reader, stdout io.Writer) {
 		cwd, _ = os.Getwd()
 	}
 	if in.ToolName == "Monitor" {
-		// The hook is registered for Monitor by name: a matcher on Bash alone would judge a Monitor call as a Bash command.
 		if in.AgentID != "" && c.tellOnce(noteMonitor, in.SessionID, in.AgentID, hookCountWait(hookNudgeTimeout)) {
 			_, _ = stdout.Write(nudgeOutput(noteMonitorText(c.callerOf(in.SessionID, in.AgentID))))
 			c.countNudge(noteMonitor, hookCountWait(hookNudgeTimeout))
@@ -201,7 +198,6 @@ func hookClaudeNudge(c *cli, stdin io.Reader, stdout io.Writer) {
 		return
 	}
 	var r *nudgeRule
-	// A refused call gets no note and uses no pause tell, since the refusal is what the agent must read; the /proc task scan runs once.
 	type taskResult struct {
 		kind, text string
 		deny       bool
@@ -225,7 +221,6 @@ func hookClaudeNudge(c *cli, stdin io.Reader, stdout io.Writer) {
 	rk, _ := hookRefusalWith(in, task, func() string { return c.noopRefusalText(in) })
 	refused := rk != ""
 	allow := !refused && picturePermit(in, cwd, ti.FilePath)
-	// Only the main thread gets a pause tell: a subagent's would use up the parent's slot, and the hand-off is the parent's to follow.
 	if in.AgentID == "" && !refused {
 		if text := c.pauseTell(in.SessionID, hookLateAfter(hookNudgeTimeout)); text != "" {
 			r = &nudgeRule{kind: "paused", text: text}
@@ -250,7 +245,6 @@ func hookClaudeNudge(c *cli, stdin io.Reader, stdout io.Writer) {
 			r = &nudgeRule{kind: kind, text: text}
 		}
 	}
-	// Counted on every search or slice, nudged or not, so the chain stays whole; only the tell is conditional.
 	canTell := r == nil && !refused && c.sessionArm(cwd, in.SessionID, expSearchNudge) != "off"
 	if !ti.Bg && c.chainNudge(&in, cwd, chainStep(in.ToolName, ti.Command, ti.FilePath), canTell) {
 		r = &nudgeRule{kind: chainKind, text: chainText}

@@ -165,7 +165,6 @@ for (const [width, scheme] of looks([
     has: page.getByRole("heading", { name: "Sandbox", exact: true }),
   });
   await sb.waitFor();
-  // The machine list may hold machines from other specs, so find drillbox's row by name.
   const row = sb.locator("li", { hasText: "drillbox" });
   const unfold = async () => {
     const d = row

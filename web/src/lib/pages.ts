@@ -3,8 +3,8 @@ import { api, qs } from './api'
 import type { Page } from './types'
 
 export interface PageParams {
-  project?: string // a key, or "none" for personal pages
-  parent?: number // 0 for top level
+  project?: string
+  parent?: number
   category?: string
   q?: string
   issue?: string

@@ -44,7 +44,6 @@ func TestTaskSessionPlacesAndStart(t *testing.T) {
 	e.setClock(e.clockNow().Add(time.Hour))
 	e.runner(e.admin, "box", claude)
 	e.runner(e.admin, "nocli", nil)
-	// A runner without task-kickoff support isn't a place: it can't take the task for the session.
 	e.runner(e.admin, "laptop", func(r *RunnerRegistration) { r.CLIs = []RunnerCLI{{Name: "claude"}} })
 
 	places, err := e.s.TaskSessionPlaces(e.ctx, e.admin)

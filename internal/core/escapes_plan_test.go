@@ -38,7 +38,6 @@ func (e *escapeEnv) assertNoFullScan(t *testing.T, name, q string, args ...any) 
 		if strings.Contains(d, "AUTOMATIC") && (strings.HasPrefix(d, "SEARCH p ") || strings.HasPrefix(d, "SEARCH el ")) {
 			t.Errorf("%s: builds an index on the fly: %s", name, d)
 		}
-		// The repo index must not drive these joins: it reads every pull request of the repo once per link.
 		if strings.HasPrefix(d, "SEARCH p USING INDEX pull_requests_repo_number") && strings.Contains(d, "(repo=?)") {
 			t.Errorf("%s: walks a repo's pull requests per link: %s", name, d)
 		}
@@ -143,7 +142,6 @@ func TestEscapesDueByRepoIsNotSlowerThanBefore(t *testing.T) {
 	}
 	t.Logf("due %v, due by repo %v, pending by repo %v", plain, byRepo, pendingRepo)
 	for name, d := range map[string]time.Duration{"due by repo": byRepo, "pending by repo": pendingRepo} {
-		// The timing bound is a loose backstop for the per-link repo search; the plan test above is the exact check.
 		if d > 3*time.Second {
 			t.Errorf("%s took %v (unfiltered %v)", name, d, plain)
 		}

@@ -271,7 +271,6 @@ func adjust(p string, score float64, q string) float64 {
 
 func isTestPath(p string) bool {
 	b := strings.ToLower(path.Base(p))
-	// test_*.py is pytest's; a Go file named test_x.go is code, not a test.
 	return strings.HasSuffix(b, "_test.go") || (strings.HasPrefix(b, "test_") && !strings.HasSuffix(b, ".go")) || strings.HasSuffix(b, "_test.py") ||
 		strings.Contains(b, ".test.") || strings.Contains(b, ".spec.") || strings.Contains(p, "/tests/") || strings.Contains(p, "/__tests__/") || strings.HasPrefix(p, "tests/") || strings.HasPrefix(p, "e2e/")
 }

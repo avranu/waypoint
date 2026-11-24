@@ -321,7 +321,6 @@ func (s *Service) WarmDecisions(ctx context.Context, actor *Actor, q UsageQuery)
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	// The evidence, as weighWarm counts it (news aside).
 	// #nosec G202 -- where is built from fixed conditions; values are bound
 	rows, err = s.db.R.QueryContext(ctx, `SELECT class, `+warmEvidenceSQL+` FROM warm_decisions WHERE `+where+` AND action != 'news' GROUP BY class`,
 		append(s.warmEvidenceArgs(), args...)...)

@@ -16,8 +16,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/sandbox"
 )
 
-// A claim carries a signed spec only when the machine's helper is ready and the machine isn't paused; otherwise the job runs as it did before sandboxing.
-
 var sandboxKeyMu sync.Mutex
 
 // readSandboxKey returns the server's spec key, or nil before it's made.
@@ -50,7 +48,6 @@ func (s *Service) sandboxKey(ctx context.Context) (ed25519.PrivateKey, error) {
 	if _, err := rand.Read(seed); err != nil {
 		return nil, err
 	}
-	// OR IGNORE: another server process on this database may have made it first; then its key wins.
 	if _, err := s.db.W.ExecContext(ctx, `INSERT OR IGNORE INTO server_settings(key, value) VALUES ('sandbox_spec_key', ?)`, base64.StdEncoding.EncodeToString(seed)); err != nil {
 		return nil, err
 	}
@@ -268,7 +265,6 @@ func sandboxRepos(ctx context.Context, q queryer, projectID int64, hint string) 
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	// Cap after the hint moved the job's repository to the front.
 	if len(out) > sandbox.MaxSpecRepos {
 		out = out[:sandbox.MaxSpecRepos]
 	}

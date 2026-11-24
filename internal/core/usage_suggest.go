@@ -334,7 +334,7 @@ func adviceOutput(o *UsageOverview) *UsageAdvice {
 	for _, t := range o.Tools {
 		switch t.Group {
 		case "builtin":
-			if t.Name != "Bash" { // Bash is judged by its command heads, not as one tool.
+			if t.Name != "Bash" {
 				consider(t.Name, t)
 			}
 		case "mcp":

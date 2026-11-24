@@ -139,7 +139,6 @@ func TestOpenPullRequestForgeDown(t *testing.T) {
 	if !errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), "open the pull request: git.example.com didn't answer") {
 		t.Fatalf("open down: %v", err)
 	}
-	// A forge can open a pull request and then go quiet without a webhook; its list finds the pull request, so it is recorded rather than opened again.
 	g.createdAnyway = true
 	res, err := e.s.OpenPullRequest(e.ctx, e.admin, in)
 	if err != nil {

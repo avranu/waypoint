@@ -57,7 +57,7 @@ func TestAgentActivity(t *testing.T) {
 	if task, err := e.s.AgentNext(e.ctx, code, AgentQuery{}); err != nil || task == nil || task.Issue.Key != a.Key {
 		t.Fatalf("next = %v, %v", task, err)
 	}
-	e.s.Wait() // background screens read the clock
+	e.s.Wait()
 	e.setClock(e.clockNow().Add(30 * time.Minute))
 	if err := e.s.AgentReportUsage(e.ctx, code, a.Key, "", AgentUsage{InputTokens: 1000, OutputTokens: 200, CostUSD: 0.5, Model: "claude-opus-5-5"}); err != nil {
 		t.Fatal(err)
@@ -72,7 +72,7 @@ func TestAgentActivity(t *testing.T) {
 	if _, err := e.s.AddComment(e.ctx, code, a.Key, "Opened the PR."); err != nil {
 		t.Fatal(err)
 	}
-	e.s.Wait() // background screens read the clock
+	e.s.Wait()
 	e.setClock(e.clockNow().Add(30 * time.Minute))
 	if _, err := e.s.AgentDone(e.ctx, code, a.Key, AgentDoneInput{Usage: &AgentUsage{OutputTokens: 100}}); err != nil {
 		t.Fatal(err)
@@ -97,7 +97,7 @@ func TestAgentActivity(t *testing.T) {
 	if _, err := e.s.CreateIssue(e.ctx, haiku, IssueInput{Project: p.Key, Title: "Follow-up found by haiku"}); err != nil {
 		t.Fatal(err)
 	}
-	e.s.Wait() // background screens read the clock
+	e.s.Wait()
 	e.setClock(e.clockNow().Add(30 * time.Minute))
 
 	f := e.forge("forgejo", "https://git.example.com", false)
@@ -177,7 +177,7 @@ func TestAgentActivity(t *testing.T) {
 		t.Error("sam asked about a project he isn't in")
 	}
 
-	e.s.Wait() // background screens read the clock
+	e.s.Wait()
 	e.setClock(e.clockNow().Add(10 * 24 * time.Hour))
 	week, _ := e.s.AgentActivity(e.ctx, e.admin, ActivityQuery{Days: 7})
 	if week.Totals.TasksDone != 0 || week.Totals.PRsMerged != 0 || len(week.Daily) != 7 {

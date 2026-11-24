@@ -12,8 +12,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// Answers are marked told only after the hook has printed them: a hook cut off early loses none, and an answer can come twice.
-
 // hookWait is the PostToolUse(Bash) hook's command.
 const hookWait = "hook claude-wait"
 
@@ -178,7 +176,6 @@ func waitETA(command, cwd, session string) string {
 		return ""
 	}
 	holders := slotHolders(dir, name)
-	// Drop our own just-started run from the holders: this wait is not queued behind it.
 	for i, h := range holders {
 		if h.Cmd != cmd {
 			continue
@@ -207,11 +204,10 @@ func hookClaudeWait(c *cli, stdin io.Reader, stdout io.Writer) {
 		Command string `json:"command"`
 	}
 	_ = json.Unmarshal(in.ToolInput, &call)
-	// The ETA runs alongside the server call and is left out if late, so the hook never times out with nothing said.
 	start := time.Now()
 	deadline := time.After(waitBudget)
 	eta := make(chan string, 1)
-	etaFor := waitETAFor // read here: the goroutine can outlive the hook
+	etaFor := waitETAFor
 	go func() { eta <- etaFor(call.Command, in.Cwd, in.SessionID) }()
 	var lines string
 	var told []int64
@@ -243,7 +239,6 @@ func hookClaudeWait(c *cli, stdin io.Reader, stdout io.Writer) {
 	if _, err := stdout.Write(hookContext("PostToolUse", text)); err != nil || lines == "" || len(told)+len(named) == 0 {
 		return
 	}
-	// The told call must finish inside the hook's timeout, so it is skipped when little time is left.
 	left := time.Duration(hookWaitTimeout)*time.Second - 500*time.Millisecond - time.Since(start)
 	if left < waitToldMin {
 		return

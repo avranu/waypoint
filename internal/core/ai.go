@@ -366,7 +366,7 @@ func (s *Service) EnsureDefaultAI(ctx context.Context, baseURL, password, model 
 	}
 	for _, t := range aiTasks {
 		if t.Task == "review" || t.Task == "verify_review" {
-			continue // Review tasks keep the free review chain from EnsureReviewModels; setting this model on them would replace it.
+			continue
 		}
 		if err := s.SetAITask(ctx, SystemActor(), t.Task, p.ID, model, nil); err != nil {
 			return err
@@ -400,7 +400,6 @@ func (s *Service) runAIAnswer(ctx context.Context, task string, chain []ChainMod
 		return "", "", invalid("no AI model is set up for %q; an admin can choose one under Admin → AI", t.Label)
 	}
 	ctx = aiContext(ctx, task)
-	// Free model tiers rate-limit, so normal AI work runs two calls at a time.
 	slots := s.aiSlots
 	if priorityOf(ctx) == prioritySurplus {
 		slots = s.surplusSlot
@@ -540,8 +539,6 @@ func nearestPoint(p float64) float64 {
 // project so the model matches the team's scale.
 func (s *Service) estimatePrompt(ctx context.Context, actor *Actor, i *Issue) (string, error) {
 	var b strings.Builder
-	// Calibration examples come from the whole project, so only for people
-	// who can see the whole project (and automations working in it).
 	role, err := s.projectRole(ctx, s.db.R, actor, i.ProjectID)
 	if err != nil {
 		return "", err

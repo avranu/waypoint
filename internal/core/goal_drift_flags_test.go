@@ -19,7 +19,7 @@ type driftLLM struct {
 	fail        error
 	calls       int
 	lastPrompts []string
-	during      func() // Runs once, inside the next pull request's model call (race window).
+	during      func()
 }
 
 func (f *driftLLM) Models(ctx context.Context, p *AIProvider) ([]AIModel, error) {
@@ -254,7 +254,6 @@ func TestDriftCheckClearLeavesNoTrace(t *testing.T) {
 	if why, _ := de.settleCheck(pr); why != "" || de.verdict(pr.ID) != driftClear {
 		t.Fatalf("clear: %q, verdict %q", why, de.verdict(pr.ID))
 	}
-	// A clear verdict is a guess, not evidence, so it raises no flag and shows nothing on the view.
 	var n int
 	if err := de.s.db.R.QueryRow(`SELECT count(*) FROM goal_drift_flags`).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("flags %d, %v", n, err)
@@ -279,7 +278,6 @@ func TestDriftCheckOnlyAgents(t *testing.T) {
 	de := newDriftEnv(t)
 	de.goal(de.admin, de.p.Key, "People find any task in a second")
 	pr := de.agentPR(4, "Theirs", nil)
-	// A repo's auto-merge setting arms a person's pull request too.
 	if _, err := de.s.db.W.Exec(`UPDATE pull_requests SET agent = '', armed_at = 1, armed_agent = ? WHERE id = ?`, mergeSettingAgent, pr.ID); err != nil {
 		t.Fatal(err)
 	}

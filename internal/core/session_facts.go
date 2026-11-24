@@ -1,7 +1,5 @@
 package core
 
-// a file-level failure (no pieces, a hole, a damaged piece) is recorded and not retried until the file grows, the parser changes or factsRetry passes; a read or database error is not recorded and is retried next run
-
 import (
 	"context"
 	"database/sql"
@@ -111,7 +109,6 @@ func (s *Service) DeriveSessionFacts(ctx context.Context) (FactsRun, error) {
 			return run, ctx.Err()
 		}
 		if run.Bytes > 0 && run.Bytes+f.raw > factsRunBytes {
-			// continue, not break: a large file must not hold back the smaller due files behind it
 			continue
 		}
 		run.Bytes += f.raw

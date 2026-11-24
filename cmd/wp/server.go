@@ -8,8 +8,6 @@ import (
 	"strings"
 )
 
-// Admins only; a permission token also needs server.read.
-
 var serverCmd = &command{
 	name: "server", group: "Agent work", args: "[status|problems|job|log|metrics …]",
 	summary:  "the Waypoint server's health, what keeps going wrong on it, recent log and metrics, read through the API (admins)",

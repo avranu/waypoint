@@ -12,8 +12,6 @@ import (
 	"unicode/utf8"
 )
 
-// Criteria compile to a WQL query in wp next's order, so autopilot takes only tasks wp next would offer, just fewer of them.
-
 // Pace waits, as the person reads them in Reason.
 const (
 	WaitSchedule = "schedule"
@@ -270,7 +268,7 @@ func (d daySet) String() string {
 	if d.all() {
 		return ""
 	}
-	on := func(i int) bool { return d[(i+1)%7] } // dayNames start on Monday, so i+1 is the time.Weekday index (Sunday is 0).
+	on := func(i int) bool { return d[(i+1)%7] }
 	var parts []string
 	for i := 0; i < 7; {
 		if !on(i) {
@@ -431,7 +429,6 @@ func (s *Service) autopilotPace(ctx context.Context, q queryer, userID, projectI
 	if spacing > 0 {
 		since = min(since, now-int64(spacing)*time.Minute.Milliseconds())
 	}
-	// A start counts from its claim, before the step has picked, so a step picking at this same tick is counted.
 	rows, err := q.QueryContext(ctx, `SELECT updated_at FROM autopilot_steps WHERE user_id = ? AND project_id = ? AND state IN (?, ?)
 		AND (next_issue IS NOT NULL OR (session_id IS NULL AND state = ?)) AND updated_at >= ? ORDER BY updated_at DESC`, userID, projectID, StepStarted, StepStarting, StepStarting, since)
 	if err != nil {
@@ -595,7 +592,7 @@ func (s *Service) spendGoesOn(ctx context.Context, userID int64) bool {
 // q is a transaction when the count decides a start: Waypoint has one writer,
 // so a count and the claim in one transaction can't race another.
 func (s *Service) autopilotRunning(ctx context.Context, q queryer, userID, projectID, notSession int64, countWaiting bool, now int64) ([]string, error) {
-	running := map[int64]string{} // Keyed by session id; a step with no session yet is keyed by minus its step id.
+	running := map[int64]string{}
 	rows, err := q.QueryContext(ctx, `SELECT DISTINCT x.id, x.state, x.last_seen_at, x.title, coalesce(x.machine, ''),
 		EXISTS (SELECT 1 FROM agent_runs r WHERE r.session_id = x.id AND r.ended_at IS NULL),
 		EXISTS (SELECT 1 FROM agent_runs r WHERE r.session_id = x.id AND r.issue_id = x.issue_id AND r.outcome IN ('expired', 'paused')),

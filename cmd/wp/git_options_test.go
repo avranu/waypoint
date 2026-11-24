@@ -94,7 +94,6 @@ func TestRunnerRefusesAnOptionAsTarget(t *testing.T) {
 // commit a round started from and the trees a test run recorded: refused
 // before git is given them.
 func TestOptionLikeRefsNeverReachGitInTheirReaders(t *testing.T) {
-	// A real repository: the refusal must be the guard, not "not a repo".
 	repo := t.TempDir()
 	tgit(t, repo, "init", "-q", "-b", "main")
 	tcommit(t, repo, "a.txt")

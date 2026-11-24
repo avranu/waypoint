@@ -1,7 +1,5 @@
 package core
 
-// An hour of a session goes to the task of its latest run begun before the hour ended, if that run ended no more than an hour earlier (or is still open); hours within two hours before a session's first run go to that run; runless sessions go to the task they hold.
-
 import (
 	"context"
 	"database/sql"
@@ -123,7 +121,7 @@ type trendBucket struct {
 	acc                     usageAcc
 	by                      map[string]float64
 	tools, errors, subagent int64
-	spawns                  int64 // Ledger spawns count subagents that tool counts miss; subagents() takes the larger of the two.
+	spawns                  int64
 	calls, ctx, over200     int64
 }
 
@@ -182,8 +180,6 @@ func (s *Service) trendBuckets(ctx context.Context, sc *usageScope, book *priceB
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	// Tool calls: built-in and MCP tools. A subagent shows up twice (the
-	// Agent tool, and its type), skills and commands as the Skill tool.
 	// #nosec G202 -- as above
 	rows, err = s.db.R.QueryContext(ctx, `SELECT machine, session, hour, repo,
 			sum(CASE WHEN kind IN ('builtin', 'mcp') THEN calls ELSE 0 END), sum(CASE WHEN kind IN ('builtin', 'mcp') THEN errors ELSE 0 END),
@@ -234,7 +230,7 @@ func (s *Service) trendBuckets(ctx context.Context, sc *usageScope, book *priceB
 
 type runSpan struct {
 	issue      int64
-	start, end int64 // end 0: still open; start 0: the session's held task, no runs
+	start, end int64
 }
 
 type trendTaskInfo struct {
@@ -529,7 +525,7 @@ func (s *Service) UsageTrends(ctx context.Context, actor *Actor, q UsageQuery) (
 		t.subagents += b.subagents()
 		t.calls += b.calls
 		t.ctx += b.ctx
-		t.sessions[sk] += b.acc.cost + 1e-12*float64(b.acc.n) // Each call adds 1e-12 per use, so a session with no prices stays above zero and can still be picked as its task's top session.
+		t.sessions[sk] += b.acc.cost + 1e-12*float64(b.acc.n)
 		t.hours[k.hour] = true
 		t.first, t.last = min(t.first, k.hour), max(t.last, k.hour)
 		if m, ok := sessMeta[sk]; ok && m.branch != "" {
@@ -671,7 +667,7 @@ type trendTaskAgg struct {
 	sessions                 map[sessKeyAt]float64
 	hours                    map[int64]bool
 	first, last              int64
-	branches                 map[sessKeyAt][2]string // Repo is kept lower-case, as the repo keys are.
+	branches                 map[sessKeyAt][2]string
 }
 
 type mergedPR struct {
@@ -725,7 +721,6 @@ func (s *Service) trendTasksInto(ctx context.Context, o *UsageTrends, attr *task
 		if t.calls > 0 {
 			row.AvgContext = f64p(float64(t.ctx) / float64(t.calls))
 		}
-		// A session's branch's merged pull requests count toward its task, since a session that moved on still worked on that branch.
 		seen := map[int64]bool{}
 		for sk := range t.sessions {
 			if topTask[sk] != id {

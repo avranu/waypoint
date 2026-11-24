@@ -1,7 +1,5 @@
 package core
 
-// The gateway key stays on Waypoint: the runner packs its checkout and Waypoint relays it, so the key never reaches a runner.
-
 import (
 	"bytes"
 	"context"
@@ -743,7 +741,6 @@ func (s *Service) gatewayView(ctx context.Context, j *gatewayJob, t *gatewayTask
 			v.ErrorKind = cmp(map[string]string{GatewayTaskCancelled: "cancelled"}[v.Status], "server")
 		}
 		if v.Status == GatewayTaskFailed && v.ErrorKind == "cancelled" {
-			// A failed task with error kind cancelled is the gateway stopping its sandbox (a deploy does this), not a cancel; a cancel through the API ends as status cancelled.
 			v.ErrorKind = "interrupted"
 			v.Error = "The gateway stopped the task's sandbox under it (" + cmp(v.Error, "the task was cancelled") + "); it is safe to send again"
 		}
@@ -790,7 +787,6 @@ func gatewayRefusedView(err error) *GatewayTaskView {
 	wait := int(max(r.retryAfter, gatewayBusyRetry).Seconds())
 	switch {
 	case r.code == gatewayNoModelAtBar:
-		// With no model at the task's quality bar and none only busy, sending again cannot help, so the audit's chain ends.
 		v.ErrorKind = gatewayNoModelAtBar
 		if r.retryAfter > 0 {
 			v.RetryAfter = wait
@@ -802,7 +798,6 @@ func gatewayRefusedView(err error) *GatewayTaskView {
 	case r.status >= 500:
 		v.ErrorKind, v.RetryAfter = "unavailable", wait
 	case r.status == http.StatusRequestTimeout:
-		// A 408 from the gateway's intake says nothing about the model: retry it after a longer wait than a busy answer.
 		v.ErrorKind, v.RetryAfter = "intake_timeout", int(max(r.retryAfter, gatewayIntakeRetry).Seconds())
 	case r.status == http.StatusUnauthorized:
 		v.ErrorKind = "auth"

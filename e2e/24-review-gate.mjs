@@ -209,7 +209,6 @@ let api, call, hook;
   await api("PUT", "/ai/tasks/review", { provider_id: provider.id, model: "fake/muse-spark-1.3", fallbacks: [] });
   await api("POST", "/projects", { name: "Gate", key: KEY });
   forge = await api("POST", "/forges", { kind: "github", name: "Fake GitHub gate", base_url: fake, token: "tok", webhook_secret: SECRET });
-  // Text from forge logins not mapped to a Waypoint person waits for a person.
   await api("PUT", `/forges/${forge.id}/people`, { people: [{ login: "robin", user: "robin" }, { login: "alex", user: "robin" }] });
   const added = await api("POST", `/projects/${KEY}/repos`, { forge_id: forge.id, repo: REPO, sync_issues: false });
   repoID = added.id;

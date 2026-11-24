@@ -1,5 +1,3 @@
-// The steps belong to an automation and are edited in its step editor; the trigger is fixed to this agent finishing.
-
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {

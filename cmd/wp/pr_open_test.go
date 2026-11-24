@@ -266,7 +266,6 @@ func TestCLIPROpenAndShip(t *testing.T) {
 	if strings.Contains(out, "Before you reply") {
 		t.Errorf("nothing in the task is put off, yet:\n%s", out)
 	}
-	// --pr stays accepted for older prompts: it must not be refused.
 	for _, args := range [][]string{{"ship", "--pr"}, {"ship", "--pr", "--skip-review", "tested by hand"}} {
 		got, code := e.run(args...)
 		if code != 0 || !strings.Contains(got, "Reply template (adapt it where it doesn't fit):") || !strings.Contains(got, iss.Key+" shipped in PR #41 (") {
@@ -475,7 +474,6 @@ func TestCLIPROpenAndShip(t *testing.T) {
 	if out = e.wp("pr", "open"); !strings.Contains(out, "Linked to "+want.Key+" (commit)") {
 		t.Errorf("commit key not used:\n%s", out)
 	}
-	// Keys in commits merged in from main name other work, so they are not linked to this change.
 	claimAt(dir, want.Key)
 	sh(t, dir, "checkout", "-q", "main")
 	sh(t, dir, "checkout", "-q", "-b", "forge-main")
@@ -594,7 +592,6 @@ func TestCLIPROpenAndShip(t *testing.T) {
 		t.Errorf("status restored while another PR (#%s) was linked:\n%s", second, out)
 	}
 
-	// Automations that finish a task on pr_merged are switched off in this test, so the task stays open.
 	autos, err := e.svc.ListAutomations(ctx, me, p.Key)
 	if err != nil {
 		t.Fatal(err)

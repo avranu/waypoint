@@ -120,7 +120,6 @@ func TestPictureReadAllowed(t *testing.T) {
 		}
 	}
 
-	// Paths resolve through the user's own symlinks (macOS /var is one), never through a link another user could re-point.
 	tmpLink := filepath.Join(base, "tmplink")
 	must(os.Symlink(tmp, tmpLink))
 	repoLink := filepath.Join(base, "repolink")

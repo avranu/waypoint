@@ -16,8 +16,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/tracing"
 )
 
-// Records logged outside a job count under a source too, so nothing that warns goes uncounted.
-
 // Sources of log records outside scheduled jobs.
 const (
 	SourceRequests   = "requests"
@@ -173,18 +171,14 @@ const otherProblems = "(more problems than are listed one by one)"
 
 // jobLedger counts log records by source and tracks scheduled jobs' runs.
 type jobLedger struct {
-	mu       sync.Mutex
-	now      func() time.Time
-	ring     *LogRing
-	jobs     map[string]*jobState
-	problems map[problemKey]*problemSeen
-	perSrc   map[string]int
-	hours    map[hourKey]*hourCount
-	// stopping: the server is going down, and what fails from here on fails
-	// because of that.
-	stopping atomic.Bool
-	// saving serializes saves, so two can't write the same counts in the
-	// wrong order.
+	mu                      sync.Mutex
+	now                     func() time.Time
+	ring                    *LogRing
+	jobs                    map[string]*jobState
+	problems                map[problemKey]*problemSeen
+	perSrc                  map[string]int
+	hours                   map[hourKey]*hourCount
+	stopping                atomic.Bool
 	saving                  sync.Mutex
 	pruned                  time.Time
 	noAdminWarned           time.Time
@@ -192,7 +186,6 @@ type jobLedger struct {
 	startTried              bool
 	checkedAt, watchdogTold time.Time
 	prev                    *PreviousRun
-	// What job_health.running_since and busy_since hold, by job, in ms (0 for none).
 	savedRunning, savedBusy map[string]int64
 	active                  map[*jobRun]struct{}
 	blankNew, blankAgain    []string
@@ -322,7 +315,7 @@ func (l *jobLedger) start(name string, period time.Duration, at time.Time) *jobR
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	st := l.state(name, period)
-	st.dirty = true // its row must exist before running_since is written to it
+	st.dirty = true
 	st.running = append(st.running, at)
 	run := &jobRun{name: name, started: at}
 	l.active[run] = struct{}{}
@@ -333,8 +326,6 @@ func (l *jobLedger) end(run *jobRun, at time.Time) {
 	ms := at.Sub(run.started).Milliseconds()
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	// Read under the ledger's lock: a secret blanked meanwhile is not copied
-	// as it was.
 	result, note := run.result()
 	delete(l.active, run)
 	st := l.jobs[run.name]
@@ -399,8 +390,6 @@ func (l *jobLedger) record(ctx context.Context, rec slog.Record, with, withTarge
 		return
 	}
 	isErr := rec.Level >= slog.LevelError
-	// The message is kept on disk and shown to admins: a secret that was put
-	// into it is blanked like one in an attribute.
 	msg := excerpt(l.ring.redact(rec.Message), 200)
 	if src != nil && src.run != nil {
 		r := src.run
@@ -557,7 +546,6 @@ func (s *Service) untracedJob(ctx context.Context, name string, period time.Dura
 	defer func() {
 		p := recover()
 		if p != nil {
-			// Re-panic after recording: going on would keep whatever the job left half done.
 			run.mu.Lock()
 			run.crashed = excerpt(fmt.Sprint(p), 200)
 			run.mu.Unlock()

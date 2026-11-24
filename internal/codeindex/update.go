@@ -145,8 +145,6 @@ func (ix *Index) Update(ctx context.Context) (UpdateStats, error) {
 		return st, err
 	}
 
-	// Which files need a look: new ones, and ones whose stat moved (or is
-	// too recent to trust, git's "racy" case).
 	var look []string
 	present := make(map[string]bool, len(files))
 	for _, f := range files {

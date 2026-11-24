@@ -340,8 +340,6 @@ func TestSendTestEvidenceReachesTheServer(t *testing.T) {
 		t.Errorf("moved: %+v", ev)
 	}
 
-	// Every field the CLI has, at once: most are left out of the body when
-	// empty, and the server refuses any it doesn't know.
 	full := testRun{}
 	fillEveryField(t, reflect.ValueOf(&full).Elem())
 	full.Tree, full.Outcome = tree, runFail
@@ -442,7 +440,7 @@ func TestGuessTestCommand(t *testing.T) {
 		{"package.json", `{"scripts": {"test": "vitest"}}`, "npm test"},
 		{"package.json", `{}`, ""},
 		{"package.json", `{"keywords": ["test"]}`, ""},
-		{"package.json", `{"scripts": {"test": "echo \"Error: no test specified\" && exit 1"}}`, ""}, // npm init's default test script is an error stub, not a test command.
+		{"package.json", `{"scripts": {"test": "echo \"Error: no test specified\" && exit 1"}}`, ""},
 		{"package.json", `{"jest": {"test": 1}}`, ""},
 		{"makefile", "test:\n\ttrue\n", "make test"},
 		{"GNUmakefile", "test:\n\ttrue\n", "make test"},

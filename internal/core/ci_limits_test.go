@@ -325,7 +325,6 @@ func TestCILimitsUrgent(t *testing.T) {
 	if !be.s.taskUrgent(be.ctx, SystemActor(), key) || !strings.Contains(text, "this task is now tagged `ci-urgent`") {
 		t.Fatalf("stopped by a limit: task not tagged:\n%s", text)
 	}
-	// The task text must not tell the agent to untag or name the urgent lane: the safety screen holds those.
 	for _, bad := range []string{"--untag", "urgent CI lane", "ahead of the merge line"} {
 		if strings.Contains(text, bad) {
 			t.Errorf("task text mentions %q:\n%s", bad, text)

@@ -82,7 +82,6 @@ func TestLogStoreAcrossRestart(t *testing.T) {
 	if got := msgs(recs); got != "after-0,after-1" || !oldest.Equal(c.t) {
 		t.Errorf("recent: %s from %v", got, oldest)
 	}
-	// Newest queries the ring can answer don't read the files, so matched counts only the ring.
 	recs, matched, _ = r2.query(LogQuery{Since: c.t.Add(-6 * time.Hour), Limit: 1, Newest: true})
 	if got := msgs(recs); got != "after-1" || matched != 2 {
 		t.Errorf("newest: %d %s", matched, got)
@@ -215,9 +214,8 @@ func TestLogStoreRedactsLate(t *testing.T) {
 	if info.Mode().Perm() != 0o600 {
 		t.Errorf("mode %v", info.Mode().Perm())
 	}
-	// A record after a cut-off line is written on its own line, never merged into it.
 	r2.Close()
-	if got := diskMsgs(t, dir); got != "forge token late-secret-abcdef in a message,after" { // A record written to disk before its secret was learnt keeps the secret; queries blank it.
+	if got := diskMsgs(t, dir); got != "forge token late-secret-abcdef in a message,after" {
 		t.Errorf("on disk: %s", got)
 	}
 }

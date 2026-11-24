@@ -205,8 +205,6 @@ async function run(width, scheme) {
   ok((await sessions.getByRole("img", { name: "Working" }).count()) >= 1 && (await sessions.getByRole("img", { name: "Waiting for you" }).count()) === 1 && (await sessions.getByRole("img", { name: "Idle" }).count()) === 1,
     `${tag} state dots: working, waiting for you, idle`);
   ok(await sessions.getByText("Config loader tidied: two functions merged, tests pass.").isVisible(), `${tag} the last update shows`);
-  // Other suites on this server delegate issues too, and Up next shows only the
-  // first few heads per agent: look at it through this suite's own project filter.
   await page.goto(`${base}/agents?project=${KEY}`);
   const next = page.getByRole("region", { name: "Up next" });
   await next.getByText("Rename a CSS class").waitFor();
@@ -239,7 +237,6 @@ async function run(width, scheme) {
   await page.getByRole("region", { name: "Sessions now" }).getByRole("button", { name: /Sessions now/ }).click();
   ok(await page.getByRole("region", { name: "Sessions now" }).getByText("Tidy the config loader").isVisible(), `${tag} …and opens again`);
 
-  // An agent matches the work anyone may take, so the empty state needs a project that has none.
   if (!(await api("GET", "/projects")).some((p) => p.key === "OVEMT")) await api("POST", "/projects", { name: "Overview empty", key: "OVEMT" });
   await page.goto(base + "/agents?agent=gemini&project=OVEMT");
   await page.getByRole("region", { name: "Sessions now" }).getByText(/Agent sessions appear here/).waitFor();
@@ -264,7 +261,6 @@ async function run(width, scheme) {
   ok((await page.getByRole("list", { name: "Sessions" }).getByRole("listitem").count()) >= 3 && (await page.getByText("Dark theme").first().isVisible()), `${tag} the active sessions are listed`);
   await pick(page, "State", "Waiting for you");
   await page.getByText("Dark theme").first().waitFor();
-  // The list refilters after the pick: wait for the others to leave rather than counting once.
   await page.getByText("Overview tab").first().waitFor({ state: "detached", timeout: 5000 }).catch(() => {});
   ok((await page.getByText("Overview tab").count()) === 0, `${tag} state filter: only those waiting for you`);
   await pick(page, "State", "Active");

@@ -11,8 +11,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/hermes"
 )
 
-// The step starts the conversation as the person who last saved the automation, who must own the assistant; the agent's actions stay within its gate.
-
 const assistantMaxWait = 2 * time.Hour
 
 func init() {
@@ -107,8 +105,6 @@ func askAssistant(c *StepCtx) error {
 	gw := client.Gateway()
 	sub := gw.Listen()
 	defer gw.Unsubscribe(sub)
-	// The same step, run again after a restart, finds its conversation
-	// rather than starting (and sending) a second one.
 	key := fmt.Sprintf("waypoint-run-%d-%s-%d", c.Run.ID, c.ID, c.Iteration)
 	res, err := gw.Call(c.Ctx, "session.create", map[string]any{"source": "waypoint", "title": excerpt(firstLine(prompt), 80), "idempotency_key": key})
 	if err != nil {

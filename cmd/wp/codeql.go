@@ -465,7 +465,6 @@ func (dockerCLI) Run(ctx context.Context, log io.Writer, args ...string) (int, e
 func codeqlScript(lang string) string {
 	mode := "--build-mode=none"
 	if lang == "go" {
-		// Autobuild would run the Makefile (npm and all).
 		mode = "--build-mode=manual --command='go build ./...'"
 	}
 	return fmt.Sprintf("codeql database create /work/db/%[1]s --language=%[1]s %[2]s --source-root=/work/src --codescanning-config=/work/cfg.yml --overwrite --threads=0", lang, mode) +
@@ -787,7 +786,7 @@ func runCodeqlScan(ctx context.Context, d codeqlDocker, o codeqlOpts) (*codeqlRe
 			return nil, codeqlFailed{fmt.Sprintf("%s: no results file; log %s", lang, logPath)}
 		}
 		var found []codeqlFinding
-		if lang == "actions" && src != o.Dir { // only a staged tree has renamed paths
+		if lang == "actions" && src != o.Dir {
 			found, err = parseSarifPaths(data, codeqlActionsRepoPath)
 		} else {
 			found, err = parseSarif(data)
@@ -816,7 +815,7 @@ func runCodeqlScan(ctx context.Context, d codeqlDocker, o codeqlOpts) (*codeqlRe
 	}
 	rep.Findings = append(rep.Findings, all...)
 	rep.Seconds = int(time.Since(started).Round(time.Second).Seconds())
-	_ = os.RemoveAll(work) // a failed scan keeps its work dir and logs; codeqlSweep removes them after a day
+	_ = os.RemoveAll(work)
 	return rep, nil
 }
 

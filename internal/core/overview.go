@@ -8,8 +8,6 @@ import (
 	"time"
 )
 
-// Nothing is stored for the overview: each call builds it from the queries the other parts already have.
-
 const (
 	ovSessions = 100
 	ovPulls    = 30

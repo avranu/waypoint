@@ -427,7 +427,6 @@ let recentID;
   const a2 = await api("GET", `/audits/${second}`);
   ok(a2.since === "3d" && a2.focus?.includes("security") && a2.max_findings === 5 && !a2.model, `the copy is its own ask, and no model ran: ${JSON.stringify({ since: a2.since, focus: a2.focus, max: a2.max_findings, model: a2.model })}`);
 
-  // Asked for 5 at a time, a model that reports 12 keeps all 12.
   const twelve = Array.from({ length: 12 }, (_, n) => ({
     title: `Nit number ${n + 1}`,
     path: "ledger/nit.go",

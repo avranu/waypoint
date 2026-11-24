@@ -21,11 +21,10 @@ import (
 )
 
 type env struct {
-	t     *testing.T
-	s     *Service
-	ctx   context.Context
-	admin *Actor
-	// Background work reads it while a test moves it on, so it is only read and set under clockMu, through clockNow and setClock.
+	t       *testing.T
+	s       *Service
+	ctx     context.Context
+	admin   *Actor
 	clockMu sync.Mutex
 	clock   time.Time
 }
@@ -544,7 +543,6 @@ func TestAutomationConditionsAndActions(t *testing.T) {
 	if got := e.get(e.admin, task.Key); len(got.Labels) != 0 {
 		t.Error("condition ignored")
 	}
-	// Assignees become watchers, so they also get later comment notifications.
 	ns, unread, _ := e.s.ListNotifications(e.ctx, sam, false, 10)
 	if unread != 2 || ns[1].Kind != NotifyAssigned || ns[0].Kind != NotifyCommented {
 		t.Errorf("sam notifications = %+v", ns)
@@ -1191,7 +1189,6 @@ func TestWebPush(t *testing.T) {
 		t.Error("VAPID key changed")
 	}
 	sam := e.user("sam", false)
-	// Test subscription keys need only be a valid P-256 point and 16-byte auth secret, not a real browser pair.
 	sub := PushSubscription{Endpoint: srv.URL + "/push/ok"}
 	sub.Keys.P256dh = "BNcRdreALRFXTkOOUHK1EtK2wtaz5Ry4YfYCA_0QTpQtUbVlUls0VJXg7A8u-Ts1XbjhazAkj7I99e8QcYP7DkM"
 	sub.Keys.Auth = "tBHItJI5svbpez7KI4CCXg"
@@ -1227,7 +1224,6 @@ func TestReviewFixesMisc(t *testing.T) {
 	if _, err := e.s.CreateTemplate(e.ctx, e.admin, p.Key, TemplateInput{Name: str("t"), Subtasks: &[]string{long}}); err == nil {
 		t.Error("over-long sub-task title accepted")
 	}
-	// Attachment ids are never reused: their URLs are cached immutably for a year.
 	i := e.issue(e.admin, IssueInput{Project: p.Key, Title: "files"})
 	a1, err := e.s.AddAttachment(e.ctx, e.admin, AttachTarget{TargetIssue, i.ID}, AttachmentInput{Name: "image.png", Data: []byte("one")})
 	if err != nil {

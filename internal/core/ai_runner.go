@@ -1,7 +1,5 @@
 package core
 
-// CLI entries run read-only on a fresh checkout of the pull request, and only a bot run carries a runner scope, so only review and reply rules can use one.
-
 import (
 	"context"
 	"encoding/json"
@@ -41,10 +39,8 @@ type runnerScope struct {
 	base    string
 	runID   int64
 	attempt int
-	// denied, when set, is why no runner may read this pull request: its
-	// text is untrusted input to a CLI on a person's machine.
-	denied string
-	seq    atomic.Int64
+	denied  string
+	seq     atomic.Int64
 }
 
 type runnerScopeKey struct{}
@@ -148,7 +144,6 @@ func (s *Service) cancelBotRunJobs(ctx context.Context, runID int64) {
 func (s *Service) runnerAttempt(ctx context.Context, cm ChainModel, system, prompt string, schema map[string]any, out any, perCall time.Duration) (ChainModel, ModelAttempt, error) {
 	name := runnerEntryName(cm)
 	start := time.Now()
-	// Attempt messages are fixed or shortened here; a raw database or network error travels only as the cause, never in the Error text.
 	fail := func(outcome, msg string, cause error) (ChainModel, ModelAttempt, error) {
 		if cause == nil {
 			cause = errors.New(msg)

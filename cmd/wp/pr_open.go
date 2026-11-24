@@ -230,7 +230,6 @@ func noticed(notice, s string) string {
 // reviewIntent is what the flags say about the task's review before its
 // pull request (core.ShipAuto and the rest).
 func (f prOpenFlags) reviewIntent() (string, error) {
-	// --pr alone means auto; with --skip-review the skip wins, with --review the review does.
 	intent := "auto"
 	if *f.review {
 		intent = "review"
@@ -253,10 +252,9 @@ func (f prOpenFlags) reviewIntent() (string, error) {
 type shipOpts struct {
 	noArm, noMove, noBabysit, notify, blocking, noWait *bool
 	waitTimeout                                        *time.Duration
-	// summaryGiven says --summary was on the command line; an empty value drops a kept summary.
-	summary      *string
-	summaryGiven bool
-	before       string
+	summary                                            *string
+	summaryGiven                                       bool
+	before                                             string
 }
 
 func addShipFlags(fs *flag.FlagSet) shipOpts {
@@ -283,7 +281,7 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 	case key == "" || *f.issue != "":
 	case given:
 		*f.issue = key
-	default: // held: the branch or commits may still name the issue to link
+	default:
 		f.finishing = key
 	}
 	if _, err := localGit("diff", "--cached", "--quiet"); err != nil && isExit(err, 1) {
@@ -296,7 +294,6 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 	} else if err != nil {
 		return false, err
 	} else if msgGiven {
-		// With -m and unstaged changes left, shipping now would open the pull request from commits that may be another change's.
 		if dirty, _ := localGit("status", "--porcelain"); uncommittedFiles(dirty) > 0 {
 			return false, c.usage("nothing is staged but the tree has changes: git add them and run wp ship -m again, or drop -m to ship the commits as they are")
 		}
@@ -324,10 +321,8 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 		o, raw = o2, raw2
 	}
 	if o.Held != "" {
-		// Held for the task's review: nothing is armed, babysat or moved, and the task isn't finished.
 		keptWhy, putOff := "", ""
 		if summary != "" {
-			// The summary is kept until the hook's Stop shows it; review findings start another turn, which ships its own.
 			c.keepSummary(cmpStr(key, o.key), summary)
 			dirty, _ := localGit("status", "--porcelain", "--untracked-files=no")
 			putOff = putOffPrompt(o.key, o.PutOff)
@@ -340,7 +335,6 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 			c.println(putOff)
 		}
 		if summary != "" && keptWhy == "" {
-			// Only once the output is written: a failed emit must not end the turn.
 			c.endTurnAfterShip(cmpStr(key, o.key), heldSummary(summary))
 		}
 		return false, nil
@@ -356,7 +350,6 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 	}
 	d := o.Pull
 	noteUrgent := (*f.urgent || o.UrgentHeld) && d.Urgent
-	// The text output is one line for the usual case, with problems on lines of their own; --json gets every note.
 	var bits, said, wrong []string
 	note := func(s string) { bits, said = append(bits, s), append(said, s) }
 	problem := func(s string) { bits, wrong = append(bits, s), append(wrong, s) }
@@ -418,7 +411,6 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 			problem("left " + o.key + " where it was: " + err.Error())
 		} else {
 			bits, moved = append(bits, o.key+" In Review"), true
-			// -m is the task's summary as well as the commit message.
 			if strings.TrimSpace(msg) != "" {
 				if _, err := c.call("POST", "/api/v1/issues/"+esc(o.key)+"/comments", map[string]string{"body": msg}); err != nil {
 					problem("comment not saved: " + err.Error())
@@ -449,7 +441,6 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 			c.println(putOff)
 		}
 		if summary != "" {
-			// The summary stays kept until the hook's Stop shows it: a turn that goes on after all can ship again without it.
 			c.keepSummary(cmpStr(key, o.key), summary)
 			why := shipNeedsAgent(o, so.before, wrong, putOff, dirty != "")
 			if why == "" && c.endTurnAfterShip(cmpStr(key, o.key), fillSummary(summary, o.key, d)) {
@@ -647,7 +638,6 @@ func (c *cli) openPR(f prOpenFlags) (*openedPR, []byte, error) {
 	if len(parents) > 0 {
 		fmt.Fprintf(c.err, "Stacked on %s: %d commits beyond %s are its; title, summary and issue use the other %d.\n", strings.Join(parents, ", "), len(all)-len(commits), base, len(commits))
 	}
-	// A held task the commits all name comes before the branch name, under the same open, same-project, not-merged checks as a claim.
 	named := branch
 	if f.finishing != "" && commitsOverBranch(*f.base, f.finishing) {
 		named = ""
@@ -664,7 +654,7 @@ func (c *cli) openPR(f prOpenFlags) (*openedPR, []byte, error) {
 		}
 	}
 	if !*f.noPush {
-		c.mergeBaseIfForkedTwice(base) // before the evidence: it can move HEAD
+		c.mergeBaseIfForkedTwice(base)
 	}
 	tested := c.sendTestEvidence(project, repo, key, f.summary)
 	body := *f.body
@@ -683,7 +673,6 @@ func (c *cli) openPR(f prOpenFlags) (*openedPR, []byte, error) {
 		}
 		body = string(b)
 	case body == "":
-		// The server may have a model reword this Summary from the same inputs.
 		summary := summarize(commits, f.summary)
 		body, err = c.renderPRBody(key, text, summary, *f.check, tested)
 		if err != nil {
@@ -703,14 +692,12 @@ func (c *cli) openPR(f prOpenFlags) (*openedPR, []byte, error) {
 	}
 	req := map[string]any{"stacked_on": stacked, "head": branch, "base": *f.base, "title": text, "body": body, "draft": *f.draft, "ready": *f.ready, "issue": key, "for": f.finishing, "repo": repo, "urgent": *f.urgent,
 		"review": intent, "reason": strings.TrimSpace(*f.skipReview), "force": *f.force}
-	// A key is sent only when its flag was given: given empty clears it, left out keeps it, so a server from before these keys still works.
 	f.addShipWords(req)
 	if ct, err := localGit("log", "-1", "--format=%ct", "HEAD"); err == nil {
 		if t, err := strconv.ParseInt(strings.TrimSpace(ct), 10, 64); err == nil {
 			req["head_time"] = t
 		}
 	}
-	// head_time alone can't order two heads committed in the same second, so the head sha is sent too.
 	if sha, err := localGit("rev-parse", "HEAD"); err == nil {
 		if sha = strings.TrimSpace(sha); sha != "" {
 			req["head_sha"] = sha
@@ -867,7 +854,7 @@ func isExit(err error, code int) bool {
 func baseRef(flag string) string {
 	if flag != "" {
 		if codeindex.CheckRef(flag) != nil {
-			return "" // git would read it as an option: never given to it
+			return ""
 		}
 		if _, err := localGit("rev-parse", "--verify", "-q", "origin/"+flag); err == nil {
 			return "origin/" + flag
@@ -925,8 +912,6 @@ func stackedOn(base, branch string) []string {
 			continue
 		}
 		refs = append(refs, r)
-		// The parent's local tip may be ahead of its pushed copy; its
-		// unpushed commits are the parent's, not this change's.
 		local := "refs/heads/" + strings.TrimPrefix(r, "origin/")
 		if _, err := localGit("rev-parse", "--verify", "--quiet", local); err == nil {
 			if _, err := localGit("merge-base", "--is-ancestor", local, "HEAD"); err != nil {
@@ -951,7 +936,7 @@ func stackedOn(base, branch string) []string {
 // branch (WP-ADR152).
 func (c *cli) mergeBaseIfForkedTwice(base string) {
 	if name, ok := strings.CutPrefix(base, "origin/"); ok && codeindex.CheckRef(name) == nil {
-		_, _ = localGit("fetch", "-q", "origin", name) // a stale base can only miss one
+		_, _ = localGit("fetch", "-q", "origin", name)
 	}
 	out, err := localGit("merge-base", "--all", base, "HEAD")
 	n := len(strings.Fields(out))
@@ -959,7 +944,6 @@ func (c *cli) mergeBaseIfForkedTwice(base string) {
 		return
 	}
 	if _, err := localGit("rev-parse", "-q", "--verify", "MERGE_HEAD"); err == nil {
-		// Someone's merge, perhaps half resolved: aborting it would lose that.
 		_, _ = fmt.Fprintf(c.err, "Notice: this branch forks from %s at %d commits, so its diff will show other pull requests' changes, and a merge is already under way here. Finish it, then git merge %s if that merge wasn't of it.\n", base, n, base)
 		return
 	}
@@ -992,7 +976,7 @@ func stackBranches(refs []string) []string {
 	for _, r := range refs {
 		name := strings.TrimPrefix(r, "origin/")
 		if strings.HasPrefix(r, "refs/heads/") {
-			name = strings.TrimPrefix(r, "refs/heads/") // a local branch may itself be named origin/x
+			name = strings.TrimPrefix(r, "refs/heads/")
 		}
 		out, err := localGit("rev-list", "--count", "--first-parent", r+"..HEAD")
 		if err != nil {
@@ -1019,7 +1003,7 @@ func stackBranches(refs []string) []string {
 		if a.n != b.n {
 			return a.n - b.n
 		}
-		if a.onLine != b.onLine { // equal counts: the branch HEAD grew from, not one merged in
+		if a.onLine != b.onLine {
 			if a.onLine {
 				return -1
 			}
@@ -1086,7 +1070,6 @@ func (c *cli) issueFor(sc *scope, flag, branch, repo string, commits []commitInf
 	skip := func(k, from, reason string) {
 		fmt.Fprintf(c.err, "Not linking %s (%s): %s. Use --issue %s to link it anyway.\n", k, from, reason, k)
 	}
-	// needOpen is for sources that may be stale: a claim, or a key in commit text.
 	usable := func(k, from string, needOpen bool) (string, bool) {
 		f, ok := look(k)
 		if !ok {
@@ -1100,7 +1083,6 @@ func (c *cli) issueFor(sc *scope, flag, branch, repo string, commits []commitInf
 			skip(k, from, "it is "+f.status)
 			return "", false
 		}
-		// A claim or key whose pull request here already merged is left over from that change, and this is another.
 		if needOpen && f.merged != 0 {
 			skip(k, from, fmt.Sprintf("its pull request #%d already merged", f.merged))
 			return "", false
@@ -1117,7 +1099,6 @@ func (c *cli) issueFor(sc *scope, flag, branch, repo string, commits []commitInf
 			return strings.ToUpper(m[1]), t, "branch"
 		}
 	}
-	// A claim can be left over from another session, so keys in the commits come before it; a claim the commits also name still wins.
 	var claimKey string
 	if dir, err := os.Getwd(); err == nil {
 		if _, cl := c.state.claimFor(dir); cl != nil {

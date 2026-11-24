@@ -40,7 +40,6 @@ func TestNextOwnWorktree(t *testing.T) {
 		git(t, s.repo, "worktree", "add", "-q", "-b", b, p, "origin/main")
 		git(t, s.repo, "push", "-q", "origin", b)
 	}
-	// Outside the worktrees folder a missing folder may be an unmounted disk: it is kept, not pruned.
 	away := filepath.Join(t.TempDir(), "away")
 	git(t, s.repo, "worktree", "add", "-q", "-b", "away", away, "origin/main")
 	git(t, s.repo, "push", "-q", "origin", "away")
@@ -50,8 +49,6 @@ func TestNextOwnWorktree(t *testing.T) {
 	folder := repo
 	oldFolder, oldCwds, oldNow := sessionFolder, procCwds, worktreeNow
 	sessionFolder = func() string { return folder }
-	// The process's folder is named through a symlink (a home that is one): the
-	// sweep resolves it, or it would remove the folder under the process.
 	busyLink := filepath.Join(t.TempDir(), "busy-link")
 	if err := os.Symlink(busy, busyLink); err != nil {
 		t.Fatal(err)

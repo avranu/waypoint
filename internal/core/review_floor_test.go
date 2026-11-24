@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// Code-review work is sent a minimum bar (reviewFloorBar); every other task none.
-
 func floorEnv(t *testing.T, g *fakeGateway) (*env, []ChainModel) {
 	t.Helper()
 	e := newEnv(t)
@@ -308,8 +306,6 @@ func TestPRAuditAtHeadFamilyCheckSkippedForTrustedBarAudits(t *testing.T) {
 		t.Fatal(err)
 	}
 	pr := &PullRequest{ID: prID, HeadSHA: "aaa"}
-	// A running audit is judged by every model it may still ask: one that
-	// may still ask Claude's own CLI is of the session's family.
 	const gatewayChain = `[{"cli":"gateway","model":"audit"}]`
 	const claudeChain = `[{"cli":"claude","model":"opus"}]`
 	for _, c := range []struct {
@@ -331,8 +327,6 @@ func TestPRAuditAtHeadFamilyCheckSkippedForTrustedBarAudits(t *testing.T) {
 		{"trusted round, audit cancelled", trustedAuditBar, trustedAuditBar, "cancelled", gatewayChain, false},
 		{"trusted round, done with no model", trustedAuditBar, trustedAuditBar, "done", gatewayChain, false},
 	} {
-		// A done audit that names no model that answered isn't taken, even
-		// where no family is excluded.
 		model := "gateway/anthropic/claude-sonnet-5-5"
 		if c.status != "done" || c.name == "trusted round, done with no model" {
 			model = ""
@@ -406,7 +400,7 @@ func TestGatewayTaskKeepsItsBar(t *testing.T) {
 	ae := newAgentEnv(t)
 	taskGateway(t, ae.s)
 	box := ae.gatewayBox()
-	ae.runnerSeen(ae.box, false) // no Cursor online: the default audit is the gateway's
+	ae.runnerSeen(ae.box, false)
 	if _, err := ae.s.RequestAudit(ae.ctx, ae.admin, AuditInput{Project: ae.p.Key}); err != nil {
 		t.Fatal(err)
 	}

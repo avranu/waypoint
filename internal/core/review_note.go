@@ -7,8 +7,6 @@ import (
 	"strings"
 )
 
-// {models} in the note is replaced with the models that answered.
-
 // DefaultReviewNote is the note until an admin words their own.
 const DefaultReviewNote = "**Automated review** by {models} · not checked by a person; verify before acting on it."
 

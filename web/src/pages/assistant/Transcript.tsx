@@ -1,5 +1,3 @@
-// Assistant text is untrusted: markdown with no remote images and no HTML.
-
 import { memo, useState, type ReactNode } from 'react'
 import clsx from 'clsx'
 import {

@@ -264,7 +264,6 @@ export function IssueSheet({ issueKey, onClose }: { issueKey: string; onClose: (
     if (!t || !(t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName)))
       return onClose()
     if (leaving.current === t) return onClose()
-    // The field sees the key first (and may cancel and blur itself); then leave it.
     leaving.current = t
     setTimeout(() => {
       if (document.activeElement === t) t.blur()

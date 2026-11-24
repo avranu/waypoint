@@ -10,10 +10,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// What the backend test jobs' evidence says (WP-704): tests that flake, are
-// slow or fail on the default branch; a commit's coverage; the #nosec and
-// //nolint ledger.
-
 // ciTests: ?repo=OWNER/NAME, ?view=flaky|slow|failing, ?days=N,
 // ?package=P, ?limit=N.
 func (s *Server) ciTests(w http.ResponseWriter, r *http.Request) (any, error) {
@@ -85,8 +81,6 @@ func flakyRepro(f core.CIFlakyTest) string {
 	if !strings.HasPrefix(pkg, ".") && !strings.Contains(strings.SplitN(pkg, "/", 2)[0], ".") {
 		pkg = "./" + pkg
 	}
-	// Both names are CI's, read from a log: quoted, so the line runs as one
-	// command whatever they hold.
 	return fmt.Sprintf("  Reproduce one, or check a fix held, from the repo's root: wp testsum --repeat 20 -- go test -run %s %s\n",
 		core.ShellWord("^"+regexp.QuoteMeta(top)+"$"), core.ShellWord(pkg))
 }

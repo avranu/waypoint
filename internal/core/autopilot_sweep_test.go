@@ -272,7 +272,6 @@ func TestSweepIgnoresQuietAndOtherSessions(t *testing.T) {
 	if got := a.atOnce(); len(got) != 1 {
 		t.Fatalf("at work: %v", got)
 	}
-	// The run stays open for its review after its pull request shipped (before_pr 'pr').
 	held, err := a.s.db.W.Exec(`INSERT INTO work_log(kind, session_id, run_id, issue_id, state, prompt, before_pr, created_at, updated_at)
 		SELECT 'review', session_id, id, issue_id, 'pending', '', 'pr', ?, ? FROM agent_runs WHERE ended_at IS NULL`, a.clockNow().UnixMilli(), a.clockNow().UnixMilli())
 	if err != nil {

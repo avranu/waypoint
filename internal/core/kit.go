@@ -14,8 +14,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// A plugin kit.toml doesn't name goes to no repo; a repos list of only '!' entries means every repo but those.
-
 const (
 	kitTOML        = "kit.toml"
 	kitMarketplace = ".claude-plugin/marketplace.json"

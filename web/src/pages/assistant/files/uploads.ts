@@ -1,5 +1,3 @@
-// Uploads live outside React so they keep going while the person moves between folders and tabs.
-
 import { useSyncExternalStore } from 'react'
 import { ApiError } from '@/lib/api'
 import { joinPath, MAX_UPLOAD, numbered } from './model'

@@ -638,7 +638,6 @@ func TestReviewTriageEvidence(t *testing.T) {
 		t.Fatalf("assessed twice: %+v", got)
 	}
 
-	// Asked-for and floor reviews aren't samples of what the rules skip.
 	row("a", "docs", 1, triageReview, triageWhyAsked, 5)
 	row("b", "floor:binary", 0, triageReview, "", 7)
 	if got = stats(); got.Sampled != 0 || got.SampledFoundAny != 0 || got.SampledFound != 0 {

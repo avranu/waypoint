@@ -1,7 +1,5 @@
 package core
 
-// Which model reviews is the gateway's choice, never Waypoint's; a review asks the gateway's review purpose.
-
 import (
 	"context"
 	"database/sql"
@@ -83,13 +81,13 @@ func armByKey(k string) (reviewArm, bool) {
 
 // armTally is what an arm's findings and runs say about it.
 type armTally struct {
-	useful, falsePos     float64 // weighted by age and prompt version
+	useful, falsePos     float64
 	rawUseful, rawFalse  int
 	models               map[string]*ArmModel
-	tokens               float64 // mean tokens a one-reviewer run spent; 0 until armCostRuns
+	tokens               float64
 	runs                 int
 	lastRun              int64
-	cost                 float64 // tokens relative to the cheapest arm measured; 1 unknown
+	cost                 float64
 	pin                  string
 	available, explore   bool
 	benched              bool
@@ -396,7 +394,6 @@ func (s *Service) chooseArms(tallies map[string]*armTally, slots int) []reviewAr
 		}
 	}
 	out := []reviewArm{cands[best]}
-	// Extra reviewers must share the first's verifier half: the verifier checks a run's findings together.
 	for len(out) < slots {
 		next := out[0]
 		if len(pinned) == 0 {
@@ -720,7 +717,7 @@ func (s *Service) ReviewArms(ctx context.Context, actor *Actor) (*ReviewArms, er
 		return nil, err
 	}
 	for _, t := range tallies {
-		t.available = t.available || t.runs > 0 // a rule naming its own verifier drew it
+		t.available = t.available || t.runs > 0
 	}
 	out := &ReviewArms{Gateway: s.gatewayID(ctx) != 0, Arms: []ReviewArm{}, ExploreUnder: armExploreUnder, BenchBound: armBenchBound, BenchedOdds: int(math.Round(1 / armBenchedOdds))}
 	for _, a := range reviewArms() {
@@ -859,9 +856,6 @@ func (s *Service) PinReviewArm(ctx context.Context, actor *Actor, key, pin strin
 	if pin != "" && pin != "on" && pin != "off" {
 		return nil, invalid("pin is on, off or empty")
 	}
-	// Read and write on the single writer connection in one transaction, so
-	// concurrent pins don't lose each other, and a failed or malformed read
-	// is an error rather than an empty set that would erase the other pins.
 	tx, err := s.db.W.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err

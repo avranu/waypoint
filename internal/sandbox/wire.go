@@ -21,7 +21,7 @@ const (
 	KeyFile  = "/etc/waypoint/sandboxd.pub"
 	Binary   = "/usr/local/libexec/waypoint/waypoint-sandboxd"
 	Unit     = "waypoint-sandboxd.service"
-	StoreMnt = "var-lib-waypoint-store.mount" // systemd's name for StoreDir's mount
+	StoreMnt = "var-lib-waypoint-store.mount"
 	// Contained sessions (WP-470): their run directories, the slice they
 	// share (PL7 §6.7) and the user their brokers run as.
 	RunDir     = "/run/waypoint-sandbox"
@@ -169,9 +169,6 @@ func Call(ctx context.Context, socket string, req Request) (*Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	// A helper that refuses the caller answers and closes without reading,
-	// so the write can fail with a broken pipe while the refusal is already
-	// waiting: read it either way.
 	_, werr := c.Write(append(b, '\n'))
 	line, err := ReadMessage(bufio.NewReader(c))
 	if err != nil {

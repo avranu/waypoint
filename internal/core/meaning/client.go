@@ -19,8 +19,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core/kernel"
 )
 
-// Without the service, goal judgements use the scorers they still have; texts go only to the configured meaning URL.
-
 // Models is the meaning service; swappable in tests.
 type Models interface {
 	// Embed returns one unit vector per text, and the model's id@revision.
@@ -136,7 +134,6 @@ func (m *Client) post(ctx context.Context, path string, body, out any) error {
 	}()
 	unanswered, err := m.send(ctx, path, body, out)
 	if unanswered && errors.Is(ctx.Err(), context.Canceled) {
-		// a caller's cancel says nothing about the service; only a deadline counts toward the breaker
 		return err
 	}
 	judged = true

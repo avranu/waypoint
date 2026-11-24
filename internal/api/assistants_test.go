@@ -346,7 +346,7 @@ func TestAssistantRouteAccess(t *testing.T) {
 				}
 				want := c.want
 				if (r.method == "PATCH" || r.method == "DELETE") && r.path == e.path("") {
-					want = 403 // Admin check runs before the row lookup, so these routes answer 403, not 404, to non-admins.
+					want = 403
 				}
 				if code, b, _ := c.cl.do(r.method, r.path, body(r.method, r.path)); code != want {
 					t.Errorf("%s %s = %d %s, want %d", r.method, r.path, code, b, want)
@@ -430,7 +430,6 @@ func TestAssistantProxy(t *testing.T) {
 		}
 	}
 
-	// The mux cleans a literal './' but routes '%2e' unescaped, so encoded dot segments need their own cases.
 	for _, p := range []string{"env/reveal", "env/reveal/OPENAI_API_KEY", "hermes/update", "auth/password-login", "auth/ws-ticket",
 		"sessions/%2e%2e/auth/me", "env/%2e/reveal", "env%2Freveal", "sessions/../auth/me", "env/./reveal", "cron/%2e/fire", "skills/%2E/hub/install"} {
 		code, b, _ := e.ann.do("GET", e.path("/api/"+p), nil)

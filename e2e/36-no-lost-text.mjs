@@ -229,7 +229,7 @@ async function run(width) {
     .first()
     .waitFor({ timeout: 5000 })
     .catch(() => {});
-  await page.waitForTimeout(800); // Wait for the refetch after a failed save; it could otherwise wipe the edit.
+  await page.waitForTimeout(800);
   ok(
     (await title.inputValue()) === base5 + " and more",
     `${tag} a failed title save keeps the edit (${await title.inputValue()})`,

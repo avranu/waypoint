@@ -1,5 +1,3 @@
-// The deploy pins agent.disabled_toolsets: a toolset on that list stays off and locked whatever its switch says.
-
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'
 import { Wrench } from 'lucide-react'

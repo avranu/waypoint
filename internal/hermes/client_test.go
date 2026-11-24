@@ -38,7 +38,7 @@ type fakeHermes struct {
 	tickets  map[string]bool
 	n        int
 	paths    []string
-	keySeen  []string // Key headers as Hermes sees them: the door strips them.
+	keySeen  []string
 	conn     *websocket.Conn
 	conns    int
 	replies  chan map[string]any
@@ -320,7 +320,6 @@ func TestCAPinning(t *testing.T) {
 	if !errors.As(err, &ua) && !strings.Contains(err.Error(), "certificate") {
 		t.Errorf("err = %v, want a certificate error", err)
 	}
-	// The system trust store doesn't stand in for the pinned CA: Hermes fails the same way, before any login.
 	if err := bad.JSON(ctx, http.MethodGet, "/api/sessions", nil, nil, nil); !errors.Is(err, ErrUnreachable) {
 		t.Errorf("hermes call through the wrong CA: %v", err)
 	}
@@ -512,7 +511,6 @@ func TestGateAPI(t *testing.T) {
 		t.Errorf("logs = %+v %v", logs, err)
 	}
 
-	// A new connection widens what the agent reaches: the gate answers 202 and waits for approval.
 	status, raw, err := c.PutConnection(ctx, "github", map[string]any{"kind": "mcp", "url": "https://api.github.com/mcp",
 		"headers": map[string]any{"Authorization": "Bearer ghp_secret"}})
 	if err != nil || status != http.StatusAccepted {
@@ -536,7 +534,6 @@ func TestGateAPI(t *testing.T) {
 	if strings.Contains(string(b), "ghp_secret") {
 		t.Error("a header value came back")
 	}
-	// Rotating the headers on an existing connection widens nothing, so it needs no approval: 200.
 	status, _, err = c.PutConnection(ctx, "github", map[string]any{"kind": "mcp", "url": "https://api.github.com/mcp",
 		"headers": map[string]any{"Authorization": "Bearer ghp_rotated"}})
 	if err != nil || status != http.StatusOK {

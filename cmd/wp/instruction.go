@@ -8,8 +8,6 @@ import (
 	"strings"
 )
 
-// Waypoint's hooks, not this command, deliver these instructions to sessions and sub-agents when they start.
-
 var instructionCmd = &command{
 	name: "instruction", group: "Knowledge", args: "SUBCOMMAND",
 	aliases: []string{"instructions", "instr"},

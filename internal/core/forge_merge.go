@@ -130,8 +130,6 @@ func mergeRefusal(err error) string {
 	if !errors.As(err, &ae) {
 		return forgeSaid(err)
 	}
-	// The forge's words are sanitised: this reaches the armed note, which
-	// the babysit types into a session.
 	body := forgeWords(ae.body, 300)
 	switch ae.status {
 	case http.StatusConflict:

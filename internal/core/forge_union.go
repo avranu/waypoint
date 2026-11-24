@@ -1,7 +1,5 @@
 package core
 
-// Forgejo's update and merge ignore merge=union, so Waypoint does the union itself: base's version of union files, forge update, then the branch's own added lines put back.
-
 import (
 	"bufio"
 	"context"
@@ -219,7 +217,6 @@ func (s *Service) unionUpdate(ctx context.Context, f *Forge, pr *PullRequest, ti
 		s.log.WarnContext(ctx, "union update: drop commit", "repo", pr.Repo, "number", pr.Number, "err", err)
 		return "", nil
 	}
-	// A failed put-back drops this branch's own lines for good and nothing later notices, so the commit is retried.
 	retry := func(msg string, files []FileChange) error {
 		var err error
 		for try := 0; try < 5; try++ {

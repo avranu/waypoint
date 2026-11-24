@@ -12,8 +12,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Codes are never reused, even after a page is deleted; a page that moves keeps its old codes, which still find it.
-
 // PagePrefixes are the code prefixes of the page categories, as an
 // earlier set of repos numbered their documents.
 var PagePrefixes = map[string]string{
@@ -129,7 +127,6 @@ func (s *Service) codePage(ctx context.Context, t *tx, id, want int64) error {
 		return nil
 	}
 	prefix := PagePrefixes[category]
-	// A move leaves the page's old number behind, so its current number may belong to another scope.
 	if number.Valid && prefix != "" && want == 0 {
 		if holder, ok, err := codeTaken(ctx, t, scope, prefix, number.Int64); err != nil {
 			return err
@@ -239,8 +236,6 @@ func (s *Service) AssignPageCodes(ctx context.Context) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	// Titled codes first, so a later page's "PL2: …" isn't beaten to PL2 by
-	// an untitled page numbered before it.
 	return s.write(ctx, SystemActor(), func(t *tx) error {
 		for _, pass := range []bool{true, false} {
 			for _, id := range ids {
@@ -278,7 +273,6 @@ func (s *Service) pageByCode(ctx context.Context, actor *Actor, c PageCode, proj
 			return 0, err
 		}
 		if ok && id != 0 {
-			// One answer whether it's missing or hidden.
 			if _, _, err := s.pageFor(ctx, s.db.R, actor, id, RoleViewer, false); err != nil {
 				return 0, notFound("page " + c.String() + " in " + strings.ToUpper(project))
 			}
@@ -308,7 +302,6 @@ func (s *Service) pageByCode(ctx context.Context, actor *Actor, c PageCode, proj
 		hits = append(hits, h)
 	}
 	rows.Close()
-	// One page can hold the same code in two places (moved, numbered alike).
 	var seen []hit
 	for _, h := range hits {
 		if slices.ContainsFunc(seen, func(x hit) bool { return x.id == h.id }) {

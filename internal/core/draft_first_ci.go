@@ -1,7 +1,5 @@
 package core
 
-// Dropping the WIP prefix is an edited event; a repo whose workflows don't list edited under pull_request types has no full run then, so its draft checks are the whole run.
-
 import (
 	"context"
 	"fmt"

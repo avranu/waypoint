@@ -78,7 +78,6 @@ function InlineField({
       await onSave(draft.trim())
       setDraft(null)
     } catch {
-      /* the save reports its own error; the text stays to retry */
     } finally {
       saving.current = false
     }

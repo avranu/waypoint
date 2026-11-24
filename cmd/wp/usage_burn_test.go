@@ -58,7 +58,6 @@ const (
 // Sonnet worker.
 func burnFixture(t *testing.T) (main string, t0 time.Time) {
 	t.Helper()
-	// clears automation env vars so the fixtures run as a person's session, not under the quota guard's automation rules
 	for _, k := range []string{"WP_TASK", "WAYPOINT_FOLLOWUP", "WAYPOINT_UNATTENDED"} {
 		t.Setenv(k, "")
 	}
@@ -72,7 +71,7 @@ func burnFixture(t *testing.T) (main string, t0 time.Time) {
 	)
 	sub := filepath.Join(root, "proj", "sess1", "subagents")
 	writeBurnFile(t, filepath.Join(sub, "agent-f1.jsonl"),
-		burnLine("m1", opus, t0, 10, 1000, 100_000, 20_000, 0), // a fork's transcript repeats its parent's messages; only the fork's own call should count
+		burnLine("m1", opus, t0, 10, 1000, 100_000, 20_000, 0),
 		burnLine("f1a", opus, t0.Add(2*time.Minute), 0, 500, 300_000, 0, 0),
 	)
 	writeBurnFile(t, filepath.Join(sub, "agent-f1.meta.json"), `{"agentType":"fork","isFork":true,"spawnDepth":1,"description":"Port search"}`)

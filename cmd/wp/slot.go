@@ -126,16 +126,12 @@ func acquireSlotIn(ctx context.Context, name string, order []int, notify, firstM
 			if ok {
 				wd, _ := os.Getwd()
 				_ = f.Truncate(0)
-				// The session last, so a wp from before it was recorded still
-				// reads the command (audit #1382.1).
 				_, _ = f.WriteAt([]byte(fmt.Sprintf("%d\t%d\t%s\t%s\t%s\t%s\n", os.Getpid(), time.Now().Unix(), slotField(wd), slotField(strings.Join(os.Args[1:], " ")), slotField(slotSession()), slotField(slotCtxKey(ctx)))), 0)
 				return &slotHold{f: f, idx: i}, nil
 			}
 			_ = f.Close()
 		}
 		if remove == nil {
-			// The first round found no slot: join the queue as of now, so those
-			// who come later can count this one (WP-1571).
 			remove = slotAddWaiter(dir, name)
 			if firstMiss != nil {
 				firstMiss()
@@ -220,8 +216,6 @@ func slotHeld(name string) bool {
 		if !ok || base != want {
 			continue
 		}
-		// The marker only counts while the wp that took the slot is alive:
-		// a background descendant that outlives it must take the slot again.
 		if pid, err := strconv.Atoi(pidStr); err == nil && pid > 0 && slotPidAlive(pid) {
 			return true
 		}

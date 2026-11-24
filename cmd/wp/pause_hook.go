@@ -9,12 +9,10 @@ import (
 	"time"
 )
 
-// PreToolUse hooks read only the local paused file, never the network; other hooks keep that file current.
-
 const (
 	pauseFile      = "paused.json"
 	pausePullEvery = 30 * time.Second
-	pauseFresh     = 30 * time.Minute // a copy older than this is ignored: fail open
+	pauseFresh     = 30 * time.Minute
 )
 
 // sessionPause is the server's AgentPause, as far as the hooks need it.
@@ -110,7 +108,7 @@ func (c *cli) claimPull() bool {
 		return false
 	}
 	cur.Tried = time.Now()
-	c.writePause(cur) // claim this round before asking, so concurrent hooks don't pile on
+	c.writePause(cur)
 	return true
 }
 
@@ -192,11 +190,9 @@ func (c *cli) pauseTell(session string, lateAfter time.Duration) string {
 	if session == "" {
 		return ""
 	}
-	// Decide the common no-op case without the lock: the lock can wait seconds behind a pull.
 	if c.pauseTold(c.readPause(), session) {
 		return ""
 	}
-	// Lock the copy: a concurrent pull must not be overwritten by this stale read.
 	if path := c.pausePath(); path != "" {
 		wait := 5 * time.Second
 		if lateAfter > 0 {

@@ -81,7 +81,6 @@ var claudeHooks = []claudeHook{
 	{event: "UserPromptSubmit", command: hookResume},
 	{event: "SessionStart", command: hookEvent, opts: hookOpts{timeout: hookSessionStartTimeout}},
 	{event: "UserPromptSubmit", command: hookEvent, opts: hookOpts{timeout: 20}, prompts: true},
-	// Runs on every prompt, so it stays local.
 	{event: "UserPromptSubmit", command: hookSlash, opts: hookOpts{timeout: hookSlashTimeout}},
 	{event: "Notification", command: hookEvent, opts: hookOpts{async: true}},
 	{event: "PermissionDenied", command: hookEvent, opts: hookOpts{async: true}},
@@ -95,14 +94,11 @@ var claudeHooks = []claudeHook{
 	{event: "ConfigChange", command: hookEvent, opts: hookOpts{async: true}},
 	{event: "InstructionsLoaded", command: hookEvent, opts: hookOpts{async: true}},
 	{event: "PostModelSwitch", command: hookEvent, opts: hookOpts{async: true}},
-	{event: "PreToolUse", command: hookNudge, opts: hookOpts{matcher: "Bash|Read|Monitor", timeout: hookNudgeTimeout}}, // Runs before every Bash, Read and Monitor call: local checks only.
-	{event: "PreToolUse", command: hookGate, opts: hookOpts{matcher: "Agent|Task", timeout: hookGateTimeout}},          // Local only: it runs synchronously before each Agent or Task call.
-	// Also emits the nudge refusals, since the nudge hook never refuses.
+	{event: "PreToolUse", command: hookNudge, opts: hookOpts{matcher: "Bash|Read|Monitor", timeout: hookNudgeTimeout}},
+	{event: "PreToolUse", command: hookGate, opts: hookOpts{matcher: "Agent|Task", timeout: hookGateTimeout}},
 	{event: "PreToolUse", command: hookGuard, opts: hookOpts{matcher: "Bash|Write|Edit|MultiEdit|NotebookEdit", timeout: hookGuardTimeout}},
-	// Runs after every tool call: local, incremental, under 50 ms.
 	{event: "PostToolUse", command: hookBurn, opts: hookOpts{timeout: 20}},
 	{event: "PostToolUse", command: hookPause, opts: hookOpts{async: true}},
-	// Foreground: its output answers the agent, so it cannot be async.
 	{event: "PostToolUse", command: hookWait, opts: hookOpts{matcher: "Bash", timeout: hookWaitTimeout}},
 }
 
@@ -529,8 +525,6 @@ func quoteArg(s string) string {
 		return s
 	}
 	if runtime.GOOS == "windows" {
-		// Windows paths can't contain double quotes; forward slashes keep a
-		// POSIX shell (Git Bash) from reading backslashes as escapes.
 		return `"` + strings.ReplaceAll(s, `\`, "/") + `"`
 	}
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
@@ -654,9 +648,8 @@ type transcriptUsage struct {
 	model         string
 	offset        int64
 	seen          []string
-	// context: input and cache tokens of the last main-conversation call read, even one written before this read; 0 if none
-	context int64
-	ttl     string
+	context       int64
+	ttl           string
 }
 
 // readTranscriptUsage sums assistant usage from offset onwards, counting
@@ -684,7 +677,7 @@ func readTranscriptUsage(r io.ReadSeeker, offset int64, seen []string, since tim
 			Minutes int64 `json:"ephemeral_5m_input_tokens"`
 		} `json:"cache_creation"`
 	}
-	latest := map[string]usage{} // per message: the last (most complete) usage line
+	latest := map[string]usage{}
 	var order []string
 	br := bufio.NewReaderSize(r, 1<<20)
 	for {
@@ -767,8 +760,6 @@ func hookClaudeReport(c *cli, stdin io.Reader) {
 	if s := c.state.Sessions[in.SessionID]; s != nil {
 		sess = *s
 	}
-	// A report that may not have landed goes again first, unchanged (same
-	// id, so the server counts it once either way).
 	if p := sess.Pending; p != nil {
 		if !c.sendUsage(p) {
 			return
@@ -803,8 +794,6 @@ func hookClaudeReport(c *cli, stdin io.Reader) {
 	id := sha256.Sum256(fmt.Appendf(nil, "%s:%d-%d", in.SessionID, sess.Offset, u.offset))
 	body["report_id"] = hex.EncodeToString(id[:16])
 	p := &pendingReport{Path: "/api/v1/agent/usage/" + esc(cl.Key), Body: body, Model: u.model, Offset: u.offset, Seen: u.seen}
-	// Remembered before sending: if the response is lost or this process is
-	// killed mid-request, the next Stop sends this same report again.
 	c.saveSession(in.SessionID, &sessionState{Offset: sess.Offset, Seen: sess.Seen, Pending: p})
 	if !c.sendUsage(p) {
 		return
@@ -817,8 +806,6 @@ func (c *cli) sendUsage(p *pendingReport) bool {
 	_, err := c.call("POST", p.Path, p.Body)
 	var ae *apiError
 	if errors.As(err, &ae) && ae.status == 400 && p.Body["agent"] == nil && p.Model != "" {
-		// The token isn't an agent token and nothing is configured: use the
-		// model the transcript names.
 		p.Body["agent"] = "anthropic/" + p.Model
 		_, err = c.call("POST", p.Path, p.Body)
 	}
@@ -869,15 +856,15 @@ func hookClaudeResume(c *cli, stdin io.Reader) {
 	}
 	in.Prompt = core.UnwrapPasted(in.Prompt)
 	if core.IsKeepWarmPing(in.Prompt) || isSessionCommand(in.Prompt) {
-		return // keep-warm pings and /wp commands are not work on the task
+		return
 	}
 	_, cl := c.state.claimFor(in.Cwd)
 	if cl == nil || c.server() == "" || c.token() == "" {
 		return
 	}
 	if in.SessionID == "" {
-		return // ownership can't be told without the prompt's session
+		return
 	}
-	c.session = in.SessionID // the prompt's session, not the directory's last one
+	c.session = in.SessionID
 	_, _ = c.clockWith("resume", cl.Key, map[string]any{"only_own": true})
 }

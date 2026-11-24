@@ -126,7 +126,6 @@ func TestSessionHooksEndToEnd(t *testing.T) {
 	s.asAgent()
 	envFile := filepath.Join(t.TempDir(), "env")
 	t.Setenv("CLAUDE_ENV_FILE", envFile)
-	// Clear the markers that make a session automation's, or session commands would answer as a task session.
 	for _, k := range []string{"WP_TASK", "WAYPOINT_FOLLOWUP", "WAYPOINT_UNATTENDED"} {
 		t.Setenv(k, "")
 	}
@@ -162,12 +161,10 @@ func TestSessionHooksEndToEnd(t *testing.T) {
 	if x = s.sessions()[0]; strings.Contains(x.LastPrompt, "secret") {
 		t.Fatal("--no-prompts sent the prompt")
 	}
-	// Under --no-prompts nothing typed is sent, not even a digest; only the id of a matched Waypoint prompt.
 	s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": keepWarmMark + ": still here, and secret"}), "--no-prompts")
 	if x = s.sessions()[0]; strings.Contains(x.LastPrompt, "secret") || strings.Contains(x.LastPrompt, keepWarmMark) {
 		t.Fatalf("a keep-warm-looking prompt under --no-prompts: %q", x.LastPrompt)
 	}
-	// A background task's report is sent as its mark alone: an empty prompt would read as the person's.
 	for _, mark := range core.HarnessPromptMarks {
 		s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": mark + "\nsecret"}), "--no-prompts")
 		if x = s.sessions()[0]; x.LastPrompt != mark {
@@ -178,7 +175,6 @@ func TestSessionHooksEndToEnd(t *testing.T) {
 	if x = s.sessions()[0]; strings.Contains(x.LastPrompt, "secret") {
 		t.Fatal("--no-prompts sent a typed /compact")
 	}
-	// Under --no-prompts a session command reaches the server as only the command, never the model's prompt.
 	if got := stopReason(t, s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": "/wp status secret"}), "--no-prompts")); !strings.HasPrefix(got, "Waypoint: ") {
 		t.Fatalf("/wp status: %q", got)
 	}
@@ -197,11 +193,9 @@ func TestSessionHooksEndToEnd(t *testing.T) {
 	if x = s.sessions()[0]; strings.HasPrefix(x.LastPrompt, core.AutopilotPromptMark) {
 		t.Fatalf("a typed prompt counted as autopilot's: %q", x.LastPrompt)
 	}
-	// Claude Code wraps pastes, and Waypoint's own prompts arrive pasted, so they must still match as Waypoint's.
 	wrap := func(p string) string {
 		return "\n\n<pasted_content id=\"d29a\">\n" + p + "\n</pasted_content id=\"d29a\">\n"
 	}
-	// A review prompt is recognised only by its recorded digest, never its visible words, so typed text cannot pass as one.
 	seen := s.sessions()[0].LastPrompt
 	s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": wrap(core.AutopilotReviewMark + "APP-9: secret findings")}), "--no-prompts")
 	if x = s.sessions()[0]; x.LastPrompt != seen {
@@ -220,7 +214,6 @@ func TestSessionHooksEndToEnd(t *testing.T) {
 	if x = s.sessions()[0]; strings.Contains(x.LastPrompt, "private") {
 		t.Fatalf("--no-prompts sent a person's paste: %q", x.LastPrompt)
 	}
-	// Every check reads the unwrapped paste text, so a wrapped keep-warm ping or /keep is still recognised.
 	before := s.sessions()[0].LastPrompt
 	s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": wrap(keepWarmMark + ": still here")}), "--no-prompts")
 	if x = s.sessions()[0]; x.LastPrompt != before {
@@ -242,7 +235,6 @@ func TestSessionHooksEndToEnd(t *testing.T) {
 	if got := stopReason(t, s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": wrap("/keep")}), "--no-prompts")); got != core.AutopilotNothingToKeepLine {
 		t.Fatalf("a wrapped /keep: %q", got)
 	}
-	// Unwrap once only: a paste that itself holds a wrapper keeps the inner one.
 	inner := `<pasted_content id="b">quoted</pasted_content id="b">`
 	s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": wrap(inner)}))
 	if x = s.sessions()[0]; x.LastPrompt != inner {
@@ -437,7 +429,6 @@ func TestHooksQueueWhenTheServerIsDown(t *testing.T) {
 		t.Fatal("the server saw events it couldn't have")
 	}
 
-	// Queued events are sent before the new hook's event, with their original times.
 	t.Setenv("WAYPOINT_SERVER", up)
 	s.hook(in("q1", "Stop", s.repo, map[string]any{"last_assistant_message": "back"}))
 	c, _ = newCLI(&bytes.Buffer{}, &bytes.Buffer{})
@@ -586,7 +577,7 @@ func TestHookInstallSet(t *testing.T) {
 		{"PreToolUse", "claude-event", "AskUserQuestion", true, 30},
 		{"PostToolUse", "claude-event", "AskUserQuestion|Bash|Read|Agent|Task", true, 30},
 		{"Stop", "claude-event", "", false, 20},
-		{"SubagentStart", "claude-event", "", false, 5}, // Synchronous: the sub-agent waits here for its instructions from this hook.
+		{"SubagentStart", "claude-event", "", false, 5},
 		{"SubagentStop", "claude-event", "", true, 30},
 		{"SessionEnd", "claude-event", "", false, 2},
 		{"PreToolUse", "claude-nudge", "Bash|Read|Monitor", false, 2},

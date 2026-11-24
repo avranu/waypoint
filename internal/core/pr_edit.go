@@ -21,7 +21,7 @@ type EditPRInput struct {
 // the forge. A draft keeps its "WIP: " prefix; Waypoint's record keeps the
 // clean title. Whoever may merge it may edit it.
 func (s *Service) EditPullRequest(ctx context.Context, actor *Actor, prID int64, in EditPRInput) error {
-	defer forgeLocks.lock(fmt.Sprintf("stackmove:%d", prID))() // one at a time with a stacked-child move
+	defer forgeLocks.lock(fmt.Sprintf("stackmove:%d", prID))()
 	pr, err := s.prByID(ctx, s.db.R, prID)
 	if err != nil {
 		return err
@@ -55,7 +55,7 @@ func (s *Service) EditPullRequest(ctx context.Context, actor *Actor, prID int64,
 		return nil
 	}
 	var ed ForgePREditor
-	if in.Title != nil || in.Body != nil { // a base alone needs only ForgePRRetargeter
+	if in.Title != nil || in.Body != nil {
 		var ok bool
 		if ed, ok = s.Forges.(ForgePREditor); !ok {
 			return invalid("this forge client can't edit pull requests")
@@ -68,9 +68,6 @@ func (s *Service) EditPullRequest(ctx context.Context, actor *Actor, prID int64,
 	if f.token == "" {
 		return invalid("the forge has no API token; add one in Admin → Forges")
 	}
-	// The edits are made one by one on the forge. One that fails after an
-	// earlier one succeeded still leaves the record and the audit what was
-	// applied, then the error comes back (WP-1670).
 	title, applied := "", []string{}
 	var ferr error
 	if in.Title != nil {

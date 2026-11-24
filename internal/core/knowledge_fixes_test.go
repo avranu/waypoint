@@ -42,7 +42,6 @@ func TestDesignMoveGuards(t *testing.T) {
 	if _, err := e.s.UpdateDesign(e.ctx, e.admin, parent.ID, DesignInput{}); err != nil {
 		t.Fatal(err)
 	}
-	// The API cannot produce this state, so it is written directly to test reads against it.
 	if _, err := e.s.db.W.Exec(`UPDATE design_notes SET project_id = ? WHERE id = ?`, beta.ID, child.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +63,6 @@ func TestCommentSearchCapAfterAccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 304 copies exceed the 300-result search cap; inserted in one statement because AddComment's mention scan is too slow under -race.
 	if _, err := e.s.db.W.ExecContext(e.ctx, `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 304)
 		INSERT INTO comments(issue_id, author_id, agent, body, created_at, updated_at)
 		SELECT c.issue_id, c.author_id, c.agent, c.body, c.created_at, c.updated_at FROM comments c, n WHERE c.id = ?`, first.ID); err != nil {
@@ -92,7 +90,6 @@ func TestWikilinkScopeAndProvenance(t *testing.T) {
 	if links, _ := e.s.ItemLinks(e.ctx, e.admin, LinkEnd{Type: KPage, ID: pg.ID}); len(links) != 0 {
 		t.Errorf("cross-project wikilink: %+v", links)
 	}
-	// Links a locked entry gains are credited to its author, not the agent.
 	yes := true
 	locked, err := e.s.CreateGlossary(e.ctx, e.admin, GlossaryInput{Term: str("Locked"), Project: &alpha.Key, Locked: &yes,
 		Definition: str("See [[Later]], [[glossary:Typed]] and [[design:Dn|the note]]; Later is plain text here.")})

@@ -12,8 +12,6 @@ import (
 	"time"
 )
 
-// Autopilot sessions already run on a branch named for their task, so wp next leaves them where they are.
-
 // sessionFolder is the folder the agent's session runs in: Claude Code
 // reads and writes there without asking, and keeps a cd only inside it. On
 // Linux it is the folder the Claude Code process ($CLAUDE_PID) started in;
@@ -144,11 +142,10 @@ func (c *cli) ownWorktree(dir, key string) (at string) {
 			made, err = makeWorktree(ctx, repo, slug, "", "", false, c.note)
 		}
 		if err != nil {
-			// Another agent starting the same task a moment ago may have made it.
 			if again, e2 := worktreeRepoAt(ctx, top); e2 == nil {
 				for _, w := range again.wts {
 					if !w.main && !w.prunable && !w.locked && w.branch != "" && branchCarries(w.branch, []string{key}) &&
-						inside(tidyReal(w.path), tidyReal(folder)) { // the folder check above ran on the planned path only
+						inside(tidyReal(w.path), tidyReal(folder)) {
 						existing, target, err = w.path, w.path, nil
 						break
 					}
@@ -209,7 +206,7 @@ func (c *cli) ownWorktree(dir, key string) (at string) {
 		}
 	}
 	if runtime.GOOS != "linux" {
-		return target // no /proc: the sweep can't see who is in a worktree, so it never runs
+		return target
 	}
 	if gone, err := c.sweepFinishedWorktrees(ctx, repo, target); err != nil {
 		c.println("  Finished worktrees left as they are: " + err.Error())
@@ -276,7 +273,7 @@ func (c *cli) sweepFinishedWorktrees(ctx context.Context, repo *worktreeRepo, sp
 		return nil, fmt.Errorf("live sessions unavailable (%v)", err)
 	}
 	slug, _, _ := gitInfo(repo.root)
-	merged, _ := c.tidyMergedPRs(slug) // If the PR lookup fails, only plain merges count, so the sweep removes fewer worktrees.
+	merged, _ := c.tidyMergedPRs(slug)
 	o := tidyOpts{worktrees: true, worktreeBranches: true, sessionEnded: c.tidySessionEnded(), now: worktreeNow()}
 	rep, err := tidyScan(ctx, repo.root, merged, o)
 	if err != nil {
@@ -284,8 +281,6 @@ func (c *cli) sweepFinishedWorktrees(ctx context.Context, repo *worktreeRepo, sp
 	}
 	home, spare := tidyReal(repo.home()), tidyReal(spare)
 	busy := append(slices.Clone(cwds), live...)
-	// Who is where may have changed during the scan: look again just before
-	// removing, and spare what has been entered.
 	if again, err := procCwds(); err == nil {
 		busy = append(busy, again...)
 	}

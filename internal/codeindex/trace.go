@@ -11,8 +11,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Server has no git: runners blame locally; add-only fixes get weak 'context' blame, since SZZ has no removed lines.
-
 const (
 	maxTraceFiles       = 60
 	maxListedFiles      = 500
@@ -114,7 +112,7 @@ func (r *fixRepo) carrier(c, tip string) (string, error) {
 		return "", fmt.Errorf("rev-list %s..%s: %w", c, tip, err)
 	}
 	found := ""
-	for _, l := range strings.Fields(out) { // rev-list lists newest first, so the last chain match is the oldest
+	for _, l := range strings.Fields(out) {
 		if chain[l] {
 			found = l
 		}
@@ -262,7 +260,6 @@ func TraceFix(root string, in FixInput) (*FixTrace, error) {
 		if len(res.Files) == maxListedFiles {
 			break
 		}
-		// A file the fix creates is where the cure lives, not the bug.
 		if f.old == "" {
 			continue
 		}
@@ -432,7 +429,6 @@ func (r *fixRepo) introducers(res *FixTrace, blamed map[string]int, tip string, 
 			a.top, a.commit = n, c
 		}
 	}
-	// A share is of the lines that could be the cause: a dropped line can't.
 	possible := res.Lines - res.Dropped
 	for m, a := range byCarrier {
 		if a.lines == 0 {
@@ -530,7 +526,7 @@ func diffPath(p string) string {
 	if p == "/dev/null" {
 		return ""
 	}
-	if u, err := strconv.Unquote(p); err == nil { // git quotes a tab, quote or backslash as Go would
+	if u, err := strconv.Unquote(p); err == nil {
 		p = u
 	}
 	p = strings.Trim(p, `"`)
@@ -593,8 +589,6 @@ func parseFixDiff(diff string) []*fixFile {
 			if m[3] != "" {
 				nNew, _ = strconv.Atoi(m[3])
 			}
-			// A hunk's body has exactly these many lines: read them here so
-			// a removed "-- x" can't be mistaken for a file header.
 			added := map[string]bool{}
 			var removed []string
 			for j := 0; j < nOld+nNew && i+1 < len(lines); {

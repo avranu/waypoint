@@ -13,8 +13,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/tracing"
 )
 
-// Outbound requests to user-supplied URLs go through this policy, so a project owner can't reach the server itself or cloud metadata.
-
 // EgressPolicy says which addresses outbound requests may reach.
 type EgressPolicy struct {
 	BlockPrivate  bool // RFC 1918, ULA, CGNAT (Tailscale) ranges
@@ -40,8 +38,6 @@ func embeddedIPv4(ip netip.Addr) (netip.Addr, bool) {
 	case nat64.Contains(ip):
 		return netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]}), true
 	case nat64Local.Contains(ip):
-		// A /48 prefix: the address sits in bits 48-63 and 72-87 (bits
-		// 64-71 are reserved, RFC 6052 section 2.2).
 		return netip.AddrFrom4([4]byte{b[6], b[7], b[9], b[10]}), true
 	case sixToFour.Contains(ip):
 		return netip.AddrFrom4([4]byte{b[2], b[3], b[4], b[5]}), true
@@ -94,7 +90,7 @@ func (p EgressPolicy) newClient(timeout, headers time.Duration) *http.Client {
 		},
 	}
 	tr := &http.Transport{
-		Proxy:                 nil, // A proxy would dial the destination outside Control's view, so the transport must not use one.
+		Proxy:                 nil,
 		DialContext:           d.DialContext,
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          20,

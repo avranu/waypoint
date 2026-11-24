@@ -1,5 +1,3 @@
-// The next agent takes over only when the failure was the model's (limit, outage, sign-in), not the work's.
-
 import { ArrowDown, ArrowUp, Plus, X } from 'lucide-react'
 import { Button, IconButton } from '@/components/ui/button'
 import { Input, Select } from '@/components/ui/input'

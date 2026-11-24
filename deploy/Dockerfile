@@ -1,5 +1,3 @@
-# Base images float on patch releases; Renovate proposes digest pins (renovate.json).
-
 FROM node:24-alpine AS web
 WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./
@@ -20,7 +18,6 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
     CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /waypoint ./cmd/waypoint
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
     sh cmd/wp/build-all.sh /out/cli "${VERSION}"
-# Distroless has no shell, so prepare a /data the nonroot user can write.
 RUN mkdir -p /out/data/backups && chmod 0750 /out/data /out/data/backups
 
 FROM gcr.io/distroless/static-debian12:nonroot

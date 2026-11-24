@@ -638,7 +638,6 @@ func (s *Service) decorateEnvs(ctx context.Context, list []*Environment) error {
 		}
 	}
 
-	// The last deployment of each.
 	// #nosec G202 -- marks are placeholders; values are bound
 	rows, err = s.db.R.QueryContext(ctx, `SELECT `+deployCols+` FROM environments e
 		JOIN deployments d ON d.id = (SELECT x.id FROM deployments x WHERE x.environment_id = e.id ORDER BY x.started_at DESC, x.id DESC LIMIT 1)
@@ -1191,7 +1190,7 @@ func (s *Service) UpEnvironment(ctx context.Context, actor *Actor, projectRef st
 			}
 			if revived {
 				t.emit(envEvent(EvEnvCreated, cur, map[string]any{"restarted": true}))
-				cur.Stopped = false // Clear Stopped on the in-memory copy so the deployment recorded below doesn't announce the revival a second time.
+				cur.Stopped = false
 			} else {
 				t.emit(envEvent(EvEnvUpdated, cur, nil))
 			}
@@ -1332,8 +1331,6 @@ func (s *Service) EnvironmentsForCommits(ctx context.Context, actor *Actor, repo
 	var want []string
 	seen := map[string]bool{}
 	for _, c := range shas {
-		// Each commit binds one variable per abbreviation, so the list is
-		// capped to stay well under SQLite's variable limit.
 		if c = strings.ToLower(strings.TrimSpace(c)); commitRE.MatchString(c) && !seen[c] && len(want) < maxEnvCommitLookups {
 			seen[c] = true
 			want = append(want, c)

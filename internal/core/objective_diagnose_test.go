@@ -163,7 +163,6 @@ func TestObjectiveDiagnoseRecordsAndReopensTheSameRound(t *testing.T) {
 	if got := o.status(task.Key); got != "To Do" {
 		t.Fatalf("status = %s", got)
 	}
-	// A released claim has no backoff: it is handed out again at the objective's own pace, which for a target is none.
 	if next, wait := o.queued(task.Key); !next {
 		t.Fatalf("the reopened round isn't handed out: %q", wait)
 	}

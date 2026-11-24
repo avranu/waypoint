@@ -33,8 +33,6 @@ func (s *Service) outsideDiff(ctx context.Context, pr *PullRequest, comments []*
 	if !pr.filesKnown || pr.tooLarge || len(pr.files) == 0 {
 		return out
 	}
-	// git quotes a path with unusual characters ("a\303\251.go"): such a
-	// list can't be compared with the paths comments name.
 	if slices.ContainsFunc(pr.files, func(f string) bool { return strings.HasPrefix(f, `"`) }) {
 		return out
 	}

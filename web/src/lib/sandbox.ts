@@ -1,5 +1,3 @@
-// Only a person in the browser changes sandbox policy; loosening asks for the password again and a reason.
-
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, enc } from './api'
 import type { Runner } from './runners'

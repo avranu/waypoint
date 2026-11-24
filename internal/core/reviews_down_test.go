@@ -30,7 +30,7 @@ func TestReviewsDownNotifies(t *testing.T) {
 	pe := newPREnv(t, "forgejo")
 	pe.llm.answers["opencode/muse-spark-1.3-contributor-free"] = oneFinding
 	pe.pullHook("opened", ForgePR{Number: 7, Title: "Fix", Author: "sam", HeadRef: "fix", HeadSHA: "aaaaaaa1111", State: "open"})
-	pe.drain() // the hook's own review answers: not part of a streak
+	pe.drain()
 	var prID int64
 	if err := pe.s.db.R.QueryRow(`SELECT id FROM pull_requests WHERE number = 7`).Scan(&prID); err != nil {
 		t.Fatal(err)

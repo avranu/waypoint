@@ -428,8 +428,6 @@ func lockFileWithin(path string, wait time.Duration) (func(), error) {
 	for {
 		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) // #nosec G304 -- our own lock file
 		if err == nil {
-			// A nonce in the lock lets unlock leave alone a lock that was
-			// taken over as stale and now belongs to someone else.
 			nonce := newNonce()
 			_, werr := f.WriteString(nonce)
 			_ = f.Close()

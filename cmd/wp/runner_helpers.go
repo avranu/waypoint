@@ -22,8 +22,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// Checks never give the reviewer their results as text: a reviewer handed leads looks only there and stops looking, so panel findings reach the audit as its own.
-
 // auditHelpers is the job's ask (core.AuditHelpers).
 type auditHelpers struct {
 	Panel   []panelCheck `json:"panel,omitempty"`
@@ -344,7 +342,6 @@ func (e *helperEnv) panelWork(ctx context.Context, pj *panelJob, change string, 
 			r.Leads[n].ID = fmt.Sprintf("%s.%d", r.Check, n+1)
 		}
 	}
-	// A reused run is done only once its leads are read: unread ones are read here, inside the same budget.
 	var again []helperRun
 	var againOf []int
 	for i := range reused {
@@ -360,7 +357,6 @@ func (e *helperEnv) panelWork(ctx context.Context, pj *panelJob, change string, 
 	runs = all[:len(runs)]
 	for k, i := range againOf {
 		a := all[len(runs)+k]
-		// Reads made here are added to the reused run's row, so this attempt pays only for them.
 		reused[i].Leads = append(reused[i].Leads, a.Leads...)
 		reused[i].Cut = append(reused[i].Cut, a.Cut...)
 		reused[i].Dropped += len(a.Cut)
@@ -903,7 +899,6 @@ func (e *helperEnv) verify(ctx context.Context, result map[string]any, after tim
 		fmt.Fprintf(e.run.out, "The check of findings was skipped: %s\n", e.skip)
 		return
 	}
-	// Check the same findings the server keeps (first helperVerifyMax, worst first), or a kept finding gets no verdict.
 	order := make([]int, 0, len(findings))
 	for i, x := range findings {
 		f, _ := x.(map[string]any)
@@ -938,14 +933,12 @@ func (e *helperEnv) verify(ctx context.Context, result map[string]any, after tim
 		}
 		verdicts[k], notes[k], costs[k], errs[k] = e.verdict(stage, f)
 	})
-	// A refuted finding is asked once more and counts as refuted only if both answers say so, since one model answer is a sample.
 	var again []int
 	for k := range order {
 		if errs[k] == nil && verdicts[k] == "refuted" {
 			again = append(again, k)
 		}
 	}
-	// A failed second ask leaves one answer, which can't refute, so the finding is unsupported; a stop with the job is only a stop.
 	var overturned atomic.Int32
 	errs2 := make([]error, len(order))
 	e.fan(len(again), func(i int) {
@@ -965,7 +958,6 @@ func (e *helperEnv) verify(ctx context.Context, result map[string]any, after tim
 		}
 	})
 	r := helperRun{Check: helperVerifyName, State: "done", MS: time.Since(start).Milliseconds()}
-	// Clear the reviewer's own verdict fields first: its answer form shares them with the check's.
 	for _, x := range findings {
 		if f, ok := x.(map[string]any); ok {
 			delete(f, "verdict")

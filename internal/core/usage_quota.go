@@ -59,7 +59,6 @@ func quotaPace(now, sampledAt, resetsAt time.Time, length time.Duration, pct flo
 		return "at_limit", pct, &sampledAt, even
 	}
 	elapsed := sampledAt.Sub(start)
-	// Very early in a window one burst reads as a huge rate.
 	if elapsed < length/20 {
 		return "too_early", pct, nil, even
 	}
@@ -186,7 +185,7 @@ func (s *Service) usageRefusalsInto(ctx context.Context, sc *usageScope, loc *ti
 			c.Reasons = append(c.Reasons, reason)
 		}
 		if source == "hook" || source == "safety_check" {
-			hooks[k] = true // a rule can't override these
+			hooks[k] = true
 		}
 	}
 	rows.Close()

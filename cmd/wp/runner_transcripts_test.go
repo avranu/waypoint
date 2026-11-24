@@ -136,7 +136,7 @@ func waitForFile(t *testing.T, cfg string) bool {
 	t.Helper()
 	for range 400 {
 		if m, _ := filepath.Glob(filepath.Join(cfg, "projects", "*-job7-*", "s1.jsonl")); len(m) == 1 {
-			time.Sleep(200 * time.Millisecond) // The fake's init line goes out just before the file appears; wait briefly so the runner reads it before a cancel.
+			time.Sleep(200 * time.Millisecond)
 			return true
 		}
 		time.Sleep(25 * time.Millisecond)

@@ -1,7 +1,5 @@
 package core
 
-// Failed checks get one re-run before a round, so a flaky test is filed once on main rather than fixed on every queued branch.
-
 import (
 	"context"
 	"database/sql"
@@ -70,14 +68,10 @@ func (s *Service) rerunForFlake(ctx context.Context, b *Babysit, pr *PullRequest
 	now := s.now()
 	if sameSHA(fr.SHA, pr.HeadSHA) {
 		if now.Sub(msTime(fr.At)) < faultRerunSettle {
-			// The forge may not have posted the re-run's pending statuses yet.
 			s.setState(ctx, b, pr, BabysitWatching, fmt.Sprintf("re-ran %s on %s to rule out a flaky test; waiting for the results", joinAnd(failed), short(pr.HeadSHA)))
 			return true
 		}
 		if !fr.Read {
-			// A failed head isn't polled, and the re-run's webhooks may have
-			// been missed: read it once more before the round. New results
-			// carry on through the events this raises.
 			fr.Read = true
 			if err := s.saveFlakeRerun(ctx, b, fr); err != nil {
 				s.log.WarnContext(ctx, "save a flake re-run", "pr", pr.ID, "err", err)
@@ -106,14 +100,11 @@ func (s *Service) rerunForFlake(ctx context.Context, b *Babysit, pr *PullRequest
 		s.log.WarnContext(ctx, "read the failed checks before a flake re-run", "pr", pr.ID, "err", err)
 		return false
 	}
-	// Save the marker first: a re-run the session can't remember would be
-	// issued again, and its results would meet a round started beside it.
 	marker := flakeRerun{SHA: pr.HeadSHA, At: now.UnixMilli(), Checks: checks}
 	if err := s.saveFlakeRerun(ctx, b, marker); err != nil {
 		s.log.WarnContext(ctx, "save a flake re-run", "pr", pr.ID, "err", err)
 		return false
 	}
-	// Keep the failed jobs' logs and test results before the re-run: the re-run replaces them.
 	s.keepFailedEvidence(ctx, f, pr.Repo, pr.HeadSHA)
 	n, err := cl.RetryChecks(ctx, f, pr.Repo, pr.HeadSHA)
 	if err != nil || n == 0 {
@@ -206,7 +197,6 @@ func failingTests(lines []string) []string {
 			suite = ""
 			continue
 		}
-		// In a suite, any FAIL line names its check, whatever its text starts with.
 		if m := e2eFailRE.FindStringSubmatch(l); suite != "" && m != nil && !goPkgFailRE.MatchString(l) {
 			add(suite + ": " + m[1])
 			named = true
@@ -349,8 +339,6 @@ func flakeRepro(checks []flakeCheck) string {
 	if len(names) > 1 {
 		run = "(" + strings.Join(names, "|") + ")"
 	}
-	// The names are read from CI logs: quoted, so the line runs as one
-	// command whatever they hold.
 	return fmt.Sprintf("Reproduce it, and check a fix held, with `wp testsum --repeat 30 -- go test -run %s ./...` (add -race if the log shows a data race): "+
 		"it counts the failing runs, and 0 in 30 puts the failure rate under about 11%%.\n\n", ShellWord("^"+run+"$"))
 }

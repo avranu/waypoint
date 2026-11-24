@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-// Shell commands an agent ran that delete, discard, overwrite or reach production, found in transcripts by plain patterns; a high-level one that ran notifies its person.
-
 // EvRiskyCommand: an upload brought high-level risky commands that ran. It
 // reaches only its user.
 const EvRiskyCommand = "usage.risky_command"

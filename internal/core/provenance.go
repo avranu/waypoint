@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-// Agents act through a person's token, so each record they write names the agent; their text stays unreviewed until a person reviews or rewrites it, and reads still return it, marked.
-
 // userRefPtr is a user reference for provenance (nil for none or system).
 func (s *Service) userRefPtr(ctx context.Context, q queryer, id *int64) *UserRef {
 	if id == nil {
@@ -71,13 +69,10 @@ func (s *Service) Review(ctx context.Context, actor *Actor, kind, ref, project s
 			if err != nil {
 				return err
 			}
-			// Approving a plan that has a story approves it on its story,
-			// not line by line (WP-190): the plan stays the agent's text.
 			if err := add(t.ExecContext(ctx, `UPDATE pages SET reviewed_by = ?, reviewed_at = ?, reviewed_on_story = story != ''
 				WHERE id = ? AND text_agent != '' AND reviewed_at IS NULL`, me, now, id)); err != nil {
 				return err
 			}
-			// A page counts once: a story kept alone counts only when its text was already reviewed.
 			kept, err := s.keepStory(ctx, t, actor, id, now)
 			if err != nil {
 				return err
@@ -290,7 +285,6 @@ func (s *Service) listUnreviewed(ctx context.Context, actor *Actor, project stri
 	q := s.db.R
 	cache := map[int64]*UserRef{}
 	out := []UnreviewedItem{}
-	// Rows are read in batches until limit visible ones are found, so what the actor cannot see does not crowd out what they can; batches are bounded.
 	scan := func(typ, query string, args []any, visible func(it *UnreviewedItem, accessID int64, projectID sql.NullInt64) bool) error {
 		if only != nil && !slices.Contains(only, typ) {
 			return nil

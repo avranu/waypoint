@@ -1,25 +1,5 @@
 package core
 
-// The CI pool's urgent lane (WP-528): a pull request labelled ci-urgent has
-// its jobs ask for the forgejo-ci-urgent runner label, which runners keep
-// for it, so they start ahead of the queue (infrastructure
-// docs/runbooks/forgejo-runner.md, "Urgent pull requests"). The label is
-// the whole switch: a workflow reads it in its runs-on, and a person can
-// put it on or take it off on the forge just as well. wp ship --urgent
-// opens a pull request with it, wp pr urgent N [--off] changes it. A task
-// tagged ci-urgent passes the label to its pull request when that opens
-// (WP-697), and only then, so a push or another ship doesn't bring back a
-// label taken off.
-//
-// The label cuts the rest of the line too (WP-686): in its merge queue an
-// urgent pull request goes ahead of every one that isn't, behind the front
-// and a base fix (lineSort); its rounds don't wait for its place in the
-// line nor for its checks to finish (urgentRound), and a runner
-// takes them before any other job (claimOrder). Before, only its CI jobs
-// were ahead: waypoint#321 waited an hour as a draft behind the line, and
-// its review findings never got a round while each update of the front
-// cancelled the run they waited on.
-
 import (
 	"context"
 	"encoding/json"
@@ -194,10 +174,6 @@ func (s *Service) labelPRUrgent(ctx context.Context, actor *Actor, pr *PullReque
 	lb, _ := json.Marshal(labels)
 	projectID, rerr := s.prAuthority(ctx, actor, pr, RoleViewer)
 	if rerr != nil {
-		// Not the access check (mayMerge, or the system, already decided that):
-		// this only finds the project to record the change under, and the label
-		// is already on the forge, so the record goes in unscoped. No project
-		// showing it is an answer; only a failed read is said.
 		if readFault(rerr) && !missingOrDenied(rerr) {
 			s.log.WarnContext(ctx, "pr authority failed", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "err", rerr)
 		}

@@ -11,8 +11,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/sandbox"
 )
 
-// A refusal from the sandbox helper is logged and the job still runs.
-
 // sandboxHelperSocket is where the host's helper listens; tests point it
 // elsewhere so they never ask the real one (WP-1065).
 var sandboxHelperSocket = sandbox.Socket

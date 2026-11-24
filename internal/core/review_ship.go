@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-// Waypoint ships when the run can go on without the session; a check that finds marks wrong goes to the session instead (tellCheck).
-
 // checkRound is the round a check audit belongs to (0: not a round's check).
 func (s *Service) checkRound(ctx context.Context, a *CodeAudit) int64 {
 	var key string
@@ -57,10 +55,9 @@ func (s *Service) continueAfterCheck(ctx context.Context, auditID int64) {
 	if round == 0 {
 		return
 	}
-	// A check that agreed or didn't run ships; a round nobody can take is released with its marks carried; one a live session can take waits for it.
 	r, err := roundByID(ctx, s.db.R, round)
 	if err != nil || r == nil || r.state != RoundRunning {
-		return // a Done round is the sweep's (shipSettledRounds)
+		return
 	}
 	out, err := s.advanceRound(ctx, round)
 	s.log.InfoContext(ctx, "round advanced after its check", "round", round, "audit", auditID, "do", out.Do, "why", out.Why, "err", err)
@@ -98,7 +95,6 @@ func (s *Service) tellCheck(ctx context.Context, a *CodeAudit) {
 	if err != nil || len(todo) == 0 {
 		return
 	}
-	// Only a round in a session that can take it goes to the session; otherwise Waypoint ships it: continueAfterCheck for a running round, the sweep for a done one.
 	round := s.checkRound(ctx, a)
 	r, err := roundByID(ctx, s.db.R, round)
 	if err != nil || r == nil || (r.state != RoundRunning && r.state != RoundDone) || a.sessionID == 0 {
@@ -200,7 +196,6 @@ func scanIDs(rows *sql.Rows) ([]int64, error) {
 // its step's (advanceStep), unless the step has stopped.
 func (s *Service) shipSettledRounds(ctx context.Context) {
 	now := s.nowMS()
-	// The SQL pre-filter must match decideRound's rules, or the batch is spent on rounds decideRound then leaves alone.
 	rows, err := s.db.R.QueryContext(ctx, `SELECT w.id FROM work_log w JOIN agent_runs r ON r.id = w.run_id
 		JOIN agent_sessions x ON x.id = w.session_id JOIN issues i ON i.id = w.issue_id
 		WHERE w.kind = 'review' AND w.before_pr != '' AND (
@@ -264,8 +259,6 @@ func (s *Service) shipDue(ctx context.Context, round, now int64) bool {
 // to the person (its flag is recorded with the rest, so a restart doesn't
 // send it again).
 func (s *Service) shipTried(ctx context.Context, round int64, key string, now int64, err error) {
-	// The record of a try outlives the try's deadline: it is what says the
-	// ship ran out of time.
 	ctx = context.WithoutCancel(ctx)
 	var tries int
 	did, _ := s.factsOfRound(ctx, round)
@@ -307,8 +300,6 @@ func (s *Service) shipTried(ctx context.Context, round int64, key string, now in
 		if !tell {
 			return nil
 		}
-		// The notice is stored by the write that sets the flag: both or
-		// neither, and dispatch sends it on.
 		var userID int64
 		if t.QueryRowContext(ctx, `SELECT coalesce(user_id, 0) FROM agent_runs WHERE id = (SELECT run_id FROM work_log WHERE id = ?)`, round).Scan(&userID) != nil || userID == 0 {
 			return nil
@@ -345,7 +336,7 @@ func shipRefused(err error) bool {
 	}
 	var ae *forgeAPIError
 	if errors.As(err, &ae) {
-		return forgeRefusalStatus(ae.status) && !ae.limited // a rate limit passes by waiting
+		return forgeRefusalStatus(ae.status) && !ae.limited
 	}
 	return errors.Is(err, ErrForbidden) || errors.Is(err, ErrNotFound)
 }

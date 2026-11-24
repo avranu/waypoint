@@ -101,7 +101,6 @@ func cmdTestsum(c *cli, args []string) error {
 	if err != nil {
 		return err
 	}
-	// A saved-output file may be followed by flags; otherwise the argument is the command, and -- is needed when the command's name is also a file path.
 	if dashed && len(rest) == 0 {
 		return c.usage("-- ends the flags; give the command after it")
 	}
@@ -351,7 +350,7 @@ func (r *testResult) render() string {
 		switch {
 		case r.NoneRan:
 			return fmt.Sprintf("NO TESTS RAN in %s%s: if you gave -run, it matched nothing\n", secs, units)
-		case total == 0 && r.Units > 0: // go test's plain output doesn't count tests, so total is 0 with units
+		case total == 0 && r.Units > 0:
 			return fmt.Sprintf("PASS: %d %s in %s\n", r.Units, r.UnitName, secs)
 		}
 		return fmt.Sprintf("PASS: %d tests in %s%s\n", total, secs, units)
@@ -432,7 +431,7 @@ func parseGoJSON(data []byte) (*testResult, bool) {
 	firstFail := map[string][]string{}
 	runs, fails := map[string]int{}, map[string]int{}
 	running := map[string]bool{}
-	build := map[string][]string{} // go test -json reports a build's compiler output as build-output events, keyed by ImportPath
+	build := map[string][]string{}
 	pkgs := map[string]bool{}
 	timeouts := map[string][]string{}
 	var failed []string
@@ -453,14 +452,11 @@ func parseGoJSON(data []byte) (*testResult, bool) {
 		case "build-output":
 			build[e.ImportPath] = append(build[e.ImportPath], strings.TrimRight(e.Output, "\n"))
 		case "run":
-			// go test -count=N runs a test N times: keep each run's output
-			// apart, so a failure shows its own run's lines.
 			out[key] = nil
 			running[key] = true
 		case "output":
 			l := strings.TrimRight(e.Output, "\n")
 			out[key] = append(out[key], l)
-			// A timeout panic lands in whichever test was running, which gets no fail of its own; its output belongs to the package.
 			if timeouts[e.Package] != nil || reGoTimeout.MatchString(l) {
 				timeouts[e.Package] = append(timeouts[e.Package], l)
 			}
@@ -472,9 +468,6 @@ func parseGoJSON(data []byte) (*testResult, bool) {
 				}
 				res.Seconds += e.Elapsed
 				cut := cutShort(e.Package, running, out)
-				// A failed test of its own explains a failed package, unless
-				// -timeout then stopped another test: that hang is a failure
-				// too, and the one --base must not wave through.
 				if e.Action == "fail" && (timeouts[e.Package] != nil || !pkgHasFailedTest(failed, e.Package) || timedOut(cut)) {
 					failed = append(failed, key)
 					if lines := build[e.FailedBuild]; e.FailedBuild != "" && len(lines) > 0 {
@@ -796,7 +789,7 @@ func parsePytest(data []byte) *testResult {
 		short := m[2][strings.LastIndex(m[2], "::")+2:]
 		s := sections[short]
 		if s == nil {
-			for k, v := range sections { // parametrized names, or a class prefix
+			for k, v := range sections {
 				if strings.HasSuffix(m[2], k) || strings.HasSuffix(m[2], "::"+k) {
 					s = v
 				}
@@ -890,9 +883,6 @@ func parseUnittest(data []byte) *testResult {
 		if strings.HasPrefix(m[3], "unittest.loader._FailedTest") {
 			f.Name = m[2] + " (didn't load)"
 		}
-		// A test with a docstring has its first line between the header and
-		// the dashes. The body runs from below the dashes to the next banner
-		// or the closing dashes before "Ran N tests".
 		start := i + 1
 		for j := i + 1; j < len(lines) && j <= i+3; j++ {
 			if strings.HasPrefix(lines[j], "-----") {
@@ -908,8 +898,6 @@ func parseUnittest(data []byte) *testResult {
 			}
 			body = append(body, b)
 		}
-		// The last frame is where it failed (unittest drops its own frames);
-		// what follows that frame's source line is the exception.
 		last := -1
 		for j, b := range body {
 			if fm := reUtFrame.FindStringSubmatch(b); fm != nil {

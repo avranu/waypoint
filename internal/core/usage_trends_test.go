@@ -273,7 +273,6 @@ func TestUsageStatistics(t *testing.T) {
 	if got := ranks([]float64{5, 1, 5, 3}); !slices.Equal(got, []float64{3.5, 1, 3.5, 2}) {
 		t.Errorf("ranks: %v", got)
 	}
-	// Normal approximation with continuity correction: U = 0 for fully separated groups of six gives z ≈ 2.80, p ≈ 0.0051.
 	p := mannWhitney([]float64{1, 2, 3, 4, 5, 6}, []float64{7, 8, 9, 10, 11, 12})
 	if p == nil || math.Abs(*p-0.0051) > 0.0005 {
 		t.Errorf("separated: %v", p)
@@ -444,7 +443,6 @@ func TestUsageCompareBeforeAndAfter(t *testing.T) {
 	if tok.Change == nil || !approx(*tok.Change, 9) || tok.P == nil || *tok.P > 0.01 {
 		t.Errorf("change or p: %v %v", tok.Change, tok.P)
 	}
-	// Whole days only; days without usage count as zero.
 	for _, st := range c.Daily {
 		if st.Key == "messages" && (st.Before.N != 7 || st.Before.Total != 5 || st.After.N != 2 || st.After.Total != 5) {
 			t.Errorf("daily: %+v", st)

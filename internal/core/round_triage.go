@@ -1,7 +1,5 @@
 package core
 
-// Only deterministic facts decide (green checks, the head's history, the comment's text); the compile-claim match is narrow on purpose, and each rejection is recorded as triage so overturns can be counted.
-
 import (
 	"context"
 	"fmt"
@@ -29,7 +27,6 @@ var compileClaimRE = lazyre.New(`(?i)` + strings.Join([]string{
 	`\b(?:breaks?|breaking|will break|would break) the build\b`,
 	`\bbuild (?:will )?(?:fail|fails|break|breaks)\b`,
 	`\bsyntax error\b`,
-	// Compiler wording only: := shadowing, duplicate JSON tags and duplicate function bodies build fine, so they are logic points, not compile claims.
 	`\bredeclared in (?:this|the same) (?:block|scope)\b`,
 	`\bcannot redeclare\b`,
 	`\bduplicate (?:import|identifier|declaration)s?\b`,

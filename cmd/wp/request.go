@@ -338,7 +338,7 @@ func (c *cli) hasSession() bool {
 
 func (c *cli) fileRequest(body map[string]any) error {
 	if body["kind"] == "command" {
-		c.watchSession(c.sessionID()) // A command request can be approved by a person in the terminal, so the session's Bash calls are watched while it waits.
+		c.watchSession(c.sessionID())
 	}
 	raw, err := c.call("POST", "/api/v1/requests", body)
 	if err != nil {
@@ -896,7 +896,6 @@ func changesFromPatch(root, patchFile string) ([]changeFile, string, error) {
 // --summary).
 func patchModes(root, patch string) (map[string]bool, error) {
 	cmd := exec.Command("git", "-c", "core.quotepath=false", "apply", "--summary", patch) // #nosec G204 -- fixed arguments
-	// From a subdirectory git leaves out the paths outside it.
 	cmd.Dir = root
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
@@ -940,7 +939,6 @@ func chmodCommand(modes map[string]bool, paths []string) string {
 // patchPaths are the files a patch touches (git apply --numstat -z).
 func patchPaths(root, patch string) ([]string, error) {
 	cmd := exec.Command("git", "apply", "--numstat", "-z", patch) // #nosec G204 -- fixed arguments
-	// Run from the repo root: from a subdirectory, git apply --numstat leaves out paths outside it.
 	cmd.Dir = root
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
@@ -994,7 +992,6 @@ func requestLs(c *cli, args []string) error {
 	if *mine || c.agentHeader() != "" {
 		q.Set("mine", "1")
 	}
-	// The server filters on one project, so each project needs its own call.
 	var refs []string
 	switch {
 	case sf.project != nil && strings.EqualFold(*sf.project, "me"):

@@ -12,8 +12,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/sandbox"
 )
 
-// Only a person in the browser can queue one; the runner's spec is signed when it polls, not when queued.
-
 // EvSandboxOp: a person asked a machine's sandbox helper for an action.
 // Data: runner (id), name, runner_owner, op, user.
 const EvSandboxOp = "sandbox.op_requested"

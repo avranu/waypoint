@@ -38,7 +38,6 @@ func TestFailedScreensBackOffToADay(t *testing.T) {
 	}
 	sweepFor(24*time.Hour, 5*time.Minute)
 	first := attempts()
-	// Retries back off exponentially: 5, 10, 20 … 640 minutes apart.
 	if first < 8 || first > 10 {
 		t.Errorf("tries the first day = %d", first)
 	}

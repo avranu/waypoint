@@ -15,8 +15,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/sandbox"
 )
 
-// Everything below the store is reached with openat2 RESOLVE_BENEATH and RESOLVE_NO_SYMLINKS from one O_PATH descriptor, so a symlink or renamed directory a sandbox writes cannot point the helper elsewhere.
-
 // storeAreas are the store's top directories, each with one directory per
 // machine user.
 var storeAreas = []string{"homes", "work", "cache"}
@@ -52,7 +50,7 @@ func openStore(path string, owner int) (*store, error) {
 		_ = unix.Close(fd)
 		return nil, err
 	}
-	if err := checkDir(path, &st, owner); err != nil { // Check the opened descriptor, not the path: the path could be swapped between Lstat and open.
+	if err := checkDir(path, &st, owner); err != nil {
 		_ = unix.Close(fd)
 		return nil, err
 	}
@@ -314,7 +312,7 @@ func (s *store) sessionLeft(id string) (ws, home bool) {
 	empty := func(sub string) bool {
 		fd, err := s.beneath(sessionsArea+"/"+id+"/"+sub, unix.O_RDONLY|unix.O_DIRECTORY)
 		if err != nil {
-			return true // A missing or unreadable subdirectory counts as empty.
+			return true
 		}
 		f := os.NewFile(uintptr(fd), sub)
 		defer func() { _ = f.Close() }()

@@ -15,8 +15,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// EnqueueRunnerJob is the way in for queuing a job; a job's end emits EvRunnerJobFinished.
-
 const (
 	runnerLogCap     = 1 << 20
 	runnerLogEmit    = time.Second
@@ -201,12 +199,9 @@ func checkRunnerInput(kind string, raw json.RawMessage) (jobNeeds, string, json.
 			in.Confine = true
 		}
 		if kind == JobAudit {
-			// Only CLIs that can be confined (not cursor) audit on a runner, and only what the gate lets it read.
 			in.ReadOnly, in.Push, in.Branch, in.Permission = true, false, "", AgentRead
 			in.Confine = slices.Contains(reviewCLIs, in.CLI)
 			if gateway {
-				// No CLI runs on the runner: the gateway's sandbox holds the
-				// agent (read-only profile, no credentials, no way out).
 				var err error
 				if in.GatewayExclude, err = cleanGatewayExclude(in.GatewayExclude); err != nil {
 					return n, "", nil, err
@@ -540,10 +535,6 @@ func (s *Service) EnqueueRunnerJob(ctx context.Context, a *Actor, in RunnerJobIn
 	if owner == 0 {
 		return nil, invalid("say whose runner the job is for")
 	}
-	// The ownership rule: your own runners. An automation runs as whoever
-	// triggered it, so it may use only the runners of the person who last
-	// saved it (anyone else editing it could otherwise run commands on that
-	// person's machine). Waypoint's own work (no user) is trusted.
 	switch {
 	case a.Automation != nil:
 		if automationRunnerOwner(a.Automation) != owner {
@@ -570,9 +561,6 @@ func (s *Service) EnqueueRunnerJob(ctx context.Context, a *Actor, in RunnerJobIn
 	if err != nil {
 		return nil, err
 	}
-	// A patch job pushes protected-file changes with no agent and no check
-	// of its own: only Waypoint queues one, for a held change it checked or
-	// a person approved (applyHeld, WP-ADR138).
 	if needs.patch && (a.User == nil || a.User.ID != 0 || a.IsAgent() || a.Automation != nil || in.Source != babysitHeldSource) {
 		return nil, fmt.Errorf("only Waypoint queues a job that pushes a held patch: %w", ErrForbidden)
 	}
@@ -962,7 +950,7 @@ func (s *Service) FinishRunnerJob(ctx context.Context, actor *Actor, id int64, i
 			state = "cancelled"
 		}
 		msg := excerpt(in.Error, 2000)
-		if state == "cancelled" { // a cancelled job's error says who asked and why, not how it died
+		if state == "cancelled" {
 			var why string
 			_ = t.QueryRowContext(ctx, `SELECT error FROM runner_jobs WHERE id = ?`, id).Scan(&why)
 			msg = cmp(why, msg)

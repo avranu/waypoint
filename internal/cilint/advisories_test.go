@@ -111,7 +111,6 @@ func TestAdvisoriesScript(t *testing.T) {
 		t.Errorf("govulncheck on main: want failure, got %d: %s", code, out)
 	}
 
-	// A branch cut before main fixed an advisory has it at its base, so it does not add it.
 	out, code = run([]string{"check", "npm", "pr"}, ab, clean, "ADVISORIES_BASE_JSON="+ab)
 	if code != 0 || !strings.Contains(out, "::warning title=Advisory fixed on main::npm: GHSA-a,GHSA-b") {
 		t.Errorf("stale branch: want a pass with the warning, got %d: %s", code, out)
@@ -124,7 +123,6 @@ func TestAdvisoriesScript(t *testing.T) {
 	if code != 0 || strings.Contains(out, "this change adds") {
 		t.Errorf("an id on two packages, on main once: want a pass, got %d: %s", code, out)
 	}
-	// An npm audit error is a failure, not 'no advisories'.
 	out, code = run([]string{"check", "npm", "pr"}, write("low.json", npmReport("GHSA-m/moderate", "GHSA-l/low")), "")
 	if code != 0 || !strings.Contains(out, "npm advisories: none") {
 		t.Errorf("moderate and low: want a silent pass, got %d: %s", code, out)
@@ -137,18 +135,15 @@ func TestAdvisoriesScript(t *testing.T) {
 	if code == 0 || !strings.Contains(out, "npm audit failed") {
 		t.Errorf("npm audit error: want failure, got %d: %s", code, out)
 	}
-	// An advisory the change adds passes when `npm run audit`, which holds the waiver list, passes.
 	out, code = run([]string{"check", "npm", "pr"}, ab, a, "ADVISORIES_AUDIT_CMD=true")
 	if code != 0 || !strings.Contains(out, "::warning title=Waived advisories::npm: this change adds GHSA-b over main") {
 		t.Errorf("added with its waiver: want a pass with the warning, got %d: %s", code, out)
 	}
-	// An id's detail is its own: GHSA-a's detail does not come from GHSA-ab.
 	out, _ = run([]string{"check", "npm", "pr"}, write("sub.json", npmReport("GHSA-a", "GHSA-ab")), write("ab2.json", npmReport("GHSA-ab")))
 	if !strings.Contains(out, "this change adds GHSA-a over main") || strings.Contains(out, "-GHSA-ab <1") {
 		t.Errorf("an id inside another: want only GHSA-a's detail, got: %s", out)
 	}
 
-	// With no readable main, findings fail as that, never against an older fetch of main.
 	repo := t.TempDir()
 	for _, args := range [][]string{{"init", "-q"}, {"-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "x"}} {
 		cmd := exec.Command("git", args...)
@@ -251,7 +246,6 @@ func TestRepoAdvisoriesJob(t *testing.T) {
 			t.Errorf("ci.yml lacks %q", strings.TrimSpace(want))
 		}
 	}
-	// Checked per job: a whole-file search would pass with one of the two steps missing.
 	jobs, _ := wfFile(t, "../../.forgejo/workflows/ci.yml")
 	for job, run := range map[string]string{
 		"backend-shard": "deploy/advisories.sh check go pr",
@@ -496,7 +490,6 @@ func TestAdvisoriesGit(t *testing.T) {
 	if code != 1 || !strings.Contains(out, "this change adds GHSA-y over main") || strings.Contains(out, "adds GHSA-x") {
 		t.Errorf("npm, branch adding Y: want failure naming Y only, got %d: %s", code, out)
 	}
-	// A branch that leaves web/package*.json unchanged skips the npm scan, so a web/audit.json it adds is not counted.
 	branch("no-deps", map[string]string{"web/audit.json": npmReport("GHSA-y"), "README": "x"})
 	out, code = run("npm")
 	if code != 0 || !strings.Contains(out, "npm advisories: web/package.json and web/package-lock.json unchanged from main; nothing this change could add") {
@@ -514,7 +507,6 @@ func TestAdvisoriesGit(t *testing.T) {
 		t.Errorf("npm, unchanged, base from ADVISORIES_BASE_SHA: want the unchanged line, got %d: %s", code, out)
 	}
 
-	// No shortcut for go: a change to Go code alone can add a called vulnerability.
 	branch("go-stale", map[string]string{"README": "go"})
 	out, code = run("go")
 	if code != 0 || !strings.Contains(out, fixedWarn+"go: GO-X ") {

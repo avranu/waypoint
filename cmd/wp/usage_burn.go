@@ -1,7 +1,5 @@
 package main
 
-// the burn meter reads local transcripts and the price table only: no network
-
 import (
 	"bufio"
 	"bytes"
@@ -34,7 +32,7 @@ var burnFallbackPrices = []burnPrice{
 	{"claude-opus-5-5", 4, 20, 5, 8, 0.2},
 	{"claude-sonnet-5-5", 2, 10, 2.5, 4, 0.2},
 	{"claude-haiku-5-5", 0.1, 0.5, 0.125, 0.2, 0.01},
-	{"claude-fable-5", 10, 50, 12.5, 20, 1}, // prices are seeded in internal/db/migrations/0026_usage.sql; keep the two in step
+	{"claude-fable-5", 10, 50, 12.5, 20, 1},
 	{"claude-mythos-5", 10, 50, 12.5, 20, 1},
 }
 
@@ -193,7 +191,7 @@ func (t *burnTree) update(files []burnFile, prices []burnPrice) bool {
 			continue
 		}
 		if fi.Size() < t.Offsets[f.id] {
-			t.Offsets[f.id] = 0 // rewritten: its ids are known already
+			t.Offsets[f.id] = 0
 		}
 		if t.read(f, prices) {
 			changed = true
@@ -528,7 +526,7 @@ func (t *burnTree) behind(files []burnFile) bool {
 }
 
 const (
-	burnAlertDefault = 100.0 // Alerts above $100/h over 10 minutes; a normal Opus session burns $10-25/h.
+	burnAlertDefault = 100.0
 	burnAlertRepeat  = 30 * time.Minute
 )
 
@@ -603,7 +601,6 @@ func hookClaudeBurn(c *cli, stdin io.Reader, stdout io.Writer) {
 	if json.NewDecoder(io.LimitReader(stdin, 4<<20)).Decode(&in) != nil {
 		return
 	}
-	// CI lint feedback rides on this hook, not a separate hook row
 	burn, stop := c.burnText(&in)
 	if stop != "" {
 		_, _ = stdout.Write(promptStop(stop))
@@ -612,11 +609,10 @@ func hookClaudeBurn(c *cli, stdin io.Reader, stdout io.Writer) {
 		return
 	}
 	text := strings.TrimSpace(c.hookCILint(&in) + "\n" + burn)
-	if in.AgentID == "" { // a subagent's tool result never reaches the agent the note is for
+	if in.AgentID == "" {
 		text = strings.TrimSpace(text + "\n\n" + c.takeNotes(in.SessionID, in.TranscriptPath))
 	}
 	if in.AgentID == "" && in.ToolName == "Bash" && isShipCall(bashCommand(in.ToolInput)) {
-		// wp ship with --summary may end the turn, so its result gets no note; a ship Claude Code moved to the background is noted for later
 		if id := bashBackground(in.ToolResponse); id != "" {
 			c.noteShipBackground(in.SessionID, id)
 		} else if text == "" {
@@ -661,7 +657,6 @@ func (c *cli) burnText(in *hookEventInput) (text, stop string) {
 			text = strings.TrimSpace(text + "\n" + said)
 		}
 		stop = halt
-		// WAYPOINT_NO_BURN quiets only the rate alert above, never the live quota guard below.
 		guardText, guardStop, guardChanged := c.guardBurn(in, st, prices)
 		if stop == "" {
 			stop = guardStop

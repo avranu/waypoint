@@ -178,8 +178,6 @@ func cmpTool(name string, input json.RawMessage) cmpEvent {
 		e.edit = bashWrites(in.Command)
 		e.lookup = !e.edit && cmpLookupRE.MatchString(cmd)
 		if e.lookup {
-			// cat > FILE <<EOF writes a file and cat <<EOF prints the text it
-			// was given: neither puts a file in context
 			line, _, _ := strings.Cut(raw, "\n")
 			if target, heredoc := cmpRedirect(line); target != "" {
 				e.edit, e.lookup, e.shell = true, false, true
@@ -195,7 +193,6 @@ func cmpTool(name string, input json.RawMessage) cmpEvent {
 			for _, m := range cmpPathRE.FindAllStringSubmatch(cmd, -1) {
 				e.paths = append(e.paths, filepath.Base(m[1]))
 			}
-			// Bare names count only before the first pipe or separator; spaces are doubled so adjacent names each get a space on both sides.
 			first := cmd
 			if i := strings.IndexAny(first, "|;&"); i >= 0 {
 				first = first[:i]
@@ -319,7 +316,6 @@ func readCompactFile(path string) ([]cmpEvent, error) {
 					text, results := cmpUserContent(l.Message.Content)
 					switch {
 					case l.IsCompactSummary:
-						// the summary is written beside its boundary, on either side
 						if lastBoundary >= 0 && ev[lastBoundary].summaryChars == 0 && lastBoundary == lastOfKind(ev, "cb") {
 							ev[lastBoundary].summaryChars = len(text)
 						} else {
@@ -337,7 +333,6 @@ func readCompactFile(path string) ([]cmpEvent, error) {
 						ev = append(ev, p)
 					}
 				case l.Type == "attachment" && l.Attachment != nil:
-					// Claude Code's restored-file attachments come after a compaction and before the next call
 					if lastBoundary < 0 || lastBoundary != lastOfKind(ev, "cb") || l.Attachment.Filename == "" {
 						break
 					}
@@ -370,7 +365,6 @@ func readCompactFile(path string) ([]cmpEvent, error) {
 			break
 		}
 		if err != nil {
-			// A read that failed partway would pass for a shorter session.
 			return nil, err
 		}
 	}

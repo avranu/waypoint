@@ -16,8 +16,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Informational only: nothing is held, and no turn is kept open waiting for it.
-
 type rewrittenPR struct {
 	Number int     `json:"number"`
 	Lines  int     `json:"lines"`
@@ -49,11 +47,10 @@ var rewrittenTasksFn = (*cli).rewrittenTasks
 // (shipNeedsAgent doesn't hear of it) and asks for no tool call.
 func (c *cli) noteRewrites(key, baseFlag string) {
 	s := rewritesText(key, rewrittenTasksFn(c, key, baseFlag))
-	// Empty results still call rewritesSeen, which clears the stored pair, so tasks that return later are news again.
 	if rewritesSeen(key, s) || s == "" {
 		return
 	}
-	_, _ = fmt.Fprintln(c.err, s) // Notices go to stderr, so stdout stays the response for --json.
+	_, _ = fmt.Fprintln(c.err, s)
 }
 
 // rewrittenTasks are the tasks whose recent lines a change to task key
@@ -63,7 +60,6 @@ func (c *cli) rewrittenTasks(key, baseFlag string) []rewrittenTask {
 	if key == "" {
 		return nil
 	}
-	// A --base starting with a dash would be read by git as an option; CheckRef refuses it before git runs.
 	if err := codeindex.CheckRef(baseFlag); err != nil {
 		_, _ = fmt.Fprintf(c.err, "wp: not noting rewritten work: base: %v\n", err)
 		return nil
@@ -88,7 +84,6 @@ func (c *cli) rewrittenTasks(key, baseFlag string) []rewrittenTask {
 		if sha, err := localGit("rev-parse", "HEAD"); err == nil && sha != "" {
 			head = sha
 		}
-		// Staged changes are not committed until wp ship runs after this, so they are blamed here as a commit object.
 		if _, err := localGit("diff", "--cached", "--quiet"); err != nil && isExit(err, 1) {
 			c, err := codeindex.IndexCommit(root, "HEAD")
 			if err != nil {
@@ -111,13 +106,12 @@ func (c *cli) rewrittenTasks(key, baseFlag string) []rewrittenTask {
 	case <-time.After(rewriteTimeout):
 		return nil
 	}
-	prs := []rewrittenPR{} // Send an empty list, not nil: the server refuses a missing list, and an empty one drops the evidence of an earlier ship.
+	prs := []rewrittenPR{}
 	for _, in := range tr.Introducers {
 		if in.PR > 0 {
 			prs = append(prs, rewrittenPR{Number: in.PR, Lines: in.Lines, Share: in.Share, At: in.At})
 		}
 	}
-	// Checked here, before sending, against the server's limits on repo and commit names.
 	if err := checkRewriteSend(repo, head, prs); err != nil {
 		_, _ = fmt.Fprintf(c.err, "wp: not noting rewritten work: %v\n", err)
 		return nil
@@ -198,7 +192,6 @@ func rewritesText(key string, got []rewrittenTask) string {
 
 // excerptLine shortens s to n runes on one line.
 func excerptLine(s string, n int) string {
-	// Control characters are replaced: an escape sequence in another task's title would act on the terminal.
 	s = strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
 			return ' '

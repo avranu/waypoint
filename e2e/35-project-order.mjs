@@ -48,7 +48,7 @@ async function run(width, scheme) {
       data: { name, key },
     });
     if (!r.ok()) fail(`${tag} create ${key}: ${r.status()}`);
-    await sleep(1100); // active_at has a resolution of a second
+    await sleep(1100);
   };
   const shown = async () =>
     (
@@ -128,9 +128,6 @@ async function run(width, scheme) {
     `${tag} a line shows where it will land`,
   );
   await shot("dragging");
-  // The sidebar reorders at once and saves to the profile behind it; on a
-  // slow runner the save can take longer than the sleep, so wait for it
-  // before reading the profile or reloading (a reload would cancel it).
   await Promise.all([
     page.waitForResponse(
       (r) =>

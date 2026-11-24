@@ -79,7 +79,6 @@ export interface RunnerJob {
   created_at: string
   started_at: string | null
   finished_at: string | null
-  // detail only, and only for the job's owner and creator
   input?: Record<string, unknown>
   result?: Record<string, unknown>
   log?: string

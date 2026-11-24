@@ -79,7 +79,6 @@ func TestCallClockSaysWhereTheTimeWent(t *testing.T) {
 	if got := c.spent(); got != want {
 		t.Errorf("spent = %q\nwant    %q", got, want)
 	}
-	// The clock must be safe to read while the CLI's output is still being read.
 	c.begin("d", "Bash "+strings.Repeat("y", 8000))
 	if n := len(c.open["d"].what); n > 130 {
 		t.Errorf("kept %d bytes of a command", n)

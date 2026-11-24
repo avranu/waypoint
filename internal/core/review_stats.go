@@ -1,7 +1,5 @@
 package core
 
-// Findings dropped before posting are never judged; a leftover audit's verdict decides the rest (confirmed or fixed useful, rejected false).
-
 import (
 	"context"
 	"encoding/json"
@@ -444,7 +442,6 @@ func tallyReviewStats(fs []statFinding, runs []statRun) *ReviewStats {
 		v.Kept.settle()
 		v.Posted.settle()
 		if v.Posted.Precision != nil {
-			// a right drop is a false finding: the complement, bounds swapped
 			acc, lo, hi := round3(1-*v.Posted.Precision), round3(1-*v.Posted.High), round3(1-*v.Posted.Low)
 			v.DropAccuracy, v.DropLow, v.DropHigh = &acc, &lo, &hi
 		}

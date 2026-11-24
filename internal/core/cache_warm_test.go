@@ -43,7 +43,6 @@ func TestDecideWarm(t *testing.T) {
 		"autopilot, second ping":     {warmFacts{WarmSince: ago(2 * time.Hour), Pending: "a background task", ContextTokens: 30_000, Pings: 1, Unattended: true}, warmCompacting, "waiting on a background task; compacted instead of a second ping"},
 		"autopilot, requests":        {warmFacts{WarmSince: ago(time.Hour), Pending: "requests", Requests: 1, PersonActive: true, ContextTokens: 300_000, Unattended: true}, warmCool, "autopilot runs it, and no work of its own is running"},
 		"autopilot, finished, typed": {warmFacts{WarmSince: ago(time.Hour), Finished: true, TypedLast: true, PersonActive: true, Unattended: true}, warmCool, "autopilot runs it, and no work of its own is running"},
-		// A session whose task isn't merged is compacted before it cools, unless its context is under 60k; its own running work still keeps it warm first.
 		"unmerged":                   {warmFacts{WarmSince: ago(time.Hour), Finished: true, ContextTokens: 120_000, Unattended: true, Clearable: true, Unmerged: true}, warmCompacting, "it said it can be cleared; its task isn't merged yet, so compacted before its cache cools"},
 		"unmerged, clearable small":  {warmFacts{WarmSince: ago(time.Hour), Finished: true, ContextTokens: 59_000, Clearable: true, Unmerged: true}, warmCool, "it said it can be cleared"},
 		"unmerged, unattended":       {warmFacts{WarmSince: ago(time.Hour), Finished: true, ContextTokens: 120_000, Unattended: true, Unmerged: true}, warmCompacting, "autopilot runs it, and no work of its own is running; its task isn't merged yet, so compacted before its cache cools"},
@@ -272,7 +271,6 @@ func TestKeepWarmAutopilotSession(t *testing.T) {
 		t.Fatal("still autopilot's after its person kept it")
 	}
 
-	// A prompt with no typed kind counts as a person's; migration 0187's backfill typed the older autopilot prompts.
 	be.setClock(be.clockNow().Add(time.Minute))
 	legacy := excerpt(pasted(AutopilotPromptMark+" started this session for WP-3"), 500)
 	for _, typedKind := range []string{"", TypedKickoff} {
@@ -487,7 +485,6 @@ func TestKeepWarmCompactsAnUnmergedSession(t *testing.T) {
 	if _, err := be.s.db.W.Exec(`DELETE FROM agent_runs WHERE session_id IS NULL AND issue_id = ?`, task.ID); err != nil {
 		t.Fatal(err)
 	}
-	// A run a diagnosis ended shipped nothing, so it holds no unmerged work.
 	for _, c := range []struct {
 		outcome string
 		holds   bool

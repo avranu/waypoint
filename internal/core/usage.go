@@ -15,8 +15,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// A mention counts once per source: re-editing the text doesn't repeat it, and removing the word doesn't erase it. Browser views aren't recorded.
-
 // Kinds of use.
 const (
 	UseLookup  = "lookup"
@@ -50,8 +48,6 @@ func (s *Service) NoteLookup(ctx context.Context, actor *Actor, typ string, id i
 	}
 	args := append([]any{typ, id}, whoArg...)
 	args = append(args, now-lookupRepeat.Milliseconds())
-	// The bump and the insert are guarded by the same window test, so two
-	// concurrent first reads end as one row and one repeat, not two rows.
 	for range 3 {
 		// #nosec G202 -- who is one of two fixed clauses; values are bound
 		res, err := s.db.W.ExecContext(ctx, `UPDATE knowledge_uses SET repeats = coalesce(repeats, 0) + 1 WHERE id = (
@@ -1079,7 +1075,6 @@ func (s *Service) shownItem(ctx context.Context, actor *Actor, r ShownRef) (typ 
 			return KGlossary, res.Matches[0].ID, true
 		}
 	case KDesign:
-		// A numeric ref resolves without a row check, so ask for the item as the actor.
 		if id, err = s.ResolveDesign(ctx, actor, r.Ref, r.Project); err == nil && id > 0 {
 			if _, err = s.kitem(ctx, actor, KDesign, id, ""); err == nil {
 				return KDesign, id, true

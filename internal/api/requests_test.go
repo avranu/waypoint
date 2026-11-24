@@ -223,7 +223,6 @@ func TestRequestsAPI(t *testing.T) {
 	if time.Since(start) > 8*time.Second {
 		t.Fatal("wait took the whole time")
 	}
-	// Reading a request counts as being told, so next omits it.
 	code, b := e.agent.do("POST", "/api/v1/agent/next", nil)
 	if code != 200 || strings.Contains(string(b), "answered request") {
 		t.Fatalf("next after reading: %d %s", code, b)
@@ -241,7 +240,6 @@ func TestRequestsAPI(t *testing.T) {
 		t.Fatalf("missing: %d", code)
 	}
 
-	// An agent's done on its own request withdraws it, keeping the note.
 	var act, own core.Request
 	e.agent.json("POST", "/api/v1/requests", map[string]any{"kind": "action", "title": "Create the repo"}, &act)
 	if code := e.agent.json("POST", "/api/v1/requests/"+act.Ref+"/decide", map[string]any{"decision": "done", "note": "main is pushed"}, &own); code != 200 || own.State != "withdrawn" || own.Note != "main is pushed" {

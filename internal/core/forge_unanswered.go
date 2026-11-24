@@ -1,7 +1,5 @@
 package core
 
-// A forge's transport failure names the forge and wraps ErrUnavailable, so the API answers 502 and the CLI retries instead of reporting an internal error.
-
 import (
 	"context"
 	"errors"

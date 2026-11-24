@@ -239,7 +239,6 @@ func TestCIHostReports(t *testing.T) {
 		t.Fatalf("alerts: %+v", a)
 	}
 
-	// Usage has no job name until the board has read the task.
 	if u, err := be.s.CIUsage(be.ctx, be.admin, "", 0); err != nil || len(u) != 0 {
 		t.Fatalf("usage before the task is known: %v %v", u, err)
 	}
@@ -290,7 +289,6 @@ func TestForgejoRerun(t *testing.T) {
 		{run: 5, id: 51, key: "browser", name: "browser", status: "cancelled"},
 		{run: 5, id: 52, key: "deploy", name: "deploy", status: "cancelled", needs: []string{"browser"}},
 		{run: 5, id: 53, key: "lint", name: "lint", status: "success"},
-		// A matrix job's name isn't its workflow key, but jobs that need it are still reopened when it is re-run.
 		{run: 5, id: 54, key: "shard", name: "shard 1", status: "failure"},
 		{run: 5, id: 55, key: "gather", name: "gather", status: "cancelled", needs: []string{"shard"}},
 	}
@@ -322,7 +320,7 @@ func TestForgejoRerun(t *testing.T) {
 			id, _ := strconv.ParseInt(strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/repos/me/app/actions/jobs/"), "/rerun"), 10, 64)
 			i := slices.IndexFunc(jobs, func(j *fakeJob) bool { return j.id == id })
 			if i < 0 || jobs[i].status == "waiting" {
-				http.Error(w, "job not done", http.StatusBadRequest) // Forgejo refuses to re-run a job that isn't done yet.
+				http.Error(w, "job not done", http.StatusBadRequest)
 				return
 			}
 			posted = append(posted, r.URL.Path)

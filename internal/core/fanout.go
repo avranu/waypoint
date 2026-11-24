@@ -16,8 +16,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Sessions start on the coordinator's machine, not through runner jobs: runners refuse jobs from agents, and the coordinator's repo and worktrees are there.
-
 // Events (kept off the issue history; UserID scopes them to the owner).
 const (
 	// Data: fanout (id), items (n), state (asked, running).
@@ -542,7 +540,6 @@ func (s *Service) CreateFanout(ctx context.Context, actor *Actor, in FanoutInput
 	if err != nil {
 		return nil, err
 	}
-	// Backlog packages are handed out only by the fan-out: agentCanTake leaves them alone.
 	status := ""
 	if st, err := s.firstStatusIn(ctx, s.db.R, p.ID, CatBacklog); err == nil {
 		status = st.Name
@@ -592,7 +589,6 @@ func (s *Service) CreateFanout(ctx context.Context, actor *Actor, in FanoutInput
 		return nil
 	})
 	if err != nil {
-		// Cancel the filed tasks on failure: left in the Backlog they are ordinary tasks, and a retried fan-out files them again.
 		s.abandonFanout(ctx, f.ID, items)
 		if requestID != 0 {
 			if _, werr := s.db.W.ExecContext(ctx, `UPDATE requests SET state = ?, updated_at = ? WHERE id = ? AND state = ?`, RequestWithdrawn, s.nowMS(), requestID, RequestOpen); werr != nil {
@@ -796,7 +792,7 @@ func (s *Service) fanoutOf(ctx context.Context, issueID int64) int64 {
 	err := s.db.R.QueryRowContext(ctx, `SELECT f.id FROM fanout_items it JOIN fanouts f ON f.id = it.fanout_id
 		WHERE it.issue_id = ? AND it.state IN ('queued', 'starting') AND f.state IN ('asked', 'running') LIMIT 1`, issueID).Scan(&id)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return -1 // On a read error return -1 (counts as a package), so agentCanTake holds the task back.
+		return -1
 	}
 	return id
 }
@@ -888,9 +884,6 @@ func (s *Service) ClaimFanout(ctx context.Context, actor *Actor, id int64, machi
 			}
 		}
 		var why []string
-		// Packages never started go first; an explicit claim then retries
-		// those whose session didn't start, so a package that keeps failing
-		// can't hold the only slot against the rest.
 		for pass := 0; pass < 2; pass++ {
 			for _, it := range f.Items {
 				if pass == 0 && it.State != ItemQueued || pass == 1 && it.State != ItemFailed {
@@ -1173,7 +1166,7 @@ func (s *Service) EndFanoutItem(ctx context.Context, actor *Actor, id int64, key
 		switch it.State {
 		case ItemStarting, ItemRunning:
 		case ItemStopped:
-			if state == ItemDone { // A wp done arriving after the item was marked stopped still counts as done.
+			if state == ItemDone {
 				if _, err := t.ExecContext(ctx, `UPDATE fanout_items SET state = ?, note = ?, spent_usd = max(spent_usd, ?) WHERE id = ?`, ItemDone, note, spent, it.ID); err != nil {
 					return err
 				}
@@ -1242,7 +1235,6 @@ func (s *Service) StopFanout(ctx context.Context, actor *Actor, id int64) (*Fano
 func (s *Service) onFanoutEvent(ctx context.Context, e *Event) {
 	switch e.Kind {
 	case EvFanoutCreated:
-		// Backlog packages are not screened ahead of time, so screen them now for them to start.
 		if f, err := s.fanoutByID(ctx, s.db.R, eventInt(e, "fanout")); err == nil {
 			for _, it := range f.Items {
 				s.queueScreenIf(it.issueID, false)

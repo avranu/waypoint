@@ -105,7 +105,6 @@ async function run(width, scheme) {
   } else {
     ok((await opacity()) === "0", `${tag} Copy is hidden until you point at the block`);
     await desc.locator("pre").hover();
-    // On a loaded CI runner the fade-in can land after a fixed pause, so wait for the opacity instead of reading it once.
     const copyHandle = await copy.elementHandle();
     const shown = await page
       .waitForFunction((b) => getComputedStyle(b).opacity === "1", copyHandle, { timeout: 3000 })
@@ -179,7 +178,6 @@ async function run(width, scheme) {
       "video/webm",
       "A recording",
     );
-    // SVG never renders from our origin.
     await upload(
       target,
       "logo.svg",
@@ -262,7 +260,7 @@ async function run(width, scheme) {
   await page.getByText(new RegExp(`^Attachments · ${before + 1}$`)).waitFor();
   ok(true, `${tag} Add file uploads to the page`);
   const row = panel.locator("li", { hasText: `extra-${tag.replace("/", "-")}.txt` });
-  await row.getByRole("button", { name: /Edit caption/ }).dispatchEvent("click"); // not .click(): on a phone a floating button can sit over the row
+  await row.getByRole("button", { name: /Edit caption/ }).dispatchEvent("click");
   await page.getByRole("dialog", { name: "Caption" }).getByLabel("Caption").fill("Extra notes");
   await page.keyboard.press("Enter");
   await panel.getByText("Extra notes").waitFor();

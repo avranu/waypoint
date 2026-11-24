@@ -177,8 +177,6 @@ export function useScrollingDown(reset?: unknown): boolean {
       const el = e.target instanceof Element ? e.target : document.scrollingElement
       if (!el) return
       const y = el.scrollTop
-      // A scroller seen for the first time started at its top, near enough:
-      // one jump (a keypress, a fling) may be its only scroll event.
       const prev = last.get(el) ?? 0
       last.set(el, y)
       if (Math.abs(y - prev) < 4) return

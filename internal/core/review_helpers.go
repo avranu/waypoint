@@ -15,8 +15,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Helpers are started by the runner, not the model, and the model is told nothing of the panel: handed its leads, it checks only those.
-
 // helperCLI and helperModel run every helper.
 const (
 	helperCLI   = "claude"
@@ -308,8 +306,6 @@ func (s *Service) settleRoundSiblings(ctx context.Context, auditID int64) {
 	}
 	_ = rows.Close()
 	for _, p := range todo {
-		// Not the poll's context: a settle cut short by a dropped poll
-		// would leave the audit half read in.
 		s.settleAudit(context.WithoutCancel(ctx), p.audit, p.job)
 	}
 }
@@ -742,7 +738,6 @@ func (s *Service) insertHelperRuns(ctx context.Context, t *tx, auditID int64, ru
 				continue
 			}
 			k1, k2, k3 := roundAuditKeys(round)
-			// An attempt that did not answer must not overwrite the leads of a row a reviewer answered beside, though its reads still cost.
 			res, err := t.ExecContext(ctx, `UPDATE audit_helper_runs SET
 				leads = CASE WHEN answered AND NOT ? THEN leads ELSE ? END,
 				cut = CASE WHEN answered AND NOT ? THEN cut ELSE ? END,
@@ -993,11 +988,6 @@ func (s *Service) againHelperStats(ctx context.Context, ivis string, iargs []any
 	var reasked, overturned int
 	from := ` FROM code_audits a JOIN (SELECT id AS project_id FROM projects) i ON i.project_id = a.project_id `
 	args := append(slices.Clone(iargs), since)
-	// A run's problems: those that became findings (leads), and the cut
-	// ones a second read or the join cut (what its why starts with), apart
-	// from the pruning's own cuts. A lead with no "confirmed" mark is from
-	// before the second read (a problem a reviewer was handed); it counts as
-	// raised, not as confirmed.
 	// #nosec G202 -- fixed conditions; values are bound
 	rows, err := s.db.R.QueryContext(ctx, `SELECT h.check_name, count(*), sum(h.state = 'done'), sum(h.state = 'failed'), sum(h.state = 'skipped'),
 			sum(h.state = 'partial'), sum(h.state = 'stopped'), sum(h.state = 'done' AND h.answered),
@@ -1025,8 +1015,6 @@ func (s *Service) againHelperStats(ctx context.Context, ivis string, iargs []any
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	// The findings that name a check, and how sessions marked them: the
-	// check names are read in Go (PanelChecksOf), from the lead column.
 	// #nosec G202 -- fixed conditions; values are bound
 	rows, err = s.db.R.QueryContext(ctx, `SELECT f.lead, f.state, `+findingFiledSQL+from+`
 		JOIN code_audit_findings f ON f.audit_id = a.id WHERE `+ivis+` AND a.created_at >= ? AND f.lead != ''`, args...)
@@ -1057,9 +1045,6 @@ func (s *Service) againHelperStats(ctx context.Context, ivis string, iargs []any
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	// The notes runner_helpers.go's verify starts a re-asked finding's with
-	// ("Asked twice,"; one whose second ask failed starts "Asked twice;" and
-	// wasn't asked again in effect).
 	// #nosec G202 -- fixed conditions; values are bound
 	if err := s.db.R.QueryRowContext(ctx, `SELECT count(*), coalesce(sum(f.verdict_note LIKE 'Asked twice, the check answered refuted, then%'), 0)`+from+`
 		JOIN code_audit_findings f ON f.audit_id = a.id WHERE `+ivis+` AND a.created_at >= ? AND f.verdict_note LIKE 'Asked twice,%'`, args...).Scan(&reasked, &overturned); err != nil {
@@ -1069,8 +1054,6 @@ func (s *Service) againHelperStats(ctx context.Context, ivis string, iargs []any
 		st := get(helperVerify)
 		st.Reasked, st.Overturned = reasked, overturned
 	}
-	// The check of findings' verdicts are on the reviewer's findings: a
-	// panel finding's verdict is its second read's, counted with its check.
 	// #nosec G202 -- fixed conditions; values are bound
 	rows, err = s.db.R.QueryContext(ctx, `SELECT f.verdict, count(*), sum(`+againHeldSQL+`), sum(f.state = 'rejected'), sum(`+findingFiledSQL+`)`+from+`
 		JOIN code_audit_findings f ON f.audit_id = a.id WHERE `+ivis+` AND a.created_at >= ? AND f.verdict != '' AND f.lead = '' GROUP BY 1`, args...)

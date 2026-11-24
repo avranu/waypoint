@@ -84,7 +84,6 @@ export function TimelinePage() {
     const el = scroller.current
     if (el) el.scrollLeft = diffDays(today, range.start) * px - el.clientWidth / 3
   }
-  // On first show and zoom changes only, so a drag's refetch doesn't yank the view.
   const hasRows = rows.length > 0
   useEffect(scrollToToday, [zoom, hasRows]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -277,7 +276,7 @@ export function TimelinePage() {
 // Issues this one blocks, when the API includes them.
 const blocksOf = (i: Issue) => i.blocks ?? []
 
-const HEADER_H = 49 // Matches the rendered date header's height, border included; it is the sticky top offset.
+const HEADER_H = 49
 const ROW_H = 40
 
 /** A bar's days (from the timeline's origin) while it's being dragged. */
@@ -541,7 +540,6 @@ function TimelineRow({
   if (drag?.mode === 'start') s = Math.min(s + shift, e)
   if (drag?.mode === 'end') e = Math.max(e + shift, s)
   const milestone = isMilestone(row)
-  // Before paint, so the lines move in the same frame as the bar.
   const dragged = drag ? `${s}:${e}` : ''
   useLayoutEffect(() => {
     live?.setPreview(issue.id, dragged ? { s, e } : null)

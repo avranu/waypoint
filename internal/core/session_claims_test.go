@@ -107,7 +107,6 @@ func TestNextLeavesAQuietSessionsTask(t *testing.T) {
 		t.Errorf("a resume = %+v", again)
 	}
 
-	// A session at its permission prompt keeps its claim past the lease, since it carries on once its person answers.
 	e.setClock(e.clockNow().Add(ClaimLease + time.Minute))
 	if err := e.s.expireRuns(e.ctx); err != nil {
 		t.Fatal(err)
@@ -165,7 +164,6 @@ func TestLapsedClaimStaysWithItsQuietSession(t *testing.T) {
 		t.Fatalf("a next after its lease ran out = %+v, %v", task, err)
 	}
 
-	// A session quiet and not waiting on its person counts as gone after strandedIdle, and its task is anyone's.
 	e.setClock(e.clockNow().Add(ClaimLease + time.Minute))
 	if err := e.s.expireRuns(e.ctx); err != nil {
 		t.Fatal(err)
@@ -322,7 +320,6 @@ func TestHookResumeLeavesAnotherSessionsTask(t *testing.T) {
 	if _, err := e.s.AgentPause(e.ctx, a, x.Key, ""); err != nil {
 		t.Fatal(err)
 	}
-	// A new session in the same directory finds the claim an earlier session left there.
 	endSession(t, e, ag, "cli-a", "/work/a", "prompt_input_exit")
 	b := sessionAgent(t, e, ag, "cli-b", "/work/a", nil)
 	if _, err := e.s.AgentResumeOwn(e.ctx, b, x.Key, ""); err == nil || !strings.Contains(err.Error(), "another session") {

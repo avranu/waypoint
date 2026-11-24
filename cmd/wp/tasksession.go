@@ -17,8 +17,6 @@ import (
 	"unicode"
 )
 
-// A task session's WP_TASK=KEY[,KEY...] is set from birth, so its hooks and every wp it runs see the binding.
-
 var startCmd = &command{
 	name: "start", group: "Tasks", args: "KEY [--bg] [FLAGS]",
 	summary: "start a fresh Claude Code session bound to task KEY",
@@ -120,8 +118,6 @@ func (l taskLaunch) claudeArgs() []string {
 // session is its own, whoever launched it. WAYPOINT_UNATTENDED stays (WP-270):
 // a session an unattended one launches is unattended too.
 func (l taskLaunch) sessionEnv(base []string) []string {
-	// CLAUDE_ENV_FILE and CLAUDE_PROJECT_DIR point at the launching session's own
-	// files: the new session's hooks would write into them.
 	drop := map[string]bool{"CLAUDE_ENV_FILE": true, "CLAUDE_PROJECT_DIR": true, "WAYPOINT_SESSION": true, "WAYPOINT_FOLLOWUP": true, "WAYPOINT_TRANSCRIPT": true, "WP_TASK": true, "CLAUDECODE": true, "WP_FANOUT": true, "WP_BUDGET_USD": true, "WAYPOINT_PRESTART": true}
 	var out []string
 	for _, kv := range base {
@@ -182,7 +178,7 @@ func currentContext() int64 {
 			return u.context
 		}
 	}
-	return 0 // the server uses what the last Stop reported
+	return 0
 }
 
 // startKickoff is a task session's first prompt (WP-1037, WP-ADR99), made as
@@ -234,7 +230,6 @@ func cmdStart(c *cli, args []string) error {
 		return c.usage("%q isn't an issue key like APP-12", pos[0])
 	}
 	if !*bg && os.Getenv("CLAUDECODE") == "1" {
-		// Inside Claude Code, wp start without --bg would open a nested claude in the Bash tool, so it refuses.
 		return errors.New("inside a Claude Code session: `wp next KEY` takes it here; `wp start KEY --bg` runs it in a fresh session")
 	}
 	var issue struct {

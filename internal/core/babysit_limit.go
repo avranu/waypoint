@@ -13,8 +13,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// A round stopped at the owner's usage limit did no work, so it is not counted: counting it would climb a rung or park the PR for a person.
-
 // limitRetry is how long a round waits when nothing says when the limit
 // lifts: a rate limit is over by then, and a spent plan costs one quick
 // failed job per try.
@@ -180,8 +178,6 @@ func (s *Service) withdrawQueuedRound(ctx context.Context, b *Babysit, pr *PullR
 		if err := t.QueryRowContext(wctx, `SELECT state FROM runner_jobs WHERE id = ?`, jobID).Scan(&state); err != nil || state != "queued" {
 			return err
 		}
-		// In the same write as the cancel, so whoever hears of the job's
-		// end finds it is no longer the babysit's and records no outcome.
 		res, err := t.ExecContext(wctx, `UPDATE babysits SET job_id = NULL, round = ?, round_sha = ?, rounds = ?, streaks = ?, wait_at = ?, updated_at = ? WHERE id = ? AND job_id = ?`,
 			nb.Round, nb.RoundSHA, string(rounds), string(st), now.UnixMilli(), now.UnixMilli(), b.ID, jobID)
 		if err != nil {

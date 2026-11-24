@@ -30,7 +30,7 @@ func newAPEnv(t *testing.T) *apEnv {
 	oldEnq, oldLook := enqueueRunnerJob, lookupRunnerJob
 	enqueueRunnerJob = func(ctx context.Context, s *Service, ac *Actor, in RunnerJobInput) (*RunnerJob, error) {
 		if in.Source == reviewCompactSource {
-			return oldEnq(ctx, s, ac, in) // Compaction jobs use the real enqueue, because the tests read the rows it writes.
+			return oldEnq(ctx, s, ac, in)
 		}
 		a.jobs = append(a.jobs, in)
 		if err := s.write(ctx, ac, func(t *tx) error {
@@ -121,16 +121,15 @@ func (a *apEnv) step() *stepRow {
 }
 
 func (a *apEnv) tick(d time.Duration) {
-	a.s.Wait() // background work reads the clock; let it finish before moving it
+	a.s.Wait()
 	a.setClock(a.clockNow().Add(d))
-	_, _ = a.s.db.W.Exec(`UPDATE runners SET last_seen_at = ?`, a.clockNow().UnixMilli()) // Without this the runner reads as offline after runnerOnlineFor (90s).
+	_, _ = a.s.db.W.Exec(`UPDATE runners SET last_seen_at = ?`, a.clockNow().UnixMilli())
 	a.s.RunAutopilot(a.ctx)
 }
 
 func (a *apEnv) jobDone(n int, res AutopilotJobResult) {
 	raw, _ := json.Marshal(res)
 	a.res[int64(n)] = RunnerJob{State: "done", Result: raw}
-	// The runner's finish event carries the source the job was queued with; a review job's own source must be accepted too.
 	src := autopilotSource
 	if n >= 1 && n <= len(a.jobs) {
 		src = a.jobs[n-1].Source
@@ -397,7 +396,6 @@ func TestAutopilotLimits(t *testing.T) {
 	if why, _ := autopilotPaused(m, waypointAutopilotDefaults(), a.clockNow()); pauseReason(why) != PauseWeekMax {
 		t.Errorf("92%% of the week, a day before it resets = %q", why)
 	}
-	// The week's ceiling rises from 24 hours before the reset to 100% at 12 hours before it.
 	m.WeekEven, m.WeekResetsAt = ptrOf(93.0), ptrOf(a.clockNow().Add(18*time.Hour))
 	if why, _ := autopilotPaused(m, waypointAutopilotDefaults(), a.clockNow()); why != "" {
 		t.Errorf("92%% of the week, 18 hours before it resets = %q", why)
@@ -746,7 +744,6 @@ func (a *apEnv) moveOnStarted() string {
 	var in AutopilotJob
 	_ = json.Unmarshal(a.jobs[len(a.jobs)-1].Input, &in)
 	cli := fmt.Sprintf("cli-%d", len(a.jobs)+1)
-	// The runner reports once the new session's SessionStart is in, so the step knows the session it started.
 	res, err := a.s.SessionHook(a.ctx, a.ag, []HookEvent{hook("box", cli, "SessionStart", func(h *HookEvent) { h.Source = "startup" })})
 	if err != nil {
 		a.t.Fatal(err)

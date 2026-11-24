@@ -382,7 +382,7 @@ func TestEgressBlocksLoopbackByDefault(t *testing.T) {
 
 func TestTLSExpiryWarning(t *testing.T) {
 	x := newEnvT(t)
-	x.setClock(time.Now()) // certificates are checked against the real time
+	x.setClock(time.Now())
 	cert, pool := selfSigned(t, x.clockNow().Add(5*24*time.Hour))
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("ok")) }))
 	srv.TLS = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}

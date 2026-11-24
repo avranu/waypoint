@@ -11,7 +11,6 @@ import (
 // suggestion waits for a person (WP-382, WP-ADR50).
 func TestSuggestGoals(t *testing.T) {
 	e := newEnv(t)
-	// s.LLM is set before any task: a background screen reads it, and quiesceGoals does not wait for that read.
 	llm := &fakeLLM{}
 	e.s.LLM = llm
 	p := e.project(e.admin, "Atlas", "")
@@ -48,7 +47,7 @@ func TestSuggestGoals(t *testing.T) {
 		},
 	}
 	raw, _ := json.Marshal(ans)
-	e.s.quiesceGoals(t) // Let background goal passes finish first, so they do not take the canned answer set below.
+	e.s.quiesceGoals(t)
 	llm.set(string(raw))
 	if err := e.s.EnsureDefaultAI(e.ctx, "http://opencode:4096", "", "opencode/big-pickle"); err != nil {
 		t.Fatal(err)
@@ -61,7 +60,6 @@ func TestSuggestGoals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A background safety screen can ask the model at any point here, so the counts below cover only the goals prompt.
 	const goalsPrompt = "Tasks people wrote that no goal covers yet"
 	prompt := ""
 	if asked := llm.with(goalsPrompt); len(asked) > 0 {
@@ -126,7 +124,6 @@ func TestSuggestGoals(t *testing.T) {
 	if n, _ := e.s.GetDesign(e.ctx, e.admin, how.ID); n.Title != "Travellers find any route as they type" {
 		t.Errorf("after approve: %q", n.Title)
 	}
-	// The count leaves out safety screens and the background meaning judgements, which ask the model on their own.
 	const screenPrompt = "Screen task "
 	asked := func() int {
 		n := 0

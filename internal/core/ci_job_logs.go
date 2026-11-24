@@ -1,7 +1,5 @@
 package core
 
-// Waypoint holds the forge token, so agents read job logs through it, including for pushes to main, which have no pull request.
-
 import (
 	"context"
 	"errors"
@@ -38,8 +36,6 @@ func (c *httpForgeClient) ActionRunsAt(ctx context.Context, f *Forge, repo, sha 
 		return nil, ErrNotFound
 	}
 	if len(sha) == 40 {
-		// Every page: a head with 50 newer skipped runs keeps an older
-		// failed run on page two, and the run that counts needs them all.
 		var out []ActionRun
 		for page := 1; ; page++ {
 			if page > fullSHARunPages {

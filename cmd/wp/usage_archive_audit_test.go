@@ -85,7 +85,7 @@ func TestArchiveRedactionOfSecretNamedKeys(t *testing.T) {
 		{`{"secret":{"a":"xx","b":{"c":["yy"]},"n":5},"o":"keep it"}`, `{"secret":{"a":"***","b":{"c":["***"]},"n":5},"o":"keep it"}`},
 		{`{"secret":["a"],"other":"keep it"}`, `{"secret":["***"],"other":"keep it"}`},
 		{`{"usage":{"input_tokens":12,"output_tokens":3},"k":"v"}`, `{"usage":{"input_tokens":12,"output_tokens":3},"k":"v"}`},
-		{`{"password":12345678}`, `{"password":12345678}`}, // numbers are left: input_tokens lives under a key named token
+		{`{"password":12345678}`, `{"password":12345678}`},
 	}
 	for _, c := range cases {
 		out, ok := redactTranscriptLineWith([]byte(c.in+"\n"), nil)
@@ -760,7 +760,7 @@ func TestUsageTranscriptFileCommand(t *testing.T) {
 	dir := fixtureDir(t)
 	archiveSync(t, e, dir)
 	want := archived(t, e, me, "sess1", "main")
-	person, _, err := e.svc.CreateToken(context.Background(), me, core.TokenSpec{Name: "person"}) // reading is for people, not agents
+	person, _, err := e.svc.CreateToken(context.Background(), me, core.TokenSpec{Name: "person"})
 	if err != nil {
 		t.Fatal(err)
 	}

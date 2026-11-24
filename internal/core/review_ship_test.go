@@ -172,7 +172,6 @@ func TestShipReviewedCheckPatience(t *testing.T) {
 	if arm == "" {
 		t.Error("no arm recorded")
 	}
-	// An unchecked rejection asks for another round, so the pull request waits for it unless the arm says enough.
 	got := e.rounds()
 	t.Logf("arm %s next %d rounds %q opened %d", arm, next, got, len(e.g.created))
 	if arm == AgainReview && (next == 0 || len(got) != 2 || got[1] != RoundPending) {
@@ -316,8 +315,6 @@ func TestShipResumesAfterTheProcessDiedWithThePROpen(t *testing.T) {
 	if len(e.g.created) != 1 || e.round(r1).state != RoundDone {
 		t.Fatalf("setup: %d pull requests, round %+v", len(e.g.created), e.round(r1))
 	}
-	// As if the process died before endRoundReviewed and endHeldRun (the
-	// ship_done mark is made in the write that ends the held run).
 	if _, err := e.s.db.W.Exec(`UPDATE work_log SET state = 'running', ended_at = NULL, read_state = 'pending', before_pr = json_remove(before_pr, '$.ship_done') WHERE id = ?`, r1); err != nil {
 		t.Fatal(err)
 	}
@@ -360,8 +357,6 @@ func TestShipNotAroundADisagreeingCheckOfADoneRound(t *testing.T) {
 	if _, err := e.s.db.W.Exec(`UPDATE work_log SET state = 'done', read_state = 'done', ended_at = 1 WHERE id = ?`, r1); err != nil {
 		t.Fatal(err)
 	}
-	// No live step carries the round: the sweep is what decides it (a step
-	// that waits on it would hold the pull request on its own).
 	if _, err := e.s.db.W.Exec(`UPDATE autopilot_steps SET state = 'stopped' WHERE review_id = ?`, r1); err != nil {
 		t.Fatal(err)
 	}

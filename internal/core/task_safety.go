@@ -15,8 +15,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Agent-written task text no person reviewed is screened before an agent takes it; a model that fails leaves the task pending, never clear.
-
 // Screen verdicts.
 const (
 	SafetyPending = "pending"
@@ -29,7 +27,7 @@ const (
 	screenRetry      = 5 * time.Minute
 	screenRetryCap   = 24 * time.Hour
 	screenSweepBatch = 20
-	screenLost       = 15 * time.Minute // a pending screen this old with no attempt was lost (a restart)
+	screenLost       = 15 * time.Minute
 )
 
 // screenFlags are what the model may name; any of them holds a task but the
@@ -133,8 +131,6 @@ func (s *Service) screenText(ctx context.Context, q queryer, issueID int64) (*sc
 		_, _ = fmt.Fprintf(h, "%s\x00%s", in.title, in.desc)
 	}
 	if in.lineage != "" {
-		// Only a held chain marks the hash, so the rest keep their verdicts;
-		// its depth is in it, so the stored reason follows the chain.
 		_, _ = fmt.Fprintf(h, "\x00%s", in.lineage)
 	}
 	for rows.Next() {
@@ -370,8 +366,6 @@ func (s *Service) decideClear(ctx context.Context, key string, in *screenInput) 
 		}
 		return ""
 	}
-	// Doubt on a guarded flag goes to the chat model too: its flag stays on
-	// the screen for whoever reads it, and the drill grades it (WP-837).
 	for _, f := range screenFlags {
 		if ans[f].Noul >= screenSureClear {
 			return ""
@@ -385,8 +379,6 @@ func (s *Service) decideClear(ctx context.Context, key string, in *screenInput) 
 // (task_safety_drill.go) asks the same way.
 func (s *Service) screenByModel(ctx context.Context, key string, in *screenInput) (screenAnswer, string, error) {
 	var ans screenAnswer
-	// Both calls or neither: a screen that spends the decision model's
-	// request and then must wait for the chat model's would repeat it.
 	if w := s.screenAIWait(ctx); w != nil {
 		return ans, "", w
 	}
@@ -494,9 +486,6 @@ func (s *Service) runScreen(ctx context.Context, issueID int64) error {
 	}
 	if in.hash == "" {
 		if in.template {
-			// Nothing an agent wrote is left to read (a template task, or one
-			// whose agents' comments a person reviewed since): say so, or the
-			// sweep takes it again every minute.
 			_, err := s.db.W.ExecContext(ctx, `UPDATE task_safety SET text_hash = '', verdict = ?, flags = '[]', rules = '[]', reason = ?, model = '', error = '', attempts = 0, updated_at = ? WHERE issue_id = ? AND text_hash = ''`,
 				SafetyClear, templateReason, s.nowMS(), issueID)
 			return err
@@ -510,7 +499,7 @@ func (s *Service) runScreen(ctx context.Context, issueID int64) error {
 		return err
 	}
 	if cat == CatDone || cat == CatCanceled || draft {
-		return nil // no agent takes it; reopening or publishing screens it
+		return nil
 	}
 	now := s.nowMS()
 	var cur struct {
@@ -523,12 +512,9 @@ func (s *Service) runScreen(ctx context.Context, issueID int64) error {
 		return err
 	}
 	if cur.hash == in.hash && cur.verdict == SafetyPending && cur.attempts > 0 && now < cur.at+screenBackoff(cur.attempts).Milliseconds() {
-		// A failed screen of this text waits out its backoff whoever asks:
-		// a queue read must not spend a request the sweep holds back.
 		return nil
 	}
 	if cur.hash == in.hash && cur.verdict != SafetyPending {
-		// Bump updated_at even when only status or rank changed, or the sweep's NOT EXISTS check keeps selecting this issue.
 		_, err := s.db.W.ExecContext(ctx, `UPDATE task_safety SET updated_at = ? WHERE issue_id = ? AND text_hash = ?`, now, issueID, in.hash)
 		return err
 	}
@@ -614,11 +600,8 @@ func (s *Service) IssueSafety(ctx context.Context, q queryer, issueID int64) (*T
 		ts.Current = true
 		return ts, nil
 	case cfgErr != nil:
-		// Can't tell whether a model is set up: don't let the rules alone
-		// clear the text; keep it pending.
 		return &TaskSafety{Verdict: SafetyPending}, nil
 	case !configured:
-		// With no model configured the rules decide at once, without waiting on a pending row a background screen is still writing.
 		rules := in.rules()
 		ts = &TaskSafety{Verdict: screenVerdict(rules, nil), Rules: rules, Reason: strings.Join(rules, "; "), At: s.now(), Current: true}
 		return ts, nil
@@ -666,7 +649,7 @@ func screenBackoff(attempts int) time.Duration {
 // (screenAllowance). Each task's retry time is spread by its number, so
 // they don't fall due together.
 func (s *Service) sweepScreens(ctx context.Context) {
-	_ = s.gatewayParked(ctx, s.gatewayID(ctx)) // a parked key's usage is read again now and then
+	_ = s.gatewayParked(ctx, s.gatewayID(ctx))
 	batch := s.screenAllowance(ctx)
 	if batch <= 0 {
 		jobSkip(ctx, "the models that screen tasks are waiting out a limit")

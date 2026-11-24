@@ -1,7 +1,5 @@
 package core
 
-// a value the transcript did not carry counts as unknown, never 0; a figure worked out from timing is labelled inferred
-
 import (
 	"context"
 	"database/sql"
@@ -288,8 +286,6 @@ func (s *Service) SessionFacts(ctx context.Context, actor *Actor, q FactsQuery) 
 		for _, u := range uids {
 			allowed[u] = true
 		}
-		// Every task's trace in a session bounds the others: the stretch after
-		// this task's trace belongs to whichever task was taken next.
 		starts := map[string][]int64{}
 		for _, t := range traces {
 			if !everyone && !allowed[t.UserID] {
@@ -455,7 +451,7 @@ func (s *Service) factsUntimed(ctx context.Context, scopes []factScope) (int, er
 		w, args := factScope{userID: sc.userID, machine: sc.machine, session: sc.session}.where("")
 		for _, tbl := range factTables {
 			if tbl == "fact_settings" {
-				continue // a setting change keeps near_at: it is placed by the time before it
+				continue
 			}
 			var n int
 			// #nosec G202 -- tbl is a constant from factTables, w is built from fixed conditions; values are bound

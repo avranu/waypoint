@@ -5,8 +5,6 @@ import (
 	"strings"
 )
 
-// The audit log keeps decisions (reviews, delegations, control, settings, access) across projects; issue history keeps field changes.
-
 // Audit categories.
 const (
 	AuditApproval   = "approval"
@@ -73,7 +71,7 @@ func auditable(a *Actor, e AuditEntry) bool {
 // Waypoint's own tables, or a forge's report).
 func (s *Service) audit(ctx context.Context, actor *Actor, e AuditEntry) {
 	if !auditable(actor, e) {
-		return // and no write: Waypoint's own setup may call this mid-transaction
+		return
 	}
 	if err := s.write(ctx, actor, func(t *tx) error { t.audit(e); return nil }); err != nil {
 		s.log.ErrorContext(ctx, "record audit entry", "action", e.Action, "err", err)

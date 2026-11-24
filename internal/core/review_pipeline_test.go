@@ -227,8 +227,6 @@ func TestVerifyNewContinuesPastTheGateway(t *testing.T) {
 	if len(b) != 2 || b[1]["model"] != "free" || b[1]["fallbacks"] != nil {
 		t.Errorf("asked %d times, last %v then %v", len(b), b[len(b)-1]["model"], b[len(b)-1]["fallbacks"])
 	}
-	// A route answers as one of its own models: which of the request's
-	// models that was is unknown, so all of them count as asked.
 	g.mu.Lock()
 	g.served = "groq/openai/gpt-oss-120b"
 	g.mu.Unlock()

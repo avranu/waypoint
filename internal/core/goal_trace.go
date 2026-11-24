@@ -11,8 +11,6 @@ import (
 	"time"
 )
 
-// Grounding is computed by code alone, never a model: an approved goal first, then the weakest edge (person over agent over guess), then fewest hops.
-
 // Groundings, best first.
 const (
 	GroundPersonGoal    = "person_goal"
@@ -161,7 +159,6 @@ func loadGoalGraph(ctx context.Context, q queryer) (*goalGraph, error) {
 		}
 	}
 	rows.Close()
-	// A person's 'intent' answer to a drift flag stands behind the flagged tasks.
 	rows, err = q.QueryContext(ctx, `SELECT fi.issue_id FROM goal_drift_flag_issues fi JOIN goal_drift_flags f ON f.id = fi.flag_id WHERE f.answer = 'intent'`)
 	if err != nil {
 		return nil, err
@@ -216,7 +213,6 @@ func loadGoalGraph(ctx context.Context, q queryer) (*goalGraph, error) {
 			g.goalScopes[pid] = true
 		}
 		if parent != 0 {
-			// A note's place is part of the text a person approved.
 			parents = append(parents, parentRow{gnode{KDesign, id}, gnode{KDesign, parent}, approved})
 		}
 		if reqIssue != 0 {
@@ -251,7 +247,6 @@ func loadGoalGraph(ctx context.Context, q queryer) (*goalGraph, error) {
 		}
 		g.add(p.child, gedge{to: p.parent, basis: b, kind: kind})
 	}
-	// A note written for a person's task traces to that task as the person's request, though nobody approved the note.
 	for _, r := range requests {
 		g.add(gnode{KDesign, r.note}, gedge{to: gnode{KIssue, r.issue}, basis: basisPerson, kind: edgeRequested})
 	}
@@ -339,7 +334,6 @@ func loadGoalGraph(ctx context.Context, q queryer) (*goalGraph, error) {
 		case e.basis == basisPerson:
 			e.by = r.by
 		}
-		// A person's no binds agents: only a person's own link brings a dismissed pair back.
 		if e.basis != basisPerson && dismissed[[2]gnode{r.src, r.dst}] {
 			continue
 		}
@@ -519,15 +513,13 @@ func (g *goalGraph) scoped(project int64) bool {
 // goalState coalesces recomputes: one runs at a time, and a change while
 // it runs starts one more after it.
 type goalState struct {
-	mu sync.Mutex
-	// store serializes storeGoalTraces: a pass that read the graph before a link was made must not overwrite rows of a pass that read after it.
-	store    sync.Mutex
-	running  bool
-	dirty    bool
-	hasGoals bool
-	checked  bool
-	idle     chan struct{}
-	// The goals model's judgements run on their own, so a slow model never holds up a recompute or goalsSettle.
+	mu                       sync.Mutex
+	store                    sync.Mutex
+	running                  bool
+	dirty                    bool
+	hasGoals                 bool
+	checked                  bool
+	idle                     chan struct{}
 	judging, judgeDirty      bool
 	judgeIdle                chan struct{}
 	judgeTimer               *time.Timer
@@ -537,9 +529,8 @@ type goalState struct {
 	asking                   map[int64]bool
 	drifting                 bool
 	driftIdle                chan struct{}
-	// Per Service, so a test can shorten goalsSettle without changing other Services (0: goalsSettleWait).
-	settleWait  time.Duration
-	beforeStore func(context.Context)
+	settleWait               time.Duration
+	beforeStore              func(context.Context)
 }
 
 // goalsSettleWait caps goalsSettle: a view waits this long for a recompute,
@@ -595,7 +586,6 @@ func (s *Service) onGoalEvent(e *Event) {
 	s.goals.mu.Lock()
 	has := s.goals.hasGoals || !s.goals.checked
 	s.goals.mu.Unlock()
-	// Until a goal exists nothing is traced, except a design-note change, which may be the first goal.
 	if !has && (e.Kind != EvKnowledge || e.Data["type"] != KDesign) {
 		return
 	}
@@ -615,7 +605,6 @@ func (s *Service) goalsChanged() {
 	s.goals.idle = idle
 	s.goals.mu.Unlock()
 	s.goBG(func() {
-		// Close idle in the same critical section that clears running, so a wait never sees one without the other.
 		for {
 			if s.bgCtx.Err() != nil {
 				s.goals.mu.Lock()
@@ -631,7 +620,6 @@ func (s *Service) goalsChanged() {
 					s.Hub.Publish(&Event{Kind: EvGoalsTraced})
 				}
 			})
-			// Meaning judgements are asked here, outside any write transaction, and only for text whose judgement is missing or stale.
 			s.judgementsChanged()
 			s.goals.mu.Lock()
 			if !s.goals.dirty {
@@ -666,7 +654,6 @@ func (s *Service) RecomputeGoalTraces(ctx context.Context) (int, error) {
 }
 
 func (s *Service) storeGoalTraces(ctx context.Context) (int, error) {
-	// Read, compare and write under one lock: a waiting pass must start from what the one before it wrote.
 	s.goals.store.Lock()
 	defer s.goals.store.Unlock()
 	var goals int
@@ -732,7 +719,6 @@ func (s *Service) storeGoalTraces(ctx context.Context) (int, error) {
 			drop = append(drop, n)
 		}
 	}
-	// Finished tasks keep the grounding they had when finished, for the week's drift; one finished since the last snapshot takes its current grounding.
 	var unsnapped int
 	if err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM issues i JOIN statuses st ON st.id = i.status_id
 		WHERE st.category = 'done' AND i.resolved_at IS NOT NULL

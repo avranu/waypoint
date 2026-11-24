@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-// Cost is API-equivalent, not an invoice: subscriptions are not billed per token. Prices are per million tokens, matched to a model id by longest prefix; a price of 0 means unknown.
-
 // ModelPrice is one row of the price table.
 type ModelPrice struct {
 	Model        string     `json:"model"` // an id prefix: claude-opus-5-5
@@ -118,7 +116,7 @@ func (s *Service) DeleteModelPrice(ctx context.Context, actor *Actor, model stri
 	if err := requireUsageAdmin(actor); err != nil {
 		return err
 	}
-	model = strings.TrimSpace(model) // as SetModelPrice stores it
+	model = strings.TrimSpace(model)
 	return s.write(ctx, actor, func(t *tx) error {
 		r, err := t.ExecContext(ctx, `DELETE FROM model_prices WHERE model = ?`, model)
 		if err != nil {

@@ -8,8 +8,6 @@ import (
 	"time"
 )
 
-// Listed so a project whose sessions are busy doesn't read as idle on the Autopilot tab.
-
 // AutopilotOpenSession is one of the person's open sessions in a project
 // that autopilot isn't doing anything with.
 type AutopilotOpenSession struct {
@@ -172,14 +170,12 @@ func (s *Service) StartAutopilotSession(ctx context.Context, a *Actor, sessionID
 		if err != nil {
 			return err
 		}
-		// Starting by hand clears an earlier /wp stop, which had left the session alone.
 		if _, err := t.ExecContext(ctx, `UPDATE agent_sessions SET left_alone_at = NULL WHERE id = ?`, x.ID); err != nil {
 			return err
 		}
 		if err := s.putStep(ctx, t, x, pid.Int64, run, now, StepDue, "", "you started it", now, 0); err != nil {
 			return err
 		}
-		// Starting by hand skips the grace and merge waits, as Start now does: created_at is backdated by the merge-wait maximum.
 		if _, err := t.ExecContext(ctx, `UPDATE autopilot_steps SET created_at = ?, attempts = 0, asked = 1 WHERE session_id = ? AND state = ?`, now-autopilotMergeWaitMax.Milliseconds(), x.ID, StepDue); err != nil {
 			return err
 		}

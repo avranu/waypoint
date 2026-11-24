@@ -1,5 +1,3 @@
-// Everything from the assistant is untrusted agent text: render it as text or with renderMarkdown(…, { untrusted: true }), never as HTML.
-
 import { queryOptions, useMutation, useQueryClient } from '@tanstack/react-query'
 import { ApiError, api, enc, qs } from './api'
 import type { UserRef } from './types'

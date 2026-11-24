@@ -13,8 +13,6 @@ import (
 	"time"
 )
 
-// Each doctor lives with its command; addDoctorTools adds the `wp doctor NAME` spelling, so a new doctor needs no registering here.
-
 var doctorCmd = &command{
 	name: "doctor", group: "Setup", args: "[TOOL] [FLAGS]",
 	summary: "health checks: this machine's setup, CI, the sandbox",
@@ -46,8 +44,6 @@ func addDoctorTools() {
 }
 
 func cmdDoctor(c *cli, args []string) error {
-	// dispatch found no tool first, but flags may come before it: wp doctor
-	// --json ci.
 	for i, a := range args {
 		if t := doctorCmd.sub(a); t != nil {
 			return c.dispatch(t, slices.Delete(slices.Clone(args), i, i+1))
@@ -191,7 +187,6 @@ func checkVersion(add addCheck, sv string) {
 	case !isRelease(sv) || !isRelease(version):
 		add(checkInfo, "wp version", "%s, a development build; the server runs %s", version, sv)
 	case slices.Compare(releaseParts(version), releaseParts(sv)) > 0:
-		// wp upgrade would only take this machine back to the server's.
 		add(checkInfo, "wp version", "%s, newer than the server's %s", version, sv)
 	default:
 		add(checkWarn, "wp version", "%s, the server runs %s: wp upgrade", version, sv)

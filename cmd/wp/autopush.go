@@ -16,20 +16,18 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Pushes only a task's own committed work, on release, session end or the autopilot sweep: never forced, never the default or a shared branch, never onto a branch with an open pull request; a detached head goes to wp-rescue/KEY.
-
 const (
 	autoPushLimit  = 10 * time.Minute
-	autoPushIdle   = 4 * time.Hour // must equal the server's strandedIdle (internal/core/stranded.go)
+	autoPushIdle   = 4 * time.Hour
 	rescuePrefix   = "wp-rescue/"
 	autoPushRemote = "origin"
-	autoAskLimit   = time.Minute // ls-remote: a forge that stalls doesn't hold the push slot
+	autoAskLimit   = time.Minute
 	autoSlotLimit  = 30 * time.Minute
 )
 
 // Seams for tests.
 var (
-	autoPushSettle = 5 * time.Second // for the session's other end hooks to finish
+	autoPushSettle = 5 * time.Second
 	autoPushSleep  = time.Sleep
 	procList       = func() ([]procDir, error) { return procDirsUnder("/proc") }
 	// pushExe is the wp the detached push runs: never a test binary, which
@@ -328,15 +326,12 @@ func autoPush(ctx context.Context, top, ref, key string, prs autoPushPRs) autoPu
 	case why != "":
 		target, out.Rescue = rescuePrefix+key, true
 	case key == "" || !branchCarries(branch, []string{key}):
-		// Only the task's own branch: a person's branch in the same checkout stays put.
 		out.Skip = "branch " + branch + " isn't a task's"
 		if key != "" {
 			out.Skip = "branch " + branch + " doesn't name " + key
 		}
 		return out
 	}
-	// A branch already on the forge may carry an open pull request: pushing
-	// would change what it merges, and set off its CI and reviews.
 	ask, stop := context.WithTimeout(ctx, autoAskLimit)
 	there, err := tidyGit(ask, top, "ls-remote", "--heads", autoPushRemote, "refs/heads/"+target)
 	stop()
@@ -357,13 +352,10 @@ func autoPush(ctx context.Context, top, ref, key string, prs autoPushPRs) autoPu
 			return out
 		}
 	} else if slices.Contains(prs.done, target) {
-		// Its pull request was merged (a squash leaves the commits on no
-		// remote) or closed: making the branch again would only start CI.
 		out.Skip = "branch " + target + "'s pull request is merged or closed"
 		return out
 	}
 	out.Branch = target
-	// The pre-push hooks get their own time, not what is left of the caller's: a sweep's few minutes would kill them midway.
 	push, cancel := context.WithTimeout(context.WithoutCancel(ctx), autoPushLimit)
 	defer cancel()
 	if _, err := tidyGit(push, top, "push", "--quiet", autoPushRemote, head+":refs/heads/"+target); err != nil {
@@ -393,7 +385,7 @@ func gitBusy(ctx context.Context, top string) string {
 	return ""
 }
 
-var userinfoRE = lazyre.New(`([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s]*@`) // to the last @: a password may hold one
+var userinfoRE = lazyre.New(`([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s]*@`)
 
 // pushErrorText is the line of git's output that says why, with no
 // credentials in it and at most 200 characters.
@@ -659,8 +651,6 @@ func hookClaudePush(c *cli, args []string) error {
 		return nil
 	}
 	defer hold.release()
-	// Read after the slot: a push before this one may have taken minutes,
-	// and a session may have started in the checkout meanwhile.
 	procs, err := procList()
 	if err != nil {
 		return nil

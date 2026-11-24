@@ -60,7 +60,7 @@ for (const [width, scheme] of looks([
 
   await section.getByLabel("Early, at a keep-warm ping").fill("40");
   ok(await section.getByRole("alert").isVisible(), `${tag} telling early after the stall time is refused`);
-  await page.waitForTimeout(2800); // Autosave fires 900 ms after typing pauses; wait well past it so a save that should not happen has time to show.
+  await page.waitForTimeout(2800);
   ok(!(await api("GET", "/stalled-jobs/policy")).custom, `${tag} and isn't saved`);
   await section.getByLabel("Early, at a keep-warm ping").fill("8");
   await quiet.fill("20");
@@ -73,13 +73,12 @@ for (const [width, scheme] of looks([
   let writes = 0;
   const count = (r) => r.method() !== "GET" && /stalled-jobs|\/projects\/[^/]+$/.test(r.url()) && writes++;
   page.on("request", count);
-  await page.waitForLoadState("networkidle"); // nothing still loading for the reload to cut off
+  await page.waitForLoadState("networkidle");
   await page.reload();
   await section.getByLabel("Stall after").waitFor();
-  await page.waitForTimeout(2000); // past the 900 ms autosave pause
+  await page.waitForTimeout(2000);
   ok(writes === 0, `${tag} opening saved times sends no save (${writes})`);
   page.off("request", count);
-  // A default typed in by hand must not count as the reset; Use the default still has to hold.
   await section.getByLabel("Stall after").fill("15");
   await section.getByLabel("Early, at a keep-warm ping").fill("10");
   await uncustom("/stalled-jobs/policy");
@@ -87,7 +86,7 @@ for (const [width, scheme] of looks([
   await quietIs(25);
   await section.getByRole("button", { name: "Use the default" }).click();
   await uncustom("/stalled-jobs/policy");
-  await page.waitForTimeout(2000); // past the 900 ms autosave pause
+  await page.waitForTimeout(2000);
   pol = await api("GET", "/stalled-jobs/policy");
   ok(!pol.custom && (await section.getByLabel("Stall after").inputValue()) === "15", `${tag} "Use the default" holds: ${JSON.stringify(pol)}`);
   await section.getByLabel("Early, at a keep-warm ping").fill("8");

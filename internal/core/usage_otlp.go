@@ -15,23 +15,6 @@ import (
 	"time"
 )
 
-// OTLP as a fourth usage source (WP-D20, WP-26). Claude Code exports
-// api_request, tool_result and tool_decision events over OTLP/HTTP; they
-// land in the tables the transcripts fill.
-//
-// Two rules keep the numbers true:
-//   - No double counting. A machine may run `wp usage sync` and export OTel
-//     at once. Rows carry `via` ('transcript' or 'otlp'); a session that has
-//     transcript rows ignores OTLP events, and a transcript chunk arriving
-//     for a session deletes the OTLP rows it already had. Sessions are keyed
-//     by Claude Code's session id, which both sources share.
-//   - Retries are free. Each event is hashed (time plus the attributes
-//     listed in otlpKeep) into otlp_seen; a hash seen before is dropped.
-//
-// Only the attributes in otlpKeep are ever read. Prompts, replies, tool
-// input and error text are never stored, even when Claude Code is told to
-// export them (OTEL_LOG_USER_PROMPTS, OTEL_LOG_TOOL_DETAILS).
-
 // OTLPEvent is one log record, flattened: attributes of the resource and of
 // the record together (the record's win).
 type OTLPEvent struct {
@@ -314,7 +297,6 @@ func (t *tx) applyOTLP(ctx context.Context, uid int64, machine, session, name st
 			detail = parts[2]
 		}
 		for _, k := range keys {
-			// the call never ran, so it counts as a refusal, not a call
 			if err := t.addOTLPTool(ctx, uid, e.At, machine, session, repo, k, 0, 0, 1, 0, 0); err != nil {
 				return err
 			}

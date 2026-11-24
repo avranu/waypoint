@@ -42,7 +42,6 @@ func TestBabysitNotifyAndFailuresStillWake(t *testing.T) {
 	if res := be.hookAs("Stop"); len(res.Messages) != 1 || !strings.HasPrefix(res.Text, "Waypoint's babysitter: Waypoint gave up") {
 		t.Fatalf("a failure didn't reach the stop: %q", res.Text)
 	}
-	// A merge notice asked for with notify is delivered just before the agent's prompt cache cools, not at once.
 	b2, err := be.s.StartBabysit(be.ctx, be.agent, pr.ID, BabysitInput{Notify: true})
 	if err != nil || !b2.Notify || b2.ID != b.ID {
 		t.Fatalf("start with notify = %+v %v", b2, err)
@@ -51,7 +50,7 @@ func TestBabysitNotifyAndFailuresStillWake(t *testing.T) {
 	if res := be.hookAs("Stop"); len(res.Messages) != 0 {
 		t.Fatalf("a requested merge notice continued a stop: %q", res.Text)
 	}
-	be.s.Wait() // the step StartBabysit kicked off reads the clock
+	be.s.Wait()
 	be.setClock(be.clockNow().Add(cacheWarm))
 	be.runner(be.admin, "m1", nil)
 	be.s.CheckBabysits(be.ctx)

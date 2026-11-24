@@ -1,5 +1,3 @@
-// Schedule times are wall-clock in Hermes's own timezone, which need not be the browser's; parsing mirrors Hermes's parse_schedule.
-
 /** Hermes's timezone: an IANA name from its config, else a fixed offset (minutes east of UTC) read off a job's timestamps, else the browser's. */
 export interface Zone {
   iana?: string
@@ -65,7 +63,6 @@ function fromWall(y: number, mo: number, d: number, h: number, mi: number, z: Zo
   if (z.offset !== undefined && !z.iana)
     return new Date(Date.UTC(y, mo - 1, d, h, mi) - z.offset * 60_000)
   if (!z.iana) return new Date(y, mo - 1, d, h, mi)
-  // One correction can land on the wrong side of a DST edge; the second pass settles it.
   const want = Date.UTC(y, mo - 1, d, h, mi)
   let t = want
   for (let i = 0; i < 2; i++) {
@@ -346,7 +343,7 @@ function parseCron(expr: string): Cron | null {
 
 function checkCron(expr: string): Parsed {
   const n = expr.trim().split(/\s+/).length
-  if (n === 6) return { kind: 'cron', expr } // a seconds field: Hermes takes it; we only describe five
+  if (n === 6) return { kind: 'cron', expr }
   if (!parseCron(expr))
     return { kind: 'error', error: `“${expr}” isn't a cron expression Hermes accepts` }
   return { kind: 'cron', expr }
@@ -360,7 +357,6 @@ export function cronNext(expr: string, z: Zone, from = new Date(), n = 3): Date[
   const start = wall(from, z)
   const hours = [...c.hour.values].sort((a, b) => a - b)
   const minutes = [...c.minute.values].sort((a, b) => a - b)
-  // The search stops five years out, so a 29 February eight years away (2096 to 2104) can return fewer than n.
   const day = new Date(Date.UTC(start.y, start.mo - 1, start.d))
   for (let i = 0; i < 366 * 5 && out.length < n; i++, day.setUTCDate(day.getUTCDate() + 1)) {
     const y = day.getUTCFullYear()

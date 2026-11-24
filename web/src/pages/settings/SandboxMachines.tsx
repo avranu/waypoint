@@ -1,5 +1,3 @@
-// Pausing a machine's sandboxing loosens it, so it needs the password and a reason.
-
 import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useMutation, useQuery } from '@tanstack/react-query'

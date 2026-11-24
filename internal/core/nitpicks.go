@@ -148,7 +148,7 @@ func nitpickCandidate(rc *PRReviewComment, gateOn bool, gateSev string) bool {
 		return false
 	}
 	if scorerClipped(rc.Body, nitpickTextMax) {
-		return false // the scorer would read only its start, so it can't vouch for the rest
+		return false
 	}
 	return rc.FindingID == 0 || !gateOn || !blocksGate(cmp(sev, "medium"), gateSev)
 }
@@ -177,7 +177,7 @@ func (s *Service) nitpickBot(ctx context.Context, q queryer, rc *PRReviewComment
 		}
 		m := relayedAuthorRE.FindStringSubmatch(strings.TrimSpace(rc.Body))
 		if m == nil {
-			return false // A relayed comment with no named author is never scored.
+			return false
 		}
 		who = m[1]
 	}
@@ -299,7 +299,7 @@ func (s *Service) waiveNitpicks(ctx context.Context, b *Babysit, pr *PullRequest
 	var last string
 	err = s.db.R.QueryRowContext(ctx, `SELECT arm FROM nitpick_decisions WHERE pr_id = ? AND set_key = ? ORDER BY id DESC LIMIT 1`, pr.ID, setKey).Scan(&last)
 	if err == nil {
-		return false // A set already decided is not decided again; an edited comment makes a new set.
+		return false
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return false
@@ -330,7 +330,7 @@ func (s *Service) waiveNitpicks(ctx context.Context, b *Babysit, pr *PullRequest
 		var wait *aiWaitError
 		switch {
 		case errors.Is(err, errNoDecider), errors.As(err, &wait):
-			return false // No decider, or a wait, leaves the set undecided; a later step asks again.
+			return false
 		case err != nil:
 			s.log.Info("decision model failed; review comments go to a round", "pr", pr.ID, "err", err)
 			arm = NitpickUnscored
@@ -515,7 +515,6 @@ func (s *Service) sweepNitpicks(ctx context.Context, prID int64) (int, error) {
 			}
 		}
 		moved = len(open)
-		// Never queued, so there is no old state to report; auditEnded settles it.
 		t.emit(&Event{Kind: EvCodeAudit, ProjectID: projectID, New: AuditDone, Data: map[string]any{"audit": auditID, "title": title}})
 		return nil
 	})

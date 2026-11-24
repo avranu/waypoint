@@ -1,5 +1,3 @@
-// Agents can't see drafts until a person publishes them.
-
 import { Globe, PenLine } from 'lucide-react'
 import clsx from 'clsx'
 import { Badge } from '@/components/ui/misc'

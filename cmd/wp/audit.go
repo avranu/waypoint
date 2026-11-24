@@ -10,8 +10,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// The audit model runs read-only on the checkout and reports findings to Waypoint; audits are not the audit log.
-
 var auditCmd = &command{
 	name: "audit", aliases: []string{"audits"}, group: "Code and CI",
 	args:    "[pr|branch|commit|range|recent|repo] [TARGET] [FLAGS]",
@@ -410,8 +408,6 @@ func (a *auditView) criteria() string {
 	if a.MinSeverity != "" {
 		parts = append(parts, a.MinSeverity+" and worse")
 	}
-	// Only when it is the number in use: a check of marks and a review
-	// round's audit list every finding whatever max_findings holds.
 	if a.MaxFindings > 0 && (a.Shown == 0 || a.Shown == a.MaxFindings) {
 		parts = append(parts, fmt.Sprintf("shows %d findings at a time", a.MaxFindings))
 	}
@@ -434,7 +430,7 @@ func (a *auditView) asked(blocking bool) string {
 
 func auditRun(target string) func(c *cli, args []string) error {
 	return func(c *cli, args []string) error {
-		target := target // --since without a target sets it to recent: the copy keeps that to this call, not later calls of this closure.
+		target := target
 		fs := c.flags()
 		sf := addScopeFlags(fs)
 		repo := fs.String("repo", "", "`REPO` (owner/name), if the project has several")

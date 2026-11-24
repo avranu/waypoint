@@ -11,8 +11,6 @@ import (
 	"time"
 )
 
-// Nothing here loops: assessorBlocked allows one assessor round per head, and a parked babysit waits for an answer or a push.
-
 const (
 	// babysitStaleAfter is how long a babysit rests in needs_person before
 	// the watchdog steps in.
@@ -250,8 +248,6 @@ func (s *Service) refusedOutsideDiff(ctx context.Context, b *Babysit, pr *PullRe
 		return false
 	}
 	s.loadPRFiles(ctx, pr)
-	// No files at all is a diff not read right: a refusal's own round
-	// changed some.
 	if !pr.filesKnown || pr.tooLarge || len(pr.files) == 0 {
 		return false
 	}

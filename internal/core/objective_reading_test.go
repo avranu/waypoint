@@ -303,7 +303,6 @@ func TestObjectiveJudgeThatEndsWithoutAnAnswerIsRetried(t *testing.T) {
 			var retryAt int64
 			for try := 1; try <= objectiveReadTries; try++ {
 				if try > 1 {
-					// The wait doubles from when the failure was noticed (at once for a cancel, at the next look otherwise).
 					left := time.Duration(retryAt-o.clockNow().UnixMilli()) * time.Millisecond
 					if want := c.wait << (try - 2); left > want || left < want-time.Minute {
 						t.Fatalf("try %d is %v away, want %v", try, left, want)
@@ -384,7 +383,6 @@ func TestObjectiveRunnerAnswersThatCantBeUsedAreFailedTries(t *testing.T) {
 	answer(ObjectiveJobResult{Head: shaA, Reading: timed(3), Kept: []ObjectiveKept{{Command: "go test ./...", OK: true}, {Command: "rm -rf /", OK: true}}})
 	ob = o.obj(task.Key)
 	if ob.Phase != PhaseBlocked || ob.PhaseWhy != BlockedReading || ob.State != ObjectiveActive {
-		// An extra command is dropped, not rejected; a rejection would make this the third try.
 		t.Logf("an extra command: phase %q tries %d note %q", ob.Phase, ob.verifyTry, ob.PhaseNote)
 	}
 	if ob.Phase == PhaseBlocked {
@@ -456,7 +454,6 @@ func TestObjectiveRunnerLosingTheFeatureTakesNoReading(t *testing.T) {
 		t.Fatalf("a runner that can't read it: phase %q tries %d health %q", ob.Phase, ob.verifyTry, ob.Health)
 	}
 	withFeature(true)
-	// An answer from a runner that lost the feature before answering still counts.
 	c, _ := o.job()
 	withFeature(false)
 	raw, _ := json.Marshal(ObjectiveJobResult{Head: shaA, Reading: timed(3)})

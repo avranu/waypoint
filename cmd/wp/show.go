@@ -7,8 +7,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// A code that could name two things (R1: request R-1 or page R1) is looked up as each; wp show asks which only when more than one exists.
-
 // showTarget is one thing a code could name: its kind and the code as
 // that kind's command takes it.
 type showTarget struct {

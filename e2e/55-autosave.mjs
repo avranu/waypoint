@@ -66,7 +66,7 @@ for (const [width, scheme] of looks([
   await page.getByRole("button", { name: "Add a description…" }).click();
   await field.pressSequentially("First thoughts", { delay: 20 });
   ok((await save.count()) === 0, `${tag} the editor has no Save button`);
-  await page.waitForTimeout(2800); // Autosave waits 1800 ms after typing pauses (issue Description AUTOSAVE_MS); a shorter wait races it.
+  await page.waitForTimeout(2800);
   ok((await desc()) === "First thoughts", `${tag} a pause in typing saves`);
   await page.screenshot({ path: `${out}/saved-${tag}.png` });
 
@@ -77,7 +77,7 @@ for (const [width, scheme] of looks([
     (await field.evaluate((el) => (el.textContent ?? "").trim())) === "First thoughts and more",
     `${tag} a refresh mid-typing brings the text back`,
   );
-  await page.waitForTimeout(2800); // Autosave waits 1800 ms after typing pauses (issue Description AUTOSAVE_MS); a shorter wait races it.
+  await page.waitForTimeout(2800);
   ok(
     (await desc()) === "First thoughts and more",
     `${tag} the restored text autosaves`,
@@ -86,7 +86,7 @@ for (const [width, scheme] of looks([
   await field.press("Control+End");
   for (const t of [" one", " two", " three"]) {
     await field.pressSequentially(t, { delay: 10 });
-    await page.waitForTimeout(2800); // Autosave waits 1800 ms after typing pauses (issue Description AUTOSAVE_MS); a shorter wait races it.
+    await page.waitForTimeout(2800);
   }
   const hist = await api(`/issues/${issue.key}/history`);
   const edits = (hist.events ?? hist).filter(
@@ -107,7 +107,7 @@ for (const [width, scheme] of looks([
   await page.screenshot({ path: `${out}/failed-${tag}.png` });
   await page.unroute("**/api/v1/issues/*");
   await retry.click();
-  await page.waitForTimeout(2800); // Autosave waits 1800 ms after typing pauses (issue Description AUTOSAVE_MS); a shorter wait races it.
+  await page.waitForTimeout(2800);
   ok((await desc()).endsWith(" offline"), `${tag} retry saves it`);
 
   await field.pressSequentially("!");
@@ -142,7 +142,7 @@ for (const [width, scheme] of looks([
   await page.locator(".prose-wp").first().click({ position: { x: 5, y: 5 } });
   await body.press("Control+End");
   await body.pressSequentially(" More.", { delay: 10 });
-  await page.waitForTimeout(2800); // Autosave waits 1800 ms after typing pauses (issue Description AUTOSAVE_MS); a shorter wait races it.
+  await page.waitForTimeout(2800);
   const got = await api(`/pages/${pg.id}`);
   ok(got.body === "Start. More.", `${tag} a page body autosaves: ${JSON.stringify(got.body)}`);
 

@@ -10,8 +10,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Trace rows go with their issue (ON DELETE CASCADE) and are never pruned on a schedule; one small row per task.
-
 // UsageTrace is one task segment of one session, as uploaded.
 type UsageTrace struct {
 	Key          string      `json:"key"` // the task, as wp next printed it
@@ -154,7 +152,6 @@ func (t *tx) applyTraces(ctx context.Context, uid int64, machine string, traces 
 			uid, machine, r.Session, r.Seq).Scan(&oldID, &oldLast, &oldCalls, &oldEnded, &oldPre, &oldEdits, &oldFirst, &oldFiles)
 		switch {
 		case err == nil:
-			// A copy read again by a later parser may class calls differently, so it replaces what is stored.
 			first := int64(0)
 			if r.FirstEditAt != nil {
 				first = *r.FirstEditAt

@@ -17,8 +17,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/semantic"
 )
 
-// The ranker only reorders and thins what the blend shows; people decide only on shown pairs, so their decisions say nothing below the blend's line.
-
 const (
 	// rankerMinTrain: decisions from before the held-out month the fit
 	// needs; a few hundred, as WP-958 asked.
@@ -285,7 +283,6 @@ func (s *Service) decideRelationSuggestion(ctx context.Context, actor *Actor, re
 			return err
 		}
 		var related, recorded int
-		// Only a link the text does not name (named_in unset) blocks a dismissal; a text-named one can still be offered and dismissed.
 		if err := t.QueryRowContext(ctx, `SELECT count(*) FROM issue_relations WHERE ((source_id = ? AND target_id = ?) OR (source_id = ? AND target_id = ?))
 			AND named_in IS NULL`,
 			a.ID, b.ID, b.ID, a.ID).Scan(&related); err != nil {
@@ -606,7 +603,6 @@ func (s *Service) fitRelationRanker(ctx context.Context) (*rankerFit, error) {
 		fit.Note = "the blend ranks the held-out month as well or better"
 		return fit, nil
 	}
-	// The line comes from the held-out month, so the recall it keeps is out of sample.
 	var took []float64
 	for n, r := range test {
 		if r.y {

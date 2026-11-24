@@ -205,7 +205,6 @@ for (const [width, scheme] of looks([
   const text = await (await call("GET", `/trace?ref=${linked.key}&format=text`, undefined, agent)).text();
   ok(text.includes("Travellers find a route in one tap"), `${tag} the agent's trace names the goal: ${text.slice(0, 300)}`);
 
-  // The flag needs a forge and a model, so the page reads a mocked one; the route is real.
   const noFlag = await call("POST", "/goals/drift/999999/answer", { answer: "intent" });
   ok(noFlag.status() === 404, `${tag} an unknown flag is a 404 from the API: ${noFlag.status()}`);
   const byAgent = await call("POST", "/goals/drift/999999/answer", { answer: "intent" }, agent);

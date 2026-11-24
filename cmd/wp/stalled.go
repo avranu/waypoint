@@ -16,16 +16,14 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Reads /proc only and never signals or touches a job; older Waypoints get the 30-minute, 15-minute rule.
-
 const (
 	stallFloor    = 5 * time.Minute
 	stallMinAge   = 30 * time.Minute
 	stallQuiet    = 15 * time.Minute
 	stallTimeout  = time.Hour
 	stallEvery    = time.Minute
-	clockTicks    = 100 // USER_HZ: /proc's CPU times are in these on every Linux port Go supports
-	stallWorkCPU  = 20  // clock ticks (USER_HZ), not seconds as stallBurstCPU is
+	clockTicks    = 100
+	stallWorkCPU  = 20
 	stallBurstCPU = 10
 )
 
@@ -39,7 +37,7 @@ type procEntry struct {
 	cpu             uint64
 	io              uint64
 	ioKnown         bool
-	mine            bool // its fds are readable: this user's (or root's view)
+	mine            bool
 	outs            []string
 }
 
@@ -159,8 +157,6 @@ func parseProcStat(s string) *procEntry {
 		return nil
 	}
 	f := strings.Fields(s[end+1:])
-	// f[0] is field 3 (state): ppid 4, pgrp 5, utime 14, stime 15,
-	// cutime 16, cstime 17, starttime 22.
 	if len(f) < 20 {
 		return nil
 	}
@@ -305,7 +301,6 @@ func timeoutBound(cmd string) time.Duration {
 		}
 		main = append(main, c)
 	}
-	// A list or pipe at the top level runs outside timeout, so it is not bounded by it.
 	if len(main) != 1 || len(main[0].words) == 0 || filepath.Base(main[0].words[0]) != "timeout" {
 		return 0
 	}
@@ -475,7 +470,7 @@ func topAlternatives(re string) []string {
 		case c == '[':
 			class = true
 			if i+1 < len(re) && re[i+1] == ']' {
-				i++ // `[]…]`: the ] is in the class
+				i++
 			}
 		case c == '(':
 			depth++
@@ -515,8 +510,6 @@ func bracketFirst(re string) string {
 // ended). Empty when there is nothing to say.
 func pgrepSelfNudge(cmd string) string {
 	for _, u := range pgrepUses(cmd) {
-		// The shell's command line, near enough: the command follows
-		// `bash -c`, so an anchored pattern (^node) doesn't match it.
 		if !u.full || strings.ContainsRune(u.pattern, '\'') || !u.matches("/bin/bash -c "+cmd) {
 			continue
 		}
@@ -552,10 +545,10 @@ type stallWatch struct {
 	first    time.Time
 	moved    time.Time
 	prev     *jobSample
-	comeback map[string]int // Short-lived commands that began after an earlier look, counted by name: two or more starts of a listed poller mark a polling loop.
+	comeback map[string]int
 	watched  int
 	reported bool
-	sent     bool // with policy 2: a report was made for this spell even if it failed, so its end is reported too
+	sent     bool
 	due      time.Time
 	said     string
 }
@@ -586,9 +579,7 @@ type settledJob struct {
 
 // stallWatcher looks at a machine's background jobs.
 type stallWatcher struct {
-	jobs map[string]*stallWatch
-	// policy: 2 once Waypoint said it applies its stall policy; probed is
-	// when the runner last asked.
+	jobs    map[string]*stallWatch
 	policy  int
 	probed  time.Time
 	settled []settledJob
@@ -658,7 +649,7 @@ func (w *stallWatcher) look(t *procTable, stat func(string) (os.FileInfo, error)
 			sw.watched++
 			if progressed(sw.prev, cur) || waiter != "" {
 				sw.moved = t.at
-				if w.policy >= 2 && (sw.reported || sw.sent) { // sent: Waypoint heard of the spell even if a failed report is to be retried, so it settles too.
+				if w.policy >= 2 && (sw.reported || sw.sent) {
 					w.settle(sw, "progress")
 				}
 			}

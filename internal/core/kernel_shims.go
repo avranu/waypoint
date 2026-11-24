@@ -2,8 +2,6 @@ package core
 
 import "git.jmann.me/claude/waypoint/internal/core/kernel"
 
-// Aliases for names moved to package kernel; new code in core uses kernel directly.
-
 var (
 	ErrNotFound     = kernel.ErrNotFound
 	ErrForbidden    = kernel.ErrForbidden

@@ -188,7 +188,6 @@ func TestCIEvidence(t *testing.T) {
 	if sup.Count != 1 || sup.NoReason != 1 || len(sup.Added) != 1 || sup.Added[0].Kind != "nolint" || len(sup.Removed) != 1 || sup.Removed[0].Path != "internal/x/a.go" || len(sup.Scans) != 2 {
 		t.Errorf("second scan: %+v, want the nolint added, the nosec removed", sup)
 	}
-	// An older commit's job that ends later is counted but must not move the ledger back.
 	exec(`INSERT INTO ci_runs(forge_id, repo, number, workflow, event, ref, sha, status, created_at) VALUES (?, 'acme/app', 9, 'ci.yml', 'push', 'main', 'aaaa000', 'success', ?)`,
 		f.ID, e.clockNow().Add(-3*time.Hour).UnixMilli())
 	job(41, 9, "backend shard (1)", "push", "main", "aaaa000", "Merge", -5*time.Minute, evidenceLog(t, &testevidence.Payload{V: 1, Shard: "1/2",

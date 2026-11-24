@@ -18,8 +18,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Worktrees go under the repo's .claude/worktrees, never beside the main checkout; nothing is deleted here, removal is wp tidy's job.
-
 var worktreeCmd = &command{
 	name: "worktree", group: "Code and CI", args: "[NAME|KEY] [--branch BRANCH] [--from REF] | ls | move [PATH…]",
 	summary: "make a worktree under the repo's .claude/worktrees/; move stray ones there",

@@ -53,12 +53,11 @@ func TestPromptInput(t *testing.T) {
 // fakeTmux plays a Claude Code session in a pane: a paste and Enter make it
 // busy.
 type fakeTmux struct {
-	t      *testing.T
-	file   string
-	screen string
-	typed  []string
-	pasted string
-	// nil means the box shows Claude Code's placeholder for the paste, which Enter then empties.
+	t          *testing.T
+	file       string
+	screen     string
+	typed      []string
+	pasted     string
 	afterPaste *string
 	lateRender int
 }

@@ -93,18 +93,14 @@ type Event struct {
 	forgeComment *forgeCommentChange
 	repoHook     *repoHookJob
 	pullLinked   *pullRef
-	// The pull request that merged; open pull requests stacked on it move onto its base.
-	stackParent int64
-	permRule    *permRuleJob
-	retitle     bool
-	draft       bool
-	coalesce    bool
-	// Folded into a prior event: live, but not recorded or fanned out.
-	merged bool
-	// A notification this write stored, sent once it commits; the event only carries it and is not published, recorded or fanned out.
-	stored *storedNotice
-	// Recorded and live, but sets nothing off.
-	quiet bool
+	stackParent  int64
+	permRule     *permRuleJob
+	retitle      bool
+	draft        bool
+	coalesce     bool
+	merged       bool
+	stored       *storedNotice
+	quiet        bool
 }
 
 // coalesceWindow is how long autosaves of one text field by one actor stay
@@ -156,8 +152,6 @@ func (t *tx) noteSession(e *Event) {
 	if err := t.QueryRowContext(context.Background(), `SELECT issue_id FROM agent_sessions WHERE id = ?`, t.actor.Session).Scan(&held); err != nil || !held.Valid || held.Int64 == e.IssueID {
 		return
 	}
-	// The task's key goes only on events of its own project: an automation
-	// sees an event's data, and must not learn a task of another project.
 	here := e.ProjectID
 	if here == 0 {
 		if err := t.QueryRowContext(context.Background(), `SELECT project_id FROM issues WHERE id = ?`, e.IssueID).Scan(&here); err != nil {
@@ -197,7 +191,6 @@ func (t *tx) emit(e *Event) {
 			e.ViaAutomation = via
 		}
 	}
-	// Deleted issues have no row to read, so the draft check skips them; an unreadable issue counts as a draft.
 	if e.IssueID != 0 && e.Kind != EvIssueDeleted {
 		if err := t.QueryRowContext(context.Background(), `SELECT draft FROM issues WHERE id = ?`, e.IssueID).Scan(&e.draft); err != nil {
 			e.draft = true
@@ -274,7 +267,6 @@ func (s *Service) dispatch(ctx context.Context, actor *Actor, events []*Event) {
 	if len(events) == 0 {
 		return
 	}
-	// Detach from the request so deliveries outlive the client; they log the events' own source, not the writer's.
 	ctx = WithLogSource(context.WithoutCancel(ctx), sourceEvents)
 	if tracing.Enabled() {
 		kinds := make([]string, len(events))
@@ -285,7 +277,6 @@ func (s *Service) dispatch(ctx context.Context, actor *Actor, events []*Event) {
 		ctx, span = tracing.Start(ctx, "dispatch", attribute.StringSlice("waypoint.events", kinds))
 		defer span.End()
 	}
-	// Stored notifications go out first and are not events to anything else.
 	for _, e := range events {
 		if e.stored != nil {
 			s.deliverNotification(ctx, e.stored)
@@ -319,7 +310,7 @@ func (s *Service) dispatch(ctx context.Context, actor *Actor, events []*Event) {
 			}
 		}
 		if e.Kind == EvUserDeleted {
-			s.dropUserTranscripts(e) // The account's rows are gone, so its archive files are removed here.
+			s.dropUserTranscripts(e)
 		}
 		if e.Kind == EvKitSourceSet {
 			s.goBG(func() { s.RefreshKit(ctx) })
@@ -331,25 +322,24 @@ func (s *Service) dispatch(ctx context.Context, actor *Actor, events []*Event) {
 			s.goBG(func() { s.urgentFromLink(ctx, e) })
 		}
 		if j := e.permRule; j != nil {
-			s.addPermissionRule(ctx, actor, j) // The rule must exist before the agent is told of the decision.
+			s.addPermissionRule(ctx, actor, j)
 		}
 		if e.Kind == EvProjectUpdated && e.Field == "auto_estimate" && e.New == "on" {
 			if p, err := s.projectByID(ctx, s.db.R, e.ProjectID); err == nil && p.Settings.AutoEstimate {
 				s.backfillEstimates(ctx, p)
 			}
 		}
-		// AI helpers spend credit and may queue a runner job, so they need ai.use.
 		if e.Kind == EvIssueCreated && (actor == nil || actor.Automation == nil || actor.Automation.ID > 0) && actor.Allows(PermAIUse) {
 			s.autoEstimate(ctx, e)
 			s.autoTitle(ctx, e)
 		}
 		if e.Kind == EvIssueCreated {
-			s.autoRelate(ctx, e) // No model here, so no ai.use gate: it relates the issues' own words.
+			s.autoRelate(ctx, e)
 		}
 		if e.Kind == EvExternalPRMerged {
 			s.goBG(func() { s.followUpsByFiles(ctx, e) })
 		}
-		s.autoScreen(e) // Agent-written text is screened before any agent takes it.
+		s.autoScreen(e)
 		s.deliverWebhooks(ctx, e)
 		if e.Kind == EvIssueStatus && (actor == nil || !actor.forgeSync) {
 			s.pushIssueState(ctx, e)
@@ -398,7 +388,6 @@ type Hub struct {
 	subs    map[*Subscription]struct{}
 	visible func(userID, projectID, issueID int64) bool
 	admin   func(userID int64) bool
-	// a task the user can't see must not be named in the event it returns
 	hide    func(userID int64, e *Event) *Event
 	observe func(e *Event)
 }
@@ -488,7 +477,6 @@ func (s *Service) StartHub() {
 		ctx := context.Background()
 		u, err := s.userByID(ctx, s.db.R, userID)
 		if err != nil {
-			// A user that can't be read is not an admin here.
 			if !errors.Is(err, ErrNotFound) {
 				if readFault(err) {
 					s.log.WarnContext(ctx, "read a user for the hub's admin check", "user", userID, "err", err)

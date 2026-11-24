@@ -14,8 +14,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Only classes, counts, token counts, root-relative paths and repository names leave the machine; never command text, file contents or absolute paths.
-
 // usageTraceVersion: a file read before traces (0) is read again, from the
 // start, for its trace rows alone.
 const usageTraceVersion = 1
@@ -393,7 +391,6 @@ func traceFile(p, cwd string) (f tracePath, work bool) {
 		case traceUnder(p, main.root):
 			rel = p[len(main.root)+1:]
 		case path.Dir(main.root) == "/" && strings.HasPrefix(p, "/"), traceUnder(p, path.Dir(main.root)):
-			// traceUnder never matches under '/', so a checkout at /app is matched through its parent by hand
 			parent := strings.TrimSuffix(path.Dir(main.root), "/")
 			if name, in, ok := strings.Cut(p[len(parent)+1:], "/"); ok && strings.HasPrefix(name, path.Base(main.root)+"-") {
 				rel = in
@@ -516,7 +513,7 @@ func traceCommands(cmd, cwd string, depth int, vars map[string]string, mem *trac
 		}
 		c.wrote = c.writes()
 		for i, w := range c.wrote {
-			if strings.HasPrefix(w.kind, "script") { // an unquoted heredoc is expanded by the shell, so its text is filled in before matching
+			if strings.HasPrefix(w.kind, "script") {
 				c.wrote[i].w = fill(w.w)
 			}
 		}
@@ -533,7 +530,7 @@ func traceCommands(cmd, cwd string, depth int, vars map[string]string, mem *trac
 				c.wrote = append(c.wrote, traceWrite{kind: kind, w: w})
 			}
 		}
-		vars["_"] = words[len(words)-1] // $_ is the last word of the previous command.
+		vars["_"] = words[len(words)-1]
 		*out = append(*out, c)
 	}
 	return dir
@@ -837,7 +834,6 @@ func (c *traceCommand) writes() []traceWrite {
 	case "git rm":
 		each("rm", plain(0))
 	case "xargs", "find":
-		// sed -i or perl -i under find or xargs edits files the line does not name; record a wildcard write
 		for i, a := range args {
 			if b := path.Base(a); b == "sed" && sedInPlace(args[i:]) || b == "perl" && i+1 < len(args) && perlInPlaceRE.MatchString(args[i+1]) {
 				out = append(out, traceWrite{kind: "patch", w: "*"})
@@ -1332,7 +1328,6 @@ func (p *usageParser) traceResult(tc *traceCall, bl *rawBlock, refused bool) {
 		return
 	}
 	if bl.IsError && tc.Class == trEdit && !tc.Scan {
-		// a refused Edit or Write wrote nothing, but a failed Bash call may have run its write first
 		failed := *tc
 		failed.Class, failed.Paths, failed.Write = trOther, nil, false
 		tc = &failed

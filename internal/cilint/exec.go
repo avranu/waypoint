@@ -47,7 +47,7 @@ func ScriptModes(name string, src []byte, mode ModeFunc) []Finding {
 	check := func(line int, cmdline string) {
 		paths, nd := scriptPaths(cmdline, dir)
 		if !IsMakefilePath(name) {
-			dir = nd // a run block is one shell, so cd carries to later lines
+			dir = nd
 		}
 		for _, p := range paths {
 			m := mode(p)

@@ -9,8 +9,6 @@ import (
 	"strconv"
 )
 
-// Waypoint can read, freeze, and add or remove connections; approving, denying and unfreezing stay with a person on Signal.
-
 // Approval is one action waiting on (or decided by) the owner on Signal.
 type Approval struct {
 	Code    string   `json:"code"`

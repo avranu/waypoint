@@ -14,8 +14,6 @@ import (
 	"time"
 )
 
-// A task keeps the arm it was first given; high-risk tasks get none and count as no evidence.
-
 const (
 	delegArmNone    = "none"
 	delegArmScouts  = "scouts"
@@ -226,7 +224,6 @@ func (s *Service) delegRows(ctx context.Context, now time.Time) ([]*delegRow, er
 	if err := rows.Err(); err != nil || len(out) == 0 {
 		return out, err
 	}
-	// Usage starts a day before the oldest draw, since a task's earlier sessions count too.
 	days := int((now.UnixMilli()-oldest)/(24*time.Hour).Milliseconds()) + 2
 	tr, err := s.UsageTrends(ctx, SystemActor(), UsageQuery{Days: min(days, 365), User: "all", allTasks: true})
 	if err != nil {
@@ -466,7 +463,6 @@ func delegPolicyFrom(rows []*delegRow, now time.Time) *delegPolicy {
 			}
 		}
 	}
-	// Draws happen here, before the policy is shared: concurrent takes and reports read it, and sample fills draws lazily.
 	fits := slices.Clone(pol.primary.Fits)
 	for _, g := range pol.guards {
 		fits = append(fits, g.fit.Fits...)
@@ -563,11 +559,9 @@ func (s *Service) delegationArm(ctx context.Context, a *Actor, i *Issue, via str
 	if got, err := s.delegAssignmentOf(ctx, s.db.R, i.ID); err != nil || got != nil {
 		return got, err
 	}
-	// An arm drawn after work has started is not a randomized assignment, so only a fresh claim draws.
 	if i.ClaimedAt == nil || s.now().Sub(*i.ClaimedAt) > delegClaimFresh {
 		return nil, nil
 	}
-	// Risk is read as the system, since the caller already holds the task; unknown risk draws nothing.
 	r, err := s.issueRiskByID(ctx, s.db.R, SystemActor(), i.ID)
 	if err != nil {
 		return nil, err

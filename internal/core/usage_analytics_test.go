@@ -130,7 +130,6 @@ func TestUsageOverviewTotalsCostAndBreakdowns(t *testing.T) {
 	e.ingest(e.me, "b", "prodhost", UsageChunk{Messages: []UsageMessageRow{msg(d2, "s3", "acme/web", "claude-opus-5-5", "main", 2, 10, 10, 0, 0, 0)}})
 	o := e.overview(e.me, UsageQuery{Days: 7})
 
-	// Expected cost: opus 5.5 at 11.8, haiku 5.5 at 0.065, and session s3's 10 input and 10 output tokens at opus's $4 and $20 per million.
 	wantCost := 11.8 + 0.065 + (10*4+10*20)/1e6
 	if !approx(o.Totals.CostUSD, wantCost) {
 		t.Errorf("cost %v, want %v", o.Totals.CostUSD, wantCost)
@@ -323,7 +322,6 @@ func TestUsageToolsBashAndUnused(t *testing.T) {
 	if len(o.Bash) != 2 || o.Bash[0].Name != "git status" || o.Bash[1].Errors != 3 {
 		t.Errorf("bash: %+v", o.Bash)
 	}
-	// Unused means configured but not used; names are compared loosely.
 	var unused []string
 	for _, u := range o.Unused {
 		unused = append(unused, u.Kind+":"+u.Name)

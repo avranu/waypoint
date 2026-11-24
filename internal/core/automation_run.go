@@ -156,8 +156,6 @@ func (s *Service) startRun(ctx context.Context, actor *Actor, a *Automation, e *
 		user = actor.User
 		depth = actor.depth
 		budget = actor.budget
-		// A run a permission token set off can do no more than the token
-		// (WP-111): its dangerous steps (runner jobs, merges) are refused.
 		perms = actor.Permissions
 	}
 	if budget == nil {
@@ -481,7 +479,7 @@ func (s *Service) executeRun(ctx context.Context, run *AutomationRun) {
 	}
 	err = x.walk(ctx)
 	if s.bgCtx.Err() != nil {
-		return // shutting down: the next start queues it again
+		return
 	}
 	s.endDurable(done, x, run, err)
 }
@@ -510,7 +508,6 @@ func (s *Service) endDurable(ctx context.Context, x *execution, run *AutomationR
 			s.log.ErrorContext(ctx, "park automation run", "run", run.ID, "err", uerr)
 			return
 		}
-		// The wait may have been resolved before the run was marked waiting.
 		var resolved sql.NullInt64
 		if s.db.R.QueryRowContext(ctx, `SELECT resolved_at FROM automation_waits WHERE id = ?`, p.waitID).Scan(&resolved) == nil && resolved.Valid {
 			_, _ = s.db.W.ExecContext(ctx, `UPDATE automation_runs SET status = 'queued', not_before = 0 WHERE id = ? AND status = 'waiting'`, run.ID)
@@ -519,7 +516,7 @@ func (s *Service) endDurable(ctx context.Context, x *execution, run *AutomationR
 		s.Hub.Publish(s.runLiveScope(ctx, run.AutomationID, &Event{Kind: EvAutomationRunFinished, ProjectID: run.ProjectID, AdminOnly: run.ProjectID == 0, New: RunWaiting, Data: map[string]any{"automation": run.AutomationID, "run": run.ID, "status": RunWaiting}}))
 		return
 	case errors.Is(err, errCancelled):
-		return // CancelAutomationRun has already written the cancelled status; this path must not overwrite it.
+		return
 	}
 	status, errText := RunSucceeded, ""
 	if err != nil {

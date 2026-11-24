@@ -130,8 +130,6 @@ function Palette({
     placeholderData: (p) => p,
   })
   const knowledge = knowledgeQ.data
-  // The rows on screen answer what is typed. Until then they are the last
-  // search's, and Enter must not run one of those.
   const settled =
     debounced === text.trim() &&
     !search.isPlaceholderData &&

@@ -20,14 +20,9 @@ func jsonUnmarshal(b []byte, v any) error { return json.Unmarshal(b, v) }
 // (WP-ADR139). Each is counted and watched by name (job_runs.go), so a step
 // that matters is its own job, not a line in a bigger one.
 type scheduled struct {
-	name  string
-	every time.Duration
-	run   func(context.Context)
-	// lane says where it runs. "" is the scheduler's loop: jobs due
-	// together run in the table's order, each waiting for the one before,
-	// so a slow one holds the rest. Anything else runs in the background,
-	// one after another with the jobs of the same lane, for work a slow
-	// forge or gateway must not let hold the loop.
+	name    string
+	every   time.Duration
+	run     func(context.Context)
 	lane    string
 	atStart bool
 }
@@ -131,7 +126,7 @@ func (s *Service) schedule() []scheduled {
 		{name: "quota guard", every: hour, run: s.RunQuotaGuard, lane: "quota guard", atStart: true},
 		{name: "quota guard baselines", every: hour, run: s.refreshGuardBaselines, lane: "quota guard", atStart: true},
 		hourly("CI pruning", s.pruneCI),
-		bg(hourly("merged branches", s.SweepBranches)), // Each repo is swept at most once every 23 hours, whatever the hourly tick.
+		bg(hourly("merged branches", s.SweepBranches)),
 		bg(hourly("CI history backfill", s.BackfillCIHistory)),
 		bg(hourly("CI history re-tier", s.RetierCIHistory)),
 		bg(hourly("instruction history backfill", s.BackfillUsageMarks)),
@@ -151,11 +146,10 @@ func (s *Service) schedule() []scheduled {
 		bg(scheduled{name: "session facts", every: fiveMin, run: s.RunSessionFacts}),
 
 		scheduled{name: "runners", every: halfMin, run: s.CheckRunners, atStart: true},
-		scheduled{name: "auto question notices", every: halfMin, run: s.NotifyAutoQuestions, atStart: true}, // Runs at start so that notices which came due while the server was down go out now.
+		scheduled{name: "auto question notices", every: halfMin, run: s.NotifyAutoQuestions, atStart: true},
 		scheduled{name: "front rounds", every: fiveMin, run: s.CheckFrontRounds},
 		scheduled{name: "forge rechecks", every: halfMin, run: s.CheckMergeRechecks},
 
-		// Catch-up at start: pull requests merged or closed while Waypoint was down are seen only by this one-off refresh.
 		once("pull requests", s.RefreshPullRequests),
 		once("resume babysits", s.ResumeBabysits),
 
@@ -171,11 +165,11 @@ func (s *Service) schedule() []scheduled {
 		scheduled{name: "armed merges", every: minute, run: s.CheckArmedMerges},
 		scheduled{name: "babysits", every: minute, run: s.CheckBabysits},
 		scheduled{name: "audits", every: minute, run: s.CheckAudits},
-		scheduled{name: "objectives", every: minute, run: s.CheckObjectives}, // after the audits that judge them (WP-ADR111, WP-ADR142)
+		scheduled{name: "objectives", every: minute, run: s.CheckObjectives},
 		scheduled{name: "request conditions", every: minute, run: s.CheckRequestWatches},
 		scheduled{name: "hold conditions", every: minute, run: s.CheckHoldConditions},
 		scheduled{name: "safety screens", every: minute, run: s.sweepScreens},
-		scheduled{name: "quota guard watch", every: minute, run: s.RunGuardWatch}, // holds before autopilot starts (WP-932)
+		scheduled{name: "quota guard watch", every: minute, run: s.RunGuardWatch},
 		scheduled{name: "autopilot", every: minute, run: s.RunAutopilot},
 		scheduled{name: "warm caches", every: minute, run: s.KeepCachesWarm},
 		scheduled{name: "work logs", every: minute, run: s.RunWorkLog},
@@ -242,16 +236,12 @@ func (s *Service) RunScheduler(ctx context.Context) {
 	}
 	s.beginServerRun(ctx)
 	context.AfterFunc(ctx, s.jobs.stop)
-	// Each on a timer and a goroutine of its own, started here and not by
-	// the loop below: they are what say the loop is stuck, and the watchdog
-	// says the check is.
 	s.goBG(func() { s.watchJobHealth(ctx) })
 	s.goBG(func() { s.runHealthWatchdog(ctx) })
 	r.fire(ctx, func(j scheduled) bool { return j.every == 0 || j.atStart })
 	s.goBG(func() { s.RunEnvChecks(ctx) })
 	s.goBG(func() { s.WatchAssistants(ctx) })
 
-	// One ticker per period; a tick is dropped, not queued, while the loop is busy.
 	var periods []time.Duration
 	for _, j := range r.jobs {
 		if j.every > 0 && !slices.Contains(periods, j.every) {

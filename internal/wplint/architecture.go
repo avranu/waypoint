@@ -141,11 +141,8 @@ func runWriteClosure(pass *analysis.Pass) (any, error) {
 	calls := map[*types.Func][]*types.Func{}
 	for fn, fd := range decls {
 		if fn.Name() == "write" && recvName(fn) == "Service" {
-			// write dispatches after its commit, which is the point: what
-			// calls write is not inside one because of it.
 			continue
 		}
-		// Work in goBG or go statements counts toward the effect; a write started that way does not, since write is skipped above.
 		ast.Inspect(fd.Body, func(n ast.Node) bool {
 			switch n := n.(type) {
 			case *ast.CallExpr:
@@ -448,7 +445,6 @@ func realVars(pass *analysis.Pass, fd *ast.FuncDecl) map[types.Object]bool {
 			real[obj] = true
 		}
 	}
-	// Dropping one variable can disqualify another (a Sub between two candidates needs both real), so repeat until nothing changes.
 	for changed := true; changed; {
 		changed = false
 		var stack []ast.Node

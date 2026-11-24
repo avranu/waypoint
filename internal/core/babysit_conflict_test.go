@@ -50,7 +50,6 @@ func TestBabysitConflictAfterRoundOnSameHead(t *testing.T) {
 	if len(be.jobs()) != 4 {
 		t.Fatalf("%d jobs", len(be.jobs()))
 	}
-	// A new conflict since the last rest makes the next rest as long as a first one.
 	be.finish(b.JobID, false)
 	b = be.babysit()
 	if !resting(&b.Rounds[3]) || !strings.Contains(b.Rounds[3].Parked, "round 4") || len(be.jobs()) != 4 {

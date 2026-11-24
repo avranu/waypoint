@@ -17,8 +17,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// waits.jsonl stays local (classifier, wp slot ls); the outbox is what the server receives.
-
 // slotPolicyVersion names the rules a hold ran under. Bump it when the class
 // rule, the slot order or the worktree rule changes (WP-1646).
 const slotPolicyVersion = "adr150-1"
@@ -89,9 +87,6 @@ func slotSnapshot(dir, name string) ([]core.SlotHolder, []core.SlotWaiter) {
 		}
 		line := slotHolderLine(f)
 		_ = f.Close()
-		// A held slot whose holder line is not written yet is recorded with
-		// pid 0 and since 0 on purpose: the slot is held, and leaving it out
-		// would undercount.
 		pid, _ := strconv.Atoi(line[0])
 		since, _ := strconv.ParseInt(line[1], 10, 64)
 		holders = append(holders, core.SlotHolder{Slot: idx, PID: pid, Since: since})
@@ -274,7 +269,6 @@ func (c *cli) sendSlotHolds(ctx context.Context) (sent, remaining int, err error
 		}
 		sent += len(batch)
 		if !removeSent(dir, ids) {
-			// The same batch would be posted again and again.
 			return sent, remaining, fmt.Errorf("the outbox could not be rewritten")
 		}
 	}

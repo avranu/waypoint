@@ -163,7 +163,7 @@ func TestAuditFallsBackAndWaitsOutBusyModels(t *testing.T) {
 		t.Fatal("a retry started before its time")
 	}
 	ae.setClock(ae.clockNow().Add(16 * time.Minute))
-	ae.runnerSeen(ae.box, true) // it kept polling; an offline runner's Cursor entry is passed over
+	ae.runnerSeen(ae.box, true)
 	ae.s.CheckAudits(ae.ctx)
 	ae.work()
 	for range 2 {
@@ -260,7 +260,6 @@ func TestParseAuditAnswer(t *testing.T) {
 			t.Errorf("%q = %+v %v", text, a, err)
 		}
 	}
-	// A reply with no findings list is an error, never a clean review.
 	for _, text := range []string{`{}`, `{"summary": "I can't review this."}`, `{"findings": null}`, "", "I found no findings in a.go, but b.go has a nil deref.",
 		"There were NO FINDINGS because the diff could not be read."} {
 		a, err := parseAuditAnswer(map[string]any{"answer": text})
@@ -439,7 +438,6 @@ func TestAuditNewsWithdrawnOnceDecided(t *testing.T) {
 		t.Fatalf("with a finding confirmed the news is %q", st)
 	}
 
-	// A filed finding counts as decided below high; a filed high one is still to do.
 	later := ae.issue(ae.admin, IssueInput{Project: ae.p.Key, Title: "Fix the log typo later"})
 	c := audit()
 	mark(high(c), "fixed")
@@ -454,7 +452,6 @@ func TestAuditNewsWithdrawnOnceDecided(t *testing.T) {
 		t.Fatalf("with the high finding filed the news is %q", st)
 	}
 
-	// A finding decided before its news is stored withdraws that news as it is stored.
 	e := audit()
 	mark(high(e), "fixed")
 	mark(low(e), "rejected")

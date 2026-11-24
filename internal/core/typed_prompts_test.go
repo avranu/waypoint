@@ -13,8 +13,6 @@ import (
 	"time"
 )
 
-// Who typed a prompt is decided by the record Waypoint wrote, never by the prompt's opening text (which is only logged).
-
 const typedTTL = 10 * time.Minute
 
 // record is Waypoint handing text to a runner to type into the session.
@@ -162,7 +160,6 @@ func TestTypedPromptVariantsOfARecordedText(t *testing.T) {
 		"reflowed":       func(p string) string { return "  " + strings.ReplaceAll(p, "\n", "\n   ") + "\n\n" },
 		"bracketed":      func(p string) string { return "\x1b[200~" + p + "\x1b[201~" },
 		"pasted_content": func(p string) string { return "\n\n<pasted_content id=\"7fe6\">\n" + p + "\n</pasted_content>" },
-		// Claude Code sends the closing tag with the id repeated.
 		"pasted_content_id_close": func(p string) string {
 			return "\n\n<pasted_content id=\"d29a\">\n" + p + "\n</pasted_content id=\"d29a\">\n"
 		},
@@ -416,7 +413,6 @@ func FuzzNormalisePrompt(f *testing.F) {
 			decorated["wrapped_twice"] = "<pasted_content>\n<pasted_content id=\"2\">" + x + "</pasted_content></pasted_content>"
 		}
 		for name, d := range decorated {
-			// A paste wrapper round text that holds a stray tag isn't unwrapped by NormalisePrompt, so the check accepts any sum PromptSums tries.
 			if got := NormalisePrompt(d); got != n && !slices.Contains(PromptSums(d), PromptSum(x)) {
 				t.Fatalf("%s: NormalisePrompt(%q) = %q, want %q (x = %q), and %v lacks the sum of x", name, d, got, n, x, PromptSums(d))
 			}

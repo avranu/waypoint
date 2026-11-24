@@ -63,7 +63,6 @@ async function run(width, scheme, n) {
   const { token } = await api("POST", "/me/tokens", { name: `autopilot ${n}`, agent: "anthropic/claude-code" });
   const agent = { ...H, Authorization: `Bearer ${token}` };
 
-  // Earlier suite 29-agents-usage leaves fresh quota samples; this tab starts with none.
   const db = new DatabaseSync(`${process.env.DIR}/wp.db`);
   db.exec("PRAGMA busy_timeout = 5000");
   db.exec("DELETE FROM quota_samples");
@@ -97,7 +96,6 @@ async function run(width, scheme, n) {
   await shot("review-hint");
   await overflow("review hint open");
   await page.keyboard.press("Escape");
-  // On a phone the hint is a sheet, so Escape may also close the dialog under it.
   if (!(await dlg.isVisible())) await row.getByRole("button", { name: `Limits for ${KEY}` }).click();
   await grace.fill("3600");
   await grace.press("Enter");
@@ -129,7 +127,6 @@ async function run(width, scheme, n) {
     return p && p.limits.hours === "09:00-18:00" && p.limits.days === "mon-fri" && p.limits.min_priority === "high" && p.limits.at_once === 2;
   }, [base, KEY]);
   ok(true, `${tag} the criteria and pace are saved in one spelling`);
-  // The row updates from a refetch after the save, so it can lag.
   await row.getByTestId("autopilot-criteria").filter({ hasText: "mon-fri" }).waitFor({ timeout: 5000 }).catch(() => {});
   const words = await row.getByTestId("autopilot-criteria").innerText();
   ok(
@@ -196,7 +193,6 @@ async function run(width, scheme, n) {
     qdb2.close();
   }
 
-  // Autopilot moves on only sessions it started; a prompt a person typed makes the session theirs and stops the step, so the kickoff's digest is recorded as autopilot's.
   const finish = async (suffix, machine, last, prompt) => {
     const where = { session_id: `cli-ap-${n}-${suffix}`, machine, cwd: `/work/ap${n}`, branch: `feat/ap${n}${suffix}` };
     const hook = (event, extra = {}) => api("POST", "/sessions/hook", { events: [{ event, ...where, ...extra }] }, agent);
@@ -211,7 +207,6 @@ async function run(width, scheme, n) {
       const at = Date.now() - 2 * 24 * 3600 * 1000;
       born.prepare(`INSERT INTO autopilot_steps (user_id, project_id, session_id, stop_at, state, due_at, next_session, next_session_at, created_at, updated_at)
         VALUES (?, ?, NULL, ?, 'started', ?, ?, ?, ?, ?)`).run(uid, pid, at, at, sid, at, at, at);
-      // The test hashes the raw prompt; that equals core.PromptSum only because the prompt is single-spaced, since PromptSum normalises first.
       const sum = crypto.createHash("sha256").update(prompt).digest("hex");
       born.prepare(`INSERT INTO typed_prompts (session_id, user_id, hash, kind, created_at, expires_at) VALUES (?, ?, ?, 'kickoff', ?, ?)`).run(
         sid, uid, sum, Date.now(), Date.now() + 3600 * 1000);
@@ -316,7 +311,6 @@ async function run(width, scheme, n) {
   await shot("read");
   await overflow("all read");
 
-  // Written straight to the database (a real one needs a runner and a sweep a minute away); the waiting one goes first, since a sweep only drops the newest.
   {
     const ready = await api("POST", "/issues", { project: KEY, title: `Own start of ${KEY}`, agent: "claude" });
     const own = new DatabaseSync(`${process.env.DIR}/wp.db`);

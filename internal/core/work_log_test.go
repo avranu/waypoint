@@ -167,7 +167,6 @@ func TestWorkLogReviewRound(t *testing.T) {
 		t.Errorf("next job = %+v, source %q", next, a.jobs[1].Source)
 	}
 
-	// A list of findings is counted by the model; rules can't read one.
 	llm := &fakeLLM{answer: `{"items":[{"claim":"merge.go read a nil map","file":"merge.go","outcome":"fixed"},{"claim":"The retry could loop","outcome":"rejected"},{"claim":"","outcome":"fixed"}]}`}
 	a.s.LLM = llm
 	if err := a.s.EnsureDefaultAI(a.ctx, "http://opencode:4096", "", "opencode/big-pickle"); err != nil {
@@ -497,7 +496,6 @@ func TestWorkLogOneRoundPerTask(t *testing.T) {
 		}
 		return a, first, second, id
 	}
-	// An interrupt takes the session from the running round, as going on to another task does; a person's prompt doesn't.
 	interrupt := func(a *apEnv) {
 		a.t.Helper()
 		if err := a.s.write(a.ctx, SystemActor(), func(t *tx) error {
@@ -568,7 +566,6 @@ func TestWorkLogOneRoundPerTask(t *testing.T) {
 		movedOnTo(t, a, second.Key)
 	})
 
-	// A background agent's result arrives as a prompt, but that is no person taking the session: the round runs on to the Stop that reports.
 	for name, handBack := range map[string]string{
 		"subagent's hand-back":                      "Another Claude session sent a message:\n<agent-message from=\"reviewer\">\n[Subagent hand-back] 3 findings\n</agent-message>",
 		"subagent's hand-back, as the hook gets it": subagentHandBackHook,
@@ -631,7 +628,6 @@ func TestWorkLogOneRoundPerTask(t *testing.T) {
 			t.Fatalf("an interrupted round wasn't asked for again: %+v", st)
 		}
 	})
-	// Cut short before it reported, the review hadn't happened: it is asked for again in the same run, so the task doesn't move on unreviewed until reviewInterruptsMax.
 	t.Run("interrupted, same run", func(t *testing.T) {
 		a, first, second, id := start(t)
 		for n := 1; n <= reviewInterruptsMax; n++ {
@@ -657,7 +653,6 @@ func TestWorkLogOneRoundPerTask(t *testing.T) {
 				t.Fatalf("interrupt %d: the new round = %+v", n, r)
 			}
 		}
-		// A session the person typed in is theirs: nothing starts there after the review.
 		a.prompt("I'll take it from here")
 		a.tick(autopilotIdleHold + time.Minute)
 		if n := a.restarts(); n != 0 {

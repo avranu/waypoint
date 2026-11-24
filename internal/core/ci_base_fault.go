@@ -1,7 +1,5 @@
 package core
 
-// The re-run count lives in server_settings so a restart does not reset it; only each branch's newest push is re-run.
-
 import (
 	"context"
 	"database/sql"
@@ -84,7 +82,7 @@ func (s *Service) checkBaseFaults(ctx context.Context, f *Forge, repo string, fr
 		}
 	}
 	def := sync.OnceValue(func() string { return s.baseDefaultBranch(ctx, f, repo) })
-	s.checkBaseAdvisories(ctx, cl, f, repo, def, fresh) // Advisories are checked whether or not the branch has red push runs.
+	s.checkBaseAdvisories(ctx, cl, f, repo, def, fresh)
 	for _, branch := range branches {
 		key := baseFaultSettingKey(f.ID, repo, branch)
 		old, had := states[branch]
@@ -171,7 +169,7 @@ func (s *Service) baseRuns(ctx context.Context, forgeID int64, repo string, fres
 	}
 	out := map[string][]ActionRun{}
 	for _, r := range byNum {
-		r.PrettyRef = strings.TrimPrefix(r.PrettyRef, "refs/heads/") // a forge that names a scheduled run's ref in full
+		r.PrettyRef = strings.TrimPrefix(r.PrettyRef, "refs/heads/")
 		if r.PrettyRef != "" && r.CommitSHA != "" {
 			out[r.PrettyRef] = append(out[r.PrettyRef], r)
 		}
@@ -213,7 +211,7 @@ func (s *Service) handleBaseFault(ctx context.Context, cl ForgeActionLogs, f *Fo
 	var runs []ActionRun
 	faults := map[string]*RunnerFault{}
 	urls := map[string]string{}
-	hostFrom := st.first // The host's waits count from the tip's first red, not from this pass.
+	hostFrom := st.first
 	for _, r := range red {
 		cur, err := cl.ActionRunNumber(ctx, f, repo, r.Index)
 		if err != nil {
@@ -237,7 +235,7 @@ func (s *Service) handleBaseFault(ctx context.Context, cl ForgeActionLogs, f *Fo
 			stopped = msTime(st.first)
 		}
 		if len(jobs) == 0 && s.now().Sub(stopped) < 5*time.Minute {
-			return // the forge may not list the jobs of a run that just ended yet; read again next time
+			return
 		}
 		hasFault := false
 		for _, j := range jobs {
@@ -245,7 +243,6 @@ func (s *Service) handleBaseFault(ctx context.Context, cl ForgeActionLogs, f *Fo
 				continue
 			}
 			if j.Name == advisoriesJob {
-				// An advisories job is never a runner fault, and must not hide one in the same run.
 				continue
 			}
 			log, err := cl.ActionJobLog(ctx, f, repo, j.ID)
@@ -253,7 +250,7 @@ func (s *Service) handleBaseFault(ctx context.Context, cl ForgeActionLogs, f *Fo
 				return
 			}
 			if strings.TrimSpace(log) == "" && s.now().Sub(stopped) < 5*time.Minute {
-				return // the forge may not serve the log of a job that just ended yet; read again next time
+				return
 			}
 			if fault := logRunnerFault(log); fault != nil {
 				s.nameFaultHost(ctx, f.ID, fault)
@@ -263,7 +260,7 @@ func (s *Service) handleBaseFault(ctx context.Context, cl ForgeActionLogs, f *Fo
 				continue
 			}
 			if derivedFailure(log) || (j.Status == "cancelled" && !stepFailedLog(log)) {
-				continue // A cancelled job with no failing step was stopped by another job, not failing itself.
+				continue
 			}
 			st.ended = baseFaultOther
 			return
@@ -312,7 +309,7 @@ func (s *Service) handleBaseFault(ctx context.Context, cl ForgeActionLogs, f *Fo
 	}
 	now := s.now()
 	if st.last > 0 && now.Sub(msTime(st.last)) < faultRerunSettle {
-		return // the forge hasn't taken up the re-run yet
+		return
 	}
 	if timeLimitOnly(faults) && st.streak >= faultTimeLimitReruns {
 		st.ended = baseFaultOther
@@ -329,7 +326,6 @@ func (s *Service) handleBaseFault(ctx context.Context, cl ForgeActionLogs, f *Fo
 	if wait {
 		return
 	}
-	// Record the attempt before asking the forge: an unrecorded back-off gets re-asked every pass, loading the sick runner it protects.
 	seen()
 	prev := *st
 	st.n++
@@ -498,7 +494,7 @@ func (s *Service) checkBaseAdvisories(ctx context.Context, cl ForgeActionLogs, f
 		stopped = newest.Created
 	}
 	if len(jobs) == 0 && s.now().Sub(stopped) < 5*time.Minute {
-		return // the forge may not list the jobs of a run that just ended yet
+		return
 	}
 	if slices.ContainsFunc(jobs, func(j ActionJob) bool { return j.Name == advisoriesJob && j.Status == "failure" }) &&
 		!s.fileAdvisories(ctx, f, repo, branch, cur.CommitSHA, cur) {

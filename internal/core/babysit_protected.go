@@ -12,8 +12,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Protected-file changes are refused at push, and the fix goes to a session as a task, since only a session may change those files.
-
 // protectedRefusalPrefix is how the runner's error names the refused files.
 const protectedRefusalPrefix = "changed protected files ("
 
@@ -99,7 +97,6 @@ func (s *Service) fileProtectedPush(ctx context.Context, b *Babysit, pr *PullReq
 		return "", nil
 	}
 	var have string
-	// A done issue filed since counts too: a session that finished it without a push isn't asked again for the same round.
 	err = s.db.R.QueryRowContext(ctx, `SELECT p.key || '-' || i.number FROM issues i JOIN projects p ON p.id = i.project_id JOIN statuses st ON st.id = i.status_id
 		WHERE i.project_id = ? AND i.title = ? AND (st.category NOT IN ('done','canceled') OR i.created_at >= ?) ORDER BY i.id DESC LIMIT 1`,
 		projectID, title, since.UnixMilli()).Scan(&have)

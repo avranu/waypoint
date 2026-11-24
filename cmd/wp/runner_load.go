@@ -14,8 +14,6 @@ import (
 	"time"
 )
 
-// The governor holds only the heavy and light lanes; request, message and gateway slots are never held, so a session's message never waits behind builds or audits.
-
 const (
 	laneHeavy   = "heavy"
 	laneLight   = "light"
@@ -23,9 +21,9 @@ const (
 	laneMessage = "message"
 	laneGateway = "gateway"
 
-	requestSlots = 2 // Mirrors core.RequestLaneSlots; the two must stay equal.
-	messageSlots = 8 // Mirrors core.MessageLaneSlots; the two must stay equal.
-	gatewaySlots = 6 // Mirrors core.GatewayLaneSlots (GatewayTasksInFlight); the two must stay equal.
+	requestSlots = 2
+	messageSlots = 8
+	gatewaySlots = 6
 	lightSlots   = 3
 
 	loadEvery = 15 * time.Second
@@ -162,7 +160,6 @@ func (g *governor) observe(s loadSample, now time.Time, heavy int) string {
 	if g.limit != wasLimit {
 		g.changed = now
 	}
-	// The live state outranks the hour profile: the profile's cap lifts only after growAfter of lasting calm, so one calm sample between busy ones doesn't lift it.
 	g.capped, g.capWhy, g.calmOver = 0, "", ""
 	if g.profile != nil && s.CPUs > 0 {
 		if busy, ok := g.profile.predict(now); ok {

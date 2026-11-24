@@ -155,9 +155,6 @@ func (c *cli) dispatch(cmd *command, args []string) error {
 	if len(args) > 0 {
 		if args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
 			if cmd.run != nil && args[0] != "help" {
-				// A group that also runs by itself lists its own flags too;
-				// one whose run takes no flags (wp design) says it has no
-				// command "-h", so it gets the group's help instead.
 				if err := cmd.run(c, args); !errors.As(err, new(usageError)) {
 					return err
 				}

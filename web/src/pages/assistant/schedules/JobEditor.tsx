@@ -548,7 +548,6 @@ function ChipsField({
   onRemove: (s: string) => void
   add: React.ReactNode
 }) {
-  // Not a <label>: the chips and buttons inside are controls of their own.
   return (
     <div role="group" aria-label={label} className="space-y-1.5">
       <div className="text-[13px] font-medium leading-5">{label}</div>

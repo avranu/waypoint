@@ -1,5 +1,3 @@
-// Attach to the gateway (give a runtime id) only when the conversation is ours to drive; a session running elsewhere (schedule, Signal) is followed by refetching so it isn't taken over.
-
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { messagesQuery, type HermesSession, type StoredMessage } from '@/lib/assistant'
@@ -106,7 +104,6 @@ export function useConversation(assistantId: number, stored: string | null, row?
     setRuntime(stored ? (runtimes.get(rkey(assistantId, stored)) ?? null) : null)
   }, [assistantId, stored])
 
-  // The bridge reconnected to Hermes: runtime ids from before are gone.
   useEffect(() => {
     if (live.epoch === 0) return
     for (const k of [...runtimes.keys()]) if (k.startsWith(assistantId + ':')) runtimes.delete(k)

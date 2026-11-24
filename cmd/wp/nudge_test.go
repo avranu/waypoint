@@ -310,7 +310,6 @@ func TestTaskNudges(t *testing.T) {
 	if out := hook("sleep 60; cat "+running, false, ""); out != "" {
 		t.Errorf("the nudge answered a refused call: %q", out)
 	}
-	// A sub-agent's background task gives as certain an exit notice as the session's, so sleeping on one is refused too.
 	startAgent(tc, "", "agent-1", true)
 	if out := guard("sleep 60; cat "+running, false, "agent-1"); !strings.Contains(out, `"permissionDecision":"deny"`) || !strings.Contains(out, "brun1 is still running") {
 		t.Errorf("the guard did not refuse a background sub-agent: %q", out)
@@ -318,9 +317,6 @@ func TestTaskNudges(t *testing.T) {
 	if out := hook("sleep 60; cat "+running, false, "agent-1"); out != "" {
 		t.Errorf("the nudge answered a refused sub-agent call: %q", out)
 	}
-	// A foreground sub-agent (or one not known to be a background one) is
-	// only noted: its shells are reaped when it answers, so ending the turn
-	// would stop the task.
 	if out := guard("sleep 60; cat "+running, false, "agent-fg"); strings.Contains(out, `"permissionDecision":"deny"`) {
 		t.Errorf("the guard refused a foreground sub-agent: %q", out)
 	}

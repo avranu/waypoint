@@ -83,8 +83,6 @@ func TestCILogs(t *testing.T) {
 		}
 	}
 
-	// Someone who can't see the project can't read its CI, and isn't told
-	// the repo exists.
 	_, err = e.s.CILogs(e.ctx, e.user("zed", false), CILogInput{Repo: "acme/app", SHA: full})
 	if !errors.Is(err, ErrNotFound) || !strings.Contains(err.Error(), "no Forgejo repo") {
 		t.Errorf("stranger: %v", err)

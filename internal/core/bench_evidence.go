@@ -8,8 +8,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Bench evidence is a fact check for readers, not something a gate may rely on.
-
 const maxEvidenceBench = 5
 
 // BenchRun is one wp bench result, as the CLI kept it. The request decoder

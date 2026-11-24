@@ -40,7 +40,6 @@ func TestSessionKindFromTheLauncher(t *testing.T) {
 	if x := kinds[task.Session]; x.Kind != SessionTask || strings.Join(x.Tasks, ",") != "WP-12,WP-13" {
 		t.Errorf("task session: %q %v", x.Kind, x.Tasks)
 	}
-	// The first event sets a session's kind; a later WP_TASK (stale environment, one-off command) doesn't change it.
 	if _, err := e.s.SessionHook(e.ctx, ag, []HookEvent{hook("box", "mine", "Stop", func(h *HookEvent) { h.Task, h.ContextTokens = "WP-9", 42_000 })}); err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +189,6 @@ func TestTaskSessionWarnsOnUnrelatedWork(t *testing.T) {
 	if again, _ := e.s.AgentTake(e.ctx, ag, other.Key, ""); e.s.TaskSessionWarning(e.ctx, ag, again, SessionHint{}) != "" {
 		t.Error("warned again for a task already held")
 	}
-	// A parent can't be done over open sub-tasks, so they close first.
 	for _, k := range []string{grand.Key, sub.Key} {
 		st := "canceled"
 		if _, err := e.s.UpdateIssue(e.ctx, e.admin, k, IssuePatch{Status: &st}); err != nil {
@@ -204,7 +202,6 @@ func TestTaskSessionWarnsOnUnrelatedWork(t *testing.T) {
 		t.Errorf("a task session got the note: %q", n)
 	}
 
-	// No session row known (its hooks not in yet): the CLI's binding counts.
 	plain, _ := e.s.TokenActor(e.ctx, tok)
 	fresh := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Fresh", Agent: "claude"})
 	task, err := e.s.AgentTake(e.ctx, plain, fresh.Key, "")

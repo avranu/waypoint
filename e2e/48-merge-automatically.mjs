@@ -87,12 +87,10 @@ let api, forge, repoID, prID;
   api = (m, p, d) => call(m, p, d).then((r) => (r.status() === 204 ? null : r.json()));
   await api("POST", "/projects", { name: "Auto", key: KEY });
   forge = await api("POST", "/forges", { kind: "github", name: "Fake GitHub auto", base_url: fake, token: "tok", webhook_secret: SECRET });
-  // Logins not listed in the forge's people map have their text held for a person.
   await api("PUT", `/forges/${forge.id}/people`, { people: [{ login: "robin", user: "robin" }] });
   repoID = (await api("POST", `/projects/${KEY}/repos`, { forge_id: forge.id, repo: REPO, sync_issues: false })).id;
   const repos = await api("GET", `/projects/${KEY}/repos`);
   ok(repos[0].auto_merge === true && repos[0].review_wait_minutes === 30 && repos[0].quiet_minutes === 10, `on by default: ${JSON.stringify(repos[0])}`);
-  // Do not close this context: the api helper calls later in the suite use its page's session.
 }
 
 // ---- the switch and the rules, at each width and theme ----

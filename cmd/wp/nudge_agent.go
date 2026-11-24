@@ -4,8 +4,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Claude Code reaps a foreground subagent's shells when it gives its final answer, so it waits in one foreground call; a background one is woken when its background Bash exits.
-
 const (
 	noteAgentWait = "agent-wait"
 	noteMonitor   = "monitor"

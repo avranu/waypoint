@@ -25,8 +25,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// never fails the session: an unreachable server queues the event in the state file for the next one
-
 const (
 	hookHTTPTimeout = 3 * time.Second
 	endHTTPTimeout  = 1200 * time.Millisecond
@@ -260,8 +258,6 @@ func procStart(pid int) string {
 	if err != nil {
 		return ""
 	}
-	// The command's name is in parentheses and may hold spaces: fields count
-	// from after the last ")".
 	i := bytes.LastIndexByte(b, ')')
 	if i < 0 {
 		return ""
@@ -273,7 +269,7 @@ func procStart(pid int) string {
 	if f[0] == "Z" || f[0] == "X" {
 		return ""
 	}
-	return f[19] // field 22 of the line: starttime
+	return f[19]
 }
 
 // harnessPid is the process the hook runs under that Claude Code started: the
@@ -338,7 +334,6 @@ func (c *cli) addSessionHeaders(req *http.Request) {
 		req.Header.Set("X-Waypoint-Claims", c.claims)
 	}
 	if prestart() {
-		// Prestart: no session exists yet and no person drives it, so the take counts as unattended.
 		req.Header.Set("X-Waypoint-Prestart", "1")
 		return
 	}
@@ -419,7 +414,7 @@ func (cs *cwdSession) dir(key string) string {
 	if cs.Cwd != "" {
 		return filepath.Clean(cs.Cwd)
 	}
-	return filepath.Clean(key) // an entry with no Cwd is keyed by its directory
+	return filepath.Clean(key)
 }
 
 // provablyAlive: the entry names the harness process and it is still running
@@ -469,15 +464,12 @@ func gitFactsAt(dir string) gitFacts {
 	if git("rev-parse", "--is-inside-work-tree") != "true" {
 		return g
 	}
-	// symbolic-ref also names a branch that has no commit yet.
 	g.Branch = git("symbolic-ref", "--short", "-q", "HEAD")
 	if g.Branch == "" {
 		g.Branch, g.Detached = "(detached "+git("rev-parse", "--short", "HEAD")+")", true
 	}
 	remote := git("remote", "get-url", "origin")
 	if remote == "" {
-		// A remote named like an option (a config's [remote "--all"]) is no
-		// remote git is told about: get-url would read it as one.
 		if first := strings.Fields(git("remote")); len(first) > 0 && codeindex.CheckRef(first[0]) == nil {
 			remote = git("remote", "get-url", first[0])
 		}
@@ -500,7 +492,6 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 	if err := json.NewDecoder(io.LimitReader(stdin, 4<<20)).Decode(&in); err != nil || in.SessionID == "" || in.HookEventName == "" {
 		return
 	}
-	// checks read the unwrapped prompt; the server gets it as typed and unwraps it once
 	raw := in.Prompt
 	if in.HookEventName == "UserPromptSubmit" {
 		in.Prompt = core.UnwrapPasted(in.Prompt)
@@ -510,14 +501,12 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 	var typedKind string
 	typedAnswered := false
 	if in.HookEventName == "UserPromptSubmit" {
-		// the lookup runs only under --no-prompts or for /compact and /exit; the server's record is used up by the event, not by the lookup
 		if p := strings.TrimSpace(in.Prompt); c.server() != "" && c.token() != "" && (noPrompts || p == "/compact" || p == "/exit") {
 			typedID, typedKind, typedAnswered = c.matchTyped(in)
 			if !typedAnswered {
 				c.countDrop("typed_lookup", "UserPromptSubmit", 1)
 			}
 		}
-		// runs locally so the guard applies with no server; a prompt pasted into a session the quota guard stopped goes no further
 		if refusal := c.noteAttendanceKind(in, typedKind, typedAnswered); refusal != "" {
 			_, _ = stdout.Write(promptStop(refusal))
 			return
@@ -532,13 +521,10 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 		}
 		c.forgetStopSent(in.SessionID)
 		if !strings.HasPrefix(strings.TrimSpace(in.Prompt), "<task-notification>") {
-			// a message, a review's findings: a summary written before it
-			// mustn't end the turn it starts (WP-1093)
 			c.dropSessionSummaries(in.SessionID)
 		}
 	}
 	if in.HookEventName == "Stop" && c.stopAlreadySent(in.SessionID) {
-		// The turn's summary went with the Stop that wp ship already sent; this later Stop reports only what still runs.
 		in.LastMessage = ""
 	}
 	if in.HookEventName == "UserPromptSubmit" {
@@ -554,7 +540,6 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 			slash = "keep"
 		}
 	}
-	// Agent tracking runs before the no-server return, so it is kept with no server.
 	c.trackAgentsLocally(in)
 	if c.server() == "" || c.token() == "" {
 		if slash != "" {
@@ -572,7 +557,6 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 			ev.Repo, ev.Branch, ev.Worktree = git.Repo, git.Branch, git.Worktree
 		}
 	}
-	// The mode and effort reach the server only with the events the hook sends; a change mid-turn is recorded at the next of those, with its time.
 	ev.PermissionMode, ev.Effort = in.PermissionMode, in.effortLevel()
 	switch in.HookEventName {
 	case "SessionStart":
@@ -585,10 +569,10 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 		rememberSession(c, in)
 		c.autoUpdateInBackground()
 	case "UserPromptSubmit":
-		prompt := in.Prompt // unwrapped above, so the digest is of what was typed
+		prompt := in.Prompt
 		p := strings.TrimSpace(prompt)
 		if noPrompts {
-			ev.TypedID = typedID // neither the text nor a digest of it leaves this machine
+			ev.TypedID = typedID
 		} else {
 			ev.PromptSum = core.PromptSum(prompt)
 		}
@@ -599,7 +583,6 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 				ev.Prompt = "/keep"
 			}
 		} else if key, ok := c.pastedPromptKey(in.SessionID, p); ok {
-			// An autopilot prompt is marked so it never counts as a person's prompt; under --no-prompts only the mark is sent.
 			ev.Prompt = autopilotPromptMark + " started this session for " + key
 			switch {
 			case noPrompts:
@@ -609,16 +592,12 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 				ev.Prompt += "\n\n" + prompt
 			}
 		} else if !noPrompts {
-			ev.Prompt = raw // the server unwraps it, once
+			ev.Prompt = raw
 		} else if fixed := fixedWaypointPrompt(p); fixed != "" && !typedAnswered {
-			// The lookup did not answer. These texts are Waypoint's own
-			// constants, not a person's words, so sending them leaks nothing
-			// and lets the server match its record by digest.
 			ev.Prompt = fixed
 		} else if mark := harnessPromptMark(p); mark != "" {
 			ev.Prompt = mark
 		}
-		// A typed prompt can hold a pasted key or token, so it is redacted before it leaves the machine.
 		ev.Prompt, _, _ = redactTextCounted(ev.Prompt, []string{c.token()})
 		if noPrompts && ev.Prompt == "" && p != "" {
 			ev.PromptWithheld = true
@@ -674,7 +653,6 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 		ev.EndReason = in.Reason
 		ev.Pending = stopPending(in, []string{c.token()}, noPrompts)
 		ev.InputTokens, ev.OutputTokens, ev.ContextTokens, _ = sessionTotals(c, in)
-		// Its tasks' pushes run later, in a detached process, once no other session is in their checkouts.
 		c.pushOnSessionEnd(in.SessionID, in.Cwd, in.Reason)
 	default:
 		return
@@ -697,8 +675,6 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 	case "Stop":
 		if over, spent := c.fanoutSessionOver(in.SessionID); over {
 			if res != nil {
-				// The session ends here, so a pending message can't block the
-				// stop; show it with the note rather than drop it.
 				if out := stopOutput("", strings.TrimSpace(res.Note+"\n"+res.Text)); out != nil {
 					_, _ = stdout.Write(out)
 				}
@@ -708,12 +684,9 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 			return
 		}
 	case "SessionEnd":
-		// However a package's session ended, the next package may start; an
-		// item already ended (wp done, its budget) stays as it ended.
 		fanoutEnded("ended", in.TranscriptPath, c.sessionCost(in.SessionID))
 	}
 	if slash != "" && (res == nil || res.Block == "") {
-		// Never on to the model: the command file's body would answer it.
 		why := "Waypoint didn't answer"
 		if res != nil {
 			why = "Waypoint's server doesn't know it yet"
@@ -723,7 +696,7 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 	}
 	if res == nil {
 		if in.HookEventName == "SessionStart" {
-			_, _ = stdout.Write(sessionStartOutput(c.withTidyHint("", in), kit)) // the hint needs no server
+			_, _ = stdout.Write(sessionStartOutput(c.withTidyHint("", in), kit))
 		}
 		if shipText != "" {
 			_, _ = stdout.Write(hookContext("UserPromptSubmit", shipText))
@@ -735,12 +708,8 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 	switch in.HookEventName {
 	case "SessionStart":
 		c.saveEnvHosts(ev.Repo, res.EnvHosts)
-		// The tidy hint shells out to git with no deadline: it runs before the
-		// pause is marked told, so nothing slow sits between the mark and the
-		// write (WP-1398).
 		text := c.withTidyHint(res.Text, in)
 		text = joinParts(c.pauseTell(in.SessionID, hookLateAfter(hookSessionStartTimeout)), text)
-		// The session's instructions first (ADR146): Claude Code cuts the end.
 		_, _ = stdout.Write(sessionStartOutput(joinParts(res.Instructions, text), kit))
 	case "SubagentStart":
 		if res.Instructions != "" {
@@ -767,8 +736,6 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 		if text == "" && res.Await > 0 {
 			text = c.awaitMessage(ev, res.Await)
 		}
-		// The server sends decisions only once per stop (never at a stop a
-		// hook already continued), and each message once.
 		if out := stopOutput(text, res.Note); out != nil {
 			_, _ = stdout.Write(out)
 		}
@@ -888,7 +855,6 @@ func rememberSession(c *cli, in hookEventInput) {
 			if s.Cwds == nil {
 				s.Cwds = map[string]*cwdSession{}
 			}
-			// Entries are keyed by session, so sessions started in one directory do not overwrite each other's entries.
 			moved := map[string]*cwdSession{}
 			for k, old := range s.Cwds {
 				if old != nil && old.Cwd == "" && old.Session != "" {
@@ -910,8 +876,6 @@ func rememberSession(c *cli, in hookEventInput) {
 					cs.Pid, cs.PidStart = pid, start
 				}
 			}
-			// One harness process has one session at a time: a /clear or a
-			// resume in the same process replaced the one it had.
 			if cs.Pid != 0 && cs.PidStart != "" {
 				for k, other := range s.Cwds {
 					if other != nil && k != in.SessionID && other.Pid == cs.Pid && other.PidStart == cs.PidStart {
@@ -1028,16 +992,12 @@ type hookReply struct {
 // Unreachable (or failing) servers queue it; one that refuses it (a revoked
 // token, a bad event) drops it. The reply is nil unless the server took it.
 func (c *cli) sendSessionEvent(ev sessionEvent) *hookReply {
-	c.expireOutbox() // counted before the counts are taken, so they go out in this call
+	c.expireOutbox()
 	queued := c.freshOutbox()
 	events := make([]sessionEvent, 0, len(queued)+1)
 	for _, q := range queued {
 		events = append(events, q.Event)
 	}
-	// What the outbox dropped rides with this event as a report with an id.
-	// It stays in the state until a send got through: the server ignores an
-	// id it has already applied, so sending it again after a timeout, a 5xx
-	// or a refusal (which rolls the batch back) is safe (WP-1468).
 	rep := c.claimDrops()
 	events = append(events, ev)
 	events[len(events)-1].Drops, events[len(events)-1].DropsID = rep.fields()
@@ -1050,9 +1010,6 @@ func (c *cli) sendSessionEvent(ev sessionEvent) *hookReply {
 			c.queueEvent(ev)
 			return nil
 		}
-		// The server understood and said no: sending it again won't help. But
-		// it refused the batch, not necessarily every event in it, so send
-		// them one at a time: the good queued events still get through.
 		var settled []queuedEvent
 		for _, q := range queued {
 			if _, err := c.call("POST", "/api/v1/sessions/hook", map[string]any{"events": []sessionEvent{q.Event}}); err != nil {
@@ -1067,12 +1024,11 @@ func (c *cli) sendSessionEvent(ev sessionEvent) *hookReply {
 		}
 		c.dropOutbox(settled)
 		if len(queued) == 0 {
-			// A refused event with nothing queued to retry is gone; its drops report stays in flight for the next send.
 			c.countDrop("refused", ev.Event, 1)
 			return nil
 		}
 		one := ev
-		rep = c.claimDrops() // Re-sends the same drops report under its own ID, so a retry after a lost reply is counted once (sessions.go:217-218).
+		rep = c.claimDrops()
 		one.Drops, one.DropsID = rep.fields()
 		if b, err = c.call("POST", "/api/v1/sessions/hook", map[string]any{"events": []sessionEvent{one}}); err != nil {
 			if !serverRefused(err) {
@@ -1152,9 +1108,9 @@ func (c *cli) queueEvent(ev sessionEvent) {
 	}
 	if ev.Event == "UserPromptSubmit" && isSessionCommand(ev.Prompt) {
 		c.countDrop("unqueued", ev.Event, 1)
-		return // /wp next an hour late would surprise; the person was told it did nothing (WP-562)
+		return
 	}
-	ev.Drops, ev.DropsID = nil, "" // sent from the state's counts, never from a copy
+	ev.Drops, ev.DropsID = nil, ""
 	if err := c.updateStateWithin(c.preOutputWait(), func(s *State) {
 		s.Outbox = append(s.Outbox, queuedEvent{Event: ev})
 		for len(s.Outbox) > 1 && (len(s.Outbox) > outboxMax || outboxBytes(s.Outbox) > outboxMaxBytes) {
@@ -1382,7 +1338,7 @@ func (c *cli) matchTyped(in hookEventInput) (id int64, kind string, answered boo
 	if json.Unmarshal(b, &pending) != nil {
 		return 0, "", false
 	}
-	for _, sum := range sums { // its own digest first, as the server tries them
+	for _, sum := range sums {
 		for _, p := range pending {
 			if p.Sum == sum {
 				return p.ID, p.Kind, true

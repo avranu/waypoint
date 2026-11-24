@@ -1,5 +1,3 @@
-// Shows the windows as the status line last reported them, not live values.
-
 import { CircleCheck, CircleDashed, TriangleAlert } from 'lucide-react'
 import clsx from 'clsx'
 import { LineChart, Legend, Sparkbars, viz } from '@/components/charts'

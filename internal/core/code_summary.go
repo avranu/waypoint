@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-// The newest summary per repo is kept, keyed by the forge's repo id so a rename or transfer keeps it.
-
 const (
 	codeSummaryMaxFiles = 20000
 	codeSummaryMaxPairs = 50000

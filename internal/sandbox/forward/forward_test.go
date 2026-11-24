@@ -84,7 +84,6 @@ func TestLoadAndRun(t *testing.T) {
 	if b, _ := os.ReadFile(filepath.Join(dir, "out")); string(b) != dir+"\ny\n" {
 		t.Errorf("the command saw %q", b)
 	}
-	// a command killed by a signal exits 128 plus the signal number, as a shell reports.
 	l.Argv = []string{"/bin/sh", "-c", "kill -TERM $$"}
 	if code, err := Run(l); code != 143 || err != nil {
 		t.Errorf("signalled: %d %v", code, err)

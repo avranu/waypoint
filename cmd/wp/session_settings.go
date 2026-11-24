@@ -4,8 +4,6 @@ import (
 	"strings"
 )
 
-// Stored in core.SessionPrefs on the server; a runner gets them with each job that starts a session.
-
 // sessionSettings mirrors core.SessionSettings.
 type sessionSettings struct {
 	RemoteControl  *bool  `json:"remote_control,omitempty"`

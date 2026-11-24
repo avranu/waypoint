@@ -59,7 +59,6 @@ func TestTraceFixBlamesTheMergeThatCarriedIt(t *testing.T) {
 		t.Fatalf("trace = %+v", got)
 	}
 	in := got.Introducers[0]
-	// The review round's own commit never counts; a mid-PR commit maps to the merge that landed it.
 	if in.PR != 5 || in.Share != 1 || in.Merge == in.Commit {
 		t.Fatalf("introducer = %+v", in)
 	}
@@ -348,7 +347,6 @@ func TestParseFixDiffReadsHunkBodiesByCount(t *testing.T) {
 	if len(files) != 1 || files[0].old != "q.sql" {
 		t.Fatalf("files = %+v", files)
 	}
-	// A removed line starting with "--" is content, not a file header.
 	if got := files[0].removed; len(got) != 1 || got[0] != 3 {
 		t.Fatalf("removed = %v", got)
 	}

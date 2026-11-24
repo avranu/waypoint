@@ -37,7 +37,6 @@ let root, t1, t2, t3;
   t1 = await api("POST", "/issues", { project: KEY, title: "Cache the board query" });
   t2 = await api("POST", "/issues", { project: KEY, title: "Also add an index" });
   t3 = await api("POST", "/issues", { project: KEY, title: "Vacuum the database after the index" });
-  // Lineage is set straight in the DB: sessions record it in production, and core tests cover that path.
   const db = new DatabaseSync(`${process.env.DIR}/wp.db`);
   db.exec("PRAGMA busy_timeout = 5000");
   const set = db.prepare(`UPDATE issues SET text_agent = ?, reporter_agent = ?, reviewed_at = NULL, origin_issue_id = ?, origin_depth = ? WHERE id = ?`);
@@ -80,7 +79,6 @@ for (const [width, scheme] of looks([[1440, "light"], [390, "light"], [390, "dar
   ok(/Written while working on/.test(n3) && n3.includes(t2.key) && n3.includes(t1.key) && n3.includes(root.key) && /depth 3/.test(n3), `${tag} t3 names its chain: ${n3}`);
   await note.getByRole("link", { name: t1.key }).click();
   await page.waitForURL(`${base}/issue/${t1.key}`);
-  // The note re-renders in place, so t3's text can still show until t1's arrives.
   await note.getByText(/depth 1/).waitFor().catch(() => {});
   ok(/depth 1/.test(await note.innerText()), `${tag} the link opens t1, at depth 1`);
   await page.goto(`${base}/issue/${t3.key}`);

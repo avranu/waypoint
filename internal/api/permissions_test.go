@@ -348,7 +348,6 @@ func TestPermissionTokenLimits(t *testing.T) {
 		t.Errorf("stream: %d", code)
 	}
 
-	// MCP reads arguments once: a duplicate key can't hide a comment.
 	edit, _, _ := svc.CreateToken(ctx, robin, core.TokenSpec{Name: "edit only", Permissions: []core.Permission{core.PermIssuesRead, core.PermIssuesEdit}})
 	editor := &client{t: t, base: ts.URL, http: http.DefaultClient, token: edit}
 	var out map[string]any

@@ -35,9 +35,6 @@ func TestAnalyzers(t *testing.T) {
 		"corelayers":    {"corelayers/internal/core", "corelayers/internal/core/kernel", "corelayers/internal/core/forge", "corelayers/internal/core/pr", "corelayers/internal/core/merge", "corelayers/internal/core/top", "corelayers/internal/core/stray"},
 		"testenv":       {"testenv/cli", "testenv/clean", "testenv/notests", "testenv/ranged"},
 	}
-	// These rules need the package's tests (llmSchemas, TestMain), so only
-	// the test variant reports; analysistest would hold the plain variant to
-	// the same want comments.
 	testVariant := map[string]bool{"schemachain": true, "testenv": true}
 	seen := map[string]bool{}
 	for _, a := range wplint.Analyzers {

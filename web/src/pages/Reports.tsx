@@ -547,7 +547,6 @@ function BurnupCard({
   picker: ReactNode
   weeks: number
 }) {
-  // Use points only when done work carries them too; otherwise a flat zero line looks broken.
   const usePoints =
     !!data?.some((w) => w.scope_points > 0) && !!data?.some((w) => w.done_points > 0)
   const unit = usePoints ? 'points' : 'issues'

@@ -17,7 +17,7 @@ func TestDailyGrokAuditBecomesATaskForClaude(t *testing.T) {
 	day := func(d int) *AutomationRun {
 		t.Helper()
 		ae.setClock(time.Date(2026, 11, d, 12, 31, 0, 0, time.UTC))
-		ae.runnerSeen(ae.box, true) // it kept polling
+		ae.runnerSeen(ae.box, true)
 		ae.s.RunTimedAutomations(ae.ctx)
 		ae.work()
 		runs := ae.env.runs(card)

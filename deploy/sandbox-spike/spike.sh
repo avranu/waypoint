@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Every VM except the bench VM runs with no NIC; the bench VM has user-mode networking and runs only this harness's scripts.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -34,7 +33,7 @@ print(json.dumps({"t": time.strftime("%Y-%m-%dT%H:%M:%S"), "test": a[0], "key": 
 }
 now() { date +%s.%N; }
 since() { awk -v a="$1" -v b="$(now)" 'BEGIN{printf "%.2f", b-a}'; }
-as_owner() { # The unit has no HOME, so HOME is set to the owner's to read the owner's login profile.
+as_owner() {
 	runuser -u "$OWNER" -- env HOME="$(getent passwd "$OWNER" | cut -d: -f6)" "$@"
 }
 owner_go() { as_owner bash -lc "go env $1"; }
@@ -85,8 +84,6 @@ prepare() {
 	log "prepare: done"
 }
 
-# Workload sources are staged as the repos' owner, so root never runs git in a
-# gitdir it doesn't own (PL7 §8.1).
 stage_sources() {
 	local name src sha
 	for name in waypoint node; do
@@ -104,7 +101,6 @@ stage_sources() {
 	stage_go
 }
 
-# go.mod may ask for a newer Go than the owner's installed one, so the toolchain is resolved with GOTOOLCHAIN=auto.
 stage_go() {
 	local goroot
 	if [ ! -x "$ROOT/stage/go/bin/go" ]; then
@@ -116,7 +112,6 @@ stage_go() {
 		chmod -R u+w "$ROOT/stage/go.tmp"
 		install -d "$ROOT/stage/gobin.tmp"
 		cp -a "$(owner_go GOPATH)/bin/." "$ROOT/stage/gobin.tmp/"
-		# Move go last: the -x guard above tests only that binary, so an interrupted copy must not leave it in place.
 		mv "$ROOT/stage/gobin.tmp" "$ROOT/stage/gobin"
 		mv "$ROOT/stage/go.tmp" "$ROOT/stage/go"
 	fi
@@ -139,7 +134,6 @@ stage_bare() {
 	fi
 }
 
-# Each bare run gets a fresh home: a kept Go build cache would make bare runs faster than a VM's fresh disk.
 fresh_home() {
 	local h=$1
 	rm -rf "$h"
@@ -176,11 +170,8 @@ stage_image() {
 	touch "$mnt/etc/cloud/cloud-init.disabled"
 	install -d "$mnt/lib/modules"
 	cp -a "/lib/modules/$KVER" "$mnt/lib/modules/"
-	# The guest user has the spike user's uid so virtiofs ownership lines up.
 	chroot "$mnt" groupadd -g "$SUID" agent
 	chroot "$mnt" useradd -m -u "$SUID" -g "$SUID" -s /bin/bash agent
-	# The guest boots the host kernel with no initrd from vda1 alone; the image's
-	# /boot and /boot/efi partitions aren't needed and mustn't stall the boot.
 	sed -i -E '/[[:space:]]\/boot(\/efi)?[[:space:]]/s/^/#/' "$mnt/etc/fstab"
 	install -d "$mnt/etc/systemd/network"
 	printf '[Match]\nName=e*\n\n[Network]\nDHCP=yes\n' >"$mnt/etc/systemd/network/10-spike.network"
@@ -314,8 +305,6 @@ t_contained() {
 	t_rename_ancestor
 }
 
-# A bind-mounted store pins its directory: renaming or replacing an ancestor of
-# the store source afterwards must not change what a new unit sees (PL7 §5.2).
 t_rename_ancestor() {
 	local src=$ROOT/rename/host-store pin=/var/lib/waypoint-spike/store got props=()
 	log "contained: rename-of-ancestor"
@@ -362,7 +351,6 @@ vm_start() {
 
 	dev=device
 	[ "$mach" = q35 ] && dev=pci
-	# firmware_args output is word-split unquoted, so it must print plain words with no spaces.
 	# shellcheck disable=SC2207,SC2054
 	qemu=(qemu-system-x86_64 -M "$mach" $(firmware_args) -enable-kvm -cpu host -smp "$VM_CPUS" -m "$VM_MEM"
 		-nodefaults -no-user-config -display none -no-reboot
@@ -468,7 +456,7 @@ vm_follow() {
 		fi
 		sleep 2
 	done
-	vm_relay "$name" # lines written just before poweroff
+	vm_relay "$name"
 	grep -aq SPIKE_DONE "$ROOT/vm/run-$name/serial.log" || rec "vm_$name" incomplete "no SPIKE_DONE"
 	rec "vm_$name" mem_peak_qemu_pss_kb "$peak"
 	rec "vm_$name" total_secs "$(since "$t0")"
@@ -483,7 +471,6 @@ t_vm_start() {
 	done
 }
 
-# Without an RTC the guest kernel spends about 5 s failing to read the time, so rtc=on.
 TUNED_MACHINE=${TUNED_MACHINE:-microvm,rtc=on}
 TUNED_APPEND=${TUNED_APPEND:-initcall_debug systemd.mask=apparmor.service systemd.mask=snapd.apparmor.service systemd.mask=lxd-installer.socket systemd.mask=apport.service systemd.mask=pollinate.service }
 t_vm_tuned() {
@@ -572,7 +559,6 @@ t_virtiofs() {
 	systemctl stop wpspike-virtiofsd 2>/dev/null || true
 }
 
-# Each job gets its own /tmp: golangci-lint locks /tmp/golangci-lint.lock, and parallel jobs sharing one /tmp fail.
 bare_job() {
 	systemd-run --unit="wpspike-$1" --uid="$SU" --gid="$SU" --collect --wait --pipe --quiet \
 		-p "Slice=$SLICE" -p "CPUQuota=$((VM_CPUS * 100))%" -p "MemoryMax=${VM_MEM}M" -p PrivateTmp=yes \
@@ -580,7 +566,6 @@ bare_job() {
 		-- /bin/bash -c "for w in waypoint node; do bash $ROOT/bare/bench.sh \$w warmup; bash $ROOT/bare/bench.sh \$w timed; done" 2>&1 || echo "SPIKE_RESULT bench_runner_rc $?"
 }
 
-# Alternating bare and VM rounds spreads any drift in host load across both sides.
 BENCH_ROUNDS=${BENCH_ROUNDS:-2}
 t_bench() {
 	need_root bench
@@ -613,7 +598,7 @@ LOAD_IDLE_MEM=${LOAD_IDLE_MEM:-2048}
 
 load_limits() {
 	if [ "$1" = on ]; then
-		systemctl start "$SLICE" # an implicit slice must be loaded to take properties
+		systemctl start "$SLICE"
 		systemctl set-property --runtime "$SLICE" MemoryHigh=20G MemoryMax=22G CPUWeight=50 CPUQuota=600% TasksMax=16384
 		systemctl set-property --runtime system.slice MemoryLow=20G
 	else
@@ -682,7 +667,7 @@ load_pass() {
 	rec "load_$pass" wall_secs "$(since "$t0")"
 	for i in $(seq 1 "$LOAD_IDLE_VMS"); do mem_sample "load-idle-$i" end; done
 	load_stop_units
-	sleep 30 # Let the load watch run 30 seconds past the work to record the recovery tail.
+	sleep 30
 	kill "$watch" 2>/dev/null || true
 	wait "$watch" 2>/dev/null || true
 	return "$ok"
@@ -693,7 +678,6 @@ t_load() {
 	local i
 	[ -f "$ROOT/contained/etc/passwd" ] || die "load needs the contained step's files: run contained first"
 	rm -rf "$ROOT/load"
-	# 0711: the bare jobs run as the spike user and must reach their homes.
 	install -d -m 0711 "$ROOT/load"
 	for i in $(seq 1 "$LOAD_JOBS"); do fresh_home "$ROOT/load/bare-$i"; done
 	rm -f "$RES/load-bare.jsonl" "$RES/load-sandboxed.jsonl"
@@ -745,7 +729,6 @@ cleanup() {
 	log "cleanup: done (results kept in $RES; packages kept)"
 }
 
-# Runs as a transient unit so it outlives the shell: a Waypoint request's command is stopped after 10 minutes.
 start() {
 	need_root start
 	[ $# -gt 0 ] || set -- all

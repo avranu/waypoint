@@ -48,8 +48,6 @@ var systemView = []string{
 	"LockPersonality=yes",
 	"SystemCallArchitectures=native",
 	"SystemCallFilter=@system-service",
-	// A refused call fails, as a container's would, instead of killing
-	// the process: build tools probe.
 	"SystemCallErrorNumber=EPERM",
 	"Slice=" + sandbox.Slice,
 }

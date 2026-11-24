@@ -1,4 +1,3 @@
-# SQLite needs one writer: the StatefulSet's rolling update deletes the old pod before its replacement starts, so two writers never share the volume.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -52,7 +51,7 @@ spec:
           startupProbe:
             httpGet: { path: /healthz, port: http }
             periodSeconds: 2
-            failureThreshold: 60 # migrations on a large DB get up to 2 minutes
+            failureThreshold: 60
           readinessProbe:
             httpGet: { path: /readyz, port: http }
             periodSeconds: 10
@@ -87,7 +86,6 @@ spec:
   ports:
     - { name: http, port: 80, targetPort: http }
 ---
-# Traefik (k3s default) streams server-sent events without extra settings.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:

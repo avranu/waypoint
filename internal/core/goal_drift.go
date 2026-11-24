@@ -101,9 +101,6 @@ func (s *Service) goalDriftCheck(ctx context.Context, projectID int64) error {
 	var prevChecked, prevFinished int64
 	var prevGrounded float64
 	_ = s.db.R.QueryRowContext(ctx, `SELECT checked_at, grounded, finished FROM goal_drift_checks WHERE project_id = ?`, projectID).Scan(&prevChecked, &prevGrounded, &prevFinished)
-	// Each owner hears the week as they see it (a sub-project they can't
-	// open stays out of their counts); the record keeps the first owner's
-	// view, or the whole project's with no owner.
 	views := make([]*GoalsOverview, len(owners))
 	for i, id := range owners {
 		u, err := s.userByID(ctx, s.db.R, id)

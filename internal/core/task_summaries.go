@@ -13,8 +13,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Waiting-on-you lines that no session request covers are filed as one auto request.
-
 const (
 	summaryMax     = 20000
 	summaryAsksMax = 10
@@ -59,7 +57,6 @@ func (s *Service) recordTaskSummary(ctx context.Context, t *tx, actor *Actor, x 
 	if prompted, err := s.promptedAfterDone(ctx, t, x.ID, run); err != nil || prompted {
 		return err
 	}
-	// An adversarial review's report is its work-log entry, so a review that started gets no task summary.
 	var doneIssue int64
 	if err := t.QueryRowContext(ctx, `SELECT issue_id FROM agent_runs WHERE id = ?`, run).Scan(&doneIssue); err != nil {
 		return err
@@ -139,7 +136,7 @@ func (s *Service) fileSummaryAsks(ctx context.Context, t *tx, actor *Actor, x *A
 	}
 	reqID, _, err := s.createRequestTx(ctx, t, actor, x, RequestInput{Kind: RequestQuestion, Title: title, Source: requestAuto, Body: b.String(), Questions: qs}, at)
 	if IsInvalid(err) {
-		return nil // Invalid input (such as an over-long body) is dropped so the Stop still succeeds.
+		return nil
 	}
 	if err != nil {
 		return err
@@ -239,7 +236,6 @@ func (s *Service) unfiledAsks(ctx context.Context, q queryer, x *AgentSession, m
 	if len(asks) == 0 {
 		return []string{}, nil
 	}
-	// Auto requests quote the whole agent message in their body, so only their title is read.
 	rows, err := q.QueryContext(ctx, `SELECT title, CASE WHEN source = ? THEN '' ELSE body END FROM requests WHERE session_id = ? ORDER BY id DESC LIMIT 200`, requestAuto, x.ID)
 	if err != nil {
 		return nil, err

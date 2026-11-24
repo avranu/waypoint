@@ -943,7 +943,6 @@ func TestLineUpdateActSkipsAFrontThatLeft(t *testing.T) {
 				t.Fatalf("plan: %+v", acts)
 			}
 			before := len(se.sg.updatedPRs())
-			// an update is tried once per base tip
 			se.sg.baseTip = "tip-9"
 			se.sg.behind = map[string]bool{head7s: true}
 			stateBefore := se.pr(7).State

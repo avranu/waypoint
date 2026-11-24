@@ -15,8 +15,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Whether a rewrite supersedes the earlier task or pulls against it takes reading both; git blame finds the overlap, and the agent records which.
-
 const (
 	// rewriteMaxAge: work merged longer ago than this is the base the change
 	// builds on, not someone's recent intent. Every rewrite measured
@@ -136,15 +134,10 @@ func (s *Service) RewrittenWork(ctx context.Context, actor *Actor, ref, repo str
 	}
 	skip := map[int64]bool{d.ID: true}
 	for _, r := range d.Relations {
-		// Waypoint's own relation from an earlier ship doesn't answer the
-		// pair: it is read again (NoteRewrites), unless something else
-		// relates them too.
 		if r.Found != rewriteFound {
 			skip[r.Issue.ID] = true
 		}
 	}
-	// A pair whose inferred relation someone removed or replaced stays
-	// unrelated, whichever of the two ships (rewrite_dismissals).
 	dismissed, err := s.rewriteDismissed(ctx, s.db.R, d.ID)
 	if err != nil {
 		return nil, err
@@ -274,8 +267,6 @@ func RewriteSpan(lines, pr, prs int) string {
 // actor can't see. A call without head and with nothing found says too little
 // to drop anything.
 func (s *Service) NoteRewrites(ctx context.Context, actor *Actor, ref, repo, head string, prs []RewrittenPR) ([]*RewrittenTask, error) {
-	// The call records relations and evidence, so it is an edit whatever the
-	// route says: core is the authority (WP-1370).
 	if err := actor.need(PermIssuesEdit); err != nil {
 		return nil, err
 	}
@@ -306,8 +297,6 @@ func (s *Service) recordRewrites(ctx context.Context, actor *Actor, d *IssueDeta
 	var got []*RewrittenTask
 	err := s.write(ctx, actor, func(t *tx) error {
 		got = nil
-		// The role is checked again here: it may have been taken away since
-		// NoteRewrites read it, and then nothing is recorded or dropped.
 		if err := s.requireProjectRole(ctx, t, actor, d.ProjectID, RoleEditor); err != nil {
 			return nil
 		}
@@ -331,10 +320,6 @@ func (s *Service) recordRewrites(ctx context.Context, actor *Actor, d *IssueDeta
 			if !s.canSee(ctx, t, actor, o.ID, o.ProjectID) {
 				continue
 			}
-			// What the pair has now, read in this write: Waypoint's own
-			// relation is refreshed; anything else (a person's or an agent's,
-			// either way round, made since RewrittenWork read) stands alone,
-			// and nothing is recorded for the pair.
 			var kind string
 			var how sql.NullString
 			err = t.QueryRowContext(ctx, `SELECT kind, found FROM issue_relations
@@ -351,13 +336,10 @@ func (s *Service) recordRewrites(ctx context.Context, actor *Actor, d *IssueDeta
 			}
 			got = append(got, r)
 		}
-		// A call drops only evidence it can speak for: the same repo, and, when it names no commit, only if it found something (an empty reading without a commit drops nothing); never a task the actor cannot see.
 		keep := map[int64]bool{}
 		for _, r := range got {
 			id, err := s.resolveIssueID(ctx, t, r.Key)
 			if err != nil {
-				// An unreadable key must not read as "no longer replaced":
-				// the evidence stays and the whole record fails.
 				return err
 			}
 			keep[id] = true
@@ -408,7 +390,6 @@ func (s *Service) recordRewrites(ctx context.Context, actor *Actor, d *IssueDeta
 				}
 				if inserted {
 					r.Recorded = true
-					// A relation to a draft is recorded on the draft (relationEventHome), so the draft's key stays out of this task's history.
 					o, err := s.issueByID(ctx, t, otherID, false)
 					if err != nil {
 						return err
@@ -504,7 +485,7 @@ func (s *Service) rewriteLeads(ctx context.Context, actor *Actor, issueID int64)
 	var out []string
 	for _, r := range got {
 		if len(out) == rewriteMaxShown {
-			break // Evidence piles up over repos and ships; the query orders by size, so the prompt gets the largest few.
+			break
 		}
 		o, err := s.issueByID(ctx, s.db.R, r.id, false)
 		if err != nil || !s.canSee(ctx, s.db.R, actor, o.ID, o.ProjectID) {
@@ -517,8 +498,6 @@ func (s *Service) rewriteLeads(ctx context.Context, actor *Actor, issueID int64)
 		case days > 1:
 			ago = fmt.Sprintf("%d days ago", days)
 		}
-		// %q leaves no newline or control character in the title; untrusted
-		// leaves nothing that closes the wrapper the lead goes into.
 		lead := untrusted(fmt.Sprintf("this change replaces %d lines that %s (%q) added in PR %d, %s: does it undo what %s did, on purpose?", r.lines, o.Key, clipText(strings.TrimSpace(o.Title), 120), r.pr, ago, o.Key))
 		if r.head == "" {
 			lead += " (traced by an older wp without the commit it read, so this may be out of date)"

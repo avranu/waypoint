@@ -1,7 +1,5 @@
 package core
 
-// Several Actions runs can share a head, so each job's check takes its state from one run per workflow and event, not the newest status per name.
-
 import (
 	"context"
 	"errors"
@@ -88,14 +86,14 @@ func (c *httpForgeClient) fgRunChecks(ctx context.Context, f *Forge, repo, sha s
 	case errors.Is(err, ErrNotFound) || isStatus(err, http.StatusNotFound):
 		return combined, nil
 	case err != nil:
-		return nil, err // no guessing a green from part of the data
+		return nil, err
 	}
 	byNumber := map[int64]ActionRun{}
 	for _, r := range runs {
 		byNumber[r.Index] = r
 	}
 	counting := countingRuns(runs)
-	jobs := map[int64][]ActionJob{} // Status URLs number jobs by their id order, so jobs are kept sorted by id.
+	jobs := map[int64][]ActionJob{}
 	var history []CommitCheck
 	historyRead := false
 	out := make([]CommitCheck, 0, len(combined))
@@ -139,8 +137,6 @@ func (c *httpForgeClient) fgRunChecks(ctx context.Context, f *Forge, repo, sha s
 		}
 		state := checkState(js[j].Status)
 		if !posted {
-			// ID is the head's newest status of this name, so a freshness
-			// check comparing status ids doesn't take the job for stale.
 			st = CommitCheck{ID: ch.ID, Created: ch.Created, Name: ch.Name, Source: ch.Source, URL: fmt.Sprintf("%s/jobs/%d", strings.TrimRight(cr.HTMLURL, "/"), j)}
 		}
 		if !posted || st.State != state {

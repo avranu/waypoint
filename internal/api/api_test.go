@@ -183,7 +183,6 @@ func TestLoginRateLimit(t *testing.T) {
 		t.Errorf("login without X-Waypoint-Client: %d", code)
 	}
 	c.web = true
-	// Successful logins don't count against the login rate limit.
 	for n := 0; n < 12; n++ {
 		if code, _ := c.do("POST", "/api/v1/auth/login", map[string]any{"login": "robin", "password": "correct horse battery"}); code != 200 {
 			t.Fatalf("login %d: %d", n, code)
@@ -256,7 +255,6 @@ func TestMCP(t *testing.T) {
 }
 
 func TestStream(t *testing.T) {
-	// Production's ReadTimeout (2 minutes, cmd/waypoint/main.go:378) must not end live streams.
 	ts, svc := setupServer(t, func(s *http.Server) { s.ReadTimeout = 300 * time.Millisecond })
 	ctx := context.Background()
 	u, _ := svc.CreateUser(ctx, core.SystemActor(), core.CreateUserInput{Username: "robin", Email: "j@example.com", Password: "correct horse battery", IsAdmin: true})

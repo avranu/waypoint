@@ -255,7 +255,6 @@ func TestReviewBeforePRNotShipped(t *testing.T) {
 	if _, err := a.s.AgentTake(a.ctx, a.ag, first.Key, ""); err != nil {
 		t.Fatal(err)
 	}
-	// With no audit runner, the round's own prompt does the review; it ends with wp ship.
 	_, _ = a.s.db.W.Exec(`DELETE FROM runners WHERE name = 'auditbox'`)
 	if _, err := a.ship(first.Key, ShipAuto); err != nil {
 		t.Fatal(err)
@@ -334,7 +333,6 @@ func TestReviewBeforePRInterrupted(t *testing.T) {
 		var in AutopilotJob
 		_ = json.Unmarshal(a.jobs[before].Input, &in)
 		a.prompt(in.Review)
-		// A person's prompt alone doesn't end the review; the session has to leave it for another task.
 		if err := a.s.write(a.ctx, SystemActor(), func(t *tx) error {
 			return a.s.stopStep(a.ctx, t, a.session, "working", "it took another task itself")
 		}); err != nil {

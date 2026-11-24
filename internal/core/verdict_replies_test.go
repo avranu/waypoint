@@ -148,7 +148,6 @@ func TestRelayedVerdictReplies(t *testing.T) {
 		t.Errorf("reply:\n%s", p)
 	}
 
-	// A bot's reply in its own thread is no new work; a person's is.
 	be.sg.setNotes(
 		PRNote{ID: "702", Kind: "comment", Author: "mirror", Body: crReview, At: at},
 		PRNote{ID: "703", Kind: "comment", Author: "mirror", Body: crLine, At: at},

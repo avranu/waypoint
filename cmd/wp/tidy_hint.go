@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-// Counting is bounded by tidyHintBudget (300 ms), so SessionStart never waits on it for long.
-
 const (
 	tidyHintOver  = 10
 	tidyHintEvery = 24 * time.Hour

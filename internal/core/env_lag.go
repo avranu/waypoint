@@ -1,7 +1,5 @@
 package core
 
-// Behind-since counts merges, not just the latest head push, which a moving branch always has; only the latest push per branch is stored.
-
 import (
 	"context"
 	"database/sql"
@@ -95,7 +93,6 @@ func (s *Service) envBehindSince(ctx context.Context, e *Environment) (*envLag, 
 		}
 		return &envLag{env: e, head: e.Head, since: since}, nil
 	}
-	// If a merge came after the head's push, that push may never have reached Waypoint, so the head on record can be stale and the lag unknown.
 	missed, err := s.firstMergeAfter(ctx, e, since.Add(envLagHeadSlack))
 	if err != nil || missed != nil {
 		return nil, err
@@ -158,8 +155,6 @@ func (s *Service) envGotCommit(ctx context.Context, e *Environment) (*time.Time,
 func (s *Service) alertEnvLag(ctx context.Context, l *envLag, now time.Time) error {
 	e := l.env
 	return s.write(ctx, SystemActor(), func(t *tx) error {
-		// Only if nothing changed since it was read: a deploy that landed
-		// meanwhile, or another server's check, wins.
 		res, err := t.ExecContext(ctx, `UPDATE environments SET lag_alerted_at = ?
 			WHERE id = ? AND commit_sha = ? AND coalesce(lag_alerted_at, 0) = ?`,
 			now.UnixMilli(), e.ID, e.Commit, msOrZero(e.lagAlertedAt))

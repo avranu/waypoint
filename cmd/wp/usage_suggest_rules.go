@@ -48,7 +48,7 @@ func (in *sugInput) mains() []*sugSession {
 const (
 	sugDocTokens      = 2_500
 	sugDocTotal       = 5_000
-	sugDocWarn        = 10_000 // Claude Code itself warns at about 40k characters, which is 10k tokens at 4 bytes per token
+	sugDocWarn        = 10_000
 	sugMinSessions    = 3
 	sugCommentShare   = 0.25
 	sugCommentTokens  = 400

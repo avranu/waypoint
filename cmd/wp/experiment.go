@@ -8,8 +8,6 @@ import (
 	"strings"
 )
 
-// No answer (an older server, no run, a person's token) means the control arm.
-
 const (
 	expNextBrief   = "next_brief"
 	expSearchNudge = "search_nudge"
@@ -24,8 +22,6 @@ func (c *cli) fetchArms(key, via string) {
 	if key == "" {
 		return
 	}
-	// A task that draws no arm (or whose ask fails) must not print the text
-	// of the one taken before it.
 	c.delegation = ""
 	var got struct {
 		Arms map[string]struct {
@@ -36,9 +32,6 @@ func (c *cli) fetchArms(key, via string) {
 			Text string `json:"text"`
 		} `json:"delegation"`
 	}
-	// The delegation arm is asked for only where its text is printed: a
-	// JSON answer carries no prose, and a task given an arm it never saw
-	// would count as having had it.
 	body := map[string]any{"experiments": clientExperiments, "via": via, "delegation": !c.asJSON}
 	if err := c.do("POST", "/api/v1/issues/"+esc(key)+"/arms", body, &got); err != nil {
 		return

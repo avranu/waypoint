@@ -387,7 +387,6 @@ func (s *Service) hydrate(ctx context.Context, q queryer, issues []*Issue) error
 		byID[i.ID] = i
 		ids = append(ids, i.ID)
 	}
-	// Chunk to stay well under SQLite's variable limit.
 	for start := 0; start < len(ids); start += 500 {
 		chunk := ids[start:min(start+500, len(ids))]
 		ph, args := placeholders(len(chunk)), int64Args(chunk)
@@ -836,15 +835,11 @@ type IssueInput struct {
 	// (WP-67). Very long titles get that without saying so.
 	TitleIsText bool `json:"title_is_text"`
 
-	// madeParent: Parent is the draft this same call just created (a
-	// template's sub-tasks), so an agent may put sub-tasks under it.
-	madeParent bool
-	// Imported from outside is always a draft.
+	madeParent   bool
 	outside      bool
 	outsideBy    string
 	outsideForge *int64
-	// Title and Description are Waypoint's template text; stampTemplate marks them so in the same write.
-	template bool
+	template     bool
 }
 
 func parsePriorityAny(v any) (int, error) {
@@ -948,7 +943,7 @@ func (s *Service) CreateIssue(ctx context.Context, actor *Actor, in IssueInput) 
 			}
 			if parent.Draft {
 				if actor.HidesDrafts() && !in.madeParent {
-					return notFound("issue " + in.Parent) // the same answer as for no issue at all
+					return notFound("issue " + in.Parent)
 				}
 				in.Draft = true
 			}
@@ -977,7 +972,7 @@ func (s *Service) CreateIssue(ctx context.Context, actor *Actor, in IssueInput) 
 				}
 				return ErrForbidden
 			}
-			if actor.scope != nil { // a job token's reach is its project's; the owner's shares don't extend it
+			if actor.scope != nil {
 				return ErrForbidden
 			}
 			r, rerr := s.shareRole(ctx, t, actor.id(), parent.ID)
@@ -1040,7 +1035,6 @@ func (s *Service) CreateIssue(ctx context.Context, actor *Actor, in IssueInput) 
 		}
 		var rank float64
 		if in.After == "" && in.Before == "" && parent == nil && createdByPerson(actor) {
-			// A person's new issue goes to the top so they can find it and add more; agents' issues and sub-tasks go last.
 			rank, err = firstRank(ctx, t, p.ID)
 		} else {
 			rank, err = s.rankFor(ctx, t, p.ID, in.After, in.Before)
@@ -1151,7 +1145,6 @@ func (s *Service) CreateIssue(ctx context.Context, actor *Actor, in IssueInput) 
 		return nil, err
 	}
 	if in.Draft && actor.HidesDrafts() {
-		// Agents can't open a draft through GetIssue (issueRole hides it), so a filed draft comes back as the bare issue.
 		i, err := s.issueByID(ctx, s.db.R, id, false)
 		if err != nil {
 			return nil, err
@@ -1234,7 +1227,7 @@ func (s *Service) rankFor(ctx context.Context, t *tx, projectID int64, after, be
 		return 0, err
 	}
 	if pid != projectID {
-		return 0, notFound("issue " + ref) // don't confirm issues elsewhere exist
+		return 0, notFound("issue " + ref)
 	}
 	var crowded bool
 	if err := t.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM issues WHERE project_id = ? AND id != ? AND abs(rank - ?) < ?)`,
@@ -1454,8 +1447,7 @@ type IssuePatch struct {
 	// ViaLink is the URL of a pull request link on this issue that causes
 	// the status change: the link remembers the status it moved the issue
 	// from, so removing the link can undo it (WP-162).
-	ViaLink string `json:"via_link"`
-	// The PR whose merge caused this change; an objective counts a merge once, however many rules act on it.
+	ViaLink    string `json:"via_link"`
 	mergedLink string
 	Step       *string `json:"step"` // a step of the issue's workflow; "" clears
 	// Comment, when set, is added in the same transaction as the change
@@ -1552,9 +1544,6 @@ func (s *Service) BulkUpdate(ctx context.Context, actor *Actor, refs []string, p
 				ids = append(ids, id)
 			}
 		}
-		// Whatever order the caller listed them in, sub-tasks go before the
-		// parent they sit under, so closing a selection never trips the
-		// open-sub-task check just because the parent came first.
 		parentOf := map[int64]int64{}
 		for _, id := range ids {
 			var par sql.NullInt64
@@ -1578,7 +1567,6 @@ func (s *Service) BulkUpdate(ctx context.Context, actor *Actor, refs []string, p
 			if err != nil {
 				return err
 			}
-			// Re-parenting every descendant would flatten the tree.
 			pp := p
 			if descendants && !roots[id] {
 				pp.Parent = Opt[string]{}
@@ -1661,7 +1649,6 @@ func (s *Service) applyPatch(ctx context.Context, t *tx, actor *Actor, i *Issue,
 		}
 	}
 	if wrote {
-		// Automation text no person has read clears its review, so the screen reads it again.
 		if author := authorAgent(ctx, t, actor); author == "" && actor.Automation != nil {
 			sets = append(sets, "reviewed_by = NULL", "reviewed_at = NULL")
 		} else {
@@ -1843,7 +1830,6 @@ func (s *Service) applyPatch(ctx context.Context, t *tx, actor *Actor, i *Issue,
 		}
 		if !int64PtrEq(newParent, i.ParentID) {
 			sets, args = append(sets, "parent_id = ?"), append(args, nullInt(newParent))
-			// Only a person's move records who put it under its parent; an agent's move records no one.
 			var by any
 			if newParent != nil && actor.actsAsPerson() {
 				by = actor.id()
@@ -1858,7 +1844,6 @@ func (s *Service) applyPatch(ctx context.Context, t *tx, actor *Actor, i *Issue,
 		}
 	}
 	var newStatus *Status
-	// Shipped means the holding agent moved it by its PR link, or found it already moved by a project rule; a lapsed claim doesn't count.
 	shipped := false
 	if p.Status != nil {
 		st, err := s.resolveStatus(ctx, t, i.ProjectID, *p.Status)
@@ -1914,7 +1899,6 @@ func (s *Service) applyPatch(ctx context.Context, t *tx, actor *Actor, i *Issue,
 			}
 		}
 	}
-	// Shipping ends the run as done so wp next doesn't hand it back; workflow steps still hand on with wp done.
 	if shipped {
 		if err := s.endRun(ctx, t, i.ID, actor.Agent, "done", nil); err != nil {
 			return err
@@ -2079,10 +2063,8 @@ func (s *Service) setStatus(ctx context.Context, t *tx, i *Issue, st *Status, se
 	}
 	*sets, *args = append(*sets, "status_id = ?"), append(*args, st.ID)
 	if nowClosed && !wasClosed {
-		// Closing clears the agents' order, and an agent's close waits for a person's review.
 		agent := t.actor.agentName()
 		if agent == "" && t.actor.closesForWork() {
-			// An automation or token closing an agent's work counts as that agent's close.
 			var err error
 			if agent, err = s.workAgent(ctx, t, i.ID); err != nil {
 				return err
@@ -2251,7 +2233,6 @@ func (s *Service) PublishIssue(ctx context.Context, actor *Actor, ref string) (*
 		if !i.Draft {
 			return invalid("%s isn't a draft", i.Key)
 		}
-		// The walk stops at outside children: their text waits for its own reading.
 		ids, err := queryIDs(ctx, t, `WITH RECURSIVE d(id) AS (SELECT ? UNION SELECT x.id FROM issues x JOIN d ON x.parent_id = d.id WHERE x.outside = 0)
 			SELECT i.id FROM d JOIN issues i ON i.id = d.id WHERE i.draft = 1`, i.ID)
 		if err != nil {
@@ -2374,7 +2355,7 @@ func (s *Service) DeleteIssue(ctx context.Context, actor *Actor, ref string, cas
 		t.emit(&Event{Kind: EvIssueDeleted, ProjectID: i.ProjectID, IssueID: i.ID, IssueKey: i.Key, Old: i.Title, draft: i.Draft})
 		detail := "deleted “" + excerpt(i.Title, 120) + "”"
 		if i.Draft {
-			detail = "deleted a draft" // its title stays out of the audit log (WP-42)
+			detail = "deleted a draft"
 		}
 		if len(ids) > 1 {
 			detail += fmt.Sprintf(" and %d sub-issues", len(ids)-1)
@@ -2484,7 +2465,6 @@ func (s *Service) MoveToProject(ctx context.Context, actor *Actor, ref, projectR
 			newKey := fmt.Sprintf("%s-%d", dst.Key, number)
 			t.emit(&Event{Kind: EvIssueUpdated, ProjectID: dst.ID, IssueID: m.id, IssueKey: newKey, Field: "project",
 				Old: fmt.Sprintf("%s-%d", srcKey, m.number), New: newKey})
-			// Live clients of the old project need to drop it.
 			t.emit(&Event{Kind: EvProjectUpdated, ProjectID: i.ProjectID})
 			if err := s.reindex(ctx, t, m.id); err != nil {
 				return err
@@ -2681,7 +2661,7 @@ func filedAfterDone(a, b *Issue) (later, earlier *Issue) {
 func relationBasis(actor *Actor) string {
 	switch {
 	case actor.Automation != nil && actor.Automation.ID < 0:
-		return linkBasisInferred // Negative automation ids are Waypoint's own matchers (aiActorNamed): nobody chose those links.
+		return linkBasisInferred
 	case actor.Automation != nil:
 		return linkBasisAutomation
 	case !actor.actsAsPerson():
@@ -2729,7 +2709,6 @@ func (s *Service) relate(ctx context.Context, t *tx, actor *Actor, a, b *Issue, 
 	if namedIn != nil {
 		basis = linkBasisInferred
 	}
-	// A person's link to a task done before this one is a follow-up; a pair keeps one row, and a plain relation said again doesn't add a second.
 	found := ""
 	if kind == "relates" && namedIn == nil {
 		var follower int64
@@ -2796,8 +2775,6 @@ func (s *Service) relate(ctx context.Context, t *tx, actor *Actor, a, b *Issue, 
 		said += " (" + subkind + ")"
 	}
 	if holder, named := relationEventHome(a, b); holder == b {
-		// Recorded on the draft, so its key stays out of the published
-		// issue's history (WP-42).
 		rel := relationFrom(kind, src.ID != b.ID)
 		if subkind != "" {
 			rel += " (" + subkind + ")"
@@ -2867,9 +2844,6 @@ func (s *Service) RemoveRelation(ctx context.Context, actor *Actor, ref string, 
 		} else if err != nil {
 			return err
 		}
-		// A relation to a task the actor can't open isn't theirs to remove,
-		// and says nothing but what a missing one does: GetIssue doesn't
-		// list it, and removing it would write its key into this history.
 		otherID := dst
 		if src != a.ID {
 			otherID = src

@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-// The registry stays busy while background agents run, so idleness is read from the screen: esc to interrupt shows only while a turn runs.
-
 // inputBox is where Claude Code's input box sits on a captured screen:
 // lines as captured (escapes removed), plain the same trimmed, top the
 // index of the box's top border, at the line of its "❯", and bottom the
@@ -93,7 +91,7 @@ func turnShown(screen string) bool {
 	for i := b.bottom + 1; i < len(b.plain); i++ {
 		low := strings.ToLower(b.plain[i])
 		if strings.ContainsAny(firstRune(low), agentMarks) {
-			continue // An agent's line carries its own words; skip it so they can't read as Claude Code's 'esc to interrupt'.
+			continue
 		}
 		if strings.Contains(low, "esc to interrupt") {
 			return true

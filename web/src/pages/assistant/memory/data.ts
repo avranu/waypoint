@@ -1,5 +1,3 @@
-// Entry edits and deletes go through Hermes's own lock.
-
 import { queryOptions, useMutation, useQueryClient } from '@tanstack/react-query'
 import { ApiError, enc } from '@/lib/api'
 import { hermes, hermesQuery, hget } from '@/lib/assistant'

@@ -30,8 +30,6 @@ export function useHoverCard<T>() {
     window.clearTimeout(timer.current)
     setShown(null)
   }, [])
-  // A scroll moves the card's row away, but the row the pointer entered
-  // (which may have scrolled the list into view) still gets its card.
   const drop = useCallback(() => setShown(null), [])
   useEffect(() => () => window.clearTimeout(timer.current), [])
   useEffect(() => {

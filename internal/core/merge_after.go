@@ -1,7 +1,5 @@
 package core
 
-// A merge wait is a check reason, not queue membership: a waiting pull request isn't queueable, and a wait loop holds none of its members.
-
 import (
 	"context"
 	"database/sql"
@@ -25,11 +23,9 @@ type PRMergeWait struct {
 	// Mutual: the other one waits for this one too, directly or round a
 	// longer loop, so none of them holds.
 	Mutual bool `json:"mutual,omitempty"`
-	// apart: it is in a repo missing from a project this one's is in, so a
-	// merge check reason (read by whoever sees this one) doesn't name it.
-	apart bool
-	loop  int
-	tasks [2]int64
+	apart  bool
+	loop   int
+	tasks  [2]int64
 	// Stack: the pull request waited for is the one this is stacked on, its
 	// base being that one's head branch (WP-ADR153, WP-1670). It isn't set
 	// or dropped: moving this one off that branch (wp pr edit --base) or
@@ -243,10 +239,6 @@ func (s *Service) mergeAfterOnce(ctx context.Context, q queryer, pr *PullRequest
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	// From task links: a task linked to pr is blocked by a task (not
-	// cancelled) linked to another pull request. A link names its pull
-	// request by URL, or by repo and number on its forge (a URL written
-	// another way).
 	// #nosec G202 -- the joined SQL is fixed text; values are bound
 	rows, err = q.QueryContext(ctx, `SELECT o.id, o.repo, o.number, o.url, o.state, bp.key || '-' || bi.number, ap.key || '-' || ai.number,
 			`+mergeWaitApart+`, bi.project_id, ai.project_id
@@ -372,7 +364,6 @@ func linkOnForge(l, forge string) string {
 func (s *Service) mergeWaitReasons(ctx context.Context, pr *PullRequest) (reasons, notes []string) {
 	waits, err := s.mergeAfter(ctx, s.db.R, pr)
 	if err != nil {
-		// A failed read holds the pull request; it isn't 'no wait'.
 		return []string{"the pull requests it merges after couldn't be read"}, nil
 	}
 	for _, w := range waits {
@@ -414,7 +405,6 @@ func (s *Service) SetPRMergeAfter(ctx context.Context, actor *Actor, prID int64,
 	}
 	repo = cmp(strings.TrimSpace(repo), pr.Repo)
 	other, err := scanPR(s.db.R.QueryRowContext(ctx, `SELECT `+prCols+` FROM pull_requests WHERE forge_id = ? AND repo = ? COLLATE NOCASE AND number = ?`, pr.ForgeID, repo, number))
-	// One answer for unknown and not visible, so it doesn't tell which.
 	unknown := notFound(fmt.Sprintf("pull request %s#%d (Waypoint knows only the repos attached to it)", repo, number))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, unknown
@@ -436,7 +426,7 @@ func (s *Service) SetPRMergeAfter(ctx context.Context, actor *Actor, prID int64,
 	if !on && other.Repo == pr.Repo && other.HeadRef == pr.BaseRef && (other.State == "open" || other.State == "draft") && pr.BaseRef != "" {
 		if waits, err := s.mergeAfter(ctx, s.db.R, pr); err == nil {
 			for _, w := range waits {
-				if w.PRID == other.ID && w.Stack && !w.Set { // Only a stack-only wait refuses the clear; with a set wait too, clearing it leaves the stack wait.
+				if w.PRID == other.ID && w.Stack && !w.Set {
 					return nil, invalid("#%d waits for #%d because its base %s is that pull request's branch; Waypoint moves it onto %s when #%d merges. To land it without waiting for #%d, move it yourself: wp pr edit %d --base %s",
 						pr.Number, other.Number, pr.BaseRef, cmp(w.onto, "BRANCH"), other.Number, other.Number, pr.Number, cmp(w.onto, "BRANCH"))
 				}
@@ -594,7 +584,6 @@ func (s *Service) visibleMergeAfter(ctx context.Context, actor *Actor, id int64)
 		if n == 0 {
 			continue
 		}
-		// A task-link wait keeps naming its tasks even when it is also the stack wait.
 		if !w.Set && w.tasks != [2]int64{} {
 			pv, pargs := visibleSQL("id", actor)
 			// #nosec G202 -- pv is a fixed condition; values are bound

@@ -242,7 +242,6 @@ func TestInstructionProjectOptOutAndBudget(t *testing.T) {
 	small := e.instr(e.admin, InstructionInput{Title: sp("Small"), Body: sp("Short.")})
 	agent := agentActor(e.admin, "anthropic/claude-opus-5-5")
 	res := e.hookIn(agent, p, "s1", "SessionStart", func(ev *HookEvent) { ev.Source = "startup" })
-	// Project instructions come first; one that no longer fits is dropped whole and counted, never cut.
 	if want := "Short.\n\n" + big; res.Instructions != want {
 		t.Fatalf("got %d characters, want %d", len(res.Instructions), len(want))
 	}

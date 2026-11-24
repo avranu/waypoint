@@ -12,8 +12,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Codes are never reused: design_codes keeps each code after its note is deleted, and a moved note keeps the codes it had.
-
 var (
 	designCodeRE = lazyre.New(`(?i)^(?:([A-Z][A-Z0-9]{1,9})-?)?ADR-?0*([0-9]{1,9})$`)
 	// "ADR-0007: Title", "ADR7 — Title", as imported decisions start.
@@ -322,7 +320,6 @@ func (s *Service) designByCodeIn(ctx context.Context, q queryer, c DesignCode, s
 		if scope != nil {
 			var err error
 			if chain, err = s.projectChainIDs(ctx, q, *scope); err != nil {
-				// If the project chain can't be read, name nothing: falling back to the global ADR7 would name the wrong note.
 				if readFault(err) {
 					s.log.WarnContext(ctx, "read the project chain to resolve a design code", "project", *scope, "code", c.String(), "err", err)
 				}

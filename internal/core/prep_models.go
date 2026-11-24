@@ -294,7 +294,7 @@ func (s *Service) prepTrial(ctx context.Context, issueID int64, hash, raw string
 			trows.Close()
 			return false, err
 		}
-		skip = append([]string{m}, skip...) // The gateway keeps only the first maxExcludes excludes, so this task's own model goes first.
+		skip = append([]string{m}, skip...)
 	}
 	trows.Close()
 	if err := trows.Err(); err != nil {
@@ -522,13 +522,12 @@ func (s *Service) scorePrep(ctx context.Context, issueID, merged int64) error {
 		}
 		t := len(truth)
 		if p.basis >= merged || truth == nil || unreadable {
-			t, hits = 0, 0 // picks made after the work landed would name its files: not counted
+			t, hits = 0, 0
 		}
 		report := p.requestID
 		if t == 0 || len(picked) == 0 || p.at < now-prepFeedbackAge.Milliseconds() {
-			report = "" // an empty report withdraws the one sent before; a prep older than the gateway's log can't be reported
+			report = ""
 		}
-		// re-sent when more work merged would change the report; the gateway keeps the latest, however late
 		if _, err := s.db.W.ExecContext(ctx, `INSERT INTO prep_scores(issue_id, source, priority, model, picked, truth, hits, scored_at, request_id, asked_at)
 			VALUES (?,?,?,?,?,?,?,?,?,?)
 			ON CONFLICT(issue_id, source, model) DO UPDATE SET picked = excluded.picked, truth = excluded.truth, hits = excluded.hits,

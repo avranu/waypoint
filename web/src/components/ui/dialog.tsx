@@ -33,7 +33,6 @@ export function Dialog({
       (focusables(ref.current)[0] ?? ref.current)?.focus({ preventScroll: true })
     return () => prev?.focus?.()
   }, [open])
-  // Portaled popovers bubble through React to here, so only act on this dialog's own DOM.
   const trap = (e: React.KeyboardEvent) => {
     if (e.key !== 'Tab' || !ref.current?.contains(e.target as Node)) return
     const list = focusables(ref.current)

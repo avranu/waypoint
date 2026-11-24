@@ -54,7 +54,6 @@ const fromProject = (p: Project): Form => ({
   color: p.color,
   background: p.background,
   parent_id: p.parent_id ?? null,
-  // Autopilot wording and stalled-job times save on their own; leaving them out of this form stops a save here from resetting them.
   settings: (({ autopilot_prompt: _p, autopilot_done: _d, stalled_jobs: _s, ...rest }) => rest)(
     p.settings,
   ),
@@ -80,7 +79,6 @@ export function GeneralTab({ project }: { project: Project }) {
   }, [projects, project.id])
   const [form, setForm] = useState<Form>(() => fromProject(project))
   const initial = useMemo(() => JSON.stringify(fromProject(project)), [project])
-  // Reset only when the saved settings (the derived initial) change, so a refetch of unrelated fields like issue counts can't reset the form.
   const [base, setBase] = useState(initial)
   if (base !== initial) {
     setBase(initial)

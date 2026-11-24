@@ -1,7 +1,5 @@
 package core
 
-// Field shapes follow Forgejo 16 (services/convert/action.go, convert.go, v16.0.5); other versions may differ.
-
 import (
 	"context"
 	"encoding/json"

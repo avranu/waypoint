@@ -1,7 +1,5 @@
 package core
 
-// Read-only: indexed reads of Waypoint's own tables, no forge calls.
-
 import (
 	stdcmp "cmp"
 	"context"
@@ -18,7 +16,7 @@ const (
 	ciLineDefaultDays  = 7
 	ciLineMaxDays      = 90
 	ciLineExamples     = 5
-	ciLineMergedPrefix = "merged as " // the note stackMerged ends a stack with
+	ciLineMergedPrefix = "merged as "
 )
 
 // CILineInput picks the repo (all you can see when empty) and how many UTC
@@ -223,7 +221,6 @@ func (s *Service) CILine(ctx context.Context, actor *Actor, in CILineInput) (*CI
 		return a
 	}
 
-	// 1. the armed pull requests, with their active babysits
 	// #nosec G202 -- a fixed column list; values are bound
 	rows, err := s.db.R.QueryContext(ctx, `SELECT `+prColsAs("p")+`, coalesce(b.state, ''), coalesce(b.wait, ''), coalesce(b.wait_at, b.updated_at, 0)
 		FROM pull_requests p LEFT JOIN babysits b ON b.pr_id = p.id AND b.ended_at IS NULL
@@ -282,7 +279,6 @@ func (s *Service) CILine(ctx context.Context, actor *Actor, in CILineInput) (*CI
 		l.Armed = append(l.Armed, e)
 		prIDs = append(prIDs, [2]any{p, l})
 	}
-	// pointers only once the slices stopped growing
 	for _, x := range prIDs {
 		p, l := x[0].(*PullRequest), x[1].(*CIMergeLine)
 		byPR[p.ID] = &l.Armed[slices.IndexFunc(l.Armed, func(e CILineEntry) bool { return e.Number == p.Number })]
@@ -393,7 +389,6 @@ func (s *Service) CILine(ctx context.Context, actor *Actor, in CILineInput) (*CI
 		k := ciLineKey(fid, repo, base)
 		a := accs[k]
 		if a == nil || a.byDate[date] == nil {
-			// A base with merges but no rows or armed pull requests is not a line, so its merges are not counted.
 			continue
 		}
 		a.byDate[date].Merges += n
@@ -404,7 +399,6 @@ func (s *Service) CILine(ctx context.Context, actor *Actor, in CILineInput) (*CI
 		return nil, err
 	}
 
-	// Stacks' own full-tier runs (on wp-queue/ branches) are left out; they are not the repo's runs.
 	rows, err = s.db.R.QueryContext(ctx, `SELECT forge_id, repo, strftime('%Y-%m-%d', created_at / 1000, 'unixepoch'), count(*) FROM ci_runs
 		WHERE created_at >= ? AND tier = '' AND status IN ('success', 'failure', 'cancelled')
 		  AND ref NOT LIKE 'wp-queue/%' AND ref NOT LIKE 'refs/heads/wp-queue/%'

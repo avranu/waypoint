@@ -179,7 +179,7 @@ func (c *cli) shoot(key string, urls []string, o shotOpts) error {
 					return fmt.Errorf("%s is this checkout's preview, which couldn't be rebuilt: %w", raw, err)
 				}
 				preview = st
-				if !sameOrigin(u, st.URL) { // restarted on another port
+				if !sameOrigin(u, st.URL) {
 					u, _ = url.Parse(st.URL + u.RequestURI())
 				}
 			}
@@ -221,9 +221,6 @@ func (c *cli) shoot(key string, urls []string, o shotOpts) error {
 	if err != nil {
 		return err
 	}
-	// A picture that can't be attached is reported and skipped like a page
-	// that couldn't be taken: failing the whole run once some are on the task
-	// would have wp done run again and attach those a second time.
 	failed, attachedN := 0, 0
 	tried := map[string]bool{}
 	for _, r := range results {
@@ -236,8 +233,6 @@ func (c *cli) shoot(key string, urls []string, o shotOpts) error {
 			c.note("%s answered HTTP %d: the picture shows that page", r.URL, r.Status)
 		}
 		if !shotInDir(dir, r.File) {
-			// The browser runs a Playwright found in the checkout: whatever
-			// it names outside the pictures directory isn't a picture (WP-579).
 			failed++
 			c.note("%s (%s): the browser named %s, outside %s; not attached", r.URL, r.Size, r.File, dir)
 			continue
@@ -274,7 +269,7 @@ func shotInDir(dir, file string) bool {
 	}
 	f, err := filepath.EvalSymlinks(file)
 	if err != nil {
-		return true // missing: attaching it fails and says so
+		return true
 	}
 	if st, err := os.Stat(f); err != nil || !st.Mode().IsRegular() {
 		return false

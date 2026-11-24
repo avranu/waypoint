@@ -1,5 +1,3 @@
-// The server holds the one gateway connection; each tab subscribes to it over SSE.
-
 import { useEffect, useSyncExternalStore } from 'react'
 import { useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { ApiError } from './api'
@@ -98,7 +96,6 @@ class Live {
     es.onmessage = (m) => this.frame(JSON.parse(m.data))
     es.onerror = () => {
       if (es.readyState === EventSource.CLOSED) {
-        // EventSource stops retrying once the server refuses (CLOSED), so retry by hand.
         this.es = null
         this.set({ state: 'down', error: 'Lost the connection to Waypoint' })
         window.setTimeout(() => this.refs > 0 && this.open(), 5000)

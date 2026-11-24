@@ -1,5 +1,3 @@
-// Values never come back, only a masked preview; the route that would reveal one (env/reveal) is refused on the way through Waypoint.
-
 import { useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { KeyRound, Plus, Search, Trash2 } from 'lucide-react'

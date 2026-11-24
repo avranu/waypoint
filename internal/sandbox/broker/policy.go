@@ -321,7 +321,6 @@ func (r *Rule) check(method, path, query string) decision {
 		}
 	}
 	if restricted && !cleanPath(path) {
-		// Patterns hold only for plain paths: refuse anything an upstream might decode differently.
 		return deny("path")
 	}
 	for _, rt := range r.Deny {
@@ -401,8 +400,6 @@ func cleanPath(p string) bool {
 			return false
 		}
 	}
-	// An escaped unreserved character means the same as the character
-	// itself to an upstream, but not to our segment matcher.
 	for i := 0; i < len(p); i++ {
 		if p[i] != '%' {
 			continue

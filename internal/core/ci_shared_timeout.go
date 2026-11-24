@@ -1,7 +1,5 @@
 package core
 
-// Go test timeouts that other commits also hit lately are the suite's, not the change's: no re-run, and the pull request waits out of the merge line.
-
 import (
 	"context"
 	"encoding/json"
@@ -107,7 +105,7 @@ func (s *Service) sharedTimeoutOf(ctx context.Context, pr *PullRequest) *sharedT
 				continue
 			}
 			if strings.Contains(ref, stackPrefix) {
-				continue // a merge-queue stack may hold this very change
+				continue
 			}
 			label := short(sha)
 			if ref != "" {
@@ -205,20 +203,16 @@ func (s *Service) waitOnSharedTimeout(ctx context.Context, b *Babysit, pr *PullR
 	base := cmp(pr.BaseRef, "its base")
 	tip, behind, stale := s.behindBase(ctx, pr)
 	what := fmt.Sprintf("go test timed out in %s, as it did lately on %s: the suite is slow, not this change", joinAnd(ev.checks), joinAnd(ev.others))
-	// Tip is empty until the first hold, so there is no earlier base to have moved from.
 	if behind && !stale && tip != "" && (st.Retry || st.Tip != "" && !sameSHA(tip, st.Tip)) {
-		// Re-entry into the line waits until the run in progress (perhaps the fix) has finished, so the retry is on the new base.
 		if !st.Retry {
 			st.Retry = true
 			s.saveSharedTimeout(ctx, b, st)
 		}
-		// Not while it waits its turn after another: retrying would hold the merge line.
 		if waits, _ := s.mergeWaitReasons(ctx, pr); len(waits) > 0 {
 			s.setState(ctx, b, pr, BabysitWatching, what+"; "+waits[0])
 			return true
 		}
 		defer s.queueLock(pr)()
-		// A pull request outside the line asks for its place on a copy, by its armed time, so queued_at and ready_at stay as they are.
 		asked := pr
 		if pr.QueuedAt == nil {
 			c := *pr
@@ -236,7 +230,6 @@ func (s *Service) waitOnSharedTimeout(ctx context.Context, b *Babysit, pr *PullR
 			s.setState(ctx, b, pr, BabysitWatching, fmt.Sprintf("%s; %s moved on, so it is tried again on it at its turn, behind #%d", what, base, ahead[0].Number))
 			return true
 		}
-		// Mark it ready before the update, as at the front of the queue, so the push runs the full CI tier once.
 		switch s.updateIfBehindThen(ctx, pr, func() { s.readyForUpdate(ctx, pr) }) {
 		case upUpdated:
 			st.Retry, st.Tip, st.Tries = false, tip, st.Tries+1
@@ -254,7 +247,6 @@ func (s *Service) waitOnSharedTimeout(ctx context.Context, b *Babysit, pr *PullR
 			return false
 		}
 	}
-	// Held out of the line so the one behind (perhaps the fix) gets its turn; the tip recorded is the first hold's, so only a later move sends it back in.
 	newTip := tip != "" && (st.Tip == "" || !behind && !sameSHA(st.Tip, tip))
 	if !sameSHA(st.SHA, pr.HeadSHA) || st.Retry || newTip {
 		st.SHA, st.Retry = pr.HeadSHA, false

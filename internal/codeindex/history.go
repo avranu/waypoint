@@ -101,7 +101,7 @@ func (ix *Index) readLog(rangeArgs ...string) ([]histCommit, error) {
 
 func (ix *Index) updateHistory(ctx context.Context, tx *sql.Tx, head string, st *UpdateStats) error {
 	t0 := time.Now()
-	var prev string // read through the transaction: it holds the only connection
+	var prev string
 	_ = tx.QueryRow(`SELECT v FROM meta WHERE k = 'history_head'`).Scan(&prev)
 	var commits []histCommit
 	var err error

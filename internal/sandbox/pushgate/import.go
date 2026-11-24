@@ -14,8 +14,6 @@ import (
 	"strings"
 )
 
-// The host never runs git in the sandbox's work tree or opens a path the sandbox chose; the gateway's own git indexes the bundle under the mirror's fixed config.
-
 // ImportRequest is what a job's runner asks of its bundle.
 type ImportRequest struct {
 	// Repo is "owner/name", one of the gateway's repos.
@@ -173,9 +171,6 @@ func (g *Gateway) Import(ctx context.Context, req ImportRequest, bundle io.Reade
 			_ = os.RemoveAll(in.dir)
 		}
 	}()
-	// The stream comes from the sandbox: it is read whole into the
-	// quarantine before the repo is locked, so one that stalls holds up its
-	// own import only, not the repo's other pushes and checks.
 	pack, err := spool(filepath.Join(in.dir, "bundle.pack"), br)
 	if err != nil {
 		return nil, fmt.Errorf("push gateway: can't store the bundle: %w", err)
@@ -207,7 +202,7 @@ func (g *Gateway) Import(ctx context.Context, req ImportRequest, bundle io.Reade
 	}
 	err = g.unpack(ctx, m, in, pack)
 	_ = pack.Close()
-	_ = os.Remove(pack.Name()) // a held push keeps the indexed pack, not this copy
+	_ = os.Remove(pack.Name())
 	if err != nil {
 		return nil, fmt.Errorf("%w: the pack can't be read: %s", ErrBadBundle, clean(err.Error()))
 	}
@@ -222,7 +217,6 @@ func (g *Gateway) Import(ctx context.Context, req ImportRequest, bundle io.Reade
 		g.emit(Event{Repo: st.Path, Refs: refs, Verdict: Refused, Reason: "import: " + why})
 		return res, nil
 	}
-	// Commits, files and diff are reported only when the tip builds on base; otherwise the range is neither the job's work nor what would be pushed.
 	if _, err := g.git(ctx, m, env, nil, "merge-base", "--is-ancestor", req.Base, hdr.tip); err != nil {
 		if exitCode(err) != 1 {
 			return nil, err
@@ -261,8 +255,6 @@ func (g *Gateway) Import(ctx context.Context, req ImportRequest, bundle io.Reade
 		return nil, v.err
 	}
 	if v.secret {
-		// Nothing of what it carries leaves the gateway: not its names,
-		// not its diff.
 		return refuse(fmt.Sprintf("it carries a known secret value (%s)", v.secretName))
 	}
 	if len(v.refused) > 0 {

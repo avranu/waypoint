@@ -142,7 +142,6 @@ func runTellAgent(c *StepCtx) error {
 	}
 	from := messageFrom{by: automationRunnerOwner(c.Automation)}
 	if a := c.Automation; a != nil {
-		// Only a stored automation (ID > 0) is named in the message; built-in helpers are not.
 		from.agent = a.RuleAgent
 		if a.ID > 0 {
 			from.automation = a.ID
@@ -177,7 +176,6 @@ func runTellAgent(c *StepCtx) error {
 			}
 		}
 	}
-	// 2. With the session's batch: an idle agent's inbox socket, via its person's runner on its machine, at once or, unless the step is blocking, with the agent's next wake-up.
 	d2, derr := c.WaitDeadline(2)
 	if derr != nil {
 		return derr
@@ -255,7 +253,7 @@ func (c *StepCtx) tellBySocket(x *AgentSession, m *SessionMessage) error {
 			return err
 		}
 		if n, _ := res.RowsAffected(); n == 0 {
-			return nil // Zero rows: a hook took the message meanwhile, which is not an error.
+			return nil
 		}
 		c.Logf("posting it through the runner %s", r.Name)
 	}
@@ -285,9 +283,6 @@ func (c *StepCtx) tellBySocket(x *AgentSession, m *SessionMessage) error {
 	if job.State != "done" {
 		return unqueue(cmp(cmp(job.Error, excerpt(tailOutput(job), 200)), job.State))
 	}
-	// It reached the agent when the runner started the job (a second or so
-	// before it reported): the agent may already have done that turn and
-	// finished, and that finish counts.
 	var posted int64
 	if err := c.S.db.R.QueryRowContext(c.Ctx, `SELECT coalesce(started_at, created_at) FROM runner_jobs WHERE id = ?`, job.ID).Scan(&posted); err != nil {
 		return err

@@ -13,8 +13,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Reads only what Waypoint keeps, with no gateway or model call, so it fits in a prompt hook.
-
 // reviewAsk is a /wp review typed in a session: answered after the hook's
 // write, from the database alone.
 type reviewAsk struct {
@@ -246,7 +244,6 @@ func (s *Service) auditProgress(ctx context.Context, auditID int64, alt string, 
 	hasJob := a.jobID.Valid && q.QueryRowContext(ctx, `SELECT j.state, j.cli, j.runner_name, j.created_at, j.started_at, j.log_size, r.last_seen_at
 		FROM runner_jobs j LEFT JOIN runners r ON r.id = j.runner_id WHERE j.id = ?`, a.jobID.Int64).
 		Scan(&j.state, &j.cli, &j.runner, &j.created, &j.started, &j.logSize, &j.runnerSeen) == nil
-	// An agentic prep is a job of the same kind and CLI but no audit, so it is left out.
 	runs := durationsOf(ctx, q, `SELECT started_at, finished_at FROM runner_jobs WHERE kind = ? AND source != ? AND state = 'done' AND started_at IS NOT NULL
 		AND finished_at > ? AND (? = '' OR cli = ?) ORDER BY id DESC LIMIT 40`, JobAudit, prepAgentSource, now-reviewStatsSpan.Milliseconds(), j.cli, j.cli)
 	name := fmt.Sprintf("Audit #%d", auditID)

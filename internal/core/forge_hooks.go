@@ -17,7 +17,7 @@ const (
 	hookPending   = "pending"
 	hookInstalled = "installed"
 	hookFailed    = "failed"
-	hookCovered   = "covered" // covered: an organisation hook sends this repo's events, so the repo gets no hook of its own.
+	hookCovered   = "covered"
 )
 
 // ForgeHook is a webhook on a forge repo.
@@ -129,7 +129,6 @@ func (s *Service) installRepoHook(ctx context.Context, repoID int64) {
 		return
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		// Detached while the hook was being made: take back what we added.
 		if h, ok := s.Forges.(ForgeHooker); ok && created {
 			_ = h.DeleteHook(ctx, hf, onRepo(repo), id)
 		}
@@ -290,7 +289,6 @@ func (s *Service) hookProblems(ctx context.Context, actor *Actor, project string
 		return out, nil
 	}
 	quiet := s.now().Add(-hookSilentAfter).UnixMilli()
-	// SQLite fills the bare columns from the row min(r.id) picked.
 	owned, oargs := actor.memberProjects(RoleOwner)
 	// #nosec G202 -- owned is placeholders; values are bound
 	rows, err := s.db.R.QueryContext(ctx, `SELECT p.key, min(r.id), r.repo, r.hook_state, r.hook_note
@@ -605,7 +603,7 @@ func (c *httpForgeClient) hookBody(f *Forge, hookURL, secret string, create bool
 		if f.Kind == "github" {
 			b["name"] = "web"
 		} else {
-			b["type"] = "gitea" // Forgejo signs these with both its and Gitea's headers
+			b["type"] = "gitea"
 		}
 	}
 	return b

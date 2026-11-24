@@ -51,7 +51,6 @@ func (s *Service) batchOrTell(ctx context.Context, sessionID, babysitID int64, b
 				}
 				blocking, herr := s.hasBlockingBatch(ctx, sessionID)
 				if herr != nil {
-					// An unknown blocking state is not no blocking: the news stays held to its deadline.
 					if readFault(herr) {
 						s.log.WarnContext(ctx, "read whether a session's batch is blocking", "session", sessionID, "err", herr)
 					}
@@ -107,7 +106,6 @@ func (s *Service) movingSiblings(ctx context.Context, sessionID, except int64) [
 			AND m.step_key LIKE 'babysit:' || b.id || ':%')`,
 		sessionID, except, babysitMoving[0], babysitMoving[1], babysitMoving[2], babysitMoving[3])
 	if err != nil {
-		// A failed read counts the other babysits as still moving, so news waits for the deadline.
 		return []int64{except}
 	}
 	defer rows.Close()
@@ -154,7 +152,6 @@ func (s *Service) releaseBatchWaiting(ctx context.Context, sessionID int64, wait
 		`UPDATE requests SET batch_until = NULL WHERE session_id = ? AND batch_until IS NOT NULL`,
 	} {
 		if _, err := s.db.W.ExecContext(ctx, q, sessionID); err != nil {
-			// A failed release on one table must not stop the other table's batched news from being released.
 			s.log.WarnContext(ctx, "release batched news", "session", sessionID, "err", err)
 		}
 	}
@@ -319,7 +316,7 @@ func (s *Service) postToSession(ctx context.Context, sessionID int64, waiting bo
 		if err != nil {
 			continue
 		}
-		if n, _ := res.RowsAffected(); n > 0 { // else a hook took it meanwhile
+		if n, _ := res.RowsAffected(); n > 0 {
 			sentMsgs = append(sentMsgs, m)
 		}
 	}
@@ -371,7 +368,6 @@ func (s *Service) sessionMessageJobFinished(ctx context.Context, e *Event) {
 	case src == sessionBatchSource && done:
 		var sessionID, posted int64
 		_ = s.db.R.QueryRowContext(ctx, `SELECT session_id FROM message_batches WHERE id = ?`, id).Scan(&sessionID)
-		// The batch reached the agent when the job started, so the posted time is the job's start, not its report.
 		_ = s.db.R.QueryRowContext(ctx, `SELECT coalesce(started_at, created_at) FROM runner_jobs WHERE id = ?`, dataInt(e, "job")).Scan(&posted)
 		if posted == 0 {
 			posted = s.nowMS()

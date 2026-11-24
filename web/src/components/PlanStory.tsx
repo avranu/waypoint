@@ -1,5 +1,3 @@
-// Until a person keeps or writes the story it is a model's suggestion, not anyone's intent.
-
 import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { Bot, Check, MessageSquareQuote, Sparkles, UserCheck } from 'lucide-react'

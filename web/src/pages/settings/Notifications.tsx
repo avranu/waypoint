@@ -67,7 +67,6 @@ export function NotificationsTab({ me }: { me: User }) {
   const [url, setUrl] = useState(me.prefs.gotify_url ?? '')
   const [token, setToken] = useState(me.prefs.gotify_token ?? '')
   const [show, setShow] = useState(false)
-  // A refetch, or a failed save's revert, must not overwrite text the person has typed.
   const edited = useRef(false)
   useEffect(() => {
     if (edited.current) return

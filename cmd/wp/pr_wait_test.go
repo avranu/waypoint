@@ -157,7 +157,6 @@ func TestCLIPRWait(t *testing.T) {
 		}
 	}
 
-	// A 502 from a proxy or a restart is retried, not reported.
 	fake.set(func(f *waitFake) {
 		f.verdicts, f.fail, f.waits = []string{"waiting", "waiting", "ready"}, map[int]bool{2: true}, nil
 	})

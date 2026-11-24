@@ -10,13 +10,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// What counts as a read from one of the repo's environments (WP-749,
-// WP-ADR90). The guard lists what leaves a request a read, rather than what
-// makes it a change: it can't keep up with every way a tool sends a body or
-// another method (abbreviated long options, config files, curl --next and
-// --expand-*, wget -e, other protocols), so anything it doesn't know is
-// refused there.
-
 // readMethods are the HTTP methods that only read.
 var readMethods = map[string]bool{"GET": true, "HEAD": true, "OPTIONS": true}
 
@@ -28,7 +21,7 @@ type readSpec struct {
 	longVal  []string
 	method   []string
 	header   []string
-	format   []string // A write-out format is judged because %output{} can write a file.
+	format   []string
 }
 
 var (
@@ -182,7 +175,6 @@ func envChange(name string, args []string) string {
 		if bad != "" {
 			return bad
 		}
-		// seen holds options, not their values: -oIx is -o with the value Ix.
 		stdin := seen["--ignore-stdin"] || seen["-I"]
 		if len(pos) > 1 && httpMethod(pos[0]) {
 			if !readMethods[strings.ToUpper(pos[0])] {
@@ -195,7 +187,7 @@ func envChange(name string, args []string) string {
 		}
 		for _, item := range pos[min(1, len(pos)):] {
 			i := strings.IndexAny(item, ":=@")
-			if i < 0 || strings.Contains(item, `\`) { // a\==b is the data field a= (httpie escapes)
+			if i < 0 || strings.Contains(item, `\`) {
 				return item
 			}
 			next := byte(0)
@@ -219,8 +211,6 @@ func envChange(name string, args []string) string {
 // is none. The variables that move them are refused (fetchSettingsVar).
 func fetchConfig(name string) string {
 	var files []string
-	// HOME, and the account's home, which the tools fall back on when a
-	// command unsets HOME.
 	for _, home := range []string{os.Getenv("HOME"), passwdHome()} {
 		xdg := os.Getenv("XDG_CONFIG_HOME")
 		if xdg == "" && home != "" {

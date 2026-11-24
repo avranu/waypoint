@@ -13,8 +13,6 @@ import (
 	"time"
 )
 
-// The check never holds a merge, and only a person's "stop this" does; a model's "clear" is kept out of every API, so no agent reads a guess as evidence.
-
 // Kinds of drift.
 const (
 	DriftContradicts = "contradicts"
@@ -274,7 +272,6 @@ func (in *driftInput) settle(a driftAnswer) (driftAnswer, error) {
 	case driftNone:
 		return driftAnswer{Kind: driftNone}, nil
 	case DriftUntraced, DriftTechnology:
-		// A person's task states intent, technology included, so drift does not flag it.
 		if in.personBehind() {
 			return driftAnswer{Kind: driftNone}, nil
 		}
@@ -414,9 +411,8 @@ func (s *Service) prDriftInput(ctx context.Context, pr *PullRequest, projectID i
 	if err != nil {
 		return nil, err
 	}
-	s.goalsSettle(ctx) // Settle first: a just-linked task must be traced before the pull request is read.
+	s.goalsSettle(ctx)
 	s.loadPRFiles(ctx, pr)
-	// A failed body read is an error, not an empty body; an empty one would let the model clear the change unread.
 	body, err := s.prBodyRead(ctx, pr)
 	if err != nil {
 		return nil, err
@@ -504,7 +500,6 @@ func (s *Service) driftHold(ctx context.Context, pr *PullRequest, settle bool) (
 		return unread("read a pull request's drift check", err)
 	}
 	if c != nil && c.verdict == driftFlag {
-		// A flag holds until a person answers; a changed text is not rechecked.
 		why, err := s.driftFlagHold(ctx, c.flagID)
 		if err != nil {
 			return unread("read a pull request's drift flag", err)
@@ -572,7 +567,7 @@ func (s *Service) advanceDriftCheck(ctx context.Context, pr *PullRequest, c *prG
 	}
 	nextTry := c.updated + (driftRetry << min(c.attempts, 4)).Milliseconds()
 	if now >= nextTry {
-		s.queueDriftCheck(pr.ID) // Requeue here: after a failed check, or a restart that lost the queued job.
+		s.queueDriftCheck(pr.ID)
 		nextTry = now + driftRetry.Milliseconds()
 	}
 	next := msTime(min(nextTry, deadline))
@@ -778,7 +773,6 @@ func (s *Service) onGoalDriftEvent(ctx context.Context, e *Event) {
 	case DriftAnswerStop:
 		if prID != 0 {
 			s.goBG(func() {
-				// Disarming only takes the pull request out of the merge line; the hold is separate.
 				if err := s.DisarmMerge(context.WithoutCancel(ctx), SystemActor(), prID); err != nil {
 					s.log.WarnContext(ctx, "disarm a stopped pull request", "pr", prID, "err", err)
 				}

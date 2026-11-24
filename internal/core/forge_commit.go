@@ -300,8 +300,6 @@ func (c *httpForgeClient) CreatePR(ctx context.Context, f *Forge, repo string, i
 	fp := a.pr()
 	labelled := true
 	if len(in.Labels) > 0 && f.Kind == "github" {
-		// GitHub's pull request call takes no labels: label its issue. It is
-		// open either way; the caller sees what fp.Labels lacks.
 		labelled = c.ChangePRLabels(ctx, f, repo, fp.Number, in.Labels, nil) == nil
 	}
 	for _, l := range in.Labels {

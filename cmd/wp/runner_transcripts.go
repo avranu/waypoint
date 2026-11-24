@@ -11,8 +11,6 @@ import (
 	"time"
 )
 
-// The checkout is removed when the job ends, so transcripts are uploaded before that, however the job ended.
-
 // jobSidecarFile is the sidecar's name in the job's project directory. It is
 // not a .jsonl file, so no transcript reader mistakes it for a session.
 const jobSidecarFile = "wp-job.json"
@@ -77,7 +75,6 @@ func withLink(o outcome, link map[string]any) outcome {
 // digits turned into "-">. The checkout's name (job<id>-<number>) is the same
 // either way, and no other job's ends with it.
 func jobProjectDir(configDir, work string) string {
-	// ReadDir, not Glob: a [ in the config directory is a path, not a pattern
 	projects := filepath.Join(configDir, "projects")
 	entries, err := os.ReadDir(projects)
 	if err != nil {
@@ -142,14 +139,12 @@ func (p *runnerProc) keepTranscripts(ctx context.Context, run *jobRun, in agentJ
 	}
 	writeSidecar := func() {
 		if b, err := json.MarshalIndent(meta, "", "  "); err == nil {
-			// The job's own claude run can leave a symlink at this name; the rename replaces it rather than writing through it.
 			if err := writeFileAtomic(filepath.Join(proj, jobSidecarFile), append(b, '\n'), 0o600); err != nil {
 				fmt.Fprintf(run.out, "Couldn't write %s beside the transcripts: %v\n", jobSidecarFile, err)
 			}
 		}
 	}
 	writeSidecar()
-	// The sidecar is local only: a cancel during the upload rewrites it here, and the transcripts are not re-sent.
 	resettle := func() {
 		if n := settleOutcome(ctx, run.cancelled, o); n.State != o.State || n.Error != o.Error {
 			o = n
@@ -181,8 +176,6 @@ func (p *runnerProc) keepTranscripts(ctx context.Context, run *jobRun, in agentJ
 	}
 	uctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), transcriptUploadLimit)
 	defer cancel()
-	// A person's cancel of this job does not cut the upload, but the runner
-	// stopping does: its finish report must not wait for a slow server.
 	if p.stopCtx != nil {
 		defer context.AfterFunc(p.stopCtx, cancel)()
 	}

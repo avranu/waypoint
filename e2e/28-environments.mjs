@@ -93,8 +93,8 @@ async function seed(api, call) {
   if (live) {
     await api("POST", `/environments/${prod.id}/check`);
     await api("POST", `/environments/${staging.id}/check`);
-    await new Promise((r) => setTimeout(r, 3300)); // a check in the last 3 s is reused
-    await api("POST", `/environments/${staging.id}/check`); // A second failed check in a row marks the environment down.
+    await new Promise((r) => setTimeout(r, 3300));
+    await api("POST", `/environments/${staging.id}/check`);
     const dev = (await api("GET", `/projects/${KEY}/environments/a23x42s`)).id;
     await api("POST", `/environments/${dev}/check`);
   }
@@ -113,7 +113,6 @@ async function seed(api, call) {
        VALUES (?, ?, 41, 'Fix the login redirect', 'robin', 'https://git.example.com/acme/waypoint/pulls/41', 'fix/login', ?, 'open', ?, ?, ?) RETURNING id`,
     )
     .get(forge, REPO, PR_SHA, now - 3600_000, now - 3600_000, now).id;
-  // Production runs a squash-merged pull request's merge commit, not its head.
   squashedID = db
     .prepare(
       `INSERT INTO pull_requests(forge_id, repo, number, title, author, url, head_ref, head_sha, merge_sha, state, opened_at, merged_at, created_at, updated_at)
@@ -217,7 +216,6 @@ async function run(width, scheme) {
   ok(await page.getByText("release build").isVisible(), `${tag} deployment notes show`);
   if (live) {
     ok(await page.getByRole("img", { name: /^Status over the last 48 hours/ }).isVisible(), `${tag} the 48 hour strip`);
-    // The response-time chart shows a note, not a line, until a few checks have run.
     ok(
       (await page.getByText(/^Response time|Response times show here/).count()) > 0,
       `${tag} the response time chart (or its note)`,

@@ -57,7 +57,6 @@ func TestRequestClosesWhenItsPullRequestMerges(t *testing.T) {
 	if got.State != RequestDone || got.Decision != closedByWatch || !strings.Contains(got.Note, "merged") || got.Watches[0].State != "satisfied" {
 		t.Fatalf("after the merge: %s %q %q %+v", got.State, got.Decision, got.Note, got.Watches)
 	}
-	// A closing is not pushed to a stopped agent; its next prompt carries it.
 	if res := be.hookAs("Stop"); res.Text != "" {
 		t.Fatalf("the agent was woken: %q", res.Text)
 	}

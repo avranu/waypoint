@@ -492,11 +492,9 @@ func TestStackedChildWaitsForParent(t *testing.T) {
 		t.Errorf("off: %v", err)
 	}
 
-	// Once moved it is held no longer, so the auto-merge the move nudges
-	// may land it before Wait returns: only ever onto main, after the move.
 	var childMergedOnto []string
 	se.sg.sm.Lock()
-	se.sg.onMergeN = func(n int) { // onMergeN runs inside MergePR with sm held, so it must not lock sm.
+	se.sg.onMergeN = func(n int) {
 		if n == 6 {
 			childMergedOnto = slices.Clone(se.sg.baseEdits)
 		}

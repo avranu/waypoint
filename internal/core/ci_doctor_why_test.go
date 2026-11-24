@@ -275,7 +275,6 @@ func TestJobFatesMore(t *testing.T) {
 		queued(task(7, 4, "browser", "cancelled", 30, 40)),
 		task(8, 5, "release", "failure", 0, 5), task(9, 6, "release", "failure", 10, 15),
 		task(10, 7, "release", "success", 20, 25), task(11, 8, "release", "success", 30, 35),
-		// lint: flaky, passing twice after passing before.
 		task(12, 9, "lint", "success", 0, 5), task(13, 10, "lint", "failure", 10, 15),
 		task(14, 11, "lint", "success", 20, 25), task(15, 12, "lint", "success", 30, 35),
 		task(16, 13, "pack", "failure", 40, 45), task(17, 14, "pack", "success", 50, 55), task(18, 15, "pack", "success", 60, 65),

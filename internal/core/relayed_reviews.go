@@ -1,7 +1,5 @@
 package core
 
-// Only the forge's mirror account (Forge.MirrorAccount) posts relays; the same text from anyone else is that person's own comment.
-
 import (
 	"crypto/sha256"
 	"encoding/hex"
@@ -134,7 +132,6 @@ func noteParts(n PRNote, whole bool, mirror string, ours posters) []notePart {
 	case r.verb == "approved" || r.verb == "dismissed":
 		return nil
 	case r.verb == "replied" && bot:
-		// Bot replies in a thread are not new work: each would draw another verdict and the two would ping-pong.
 		return nil
 	case r.path != "" || r.verb == "replied":
 		one[0].path, one[0].line, one[0].relayID = r.path, r.line, r.finding
@@ -153,12 +150,8 @@ func noteParts(n PRNote, whole bool, mirror string, ours posters) []notePart {
 		lines[i].finding, lines[i].text = cutFinding(lines[i].text)
 	}
 	for _, l := range lines {
-		// The id comes from where the finding is, not its position in the
-		// body, so an entry added before it doesn't hand it another's verdict.
 		id := relayedID(n.ID, l.place)
 		if places[l.place] > 1 {
-			// Several findings share the place: tell them apart by their
-			// text, not their order, so an inserted one doesn't shift the rest.
 			sum := sha256.Sum256([]byte(l.text))
 			id += "-" + hex.EncodeToString(sum[:4])
 			if seen[id]++; seen[id] > 1 {

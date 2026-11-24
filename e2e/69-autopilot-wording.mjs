@@ -47,7 +47,7 @@ for (const [width, scheme] of looks([
 
   await prompt.fill("Do the next task.");
   ok(await section.getByText("Name the task with {key} or {next}").isVisible(), `${tag} a prompt without its task is refused`);
-  await page.waitForTimeout(2800); // Autosave fires 900 ms after typing pauses; wait well past it so a save that should not happen has time to show.
+  await page.waitForTimeout(2800);
   ok(!(await api("GET", "/autopilot/text")).custom_prompt, `${tag} and isn't saved`);
   await prompt.fill("Take {key} ({title}).\n\n{next}");
   await done.fill("{key} done. {status}");

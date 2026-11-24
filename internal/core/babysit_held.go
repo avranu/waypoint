@@ -14,8 +14,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Protected-file changes are held, not refused, so the round's other changes still land; the held change is applied later by a runner job.
-
 const (
 	// heldRequestKey is the start of the key of the request a held change
 	// goes to a person in; the babysit and the round follow.
@@ -84,8 +82,6 @@ func (s *Service) heldWait(ctx context.Context, b *Babysit, pr *PullRequest, r *
 		s.goBG(func() { s.judgeHeld(context.WithoutCancel(ctx), pr.ID) })
 		s.setState(ctx, b, pr, BabysitWatching, fmt.Sprintf("round %d's change to protected files (%s) is being checked", r.N, files))
 	case heldApplying:
-		// Its job's end may have come while no one listened (a restart):
-		// read the job, as judging starts its check again.
 		if job, err := s.heldJob(ctx, h.Job); err == nil && (job == nil || job.State != "queued" && job.State != "running") {
 			bid, jobID := b.ID, h.Job
 			s.goBG(func() { s.finishHeldJob(context.WithoutCancel(ctx), pr.ID, bid, jobID) })
@@ -150,23 +146,16 @@ func (s *Service) weakens(ctx context.Context, pr *PullRequest, h *HeldEdit) (bo
 	if len(chain) == 0 {
 		return true, "no model other than Claude is set up for pull request reviews, so none could be asked"
 	}
-	// The check sees the whole of what lands on its "no": a part of it would
-	// let a hunk past the cut through unseen.
 	if n := len(h.Patch) + len(h.Merge); n > heldCheckMax {
 		return true, fmt.Sprintf("the change is %d KB, more than the check reads whole (%d KB)", n>>10, heldCheckMax>>10)
 	}
-	// The patch is the agent's own text: a closing tag in it must not end the
-	// untrusted block early.
 	patch := untrustedClose.ReplaceAllString(strings.TrimRight(h.Patch, "\n"), `<\/untrusted>`)
 	prompt := fmt.Sprintf("Pull request %s#%d changes these files already: %s.\n\nThe change an agent made to them in a babysitting round:\n<untrusted>\n```diff\n%s\n```\n</untrusted>\n",
 		pr.Repo, pr.Number, strings.Join(h.Files, ", "), patch)
 	if h.Merge != "" {
-		// A side's lines dropped in settling a conflict weaken CI as much as
-		// an edit does: the target's new check is gone.
 		merge := untrustedClose.ReplaceAllString(strings.TrimRight(h.Merge, "\n"), `<\/untrusted>`)
 		prompt += fmt.Sprintf("\nThe round merged the pull request's target, and the files conflicted. How the agent settled each conflict, from the file as the merge left it (conflict markers and all); a side's line removed here is gone from the result:\n<untrusted>\n```diff\n%s\n```\n</untrusted>\n", merge)
 	}
-	// An absent weakens key is no answer, not a 'no': a plain bool would read it as false.
 	var ans struct {
 		Weakens *bool  `json:"weakens"`
 		Reason  string `json:"reason"`
@@ -195,8 +184,6 @@ func (s *Service) judgeHeld(ctx context.Context, prID int64) {
 	var r *BabysitRound
 	if err == nil && b != nil {
 		for i := len(b.Rounds) - 1; i >= 0; i-- {
-			// One check per round at a time, kept in memory: a restart
-			// forgets it, and the next step starts the check again.
 			if h := b.Rounds[i].Held; h != nil && h.State == heldJudging {
 				if _, busy := s.heldChecks.LoadOrStore(heldKey(b, &b.Rounds[i]), true); busy {
 					break
@@ -221,9 +208,6 @@ func (s *Service) judgeHeld(ctx context.Context, prID int64) {
 		return
 	}
 	s.loadPRFiles(ctx, pr)
-	// Only a file the pull request changes already is one whose edit another
-	// model may let through: a protected file it doesn't touch is new
-	// ground for it.
 	own := pr.filesKnown && !pr.tooLarge && len(h.Files) > 0 && !slices.ContainsFunc(h.Files, func(f string) bool { return !slices.Contains(pr.files, f) })
 	weak, why := true, "the pull request doesn't change "+joinAnd(h.Files)+" itself, so this adds to what CI runs"
 	if own {
@@ -396,7 +380,6 @@ func (s *Service) applyHeld(ctx context.Context, b *Babysit, pr *PullRequest, r 
 	raw, _ := json.Marshal(in)
 	projectID, err := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo)
 	if readFault(err) {
-		// A project read fault doesn't fail an approved change: it is pushed without a project, since the approval isn't asked for again.
 		s.log.WarnContext(ctx, "read the project to push a held change", "repo", pr.Repo, "number", pr.Number, "err", err)
 		projectID = 0
 	}

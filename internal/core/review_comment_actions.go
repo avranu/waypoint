@@ -1,7 +1,5 @@
 package core
 
-// Forgejo has no API to resolve a thread, so there a resolution lives only in Waypoint (review_comment_events).
-
 import (
 	"context"
 	"encoding/json"

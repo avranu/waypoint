@@ -6,8 +6,6 @@ import (
 	"strings"
 )
 
-// A model told to fix a test must not also change the CI config or lockfiles that judge it, so the commits are checked before the push.
-
 // protectRE turns a glob into a pattern over a repository path: `**/` is any
 // directories, `**` anything, `*` and `?` stay within one segment.
 func protectRE(g string) (*regexp.Regexp, error) {

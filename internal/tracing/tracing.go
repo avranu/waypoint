@@ -65,7 +65,6 @@ func Setup(ctx context.Context, version string, log *slog.Logger) (func(context.
 	if err != nil {
 		return nil, err
 	}
-	// Later options win, so the environment overrides these defaults.
 	res, err := resource.New(ctx,
 		resource.WithAttributes(attribute.String("service.name", "waypoint"), attribute.String("service.version", version)),
 		resource.WithFromEnv(),

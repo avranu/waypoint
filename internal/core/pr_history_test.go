@@ -79,7 +79,7 @@ func (pe *prEnv) send(event string, payload map[string]any) {
 func TestPullRequestHistory(t *testing.T) {
 	pe := newPREnv(t, "github")
 	pe.fg.ownLogin = "robin"
-	pe.policy(MergePolicyInput{AutoMerge: ptr(false)}) // its arming would be in the audit log too
+	pe.policy(MergePolicyInput{AutoMerge: ptr(false)})
 	pe.llm.answers["opencode/muse-spark-1.3-contributor-free"] = `{"findings":[]}`
 	pr := ForgePR{Number: 12, Title: "Add search", Author: "robin", HeadRef: "search", HeadSHA: "aaaaaaa1111", State: "open",
 		Body: "Adds search.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"}
@@ -238,7 +238,6 @@ func TestGitLabMergeRequestHistory(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// The hook payload doesn't name the author, so the stubbed API supplies it.
 	setState := func(state string) {
 		pe.fg.setPR(pe.f, "me/app", ForgePR{Number: 8, Title: "Tidy", Author: "sam", HeadRef: "tidy", HeadSHA: "ddddddd4444", State: state}, sampleDiff)
 	}
@@ -265,7 +264,7 @@ func TestGitLabMergeRequestHistory(t *testing.T) {
 
 func TestRefreshPullRequests(t *testing.T) {
 	pe := newPREnv(t, "github")
-	pe.policy(MergePolicyInput{AutoMerge: ptr(false)}) // its arming would be in the audit log too
+	pe.policy(MergePolicyInput{AutoMerge: ptr(false)})
 	pe.llm.answers["opencode/muse-spark-1.3-contributor-free"] = `{"findings":[]}`
 	merged := time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC)
 	opened := merged.Add(-48 * time.Hour)

@@ -224,7 +224,7 @@ func filesSection(ch reviewChunk, head func(path string) string, budget int) str
 		}
 		text := head(fd.path)
 		if text == "" {
-			continue // deleted, binary or unreadable: the diff is all there is
+			continue
 		}
 		body, cut := numberedFile(text, fd.text, left)
 		if body == "" {

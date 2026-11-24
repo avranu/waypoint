@@ -15,8 +15,6 @@ import (
 	"unicode/utf8"
 )
 
-// Waypoint's typed prompts are recognised by their stored record of normalised text, never by a prefix mark.
-
 // Kinds of text Waypoint types into a session.
 const (
 	TypedReview   = "review"
@@ -25,7 +23,7 @@ const (
 	TypedMessage  = "message"
 	TypedInbox    = "inbox"
 	TypedKickoff  = "kickoff"
-	TypedStart    = "start" // the text a session was started with (argv), which a person may have composed
+	TypedStart    = "start"
 	TypedExit     = "exit"
 )
 
@@ -82,9 +80,6 @@ var (
 // ones among them) are dropped, invalid UTF-8 becomes a space, every run of
 // whitespace becomes one space, and the ends are trimmed. Idempotent.
 func NormalisePrompt(text string) string {
-	// Removing an escape sequence or a format character can join what was
-	// around it into a new one, so the pass repeats until it changes nothing:
-	// that is what makes the result its own normal form.
 	for {
 		n := normalisePromptOnce(text)
 		if n == text {
@@ -239,12 +234,9 @@ func (s *Service) recordHandedOver(ctx context.Context, q queryer, kind string, 
 			}
 			texts = append(texts, typed{kind, m.Body})
 		default:
-			// Claude Code may wrap an inbox batch's heading, so only its exact body is recognised.
 			texts = append(texts, typed{TypedInbox, m.Body})
 		}
 	case JobSession:
-		// A session started with text Waypoint composed: the session has no
-		// id yet. A kickoff the runner composes after the claim records itself.
 		var j SessionJob
 		if json.Unmarshal(input, &j) != nil || j.Prompt == "" {
 			return nil
@@ -341,12 +333,7 @@ func (s *Service) recogniseTyped(ctx context.Context, t *tx, sessionID int64, ev
 		return "", nil
 	}
 	at := min(s.hookTime(ev), s.nowMS())
-	// The same invocation posted again (the CLI's outbox resends after a lost
-	// answer) is answered as the first was: from the record that invocation
-	// used up, or from the tombstone it left when it matched none, and it uses
-	// no other. A resend with no key is a new prompt and takes the next record.
 	if ev.Key != "" {
-		// A key answers only for the same text, unless the hook sent no text or digest to compare.
 		q, args := `SELECT kind FROM typed_prompts WHERE session_id = ? AND consumed_key = ?`, []any{sessionID, ev.Key}
 		if len(sums) > 0 {
 			q += ` AND hash IN (?` + strings.Repeat(`,?`, len(sums)-1) + `)`
@@ -362,7 +349,6 @@ func (s *Service) recogniseTyped(ctx context.Context, t *tx, sessionID int64, ev
 			return "", err
 		}
 	}
-	// One read decides whether anything can match: a hook's outbox can bring 200 prompts in one write, which must finish inside the hook's timeout.
 	var pending, held int
 	if err := t.QueryRowContext(ctx, `SELECT coalesce(sum(session_id IS NOT NULL), 0), coalesce(sum(session_id IS NULL), 0) FROM typed_prompts
 		WHERE consumed_at IS NULL AND expires_at > ? AND (session_id = ? OR (session_id IS NULL AND user_id = (SELECT user_id FROM agent_sessions WHERE id = ?)))`,
@@ -373,7 +359,6 @@ func (s *Service) recogniseTyped(ctx context.Context, t *tx, sessionID int64, ev
 	if pending+held == 0 {
 		sums = nil
 	} else if ev.TypedID != 0 {
-		// A --no-prompts hook sends no text or digest, so the record is matched by its id alone.
 		err = t.QueryRowContext(ctx, `UPDATE typed_prompts SET consumed_at = ?, consumed_key = ?, session_id = ? WHERE consumed_at IS NULL AND id = ? AND expires_at > ? AND (
 			session_id = ? OR (session_id IS NULL AND user_id = (SELECT user_id FROM agent_sessions WHERE id = ?)
 			  AND NOT EXISTS (SELECT 1 FROM session_events WHERE session_id = ? AND kind = 'prompt'))) RETURNING kind`,
@@ -396,18 +381,12 @@ func (s *Service) recogniseTyped(ctx context.Context, t *tx, sessionID int64, ev
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		n := NormalisePrompt(ev.Prompt)
-		// The UPDATEs above matched nothing, so the pending count read before them still holds.
 		if strings.HasPrefix(n, AutopilotPromptMark) || pending > 0 {
-			// Every prompt that matches nothing while Waypoint has text pending
-			// for the session is logged, not only one with the mark: a Waypoint
-			// prompt turned away for a changed byte would otherwise be silent.
 			s.log.WarnContext(ctx, "a prompt with Waypoint's mark matches nothing Waypoint typed: read as the person's",
 				"session", sessionID, "kind_guess", markKindGuess(n), "pending", pending, "typed_id", ev.TypedID, "length", len(n), "raw_length", len(ev.Prompt),
 				"sum", sum, "client_sum", ev.PromptSum, "text_sum", PromptSum(ev.Prompt))
 		}
 		if ev.Key != "" {
-			// So the same invocation, sent again, is the person's again even if
-			// a record was recorded for that text meanwhile.
 			now := s.nowMS()
 			if _, err := t.ExecContext(ctx, `INSERT INTO typed_prompts(session_id, hash, kind, created_at, expires_at, consumed_at, consumed_key) VALUES (?,?,'',?,?,?,?)`,
 				sessionID, sum, now, now, now, ev.Key); err != nil {

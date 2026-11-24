@@ -11,8 +11,6 @@ import (
 	"strings"
 )
 
-// only names leave this machine: no skill text, hook command lines, or MCP server URLs or arguments
-
 type usageInventoryItem struct {
 	Kind   string `json:"kind"` // mcp, skill, command, agent, plugin, hook
 	Name   string `json:"name"`

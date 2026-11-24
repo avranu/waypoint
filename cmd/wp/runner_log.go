@@ -15,7 +15,7 @@ import (
 type logSink struct {
 	mu      sync.Mutex
 	raw     []byte
-	sent    int64 // Counted after invalid UTF-8 is replaced, so it is not an offset into the raw bytes.
+	sent    int64
 	total   int64
 	tail    []byte
 	closed  bool

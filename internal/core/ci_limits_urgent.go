@@ -1,7 +1,5 @@
 package core
 
-// The limits task is tagged ci-urgent once per spell of stopped runs (a person's untag sticks); the calm check untags only the tag it put on.
-
 import (
 	"context"
 	"fmt"

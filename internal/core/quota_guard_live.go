@@ -13,8 +13,6 @@ import (
 	"time"
 )
 
-// Session hooks tell, then stop, automation's sessions at the policy lines; a minute sweep holds automation; a person's own session is touched only by the idle rule, which their next prompt lifts.
-
 // Live guard events; each reaches only its user.
 const (
 	EvQuotaGuardHold = "usage.quota_guard_hold"
@@ -521,8 +519,6 @@ func (s *Service) guardWatchUser(ctx context.Context, uid int64, now time.Time) 
 		return nil
 	}
 	return s.write(ctx, nil, func(t *tx) error {
-		// A lift or a baseline written since this sweep read the state
-		// wins; the next minute judges again.
 		cur, err := s.loadGuardWatch(ctx, t, uid)
 		if err != nil {
 			return err
@@ -604,11 +600,9 @@ func (s *Service) guardJudge(ctx context.Context, uid int64, now time.Time, w *g
 			w.OverSince, w.OverFrom = ptrOf(now), *m.WeekPercent
 		}
 	}
-	// Repeated stops point at the strategy and hold automation; a hold's own stops and an idle person's session do not count.
 	if hold == nil && !quiet {
 		since := now.Add(-guardTripsSpan)
 		if w.TripsFrom != nil {
-			// Stops recorded in the hold's or lift's own millisecond were before it.
 			since = maxTime(since, w.TripsFrom.Add(time.Millisecond))
 		}
 		var n int
@@ -733,7 +727,7 @@ func (s *Service) refreshGuardBaselines(ctx context.Context) {
 			continue
 		}
 		if err := s.write(ctx, nil, func(t *tx) error {
-			cur, err := s.loadGuardWatch(ctx, t, uid) // the minute sweep may have written since
+			cur, err := s.loadGuardWatch(ctx, t, uid)
 			if err != nil {
 				return err
 			}
@@ -1054,7 +1048,6 @@ func (s *Service) LiftQuotaGuard(ctx context.Context, actor *Actor, quietFor str
 		if w.Hold != nil {
 			rule = w.Hold.Rule
 		}
-		// Only stops after a lift count towards a new hold; the lift resets the trips window and the over phase.
 		w.Hold, w.QuietUntil, w.TripsFrom = nil, ptrOf(now.Add(quiet)), ptrOf(now)
 		w.OverSince, w.OverFrom = nil, 0
 		if err := saveGuardWatch(ctx, t, uid, w); err != nil {

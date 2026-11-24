@@ -82,7 +82,6 @@ export function DeleteProjectsDialog({
         }
       }),
     )
-    // Issues from these projects may be in any list on screen.
     qc.invalidateQueries()
     const gone = doomed.filter((p) => !failed.includes(p.name))
     if (gone.some((p) => pathname === `/p/${p.key}` || pathname.startsWith(`/p/${p.key}/`)))

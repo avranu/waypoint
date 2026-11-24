@@ -8,8 +8,6 @@ import (
 	"slices"
 )
 
-// each arm's share is the probability it is best (Thompson sampling); observations age by half-life, and the half-life mix is weighted by recent forecast accuracy
-
 // prepObs is one task in a fit.
 type prepObs struct {
 	Y float64   // the outcome; lower is better
@@ -32,10 +30,9 @@ type prepFit struct {
 	// ArmN: each arm's weighted observations; the last is no pointers'.
 	ArmN  []float64
 	draws [][]float64
-	// covariates' coefficients first, then the arms'
-	beta []float64
-	inv  [][]float64
-	p    int
+	beta  []float64
+	inv   [][]float64
+	p     int
 }
 
 const (
@@ -111,7 +108,7 @@ func fitPrepArms(arms []string, obs []prepObs, spread float64) *prepFit {
 	}
 	f.N = sumW
 	prior := make([]float64, d)
-	prior[0] = 1e-8 // the intercept is unpenalised; only the covariates are shrunk
+	prior[0] = 1e-8
 	for i := 1; i < p; i++ {
 		prior[i] = 1 / (prepCovarSD * prepCovarSD)
 	}
@@ -121,7 +118,6 @@ func fitPrepArms(arms []string, obs []prepObs, spread float64) *prepFit {
 	sigma2 := spread * spread
 	var inv [][]float64
 	var beta []float64
-	// the spread is re-estimated from the previous fit's residuals, a few times
 	for range 3 {
 		a := make([][]float64, d)
 		for i := range d {

@@ -100,9 +100,9 @@ func Ran(hit []byte, i int) bool {
 
 // Suppression kinds.
 const (
-	NoSec   = "nosec"  // gosec's #nosec
-	NoLint  = "nolint" // golangci-lint's //nolint
-	WPLint  = "wplint" // wplint's //wplint:ignore (internal/wplint)
+	NoSec   = "nosec"
+	NoLint  = "nolint"
+	WPLint  = "wplint"
 	allRule = "all"
 )
 

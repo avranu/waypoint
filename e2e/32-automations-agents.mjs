@@ -161,7 +161,6 @@ async function run(width, scheme, key, full) {
   await gallery("Fix failing CI on agents' PRs").getByRole("button", { name: "Copy and edit" }).click();
   dlg = dialog("New automation");
   await dlg.getByLabel("Name", { exact: true }).waitFor();
-  // the form fills the copy's name a moment after the dialog opens
   const copyName = await dlg.getByLabel("Name", { exact: true }).evaluate(
     (el) =>
       new Promise((resolve) => {

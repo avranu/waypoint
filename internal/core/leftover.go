@@ -12,8 +12,6 @@ import (
 	"time"
 )
 
-// Other people's review comments left open at merge are only counted, never made into work or read by a model as instructions: their writers may be strangers.
-
 const (
 	// leftoverAgent is the requesting agent of the audits made at merge.
 	leftoverAgent = "review-leftover"
@@ -244,7 +242,7 @@ func (s *Service) sweepLeftover(ctx context.Context, prID int64, fixSince time.T
 	}
 	projectID, err := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo)
 	if err != nil {
-		return 0, err // not "attached to nothing": the pull request stays due
+		return 0, err
 	}
 	if projectID == 0 {
 		return 0, nil
@@ -257,7 +255,6 @@ func (s *Service) sweepLeftover(ctx context.Context, prID int64, fixSince time.T
 	var auditID int64
 	var fix bool
 	err = s.write(ctx, SystemActor(), func(t *tx) error {
-		// Read again inside the write: another sweep may have won.
 		cur, err := s.prByID(ctx, t, prID)
 		if err != nil || cur.State != "merged" {
 			return err
@@ -358,7 +355,6 @@ func (s *Service) sweepLeftover(ctx context.Context, prID int64, fixSince time.T
 			}
 		}
 		moved = len(found)
-		// Made done, never queued: the event carries no previous state.
 		t.emit(&Event{Kind: EvCodeAudit, ProjectID: projectID, New: AuditDone, Data: map[string]any{"audit": auditID, "title": title}})
 		return nil
 	})

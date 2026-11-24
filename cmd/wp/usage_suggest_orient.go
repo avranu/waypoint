@@ -6,8 +6,6 @@ import (
 	"strings"
 )
 
-// Counts what agents do before their first edit (wp code, wp brief, search nudge), to compare adoption across time windows.
-
 // sugOrientation counts transcripts (main threads and subagents) with at
 // least one call.
 type sugOrientation struct {
@@ -73,7 +71,7 @@ func chainPoint(calls []sugCall, end int) int {
 	finds, steps := 0, 0
 	for i := range end {
 		if calls[i].Tool == "Grep" {
-			continue // Grep is never nudged: the nudge hook matches only Bash, Read and Monitor (hook.go:106)
+			continue
 		}
 		switch callStep(calls[i]) {
 		case stepWP:
@@ -241,7 +239,6 @@ func orientation(sessions []*sugSession) *sugOrientation {
 				nudged = true
 			}
 			n++
-			// parallel calls of one assistant message share one request
 			if c.msg == "" || !seenMsg[c.msg] {
 				tokens += c.Ctx
 				seenMsg[c.msg] = true

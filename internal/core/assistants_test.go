@@ -625,7 +625,6 @@ func TestAssistantWatcher(t *testing.T) {
 	check()
 	want("thawed", 4, "running again")
 
-	// A short outage is silent (a deploy restarts the gate); notices come once it has lasted and when it is back.
 	e.down.Store(true)
 	st = check()
 	if st.Reachable || st.DownSince == nil || st.Error == "" {

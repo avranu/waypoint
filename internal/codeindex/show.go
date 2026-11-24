@@ -451,7 +451,6 @@ func (ix *Index) showSymbol(ctx context.Context, name string, o ShowOptions) (*S
 	top := best[0]
 	res, err := ix.showFileSymbol(ctx, top.Path, top.Symbol.Qualified(), o)
 	if err != nil {
-		// the index is a moment behind the file: fall back to the plain name
 		if res, err = ix.showFileSymbol(ctx, top.Path, top.Symbol.Name, o); err != nil {
 			return nil, err
 		}

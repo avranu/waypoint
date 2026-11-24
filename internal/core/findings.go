@@ -1,7 +1,5 @@
 package core
 
-// A review reads the forge's threads first, so resolutions and replies are known before new findings are posted.
-
 import (
 	"context"
 	"database/sql"
@@ -278,7 +276,7 @@ func (s *Service) syncFindings(ctx context.Context, f *Forge, pr *PullRequest, w
 	if err != nil {
 		return nil, err
 	}
-	threads = s.screenThreads(ctx, f, pr, threads) // Threads by outsiders are held for a person before anything reads them.
+	threads = s.screenThreads(ctx, f, pr, threads)
 	res.threads = threads
 	findings, err := s.prFindings(ctx, s.db.R, pr.ID)
 	if err != nil {
@@ -308,7 +306,7 @@ func (s *Service) syncFindings(ctx context.Context, f *Forge, pr *PullRequest, w
 			rs, err := cl.CommentReactions(ctx, f, pr.Repo, pr.Number, l.th.root().ID)
 			if err != nil {
 				s.log.Debug("read reactions", "repo", pr.Repo, "number", pr.Number, "err", err)
-				continue // A failed read of one comment (e.g. a deleted one) must not skip the rest.
+				continue
 			}
 			for _, r := range rs {
 				if (r.Emoji == "-1" || r.Emoji == "thumbsdown" || r.Emoji == "👎") && !isBotLogin(r.User) {
@@ -340,11 +338,9 @@ func (s *Service) syncFindings(ctx context.Context, f *Forge, pr *PullRequest, w
 				}
 				fnd.State, res.changed = FindingResolved, res.changed || ch
 			case !th.Resolved && fnd.State == FindingResolved:
-				// Not when Waypoint holds the resolution itself (wp pr resolve):
-				// a forge that can't resolve threads never shows it.
 				byForgeClick, err := s.resolvedOnForge(ctx, t, fnd.ID)
 				if err != nil {
-					return err // A failed read changes nothing: an unread resolution is not a person's click, so nothing is reopened.
+					return err
 				}
 				if !byForgeClick {
 					break
@@ -577,7 +573,6 @@ func (s *Service) closeFindingThread(ctx context.Context, pr *PullRequest, fnd *
 			s.log.Debug("resolve finding thread", "repo", pr.Repo, "number", pr.Number, "err", err)
 		}
 	}
-	// A reply that wasn't posted adds no comment, so it must not mark the next person's comment as read.
 	if posted {
 		_, _ = s.db.W.ExecContext(ctx, `UPDATE bot_findings SET replies_seen = replies_seen + 1 WHERE id = ?`, fnd.ID)
 	}
@@ -647,7 +642,7 @@ func reviewConversation(findings []*findingRow, threads []ReviewThread) string {
 	first := true
 	for _, f := range findings {
 		if f.Placement == "withheld" && f.private {
-			continue // Withheld private findings never go into the prompt: a model may copy them.
+			continue
 		}
 		if first {
 			line("Waypoint's earlier findings on this pull request:")

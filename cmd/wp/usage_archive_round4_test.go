@@ -132,7 +132,7 @@ func TestArchiveOffReportHasADeadline(t *testing.T) {
 	t.Setenv("WP_USAGE_ARCHIVE", "off")
 	lowerVar(t, &archiveReportHookTimeout, 300*time.Millisecond)
 	tap.onStatus = func(_ int, _ http.ResponseWriter, r *http.Request) bool {
-		_, _ = io.Copy(io.Discard, r.Body) // net/http reports a client hang-up on r.Context only once the request body is read to EOF
+		_, _ = io.Copy(io.Discard, r.Body)
 		select {
 		case <-r.Context().Done():
 		case <-time.After(20 * time.Second):
@@ -162,7 +162,7 @@ func TestHookPassBoundsTheHourCountUpload(t *testing.T) {
 		if !stall {
 			return false
 		}
-		_, _ = io.Copy(io.Discard, r.Body) // net/http reports a client hang-up on r.Context only once the request body is read to EOF
+		_, _ = io.Copy(io.Discard, r.Body)
 		select {
 		case <-r.Context().Done():
 		case <-time.After(20 * time.Second):

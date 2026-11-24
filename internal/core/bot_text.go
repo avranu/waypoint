@@ -1,7 +1,5 @@
 package core
 
-// A babysitter's packet shows 4000 characters of a comment, so bot chrome (HTML, repeated sections) is stripped to keep findings in view.
-
 import (
 	"fmt"
 	"html"
@@ -54,7 +52,6 @@ func tidyReviewBody(author, body string) string {
 // with nothing to act on. Code (fenced, by CommonMark's rules) keeps its tags.
 func tidyBotText(s string) string {
 	s = strings.ReplaceAll(stripMarkers(s), "\r\n", "\n")
-	// Mask fenced code before dropping sections and stripping tags: code may hold <details> or tags those steps would cut.
 	var code []string
 	var masked strings.Builder
 	for _, sg := range splitFences(s) {
@@ -181,7 +178,6 @@ func botTextChanged(old, now string) bool {
 	o, n := norm(old), norm(now)
 	if cut, ok := strings.CutSuffix(o, "…"); ok && len([]rune(old)) >= storedCommentChars {
 		r := []rune(cut)
-		// Short of where it was cut: markup there may have been half a tag.
 		return !strings.HasPrefix(n, string(r[:max(0, len(r)-200)]))
 	}
 	return o != n

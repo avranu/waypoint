@@ -272,7 +272,6 @@ func TestAgentLoopRound3(t *testing.T) {
 	if secs != 3*3600 {
 		t.Errorf("expired run lasted %ds, want %d", secs, 3*3600)
 	}
-	// The server, not the agent, ended this run: its end is inferred (end_inferred).
 	if !inferred {
 		t.Error("an expired run's end is not marked inferred")
 	}

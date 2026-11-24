@@ -1,7 +1,5 @@
 package core
 
-// Reports only: machines keep offsets past bytes already sent, so dropping index rows would not get the missing bytes back.
-
 import (
 	"context"
 	"errors"
@@ -85,8 +83,6 @@ func (s *Service) countMissingTranscriptFiles(ctx context.Context) (int64, error
 			case errors.Is(err, fs.ErrNotExist):
 				missing++
 			default:
-				// not knowing is not missing (an unreadable directory would
-				// count every piece)
 				return 0, fmt.Errorf("stat %s: %w", p, err)
 			}
 		}

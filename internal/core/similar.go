@@ -7,8 +7,6 @@ import (
 	"strings"
 )
 
-// Open issues a proposed one reads like, so work already on the board is not filed twice.
-
 // maxSimilarIssues is the most similar issues listed for proposed text.
 const maxSimilarIssues = 5
 
@@ -105,7 +103,6 @@ func (s *Service) SimilarIssues(ctx context.Context, actor *Actor, q SimilarQuer
 		} else {
 			m.Reason = "Shares " + idx.shared(vec, d.vec)
 		}
-		// The high band also holds reviews, steps and series of an issue, so only a same title or a near-identical score counts as the same work.
 		m.Same = m.SameProject && !m.Sibling && !named[i.Key] && (sameTitle || score >= simDuplicate)
 		out = append(out, m)
 	}

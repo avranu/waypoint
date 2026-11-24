@@ -18,7 +18,7 @@ const (
 	// attachments keep room.
 	maxAutoShots     = 40
 	maxAutoShotBytes = 10 << 20
-	shotHTTPTimeout  = 20 * time.Second // async: the agent never waits on it
+	shotHTTPTimeout  = 20 * time.Second
 	autoShotCaption  = "Seen by the agent while working (saved automatically)"
 )
 
@@ -55,7 +55,6 @@ func (c *cli) keepScreenshot(in hookEventInput) {
 	sum := sha256.Sum256(data)
 	id := hex.EncodeToString(sum[:8])
 	key := cl.Key
-	// Taken under the lock, so parallel Reads of one image upload it once.
 	reserved := false
 	_ = c.updateState(func(s *State) {
 		cur := s.sessionClaim(in.Cwd, in.SessionID)

@@ -415,8 +415,6 @@ func (s *Service) searchCommentsFor(ctx context.Context, actor *Actor, words str
 	if m == "" {
 		return SearchGroup{}, nil
 	}
-	// Visibility goes in the SQL, before the cap: other projects' matches
-	// mustn't crowd out the ones this person may see.
 	with, wargs := "", []any{}
 	where, args := []string{"comment_search MATCH ?", draftsHidden(actor, "i")}, []any{m}
 	switch member, margs := actor.memberProjects(RoleViewer); {

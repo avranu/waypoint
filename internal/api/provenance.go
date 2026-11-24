@@ -140,7 +140,6 @@ func pageLine(p *core.Page) string {
 	}
 	switch {
 	case p.TextAgent != "" && !p.Unreviewed && p.ReviewedOnStory:
-		// Approving a plan approves its story, not the agent's text; a review from before stories existed covers the text.
 		by := "a person"
 		if p.ReviewedBy != nil {
 			by = p.ReviewedBy.DisplayName

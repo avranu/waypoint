@@ -1,7 +1,5 @@
 package core
 
-// Before/after compares usage in the days before a moment against the days after it, per session, task and day, by medians with a Mann–Whitney p-value; few samples are reported, not hidden.
-
 import (
 	"context"
 	"strings"
@@ -132,7 +130,6 @@ func (s *Service) UsageCompare(ctx context.Context, actor *Actor, uq UsageQuery,
 	if at >= now {
 		return nil, invalid("at: the moment must be in the past")
 	}
-	// The hour holding the pivot counts as after; for days, the pivot's own day and today are left out.
 	pivot := at - at%hourMillis
 	span := int64(q.Window) * 24 * hourMillis
 	hourFrom, hourTo := pivot-span, min(pivot+span, now)

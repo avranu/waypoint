@@ -128,9 +128,9 @@ func TestSharedBlock(t *testing.T) {
 		{"", false, "rules", "y", "AGENTS.md"},
 		{"rules", true, "", "", "CLAUDE.md"},
 		{"@AGENTS.md\n", true, "rules", "y", "AGENTS.md"},
-		{"AGENTS.md", true, "rules", "y", "AGENTS.md"}, // A CLAUDE.md symlink is read as its target's path, not its text.
+		{"AGENTS.md", true, "rules", "y", "AGENTS.md"},
 		{"See @AGENTS.md\n", true, "", "", "CLAUDE.md"},
-		{"rules\n@AGENTS.md", true, "more", "y", "AGENTS.md"}, // An @AGENTS.md import makes AGENTS.md the file for the one block both files read.
+		{"rules\n@AGENTS.md", true, "more", "y", "AGENTS.md"},
 	} {
 		if got := rootInstructionFile(c.claude, c.hasC, c.agents, c.hasA == "y"); got != c.want {
 			t.Errorf("root file for %q/%v %q/%v = %s, want %s", c.claude, c.hasC, c.agents, c.hasA, got, c.want)

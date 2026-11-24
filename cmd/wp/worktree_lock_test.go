@@ -396,7 +396,6 @@ func TestNextLockedWorktree(t *testing.T) {
 		t.Errorf("work gone: %v", err)
 	}
 
-	// Cut branches carry the task key in their name, which is how Waypoint maps a branch to its task.
 	k3 := mk("Alive")
 	b3 := "wp-" + strings.ToLower(k3)
 	wt3 := earlier(k3, b3, liveReason(t))

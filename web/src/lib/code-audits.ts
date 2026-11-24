@@ -1,5 +1,3 @@
-// Not the audit log (lib/audit.ts), which records what people decided.
-
 import { queryOptions } from '@tanstack/react-query'
 import { api, qs } from './api'
 import type { UserRef } from './types'

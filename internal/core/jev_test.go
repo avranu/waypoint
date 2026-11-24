@@ -126,7 +126,6 @@ func TestSafetyScreenAsksTheDecisionModelFirst(t *testing.T) {
 		t.Fatalf("unsure: %+v, chat screens %d", ts, g.screens())
 	}
 
-	// A guarded flag the decision model is unsure of stays on the screen but alone doesn't hold the task.
 	j.yes = map[string]float64{"install": 0.4}
 	g.answer = `{"flags": ["install"], "reason": "adds a dev dependency"}`
 	ts = screen("Add a linter", "Add eslint-plugin-react as a dev dependency.")

@@ -1,7 +1,5 @@
 package core
 
-// A collector is stalled when work has waited past collectorStallAfter and nothing newer came out; each repo or machine is judged alone, so a busy one cannot hide an idle one.
-
 import (
 	"context"
 	"database/sql"
@@ -48,15 +46,12 @@ type collector struct {
 	args             func(now time.Time) []any
 	output           string
 	group, groupHelp string
-	// repoWaiting must use the waiting query's predicate; a copy that drifted would count the wrong things.
-	repoWaiting  string
-	repoOutput   string
-	dropped, off string
-	problem      func(s *Service, ctx context.Context) (string, error)
-	// also names the other queries the collector runs, with their bound values,
-	// so TestCollectorQueriesUseIndexes plans them too.
-	also  map[string]collectorQuery
-	scans map[string]string
+	repoWaiting      string
+	repoOutput       string
+	dropped, off     string
+	problem          func(s *Service, ctx context.Context) (string, error)
+	also             map[string]collectorQuery
+	scans            map[string]string
 }
 
 // collectorQuery is a query with its bound values.
@@ -92,7 +87,6 @@ var collectors = []collector{
 		name:    "escape traces",
 		about:   "a runner with a checkout traces each merged bug fix to the change that caused it (wp code trace; EscapesDue)",
 		waiting: `SELECT COUNT(DISTINCT p.id), MIN(max(COALESCE(p.merged_at, p.landed_at, p.updated_at), el.created_at)) ` + escapeTracesWaitingFrom,
-		// Only a runner with a checkout traces a fix, so a repo no runner checks out stays in the waiting count.
 		repoWaiting: `SELECT lower(p.repo), MIN(p.repo), COUNT(DISTINCT p.id), MIN(max(COALESCE(p.merged_at, p.landed_at, p.updated_at), el.created_at)) ` +
 			escapeTracesWaitingFrom + ` GROUP BY lower(p.repo)`,
 		repoOutput: `SELECT lower(p.repo), MAX(ft.traced_at) FROM fix_traces ft CROSS JOIN pull_requests p ON p.id = ft.pr_id
@@ -168,8 +162,7 @@ var collectors = []collector{
 		args: func(now time.Time) []any {
 			return []any{now.Add(-factsQuiet).UnixMilli(), transcript.ParserVersion, now.Add(-factsRetry).UnixMilli()}
 		},
-		output: `SELECT MAX(f.derived_at) FROM session_fact_files f`,
-		// A derive failure is retried rather than counted as lost; factsProblem reports it.
+		output:  `SELECT MAX(f.derived_at) FROM session_fact_files f`,
 		problem: (*Service).factsProblem,
 		also: map[string]collectorQuery{
 			"failed":    {factsFailedSQL, nil},
@@ -182,7 +175,6 @@ var collectors = []collector{
 		},
 	},
 	{
-		// Counts session data lost by hooks, uploads and server caps, so a drop is never silent; nothing waits on it.
 		name:    "session data",
 		about:   "session hooks, usage uploads and the caps on what a session keeps; what each dropped, by reason, is in wp server status (Hook data dropped)",
 		waiting: `SELECT 0, NULL`,
@@ -421,7 +413,7 @@ func (s *Service) readCollector(ctx context.Context, c collector, now time.Time)
 // admins about the stalled ones. Hourly.
 func (s *Service) CheckCollectorHealth(ctx context.Context) {
 	now := s.now()
-	s.CheckTranscriptFiles(ctx) // CheckTranscriptFiles limits itself to once a day (transcriptFilesEvery), so this hourly call is usually a no-op.
+	s.CheckTranscriptFiles(ctx)
 	for _, c := range collectors {
 		if ctx.Err() != nil {
 			return
@@ -543,7 +535,6 @@ func (s *Service) noteDropped(ctx context.Context, t *tx, c collector, r collect
 		return err
 	}
 	if *r.dropped < toldTotal.Int64 {
-		// the total fell (a machine's state reset); what grows from here is new
 		if _, err := t.ExecContext(ctx, `UPDATE collector_health SET dropped_told = ? WHERE name = ?`, *r.dropped, c.name); err != nil {
 			return err
 		}

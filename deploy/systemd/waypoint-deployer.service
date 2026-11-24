@@ -6,5 +6,4 @@ After=network-online.target
 [Service]
 Type=oneshot
 ExecStart=%h/bin/waypoint-deployer
-# The 40min covers the build, the health wait and a rollback in one run.
 TimeoutStartSec=40min

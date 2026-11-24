@@ -1,20 +1,5 @@
 package core
 
-// CI evidence (WP-704). The backend test jobs print, at the end of their
-// log, each test's result, the shards' merged cover profiles and (one shard)
-// the tree's #nosec, //nolint and //wplint:ignore comments, as "wp-evidence" lines
-// (internal/testevidence, .forgejo/scripts/gotest-shard.sh). Before, CI
-// computed all of it and threw it away: nothing said which tests were
-// flaky or slow, what internal/core's coverage was (each of four shards
-// printed a partial number), or how many findings had been waved through.
-//
-// The CI history pass (every ten minutes) reads the logs of finished jobs
-// it has kept (ci_jobs) and keeps what they carry. Which jobs carry
-// evidence is learned per job name, so a repo whose CI prints none costs a
-// few reads a week. A re-run replaces a job's log, so the babysitter's
-// flake re-run first reads the failed jobs' evidence: those failures are
-// what a flake score is made of. Decision: WP-ADR62.
-
 import (
 	"bytes"
 	"compress/gzip"
@@ -82,7 +67,7 @@ type evidenceJob struct {
 	event     string
 	tier      string
 	at        int64
-	pushed    int64 // Its run's creation time (0 if unknown) orders scans of the default branch.
+	pushed    int64
 	onDefault bool
 }
 
@@ -363,7 +348,6 @@ func (s *Service) keepFailedEvidence(ctx context.Context, f *Forge, repo, sha st
 				continue
 			}
 			if verdict == evidenceKept {
-				// Mark it kept first: the history pass would otherwise read the re-run's log under this task.
 				if err := s.setJobEvidence(ctx, f.ID, repo, j.TaskID, evidenceKept); err != nil {
 					s.log.Debug("CI evidence before a re-run: mark", "err", err)
 				}
@@ -427,7 +411,7 @@ func mergeCoverage(ctx context.Context, tx *sql.Tx, forgeID int64, repo string, 
 		return err
 	}
 	if err == nil && len(blob) == 0 {
-		return nil // Detail already pruned: a late shard cannot be merged in, so nothing is done.
+		return nil
 	}
 	byPath := map[string]testevidence.File{}
 	if len(blob) > 0 {

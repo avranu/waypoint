@@ -490,7 +490,7 @@ func TestGoalContextRows(t *testing.T) {
 
 	e.exec(`UPDATE issues SET status_id = (SELECT st.id FROM statuses st WHERE st.category = 'done' LIMIT 1) WHERE id IN (?,?,?,?,?)`,
 		flagged.ID, fine.ID, pending.ID, errored.ID, bare.ID)
-	e.s.goalPol.pol = nil // the draws cached an estimate before these rows
+	e.s.goalPol.pol = nil
 	if _, err := e.s.GoalContextPolicy(e.ctx, e.me); err == nil {
 		t.Error("a member read the report")
 	}

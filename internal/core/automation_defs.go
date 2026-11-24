@@ -60,7 +60,6 @@ func init() {
 		Match: func(tr Trigger, e *Event) bool {
 			oc, _ := e.Data["old_category"].(string)
 			nc, _ := e.Data["new_category"].(string)
-			// A category matches only when the issue leaves (From) or enters (To) it; moving within one doesn't count.
 			match := func(want, name, cat string) bool {
 				if want == "" {
 					return true
@@ -84,7 +83,7 @@ func init() {
 	registerTrigger(TriggerDef{Name: "field_changed", Label: "A field changes", Group: "Issues", Phrase: "a field changes", Event: EvIssueUpdated, Issue: true,
 		Params: []ParamDef{{Name: "field", Label: "Field", Type: PField, Options: opts("title", "Title", "description", "Description", "type", "Type", "priority", "Priority", "points", "Points",
 			"sprint", "Sprint", "parent", "Parent", "labels", "Tags", "start_date", "Start date", "due_date", "Due date"), Help: "Empty is any field."}},
-		Match: func(tr Trigger, e *Event) bool { // Objective events are named by field, so the any-field trigger skips them.
+		Match: func(tr Trigger, e *Event) bool {
 			if tr.Field == "" {
 				return e.Field != "objective"
 			}

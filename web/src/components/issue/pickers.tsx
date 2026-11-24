@@ -163,7 +163,6 @@ export function StatusPicker({
     value: s.id,
     label: s.name,
     icon: <StatusIcon category={s.category} color={s.color} />,
-    // The server refuses to finish a parent while a sub-task is open; this hint only warns before the click.
     hint:
       s.category === 'done' && openChildren > 0 && value.category !== 'done'
         ? `${openChildren} sub-task${openChildren === 1 ? '' : 's'} open`

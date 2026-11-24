@@ -13,8 +13,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Evidence is a fact check for readers, never an authority a gate may rely on; the tree comes from the CLI.
-
 // Test evidence outcomes.
 const (
 	EvidencePass  = "pass"
@@ -298,7 +296,7 @@ func evidenceLine(outcome string, r TestRun) string {
 		return s
 	}
 	if counts == "" {
-		return "Tests on this tree: " + cmp(units+" passed", "passed") + how // A run with no counts (plain go test output) reports its units only.
+		return "Tests on this tree: " + cmp(units+" passed", "passed") + how
 	}
 	if units != "" {
 		counts += " in " + units
@@ -389,8 +387,6 @@ func (s *Service) RecordTestEvidence(ctx context.Context, actor *Actor, projectR
 		outcome, line := summarizeEvidence(in.Runs, in.Nearest, now)
 		var issue *Issue
 		if key := strings.TrimSpace(in.Issue); key != "" {
-			// A task this actor can't edit just isn't linked: the role checked
-			// above is for this project, and the task can be in another.
 			if i, _, err := s.getIssueFor(ctx, t, actor, key, RoleEditor, false); err == nil {
 				issue = i
 			}
@@ -471,8 +467,6 @@ func testWords(col string) string {
 // history for doesn't.
 func (s *Service) repoCIRunsTests(ctx context.Context, evidenceID int64, repo string) bool {
 	since := s.now().Add(-ciTestsLookback).UnixMilli()
-	// Only the forges that host the repo for the evidence's project: another
-	// project may have the same owner/name on another forge.
 	const forges = `(SELECT pr.forge_id FROM project_repos pr WHERE pr.repo = ? COLLATE NOCASE
 		AND pr.project_id = (SELECT project_id FROM test_evidence WHERE id = ?))`
 	var one int

@@ -31,7 +31,6 @@ func TestCLIPRReview(t *testing.T) {
 	if out, code := e.run("pr", "review", "retry", "3"); code != 0 || !strings.Contains(out, "a review is already queued at abc1233 (run 1); nothing to retry") {
 		t.Errorf("retry while queued: %d %s", code, out)
 	}
-	// An agent cancelling the head's review would let it merge unreviewed.
 	if out, code := e.run("pr", "review", "cancel", "3"); code != 1 || !strings.Contains(out, "agents can't cancel the review of a pull request's head") {
 		t.Errorf("agent cancels the head's review: %d %s", code, out)
 	}

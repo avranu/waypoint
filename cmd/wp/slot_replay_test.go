@@ -168,7 +168,6 @@ func TestReplayRowsRecordedAndModel(t *testing.T) {
 	if len(asked.Short) != 3 || slotPct(asked.Short, 0.5) != 581000 || slotPct(asked.Short, 0.95) != 598000 || slotPct(asked.Long, 0.95) != 0 {
 		t.Errorf("asked %+v", asked)
 	}
-	// The model uses the group's recorded threshold, not today's.
 	g.ThresholdSecs = 660
 	if _, other, _ := replayRows(g, recordedPolicy); other.ClassedLong != 0 {
 		t.Errorf("model at the recorded threshold of 11m: %+v", other)
@@ -227,7 +226,6 @@ func TestSlotReplayLocalCommand(t *testing.T) {
 // from; one that had ended is.
 func TestReplayClassesIgnoreSameKeyRunStillGoing(t *testing.T) {
 	hist := []core.SlotHold{rj(-9000, 10, "c", ""), rj(-8000, 10, "c", ""), rj(-7000, 600, "c", "")}
-	// A same-key run still going is not in the class history: counting it would flip the class.
 	jobs := []core.SlotHold{rj(1000, 600, "c", ""), rj(1100, 600, "c", ""), rj(1701, 10, "c", "")}
 	if got := replayClasses(jobs[:2], hist, 5*time.Minute); got[0] != "short" || got[1] != "short" {
 		t.Errorf("classes %v, want short short", got)

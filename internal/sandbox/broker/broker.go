@@ -205,7 +205,6 @@ func (b *Broker) connect(w http.ResponseWriter, r *http.Request) {
 	}
 	sni, hello, err := peekSNI(conn, 15*time.Second)
 	if err != nil || strings.TrimSuffix(strings.ToLower(sni), ".") != host {
-		// a TLS server name other than CONNECT's host is domain fronting, so it is denied.
 		e.Verdict, e.Reason = Denied, "sni"
 		b.emit(e)
 		return
@@ -258,8 +257,6 @@ func (b *Broker) tunnel(conn net.Conn, rule *Rule, e Entry) {
 	t.Stop()
 	_ = conn.Close()
 	_ = up.Close()
-	// Closing both ends makes a still-running copy return; wait for it so
-	// sent and got are no longer being written.
 	for ; pending > 0; pending-- {
 		<-done
 	}
@@ -347,7 +344,6 @@ func (b *Broker) forward(w http.ResponseWriter, r *http.Request, rule *Rule, sch
 	path := r.URL.EscapedPath()
 	e := Entry{Method: r.Method, Host: rule.Host, Port: rule.port(), Path: logPath(path), Template: rule.Template}
 	if !sameHost(r.Host, rule) {
-		// a Host header naming another host than CONNECT's is domain fronting, so it is refused.
 		b.refuse(w, e, "host")
 		return
 	}
@@ -393,13 +389,11 @@ func (b *Broker) forward(w http.ResponseWriter, r *http.Request, rule *Rule, sch
 			w.WriteHeader(http.StatusBadGateway)
 		},
 	}
-	// ReverseProxy panics with ErrAbortHandler when a body copy fails, so the log runs in a defer.
 	defer func() {
 		e.Verdict, e.Status, e.BytesUp, e.BytesDown = Allowed, cw.status, sent.Load(), cw.n
 		if upErr != nil {
 			e.Verdict, e.Reason = Failed, upstreamReason(upErr)
 		} else if cw.limit {
-			// A body copy cut off by the byte limit never reaches ErrorHandler, so the verdict is set here.
 			e.Verdict, e.Reason = Failed, "limit"
 		}
 		b.emit(e)

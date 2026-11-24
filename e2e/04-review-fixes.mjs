@@ -65,7 +65,6 @@ await page.goto(`${base}/issue/${created.key}`);
 await page.waitForTimeout(800);
 const prose = page.locator(".prose-wp").first();
 ok(
-  // Copy buttons are added after sanitising, so only the markdown's own buttons count here.
   (await prose
     .locator("style, form, button:not(.code-copy), input:not(.task)")
     .count()) === 0,

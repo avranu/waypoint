@@ -51,7 +51,7 @@ func (h *Helper) serveConn(c net.Conn) {
 		writeResponse(c, sandbox.Response{Error: fmt.Sprintf("uid %d may not use the sandbox helper", uid)})
 		return
 	}
-	fr := &fdReader{c: c.(*net.UnixConn)} // peerUID checked it's a unix socket
+	fr := &fdReader{c: c.(*net.UnixConn)}
 	defer fr.closeFDs()
 	br := bufio.NewReader(fr)
 	line, err := sandbox.ReadMessage(br)
@@ -74,7 +74,6 @@ func (h *Helper) serveConn(c net.Conn) {
 		writeResponse(c, sandbox.Response{Error: err.Error()})
 		return
 	}
-	// Clear the deadline: a session runs until the runner hangs up.
 	_ = c.SetDeadline(time.Time{})
 	hangup := make(chan struct{})
 	go func() {

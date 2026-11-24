@@ -10,8 +10,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Guesses at a question from a turn's end are announced only if still open after autoQuestionDelay, since the person usually answers in the terminal first.
-
 const (
 	requestAuto     = "auto"
 	notAQuestion    = "not a question"
@@ -110,7 +108,7 @@ func (s *Service) autoFileQuestion(ctx context.Context, t *tx, actor *Actor, x *
 		Questions: []Question{{Question: title}},
 	}, at)
 	if IsInvalid(err) {
-		return nil // An invalid filing (e.g. too many open requests) is dropped so the Stop hook still succeeds.
+		return nil
 	}
 	return err
 }
@@ -151,7 +149,6 @@ func (s *Service) NotifyAutoQuestions(ctx context.Context) {
 	rows.Close()
 	for _, d := range list {
 		err := s.write(ctx, SystemActor(), func(t *tx) error {
-			// Clearing notify_at first is the claim: two sweeps must not announce one request twice.
 			res, err := t.ExecContext(ctx, `UPDATE requests SET notify_at = NULL WHERE id = ? AND notify_at IS NOT NULL AND state = 'open'`, d.id)
 			if err != nil {
 				return err
@@ -184,7 +181,7 @@ func (s *Service) tellDecision(ctx context.Context, id int64) {
 	}
 	r := list[0]
 	if !r.sessionID.Valid || r.DeliveredAt != nil || !slices.Contains(decidedStates, r.State) || r.Via != "" || !r.wakes() {
-		return // A decision that needs no follow-up waits for the agent's next prompt instead of waking it.
+		return
 	}
 	s.batchOrTell(ctx, r.sessionID.Int64, 0, r.Blocking, func(until int64) error {
 		_, err := s.db.W.ExecContext(ctx, `UPDATE requests SET batch_until = ? WHERE id = ? AND delivered_at IS NULL`, until, id)

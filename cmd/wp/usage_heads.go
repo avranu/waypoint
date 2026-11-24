@@ -7,8 +7,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// ordinary commands send only each segment's program and subcommand; arguments leave only in refused or risky calls, redacted
-
 // shellWords splits a command line into segments (at && || ; | & and
 // newlines) of words with quotes removed. It follows the shell closely
 // enough for heads, not for running anything: quoted strings and $(…) stay

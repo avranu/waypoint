@@ -1,5 +1,3 @@
-// Kept apart from the page so the router can validate URL state without loading the page.
-
 export type AgentsTab =
   | 'overview'
   | 'queue'

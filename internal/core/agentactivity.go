@@ -140,7 +140,6 @@ func (s *Service) AgentActivity(ctx context.Context, actor *Actor, q ActivityQue
 	q.Agent = strings.TrimSpace(q.Agent)
 	now := s.nowMS()
 	loc := s.actorLocation(actor)
-	// The period is whole calendar days in the viewer's time zone, not N×24 hours.
 	today := time.UnixMilli(now).In(loc)
 	first := time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, loc).AddDate(0, 0, -(q.Days - 1))
 	from := first.UnixMilli()
@@ -226,8 +225,6 @@ func (a *activityBuilder) day(ms int64) *ActivityDay {
 // runs reads the runs that overlap the period. A run's tokens and cost count
 // in the period it started in; its time counts where it falls.
 func (a *activityBuilder) runs(ctx context.Context, where string, args []any) error {
-	// A run still open counts until now, or until its lease ran out if the
-	// agent went quiet (the sweep hasn't closed it yet), as reports do.
 	// #nosec G202 -- where is built from fixed conditions; values are bound
 	rows, err := a.s.db.R.QueryContext(ctx, `SELECT r.id, r.agent, r.model, r.step, r.started_at, r.ended_at,
 			min(coalesce(r.ended_at, min(?, coalesce((SELECT x.claimed_until FROM issues x WHERE x.id = r.issue_id AND x.claimed_by = r.agent), r.started_at + ?))), ?),
@@ -365,8 +362,6 @@ func (a *activityBuilder) writing(ctx context.Context, where string, args []any)
 // issue an agent in the period worked on, linked by an agent, or naming a
 // coding agent in their text, opened or merged in the period.
 func (a *activityBuilder) pulls(ctx context.Context, where string, args []any) error {
-	// Without a pull request record (a repo bots don't watch), when it
-	// merged comes from the linked issues' history.
 	mergedAt := map[string]int64{}
 	ev, err := a.s.db.R.QueryContext(ctx, `SELECT new_value, min(created_at) FROM events WHERE kind = ? AND created_at >= ? GROUP BY new_value`,
 		EvExternalPRMerged, a.from)
@@ -426,7 +421,7 @@ func (a *activityBuilder) pulls(ctx context.Context, where string, args []any) e
 		case mergedAt[url] > 0:
 			p.merged = mergedAt[url]
 		case state == "merged" && p.merged == 0:
-			p.merged = -1 // -1 marks a PR merged with no recorded merge time.
+			p.merged = -1
 		}
 		add := func(ag string) {
 			if ag != "" && !slices.ContainsFunc(p.agents, func(x string) bool { return normalizeAgent(x) == normalizeAgent(ag) }) {
@@ -536,7 +531,6 @@ func (a *activityBuilder) result() *Activity {
 	}
 	for _, k := range a.order {
 		x := a.agents[k]
-		// An agent's time is the union of its runs' spans, so concurrent tasks count once.
 		for _, sp := range mergeSpans(a.spans[k]) {
 			x.Seconds += (sp[1] - sp[0]) / 1000
 			a.splitDays(sp[0], sp[1])

@@ -140,7 +140,6 @@ func TestRunChainWithoutARunnerIsUnavailable(t *testing.T) {
 	ae, _ := runnerChainEnv(t)
 	pid := ae.providerID()
 	ae.llm.answers[museModel] = `{"findings":[]}`
-	// A rule's runners are its owner's only: the admin's runner, which has claude, never serves bob's rule.
 	bob := ae.user("bob", false)
 	ae.runner(bob, "bobbox", func(r *RunnerRegistration) {
 		r.CLIs = []RunnerCLI{{Name: "opencode"}}

@@ -12,8 +12,6 @@ import (
 	"syscall"
 )
 
-// Runs the failing tests in a temporary checkout of REF, never in the work tree, which others may share.
-
 // baseVerdicts, in the order they're listed. The first counts as already
 // there; the next five as this change's (or a flake); the last as neither.
 const (
@@ -127,7 +125,6 @@ func baseArgv(argv []string, failures []testFailure) []string {
 		out = append(out, a)
 	}
 	run := "-run=^(" + strings.Join(names, "|") + ")$"
-	// Insert -run before -args; go test reads flags before packages, so its place among the flags doesn't matter.
 	if k := slices.Index(out, "-args"); k >= 0 {
 		return slices.Concat(out[:k], []string{run}, out[k:])
 	}
@@ -154,8 +151,6 @@ func baseVerdict(f testFailure, base *testResult) string {
 	}
 	switch {
 	case base.Ran == nil:
-		// Only failures are named (pytest, junit, go test's plain text):
-		// not failing there is all that's known.
 		return baseNotFailing
 	case f.Test == "":
 		if testFailed || pkgFailed {

@@ -64,8 +64,6 @@ export function RichTextInput({
   const qc = useQueryClient()
   const target = attachTo ?? (issueKey ? issueTarget(issueKey) : undefined)
   const editor = useRef<HTMLDivElement | null>(null)
-  // The markdown the DOM currently shows. An outside change that differs from
-  // this is the only reason to replace the DOM under the person typing.
   const shown = useRef(value)
   const users = useQuery(q.users()).data ?? []
   const [mention, setMention] = useState<Mention | null>(null)
@@ -81,9 +79,7 @@ export function RichTextInput({
   const sync = () => {
     const el = editor.current
     if (!el) return
-    // A browser leaves a <br> or an empty <p> behind after everything is deleted; clear that residue only.
     if (blank(el) && el.innerHTML !== '') el.innerHTML = ''
-    // A ticked box changes the property, not the attribute innerHTML shows.
     for (const box of Array.from(el.querySelectorAll<HTMLInputElement>('input[type=checkbox]')))
       box.toggleAttribute('checked', box.checked)
     const md = htmlToMarkdown(el.innerHTML)
@@ -108,10 +104,6 @@ export function RichTextInput({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- starting value only
   }, [])
 
-  // The editor's own changes come back equal to `shown`. Anything else is
-  // newer than the DOM, so it is shown even under the caret: left out, the
-  // next keystroke would serialize the old DOM over it. The caret keeps its
-  // place in the text.
   useEffect(() => {
     const el = editor.current
     if (!el || value === shown.current) return
@@ -283,14 +275,9 @@ export function RichTextInput({
     sel?.removeAllRanges()
     sel?.addRange(range)
     sync()
-    // The editor may be gone when an upload ends (switched to markdown, done,
-    // Escape), or the placeholder deleted; then the draft is what to edit.
     const finish = (i: number, markdown: string | null) => {
       const ph = placeholders[i]
       const node = nodes[i]
-      // Text typed beside the placeholder joins its node: cut the
-      // placeholder out and leave the rest alone. If it was edited, fall
-      // through to the draft.
       const at0 = mounted.current && node.isConnected ? node.data.indexOf(ph) : -1
       if (at0 >= 0) {
         const mid = at0 > 0 ? node.splitText(at0) : node
@@ -304,9 +291,6 @@ export function RichTextInput({
         sync()
         return true
       }
-      // The draft holds the placeholder as the serializer wrote it (escaped),
-      // or as typed if markdown mode has rewritten it. While this editor is
-      // open, the change comes back as `value` and the effect above shows it.
       const v = draftNow()
       const at = [ph, asWritten(ph)].find((p) => v.includes(p))
       if (!at) return false
@@ -359,8 +343,6 @@ export function RichTextInput({
           upload([...e.dataTransfer.files])
           return
         }
-        // Text dragged in from elsewhere is plain text, as a paste is; moving
-        // text around inside the editor is the browser's.
         const el = editor.current
         const text = e.dataTransfer.getData('text/plain')
         if (inside || !text || !el || !el.contains(e.target as Node)) return
@@ -423,7 +405,6 @@ export function RichTextInput({
         onClick={(e) => {
           const t = e.target as HTMLElement
           if (t instanceof HTMLInputElement && t.type === 'checkbox') {
-            // The browser toggles the box; save it after it does.
             window.setTimeout(sync, 0)
             return
           }
@@ -433,8 +414,6 @@ export function RichTextInput({
           if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) detect()
         }}
         onKeyDown={(e) => {
-          // Markdown has no underline; the shortcut would make one that
-          // vanishes on save.
           if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'u') {
             e.preventDefault()
             return

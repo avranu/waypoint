@@ -231,7 +231,6 @@ func approvalLine(n *core.DesignNote) string {
 	}
 	s := written + " Approved by " + by + " on " + day(*n.ApprovedAt) + "."
 	if n.Requested != nil {
-		// A request is provenance, not approval; never word it as approved.
 		s = "Written by " + who(n.CreatedBy, n.CreatedAgent) + " on " + day(n.CreatedAt) + " for " + n.Requested.Issue + ", which " +
 			who(n.Requested.By, "") + " filed: it counts on that request; no person approved it."
 	}

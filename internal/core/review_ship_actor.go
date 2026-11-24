@@ -105,8 +105,6 @@ func (s *Service) stopShipWith(ctx context.Context, r *roundRow, in shipRoundIn,
 			return err
 		}
 		s.emitWorkLog(ctx, t, r.issueID, r.id, RoundDone)
-		// The person is told by the write that ends the ship (dispatch
-		// sends it): the round ends and the notice stands or falls together.
 		who := in.userID
 		if in.user != nil {
 			who = in.user.ID
@@ -136,8 +134,6 @@ func (s *Service) stopShipWith(ctx context.Context, r *roundRow, in shipRoundIn,
 				return err
 			}
 		}
-		// No event for the claim itself: endRun says the run ended, and a
-		// claim's release is evented nowhere else either (dropClaim).
 		_, err := t.ExecContext(ctx, `UPDATE issues SET claimed_by = '', claimed_until = NULL, claimed_at = NULL WHERE id = ? AND claimed_by = ?`, r.issueID, in.agent)
 		return err
 	}); err != nil {

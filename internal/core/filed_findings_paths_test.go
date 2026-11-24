@@ -7,8 +7,6 @@ import (
 	"testing"
 )
 
-// On the to-do paths a finding filed as an issue (confirmed, linked, medium or lower) is dropped; a confirmed one with no issue is kept.
-
 type filedEnv struct {
 	*apEnv
 	prID, forge, issue int64

@@ -26,7 +26,6 @@ const defaultLabelColor = "ededed"
 // madeLabels are the labels Waypoint makes with a colour and description of
 // their own; any other gets defaultLabelColor and no description.
 var madeLabels = map[string]struct{ color, description string }{
-	// Same label, colour and description as infrastructure's bin/ci-urgent.py gives it.
 	CIUrgentLabel: {"#d93f0b", "CI runs on the urgent lane, ahead of the queue (infrastructure docs/runbooks/forgejo-runner.md)"},
 }
 
@@ -128,7 +127,6 @@ func (c *httpForgeClient) RequestReviewers(ctx context.Context, f *Forge, repo s
 	if f.Kind != "gitlab" {
 		return c.do(ctx, f, http.MethodPost, fmt.Sprintf("/repos/%s/pulls/%d/requested_reviewers", repo, number), map[string]any{"reviewers": users}, nil)
 	}
-	// GitLab replaces the whole reviewer list, so the reviewers already there go in the request too.
 	var mr struct {
 		Reviewers []struct {
 			ID int64 `json:"id"`
@@ -221,7 +219,6 @@ func (c *httpForgeClient) retryForgejo(ctx context.Context, f *Forge, repo, sha 
 		if cr, ok := counting[runGroup(r)]; !ok || cr.ID != r.ID {
 			continue
 		}
-		// A fail-fast run ends cancelled after its first failure, so cancelled runs are retried as well as failed ones.
 		if r.Status != "failure" && r.Status != "cancelled" {
 			continue
 		}
@@ -268,7 +265,6 @@ func (c *httpForgeClient) rerunForgejoJobs(ctx context.Context, f *Forge, repo s
 		}
 		posted[j.ID] = true
 		n++
-		// A re-run reopens dependent jobs whose needs use workflow keys the API doesn't give (a matrix job's name differs), so jobs are read again, not matched; re-running a reopened job is refused.
 		if jobs, err = c.ActionJobs(ctx, f, repo, runID); err != nil {
 			return n, err
 		}

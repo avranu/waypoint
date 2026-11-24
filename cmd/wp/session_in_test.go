@@ -99,7 +99,6 @@ func TestSessionInResolvesSymlinks(t *testing.T) {
 	pid, start := exitedPid(t)
 	ancestor := &cwdSession{Session: "ancestor", Pid: os.Getpid(), PidStart: self, At: time.Now(), Cwd: root}
 
-	// A dead nearest session does not fall back to a live ancestor, even when reached through a symlink.
 	nearest := &cwdSession{Session: "nearest-dead", Pid: pid, PidStart: start, At: time.Now(), Cwd: real}
 	s := &State{Cwds: map[string]*cwdSession{"a": ancestor, "n": nearest}}
 	if got := s.sessionIn(filepath.Join(link, "deep")); got != "" {

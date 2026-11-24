@@ -401,7 +401,6 @@ func TestFactsReadTaskByWindows(t *testing.T) {
 	if f1.Scope != "task" || len(f1.Sources) != 1 || f1.Sources[0].To == nil || f2.Sources[0].To != nil {
 		t.Errorf("windows: %+v %+v", f1.Sources, f2.Sources)
 	}
-	// A task's status counts its sessions' whole files, not its window, and says so.
 	if !f1.Status.WholeSession || !f2.Status.WholeSession || f1.Status.FilesArchived != 2 {
 		t.Errorf("a task's status must be named whole-session: %+v", f1.Status)
 	}

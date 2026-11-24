@@ -1,7 +1,5 @@
 package core
 
-// againPolicy.settle reads no database and no clock, so every case of the rule can be listed in a test.
-
 import (
 	"errors"
 	"maps"
@@ -54,12 +52,10 @@ func (p againPolicy) floor(tier string) float64 {
 // comes to need it, so a round a signal calls isn't lost to a record it
 // never reads, and none is decided as if a failed read had said no.
 type againFacts struct {
-	tier        string
-	fixed, open int
-	passed      bool
-	unread      bool
-	// spent: the loop had its one later round read by labels alone;
-	// probed: it had its one probe.
+	tier                    string
+	fixed, open             int
+	passed                  bool
+	unread                  bool
 	spent, probed           bool
 	historyErr              error
 	trusted                 bool
@@ -92,7 +88,6 @@ func (p againPolicy) settle(c *againDecision, fs, earlier []againFinding, ans ma
 	if c.unread = f.unread; f.unread {
 		c.unchecked++
 	}
-	// Without the model no repeat can be told, so a loop gets one labels-only round, and no PR opens on findings nobody followed up.
 	unscoredLater := !scored && len(earlier) > 0
 	c.need = p.needFor(c.index)
 	calls := c.serious > 0 || c.weight > 0 && c.weight >= c.need || c.unchecked > 0
@@ -109,7 +104,7 @@ func (p againPolicy) settle(c *againDecision, fs, earlier []againFinding, ans ma
 	case unscoredLater:
 		c.arm = AgainUnscored
 	case f.fixed == 0 && f.open == 0:
-		c.arm = AgainRejected // the rejections were unchecked, but none would have been a signal
+		c.arm = AgainRejected
 	case !scored && noModel:
 		c.arm = AgainNoModel
 	case !scored:
@@ -121,9 +116,6 @@ func (p againPolicy) settle(c *againDecision, fs, earlier []againFinding, ans ma
 		}
 	}
 	if (c.arm == AgainEnough || c.arm == AgainWeighed) && c.probeable() {
-		// One probe a loop: probes skip stakes, the reviewer's record and
-		// the yield floor, so rounds that kept scoring under the bar would
-		// otherwise go on to the cap on the probe draw alone.
 		if err := errors.Join(f.historyErr, f.probeErr); err != nil {
 			return false, errors.Join(errAgainRead, err)
 		}
@@ -133,9 +125,6 @@ func (p againPolicy) settle(c *againDecision, fs, earlier []againFinding, ans ma
 			}
 		}
 	}
-	// A signal is backed by the session's own mark, the check of it and
-	// the check against the code: neither the reviewer's record nor the
-	// yield record overrides it.
 	scoresCall := c.arm == "" && !probe && !calls
 	if scoresCall && c.fixesMean < bar.risky {
 		switch {

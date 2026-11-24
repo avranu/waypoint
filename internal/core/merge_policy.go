@@ -1,7 +1,5 @@
 package core
 
-// every armed merge waits for required checks and for reviews to settle through the quiet period; a repo on several projects takes the strictest policy
-
 import (
 	"context"
 	"database/sql"
@@ -470,15 +468,12 @@ func (s *Service) autoArm(ctx context.Context, prID int64) bool {
 	mine := pr.ArmedAt != nil && pr.ArmedAgent == mergeSettingAgent
 	switch {
 	case mine && why != "" && pr.State == "open":
-		// A draft stays armed: readiness waits for it to leave draft.
 		s.disarmOutOfScope(ctx, pr, why)
 		return false
 	case scopedArm(pr) && baseWhy != "":
 		s.disarmOutOfScope(ctx, pr, baseWhy)
 		return false
 	case !known:
-		// Can't tell whether its base is in scope: arm nothing new; an
-		// armed merge asks the forge again before it merges.
 		return pr.ArmedAt != nil
 	case pr.ArmedAt == nil && why == "" && baseWhy == "" && pr.armDeclined == 0:
 		return s.armBySetting(ctx, pr)

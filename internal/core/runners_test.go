@@ -275,7 +275,7 @@ func TestClaimTakesAuditsAfterEverythingElse(t *testing.T) {
 func TestHeldPollUsesTheRunnerAsItIsNow(t *testing.T) {
 	e := newEnv(t)
 	r := e.runner(e.admin, "mine", nil)
-	e.runner(e.admin, "other", nil) // so a job for /work can be queued once mine stops allowing it
+	e.runner(e.admin, "other", nil)
 	wait := 1.0
 	got := make(chan *RunnerWork, 1)
 	go func() {
@@ -438,7 +438,6 @@ func TestPollStopsJobsWaypointEnded(t *testing.T) {
 		t.Fatalf("nothing to stop yet: %+v", w.Cancel)
 	}
 	e.s.cancelStepJob(e.ctx, silent.ID, "The audit was cancelled.")
-	// Just ended: a held poll's list may be older than the job's own end.
 	if w := e.poll(e.admin, r, RunnerPoll{Running: both}); len(w.Cancel) != 0 {
 		t.Errorf("told to stop a job that only just ended: %+v", w.Cancel)
 	}
@@ -608,7 +607,6 @@ func TestPollFailsJobsTheRunnerLost(t *testing.T) {
 	lost := e.enqueue(e.admin, RunnerJobInput{Kind: JobCommand, Input: cmdInput("b", "/work")})
 	e.poll(e.admin, r, RunnerPoll{})
 	e.poll(e.admin, r, RunnerPoll{})
-	// A poll built before a claim arrived doesn't list the job, so a job missing from one poll is not lost until the grace period passes.
 	e.poll(e.admin, r, RunnerPoll{Running: []int64{}})
 	if j, _ := e.s.GetRunnerJob(e.ctx, e.admin, lost.ID, -1); j.State != "running" {
 		t.Errorf("failed within the grace period: %s", j.State)

@@ -13,8 +13,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// Plain-text answers keep agent token use low; ?format=json asks for structured output.
-
 //go:embed agent_help.md
 var agentHelpText string
 
@@ -70,7 +68,6 @@ func (s *Server) agentTake(w http.ResponseWriter, r *http.Request, batch bool) (
 		take = s.svc.AgentBatch
 	}
 	t, err := take(r.Context(), actorFrom(r), q)
-	// A pause by a person is an answer to the agent, not an error.
 	if p := (*core.ErrAgentsPaused)(nil); errors.As(err, &p) {
 		if wantsJSON(r) {
 			return map[string]any{"task": nil, "paused": p.Pause, "message": p.Error()}, nil
@@ -109,7 +106,6 @@ func (s *Server) agentTake(w http.ResponseWriter, r *http.Request, batch bool) (
 func sessionHint(r *http.Request) core.SessionHint {
 	h := core.SessionHint{Task: strings.TrimSpace(r.Header.Get("X-Waypoint-Task"))}
 	if len(h.Task) > 1000 {
-		// Cut a long task hint at a separator, so no issue key is split in half.
 		h.Task = h.Task[:1000]
 		h.Task = h.Task[:max(0, strings.LastIndexAny(h.Task, ", \t"))]
 	}
@@ -187,7 +183,6 @@ func agentTaskText(t *core.AgentTask, o taskText) string {
 	for _, k := range t.Skipped {
 		fmt.Fprintf(&b, "(Passed over %s.)\n", k)
 	}
-	// Priority, type, points and status don't change this text, so they are left out.
 	switch {
 	case o.Assigned:
 		fmt.Fprintf(&b, "Autopilot assigned %s to you: %q %s\n", d.Key, d.Title, provenance(d, false))
@@ -200,7 +195,6 @@ func agentTaskText(t *core.AgentTask, o taskText) string {
 		fmt.Fprintf(&b, "%s %q %s\n", d.Key, d.Title, provenance(d, false))
 	}
 	if o.Assigned {
-		// SessionStart can't tell autopilot sessions, so the note goes here; a session a person started is not told.
 		b.WriteString(core.AutopilotSessionNote + "\n")
 	}
 	b.WriteString(writtenLine(d, true, time.Now()))
@@ -556,7 +550,7 @@ func (s *Server) getPage(w http.ResponseWriter, r *http.Request) (any, error) {
 		return nil, err
 	}
 	pg, err := s.svc.GetPage(r.Context(), actorFrom(r), id)
-	if err == nil && !queryBool(r, "listed") { // listed=1 marks a page wp brief listed unasked; that is not recorded as a lookup.
+	if err == nil && !queryBool(r, "listed") {
 		s.svc.NoteLookup(r.Context(), actorFrom(r), core.KPage, id, "")
 	}
 	if err != nil || !wantsText(r) {
@@ -668,8 +662,6 @@ func (s *Server) cliLoginInfo(w http.ResponseWriter, r *http.Request) (any, erro
 	if err != nil {
 		return nil, err
 	}
-	// The approval page warns when the login was started somewhere else: a
-	// code someone sent you is how this flow gets phished.
 	ip := s.clientIP(r)
 	return struct {
 		*core.DeviceRequest

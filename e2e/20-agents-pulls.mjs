@@ -37,7 +37,7 @@ const pr = {
   number: 7,
   title: "Checkout totals skip the first item",
   body: "Fixes the cart total.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>",
-  html_url: "", // Set below to the fake's own address, so links to it count as its pull request.
+  html_url: "",
   state: "open",
   merged: false,
   draft: false,
@@ -155,7 +155,6 @@ let key, prID, forge;
   await note.fill(NOTE);
   await page.getByText("Low-trust review by a free model (fake/muse-spark-1.3)").waitFor();
   ok(true, "the preview fills in the model");
-  // Several forms on Admin → AI have a Save button, so scope it to this form.
   const noteForm = page.locator("form").filter({ has: note });
   await noteForm.getByRole("button", { name: "Save" }).click();
   await noteForm.getByRole("button", { name: "Use the default" }).waitFor();
@@ -168,7 +167,6 @@ let key, prID, forge;
     kind: "github", name: "Fake GitHub pulls", base_url: fake, token: "tok", webhook_secret: SECRET,
   });
   await api("POST", `/projects/${key}/repos`, { forge_id: forge.id, repo: REPO, sync_issues: false });
-  // Their forge logins are Waypoint people here: text from anyone else waits for a person (WP-281).
   await api("PUT", `/forges/${forge.id}/people`, { people: [{ login: "robin", user: "robin" }, { login: "alex", user: "robin" }, { login: "renovate[bot]", user: "robin" }] });
 
   await hook("pull_request", { action: "opened", pull_request: pr, sender: { login: "robin" } });

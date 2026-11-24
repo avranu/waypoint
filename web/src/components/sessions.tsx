@@ -113,7 +113,6 @@ export function TaskSessionChip({ s }: { s: Pick<AgentSession, 'kind' | 'tasks'>
  * while it still runs. */
 export function ContextSize({ s }: { s: Pick<AgentSession, 'context_tokens' | 'state' | 'kind'> }) {
   if (!s.context_tokens) return null
-  // Task sessions hand off by ending: no advice to start a fresh one.
   const big = s.context_tokens > BIG_CONTEXT && s.state !== 'ended' && s.kind !== 'task'
   const carried = `Its last model call carried ${s.context_tokens.toLocaleString()} tokens of context`
   return (

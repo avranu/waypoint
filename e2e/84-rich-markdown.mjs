@@ -147,7 +147,6 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
     '<table><tbody><tr><th>h</th></tr><tr><td><a href="/x?a|b">l</a> <img src="/i|.png" alt="p|q"> <a href="/y|z"></a> <a href="https://e.com/a|b">https://e.com/a|b</a></td></tr></tbody></table>',
     "| h |\n| --- |\n| [l](/x?a\\|b) ![p\\|q](/i\\|.png) [/y\\|z](/y\\|z) <https://e.com/a\\|b> |",
   );
-  // Autolinks are bare only where nothing after them would extend the URL, <angled> where something would, and [text](target) when relative.
   await writes(
     "Autolinks",
     '<p>see <a href="https://example.com/a_b">https://example.com/a_b</a>. (<a href="https://example.com/">https://example.com/</a>)</p>' +
@@ -170,7 +169,6 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
   await writes("Script and style", "<p>a<style>p{}</style><script>x()</script>b</p>", "ab");
   await writes("Heading break", "<h2>a<br>b</h2>", "## a b");
   await writes("Heading closer", "<h2>Issue #</h2>", "## Issue \\#");
-  // At a paragraph's start, escape what would open a block (a code indent, a number and dot, three dashes); a dash-and-pipe row would make a table.
   await writes("Indent", "<p>&nbsp;&nbsp;&nbsp;&nbsp;a<br><br>&nbsp;&nbsp;&nbsp;&nbsp;b<br>&nbsp;&nbsp;&nbsp;&nbsp;c</p>", "a\n\nb\n    c");
   await writes("Number after blank", "<p>a<br><br>2. b<br>3. c</p>", "a\n\n2\\. b\n3. c");
   await writes("Spaced rule", "<p>-- -<br><br>---</p>", "\\-- -\n\n\\---");
@@ -223,7 +221,6 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
     ok((await desc(i.key)) === text, `${tag} script text is unchanged`);
   }
 
-  // Spaces inside emphasis markers stop it parsing as emphasis, so they go outside the markers.
   {
     const i = await open("Bold edge", "word next");
     await richBox.waitFor();
@@ -261,7 +258,6 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
     await settleClose();
   }
 
-  // A fence must be longer than any backtick run in the code body.
   {
     const text = "````\na\n```\nb\n````";
     const i = await open("Fence", text);

@@ -15,8 +15,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Agents can't write a story: the plan's author would be grading its own plan.
-
 const (
 	storyTask  = "story"
 	storyAgent = "waypoint/story"
@@ -291,7 +289,6 @@ func (s *Service) writeStory(ctx context.Context, id int64, force bool) error {
 	if err != nil {
 		return err
 	}
-	// Bookkeeping for the sweep, not an edit: when the model was last asked.
 	if _, err := s.db.W.ExecContext(ctx, `UPDATE pages SET story_tried = ? WHERE id = ?`, s.nowMS(), id); err != nil {
 		return err
 	}
@@ -307,7 +304,6 @@ func (s *Service) writeStory(ctx context.Context, id int64, force bool) error {
 	actor := aiActorNamed("AI story", derefInt(pg.ProjectID), model)
 	var n int64
 	err = s.write(ctx, actor, func(t *tx) error {
-		// The model call runs outside this write, so the update applies only while the body and any person's story are as they were read.
 		res, err := t.ExecContext(ctx, `UPDATE pages SET story = ?, story_agent = ?, story_model = ?, story_by = NULL, story_at = ?, story_base = ?
 			WHERE id = ? AND (story = '' OR story_agent != '') AND body = ?`, story, storyAgent, model, s.nowMS(), storyHash(pg.Body), id, pg.Body)
 		if err != nil {

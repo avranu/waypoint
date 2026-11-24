@@ -15,8 +15,6 @@ import (
 	"time"
 )
 
-// The marketplace goes in at user scope; plugins are enabled at local scope, in the checkout's git-ignored settings.local.json (checked against Claude Code 2.1.309).
-
 // kitWant is what the kit wants in one checkout.
 type kitWant struct {
 	Marketplace string
@@ -114,7 +112,7 @@ func planKitSync(want kitWant, have kitHave, force bool) kitPlan {
 			}
 			p.Drift = append(p.Drift, kitDrift{Plugin: name, What: what + " (--force to enable it)"})
 			if managed[id] {
-				p.Managed = append(p.Managed, id) // Still wp-managed while the person has it disabled, so it stays listed in the state.
+				p.Managed = append(p.Managed, id)
 			}
 			continue
 		case !installed:
@@ -257,7 +255,7 @@ func forgetGoneInstalls(marketplace string) (int, error) {
 	var file map[string]json.RawMessage
 	var plugins map[string][]json.RawMessage
 	if json.Unmarshal(raw, &file) != nil || json.Unmarshal(file["plugins"], &plugins) != nil {
-		return 0, nil // An unrecognised file is left alone with no error: its format belongs to Claude Code.
+		return 0, nil
 	}
 	gone := 0
 	for id, list := range plugins {
@@ -401,7 +399,6 @@ func lineDiff(a, b string) string {
 	if n > maxDiffLines || m > maxDiffLines {
 		return fmt.Sprintf("(settings too long to diff: %d -> %d lines)\n", n, m)
 	}
-	// lcs[i][j] is the common run of the suffixes x[i:] and y[j:]; reads past either end are 0.
 	lcs := make([][]int, n)
 	for i := range lcs {
 		lcs[i] = make([]int, m)
@@ -470,7 +467,6 @@ func (c claudeCLI) Run(ctx context.Context, dir string, args ...string) error {
 	cmd.Stdin = nil
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		// With --json the first output line is the JSON result; the rest is text for people.
 		msg := strings.TrimSpace(string(out))
 		var res struct {
 			Error   string `json:"error"`
@@ -542,7 +538,7 @@ func applyKitPlan(ctx context.Context, cl claudePlugins, dir string, want kitWan
 	failedMarketplace := false
 	for _, a := range plan.Actions {
 		if a.Kind == "compact-window" {
-			continue // written above: claude has no command for it
+			continue
 		}
 		if failedMarketplace && a.Plugin != "" {
 			errs = append(errs, fmt.Errorf("%s %s: skipped, the marketplace isn't there", a.Kind, a.Plugin))

@@ -10,7 +10,6 @@ import (
 // needs the agent. The table is each producer and what it needs; the cases
 // below drive the ones reachable from a ship and check what the result says.
 func TestShipTextsSayWhatTheyNeed(t *testing.T) {
-	// Held is true unless the text says 'Nothing more to run'; a notice is news unless it asks for action.
 	for _, p := range []struct {
 		producer string
 		held     bool

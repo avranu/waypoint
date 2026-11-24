@@ -13,8 +13,6 @@ import (
 	"time"
 )
 
-// Follow-ups run once when the agent truly finishes; only the session's person can read, queue, run or clear them.
-
 var followupCmd = &command{
 	name: "followup", aliases: []string{"follow-up", "followups"}, group: "Tasks", args: "[show|set|run|clear] [SESSION]",
 	summary: "(people) queue steps to run when an agent session finishes",

@@ -1,7 +1,5 @@
 package core
 
-// Full tier = the largest job set that stallMinRuns successful pull request runs ran (draft runs are subsets); stall = stallFactor x their p90, never below stallFloor.
-
 import (
 	"context"
 	"fmt"
@@ -131,7 +129,6 @@ func stallFromHistory(tasks []ActionTask) (time.Duration, string) {
 	if full == nil {
 		return fullRunStall, fmt.Sprintf("the default; fewer than %d recent full runs to go by", stallMinRuns)
 	}
-	// A run bigger than the chosen set is understated by its times, so the default applies until enough full runs exist.
 	for _, r := range runs {
 		if len(r.all) > len(full.jobs) && !slices.ContainsFunc(full.jobs, func(j string) bool { return !slices.Contains(r.all, j) }) {
 			return fullRunStall, fmt.Sprintf("the default; fewer than %d recent full runs to go by", stallMinRuns)

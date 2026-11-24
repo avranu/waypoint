@@ -220,8 +220,6 @@ func cmdPRReviewRetry(c *cli, args []string) error {
 		}
 		return queued(r, raw)
 	}
-	// Each review rule's review on its own: one rule's review waiting
-	// doesn't hold another's failed one back.
 	return c.eachPR(sf, pos, repo, false, func(d *prDetail, raw []byte) error {
 		runs, err := prRuns(raw)
 		if err != nil {

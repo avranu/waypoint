@@ -77,7 +77,6 @@ func TestCIPollSlowLane(t *testing.T) {
 		t.Error("didn't read the live head")
 	}
 
-	// The live head is still read hourly past a day, because a finished run can otherwise show as pending for a day or more; superseded heads are not.
 	se.setClock(se.clockNow().Add(25 * time.Hour))
 	se.forgetReads()
 	se.s.PollCI(se.ctx)

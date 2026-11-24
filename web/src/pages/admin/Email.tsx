@@ -1,5 +1,3 @@
-// Until SMTP is set, automations can't send email and the editor hides that option.
-
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { q } from '@/lib/queries'

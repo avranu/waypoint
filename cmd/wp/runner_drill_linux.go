@@ -22,8 +22,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/sandbox/probe"
 )
 
-// The runner reports only what the outside can see; Waypoint, not the runner, decides pass or fail.
-
 // drillOutputMax bounds what a session's stdout can make the runner hold.
 const drillOutputMax = 1 << 20
 
@@ -146,7 +144,6 @@ func (p *runnerProc) drillSession(ctx context.Context, run *jobRun, sd *sandbox.
 	go func() { defer wg.Done(); _, _ = io.Copy(&errOut, errR) }()
 
 	_, err = sandbox.Start(ctx, p.sandboxSocket(), sd, inR, outW, errW)
-	// close the parent's copies of the pipe ends after Start, or the readers never see EOF when the helper exits
 	_ = outW.Close()
 	_ = errW.Close()
 	_ = inR.Close()

@@ -37,7 +37,6 @@ func TestDecideRoundNeverStrands(t *testing.T) {
 														}
 														out := decideRound(in)
 														n++
-														// Formatted only on failure: formatting every combination was most of the test's time.
 														name := func() string { return fmt.Sprintf("%+v -> %+v", in, out) }
 														over := state == RoundFailed || state == RoundSkipped || state == RoundInterrupted
 														waypoints := runOpen && !prOpen
@@ -255,7 +254,6 @@ func TestDecideEndedRoundNeverStrands(t *testing.T) {
 								}
 								out := decideRound(in)
 								n++
-								// Formatted only on failure: formatting every combination was nearly all of the test's time.
 								name := func() string { return fmt.Sprintf("%+v -> %+v", in, out) }
 								switch out.Do {
 								case doNothing:
@@ -277,7 +275,7 @@ func TestDecideEndedRoundNeverStrands(t *testing.T) {
 								}
 								free := in.Unshipped && !in.PROpen && !in.PRGone && !in.Linked && !in.Resolved && !in.Superseded && !in.Newer && !in.Taken && in.SinceEnd <= strandedShipWindow
 								over := state == RoundSkipped || state == RoundFailed || state == RoundInterrupted
-								unreviewed := state == RoundDone && !in.reviewed() // A done round counts unreviewed until its report is asked for or it has ended and been told.
+								unreviewed := state == RoundDone && !in.reviewed()
 								if free && out.Do != doEnd && (!unreviewed || (out.Do != doTell && out.Do != doWait)) && (state == RoundDone || (over && in.Release != "")) && out.Do != doReleaseAfterRunEnded {
 									t.Fatalf("an unshipped round of an ended run isn't released: %s", name())
 								}

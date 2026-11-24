@@ -56,8 +56,6 @@ export function ChatTab({ assistant }: { assistant: Assistant }) {
   const navigate = useNavigate({ from: '/assistant/$id' })
   const wide = useMediaQuery('(min-width: 900px)')
   const [listOpen, setListOpen] = useState(false)
-  // A conversation keeps its component when it gets its id (the first
-  // send), so the turn streaming in it isn't lost; picking one starts afresh.
   const [convKey, setConvKey] = useState(() => search.s ?? 'new')
   useEffect(() => {
     if (search.send === '1' && search.ask && !search.s) setConvKey(`ask-${Date.now()}`)
@@ -928,8 +926,6 @@ function Composer({
     }
   }, [debounced, assistant.id, runtime])
 
-  // The rows answer `debounced`; until that is what is typed they belong to
-  // an earlier text, and Enter or Tab must not swap them in for it.
   const fresh = completions.length > 0 && !!slashText && debounced === slashText
   const submit = async () => {
     const t = text.trim()

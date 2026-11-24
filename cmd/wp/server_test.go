@@ -121,7 +121,7 @@ func TestServerProblemsCLI(t *testing.T) {
 	if out, code := e.run("server", "ack", id, "-m", "known"); code == 0 || !strings.Contains(out, "is for people, not agents") {
 		t.Errorf("ack from Claude Code: exit %d\n%s", code, out)
 	}
-	t.Setenv("WAYPOINT_AGENT", "none") // WAYPOINT_AGENT=none marks a person's shell.
+	t.Setenv("WAYPOINT_AGENT", "none")
 	if out, code := e.run("server", "ack", id, "-m", "known"); code == 0 || !strings.Contains(out, "not in an agent's shell") {
 		t.Errorf("ack in an agent's shell: exit %d\n%s", code, out)
 	}

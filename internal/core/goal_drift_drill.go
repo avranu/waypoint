@@ -7,8 +7,6 @@ import (
 	"strings"
 )
 
-// The drill runs the same call a real pull request does, so a weaker model or one talked out of a flag shows up in it.
-
 var driftDrillGoals = []driftGoal{
 	{title: "A small team runs the whole tracker on one small server of its own",
 		body: "One binary and one database file. No other service to run, and nothing leaves that server unless the team turns it on."},

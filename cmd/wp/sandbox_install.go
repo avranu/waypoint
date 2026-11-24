@@ -20,8 +20,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/sandbox"
 )
 
-// The root helper is installed by a person, who reads the script first; wp only writes it and checks the result.
-
 var sandboxInstallCmd = &command{
 	name: "install", args: "[--store-from DIR] [--runner-uid N] [--runner-id N]",
 	summary: "print the root script that installs this machine's sandbox helper",
@@ -77,7 +75,6 @@ func (c *cli) sandboxKey() (*cliSandboxKey, error) {
 func sandboxInstall(c *cli, args []string) error {
 	fs := c.flags()
 	from := fs.String("store-from", "", "`DIR`: keep the store here, bind-mounted at "+sandbox.StoreDir)
-	// The default is resolved after parsing, so the help doesn't show whoever ran it.
 	uid := fs.Int("runner-uid", 0, "`N`: runner's uid (default yours)")
 	runnerID := fs.Int64("runner-id", 0, "`N`: take specs only for this runner")
 	if _, err := c.parse(fs, args); err != nil {
@@ -102,8 +99,6 @@ func sandboxInstall(c *cli, args []string) error {
 		return c.usage("--store-from and the server URL must not contain control characters")
 	}
 	if strings.ContainsAny(*from, " \\%\"'") {
-		// The path goes into the store's systemd unit, where whitespace splits RequiresMountsFor=
-		// and % and \ start escapes; shell quoting would not help there.
 		return c.usage("--store-from must not contain spaces, quotes, backslashes or %%")
 	}
 	key, err := c.sandboxKey()
@@ -433,7 +428,7 @@ func sandboxDoctor(c *cli, args []string) error {
 	for _, scope := range []string{"--system", "--global"} {
 		out, err := exec.Command("git", "config", scope, "--get-all", "safe.directory").Output() // #nosec G204 -- fixed arguments
 		var ee *exec.ExitError
-		if err != nil && (!errors.As(err, &ee) || ee.ExitCode() != 1) { // exit 1 just means the key isn't set
+		if err != nil && (!errors.As(err, &ee) || ee.ExitCode() != 1) {
 			add(checkWarn, "git", "couldn't read the %s git config, so safe.directory '*' wasn't checked: %v", strings.TrimPrefix(scope, "--"), err)
 			continue
 		}
@@ -566,7 +561,7 @@ func openAbove(mounts []mountEntry, store *mountEntry) []string {
 	parts := []string{""}
 	if rel != "" {
 		parts = append(parts, strings.Split(rel, "/")...)
-		parts = parts[:len(parts)-1] // the store itself is checked by the helper
+		parts = parts[:len(parts)-1]
 	}
 	for i, p := range parts {
 		if i > 0 {

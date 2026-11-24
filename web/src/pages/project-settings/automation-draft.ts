@@ -1,5 +1,3 @@
-// Settings the catalog doesn't list are kept as given, so rules from other versions save unchanged.
-
 import {
   paramShown,
   type ActionDef,

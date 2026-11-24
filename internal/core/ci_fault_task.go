@@ -1,7 +1,5 @@
 package core
 
-// One open task per forge and fault kind; agents only read and report, and host changes happen only through deterministic tools.
-
 import (
 	"context"
 	"database/sql"

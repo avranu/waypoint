@@ -376,7 +376,6 @@ func (r *Rule) isDurable() bool {
 		if a.OnError == "retry" {
 			return true
 		}
-		// A review followed by later steps must wait for its bot run: those steps read what it found.
 		if a.Type == "review" && n < len(steps)-1 {
 			return true
 		}

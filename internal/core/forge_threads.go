@@ -1,7 +1,5 @@
 package core
 
-// Findings keep their comment and thread ids, so a fixed or withdrawn one can be replied to and, where the forge allows, resolved.
-
 import (
 	"bytes"
 	"context"
@@ -129,8 +127,6 @@ func (c *httpForgeClient) ReplyToThread(ctx context.Context, f *Forge, repo stri
 		err := c.do(ctx, f, http.MethodPost, fmt.Sprintf("%s/merge_requests/%d/discussions/%s/notes", glProject(repo), pr.Number, url.PathEscape(th.ID)), map[string]string{"body": body}, &n)
 		return strconv.FormatInt(n.ID, 10), err
 	}
-	// Forgejo has no reply call: a comment on the same line of the same file
-	// joins the conversation, so post a one-comment review there.
 	if th.Path == "" || th.Line <= 0 {
 		return "", ErrUnsupported
 	}
@@ -144,7 +140,6 @@ func (c *httpForgeClient) ReplyToThread(ctx context.Context, f *Forge, repo stri
 	if err != nil {
 		return "", err
 	}
-	// The new comment is the last one of the review.
 	cs, err := c.fgReviewComments(ctx, f, repo, pr.Number, res.ID)
 	if err == nil && len(cs) > 0 {
 		return strconv.FormatInt(cs[len(cs)-1].ID, 10), nil

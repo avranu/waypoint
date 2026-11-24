@@ -1,7 +1,5 @@
 package core
 
-// A trusted reviewer's findings count for neither review arm: they would make "no verifier" look good, and that arm also carries the weak models.
-
 import (
 	"context"
 	"strings"
@@ -105,7 +103,7 @@ func (s *Service) reviewerTrust(ctx context.Context) (reviewerTrust, error) {
 			c = &count{}
 			counts[m] = c
 		}
-		w := armWeight(now, f, f.version, "") // Weighted by age only: passing the finding's own version as current means no prompt version discounts it.
+		w := armWeight(now, f, f.version, "")
 		c.judged++
 		if f.useful {
 			c.useful += w

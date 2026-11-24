@@ -21,8 +21,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/sandbox/forward"
 )
 
-// The call lasts as long as the session; when it ends or the runner hangs up, the units stop and the workspace is cleared as the repo user, unless the spec keeps it.
-
 // systemCAs is where Debian and Ubuntu keep the machine's CA bundle.
 const systemCAs = "/etc/ssl/certs/ca-certificates.crt"
 
@@ -222,10 +220,9 @@ func (h *Helper) prepare(sd *sandbox.Signed) (*startPlan, error) {
 	saved := false
 	defer func() {
 		if !saved {
-			_ = h.led.save(h.ledgerPath()) // the nonce is spent either way
+			_ = h.led.save(h.ledgerPath())
 		}
 	}()
-	// These go into unit properties unescaped, so each must pass unitPath.
 	for _, p := range []string{h.cfg.RunPath, h.cfg.StorePath, h.cfg.StatePath, h.cfg.Binary} {
 		if !unitPath(p) {
 			return nil, fmt.Errorf("%q must be a clean absolute path with no spaces, colons, quotes, backslashes, $, ; or %% for sessions to run", p)
@@ -281,8 +278,6 @@ func (h *Helper) prepare(sd *sandbox.Signed) (*startPlan, error) {
 	}
 	rec.Runner, rec.Job, rec.Keep, rec.Started = s.Runner, s.Job, ss.Keep, now
 	u.LastUsed = now
-	// The record is saved before anything is made, so a crash from here
-	// on leaves something reconcile clears.
 	saved = true
 	if err := h.led.save(h.ledgerPath()); err != nil {
 		return nil, err
@@ -290,8 +285,6 @@ func (h *Helper) prepare(sd *sandbox.Signed) (*startPlan, error) {
 	ses := &session{rec: *rec, run: filepath.Join(h.cfg.RunPath, ss.ID), running: true, done: make(chan struct{})}
 	h.sessions[ss.ID] = ses
 	p := &startPlan{ses: ses, uid: u.UID, egressUID: egressUID, egressGID: egressGID, resources: ss.Resources.WithDefaults()}
-	// From here a failure hands back the plan with the error, and Start
-	// clears what was made.
 	unattended := ss.Class == sandbox.ClassUnattended
 	dir, err := h.store.sessionDirs(ss.ID, u.UID, unattended)
 	if err == nil && !unattended {
@@ -379,10 +372,6 @@ func (h *Helper) writeRunDir(p *startPlan, ss *sandbox.Session, user string) err
 			return err
 		}
 	}
-	// The broker makes its socket here; the setgid bit gives the socket
-	// the repo user's group, so the session (and nothing else) can use it.
-	// The mode is set while the directory is still root's: a chmod to
-	// setgid on another group's directory needs CAP_FSETID.
 	bdir := filepath.Join(run, "broker")
 	if err := os.Mkdir(bdir, 0o700); err != nil {
 		return err

@@ -30,12 +30,10 @@ func TestBashRules(t *testing.T) {
 		{"go test ./internal/core", []string{"Bash(go test ./internal/core)"}},
 		{"git push origin main", []string{"Bash(git push origin main)"}},
 		{"git status --short src/a.go", []string{"Bash(git status --short src/a.go)", "Bash(git status --short *)"}},
-		// git fetch and ls-remote run --upload-pack and ext:: commands; grep -O runs a pager; log, show, diff, blame, shortlog and rev-list write files with --output.
 		{"git show HEAD~1", []string{"Bash(git show HEAD~1)"}},
 		{"git fetch https://example.com/x", []string{"Bash(git fetch https://example.com/x)"}},
 		{"git ls-remote origin", []string{"Bash(git ls-remote origin)"}},
 		{"git grep -n foo", []string{"Bash(git grep -n foo)"}},
-		// these run a command named in their arguments.
 		{"vim -c '!id' notes.txt", []string{"Bash(vim -c '!id' notes.txt)"}},
 		{"expect -c 'spawn id'", []string{"Bash(expect -c 'spawn id')"}},
 		{"script -c 'id' out.log", []string{"Bash(script -c 'id' out.log)"}},
@@ -97,7 +95,6 @@ func TestPermissionRulesOtherTools(t *testing.T) {
 	if got := permissionRules("WebFetch", json.RawMessage(`{"url":"http://localhost:8080/"}`)); got != nil {
 		t.Fatalf("a bare host: %+v", got)
 	}
-	// An address names a machine (cloud metadata, loopback), not a site, so no domain rule may name one.
 	for _, u := range []string{"http://169.254.169.254/latest/meta-data/", "http://127.0.0.1:8080/", "http://127.1/", "http://[::1]/"} {
 		if got := permissionRules("WebFetch", json.RawMessage(`{"url":"`+u+`"}`)); got != nil {
 			t.Errorf("an address %s: %+v", u, got)
@@ -217,8 +214,6 @@ func TestVersionedRiskyPrograms(t *testing.T) {
 			t.Errorf("%s is not risky", p)
 		}
 	}
-	// A program that writes a file through an option gets no prefix rule:
-	// "sort -r input *" would allow "sort -r input -o ~/.bashrc".
 	if got := ruleList(bashRules("sort -r input")); len(got) != 1 {
 		t.Errorf("sort: %q", got)
 	}

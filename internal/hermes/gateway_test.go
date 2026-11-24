@@ -102,7 +102,6 @@ func TestGatewayCallsAndEvents(t *testing.T) {
 		t.Error("not watched with a subscriber")
 	}
 	waitOpen(t, gw)
-	// the bridge's "open" waits for client.capabilities, so Hermes's ready event arrives first.
 	next(t, sub, func(m frameMsg) bool { return m.Method == "event" && m.Params.Type == "gateway.ready" })
 	_, m := next(t, sub, func(m frameMsg) bool { return m.Method == "bridge" && m.Params.State == "open" })
 	if m.Params.Reconnected {
@@ -398,7 +397,7 @@ func TestGatewaySlowSubscriber(t *testing.T) {
 
 func TestGatewayCallWhileDown(t *testing.T) {
 	g := bare()
-	g.state = "open" // state says open with no connection behind it; the call must report ErrUnreachable.
+	g.state = "open"
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	if _, err := g.Call(ctx, "ping", nil); !errors.Is(err, ErrUnreachable) {

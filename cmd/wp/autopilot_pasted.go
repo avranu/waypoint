@@ -6,8 +6,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// The runner notes each prompt it pastes by session; the UserPromptSubmit hook on this machine finds the note and marks the prompt, so it needn't start with autopilotPromptMark.
-
 // pastedPrompt is one prompt autopilot pasted: the task, and a digest of
 // its words (so the state file never holds the task's text).
 type pastedPrompt struct {

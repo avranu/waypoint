@@ -116,7 +116,6 @@ func TestUpdateBranchConflict(t *testing.T) {
 	if n := se.pr(5).armedNote; !strings.Contains(n, "has conflicts with main") {
 		t.Errorf("note = %q", n)
 	}
-	// The forge's mergeable flag can still say yes while the branch conflicts with main; the work packet must report the conflict anyway.
 	if todo, err := se.s.PRWorkPacket(se.ctx, SystemActor(), id); err != nil || !todo.Conflict || !strings.Contains(todo.Text, "Conflicts with main") {
 		t.Errorf("work packet = %+v, %v", todo, err)
 	}

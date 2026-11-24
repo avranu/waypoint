@@ -26,7 +26,7 @@ func (c *cli) testsumRepeat(argv []string, format string, n int, untilFail bool,
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	rec := newTestRunRecorder(argv)
-	key := slotRunFor("wp testsum --repeat", argv) // the hold is N runs, so not the command's own history
+	key := slotRunFor("wp testsum --repeat", argv)
 	argv = goTestCount1(goTestJSON(argv))
 	env, release, err := c.takeSlotFor(ctx, "tests", defaultSlots(), key)
 	if err != nil {
@@ -98,8 +98,6 @@ func (c *cli) testsumRepeat(argv []string, format string, n int, untilFail bool,
 		}
 	}
 
-	// Keep one run for wp ship: a failure if there was one, so twenty
-	// passes can't hide the run that failed.
 	switch {
 	case firstFailRun > 0 && firstFail != nil:
 		rec.finish(firstFail, firstFailCode)
@@ -138,7 +136,6 @@ func (c *cli) testsumRepeat(argv []string, format string, n int, untilFail bool,
 	case stopped:
 		return exitCode(130)
 	case firstFailRun > 0, empty == runs:
-		// Every run having run no test is no evidence a flake is gone.
 		return exitCode(1)
 	}
 	return nil

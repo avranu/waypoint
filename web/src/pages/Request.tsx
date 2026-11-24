@@ -120,7 +120,6 @@ export function RequestView({
   onClose?: () => void
 }) {
   const navigate = useNavigate()
-  // A run or an apply in flight: look again soon, in case the live stream missed its end.
   const { data: r, error } = useQuery({
     ...requestQuery(code),
     refetchInterval: (query) => (active(query.state.data) ? 2500 : false),
@@ -199,11 +198,7 @@ function RequestBody({ r, mode, back }: { r: WRequest; mode: 'page' | 'sheet'; b
       </header>
 
       {html && (
-        <div
-          className="prose-wp mt-4 text-[14px]"
-          // sanitised by renderMarkdown
-          dangerouslySetInnerHTML={{ __html: html }}
-        />
+        <div className="prose-wp mt-4 text-[14px]" dangerouslySetInnerHTML={{ __html: html }} />
       )}
 
       <div className="mt-5 space-y-4">

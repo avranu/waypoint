@@ -10,8 +10,6 @@ import (
 	"unicode/utf8"
 )
 
-// A diagnose round ends only with a recorded diagnosis: wp done, opening a pull request, wp ship and merges are refused in it, and nothing is read.
-
 // roundEnd is what a round came to.
 type roundEnd struct {
 	outcome string
@@ -98,7 +96,6 @@ func (s *Service) objectiveOpenRound(ctx context.Context, t *tx, o *Objective, r
 	if baseline {
 		phase = PhaseBaseline
 	}
-	// A loop reads nothing, so it is never a diagnose round.
 	kind := ""
 	if o.diagnosisDue(o.NoBetter) {
 		kind = RoundKindDiagnose
@@ -223,7 +220,6 @@ func (s *Service) objectiveSettle(ctx context.Context, t *tx, o *Objective, e ro
 			return err
 		}
 	}
-	// RoundEmpty neither counts toward nor clears the rounds-in-a-row count; a diagnosis stands until a round makes progress or the measurement changes.
 	switch {
 	case e.outcome == RoundMet || e.outcome == RoundProgress:
 		o.NoBetter, o.diagnosisID = 0, 0
@@ -326,14 +322,11 @@ func (s *Service) objectiveSettle(ctx context.Context, t *tx, o *Objective, e ro
 	case e.outcome == RoundNone:
 		wait = max(wait, objectiveBackoff(stalled))
 	case e.outcome == RoundWorked && stalled > 2:
-		// Work landed that the reading can't call nearer (a pass/fail check, a judge) follows at once twice, then waits from the third in a row.
 		wait = max(wait, objectiveBackoff(stalled-2))
 	}
 	if e.moved {
 		wait = 0
 	}
-	// A verified round that was never read leaves no commit to start the
-	// next from: that is read first.
 	baseline := o.verified() && o.BaseSHA == ""
 	if err := s.objectiveOpenRound(ctx, t, o, o.Round+1, stalled, wait, baseline); err != nil {
 		return err
@@ -352,10 +345,9 @@ func (s *Service) objectiveSettle(ctx context.Context, t *tx, o *Objective, e ro
 // workEnd is something that would end a round's work: the task closing, or
 // a pull request of the task merging.
 type workEnd struct {
-	direct bool
-	merged string
-	agent  string
-	// nil: the close asked for no status (a merge in a project with no rule closing tasks on merge).
+	direct  bool
+	merged  string
+	agent   string
 	closeAs *Status
 }
 
@@ -372,8 +364,6 @@ func (s *Service) objectiveClose(ctx context.Context, t *tx, actor *Actor, i *Is
 		return st, err
 	}
 	now := s.nowMS()
-	// What an agent wrote on the forge and Waypoint mirrors isn't a
-	// person's close.
 	if objectivePerson(actor) && (!actor.forgeSync || actor.textAgent == "") {
 		why := "closed as " + st.Name + " by " + cmp(actor.User.DisplayName, actor.User.Username)
 		res, err := t.ExecContext(ctx, `UPDATE objective_rounds SET outcome = ?, note = ? WHERE issue_id = ? AND outcome = ?`, RoundUnmeasured, why+" before it was read", i.ID, RoundReading)
@@ -390,8 +380,6 @@ func (s *Service) objectiveClose(ctx context.Context, t *tx, actor *Actor, i *Is
 				return nil, err
 			}
 		}
-		// A judge still reading is cancelled by the sweep this event sets
-		// off (objectiveSweepAudits).
 		if err := s.objectiveEnd(ctx, t, o, ObjectiveEnded, why); err != nil {
 			return nil, err
 		}
@@ -440,7 +428,6 @@ func (s *Service) objectiveWorkEnded(ctx context.Context, t *tx, o *Objective, i
 	old := fmt.Sprintf("round %d", o.Round)
 	note := func(text string) { t.emit(objectiveEvent(o, "note", old, text)) }
 	if w.merged != "" {
-		// A pull request merges once: a rule that closes the task on the same merge ends nothing more.
 		res, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO objective_merges (issue_id, url, round_no, at) VALUES (?, ?, ?, ?)`, i.ID, w.merged, o.Round, now)
 		if err != nil {
 			return nil, err
@@ -479,7 +466,6 @@ func (s *Service) objectiveWorkEnded(ctx context.Context, t *tx, o *Objective, i
 		t.emit(objectiveEvent(o, "verdict", old, fmt.Sprintf("another pull request merged while round %d was being read: it is read again", o.Round)))
 		return nil, nil
 	case o.RoundKind == RoundKindDiagnose && w.merged == "":
-		// A merge can't be refused in a diagnose round, so it is read as that round's end; a close is not.
 		if w.direct {
 			held := i.ClaimedBy != "" && i.ClaimedUntil != nil && i.ClaimedUntil.UnixMilli() > now
 			return nil, o.diagnoseDoneError(i.Key, inProgress && held)
@@ -504,7 +490,6 @@ func (s *Service) objectiveWorkEnded(ctx context.Context, t *tx, o *Objective, i
 		t.emit(objectiveEvent(o, "baseline", old, fmt.Sprintf("a pull request merged while round %d waited to be taken up: Waypoint reads where the round now starts from", o.Round)))
 		return nil, nil
 	case w.merged != "":
-		// A merge while someone holds the round doesn't cut their work short: they end it and it is read with their own work; with nobody holding it, the merge ends the round.
 		var made int64
 		err := t.QueryRowContext(ctx, `SELECT created_at FROM external_links WHERE issue_id = ? AND url = ? AND kind = 'pull'`, i.ID, w.merged).Scan(&made)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -551,7 +536,6 @@ func (s *Service) objectiveWorkEnded(ctx context.Context, t *tx, o *Objective, i
 		}
 	}
 	if noTodo {
-		// With no To Do status to wait in, the objective ends rather than leaving a task that never reopens.
 		if _, err := t.ExecContext(ctx, `UPDATE objective_rounds SET outcome = ? WHERE issue_id = ? AND outcome = ?`, RoundLoop, i.ID, RoundReading); err != nil {
 			return nil, err
 		}
@@ -756,7 +740,6 @@ func (s *Service) ObjectiveDiagnose(ctx context.Context, actor *Actor, ref strin
 		if err != nil {
 			return err
 		}
-		// The run ends as diagnosed, not done: no workflow step was finished, and a step's same/different-agent rule reads the latest done run.
 		if i.ClaimedBy != "" {
 			if err := s.endRun(ctx, t, i.ID, i.ClaimedBy, RunDiagnosed, nil); err != nil {
 				return err
@@ -792,8 +775,6 @@ func (s *Service) ObjectiveDiagnose(ctx context.Context, actor *Actor, ref strin
 				return err
 			}
 		}
-		// The same round again, as a work round after its own pace: nothing
-		// was read, so no back-off follows.
 		o.NoBetter = 0
 		wait := time.Duration(o.everyMS) * time.Millisecond
 		if err := s.objectiveOpenRound(ctx, t, o, o.Round, o.Stalled, wait, false); err != nil {
@@ -890,8 +871,6 @@ func (s *Service) ObjectiveGo(ctx context.Context, actor *Actor, ref, action str
 			}
 			sets := append(verifyReset(), "phase", from, "phase_at", now, "phase_why", "", "phase_note", "", "blocked_from", "", "verify_at", now)
 			if o.Phase == PhaseBlocked && o.PhaseWhy == BlockedPerson {
-				// Whoever sends it on answers for its commands: they run on
-				// that person's runner from here.
 				sets = append(sets, "confirmed_by", actor.id(), "confirmed_at", now)
 			}
 			if err := s.objSet(ctx, t, i.ID, sets...); err != nil {
@@ -942,7 +921,6 @@ func (s *Service) ObjectiveGo(ctx context.Context, actor *Actor, ref, action str
 				if o.Phase == PhaseBlocked && o.PhaseWhy == BlockedTouched {
 					e.note = who + " set its reading aside: the round changed what the check runs"
 				}
-				// Without a reading the commit the next round starts from is unknown, so it is read before the round is handed out.
 				o.BaseSHA, o.baseOK, o.baseValue = "", nil, nil
 				return s.objectiveSettle(ctx, t, o, e)
 			case from == PhaseBaseline:

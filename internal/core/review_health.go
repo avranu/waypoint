@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-// Not a poll: figures change only when a loop record is written or a finding is marked; marks made after a run's last decision are read at the project's next decision.
-
 // EvReviewLoopRecorded: the review loop's record of a project changed. Not
 // recorded in history; it sets off the health check.
 const EvReviewLoopRecorded = "review.loop_recorded"
@@ -83,7 +81,6 @@ func reviewHealthIssues(byRound []AgainRoundStat, agree *AgainAgreement, helpers
 				"%d decision(s) at round %s in the last %d days stopped at the cap of %d rounds. Rounds that run that long mean the repeat detection missed churn or the floor is too low; read those runs' rounds (wp pr rounds, wp worklog --review).",
 				r.Arms[AgainCap], idx, reviewHealthDays, reviewRoundsCap)
 		}
-		// A probe round with no useful finds says nothing of the bar: without the > 0 guard, 0 >= 0 fires when the again rounds found nothing too.
 		if r.ProbeFollowed >= healthMinProbes && r.Followed >= healthMinFollowed && r.ProbeUseful > 0 && r.ProbeUseful*r.Followed*5 >= r.Useful*r.ProbeFollowed*4 {
 			add("Review loop: probes at round "+idx+" find as much as again rounds",
 				"At round %s in the last %d days, %d of %d judged probe rounds were useful (%.0f%%) against %d of %d after again decisions (%.0f%%). Rounds the scores turned down find about as much as the ones they chose: the bar there is too high.",

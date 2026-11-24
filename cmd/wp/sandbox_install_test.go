@@ -26,7 +26,6 @@ func TestInstallSandboxScript(t *testing.T) {
 		"printf '%s\\n' 'ed25519:AAAA' > " + sandbox.KeyFile + ".new",
 		"Fingerprint SHA256:xyz",
 		"checksum mismatch",
-		// RestrictSUIDSGID is left out of the capability set because it fails openat2 on devhost.
 		"\nCapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_DAC_READ_SEARCH\n",
 		"\nNoNewPrivileges=yes\n",
 		"useradd --system --gid " + sandbox.EgressUser,
@@ -42,8 +41,6 @@ func TestInstallSandboxScript(t *testing.T) {
 	if strings.Contains(s, "RestrictSUIDSGID") || strings.Contains(s, "DAC_OVERRIDE") {
 		t.Error("the unit has RestrictSUIDSGID or CAP_DAC_OVERRIDE")
 	}
-	// A Documentation= link would point at one Waypoint's own notes, which
-	// another install doesn't have (WP-459).
 	if strings.Contains(s, "Documentation=") || strings.Contains(s, "/design/") {
 		t.Error("the unit links to a page outside the tree")
 	}

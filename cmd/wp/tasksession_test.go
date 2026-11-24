@@ -129,7 +129,6 @@ func TestTaskSessionWarnsOnUnrelatedWorkEndToEnd(t *testing.T) {
 	if !strings.HasPrefix(out, other) {
 		t.Errorf("the answer should still start with the task: %s", out)
 	}
-	// Stop records the context but never shows the context note to a task session.
 	s.wp("done", bound)
 	big := writeTranscript(t, transcriptLine("m1", 300_000, 0, 10, false))
 	if out := s.hook(in("task-1", "Stop", s.repo, map[string]any{"transcript_path": big})); out != "" {

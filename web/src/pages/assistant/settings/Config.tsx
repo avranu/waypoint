@@ -437,7 +437,6 @@ function FieldControl({
           value={value === null || value === undefined ? '' : String(value)}
           onChange={(e) => {
             const t = e.target.value
-            // Hermes keeps some "string" settings as numbers; keep them numbers.
             onChange(
               typeof value === 'number' && t.trim() !== '' && !isNaN(Number(t)) ? Number(t) : t,
             )

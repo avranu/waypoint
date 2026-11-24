@@ -47,7 +47,6 @@ func TestSafetyScreenGatesTheQueue(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// AgentNext queues screens of pending tasks; wait for them so a late failure cannot land after the retry's reset.
 		e.s.bg.Wait()
 		if task == nil {
 			return ""
@@ -61,7 +60,7 @@ func TestSafetyScreenGatesTheQueue(t *testing.T) {
 	plain := e.issue(writer, IssueInput{Project: p.Key, Title: "Tidy the queue code", Agent: "claude", Priority: "low"})
 	risky := e.issue(writer, IssueInput{Project: p.Key, Title: "Install gVisor", Agent: "claude", Priority: "urgent",
 		Description: "Run `sudo apt-get install runsc` on farhost."})
-	e.s.bg.Wait() // the screens that creating them queued store the rules' verdicts; next() must not race them
+	e.s.bg.Wait()
 	if got := next(); got != plain.Key {
 		t.Fatalf("rules only: next = %q, want %s", got, plain.Key)
 	}
@@ -78,7 +77,7 @@ func TestSafetyScreenGatesTheQueue(t *testing.T) {
 	if held == nil || held.Reason != WaitSafety || !strings.Contains(held.Detail, "runs as root") {
 		t.Fatalf("held = %+v", held)
 	}
-	e.s.bg.Wait() // the screen that creating it queued stores the rules' verdict
+	e.s.bg.Wait()
 	if got := e.search(e.admin, "is:held"); len(got) != 1 || got[0] != risky.Key {
 		t.Errorf("is:held = %v", got)
 	}

@@ -94,8 +94,6 @@ func (p *runnerProc) lookStalled(ctx context.Context, w *stallWatcher, lastErr *
 	err = p.c.callInto(ctx, "POST", "/api/v1/runner/stalled-jobs", body, &ans)
 	switch {
 	case err != nil && isNotFound(err) && !strings.HasPrefix(err.Error(), "runner "):
-		// An older server: nothing to tell it. ("runner not found" is this
-		// runner gone, which a later look may get past.)
 	case err != nil:
 		p.logf("stalled jobs: %v", err)
 		for _, j := range jobs {
@@ -103,7 +101,6 @@ func (p *runnerProc) lookStalled(ctx context.Context, w *stallWatcher, lastErr *
 		}
 		w.settled = append(settled, w.settled...)
 		if isBadRequest(err) && w.policy >= 2 {
-			// Waypoint went back to a version without the stall policy.
 			w.policy, w.probed, w.settled = 0, time.Now(), nil
 		}
 	default:
@@ -139,7 +136,7 @@ func (p *runnerProc) probeStallPolicy(ctx context.Context, w *stallWatcher) {
 	var ans stalledAnswer
 	if err := p.c.callInto(ctx, "POST", "/api/v1/runner/stalled-jobs", map[string]any{"runner": p.id, "jobs": []stalledJob{}, "v": 2}, &ans); err != nil {
 		if !isBadRequest(err) && !isNotFound(err) {
-			w.probed = w.probed.Add(stallAgainMax - stallProbeEvery) // A transient probe failure asks again in 15 minutes, not an hour.
+			w.probed = w.probed.Add(stallAgainMax - stallProbeEvery)
 		}
 		return
 	}

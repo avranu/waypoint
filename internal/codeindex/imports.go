@@ -217,7 +217,7 @@ func (ix *Index) resolveImports(tx *sql.Tx) error {
 	for _, p := range todo {
 		key := [3]string{p.path, p.lang, p.sp}
 		if p.lang == "go" || p.lang == "python" && !strings.HasPrefix(p.sp, ".") {
-			key[0] = "" // the answer doesn't depend on the importing file
+			key[0] = ""
 		}
 		t, ok := cache[key]
 		if !ok {

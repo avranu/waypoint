@@ -1,7 +1,5 @@
 package core
 
-// Found from log patterns here: no agent round is spent on these, and ci_fault_retry.go re-runs them.
-
 import (
 	"context"
 	"fmt"
@@ -49,16 +47,11 @@ var runnerFaultRules = []struct {
 	{lazyre.New(`(?i)no space left on device|\bENOSPC\b|disk quota exceeded`), faultDisk, "the runner ran out of disk space"},
 	{lazyre.New(`(?i)cannot connect to the docker daemon`), faultDocker, "the runner's Docker daemon wasn't reachable"},
 	{lazyre.New(`(?i)runner has received a shutdown signal|lost communication with the server|job failed \(system failure\)`), faultLost, "the runner was lost during the job"},
-	// Ordered before the Docker timeout rule below, which it also matches: the first match counts.
 	{lazyre.New(`(?i)\[runner\]:?\s*context deadline exceeded.*unable to copy "?/var/run/act/workflow/`), faultTimeLimit, "the job hit its workflow's time limit (timeout-minutes)"},
 	{lazyre.New(`(?i)(?:\[runner\]|error response from daemon|failed to (?:pull|fetch|start|create|remove)\b).*context deadline exceeded`), faultTimeout, "the runner timed out talking to Docker or a registry"},
-	// Only the runner's own [runner] line counts: a test that can't resolve a host is the code's.
 	{lazyre.New(`(?i)\[runner\]:.*(?:could not resolve host|temporary failure in name resolution|no such host|server misbehaving)`), faultDNS, "the runner couldn't resolve a host name (DNS)"},
-	// 'no such host' is left out: a test's made-up host says that too.
 	{lazyre.New(`(?i)\blookup \S+ on \S+: (?:server misbehaving|read udp \S+ i/o timeout)|temporary failure in name resolution|could not resolve host`), faultDNS, "the runner couldn't look up a host name (DNS)"},
-	// A service container that never passes its health check stops the job before any repo step runs.
 	{lazyre.New(`(?i)\bservice \[[^\]]+\]: container health check \S+ \([^)]*\) is not healthy`), faultService, "a CI service container never became healthy"},
-	// curl 22 (an HTTP error status, as for a wrong URL) is the code's; 18, 35, 56 and 92 are network faults.
 	{lazyre.New(`^#\d+ [\d.]+ curl: \((?:18|35|56|92)\) `), faultNetwork, "a download in the Docker build was cut off (network)"},
 }
 
@@ -177,8 +170,6 @@ func (s *Service) headRunnerFaults(ctx context.Context, pr *PullRequest) map[str
 	if !ok || len(out) == 0 {
 		return nil
 	}
-	// Named once the rows are closed: a query while they are open holds a
-	// second reader, and with every reader held so, none is left for it.
 	for _, f := range out {
 		s.nameFaultHost(ctx, pr.ForgeID, f)
 	}

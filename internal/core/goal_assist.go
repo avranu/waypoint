@@ -243,7 +243,6 @@ func (s *Service) GoalWork(ctx context.Context, actor *Actor, goalID int64, proj
 	}
 	out := &GoalWorkList{Goal: *goal, Items: []GoalWorkItem{}}
 
-	// An unapproved goal is not in the matcher, so its own text is vectorized here.
 	m, err := s.newGoalMatcher(ctx)
 	if err != nil {
 		return nil, err

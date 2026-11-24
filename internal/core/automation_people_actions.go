@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// The automation never decides the request it makes; the person does.
-
 var askKinds = opts(RequestQuestion, "A question", RequestAction, "Something only they can do")
 
 // autoRequestKey names the request a step made, so a step run twice finds it.
@@ -74,7 +72,6 @@ func (c *StepCtx) makeRequest(slot int) (id int64, err error) {
 		}
 		in.Questions = []Question{q}
 	case RequestAction:
-		// An action request sets no question: the request itself is the note for the person.
 	default:
 		return 0, invalid("a person can be asked a question or to do something")
 	}

@@ -28,7 +28,7 @@ func TestGoalTracesStalePassLosesNoLink(t *testing.T) {
 		}
 	}
 	t.Cleanup(func() {
-		e.s.quiesceGoals(t) // Quiesce before clearing the hook, so no pass reads it while it is cleared.
+		e.s.quiesceGoals(t)
 		e.s.goals.beforeStore = nil
 	})
 	stale := make(chan error, 1)
@@ -44,7 +44,6 @@ func TestGoalTracesStalePassLosesNoLink(t *testing.T) {
 		_, err := e.s.RecomputeGoalTraces(e.ctx)
 		direct <- err
 	}()
-	// The direct pass must wait for the stale one: unserialized, it would finish first and the stale write would overwrite its rows.
 	select {
 	case err := <-direct:
 		direct <- err

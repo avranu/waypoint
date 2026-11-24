@@ -210,7 +210,6 @@ func decideWarm(f warmFacts) warmChoice {
 		}
 		return warmChoice{Action: warmCompacting, Why: why, Warm: true, Class: class}
 	}
-	// Every cool goes through orUnmerged so it keeps its own reason and class; only at or above unmergedCompactFrom does an unmerged session compact instead, in the unmerged class.
 	orUnmerged := func(c warmChoice) warmChoice {
 		if f.Unmerged && c.Action == warmCool && f.ContextTokens >= unmergedCompactFrom {
 			c.Action, c.Class = warmCompacting, warmClassUnmerged
@@ -332,7 +331,7 @@ func (s *Service) warmSession(ctx context.Context, id int64) error {
 	c := decideWarm(f)
 	rule := c.Action
 	c = s.weighWarm(ctx, user, model, ctxTokens, c)
-	evidenceChanged := rule != c.Action // before the runner check: that is no evidence
+	evidenceChanged := rule != c.Action
 	if c.Action != warmCool && !runnerOnline(ctx, s, user, machine) {
 		c = warmChoice{Action: warmCool, Why: c.Why + "; no runner of its person's is online on " + machine + " to keep it warm", Class: c.Class}
 	}
@@ -555,8 +554,6 @@ func (s *Service) cacheWarmJobFinished(ctx context.Context, e *Event) {
 // that post starts doesn't read as its person typing.
 // It returns the previous marker and the one written, for restorePosted.
 func markPosted(ctx context.Context, s *Service, sessionID int64) (previous sql.NullInt64, at int64, ok bool) {
-	// Read and write in one write transaction, so each post sees the marker
-	// the previous one wrote.
 	tx, err := s.db.W.BeginTx(ctx, nil)
 	if err != nil {
 		s.log.WarnContext(ctx, "note a post to a session", "session", sessionID, "err", err)
@@ -708,7 +705,6 @@ func (s *Service) warmSessionStart(ctx context.Context, t *tx, x *AgentSession, 
 		}
 		return true, s.sessionTimeline(ctx, t, x.ID, at, "autopilot", "", 0, "", "", "Compacted it before the adversarial review", x.projectID, map[string]any{"decision": warmReview})
 	}
-	// The compaction's own stop may have come first (state compacted).
 	if ev.Source == "compact" && (state == warmCompacting || state == warmCompacted) {
 		if _, err := t.ExecContext(ctx, `UPDATE agent_sessions SET warm_state = ?, warm_at = ?, context_tokens = 0 WHERE id = ?`, warmCompacted, at, x.ID); err != nil {
 			return true, err

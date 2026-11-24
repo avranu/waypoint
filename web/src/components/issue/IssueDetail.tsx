@@ -157,7 +157,6 @@ function Loaded({
   const closed = issue.status.category === 'done' || issue.status.category === 'canceled'
   const publish = usePublishIssue()
   const [opened, setOpened] = useState<string[]>([])
-  // A '+' starts adding only once, so returning to Details doesn't reopen the box or file chooser.
   const [starting, setStarting] = useState('')
   const [objectiveOpen, setObjectiveOpen] = useState(false)
   const knowledge = useQuery(linksQuery({ type: 'issue', key: issue.key }))
@@ -166,7 +165,6 @@ function Loaded({
     file: (issue.attachments?.length ?? 0) > 0,
     link: issue.links.length > 0,
     relation: issue.relations.length > 0,
-    // Mentions show in their own section below, so they don't count as knowledge here.
     knowledge: (knowledge.data ?? []).some((l) => !(l.auto && l.rel === 'mentions')),
   }
   const visible = (k: string) => filled[k] || opened.includes(k)
@@ -739,15 +737,11 @@ function TitleEditor({
   const key = `title:${issueKey}`
   const [stored] = useState(() => (editable ? readDraft<string>(key) : null))
   const [draft, setDraft] = useState(stored ?? value)
-  // Dirty: the field holds an edit the server hasn't got. Only a clean field
-  // follows the saved title, so a refetch can't wipe what's being typed.
   const [dirty, setDirty] = useState(stored !== null && stored !== value)
   const [restored, setRestored] = useState(dirty)
   const [kept, setKept] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const saving = useRef(false)
-  // Set by Esc: the blur it causes fires before React re-renders, with the
-  // edit still in this render's closure, and must not save it.
   const cancelled = useRef(false)
   const ref = useRef<HTMLTextAreaElement>(null)
   useUnsaved(dirty && !kept)

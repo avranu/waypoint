@@ -6,8 +6,6 @@ import (
 	"time"
 )
 
-// The runner watches its own machine load; the server hands out only jobs of the lanes a poll asks for.
-
 // Lanes split jobs by what they cost the machine. Light jobs mostly wait on
 // a model (read-only reviews and audits) or are nothing at all (an inbox
 // message); heavy ones check code out, build and test, or start a session

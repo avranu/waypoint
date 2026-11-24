@@ -15,8 +15,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// A fingerprint (file, enclosing symbol, gist of the text) is how a finding is matched across rounds.
-
 // Round classes.
 const (
 	// RoundNew: a finding on code no earlier round was told about.
@@ -233,7 +231,7 @@ func (l *ledger) repeatOf(it ledgerItem, e LedgerEntry) (ledgerItem, int, bool) 
 		}
 		pg := gistOf(p.Body)
 		if (p.Dealt || l.pushedWith(p.ID) > 0) && len(words) >= 5 && pg == e.Gist {
-			return p, l.fixedIn(p), true // A re-post under a new id with the same text is the same finding: match on the gist.
+			return p, l.fixedIn(p), true
 		}
 		if !p.Fixed && l.pushedWith(p.ID) == 0 {
 			continue
@@ -248,7 +246,6 @@ func (l *ledger) repeatOf(it ledgerItem, e LedgerEntry) (ledgerItem, int, bool) 
 		}
 		return p, l.fixedIn(p), true
 	}
-	// An audit finding fixed in an earlier round keeps its fingerprint across rounds.
 	for _, r := range l.in.Rounds {
 		if !r.Pushed {
 			continue
@@ -580,7 +577,6 @@ func (s *Service) classifyLiveRound(ctx context.Context, b *Babysit, pr *PullReq
 	}
 	in.Earlier = append(in.Earlier, s.earlierFindings(ctx, pr.ID, t.Findings)...)
 	if len(t.Checks) > 0 {
-		// If the base's failures can't be read, leave them out: the ledger describes only the round.
 		_, red, err := s.baseFailing(ctx, pr)
 		if err != nil {
 			s.log.WarnContext(ctx, "read what fails on the base for a round's ledger", "pr", pr.ID, "err", err)

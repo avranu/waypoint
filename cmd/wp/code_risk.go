@@ -175,7 +175,7 @@ func (c *cli) prFiles(sf scopeFlags, n int, root string) ([]string, error) {
 func prFilesOf(root string, n int, d *prDetail) ([]string, error) {
 	tip := ""
 	for _, spec := range []string{fmt.Sprintf("refs/pull/%d/head", n), fmt.Sprintf("refs/merge-requests/%d/head", n), d.HeadRef} {
-		if spec == "" || codeindex.CheckRef(spec) != nil { // a forge's branch name is untrusted input: a leading dash would make git read it as an option
+		if spec == "" || codeindex.CheckRef(spec) != nil {
 			continue
 		}
 		if _, err := gitIn(root, "fetch", "-q", "origin", spec); err == nil {

@@ -120,7 +120,7 @@ func transcriptFilesText(files []core.TranscriptFile) string {
 	tw := tabwriter.NewWriter(&b, 0, 4, 2, ' ', 0)
 	_, _ = fmt.Fprintln(tw, "MACHINE\tFILE\tKIND\tGEN\tPIECES\tRAW\tSTORED\tREDACTED\tREDACTIONS\tCOMPLETE\tLAST")
 	for _, f := range files {
-		red := "unknown" // pieces stored before redaction counts existed have no count
+		red := "unknown"
 		if f.Redactions != nil {
 			red = fmt.Sprint(*f.Redactions)
 		}

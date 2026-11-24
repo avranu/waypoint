@@ -106,7 +106,6 @@ async function run(width, scheme) {
     const b = await bar(to).boundingBox();
     near(e.x1, a.x + a.width, `${tag} ${what} starts at ${from}'s end`);
     near(e.y1, a.y + a.height / 2, `${tag} ${what} starts on ${from}'s row`);
-    // A rotated milestone diamond's box is wider than its shape, so its arrow tip gets a wider tolerance (6px).
     near(
       e.x2,
       b.x,

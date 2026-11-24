@@ -709,8 +709,6 @@ func TestApproveChangeConflictWritesNothing(t *testing.T) {
 func TestApproveChangeAuthorisation(t *testing.T) {
 	r := newReqEnv(t)
 	fake := r.forgejo(map[string]string{"CLAUDE.md": udiff.GitBlobSHA("x")})
-	// bob is only a viewer of the project: his agent may ask, but approving
-	// would write to the repository with the forge's token.
 	bobAgent := agentActor(r.bob, "anthropic/claude-code")
 	q, _, err := r.s.CreateRequest(r.ctx, bobAgent, RequestInput{Kind: RequestChange, Title: "Edit", Project: r.p.Key,
 		Files: []RequestFileInput{{Path: "CLAUDE.md", BaseSHA: udiff.GitBlobSHA("x"), Base: "x", Content: "y"}}})

@@ -226,7 +226,6 @@ func TestCommitStatusesAndChecks(t *testing.T) {
 	a, f, c = newAPIFake(t, "github")
 	a.reply["GET /repos/me/app/commits/abc/status?per_page=100&page=1"] = map[string]any{"statuses": []map[string]any{{"context": "legacy/ci", "state": "success", "id": 4},
 		{"context": "waypoint/review", "state": "success", "id": 6}, {"context": "waypoint/tested", "state": "success", "id": 9}}}
-	// The combined status names no creator; the statuses list does, for Waypoint's contexts.
 	a.reply["GET /repos/me/app/commits/abc/statuses?per_page=100&page=1"] = []map[string]any{
 		{"id": 9, "context": "waypoint/tested", "creator": map[string]any{"login": "claude"}},
 		{"id": 7, "context": "waypoint/review", "creator": map[string]any{"login": "waypoint"}},
@@ -261,7 +260,6 @@ func TestCommitStatusesAndChecks(t *testing.T) {
 		t.Fatalf("checks = %+v %v", checks, err)
 	}
 
-	// A GitLab job's author is who triggered its pipeline, so no waypoint/* job counts as Waypoint's; only a status posted through the API keeps its author.
 	a, f, c = newAPIFake(t, "gitlab")
 	a.reply["GET /projects/me%2Fapp/repository/commits/abc/statuses?per_page=100&page=1"] = []map[string]any{
 		{"id": 41, "name": "waypoint/review", "status": "success", "pipeline_id": 5, "author": map[string]any{"username": "waypoint"}},

@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-// Never touches the job (quiet is not stuck: a download may resume); a cold session is not woken for a notice, since waking re-reads its whole context, unless the job stays quiet past ColdWake.
-
 // StalledJob is one quiet background job a runner reports.
 type StalledJob struct {
 	Session   string    `json:"session"` // the Claude Code session's id
@@ -97,7 +95,7 @@ func (s *Service) ReportStalledJobs(ctx context.Context, actor *Actor, in Stalle
 		return nil, notFound("runner")
 	}
 	user := actor.User.ID
-	if len(in.Settled) > 200 { // as many as a runner keeps (cmd/wp settle)
+	if len(in.Settled) > 200 {
 		in.Settled = in.Settled[:200]
 	}
 	for _, j := range in.Settled {
@@ -138,10 +136,6 @@ type stallSpell struct {
 // session.
 func (s *Service) quietJob(ctx context.Context, userID int64, machine string, j StalledJob, v2 bool) (StalledJobOutcome, error) {
 	o := StalledJobOutcome{Task: j.Task, Session: j.Session}
-	// later: report it again in d while it stays quiet. An older runner
-	// reports a job once unless asked again, at its next look (a minute), so
-	// it is asked only while something is still to come: the job isn't
-	// stalled yet, or a cold wake waits.
 	later := func(d time.Duration, outcome string, pending bool) (StalledJobOutcome, error) {
 		o.Outcome = outcome
 		d = min(max(d, time.Minute), stallAgainMax)
@@ -169,8 +163,6 @@ func (s *Service) quietJob(ctx context.Context, userID int64, machine string, j 
 	pol := s.stallPolicyFor(ctx, s.db.R, project.Int64)
 	now := s.now()
 	quiet := now.Sub(sp.QuietFrom)
-	// A spell that can't be told can't be acted on, so while untold it isn't
-	// evidence of how long the job's kind stays quiet and fine.
 	skip := func(why string) {
 		if sp.ToldAt.Valid {
 			return
@@ -197,7 +189,6 @@ func (s *Service) quietJob(ctx context.Context, userID int64, machine string, j 
 	minAge := time.Duration(pol.MinAge) * time.Minute
 	need := time.Duration(th.Quiet) * time.Minute
 	if age < minAge || quiet < need {
-		// Soon enough for an early notice at a keep-warm ping to read it fresh.
 		return later(min(max(minAge-age, need-quiet), stallAgainSoon), "quiet, not stalled yet", true)
 	}
 	how, outcome, err := s.tellStalled(ctx, userID, id, sp, pol, th, j, quiet)
@@ -225,8 +216,6 @@ func (s *Service) recordQuiet(ctx context.Context, userID, sessionID, project in
 			userID, j.Session, j.Task).Scan(&sp.ID)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
-			// A lost spell of the same job (its runner went away a while)
-			// is this one: its unread notice gives way to this spell's.
 			if _, err := t.ExecContext(ctx, `UPDATE session_messages SET state = 'cancelled' WHERE state = 'queued' AND id IN
 				(SELECT message_id FROM stalled_jobs WHERE user_id = ? AND cli_session = ? AND task = ? AND settled = 'lost' AND message_id IS NOT NULL)`,
 				userID, j.Session, j.Task); err != nil {
@@ -242,8 +231,6 @@ func (s *Service) recordQuiet(ctx context.Context, userID, sessionID, project in
 		case err != nil:
 			return err
 		default:
-			// The runner counts from its first look: a restarted one sees
-			// less quiet than there was.
 			_, err = t.ExecContext(ctx, `UPDATE stalled_jobs SET seen_at = ?, report = ?, session_id = ?, project_id = ?, quiet_from = min(quiet_from, ?) WHERE id = ?`,
 				now.UnixMilli(), string(raw), sessionID, nullID(project), quietFrom.UnixMilli(), sp.ID)
 			if err != nil {
@@ -335,7 +322,6 @@ func (s *Service) tellStalled(ctx context.Context, userID, id int64, sp *stallSp
 		outcome = fmt.Sprintf("its session reads it at its next turn (its prompt cache is cold, so it wasn't woken; it is if there's still no progress after %d min)", max(pol.ColdWake, th.Quiet))
 	case how == stallPassive:
 	case m.State == MessageQueued:
-		// Its work still waits on the job, so this news is posted now as waiting (blocking) news.
 		s.postToSession(ctx, id, true)
 		outcome = "its session reads it at its next turn (its prompt cache is warm, but its runner couldn't wake it)"
 		if how == stallColdWake {

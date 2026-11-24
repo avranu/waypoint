@@ -689,7 +689,6 @@ function HookStatus({
           line(<CircleAlert className="size-3.5 text-warn" />, r.hook_note, 'text-muted')}
       </>
     )
-  // An existing hook may be an organisation's; adding a repo hook beside it would double every delivery.
   if (seen) return line(<CircleCheck className="size-3.5 text-ok" />, `Webhook working · ${seen}`)
   return (
     <div className="mt-1 text-xs text-subtle">

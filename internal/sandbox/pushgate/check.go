@@ -221,7 +221,6 @@ func (g *Gateway) changedFiles(ctx context.Context, m *mirror, env []string, com
 	if err != nil {
 		return nil, err
 	}
-	// Commit ids are also kept as paths, so a file named like a commit id is still checked.
 	seen := map[string]bool{}
 	var files []string
 	for _, f := range bytes.Split(out, []byte{0}) {
@@ -389,8 +388,6 @@ func (g *Gateway) scanBatch(r *bufio.Reader, paths map[string]string) (string, s
 		if err != nil {
 			return "", "", fmt.Errorf("cat-file: bad size %q", f[2])
 		}
-		// win keeps the last maxLen-1 bytes of what came before, so a value
-		// split across two reads is still found.
 		win := make([]byte, 0, maxLen-1+len(buf))
 		left := size
 		for left > 0 {

@@ -9,8 +9,6 @@ import (
 	"unicode/utf8"
 )
 
-// Completed slot holds are reported so the slot policy can be checked and simulated.
-
 const (
 	// SlotHoldsMax is the most holds one request may carry.
 	SlotHoldsMax = 500
@@ -102,7 +100,7 @@ func slotWriter(actor *Actor) (int64, error) {
 // slotHoldRow validates h and returns its cleaned form (ok false: refused).
 func slotHoldRow(h SlotHold, now int64) (SlotHold, []byte, []byte, bool) {
 	if utf8.RuneCountInString(strings.TrimSpace(h.ID)) > 64 {
-		return h, nil, nil, false // cutting an id could merge two holds into one
+		return h, nil, nil, false
 	}
 	h.ID, h.Name = clip(h.ID, 64), clip(h.Name, 100)
 	h.Repo, h.Tree, h.Cmd = clip(h.Repo, 1024), clip(h.Tree, 1024), clip(h.Cmd, 4000)
@@ -159,10 +157,6 @@ func (s *Service) RecordSlotHolds(ctx context.Context, actor *Actor, in SlotHold
 	tooMany := len(in.Holds) > SlotHoldsMax
 	err = s.write(ctx, actor, func(t *tx) error {
 		*res = SlotHoldsResult{}
-		// Waiting since the oldest hold the machine still has (its own clock,
-		// never later than now), so a stall is as old as the data that waits.
-		// With no usable oldest, a machine already waiting keeps its earlier
-		// since (it is not newer than it was), else it is now.
 		since, usable := now, in.Oldest > 0 && in.Oldest < now
 		if usable {
 			since = in.Oldest

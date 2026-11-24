@@ -1,7 +1,5 @@
 package core
 
-// Job logs are fetched through Waypoint, which holds the forge token.
-
 import (
 	"context"
 	"errors"

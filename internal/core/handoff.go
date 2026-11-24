@@ -8,8 +8,6 @@ import (
 	"time"
 )
 
-// Reserve the task and the launch in one write, so two hand-offs can't take the same task and the live-session limit counts a launch before its session exists.
-
 const (
 	// MaxTaskSessions is how many task sessions a person has at once from
 	// hand-offs (WP-53's per-person setting replaces it).
@@ -32,7 +30,7 @@ const (
 	OutcomeStarted = "started"
 	OutcomeNone    = "none"
 	OutcomeFailed  = "failed"
-	OutcomeSkipped = "skipped" // older clients: wp done --no-next
+	OutcomeSkipped = "skipped"
 )
 
 // HandoffResult is Handoff's answer.
@@ -50,7 +48,6 @@ type HandoffResult struct {
 func (s *Service) liveTaskSessions(ctx context.Context, q queryer, userID, except int64, agent string) (int, error) {
 	now := s.nowMS()
 	var n, pending int
-	// A crashed session never sets ended_at, so only a recent heartbeat keeps it counting against the limit.
 	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM agent_sessions WHERE user_id = ? AND kind = 'task' AND finished_at IS NULL AND ended_at IS NULL AND id != ?
 		AND last_seen_at > ?`, userID, except, now-sessionIdleAfter.Milliseconds()).Scan(&n); err != nil {
 		return 0, err

@@ -954,8 +954,6 @@ function FileDialog({
   const f = useQuery(query)
   const [draft, setDraft] = useState<string | null>(null)
   const [message, setMessage] = useState('')
-  // The file's blob id when the edit began: a refetch while editing mustn't
-  // move it, or the server's check against a changed file would pass.
   const [baseSha, setBaseSha] = useState('')
   const edit = useEditAgentFile()
   const move = (step: number) => {

@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-// A surplus refusal is no model's answer: it is not counted against a model, and the work waits for the gateway's Retry-After.
-
 const (
 	prioritySurplus = "surplus"
 	// surplusRetry is how long surplus work waits after a refusal that

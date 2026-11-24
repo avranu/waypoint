@@ -45,7 +45,6 @@ func unwrapPasted(text string) (inner string, ok bool) {
 		return "", false
 	}
 	if id := pastedIDRE.FindStringSubmatch(open[1]); id != nil {
-		// Claude Code's own form: the closing tag repeats the id, once.
 		if end := `</pasted_content id="` + id[1] + `">`; strings.HasSuffix(p, end) {
 			if len(p) < len(open[0])+len(end) || strings.Count(p, end) != 1 {
 				return "", false
@@ -53,8 +52,6 @@ func unwrapPasted(text string) (inner string, ok bool) {
 			return strings.TrimSpace(p[len(open[0]) : len(p)-len(end)]), true
 		}
 	}
-	// Otherwise the tags nest, closing plain, and the first one closes at the
-	// very end.
 	const end = "</pasted_content>"
 	if !strings.HasSuffix(p, end) {
 		return "", false

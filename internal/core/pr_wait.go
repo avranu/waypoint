@@ -1,7 +1,5 @@
 package core
 
-// Conflicts and new heads send no event, so a held request also reads the pull request from the forge every minute.
-
 import (
 	"context"
 	"fmt"
@@ -155,7 +153,7 @@ func (s *Service) WaitPullRequest(ctx context.Context, actor *Actor, prID int64,
 	defer done()
 	s.scheduleMergeRecheck(ctx, prID)
 	if in.Head != "" && !sameSHA(pr.HeadSHA, in.Head) {
-		s.prWaitRefresh(ctx, pr) // the push's webhook may not have come yet
+		s.prWaitRefresh(ctx, pr)
 	}
 	deadline := time.NewTimer(in.Timeout)
 	defer deadline.Stop()
@@ -231,7 +229,7 @@ func (s *Service) CheckArmedHeads(ctx context.Context) {
 // prWaitRead is prWaitRefresh; force skips the rate limit. It returns the
 // head the forge says the pull request has now (empty when it wasn't read).
 func (s *Service) prWaitRead(ctx context.Context, pr *PullRequest, force bool) string {
-	ctx = context.WithoutCancel(ctx) // a write half done when the client leaves helps no one
+	ctx = context.WithoutCancel(ctx)
 	f, err := s.forgeByID(ctx, pr.ForgeID)
 	prc, ok := s.Forges.(ForgePRs)
 	if err != nil || !ok || f.token == "" || (!force && !s.prWait.mayRead(pr.ID)) {
@@ -338,7 +336,6 @@ func (s *Service) prWaitState(ctx context.Context, prID int64, head string) (*PR
 		w.Why = "checks haven't been read yet"
 		return w, nil
 	case w.CI == CIFailed || (w.CI == CIPending && failedNotCancelled(w.Checks)):
-		// A cancelled check doesn't settle a pending pull request: a newer run of the same head cancels it, and its statuses stand until that run's jobs start.
 		if moved, ok := s.headSuperseded(ctx, pr); ok {
 			w.Why = "a newer head, " + short(moved) + ", is being read"
 			return w, nil

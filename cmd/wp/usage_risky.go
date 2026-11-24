@@ -8,8 +8,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// levels: high reaches production, another machine, a cluster or a disk, rewrites shared history, or deletes outside any checkout; medium loses local work or state a person might want back
-
 // riskyHit is one risky command in a shell line.
 type riskyHit struct {
 	Kind    string `json:"k"`           // delete, discard, force_push, push_main, branch_delete, history, sql, cluster, deploy, service, docker, disk, power, permissions, remote_script
@@ -378,7 +376,7 @@ func rebuildable(p string) bool {
 				}
 			}
 		}
-		return !strings.HasPrefix(p, "/") || strings.Count(p, "/") > 2 // only build output inside a project counts; a build directory directly under home does not
+		return !strings.HasPrefix(p, "/") || strings.Count(p, "/") > 2
 	}
 	return false
 }
@@ -439,7 +437,7 @@ func riskyGit(args []string) (riskyHit, bool) {
 		}
 	case "clean":
 		if (strings.ContainsAny(short, "f") || long["force"]) && (!strings.Contains(short, "X") || strings.Contains(short, "x")) {
-			return riskyHit{Kind: "discard", Level: riskMedium, Label: "git clean -f"}, true // -X alone: only ignored files, made again by a build
+			return riskyHit{Kind: "discard", Level: riskMedium, Label: "git clean -f"}, true
 		}
 	case "checkout", "restore":
 		if sub == "checkout" && (strings.Contains(short, "f") || long["force"]) {

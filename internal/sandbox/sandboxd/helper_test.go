@@ -75,7 +75,7 @@ func (f *fakeSys) DelUser(n string) error {
 		return fmt.Errorf("user %s doesn't exist", n)
 	}
 	delete(f.users, n)
-	delete(f.groups, n) // as USERGROUPS_ENAB does
+	delete(f.groups, n)
 	f.dels = append(f.dels, n)
 	return nil
 }

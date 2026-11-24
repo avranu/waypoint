@@ -1,4 +1,3 @@
-# Waypoint refuses every tool permission the agent asks for; the agent's tools can only reach this container.
 FROM node:24-slim
 ARG OPENCODE_VERSION=1.18.32
 RUN npm install -g --no-audit --no-fund --before="$(date -u -d '-7 days' +%Y-%m-%dT%H:%M:%SZ)" "opencode-ai@${OPENCODE_VERSION}" \

@@ -1,5 +1,3 @@
-// Colors are CSS variables only, so light and dark mode both work.
-
 import {
   useEffect,
   useLayoutEffect,

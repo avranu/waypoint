@@ -7,8 +7,6 @@ import (
 	"unicode"
 )
 
-// jobs get an allowlist of the runner's environment, not all of it, because the runner's holds the person's SSH agent, desktop bus, and forge and cloud tokens
-
 // jobEnvVars are the variables a job keeps from the runner's environment.
 var jobEnvVars = map[string]bool{}
 
@@ -44,7 +42,7 @@ var apiKeyVars = []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_A
 func jobEnvKeeps(k string, keepKeys bool) bool {
 	u := strings.ToUpper(k)
 	if strings.HasPrefix(u, "WAYPOINT_") {
-		return false // WAYPOINT_ variables never reach a job, but HOME is kept, so the saved config.json under it stays readable: a known gap until the broker phase
+		return false
 	}
 	if jobEnvVars[u] || runnerEnvPass[u] {
 		return true

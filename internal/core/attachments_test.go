@@ -41,7 +41,6 @@ func TestAttachmentKinds(t *testing.T) {
 		{"conf.yaml", []byte("a: 1\n"), "text/yaml", KindText, "text"},
 		{"fix.diff", []byte("--- a\n+++ b\n"), "text/x-diff", KindText, "text"},
 		{"notes", []byte("plain words"), "text/plain", KindText, "text"},
-		// HTML and SVG are never shown from our origin, since they can run script; they download.
 		{"x.html", []byte("<html><script>alert(1)</script>"), "text/html", KindFile, ""},
 		{"x.svg", []byte(`<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`), "image/svg+xml", KindFile, ""},
 		{"x.svg.txt", []byte(`<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"/>`), "text/xml", KindFile, ""},

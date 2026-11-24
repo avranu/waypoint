@@ -24,7 +24,6 @@ func (s *Server) runnersRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/runner/jobs/{id}/finish", a(s.runnerJobFinish))
 	mux.HandleFunc("POST /api/v1/runner/jobs/{id}/cancel", a(s.runnerJobCancel))
 	mux.HandleFunc("POST /api/v1/runner/stalled-jobs", a(s.runnerStalledJobs))
-	// The gateway key stays on the server: Waypoint, not the runner, sends the checkout to the LLM gateway.
 	mux.HandleFunc("POST /api/v1/runner/jobs/{id}/gateway", a(s.runnerGatewayStart))
 	mux.HandleFunc("GET /api/v1/runner/jobs/{id}/gateway", a(s.runnerGatewayTask))
 	mux.HandleFunc("POST /api/v1/runner/jobs/{id}/gateway/cancel", a(s.runnerGatewayCancel))
@@ -72,7 +71,6 @@ func (s *Server) runnerPoll(w http.ResponseWriter, r *http.Request) (any, error)
 	if err != nil {
 		return nil, err
 	}
-	// Runners on a different release build update themselves to this version, so it must stay the server's build version.
 	return struct {
 		*core.RunnerWork
 		ServerVersion string `json:"server_version"`

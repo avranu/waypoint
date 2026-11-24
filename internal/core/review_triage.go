@@ -15,8 +15,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Floors always review; active rules skip; a shadow rule only records; a hash-picked holdout of the active rules' skips is reviewed anyway, to measure their misses.
-
 // TriageVersion names the rules that decided, stored on each row so results
 // can be split when the rules change.
 const TriageVersion = "rules-1"
@@ -251,13 +249,12 @@ func triageFeatures(c *ChangeFacts) *TriageFeatures {
 		total[name] = a + d
 		f.MaxFileLines = max(f.MaxFileLines, a+d)
 		if a+d == 0 && cl != fileDoc {
-			f.CodeLines++ // Sort by stakes before the cut to ten, so many loose matches can't hide a high-stakes file.
+			f.CodeLines++
 		}
 	}
 	slices.SortStableFunc(f.Sensitive, func(a, b string) int { return stakesRank(a) - stakesRank(b) })
 	f.Sensitive = f.Sensitive[:min(len(f.Sensitive), 10)]
 	seen := parseUnifiedDiff(c.Diff, f)
-	// Lines numstat counted that the diff didn't explain are code.
 	for name, n := range total {
 		if f.class[name] != fileDoc && seen[name] < n {
 			f.CodeLines += n - seen[name]
@@ -371,7 +368,6 @@ func classifyHunk(file string, removed, added []string, f *TriageFeatures) {
 	}
 	byKind(removed, &oldCode)
 	byKind(added, &newCode)
-	// Blank lines with nothing beside them may be in a raw string, as data.
 	if len(oldCode)+len(newCode) == 0 && f.CommentLines == comments {
 		f.CodeLines += f.BlankLines - blanks
 		return
@@ -424,7 +420,6 @@ func isComment(ext, line string) bool {
 	if !strings.HasPrefix(s, marker) {
 		return false
 	}
-	// In C a trailing backslash carries the comment onto the next line.
 	if strings.HasSuffix(s, `\`) {
 		return false
 	}
@@ -548,7 +543,6 @@ var triageRules = []triageRule{
 		return f.Docs == f.Files && f.lines() <= 300 && f.Files <= 10
 	}},
 	{"comments", true, "only comments changed", func(f *TriageFeatures) bool {
-		// Blank lines alone don't count: inside a raw string they are data.
 		return f.nonDocFilesAreCode() && f.Code > 0 && f.CommentLines > 0 && f.allCommentOrBlank() && f.lines() <= 150
 	}},
 	{"wording", false, "only wording changed", func(f *TriageFeatures) bool {

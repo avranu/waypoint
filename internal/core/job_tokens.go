@@ -8,8 +8,6 @@ import (
 	"time"
 )
 
-// A job's token is narrower than the runner's person token: agent-bound, limited to the job's project tree, editor at most.
-
 // jobTokenPermissions is what a job's token may do: the work an agent does
 // on a task, and nothing that runs code, spends credit or changes who can
 // do what.

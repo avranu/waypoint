@@ -76,7 +76,6 @@ async function run(width, scheme, n) {
     `INSERT INTO autopilot_steps(user_id, project_id, session_id, stop_at, state, reason, detail, due_at, created_at, updated_at, review_id)
      VALUES (?, ?, ?, ?, 'waiting', 'audit', 'waiting', ?, ?, ?, ?)`,
   ).run(userID, projectID, id(auditCli), now, now + 120_000, now, now, auditRound);
-  // The minute sweep skips a queued round that no autopilot step carries, so this one gets a step due after the run.
   const queuedRound = db.prepare(`SELECT id FROM work_log WHERE session_id = ?`).get(id(queuedCli)).id;
   db.prepare(
     `INSERT INTO autopilot_steps(user_id, project_id, session_id, stop_at, state, reason, detail, due_at, created_at, updated_at, review_id)
@@ -92,7 +91,6 @@ async function run(width, scheme, n) {
   await chips.filter({ hasText: "Review failed" }).first().waitFor();
   ok(((await chips.filter({ hasText: "Review failed" }).first().getAttribute("title")) || "").includes(why), `${tag} the failed chip says why`);
   const rgb = (c) => c.evaluate((el) => getComputedStyle(el.firstElementChild).backgroundColor);
-  // getComputedStyle returns the pale chip's colour as oklab() with alpha (color-mix in index.css), so compare it as painted pixels on a canvas.
   const blue = (color) =>
     page.evaluate((color) => {
       const g = Object.assign(document.createElement("canvas"), { width: 1, height: 1 }).getContext("2d");

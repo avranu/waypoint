@@ -100,7 +100,6 @@ async function run(width, scheme) {
   const rels = (await api("GET", `/issues/${src.key}`)).relations ?? [];
   ok(rels.some((r) => r.issue.key === want.key), `${tag} picking relates it`);
   ok(await search.isVisible(), `${tag} the add box stays open for the next one`);
-  // Enter waits for the search answer and takes the top match, never a row the list still shows for the earlier words.
   await search.fill("review every merge");
   await page.keyboard.press("Enter");
   await page.waitForResponse((r) => r.url().includes("/relations") && r.request().method() === "POST");

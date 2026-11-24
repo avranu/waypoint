@@ -125,7 +125,7 @@ func TestBaseFaultsRerun(t *testing.T) {
 	af.add(12, "wip", "ccccccc", "failure", dnsCheckoutLog, failedAt)
 	sweep := func() {
 		t.Helper()
-		se.s.Wait() // background work (task screening) reads the clock; let it finish first
+		se.s.Wait()
 		se.setClock(se.clockNow().Add(10 * time.Minute))
 		se.s.RecordCIHistory(se.ctx)
 	}

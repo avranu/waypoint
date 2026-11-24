@@ -20,11 +20,8 @@ var relationKindList = []RelationKind{
 	{Kind: "relates"},
 	{Kind: "blocks", Inverse: "blocked_by"},
 	{Kind: "duplicates", Inverse: "duplicated_by"},
-	// A follows B is more work on what B did: a fix mends B's miss, an expansion does more of it.
 	{Kind: "follows", Inverse: "followed_by", Subkinds: []string{"fix", "expansion"}},
-	// Undoing B's work when A supersedes it is not a regression.
 	{Kind: "supersedes", Inverse: "superseded_by"},
-	// The two pull against each other, so whoever takes either should weigh both.
 	{Kind: "tension"},
 }
 

@@ -59,7 +59,6 @@ func TestTestsumRepeatCountsFlakes(t *testing.T) {
 	t.Chdir(flakyModule(t))
 	t.Setenv("FAIL_ON", "2,4")
 	var out, errb bytes.Buffer
-	// No -count given: without the added -count=1 runs 2..6 would be cached.
 	if code := run([]string{"testsum", "--repeat", "6", "--", "go", "test", "."}, &out, &errb); code != 1 {
 		t.Fatalf("exit %d, want 1\n%s%s", code, out.String(), errb.String())
 	}

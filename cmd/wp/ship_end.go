@@ -12,8 +12,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// With --summary, a clean wp ship ends the turn through the hook's Stop with no further model call; anything needing the agent lets the turn go on and keeps the summary.
-
 // shipStopReason marks the Stop event a hook sent for a turn wp ship ended:
 // Reason is a field older servers already take, so the event reaches them.
 const shipStopReason = "ship"
@@ -349,7 +347,7 @@ func (c *cli) stopAlreadySent(session string) bool {
 	if e == nil || e.Stopped.IsZero() {
 		return false
 	}
-	stopped := e.Stopped // read before shipSession clears it (it may mutate e itself)
+	stopped := e.Stopped
 	c.shipSession(session, func(e *shipEnd) { e.Stopped = time.Time{} })
 	return time.Since(stopped) <= shipStopFresh
 }
@@ -381,15 +379,12 @@ func (c *cli) shipStop(in hookEventInput, bg string) (stop []byte, context strin
 		ev.Repo, ev.Branch, ev.Worktree = gitInfo(in.Cwd)
 	}
 	ev.InputTokens, ev.OutputTokens, ev.ContextTokens, ev.CacheTTL = sessionTotals(c, in)
-	// PostToolUse and prompts don't report running work, so a turn ending at wp ship is taken to leave nothing running; a later Stop hook reports what it does.
 	ev.Pending = &hookPending{Tasks: []pendingTask{}, Crons: []pendingCron{}}
 	ev.Checkouts = hookCheckouts(in.Cwd, c.state.sessionClaims(in.SessionID))
 	c.hookTimeout = hookHTTPTimeout
-	// Not through the outbox: a Stop that arrives later than the turn
-	// that went on after it would say the session stopped when it didn't.
 	b, err := c.call("POST", "/api/v1/sessions/hook", map[string]any{"events": []sessionEvent{ev}})
 	if err != nil {
-		return nil, "" // If the server can't be reached the turn goes on, and wp ship's output already told the agent to reply.
+		return nil, ""
 	}
 	var res hookReply
 	_ = json.Unmarshal(b, &res)
@@ -400,7 +395,6 @@ func (c *cli) shipStop(in hookEventInput, bg string) (stop []byte, context strin
 		text = c.awaitMessage(ev, res.Await)
 	}
 	if text != "" {
-		// A message for the agent keeps the turn going; its own Stop comes later, as after a Stop hook's block.
 		return nil, text
 	}
 	c.shipSession(in.SessionID, func(e *shipEnd) { e.Stopped = time.Now() })

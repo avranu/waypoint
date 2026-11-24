@@ -1,7 +1,5 @@
 package core
 
-// A try link is a page's full URL, or its path for a page shot on a local server, completed with the project's deployed environment URL.
-
 import (
 	"context"
 	"database/sql"
@@ -225,7 +223,7 @@ func (s *Service) tryBases(ctx context.Context, actor *Actor, project string) ma
 	if err != nil {
 		return out
 	}
-	for _, kind := range []string{EnvStaging, EnvProduction} { // Later kinds overwrite earlier ones, so production (listed last) takes precedence over staging.
+	for _, kind := range []string{EnvStaging, EnvProduction} {
 		for _, e := range envs {
 			if e.Kind == kind && webURL(e.URL) {
 				out[e.Project] = strings.TrimRight(e.URL, "/")

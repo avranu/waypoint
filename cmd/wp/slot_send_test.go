@@ -352,7 +352,6 @@ func (r *ssRecorder) count() int {
 
 func TestSlotHoldSentToServerHasNoInlineSecrets(t *testing.T) {
 	c, dir := ssEnv(t, ssDown(t))
-	// one argument holds a space: joined with spaces, its tail would leak
 	argv := []string{"go", "test", "--token=abc123secret", "--password", "hunter2 tail2", "./x"}
 	_, rel, err := c.takeSlotFor(context.Background(), "tests", 2, slotRunOf(argv))
 	if err != nil {
@@ -376,7 +375,7 @@ func TestSlotHoldSentToServerHasNoInlineSecrets(t *testing.T) {
 	c2, _, _ := sqCLI()
 	deadline := time.Now().Add(5 * time.Second)
 	for len(readOutbox(dir)) > 0 && time.Now().Before(deadline) {
-		_, _, _ = c2.sendSlotHolds(context.Background()) // the earlier background send may still hold the lock
+		_, _, _ = c2.sendSlotHolds(context.Background())
 		time.Sleep(50 * time.Millisecond)
 	}
 	rec.mu.Lock()
@@ -389,7 +388,6 @@ func TestSlotHoldSentToServerHasNoInlineSecrets(t *testing.T) {
 			t.Errorf("posted a secret: %s", b)
 		}
 	}
-	// the local key is unchanged (the classifier and waits.jsonl use it)
 	if recs := readWaitRecs(dir); len(recs) != 1 || recs[0].Cmd != slotKey(argv) {
 		t.Errorf("waits.jsonl %+v", recs)
 	}

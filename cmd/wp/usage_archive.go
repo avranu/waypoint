@@ -24,8 +24,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Archive offsets are the file's own, so a retry or a crash between upload and saving state never stores a byte twice or skips one.
-
 const (
 	archiveStateFile = "usage-archive.json"
 	// archiveTailLen: the bytes before the offset that are hashed on every
@@ -227,22 +225,20 @@ func archiveFileOfPath(p string) usageFile {
 }
 
 type archiver struct {
-	ctx      context.Context
-	c        *cli
-	st       archiveState
-	res      *archiveResult
-	dry      bool
-	deadline time.Time
-	fails    int
-	known    []string
-	stop     string
-	full     bool
-	quiet    bool // the server does not take this token's uploads, or keeps none: say nothing more
-	hook     bool // a hook's pass: shorter floor and report timeout, to end inside the hook's timeout
-	// syncStart is when the whole sync began; a hook's status post ends before
-	// syncStart + usageHookTimeout.
+	ctx       context.Context
+	c         *cli
+	st        archiveState
+	res       *archiveResult
+	dry       bool
+	deadline  time.Time
+	fails     int
+	known     []string
+	stop      string
+	full      bool
+	quiet     bool
+	hook      bool
 	syncStart time.Time
-	pieceCap  int // most raw bytes per piece the server takes, lowered by a 413; 0 means none known
+	pieceCap  int
 }
 
 // bound is the caller's context for the pass, or the background one.
@@ -275,8 +271,6 @@ func usageArchive(c *cli, o usageSyncOptions, root string, syncStart time.Time) 
 	if !o.DryRun {
 		unlock, ok := tryLock(filepath.Join(c.dir, "usage-archive.lock"), 30*time.Minute)
 		if !ok {
-			// the holder listed its files before this pass's bytes were written:
-			// leave it a note to look once more before it ends
 			_ = os.WriteFile(again, nil, 0o600)
 			res.Stopped = archiveBusy
 			return res, nil
@@ -284,7 +278,7 @@ func usageArchive(c *cli, o usageSyncOptions, root string, syncStart time.Time) 
 		defer unlock()
 		_ = os.Remove(again)
 	}
-	st, err := loadArchiveState(c.dir) // under the lock: no other pass writes it meanwhile
+	st, err := loadArchiveState(c.dir)
 	if err != nil {
 		return res, err
 	}
@@ -304,7 +298,7 @@ func usageArchive(c *cli, o usageSyncOptions, root string, syncStart time.Time) 
 		if archiveNow().Sub(time.UnixMilli(a.st.PieceCapAt)) < archiveRetryHeld {
 			a.pieceCap = int(min(a.st.PieceCap, int64(math.MaxInt32)))
 		} else {
-			a.st.PieceCap, a.st.PieceCapAt = 0, 0 // a proxy's limit may have been raised
+			a.st.PieceCap, a.st.PieceCapAt = 0, 0
 		}
 	}
 	limit, from := archivePassLimit, started
@@ -315,7 +309,6 @@ func usageArchive(c *cli, o usageSyncOptions, root string, syncStart time.Time) 
 	if d, ok := a.bound().Deadline(); ok && d.Before(a.deadline) {
 		a.deadline = d
 	}
-	// a pass that found the lock busy leaves a note: bytes written after the listing get another round while time allows
 	more := func() bool {
 		if o.DryRun || a.stop != "" || a.bound().Err() != nil || !time.Now().Before(a.deadline) {
 			return false
@@ -344,15 +337,11 @@ func usageArchive(c *cli, o usageSyncOptions, root string, syncStart time.Time) 
 		}
 		saveErr := a.save()
 		if a.quiet || o.OnlyFiles {
-			// A pass over named files holds only their backlog; posting it as the machine's would zero the server's figure, so only the full pass reports.
 			return res, saveErr
 		}
 		if err := a.report(c, res); err != nil {
 			return res, errors.Join(saveErr, err)
 		}
-		// the last look, just before the deferred unlock: a note written
-		// during save and report is read here. What remains: a note written
-		// between this look and the unlock waits for the next pass.
 		if round < archiveAgainRounds && more() {
 			continue
 		}
@@ -366,7 +355,6 @@ func usageArchive(c *cli, o usageSyncOptions, root string, syncStart time.Time) 
 func (a *archiver) pass(o usageSyncOptions, root string) error {
 	res := a.res
 	res.PendingBytes, res.PendingFiles = 0, 0
-	// The usage counts use a 7-day window (defaultSyncSince), but the archive reaches back 30 days, so it keeps transcripts the counts drop.
 	since := o.Since
 	if o.All && since == 0 {
 		since = 0
@@ -415,7 +403,7 @@ func (a *archiver) pass(o usageSyncOptions, root string) error {
 		if seen[p] || o.OnlyFiles {
 			continue
 		}
-		fi, err := os.Lstat(p) // a link is not followed: it is listed, then refused when opened and counted unreadable
+		fi, err := os.Lstat(p)
 		switch {
 		case errors.Is(err, os.ErrNotExist):
 			if fs.Size > fs.Off {
@@ -426,7 +414,6 @@ func (a *archiver) pass(o usageSyncOptions, root string) error {
 			add(archiveFileOfPath(p))
 		}
 	}
-	// a hook's pass may start uploads only within archiveHookLimit, so its own session goes first
 	sort.SliceStable(todo, func(i, j int) bool {
 		if todo[i].first != todo[j].first {
 			return todo[i].first
@@ -654,7 +641,7 @@ func (a *archiver) file(f usageFile, size int64) {
 		if !changed && st.Tail != "" {
 			tail, err := tailHash(fh, st.Off)
 			if err != nil {
-				a.drop("unreadable_file") // an unreadable tail is not a rewrite: the file is not restarted from byte 0
+				a.drop("unreadable_file")
 				return
 			}
 			changed = tail != st.Tail
@@ -726,8 +713,6 @@ func (a *archiver) file(f usageFile, size int64) {
 		if err != nil {
 			var ae *apiError
 			switch {
-			// the code names the refusals; the exact words are the fallback for a
-			// server that predates the code
 			case errors.As(err, &ae) && ae.status == http.StatusForbidden && (ae.code == "transcript_job" || ae.msg == core.TranscriptJobRefusal):
 				a.stop = "this is a runner job's token; the runner's own sync archives its sessions"
 				a.quiet = true
@@ -741,9 +726,6 @@ func (a *archiver) file(f usageFile, size int64) {
 				a.st.NoneAt = archiveNow().UnixMilli()
 				return
 			case errors.As(err, &ae) && ae.status == http.StatusRequestEntityTooLarge:
-				// most likely a proxy's body limit, not the server's refusal of the
-				// content: learn a smaller piece size, for the rest of the pass and
-				// the passes after it. Only a single line still refused holds the file.
 				if len(piece.lines) > 1 {
 					a.learnCap(len(piece.data) / 2)
 					continue
@@ -1067,8 +1049,6 @@ func (r redactCount) rules() map[string]int64 {
 func redactTranscriptLineCounted(line []byte, known []string) ([]byte, bool, redactCount) {
 	var cnt redactCount
 	if !json.Valid(bytes.TrimSpace(line)) {
-		// the line end stays out of the text: a PEM pattern running to the end
-		// of the text would take it, and two lines would become one
 		body, end := line, []byte(nil)
 		if n := len(bytes.TrimRight(line, "\r\n")); n < len(line) {
 			body, end = line[:n], line[n:]
@@ -1097,7 +1077,7 @@ func redactTranscriptLineCounted(line []byte, known []string) ([]byte, bool, red
 			case pendingSecret && (c == '[' || c == '{'):
 				pendingSecret, depth = false, 1
 			case pendingSecret:
-				pendingSecret = false // numbers, booleans and null are left: a usage count such as input_tokens matches the secret key pattern
+				pendingSecret = false
 			case depth > 0 && (c == '[' || c == '{'):
 				depth++
 			case depth > 0 && (c == ']' || c == '}'):

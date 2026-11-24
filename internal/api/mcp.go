@@ -15,8 +15,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/wql"
 )
 
-// Stateless: each POST is one JSON-RPC message with a plain JSON reply, authenticated with the REST bearer tokens.
-
 var mcpVersions = []string{"2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"}
 
 type rpcRequest struct {
@@ -53,7 +51,6 @@ func (s *Server) mcp(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "read error", http.StatusBadRequest)
 		return
 	}
-	// Changes made over MCP count as an agent's, whatever token made them.
 	actor.MCP = true
 	ctx := context.WithValue(r.Context(), actorKey, actor)
 	trimmed := strings.TrimSpace(string(body))

@@ -180,7 +180,6 @@ for (const [width, scheme] of looks([
   await page.goto(`${base}/agents?tab=setup`);
   const glance = page.getByLabel("At a glance");
   await glance.waitFor();
-  // The Repos tile can show the same words for a repo an earlier suite left, so take the last match.
   ok(await glance.getByText("1 needs fixing", { exact: true }).last().isVisible(), `${tag} the laptop needs fixing`);
   ok(await page.getByText(/wp hooks installed: not installed: run wp setup/).first().isVisible(), `${tag} says why`);
   const api = repoRow(page, "setco/api");

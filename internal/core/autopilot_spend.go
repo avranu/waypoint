@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// The sweep's starts skip the schedule, the pace's spacing and the daily count, but not the hourly spend limit or the loop guard.
-
 const (
 	// DefaultSpendAtOnce: autopilot sessions at once, across the person's
 	// projects, while it uses what's left.
@@ -87,11 +85,9 @@ func (s *Service) weekReading(ctx context.Context, uid int64, now time.Time) (*w
 	}
 	r := &weekReading{at: msTime(at), reset: msTime(reset), pct: pct}
 	if now.Sub(r.at) > time.Hour {
-		// No reading in the last hour means no session is at work, so use is taken as flat.
 		r.perHour = ptrOf(0.0)
 		return r, nil
 	}
-	// The slope takes the hour's own readings first: a reading from before an idle gap would spread a fresh burst over the gap.
 	var baseAt int64
 	var basePct float64
 	const sameWeek = `user_id = ? AND span = 'seven_day' AND resets_at BETWEEN ? AND ?`

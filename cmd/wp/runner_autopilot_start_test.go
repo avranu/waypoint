@@ -30,7 +30,6 @@ func newStartFixture(t *testing.T, show bool) *startFixture {
 	t.Helper()
 	x := &startFixture{f: &fakePane{}}
 	x.repo, x.p = restartFixture(t, x.f)
-	// The fixture's old session would look like the new one.
 	_ = os.Remove(filepath.Join(x.f.cfg, "sessions", strconv.Itoa(os.Getpid())+".json"))
 	bin := t.TempDir()
 	_ = os.WriteFile(filepath.Join(bin, "tmux"), []byte("#!/bin/sh\n"), 0o700) // #nosec G306 -- it has to be executable

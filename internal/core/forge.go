@@ -375,7 +375,6 @@ func (s *Service) UpdateForge(ctx context.Context, actor *Actor, id int64, in Fo
 			if in.Token == nil && in.WebhookSecret == nil && in.BotToken == nil {
 				return nil
 			}
-			// A new webhook secret or bot token refreshes the webhooks Waypoint added, which otherwise keep signing with the old one.
 			return s.refreshRepoHooks(ctx, t, id)
 		})
 		if err != nil {
@@ -411,7 +410,6 @@ func (s *Service) DeleteForge(ctx context.Context, actor *Actor, id int64) error
 		return err
 	}
 	return s.write(ctx, actor, func(t *tx) error {
-		// The webhooks Waypoint added would only bounce off from now on.
 		rows, err := t.QueryContext(ctx, `SELECT DISTINCT repo, hook_id FROM project_repos WHERE forge_id = ? AND hook_id != ''`, id)
 		if err != nil {
 			return err
@@ -592,7 +590,6 @@ func (s *Service) AddProjectRepo(ctx context.Context, actor *Actor, projectRef s
 		if _, err := t.ExecContext(ctx, `DELETE FROM forge_repo_ignores WHERE forge_id = ? AND repo = ?`, f.ID, repo); err != nil {
 			return err
 		}
-		// LastInsertId is unreliable on the upsert path; look the row up.
 		if err := t.QueryRowContext(ctx, `SELECT id FROM project_repos WHERE project_id = ? AND forge_id = ? AND repo = ?`, p.ID, f.ID, repo).Scan(&id); err != nil {
 			return err
 		}
@@ -808,7 +805,6 @@ func (s *Service) AddLink(ctx context.Context, actor *Actor, issueRef, rawURL, t
 			return err
 		}
 		issueID = i.ID
-		// Links an agent adds remember that agent and stay however the item's text changes.
 		res, err := t.ExecContext(ctx, `INSERT INTO external_links(issue_id, provider, kind, url, repo, number, title, state, created_at, created_agent, via) VALUES (?,?,?,?,?,?,?,?,?,?,'added')
 			ON CONFLICT(issue_id, url) DO UPDATE SET title = CASE WHEN excluded.title != '' THEN excluded.title ELSE title END,
 				created_agent = CASE WHEN created_agent = '' THEN excluded.created_agent ELSE created_agent END, via = 'added'`,
@@ -859,8 +855,6 @@ func (s *Service) RemoveLink(ctx context.Context, actor *Actor, issueRef string,
 			return err
 		}
 		if !mirror && (kind == "pull" || kind == "commit" || kind == "issue") {
-			// Its text is scanned again on every change: it must not link
-			// the item back (WP-379). It stays a mention.
 			var by any
 			if actor.User != nil && actor.User.ID != 0 {
 				by = actor.User.ID
@@ -1033,7 +1027,6 @@ func (s *Service) applyLinkState(ctx context.Context, linkURL string, item *Forg
 				kind = EvExternalIssueClose
 			}
 			if kind != "" {
-				// New is the link's own URL, not the forge's spelling of it, so a rule's move is remembered on the link.
 				t.emit(&Event{Kind: kind, ProjectID: i.ProjectID, IssueID: i.ID, IssueKey: i.Key, New: linkURL, Old: r.state,
 					Data: map[string]any{"title": item.Title, "number": item.Number}})
 			} else {
@@ -1092,7 +1085,7 @@ func (s *Service) HandleForgeWebhook(ctx context.Context, forgeID int64, h http.
 type forgeEvent struct {
 	kind                       string
 	repo                       string
-	repoID                     int64 // The forge's repo id, which survives renames, unlike the name.
+	repoID                     int64
 	group                      *bool
 	org                        string
 	item                       *ForgeItem
@@ -1146,8 +1139,6 @@ func (s *Service) handleForgeEvent(ctx context.Context, f *Forge, ev *forgeEvent
 	switch ev.kind {
 	case "pull":
 		if ev.branch == "" && ev.item != nil {
-			// A payload without its branch must not make the scan take back
-			// the links the branch made: use the one recorded before.
 			_ = s.db.R.QueryRowContext(ctx, `SELECT head_ref FROM pull_requests WHERE forge_id = ? AND url = ?`, f.ID, ev.item.URL).Scan(&ev.branch)
 		}
 		if ev.pr != nil {
@@ -1159,7 +1150,7 @@ func (s *Service) handleForgeEvent(ctx context.Context, f *Forge, ev *forgeEvent
 			s.log.WarnContext(ctx, "record forge mentions", "url", ev.item.URL, "err", err)
 		}
 		s.applyLinkState(ctx, ev.item.URL, link)
-		s.onPRActivity(ctx, f, ev.repo, ev.review) // GitLab approvals come as merge request events
+		s.onPRActivity(ctx, f, ev.repo, ev.review)
 	case "review":
 		if ev.review.Body != "" {
 			s.scanComment(ctx, f, ev.repo, true, ev.review.number, "review", "created", ev.review.ForgeComment)
@@ -1360,7 +1351,6 @@ func parseGitHubHook(event string, body []byte) (*forgeEvent, error) {
 	case "push":
 		ev.kind = "push"
 		if p.Before != "" && p.Before == p.After {
-			// Forgejo's "test delivery": the latest commit, pushed again.
 			ev.kind = "ping"
 			break
 		}
@@ -1583,8 +1573,6 @@ func (s *Service) SyncRepo(ctx context.Context, repoID int64) error {
 	if err != nil {
 		return err
 	}
-	// One bad item must not hold back the rest. If any failed, the sync
-	// point stays put so the next run retries them (imports are idempotent).
 	var failed []error
 	for _, it := range items {
 		if err := s.importForgeIssue(ctx, f, repo, it); err != nil {
@@ -1721,9 +1709,7 @@ func (s *Service) pushIssueState(ctx context.Context, e *Event) {
 // calls a person waits on (forgePatient).
 type httpForgeClient struct {
 	http, patient *http.Client
-	// glJobs remembers which GitLab commit statuses are pipeline jobs
-	// (gitlabJobAuthors); a status's kind never changes.
-	glJobs glJobCache
+	glJobs        glJobCache
 }
 
 func apiBase(f *Forge) string {

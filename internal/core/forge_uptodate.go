@@ -1,7 +1,5 @@
 package core
 
-// CI tests the head, not the merge result, so Waypoint merges only a head that already contains the base's tip.
-
 import (
 	"bytes"
 	"context"
@@ -121,8 +119,6 @@ func (s *Service) behindBaseErr(ctx context.Context, pr *PullRequest) (tip strin
 	}
 	tip, behind, err = cl.BehindBase(ctx, f, pr.Repo, pr.BaseRef, pr.HeadSHA)
 	if err != nil {
-		// A base or repository the forge doesn't have, or a forge that can't
-		// say, is an answer. A read that failed is not "not behind" (WP-1406).
 		if errors.Is(err, ErrNotFound) || errors.Is(err, ErrUnsupported) || isStatus(err, http.StatusNotFound) {
 			return "", false, false, nil
 		}
@@ -251,7 +247,6 @@ func (s *Service) updateIfBehindThen(ctx context.Context, pr *PullRequest, befor
 		case was.outcome == upConflict && sameSHA(was.from, pr.HeadSHA):
 			return upConflict
 		case was.outcome == upConflict:
-			// Another head was refused: this one hasn't been tried.
 		case was.outcome == upUpdated && !sameSHA(was.from, pr.HeadSHA) && was.n < updateAttempts:
 			n = was.n + 1
 		case s.now().Sub(was.at) < updateRetry:
@@ -263,7 +258,6 @@ func (s *Service) updateIfBehindThen(ctx context.Context, pr *PullRequest, befor
 	if err != nil {
 		return upFailed
 	}
-	// A head already in its base has landed; merging the base into it would leave an empty merge commit the forge never sees as landed, and would run CI for nothing.
 	if bl, ok := s.Forges.(ForgeBranches); ok {
 		if in, _, err := s.headLanded(ctx, f, bl, pr.Repo, tip, pr.HeadSHA); err == nil && in {
 			s.armNote(ctx, pr.ID, "its work is already on "+cmp(pr.BaseRef, "its base")+"; finishing it instead of updating the branch")
@@ -284,7 +278,6 @@ func (s *Service) updateIfBehindThen(ctx context.Context, pr *PullRequest, befor
 	err = cl.UpdateBranch(ctx, f, pr.Repo, pr.Number)
 	unioned := ""
 	if isStatus(err, http.StatusConflict) {
-		// The forge's merge ignores merge=union; Waypoint does it (WP-594).
 		var uerr error
 		if unioned, uerr = s.unionUpdate(ctx, f, pr, tip); unioned != "" || uerr != nil {
 			err = uerr
@@ -372,7 +365,6 @@ func (c *httpForgeClient) CommitTree(ctx context.Context, f *Forge, repo, sha st
 		}
 		return r.Tree.SHA, nil
 	}
-	// Forgejo and Gitea return the commit id as a tree's sha, so the tree id is computed from the listed entries as git does.
 	var entries []treeEntry
 	for page := 1; page <= 20; page++ {
 		var r struct {
@@ -388,8 +380,6 @@ func (c *httpForgeClient) CommitTree(ctx context.Context, f *Forge, repo, sha st
 				return "", fmt.Errorf("the forge listed %d of %s's %d tree entries", len(entries), short(sha), r.TotalCount)
 			}
 			if len(entries) == 0 {
-				// A valid empty tree: no entry ids to tell SHA-1 from
-				// SHA-256, so go by the commit id's length.
 				if len(sha) == 2*sha256.Size {
 					sum := sha256.Sum256([]byte("tree 0\x00"))
 					return hex.EncodeToString(sum[:]), nil
@@ -464,7 +454,7 @@ func (s *Service) markTested(ctx context.Context, f *Forge, pr *PullRequest, hea
 		return
 	}
 	if ht, err := tr.CommitTree(ctx, f, pr.Repo, head); err != nil || ht != mt {
-		return // the merge brought in base commits the head's checks never saw
+		return
 	}
 	if err := cl.SetCommitStatus(ctx, f, pr.Repo, merged, CommitStatusPost{Context: testedContext, State: "success",
 		Description: excerpt(fmt.Sprintf("same tree as #%d's head %s, which passed every check", pr.Number, short(head)), 140), TargetURL: pr.URL}); err != nil {

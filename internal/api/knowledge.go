@@ -118,7 +118,7 @@ func (s *Server) getDesign(w http.ResponseWriter, r *http.Request) (any, error) 
 	if err != nil {
 		return nil, err
 	}
-	if !queryBool(r, "listed") { // listed=1: wp brief listing it unasked, recorded as shown
+	if !queryBool(r, "listed") {
 		s.svc.NoteLookup(r.Context(), actorFrom(r), core.KDesign, id, "")
 	}
 	if wantsText(r) {

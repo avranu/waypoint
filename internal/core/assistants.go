@@ -15,8 +15,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/hermes"
 )
 
-// Tokens never reach the assistant, and nothing a token can do may drive the door that controls it; what the assistant says is untrusted text.
-
 // EvAssistant is the live event for an assistant's state (owner only).
 const EvAssistant = "assistant.status"
 
@@ -456,7 +454,6 @@ func (s *Service) FreezeAssistant(ctx context.Context, actor *Actor, id int64) (
 	}
 	s.audit(ctx, actor, AuditEntry{Action: "assistant.freeze", Category: AuditControl, TargetType: "assistant", TargetID: id,
 		Target: a.Name, URL: fmt.Sprintf("/assistant/%d", id), Detail: "frozen from Waypoint"})
-	// Save Frozen before checkAssistant runs, so the freezer's own freeze is not reported back to them as a change.
 	st := a.State
 	st.Frozen = true
 	if b, err := json.Marshal(st); err == nil {
@@ -537,8 +534,6 @@ func (s *Service) checkAssistantRow(ctx context.Context, r *assistantRow) {
 		}
 	}
 	if err != nil {
-		// What it last said still stands while it can't be asked: a blip
-		// mustn't make old approvals look new, or a freeze look lifted.
 		next.Pending, next.Frozen, next.Signal = prev.Pending, prev.Frozen, prev.Signal
 		next.Error = excerpt(err.Error(), 300)
 		next.DownSince = prev.DownSince

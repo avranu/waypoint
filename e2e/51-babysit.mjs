@@ -204,7 +204,6 @@ const setupCtx = await browser.newContext({ viewport: { width: 1280, height: 900
   forge = await api("POST", "/forges", { kind: "github", name: "Fake GitHub babysit", base_url: fake, token: "tok", webhook_secret: SECRET });
   await api("PUT", `/forges/${forge.id}/people`, { people: [{ login: "robin", user: "robin" }, { login: "alice", user: "robin" }, { login: "carol", user: "robin" }, { login: "llm-review", user: "robin" }] });
   const added = await api("POST", `/projects/${KEY}/repos`, { forge_id: forge.id, repo: REPO, sync_issues: false });
-  // A merge by a person does not wait for reviews.
   await api("PATCH", `/projects/${KEY}/repos/${added.id}`, { auto_merge: false, review_wait_minutes: 0, quiet_minutes: 0 });
   await hook("pull_request", { action: "opened", pull_request: pr, sender: { login: "robin" } });
   await wait(async () => {
@@ -236,7 +235,6 @@ const setupCtx = await browser.newContext({ viewport: { width: 1280, height: 900
   ok(fakeState.reactions.includes("501:eyes") && fakeState.reactions.includes("701:eyes"), `👀 on the forge: ${fakeState.reactions.join(", ")}`);
   ok(!(await panel.getByRole("button", { name: "Start" }).isVisible()), "Start is gone once it runs");
 
-  // These are the calls wp pr ack and wp pr fixed make (cmd/wp/pr_babysit.go).
   const view = await api("GET", `/pulls/${prID}/babysit`);
   const id = (author) => view.comments.find((c) => c.author === author).id;
   await api("POST", "/review-comments/ack", { ids: [id("llm-review")], verdict: "rejected", note: "It runs once a day; a cache buys nothing." });
@@ -259,7 +257,6 @@ async function look(width, scheme) {
   page.on("console", (m) => {
     if (m.type() === "error") fail(`${tag} console: ${m.text().slice(0, 300)}`);
   });
-  // Reaching a rest needs a runner this suite lacks, so the babysit response is stubbed.
   await page.route("**/api/v1/pulls/*/babysit", async (route) => {
     const res = await route.fetch();
     const json = await res.json();

@@ -12,8 +12,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// max_findings sets how many findings are shown at a time, not how many are kept.
-
 // AuditDefaultShown is how many findings are shown at a time when an audit
 // sets no number.
 const AuditDefaultShown = auditDefaultFindings
@@ -91,7 +89,6 @@ func cleanAuditCriteria(in AuditInput) (auditCriteria, error) {
 	default:
 		return c, invalid("the lowest severity to report is one of %s", strings.Join(auditSeverities, ", "))
 	}
-	// The check purpose needs a finding per wrong mark plus one per left-out mark, so its cap is the sum of both.
 	most := auditMaxFindings
 	if in.purpose == AuditCheck {
 		most = max(most, checkClaimsMax+checkLeftOutMax)

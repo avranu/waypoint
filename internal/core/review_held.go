@@ -120,10 +120,7 @@ type shipRoundIn struct {
 	userID  int64
 	agent   string
 	why     string
-	// ended: the round's session has ended (the run is still open). The
-	// ship then acts with no session: a babysit and a claim recorded for a
-	// dead session would send its news, and its warnings to others, nowhere.
-	ended bool
+	ended   bool
 }
 
 // shipRun is what one ship of a round has read and decided as it goes, so
@@ -140,9 +137,7 @@ type shipRun struct {
 	res              *OpenPRResult
 	notes            []string
 	armed, babysat   bool
-	// pin: the commit the review read, which a pull request must be at to
-	// be opened for it and armed ("" when none is known).
-	pin string
+	pin              string
 }
 
 // shipRound is the one server-side ship of a round's branch: a release (the
@@ -192,9 +187,6 @@ func (s *Service) shipRead(ctx context.Context, in shipRoundIn) (*shipRun, error
 	}
 	sh := &shipRun{r: r, bp: bp, in: in}
 	reviewed := in.why == ""
-	// A check of the marks that never gave an answer (failed, hit a limit,
-	// cancelled, or by a person) is not "nothing left to do": the PR opens,
-	// and says what wasn't checked (WP-1370).
 	unchecked := ""
 	if reviewed {
 		unchecked = s.uncheckedOf(ctx, r, true)
@@ -214,20 +206,18 @@ func (s *Service) shipRead(ctx context.Context, in shipRoundIn) (*shipRun, error
 		if err := s.db.R.QueryRowContext(ctx, `SELECT ended_at IS NULL FROM agent_sessions WHERE id = ?`, in.session).Scan(&live); err == nil {
 			in.ended = !live
 		} else if !errors.Is(err, sql.ErrNoRows) {
-			return nil, err // unknown is not "still live": the ship is tried again
+			return nil, err
 		}
 	}
 	in.agent = s.shipAgent(ctx, r, in.agent, in.session)
 	if in.userID == 0 {
 		if err := s.db.R.QueryRowContext(ctx, `SELECT user_id FROM agent_sessions WHERE id = ?`, in.session).Scan(&in.userID); err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return nil, err // the ship is tried again, as whoever opens it is not known
+			return nil, err
 		}
 	}
 	sh.reviewed, sh.unchecked, sh.ran = reviewed, unchecked, ran
 	sh.in = in
 	if reviewed {
-		// The run must still be open: a ship of the session's own ends it,
-		// and then there is nothing left for Waypoint to do.
 		var open bool
 		if err := s.db.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM agent_runs WHERE id = ? AND ended_at IS NULL)`, r.runID.Int64).Scan(&open); err != nil {
 			return nil, err
@@ -277,7 +267,6 @@ func (s *Service) shipAuthorize(ctx context.Context, sh *shipRun) (done bool, er
 			return true, err
 		}
 		if len(keys) == 0 {
-			// Not a pull request a person unlinked from the task on purpose: RemoveLink keeps a record of that in issue_unlinks.
 			var by, url string
 			var unlinked bool
 			if s.db.R.QueryRowContext(ctx, `SELECT p.agent, p.url, EXISTS (SELECT 1 FROM issue_unlinks u WHERE u.issue_id = ? AND u.url = p.url) FROM pull_requests p WHERE p.id = ?`, r.issueID, id).Scan(&by, &url, &unlinked) == nil && by != "" && by == in.agent && !unlinked {
@@ -339,9 +328,6 @@ func (s *Service) shipOpen(ctx context.Context, sh *shipRun) (done bool, err err
 	r, bp, in, reviewed, actor := sh.r, sh.bp, sh.in, sh.reviewed, sh.actor
 	title, unchecked, given, panel, ran := sh.title, sh.unchecked, sh.given, sh.panel, sh.ran
 	body := bp.Body
-	// A stacked branch's parent may have merged or closed, its branch gone,
-	// while the ship was held: its base is worked out again, as a live
-	// ship's is (WP-1670). One asked for stays as asked.
 	base, stackedOn := bp.Base, []string(nil)
 	if bp.Stacked != "" {
 		base, stackedOn = bp.Asked, []string{bp.Stacked}
@@ -367,11 +353,8 @@ func (s *Service) shipOpen(ctx context.Context, sh *shipRun) (done bool, err err
 		}
 		in2.Body = strings.TrimSpace(body + "\n\nWaypoint opened this " + lead + ": " + in.why + "." + panel)
 	}
-	// The authority is asked again once the forge has answered: it can go
-	// while the call is out, and then the pull request that exists is
-	// recorded and left alone.
 	again := in
-	again.user = nil // read the person again: in.user is from before the forge call
+	again.user = nil
 	in2.stillMay = func(ctx context.Context) string {
 		_, why, err := s.shipAuthority(ctx, r, bp, &again)
 		if err != nil {
@@ -385,9 +368,6 @@ func (s *Service) shipOpen(ctx context.Context, sh *shipRun) (done bool, err err
 	}
 	sh.pin = s.reviewedHead(ctx, r, bp)
 	if reviewed && res.Pull != nil && res.Held == "" && res.Stopped == "" && sh.pin != "" && !sameSHA(res.Pull.HeadSHA, sh.pin) {
-		// Pushed between the check of the branch and the forge opening it
-		// (or an open pull request that is at another commit): it is
-		// recorded, not armed, and the review starts over.
 		return true, s.startOverAfterMove(ctx, r, in, bp, fmt.Sprintf("%s#%d", res.Pull.Repo, res.Pull.Number))
 	}
 	if res.Stopped != "" && res.Pull != nil {
@@ -476,7 +456,6 @@ func (s *Service) shipRecord(ctx context.Context, sh *shipRun) error {
 			return err
 		}
 	}
-	// The notice commits in the same transaction that ends the run, so a crash can't leave a shipped task nobody was told of; dispatch sends it.
 	head, text, _ := s.shipWords(ctx, sh)
 	return s.endHeldRunWith(ctx, actor, r.issueID, in.agent, func(t *tx) error {
 		res, err := t.ExecContext(ctx, `UPDATE work_log SET before_pr = json_set(before_pr, '$.ship_done', json('true')) WHERE id = ? AND before_pr != '' AND coalesce(json_extract(before_pr, '$.ship_done'), 0) = 0`, r.id)
@@ -532,7 +511,6 @@ func (s *Service) shipWords(ctx context.Context, sh *shipRun) (head, text, sessi
 	if bp.Urgent && pr.Urgent {
 		text += fmt.Sprintf(" Its wp ship marked it urgent, so it delays other CI runs to cut the line: `wp pr urgent %d --off` takes that off.", pr.Number)
 	} else if pr.Urgent && !res.Existing && !strings.Contains(res.Notice, taggedUrgentNotice(r.key, pr.Number)) {
-		// Urgent because the task is tagged, not because wp ship asked; the open's own notice doesn't say so.
 		text += " " + taggedUrgentNotice(r.key, pr.Number)
 	}
 	return head, text, session
@@ -550,7 +528,7 @@ func (s *Service) shipTell(ctx context.Context, sh *shipRun) {
 		return
 	}
 	_, _, text := s.shipWords(ctx, sh)
-	if in.session != 0 && !in.ended { // an ended session can't read it; the person's notice carries it
+	if in.session != 0 && !in.ended {
 		if _, err := s.queueMessage(ctx, in.session, text, fmt.Sprintf("shipped:%d", r.id), messageFrom{}, true); err != nil {
 			s.log.WarnContext(ctx, "autopilot: tell a session its pull request opened", "round", r.id, "err", err)
 		}
@@ -629,8 +607,6 @@ func (s *Service) endRoundReviewed(ctx context.Context, r *roundRow, unchecked s
 		if n, _ := res.RowsAffected(); n > 0 {
 			s.emitWorkLog(ctx, t, r.issueID, r.id, RoundDone)
 		}
-		// The step carrying the round ends in the same write: a crash between
-		// the two can't leave a step waiting on a round that shipped.
 		return s.endShippedStep(ctx, t, r.id)
 	})
 }
@@ -915,7 +891,6 @@ func (s *Service) roundFacts(ctx context.Context, r *roundRow) (facts string, ra
 			}
 		}
 	}
-	// An earlier round's marks stay unchecked when its check didn't run, whatever this round's check did.
 	if un := s.uncheckedOf(ctx, r, false); un != "" {
 		parts = append(parts, un)
 	}

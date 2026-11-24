@@ -364,7 +364,6 @@ func (s *Service) fillPRs(ctx context.Context, actor *Actor, prs []*PRSummary) e
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	// Waypoint's own reviews are its bot runs, posted or signed off with 👍.
 	// #nosec G202 -- in is placeholders only; values are bound
 	rows, err = s.db.R.QueryContext(ctx, `SELECT pr_id, count(*) FROM bot_runs WHERE pr_id IN (`+in+`) AND kind = 'review' AND status = 'done' GROUP BY pr_id`, ids...)
 	if err != nil {
@@ -635,7 +634,6 @@ func (s *Service) GetPullRequest(ctx context.Context, actor *Actor, id int64) (*
 	if err != nil {
 		return nil, err
 	}
-	// Text outsiders wrote is hidden from agents even when it was stored before the outside filter existed.
 	var voice *prVoice
 	if actor.HidesDrafts() {
 		if pr, err := s.prByID(ctx, s.db.R, id); err == nil {

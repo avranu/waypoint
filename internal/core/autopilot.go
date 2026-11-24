@@ -335,7 +335,7 @@ func (s *Service) autopilotRows(ctx context.Context, q queryer, userID int64) (m
 			return nil, err
 		}
 		r.enabled = en != 0
-		_ = json.Unmarshal([]byte(raw), &r.limits) // An unreadable limits row reads as all unset, so it inherits the defaults.
+		_ = json.Unmarshal([]byte(raw), &r.limits)
 		out[pid] = r
 	}
 	return out, rows.Err()
@@ -511,7 +511,6 @@ func (s *Service) SetAutopilot(ctx context.Context, a *Actor, project string, in
 		case in.Merge:
 			r.limits = r.limits.over(in.Limits)
 		default:
-			// Keep the week's-end settings a form doesn't give: a form saved just after their switch would otherwise put back what it read.
 			keep := r.limits
 			r.limits = in.Limits
 			if pid == 0 && r.limits.SpendLeft == nil {
@@ -544,7 +543,6 @@ func (s *Service) SetAutopilot(ctx context.Context, a *Actor, project string, in
 			uid, proj, boolInt(r.enabled), string(raw), r.quotaOffUntil, now); err != nil {
 			return err
 		}
-		// quota_off_at is when the limits first went off: extending them keeps the first time.
 		if quotaOff > 0 && !wasOff {
 			if _, err := t.ExecContext(ctx, `UPDATE autopilot_settings SET quota_off_at = ? WHERE user_id = ? AND coalesce(project_id, 0) = ?`, now, uid, pid); err != nil {
 				return err
@@ -581,7 +579,6 @@ func (s *Service) SetAutopilot(ctx context.Context, a *Actor, project string, in
 			}
 		}
 		if turnedOff {
-			// Turning off stops pending starts, but not sessions already started or reviews already asked for (roundOwed).
 			if err := s.stopOwnStarts(ctx, t, uid, pid, "off", "autopilot was turned off"); err != nil {
 				return err
 			}
@@ -614,7 +611,6 @@ func (s *Service) SetAutopilot(ctx context.Context, a *Actor, project string, in
 						return err
 					}
 					heldKeys, heldSteps, heldBefore = append(heldKeys, key), append(heldSteps, l.step), append(heldBefore, before != "")
-					// A kept step waiting on a pause or schedule is due now: the review it owes doesn't wait for the schedule.
 					if _, err := t.ExecContext(ctx, `UPDATE autopilot_steps SET due_at = ?, updated_at = ? WHERE id = ? AND state = ? AND due_at > ?`,
 						now, now, l.step, StepWaiting, now); err != nil {
 						return err
@@ -692,7 +688,6 @@ func (s *Service) autopilotMeter(ctx context.Context, uid int64) (*AutopilotMete
 	if err != nil {
 		return nil, err
 	}
-	// A quota reading from before the window reset, or older than six hours, says nothing about now; its pace is judged when taken.
 	if ok && reset.After(now) && now.Sub(at) < quotaFresh {
 		even := 100 * (1 - float64(reset.Sub(at))/float64(7*24*time.Hour))
 		m.WeekPercent, m.WeekEven, m.WeekResetsAt, m.QuotaSampled = ptrOf(pct), ptrOf(math.Round(max(0, even)*10)/10), ptrOf(reset), ptrOf(at)
@@ -770,7 +765,6 @@ func autopilotPaused(m *AutopilotMeter, l AutopilotLimits, now time.Time) (why s
 	if max := valueOf(l.MaxHourlyUSD); max > 0 && m.HourlyUSD >= max {
 		return fmt.Sprintf("the last hour cost $%.0f, over the $%.0f limit", m.HourlyUSD, max), now.Add(5 * time.Minute)
 	}
-	// The live quota guard's hold is for a runaway, not a share of the quota: turning the quota limits off does not lift it.
 	if h := m.GuardHold; h != nil && h.Until.After(now) {
 		return guardPausePrefix + h.Reason, minTime(h.Until, now.Add(5*time.Minute))
 	}

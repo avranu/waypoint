@@ -54,7 +54,6 @@ func TestCIHistory(t *testing.T) {
 		return map[string]any{"id": 100 + n, "index_in_repo": n, "workflow_id": "ci.yml", "status": status, "title": title,
 			"created": at(day, created), "started": at(day, created), "stopped": at(day, stopped)}
 	}
-	// The forge titles a draft by its commit subject, so only the event payload shows it is a draft.
 	draftRun := run(4, "success", "Add", "28", "07:58", "08:01")
 	draftRun["event_payload"] = `{"action":"opened","pull_request":{"title":"WIP: Add"}}`
 	fixRun := run(6, "failure", "WIP: Fix", "28", "10:00", "10:33")
@@ -235,7 +234,6 @@ func TestRetierCIHistory(t *testing.T) {
 		}
 	}
 	exec(`INSERT INTO project_repos(project_id, forge_id, repo, created_at) VALUES (?, ?, 'acme/app', 0)`, p.ID, f.ID)
-	// Run numbers repeat across repos, so another repo's run 4 is a different run.
 	keep := func(repo string, run, task, test int64) {
 		exec(`INSERT INTO ci_runs(forge_id, repo, number, status, created_at) VALUES (?, ?, ?, 'success', 1)`, f.ID, repo, run)
 		exec(`INSERT INTO ci_jobs(forge_id, repo, task_id, run_number, name, status, started_at, ended_at) VALUES (?, ?, ?, ?, 'backend', 'success', 1, 2)`, f.ID, repo, task, run)
@@ -277,7 +275,6 @@ func TestRetierCIHistory(t *testing.T) {
 		exec(`INSERT INTO ci_tests(id, forge_id, repo, package, name) VALUES (?, ?, 'acme/app', 'many', ?)`, 1000+i, f.ID, strconv.FormatInt(i, 10))
 		exec(`INSERT INTO ci_test_runs(test_id, task_id, sha, outcome, ms, at) VALUES (?, 40, 'abc', 'pass', 1, 1)`, 1000+i)
 	}
-	// A forge that doesn't answer isn't an answer: the repo stays unmarked and is tried again.
 	e.s.RetierCIHistory(e.ctx)
 	var marked int
 	if err := e.s.db.R.QueryRowContext(e.ctx, `SELECT count(*) FROM server_settings WHERE key LIKE ?`, ciRetierKey+"%").Scan(&marked); err != nil || marked != 0 {

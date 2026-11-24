@@ -103,8 +103,6 @@ const pageFrom = ` FROM pages pg LEFT JOIN projects p ON p.id = pg.project_id LE
 	LEFT JOIN users tb ON tb.id = pg.text_by`
 
 func pageSelect(withBody bool) string {
-	// The second body is the story's base: lists without bodies still read
-	// it for pages with a story, so story_stale reads the same everywhere.
 	body, base := "''", "CASE WHEN pg.story != '' THEN pg.body ELSE '' END"
 	if withBody {
 		body, base = "pg.body", "pg.body"
@@ -144,8 +142,6 @@ func scanPage(sc interface{ Scan(...any) error }) (*Page, error) {
 // agents and automations (WP-42).
 func (s *Service) pageRole(ctx context.Context, q queryer, actor *Actor, pg *Page) (int, error) {
 	if actor.HidesDrafts() {
-		// From the database, so a caller holding a partial Page can't get
-		// it wrong; a failed lookup counts as a draft.
 		var d bool
 		if err := q.QueryRowContext(ctx, `SELECT draft FROM pages WHERE id = ?`, pg.ID).Scan(&d); (err != nil && !errors.Is(err, sql.ErrNoRows)) || d {
 			return RoleNone, nil
@@ -154,7 +150,6 @@ func (s *Service) pageRole(ctx context.Context, q queryer, actor *Actor, pg *Pag
 	if pg.ProjectID != nil {
 		return s.projectRole(ctx, q, actor, *pg.ProjectID)
 	}
-	// A job's token never reaches its person's personal pages (WP-418).
 	if pg.Owner != nil && pg.Owner.ID == actor.id() && actor.id() != 0 && actor.scope == nil {
 		return RoleOwner, nil
 	}
@@ -542,7 +537,6 @@ func (s *Service) CreatePage(ctx context.Context, actor *Actor, in PageInput) (*
 		return nil, err
 	}
 	if in.Draft && actor.HidesDrafts() {
-		// Drafts are hidden from agents, so an agent filing one gets back only what it wrote.
 		pg, err := scanPage(s.db.R.QueryRowContext(ctx, pageSelect(false)+` WHERE pg.id = ?`, id))
 		if err == nil && cat == "decision" {
 			pg.Notice = DecisionPageNotice
@@ -593,7 +587,7 @@ func (s *Service) PublishPage(ctx context.Context, actor *Actor, id int64) (*Pag
 	}
 	for _, pid := range published {
 		s.publishPage(projectID, pid)
-		s.pageEvent(ctx, actor, EvPageUpdated, pid) // Publishing a draft runs the page automations, as creating a page does.
+		s.pageEvent(ctx, actor, EvPageUpdated, pid)
 	}
 	return s.GetPage(ctx, actor, id)
 }
@@ -696,8 +690,6 @@ func (s *Service) UpdatePage(ctx context.Context, actor *Actor, id int64, in Pag
 			}
 		}
 		if !int64PtrEq(project, pg.ProjectID) {
-			// Taking pages out of a project is the owners' call; a page that
-			// becomes personal is the mover's, so it can't end up unreachable.
 			if pg.ProjectID != nil {
 				if err := s.requireProjectRole(ctx, t, actor, *pg.ProjectID, RoleOwner); err != nil {
 					return invalid("only project owners can move pages out of the project")
@@ -730,7 +722,6 @@ func (s *Service) UpdatePage(ctx context.Context, actor *Actor, id int64, in Pag
 				return err
 			}
 		}
-		// A new category or project gives the page a new code; old codes still lead to it.
 		if recode {
 			if err := s.codePage(ctx, t, id, want); err != nil {
 				return err

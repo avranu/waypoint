@@ -248,7 +248,6 @@ func envLs(c *cli, args []string) error {
 }
 
 func sortEnvs(all []cliEnv, rank map[string]int) {
-	// Insertion sort is stable, so environments that tie keep the server's order.
 	kind := map[string]int{"production": 0, "staging": 1, "preview": 2, "dev": 3}
 	less := func(a, b cliEnv) bool {
 		if a.Stopped != b.Stopped {

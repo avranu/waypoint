@@ -6,8 +6,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// The reading runs in fresh checkouts on the person's own runner, so the agent that worked the round has no hand in it.
-
 const (
 	// JobObjective reads an objective in fresh checkouts: the check, at the
 	// commit the branch stands at and beside the commit the round started

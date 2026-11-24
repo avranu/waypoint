@@ -1,7 +1,5 @@
 package core
 
-// Riding pull requests share one candidate run: they pass, fail or are cancelled together and merge in order (queue_stacks.pos says which head is whose).
-
 import (
 	"context"
 	"time"
@@ -37,7 +35,6 @@ func (s *Service) poolSaturated(ctx context.Context, forgeID int64) bool {
 		bctx := context.WithoutCancel(ctx)
 		s.goBG(func() {
 			defer s.poolSatReading.Store(false)
-			// Run to note the verdicts; the snapshot itself is not wanted.
 			if _, err := s.ciSnapshot(bctx); err != nil {
 				if readFault(err) {
 					s.log.WarnContext(bctx, "read the CI snapshot that notes the verdicts", "err", err)

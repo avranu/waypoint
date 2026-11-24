@@ -8,8 +8,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// Waypoint reads every round itself; a worker's report never decides whether the objective is met.
-
 func (s *Server) getObjective(w http.ResponseWriter, r *http.Request) (any, error) {
 	o, err := s.svc.GetObjective(r.Context(), actorFrom(r), r.PathValue("key"))
 	if err != nil || !wantsText(r) {

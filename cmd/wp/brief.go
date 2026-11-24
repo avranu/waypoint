@@ -383,8 +383,6 @@ func (c *cli) governingSection(key, project, title, body, extra, question string
 	seen := map[string]bool{}
 	addNote := func(ref string) {
 		var n govNote
-		// listed=1: the brief reads it to list it unasked; that is a showing
-		// (recorded below), not a lookup by the agent.
 		path := "/api/v1/design/" + esc(ref) + "?listed=1"
 		if project != "" {
 			path += "&project=" + url.QueryEscape(project)
@@ -562,7 +560,7 @@ func (c *cli) glossaryFor(text, project string, linked []string) []glossHit {
 		}
 		need := 2
 		if !strings.Contains(g.Term, " ") && !isLinked[strings.ToLower(g.Term)] {
-			need = 3 // one word (Take, Key, Claim) is often everyday English
+			need = 3
 		}
 		if n >= need {
 			hits = append(hits, hit{glossHit{fmt.Sprintf("%s (glossary): %s  [wp define %q]", g.Term, noteSummary(g.Definition, 160), g.Term), g.Term}, n})

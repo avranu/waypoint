@@ -132,7 +132,6 @@ function Form({ defaults, onClose }: { defaults: Defaults; onClose: () => void }
   const workflows = useQuery({ ...workflowsQuery(projectKey), enabled: !!projectKey }).data ?? []
   const templates = useQuery({ ...templatesQuery(projectKey), enabled: !!projectKey }).data ?? []
   const tp = usePopover()
-  // A template fills in the form; its sub-tasks are added when the issue is created.
   const applyTemplate = (t: IssueTemplate) => {
     setTemplate(t)
     if (t.type) setType(t.type as IssueType)

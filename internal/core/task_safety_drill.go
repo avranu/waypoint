@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-// The drill's verdicts go to its own tables, never task_safety; the rules are left out so it tests the models alone.
-
 const (
 	drillEvery = 7 * 24 * time.Hour
 	// drillRetry: a drill no model answered (an outage) is tried again
@@ -283,7 +281,6 @@ func (s *Service) runDrill(ctx context.Context, by int64) error {
 	d := &SafetyDrill{StartedAt: s.now()}
 	for n, dc := range drillCases {
 		c := DrillCase{Name: dc.name, Label: dc.label, Want: dc.want}
-		// An ordinary-looking key: the models aren't told this is a drill.
 		var ans screenAnswer
 		var model string
 		var err error
@@ -301,7 +298,6 @@ func (s *Service) runDrill(ctx context.Context, by int64) error {
 			d.Errors++
 		default:
 			c.Flags = cleanFlags(ans.Flags)
-			// The drill grades any flag as a hold, even one the real screen's guard would clear anyway (WP-837).
 			c.Verdict = SafetyClear
 			if len(c.Flags) > 0 {
 				c.Verdict = SafetyHold

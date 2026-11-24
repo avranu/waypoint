@@ -17,8 +17,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Only a person's own act puts an objective in effect, since its check and keep-passing commands run on that person's machine; an agent's close can't end its rounds, and its wp objective check decides nothing.
-
 const (
 	ObjectiveProposed = "proposed"
 	ObjectiveActive   = "active"
@@ -220,17 +218,14 @@ type Objective struct {
 	verifyTry               int
 	verifyJob, verifyAudit  *int64
 	verifyAt                int64
-	// verifyReading: nil while the commands of the reading under way
-	// haven't run; then the reading they gave (0: there is no check, so no
-	// reading of one); verifyHead the commit they ran at.
-	verifyReading      *int64
-	verifyHead         string
-	pendingMeasurement *int64
-	baseOK             *bool
-	baseValue          *float64
-	stalledTold        int
-	stuckToldAt        int64
-	diagnosisID        int64
+	verifyReading           *int64
+	verifyHead              string
+	pendingMeasurement      *int64
+	baseOK                  *bool
+	baseValue               *float64
+	stalledTold             int
+	stuckToldAt             int64
+	diagnosisID             int64
 }
 
 // ObjectiveDiagnosis is what a diagnose round found: why the rounds before it
@@ -619,7 +614,6 @@ func (o *Objective) measuredRev() string { return objectiveHash(o.measured()) }
 // and not one written over it since.
 func (o *Objective) rev() string {
 	parts := append(o.measured(), o.Pace, strconv.FormatInt(o.everyMS, 10), strconv.Itoa(o.MaxRounds))
-	// The default adds nothing to the rev, so an existing proposal's rev is unchanged and a person's confirmation still matches it.
 	if o.DiagnoseAfter != objectiveDiagnoseDefault {
 		parts = append(parts, strconv.Itoa(o.DiagnoseAfter))
 	}
@@ -917,7 +911,6 @@ func ObjectiveText(o *Objective, forAgent bool, now time.Time) string {
 		how = append(how, "median wall time of several runs")
 	case MeasureValue:
 		if o.Unit != "" {
-			// The wording below must match what readValue (cmd/wp/objective_measure.go) does with a unit; change them together.
 			how = append(how, "the last number printed directly before \""+o.Unit+"\" (any case; \"81.3% of 1204\" reads 81.3 for %), on the last line that has one")
 		} else {
 			how = append(how, "the last number on the command's last non-empty line of output (a dash between numbers, as in 10-20, is a range, not a sign)")
@@ -973,7 +966,6 @@ func ObjectiveText(o *Objective, forAgent bool, now time.Time) string {
 		fmt.Fprintf(&b, "  The latest %s, %s (it stands until a round makes progress or the objective is set again):\n", who, objectiveClock(d.At))
 		text := strings.TrimSpace(d.Text)
 		if forAgent {
-			// The brief's limit counts characters, as the diagnosis's own limit does.
 			if r := []rune(text); len(r) > objectiveBriefDiagnosis {
 				text = string(r[:objectiveBriefDiagnosis]) + "\n[the rest is cut: wp objective show " + o.Key + " has all of it]"
 			}
@@ -1266,8 +1258,6 @@ func (s *Service) objectiveOf(ctx context.Context, q queryer, issueID int64) (*O
 	if len(verdicts) > 0 {
 		o.Verdict = verdicts[0]
 	}
-	// The diagnosis later rounds read, if one still stands: read with the
-	// row, so a clear between the two reads can't fail this one.
 	diagnosisID := o.diagnosisID
 	rows, err := q.QueryContext(ctx, `SELECT round_no, started_at, ended_at, outcome, coalesce(measurement_id, 0), agent, pr_url, base_sha, head_sha, note, diagnosis, diagnosis_by, id FROM objective_rounds
 		WHERE issue_id = ? ORDER BY id DESC LIMIT ?`, issueID, objectiveRecent)
@@ -1456,8 +1446,6 @@ func (s *Service) ListObjectives(ctx context.Context, actor *Actor, project stri
 		q, args = q+` AND i.project_id = ?`, append(args, p.ID)
 	}
 	if !all {
-		// One in effect is listed even on a closed task: that is a fault to
-		// see. A proposal on a closed task is nothing to act on.
 		q += ` AND (o.state = 'active' OR (o.state = 'proposed' AND st.category NOT IN ('done', 'canceled')))`
 	}
 	q += ` ORDER BY CASE WHEN o.state = 'proposed' THEN 0 WHEN o.state = 'active' AND (o.phase = 'blocked' OR o.stuck_since IS NOT NULL) THEN 0
@@ -1490,7 +1478,7 @@ func (s *Service) ListObjectives(ctx context.Context, actor *Actor, project stri
 		if err != nil {
 			return nil, err
 		}
-		if o != nil { // nil: taken off since the ids were read
+		if o != nil {
 			out = append(out, o)
 		}
 	}
@@ -1562,10 +1550,6 @@ func (s *Service) SetObjective(ctx context.Context, actor *Actor, ref string, in
 		if cur != nil && cur.State != ObjectiveProposed && !person {
 			return forbidden("%s's objective is in effect: changing what its rounds are measured by is for a person, in the web or their own terminal. If it is wrong or can't be reached, say so with wp request ask", i.Key)
 		}
-		// What the change builds on. A person's change of an agent's
-		// proposal builds on it only when they name the proposal they read;
-		// otherwise it starts from nothing, so no command an agent wrote
-		// goes into effect unread beside the person's own.
 		fresh := cur == nil
 		if cur != nil && cur.State == ObjectiveProposed && person {
 			switch {
@@ -1594,7 +1578,6 @@ func (s *Service) SetObjective(ctx context.Context, actor *Actor, ref string, in
 		if in.Until == nil && in.Measure == nil && in.Better == nil {
 			better = o.Better
 		}
-		// A form sends the target back on every save, so text equal to the stored one (ignoring case and spacing) is not a change.
 		same := func(p *string, was string) bool {
 			return p == nil || strings.EqualFold(strings.Join(strings.Fields(*p), " "), was)
 		}
@@ -1833,8 +1816,6 @@ func (s *Service) objectiveEdited(ctx context.Context, t *tx, cur, o *Objective,
 	if from == PhaseBlocked {
 		from = cur.blockedFrom
 	}
-	// Whoever changes it answers for its commands from here on: they run
-	// on that person's runner.
 	if changed {
 		if err := s.objSet(ctx, t, o.IssueID, "confirmed_by", nullUser(actor.id()), "confirmed_at", now); err != nil {
 			return err
@@ -1844,7 +1825,6 @@ func (s *Service) objectiveEdited(ctx context.Context, t *tx, cur, o *Objective,
 	case outOfRounds && (o.MaxRounds == 0 || o.MaxRounds > cur.Round):
 		if changed {
 			o.BaseSHA, o.baseOK, o.baseValue = "", nil, nil
-			// A new measure clears the no-better count and the diagnosis; more rounds alone keep them, so a diagnosis owed stays owed.
 			o.NoBetter, o.diagnosisID = 0, 0
 			if err := s.objSet(ctx, t, o.IssueID, "no_better", 0, "diagnosis_id", nil); err != nil {
 				return err
@@ -1860,7 +1840,6 @@ func (s *Service) objectiveEdited(ctx context.Context, t *tx, cur, o *Objective,
 			}
 			return nil
 		}
-		// Lowering diagnose-after makes a diagnose round it no longer asks for a work round at once; the count is read again only when the next round opens.
 		if cur.RoundKind == RoundKindDiagnose && !o.diagnosisDue(cur.NoBetter) && !outOfRounds {
 			return s.objSet(ctx, t, o.IssueID, "round_kind", "")
 		}
@@ -1877,8 +1856,6 @@ func (s *Service) objectiveEdited(ctx context.Context, t *tx, cur, o *Objective,
 	}
 	switch {
 	case from == PhaseVerdict && !o.verified():
-		// A round's work waits to be read, and nothing reads a loop: the
-		// round is done.
 		if err := s.objSet(ctx, t, o.IssueID, sets...); err != nil {
 			return err
 		}
@@ -2144,7 +2121,7 @@ type objectiveWait struct {
 	round int
 	phase string
 	note  string
-	until int64 // not before; 0: it waits for spare quota
+	until int64
 }
 
 // objectiveWaits are the open tasks whose objective keeps them from being

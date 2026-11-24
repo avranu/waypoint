@@ -202,7 +202,6 @@ func TestSessionEnvCarriesTheFanout(t *testing.T) {
 	if env != "PATH=/bin WP_TASK=WP-3 WP_FANOUT=4 WP_BUDGET_USD=7.50" {
 		t.Errorf("env = %q", env)
 	}
-	// WP_FANOUT and WP_BUDGET_USD inherited from a package's session are dropped, so another session is not taken for the package
 	if env := strings.Join(taskLaunch{tasks: []string{"WP-3"}}.sessionEnv([]string{"WP_FANOUT=1", "WP_BUDGET_USD=99"}), " "); env != "WP_TASK=WP-3" {
 		t.Errorf("env = %q", env)
 	}

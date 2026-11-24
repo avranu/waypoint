@@ -1,5 +1,3 @@
-// A project's own stall policy, set by its owners, overrides the admins' policy for every project.
-
 import { api, enc } from './api'
 import type { StallPolicy } from './types'
 

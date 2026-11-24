@@ -322,7 +322,6 @@ func (s *Service) syncReviewComments(ctx context.Context, pr *PullRequest) (int,
 		if err != nil {
 			return 0, fmt.Errorf("read reviews and comments: %w", err)
 		}
-		// A note already split into parts (ids '<id>.N') is never kept whole; an unsplit dealt-with note is.
 		whole := map[string]bool{}
 		if prior, err := s.reviewComments(ctx, s.db.R, pr.ID); err == nil {
 			split := map[string]bool{}
@@ -470,7 +469,6 @@ func (s *Service) syncReviewComments(ctx context.Context, pr *PullRequest) (int,
 				return err
 			}
 			if _, ok := have[key]; !ok {
-				// Deleted and back (a GitLab note restored) counts as known.
 				var old int
 				if err := t.QueryRowContext(ctx, `SELECT count(*) FROM review_comment_events WHERE comment_id = ?`, id).Scan(&old); err != nil {
 					return err
@@ -483,14 +481,13 @@ func (s *Service) syncReviewComments(ctx context.Context, pr *PullRequest) (int,
 					}
 				}
 			}
-			// A bot's in-place edit (CodeRabbit) doesn't answer a person's hold on a comment, so the hold stays.
 			_, known := have[key]
 			edited := known && c.findingID == 0 && !c.resolved && reopenOnEdit(verdicts[id]) && botTextChanged(bodies[id], body)
 			byPerson := false
 			if edited && verdicts[id] == VerdictNeedsPerson {
 				var perr error
 				if byPerson, perr = s.verdictByPerson(ctx, t, id); perr != nil {
-					return perr // A verdict that can't be read is not 'nobody's call': return the error rather than reopen it.
+					return perr
 				}
 			}
 			if edited && !byPerson {
@@ -510,7 +507,6 @@ func (s *Service) syncReviewComments(ctx context.Context, pr *PullRequest) (int,
 			}
 		}
 		for _, id := range have {
-			// Outside text now waiting for a person has its comment body cleared, not kept.
 			if _, err := t.ExecContext(ctx, `UPDATE review_comments SET gone_at = ?, body = CASE WHEN EXISTS (SELECT 1 FROM outside_pr_text o
 				WHERE o.pr_id = review_comments.pr_id AND o.state != 'approved' AND (o.external_id = review_comments.ext_id
 				OR (review_comments.kind = 'relayed' AND review_comments.ext_id LIKE o.external_id || '.%'))) THEN '' ELSE body END
@@ -544,8 +540,6 @@ func (s *Service) syncReviewComments(ctx context.Context, pr *PullRequest) (int,
 			continue
 		}
 		err := s.write(ctx, SystemActor(), func(t *tx) error {
-			// Only if it is still the fixed comment held above: a round or
-			// person may have given it a newer verdict meanwhile.
 			var cur, curFix string
 			if err := t.QueryRowContext(ctx, `SELECT verdict, fix_sha FROM review_comments WHERE id = ?`, h.id).Scan(&cur, &curFix); err != nil {
 				return err
@@ -586,7 +580,7 @@ func (s *Service) fixOnHead(ctx context.Context, f *Forge, pr *PullRequest, fix 
 	}
 	has, err := cl.Contains(ctx, f, pr.Repo, fix, pr.HeadSHA)
 	if err != nil {
-		if readFault(err) && !isStatus(err, http.StatusNotFound) { // A 404 means the fix isn't in the history: an answer, not a fault, so it isn't logged as a warning.
+		if readFault(err) && !isStatus(err, http.StatusNotFound) {
 			s.log.WarnContext(ctx, "read whether a fix is in a pull request's head", "repo", pr.Repo, "number", pr.Number, "fix", short(fix), "err", err)
 		}
 		return false
@@ -617,7 +611,6 @@ func (s *Service) verifyFixes(ctx context.Context, pr *PullRequest) {
 			continue
 		}
 		if rc.Verdict == VerdictVerified {
-			// A verified comment can lack its reply: it was verified before the reply step, or the forge refused one.
 			if owed > 0 && s.answerVerified(ctx, pr, rc) {
 				owed--
 			}
@@ -745,7 +738,7 @@ func (s *Service) recordVerdict(ctx context.Context, t *tx, id, prID int64, to, 
 		return err
 	}
 	if to == VerdictSeen && old != VerdictNew {
-		return nil // A 'seen' must not overwrite a verdict someone gave meanwhile.
+		return nil
 	}
 	if _, err := t.ExecContext(ctx, `UPDATE review_comments SET verdict = ?, note = CASE WHEN ? != '' THEN ? ELSE note END,
 		fix_sha = CASE WHEN ? != '' THEN ? ELSE fix_sha END WHERE id = ?`, to, note, excerpt(note, 2000), fixSHA, fixSHA, id); err != nil {
@@ -776,12 +769,9 @@ func (s *Service) markComment(ctx context.Context, pr *PullRequest, rc *PRReview
 	text := note
 	emoji := verdictEmoji[to]
 	replyID := ""
-	// A fix with no commit named counts as on the head.
 	sha := cmp(cmp(fixSHA, rc.FixSHA), pr.HeadSHA)
 	if body := verdictReply(rc, to, text, sha, sha); body != "" {
 		replyID = s.replyToComment(ctx, f, bot, pr, rc, body)
-		// The marker in that reply is how a mirror learns the verdict:
-		// don't record it as given while the reply hasn't gone out.
 		if replyID == "" && rc.relayID != "" {
 			return invalid("the forge didn't take the verdict reply on %s; try again", rc.Ref)
 		}
@@ -1027,11 +1017,10 @@ func (s *Service) loadComments(ctx context.Context, actor *Actor, ids []string, 
 		if rc.Gone {
 			return nil, nil, invalid("%s was deleted on the forge", rc.Ref)
 		}
-		// An agent's needs_person is a hand-off the assessor settles, so it is not a person's call.
 		byPerson := false
 		if guard && actor.IsAgent() {
 			if byPerson, err = s.verdictByPerson(ctx, s.db.R, rc.id); err != nil {
-				return nil, nil, err // A verdict that can't be read is not 'nobody's call': refuse rather than let an agent overrule it.
+				return nil, nil, err
 			}
 		}
 		if byPerson {
@@ -1263,7 +1252,7 @@ func (s *Service) assessorPacket(ctx context.Context, pr *PullRequest) (*PRTodo,
 			if readFault(err) {
 				s.log.WarnContext(ctx, "leave a comment out of the assessor's packet: who decided its verdict is unread", "comment", rc.id, "pr", pr.ID, "err", err)
 			}
-			return false // A verdict that can't be read leaves the comment out of the assessor's packet, as a person's would be.
+			return false
 		}
 		return !byPerson
 	})
@@ -1326,7 +1315,6 @@ func (s *Service) packetOf(ctx context.Context, actor *Actor, pr *PullRequest, a
 			t.Refused = refusedRound(b, pr.HeadSHA)
 		}
 		if !all {
-			// Findings an earlier round was already handed are left for a person; wp pr todo still lists them.
 			t.Findings = slices.DeleteFunc(t.Findings, func(f TodoFinding) bool {
 				return f.startsRound() && slices.ContainsFunc(b.Rounds, func(r BabysitRound) bool { return slices.Contains(r.Findings, f.ID) })
 			})

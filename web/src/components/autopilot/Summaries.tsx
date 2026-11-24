@@ -247,7 +247,6 @@ function SummaryCard({
       <div className={clsx('relative mt-2', long && !open && 'max-h-52 overflow-hidden')}>
         <div
           className="prose-wp text-[13px] [overflow-wrap:anywhere]"
-          // sanitised by renderMarkdown
           dangerouslySetInnerHTML={{ __html: html }}
         />
         {long && !open && (

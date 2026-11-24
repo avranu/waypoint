@@ -8,8 +8,6 @@ import (
 	"time"
 )
 
-// A hold sits beside the status rather than replacing it, so the task keeps its place and returns to the queue when the hold ends.
-
 // Hold is a task's hold.
 type Hold struct {
 	At time.Time `json:"at"`
@@ -20,9 +18,8 @@ type Hold struct {
 	Waits string    `json:"waits,omitempty"`
 	Note  string    `json:"note,omitempty"`
 	// By is the person who placed it (an agent's person, when Agent is set).
-	By    string `json:"by,omitempty"`
-	Agent string `json:"agent,omitempty"`
-	// Set when a person placed the hold or it waits for a person: agents can't change or lift it (personsHold).
+	By       string `json:"by,omitempty"`
+	Agent    string `json:"agent,omitempty"`
 	byPerson bool
 }
 
@@ -224,7 +221,6 @@ func (s *Service) placeHold(ctx context.Context, t *tx, actor *Actor, i *Issue, 
 	} else {
 		when = nil
 	}
-	// An agent's hold is person-only only when it waits for a person (when.Person).
 	byPerson := !actor.HidesDrafts() || (when != nil && when.Person)
 	if _, err := t.ExecContext(ctx, `UPDATE issues SET hold_at = ?, hold_until = ?, hold_note = ?, hold_by = ?, hold_agent = ?, hold_person = ?, hold_when = ?,
 		updated_at = ? WHERE id = ?`, now, nullInt(until), note, nullUser(actor.id()), actor.agentName(), byPerson, raw, now, i.ID); err != nil {

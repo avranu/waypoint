@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-// Waypoint tells, it doesn't push: a push onto a pull request changes what it merges and sets off its CI and reviews.
-
 // EvUnpushedLeft: a session went away leaving commits its pull request
 // hasn't got. UserID is the session's person.
 const EvUnpushedLeft = "session.unpushed_left"
@@ -127,7 +125,6 @@ func (s *Service) tellUnpushed(ctx context.Context, t *tx, x *AgentSession, ws w
 			return err
 		}
 		body := u.comment(x.Machine, how, msTime(ws.At))
-		// A draft comment notifies no watchers until a person publishes it.
 		var keys []string
 		var heard []int64
 		var first *Issue

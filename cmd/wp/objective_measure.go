@@ -89,8 +89,6 @@ func runCheck(ctx context.Context, dir string, env []string, command string, tim
 	err := cmd.Run()
 	wall := time.Since(start).Seconds()
 	procExited(cmd)
-	// Whatever it left running would load the machine through the runs
-	// that follow, and could hold the checkout open.
 	killGroup(cmd)
 	r := checkRun{Stdout: out.String(), All: all.String(), Wall: wall}
 	if ctx.Err() != nil {
@@ -103,7 +101,6 @@ func runCheck(ctx context.Context, dir string, env []string, command string, tim
 	var ee *exec.ExitError
 	switch {
 	case err == nil || errors.Is(err, exec.ErrWaitDelay):
-		// A straggler holding the output pipe open is not a failure.
 		if cmd.ProcessState != nil {
 			r.Code = cmd.ProcessState.ExitCode()
 		}
@@ -222,8 +219,6 @@ func measureCheck(ctx context.Context, spec measureSpec, sides []measureSide, sa
 		case err != nil:
 			return run, false, stopped(ctx, "the check in "+sides[i].Label, err)
 		case run.TimedOut && i > 0:
-			// Only the head must read: another side that is too slow to
-			// read is an answer about that side, and the head's stands.
 			fail(i, run, fmt.Sprintf("the check ran longer than %s and was stopped. ", spec.Timeout.Round(time.Second)))
 			r.Runs = max(r.Runs, 1)
 			return run, false, nil
@@ -466,9 +461,6 @@ func readValue(out, unit string) *float64 {
 			v := nums[len(nums)-1].v
 			return &v
 		}
-		// The unit is matched in the line as printed, whatever its case:
-		// lowering the line first would move the numbers' byte offsets
-		// wherever a letter's lower case is a different length.
 		for k := len(nums) - 1; k >= 0; k-- {
 			rest := strings.TrimLeft(l[nums[k].end:], " \t")
 			if len(rest) < len(unit) || !strings.EqualFold(rest[:len(unit)], unit) {

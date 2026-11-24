@@ -1,7 +1,5 @@
 package core
 
-// Assignment hashes the experiment, run and task: stable within a run, independent across experiments, re-randomised by each run; only agents are assigned.
-
 import (
 	"context"
 	"crypto/sha256"
@@ -548,8 +546,6 @@ func (s *Service) experimentArms(ctx context.Context, issueID int64, keys []stri
 			return out, err
 		}
 		if expose {
-			// The arm is stored by now, so a failed exposure still reports
-			// it (the control here would disagree with the stored arm).
 			if _, err := s.db.W.ExecContext(ctx, `UPDATE experiment_units SET exposed_at = ? WHERE run_id = ? AND issue_id = ? AND exposed_at IS NULL`, now, r.ID, issueID); err != nil {
 				s.log.WarnContext(ctx, "experiment exposure", "experiment", r.Experiment, "issue", issueID, "err", err)
 			}
@@ -630,10 +626,7 @@ func (s *Service) IssueArms(ctx context.Context, actor *Actor, key string, in Is
 		return nil, err
 	}
 	out.Arms = arms
-	// Only the agent holding the task draws its arm: the first draw is kept,
-	// so it must be the take's (WP-ADR129).
 	if in.Delegation && i.ClaimedBy != "" && i.ClaimedBy == actor.agentName() {
-		// A failed draw does not block the take: the task goes on without an arm.
 		if out.Delegation, err = s.delegationArm(ctx, actor, i, via); err != nil {
 			s.log.WarnContext(ctx, "delegation policy: draw the task's arm", "issue", i.ID, "err", err)
 			out.Delegation = nil
@@ -646,7 +639,7 @@ func (s *Service) IssueArms(ctx context.Context, actor *Actor, key string, in Is
 // the control, so a bad arm costs a bounded amount.
 const (
 	guardRatio    = 1.5
-	guardP        = 0.01 // Unadjusted for multiple comparisons: a guardrail errs toward stopping.
+	guardP        = 0.01
 	guardDoneDrop = 0.15
 )
 

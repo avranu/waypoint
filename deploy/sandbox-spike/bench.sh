@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# The same script runs bare and in the VM, so the two timings compare like for like.
 set -u
 
 workload=${1:?workload}
@@ -21,7 +20,6 @@ esac
 log=$HOME/bench-$workload-$phase.log
 secs() { awk -v a="$1" -v b="$(date +%s.%N)" 'BEGIN{printf "%.1f", b-a}'; }
 
-# golangci-lint's cache is emptied first, so bare runs start cold like each VM.
 if [ "$workload/$phase" = waypoint/timed ]; then
 	rm -rf "$HOME/.cache/golangci-lint"
 	start=$(date +%s.%N)

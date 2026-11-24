@@ -1,5 +1,3 @@
-// Drafts are kept in storage, so this warns only when storage refused one, or on refresh or close while a save is in flight.
-
 import { useBlocker } from '@tanstack/react-router'
 import { hasInflight, hasUnsaved, useAnyUnsaved } from '@/lib/drafts'
 import { Confirm } from '@/components/ui/dialog'

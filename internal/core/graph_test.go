@@ -220,7 +220,6 @@ func TestGraphNeighbourhood(t *testing.T) {
 		if !shown[ed.From] || !shown[ed.To] {
 			t.Errorf("edge to something not shown: %+v", ed)
 		}
-		// Hub cost depends on the route, so drawn edges take none and keep the link's own length.
 		bare := gedgeRec{kind: ed.Kind, basis: int8(slices.Index(basisNames, ed.Basis)), score: float32(ed.Score)}
 		if want := round2(edgeLength(bare, 0)); ed.Length != want {
 			t.Errorf("drawn edge %s→%s length %v, want %v", ed.From, ed.To, ed.Length, want)

@@ -152,7 +152,6 @@ func (c *httpForgeClient) ReactTo(ctx context.Context, f *Forge, repo string, nu
 	case "comment":
 		path = fmt.Sprintf("/repos/%s/issues/comments/%s/reactions", repo, url.PathEscape(commentID))
 	case "inline":
-		// Forgejo keeps comments on the diff with the issue's comments.
 		path = fmt.Sprintf("/repos/%s/issues/comments/%s/reactions", repo, url.PathEscape(commentID))
 		if f.Kind == "github" {
 			path = fmt.Sprintf("/repos/%s/pulls/comments/%s/reactions", repo, url.PathEscape(commentID))

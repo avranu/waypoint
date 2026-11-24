@@ -137,7 +137,6 @@ function WordingForm({
   onSave: (v: Wording) => Promise<unknown>
 }) {
   const [v, setV] = useState<Wording>(current)
-  // A change from elsewhere replaces what is typed, but not what this form just saved.
   const [seen, setSeen] = useState(JSON.stringify(current))
   const sent = useSent()
   const prompt = v.prompt.trim() || fallback.prompt

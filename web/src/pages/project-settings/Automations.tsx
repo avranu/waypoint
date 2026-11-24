@@ -217,7 +217,6 @@ export function AutomationsPanel({ project }: { project?: Project }) {
       />
       {runs && (
         <RunsDialog
-          // Use the list's copy: the card's can be stale after a toggle.
           automation={automations.find((x) => x.id === runs.a.id) ?? runs.a}
           open
           initial={runs.initial}

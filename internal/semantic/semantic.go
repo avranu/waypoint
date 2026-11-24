@@ -97,7 +97,6 @@ func Train(ctx context.Context, docs []map[string]int, o Options) (*Model, error
 	for _, t := range vocab {
 		m.df[t] = df[t]
 	}
-	// The norm counts every term; the rows keep only the known ones.
 	type ent struct {
 		j int
 		w float64
@@ -112,8 +111,6 @@ func Train(ctx context.Context, docs []map[string]int, o Options) (*Model, error
 		}
 		sort.Slice(rows[i], func(a, b int) bool { return rows[i][a].j < rows[i][b].j })
 	}
-	// At most a quarter of the matrix's smaller side: a model that keeps
-	// every dimension of a small corpus learns no word's neighbours.
 	k := min(o.K, max(1, min(nd, nt)/4))
 	p := min(k+10, nd, nt)
 	mulAt := func(X [][]float64) [][]float64 {
@@ -214,7 +211,7 @@ func weigh(c map[string]int, df map[string]int, n int) map[string]float64 {
 	for t := range c {
 		terms = append(terms, t)
 	}
-	sort.Strings(terms) // a fixed order keeps the norm bit-identical
+	sort.Strings(terms)
 	for _, t := range terms {
 		k := c[t]
 		if k <= 0 {
@@ -247,7 +244,7 @@ func (m *Model) Project(counts map[string]int) []float64 {
 	for t := range counts {
 		terms = append(terms, t)
 	}
-	sort.Strings(terms) // a fixed order of sums: the same text, the same vector
+	sort.Strings(terms)
 	for _, t := range terms {
 		row, ok := m.rows[t]
 		if !ok || counts[t] <= 0 {
@@ -279,8 +276,6 @@ func (m *Model) TermCos(a, b string) float64 {
 	if !ok || !ok2 {
 		return 0
 	}
-	// Rows hold V·S^(Scale-1), weighted for folding text in; a term's own
-	// place is V·S.
 	x := make([]float64, len(ra))
 	y := make([]float64, len(rb))
 	for c := range ra {

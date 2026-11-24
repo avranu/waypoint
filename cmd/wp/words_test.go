@@ -14,8 +14,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// Messages must not hardcode a number that a constant sets.
-
 // The refusal names the limits wp audit really has, from the constants, not
 // one number that the default (gateway) audit does not have.
 func TestGrokRefusalNamesTheAuditLimits(t *testing.T) {

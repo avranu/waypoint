@@ -16,8 +16,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// A lock is stale only when its pid provably no longer exists (absent, reused start time, or zombie); age and an unreadable reason are never evidence.
-
 // The start time is optional: an older Claude Code wrote only the pid.
 //
 // Claude Code records no host. A reason that does name one ("... start T host
@@ -55,7 +53,6 @@ func readLockProc(pid int) (e lockProc, found bool, err error) {
 	}
 	b, err := os.ReadFile(filepath.Join(lockProcRoot, strconv.Itoa(pid), "stat")) // #nosec G304 -- a pid read from a lock reason, as digits
 	if errors.Is(err, fs.ErrNotExist) {
-		// A pid the kernel knows but /proc hides (hidepid) is not absent.
 		if lockPidSignal(pid) {
 			return e, false, errors.New("the pid exists but /proc doesn't show it")
 		}
@@ -64,7 +61,6 @@ func readLockProc(pid int) (e lockProc, found bool, err error) {
 	if err != nil {
 		return e, false, err
 	}
-	// comm may hold spaces and parentheses, so split the stat line at the last ')'.
 	s := string(b)
 	i := strings.LastIndexByte(s, ')')
 	if i < 0 {
@@ -153,7 +149,7 @@ func lockOwner(reason string, lockedAt time.Time) (gone bool, why string) {
 		if upTicks < 0 || start > math.MaxInt64 || int64(start) > upTicks {
 			return false, fmt.Sprintf("its lock names pid %d, started at tick %d after a boot, later than this host has been up (%s): another host or container wrote it, or the start is no real time, so wp can't tell", pid, start, up.Round(time.Second))
 		}
-		startAfterBoot := time.Duration(int64(start)) * lockTick // no later than up, so no overflow
+		startAfterBoot := time.Duration(int64(start)) * lockTick
 		boot := now.Add(-up)
 		switch {
 		case lockedAt.IsZero():
@@ -369,9 +365,6 @@ func reclaimWhere(ctx context.Context, repo *worktreeRepo, top string, match fun
 		}
 	}
 	if prune {
-		// git worktree prune drops every unlocked missing folder's record: not
-		// those of other work outside the repo's own folder, where a disk may
-		// only be unmounted.
 		for _, w := range repo.wts {
 			if !w.main && !w.bare && !w.locked && !dirExists(w.path) && !inside(tidyReal(w.path), home) &&
 				!match(w) {

@@ -1,5 +1,3 @@
-// Secrets are typed only here; the API never sends them back.
-
 import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'

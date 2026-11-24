@@ -263,7 +263,7 @@ func TestTellAgentThroughTheRunnersSocket(t *testing.T) {
 		t.Fatalf("after: %s %+v", fu.State, fu.Run.Steps[0].Outputs)
 	}
 
-	f.setClock(f.clockNow().Add(time.Minute)) // the last stop's hook has expired by now
+	f.setClock(f.clockNow().Add(time.Minute))
 	f.hook("UserPromptSubmit", func(h *HookEvent) { h.Prompt = "go" })
 	f.queue(step("tell_agent", map[string]any{"message": "Now merge it.", "wait": false}))
 	if _, err := f.s.RunFollowUpNow(f.ctx, f.admin, f.sid); err != nil {

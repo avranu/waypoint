@@ -1,7 +1,5 @@
 package core
 
-// state at a moment is the latest snapshot at or before it plus later session_observed rows; past the cap, the gap between the kept first and oldest snapshots has none
-
 import (
 	"context"
 	"database/sql"
@@ -220,7 +218,7 @@ func addDropRow(ctx context.Context, q queryer, uid int64, machine, reason, even
 
 // Reasons the server counts in hook_drops for data it did not keep.
 const (
-	DropSessionEventsTrim  = "session_events_trim" // outstanding records are kept: two rows at most per item named
+	DropSessionEventsTrim  = "session_events_trim"
 	DropEvidenceRunsCap    = "evidence_cap"
 	DropPromptTextWithheld = "prompt_text_withheld"
 	DropUnregisteredWrite  = "unregistered_session"

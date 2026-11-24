@@ -41,7 +41,7 @@ type Gateway struct {
 	ring    []Frame
 	seq     int64
 	open    map[string]Frame
-	rawIDs  map[string]json.RawMessage // Hermes sends request ids as strings or numbers; a reply must echo the form it sent.
+	rawIDs  map[string]json.RawMessage
 	used    time.Time
 	quiet   map[string]bool
 	stop    context.CancelFunc
@@ -264,7 +264,6 @@ func (g *Gateway) session(ctx context.Context) error {
 	last := make(chan struct{}, 1)
 	go g.pinger(sctx, conn, last)
 	go func() {
-		// Without this Hermes withdraws approvals and clarify questions.
 		if _, err := g.Call(sctx, "client.capabilities", map[string]any{"server_requests": true}); err != nil {
 			_ = conn.Close(websocket.StatusGoingAway, "capabilities refused")
 			return
@@ -443,7 +442,6 @@ func (g *Gateway) publishLocked(msg json.RawMessage) Frame {
 		select {
 		case s.C <- f:
 		default:
-			// A subscriber too far behind is dropped; the browser reconnects and catches up.
 			delete(g.subs, s)
 			close(s.gone)
 		}
@@ -495,7 +493,7 @@ func (g *Gateway) subscribe(after int64, quiet bool) (*Sub, Hello, []Frame) {
 			}
 		}
 	} else if after > g.seq {
-		h.Reset = true // A cursor past this server's seq means the server restarted, so the client must reload.
+		h.Reset = true
 	}
 	return s, h, replay
 }

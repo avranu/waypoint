@@ -243,7 +243,7 @@ func TestObjectiveAPIDiagnoseRecords(t *testing.T) {
 	}
 	diagnoseRound := func() {
 		t.Helper()
-		svc.Wait() // Wait first, so work the PUT set off cannot race the row update below.
+		svc.Wait()
 		res, err := d.W.ExecContext(ctx, `UPDATE objectives SET phase = '', round_kind = 'diagnose', no_better = 2, base_sha = ? WHERE issue_id = ?`, strings.Repeat("a", 40), task.ID)
 		if err != nil {
 			t.Fatal(err)

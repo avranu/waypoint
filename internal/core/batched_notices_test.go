@@ -96,7 +96,7 @@ func TestNewsThatCanWaitWaitsADayOnAColdCache(t *testing.T) {
 	be.s.babysitTell(be.ctx, bs[1], prs[1], "merged", "o/r#8 merged.")
 	be.runner(be.admin, "m1", nil)
 	be.s.CheckBabysits(be.ctx)
-	be.s.Wait() // background refreshes read the clock; let them finish before it moves
+	be.s.Wait()
 	if jobs := be.messageJobs(); len(jobs) != 0 {
 		t.Fatalf("woke the agent for news it needn't see yet: %v", jobs)
 	}

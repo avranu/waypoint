@@ -6,8 +6,6 @@ import (
 	"strings"
 )
 
-// Decides what an unattended session may write; nothing here runs a command.
-
 // guardRepo is a repository found from a directory: its top-level and the git
 // directory it shares with its worktrees.
 type guardRepo struct {
@@ -158,13 +156,9 @@ func isWaypointState(p string) bool {
 	if err != nil || d == "" {
 		return false
 	}
-	// p is link-resolved, so the state file is too (a symlinked config dir);
-	// a relative dir is relative to wp's own working directory, as wp itself
-	// reads it.
 	if abs, err := filepath.Abs(d); err == nil {
 		d = abs
 	}
-	// Judged sessions must not write the quota guard's state, so they cannot turn it off or restart its counts.
 	for _, f := range []string{"state.json", pauseFile, "guard_trips.json"} {
 		if p == realPath(filepath.Join(d, f)) {
 			return true

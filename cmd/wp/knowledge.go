@@ -351,7 +351,7 @@ func glossaryAdd(c *cli, args []string) error {
 	}
 	in := map[string]any{"term": term, "definition": *def, "project": project, "aliases": []string(aliases), "links": []string(links)}
 	if len(avoid) > 0 {
-		in["avoid"] = []string(avoid) // only when given: servers before words to avoid refuse the field
+		in["avoid"] = []string(avoid)
 	}
 	if *lock {
 		in["locked"] = true

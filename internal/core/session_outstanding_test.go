@@ -56,7 +56,6 @@ func TestStopNamesOutstandingWorkWhileARunGoes(t *testing.T) {
 			t.Errorf("after a new finding the stop lacks %q:\n%s", want, res.Text)
 		}
 	}
-	// a continued turn's own Stop is not held again, even with an untold finding; the next Stop names it
 	if _, err := a.s.db.W.Exec(`INSERT INTO code_audit_findings(audit_id, ordinal, title) VALUES (?, 4, 'Later finding')`, audit); err != nil {
 		t.Fatal(err)
 	}
@@ -118,8 +117,6 @@ func TestSessionOutstanding(t *testing.T) {
 
 	round, audit, _ := handoffStart(t, a)
 	a.endAudit(box, "done", "Merge reads a nil map", "Unchecked error", "Dead code")
-	// Until the round's prompt goes in, its findings are the prompt's to give,
-	// in full: naming them too would give them twice.
 	if o, err := a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtWait); err != nil || !o.Empty() {
 		t.Fatalf("before the round's prompt went in: %+v %v", o, err)
 	}
@@ -144,7 +141,6 @@ func TestSessionOutstanding(t *testing.T) {
 		t.Fatalf("lines:\n%s", got.Lines)
 	}
 
-	// the wait records nothing itself: a hook that never printed names none, so asking again names them again
 	if again, err := a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtWait); err != nil || !slices.Equal(again.Findings, want) {
 		t.Fatalf("asked again before the print: %+v %v", again, err)
 	}
@@ -181,7 +177,6 @@ func TestSessionOutstanding(t *testing.T) {
 		t.Fatalf("after the round ended: %+v %v", got, err)
 	}
 
-	// at a Stop with no findings to do, an answered request does not carry the agent on alone; it waits for a turn's start; at the wait its answer is given in full and marked told
 	req, _, err := a.s.CreateRequest(a.ctx, &ag, RequestInput{Kind: "question", Title: "Squash the migrations?", Project: a.p.Key,
 		Questions: []Question{{Question: "Squash?", Choices: []Choice{{Label: "yes"}, {Label: "no"}}}}})
 	if err != nil {
@@ -200,7 +195,6 @@ func TestSessionOutstanding(t *testing.T) {
 	if !slices.Equal(got.Requests, []string{req.Code}) || !slices.Equal(got.RequestIDs, []int64{req.ID}) || !strings.Contains(got.Lines, "No, keep them apart.") || strings.Contains(got.Lines, "wp request") {
 		t.Fatalf("requests = %v %v %q, want [%s] with its answer", got.Requests, got.RequestIDs, got.Lines, req.Code)
 	}
-	// an answer is marked told only once the hook confirms it printed it; a reply it never got is given again at the next wait or Stop
 	delivered := func() bool {
 		var at sql.NullInt64
 		if err := a.s.db.R.QueryRow(`SELECT delivered_at FROM requests WHERE id = ?`, req.ID).Scan(&at); err != nil {
@@ -223,7 +217,6 @@ func TestSessionOutstanding(t *testing.T) {
 	if got, _ = a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtWait); !got.Empty() {
 		t.Fatalf("the request named twice: %+v", got)
 	}
-	// the hook's confirmation marks only answered requests told; an open request it names stays untold
 	open, _, err := a.s.CreateRequest(a.ctx, &ag, RequestInput{Kind: "question", Title: "Drop the column?", Project: a.p.Key,
 		Questions: []Question{{Question: "Drop?", Choices: []Choice{{Label: "yes"}, {Label: "no"}}}}})
 	if err != nil {
@@ -361,7 +354,6 @@ func TestOutstandingLines(t *testing.T) {
 	if strings.Contains(got, "wp request") {
 		t.Errorf("the answer sends the agent to read it:\n%s", got)
 	}
-	// The hook's room is limited: an answer too long for it is left out here and waits for a Stop or a turn's start.
 	small2 := *r
 	small2.Ref = "WP:R-5"
 	huge := *r
@@ -369,7 +361,6 @@ func TestOutstandingLines(t *testing.T) {
 	if fit := fitDecisions([]*Request{r, &huge, &small2}, 5000); len(fit) != 2 || fit[0] != r || fit[1] != &small2 {
 		t.Errorf("fit = %v", fit)
 	}
-	// long findings take no more than their share, so the lines stay inside the hook's room
 	long := make([]CodeAuditFinding, 30)
 	for i := range long {
 		long[i] = CodeAuditFinding{ID: fmt.Sprintf("7.%d", i+1), Severity: "low", Title: strings.Repeat("t", 200), Path: strings.Repeat("p/", 60) + "a.go", Line: 3}

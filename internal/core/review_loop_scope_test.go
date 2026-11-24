@@ -72,7 +72,6 @@ func TestAgainLoopOf(t *testing.T) {
 		}
 	}
 
-	// The arm is set here: the range above leaves whichever came last.
 	exec(`UPDATE review_again_decisions SET arm = ? WHERE round_id = ?`, AgainReview, r1)
 	exec(`UPDATE work_log SET state = ? WHERE id = ?`, RoundSkipped, r1)
 	if got := loop(run); got != with {

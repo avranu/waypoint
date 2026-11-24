@@ -1,7 +1,5 @@
 package core
 
-// Repos covered by an organisation webhook get no repo webhook of their own, so no delivery arrives twice.
-
 import (
 	"context"
 	"database/sql"

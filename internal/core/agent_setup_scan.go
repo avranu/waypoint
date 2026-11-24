@@ -35,7 +35,6 @@ type setupRepo struct {
 	forgeID  int64
 	repo     string
 	projects []string
-	// Opted out if any of its projects turned repo syncing off.
 	optedOut bool
 }
 
@@ -89,8 +88,6 @@ func (s *Service) RefreshAgentSetupNow(ctx context.Context, actor *Actor) error 
 	}
 	agentRefreshMu.Lock()
 	if agentRefreshing {
-		// A read is under way and may have passed some repos already: one
-		// more follows it.
 		agentRefreshAgain = true
 		agentRefreshMu.Unlock()
 		return nil

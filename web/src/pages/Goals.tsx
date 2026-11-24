@@ -1,5 +1,3 @@
-// Agents' links and goals stay pending until a person stands behind them.
-
 import { useMemo, useRef, useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -1040,7 +1038,6 @@ function WaitingLinks({
     onSettled: refresh,
     onError: toastError,
   })
-  // Acknowledging is not approval: each link keeps its agent or Waypoint basis.
   const capped = links.length >= LIST_MAX
   const all = useMutation({
     mutationFn: () => goalApi.acknowledge(links.map((l) => l.link_id)),

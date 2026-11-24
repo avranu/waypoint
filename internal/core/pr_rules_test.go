@@ -384,7 +384,6 @@ func TestAskCodeRabbitOncePerPullRequest(t *testing.T) {
 		t.Fatalf("marked ready: %d asks", n)
 	}
 
-	// The migration seeds the template's rule as a literal, so the two must stay equal.
 	sqlText, err := os.ReadFile("../db/migrations/0185_coderabbit_requests.sql")
 	if err != nil {
 		t.Fatal(err)

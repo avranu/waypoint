@@ -208,7 +208,6 @@ func TestReviewRoundStakes(t *testing.T) {
 		if n := prAudits(); n != 2 {
 			t.Fatalf("the pull request didn't ask for its own audit: %d audits", n)
 		}
-		// A pull request's own failed audit asks for nothing more; it still counts as the head's audit.
 		a.endAudit(box, "failed")
 		if n := prAudits(); n != 2 {
 			t.Fatalf("the pull request's own failed audit asked again: %d audits", n)
@@ -250,7 +249,6 @@ func TestReviewRoundStakes(t *testing.T) {
 		if normal != nil && (normal.Recomputed != 0 || len(normal.Outcomes) != len(experimentMetrics)+len(stakesExtraMetrics) || stats.Rows[0].Rule != StakesRule) {
 			t.Errorf("outcomes = %+v, recomputed %d, rule %q", normal.Outcomes, normal.Recomputed, stats.Rows[0].Rule)
 		}
-		// The floor bar is every round's and counts as no bar; a tier bar above it counts as barred.
 		barred := func(weakest string) int {
 			t.Helper()
 			if _, err := a.s.db.W.Exec(`UPDATE code_audits SET weakest = ? WHERE id = ?`, weakest, au.ID); err != nil {
@@ -276,7 +274,6 @@ func TestReviewRoundStakes(t *testing.T) {
 				t.Errorf("a round whose audit was held to %q: Barred = %d, want %d", weakest, got, want)
 			}
 		}
-		// A non-admin gets the stakes tiers without the usage figures, with a note saying why.
 		member := *a.admin.User
 		member.IsAdmin = false
 		stats, err = a.s.GetReviewStakesStats(a.ctx, &Actor{User: &member}, "", 14, false)
@@ -293,7 +290,6 @@ func TestReviewRoundStakes(t *testing.T) {
 		}
 	})
 
-	// A round that ends before its reviewer's findings are typed in hands them to the pull request with its audit.
 	t.Run("a finished review the round never typed goes to the pull request", func(t *testing.T) {
 		a, box := auditAPEnv(t)
 		id := start(a, `{"files":2,"added":20}`)

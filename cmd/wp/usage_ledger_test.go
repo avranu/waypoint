@@ -49,7 +49,7 @@ func TestUsageLedgerContextAndColdStarts(t *testing.T) {
 		ledgerLine("m2", t0.Add(time.Minute), 10, 0, 0, 250_000),
 		ledgerLine("m3", t0.Add(11*time.Minute), 5, 310_000, 0, 1000),
 		ledgerLine("m4", t0.Add(50*time.Minute), 5, 0, 20, 0),
-		ledgerLine("m5", t0.Add(90*time.Minute), 5, 0, 30, 0), // a one-hour cache write keeps the cache warm for an hour, not five minutes
+		ledgerLine("m5", t0.Add(90*time.Minute), 5, 0, 30, 0),
 	)
 	f := usageFile{Path: path, Session: "s", Kind: "main", Main: true}
 	p, err := readUsageFile(f, usageFileState{}, nil, false)

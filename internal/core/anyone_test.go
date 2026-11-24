@@ -72,7 +72,7 @@ func TestIssueAnyoneDefaultAndStates(t *testing.T) {
 		"is:agent":     {any.Key, cl.Key},
 		"is:delegated": {any.Key, cl.Key},
 		"-is:human":    {def.Key, any.Key, cl.Key},
-		"agent:no":     {}, // Only the keywords none and human mean humans-only; agent:no is a name search, not that keyword.
+		"agent:no":     {},
 	} {
 		slices.Sort(want)
 		if got := found(q); !slices.Equal(got, want) && len(got)+len(want) > 0 {
@@ -87,7 +87,6 @@ func TestAnyoneInTheQueue(t *testing.T) {
 	mk := func(title, agent, prio string) *IssueDetail {
 		return e.issue(e.admin, IssueInput{Project: p.Key, Title: title, Agent: agent, Priority: prio})
 	}
-	// An urgent Anyone task ranks before delegated tasks of lower priority.
 	anyoneUrgent := mk("Anyone urgent", "", "urgent")
 	anyoneLow := mk("Anyone low", "", "low")
 	delegatedLow := mk("Delegated low", "claude", "low")

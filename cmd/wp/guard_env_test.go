@@ -85,7 +85,6 @@ func TestGuardEnvHosts(t *testing.T) {
 		{`http -I https://llm.example.test/admin/config 'a\==b'`, ruleEnvChange},
 		{`http -I https://llm.example.test/admin/config 'x\:y=z'`, ruleEnvChange},
 		{`curl -X get https://llm.example.test/admin`, ruleEnvChange},
-		// The shell expands braces, globs, variables and substitutions after the guard reads a word, so such words are refused.
 		{`curl https://llm.example.test/health {-d,x=1}`, ruleEnvChange},
 		{`curl https://llm.example.test/health ""{-X,POST}`, ruleEnvChange},
 		{`curl https://llm.example.test/health ?d`, ruleEnvChange},
@@ -96,10 +95,8 @@ func TestGuardEnvHosts(t *testing.T) {
 		{`curl https://llm.example.test/a $(echo -d x)`, ruleEnvChange},
 		{`http -I https://llm.example.test/a {--form,a==b}`, ruleEnvChange},
 		{`curl -H "Authorization: Bearer $KEY" 'https://llm.example.test/a?b=1' '{-d,x}'`, ""},
-		// find -exec runs the same command, so it gets the same checks.
 		{`find . -maxdepth 0 -exec curl https://llm.example.test/health {-d,x=1} \;`, ruleEnvChange},
 		{`find . -maxdepth 0 -exec curl -sS https://llm.example.test/health \;`, ""},
-		// A read that writes a file besides its output (curl -D) has that path judged too.
 		{`curl -D /etc/cron.d/x https://llm.example.test/healthz`, ruleHost},
 		{`curl --dump-header .claude/settings.json https://llm.example.test/healthz`, ruleGuard},
 		{`curl -D /dev/stderr -o /dev/null https://llm.example.test/healthz`, ""},
@@ -107,14 +104,12 @@ func TestGuardEnvHosts(t *testing.T) {
 		{`wget --output-file=/etc/cron.d/x -qO- https://llm.example.test/version`, ruleHost},
 		{`http --ignore-stdin -o /etc/cron.d/x https://llm.example.test/healthz`, ruleHost},
 		{`xh -I --output /etc/cron.d/x llm.example.test/healthz`, ruleHost},
-		// wp env read -o writes a file as curl -o does, so its path is judged.
 		{`wp env read production health -o .claude/settings.json`, ruleGuard},
 		{`wp env read production health --o=/etc/cron.d/x`, ruleHost},
 		{`wp env get production /x -i -o=/usr/bin/ls`, ruleHost},
 		{`wp -p env env read health -o /etc/cron.d/x`, ruleHost},
 		{`wp env read production health -o out.json`, ""},
 		{`wp comment WP-1 "-o /etc/cron.d/x"`, ""},
-		// Config files a tool reads on its own (CURL_HOME, WGETRC, HTTPIE_CONFIG_DIR) can change a read, so the call is refused.
 		{`CURL_HOME=. curl https://llm.example.test/`, ruleDownload},
 		{`WGETRC=./wgetrc wget -qO- https://llm.example.test/`, ruleDownload},
 		{`HTTPIE_CONFIG_DIR=. http -I https://llm.example.test/`, ruleDownload},

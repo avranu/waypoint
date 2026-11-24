@@ -1,7 +1,5 @@
 package core
 
-// The scheduler records runs and jobs every ten minutes too, not only when someone opens the CI board, and backfills each repo once.
-
 import (
 	stdcmp "cmp"
 	"context"
@@ -56,7 +54,6 @@ func (s *Service) recordCIRuns(ctx context.Context, forgeID int64, repo string, 
 		if ciPending(r.Status) || !validTime(r.Created) {
 			continue
 		}
-		// a re-run makes a finished run unfinished and finishes it again
 		if _, err := tx.ExecContext(ctx, `INSERT INTO ci_runs(forge_id, repo, number, workflow, event, ref, sha, title, tier, status, created_at, started_at, stopped_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(forge_id, repo, number) DO UPDATE SET status = excluded.status, started_at = excluded.started_at, stopped_at = excluded.stopped_at`,
@@ -301,7 +298,7 @@ func (s *Service) ciBackfillRead(ctx context.Context, cl ForgeActions, f *Forge,
 			return nil, nil, err
 		}
 		for _, t := range list {
-			if !seen[t.ID] { // pages shift while new tasks arrive
+			if !seen[t.ID] {
 				seen[t.ID] = true
 				tasks = append(tasks, t)
 			}
@@ -837,7 +834,6 @@ func (s *Service) noteCIWhole(ctx context.Context, forgeID int64, repo string, o
 			from = pf
 		}
 	case errors.Is(err, sql.ErrNoRows):
-		// A legacy backfill marker doesn't say whether the page cap cut the backfill short, so coverage starts from this read.
 	default:
 		s.log.WarnContext(ctx, "read CI history coverage", "repo", repo, "err", err)
 		return oldest

@@ -60,7 +60,6 @@ func TestMergeAfterLetsTheOtherGoFirst(t *testing.T) {
 	if m := be.sg.merged(); len(m) != 1 {
 		t.Fatalf("merges %+v", m)
 	}
-	// Merging #8 re-checks #7 directly, with no periodic sweep.
 	be.s.Wait()
 	if rd := be.readinessOf(7); mergeWaitIn(rd.Reasons) != "" {
 		t.Fatalf("#7 still waits: %v", rd.Reasons)

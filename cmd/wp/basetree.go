@@ -30,8 +30,6 @@ func baseWorktree(ref string) (dir string, cleanup func(), sha string, err error
 		return "", nil, "", err
 	}
 	sweepBaseWorktrees()
-	// The pid in the name lets a later run remove a checkout whose wp bench
-	// was killed before it could.
 	root, err := os.MkdirTemp("", baseTmpPrefix+strconv.Itoa(os.Getpid())+"-")
 	if err != nil {
 		return "", nil, "", err
@@ -41,7 +39,6 @@ func baseWorktree(ref string) (dir string, cleanup func(), sha string, err error
 		return "", nil, "", err
 	}
 	cleanup = func() {
-		// Our own temporary checkout: nothing in it is anyone's work.
 		_, _ = localGit("worktree", "remove", "--force", root)
 		_ = os.RemoveAll(root)
 		_, _ = localGit("worktree", "prune")

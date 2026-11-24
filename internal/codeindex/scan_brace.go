@@ -7,8 +7,6 @@ import (
 	"sync"
 )
 
-// Approximate by design: it finds the declarations people search for and never fails on odd code.
-
 type bLine struct {
 	code        string
 	comment     string
@@ -21,7 +19,7 @@ type bLine struct {
 
 type bOpener struct {
 	line   int
-	close  int // line of the matching '}', or the last line when unmatched
+	close  int
 	pdepth int
 }
 
@@ -238,10 +236,10 @@ type braceRule struct {
 	nameGroup int
 	scope     int
 	container bool
-	transpar  bool // a container whose members count as top-level (namespace, mod)
-	callWrap  bool // the body is a callback inside the call's parentheses: describe('x', () => {
+	transpar  bool
+	callWrap  bool
 	anon      bool
-	raw       bool // match the line as written, strings included (the name is in a string)
+	raw       bool
 	resolve   func(m []string) (name string)
 }
 
@@ -362,7 +360,7 @@ func scanBrace(lang string, src []byte) Parsed {
 	type cont struct {
 		name        string
 		bodyDepth   int
-		end         int // line index of the closing brace
+		end         int
 		transparent bool
 		pdepth      int
 	}

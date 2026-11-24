@@ -56,8 +56,6 @@ func GoTest(r io.Reader, text io.Writer, module string) ([]Test, error) {
 					write(e.Output)
 				}
 			case Pass, Fail, Skip:
-				// Tests that never ended (a panic, a timeout): their output
-				// is why the package failed.
 				for _, k := range sortedKeys(held) {
 					if strings.HasPrefix(k, e.Package+"\x00") {
 						if e.Action == Fail {
@@ -74,7 +72,7 @@ func GoTest(r io.Reader, text io.Writer, module string) ([]Test, error) {
 			}
 		case e.Action == Pass || e.Action == Fail || e.Action == Skip:
 			if strings.Contains(e.Test, "/") {
-				continue // Subtest results are skipped: the top-level test's own event, which comes after them, gives the outcome.
+				continue
 			}
 			k := key(e.Package, e.Test)
 			if e.Action == Fail {

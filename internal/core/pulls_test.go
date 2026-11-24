@@ -458,9 +458,7 @@ func newPREnv(t *testing.T, kind string) *prEnv {
 	e.s.Forges = fg
 	llm := &scriptLLM{answers: map[string]string{}}
 	e.s.LLM = llm
-	e.s.rnd = func() float64 { return 0.99 } // never post a drop or draw a benched arm
-	// Arms draw their posterior mean: untried arms tie, and the first wins
-	// (diff+files, verified when a verifier is set up).
+	e.s.rnd = func() float64 { return 0.99 }
 	e.s.beta = func(a, b float64) float64 { return a / (a + b) }
 	e.s.trustSeeds = []string{}
 	if err := e.s.EnsureDefaultAI(e.ctx, "http://opencode:4096", "", "opencode/big-pickle"); err != nil {
@@ -475,8 +473,6 @@ func newPREnv(t *testing.T, kind string) *prEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Adding the repo installs its webhook in the background, reading the
-	// clock; let it finish before tests move the clock.
 	e.s.Wait()
 	return &prEnv{env: e, fg: fg, llm: llm, f: f, p: p, repo: r}
 }
@@ -743,7 +739,6 @@ func TestReviewCommandsAndRetries(t *testing.T) {
 		t.Errorf("retried: %+v", done)
 	}
 
-	// Agents can't cancel the head's review, since a cancelled review counts as done.
 	agent := &Actor{User: pe.admin.User, Agent: "anthropic/claude-opus-5-5"}
 	pr.HeadSHA = "eeeeeee5555"
 	pe.pullHook("synchronize", pr)
@@ -754,7 +749,6 @@ func TestReviewCommandsAndRetries(t *testing.T) {
 	if _, err := pe.s.CancelBotRun(pe.ctx, agent, live.ID); err == nil || !strings.Contains(err.Error(), "agents can't cancel the review of a pull request's head") {
 		t.Errorf("an agent cancelled the head's review: %v", err)
 	}
-	// Head SHAs compare case-insensitively and by prefix, so abbreviations match.
 	if _, err := pe.s.db.W.ExecContext(pe.ctx, `UPDATE bot_runs SET head_sha = 'EEEEEEE' WHERE id = ?`, live.ID); err != nil {
 		t.Fatal(err)
 	}

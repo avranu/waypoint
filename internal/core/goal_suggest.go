@@ -9,8 +9,6 @@ import (
 	"unicode/utf8"
 )
 
-// Model output is only a proposal: a suggested goal waits for a person's Approve, and a rewording of an approved goal is a pending edit.
-
 // goalSuggestTask is the AI task; without a model of its own it uses the
 // automations' model.
 const goalSuggestTask = "goals"
@@ -72,7 +70,6 @@ func (s *Service) SuggestGoals(ctx context.Context, actor *Actor, project string
 	if role < RoleEditor || actor.IsAgent() {
 		return nil, forbidden("only a person with edit rights on %s asks for goal suggestions", p.Key)
 	}
-	// The run is detached from the request so it finishes after the person leaves the page; its timeout still bounds it.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), goalSuggestTimeout)
 	defer cancel()
 	return s.suggestGoals(ctx, p.ID)
@@ -179,7 +176,6 @@ func (s *Service) goalSuggestInput(ctx context.Context, p *Project) (*goalSugges
 			continue
 		}
 		in.goals = append(in.goals, title)
-		// Each goal is reworded once, from the project it lives in (a global goal from a root project), not from every child.
 		if w := goalWording(title); len(w) > 0 && (pid == p.ID || (pid == 0 && p.ParentID == nil)) {
 			in.flagged = append(in.flagged, goalSuggestFlagged{id, title, w})
 		}
@@ -217,8 +213,6 @@ func (s *Service) goalSuggestInput(ctx context.Context, p *Project) (*goalSugges
 		}
 		in.flagged = kept
 	}
-	// People's tasks that reach no approved goal: open ones, and ones
-	// finished lately (what people did says what they want too).
 	// #nosec G202 -- placeholders only; values are bound
 	rows, err = s.db.R.QueryContext(ctx, `SELECT i.id, p.key || '-' || i.number, i.title, i.description
 		FROM goal_traces gt JOIN issues i ON i.id = gt.item_id JOIN projects p ON p.id = i.project_id JOIN statuses st ON st.id = i.status_id
@@ -388,7 +382,6 @@ func (s *Service) applyGoalSuggestions(ctx context.Context, p *Project, in *goal
 			return nil
 		})
 		if err != nil {
-			// Don't leave a goal with no links: its title would block a retry.
 			if derr := s.write(ctx, SystemActor(), func(t *tx) error {
 				_, derr := t.ExecContext(ctx, `DELETE FROM design_notes WHERE id = ?`, n.ID)
 				return derr
@@ -413,8 +406,6 @@ func (s *Service) applyGoalSuggestions(ctx context.Context, p *Project, in *goal
 		if title == "" || strings.EqualFold(title, f.title) || len(goalWording(title)) > 0 {
 			continue
 		}
-		// Always a proposal, even on a goal agents may edit: the person
-		// who wrote the goal decides its words.
 		err := s.write(ctx, actor, func(t *tx) error {
 			var body string
 			if err := t.QueryRowContext(ctx, `SELECT body FROM design_notes WHERE id = ?`, f.id).Scan(&body); err != nil {

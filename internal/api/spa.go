@@ -36,7 +36,6 @@ type staticFile struct {
 }
 
 func init() {
-	// Go's table doesn't know it; browsers want this for the PWA manifest.
 	_ = mime.AddExtensionType(".webmanifest", "application/manifest+json")
 }
 

@@ -12,24 +12,6 @@ import (
 	"time"
 )
 
-// Text from outside on pull requests (WP-281, WP-ADR14). What a forge user
-// who isn't a Waypoint person writes on a pull request reaches no agent,
-// automation or model until a person has read and approved it:
-//
-//   - a pull request from outside (its title, description and code) is
-//     recorded with outside = 1: agents can't list or read it (prVisible,
-//     prAuthority), automation steps can't take it (StepCtx.PullRequest),
-//     bots don't review or answer on it, it sets off no event, and its
-//     title is blank until a person approves it. A new head or title from
-//     its author waits again;
-//   - a review, review comment or conversation comment from outside is
-//     dropped where Waypoint reads the forge (screenThreads, screenNotes),
-//     before anything else sees it, and waits in outside_pr_text;
-//   - their history keeps that they acted, not what they wrote.
-//
-// Waypoint's own accounts (the token's login is a person's; the bot
-// account's text is Waypoint's) aren't outside.
-
 // Kinds of outside text on a pull request.
 const (
 	OutsidePull = "pull"
@@ -116,7 +98,6 @@ func (v *prVoice) authorOutsideErr(ctx context.Context, q queryer, forgeAuthor, 
 	if strings.EqualFold(author, forgeAuthor) {
 		return false, nil
 	}
-	// The original is on GitHub: its author must be a person there.
 	var ok bool
 	if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM forge_people fp JOIN forges g ON g.id = fp.forge_id
 		WHERE g.kind = 'github' AND fp.login = ?)`, strings.TrimSpace(author)).Scan(&ok); err != nil {
@@ -200,7 +181,6 @@ func (s *Service) screenPull(ctx context.Context, t *tx, v *prVoice, pr *PullReq
 	title := excerpt(stripWIP(fp.Title), 300)
 	forgeAuthor := fp.Author
 	if forgeAuthor == "" {
-		// A GitLab hook, or a refresh, doesn't say: who it was recorded as.
 		forgeAuthor = pr.forgeAuthor
 	}
 	outsider, err := v.authorOutsideErr(ctx, t, forgeAuthor, pr.Author)

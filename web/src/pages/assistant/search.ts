@@ -1,5 +1,3 @@
-// Kept out of the page module: the router imports this validator eagerly, and the page is code-split.
-
 export type AssistantTab =
   'chat' | 'activity' | 'schedules' | 'skills' | 'memory' | 'tools' | 'files' | 'usage' | 'settings'
 

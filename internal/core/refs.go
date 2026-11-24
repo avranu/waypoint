@@ -11,8 +11,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Frontends link only the codes ResolveRefs returns (POST /refs); a code it does not resolve stays text.
-
 // Reference kinds beyond the knowledge kinds.
 const (
 	KRequest = "request"
@@ -116,7 +114,6 @@ func (s *Service) resolveRef(ctx context.Context, actor *Actor, tok string, sc r
 		case "design note", "design", "decision":
 			return s.itemRef(ctx, actor, KDesign, n)
 		case "request":
-			// A bare integer in resolveRequestID is the database id, not the request number (R-N), once other projects have filed requests.
 			return s.requestByCode(ctx, actor, "R-"+m[2], sc)
 		default:
 			return s.pullRef(ctx, actor, "", int(min(max(n, 0), math.MaxInt32)), sc)

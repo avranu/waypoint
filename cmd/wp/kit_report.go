@@ -117,8 +117,6 @@ func (c *cli) maybeReportMachine() {
 	if err != nil || throwawayBuild(exe) {
 		return
 	}
-	// Claimed under the state lock before it runs, checked against the state
-	// as saved, so of sessions starting together only one sends.
 	claimed := false
 	err = c.updateState(func(s *State) {
 		if time.Since(s.MachineReport) >= machineReportEvery {
@@ -152,11 +150,8 @@ func (c *cli) machineReport() machineReport {
 		case strings.HasSuffix(rel, ".json"):
 			body = redactJSON(body)
 		case strings.HasPrefix(rel, ".claude/hooks/"):
-			// Scripts embed tokens inline (curl -H 'Authorization: ...').
 			body = redactCommand(body)
 		}
-		// Capped after cleaning. A cut JSON file wouldn't parse, so a JSON one
-		// over the cap is left out; text is cut on a character boundary.
 		if len(body) > maxReportFile {
 			if strings.HasSuffix(rel, ".json") {
 				return
@@ -309,7 +304,6 @@ func redactJSON(raw string) string {
 		case []any:
 			for i := range t {
 				if under == "hooks" {
-					// Hook entries are not event names: walk them as 'hook' so their secret-named fields are still blanked.
 					t[i] = walk(t[i], "hook")
 				} else {
 					t[i] = walk(t[i], under)

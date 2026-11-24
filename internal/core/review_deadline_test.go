@@ -16,7 +16,6 @@ func TestRoundBeforePRHasADeadlineWhileSessionWorks(t *testing.T) {
 	a, g, _ := heldEnv(t)
 	a.stopWith("Waiting for the review.")
 	a.prompt(HarnessPromptMarks[0] + " a task finished")
-	// Every typing try finds the screen held; otherwise a job nobody answers fails its runner first and the round ends for another reason.
 	answered := 0
 	for range int(heldScreenWait/(5*time.Minute)) + 3 {
 		a.tickAll(5 * time.Minute)
@@ -92,8 +91,6 @@ func TestRoundAfterPRHeldScreenEnds(t *testing.T) {
 	if len(a.jobs) == 0 {
 		t.Fatalf("no review job: %+v", a.step())
 	}
-	// The clock passes the deadline with the job out (no tick runs, so no
-	// sweep ends the round first): the runner's "held" answer is what ends it.
 	a.s.Wait()
 	a.setClock(a.clockNow().Add(heldScreenWait + time.Minute))
 	if r := a.round(round); r.state == RoundFailed {

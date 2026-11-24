@@ -10,8 +10,6 @@ import (
 	"strings"
 )
 
-// Risk comes from provenance records only, never a model; the level is the highest factor, and the safety screen feeds the risk but never reads it back.
-
 // Risk levels, lowest first.
 const (
 	RiskLow    = "low"
@@ -412,8 +410,6 @@ func (s *Service) issueRiskFacts(ctx context.Context, q queryer, actor *Actor, i
 			f.CloseAgent = cmp(closeAgent, "an agent")
 		}
 	}
-	// none comes from its condition, so WQL agrees; it holds for outside
-	// text too, which no agent wrote either.
 	f.Grounding = grounding
 	for n, c := range conds {
 		if c[0] == riskNoGoal && on[n] {
@@ -483,8 +479,6 @@ func (s *Service) RiskOf(ctx context.Context, actor *Actor, kind, ref, project s
 	if actor == nil || actor.User == nil {
 		return nil, ErrUnauthorized
 	}
-	// The route needs issues.read; a token reads the other kinds' risk only
-	// with their own read permission.
 	if p, ok := map[string]Permission{RiskKindPage: PermPagesRead, RiskKindDesign: PermDesignRead, RiskKindGlossary: PermGlossaryRead, RiskKindPull: PermPullsRead,
 		RiskKindPrompt: PermSessionsRead, RiskKindAutomation: PermAutomationsRead}[kind]; ok {
 		if err := actor.need(p); err != nil {

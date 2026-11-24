@@ -87,8 +87,6 @@ export function MarkdownEditor({
   const [stored] = useState(() => (draftKey ? readDraft<string>(draftKey) : null))
   const [restored, setRestored] = useState(stored !== null && stored !== value)
   const [editing, setEditing] = useState(autoEdit || restored)
-  // What's on screen: the saved text plus any checkbox toggles still being
-  // saved, so a quick second toggle builds on the first instead of undoing it.
   const [shown, setShown] = useState(value)
   useEffect(() => setShown(value), [value])
   const [draft, setDraftState] = useState(restored ? stored! : value)
@@ -97,7 +95,6 @@ export function MarkdownEditor({
     if (!editing) setDraftState(shown)
   }, [shown, editing])
   const setDraft = (v: string) => {
-    // An upload can finish after the editor closed; nothing autosaves then, so its text is sent now.
     if (autosave && !latest.current.editing) {
       latest.current.draft = v
       setDraftState(v)
@@ -152,12 +149,9 @@ export function MarkdownEditor({
   const wasEditing = useRef(editing)
   if (editing && !wasEditing.current) ((base.current = value), sent.current.clear())
   wasEditing.current = editing
-  // The text changed on the server since editing began, by someone else:
-  // saving would overwrite it, so autosave waits for a choice.
   const conflict =
     autosave && editing && value !== base.current && !sent.current.has(value) && value !== draft
 
-  // Sends the draft; resolves true once the server has it (or has all of it).
   const flush = (): Promise<boolean> => {
     const run = async () => {
       const text = latest.current.draft
@@ -203,7 +197,6 @@ export function MarkdownEditor({
     [],
   )
 
-  // The rich editor must not open on text whose formatting it would lose; such text opens as markdown.
   const opening = useMemo(
     () => {
       if (!rich || !editing) return null
@@ -372,7 +365,7 @@ export function MarkdownEditor({
       const boxes = Array.from((e.currentTarget as HTMLElement).querySelectorAll('input.task'))
       const next = toggleTask(shown, boxes.indexOf(t), boxes.length)
       if (next === null) {
-        setEditing(true) // can't map the box to the source safely
+        setEditing(true)
         return
       }
       setShown(next)

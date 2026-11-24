@@ -97,7 +97,6 @@ func TestEarlierClosedPullRequestDoesNotBlockTheShip(t *testing.T) {
 	if len(e.g.created) != 1 {
 		t.Fatalf("an earlier closed pull request left %d opened, want 1", len(e.g.created))
 	}
-	// A pull request closed after the round began is a person's decision, so nothing opens.
 	e2, round2 := tipRound(t)
 	e2.g.tips = map[string]string{"wp-1-first": tipAudited}
 	if err := e2.s.db.R.QueryRow(`SELECT created_at FROM work_log WHERE id = ?`, round2).Scan(&made); err != nil {

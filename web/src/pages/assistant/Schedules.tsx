@@ -1,5 +1,3 @@
-// The list refreshes on cron.changed from the live stream; Run now's request stays open until Hermes answers.
-
 import { useMemo, useState } from 'react'
 import { useNavigate, useSearch } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'

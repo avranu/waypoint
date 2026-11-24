@@ -153,7 +153,7 @@ func (s *Service) sendPush(ctx context.Context, userID int64, msg pushMessage) {
 		subscriber = "mailto:waypoint@localhost"
 	}
 	for _, t := range targets {
-		body := slices.Clone(payload) // the library appends padding in place
+		body := slices.Clone(payload)
 		s.goBG(func() {
 			resp, err := webpush.SendNotificationWithContext(context.Background(), body, &t.sub, &webpush.Options{
 				HTTPClient: s.pushHTTP, Subscriber: subscriber, VAPIDPublicKey: pub, VAPIDPrivateKey: priv, TTL: 24 * 3600,

@@ -427,7 +427,7 @@ func (s *Service) ListTimeEntries(ctx context.Context, actor *Actor, q TimeQuery
 	}
 	switch {
 	case q.all:
-		q.Limit = -1 // SQLite: no limit
+		q.Limit = -1
 	case q.Limit <= 0:
 		q.Limit = 500
 	case q.Limit > 2000:

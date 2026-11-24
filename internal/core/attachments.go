@@ -137,7 +137,7 @@ func detectContentType(name string, data []byte) string {
 	}
 	ext := strings.ToLower(path.Ext(name))
 	if ext == ".svg" {
-		return "image/svg+xml" // SVG keeps its own type but is never shown in place, since it can carry script.
+		return "image/svg+xml"
 	}
 	if ct == "text/plain" || ct == "application/octet-stream" {
 		if t, ok := textExts[ext]; ok && looksLikeText(data) {
@@ -284,8 +284,6 @@ func (s *Service) targetAccess(ctx context.Context, q queryer, actor *Actor, t A
 			return nil, err
 		}
 		author = authorNull.Int64
-		// Whoever can see the issue can comment, so the author keeps the
-		// right to put files on their own comment.
 		need := min
 		if author != 0 && author == actor.id() && min <= RoleEditor {
 			need = RoleViewer
@@ -598,7 +596,6 @@ func (s *Service) attachmentTarget(ctx context.Context, t *tx, actor *Actor, id 
 	tg, err := s.targetAccess(ctx, t, actor, AttachTarget{typ, tid}, RoleEditor)
 	if err != nil {
 		if errors.Is(err, ErrForbidden) {
-			// A viewer who cannot edit is forbidden; anyone who cannot see the target gets not found, so existence is not leaked.
 			if _, verr := s.targetAccess(ctx, t, actor, AttachTarget{typ, tid}, RoleViewer); verr != nil {
 				return nil, notFound("attachment")
 			}

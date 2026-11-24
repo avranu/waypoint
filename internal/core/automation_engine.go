@@ -19,8 +19,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// A parked or interrupted run resumes by walking its steps again, so every step must be safe to run twice.
-
 // Run statuses.
 const (
 	RunQueued    = "queued"
@@ -59,9 +57,8 @@ type AutomationRun struct {
 	Steps []*RunStep `json:"steps,omitempty"`
 	Rule  *Rule      `json:"rule,omitempty"`
 
-	ruleID  int64
-	actorID int64
-	// permissions is the triggering token's (WP-111); nil: unrestricted.
+	ruleID      int64
+	actorID     int64
 	permissions []Permission
 	depth       int
 	notBefore   int64
@@ -289,10 +286,8 @@ func (x *execution) step(ctx context.Context, st Action, id string, iter, pos in
 	case row.Attempts == 0:
 		row.Attempts = 1
 	case row.Status == "waiting":
-		// Resuming from a retry's pause starts a new try; resuming from a step's own wait keeps the same try.
 		w, rerr := x.s.stepWait(ctx, x.run.ID, id, iter, retrySeq(row.Attempts))
 		if rerr != nil {
-			// If the wait can't be read, stop: carrying on could run the step before a retry's pause is over.
 			return fail(fmt.Errorf("read what the step was waiting for: %w", rerr))
 		}
 		if w != nil {
@@ -336,8 +331,6 @@ func (x *execution) step(ctx context.Context, st Action, id string, iter, pos in
 		_, _, err := c.waitSeq(retrySeq(row.Attempts), "", "", "", delay)
 		return err
 	case runErr != nil:
-		// What the step set before it failed stays (an exit code, the output),
-		// for the steps that carry on after it.
 		row.Inputs, row.Log, row.Outputs = c.recordedInputs(), row.Log+c.log.String(), c.out
 		return fail(runErr)
 	}
@@ -625,7 +618,6 @@ func (c *StepCtx) recordedInputs() map[string]any {
 			case p.Type == PURL:
 				out[p.Name] = redactURL(anyString(v))
 			case p.Type == PTemplate || p.Type == PJSON:
-				// A render failure here is not an error: legacy actions fill their own templates, so the raw value is kept.
 				if r, err := renderTemplate(anyString(v), c.data); err == nil {
 					out[p.Name] = r
 				} else {
@@ -696,8 +688,6 @@ func (c *StepCtx) WaitSlot(slot int, kind, key, match string, timeout time.Durat
 	var p *parked
 	if ready != nil && errors.As(err, &p) {
 		if rev, ok := ready(); ok {
-			// It happened between the look and the wait: end the wait now. The
-			// run is not parked yet; endDurable queues it again when it is.
 			c.S.resolveWait(c.Ctx, pendingWait{id: p.waitID, runID: sql.NullInt64{Int64: c.Run.ID, Valid: true}}, "event", rev)
 		}
 	}

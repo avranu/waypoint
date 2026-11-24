@@ -1,7 +1,5 @@
 package core
 
-// A fact that can't be read refuses the ship; only AgainUnscored decides on the reviewers' labels alone (decision model failed, nothing at the floor).
-
 import (
 	"context"
 	"database/sql"
@@ -390,7 +388,7 @@ func (s *Service) againLoopOf(ctx context.Context, round, run int64) (*againLoop
 	}
 	defer rows.Close()
 	l := &againLoop{}
-	list := []string{"0"} // no row's ID: the list is never empty
+	list := []string{"0"}
 	for rows.Next() {
 		var id int64
 		if err := rows.Scan(&id); err != nil {
@@ -427,13 +425,11 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 		return "", "", err
 	}
 	if loop == nil || in.Decisions > 0 || !roundDecidable(in.State, in.Started) {
-		// A ship asked again after its pull request failed to open does not decide the round again.
 		return "", "", nil
 	}
 	index := len(loop.earlier) + 1
 	p := s.againPolicy()
 	audit, own := in.AuditID, in.OwnID
-	// What a ship is asked depends on the wait alone, not on whether the round's session still runs: a late ship is shown the findings, not released past them.
 	in.ShipOpens, in.Session = true, true
 	switch out := decideRound(in); out.Do {
 	case doWait:
@@ -441,7 +437,6 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 		return fmt.Sprintf("audit #%d, %s's adversarial review round, is still going: end your turn, and Waypoint carries the round on when it ends: it opens the pull request itself, or gives you what it found. Nothing more to run.", audit, g.key), "", nil
 	case doTell:
 		if out.Need == needMarks {
-			// An open or confirmed-but-unfixed finding holds the ship, as roundTodo holds an audited one.
 			todo, lines, err := s.againTodoLines(ctx, audit)
 			if err != nil || len(todo) == 0 {
 				return "", "", err
@@ -454,7 +449,6 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 	case doEnd:
 		return reportHold(g.key, index, bp.Base), "", nil
 	case doRelease:
-		// A released round carries its audit to the pull request (OpenPR, carryAudits), where an open critical or high finding holds the merge.
 		s.writeLogged(ctx, "record why a round was released at its ship", `UPDATE work_log SET reason = ? WHERE id = ? AND state = ?`, out.Why, round, in.State)
 		if bp.facts != nil {
 			bp.facts.released = round
@@ -462,10 +456,8 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 		return "", "", nil
 	}
 	if audit == 0 {
-		// A plan handed over to the pull request: its slow audit holds the merge, and no decision is made here.
 		return "", "", nil
 	}
-	// Marks are checked before they count: an all-rejected round would otherwise end the loop with no model asked, and a fix would count as done on the session's word alone; not at the cap.
 	var check int64
 	var passed, unread bool
 	if index < p.cap {
@@ -490,7 +482,6 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 			return s.countOwnRound(ctx, t, g.issueID, round, 0, 0, 0, at)
 		})
 	}
-	// A filed finding stands as real, so it never makes a round all-rejected; marks count over every finding, not just those the model reads.
 	total, fixed, rejected, filed, err := s.markCounts(ctx, audit, check)
 	if err != nil {
 		return "", "", err
@@ -503,8 +494,6 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 	case passed:
 		d.checked = checkPassed
 	}
-	// A decision that isn't recorded isn't made: the ship is refused, and
-	// asked again it decides again.
 	record := func() error {
 		err := s.write(ctx, actor, func(t *tx) error {
 			at := s.nowMS()
@@ -521,7 +510,6 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 		if !errors.Is(err, errRoundDecided) {
 			return err
 		}
-		// A ship that loses the race writes nothing; it opens the pull request only if the winning ship ended the loop.
 		var next int64
 		if err := s.db.R.QueryRowContext(ctx, `SELECT coalesce(next_round_id, 0) FROM review_again_decisions WHERE round_id = ?`, round).Scan(&next); err != nil {
 			return err
@@ -533,7 +521,6 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 	}
 	disputed := slices.ContainsFunc(findings, func(f againFinding) bool { return f.audit != audit && f.state == "rejected" })
 	if fixed == 0 && open == 0 && !passed && !disputed {
-		// Every finding rejected and none disputed: nothing the review found stands, so no further review is asked.
 		d.arm = AgainRejected
 		return "", "", record()
 	}
@@ -636,7 +623,6 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 			}
 			s.emitWorkLog(ctx, t, g.issueID, round, RoundDone)
 		case RoundDone:
-			// The session's own report (a Stop, or its read of the audit) stands; the round's counts are taken from it.
 			if own != 0 {
 				if err := s.countOwnRound(ctx, t, g.issueID, round, total, fixed, rejected, at); err != nil {
 					return err
@@ -656,7 +642,6 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 		return d.insertOnce(ctx, t, at)
 	})
 	if errors.Is(err, ErrConflict) || errors.Is(err, errRoundDecided) {
-		// The losing ship is never told to run its command again: the round's current state is what it needs.
 		s.log.InfoContext(ctx, "ship raced a server-side change of its round", "round", round, "task", g.key, "err", err)
 		bp.facts.idleHeld()
 		return fmt.Sprintf("Pushed %s. Waypoint moved %s's adversarial review on while this ship ran, and carries it from where it stands: it opens the pull request itself, or tells this session what is left. Nothing more to run: end your turn.", head, g.key), "", nil
@@ -838,7 +823,6 @@ func (s *Service) decideAgain(ctx context.Context, d *againDecision, state strin
 		if len(got) == 0 {
 			return nil, "", first
 		}
-		// A step counts answers, not tries: a failed ask is asked again, so every rule judges the same number of answers.
 		if len(got) < want && asked < againSamplesMax {
 			continue
 		}
@@ -1018,7 +1002,6 @@ func (d *againDecision) score(findings []againFinding, earlier []againFinding, a
 		if f.stands() && (len(earlier) == 0 || st >= againNovelMin) {
 			d.novel++
 		}
-		// Reworked counts refuted findings too: code the session changed for one is still unread by any reviewer.
 		if f.hold > 0 && (len(earlier) == 0 || f.sev*f.hold >= againNovelMin) {
 			d.reworked++
 		}
@@ -1476,7 +1459,6 @@ func (s *Service) againTrust(ctx context.Context, audit int64) (bool, error) {
 		return false, err
 	}
 	if model == ownReportModel && strings.HasSuffix(key, ":own") {
-		// A session's own report is trusted without the reviewer record; its scores are taken at their word.
 		return true, nil
 	}
 	rt, err := s.reviewerTrust(ctx)
@@ -1531,7 +1513,6 @@ func againRecordOf(rt reviewerTrust, model string) string {
 // againTodoLines is againTodo with a line for each finding: its ID, severity,
 // place and title, so a session sees what to decide without another command.
 func (s *Service) againTodoLines(ctx context.Context, audit int64) (ids []string, lines string, err error) {
-	// Must match roundTodo's undecided findings: the pull request's babysitter's findings are left out.
 	a, err := s.auditRow(ctx, audit)
 	if err != nil {
 		return nil, "", err
@@ -1639,7 +1620,6 @@ func (s *Service) checkMarks(ctx context.Context, actor *Actor, g *reviewGate, b
 				return 0, "", false, false, err
 			}
 			if len(ids) == 0 && counted {
-				// A report of nothing that the count of the reviewer's words agrees with is not checked: two readers already agree.
 				said = ""
 			}
 			if said != "" {
@@ -1709,15 +1689,12 @@ func (s *Service) checkMarks(ctx context.Context, actor *Actor, g *reviewGate, b
 			return 0, checkingText(bp.Branch, g.key, what, check), false, false, nil
 		}
 		s.log.WarnContext(ctx, "a round's check of its marks is past its patience; they stand unchecked", "round", round, "audit", check)
-		// Left queued, it would still take the runner's next slot, ahead of
-		// the round it no longer holds.
 		if _, err := s.CancelAudit(ctx, SystemActor(), check); err != nil {
 			s.log.WarnContext(ctx, "cancel a round's check past its patience", "audit", check, "err", err)
 		}
 	default:
 		s.log.WarnContext(ctx, "a round's check of its marks ended without an answer; they stand unchecked", "round", round, "audit", check, "status", status)
 	}
-	// The last result marks an own report whose check was to read it against the reviewer's words and did not.
 	return 0, "", true, own && strings.Contains(asked, checkLeftOut), nil
 }
 
@@ -1938,13 +1915,13 @@ type againDecision struct {
 	issues, fixes                   int
 	probs, model, arm               string
 	index, novel, repeats           int
-	reworked                        int // new findings the session changed code for, refuted or not
+	reworked                        int
 	tier                            string
 	signals, signalRepeats          int
-	serious, weight, need           int // high and critical signals, each calling another round; medium signals; the mediums another round needed
+	serious, weight, need           int
 	unchecked, checked              int
-	unread                          bool // own report not read against the reviewer's words; counted in unchecked
-	labels                          int  // 1 when read by labels alone; the model unscored
+	unread                          bool
+	labels                          int
 	samples                         int
 	spread                          string
 	floor                           float64
@@ -1980,7 +1957,7 @@ func (d *againDecision) insert(ctx context.Context, t *tx, at int64) (inserted b
 		return false, err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return false, nil // Zero rows: another ship decided this round first; not an error.
+		return false, nil
 	}
 	var project int64
 	if err := t.QueryRowContext(ctx, `SELECT project_id FROM issues WHERE id = ?`, d.issue).Scan(&project); err != nil {

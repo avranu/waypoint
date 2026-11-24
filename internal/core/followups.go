@@ -13,8 +13,6 @@ import (
 	"time"
 )
 
-// "Finished" at a Stop hook means no background task, cron or wakeup can wake the agent, nothing is delivered at that stop, and no open request from the session.
-
 const (
 	followUpTrigger = "session_finished"
 	// stopAwait is how long a Stop hook that set off a follow-up waits for
@@ -78,7 +76,7 @@ type SessionMessage struct {
 	AutomationID int64 `json:"automation_id,omitempty"`
 
 	sessionID   int64
-	passive     bool // news, not work: waits for the next prompt or start, never continues a stop
+	passive     bool
 	deliveredAt sql.NullInt64
 	stepKey     string
 }
@@ -201,7 +199,6 @@ func (s *Service) followUpEvents(ctx context.Context, e *Event) {
 			}
 		}
 	case EvRequestUpdated:
-		// A request that expired because its session ended does not start the follow-up; Run now still does.
 		if ended, _ := e.Data["session_ended"].(bool); ended {
 			return
 		}
@@ -416,8 +413,6 @@ func (s *Service) SaveFollowUp(ctx context.Context, actor *Actor, sessionID int6
 		return nil, err
 	}
 	now := s.nowMS()
-	// Not the session's title: an automation's name shows in the history of
-	// what it changes, where people who can't see the session read it.
 	name := "Follow-up of session " + itoa64(x.ID)
 	err = s.write(ctx, actor, func(t *tx) error {
 		if a == nil {
@@ -639,7 +634,6 @@ func (s *Service) takeMessages(ctx context.Context, t *tx, x *AgentSession, via 
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	// A wp ship waiting on a review round's news holds that news back from this delivery.
 	out = slices.DeleteFunc(out, func(m *SessionMessage) bool { return s.shipWaits.holds(ctx, t, s.now(), x.ID, m) })
 	if len(out) == 0 {
 		return nil, nil
@@ -702,7 +696,6 @@ func MessagesText(list []*SessionMessage) string {
 			head = "Waypoint: " + m.From + " queued this for when you finished"
 		}
 		if m.Agent != "" {
-			// Agent-written text is not a person's words, even when a person's automation sends it.
 			head += "; " + agentPhrase(m.Agent) + " wrote it and no person has reviewed it"
 		}
 		parts = append(parts, head+":\n\n"+m.Body)
@@ -934,8 +927,6 @@ func messageTask(ctx context.Context, q queryer, stepKey string) (task int64, bo
 		if err == nil {
 			var asked int
 			if kind == "audit" && q.QueryRowContext(ctx, `SELECT count(*) FROM code_audits WHERE id = ? AND request_key NOT LIKE 'review-round:%' AND pr_id IS NULL`, n).Scan(&asked) == nil && asked > 0 {
-				// An audit somebody asked for that no round or pull request
-				// carries is news of no task: it is the asker's.
 				return 0, false
 			}
 			_ = q.QueryRowContext(ctx, `SELECT coalesce(

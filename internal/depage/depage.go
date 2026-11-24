@@ -279,7 +279,7 @@ func ParseRenovate(b []byte) ([]Rule, error) {
 			continue
 		}
 		if len(m.ManagerFilePatterns) == 0 {
-			continue // Renovate reads no files for it; an empty regexp would match every one
+			continue
 		}
 		var files []string
 		for _, p := range m.ManagerFilePatterns {

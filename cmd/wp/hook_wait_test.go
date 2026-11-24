@@ -46,7 +46,6 @@ func waitHookTold(t *testing.T, status int, body string, input map[string]any) (
 				t.Errorf("told: %v", err)
 			}
 			told = in.Requests
-			// An answer is told only once the hook has printed it.
 			if stdout.String() == "" {
 				t.Errorf("told %v before the hook printed anything", in.Requests)
 			}
@@ -501,12 +500,10 @@ func TestWaitHookSaysTheETAOfABackgroundedRun(t *testing.T) {
 		dir, _ := slotDir()
 		writeWaiter(t, dir, os.Getppid(), time.Now().Add(-2*time.Second).UnixNano())
 		out, _ := waitHook(t, 200, `{}`, bashCall("wp slot run tests -n 1 -- go test ./...", true))
-		// (20 left + 30 run) * 1.2 is the expected wait, in minutes.
 		if ctx := waitContext(t, out); !strings.Contains(ctx, "is expected to complete in 60 minutes.") {
 			t.Errorf("context:\n%s", ctx)
 		}
 	})
-	// Where no process's session can be read (darwin), the session each run recorded says whose it is.
 	t.Run("no session to read: another session's identical run 1s old holds it: queued", func(t *testing.T) {
 		t.Setenv("WAYPOINT_SLOT_DIR", t.TempDir())
 		stubPidSessions(t, map[int]string{})
@@ -529,7 +526,6 @@ func TestWaitHookSaysTheETAOfABackgroundedRun(t *testing.T) {
 			t.Errorf("context:\n%s", ctx)
 		}
 	})
-	// A quoted '>' is an argument, not a redirection: the key is the one the run records.
 	t.Run("a quoted > is an argument", func(t *testing.T) {
 		t.Setenv("WAYPOINT_SLOT_DIR", t.TempDir())
 		seedRuns(t, "tests", "grep > file", "/tmp", 30, 30, 30)

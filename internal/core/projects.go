@@ -140,7 +140,7 @@ func (p *ProjectSettings) validate() error {
 		v    *string
 		what string
 	}{{&p.AutopilotPrompt, "prompt"}, {&p.AutopilotDone, "note"}} {
-		v, err := cleanAutopilotText(*part.v, part.what, "") // no default is passed here, so a project's own text is kept even when it reads like the built-in default
+		v, err := cleanAutopilotText(*part.v, part.what, "")
 		if err != nil {
 			return err
 		}
@@ -588,7 +588,6 @@ func (s *Service) ListProjects(ctx context.Context, actor *Actor, includeArchive
 			if p.OpenIssues, err = s.guestOpenCount(ctx, actor, p.Key); err != nil {
 				return nil, err
 			}
-			// Issues they can't see don't say when they changed.
 			p.ActiveAt = &p.UpdatedAt
 		}
 	}
@@ -814,9 +813,7 @@ type ProjectInput struct {
 	Archived    *bool            `json:"archived"`
 	Settings    *ProjectSettings `json:"settings"`
 	// Parent nests the project under another (a key); null or "" un-nests.
-	Parent Opt[string] `json:"parent"`
-	// settingsJSON is the settings object as sent, so an update changes only
-	// the fields it names (zero values included).
+	Parent       Opt[string] `json:"parent"`
 	settingsJSON json.RawMessage
 }
 
@@ -1033,8 +1030,6 @@ func (s *Service) UpdateProject(ctx context.Context, actor *Actor, ref string, i
 	if in.Description != nil {
 		sets, args = append(sets, "description = ?"), append(args, *in.Description)
 	}
-	// A person changing the icon, colour or background makes the look theirs.
-	// The settings form sends all three on every save, so only a difference counts.
 	lookChanged := false
 	if in.Color != nil {
 		if !colorRE.MatchString(*in.Color) {
@@ -1124,7 +1119,7 @@ func (s *Service) UpdateProject(ctx context.Context, actor *Actor, ref string, i
 			}
 			if err == nil {
 				ev := &Event{Kind: EvProjectUpdated, ProjectID: p.ID}
-				if autoEstimateOn { // dispatch backfills the project's unestimated issues
+				if autoEstimateOn {
 					ev.Field, ev.New = "auto_estimate", "on"
 				}
 				t.emit(ev)
@@ -1157,8 +1152,6 @@ func (s *Service) DeleteProject(ctx context.Context, actor *Actor, ref string) e
 		return err
 	}
 	return s.write(ctx, actor, func(t *tx) error {
-		// Webhooks Waypoint added for the project's repos go too, unless
-		// another project still has the repo (checked after commit).
 		rows, err := t.QueryContext(ctx, `SELECT forge_id, repo, hook_id FROM project_repos WHERE project_id = ? AND hook_id != ''`, p.ID)
 		if err != nil {
 			return err
@@ -1189,7 +1182,6 @@ func (s *Service) DeleteProject(ctx context.Context, actor *Actor, ref string) e
 		if _, err := t.ExecContext(ctx, `DELETE FROM issue_search WHERE rowid IN (SELECT id FROM issues WHERE project_id = ?)`, p.ID); err != nil {
 			return err
 		}
-		// Issues reference statuses without ON DELETE, so drop them first.
 		if _, err := t.ExecContext(ctx, `DELETE FROM issues WHERE project_id = ?`, p.ID); err != nil {
 			return err
 		}

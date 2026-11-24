@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-// Nothing depends on this job: if it is held or fails, the round's own job compacts the session as usual.
-
 // reviewCompactSource is the source of that job; its source id is the round.
 const reviewCompactSource = "review_compact"
 

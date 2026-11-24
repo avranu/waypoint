@@ -39,8 +39,6 @@ func (s *Service) beginServerRun(ctx context.Context) {
 	}
 	var prev *PreviousRun
 	var runID int64
-	// On the first try every running or busy mark is an earlier process's,
-	// whatever its clock said; on a retry only those from before this start.
 	s.jobs.mu.Lock()
 	retry := s.jobs.startTried
 	s.jobs.startTried = true
@@ -57,9 +55,6 @@ func (s *Service) beginServerRun(ctx context.Context) {
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		// It was last seen working when the check last finished or the
-		// liveness tick last ran, whichever is later: a check stalled for
-		// hours is not the server being gone.
 		end := max(checked, alive)
 		if err == nil {
 			if stopped.Valid {

@@ -10,8 +10,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Sleeping on a background command of this session that still holds its output file open is refused, not noted: its exit notice is certain to come.
-
 const sleepWaitSecs = 30
 
 var (
@@ -68,7 +66,7 @@ func taskNudge(tool, cmd, path string, who caller) (kind, text string, deny bool
 			return "agent-output", "That file is sub-agent " + id + "'s whole transcript. Its report comes when it finishes; reading the transcript fills your context.", false
 		}
 		if !heldOpen(file) {
-			continue // finished, or not knowable here: reading the output is fine
+			continue
 		}
 		switch who {
 		case callerBg:
@@ -114,7 +112,7 @@ var heldOpen = func(file string) bool {
 		dir := "/proc/" + name + "/fd/"
 		fds, err := os.ReadDir(dir)
 		if err != nil {
-			continue // another user's process
+			continue
 		}
 		for _, fd := range fds {
 			if l, err := os.Readlink(dir + fd.Name()); err == nil && l == want {

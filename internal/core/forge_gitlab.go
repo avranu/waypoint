@@ -116,7 +116,6 @@ func parseGitLabHook(body []byte) (*forgeEvent, error) {
 			ev.item = &ForgeItem{Number: a.IID, State: glState(a.State), URL: a.URL, Confidential: true}
 			break
 		}
-		// GitLab's issue hook has no author, only the user who acted; for a new or edited issue that user wrote the text, so it is the author.
 		ev.item = &ForgeItem{Number: a.IID, Title: a.Title, Body: a.Description, State: glState(a.State), URL: a.URL, Author: p.User.Username}
 		for _, l := range p.Labels {
 			ev.item.Labels = append(ev.item.Labels, l.Title)
@@ -128,7 +127,6 @@ func parseGitLabHook(body []byte) (*forgeEvent, error) {
 		}
 		ev.kind, ev.branch = "pull", a.SourceBranch
 		ev.item = &ForgeItem{Number: a.IID, Title: a.Title, Body: a.Description, State: state, URL: a.URL, IsPR: true}
-		// The hook names the user who acted, not the pull request's author; onForgePull reads the author from the API when it is missing.
 		ev.pr = &ForgePR{Number: a.IID, Title: a.Title, Body: a.Description, URL: a.URL, State: state,
 			BaseRef: a.TargetBranch, HeadRef: a.SourceBranch, HeadSHA: a.LastCommit.ID, OpenedAt: a.CreatedAt.ptr(), actor: p.User.Username}
 		for _, l := range p.Labels {
@@ -147,12 +145,12 @@ func parseGitLabHook(body []byte) (*forgeEvent, error) {
 		}
 		ev.sender = p.User.Username
 		if state == "merged" {
-			ev.pr.MergeSHA = a.MergeCommitSHA // none for a squash without a merge commit: the next sync reads squash_commit_sha
+			ev.pr.MergeSHA = a.MergeCommitSHA
 		}
 		switch a.Action {
 		case "merge":
 			ev.pr.MergedBy = p.User.Username
-		case "approved", "approval": // approval: one person approved; approved: the last approval needed
+		case "approved", "approval":
 			ev.review = &forgeReviewEvent{number: a.IID, kind: "approved", sha: a.LastCommit.ID,
 				ForgeComment: ForgeComment{ID: "gl-approved:" + p.User.Username + ":" + a.LastCommit.ID, Author: p.User.Username, URL: a.URL}}
 		}
@@ -213,7 +211,7 @@ func (g *glTime) UnmarshalJSON(b []byte) error {
 			return nil
 		}
 	}
-	return nil // a date it can't read is no reason to drop the event
+	return nil
 }
 
 func (g glTime) ptr() *time.Time {

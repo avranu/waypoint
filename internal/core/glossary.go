@@ -11,8 +11,6 @@ import (
 	"time"
 )
 
-// A project's full glossary is its own terms, its ancestors' and the global ones; a nearer definition shadows a further one, and a locked entry can't be changed by agents.
-
 // GlossaryEntry is one term.
 type GlossaryEntry struct {
 	ID int64 `json:"id"`
@@ -327,7 +325,6 @@ func (s *Service) LookupGlossary(ctx context.Context, actor *Actor, term, projec
 		res.Matches = append(res.Matches, g)
 	}
 	rows.Close()
-	// A word this project avoids: the entries that say what to use instead.
 	// #nosec G202 -- fixed conditions, an integer-built rank and ? placeholders
 	rows, err = s.db.R.QueryContext(ctx, glossarySelect+` WHERE `+cond+` AND EXISTS (SELECT 1 FROM json_each(g.avoid) WHERE value = ? COLLATE NOCASE)
 		ORDER BY `+rank+`, g.id`, append(slices.Clone(base), term)...)

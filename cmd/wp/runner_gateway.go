@@ -1,7 +1,5 @@
 package main
 
-// The runner never holds the LLM gateway's address or key: Waypoint has them and sends the task on.
-
 import (
 	"archive/tar"
 	"bytes"
@@ -216,7 +214,6 @@ func (p *runnerProc) gatewayUpload(ctx context.Context, path, prompt string, arc
 		return nil, err
 	}
 	body := io.MultiReader(&head, io.LimitReader(archive, size), strings.NewReader("\r\n--"+mw.Boundary()+"--\r\n"))
-	// Copy the client: a longPoll set on the shared client would give every other runner request the upload's long timeout.
 	c := *p.c
 	c.longPoll = gatewayUploadTimeout
 	raw, err := c.send(ctx, "POST", path, mw.FormDataContentType(), body)
@@ -302,7 +299,6 @@ func packCheckout(work string, w io.Writer, max int64) (files int, left []string
 		if err := tw.WriteHeader(&tar.Header{Typeflag: tar.TypeReg, Name: path, Mode: mode, Size: info.Size()}); err != nil {
 			return err
 		}
-		// Copy only the size the header declared: a file that grows while packed would make tar reject the whole archive (ErrWriteTooLong).
 		if _, err := io.CopyN(tw, f, info.Size()); err != nil {
 			return err
 		}

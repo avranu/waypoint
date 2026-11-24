@@ -253,8 +253,6 @@ func (s *Service) end(ctx context.Context, q queryer, e LinkEnd, scope *int64) (
 		if ref == "" {
 			return "", 0, "", invalid("say what to link: a type and id, or a ref")
 		}
-		// ADR7 and ADR-0007 would read as issue keys: a decision code wins
-		// if a note has it.
 		if id, ok := s.designByCodeLoose(ctx, q, ref, scope); ok {
 			return KDesign, id, "", nil
 		}
@@ -395,8 +393,6 @@ func (s *Service) resolveName(ctx context.Context, q queryer, typ, name string, 
 // an issue key, then (unless the target says its type) a glossary term, a
 // design note, a page.
 func (s *Service) resolveWikilink(ctx context.Context, q queryer, target string, scope *int64) (string, int64, bool) {
-	// [[ADR7]] and [[ADR-0007]] would read as issue keys: a decision code
-	// wins if a note has it.
 	if id, ok := s.designByCodeLoose(ctx, q, target, scope); ok {
 		return KDesign, id, true
 	}
@@ -424,7 +420,6 @@ func (s *Service) resolveWikilink(ctx context.Context, q queryer, target string,
 	case KFile, KURL:
 		return "", 0, false
 	}
-	// A page code resolves in this project or the nearest one above it.
 	if id, ok := s.pageByCodeLoose(ctx, q, target, scope); ok {
 		return KPage, id, true
 	}
@@ -831,7 +826,6 @@ func (s *Service) addLink(ctx context.Context, t *tx, actor *Actor, in LinkInput
 			_, err = t.ExecContext(ctx, `UPDATE knowledge_links SET confirmed_by = ?, confirmed_at = ? WHERE id = ? AND auto = 0 AND confirmed_by IS NULL
 				AND (basis != '' OR created_agent != '' OR created_by IS NULL)`, actor.id(), s.nowMS(), id)
 		default:
-			// The guess's reason is cleared but its score stays on the row, so the matcher's view is still recorded.
 			_, err = t.ExecContext(ctx, `UPDATE knowledge_links SET basis = ?, created_by = ?, created_agent = ?, created_at = ?, note = ?, session_id = ?, session_issue_id = ?
 				WHERE id = ? AND confirmed_by IS NULL AND basis IN (?, ?)`,
 				basis, nullUser(actor.id()), actor.creditAgent(), s.nowMS(), strings.TrimSpace(in.Note), sessID, sessTask, id, linkBasisInferred, linkBasisSuggested)

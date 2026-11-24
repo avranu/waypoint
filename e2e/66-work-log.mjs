@@ -116,7 +116,6 @@ async function run(width, scheme, n) {
   await page.getByTestId(`autopilot-${KEY}`).getByRole("button", { name: `Limits for ${KEY}` }).click();
   await dlg.waitFor();
   await brief.fill(house + "!");
-  // The server counts this limit in code points (utf8.RuneCountInString), so the client must count the same way.
   await dlg.getByText(`${[...house].length + 1} of 12,000 characters`).waitFor();
   ok(true, `${tag} the brief's length is counted in characters, as the server counts it`);
   await brief.fill("");
@@ -139,7 +138,6 @@ async function run(width, scheme, n) {
   await dlg.getByRole("button", { name: "Inherit instead" }).click();
   await briefIs(null);
   ok((await brief.getAttribute("placeholder")) === house, `${tag} Inherit instead goes back to the default's brief`);
-  // Later tests in this suite run against these autopilot limits, so restore them here.
   await api("PUT", "/autopilot", { limits: mine });
   await brief.fill("Attack the parser. Name the input that breaks it.");
   await brief.blur();

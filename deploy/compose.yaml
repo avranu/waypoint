@@ -1,4 +1,3 @@
-# Per-host settings go in deploy/.env (gitignored; compose reads it automatically).
 services:
   waypoint:
     build:
@@ -15,21 +14,17 @@ services:
       WAYPOINT_TRUST_PROXY: ${WAYPOINT_TRUST_PROXY:-1}
       WAYPOINT_METRICS_TOKEN: ${WAYPOINT_METRICS_TOKEN:-}
       WAYPOINT_LOG_LEVEL: ${WAYPOINT_LOG_LEVEL:-info}
-      # An empty WAYPOINT_AI_OPENCODE_URL opts out: the default applies only when the variable is unset.
       WAYPOINT_AI_OPENCODE_URL: ${WAYPOINT_AI_OPENCODE_URL-http://opencode:4096}
-      # An empty WAYPOINT_AI_MEANING_URL turns the service off: the default applies only when unset.
       WAYPOINT_AI_MEANING_URL: ${WAYPOINT_AI_MEANING_URL-http://meaning:8080}
       WAYPOINT_AI_MEANING_TOKEN: ${MEANING_TOKEN:-}
       WAYPOINT_AI_MODEL: ${WAYPOINT_AI_MODEL:-opencode/big-pickle}
       WAYPOINT_AI_OPENCODE_PASSWORD: ${OPENCODE_SERVER_PASSWORD:-}
-      # Later starts with only the key keep the URL saved on the first start.
       LLM_GATEWAY_URL: ${LLM_GATEWAY_URL:-}
       LLM_GATEWAY_API_KEY: ${LLM_GATEWAY_API_KEY:-}
       LLM_GATEWAY_MODEL: ${LLM_GATEWAY_MODEL:-}
       LLM_GATEWAY_EXTENSIONS: ${LLM_GATEWAY_EXTENSIONS:-}
       OPENLLMS_BASE_URL: ${OPENLLMS_BASE_URL:-}
       OPENLLMS_API_KEY: ${OPENLLMS_API_KEY:-}
-      # Each assistant can override both in Admin → Assistants.
       WAYPOINT_ASSISTANT_KEY_HEADER: ${WAYPOINT_ASSISTANT_KEY_HEADER:-}
       WAYPOINT_ASSISTANT_AGENT_URL: ${WAYPOINT_ASSISTANT_AGENT_URL:-}
     volumes:
@@ -59,7 +54,6 @@ services:
       MEANING_THREADS: ${MEANING_THREADS:-4}
       MEANING_TOKEN: ${MEANING_TOKEN:-}
       MEANING_STUCK_S: ${MEANING_STUCK_S:-180}
-    # The image has the same health check; this copy makes deploy-status show it.
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=9).status==200 else 1)"]
       interval: 30s

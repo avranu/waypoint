@@ -11,8 +11,6 @@ export function useQuickAdd(draftKey: string | null) {
   const [text, setDraft] = useDraft(draftKey, '')
   const [error, setError] = useState<string | null>(null)
   const sending = useRef(false)
-  // The latest text, read at submit time: a second Enter queued behind the
-  // first can run before the re-render that shows the cleared box.
   const latest = useRef(text)
   latest.current = text
   const parse = (t: string) =>
@@ -29,9 +27,6 @@ export function useQuickAdd(draftKey: string | null) {
   const submit = async (
     build: (p: Parsed) => IssueInput | null,
   ): Promise<IssueDetail | undefined> => {
-    // One at a time: the text stays until the server has it, so a second
-    // Enter while the first is on its way would add a duplicate. A ref, not
-    // create.isPending: a second Enter before the re-render still sees false.
     if (sending.current) return
     const p = parse(latest.current)
     if (!p.title.trim()) return

@@ -198,7 +198,6 @@ body {
   background: none;
   padding: 0;
 }
-/* Copy buttons are added after DOMPurify, which forbids button elements (lib/markdown.ts). */
 .prose-wp .code-block {
   position: relative;
 }

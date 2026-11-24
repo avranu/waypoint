@@ -1,5 +1,3 @@
-// Names and contents are the agent's text: render as text, never HTML.
-
 import { queryOptions, type QueryClient } from '@tanstack/react-query'
 import { hget, hermesQuery } from '@/lib/assistant'
 import { qs } from '@/lib/api'

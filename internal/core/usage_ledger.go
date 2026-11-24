@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// Per-call measures come from ledger_hours; tokens and cost from usage_hours. Sessions join to tasks via agent_sessions.issue_id and to pull requests via repo and branch.
-
 // LedgerStats is what a set of calls looked like.
 type LedgerStats struct {
 	Calls      int64    `json:"calls"` // calls measured
@@ -313,7 +311,6 @@ func (s *Service) UsageLedger(ctx context.Context, actor *Actor, q UsageQuery) (
 		out.Tasks, out.Truncated = out.Tasks[:usageTopSessions], true
 	}
 
-	// Yields count everything a closed task's or merged pull request's sessions used, whenever it was used, not just the period.
 	allTime := *sc
 	allTime.from = 0
 	life, err := s.sessionModelUsage(ctx, &allTime, book)

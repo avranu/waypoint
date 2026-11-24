@@ -230,7 +230,7 @@ func TestTestsumCapsAndTruncatesMessages(t *testing.T) {
 
 func TestTestsumRunsCommandThroughSlot(t *testing.T) {
 	slotEnv(t)
-	t.Chdir(t.TempDir()) // no repo: nothing recorded in this checkout's git dir
+	t.Chdir(t.TempDir())
 	var out, errb bytes.Buffer
 	cmd := `printf '{"Action":"pass","Package":"p","Test":"T","Elapsed":0}\n{"Action":"pass","Package":"p","Elapsed":1}\n'`
 	if code := run([]string{"testsum", "--", "sh", "-c", cmd}, &out, &errb); code != 0 || !strings.HasPrefix(out.String(), "PASS: 1 tests") {
@@ -246,7 +246,6 @@ func TestTestsumRunsCommandThroughSlot(t *testing.T) {
 		!strings.Contains(out.String(), "but the command exited 2") || !strings.Contains(out.String(), "mypy: 2 errors") {
 		t.Errorf("pass then failure: %d %q", code, out.String())
 	}
-	// without --, testsum takes flags before the command and the command gets everything from its first word, -- included
 	out.Reset()
 	errb.Reset()
 	cmd = `printf '{"Action":"pass","Package":"p","Test":"T","Elapsed":0}\n{"Action":"pass","Package":"p","Elapsed":1}\n'; [ "$*" = "--format x -- -y" ] || exit 9`

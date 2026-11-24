@@ -34,9 +34,6 @@ func reviewerChains(first []ChainModel, more [][]ChainModel, gateway int64) [][]
 		if len(c) == 0 || len(out) == reviewMaxReviewers {
 			continue
 		}
-		// The same chain twice is one reviewer, unless it asks the gateway
-		// first: a later reviewer excludes the first one's model there, so
-		// the gateway picks another (WP-365).
 		key := fmt.Sprint(c)
 		if seen[key] && (gateway == 0 || c[0].ProviderID != gateway) {
 			continue
@@ -98,7 +95,6 @@ func (s *Service) reviewOnce(ctx context.Context, chain []ChainModel, prompt str
 	}
 	ctx, note := withSalvage(withMaxTokens(ctx, reviewMaxTokens))
 	used, attempts, err := s.runChain(ctx, chain, reviewSystem, prompt, reviewSchema, &ans, reviewCallTimeout)
-	// The gateway cannot fall back once a model's stream has started, so a model that then fails or runs past the call's timeout is left out of one more ask, since a round's retry could get it again.
 	if slow := failedMidStream(chain, attempts); err != nil && ctx.Err() == nil && slow != "" && s.asksExcludingGateway(ctx, chain) {
 		s.log.InfoContext(ctx, "a review's model failed after it started; asking again without it", "model", slow)
 		var more []ModelAttempt
@@ -367,7 +363,6 @@ func (s *Service) verifyNewIn(ctx context.Context, chain []ChainModel, hf *headF
 			var ans struct {
 				Verdicts []verdict `json:"verdicts"`
 			}
-			// The exclusion is only a request to the gateway, so the sameModel check below is what keeps a finding from being judged by a model that raised it.
 			var raisedBy []string
 			for _, it := range pending {
 				raisedBy = append(raisedBy, reviewersOf(found[it.n])...)

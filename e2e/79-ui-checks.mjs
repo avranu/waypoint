@@ -142,7 +142,7 @@ function inPage({ category }) {
           if (cs.position === "fixed") { contained = true; break; }
         }
         if (contained || getComputedStyle(el).position === "fixed") continue;
-        if (r.left >= box.right - 1 || r.right <= box.left + 1) continue; // Skip text entirely off the box: hidden slide-overs sit off-screen.
+        if (r.left >= box.right - 1 || r.right <= box.left + 1) continue;
         out.add(el);
       }
       for (const el of out) {
@@ -171,13 +171,11 @@ function inPage({ category }) {
       if (!hides(cs.overflowX) && !hides(cs.overflowY)) continue;
       if (cs.textOverflow === "ellipsis" || cs.webkitLineClamp !== "none" || cs.getPropertyValue("-webkit-line-clamp") !== "none") continue;
       if (!visible(el)) continue;
-      // Only an element's own text counts; a layout box may clip its children by design.
       const own = [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim().length > 1);
       if (!own) continue;
       const x = hides(cs.overflowX) && el.scrollWidth > el.clientWidth + 1;
       const y = hides(cs.overflowY) && el.scrollHeight > el.clientHeight + 1;
       if (!x && !y) continue;
-      // Skip near-zero-height regions: a collapsed toggle hides its content by design.
       if (el.clientHeight < 4 && y) continue;
       add("clipped", el, `${x ? `content ${el.scrollWidth}px in ${el.clientWidth}px` : `content ${el.scrollHeight}px in ${el.clientHeight}px`}: ${norm(el.textContent).slice(0, 60)}`);
     }
@@ -191,7 +189,7 @@ function inPage({ category }) {
       [/\bNaN\b/, "NaN"],
       [/\bnull\b/, "null"],
       [/\{\{|\}\}|\{[A-Za-z_.]+\}|\{\s*\}/, "braces"],
-      [/(?<![/*])\*\*(?![/*])/, "markdown bold"], // Matches a markdown ** only; the lookarounds skip glob text such as release/** and **/x.
+      [/(?<![/*])\*\*(?![/*])/, "markdown bold"],
       [/&(amp|lt|gt|quot|#\d+);/, "html entity"],
       [/\$\{/, "template"],
     ];
@@ -230,7 +228,6 @@ function inPage({ category }) {
       if (!byScope.has(s)) byScope.set(s, []);
       byScope.get(s).push(b);
     }
-    // Sibling rows built alike may repeat text legitimately, e.g. two environments both down since the same time.
     const siblingRows = (a, b) => {
       let x = a;
       while (x.parentElement && !x.parentElement.contains(b)) x = x.parentElement;
@@ -313,7 +310,6 @@ function inPage({ category }) {
       if (!visible(s) && !s.matches("li,ul,ol,div,section,table")) return false;
       if (s.matches("h1,h2,h3,h4,h5,h6") || s.querySelector(":scope > h1,:scope > h2,:scope > h3,:scope > h4,:scope > h5,:scope > h6")) return null;
       if (!visible(s)) return false;
-      // A pulsing skeleton means the section is still loading, so it is not counted as empty.
       if (s.matches(".animate-pulse") || s.querySelector(".animate-pulse")) return true;
       if (s.matches("button,a") || ([...s.querySelectorAll("*")].length < 8 && !norm(s.innerText ?? "") && !s.querySelector("img,input,textarea,select,table,canvas,video"))) return false;
       return !!norm(s.innerText ?? "") || !!s.querySelector("img,input,textarea,select,table,canvas,video");
@@ -541,7 +537,6 @@ for (const look of lookList) {
         await page.waitForTimeout(300);
         record(u.route, look.name, await page.evaluate(inPage, { category: look.categories.filter((c) => c !== "overlap") }));
         if (look.categories.includes("overlap")) {
-          // elementFromPoint only sees what is in the viewport, so this look uses a tall viewport.
           await page.setViewportSize({ width: look.vp.width, height: 2600 });
           await page.waitForTimeout(400);
           record(u.route, look.name, await page.evaluate(inPage, { category: ["overlap"] }));
@@ -573,11 +568,9 @@ if (!visited) console.log("FAIL no pages checked");
 
 const baseline = fs.existsSync(baselineFile) ? JSON.parse(fs.readFileSync(baselineFile, "utf8")) : {};
 if (process.env.UI_CHECKS_WRITE) {
-  // A run that missed pages would drop their entries from the baseline.
   if (errors.length || !visited) process.exit(1);
   const next = {};
   for (const [k] of rows) next[k] = baseline[k] ?? "";
-  // Only a full run (E2E_LOOKS=all, the default) may drop baseline entries; a single look keeps the ones it did not see.
   if (!everyLook) for (const [k, v] of Object.entries(baseline)) if (!(k in next)) next[k] = v;
   fs.writeFileSync(baselineFile, JSON.stringify(next, null, 2) + "\n");
   console.log(`baseline written: ${rows.length} findings -> ${baselineFile}`);

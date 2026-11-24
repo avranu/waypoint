@@ -58,7 +58,7 @@ func (c *StepCtx) PullRequest(param string) (*PullRequest, error) {
 		return nil, err
 	}
 	if pr.Outside {
-		return nil, errPROutside(pr) // Outside pull requests need a person's approval before any automation acts on them.
+		return nil, errPROutside(pr)
 	}
 	return pr, nil
 }
@@ -95,7 +95,6 @@ func (c *StepCtx) findPR(repo string, n int) (*PullRequest, error) {
 	case len(candidates) != 1:
 		return nil, notFound(fmt.Sprintf("pull request #%d", n))
 	}
-	// Unknown to Waypoint: it may be new on the forge.
 	r := candidates[0]
 	prc, ok := c.S.Forges.(ForgePRs)
 	if !ok || r.Forge.token == "" {
@@ -147,7 +146,6 @@ func (c *StepCtx) freshPR(pr *PullRequest, checks bool) *PullRequest {
 	}
 	if prc, ok := c.S.Forges.(ForgePRs); ok {
 		if fp, err := prc.GetPR(c.Ctx, f, pr.Repo, pr.Number); err == nil {
-			// Record the change before firing its events: a late forge webhook then finds nothing new to fire.
 			if _, err := c.S.recordPR(c.Ctx, f, pr.Repo, fp, true); err != nil {
 				if readFault(err) {
 					c.S.log.WarnContext(c.Ctx, "record a pull request before firing what it calls for", "repo", pr.Repo, "number", pr.Number, "err", err)
@@ -186,8 +184,6 @@ var protectedPaths = []string{
 }
 
 func openPR(c *StepCtx) error {
-	// The run keeps its caller's permissions, so opening a pull request asks
-	// for the one the ship path asks for (OpenPR, shipActor).
 	if err := c.Actor.need(PermPullsWrite); err != nil {
 		return fmt.Errorf("open_pr: %w", err)
 	}
@@ -359,8 +355,6 @@ func waitForPR(c *StepCtx, what string) error {
 	default:
 		return invalid("unknown wait: %s", what)
 	}
-	// A repository without CI never says so: after a few minutes of no
-	// checks, look again (the state becomes "none", which is a pass).
 	first := timeout
 	if what == waitCI || what == waitCIPassed {
 		first = min(timeout, ciNoChecksWait+time.Minute)
@@ -370,8 +364,6 @@ func waitForPR(c *StepCtx, what string) error {
 		return err
 	}
 	if timedOut && first < timeout {
-		// The rest of the time counts from when the first wait began, however
-		// long the run took to come back.
 		left := timeout - first
 		d, derr := c.WaitDeadline(0)
 		if derr != nil {
@@ -494,7 +486,6 @@ func mergePR(c *StepCtx) error {
 	if err != nil {
 		return err
 	}
-	// Arming set by the repo's automatic-merge setting is taken over; arming by anyone else is kept.
 	if pr.ArmedAt == nil || pr.ArmedAgent == mergeSettingAgent {
 		res, err := c.S.MergePR(c.Ctx, c.Actor, pr.ID, MergeInput{Style: style, DeleteBranch: &del, Message: msg, WhenReady: true})
 		if err != nil {
@@ -521,7 +512,6 @@ func mergePR(c *StepCtx) error {
 		return err
 	}
 	if cur != nil && cur.State != "merged" && timedOut {
-		// Checks may settle with no event telling Waypoint, so look once more before giving up on the merge.
 		cur = c.freshPR(cur, true)
 		c.S.maybeAutoMerge(c.Ctx, cur.ID)
 		if cur, err = reload(); err != nil {
@@ -533,8 +523,7 @@ func mergePR(c *StepCtx) error {
 		c.setPROutputs(cur)
 		return nil
 	}
-	// Disarm a merge that did not happen, or it could merge later with nobody watching.
-	if err := c.S.DisarmMerge(c.Ctx, c.Actor, pr.ID); readFault(err) && !missingOrDenied(err) { // A denied or missing pull request means nothing is armed for this actor, so that error is not a fault.
+	if err := c.S.DisarmMerge(c.Ctx, c.Actor, pr.ID); readFault(err) && !missingOrDenied(err) {
 		c.S.log.WarnContext(c.Ctx, "take a pull request's merge off after the step", "pr", pr.ID, "err", err)
 	}
 	c.Set("Merged", false)
@@ -690,9 +679,6 @@ func ciFixPrompt(pr *PullRequest, failed []FailedCheck, focus string) string {
 // (runnerGate). An agent's pull request needs only its branch to be in the
 // repository.
 func (c *StepCtx) fixCIGate(pr *PullRequest) string {
-	// A rule that reacts to a pull request (CI failed, an update, a comment)
-	// works on whoever's it is; a manual or timed run is one a person chose,
-	// and a rule's own pull request is its owner's.
 	if !strings.HasPrefix(c.Event.Kind, "pr.") {
 		return ""
 	}
@@ -736,14 +722,12 @@ func fixCI(c *StepCtx) error {
 		return err
 	}
 	c.Set("Fixed", false)
-	// A step resumed after its job was queued carries on with that job, even if CI has since passed.
 	if !c.hasJob() && (pr.CIState != CIFailed || len(failed) == 0) {
 		c.Logf("CI isn't failing on %s, so there is nothing to fix", short(pr.HeadSHA))
 		c.Set("Skipped", true)
 		return nil
 	}
 	if faults := c.S.headRunnerFaults(c.Ctx, pr); !c.hasJob() && faults != nil {
-		// Runner faults are not code faults; only a job's own time limit is the repo's to fix, and only after re-runs fail.
 		switch {
 		case !timeLimitOnly(faults):
 			c.Logf("not fixing CI: it failed on its runner, not its code (%s)", faultSummary(faults))

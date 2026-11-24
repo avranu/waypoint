@@ -11,8 +11,6 @@ import (
 	"time"
 )
 
-// Refusals are audit-only: no request, no notification, and the agent is not told, so nothing waits on a person.
-
 const (
 	// refusalRepeat: the same call refused again in a session this soon
 	// counts on the same row.
@@ -212,7 +210,6 @@ func (s *Service) ListRefusals(ctx context.Context, actor *Actor, q RefusalQuery
 		where, args = append(where, "f.session_id = ?"), append(args, q.Session)
 	}
 	if spec := strings.TrimSpace(q.Agent); spec != "" {
-		// Specs aren't SQL: match the period's agents in Go.
 		// #nosec G202 -- where is built from fixed conditions; values are bound
 		rows, err := s.db.R.QueryContext(ctx, `SELECT DISTINCT f.agent FROM tool_refusals f WHERE `+strings.Join(where, " AND "), args...)
 		if err != nil {
@@ -422,7 +419,6 @@ func (s *Service) ruleSuggestions(ctx context.Context, cond string, args []any) 
 				g = &RuleSuggestion{Rule: r.Rule, Covers: r.Covers, Tool: tool, Repo: repo, rank: rank, sess: map[int64]bool{}}
 				groups[k] = g
 			}
-			// Refusal is the newest call in the group with no rule yet, or whose pick failed.
 			if open && g.Refusal == 0 {
 				g.Refusal = id
 			}
@@ -526,10 +522,6 @@ func (s *Service) AllowRefusedCall(ctx context.Context, actor *Actor, id int64, 
 	}
 	err = s.write(ctx, actor, func(t *tx) error {
 		now := s.nowMS()
-		// Claim the call, so a second pick (another tab, the row and the
-		// suggestion at once) can't open a second pull request or record
-		// its failure over the first's. A pick whose dispatch never
-		// finished (a restart) can be made again after refusalPickStale.
 		res, err := t.ExecContext(ctx, `UPDATE tool_refusals SET rule_by = ?, rule_at = ?, rule_reason = ''
 			WHERE id = ? AND rule = '' AND (rule_at IS NULL OR rule_reason != '' OR rule_at < ?)`, actor.id(), now, f.ID, now-refusalPickStale.Milliseconds())
 		if err != nil {
@@ -593,7 +585,6 @@ func (s *Service) addRefusalRule(ctx context.Context, actor *Actor, j *permRuleJ
 	default:
 		rule, pr = j.rule, res.URL
 	}
-	// Only this pick's outcome: a later pick of a stale one owns the row.
 	if _, err := s.db.W.ExecContext(ctx, `UPDATE tool_refusals SET rule = ?, rule_pr = ?, rule_reason = ? WHERE id = ? AND rule_at = ?`, rule, pr, reason, j.refusal, j.at); err != nil {
 		s.log.ErrorContext(ctx, "record a refusal's rule", "refusal", j.refusal, "rule", j.rule, "pr", pr, "err", err)
 	}

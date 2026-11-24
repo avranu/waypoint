@@ -149,7 +149,7 @@ func TestIssueRiskMatchesSearch(t *testing.T) {
 	}
 	held := mk(agent, "Held by the screen")
 	outside := mk(e.admin, "From a stranger")
-	e.s.Wait() // background safety screens
+	e.s.Wait()
 	exec := func(q string, args ...any) {
 		t.Helper()
 		if _, err := e.s.db.W.ExecContext(e.ctx, q, args...); err != nil {

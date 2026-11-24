@@ -1,5 +1,3 @@
-// A project's glossary and design notes are its own plus its ancestors' plus the global ones.
-
 import { queryOptions, type QueryClient } from '@tanstack/react-query'
 import { api, enc, qs } from './api'
 import type {
@@ -294,7 +292,6 @@ export const REL_LABEL: Record<LinkRel, { out: string; in: string }> = {
 /** Groundings in a person's words, short enough for a chip. */
 export const GROUNDING_LABEL: Record<Grounding, string> = {
   person_goal: 'Approved goal',
-  // The three agent-made groundings share the label 'Agent' on purpose; the Goals page groups them too.
   agent_goal: 'Agent',
   inferred_goal: 'Agent',
   proposed_goal: 'Agent',

@@ -1,7 +1,5 @@
 package core
 
-// Deletes only remote branches whose tip is already in the default branch, keeping anything someone might still use.
-
 import (
 	"context"
 	"errors"
@@ -109,7 +107,6 @@ func (s *Service) planBranches(ctx context.Context, f *Forge, repo string) (*Rem
 		}
 	}
 	rows.Close()
-	// A squash merge leaves no git ancestry, so a branch's own merged pull request is what marks it merged.
 	mergedHeads := map[string]int{}
 	rows, err = s.db.R.QueryContext(ctx, `SELECT head_ref, head_sha, number FROM pull_requests WHERE forge_id = ? AND repo = ? COLLATE NOCASE AND state = 'merged' AND head_sha != '' AND merged_at > ?
 		ORDER BY merged_at`, f.ID, repo, s.nowMS()-366*24*3600*1000)

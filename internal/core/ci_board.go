@@ -1,7 +1,5 @@
 package core
 
-// The pool jobs share: reporting CI hosts, else an admin's per-forge setting, else the forge's runners, else one runner as busy as the busiest moment of the day.
-
 import (
 	"context"
 	"database/sql"
@@ -20,7 +18,7 @@ const (
 	ciBoardFresh    = 15 * time.Second
 	ciHistoryFresh  = 2 * time.Minute
 	ciHistoryWindow = 24 * time.Hour
-	ciTaskPages     = 6 // ci_jobs supplies the rest of the day's jobs past this cap.
+	ciTaskPages     = 6
 	ciRecentMax     = 200
 	ciBucket        = 15 * time.Minute
 	ciReadParallel  = 6
@@ -82,7 +80,7 @@ type CIAlert struct {
 	Title string `json:"title"`
 	Body  string `json:"body,omitempty"`
 	URL   string `json:"url,omitempty"`
-	key   string // identifies the same trouble across sweeps, whatever its numbers.
+	key   string
 }
 
 // CIPool is the runners a forge's jobs share, as the ETAs model them.
@@ -215,13 +213,12 @@ type CIPoint struct {
 
 // ciBoardCache keeps what was read, shared by everyone looking.
 type ciBoardCache struct {
-	mu      sync.Mutex
-	at      time.Time
-	snap    *ciSnapshot
-	history map[string]*ciHistory
-	runners map[int64]ciRunners
-	stall   map[string]ciStall
-	// the failing tests a finished job's log names; cached, since a finished log won't change.
+	mu       sync.Mutex
+	at       time.Time
+	snap     *ciSnapshot
+	history  map[string]*ciHistory
+	runners  map[int64]ciRunners
+	stall    map[string]ciStall
 	tests    map[string][]string
 	building chan struct{}
 }
@@ -233,15 +230,13 @@ type ciRunners struct {
 }
 
 type ciHistory struct {
-	at    time.Time
-	tasks []ActionTask
-	runs  map[int64]ActionRun
-	err   error
-	// Jobs past the tasks cap come from ci_jobs; tasks and kept hold every job finished from whole on (zero: all of them).
-	kept  []ciKeptJob
-	waits map[int64]int64
-	whole time.Time
-	// runs holds only the newest 50; the other runs tasks name are kept here, at ci_runs' draft tier.
+	at        time.Time
+	tasks     []ActionTask
+	runs      map[int64]ActionRun
+	err       error
+	kept      []ciKeptJob
+	waits     map[int64]int64
+	whole     time.Time
 	draftRuns map[int64]bool
 }
 
@@ -320,7 +315,6 @@ func (s *Service) ciSnapshot(ctx context.Context) (*ciSnapshot, error) {
 		if c.building == nil {
 			c.building = make(chan struct{})
 			c.mu.Unlock()
-			// the read outlives a viewer who leaves: the others share it
 			rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
 			snap, err := s.readCI(rctx)
 			cancel()
@@ -500,7 +494,7 @@ func (s *Service) readCIRepo(ctx context.Context, cl ForgeActions, d *ciRepoData
 		var jobs []ActionJob
 		err := call(func() (err error) { jobs, err = cl.ActionJobs(ctx, f, repo, r.ID); return err })
 		if noActions(err) {
-			gone[r.ID] = true // a run deleted after the list was read is skipped, not an error.
+			gone[r.ID] = true
 			continue
 		}
 		if err != nil {
@@ -548,7 +542,7 @@ func (s *Service) ciRepoHistory(ctx context.Context, cl ForgeActions, f *Forge, 
 	}
 	h = &ciHistory{at: s.now(), runs: map[int64]ActionRun{}}
 	since := s.now().Add(-ciHistoryWindow)
-	var oldest time.Time // Zero once the task list ran out, so the read covers all of it.
+	var oldest time.Time
 	for page := 1; page <= ciTaskPages; page++ {
 		var list []ActionTask
 		if h.err = call(func() (err error) { list, err = cl.ActionTasks(ctx, f, repo, nil, page, 50); return err }); h.err != nil {
@@ -713,7 +707,6 @@ func tptr(t time.Time) *time.Time {
 // layoutCIBoard turns a snapshot into the board actor may see.
 func (s *Service) layoutCIBoard(ctx context.Context, actor *Actor, snap *ciSnapshot) *CIBoard {
 	now := snap.at
-	// The last day's figures start where every repo's jobs are whole: a day ago, or later after a hole in the kept jobs.
 	from := now.Add(-ciHistoryWindow)
 	for _, d := range snap.repos {
 		if d.hist != nil && d.hist.whole.After(from) {
@@ -943,7 +936,6 @@ func (s *Service) layoutCIBoard(ctx context.Context, actor *Actor, snap *ciSnaps
 				sims90[fid] = append(sims90[fid], sj90)
 				pending = append(pending, pend{job: cj, forge: fid, sim: idx[j.ID], runIx: runIx})
 			}
-			// A job's needs match the run's unfinished jobs by name; a need matching no name waits for every other unfinished job that needs nothing.
 			for _, j := range jobs {
 				si, ok := idx[j.ID]
 				if !ok || len(j.Needs) == 0 || j.Status == "running" {

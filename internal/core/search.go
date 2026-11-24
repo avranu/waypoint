@@ -43,12 +43,11 @@ type compiled struct {
 	with   string
 	joins  string
 	where  []string
-	args   []any // where-clause args only; sql() puts the joins' jargs first
+	args   []any
 	jargs  []any
 	order  string
 	hasFTS bool
-	// score is the relevance of the query's words (lower is better): bm25, doubled when every word is in the key or title.
-	score string
+	score  string
 }
 
 func (c *compiled) add(cond string, args ...any) {
@@ -99,7 +98,6 @@ func (s *Service) compileQuery(ctx context.Context, actor *Actor, q wql.Query, p
 			continue
 		}
 		if t.Negate {
-			// an unset field is NULL, which a plain comparison misses; coalesce to 0 so its negation matches it
 			cond = "coalesce((" + cond + "), 0) = 0"
 		}
 		c.add(cond, args...)
@@ -124,7 +122,6 @@ func (s *Service) compileQuery(ctx context.Context, actor *Actor, q wql.Query, p
 			c.score = "f.score"
 			c.joins += ` JOIN (SELECT rowid AS rid, bm25(issue_search, 10.0, 5.0, 1.0) AS score FROM issue_search WHERE issue_search MATCH ?) f ON f.rid = i.id`
 			c.jargs = append(c.jargs, m)
-			// A title match outranks one buried in a long body or comments, because a searcher remembers the title.
 			if t := ftsTitleQuery(words); t != "" {
 				c.score = "f.score * (CASE WHEN ft.rid IS NULL THEN 1 ELSE 2 END)"
 				c.joins += ` LEFT JOIN (SELECT rowid AS rid FROM issue_search WHERE issue_search MATCH ?) ft ON ft.rid = i.id`
@@ -186,7 +183,7 @@ func ftsMatch(text string) string {
 func ftsQuery(words []string) string {
 	pos, neg := ftsTerms(words)
 	if len(pos) == 0 {
-		return "" // FTS5 can't start with NOT
+		return ""
 	}
 	q := strings.Join(pos, " AND ")
 	for _, t := range neg {
@@ -318,8 +315,6 @@ func (s *Service) compileTerm(ctx context.Context, actor *Actor, t wql.Term, now
 		c, a := inList("st.name", vals)
 		return c, a, nil
 	case "category", "cat", "kind":
-		// Status categories (todo, done, …) and issue categories (feature,
-		// bugfix, …) don't overlap, so one key serves both.
 		var statusCats, issueCats []string
 		for _, v := range vals {
 			v = strings.ToLower(strings.ReplaceAll(v, " ", "_"))
@@ -693,7 +688,6 @@ func (s *Service) isCond(actor *Actor, v, today, key string) (string, []any, err
 
 // Search finds issues with a query.
 func (s *Service) Search(ctx context.Context, actor *Actor, p SearchParams) (*SearchResult, error) {
-	// A query that is only a request code means that code, not a filter on it.
 	if p.RawFTS == "" {
 		if c := bareRequestCode(p.Query); c != nil {
 			p.Query, p.RawFTS = "", mentionExpr([]searchCode{*c})

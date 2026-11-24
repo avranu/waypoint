@@ -21,8 +21,6 @@ export function useAutosave(
   const [done, setDone] = useState(false)
   const latest = useRef({ save, pending: false })
   latest.current = { save, pending: ok && key !== saved }
-  // One save at a time, so they reach the server, and their answers come
-  // back, in the order they were made; a change made meanwhile goes next.
   const inflight = useRef<Promise<unknown> | null>(null)
   const flush = useCallback(function run() {
     if (inflight.current) {

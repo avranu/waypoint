@@ -205,7 +205,6 @@ func TestTidyVerdicts(t *testing.T) {
 		}
 	}
 
-	// A squash merge reads as unmerged unless Waypoint's pull request records say it merged.
 	wantVerdict(t, scanTidy(t, wtHere, nil, later()).row(t, "branch", "sq"), tidyKeep, "unmerged")
 
 	wantVerdict(t, scanTidy(t, wtHere, prs, time.Now()).row(t, "branch", "done-alone"), tidyKeep, "active")
@@ -383,7 +382,6 @@ func TestTidyHintThreshold(t *testing.T) {
 // The SessionStart hint counts what is removable, once a day per repo.
 func TestTidyHintCountsAndCaches(t *testing.T) {
 	f := newTidyFixture(t)
-	// Counting 11 branches can outrun the real 300 ms hook budget on a loaded CI runner, so this test raises it.
 	t.Cleanup(func(b time.Duration) func() { return func() { tidyHintBudget = b } }(tidyHintBudget))
 	tidyHintBudget = time.Minute
 	t.Setenv("WAYPOINT_SERVER", "")

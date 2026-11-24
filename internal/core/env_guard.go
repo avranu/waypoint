@@ -8,8 +8,6 @@ import (
 	"strings"
 )
 
-// Addresses an agent, an agent's shell, an automation or a token set don't count, so an agent can't open the guard by recording one.
-
 // maxGuardHosts bounds the list one SessionStart carries.
 const maxGuardHosts = 50
 

@@ -32,7 +32,6 @@ func (s *Server) slotHoldsPost(w http.ResponseWriter, r *http.Request) (any, err
 		}
 		*dst = n
 	}
-	// Unknown fields are let through, unlike decodeBodyMax, so a wp newer than this server does not have its whole batch refused.
 	var body struct {
 		Holds []json.RawMessage `json:"holds"`
 	}

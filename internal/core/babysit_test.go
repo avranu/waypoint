@@ -419,7 +419,6 @@ func TestBabysitFailedCheckRounds(t *testing.T) {
 	}
 	var timeout int
 	_ = be.s.db.R.QueryRow(`SELECT timeout FROM runner_jobs WHERE id = ?`, jobs[2]).Scan(&timeout)
-	// The job's time limit leaves room for commands waiting on a test slot.
 	if in := be.jobInput(jobs[2]); in.WorkTimeout != 5400 || timeout != 7200 {
 		t.Errorf("assessor work timeout %d, job timeout %d", in.WorkTimeout, timeout)
 	}

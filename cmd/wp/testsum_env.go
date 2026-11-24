@@ -6,8 +6,6 @@ import (
 	"strings"
 )
 
-// Drops credential-named variables before a test command starts; a checkout's .env is the repo's own business.
-
 // testSecretSuffixes and testSecretParts are the name shapes of credentials.
 var (
 	testSecretSuffixes = []string{"_TOKEN", "_KEY", "_APIKEY", "_SECRET", "_CREDENTIALS", "_PAT", "_PASS", "_PWD"}

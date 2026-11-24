@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-// A round's pull request opens only on a review that read something, or one handed over to the pull request; otherwise the round waits for the session, then ends and tells the person once.
-
 // doneRound makes the round e.review ran an ended one (the session's turn is
 // over, its report read): the shape the scenarios start from.
 func (e *loopEnv) doneRound(round int64) {

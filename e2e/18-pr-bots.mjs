@@ -214,7 +214,6 @@ async function run(width) {
   await page.getByText("Connect a runner").waitFor();
   await shot("admin-ai-agents");
   await overflow("admin ai");
-  // A task chain can't use a runner: it has no owner.
   const refused = await page.request.fetch(`${base}/api/v1/ai/tasks/review`, {
     method: "PUT",
     headers: { "X-Waypoint-Client": "web" },
@@ -318,7 +317,6 @@ async function run(width) {
     repo: `me/app${tag}`,
     sync_issues: false,
   });
-  // Their forge login is a Waypoint person here: text from anyone else waits for a person (WP-281).
   await api("PUT", `/forges/${forge.id}/people`, {
     people: [{ login: "sam", user: "robin" }],
   });
@@ -422,8 +420,6 @@ async function run(width) {
     .click();
   await page.getByRole("menuitem", { name: "Claude Code" }).click();
   await dlg.getByLabel("Model of Claude Code").fill("sonnet");
-  // Earlier suites may have connected a runner; the note shows only when
-  // none of the viewer's online runners has Claude Code signed in.
   const claudeReady = (await api("GET", "/runners")).some(
     (r) =>
       r.online &&
@@ -455,7 +451,6 @@ async function run(width) {
     `${tag} the copy saved the coding agent on a runner`,
   );
 
-  // Only one review rule here, so the fake sees one review.
   await api("DELETE", `/automations/${copy.id}`);
 
   await page.goto(`${base}/p/${key}/settings?tab=integrations`);
@@ -468,8 +463,6 @@ async function run(width) {
   await shot("integrations");
   await overflow("integrations");
 
-  // Review arms without the verifier are drawn to measure it; this suite
-  // needs every run verified, so the verified arms are pinned on.
   {
     const db = new DatabaseSync(`${process.env.DIR}/wp.db`);
     db.exec("PRAGMA busy_timeout = 5000");

@@ -148,7 +148,6 @@ func TestCompactColdAndControls(t *testing.T) {
 	if manual.Cold != 1 || manual.First.NoRead != 1 {
 		t.Errorf("manual: %+v", manual)
 	}
-	// a cold compaction re-reads the history at the input price; the restart it spared would have cost the write price
 	if want := 120000 * 4 / 1e6; math.Abs(manual.ReadUSD-want) > 1e-9 {
 		t.Errorf("cold read $%.4f, want $%.4f", manual.ReadUSD, want)
 	}
@@ -458,11 +457,9 @@ func TestCompactPricesDuplicatesAndUnreadable(t *testing.T) {
 	if f.N != 1 || f.Calls != 1 || f.Tools != 1 || f.FileLookups != 1 {
 		t.Errorf("after manual: %+v", f)
 	}
-	// Cache writes price at the 5-minute tier, not the 1-hour tier.
 	if math.Abs(f.USDWrite-5) > 1e-9 || math.Abs(rep.Compactions[1].RewriteUSD-5) > 1e-9 {
 		t.Errorf("write $%.4f, rewrite $%.4f, want $5", f.USDWrite, rep.Compactions[1].RewriteUSD)
 	}
-	// a message's text block counts once when the message is logged twice
 	ev, err := readCompactFile(filepath.Join(root, "projects", "-r", "four.jsonl"))
 	if err != nil {
 		t.Fatal(err)

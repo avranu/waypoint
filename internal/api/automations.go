@@ -33,7 +33,6 @@ func (s *Server) automationRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/admin/system", a(s.adminSystem))
 	mux.HandleFunc("PUT /api/v1/admin/system-limits", a(s.setSystemLimits))
 
-	// The incoming webhook trigger: the secret address is the credential.
 	mux.HandleFunc("POST /hooks/automations/{token}", s.automationHook)
 }
 

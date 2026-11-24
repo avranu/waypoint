@@ -1,7 +1,5 @@
 package core
 
-// Stacked pull requests: merging the bottom one carries the whole stack onto the base, so the ones above are finished here once their head is already in base.
-
 import (
 	"context"
 	"database/sql"
@@ -122,7 +120,7 @@ func (s *Service) landPR(ctx context.Context, f *Forge, pr *PullRequest) (bool, 
 	if !ok || !ok2 || f.token == "" {
 		return false, nil
 	}
-	defer forgeLocks.lock(fmt.Sprintf("merge:%d", pr.ID))() // not while an armed merge is under way
+	defer forgeLocks.lock(fmt.Sprintf("merge:%d", pr.ID))()
 	fp, err := prc.GetPR(ctx, f, pr.Repo, pr.Number)
 	if err != nil {
 		return false, err
@@ -140,7 +138,7 @@ func (s *Service) landPR(ctx context.Context, f *Forge, pr *PullRequest) (bool, 
 	}
 	var seen, landed *int64
 	if err := s.db.R.QueryRowContext(ctx, `SELECT landed_seen_at, landed_at FROM pull_requests WHERE id = ?`, pr.ID).Scan(&seen, &landed); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return false, err // A failed read must stop here: with landed unread, the comment would be posted again.
+		return false, err
 	}
 	if !in {
 		if seen != nil {
@@ -149,8 +147,6 @@ func (s *Service) landPR(ctx context.Context, f *Forge, pr *PullRequest) (bool, 
 		return false, nil
 	}
 	now := s.nowMS()
-	// GitHub and GitLab mark such a pull request merged on their own: wait
-	// for them, and close it only if they haven't.
 	if f.Kind != "forgejo" && landed == nil {
 		if seen == nil {
 			s.setLanded(ctx, pr.ID, fmt.Sprintf("landed_seen_at = %d", now))
@@ -160,7 +156,6 @@ func (s *Service) landPR(ctx context.Context, f *Forge, pr *PullRequest) (bool, 
 			return false, nil
 		}
 	}
-	// The head is read again after the landing check; a moved head means the check no longer holds.
 	sha, text := s.landedWhere(ctx, f, cl, pr, fp, work)
 	again, err := prc.GetPR(ctx, f, pr.Repo, pr.Number)
 	if err != nil {
@@ -233,7 +228,6 @@ func (s *Service) headLanded(ctx context.Context, f *Forge, cl ForgeBranches, re
 	if ahead > maxEmptyMerges {
 		return false, "", nil
 	}
-	// Any error here is only "can't tell": not landed, never a gone pull request.
 	_, work, ok := s.emptyMerge(ctx, f, cl, repo, base, head, maxEmptyMerges)
 	return ok, work, nil
 }
@@ -381,7 +375,7 @@ func (s *Service) repoMissing(ctx context.Context, f *Forge, repo string) (moved
 		return false
 	}
 	got, err := finder.GetRepo(ctx, f, repo)
-	if err == nil && !strings.EqualFold(got.Path, repo) { // the forge redirects the old name
+	if err == nil && !strings.EqualFold(got.Path, repo) {
 		if err := s.moveRepo(ctx, SystemActor(), f, repo, got.Path, got.ID, false, false); err != nil {
 			s.log.WarnContext(ctx, "follow moved repo", "forge", f.Name, "from", repo, "to", got.Path, "err", err)
 			return false

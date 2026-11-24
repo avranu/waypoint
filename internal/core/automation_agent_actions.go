@@ -12,8 +12,6 @@ import (
 	"unicode/utf8"
 )
 
-// Jobs go to the runners of whoever last saved the automation; a rerun after a wait or restart finds its job by step key and never queues a second.
-
 // PAgents: a chain of coding-agent CLIs and models, tried in order.
 const PAgents = "agents"
 
@@ -400,7 +398,7 @@ func (c *StepCtx) jobProject(r *stepRepo) (int64, error) {
 		}
 		id, err := c.S.attachedProject(c.Ctx, c.S.db.R, r.Forge.ID, r.Repo)
 		if err != nil {
-			return 0, err // On a lookup error do not fall back to the automation's project: the job would be filed under the wrong one.
+			return 0, err
 		}
 		if id != 0 {
 			return id, nil
@@ -684,7 +682,6 @@ func exitNote(code int) string {
 // protected-path check must see the name the runner saw.
 func anyFileStrings(v any) []string {
 	if s, ok := v.(string); ok {
-		// Names are split on newlines only, as the runner sends them: commas and blanks are part of a name.
 		var out []string
 		for _, f := range strings.Split(s, "\n") {
 			if f != "" {

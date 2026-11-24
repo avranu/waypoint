@@ -78,7 +78,6 @@ func myers(a, b []string, maxEdits int) []diffOp {
 	maxD := min(n+m, maxEdits)
 	off := maxD + 1
 	v := make([]int, 2*off+1)
-	// snaps[d] is v for diagonals -d-1..d+1 before round d, to walk back.
 	var snaps [][]int
 	found := -1
 rounds:

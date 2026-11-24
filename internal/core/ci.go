@@ -1,7 +1,5 @@
 package core
 
-// Pending heads are polled for hours, since the shared runner queue can hold a job that long.
-
 import (
 	"context"
 	"errors"
@@ -171,7 +169,7 @@ func (s *Service) refreshHead(ctx context.Context, f *Forge, repo, sha string) e
 	rows.Close()
 	var need []CommitCheck
 	for _, c := range checks {
-		if k, kept := have[c.Name]; c.State == CheckFailed && (!kept || k.url != c.URL || sameLogStale(k.statusID, c.ID) || (cancelledCheck(c.Description) && !stepFailedLog(k.log))) { // A cancelled job's kept log may still have been growing, so it is read again.
+		if k, kept := have[c.Name]; c.State == CheckFailed && (!kept || k.url != c.URL || sameLogStale(k.statusID, c.ID) || (cancelledCheck(c.Description) && !stepFailedLog(k.log))) {
 			need = append(need, c)
 		}
 	}
@@ -198,8 +196,6 @@ func (s *Service) refreshHead(ctx context.Context, f *Forge, repo, sha string) e
 			checks[i].Description = failedThenStopped
 		}
 	}
-	// Only now, with fail-fast cancellations told from real cancels, can a
-	// job's later pass supersede them.
 	checks = dropSuperseded(checks)
 	state := ciState(checks, seen, now)
 	if state == CIPassed && s.fullRunOutstanding(ctx, f, repo, sha, checks) {
@@ -224,7 +220,6 @@ func (s *Service) refreshHead(ctx context.Context, f *Forge, repo, sha string) e
 				return err
 			}
 		}
-		// A rerun can rename its checks, so checks absent from this run are dropped.
 		names := make([]any, 0, len(checks)+1)
 		names = append(names, headID)
 		for _, c := range checks {
@@ -325,7 +320,6 @@ const liveHeadSQL = `EXISTS (SELECT 1 FROM pull_requests p WHERE p.forge_id = h.
 // PollCI reads the heads whose checks are still pending, once a minute.
 func (s *Service) PollCI(ctx context.Context) {
 	now := s.nowMS()
-	// Past the two-hour window only the current head of an open or draft pull request is polled; a superseded head stops there.
 	rows, err := s.db.R.QueryContext(ctx, `SELECT h.forge_id, h.repo, h.sha FROM ci_heads h WHERE h.state = 'pending' AND (
 			(h.seen_at > ? AND h.checked_at < ?)
 			OR (h.checked_at < CASE WHEN h.seen_at > ? THEN ? ELSE ? END AND `+liveHeadSQL+`)
@@ -385,7 +379,6 @@ func (s *Service) pruneCI(ctx context.Context) {
 func (s *Service) onForgeCI(ctx context.Context, f *Forge, repo, sha string) {
 	switch id, err := s.attachedProject(ctx, s.db.R, f.ID, repo); {
 	case err != nil:
-		// Not "attached to nothing": the checks are read all the same.
 		if readFault(err) {
 			s.log.WarnContext(ctx, "read the project of a repo whose checks changed", "repo", repo, "err", err)
 		}
@@ -447,11 +440,10 @@ func (s *Service) afterPRRecorded(ctx context.Context, f *Forge, pr *PullRequest
 		}
 	}
 	if pr.Outside {
-		return // nothing acts on it before a person approves it (WP-281)
+		return
 	}
 	on, _, gerr := s.gateConfigErr(ctx, pr.ForgeID, pr.Repo)
 	if gerr != nil {
-		// Not "gate off": evaluating it reports the same failure and posts nothing.
 		if readFault(gerr) {
 			s.log.WarnContext(ctx, "read a repo's review gate setting", "repo", pr.Repo, "number", pr.Number, "err", gerr)
 		}

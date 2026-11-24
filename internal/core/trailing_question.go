@@ -7,8 +7,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Regex only, no model call: deterministic and free to run in the Stop hook.
-
 const (
 	tailChars       = 1200
 	tailParagraphs  = 3
@@ -47,7 +45,7 @@ var (
 
 // qUnit is one sentence of the message tail.
 type qUnit struct {
-	text     string // Code and bold stay; punctuation inside code is masked so it never ends a sentence.
+	text     string
 	bullet   bool
 	endOfRun bool
 	heading  bool
@@ -152,7 +150,7 @@ func isAsk(u qUnit) bool {
 	plain := strings.TrimSpace(strings.ReplaceAll(u.text, "**", ""))
 	plain = strings.TrimLeft(plain, "*_ ")
 	if u.heading && !u.inLast {
-		return false // A bold or heading line ending in a question labels what follows, unless it is in the last paragraph.
+		return false
 	}
 	if strings.HasSuffix(strings.TrimRight(plain, "*_\")]”’' `"), "?") {
 		return u.endOfRun

@@ -86,7 +86,6 @@ func TestSlotETAMessage(t *testing.T) {
 	if got := slotETAMessage("tests", true, -1, min2(10), true); !strings.Contains(got, "queued") || !strings.Contains(got, "once it starts") || !strings.Contains(got, "12 minutes") {
 		t.Errorf("unknown wait: %s", got)
 	}
-	// Advice is withheld for foreground runs, whose stderr is read only after the run ends.
 	if got := slotETAMessage("tests", true, min2(20), min2(30), false); got != "The test is queued, and is expected to complete in 60 minutes." {
 		t.Errorf("no advice: %q", got)
 	}
@@ -215,7 +214,6 @@ func TestSlotQueuedAheadCountsLiveEarlierWaiters(t *testing.T) {
 	dir, _ := slotDir()
 	_ = os.MkdirAll(dir, 0o700)
 	now := time.Now().UnixNano()
-	// A waiter file whose lock is free is no one's, even if its pid is now alive.
 	writeWaiter(t, dir, os.Getppid(), now-1e9)
 	writeWaiter(t, dir, os.Getpid()+1, now+1e12)
 	_ = os.WriteFile(filepath.Join(dir, "tests.4194999.wait"), []byte(strconv.FormatInt(now-2e9, 10)), 0o600)
@@ -305,7 +303,6 @@ func TestSlotQueuedAheadForASession(t *testing.T) {
 	if got := slotQueuedAheadOf(dir, "tests", "s1"); got != 1 {
 		t.Errorf("ahead = %d, want 1", got)
 	}
-	// A session with no waiter yet has every waiter ahead of it.
 	if got := slotQueuedAheadOf(dir, "tests", "s9"); got != 3 {
 		t.Errorf("a session with no waiter: ahead = %d, want 3", got)
 	}

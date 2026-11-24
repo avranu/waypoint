@@ -1,7 +1,5 @@
 package core
 
-// The filter is checked where a PR event starts a run (startRun), before any step.
-
 import (
 	"context"
 	"encoding/json"
@@ -55,7 +53,7 @@ func (f *PRFilter) skip(pr *PullRequest, kind string) string {
 		return "closed"
 	case kind == EvPRUpdated && pr.BotsPaused:
 		return "paused with @waypoint pause"
-	case kind == EvPRUpdated && pr.State == "draft" && !flt.Drafts && !pr.WipAuto: // Waypoint's own drafts (WipAuto) still get the bots.
+	case kind == EvPRUpdated && pr.State == "draft" && !flt.Drafts && !pr.WipAuto:
 		return "a draft"
 	case kind == EvPRUpdated && !flt.Bots && len(flt.Authors) == 0 && isBotLogin(pr.Author):
 		return "opened by a bot (" + pr.Author + ")"

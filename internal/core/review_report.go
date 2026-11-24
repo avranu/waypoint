@@ -11,8 +11,6 @@ import (
 	"unicode/utf8"
 )
 
-// A round the session reviewed itself is held without its recorded report, so it cannot open a pull request unrecorded.
-
 const (
 	// ownReportKey is the request key of a round's own report.
 	ownReportKey = "review-round:%d:own"
@@ -255,8 +253,6 @@ func (s *Service) ReportReview(ctx context.Context, actor *Actor, ref string, in
 	res := &ReviewReportResult{Round: r.id, Dropped: dropped}
 	var id int64
 	err = s.write(ctx, actor, func(t *tx) error {
-		// Read again in the write: a ship may have decided the round, or
-		// asked for the check of its marks, since.
 		now, err := s.reportRoundOf(ctx, t, actor.Session, i.ID)
 		if err != nil {
 			return err
@@ -270,8 +266,6 @@ func (s *Service) ReportReview(ctx context.Context, actor *Actor, ref string, in
 		at := s.nowMS()
 		if now.own != 0 {
 			id, res.Replaced = now.own, true
-			// A mark a person set is theirs: the replacement would drop it
-			// and leave no record of it, so it is refused instead.
 			var ordinal int
 			var ftitle string
 			if err := t.QueryRowContext(ctx, `SELECT ordinal, title FROM code_audit_findings WHERE audit_id = ? AND decided_by IS NOT NULL AND decided_agent = '' ORDER BY ordinal LIMIT 1`, id).Scan(&ordinal, &ftitle); err == nil {
@@ -312,16 +306,12 @@ func (s *Service) ReportReview(ctx context.Context, actor *Actor, ref string, in
 				return err
 			}
 		}
-		// Made done: it was never queued, so no Old (auditEnded still
-		// settles it, and tells nobody: no session or person asked to be).
 		t.emit(&Event{Kind: EvCodeAudit, ProjectID: p.ID, New: AuditDone, Data: map[string]any{"audit": id, "title": title}})
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	// (Read as the record has it, not through GetAudit: the report is
-	// the session's own, whatever else its token may read.)
 	if res.Audit, err = s.auditRow(ctx, id); err != nil {
 		return nil, err
 	}
@@ -402,7 +392,6 @@ func (s *Service) ownReviewSaid(ctx context.Context, session, issueID, round int
 		}
 		return out, rows.Err()
 	}
-	// The same two windows of reviews ownReviewRaised counts.
 	bodies, err := read(` AND o.id > ?`, round)
 	if err == nil && len(bodies) == 0 {
 		bodies, err = read(` AND o.id < ? AND o.id > (SELECT coalesce(max(w.id), 0) FROM work_log w
@@ -500,8 +489,6 @@ func (s *Service) reportRoundOf(ctx context.Context, q queryer, session, issueID
 		return nil, err
 	}
 	if r.reviewer != 0 {
-		// A reviewer that found nothing, or read nothing, handed the
-		// session no findings: its own review may still report some.
 		var n int
 		if err := q.QueryRowContext(ctx, `SELECT count(*) FROM code_audit_findings WHERE audit_id = ?`, r.reviewer).Scan(&n); err != nil {
 			return nil, err

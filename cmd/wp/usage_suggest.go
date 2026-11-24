@@ -11,8 +11,6 @@ import (
 	"time"
 )
 
-// Reads local transcripts and the server's session snapshots; no model is called.
-
 var usageSuggestCmd = &command{
 	name: "suggest", args: "[--since 30d] [--until 7d] [--dir CLAUDE_CONFIG_DIR]",
 	summary: "how this repository could cost its agents fewer tokens",

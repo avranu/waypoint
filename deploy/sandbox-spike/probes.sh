@@ -1,10 +1,4 @@
 #!/usr/bin/env bash
-# probes.sh: escape probes for the WP-287 Phase 0 spike (WP-417), a first cut of
-# the escape suite in PL7 §13. Runs as the unprivileged sandbox user, inside a
-# Contained unit or a VM guest. Every probe should print REFUSED.
-#
-# Output: "PROBE name REFUSED|ALLOWED detail" lines.
-#   SPIKE_HOST_IP  an address of the host on its LAN (optional)
 set -u
 
 if [ "$(id -u)" = 0 ]; then
@@ -16,7 +10,6 @@ probe() {
 	local name=$1
 	shift
 	local out
-	# Through bash so the helper functions below work under timeout.
 	local rc=0 verdict
 	out=$(timeout 5 bash -c '"$@"' probe "$@" 2>&1) || rc=$?
 	case "$rc" in

@@ -535,7 +535,6 @@ func cmdNew(c *cli, args []string) error {
 	if len(*f.assign) > 0 {
 		body["assignees"] = []string(*f.assign)
 	}
-	// A sub-task's project comes from its parent unless one is named.
 	if *project != "" || *f.parent == "" {
 		sc, err := c.scopeFor(scopeFlags{project: project})
 		if err != nil {
@@ -724,7 +723,7 @@ func cmdEdit(c *cli, args []string) error {
 			}
 			var moved issueSummary
 			if jsonInto(raw, &moved) == nil && moved.Key != "" {
-				key = moved.Key // a move gives it a new key
+				key = moved.Key
 			}
 		}
 		if len(patch) > 0 {

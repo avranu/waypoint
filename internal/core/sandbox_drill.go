@@ -14,8 +14,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/sandbox/probe"
 )
 
-// A helper, systemd or kernel upgrade can open a Contained wall that no normal job would show, so the drill runs weekly and on each helper version change.
-
 // JobSandboxDrill is the drill's runner job kind.
 const JobSandboxDrill = "sandbox_drill"
 

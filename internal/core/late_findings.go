@@ -1,7 +1,5 @@
 package core
 
-// A bot's finding below high that comes after a babysit's review round began starts no round and holds no merge; a person's comment, an unknown severity, and Waypoint's own review-gate finding always hold.
-
 import (
 	"context"
 	"strings"
@@ -119,7 +117,7 @@ func (s *Service) lateMinors(ctx context.Context, pr *PullRequest, b *Babysit, c
 	}
 	gateOn, gateSev, err := s.gateConfigErr(ctx, pr.ForgeID, pr.Repo)
 	if err != nil {
-		return out // Gate state unknown: late minors are not waived, so they stay actionable.
+		return out
 	}
 	for _, rc := range comments {
 		if !rc.Dealt && rc.Verdict != VerdictNeedsPerson && lateMinor(rc, since, gateOn, gateSev) {

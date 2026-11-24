@@ -1,5 +1,3 @@
-// Untrusted text: unseen by agents, automations and models until a person approves it; shown as plain text, never rendered, loaded or linked.
-
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ExternalLink, Globe } from 'lucide-react'
 import { decideOutsidePR, outsidePRQuery, type OutsidePRText } from '@/lib/pulls'

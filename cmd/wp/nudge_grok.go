@@ -9,11 +9,9 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// A note would arrive after a foreground call returns, so a Grok run that would be cut short is refused, and the refusal names wp audit.
-
 const (
 	grokProbeSecs = 300
-	grokRunSecs   = 1800 // the shortest limit a review has been seen to finish in
+	grokRunSecs   = 1800
 	bashCapSecs   = 600
 	bashDefSecs   = 120
 )

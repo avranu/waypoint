@@ -15,8 +15,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Costs no agent tokens: round reports are the session's last message, counted by fixed rules, with the free work_log AI task only where those can't tell.
-
 // Work log entry kinds: stored (review, note) and read from elsewhere.
 const (
 	WorkReview  = "review"
@@ -31,10 +29,10 @@ const (
 const (
 	RoundPending     = "pending"
 	RoundRunning     = "running"
-	RoundDone        = "done" // The body holds the session's report.
+	RoundDone        = "done"
 	RoundSkipped     = "skipped"
 	RoundInterrupted = "interrupted"
-	RoundFailed      = "failed" // Also covers a round whose session returned no report.
+	RoundFailed      = "failed"
 )
 
 // Note tags: a note may count as an issue found, fixed or rejected.
@@ -206,7 +204,7 @@ type roundRow struct {
 	id, issueID       int64
 	state, readState  string
 	createdAt         int64
-	updatedAt         int64 // Only roundByID fills this field.
+	updatedAt         int64
 	startedAt, ended  sql.NullInt64
 	sessionID, runID  sql.NullInt64
 	body, prompt, key string
@@ -383,7 +381,6 @@ func (s *Service) roundAtStop(ctx context.Context, t *tx, x *AgentSession, issue
 	seen := map[string]int64{}
 	if raw != "" {
 		if err := json.Unmarshal([]byte(raw), &seen); err != nil {
-			// An unreadable background record leaves the round open; the next Stop decides rather than guessing.
 			s.log.WarnContext(ctx, "round at stop: unreadable background record", "x", x.ID, "round", r.id, "err", err)
 			return false, nil
 		}
@@ -401,7 +398,6 @@ func (s *Service) roundAtStop(ctx context.Context, t *tx, x *AgentSession, issue
 	if body == "" {
 		read, reason = readFailed, "the session stopped without a report"
 	}
-	// A round reported through ReportReview is counted from that report, whatever the Stop message says.
 	own, total, fixed, rejected, err := s.ownReportCounts(ctx, t, r.id)
 	if err != nil {
 		return false, err
@@ -500,7 +496,6 @@ func (s *Service) sweepRounds(ctx context.Context) {
 	s.shipSettledRounds(ctx)
 	s.repostQueuedNews(ctx)
 	s.expireOrphanNews(ctx)
-	// decideRound decides whether this sweep ends a round; a round whose check is still on waits.
 	rows, err := s.db.R.QueryContext(ctx, `SELECT id FROM work_log WHERE kind = 'review' AND state IN ('pending', 'running') LIMIT 200`)
 	if err != nil {
 		s.log.WarnContext(ctx, "review rounds to end", "err", err)
@@ -519,7 +514,7 @@ func (s *Service) sweepRounds(ctx context.Context) {
 			s.log.WarnContext(ctx, "review rounds to end: read one", "round", id, "err", err)
 			continue
 		}
-		if out := decideRound(in); out.Do == doEnd && out.Told == "" { // A told end is advanceRound's, which also gives the person the notice; this sweep leaves it alone.
+		if out := decideRound(in); out.Do == doEnd && out.Told == "" {
 			s.setRoundNow(ctx, id, []string{in.State}, out.To, out.Why)
 		}
 	}
@@ -566,7 +561,6 @@ func (s *Service) reviewHold(ctx context.Context, pr *PullRequest) (reason strin
 			end = max(end, auditAt+reviewAuditWait.Milliseconds()+reviewHoldAfterAudit.Milliseconds())
 		}
 		if state == RoundPending {
-			// The review still comes however long the audit queue is: its time counts from where the audit got to, not from asking.
 			if auditQueued {
 				end = max(end, now+reviewAuditWait.Milliseconds()+reviewHoldAfterAudit.Milliseconds())
 			} else if auditStarted > 0 {

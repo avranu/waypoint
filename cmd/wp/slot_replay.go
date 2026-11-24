@@ -63,7 +63,6 @@ func replayClasses(jobs, hist []core.SlotHold, threshold time.Duration) []string
 			if i < len(hist) {
 				continue
 			}
-			// idx is sorted by end, so sort.Search finds the first hold that ended after the job queued.
 			queued := all[i].QueuedAt
 			pos := sort.Search(len(idx), func(k int) bool { return replayEnd(all[idx[k]]) > queued })
 			var secs []int64
@@ -250,7 +249,7 @@ func (g replayGroup) threshold() time.Duration {
 // was not recorded (or is overridden) has the slot order's long slots.
 func replayGroups(holds []core.SlotHold, slotsFlag int, since time.Time) []replayGroup {
 	idx := map[[3]string]int{}
-	hist := map[[2]string][]core.SlotHold{} // production's history ignores the policy
+	hist := map[[2]string][]core.SlotHold{}
 	var gs []replayGroup
 	for _, h := range holds {
 		k := [3]string{h.Machine, h.Name, h.Policy}

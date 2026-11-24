@@ -1,4 +1,3 @@
-# Public repository: no secrets, read-only permissions, no pull_request_target or pull_request trigger, GitHub-hosted runners only, and nothing here may use .forgejo/ (forge-sync strips it).
 name: github-ci
 
 on:
@@ -22,13 +21,11 @@ on:
 permissions:
   contents: read
 
-# Cancelling superseded runs is safe only because nothing waits on these results.
 concurrency:
   group: github-ci-${{ github.event_name }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  # Forgejo's lint job without the steps that compare with main or read .forgejo/, which GitHub doesn't have.
   lint:
     if: github.server_url == 'https://github.com' && github.event_name != 'schedule'
     runs-on: ubuntu-24.04
@@ -75,7 +72,6 @@ jobs:
         working-directory: web
         run: npm run build
 
-  # Skipped here: internal/repocheck's TestNoSiteNames (its list is the SITE_NAMES secret, which GitHub doesn't get) and internal/cilint's checks of Forgejo's workflow.
   race:
     name: race (${{ matrix.group }})
     if: github.server_url == 'https://github.com' && github.event_name != 'schedule'
@@ -107,7 +103,7 @@ jobs:
             -gcflags='modernc.org/libc/...=-race=false' \
             -gcflags='modernc.org/memory=-race=false' \
             -gcflags='modernc.org/mathutil=-race=false' \
-            -count=1 -timeout 50m $pkgs # The 50m timeout must cover a group holding more than one of Forgejo's 30m shards.
+            -count=1 -timeout 50m $pkgs
 
   e2e:
     name: e2e shard ${{ matrix.shard }}
@@ -139,7 +135,6 @@ jobs:
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('e2e/package-lock.json') }}
-      # The browser cache saves Playwright's download only, not apt's packages.
       - name: browsers
         working-directory: e2e
         run: |

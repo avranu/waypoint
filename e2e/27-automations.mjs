@@ -299,7 +299,6 @@ async function run(width, scheme, full) {
     await shot("sweep");
     await dlg.getByRole("button", { name: "Cancel" }).click();
 
-    // Rules saved before steps existed must open and save unchanged.
     const OLD = [
       ["Old: ship it", { trigger: { event: "status_changed", from: "todo", to: "done" }, if: "type:bug", actions: [{ type: "set_priority", value: "high" }, { type: "add_label", value: "shipped" }, { type: "assign", user: "reporter" }] }],
       ["Old: weekly plan", { trigger: { event: "schedule", every: "week", weekday: 3, at: "10:30" }, actions: [{ type: "create_issue", title: "Weekly {{.Date}}", body: "Plan", labels: ["planning"], due: "+2d" }] }],

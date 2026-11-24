@@ -13,11 +13,6 @@ import (
 	"strings"
 )
 
-// The gateway's git never reads a config, hook or attribute file that it
-// didn't write: no system or global config, a fixed repository config that
-// is rewritten on every start, no hooks, no replace refs, literal
-// pathspecs, and an environment built from nothing (PL7 §7.2, §8.1).
-
 // mirrorConfig is the whole of a mirror's config. It is written over
 // whatever is there each time the gateway opens the mirror.
 const mirrorConfig = `[core]
@@ -169,7 +164,6 @@ func (g *Gateway) open(ctx context.Context, r *Repo) (*mirror, error) {
 	if err := os.WriteFile(filepath.Join(m.dir, "config"), []byte(mirrorConfig), 0o600); err != nil {
 		return nil, err
 	}
-	// Remove alternates and shallow grafts: either could bring in objects or rewrite history the checks read.
 	_ = os.Remove(filepath.Join(m.dir, "objects", "info", "alternates"))
 	_ = os.Remove(filepath.Join(m.dir, "shallow"))
 	return m, nil

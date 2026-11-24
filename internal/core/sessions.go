@@ -13,8 +13,6 @@ import (
 	"unicode/utf8"
 )
 
-// filled by the CLI's hooks, never the model; keyed by (user, machine, CLI session id), so a resumed session is the same row
-
 // Session states. The stored state is what the last hook said; reading it
 // applies the idle and ended rules.
 const (
@@ -215,7 +213,6 @@ type HookEvent struct {
 	// one the client sent again after a lost reply is counted once.
 	DropsID string `json:"drops_id,omitempty"`
 
-	// quiet: a keep-warm ping or Waypoint's /compact; records no turn of the session's work
 	quiet   bool
 	typed   string
 	kept    string
@@ -570,8 +567,6 @@ func (s *Service) ListAgentSessions(ctx context.Context, actor *Actor, q AgentSe
 		return out, rows.Err()
 	}
 	if spec != "" {
-		// Agent specs match in Go ("claude" covers every Claude model), so
-		// read the newest few thousand and page what matches.
 		// #nosec G202 -- fixed fragments; values are bound
 		rows, err := s.db.R.QueryContext(ctx, `SELECT `+sessionCols+` FROM agent_sessions s WHERE `+cond+order+` LIMIT 3000`, args...)
 		if err != nil {
@@ -748,7 +743,6 @@ func (s *Service) GetAgentSession(ctx context.Context, actor *Actor, id int64) (
 		refusedText = role >= RoleEditor
 	}
 	refusedText = refusedText && !actor.HidesCommandText()
-	// outstanding records are bookkeeping: left out here and not counted in the trim
 	rows, err := s.db.R.QueryContext(ctx, `SELECT id, kind, ref_type, label, url, detail, data, created_at FROM session_events WHERE session_id = ? AND kind != ? ORDER BY id DESC LIMIT 1000`, id, outstandingKind)
 	if err != nil {
 		return nil, err
@@ -868,14 +862,12 @@ func (s *Service) SessionHook(ctx context.Context, actor *Actor, evs []HookEvent
 	}
 	evs = append([]HookEvent(nil), evs...)
 	for n := range evs {
-		// unwrapped here, once: a pasted prompt is its text, so autopilot's own still reads as autopilot's, whatever wp sent it
 		if evs[n].Event == "UserPromptSubmit" {
 			evs[n].Prompt = UnwrapPasted(evs[n].Prompt)
 		}
 	}
 	res := &HookResult{}
 	lastQuiet := false
-	// every reply carries the pause for the hooks' local copy; a Stop under a pause is not carried on
 	var perr error
 	if res.Pause, perr = s.sessionPause(ctx, actor.id(), pausedAgent(actor)); perr != nil {
 		return nil, perr
@@ -924,22 +916,18 @@ func (s *Service) SessionHook(ctx context.Context, actor *Actor, evs []HookEvent
 			}
 			if last && ev.kept != "" {
 				res.Block, advance, review = ev.kept, ev.advance, ev.review
-				continue // no turn: what would start one waits for the next prompt
+				continue
 			}
 			if last {
 				lastQuiet = ev.quiet
 			}
 			if last && ev.quiet && ev.Event != "Stop" {
-				// A ping's prompt, or the start Waypoint's /compact ends with: news
-				// waits for the stop, which carries the agent on with it (WP-192).
 				continue
 			}
 			if last && ev.Event == "Stop" {
 				leftStop = sessionLeftAlone(ctx, t, x.ID)
 			}
 			held := pausedStop || leftStop
-			// A person's answer, given in the web while the agent sat idle,
-			// reaches it at the start of its next turn, not at the end of it.
 			if last && (ev.Event == "SessionStart" || ev.Event == "UserPromptSubmit" || (ev.Event == "Stop" && !ev.StopHookActive && !held)) {
 				res.Deliver, err = s.takeDecisions(ctx, t, actor, x, ev.Event == "SessionStart", ev.Event != "Stop")
 				if err != nil {
@@ -959,9 +947,6 @@ func (s *Service) SessionHook(ctx context.Context, actor *Actor, evs []HookEvent
 				}
 			}
 			if last && ev.Event == "Stop" {
-				// A ping's stop leaves the last real stop's judgment as it was
-				// (finished stays finished, with no second session.finished),
-				// unless it carries the agent on with news (WP-192).
 				if delivered := len(res.Deliver) > 0 || len(res.Messages) > 0; delivered || !ev.quiet {
 					if err := s.settleStop(ctx, t, x, &ev, delivered); err != nil {
 						return err
@@ -975,7 +960,6 @@ func (s *Service) SessionHook(ctx context.Context, actor *Actor, evs []HookEvent
 					}
 				}
 				if !ev.StopHookActive && !ev.quiet && len(res.Deliver) == 0 && len(res.Messages) == 0 && len(runningTasks(ev.Pending)) == 0 {
-					// Only when the session is done: "done" would misread while it still works; a later Stop says it.
 					if note, err := s.bigSessionNote(ctx, t, x.ID); err != nil {
 						s.log.WarnContext(ctx, "big session note", "session", x.ID, "err", err)
 					} else {
@@ -990,8 +974,6 @@ func (s *Service) SessionHook(ctx context.Context, actor *Actor, evs []HookEvent
 						s.log.WarnContext(ctx, "stop step", "session", x.ID, "err", err)
 					}
 				case !ev.StopHookActive && !ev.quiet && len(res.Deliver) == 0 && len(res.Messages) == 0:
-					// Autopilot (WP-ADR9): a finished session moves on after the grace.
-					// Like the size note, it never fails the Stop.
 					//wplint:ignore writeclosure agentWork can queue a background safety screen of a candidate task; it screens the task, not this Stop, and records only its own result
 					if note, err := s.autopilotAtStop(ctx, t, x, &ev); err != nil {
 						s.log.WarnContext(ctx, "autopilot at stop", "session", x.ID, "err", err)
@@ -1023,7 +1005,6 @@ func (s *Service) SessionHook(ctx context.Context, actor *Actor, evs []HookEvent
 	if evs[len(evs)-1].Event == "SessionStart" && !lastQuiet {
 		res.Text = joinText(res.Text, s.autopilotSessionNote(ctx, res.Session, 0))
 	}
-	// Send any follow-up with news first: the wait below needs a Stop that says nothing.
 	if last := evs[len(evs)-1]; last.Event == "Stop" && !last.StopHookActive && !lastQuiet && !pausedStop && !leftStop && res.Text == "" && res.Session != 0 {
 		if running := runningTasks(last.Pending); len(running) > 0 && !s.followUpTalks(ctx, res.Session) {
 			ac := *actor
@@ -1036,8 +1017,6 @@ func (s *Service) SessionHook(ctx context.Context, actor *Actor, evs []HookEvent
 		}
 	}
 	if last := evs[len(evs)-1]; (last.Event == "SessionStart" || last.Event == "UserPromptSubmit") && last.Repo != "" {
-		// Each prompt too, so a vouch a person answers mid-session reaches
-		// the guard at the agent's next turn (WP-1087).
 		res.EnvHosts = s.EnvGuardHosts(ctx, actor, last.Repo)
 	}
 	if last := evs[len(evs)-1]; last.Event == "Stop" && !lastQuiet && !pausedStop && !leftStop && res.Text == "" && s.followUpTalks(ctx, res.Session) {
@@ -1321,7 +1300,6 @@ func (s *Service) applyHookEvent(ctx context.Context, t *tx, actor *Actor, x *Ag
 		_, err := t.ExecContext(ctx, `UPDATE agent_sessions SET state = ?, wait_reason = ? WHERE id = ? AND last_seen_at <= ?`, state, reason, x.ID, at+1)
 		return err
 	}
-	// Keep-warm pings (prompt cache) and /compact are no turn: they leave the session's state as it was.
 	var err error
 	switch ev.Event {
 	case "SessionStart":
@@ -1373,14 +1351,11 @@ func (s *Service) applyHookEvent(ctx context.Context, t *tx, actor *Actor, x *Ag
 	case "UserPromptSubmit":
 		if kept, err := s.sessionCommand(ctx, t, x, ev); err != nil {
 			if SessionCommand(ev.Prompt) != "" {
-				return err // A failed session command stops here; its text must not reach the agent as a prompt.
+				return err
 			}
 			s.log.WarnContext(ctx, "autopilot keep", "session", x.ID, "err", err)
 		} else if kept != "" {
 			ev.kept = kept
-			// Never a turn. keep is its person taking the session; Waypoint's
-			// other commands (status, review, next, stop, continue) only read
-			// or steer it, so an autopilot session stays autopilot's (WP-1319).
 			if c := SessionCommand(ev.Prompt); c != "" && c != "keep" {
 				return nil
 			}
@@ -1466,8 +1441,6 @@ func (s *Service) applyHookEvent(ctx context.Context, t *tx, actor *Actor, x *Ag
 			}
 			return setState(SessionWorking, "")
 		}
-		// A tool call that ran may be the very thing a request asked a person
-		// to approve (WP-126).
 		return s.closeRanInSession(ctx, t, x, ev)
 	case "Stop":
 		if ev.quiet, err = s.warmStop(ctx, t, x, ev, at); err != nil {
@@ -1484,7 +1457,6 @@ func (s *Service) applyHookEvent(ctx context.Context, t *tx, actor *Actor, x *Ag
 			sets, args = append(sets, "input_tokens = max(input_tokens, ?)", "output_tokens = max(output_tokens, ?)"), append(args, ev.InputTokens, ev.OutputTokens)
 		}
 		if ev.ContextTokens > 0 {
-			// The latest, not the largest: /compact shrinks it.
 			sets, args = append(sets, "context_tokens = ?"), append(args, ev.ContextTokens)
 		}
 		if len(sets) > 0 {
@@ -1517,7 +1489,6 @@ func (s *Service) applyHookEvent(ctx context.Context, t *tx, actor *Actor, x *Ag
 		if err := s.recordTaskSummary(ctx, t, actor, x, ev.LastMessage, at); err != nil {
 			s.log.WarnContext(ctx, "task summary", "session", x.ID, "err", err)
 		}
-		// Outstanding rows are left out of this prune and its count: deleting one would let its item be named again.
 		res, err := t.ExecContext(ctx, `DELETE FROM session_events WHERE session_id = ? AND kind != ? AND id < (SELECT id FROM session_events WHERE session_id = ? AND kind != ? ORDER BY id DESC LIMIT 1 OFFSET ?)`,
 			x.ID, outstandingKind, x.ID, outstandingKind, sessionEventsKept)
 		if err != nil {
@@ -1565,10 +1536,6 @@ func (s *Service) applyHookEvent(ctx context.Context, t *tx, actor *Actor, x *Ag
 		if err := warmEnded(ctx, t, x.ID, at, ev.EndReason); err != nil {
 			return err
 		}
-		// Autopilot's own /exit or /clear ends it while its step is starting
-		// (the job reports how that went, and the task stays reserved for the
-		// new session); any other end takes the session out of autopilot's
-		// hands.
 		var starting int
 		if err := t.QueryRowContext(ctx, `SELECT count(*) FROM autopilot_steps WHERE session_id = ? AND state = ?`, x.ID, StepStarting).Scan(&starting); err != nil {
 			return err
@@ -1578,8 +1545,6 @@ func (s *Service) applyHookEvent(ctx context.Context, t *tx, actor *Actor, x *Ag
 				return err
 			}
 		}
-		// Commits it left that its pull request hasn't got (WP-599).
-		// A failure undoes all of it, so the sweep tells it later.
 		if err := t.part(ctx, func() error {
 			return s.tellUnpushed(ctx, t, x, s.loadWorkState(ctx, t, x.ID), endedHow(ev.EndReason))
 		}); err != nil {
@@ -1640,7 +1605,6 @@ func (s *Service) carryOverClear(ctx context.Context, t *tx, x *AgentSession, at
 	for _, q := range []string{
 		`UPDATE babysits SET session_id = ? WHERE session_id = ? AND ended_at IS NULL`,
 		`UPDATE session_messages SET session_id = ? WHERE session_id = ? AND state = 'queued' AND step_key LIKE 'babysit:%'`,
-		// Paused runs move too: a /clear while idle still holds them.
 		`UPDATE agent_runs SET session_id = ? WHERE session_id = ? AND (ended_at IS NULL OR (outcome = 'paused'
 			AND id = (SELECT max(id) FROM agent_runs r WHERE r.issue_id = agent_runs.issue_id AND r.agent = agent_runs.agent)))`,
 	} {

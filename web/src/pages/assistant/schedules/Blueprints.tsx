@@ -93,7 +93,6 @@ function BlueprintDialog({
   const qc = useQueryClient()
   const targets = useQuery(targetsQuery(assistantId)).data?.targets ?? []
   const names = new Map(targets.map((t) => [t.id, t.name]))
-  // 'origin' means Hermes's home channel, which exists only when a messaging platform is connected.
   const noHome = !targets.some((t) => t.id !== 'local' && !t.id.startsWith('bot-chat'))
   const [values, setValues] = useState<Record<string, string>>(() =>
     Object.fromEntries(

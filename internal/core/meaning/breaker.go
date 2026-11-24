@@ -14,8 +14,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core/kernel"
 )
 
-// Logs once when the breaker opens and after each failed probe, not per call, so an outage is one problem in wp server problems.
-
 // ErrDown wraps every failure to reach the meaning service; the
 // breaker reports those, so callers log them below a warning.
 var ErrDown = errors.New("the meaning service is not answering")

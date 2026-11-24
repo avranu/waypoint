@@ -17,8 +17,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Waypoint never runs a command itself or holds a subscription credential; a runner runs only its owner's work.
-
 const (
 	runnerOnlineFor = 90 * time.Second
 	runnerMaxWait   = 30 * time.Second
@@ -186,7 +184,7 @@ func cleanDir(p string) (string, bool) {
 	}
 	for _, seg := range strings.Split(p, "/") {
 		if seg == ".." {
-			return "", false // never resolved on the server: the runner would see something else
+			return "", false
 		}
 	}
 	c := path.Clean(p)
@@ -276,7 +274,7 @@ func (r *RunnerRegistration) clean() error {
 	clis := make([]RunnerCLI, 0, len(runnerCLIs))
 	for _, c := range r.CLIs {
 		if !slices.Contains(runnerCLIs, c.Name) || slices.ContainsFunc(clis, func(k RunnerCLI) bool { return k.Name == c.Name }) {
-			continue // a CLI this Waypoint doesn't drive, or one already reported: a longer report never fails a poll
+			continue
 		}
 		clis = append(clis, RunnerCLI{Name: c.Name, Version: cleanWord(c.Version, 80), SignedIn: c.SignedIn, Detail: cleanWord(c.Detail, 200)})
 	}
@@ -587,12 +585,12 @@ func (s *Service) RunnerPoll(ctx context.Context, actor *Actor, in RunnerPoll) (
 	}
 	r, err := s.runnerByID(ctx, s.db.R, in.Runner)
 	if err != nil || r.Owner.ID != actor.User.ID {
-		return nil, notFound("runner") // someone else's runner looks like none
+		return nil, notFound("runner")
 	}
 	if err := s.runnerSeen(ctx, actor, r, in); err != nil {
 		return nil, err
 	}
-	if in.CLIs != nil { // the claim below goes by what it just reported
+	if in.CLIs != nil {
 		if r, err = s.runnerByID(ctx, s.db.R, r.ID); err != nil {
 			return nil, err
 		}
@@ -614,10 +612,8 @@ func (s *Service) RunnerPoll(ctx context.Context, actor *Actor, in RunnerPoll) (
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
 	for first := true; ; first = false {
-		wake := s.runnerWake() // before looking, so a kick between the look and the wait isn't lost
+		wake := s.runnerWake()
 		if !first {
-			// Fresh each time round: a re-register may have narrowed the
-			// directories, labels or CLIs while the poll was held.
 			if r, err = s.runnerByID(ctx, s.db.R, r.ID); err != nil {
 				return nil, err
 			}
@@ -753,9 +749,6 @@ type jobNeeds struct {
 // runnerCanTake: labels match, the directory is allowed, the CLI is there
 // (and not known to be signed out).
 func runnerCanTake(r *Runner, n jobNeeds) bool {
-	// A review carries a pull request's text: only to a runner whose wp says
-	// it confines the CLI to the checkout. This is what both the pre-check and
-	// the poll that hands out jobs ask, so an older runner never gets one.
 	if n.kind == JobReview && !slices.Contains(r.Features, FeatureConfine) {
 		return false
 	}
@@ -784,8 +777,6 @@ func runnerCanTake(r *Runner, n jobNeeds) bool {
 		return false
 	}
 	if n.cli == GatewayCLI {
-		// Not a CLI on the machine: the gateway runs the agent, and the
-		// runner's wp only has to know how to hand it the checkout.
 		return slices.Contains(r.Features, FeatureGatewayAudit)
 	}
 	if n.cli != "" {
@@ -997,7 +988,6 @@ func (s *Service) claimRunnerJob(ctx context.Context, actor *Actor, r *Runner, l
 				if c.Token, err = t.mintJobToken(ctx, c.ID, r.Owner.ID, agent, c.Timeout); err != nil {
 					return err
 				}
-				// Sign after the job's users are minted above; a failed signing is logged and the job goes out with no sandbox spec.
 				if signer != nil && project.Valid {
 					if c.Sandbox, err = signer.sign(ctx, t, s.now(), &c, project.Int64); err != nil {
 						s.log.WarnContext(ctx, "sandbox spec", "job", c.ID, "err", err)
@@ -1053,7 +1043,6 @@ func (s *Service) withPriorPanel(ctx context.Context, input json.RawMessage, aud
 	if json.Unmarshal(h["panel"], &panel) != nil || len(panel) == 0 {
 		return input
 	}
-	// The stored input keeps no prior runs: the prior panel is read when a runner takes the job, replacing any a legacy input carries, and dropped when none is reusable.
 	s.settleRoundSiblings(ctx, auditID)
 	prior := s.priorPanel(ctx, auditID)
 	if len(prior) == 0 {

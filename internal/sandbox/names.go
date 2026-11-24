@@ -7,8 +7,6 @@ import (
 	"strings"
 )
 
-// h6 is never cut to fit the 32-character limit, only the slug parts are, so similar slugs never collide.
-
 // MaxUserName is Linux's limit on a user name.
 const MaxUserName = 32
 

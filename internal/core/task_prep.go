@@ -14,13 +14,11 @@ import (
 	"unicode"
 )
 
-// The model only picks from server-supplied candidates; the facts shown with a pick are filled in by the server, never by the model.
-
 const (
 	prepPerProject  = 3
 	prepDueMax      = 6
 	prepSettle      = 10 * time.Minute
-	prepPendingMax  = 30 * time.Minute // a prep still pending after this was lost (a restart); make it again
+	prepPendingMax  = 30 * time.Minute
 	prepRetryFailed = 6 * time.Hour
 	prepBundleMax   = 256 << 10
 	prepMaxFiles    = 20
@@ -344,7 +342,6 @@ func (s *Service) UploadPrep(ctx context.Context, a *Actor, key string, b PrepBu
 	if err != nil {
 		return nil, err
 	}
-	// A re-made prep keeps its held-out flag: an agent may already have seen the first one.
 	var held bool
 	if err := s.db.R.QueryRowContext(ctx, `SELECT held_out FROM task_preps WHERE issue_id = ?`, i.ID).Scan(&held); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
@@ -354,10 +351,6 @@ func (s *Service) UploadPrep(ctx context.Context, a *Actor, key string, b PrepBu
 	if pos > 0 {
 		priority = prioritySurplus
 	}
-	// Another upload while a prep made ahead is still pending (a second
-	// runner, its mark used up) stays that prep ahead: same priority, same
-	// outcome row. Not once PrepDue handed the task out at the front: its
-	// prep is then normal, never one surplus could refuse.
 	var oldState, oldPriority string
 	var oldAt int64
 	stillAhead := false
@@ -389,7 +382,6 @@ func (s *Service) UploadPrep(ctx context.Context, a *Actor, key string, b PrepBu
 	if err != nil {
 		return nil, err
 	}
-	// Read before queuing: a surplus prep the gateway refuses at once is deleted (task_prep.go:604), so a read after queuePrep can find nothing.
 	p, err := s.prepOf(ctx, i, false)
 	s.queuePrep(i.ID, i.Key)
 	return p, err
@@ -509,7 +501,7 @@ var prepPickSchema = map[string]any{
 	"type": "object",
 	"properties": map[string]any{
 		"path": map[string]any{"type": "string"},
-		"name": map[string]any{"type": []string{"string", "null"}}, // optional: strict mode wants it listed, null when absent
+		"name": map[string]any{"type": []string{"string", "null"}},
 		"why":  map[string]any{"type": "string"},
 	},
 	"required":             []string{"path", "name", "why"},
@@ -572,7 +564,6 @@ func (s *Service) runPrep(ctx context.Context, issueID int64) error {
 	model, requestID, err := s.runAIAnswer(pctx, "prep", chain, prepSystem, prompt, prepSchema, &answer)
 	var wait *aiWaitError
 	if err != nil && priority == prioritySurplus && errors.As(err, &wait) {
-		// A surplus prep refused for capacity is deleted, not marked failed, so the task gets a normal prep when it reaches the front.
 		_, werr := s.db.W.ExecContext(ctx, `DELETE FROM task_preps WHERE issue_id = ? AND state = 'pending' AND priority = ?`, issueID, prioritySurplus)
 		s.endPrepAhead(ctx, issueID, "refused")
 		return errors.Join(err, werr)

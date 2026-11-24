@@ -124,7 +124,7 @@ func (s *Server) transcriptRead(w http.ResponseWriter, r *http.Request) (any, er
 	if n := noteFrom(r); n != nil {
 		n.err = err
 	}
-	panic(http.ErrAbortHandler) // some bytes are out: end the transfer as broken, not as whole
+	panic(http.ErrAbortHandler)
 }
 
 type countWriter struct {

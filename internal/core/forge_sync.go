@@ -139,7 +139,6 @@ func hostOf(raw string) string {
 
 func (s *Service) upsertForgeComment(ctx context.Context, f *Forge, issueID int64, action string, c ForgeComment) error {
 	body := truncateBytes(strings.TrimSpace(c.Body), maxCommentLen)
-	// Text from a non-person login waits for approval; a login agents may hold counts as unreviewed agent text unless marked person_only.
 	outside, agent := s.forgeWriter(ctx, s.db.R, f, c.Author)
 	sys := forgeSyncActor(f, c.Author, agent)
 	return s.write(ctx, sys, func(t *tx) error {
@@ -157,7 +156,7 @@ func (s *Service) upsertForgeComment(ctx context.Context, f *Forge, issueID int6
 		}
 		held := err == nil
 		var cid int64
-		var mine bool // origin 0 is Waypoint's own copy on the forge; origin 1 is a comment written on the forge.
+		var mine bool
 		err = t.QueryRowContext(ctx, `SELECT l.comment_id, l.origin = 0 FROM comment_links l JOIN comments c ON c.id = l.comment_id
 			WHERE l.forge_id = ? AND l.external_id = ? AND c.issue_id = ?`, f.ID, c.ID, issueID).Scan(&cid, &mine)
 		switch {
@@ -212,9 +211,6 @@ func (s *Service) upsertForgeComment(ctx context.Context, f *Forge, issueID int6
 			issueID, f.ID, c.ID).Scan(&gone); err != nil || gone {
 			return err
 		}
-		// The webhook for a comment Waypoint just posted can beat the post's
-		// own reply: recognise our copy by its marker and text instead of
-		// copying it back.
 		if strings.Contains(body, viaWaypoint) {
 			var own int64
 			err = t.QueryRowContext(ctx, `SELECT id FROM comments c WHERE issue_id = ? AND created_at > ? AND instr(?, body) > 0
@@ -235,7 +231,6 @@ func (s *Service) upsertForgeComment(ctx context.Context, f *Forge, issueID int6
 		}
 		created := s.nowMS()
 		if held {
-			// A held comment released later keeps the time it was written and raises no events (its events are quiet).
 			created = heldAt
 			if err := s.dropHeld(ctx, t, i, f, c.ID); err != nil {
 				return err
@@ -280,7 +275,7 @@ func (s *Service) pushComment(ctx context.Context, e *Event) {
 	cm, ok := s.Forges.(ForgeCommenter)
 	commentID := dataInt(e, "comment_id")
 	if !ok || commentID == 0 || e.Data["local"] == true {
-		return // a local comment names machines and paths (addLocalComment)
+		return
 	}
 	text, err := s.forgeCommentText(ctx, commentID)
 	if err != nil {
@@ -519,8 +514,6 @@ func (s *Service) ensureRepoProject(ctx context.Context, f *Forge, repo string, 
 	if !validRepoFor(f.Kind, repo) {
 		return invalid("repo %q", repo)
 	}
-	// One at a time per owner/name (across forges, for mirrors), so two
-	// webhooks for a new repo make one project.
 	unlock := forgeLocks.lock("repo|" + strings.ToLower(repo))
 	defer unlock()
 	var n int
@@ -553,7 +546,6 @@ func (s *Service) ensureRepoProject(ctx context.Context, f *Forge, repo string, 
 	} else if err != nil {
 		return err
 	}
-	// A name-only match may be a different repo: it links with sync and posting off, and its bots stay off because a mirror's pull requests copy reviews and would double them.
 	on := boolInt(!mirror)
 	if _, err := s.db.W.ExecContext(ctx, `INSERT INTO project_repos(project_id, forge_id, repo, forge_repo_id, sync_issues, post_comments, bots, created_at) VALUES (?,?,?,?,?,?,?,?)
 		ON CONFLICT(project_id, forge_id, repo) DO NOTHING`, projectID, f.ID, repo, id, on, on, on, s.nowMS()); err != nil {
@@ -602,7 +594,6 @@ func (s *Service) namespaceIsGroup(ctx context.Context, f *Forge, ns string, hin
 // made the first time it's needed and shared by every forge. GitLab
 // subgroups nest under their parent group's project.
 func (s *Service) namespaceProject(ctx context.Context, admin *Actor, f *Forge, ns string) (*Project, error) {
-	// Namespaces lock after repos and children before parents, so no cycle.
 	unlock := forgeLocks.lock("ns|" + strings.ToLower(ns))
 	defer unlock()
 	var id int64
@@ -697,7 +688,6 @@ func (s *Service) DiscoverRepos(ctx context.Context, actor *Actor, forgeID int64
 	if err != nil {
 		return 0, err
 	}
-	// Only repos the forge reported: the names come from the browser.
 	want := func(list []string) map[string]bool {
 		m := map[string]bool{}
 		for _, r := range list {
@@ -877,7 +867,6 @@ func (c *httpForgeClient) ListRepos(ctx context.Context, f *Forge) ([]ForgeRepo,
 	}
 	orgs := map[string]bool{}
 	if f.Kind != "github" {
-		// Forgejo's repo owners don't say whether they're organisations.
 		var list []struct {
 			Name     string `json:"name"`
 			Username string `json:"username"`

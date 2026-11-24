@@ -11,8 +11,6 @@ import (
 	"time"
 )
 
-// Each fire is recorded in automation_fires, so it happens once per issue and period.
-
 // RunTimedAutomations fires every time-based automation that is due.
 func (s *Service) RunTimedAutomations(ctx context.Context) {
 	rows, err := s.db.R.QueryContext(ctx, `SELECT `+automationCols+` FROM automations WHERE enabled = 1 AND session_id IS NULL ORDER BY project_id, position, id`)
@@ -104,7 +102,6 @@ func (s *Service) runTimed(ctx context.Context, a *Automation) error {
 			if err != nil {
 				return err
 			}
-			// The scheduler runs every five minutes; the ten-minute window overlaps so no occurrence is missed.
 			at, ok := c.Latest(now, 10*time.Minute)
 			if !ok {
 				return nil
@@ -118,7 +115,6 @@ func (s *Service) runTimed(ctx context.Context, a *Automation) error {
 		}
 	}
 	q := strings.TrimSpace(a.Rule.If + " " + extra)
-	// Issues that already fired stay in the results, so one page could hide the rest forever.
 	var issues []*Issue
 	for offset := 0; offset < 10000; offset += 500 {
 		res, err := s.Search(ctx, SystemActor(), SearchParams{Query: q, Project: projectKey, Limit: 500, Offset: offset})

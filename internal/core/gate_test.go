@@ -44,30 +44,28 @@ type shipForge struct {
 	tipDefault string
 	tipHang    bool
 
-	created      []NewPR
-	heads        map[string]string
-	labelOps     []string
-	reviewers    [][]string
-	retries      []string
-	noRetry      bool
-	retryNone    bool
-	retryErr     error
-	retryPartial int
-	containsErr  error
-	canRetryErr  error
-	notes        []PRNote
-	reactedTo    []string
-	titleEdits   []string
-	bodyEdits    []string
-	baseEdits    []string
-	baseErr      error
-	brs          []ForgeBranch
-	brErr        error
-	// Runs after a title edit is made; the forge's webhook can arrive before the editor's own write.
+	created        []NewPR
+	heads          map[string]string
+	labelOps       []string
+	reviewers      [][]string
+	retries        []string
+	noRetry        bool
+	retryNone      bool
+	retryErr       error
+	retryPartial   int
+	containsErr    error
+	canRetryErr    error
+	notes          []PRNote
+	reactedTo      []string
+	titleEdits     []string
+	bodyEdits      []string
+	baseEdits      []string
+	baseErr        error
+	brs            []ForgeBranch
+	brErr          error
 	afterTitleEdit func(title string)
-	// afterCreate runs before CreatePR answers, as the forge's webhook usually does
-	createAuthor string
-	afterCreate  func(fp ForgePR) error
+	createAuthor   string
+	afterCreate    func(fp ForgePR) error
 
 	behind     map[string]bool
 	baseTip    string
@@ -76,12 +74,10 @@ type shipForge struct {
 	updates    []int
 	updateErr  error
 	updateErrs map[int]error
-	// Runs with the fake's lock held: set fields directly, don't call locking methods.
-	onMerge func()
-	hidden  map[string]bool // Commits here are not yet visible to a read of the base (forge read lag).
-	trees   map[string]string
+	onMerge    func()
+	hidden     map[string]bool
+	trees      map[string]string
 
-	// onMergeN runs inside MergePR with sm held
 	mergeSHAs map[int]string
 	onMergeN  func(n int)
 	commitFn  func(in CommitInput) (*ForgeCommit, error)
@@ -271,7 +267,6 @@ func (g *shipForge) CommitChecks(ctx context.Context, f *Forge, repo, sha string
 	for i := range out {
 		out[i].State = checkState(out[i].State)
 	}
-	// Waypoint's own status is listed among the checks, posted by its token's account, as on a real forge
 	for i, st := range g.statuses[sha] {
 		out = append(out, CommitCheck{Name: st.Context, State: checkState(st.State), Source: "status", Creator: "waypoint-bot", ID: g.stamps[sha][i]})
 	}
@@ -306,7 +301,7 @@ func (g *shipForge) MergePR(ctx context.Context, f *Forge, repo string, pr *Forg
 	g.prs[mk(f, repo, pr.Number)].State = "merged"
 	g.prs[mk(f, repo, pr.Number)].MergeSHA = cmp(g.mergeSHAs[pr.Number], "4e7ced0ffee")
 	if g.onMerge != nil {
-		g.onMerge() // sm is held here, so onMerge sets fields directly rather than locking
+		g.onMerge()
 	}
 	if g.onMergeN != nil {
 		g.onMergeN(pr.Number)
@@ -406,7 +401,7 @@ func (se *shipEnv) watch(kinds ...string) *eventLog {
 }
 
 func (l *eventLog) all() []*Event {
-	time.Sleep(20 * time.Millisecond) // Events are appended by a goroutine; wait so in-flight ones reach the list.
+	time.Sleep(20 * time.Millisecond)
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return slices.Clone(l.list)
@@ -441,7 +436,6 @@ func TestReviewGateLifecycle(t *testing.T) {
 		t.Fatalf("findings = %+v", fs)
 	}
 
-	// Forgejo sends no event for a resolved thread; only the periodic check sees it.
 	se.sg.resolve(0, "sam")
 	se.setClock(se.clockNow().Add(3 * time.Minute))
 	se.s.CheckGates(se.ctx)
@@ -463,7 +457,6 @@ func TestReviewGateLifecycle(t *testing.T) {
 	if st := se.sg.lastStatus("1111111aaaa"); st.State != "failure" {
 		t.Fatalf("reopened thread: %+v", st)
 	}
-	// An agent may dismiss a finding only with a note saying why
 	agent := agentActorFor(se.admin, "anthropic/claude-opus-5-5")
 	var ie *InvalidError
 	if _, err := se.s.DismissFinding(se.ctx, agent, fs[0].ID, " "); !errors.As(err, &ie) {
@@ -628,7 +621,6 @@ func TestVerifyFixedFindings(t *testing.T) {
 	if st := se.sg.lastStatus("1111111aaaa"); st.State != "failure" {
 		t.Fatalf("first status = %+v", st)
 	}
-	// One model answer serves every call here: no new findings, and the old one fixed
 	se.llm.answers["opencode/muse-spark-1.3-contributor-free"] = `{"findings":[],"verdict":"fixed","reason":"The comparison is now ==."}`
 	pr := testPR
 	pr.HeadSHA = "2222222bbbb"
@@ -748,7 +740,6 @@ func TestReviewSeesTheConversation(t *testing.T) {
 	pr.HeadSHA = "2222222bbbb"
 	se.pullHook("synchronize", pr)
 	n := len(se.llm.prompts)
-	// A reply also queues a reply run that this test's model can't answer, so only review runs are checked
 	var done []*BotRun
 	for _, r := range se.drain() {
 		if r.Kind == "review" {

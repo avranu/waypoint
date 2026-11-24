@@ -1,5 +1,3 @@
-// Each review draws an arm by measured precision per token; with an LLM gateway the gateway picks the model, so models show only as what it chose.
-
 import { useQuery } from '@tanstack/react-query'
 import { aiq, usePinReviewArm, type ReviewArm, type ReviewArms } from '@/lib/ai'
 import { relativeTime } from '@/lib/format'

@@ -34,8 +34,6 @@ const browser = await pw.chromium.launch();
 const out = [];
 try {
   for (const size of job.sizes) {
-    // A token goes only to a context that shows its own server's pages, so
-    // no other page can make a request that carries it.
     const blocked = [];
     const open = async (server) => {
       const token = (server && tokens[server]) || "";
@@ -49,14 +47,10 @@ try {
         await ctx.route("**/*", (route) => {
           const req = route.request();
           const origin = new URL(req.url()).origin;
-          // Service-worker fetches have no frame; they belong to this server.
           if (req.serviceWorker()) {
             if (origin !== server) return route.continue();
             return route.continue({ headers: { ...req.headers(), authorization: "Bearer " + token } });
           }
-          // A page that navigates away (Go.tsx follows a link) must not take
-          // the token with it: refuse top-level moves off this server, and
-          // send the token only while the page itself is on it.
           if (origin !== server) {
             if (req.isNavigationRequest() && !req.frame().parentFrame()) {
               blocked.push(req.url());

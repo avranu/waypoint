@@ -77,7 +77,6 @@ for (const [width, scheme] of looks([
   await page.getByText("Sandbox saved").waitFor();
   ok((await api("GET", `/projects/${key}/sandbox`)).body.level === "vm", `${tag} saved VM`);
 
-  // Signing in just now counts as entering the password, so make the server ask once.
   await choose(page, "Runner jobs", "Off");
   ok(await section.getByText("Runs as you: everything you can reach").isVisible(), `${tag} Off says what it opens up`);
   const loosen = section.getByRole("button", { name: "Loosen sandbox" });
@@ -125,7 +124,6 @@ for (const [width, scheme] of looks([
       data: { name: "laptop", hostname: "laptop.local", os: "linux", arch: "amd64", version: "v1", labels: [], allowed_dirs: ["/work"], clis: [] },
     });
     ok(r.status() === 200, `register a runner: ${r.status()}`);
-    // The helper reports ready through the runner's poll, once it pins this server's key and its store is sound.
     runnerId = (await r.json()).id;
     const fp = (await api("GET", "/sandbox/key")).body.fingerprint;
     ok(/^SHA256:/.test(fp), `the server's spec key: ${fp}`);
@@ -147,7 +145,6 @@ for (const [width, scheme] of looks([
   ok(await sb.locator("code", { hasText: /^SHA256:/ }).isVisible(), `${tag} shows the key's fingerprint`);
   await sb.screenshot({ path: `${out}/helper-${width}-${scheme}.png` });
 
-  // Removing a machine user goes to the runner as a signed spec on its next poll, and is done only once the runner answers.
   ok(await sb.getByText("wpr-old-thing-0a0b0c", { exact: true }).isVisible(), `${tag} shows the removed history`);
   ok(await sb.getByText(/trash\/wpr-old-thing/).isVisible(), `${tag} says where a removed user's files wait`);
   ok((await sb.getByText("no project here uses it now").count()) === 2, `${tag} flags users no project uses`);

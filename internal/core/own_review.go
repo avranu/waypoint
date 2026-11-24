@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// A session's own review is the task's review round; ship holds the pull request until the session reports its findings.
-
 // WorkOwnReview is a session's own adversarial review (stored).
 const WorkOwnReview = "own_review"
 
@@ -41,8 +39,6 @@ func (s *Service) recordOwnReview(ctx context.Context, t *tx, actor *Actor, x *A
 		return nil
 	}
 	run, issueID, pid, key := c.run, c.issueID, c.pid, c.key
-	// The hook's outbox replays an event whose POST failed, with its own
-	// time: the same report at the same time is the same review.
 	var seen int
 	if err := t.QueryRowContext(ctx, `SELECT count(*) FROM work_log WHERE kind = ? AND session_id = ? AND issue_id = ? AND created_at = ? AND body = ?`,
 		WorkOwnReview, x.ID, issueID, at, clipText(report, reviewReportMax)).Scan(&seen); err != nil {
@@ -238,7 +234,7 @@ func ownReviewBy(ev *HookEvent) string {
 // ownReview is a session's own review of the gate's task.
 type ownReview struct {
 	id, ended int64
-	found     sql.NullInt64 // Null until its report is counted; a null count is not a zero.
+	found     sql.NullInt64
 	attached  bool
 }
 

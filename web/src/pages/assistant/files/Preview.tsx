@@ -1,5 +1,3 @@
-// Markdown is untrusted: render with no HTML and no remote images; HTML is only ever text.
-
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useBlocker } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -370,7 +368,6 @@ function ImageView({ id, entry }: { id: number; entry: FileEntry }) {
         {img.error.message}
       </NoPreview>
     )
-  // Only ever an image: an <img> doesn't run what's inside (SVG included).
   if (!img.data.data_url.startsWith('data:image/')) return <NoPreview id={id} entry={entry} />
   return (
     <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-auto bg-sunken p-4 sm:p-6">

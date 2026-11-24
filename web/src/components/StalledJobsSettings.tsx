@@ -208,8 +208,6 @@ function StallForm({
         <Switch
           checked={!v.off}
           onChange={(on) =>
-            // Off hides the times, so times that can't be saved go back to
-            // the saved ones rather than hold the switch back unseen.
             setV((d) => {
               const n = { ...d, off: !on }
               return !on && stallPolicyError(fromDraft(n))
@@ -277,8 +275,6 @@ function StallForm({
                 size="sm"
                 variant="ghost"
                 icon={<RotateCcw className="size-3.5" />}
-                // Through the autosave, like any other change, so it is
-                // this form's own and nothing typed before undoes it.
                 onClick={() => setV(toDraft(fallback))}
               >
                 {resetLabel}

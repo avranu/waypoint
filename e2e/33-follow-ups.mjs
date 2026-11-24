@@ -95,7 +95,6 @@ async function run(width, scheme, n) {
   ok(true, `${tag} a background task holds it, and the header says so`);
   await shot("held");
 
-  // No runner is on this machine, so the step runs and fails.
   const fin = await hook("Stop", { last_message: "The parser is done; tests pass.", pending: { tasks: [], crons: [] } });
   ok(!fin.await, `${tag} no hook wait for a step that doesn't talk to the agent`);
   await panel.getByText("Failed").first().waitFor({ timeout: 20000 });

@@ -99,7 +99,6 @@ var AutomationTemplates = []AutomationTemplate{
 		Rule:        Rule{Trigger: Trigger{Event: "pr_comment"}, Actions: []Action{{Type: "reply"}}},
 	},
 	{
-		// Not on pushes: CodeRabbit reviews the twin again on each request, and every review starts a babysitting round.
 		Name:        "Ask CodeRabbit to review",
 		Description: "Each new pull request, or draft marked ready, gets \"@coderabbitai review\" from the bot account, once, not on pushes. For repos a mirror copies to GitHub, where CodeRabbit reviews the twin: forge-sync passes the command on when the bot account is one of its command_authors. Added on, by migration, to projects with a repo on a forge that has a mirror account.",
 		Rule: Rule{Trigger: Trigger{Event: "pr_updated", Extra: map[string]any{"on": "new"}}, PR: reviewFilter,
@@ -340,8 +339,6 @@ func (s *Service) runAction(c *StepCtx) error {
 		}
 		who := s.actionUser(issue, actor, act.User)
 		if who == "" {
-			// "actor" or "reporter" with nobody behind it (a forge sync, a
-			// deleted reporter): leave assignees alone rather than clear them.
 			return nil
 		}
 		var p IssuePatch
@@ -597,7 +594,6 @@ func (s *Service) runAction(c *StepCtx) error {
 		if err != nil {
 			return err
 		}
-		// Agent-written text carried into an issue stays attributed to the agent: it is unreviewed and screened before agents take it.
 		if w := strings.Join(strings.Fields(writtenBy), "/"); w != "" {
 			if len(w) > 100 {
 				return invalid("written_by can be at most 100 characters")

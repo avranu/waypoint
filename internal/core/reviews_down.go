@@ -25,7 +25,6 @@ const providersDownText = "every review model "
 // answer after such a streak, it emits EvReviewsDown. Once per streak: the
 // notice goes out on the run that reaches the count, not the ones after.
 func (s *Service) reviewsDownCheck(ctx context.Context, t *tx, projectID, prID, runID int64) {
-	// Other failures (auth, bad answers) neither end nor extend an outage streak; of runs finishing in the same millisecond, the one that ended last leads.
 	rows, err := t.QueryContext(ctx, `SELECT status = 'failed' FROM bot_runs
 		WHERE project_id = ? AND kind = 'review' AND finished_at IS NOT NULL
 		AND (status = 'done' OR (status = 'failed' AND substr(error, 1, ?) = ?))

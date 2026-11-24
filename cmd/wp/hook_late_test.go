@@ -398,9 +398,6 @@ func TestChainNudgeLateFloor(t *testing.T) {
 		t.Fatal(err)
 	}
 	setAge(t, 1800*time.Millisecond)
-	// Widen the floor so a slow runner delaying the release can't end the wait
-	// first; the lock is still held when chainNudge starts, and the wait ends
-	// when it is removed.
 	old := hookLockFloor
 	hookLockFloor = 5 * time.Second
 	t.Cleanup(func() { hookLockFloor = old })

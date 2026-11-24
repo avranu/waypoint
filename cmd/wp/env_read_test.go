@@ -56,7 +56,7 @@ func TestCLIEnvReadVouch(t *testing.T) {
 	}
 	t.Setenv("HARBOR_ADMIN_KEY", secret)
 	for _, k := range []string{"CLAUDECODE", "GEMINI_CLI", "OPENCODE", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "WAYPOINT_AGENT"} {
-		t.Setenv(k, "") // a person's shell, whatever runs the test
+		t.Setenv(k, "")
 	}
 
 	out := e.wp("env", "read", "production", "/admin/health?limit=5", "--bearer", "HARBOR_ADMIN_KEY", "-H", "X-Tenant: acme", "-p", p.Key)

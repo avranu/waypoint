@@ -1,7 +1,5 @@
 package core
 
-// A thread a person resolved is never argued again.
-
 import (
 	"context"
 	"encoding/json"

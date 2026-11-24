@@ -13,8 +13,6 @@ import (
 	"time"
 )
 
-// Restart is /exit then a new Claude Code in the pane; the prompt is typed once it is ready, not put on the command line; a pane that can't take that is left alone.
-
 // relaunch is how a session's process is started again.
 type relaunch struct {
 	respawn        bool
@@ -46,7 +44,6 @@ var (
 		if err != nil {
 			return p, err
 		}
-		// "pid (comm) state ppid …": comm may hold spaces and parentheses.
 		at := bytes.LastIndexByte(stat, ')')
 		if at < 0 {
 			return p, fmt.Errorf("can't read /proc/%d/stat", pid)
@@ -220,8 +217,6 @@ func (p *runnerProc) restartSession(ctx context.Context, run *jobRun, in autopil
 	if _, err := runTmux(ctx, socket, nil, "send-keys", "-t", pane, "Enter"); err != nil {
 		return failed("%v", err)
 	}
-	// A worktree with commits asks what to do with it. Keep it: the sweep
-	// below is what decides, and it never loses work.
 	var pressed time.Time
 	gone := func() bool {
 		if !pidAlive(s.PID) {
@@ -243,7 +238,6 @@ func (p *runnerProc) restartSession(ctx context.Context, run *jobRun, in autopil
 	if rl.worktree {
 		name := worktreeName(ctx, rl.root, in.Key)
 		if name == "" {
-			// Never start in the person's checkout: stop with the pane free.
 			return ended("no worktree for this session: every name for %s is taken", in.Key)
 		} else {
 			worktree = filepath.Join(rl.root, autopilotWorktrees, name)
@@ -257,8 +251,6 @@ func (p *runnerProc) restartSession(ctx context.Context, run *jobRun, in autopil
 			spare = rl.dir
 		}
 		base.Kept = p.sweepWorktrees(ctx, run, in, rl, spare)
-		// It can take minutes on a large repository, and the pane is empty
-		// now: the new session starts while it runs.
 		unshipped = make(chan []string, 1)
 		go func() { unshipped <- p.noteUnshipped(ctx, run, in, rl) }()
 	}
@@ -282,7 +274,6 @@ func (p *runnerProc) restartSession(ctx context.Context, run *jobRun, in autopil
 		if !waitUntil(ctx, 10*time.Second, atShell) {
 			return ended("its pane didn't come back to %s to start Claude Code again", rl.shell)
 		}
-		// A leading space keeps the line out of the shell's history.
 		if _, err := runTmux(ctx, socket, nil, "send-keys", "-t", pane, "-l", " "+line); err != nil {
 			return ended("Claude Code couldn't be started again: %v", err)
 		}

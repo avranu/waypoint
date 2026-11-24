@@ -83,7 +83,6 @@ export function weekLabel(from: Date): string {
 export function useInvalidateTime() {
   const qc = useQueryClient()
   return () => {
-    // 'issue' too: the issue page shows total time spent.
     for (const k of ['time', 'timer', 'timeReport', 'issueTime', 'issue'])
       qc.invalidateQueries({ queryKey: [k] })
   }

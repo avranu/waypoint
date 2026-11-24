@@ -1,7 +1,5 @@
 package core
 
-// Only a waypoint/* status posted by Waypoint's own forge account counts as Waypoint's: any account with write access can post any context, and branch rules match by context alone.
-
 import (
 	"context"
 	"fmt"
@@ -26,7 +24,6 @@ func (s *Service) foreignOwnStatuses(ctx context.Context, f *Forge, repo, sha st
 		return
 	}
 	for _, c := range foreign {
-		// A check run is an app's, never Waypoint's, and a GitLab pipeline job has no creator.
 		if c.Source != "check_run" && strings.EqualFold(c.Creator, self) {
 			continue
 		}
@@ -35,12 +32,9 @@ func (s *Service) foreignOwnStatuses(ctx context.Context, f *Forge, repo, sha st
 		if !warned {
 			s.warnForeign(f, repo, sha, c, self)
 		}
-		// A forged check run is logged only: Waypoint answers with a commit
-		// status, which doesn't override a check run of the same name.
 		if c.Name != gateContext || c.Source == "check_run" {
 			continue
 		}
-		// The answer counts as done only once a pull request with the gate on was handled, so an early read is answered on a later one.
 		if _, busy := s.foreignAnswers.LoadOrStore(key, true); busy {
 			continue
 		}
@@ -79,7 +73,7 @@ func (s *Service) answerForgedGate(ctx context.Context, f *Forge, repo, sha stri
 		var id int64
 		if err := rows.Scan(&id); err != nil {
 			rows.Close()
-			return false // don't skip a pull request; try again on the next read
+			return false
 		}
 		ids = append(ids, id)
 	}
@@ -106,7 +100,7 @@ func (s *Service) answerForgedGate(ctx context.Context, f *Forge, repo, sha stri
 // when the forged status disagrees with it; eval when Waypoint has no
 // verdict on this head yet, so it must work one out.
 func (s *Service) reassertGate(ctx context.Context, prID int64, sha string, forged CommitCheck) (eval, applies bool, err error) {
-	defer forgeLocks.lock(fmt.Sprintf("gate:%d", prID))() // as evalGate: one post at a time
+	defer forgeLocks.lock(fmt.Sprintf("gate:%d", prID))()
 	pr, err := s.prByID(ctx, s.db.R, prID)
 	if err != nil || pr.HeadSHA != sha || (pr.State != "open" && pr.State != "draft") {
 		return false, false, err

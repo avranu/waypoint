@@ -276,7 +276,6 @@ function Sections({
     const overId = e.over.id
     throttle(() =>
       setLists((l) => {
-        // Work from the latest state: drag-over events can outpace renders.
         const src = Object.keys(l).find((k) => l[k].some((i) => i.key === e.active.id))
         const item = src ? l[src].find((i) => i.key === e.active.id) : undefined
         if (!src || !item || src === to || !l[to]) return l
@@ -292,8 +291,6 @@ function Sections({
     setActive(null)
     let sec = find(e.active.id)
     if (!e.over || !from || !sec) return setLists(server)
-    // The last drag-over can be throttled away or not rendered yet: land in
-    // the section under the pointer regardless.
     let base = lists
     const overSec = find(e.over.id)
     if (overSec && overSec !== sec && base[overSec]) {

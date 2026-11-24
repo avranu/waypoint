@@ -15,8 +15,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Recording never fails a test command.
-
 const (
 	runPass  = "pass"
 	runFail  = "fail"
@@ -26,7 +24,7 @@ const (
 	testRunsKeep    = 100
 	testRunsMaxSize = 512 * 1024
 	testRunsSend    = 10
-	testRunCmdMax   = 4000 // Must match the server's command length limit.
+	testRunCmdMax   = 4000
 	testRunNames    = 500
 	testRunFailures = 20
 )
@@ -120,7 +118,6 @@ func workingTree() string {
 	defer func() { _ = os.Remove(name) }()
 	src, err := os.Open(index) // #nosec G304 -- git's own index path
 	if err != nil {
-		// No index yet (a fresh repo): git starts one, but not from an empty file.
 		_ = tmp.Close()
 		_ = os.Remove(name)
 	} else {
@@ -130,9 +127,6 @@ func workingTree() string {
 		if err := tmp.Close(); err != nil || cerr != nil {
 			return ""
 		}
-		// The copy keeps the index's own time: git trusts a file's cached
-		// entry when the file is older than the index, so a newer copy hides
-		// an edit of the same size made just after the index was written.
 		if serr == nil {
 			_ = os.Chtimes(name, info.ModTime(), info.ModTime())
 		}
@@ -258,7 +252,7 @@ func runsToSend(on []testRun) []testRun {
 }
 
 func filesBetween(a, b string) int {
-	if codeindex.CheckRef(a) != nil || codeindex.CheckRef(b) != nil { // Refs must pass codeindex.CheckRef first: a dash-led ref would be read by git as an option.
+	if codeindex.CheckRef(a) != nil || codeindex.CheckRef(b) != nil {
 		return -1
 	}
 	out, err := localGit("diff", "--name-only", a, b)
@@ -390,8 +384,6 @@ func (c *cli) sendTestEvidence(project, repo, key, summary string) *shipEvidence
 	}
 	bench := benchToSend(readBenchRecords(benchPath()), tree)
 	if len(bench) > 0 {
-		// Only when there are some: a server from before bench evidence
-		// refuses the field.
 		body["bench"] = bench
 	}
 	raw, err := c.call("POST", "/api/v1/projects/"+esc(project)+"/test-evidence", body)
@@ -424,8 +416,6 @@ func benchToSend(recs []benchRecord, tree string) []benchRecord {
 	seen := map[[4]string]bool{}
 	for i := len(recs) - 1; i >= 0 && len(out) < 5; i-- {
 		r := recs[i]
-		// The base is part of the key: a quick re-time without --base
-		// mustn't hide the comparison a "faster" rests on.
 		k := [4]string{r.Command, r.Dir, r.Setup, r.BaseRef}
 		if r.Tree != tree || r.Moved || seen[k] {
 			continue

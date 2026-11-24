@@ -1,5 +1,3 @@
-// Approving lets the waiting CLI sign in as you, or as the agent it names.
-
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import { useMutation, useQuery } from '@tanstack/react-query'

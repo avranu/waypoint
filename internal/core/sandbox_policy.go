@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// Only a person signed in to the Waypoint UI may change these, never a token, MCP tool or automation; loosening also needs their password from the last ten minutes and a reason.
-
 // Sandbox levels, strongest first (WP-ADR28 decision 2).
 const (
 	SandboxVM        = "vm"
@@ -656,7 +654,6 @@ func (s *Service) notifySandboxPolicy(ctx context.Context, actor *Actor, e *Even
 	} else {
 		title = "Sandbox " + verb + " on " + name
 		link = "/admin?tab=runners"
-		// The runner's owner may not be an admin: their page is Settings.
 		owner = dataInt(e, "runner_owner")
 		if owner != 0 && owner != actor.id() {
 			s.notifyURL(ctx, owner, nil, NotifySandbox, title, body, "/settings?tab=runners")

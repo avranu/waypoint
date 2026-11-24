@@ -11,12 +11,10 @@ import (
 	"strings"
 )
 
-// A regression test that passes on the buggy code proves nothing, so a proof runs it with and without the fix; only a proof on the blamed change confirms or refutes the blame.
-
 const (
 	proofsDueMax   = 10
 	proofNoteMax   = 2000
-	proofTestsMax  = 240 // Sized to codeindex's proof limits, 6 packages of 40 tests (maxProvePackages, maxProveTests).
+	proofTestsMax  = 240
 	proofTestMax   = 300
 	proofConfirmed = 1.0
 )
@@ -97,8 +95,6 @@ func (s *Service) proofsDueIn(ctx context.Context, project int64, repo string, l
 		args = append(args, repo)
 	}
 	args = append(args, limit)
-	// Each repo's newest come first, round-robin, so a repo no runner here
-	// holds (or whose fixes keep failing) can't use up every round.
 	// #nosec G202 -- repoSQL is fixed text; values are bound
 	rows, err := s.db.R.QueryContext(ctx, `SELECT id, repo, number, merge_sha, head_sha, base_ref, commits, fix_sha, intro FROM (
 		SELECT p.id, p.repo, p.number, p.merge_sha, p.head_sha, p.base_ref, COALESCE(p.commits, 0) AS commits, ft.fix_sha,
@@ -207,8 +203,6 @@ func (s *Service) RecordFixProof(ctx context.Context, a *Actor, in FixProofInput
 			return invalid("the fix is traced to %s now, not %s", shortSHA(traced), shortSHA(in.Commit))
 		}
 		if in.IntroCheck != "" {
-			// A check of a change the trace never blamed would confirm or
-			// refute nothing in the ledger, yet read as if it did.
 			var n int
 			if err := t.QueryRowContext(ctx, `SELECT COUNT(*) FROM fix_trace_introducers WHERE pr_id = ? AND merge_sha = ?`, in.PR, in.Intro).Scan(&n); err != nil {
 				return err
@@ -359,7 +353,6 @@ func ProofText(outcome string, failed []string, intro, check, note string) strin
 	case "no_build":
 		line += fmt.Sprintf("; the test doesn't build on the blamed %s", short)
 	}
-	// Only the runner's own words: other notes carry test output.
 	if note != "" && outcome == "none" {
 		if i := strings.IndexByte(note, '\n'); i >= 0 {
 			note = note[:i]

@@ -9,8 +9,6 @@ import (
 	"unicode/utf8"
 )
 
-// The CLI reads transcripts itself and sends hour-bucketed counts, so the agent spends nothing; all usage belongs to one person, read back only by them and admins.
-
 // UsageMessageRow counts assistant messages in one hour of one session.
 // Counts may be negative: a message written again with more tokens (a
 // stream's later line) is sent as the difference.
@@ -233,13 +231,11 @@ func (s *Service) IngestUsage(ctx context.Context, actor *Actor, in UsageIngest)
 			}
 		}
 		if len(in.Chunks) > 0 && res.Accepted == 0 {
-			// A replayed upload: every chunk was counted before, and so were its parser stats.
 			in.Parsed, in.Skipped, in.Unknown = 0, 0, nil
 		}
 		if err := t.touchMachine(ctx, uid, in, now); err != nil {
 			return err
 		}
-		// Old chunk ids are only needed while a retry could still come.
 		_, err := t.ExecContext(ctx, `DELETE FROM usage_chunks WHERE user_id = ? AND created_at < ?`, uid, now-usageChunkKeep.Milliseconds())
 		return err
 	})
@@ -274,7 +270,6 @@ func (k ingestSkips) add(reason, table string) { k[[2]string{reason, table}]++ }
 
 func (t *tx) applyUsageChunk(ctx context.Context, uid int64, machine string, c UsageChunk, maxHour int64) error {
 	skips := ingestSkips{}
-	// A session read from its transcript no longer counts its OTLP events.
 	if err := t.dropOTLPFor(ctx, uid, c); err != nil {
 		return err
 	}
