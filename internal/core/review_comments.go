@@ -22,7 +22,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
 	"git.jmann.me/claude/waypoint/internal/lazyre"
@@ -1560,19 +1559,17 @@ func packetBody(s string) string {
 	return s
 }
 
-var untrustedTagRE = lazyre.New(`(?i)<\s*/?\s*untrusted\s*>`)
+// untrustedTagRE matches an <untrusted> mark, open or closing, in any case,
+// with spaces or Unicode format characters (zero-width and the like) inside
+// it: a reader that drops those still sees the mark, so the match has to.
+// The text around a mark keeps its format characters (an emoji's joiner, a
+// right-to-left mark).
+var untrustedTagRE = lazyre.New(`(?i)<[\s\p{Cf}]*/?[\s\p{Cf}]*` +
+	strings.Join(strings.Split("untrusted", ""), `\p{Cf}*`) + `[\s\p{Cf}]*>`)
 
 // untrusted makes text safe to put between <untrusted> tags: it can't
 // close them, however it nests the tag ("</untru</untrusted>sted>").
 func untrusted(s string) string {
-	// Format characters (zero-width and the like) can hide a closing mark
-	// from the match but not from a reader that drops them.
-	s = strings.Map(func(r rune) rune {
-		if unicode.Is(unicode.Cf, r) {
-			return -1
-		}
-		return r
-	}, s)
 	for {
 		t := untrustedTagRE.ReplaceAllString(s, "")
 		if t == s {
