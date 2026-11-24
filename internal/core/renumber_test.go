@@ -131,8 +131,6 @@ func (se *shipEnv) rnSecond(files ...string) {
 	renumberSeen.Delete(se.s.lineRunKey(rnRef(se)))
 }
 
-func (se *shipEnv) rnCommitted() int { return len(se.sg.union.log) }
-
 func TestRenumberCommitsRename(t *testing.T) {
 	se := renumberEnv(t, "me/app")
 	se.renumber()
