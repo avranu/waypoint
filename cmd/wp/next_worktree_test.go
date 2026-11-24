@@ -53,7 +53,13 @@ func TestNextOwnWorktree(t *testing.T) {
 	folder := repo
 	oldFolder, oldCwds, oldNow := sessionFolder, procCwds, worktreeNow
 	sessionFolder = func() string { return folder }
-	procCwds = func() ([]string, error) { return []string{busy}, nil }
+	// The process's folder is named through a symlink (a home that is one): the
+	// sweep resolves it, or it would remove the folder under the process.
+	busyLink := filepath.Join(t.TempDir(), "busy-link")
+	if err := os.Symlink(busy, busyLink); err != nil {
+		t.Fatal(err)
+	}
+	procCwds = func() ([]string, error) { return []string{busyLink}, nil }
 	worktreeNow = func() time.Time { return time.Now().Add(3 * time.Hour) } // past tidy's quiet period
 	t.Cleanup(func() { sessionFolder, procCwds, worktreeNow = oldFolder, oldCwds, oldNow })
 

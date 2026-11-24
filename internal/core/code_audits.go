@@ -40,8 +40,13 @@ const (
 	AuditLimited   = "limited" // a usage limit stopped every model
 	AuditCancelled = "cancelled"
 
-	auditTimeout    = 2700 // seconds: Grok at high effort reads a large repository slowly
-	auditMaxRetries = 3    // times a chain whose models were all busy is tried again
+	auditTimeout = 2700 // seconds: Grok at high effort reads a large repository slowly
+	// AuditCLITimeoutSecs and AuditGatewayTimeoutSecs are the runner job's time
+	// for an audit by a CLI model and by the gateway's agent, before a helper
+	// panel's extra: what wp says of how long an audit may take.
+	AuditCLITimeoutSecs     = auditTimeout
+	AuditGatewayTimeoutSecs = gatewayAuditTimeout
+	auditMaxRetries         = 3 // times a chain whose models were all busy is tried again
 	// auditUnreadableRetries: times the chain's last runner model is asked
 	// again after an answer out of form.
 	auditUnreadableRetries = 1
@@ -1611,6 +1616,9 @@ func (s *Service) codeAuditEvent(ctx context.Context, e *Event) {
 	if id == 0 {
 		return
 	}
+	if e.Old != e.New && e.Field != "fix" {
+		s.log.InfoContext(ctx, "audit changed state", "audit", id, "from", e.Old, "to", e.New)
+	}
 	switch {
 	case e.Field == "findings":
 		s.withdrawDecidedAuditNews(ctx, id)
@@ -1694,7 +1702,7 @@ func (s *Service) postAuditComment(ctx context.Context, a *CodeAudit) {
 	c, err := fprs.PostPRComment(ctx, botForge(f), a.Repo, a.PRNumber, auditComment(a, s.BaseURL()))
 	if err != nil {
 		s.log.WarnContext(ctx, "post an audit on its pull request", "audit", a.ID, "err", err)
-		_, _ = s.db.W.ExecContext(ctx, `UPDATE code_audits SET error = ? WHERE id = ? AND error = ''`, "Couldn't post it on the pull request: "+excerpt(PublicError(err), 200), a.ID)
+		s.writeLogged(ctx, "record why an audit's result wasn't passed on", `UPDATE code_audits SET error = ? WHERE id = ? AND error = ''`, "Couldn't post it on the pull request: "+excerpt(PublicError(err), 200), a.ID)
 		return
 	}
 	a.CommentURL = c.URL
@@ -1792,7 +1800,7 @@ func (s *Service) auditFixTask(ctx context.Context, id int64) {
 	made, err := s.CreateIssue(ctx, &writer, in)
 	if err != nil {
 		s.log.WarnContext(ctx, "make an audit's fix task", "audit", a.ID, "err", err)
-		_, _ = s.db.W.ExecContext(ctx, `UPDATE code_audits SET error = ? WHERE id = ?`, "Couldn't make the task for Claude: "+excerpt(PublicError(err), 200), a.ID)
+		s.writeLogged(ctx, "record why an audit's result wasn't passed on", `UPDATE code_audits SET error = ? WHERE id = ?`, "Couldn't make the task for Claude: "+excerpt(PublicError(err), 200), a.ID)
 		return
 	}
 	if err := s.write(ctx, SystemActor(), func(t *tx) error {
@@ -1952,21 +1960,30 @@ func writeAuditFinding(b *strings.Builder, f CodeAuditFinding) {
 
 // tellAudit tells whoever asked that an audit ended: the agent session that
 // asked (at its next stop), else the person, by a notification. An
-// automation's owner hears only of what needs them.
+// automation's owner hears only of what needs them: a failure, a usage
+// limit, findings.
 func (s *Service) tellAudit(ctx context.Context, a *CodeAudit) {
+	if a.Purpose == AuditCheck {
+		// A round's check of its marks is the round's: its findings go to
+		// the session in one message, and a check that found nothing lets
+		// Waypoint carry the round on (WP-1370).
+		s.tellCheck(ctx, a)
+		return
+	}
 	text := auditNews(a, s.BaseURL())
 	if a.sessionID != 0 {
-		m, err := s.storeMessage(ctx, a.sessionID, text, auditNewsKey(a.ID, a.Status), messageFrom{}, false)
-		if err != nil {
-			s.log.WarnContext(ctx, "tell a session about its audit", "audit", a.ID, "err", err)
-		} else if m.State == MessageQueued && (a.Status != AuditDone || !s.withdrawDecidedAuditNews(ctx, a.ID)) {
-			// Its findings may all be decided already, marked while the
-			// comment posted: then it is withdrawn as it is stored.
-			s.batchOrTell(ctx, a.sessionID, 0, a.blocking, func(until int64) error {
-				_, err := s.db.W.ExecContext(ctx, `UPDATE session_messages SET batch_until = ?, blocking = ? WHERE id = ? AND state = 'queued'`, until, a.blocking, m.ID)
-				return err
-			})
+		quiet := a.Status == AuditDone && a.Counts.Total == 0 && a.Via == "system"
+		if quiet && !a.readNothing() {
+			// Waypoint started it (a review round, a pull request's audit):
+			// finding nothing is not news to the session (WP-1370). One
+			// somebody asked for always answers, clean or not.
+			return
 		}
+		// Only someone waiting on it is told of a failure as news; for anyone
+		// else it waits for the next prompt. An audit of Waypoint's that read
+		// nothing is no clean one, and is said so without waking the session.
+		passive := (a.Status != AuditDone && !a.blocking) || quiet
+		s.messageSessionAs(ctx, a, text, auditNewsKey(a.ID, a.Status), passive)
 		return
 	}
 	if a.Status == AuditCancelled {
@@ -1975,6 +1992,10 @@ func (s *Service) tellAudit(ctx context.Context, a *CodeAudit) {
 	who := a.requestedBy
 	if a.automationID != 0 {
 		who = a.ownerID
+		// A usage limit that stopped it doesn't tell the owner: a recurring
+		// automation on a spent pool would tell every run until the plan
+		// comes back, and its run already shows Limited (auditStep). A
+		// person's own audit is told once (below).
 		needed := a.Status == AuditFailed || (a.Status == AuditDone && !a.Fix && a.Counts.Total > 0)
 		if !needed {
 			return
@@ -1984,6 +2005,31 @@ func (s *Service) tellAudit(ctx context.Context, a *CodeAudit) {
 		return
 	}
 	s.notifyURL(ctx, who, nil, NotifyAudit, auditHeadline(a), text, fmt.Sprintf("/audits/%d", a.ID))
+}
+
+// messageSession queues text for the session that asked for an audit, once
+// per key, and has it typed in (waiting for the session when the audit is
+// blocking).
+func (s *Service) messageSession(ctx context.Context, a *CodeAudit, text, key string) {
+	s.messageSessionAs(ctx, a, text, key, false)
+}
+
+// messageSessionAs is messageSession, passive when it is news that waits for
+// the session's next prompt and never wakes it.
+func (s *Service) messageSessionAs(ctx context.Context, a *CodeAudit, text, key string, passive bool) {
+	m, err := s.storeMessage(ctx, a.sessionID, text, key, messageFrom{}, passive)
+	if err != nil {
+		s.log.WarnContext(ctx, "tell a session about its audit", "audit", a.ID, "err", err)
+		return
+	}
+	// News of a finished audit whose findings were all decided while its
+	// comment posted is withdrawn as it is stored (WP-1525).
+	if m.State == MessageQueued && !passive && (key != auditNewsKey(a.ID, AuditDone) || !s.withdrawDecidedAuditNews(ctx, a.ID)) {
+		s.batchOrTell(ctx, a.sessionID, 0, a.blocking, func(until int64) error {
+			_, err := s.writeRows(ctx, `UPDATE session_messages SET batch_until = ?, blocking = ? WHERE id = ? AND state = 'queued'`, until, a.blocking, m.ID)
+			return err
+		})
+	}
 }
 
 // auditNewsKey is the step key of the message telling a session an audit
@@ -2008,7 +2054,7 @@ func auditNewsKey(id int64, status string) string {
 // its filed issue canceled or deleted) does not queue the news again.
 // Whoever reopened it knows, and the audit's findings list it as to do.
 func (s *Service) withdrawDecidedAuditNews(ctx context.Context, id int64) bool {
-	res, err := s.db.W.ExecContext(ctx, `UPDATE session_messages SET state = 'cancelled' WHERE step_key = ? AND state = ?
+	n, err := s.writeRows(ctx, `UPDATE session_messages SET state = 'cancelled' WHERE step_key = ? AND state = ?
 		AND EXISTS (SELECT 1 FROM code_audit_findings f WHERE f.audit_id = ?)
 		AND NOT EXISTS (SELECT 1 FROM code_audit_findings f WHERE f.audit_id = ? AND `+findingToDoSQL+`)`,
 		auditNewsKey(id, AuditDone), MessageQueued, id, id)
@@ -2016,7 +2062,7 @@ func (s *Service) withdrawDecidedAuditNews(ctx context.Context, id int64) bool {
 		s.log.WarnContext(ctx, "withdraw an audit's news once its findings are decided", "audit", id, "err", err)
 		return false
 	}
-	if n, _ := res.RowsAffected(); n > 0 {
+	if n > 0 {
 		s.log.InfoContext(ctx, "withdrew an audit's news: every finding is decided", "audit", id)
 		return true
 	}
@@ -2052,8 +2098,11 @@ func (s *Service) withdrawRequeuedAuditNews(ctx context.Context, batch int64) {
 func auditHeadline(a *CodeAudit) string {
 	switch a.Status {
 	case AuditDone:
+		if a.readNothing() {
+			return fmt.Sprintf("Audit #%d of %s read nothing", a.ID, a.Title)
+		}
 		if a.Counts.Total == 0 {
-			return "Audit of " + a.Title + ": no findings"
+			return fmt.Sprintf("Audit #%d of %s found nothing", a.ID, a.Title)
 		}
 		return fmt.Sprintf("Audit of %s: %d finding%s", a.Title, a.Counts.Total, plural(a.Counts.Total))
 	case AuditLimited:
@@ -2070,6 +2119,11 @@ func auditNews(a *CodeAudit, base string) string {
 	b.WriteString(auditHeadline(a))
 	switch a.Status {
 	case AuditDone:
+		if a.readNothing() {
+			// Not a clean audit: no model ran.
+			b.WriteString(": " + untrusted(strings.TrimRight(a.Summary, ". ")) + ". No model ran, so this says nothing about the code.")
+			break
+		}
 		if a.Counts.Total > 0 {
 			var parts []string
 			for _, x := range []struct {
@@ -2083,6 +2137,11 @@ func auditNews(a *CodeAudit, base string) string {
 			b.WriteString(" (" + strings.Join(parts, ", ") + ")")
 		}
 		b.WriteString(", by " + a.Model + ".")
+		if len(a.Findings) > 0 {
+			// Each one, so the reader needn't open the audit to know what is
+			// at stake (WP-1370).
+			b.WriteString("\n" + findingLines(a.Findings))
+		}
 		if a.FixIssue != "" {
 			b.WriteString(" Claude's task to check and fix them: " + a.FixIssue + ".")
 		}
@@ -2092,6 +2151,10 @@ func auditNews(a *CodeAudit, base string) string {
 	default:
 		if a.Error != "" {
 			b.WriteString(": " + a.Error)
+		}
+		if a.sessionID != 0 && a.blocking && a.Status != AuditCancelled {
+			// Someone is waiting on it: say what happened and what is left to do.
+			b.WriteString("\nThe audit you waited on has no result. Run `wp audit` again if you still need it; otherwise go on without it.")
 		}
 	}
 	fmt.Fprintf(&b, "\n%s/audits/%d · wp audit show %d", base, a.ID, a.ID)
@@ -2479,9 +2542,17 @@ func (s *Service) CancelAudit(ctx context.Context, actor *Actor, id int64) (*Cod
 	if who == "" && actor.User != nil {
 		who = actor.User.DisplayName
 	}
+	// One winner: the transition happens only if the audit is still going when
+	// the write runs, so a finish that landed since the read above (or another
+	// cancel) is never overwritten and never emits a second event.
 	err = s.write(ctx, actor, func(t *tx) error {
-		if _, err := t.ExecContext(ctx, `UPDATE code_audits SET status = ?, error = ?, finished_at = ? WHERE id = ?`, AuditCancelled, "Cancelled by "+cmp(who, "someone")+".", s.nowMS(), id); err != nil {
+		res, err := t.ExecContext(ctx, `UPDATE code_audits SET status = ?, error = ?, finished_at = ? WHERE id = ? AND status IN (?, ?)`,
+			AuditCancelled, "Cancelled by "+cmp(who, "someone")+".", s.nowMS(), id, AuditQueued, AuditRunning)
+		if err != nil {
 			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return invalid("audit #%d has ended", id)
 		}
 		t.emit(&Event{Kind: EvCodeAudit, ProjectID: a.projectID, Old: a.Status, New: AuditCancelled, Data: map[string]any{"audit": id}})
 		return nil
@@ -2623,6 +2694,11 @@ func (s *Service) MarkAuditFindings(ctx context.Context, actor *Actor, in MarkFi
 	note := strings.TrimSpace(in.Note)
 	if utf8.RuneCountInString(note) > 2000 {
 		return nil, invalid("a note is at most 2000 characters")
+	}
+	// As for a bot's finding (DismissFinding): an agent says why it is wrong or
+	// not worth fixing, so its dismissal can be judged and isn't a bare click.
+	if state == "rejected" && note == "" && actor.IsAgent() {
+		return nil, invalid("say why the finding is wrong or not worth fixing (a note)")
 	}
 	type ref struct {
 		audit int64

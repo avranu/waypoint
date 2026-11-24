@@ -1083,6 +1083,9 @@ func (s *Service) FanoutItemStarted(ctx context.Context, actor *Actor, id int64,
 	if len(attach) > 100 {
 		return invalid("attach id is too long")
 	}
+	if attach != "" && !ValidAttachID(attach) {
+		return invalid("attach id is not a Claude Code background session id (6 to 36 hex digits)")
+	}
 	return s.write(ctx, actor, func(t *tx) error {
 		f, err := s.ownFanout(ctx, t, actor, id)
 		if err != nil {

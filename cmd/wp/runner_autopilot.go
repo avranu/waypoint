@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"os/exec"
@@ -14,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core"
 )
 
 // Autopilot jobs (WP-ADR9): the session finished its task, so start the next
@@ -120,16 +123,16 @@ var (
 	autopilotReadyWait = 90 * time.Second
 	// autopilotCompactWait is how long /compact has before a review's
 	// prompt: compacting a full context takes minutes.
-	autopilotCompactWait = 6 * time.Minute
+	autopilotCompactWait = core.ReviewCompactWait
 	// autopilotCompactStart is how long /compact has to show as busy.
-	autopilotCompactStart = 10 * time.Second
+	autopilotCompactStart = core.ReviewCompactStart
 	// autopilotIdleWait is how long a review job waits for a busy session to
 	// go idle before it is held. With autopilotCompactWait it stays under
 	// the server's reviewJobTimeout (10 minutes).
-	autopilotIdleWait = 3 * time.Minute
+	autopilotIdleWait = core.ReviewIdleWait
 	// reviewTookWait is how long a session has to show it took the review
 	// prompt (its status turning busy, or its screen, WP-1325).
-	reviewTookWait = 15 * time.Second
+	reviewTookWait = core.ReviewBusyWait
 )
 
 var errNoTmux = errors.New("tmux isn't installed on this machine")
@@ -259,9 +262,7 @@ func (p *runnerProc) execAutopilot(ctx context.Context, run *jobRun, in autopilo
 // reviewPasteSettle is how long to let the session take in a pasted review
 // prompt before Enter: a prompt carries an audit's every finding (WP-769),
 // so it can be far longer than the 2 KB this was 400 ms for.
-func reviewPasteSettle(n int) time.Duration {
-	return 400*time.Millisecond + time.Duration(n/1024)*10*time.Millisecond
-}
+func reviewPasteSettle(n int) time.Duration { return core.ReviewPasteSettle(n) }
 
 // reviewSession (WP-285): the session finished in.ReviewOf; compact it
 // (unless its transcript shows that was done while Grok audited it, and
@@ -542,6 +543,11 @@ func (p *runnerProc) promptSession(ctx context.Context, run *jobRun, in autopilo
 	// The session's hook knows this prompt for autopilot's own, whatever its
 	// wording (WP-308), so it never counts as the person's.
 	p.c.notePastedPrompt(newID, in.Key, prompt)
+	// The server recognises it by this note, made before it is typed
+	// (WP-1370): nothing is typed that Waypoint can't tell for its own.
+	if err := p.noteTyped(ctx, in.Step, run.id, newID, prompt); err != nil {
+		return cleared("its prompt couldn't be recorded with Waypoint, so it wasn't typed: %v", err)
+	}
 	buf := fmt.Sprintf("wp-autopilot-%d", run.id) // one per job: two jobs never paste each other's
 	if _, err := runTmux(ctx, socket, []byte(prompt), "load-buffer", "-b", buf, "-"); err != nil {
 		return cleared("its prompt couldn't be loaded: %v", err)
@@ -820,6 +826,60 @@ func (p *runnerProc) stepWantedAsk(ctx context.Context, step, job int64) (bool, 
 		return false, err
 	}
 	return r.Wanted, nil
+}
+
+// noteTyped tells Waypoint the prompt this job made and is about to type
+// into session cliID (POST .../typed), which the server can't know: wp
+// next's answer is part of it. No step or no server (a bare cli) has none to
+// tell.
+func (p *runnerProc) noteTyped(ctx context.Context, step, job int64, cliID, prompt string) error {
+	if step == 0 || p.c.server() == "" {
+		return nil
+	}
+	return p.c.callInto(ctx, "POST", fmt.Sprintf("/api/v1/autopilot/steps/%d/typed?job=%d", step, job),
+		map[string]string{"cli_id": cliID, "text": prompt}, nil)
+}
+
+// noteTypedStart tells Waypoint the text a session is about to be started
+// with on its command line, which it can't know when the text is made here
+// (the kickoff is wp next's answer). A person's own --prompt is their words
+// and is not noted. Best effort: a server that doesn't answer leaves the
+// first prompt read as the person's, as it was before.
+func (c *cli) noteTypedStart(ctx context.Context, text string) error {
+	if c.server() == "" || strings.TrimSpace(text) == "" {
+		return nil
+	}
+	var err error
+	for i, wait := range typedStartBackoff {
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(wait):
+			}
+		}
+		if err = c.callInto(ctx, "POST", "/api/v1/sessions/typed-start", map[string]string{"text": text}, nil); err == nil {
+			return nil
+		}
+		if serverRefused(err) {
+			return err // sending it again won't change the answer
+		}
+	}
+	return err
+}
+
+// typedStartBackoff are the waits before each attempt to note a start (the
+// first is at once). It is a var for the tests.
+var typedStartBackoff = []time.Duration{0, 500 * time.Millisecond, 2 * time.Second}
+
+// warnTypedStart tells where a person will see it that the start couldn't be
+// noted: the session still starts, because a server that is down for one
+// best-effort call must not strand the task, and the cost of going on is one
+// first prompt read as a person's turn, which the warning names.
+func warnTypedStart(w io.Writer, err error) {
+	if err != nil {
+		fmt.Fprintf(w, "wp: couldn't tell Waypoint what this session starts with (%v); its first prompt will read as a person's, not as Waypoint's.\n", err)
+	}
 }
 
 // autopilotEnv is the environment wp next runs with: the new session's,

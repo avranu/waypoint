@@ -1001,6 +1001,10 @@ func (s *Service) claimRunnerJob(ctx context.Context, actor *Actor, r *Runner, l
 					c.Timeout = in.WorkTimeout
 				}
 			}
+			// What the runner will type goes on record in this write (WP-1370).
+			if err := s.recordHandedOver(ctx, t, c.Kind, c.Input, source, c.Timeout, r.Owner.ID); err != nil {
+				return err
+			}
 			c.Lane, _ = claimLane(r, jobNeeds{kind: c.Kind, source: source, cli: cli}, lanes)
 			if agent, ok := jobTokenAgent(c.Kind, c.Input); ok {
 				if c.Token, err = t.mintJobToken(ctx, c.ID, r.Owner.ID, agent, c.Timeout); err != nil {

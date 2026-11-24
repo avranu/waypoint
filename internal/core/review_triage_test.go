@@ -346,7 +346,7 @@ func TestShipTriage(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(res.Held, "End your turn") {
+		if !strings.Contains(res.Held, "end your turn") {
 			t.Fatalf("%+v", res)
 		}
 		rows := a.triageRows()
@@ -360,7 +360,7 @@ func TestShipTriage(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(res.Held, "End your turn") || len(g.created) != 0 {
+		if !strings.Contains(res.Held, "end your turn") || len(g.created) != 0 {
 			t.Fatalf("%+v", res)
 		}
 		if rows := a.triageRows(); len(rows) != 1 || rows[0].why != triageWhyHoldout || rows[0].action != triageReview {
@@ -373,7 +373,7 @@ func TestShipTriage(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(res.Held, "End your turn") {
+		if !strings.Contains(res.Held, "end your turn") {
 			t.Fatalf("%+v", res)
 		}
 		if rows := a.triageRows(); len(rows) != 1 || rows[0].rule != "floor:no_facts" {
@@ -389,7 +389,7 @@ func TestShipTriage(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(res.Held, "End your turn") || len(g.created) != 0 {
+		if !strings.Contains(res.Held, "end your turn") || len(g.created) != 0 {
 			t.Fatalf("%+v", res)
 		}
 		if rows := a.triageRows(); len(rows) != 1 || rows[0].why != triageWhyModeShadow {
@@ -410,7 +410,7 @@ func TestShipTriage(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(res.Held, "End your turn") || len(g.created) != 0 {
+		if !strings.Contains(res.Held, "end your turn") || len(g.created) != 0 {
 			t.Fatalf("%+v", res)
 		}
 		if rows := a.triageRows(); len(rows) != 1 || rows[0].rule != "floor:risky_code" {
@@ -429,7 +429,7 @@ func TestShipTriage(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(res.Held, "End your turn") || len(g.created) != 0 {
+		if !strings.Contains(res.Held, "end your turn") || len(g.created) != 0 {
 			t.Fatalf("%+v (opened %d)", res, len(g.created))
 		}
 		rows := a.triageRows()

@@ -39,7 +39,13 @@ func queueable(pr *PullRequest, reasons []string) bool {
 }
 
 // queueAhead lists the pull requests ahead of pr in its line, front first;
-// pr not in the line is behind them all.
+// pr not in the line is behind them all. The order is the line's own
+// (lineOrder), so the pull request that fixes a red base isn't told to wait
+// behind ones the line puts it ahead of; what fails on the base is read at
+// the tip Waypoint last stored, which costs no call to the forge while the
+// base is green. While it is red, a queued head that passes a job failing on
+// the base costs one Contains call to the forge, cached per tip and head once
+// it answers (a call that fails is asked again).
 func (s *Service) queueAhead(ctx context.Context, pr *PullRequest) ([]*PullRequest, error) {
 	members, err := s.lineMembers(ctx, lineOf(pr))
 	if err != nil {
@@ -51,12 +57,15 @@ func (s *Service) queueAhead(ctx context.Context, pr *PullRequest) ([]*PullReque
 			all = append(all, p)
 		}
 	}
+	if pr.QueuedAt != nil {
+		all = append(all, pr)
+	}
+	if _, _, err := s.lineOrder(ctx, all, ""); err != nil {
+		return nil, err
+	}
 	if pr.QueuedAt == nil {
-		lineSort(all, 0)
 		return all, nil
 	}
-	all = append(all, pr)
-	lineSort(all, 0)
 	return all[:slices.Index(all, pr)], nil
 }
 

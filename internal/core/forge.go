@@ -1820,8 +1820,8 @@ func (c *httpForgeClient) do(ctx context.Context, f *Forge, method, path string,
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return &forgeAPIError{method: method, path: path, status: resp.StatusCode, body: strings.TrimSpace(string(b))}
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return apiErrorOf(method, path, resp, b)
 	}
 	if out == nil {
 		return nil
@@ -1834,6 +1834,28 @@ type forgeAPIError struct {
 	method, path string
 	status       int
 	body         string
+	// retryAfter is what the forge asked to wait (Retry-After); limited: the
+	// forge refused for rate, not for the request (429, or a 403 that says
+	// so), which trying later can change.
+	retryAfter time.Duration
+	limited    bool
+}
+
+// apiErrorOf is the error of a response that wasn't a success.
+func apiErrorOf(method, path string, resp *http.Response, b []byte) *forgeAPIError {
+	e := &forgeAPIError{method: method, path: path, status: resp.StatusCode, body: strings.TrimSpace(string(b))}
+	if v := strings.TrimSpace(resp.Header.Get("Retry-After")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			e.retryAfter = time.Duration(n) * time.Second
+		} else if at, err := http.ParseTime(v); err == nil {
+			e.retryAfter = max(time.Until(at), 0)
+		}
+	}
+	low := strings.ToLower(e.body)
+	e.limited = e.status == http.StatusTooManyRequests ||
+		(e.status == http.StatusForbidden && (e.retryAfter > 0 || resp.Header.Get("X-RateLimit-Remaining") == "0" ||
+			strings.Contains(low, "rate limit") || strings.Contains(low, "abuse detection")))
+	return e
 }
 
 func (e *forgeAPIError) Error() string {

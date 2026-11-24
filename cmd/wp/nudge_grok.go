@@ -5,6 +5,8 @@ import (
 	"path"
 	"slices"
 	"strings"
+
+	"git.jmann.me/claude/waypoint/internal/core"
 )
 
 // Cut-short Grok runs (WP-758). Agents asked for a Grok review ran
@@ -128,8 +130,10 @@ func grokCutShort(cmd string, bg bool, toolMs float64) string {
 			continue
 		}
 		return fmt.Sprintf("Not run: Grok reviews often take over 25 minutes and Cursor prints only at the end, so this one would stop at %.0f minutes with nothing kept. "+
-			"`wp audit pr|branch|commit|range -m WHAT` runs it on your runner with a 45-minute limit, keeps the findings and tells you when it ends. "+
-			"By hand: run_in_background with `timeout 2700`. A quick check: `timeout 300` or less.", max(limit/60, 1))
+			"`wp audit pr|branch|commit|range -m WHAT` runs it on your runner, keeps the findings and tells you the result when it ends, a clean one too. "+
+			"Its limit is %d minutes for a model run by a CLI like Cursor, and %d for the gateway's agent (the default), plus time for any helpers. "+
+			"By hand: run_in_background with `timeout %d`. A quick check: `timeout %d` or less.",
+			max(limit/60, 1), core.AuditCLITimeoutSecs/60, core.AuditGatewayTimeoutSecs/60, core.AuditCLITimeoutSecs, grokProbeSecs)
 	}
 	return ""
 }

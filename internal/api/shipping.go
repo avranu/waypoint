@@ -50,36 +50,45 @@ func (s *Server) findPull(w http.ResponseWriter, r *http.Request) (any, error) {
 	return s.svc.GetPullRequest(r.Context(), actor, id)
 }
 
+// openPullBody is the request of wp pr open and wp ship.
+type openPullBody struct {
+	Repo   string `json:"repo"`
+	Head   string `json:"head"`
+	Base   string `json:"base"`
+	Title  string `json:"title"`
+	Body   string `json:"body"`
+	Draft  bool   `json:"draft"`
+	Ready  bool   `json:"ready"`
+	Issue  string `json:"issue"`
+	For    string `json:"for"` // the task wp ship finishes (WP-608)
+	Urgent bool   `json:"urgent"`
+	// Review: wp ship's intent about the task's review before the pull
+	// request (auto, review, pr, skip; WP-688), with what goes with it.
+	Review   string `json:"review"`
+	Reason   string `json:"reason"`
+	Force    bool   `json:"force"`
+	HeadTime int64  `json:"head_time"`
+	HeadSHA  string `json:"head_sha"`
+	// Message and Summary are left out by a CLI that wasn't given them:
+	// absent keeps what the round holds, "" clears it (WP-1370).
+	Message *string           `json:"message"`
+	Summary *string           `json:"summary"`
+	Change  *core.ChangeFacts `json:"change"`
+	// BodyInputs: what wp ship rendered the description from (WP-55).
+	BodyInputs *core.PRBodyInputs `json:"body_inputs"`
+	// StackedOn: the branches head was built on, nearest first (WP-1670).
+	StackedOn []string `json:"stacked_on"`
+}
+
 // openPull opens a pull request from a branch already pushed (wp pr open).
 func (s *Server) openPull(w http.ResponseWriter, r *http.Request) (any, error) {
-	var in struct {
-		Repo   string `json:"repo"`
-		Head   string `json:"head"`
-		Base   string `json:"base"`
-		Title  string `json:"title"`
-		Body   string `json:"body"`
-		Draft  bool   `json:"draft"`
-		Ready  bool   `json:"ready"`
-		Issue  string `json:"issue"`
-		For    string `json:"for"` // the task wp ship finishes (WP-608)
-		Urgent bool   `json:"urgent"`
-		// Review: wp ship's intent about the task's review before the pull
-		// request (auto, review, pr, skip; WP-688), with what goes with it.
-		Review   string            `json:"review"`
-		Reason   string            `json:"reason"`
-		Force    bool              `json:"force"`
-		HeadTime int64             `json:"head_time"`
-		HeadSHA  string            `json:"head_sha"`
-		Change   *core.ChangeFacts `json:"change"`
-		// BodyInputs: what wp ship rendered the description from (WP-55).
-		BodyInputs *core.PRBodyInputs `json:"body_inputs"`
-	}
+	var in openPullBody
 	if err := decode(r, &in); err != nil {
 		return nil, err
 	}
 	res, err := s.svc.OpenPullRequest(r.Context(), actorFrom(r), core.OpenPRInput{Project: r.PathValue("key"), Repo: in.Repo, Head: in.Head,
 		Base: in.Base, Title: in.Title, Body: in.Body, Draft: in.Draft, Ready: in.Ready, Issue: in.Issue, For: in.For, Urgent: in.Urgent,
-		Review: in.Review, Reason: in.Reason, Force: in.Force, HeadTime: in.HeadTime, HeadSHA: in.HeadSHA, Change: in.Change, BodyInputs: in.BodyInputs})
+		Review: in.Review, Reason: in.Reason, Force: in.Force, HeadTime: in.HeadTime, HeadSHA: in.HeadSHA, Message: in.Message, Summary: in.Summary, Change: in.Change, BodyInputs: in.BodyInputs, StackedOn: in.StackedOn})
 	if err != nil {
 		return nil, err
 	}
@@ -88,14 +97,28 @@ func (s *Server) openPull(w http.ResponseWriter, r *http.Request) (any, error) {
 	}
 	res.ShipReply = s.svc.ShipReplyTemplate(r.Context(), actorFrom(r))
 	if in.Issue != "" {
-		// Best effort: a task that can't be skimmed just shows nothing.
-		var rerr error
-		res.PutOff, rerr = s.svc.PutOffSteps(r.Context(), actorFrom(r), in.Issue)
-		if rerr != nil && !errors.Is(rerr, context.Canceled) && !errors.Is(rerr, core.ErrNotFound) && !errors.Is(rerr, core.ErrForbidden) { // not seen: nothing shown
-			s.log.WarnContext(r.Context(), "read the steps put off in a task", "issue", in.Issue, "err", rerr)
-		}
+		res.PutOff = s.putOffAfterOpen(r.Context(), actorFrom(r), in.Issue, res.Reviewed)
 	}
 	return res, nil
+}
+
+// putOffAfterOpen is what the open says about the task's put-off steps. After
+// a reviewed round the completeness check had the notes as leads (WP-1370),
+// so only the open subtasks, which no check reads, stay; a direct open keeps
+// both. Best effort: a task that can't be skimmed just shows nothing.
+func (s *Server) putOffAfterOpen(ctx context.Context, actor *core.Actor, issue string, reviewed bool) *core.PutOffSteps {
+	p, err := s.svc.PutOffSteps(ctx, actor, issue)
+	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, core.ErrNotFound) && !errors.Is(err, core.ErrForbidden) { // not seen: nothing shown
+		s.log.WarnContext(ctx, "read the steps put off in a task", "issue", issue, "err", err)
+	}
+	if p == nil || !reviewed {
+		return p
+	}
+	p.Notes, p.More = nil, 0
+	if len(p.Open) == 0 {
+		return nil
+	}
+	return p
 }
 
 func (s *Server) checkPull(w http.ResponseWriter, r *http.Request) (any, error) {
@@ -172,11 +195,12 @@ func (s *Server) editPull(w http.ResponseWriter, r *http.Request) (any, error) {
 	var in struct {
 		Title *string `json:"title"`
 		Body  *string `json:"body"`
+		Base  *string `json:"base"`
 	}
 	if err := decode(r, &in); err != nil {
 		return nil, err
 	}
-	return nil, s.svc.EditPullRequest(r.Context(), actorFrom(r), id, core.EditPRInput{Title: in.Title, Body: in.Body})
+	return nil, s.svc.EditPullRequest(r.Context(), actorFrom(r), id, core.EditPRInput{Title: in.Title, Body: in.Body, Base: in.Base})
 }
 
 // urgentPull puts a pull request's CI on the urgent lane (POST) or takes it

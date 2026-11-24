@@ -254,6 +254,14 @@ func (s *Service) postToIdleSession(ctx context.Context, sessionID int64) {
 // stopped while its background work runs (stored as working, since that
 // work's report starts its next turn), as news about that work must (WP-605).
 func (s *Service) postToSession(ctx context.Context, sessionID int64, waiting bool) {
+	// Say what held back a post when news is waiting for it (not for every
+	// call: most find nothing to post).
+	skip := func(why string) {
+		var n int
+		if s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM session_messages WHERE session_id = ? AND state = 'queued' AND passive = 0 AND batch_until IS NULL`, sessionID).Scan(&n) == nil && n > 0 {
+			s.log.InfoContext(ctx, "session message not posted", "session", sessionID, "queued", n, "why", why)
+		}
+	}
 	var cli, machine, state, agent string
 	var user int64
 	var stopped sql.NullInt64
@@ -264,15 +272,19 @@ func (s *Service) postToSession(ctx context.Context, sessionID int64, waiting bo
 		state = SessionIdle
 	}
 	if state != SessionIdle || cli == "" || !cliSessionRE.MatchString(cli) {
-		return // a working agent reads it at its next stop; an ended one at its next start
+		skip("the session is " + state + " (a working agent reads it at its next stop; an ended one at its next start)")
+		return
 	}
 	if p, err := s.sessionPause(ctx, user, agent); err != nil || p != nil {
+		skip("the agent is paused")
 		return // paused (WP-146): it waits for the person's next prompt, or for Resume
 	}
 	if sessionLeftAlone(ctx, s.db.R, sessionID) {
+		skip("its person stopped Waypoint in the session")
 		return // its person typed /wp stop there (WP-562): it waits for their next prompt
 	}
 	if !runnerOnline(ctx, s, user, machine) {
+		skip("no runner is online on " + machine)
 		return
 	}
 	rows, err := s.db.R.QueryContext(ctx, `SELECT `+messageCols+` FROM session_messages m LEFT JOIN users u ON u.id = m.created_by
@@ -287,6 +299,7 @@ func (s *Service) postToSession(ctx context.Context, sessionID int64, waiting bo
 		}
 	}
 	rows.Close()
+	msgs = slices.DeleteFunc(msgs, func(m *SessionMessage) bool { return s.shipWaits.holds(ctx, s.db.R, s.now(), sessionID, m) }) // a wp ship waits for it (WP-1669)
 	reqs, err := s.loadRequests(ctx, SystemActor(), true, `r.session_id = ? AND r.user_id = ? AND r.delivered_at IS NULL AND r.batch_until IS NULL AND r.state IN ('`+strings.Join(decidedStates, "','")+`') ORDER BY r.id`, sessionID, user)
 	if err != nil {
 		return
@@ -326,6 +339,7 @@ func (s *Service) postToSession(ctx context.Context, sessionID int64, waiting bo
 	if len(sentMsgs) == 0 && len(sentReqs) == 0 {
 		return
 	}
+	s.log.InfoContext(ctx, "session messages posted", "session", sessionID, "batch", batch, "messages", len(sentMsgs), "requests", len(sentReqs))
 	raw, _ := json.Marshal(MessageJob{CLIID: cli, Body: joinText(DecisionsText(sentReqs), MessagesText(sentMsgs))})
 	previousPostedAt, postedAt, marked := markPosted(ctx, s, sessionID)
 	if _, err := enqueueRunnerJob(ctx, s, &Actor{User: &User{ID: user}}, RunnerJobInput{Kind: JobMessage, OwnerID: user, Label: machine, Input: raw,
@@ -399,5 +413,32 @@ func (s *Service) sessionMessageJobFinished(ctx context.Context, e *Event) {
 		}
 	case src == sessionBatchSource:
 		s.unsendBatch(ctx, id)
+	}
+}
+
+// repostNewsAfter is how long news about a round waits in a session's queue
+// before the sweep posts it again: the post that was tried when it was
+// queued found the session busy, paused, left alone, or without a runner,
+// and nothing else comes back for it while the session stays idle.
+const repostNewsAfter = 2 * time.Minute
+
+// repostQueuedNews posts the audit and check news still queued to the idle
+// sessions that can take it now (WP-1370): the news a round waits on must
+// not depend on the one try made when it was queued.
+func (s *Service) repostQueuedNews(ctx context.Context) {
+	rows, err := s.db.R.QueryContext(ctx, `SELECT DISTINCT m.session_id FROM session_messages m JOIN agent_sessions x ON x.id = m.session_id
+		WHERE m.state = 'queued' AND m.passive = 0 AND m.batch_until IS NULL AND x.ended_at IS NULL AND m.created_at < ?
+		AND (m.step_key LIKE 'check:%' OR m.step_key LIKE 'audit:%') LIMIT 50`, s.nowMS()-repostNewsAfter.Milliseconds())
+	if err != nil {
+		s.log.WarnContext(ctx, "queued news to post again", "err", err)
+		return
+	}
+	ids, err := scanIDs(rows)
+	if err != nil {
+		s.log.WarnContext(ctx, "queued news to post again: read them", "err", err)
+		return
+	}
+	for _, id := range ids {
+		s.postToSession(ctx, id, true)
 	}
 }

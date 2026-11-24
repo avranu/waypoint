@@ -33,6 +33,13 @@ func newAPEnv(t *testing.T) *apEnv {
 			return oldEnq(ctx, s, ac, in) // the real thing: its rows are what the tests read (WP-794)
 		}
 		a.jobs = append(a.jobs, in)
+		// The runner that claims it at once, as claimRunnerJob does: what it
+		// will type is on record (WP-1370).
+		if err := s.write(ctx, ac, func(t *tx) error {
+			return s.recordHandedOver(ctx, t, in.Kind, in.Input, in.Source, in.Timeout, in.OwnerID)
+		}); err != nil {
+			return nil, err
+		}
 		return &RunnerJob{ID: int64(len(a.jobs)), Kind: in.Kind, State: "queued", Source: in.Source, SourceID: in.SourceID}, nil
 	}
 	lookupRunnerJob = func(ctx context.Context, s *Service, id int64) (*RunnerJob, error) {
@@ -221,6 +228,7 @@ func TestAutopilotLeavesAPersonTheirSession(t *testing.T) {
 	a.finish(first.Key)
 	a.stopWith("Done.")
 	// Autopilot's own prompt is never a person's.
+	a.record(TypedKickoff, AutopilotPromptMark+" started this session for APP-9.")
 	if _, err := a.s.SessionHook(a.ctx, a.ag, []HookEvent{hook("box", a.cli, "UserPromptSubmit", func(h *HookEvent) { h.Prompt = AutopilotPromptMark + " started this session for APP-9." })}); err != nil {
 		t.Fatal(err)
 	}

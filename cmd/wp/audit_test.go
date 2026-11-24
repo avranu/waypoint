@@ -251,7 +251,7 @@ func TestCLIAuditReport(t *testing.T) {
 				got.Store(r.URL.Path + " " + string(raw))
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(`{"audit": {"id": 7, "findings": [{"id": "7.1", "severity": "high", "state": "fixed", "title": "Merge loses an update"}]},
-					"round": 3, "replaced": true, "dropped": 2, "next": "Run ` + "`wp ship --pr`" + `."}`))
+					"round": 3, "replaced": true, "dropped": 2, "next": "Run ` + "`wp ship`" + `."}`))
 				return
 			}
 			h.ServeHTTP(w, r)
@@ -298,7 +298,7 @@ func TestCLIAuditReport(t *testing.T) {
 	}
 	faked.Store(true)
 	out := e.wp("audit", "report", i.Key, "-f", file)
-	for _, want := range []string{"Replaced your review of " + i.Key + " as audit #7: 1 finding.", "2 more, the least severe, were left out", "7.1  high     fixed    Merge loses an update", "Run `wp ship --pr`."} {
+	for _, want := range []string{"Replaced your review of " + i.Key + " as audit #7: 1 finding.", "2 more, the least severe, were left out", "7.1  high     fixed    Merge loses an update", "Run `wp ship`."} {
 		if !strings.Contains(out, want) {
 			t.Errorf("wp audit report lacks %q:\n%s", want, out)
 		}

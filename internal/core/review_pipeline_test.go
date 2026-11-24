@@ -1,6 +1,8 @@
 package core
 
 import (
+	"context"
+	"encoding/json"
 	"net/http/httptest"
 	"slices"
 	"strings"
@@ -243,5 +245,55 @@ func TestVerifyNewContinuesPastTheGateway(t *testing.T) {
 	g.mu.Unlock()
 	if b := asked("review-verify", "free"); len(b) != 1 {
 		t.Errorf("asked %d times", len(b))
+	}
+}
+
+// slowRoute is a gateway whose route serves a model that never answers in
+// time, until the request leaves that model out.
+type slowRoute struct {
+	*scriptLLM
+	slow string
+}
+
+func (l *slowRoute) Complete(ctx context.Context, p *AIProvider, model, system, prompt string, schema map[string]any) (json.RawMessage, string, error) {
+	if !slices.Contains(gatewayExcludeOf(ctx), l.slow) {
+		l.mu.Lock()
+		l.calls = append(l.calls, model+" → "+l.slow)
+		l.mu.Unlock()
+		return nil, l.slow, context.DeadlineExceeded
+	}
+	return l.scriptLLM.Complete(ctx, p, model, system, prompt, schema)
+}
+
+func (l *slowRoute) CompleteWithFallbacks(ctx context.Context, p *AIProvider, model string, _ []string, system, prompt string, schema map[string]any) (json.RawMessage, string, error) {
+	return l.Complete(ctx, p, model, system, prompt, schema)
+}
+
+// A route's model that runs out the call's time is left out of one more
+// request, so the part is still reviewed, and the failure is recorded as
+// that model's (WP-1709).
+func TestReviewAsksAgainWithoutTheModelThatTimedOut(t *testing.T) {
+	re := newReviewEnv(t)
+	re.asGateway(t)
+	const grok = "cursor/grok-4.7-medium"
+	re.llm.answers[museModel] = loginFinding
+	re.s.LLM = &slowRoute{scriptLLM: re.llm, slow: grok}
+	chain, err := re.s.taskChain(re.ctx, "review")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := re.s.reviewOnce(re.ctx, chain[:1], "the diff")
+	if a.err != nil || len(a.findings) != 1 || a.model != museModel {
+		t.Fatalf("answer = %+v", a)
+	}
+	if len(a.log) != 2 || a.log[0].Model != grok || a.log[0].Outcome != "timeout" || a.log[1].Outcome != "ok" {
+		t.Errorf("attempts = %+v", a.log)
+	}
+	// Not for a model the chain named, nor for a rate limit.
+	if got := failedMidStream(chain[:1], []ModelAttempt{{Model: chain[0].Model, Outcome: "timeout"}}); got != "" {
+		t.Errorf("the chain's own model = %q", got)
+	}
+	if got := failedMidStream(chain[:1], []ModelAttempt{{Model: grok, Outcome: "rate_limit"}}); got != "" {
+		t.Errorf("a rate limit = %q", got)
 	}
 }
