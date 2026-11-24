@@ -516,6 +516,16 @@ for (const [width, scheme] of looks(
     (h) => !/blockquote/.test(h),
   );
   await typed(
+    "backspace in an empty task leaves an empty bullet item",
+    async () => {
+      await type("[ ] ");
+      await press("Backspace");
+      await type("x");
+    },
+    "- x",
+    /^<ul><li>x<\/li><\/ul>$/,
+  );
+  await typed(
     "backspace at a task box",
     async () => {
       await type("[ ] t");

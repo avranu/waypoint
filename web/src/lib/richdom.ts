@@ -725,7 +725,10 @@ function dropStrandedGap(li: Element | null) {
   if (keep) select(keep)
 }
 
-function removeBox(li: Element) {
+// `keepItem`: Backspace in a task with nothing after its box leaves an empty
+// bullet item, where a plain delete would take the whole item (and the list)
+// with it.
+function removeBox(li: Element, keepItem = false) {
   const box = Array.from(li.children).find((c) => c.matches('input.task'))
   if (!box) return
   const r = document.createRange()
@@ -733,6 +736,22 @@ function removeBox(li: Element) {
   const next = box.nextSibling
   if (next?.nodeType === Node.TEXT_NODE && (next as Text).data.startsWith(GAP)) r.setEnd(next, 1)
   else r.setEndAfter(box)
+  if (keepItem && li.textContent!.trim() === '') {
+    // Taking the box out of an item with nothing else in it takes the whole
+    // item (and the list). With a placeholder character in it, the item stays;
+    // backspacing that last, visible character leaves the empty item.
+    caretAt(li, 0)
+    exec('insertText', '.')
+    const dot = li.firstChild
+    const gone = document.createRange()
+    gone.setStartAfter(dot!)
+    gone.setEnd(r.endContainer, r.endOffset)
+    select(gone)
+    exec('delete')
+    if (dot?.nodeType === Node.TEXT_NODE) caretAt(dot, 1)
+    exec('delete')
+    return
+  }
   select(r)
   exec('delete')
 }
@@ -760,7 +779,7 @@ function backspace(el: HTMLElement, e: KeyLike, caret: Range): boolean {
     }
     if (!/^\ufffc ?$/.test(s.before) || !b.node.querySelector(':scope > input.task')) return false
     e.preventDefault()
-    removeBox(b.node)
+    removeBox(b.node, true)
     return true
   }
   if (s.before !== '') return false

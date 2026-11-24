@@ -409,6 +409,11 @@ for (const [width, scheme] of looks(
     await aBack();
     await cc("X");
   }, "`aX`", (h) => /<code>aX<\/code>/.test(h) || /<code>a<\/code>[^<]*X/.test(h));
+  await typed("backspace by beforeinput in an empty task leaves an empty bullet item", async () => {
+    await type("[ ] ");
+    await aBack();
+    await type("x");
+  }, "- x", /^<ul><li>x<\/li><\/ul>$/);
   await typed("a plain backspace by beforeinput still deletes a character", async () => {
     await word("abc");
     await aBack();
@@ -448,6 +453,39 @@ for (const [width, scheme] of looks(
     await aEnter();
     await type("next");
   }, "> q\n\nout\n\n###### h\n\nnext", /<blockquote><p>q<\/p><\/blockquote><p>out<\/p><h6>h<\/h6><p>next<\/p>/);
+
+  // 6c. Enter by beforeinput with the mention menu open picks the highlighted
+  // person and inserts no paragraph, as Enter on a desktop does.
+  {
+    const menu = page.getByRole("listbox", { name: "Mention someone" });
+    for (const [name, steps] of [
+      ["typed", async () => type("hi @rob")],
+      [
+        "composed",
+        async () => {
+          await word("hi");
+          await cc(" @");
+          await word("rob");
+        },
+      ],
+    ]) {
+      const issue = await make(`mention ${name}`);
+      await page.goto(`${base}/issue/${issue.key}`);
+      await page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {});
+      await page.getByRole("button", { name: "Add a description…" }).click();
+      await richBox.waitFor();
+      await steps();
+      await menu.waitFor();
+      await aEnter();
+      const h = await html();
+      ok(/@robin/.test(h) && (h.match(/<p>/g) ?? []).length === 1, `${tag} ${name}: Enter by beforeinput picks the mention, no new paragraph (${h})`);
+      ok(!(await menu.isVisible()), `${tag} ${name}: the menu closed after the pick`);
+      await done.click();
+      await richBox.waitFor({ state: "detached" });
+      const got = await waitDesc(issue.key, "hi @robin");
+      ok(/^hi @robin\s*$/.test(got ?? ""), `${tag} ${name}: saved ${JSON.stringify(got)}`);
+    }
+  }
 
   // 7. Multi-character inserts that are not compositions stay literal.
   for (const [src, md] of [
