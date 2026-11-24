@@ -650,6 +650,15 @@ function Cell({ r, cell }: { r: WRequest; cell: RequestCell }) {
   const run = useRunCell(r.ref)
   const latest = cell.runs[0]
   const [cmd, setCmd] = useState(latest?.command ?? cell.command)
+  // A run that appears after the page loaded (another tab, another editor) is what the editor shows.
+  const latestId = latest?.id
+  const seenRun = useRef(latestId)
+  useEffect(() => {
+    if (latestId !== seenRun.current) {
+      seenRun.current = latestId
+      if (latest) setCmd(latest.command)
+    }
+  }, [latestId, latest])
   const busy = latest?.state === 'queued' || latest?.state === 'running' || run.isPending
   // A command a failed run sent back to the agent can be run again: that reopens it.
   const canRun =
@@ -702,6 +711,11 @@ function Cell({ r, cell }: { r: WRequest; cell: RequestCell }) {
           <button className="underline" onClick={() => setCmd(cell.command)}>
             Reset to the agent’s command
           </button>
+        )}
+        {edited && !canRun && (
+          <span className="font-mono" title="The agent’s command">
+            agent’s: {cell.command}
+          </span>
         )}
       </div>
       {latest && <RunOutput run={latest} />}
