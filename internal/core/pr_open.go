@@ -338,7 +338,13 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 					// "Already exists" with the pull request not found: it may
 					// be one the forge hasn't listed yet, so this is tried
 					// again, not a refusal that ends the round.
-					return nil, fmt.Errorf("open the pull request: the forge says one from %s may already exist, but didn't list it (%v): %w", in.Head, err, ErrUnavailable)
+					// The forge's error is kept as text only: a forgeAPIError
+					// would read as a refusal (shipRefused).
+					return nil, fmt.Errorf("open the pull request: %w", &forgeDownError{
+						what: fmt.Sprintf("the forge says one from %s may already exist (%v), but didn't list it", in.Head, err),
+						then: "try again in a minute",
+						err:  errors.New(err.Error()),
+					})
 				}
 				return nil, fmt.Errorf("open the pull request: %w", s.forgeUnanswered(f, time.Since(start), err))
 			}
