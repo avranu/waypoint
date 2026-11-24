@@ -528,7 +528,9 @@ const norm = (html: string) => withoutPark(html).replace(/\s+/g, ' ').trim()
  */
 export function survivesRichEdit(md: string): boolean {
   if (hasRawHtml(md)) return false
-  // A PARK in the text is ignored on both sides: the editor drops it on save.
-  const html = renderMarkdownForEdit(withoutPark(md))
+  // The editor drops every PARK on save, its own parked carets and any in the
+  // text alike, which no comparison can see: such text stays in markdown.
+  if (md.includes(PARK)) return false
+  const html = renderMarkdownForEdit(md)
   return norm(renderMarkdownForEdit(htmlToMarkdown(html))) === norm(html)
 }
