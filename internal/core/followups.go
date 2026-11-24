@@ -641,7 +641,7 @@ func (s *Service) takeMessages(ctx context.Context, t *tx, x *AgentSession, via 
 	}
 	passiveOK, activeOK := true, via != "prompt"
 	rows, err := t.QueryContext(ctx, `SELECT `+messageCols+` FROM session_messages m LEFT JOIN users u ON u.id = m.created_by
-		WHERE m.session_id = ? AND m.state = 'queued' AND ((m.passive = 0 AND ?) OR (m.passive = 1 AND ?)) ORDER BY m.id LIMIT 20`, x.ID, activeOK, passiveOK)
+		WHERE m.session_id = ? AND m.state = 'queued' AND ((m.passive = 0 AND ?) OR (m.passive = 1 AND ?)) ORDER BY m.id`, x.ID, activeOK, passiveOK)
 	if err != nil {
 		return nil, err
 	}
@@ -658,8 +658,10 @@ func (s *Service) takeMessages(ctx context.Context, t *tx, x *AgentSession, via 
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	// The round's news a wp ship waits for is that wait's (WP-1669).
+	// The round's news a wp ship waits for is that wait's (WP-1669); the
+	// limit counts what is left.
 	out = slices.DeleteFunc(out, func(m *SessionMessage) bool { return s.shipWaits.holds(ctx, t, s.now(), x.ID, m) })
+	out = out[:min(len(out), 20)]
 	if len(out) == 0 {
 		return nil, nil
 	}

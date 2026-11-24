@@ -37,6 +37,9 @@ func longPoll(chunk, minHold time.Duration, deadline time.Time, ask func(hold ti
 			if !transientErr(err) || failures >= len(waitRetry) {
 				return err
 			}
+			if probe && time.Until(deadline) < minHold {
+				return errPollBound // no time to retry the probe
+			}
 			if hold > 0 {
 				chunk = min(chunk, waitShortChunk)
 			}

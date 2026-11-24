@@ -197,11 +197,12 @@ func (s *Service) shipWaitTarget(ctx context.Context, actor *Actor, cliID, machi
 	if session == 0 {
 		return 0, 0, notFound("session")
 	}
-	task, err = s.resolveIssueID(ctx, s.db.R, taskKey)
+	// Reading the task is the access check: an issue the actor can't see is not found.
+	i, _, err := s.getIssueFor(ctx, s.db.R, actor, taskKey, RoleViewer, false)
 	if err != nil {
 		return 0, 0, err
 	}
-	// Reading the task is the access check (the session is the actor's: SessionForHeader).
+	task = i.ID
 	if _, err := s.sessionByID(ctx, s.db.R, actor, session); err != nil {
 		return 0, 0, err
 	}
@@ -348,6 +349,13 @@ func (s *Service) AckShipNews(ctx context.Context, actor *Actor, cliID, machine,
 		for _, id := range ids {
 			var key string
 			if t.QueryRowContext(ctx, `SELECT step_key FROM session_messages WHERE id = ? AND session_id = ?`, id, session).Scan(&key) != nil {
+				continue
+			}
+			// Only this task's audit and check news is a wait's to ack.
+			if !strings.HasPrefix(key, "audit:") && !strings.HasPrefix(key, "check:") {
+				continue
+			}
+			if n, bound := messageTask(ctx, t, key); !bound || n != task {
 				continue
 			}
 			res, err := t.ExecContext(ctx, `UPDATE session_messages SET state = 'delivered', via = 'ship', delivered_at = ?, batch_until = NULL WHERE id = ? AND session_id = ? AND state = 'queued'`, now, id, session)

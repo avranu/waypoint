@@ -56,7 +56,7 @@ type shipNews struct {
 // that does (findings to mark, its own report) is the agent's to act on now,
 // and nothing would come while it waited.
 func (c *cli) canWaitShip(so shipOpts, o *openedPR) bool {
-	return !*so.noWait && !factAsks(o.HeldNeedsAgent) && !c.asJSON && c.agentHeader() != "" && c.thisSession() != "" && c.server() != "" && c.token() != ""
+	return !*so.noWait && !factAsks(o.HeldNeedsAgent) && !(o.Notice != "" && factAsks(o.NoticeNeedsAgent)) && !c.asJSON && c.agentHeader() != "" && c.thisSession() != "" && c.server() != "" && c.token() != ""
 }
 
 // Why waitShipNews returned no news.
@@ -93,7 +93,6 @@ func (c *cli) waitShipNews(task string, bound time.Duration, announce func()) (*
 		}
 		switch n.Outcome {
 		case "findings":
-			c.ackShipNews(task, n.IDs)
 			news = n
 		case "pull", "ended":
 			news = n
@@ -195,5 +194,8 @@ func (c *cli) waitHeldShip(f prOpenFlags, so shipOpts, o *openedPR, raw []byte, 
 		c.println(notes)
 	}
 	c.println(n.Text)
+	if n.Outcome == "findings" {
+		c.ackShipNews(task, n.IDs) // once printed
+	}
 	return o, raw, true, nil
 }
