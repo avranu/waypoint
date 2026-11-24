@@ -30,9 +30,9 @@ export function AuditsTab({ filters }: HubTabProps) {
   return (
     <div className="space-y-4">
       <Explainer id="agents:audits" label="What an audit is">
-        Another model (Grok 4.7 through Cursor unless you choose others, or the one an LLM gateway
-        gateway picks for audits where one is set up) reads a checkout from your runner: what landed
-        on a branch lately (the last week, say), a repository, a branch, a commit, a range or a pull
+        Another model (Grok 4.7 through Cursor unless you choose others, then the one an LLM gateway
+        picks for audits when Cursor can’t run it) reads a checkout from your runner: what landed on
+        a branch lately (the last week, say), a repository, a branch, a commit, a range or a pull
         request. It reports what it finds, looking hardest where you ask. It never changes anything:
         each finding is a claim until someone confirms, fixes or rejects it. A pull request’s
         findings are posted on it too, and Claude can be asked to check and fix them. Agents ask

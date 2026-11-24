@@ -1125,8 +1125,8 @@ steers or clears one in effect.
 ## Audits (WP-348)
 
 A model reads a repository, branch, commit, range or pull request from your runner's checkout and
-reports findings: by default the one the LLM gateway picks (gateway/audit), or Grok through
-Cursor on a Waypoint with no LLM gateway. It never changes anything; findings are claims until
+reports findings: by default Grok 4.7 through Cursor on a runner, then the one the LLM gateway picks
+(gateway/audit); Grok through Cursor alone on a Waypoint with no LLM gateway. It never changes anything; findings are claims until
 someone checks them. Not the audit log above.
 
     POST /audits {target: repo|branch|commit|range|pr, repo, project, ref, base, pr, pr_id,

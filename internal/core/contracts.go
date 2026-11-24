@@ -249,7 +249,8 @@ type AgentJob struct {
 	DiffExclude []string `json:"diff_exclude,omitempty"`
 	// GatewayExclude, for an audit the LLM gateway runs (CLI
 	// GatewayCLI): globs of the models it must not run on, which are the
-	// family of the model that wrote the code (WP-617).
+	// family of the model that wrote the code (WP-617), or none for an audit
+	// held to the high-stakes bar (auditFamilyExclude, WP-1752).
 	GatewayExclude []string `json:"gateway_exclude,omitempty"`
 	// GatewayArchiveMax and GatewayFileMax, for such an audit, are what the
 	// gateway takes of the packed checkout and of one file in it, bytes

@@ -399,6 +399,17 @@ func gatewayExcludeFor(author string) []string {
 	return out
 }
 
+// auditFamilyExclude is the globs an audit held to the bar weakest keeps
+// away from the code of author: the author's family (gatewayExcludeFor),
+// except at trustedAuditBar, where the bar is what trusts the reviewer and
+// any family may answer (WP-1752, WP-ADR102).
+func auditFamilyExclude(weakest, author string) []string {
+	if weakest == trustedAuditBar {
+		return nil
+	}
+	return gatewayExcludeFor(author)
+}
+
 var gatewayGlobRE = lazyre.New(`^[A-Za-z0-9*][A-Za-z0-9._:/@+*-]{0,99}$`)
 
 // gatewayWeakestRE is a model name as a task's quality bar takes it: an id

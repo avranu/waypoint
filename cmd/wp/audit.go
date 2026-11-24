@@ -19,11 +19,12 @@ var auditCmd = &command{
 	name: "audit", aliases: []string{"audits"}, group: "Code and CI",
 	args:    "[pr|branch|commit|range|recent|repo] [TARGET] [FLAGS]",
 	summary: "have a model on your runner audit a PR, branch, commit or the repo",
-	about: `By default, where the Waypoint has an LLM gateway, the model it picks
-for audits (gateway/audit; spends no coding plan's quota), else Grok through
-Cursor on your runner, from a checkout your runner sends. Reads only; findings are recorded
-(wp audit show), posted on a pull request, and your session is told the result
-when it ends, findings or none.
+	about: `By default, where the Waypoint has an LLM gateway, Grok 4.7 through Cursor
+on your runner first, then the model the gateway picks for audits
+(gateway/audit); with no gateway, Grok through Cursor alone. Runs on a
+checkout your runner sends. Reads only; findings are recorded
+(wp audit show), posted on a pull request, and your session is told the
+result when it ends, findings or none.
 
   wp audit                  the branch's pull request, else the branch against
                             the default branch (on it: the whole repository)
@@ -463,7 +464,7 @@ func auditRun(target string) func(c *cli, args []string) error {
 		short(fs, "m", "instructions")
 		file := fs.String("f", "", "read the instructions from `FILE` (- for stdin)")
 		var models multiFlag
-		fs.Var(&models, "model", "`MODEL` to try, in order (repeatable; default gateway/audit, or cursor/grok-4.7-high with no LLM gateway)")
+		fs.Var(&models, "model", "`MODEL` to try, in order (repeatable; default cursor/grok-4.7-high, cursor/grok-4.7-medium, then gateway/audit; the Cursor ones alone with no LLM gateway)")
 		fix := fs.Bool("fix", false, "also make a task to check and fix the findings")
 		noComment := fs.Bool("no-comment", false, "don't post findings on the pull request")
 		blocking := fs.Bool("blocking", false, "tell me when it ends, or within five minutes if one of my pull requests is still being watched")
