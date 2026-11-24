@@ -86,7 +86,9 @@ func TestTaskSummariesAndUnfiledAsks(t *testing.T) {
 	}
 	// The agent's next Stop rewrites it; the request isn't filed again.
 	stopMsg(msg + "\nAlso: CI is green.")
-	_ = te.s.db.R.QueryRow(`SELECT count(*) FROM requests WHERE source = ?`, requestAuto).Scan(&n)
+	if err := te.s.db.R.QueryRow(`SELECT count(*) FROM requests WHERE source = ?`, requestAuto).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
 	if n != 1 {
 		t.Errorf("auto requests = %d, want 1", n)
 	}
@@ -150,8 +152,8 @@ func stopWithSummary(t *testing.T, te *taskEnv, msg string) {
 	}
 }
 
-// More asks than a request holds are filed as one request of the most it
-// holds, not dropped. (A Stop's own trailing-question rule can file first, so
+// More asks than a request holds are read whole; the first the request holds
+// are filed as one request. (A Stop's own trailing-question rule can file first, so
 // this calls the filing step itself.)
 func TestTaskSummaryWithMoreAsksThanARequestHolds(t *testing.T) {
 	te := newTaskEnv(t, "")
@@ -160,9 +162,10 @@ func TestTaskSummaryWithMoreAsksThanARequestHolds(t *testing.T) {
 		msg += "- " + ask + "\n"
 	}
 	asks := summaryAsks("Waiting on you:\n" + msg)
-	if len(asks) != maxRequestQuestions {
-		t.Fatalf("a summary with 9 asks keeps %d, want %d", len(asks), maxRequestQuestions)
+	if len(asks) != 9 {
+		t.Fatalf("a summary with 9 asks reads %d, want 9", len(asks))
 	}
+	asks = asks[:maxRequestQuestions]
 	err := te.s.write(te.ctx, te.ag, func(tx *tx) error {
 		x, err := te.s.sessionByID(te.ctx, tx, te.ag, te.session)
 		if err != nil {

@@ -242,6 +242,9 @@ func (s *Service) DeclineIssue(ctx context.Context, actor *Actor, ref, agent, wh
 			}
 		}
 		agentBy := authorAgent(ctx, t, actor)
+		if agentBy == "" {
+			agentBy = id // an agent named in the body or argument
+		}
 		by := agentBy
 		if by == "" && actor.User != nil {
 			by = cmp(actor.User.DisplayName, actor.User.Username)

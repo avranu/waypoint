@@ -21,7 +21,7 @@ import (
 
 const (
 	summaryMax     = 20000 // characters of a summary kept
-	summaryAsksMax = maxRequestQuestions
+	summaryAsksMax = 50    // asks read from a summary, before the covered ones are dropped
 )
 
 // TaskSummary is one finished task's summary.
@@ -276,6 +276,9 @@ func (s *Service) unfiledAsks(ctx context.Context, q queryer, x *AgentSession, m
 	for _, a := range asks {
 		if requestCodeRE.MatchString(a) || askCovered(a, filed) {
 			continue
+		}
+		if len(out) == maxRequestQuestions {
+			break // one request holds this many
 		}
 		out = append(out, a)
 	}
