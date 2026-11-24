@@ -601,13 +601,17 @@ func (s *Service) reviewFacts(ctx context.Context, id int64, in *roundIn) error 
 func (s *Service) endedFacts(ctx context.Context, r *roundRow, in *roundIn) error {
 	now := s.nowMS()
 	var updated, runEnd, sessEnd, moved int64
+	// Taken: an open run of another session. The round's own session taking
+	// the task again after its claim expired is a new run of the same session,
+	// not another holder (WP-1828); a round with no session compares runs.
 	err := s.db.R.QueryRowContext(ctx, `SELECT w.updated_at, coalesce((SELECT ended_at FROM agent_runs WHERE id = w.run_id), 0),
 			coalesce((SELECT ended_at FROM agent_sessions WHERE id = w.session_id), 0),
 			coalesce((SELECT min(o.started_at) FROM agent_runs o WHERE o.session_id = w.session_id AND o.id > w.run_id AND o.issue_id != w.issue_id), 0),
 			i.resolved_at IS NOT NULL,
 			EXISTS (SELECT 1 FROM external_links l WHERE l.issue_id = w.issue_id AND l.kind = 'pull'),
 			w.id != (SELECT max(m.id) FROM work_log m WHERE m.kind = 'review' AND m.issue_id = w.issue_id),
-			EXISTS (SELECT 1 FROM agent_runs o WHERE o.issue_id = w.issue_id AND o.id != coalesce(w.run_id, 0) AND o.ended_at IS NULL)
+			EXISTS (SELECT 1 FROM agent_runs o WHERE o.issue_id = w.issue_id AND o.ended_at IS NULL AND
+				CASE WHEN w.session_id IS NULL THEN o.id != coalesce(w.run_id, 0) ELSE o.session_id IS NOT w.session_id END)
 		FROM work_log w JOIN issues i ON i.id = w.issue_id WHERE w.id = ?`, r.id).Scan(&updated, &runEnd, &sessEnd, &moved, &in.Resolved, &in.Linked, &in.Newer, &in.Taken)
 	if err != nil {
 		return err
