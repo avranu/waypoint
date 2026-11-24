@@ -99,7 +99,8 @@ const (
 	endRefused     = "refused"
 	endDuplicate   = "duplicate"
 	endBatchSplit  = "batch_split"
-	endBaseRed     = "base_red" // failed only what the base's tip fails: not the heads' account, tried again once the tip moves or turns green
+	endUnreadable  = "unreadable" // a live row that could not be read (WP-1700): not evidence about the forge
+	endBaseRed     = "base_red"   // failed only what the base's tip fails: not the heads' account, tried again once the tip moves or turns green
 )
 
 type lineActionKind string

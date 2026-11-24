@@ -6,10 +6,13 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core"
 )
 
 // guardTestSite makes a repository with an origin on a forge, and a guard
@@ -634,9 +637,46 @@ func TestGuardHook(t *testing.T) {
 	if out := run("Bash", bash); !strings.Contains(out, "deny") {
 		t.Errorf("runner job: %q", out)
 	}
-	// Bad input fails open.
+	// A call the guard can't read is refused while the guard is active (a
+	// 4.2 MB Write to .claude/settings.json was allowed), and the control: a
+	// person's own session, where the guard is silent, is let through, and so
+	// is a call of 3 MB that does decode.
+	big := `{"session_id":"sess-1","hook_event_name":"PreToolUse","tool_name":"Write","cwd":` + strconv.Quote(repo) +
+		`,"tool_input":{"file_path":".claude/settings.json","content":"` + strings.Repeat("x", 4<<20+200) + `"}}`
+	var refused bytes.Buffer
+	hookClaudeGuard(c, strings.NewReader(big), &refused)
+	if !strings.Contains(refused.String(), `"permissionDecision":"deny"`) || !strings.Contains(refused.String(), "over 4 MB") {
+		t.Errorf("an oversize call was let through: %.200q", refused.String())
+	}
+	refused.Reset()
+	hookClaudeGuard(c, strings.NewReader("not json"), &refused)
+	if !strings.Contains(refused.String(), "deny") {
+		t.Errorf("unreadable input was let through while the guard is active: %q", refused.String())
+	}
+	if log, _ := os.ReadFile(filepath.Join(c.dir, "guard.log")); !strings.Contains(string(log), "can't read") {
+		t.Errorf("guard.log has no line for a call the guard couldn't read: %q", log)
+	}
+	if c.loadState().Nudges["guard_unreadable"] == nil {
+		t.Error("a refused unreadable call was not counted")
+	}
+	// Control: a large call that is under the limit and harmless still passes.
+	fine := `{"session_id":"sess-1","hook_event_name":"PreToolUse","tool_name":"Write","cwd":` + strconv.Quote(repo) +
+		`,"tool_input":{"file_path":"notes.txt","content":"` + strings.Repeat("x", 3<<20) + `"}}`
+	refused.Reset()
+	hookClaudeGuard(c, strings.NewReader(fine), &refused)
+	if refused.Len() != 0 {
+		t.Errorf("a 3 MB harmless Write was refused: %.200q", refused.String())
+	}
+	t.Setenv("WAYPOINT_UNATTENDED", "")
+	refused.Reset()
+	hookClaudeGuard(c, strings.NewReader(big), &refused)
+	hookClaudeGuard(c, strings.NewReader("not json"), &refused)
+	if refused.Len() != 0 {
+		t.Errorf("a person's session was refused for unreadable input: %.200q", refused.String())
+	}
+	t.Setenv("WAYPOINT_UNATTENDED", "1")
+	// Input that decodes but isn't a call the guard judges is let through.
 	var quiet bytes.Buffer
-	hookClaudeGuard(c, strings.NewReader("not json"), &quiet)
 	hookClaudeGuard(c, strings.NewReader(`{"tool_name":"Bash","tool_input":"x"}`), &quiet)
 	hookClaudeGuard(c, strings.NewReader(`{"tool_name":"Bash","tool_input":{"command":"x"}}`), &quiet)
 	hookClaudeGuard(c, strings.NewReader(`{"tool_name":"Write","tool_input":{"file_path":5}}`), &quiet)
@@ -685,7 +725,7 @@ func TestGuardAutopilotMark(t *testing.T) {
 	if guarded("s2") {
 		t.Error("another session was guarded")
 	}
-	prompt("s1", keepWarmMark+" ping")
+	prompt("s1", core.KeepWarmPing())
 	prompt("s1", "/compact")
 	if !guarded("s1") {
 		t.Error("Waypoint's own prompts cleared the mark")
@@ -695,6 +735,13 @@ func TestGuardAutopilotMark(t *testing.T) {
 	if !guarded("s1") {
 		t.Error("a background task reporting back cleared the mark")
 	}
+	// Starting a prompt with the keep-warm mark is not Waypoint's ping: a
+	// person who types it is the person (WP-1370).
+	prompt("s1", core.KeepWarmMark+" ping, but my own words")
+	if guarded("s1") {
+		t.Error("a person's prompt that starts with the keep-warm mark was read as Waypoint's ping")
+	}
+	prompt("s1", autopilotPromptMark+" started this session for APP-2, after APP-1 was done in the session before it.")
 	prompt("s1", "  thanks, now look at the docs")
 	if guarded("s1") {
 		t.Error("a person's prompt didn't clear the mark")
@@ -1253,5 +1300,23 @@ func TestGuardLogUnlockedCap(t *testing.T) {
 				t.Error("the new line is not in guard.log")
 			}
 		})
+	}
+}
+
+// The guard reads up to guardInputMax bytes of input: that many decode, one
+// more is refused.
+func TestDecodeGuardInputAtTheLimit(t *testing.T) {
+	const head = `{"tool_name":"Write","tool_input":{"file_path":"a","content":"`
+	const tail = `"}}`
+	exact := head + strings.Repeat("x", guardInputMax-len(head)-len(tail)) + tail
+	if len(exact) != guardInputMax {
+		t.Fatalf("built %d bytes", len(exact))
+	}
+	var in hookEventInput
+	if err := decodeGuardInput(strings.NewReader(exact), &in); err != nil || in.ToolName != "Write" {
+		t.Errorf("exactly %d bytes: %v", guardInputMax, err)
+	}
+	if err := decodeGuardInput(strings.NewReader(exact+" "), &in); err == nil || !strings.Contains(err.Error(), "over") {
+		t.Errorf("%d bytes: %v", guardInputMax+1, err)
 	}
 }

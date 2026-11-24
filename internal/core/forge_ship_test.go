@@ -545,3 +545,35 @@ func TestFailedJobLogKeepsFailureMarker(t *testing.T) {
 		t.Fatalf("marker lost: %v %d bytes", err, len(logs["ci / backend (pull_request)"]))
 	}
 }
+
+// EditPRBase retargets a pull request: Forgejo and GitHub patch its base,
+// GitLab puts the merge request's target branch, and a refusal is an error
+// (WP-1670).
+func TestEditPRBaseCalls(t *testing.T) {
+	ctx := context.Background()
+	for _, kind := range []string{"forgejo", "github"} {
+		a, f, c := newAPIFake(t, kind)
+		a.reply["PATCH /repos/me/app/pulls/7"] = map[string]any{}
+		if err := c.EditPRBase(ctx, f, "me/app", 7, "release"); err != nil {
+			t.Errorf("%s: %v", kind, err)
+		}
+		if call := a.call("PATCH", "/repos/me/app/pulls/7"); call == nil || call.body["base"] != "release" {
+			t.Errorf("%s: call %+v", kind, call)
+		}
+		a.reply["PATCH /repos/me/app/pulls/8"] = 422
+		if err := c.EditPRBase(ctx, f, "me/app", 8, "gone"); err == nil {
+			t.Errorf("%s: a refused move is no error", kind)
+		}
+	}
+	a, f, c := newAPIFake(t, "gitlab")
+	a.reply["PUT /projects/me%2Fapp/merge_requests/7"] = map[string]any{}
+	if err := c.EditPRBase(ctx, f, "me/app", 7, "release"); err != nil {
+		t.Errorf("gitlab: %v", err)
+	}
+	if call := a.call("PUT", "/projects/me%2Fapp/merge_requests/7"); call == nil || call.body["target_branch"] != "release" {
+		t.Errorf("gitlab: call %+v", call)
+	}
+	if err := c.EditPRBase(ctx, f, "me/app", 8, "gone"); err == nil { // the fake has no such merge request: 404
+		t.Error("gitlab: a refused move is no error")
+	}
+}

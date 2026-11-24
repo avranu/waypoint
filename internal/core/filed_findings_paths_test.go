@@ -340,7 +340,7 @@ func TestFilingVoidCheckClaims(t *testing.T) {
 func TestFilingVoidAgainTodo(t *testing.T) {
 	e := filedPR(t)
 	id := e.audit("", "", filedCanceled, filedDupOfOpen)
-	todo, err := e.s.againTodo(e.ctx, id)
+	todo, _, err := e.s.againTodoLines(e.ctx, id)
 	if want := []string{fmt.Sprintf("%d.1", id)}; err != nil || !slices.Equal(todo, want) {
 		t.Fatalf("to do = %v, %v; want %v", todo, err, want)
 	}

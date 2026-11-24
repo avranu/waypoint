@@ -113,6 +113,21 @@ const StopEndedByShip = "ship"
 // be reached with are sent later, in order, with At set to when they
 // happened.
 type HookEvent struct {
+	// PromptSum: UserPromptSubmit: the SHA-256 of the whole prompt's
+	// normalised text (PromptSum), which the hook computes from what it was
+	// given. A hook that withholds the prompt (--no-prompts) sends TypedID
+	// instead, and no digest. Empty: the server digests Prompt.
+	PromptSum string `json:"prompt_sum,omitempty"`
+	// TypedID: UserPromptSubmit from a hook that sends no prompt text or
+	// digest (--no-prompts): the id of the pending record (PendingTypedPrompts)
+	// whose digest it matched itself.
+	TypedID int64 `json:"typed_id,omitempty"`
+	// Key: one hook invocation's own key, the same on every attempt to post
+	// it (the CLI's outbox sends the stored event again). A repeat of a
+	// UserPromptSubmit with a key the server has already answered gets the
+	// same answer and uses no further record. Empty (an older CLI): each
+	// arrival is its own, as before.
+	Key       string `json:"key,omitempty"`
 	Event     string `json:"event"` // SessionStart, UserPromptSubmit, Notification, PermissionDenied, PreToolUse, PostToolUse, Stop, SubagentStart, SubagentStop, SessionEnd, PostCompact, ConfigChange, InstructionsLoaded, PostModelSwitch
 	At        int64  `json:"at,omitempty"`
 	SessionID string `json:"session_id"` // the CLI's
@@ -206,6 +221,9 @@ type HookEvent struct {
 	// quiet: a keep-warm ping's prompt or stop, or Waypoint's /compact
 	// (WP-192): no turn of the session's work, so it records nothing of one.
 	quiet bool
+	// typed: the kind of text Waypoint typed that this UserPromptSubmit
+	// reports (TypedReview, ...), "" for a person's prompt (recogniseTyped).
+	typed string
 	// kept: this UserPromptSubmit was the person's keep (WP-ADR9) or
 	// another session command (WP-562): it goes no further, and they see
 	// this line instead of a turn.
@@ -1359,7 +1377,9 @@ func (s *Service) applyHookEvent(ctx context.Context, t *tx, actor *Actor, x *Ag
 	case "SessionStart":
 		ev.quiet, err = s.warmSessionStart(ctx, t, x, ev, at)
 	case "UserPromptSubmit":
-		ev.quiet, err = s.warmQuietPrompt(ctx, t, x, ev)
+		if ev.typed, err = s.recogniseTyped(ctx, t, x.ID, ev); err == nil {
+			ev.quiet, err = s.warmQuietPrompt(ctx, t, x, ev)
+		}
 	}
 	if err != nil || ev.quiet {
 		return err
@@ -1453,6 +1473,11 @@ func (s *Service) applyHookEvent(ctx context.Context, t *tx, actor *Actor, x *Ag
 			}
 			if err := s.sessionTimeline(ctx, t, x.ID, at, "prompt", "", 0, "", "", excerpt(ev.Prompt, sessionPromptLine), x.projectID, data); err != nil {
 				return err
+			}
+			if ev.typed != "" {
+				if _, err := t.ExecContext(ctx, `UPDATE session_events SET typed_kind = ? WHERE id = (SELECT max(id) FROM session_events WHERE session_id = ? AND kind = 'prompt')`, ev.typed, x.ID); err != nil {
+					return err
+				}
 			}
 		}
 		if err := s.noteNamedRefs(ctx, t, x, ev.Prompt, at); err != nil { // WP-378
@@ -1596,6 +1621,9 @@ func (s *Service) applyHookEvent(ctx context.Context, t *tx, actor *Actor, x *Ag
 			return err
 		}
 		if err := s.expireOnEnd(ctx, t, x.ID, at); err != nil { // WP-66
+			return err
+		}
+		if _, err := t.ExecContext(ctx, `DELETE FROM typed_prompts WHERE session_id = ?`, x.ID); err != nil { // WP-1370
 			return err
 		}
 		if err := warmEnded(ctx, t, x.ID, at, ev.EndReason); err != nil { // WP-1000

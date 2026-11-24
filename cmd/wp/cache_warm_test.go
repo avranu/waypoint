@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -20,12 +19,6 @@ import (
 func TestKeepWarmMarkMatchesCore(t *testing.T) {
 	if keepWarmMark != core.KeepWarmMark {
 		t.Fatalf("cmd/wp says %q, core says %q", keepWarmMark, core.KeepWarmMark)
-	}
-}
-
-func TestHarnessPromptMarksMatchCore(t *testing.T) {
-	if !slices.Equal(harnessPromptMarks, core.HarnessPromptMarks) {
-		t.Fatalf("cmd/wp says %q, core says %q", harnessPromptMarks, core.HarnessPromptMarks)
 	}
 }
 
@@ -199,5 +192,25 @@ func TestCompactAndPingJobsTypeIntoAShellSession(t *testing.T) {
 	}
 	if len(typed) != 5 { // /compact, Enter; load-buffer, paste-buffer, Enter
 		t.Errorf("typed %q", typed)
+	}
+}
+
+// The client reads a prompt as the server does (core.NormalisePrompt): a mark
+// hidden by a paste wrapper, a zero-width character or a run of whitespace
+// is still found, so --no-prompts reports a harness prompt as one (WP-1370).
+func TestHarnessPromptMarkReadsAsTheServerDoes(t *testing.T) {
+	mark := core.HarnessPromptMarks[0]
+	for name, p := range map[string]string{
+		"plain":      mark + " rest",
+		"wrapped":    "<pasted_content>" + mark + " rest</pasted_content>",
+		"zero width": "\u200b" + mark + " rest",
+		"escape":     "\x1b[200~" + mark + " rest",
+	} {
+		if got := harnessPromptMark(p); got != mark {
+			t.Errorf("%s: mark %q, want %q", name, got, mark)
+		}
+	}
+	if harnessPromptMark("hello "+mark) != "" {
+		t.Error("a mark that isn't at the start was found")
 	}
 }

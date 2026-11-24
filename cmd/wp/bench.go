@@ -199,7 +199,7 @@ func cmdBench(c *cli, args []string) error {
 		}
 	}
 
-	env, release, err := c.takeSlotFor(ctx, "tests", defaultSlots(), slotKeyFor("wp bench", argv)) // the hold is a warm-up and many timed runs
+	env, release, err := c.takeSlotFor(ctx, "tests", defaultSlots(), slotRunFor("wp bench", argv)) // the hold is a warm-up and many timed runs
 	if err != nil {
 		if ctx.Err() != nil {
 			_, _ = fmt.Fprintln(c.err, "wp bench: stopped while waiting for the slot; nothing was kept")

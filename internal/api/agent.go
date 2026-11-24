@@ -634,16 +634,18 @@ func (s *Server) suggestRelations(w http.ResponseWriter, r *http.Request) (any, 
 	return s.svc.SuggestRelations(r.Context(), actorFrom(r), r.PathValue("key"))
 }
 
-// rewrittenWork names the tasks whose recent lines a change replaces (WP-782).
+// rewrittenWork names the tasks whose recent lines a change replaces (WP-782)
+// and relates them to the task, inferred (WP-1370).
 func (s *Server) rewrittenWork(w http.ResponseWriter, r *http.Request) (any, error) {
 	var in struct {
 		Repo string             `json:"repo"`
+		Head string             `json:"head"`
 		PRs  []core.RewrittenPR `json:"prs"`
 	}
 	if err := decode(r, &in); err != nil {
 		return nil, err
 	}
-	return s.svc.RewrittenWork(r.Context(), actorFrom(r), r.PathValue("key"), in.Repo, in.PRs)
+	return s.svc.NoteRewrites(r.Context(), actorFrom(r), r.PathValue("key"), in.Repo, in.Head, in.PRs)
 }
 
 // ---- CLI login (device flow) ----

@@ -14,6 +14,9 @@ func (s *Server) sessionRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/sessions", a(s.listAgentSessions))
 	mux.HandleFunc("POST /api/v1/sessions/hook", a(s.sessionHook))
 	mux.HandleFunc("POST /api/v1/sessions/hook/await", a(s.sessionHookAwait))
+	mux.HandleFunc("POST /api/v1/sessions/hook/ship-news", a(s.sessionShipNews))
+	mux.HandleFunc("POST /api/v1/sessions/typed-start", a(s.sessionTypedStart))
+	mux.HandleFunc("GET /api/v1/sessions/typed-prompts", a(s.sessionTypedPrompts))
 	mux.HandleFunc("GET /api/v1/sessions/pause", a(s.sessionPause))
 	mux.HandleFunc("POST /api/v1/sessions/pulse", a(s.sessionPulse))
 	mux.HandleFunc("GET /api/v1/sessions/current", a(s.currentAgentSession))
@@ -84,6 +87,26 @@ func (s *Server) sessionHook(w http.ResponseWriter, r *http.Request) (any, error
 	return s.svc.SessionHook(r.Context(), actorFrom(r), in.Events)
 }
 
+// sessionTypedStart: the text a session is about to be started with, noted
+// before the session exists so its first prompt is known as Waypoint's
+// (WP-1370).
+func (s *Server) sessionTypedStart(w http.ResponseWriter, r *http.Request) (any, error) {
+	var in struct {
+		Text string `json:"text"`
+	}
+	if err := decode(r, &in); err != nil {
+		return nil, err
+	}
+	return nil, s.svc.RecordTypedStart(r.Context(), actorFrom(r), in.Text)
+}
+
+// sessionTypedPrompts: the digests of the texts Waypoint has typed into the
+// session (?cli=ID) that no prompt has used yet, for a hook that sends no
+// prompt text to match locally (WP-1370).
+func (s *Server) sessionTypedPrompts(w http.ResponseWriter, r *http.Request) (any, error) {
+	return s.svc.PendingTypedPrompts(r.Context(), actorFrom(r), r.URL.Query().Get("cli"))
+}
+
 // sessionPause is the pause winding the caller's sessions down, or null:
 // the hooks pull it to a local file (WP-146).
 func (s *Server) sessionPause(w http.ResponseWriter, r *http.Request) (any, error) {
@@ -113,6 +136,30 @@ func (s *Server) sessionHookAwait(w http.ResponseWriter, r *http.Request) (any, 
 		return nil, err
 	}
 	return s.svc.AwaitMessage(r.Context(), actorFrom(r), in.SessionID, in.Machine, time.Duration(in.Wait)*time.Second)
+}
+
+// sessionShipNews holds a wp ship that was held for its task's review round
+// until the round has something for the agent (WP-1669).
+func (s *Server) sessionShipNews(w http.ResponseWriter, r *http.Request) (any, error) {
+	waits(r)
+	var in struct {
+		SessionID string `json:"session_id"`
+		Machine   string `json:"machine"`
+		Task      string `json:"task"`
+		Wait      int    `json:"wait"` // seconds
+		// Ack: the messages of findings the client has; delivers them.
+		Ack []int64 `json:"ack"`
+	}
+	if err := decode(r, &in); err != nil {
+		return nil, err
+	}
+	if len(in.Ack) > 0 {
+		if err := s.svc.AckShipNews(r.Context(), actorFrom(r), in.SessionID, in.Machine, in.Task, in.Ack); err != nil {
+			return nil, err
+		}
+		return map[string]string{"outcome": "acked"}, nil
+	}
+	return s.svc.AwaitShipNews(r.Context(), actorFrom(r), in.SessionID, in.Machine, in.Task, time.Duration(in.Wait)*time.Second)
 }
 
 func (s *Server) getFollowUp(w http.ResponseWriter, r *http.Request) (any, error) {

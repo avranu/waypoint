@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
@@ -411,7 +412,24 @@ type dockerCLI struct{}
 // codeqlDockerClient is the docker the scan uses (tests replace it).
 var codeqlDockerClient codeqlDocker = dockerCLI{}
 
+// checkCodeqlImage refuses an image name docker would read as an option (a
+// leading dash: --privileged) or that holds a space or control character.
+// Image names never start with a dash, so no real image is refused.
+func checkCodeqlImage(image string) error {
+	bad := strings.HasPrefix(image, "-")
+	for _, r := range image {
+		bad = bad || unicode.IsControl(r) || unicode.IsSpace(r)
+	}
+	if bad {
+		return codeqlUnavailable{fmt.Sprintf("%q is not a docker image name (no leading dash, spaces or control characters); name the CodeQL image with --image or WP_CODEQL_IMAGE", image)}
+	}
+	return nil
+}
+
 func (dockerCLI) HasImage(ctx context.Context, image string) error {
+	if err := checkCodeqlImage(image); err != nil {
+		return err
+	}
 	bin, err := exec.LookPath("docker")
 	if err != nil {
 		return codeqlUnavailable{"docker is not installed (no docker on PATH)"}
@@ -692,6 +710,9 @@ func runCodeqlScan(ctx context.Context, d codeqlDocker, o codeqlOpts) (*codeqlRe
 	started := time.Now()
 	if o.Image == "" {
 		return nil, errCodeqlNoImage
+	}
+	if err := checkCodeqlImage(o.Image); err != nil {
+		return nil, err
 	}
 	if err := d.HasImage(ctx, o.Image); err != nil {
 		return nil, err

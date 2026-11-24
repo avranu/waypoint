@@ -554,6 +554,24 @@ type MergeInput struct {
 	// head moved since (wp pr wait --merge waited on it), it isn't merged.
 	Head  string
 	armed bool // merging because it was armed: it waits for reviews to settle
+	// notice, when set, is told what the merge did instead of what was asked.
+	notice *string
+}
+
+// say tells the caller of a merge a notice, when they asked for it.
+func (in MergeInput) say(asked bool, text string) {
+	if asked && in.notice != nil {
+		*in.notice = text
+	}
+}
+
+// afterSettle is pr as the record has it once settleStack may have moved its
+// base; pr itself when that can't be read.
+func (s *Service) afterSettle(ctx context.Context, pr *PullRequest) *PullRequest {
+	if cur, err := s.prByID(ctx, s.db.R, pr.ID); err == nil {
+		return cur
+	}
+	return pr
 }
 
 // MergeResult is what a merge request did.
@@ -633,16 +651,28 @@ func (s *Service) MergePR(ctx context.Context, actor *Actor, prID int64, in Merg
 	// Read first, as merging releases the claim the warning is about. The
 	// claim itself waits for an arm that worked (WP-117).
 	warning := s.prClaimWarning(ctx, actor, pr.ID)
+	var notice string // what the merge did differently from what was asked
 	defer func() {
 		if err != nil || res == nil || (!res.Merged && !res.Armed) {
 			return
 		}
-		res.Warning = warning
+		res.Warning = joinNotes(warning, notice)
 		if !res.Merged {
 			s.claimPR(ctx, actor, pr.ID)
 		}
 	}()
 	if in.WhenReady {
+		// The record can lag the forge: one closed or merged there isn't
+		// armed (WP-1670). A forge that doesn't answer leaves the record.
+		if s.forgeEnded(ctx, pr.ID) {
+			cur, err := s.prByID(ctx, s.db.R, pr.ID)
+			if err != nil {
+				return nil, err
+			}
+			return nil, invalid("this pull request is %s", cur.State)
+		}
+		s.settleStack(ctx, pr, false) // so its stack wait is read right
+		pr = s.afterSettle(ctx, pr)   // and the base it moved to is the one the policy reads
 		if pr.Outside {
 			return nil, errPROutside(pr) // a head no person approved never merges by itself (WP-281)
 		}
@@ -677,8 +707,15 @@ func (s *Service) MergePR(ctx context.Context, actor *Actor, prID int64, in Merg
 				return &MergeResult{ByHand: true, Reasons: []string{byHand}}, nil
 			}
 		}
+		if in.Head != "" && !sameSHA(pr.HeadSHA, in.Head) {
+			// Armed for the head that was reviewed, not whatever it moved to.
+			return nil, invalid("its head is %s, not %s; not armed", short(pr.HeadSHA), short(in.Head))
+		}
 		return s.armMerge(ctx, actor, pr, in.Style)
 	}
+	s.settleStack(ctx, pr, false)
+	pr = s.afterSettle(ctx, pr)
+	in.notice = &notice
 	sha, err := s.mergeNow(ctx, actor, pr, in, "from the pull request page")
 	if err != nil {
 		return nil, err
@@ -810,6 +847,10 @@ func (s *Service) maybeAutoMerge(ctx context.Context, prID int64) {
 		return // a head from outside waits for a person's approval first (WP-281)
 	}
 	s.ensureArmedBabysit(ctx, pr) // an armed pull request is always babysat (WP-188)
+	s.settleStack(ctx, pr, true)  // a move off a merged parent that was left is made now (WP-1670)
+	if cur, err := s.prByID(ctx, s.db.R, pr.ID); err == nil {
+		pr = cur // a move changed its base
+	}
 	rd, err := s.readiness(ctx, pr)
 	if err != nil {
 		s.armedMergeUnread(ctx, pr, "read whether an armed pull request is ready", "whether it is ready couldn't be read", err)
@@ -1012,6 +1053,34 @@ func (s *Service) mergeNow(ctx context.Context, actor *Actor, pr *PullRequest, i
 	if in.DeleteBranch != nil {
 		del = *in.DeleteBranch
 	}
+	askedDelete := in.DeleteBranch != nil && *in.DeleteBranch
+	// A forge may delete the branch inside the merge call and close (or
+	// retarget itself) the pull requests open into it. So when some are, the
+	// merge doesn't ask for that: they move off the branch first, then it
+	// goes (afterStackMerge; WP-ADR153). Where the forge can't say whether
+	// the branch is one the repo keeps, nothing is deleted or moved: they
+	// hold as stacked on a merged pull request, and settleStack moves them.
+	var stacked []*PullRequest
+	if del {
+		if stacked, err = s.prsStackedOn(ctx, cur); err != nil {
+			// Before anything merges, as the project read below.
+			return "", s.heldRead(ctx, pr, "list the pull requests stacked on the branch being merged", "the pull requests stacked on it couldn't be read", err)
+		}
+		if len(stacked) > 0 {
+			switch kept, known := s.longLivedBranch(ctx, f, cur); {
+			case !known:
+				del, stacked = false, nil
+				s.log.WarnContext(ctx, "left a merged branch for the pull requests stacked on it", "repo", cur.Repo, "branch", cur.HeadRef)
+				in.say(askedDelete, cur.HeadRef+" was not deleted: pull requests are open into it and the forge didn't say whether the repo keeps it")
+			case kept:
+				// A branch the repo keeps: they are not stacked on it, and
+				// it isn't deleted under them.
+				del, stacked = false, nil
+				s.log.WarnContext(ctx, "left a kept branch with pull requests open into it", "repo", cur.Repo, "branch", cur.HeadRef)
+				in.say(askedDelete, cur.HeadRef+" was not deleted: pull requests are open into it and the repo keeps it")
+			}
+		}
+	}
 	style := cmp(in.Style, cur.ArmedStyle)
 	projectID, err := s.attachedProjectFor(ctx, actor, cur)
 	if err != nil {
@@ -1026,7 +1095,7 @@ func (s *Service) mergeNow(ctx context.Context, actor *Actor, pr *PullRequest, i
 	// the next in the queue isn't updated with that read (WP-316).
 	s.noteMerging(cur)
 	start = time.Now()
-	err = cl.MergePR(ctx, f, pr.Repo, fp, MergeOptions{Style: style, HeadSHA: fp.HeadSHA, DeleteBranch: del, Title: in.Title, Message: in.Message})
+	err = cl.MergePR(ctx, f, pr.Repo, fp, MergeOptions{Style: style, HeadSHA: fp.HeadSHA, DeleteBranch: del && len(stacked) == 0, Title: in.Title, Message: in.Message})
 	var kept *branchNotDeleted
 	if err != nil && !errors.As(err, &kept) {
 		if down := s.forgeUnanswered(f, time.Since(start), err); errors.Is(down, ErrUnavailable) {
@@ -1081,6 +1150,7 @@ func (s *Service) mergeNow(ctx context.Context, actor *Actor, pr *PullRequest, i
 			}
 		}
 	}
+	s.afterStackMerge(ctx, f, cur, stacked)
 	if rd.stack != nil {
 		s.candMergedOn(ctx, f, cur, rd.stack, sha)
 	} else {

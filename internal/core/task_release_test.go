@@ -401,6 +401,9 @@ func TestAutopilotIgnoresSweptClaims(t *testing.T) {
 func TestAutopilotSaysWhyASessionWontContinue(t *testing.T) {
 	prompt := func(a *apEnv, text string) {
 		t.Helper()
+		if strings.HasPrefix(text, AutopilotPromptMark) {
+			a.record(TypedKickoff, text)
+		}
 		if _, err := a.s.SessionHook(a.ctx, a.ag, []HookEvent{hook("box", a.cli, "UserPromptSubmit", func(h *HookEvent) { h.Prompt = text })}); err != nil {
 			t.Fatal(err)
 		}

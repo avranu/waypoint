@@ -3,6 +3,7 @@ package core
 import (
 	"encoding/json"
 	"errors"
+	"time"
 )
 
 // Shared names for WP-D16 to WP-D21, so the parts built in parallel agree.
@@ -248,7 +249,8 @@ type AgentJob struct {
 	DiffExclude []string `json:"diff_exclude,omitempty"`
 	// GatewayExclude, for an audit the LLM gateway runs (CLI
 	// GatewayCLI): globs of the models it must not run on, which are the
-	// family of the model that wrote the code (WP-617).
+	// family of the model that wrote the code (WP-617), or none for an audit
+	// held to the high-stakes bar (auditFamilyExclude, WP-1752).
 	GatewayExclude []string `json:"gateway_exclude,omitempty"`
 	// GatewayWeakest, for such an audit: the weakest model the gateway may
 	// run it on, its quality bar (WP-916); "": none.
@@ -303,7 +305,9 @@ type RunnerJob struct {
 	Error    string          `json:"error,omitempty"`
 	Source   string          `json:"source,omitempty"`
 	SourceID int64           `json:"source_id,omitempty"`
-	Input    json.RawMessage `json:"-"` // what it was queued with, for the code that queued it
+	// StartedAt is when a runner claimed it (nil: still queued).
+	StartedAt *time.Time      `json:"started_at,omitempty"`
+	Input     json.RawMessage `json:"-"` // what it was queued with, for the code that queued it
 }
 
 // ErrNoRunner: no runner of the right owner (and label) is registered.

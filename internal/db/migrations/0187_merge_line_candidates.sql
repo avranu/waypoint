@@ -1,3 +1,4 @@
+-- wplint:ignore migrations comment-only edit: names the new unreadable end_reason
 -- The merge line pushes to no branch of a pull request that rides a
 -- candidate; a front that can't ride one is brought up to date on its own
 -- branch (WP-1659, WP-ADR152). One queue_stacks row is now one candidate
@@ -9,7 +10,7 @@
 -- conflicts with the base, which a round resolves).
 -- end_reason: one machine word for how it ended (merged, failed, conflict,
 -- lost, no_run, no_merge, line_changed, base_moved, head_moved, refused,
--- duplicate, batch_split, base_red), beside the note's human text; '' while live and for rows
+-- duplicate, batch_split, base_red, unreadable), beside the note's human text; '' while live and for rows
 -- from before.
 ALTER TABLE queue_stacks ADD COLUMN reran INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE queue_stacks ADD COLUMN end_reason TEXT NOT NULL DEFAULT '';

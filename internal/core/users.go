@@ -570,7 +570,15 @@ func (s *Service) RevokeAPIToken(ctx context.Context, actor *Actor, id int64) er
 
 // TokenActor authenticates an API token.
 func (s *Service) TokenActor(ctx context.Context, tok string) (*Actor, error) {
-	h := hashToken(tok)
+	return s.tokenActor(ctx, hashToken(tok), 0, true)
+}
+
+// tokenActor is the one way an API token becomes an actor, for a request
+// carrying it (touch: it was just used) and for the server finishing what a
+// session shipped with it (WP-1370): the same expiry and disabled-user
+// checks, the same read-only, permissions and runner-job scope. col is the
+// hash it is found by, else its id.
+func (s *Service) tokenActor(ctx context.Context, hash string, tokenID int64, touch bool) (*Actor, error) {
 	var id, uid int64
 	var ro bool
 	var agent string
@@ -578,7 +586,12 @@ func (s *Service) TokenActor(ctx context.Context, tok string) (*Actor, error) {
 	var perms sql.NullString
 	var name string
 	var job sql.NullInt64
-	err := s.db.R.QueryRowContext(ctx, `SELECT id, user_id, name, read_only, agent, permissions, expires_at, last_used_at, runner_job_id FROM api_tokens WHERE token_hash = ?`, h).
+	const cols = `SELECT id, user_id, name, read_only, agent, permissions, expires_at, last_used_at, runner_job_id FROM api_tokens WHERE `
+	q, key := cols+`token_hash = ?`, any(hash)
+	if hash == "" {
+		q, key = cols+`id = ?`, tokenID
+	}
+	err := s.db.R.QueryRowContext(ctx, q, key).
 		Scan(&id, &uid, &name, &ro, &agent, &perms, &exp, &used, &job)
 	if err != nil {
 		return nil, ErrUnauthorized
@@ -591,7 +604,7 @@ func (s *Service) TokenActor(ctx context.Context, tok string) (*Actor, error) {
 	if err != nil || u.Disabled {
 		return nil, ErrUnauthorized
 	}
-	if !used.Valid || now-used.Int64 > 60*1000 {
+	if touch && (!used.Valid || now-used.Int64 > 60*1000) {
 		if _, err := s.db.W.ExecContext(ctx, `UPDATE api_tokens SET last_used_at = ? WHERE id = ?`, now, id); err != nil {
 			s.log.WarnContext(ctx, "best-effort write failed", "err", err)
 		}

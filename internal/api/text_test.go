@@ -411,3 +411,17 @@ func TestGoalLineChain(t *testing.T) {
 		t.Errorf("no goal: %q", got)
 	}
 }
+
+// A relation Waypoint inferred from a rewrite says so in wp show, with what
+// it saw; one someone chose doesn't (WP-1370).
+func TestIssueTextShowsAnInferredRelationsNote(t *testing.T) {
+	d := &core.IssueDetail{Issue: &core.Issue{Key: "WP-9", Title: "T", Status: core.Status{Name: "To Do"}},
+		Relations: []core.Relation{
+			{Kind: "relates", Issue: core.IssueRef{Key: "WP-4", Title: "Earlier"}, State: "done", Basis: "inferred", Found: "rewrite", Note: "replaces 181 lines from PR 413, 96% of the lines it replaces"},
+			{Kind: "follows", Issue: core.IssueRef{Key: "WP-5", Title: "Chosen"}, State: "done", Basis: "agent"}}}
+	got := issueText(d, nil)
+	if !strings.Contains(got, "  relates WP-4 \"Earlier\" (done)\n    inferred by Waypoint: a change replaces 181 lines from PR 413, 96% of the lines it replaces\n") ||
+		strings.Count(got, "inferred by Waypoint") != 1 {
+		t.Errorf("relations:\n%s", got)
+	}
+}

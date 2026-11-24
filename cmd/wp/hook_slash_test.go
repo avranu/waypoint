@@ -97,7 +97,7 @@ func TestWpBtw(t *testing.T) {
 	if out := slashHook(t, c, "s2", "/x", "hello"); out != "" {
 		t.Errorf("another session got the note: %q", out)
 	}
-	if out := slashHook(t, c, "s1", "/x", keepWarmMark+": still here"); out != "" {
+	if out := slashHook(t, c, "s1", "/x", core.KeepWarmPing()); out != "" {
 		t.Errorf("a keep-warm ping took the note: %q", out)
 	}
 	out := slashHook(t, c, "s1", "/x", "<task-notification>done</task-notification>")

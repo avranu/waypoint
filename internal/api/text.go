@@ -195,6 +195,9 @@ func issueTextHint(d *core.IssueDetail, comments []core.Comment, withHint bool) 
 		b.WriteString("\nRelations:\n")
 		for _, r := range d.Relations {
 			fmt.Fprintf(&b, "  %s %s %q (%s)\n", relationWords(r), r.Issue.Key, r.Issue.Title, r.State)
+			if r.Basis == "inferred" && r.Note != "" {
+				fmt.Fprintf(&b, "    inferred by Waypoint: a change %s\n", r.Note)
+			}
 		}
 	}
 	if len(d.Links) > 0 {

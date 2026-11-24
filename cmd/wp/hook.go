@@ -27,7 +27,7 @@ const (
 	hookResume  = "hook claude-resume" // UserPromptSubmit: restart the clock
 	hookEvent   = "hook claude-event"  // everything else: sessions and requests (WP-D16)
 	hookNudge   = "hook claude-nudge"  // PreToolUse(Bash|Read): the better tool, in one line (WP-47); notes a poll of a running background task (WP-191); lets a Read of a project, task or scratchpad picture through unasked (WP-1137); never refuses (WP-1411)
-	hookGate    = "hook claude-gate"   // PreToolUse(Agent): forks, depth, width, model (WP-143); holds a start while Claude Code's agent limit is reached (WP-1443)
+	hookGate    = "hook claude-gate"   // PreToolUse(Agent): forks and model (WP-143); holds a start while Claude Code's agent limit is reached (WP-1443)
 	hookBurn    = "hook claude-burn"   // PostToolUse(all): silent unless the tree burns above $100/h (WP-144)
 	hookGuard   = "hook claude-guard"  // PreToolUse(Bash|Write|Edit|web): refuses risky calls in unattended sessions (WP-270), and the nudge refusals in every session (WP-1411)
 	hookPause   = "hook claude-pause"  // PostToolUse(all), async: pulls the person's session pause to a local file (WP-146)
@@ -137,8 +137,16 @@ calls in unattended sessions. They never fail a session, and transcripts are rea
 only for token counts, message times and model names, and for the report of an
 adversarial-review subagent, kept in its task's work log (WP-1089).
 
---no-prompts leaves prompt text out of the reports, a review's prompt and description included. --uninstall removes
-every Waypoint hook.`,
+--no-prompts leaves prompt text out of the reports: what a person typed, a
+review's prompt, and the description of a review. No digest of a prompt is
+sent either. To tell what Waypoint typed into a session from what a person
+typed, the hook asks the server which texts it typed are still pending
+(their SHA-256 digests), compares them on this machine, and reports only
+the id of the one it matched, or that none did. What still goes is the
+session's title (Claude Code's name for it, which may be drawn from the
+first prompt), the event's time and kind, the marks of prompts Claude Code
+itself submits (a background task reporting back), and the rest of each
+report. Without a server answer a prompt reads as a person's. --uninstall removes every Waypoint hook.`,
 			examples: []string{"wp hook claude", "wp hook claude --uninstall"}, run: hookClaude},
 		{name: "claude-event", hidden: true, summary: "the session hooks (run by Claude Code)",
 			run: func(c *cli, args []string) error {
@@ -163,7 +171,7 @@ every Waypoint hook.`,
 				hookClaudeBurn(c, os.Stdin, c.out)
 				return nil // never blocks, never fails
 			}},
-		{name: "claude-gate", hidden: true, summary: "the Agent-call gate (run by Claude Code): forks, depth, width and model",
+		{name: "claude-gate", hidden: true, summary: "the Agent-call gate (run by Claude Code): forks and model",
 			run: func(c *cli, args []string) error {
 				hookClaudeGate(c, os.Stdin, c.out)
 				return nil // fails open
@@ -217,7 +225,7 @@ func claudeSettingsPath() (string, error) {
 func hookClaude(c *cli, args []string) error {
 	fs := c.flags()
 	uninstall := fs.Bool("uninstall", false, "remove the hooks")
-	noPrompts := fs.Bool("no-prompts", false, "leave prompt text out of the reports")
+	noPrompts := fs.Bool("no-prompts", false, "leave prompt text out of the reports (no digest of it either; the session title is still sent: wp hook claude -h)")
 	if _, err := c.parse(fs, args); err != nil {
 		return err
 	}
@@ -858,20 +866,10 @@ func (c *cli) saveSession(id string, sess *sessionState) {
 // keepWarmMark starts Waypoint's keep-warm pings (core.KeepWarmMark).
 const keepWarmMark = "Waypoint keep-warm"
 
-// harnessPromptMarks start the prompts Claude Code submits when something
-// the session started reports back (core.HarnessPromptMarks).
-var harnessPromptMarks = []string{"<task-notification>", "Another Claude session sent a message:", `<agent-message from="`}
-
-// harnessPromptMark is the mark the prompt starts with, "" if none.
-func harnessPromptMark(prompt string) string {
-	p := strings.TrimSpace(prompt)
-	for _, mark := range harnessPromptMarks {
-		if strings.HasPrefix(p, mark) {
-			return mark
-		}
-	}
-	return ""
-}
+// harnessPromptMark is the mark (core.HarnessPromptMarks, the list the server
+// reads) the prompt starts with once normalised as the server normalises
+// (core.NormalisePrompt), "" if none.
+func harnessPromptMark(prompt string) string { return core.HarnessPromptMark(prompt) }
 
 // hookClaudeResume handles UserPromptSubmit: the session in a directory
 // where a task was taken is working again, so the task's clock restarts.
@@ -888,7 +886,7 @@ func hookClaudeResume(c *cli, stdin io.Reader) {
 		return
 	}
 	in.Prompt = core.UnwrapPasted(in.Prompt) // a paste's text (WP-1562)
-	if strings.HasPrefix(strings.TrimSpace(in.Prompt), keepWarmMark) || isSessionCommand(in.Prompt) {
+	if core.IsKeepWarmPing(in.Prompt) || isSessionCommand(in.Prompt) {
 		return // a keep-warm ping, or a /wp command, is no work on the task (WP-192, WP-562)
 	}
 	_, cl := c.state.claimFor(in.Cwd)

@@ -18,10 +18,12 @@ var shipCmd = &command{
 	about: `With code here to ship (staged changes, commits not pushed, or a branch with
 its own commits that has a pull request open, is named for the task, or (one
 task finishing) has every commit's subject naming that task), it
-commits what is staged, opens the pull request, arms merge when ready (not
-where the repo's Merge automatically is off), babysits it and moves the task
-to In Review; Waypoint merges it. A pull request already open from the branch
-for another task is pushed to but not armed, babysat or linked.
+commits what is staged, opens the pull request, arms merge when ready,
+babysits it and moves the task to In Review; Waypoint merges it. It is not
+armed, and a person merges it, where the repo's Merge automatically is off or
+covers only other base branches than this pull request's, and for a pull
+request whose head is outside the repo. A pull request already open from the
+branch for another task is pushed to but not armed, babysat or linked.
 With nothing to ship, the task moves to its next workflow step, or Done.
 -m is the commit message for staged changes, the task's comment and the
 lead of the pull request's description, which Waypoint writes: don't write
@@ -31,10 +33,18 @@ ship are refused: stage the task's, or --no-ship finishes without them.
 KEY defaults to the task you hold; with nothing to ship, several KEYs share
 one -m. Safe to run again.
 Where your autopilot reviews before pull requests, the task's adversarial
-review comes first: say which you want with --review (schedule it), --pr
-(open the pull request after it) or --skip-review WHY. With none it does
-whichever fits; a notice says when it did something else and how to
-override it.
+review comes first: say which you want with --review (schedule it) or
+--skip-review WHY. With neither it does whichever fits, and Waypoint carries
+the review on and opens the pull request itself when the review leaves
+nothing for you to do, so run it once (--pr is the same, kept for older
+prompts); a notice says when it did something else and how to override it.
+When the pull request is held for the review round (or the check of your marks),
+wp ship waits for the round's next step and prints it, up to --wait-timeout
+(default 90m): the findings in full, to mark and ship again; the pull request
+Waypoint opened (the turn ends there, as with --summary); or why the round
+ended. Run it with run_in_background: true and end your turn: you are woken
+when it exits. --no-wait returns at once as before, and what the review finds
+comes to you later as a message.
 --summary is your final reply to the person, written before you know the
 outcome: when the ship goes as expected (the pull request armed or babysat,
 or held for its review, with no notice or warning), Waypoint ends your turn
@@ -64,6 +74,9 @@ func cmdFinish(c *cli, args []string) error {
 	pos, err := c.parse(fs, args)
 	if err != nil {
 		return err
+	}
+	if err := f.checkBase(); err != nil {
+		return c.usage("%s", err)
 	}
 	msgGiven := false
 	checkGiven := false
@@ -115,7 +128,7 @@ func cmdFinish(c *cli, args []string) error {
 	} else if !shipping && intent == "review" {
 		_, _ = fmt.Fprintln(c.err, "Notice: there is no code here to ship, so no adversarial review; finishing the task.")
 	} else if !shipping && intent != "auto" {
-		return c.usage("there is no code here to ship, so no review or pull request either (wp ship without --review, --pr or --skip-review finishes the task)")
+		return c.usage("there is no code here to ship, so no review or pull request either (wp ship without --review or --skip-review finishes the task)")
 	}
 	if !shipping && !*noShip {
 		what, err := c.unshippedWork(keys)
@@ -161,16 +174,7 @@ func cmdFinish(c *cli, args []string) error {
 		c.objectiveShipNote(k) // WP-927: Waypoint reads a round's end itself; nothing is measured here
 	}
 	if shipping {
-		s := c.rewritesNotice(shipKey(keys), *f.base)
-		// Recorded even when empty, so tasks that return after a ship that
-		// named nobody are news again.
-		seen := rewritesSeen(shipKey(keys), s)
-		if s != "" {
-			_, _ = fmt.Fprintln(c.err, "Notice: "+s) // stderr: --json keeps stdout for the response
-			if so.before == "" && !seen {
-				so.before = "the change replaces other tasks' recent work" // WP-782
-			}
-		}
+		c.noteRewrites(shipKey(keys), *f.base) // information only (WP-1370): it keeps no turn open
 	}
 	if len(shots) > 0 {
 		if len(keys) != 1 {
