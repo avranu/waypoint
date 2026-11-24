@@ -139,7 +139,7 @@ func TestKitReport(t *testing.T) {
 	// A session's start: at most every 6 hours, never from a test build.
 	var started [][]string
 	oldStart, oldExe := backgroundStart, selfExe
-	backgroundStart = func(exe string, args ...string) { started = append(started, args) }
+	backgroundStart = func(exe string, args ...string) bool { started = append(started, args); return true }
 	selfExe = func() (string, error) { return "/usr/local/bin/wp", nil }
 	t.Cleanup(func() { backgroundStart, selfExe = oldStart, oldExe })
 	c.maybeReportMachine()

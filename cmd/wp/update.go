@@ -228,8 +228,15 @@ func binaryVersion(ctx context.Context, path string) (string, error) {
 }
 
 // replaceExe puts next in place of exe. On Windows a running .exe can't be
-// overwritten but can be renamed, so the old one moves aside first.
+// overwritten but can be renamed, so the old one moves aside first. A lock
+// beside exe lets one wp at a time do it: two that overlap on Windows could
+// remove the other's moved-aside binary and leave none at exe.
 func replaceExe(exe, next string) error {
+	unlock, err := lockFileWithin(filepath.Join(filepath.Dir(exe), ".wp-update.lock"), 20*time.Second)
+	if err != nil {
+		return fmt.Errorf("another wp is replacing it: %w", err)
+	}
+	defer unlock()
 	if runtime.GOOS != "windows" {
 		return os.Rename(next, exe)
 	}
@@ -323,9 +330,14 @@ func (c *cli) autoUpdate(ctx context.Context, sv string, err error) {
 // recordUpdate writes the state file's record of an update: now, for server
 // version sv, with result. A check that couldn't ask the server (sv empty)
 // keeps the version a claim named, so its 6-hour backoff stands. A claim
-// (the try begins) replaces the record whatever it said.
+// (the try begins) replaces the record whatever it said. A result for one
+// release doesn't overwrite another wp's fresh claim on another: that
+// download still runs, and its claim keeps others from starting a third.
 func (c *cli) recordUpdate(sv, result string, claim bool) {
 	_ = c.updateState(func(s *State) {
+		if u := s.Update; !claim && sv != "" && claimLive(u) && u.Server != "" && u.Server != sv {
+			return
+		}
 		if sv == "" && !claim && s.Update != nil {
 			sv = s.Update.Server
 		}
@@ -342,7 +354,20 @@ func (c *cli) autoUpdateInBackground() {
 	if autoUpdateOff() || !isRelease(version) {
 		return
 	}
-	c.claimAutoUpdate("", func(u *updateCheck) bool { return u == nil || time.Since(u.Checked) >= autoUpdateEvery })
+	c.claimAutoUpdate("", func(u *updateCheck) bool {
+		return u == nil || (time.Since(u.Checked) >= autoUpdateEvery && !claimLive(u))
+	})
+}
+
+// updateClaimFresh is how long a try's claim (Result "started") holds off
+// every other wp's: longer than a download may take (wp upgrade's 10
+// minutes), short enough that a claim whose process died doesn't stop
+// updates for long.
+const updateClaimFresh = 15 * time.Minute
+
+// claimLive: u is a try's claim that is still fresh.
+func claimLive(u *updateCheck) bool {
+	return u != nil && u.Result == "started" && time.Since(u.Checked) < updateClaimFresh
 }
 
 // updateRetryEvery is how long after a try (a wp command's, or a runner's)
@@ -379,7 +404,7 @@ func (c *cli) autoUpdateIfBehind() {
 		return
 	}
 	c.claimAutoUpdate(seen, func(u *updateCheck) bool {
-		return u == nil || u.Server != seen || time.Since(u.Checked) >= updateRetryEvery
+		return u == nil || ((u.Server != seen || time.Since(u.Checked) >= updateRetryEvery) && !claimLive(u))
 	})
 }
 
@@ -388,8 +413,9 @@ const claimWait = 500 * time.Millisecond
 
 // claimAutoUpdate starts the background upgrade when due says so of the
 // state file's record, which is claimed (checked now, Result "started", for
-// server version seen when it is known) so wp processes that run during the
-// download don't start another.
+// server version seen, empty when it isn't known) so wp processes that run
+// during the download, and the runner, don't start another; due says no to
+// a fresh claim. A process that couldn't be started gives the claim back.
 func (c *cli) claimAutoUpdate(seen string, due func(*updateCheck) bool) {
 	if !due(c.state.Update) {
 		return
@@ -408,24 +434,24 @@ func (c *cli) claimAutoUpdate(seen string, due func(*updateCheck) bool) {
 		if s.Update == nil {
 			s.Update = &updateCheck{}
 		}
-		s.Update.Checked, claimed = time.Now(), true
-		if seen != "" {
-			s.Update.Server, s.Update.Result = seen, "started"
-		}
+		s.Update.Checked, s.Update.Server, s.Update.Result, claimed = time.Now(), seen, "started", true
 	})
-	if claimed {
-		backgroundStart(exe, "upgrade", "--auto")
+	if claimed && !backgroundStart(exe, "upgrade", "--auto") {
+		c.releaseUpdateClaim(seen)
 	}
 }
 
 // backgroundStart runs a command detached, with no stdio of ours, so the
-// hook's pipes close when the hook ends (tests swap it).
-var backgroundStart = func(exe string, args ...string) {
+// hook's pipes close when the hook ends, and says whether it started (tests
+// swap it).
+var backgroundStart = func(exe string, args ...string) bool {
 	cmd := exec.Command(exe, args...) // #nosec G204 -- our own binary
 	cmd.SysProcAttr = detachedProc()
-	if cmd.Start() == nil {
-		_ = cmd.Process.Release()
+	if cmd.Start() != nil {
+		return false
 	}
+	_ = cmd.Process.Release()
+	return true
 }
 
 // releaseUpdateClaim removes the claim of a try for server version sv that

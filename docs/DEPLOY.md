@@ -583,17 +583,23 @@ binary starts against a newer schema without complaint but may misbehave, so
 (`waypoint backup`, or rely on the daily one), then swap the binary or image
 (`make deploy`; production deploys itself, see Continuous delivery). `waypoint version` prints the running build.
 
-Every answer carries the server's version (`X-Waypoint-Version`), and `wp`
-and runners built from a release follow it:
+A server built with a version names it on every answer (`X-Waypoint-Version`;
+one built without sends no header, and nothing follows it), and `wp` and
+runners built from a release follow it:
 
 - **`wp`**: any command that sees the server on another release starts
   `wp upgrade --auto` in the background when it ends, once per server
   version, and tries again after 6 hours if it didn't take. The SessionStart
-  hook also looks once a day.
-- **Runner**: the binary is replaced as soon as the server's version differs,
-  even with jobs running, so `wp` calls on that machine use it at once. The
-  runner process restarts on it when no job is running. If it has waited 15
-  minutes, it takes no new jobs until the running ones finish, then restarts.
+  hook also looks once a day. One download runs at a time: the others wait
+  for its claim (15 minutes at most).
+- **Runner**: the download starts as soon as the server's version differs,
+  even with jobs running, and once it succeeds the binary is replaced, so
+  `wp` calls on that machine use it at once; until then (or for 6 hours
+  after a failed download) jobs run the old one. The runner process restarts
+  on the new binary when no job is running, whichever `wp` put it there. If
+  it has waited 15 minutes, it takes no new jobs until the running ones
+  finish, then restarts. A server back on the runner's own release has the
+  binary put back, with no restart.
 
 This applies only to release builds (`vX.Y.Z`) on both sides; a runner started
 with `--once` never updates. A runner started on a `wp` from before this

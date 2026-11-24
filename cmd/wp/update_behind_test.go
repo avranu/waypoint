@@ -31,10 +31,11 @@ func newBehindEnv(t *testing.T) *behindEnv {
 	b := &behindEnv{t: t}
 	b.exe = installedWP(t)
 	old := backgroundStart
-	backgroundStart = func(bin string, args ...string) {
+	backgroundStart = func(bin string, args ...string) bool {
 		b.mu.Lock()
 		b.started = append(b.started, bin+" "+strings.Join(args, " "))
 		b.mu.Unlock()
+		return true
 	}
 	t.Cleanup(func() { backgroundStart = old })
 	return b
@@ -204,6 +205,7 @@ func TestAutoUpdateKeepsTheClaimedVersionWhenTheServerCheckFails(t *testing.T) {
 
 func TestSelfUpdateSkipsTheDownloadWhenTheDiskHasIt(t *testing.T) {
 	setVersion(t, "v1.1.0")
+	t.Setenv("WAYPOINT_SERVER", "") // no server from the environment either
 	exe := installedWP(t)
 	// Another process already put v1.2.0 here; this cli has no server to download from.
 	_ = os.WriteFile(exe, []byte("#!/bin/sh\necho 'wp v1.2.0'\n"), 0o755)
@@ -296,7 +298,7 @@ func TestRunnerRecordsItsUpdateInTheSharedState(t *testing.T) {
 	u := newUpdRunner(t, e, "v1.2.0")
 	b := &behindEnv{t: t, exe: u.exe}
 	old := backgroundStart
-	backgroundStart = func(bin string, args ...string) { b.started = append(b.started, bin) }
+	backgroundStart = func(bin string, args ...string) bool { b.started = append(b.started, bin); return true }
 	t.Cleanup(func() { backgroundStart = old })
 	started := make(chan struct{})
 	release := make(chan struct{})

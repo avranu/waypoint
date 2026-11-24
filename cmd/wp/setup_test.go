@@ -478,10 +478,11 @@ func TestAutoUpdateFromTheHook(t *testing.T) {
 	var mu sync.Mutex
 	var started []string
 	old := backgroundStart
-	backgroundStart = func(bin string, args ...string) {
+	backgroundStart = func(bin string, args ...string) bool {
 		mu.Lock()
 		started = append(started, bin+" "+strings.Join(args, " "))
 		mu.Unlock()
+		return true
 	}
 	t.Cleanup(func() { backgroundStart = old })
 	cl := func() *cli {
