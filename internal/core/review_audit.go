@@ -19,13 +19,12 @@ import (
 // that model's findings to check and fix instead of asking it for a review of
 // its own, which spends Claude tokens on a Sonnet reviewer.
 //
-// The audit is the gateway's to run (WP-617, WP-ADR84; WP-871): the
-// round asks its audit purpose and nothing else (defaultAuditChain). The
-// gateway chooses the model, moves to its next when one fails, knows which of
-// its upstreams has usage left, and leaves out the session's family. A round
-// calls no coding plan's CLI itself and keeps no order of models behind the
-// gateway: Grok is the gateway's to serve as the audit purpose's first
-// choice.
+// The round asks the default audit (defaultAuditChain): Grok through Cursor
+// on a runner first (WP-1725, WP-ADR155), then the gateway's audit purpose
+// (WP-617, WP-ADR84; WP-871). Behind its purpose the gateway chooses the
+// model, moves to its next when one fails, knows which of its upstreams has
+// usage left, and leaves out the session's family; a round keeps no order of
+// models behind the gateway.
 //
 // When the gateway's audit can't be had (it failed, no runner that could
 // send it was online for reviewAuditQueueWait, or it ran past
@@ -455,7 +454,9 @@ func (s *Service) planReview(ctx context.Context, st *stepRow, review *roundRow,
 	if err != nil {
 		return reviewPlan{}, err
 	}
-	tried := slices.Equal(a.Models, auditModelNames(s.defaultAuditChain(ctx))) && a.Weakest == stakes.barFor(reviewOtherAuditKey)
+	// (Every model of today's default among the audit's, in whatever company:
+	// one a person named the gateway and another model for hasn't asked Grok.)
+	tried := a.Weakest == stakes.barFor(reviewOtherAuditKey) && !slices.ContainsFunc(auditModelNames(s.defaultAuditChain(ctx)), func(m string) bool { return !slices.Contains(a.Models, m) })
 	who := reviewAuditWho(a)
 	switch a.Status {
 	case AuditDone:
@@ -560,7 +561,7 @@ func (s *Service) planReview(ctx context.Context, st *stepRow, review *roundRow,
 		why := fmt.Sprintf("%s audit #%d ended %s", upperFirst(who), a.ID, a.Status)
 		if a.Status == AuditLimited {
 			why = fmt.Sprintf("%s audit #%d stopped at a usage limit", upperFirst(who), a.ID)
-			if grokAudit(a) {
+			if cursorSpent(a) {
 				why += " (the Cursor plan's pool)"
 			}
 		}
@@ -1047,12 +1048,32 @@ func reviewAuditWho(a *CodeAudit) string {
 }
 
 // grokAudit: the audit is one Cursor runs or ran: one a person named Cursor
-// for, one asked before WP-871, or any on a Waypoint with no gateway.
+// for, one asked before WP-871, or a default one on a Waypoint with no
+// gateway. One not answered yet is judged by the model of its chain it is at,
+// so a default audit the gateway took after Cursor was passed over is
+// another model's.
 func grokAudit(a *CodeAudit) bool {
 	if a.Model != "" {
 		return strings.HasPrefix(a.Model, "cursor/")
 	}
-	return len(a.Models) > 0 && strings.HasPrefix(a.Models[0], "cursor/")
+	if len(a.Models) == 0 {
+		return false
+	}
+	return strings.HasPrefix(a.Models[min(max(a.Slot, 0), len(a.Models)-1)], "cursor/")
+}
+
+// cursorSpent: a Cursor model of the audit's last pass of its chain hit a
+// usage limit, so the limit was the Cursor plan's pool. A chain that also
+// went through the gateway (the default) says nothing of the pool when only
+// the gateway was spent. An audit with no attempts recorded is judged by
+// grokAudit.
+func cursorSpent(a *CodeAudit) bool {
+	if len(a.Attempts) == 0 {
+		return grokAudit(a)
+	}
+	return slices.ContainsFunc(a.Attempts, func(x AuditAttempt) bool {
+		return x.Round == a.Retries && x.Outcome == "spent" && strings.HasPrefix(x.Model, "cursor/")
+	})
 }
 
 // auditJobInfo is the runner job of an audit; nil when it has none (or the
@@ -1241,15 +1262,15 @@ func roundAsks(reviewText, roundContext string) []string {
 // prAuditAtHead is the pull request's own audit at its head (0: none) when
 // its reviewer isn't of the family of sessionModel, the model of the session
 // the findings go to: the model that answered, for an audit that is done;
-// every model it may still ask, for one that isn't (otherFamilyChain). A
-// round with a quality bar (weakest) takes only an audit held to the same
-// or, at the floor, to a higher one,
+// every model it may still ask, for one that isn't (otherFamilyChain). An
+// audit held to the high-stakes bar is taken from any family, as it was
+// asked (auditFamilyExclude, WP-1752). A round with a quality bar (weakest)
+// takes only an audit held to the same or, at the floor, to a higher one,
 // and only one whose prompt asked each of asks (roundAsks): WP-1320's live
 // review found a round taking the pull request's own audit, which asks
 // neither the brief nor the task, in place of its own. (A round of a task
 // asks the task, so it never takes one: its own audit runs its panel.)
 func (s *Service) prAuditAtHead(ctx context.Context, pr *PullRequest, sessionModel, weakest string, asks []string) (int64, error) {
-	own := gatewayExcludeFor(sessionModel)
 	// The floor is what every audit on the gateway's choice asks (WP-1440),
 	// so a round at the floor takes an audit held to it or to a tier's bar
 	// above it, never one from before the floor (weakest ''). Any other bar
@@ -1262,7 +1283,7 @@ func (s *Service) prAuditAtHead(ctx context.Context, pr *PullRequest, sessionMod
 		held = append(held, elevatedAuditBar, trustedAuditBar)
 		named = 1
 	}
-	q := `SELECT id, ref, status, models, model, author_model FROM code_audits WHERE pr_id = ? AND purpose = '' AND status IN ('queued','running','done')
+	q := `SELECT id, ref, status, models, model, author_model, weakest FROM code_audits WHERE pr_id = ? AND purpose = '' AND status IN ('queued','running','done')
 		AND (? = '' OR weakest IN (` + strings.TrimSuffix(strings.Repeat("?,", len(held)), ",") + `)
 			OR (? = 1 AND weakest = '' AND models != '' AND instr(models, '"cli":"gateway"') = 0))`
 	args := []any{pr.ID, weakest}
@@ -1281,10 +1302,11 @@ func (s *Service) prAuditAtHead(ctx context.Context, pr *PullRequest, sessionMod
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var id int64
-		var ref, status, models, model, author string
-		if rows.Scan(&id, &ref, &status, &models, &model, &author) != nil || !sameSHA(ref, pr.HeadSHA) {
+		var ref, status, models, model, author, bar string
+		if rows.Scan(&id, &ref, &status, &models, &model, &author, &bar) != nil || !sameSHA(ref, pr.HeadSHA) {
 			continue
 		}
+		own := auditFamilyExclude(bar, sessionModel)
 		if status == AuditDone {
 			if model != "" && !gatewayExcludes(own, model) {
 				return id, nil
@@ -1334,6 +1356,10 @@ func gatewayExcludes(globs []string, name string) bool {
 func (s *Service) requestRoundAudit(ctx context.Context, review *roundRow, in AuditInput) (int64, error) {
 	a, err := s.RequestAudit(ctx, SystemActor(), in)
 	if err == nil {
+		// Started now, not when the event is handled: which model of its chain
+		// it is at (Cursor's, or the gateway's after Cursor was passed over)
+		// is what the round's wait says and reads the odds of.
+		s.advanceAudit(ctx, a.ID)
 		return a.ID, nil
 	}
 	var id int64
