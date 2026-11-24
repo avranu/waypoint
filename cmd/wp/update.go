@@ -24,9 +24,11 @@ import (
 // `wp upgrade` replaces this binary with the one the server serves at
 // /cli/wp-OS-ARCH, checked against /cli/SHA256SUMS as the install script
 // does, and only once the new binary has run here and named the version
-// expected. The runner does it by itself between jobs when the server's
-// version differs, and the SessionStart hook looks once a day in a detached
-// process; both only when this wp and the server are release builds. A wp
+// expected. Any wp command that sees the server on another release starts it
+// in a detached process when it ends (once per server version, again after 6
+// hours), the SessionStart hook looks once a day too, and the runner updates
+// the binary at once and restarts when idle; all only when this wp and the
+// server are release builds. A wp
 // that changed brings the Claude Code hooks up to date the next time one
 // runs (refreshHooks). See WP design #330, "Setting a computer up".
 
@@ -34,7 +36,7 @@ var updateCmd = &command{
 	name: "upgrade", aliases: []string{"self-update"}, group: "Setup", args: "[--check] [--force]",
 	summary: "replace this wp with the version your Waypoint serves",
 	about: `Downloads the wp your Waypoint serves, verifies it and replaces this
-binary. Runners and hooks do this themselves for release builds; set
+binary. wp commands, hooks and runners do this themselves for release builds; set
 WAYPOINT_NO_AUTO_UPDATE=1 to stop that.`,
 	examples: []string{"wp upgrade", "wp upgrade --check"},
 	run:      cmdUpdate,
@@ -312,13 +314,52 @@ func (c *cli) autoUpdate(ctx context.Context, sv string, err error) {
 
 // autoUpdateInBackground starts `wp upgrade --auto` in a detached process
 // at most once a day (the SessionStart hook calls it), so the hook never
-// waits for the download.
+// waits for the download. It covers servers that don't send their version
+// with every answer.
 func (c *cli) autoUpdateInBackground() {
 	defer func() { _ = recover() }() // a hook must never fail the session
 	if autoUpdateOff() || !isRelease(version) {
 		return
 	}
-	due := func(u *updateCheck) bool { return u == nil || time.Since(u.Checked) >= autoUpdateEvery }
+	c.claimAutoUpdate("", func(u *updateCheck) bool { return u == nil || time.Since(u.Checked) >= autoUpdateEvery })
+}
+
+// autoUpdateBehindEvery is how long after a try wp waits before trying for
+// the same server version again.
+const autoUpdateBehindEvery = 6 * time.Hour
+
+// seeServerVersion remembers the version a server answer named.
+func (c *cli) seeServerVersion(v string) {
+	if v = strings.TrimSpace(v); v != "" {
+		c.sawVersion.Store(v)
+	}
+}
+
+// autoUpdateIfBehind runs when a command has finished (run calls it, hooks
+// included): if any answer it got showed the server on another release than
+// this wp, it starts `wp upgrade --auto` detached, once per server version
+// and again after 6 hours. It prints nothing and never fails the command.
+// The foreground runner updates itself (runnerProc.updateSelf) and wp
+// upgrade is the update.
+func (c *cli) autoUpdateIfBehind() {
+	defer func() { _ = recover() }()
+	seen, _ := c.sawVersion.Load().(string)
+	if seen == "" || seen == version || autoUpdateOff() || !isRelease(seen) || !isRelease(version) {
+		return
+	}
+	if c.cur == runnerCmd || c.cur == updateCmd {
+		return
+	}
+	c.claimAutoUpdate(seen, func(u *updateCheck) bool {
+		return u == nil || u.Server != seen || time.Since(u.Checked) >= autoUpdateBehindEvery
+	})
+}
+
+// claimAutoUpdate starts the background upgrade when due says so of the
+// state file's record, which is claimed (checked now, Result "started", for
+// server version seen when it is known) so wp processes that run during the
+// download don't start another.
+func (c *cli) claimAutoUpdate(seen string, due func(*updateCheck) bool) {
 	if !due(c.state.Update) {
 		return
 	}
@@ -335,6 +376,9 @@ func (c *cli) autoUpdateInBackground() {
 			s.Update = &updateCheck{}
 		}
 		s.Update.Checked, claimed = time.Now(), true
+		if seen != "" {
+			s.Update.Server, s.Update.Result = seen, "started"
+		}
 	})
 	if claimed {
 		backgroundStart(exe, "upgrade", "--auto")

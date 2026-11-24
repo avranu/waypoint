@@ -41,8 +41,10 @@ Waypoint. Only jobs you started (or a rule you own) run on your runners.
 environment (PATH, HOME, locale, proxy, toolchains); API keys, SSH agent and
 the runner's token stay behind. --env NAME passes one more.
 
-It also uploads Claude Code usage and prepares queued tasks, and updates wp
-between jobs to the server's version; the --no-* flags turn each off.
+It also uploads Claude Code usage and prepares queued tasks, and keeps wp at
+the server's version: the new binary is put in place at once and the runner
+restarts on it when no job is running (after 15 minutes of waiting it takes no
+new jobs until the running ones finish); the --no-* flags turn each off.
 On Linux --max-jobs is a ceiling: it takes fewer while the machine is busy
 (wp runner status shows how many and why). A job that has waited over a
 minute for a test slot doesn't count toward it, one such job at a time.
@@ -109,7 +111,7 @@ func runnerFlags(c *cli, o *runnerOpts, install bool) func([]string) ([]string, 
 	fs.IntVar(&o.MaxJobs, "max-jobs", 1, "`N`: most jobs at once")
 	fs.BoolVar(&o.NoUsageSync, "no-usage-sync", false, "don't upload Claude Code usage")
 	fs.BoolVar(&o.NoPrep, "no-prep", false, "don't prepare queued tasks")
-	fs.BoolVar(&o.NoAutoUpdate, "no-auto-update", false, "don't update wp to the server's version")
+	fs.BoolVar(&o.NoAutoUpdate, "no-auto-update", false, "keep this wp version: no update or restart to the server's")
 	if !install {
 		fs.BoolVar(&o.Once, "once", false, "take waiting jobs, then exit")
 		fs.Float64Var(&o.PollWait, "wait", -1, "seconds a poll is held")
@@ -193,6 +195,13 @@ type runnerProc struct {
 	serverVersion  string
 	updateTriedFor string
 	updateTriedAt  time.Time
+	// The wp on disk is already this release (updatedExe, since updatedAt)
+	// while this process still runs the old one and waits for idle to restart.
+	updatedTo, updatedExe string
+	updatedAt             time.Time
+	drainLoggedFor        string
+	draining              bool             // takes no new jobs until idle, then restarts
+	now                   func() time.Time // tests swap it; nil: time.Now
 
 	reportCtx context.Context // ends when the runner has stopped waiting to report
 	// stopCtx ends when a runner stop begins (stopAll); nil in a runner built by hand
@@ -473,14 +482,13 @@ func (p *runnerProc) run(ctx context.Context, reportStop context.CancelFunc) err
 	delay := time.Second
 	var err error
 	for ctx.Err() == nil {
-		// Between jobs, never during one: catch up with the server's wp.
-		if p.updateDue() && len(p.activeIDs()) == 0 {
-			if exe, ok := p.updateSelf(ctx); ok {
-				err = &restartError{exe: exe}
-				break
-			}
+		// The binary is replaced at once; the process restarts on it when
+		// idle, and a runner that stays busy drains to get there.
+		if exe, _ := p.updateStep(ctx); exe != "" {
+			err = &restartError{exe: exe}
+			break
 		}
-		lanes, free := p.slotsNow()
+		lanes, free := p.lanesNow()
 		// While full, the poll is only a heartbeat that listens for cancels;
 		// it ends when a slot frees (it can't have taken a job, so ending it
 		// loses nothing).
@@ -557,32 +565,108 @@ func (p *runnerProc) run(ctx context.Context, reportStop context.CancelFunc) err
 	return err
 }
 
-// updateDue: the server runs another release than this wp, which is a
-// release build too, and the runner may update itself (a failed try is
-// repeated after 6 hours).
-func (p *runnerProc) updateDue() bool {
-	sv := p.serverVersion
-	if p.opts.NoAutoUpdate || p.opts.Once || autoUpdateOff() || sv == version || !isRelease(sv) || !isRelease(version) {
-		return false
+// runnerDrainAfter is how long a runner whose wp on disk is the new release
+// keeps taking jobs while it waits for idle, before it stops taking them.
+const runnerDrainAfter = 15 * time.Minute
+
+// updateRetryEvery is how long a runner waits after a failed update before
+// it tries for the same server version again.
+const updateRetryEvery = 6 * time.Hour
+
+func (p *runnerProc) clock() time.Time {
+	if p.now != nil {
+		return p.now()
 	}
-	return p.updateTriedFor != sv || time.Since(p.updateTriedAt) >= 6*time.Hour
+	return time.Now()
 }
 
-// updateSelf replaces this wp with the server's, and says where it is if
-// the runner should restart on it.
-func (p *runnerProc) updateSelf(ctx context.Context) (string, bool) {
+// updateAllowed: the server runs another release than this wp, which is a
+// release build too, and the runner may update itself.
+func (p *runnerProc) updateAllowed() bool {
 	sv := p.serverVersion
-	p.updateTriedFor, p.updateTriedAt = sv, time.Now()
+	return !p.opts.NoAutoUpdate && !p.opts.Once && !autoUpdateOff() && sv != version && isRelease(sv) && isRelease(version)
+}
+
+// updateDue: updateAllowed, and the binary isn't updated to it yet (a failed
+// try is repeated after 6 hours).
+func (p *runnerProc) updateDue() bool {
+	sv := p.serverVersion
+	return p.updateAllowed() && p.updatedTo != sv && (p.updateTriedFor != sv || p.clock().Sub(p.updateTriedAt) >= updateRetryEvery)
+}
+
+// updateStep is the runner's update logic, once per loop. It replaces the
+// binary on disk as soon as the server runs another release, at once even
+// with jobs running. It returns the path to restart on when idle, and drain
+// when the runner has waited for idle longer than runnerDrainAfter and
+// should take no new jobs until the running ones finish.
+func (p *runnerProc) updateStep(ctx context.Context) (restart string, drain bool) {
+	p.draining = false
+	if !p.updateAllowed() {
+		return "", false
+	}
+	sv := p.serverVersion
+	active := len(p.activeIDs())
+	if p.updatedTo == sv {
+		if active == 0 {
+			p.logf("Restarting on wp %s at %s.", sv, p.updatedExe)
+			return p.updatedExe, false
+		}
+		if p.clock().Sub(p.updatedAt) >= runnerDrainAfter {
+			p.draining = true
+			if p.drainLoggedFor != sv {
+				p.drainLoggedFor = sv
+				p.logf("Waiting to restart on wp %s since %s: taking no new jobs until the %d running finish, then restarting on wp %s.", sv, p.updatedAt.Format("15:04"), active, sv)
+			}
+		}
+		return "", p.draining
+	}
+	if !p.updateDue() {
+		return "", false
+	}
+	if active == 0 {
+		return p.updateSelf(ctx)
+	}
+	if exe, ok := p.replaceBinary(ctx); ok {
+		p.updatedTo, p.updatedExe, p.updatedAt = sv, exe, p.clock()
+		p.logf("Updated %s to wp %s; this runner restarts on it when its %d job%s finish%s.", exe, sv, active, pluralS(active), map[bool]string{true: "es", false: ""}[active == 1])
+	}
+	return "", false
+}
+
+// updateSelf replaces this wp with the server's and, once it has, says to
+// restart on it.
+func (p *runnerProc) updateSelf(ctx context.Context) (string, bool) {
+	exe, ok := p.replaceBinary(ctx)
+	if !ok {
+		return "", false
+	}
+	p.logf("Updated %s to wp %s; restarting on it.", exe, p.serverVersion)
+	return exe, false
+}
+
+// replaceBinary downloads the server's wp over this one, noting the try.
+func (p *runnerProc) replaceBinary(ctx context.Context) (string, bool) {
+	sv := p.serverVersion
+	p.updateTriedFor, p.updateTriedAt = sv, p.clock()
 	p.logf("Waypoint runs %s and this runner wp %s: updating wp (--no-auto-update turns this off)", sv, version)
-	got, exe, err := p.c.selfUpdate(ctx, sv)
+	_, exe, err := p.c.selfUpdate(ctx, sv)
 	if err != nil {
 		if ctx.Err() == nil {
 			p.logf("Couldn't update wp: %v. Carrying on with %s; trying again in 6 hours.", err, version)
 		}
 		return "", false
 	}
-	p.logf("Updated %s to wp %s; restarting on it.", exe, got)
 	return exe, true
+}
+
+// lanesNow is slotsNow, except that a draining runner has no lane or slot
+// open: its poll is then only the heartbeat that listens for cancels and
+// ends when a job finishes.
+func (p *runnerProc) lanesNow() ([]string, int) {
+	if p.draining {
+		return []string{}, 0
+	}
+	return p.slotsNow()
 }
 
 func isNotFound(err error) bool {

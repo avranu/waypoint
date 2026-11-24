@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -352,8 +353,10 @@ type cli struct {
 	// per-invocation overrides (flags and environment)
 	asJSON bool
 	agent  string
-	cur    *command      // the command running, for help and usage errors
-	fs     *flag.FlagSet // its flags, once it parsed them: usage errors list them
+	cur    *command // the command running, for help and usage errors
+	// sawVersion is the X-Waypoint-Version of the latest answer from the server.
+	sawVersion atomic.Value  // string
+	fs         *flag.FlagSet // its flags, once it parsed them: usage errors list them
 	// session is the agent session this process acts for when it isn't in
 	// the environment (a hook knows the id from its input).
 	session string

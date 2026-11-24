@@ -127,7 +127,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "wp: unknown command %q; run wp help for the list\n", args[0])
 		return 2
 	}
-	if err := c.dispatch(cmd, args[1:]); err != nil {
+	err = c.dispatch(cmd, args[1:])
+	c.autoUpdateIfBehind() // after any outcome, whatever the exit code
+	if err != nil {
 		if errors.Is(err, errHelpShown) {
 			return 0
 		}

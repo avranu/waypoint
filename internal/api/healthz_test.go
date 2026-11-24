@@ -26,3 +26,19 @@ func TestHealthzReportsVersion(t *testing.T) {
 		}
 	}
 }
+
+// Every answer names the server's release, so a wp that sees it differ from
+// its own can upgrade at once (WP-1773); errors and unauthenticated answers too.
+func TestEveryResponseCarriesTheServerVersion(t *testing.T) {
+	ts, _ := setup(t)
+	for _, path := range []string{"/healthz", "/api/v1/me", "/no/such/path"} {
+		res, err := http.Get(ts.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		if got := res.Header.Get("X-Waypoint-Version"); got != "test" {
+			t.Errorf("%s (%d): X-Waypoint-Version = %q, want test", path, res.StatusCode, got)
+		}
+	}
+}

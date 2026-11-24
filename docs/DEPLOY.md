@@ -583,6 +583,21 @@ binary starts against a newer schema without complaint but may misbehave, so
 (`waypoint backup`, or rely on the daily one), then swap the binary or image
 (`make deploy`; production deploys itself, see Continuous delivery). `waypoint version` prints the running build.
 
+Every answer carries the server's version (`X-Waypoint-Version`), and `wp`
+and runners built from a release follow it:
+
+- **`wp`**: any command that sees the server on another release starts
+  `wp upgrade --auto` in the background when it ends, once per server
+  version, and tries again after 6 hours if it didn't take. The SessionStart
+  hook also looks once a day.
+- **Runner**: the binary is replaced as soon as the server's version differs,
+  even with jobs running, so `wp` calls on that machine use it at once. The
+  runner process restarts on it when no job is running. If it has waited 15
+  minutes, it takes no new jobs until the running ones finish, then restarts.
+
+`WAYPOINT_NO_AUTO_UPDATE=1` stops all of this, and `wp runner --no-auto-update`
+stops it for one runner.
+
 ## Observability
 
 - `GET /healthz`, `/readyz` — database reachability (both; there is no
