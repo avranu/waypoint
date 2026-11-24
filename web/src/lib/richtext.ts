@@ -162,6 +162,20 @@ function target(url: string) {
   return /[()\s<>]/.test(u) ? `<${u.replace(/[\\<>]/g, (c) => (c === '\\' ? c : `\\${c}`))}>` : u
 }
 
+// A code block's text. The browser writes a newline typed in one as <br>, and
+// a <br> at the very end only holds the last line open, so it is no text.
+function codeText(node: Node): string {
+  const text = (n: Node): string =>
+    n.nodeType === Node.TEXT_NODE
+      ? (n as Text).data
+      : n.nodeName === 'BR'
+        ? '\n'
+        : Array.from(n.childNodes).map(text).join('')
+  const all = text(node)
+  const last = (node.lastChild?.nodeName === 'CODE' ? node.lastChild : node).lastChild
+  return last?.nodeName === 'BR' && all.endsWith('\n') ? all.slice(0, -1) : all
+}
+
 function serialize(node: Node, opts: Opts = {}): string {
   if (node.nodeType === Node.TEXT_NODE) {
     const data = (node as Text).data.replace(/\u00a0/g, ' ')
@@ -193,7 +207,7 @@ function serialize(node: Node, opts: Opts = {}): string {
     case 'pre': {
       const code = el.querySelector('code')
       const lang = (code?.className.match(/language-([\w-]+)/) ?? [])[1] ?? ''
-      const body = (code ?? el).textContent?.replace(/\n$/, '') ?? ''
+      const body = codeText(code ?? el).replace(/\n$/, '')
       // A table cell is one line: code pasted into one stays inline code.
       if (opts.cell) return codeSpan(oneLine(body))
       const longest = Math.max(0, ...(body.match(/`+/g) ?? []).map((r) => r.length))
@@ -445,7 +459,8 @@ function autolinks(md: string) {
 /** The markdown behind a rich editor's HTML. */
 export function htmlToMarkdown(html: string): string {
   const tpl = document.createElement('template')
-  tpl.innerHTML = html
+  // A zero-width space is how the editor parks the caret after an element.
+  tpl.innerHTML = html.replace(/\u200b/g, '')
   return autolinks(tidy(serialize(tpl.content)))
 }
 

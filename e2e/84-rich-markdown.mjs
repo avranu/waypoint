@@ -98,7 +98,11 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
   const typeInto = async (title, typed, want) => {
     const issue = await open(title);
     await richBox.waitFor();
-    await field.pressSequentially(typed);
+    // Inserted in one piece, which the typing rules (WP-1749) leave alone: this
+    // suite is about how literal text is written, not about what typing a
+    // marker does (suite 85).
+    await field.focus();
+    await page.keyboard.insertText(typed);
     const got = await saved(issue.key, want);
     ok(got === want, `${tag} typed ${JSON.stringify(typed)} saves ${JSON.stringify(want)}: ${JSON.stringify(got)}`);
     await settleClose();
@@ -208,7 +212,7 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
     await richBox.waitFor();
     await field.press("Control+End");
     await field.press("Enter");
-    await field.pressSequentially("[ ] foo");
+    await page.keyboard.insertText("[ ] foo");
     const want = "- first\n- \\[ ] foo";
     const got = await saved(i.key, want);
     ok(got === want, `${tag} a typed [ ] in a bullet is escaped: ${JSON.stringify(got)}`);

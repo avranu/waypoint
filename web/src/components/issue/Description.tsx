@@ -90,6 +90,12 @@ export function MarkdownEditor({
   const [stored] = useState(() => (draftKey ? readDraft<string>(draftKey) : null))
   const [restored, setRestored] = useState(stored !== null && stored !== value)
   const [editing, setEditing] = useState(autoEdit || restored)
+  // Where a click opened the editor: the caret goes there and the page stays
+  // where it is. A keyboard open or a restored draft has none.
+  const [clicked, setClicked] = useState<{ x: number; y: number } | undefined>()
+  useEffect(() => {
+    if (!editing) setClicked(undefined)
+  }, [editing])
   // What's on screen: the saved text plus any checkbox toggles still being
   // saved, so a quick second toggle builds on the first instead of undoing it.
   const [shown, setShown] = useState(value)
@@ -260,6 +266,33 @@ export function MarkdownEditor({
   }
 
   const uploads = !!(issueKey || attachTo)
+  // The save state shows in the rich editor's toolbar, so nothing opens under
+  // the text; a conflict is a question and still gets its own row below.
+  const inToolbar = autosave && !conflict && rich && editor?.mode === 'rich'
+  const saveState = (
+    <>
+      <button
+        type="button"
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={() => void settle()}
+        className="rounded-md px-1.5 py-0.5 text-xs text-subtle hover:bg-hover hover:text-fg"
+      >
+        Done
+      </button>
+      {restored && state === 'idle' && (
+        <span className="whitespace-nowrap text-xs text-muted">Unsaved edit restored</span>
+      )}
+      {state === 'error' && (
+        <button
+          type="button"
+          onClick={() => void flush()}
+          className="whitespace-nowrap text-xs text-danger underline"
+        >
+          Not saved: retry
+        </button>
+      )}
+    </>
+  )
   if (editing) {
     return (
       <div className="space-y-2" onBlur={autosave && !conflict ? () => void flush() : undefined}>
@@ -275,6 +308,8 @@ export function MarkdownEditor({
             getValue={() => latest.current.draft}
             placeholder={`Write here. Type @ to mention someone${uploads ? '; paste or drop files to attach them.' : '.'}`}
             onSource={toMarkdown}
+            caretAt={clicked}
+            trailing={inToolbar ? saveState : undefined}
           />
         ) : (
           <MarkdownInput
@@ -307,7 +342,7 @@ export function MarkdownEditor({
             </button>
           </div>
         )}
-        {autosave ? (
+        {inToolbar ? null : autosave ? (
           <div className="flex items-center gap-2">
             {conflict ? (
               <>
@@ -327,27 +362,7 @@ export function MarkdownEditor({
                 </Button>
               </>
             ) : (
-              <>
-                <button
-                  type="button"
-                  onClick={() => void settle()}
-                  className="rounded-md px-1.5 py-0.5 text-xs text-subtle hover:bg-hover hover:text-fg"
-                >
-                  Done
-                </button>
-                {restored && state === 'idle' && (
-                  <span className="text-xs text-muted">Unsaved edit restored</span>
-                )}
-                {state === 'error' && (
-                  <button
-                    type="button"
-                    onClick={() => void flush()}
-                    className="text-xs text-danger underline"
-                  >
-                    Not saved: retry
-                  </button>
-                )}
-              </>
+              saveState
             )}
           </div>
         ) : (
@@ -396,7 +411,10 @@ export function MarkdownEditor({
       Promise.resolve(onSave(next)).catch(() => setShown(value))
       return
     }
-    if (editable && !window.getSelection()?.toString()) setEditing(true)
+    if (editable && !window.getSelection()?.toString()) {
+      setClicked(e.detail > 0 ? { x: e.clientX, y: e.clientY } : undefined)
+      setEditing(true)
+    }
   }
 
   if (!shown) {

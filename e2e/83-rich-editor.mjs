@@ -449,7 +449,7 @@ for (const [width, scheme] of looks([
   );
   await page.getByRole("button", { name: "Add a description…", exact: true }).click();
   await richBox.waitFor();
-  const prompt = await richBox.evaluate((el) => getComputedStyle(el, "::before").content);
+  const prompt = await richBox.evaluate((el) => getComputedStyle(el.firstElementChild ?? el, "::before").content);
   ok(prompt.length > 2, `${tag} an empty editor shows its prompt: ${prompt}`);
   ok(
     !prompt.replace(/^["']/, "").startsWith("Add a description"),

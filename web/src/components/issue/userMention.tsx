@@ -13,7 +13,7 @@ import type { UserRef } from '@/lib/types'
  * (as markdown.ts's TOKEN has it), so "@.", "@-" and the like open nothing; a
  * bare "@" does.
  */
-export const MENTION_RE = /(^|[\s(])@((?:[a-zA-Z0-9][\w.-]{0,38})?)$/
+export const MENTION_RE = /(^|[\s(\u200b])@((?:[a-zA-Z0-9][\w.-]{0,38})?)$/
 
 /** Up to six people whose username or a word of whose name starts with `text`. */
 export function matchUsers(users: UserRef[], text: string | undefined): UserRef[] {

@@ -100,3 +100,4 @@
 6 82-inbox
 20 83-rich-editor
 20 84-rich-markdown
+40 85-rich-typing
