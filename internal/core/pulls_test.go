@@ -392,6 +392,11 @@ func (p *prForge) ListPRs(ctx context.Context, f *Forge, repo string) ([]*ForgeP
 func (p *prForge) setPR(f *Forge, repo string, pr ForgePR, diff string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	// As the forge's client reads it: an open pull request with a "WIP: "
+	// title is a draft.
+	if pr.State == "open" && draftTitle(pr.Title) {
+		pr.State = "draft"
+	}
 	p.prs[mk(f, repo, pr.Number)] = &pr
 	p.diffs[pr.HeadSHA] = diff
 }
