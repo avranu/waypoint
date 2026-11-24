@@ -237,8 +237,15 @@ func cmdPRWait(c *cli, args []string) error {
 		return err
 	case w == nil && errors.As(err, &bound):
 		// Out of time with no answer: a timeout like any other, with no
-		// verdict to print.
-		_, _ = fmt.Fprintf(c.err, "timed out after %s: no answer from Waypoint: %v\n", *timeout, bound.cause)
+		// verdict to print. With --json it is still JSON, the wait null.
+		if c.asJSON {
+			all, _ := json.Marshal(map[string]any{"wait": nil, "error": "no answer from Waypoint: " + bound.cause.Error()})
+			if err := c.emit(all, nil); err != nil {
+				return err
+			}
+		} else {
+			_, _ = fmt.Fprintf(c.err, "timed out after %s: no answer from Waypoint: %v\n", *timeout, bound.cause)
+		}
 		return exitCode(waitExitTimeout)
 	}
 	return c.waitVerdict(w, raw, *merge, *timeout)
