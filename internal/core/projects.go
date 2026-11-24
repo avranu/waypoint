@@ -1197,8 +1197,7 @@ func (s *Service) DeleteProject(ctx context.Context, actor *Actor, ref string) e
 		for _, j := range hooks {
 			t.emit(&Event{Kind: EvRepoHook, repoHook: j})
 		}
-		// Automatic projects shouldn't bring its repos back on the next
-		// discovery, unless another project still has them.
+		// Ignore the deleted project's repos so discovery doesn't offer them again, unless another project still has them.
 		if _, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO forge_repo_ignores(forge_id, repo, created_at)
 			SELECT pr.forge_id, pr.repo, ? FROM project_repos pr WHERE pr.project_id = ? AND NOT EXISTS (
 				SELECT 1 FROM project_repos o WHERE o.forge_id = pr.forge_id AND lower(o.repo) = lower(pr.repo) AND o.project_id != pr.project_id)`,

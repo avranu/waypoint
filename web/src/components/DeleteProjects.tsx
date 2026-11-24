@@ -144,8 +144,8 @@ export function DeleteProjectsDialog({
             </ul>
           )}
           <p className="text-xs text-subtle">
-            Repositories {single ? 'it' : 'they'} synced won't come back through automatic projects;
-            attach one again from a project's settings.
+            Repositories attached to {single ? 'it' : 'them'} won't be offered again by automatic
+            projects or Discover repositories; attach one again from a project's settings.
           </p>
         </div>
       </Dialog>

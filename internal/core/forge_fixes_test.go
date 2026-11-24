@@ -351,6 +351,52 @@ func TestForgeDiscoverPickAndDelete(t *testing.T) {
 	}
 }
 
+// Deleting a hand-made project ignores its repos too, unless another project
+// still has them; attaching one by hand lifts the ignore.
+func TestForgeDeleteHandMadeProjectIgnoresRepos(t *testing.T) {
+	e := newEnv(t)
+	mem := newMemForge()
+	e.s.Forges = mem
+	f := e.forge("github", "", false)
+	mem.repos[f.ID] = []ForgeRepo{{Path: "me/web"}, {Path: "me/shared"}}
+	ignores := func() (n int) {
+		e.s.db.R.QueryRow(`SELECT count(*) FROM forge_repo_ignores`).Scan(&n)
+		return n
+	}
+	a, b, c := e.project(e.admin, "Alpha", "kanban"), e.project(e.admin, "Beta", "kanban"), e.project(e.admin, "Gamma", "kanban")
+	for _, add := range []struct {
+		p    *Project
+		repo string
+	}{{a, "me/web"}, {a, "me/shared"}, {b, "me/shared"}} {
+		if _, err := e.s.AddProjectRepo(e.ctx, e.admin, add.p.Key, f.ID, add.repo, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.s.Wait()
+	if err := e.s.DeleteProject(e.ctx, e.admin, a.Key); err != nil {
+		t.Fatal(err)
+	}
+	e.s.Wait()
+	var repo string
+	if err := e.s.db.R.QueryRow(`SELECT repo FROM forge_repo_ignores`).Scan(&repo); err != nil || repo != "me/web" || ignores() != 1 {
+		t.Fatalf("ignores = %d (%q, %v), want only me/web (me/shared is still on Beta)", ignores(), repo, err)
+	}
+	preview, err := e.s.PreviewDiscover(e.ctx, e.admin, f.ID)
+	if err != nil || len(preview) != 0 {
+		t.Errorf("preview offers %+v, %v", preview, err)
+	}
+	if n, _ := e.s.DiscoverRepos(e.ctx, e.admin, f.ID, nil); n != 0 {
+		t.Errorf("discover attached %d", n)
+	}
+	if _, err := e.s.AddProjectRepo(e.ctx, e.admin, c.Key, f.ID, "me/web", true); err != nil {
+		t.Fatal(err)
+	}
+	e.s.Wait()
+	if ignores() != 0 {
+		t.Errorf("ignore kept after attaching by hand")
+	}
+}
+
 // A GitLab issue made confidential is emptied here, and filled back in if
 // it becomes public again.
 func TestGitLabIssueMadeConfidential(t *testing.T) {
