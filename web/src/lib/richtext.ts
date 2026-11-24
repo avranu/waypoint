@@ -338,13 +338,21 @@ function blocksOf(nodes: Node[], opts: Opts = {}) {
   return out + text(false)
 }
 
+const isListTag = (e: Element) => ['ul', 'ol'].includes(e.tagName.toLowerCase())
+
 function list(el: HTMLElement, opts: Opts = {}): string {
   const ordered = el.tagName.toLowerCase() === 'ol'
   let out = ''
   let n = ordered ? Number.parseInt(el.getAttribute('start') ?? '', 10) : 1
   if (!Number.isFinite(n)) n = 1
-  for (const child of Array.from(el.children)) {
-    if (child.tagName.toLowerCase() !== 'li') continue
+  const kids = Array.from(el.children)
+  for (const [at, child] of kids.entries()) {
+    if (child.tagName.toLowerCase() !== 'li') {
+      // A sub-list with no item before it has no parent to nest under.
+      if (isListTag(child) && !kids.slice(0, at).some((k) => k.tagName.toLowerCase() === 'li'))
+        out += list(child as HTMLElement, opts)
+      continue
+    }
     const li = child as HTMLElement
     const box = Array.from(li.children).find(
       (c) => c.tagName.toLowerCase() === 'input' && (c as HTMLInputElement).type === 'checkbox',
@@ -369,6 +377,10 @@ function list(el: HTMLElement, opts: Opts = {}): string {
     if (!box && /^\[[ xX]\]/.test(body)) body = `\\${body}`
     const bare = ordered ? `${n++}.` : '-'
     const marker = box ? `${bare} [${box.checked ? 'x' : ' '}]` : bare
+    // Chromium's indent writes the sub-list as a sibling of the item, straight
+    // inside the outer list; it belongs to the item before it.
+    for (let k = at + 1; k < kids.length && isListTag(kids[k]); k++)
+      nested.push(kids[k] as HTMLElement)
     // Nested content lines up with the parent's text: marker width + 1.
     // Lines after the first are indented by that too, or a second paragraph
     // or a code block would end the item.

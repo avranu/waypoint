@@ -341,6 +341,7 @@ const plain = (e: KeyboardEvent) => !e.shiftKey && !e.ctrlKey && !e.metaKey && !
  */
 export function keyRules(el: HTMLElement, e: KeyboardEvent): boolean {
   if (!SUPPORTED || e.isComposing) return false
+  if (e.key === 'Tab' && !e.ctrlKey && !e.metaKey && !e.altKey && tabInList(el, e)) return true
   const caret = caretIn(el)
   if (!caret) return false
   if (e.key === 'Backspace' && plain(e)) {
@@ -380,7 +381,15 @@ export function keyRules(el: HTMLElement, e: KeyboardEvent): boolean {
     exec('formatBlock', 'p')
     return true
   }
-  if (b.node?.tagName === 'LI') return taskEnter(el, e, b.node, caret)
+  if (b.node?.tagName === 'LI') {
+    // An empty nested item steps out one level; only a top-level one ends the list.
+    if (isNested(b.node, el) && b.node.textContent!.replace(PARK, '').trim() === '') {
+      e.preventDefault()
+      exec('outdent')
+      return true
+    }
+    return taskEnter(el, e, b.node, caret)
+  }
   if (b.node?.parentElement?.tagName === 'BLOCKQUOTE') return quoteEnter(el, e, b.node)
   if (b.parent !== el || (b.node && b.node.tagName !== 'P' && b.node.tagName !== 'DIV'))
     return false
@@ -398,6 +407,42 @@ export function keyRules(el: HTMLElement, e: KeyboardEvent): boolean {
     return true
   }
   return false
+}
+
+const isList = (n: Element | null) => n?.tagName === 'UL' || n?.tagName === 'OL'
+
+// An item inside another list: Chromium's indent puts the new list in the
+// previous item or, as often, straight inside the outer list.
+function isNested(li: Element, el: HTMLElement): boolean {
+  const list = li.parentElement
+  const up = list?.parentElement
+  return !!list && isList(list) && !!up && up !== el && (up.tagName === 'LI' || isList(up))
+}
+
+// Tab nests the items under the caret (or in the selection) beneath their
+// previous item, Shift+Tab lifts them one level, both with execCommand so one
+// undo reverses one press. Where neither can happen in a list the key is still
+// swallowed, or focus would leave the editor mid-list; Escape is the way out.
+// Outside lists, and in code, Tab is the browser's or the code rule's.
+function tabInList(el: HTMLElement, e: KeyboardEvent): boolean {
+  const sel = window.getSelection()
+  if (!sel || sel.rangeCount === 0) return false
+  const r = sel.getRangeAt(0)
+  if (!el.contains(r.startContainer) || !el.contains(r.endContainer)) return false
+  const start = elementOf(r.startContainer)
+  // Code is the code rule's (below), which takes Tab as two spaces.
+  if (!start || start.closest('pre')) return false
+  const li = start.closest('li')
+  if (!li || !el.contains(li)) return false
+  e.preventDefault()
+  if (e.shiftKey) {
+    if (isNested(li, el)) exec('outdent')
+    return true
+  }
+  // Chromium indents an item with no previous sibling into a list of its own.
+  const prev = li.previousElementSibling
+  if (prev && (prev.tagName === 'LI' || isList(prev))) exec('indent')
+  return true
 }
 
 function inCode(el: HTMLElement, e: KeyboardEvent, caret: Range, pre: Element): boolean {
@@ -498,6 +543,13 @@ function backspace(el: HTMLElement, e: KeyboardEvent, caret: Range): boolean {
   const s = scan(b, caret)
   const tag = b.node.tagName
   if (tag === 'LI') {
+    // At the start of a nested item (before a task's box too) it steps out one
+    // level; a top-level task then loses its box as before.
+    if (isNested(b.node, el) && (s.before === '' || /^\ufffc ?$/.test(s.before))) {
+      e.preventDefault()
+      exec('outdent')
+      return true
+    }
     if (!/^\ufffc ?$/.test(s.before) || !b.node.querySelector(':scope > input.task')) return false
     e.preventDefault()
     removeBox(b.node)
