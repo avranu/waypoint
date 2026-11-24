@@ -106,14 +106,12 @@ func (s *Service) tokenLogin(ctx context.Context, f *Forge, bot bool) string {
 // severity, and took their review out of the people's (WP-934).
 type posters struct {
 	logins []string
-	// unknown: a token's account couldn't be read (tokenLogin keeps that an
-	// hour). Its posts then count as a person's, the safe side: a marker
-	// is never trusted from an account that isn't known to be Waypoint's.
-	unknown bool
 }
 
 // waypointPosters are the accounts Waypoint posts as on f; none on a forge
-// with no token, where it posts nothing.
+// with no token, where it posts nothing. A token whose account can't be read
+// adds no login, so its posts count as a person's: a marker is never trusted
+// from an account not known to be Waypoint's.
 func (s *Service) waypointPosters(ctx context.Context, f *Forge) posters {
 	var p posters
 	for _, bot := range []bool{false, true} {
@@ -122,8 +120,6 @@ func (s *Service) waypointPosters(ctx context.Context, f *Forge) posters {
 		}
 		if l := s.tokenLogin(ctx, f, bot); l != "" {
 			p.logins = append(p.logins, l)
-		} else {
-			p.unknown = true
 		}
 	}
 	return p
