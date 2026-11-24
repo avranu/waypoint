@@ -13,7 +13,9 @@ import { clearDraft, readDraft, tracked, useUnsaved, writeDraft } from '@/lib/dr
 
 // The editor a description opens in is remembered (WP-628).
 const MODE_KEY = 'wp.editor.mode'
+let chosen: 'rich' | 'md' | null = null
 const readMode = (): 'rich' | 'md' => {
+  if (chosen) return chosen
   try {
     return localStorage.getItem(MODE_KEY) === 'md' ? 'md' : 'rich'
   } catch {
@@ -21,10 +23,11 @@ const readMode = (): 'rich' | 'md' => {
   }
 }
 const writeMode = (m: 'rich' | 'md') => {
+  chosen = m
   try {
     localStorage.setItem(MODE_KEY, m)
   } catch {
-    // Private mode: the choice lasts until the page closes.
+    // Private mode: the memo above keeps the choice until the page closes.
   }
 }
 
