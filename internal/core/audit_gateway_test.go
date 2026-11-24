@@ -36,13 +36,21 @@ type taskLLM struct {
 	limits      GatewayLimits
 	limitsErr   error
 	limitsCalls int
+	// limitsMeanwhile runs once, between an ask's answer and its return:
+	// what another caller does while this ask is on its way back.
+	limitsMeanwhile func()
 }
 
 func (l *taskLLM) TaskLimits(ctx context.Context, p *AIProvider) (GatewayLimits, error) {
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	l.limitsCalls++
-	return l.limits, l.limitsErr
+	lim, err, meanwhile := l.limits, l.limitsErr, l.limitsMeanwhile
+	l.limitsMeanwhile = nil
+	l.mu.Unlock()
+	if meanwhile != nil {
+		meanwhile()
+	}
+	return lim, err
 }
 
 func (l *taskLLM) CreateTask(ctx context.Context, p *AIProvider, spec gatewayTaskSpec, archive io.Reader, size int64) (*gatewayTask, error) {
@@ -1341,6 +1349,31 @@ func TestGatewayTaskLimits(t *testing.T) {
 	ae.s.gatewayLimits.Clear()
 	if got := ae.s.GatewayTaskLimits(gone); got != def {
 		t.Errorf("gateway setting unread, none before: %+v", got)
+	}
+	// A failed ask doesn't undo a good answer another caller stored while it
+	// was on its way: with none before, and with an older one.
+	for name, before := range map[string]bool{"none before": false, "one before": true} {
+		ae.s.gatewayLimits.Clear()
+		if before {
+			gw.limitsErr, gw.limits = nil, GatewayLimits{32 * MiB, 8 * MiB}
+			ae.s.GatewayTaskLimits(ae.ctx)
+			now = now.Add(11 * time.Minute)
+		}
+		gw.limitsErr = errors.New("down")
+		gw.limitsMeanwhile = func() {
+			gw.mu.Lock()
+			gw.limitsErr, gw.limits = nil, GatewayLimits{64 * MiB, 8 * MiB}
+			gw.mu.Unlock()
+			if got := ae.s.GatewayTaskLimits(ae.ctx); got.ArchiveBytes != 64*MiB {
+				t.Errorf("%s: the good answer meanwhile: %+v", name, got)
+			}
+		}
+		if got := ae.s.GatewayTaskLimits(ae.ctx); got.ArchiveBytes != 64*MiB {
+			t.Errorf("%s: the failed ask answers %+v, not the good answer stored meanwhile", name, got)
+		}
+		if got := ae.s.GatewayTaskLimits(ae.ctx); got.ArchiveBytes != 64*MiB {
+			t.Errorf("%s: after a failed ask, the cache holds %+v, not the good answer stored meanwhile", name, got)
+		}
 	}
 	// A successful answer that states nothing is the default, kept ten minutes.
 	ae.s.gatewayLimits.Clear()

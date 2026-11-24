@@ -491,8 +491,9 @@ func (c *httpLLM) TaskLimits(ctx context.Context, p *AIProvider) (GatewayLimits,
 // range (1 MiB to 512 MiB for the archive, 64 KiB to the archive for a file)
 // or can't be asked. Whatever fails on the way to asking (reading which
 // gateway is set up, reading its provider, the ask itself), the last figures
-// it did state stay (stale beats the default); a failed ask is made again
-// after a minute.
+// it did state stay (stale beats the default), and a failed ask never
+// overwrites a good answer another caller stored meanwhile; a failed ask is
+// made again after a minute.
 func (s *Service) GatewayTaskLimits(ctx context.Context) GatewayLimits {
 	def := GatewayLimits{ArchiveBytes: GatewayArchiveMax, FileBytes: GatewayFileMax}
 	ll, ok := s.LLM.(taskLimitsLLM)
@@ -536,7 +537,23 @@ func (s *Service) GatewayTaskLimits(ctx context.Context) GatewayLimits {
 		if had {
 			lim = prev.lim
 		}
-		s.gatewayLimits.Store(p.ID, cachedGatewayLimits{at: s.now(), lim: lim, failed: true})
+		// Only over what this ask started from: a good answer another
+		// caller stored while it was on its way stays, and is the answer.
+		failed := cachedGatewayLimits{at: s.now(), lim: lim, failed: true}
+		var stored bool
+		if had {
+			stored = s.gatewayLimits.CompareAndSwap(pid, last, failed)
+		} else {
+			_, loaded := s.gatewayLimits.LoadOrStore(pid, failed)
+			stored = !loaded
+		}
+		if !stored {
+			if cur, ok := s.gatewayLimits.Load(pid); ok {
+				if c, ok := cur.(cachedGatewayLimits); ok {
+					return c.lim
+				}
+			}
+		}
 		return lim
 	case got.ArchiveBytes >= 1<<20 && got.ArchiveBytes <= 512<<20:
 		lim.ArchiveBytes = got.ArchiveBytes
