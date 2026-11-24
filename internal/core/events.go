@@ -334,6 +334,9 @@ func (s *Service) dispatch(ctx context.Context, actor *Actor, events []*Event) {
 		s.notifyFor(ctx, actor, e)
 	}
 	for _, e := range events {
+		if e.Kind == EvPRUpdated {
+			s.renumberOnPR(ctx, e) // numbered files that clash (WP-1815)
+		}
 		if e.Kind == EvRepoPushed {
 			s.onRepoPushed(ctx, e)
 			s.onKitPush(ctx, e) // the agent kit's default branch moved (WP-ADR2)

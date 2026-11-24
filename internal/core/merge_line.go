@@ -926,6 +926,9 @@ func (s *Service) lineStep(ctx context.Context, ref lineRef) {
 			ls = again
 		}
 	}
+	if !ls.snap.TipStale {
+		s.renumberPass(ctx, ls.ref, ls.tip, ls.order) // numbered files that clash (WP-1815)
+	}
 	s.lineWaits(ctx, ls)
 }
 

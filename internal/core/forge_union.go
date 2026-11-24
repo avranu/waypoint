@@ -83,7 +83,11 @@ func (c *httpForgeClient) CommitToBranch(ctx context.Context, f *Forge, repo, br
 
 // unionPaths reads the patterns of a .gitattributes file whose attributes
 // include merge=union. Other attributes and lines are ignored.
-func unionPaths(attrs string) []string {
+func unionPaths(attrs string) []string { return attrPaths(attrs, "merge=union") }
+
+// attrPaths reads the patterns of a .gitattributes file whose attributes
+// include attr, written exactly so.
+func attrPaths(attrs, attr string) []string {
 	var out []string
 	sc := bufio.NewScanner(strings.NewReader(attrs))
 	for sc.Scan() {
@@ -91,7 +95,7 @@ func unionPaths(attrs string) []string {
 		if len(fs) < 2 || strings.HasPrefix(fs[0], "#") || strings.HasPrefix(fs[0], "[") {
 			continue
 		}
-		if slices.Contains(fs[1:], "merge=union") {
+		if slices.Contains(fs[1:], attr) {
 			out = append(out, strings.TrimPrefix(fs[0], "/"))
 		}
 	}

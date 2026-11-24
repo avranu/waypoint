@@ -1,3 +1,6 @@
 # Waypoint's merge queue merges this file as a union: Forgejo's own merge ignores it,
 # so the queue takes care of it (WP-594). Lines other branches added are kept.
 e2e/weights.txt merge=union
+
+# Waypoint renames a pull request's new migrations when their numbers clash with the base or another open pull request.
+internal/db/migrations/*.sql waypoint-numbered
