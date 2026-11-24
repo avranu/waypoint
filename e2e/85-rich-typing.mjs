@@ -614,8 +614,10 @@ for (const [width, scheme] of looks(
   // every handler (the listener on window runs after React's).
   const watchKeys = () =>
     page.evaluate(() => {
+      if (window.__dpListener) window.removeEventListener("keydown", window.__dpListener);
       window.__dp = [];
-      window.addEventListener("keydown", (e) => window.__dp.push(e.defaultPrevented));
+      window.__dpListener = (e) => window.__dp.push(e.defaultPrevented);
+      window.addEventListener("keydown", window.__dpListener);
     });
 
   // 14. Rules that must not eat text.
