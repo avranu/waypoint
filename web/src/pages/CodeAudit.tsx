@@ -465,7 +465,7 @@ function FindingItem({ finding: f, audit: a }: { finding: AuditFinding; audit: C
         </div>
       )}
       {(f.note || f.by || f.issue) && f.state !== 'open' && (
-        <p className="text-xs text-muted">
+        <p className="break-words text-xs text-muted">
           {FINDING_STATE[f.state].label}
           {f.by && ` by ${f.by}`}
           {f.at && ` ${relativeTime(f.at)}`}

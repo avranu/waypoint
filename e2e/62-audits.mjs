@@ -15,6 +15,7 @@ import { chromium } from "playwright";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
+import { DatabaseSync } from "node:sqlite";
 import { looks } from "./looks.mjs";
 const [base, out] = process.argv.slice(2);
 fs.mkdirSync(out, { recursive: true });
@@ -108,6 +109,10 @@ const wait = async (cond, what, ms = 15000) => {
     await new Promise((r) => setTimeout(r, 150));
   }
 };
+
+// A rejection's evidence: long, with one unbroken path in it.
+const EVIDENCE =
+  "Read internal/core/some_long_directory/another_long_name/file_with_long_name_test.go:1234, which streams rows through a cursor and never holds more than one page; the export test there runs 5 million rows under a 512 MB limit and passes, so the memory claim does not hold on the current code path.";
 
 // What the model answers: worst last here, so the page has to sort them.
 const FINDINGS = [
@@ -262,6 +267,19 @@ let auditID;
   await item("The export").getByText(/Rejected by .*Exports stream since v2/).waitFor();
   ok(true, "the rejection shows who and why");
   await page.getByRole("radio", { name: /To do/ }).click();
+
+  // An agent's rejection carries evidence and the model and effort it ran as
+  // (WP-1825). Only an agent's mark sets the decided_* columns, so write them.
+  const db = new DatabaseSync(`${process.env.DIR}/wp.db`);
+  db.exec("PRAGMA busy_timeout = 5000");
+  const res = db
+    .prepare(
+      `UPDATE code_audit_findings SET evidence = ?, decided_model = 'claude-sonnet-5-5', decided_effort = 'high', decided_strength = ?
+       WHERE audit_id = ? AND title LIKE 'The export%' AND state = 'rejected'`,
+    )
+    .run(EVIDENCE, "at_least: sonnet 5.5 (high) is as strong as sonnet", auditID);
+  db.close();
+  ok(res.changes === 1, "the rejected finding got evidence and the model it was rejected as");
 }
 
 // ---- look at it, at each width ----
@@ -315,6 +333,29 @@ for (const [w, s] of looks([
   } catch (e) {
     fail(`${w}/${s}: ${e.message.split("\n")[0]}`);
   }
+}
+
+// ---- a rejection's evidence and the model it ran as, at both widths ----
+for (const width of [1280, 390]) {
+  const ctx = await browser.newContext({ viewport: { width, height: 900 } });
+  try {
+    const p = await signIn(ctx);
+    await p.goto(`${base}/audits/${auditID}`);
+    await p.getByRole("radio", { name: "All" }).click();
+    const rej = p.locator('li[id^="finding-"]', { hasText: "The export" });
+    await rej.getByText(/evidence: Read internal\/core/).waitFor();
+    ok(await rej.getByText(EVIDENCE, { exact: false }).isVisible(), `${width} the rejection's evidence is shown`);
+    ok(await rej.getByText("as claude-sonnet-5-5 (high)", { exact: false }).isVisible(), `${width} the rejection shows the model and effort`);
+    ok(!(await p.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)), `${width} the rejected finding: no sideways scroll`);
+    const clipped = await rej.getByText(/evidence: Read internal\/core/).evaluate((el) => el.scrollWidth > el.clientWidth);
+    ok(!clipped, `${width} the long path in the evidence wraps, not clipped`);
+    const li = await rej.boundingBox();
+    ok(li && li.x >= 0 && li.x + li.width <= width, `${width} the finding fits the screen (${li?.x}+${li?.width})`);
+    await rej.screenshot({ path: `${out}/rejected-evidence-${width}.png` });
+  } catch (e) {
+    fail(`${width} rejected evidence: ${e.message.split("\n")[0]}`);
+  }
+  await ctx.close();
 }
 
 // ---- Claude fixes the rest ----
