@@ -438,12 +438,18 @@ func (s *Service) RefreshPullRequests(ctx context.Context) {
 		}
 		hooked := s.hookDelivers(ctx, f.ID, x.repo)
 		for _, fp := range prs {
+			recorded := true
 			if !hooked && (fp.State == "open" || fp.State == "draft") {
-				s.onForgePull(ctx, f, x.repo, fp)
+				recorded = s.onForgePull(ctx, f, x.repo, fp)
 			} else if err := s.refreshPR(ctx, f, x.repo, fp); err != nil {
 				s.log.WarnContext(ctx, "refresh pull request", "repo", x.repo, "number", fp.Number, "err", err)
+				recorded = false
 			}
-			s.refreshPRMentions(ctx, f, x.repo, fp)
+			// One not recorded isn't known to be from a person: its links wait
+			// for the next sync (WP-1802).
+			if recorded {
+				s.refreshPRMentions(ctx, f, x.repo, fp)
+			}
 		}
 	}
 }

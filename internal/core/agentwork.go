@@ -454,7 +454,7 @@ func (s *Service) outOnPRs(ctx context.Context, q queryer, issues []*Issue) (map
 		}
 	}
 	for chunk := range slices.Chunk(ids, 500) {
-		// #nosec G202 -- placeholders only; values are bound
+		// #nosec G202 -- placeholders, and unapprovedOutsidePullSQL's column name; values are bound
 		rows, err := q.QueryContext(ctx, `SELECT issue_id, url, repo, number, state FROM external_links
 			WHERE kind = 'pull' AND state IN ('', 'open', 'draft', 'merged') AND issue_id IN (`+placeholders(len(chunk))+`)
 			AND (state = 'merged' OR NOT `+unapprovedOutsidePullSQL("external_links.url")+`)

@@ -1037,21 +1037,21 @@ func (s *Service) applyLinkState(ctx context.Context, linkURL string, item *Forg
 			if err != nil {
 				return err
 			}
-			// Read inside the write, so an approval that committed first is seen,
-			// and a failed read holds: approving replays the open for links
-			// already open (WP-1802).
-			var held bool
-			if err := t.QueryRowContext(ctx, `SELECT `+unapprovedOutsidePullSQL("?"), linkURL).Scan(&held); err != nil {
-				held = true
-			}
 			kind := ""
 			switch {
 			case item.IsPR && item.State == "merged":
 				kind = EvExternalPRMerged
 			case item.IsPR && item.State == "closed":
 				kind = EvExternalPRClosed
-			case item.IsPR && item.State == "open" && !held: // new, reopened, or out of draft; a person approves an outside one first
-				kind = EvExternalPROpened
+			case item.IsPR && item.State == "open": // new, reopened, or out of draft
+				// Not while no person approved an outside one: approving it runs
+				// this. Read in this write, so whichever of the two commits
+				// second sees the other; a failed read rolls the state back for
+				// the next sync (WP-1802).
+				opened, err := s.emitPullOpened(ctx, t, r.issueID, linkURL, r.state, item.Title, item.Number, false)
+				if err != nil || opened {
+					return err
+				}
 			case !item.IsPR && item.State == "closed":
 				kind = EvExternalIssueClose
 			}
@@ -1182,8 +1182,11 @@ func (s *Service) handleForgeEvent(ctx context.Context, f *Forge, ev *forgeEvent
 			// the links the branch made: use the one recorded before.
 			_ = s.db.R.QueryRowContext(ctx, `SELECT head_ref FROM pull_requests WHERE forge_id = ? AND url = ?`, f.ID, ev.item.URL).Scan(&ev.branch)
 		}
-		if ev.pr != nil {
-			s.onForgePull(ctx, f, ev.repo, ev.pr)
+		if ev.pr != nil && !s.onForgePull(ctx, f, ev.repo, ev.pr) {
+			// Not recorded, so not known to be from a person: its links set
+			// nothing off until a sync records it (WP-1802).
+			s.onPRActivity(ctx, f, ev.repo, ev.review)
+			return nil
 		}
 		// Links on issues show its title only when a Waypoint person wrote
 		// it, or a person approved it (WP-281).

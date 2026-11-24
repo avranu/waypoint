@@ -233,11 +233,16 @@ func isBotLogin(login string) bool {
 
 // onForgePull records a pull request webhook and, when it brings a new
 // head, readiness or a reopening, fires pr.updated in each project with bots
-// on for the repo.
-func (s *Service) onForgePull(ctx context.Context, f *Forge, repo string, fp *ForgePR) {
+// on for the repo. It says false when it couldn't record one it should
+// have: whether it is from outside is then unknown, so its links wait for
+// the next sync (WP-1802).
+func (s *Service) onForgePull(ctx context.Context, f *Forge, repo string, fp *ForgePR) bool {
 	var attached int
-	if err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM project_repos WHERE forge_id = ? AND repo = ? COLLATE NOCASE`, f.ID, repo).Scan(&attached); err != nil || attached == 0 {
-		return
+	if err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM project_repos WHERE forge_id = ? AND repo = ? COLLATE NOCASE`, f.ID, repo).Scan(&attached); err != nil {
+		return false
+	}
+	if attached == 0 {
+		return true
 	}
 	if fp.HeadSHA == "" || fp.Author == "" {
 		if c, ok := s.Forges.(ForgePRs); ok {
@@ -256,9 +261,10 @@ func (s *Service) onForgePull(ctx context.Context, f *Forge, repo string, fp *Fo
 	pr, err := s.recordPR(ctx, f, repo, fp, true)
 	if err != nil {
 		s.log.WarnContext(ctx, "record pull request", "repo", repo, "number", fp.Number, "err", err)
-		return
+		return false
 	}
 	s.afterPRRecorded(ctx, f, pr)
+	return true
 }
 
 // recordPR stores a pull request as its forge reports it, and what changed

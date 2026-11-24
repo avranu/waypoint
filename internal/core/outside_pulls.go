@@ -212,8 +212,10 @@ func (s *Service) screenPull(ctx context.Context, t *tx, v *prVoice, pr *PullReq
 			return nil
 		}
 		pr.Outside = false
-		_, err := t.ExecContext(ctx, `UPDATE pull_requests SET outside = 0 WHERE id = ?`, pr.ID)
-		return err
+		if _, err := t.ExecContext(ctx, `UPDATE pull_requests SET outside = 0 WHERE id = ?`, pr.ID); err != nil {
+			return err
+		}
+		return s.outsidePullsOpened(ctx, t, pr.URL) // what its links held (WP-1802)
 	}
 	var state, okTitle, okHead, okHash string
 	err = t.QueryRowContext(ctx, `SELECT state, title, head_sha, body_hash FROM outside_pr_text WHERE pr_id = ? AND external_id = ''`, pr.ID).
@@ -223,9 +225,12 @@ func (s *Service) screenPull(ctx context.Context, t *tx, v *prVoice, pr *PullReq
 	}
 	approved := state == outsideApproved
 	if approved && okTitle == title && okHead == pr.HeadSHA {
+		was := pr.Outside
 		pr.Outside = false
-		_, err := t.ExecContext(ctx, `UPDATE pull_requests SET outside = 0 WHERE id = ?`, pr.ID)
-		return err
+		if _, err := t.ExecContext(ctx, `UPDATE pull_requests SET outside = 0 WHERE id = ?`, pr.ID); err != nil || !was {
+			return err
+		}
+		return s.outsidePullsOpened(ctx, t, pr.URL)
 	}
 	shown := ""
 	if approved && okTitle == title {
@@ -271,46 +276,73 @@ func unapprovedOutsidePullSQL(urlExpr string) string {
 	return "EXISTS (SELECT 1 FROM pull_requests op WHERE op.outside = 1 AND op.url = " + urlExpr + ")"
 }
 
-// outsidePullOpened runs what a link's open pull request sets off, for the
-// links of pull requests a person just let in: as applyLinkState does when
-// a pull request opens.
-func (s *Service) outsidePullOpened(ctx context.Context, urls ...string) {
-	err := s.write(ctx, SystemActor(), func(t *tx) error {
-		for _, u := range urls {
-			rows, err := t.QueryContext(ctx, `SELECT el.issue_id, el.title, coalesce(el.number, 0) FROM external_links el
-				WHERE el.url = ? AND el.kind = 'pull' AND el.state = 'open'
-				AND NOT EXISTS (SELECT 1 FROM events e WHERE e.issue_id = el.issue_id AND e.kind = ? AND e.new_value = el.url)`, u, EvExternalPROpened)
-			if err != nil {
+// emitPullOpened sets off what an open pull request's link does on an
+// issue, unless no person approved the pull request yet (WP-1802). With
+// once, not where the link's last open, merge or close was this open: a
+// pull request let in later replays an open it held, not one that fired.
+// Every open of a link goes through here, in the write that changes what
+// it reads, so an approval and a state change can't both miss it.
+func (s *Service) emitPullOpened(ctx context.Context, t *tx, issueID int64, url, old, title string, number any, once bool) (bool, error) {
+	var held bool
+	if err := t.QueryRowContext(ctx, `SELECT `+unapprovedOutsidePullSQL("?"), url).Scan(&held); err != nil { // #nosec G202 -- the helper splices a placeholder, no value
+		return false, err
+	}
+	if held {
+		return false, nil
+	}
+	if once {
+		var last string
+		err := t.QueryRowContext(ctx, `SELECT kind FROM events WHERE issue_id = ? AND new_value = ? AND kind IN (?, ?, ?) ORDER BY id DESC LIMIT 1`,
+			issueID, url, EvExternalPROpened, EvExternalPRMerged, EvExternalPRClosed).Scan(&last)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return false, err
+		}
+		if last == EvExternalPROpened {
+			return false, nil
+		}
+	}
+	i, err := s.issueByID(ctx, t, issueID, false)
+	if err != nil {
+		return false, err
+	}
+	t.emit(&Event{Kind: EvExternalPROpened, ProjectID: i.ProjectID, IssueID: i.ID, IssueKey: i.Key, New: url, Old: old,
+		Data: map[string]any{"title": title, "number": number}})
+	return true, nil
+}
+
+// outsidePullsOpened runs what the open links of pull requests just let in
+// held, in the write that lets them in: as applyLinkState does when a pull
+// request opens.
+func (s *Service) outsidePullsOpened(ctx context.Context, t *tx, urls ...string) error {
+	for _, u := range urls {
+		rows, err := t.QueryContext(ctx, `SELECT issue_id, title, coalesce(number, 0) FROM external_links WHERE url = ? AND kind = 'pull' AND state = 'open'`, u)
+		if err != nil {
+			return err
+		}
+		type link struct {
+			issue, number int64
+			title         string
+		}
+		var list []link
+		for rows.Next() {
+			var l link
+			if err := rows.Scan(&l.issue, &l.title, &l.number); err != nil {
+				rows.Close()
 				return err
 			}
-			type link struct {
-				issue, number int64
-				title         string
-			}
-			var list []link
-			for rows.Next() {
-				var l link
-				if err := rows.Scan(&l.issue, &l.title, &l.number); err != nil {
-					rows.Close()
-					return err
-				}
-				list = append(list, l)
-			}
-			rows.Close()
-			for _, l := range list {
-				i, err := s.issueByID(ctx, t, l.issue, false)
-				if err != nil {
-					return err
-				}
-				t.emit(&Event{Kind: EvExternalPROpened, ProjectID: i.ProjectID, IssueID: i.ID, IssueKey: i.Key, New: u, Old: "",
-					Data: map[string]any{"title": l.title, "number": l.number}})
+			list = append(list, l)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		for _, l := range list {
+			if _, err := s.emitPullOpened(ctx, t, l.issue, u, "", l.title, l.number, true); err != nil {
+				return err
 			}
 		}
-		return nil
-	})
-	if err != nil && readFault(err) {
-		s.log.WarnContext(ctx, "run what an approved pull request's links held", "err", err)
 	}
+	return nil
 }
 
 // errPROutside refuses work on a pull request from outside no person
@@ -415,6 +447,11 @@ func (s *Service) ApproveOutsidePR(ctx context.Context, actor *Actor, id int64) 
 			}
 			n, _ := res.RowsAffected()
 			opened = n > 0
+			if opened {
+				if err := s.outsidePullsOpened(ctx, t, pr.URL); err != nil {
+					return err
+				}
+			}
 		}
 		t.audit(AuditEntry{Action: "outside.approve", Category: AuditApproval, ProjectID: pid, TargetType: "pr", TargetID: pr.ID,
 			Target: fmt.Sprintf("%s#%d", pr.Repo, pr.Number), URL: pr.URL, Detail: "approved " + what + " from outside"})
@@ -437,7 +474,6 @@ func (s *Service) ApproveOutsidePR(ctx context.Context, actor *Actor, id int64) 
 	if !opened {
 		return nil
 	}
-	s.outsidePullOpened(ctx, pr.URL)
 	// What waited from it happens now, as for a pull request just opened.
 	cur, err := s.prByID(ctx, s.db.R, pr.ID)
 	if err != nil {
@@ -488,34 +524,37 @@ func (s *Service) DiscardOutsidePR(ctx context.Context, actor *Actor, id int64) 
 // login now mapped to a person: their pull requests, with their titles, and
 // their comments (read again from the forge next time).
 func (s *Service) releaseOutsidePRs(ctx context.Context, forgeID int64, login string) error {
-	rows, err := s.db.R.QueryContext(ctx, `SELECT url FROM pull_requests WHERE forge_id = ? AND outside = 1 AND author = ? COLLATE NOCASE AND state = 'open'`, forgeID, login)
-	if err != nil {
-		return err
-	}
-	var urls []string
-	for rows.Next() {
-		var u string
-		if err := rows.Scan(&u); err != nil {
-			rows.Close()
+	// One write: the pull requests it lets in are the ones whose held opens
+	// it runs.
+	return s.write(ctx, SystemActor(), func(t *tx) error {
+		rows, err := t.QueryContext(ctx, `SELECT url FROM pull_requests WHERE forge_id = ? AND outside = 1 AND author = ? COLLATE NOCASE`, forgeID, login)
+		if err != nil {
 			return err
 		}
-		urls = append(urls, u)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	if _, err := s.db.W.ExecContext(ctx, `UPDATE pull_requests SET outside = 0, title = coalesce((SELECT o.title FROM outside_pr_text o
-			WHERE o.pr_id = pull_requests.id AND o.external_id = ''), title)
-		WHERE forge_id = ? AND outside = 1 AND author = ? COLLATE NOCASE`, forgeID, login); err != nil {
-		return err
-	}
-	if _, err := s.db.W.ExecContext(ctx, `DELETE FROM outside_pr_text WHERE author = ? COLLATE NOCASE AND state = 'held'
-		AND pr_id IN (SELECT id FROM pull_requests WHERE forge_id = ?)`, login, forgeID); err != nil {
-		return err
-	}
-	s.outsidePullOpened(ctx, urls...)
-	return nil
+		var urls []string
+		for rows.Next() {
+			var u string
+			if err := rows.Scan(&u); err != nil {
+				rows.Close()
+				return err
+			}
+			urls = append(urls, u)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		if _, err := t.ExecContext(ctx, `UPDATE pull_requests SET outside = 0, title = coalesce((SELECT o.title FROM outside_pr_text o
+				WHERE o.pr_id = pull_requests.id AND o.external_id = ''), title)
+			WHERE forge_id = ? AND outside = 1 AND author = ? COLLATE NOCASE`, forgeID, login); err != nil {
+			return err
+		}
+		if _, err := t.ExecContext(ctx, `DELETE FROM outside_pr_text WHERE author = ? COLLATE NOCASE AND state = 'held'
+			AND pr_id IN (SELECT id FROM pull_requests WHERE forge_id = ?)`, login, forgeID); err != nil {
+			return err
+		}
+		return s.outsidePullsOpened(ctx, t, urls...)
+	})
 }
 
 // outsidePullsWaiting counts the pull requests with text from outside

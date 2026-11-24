@@ -686,6 +686,7 @@ func heldOwed(ctx context.Context, q queryer, roundID int64) (string, error) {
 		return "", nil
 	}
 	var key string
+	// #nosec G202 -- unapprovedOutsidePullSQL splices a column name, no value (WP-1802)
 	err := q.QueryRowContext(ctx, `SELECT p.key || '-' || i.number FROM work_log w JOIN agent_runs r ON r.id = w.run_id
 		JOIN issues i ON i.id = w.issue_id JOIN projects p ON p.id = i.project_id
 		WHERE w.id = ? AND w.before_pr != '' AND r.ended_at IS NULL AND i.resolved_at IS NULL

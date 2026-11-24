@@ -494,6 +494,11 @@ func (s *Service) releaseOutsideIssue(ctx context.Context, t *tx, issueID int64,
 			return err
 		}
 		t.emit(&Event{Kind: EvIssueUpdated, ProjectID: i.ProjectID, IssueID: id, IssueKey: i.Key, Field: "draft", Old: "draft", New: "published", quiet: true})
+		// As PublishIssue does: the pull requests that named it as a draft
+		// link it now (WP-1802).
+		if err := s.linkHeldOwnWork(ctx, t, id); err != nil {
+			return err
+		}
 	}
 	return nil
 }

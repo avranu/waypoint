@@ -601,6 +601,7 @@ func (s *Service) reviewFacts(ctx context.Context, id int64, in *roundIn) error 
 func (s *Service) endedFacts(ctx context.Context, r *roundRow, in *roundIn) error {
 	now := s.nowMS()
 	var updated, runEnd, sessEnd, moved int64
+	// #nosec G202 -- unapprovedOutsidePullSQL splices a column name, no value (WP-1802)
 	err := s.db.R.QueryRowContext(ctx, `SELECT w.updated_at, coalesce((SELECT ended_at FROM agent_runs WHERE id = w.run_id), 0),
 			coalesce((SELECT ended_at FROM agent_sessions WHERE id = w.session_id), 0),
 			coalesce((SELECT min(o.started_at) FROM agent_runs o WHERE o.session_id = w.session_id AND o.id > w.run_id AND o.issue_id != w.issue_id), 0),

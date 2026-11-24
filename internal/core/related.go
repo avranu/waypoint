@@ -399,6 +399,7 @@ type coMention struct {
 // (medium, never linked by itself). Items naming many issues (a release,
 // a sweep) say little and are left out.
 func (s *Service) forgeCoMentions(ctx context.Context, issueID int64) []coMention {
+	// #nosec G202 -- unapprovedOutsidePullSQL splices a column name, no value (WP-1802)
 	rows, err := s.db.R.QueryContext(ctx, `SELECT o.issue_id, max(me.own), group_concat(DISTINCT o.verb), coalesce(nullif(me.title, ''), me.repo), coalesce(me.number, 0), me.item_kind
 		FROM forge_mentions me
 		JOIN forge_mentions o ON o.item_url = me.item_url AND o.issue_id != me.issue_id AND o.gone_at IS NULL

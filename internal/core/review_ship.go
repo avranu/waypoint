@@ -218,6 +218,7 @@ func (s *Service) shipSettledRounds(ctx context.Context) {
 	// pre-filtered the way decideRound decides it (newest round, no pull
 	// request linked, in the window) so the batch isn't spent on rounds it
 	// leaves alone; decideRound is the one that says.
+	// #nosec G202 -- unapprovedOutsidePullSQL splices a column name, no value (WP-1802)
 	rows, err := s.db.R.QueryContext(ctx, `SELECT w.id FROM work_log w JOIN agent_runs r ON r.id = w.run_id
 		JOIN agent_sessions x ON x.id = w.session_id JOIN issues i ON i.id = w.issue_id
 		WHERE w.kind = 'review' AND w.before_pr != '' AND (

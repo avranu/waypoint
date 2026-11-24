@@ -368,9 +368,10 @@ func (s *Service) issueProject(ctx context.Context, q queryer, issueID int64) (i
 }
 
 // linkOwnWork links src's item to the issues it is the own work of,
-// unless someone unlinked it from one. It returns how many it linked. An
-// outside author's pull request leaves out an issue still waiting as an
-// outside draft: publishing it makes that link (WP-1802).
+// unless someone unlinked it from one. It returns how many it linked. A
+// pull request, approved or not, leaves out an issue still waiting as an
+// outside draft: what its link sets off would be the draft's, and dropped,
+// so publishing the issue makes the link and runs it (WP-1802).
 func (s *Service) linkOwnWork(ctx context.Context, t *tx, src forgeText, owned map[int64]*mentionHit) (int, error) {
 	var n int
 	number := any(nil)
@@ -378,16 +379,16 @@ func (s *Service) linkOwnWork(ctx context.Context, t *tx, src forgeText, owned m
 		number = src.item.Number
 	}
 	for issueID, m := range owned {
-		if src.kind == "pull" && !src.trusted {
-			var draft bool
-			if err := t.QueryRowContext(ctx, `SELECT outside FROM issues WHERE id = ?`, issueID).Scan(&draft); err != nil {
+		if src.kind == "pull" {
+			var outside bool
+			if err := t.QueryRowContext(ctx, `SELECT outside FROM issues WHERE id = ?`, issueID).Scan(&outside); err != nil {
 				return n, err
 			}
-			if draft {
+			if outside {
 				continue
 			}
 		}
-		added, err := s.linkOwnItem(ctx, t, issueID, src.f.ID, src.kind, src.item.URL, src.repo, number, src.item.Title, "", m.ref.Place)
+		added, err := s.linkOwnItem(ctx, t, issueID, src.f.ID, src.f.Kind, src.kind, src.item.URL, src.repo, number, src.item.Title, "", m.ref.Place)
 		if err != nil {
 			return n, err
 		}
@@ -401,7 +402,7 @@ func (s *Service) linkOwnWork(ctx context.Context, t *tx, src forgeText, owned m
 // linkOwnItem links an item to an issue as its own work, unless someone
 // unlinked it. It says whether a link was added; one made before forge
 // mentions were recorded only learns how.
-func (s *Service) linkOwnItem(ctx context.Context, t *tx, issueID, forgeID int64, kind, url, repo string, number any, title, state, place string) (bool, error) {
+func (s *Service) linkOwnItem(ctx context.Context, t *tx, issueID, forgeID int64, provider, kind, url, repo string, number any, title, state, place string) (bool, error) {
 	var unlinked bool
 	if err := t.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM issue_unlinks WHERE issue_id = ? AND url = ?)`, issueID, url).Scan(&unlinked); err != nil {
 		return false, err
@@ -409,12 +410,8 @@ func (s *Service) linkOwnItem(ctx context.Context, t *tx, issueID, forgeID int64
 	if unlinked {
 		return false, nil
 	}
-	f, err := s.forgeByID(ctx, forgeID)
-	if err != nil {
-		return false, err
-	}
 	res, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO external_links(issue_id, provider, kind, url, repo, number, title, state, synced_at, created_at, via)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?)`, issueID, f.Kind, kind, url, repo, number, title, state, s.nowMS(), s.nowMS(), place)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?)`, issueID, provider, kind, url, repo, number, title, state, s.nowMS(), s.nowMS(), place)
 	if err != nil {
 		return false, err
 	}
@@ -440,20 +437,21 @@ func (s *Service) linkOwnItem(ctx context.Context, t *tx, issueID, forgeID int64
 // state last seen, and sets off what opening one would have, unless a
 // person hasn't approved its pull request yet.
 func (s *Service) linkHeldOwnWork(ctx context.Context, t *tx, issueID int64) error {
-	rows, err := t.QueryContext(ctx, `SELECT forge_id, repo, item_url, number, title, state, place FROM forge_mentions
-		WHERE issue_id = ? AND own = 1 AND gone_at IS NULL AND item_kind = 'pull' AND number IS NOT NULL AND state IN ('open', 'draft', 'merged')`, issueID)
+	rows, err := t.QueryContext(ctx, `SELECT m.forge_id, f.kind, m.repo, m.item_url, m.number, m.title, m.state, m.place FROM forge_mentions m
+		JOIN forges f ON f.id = m.forge_id
+		WHERE m.issue_id = ? AND m.own = 1 AND m.gone_at IS NULL AND m.item_kind = 'pull' AND m.number IS NOT NULL AND m.state IN ('open', 'draft', 'merged')`, issueID)
 	if err != nil {
 		return err
 	}
 	type pull struct {
-		forgeID                        int64
-		repo, url, title, state, place string
-		number                         int
+		forgeID                                  int64
+		provider, repo, url, title, state, place string
+		number                                   int
 	}
 	var list []pull
 	for rows.Next() {
 		var p pull
-		if err := rows.Scan(&p.forgeID, &p.repo, &p.url, &p.number, &p.title, &p.state, &p.place); err != nil {
+		if err := rows.Scan(&p.forgeID, &p.provider, &p.repo, &p.url, &p.number, &p.title, &p.state, &p.place); err != nil {
 			rows.Close()
 			return err
 		}
@@ -464,26 +462,16 @@ func (s *Service) linkHeldOwnWork(ctx context.Context, t *tx, issueID int64) err
 		return err
 	}
 	for _, p := range list {
-		added, err := s.linkOwnItem(ctx, t, issueID, p.forgeID, "pull", p.url, p.repo, p.number, p.title, p.state, p.place)
+		added, err := s.linkOwnItem(ctx, t, issueID, p.forgeID, p.provider, "pull", p.url, p.repo, p.number, p.title, p.state, p.place)
 		if err != nil {
 			return err
 		}
 		if !added || p.state != "open" {
 			continue
 		}
-		var held bool
-		if err := t.QueryRowContext(ctx, `SELECT `+unapprovedOutsidePullSQL("?"), p.url).Scan(&held); err != nil {
+		if _, err := s.emitPullOpened(ctx, t, issueID, p.url, "", p.title, p.number, true); err != nil {
 			return err
 		}
-		if held {
-			continue
-		}
-		i, err := s.issueByID(ctx, t, issueID, false)
-		if err != nil {
-			return err
-		}
-		t.emit(&Event{Kind: EvExternalPROpened, ProjectID: i.ProjectID, IssueID: i.ID, IssueKey: i.Key, New: p.url,
-			Data: map[string]any{"title": p.title, "number": p.number}})
 	}
 	return nil
 }

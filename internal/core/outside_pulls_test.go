@@ -393,10 +393,13 @@ func TestUnapprovedOutsideLinkHoldsItsEffects(t *testing.T) {
 	}
 }
 
-// An outside author's pull request doesn't link to an issue still waiting
-// as an outside draft; publishing it makes the link (WP-1802, R-565).
+// No pull request links to an issue still waiting as an outside draft:
+// what the link set off would be the draft's, and dropped. Publishing it
+// makes the link, and runs the open unless no person approved the pull
+// request (WP-1802, R-565).
 func TestOutsidePullDoesNotLinkAnOutsideDraft(t *testing.T) {
 	se := newShipEnv(t, "forgejo")
+	opened := se.watch(EvExternalPROpened)
 	i := se.issue(se.admin, IssueInput{Project: se.p.Key, Title: "Login"})
 	se.mexec(`UPDATE issues SET draft = 1, outside = 1, outside_by = 'mallory' WHERE id = ?`, i.ID)
 	pr := ForgePR{Number: 62, Title: "Rework login", Author: "mallory", HeadRef: strings.ToLower(i.Key) + "-x",
@@ -414,14 +417,147 @@ func TestOutsidePullDoesNotLinkAnOutsideDraft(t *testing.T) {
 	if len(links) != 1 || links[0].Via != "branch" {
 		t.Fatalf("links after publishing: %+v", links)
 	}
+	if n := len(opened.all()); n != 0 {
+		t.Errorf("pr_opened for an unapproved pull request at publish = %d", n)
+	}
 
-	t.Run("a person's pull request links a draft as before", func(t *testing.T) {
+	t.Run("a person's pull request waits for the draft too, and publishing runs its open", func(t *testing.T) {
+		before := len(opened.all())
 		j := se.issue(se.admin, IssueInput{Project: se.p.Key, Title: "Sessions"})
 		se.mexec(`UPDATE issues SET draft = 1, outside = 1, outside_by = 'mallory' WHERE id = ?`, j.ID)
 		se.pullHook("opened", ForgePR{Number: 63, Title: "Sessions", Author: "sam", HeadRef: strings.ToLower(j.Key) + "-x", HeadSHA: "aaaaaaa6363", State: "open"})
 		se.s.Wait()
+		if links := se.get(se.admin, j.Key).Links; len(links) != 0 {
+			t.Fatalf("linked a draft: %+v", links)
+		}
+		if _, err := se.s.PublishIssue(se.ctx, se.admin, j.Key); err != nil {
+			t.Fatal(err)
+		}
+		se.s.Wait()
 		if links := se.get(se.admin, j.Key).Links; len(links) != 1 {
-			t.Fatalf("links: %+v", links)
+			t.Fatalf("links after publishing: %+v", links)
+		}
+		if n := len(opened.all()) - before; n != 1 {
+			t.Errorf("pr_opened at publish = %d", n)
+		}
+		if got := se.get(se.admin, j.Key).Status.Name; got != "In Review" {
+			t.Errorf("status after publishing = %q", got)
 		}
 	})
+}
+
+// Mapping an outside author's login to a person lets in their pull request
+// and publishes their draft; the pull request that named the draft links it
+// and runs its open, once (WP-1802).
+func TestMappingALoginLinksTheirPullToTheirDraft(t *testing.T) {
+	se := newShipEnv(t, "forgejo")
+	opened := se.watch(EvExternalPROpened)
+	i := se.issue(se.admin, IssueInput{Project: se.p.Key, Title: "Login"})
+	se.mexec(`UPDATE issues SET draft = 1, outside = 1, outside_by = 'mallory', outside_forge = ? WHERE id = ?`, se.f.ID, i.ID)
+	se.pullHook("opened", ForgePR{Number: 64, Title: "Rework login", Author: "mallory", HeadRef: strings.ToLower(i.Key) + "-x",
+		HeadSHA: "aaaaaaa6464", State: "open", HeadRepo: "mallory/app"})
+	// And one naming a published task: linked, held until mapping lets it in.
+	j := se.issue(se.admin, IssueInput{Project: se.p.Key, Title: "Sessions"})
+	se.pullHook("opened", ForgePR{Number: 67, Title: "Sessions", Author: "mallory", HeadRef: strings.ToLower(j.Key) + "-x",
+		HeadSHA: "aaaaaaa6767", State: "open", HeadRepo: "mallory/app"})
+	se.s.Wait()
+	if links := se.get(se.admin, i.Key).Links; len(links) != 0 {
+		t.Fatalf("linked a draft: %+v", links)
+	}
+	if links := se.get(se.admin, j.Key).Links; len(links) != 1 || len(opened.all()) != 0 {
+		t.Fatalf("published task: links %+v, opened %d", links, len(opened.all()))
+	}
+	if _, err := se.s.SetForgePeople(se.ctx, se.admin, se.f.ID, []ForgePersonInput{{Login: "mallory", User: se.admin.User.Username}}); err != nil {
+		t.Fatal(err)
+	}
+	se.s.Wait()
+	d := se.get(se.admin, i.Key)
+	if d.Draft || d.Outside {
+		t.Fatalf("still a draft: %+v", d.Issue)
+	}
+	if len(d.Links) != 1 {
+		t.Fatalf("links after mapping: %+v", d.Links)
+	}
+	if n := len(opened.all()); n != 2 {
+		t.Errorf("pr_opened after mapping = %d", n)
+	}
+	if d.Status.Name != "In Review" {
+		t.Errorf("status after mapping = %q", d.Status.Name)
+	}
+	if got := se.get(se.admin, j.Key).Status.Name; got != "In Review" {
+		t.Errorf("published task's status after mapping = %q", got)
+	}
+	// A sync that reads it again opens nothing twice.
+	se.pullHook("synchronized", ForgePR{Number: 64, Title: "Rework login", Author: "mallory", HeadRef: strings.ToLower(i.Key) + "-x",
+		HeadSHA: "aaaaaaa6464", State: "open", HeadRepo: "mallory/app"})
+	se.s.Wait()
+	if n := len(opened.all()); n != 2 {
+		t.Errorf("pr_opened after a second read = %d", n)
+	}
+}
+
+// An approved outside pull request that comes back with the approved title
+// and head runs what its links held, in the same write (WP-1802).
+func TestApprovedOutsidePullStillHoldsADraftLink(t *testing.T) {
+	se := newShipEnv(t, "forgejo")
+	i := se.issue(se.admin, IssueInput{Project: se.p.Key, Title: "Login"})
+	se.mexec(`UPDATE issues SET draft = 1, outside = 1, outside_by = 'mallory' WHERE id = ?`, i.ID)
+	pr := ForgePR{Number: 65, Title: "Rework login", Author: "mallory", HeadRef: strings.ToLower(i.Key) + "-x",
+		HeadSHA: "aaaaaaa6565", State: "open", HeadRepo: "mallory/app"}
+	se.pullHook("opened", pr)
+	se.s.Wait()
+	held, err := se.s.ListOutsidePR(se.ctx, se.admin, se.pr(65).ID)
+	if err != nil || len(held) != 1 {
+		t.Fatal(held, err)
+	}
+	if err := se.s.ApproveOutsidePR(se.ctx, se.admin, held[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	se.s.Wait()
+	se.pullHook("synchronized", pr) // the scan, now trusted
+	se.s.Wait()
+	if links := se.get(se.admin, i.Key).Links; len(links) != 0 {
+		t.Fatalf("an approved pull request linked a draft: %+v", links)
+	}
+}
+
+// A review round counts only a pull request a person let in as the task's:
+// an unapproved outside one linked to it doesn't end the round (WP-1802).
+func TestEndedFactsIgnoreAnUnapprovedOutsideLink(t *testing.T) {
+	se := newShipEnv(t, "forgejo")
+	i := se.issue(se.admin, IssueInput{Project: se.p.Key, Title: "Login"})
+	pr := ForgePR{Number: 66, Title: "Rework login", Author: "mallory", HeadRef: strings.ToLower(i.Key) + "-x",
+		HeadSHA: "aaaaaaa6666", State: "open", HeadRepo: "mallory/app"}
+	se.pullHook("opened", pr)
+	se.s.Wait()
+	if links := se.get(se.admin, i.Key).Links; len(links) != 1 {
+		t.Fatalf("links: %+v", links)
+	}
+	res, err := se.s.db.W.ExecContext(se.ctx, `INSERT INTO work_log(issue_id, kind, created_at, updated_at) VALUES (?, 'review', 1, 1)`, i.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	round, _ := res.LastInsertId()
+	var in roundIn
+	if err := se.s.endedFacts(se.ctx, &roundRow{id: round, issueID: i.ID}, &in); err != nil {
+		t.Fatal(err)
+	}
+	if in.Linked {
+		t.Error("an unapproved outside pull request counts as the task's")
+	}
+	held, err := se.s.ListOutsidePR(se.ctx, se.admin, se.pr(66).ID)
+	if err != nil || len(held) != 1 {
+		t.Fatal(held, err)
+	}
+	if err := se.s.ApproveOutsidePR(se.ctx, se.admin, held[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	se.s.Wait()
+	in = roundIn{}
+	if err := se.s.endedFacts(se.ctx, &roundRow{id: round, issueID: i.ID}, &in); err != nil {
+		t.Fatal(err)
+	}
+	if !in.Linked {
+		t.Error("an approved pull request doesn't count as the task's")
+	}
 }
