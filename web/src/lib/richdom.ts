@@ -396,10 +396,16 @@ function convert(el: HTMLElement, b: Block, caret: Range, rule: BlockRule): bool
   return true
 }
 
+// Marks a code block opened here by a typed "```". One opened from the saved
+// text may have had a longer fence or a "~~~" one, inside which a "```" line
+// is code, so only this one ends on a typed closing fence.
+const TYPED_FENCE = 'data-typed-fence'
+
 function codeBlock(el: HTMLElement, b: Block, lang: string): boolean {
   select(wholeOrContents(b))
   const cls = lang ? ` class="language-${escAttr(lang)}"` : ''
-  exec('insertHTML', `<pre><code${cls}>${EMPTY_LINE}</code></pre>`)
+  // The block knows its fence: Enter on a matching line ends it (inCode).
+  exec('insertHTML', `<pre ${TYPED_FENCE}><code${cls}>${EMPTY_LINE}</code></pre>`)
   const now = caretIn(el)
   const code = now && elementOf(now.startContainer)?.closest('pre')?.querySelector('code')
   if (code) caretAt(code, 0)
@@ -415,8 +421,11 @@ function inline(s: Scanned, caret: Range, m: InlineMatch): boolean {
   inner.setStart(...from)
   inner.setEnd(...to)
   const frag = inner.cloneContents()
-  // Code is text only: an image, checkbox or piece inside would be lost.
-  if (m.kind === 'code' && frag.querySelector('img,input,video,code,pre,[data-md]')) return false
+  // Code is text only: any element inside (an image, a checkbox, a piece, a
+  // line break, a link or bold) would be lost, and the typing stays literal.
+  if (m.kind === 'code' && frag.querySelector('*')) return false
+  // A link inside a link is none: the browser splits the outer one.
+  if (m.kind === 'link' && frag.querySelector(`a,[${PIECE_SRC}]`)) return false
   const full = document.createRange()
   full.setStart(...open)
   full.setEnd(caret.startContainer, caret.startOffset)
@@ -577,7 +586,7 @@ export function keyRules(el: HTMLElement, e: KeyLike): boolean {
   }
   if (b.node?.tagName === 'LI') {
     // An empty nested item steps out one level; only a top-level one ends the list.
-    if (isNested(b.node, el) && b.node.textContent!.replace(PARK, '').trim() === '') {
+    if (isNested(b.node, el) && blank(b.node)) {
       e.preventDefault()
       exec('outdent')
       return true
@@ -604,6 +613,15 @@ export function keyRules(el: HTMLElement, e: KeyLike): boolean {
 }
 
 const isList = (n: Element | null) => n?.tagName === 'UL' || n?.tagName === 'OL'
+
+// Content with no text of its own: an image, a video, a rule, code, a table, a
+// piece, a checkbox other than a task's own box.
+const TEXTLESS = `img,video,hr,pre,code,table,input:not(.task),[${PIECE_SRC}]`
+
+// A block with nothing in it: no text but white space and parking characters,
+// and none of the content that has no text.
+const blank = (n: Element) =>
+  n.textContent!.replace(/\ufeff/g, '').trim() === '' && !n.querySelector(TEXTLESS)
 
 // An item inside another list: Chromium's indent puts the new list in the
 // previous item or, as often, straight inside the outer list.
@@ -702,8 +720,10 @@ function inCode(el: HTMLElement, e: KeyLike, caret: Range, pre: Element): boolea
   if (e.key !== 'Enter') return false
   e.preventDefault()
   if (after === '') {
-    // A closing fence, or a second empty line, ends the block.
-    const fence = /(^|\n)```$/.exec(before)
+    // A closing fence, or a second empty line, ends the block. The fence
+    // closes the "```" typed to open it: three or more backticks and nothing
+    // but spaces after; in a block whose opener is not known it is code.
+    const fence = pre.hasAttribute(TYPED_FENCE) ? /(^|\n)`{3,}[ \t]*$/.exec(before) : null
     const gone = fence ? fence[0].length : before.endsWith('\n\n') ? 2 : 0
     if (gone) {
       eraseBack(gone)
@@ -717,8 +737,7 @@ function inCode(el: HTMLElement, e: KeyLike, caret: Range, pre: Element): boolea
 
 function quoteEnter(el: HTMLElement, e: KeyLike, p: Element): boolean {
   // An image is content though it has no text.
-  if (p.textContent !== '' || p.querySelector('img') || p.parentElement!.lastElementChild !== p)
-    return false
+  if (!blank(p) || p.parentElement!.lastElementChild !== p) return false
   e.preventDefault()
   // Outdent lifts the empty line out of the quote; with other lines left in
   // the quote it comes out as bare text, which is made a paragraph.
@@ -741,7 +760,7 @@ function taskEnter(el: HTMLElement, e: KeyLike, li: Element, caret: Range): bool
   if (!box) return false
   // Caret before the box: leave it to the browser.
   if (caret.comparePoint(box.parentNode!, indexIn(box)) > 0) return false
-  if (li.textContent!.trim() === '') {
+  if (blank(li)) {
     // An empty task is no task: the box goes and Enter leaves the list.
     removeBox(li)
     return false
@@ -753,7 +772,7 @@ function taskEnter(el: HTMLElement, e: KeyLike, li: Element, caret: Range): bool
   if (!next?.node) return true
   // The new item starts with a box in front of what followed the caret, which
   // stays; with nothing after the caret the item is only the box.
-  if (next.node.textContent === '') select(contentOf(next))
+  if (blank(next.node)) select(contentOf(next))
   exec('insertHTML', `${taskBox()}${GAP}`)
   caretAtStart(next.node)
   if (GECKO) dropStrandedGap(next.node.previousElementSibling)
@@ -787,7 +806,7 @@ function removeBox(li: Element, keepItem = false) {
   const next = box.nextSibling
   if (next?.nodeType === Node.TEXT_NODE && (next as Text).data.startsWith(GAP)) r.setEnd(next, 1)
   else r.setEndAfter(box)
-  if (keepItem && li.textContent!.trim() === '') {
+  if (keepItem && blank(li)) {
     // Taking the box out of an item with nothing else in it takes the whole
     // item (and the list). With a placeholder character in it, the item stays;
     // backspacing that last, visible character leaves the empty item.
