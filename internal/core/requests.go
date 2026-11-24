@@ -360,8 +360,8 @@ func requestVisible(actor *Actor, alias string) (string, []any) {
 }
 
 // resolveRequestID finds a request the actor may see from a reference: a
-// number (the id), R-12 (the session's, then the person's own, then the only
-// one), or KEY:R-12 / me:R-12.
+// number (the id), R-12 (the session's, then the only one), or
+// KEY:R-12 / me:R-12.
 func (s *Service) resolveRequestID(ctx context.Context, q queryer, actor *Actor, ref string) (int64, error) {
 	ref = strings.TrimSpace(ref)
 	if actor == nil || actor.User == nil {
@@ -419,8 +419,7 @@ func (s *Service) resolveRequestID(ctx context.Context, q queryer, actor *Actor,
 	if len(cands) == 1 {
 		return cands[0].id, nil
 	}
-	// Several projects number alike: the asking session's own come first,
-	// then the person's personal ones.
+	// Several projects number alike: the asking session's own come first.
 	for _, c := range cands {
 		if actor.Session != 0 && c.session.Valid && c.session.Int64 == actor.Session {
 			return c.id, nil
