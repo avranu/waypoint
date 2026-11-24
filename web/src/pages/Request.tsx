@@ -648,13 +648,12 @@ function Cells({ r }: { r: WRequest }) {
 
 function Cell({ r, cell }: { r: WRequest; cell: RequestCell }) {
   const run = useRunCell(r.ref)
-  const [cmd, setCmd] = useState(cell.command)
   const latest = cell.runs[0]
+  const [cmd, setCmd] = useState(latest?.command ?? cell.command)
   const busy = latest?.state === 'queued' || latest?.state === 'running' || run.isPending
   // A command a failed run sent back to the agent can be run again: that reopens it.
   const canRun =
     (r.state === 'open' || (r.state === 'failed' && r.kind === 'command')) && r.can_decide
-  // A reload after a run keeps what the person edited it to.
   const edited = cmd !== cell.command
   return (
     <div className="overflow-hidden rounded-xl border border-line bg-panel">

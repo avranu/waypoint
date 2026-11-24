@@ -258,6 +258,9 @@ async function run(width, scheme) {
   sentBack.close();
   await page.reload();
   await page.getByText(/ran it and it failed \(exit 2\), so it went back to the agent/).waitFor();
+  ok((await cell.inputValue()) === "make migrate ARGS=--dry-run", `${tag} a reload keeps the command the person ran`);
+  await page.getByRole("button", { name: "Reset to the agent’s command" }).click();
+  ok((await cell.inputValue()) === "make migrate", `${tag} and it can be reset to the agent's command`);
   ok(await page.getByRole("button", { name: "Run again" }).first().isVisible(), `${tag} a command sent back can be run again`);
   ok((await page.getByRole("button", { name: "Done" }).count()) === 0, `${tag} and isn't decided twice`);
   ok((await page.getByText("Applying failed").count()) === 0, `${tag} and doesn't read as a failed change`);
