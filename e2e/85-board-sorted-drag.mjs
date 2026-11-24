@@ -79,6 +79,7 @@ for (const vp of looks([
     await page.mouse.move(b.x + 60, b.y + 15, { steps: 14 });
     await page.mouse.move(b.x + 62, b.y + 17, { steps: 2 });
     await page.mouse.up();
+    // wplint:ignore e2e-wait a same-column drop under a sort sends no request: there is nothing to wait on
     await page.waitForTimeout(800);
   };
 
