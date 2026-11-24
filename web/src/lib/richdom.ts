@@ -18,7 +18,8 @@ import { PIECE_SRC, pieceHtml } from '@/lib/markdown'
 // A table cell is a block of its own: the caret in one is never in "the table".
 const TEXT_BLOCKS = new Set(['P', 'DIV', 'LI', 'TD', 'TH', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6'])
 const ANY_BLOCKS = new Set([...TEXT_BLOCKS, 'PRE', 'BLOCKQUOTE', 'UL', 'OL', 'TABLE', 'HR'])
-const TASK_BOX = '<input class="task" type="checkbox" contenteditable="false">'
+const taskBox = (checked = false) =>
+  `<input class="task" type="checkbox" contenteditable="false"${checked ? ' checked' : ''}>`
 
 /** A paragraph-like block: an element, or a bare run of nodes at the root. */
 type Block = { node: Element | null; parent: Node; from: number; to: number }
@@ -365,7 +366,7 @@ function convert(el: HTMLElement, b: Block, caret: Range, rule: BlockRule): bool
   tail.setEnd(content.endContainer, content.endOffset)
   const rest = html(tail.cloneContents())
   const body = rest || EMPTY_LINE
-  const box = (checked: boolean) => `${TASK_BOX.replace('>', checked ? ' checked>' : '>')}${GAP}`
+  const box = (checked: boolean) => `${taskBox(checked)}${GAP}`
   let out: string
   switch (rule.kind) {
     case 'heading':
@@ -749,7 +750,7 @@ function taskEnter(el: HTMLElement, e: KeyLike, li: Element, caret: Range): bool
   // The new item starts with a box in front of what followed the caret, which
   // stays; with nothing after the caret the item is only the box.
   if (next.node.textContent === '') select(contentOf(next))
-  exec('insertHTML', `${TASK_BOX}${GAP}`)
+  exec('insertHTML', `${taskBox()}${GAP}`)
   caretAtStart(next.node)
   if (GECKO) dropStrandedGap(next.node.previousElementSibling)
   return true
