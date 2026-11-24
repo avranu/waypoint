@@ -274,9 +274,11 @@ for (const [width, scheme] of looks([
         const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
         const dt = new DataTransfer();
         dt.items.add(new File([bytes], n, { type: "image/png" }));
-        el.dispatchEvent(
-          new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }),
-        );
+        const ev = new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true });
+        // Firefox ignores the init dictionary's clipboardData and gives the event
+        // an empty one, which still takes files; Chromium and WebKit kept ours.
+        if (!ev.clipboardData.files.length) ev.clipboardData.items.add(new File([bytes], n, { type: "image/png" }));
+        el.dispatchEvent(ev);
       },
       [PNG, name],
     );

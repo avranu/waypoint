@@ -99,6 +99,18 @@ export function RichTextInput({
   // the scroll position to the top and the click would move everything.
   const initial = useRef<string | null>(null)
   if (initial.current === null) initial.current = renderMarkdownForEdit(value) || EMPTY
+  // Where the page was scrolled when a click opened the editor, read before
+  // React swaps the rendered text for the editor. Playwright's WebKit resets
+  // the scrolled box to its top across that swap, which would move the page
+  // and put the caret where the click no longer is; it is put back below.
+  const scrolled = useRef<[Element, number][] | null>(null)
+  if (scrolled.current === null) {
+    scrolled.current = []
+    const hit = caretAt && document.elementFromPoint(caretAt.x, caretAt.y)
+    for (let n = hit || null; n; n = n.parentElement) {
+      if (n.scrollTop > 0) scrolled.current.push([n, n.scrollTop])
+    }
+  }
   // The markdown the DOM currently shows. An outside change that differs from
   // this is the only reason to replace the DOM under the person typing.
   const shown = useRef(value)
@@ -167,6 +179,7 @@ export function RichTextInput({
     } catch {
       // Older browsers ignore these; the browser's own blocks still serialize.
     }
+    for (const [n, top] of scrolled.current ?? []) if (n.isConnected) n.scrollTop = top
     if (autoFocus) {
       // Focusing scrolls the caret into view, which is what opening by the
       // keyboard wants; a click opened the editor where the person already is.

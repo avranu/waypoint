@@ -484,7 +484,27 @@ function tabInList(el: HTMLElement, e: KeyboardEvent): boolean {
   }
   // Chromium indents an item with no previous sibling into a list of its own.
   const prev = li.previousElementSibling
-  if (prev && (prev.tagName === 'LI' || isList(prev))) exec('indent')
+  if (!(prev && (prev.tagName === 'LI' || isList(prev)))) return true
+  const end = elementOf(r.endContainer)?.closest('li')
+  if (GECKO && end && end !== li && end.parentElement === li.parentElement) {
+    // Firefox's indent nests only the last item of a selection; one at a time
+    // is what Blink does for all of them.
+    const items: Element[] = []
+    for (let n: Element | null = li; n; n = n.nextElementSibling) {
+      items.push(n)
+      if (n === end) break
+    }
+    for (const item of items) {
+      caretAtStart(item)
+      exec('indent')
+    }
+    const all = document.createRange()
+    all.setStart(items[0], 0)
+    all.setEnd(items[items.length - 1], items[items.length - 1].childNodes.length)
+    select(all)
+    return true
+  }
+  exec('indent')
   return true
 }
 
@@ -608,6 +628,14 @@ function backspace(el: HTMLElement, e: KeyboardEvent, caret: Range): boolean {
     if (isNested(b.node, el) && (s.before === '' || /^\ufffc ?$/.test(s.before))) {
       e.preventDefault()
       exec('outdent')
+      // Firefox leaves the caret in front of a task's box, where typing would
+      // put the text outside the task; Blink leaves it after the box.
+      const now = GECKO ? caretIn(el) : null
+      const li = now && blockAt(el, now)?.node
+      if (li?.tagName === 'LI' && li.querySelector(':scope > input.task')) {
+        const box = li.querySelector(':scope > input.task')!
+        if (now!.comparePoint(box.parentNode!, indexIn(box)) >= 0) caretAtStart(li)
+      }
       return true
     }
     if (!/^\ufffc ?$/.test(s.before) || !b.node.querySelector(':scope > input.task')) return false
