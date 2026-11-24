@@ -186,7 +186,7 @@ func (c *StepCtx) freshPR(pr *PullRequest, checks bool) *PullRequest {
 // round that settles a conflict there must be able to push (WP-505). Source
 // code in a package called secrets is code, not a secret (WP-750).
 var protectedPaths = []string{
-	".github/**", ".forgejo/**", ".gitea/**", ".gitlab/**", ".circleci/**", ".woodpecker/**", ".gitlab-ci.yml", ".woodpecker.yml", ".drone.yml",
+	".github/**", ".forgejo/**", ".gitea/**", ".gitlab/**", ".waypoint/pre-push", ".circleci/**", ".woodpecker/**", ".gitlab-ci.yml", ".woodpecker.yml", ".drone.yml",
 	"Jenkinsfile", "azure-pipelines.yml",
 	"**/package-lock.json", "**/yarn.lock", "**/pnpm-lock.yaml", "**/bun.lock", "**/bun.lockb", "**/go.sum", "**/Cargo.lock", "**/poetry.lock",
 	"**/uv.lock", "**/Pipfile.lock", "**/Gemfile.lock", "**/composer.lock",

@@ -504,7 +504,11 @@ func (p *runnerProc) execAgent(ctx context.Context, run *jobRun, kind string, in
 		hx.join(ctx, result)
 	}
 	if !in.ReadOnly {
-		return p.deliver(ctx, run, in, bare, work, env, baseSHA, result, &pushed)
+		var chk *prePushCheck
+		if in.perm() != "read" && in.Patch == "" {
+			chk = &prePushCheck{env: cmd.Env, fix: p.prePushFix(run, in, path, work, cmd.Env)}
+		}
+		return p.deliver(ctx, run, in, bare, work, env, baseSHA, result, &pushed, chk)
 	}
 	return outcome{State: "done", Result: result}
 }
@@ -551,7 +555,7 @@ func (p *runnerProc) salvage(ctx context.Context, run *jobRun, in agentJob, bare
 		return timedOut
 	}
 	fmt.Fprintf(run.out, "\nThe agent ran out of time; delivering the commits it had made\n")
-	if d := p.deliver(ctx, run, in, bare, work, env, baseSHA, result, pushed); d.State != "done" {
+	if d := p.deliver(ctx, run, in, bare, work, env, baseSHA, result, pushed, nil); d.State != "done" {
 		timedOut.Error += " Its commits weren't pushed: " + excerpt(d.Error, 300)
 	}
 	return timedOut
@@ -561,21 +565,13 @@ func (p *runnerProc) salvage(ctx context.Context, run *jobRun, in agentJob, bare
 // left uncommitted is committed, changes to protected files are held back,
 // and the branch is pushed. result gains what was done; pushed is set once
 // the branch is on the remote.
-func (p *runnerProc) deliver(ctx context.Context, run *jobRun, in agentJob, bare, work string, env []string, baseSHA string, result map[string]any, pushed *bool) outcome {
+func (p *runnerProc) deliver(ctx context.Context, run *jobRun, in agentJob, bare, work string, env []string, baseSHA string, result map[string]any, pushed *bool, chk *prePushCheck) outcome {
 	{ // at the depth it had in execAgent, so the lines keep their history
-		if status, _ := p.git(ctx, work, "status", "--porcelain"); status != "" {
-			msg := strings.TrimSpace(in.CommitMessage)
-			if msg == "" {
-				msg = "Agent changes"
-			}
-			fmt.Fprintf(run.out, "\nCommitting the changes the agent left\n")
-			if _, err := p.git(ctx, work, "add", "-A"); err != nil {
-				return p.partial(result, "git add failed: %v", err)
-			}
-			if _, err := p.commit(ctx, work, msg, true); err != nil {
-				return p.partial(result, "committing the agent's changes failed: %v", err)
-			}
+		if err := p.commitLeft(ctx, run, in, work); err != nil {
+			return p.partial(result, "%v", err)
 		}
+		ctx, cancel := p.prePush(ctx, run, in, work, baseSHA, chk, result)
+		defer cancel()
 		revs, err := p.git(ctx, work, "rev-list", "--reverse", baseSHA+"..HEAD")
 		if err != nil {
 			return p.partial(result, "%v", err)

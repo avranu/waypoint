@@ -1,0 +1,34 @@
+#!/bin/sh
+# What a runner runs on an agent's commits before it pushes them, and what a
+# babysitting round is told to run before it ends (cmd/wp/runner_prepush.go):
+# CI's lint job on the parts this branch changes, as the pre-push hook of
+# .pre-commit-config.yaml picks them. A round's push that fails lint costs a
+# whole CI run and another round (WP-1808).
+set -u
+cd "$(dirname "$0")/.." || exit 1
+
+# A runner's checkout may not have main as origin/main yet; the checks
+# compare with it.
+git rev-parse -q --verify origin/main >/dev/null ||
+  git fetch -q origin main:refs/remotes/origin/main || true
+base=$(git merge-base HEAD origin/main 2>/dev/null || echo origin/main)
+changed=$(
+  git diff --name-only "$base" HEAD 2>/dev/null
+  git status --porcelain | cut -c4-
+)
+[ -n "$changed" ] || exit 0
+
+PATH="$(go env GOPATH)/bin:$PATH"
+status=0
+if echo "$changed" | grep -q -E '(\.go$|^go\.(mod|sum)$|^\.golangci\.yml$)'; then
+  command -v golangci-lint >/dev/null || make tools || status=1
+  make prepush-go || status=1
+fi
+if echo "$changed" | grep -q -E '^(\.forgejo/|\.github/|deploy/k8s/)'; then
+  command -v actionlint >/dev/null || make tools || status=1
+  make prepush-ops || status=1
+fi
+if echo "$changed" | grep -v '^web/dist/' | grep -q '^web/'; then
+  make prepush-web || status=1
+fi
+exit $status
