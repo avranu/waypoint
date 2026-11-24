@@ -70,7 +70,9 @@ const space = (c: string | undefined) => c !== undefined && (c === PARK || /[\s\
 // punctuation beside it, never a letter or digit (snake_case, file_name).
 const edge = (c: string | undefined) => c === undefined || !/[\p{L}\p{N}]/u.test(c)
 
-const SAFE_HREF = /^(?:https?:\/\/|mailto:|\/(?!\/)|#)\S+$/i
+// A root-relative path never starts "//" or "/\": browsers read a backslash
+// there as a slash, and the link would leave the site.
+const SAFE_HREF = /^(?:https?:\/\/|mailto:|\/(?![/\\])|#)\S+$/i
 
 /**
  * The inline markdown just completed by the character typed last, or null.
@@ -105,6 +107,13 @@ export function inlineRule(before: string, after: string): InlineMatch | null {
   return opener('em', before, after, c, 1)
 }
 
+// Whether the character at i follows an odd run of backslashes.
+function backslashed(s: string, i: number) {
+  let n = 0
+  while (i - n - 1 >= 0 && s[i - n - 1] === '\\') n++
+  return n % 2 === 1
+}
+
 function wrapped(
   kind: InlineKind,
   text: string,
@@ -131,11 +140,14 @@ function opener(
   const word = c === '_'
   if (word && !edge(after[0])) return null
   const delim = c.repeat(n)
+  // A backslash before a delimiter makes it literal.
+  if (backslashed(before, close)) return null
   for (let i = close - n; i >= 0; i--) {
     if (before.slice(i, i + n) !== delim) continue
     // The opener is not part of a longer run.
     if (before[i - 1] === c || before[i + n] === c) continue
     if (word && !edge(before[i - 1])) continue
+    if (backslashed(before, i)) continue
     const m = wrapped(kind, before, i, n, close)
     if (m) return m
   }

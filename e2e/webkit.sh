@@ -8,6 +8,14 @@
 # Needs docker and a built bin/waypoint (`make build`); `make e2e-webkit` does both.
 set -euo pipefail
 cd "$(dirname "$0")"
+# A suite that launches Chromium itself (no launchEngine, e.g. one that needs a
+# CDP session) would run on Chromium and be reported as a WebKit run: refuse it.
+for a in "${@:-85-rich-typing}"; do
+  for f in "$a"*.mjs; do
+    [ -e "$f" ] || { echo "webkit.sh: no suite $a" >&2; exit 1; }
+    grep -q launchEngine "$f" || { echo "webkit.sh: $f does not use launchEngine, so it cannot run under WebKit" >&2; exit 1; }
+  done
+done
 [ -d node_modules/playwright ] || npm ci --no-audit --no-fund
 ver=$(node -p 'require("./node_modules/playwright/package.json").version')
 port=$(node -e 'const s=require("net").createServer().listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})')

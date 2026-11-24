@@ -415,6 +415,8 @@ function inline(s: Scanned, caret: Range, m: InlineMatch): boolean {
   inner.setStart(...from)
   inner.setEnd(...to)
   const frag = inner.cloneContents()
+  // Code is text only: an image, checkbox or piece inside would be lost.
+  if (m.kind === 'code' && frag.querySelector('img,input,video,code,pre,[data-md]')) return false
   const full = document.createRange()
   full.setStart(...open)
   full.setEnd(caret.startContainer, caret.startOffset)
@@ -714,7 +716,9 @@ function inCode(el: HTMLElement, e: KeyLike, caret: Range, pre: Element): boolea
 }
 
 function quoteEnter(el: HTMLElement, e: KeyLike, p: Element): boolean {
-  if (p.textContent !== '' || p.parentElement!.lastElementChild !== p) return false
+  // An image is content though it has no text.
+  if (p.textContent !== '' || p.querySelector('img') || p.parentElement!.lastElementChild !== p)
+    return false
   e.preventDefault()
   // Outdent lifts the empty line out of the quote; with other lines left in
   // the quote it comes out as bare text, which is made a paragraph.

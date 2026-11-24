@@ -74,6 +74,19 @@ type Props = {
 // the browser leaves the first line as bare text that no rule can see.
 const EMPTY = '<p><br></p>'
 
+// Marks the editor empty for its placeholder: one paragraph holding only a
+// <br>, no text. (CSS alone can't tell that from "text<br>text", where the
+// <br> is the only child element too.)
+const markEmpty = (el: HTMLElement) =>
+  el.toggleAttribute(
+    'data-empty',
+    el.textContent === '' &&
+      el.children.length === 1 &&
+      el.firstElementChild?.tagName === 'P' &&
+      el.firstElementChild.children.length === 1 &&
+      el.firstElementChild.firstElementChild?.tagName === 'BR',
+  )
+
 type Mention = { node: Text; start: number; end: number; text: string }
 
 /**
@@ -168,6 +181,7 @@ export function RichTextInput({
     // A ticked box changes the property, not the attribute innerHTML shows.
     for (const box of Array.from(el.querySelectorAll<HTMLInputElement>('input[type=checkbox]')))
       box.toggleAttribute('checked', box.checked)
+    markEmpty(el)
     const md = htmlToMarkdown(el.innerHTML)
     shown.current = md
     latest.current = md
@@ -187,6 +201,7 @@ export function RichTextInput({
       // Older browsers ignore these; the browser's own blocks still serialize.
     }
     for (const [n, top] of scrolled.current ?? []) if (n.isConnected) n.scrollTop = top
+    markEmpty(el)
     if (autoFocus) {
       // Focusing scrolls the caret into view, which is what opening by the
       // keyboard wants; a click opened the editor where the person already is.
@@ -211,6 +226,7 @@ export function RichTextInput({
     const caret = el.contains(document.activeElement) ? caretOffset(el) : null
     el.innerHTML = renderMarkdownForEdit(value) || EMPTY
     shown.current = value
+    markEmpty(el)
     if (caret !== null) placeCaretAt(el, caret)
   }, [value])
 
@@ -243,6 +259,9 @@ export function RichTextInput({
         }
       } catch (err) {
         console.error('typed markdown rule failed', err)
+        // The rule may have changed the DOM before it threw: the draft takes
+        // what is there, as an input event's does.
+        sync()
       }
     }
     el.addEventListener('beforeinput', onBefore)
@@ -282,7 +301,13 @@ export function RichTextInput({
   const pick = (u: UserRef) => {
     if (!mention) return
     const { node, start, end } = mention
-    editor.current?.focus()
+    // The text may have been replaced since the menu opened (a draft
+    // refresh): a range into a detached node no longer means the trigger.
+    if (!editor.current?.contains(node) || end > node.data.length || node.data[start] !== '@') {
+      setMention(null)
+      return
+    }
+    editor.current.focus()
     const range = document.createRange()
     range.setStart(node, start)
     range.setEnd(node, end)
@@ -610,6 +635,7 @@ export function RichTextInput({
             }
           } catch (err) {
             console.error('typed markdown rule failed', err)
+            sync()
           }
         }}
         onClick={(e) => {
@@ -643,6 +669,14 @@ export function RichTextInput({
           }
         }}
         onKeyDown={(e) => {
+          // A key in an IME composition belongs to the IME (Enter confirms a
+          // candidate, Escape clears it): not the menu's, the rules', or the
+          // parent's save and close. Safari reports it after the composition
+          // ended, as keyCode 229.
+          if (e.nativeEvent.isComposing || e.keyCode === 229) {
+            keyed.current = false
+            return
+          }
           keyed.current = e.key === 'Enter' || e.key === 'Backspace'
           // Markdown has no underline; the shortcut would make one that
           // vanishes on save.

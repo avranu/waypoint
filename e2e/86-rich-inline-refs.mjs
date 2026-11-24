@@ -391,7 +391,8 @@ for (const [width, scheme] of looks(
     await press("Control+End");
     await type(" [[Again]]");
     await press("Backspace");
-    console.log(`info ${tag} Backspace right after a converted wikilink leaves ${JSON.stringify(await richBox.evaluate((el) => el.textContent.trim()))} and ${await pieceCount()} piece(s)`);
+    const left = await richBox.evaluate((el) => el.textContent.replace(/[\ufeff\u00a0]/g, " ").trim());
+    ok((await pieceCount()) === 0 && left === "Start", `${tag} Backspace right after a converted wikilink removes it and leaves Start (${JSON.stringify(left)}, ${await pieceCount()} piece(s))`);
   }
   {
     await openSmall("Typed mention", "Start");
@@ -402,6 +403,17 @@ for (const [width, scheme] of looks(
     ok((await pieceCount()) === 1, `${tag} a space after it converts the mention (${await pieceCount()})`);
     await press("Control+z");
     ok((await pieceCount()) === 0, `${tag} one undo gives back the typed mention`);
+  }
+
+  // What follows a piece is not part of it: no "]" is escaped between them.
+  for (const tail of ["(draft)", "[[Bar]]"]) {
+    const i = await openSmall(`Piece then ${tail}`, "Start");
+    await press("Control+End");
+    await type(` [[Foo]]${tail}`);
+    await done.click();
+    const want = `Start [[Foo]]${tail}`;
+    const got = await waitDesc(i.key, want);
+    ok(got === want, `${tag} [[Foo]] directly followed by ${tail} saves as typed (${JSON.stringify(got)})`);
   }
 
   // A piece with a letter typed straight after it, and a piece at the end of a paragraph.

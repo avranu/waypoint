@@ -149,8 +149,8 @@ body {
   display: none;
 }
 
-/* An empty editor holds one empty paragraph (see RichTextInput). */
-.rich-editor > p:only-child:has(> br:only-child)::before {
+/* An empty editor holds one empty paragraph; RichTextInput sets data-empty. */
+.rich-editor[data-empty] > p::before {
   content: var(--rich-placeholder);
   color: var(--wp-subtle);
   pointer-events: none;

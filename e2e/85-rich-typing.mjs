@@ -421,7 +421,8 @@ for (const [width, scheme] of looks(
         await type(`${src} y`);
       },
       null,
-      (h) => !/<a /.test(h),
+      // The syntax stays as typed: no link or image, and not dropped either.
+      (h) => !/<a |<img /.test(h) && h.includes(src),
     );
 
   // 11. Undo gives back what was typed.
@@ -948,7 +949,13 @@ for (const [width, scheme] of looks(
       throw e;
     });
     const after = await measure();
-    ok(JSON.stringify(after.scrollers.filter(Boolean)) === JSON.stringify(before.scrollers.filter(Boolean)) && after.scrollY === before.scrollY, `${tag} nothing scrolled (${before.scrollers.filter(Boolean)} -> ${after.scrollers.filter(Boolean)})`);
+    // The editor may sit a level deeper than the view, so the ancestors are
+    // lined up from the root; every one they share keeps its scroll, zero included.
+    const rootward = (a) => [...a].reverse();
+    const shared = Math.min(before.scrollers.length, after.scrollers.length);
+    const was = rootward(before.scrollers).slice(0, shared);
+    const now = rootward(after.scrollers).slice(0, shared);
+    ok(JSON.stringify(now) === JSON.stringify(was) && after.scrollY === before.scrollY, `${tag} nothing scrolled (${was} -> ${now})`);
     ok(JSON.stringify(after.self) === JSON.stringify(before.self), `${tag} the description box is where it was (${before.self} -> ${after.self})`);
     ok(JSON.stringify(after.above) === JSON.stringify(before.above), `${tag} what is above did not move`);
     ok(JSON.stringify(after.below) === JSON.stringify(before.below), `${tag} what is below did not move (${JSON.stringify(before.below)} -> ${JSON.stringify(after.below)})`);

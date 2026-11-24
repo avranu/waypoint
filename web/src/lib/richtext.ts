@@ -164,17 +164,36 @@ function target(url: string) {
 }
 
 // A code block's text. The browser writes a newline typed in one as <br>, and
-// a <br> at the very end only holds the last line open, so it is no text.
+// a <br> at the very end only holds the last line open, so it is no text; the
+// rendered form of a block likewise ends in a newline. Exactly one trailing
+// newline goes, so a blank last line the person made is kept.
 function codeText(node: Node): string {
   const text = (n: Node): string =>
     n.nodeType === Node.TEXT_NODE
       ? (n as Text).data
       : n.nodeName === 'BR'
         ? '\n'
-        : Array.from(n.childNodes).map(text).join('')
+        : (pieceOf(n) ?? Array.from(n.childNodes).map(text).join(''))
   const all = text(node)
-  const last = (node.lastChild?.nodeName === 'CODE' ? node.lastChild : node).lastChild
-  return last?.nodeName === 'BR' && all.endsWith('\n') ? all.slice(0, -1) : all
+  return all.endsWith('\n') ? all.slice(0, -1) : all
+}
+
+// The markdown of a wikilink or @mention the editor drew, or null.
+function pieceOf(node: Node): string | null {
+  if (node.nodeType !== Node.ELEMENT_NODE) return null
+  const el = node as HTMLElement
+  const piece = el.getAttribute(PIECE_SRC)
+  return piece !== null && el.getAttribute('contenteditable') === 'false' && isPieceSrc(piece)
+    ? piece
+    : null
+}
+
+// An element's text for a code span, a piece being its markdown, not its label.
+function plainText(node: Node): string {
+  const piece = pieceOf(node)
+  if (piece !== null) return piece
+  if (node.nodeType === Node.TEXT_NODE) return (node as Text).data
+  return Array.from(node.childNodes).map(plainText).join('')
 }
 
 function serialize(node: Node, opts: Opts = {}): string {
@@ -190,9 +209,8 @@ function serialize(node: Node, opts: Opts = {}): string {
   const inner = (o: Opts = opts) => children(el, o)
 
   // A wikilink or @mention the editor drew: its markdown, as it was.
-  const piece = el.getAttribute(PIECE_SRC)
-  if (piece !== null && el.getAttribute('contenteditable') === 'false' && isPieceSrc(piece))
-    return piece
+  const piece = pieceOf(el)
+  if (piece !== null) return piece
 
   switch (tag) {
     case 'br':
@@ -208,12 +226,12 @@ function serialize(node: Node, opts: Opts = {}): string {
     case 'del':
       return wrap('~~', inner())
     case 'code':
-      if (el.parentElement?.tagName.toLowerCase() === 'pre') return el.textContent ?? ''
-      return codeSpan(el.textContent ?? '')
+      if (el.parentElement?.tagName.toLowerCase() === 'pre') return plainText(el)
+      return codeSpan(plainText(el))
     case 'pre': {
       const code = el.querySelector('code')
-      const lang = (code?.className.match(/language-([\w-]+)/) ?? [])[1] ?? ''
-      const body = codeText(code ?? el).replace(/\n$/, '')
+      const lang = (code?.className.match(/(?:^|\s)language-(\S+)/) ?? [])[1] ?? ''
+      const body = codeText(code ?? el)
       // A table cell is one line: code pasted into one stays inline code.
       if (opts.cell) return codeSpan(oneLine(body))
       const longest = Math.max(0, ...(body.match(/`+/g) ?? []).map((r) => r.length))
@@ -292,7 +310,14 @@ function oneLine(md: string) {
 
 function children(node: Node, opts: Opts = {}) {
   let out = ''
-  for (const child of Array.from(node.childNodes)) out = join(out, serialize(child, opts))
+  let afterPiece = false
+  for (const child of Array.from(node.childNodes)) {
+    const md = serialize(child, opts)
+    // A wikilink or mention is whole as it is: what follows it (a "(" after
+    // "]]") is not part of it, so nothing is escaped between them.
+    out = afterPiece ? out + md : join(out, md)
+    afterPiece = pieceOf(child) !== null
+  }
   return out
 }
 
@@ -323,6 +348,7 @@ function blocksOf(nodes: Node[], opts: Opts = {}) {
   let out = ''
   let run = ''
   let afterBlock = false
+  let afterPiece = false
   // Inline text gets a blank line from a block on either side, so neither
   // joins the other: text right above a rule would become a setext heading,
   // and text right under a paragraph, quote or list would continue it.
@@ -338,7 +364,12 @@ function blocksOf(nodes: Node[], opts: Opts = {}) {
       out += text(true) + serialize(child, opts)
       run = ''
       afterBlock = true
-    } else run = join(run, serialize(child, opts))
+      afterPiece = false
+    } else {
+      const md = serialize(child, opts)
+      run = afterPiece ? run + md : join(run, md)
+      afterPiece = pieceOf(child) !== null
+    }
   }
   return out + text(false)
 }

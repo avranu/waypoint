@@ -241,13 +241,17 @@ export function MarkdownEditor({
     if (!editing) setPicked(null)
   }, [editing])
   const editor = picked ?? opening
+  // The click that opened the editor placed its caret once; a later switch of
+  // mode must not reuse the point, the layout under it having changed.
   const toRich = () => {
+    setClicked(undefined)
     if (survivesRichEdit(draft)) {
       writeMode('rich')
       setPicked({ mode: 'rich', note: false })
     } else setPicked({ mode: 'md', note: true })
   }
   const toMarkdown = () => {
+    setClicked(undefined)
     writeMode('md')
     setPicked({ mode: 'md', note: false })
   }

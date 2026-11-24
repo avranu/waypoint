@@ -488,12 +488,14 @@ for (const [width, scheme] of looks(
   }
 
   // 7. Multi-character inserts that are not compositions stay literal.
+  // What the editor shows, as text: markup gone, no-break spaces and markers plain.
+  const shownText = (h) => h.replace(/<[^>]*>/g, "").replace(/&nbsp;/g, " ").replace(/&gt;/g, ">").replace(/&lt;/g, "<").replace(/&amp;/g, "&").replace(/\ufeff/g, "");
   for (const [src, md] of [
     ["# ", "\\#"],
-    ["- ", "-"],
-    ["> ", ">"],
+    ["- ", "\\-"],
+    ["> ", "\\>"],
     ["1. ", "1\\."],
-    ["[ ] ", "\\[ \\]"],
+    ["[ ] ", "[ ]"],
     ["a `b`", "a \\`b\\`"],
     ["**b**", "\\*\\*b\\*\\*"],
     ["a ~~b~~", "a \\~\\~b\\~\\~"],
@@ -505,13 +507,13 @@ for (const [width, scheme] of looks(
         // characters, as a drop or an autocorrect that replaces text arrive.
         await page.keyboard.insertText(src);
       },
-      null,
-      (h) => !/<(h\d|ul|ol|strong|em|s|code|blockquote|input)\b/.test(h),
+      md,
+      (h) => !/<(h\d|ul|ol|strong|em|s|code|blockquote|input)\b/.test(h) && shownText(h).includes(src.trim()),
     );
   await typed("inserted fence stays literal", async () => {
     await page.keyboard.insertText("```");
     await word("x");
-  }, null, (h) => !/<pre/.test(h));
+  }, null, (h) => !/<pre/.test(h) && shownText(h).includes("```x"));
   // 8. Undo after a composed conversion gives the typed text back.
   await typed("undo a composed heading", async () => {
     await cc("# ");
