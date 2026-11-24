@@ -532,3 +532,44 @@ func TestAdvisoriesJobIsInWorkflow(t *testing.T) {
 		t.Errorf("ci.yml has no job %q: advisoriesJob and the workflow disagree", advisoriesJob)
 	}
 }
+
+// WP-1707: the stacks_failing title counts what its trigger counts (failed and
+// conflicts), not the cancelled ones, which StackFates breaks down by reason.
+func TestCIDoctorStacksFailingTitleCount(t *testing.T) {
+	be, pr := armedBabysit(t)
+	now := be.clockNow()
+	n := 0
+	add := func(state, reason string) {
+		t.Helper()
+		n++
+		if _, err := be.s.db.W.ExecContext(be.ctx, `INSERT INTO queue_stacks(forge_id, repo, base_ref, pr_id, base_sha, branch, commit_sha, state, note, run_url, created_at, ended_at, end_reason)
+			VALUES (?,?,?,?,'b','wp-queue/main/1','c',?,'','',?,?,?)`,
+			pr.ForgeID, pr.Repo, pr.BaseRef, pr.ID, state, now.Add(-time.Duration(n)*10*time.Minute).UnixMilli(), now.UnixMilli(), reason); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add("failed", endFailed)
+	add("failed", endFailed)
+	add(stackConflict, "")
+	for range 3 {
+		add("cancelled", endBaseRed)
+	}
+	for range 2 {
+		add("cancelled", endBaseMoved)
+	}
+	d, err := be.s.CIDoctor(be.ctx, be.admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := slices.IndexFunc(d.Findings, func(f CIFinding) bool { return f.Kind == "stacks_failing" })
+	if i < 0 {
+		t.Fatalf("no stacks_failing finding: %+v", d.Findings)
+	}
+	title := d.Findings[i].Title
+	if !strings.Contains(title, ": 3 candidates failed and none passed in the last ") {
+		t.Errorf("title = %q", title)
+	}
+	if !strings.Contains(title, "5 cancelled (3 base red, 2 base moved)") {
+		t.Errorf("title lacks the cancelled breakdown: %q", title)
+	}
+}

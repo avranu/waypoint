@@ -1851,8 +1851,8 @@ func doctorFindings(d *CIDoctor, b *CIBoard, now time.Time, extra ...CIFinding) 
 		}
 		if st := l.Stacks; stacksFailing(st) {
 			f := CIFinding{Level: "warn", Kind: "stacks_failing", Repo: l.Repo,
-				Title: fmt.Sprintf("%s: none of the %d stacked places that ended in the last %s passed (%s); the line merges one full run at a time",
-					where, st.Failed+st.Conflicts+st.Cancelled, ShortDuration(doctorTrend), StackFates(st)),
+				Title: fmt.Sprintf("%s: %d candidates failed and none passed in the last %s (%s); the line merges one full run at a time",
+					where, st.Failed+st.Conflicts, ShortDuration(doctorTrend), StackFates(st)),
 				Detail: "A candidate is built from the base and the first places of the merge line and gets a full run, so the front can merge on it; when they all fail, each costs a full run of runners and saves no time.",
 				URL:    st.LastRun}
 			if st.LastFail != "" {
@@ -2058,8 +2058,8 @@ func doctorBottleneck(d *CIDoctor) {
 		}
 	}
 	if st := worst.Stacks; stacksFailing(st) {
-		bn.Evidence = append(bn.Evidence, fmt.Sprintf("its stacks don't help: none of %d stacked places passed in the last %s (%s)",
-			st.Failed+st.Conflicts+st.Cancelled, ShortDuration(doctorTrend), StackFates(st)))
+		bn.Evidence = append(bn.Evidence, fmt.Sprintf("its stacks don't help: %d candidates failed and none passed in the last %s (%s)",
+			st.Failed+st.Conflicts, ShortDuration(doctorTrend), StackFates(st)))
 	}
 	bn.Evidence = append(bn.Evidence, fmt.Sprintf("the runners are not it: %.0f%% busy over the last 3h, typical wait %s", p.Busy3h*100, dur(p.WaitP50_3h)))
 	bn.Summary = head
