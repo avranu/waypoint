@@ -304,7 +304,13 @@ func (s *Service) recordPR(ctx context.Context, f *Forge, repo string, fp *Forge
 	if fp.HeadSHA != "" && (fp.State == "open" || fp.State == "draft") {
 		if prev, perr := s.prByNumber(ctx, s.db.R, f.ID, repo, fp.Number); perr == nil {
 			if prev != nil && prev.State == "draft" && fp.State == "open" && prev.HeadSHA == fp.HeadSHA && !sameSHA(prev.readySHA, fp.HeadSHA) {
-				readyEditRuns, _ = s.ciRunsOnEdit(ctx, f, repo, fp.HeadSHA)
+				var rerr error
+				if readyEditRuns, rerr = s.ciRunsOnEdit(ctx, f, repo, fp.HeadSHA); rerr != nil {
+					// A failed read is not "no run": hold it as if the edit runs
+					// the checks (fullRunStalled lifts the hold where it does not).
+					s.log.WarnContext(ctx, "read the workflows for a draft made ready by an edit", "repo", repo, "pr", fp.Number, "err", rerr)
+					readyEditRuns = true
+				}
 			}
 			carry = s.carryDecision(ctx, f, repo, prev, fp)
 		}
