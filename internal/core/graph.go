@@ -522,7 +522,9 @@ func loadRelGraph(ctx context.Context, q queryer) (*relGraph, error) {
 	}); err != nil {
 		return nil, err
 	}
-	if err := each(`SELECT issue_id, item_url, repo, coalesce(number, 0), title, state, max(own), group_concat(DISTINCT verb)
+	// "Its text says": only trusted text's verbs (an outside row has no
+	// excerpt), as on the pull request page (WP-1785).
+	if err := each(`SELECT issue_id, item_url, repo, coalesce(number, 0), title, state, max(own), group_concat(DISTINCT CASE WHEN excerpt != '' THEN verb END)
 		FROM forge_mentions WHERE item_kind = 'pull' AND gone_at IS NULL GROUP BY issue_id, item_url ORDER BY min(id)`, func(r *sql.Rows) error {
 		var u pullUse
 		var issue int64

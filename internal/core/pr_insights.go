@@ -528,32 +528,63 @@ func prLinksSQL(actor *Actor, ids []any) (string, []any) {
 }
 
 // prMentions adds the issues the pull requests' text names but which aren't
-// linked to them (WP-379), as the actor can see them.
+// linked to them (WP-379), as the actor can see them. Each shows the verb of
+// the row the issue page's mention takes it from (mentionRank), but only a
+// trusted text's: the page doesn't say who wrote it, so an outside comment's
+// "fixes" would read as the pull request's own claim.
 func (s *Service) prMentions(ctx context.Context, actor *Actor, ids []any, byID map[int64]*PRSummary) error {
 	vis, vargs := visibleSQL("i.project_id", actor)
 	// #nosec G202 -- vis is a fixed condition and the rest placeholders; values are bound
-	rows, err := s.db.R.QueryContext(ctx, `SELECT p.id, i.id, pj.key || '-' || i.number, i.title, st.name, st.category, COALESCE((SELECT fm2.verb FROM forge_mentions fm2 WHERE fm2.item_url = p.url AND fm2.issue_id = i.id AND fm2.gone_at IS NULL ORDER BY CASE WHEN fm2.verb IN ('fixes','closes','resolves','implements','issue') THEN 3 WHEN fm2.verb = '' THEN 0 WHEN fm2.verb = 'relates' THEN 1 ELSE 2 END DESC, fm2.id LIMIT 1), '')
+	rows, err := s.db.R.QueryContext(ctx, `SELECT p.id, i.id, pj.key || '-' || i.number, i.title, st.name, st.category, fm.verb, fm.excerpt
 		FROM pull_requests p
 		JOIN forge_mentions fm ON fm.item_url = p.url AND fm.gone_at IS NULL
 		JOIN issues i ON i.id = fm.issue_id JOIN projects pj ON pj.id = i.project_id JOIN statuses st ON st.id = i.status_id
 		WHERE p.id IN (`+idList(len(ids))+`) AND `+vis+` AND `+draftsHidden(actor, "i")+`
 		AND NOT EXISTS (SELECT 1 FROM external_links el WHERE el.issue_id = i.id AND el.kind = 'pull' AND (el.url = p.url OR (el.repo = p.repo COLLATE NOCASE AND el.number = p.number)))
-		GROUP BY p.id, i.id ORDER BY i.id`, append(slices.Clone(ids), vargs...)...)
+		ORDER BY i.id, fm.created_at DESC, fm.id DESC`, append(slices.Clone(ids), vargs...)...)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
+	type pi struct{ pr, issue int64 }
+	type pick struct {
+		pr      *PRSummary
+		at      int // index in pr.Mentions
+		rank    int
+		trusted bool
+	}
+	picked := map[pi]*pick{}
 	for rows.Next() {
 		var prID int64
 		var m PRIssue
-		if err := rows.Scan(&prID, &m.ID, &m.Key, &m.Title, &m.Status, &m.Category, &m.Verb); err != nil {
+		var excerpt string
+		if err := rows.Scan(&prID, &m.ID, &m.Key, &m.Title, &m.Status, &m.Category, &m.Verb, &excerpt); err != nil {
 			return err
 		}
-		if p := byID[prID]; p != nil {
-			p.Mentions = append(p.Mentions, m)
+		p := byID[prID]
+		if p == nil {
+			continue
+		}
+		k := pi{prID, m.ID}
+		r := mentionRank(ForgeMention{Verb: m.Verb, Excerpt: excerpt})
+		if c := picked[k]; c != nil {
+			if r > c.rank { // a tie keeps the newer, as forgeMentions does
+				c.pr.Mentions[c.at].Verb, c.rank, c.trusted = m.Verb, r, excerpt != ""
+			}
+			continue
+		}
+		picked[k] = &pick{pr: p, at: len(p.Mentions), rank: r, trusted: excerpt != ""}
+		p.Mentions = append(p.Mentions, m)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, c := range picked {
+		if !c.trusted {
+			c.pr.Mentions[c.at].Verb = ""
 		}
 	}
-	return rows.Err()
+	return nil
 }
 
 // ---- one pull request ----
