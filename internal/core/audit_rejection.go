@@ -111,7 +111,7 @@ func (s *Service) rejecterModel(ctx context.Context, actor *Actor) strength.Mode
 	return currentVersion(strength.Parse(model, effort))
 }
 
-// weighRejections holds an agent's rejection of findings to what Jess
+// weighRejections holds an agent's rejection of findings to the rule R-569
 // decided (WP-1825): outside the round's own, it gives evidence and is as
 // strong as the model that found each finding. It returns what to keep with
 // each verdict.
