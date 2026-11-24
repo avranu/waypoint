@@ -8,13 +8,14 @@ import {
   fenceRule,
   inlineRule,
   OPAQUE,
+  PARK,
   ruleLine,
-  ZWSP,
   type BlockRule,
   type InlineMatch,
 } from '@/lib/richinput'
 
-const TEXT_BLOCKS = new Set(['P', 'DIV', 'LI', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6'])
+// A table cell is a block of its own: the caret in one is never in "the table".
+const TEXT_BLOCKS = new Set(['P', 'DIV', 'LI', 'TD', 'TH', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6'])
 const ANY_BLOCKS = new Set([...TEXT_BLOCKS, 'PRE', 'BLOCKQUOTE', 'UL', 'OL', 'TABLE', 'HR'])
 const TASK_BOX = '<input class="task" type="checkbox" contenteditable="false">'
 
@@ -66,8 +67,9 @@ function contentOf(b: Block): Range {
   return r
 }
 
-type Text1 = { node: Text; start: number; len: number }
-type Scanned = { before: string; after: string; texts: Text1[] }
+/** A text node and where its part before the caret starts in `Scanned.before`. */
+type TextRun = { node: Text; start: number; len: number }
+type Scanned = { before: string; after: string; texts: TextRun[] }
 
 const OPAQUE_TAGS = new Set(['CODE', 'PRE', 'INPUT', 'IMG', 'VIDEO'])
 
@@ -77,7 +79,7 @@ const OPAQUE_TAGS = new Set(['CODE', 'PRE', 'INPUT', 'IMG', 'VIDEO'])
 function scan(b: Block, caret: Range): Scanned {
   let before = ''
   let after = ''
-  const texts: Text1[] = []
+  const texts: TextRun[] = []
   const walk = (node: Node) => {
     if (node.nodeType === Node.TEXT_NODE) {
       const t = node as Text
@@ -180,8 +182,9 @@ export function inputRules(el: HTMLElement, e: InputEvent): boolean {
     const inItem = b.node?.tagName === 'LI'
     if (!bare && !inItem) return false
     if (bare && b.parent !== el) return false
+    // A fence replaces the whole paragraph, so only when nothing follows it.
     const fence = fenceRule(s.before.trim(), true)
-    if (fence && bare) return codeBlock(el, b, caret, fence.lang)
+    if (fence && bare && s.after === '') return codeBlock(el, b, fence.lang)
     const rule = blockRule(s.before, !!inItem)
     return rule ? convert(el, b, caret, rule) : false
   }
@@ -224,8 +227,7 @@ function convert(el: HTMLElement, b: Block, caret: Range, rule: BlockRule): bool
   return true
 }
 
-function codeBlock(el: HTMLElement, b: Block, caret: Range, lang: string): boolean {
-  void caret
+function codeBlock(el: HTMLElement, b: Block, lang: string): boolean {
   select(contentOf(b))
   const cls = lang ? ` class="language-${escAttr(lang)}"` : ''
   exec('insertHTML', `<pre><code${cls}><br></code></pre>`)
@@ -255,10 +257,10 @@ function inline(s: Scanned, caret: Range, m: InlineMatch): boolean {
     out = `<${tag}>${html(frag)}</${tag}>`
   }
   select(full)
-  // The space after the element is where the caret goes: the browser types
-  // into the element it follows, so the next characters need a node of their
-  // own. htmlToMarkdown drops it.
-  exec('insertHTML', out + ZWSP)
+  // The parking character after the element is where the caret goes: the
+  // browser types into the element it follows, so the next characters need a
+  // node of their own. htmlToMarkdown drops it.
+  exec('insertHTML', out + PARK)
   return true
 }
 
@@ -309,12 +311,30 @@ function peek(dir: 'backward' | 'forward'): string {
   return crossed
 }
 
+// Backspace with the caret just after a parking character: it goes together
+// with the one visible character before it (a whole grapheme, an emoji too),
+// or alone when nothing precedes it in its block.
+function eraseParked(caret: Range) {
+  const sel = window.getSelection()
+  if (!sel) return
+  const { startContainer, startOffset } = caret
+  sel.modify('extend', 'backward', 'character')
+  const parked = sel.toString()
+  sel.modify('extend', 'backward', 'character')
+  const both = sel.toString()
+  if (both.length === parked.length || both.includes('\n')) {
+    caretAt(startContainer, startOffset)
+    sel.modify('extend', 'backward', 'character')
+  }
+  exec('delete')
+}
+
 const plain = (e: KeyboardEvent) => !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey
 
 /**
  * Keys the browser handles badly in markdown-shaped content: Enter and Tab
  * in code, Enter after "```" or "---", Backspace at the start of a heading,
- * quote, code or task, and arrows past the zero-width space after an inline
+ * quote, code or task, and arrows past the parking character after an inline
  * conversion. True if it was handled (the event is then cancelled).
  */
 export function keyRules(el: HTMLElement, e: KeyboardEvent): boolean {
@@ -322,33 +342,25 @@ export function keyRules(el: HTMLElement, e: KeyboardEvent): boolean {
   const caret = caretIn(el)
   if (!caret) return false
   if (e.key === 'Backspace' && plain(e)) {
-    if (peek('backward') === ZWSP) {
+    if (peek('backward') === PARK) {
       e.preventDefault()
-      const sel = window.getSelection()
-      sel?.modify('extend', 'backward', 'character')
-      const one = sel?.toString() ?? ''
-      sel?.modify('extend', 'backward', 'character')
-      if ((sel?.toString() ?? '').length !== 2 || one !== ZWSP) {
-        // Nothing visible before it: just the invisible character goes.
-        const r = sel?.getRangeAt(0)
-        if (r) {
-          r.setStart(caret.startContainer, caret.startOffset)
-          r.collapse(true)
-          select(r)
-          sel?.modify('extend', 'backward', 'character')
-        }
-      }
-      exec('delete')
+      eraseParked(caret)
       return true
     }
     return backspace(el, e, caret)
   }
   if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && plain(e)) {
-    if (!el.textContent?.includes(ZWSP)) return false
+    // Only the step over a parking character is the editor's: it takes two
+    // moves to get past it. Every other arrow press is the browser's.
+    // Without one in the editor there is nothing to look for, and looking
+    // moves the selection and puts it back, which the browser may not undo
+    // exactly (next to a checkbox).
+    if (!el.textContent?.includes(PARK)) return false
     const dir = e.key === 'ArrowLeft' ? 'backward' : 'forward'
+    if (peek(dir) !== PARK) return false
     e.preventDefault()
     const sel = window.getSelection()
-    if (peek(dir) === ZWSP) sel?.modify('move', dir, 'character')
+    sel?.modify('move', dir, 'character')
     sel?.modify('move', dir, 'character')
     return true
   }
@@ -358,6 +370,14 @@ export function keyRules(el: HTMLElement, e: KeyboardEvent): boolean {
   if (e.key !== 'Enter' || !plain(e)) return false
   const b = blockAt(el, caret)
   if (!b) return false
+  if (b.node?.tagName === 'H6' && b.parent === el && scan(b, caret).after === '') {
+    // Blink starts the line after a heading in a new paragraph for h1 to h5
+    // but stays in an h6; the other levels are the browser's.
+    e.preventDefault()
+    exec('insertParagraph')
+    exec('formatBlock', 'p')
+    return true
+  }
   if (b.node?.tagName === 'LI') return taskEnter(el, e, b.node, caret)
   if (b.node?.parentElement?.tagName === 'BLOCKQUOTE') return quoteEnter(el, e, b.node)
   if (b.parent !== el || (b.node && b.node.tagName !== 'P' && b.node.tagName !== 'DIV'))
@@ -367,7 +387,7 @@ export function keyRules(el: HTMLElement, e: KeyboardEvent): boolean {
   const fence = fenceRule(s.before.trim())
   if (fence) {
     e.preventDefault()
-    return codeBlock(el, b, caret, fence.lang)
+    return codeBlock(el, b, fence.lang)
   }
   if (ruleLine(s.before)) {
     e.preventDefault()
@@ -430,9 +450,6 @@ function quoteEnter(el: HTMLElement, e: KeyboardEvent, p: Element): boolean {
 function taskEnter(el: HTMLElement, e: KeyboardEvent, li: Element, caret: Range): boolean {
   const box = Array.from(li.children).find((c) => c.matches('input.task'))
   if (!box) return false
-  const before = document.createRange()
-  before.setStart(box, 0)
-  before.setEnd(caret.startContainer, caret.startOffset)
   // Caret before the box: leave it to the browser.
   if (caret.comparePoint(box.parentNode!, indexIn(box)) > 0) return false
   if (li.textContent!.trim() === '') {
@@ -445,9 +462,9 @@ function taskEnter(el: HTMLElement, e: KeyboardEvent, li: Element, caret: Range)
   const now = caretIn(el)
   const next = now && blockAt(el, now)
   if (!next?.node) return true
-  const all = document.createRange()
-  all.selectNodeContents(next.node)
-  select(all)
+  // The new item starts with a box in front of what followed the caret, which
+  // stays; with nothing after the caret the item is only the box.
+  if (next.node.textContent === '') select(contentOf(next))
   exec('insertHTML', `${TASK_BOX} `)
   caretAtStart(next.node)
   return true

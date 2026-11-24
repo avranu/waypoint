@@ -3,11 +3,14 @@
 // caret and does the DOM work for what is matched here.
 
 /**
- * A zero-width space. After an inline conversion the caret needs a text node
- * of its own outside the new element, or the browser types into the element;
- * this is that node's content. htmlToMarkdown drops it.
+ * The caret-parking character: U+FEFF, the zero-width no-break space that
+ * ProseMirror uses for its cursor wrapper. In the middle of text it means
+ * nothing, unlike a zero-width space, which people paste in. After an inline
+ * conversion the caret needs a text node of its own outside the new element,
+ * or the browser types into the element; this is that node's content.
+ * htmlToMarkdown drops it, and nothing else.
  */
-export const ZWSP = '\u200b'
+export const PARK = '\ufeff'
 
 /** Stands for an element (inline code, a checkbox, an image) in the text. */
 export const OPAQUE = '\ufffc'
@@ -62,7 +65,7 @@ export type InlineMatch = {
   href?: string
 }
 
-const space = (c: string | undefined) => c !== undefined && /[\s\u200b\u00a0]/.test(c)
+const space = (c: string | undefined) => c !== undefined && (c === PARK || /[\s\u00a0]/.test(c))
 // An underscore opens or closes only at a word edge: nothing, white space or
 // punctuation beside it, never a letter or digit (snake_case, file_name).
 const edge = (c: string | undefined) => c === undefined || !/[\p{L}\p{N}]/u.test(c)

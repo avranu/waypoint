@@ -149,17 +149,19 @@ body {
   display: none;
 }
 
-/* A rich editor (WP-628): an empty one shows its prompt. */
-.rich-editor:empty::before {
-  content: attr(data-placeholder);
-  color: var(--wp-subtle);
-  pointer-events: none;
-}
 /* An empty editor holds one empty paragraph (see RichTextInput). */
 .rich-editor > p:only-child:has(> br:only-child)::before {
   content: var(--rich-placeholder);
   color: var(--wp-subtle);
   pointer-events: none;
+  /* One line, whatever the hint's length, so the editor is no taller than the
+     "Add a description" button it replaces. */
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: top;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Rendered markdown. */

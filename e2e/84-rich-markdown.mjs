@@ -95,38 +95,38 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
     await field.waitFor();
     return issue;
   };
-  const typeInto = async (title, typed, want) => {
+  const insertInto = async (title, text, want) => {
     const issue = await open(title);
     await richBox.waitFor();
     // Inserted in one piece, which the typing rules (WP-1749) leave alone: this
     // suite is about how literal text is written, not about what typing a
     // marker does (suite 85).
     await field.focus();
-    await page.keyboard.insertText(typed);
+    await page.keyboard.insertText(text);
     const got = await saved(issue.key, want);
-    ok(got === want, `${tag} typed ${JSON.stringify(typed)} saves ${JSON.stringify(want)}: ${JSON.stringify(got)}`);
+    ok(got === want, `${tag} inserting ${JSON.stringify(text)} saves ${JSON.stringify(want)}: ${JSON.stringify(got)}`);
     await settleClose();
   };
 
-  // Literal text typed into the editor is escaped, and no more than needed.
-  await typeInto("Esc star", "*emph* and a*b", "\\*emph\\* and a\\*b");
-  await typeInto("Esc tick", "a `code` b", "a \\`code\\` b");
-  await typeInto("Esc under", "snake_case and _x_", "snake_case and \\_x\\_");
-  await typeInto("Esc tilde", "~/bin and ~x~", "~/bin and \\~x\\~");
-  await typeInto("Esc tag", "<div> and 1 < 2", "\\<div> and 1 < 2");
-  await typeInto("Esc link", "[x](y) and [a][b]", "[x\\](y) and [a\\][b]");
-  await typeInto("Esc image", "![a](b)", "![a\\](b)");
-  await typeInto("Esc entity", "&amp; and R&D and &#65;", "\\&amp; and R&D and \\&#65;");
-  await typeInto("Esc wiki", "see [[Some Page]] and [[A|b]]", "see [[Some Page]] and [[A|b]]");
-  await typeInto("Esc heading", "# h", "\\# h");
-  await typeInto("Esc heading root", "# not a heading", "\\# not a heading");
-  await typeInto("Esc number", "1. n", "1\\. n");
-  await typeInto("Esc number paren", "2) n", "2\\) n");
-  await typeInto("Esc quote", "> q", "\\> q");
-  await typeInto("Esc dash", "- d", "\\- d");
-  await typeInto("Esc bullet star", "* d", "\\* d");
-  await typeInto("Esc spaced star", "2 * 3 * 4", "2 * 3 * 4");
-  await typeInto("Esc line star", "a" + "\n".repeat(0) + " * b", "a * b");
+  // Literal text put into the editor in one piece is escaped, and no more than needed.
+  await insertInto("Esc star", "*emph* and a*b", "\\*emph\\* and a\\*b");
+  await insertInto("Esc tick", "a `code` b", "a \\`code\\` b");
+  await insertInto("Esc under", "snake_case and _x_", "snake_case and \\_x\\_");
+  await insertInto("Esc tilde", "~/bin and ~x~", "~/bin and \\~x\\~");
+  await insertInto("Esc tag", "<div> and 1 < 2", "\\<div> and 1 < 2");
+  await insertInto("Esc link", "[x](y) and [a][b]", "[x\\](y) and [a\\][b]");
+  await insertInto("Esc image", "![a](b)", "![a\\](b)");
+  await insertInto("Esc entity", "&amp; and R&D and &#65;", "\\&amp; and R&D and \\&#65;");
+  await insertInto("Esc wiki", "see [[Some Page]] and [[A|b]]", "see [[Some Page]] and [[A|b]]");
+  await insertInto("Esc heading", "# h", "\\# h");
+  await insertInto("Esc heading root", "# not a heading", "\\# not a heading");
+  await insertInto("Esc number", "1. n", "1\\. n");
+  await insertInto("Esc number paren", "2) n", "2\\) n");
+  await insertInto("Esc quote", "> q", "\\> q");
+  await insertInto("Esc dash", "- d", "\\- d");
+  await insertInto("Esc bullet star", "* d", "\\* d");
+  await insertInto("Esc spaced star", "2 * 3 * 4", "2 * 3 * 4");
+  await insertInto("Esc line star", "a" + "\n".repeat(0) + " * b", "a * b");
 
   // What the editor writes for a DOM it holds (as a paste or the browser can
   // leave it): link labels, alt text and table cells escape what would end
@@ -206,7 +206,8 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
     "- a\n\n  b\n\n  ```\n  # c\n  ```\n- d",
   );
 
-  // A literal task box at the start of a list item stays literal.
+  // A literal task box inserted in one piece at the start of a list item stays literal
+  // (typed key by key it becomes a task: suite 85).
   {
     const i = await open("Esc task", "- first");
     await richBox.waitFor();
@@ -215,7 +216,7 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
     await page.keyboard.insertText("[ ] foo");
     const want = "- first\n- \\[ ] foo";
     const got = await saved(i.key, want);
-    ok(got === want, `${tag} a typed [ ] in a bullet is escaped: ${JSON.stringify(got)}`);
+    ok(got === want, `${tag} an inserted [ ] in a bullet is escaped: ${JSON.stringify(got)}`);
     await settleClose();
   }
 

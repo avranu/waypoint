@@ -2,9 +2,12 @@
 // "[ ] ", "> ", fences, rules and `code`, **bold**, *italic*, ~~strike~~ and
 // [links](url) apply as they are typed, undo gives back the typed characters,
 // and opening the editor with a click moves nothing on the page.
-// Run after 01-signup-flow (user robin). RICH_TYPING_BROWSER=firefox runs it
-// under Firefox, which the other suites don't use.
-import { chromium, firefox } from "playwright";
+// Run after 01-signup-flow (user robin). RICH_TYPING_BROWSER=firefox (or
+// webkit) runs it under that browser, which the other suites don't use. There
+// the typed-markdown rules are switched off (richdom.ts, WP-1758), so the
+// cases that expect a conversion FAIL by design: that mode exists to measure
+// them for WP-1758, not to pass. Only Chromium is expected to pass.
+import { chromium, firefox, webkit } from "playwright";
 import fs from "node:fs";
 import { looks } from "./looks.mjs";
 const [base, out] = process.argv.slice(2);
@@ -13,7 +16,12 @@ const errors = [];
 const fail = (m) => (console.log("FAIL", m), errors.push(m));
 const ok = (c, m) => (c ? console.log("ok  ", m) : fail(m));
 const H = { "X-Waypoint-Client": "web" };
-const browser = await (process.env.RICH_TYPING_BROWSER === "firefox" ? firefox : chromium).launch();
+const browser = await (
+  { firefox, webkit }[process.env.RICH_TYPING_BROWSER ?? ""] ?? chromium
+).launch();
+// Milliseconds between key presses. Found by trial, not derived: with no delay
+// the typing outran the editor's input handling and cases flaked; 12 was the
+// smallest value that did not, and still keeps the suite short.
 const KEY_DELAY = 12;
 
 async function login(ctx) {
@@ -114,13 +122,12 @@ for (const [width, scheme] of looks(
   // Opens a new task's empty description and runs `steps` on the editor, then
   // checks the editor's HTML (`dom` is a regex or a function) and, after Done,
   // the saved markdown.
-  const typed = async (name, steps, md, dom, initial = "") => {
-    const issue = await make(name, initial);
+  const typed = async (name, steps, md, dom) => {
+    const issue = await make(name, "");
     await page.goto(`${base}/issue/${issue.key}`);
     // The description lives on the Details tab, which a fresh browser opens second.
     await page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {});
-    if (initial) await page.getByText(initial.split("\n")[0].slice(0, 12)).first().click();
-    else await page.getByRole("button", { name: "Add a description…" }).click();
+    await page.getByRole("button", { name: "Add a description…" }).click();
     await richBox.waitFor();
     await steps();
     const html = await richBox.evaluate((el) => el.innerHTML);
@@ -129,6 +136,11 @@ for (const [width, scheme] of looks(
       ok(good, `${tag} ${name}: editor DOM (${html.replace(/​/g, "·").slice(0, 160)})`);
     }
     await done.click();
+    if (md === null) {
+      // Only the editor's DOM is checked; the editor closes once it has saved.
+      await richBox.waitFor({ state: "detached" });
+      return issue;
+    }
     const got = await waitDesc(issue.key, md);
     ok(got === md, `${tag} ${name}: saved ${JSON.stringify(md)}${got === md ? "" : ` got ${JSON.stringify(got)}`}`);
     return issue;
@@ -137,7 +149,7 @@ for (const [width, scheme] of looks(
   const press = (k) => page.keyboard.press(k);
 
   // 1. Headings.
-  for (const n of [1, 2, 3])
+  for (const n of [1, 2, 3, 4, 5, 6])
     await typed(
       `heading ${n}`,
       async () => {
@@ -192,7 +204,7 @@ for (const [width, scheme] of looks(
       await type("+ b");
     },
     "- a\n\n- b",
-    /<ul><li>a<\/li><\/ul><p>.*<\/p>|<ul>.*<ul>/,
+    /^<ul><li>a<\/li><\/ul><ul><li>b<\/li><\/ul>$/,
   );
 
   // 3. Tasks.
@@ -298,6 +310,18 @@ for (const [width, scheme] of looks(
     /<hr><p>below<\/p>/,
   );
 
+  for (const r of ["***", "___"])
+    await typed(
+      `rule ${r}`,
+      async () => {
+        await type(r);
+        await press("Enter");
+        await type("below");
+      },
+      "---\n\nbelow",
+      /<hr><p>below<\/p>/,
+    );
+
   // 7. Inline code, with typing continuing outside it.
   await typed(
     "inline code",
@@ -355,7 +379,7 @@ for (const [width, scheme] of looks(
     ["a_b_ c", "a_b\\_ c"],
     ["**", "\\*\\*"],
   ]) {
-    const issue = await typed(
+    await typed(
       `literal ${src}`,
       async () => {
         await type(src);
@@ -363,7 +387,6 @@ for (const [width, scheme] of looks(
       md,
       (h) => !/<(h\d|ul|ol|strong|em|s|code|blockquote)\b/.test(h),
     );
-    void issue;
   }
 
   // 10. Links.
@@ -383,6 +406,21 @@ for (const [width, scheme] of looks(
     "[x\\](javascript:alert) y",
     (h) => !/<a /.test(h),
   );
+
+  for (const src of [
+    "![x](https://example.com)",
+    "[](https://example.com)",
+    "[x](data:text/html,x)",
+    "[x](//host)",
+  ])
+    await typed(
+      `link negative ${src}`,
+      async () => {
+        await type(`${src} y`);
+      },
+      null,
+      (h) => !/<a /.test(h),
+    );
 
   // 11. Undo gives back what was typed.
   await typed(
@@ -417,10 +455,40 @@ for (const [width, scheme] of looks(
     async () => {
       await type("**b**");
       await press("Control+z");
+      const t = await richBox.evaluate((el) => el.innerText.replace(/\ufeff/g, ""));
+      ok(t.trim() === "**b**", `${tag} undo after the closing ** is the literal text (${JSON.stringify(t)})`);
       await press("Control+Shift+z");
     },
     "**b**",
     /<strong>b<\/strong>/,
+  );
+
+  await typed(
+    "undo a bullet",
+    async () => {
+      await type("- ");
+      await press("Control+z");
+      const t = await richBox.evaluate((el) => el.innerHTML);
+      ok(/^<p>-(&nbsp;| )<\/p>$/.test(t), `${tag} undo after "- " is the literal text (${t})`);
+      await press("End");
+      await type("x");
+    },
+    "\\- x",
+    /<p>-[^<]*x<\/p>/,
+  );
+  await typed(
+    "undo a fence",
+    async () => {
+      await type("```");
+      await press("Enter");
+      await press("Control+z");
+      const t = await richBox.evaluate((el) => el.innerHTML);
+      ok(/^<p>```<\/p>$/.test(t), `${tag} undo after Enter on a fence is the literal text (${t})`);
+      await press("End");
+      await type("x");
+    },
+    "\\`\\`\\`x",
+    (h) => !/<pre/.test(h),
   );
 
   // 12. Backspace turns a block back into a paragraph.
@@ -482,6 +550,313 @@ for (const [width, scheme] of looks(
     "`aXb`cd",
     null,
   );
+
+  // Opens an existing description for editing by clicking its text.
+  const openDesc = async (name, initial) => {
+    const issue = await make(name, initial);
+    await page.goto(`${base}/issue/${issue.key}`);
+    await page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {});
+    return issue;
+  };
+  const viewBox = page.locator('.prose-wp[title="Click or press Enter to edit"]').first();
+  const closeAndCheck = async (issue, name, md) => {
+    await done.click();
+    const got = await waitDesc(issue.key, md);
+    ok(got === md, `${tag} ${name}: saved ${JSON.stringify(md)}${got === md ? "" : ` got ${JSON.stringify(got)}`}`);
+  };
+  // Whether the last key press was default-prevented once it had gone through
+  // every handler (the listener on window runs after React's).
+  const watchKeys = () =>
+    page.evaluate(() => {
+      window.__dp = [];
+      window.addEventListener("keydown", (e) => window.__dp.push(e.defaultPrevented));
+    });
+
+  // 14. Rules that must not eat text.
+  await typed(
+    "fence on space with text after the caret",
+    async () => {
+      await type("foo");
+      await press("Home");
+      await type("``` ");
+    },
+    "\\`\\`\\` foo",
+    (h) => /foo/.test(h) && !/<pre/.test(h),
+  );
+  await typed(
+    "Enter in the middle of a task keeps the text",
+    async () => {
+      await type("[ ] buy milk");
+      for (let i = 0; i < 4; i++) await press("ArrowLeft");
+      await press("Enter");
+    },
+    "- [ ] buy\n- [ ] milk",
+    /buy(?:&nbsp;| )?<\/li><li><input[^>]*>[^<]*milk<\/li>/,
+  );
+  await typed(
+    "Enter at the start of a task's text keeps the text",
+    async () => {
+      await type("[ ] milk");
+      await press("Home");
+      await press("ArrowRight");
+      await press("ArrowRight");
+      await press("Enter");
+    },
+    "- [ ]\n- [ ] milk",
+    /<li><input[^>]*>(?:<br>)?<\/li><li><input[^>]*>[^<]*milk<\/li>/,
+  );
+  {
+    const i = await openDesc("Task in a bullet", "- first");
+    await viewBox.click();
+    await richBox.waitFor();
+    await press("Control+End");
+    await press("Enter");
+    await type("[ ] ");
+    await type("t");
+    const h = await richBox.evaluate((el) => el.innerHTML);
+    ok(/<li>first<\/li><li><input[^>]*class="task"[^>]*>[^<]*t<\/li>/.test(h), `${tag} "[ ] " typed at the start of a bullet makes it a task (${h.slice(0, 160)})`);
+    await closeAndCheck(i, "task in a bullet", "- first\n- [ ] t");
+  }
+
+  // Tables: the caret in a cell is in the cell, not in "the table".
+  {
+    const table = "| a | b |\n| --- | --- |\n| 1 | 2 |";
+    const i = await openDesc("Table", table);
+    await page.locator(".prose-wp th").first().click();
+    await richBox.waitFor();
+    await press("Home");
+    await type("- ");
+    await type("# ");
+    await type("``` ");
+    await press("End");
+    await type(" `x` y");
+    const h = await richBox.evaluate((el) => el.innerHTML);
+    ok(/<table/.test(h) && !/<(ul|h1|pre)\b/.test(h), `${tag} block rules typed in a table cell leave the table alone (${h.slice(0, 200)})`);
+    ok(/<th>[^<]*<code>x<\/code>/.test(h) && !/<code>x<\/code>[^<]*y<\/code>/.test(h), `${tag} inline code typed in a cell converts, inside that cell (${h.slice(0, 200)})`);
+    await done.click();
+    await richBox.waitFor({ state: "detached" });
+    const got = await desc(i.key);
+    ok(/^\| .*\|\n\| --- \| --- \|\n\| 1 \| 2 \|$/.test(got) && got.includes("`x`") && got.includes("- # \\`\\`\\` "), `${tag} the table is still a table in the saved markdown (${JSON.stringify(got)})`);
+  }
+
+  // Opening by keyboard puts the caret after a trailing link or code.
+  for (const [name, src, want] of [
+    ["link", "See [the docs](https://example.com)", "See [the docs](https://example.com) more"],
+    ["code", "Run `npm test`", "Run `npm test` more"],
+  ]) {
+    const i = await openDesc(`Trailing ${name}`, src);
+    await viewBox.focus();
+    await press("Enter");
+    await richBox.waitFor();
+    await type(" more");
+    await closeAndCheck(i, `typing after a trailing ${name}`, want);
+  }
+
+  // A zero-width space the person's own text holds is kept.
+  await typed(
+    "pasted U+200B in a paragraph",
+    async () => {
+      await page.keyboard.insertText("a​b");
+    },
+    "a​b",
+    null,
+  );
+  await typed(
+    "pasted U+200B in a code block",
+    async () => {
+      await type("```");
+      await press("Enter");
+      await page.keyboard.insertText("x​y");
+    },
+    "```\nx​y\n```",
+    null,
+  );
+  {
+    const i = await openDesc("Stored U+200B", "one​two");
+    await viewBox.click();
+    await richBox.waitFor({ timeout: 3000 });
+    ok((await page.locator('textarea[aria-label="Description"]').count()) === 0, `${tag} a description with a U+200B opens in the rich editor`);
+    await closeAndCheck(i, "stored U+200B", "one​two");
+  }
+
+  // Arrows: only the step over the caret parking space is the editor's.
+  await typed(
+    "arrow keys elsewhere are left to the browser",
+    async () => {
+      await type("`ab`cd");
+      await watchKeys();
+      await press("ArrowLeft");
+      const dp = await page.evaluate(() => window.__dp);
+      ok(dp.length === 1 && dp[0] === false, `${tag} an arrow press away from the parking space is not default-prevented (${dp})`);
+      await press("ArrowLeft");
+      await press("ArrowLeft");
+      await type("X");
+    },
+    "`aXb`cd",
+    null,
+  );
+  await typed(
+    "Tab outside a code block is not eaten",
+    async () => {
+      await type("a");
+      await watchKeys();
+      await press("Tab");
+      const dp = await page.evaluate(() => window.__dp);
+      ok(dp.length === 1 && dp[0] === false, `${tag} Tab in a paragraph is not default-prevented (${dp})`);
+      const inside = await richBox.evaluate((el) => el.contains(document.activeElement));
+      ok(!inside, `${tag} Tab in a paragraph moves focus out of the editor`);
+    },
+    "a",
+    null,
+  );
+
+  // Backspace over the parking space takes one visible character, an emoji too.
+  await typed(
+    "backspace over the parking space after an emoji",
+    async () => {
+      await type("`a\u{1F600}`");
+      await press("Backspace");
+      await type("X");
+    },
+    "`aX`",
+    (h) => /<code>aX<\/code>/.test(h) || /<code>a<\/code>[^<]*X/.test(h),
+  );
+
+  // A rule that throws must not lose the typed text.
+  await typed(
+    "a throwing rule still saves",
+    async () => {
+      await page.evaluate(() => {
+        const real = Element.prototype.closest;
+        window.__restore = () => (Element.prototype.closest = real);
+        Element.prototype.closest = function (sel) {
+          if (sel === "pre, code") throw new Error("boom");
+          return real.call(this, sel);
+        };
+      });
+      await type("ab");
+      await page.evaluate(() => window.__restore());
+    },
+    "ab",
+    null,
+  );
+
+  // A drag over the text selects it; it does not open the editor.
+  {
+    await openDesc("Drag select", "Some selectable words here");
+    await viewBox.waitFor();
+    const r = await viewBox.evaluate((el) => {
+      const range = document.createRange();
+      range.selectNodeContents(el.querySelector("p"));
+      const b = range.getBoundingClientRect();
+      return { l: b.left + 2, r: b.right - 2, y: b.top + b.height / 2 };
+    });
+    await page.mouse.move(r.l, r.y);
+    await page.mouse.down();
+    await page.mouse.move((r.l + r.r) / 2, r.y, { steps: 5 });
+    await page.mouse.move(r.r, r.y, { steps: 5 });
+    await page.mouse.up();
+    const sel = await page.evaluate(() => getSelection().toString());
+    ok(sel.length > 5, `${tag} the drag selected text (${JSON.stringify(sel)})`);
+    ok((await richBox.count()) === 0, `${tag} a drag-select over the description does not open the editor`);
+  }
+
+  // The toolbar clears the page header in the issue sheet too.
+  {
+    const i = await openDesc("Sheet toolbar", "Words in a sheet.\n\nMore words.");
+    await page.goto(`${base}/p/RICH/board?issue=${i.key}`);
+    const dialog = page.getByRole("dialog", { name: i.key });
+    await dialog.waitFor();
+    await dialog.locator('.prose-wp[title="Click or press Enter to edit"]').first().click();
+    await richBox.waitFor();
+    const tb = page.getByRole("toolbar", { name: "Formatting" });
+    const box = await tb.boundingBox();
+    ok(box && box.y >= 0 && box.y + box.height <= height && box.x >= 0 && box.x + box.width <= width + 0.5, `${tag} the toolbar is on screen in the sheet (${JSON.stringify(box)})`);
+    const hit = await tb.evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      const top = document.elementFromPoint(r.left + 12, r.top + r.height / 2);
+      return !!top && !!top.closest('[role="toolbar"]');
+    });
+    ok(hit, `${tag} the toolbar is not covered in the sheet`);
+    const ed = await richBox.boundingBox();
+    ok(box && ed && box.y + box.height <= ed.y + 0.5, `${tag} the sheet's toolbar sits above the text (${JSON.stringify(box)} / ${JSON.stringify(ed)})`);
+    await page.screenshot({ path: `${out}/rich-sheet-${tag}.png` });
+    await press("Escape");
+    await page.goto(`${base}/`);
+  }
+
+  // The toolbar's row scrolls sideways on a phone, and says so.
+  // (At 390 the buttons still fit; the row overflows from about 330px.)
+  if (width < 500) {
+    await page.setViewportSize({ width: 320, height });
+    const i = await openDesc("Toolbar cue", "Words.");
+    await viewBox.click();
+    await richBox.waitFor();
+    const tb = page.getByRole("toolbar", { name: "Formatting" });
+    const state = () =>
+      tb.evaluate((el) => ({
+        fade: el.getAttribute("data-fade"),
+        mask: getComputedStyle(el).maskImage || getComputedStyle(el).webkitMaskImage,
+        left: el.scrollLeft,
+        max: el.scrollWidth - el.clientWidth,
+      }));
+    const a = await state();
+    ok(a.max > 0 && a.left === 0, `${tag} the toolbar row overflows at 320 (${JSON.stringify(a)})`);
+    ok(a.fade === "right" && a.mask && a.mask !== "none", `${tag} a fade on the right edge says there are more buttons (${JSON.stringify(a)})`);
+    await page.screenshot({ path: `${out}/rich-toolbar-cue-start-${tag}.png` });
+    await tb.evaluate((el) => (el.scrollLeft = el.scrollWidth));
+    await tb.evaluate((el) => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+    const b = await state();
+    ok(b.fade === "left" && b.mask && b.mask !== "none", `${tag} at the end the fade is on the left only (${JSON.stringify(b)})`);
+    await page.screenshot({ path: `${out}/rich-toolbar-cue-end-${tag}.png` });
+    await page.getByRole("button", { name: "Edit as markdown" }).click();
+    await page.locator('textarea[aria-label="Description"]').waitFor();
+    ok(true, `${tag} "Edit as markdown" is reachable by scrolling the toolbar`);
+    await page.getByRole("button", { name: "Edit formatted" }).click();
+    await richBox.waitFor();
+    await press("Escape");
+    await page.setViewportSize({ width, height });
+  }
+
+  // An empty (or blank) description opens into the same box: nothing moves.
+  for (const blank of [undefined, "   "]) {
+    const i = await openDesc(blank ? "Blank description" : "Empty description", blank);
+    const btn = page.getByRole("button", { name: "Add a description…", exact: true });
+    await btn.waitFor();
+    const measure = (sel) =>
+      page.evaluate((sel) => {
+        const el = sel
+          ? document.querySelector(sel)
+          : Array.from(document.querySelectorAll("button")).find((b) => b.textContent === "Add a description…");
+        if (!window.__below) {
+          let n = el;
+          while (n && !n.nextElementSibling) n = n.parentElement;
+          window.__below = n?.nextElementSibling;
+        }
+        const box = (e) => {
+          const r = e.getBoundingClientRect();
+          return [r.left, r.top, r.width, r.height].map((v) => Math.round(v * 100) / 100);
+        };
+        const cs = getComputedStyle(el);
+        return {
+          self: box(el),
+          below: window.__below ? box(window.__below) : null,
+          scrollY: window.scrollY,
+          style: [cs.paddingTop, cs.paddingLeft, cs.fontSize, cs.lineHeight, cs.fontWeight, cs.fontFamily].join("|"),
+        };
+      }, sel);
+    const before = await measure(null);
+    await btn.click();
+    await richBox.waitFor();
+    const after = await measure('[contenteditable="true"][aria-label="Description"]');
+    const same = (a, b) => a.length === b.length && a.every((v, k) => Math.abs(v - b[k]) <= 0.5);
+    const what = blank ? "a blank description" : "an empty description";
+    ok(same(before.self, after.self), `${tag} ${what}: the placeholder's box is where it was (${before.self} -> ${after.self})`);
+    ok(before.below && same(before.below, after.below), `${tag} ${what}: what is below did not move (${before.below} -> ${after.below})`);
+    ok(before.scrollY === after.scrollY, `${tag} ${what}: nothing scrolled (${before.scrollY} -> ${after.scrollY})`);
+    ok(before.style === after.style, `${tag} ${what}: same padding and font (${before.style} / ${after.style})`);
+    await press("Escape");
+  }
 
   // 13. Clicking to edit moves nothing.
   {
@@ -571,11 +946,8 @@ for (const [width, scheme] of looks(
     for (let i = 0; i < Math.min(before.blocks.length, after.blocks.length); i++) {
       const a = JSON.parse(before.blocks[i].replace(/^\S+ /, ""));
       const b = JSON.parse(after.blocks[i].replace(/^\S+ /, ""));
-      // Block boxes must match; inline pieces (links, emphasis) may differ in
-      // width where the editor shows the source (wikilink brackets, mentions).
-      const inline = /^(A|STRONG|EM) /.test(before.blocks[i]);
-      const tol = inline ? 1e9 : 0.5;
-      if (a.some((v, k) => (k === 2 && inline ? false : Math.abs(v - b[k]) > tol))) moved.push(`${before.blocks[i]} -> ${after.blocks[i]}`);
+      // Every block's box must match to within half a pixel.
+      if (a.some((v, k) => Math.abs(v - b[k]) > 0.5)) moved.push(`${before.blocks[i]} -> ${after.blocks[i]}`);
     }
     ok(moved.length === 0, `${tag} every block is at the same pixel position${moved.length ? `: ${moved.slice(0, 4).join("; ")}` : ""}`);
     const caret = await page.evaluate(() => {

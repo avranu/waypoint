@@ -3,6 +3,7 @@
 // text, so pasted markup can't smuggle itself into the source.
 
 import { renderMarkdownForEdit, hasRawHtml } from '@/lib/markdown'
+import { PARK } from '@/lib/richinput'
 
 // `label`: text inside a link label or image alt, where any bracket would end
 // it early. `cell`: inside a table cell, which is one line (its pipes are
@@ -459,12 +460,14 @@ function autolinks(md: string) {
 /** The markdown behind a rich editor's HTML. */
 export function htmlToMarkdown(html: string): string {
   const tpl = document.createElement('template')
-  // A zero-width space is how the editor parks the caret after an element.
-  tpl.innerHTML = html.replace(/\u200b/g, '')
+  // The editor parks the caret after an element in a PARK character; only that
+  // one goes, so a zero-width space in the person's own text is kept.
+  tpl.innerHTML = withoutPark(html)
   return autolinks(tidy(serialize(tpl.content)))
 }
 
-const norm = (html: string) => html.replace(/\s+/g, ' ').trim()
+const withoutPark = (s: string) => s.split(PARK).join('')
+const norm = (html: string) => withoutPark(html).replace(/\s+/g, ' ').trim()
 
 /**
  * Whether markdown can be opened in the rich editor without losing anything.
@@ -477,6 +480,7 @@ const norm = (html: string) => html.replace(/\s+/g, ' ').trim()
  */
 export function survivesRichEdit(md: string): boolean {
   if (hasRawHtml(md)) return false
-  const html = renderMarkdownForEdit(md)
+  // A PARK in the text is ignored on both sides: the editor drops it on save.
+  const html = renderMarkdownForEdit(withoutPark(md))
   return norm(renderMarkdownForEdit(htmlToMarkdown(html))) === norm(html)
 }

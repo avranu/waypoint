@@ -449,7 +449,8 @@ for (const [width, scheme] of looks([
   );
   await page.getByRole("button", { name: "Add a description…", exact: true }).click();
   await richBox.waitFor();
-  const prompt = await richBox.evaluate((el) => getComputedStyle(el.firstElementChild ?? el, "::before").content);
+  // An empty editor holds one empty paragraph, and the hint is that paragraph's ::before.
+  const prompt = await richBox.evaluate((el) => getComputedStyle(el.firstElementChild, "::before").content);
   ok(prompt.length > 2, `${tag} an empty editor shows its prompt: ${prompt}`);
   ok(
     !prompt.replace(/^["']/, "").startsWith("Add a description"),

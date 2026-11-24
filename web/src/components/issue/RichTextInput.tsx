@@ -32,6 +32,7 @@ import { toast, toastError } from '@/components/ui/toast'
 import { issueTarget, refreshAttachments, uploadAttachment } from '@/lib/attachments'
 import { renderMarkdownForEdit } from '@/lib/markdown'
 import { htmlToMarkdown } from '@/lib/richtext'
+import { PARK } from '@/lib/richinput'
 import { inputRules, keyRules } from '@/lib/richdom'
 import type { UserRef } from '@/lib/types'
 import { MENTION_RE, MentionList, useMentionMatches } from './userMention'
@@ -68,6 +69,13 @@ const EMPTY = '<p><br></p>'
 
 type Mention = { node: Text; start: number; end: number; text: string }
 
+/**
+ * The box a description is shown in, as rendered text and as this editor: the
+ * same padding, font and line height, so opening the editor moves nothing.
+ * Description.tsx's view, its empty-state button and the editor all use it.
+ */
+export const DESCRIPTION_BOX = 'prose-wp -mx-1 rounded-lg px-1 py-1 text-sm leading-relaxed'
+
 export function RichTextInput({
   value,
   onValueChange,
@@ -94,9 +102,29 @@ export function RichTextInput({
   // The markdown the DOM currently shows. An outside change that differs from
   // this is the only reason to replace the DOM under the person typing.
   const shown = useRef(value)
-  // An empty description gets room to write in; one with text is the size of
-  // its text, as the page showed it, so opening it moves nothing.
-  const [roomy] = useState(() => !value.trim())
+  // The formatting toolbar's row scrolls sideways when it doesn't fit; which
+  // edge has more buttons past it shows as a fade.
+  const bar = useRef<HTMLDivElement | null>(null)
+  const [fade, setFade] = useState({ left: false, right: false })
+  const measureBar = () => {
+    const b = bar.current
+    if (!b) return
+    const left = b.scrollLeft > 1
+    const right = b.scrollLeft + b.clientWidth < b.scrollWidth - 1
+    setFade((f) => (f.left === left && f.right === right ? f : { left, right }))
+  }
+  useLayoutEffect(measureBar)
+  useEffect(() => {
+    const b = bar.current
+    if (!b) return
+    const ro = new ResizeObserver(measureBar)
+    ro.observe(b)
+    window.addEventListener('resize', measureBar)
+    return () => {
+      ro.disconnect()
+      window.removeEventListener('resize', measureBar)
+    }
+  }, [])
   const users = useQuery(q.users()).data ?? []
   const [mention, setMention] = useState<Mention | null>(null)
   const [active, setActive] = useState(0)
@@ -429,6 +457,18 @@ export function RichTextInput({
           <div
             role="toolbar"
             aria-label="Formatting"
+            ref={bar}
+            onScroll={measureBar}
+            data-fade={
+              fade.left && fade.right
+                ? 'both'
+                : fade.left
+                  ? 'left'
+                  : fade.right
+                    ? 'right'
+                    : undefined
+            }
+            style={fadeStyle(fade)}
             className="no-scrollbar flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto px-1"
           >
             {tool('Bold', <Bold className="size-3.5" />, () => run('bold'))}
@@ -469,23 +509,29 @@ export function RichTextInput({
         role="textbox"
         aria-multiline="true"
         aria-label={ariaLabel}
-        data-placeholder={placeholder}
         contentEditable
         suppressContentEditableWarning
         dangerouslySetInnerHTML={{ __html: initial.current }}
         spellCheck
         style={{ '--rich-placeholder': JSON.stringify(placeholder ?? '') } as React.CSSProperties}
-        // The same box as the rendered text it replaces (Description.tsx), so
-        // opening it moves nothing; focus and dragging show as a ring, which
-        // takes no room.
+        // The same box as the rendered text it replaces (Description.tsx), at
+        // the size of its content, so opening it moves nothing; focus and
+        // dragging show as a ring, which takes no room.
         className={clsx(
-          'rich-editor prose-wp -mx-1 rounded-lg px-1 py-1 text-sm leading-relaxed outline-none transition-shadow focus:ring-2 focus:ring-accent/25',
-          roomy && 'min-h-24',
+          'rich-editor outline-none transition-shadow focus:ring-2 focus:ring-accent/25',
+          DESCRIPTION_BOX,
           dragging && 'ring-2 ring-accent/40',
         )}
         onInput={(e) => {
           const el = editor.current
-          if (el) inputRules(el, e.nativeEvent as InputEvent)
+          // A rule that fails must not cost the person what they typed.
+          if (el) {
+            try {
+              inputRules(el, e.nativeEvent as InputEvent)
+            } catch (err) {
+              console.error('typed markdown rule failed', err)
+            }
+          }
           sync()
           detect()
         }}
@@ -528,7 +574,15 @@ export function RichTextInput({
             }
           }
           const el = editor.current
-          if (el && keyRules(el, e.nativeEvent)) {
+          let handled = false
+          try {
+            handled = !!el && keyRules(el, e.nativeEvent)
+          } catch (err) {
+            console.error('key rule failed', err)
+            sync()
+            detect()
+          }
+          if (handled) {
             sync()
             detect()
             return
@@ -626,14 +680,74 @@ function placeCaretAt(el: HTMLElement, n: number) {
   placeCaretAtEnd(el)
 }
 
+// Elements the caret goes into to reach the end of the text; the code of a
+// block of code is one too. Any other element (a link, code, emphasis) is
+// stepped over, since text typed at its end would extend it.
+const CONTAINERS = new Set([
+  'P',
+  'DIV',
+  'LI',
+  'UL',
+  'OL',
+  'BLOCKQUOTE',
+  'PRE',
+  'H1',
+  'H2',
+  'H3',
+  'H4',
+  'H5',
+  'H6',
+  'TR',
+  'TBODY',
+  'THEAD',
+  'TD',
+  'TH',
+])
+
+// Containers of blocks: a whitespace-only text node among their children is
+// the markup's line breaks, not text, and no caret goes in it.
+const OF_BLOCKS = new Set(['UL', 'OL', 'BLOCKQUOTE', 'TR', 'TBODY', 'THEAD'])
+
+function lastChildOf(n: Node): ChildNode | null {
+  let last = n.lastChild
+  while (
+    last &&
+    last.nodeType === Node.TEXT_NODE &&
+    !(last as Text).data.trim() &&
+    (n.nodeName === 'DIV' || OF_BLOCKS.has(n.nodeName)) &&
+    last.previousSibling
+  )
+    last = last.previousSibling
+  return last
+}
+
 function placeCaretAtEnd(el: HTMLElement) {
   // Inside the last block, where typing goes: a caret between blocks leaves
   // the typing rules unable to tell what is being typed in.
   let n: Node = el
-  while (n.lastChild && !VOID.has(n.lastChild.nodeName)) n = n.lastChild
+  for (let last = lastChildOf(n); last && !VOID.has(last.nodeName); last = lastChildOf(n)) {
+    const into =
+      last.nodeType === Node.TEXT_NODE ||
+      CONTAINERS.has(last.nodeName) ||
+      (last.nodeName === 'CODE' && n.nodeName === 'PRE')
+    if (!into) break
+    n = last
+  }
   const range = document.createRange()
+  const last = lastChildOf(n)
   if (n.nodeType === Node.TEXT_NODE) range.setStart(n, (n as Text).data.length)
-  else
+  else if (
+    last &&
+    last.nodeType === Node.ELEMENT_NODE &&
+    last.nodeName !== 'BR' &&
+    !VOID.has(last.nodeName)
+  ) {
+    // After an inline element: the caret needs a text node of its own there,
+    // as it does after a typed conversion. htmlToMarkdown drops it.
+    const park = document.createTextNode(PARK)
+    n.appendChild(park)
+    range.setStart(park, 1)
+  } else
     range.setStart(
       n,
       n.lastChild?.nodeName === 'BR' ? n.childNodes.length - 1 : n.childNodes.length,
@@ -642,6 +756,14 @@ function placeCaretAtEnd(el: HTMLElement) {
   const sel = window.getSelection()
   sel?.removeAllRanges()
   sel?.addRange(range)
+}
+
+// A gradient over the toolbar row's edge that has more buttons beyond it.
+function fadeStyle({ left, right }: { left: boolean; right: boolean }): React.CSSProperties {
+  if (!left && !right) return {}
+  const edge = '1.5rem'
+  const mask = `linear-gradient(to right, ${left ? 'transparent' : '#000'} 0, #000 ${left ? edge : '0px'}, #000 calc(100% - ${right ? edge : '0px'}), ${right ? 'transparent' : '#000'} 100%)`
+  return { maskImage: mask, WebkitMaskImage: mask }
 }
 
 const VOID = new Set(['BR', 'HR', 'IMG', 'INPUT', 'VIDEO', 'TABLE'])
