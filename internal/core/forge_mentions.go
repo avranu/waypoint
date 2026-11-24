@@ -170,6 +170,9 @@ type forgeText struct {
 	places    []string // the places this text has: rows there it no longer names are gone
 	trusted   bool     // a Waypoint person (or Waypoint) wrote it: lines may be quoted
 	author    string
+	// fromOutside: a pull request's author isn't a Waypoint person, even
+	// after a person approved its text (doubt counts as outside).
+	fromOutside bool
 	// link: own work becomes a link (an open pull request's text, a
 	// forge issue's or a pushed commit's; not a closed pull request read
 	// by a sync). takeBack: links this text made and no longer makes are
@@ -368,10 +371,11 @@ func (s *Service) issueProject(ctx context.Context, q queryer, issueID int64) (i
 }
 
 // linkOwnWork links src's item to the issues it is the own work of,
-// unless someone unlinked it from one. It returns how many it linked. A
-// pull request, approved or not, leaves out an issue still waiting as an
-// outside draft: what its link sets off would be the draft's, and dropped,
-// so publishing the issue makes the link and runs it (WP-1802).
+// unless someone unlinked it from one. It returns how many it linked. An
+// outside author's pull request, approved or not, leaves out an issue
+// still waiting as an outside draft: publishing the issue, or its author
+// becoming a person, makes the link and runs it (WP-1802). A person's pull
+// request links the draft at once.
 func (s *Service) linkOwnWork(ctx context.Context, t *tx, src forgeText, owned map[int64]*mentionHit) (int, error) {
 	var n int
 	number := any(nil)
@@ -379,7 +383,7 @@ func (s *Service) linkOwnWork(ctx context.Context, t *tx, src forgeText, owned m
 		number = src.item.Number
 	}
 	for issueID, m := range owned {
-		if src.kind == "pull" {
+		if src.kind == "pull" && src.fromOutside {
 			var outside bool
 			if err := t.QueryRowContext(ctx, `SELECT outside FROM issues WHERE id = ?`, issueID).Scan(&outside); err != nil {
 				return n, err
@@ -521,7 +525,8 @@ func (s *Service) scanPull(ctx context.Context, f *Forge, repo string, raw, show
 		places = append(places, "branch")
 	}
 	return s.recordForgeMentions(ctx, forgeText{f: f, repo: repo, kind: "pull", item: shown, sourceURL: raw.URL, places: places,
-		trusted: shown == raw, author: raw.Author, link: link, takeBack: link}, refs)
+		trusted: shown == raw, author: raw.Author, link: link, takeBack: link,
+		fromOutside: s.prVoice(ctx, f).authorOutside(ctx, s.db.R, raw.Author, effectiveAuthor(raw.Author, raw.Body))}, refs)
 }
 
 // scanForgeIssue records a forge issue's mentions: a key in its title

@@ -365,6 +365,12 @@ func TestUnapprovedOutsideLinkHoldsItsEffects(t *testing.T) {
 	if out, err := se.s.outOnPRs(se.ctx, se.s.db.R, []*Issue{iss}); err != nil || len(out) != 0 || se.s.outOnPR(se.ctx, se.s.db.R, iss) != nil {
 		t.Errorf("out on a pull request nobody approved: %+v %v", out, err)
 	}
+	// Merged needs a person, so a merged one counts even before approval.
+	se.mexec(`UPDATE external_links SET state = 'merged' WHERE issue_id = ? AND kind = 'pull'`, i.ID)
+	if out, err := se.s.outOnPRs(se.ctx, se.s.db.R, []*Issue{iss}); err != nil || len(out) != 1 {
+		t.Errorf("out on a merged pull request nobody approved: %+v %v", out, err)
+	}
+	se.mexec(`UPDATE external_links SET state = 'open' WHERE issue_id = ? AND kind = 'pull'`, i.ID)
 	if cm := se.s.forgeCoMentions(se.ctx, i.ID); len(cm) != 0 {
 		t.Errorf("a suggestion from an unapproved pull request: %+v", cm)
 	}
@@ -393,10 +399,10 @@ func TestUnapprovedOutsideLinkHoldsItsEffects(t *testing.T) {
 	}
 }
 
-// No pull request links to an issue still waiting as an outside draft:
-// what the link set off would be the draft's, and dropped. Publishing it
-// makes the link, and runs the open unless no person approved the pull
-// request (WP-1802, R-565).
+// No outside author's pull request links to an issue still waiting as an
+// outside draft: publishing it makes the link, and runs the open unless no
+// person approved the pull request. A person's pull request links it at
+// once (WP-1802, R-565).
 func TestOutsidePullDoesNotLinkAnOutsideDraft(t *testing.T) {
 	se := newShipEnv(t, "forgejo")
 	opened := se.watch(EvExternalPROpened)
@@ -421,15 +427,15 @@ func TestOutsidePullDoesNotLinkAnOutsideDraft(t *testing.T) {
 		t.Errorf("pr_opened for an unapproved pull request at publish = %d", n)
 	}
 
-	t.Run("a person's pull request waits for the draft too, and publishing runs its open", func(t *testing.T) {
-		before := len(opened.all())
+	t.Run("a person's pull request links the draft at once", func(t *testing.T) {
 		j := se.issue(se.admin, IssueInput{Project: se.p.Key, Title: "Sessions"})
 		se.mexec(`UPDATE issues SET draft = 1, outside = 1, outside_by = 'mallory' WHERE id = ?`, j.ID)
 		se.pullHook("opened", ForgePR{Number: 63, Title: "Sessions", Author: "sam", HeadRef: strings.ToLower(j.Key) + "-x", HeadSHA: "aaaaaaa6363", State: "open"})
 		se.s.Wait()
-		if links := se.get(se.admin, j.Key).Links; len(links) != 0 {
-			t.Fatalf("linked a draft: %+v", links)
+		if links := se.get(se.admin, j.Key).Links; len(links) != 1 || links[0].Via != "branch" {
+			t.Fatalf("a person's pull request on a draft: %+v", links)
 		}
+		before := len(opened.all())
 		if _, err := se.s.PublishIssue(se.ctx, se.admin, j.Key); err != nil {
 			t.Fatal(err)
 		}
@@ -437,11 +443,8 @@ func TestOutsidePullDoesNotLinkAnOutsideDraft(t *testing.T) {
 		if links := se.get(se.admin, j.Key).Links; len(links) != 1 {
 			t.Fatalf("links after publishing: %+v", links)
 		}
-		if n := len(opened.all()) - before; n != 1 {
-			t.Errorf("pr_opened at publish = %d", n)
-		}
-		if got := se.get(se.admin, j.Key).Status.Name; got != "In Review" {
-			t.Errorf("status after publishing = %q", got)
+		if n := len(opened.all()) - before; n != 0 {
+			t.Errorf("publishing replayed an open = %d", n)
 		}
 	})
 }
