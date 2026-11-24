@@ -677,10 +677,16 @@ func (s *Service) reviewersMissing(ctx context.Context, pr *PullRequest, pol Mer
 			}
 			continue
 		}
+		// On a head that carried an earlier review (WP-1808), a post on the
+		// head whose diff it has, or on any head that carried from that one,
+		// counts; a post on another head (a late review of an older diff)
+		// does not, however recent.
 		var n int
 		if err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM pr_events WHERE pr_id = ? AND actor = ? COLLATE NOCASE
-			AND kind IN ('commented','reviewed','approved','changes_requested') AND (sha IN (?, ?) OR (created_at >= ? AND (sha = '' OR ?)))`,
-			pr.ID, who, pr.HeadSHA, pr.contentHeadSHA(), since.UnixMilli(), pr.contentHeadSHA() != pr.HeadSHA).Scan(&n); err != nil {
+			AND kind IN ('commented','reviewed','approved','changes_requested') AND (sha IN (?, ?) OR (sha = '' AND created_at >= ?)
+				OR (? AND sha IN (SELECT head_sha FROM reviewed_heads WHERE pr_id = ? AND carried = 1 AND content_sha = ?)))`,
+			pr.ID, who, pr.HeadSHA, pr.contentHeadSHA(), since.UnixMilli(),
+			pr.contentHeadSHA() != pr.HeadSHA, pr.ID, pr.contentHeadSHA()).Scan(&n); err != nil {
 			return nil, err
 		}
 		if n == 0 {

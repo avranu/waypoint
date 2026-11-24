@@ -1,6 +1,7 @@
 package core
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -354,5 +355,57 @@ func TestAskOnceOnlyForTheCodeRabbitAsk(t *testing.T) {
 	}
 	if asks != 1 || labels != 2 {
 		t.Errorf("asks = %d, other comments = %d, want 1 and 2", asks, labels)
+	}
+}
+
+// WP-1808: on a head that carried a review, an expected reviewer's post
+// counts on the head whose diff it has or on a head that carried from it, not
+// on another head, however recent.
+func TestCarriedHeadExpectedReviewer(t *testing.T) {
+	pe := newPREnv(t, "github")
+	pr := reviewedFirst(t, pe)
+	pe.diffs = map[string]string{"2222222bbbb": sampleDiff, "3333333cccc": sampleDiff}
+	pe.fg.parents = map[string][]string{"2222222bbbb": {"1111111aaaa", "basebase01"}, "3333333cccc": {"2222222bbbb", "basebase02"}}
+	for _, h := range []string{"2222222bbbb", "3333333cccc"} {
+		pe.setClock(pe.clockNow().Add(5 * time.Minute))
+		pr.HeadSHA = h
+		pe.pullHook("synchronize", pr)
+		pe.settle()
+	}
+	row, err := pe.s.prByNumber(pe.ctx, pe.s.db.R, pe.f.ID, "me/app", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.contentHeadSHA() != "1111111aaaa" {
+		t.Fatalf("content head = %s", row.contentHeadSHA())
+	}
+	since := *row.contentSince()
+	pol := MergePolicy{ExternalReviewers: []string{"carol"}}
+	for _, c := range []struct {
+		name, sha string
+		counts    bool
+	}{
+		{"none", "", false},
+		{"a late review of an older head", "0000000zzzz", false},
+		{"on the head that carried in between", "2222222bbbb", true},
+		{"on the content's head", "1111111aaaa", true},
+		{"a comment on no head, since", "", true},
+	} {
+		if _, err := pe.s.db.W.ExecContext(pe.ctx, `DELETE FROM pr_events WHERE pr_id = ? AND actor = 'carol'`, row.ID); err != nil {
+			t.Fatal(err)
+		}
+		if c.name != "none" {
+			if _, err := pe.s.db.W.ExecContext(pe.ctx, `INSERT INTO pr_events(pr_id, kind, actor, bot, sha, created_at) VALUES (?, 'reviewed', 'carol', 0, ?, ?)`,
+				row.ID, c.sha, pe.clockNow().UnixMilli()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		missing, err := pe.s.reviewersMissing(pe.ctx, row, pol, nil, since)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := !slices.Contains(missing, "carol"); got != c.counts {
+			t.Errorf("%s: counts = %v, want %v (missing %v)", c.name, got, c.counts, missing)
+		}
 	}
 }
