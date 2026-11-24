@@ -155,11 +155,13 @@ function html(frag: DocumentFragment): string {
 
 const exec = (cmd: string, arg?: string) => document.execCommand(cmd, false, arg)
 
-// Firefox builds different markup for the same execCommand calls (Enter after
-// a typed heading stays in the heading, quotes and fences come out wrong), so
-// there the rules stay off and typed markdown is literal text, as it was
-// before WP-1749, until they are made to work in it (WP-1758).
-const SUPPORTED = typeof navigator === 'undefined' || !/\bFirefox\//.test(navigator.userAgent)
+// The rules are written against Blink's execCommand and are on only there.
+// Firefox builds different markup for the same calls (Enter after a typed
+// heading stays in the heading, quotes and fences come out wrong), and WebKit
+// (Safari, every iOS browser) has not been run at all. In both, typed markdown
+// is literal text, as it was before WP-1749, until the rules are shown to
+// work there (WP-1758).
+const SUPPORTED = typeof navigator === 'undefined' || /Chrome\//.test(navigator.userAgent)
 
 /**
  * Called after a character was typed. Converts "# ", "- ", "[ ] " and the
