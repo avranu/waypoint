@@ -153,6 +153,12 @@ function html(frag: DocumentFragment): string {
 
 const exec = (cmd: string, arg?: string) => document.execCommand(cmd, false, arg)
 
+// Firefox builds different markup for the same execCommand calls (Enter after
+// a typed heading stays in the heading, quotes and fences come out wrong), so
+// there the rules stay off and typed markdown is literal text, as it was
+// before WP-1749, until they are made to work in it (WP-1758).
+const SUPPORTED = typeof navigator === 'undefined' || !/\bFirefox\//.test(navigator.userAgent)
+
 /**
  * Called after a character was typed. Converts "# ", "- ", "[ ] " and the
  * like at the start of a block, and `code`, **bold**, *italic*, ~~strike~~
@@ -160,6 +166,7 @@ const exec = (cmd: string, arg?: string) => document.execCommand(cmd, false, arg
  * anything.
  */
 export function inputRules(el: HTMLElement, e: InputEvent): boolean {
+  if (!SUPPORTED) return false
   if (e.isComposing || e.inputType !== 'insertText' || !e.data || e.data.length !== 1) return false
   const caret = caretIn(el)
   if (!caret) return false
@@ -311,7 +318,7 @@ const plain = (e: KeyboardEvent) => !e.shiftKey && !e.ctrlKey && !e.metaKey && !
  * conversion. True if it was handled (the event is then cancelled).
  */
 export function keyRules(el: HTMLElement, e: KeyboardEvent): boolean {
-  if (e.isComposing) return false
+  if (!SUPPORTED || e.isComposing) return false
   const caret = caretIn(el)
   if (!caret) return false
   if (e.key === 'Backspace' && plain(e)) {
