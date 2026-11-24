@@ -495,13 +495,22 @@ func (s *Service) refreshPR(ctx context.Context, f *Forge, repo string, fp *Forg
 		return err
 	}
 	settled := fp.State == "closed" || fp.State == "merged"
+	bodyChanged := false
+	if old != nil && !settled && fp.Body != "" {
+		if bodyChanged, err = s.approvedBodyChanged(ctx, old.ID, fp.Body); err != nil {
+			// Unread, it may have changed: screen it again, which holds
+			// it if it did.
+			s.log.WarnContext(ctx, "read approved pull request description", "prID", old.ID, "err", err)
+			bodyChanged = true
+		}
+	}
 	switch {
 	case old != nil && old.HeadSHA == "" && !settled && fp.HeadSHA != "":
 		// Recorded headless a sync ago and its webhook never came: take it
 		// as that webhook, or it never gets reviewed, followed or merged.
 		s.onForgePull(ctx, f, repo, fp)
 		return nil
-	case old != nil && !settled && fp.Body != "" && s.approvedBodyChanged(ctx, old.ID, fp.Body):
+	case bodyChanged:
 		// An approved outside pull request's description changed and its
 		// webhook never came: screen it as that webhook would.
 		s.onForgePull(ctx, f, repo, fp)

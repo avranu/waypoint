@@ -334,6 +334,34 @@ func TestPullRequestFromOutsideLeaksNothing(t *testing.T) {
 		}
 	})
 
+	t.Run("an approved description reaches the review whole, unless it was cut when held", func(t *testing.T) {
+		for _, c := range []struct {
+			body string
+			want bool
+		}{
+			{"Wait for it…", true},
+			{strings.Repeat("a", 20000), true},
+			{strings.Repeat("a", 20001), false},
+		} {
+			se := newShipEnv(t, "forgejo")
+			pr := ForgePR{Number: 42, Title: "Add feature", Body: c.body, Author: "mallory", HeadRef: "feature", HeadSHA: "aaaaaaa4242", State: "open", HeadRepo: "me/app"}
+			se.pullHook("opened", pr)
+			se.s.Wait()
+			held, err := se.s.ListOutsidePR(se.ctx, se.admin, se.pr(42).ID)
+			if err != nil || len(held) != 1 {
+				t.Fatal(held, err)
+			}
+			if err := se.s.ApproveOutsidePR(se.ctx, se.admin, held[0].ID); err != nil {
+				t.Fatal(err)
+			}
+			se.s.Wait()
+			got := se.s.approvedBody(se.ctx, se.f, se.pr(42), &pr)
+			if (got == c.body) != c.want || (!c.want && got != "") {
+				t.Fatalf("body of %d runes ending %q: approvedBody gave %d runes, want whole: %v", len([]rune(c.body)), c.body[len(c.body)-3:], len([]rune(got)), c.want)
+			}
+		}
+	})
+
 	t.Run("agents see no bot runs or branches of one that became outside", func(t *testing.T) {
 		se := newShipEnv(t, "forgejo")
 		se.pullHook("opened", testPR)
