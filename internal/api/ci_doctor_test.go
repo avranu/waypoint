@@ -19,6 +19,7 @@ func TestCIDoctorText(t *testing.T) {
 		},
 		Lines: []core.CILine{{Repo: "Robin/juno", Base: "main", Armed: 40, Moving: 38, Stalled: true, AtFront: 4 * 3600, LastMerge: &last,
 			Front:          &core.CILinePR{Number: 117, Title: "Add tags", State: "watching", Wait: "waiting for the forge's new results", WaitFor: 3 * 3600},
+			Stacks:         core.CIStackStats{Tried: 6, Passed: 2, Failed: 3, Cancelled: 1, FailedBy: map[string]int{"refused": 2, "failed": 1}, Reran: 3, RerunPassed: 1},
 			Steps:          core.CIMergeSteps{N: 3, Update: 120, FullRun: 1500, Total: 2400},
 			EndedBy:        []core.CILineJob{{Name: "juno-browser", Merges: 3, P50: 2400}},
 			HeldAfterGreen: []core.CIHoldStat{{What: "waiting for forge-checks/codeql", Merges: 2, P50: 1080}},
@@ -30,7 +31,7 @@ func TestCIDoctorText(t *testing.T) {
 		CIWork: []core.CIWorkPR{{Repo: "Robin/juno", Number: 120, Title: "Fix flaky browser job", Position: 3, State: "watching", Issue: "JUNO-313"}},
 	}
 	out := ciDoctorText(d, "", true)
-	for _, want := range []string{"PROBLEM", "Bottleneck (stalled)", "next: wp pr babysit 117", "front #117", "STALLED", "full run 25m", "2 job re-runs", "#3 in line", "JUNO-313",
+	for _, want := range []string{"PROBLEM", "Bottleneck (stalled)", "next: wp pr babysit 117", "front #117", "STALLED", "full run 25m", "2 job re-runs", "#3 in line", "stacked places 6h: 6, 2 passed, 3 failed (2 refused), 1 cancelled; 3 re-run, 1 of them passed", "JUNO-313",
 		"full run ends on: juno-browser in 3 (takes 40m)", "held by (of 3 merges): waiting for forge-checks/codeql 18m in 2",
 		"merged before its full run passed", "after green: quiet 10m", "slowest #2", "2 stopped when e2e failed", "e2e shard 2: 17 runs, 7 passed, 4 failed, 0 cancelled [fails only with #272]"} {
 		if !strings.Contains(out, want) {
