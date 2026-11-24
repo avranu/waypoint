@@ -1154,12 +1154,11 @@ func (s *Service) writeIntent(ctx context.Context, p *strings.Builder, b *Babysi
 				continue
 			}
 			issueIDs = append(issueIDs, l.issue.ID)
-			var outside bool
-			if err := s.db.R.QueryRowContext(ctx, `SELECT outside FROM issues WHERE id = ?`, l.issue.ID).Scan(&outside); err != nil || outside {
+			if is.Outside {
 				fmt.Fprintf(p, "\nTask %s: %s\n", l.issue.Key, outsideTitleInPrompt)
 				continue
 			}
-			fmt.Fprintf(p, "\nTask %s: %s\n<untrusted>\n%s\n</untrusted>\n", l.issue.Key, is.Title, capText(is.Description, assessorIssueChars))
+			fmt.Fprintf(p, "\nTask %s: %s\n<untrusted>\n%s\n</untrusted>\n", l.issue.Key, excerpt(oneLine(is.Title), 300), untrusted(capText(is.Description, assessorIssueChars)))
 		}
 	}
 	// The description it shipped with, the drift guard's anchor (WP-440):
@@ -1188,7 +1187,7 @@ func (s *Service) writeIntent(ctx context.Context, p *strings.Builder, b *Babysi
 			}
 			rows.Close()
 			for _, n := range notes {
-				fmt.Fprintf(p, "\nDecision %s: %s\n<untrusted>\n%s\n</untrusted>\n", n.Code, n.Title, capText(n.Body, assessorDecisionCap))
+				fmt.Fprintf(p, "\nDecision %s: %s\n<untrusted>\n%s\n</untrusted>\n", n.Code, oneLine(n.Title), untrusted(capText(n.Body, assessorDecisionCap)))
 			}
 		}
 	}
