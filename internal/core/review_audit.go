@@ -88,8 +88,10 @@ const (
 	// reviewerOdds: the reviewer starts when the audit is more likely to end
 	// after the round's patience than before it.
 	reviewerOdds = 0.5
-	// reviewerMinRuns: how many recent runs like the audit's it takes to
-	// tell its chance; with fewer, the round waits out its patience.
+	// reviewerMinRuns: how many recent runs like the audit's that went as
+	// long as it has it takes to tell its chance (WP-ADR117's "at least 8
+	// such runs"); with fewer, and so with fewer recent runs at all, the
+	// round waits out its patience.
 	reviewerMinRuns = 8
 	// reviewerAuditKey makes a round's Sonnet reviewer once (roundReviewer).
 	reviewerAuditKey = "review-round:%d:sonnet"
@@ -508,8 +510,11 @@ func (s *Service) planReview(ctx context.Context, st *stepRow, review *roundRow,
 				}
 				return own, nil
 			}
+			// odds_known false: started at the patience with too few runs
+			// that went as long to tell (in of runs, fewer than
+			// reviewerMinRuns), so chance is unset, not 0% (audit 1575.3).
 			s.log.Info("review round: Claude review started beside its audit", "round", review.id, "audit", a.ID, "reviewer", rv.ID,
-				"model", stakes.reviewer().Model, "stakes", cmp(stakes.tier, StakesUnknown), "chance", odds.chance, "runs", odds.runs, "past_patience", now >= patience)
+				"model", stakes.reviewer().Model, "stakes", cmp(stakes.tier, StakesUnknown), "odds_known", odds.known, "chance", odds.chance, "in", odds.in, "runs", odds.runs, "past_patience", now >= patience)
 		}
 		what := "waiting for a runner to take"
 		if running {
@@ -845,7 +850,7 @@ func (s *Service) dropReviewer(ctx context.Context, rv *CodeAudit) {
 // landingOdds is how likely a round's audit is to end with findings by
 // the round's patience.
 type landingOdds struct {
-	known       bool    // enough recent runs that went as long as it has to tell (reviewerMinRuns)
+	known       bool    // enough recent runs that went as long as it has to tell (reviewerMinRuns; never with fewer recent runs at all)
 	chance      float64 // the share of runs like it that would have
 	in, runs    int     // of how many runs that had gone as long as it has
 	start       int64   // when it likely starts running (now, for one running)
@@ -870,8 +875,8 @@ func (o landingOdds) late(now, patience int64) string {
 
 // auditLandingChance is how likely the audit a (its job job, nil between
 // attempts) is to end with findings by deadline, by the recent runs of
-// jobs like it (audits through the same CLI, the gateway's mostly, of the
-// last reviewStatsSpan): of those that had gone as long as it has, the
+// jobs like it (audits through the same CLI, the gateway's mostly: the 40
+// newest of the last reviewStatsSpan): of those that had gone as long as it has, the
 // share that ended done by then, when at least reviewerMinRuns had (with
 // fewer the odds aren't known). One queued starts after a median run for
 // each wave of the gateway's slots ahead of it, as /wp review estimates
@@ -915,6 +920,7 @@ func (s *Service) auditLandingChance(ctx context.Context, a *CodeAudit, job *Run
 	_ = rows.Close()
 	o := landingOdds{start: now}
 	if len(runs) < reviewerMinRuns {
+		// Fewer recent runs at all than it takes of those that went as long.
 		return o
 	}
 	var ran int64

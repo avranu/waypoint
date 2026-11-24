@@ -2,6 +2,8 @@ package core
 
 import (
 	"encoding/json"
+	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"testing"
@@ -640,6 +642,8 @@ func TestReviewRoundFallsBack(t *testing.T) {
 	// at least 8 such runs; with fewer it waits out the hour").
 	t.Run("no runs went as long", func(t *testing.T) {
 		a, box := auditAPEnv(t)
+		logs := &lockedBuf{}
+		a.s.log = slog.New(slog.NewTextHandler(logs, nil))
 		at := a.clockNow().UnixMilli()
 		for i := range reviewerMinRuns + 2 {
 			end := at - int64(i)*int64(time.Hour/time.Millisecond)
@@ -660,8 +664,8 @@ func TestReviewRoundFallsBack(t *testing.T) {
 		if rv, err := a.s.roundReviewer(a.ctx, id); err != nil || rv != nil {
 			t.Fatalf("a reviewer started at 41m on no runs that went as long: %+v (%v); step %q", rv, err, a.step().detail)
 		}
-		if d := a.step().detail; strings.Contains(d, "recent runs") {
-			t.Errorf("the wait gives odds it doesn't have: %q", d)
+		if d := a.step().detail; !strings.Contains(d, "waiting for") || !strings.Contains(d, "starts beside it in") || strings.Contains(d, "recent runs") {
+			t.Errorf("the step should say it waits for the audit until the reviewer's time, with no odds: %q", d)
 		}
 		for range 2 {
 			a.tick(10 * time.Minute)
@@ -669,7 +673,77 @@ func TestReviewRoundFallsBack(t *testing.T) {
 		if rv, err := a.s.roundReviewer(a.ctx, id); err != nil || rv == nil {
 			t.Errorf("no reviewer once the hour had passed: %+v (%v); step %q", rv, err, a.step().detail)
 		}
+		// The start's log line says the odds weren't known, so a chance of 0
+		// there isn't read as "0%" (audit 1575.3).
+		if l := logs.String(); !strings.Contains(l, "Claude review started beside its audit") || !strings.Contains(l, "odds_known=false") || !strings.Contains(l, "past_patience=true") {
+			t.Errorf("the reviewer's start isn't logged as past the patience with odds unknown: %s", l)
+		}
 	})
+	// The same with a few runs that went as long, short of reviewerMinRuns:
+	// the share of so few isn't odds (WP-ADR117 counts the runs that went as
+	// long, not all recent ones), so 0 of 7 waits out the hour and 0 of 8
+	// starts the reviewer (audit 1575.4).
+	for _, c := range []struct {
+		long  int
+		early bool
+	}{{reviewerMinRuns - 1, false}, {reviewerMinRuns, true}} {
+		t.Run(fmt.Sprintf("%d runs went as long", c.long), func(t *testing.T) {
+			a, box := auditAPEnv(t)
+			logs := &lockedBuf{}
+			a.s.log = slog.New(slog.NewTextHandler(logs, nil))
+			at := a.clockNow().UnixMilli()
+			add := func(i int, took time.Duration) {
+				end := at - int64(i)*int64(10*time.Minute/time.Millisecond)
+				if _, err := a.s.db.W.Exec(`INSERT INTO runner_jobs(owner_id, kind, title, cli, input, state, timeout, source, result, created_at, started_at, finished_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+					a.admin.User.ID, JobAudit, "an audit", GatewayCLI, "{}", "done", 3600, "audit", "{}", end-took.Milliseconds(), end-took.Milliseconds(), end); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Twelve quick runs keep the odds above one half while the audit
+			// is young; once it has outlasted them, only the slow ones (none
+			// of which ended within the hour) are left to read.
+			for i := range 12 {
+				add(i, 5*time.Minute)
+			}
+			for i := range c.long {
+				add(12+i, 90*time.Minute)
+			}
+			id := start(a)
+			a.tick(61 * time.Second)
+			a.s.Wait()
+			if audit := a.poll(a.admin, box, RunnerPoll{}).Job; audit == nil || agentJobOf(t, audit).CLI != GatewayCLI {
+				t.Fatalf("no audit job: %+v", audit)
+			}
+			if rv, err := a.s.roundReviewer(a.ctx, id); err != nil || rv != nil {
+				t.Fatalf("a reviewer started beside a young audit: %+v (%v); step %q", rv, err, a.step().detail)
+			}
+			for range 2 {
+				a.tick(10 * time.Minute)
+			}
+			rv, err := a.s.roundReviewer(a.ctx, id)
+			if err != nil || (rv != nil) != c.early {
+				t.Fatalf("at 21m with 0 of %d runs that went as long ending in time: reviewer %+v (%v), want one %v; step %q", c.long, rv, err, c.early, a.step().detail)
+			}
+			if c.early {
+				if l := logs.String(); !strings.Contains(l, "odds_known=true") || !strings.Contains(l, fmt.Sprintf("in=0 runs=%d", c.long)) || !strings.Contains(l, "past_patience=false") {
+					t.Errorf("the early start's log doesn't give its odds: %s", l)
+				}
+				return
+			}
+			if d := a.step().detail; !strings.Contains(d, "waiting for") || strings.Contains(d, "recent runs") {
+				t.Errorf("the step should say it waits for the audit, with no odds: %q", d)
+			}
+			for range 4 {
+				a.tick(10 * time.Minute)
+			}
+			if rv, err := a.s.roundReviewer(a.ctx, id); err != nil || rv == nil {
+				t.Errorf("no reviewer once the hour had passed: %+v (%v); step %q", rv, err, a.step().detail)
+			}
+			if l := logs.String(); !strings.Contains(l, "odds_known=false") || !strings.Contains(l, fmt.Sprintf("in=0 runs=%d", c.long)) || !strings.Contains(l, "past_patience=true") {
+				t.Errorf("the late start's log doesn't say what the odds had to go on: %s", l)
+			}
+		})
+	}
 	// WP-1306: audits the gateway refused (no model at the bar) say nothing
 	// of how long one that runs takes: they don't lower the odds, so the
 	// round still waits for an audit that likely lands. Other quick failures
