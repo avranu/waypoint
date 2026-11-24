@@ -13,6 +13,7 @@ import {
   type BlockRule,
   type InlineMatch,
 } from '@/lib/richinput'
+import { PIECE_SRC } from '@/lib/markdown'
 
 // A table cell is a block of its own: the caret in one is never in "the table".
 const TEXT_BLOCKS = new Set(['P', 'DIV', 'LI', 'TD', 'TH', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6'])
@@ -95,7 +96,8 @@ function scan(b: Block, caret: Range): Scanned {
     if (node.nodeType !== Node.ELEMENT_NODE) return
     const e = node as Element
     const isBefore = caret.comparePoint(e.parentNode!, indexIn(e)) < 0
-    if (OPAQUE_TAGS.has(e.tagName) || e.tagName === 'BR') {
+    // A wikilink or @mention piece is one character too: no rule reads inside it.
+    if (OPAQUE_TAGS.has(e.tagName) || e.tagName === 'BR' || e.hasAttribute(PIECE_SRC)) {
       const ch = e.tagName === 'BR' ? '\n' : OPAQUE
       if (isBefore) before += ch
       else if (after.length < 2) after += ch

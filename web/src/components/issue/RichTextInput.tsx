@@ -542,6 +542,20 @@ export function RichTextInput({
             window.setTimeout(sync, 0)
             return
           }
+          // A wikilink piece is a link, and must not take the person away
+          // from their text: the click puts the caret on its nearer side.
+          const piece = t.closest?.('[data-md]')
+          if (piece && editor.current?.contains(piece)) {
+            e.preventDefault()
+            const r = piece.getBoundingClientRect()
+            const range = document.createRange()
+            if (e.clientX < r.left + r.width / 2) range.setStartBefore(piece)
+            else range.setStartAfter(piece)
+            range.collapse(true)
+            const sel = window.getSelection()
+            sel?.removeAllRanges()
+            sel?.addRange(range)
+          }
           detect()
         }}
         onKeyUp={(e) => {

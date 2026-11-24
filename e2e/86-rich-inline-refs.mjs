@@ -1,0 +1,305 @@
+// Wikilinks, @mentions and issue references look the same in the rich editor
+// as in the description view, so clicking to edit shifts nothing (WP-1763,
+// WP-1749). Run after 01-signup-flow (user robin).
+import { chromium } from "playwright";
+import fs from "node:fs";
+import { looks } from "./looks.mjs";
+const [base, out] = process.argv.slice(2);
+fs.mkdirSync(out, { recursive: true });
+const errors = [];
+const fail = (m) => (console.log("FAIL", m), errors.push(m));
+const ok = (c, m) => (c ? console.log("ok  ", m) : fail(m));
+const H = { "X-Waypoint-Client": "web" };
+const browser = await chromium.launch();
+
+async function login(ctx) {
+  const page = await ctx.newPage();
+  page.setDefaultTimeout(10000);
+  await page.goto(base + "/login");
+  await page.getByLabel("Username or email").fill("robin");
+  await page.getByLabel("Password").fill("correct horse battery");
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await page.waitForURL(base + "/");
+  return page;
+}
+
+{
+  const ctx = await browser.newContext();
+  const page = await login(ctx);
+  const projects = await (await page.request.get(base + "/api/v1/projects", { headers: H })).json();
+  if (!projects.some((p) => p.key === "RICH"))
+    await page.request.post(base + "/api/v1/projects", { headers: H, data: { name: "Rich editor", key: "RICH" } });
+  await ctx.close();
+}
+
+const WORDS = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty".split(" ");
+const STEPS = 24;
+// One paragraph per amount of leading text, so some of them have the piece
+// close to where the line wraps at any width. The marker word follows it.
+const sweep = (kind, piece) =>
+  Array.from({ length: STEPS }, (_, i) => {
+    const lead = Array.from({ length: 4 + i }, (_, k) => WORDS[(k + i) % WORDS.length]).join(" ");
+    return `${lead} ${piece} mk${kind}${i}x then enough words after it to fill the end of the line and a bit more.`;
+  }).join("\n\n");
+
+for (const [width, scheme] of looks(
+  [
+    [1280, "light"],
+    [390, "dark"],
+  ],
+  [0, 1],
+)) {
+  const tag = `w${width}`;
+  const height = width < 500 ? 844 : 800;
+  const ctx = await browser.newContext({ viewport: { width, height }, colorScheme: scheme });
+  const page = await login(ctx);
+  page.on("pageerror", (e) => fail(`${tag} pageerror: ${e.message}`));
+  const make = async (title, description) =>
+    (
+      await page.request.post(base + "/api/v1/issues", {
+        headers: H,
+        data: { project: "RICH", title: `${title} ${tag}`, description: description || undefined },
+      })
+    ).json();
+  const richBox = page.locator('[contenteditable="true"][aria-label="Description"]');
+  const viewSel = '.prose-wp[title="Click or press Enter to edit"]';
+
+  const ref = await make("Referenced", "Referenced.");
+  const pieces = {
+    wikilink: "[[Some Page]]",
+    mention: "@robin",
+    issue: ref.key,
+  };
+  // Where the marker word of each paragraph is: the first client rect of its text,
+  // from its paragraph's top so one paragraph reflowing does not blame the next.
+  const markers = () =>
+    page.evaluate(() => {
+      const root =
+        document.querySelector('[contenteditable="true"][aria-label="Description"]') ??
+        document.querySelector('.prose-wp[title="Click or press Enter to edit"]');
+      const out = {};
+      for (const p of root.querySelectorAll("p")) {
+        const m = /mk([a-z]+\d+)x/.exec(p.textContent);
+        if (!m) continue;
+        const walk = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
+        for (let t = walk.nextNode(); t; t = walk.nextNode()) {
+          const at = t.data.indexOf(m[0]);
+          if (at < 0) continue;
+          const r = document.createRange();
+          r.setStart(t, at);
+          r.setEnd(t, at + m[0].length);
+          const q = r.getClientRects()[0];
+          const top = p.getBoundingClientRect().top;
+          out[m[1]] = [Math.round(q.left * 100) / 100, Math.round((q.top - top) * 100) / 100, Math.round(p.getBoundingClientRect().height * 100) / 100];
+          break;
+        }
+      }
+      const b = root.getBoundingClientRect();
+      return { markers: out, box: [b.left, b.top, b.width, b.height] };
+    });
+
+  const description = Object.entries(pieces).map(([k, p]) => sweep(k, p)).join("\n\n");
+  const issue = await make("Inline refs", description);
+  await page.goto(`${base}/issue/${issue.key}`);
+  await page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {});
+  const view = page.locator(viewSel).first();
+  await view.waitFor();
+  // The reference becomes a link once the server has resolved it.
+  await view.locator(`a[href="/issue/${ref.key}"]`).first().waitFor();
+  await page.evaluate(() => document.fonts.ready);
+  const before = await markers();
+  ok(Object.keys(before.markers).length === 3 * STEPS, `${tag} the view shows every marker (${Object.keys(before.markers).length})`);
+  const word = await view.evaluate((el) => {
+    const p = el.querySelector("p");
+    const t = p.firstChild;
+    const r = document.createRange();
+    r.setStart(t, 0);
+    r.setEnd(t, 3);
+    const q = r.getBoundingClientRect();
+    return { x: q.left + q.width / 2, y: q.top + q.height / 2 };
+  });
+  await page.mouse.click(word.x, word.y);
+  await richBox.waitFor();
+  const after = await markers();
+  for (const kind of Object.keys(pieces)) {
+    const rows = [];
+    for (let i = 0; i < STEPS; i++) {
+      const a = before.markers[kind + i];
+      const b = after.markers[kind + i];
+      if (!a || !b) {
+        rows.push(`#${i} missing`);
+        continue;
+      }
+      if (Math.abs(a[0] - b[0]) > 0.5 || Math.abs(a[1] - b[1]) > 0.5 || Math.abs(a[2] - b[2]) > 0.5)
+        rows.push(`#${i} dx ${(b[0] - a[0]).toFixed(1)} dy ${(b[1] - a[1]).toFixed(1)} dh ${(b[2] - a[2]).toFixed(1)}`);
+    }
+    ok(rows.length === 0, `${tag} text after a ${kind} stays put when the editor opens: ${rows.length} of ${STEPS} moved${rows.length ? ` (${rows.slice(0, 6).join("; ")})` : ""}`);
+  }
+  ok(JSON.stringify(before.box) === JSON.stringify(after.box), `${tag} the description box is the same (${before.box} -> ${after.box})`);
+  await page.screenshot({ path: `${out}/inline-${tag}.png` });
+  await page.keyboard.press("Escape");
+
+  // Behaviour of the pieces in the editor, each on a small description.
+  const desc = async (key) =>
+    (await (await page.request.get(base + `/api/v1/issues/${key}`, { headers: H })).json()).description;
+  const waitDesc = async (key, want, ms = 10000) => {
+    const end = Date.now() + ms;
+    let d = await desc(key);
+    while (d !== want && Date.now() < end) {
+      // wplint:ignore e2e-wait polling a value or proving a negative: there is nothing to wait on
+      await page.waitForTimeout(250);
+      d = await desc(key);
+    }
+    return d;
+  };
+  const done = page.getByRole("button", { name: "Done", exact: true });
+  const openSmall = async (title, text) => {
+    const i = await make(title, text);
+    await page.goto(`${base}/issue/${i.key}`);
+    await page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {});
+    const v = page.locator(viewSel).first();
+    await v.waitFor();
+    const at = await v.evaluate((el) => {
+      const r = document.createRange();
+      const t = el.querySelector("p").firstChild;
+      r.setStart(t, 0);
+      r.setEnd(t, 1);
+      const q = r.getBoundingClientRect();
+      return { x: q.left + q.width / 2, y: q.top + q.height / 2 };
+    });
+    await page.mouse.click(at.x, at.y);
+    await richBox.waitFor();
+    return i;
+  };
+  // The text of the first paragraph up to the caret (PARK dropped).
+  const caretText = () =>
+    page.evaluate(() => {
+      const s = getSelection();
+      const n = s.anchorNode;
+      const p = (n.nodeType === 3 ? n.parentElement : n).closest("p");
+      const r = document.createRange();
+      r.setStart(p, 0);
+      r.setEnd(n, s.anchorOffset);
+      return r.toString().replace(/﻿/g, "");
+    });
+  const pieceCount = () => richBox.evaluate((el) => el.querySelectorAll("[data-md]").length);
+  const type = (s) => page.keyboard.type(s, { delay: 12 });
+  const press = (k) => page.keyboard.press(k);
+
+  // Round trip: opening and closing changes nothing; typing elsewhere keeps every piece.
+  const src = "See [[Some Page]], [[Target|shown label]] and (@robin). Also **bold @robin** and `@code [[x]]` ok";
+  {
+    const i = await openSmall("Round trip", src);
+    const n = await pieceCount();
+    ok(n === 4, `${tag} the editor holds the pieces as uneditable elements (${n} of 4)`);
+    const html = await richBox.evaluate((el) => el.innerHTML);
+    ok(/contenteditable="false"/.test(html) && /data-md="\[\[Target\|shown label\]\]"/.test(html), `${tag} each piece carries its markdown (${html.slice(0, 200)})`);
+    await press("Escape");
+    await richBox.waitFor({ state: "detached" });
+    ok((await desc(i.key)) === src, `${tag} open and close without a change leaves the markdown byte-identical`);
+  }
+  {
+    const i = await openSmall("Type elsewhere", src);
+    // Control+End: at 390 wide End goes to the end of the line, not of the text.
+    await press("Control+End");
+    await type("!");
+    await done.click();
+    const got = await waitDesc(i.key, src + "!");
+    ok(got === src + "!", `${tag} typing after the pieces saves them as they were: ${JSON.stringify(got)}`);
+  }
+
+  // Caret before and after a piece: arrows, then clicks.
+  for (const [name, piece, text] of [
+    ["wikilink", "[[Some Page]]", "Some Page"],
+    ["mention", "@robin", "@robin"],
+  ]) {
+    await openSmall(`Caret ${name}`, `ab ${piece} cd`);
+    await press("Home");
+    for (let k = 0; k < 3; k++) await press("ArrowRight");
+    const beforePiece = await caretText();
+    ok(beforePiece === "ab ", `${tag} ${name}: three Right arrows reach the spot before it (${JSON.stringify(beforePiece)})`);
+    await press("ArrowRight");
+    const afterPiece = await caretText();
+    ok(afterPiece === `ab ${text}`, `${tag} ${name}: one more steps over it (${JSON.stringify(afterPiece)})`);
+    await press("ArrowLeft");
+    const back = await caretText();
+    ok(back === "ab ", `${tag} ${name}: Left steps back before it (${JSON.stringify(back)})`);
+    // Text typed beside it goes outside it.
+    await type("X");
+    await press("ArrowRight");
+    await type("Y");
+    const inside = await richBox.evaluate((el) => el.querySelector("[data-md]")?.textContent);
+    ok(inside === text, `${tag} ${name}: text typed beside it stays outside (${JSON.stringify(inside)})`);
+    await press("Escape");
+    // By click: on its left edge, then its right edge.
+    await openSmall(`Click ${name}`, `ab ${piece} cd`);
+    const box = await richBox.locator("[data-md]").boundingBox();
+    await page.mouse.click(box.x + 2, box.y + box.height / 2);
+    const l = await caretText();
+    ok(l === "ab ", `${tag} ${name}: a click on its left edge puts the caret before it (${JSON.stringify(l)})`);
+    await page.mouse.click(box.x + box.width - 2, box.y + box.height / 2);
+    const r = await caretText();
+    ok(r === `ab ${text}`, `${tag} ${name}: a click on its right edge puts the caret after it (${JSON.stringify(r)})`);
+    await press("Escape");
+  }
+
+  // Backspace right after a piece deletes it whole; one undo restores it.
+  for (const [name, piece, text] of [
+    ["wikilink", "[[Some Page]]", "Some Page"],
+    ["mention", "@robin", "@robin"],
+  ]) {
+    await openSmall(`Backspace ${name}`, `ab ${piece} cd`);
+    await press("Home");
+    for (let k = 0; k < 4; k++) await press("ArrowRight");
+    const at = await caretText();
+    ok(at === `ab ${text}`, `${tag} ${name}: caret is right after it (${JSON.stringify(at)})`);
+    await press("Backspace");
+    const gone = await richBox.evaluate((el) => el.textContent);
+    ok((await pieceCount()) === 0 && gone.replace(/\s+/g, " ").trim() === "ab cd", `${tag} ${name}: Backspace deletes the whole piece (${JSON.stringify(gone)})`);
+    await press("Control+z");
+    const restored = await richBox.evaluate((el) => el.textContent);
+    ok((await pieceCount()) === 1 && restored.trim() === `ab ${text} cd`, `${tag} ${name}: one undo restores it (${JSON.stringify(restored)})`);
+    await press("Escape");
+  }
+
+  // New [[x]] and @name typed in the editor are literal markdown, and render once saved.
+  {
+    const i = await openSmall("Typed refs", "Start");
+    await press("End");
+    await type(" [[Fresh Page]] @robin and done");
+    await done.click();
+    const want = "Start [[Fresh Page]] @robin and done";
+    const got = await waitDesc(i.key, want);
+    ok(got === want, `${tag} typed [[x]] and @name save as literal markdown: ${JSON.stringify(got)}`);
+    await page.goto(`${base}/issue/${i.key}`);
+    await page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {});
+    const v = page.locator(viewSel).first();
+    await v.waitFor();
+    const links = (await v.locator("a.wikilink").allTextContents()).join();
+    const mentions = (await v.locator(".mention").allTextContents()).join();
+    ok(links === "Fresh Page" && mentions === "@robin", `${tag} they render as a wikilink and a mention once saved (${links} / ${mentions})`);
+  }
+
+  // The mention menu opens after a piece, and picking writes the mention.
+  {
+    const i = await openSmall("Menu", "x [[Some Page]]");
+    await press("End");
+    await type(" @ro");
+    const menu = page.getByRole("listbox", { name: "Mention someone" });
+    await menu.waitFor();
+    ok((await menu.getByRole("option").count()) >= 1, `${tag} the mention menu opens after a piece`);
+    await press("Enter");
+    await done.click();
+    const want = "x [[Some Page]] @robin";
+    const got = await waitDesc(i.key, want);
+    ok(got === want, `${tag} picking from the menu writes the mention: ${JSON.stringify(got)}`);
+  }
+  await ctx.close();
+}
+
+await browser.close();
+if (errors.length) {
+  console.log(`\n${errors.length} failure(s)`);
+  process.exit(1);
+}
+console.log("no errors");
