@@ -97,9 +97,18 @@ func TestRunnerStartSetsTheUpdateOptOutForItsChildren(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			cancel()
 			tc.opts.Name, tc.opts.MaxJobs, tc.opts.PollWait, tc.opts.NoUsageSync = "box", 1, -1, true
-			_ = runRunner(ctx, c, tc.opts)
+			restore := setUpdateOptOut(tc.opts)
 			if got := autoUpdateOff(); got != tc.want {
 				t.Fatalf("WAYPOINT_NO_AUTO_UPDATE off = %v, want %v", got, tc.want)
+			}
+			restore()
+			if autoUpdateOff() {
+				t.Fatal("the opt-out outlived the runner")
+			}
+			// A runner that has stopped leaves the environment as it found it.
+			_ = runRunner(ctx, c, tc.opts)
+			if autoUpdateOff() {
+				t.Fatal("runRunner left the opt-out set")
 			}
 		})
 	}

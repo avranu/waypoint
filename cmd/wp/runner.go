@@ -168,10 +168,7 @@ func runRunner(ctx context.Context, c *cli, o runnerOpts) error {
 	if err := passJobEnv(o.Env); err != nil {
 		return c.usage("%v", err)
 	}
-	if o.NoAutoUpdate || o.Once {
-		// Every child gets it through jobEnvKeeps, so its wp stays as it is too.
-		_ = os.Setenv(updateOptOutVar, "1")
-	}
+	defer setUpdateOptOut(o)()
 	host, _ := os.Hostname()
 	if o.Name == "" {
 		o.Name = machineName() // what sessions report, so requests find this runner
@@ -1047,5 +1044,24 @@ func (p *runnerProc) finish(id int64, o outcome) {
 func (p *runnerProc) stopUpdate() {
 	if p.updating {
 		p.c.releaseUpdateClaim(p.updateTriedFor)
+	}
+}
+
+// setUpdateOptOut puts the update opt-out in this process's environment when
+// the runner doesn't update (--no-auto-update, --once): every child gets it
+// through jobEnvKeeps, so its wp stays as it is too. The returned func puts
+// the environment back, so it lasts no longer than the runner.
+func setUpdateOptOut(o runnerOpts) (restore func()) {
+	if !o.NoAutoUpdate && !o.Once {
+		return func() {}
+	}
+	was, had := os.LookupEnv(updateOptOutVar)
+	_ = os.Setenv(updateOptOutVar, "1")
+	return func() {
+		if had {
+			_ = os.Setenv(updateOptOutVar, was)
+		} else {
+			_ = os.Unsetenv(updateOptOutVar)
+		}
 	}
 }
