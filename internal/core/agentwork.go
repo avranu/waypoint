@@ -457,6 +457,7 @@ func (s *Service) outOnPRs(ctx context.Context, q queryer, issues []*Issue) (map
 		// #nosec G202 -- placeholders only; values are bound
 		rows, err := q.QueryContext(ctx, `SELECT issue_id, url, repo, number, state FROM external_links
 			WHERE kind = 'pull' AND state IN ('', 'open', 'draft', 'merged') AND issue_id IN (`+placeholders(len(chunk))+`)
+			AND (state = 'merged' OR NOT `+unapprovedOutsidePullSQL("external_links.url")+`)
 			AND NOT (state = 'merged' AND EXISTS (SELECT 1 FROM objectives o WHERE o.issue_id = external_links.issue_id
 				AND o.state IN ('active', 'met', 'ended') AND external_links.created_at < o.round_started_at))
 			ORDER BY state = 'merged', id DESC`, int64Args(chunk)...)

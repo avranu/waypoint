@@ -1008,6 +1008,8 @@ func (s *Service) applyLinkState(ctx context.Context, linkURL string, item *Forg
 	if err != nil {
 		return
 	}
+	var held bool
+	_ = s.db.R.QueryRowContext(ctx, `SELECT `+unapprovedOutsidePullSQL("?"), linkURL).Scan(&held)
 	type row struct {
 		id, issueID int64
 		kind, state string
@@ -1043,7 +1045,7 @@ func (s *Service) applyLinkState(ctx context.Context, linkURL string, item *Forg
 				kind = EvExternalPRMerged
 			case item.IsPR && item.State == "closed":
 				kind = EvExternalPRClosed
-			case item.IsPR && item.State == "open": // new, reopened, or out of draft
+			case item.IsPR && item.State == "open" && !held: // new, reopened, or out of draft; a person approves an outside one first
 				kind = EvExternalPROpened
 			case !item.IsPR && item.State == "closed":
 				kind = EvExternalIssueClose

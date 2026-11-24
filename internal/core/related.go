@@ -402,7 +402,7 @@ func (s *Service) forgeCoMentions(ctx context.Context, issueID int64) []coMentio
 	rows, err := s.db.R.QueryContext(ctx, `SELECT o.issue_id, max(me.own), group_concat(DISTINCT o.verb), coalesce(nullif(me.title, ''), me.repo), coalesce(me.number, 0), me.item_kind
 		FROM forge_mentions me
 		JOIN forge_mentions o ON o.item_url = me.item_url AND o.issue_id != me.issue_id AND o.gone_at IS NULL
-		WHERE me.issue_id = ? AND me.gone_at IS NULL
+		WHERE me.issue_id = ? AND me.gone_at IS NULL AND NOT `+unapprovedOutsidePullSQL("me.item_url")+`
 		AND (SELECT count(DISTINCT x.issue_id) FROM forge_mentions x WHERE x.item_url = me.item_url AND x.gone_at IS NULL) <= ?
 		GROUP BY o.issue_id, me.item_url ORDER BY max(me.updated_at) DESC LIMIT 20`, issueID, maxCoMentioned)
 	if err != nil {

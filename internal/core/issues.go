@@ -2335,6 +2335,9 @@ func (s *Service) PublishIssue(ctx context.Context, actor *Actor, ref string) (*
 			}
 			// Published now, so this sets off what a new issue would have.
 			t.emit(&Event{Kind: EvIssueUpdated, ProjectID: i.ProjectID, IssueID: id, IssueKey: key, Field: "draft", Old: "draft", New: "published"})
+			if err := s.linkHeldOwnWork(ctx, t, id); err != nil {
+				return err
+			}
 		}
 		return nil
 	})

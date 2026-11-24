@@ -334,3 +334,93 @@ func TestPullRequestFromOutsideLeaksNothing(t *testing.T) {
 		}
 	})
 }
+
+// A link from a pull request no person approved is shown, but sets nothing
+// off until one does (WP-1802, R-568).
+func TestUnapprovedOutsideLinkHoldsItsEffects(t *testing.T) {
+	se := newShipEnv(t, "forgejo")
+	i := se.issue(se.admin, IssueInput{Project: se.p.Key, Title: "Login"})
+	other := se.issue(se.admin, IssueInput{Project: se.p.Key, Title: "Sessions"})
+	opened := se.watch(EvExternalPROpened)
+	pr := ForgePR{Number: 61, Title: "Rework login", Body: "depends on " + other.Key, Author: "mallory",
+		HeadRef: strings.ToLower(i.Key) + "-x", HeadSHA: "aaaaaaa6161", State: "open", HeadRepo: "mallory/app"}
+	se.mexec(`UPDATE issues SET status_id = (SELECT id FROM statuses WHERE project_id = issues.project_id AND category = 'in_progress' ORDER BY position LIMIT 1) WHERE id = ?`, i.ID)
+	before := se.get(se.admin, i.Key).Status.Name
+	se.pullHook("opened", pr)
+	se.s.Wait()
+
+	if links := se.get(se.admin, i.Key).Links; len(links) != 1 {
+		t.Fatalf("link not shown: %+v", links)
+	}
+	if n := len(opened.all()); n != 0 {
+		t.Errorf("pr_opened events for an unapproved pull request = %d", n)
+	}
+	if got := se.get(se.admin, i.Key).Status.Name; got != before {
+		t.Errorf("status moved to %q", got)
+	}
+	iss, err := se.s.issueByID(se.ctx, se.s.db.R, i.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err := se.s.outOnPRs(se.ctx, se.s.db.R, []*Issue{iss}); err != nil || len(out) != 0 || se.s.outOnPR(se.ctx, se.s.db.R, iss) != nil {
+		t.Errorf("out on a pull request nobody approved: %+v %v", out, err)
+	}
+	if cm := se.s.forgeCoMentions(se.ctx, i.ID); len(cm) != 0 {
+		t.Errorf("a suggestion from an unapproved pull request: %+v", cm)
+	}
+
+	held, err := se.s.ListOutsidePR(se.ctx, se.admin, se.pr(61).ID)
+	if err != nil || len(held) != 1 {
+		t.Fatal(held, err)
+	}
+	if err := se.s.ApproveOutsidePR(se.ctx, se.admin, held[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	se.s.Wait()
+	if n := len(opened.all()); n != 1 {
+		t.Errorf("pr_opened events after approval = %d", n)
+	}
+	if got := se.get(se.admin, i.Key).Status.Name; got != "In Review" {
+		t.Errorf("status after approval = %q", got)
+	}
+	if out, err := se.s.outOnPRs(se.ctx, se.s.db.R, []*Issue{iss}); err != nil || len(out) != 0 {
+		// the issue now sits In Review, outside the in-progress category
+		t.Logf("out after approval: %+v %v", out, err)
+	}
+	if cm := se.s.forgeCoMentions(se.ctx, i.ID); len(cm) != 1 || cm[0].kind != "blocked_by" {
+		t.Errorf("suggestions after approval: %+v", cm)
+	}
+}
+
+// An outside author's pull request doesn't link to an issue still waiting
+// as an outside draft; publishing it makes the link (WP-1802, R-565).
+func TestOutsidePullDoesNotLinkAnOutsideDraft(t *testing.T) {
+	se := newShipEnv(t, "forgejo")
+	i := se.issue(se.admin, IssueInput{Project: se.p.Key, Title: "Login"})
+	se.mexec(`UPDATE issues SET draft = 1, outside = 1, outside_by = 'mallory' WHERE id = ?`, i.ID)
+	pr := ForgePR{Number: 62, Title: "Rework login", Author: "mallory", HeadRef: strings.ToLower(i.Key) + "-x",
+		HeadSHA: "aaaaaaa6262", State: "open", HeadRepo: "mallory/app"}
+	se.pullHook("opened", pr)
+	se.s.Wait()
+	if links := se.get(se.admin, i.Key).Links; len(links) != 0 {
+		t.Fatalf("linked a draft: %+v", links)
+	}
+	if _, err := se.s.PublishIssue(se.ctx, se.admin, i.Key); err != nil {
+		t.Fatal(err)
+	}
+	se.s.Wait()
+	links := se.get(se.admin, i.Key).Links
+	if len(links) != 1 || links[0].Via != "branch" {
+		t.Fatalf("links after publishing: %+v", links)
+	}
+
+	t.Run("a person's pull request links a draft as before", func(t *testing.T) {
+		j := se.issue(se.admin, IssueInput{Project: se.p.Key, Title: "Sessions"})
+		se.mexec(`UPDATE issues SET draft = 1, outside = 1, outside_by = 'mallory' WHERE id = ?`, j.ID)
+		se.pullHook("opened", ForgePR{Number: 63, Title: "Sessions", Author: "sam", HeadRef: strings.ToLower(j.Key) + "-x", HeadSHA: "aaaaaaa6363", State: "open"})
+		se.s.Wait()
+		if links := se.get(se.admin, j.Key).Links; len(links) != 1 {
+			t.Fatalf("links: %+v", links)
+		}
+	})
+}
