@@ -270,6 +270,8 @@ type Service struct {
 	sessCache sessionCache
 	// stopWaits: Stop hooks waiting for a follow-up's message (WP-D22).
 	stopWaits stopWaits
+	// shipWaits: wp ship calls waiting on a review round's news (WP-1669).
+	shipWaits shipWaits
 	// babysitLocks: one babysit step at a time per pull request (WP-134).
 	babysitLocks keyedLocks
 	// shipLocks: one server-side ship at a time per review round (WP-1370).
