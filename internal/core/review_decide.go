@@ -632,7 +632,7 @@ func (s *Service) takenText(ctx context.Context, r *roundRow) string {
 		FROM work_log w JOIN issues i ON i.id = w.issue_id JOIN projects p ON p.id = i.project_id
 		JOIN agent_runs o ON `+takenRun+` LEFT JOIN agent_sessions x ON x.id = o.session_id
 		WHERE w.id = ? ORDER BY o.id DESC LIMIT 1`, r.id).Scan(&sess, &agent, &cwd, &machine, &seen, &key)
-	who := takenWhy
+	var who string
 	switch {
 	case err != nil:
 		// The holder left between the decision and this read: the next ask says what Waypoint does.
