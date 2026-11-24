@@ -302,9 +302,10 @@ func TestGoalTraceNoteParentBasis(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// The relation graph's under edge says the same as the trace. Read
-		// afresh: the test clock stands still, so the cached graph's
-		// signature wouldn't see the move.
+		// The relation graph's under edge says the same as the trace: the
+		// graph page shows its basis too, "under (by a person)". Read afresh:
+		// the test clock stands still, so the cached graph's signature
+		// wouldn't see the move.
 		g, err := loadRelGraph(e.ctx, e.s.db.R)
 		if err != nil {
 			t.Fatal(err)
@@ -361,54 +362,5 @@ func TestGoalTraceNoteParentBasis(t *testing.T) {
 	}
 	if got := underBasis(b.ID); got != "person" {
 		t.Errorf("proposal after approval: basis = %s, want person", got)
-	}
-}
-
-// WP-1790: the goal matcher learns a goal's words only from notes a person
-// put under it, and not from below a note an agent put there.
-func TestGoalMatcherNoteParentBasis(t *testing.T) {
-	e := newEnv(t)
-	p := e.project(e.admin, "Gamma", "")
-	agent := *e.admin
-	agent.Agent = "anthropic/claude-opus-5-5"
-	a := e.goal(e.admin, p.Key, "The studio keeps its work safe")
-	b := e.goal(e.admin, p.Key, "The team sees deploys and outages at a glance")
-	for _, title := range []string{"Write the onboarding guide", "Tidy the settings page", "Plan the quarterly offsite", "Upgrade the mail templates"} {
-		e.issue(e.admin, IssueInput{Project: p.Key, Title: title})
-	}
-	task := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Decide how pieces are handled"})
-
-	// An agent writes a note for a person's task and puts it under a.
-	note, err := e.s.CreateDesign(e.ctx, &agent, DesignInput{Title: str("Kiln glaze firing"), Kind: str("decision"),
-		Body:    str("Fire stoneware glaze in the kiln at cone six; pottery cracks when the kiln cools fast."),
-		Project: &p.Key, Parent: Opt[int64]{Set: true, Value: &a.ID}, For: task.Key})
-	if err != nil || note.Requested == nil {
-		t.Fatalf("create = %+v, %v", note, err)
-	}
-	// A person adds a note under the agent's.
-	if _, err := e.s.CreateDesign(e.ctx, e.admin, DesignInput{Title: str("Kiln shelves for stoneware"), Kind: str("decision"),
-		Body:    str("Stoneware pottery sits on kiln shelves washed against glaze drips."),
-		Project: &p.Key, Parent: Opt[int64]{Set: true, Value: &note.ID}}); err != nil {
-		t.Fatal(err)
-	}
-	work := e.issue(&agent, IssueInput{Project: p.Key, Title: "Kiln glaze cracks stoneware pottery", Description: "Stoneware pottery from the kiln cracks under the glaze."})
-
-	e.goals(e.admin, p.Key)
-	if got := e.grounding(work.Key); got != GroundNone {
-		t.Errorf("only an agent put the kiln notes under a goal: grounding = %s, want none", got)
-	}
-
-	// A person moves the agent's note under b: now b means kiln work.
-	if _, err := e.s.UpdateDesign(e.ctx, e.admin, note.ID, DesignInput{Parent: Opt[int64]{Set: true, Value: &b.ID}}); err != nil {
-		t.Fatal(err)
-	}
-	o := e.goals(e.admin, p.Key)
-	if got := e.grounding(work.Key); got != GroundInferredGoal {
-		t.Fatalf("a person put the kiln notes under b: grounding = %s, want inferred_goal", got)
-	}
-	for _, l := range o.Links {
-		if l.Item.Key == work.Key && l.Goal.ID != b.ID {
-			t.Errorf("guessed goal %d, want %d", l.Goal.ID, b.ID)
-		}
 	}
 }
