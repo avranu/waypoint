@@ -102,3 +102,5 @@
 20 84-rich-markdown
 150 85-rich-typing
 40 87-rich-nesting
+60 88-rich-composition
+40 86-rich-inline-refs

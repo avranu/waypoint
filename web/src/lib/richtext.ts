@@ -2,7 +2,7 @@
 // contenteditable editor makes are handled; anything else falls back to its
 // text, so pasted markup can't smuggle itself into the source.
 
-import { renderMarkdownForEdit, hasRawHtml } from '@/lib/markdown'
+import { renderMarkdownForEdit, hasRawHtml, isPieceSrc, PIECE_SRC } from '@/lib/markdown'
 import { PARK } from '@/lib/richinput'
 
 // `label`: text inside a link label or image alt, where any bracket would end
@@ -188,6 +188,11 @@ function serialize(node: Node, opts: Opts = {}): string {
   const el = node as HTMLElement
   const tag = el.tagName.toLowerCase()
   const inner = (o: Opts = opts) => children(el, o)
+
+  // A wikilink or @mention the editor drew: its markdown, as it was.
+  const piece = el.getAttribute(PIECE_SRC)
+  if (piece !== null && el.getAttribute('contenteditable') === 'false' && isPieceSrc(piece))
+    return piece
 
   switch (tag) {
     case 'br':

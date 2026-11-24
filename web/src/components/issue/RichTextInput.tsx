@@ -30,10 +30,10 @@ import { IconButton } from '@/components/ui/button'
 import { useEscapeLayer } from '@/components/ui/layers'
 import { toast, toastError } from '@/components/ui/toast'
 import { issueTarget, refreshAttachments, uploadAttachment } from '@/lib/attachments'
-import { renderMarkdownForEdit } from '@/lib/markdown'
+import { pieceHtml, renderMarkdownForEdit } from '@/lib/markdown'
 import { htmlToMarkdown } from '@/lib/richtext'
 import { PARK } from '@/lib/richinput'
-import { inputRules, keyRules } from '@/lib/richdom'
+import { beforeInputRules, composedRules, inputRules, insertPiece, keyRules } from '@/lib/richdom'
 import type { UserRef } from '@/lib/types'
 import { MENTION_RE, MentionList, useMentionMatches } from './userMention'
 
@@ -207,6 +207,32 @@ export function RichTextInput({
     if (caret !== null) placeCaretAt(el, caret)
   }, [value])
 
+  // Android keyboards send Enter and Backspace as keydown 229 and then
+  // beforeinput, not as a keydown with the key. `keyed` is set when a keydown
+  // did carry Enter or Backspace (keyRules has had its turn), so the
+  // beforeinput that follows is not handled a second time; `composing` is
+  // true between compositionstart and compositionend, when the DOM is not ours
+  // to change.
+  const keyed = useRef(false)
+  const composing = useRef(false)
+  useEffect(() => {
+    const el = editor.current
+    if (!el) return
+    const onBefore = (e: Event) => {
+      if (keyed.current || composing.current) return
+      try {
+        if (beforeInputRules(el, e as InputEvent)) {
+          sync()
+          detect()
+        }
+      } catch (err) {
+        console.error('typed markdown rule failed', err)
+      }
+    }
+    el.addEventListener('beforeinput', onBefore)
+    return () => el.removeEventListener('beforeinput', onBefore)
+  })
+
   // What the editor last wrote out; the draft's newest text while mounted.
   const latest = useRef(value)
   latest.current = value
@@ -240,18 +266,24 @@ export function RichTextInput({
   const pick = (u: UserRef) => {
     if (!mention) return
     const { node, start, end } = mention
-    const insert = `@${u.username} `
-    node.data = node.data.slice(0, start) + insert + node.data.slice(end)
-    const caret = start + insert.length
+    editor.current?.focus()
     const range = document.createRange()
-    range.setStart(node, caret)
-    range.collapse(true)
+    range.setStart(node, start)
+    range.setEnd(node, end)
     const sel = window.getSelection()
     sel?.removeAllRanges()
     sel?.addRange(range)
+    // The same piece the editor draws for a mention already in the text, put
+    // in by execCommand so one undo takes it out. A no-break space follows it
+    // for the caret to sit in: typing there is plain text, not part of the
+    // piece, and (unlike a plain space) it is not dropped at a line's end.
+    // None is added when a space already follows, or the text would show two.
+    const html = pieceHtml(`@${u.username}`)
+    const gap = /^[\s\u00a0]/.test(node.textContent?.slice(end) ?? '') ? '' : '&nbsp;'
+    if (html) insertPiece(html + gap)
+    else document.execCommand('insertText', false, `@${u.username} `)
     setMention(null)
     sync()
-    editor.current?.focus()
   }
 
   const block = (selector: string): HTMLElement | null => {
@@ -548,6 +580,22 @@ export function RichTextInput({
           sync()
           detect()
         }}
+        onCompositionStart={() => {
+          composing.current = true
+        }}
+        onCompositionEnd={(e) => {
+          composing.current = false
+          const el = editor.current
+          if (!el) return
+          try {
+            if (composedRules(el, e.data)) {
+              sync()
+              detect()
+            }
+          } catch (err) {
+            console.error('typed markdown rule failed', err)
+          }
+        }}
         onClick={(e) => {
           const t = e.target as HTMLElement
           if (t instanceof HTMLInputElement && t.type === 'checkbox') {
@@ -555,12 +603,28 @@ export function RichTextInput({
             window.setTimeout(sync, 0)
             return
           }
+          // A wikilink piece is a link, and must not take the person away
+          // from their text: the click puts the caret on its nearer side.
+          const piece = t.closest?.('[data-md]')
+          if (piece && editor.current?.contains(piece)) {
+            e.preventDefault()
+            const r = piece.getBoundingClientRect()
+            const range = document.createRange()
+            if (e.clientX < r.left + r.width / 2) range.setStartBefore(piece)
+            else range.setStartAfter(piece)
+            range.collapse(true)
+            const sel = window.getSelection()
+            sel?.removeAllRanges()
+            sel?.addRange(range)
+          }
           detect()
         }}
         onKeyUp={(e) => {
+          keyed.current = false
           if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) detect()
         }}
         onKeyDown={(e) => {
+          keyed.current = e.key === 'Enter' || e.key === 'Backspace'
           // Markdown has no underline; the shortcut would make one that
           // vanishes on save.
           if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'u') {

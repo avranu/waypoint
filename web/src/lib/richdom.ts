@@ -13,6 +13,7 @@ import {
   type BlockRule,
   type InlineMatch,
 } from '@/lib/richinput'
+import { PIECE_SRC, pieceHtml } from '@/lib/markdown'
 
 // A table cell is a block of its own: the caret in one is never in "the table".
 const TEXT_BLOCKS = new Set(['P', 'DIV', 'LI', 'TD', 'TH', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6'])
@@ -95,7 +96,8 @@ function scan(b: Block, caret: Range): Scanned {
     if (node.nodeType !== Node.ELEMENT_NODE) return
     const e = node as Element
     const isBefore = caret.comparePoint(e.parentNode!, indexIn(e)) < 0
-    if (OPAQUE_TAGS.has(e.tagName) || e.tagName === 'BR') {
+    // A wikilink or @mention piece is one character too: no rule reads inside it.
+    if (OPAQUE_TAGS.has(e.tagName) || e.tagName === 'BR' || e.hasAttribute(PIECE_SRC)) {
       const ch = e.tagName === 'BR' ? '\n' : OPAQUE
       if (isBefore) before += ch
       else if (after.length < 2) after += ch
@@ -193,7 +195,29 @@ const SUPPORTED = typeof navigator === 'undefined' || /Chrome\/|Firefox\//.test(
  */
 export function inputRules(el: HTMLElement, e: InputEvent): boolean {
   if (!SUPPORTED) return false
-  if (e.isComposing || e.inputType !== 'insertText' || !e.data || e.data.length !== 1) return false
+  // A composition commit that arrives as an input event with isComposing
+  // already false (Safari ends the composition first) is judged like a
+  // composition end; one still composing is left alone.
+  if (e.isComposing) return false
+  if (e.inputType === 'insertCompositionText') return composedRules(el, e.data ?? '')
+  if (e.inputType !== 'insertText' || !e.data || e.data.length !== 1) return false
+  return typedRules(el, e.data, false)
+}
+
+/**
+ * Called when a composition has ended (Android keyboards, IMEs, dictation
+ * send ordinary typing this way) with the text it committed. The DOM is never
+ * changed while a composition is active, so the rules run here, judging from
+ * the text before the caret as ProseMirror does: the trigger is the last
+ * character committed, whatever the length of what was committed. A paste or
+ * autocorrect is not a composition and never comes through here.
+ */
+export function composedRules(el: HTMLElement, data: string): boolean {
+  if (!SUPPORTED || !data) return false
+  return typedRules(el, data.slice(-1).replace(/\u00a0/g, ' '), true)
+}
+
+function typedRules(el: HTMLElement, ch: string, composed: boolean): boolean {
   const caret = caretIn(el)
   if (!caret) return false
   const at = elementOf(caret.startContainer)
@@ -201,7 +225,10 @@ export function inputRules(el: HTMLElement, e: InputEvent): boolean {
   const b = blockAt(el, caret)
   if (!b) return false
   const s = scan(b, caret)
-  if (e.data === ' ') {
+  // The committed text may already have been acted on, or the caret moved on.
+  if (composed && !s.before.endsWith(ch)) return false
+  if (piece(s, caret, ch)) return true
+  if (ch === ' ') {
     const bare = b.node ? b.node.tagName === 'P' || b.node.tagName === 'DIV' : true
     const inItem = b.node?.tagName === 'LI'
     if (!bare && !inItem) return false
@@ -214,6 +241,95 @@ export function inputRules(el: HTMLElement, e: InputEvent): boolean {
   }
   const m = inlineRule(s.before, s.after)
   return m ? inline(s, caret, m) : false
+}
+
+// A typed [[wikilink]] becomes the editor's piece when its "]]" is typed, and a
+// typed @name when a space or punctuation ends it, as the pieces already in
+// the description are drawn, so saving moves nothing. Neither '.' nor '-'
+// ends a name (they can be inside one: "@a.b"). The conversion is one
+// insertHTML, so one undo gives back the typed text.
+const NAME_END = /^[ ,;:!?)]$/
+
+// Chromium's insertHTML splits the paragraph when an uneditable element goes in
+// at its very end. A parked caret node after the selection keeps it inline
+// (put in by hand, so it is not an undo step; undo leaves it, unseen).
+export function insertPiece(html: string) {
+  const r = window.getSelection()?.getRangeAt(0)
+  const t = r?.endContainer
+  if (
+    t &&
+    t.nodeType === Node.TEXT_NODE &&
+    r.endOffset === t.textContent?.length &&
+    !t.nextSibling
+  ) {
+    t.parentNode?.appendChild(document.createTextNode(PARK))
+  }
+  exec('insertHTML', html)
+  looseSpaces()
+}
+
+// Chromium turns the spaces beside the new piece into no-break ones, which the
+// saved view (plain spaces) does not have: lines break elsewhere and one at a
+// line's start shows. Put plain ones back where text follows or precedes.
+function looseSpaces() {
+  const sel = window.getSelection()
+  if (!sel?.anchorNode) return
+  const isPiece = (x: Node | null) => x instanceof Element && x.hasAttribute(PIECE_SRC)
+  // Chromium can leave the caret inside the piece's text; the piece is then
+  // an ancestor, else a sibling of the caret's node.
+  const [node, offset] = [sel.anchorNode, sel.anchorOffset]
+  let n: Node | null =
+    node.nodeType === Node.ELEMENT_NODE ? (node.childNodes[offset - 1] ?? null) : node
+  const inside = (node.parentElement?.closest('[data-md]') as Node | null) ?? null
+  if (inside) n = inside
+  const from = n
+  while (n && !isPiece(n)) n = n.previousSibling
+  for (n = n ?? from; n && !isPiece(n);) n = n.nextSibling
+  if (!n) return
+  const before = n.previousSibling
+  if (before?.nodeType === Node.TEXT_NODE) {
+    const d = (before as Text).data
+    if (/[^\s\u00a0]\u00a0$/.test(d)) (before as Text).data = `${d.slice(0, -1)} `
+  }
+  let after = n.nextSibling
+  while (after?.nodeType === Node.TEXT_NODE && (after as Text).data === PARK)
+    after = after.nextSibling
+  let lead = 0
+  if (after?.nodeType === Node.TEXT_NODE) {
+    const t = after as Text
+    const m = /^(\ufeff*)\u00a0(?=[^\s\u00a0])/.exec(t.data)
+    if (m) t.data = `${m[1]} ${t.data.slice(m[0].length)}`
+    lead = /^\ufeff*[ \u00a0]?/.exec(t.data)?.[0].length ?? 0
+  }
+  // Setting text moves a caret inside it; put it back, and a caret left inside
+  // the piece goes after it and the space that follows, where typing is text.
+  if (inside && after) sel.collapse(after, lead)
+  else sel.collapse(node, offset)
+}
+
+function piece(s: Scanned, caret: Range, typed: string): boolean {
+  const done = (from: number, src: string, tail: string, park: boolean) => {
+    const open = pieceHtml(src)
+    const at = pointAt(s, from)
+    if (!open || !at) return false
+    const r = document.createRange()
+    r.setStart(...at)
+    r.setEnd(caret.startContainer, caret.startOffset)
+    select(r)
+    insertPiece(open + tail + (park ? PARK : ''))
+    return true
+  }
+  if (typed === ']') {
+    const w = /\[\[[^[\]|\n\ufffc]{1,200}(?:\|[^[\]\n\ufffc]{0,200})?\]\]$/.exec(s.before)
+    return !!w && done(w.index, w[0], '', true)
+  }
+  if (!NAME_END.test(typed)) return false
+  const body = s.before.slice(0, -1)
+  const m = /(^|[\s(\ufeff])@([a-zA-Z0-9][\w.-]{0,38})$/.exec(body)
+  if (!m) return false
+  const name = m[2].replace(/[.-]+$/, '')
+  const trail = esc(m[2].slice(name.length) + (typed === ' ' ? '\u00a0' : typed))
+  return done(m.index + m[1].length, '@' + name, trail, false)
 }
 
 function convert(el: HTMLElement, b: Block, caret: Range, rule: BlockRule): boolean {
@@ -368,7 +484,13 @@ function eraseParked(caret: Range) {
   exec('delete')
 }
 
-const plain = (e: KeyboardEvent) => !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey
+/** What the key rules read of an event: a keydown, or a beforeinput standing in for one. */
+type KeyLike = Pick<
+  KeyboardEvent,
+  'key' | 'isComposing' | 'shiftKey' | 'ctrlKey' | 'metaKey' | 'altKey' | 'preventDefault'
+>
+
+const plain = (e: KeyLike) => !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey
 
 /**
  * Keys the browser handles badly in markdown-shaped content: Enter and Tab
@@ -376,7 +498,7 @@ const plain = (e: KeyboardEvent) => !e.shiftKey && !e.ctrlKey && !e.metaKey && !
  * quote, code or task, and arrows past the parking character after an inline
  * conversion. True if it was handled (the event is then cancelled).
  */
-export function keyRules(el: HTMLElement, e: KeyboardEvent): boolean {
+export function keyRules(el: HTMLElement, e: KeyLike): boolean {
   if (!SUPPORTED || e.isComposing) return false
   if (e.key === 'Tab' && !e.ctrlKey && !e.metaKey && !e.altKey && tabInList(el, e)) return true
   const caret = caretIn(el)
@@ -467,7 +589,7 @@ function isNested(li: Element, el: HTMLElement): boolean {
 // undo reverses one press. Where neither can happen in a list the key is still
 // swallowed, or focus would leave the editor mid-list; Escape is the way out.
 // Outside lists, and in code, Tab is the browser's or the code rule's.
-function tabInList(el: HTMLElement, e: KeyboardEvent): boolean {
+function tabInList(el: HTMLElement, e: KeyLike): boolean {
   const sel = window.getSelection()
   if (!sel || sel.rangeCount === 0) return false
   const r = sel.getRangeAt(0)
@@ -508,7 +630,33 @@ function tabInList(el: HTMLElement, e: KeyboardEvent): boolean {
   return true
 }
 
-function inCode(el: HTMLElement, e: KeyboardEvent, caret: Range, pre: Element): boolean {
+/**
+ * Android keyboards send Enter and Backspace as keydown 229 with no key, then
+ * beforeinput insertParagraph / insertLineBreak / deleteContentBackward. This
+ * runs the key rules for those, only when the keydown did not carry the key
+ * (the caller checks), so a desktop press is not handled twice.
+ */
+export function beforeInputRules(el: HTMLElement, e: InputEvent): boolean {
+  if (!SUPPORTED || e.isComposing || !e.cancelable) return false
+  const key =
+    e.inputType === 'insertParagraph' || e.inputType === 'insertLineBreak'
+      ? 'Enter'
+      : e.inputType === 'deleteContentBackward'
+        ? 'Backspace'
+        : ''
+  if (!key) return false
+  return keyRules(el, {
+    key,
+    isComposing: false,
+    shiftKey: false,
+    ctrlKey: false,
+    metaKey: false,
+    altKey: false,
+    preventDefault: () => e.preventDefault(),
+  })
+}
+
+function inCode(el: HTMLElement, e: KeyLike, caret: Range, pre: Element): boolean {
   if (!plain(e)) return false
   const { before, after } = codeSplit(pre, caret)
   if (e.key === 'Tab') {
@@ -538,7 +686,7 @@ function inCode(el: HTMLElement, e: KeyboardEvent, caret: Range, pre: Element): 
   return true
 }
 
-function quoteEnter(el: HTMLElement, e: KeyboardEvent, p: Element): boolean {
+function quoteEnter(el: HTMLElement, e: KeyLike, p: Element): boolean {
   if (p.textContent !== '' || p.parentElement!.lastElementChild !== p) return false
   e.preventDefault()
   // Outdent lifts the empty line out of the quote; with other lines left in
@@ -557,7 +705,7 @@ function quoteEnter(el: HTMLElement, e: KeyboardEvent, p: Element): boolean {
   return true
 }
 
-function taskEnter(el: HTMLElement, e: KeyboardEvent, li: Element, caret: Range): boolean {
+function taskEnter(el: HTMLElement, e: KeyLike, li: Element, caret: Range): boolean {
   const box = Array.from(li.children).find((c) => c.matches('input.task'))
   if (!box) return false
   // Caret before the box: leave it to the browser.
@@ -609,7 +757,7 @@ function removeBox(li: Element) {
   exec('delete')
 }
 
-function backspace(el: HTMLElement, e: KeyboardEvent, caret: Range): boolean {
+function backspace(el: HTMLElement, e: KeyLike, caret: Range): boolean {
   const at = elementOf(caret.startContainer)
   const pre = at?.closest('pre')
   if (pre && el.contains(pre)) {
