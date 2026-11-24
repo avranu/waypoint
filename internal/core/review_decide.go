@@ -594,26 +594,43 @@ func (s *Service) reviewFacts(ctx context.Context, id int64, in *roundIn) error 
 	return nil
 }
 
-// roundRunOpen: the round's own run is open, or its session holds the task
-// in another open run. A session that took the task again after its claim
-// expired carries the round in that run, as if the first had never ended
-// (WP-1828): the round waits on its marks and ships by the session's ship,
-// and is not released behind a session still working.
+// carriesRound is true of an open run, aliased as given, that carries round w:
+// the round's own run, or the same holder's later run on its task. That is
+// the round's session's run; or, where the run or the round has no session
+// to compare, a run of the agent the round's run was (the claim path opens a
+// run with no session for a caller that names none, and heldElsewhere reads
+// such a run as nobody else's, so the same agent's re-claim is the same
+// holder: WP-1828). roundRunOpen, takenRun and movedOnAt all read the holder
+// through it, so the rule is written once.
+func carriesRound(o string) string {
+	return o + `.ended_at IS NULL AND (` + o + `.id IS w.run_id OR (` + o + `.issue_id = w.issue_id AND (
+		(w.session_id IS NOT NULL AND ` + o + `.session_id IS w.session_id)
+		OR ((w.session_id IS NULL OR ` + o + `.session_id IS NULL) AND ` + o + `.agent IS (SELECT ra.agent FROM agent_runs ra WHERE ra.id = w.run_id)))))`
+}
+
+// roundRunOpen: a run that carries the round is open (carriesRound). A
+// session that took the task again after its claim expired carries the round
+// in that run, as if the first had never ended (WP-1828): the round waits on
+// its marks and ships by the session's ship, and is not released behind a
+// session still working. The round keeps its own run_id: the new run carries
+// it rather than the round moving onto the new run.
 func roundRunOpen(ctx context.Context, q queryer, round int64) (open bool, err error) {
-	err = q.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM work_log w JOIN agent_runs o ON o.ended_at IS NULL
-		AND (o.id = w.run_id OR (o.issue_id = w.issue_id AND o.session_id = w.session_id))
+	err = q.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM work_log w JOIN agent_runs o ON `+carriesRound("o")+`
 		WHERE w.id = ? AND w.run_id IS NOT NULL)`, round).Scan(&open)
 	return open, err
 }
 
 // takenRun is the open run o that makes round w Taken: one on its task that
-// is neither the round's own run nor a run of the round's session
-// (roundRunOpen has those). A run with no session is somebody else's work,
-// and a round with no session compares runs alone. The round keeps its own
-// run_id when its session takes the task again: that session's new run carries
-// it (roundRunOpen) rather than the round moving onto the new run.
-const takenRun = `o.issue_id = w.issue_id AND o.ended_at IS NULL AND o.id != coalesce(w.run_id, 0)
-	AND (w.session_id IS NULL OR o.session_id IS NOT w.session_id)`
+// doesn't carry the round (carriesRound): another session's, or another
+// agent's with no session.
+var takenRun = `o.issue_id = w.issue_id AND o.ended_at IS NULL AND NOT (` + carriesRound("o") + `)`
+
+// movedOnAt is when round w's session first started a run on another task
+// after the run that carries the round (its newest open one, else the
+// round's own); 0 if it hasn't. endedFacts, shipSettledRounds and
+// reviveHeldRounds all read a session's move through it.
+var movedOnAt = `coalesce((SELECT min(mv.started_at) FROM agent_runs mv WHERE mv.session_id = w.session_id AND mv.issue_id != w.issue_id
+	AND mv.id > coalesce((SELECT max(h.id) FROM agent_runs h WHERE h.issue_id = w.issue_id AND ` + carriesRound("h") + `), w.run_id)), 0)`
 
 // laterRunEnd is when the last later run on round w's task ended: a session
 // that held the task after the round and left without a ship. The round's
@@ -655,12 +672,9 @@ func (s *Service) takenText(ctx context.Context, r *roundRow) string {
 func (s *Service) endedFacts(ctx context.Context, r *roundRow, in *roundIn) error {
 	now := s.nowMS()
 	var updated, runEnd, sessEnd, moved, heldEnd int64
-	// moved: the session's first run on another task after the run that
-	// carries the round (its newest open one on this task, else the round's).
 	err := s.db.R.QueryRowContext(ctx, `SELECT w.updated_at, coalesce((SELECT ended_at FROM agent_runs WHERE id = w.run_id), 0),
 			coalesce((SELECT ended_at FROM agent_sessions WHERE id = w.session_id), 0),
-			coalesce((SELECT min(o.started_at) FROM agent_runs o WHERE o.session_id = w.session_id AND o.issue_id != w.issue_id AND o.id > coalesce(
-				(SELECT max(h.id) FROM agent_runs h WHERE h.issue_id = w.issue_id AND h.session_id = w.session_id AND h.ended_at IS NULL), w.run_id)), 0),
+			`+movedOnAt+`,
 			`+laterRunEnd+`,
 			i.resolved_at IS NOT NULL,
 			EXISTS (SELECT 1 FROM external_links l WHERE l.issue_id = w.issue_id AND l.kind = 'pull'),

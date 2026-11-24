@@ -38,10 +38,26 @@ func (e *loopEnv) otherSession() int64 {
 	return sid
 }
 
-// openRun opens a run on an issue for a session (nil: a run with no session).
+// openRun opens a run on an issue for a session (nil: a run with no session),
+// as the agent that holds the test's task.
 func (e *loopEnv) openRun(issue int64, session any) {
 	e.t.Helper()
-	e.exec(`INSERT INTO agent_runs(issue_id, agent, user_id, started_at, session_id) VALUES (?, 'claude', ?, ?, ?)`, issue, e.admin.User.ID, e.clockNow().UnixMilli(), session)
+	e.openRunAs(issue, session, e.taskAgent())
+}
+
+// openRunAs opens a run on an issue for a session as the given agent.
+func (e *loopEnv) openRunAs(issue int64, session any, agent string) {
+	e.t.Helper()
+	e.exec(`INSERT INTO agent_runs(issue_id, agent, user_id, started_at, session_id) VALUES (?, ?, ?, ?, ?)`, issue, agent, e.admin.User.ID, e.clockNow().UnixMilli(), session)
+}
+
+// taskAgent is the agent of the test task's first run (the round's).
+func (e *loopEnv) taskAgent() (agent string) {
+	e.t.Helper()
+	if err := e.s.db.R.QueryRowContext(e.ctx, `SELECT agent FROM agent_runs WHERE issue_id = ? ORDER BY id LIMIT 1`, e.task.ID).Scan(&agent); err != nil {
+		e.t.Fatal(err)
+	}
+	return agent
 }
 
 func (e *loopEnv) factsOf(round int64) roundIn {
@@ -175,15 +191,30 @@ func TestOtherSessionOpenRunTakesTheTask(t *testing.T) {
 	}
 }
 
-// An open run with no session is somebody's work too: for a round with a
-// session it is another holder, never the round's own.
-func TestSessionlessOpenRunTakesTheTask(t *testing.T) {
+// The same agent taking the task again with no session (a caller that named
+// none) is the round's holder still, not another (WP-1828): its run carries
+// the round. Another agent's run with no session is another holder.
+func TestSessionlessRunOfTheRoundsAgentCarriesTheRound(t *testing.T) {
 	e := newLoopEnv(t, map[string]string{"": "critical", "fixes": "complete"})
 	r1 := e.fixedRound()
 	e.expireRun(r1)
 	e.openRun(e.task.ID, nil)
-	if in := e.factsOf(r1); !in.Taken || in.RunOpen {
-		t.Fatalf("Taken = %v, RunOpen = %v: want a run with no session to take the task", in.Taken, in.RunOpen)
+	in := e.factsOf(r1)
+	if in.Taken || !in.RunOpen {
+		t.Fatalf("Taken = %v, RunOpen = %v: want the agent's own run with no session to carry the round", in.Taken, in.RunOpen)
+	}
+	if out := decideRound(in); out.Do != doShip {
+		t.Fatalf("decideRound = %+v: want the reviewed round shipped", out)
+	}
+	e.exec(`UPDATE agent_runs SET ended_at = ?, outcome = 'expired' WHERE issue_id = ? AND ended_at IS NULL`, e.clockNow().UnixMilli(), e.task.ID)
+	e.openRunAs(e.task.ID, nil, "someone/else")
+	in = e.factsOf(r1)
+	if !in.Taken || in.RunOpen {
+		t.Fatalf("Taken = %v, RunOpen = %v: want another agent's run with no session to take the task", in.Taken, in.RunOpen)
+	}
+	got, err := e.s.shipNewsNow(e.ctx, e.session, e.task.ID)
+	if err != nil || got == nil || !strings.Contains(got.Text, "a run of someone/else with no session holds it") {
+		t.Fatalf("shipNewsNow = %+v, %v: want the holder named", got, err)
 	}
 }
 
@@ -197,19 +228,24 @@ func TestRoundsOwnSessionlessRunIsNotAnotherHolder(t *testing.T) {
 	}
 }
 
-// A round with no session compares runs: any other open run on the task is
-// another holder, and its own run is not.
-func TestRoundWithNoSessionComparesRuns(t *testing.T) {
+// A round with no session has no session to compare: a later run of its
+// run's agent carries it, and another agent's run is another holder.
+func TestRoundWithNoSessionComparesAgents(t *testing.T) {
 	e := newLoopEnv(t, map[string]string{"": "critical", "fixes": "complete"})
 	r1 := e.fixedRound()
 	e.exec(`UPDATE work_log SET session_id = NULL WHERE id = ?`, r1)
-	if in := e.factsOf(r1); in.Taken {
-		t.Fatal("a round with no session counted its own open run as another holder")
+	if in := e.factsOf(r1); in.Taken || !in.RunOpen {
+		t.Fatalf("Taken = %v, RunOpen = %v: a round with no session counted its own open run as another holder", in.Taken, in.RunOpen)
 	}
 	e.expireRun(r1)
 	e.openRun(e.task.ID, e.session)
+	if in := e.factsOf(r1); in.Taken || !in.RunOpen {
+		t.Fatalf("Taken = %v, RunOpen = %v: want the same agent's later run to carry a round with no session", in.Taken, in.RunOpen)
+	}
+	e.exec(`UPDATE agent_runs SET ended_at = ?, outcome = 'expired' WHERE issue_id = ? AND ended_at IS NULL`, e.clockNow().UnixMilli(), e.task.ID)
+	e.openRunAs(e.task.ID, e.otherSession(), "someone/else")
 	if in := e.factsOf(r1); !in.Taken || in.RunOpen {
-		t.Fatalf("Taken = %v, RunOpen = %v: want another open run to take a round with no session", in.Taken, in.RunOpen)
+		t.Fatalf("Taken = %v, RunOpen = %v: want another agent's run to take a round with no session", in.Taken, in.RunOpen)
 	}
 }
 
