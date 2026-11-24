@@ -8,8 +8,25 @@ import (
 // pollSleep waits between retries of a long poll (replaced in tests).
 var pollSleep = time.Sleep
 
+// pollSlack is how long the first request may take beyond what it asks the
+// server to hold: it must get one answer, whatever the bound. pollGrace is how
+// far past the deadline any later request may run: a held request needs a
+// moment after its hold for the answer to arrive.
+const (
+	pollSlack = 30 * time.Second
+	pollGrace = 5 * time.Second
+)
+
 // errPollBound: the deadline is too close to hold another request.
 var errPollBound = errors.New("long poll: out of time")
+
+// pollBoundError is errPollBound when the last request failed: cause is why,
+// for a caller with nothing better to say.
+type pollBoundError struct{ cause error }
+
+func (e *pollBoundError) Error() string        { return errPollBound.Error() + ": " + e.cause.Error() }
+func (e *pollBoundError) Is(target error) bool { return target == errPollBound }
+func (e *pollBoundError) Unwrap() error        { return e.cause }
 
 // longPoll is the loop behind wp pr wait and wp ship's wait: ask the server to
 // hold a request until something happens, up to deadline. The first request
@@ -17,22 +34,39 @@ var errPollBound = errors.New("long poll: out of time")
 // min(chunk, time left). A transient failure is retried after waitRetry's
 // backoff, up to len(waitRetry) times in a row, and once a held request has
 // failed the chunk drops to waitShortChunk (a proxy may have cut it short).
+// A failed probe is asked again while any time is left, after the backoff
+// or what is left of the time, whichever is shorter. A failed held request
+// needs room for the whole backoff and another hold of minHold. A failure
+// without that room ends the poll at once, without sleeping up to the deadline
+// first.
 //
-// ask makes one request and says whether the poll is over (true, or an error
-// it handled itself). longPoll returns nil then, errPollBound when less than
-// minHold is left (a server counts whole seconds: ship's wait wants one, pr wait
-// holds whatever is left), or the error that was not retried.
-func longPoll(chunk, minHold time.Duration, deadline time.Time, ask func(hold time.Duration, probe bool) (done bool, err error)) error {
-	failures := 0
+// ask makes one request, taking at most limit (the client's timeout): the
+// first request may take hold+pollSlack; every later one, a retried probe
+// included, ends by pollGrace after the deadline, so a request that stalls
+// can't keep the caller past its bound for long. It says whether the poll is
+// over (true, or an error it handled itself). longPoll returns nil then, the error that was not
+// retried, or errPollBound when time ran out: less than minHold is left (a
+// server counts whole seconds: ship's wait wants one, pr wait holds whatever is
+// left), or a failed request had no room to be asked again, which
+// pollBoundError says with the request's error. That can be the probe's, so a
+// caller may get errPollBound with no answer at all.
+func longPoll(chunk, minHold time.Duration, deadline time.Time, ask func(hold time.Duration, probe bool, limit time.Duration) (done bool, err error)) error {
+	failures, first := 0, true
 	probe := true
 	for {
 		hold := min(chunk, time.Until(deadline))
-		if probe {
+		switch {
+		case probe:
 			hold = 0
-		} else if hold < minHold {
+		case hold < minHold:
 			return errPollBound
 		}
-		done, err := ask(hold, probe)
+		limit := hold + pollSlack
+		if !first {
+			limit = min(limit, max(time.Until(deadline), 0)+pollGrace)
+		}
+		first = false
+		done, err := ask(hold, probe, limit)
 		if err != nil {
 			if !transientErr(err) || failures >= len(waitRetry) {
 				return err
@@ -40,7 +74,14 @@ func longPoll(chunk, minHold time.Duration, deadline time.Time, ask func(hold ti
 			if hold > 0 {
 				chunk = min(chunk, waitShortChunk)
 			}
-			pollSleep(waitRetry[failures])
+			backoff, left := waitRetry[failures], time.Until(deadline)
+			switch {
+			case probe && left <= 0, !probe && left-backoff < minHold:
+				return &pollBoundError{err}
+			case probe:
+				backoff = min(backoff, left)
+			}
+			pollSleep(backoff)
 			failures++
 			continue
 		}

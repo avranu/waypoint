@@ -65,19 +65,31 @@ type shipWaitEntry struct {
 	until time.Time // registered until, once the last call returned
 }
 
-// holds: a wp ship waits for m (audit or check news of its task).
-func (w *shipWaits) holds(ctx context.Context, q queryer, now time.Time, session int64, m *SessionMessage) bool {
+// holder says, for one session's messages, whether a wp ship waits for each
+// (audit or check news of its task). An audit's or check's task is looked up
+// once, however many of its messages are asked about.
+func (w *shipWaits) holder(ctx context.Context, q queryer, now time.Time, session int64) func(m *SessionMessage) bool {
 	w.mu.Lock()
 	n := len(w.by[session])
 	w.mu.Unlock()
-	if n == 0 || (!strings.HasPrefix(m.stepKey, "audit:") && !strings.HasPrefix(m.stepKey, "check:")) {
-		return false
+	if n == 0 {
+		return func(*SessionMessage) bool { return false }
 	}
-	task, bound := messageTask(ctx, q, m.stepKey)
-	if !bound || task == 0 {
-		return false
+	tasks := map[string]int64{}
+	return func(m *SessionMessage) bool {
+		if !strings.HasPrefix(m.stepKey, "audit:") && !strings.HasPrefix(m.stepKey, "check:") {
+			return false
+		}
+		kind, id := stepKeySource(m.stepKey)
+		task, ok := tasks[kind+":"+id]
+		if !ok {
+			if t, bound := messageTask(ctx, q, m.stepKey); bound {
+				task = t
+			}
+			tasks[kind+":"+id] = task
+		}
+		return task != 0 && w.held(session, task, now)
 	}
-	return w.held(session, task, now)
 }
 
 func (w *shipWaits) held(session, task int64, now time.Time) bool {
