@@ -593,7 +593,13 @@ func (s *Service) classifyLiveRound(ctx context.Context, b *Babysit, pr *PullReq
 	}
 	in.Earlier = append(in.Earlier, s.earlierFindings(ctx, pr.ID, t.Findings)...)
 	if len(t.Checks) > 0 {
-		_, in.BaseRed = s.baseFailing(ctx, pr)
+		// Unread, the round is classified without the base's failures: the
+		// ledger only describes the round, and the line decides for itself.
+		_, red, err := s.baseFailing(ctx, pr)
+		if err != nil {
+			s.log.WarnContext(ctx, "read what fails on the base for a round's ledger", "pr", pr.ID, "err", err)
+		}
+		in.BaseRed = red
 	}
 	round.Ledger, round.Class = classifyRound(in)
 	round.WorkClass = round.Class

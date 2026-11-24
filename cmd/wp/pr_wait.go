@@ -215,50 +215,49 @@ func cmdPRWait(c *cli, args []string) error {
 	}
 	head := pushedHead(d.HeadRef)
 	start := time.Now()
-	deadline := start.Add(*timeout)
 	var w *prWaitResult
 	var raw []byte
-	// The first request says where it stands now; the next ones are held.
-	hold, chunk, failures := time.Duration(0), waitChunk, 0
-	for {
+	err = longPoll(waitChunk, time.Nanosecond, start.Add(*timeout), func(hold time.Duration, _ bool, limit time.Duration) (bool, error) {
 		if time.Since(start) > waitHeadFor {
 			head = "" // someone else pushed since, or this checkout is behind: wait on the pull request's head
 		}
-		next, nraw, err := c.waitOnce(d.ID, head, hold)
+		next, nraw, err := c.waitOnce(d.ID, head, hold, limit)
 		if err != nil {
-			if !transientErr(err) || failures >= len(waitRetry) {
-				return err
-			}
-			if hold > 0 {
-				chunk = waitShortChunk // a proxy may have cut it short: ask for less
-			}
-			time.Sleep(waitRetry[failures])
-			failures++
-			if w != nil {
-				hold = min(chunk, max(time.Until(deadline), 0))
-			}
-			continue
+			return false, err
 		}
 		if w == nil && next.Verdict == "waiting" && *timeout > 0 && !*quiet {
 			_, _ = fmt.Fprintf(c.err, "Waiting for %s (%s)…\n", next.at(), next.Why)
 		}
-		w, raw, failures = next, nraw, 0
-		left := time.Until(deadline)
-		if w.Verdict != "waiting" || left <= 0 {
-			break
+		w, raw = next, nraw
+		return w.Verdict != "waiting", nil
+	})
+	var bound *pollBoundError
+	switch {
+	case err != nil && !errors.Is(err, errPollBound):
+		return err
+	case w == nil && errors.As(err, &bound):
+		// Out of time with no answer: a timeout like any other, with no
+		// verdict to print. With --json it is still JSON, the wait null.
+		if c.asJSON {
+			all, _ := json.Marshal(map[string]any{"wait": nil, "error": "no answer from Waypoint: " + bound.cause.Error()})
+			if err := c.emit(all, nil); err != nil {
+				return err
+			}
+		} else {
+			_, _ = fmt.Fprintf(c.err, "timed out after %s: no answer from Waypoint: %v\n", *timeout, bound.cause)
 		}
-		hold = min(chunk, left)
+		return exitCode(waitExitTimeout)
 	}
 	return c.waitVerdict(w, raw, *merge, *timeout)
 }
 
-// waitOnce asks the server to hold a wait up to hold.
-func (c *cli) waitOnce(id int64, head string, hold time.Duration) (*prWaitResult, []byte, error) {
+// waitOnce asks the server to hold a wait up to hold, taking at most limit.
+func (c *cli) waitOnce(id int64, head string, hold, limit time.Duration) (*prWaitResult, []byte, error) {
 	q := url.Values{"timeout": {fmt.Sprint(int(hold.Seconds()))}}
 	if head != "" {
 		q.Set("head", head)
 	}
-	c.longPoll = hold + 30*time.Second
+	c.longPoll = limit
 	defer func() { c.longPoll = 0 }()
 	raw, err := c.call("GET", fmt.Sprintf("/api/v1/pulls/%d/wait?%s", id, q.Encode()), nil)
 	if err != nil {
@@ -330,7 +329,7 @@ func (c *cli) waitVerdict(w *prWaitResult, raw []byte, merge bool, timeout time.
 				lines = append(lines, "Warning: "+res.Warning)
 			}
 		case strings.Contains(err.Error(), "is merged"): // it merged itself meanwhile
-			if again, araw, aerr := c.waitOnce(w.ID, "", 0); aerr == nil && again.Verdict == "merged" {
+			if again, araw, aerr := c.waitOnce(w.ID, "", 0, pollSlack); aerr == nil && again.Verdict == "merged" {
 				out["wait"] = araw
 				lines = append(lines, fmt.Sprintf("merged %s  %s#%d", shortSHA(cmpStr(again.MergedSHA, again.HeadSHA)), w.Repo, w.Number))
 				break

@@ -158,6 +158,18 @@ func TestCLIPRWait(t *testing.T) {
 		}
 	}
 
+	// A first request that fails with no time to ask again is a timeout like
+	// any other (exit 4), which says why there is no verdict.
+	fake.set(func(f *waitFake) { f.verdicts, f.fail, f.waits = []string{"ready"}, map[int]bool{1: true}, nil })
+	if out, code := e.run("pr", "wait", "3", "--timeout", "0"); code != 4 || !strings.HasPrefix(out, "timed out after 0s: no answer from Waypoint") || !strings.Contains(out, "502") {
+		t.Errorf("a failed first request: exit %d %q", code, out)
+	}
+	// With --json it says so in JSON, with no wait to show.
+	fake.set(func(f *waitFake) { f.verdicts, f.fail, f.waits = []string{"ready"}, map[int]bool{1: true}, nil })
+	if out, code := e.run("pr", "wait", "3", "--timeout", "0", "--json"); code != 4 || !strings.Contains(out, `"wait": null`) || !strings.Contains(out, `"error": "no answer from Waypoint: `) {
+		t.Errorf("a failed first request with --json: exit %d %q", code, out)
+	}
+
 	// It waits on the server, quietly: one line when it starts. A 502 (a
 	// proxy, a restart) is asked again.
 	fake.set(func(f *waitFake) {

@@ -86,7 +86,7 @@ func anyStrings(v any) []string {
 func TestPRFindingHelpNamesBothForms(t *testing.T) {
 	for _, name := range []string{"dismiss", "reopen"} {
 		sub := prSub(t, name)
-		if !strings.Contains(sub.args+sub.summary+sub.about, "AUDIT.N") {
+		if !strings.Contains(sub.summary, "AUDIT.N") {
 			t.Errorf("wp pr %s help doesn't name AUDIT.N", name)
 		}
 	}

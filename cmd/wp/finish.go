@@ -38,6 +38,13 @@ review comes first: say which you want with --review (schedule it) or
 the review on and opens the pull request itself when the review leaves
 nothing for you to do, so run it once (--pr is the same, kept for older
 prompts); a notice says when it did something else and how to override it.
+When the pull request is held for the review round (or the check of your marks),
+wp ship waits for the round's next step and prints it, up to --wait-timeout
+(default 90m): the findings in full, to mark and ship again; the pull request
+Waypoint opened (the turn ends there, as with --summary); or why the round
+ended. Run it with run_in_background: true and end your turn: you are woken
+when it exits. --no-wait returns at once as before, and what the review finds
+comes to you later as a message.
 --summary is your final reply to the person, written before you know the
 outcome: when the ship goes as expected (the pull request armed or babysat,
 or held for its review, with no notice or warning), Waypoint ends your turn

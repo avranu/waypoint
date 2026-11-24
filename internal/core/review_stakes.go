@@ -3,7 +3,8 @@ package core
 // Stakes tiers (WP-1231, WP-1248, WP-ADR121, narrowing WP-ADR102): how
 // hard a review round's audit is held to a quality bar, and which rounds
 // may spend Claude quota on their review. A round's audit is free: the
-// LLM gateway runs it on a model outside the author's family. A
+// LLM gateway runs it on a model outside the author's family, or at the
+// high-stakes bar on any model it rates that well (WP-1752). A
 // review on Claude (the reviewer of WP-ADR117 in a new session, or the
 // working session's own) spends the quota other work needs, so the tier
 // decides which Claude model reviews when the free audit can't be had in
@@ -13,7 +14,7 @@ package core
 //     credentials, data migrations, deploys or CI (stakesPathRE), the
 //     change is very large (over stakesHugeLines), or a large one (over
 //     triageMaxLines) touches risky files. Its audit is held to
-//     trustedAuditBar (Claude Sonnet or better), and a slow or failed audit
+//     trustedAuditBar (Grok 4.7 or better), and a slow or failed audit
 //     starts the Sonnet reviewer (WP-ADR117).
 //   - elevated: a large change (over triageMaxLines), ADR102's other signs
 //     (risky files in a smaller change, the looser sensitive names: token,

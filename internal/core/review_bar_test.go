@@ -9,7 +9,7 @@ import (
 // a bare model family ("sonnet", "haiku", "opus") is one of its routes:
 // with "sonnet" every high-stakes audit failed with a 400 (WP-1134).
 func TestTrustedAuditBarIsNoGatewayRoute(t *testing.T) {
-	for _, route := range []string{"sonnet", "haiku", "opus", "claude", "anthropic", "audit"} {
+	for _, route := range []string{"sonnet", "haiku", "opus", "grok", "claude", "anthropic", "audit"} {
 		if strings.EqualFold(strings.TrimSpace(trustedAuditBar), route) {
 			t.Fatalf("trustedAuditBar %q is a gateway route or provider", trustedAuditBar)
 		}

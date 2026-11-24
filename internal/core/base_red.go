@@ -12,25 +12,35 @@ package core
 
 import (
 	"context"
+	"database/sql"
+	"errors"
+	"fmt"
 	"strings"
 )
 
 // baseFailing reads the jobs that fail on pr's base's tip, as its CI last
-// reported them; none while it runs or when the tip isn't known.
-func (s *Service) baseFailing(ctx context.Context, pr *PullRequest) (string, map[string]bool) {
+// reported them; none while it runs or when the tip isn't known. A read that
+// failed is an error, not "none fail": the line would take a failure of the
+// base for the pull request's own and eject it.
+func (s *Service) baseFailing(ctx context.Context, pr *PullRequest) (string, map[string]bool, error) {
 	var tip string
-	if err := s.db.R.QueryRowContext(ctx, `SELECT head_sha FROM branch_activity WHERE forge_id = ? AND repo = ? COLLATE NOCASE AND branch = ?`,
-		pr.ForgeID, pr.Repo, pr.BaseRef).Scan(&tip); err != nil || tip == "" {
-		return "", nil
+	err := s.db.R.QueryRowContext(ctx, `SELECT head_sha FROM branch_activity WHERE forge_id = ? AND repo = ? COLLATE NOCASE AND branch = ?`,
+		pr.ForgeID, pr.Repo, pr.BaseRef).Scan(&tip)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && tip == "") {
+		return "", nil, nil
 	}
-	return tip, s.baseFailingAt(ctx, pr, tip)
+	if err != nil {
+		return "", nil, err
+	}
+	failing, err := s.baseFailingAt(ctx, pr, tip)
+	return tip, failing, err
 }
 
 // baseFailingAt is baseFailing for a tip the caller already chose.
-func (s *Service) baseFailingAt(ctx context.Context, pr *PullRequest, tip string) map[string]bool {
+func (s *Service) baseFailingAt(ctx context.Context, pr *PullRequest, tip string) (map[string]bool, error) {
 	checks, err := s.shaChecks(ctx, pr.ForgeID, pr.Repo, tip)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	failing := map[string]bool{}
 	for _, c := range dropSuperseded(checks) {
@@ -40,7 +50,7 @@ func (s *Service) baseFailingAt(ctx context.Context, pr *PullRequest, tip string
 			failing[checkJob(c.Name)] = true
 		}
 	}
-	return failing
+	return failing, nil
 }
 
 // checkJob is a check's job, the same on a push and on a pull request.
@@ -83,10 +93,10 @@ func (s *Service) shaChecks(ctx context.Context, forgeID int64, repo, sha string
 
 // fixesBase: pr's head passes (ran, not skipped) a job of failing and fails
 // none of them, and holds the base's tip, so it passed on top of what fails.
-func (s *Service) fixesBase(ctx context.Context, pr *PullRequest, tip string, failing map[string]bool) bool {
+func (s *Service) fixesBase(ctx context.Context, pr *PullRequest, tip string, failing map[string]bool) (bool, error) {
 	checks, err := s.shaChecks(ctx, pr.ForgeID, pr.Repo, pr.HeadSHA)
 	if err != nil {
-		return false
+		return false, fmt.Errorf("read a head's checks: %w", err)
 	}
 	passed := false
 	for _, c := range dropSuperseded(checks) {
@@ -95,30 +105,31 @@ func (s *Service) fixesBase(ctx context.Context, pr *PullRequest, tip string, fa
 		}
 		switch {
 		case c.State == CheckFailed, c.State == CheckPending:
-			return false
+			return false, nil
 		case c.State == CheckSuccess && !skippedCheck(c):
 			passed = true
 		}
 	}
 	if !passed {
-		return false
+		return false, nil
 	}
 	key := "holds:" + tip + ":" + pr.HeadSHA
 	if v, ok := s.baseRed.Load(key); ok {
-		return v.(bool)
+		return v.(bool), nil
 	}
 	cl, ok := s.Forges.(ForgeUpToDate)
 	if !ok {
-		return false
+		return false, nil
 	}
 	f, err := s.forgeByID(ctx, pr.ForgeID)
 	if err != nil || f.token == "" {
-		return false
+		return false, nil
 	}
 	holds, err := cl.Contains(ctx, f, pr.Repo, tip, pr.HeadSHA)
 	if err != nil {
-		return false
+		s.log.WarnContext(ctx, "ask whether a head holds the base's tip", "pr", pr.ID, "err", err)
+		return false, nil
 	}
 	s.baseRed.Store(key, holds)
-	return holds
+	return holds, nil
 }

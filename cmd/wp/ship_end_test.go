@@ -391,3 +391,23 @@ func TestNoCodeShipSkipsCheck(t *testing.T) {
 		}
 	}
 }
+
+// A wp ship that waited an hour on its review round and was moved to the
+// background writes its marker at the end: the report of that background
+// call still takes it (WP-1669).
+func TestShipEndMarkerAfterALongBackgroundWait(t *testing.T) {
+	t.Setenv("WAYPOINT_CONFIG_DIR", t.TempDir())
+	t.Setenv("WAYPOINT_AGENT", "claude")
+	t.Setenv("WAYPOINT_SESSION", "sess-long")
+	t.Setenv("WAYPOINT_SERVER", "http://127.0.0.1:1")
+	t.Setenv("WAYPOINT_TOKEN", "x")
+	c, _ := newCLI(new(bytes.Buffer), new(bytes.Buffer))
+	c.noteShipBackground("sess-long", "b1")
+	c.shipSession("sess-long", func(e *shipEnd) { e.Bg["b1"] = time.Now().Add(-60 * time.Minute) })
+	if !c.endTurnAfterShip("WP-1", "Shipped.") {
+		t.Fatal("no marker was written for an agent's ship in a session with a server and a token")
+	}
+	if e := c.takeShipEnd("sess-long", "b1"); e == nil || e.Text != "Shipped." {
+		t.Fatalf("the marker written at the end of an hour's wait was refused: %+v", e)
+	}
+}
