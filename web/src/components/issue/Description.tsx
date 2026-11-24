@@ -23,11 +23,11 @@ const readMode = (): 'rich' | 'md' => {
   }
 }
 const writeMode = (m: 'rich' | 'md') => {
-  chosen = m
   try {
     localStorage.setItem(MODE_KEY, m)
+    chosen = null
   } catch {
-    // Private mode: the memo above keeps the choice until the page closes.
+    chosen = m
   }
 }
 
