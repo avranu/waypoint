@@ -984,7 +984,6 @@ func (s *Service) advanceAudit(ctx context.Context, id int64) {
 			}
 			in.GatewayExclude = auditFamilyExclude(a.Weakest, a.authorModel)
 			timeout = gatewayAuditTimeout + a.Helpers.extraTimeout()
-			s.setGatewayLimits(ctx, &in)
 			if a.Weakest != reviewFloorBar || m.Model == gatewayAuditModel {
 				in.GatewayWeakest = a.Weakest // the floor is for the audit purpose, not a model named for the audit
 			}

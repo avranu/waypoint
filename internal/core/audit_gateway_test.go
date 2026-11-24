@@ -701,6 +701,21 @@ func TestGatewayAuditNames(t *testing.T) {
 	if got, err := job(JobAudit, AgentJob{CLI: "claude", GatewayExclude: []string{"*claude*"}, GatewayWeakest: "sonnet"}); err != nil || got.GatewayExclude != nil || got.GatewayWeakest != "" {
 		t.Errorf("a CLI's audit = %+v %v", got, err)
 	}
+	// The gateway's limits are Waypoint's to write as it queues a gateway's
+	// job (TestGatewayJobsCarryItsLimits); whatever a caller sent is dropped.
+	for _, c := range []struct {
+		kind string
+		in   AgentJob
+	}{
+		{JobAudit, AgentJob{CLI: GatewayCLI, Model: "audit"}},
+		{JobAudit, AgentJob{CLI: "claude"}},
+		{JobAgent, AgentJob{CLI: "claude"}},
+	} {
+		c.in.GatewayArchiveMax, c.in.GatewayFileMax = 512<<20, 512<<20
+		if got, err := job(c.kind, c.in); err != nil || got.GatewayArchiveMax != 0 || got.GatewayFileMax != 0 {
+			t.Errorf("%s %s with limits of its own = %+v %v", c.kind, c.in.CLI, got, err)
+		}
+	}
 	for why, bad := range map[string]func() error{
 		"an agent job": func() error { _, err := job(JobAgent, AgentJob{CLI: GatewayCLI, Model: "audit"}); return err },
 		"no model":     func() error { _, err := job(JobAudit, AgentJob{CLI: GatewayCLI}); return err },
@@ -1672,6 +1687,32 @@ func TestGatewayTaskLimits(t *testing.T) {
 	now = now.Add(9 * time.Minute)
 	if got := ae.s.GatewayTaskLimits(ae.ctx); got != def || gw.limitsCalls != calls+1 {
 		t.Errorf("an answer stating nothing: %+v after %d asks", got, gw.limitsCalls-calls)
+	}
+}
+
+// Every job of the gateway's carries its limits, however it was queued: an
+// audit, a prep trial (TestPrepAgentTrial) or a person through the API, whose
+// own figures don't count. The upload is held to them, so a job without them
+// would be packed against the runner's 20 MiB and refused under a gateway
+// that takes less.
+func TestGatewayJobsCarryItsLimits(t *testing.T) {
+	ae := newAgentEnv(t)
+	gw := taskGateway(t, ae.s)
+	gw.limits = GatewayLimits{ArchiveBytes: 10 << 20, FileBytes: 1 << 20}
+	box := ae.gatewayBox()
+	if _, err := ae.s.RequestAudit(ae.ctx, ae.admin, AuditInput{Project: ae.p.Key, Models: []string{"gateway"}}); err != nil {
+		t.Fatal(err)
+	}
+	if in := agentJobOf(t, ae.takeOn(box)); in.GatewayArchiveMax != 10<<20 || in.GatewayFileMax != 1<<20 {
+		t.Errorf("an audit's limits = %d, %d", in.GatewayArchiveMax, in.GatewayFileMax)
+	}
+	raw, _ := json.Marshal(AgentJob{CLI: GatewayCLI, Model: gatewayAuditModel, Prompt: "Audit it.", Repo: "https://git.example.com/me/app.git", Base: "main",
+		GatewayArchiveMax: 512 << 20, GatewayFileMax: 512 << 20})
+	if _, err := ae.s.EnqueueRunnerJob(ae.ctx, ae.admin, RunnerJobInput{Kind: JobAudit, Input: raw}); err != nil {
+		t.Fatal(err)
+	}
+	if in := agentJobOf(t, ae.takeOn(box)); in.GatewayArchiveMax != 10<<20 || in.GatewayFileMax != 1<<20 {
+		t.Errorf("a person's job's limits = %d, %d, want the gateway's", in.GatewayArchiveMax, in.GatewayFileMax)
 	}
 }
 

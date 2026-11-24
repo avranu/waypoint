@@ -601,11 +601,17 @@ func (s *Service) lastGatewayLimits(def GatewayLimits) GatewayLimits {
 	return newest.lim
 }
 
-// setGatewayLimits writes the gateway's limits into a job it runs, so the
-// runner packs against them and the upload is held to them (archiveMax).
-func (s *Service) setGatewayLimits(ctx context.Context, in *AgentJob) {
+// withGatewayLimits writes the gateway's limits into the input of a job it
+// runs (EnqueueRunnerJob does, for every such job), so the runner packs
+// against them and the upload is held to them (archiveMax).
+func (s *Service) withGatewayLimits(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+	var in AgentJob
+	if err := json.Unmarshal(input, &in); err != nil {
+		return nil, err
+	}
 	lim := s.GatewayTaskLimits(ctx)
 	in.GatewayArchiveMax, in.GatewayFileMax = lim.ArchiveBytes, lim.FileBytes
+	return json.Marshal(in)
 }
 
 // archiveMax is the most archive a job's upload may be: what the job was
