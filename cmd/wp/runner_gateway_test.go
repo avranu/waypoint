@@ -16,7 +16,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -303,7 +302,7 @@ func TestGatewayAuditJobFailures(t *testing.T) {
 		if err := os.MkdirAll(p.cacheDir(), 0o750); err != nil { // the checkout's making leaves it there
 			t.Fatal(err)
 		}
-		o := p.execGatewayAudit(ctx, run, agentJob{CLI: gatewayCLI, Model: "audit", Prompt: "Audit it."}, work, map[string]any{"cli": gatewayCLI})
+		o := p.execGatewayAudit(ctx, run, agentJob{CLI: gatewayCLI, Model: "audit", Prompt: "Audit it."}, work, nil, map[string]any{"cli": gatewayCLI})
 		res, _ := o.Result.(map[string]any)
 		return o, res, run
 	}
@@ -471,37 +470,69 @@ func TestLeftOutText(t *testing.T) {
 	}
 }
 
-func TestDiffGitNames(t *testing.T) {
-	for in, want := range map[string][]string{
-		"a/x.go b/x.go":                         {"x.go"},
-		"a/dir/my file.go b/dir/my file.go":     {"dir/my file.go"},
-		"a/old.go b/new/old2.go":                {"old.go", "new/old2.go"},
-		`"a/caf\303\251.go" "b/caf\303\251.go"`: {"café.go", "café.go"},
-	} {
-		if got := diffGitNames(in); !slices.Equal(got, want) {
-			t.Errorf("%s: %q, want %q", in, got, want)
-		}
-	}
-}
-
-// The change's files are read from its diff, renames by their own lines
-// where the header is ambiguous.
-func TestChangedFiles(t *testing.T) {
-	work := t.TempDir()
-	diff := "diff --git a/x.go b/x.go\n--- a/x.go\n+++ b/x.go\n" +
-		"diff --git a/old.go b/dir b/new.go\nsimilarity index 100%\nrename from old.go\nrename to dir b/new.go\n" +
-		"diff --git \"a/caf\\303\\251.go\" \"b/t\\303\\251.go\"\nrename from \"caf\\303\\251.go\"\nrename to \"t\\303\\251.go\"\n"
-	if err := os.MkdirAll(filepath.Join(work, auditChangeDir), 0o750); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(work, auditChangeDir, "change.diff"), []byte(diff), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	got := changedFiles(work)
-	for _, n := range []string{"x.go", "old.go", "dir b/new.go", "café.go", "té.go"} {
-		if !got[n] {
-			t.Errorf("%q not among %v", n, got)
-		}
+// The change's files are the ones git lists, not names read back out of the
+// diff: a rename into a path with " b/" in it stays, an untouched file a
+// split header would name doesn't, and diff.noprefix in the runner's git
+// config (no a/ and b/ in the headers) changes nothing.
+func TestPackForGatewayKeepsWhatGitLists(t *testing.T) {
+	for name, cfg := range map[string]string{"plain": "", "noprefix": "[diff]\n\tnoprefix = true\n"} {
+		t.Run(name, func(t *testing.T) {
+			conf := filepath.Join(t.TempDir(), "gitconfig")
+			if err := os.WriteFile(conf, []byte("[user]\n\tname = T\n\temail = t@example.test\n"+cfg), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("GIT_CONFIG_GLOBAL", conf)
+			t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+			work := t.TempDir()
+			write := func(p string) {
+				if err := os.MkdirAll(filepath.Dir(filepath.Join(work, p)), 0o750); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(work, p), []byte(noise(t, 100<<10)), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			gitOut(t, work, "init", "-q", "-b", "main")
+			for _, f := range []string{"old.go", "mod.go", "new.go"} {
+				write(f)
+			}
+			gitOut(t, work, "add", "-A")
+			gitOut(t, work, "commit", "-q", "-m", "one")
+			from := gitOut(t, work, "rev-parse", "HEAD")
+			if err := os.Mkdir(filepath.Join(work, "dir b"), 0o750); err != nil {
+				t.Fatal(err)
+			}
+			gitOut(t, work, "mv", "old.go", "dir b/new.go") // diff --git a/old.go b/dir b/new.go
+			f, err := os.OpenFile(filepath.Join(work, "mod.go"), os.O_APPEND|os.O_WRONLY, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = f.WriteString("// one more line\n")
+			_ = f.Close()
+			gitOut(t, work, "add", "-A")
+			gitOut(t, work, "commit", "-q", "-m", "two")
+			p, run := newTestProc(t), newRun(time.Minute)
+			r := &auditRange{from: from, to: gitOut(t, work, "rev-parse", "HEAD")}
+			if _, err := p.auditDiff(context.Background(), work, r, 1<<20); err != nil {
+				t.Fatal(err)
+			}
+			archive, err := os.CreateTemp(t.TempDir(), "pack")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer archive.Close()
+			// Room for two of the three 100 KiB files: the 64 KiB pass leaves
+			// out all but the change's.
+			res, _, err := p.packForGateway(context.Background(), run, agentJob{}, work, r.files, archive, 250<<10, 5<<20)
+			if err != nil {
+				t.Fatalf("files %q: %v\n%s", r.files, err, run.out.text())
+			}
+			packed, _ := os.ReadFile(archive.Name())
+			files := unpack(t, packed)
+			if files["dir b/new.go"] == "" || files["mod.go"] == "" || files["new.go"] != "" || len(res.Left) != 1 || res.Left[0].Path != "new.go" {
+				t.Errorf("files %q; left %v", r.files, res.Left)
+			}
+		})
 	}
 }
 
@@ -568,11 +599,7 @@ func TestPackForGatewayTiers(t *testing.T) {
 			if err := os.MkdirAll(filepath.Join(work, ".waypoint-audit"), 0o750); err != nil {
 				t.Fatal(err)
 			}
-			var diff strings.Builder
-			for _, f := range c.changed {
-				fmt.Fprintf(&diff, "diff --git a/%s b/%s\n+x\n", f, f)
-			}
-			if err := os.WriteFile(filepath.Join(work, ".waypoint-audit/change.diff"), []byte(diff.String()), 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(work, ".waypoint-audit/change.diff"), []byte("+x\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			archive, err := os.CreateTemp(t.TempDir(), "pack")
@@ -581,7 +608,7 @@ func TestPackForGatewayTiers(t *testing.T) {
 			}
 			defer archive.Close()
 			p, run := newTestProc(t), newRun(time.Minute)
-			_, tier, err := p.packForGateway(context.Background(), run, agentJob{DiffPaths: c.paths, DiffExclude: c.exclude}, work, archive, c.limit, 5<<20)
+			_, tier, err := p.packForGateway(context.Background(), run, agentJob{DiffPaths: c.paths, DiffExclude: c.exclude}, work, c.changed, archive, c.limit, 5<<20)
 			if c.tooLarge {
 				if !errors.Is(err, errArchiveTooLarge) {
 					t.Fatalf("err = %v\n%s", err, run.out.text())
@@ -632,7 +659,7 @@ func TestPackForGatewayScopeUnknown(t *testing.T) {
 	}
 	defer archive.Close()
 	p, run := newTestProc(t), newRun(time.Minute)
-	res, _, err := p.packForGateway(context.Background(), run, agentJob{DiffPaths: []string{"src"}}, work, archive, 110<<10, 5<<20)
+	res, _, err := p.packForGateway(context.Background(), run, agentJob{DiffPaths: []string{"src"}}, work, nil, archive, 110<<10, 5<<20)
 	if err != nil || len(res.Left) != 1 || res.Left[0].Reason != "over 64 KiB" || !strings.Contains(run.out.text(), "going by file sizes alone") {
 		t.Errorf("%+v, %v\n%s", res, err, run.out.text())
 	}
@@ -658,7 +685,7 @@ func TestGatewayAuditJobLimits(t *testing.T) {
 		}
 		in.CLI, in.Model, in.Prompt = gatewayCLI, "audit", "Audit it."
 		r := newRun(time.Minute)
-		return p.execGatewayAudit(context.Background(), r, in, work, map[string]any{"cli": gatewayCLI}), relay, r
+		return p.execGatewayAudit(context.Background(), r, in, work, nil, map[string]any{"cli": gatewayCLI}), relay, r
 	}
 	t.Run("the job's file limit", func(t *testing.T) {
 		o, relay, r := run(t, agentJob{GatewayFileMax: 100 << 10}, map[string]string{"a.txt": "one\n", "b.txt": strings.Repeat("b", 100<<10+1)})
@@ -727,7 +754,7 @@ func TestGatewayAuditJobLimits(t *testing.T) {
 		}
 		relay := &fakeRelay{}
 		relay.serve(t)
-		o := p.execGatewayAudit(context.Background(), newRun(time.Minute), agentJob{CLI: gatewayCLI, Model: "audit", Prompt: "Audit it.", GatewayArchiveMax: 20 << 10, DiffPaths: []string{"src"}}, work, map[string]any{})
+		o := p.execGatewayAudit(context.Background(), newRun(time.Minute), agentJob{CLI: gatewayCLI, Model: "audit", Prompt: "Audit it.", GatewayArchiveMax: 20 << 10, DiffPaths: []string{"src"}}, work, nil, map[string]any{})
 		res, _ := o.Result.(map[string]any)
 		if o.State != "failed" || res["gateway_error"] != "body_too_large" || !strings.Contains(o.Error, "outside the audit's paths") || res["left_out"] != "1 file out of scope (8 B)" {
 			t.Errorf("outcome = %+v", o)

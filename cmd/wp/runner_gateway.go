@@ -22,7 +22,6 @@ import (
 	"net/textproto"
 	"os"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -75,8 +74,10 @@ type gatewayTaskView struct {
 }
 
 // execGatewayAudit runs the audit's model at the gateway over the checkout
-// in work. result holds what the job reports of the checkout already.
-func (p *runnerProc) execGatewayAudit(ctx context.Context, run *jobRun, in agentJob, work string, result map[string]any) outcome {
+// in work. changed are the files the change under audit touches (none for an
+// audit of a whole repository); result holds what the job reports of the
+// checkout already.
+func (p *runnerProc) execGatewayAudit(ctx context.Context, run *jobRun, in agentJob, work string, changed []string, result map[string]any) outcome {
 	ended := func(view *gatewayTaskView) (outcome, bool) {
 		switch {
 		case errors.Is(ctx.Err(), context.DeadlineExceeded):
@@ -116,7 +117,7 @@ func (p *runnerProc) execGatewayAudit(ctx context.Context, run *jobRun, in agent
 	if fileMax <= 0 {
 		fileMax = gatewayFileFallback
 	}
-	res, tier, err := p.packForGateway(ctx, run, in, work, archive, limit, fileMax)
+	res, tier, err := p.packForGateway(ctx, run, in, work, changed, archive, limit, fileMax)
 	tooLarge := errors.Is(err, errArchiveTooLarge)
 	if left := res.leftOutText(); left != "" && (err == nil || tooLarge) {
 		result["left_out"] = left
@@ -428,12 +429,16 @@ func fmtMiB(n int64) string {
 // says which one applied (" (the checkout was over 20 MiB: files over 1 MiB
 // left out)"; "" for a plain pack). Past the last it answers
 // errArchiveTooLarge, and the result is what that last pass left out. The
-// change's own files (keep) are protected from the stricter passes' cuts, not
+// change's own files (changed, as git lists them: auditRange.files) and its
+// copy in auditChangeDir are protected from the stricter passes' cuts, not
 // from the binary and per-file-limit rules, which apply in every pass.
-func (p *runnerProc) packForGateway(ctx context.Context, run *jobRun, in agentJob, work string, archive *os.File, limit, fileMax int64) (res packResult, tier string, err error) {
-	changed := changedFiles(work)
+func (p *runnerProc) packForGateway(ctx context.Context, run *jobRun, in agentJob, work string, changed []string, archive *os.File, limit, fileMax int64) (res packResult, tier string, err error) {
+	mine := make(map[string]bool, len(changed))
+	for _, f := range changed {
+		mine[f] = true
+	}
 	keep := func(path string) bool {
-		return path == auditChangeDir || strings.HasPrefix(path, auditChangeDir+"/") || changed[path]
+		return path == auditChangeDir || strings.HasPrefix(path, auditChangeDir+"/") || mine[path]
 	}
 	passes := append([]gatewayTier{{}}, gatewayTiers...)
 	var out func(string) bool
@@ -516,81 +521,6 @@ func (p *runnerProc) scopeOut(ctx context.Context, run *jobRun, work string, in 
 	return func(path string) bool {
 		return (inside != nil && !inside[path]) || outside[path]
 	}
-}
-
-// changedFiles are the files the change under audit touches, as its diff in
-// the checkout names them (auditChangeDir/change.diff; files.txt holds git's
-// --stat, whose paths are cut and merged for renames). Empty for an audit of
-// a whole repository.
-func changedFiles(work string) map[string]bool {
-	root, err := os.OpenRoot(work)
-	if err != nil {
-		return nil
-	}
-	defer func() { _ = root.Close() }()
-	diff, err := root.ReadFile(auditChangeDir + "/change.diff")
-	if err != nil {
-		return nil
-	}
-	names := map[string]bool{}
-	for _, line := range strings.Split(string(diff), "\n") {
-		if rest, ok := strings.CutPrefix(line, "diff --git "); ok {
-			for _, n := range diffGitNames(rest) {
-				names[n] = true
-			}
-			continue
-		}
-		// A rename's or copy's own lines name each side unambiguously, where
-		// the header can't (a path with " b/" in it).
-		for _, p := range []string{"rename from ", "rename to ", "copy from ", "copy to "} {
-			if n, ok := strings.CutPrefix(line, p); ok {
-				if strings.HasPrefix(n, `"`) {
-					if u, err := strconv.Unquote(n); err == nil {
-						n = u
-					}
-				}
-				names[n] = true
-			}
-		}
-	}
-	return names
-}
-
-// diffGitNames reads the paths from a "diff --git a/X b/Y" line (after the
-// prefix): X and Y, which differ for a rename. Quoted names are unquoted.
-func diffGitNames(rest string) []string {
-	var out []string
-	if strings.HasPrefix(rest, `"`) || strings.Contains(rest, ` "b/`) {
-		// Quoted (a name with odd bytes): each side by itself.
-		for rest = strings.TrimSpace(rest); rest != ""; rest = strings.TrimSpace(rest) {
-			var word string
-			if strings.HasPrefix(rest, `"`) {
-				q, err := strconv.QuotedPrefix(rest)
-				if err != nil {
-					return out
-				}
-				word, _ = strconv.Unquote(q)
-				rest = rest[len(q):]
-			} else if i := strings.Index(rest, ` "`); i >= 0 {
-				word, rest = rest[:i], rest[i:]
-			} else {
-				word, rest = rest, ""
-			}
-			if len(word) > 2 {
-				out = append(out, word[2:])
-			}
-		}
-		return out
-	}
-	// Both sides alike: "a/X b/X", so X is half of what's left of the
-	// prefixes. Otherwise a rename: split at the last " b/".
-	if n := len(rest) - 5; n > 0 && n%2 == 0 && strings.HasPrefix(rest, "a/") && rest[2+n/2:5+n/2] == " b/" && rest[2:2+n/2] == rest[5+n/2:] {
-		return []string{rest[2 : 2+n/2]}
-	}
-	if i := strings.LastIndex(rest, " b/"); i > 2 && strings.HasPrefix(rest, "a/") {
-		return []string{rest[2:i], rest[i+3:]}
-	}
-	return nil
 }
 
 // packCheckout writes the files of the checkout in work to w as a gzipped

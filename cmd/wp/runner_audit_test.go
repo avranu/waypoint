@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -204,6 +205,10 @@ func TestAuditPeriodAndPaths(t *testing.T) {
 	}
 	if !strings.Contains(got, "+export const quokka = 1;") || strings.Contains(got, "var X") || !strings.Contains(got, "only in web") {
 		t.Errorf("web only:\n%s", got)
+	}
+	// The change's files, as git lists them, for the gateway's pack to keep.
+	if !slices.Equal(r.files, []string{"web/b.ts"}) {
+		t.Errorf("files %q", r.files)
 	}
 	// Commit three touches only what is left out, so it doesn't count.
 	r = &auditRange{from: first, to: head, exclude: []string{"web", "*_test.go"}}
