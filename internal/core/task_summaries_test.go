@@ -1,8 +1,9 @@
 package core
 
 import (
-	"errors"
+	"bytes"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -158,10 +159,13 @@ func stopWithSummary(t *testing.T, te *taskEnv, msg string) {
 }
 
 // More asks than a request holds are read whole; the first the request holds
-// are filed as one request. (A Stop's own trailing-question rule can file first, so
-// this calls the filing step itself.)
+// are filed as one request, and a refusal is logged, not a failed Stop. (A
+// Stop's own trailing-question rule can file first, so this calls the filing
+// step itself.)
 func TestTaskSummaryWithMoreAsksThanARequestHolds(t *testing.T) {
 	te := newTaskEnv(t, "")
+	logs := &bytes.Buffer{}
+	te.s.log = slog.New(slog.NewTextHandler(logs, nil))
 	var msg string
 	for _, ask := range []string{"The runner install on runner1", "The forge token rotation before Friday", "A name for the new tab", "The production deploy window", "How long audit logs are retained", "A billing contact for the invoices", "The mirror host for backups", "The license key renewal", "The domain registration renewal"} {
 		msg += "- " + ask + "\n"
@@ -179,9 +183,11 @@ func TestTaskSummaryWithMoreAsksThanARequestHolds(t *testing.T) {
 			return te.s.fileSummaryAsks(te.ctx, tx, te.ag, x, 0, "WP-1", asks, te.s.nowMS())
 		})
 	}
-	// A refusal other than the open cap is returned, not swallowed.
-	if err := file(asks); !IsInvalid(err) || errors.Is(err, errRequestsFull) {
-		t.Fatalf("filing more asks than a request holds: %v, want the refusal", err)
+	if err := file(asks); err != nil {
+		t.Fatalf("filing more asks than a request holds: %v, want the refusal logged", err)
+	}
+	if !strings.Contains(logs.String(), "summary asks refused") || !strings.Contains(logs.String(), "full=false") {
+		t.Fatalf("the refusal isn't logged: %q", logs.String())
 	}
 	if err := file(asks[:maxRequestQuestions]); err != nil {
 		t.Fatalf("filing a summary's asks: %v", err)
@@ -199,6 +205,8 @@ func TestTaskSummaryWithMoreAsksThanARequestHolds(t *testing.T) {
 // and the Stop still succeeds.
 func TestTaskSummaryAsksAtTheOpenRequestCap(t *testing.T) {
 	te := newTaskEnv(t, "")
+	logs := &bytes.Buffer{}
+	te.s.log = slog.New(slog.NewTextHandler(logs, nil))
 	for i := range maxRequestsOpenIn {
 		title := fmt.Sprintf("Open question number %d zq%dx", i, i*7919)
 		if _, _, err := te.s.CreateRequest(te.ctx, te.ag, RequestInput{Kind: RequestQuestion, Title: title, Questions: []Question{{Question: title}}}); err != nil {
@@ -219,5 +227,8 @@ func TestTaskSummaryAsksAtTheOpenRequestCap(t *testing.T) {
 	}
 	if summaries != 1 || linked != 0 {
 		t.Errorf("summaries = %d with %d linked to a request, want 1 with none", summaries, linked)
+	}
+	if !strings.Contains(logs.String(), "summary asks refused") || !strings.Contains(logs.String(), "full=true") {
+		t.Errorf("the open-cap refusal isn't logged: %q", logs.String())
 	}
 }
