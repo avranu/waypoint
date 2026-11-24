@@ -206,6 +206,77 @@ func TestLoginRateLimit(t *testing.T) {
 	}
 }
 
+type fromAddr struct{ ip string }
+
+func (f *fromAddr) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	r.Header.Set("X-Forwarded-For", f.ip)
+	return http.DefaultTransport.RoundTrip(r)
+}
+
+func loginServer(t *testing.T, tune func(*Server)) *httptest.Server {
+	t.Helper()
+	d, err := db.OpenFresh(context.Background(), filepath.Join(t.TempDir(), "api.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
+	svc := core.New(d, core.Config{BaseURL: "http://wp.test"}, nil)
+	if _, err := svc.CreateUser(context.Background(), core.SystemActor(), core.CreateUserInput{Username: "robin", Email: "j@example.com", Password: "correct horse battery"}); err != nil {
+		t.Fatal(err)
+	}
+	trusted, _ := ParseTrustedProxies("1")
+	srv := New(svc, Config{BaseURL: "http://wp.test", Version: "test", TrustedProxies: trusted}, svc.Log())
+	if tune != nil {
+		tune(srv)
+	}
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+func loginFrom(t *testing.T, ts *httptest.Server, ip, password string) int {
+	t.Helper()
+	c := &client{t: t, base: ts.URL, web: true, http: &http.Client{Transport: &fromAddr{ip}}}
+	code, _ := c.do("POST", "/api/v1/auth/login", map[string]any{"login": "robin", "password": password})
+	return code
+}
+
+func TestLoginLockoutIsPerAddress(t *testing.T) {
+	ts := loginServer(t, nil)
+	var last int
+	for n := 0; n < 40; n++ {
+		last = loginFrom(t, ts, "198.51.100.7", "wrong password")
+	}
+	if last != 429 {
+		t.Fatalf("address A not locked out: %d", last)
+	}
+	if code := loginFrom(t, ts, "198.51.100.7", "correct horse battery"); code != 429 {
+		t.Errorf("right password from locked address A: %d", code)
+	}
+	if code := loginFrom(t, ts, "203.0.113.9", "correct horse battery"); code != 200 {
+		t.Errorf("right password from address B after A's failures: %d", code)
+	}
+}
+
+func TestLoginAccountLimitStopsRotatingGuesser(t *testing.T) {
+	ts := loginServer(t, func(s *Server) { s.userLimiter = newRateLimiter(5, 10*time.Minute) })
+	if code := loginFrom(t, ts, "203.0.113.9", "correct horse battery"); code != 200 {
+		t.Fatalf("owner's first sign-in: %d", code)
+	}
+	for n := 0; n < 5; n++ {
+		if code := loginFrom(t, ts, fmt.Sprintf("192.0.2.%d", n+1), "wrong password"); code != 400 {
+			t.Fatalf("guess %d: %d", n, code)
+		}
+	}
+	if code := loginFrom(t, ts, "192.0.2.99", "correct horse battery"); code != 429 {
+		t.Errorf("a new address after the account-wide limit: %d", code)
+	}
+	if code := loginFrom(t, ts, "203.0.113.9", "correct horse battery"); code != 200 {
+		t.Errorf("an address that signed in before, after the account-wide limit: %d", code)
+	}
+}
+
 func TestMCP(t *testing.T) {
 	ts, svc := setup(t)
 	ctx := context.Background()

@@ -48,15 +48,16 @@ type Config struct {
 
 // Server is the HTTP front end.
 type Server struct {
-	done        chan struct{} // closed on shutdown, to end live streams
-	doneOnce    sync.Once
-	svc         *core.Service
-	cfg         Config
-	log         *slog.Logger
-	limiter     *rateLimiter // per client address
-	userLimiter *rateLimiter // failed logins per account
-	jobLimiter  *rateLimiter // requests per runner job's own token (WP-418)
-	static      *staticFiles
+	done            chan struct{} // closed on shutdown, to end live streams
+	doneOnce        sync.Once
+	svc             *core.Service
+	cfg             Config
+	log             *slog.Logger
+	limiter         *rateLimiter // per client address
+	userLimiter     *rateLimiter // failed logins per account, from any address
+	userAddrLimiter *rateLimiter // failed logins per account and address
+	jobLimiter      *rateLimiter // requests per runner job's own token (WP-418)
+	static          *staticFiles
 	// abandonedAfter is how long a request must have run before a caller
 	// who hung up on it is worth a warning. A choice, from a week of the
 	// production log (2026-11-13..20): 118 of 120 hang-ups on the pull
@@ -74,7 +75,7 @@ const statusClientClosed = 499
 
 // New builds a Server.
 func New(svc *core.Service, cfg Config, log *slog.Logger) *Server {
-	return &Server{done: make(chan struct{}), svc: svc, cfg: cfg, log: log, limiter: newRateLimiter(10, time.Minute), userLimiter: newRateLimiter(30, 10*time.Minute),
+	return &Server{done: make(chan struct{}), svc: svc, cfg: cfg, log: log, limiter: newRateLimiter(10, time.Minute), userLimiter: newRateLimiter(300, 10*time.Minute), userAddrLimiter: newRateLimiter(30, 10*time.Minute),
 		jobLimiter: newRateLimiter(core.JobTokenRateLimit, time.Minute), static: newStaticFiles(), abandonedAfter: defaultAbandonedAfter}
 }
 
@@ -720,6 +721,24 @@ func queryBool(r *http.Request, name string) bool {
 }
 
 // ---- rate limiting ----
+
+// loginBlocked reports whether a password attempt for login from ip is
+// refused. The account-wide limit guards against a guesser rotating
+// addresses; it spares an address the account already signed in from.
+func (s *Server) loginBlocked(ctx context.Context, login, ip string) bool {
+	login = strings.ToLower(strings.TrimSpace(login))
+	if s.limiter.blocked("login:"+ip) || s.userAddrLimiter.blocked("login-user:"+login+"|"+ip) {
+		return true
+	}
+	return s.userLimiter.blocked("login-user:"+login) && !s.svc.SignedInFrom(ctx, login, ip)
+}
+
+func (s *Server) loginFailed(login, ip string) {
+	login = strings.ToLower(strings.TrimSpace(login))
+	s.limiter.hit("login:" + ip)
+	s.userLimiter.hit("login-user:" + login)
+	s.userAddrLimiter.hit("login-user:" + login + "|" + ip)
+}
 
 type rateLimiter struct {
 	mu     sync.Mutex

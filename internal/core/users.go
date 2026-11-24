@@ -330,6 +330,19 @@ func (s *Service) Login(ctx context.Context, login, password, userAgent, ip stri
 	return tok, u, err
 }
 
+// SignedInFrom reports whether login's account has a live session started
+// from ip, so a sign-in lockout can spare the owner's own address.
+func (s *Service) SignedInFrom(ctx context.Context, login, ip string) bool {
+	if ip == "" {
+		return false
+	}
+	var found bool
+	err := s.db.R.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sessions s JOIN users u ON u.id = s.user_id
+		WHERE (u.username = ? OR u.email = ?) AND s.ip = ? AND s.expires_at > ?)`,
+		strings.TrimSpace(login), strings.TrimSpace(login), ip, s.nowMS()).Scan(&found)
+	return err == nil && found
+}
+
 func (s *Service) createSession(ctx context.Context, userID int64, userAgent, ip string) (string, error) {
 	tok := newToken("wps_")
 	now := s.nowMS()

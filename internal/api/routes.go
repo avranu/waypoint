@@ -416,17 +416,15 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) (any, error) {
 	if err := decode(r, &in); err != nil {
 		return nil, err
 	}
-	// Only failures count, per address and per account. The per-account
-	// limit is looser so someone else's guessing can't easily lock you out.
+	// Only failures count: per address, per account and address, and per
+	// account. Someone else's guessing can't lock the owner's address out.
 	ip := s.clientIP(r)
-	userKey := "login-user:" + strings.ToLower(strings.TrimSpace(in.Login))
-	if s.limiter.blocked("login:"+ip) || s.userLimiter.blocked(userKey) {
+	if s.loginBlocked(r.Context(), in.Login, ip) {
 		return nil, errTooMany
 	}
 	tok, u, err := s.svc.Login(r.Context(), in.Login, in.Password, r.UserAgent(), ip)
 	if err != nil {
-		s.limiter.hit("login:" + ip)
-		s.userLimiter.hit(userKey)
+		s.loginFailed(in.Login, ip)
 		return nil, fmt.Errorf("%w: wrong username or password", errBadRequest)
 	}
 	s.setSession(w, r, tok)

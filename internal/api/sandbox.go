@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"git.jmann.me/claude/waypoint/internal/core"
@@ -150,15 +149,13 @@ func (s *Server) reauth(w http.ResponseWriter, r *http.Request) (any, error) {
 	}
 	a := actorFrom(r)
 	ip := s.clientIP(r)
-	userKey := "login-user:" + strings.ToLower(a.User.Username)
-	if s.limiter.blocked("login:"+ip) || s.userLimiter.blocked(userKey) {
+	if s.loginBlocked(r.Context(), a.User.Username, ip) {
 		return nil, errTooMany
 	}
 	until, err := s.svc.Reauth(r.Context(), a, in.Password)
 	var ie *core.InvalidError
 	if errors.As(err, &ie) {
-		s.limiter.hit("login:" + ip)
-		s.userLimiter.hit(userKey)
+		s.loginFailed(a.User.Username, ip)
 	}
 	if err != nil {
 		return nil, err
