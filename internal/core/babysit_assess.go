@@ -1158,9 +1158,7 @@ func (s *Service) writeIntent(ctx context.Context, p *strings.Builder, b *Babysi
 				fmt.Fprintf(p, "\nTask %s: %s\n", l.issue.Key, outsideTitleInPrompt)
 				continue
 			}
-			// The title sits in the wrapper with the description: an issue
-			// published from outside still carries its stranger's words.
-			fmt.Fprintf(p, "\nTask %s:\n<untrusted>\n%s\n\n%s\n</untrusted>\n", l.issue.Key, untrusted(excerpt(is.Title, 300)), untrusted(capText(is.Description, assessorIssueChars)))
+			fmt.Fprintf(p, "\nTask %s: %s\n<untrusted>\n%s\n</untrusted>\n", l.issue.Key, is.Title, capText(is.Description, assessorIssueChars))
 		}
 	}
 	// The description it shipped with, the drift guard's anchor (WP-440):
