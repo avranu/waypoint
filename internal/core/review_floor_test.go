@@ -338,9 +338,13 @@ func TestPRAuditAtHeadFamilyCheckSkippedForTrustedBarAudits(t *testing.T) {
 		{"trusted round, floor audit", trustedAuditBar, reviewFloorBar, "done", gatewayChain, false},
 		{"trusted round, audit with no bar", trustedAuditBar, "", "done", gatewayChain, false},
 		{"trusted round, audit failed", trustedAuditBar, trustedAuditBar, "failed", gatewayChain, false},
+		{"trusted round, audit cancelled", trustedAuditBar, trustedAuditBar, "cancelled", gatewayChain, false},
+		{"trusted round, done with no model", trustedAuditBar, trustedAuditBar, "done", gatewayChain, false},
 	} {
+		// A done audit that names no model that answered isn't taken, even
+		// where no family is excluded.
 		model := "gateway/anthropic/claude-sonnet-5-5"
-		if c.status != "done" {
+		if c.status != "done" || c.name == "trusted round, done with no model" {
 			model = ""
 		}
 		res, err := a.s.db.W.Exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, pr_id, pr_number, ref, status, model, models, author_model, title, owner_id, created_at, weakest)
