@@ -112,15 +112,16 @@ func (s *Service) reviewOnce(ctx context.Context, chain []ChainModel, prompt str
 	// The route's models that stalled lately are left out from the first
 	// request, as WP-1709's second one would (WP-1768).
 	var gw int64
-	if s.asksExcludingGateway(ctx, chain) {
+	if s.asksReviewRoute(ctx, chain) {
 		gw = s.gatewayWith(ctx, GatewayExclude)
 	}
 	plain := ctx
 	ctx, cooled := s.withCooling(ctx, gw, gatewayReviewRoute)
 	used, attempts, err := s.runChain(ctx, chain, reviewSystem, prompt, reviewSchema, &ans, reviewCallTimeout)
 	if len(cooled) > 0 && err != nil && ctx.Err() == nil && leftNoModel(chain, attempts) {
-		// Maybe the cooling models were all the route had: ask as without.
-		ctx = plain
+		// Maybe the cooling models were all the route had: ask as without,
+		// with the same bar.
+		ctx, cooled = plain, nil
 		var more []ModelAttempt
 		used, more, err = s.runChain(ctx, chain, reviewSystem, prompt, reviewSchema, &ans, reviewCallTimeout)
 		attempts = append(attempts, more...)
@@ -131,11 +132,23 @@ func (s *Service) reviewOnce(ctx context.Context, chain []ChainModel, prompt str
 	// may get the same model. Ask once more with it left out (WP-1709).
 	if slow := failedMidStream(chain, attempts); err != nil && ctx.Err() == nil && slow != "" && s.asksExcludingGateway(ctx, chain) {
 		s.log.InfoContext(ctx, "a review's model failed after it started; asking again without it", "model", slow)
-		s.coolModel(ctx, gw, gatewayReviewRoute, slow)
+		if stalledModel(chain, attempts) != "" {
+			s.coolModel(ctx, gw, gatewayReviewRoute, slow)
+		}
+		// What plain excludes (the first reviewer's model) comes first, then
+		// slow, then the cooling models: the gateway takes only so many
+		// patterns, so what is cut is a cool-down.
+		without := append(slices.Clone(gatewayExcludeOf(plain)), slow)
 		var more []ModelAttempt
-		used, more, err = s.runChain(withGatewayExclude(ctx, append(slices.Clone(gatewayExcludeOf(ctx)), slow)), chain, reviewSystem, prompt, reviewSchema, &ans, reviewCallTimeout)
+		used, more, err = s.runChain(withGatewayExclude(plain, append(slices.Clone(without), cooled...)), chain, reviewSystem, prompt, reviewSchema, &ans, reviewCallTimeout)
 		attempts = append(attempts, more...)
-		if again := failedMidStream(chain, more); err != nil && ctx.Err() == nil && again != "" {
+		if len(cooled) > 0 && err != nil && ctx.Err() == nil && leftNoModel(chain, more) {
+			// Without slow and the cooling models the route had none: ask
+			// as WP-1709 did, without slow alone.
+			used, more, err = s.runChain(withGatewayExclude(plain, without), chain, reviewSystem, prompt, reviewSchema, &ans, reviewCallTimeout)
+			attempts = append(attempts, more...)
+		}
+		if again := stalledModel(chain, more); err != nil && ctx.Err() == nil && again != "" {
 			s.coolModel(ctx, gw, gatewayReviewRoute, again) // the replacement stalled too
 		}
 	}

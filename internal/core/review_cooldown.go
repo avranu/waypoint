@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -81,14 +82,36 @@ func (s *Service) withCooling(ctx context.Context, pid int64, route string) (con
 	return withGatewayExclude(ctx, append(slices.Clone(gatewayExcludeOf(ctx)), models...)), models
 }
 
+// asksReviewRoute is whether chain asks the gateway that takes exclude for
+// its review route: a chain that names a model of its own (a named reviewer,
+// a pinned model) is not held off the models that stalled on the route.
+func (s *Service) asksReviewRoute(ctx context.Context, chain []ChainModel) bool {
+	id := s.gatewayWith(ctx, GatewayExclude)
+	return id != 0 && slices.ContainsFunc(chain, func(c ChainModel) bool {
+		return c.CLI == "" && c.ProviderID == id && c.Model == gatewayReviewRoute
+	})
+}
+
+// stalledModel is failedMidStream's model when the last request timed out:
+// only a stall is remembered, not an empty, too long or unreadable answer.
+func stalledModel(chain []ChainModel, attempts []ModelAttempt) string {
+	m := failedMidStream(chain, attempts)
+	if m == "" || attempts[len(attempts)-1].Outcome != "timeout" {
+		return ""
+	}
+	return m
+}
+
 // leftNoModel is whether the last request failed without any model of the
-// route having served: what the gateway answers when every model is left
-// out, as when cooling ones are all it has.
+// route having served, as the gateway answers when every model is left out:
+// no_model_at_bar, or a bare 503 (classified "server" like a 502 or 504, so
+// the attempt's text tells them apart). A 404, 502, 504 or other error is an
+// ordinary failure, not asked again.
 func leftNoModel(chain []ChainModel, attempts []ModelAttempt) bool {
 	if len(attempts) == 0 {
 		return false
 	}
 	a := attempts[len(attempts)-1]
-	return (a.Outcome == "server" || a.Outcome == "error" || a.Outcome == "unavailable") &&
-		(a.Model == "" || slices.ContainsFunc(chain, func(c ChainModel) bool { return c.Model == a.Model }))
+	none := a.Outcome == "no_model_at_bar" || (a.Outcome == "server" && strings.HasSuffix(a.Error, "HTTP 503"))
+	return none && (a.Model == "" || slices.ContainsFunc(chain, func(c ChainModel) bool { return c.Model == a.Model }))
 }
