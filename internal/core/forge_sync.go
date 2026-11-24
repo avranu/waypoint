@@ -654,6 +654,9 @@ func (s *Service) namespaceProject(ctx context.Context, admin *Actor, f *Forge, 
 // DiscoveredRepo is a repo discovery would attach.
 type DiscoveredRepo struct {
 	Repo string `json:"repo"`
+	// Ignored repos are listed so they can be offered again; discovery
+	// attaches none of them.
+	Ignored bool `json:"ignored,omitempty"`
 	// Namespace is the organisation or group whose project it nests under
 	// ("" for a person's repo); NewNamespace says that project is new too.
 	Namespace    string `json:"namespace,omitempty"`
@@ -676,11 +679,11 @@ func (s *Service) PreviewDiscover(ctx context.Context, actor *Actor, forgeID int
 	if err != nil {
 		return nil, err
 	}
-	repos, err := s.pendingRepos(ctx, f, false)
+	repos, ignored, err := s.listRepos(ctx, f, false)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]DiscoveredRepo, 0, len(repos))
+	out := make([]DiscoveredRepo, 0, len(repos)+len(ignored))
 	for _, r := range repos {
 		d := DiscoveredRepo{Repo: r.Path}
 		// A repo attached under its old name (renamed or transferred) joins
@@ -701,7 +704,31 @@ func (s *Service) PreviewDiscover(ctx context.Context, actor *Actor, forgeID int
 		}
 		out = append(out, d)
 	}
+	for _, r := range ignored {
+		out = append(out, DiscoveredRepo{Repo: r.Path, Ignored: true})
+	}
 	return out, nil
+}
+
+// UnignoreRepo clears the ignore on a repo, so discovery offers it again
+// (admins).
+func (s *Service) UnignoreRepo(ctx context.Context, actor *Actor, forgeID int64, repo string) error {
+	f, err := s.discoverForge(ctx, actor, forgeID)
+	if err != nil {
+		return err
+	}
+	repo = strings.Trim(strings.TrimSpace(repo), "/")
+	return s.write(ctx, actor, func(t *tx) error {
+		res, err := t.ExecContext(ctx, `DELETE FROM forge_repo_ignores WHERE forge_id = ? AND lower(repo) = lower(?)`, f.ID, repo)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return nil
+		}
+		t.audit(AuditEntry{Action: "repo.unignore", Category: AuditSettings, TargetType: "repo", Target: repo, Detail: "offered again on " + f.Name})
+		return nil
+	})
 }
 
 // DiscoverRepos attaches every repo the forge's token can see, or only
@@ -777,29 +804,39 @@ func (s *Service) discoverRepos(ctx context.Context, f *Forge) (int, error) {
 // weren't detached on purpose. With follow, an attached repo reported under
 // a new name is renamed first, so it isn't pending (WP-166).
 func (s *Service) pendingRepos(ctx context.Context, f *Forge, follow bool) ([]ForgeRepo, error) {
+	out, _, err := s.listRepos(ctx, f, follow)
+	return out, err
+}
+
+// listRepos splits the repos pendingRepos would drop into the pending ones
+// and those ignored (and not attached).
+func (s *Service) listRepos(ctx context.Context, f *Forge, follow bool) (pending, ignored []ForgeRepo, err error) {
 	d, ok := s.Forges.(ForgeDiscoverer)
 	if !ok {
-		return nil, invalid("this forge client can't list repositories")
+		return nil, nil, invalid("this forge client can't list repositories")
 	}
 	repos, err := d.ListRepos(ctx, f)
 	if err != nil {
-		return nil, invalid("couldn't list repositories: %s", PublicError(err))
+		return nil, nil, invalid("couldn't list repositories: %s", PublicError(err))
 	}
-	var out []ForgeRepo
 	for _, r := range repos {
 		if follow {
 			s.followRepo(ctx, f, r.Path, r.ID)
 		}
-		var n int
-		if err := s.db.R.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM project_repos WHERE forge_id = ? AND lower(repo) = lower(?))
-			+ (SELECT count(*) FROM forge_repo_ignores WHERE forge_id = ? AND repo = ?)`, f.ID, r.Path, f.ID, r.Path).Scan(&n); err != nil {
-			return nil, err
+		var attached, ignore int
+		if err := s.db.R.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM project_repos WHERE forge_id = ? AND lower(repo) = lower(?)),
+			(SELECT count(*) FROM forge_repo_ignores WHERE forge_id = ? AND repo = ?)`, f.ID, r.Path, f.ID, r.Path).Scan(&attached, &ignore); err != nil {
+			return nil, nil, err
 		}
-		if n == 0 {
-			out = append(out, r)
+		switch {
+		case attached > 0:
+		case ignore > 0:
+			ignored = append(ignored, r)
+		default:
+			pending = append(pending, r)
 		}
 	}
-	return out, nil
+	return pending, ignored, nil
 }
 
 func (s *Service) attachRepos(ctx context.Context, f *Forge, repos []ForgeRepo) int {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Search } from 'lucide-react'
 import type { DiscoveredRepo, Forge } from '@/lib/types'
 import { Dialog } from '@/components/ui/dialog'
@@ -30,28 +30,41 @@ export function DiscoverPicker({
   busy,
   onCancel,
   onConfirm,
+  onUnignore,
 }: {
   forge: Forge | null
   repos: DiscoveredRepo[]
   busy: boolean
   onCancel: () => void
   onConfirm: (attach: string[], skip: string[]) => void
+  /** offers an ignored repo again */
+  onUnignore: (repo: string) => void
 }) {
   const [picked, setPicked] = useState<Set<string>>(new Set())
   const [filter, setFilter] = useState('')
+  const known = useRef<Set<string>>(new Set())
+  const ignored = useMemo(() => repos.filter((r) => r.ignored), [repos])
+  const offered = useMemo(() => repos.filter((r) => !r.ignored), [repos])
   useEffect(() => {
-    setPicked(new Set(repos.map((r) => r.repo)))
-    setFilter('')
-  }, [repos])
+    if (!forge) {
+      known.current = new Set()
+      return
+    }
+    const fresh = offered.filter((r) => !known.current.has(r.repo)).map((r) => r.repo)
+    known.current = new Set(offered.map((r) => r.repo))
+    setPicked((prev) => new Set([...[...prev].filter((r) => known.current.has(r)), ...fresh]))
+  }, [forge, offered])
+  useEffect(() => setFilter(''), [forge])
   const groups = useMemo(() => {
     const m = new Map<string, DiscoveredRepo[]>()
-    for (const r of repos) m.set(owner(r.repo), [...(m.get(owner(r.repo)) ?? []), r])
+    for (const r of offered) m.set(owner(r.repo), [...(m.get(owner(r.repo)) ?? []), r])
     return [...m.entries()].sort(([a], [b]) => a.localeCompare(b))
-  }, [repos])
+  }, [offered])
   const needle = filter.trim().toLowerCase()
   const shown = groups
     .map(([g, list]) => [g, list.filter((r) => r.repo.toLowerCase().includes(needle))] as const)
     .filter(([, list]) => list.length > 0)
+  const shownIgnored = ignored.filter((r) => r.repo.toLowerCase().includes(needle))
   const set = (list: DiscoveredRepo[], on: boolean) => {
     const next = new Set(picked)
     for (const r of list)
@@ -60,7 +73,7 @@ export function DiscoverPicker({
     setPicked(next)
   }
   const visible = shown.flatMap(([, list]) => list)
-  const chosen = repos.filter((r) => picked.has(r.repo))
+  const chosen = offered.filter((r) => picked.has(r.repo))
   const made = projectsMade(chosen)
   const box = 'size-4 shrink-0 accent-[var(--wp-accent)]'
   return (
@@ -71,7 +84,7 @@ export function DiscoverPicker({
       footer={
         <>
           <span className="mr-auto text-xs text-subtle">
-            {chosen.length} of {repos.length} selected
+            {chosen.length} of {offered.length} selected
           </span>
           <Button variant="ghost" disabled={busy} onClick={onCancel}>
             Cancel
@@ -82,23 +95,26 @@ export function DiscoverPicker({
             onClick={() =>
               onConfirm(
                 chosen.map((r) => r.repo),
-                repos.filter((r) => !picked.has(r.repo)).map((r) => r.repo),
+                offered.filter((r) => !picked.has(r.repo)).map((r) => r.repo),
               )
             }
           >
-            {chosen.length === 0
-              ? 'Skip all'
-              : made === 0
-                ? 'Attach'
-                : `Create ${made} ${made === 1 ? 'project' : 'projects'}`}
+            {offered.length === 0
+              ? 'Done'
+              : chosen.length === 0
+                ? 'Skip all'
+                : made === 0
+                  ? 'Attach'
+                  : `Create ${made} ${made === 1 ? 'project' : 'projects'}`}
           </Button>
         </>
       }
     >
       <div className="sticky top-0 z-10 space-y-2 border-b border-line bg-raised p-3">
         <p className="text-[13px] text-muted">
-          These would make {projectsMade(repos)} projects. Uncheck the repositories you don't want:
-          they won't get projects now or later. You can still attach one from a project's settings.
+          These would make {projectsMade(offered)} projects. Uncheck the repositories you don't
+          want: they won't get projects now or later. You can still attach one from a project's
+          settings.
         </p>
         {repos.length > 10 && (
           <div className="relative">
@@ -124,7 +140,9 @@ export function DiscoverPicker({
       </div>
       <div className="space-y-2 p-1.5">
         {shown.length === 0 && (
-          <p className="p-2.5 text-[13px] text-muted">No repositories match.</p>
+          <p className="p-2.5 text-[13px] text-muted">
+            {offered.length === 0 ? 'Nothing new to offer.' : 'No repositories match.'}
+          </p>
         )}
         {shown.map(([g, list]) => (
           <div key={g}>
@@ -165,6 +183,33 @@ export function DiscoverPicker({
             </ul>
           </div>
         ))}
+        {shownIgnored.length > 0 && (
+          <div>
+            <p className="px-2 pt-2 text-[13px] font-medium">Ignored</p>
+            <p className="px-2 pb-1 text-xs text-subtle">
+              Left out earlier, or from a deleted project, so automatic projects skip them.
+            </p>
+            <ul>
+              {shownIgnored.map((r) => (
+                <li
+                  key={r.repo}
+                  className="flex min-h-9 items-center gap-2.5 rounded-lg py-1 pl-2 pr-2 text-[13px]"
+                >
+                  <span className="min-w-0 flex-1 truncate font-mono">{r.repo}</span>
+                  <Badge>ignored</Badge>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={busy}
+                    onClick={() => onUnignore(r.repo)}
+                  >
+                    Offer again
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </div>
     </Dialog>
   )

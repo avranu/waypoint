@@ -332,7 +332,7 @@ func TestForgeDiscoverPickAndDelete(t *testing.T) {
 		t.Errorf("ignores = %d, want me/notes", ignores)
 	}
 	// acme/api was neither picked nor skipped: still offered.
-	if preview, _ = e.s.PreviewDiscover(e.ctx, e.admin, f.ID); len(preview) != 1 || preview[0].Repo != "acme/api" || preview[0].NewNamespace {
+	if preview, _ = e.s.PreviewDiscover(e.ctx, e.admin, f.ID); len(preview) != 2 || preview[0].Repo != "acme/api" || preview[0].NewNamespace || preview[1].Repo != "me/notes" || !preview[1].Ignored {
 		t.Errorf("preview after = %+v", preview)
 	}
 	// Deleting the web project keeps acme/web from coming back.
@@ -382,8 +382,8 @@ func TestForgeDeleteHandMadeProjectIgnoresRepos(t *testing.T) {
 		t.Fatalf("ignores = %d (%q, %v), want only me/web (me/shared is still on Beta)", ignores(), repo, err)
 	}
 	preview, err := e.s.PreviewDiscover(e.ctx, e.admin, f.ID)
-	if err != nil || len(preview) != 0 {
-		t.Errorf("preview offers %+v, %v", preview, err)
+	if err != nil || len(preview) != 1 || preview[0].Repo != "me/web" || !preview[0].Ignored {
+		t.Errorf("preview lists %+v, %v, want only me/web, ignored", preview, err)
 	}
 	if n, err := e.s.DiscoverRepos(e.ctx, e.admin, f.ID, nil); err != nil || n != 0 {
 		t.Errorf("discover attached %d, %v", n, err)
@@ -435,5 +435,51 @@ func TestGitLabIssueMadeConfidential(t *testing.T) {
 	send(issue(false))
 	if got := e.get(e.admin, key); got.Title != "Public bug" {
 		t.Errorf("not restored when public again: %q", got.Title)
+	}
+}
+
+// An ignored repo is still listed for the picker, flagged and after the
+// offered ones; clearing the ignore offers it again, and automatic
+// projects skip it while it's ignored.
+func TestForgeDiscoverListsIgnoredAndClearsThem(t *testing.T) {
+	e := newEnv(t)
+	mem := newMemForge()
+	e.s.Forges = mem
+	f := e.forge("github", "", true)
+	mem.repos[f.ID] = []ForgeRepo{{Path: "me/a"}, {Path: "me/b"}, {Path: "me/c"}}
+	if _, err := e.s.DiscoverRepos(e.ctx, e.admin, f.ID, &RepoPick{Skip: []string{"me/a"}}); err != nil {
+		t.Fatal(err)
+	}
+	preview, err := e.s.PreviewDiscover(e.ctx, e.admin, f.ID)
+	if err != nil || len(preview) != 3 {
+		t.Fatalf("preview = %+v, %v", preview, err)
+	}
+	if preview[0].Repo != "me/b" || preview[0].Ignored || preview[1].Repo != "me/c" || preview[1].Ignored {
+		t.Errorf("offered first: %+v", preview)
+	}
+	if preview[2].Repo != "me/a" || !preview[2].Ignored {
+		t.Errorf("ignored last: %+v", preview[2])
+	}
+	if n, _ := e.s.DiscoverRepos(e.ctx, e.admin, f.ID, nil); n != 2 {
+		t.Errorf("automatic projects attached %d, want the 2 not ignored", n)
+	}
+	e.s.Wait()
+	if err := e.s.UnignoreRepo(e.ctx, e.user("sam", false), f.ID, "me/a"); !errors.Is(err, ErrForbidden) {
+		t.Errorf("member clear: %v", err)
+	}
+	var n int
+	e.s.db.R.QueryRow(`SELECT count(*) FROM forge_repo_ignores`).Scan(&n)
+	if n != 1 {
+		t.Fatalf("ignores after refused clear = %d", n)
+	}
+	if err := e.s.UnignoreRepo(e.ctx, e.admin, f.ID, "ME/A"); err != nil {
+		t.Fatal(err)
+	}
+	e.s.db.R.QueryRow(`SELECT count(*) FROM forge_repo_ignores`).Scan(&n)
+	if n != 0 {
+		t.Errorf("ignore kept: %d", n)
+	}
+	if n, _ := e.s.DiscoverRepos(e.ctx, e.admin, f.ID, nil); n != 1 {
+		t.Errorf("offered again attached %d, want 1", n)
 	}
 }

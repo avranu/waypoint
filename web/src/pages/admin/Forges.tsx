@@ -92,9 +92,20 @@ export function ForgesTab() {
         toast(`Automatic projects stay off for ${forge.name} until its repositories can be listed`)
       return
     }
-    if (projectsMade(repos) > ASK_ABOVE) setPicking({ forge, repos, enable })
-    else attach.mutate({ forge, repos: repos.map((r) => r.repo), skip: [], enable })
+    const offered = repos.filter((r) => !r.ignored)
+    if (projectsMade(offered) > ASK_ABOVE || offered.length < repos.length)
+      setPicking({ forge, repos, enable })
+    else attach.mutate({ forge, repos: offered.map((r) => r.repo), skip: [], enable })
   }
+  const unignore = useMutation({
+    mutationFn: async (v: { forge: Forge; repo: string }) => {
+      await api.post(`/forges/${v.forge.id}/discover/unignore`, { repo: v.repo })
+      return qc.fetchQuery(q.discoverPreview(v.forge.id))
+    },
+    onSuccess: (repos, v) =>
+      setPicking((p) => (p && p.forge.id === v.forge.id ? { ...p, repos } : p)),
+    onError: toastError,
+  })
   const [editing, setEditing] = useState<Forge | 'new' | null>(null)
   const [deleting, setDeleting] = useState<Forge | null>(null)
   const [secret, setSecret] = useState<{ forge: Forge; secret: string } | null>(null)
@@ -200,7 +211,8 @@ export function ForgesTab() {
       <DiscoverPicker
         forge={picking?.forge ?? null}
         repos={picking?.repos ?? NO_REPOS}
-        busy={attach.isPending}
+        busy={attach.isPending || unignore.isPending}
+        onUnignore={(repo) => picking && unignore.mutate({ forge: picking.forge, repo })}
         onCancel={() => {
           if (picking?.enable) toast(`Automatic projects stay off for ${picking.forge.name}`)
           setPicking(null)

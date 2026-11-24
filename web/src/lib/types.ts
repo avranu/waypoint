@@ -1225,6 +1225,8 @@ export interface OutsideText {
 /** A repo discovery would attach (GET /forges/{id}/discover). */
 export interface DiscoveredRepo {
   repo: string
+  /** left out on purpose; discovery attaches none of these until offered again */
+  ignored?: boolean
   /** the organisation or group whose project it nests under */
   namespace?: string
   /** that organisation's project is new too */

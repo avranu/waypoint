@@ -628,6 +628,7 @@ var routePermissions = map[string]core.Permission{
 	"PUT /api/v1/forges/{id}/people":             permNever, // whose word counts (WP-279)
 	"GET /api/v1/forges/{id}/discover":           core.PermForgesManage,
 	"POST /api/v1/forges/{id}/discover":          core.PermForgesManage,
+	"POST /api/v1/forges/{id}/discover/unignore": core.PermForgesManage,
 	"GET /api/v1/forges/{id}/orgs":               core.PermForgesManage,
 	"GET /api/v1/forges/{id}/org-hooks":          core.PermForgesManage,
 	"POST /api/v1/forges/{id}/org-hooks":         core.PermForgesManage,

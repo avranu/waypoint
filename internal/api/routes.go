@@ -256,6 +256,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/v1/forges/{id}/people", a(s.setForgePeople))
 	mux.HandleFunc("GET /api/v1/forges/{id}/discover", a(s.previewDiscover))
 	mux.HandleFunc("POST /api/v1/forges/{id}/discover", a(s.discoverRepos))
+	mux.HandleFunc("POST /api/v1/forges/{id}/discover/unignore", a(s.unignoreRepo))
 	mux.HandleFunc("GET /api/v1/forges/{id}/orgs", a(s.forgeOrgs))
 	mux.HandleFunc("GET /api/v1/forges/{id}/org-hooks", a(s.listOrgHooks))
 	mux.HandleFunc("POST /api/v1/forges/{id}/org-hooks", a(s.addOrgHook))
@@ -1014,6 +1015,21 @@ func (s *Server) discoverRepos(w http.ResponseWriter, r *http.Request) (any, err
 		return nil, err
 	}
 	return map[string]int{"added": n}, nil
+}
+
+// unignoreRepo offers an ignored repo to discovery again.
+func (s *Server) unignoreRepo(w http.ResponseWriter, r *http.Request) (any, error) {
+	id, err := pathID(r, "id")
+	if err != nil {
+		return nil, err
+	}
+	var in struct {
+		Repo string `json:"repo"`
+	}
+	if err := decode(r, &in); err != nil {
+		return nil, err
+	}
+	return nil, s.svc.UnignoreRepo(r.Context(), actorFrom(r), id, in.Repo)
 }
 
 func (s *Server) forgeOrgs(w http.ResponseWriter, r *http.Request) (any, error) {
