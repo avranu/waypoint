@@ -16,13 +16,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/sandbox"
 )
 
-// The sandbox helper (WP-418, WP-ADR28, PL7 §5.3) is root on each runner
-// machine and acts only on job specs this server signs. The server's key
-// is made once and kept in server_settings; wp sandbox install pins its
-// public half on the machine. A runner reports its helper on each poll
-// that has news, and a claim carries a signed spec only when that helper
-// is installed, pins this key, has a sound store and the machine isn't
-// paused: anywhere else a job runs as it did before sandboxing.
+// A claim carries a signed spec only when the machine's helper is ready and the machine isn't paused; otherwise the job runs as it did before sandboxing.
 
 var sandboxKeyMu sync.Mutex
 
@@ -175,7 +169,7 @@ func (s *Service) sandboxHelper(ctx context.Context, q queryer, runnerID int64) 
 	if err != nil {
 		return nil, err
 	}
-	fp := "" // no key yet: nothing can pin it
+	fp := ""
 	if priv != nil {
 		pub, _ := priv.Public().(ed25519.PublicKey)
 		fp = sandbox.Fingerprint(pub)
@@ -300,7 +294,6 @@ func repoURLIs(url, slug, baseURL string) bool {
 	if host == "" {
 		return true
 	}
-	// https://host/o/n, ssh://git@host:port/o/n or git@host:o/n.
 	rest := strings.TrimSuffix(strings.TrimSuffix(u, sl), "/")
 	rest = strings.TrimSuffix(rest, ":")
 	if i := strings.Index(rest, "://"); i >= 0 {

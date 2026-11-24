@@ -11,12 +11,7 @@ import (
 	"strings"
 )
 
-// Renamed and transferred repos (WP-166). A forge gives every repo an id
-// that survives renames and transfers to another owner. Waypoint records it
-// per attached repo and, when the repo turns up under another name, renames
-// the attachment and what it recorded under the old name, instead of taking
-// the repo for a new one (that made a second project with twins of the
-// first one's issues, and left the first on a dead name).
+// A forge's repo id survives renames and transfers, so a moved repo is followed by id, not taken for a new one.
 
 // ForgeRepoFinder is the optional part of a ForgeClient that looks a repo
 // up by name and by the forge's id.
@@ -41,9 +36,9 @@ func (s *Service) followRepo(ctx context.Context, f *Forge, repo string, id int6
 	if err != nil {
 		return
 	}
-	var moved string  // the name this id is attached under, when not this one
-	var unknown bool  // attached under this name, id not known yet
-	var stale []int64 // other repos attached under this name: they moved away
+	var moved string
+	var unknown bool
+	var stale []int64
 	for rows.Next() {
 		var name string
 		var known int64
@@ -132,7 +127,7 @@ func (s *Service) checkRepoNames(ctx context.Context) {
 		if !ok {
 			var rerr error
 			f, rerr = s.forgeByID(ctx, a.forgeID)
-			if readFault(rerr) && !errors.Is(rerr, ErrNotFound) { // a forge removed since: its repos aren't followed
+			if readFault(rerr) && !errors.Is(rerr, ErrNotFound) { // A removed forge (not found) is not followed; other read faults are logged.
 				s.log.WarnContext(ctx, "read the forge of an attached repo to follow its moves", "forge", a.forgeID, "repo", a.repo, "err", rerr)
 			}
 			forges[a.forgeID] = f
@@ -143,7 +138,7 @@ func (s *Service) checkRepoNames(ctx context.Context) {
 		got, err := finder.GetRepo(ctx, f, a.repo)
 		switch {
 		case err == nil && (a.known == 0 || got.ID == a.known):
-			if !strings.EqualFold(got.Path, a.repo) { // the forge redirected the old name
+			if !strings.EqualFold(got.Path, a.repo) {
 				if err := s.moveRepo(ctx, SystemActor(), f, a.repo, got.Path, got.ID, false, false); err != nil {
 					s.log.WarnContext(ctx, "follow moved repo", "forge", f.Name, "from", a.repo, "to", got.Path, "err", err)
 				}
@@ -151,7 +146,6 @@ func (s *Service) checkRepoNames(ctx context.Context) {
 				s.followRepo(ctx, f, a.repo, got.ID)
 			}
 		case a.known != 0 && (err == nil || isStatus(err, http.StatusNotFound)):
-			// Gone from this name, or another repo has it now.
 			s.findMovedRepo(ctx, f, a.repo, a.known)
 		case err != nil && !isStatus(err, http.StatusNotFound):
 			s.log.Debug("check repo name", "forge", f.Name, "repo", a.repo, "err", err)
@@ -221,7 +215,6 @@ func (s *Service) MoveProjectRepo(ctx context.Context, actor *Actor, projectRef 
 	if strings.EqualFold(got.Path, old) && got.ID == known {
 		return nil, invalid("%s is linked to that repository already", old)
 	}
-	// Owners of the projects whose attachment of the new name it replaces.
 	taken, err := queryIDs(ctx, s.db.R, `SELECT DISTINCT project_id FROM project_repos WHERE forge_id = ? AND lower(repo) = lower(?)`, f.ID, got.Path)
 	if err != nil {
 		return nil, err
@@ -239,7 +232,6 @@ func (s *Service) MoveProjectRepo(ctx context.Context, actor *Actor, projectRef 
 		}
 	}
 	if opt.Relink && !opt.Force && !strings.EqualFold(got.Path, old) {
-		// Everything recorded under the old name takes the new one, for every project linking it.
 		sharing, err := queryIDs(ctx, s.db.R, `SELECT DISTINCT project_id FROM project_repos WHERE forge_id = ? AND lower(repo) = lower(?) AND project_id != ?`, f.ID, old, p.ID)
 		if err != nil {
 			return nil, err
@@ -292,13 +284,12 @@ func (s *Service) moveRepo(ctx context.Context, actor *Actor, f *Forge, old, rep
 	}
 	base := strings.TrimRight(f.BaseURL, "/") + "/"
 	oldURL, newURL := base+old+"/", base+repo+"/"
-	// rewrite is SQL turning col's old URL prefix into the new one.
 	rewrite := func(col string) (string, []any) {
 		return `CASE WHEN lower(substr(` + col + `, 1, ?)) = lower(?) THEN ? || substr(` + col + `, ?) ELSE ` + col + ` END`,
 			[]any{len(oldURL), oldURL, newURL, len(oldURL) + 1}
 	}
-	var moved []int64 // projects whose attachment moved
-	forgeActor := ""  // the forge reported it: Waypoint's own move is recorded too
+	var moved []int64
+	forgeActor := ""
 	if actor.id() == 0 {
 		forgeActor = f.Name
 	}
@@ -345,12 +336,10 @@ func (s *Service) moveRepo(ctx context.Context, actor *Actor, f *Forge, old, rep
 			repo, id, f.ID, old); err != nil {
 			return err
 		}
-		// Attached now, whatever was skipped under this name before.
 		if _, err := t.ExecContext(ctx, `DELETE FROM forge_repo_ignores WHERE forge_id = ? AND repo = ?`, f.ID, repo); err != nil {
 			return err
 		}
-		// Links to its issues, pull requests and commits (on this forge: the
-		// URL says so). One an issue has under both names stays as it was.
+		// A link an issue already has under the new name stays under the old one (UPDATE OR IGNORE).
 		expr, args := rewrite("url")
 		if _, err := t.ExecContext(ctx, `UPDATE OR IGNORE external_links SET url = `+expr+`, repo = CASE WHEN lower(repo) = lower(?) THEN ? ELSE repo END
 			WHERE lower(substr(url, 1, ?)) = lower(?)`, append(args, old, repo, len(oldURL), oldURL)...); err != nil {
@@ -360,9 +349,7 @@ func (s *Service) moveRepo(ctx context.Context, actor *Actor, f *Forge, old, rep
 			append(args, f.ID, len(oldURL), oldURL)...); err != nil {
 			return err
 		}
-		// Pull requests: the ones recorded under the old name keep their
-		// merge arming, babysitting and review state; copies recorded under
-		// the new one since the move go.
+		// Pull requests under the old name keep their merge arming and review state; new-name copies with the same number are dropped.
 		if _, err := t.ExecContext(ctx, `DELETE FROM pull_requests WHERE forge_id = ? AND lower(repo) = lower(?)
 			AND number IN (SELECT number FROM pull_requests WHERE forge_id = ? AND lower(repo) = lower(?))`, f.ID, repo, f.ID, old); err != nil {
 			return err
@@ -372,7 +359,7 @@ func (s *Service) moveRepo(ctx context.Context, actor *Actor, f *Forge, old, rep
 			append(append([]any{repo}, args...), old, repo, f.ID, old)...); err != nil {
 			return err
 		}
-		// Checks and pushes are caches: what's newer under the new name wins.
+		// A cache row already under the new name wins; the old name's duplicates are dropped.
 		for _, table := range []string{"ci_heads", "branch_activity"} {
 			// #nosec G202 -- fixed table names
 			if _, err := t.ExecContext(ctx, `UPDATE OR IGNORE `+table+` SET repo = ? WHERE forge_id = ? AND lower(repo) = lower(?)`, repo, f.ID, old); err != nil {
@@ -434,8 +421,7 @@ func (s *Service) followNamespace(ctx context.Context, f *Forge, projectID int64
 	if p.ParentID != nil {
 		cur = *p.ParentID
 	}
-	// Under the old organisation's project, or at the top for a person's
-	// repo; a top project with an organisation's repo was put there.
+	// Only a project still where Waypoint put it follows the repo; a person's own project stays.
 	if cur != was || (was == 0 && s.namespaceIsGroup(ctx, f, oldNS, nil)) {
 		return
 	}
@@ -443,7 +429,7 @@ func (s *Service) followNamespace(ctx context.Context, f *Forge, projectID int64
 	if err != nil {
 		return
 	}
-	in, want := ProjectInput{Parent: Opt[string]{Set: true}}, int64(0) // the top
+	in, want := ProjectInput{Parent: Opt[string]{Set: true}}, int64(0)
 	if s.namespaceIsGroup(ctx, f, newNS, nil) {
 		parent, err := s.namespaceProject(ctx, admin, f, newNS)
 		if err != nil {
@@ -459,8 +445,6 @@ func (s *Service) followNamespace(ctx context.Context, f *Forge, projectID int64
 		s.log.WarnContext(ctx, "move project with its repo", "project", p.Key, "err", err)
 	}
 }
-
-// ---- HTTP client ----
 
 type apiRepoRef struct {
 	ID                int64  `json:"id"`

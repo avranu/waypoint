@@ -1,42 +1,5 @@
 #!/usr/bin/env bash
-# Pull-based deploys of Waypoint on its production host: CI holds
-# no key to production (WP-406, WP-ADR45). Installed as ~/bin/waypoint-deployer by
-# deploy/setup-cd.sh and run every two minutes by a systemd user timer
-# (waypoint-deployer.timer):
-#
-#   waypoint-deployer             deploy the newest release, if it passes the checks below
-#   waypoint-deployer status      what the deployer sees and what it would do, without deploying
-#   waypoint-deployer pause       stop deploying (an incident); `resume` starts again
-#
-# Each run fetches main and the v* tags from the forge with a read-only token
-# (~/.config/waypoint-deployer/forge-token, scope read:repository) into a bare
-# mirror, and deploys the newest vMAJOR.MINOR.PATCH tag only when:
-#   - the tagged commit is on main (branch protection makes main the only
-#     reviewed and tested history), so a stolen release token can create a tag
-#     but can't get a commit that isn't on main deployed;
-#   - it descends from the commit that runs now, so nothing goes backwards
-#     (a live commit that main doesn't have yet, an incident deploy of a
-#     branch, holds every release until it is merged);
-#   - its forge release is published with its binaries (deploy/release.sh
-#     attaches them last, so the release job finished);
-#   - the deployer hasn't tried it before. Each release is tried once: after
-#     `make rollback-remote` or a failed deploy it waits for the next release
-#     (fix forward) instead of putting the same one back.
-# Then it hands `git archive` of that commit to ~/bin/waypoint-deploy
-# (deploy/remote-deploy.sh), which builds, health-checks and rolls back by
-# itself, and records the deployment in Waypoint when
-# ~/.config/waypoint-deployer/waypoint-token holds an API token with write on
-# project WP. After a successful deploy it updates these three programs in
-# ~/bin from the release it deployed.
-#
-# Settings: FORGE_URL (the forge's root URL), REPO (owner/name) and
-# WAYPOINT_URL (where deployments are recorded), each from the environment,
-# else from ~/.config/waypoint-deployer/settings (KEY=VALUE lines, written by
-# deploy/setup-cd.sh), else from what is already here: the mirror's origin
-# for the first two, WAYPOINT_BASE_URL in the live tree's deploy/.env for
-# the third.
-#
-# Log: journalctl --user -u waypoint-deployer (and ~/.local/state/waypoint-deployer/deployer.log).
+# CI holds no key to production: the deployer deploys the newest vX.Y.Z tag only if it is on main, descends from the live commit, is published, and was not tried before.
 set -euo pipefail
 
 CONF=${WAYPOINT_DEPLOYER_CONF:-$HOME/.config/waypoint-deployer}
@@ -50,7 +13,7 @@ TRIED=$STATE/tried
 LOG=$STATE/deployer.log
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-# setting KEY FILE: the last KEY=VALUE in FILE (quotes dropped); read, never sourced.
+# Read, never sourced, so the settings file cannot run code.
 setting() {
   [[ -r $2 ]] || return 0
   sed -n "s/^$1=//p" "$2" | tail -n 1 | sed "s/^[\"']//; s/[\"']\$//"
@@ -87,8 +50,7 @@ forge_token() {
   tr -d '[:space:]' <"$CONF/forge-token"
 }
 
-# git ARGS... in the mirror; the token travels in the environment, never argv.
-# No token, no git: the deployer never fetches without one.
+# The token travels in the environment, never argv; no token, no fetch.
 mgit() {
   local token
   token=$(forge_token) || exit 1
@@ -106,7 +68,6 @@ fetch() {
   mgit fetch -q --no-tags --prune origin '+refs/heads/main:refs/heads/main' '+refs/tags/v*:refs/tags/v*'
 }
 
-# newest_tag: the highest vMAJOR.MINOR.PATCH tag in the mirror.
 newest_tag() {
   local t
   while IFS= read -r t; do
@@ -117,8 +78,6 @@ newest_tag() {
   done < <(git --git-dir="$MIRROR" tag --list 'v*' --sort=-v:refname)
 }
 
-# release_ready TAG: the forge release for TAG is published (not a draft) and
-# has its binaries.
 release_ready() {
   local body
   body=$(printf 'header = "Authorization: token %s"\n' "$(forge_token)" |
@@ -127,10 +86,8 @@ release_ready() {
   jq -e '(.draft | not) and ((.assets // []) | length > 0)' <<<"$body" >/dev/null
 }
 
-# live_tag: the version the live tree was deployed as (a tag, a sha, or empty).
 live_tag() { cat "$ROOT/waypoint/.deployed-version" 2>/dev/null || true; }
 
-# live_commit: the commit of the live tree, when the mirror knows it.
 live_commit() {
   local v
   v=$(live_tag)
@@ -138,15 +95,12 @@ live_commit() {
   git --git-dir="$MIRROR" rev-parse -q --verify "$v^{commit}" 2>/dev/null || true
 }
 
-# deploy_lock_busy: another deploy (by hand, rollback) holds remote-deploy.sh's lock.
 deploy_lock_busy() {
   local lock=$ROOT/.waypoint-deploy.lock
   [[ -e $lock ]] || return 1
   ! flock -n "$lock" true
 }
 
-# decide: sets TAG, SHA and REASON. TAG is empty when there is nothing to
-# deploy, and REASON says why.
 decide() {
   local live
   TAG='' SHA='' REASON='' CANDIDATE=''
@@ -165,9 +119,7 @@ decide() {
   elif ! git --git-dir="$MIRROR" merge-base --is-ancestor "$SHA" refs/heads/main; then
     REASON="REFUSED: $TAG ($SHA) is not on main"
   elif live=$(live_commit) && [[ -n $(live_tag) && -z $live ]]; then
-    # Fail closed: a live commit the mirror doesn't have (an incident deploy
-    # of a branch by hand) can't be shown to be in $TAG. Once that commit is
-    # merged to main it resolves here and the next release goes out.
+    # A live commit the mirror doesn't have can't be shown to be in the tag, so refuse until it is on main.
     REASON="REFUSED: the live $(live_tag) is not on main yet, so $TAG may not contain it; merge it to main (or deploy a release by hand)"
   elif [[ -n $live ]] && ! git --git-dir="$MIRROR" merge-base --is-ancestor "$live" "$SHA"; then
     REASON="REFUSED: $TAG ($SHA) does not descend from the live $(live_tag) ($live)"
@@ -183,7 +135,7 @@ decide() {
   TAG=''
 }
 
-record() { # record STATUS [NOTES]
+record() {
   local tok
   [[ -x $RECORD && -r $CONF/waypoint-token && -n $WAYPOINT_URL ]] || return 0
   tok=$(tr -d '[:space:]' <"$CONF/waypoint-token")
@@ -191,8 +143,7 @@ record() { # record STATUS [NOTES]
     RUN_URL="$FORGE_URL/$REPO/releases/tag/$TAG" "$RECORD" "$@" || say "recording '$1' in Waypoint failed (the deploy stands)"
 }
 
-# self_update: install this program, remote-deploy.sh and record-deployment.sh
-# from the deployed commit. A rename, so a running copy keeps its old file.
+# Installs by rename: a running bash script must not be overwritten in place.
 self_update() {
   local pair path dest tmp
   for pair in deploy/pull-deploy.sh:waypoint-deployer deploy/remote-deploy.sh:waypoint-deploy deploy/record-deployment.sh:waypoint-record-deployment; do
@@ -219,7 +170,6 @@ deploy() {
   printf '%s %s\n' "$SHA" "$(date -u +%FT%TZ)" >"$TRIED/$TAG"
   say "deploying $TAG ($SHA)"
   record started
-  # remote-deploy.sh reads SSH_ORIGINAL_COMMAND first; this is a local call.
   mgit archive --format=tar "$SHA" | env -u SSH_ORIGINAL_COMMAND "$DEPLOY" deploy "$TAG" || rc=$?
   case $rc in
   0)
@@ -279,7 +229,6 @@ main() {
   status | "") ;;
   *) usage ;;
   esac
-  # One run at a time: a deploy takes longer than the timer's interval.
   exec 8>"$STATE/.lock"
   if [[ ${1:-} == status ]]; then
     [[ $# -eq 1 ]] || usage
@@ -292,8 +241,6 @@ main() {
   fetch
   decide
   if [[ -z $TAG ]]; then
-    # Say only what a person should see: a refusal, once per release, not
-    # the usual "is live".
     if [[ $REASON == REFUSED* && ! -e $STATE/refused-$CANDIDATE ]]; then
       say "$REASON"
       : >"$STATE/refused-$CANDIDATE"

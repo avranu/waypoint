@@ -9,8 +9,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// Review of agent-written content and page codes (WP-D11).
-
 func (s *Server) listUnreviewed(w http.ResponseWriter, r *http.Request) (any, error) {
 	items, err := s.svc.ListUnreviewed(r.Context(), actorFrom(r), r.URL.Query().Get("project"), queryInt(r, "limit", 200))
 	if err != nil || !wantsText(r) {
@@ -135,15 +133,14 @@ func pageLine(p *core.Page) string {
 		b.WriteString(" (personal)")
 	}
 	if p.Draft {
-		b.WriteString(" draft") // WP-42
+		b.WriteString(" draft")
 	}
 	if p.ChildCount > 0 {
 		fmt.Fprintf(&b, " (%d sub-pages)", p.ChildCount)
 	}
 	switch {
 	case p.TextAgent != "" && !p.Unreviewed && p.ReviewedOnStory:
-		// Approving a plan approves its story, not the agent's text (WP-190);
-		// a review from before it had a story was of the text.
+		// Approving a plan approves its story, not the agent's text; a review from before stories existed covers the text.
 		by := "a person"
 		if p.ReviewedBy != nil {
 			by = p.ReviewedBy.DisplayName

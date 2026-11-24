@@ -22,7 +22,6 @@ func TestRelayFindingIDs(t *testing.T) {
 	if len(old) != 2 || old[0].extID != ps[0].extID || old[1].extID != ps[1].extID || old[0].relayID != "" {
 		t.Errorf("before finding markers = %+v", old)
 	}
-	// Two findings on one line are told apart by their text, not the marker.
 	two := strings.Replace(crReview, "On `app/b.go` line 7 (before the change):", "On `app/a.go` line 12:", 1)
 	a, b := noteParts(note("4", two), false, "mirror", posters{}), noteParts(note("4", relayFindingRE.ReplaceAllString(two, "")), false, "mirror", posters{})
 	if len(a) != 2 || a[0].extID != b[0].extID || a[1].extID != b[1].extID || a[0].extID == a[1].extID {
@@ -45,7 +44,7 @@ func TestVerdictReply(t *testing.T) {
 		URL: "https://git/x#issuecomment-9", relayID: "123", relayAuthor: "coderabbitai[bot]"}
 	finding := &PRReviewComment{Kind: "finding", Author: "waypoint", Body: "[P2] the loop never ends", URL: "https://git/x#review-4", FindingID: 3}
 	inline := &PRReviewComment{Kind: "inline", Author: "carol", Body: "Rename it."}
-	sha := "8888888bbbbccccddddeeeeffff000011112222333344445555666677778888" // sha256: the marker takes 40
+	sha := "8888888bbbbccccddddeeeeffff000011112222333344445555666677778888"
 	cases := []struct {
 		name         string
 		rc           *PRReviewComment
@@ -77,7 +76,6 @@ func TestVerdictReply(t *testing.T) {
 			}
 		}
 	}
-	// A comment with an emoji of its own still speaks only with a note.
 	for _, to := range []string{VerdictAccepted, VerdictFixed, VerdictDismissed, VerdictFixing, VerdictSeen, VerdictVerified} {
 		if got := verdictReply(inline, to, "", sha, sha); got != "" {
 			t.Errorf("%s on a person's thread with no note: %q", to, got)
@@ -129,7 +127,6 @@ func TestRelayedVerdictReplies(t *testing.T) {
 		t.Errorf("%d replies, want 3:\n%s", n, p)
 	}
 
-	// Fixed in a commit not pushed yet: nothing more until the push.
 	if _, err := be.s.FixedReviewComments(be.ctx, be.agent, FixedInput{IDs: []string{a.Ref}, SHA: "8888888bbbb"}); err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +141,6 @@ func TestRelayedVerdictReplies(t *testing.T) {
 		t.Errorf("after the push, replies:\n%s", p)
 	}
 
-	// A plain reply reaches the thread too.
 	if _, err := be.s.ReplyToReviewComment(be.ctx, be.agent, b.Ref, "Doing this one with the nil check."); err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +148,7 @@ func TestRelayedVerdictReplies(t *testing.T) {
 		t.Errorf("reply:\n%s", p)
 	}
 
-	// CodeRabbit answering in its thread is no new work; a person is.
+	// A bot's reply in its own thread is no new work; a person's is.
 	be.sg.setNotes(
 		PRNote{ID: "702", Kind: "comment", Author: "mirror", Body: crReview, At: at},
 		PRNote{ID: "703", Kind: "comment", Author: "mirror", Body: crLine, At: at},

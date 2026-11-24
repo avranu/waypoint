@@ -51,8 +51,6 @@ func TestReviewProfileLimits(t *testing.T) {
 	if err := (AutopilotLimits{ReviewText: ptrOf("Line one\n\tindented")}).validateReviewProfile(); err != nil {
 		t.Fatal(err)
 	}
-	// A person's own brief goes into the session's prompt; with none, the
-	// default does, as it does for every other reviewer.
 	if p := ownReviewBrief("Review it.", AutopilotLimits{}); !strings.HasPrefix(p, "Review it.") || !strings.Contains(p, "<brief>\n"+briefText(promptText(DefaultReviewText))+"\n</brief>") {
 		t.Fatalf("no brief: %q", p)
 	}
@@ -115,8 +113,7 @@ func TestReviewProfileSettings(t *testing.T) {
 	if _, err := a.s.ReviewModelOptions(a.ctx, a.ag); err != nil {
 		t.Fatalf("an agent reads the options: %v", err)
 	}
-	// Who changed how reviews run, and to what, is in the audit log: the
-	// brief by its length and hash, never its text.
+	// The audit log records a brief by its length and hash, never its text.
 	page, err := a.s.ListAudit(a.ctx, a.admin, AuditQuery{Category: AuditControl})
 	if err != nil {
 		t.Fatal(err)
@@ -127,7 +124,7 @@ func TestReviewProfileSettings(t *testing.T) {
 			said = append(said, e.Target)
 		}
 	}
-	slices.Reverse(said) // oldest first
+	slices.Reverse(said)
 	want := []string{"autopilot defaults, reviewer: claude/sonnet, was inherited, reviewer's instructions: custom (9 characters, ", "autopilot in " + a.p.Key + ", reviewer: session, was inherited"}
 	if len(said) < 2 || !strings.HasPrefix(said[len(said)-2], want[0]) || said[len(said)-1] != want[1] || strings.Contains(strings.Join(said, "\n"), "My brief") {
 		t.Errorf("the audit log says %q, want the last two %q", said, want)

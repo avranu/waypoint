@@ -19,87 +19,76 @@ type shipForge struct {
 	sm            sync.Mutex
 	threads       []ReviewThread
 	nextID        int
-	replies       []string // "thread-id: text"
+	replies       []string
 	resolved      []string
-	noResolv      bool                          // Forgejo: no resolve API
-	statuses      map[string][]CommitStatusPost // sha → posted, in order
-	stamps        map[string][]int64            // sha → the forge's id of each posted status
-	seq           int64                         // the last status id given out
-	checks        map[string][]CommitCheck      // sha → what the forge lists
-	logs          map[string]string             // check name → log tail
+	noResolv      bool
+	statuses      map[string][]CommitStatusPost
+	stamps        map[string][]int64
+	seq           int64
+	checks        map[string][]CommitCheck
+	logs          map[string]string
 	merges        []MergeOptions
 	mergeErr      error
-	behindErr     error                 // BehindBase fails with it
-	createErr     error                 // CreatePR fails with it
-	listHides     int                   // the first N ListPRs answer nothing (the forge not showing a pull request yet)
-	defaultBranch string                // what DefaultBranch says: "" main, "-" an error
-	reacts        map[string][]Reaction // comment id → reactions
-	fileAt        map[string]string     // sha:path → content
-	reads         int                   // thread reads
-	replyErr      error                 // ReplyToThread fails with it
-	reactErr      map[string]error      // comment id → CommentReactions fails with it
+	behindErr     error
+	createErr     error
+	listHides     int
+	defaultBranch string
+	reacts        map[string][]Reaction
+	fileAt        map[string]string
+	reads         int
+	replyErr      error
+	reactErr      map[string]error
 
-	tips   map[string]string // branch → what BranchHead says; absent: it can't say
-	tipErr error             // BranchHead fails with it
-	// tipDefault is what BranchHead says for a branch when tips is nil (a test
-	// that sets tips, even empty, says every branch itself).
+	tips       map[string]string
+	tipErr     error
 	tipDefault string
-	// tipHang: BranchHead doesn't answer until its context ends.
-	tipHang bool
+	tipHang    bool
 
-	created      []NewPR           // pull requests opened through CreatePR
-	heads        map[string]string // head branch → the sha a pull request from it starts at
-	labelOps     []string          // "+name" / "-name" on pull requests
+	created      []NewPR
+	heads        map[string]string
+	labelOps     []string
 	reviewers    [][]string
-	retries      []string // shas whose failed checks were run again
-	noRetry      bool     // a forge that can't re-run checks (Forgejo before 17)
-	retryNone    bool     // a forge that finds nothing to re-run
-	retryErr     error    // a forge that refuses a re-run
-	retryPartial int      // with retryErr: how many it re-ran before failing
-	containsErr  error    // Contains fails with it
-	canRetryErr  error    // CanRetryChecks fails with it
-	notes        []PRNote // review bodies and conversation comments (babysit_test.go)
-	reactedTo    []string // "kind:id:emoji" put on comments
-	titleEdits   []string // titles set through EditPRTitle (draft_first_test.go)
+	retries      []string
+	noRetry      bool
+	retryNone    bool
+	retryErr     error
+	retryPartial int
+	containsErr  error
+	canRetryErr  error
+	notes        []PRNote
+	reactedTo    []string
+	titleEdits   []string
 	bodyEdits    []string
-	baseEdits    []string      // "number:base" set through EditPRBase (pr_open_test.go)
-	baseErr      error         // EditPRBase fails with it
-	brs          []ForgeBranch // what Branches lists
-	brErr        error         // Branches fails with it
-	// afterTitleEdit runs once a title edit is made, as the forge's webhook
-	// for it may arrive before the editor's own write.
+	baseEdits    []string
+	baseErr      error
+	brs          []ForgeBranch
+	brErr        error
+	// Runs after a title edit is made; the forge's webhook can arrive before the editor's own write.
 	afterTitleEdit func(title string)
-	// createAuthor opens pull requests (wp-bot when empty); afterCreate runs
-	// before CreatePR answers, as the forge's webhook usually does, and what
-	// it returns is CreatePR's error.
+	// afterCreate runs before CreatePR answers, as the forge's webhook usually does
 	createAuthor string
 	afterCreate  func(fp ForgePR) error
 
-	behind    map[string]bool // head sha → lacks the base's tip (forge_uptodate_test.go)
-	baseTip   string
-	tipReads  int    // BehindBase calls answered
-	tipThen   string // the base's tip from the second BehindBase on, when set
-	updates   []int  // pull requests whose branch was updated
-	updateErr error
-	// updateErrs: per pull request number, over updateErr.
+	behind     map[string]bool
+	baseTip    string
+	tipReads   int
+	tipThen    string
+	updates    []int
+	updateErr  error
 	updateErrs map[int]error
-	// onMerge runs inside MergePR, with sm held.
+	// Runs with the fake's lock held: set fields directly, don't call locking methods.
 	onMerge func()
-	hidden  map[string]bool   // commits a read of the base doesn't show yet (WP-316)
-	trees   map[string]string // commit sha → tree sha (merge_queue_test.go)
+	hidden  map[string]bool // Commits here are not yet visible to a read of the base (forge read lag).
+	trees   map[string]string
 
-	// merge_stack_test.go: mergeSHAs gives pull request n's merge commit
-	// (else 4e7ced0ffee), onMergeN runs inside MergePR with sm held,
-	// commitFn makes CommitFiles work, parents lists commits' parents.
+	// onMergeN runs inside MergePR with sm held
 	mergeSHAs map[int]string
 	onMergeN  func(n int)
 	commitFn  func(in CommitInput) (*ForgeCommit, error)
 	parents   map[string][]string
-	deleted   []string // branches deleted
-	// forge_union_test.go: a Forgejo that merges union files only once the
-	// branch holds the base's version of them.
+	deleted   []string
 	union     unionFake
-	cancelled []string // commits whose runs were cancelled
+	cancelled []string
 }
 
 // shippedHead is the commit wp ship says it pushed in the tests, and where the
@@ -279,13 +268,10 @@ func (g *shipForge) CommitChecks(ctx context.Context, f *Forge, repo, sha string
 	g.sm.Lock()
 	defer g.sm.Unlock()
 	out := slices.Clone(g.checks[sha])
-	// A test may store a forge's raw state ("skipped", "queued"); map it
-	// as the real client does. The Check* constants map to themselves.
 	for i := range out {
 		out[i].State = checkState(out[i].State)
 	}
-	// Waypoint's own status is among them, as on a real forge, posted by
-	// the account of its token (prForge.TokenLogin).
+	// Waypoint's own status is listed among the checks, posted by its token's account, as on a real forge
 	for i, st := range g.statuses[sha] {
 		out = append(out, CommitCheck{Name: st.Context, State: checkState(st.State), Source: "status", Creator: "waypoint-bot", ID: g.stamps[sha][i]})
 	}
@@ -320,7 +306,7 @@ func (g *shipForge) MergePR(ctx context.Context, f *Forge, repo string, pr *Forg
 	g.prs[mk(f, repo, pr.Number)].State = "merged"
 	g.prs[mk(f, repo, pr.Number)].MergeSHA = cmp(g.mergeSHAs[pr.Number], "4e7ced0ffee")
 	if g.onMerge != nil {
-		g.onMerge() // the base moves: set fields directly, sm is held
+		g.onMerge() // sm is held here, so onMerge sets fields directly rather than locking
 	}
 	if g.onMergeN != nil {
 		g.onMergeN(pr.Number)
@@ -358,7 +344,6 @@ func newShipEnv(t *testing.T, kind string) *shipEnv {
 	sg := newShipForge()
 	pe.s.Forges = sg
 	pe.fg = sg.prForge
-	// Same models as the review tests.
 	pe.llm.answers["opencode/muse-spark-1.3-contributor-free"] = oneFinding
 	return &shipEnv{prEnv: pe, sg: sg}
 }
@@ -421,7 +406,7 @@ func (se *shipEnv) watch(kinds ...string) *eventLog {
 }
 
 func (l *eventLog) all() []*Event {
-	time.Sleep(20 * time.Millisecond) // the collector goroutine
+	time.Sleep(20 * time.Millisecond) // Events are appended by a goroutine; wait so in-flight ones reach the list.
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return slices.Clone(l.list)
@@ -436,7 +421,6 @@ func TestReviewGateLifecycle(t *testing.T) {
 
 	se.pullHook("opened", testPR)
 	se.s.Wait()
-	// Pending while the review waits.
 	if st := se.sg.lastStatus("1111111aaaa"); st.Context != "waypoint/review" || st.State != "pending" || st.Description != "Review in progress" ||
 		!strings.Contains(st.TargetURL, "/agents?tab=pulls&pr=") {
 		t.Fatalf("first status = %+v", st)
@@ -444,7 +428,6 @@ func TestReviewGateLifecycle(t *testing.T) {
 	if done := se.drain(); len(done) != 1 || done[0].Status != "done" {
 		t.Fatalf("review: %+v", done)
 	}
-	// A high finding is above P2: the gate fails, naming it.
 	st := se.sg.lastStatus("1111111aaaa")
 	if st.State != "failure" || !strings.HasPrefix(st.Description, "1 open finding: P1 The nil check is inverted") {
 		t.Fatalf("status after review = %+v", st)
@@ -453,14 +436,12 @@ func TestReviewGateLifecycle(t *testing.T) {
 	if pr.GateState != "failure" || pr.gateOpen != 1 || pr.gateSHA != "1111111aaaa" {
 		t.Errorf("pull request = %+v", pr)
 	}
-	// The finding is linked to its comment and thread.
 	fs := se.findings(5)
 	if len(fs) != 1 || fs[0].threadID != "T1001" || fs[0].commentID != "1001" || fs[0].State != "open" || fs[0].headSHA != "1111111aaaa" {
 		t.Fatalf("findings = %+v", fs)
 	}
 
-	// A person resolves the thread on the forge; Forgejo sends no event, so
-	// the periodic check finds out.
+	// Forgejo sends no event for a resolved thread; only the periodic check sees it.
 	se.sg.resolve(0, "sam")
 	se.setClock(se.clockNow().Add(3 * time.Minute))
 	se.s.CheckGates(se.ctx)
@@ -475,7 +456,6 @@ func TestReviewGateLifecycle(t *testing.T) {
 	if h := hist[fs[0].ID]; len(h) != 1 || h[0].Kind != "forge" || h[0].By != "sam" || h[0].State != FindingResolved {
 		t.Errorf("history = %+v", h)
 	}
-	// Reopening the thread makes it block again.
 	se.sg.sm.Lock()
 	se.sg.threads[0].Resolved = false
 	se.sg.sm.Unlock()
@@ -483,8 +463,7 @@ func TestReviewGateLifecycle(t *testing.T) {
 	if st := se.sg.lastStatus("1111111aaaa"); st.State != "failure" {
 		t.Fatalf("reopened thread: %+v", st)
 	}
-	// Dismissing in Waypoint stops it blocking. An agent may, saying why
-	// (WP-128).
+	// An agent may dismiss a finding only with a note saying why
 	agent := agentActorFor(se.admin, "anthropic/claude-opus-5-5")
 	var ie *InvalidError
 	if _, err := se.s.DismissFinding(se.ctx, agent, fs[0].ID, " "); !errors.As(err, &ie) {
@@ -517,7 +496,6 @@ func TestReviewGateLifecycle(t *testing.T) {
 	if got, err := se.s.ReopenFinding(se.ctx, se.admin, fs[0].ID); err != nil || got.State != FindingOpen {
 		t.Fatalf("reopen: %+v %v", got, err)
 	}
-	// The gate's events: pending, failure, success, failure, success, failure.
 	var states []string
 	for _, e := range gateEvents.all() {
 		states = append(states, e.Data["state"].(string))
@@ -544,7 +522,7 @@ func agentActorFor(a *Actor, name string) *Actor {
 
 func TestReviewGateSeverityAndPrivateFindings(t *testing.T) {
 	se := newShipEnv(t, "forgejo")
-	se.gate("P1") // only critical and high
+	se.gate("P1")
 	se.sg.files[".forgejo/sync.toml"] = `private = ["deploy/**"]`
 	se.llm.answers["opencode/muse-spark-1.3-contributor-free"] = `{"findings":[
 		{"file":"app/login.go","line":11,"severity":"medium","claim":"Unchecked error from find.","suggestion":""},
@@ -552,7 +530,6 @@ func TestReviewGateSeverityAndPrivateFindings(t *testing.T) {
 	se.pullHook("opened", testPR)
 	se.drain()
 	st := se.sg.lastStatus("1111111aaaa")
-	// The critical one blocks, but its text stays off a status GitHub may get.
 	if st.State != "failure" || st.Description != "1 open finding: P0 (a private file)" {
 		t.Fatalf("status = %+v", st)
 	}
@@ -560,7 +537,6 @@ func TestReviewGateSeverityAndPrivateFindings(t *testing.T) {
 	if len(fs) != 2 {
 		t.Fatalf("findings = %d", len(fs))
 	}
-	// Dismiss the critical one: the medium is below the gate.
 	for _, f := range fs {
 		if f.Severity == "critical" {
 			if _, err := se.s.DismissFinding(se.ctx, se.admin, f.ID, ""); err != nil {
@@ -572,7 +548,6 @@ func TestReviewGateSeverityAndPrivateFindings(t *testing.T) {
 	if st := se.sg.lastStatus("1111111aaaa"); st.State != "success" || st.Description != "No blocking findings (1 below P1)" {
 		t.Fatalf("status = %+v", st)
 	}
-	// Severity can be read as P or as a word.
 	for _, in := range []string{"P0", "critical", " Medium "} {
 		if _, ok := parseSeverity(in); !ok {
 			t.Errorf("parseSeverity(%q)", in)
@@ -618,11 +593,9 @@ func TestReviewGateFailedAndOff(t *testing.T) {
 		se.drain()
 	}
 	se.s.Wait()
-	// A review that never ran isn't a pass.
 	if st := se.sg.lastStatus("1111111aaaa"); st.State != "failure" || !strings.Contains(st.Description, "didn't run") {
 		t.Fatalf("status = %+v", st)
 	}
-	// Switching the gate off takes a failing status down.
 	off := false
 	if err := se.s.SetRepoGate(se.ctx, se.admin, se.p.Key, se.repo.ID, &off, nil); err != nil {
 		t.Fatal(err)
@@ -638,7 +611,6 @@ func TestReviewGateFailedAndOff(t *testing.T) {
 	if repos[0].ReviewGate || repos[0].GateSeverity != "medium" {
 		t.Errorf("repo = %+v", repos[0])
 	}
-	// Only a project owner changes it.
 	viewer := se.user("vera", false)
 	on := true
 	if err := se.s.SetRepoGate(se.ctx, viewer, se.p.Key, se.repo.ID, &on, nil); err == nil {
@@ -656,8 +628,7 @@ func TestVerifyFixedFindings(t *testing.T) {
 	if st := se.sg.lastStatus("1111111aaaa"); st.State != "failure" {
 		t.Fatalf("first status = %+v", st)
 	}
-	// A push changes the file; the model says the finding is fixed.
-	// One answer for every call: no new findings, and the old one fixed.
+	// One model answer serves every call here: no new findings, and the old one fixed
 	se.llm.answers["opencode/muse-spark-1.3-contributor-free"] = `{"findings":[],"verdict":"fixed","reason":"The comparison is now ==."}`
 	pr := testPR
 	pr.HeadSHA = "2222222bbbb"
@@ -684,7 +655,6 @@ func TestVerifyFixedFindings(t *testing.T) {
 	if st := se.sg.lastStatus("2222222bbbb"); st.State != "success" {
 		t.Fatalf("status on the new head = %+v", st)
 	}
-	// The fixed finding no longer hides a look-alike if the problem comes back.
 	found, repeated, err := se.s.dropRepeated(se.ctx, se.pr(5).ID, []Finding{{File: "app/login.go", Line: 11, Severity: "high", Claim: "The nil check is inverted, so every login fails."}}, nil)
 	if err != nil || repeated != 0 || len(found) != 1 {
 		t.Errorf("a fixed finding still suppresses: %v %d %v", found, repeated, err)
@@ -720,7 +690,7 @@ func TestVerifyBoundsFailedModelCalls(t *testing.T) {
 
 func TestVerifyUnchangedAndForgejo(t *testing.T) {
 	se := newShipEnv(t, "forgejo")
-	se.sg.noResolv = true // no resolve API
+	se.sg.noResolv = true
 	se.gate("P2")
 	se.sg.fileAt["1111111aaaa:app/login.go"] = "same\n"
 	se.sg.fileAt["2222222bbbb:app/login.go"] = "same\n"
@@ -731,7 +701,6 @@ func TestVerifyUnchangedAndForgejo(t *testing.T) {
 	pr.HeadSHA = "2222222bbbb"
 	se.pullHook("synchronize", pr)
 	se.drain()
-	// The file didn't change: no model call to check it, the finding stays.
 	calls := se.llm.calls[before:]
 	for _, c := range calls {
 		_ = c
@@ -744,7 +713,6 @@ func TestVerifyUnchangedAndForgejo(t *testing.T) {
 			t.Errorf("an unchanged file was put to a model:\n%s", p)
 		}
 	}
-	// Changed, but the model can't tell: stays open; Forgejo can't resolve.
 	se.sg.fileAt["3333333cccc:app/login.go"] = "different\n"
 	se.llm.answers["opencode/muse-spark-1.3-contributor-free"] = `{"verdict":"unclear","reason":"Can't see the caller."}`
 	pr.HeadSHA = "3333333cccc"
@@ -753,7 +721,6 @@ func TestVerifyUnchangedAndForgejo(t *testing.T) {
 	if fs := se.findings(5); fs[0].State != FindingOpen || fs[0].checkedSHA != "3333333cccc" {
 		t.Fatalf("finding = %+v", fs[0])
 	}
-	// Fixed on Forgejo: a reply, but the thread stays unresolved there.
 	se.sg.fileAt["4444444dddd:app/login.go"] = "fixed\n"
 	se.llm.answers["opencode/muse-spark-1.3-contributor-free"] = `{"verdict":"fixed","reason":"Gone."}`
 	pr.HeadSHA = "4444444dddd"
@@ -771,7 +738,6 @@ func TestReviewSeesTheConversation(t *testing.T) {
 	se := newShipEnv(t, "github")
 	se.pullHook("opened", testPR)
 	se.drain()
-	// A person answers the finding, and another reviewer leaves a comment.
 	se.sg.reply(0, "sam", "This is deliberate: the caller checks.")
 	se.sg.sm.Lock()
 	se.sg.threads = append(se.sg.threads, ReviewThread{ID: "TX", Path: "app/login.go", Line: 12, Comments: []ThreadComment{{ID: "9", Author: "copilot-reviewer", Body: "Consider logging the user id here."}}})
@@ -782,7 +748,7 @@ func TestReviewSeesTheConversation(t *testing.T) {
 	pr.HeadSHA = "2222222bbbb"
 	se.pullHook("synchronize", pr)
 	n := len(se.llm.prompts)
-	// Sam's reply also queues an answer (which this test's model can't give).
+	// A reply also queues a reply run that this test's model can't answer, so only review runs are checked
 	var done []*BotRun
 	for _, r := range se.drain() {
 		if r.Kind == "review" {
@@ -804,7 +770,6 @@ func TestReviewSeesTheConversation(t *testing.T) {
 			t.Errorf("prompt lacks %q:\n%s", want, prompt)
 		}
 	}
-	// A new finding that restates another reviewer's open comment isn't posted.
 	if done[0].Summary == "" || !strings.Contains(done[0].Summary, "1 already raised") {
 		t.Errorf("summary = %q", done[0].Summary)
 	}
@@ -815,7 +780,6 @@ func TestAnswerReplies(t *testing.T) {
 	se.gate("P2")
 	se.pullHook("opened", testPR)
 	se.drain()
-	// A person replies in the bot's thread: a webhook says a comment came.
 	se.llm.answers["opencode/muse-spark-1.3-contributor-free"] = `{"action":"stand_by","reply":"find() returns nil when the user is unknown: see store.go:40."}`
 	cid := se.sg.reply(0, "sam", "No, find() never returns nil here.")
 	replyHook := func() {
@@ -835,16 +799,13 @@ func TestAnswerReplies(t *testing.T) {
 	if len(runs) != 1 || runs[0].Kind != "reply" || runs[0].Status != "done" {
 		t.Fatalf("runs = %+v", runs)
 	}
-	// The model stood by it with evidence.
 	if runs[0].Summary == "" {
 		t.Error("no summary")
 	}
-	// Triggering again without a new comment queues nothing.
 	replyHook()
 	if len(se.drain()) != 0 {
 		t.Error("answered the same comment twice")
 	}
-	// The thread now ends with the bot's answer.
 	th := se.sg.thread(0)
 	if last := th.Comments[len(th.Comments)-1]; !strings.Contains(last.Body, "<!-- waypoint-reply -->") {
 		t.Errorf("last comment = %q", last.Body)
@@ -876,7 +837,6 @@ func TestAnswerRepliesWithdrawAndResolved(t *testing.T) {
 		t.Errorf("status = %+v", st)
 	}
 
-	// A thread a person resolved is never argued again, even if they reply.
 	se2 := newShipEnv(t, "github")
 	se2.pullHook("opened", testPR)
 	se2.drain()
@@ -913,7 +873,6 @@ func TestThumbsDownDismisses(t *testing.T) {
 	se.gate("P2")
 	se.pullHook("opened", testPR)
 	se.drain()
-	// The bot's own 👍 doesn't count; a person's 👎 does.
 	se.sg.sm.Lock()
 	se.sg.reacts["1001"] = []Reaction{{Emoji: "+1", User: "waypoint-bot"}, {Emoji: "-1", User: "sam"}}
 	se.sg.sm.Unlock()

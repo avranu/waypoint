@@ -1,10 +1,6 @@
 package core
 
-// Usage marks (WP-196, WP-ADR39): commits that changed what agents are told — a
-// CLAUDE.md, an AGENTS.md, anything under .claude/ — on a repo's default
-// branch. The Trends tab draws them on its charts and offers them as the
-// pivot of a before/after comparison. Pushes record them as they arrive;
-// the forge's history fills in the ones from before, once per repo.
+// Records commits to a repo's default branch that change what agents are told (CLAUDE.md, AGENTS.md, anything under .claude/): pushes record them as they arrive, and the forge's history backfills earlier ones once per repo.
 
 import (
 	"context"
@@ -106,7 +102,7 @@ func (c *httpForgeClient) PathCommits(ctx context.Context, f *Forge, repo, p str
 			u = fmt.Sprintf("%s/repository/commits?path=%s&since=%s&per_page=100&page=%d", glProject(repo), q, url.QueryEscape(since.UTC().Format(time.RFC3339)), page)
 		case "github":
 			u = fmt.Sprintf("/repos/%s/commits?path=%s&since=%s&per_page=100&page=%d", repo, q, url.QueryEscape(since.UTC().Format(time.RFC3339)), page)
-		default: // Forgejo and Gitea: no since, and no file lists wanted
+		default:
 			u = fmt.Sprintf("/repos/%s/commits?path=%s&limit=100&page=%d&stat=false&files=false&verification=false", repo, q, page)
 		}
 		var list []struct {
@@ -218,7 +214,7 @@ func (s *Service) BackfillUsageMarks(ctx context.Context) {
 			}
 		}
 		if failed {
-			continue // tried again the next hour
+			continue
 		}
 		if _, err := s.db.W.ExecContext(ctx, `INSERT INTO server_settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
 			key, itoa64(s.nowMS())); err != nil {

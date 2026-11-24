@@ -1,10 +1,5 @@
 package core
 
-// Commit statuses and checks (WP-D21): Waypoint posts its own
-// `waypoint/review` status, reads the statuses and check runs on a pull
-// request's head to know whether CI passed, and keeps the tail of a failed
-// job's log for a bot that fixes CI.
-
 import (
 	"context"
 	"errors"
@@ -98,7 +93,7 @@ func checkState(s string) string {
 	case "failure", "error", "failed", "canceled", "cancelled", "timed_out", "action_required", "stale", "startup_failure":
 		return CheckFailed
 	}
-	return CheckPending // pending, running, queued, in_progress, created, waiting, …
+	return CheckPending
 }
 
 func (c *httpForgeClient) SetCommitStatus(ctx context.Context, f *Forge, repo, sha string, st CommitStatusPost) error {
@@ -226,8 +221,7 @@ func (c *httpForgeClient) commitChecks(ctx context.Context, f *Forge, repo, sha 
 		c.gitlabJobAuthors(ctx, f, repo, out, pipelines)
 		return out, nil
 	}
-	// Forgejo, Gitea and GitHub: the combined status lists the latest status
-	// of each context.
+	// The combined status gives only the latest status per context, so earlier statuses of the same context are not in this list.
 	size, per := "limit", 50
 	if f.Kind == "github" {
 		size, per = "per_page", 100
@@ -472,7 +466,7 @@ func (c *httpForgeClient) tailMarked(ctx context.Context, f *Forge, path string,
 	s := strings.ToValidUTF8(string(buf), "")
 	if total > int64(keep) {
 		if i := strings.IndexByte(s, '\n'); i >= 0 {
-			s = s[i+1:] // start on a whole line
+			s = s[i+1:]
 		}
 		s = "… (earlier output cut)\n" + s
 		for i, mark := range marks {
@@ -572,7 +566,7 @@ func (c *httpForgeClient) fgJobID(ctx context.Context, f *Forge, repo, sha strin
 		if !strings.EqualFold(m[1], repo) {
 			return "", 0, fmt.Errorf("%w: the check's job is in %s, not %s", ErrNotFound, m[1], repo)
 		}
-		repo = m[1] // as the forge spells it
+		repo = m[1]
 		index, _ := strconv.Atoi(m[3])
 		var list struct {
 			WorkflowRuns []fgRun `json:"workflow_runs"`

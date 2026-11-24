@@ -17,7 +17,7 @@ const ok = (c, m) => (c ? console.log("ok  ", m) : fail(m));
 const H = { "X-Waypoint-Client": "web" };
 
 // A fake GitHub that lists `repos` (per run) and has no issues.
-let current = []; // full names the forge lists
+let current = [];
 const gh = http.createServer((req, res) => {
   const send = (code, body) => {
     res.writeHead(code, { "Content-Type": "application/json" });
@@ -61,7 +61,6 @@ async function run(width) {
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL(base + "/");
 
-  // ---- automatic projects ask first ----
   const org = `org${tag}`;
   current = [
     ...Array.from({ length: 7 }, (_, i) => `${org}/repo${i}`),
@@ -87,9 +86,7 @@ async function run(width) {
   await picker.getByRole("checkbox", { name: "repo6" }).uncheck();
   await picker.getByRole("checkbox", { name: "notes" }).uncheck();
   ok(
-    await picker
-      .getByRole("button", { name: "Create 6 projects" })
-      .isVisible(),
+    await picker.getByRole("button", { name: "Create 6 projects" }).isVisible(),
     `${tag} unchecking three repos leaves 6 projects to make`,
   );
   await page.screenshot({ path: `${out}/picker-${width}.png` });
@@ -99,8 +96,7 @@ async function run(width) {
     (f) => f.name === `Forge ${tag}`,
   );
   ok(forge?.auto_projects, `${tag} automatic projects turned on after picking`);
-  const names = async () =>
-    (await api("GET", "/projects")).map((p) => p.name);
+  const names = async () => (await api("GET", "/projects")).map((p) => p.name);
   let have = await names();
   ok(
     have.includes(org) &&
@@ -109,11 +105,9 @@ async function run(width) {
       !have.includes("notes"),
     `${tag} only the picked repos got projects`,
   );
-  // Discovering again offers nothing: skipped repos stay skipped.
   const again = await api("GET", `/forges/${forge.id}/discover`);
   ok(again.length === 0, `${tag} skipped repos aren't offered again`);
 
-  // ---- recent first ----
   const proj = await api("POST", "/projects", { name: `Fresh ${tag}` });
   await api("POST", "/issues", { project: proj.key, title: "Recent work" });
   const sidebarNames = () =>
@@ -130,7 +124,6 @@ async function run(width) {
     );
   }
 
-  // ---- delete one from its menu ----
   if (desktop) {
     const row = page
       .locator("aside nav .group")
@@ -153,7 +146,6 @@ async function run(width) {
   await one.waitFor({ state: "detached" });
   ok(!(await names()).includes(`Fresh ${tag}`), `${tag} deleted one project`);
 
-  // ---- delete several ----
   await page.goto(base + "/");
   if (desktop) {
     await page.getByRole("button", { name: "Project actions" }).click();
@@ -164,8 +156,9 @@ async function run(width) {
   }
   const many = page.getByRole("dialog", { name: "Delete projects" });
   await many.waitFor();
-  // Checking the organisation checks its repos' projects too.
-  await many.getByRole("checkbox", { name: new RegExp(`\\b${org}\\b`) }).check();
+  await many
+    .getByRole("checkbox", { name: new RegExp(`\\b${org}\\b`) })
+    .check();
   await many.getByRole("checkbox", { name: /\brepo4\b/ }).uncheck();
   await page.screenshot({ path: `${out}/delete-many-${width}.png` });
   await many.getByRole("button", { name: "Delete 5…" }).click();
@@ -174,12 +167,9 @@ async function run(width) {
   await sure.waitFor({ state: "detached" });
   have = await names();
   ok(
-    !have.includes(org) &&
-      !have.includes("repo0") &&
-      have.includes("repo4"),
+    !have.includes(org) && !have.includes("repo0") && have.includes("repo4"),
     `${tag} deleted the organisation and four of its repos, kept repo4 (${have})`,
   );
-  // Deleted projects' repos don't come back.
   const after = await api("GET", `/forges/${forge.id}/discover`);
   ok(after.length === 0, `${tag} deleted projects' repos aren't offered again`);
   ok(

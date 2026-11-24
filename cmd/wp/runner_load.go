@@ -14,35 +14,7 @@ import (
 	"time"
 )
 
-// The runner takes as many jobs as its machine has room for (WP-366,
-// WP-ADR27). --max-jobs is the ceiling, but for one heavy job that waits
-// for a test slot (yieldingJobs); between it and one, a governor
-// watches the machine (load, CPU, memory and disk pressure) and:
-//   - calm: allows one more heavy job when the ones allowed are all running
-//     and nothing changed for a couple of minutes (a job's load comes a
-//     while after it starts);
-//   - busy: no more heavy jobs than are running;
-//   - overloaded: one job at a time, of any kind (running ones carry on).
-//
-// Light jobs (reviews, audits; core.JobLane) mostly wait on
-// a model and have a lane beside the heavy one, as wide as the heavy limit
-// and at least lightSlots: a machine that holds builds to one still runs a
-// few audits at once (WP-761). The jobs of
-// a request a person approved (a command they ran, a change; the server
-// says so at the claim) are short and the person is watching, so they have
-// requestSlots of their own beside --max-jobs that the governor never holds
-// (WP-503). An inbox message (a review's compaction, a keep-warm ping) types
-// a line into a session and is done in a second, so messages have
-// messageSlots of their own too, shared with nothing and never held, and a
-// session never waits at full context behind audits, builds or a busy
-// machine (WP-886). An audit through the LLM gateway clones, packs and
-// then only asks how the gateway's agent goes, for up to hours: it has
-// gatewaySlots of its own beside --max-jobs, never held, so two of them no
-// longer fill the light lane for hours while the machine sits calm
-// (WP-1064). From what it saw in past weeks, it also allows fewer heavy jobs during and just
-// before the hours the machine is usually busy with other work, but not once
-// the machine has measured calm for growAfter: lasting calm is taken as it is
-// (WP-1618).
+// The governor holds only the heavy and light lanes; request, message and gateway slots are never held, so a session's message never waits behind builds or audits.
 
 const (
 	laneHeavy   = "heavy"
@@ -51,13 +23,13 @@ const (
 	laneMessage = "message"
 	laneGateway = "gateway"
 
-	requestSlots = 2 // core.RequestLaneSlots
-	messageSlots = 8 // core.MessageLaneSlots
-	gatewaySlots = 6 // core.GatewayLaneSlots: as many as the gateway runs of Waypoint's at once
-	lightSlots   = 3 // the light lane's least width, within --max-jobs and leaving a heavy job room
+	requestSlots = 2 // Mirrors core.RequestLaneSlots; the two must stay equal.
+	messageSlots = 8 // Mirrors core.MessageLaneSlots; the two must stay equal.
+	gatewaySlots = 6 // Mirrors core.GatewayLaneSlots (GatewayTasksInFlight); the two must stay equal.
+	lightSlots   = 3
 
-	loadEvery = 15 * time.Second // how often the governor looks
-	growAfter = 2 * time.Minute  // calm this long, and this long since the last change or heavy start, before one more
+	loadEvery = 15 * time.Second
+	growAfter = 2 * time.Minute
 )
 
 // jobLane is core.JobLane: the lane a job of this kind runs in.
@@ -140,16 +112,16 @@ func classify(s loadSample) (string, string) {
 type governor struct {
 	mu        sync.Mutex
 	max       int
-	limit     int // heavy jobs at once, 1..max
+	limit     int
 	level     string
 	reason    string
 	last      loadSample
 	calmSince time.Time
-	changed   time.Time // limit last changed
-	started   time.Time // last heavy job started
-	capped    int       // from the profile, while the machine isn't calm; 0 none
+	changed   time.Time
+	started   time.Time
+	capped    int
 	capWhy    string
-	calmOver  string // the profile's cap that a calm machine isn't held to, for the status
+	calmOver  string
 	profile   *loadProfile
 }
 
@@ -190,10 +162,7 @@ func (g *governor) observe(s loadSample, now time.Time, heavy int) string {
 	if g.limit != wasLimit {
 		g.changed = now
 	}
-	// What the machine does now outranks what it usually does (WP-1618,
-	// WP-ADR149): the profile caps heavy jobs unless the machine has been
-	// calm for growAfter. Lasting calm means nothing else is using it,
-	// whatever the hour says; one calm sample between busy ones doesn't.
+	// The live state outranks the hour profile: the profile's cap lifts only after growAfter of lasting calm, so one calm sample between busy ones doesn't lift it.
 	g.capped, g.capWhy, g.calmOver = 0, "", ""
 	if g.profile != nil && s.CPUs > 0 {
 		if busy, ok := g.profile.predict(now); ok {
@@ -207,8 +176,6 @@ func (g *governor) observe(s loadSample, now time.Time, heavy int) string {
 				g.capWhy = fmt.Sprintf("other work usually uses %.1f of %d CPUs about now", busy, s.CPUs)
 			}
 			if g.capped > 0 && level == levelCalm && now.Sub(g.calmSince) >= growAfter {
-				// Said in the status, so the times the usual limit
-				// gave way can be seen (audit 1406.6).
 				g.calmOver = fmt.Sprintf("%s, but the machine is calm, so the usual limit of %d isn't applied", g.capWhy, g.capped)
 				g.capped, g.capWhy = 0, ""
 			}
@@ -303,8 +270,6 @@ func (g *governor) report(now time.Time, heavy, light, gw int) map[string]any {
 
 func round2(v float64) float64 { return math.Round(v*100) / 100 }
 
-// ---- the profile: how busy the machine usually is, hour by hour ----
-
 // loadProfile learns how many CPUs other work (everything but this runner
 // and its jobs) keeps busy at each hour of the week, from the busiest tenth
 // of each hour's looks, smoothed over the weeks. An hour of the week it
@@ -314,7 +279,7 @@ type loadProfile struct {
 	path  string
 	Week  [168]profileHour `json:"week"` // Monday 00:00 first, local time
 	Day   [24]profileHour  `json:"day"`
-	hour  time.Time        // the hour being collected
+	hour  time.Time
 	looks []float64
 }
 
@@ -323,7 +288,7 @@ type profileHour struct {
 	Busy float64 `json:"busy"` // CPUs other work kept busy (90th percentile)
 }
 
-const profileMinLooks = 20 // about five minutes of looks make an hour count
+const profileMinLooks = 20
 
 func weekHour(t time.Time) int { return (int(t.Weekday())+6)%7*24 + t.Hour() }
 
@@ -421,7 +386,7 @@ func (p *loadProfile) busyHours(now time.Time, cpus int) []time.Time {
 // can't (the runner then takes up to --max-jobs).
 type loadMeter interface{ sample() loadSample }
 
-var newLoadMeterFn = newLoadMeter // tests
+var newLoadMeterFn = newLoadMeter
 
 // maxRunnerJobs is core.MaxRunnerJobs: the most --max-jobs allows.
 const maxRunnerJobs = 16
@@ -510,8 +475,6 @@ func (p *runnerProc) slotsNow() ([]string, int) {
 	if len(lanes) == 0 {
 		return lanes, 0
 	}
-	// Only the lanes asked for count: with heavy and light closed (the
-	// governor holds them) just the request lane's open slots are free.
 	free := 0
 	if slices.Contains(lanes, laneHeavy) || slices.Contains(lanes, laneLight) {
 		free += max(p.opts.MaxJobs-heavy-light, 0)

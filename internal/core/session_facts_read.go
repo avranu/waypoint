@@ -1,11 +1,6 @@
 package core
 
-// Reading the session facts (WP-1467): what a session, or a task's share of
-// one, did, counted from the fact_* rows. The same access as the raw
-// transcript: a person reads their own sessions, an admin anyone's, and an
-// agent's token reads none (the facts hold paths and commands). A value the
-// transcript did not carry is counted as unknown, never as 0; what is worked out
-// from timing rather than read is labelled inferred.
+// a value the transcript did not carry counts as unknown, never 0; a figure worked out from timing is labelled inferred
 
 import (
 	"context"
@@ -281,7 +276,6 @@ func (s *Service) SessionFacts(ctx context.Context, actor *Actor, q FactsQuery) 
 		scopes = []factScope{sc}
 	} else {
 		out.Scope, out.Key = "task", q.Task
-		// the task must be one the actor may read, whoever's traces it has
 		iss, _, err := s.getIssueFor(ctx, s.db.R, actor, strings.ToUpper(q.Task), RoleViewer, false)
 		if err != nil {
 			return nil, err
@@ -312,8 +306,6 @@ func (s *Service) SessionFacts(ctx context.Context, actor *Actor, q FactsQuery) 
 			}
 			from := t.Started
 			var to *int64
-			// The window ends where the session's next trace (of any task)
-			// begins; with none, at its own end when it has one, else it is open.
 			for _, n := range starts[k] {
 				if n > t.Started && (to == nil || n < *to) {
 					v := n
@@ -417,8 +409,6 @@ func (s *Service) factsStatus(ctx context.Context, scopes []factScope, st *Facts
 		if has && derived.Valid && (!current || failed || derived.Int64 < end) {
 			st.FilesEarlierRows++
 		}
-		// What the parser did not understand: only from a last attempt that
-		// succeeded with the current parser; a failed attempt's counts are old.
 		if !current || failed || !derived.Valid {
 			continue
 		}
@@ -667,7 +657,6 @@ func (s *Service) factsCount(ctx context.Context, scopes []factScope, o *Session
 	if err != nil {
 		return err
 	}
-	// a NULL name is its own entry, not merged with an empty one
 	type ik struct {
 		kind, ftype, name string
 		noName            bool

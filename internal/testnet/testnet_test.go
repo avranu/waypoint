@@ -41,8 +41,6 @@ func TestGuardRefusesOnlyWhatLeavesTheMachine(t *testing.T) {
 	if _, err := http.Get("https://api.github.com/"); !errors.Is(err, ErrRefused) {
 		t.Errorf("a real host: %v", err)
 	}
-	// A reserved name is refused without being recorded; a real one is
-	// recorded once, whatever search domains the resolver tries it with.
 	for _, name := range []string{"git.example.com", "wp1065-nowhere.nohost-wp.org"} {
 		if _, err := net.DefaultResolver.LookupHost(context.Background(), name); err == nil {
 			t.Errorf("%s resolved", name)
@@ -127,7 +125,6 @@ func TestEveryPackageIsGuarded(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		// The call in a TestMain, not just a mention of it.
 		src := string(b)
 		if (strings.Contains(src, "func TestMain(") && (strings.Contains(src, "testnet.Run(m)") || strings.Contains(src, "testnet.Guard()"))) || dir == filepath.Join("internal", "testnet") {
 			guarded[dir] = true

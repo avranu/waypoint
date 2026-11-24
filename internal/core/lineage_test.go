@@ -12,8 +12,6 @@ func TestLineageChainsAndHolds(t *testing.T) {
 	e := newEnv(t)
 	p := e.project(e.admin, "Line", "")
 	n := 0
-	// in is an agent working in a session of its own, holding task (if any)
-	// or bound to it by WP_TASK (bind).
 	in := func(agent, task string, bind bool) *Actor {
 		t.Helper()
 		n++
@@ -54,7 +52,6 @@ func TestLineageChainsAndHolds(t *testing.T) {
 		t.Errorf("a person's task has a lineage: %+v", l)
 	}
 
-	// Agent A, working on the person's task, files one: depth 1, cleared.
 	a := in("anthropic/claude-opus-5-5", person.Key, false)
 	t1 := e.issue(a, IssueInput{Project: p.Key, Title: "Cache the board query", Agent: "claude"})
 	release(a, person.Key)
@@ -67,16 +64,13 @@ func TestLineageChainsAndHolds(t *testing.T) {
 		t.Fatalf("t1 safety = %+v", d1.Safety)
 	}
 
-	// Agent B, working on t1 (an agent's, unreviewed), files one: depth 2,
-	// which a model screens (WP-837: holding from depth 2 held too much).
 	llm := &fakeLLM{answer: `{"flags": [], "reason": ""}`}
 	e.s.LLM = llm
 	if err := e.s.EnsureDefaultAI(e.ctx, "http://opencode:4096", "", "opencode/big-pickle"); err != nil {
 		t.Fatal(err)
 	}
 	e.s.bg.Wait()
-	// B also takes the person's task: the deepest task its session holds
-	// counts, not the latest taken.
+	// A session's depth is the deepest task it holds, not the latest one taken.
 	b := in("anthropic/claude-sonnet-5-5", t1.Key, false)
 	if _, err := e.s.AgentTake(e.ctx, b, person.Key, ""); err != nil {
 		t.Fatal(err)
@@ -100,8 +94,6 @@ func TestLineageChainsAndHolds(t *testing.T) {
 		t.Errorf("is:held = %v", got)
 	}
 
-	// A session bound to t2 by WP_TASK, without taking it, writes at depth 3:
-	// held by the rule, with no model asked.
 	c := in("anthropic/claude-haiku-5-5", t2.Key, true)
 	asked := len(llm.prompts)
 	t3 := e.issue(c, IssueInput{Project: p.Key, Title: "Drop the old index"})
@@ -109,7 +101,6 @@ func TestLineageChainsAndHolds(t *testing.T) {
 	if got := depth(t3.Key); got != 3 {
 		t.Fatalf("t3 depth = %d", got)
 	}
-	// The stored reason names no task: whoever can open t3 may not see t2.
 	if d := e.get(e.admin, t3.Key); d.Lineage == nil || !d.Lineage.Held || d.Safety == nil || d.Safety.Verdict != SafetyHold ||
 		strings.Contains(d.Safety.Reason, t2.Key) || !strings.Contains(d.Safety.Reason, "depth 3") {
 		t.Fatalf("t3 = %+v / %+v", d.Lineage, d.Safety)
@@ -121,7 +112,6 @@ func TestLineageChainsAndHolds(t *testing.T) {
 		t.Errorf("is:held = %v", got)
 	}
 
-	// A person's review up the chain shortens every chain below it.
 	if _, err := e.s.Review(e.ctx, e.admin, ReviewIssue, t1.Key, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -131,8 +121,6 @@ func TestLineageChainsAndHolds(t *testing.T) {
 	if got := depth(t3.Key); got != 2 {
 		t.Errorf("t3 depth after t1's review = %d", got)
 	}
-	// The review screens the tasks below it again: t3, at depth 2 now, is
-	// cleared by the model and no longer listed as held.
 	e.s.bg.Wait()
 	if d := e.get(e.admin, t3.Key); d.Safety == nil || d.Safety.Verdict != SafetyClear {
 		t.Errorf("t3 after the chain was reviewed: %+v", d.Safety)
@@ -141,8 +129,7 @@ func TestLineageChainsAndHolds(t *testing.T) {
 		t.Errorf("is:held after the review = %v", got)
 	}
 
-	// An agent editing t3 from a shallower task doesn't shorten its chain;
-	// one editing its own task keeps it.
+	// An edit from a shallower task never shortens a task's chain; editing from its own task keeps it.
 	a2 := in("anthropic/claude-opus-5-5", person.Key, false)
 	desc := "Drop it after the new one is live."
 	if _, err := e.s.UpdateIssue(e.ctx, a2, t3.Key, IssuePatch{Description: &desc}); err != nil {
@@ -151,7 +138,6 @@ func TestLineageChainsAndHolds(t *testing.T) {
 	if got := depth(t3.Key); got != 2 {
 		t.Errorf("t3 depth after a shallower edit = %d", got)
 	}
-	// Nor does one at the same depth redirect it: t2 (depth 1 now) keeps t1.
 	desc2 := "An index on (project, status)."
 	if _, err := e.s.UpdateIssue(e.ctx, a2, t2.Key, IssuePatch{Description: &desc2}); err != nil {
 		t.Fatal(err)
@@ -161,8 +147,6 @@ func TestLineageChainsAndHolds(t *testing.T) {
 	}
 	release(a2, person.Key)
 
-	// Someone t3 alone is shared with sees the depth of the tasks up its
-	// chain, not which they are or who wrote them; its reason names none.
 	sam := e.user("sam", false)
 	if err := e.s.ShareIssue(e.ctx, e.admin, t3.Key, "sam", "viewer"); err != nil {
 		t.Fatal(err)
@@ -174,18 +158,15 @@ func TestLineageChainsAndHolds(t *testing.T) {
 		t.Errorf("t3's reason names t2: %s", d.Safety.Reason)
 	}
 
-	// Deleting a task up the chain keeps the depth it had then.
 	if err := e.s.DeleteIssue(e.ctx, e.admin, t2.Key, false); err != nil {
 		t.Fatal(err)
 	}
-	// t2 was at depth 2 when t3 was written: that stands in for the chain,
-	// which can't be read again (t1's later review doesn't shorten it).
+	// Once a task up the chain is deleted, its stored depth at write time stands in; later reviews don't shorten it.
 	d3 := e.get(e.admin, t3.Key)
 	if d3.Lineage == nil || d3.Lineage.Depth != 3 || len(d3.Lineage.Chain) != 1 || !d3.Lineage.Chain[0].Gone || d3.Lineage.Chain[0].Depth != 2 {
 		t.Errorf("t3 lineage after t2's deletion = %+v", d3.Lineage)
 	}
 
-	// A person rewriting it makes it theirs: no chain.
 	title := "Drop the old board index"
 	if _, err := e.s.UpdateIssue(e.ctx, e.admin, t3.Key, IssuePatch{Title: &title}); err != nil {
 		t.Fatal(err)

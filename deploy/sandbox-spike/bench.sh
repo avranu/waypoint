@@ -1,13 +1,5 @@
 #!/usr/bin/env bash
-# bench.sh WORKLOAD PHASE: one build/test workload for the WP-287 Phase 0 spike
-# (WP-417). The same script runs bare on the host and inside the VM, so the two
-# timings compare like for like.
-#
-#   WORKLOAD  waypoint (make check) | node (npm ci && npm test)
-#   PHASE     warmup (fills module and npm caches, untimed in the report) | timed
-#
-# Prints "SPIKE_RESULT key value" lines on stdout; the full log goes to
-# $HOME/bench-WORKLOAD-PHASE.log.
+# The same script runs bare and in the VM, so the two timings compare like for like.
 set -u
 
 workload=${1:?workload}
@@ -29,9 +21,7 @@ esac
 log=$HOME/bench-$workload-$phase.log
 secs() { awk -v a="$1" -v b="$(date +%s.%N)" 'BEGIN{printf "%.1f", b-a}'; }
 
-# make check timed per target, so a slow part (say govulncheck over the VM's
-# user-mode network) shows. golangci-lint's own cache is emptied first: each VM
-# starts without one, and the bare runs must too.
+# golangci-lint's cache is emptied first, so bare runs start cold like each VM.
 if [ "$workload/$phase" = waypoint/timed ]; then
 	rm -rf "$HOME/.cache/golangci-lint"
 	start=$(date +%s.%N)

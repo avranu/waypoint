@@ -251,8 +251,6 @@ func validatePassword(p string) error {
 	return nil
 }
 
-// ---- passwords ----
-
 const (
 	argonTime    = 2
 	argonMemory  = 19 * 1024
@@ -299,8 +297,6 @@ var dummyHash = sync.OnceValue(func() string { return HashPassword("not-a-real-p
 // unknown user takes no longer than later ones. The server calls it at start.
 func WarmLogin() { dummyHash() }
 
-// ---- tokens ----
-
 func newToken(prefix string) string {
 	b := make([]byte, 32)
 	rand.Read(b)
@@ -311,8 +307,6 @@ func hashToken(tok string) string {
 	sum := sha256.Sum256([]byte(tok))
 	return hex.EncodeToString(sum[:])
 }
-
-// ---- sessions ----
 
 const sessionTTL = 60 * 24 * time.Hour
 
@@ -336,9 +330,7 @@ func (s *Service) createSession(ctx context.Context, userID int64, userAgent, ip
 	if len(userAgent) > 300 {
 		userAgent = userAgent[:300]
 	}
-	// The person just typed their password, so the session starts
-	// re-authenticated (WP-418): loosening the sandbox right after signing
-	// in asks for nothing more.
+	// A password login starts its session already re-authenticated (reauth_at is set), so loosening the sandbox right after sign-in asks nothing more.
 	_, err := s.db.W.ExecContext(ctx, `INSERT INTO sessions(token_hash, user_id, created_at, last_seen_at, expires_at, user_agent, ip, reauth_at)
 		VALUES (?,?,?,?,?,?,?,?)`, hashToken(tok), userID, now, now, now+sessionTTL.Milliseconds(), userAgent, ip, now)
 	return tok, err
@@ -370,7 +362,6 @@ func (s *Service) SessionUser(ctx context.Context, tok string) (*User, error) {
 	if err != nil || u.Disabled {
 		return nil, ErrUnauthorized
 	}
-	// Touch at most every 10 minutes to keep writes rare.
 	if now-lastSeen > 10*60*1000 {
 		if _, err := s.db.W.ExecContext(ctx, `UPDATE sessions SET last_seen_at = ?, expires_at = ? WHERE token_hash = ?`, now, now+sessionTTL.Milliseconds(), h); err != nil {
 			s.log.WarnContext(ctx, "best-effort write failed", "err", err)
@@ -384,8 +375,6 @@ func (s *Service) Logout(ctx context.Context, tok string) error {
 	_, err := s.db.W.ExecContext(ctx, `DELETE FROM sessions WHERE token_hash = ?`, hashToken(tok))
 	return err
 }
-
-// ---- API tokens ----
 
 // APIToken describes a personal access token (never the secret itself).
 type APIToken struct {
@@ -513,7 +502,7 @@ func (s *Service) apiToken(ctx context.Context, actor *Actor, id int64) (*APITok
 
 // apiTokens lists the actor's tokens, or just token id when it isn't 0.
 func (s *Service) apiTokens(ctx context.Context, actor *Actor, id int64) ([]APIToken, error) {
-	if actor.Restricted() { // a read-only token may list them; a permission token may not
+	if actor.Restricted() {
 		return nil, actor.canManageTokens()
 	}
 	rows, err := s.db.R.QueryContext(ctx, `SELECT id, name, prefix, read_only, agent, permissions, created_at, last_used_at, expires_at
@@ -611,9 +600,7 @@ func (s *Service) tokenActor(ctx context.Context, hash string, tokenID int64, to
 	}
 	ps := permissionSet(parsePermissions(perms))
 	if ps != nil && agent == "" {
-		// A permission token always acts as an agent (WP-111): its writes
-		// are marked as an agent's, it never sees drafts, and the guards
-		// that keep agents off approved notes and locked terms apply.
+		// A permission token writes as agent token/NAME; the agent guards apply through Permissions either way.
 		agent = "token/" + name
 	}
 	a := &Actor{User: u, ReadOnly: ro, Agent: agent, Permissions: ps, TokenID: id, RunnerJob: job.Int64}
@@ -621,15 +608,13 @@ func (s *Service) tokenActor(ctx context.Context, hash string, tokenID int64, to
 		if a.scope, err = s.jobScope(ctx, job.Int64, u); err != nil {
 			return nil, err
 		}
-		// Never an admin, even where code reads the flag itself.
+		// Job actors get a copy of the user with IsAdmin cleared, for code that reads the flag directly rather than through isAdmin().
 		nu := *u
 		nu.IsAdmin = false
 		a.User = &nu
 	}
 	return a, nil
 }
-
-// ---- invites and password resets ----
 
 // UserLink is a one-time invite or password reset link.
 type UserLink struct {
@@ -879,7 +864,6 @@ func (s *Service) ResetPassword(ctx context.Context, tok, password string) error
 		if err := dropPushSubscriptions(ctx, t, uid.Int64); err != nil {
 			return err
 		}
-		// This link and any other outstanding reset link for the account.
 		_, err = t.ExecContext(ctx, `UPDATE user_links SET used_at = ? WHERE used_at IS NULL AND (token_hash = ? OR (user_id = ? AND kind = 'reset'))`,
 			now, hashToken(tok), uid.Int64)
 		return err
@@ -906,8 +890,6 @@ func (s *Service) ChangePassword(ctx context.Context, actor *Actor, oldPW, newPW
 		if _, err := t.ExecContext(ctx, `UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?`, HashPassword(newPW), now, u.ID); err != nil {
 			return err
 		}
-		// A new password ends every other session, push subscription and
-		// pending reset link (this browser can subscribe again).
 		if _, err := t.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ? AND token_hash != ?`, u.ID, actor.session); err != nil {
 			return err
 		}
@@ -1167,13 +1149,11 @@ func (s *Service) UpdateUser(ctx context.Context, actor *Actor, id int64, p User
 			}
 			return nil, err
 		}
-		// Disabling signs the person out everywhere.
 		if p.Disabled != nil && *p.Disabled {
 			if _, err := s.db.W.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, u.ID); err != nil {
 				return nil, err
 			}
 		}
-		// What an admin changed about someone's access, for the record.
 		var changes []string
 		if p.IsAdmin != nil && *p.IsAdmin != u.IsAdmin {
 			changes = append(changes, map[bool]string{true: "made " + u.Name() + " an admin", false: "removed " + u.Name() + "'s admin access"}[*p.IsAdmin])
@@ -1204,8 +1184,6 @@ func (s *Service) DeleteUser(ctx context.Context, actor *Actor, id int64) error 
 		return invalid("you cannot delete yourself")
 	}
 	return s.write(ctx, actor, func(t *tx) error {
-		// Projects only this user owned pass to the admin deleting them, so
-		// none is left without an owner.
 		if actor.id() != 0 {
 			if _, err := t.ExecContext(ctx, `INSERT INTO project_members(project_id, user_id, role, created_at)
 				SELECT m.project_id, ?, 'owner', ? FROM project_members m
@@ -1224,7 +1202,7 @@ func (s *Service) DeleteUser(ctx context.Context, actor *Actor, id int64) error 
 		}
 		detail := "deleted the account; their issues stay"
 		if s.cfg.TranscriptDir != "" {
-			// a promise of what dispatch does next; if it fails, that has its own entry
+			// The audit detail promises dispatch's next step; if that fails, it gets its own audit entry.
 			detail += "; their archived transcripts are removed from the disk next"
 		}
 		t.audit(AuditEntry{Action: "user.delete", Category: AuditAccess, TargetType: "user", TargetID: id, Target: name, Detail: detail})
@@ -1232,8 +1210,6 @@ func (s *Service) DeleteUser(ctx context.Context, actor *Actor, id int64) error 
 		return nil
 	})
 }
-
-// ---- avatars ----
 
 const maxAvatarBytes = 2 << 20
 
@@ -1286,8 +1262,6 @@ func sniffImage(b []byte) string {
 	}
 	return ""
 }
-
-// ---- bootstrap ----
 
 // UserCount returns how many accounts exist.
 func (s *Service) UserCount(ctx context.Context) (int, error) {

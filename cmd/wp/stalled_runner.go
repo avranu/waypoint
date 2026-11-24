@@ -71,14 +71,14 @@ func (p *runnerProc) lookStalled(ctx context.Context, w *stallWatcher, lastErr *
 	jobs = w.look(t, os.Stat)
 	if len(jobs) > stalledPerReport {
 		for _, j := range jobs[stalledPerReport:] {
-			w.unreport(j) // the next look's report
+			w.unreport(j)
 		}
 		jobs = jobs[:stalledPerReport]
 	}
 	settled := w.settled
 	w.settled = nil
 	if w.policy < 2 {
-		settled = nil // an older Waypoint keeps no spells
+		settled = nil
 	}
 	if len(jobs) == 0 && len(settled) == 0 {
 		return
@@ -139,7 +139,7 @@ func (p *runnerProc) probeStallPolicy(ctx context.Context, w *stallWatcher) {
 	var ans stalledAnswer
 	if err := p.c.callInto(ctx, "POST", "/api/v1/runner/stalled-jobs", map[string]any{"runner": p.id, "jobs": []stalledJob{}, "v": 2}, &ans); err != nil {
 		if !isBadRequest(err) && !isNotFound(err) {
-			w.probed = w.probed.Add(stallAgainMax - stallProbeEvery) // not reached: ask again sooner
+			w.probed = w.probed.Add(stallAgainMax - stallProbeEvery) // A transient probe failure asks again in 15 minutes, not an hour.
 		}
 		return
 	}

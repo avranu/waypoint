@@ -1,7 +1,4 @@
-// The assistant's schedules (WP-ADR1): Hermes's cron jobs, which run a
-// prompt on a schedule and send the answer somewhere. The list stays live
-// through the live stream's cron.changed; Run now runs inside its request,
-// so it shows as running until Hermes answers, and the page stays usable.
+// The list refreshes on cron.changed from the live stream; Run now's request stays open until Hermes answers.
 
 import { useMemo, useState } from 'react'
 import { useNavigate, useSearch } from '@tanstack/react-router'

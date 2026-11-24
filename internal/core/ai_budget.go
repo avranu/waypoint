@@ -45,7 +45,7 @@ type keyUsageLLM interface {
 // Nothing was sent, so callers don't count it as a failed try.
 type aiWaitError struct {
 	until time.Time
-	why   string // quota, busy, surplus (no spare capacity for optional work, WP-906)
+	why   string // surplus: no spare capacity for optional work
 }
 
 func (e *aiWaitError) Error() string {
@@ -65,8 +65,8 @@ func (e *aiWaitError) Unwrap() error { return &InvalidError{Msg: e.Error()} }
 // aiBudget is what the Service knows of the gateway's waits.
 type aiBudget struct {
 	mu     sync.Mutex
-	parked map[int64]aiPark     // the key's day, by provider
-	busy   map[askPark]busyPark // a request's candidates, by what it asked for
+	parked map[int64]aiPark
+	busy   map[askPark]busyPark
 }
 
 type aiPark struct{ until, checked time.Time }
@@ -82,12 +82,12 @@ type aiPark struct{ until, checked time.Time }
 type askPark struct {
 	pid      int64
 	names    string
-	priority string // "" or prioritySurplus
+	priority string
 }
 
 type busyPark struct {
 	until time.Time
-	task  string // the AI task that met it, for what the screen waits on
+	task  string
 }
 
 // nextUTCMidnight is when the gateway's day resets.
@@ -303,7 +303,7 @@ func (s *Service) keyHasRoom(ctx context.Context, pid int64) bool {
 func (s *Service) screenAIWait(ctx context.Context) *aiWaitError {
 	chain, err := s.taskChain(ctx, "task_safety")
 	if err != nil || len(chain) == 0 {
-		return nil // runAI says what is wrong
+		return nil
 	}
 	pids := map[int64]bool{}
 	for _, cm := range chain {
@@ -316,7 +316,7 @@ func (s *Service) screenAIWait(ctx context.Context) *aiWaitError {
 	b := &s.aib
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	var first *aiWaitError // the earliest any of them may be asked again
+	var first *aiWaitError
 	for pid := range pids {
 		w := &aiWaitError{why: "quota"}
 		if pk, ok := b.parked[pid]; ok && now.Before(pk.until) {
@@ -330,7 +330,7 @@ func (s *Service) screenAIWait(ctx context.Context) *aiWaitError {
 			}
 		}
 		if w.until.IsZero() {
-			return nil // this provider may be asked
+			return nil
 		}
 		if first == nil || w.until.Before(first.until) {
 			first = w

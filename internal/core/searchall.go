@@ -11,9 +11,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/wql"
 )
 
-// Search everything (WP-D10): issues, pages, comments, glossary entries
-// and design notes in one call, grouped by kind.
-
 // SearchKinds are what SearchAll covers, in the order groups are returned.
 var SearchKinds = []string{KIssue, KRequest, KDesign, KGlossary, KPage, "comment"}
 
@@ -113,7 +110,6 @@ func ParseKinds(list []string) ([]string, error) {
 	if len(out) == 0 {
 		return slices.Clone(SearchKinds), nil
 	}
-	// Keep the standard order.
 	slices.SortFunc(out, func(a, b string) int { return slices.Index(SearchKinds, a) - slices.Index(SearchKinds, b) })
 	return out, nil
 }
@@ -131,8 +127,6 @@ func (s *Service) SearchAll(ctx context.Context, actor *Actor, q AllQuery) (*All
 	if err != nil {
 		return nil, err
 	}
-	// Codes (R-28, API:R-28, ADR7, page #60) are found as what they name,
-	// then as text that writes them, then as the words they are.
 	numbered, text2 := numberedSearchRefs(text)
 	codes, rest := parseSearchCodes(text2)
 	parsed, err := wql.Parse(rest)
@@ -183,8 +177,6 @@ func (s *Service) SearchAll(ctx context.Context, actor *Actor, q AllQuery) (*All
 		if r != nil {
 			exact = append(exact, s.hitOf(ctx, *r))
 		}
-		// "request #3" finds what R-3 does: every request numbered 3 the
-		// actor can see, even when no one of them is the R-3 meant.
 		if m := refNumberedRE.FindStringSubmatch(n); m != nil && strings.EqualFold(m[1], "request") {
 			num, _ := strconv.Atoi(m[2])
 			for _, id := range s.requestIDsNumbered(ctx, actor, num) {
@@ -210,7 +202,6 @@ func (s *Service) SearchAll(ctx context.Context, actor *Actor, q AllQuery) (*All
 	if res.Exact == nil {
 		res.Exact = []SearchHit{}
 	}
-	// A kind's text search, for words or for a code's spellings.
 	run := func(kind string, w string, raw bool) (SearchGroup, error) {
 		if raw {
 			w = ftsRaw + w
@@ -271,7 +262,6 @@ func (s *Service) SearchAll(ctx context.Context, actor *Actor, q AllQuery) (*All
 		}
 		res.Groups = append(res.Groups, g)
 	}
-	// The groups that hold what the codes name come first.
 	slices.SortStableFunc(res.Groups, func(a, b SearchGroup) int {
 		return exactCount(res.Exact, b.Kind) - exactCount(res.Exact, a.Kind)
 	})
@@ -385,7 +375,6 @@ func (s *Service) searchPagesFor(ctx context.Context, actor *Actor, words string
 		}
 		pages = append(pages, list...)
 	}
-	// Best matches first: rank by the full-text score.
 	m := ftsMatch(words)
 	ids := make([]int64, len(pages))
 	for i, p := range pages {
@@ -431,7 +420,7 @@ func (s *Service) searchCommentsFor(ctx context.Context, actor *Actor, words str
 	with, wargs := "", []any{}
 	where, args := []string{"comment_search MATCH ?", draftsHidden(actor, "i")}, []any{m}
 	switch member, margs := actor.memberProjects(RoleViewer); {
-	case actor.scope != nil: // a job's token: its projects, no shares (WP-418)
+	case actor.scope != nil:
 		where, args = append(where, "i.project_id IN "+member), append(args, margs...)
 	case !actor.isAdmin():
 		with = `WITH RECURSIVE shared(id, depth) AS (

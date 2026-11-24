@@ -19,12 +19,11 @@ import (
 // and cancels queued runs; agents can't cancel the head's review (WP-217).
 func TestCLIPRReview(t *testing.T) {
 	e := newEnv(t)
-	me := e.login() // a person; the CLI's token is an agent's
+	me := e.login()
 	prRepo(t, e, me)
 	gitRepo(t, "git@git.example.com:robin/waypoint.git")
 	ctx := context.Background()
 
-	// Opening it queued the head's review.
 	out := e.wp("pr", "review", "3")
 	if !regexp.MustCompile(`robin/waypoint#3 review bot runs, newest first:\n  run 1 +queued +review abc1233  just now\nStop the queued and running ones: wp pr review cancel 3\n`).MatchString(out) {
 		t.Errorf("wp pr review:\n%s", out)
@@ -39,7 +38,6 @@ func TestCLIPRReview(t *testing.T) {
 	if out, code := e.run("pr", "review", "cancel", "--run", "1"); code == 0 || !strings.Contains(out, "agents can't cancel") {
 		t.Errorf("agent cancels the head's review by --run: %d %s", code, out)
 	}
-	// A person can; then the review is retried at the head.
 	if _, err := e.svc.CancelBotRun(ctx, me, 1); err != nil {
 		t.Fatal(err)
 	}
@@ -54,14 +52,11 @@ func TestCLIPRReview(t *testing.T) {
 		t.Errorf("retry:\n%s", out)
 	}
 
-	// A push skips the old head's run and queues the new head's, which is
-	// no more the agent's to cancel.
 	push(t, e, me, "abc1234def")
 	out, code := e.run("pr", "review", "cancel", "3")
 	if code != 1 || !regexp.MustCompile(`run 3 \(review at abc1234\): .*agents can't cancel`).MatchString(out) || strings.Contains(out, "run 2") {
 		t.Errorf("cancel after a push: %d %s", code, out)
 	}
-	// --json says why too.
 	out, code = e.run("pr", "review", "cancel", "3", "--json")
 	var refused []map[string]any
 	if err := json.Unmarshal([]byte(out[:strings.LastIndex(out, "]")+1]), &refused); code != 1 || err != nil || len(refused) != 1 || refused[0]["id"] != float64(3) ||
@@ -83,7 +78,6 @@ func TestCLIPRReview(t *testing.T) {
 			t.Errorf("wp pr review -n %s: %d %s", n, code, out)
 		}
 	}
-	// Retrying while the head's review waits is that same run.
 	if out = e.wp("pr", "review", "retry", "--run", "1"); !strings.Contains(out, "robin/waypoint#3: review queued again at abc1234 (run 3).") {
 		t.Errorf("retry --run:\n%s", out)
 	}
@@ -144,7 +138,6 @@ func TestCLIPRReviewTwoRules(t *testing.T) {
 	if err := json.Unmarshal([]byte(e.wp("pr", "review", "3", "--json")), &runs); err != nil || len(runs) != 3 || runs[0].Status != "queued" || runs[1].Status != "queued" {
 		t.Fatalf("runs after the push: %+v %v", runs, err)
 	}
-	// A person stops the newest; the other rule's review still waits.
 	if _, err := e.svc.CancelBotRun(ctx, me, runs[1].ID); err != nil {
 		t.Fatal(err)
 	}

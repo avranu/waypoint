@@ -1,7 +1,3 @@
-// Links between anything (WP-D10): design notes, glossary terms, issues,
-// pages, files and URLs, shown from both ends with direction-aware labels.
-// One block for the glossary, design notes, pages and issues.
-
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -164,7 +160,6 @@ export function Links({
   const remove = useMutation({
     mutationFn: (l: KLink) => linkApi.remove(at, l),
     onMutate: (l) => {
-      // Drop it from the list straight away.
       qc.setQueryData<KLink[]>(linksQuery(at).queryKey, (old) =>
         old?.filter((x) => !(x.id === l.id && x.via === l.via && x.item.id === l.item.id)),
       )
@@ -172,7 +167,6 @@ export function Links({
     onError: toastError,
     onSettled: refresh,
   })
-  // An agent's link or Waypoint's guess becomes the person's (WP-ADR50).
   const confirm = useMutation({
     mutationFn: (l: KLink) => goalApi.confirm(l.id),
     onError: toastError,
@@ -187,7 +181,6 @@ export function Links({
       GROUPS.map((g) => ({ ...g, links: list.filter((l) => l.item.type === g.type) }))
         .filter((g) => g.links.length > 0)
         .map((g) => {
-          // One kind of link across the group is said once, in its header.
           const rels = new Set(g.links.map((l) => relOf(l)))
           return { ...g, rel: rels.size === 1 ? [...rels][0] : undefined }
         }),
@@ -370,7 +363,7 @@ function LinkPicker({
   const debounced = useDebounced(t, 180)
   const isURL = URL_RE.test(t)
   const results = useQuery({
-    // More than are shown: what's already linked is left out of the results.
+    // Fetches more than are shown, since already-linked hits are dropped after the search.
     ...searchAllQuery({
       q: debounced,
       kinds: 'issues,design,glossary,pages',
@@ -382,7 +375,6 @@ function LinkPicker({
   const add = useMutation({
     mutationFn: (c: Choice) => linkApi.add(at, c.to, rel),
     onSuccess: () => {
-      // The picker stays for the next link; Esc closes it.
       setText('')
       setActive(0)
       box.current?.focus()
@@ -433,7 +425,6 @@ function LinkPicker({
             state: g.kind === 'issue' ? h.state : undefined,
             project_key: h.project_key,
           }
-          // A key or URL typed out still says "linked"; a search just moves on.
           if (linked(item)) continue
           if (out.some((o) => o.item.type === 'issue' && o.item.key === h.key && h.key)) continue
           shown++

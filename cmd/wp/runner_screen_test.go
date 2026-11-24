@@ -57,28 +57,22 @@ func TestTurnShown(t *testing.T) {
 		screen string
 		want   bool
 	}{
-		"idle with agents":        {screenAgentsIdle, false},
-		"at rest":                 {screenRest, false},
-		"agent says interrupt":    {screenAgentInterrupt, false},
-		"narrow pane, spinner":    {screenNarrow, true},
-		"empty":                   {screenEmpty, false},
-		"working":                 {screenWorking, true},
-		"working with agents":     {screenWorkingAgents, true},
-		"transcript quotes hint":  {screenQuotesHint, false},
-		"no box":                  {screenDialog, true},
-		"footer hint only":        {"\n────────\n❯ \n────────\n  esc to interrupt\n", true},
-		"footer hint, no spinner": {screenRule + "❯ \n" + screenRule + "  ⏵⏵ auto mode on · esc to interrupt\n", true},
-		// Synthetic, at rest: other people's words quote the hint.
-		"last message quotes hint": {"● The footer says esc to interrupt while a turn runs.\n\n" + screenRule + "❯ \n" + screenRule + "  ⏵⏵ auto mode on\n", false},
-		"draft quotes hint":        {screenRule + "❯ what does esc to interrupt mean\n" + screenRule + "  ⏵⏵ auto mode on\n", false},
-		"agent quotes hint":        {screenRule + "❯ \n" + screenRule + "  ⏵⏵ auto mode on · ← 1 agent\n  ● main\n  ◯ worker  Reading the esc to interrupt hint\n", false},
-		// Synthetic, a turn running in a narrow pane: a task list between
-		// the spinner and the box, and the older spinner that carried the
-		// hint itself.
-		"spinner over a task list": {"✶ Wiring… (2m 4s · ↓ 3.1k tokens)\n  ⎿  ☒ Read the diff\n     ☐ Fix the test\n     ☐ Run the suite\n\n" + screenRule + "❯ \n" + screenRule + "  ⏵⏵ auto mode on\n", true},
-		// A task list longer than any fixed look-back, in a narrow pane.
-		"spinner over a long task list": {"✶ Wiring… (2m 4s · ↓ 3.1k tokens)\n  ⎿  ☒ Read the diff\n" + strings.Repeat("     ☐ Fix a test\n", 12) + "\n" + screenRule + "❯ \n" + screenRule + "  ⏵⏵ auto mode on\n", true},
-		// At rest, a person's last prompt that looks like a spinner line.
+		"idle with agents":               {screenAgentsIdle, false},
+		"at rest":                        {screenRest, false},
+		"agent says interrupt":           {screenAgentInterrupt, false},
+		"narrow pane, spinner":           {screenNarrow, true},
+		"empty":                          {screenEmpty, false},
+		"working":                        {screenWorking, true},
+		"working with agents":            {screenWorkingAgents, true},
+		"transcript quotes hint":         {screenQuotesHint, false},
+		"no box":                         {screenDialog, true},
+		"footer hint only":               {"\n────────\n❯ \n────────\n  esc to interrupt\n", true},
+		"footer hint, no spinner":        {screenRule + "❯ \n" + screenRule + "  ⏵⏵ auto mode on · esc to interrupt\n", true},
+		"last message quotes hint":       {"● The footer says esc to interrupt while a turn runs.\n\n" + screenRule + "❯ \n" + screenRule + "  ⏵⏵ auto mode on\n", false},
+		"draft quotes hint":              {screenRule + "❯ what does esc to interrupt mean\n" + screenRule + "  ⏵⏵ auto mode on\n", false},
+		"agent quotes hint":              {screenRule + "❯ \n" + screenRule + "  ⏵⏵ auto mode on · ← 1 agent\n  ● main\n  ◯ worker  Reading the esc to interrupt hint\n", false},
+		"spinner over a task list":       {"✶ Wiring… (2m 4s · ↓ 3.1k tokens)\n  ⎿  ☒ Read the diff\n     ☐ Fix the test\n     ☐ Run the suite\n\n" + screenRule + "❯ \n" + screenRule + "  ⏵⏵ auto mode on\n", true},
+		"spinner over a long task list":  {"✶ Wiring… (2m 4s · ↓ 3.1k tokens)\n  ⎿  ☒ Read the diff\n" + strings.Repeat("     ☐ Fix a test\n", 12) + "\n" + screenRule + "❯ \n" + screenRule + "  ⏵⏵ auto mode on\n", true},
 		"person's prompt like a spinner": {"> Fixing… (it broke)\n" + screenRule + "❯ \n" + screenRule + "  ⏵⏵ auto mode on\n", false},
 		"spinner with the hint":          {"✻ Thinking… (12s · esc to interrupt)\n\n" + screenRule + "❯ \n" + screenRule + "  ? for shortcuts\n", true},
 	} {
@@ -220,7 +214,6 @@ func (c *compactScreenTmux) run(ctx context.Context, socket string, stdin []byte
 		c.screen = screenWorking
 		return "", nil
 	case args[0] == "capture-pane" && c.compacted && c.pasted == "":
-		// The compaction runs for a few looks, then the prompt is back.
 		if c.captures++; c.captures > 4 {
 			c.screen = screenAgentsIdle
 		}

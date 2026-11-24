@@ -58,7 +58,7 @@ const (
 // Sonnet worker.
 func burnFixture(t *testing.T) (main string, t0 time.Time) {
 	t.Helper()
-	// a person's session: the quota guard's automation rules stay out of these
+	// clears automation env vars so the fixtures run as a person's session, not under the quota guard's automation rules
 	for _, k := range []string{"WP_TASK", "WAYPOINT_FOLLOWUP", "WAYPOINT_UNATTENDED"} {
 		t.Setenv(k, "")
 	}
@@ -67,13 +67,12 @@ func burnFixture(t *testing.T) (main string, t0 time.Time) {
 	t0 = time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
 	writeBurnFile(t, main,
 		burnLine("m1", opus, t0, 10, 1000, 100_000, 20_000, 0),
-		// the same message again, as a transcript writes one line per block
 		burnLine("m1", opus, t0, 10, 1000, 100_000, 20_000, 0),
 		burnLine("m2", opus, t0.Add(time.Minute), 10, 2000, 200_000, 0, 10_000),
 	)
 	sub := filepath.Join(root, "proj", "sess1", "subagents")
 	writeBurnFile(t, filepath.Join(sub, "agent-f1.jsonl"),
-		burnLine("m1", opus, t0, 10, 1000, 100_000, 20_000, 0), // copied from the parent
+		burnLine("m1", opus, t0, 10, 1000, 100_000, 20_000, 0), // a fork's transcript repeats its parent's messages; only the fork's own call should count
 		burnLine("f1a", opus, t0.Add(2*time.Minute), 0, 500, 300_000, 0, 0),
 	)
 	writeBurnFile(t, filepath.Join(sub, "agent-f1.meta.json"), `{"agentType":"fork","isFork":true,"spawnDepth":1,"description":"Port search"}`)
@@ -90,8 +89,6 @@ func TestBurnTreeCountsForkedMessagesOnce(t *testing.T) {
 	main, _ := burnFixture(t)
 	tree := newBurnTree()
 	tree.update(burnFiles(main), nil)
-	// main: m1 = 10*4 + 1000*20 + 100000*.2 + 20000*5 = 40+20000+20000+100000 = 140040 -> $0.14004
-	//       m2 = 10*4 + 2000*20 + 200000*.2 + 10000*8 = 40+40000+40000+80000 = 160040 -> $0.16004
 	m := tree.Agents["main"]
 	if m.Calls != 2 || !near(m.Cost, 0.30008) {
 		t.Fatalf("main: %d calls, $%.5f", m.Calls, m.Cost)
@@ -103,12 +100,10 @@ func TestBurnTreeCountsForkedMessagesOnce(t *testing.T) {
 	if f.Kind != "fork" || f.Calls != 1 || f.Depth != 1 || f.Desc != "Port search" {
 		t.Fatalf("the fork counts only its own message: %+v", f)
 	}
-	// f1a = 500*20 + 300000*.2 = 70000 -> $0.07
 	if !near(f.Cost, 0.07) {
 		t.Fatalf("fork cost $%.5f", f.Cost)
 	}
 	w := tree.Agents["w1"]
-	// 100*2 + 1000*10 + 50000*.2 = 20200 -> $0.0202
 	if w.Kind != "sonnet-worker" || !near(w.Cost, 0.0202) {
 		t.Fatalf("worker: %+v", w)
 	}
@@ -140,7 +135,6 @@ func TestBurnReadsIncrementally(t *testing.T) {
 	if tree.update(burnFiles(main), nil) {
 		t.Fatal("nothing new, yet the tree changed")
 	}
-	// a new message, and a half-written line that is read once complete
 	appendBurn(t, main, burnLine("m3", opus, t0.Add(4*time.Minute), 0, 1000, 0, 0, 0))
 	partial := burnLine("m4", opus, t0.Add(5*time.Minute), 0, 1000, 0, 0, 0)
 	appendBurn(t, main, partial[:20])
@@ -170,7 +164,6 @@ func burnRun(t *testing.T, c *cli, session, main string, now time.Time) string {
 func TestBurnHookStaysSilentAtNormalRates(t *testing.T) {
 	main, t0 := burnFixture(t)
 	c := &cli{dir: t.TempDir()}
-	// $6 in 5 minutes is $36/h: a busy session, not an alarm
 	appendBurn(t, main, burnLine("big1", opus, t0.Add(5*time.Minute), 0, 300_000, 0, 0, 0))
 	for i := range 3 {
 		if got := burnRun(t, c, "quiet", main, t0.Add(time.Duration(6+i)*time.Minute)); got != "" {
@@ -182,7 +175,6 @@ func TestBurnHookStaysSilentAtNormalRates(t *testing.T) {
 func TestBurnHookFiresOnceThenOnDoubling(t *testing.T) {
 	main, t0 := burnFixture(t)
 	c := &cli{dir: t.TempDir()}
-	// $24 of output at minute 5: with the fixture, about $24.4 in 10 min is $146/h
 	appendBurn(t, main, burnLine("big1", opus, t0.Add(5*time.Minute), 0, 1_200_000, 0, 0, 0))
 	now := t0.Add(6 * time.Minute)
 	out := burnRun(t, c, "fast", main, now)
@@ -201,12 +193,10 @@ func TestBurnHookFiresOnceThenOnDoubling(t *testing.T) {
 	if got := burnRun(t, c, "fast", main, now.Add(time.Minute)); got != "" {
 		t.Fatalf("it fires once: %s", got)
 	}
-	// a little faster is still quiet
 	appendBurn(t, main, burnLine("big2", opus, t0.Add(7*time.Minute), 0, 400_000, 0, 0, 0))
 	if got := burnRun(t, c, "fast", main, t0.Add(8*time.Minute)); got != "" {
 		t.Fatalf("not doubled: %s", got)
 	}
-	// double the first rate
 	appendBurn(t, main, burnLine("big3", opus, t0.Add(9*time.Minute), 0, 3_000_000, 0, 0, 0))
 	if got := burnRun(t, c, "fast", main, t0.Add(10*time.Minute)); !strings.Contains(got, "Unusual spend") {
 		t.Fatalf("doubled rate must fire again: %q", got)
@@ -217,7 +207,7 @@ func TestBurnHookRepeatsAfterThirtyMinutes(t *testing.T) {
 	st := &burnState{Tree: newBurnTree()}
 	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
 	st.Tree.Agents["main"] = &burnAgent{Kind: "main", Calls: 1, CtxSum: 100_000}
-	st.Tree.Minutes[now.Unix()/60] = 20 // $120/h
+	st.Tree.Minutes[now.Unix()/60] = 20
 	if line, _ := st.decide(now); line == "" {
 		t.Fatal("first")
 	}
@@ -274,10 +264,10 @@ func TestBurnFindsTheSession(t *testing.T) {
 
 func TestBurnHookCatchesUpInBoundedSteps(t *testing.T) {
 	old := burnHookBudget
-	burnHookBudget = 500 // a few lines per call
+	burnHookBudget = 500
 	defer func() { burnHookBudget = old }()
 	main, t0 := burnFixture(t)
-	appendBurn(t, main, burnLine("big", opus, t0.Add(5*time.Minute), 0, 300_000, 0, 0, 0)) // $6 in 5 min
+	appendBurn(t, main, burnLine("big", opus, t0.Add(5*time.Minute), 0, 300_000, 0, 0, 0))
 	t.Setenv("WP_BURN_ALERT_PER_HOUR", "10")
 	old2 := burnNow
 	burnNow = func() time.Time { return t0.Add(6 * time.Minute) }
@@ -308,7 +298,7 @@ func TestBurnHookIsFast(t *testing.T) {
 	appendBurn(t, main, lines...)
 	c := &cli{dir: t.TempDir()}
 	in := fmt.Sprintf(`{"session_id":"fast","transcript_path":%q}`, main)
-	hookClaudeBurn(c, strings.NewReader(in), &bytes.Buffer{}) // the first look reads it all
+	hookClaudeBurn(c, strings.NewReader(in), &bytes.Buffer{})
 	best := time.Hour
 	for range 5 {
 		start := time.Now()

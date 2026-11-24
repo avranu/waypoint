@@ -1,9 +1,5 @@
 package main
 
-// wp pr wait and wp pr log (WP-132, WP-ADR2 §1): block on the server until
-// a pull request settles, and read the failing part of a check's log
-// through Waypoint. They replace infrastructure's ci_wait.py.
-
 import (
 	"encoding/json"
 	"errors"
@@ -16,11 +12,11 @@ import (
 
 // wp pr wait's exit codes (WP-ADR2 §1).
 const (
-	waitExitFailed   = 1 // a check failed
-	waitExitConflict = 2 // conflicts with its base
-	waitExitBlocked  = 3 // blocked by review: findings, changes requested, the gate, a draft; or --merge refused
-	waitExitTimeout  = 4 // the time ran out
-	waitExitClosed   = 5 // closed without merging
+	waitExitFailed   = 1
+	waitExitConflict = 2
+	waitExitBlocked  = 3
+	waitExitTimeout  = 4
+	waitExitClosed   = 5
 )
 
 const (
@@ -134,7 +130,6 @@ func (l *prLogs) text(full bool) string {
 			b.WriteString("(" + c.Error + ")\n")
 		}
 		if f := c.Fault; f != nil {
-			// WP-230: no code change fixes it.
 			on := ""
 			if f.Runner != "" {
 				on = " (" + f.Runner + ")"
@@ -314,7 +309,7 @@ func (c *cli) waitVerdict(w *prWaitResult, raw []byte, merge bool, timeout time.
 			if res.Warning != "" {
 				lines = append(lines, "Warning: "+res.Warning)
 			}
-		case strings.Contains(err.Error(), "is merged"): // it merged itself meanwhile
+		case strings.Contains(err.Error(), "is merged"):
 			if again, araw, aerr := c.waitOnce(w.ID, "", 0); aerr == nil && again.Verdict == "merged" {
 				out["wait"] = araw
 				lines = append(lines, fmt.Sprintf("merged %s  %s#%d", shortSHA(cmpStr(again.MergedSHA, again.HeadSHA)), w.Repo, w.Number))

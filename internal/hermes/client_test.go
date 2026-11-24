@@ -38,11 +38,11 @@ type fakeHermes struct {
 	tickets  map[string]bool
 	n        int
 	paths    []string
-	keySeen  []string // the key headers as Hermes saw them (the door strips them)
+	keySeen  []string // Key headers as Hermes sees them: the door strips them.
 	conn     *websocket.Conn
 	conns    int
-	replies  chan map[string]any // what the client answered to our requests
-	expireAt map[string]bool     // paths whose next call finds the session gone
+	replies  chan map[string]any
+	expireAt map[string]bool
 }
 
 func newFakeHermes(t *testing.T) *fakeHermes {
@@ -141,7 +141,7 @@ func (f *fakeHermes) serveWS(w http.ResponseWriter, r *http.Request) {
 	}
 	f.mu.Lock()
 	valid := f.tickets[ticket]
-	delete(f.tickets, ticket) // single use
+	delete(f.tickets, ticket)
 	f.mu.Unlock()
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"hermes-gateway-v1"}})
 	if err != nil {
@@ -271,7 +271,7 @@ func TestNewValidates(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		cfg  Config
-		want string // "" for no error
+		want string
 		url  string
 	}{
 		{"https with CA", Config{URL: " https://10.0.0.1:9443/some/path?x=1 ", CAPEM: ca}, "", "https://10.0.0.1:9443"},
@@ -320,8 +320,7 @@ func TestCAPinning(t *testing.T) {
 	if !errors.As(err, &ua) && !strings.Contains(err.Error(), "certificate") {
 		t.Errorf("err = %v, want a certificate error", err)
 	}
-	// Nor does the system's trust store stand in for the pinned CA: the
-	// Hermes side fails the same way, before any login is sent.
+	// The system trust store doesn't stand in for the pinned CA: Hermes fails the same way, before any login.
 	if err := bad.JSON(ctx, http.MethodGet, "/api/sessions", nil, nil, nil); !errors.Is(err, ErrUnreachable) {
 		t.Errorf("hermes call through the wrong CA: %v", err)
 	}
@@ -334,7 +333,6 @@ func TestKeyHeader(t *testing.T) {
 	if hermestest.DefaultKeyHeader != DefaultKeyHeader {
 		t.Fatalf("the fake door reads %s, the client sends %s", hermestest.DefaultKeyHeader, DefaultKeyHeader)
 	}
-	// The site's gate may read its key from another header (WP-459).
 	for _, header := range []string{"", otherKeyHeader} {
 		t.Run("header="+header, func(t *testing.T) { testKeyHeader(t, header) })
 	}
@@ -345,7 +343,6 @@ func testKeyHeader(t *testing.T, header string) {
 	door := hermestest.NewDoor("door-key", fh)
 	door.Header = header
 	ctx := tctx(t)
-	// The door sees the key on every request, gate and Hermes alike.
 	var mu sync.Mutex
 	var keys []string
 	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -370,7 +367,7 @@ func testKeyHeader(t *testing.T, header string) {
 			t.Errorf("request without the key: %s", k)
 		}
 	}
-	if len(keys) < 3 { // status, login, sessions
+	if len(keys) < 3 {
 		t.Errorf("door saw %v", keys)
 	}
 	mu.Unlock()
@@ -411,13 +408,10 @@ func TestReLogin(t *testing.T) {
 	if fh.loginCount() != 1 {
 		t.Fatalf("logins = %d, want 1 (signed in on first use)", fh.loginCount())
 	}
-	// Reused while the session lasts.
 	if err := c.JSON(ctx, http.MethodGet, "/api/sessions", nil, nil, nil); err != nil || fh.loginCount() != 1 {
 		t.Fatalf("second call: %v, logins %d", err, fh.loginCount())
 	}
 
-	// The session lapses: one 401 envelope, one fresh login, the request
-	// resent with its body.
 	fh.mu.Lock()
 	fh.expireAt["/api/sessions"] = true
 	fh.mu.Unlock()
@@ -428,7 +422,6 @@ func TestReLogin(t *testing.T) {
 		t.Errorf("logins = %d, want 2", fh.loginCount())
 	}
 
-	// Many requests finding the session gone at once sign in once.
 	fh.expireSessions()
 	var wg sync.WaitGroup
 	errs := make(chan error, 8)
@@ -450,7 +443,6 @@ func TestReLogin(t *testing.T) {
 		t.Errorf("logins = %d after a concurrent expiry, want 3", fh.loginCount())
 	}
 
-	// A domain 401 (not the session envelope) comes back as is, no login.
 	err := c.JSON(ctx, http.MethodGet, "/api/not-yours", nil, nil, nil)
 	var he *Error
 	if !errors.As(err, &he) || he.Status != 401 || he.Msg != "not_yours" {
@@ -460,13 +452,11 @@ func TestReLogin(t *testing.T) {
 		t.Errorf("a domain 401 caused a login (%d)", fh.loginCount())
 	}
 
-	// A wrong password is said plainly.
 	bad := newClient(t, Config{URL: ts.URL, CAPEM: ca, Key: "k", Username: "waypoint", Password: "nope"})
 	if err := bad.JSON(ctx, http.MethodGet, "/api/sessions", nil, nil, nil); err == nil || !strings.Contains(err.Error(), "refused Waypoint's login") {
 		t.Errorf("wrong password: %v", err)
 	}
 
-	// Check signs in afresh and reads /api/auth/me.
 	me, err := c.Check(ctx)
 	if err != nil || me["username"] != "waypoint" {
 		t.Errorf("check: %v %v", me, err)
@@ -522,7 +512,7 @@ func TestGateAPI(t *testing.T) {
 		t.Errorf("logs = %+v %v", logs, err)
 	}
 
-	// A new connection widens what the agent reaches: 202, pending on Signal.
+	// A new connection widens what the agent reaches: the gate answers 202 and waits for approval.
 	status, raw, err := c.PutConnection(ctx, "github", map[string]any{"kind": "mcp", "url": "https://api.github.com/mcp",
 		"headers": map[string]any{"Authorization": "Bearer ghp_secret"}})
 	if err != nil || status != http.StatusAccepted {
@@ -546,13 +536,12 @@ func TestGateAPI(t *testing.T) {
 	if strings.Contains(string(b), "ghp_secret") {
 		t.Error("a header value came back")
 	}
-	// The same connection again changes nothing that needs approval: 200.
+	// Rotating the headers on an existing connection widens nothing, so it needs no approval: 200.
 	status, _, err = c.PutConnection(ctx, "github", map[string]any{"kind": "mcp", "url": "https://api.github.com/mcp",
 		"headers": map[string]any{"Authorization": "Bearer ghp_rotated"}})
 	if err != nil || status != http.StatusOK {
 		t.Errorf("unchanged put: %d %v", status, err)
 	}
-	// The gate's 4xx answers carry their message.
 	var he *Error
 	if _, _, err := c.PutConnection(ctx, "Bad Name", map[string]any{"kind": "mcp", "url": "https://x"}); !errors.As(err, &he) || he.Status != 400 || !strings.Contains(he.Msg, "lowercase") {
 		t.Errorf("bad name: %v", err)
@@ -564,7 +553,6 @@ func TestGateAPI(t *testing.T) {
 		t.Errorf("delete again: %v", err)
 	}
 
-	// Freeze: the gate says so, and Hermes stops answering.
 	if err := c.Freeze(ctx); err != nil {
 		t.Fatal(err)
 	}

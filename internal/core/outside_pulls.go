@@ -32,7 +32,7 @@ import (
 
 // Kinds of outside text on a pull request.
 const (
-	OutsidePull = "pull" // the pull request: title, description and code at a head
+	OutsidePull = "pull"
 )
 
 // Outside text on a pull request, as a person decides on it.
@@ -69,7 +69,7 @@ func textHash(s string) string {
 type prVoice struct {
 	s   *Service
 	f   *Forge
-	bot string // Waypoint's bot account: what it posts, Waypoint wrote
+	bot string
 }
 
 func (s *Service) prVoice(ctx context.Context, f *Forge) *prVoice {
@@ -205,7 +205,7 @@ func (s *Service) screenPull(ctx context.Context, t *tx, v *prVoice, pr *PullReq
 	}
 	outsider, err := v.authorOutsideErr(ctx, t, forgeAuthor, pr.Author)
 	if err != nil {
-		return err // marks nothing: the next sync decides
+		return err
 	}
 	if !outsider {
 		if !pr.Outside {
@@ -388,7 +388,6 @@ func (s *Service) ApproveOutsidePR(ctx context.Context, actor *Actor, id int64) 
 	if !opened {
 		return nil
 	}
-	// What waited from it happens now, as for a pull request just opened.
 	cur, err := s.prByID(ctx, s.db.R, pr.ID)
 	if err != nil {
 		return err

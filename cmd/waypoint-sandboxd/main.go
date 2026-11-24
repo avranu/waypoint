@@ -35,8 +35,7 @@ var version = "dev"
 
 func main() {
 	err := func() error {
-		// What the helper runs in sessions' units (WP-470): the same
-		// binary, so a session sees nothing of the machine's but /usr.
+		// Session units re-run this binary with a subcommand, and inside them only /usr is visible
 		if len(os.Args) > 1 {
 			switch os.Args[1] {
 			case "broker":
@@ -254,7 +253,6 @@ func run() error {
 	}
 	defer h.Close()
 
-	// A socket left by a crash goes; anything else at that path stays.
 	if fi, err := os.Lstat(*socket); err == nil {
 		if fi.Mode().Type() != fs.ModeSocket {
 			return fmt.Errorf("%s exists and isn't a socket", *socket)

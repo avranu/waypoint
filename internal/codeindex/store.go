@@ -152,7 +152,7 @@ func (ix *Index) open() error {
 		if attempt > 0 {
 			return fmt.Errorf("code index %s: %w", ix.DBPath, err)
 		}
-		removeDB(ix.DBPath) // unreadable or from another version: start over
+		removeDB(ix.DBPath)
 	}
 }
 

@@ -1,6 +1,4 @@
-// Agents page, wp CLI tab (WP-618): how agents get on with wp, from the counters
-// `wp usage sync` reads out of Claude Code's transcripts. Command and flag names
-// only, never arguments. `wp usage cli` is the same report for an agent to read.
+// Only command and flag names are recorded, never arguments.
 
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'

@@ -26,9 +26,9 @@ type Verdict int
 
 // Verdicts.
 const (
-	OK      Verdict = iota // old enough
-	TooNew                 // published within the minimum age
-	Unknown                // its age couldn't be read
+	OK Verdict = iota
+	TooNew
+	Unknown
 )
 
 // Result is one new version's verdict.

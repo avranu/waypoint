@@ -25,7 +25,8 @@ for (const vp of looks([
   page.on(
     "console",
     (m) =>
-      m.type() === "error" && fail(`console (${tag}): ` + m.text().slice(0, 300)),
+      m.type() === "error" &&
+      fail(`console (${tag}): ` + m.text().slice(0, 300)),
   );
   await page.goto(base + "/login");
   await page.getByLabel("Username or email").fill("robin");
@@ -41,20 +42,24 @@ for (const vp of looks([
       ).json(),
   };
 
-  const key = "QA" + vp.width; // a fresh project per viewport
+  const key = "QA" + vp.width;
   if (!(await api.get("/projects")).some((p) => p.key === key))
     await api.post("/projects", { name: "Quick add " + vp.width, key });
   const titles = (c) =>
-    c.locator("[data-nav-key]").evaluateAll((els) => els.map((e) => e.textContent));
+    c
+      .locator("[data-nav-key]")
+      .evaluateAll((els) => els.map((e) => e.textContent));
 
   await page.goto(`${base}/p/${key}/board`);
   await page.waitForSelector("section[data-col]");
 
-  // WP-63: clicking "Nothing here" opens the inline create for that column.
   const last = page.locator("section[data-col]").last();
   await last.getByText("Nothing here").click();
   const lastBox = last.getByLabel("New issue title");
-  ok(await lastBox.isVisible(), `${tag}: clicking Nothing here opens the add box`);
+  ok(
+    await lastBox.isVisible(),
+    `${tag}: clicking Nothing here opens the add box`,
+  );
   ok(
     await lastBox.evaluate((e) => e === document.activeElement),
     `${tag}: the add box is focused`,
@@ -62,31 +67,38 @@ for (const vp of looks([
   await page.screenshot({ path: `${out}/${tag}-empty-click.png` });
   await page.keyboard.press("Escape");
 
-  // WP-73: seed the first column, then add through the box.
   const first = page.locator("section[data-col]").first();
   for (const t of ["Seed one", "Seed two"])
     await api.post("/issues", { project: key, title: t });
   await page.reload();
   await page.waitForSelector("section[data-col]");
-  // The seeds are on the board before the box opens, so the new ones have a top to go above.
-  await first.locator("[data-nav-key]").filter({ hasText: "Seed two" }).waitFor();
+  await first
+    .locator("[data-nav-key]")
+    .filter({ hasText: "Seed two" })
+    .waitFor();
   await first.getByRole("button", { name: "Add issue" }).click();
   const input = first.getByLabel("New issue title");
   await input.fill("Added first");
   await input.press("Enter");
-  await first.locator("[data-nav-key]").filter({ hasText: "Added first" }).waitFor();
+  await first
+    .locator("[data-nav-key]")
+    .filter({ hasText: "Added first" })
+    .waitFor();
   ok(
     (await input.isVisible()) &&
       (await input.evaluate((e) => e === document.activeElement)),
     `${tag}: the box stays open and focused`,
   );
-  // Rapid entry: the next one goes in at once, without waiting for a refetch.
   await input.fill("Added second");
   await input.press("Enter");
-  await first.locator("[data-nav-key]").filter({ hasText: "Added second" }).waitFor();
-  // The seeds, added through the API as the dialog does, went to the top too.
+  await first
+    .locator("[data-nav-key]")
+    .filter({ hasText: "Added second" })
+    .waitFor();
   const order = ["Added second", "Added first", "Seed two", "Seed one"];
-  const got = (await titles(first)).map((t) => order.find((x) => t.includes(x)));
+  const got = (await titles(first)).map((t) =>
+    order.find((x) => t.includes(x)),
+  );
   ok(
     got.join("|") === order.join("|"),
     `${tag}: newest at the top of the column: ${got.join("|")}`,

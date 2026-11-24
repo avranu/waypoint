@@ -34,7 +34,6 @@ async function run(width) {
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL(base + "/");
 
-  // ---- switching pages while editing (desktop: the tree stays beside the page) ----
   if (width > 500) {
     const a = await api("POST", "/pages", {
       title: `Alpha ${tag}`,
@@ -47,7 +46,7 @@ async function run(width) {
       project: "WAYP",
     });
     const tree = page.locator("aside");
-    await page.goto(`${base}/pages/${b.id}`); // Beta is now cached
+    await page.goto(`${base}/pages/${b.id}`);
     await page.getByText("Body of beta").waitFor();
     await tree.getByRole("link", { name: `Alpha ${tag}` }).click();
     await page.getByText("Body of alpha").click();
@@ -65,7 +64,6 @@ async function run(width) {
     );
   }
 
-  // ---- quick checkbox toggles, with slow saves ----
   const c = await api("POST", "/pages", {
     title: `Tasks ${tag}`,
     body: "- [ ] one\n- [ ] two\n- [ ] three",
@@ -91,7 +89,6 @@ async function run(width) {
   );
   await page.unrouteAll();
 
-  // ---- device login started from another address ----
   const start = await api(
     "POST",
     "/cli/login",

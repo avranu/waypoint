@@ -1,10 +1,6 @@
 package core
 
-// Keeping an armed pull request up to date with its base before it merges.
-// A pull request's CI tests its head, not the merge result, so two green
-// pull requests can break the base together; Waypoint merges only a head
-// that already contains the base's tip, and brings the branch up to date
-// (which starts CI again) when it doesn't.
+// CI tests the head, not the merge result, so Waypoint merges only a head that already contains the base's tip.
 
 import (
 	"bytes"
@@ -51,7 +47,6 @@ func (c *httpForgeClient) BehindBase(ctx context.Context, f *Forge, repo, baseRe
 	if tip == "" {
 		return "", false, fmt.Errorf("the forge didn't say where %s is", baseRef)
 	}
-	// Commits the tip has that the head lacks.
 	n, err := c.Ahead(ctx, f, repo, headSHA, tip)
 	if err != nil {
 		return "", false, err
@@ -60,7 +55,7 @@ func (c *httpForgeClient) BehindBase(ctx context.Context, f *Forge, repo, baseRe
 }
 
 func (c *httpForgeClient) Contains(ctx context.Context, f *Forge, repo, sha, headSHA string) (bool, error) {
-	n, err := c.Ahead(ctx, f, repo, headSHA, sha) // commits sha has that headSHA lacks
+	n, err := c.Ahead(ctx, f, repo, headSHA, sha)
 	return n == 0, err
 }
 
@@ -187,23 +182,23 @@ func (s *Service) staleBaseRead(ctx context.Context, cl ForgeUpToDate, f *Forge,
 	}
 	has, err := cl.Contains(ctx, f, pr.Repo, m.sha, tip)
 	if err != nil {
-		return false // can't tell: no reason to wait
+		return false
 	}
 	if has {
-		s.baseMerged.CompareAndDelete(baseKey(pr), v) // it shows now, and so will every later read
+		s.baseMerged.CompareAndDelete(baseKey(pr), v)
 	}
 	return !has
 }
 
 // Outcomes of bringing a branch up to date.
 const (
-	upToDate   = iota // it has the base's tip
-	upUpdated         // the base was merged in: a new head is coming
-	upConflict        // the base doesn't merge in cleanly: a round's work
-	upWaiting         // its push hasn't come in yet: wait
-	upFailed          // the forge refused or couldn't be asked: tried again later
-	upStale           // the base doesn't show Waypoint's last merge yet: read again (WP-316)
-	upLanded          // its work is already in the base: it is being finished, not updated (WP-464)
+	upToDate = iota
+	upUpdated
+	upConflict
+	upWaiting
+	upFailed
+	upStale
+	upLanded
 )
 
 // baseUpdate is what came of bringing a branch up to date with a tip: from
@@ -254,13 +249,13 @@ func (s *Service) updateIfBehindThen(ctx context.Context, pr *PullRequest, befor
 		was := v.(baseUpdate)
 		switch {
 		case was.outcome == upConflict && sameSHA(was.from, pr.HeadSHA):
-			return upConflict // a round deals with it, or a person
+			return upConflict
 		case was.outcome == upConflict:
 			// Another head was refused: this one hasn't been tried.
 		case was.outcome == upUpdated && !sameSHA(was.from, pr.HeadSHA) && was.n < updateAttempts:
-			n = was.n + 1 // its push came in without the tip: again, now
+			n = was.n + 1
 		case s.now().Sub(was.at) < updateRetry:
-			return upWaiting // its push hasn't come in yet
+			return upWaiting
 		}
 	}
 	cl := s.Forges.(ForgeUpToDate)
@@ -268,10 +263,7 @@ func (s *Service) updateIfBehindThen(ctx context.Context, pr *PullRequest, befor
 	if err != nil {
 		return upFailed
 	}
-	// A head already in its base (a push to the base carried it) has landed:
-	// merging the base into it would leave one empty merge commit ahead, so
-	// the forge would never see it landed, and its push would run the whole
-	// CI for nothing (WP-464).
+	// A head already in its base has landed; merging the base into it would leave an empty merge commit the forge never sees as landed, and would run CI for nothing.
 	if bl, ok := s.Forges.(ForgeBranches); ok {
 		if in, _, err := s.headLanded(ctx, f, bl, pr.Repo, tip, pr.HeadSHA); err == nil && in {
 			s.armNote(ctx, pr.ID, "its work is already on "+cmp(pr.BaseRef, "its base")+"; finishing it instead of updating the branch")
@@ -380,10 +372,7 @@ func (c *httpForgeClient) CommitTree(ctx context.Context, f *Forge, repo, sha st
 		}
 		return r.Tree.SHA, nil
 	}
-	// Forgejo and Gitea answer a commit's tree.sha, and a tree's sha, with
-	// the commit's own id, so a merge's tree never matched its head's and
-	// nothing was ever marked tested. The entries are right, though: the
-	// tree's id is computed from them as git does.
+	// Forgejo and Gitea return the commit id as a tree's sha, so the tree id is computed from the listed entries as git does.
 	var entries []treeEntry
 	for page := 1; page <= 20; page++ {
 		var r struct {

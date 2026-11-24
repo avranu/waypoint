@@ -9,11 +9,7 @@ import (
 	"unicode/utf8"
 )
 
-// Usage analytics (WP-D20): what `wp usage sync` and `wp statusline` report
-// about a person's coding-agent sessions. The CLI reads Claude Code's own
-// transcripts and sends compact, hour-bucketed counts, so the agent spends
-// nothing and reports nothing about itself. All of it belongs to one
-// person; they (and admins) read it back.
+// The CLI reads transcripts itself and sends hour-bucketed counts, so the agent spends nothing; all usage belongs to one person, read back only by them and admins.
 
 // UsageMessageRow counts assistant messages in one hour of one session.
 // Counts may be negative: a message written again with more tokens (a
@@ -145,7 +141,7 @@ const (
 	usageMaxChunks  = 2000
 	usageMaxRows    = 60000
 	usageChunkKeep  = 90 * 24 * time.Hour
-	usageMinHour    = 1_700_000_000_000 // 2023-11: nothing earlier is a Claude Code session
+	usageMinHour    = 1_700_000_000_000
 	usageFutureSkew = 36 * time.Hour
 )
 
@@ -448,8 +444,6 @@ func (t *tx) touchMachine(ctx context.Context, uid int64, in UsageIngest, now in
 		uid, in.Machine, now, clip(in.Version, 40), in.Parsed, in.Skipped, string(unknown))
 	return err
 }
-
-// ---- the status line ----
 
 // QuotaWindow is one rate-limit window as the status line saw it.
 type QuotaWindow struct {

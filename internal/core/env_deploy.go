@@ -1,10 +1,5 @@
 package core
 
-// Deployments (WP-D19): what ran where, and when. CI records them with
-// `wp env deploy` or the API ("started", then "succeeded" or "failed" for the
-// same commit); a version endpoint that reports a commit nobody told us
-// about is recorded as "detected".
-
 import (
 	"context"
 	"database/sql"
@@ -135,7 +130,7 @@ type DeployInput struct {
 // RecordDeployment records a deployment to an environment by id. A token
 // with editor access on the project may (this is what CI uses).
 func (s *Service) RecordDeployment(ctx context.Context, actor *Actor, envID int64, in DeployInput) (*Deployment, error) {
-	if err := actor.need(PermEnvironmentsWrite); err != nil { // WP-111
+	if err := actor.need(PermEnvironmentsWrite); err != nil {
 		return nil, err
 	}
 	e, err := s.envFor(ctx, s.db.R, actor, envID, RoleEditor)
@@ -162,7 +157,7 @@ func (s *Service) RecordDeployment(ctx context.Context, actor *Actor, envID int6
 // its name (production, staging and dev by name, else a preview). Creating
 // needs what recording does: editor access to the project.
 func (s *Service) RecordDeploymentNamed(ctx context.Context, actor *Actor, projectRef, name string, in DeployInput) (*Deployment, error) {
-	if err := actor.need(PermEnvironmentsWrite); err != nil { // WP-111
+	if err := actor.need(PermEnvironmentsWrite); err != nil {
 		return nil, err
 	}
 	p, err := s.projectByRef(ctx, s.db.R, projectRef)
@@ -240,7 +235,6 @@ func (s *Service) recordDeployTx(t *tx, e *Environment, in DeployInput) (*Deploy
 	}
 	now := s.nowMS()
 
-	// A started deployment of the same release is finished by its outcome.
 	var open *Deployment
 	{
 		rows, err := t.QueryContext(ctx, `SELECT `+deployCols+` FROM deployments d WHERE d.environment_id = ? AND d.status = 'started' ORDER BY d.started_at DESC, d.id DESC LIMIT 20`, e.ID)
@@ -303,8 +297,6 @@ func (s *Service) recordDeployTx(t *tx, e *Environment, in DeployInput) (*Deploy
 		d.By = &r
 	}
 
-	// A deploy to a stopped environment means it is running again; one with
-	// a lease renews it.
 	revived := e.Stopped
 	if revived || e.TTLS > 0 || status == DeploySucceeded {
 		var expires any
@@ -312,10 +304,9 @@ func (s *Service) recordDeployTx(t *tx, e *Environment, in DeployInput) (*Deploy
 			expires = s.now().Add(time.Duration(e.TTLS) * time.Second).UnixMilli()
 		}
 		if status == DeploySucceeded {
-			// What it runs now. A different commit without a branch or version
-			// doesn't keep the old ones.
+			// A different commit without a branch or version drops the old ones.
 			newCommit, newBranch, newVersion := d.Commit, d.Branch, d.Version
-			if d.Commit != "" && sameCommit(d.Commit, e.Commit) { // a redeploy
+			if d.Commit != "" && sameCommit(d.Commit, e.Commit) {
 				newCommit, newBranch, newVersion = longer(d.Commit, e.Commit), cmp(newBranch, e.Branch), cmp(newVersion, e.Version)
 			}
 			e.Commit, e.Branch, e.Version = newCommit, newBranch, newVersion

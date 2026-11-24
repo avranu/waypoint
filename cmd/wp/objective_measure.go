@@ -14,12 +14,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// What an objective's check is read with (WP-927, WP-ADR111, WP-ADR142): one
-// implementation for the runner's reading of a round (objective_run.go) and
-// for the worker's own working reading (wp objective check). Both run the
-// command in checkouts they are given, setup first, and read a time, a
-// number the command prints or just its exit status.
-
 const (
 	// checkCapture is how much of a command's output is kept to read a
 	// value from: the end of it.
@@ -218,7 +212,6 @@ func measureCheck(ctx context.Context, spec measureSpec, sides []measureSide, sa
 		spec.Prepared()
 	}
 	timed := spec.Measure == "time"
-	// one run of side i; false when the side has failed and must not run again
 	runSide := func(i int) (checkRun, bool, error) {
 		r := reads[i]
 		if r.failed {
@@ -253,7 +246,6 @@ func measureCheck(ctx context.Context, spec measureSpec, sides []measureSide, sa
 	for i := range order {
 		order[i] = i
 	}
-	// The first round: a time's warm-up, a value's or pass's only run.
 	var warmCost float64
 	for _, i := range order {
 		say("Running the check in %s", sides[i].Label)
@@ -289,7 +281,6 @@ func measureCheck(ctx context.Context, spec measureSpec, sides []measureSide, sa
 		}
 	}
 	if timed {
-		// Timed runs, while the budget and the run count allow.
 		for round := 1; round <= spec.runs(); round++ {
 			if spec.Budget > 0 && time.Since(start)+time.Duration(warmCost*1.2*float64(time.Second)) > spec.Budget {
 				break
@@ -317,7 +308,7 @@ func measureCheck(ctx context.Context, spec measureSpec, sides []measureSide, sa
 		}
 		for _, r := range reads {
 			if !r.failed && len(r.samples) == 0 {
-				r.samples = []float64{r.warm} // no minimum asked for: the warm-up is all there is
+				r.samples = []float64{r.warm}
 			}
 		}
 	}
@@ -328,7 +319,7 @@ func measureCheck(ctx context.Context, spec measureSpec, sides []measureSide, sa
 		r.OK = true
 		r.Runs = max(len(r.samples), 1)
 		if len(r.samples) == 0 {
-			continue // a pass
+			continue
 		}
 		sorted := slices.Sorted(slices.Values(r.samples))
 		m, lo, hi := quantile(sorted, 0.5), quantile(sorted, 0.25), quantile(sorted, 0.75)
@@ -483,7 +474,6 @@ func readValue(out, unit string) *float64 {
 			if len(rest) < len(unit) || !strings.EqualFold(rest[:len(unit)], unit) {
 				continue
 			}
-			// "ms" isn't "m": a unit of letters ends at a word's end.
 			if after := rest[len(unit):]; after != "" && isLetter(unit[len(unit)-1]) && isLetter(after[0]) {
 				continue
 			}

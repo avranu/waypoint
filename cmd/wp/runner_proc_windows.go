@@ -46,7 +46,7 @@ func processAlive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
-	const queryLimited = 0x1000                                     // PROCESS_QUERY_LIMITED_INFORMATION
+	const queryLimited = 0x1000
 	h, err := syscall.OpenProcess(queryLimited, false, uint32(pid)) // #nosec G115 -- pid > 0
 	if err != nil {
 		return errors.Is(err, syscall.ERROR_ACCESS_DENIED)
@@ -56,6 +56,6 @@ func processAlive(pid int) bool {
 	if syscall.GetExitCodeProcess(h, &code) != nil {
 		return true
 	}
-	const stillActive = 259 // STILL_ACTIVE
+	const stillActive = 259
 	return code == stillActive
 }

@@ -6,8 +6,6 @@ import (
 	"time"
 )
 
-// One wake-up for the news of several babysits (WP-209).
-
 // twoBabysits: the agent shipped #7 and #8 and stopped; its runner on m1
 // can post to its inbox socket.
 func twoBabysits(t *testing.T) (*bsEnv, [2]*PullRequest, [2]*Babysit) {
@@ -44,14 +42,14 @@ func (be *bsEnv) messageJobs() []string {
 
 func TestBatchedNewsGoesInOneWakeUp(t *testing.T) {
 	be, prs, bs := twoBabysits(t)
-	bs[0].Blocking, bs[1].Blocking = true, true      // its other work waits on them
-	be.setClock(be.clockNow().Add(10 * time.Minute)) // its cache is cold
-	be.runner(be.admin, "m1", nil)                   // the runner keeps checking in
+	bs[0].Blocking, bs[1].Blocking = true, true
+	be.setClock(be.clockNow().Add(10 * time.Minute))
+	be.runner(be.admin, "m1", nil)
 	be.s.babysitTell(be.ctx, bs[0], prs[0], "gave_up", "Waypoint gave up babysitting o/r#7: it failed.")
 	if jobs := be.messageJobs(); len(jobs) != 0 {
 		t.Fatalf("woke the agent while #8 still moves: %v", jobs)
 	}
-	be.s.CheckBabysits(be.ctx) // not due yet
+	be.s.CheckBabysits(be.ctx)
 	if jobs := be.messageJobs(); len(jobs) != 0 {
 		t.Fatalf("released early: %v", jobs)
 	}
@@ -77,8 +75,6 @@ func TestBatchGoesWhenDue(t *testing.T) {
 
 func TestBatchKeepsAWarmCacheWarm(t *testing.T) {
 	be, prs, bs := twoBabysits(t)
-	// Stopped 50 minutes ago: news it asked for waits only until just before
-	// the cache cools.
 	be.setClock(be.clockNow().Add(50 * time.Minute))
 	b := bs[0]
 	b.Notify = true
@@ -94,10 +90,10 @@ func TestBatchKeepsAWarmCacheWarm(t *testing.T) {
 
 func TestNewsThatCanWaitWaitsADayOnAColdCache(t *testing.T) {
 	be, prs, bs := twoBabysits(t)
-	be.setClock(be.clockNow().Add(2 * time.Hour)) // its cache is cold
+	be.setClock(be.clockNow().Add(2 * time.Hour))
 	bs[0].Notify, bs[1].Notify = true, true
 	be.s.babysitTell(be.ctx, bs[0], prs[0], "merged", "o/r#7 merged.")
-	be.s.babysitTell(be.ctx, bs[1], prs[1], "merged", "o/r#8 merged.") // nothing else moves, and still it waits
+	be.s.babysitTell(be.ctx, bs[1], prs[1], "merged", "o/r#8 merged.")
 	be.runner(be.admin, "m1", nil)
 	be.s.CheckBabysits(be.ctx)
 	be.s.Wait() // background refreshes read the clock; let them finish before it moves
@@ -131,7 +127,7 @@ func TestBlockingNewsTakesWaitingNewsAlong(t *testing.T) {
 	bs[0].Notify, bs[1].Blocking = true, true
 	be.s.babysitTell(be.ctx, bs[0], prs[0], "merged", "o/r#7 merged.")
 	be.runner(be.admin, "m1", nil)
-	be.s.babysitTell(be.ctx, bs[1], prs[1], "gave_up", "Waypoint gave up babysitting o/r#8.") // nothing else moves: goes now
+	be.s.babysitTell(be.ctx, bs[1], prs[1], "gave_up", "Waypoint gave up babysitting o/r#8.")
 	if jobs := be.messageJobs(); len(jobs) != 1 || !strings.Contains(jobs[0], "o/r#7") || !strings.Contains(jobs[0], "o/r#8") {
 		t.Fatalf("want one post with both: %v", jobs)
 	}
@@ -141,7 +137,6 @@ func TestStatusAndHooksTakeBatchedNews(t *testing.T) {
 	be, prs, bs := twoBabysits(t)
 	be.setClock(be.clockNow().Add(10 * time.Minute))
 	be.s.babysitTell(be.ctx, bs[0], prs[0], "gave_up", "Waypoint gave up babysitting o/r#7.")
-	// Asking after any babysit hands it over.
 	v, err := be.s.BabysitStatus(be.ctx, be.agent, prs[1].ID)
 	if err != nil || !strings.Contains(v.Batched, "o/r#7") {
 		t.Fatalf("status = %+v %v", v, err)
@@ -150,7 +145,6 @@ func TestStatusAndHooksTakeBatchedNews(t *testing.T) {
 		t.Errorf("handed over twice: %q", v.Batched)
 	}
 
-	// A passive notice rides along with news that continues a stop.
 	be.s.babysitTell(be.ctx, bs[1], prs[1], "closed", "o/r#8 was closed without merging.")
 	be.s.queueMessage(be.ctx, be.agent.Session, "do the next thing", "test:next", messageFrom{}, false)
 	res := be.hookAs("Stop")
@@ -166,7 +160,7 @@ func TestNewsThatNeedsTheAgentCanWait(t *testing.T) {
 	be.setClock(be.clockNow().Add(10 * time.Minute))
 	be.runner(be.admin, "m1", nil)
 	be.s.babysitTell(be.ctx, bs[0], prs[0], "gave_up", "Waypoint gave up babysitting o/r#7.")
-	be.s.babysitTell(be.ctx, bs[1], prs[1], "gave_up", "Waypoint gave up babysitting o/r#8.") // nothing else moves, and still it waits
+	be.s.babysitTell(be.ctx, bs[1], prs[1], "gave_up", "Waypoint gave up babysitting o/r#8.")
 	be.setClock(be.clockNow().Add(batchBlockingWait + time.Second))
 	be.runner(be.admin, "m1", nil)
 	be.s.CheckBabysits(be.ctx)
@@ -179,7 +173,6 @@ func TestNewsThatNeedsTheAgentCanWait(t *testing.T) {
 	if jobs := be.messageJobs(); len(jobs) != 1 || !strings.Contains(jobs[0], "o/r#7") || !strings.Contains(jobs[0], "o/r#8") {
 		t.Fatalf("want one post with both before the cache cools: %v", jobs)
 	}
-	// A stop takes news the agent must act on: its context is warm then.
 	be.s.babysitTell(be.ctx, bs[0], prs[0], "needs_person@x", "o/r#7 needs a person.")
 	if res := be.hookAs("Stop"); !strings.Contains(res.Text, "o/r#7 needs a person") {
 		t.Fatalf("a stop didn't take it: %q", res.Text)

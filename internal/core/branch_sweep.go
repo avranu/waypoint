@@ -1,12 +1,6 @@
 package core
 
-// Merged branches on the forge (WP-140). Waypoint deletes a branch when it
-// merges that branch's own pull request, which leaves behind every branch
-// merged some other way (stacked branches merged into one another, a merge
-// by hand). A daily sweep, and one right after a landed pull request is
-// finished, deletes the remote branches whose tip is already in the default
-// branch, under rules that keep anything someone might still be using.
-// The verdict words are `wp tidy`'s.
+// Deletes only remote branches whose tip is already in the default branch, keeping anything someone might still use.
 
 import (
 	"context"
@@ -20,18 +14,18 @@ import (
 
 // Verdicts of a remote branch.
 const (
-	BranchRemovable = "removable" // merged and idle: the sweep deletes it
-	BranchKeep      = "keep"      // unmerged, in use, or too new
-	BranchProtected = "protected" // the default branch, protected, release/*
-	BranchStale     = "stale"     // unmerged and idle for a month: listed, never deleted
+	BranchRemovable = "removable"
+	BranchKeep      = "keep"
+	BranchProtected = "protected"
+	BranchStale     = "stale"
 )
 
 const (
-	branchQuiet      = 2 * time.Hour       // a branch touched this recently is active
-	branchStaleAfter = 30 * 24 * time.Hour // unmerged and idle this long is stale
-	branchSweepEvery = 23 * time.Hour      // between a repo's sweeps
-	tidyCacheFor     = 5 * time.Minute     // a listing is reused this long
-	maxBranchLookups = 200                 // commit-time reads in one plan
+	branchQuiet      = 2 * time.Hour
+	branchStaleAfter = 30 * 24 * time.Hour
+	branchSweepEvery = 23 * time.Hour
+	tidyCacheFor     = 5 * time.Minute
+	maxBranchLookups = 200
 )
 
 // RemoteBranch is a branch on the forge with the sweep's verdict.
@@ -96,7 +90,6 @@ func (s *Service) planBranches(ctx context.Context, f *Forge, repo string) (*Rem
 	now := s.now()
 	plan := &RemoteBranches{Repo: repo, Forge: f.Kind, Default: def, Enabled: s.deletesMergedBranches(ctx, f.ID, repo), Counts: map[string]int{}}
 
-	// What needs a branch: open pull requests' heads and bases.
 	holds := map[string]string{}
 	rows, err := s.db.R.QueryContext(ctx, `SELECT number, head_ref, head_repo, base_ref FROM pull_requests WHERE forge_id = ? AND repo = ? COLLATE NOCASE AND state IN ('open','draft')`, f.ID, repo)
 	if err != nil {
@@ -116,8 +109,7 @@ func (s *Service) planBranches(ctx context.Context, f *Forge, repo string) (*Rem
 		}
 	}
 	rows.Close()
-	// Branches whose own pull request merged on exactly this commit are as
-	// merged as ones git sees in the default branch (a squash leaves no ancestry).
+	// A squash merge leaves no git ancestry, so a branch's own merged pull request is what marks it merged.
 	mergedHeads := map[string]int{}
 	rows, err = s.db.R.QueryContext(ctx, `SELECT head_ref, head_sha, number FROM pull_requests WHERE forge_id = ? AND repo = ? COLLATE NOCASE AND state = 'merged' AND head_sha != '' AND merged_at > ?
 		ORDER BY merged_at`, f.ID, repo, s.nowMS()-366*24*3600*1000)
@@ -132,7 +124,6 @@ func (s *Service) planBranches(ctx context.Context, f *Forge, repo string) (*Rem
 		}
 	}
 	rows.Close()
-	// Pushes Waypoint saw.
 	pushed := map[string]time.Time{}
 	rows, err = s.db.R.QueryContext(ctx, `SELECT branch, pushed_at FROM branch_activity WHERE forge_id = ? AND repo = ? COLLATE NOCASE`, f.ID, repo)
 	if err != nil {
@@ -155,7 +146,6 @@ func (s *Service) planBranches(ctx context.Context, f *Forge, repo string) (*Rem
 	}
 	sort.Slice(branches, func(i, j int) bool { return branches[i].Name < branches[j].Name })
 	lookups := 0
-	// idle: since the newest of the branch's tip commit and Waypoint's last push.
 	idle := func(b ForgeBranch) (time.Duration, bool) {
 		newest := time.Time{}
 		if at, ok := pushed[b.Name]; ok {
@@ -190,8 +180,7 @@ func (s *Service) planBranches(ctx context.Context, f *Forge, repo string) (*Rem
 			} else if defTip != "" && (b.SHA == defTip || func() bool {
 				n, err := cl.Ahead(ctx, f, repo, def, b.SHA)
 				if err != nil {
-					// Not known to be in the default branch: the branch is kept.
-					if readFault(err) && !isStatus(err, http.StatusNotFound) && !errors.Is(err, ErrNotFound) { // a repo the forge no longer has is an answer
+					if readFault(err) && !isStatus(err, http.StatusNotFound) && !errors.Is(err, ErrNotFound) {
 						s.log.WarnContext(ctx, "read whether a branch is ahead of the default branch", "repo", repo, "branch", b.Name, "err", err)
 					}
 					return false
@@ -203,7 +192,6 @@ func (s *Service) planBranches(ctx context.Context, f *Forge, repo string) (*Rem
 			age, known := idle(b)
 			switch {
 			case by != "" && !known && b.SHA == defTip:
-				// Cut from the default branch and nothing known of when: it looks merged.
 				row.Verdict, row.Reason = BranchKeep, "same commit as "+def+" and no push seen: it may be new"
 			case by != "" && known && age < branchQuiet:
 				row.Verdict, row.Reason = BranchKeep, fmt.Sprintf("active: moved %d min ago", int(age.Minutes()))
@@ -235,8 +223,6 @@ func (s *Service) sweepRepoBranches(ctx context.Context, f *Forge, repo string) 
 	plan, err := s.planBranches(ctx, f, repo)
 	if err != nil {
 		if isStatus(err, http.StatusNotFound) {
-			// Moved or deleted: follow it, else note it once and look again
-			// at the usual interval, not every sync (WP-207).
 			if s.repoMissing(ctx, f, repo) {
 				return
 			}
@@ -259,7 +245,6 @@ func (s *Service) sweepRepoBranches(ctx context.Context, f *Forge, repo string) 
 	if len(doomed) == 0 {
 		return
 	}
-	// Right before deleting, a branch must still be where it was judged.
 	tips := map[string]string{}
 	now, err := cl.Branches(ctx, f, repo)
 	if err != nil {
@@ -274,7 +259,7 @@ func (s *Service) sweepRepoBranches(ctx context.Context, f *Forge, repo string) 
 	projectID, err := s.attachedProject(ctx, s.db.R, f.ID, repo)
 	if err != nil {
 		if readFault(err) {
-			s.log.WarnContext(ctx, "read the project to delete merged branches", "repo", repo, "err", err) // before any is deleted
+			s.log.WarnContext(ctx, "read the project to delete merged branches", "repo", repo, "err", err)
 		}
 		return
 	}
@@ -337,7 +322,6 @@ func (s *Service) SweepBranches(ctx context.Context) {
 		err = cerr
 	}
 	if readFault(err) {
-		// The repos read so far are still swept; the rest wait for the next run.
 		s.log.WarnContext(ctx, "branch sweep: read the repos to sweep", "err", err)
 	}
 	for _, x := range list {
@@ -442,7 +426,7 @@ func (s *Service) SetRepoBranchCleanup(ctx context.Context, actor *Actor, projec
 	if err := s.requireProjectRole(ctx, s.db.R, actor, p.ID, RoleOwner); err != nil {
 		return err
 	}
-	defer s.tidyCache.Clear() // the listings say whether deleting is on
+	defer s.tidyCache.Clear()
 	return s.write(ctx, actor, func(t *tx) error {
 		var repo string
 		if err := t.QueryRowContext(ctx, `SELECT repo FROM project_repos WHERE id = ? AND project_id = ?`, id, p.ID).Scan(&repo); err != nil {

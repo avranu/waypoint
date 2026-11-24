@@ -9,11 +9,7 @@ import (
 	"time"
 )
 
-// What a hold waits for besides a date (WP-776, WP-ADR75): tasks to close,
-// requests to be settled, a person's review of the task, a person
-// lifting it. All of them, and the date if it has one. A minute job lifts
-// the hold when they are met, so the queue only ever asks whether a task is
-// on hold.
+// A minute job lifts a hold once its conditions are met, so the queue only checks whether a task is on hold.
 
 // HoldWhen is what a hold waits for. References are stored by id, checked
 // against what the placer may see when the hold is placed.
@@ -116,8 +112,7 @@ func (s *Service) holdWhenFor(ctx context.Context, t *tx, actor *Actor, i *Issue
 		w.Requests = append(w.Requests, HoldRef{id, requestRef(key.String, number)})
 	}
 	if w.Reviewed {
-		// Marking it reviewed records nothing when nothing awaits review, so
-		// the condition could never be met: a person lifts it instead.
+		// With nothing awaiting review, marking reviewed records nothing, so a person must lift the hold instead.
 		waiting, err := reviewWaiting(ctx, t, i.ID)
 		if err != nil {
 			return nil, err
@@ -257,7 +252,7 @@ func (s *Service) holdMet(ctx context.Context, issueID, holdAt int64, w *HoldWhe
 		case err != nil:
 			return false, "", err
 		case state == RequestOpen, state == RequestApplying, state == RequestExpired:
-			return false, "", nil // no answer yet; an expired one goes to a person (personForExpired)
+			return false, "", nil
 		}
 		why = append(why, r.Ref+" is "+state)
 	}

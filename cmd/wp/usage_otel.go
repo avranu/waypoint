@@ -10,9 +10,6 @@ import (
 	"time"
 )
 
-// wp usage otel: point Claude Code's OpenTelemetry export at Waypoint
-// (WP-D20, WP-26).
-
 var usageOtelCmd = &command{
 	name: "otel", args: "[--install | --uninstall] [--metrics]",
 	summary: "set up Claude Code's OpenTelemetry export to Waypoint",

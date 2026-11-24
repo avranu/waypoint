@@ -1,6 +1,3 @@
-// Making or changing a schedule: what to ask, when, where the answer goes,
-// and (folded away) which skills, tools and model it runs with.
-
 import { useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'
@@ -230,8 +227,6 @@ export function JobEditor({
   )
 }
 
-// ---- when ----
-
 const MODES: { value: Mode; label: string }[] = [
   { value: 'interval', label: 'Every…' },
   { value: 'daily', label: 'Daily' },
@@ -277,7 +272,6 @@ function ScheduleBuilder({
             onClick={() =>
               set({
                 mode: m.value,
-                // Custom starts from what the builder said, to edit by hand.
                 ...(m.value === 'custom' && !b.raw ? { raw: buildSchedule(b) } : {}),
               })
             }
@@ -428,8 +422,6 @@ function SchedulePreview({ text, zone }: { text: string; zone: Zone }) {
     </div>
   )
 }
-
-// ---- with what ----
 
 function SkillsField({
   assistantId,

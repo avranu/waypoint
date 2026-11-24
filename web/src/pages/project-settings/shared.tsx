@@ -1,5 +1,3 @@
-// Small building blocks shared by the project settings tabs.
-
 import { useRef, useState, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { Check, Lock } from 'lucide-react'

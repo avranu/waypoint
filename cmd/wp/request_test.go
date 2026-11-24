@@ -126,8 +126,7 @@ func TestSessionHooksEndToEnd(t *testing.T) {
 	s.asAgent()
 	envFile := filepath.Join(t.TempDir(), "env")
 	t.Setenv("CLAUDE_ENV_FILE", envFile)
-	// Run from a task session, the session commands answer as one (/keep
-	// "does nothing here"); this test is of a session a person started.
+	// Clear the markers that make a session automation's, or session commands would answer as a task session.
 	for _, k := range []string{"WP_TASK", "WAYPOINT_FOLLOWUP", "WAYPOINT_UNATTENDED"} {
 		t.Setenv(k, "")
 	}
@@ -155,7 +154,6 @@ func TestSessionHooksEndToEnd(t *testing.T) {
 		t.Fatalf("session by directory: %q", got)
 	}
 
-	// Prompts: kept, cut to 300 characters; not with --no-prompts.
 	s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": strings.Repeat("p", 500), "session_title": "Fix it"}))
 	if x = s.sessions()[0]; len([]rune(x.LastPrompt)) != 300 || x.Title != "Fix it" {
 		t.Fatalf("prompt: %d %q", len([]rune(x.LastPrompt)), x.Title)
@@ -164,18 +162,12 @@ func TestSessionHooksEndToEnd(t *testing.T) {
 	if x = s.sessions()[0]; strings.Contains(x.LastPrompt, "secret") {
 		t.Fatal("--no-prompts sent the prompt")
 	}
-	// Under --no-prompts a keep-warm-looking prompt sends neither its text nor a
-	// digest of it (WP-1370): nothing the person wrote rides along. The hook
-	// compares it with the pending prompts Waypoint typed, here and locally,
-	// and sends only the id of the one it matches; with none it is the
-	// person's (the quiet ping with a record is core's test,
-	// TestKeepWarmPingsASessionWaitingOnWork).
+	// Under --no-prompts nothing typed is sent, not even a digest; only the id of a matched Waypoint prompt.
 	s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": keepWarmMark + ": still here, and secret"}), "--no-prompts")
 	if x = s.sessions()[0]; strings.Contains(x.LastPrompt, "secret") || strings.Contains(x.LastPrompt, keepWarmMark) {
 		t.Fatalf("a keep-warm-looking prompt under --no-prompts: %q", x.LastPrompt)
 	}
-	// So does a background task reporting back, as its mark alone: an empty
-	// prompt would read as a person's (WP-700).
+	// A background task's report is sent as its mark alone: an empty prompt would read as the person's.
 	for _, mark := range core.HarnessPromptMarks {
 		s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": mark + "\nsecret"}), "--no-prompts")
 		if x = s.sessions()[0]; x.LastPrompt != mark {
@@ -186,9 +178,7 @@ func TestSessionHooksEndToEnd(t *testing.T) {
 	if x = s.sessions()[0]; strings.Contains(x.LastPrompt, "secret") {
 		t.Fatal("--no-prompts sent a typed /compact")
 	}
-	// A session command (WP-562) reaches the server under --no-prompts as
-	// only the command, and never the model; the machine's own are left to
-	// the slash hook.
+	// Under --no-prompts a session command reaches the server as only the command, never the model's prompt.
 	if got := stopReason(t, s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": "/wp status secret"}), "--no-prompts")); !strings.HasPrefix(got, "Waypoint: ") {
 		t.Fatalf("/wp status: %q", got)
 	}
@@ -198,28 +188,20 @@ func TestSessionHooksEndToEnd(t *testing.T) {
 	if out := s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": "/wp btw secret"})); out != "" {
 		t.Fatalf("the event hook answered /wp btw: %q", out)
 	}
-	// Autopilot's prompt, however it is worded, goes marked as its own
-	// (WP-308); under --no-prompts, only the mark and the task.
 	c.notePastedPrompt("sess-1", "APP-9", "Handle APP-9.\n\nsecret steps")
 	s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": "Handle APP-9.\n\nsecret  steps\n"}), "--no-prompts")
 	if x = s.sessions()[0]; x.LastPrompt != core.AutopilotPromptMark+" started this session for APP-9" {
 		t.Fatalf("autopilot's pasted prompt: %q", x.LastPrompt)
 	}
-	// The note is used up: the same words typed again are the person's.
 	s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": "Handle APP-9.\n\nsecret steps"}))
 	if x = s.sessions()[0]; strings.HasPrefix(x.LastPrompt, core.AutopilotPromptMark) {
 		t.Fatalf("a typed prompt counted as autopilot's: %q", x.LastPrompt)
 	}
-	// Claude Code wraps a paste, and Waypoint's prompts are pasted: still
-	// Waypoint's under --no-prompts, not the person's (WP-1562).
+	// Claude Code wraps pastes, and Waypoint's own prompts arrive pasted, so they must still match as Waypoint's.
 	wrap := func(p string) string {
 		return "\n\n<pasted_content id=\"d29a\">\n" + p + "\n</pasted_content id=\"d29a\">\n"
 	}
-	// (The same prompt with a record is Waypoint's: hook_drops_test.go's
-	// TestNoPromptsMatchesAWrappedTypedPrompt.)
-	// A review prompt is known by its recorded digest (WP-1370), never its
-	// visible words: with no record, wrapped or not, it is a person's prompt,
-	// and --no-prompts sends none of it.
+	// A review prompt is recognised only by its recorded digest, never its visible words, so typed text cannot pass as one.
 	seen := s.sessions()[0].LastPrompt
 	s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": wrap(core.AutopilotReviewMark + "APP-9: secret findings")}), "--no-prompts")
 	if x = s.sessions()[0]; x.LastPrompt != seen {
@@ -230,18 +212,15 @@ func TestSessionHooksEndToEnd(t *testing.T) {
 	if x = s.sessions()[0]; x.LastPrompt != core.AutopilotPromptMark+" started this session for APP-9" {
 		t.Fatalf("autopilot's wrapped pasted prompt: %q", x.LastPrompt)
 	}
-	// The note is used up: a wrapped copy is the person's, sent as pasted.
 	s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": wrap("Handle APP-9.\n\nsecret steps")}))
 	if x = s.sessions()[0]; x.LastPrompt != "Handle APP-9. secret steps" {
 		t.Fatalf("a person's wrapped copy: %q", x.LastPrompt)
 	}
-	// A person's paste stays theirs under --no-prompts: nothing is sent.
 	s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": wrap("private note")}), "--no-prompts")
 	if x = s.sessions()[0]; strings.Contains(x.LastPrompt, "private") {
 		t.Fatalf("--no-prompts sent a person's paste: %q", x.LastPrompt)
 	}
-	// Every check reads a paste's text: a keep-warm ping, a background
-	// task's report, a /wp command or /keep, wrapped, are what they are.
+	// Every check reads the unwrapped paste text, so a wrapped keep-warm ping or /keep is still recognised.
 	before := s.sessions()[0].LastPrompt
 	s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": wrap(keepWarmMark + ": still here")}), "--no-prompts")
 	if x = s.sessions()[0]; x.LastPrompt != before {
@@ -263,21 +242,18 @@ func TestSessionHooksEndToEnd(t *testing.T) {
 	if got := stopReason(t, s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": wrap("/keep")}), "--no-prompts")); got != core.AutopilotNothingToKeepLine {
 		t.Fatalf("a wrapped /keep: %q", got)
 	}
-	// Unwrapped once, on the server: a paste of text that is itself one
-	// whole paste keeps its inner wrapper.
+	// Unwrap once only: a paste that itself holds a wrapper keeps the inner one.
 	inner := `<pasted_content id="b">quoted</pasted_content id="b">`
 	s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": wrap(inner)}))
 	if x = s.sessions()[0]; x.LastPrompt != inner {
 		t.Fatalf("a paste of a paste: %q", x.LastPrompt)
 	}
 
-	// Notification → waiting for you.
 	s.hook(in("sess-1", "Notification", s.repo, map[string]any{"notification_type": "idle_prompt", "message": "Claude is waiting"}))
 	if x = s.sessions()[0]; x.State != core.SessionWaiting {
 		t.Fatalf("after a notification: %s", x.State)
 	}
 
-	// The agent asks (what it does through wp is recorded in its session).
 	t.Setenv("WAYPOINT_SESSION", "sess-1")
 	out = s.wp("request", "ask", "Which database?", "--choice", "sqlite", "--choice", "postgres", "-d", "Tests need to know.")
 	if !strings.Contains(out, "Filed "+s.project.Key+":R-1") {
@@ -288,7 +264,6 @@ func TestSessionHooksEndToEnd(t *testing.T) {
 		t.Fatalf("requests: %+v", page.Requests)
 	}
 
-	// Stop with nothing decided: silent. Then the person answers.
 	tr := filepath.Join(t.TempDir(), "t.jsonl")
 	_ = os.WriteFile(tr, []byte(`{"type":"assistant","timestamp":"`+time.Now().UTC().Format(time.RFC3339Nano)+`","message":{"id":"m1","model":"claude-opus-5","usage":{"input_tokens":40,"output_tokens":10,"cache_creation_input_tokens":60}}}`+"\n"), 0o600)
 	stop := func(more map[string]any) string {
@@ -304,24 +279,20 @@ func TestSessionHooksEndToEnd(t *testing.T) {
 	if x = s.sessions()[0]; x.State != core.SessionIdle || x.LastUpdate != "All done for now." || x.InputTokens != 100 || x.OutputTokens != 10 {
 		t.Fatalf("after stop: %s %q %d/%d", x.State, x.LastUpdate, x.InputTokens, x.OutputTokens)
 	}
-	// Running totals: a second Stop doesn't count the same messages again.
 	stop(nil)
 	if x = s.sessions()[0]; x.InputTokens != 100 {
 		t.Fatalf("double-counted: %d", x.InputTokens)
 	}
 
 	if _, err := s.svc.DecideRequest(context.Background(), s.me, "R-1", core.RequestDecision{Decision: "answer", Answers: []core.Answer{{Choices: []string{"sqlite"}}}, Note: "for tests"}); err != nil {
-		// R-1 is ambiguous only across projects; this one is the session's.
 		page, _ = s.svc.ListRequests(context.Background(), s.me, core.RequestQuery{})
 		if _, err := s.svc.DecideRequest(context.Background(), s.me, page.Requests[0].Ref, core.RequestDecision{Decision: "answer", Answers: []core.Answer{{Choices: []string{"sqlite"}}}, Note: "for tests"}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	// next mentions what was answered.
 	if out = s.wp("next"); !strings.Contains(out, "1 answered request: wp request ls --answered") {
 		t.Fatalf("next: %s", out)
 	}
-	// A Stop that already continued is never blocked again.
 	if out = stop(map[string]any{"stop_hook_active": true}); out != "" {
 		t.Fatalf("blocked a continuing Stop: %q", out)
 	}
@@ -337,7 +308,6 @@ func TestSessionHooksEndToEnd(t *testing.T) {
 		t.Fatalf("next after delivery: %s", out)
 	}
 
-	// The next session in the same directory hears about decisions made while none was running.
 	s.hook(in("sess-1", "SessionEnd", s.repo, map[string]any{"reason": "logout", "transcript_path": tr}))
 	if x = s.sessions()[0]; x.State != core.SessionEnded {
 		t.Fatalf("after end: %s", x.State)
@@ -467,7 +437,7 @@ func TestHooksQueueWhenTheServerIsDown(t *testing.T) {
 		t.Fatal("the server saw events it couldn't have")
 	}
 
-	// Back up: the next hook sends the queue first, with the original times.
+	// Queued events are sent before the new hook's event, with their original times.
 	t.Setenv("WAYPOINT_SERVER", up)
 	s.hook(in("q1", "Stop", s.repo, map[string]any{"last_assistant_message": "back"}))
 	c, _ = newCLI(&bytes.Buffer{}, &bytes.Buffer{})
@@ -479,7 +449,6 @@ func TestHooksQueueWhenTheServerIsDown(t *testing.T) {
 		t.Fatalf("after catching up: %+v", list)
 	}
 
-	// A token the server refuses isn't queued (sending again can't help).
 	t.Setenv("WAYPOINT_TOKEN", "wpt_revoked")
 	s.hook(in("q2", "SessionStart", s.repo, nil))
 	c, _ = newCLI(&bytes.Buffer{}, &bytes.Buffer{})
@@ -550,7 +519,6 @@ func TestRefusedEventDoesNotDropTheGoodQueuedOnes(t *testing.T) {
 func TestHookIgnoresWhatItShould(t *testing.T) {
 	s := newSessionEnv(t)
 	s.asAgent()
-	// Garbage, no session id, an unknown event, and no server: never an error, never output.
 	var out bytes.Buffer
 	c, _ := newCLI(&out, &out)
 	hookClaudeEvent(c, strings.NewReader("not json"), &out, false)
@@ -573,7 +541,6 @@ func TestHookInstallSet(t *testing.T) {
 	path := filepath.Join(dir, "settings.json")
 	t.Setenv("WP_CLAUDE_SETTINGS", path)
 	t.Setenv("WAYPOINT_CONFIG_DIR", t.TempDir())
-	// An old install (usage hooks only) and someone else's hooks.
 	old := `{"model":"opus","hooks":{
 		"Stop":[{"hooks":[{"type":"command","command":"/old/wp hook claude-report","timeout":30}]},{"hooks":[{"type":"command","command":"theirs"}]}],
 		"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"x"}]}]}}`
@@ -591,7 +558,6 @@ func TestHookInstallSet(t *testing.T) {
 		}
 		return m
 	}
-	// entry finds our hook for an event and command marker.
 	entry := func(m map[string]any, event, marker string) (group, hook map[string]any) {
 		for _, g := range m["hooks"].(map[string]any)[event].([]any) {
 			gm := g.(map[string]any)
@@ -620,7 +586,7 @@ func TestHookInstallSet(t *testing.T) {
 		{"PreToolUse", "claude-event", "AskUserQuestion", true, 30},
 		{"PostToolUse", "claude-event", "AskUserQuestion|Bash|Read|Agent|Task", true, 30},
 		{"Stop", "claude-event", "", false, 20},
-		{"SubagentStart", "claude-event", "", false, 5}, // waits for its instructions (ADR146)
+		{"SubagentStart", "claude-event", "", false, 5}, // Synchronous: the sub-agent waits here for its instructions from this hook.
 		{"SubagentStop", "claude-event", "", true, 30},
 		{"SessionEnd", "claude-event", "", false, 2},
 		{"PreToolUse", "claude-nudge", "Bash|Read|Monitor", false, 2},
@@ -634,7 +600,6 @@ func TestHookInstallSet(t *testing.T) {
 			t.Errorf("%s %s: matcher %v async %v timeout %v", c.event, c.marker, g["matcher"], h["async"], h["timeout"])
 		}
 	}
-	// The old entry now points at this binary; the others' hooks are untouched.
 	if _, h := entry(m, "Stop", "claude-report"); strings.Contains(h["command"].(string), "/old/") {
 		t.Errorf("old path kept: %v", h["command"])
 	}
@@ -644,13 +609,11 @@ func TestHookInstallSet(t *testing.T) {
 	if _, h := entry(m, "PreToolUse", `"x"`); h == nil && !strings.Contains(string(mustJSON(m)), `"command":"x"`) {
 		t.Error("someone else's PreToolUse hook was lost")
 	}
-	// Again: nothing changes.
 	out.Reset()
 	run([]string{"hook", "claude"}, &out, &out)
 	if !strings.Contains(out.String(), "already installed") {
 		t.Errorf("second install: %s", out.String())
 	}
-	// --no-prompts changes the prompt hook only, and installing without it undoes that.
 	run([]string{"hook", "claude", "--no-prompts"}, &out, &out)
 	if _, h := entry(read(), "UserPromptSubmit", "claude-event"); !strings.Contains(h["command"].(string), "--no-prompts") {
 		t.Errorf("--no-prompts missing: %v", h["command"])
@@ -662,7 +625,6 @@ func TestHookInstallSet(t *testing.T) {
 	if _, h := entry(read(), "UserPromptSubmit", "claude-event"); strings.Contains(h["command"].(string), "--no-prompts") {
 		t.Errorf("--no-prompts stayed: %v", h["command"])
 	}
-	// Uninstall removes every hook of ours and only those.
 	run([]string{"hook", "claude", "--uninstall"}, &out, &out)
 	b, _ := os.ReadFile(path)
 	if strings.Contains(string(b), "claude-") || !strings.Contains(string(b), "theirs") || !strings.Contains(string(b), `"command": "x"`) {
@@ -671,8 +633,6 @@ func TestHookInstallSet(t *testing.T) {
 }
 
 func mustJSON(v any) []byte { b, _ := json.Marshal(v); return b }
-
-// ---- wp request ----
 
 func TestRequestCommands(t *testing.T) {
 	s := newSessionEnv(t)
@@ -688,7 +648,6 @@ func TestRequestCommands(t *testing.T) {
 	if r.Kind != "question" || r.Title != "Squash the migrations?" || len(r.Questions[0].Choices) != 2 || r.Questions[0].Choices[0].Label != "yes, squash them" {
 		t.Fatalf("question: %+v", r)
 	}
-	// Resolved from the repo's project, with no session.
 	if r.Project == nil || r.Project.Key != s.project.Key {
 		t.Fatalf("project: %+v", r.Project)
 	}
@@ -719,7 +678,6 @@ func TestRequestCommands(t *testing.T) {
 		t.Errorf("show: %s", out)
 	}
 
-	// An agent can't decide; a person can, from a terminal.
 	if out, code := s.run("request", "answer", "R-1", "--choice", "no"); code == 0 || !strings.Contains(out, "for people") {
 		t.Errorf("agent answered: %d %s", code, out)
 	}
@@ -727,7 +685,6 @@ func TestRequestCommands(t *testing.T) {
 		t.Errorf("agent snoozed: %s", out)
 	}
 
-	// wait returns when a person decides (here, after a moment).
 	go func() {
 		time.Sleep(400 * time.Millisecond)
 		_, _ = s.svc.DecideRequest(ctx, s.me, "R-1", core.RequestDecision{Decision: "answer", Answers: []core.Answer{{Choices: []string{"no"}}}, Note: "too risky"})
@@ -741,7 +698,6 @@ func TestRequestCommands(t *testing.T) {
 		t.Errorf("wait timeout: %d %s", code, out)
 	}
 
-	// answered lists it until it is read.
 	if out = s.wp("request", "ls", "--answered"); strings.Contains(out, "R-1") {
 		t.Errorf("wait should count as being told, but ls --answered has: %s", out)
 	}
@@ -752,7 +708,6 @@ func TestRequestCommands(t *testing.T) {
 		t.Errorf("ls --all --json: %s", out)
 	}
 
-	// The person, from a terminal.
 	s.asHuman()
 	if out = s.wp("request", "done", "R-2", "-m", "set it"); !strings.Contains(out, "R-2 is now done") {
 		t.Errorf("done: %s", out)
@@ -814,7 +769,6 @@ func TestRequestChange(t *testing.T) {
 		t.Fatalf("show --diff: %s", out)
 	}
 
-	// Several files by PATH=FILE, a new one, and a delete, from a subdirectory.
 	other := filepath.Join(tmp, "other.txt")
 	_ = os.WriteFile(other, []byte("fresh\n"), 0o644)
 	t.Chdir(filepath.Join(s.repo, "sub"))
@@ -834,7 +788,6 @@ func TestRequestChange(t *testing.T) {
 		t.Fatalf("delete: %+v", drop.Files)
 	}
 
-	// A patch is applied to HEAD's files here, to get the new contents.
 	t.Chdir(s.repo)
 	write("CLAUDE.md", "# Rules\nbe nice\nbe terse\n")
 	patch := git(t, s.repo, "diff", "--", "CLAUDE.md")
@@ -847,7 +800,6 @@ func TestRequestChange(t *testing.T) {
 	if len(viaPatch.Files) != 1 || viaPatch.Files[0].Path != "CLAUDE.md" || viaPatch.Files[0].BaseSHA != blob || !strings.Contains(viaPatch.Files[0].Diff, "+be terse") {
 		t.Fatalf("patch: %+v", viaPatch.Files)
 	}
-	// A patch that doesn't apply, binary content, outside the repo, no repo.
 	badPatch := filepath.Join(tmp, "bad.diff")
 	_ = os.WriteFile(badPatch, []byte(strings.Replace(patch, "be nice", "be kind", 1)+"\n"), 0o644)
 	if out, code := s.run("request", "change", "--patch", badPatch); code == 0 || !strings.Contains(out, "doesn't apply") {
@@ -901,7 +853,6 @@ func TestRequestChangeOutsideTheRepo(t *testing.T) {
 		return got.Key
 	}
 
-	// Above the repo: its directory is an ancestor of the repo root.
 	t.Chdir(s.repo)
 	orgFile := filepath.Join(filepath.Dir(s.repo), "CLAUDE.md")
 	if out := s.wp("request", "change", orgFile, "--from", newMD, "-m", "Org rules"); !strings.Contains(out, "Filed") {
@@ -915,7 +866,6 @@ func TestRequestChangeOutsideTheRepo(t *testing.T) {
 		t.Errorf("filed in %s, want the organization %s", got, org.Key)
 	}
 
-	// Elsewhere (a sibling of nothing above the repo): the repo's project.
 	if out := s.wp("request", "change", filepath.Join(tmp, "notes.md"), "--from", newMD, "-m", "Notes"); !strings.Contains(out, "Filed") {
 		t.Fatalf("change: %s", out)
 	}
@@ -923,8 +873,6 @@ func TestRequestChangeOutsideTheRepo(t *testing.T) {
 		t.Errorf("filed in %s, want %s", got, s.project.Key)
 	}
 
-	// From a directory with no repo: -p picks the project; the path is made absolute and
-	// the file's current content is the base.
 	dir := t.TempDir()
 	_ = os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("# Org\n"), 0o644)
 	t.Chdir(dir)
@@ -936,7 +884,6 @@ func TestRequestChangeOutsideTheRepo(t *testing.T) {
 	if !f.Outside || f.Path != evalAbs(t, filepath.Join(dir, "CLAUDE.md")) || f.New || f.BaseSHA == "" || !strings.Contains(f.Diff, "+be brief") || projectOf(req) != org.Key {
 		t.Fatalf("from a non-repo directory: %+v in %s", f, req.Ref)
 	}
-	// There is no HEAD to compare with, so the new content must be given.
 	if out, code := s.run("request", "change", "CLAUDE.md", "-p", org.Key); code == 0 || !strings.Contains(out, "--from") {
 		t.Errorf("no new content: %d %s", code, out)
 	}
@@ -972,7 +919,6 @@ func TestSessionHeadersFollowTheAgent(t *testing.T) {
 	if got.Get("X-Waypoint-Session") != "sess-9" || got.Get("X-Waypoint-Machine") != "box" {
 		t.Errorf("agent headers: %v", got)
 	}
-	// A person at the same terminal isn't attributed to the agent's session.
 	t.Setenv("WAYPOINT_AGENT", "none")
 	if _, err := c.call("GET", "/api/v1/me", nil); err != nil {
 		t.Fatal(err)
@@ -980,7 +926,6 @@ func TestSessionHeadersFollowTheAgent(t *testing.T) {
 	if got.Get("X-Waypoint-Session") != "" {
 		t.Errorf("a person got the session header: %v", got)
 	}
-	// Without the environment, the session that started in the directory.
 	t.Setenv("WAYPOINT_AGENT", "anthropic/claude-code")
 	t.Setenv("WAYPOINT_SESSION", "")
 	cwd, _ := os.Getwd()
@@ -1040,18 +985,15 @@ func TestStopHookCarriesAFollowUpsMessage(t *testing.T) {
 		}
 		return s.hook(in("sess-1", "Stop", s.repo, m))
 	}
-	// A background task still runs: not finished, nothing to say.
 	if out := stop(`[{"id":"b1","type":"shell","status":"running","description":"go test"}]`, `[]`); out != "" {
 		t.Fatalf("blocked with background work: %q", out)
 	}
 	if x = s.sessions()[0]; x.Pending != "a background task" || x.State != core.SessionWorking {
 		t.Fatalf("pending: %q %s", x.Pending, x.State)
 	}
-	// An older Claude Code that doesn't say: unknown.
 	if out := stop("", ""); out != "" || s.sessions()[0].Pending != "?" {
 		t.Fatalf("unknown: %q %q", out, s.sessions()[0].Pending)
 	}
-	// Finished: the hook waits for the message while the follow-up runs.
 	done := make(chan struct{})
 	go func() {
 		for {
@@ -1081,7 +1023,7 @@ func TestSessionStartReportsTheJobThatStartedIt(t *testing.T) {
 	t.Setenv("WAYPOINT_FOLLOWUP", "42")
 	var got []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/v1/sessions/hook" { // not the tidy hint's or the agent kit's questions
+		if r.URL.Path == "/api/v1/sessions/hook" {
 			got, _ = io.ReadAll(r.Body)
 		}
 		_, _ = w.Write([]byte(`{"session":1}`))
@@ -1126,7 +1068,7 @@ func TestRequestBareNumberIsCode(t *testing.T) {
 	s.asHuman()
 	ambiguous("request", "answer", "1", "--choice", "yes")
 	ambiguous("request", "wait", "1", "--timeout", "1s")
-	ambiguous("request", "show", "1") // show already read 1 as R-1
+	ambiguous("request", "show", "1")
 	if d, err := s.svc.GetRequest(ctx, s.me, decoy.Ref, 0); err != nil || d.State != "open" || len(d.Watches) != 0 {
 		t.Errorf("the decoy was touched: %+v %v", d, err)
 	}
@@ -1187,7 +1129,6 @@ func TestRequestChangeModes(t *testing.T) {
 		t.Fatalf("mode-only: %d %s", code, out)
 	}
 
-	// Contents and a mode: the contents are filed, the mode is named.
 	write("notes.txt", "a\nb\n")
 	git(t, s.repo, "add", "notes.txt")
 	git(t, s.repo, "update-index", "--chmod=+x", "build.sh")
@@ -1204,13 +1145,11 @@ func TestRequestChangeModes(t *testing.T) {
 		t.Fatalf("mixed files: %+v", req.Files)
 	}
 
-	// Content equal to its base is not a change.
 	same := filepath.Join(tmp, "same.txt")
 	_ = os.WriteFile(same, []byte("a\n"), 0o644)
 	if out, code := s.run("request", "change", "notes.txt", "--from", same, "-m", "nothing"); code == 0 || !strings.Contains(out, "alters nothing") {
 		t.Errorf("unchanged: %d %s", code, out)
 	}
-	// One file unchanged among others: it is left out, and said so.
 	newer := filepath.Join(tmp, "newer.txt")
 	_ = os.WriteFile(newer, []byte("a\nc\n"), 0o644)
 	out, code = s.run("request", "change", "notes.txt="+newer, "build.sh="+filepath.Join(s.repo, "build.sh"), "-m", "one")

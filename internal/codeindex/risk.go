@@ -9,11 +9,6 @@ import (
 	"time"
 )
 
-// Risk reads a change (a list of files) against the index's history: which
-// files are hotspots, which had bug fixes, which files usually change with
-// them but are not in the change, who owns them, how far they reach and
-// which tests cover them. It answers "what should I check before shipping".
-
 // FileRisk is one changed file.
 type FileRisk struct {
 	Path        string    `json:"path"`

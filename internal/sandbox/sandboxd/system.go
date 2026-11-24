@@ -93,8 +93,6 @@ func (OS) AddGroup(name string, gid int) error {
 }
 
 func (OS) AddUser(name string, uid, gid int, home, gecos string) error {
-	// -r: a system account, so no subordinate ids, no aging and no mail
-	// spool; -M: no home from /etc/skel; no -p: the password is locked.
 	return run("/usr/sbin/useradd", "-r", "-M", "-u", strconv.Itoa(uid), "-g", strconv.Itoa(gid),
 		"-d", home, "-s", "/usr/sbin/nologin", "-c", gecos, name)
 }

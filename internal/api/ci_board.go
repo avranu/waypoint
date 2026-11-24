@@ -20,13 +20,12 @@ func (s *Server) ciBoardRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/ci", a(s.ciBoard))
 	mux.HandleFunc("GET /api/v1/ci/log", a(s.ciLog))
 	mux.HandleFunc("GET /api/v1/ci/doctor", a(s.ciDoctor))
-	mux.HandleFunc("GET /api/v1/ci/history", a(s.ciHistory)) // WP-490
-	mux.HandleFunc("GET /api/v1/ci/line", a(s.ciLine))       // WP-1658
-	mux.HandleFunc("GET /api/v1/ci/tests", a(s.ciTests))     // WP-704
+	mux.HandleFunc("GET /api/v1/ci/history", a(s.ciHistory))
+	mux.HandleFunc("GET /api/v1/ci/line", a(s.ciLine))
+	mux.HandleFunc("GET /api/v1/ci/tests", a(s.ciTests))
 	mux.HandleFunc("GET /api/v1/ci/coverage", a(s.ciCoverage))
 	mux.HandleFunc("GET /api/v1/ci/suppressions", a(s.ciSuppressions))
 	mux.HandleFunc("PUT /api/v1/ci/pools/{forge}", a(s.setCIPool))
-	// CI hosts' reporters, and the usage they recorded (WP-231).
 	mux.HandleFunc("POST /api/v1/ci/report", a(s.ciReport))
 	mux.HandleFunc("GET /api/v1/ci/usage", a(s.ciUsage))
 }

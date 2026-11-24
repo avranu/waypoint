@@ -49,8 +49,6 @@ func TestAdvisoriesScript(t *testing.T) {
 		}
 		return p
 	}
-	// env: more NAME=value settings; without one, `npm run audit` fails (no
-	// waiver).
 	runIn := func(wd string, args []string, tree, main string, env ...string) (string, int) {
 		cmd := exec.Command("bash", append([]string{script}, args...)...)
 		cmd.Dir = wd
@@ -86,7 +84,6 @@ func TestAdvisoriesScript(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "::warning title=Advisory on main::") || !strings.Contains(out, "GHSA-a") {
 		t.Errorf("tree A over main A: want a pass with the warning, got %d: %s", code, out)
 	}
-	// No main file and no git remote: a clean tree must not need main at all.
 	out, code = run([]string{"check", "npm", "pr"}, clean, "")
 	if code != 0 || strings.Contains(out, "::warning") {
 		t.Errorf("clean tree: want a silent pass, got %d: %s", code, out)
@@ -95,7 +92,6 @@ func TestAdvisoriesScript(t *testing.T) {
 	if code == 0 || !strings.Contains(out, "::error title=Advisories on main::npm: GHSA-a") {
 		t.Errorf("main with a finding: want failure, got %d: %s", code, out)
 	}
-	// govulncheck: only a finding with a called function counts.
 	gov := write("gov.json", `{"config":{}}
 {"osv":{"id":"GO-1","summary":"imported only"}}
 {"finding":{"osv":"GO-1","trace":[{"module":"m"}]}}
@@ -115,8 +111,7 @@ func TestAdvisoriesScript(t *testing.T) {
 		t.Errorf("govulncheck on main: want failure, got %d: %s", code, out)
 	}
 
-	// A branch cut before main fixed an advisory didn't add it: the commit it
-	// left main at has it too (1464.2). One it added after that still fails.
+	// A branch cut before main fixed an advisory has it at its base, so it does not add it.
 	out, code = run([]string{"check", "npm", "pr"}, ab, clean, "ADVISORIES_BASE_JSON="+ab)
 	if code != 0 || !strings.Contains(out, "::warning title=Advisory fixed on main::npm: GHSA-a,GHSA-b") {
 		t.Errorf("stale branch: want a pass with the warning, got %d: %s", code, out)
@@ -125,12 +120,11 @@ func TestAdvisoriesScript(t *testing.T) {
 	if code == 0 || !strings.Contains(out, "this change adds GHSA-b over main") || !strings.Contains(out, "Advisory fixed on main::npm: GHSA-a ") {
 		t.Errorf("stale branch that adds one: want failure naming only GHSA-b, got %d: %s", code, out)
 	}
-	// One advisory against two packages is one id, not a new one (1464.11).
 	out, code = run([]string{"check", "npm", "pr"}, write("aa.json", npmReport("GHSA-a", "GHSA-a")), a)
 	if code != 0 || strings.Contains(out, "this change adds") {
 		t.Errorf("an id on two packages, on main once: want a pass, got %d: %s", code, out)
 	}
-	// Only high and critical count; an npm audit error is a failure, not "none".
+	// An npm audit error is a failure, not 'no advisories'.
 	out, code = run([]string{"check", "npm", "pr"}, write("low.json", npmReport("GHSA-m/moderate", "GHSA-l/low")), "")
 	if code != 0 || !strings.Contains(out, "npm advisories: none") {
 		t.Errorf("moderate and low: want a silent pass, got %d: %s", code, out)
@@ -143,20 +137,18 @@ func TestAdvisoriesScript(t *testing.T) {
 	if code == 0 || !strings.Contains(out, "npm audit failed") {
 		t.Errorf("npm audit error: want failure, got %d: %s", code, out)
 	}
-	// An advisory the change adds together with its waiver passes when
-	// `npm run audit` does (1464.10).
+	// An advisory the change adds passes when `npm run audit`, which holds the waiver list, passes.
 	out, code = run([]string{"check", "npm", "pr"}, ab, a, "ADVISORIES_AUDIT_CMD=true")
 	if code != 0 || !strings.Contains(out, "::warning title=Waived advisories::npm: this change adds GHSA-b over main") {
 		t.Errorf("added with its waiver: want a pass with the warning, got %d: %s", code, out)
 	}
-	// The new ids' details are theirs alone, whatever their ids hold (1464.26).
+	// An id's detail is its own: GHSA-a's detail does not come from GHSA-ab.
 	out, _ = run([]string{"check", "npm", "pr"}, write("sub.json", npmReport("GHSA-a", "GHSA-ab")), write("ab2.json", npmReport("GHSA-ab")))
 	if !strings.Contains(out, "this change adds GHSA-a over main") || strings.Contains(out, "-GHSA-ab <1") {
 		t.Errorf("an id inside another: want only GHSA-a's detail, got: %s", out)
 	}
 
-	// Main can't be read (a repository with no origin): findings fail, said
-	// as that, and never against an older fetch (1464.9, 1464.17).
+	// With no readable main, findings fail as that, never against an older fetch of main.
 	repo := t.TempDir()
 	for _, args := range [][]string{{"init", "-q"}, {"-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "x"}} {
 		cmd := exec.Command("git", args...)
@@ -251,8 +243,6 @@ func TestRepoAdvisoriesJob(t *testing.T) {
 	if strings.Contains(adv.If, "pull_request") {
 		t.Errorf("advisories must not run on a pull request: %s", adv.If)
 	}
-	// Main's go step is the script's; main's npm step is the audit with the
-	// waiver list.
 	for _, want := range []string{
 		"run: deploy/advisories.sh check go main\n",
 		"run: npm run audit\n",
@@ -261,8 +251,7 @@ func TestRepoAdvisoriesJob(t *testing.T) {
 			t.Errorf("ci.yml lacks %q", strings.TrimSpace(want))
 		}
 	}
-	// The pull request steps, each in its own job and with the merge base: a
-	// whole-file search passed with one of the two lines gone.
+	// Checked per job: a whole-file search would pass with one of the two steps missing.
 	jobs, _ := wfFile(t, "../../.forgejo/workflows/ci.yml")
 	for job, run := range map[string]string{
 		"backend-shard": "deploy/advisories.sh check go pr",
@@ -433,8 +422,6 @@ func TestAdvisoriesGit(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// npm audit --json prints audit.json if the tree has one, else the
-	// lockfile; anything else npm is asked fails (no `npm run audit` here).
 	fakes := map[string]string{
 		"npm":         "#!/bin/sh\n[ \"$1 $2\" = 'audit --json' ] || exit 1\nif [ -f audit.json ]; then cat audit.json; else cat package-lock.json; fi\nexit 1\n",
 		"govulncheck": "#!/bin/sh\ncat vuln.json\n",
@@ -462,7 +449,6 @@ func TestAdvisoriesGit(t *testing.T) {
 	goClean := `{"config":{}}` + "\n"
 	goX := goClean + `{"osv":{"id":"GO-X","summary":"x"}}` + "\n" + `{"finding":{"osv":"GO-X","trace":[{"function":"F","module":"m"}]}}` + "\n"
 	goY := goX + `{"osv":{"id":"GO-Y","summary":"y"}}` + "\n" + `{"finding":{"osv":"GO-Y","trace":[{"function":"G","module":"m"}]}}` + "\n"
-	// First commit: main has advisory X. Second: main has fixed it.
 	put("web/package.json", "{}")
 	put("web/package-lock.json", npmReport("GHSA-x"))
 	put("vuln.json", goX)
@@ -474,8 +460,6 @@ func TestAdvisoriesGit(t *testing.T) {
 	gitIn(t, repo, "commit", "-q", "-a", "-m", "c2")
 	gitIn(t, repo, "push", "-q", "origin", "main")
 
-	// branch checks out a new branch cut from c1 with the given files, and
-	// returns to nothing: each case is its own branch.
 	branch := func(name string, files map[string]string) {
 		gitIn(t, repo, "checkout", "-q", "-b", name, c1)
 		for f, b := range files {
@@ -500,9 +484,6 @@ func TestAdvisoriesGit(t *testing.T) {
 	}
 	fixedWarn := "::warning title=Advisory fixed on main::"
 
-	// (a) A branch cut before main fixed X, which changes the lockfile but
-	// doesn't add X: a pass with the warning, the base found by merge-base and
-	// again from ADVISORIES_BASE_SHA.
 	branch("stale", map[string]string{"web/package-lock.json": npmReport("GHSA-x", "GHSA-low/low")})
 	for name, env := range map[string][]string{"merge-base": nil, "ADVISORIES_BASE_SHA": {"ADVISORIES_BASE_SHA=" + c1}} {
 		out, code := run("npm", env...)
@@ -510,15 +491,12 @@ func TestAdvisoriesGit(t *testing.T) {
 			t.Errorf("npm, stale branch (%s): want a pass with the fixed-on-main warning, got %d: %s", name, code, out)
 		}
 	}
-	// (b) A branch that adds Y fails naming Y, and not X.
 	branch("adds", map[string]string{"web/package-lock.json": npmReport("GHSA-x", "GHSA-y")})
 	out, code := run("npm")
 	if code != 1 || !strings.Contains(out, "this change adds GHSA-y over main") || strings.Contains(out, "adds GHSA-x") {
 		t.Errorf("npm, branch adding Y: want failure naming Y only, got %d: %s", code, out)
 	}
-	// (d) Item 4: a branch that leaves web/package*.json alone is not scanned,
-	// though its tree's audit has Y (audit.json) that main lacks: only the
-	// shortcut can pass it. One that changes the lockfile is scanned.
+	// A branch that leaves web/package*.json unchanged skips the npm scan, so a web/audit.json it adds is not counted.
 	branch("no-deps", map[string]string{"web/audit.json": npmReport("GHSA-y"), "README": "x"})
 	out, code = run("npm")
 	if code != 0 || !strings.Contains(out, "npm advisories: web/package.json and web/package-lock.json unchanged from main; nothing this change could add") {
@@ -529,8 +507,6 @@ func TestAdvisoriesGit(t *testing.T) {
 	if code != 1 || !strings.Contains(out, "this change adds GHSA-y over main") {
 		t.Errorf("npm, package.json changed: want the scan to fail for Y, got %d: %s", code, out)
 	}
-	// With the base only in ADVISORIES_BASE_SHA (no origin/main ref to
-	// merge-base against) the shortcut still finds it.
 	gitIn(t, repo, "checkout", "-q", "no-deps")
 	gitIn(t, repo, "update-ref", "-d", "refs/remotes/origin/main")
 	out, code = run("npm", "ADVISORIES_BASE_SHA="+c1)
@@ -538,9 +514,7 @@ func TestAdvisoriesGit(t *testing.T) {
 		t.Errorf("npm, unchanged, base from ADVISORIES_BASE_SHA: want the unchanged line, got %d: %s", code, out)
 	}
 
-	// (c) go: no shortcut (a change to Go code alone can add a called
-	// vulnerability). The stale branch passes with the warning; the worktree
-	// made for main is gone afterwards; one adding Y fails.
+	// No shortcut for go: a change to Go code alone can add a called vulnerability.
 	branch("go-stale", map[string]string{"README": "go"})
 	out, code = run("go")
 	if code != 0 || !strings.Contains(out, fixedWarn+"go: GO-X ") {
@@ -587,7 +561,6 @@ esac
 		return fmt.Sprintf(`"%[1]s":{"via":[{"name":"%[1]s","severity":"high","range":"<=4.0.7","title":"bad","url":"https://github.com/advisories/%[2]s"}]}`, pkg, id)
 	}
 	audit := filepath.Join(dir, "audit.json")
-	// picomatch's advisory is on the waiver list; the other package's isn't.
 	if err := os.WriteFile(audit, []byte(`{"vulnerabilities":{`+adv("picomatch", "GHSA-fc5q-39xc-vjpf")+","+adv("other", "GHSA-zzzz")+`}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}

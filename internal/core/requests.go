@@ -16,17 +16,15 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Requests (WP-D16): something an agent asks of a person while it keeps
-// working. They survive the chat: a request is a row with a state until a
-// person decides it, and the decision is delivered to the agent.
+// A request stays open until a person decides it; the decision then goes to the asking agent.
 
 // Request kinds.
 const (
-	RequestQuestion   = "question"   // free text or choices
-	RequestChange     = "change"     // file edits a hook or rule stopped the agent making
-	RequestCommand    = "command"    // commands to run, a cell each
-	RequestPermission = "permission" // a tool call the classifier, a hook or a rule refused
-	RequestAction     = "action"     // a step only a person can do
+	RequestQuestion   = "question"
+	RequestChange     = "change"
+	RequestCommand    = "command"
+	RequestPermission = "permission"
+	RequestAction     = "action"
 )
 
 // RequestKinds in the order people read them.
@@ -40,12 +38,12 @@ const (
 	RequestDenied    = "denied"
 	RequestDone      = "done"
 	RequestDismissed = "dismissed"
-	RequestWithdrawn = "withdrawn" // the asking agent took it back
+	RequestWithdrawn = "withdrawn"
 	RequestApplying  = "applying"
 	RequestApplied   = "applied"
 	RequestFailed    = "failed"
-	RequestConflict  = "conflict" // the files changed since the agent made the change
-	RequestExpired   = "expired"  // a hook's request the agent moved on from (WP-66)
+	RequestConflict  = "conflict"
+	RequestExpired   = "expired"
 )
 
 // decidedStates are the states an agent is told about.
@@ -60,7 +58,7 @@ const (
 	maxRequestTotal   = 1 << 20
 	maxCellOutput     = 256 << 10
 	permissionDedupe  = 10 * time.Minute
-	maxRequestsOpenIn = 200 // per person, so a runaway agent can't bury the inbox
+	maxRequestsOpenIn = 200
 )
 
 // Question is one thing asked: free text, or one or several choices.
@@ -314,12 +312,9 @@ type RequestInput struct {
 	// ClosesWhen: conditions that close the request when one holds (WP-126).
 	ClosesWhen []WatchInput `json:"closes_when"`
 	Source     string       `json:"-"` // requestAuto: filed by Waypoint from the end of a turn (WP-96)
-	// envRead: an environment read ask (VouchEnvironment); not settable
-	// from the API, so the question asked is the one Waypoint writes.
+	// Set by Waypoint only, never from the API, so the question asked is the one Waypoint writes.
 	envRead *EnvReadAsk
 }
-
-// ---- refs ----
 
 var requestRefRE = lazyre.New(`(?i)^(?:([a-z0-9_.-]+):)?r-?(\d+)$`)
 
@@ -338,8 +333,7 @@ func requestVisible(actor *Actor, alias string) (string, []any) {
 	}
 	editor, eargs := actor.memberProjects(RoleEditor)
 	if actor.scope != nil {
-		// A job's token: its own requests and those it may decide, in its
-		// projects only (WP-418).
+		// A job's token sees its own requests and those it may decide, within its projects only.
 		member, margs := actor.memberProjects(RoleViewer)
 		return fmt.Sprintf(`((%[1]s.user_id = ? AND %[1]s.project_id IN %[2]s) OR %[1]s.project_id IN %[3]s)`, alias, member, editor),
 			append(append([]any{actor.id()}, margs...), eargs...)
@@ -407,8 +401,7 @@ func (s *Service) resolveRequestID(ctx context.Context, q queryer, actor *Actor,
 	if len(cands) == 1 {
 		return cands[0].id, nil
 	}
-	// Several projects number alike: the asking session's own come first,
-	// then the person's personal ones.
+	// When several projects number alike, the asking session's own request wins.
 	for _, c := range cands {
 		if actor.Session != 0 && c.session.Valid && c.session.Int64 == actor.Session {
 			return c.id, nil
@@ -424,8 +417,6 @@ func (s *Service) resolveRequestID(ctx context.Context, q queryer, actor *Actor,
 	}
 	return 0, invalid("%s could be %s; use the full reference", strings.ToUpper(ref), strings.Join(keys, " or "))
 }
-
-// ---- loading ----
 
 const requestCols = `r.id, r.project_id, r.number, r.user_id, r.session_id, r.issue_id, r.agent, r.kind, r.title, r.body, r.state, r.payload,
 	r.answer, r.decision, r.note, r.via, r.decided_by, r.decided_at, r.delivered_at, r.snoozed_until, r.apply_path, r.result, r.error, r.created_at, r.updated_at, r.source, r.followup, r.followup_on, r.blocking`
@@ -702,8 +693,6 @@ func (s *Service) canDecide(ctx context.Context, actor *Actor, r *Request, roles
 	return role >= RoleEditor
 }
 
-// ---- listing ----
-
 // RequestQuery narrows a request list.
 type RequestQuery struct {
 	State   string // open (default), answered (decided, agent not told yet), decided, snoozed, all, or one state
@@ -872,8 +861,6 @@ func (s *Service) fillRunner(ctx context.Context, actor *Actor, r *Request) {
 	r.Runner = &RequestRunner{Machine: r.Session.Machine, Online: runnerOnline(ctx, s, actor.id(), r.Session.Machine)}
 }
 
-// ---- creating ----
-
 var toolNameRE = lazyre.New(`^[A-Za-z0-9_.:*-]{1,100}$`)
 
 // CreateRequest files a request for the actor's person. Agents ask; people
@@ -919,7 +906,6 @@ func (s *Service) createRequestTx(ctx context.Context, t *tx, actor *Actor, sess
 	}
 	fullTitle := in.Title
 	if len([]rune(in.Title)) > maxRequestTitle {
-		// Text typed where a title goes: a short title, the text kept whole in the details (WP-175).
 		in.Title, in.Body = splitTitle(in.Title, in.Body, true)
 	}
 	if len(in.Body) > maxRequestBody {
@@ -967,13 +953,12 @@ func (s *Service) createRequestTx(ctx context.Context, t *tx, actor *Actor, sess
 		}
 		input := in.ToolInput
 		if len(input) > 20_000 {
-			input = nil // too large to show; the title says what it was
+			input = nil
 		}
 		pay.Tool = &ToolCall{Name: in.Tool, Input: input, Reason: excerpt(in.Reason, 1000)}
 		dedupe = toolDedupe(in.Tool, in.ToolInput)
 	}
-	// Where it belongs: the project asked for, else the session's, else the
-	// issue's; outside any project it is personal.
+	// Project: explicit, else the issue's, else the session's if the person has a role in it; with none it is personal ("me" forces personal).
 	var projectID sql.NullInt64
 	var issueID sql.NullInt64
 	if in.Issue != "" {
@@ -1008,8 +993,7 @@ func (s *Service) createRequestTx(ctx context.Context, t *tx, actor *Actor, sess
 		}
 	}
 	if in.Organization && projectID.Valid {
-		// A file above the repo belongs to the organization the repo's project
-		// sits under, when the person can see it; else it stays in the project.
+		// An organization file goes to the parent organization of the repo's project when the person can see it; otherwise it stays in the project.
 		var parent sql.NullInt64
 		_ = t.QueryRowContext(ctx, `SELECT parent_id FROM projects WHERE id = ?`, projectID.Int64).Scan(&parent)
 		if parent.Valid {
@@ -1028,8 +1012,7 @@ func (s *Service) createRequestTx(ctx context.Context, t *tx, actor *Actor, sess
 	if sess != nil {
 		sessionID = sql.NullInt64{Int64: sess.ID, Valid: true}
 	}
-	// An environment read ask is one per project and addresses, whichever
-	// session asks: the open one is the answer to a repeat.
+	// An env-read ask dedupes per project across sessions: one open ask answers every session that repeats it.
 	if in.envRead != nil && projectID.Valid {
 		var dup int64
 		err := t.QueryRowContext(ctx, `SELECT id FROM requests WHERE project_id = ? AND dedupe_key = ? AND state = 'open' ORDER BY id DESC LIMIT 1`, projectID.Int64, dedupe).Scan(&dup)
@@ -1039,12 +1022,11 @@ func (s *Service) createRequestTx(ctx context.Context, t *tx, actor *Actor, sess
 			return 0, false, err
 		}
 	}
-	// A repeat is the same request: a permission denial again, or the same tool call.
 	if sessionID.Valid {
 		var dup int64
 		var err error
 		switch {
-		case dedupe != "": // the same refused call, whatever its tool_use_id
+		case dedupe != "": // A refused call repeats under a new tool_use_id, so it is matched by content, not by tool_use_id.
 			err = t.QueryRowContext(ctx, `SELECT id FROM requests WHERE session_id = ? AND dedupe_key = ? AND state = 'open' AND created_at > ? ORDER BY id DESC LIMIT 1`,
 				sessionID.Int64, dedupe, at-permissionDedupe.Milliseconds()).Scan(&dup)
 		case in.ToolUseID != "":
@@ -1082,7 +1064,7 @@ func (s *Service) createRequestTx(ctx context.Context, t *tx, actor *Actor, sess
 	if in.Blocking && follow == "never" {
 		return 0, false, invalid("blocking is for an answer that wakes you, not followup never")
 	}
-	var notifyAt any // an auto-filed question tells the person only if it is still open after a while
+	var notifyAt any
 	if in.Source == requestAuto {
 		notifyAt = at + autoQuestionDelay.Milliseconds()
 	}
@@ -1126,10 +1108,7 @@ func (s *Service) createRequestTx(ctx context.Context, t *tx, actor *Actor, sess
 		}
 	}
 	if in.Source == requestAuto {
-		// A guess at a question waits before it is announced: request.created
-		// (and the notification, and automations on it) follow when it is
-		// still open after autoQuestionDelay (NotifyAutoQuestions). The page
-		// is told now, so it lists it.
+		// A guess at a question is announced only after autoQuestionDelay; the page is told now (request.updated) so it lists the request.
 		t.emit(requestEvent(EvRequestUpdated, id, ref, number, in.Kind, RequestOpen, actor.id(), projectID, sessionID, in.Title, actor.agentName()))
 		return id, true, nil
 	}
@@ -1151,7 +1130,7 @@ func canonicalJSON(raw json.RawMessage) string {
 	if json.Unmarshal(raw, &v) != nil {
 		return string(raw)
 	}
-	b, _ := json.Marshal(v) // maps marshal with sorted keys
+	b, _ := json.Marshal(v)
 	return string(b)
 }
 
@@ -1322,10 +1301,7 @@ func checkChangeFiles(in []RequestFileInput) ([]storedFile, error) {
 	return out, nil
 }
 
-// ---- hooks create requests ----
-
-// A refused tool call (the PermissionDenied hook) is no longer a request: it
-// is logged for audit (logRefusal, WP-232, WP-ADR115).
+// A refused tool call is logged for audit (logRefusal), not filed as a request.
 
 // toolSummary is the part of a tool call a person recognises: the command
 // of Bash, the path of a file tool.
@@ -1452,8 +1428,6 @@ func terminalAnswer(raw json.RawMessage) string {
 	return excerpt(strings.Join(parts, "\n"), 1500)
 }
 
-// ---- delivering decisions ----
-
 // takeDecisions returns the decisions the agent hasn't been told yet and
 // marks them delivered: those of this session at Stop; at SessionStart also
 // those of earlier sessions in the same worktree.
@@ -1473,8 +1447,7 @@ func (s *Service) takeDecisions(ctx context.Context, t *tx, actor *Actor, x *Age
 		return nil, err
 	}
 	if !bundled {
-		// Quiet dismissals pending from before WP-197 are marked told, unsaid,
-		// so they don't fill the limit on every stop.
+		// Quiet dismissals are marked told here, unsent, so they cannot fill the query limit on every Stop.
 		var quiet []int64
 		for _, r := range list {
 			if r.quiet() {
@@ -1496,7 +1469,6 @@ func (s *Service) takeDecisions(ctx context.Context, t *tx, actor *Actor, x *Age
 			return nil, nil
 		}
 	} else {
-		// A quiet dismissal decided before WP-197 is marked told, unsaid.
 		list = slices.DeleteFunc(list, func(r *Request) bool { return r.quiet() })
 	}
 	// #nosec G202 -- only ? placeholders are joined in
@@ -1572,15 +1544,12 @@ func (r *Request) wakes() bool {
 	if r.quiet() {
 		return false
 	}
-	// A refused call's request (WP-233, WP-ADR114): by the time a person
-	// decides it the agent has usually moved on, so the decision waits for
-	// its next prompt rather than waking it to rerun a call it may no longer
-	// need.
+	// A decision on a refused call waits for the agent's next prompt: by then the agent has usually moved on, and rerunning the call may be unneeded.
 	if r.Kind == RequestPermission && !r.Blocking {
 		return false
 	}
 	if r.Decision == closedByWatch || r.Decision == closedInSession {
-		return false // Waypoint closed it: nothing for the agent to act on
+		return false
 	}
 	switch r.Followup {
 	case "never":
@@ -1636,7 +1605,7 @@ func (s *Service) AnsweredRequests(ctx context.Context, actor *Actor) int {
 		args = append(args, st)
 	}
 	mine := ""
-	if actor.Session != 0 { // a session hears of its own requests, not every session's (WP-271)
+	if actor.Session != 0 {
 		mine, args = " AND session_id = ?", append(args, actor.Session)
 	}
 	_ = s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM requests WHERE user_id = ? AND decided_at IS NOT NULL AND delivered_at IS NULL AND via = '' AND state IN (`+placeholders(len(decidedStates))+`)`+mine, args...).Scan(&n)
@@ -1735,8 +1704,6 @@ func tail(s string, n int) string {
 	return "…\n" + s
 }
 
-// ---- deciding ----
-
 // RequestDecision is what a person decides.
 type RequestDecision struct {
 	Decision string   `json:"decision"` // answer, approve, deny, done, dismiss
@@ -1780,7 +1747,7 @@ func (s *Service) DecideRequest(ctx context.Context, actor *Actor, ref string, i
 			return nil, fmt.Errorf("%w; the agent that asked can take it back: wp request withdraw %s -m WHY", err, ref)
 		}
 	}
-	if err := actor.need(PermRequestsAnswer); err != nil { // WP-111
+	if err := actor.need(PermRequestsAnswer); err != nil {
 		return nil, err
 	}
 	if err := actor.requirePersonDirect("deciding a request"); err != nil {
@@ -1800,9 +1767,7 @@ func (s *Service) DecideRequest(ctx context.Context, actor *Actor, ref string, i
 	if in.NotAQuestion && in.Decision == "dismiss" && in.Note == "" {
 		in.Note = notAQuestion
 	}
-	// Approving a permission request with an allow rule (WP-233): the rule
-	// and the repo it goes to are checked first, so a bad one leaves the
-	// request open with the error.
+	// The rule and its repo are checked before anything changes, so a bad rule leaves the request open with the error.
 	in.Rule = strings.TrimSpace(in.Rule)
 	var ruleRepo *setupRepo
 	if in.Rule != "" {
@@ -1824,12 +1789,10 @@ func (s *Service) DecideRequest(ctx context.Context, actor *Actor, ref string, i
 		}
 	}
 	if in.Decision == "answer" {
-		// "Allow reads" on an environment read ask records its addresses
-		// first, as the answering person's (WP-1087); if that fails the
-		// request stays open with the error.
+		// An env-read answer records its addresses first, as the answering person; if that fails the request stays open.
 		list, err := s.loadRequests(ctx, actor, true, `r.id = ?`, id)
 		if err != nil {
-			return nil, err // not knowing whether it's an env read ask, don't answer it
+			return nil, err
 		}
 		if len(list) == 1 && list[0].State == RequestOpen && list[0].EnvRead != nil {
 			r := list[0]
@@ -1912,9 +1875,9 @@ func (s *Service) DecideRequest(ctx context.Context, actor *Actor, ref string, i
 			}
 		}
 		r.State, r.Decision, r.Note = state, in.Decision, in.Note
-		var delivered any // NULL: the agent is still to be told
+		var delivered any
 		if r.quiet() {
-			delivered = now // nothing to tell (WP-197)
+			delivered = now
 		}
 		if _, err := t.ExecContext(ctx, `UPDATE requests SET state = ?, decision = ?, note = ?, answer = ?, decided_by = ?, decided_at = ?, delivered_at = ?, snoozed_until = NULL,
 			apply_path = ?, error = '', updated_at = ? WHERE id = ?`,
@@ -1937,7 +1900,7 @@ func (s *Service) DecideRequest(ctx context.Context, actor *Actor, ref string, i
 	if applyChange && tmp != nil {
 		s.applyChange(ctx, actor, tmp.ID, in.ApplyPath)
 	} else if tmp != nil {
-		s.tellDecision(ctx, id) // after dispatch added any rule (permRuleJob)
+		s.tellDecision(ctx, id) // The agent is told only after dispatch has added any permission rule (permRuleJob), so the rule is in place when it hears.
 	}
 	return s.GetRequest(ctx, actor, strconv.FormatInt(id, 10), 0)
 }
@@ -2035,11 +1998,9 @@ func checkAnswers(qs []Question, in RequestDecision) ([]Answer, string, error) {
 	return answers, strings.Join(parts, "\n\n"), nil
 }
 
-// ---- snooze and withdraw ----
-
 // SnoozeRequest hides an open request until a time (nil brings it back).
 func (s *Service) SnoozeRequest(ctx context.Context, actor *Actor, ref string, until *time.Time) (*Request, error) {
-	if err := actor.need(PermRequestsAnswer); err != nil { // WP-111
+	if err := actor.need(PermRequestsAnswer); err != nil {
 		return nil, err
 	}
 	if err := actor.requirePersonDirect("snoozing a request"); err != nil {
@@ -2085,7 +2046,7 @@ func (s *Service) SnoozeRequest(ctx context.Context, actor *Actor, ref string, u
 // person it is for, no longer needs the answer. reason, if given, is kept
 // as the request's note for the person to read (WP-198).
 func (s *Service) WithdrawRequest(ctx context.Context, actor *Actor, ref, reason string) (*Request, error) {
-	if err := actor.need(PermRequestsCreate); err != nil { // WP-111: withdraw your own
+	if err := actor.need(PermRequestsCreate); err != nil {
 		return nil, err
 	}
 	if err := actor.canWrite(); err != nil {
@@ -2104,8 +2065,7 @@ func (s *Service) WithdrawRequest(ctx context.Context, actor *Actor, ref, reason
 		if err != nil {
 			return err
 		}
-		// An agent, restricted token or not, takes back only what it asked
-		// (one token can serve several agents, each named per call).
+		// One agent token can serve several agents, so withdraw matches the agent's name as well as the user.
 		if r.userID != actor.id() || ((actor.Restricted() || actor.agentName() != "") && r.Agent != actor.agentName()) {
 			return fmt.Errorf("only the agent that asked can withdraw %s: %w", r.Code, ErrForbidden)
 		}
@@ -2131,8 +2091,6 @@ func (s *Service) WithdrawRequest(ctx context.Context, actor *Actor, ref, reason
 	}
 	return s.GetRequest(ctx, actor, strconv.FormatInt(id, 10), 0)
 }
-
-// ---- waiting on you ----
 
 // Waiting is everything waiting on the actor, in one place (WP-D16).
 type Waiting struct {
@@ -2217,8 +2175,7 @@ func (s *Service) waitingOnYou(ctx context.Context, actor *Actor, project, agent
 			}
 		}
 	}
-	// Webhooks and text from outside are nobody's agent's doing: only an
-	// unnarrowed or project-narrowed view shows them.
+	// Webhook and outside-text problems belong to no agent, so only an unnarrowed or project-narrowed view shows them.
 	if agent == "" {
 		if w.Hooks, err = s.hookProblems(ctx, actor, project); err != nil {
 			return nil, err

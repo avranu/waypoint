@@ -86,7 +86,6 @@ func TestPermissionApproveWithRule(t *testing.T) {
 	deny(t, se.env, ag, "cli-1", "Bash", `{"command":"wp pr show 12"}`)
 	req := latestPermission(t, se.env, se.admin)
 
-	// A rule the check refuses, or with another decision, leaves the request open.
 	for _, d := range []RequestDecision{{Decision: "approve", Rule: "Bash(wp *)"}, {Decision: "approve", Rule: "Bash(rm -rf *)"}, {Decision: "deny", Rule: "Bash(wp pr show *)"}} {
 		if _, err := se.s.DecideRequest(se.ctx, se.admin, req.Ref, d); !IsInvalid(err) {
 			t.Fatalf("%+v: %v", d, err)
@@ -122,8 +121,6 @@ func TestPermissionApproveWithRule(t *testing.T) {
 		t.Fatalf("what the agent is told: %q", text)
 	}
 
-	// A rule that couldn't be added isn't reported as chosen: Rule stays
-	// empty and Reason says why, for the agent and the person (c5448).
 	se.fake.failPR = true
 	deny(t, se.env, ag, "cli-1", "Bash", `{"command":"wp pr log 14"}`)
 	failed := latestPermission(t, se.env, se.admin)
@@ -139,7 +136,6 @@ func TestPermissionApproveWithRule(t *testing.T) {
 	}
 	se.fake.failPR = false
 
-	// A session with no repo Waypoint knows can't take a rule.
 	if _, err := se.s.db.W.Exec(`UPDATE agent_sessions SET repo = 'elsewhere/x' WHERE id = ?`, res.Session); err != nil {
 		t.Fatal(err)
 	}
@@ -175,10 +171,10 @@ func TestRefusedCallRule(t *testing.T) {
 		}
 	}
 	refuse("cli-1", "wp pr show 12")
-	refuse("cli-1", "wp pr show 12") // a repeat: the same row
+	refuse("cli-1", "wp pr show 12")
 	refuse("cli-2", "wp pr show 13")
-	refuse("cli-2", "make a && make b") // chained: no rule covers it
-	refuse("cli-2", "make lint")        // once only: not offered at the top
+	refuse("cli-2", "make a && make b")
+	refuse("cli-2", "make lint")
 
 	page, err := se.s.ListRefusals(se.ctx, se.admin, RefusalQuery{})
 	if err != nil {
@@ -207,7 +203,6 @@ func TestRefusedCallRule(t *testing.T) {
 		t.Fatalf("the top rule's example should be the newest call it covers, not %d", show12.ID)
 	}
 
-	// Only a person picks a rule, and only one that passes the checks.
 	if _, err := se.s.AllowRefusedCall(se.ctx, ag, show12.ID, "Bash(wp pr show *)"); err == nil || !strings.Contains(err.Error(), "a person picks") {
 		t.Fatalf("an agent picked a rule: %v", err)
 	}
@@ -247,16 +242,12 @@ func TestRefusedCallRule(t *testing.T) {
 	if last.Rule != "Bash(wp pr show *)" || !last.Added || last.PR != f.RulePR {
 		t.Fatalf("an added rule goes last, marked: %+v", page.Rules)
 	}
-	// A rule whose every call has one is no longer offered: its button
-	// would pick for a call that already has a rule.
 	for _, g := range page.Rules {
 		if g.Rule == "Bash(wp pr show 12)" {
 			t.Fatalf("offered for a call that has a rule: %+v", g)
 		}
 	}
 
-	// A pull request that fails leaves no rule, says why, and the call
-	// still offers its rules.
 	se.fake.failPR = true
 	refuse("cli-1", "wp pr log 14")
 	page, _ = se.s.ListRefusals(se.ctx, se.admin, RefusalQuery{Limit: 1})
@@ -268,8 +259,6 @@ func TestRefusedCallRule(t *testing.T) {
 		t.Fatalf("a rule whose PR failed: %+v", f)
 	}
 
-	// A pick on its way can't be made again (another tab, the row and the
-	// suggestion at once) until it is stale; a failed one can.
 	se.fake.failPR = false
 	if _, err := se.s.db.W.Exec(`UPDATE tool_refusals SET rule_at = ?, rule_reason = '' WHERE id = ?`, se.clockNow().UnixMilli(), f.ID); err != nil {
 		t.Fatal(err)

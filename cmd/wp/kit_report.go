@@ -1,9 +1,5 @@
 package main
 
-// wp kit report: this machine's agent files and Waypoint's checks on it, for
-// Agents → Setup (WP-ADR44 §2). Sent by wp kit sync and, at most every 6
-// hours, in the background at session start.
-
 import (
 	"encoding/json"
 	"errors"
@@ -300,7 +296,6 @@ func redactJSON(raw string) string {
 				case k == "args" && isArr(val):
 					t[k] = redactArgs(val.([]any))
 				case under != "hooks" && secretKeyCLI.MatchString(k):
-					// A secret-named object is blanked all the way down.
 					if isMap {
 						t[k] = walk(val, "env")
 					} else {
@@ -314,8 +309,7 @@ func redactJSON(raw string) string {
 		case []any:
 			for i := range t {
 				if under == "hooks" {
-					// An entry isn't an event name: its secret-named fields
-					// are blanked like any other.
+					// Hook entries are not event names: walk them as 'hook' so their secret-named fields are still blanked.
 					t[i] = walk(t[i], "hook")
 				} else {
 					t[i] = walk(t[i], under)
@@ -368,7 +362,7 @@ func redactArgs(args []any) []any {
 		s, ok := a.(string)
 		if !ok {
 			if hide {
-				args[i], hide = "•••", false // a number or object after a secret flag
+				args[i], hide = "•••", false
 			}
 			continue
 		}
@@ -376,7 +370,7 @@ func redactArgs(args []any) []any {
 		case hide:
 			args[i], hide = "•••", false
 		case strings.HasPrefix(s, "-H") && len(s) > 2 && !strings.HasPrefix(s, "--"):
-			args[i] = "-H•••" // an attached header: -HAuthorization: Bearer x
+			args[i] = "-H•••"
 		case strings.HasPrefix(s, "-") && strings.Contains(s, "="):
 			k, v, _ := strings.Cut(s, "=")
 			switch {
@@ -390,7 +384,6 @@ func redactArgs(args []any) []any {
 		case strings.Contains(s, "://"):
 			args[i] = redactURL(s)
 		case strings.Contains(s, "="):
-			// A bare NAME=value (docker run -e KEY=secret).
 			if k, _, _ := strings.Cut(s, "="); secretKeyCLI.MatchString(k) {
 				args[i] = k + "=" + "•••"
 			}
@@ -404,7 +397,7 @@ func redactArgs(args []any) []any {
 func redactURL(s string) string {
 	u, err := url.Parse(s)
 	if err != nil {
-		return "•••" // can't tell what is in it
+		return "•••"
 	}
 	if u.RawQuery == "" && u.Fragment == "" && u.RawFragment == "" && u.User == nil && (u.Path == "" || u.Path == "/") {
 		return s
@@ -432,7 +425,6 @@ func mcpNamesOnly(raw string) string {
 	for n := range cj.Servers {
 		names[n] = map[string]string{}
 	}
-	// Servers set up for single projects count as the machine's too.
 	for _, p := range cj.Projects {
 		for n := range p.Servers {
 			names[n] = map[string]string{}

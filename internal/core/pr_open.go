@@ -1,8 +1,6 @@
 package core
 
-// Opening a pull request on the project's forge (WP-44): the CLI pushes the
-// branch, Waypoint opens the pull request with the forge's token, so access
-// is checked here and an agent never needs forge credentials of its own.
+// The forge token is Waypoint's, so access is checked here and an agent never needs forge credentials of its own.
 
 import (
 	"context"
@@ -41,11 +39,8 @@ type OpenPRInput struct {
 	Reason string
 	// noSweep: Waypoint's own skip (a held review released), not the agent's,
 	// so no other round is recorded as skipped by the agent.
-	noSweep bool
-	// facts: what the texts of this ship need of the agent (see shipFacts).
-	facts *shipFacts
-	// byWaypoint: Waypoint opens it (shipHeld), not the agent's wp ship, so
-	// the notes it leaves say so (WP-1325).
+	noSweep    bool
+	facts      *shipFacts
 	byWaypoint bool
 	// stillMay asks, once the forge has answered, whether the one opening
 	// still may: "" yes, else why not. It is the server ship's, whose
@@ -142,8 +137,6 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 	if in.Head == "" {
 		return nil, invalid("say which branch to open the pull request from")
 	}
-	// The words a ship carries are kept on its round: bounded like a comment
-	// (which -m becomes), and refused rather than cut (WP-1370).
 	for _, w := range []struct {
 		name string
 		v    *string
@@ -159,20 +152,17 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 	if err := s.requireProjectRole(ctx, s.db.R, actor, p.ID, RoleEditor); err != nil {
 		return nil, err
 	}
-	// A diagnose round ships no code: its pull request would be what the
-	// round is for. The round reopens as a work round once the diagnosis
-	// is recorded (WP-1449). Whoever opens it, a person included.
 	for _, ref := range []string{in.Issue, in.For} {
 		if ref == "" {
 			continue
 		}
 		i, _, err := s.getIssueFor(ctx, s.db.R, actor, ref, RoleEditor, false)
 		if err != nil {
-			continue // not a task this can be said of; the rest of the open says so
+			continue
 		}
 		o, err := s.objectiveRow(ctx, s.db.R, i.ID)
 		if err != nil {
-			return nil, err // not knowing is not leave to open it
+			return nil, err // An unreadable objective fails the open rather than skipping the diagnose check.
 		}
 		if o != nil && o.diagnoseRound() {
 			return nil, invalid("%s's round %d is a diagnose round, which ships no code: record the diagnosis first (wp objective diagnose %s -f FILE). The same round then reopens as a work round, and that is the round to ship in. A person can skip the diagnosis with wp objective next %s",
@@ -209,8 +199,8 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 	alreadyOpen := existing != 0
 	task := cmp(in.For, in.Issue)
 	res := &OpenPRResult{}
-	tagged := ""    // the task whose ci-urgent tag made a new pull request urgent
-	linked := false // the task's link was made as the pull request was recorded
+	tagged := ""
+	linked := false
 	if existing == 0 && in.Title == "" {
 		return nil, invalid("the pull request needs a title")
 	}
@@ -231,12 +221,9 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 				return nil, err
 			}
 			if !open {
-				// The push has happened: held or not, this session is on it (WP-117).
 				hr := &OpenPRResult{Existing: true, Held: held, Notice: joinNotes(res.Notice, notice), HeldNeedsAgent: in.facts.heldAsks(held), NoticeNeedsAgent: in.facts.noticeAsksAgent(notice)}
 				if in.Urgent {
-					// The pull request is open, so --urgent applies now: the
-					// ship after the review needn't say it again, and its
-					// round doesn't carry it, so --off stays off (WP-774).
+					// Urgent is set on the open pull request now, so the ship after the review need not repeat it.
 					if _, err := s.SetPRUrgent(ctx, actor, existing, true); err != nil {
 						hr.Warning = "couldn't put it on the urgent CI lane: " + err.Error()
 					} else {
@@ -277,8 +264,6 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 		if !in.Urgent && s.heldUrgent(ctx, actor, cmp(in.For, in.Issue), in.Head) {
 			in.Urgent, res.UrgentHeld = true, true
 		}
-		// Autopilot's adversarial review of the task, before its pull
-		// request opens (WP-688).
 		open, held, notice, err := s.reviewFirstOnce(ctx, actor, p, in, pick.Repo, in.Head, base, false)
 		if err != nil {
 			return nil, err
@@ -292,7 +277,7 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 		res.Notice = joinNotes(stackNote, notice)
 		if id, err := s.resolveIssueID(ctx, s.db.R, cmp(in.For, in.Issue)); err == nil && in.Review != ShipSkip && actor.Session != 0 {
 			if run, err := s.openRunIn(ctx, s.db.R, actor.Session, id); err != nil {
-				s.log.WarnContext(ctx, "read the session's open run", "session", actor.Session, "err", err) // Reviewed stays false: the open says nothing of a review
+				s.log.WarnContext(ctx, "read the session's open run", "session", actor.Session, "err", err)
 			} else {
 				res.Reviewed = s.reviewedRound(ctx, id, run, in.Head)
 			}
@@ -324,7 +309,6 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 			fp.wipAuto = managed
 		}
 		if err != nil {
-			// A concurrent open of the same branch won: return its pull request.
 			if again := s.openFrom(ctx, fctx, pick, in.Head); again != 0 {
 				existing, res.Existing = again, true
 			} else if open := s.openOnForge(fctx, f, pick.Repo, in.Head, base); open != nil {
@@ -335,9 +319,6 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 			} else {
 				var ae *forgeAPIError
 				if errors.As(err, &ae) && (ae.status == 409 || ae.status == 422) && strings.Contains(strings.ToLower(err.Error()), "already exist") {
-					// "Already exists" with the pull request not found: it may
-					// be one the forge hasn't listed yet, so this is tried
-					// again, not a refusal that ends the round.
 					return nil, fmt.Errorf("open the pull request: the forge says one from %s may already exist, but didn't list it: %v", in.Head, err)
 				}
 				return nil, fmt.Errorf("open the pull request: %w", s.forgeUnanswered(f, time.Since(start), err))
@@ -478,7 +459,7 @@ func (s *Service) recordOpened(ctx context.Context, actor *Actor, projectID int6
 		detail := "opened “" + excerpt(pr.Title, 120) + "”"
 		if pr.BaseRef != "" {
 			detail += " into " + pr.BaseRef
-			if stackedOn != 0 { // stackBase chose the base (WP-1670)
+			if stackedOn != 0 {
 				detail += fmt.Sprintf(" (stacked on #%d)", stackedOn)
 			}
 		}

@@ -56,7 +56,6 @@ func TestStackBranchesNearest(t *testing.T) {
 	if got := stackBranches([]string{"refs/heads/side", "refs/heads/parent"}); !slices.Equal(got, []string{"parent", "side"}) {
 		t.Errorf("side branch merged in: %v", got)
 	}
-	// A ref git can't resolve is skipped, not an error for the rest.
 	if got := stackBranches([]string{"origin/gone", "refs/heads/parent"}); !slices.Equal(got, []string{"parent"}) {
 		t.Errorf("an unresolvable ref: %v", got)
 	}
@@ -85,10 +84,9 @@ func TestStackBranchesEqualCountKeepsOrder(t *testing.T) {
 // openForge is a forge that opens pull requests and nothing else.
 type openForge struct {
 	core.ForgeClient
-	mu      sync.Mutex
-	created []core.NewPR
-	merged  map[int]bool // pull requests that read as merged
-	// baseEdits: "number:base" set through EditPRBase.
+	mu        sync.Mutex
+	created   []core.NewPR
+	merged    map[int]bool
 	baseEdits []string
 }
 
@@ -151,14 +149,13 @@ func sh(t *testing.T, dir string, args ...string) {
 
 func TestCLIPROpenAndShip(t *testing.T) {
 	e := newEnv(t)
-	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull) // CI has no git config; reproduce that
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
-	// wp ship runs a plain `git commit`, which needs an identity; CI has none.
 	for _, k := range []string{"GIT_AUTHOR", "GIT_COMMITTER"} {
 		t.Setenv(k+"_NAME", "T")
 		t.Setenv(k+"_EMAIL", "t@example.com")
 	}
-	me := e.login() // an agent token (claude opus)
+	me := e.login()
 	ctx := context.Background()
 	fg := &openForge{}
 	e.svc.Forges = fg
@@ -190,7 +187,6 @@ func TestCLIPROpenAndShip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// On the base branch.
 	if out, code := e.run("pr", "open"); code != 2 || !strings.Contains(out, "on main itself") {
 		t.Errorf("open with nothing to open: %d %s", code, out)
 	}
@@ -204,9 +200,6 @@ func TestCLIPROpenAndShip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Intents (WP-688): one at a time, --force only with --review; a
-	// review that can't be had here opens the pull request and says why
-	// (WP-1007).
 	for _, args := range [][]string{{"--review", "--skip-review", "why"}, {"--force"}, {"--skip-review", " "}} {
 		if out, code := e.run(append([]string{"pr", "open"}, args...)...); code != 2 {
 			t.Errorf("pr open %q: %d %s", args, code, out)
@@ -223,7 +216,7 @@ func TestCLIPROpenAndShip(t *testing.T) {
 		t.Fatalf("created %d pull requests", len(fg.created))
 	}
 	in := fg.created[0]
-	if in.Head != strings.ToLower(iss.Key)+"-redirect" || in.Base != "main" || !in.Draft { // an agent: a draft Waypoint marks ready (WP-158)
+	if in.Head != strings.ToLower(iss.Key)+"-redirect" || in.Base != "main" || !in.Draft {
 		t.Errorf("opened %+v", in)
 	}
 	for _, want := range []string{"## Summary", "Fix the redirect loop", "It looped.", "Issue: " + iss.Key, "## Checks run", "- ran `make check`"} {
@@ -234,7 +227,6 @@ func TestCLIPROpenAndShip(t *testing.T) {
 	if strings.Contains(in.Body, "Co-Authored-By") {
 		t.Errorf("trailers are in the body:\n%s", in.Body)
 	}
-	// Waypoint wrote it, so a model may reword its Summary (WP-55).
 	if r, err := e.svc.PRBodies(ctx, me, 30, 0); err != nil || r.Counts["pending"] != 1 {
 		t.Errorf("rendered description not kept for the model: %+v %v", r, err)
 	}
@@ -245,14 +237,11 @@ func TestCLIPROpenAndShip(t *testing.T) {
 		t.Errorf("the branch wasn't pushed: %v", err)
 	}
 
-	// Again: the same pull request, nothing opened.
 	out = e.wp("pr", "open")
 	if !strings.Contains(out, "Already open: robin/waypoint#41") || len(fg.created) != 1 {
 		t.Errorf("second open (%d created):\n%s", len(fg.created), out)
 	}
 
-	// Ship: commits what is staged, reuses the pull request, arms it and
-	// moves the issue.
 	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -260,11 +249,8 @@ func TestCLIPROpenAndShip(t *testing.T) {
 	if out, code := e.run("ship"); code != 2 || !strings.Contains(out, "say what they are with -m") {
 		t.Errorf("ship without a message: %d %s", code, out)
 	}
-	t.Setenv("WAYPOINT_AGENT", "none") // a person: no reply template
+	t.Setenv("WAYPOINT_AGENT", "none")
 	out = e.wp("ship", "-m", "Add a.txt")
-	// That no test ran on this tree (WP-715) while CI runs none either, then
-	// one line for the pull request (WP-1080). The branch named the task, so
-	// the link is said; moving it to In Review goes without saying.
 	if lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n"); len(lines) != 2 || !strings.HasPrefix(lines[0], "No test run recorded on this tree (`wp testsum ") ||
 		!regexp.MustCompile(`^PR 41 already open, armed, linked `+iss.Key+` \(branch\), Waypoint is babysitting: https?://\S+/pulls/41$`).MatchString(lines[1]) {
 		t.Errorf("ship printed %d lines:\n%s", len(lines), out)
@@ -272,8 +258,6 @@ func TestCLIPROpenAndShip(t *testing.T) {
 	if d, err := e.svc.GetIssue(ctx, me, iss.Key); err != nil || d.Status.Name != "In Review" {
 		t.Errorf("not In Review: %v %+v", err, d)
 	}
-	// An agent also gets the short reply to end its turn with (WP-390),
-	// and isn't told clearing is safe while tracked files are dirty.
 	t.Setenv("WAYPOINT_AGENT", "anthropic/claude-opus")
 	out = e.wp("ship")
 	if !strings.Contains(out, "Reply template (adapt it where it doesn't fit):") || !strings.Contains(out, iss.Key+" shipped in PR #41 (") || !strings.Contains(out, "The session can be cleared without losing work.") {
@@ -282,16 +266,13 @@ func TestCLIPROpenAndShip(t *testing.T) {
 	if strings.Contains(out, "Before you reply") {
 		t.Errorf("nothing in the task is put off, yet:\n%s", out)
 	}
-	// --pr is plain wp ship, kept for older prompts: it is not refused, and
-	// gives the same answer, also beside --skip-review.
+	// --pr stays accepted for older prompts: it must not be refused.
 	for _, args := range [][]string{{"ship", "--pr"}, {"ship", "--pr", "--skip-review", "tested by hand"}} {
 		got, code := e.run(args...)
 		if code != 0 || !strings.Contains(got, "Reply template (adapt it where it doesn't fit):") || !strings.Contains(got, iss.Key+" shipped in PR #41 (") {
 			t.Errorf("wp %s: exit %d, want what wp ship gives:\n%s", strings.Join(args, " "), code, got)
 		}
 	}
-	// Steps the task leaves for later are quoted before the reply, as
-	// something to check (WP-479).
 	if _, err := e.svc.AddComment(ctx, me, iss.Key, "Fix the redirect now. Step 2 only if real users still loop."); err != nil {
 		t.Fatal(err)
 	}
@@ -308,7 +289,6 @@ func TestCLIPROpenAndShip(t *testing.T) {
 		t.Errorf("dirty ship reply:\n%s", out)
 	}
 	sh(t, dir, "checkout", "--", "a.txt")
-	// Admins word it (Admin → AI); the CLI fills in the placeholders.
 	if _, err := e.svc.SetShipReply(ctx, me, "Done: {task} in #{pr} {url}."); err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +298,7 @@ func TestCLIPROpenAndShip(t *testing.T) {
 	if defaultShipReply != core.DefaultShipReply {
 		t.Error("the CLI's fallback ship reply differs from core.DefaultShipReply")
 	}
-	shipEndsTurn(t, e, me, iss.Key) // WP-1093
+	shipEndsTurn(t, e, me, iss.Key)
 	t.Setenv("WAYPOINT_AGENT", "")
 	if out := e.wp("pr", "babysit", "41", "--status"); !strings.Contains(out, "#41: babysitting") {
 		t.Errorf("not babysat:\n%s", out)
@@ -333,7 +313,6 @@ func TestCLIPROpenAndShip(t *testing.T) {
 		t.Errorf("ship didn't commit: %s", out)
 	}
 
-	// A draft with its own title and body, from another branch.
 	sh(t, dir, "checkout", "-q", "-b", "scratch")
 	sh(t, dir, "commit", "-q", "--allow-empty", "-m", "Try a thing")
 	if err := os.WriteFile(filepath.Join(dir, "body.md"), []byte("My own words.\n"), 0o644); err != nil {
@@ -357,8 +336,6 @@ func TestCLIPROpenAndShip(t *testing.T) {
 		t.Errorf("wp help ship:\n%s", out)
 	}
 
-	// An agent's pull request opens as a draft Waypoint marks ready (WP-158),
-	// and is still armed and babysat; --ready opens it ready.
 	if !fg.created[0].Draft {
 		t.Errorf("an agent's pull request wasn't opened as a draft: %+v", fg.created[0])
 	}
@@ -381,7 +358,6 @@ func TestCLIPROpenAndShip(t *testing.T) {
 		t.Errorf("ship --ready (draft=%v):\n%s", fg.created[2].Draft, out)
 	}
 
-	// Which issue a pull request is linked to (WP-151, WP-162).
 	stale, err := e.svc.CreateIssue(ctx, me, core.IssueInput{Project: p.Key, Title: "Unrelated stale task"})
 	if err != nil {
 		t.Fatal(err)
@@ -413,21 +389,18 @@ func TestCLIPROpenAndShip(t *testing.T) {
 		return m[1] + m[2]
 	}
 
-	// The key in the branch name beats a task taken in a parent directory.
 	claimAt(filepath.Dir(dir), stale.Key)
 	branch(strings.ToLower(want.Key) + "-real")
 	out = e.wp("pr", "open")
 	if !strings.Contains(out, "Linked to "+want.Key+" (branch)") || !strings.Contains(out, "The real task") || strings.Contains(out, stale.Key) {
 		t.Errorf("a parent directory's task outranked the branch key:\n%s", out)
 	}
-	// A task taken in the directory around the checkout (not a repo) isn't this checkout's.
 	branch("no-key-1")
 	out = e.wp("pr", "open")
 	if strings.Contains(out, "Linked to") {
 		t.Errorf("a parent directory's task was inherited:\n%s", out)
 	}
 
-	// A task taken in this checkout is used, and says so.
 	claimAt(dir, want.Key)
 	branch("no-key-2")
 	out = e.wp("pr", "open")
@@ -437,8 +410,6 @@ func TestCLIPROpenAndShip(t *testing.T) {
 		t.Errorf("claim fallback didn't say so:\n%s", out)
 	}
 
-	// A stale claim never wins over a key the commits name; a claim the
-	// commits also name does.
 	claimAt(dir, stale.Key)
 	sh(t, dir, "checkout", "-q", "main")
 	sh(t, dir, "checkout", "-q", "-b", "no-key-2b")
@@ -455,7 +426,6 @@ func TestCLIPROpenAndShip(t *testing.T) {
 		t.Errorf("a claim named in the commits wasn't used:\n%s", out)
 	}
 
-	// A finished task is not used; --issue still can.
 	done, err := e.svc.CreateIssue(ctx, me, core.IssueInput{Project: p.Key, Title: "Long finished"})
 	if err != nil {
 		t.Fatal(err)
@@ -474,8 +444,6 @@ func TestCLIPROpenAndShip(t *testing.T) {
 		t.Errorf("--issue refused:\n%s", out)
 	}
 
-	// An issue of another project is not used, from a claim or from commit
-	// text (WP-156 on an infrastructure pull request), until named with --issue.
 	op, err := e.svc.CreateProject(ctx, me, core.ProjectInput{Name: ptr("Elsewhere")})
 	if err != nil {
 		t.Fatal(err)
@@ -490,7 +458,7 @@ func TestCLIPROpenAndShip(t *testing.T) {
 	if strings.Contains(out, "Linked to") || !strings.Contains(out, "Not linking "+other.Key) || !strings.Contains(out, "project "+op.Key) {
 		t.Errorf("a cross-project claim linked:\n%s", out)
 	}
-	claimAt(dir, want.Key+"0") // no such issue
+	claimAt(dir, want.Key+"0")
 	sh(t, dir, "checkout", "-q", "main")
 	sh(t, dir, "checkout", "-q", "-b", "no-key-6")
 	sh(t, dir, "commit", "-q", "--allow-empty", "-m", "Tune the thing", "-m", "(Waypoint "+other.Key+")")
@@ -501,15 +469,13 @@ func TestCLIPROpenAndShip(t *testing.T) {
 	if out = e.wp("pr", "open", "--issue", other.Key); !strings.Contains(out, "Linked to "+other.Key+" (--issue)") {
 		t.Errorf("--issue refused for another project:\n%s", out)
 	}
-	// A key in the commits of this project still works.
 	sh(t, dir, "checkout", "-q", "main")
 	sh(t, dir, "checkout", "-q", "-b", "no-key-7")
 	sh(t, dir, "commit", "-q", "--allow-empty", "-m", "Part of "+want.Key)
 	if out = e.wp("pr", "open"); !strings.Contains(out, "Linked to "+want.Key+" (commit)") {
 		t.Errorf("commit key not used:\n%s", out)
 	}
-	// Main merged into the branch with a base not fetched since: main's
-	// commits name other work, not this change's issue (WP-487).
+	// Keys in commits merged in from main name other work, so they are not linked to this change.
 	claimAt(dir, want.Key)
 	sh(t, dir, "checkout", "-q", "main")
 	sh(t, dir, "checkout", "-q", "-b", "forge-main")
@@ -520,7 +486,6 @@ func TestCLIPROpenAndShip(t *testing.T) {
 		t.Errorf("a key from merged-in main commits was linked:\n%s", out)
 	}
 
-	// Ship names the issue and why, moves it, and unlinking puts it back.
 	task, err := e.svc.CreateIssue(ctx, me, core.IssueInput{Project: p.Key, Title: "Shipped then unlinked"})
 	if err != nil {
 		t.Fatal(err)
@@ -530,7 +495,7 @@ func TestCLIPROpenAndShip(t *testing.T) {
 	branch("no-key-8")
 	out = e.wp("ship")
 	n := prNum(out)
-	if strings.Contains(out, "linked "+task.Key) { // the task being finished: the agent knows it
+	if strings.Contains(out, "linked "+task.Key) {
 		t.Errorf("ship output:\n%s", out)
 	}
 	if d, err := e.svc.GetIssue(ctx, me, task.Key); err != nil || d.Status.Name != "In Review" {
@@ -554,13 +519,10 @@ func TestCLIPROpenAndShip(t *testing.T) {
 	if out = e.wp("pr", "unlink", n); !strings.Contains(out, "isn't linked to any issue") {
 		t.Errorf("second unlink:\n%s", out)
 	}
-	// wp done ships as well (WP-608): a staged change of the task held
-	// here goes out as its pull request.
 	viaDone, err := e.svc.CreateIssue(ctx, me, core.IssueInput{Project: p.Key, Title: "Finished with done"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Earlier steps' files aren't anyone's work.
 	if err := os.WriteFile(filepath.Join(dir, ".git", "info", "exclude"), []byte(".waypoint/\nbody.md\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -578,9 +540,6 @@ func TestCLIPROpenAndShip(t *testing.T) {
 	if out := e.wp("show", viaDone.Key); !strings.Contains(out, "Ship it with done") {
 		t.Errorf("-m isn't the task's comment too:\n%s", out)
 	}
-	// Another task taken on that branch (a review of it) is finished
-	// without arming, babysitting or linking the pull request: it is the
-	// first task's work.
 	review, err := e.svc.CreateIssue(ctx, me, core.IssueInput{Project: p.Key, Title: "Review the change"})
 	if err != nil {
 		t.Fatal(err)
@@ -590,7 +549,7 @@ func TestCLIPROpenAndShip(t *testing.T) {
 	if !strings.Contains(out, "it is "+viaDone.Key+"'s work, so not armed or babysat") || len(fg.created) != before+1 {
 		t.Errorf("another task's pull request:\n%s", out)
 	}
-	if !strings.Contains(out, "cut the line") { // WP-543: it was marked all the same
+	if !strings.Contains(out, "cut the line") {
 		t.Errorf("another task's pull request marked urgent, no note:\n%s", out)
 	}
 	if out := e.wp("show", review.Key); !strings.Contains(out, "Done") || !strings.Contains(out, "Looks right") {
@@ -600,14 +559,12 @@ func TestCLIPROpenAndShip(t *testing.T) {
 		t.Errorf("the review task was linked:\n%s", out)
 	}
 
-	// pr link is the inverse; the status stays where it is.
 	if out = e.wp("pr", "link", n, task.Key); !strings.Contains(out, "Linked") {
 		t.Errorf("pr link:\n%s", out)
 	}
 	if out = e.wp("pr", "show", n); !strings.Contains(out, task.Key) {
 		t.Errorf("pr link didn't link:\n%s", out)
 	}
-	// wp unlink KEY #N removes it again.
 	if out = e.wp("unlink", task.Key, "#"+n); !strings.Contains(out, "Unlinked") {
 		t.Errorf("wp unlink KEY #N:\n%s", out)
 	}
@@ -615,8 +572,6 @@ func TestCLIPROpenAndShip(t *testing.T) {
 		t.Errorf("unlinking a link that is gone succeeded")
 	}
 
-	// Another open pull request still linked: unlinking the one that moved the
-	// issue leaves its status.
 	two, err := e.svc.CreateIssue(ctx, me, core.IssueInput{Project: p.Key, Title: "Two pull requests"})
 	if err != nil {
 		t.Fatal(err)
@@ -626,8 +581,6 @@ func TestCLIPROpenAndShip(t *testing.T) {
 	first := prNum(e.wp("ship"))
 	branch("no-key-10")
 	second := prNum(e.wp("pr", "open", "--issue", two.Key))
-	// A KEY limits it to that issue: the other link stays, whichever is
-	// listed first (WP-487).
 	e.wp("pr", "link", first, task.Key)
 	for _, k := range []string{task.Key, two.Key} {
 		if out = e.wp("pr", "unlink", first, k); !strings.Contains(out, "Unlinked robin/waypoint#"+first+" from "+k) || strings.Count(out, "Unlinked") != 1 {
@@ -641,10 +594,7 @@ func TestCLIPROpenAndShip(t *testing.T) {
 		t.Errorf("status restored while another PR (#%s) was linked:\n%s", second, out)
 	}
 
-	// A claim left over from a task whose pull request here already merged
-	// isn't linked to the next change (WP-493). Every project finishes a task
-	// when its pull request merges (WP-496); this one has switched that off,
-	// so the task is still open.
+	// Automations that finish a task on pr_merged are switched off in this test, so the task stays open.
 	autos, err := e.svc.ListAutomations(ctx, me, p.Key)
 	if err != nil {
 		t.Fatal(err)
@@ -684,10 +634,7 @@ func TestCLIPROpenAndShip(t *testing.T) {
 		t.Errorf("--issue refused for a task with a merged pull request:\n%s", out)
 	}
 
-	// A branch made from another pull request's branch (stacked): with no
-	// commits of its own it isn't opened, and once it has some, the other
-	// branch's commits name neither its title nor its issue (WP-493).
-	claimAt(dir, want.Key+"0") // no such issue
+	claimAt(dir, want.Key+"0")
 	sh(t, dir, "checkout", "-q", "main")
 	sh(t, dir, "checkout", "-q", "-b", "stack-parent")
 	sh(t, dir, "commit", "-q", "--allow-empty", "-m", "Parent work for "+want.Key)
@@ -697,8 +644,6 @@ func TestCLIPROpenAndShip(t *testing.T) {
 	if out, code := e.run("pr", "open"); code != 2 || !strings.Contains(out, "no commits of its own") || !strings.Contains(out, "origin/stack-parent") || len(fg.created) != opened {
 		t.Errorf("a stacked branch with nothing of its own (%d):\n%s", code, out)
 	}
-	// wp ship -m with the work left unstaged stops instead of shipping
-	// the parent's commits.
 	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("child"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -713,18 +658,14 @@ func TestCLIPROpenAndShip(t *testing.T) {
 	if !strings.Contains(out, "Stacked on origin/stack-parent") {
 		t.Errorf("stacking not said:\n%s", out)
 	}
-	// It merges into the pull request it is stacked on, not main, and the
-	// notice says how to ship the stack into main (WP-634).
 	if fg.created[opened].Base != "stack-parent" || !strings.Contains(out, "opens into stack-parent") || !strings.Contains(out, "--base main") {
 		t.Errorf("a stacked branch's base is %q:\n%s", fg.created[opened].Base, out)
 	}
-	// Two deep: the nearest branch with a pull request open is the base.
 	sh(t, dir, "checkout", "-q", "-b", "stack-grandchild")
 	sh(t, dir, "commit", "-q", "--allow-empty", "-m", "Grandchild work")
 	if out = e.wp("pr", "open"); fg.created[opened+1].Base != "stack-child" {
 		t.Errorf("two deep, the base is %q:\n%s", fg.created[opened+1].Base, out)
 	}
-	// --base on the one already open moves it; so does wp pr edit --base.
 	out = e.wp("pr", "open", "--base", "main")
 	if !strings.Contains(out, "Already open:") || !strings.Contains(out, "is now open into main") || len(fg.created) != opened+2 {
 		t.Errorf("--base on an open pull request:\n%s", out)
@@ -737,8 +678,6 @@ func TestCLIPROpenAndShip(t *testing.T) {
 		t.Errorf("base edits %v, want %v", fg.bases(), want)
 	}
 
-	// Marking a pull request urgent says what that costs and how to undo
-	// it; a run that didn't ask for the lane doesn't repeat it (WP-543).
 	note := func(n int) string {
 		return fmt.Sprintf("This pull request is marked urgent, so it delays other CI runs to cut the line; if you didn't intend that, run `wp pr urgent %d --off`.", n)
 	}
@@ -799,8 +738,6 @@ func TestMergeBaseIfForkedTwice(t *testing.T) {
 		sh(t, dir, "add", name)
 		sh(t, dir, "commit", "-q", "-m", "change "+name)
 	}
-	// main: first, then main.txt, then merges lower. top: lower's commit, its
-	// own, and a merge of main from before lower landed.
 	setup := func(t *testing.T) string {
 		t.Helper()
 		bare := filepath.Join(t.TempDir(), "origin.git")

@@ -1,17 +1,6 @@
 package core
 
-// Late minor findings (WP-428, WP-ADR29). Each round's push is reviewed again, and a
-// reviewer that finds something new on every pass (CodeRabbit above all)
-// sent pull requests round after round for small things: on 2026-11-02, 23
-// of the 41 comment-only rounds after a pull request's first comment round
-// carried nothing above medium, and every one cost a draft run, a review
-// and the pull request's place in its merge line. So once a babysit has
-// handed out a round for review comments, a bot's finding below high that
-// came after that round began starts no round of its own and doesn't hold
-// the merge. It rides along when a round goes out for something else, and
-// one still open when the pull request merges is recorded as leftover
-// (WP-367). A person's comment, a finding whose severity isn't known, and
-// Waypoint's own finding that the review gate counts always hold.
+// A bot's finding below high that comes after a babysit's review round began starts no round and holds no merge; a person's comment, an unknown severity, and Waypoint's own review-gate finding always hold.
 
 import (
 	"context"
@@ -23,7 +12,7 @@ import (
 
 // relayedAuthorRE: a mirror relays another forge's review comments under its
 // own account and names who wrote them in the first line.
-var relayedAuthorRE = lazyre.New(`^\*\*([^*\s]+)\*\* (?:reviewed|commented) on `) // "on GitHub:" or, split per finding, "on `a.go` line 3:"
+var relayedAuthorRE = lazyre.New(`^\*\*([^*\s]+)\*\* (?:reviewed|commented) on `)
 
 // markedSeverityRE: the severities a bot marks its comments with: Waypoint's
 // "**P2** medium", CodeRabbit's "⚠️ Potential issue | 🟡 Minor" (each marker
@@ -45,7 +34,6 @@ func (rc *PRReviewComment) botComment() bool {
 	if rc.Bot || rc.FindingID != 0 || isBotLogin(rc.Author) {
 		return true
 	}
-	// Only a mirror's relays count: anyone can type a bot's header.
 	if !rc.mirrored() {
 		return false
 	}
@@ -81,7 +69,7 @@ func (rc *PRReviewComment) severity() string {
 	}
 	for _, sg := range splitFences(rc.Body) {
 		if sg.code {
-			continue // quoted code isn't a severity marker
+			continue
 		}
 		for _, m := range crSeverityRE.FindAllStringSubmatch(sg.text, -1) {
 			higher(crSeverities[m[1]+m[2]])
@@ -123,7 +111,7 @@ func lateMinor(rc *PRReviewComment, since time.Time, gateOn bool, gateSev string
 func (s *Service) lateMinors(ctx context.Context, pr *PullRequest, b *Babysit, comments []*PRReviewComment) map[string]bool {
 	out, err := s.waivedNitpicks(ctx, pr.ID, comments)
 	if err != nil {
-		out = map[string]bool{} // scores unread: nothing is waived, every finding stays actionable
+		out = map[string]bool{}
 	}
 	since := commentRoundsSince(b)
 	if since.IsZero() {
@@ -131,7 +119,7 @@ func (s *Service) lateMinors(ctx context.Context, pr *PullRequest, b *Babysit, c
 	}
 	gateOn, gateSev, err := s.gateConfigErr(ctx, pr.ForgeID, pr.Repo)
 	if err != nil {
-		return out // gate state unknown: every finding stays actionable
+		return out // Gate state unknown: late minors are not waived, so they stay actionable.
 	}
 	for _, rc := range comments {
 		if !rc.Dealt && rc.Verdict != VerdictNeedsPerson && lateMinor(rc, since, gateOn, gateSev) {

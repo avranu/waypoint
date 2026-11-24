@@ -11,12 +11,7 @@ import (
 	"time"
 )
 
-// wp usage suggest (WP-193): how this repository could cost its agents
-// fewer tokens, the way Claude Code's /fewer-permission-prompts finds the
-// approvals to stop asking for. It reads the repository (instruction
-// files, comments) and this machine's transcripts of the sessions that
-// worked in it, and prints each finding with its evidence and what to
-// change. Everything stays on this machine; no model is involved.
+// Reads local transcripts and the server's session snapshots; no model is called.
 
 var usageSuggestCmd = &command{
 	name: "suggest", args: "[--since 30d] [--until 7d] [--dir CLAUDE_CONFIG_DIR]",

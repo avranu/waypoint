@@ -13,36 +13,7 @@ import (
 	"unicode/utf8"
 )
 
-// The prep policy (WP-250, WP-ADR104): what an agent taking a task is shown
-// of its prep, decided by what agents did with each kind of pointer.
-//
-// The arms are showing nothing, the chat prep's picks (one model, one
-// request, picking from the code index's candidates), and the agentic
-// prep's (a model that read the repository with tools, prep_agent.go).
-// Nothing is an arm because it is what every kind of pointer has to beat:
-// over the prep experiment's first 435 tasks, showing the chat prep's picks
-// changed agents' searches by a factor of 1.00 [0.79, 1.27], and their
-// navigation before the first edit by 1.28 [0.86, 1.91], though agents
-// edited 46% of the files named (page WP-X19).
-//
-// A task's arm is drawn once, the first time an agent is given its ready
-// prep, with each arm's share the probability that it is the best on the
-// outcome (navigation calls before the first edit, from the navigation
-// traces wp usage sync uploads). So no arm gets a fixed share, an arm the
-// data say is worse loses its tasks as fast as they say it, and there is no
-// calendar: the estimate weighs a task less as it ages, so an arm gets
-// tasks again only when the evidence against it is old enough to doubt.
-// How fast that is comes from the data too: fits at several half-lives,
-// mixed by how well each forecast the last four weeks (prep_policy_stats.go).
-// Guards (all navigation, tasks left undone, review findings) take an arm
-// out while it is credibly worse than nothing on one of them, and an arm
-// other than the chat prep is offered only once its picks have been scored
-// offline against what the merged work changed (prep_offline.go).
-//
-// Nothing here is polled. Traces landing mark the estimate out of date; it
-// is worked out again from every row the next time a task needs an arm, so
-// an outcome that arrives late (a session's later trace, a review, a task
-// reopened) refines it then.
+// a task's arm is drawn once, at its first take with a ready prep; the estimate is recomputed when traces land, not polled
 
 const (
 	prepArmNone  = "none"
@@ -132,7 +103,7 @@ type prepRow struct {
 	textLen        int
 	agentReady     bool
 	exposed        int64
-	started        int64 // its take's trace began (the clock of what came of it)
+	started        int64
 	project        int64
 	typ            string
 	resolved       int64
@@ -144,7 +115,7 @@ type prepRow struct {
 	ctxStart       float64
 	prs            int
 	findings       float64
-	files          string // the trace's files, JSON
+	files          string
 }
 
 // prepGuardFit is one guard's estimate.
@@ -157,15 +128,15 @@ type prepGuardFit struct {
 // prepPolicy is the estimate as last worked out.
 type prepPolicy struct {
 	at       time.Time
-	arms     []string // every arm but none, the drawn ones first
+	arms     []string // defined arms first (prepArmDefs order), then any others drawn
 	primary  *prepMix
-	allTime  *prepFit // the same with no task aged: where the two part, something changed
+	allTime  *prepFit // the fit with no task aged; where it and primary differ, something changed
 	guards   []prepGuardFit
-	blocked  map[string]string // arm: why it is out
+	blocked  map[string]string
 	offline  []PrepOfflineArm
 	exposed  int
 	measured int
-	byArm    map[string]int // measured tasks, by arm
+	byArm    map[string]int
 }
 
 // prepPolicyNow is the estimate, worked out again if a trace landed since,
@@ -233,8 +204,6 @@ func (s *Service) prepRows(ctx context.Context, now time.Time) ([]*prepRow, erro
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	// Each task's outcome is its first take's trace from when it was
-	// exposed: the take the pointers were printed in.
 	rows, err = s.db.R.QueryContext(ctx, `SELECT t.issue_id, t.started_at, t.last_at, t.ended, t.model, t.locate, t.infile, t.reads, t.delegated,
 			t.pre_locate, t.pre_infile, t.pre_reads, t.pre_delegated, t.first_edit_at, t.ctx_start, t.files
 		FROM task_traces t JOIN prep_assignments a ON a.issue_id = t.issue_id
@@ -260,8 +229,6 @@ func (s *Service) prepRows(ctx context.Context, now time.Time) ([]*prepRow, erro
 		r.edited = firstEdit.Valid
 		r.closed = ended != "" || now.UnixMilli()-last >= prepTraceOpen.Milliseconds()
 		r.model = model
-		// summed as floats: counts are bounded when stored (cleanTrace), and
-		// no sum of them may wrap into a number with no logarithm
 		r.preNav = float64(preLocate) + float64(preInfile) + float64(preReads) + float64(preDelegated)
 		r.nav = float64(locate) + float64(infile) + float64(reads) + float64(delegated)
 		r.ctxStart = float64(ctxStart)
@@ -271,7 +238,6 @@ func (s *Service) prepRows(ctx context.Context, now time.Time) ([]*prepRow, erro
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	// Review findings (not withdrawn) on the task's pull requests.
 	rows, err = s.db.R.QueryContext(ctx, `SELECT x.issue_id, COUNT(*), coalesce(SUM(x.n), 0) FROM (
 			SELECT DISTINCT el.issue_id, p.id, (SELECT COUNT(*) FROM bot_findings f WHERE f.pr_id = p.id AND f.state != 'withdrawn') AS n
 			FROM prep_assignments a JOIN external_links el ON el.issue_id = a.issue_id
@@ -309,14 +275,11 @@ func (r *prepRow) at() int64 {
 func prepValue(o *prepOutcome, r *prepRow, now time.Time) (float64, bool) {
 	switch o.Key {
 	case "pre_nav":
-		// Final once the first edit is made, or the take is over.
 		return math.Log1p(r.preNav), r.traced && (r.edited || r.closed)
 	case "nav":
 		return math.Log1p(r.nav), r.traced && r.closed
 	case "undone":
-		// Of tasks an agent took (a trace of the take): a task whose
-		// pointers were printed and that no measured agent went on to take
-		// says nothing of what the pointers did to the work.
+		// undone counts only tasks an agent took: an untaken task says nothing of what the pointers did
 		if !r.traced {
 			return 0, false
 		}
@@ -416,7 +379,7 @@ func (s *Service) prepPolicyCompute(ctx context.Context, now time.Time) (*prepPo
 	for i := range prepGuards {
 		g := prepGuards[i]
 		obs, used := prepObservations(&g, pol.arms, rows, now)
-		// Aged as the primary outcome's forecasts say evidence ages.
+		// guards use the primary outcome's aging weights, not their own
 		gf := prepGuardFit{prepOutcome: g, fit: fitPrepMix(pol.arms, obs, g.Spread, pol.primary.W), tasks: len(used)}
 		pol.guards = append(pol.guards, gf)
 		for j, arm := range pol.arms {
@@ -629,7 +592,6 @@ func (s *Service) prepDrawArm(ctx context.Context, a *Actor, i *Issue, chat, age
 		i.ID, arm, policy, propensity, string(raw), b2i(same), prepTextLen(i), b2i(avail[prepArmAgent]), now); err != nil {
 		return nil, err
 	}
-	// Whichever request drew first is the task's arm.
 	got, err := s.prepAssignmentOf(ctx, i.ID)
 	if err != nil || got == nil {
 		return nil, err
@@ -651,8 +613,6 @@ func (s *Service) prepPolicyApply(ctx context.Context, a *Actor, i *Issue, p *Ta
 		return
 	}
 	if a.ReadOnly {
-		// A read-only token takes no task: its read draws no arm and
-		// exposes none. It is given the arm the task has, if one was drawn.
 		if got, err := s.prepAssignmentOf(ctx, i.ID); err != nil || got == nil {
 			return
 		}
@@ -665,14 +625,12 @@ func (s *Service) prepPolicyApply(ctx context.Context, a *Actor, i *Issue, p *Ta
 	agent, model, _ := s.agentPrepNotes(ctx, i.ID)
 	if got == nil && !p.HeldOut {
 		if got, err = s.prepDrawArm(ctx, a, i, p.Notes, agent); err != nil {
-			// The chat prep's picks, as before there was a policy.
 			s.log.WarnContext(ctx, "prep policy: draw the task's arm", "issue", i.ID, "err", err)
 			return
 		}
 	}
 	if got == nil && p.HeldOut {
-		// Held out by the prep experiment before its prep was ready: its
-		// arm is nothing, at that experiment's share.
+		// a task held out by the prep experiment is logged as arm none at that experiment's 0.2 share
 		if _, err := s.db.W.ExecContext(ctx, `INSERT INTO prep_assignments(issue_id, arm, policy, propensity, text_len, assigned_at)
 			VALUES (?,?,?,?,?,?) ON CONFLICT(issue_id) DO NOTHING`, i.ID, prepArmNone, "import", 0.2, prepTextLen(i), s.nowMS()); err != nil {
 			s.log.WarnContext(ctx, "prep policy: keep a held-out task's arm", "issue", i.ID, "err", err)
@@ -894,7 +852,6 @@ func (s *Service) prepPolicyReport(ctx context.Context) (*PrepPolicyReport, erro
 	for h, hl := range p.primary.HalfLives {
 		rep.Ageing = append(rep.Ageing, PrepPolicyAgeing{HalfLife: hl, Weight: p.primary.W[h]})
 	}
-	// What the data would show: the narrowest arm's 90% bound, as a share.
 	narrow := math.Inf(1)
 	for j := range p.arms {
 		if _, sd := p.primary.effect(j); p.primary.armN(j) > 0 {

@@ -1,11 +1,5 @@
 package core
 
-// Checking what a push fixed (WP-D21): on each push, every open finding
-// whose file changed since it was raised is put to the review chain with
-// the code around its line: still present, fixed, or can't tell. Fixed ones
-// get a reply "Fixed in `abc1234`", their thread resolved where the forge's
-// API allows, and the state fixed.
-
 import (
 	"context"
 	"errors"
@@ -96,7 +90,7 @@ func (s *Service) verifyFindings(ctx context.Context, r *BotRun, f *Forge, cl Fo
 	checked := 0
 	type verdict struct {
 		f      *findingRow
-		to     string // a state, or "" to keep it open
+		to     string
 		by     string
 		reason string
 	}
@@ -111,7 +105,7 @@ func (s *Service) verifyFindings(ctx context.Context, r *BotRun, f *Forge, cl Fo
 		}
 		then, now := read(fnd.Path, fnd.headSHA), read(fnd.Path, head)
 		if then.err != nil || (now.err != nil && !errors.Is(now.err, ErrNotFound)) {
-			continue // can't compare what can't be read
+			continue
 		}
 		if now.err == nil && then.text == now.text {
 			unchanged = append(unchanged, fnd.ID)
@@ -133,7 +127,7 @@ func (s *Service) verifyFindings(ctx context.Context, r *BotRun, f *Forge, cl Fo
 			Verdict string `json:"verdict"`
 			Reason  string `json:"reason"`
 		}
-		checked++ // a failed call costs as much as a good one, so it counts toward verifyMax
+		checked++
 		used, attempts, err := s.runChain(withGatewayRouting(aiContext(ctx, "fix_check"), fixCheckRouting(r.ID)), chain, verifySystem, p.String(), verifySchema, &ans, 3*time.Minute)
 		out.log = append(out.log, attempts...)
 		if err != nil {
@@ -179,13 +173,10 @@ func (s *Service) verifyFindings(ctx context.Context, r *BotRun, f *Forge, cl Fo
 		return nil
 	})
 	if err != nil {
-		// Nothing was recorded, so nothing is reported as checked or fixed;
-		// the next push checks these findings again.
 		s.log.ErrorContext(ctx, "record the checks of earlier findings", "run", r.ID, "err", err)
 		return verifyOutcome{log: out.log}
 	}
-	// Only now say so in the thread, and close it where the forge allows:
-	// the forge never hears of a fix the database does not have.
+	// The forge hears of a fix only after the checks are recorded; it never hears of a fix the database does not have.
 	for _, v := range verdicts {
 		if v.to == FindingFixed {
 			v.f.State = v.to

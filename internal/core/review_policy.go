@@ -1,13 +1,6 @@
 package core
 
-// The rule that decides whether another review round comes before a pull
-// request (WP-1320), apart from everything it reads. reviewAgain gathers
-// the facts (the round's findings and marks, the change's stakes, the
-// loop's history, the reviewer's and the rounds' records) and asks the
-// decision model; againPolicy.settle turns them into an arm. settle reads
-// no database and no clock, so every case of the rule can be listed in a
-// test, and the numbers it turns on are one value (againPolicy), not
-// constants spread through the code that gathers.
+// againPolicy.settle reads no database and no clock, so every case of the rule can be listed in a test.
 
 import (
 	"errors"
@@ -16,22 +9,11 @@ import (
 
 // againPolicy is every number the rule turns on.
 type againPolicy struct {
-	// bars and floors by stakes tier (againBars, againFloors); a tier
-	// without one takes the unknown tier's.
-	bars   map[string]againBar
-	floors map[string]float64
-	// cap: rounds of one change before its pull request past which no more
-	// come (reviewRoundsCap).
-	cap int
-	// yieldFloor, yieldMin: a record of at least yieldMin rounds, drawn
-	// under yieldFloor, ends a loop the scores alone called for; a probe
-	// needs its record's draw at or over yieldFloor.
-	yieldFloor float64
-	yieldMin   int
-	// needBase, needGrowth: the medium signals another round needs after the
-	// change's k-th round (k = 1 the first) is needBase * needGrowth^(k-1)
-	// (WP-1569): 1 after round 1, then 2, 4, 8 and on. A high or critical
-	// signal calls at any round.
+	bars                 map[string]againBar
+	floors               map[string]float64
+	cap                  int
+	yieldFloor           float64
+	yieldMin             int
 	needBase, needGrowth int
 }
 
@@ -72,24 +54,16 @@ func (p againPolicy) floor(tier string) float64 {
 // comes to need it, so a round a signal calls isn't lost to a record it
 // never reads, and none is decided as if a failed read had said no.
 type againFacts struct {
-	// tier is the change's stakes tier (roundRisk).
-	tier string
-	// fixed and open count the session's marks over every finding of the
-	// round; passed: the check of those marks was passed over.
+	tier        string
 	fixed, open int
 	passed      bool
-	// unread: the check passed with an own report nothing read against
-	// its reviewer's words (checkMarks).
-	unread bool
+	unread      bool
 	// spent: the loop had its one later round read by labels alone;
 	// probed: it had its one probe.
-	spent, probed bool
-	historyErr    error
-	// trusted: the reviewer's record backs its claims (againTrust).
-	trusted  bool
-	trustErr error
-	// probeYield and reviewYield are the draws from the records of the
-	// rounds that followed probes, and again decisions, at this index.
+	spent, probed           bool
+	historyErr              error
+	trusted                 bool
+	trustErr                error
 	probeYield, reviewYield againYieldRead
 	probeErr, yieldErr      error
 }
@@ -118,23 +92,10 @@ func (p againPolicy) settle(c *againDecision, fs, earlier []againFinding, ans ma
 	if c.unread = f.unread; f.unread {
 		c.unchecked++
 	}
-	// From the second round on, without the model no repeat can be told:
-	// by labels every finding is new, and rounds read that way could go on
-	// over the same ground. A signal or an unchecked rejection still gets
-	// one such round a loop, so the pull request doesn't open on findings
-	// no one followed up (WP-1320's live check of its own first round, 2.2).
+	// Without the model no repeat can be told, so a loop gets one labels-only round, and no PR opens on findings nobody followed up.
 	unscoredLater := !scored && len(earlier) > 0
-	// A new high or critical signal calls another round at any round
-	// index; medium signals are counted, and must number what this index
-	// needs (WP-1569). c.index is the round being decided, 1-based
-	// (reviewAgain sets it to len(earlier)+1): any medium calls after the
-	// first round, then two, four, eight. An unchecked rejection calls on
-	// any round, as before.
 	c.need = p.needFor(c.index)
 	calls := c.serious > 0 || c.weight > 0 && c.weight >= c.need || c.unchecked > 0
-	// Read by labels alone on a later round, any signal, one short of its
-	// count too, still gets the loop's one round (below): no repeat can be
-	// told, and the pull request shouldn't open on findings no one followed up.
 	calls = calls || unscoredLater && c.signals > 0
 	if unscoredLater && calls && f.historyErr != nil {
 		return false, errors.Join(errAgainRead, f.historyErr)
@@ -156,8 +117,6 @@ func (p againPolicy) settle(c *againDecision, fs, earlier []againFinding, ans ma
 	default:
 		c.arm = c.pick(bar)
 		if c.arm == AgainEnough && c.weight > 0 {
-			// Medium signals stood but fell short of the round's count and
-			// nothing else calls: a stop the weighing made, recorded as such.
 			c.arm = AgainWeighed
 		}
 	}
@@ -179,8 +138,6 @@ func (p againPolicy) settle(c *againDecision, fs, earlier []againFinding, ans ma
 	// yield record overrides it.
 	scoresCall := c.arm == "" && !probe && !calls
 	if scoresCall && c.fixesMean < bar.risky {
-		// How the findings and fixes sound is what calls: the reviewer's
-		// record must back it.
 		switch {
 		case f.trustErr != nil:
 			return false, errors.Join(errAgainRead, f.trustErr)
@@ -189,7 +146,6 @@ func (p againPolicy) settle(c *againDecision, fs, earlier []againFinding, ans ma
 		}
 	}
 	if c.arm == "" && !probe {
-		// A record that couldn't be read ends no loop: the round comes.
 		if f.yieldErr == nil && f.reviewYield.n >= p.yieldMin {
 			c.yieldP = f.reviewYield.p
 			if c.yieldP < p.yieldFloor && scoresCall {

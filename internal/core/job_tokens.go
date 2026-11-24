@@ -8,20 +8,7 @@ import (
 	"time"
 )
 
-// Per-job tokens (WP-418, WP-ADR28 §7.3). A runner job that runs wp gets a
-// Waypoint token of its own instead of the runner's, which is a person's
-// token and can do anything that person can. The server mints it when a
-// runner claims the job and deletes it when the job ends; it also expires
-// with the job. It is an agent-bound permission token, so every control that
-// refuses agents applies to it, and its permissions leave out what a job
-// should never do: manage tokens (refused to every permission token), answer
-// or run requests, start sessions, run or host runner jobs, deploy, manage
-// projects, repositories, forges, automations, AI settings or webhooks,
-// delete things, or administer Waypoint.
-//
-// It reaches only the job's project and its sub-projects (jobScope), as an
-// editor at most and never as an admin. A later phase has a broker hold it,
-// so the sandbox only sees a placeholder.
+// A job's token is narrower than the runner's person token: agent-bound, limited to the job's project tree, editor at most.
 
 // jobTokenPermissions is what a job's token may do: the work an agent does
 // on a task, and nothing that runs code, spends credit or changes who can
@@ -78,7 +65,7 @@ func jobAgentID(cli, model string) string {
 	if vendor == "" {
 		vendor = "runner"
 	}
-	model, _, _ = strings.Cut(model, "[") // opus[1m]
+	model, _, _ = strings.Cut(model, "[")
 	switch {
 	case model == "":
 		model = map[string]string{"claude": "claude-code", "cursor": "cursor-agent"}[cli]

@@ -60,26 +60,31 @@ async function run(width, scheme) {
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL(base + "/");
 
-  // ---- issue: agent, category, workflow ----
   const issue = await api("POST", "/issues", {
     project: "WAYP",
     title: `Agent work ${tag}`,
   });
   await page.goto(`${base}/issue/${issue.key}`);
   const props = mobile ? page : page.locator("aside");
-  // New issues are open to anyone; agents are picked in the assignee list (WP-1196).
   await props.getByTitle("Assignees").locator("visible=true").first().click();
-  await page.getByRole("option", { name: /^Any agent/ }).last().click();
+  await page
+    .getByRole("option", { name: /^Any agent/ })
+    .last()
+    .click();
   await page.keyboard.press("Escape");
-  // Unset Category and Workflow sit behind "More" on the strip; the side panel lists them.
-  // Picking one from More opens its picker straight away.
   const openField = async (name) => {
-    const more = props.getByRole("button", { name: "More fields" }).locator("visible=true");
+    const more = props
+      .getByRole("button", { name: "More fields" })
+      .locator("visible=true");
     if (await more.count()) {
       await more.first().click();
       await page.getByRole("menuitem", { name, exact: true }).click();
     } else {
-      await props.getByTitle(name, { exact: true }).locator("visible=true").first().click();
+      await props
+        .getByTitle(name, { exact: true })
+        .locator("visible=true")
+        .first()
+        .click();
     }
   };
   await openField("Category");
@@ -117,7 +122,6 @@ async function run(width, scheme) {
   );
   await shot("issue");
 
-  // Robot and step chips in the list; agent-made toggle in the filter bar.
   await page.goto(`${base}/p/WAYP/list`);
   await page.getByText(issue.title).first().waitFor();
   if (!mobile)
@@ -139,7 +143,6 @@ async function run(width, scheme) {
   await page.mouse.move(700, 500);
   await page.waitForTimeout(400);
   await shot("toolbar-on");
-  // The kanban board shares the toolbar (and the remembered state).
   await page.goto(`${base}/p/WAYP/board`);
   await toggle.waitFor();
   ok(
@@ -154,13 +157,12 @@ async function run(width, scheme) {
     `${tag} board toggle turns it off`,
   );
   await page.mouse.move(700, 500);
-  await page.waitForTimeout(400); // let the colour transition finish
+  await page.waitForTimeout(400);
   await shot("board-toolbar-off");
   await page.goto(`${base}/p/WAYP/list`);
   await page.getByText(issue.title).first().waitFor();
   await shot("list");
 
-  // ---- pages ----
   await page.goto(`${base}/pages`);
   await page.getByRole("button", { name: "New", exact: true }).click();
   await page.waitForURL(/\/pages\/\d+$/);
@@ -191,7 +193,7 @@ async function run(width, scheme) {
   await page.getByRole("option", { name: `Link ${issue.key}` }).click();
   await page.getByRole("link", { name: new RegExp(issue.key) }).waitFor();
   ok(true, `${tag} issue linked to the page`);
-  await page.keyboard.press("Escape"); // the link box stays open after an add (WP-1196)
+  await page.keyboard.press("Escape");
 
   await page.getByRole("button", { name: "Page actions" }).click();
   await page.getByRole("menuitem", { name: "New sub-page" }).click();
@@ -231,14 +233,12 @@ async function run(width, scheme) {
   }
   await shot("pages");
 
-  // The issue now lists the page.
   d = await api("GET", `/issues/${issue.key}`);
   ok(
     d.pages?.some((p) => p.id === id),
     `${tag} issue shows the linked page`,
   );
 
-  // ⌘K finds pages.
   if (!mobile) {
     await page.goto(base + "/");
     await page
@@ -252,7 +252,6 @@ async function run(width, scheme) {
     await page.keyboard.press("Escape");
   }
 
-  // ---- settings: workflows, automation trigger ----
   await page.goto(`${base}/p/WAYP/settings?tab=workflows`);
   await page.getByText("Agent pipeline").first().waitFor();
   await page.getByRole("button", { name: "New workflow" }).click();
@@ -273,7 +272,6 @@ async function run(width, scheme) {
   await shot("workflows");
   await api("DELETE", `/workflows/${wf.id}`);
 
-  // ---- agent token ----
   await page.goto(`${base}/settings?tab=tokens`);
   await page.getByRole("button", { name: "New token" }).click();
   await page.getByPlaceholder("Claude Code").fill(`bot ${tag}`);
@@ -286,7 +284,6 @@ async function run(width, scheme) {
   await page.getByText("claude-haiku-5-5").first().waitFor();
   ok(true, `${tag} agent token listed with its agent`);
 
-  // ---- device login ----
   const start = await (
     await page.request.fetch(base + "/api/v1/cli/login", {
       method: "POST",
@@ -310,13 +307,11 @@ async function run(width, scheme) {
   ).json();
   ok(poll.status === "approved", `${tag} device login approved`);
 
-  // ---- nested projects ----
   const sub = `S${width}${scheme[0].toUpperCase()}`.slice(0, 10);
   if (!(await api("GET", "/projects/" + sub))?.key)
     await api("POST", "/projects", { name: `Sub ${tag}`, key: sub });
   await api("PATCH", "/projects/" + sub, { parent: "WAYP" });
   await page.goto(`${base}/p/${sub}/settings`);
-  // The parent dropdown shows the chosen project.
   ok(
     await page
       .getByRole("combobox", { name: "Parent project" })

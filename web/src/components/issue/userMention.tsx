@@ -1,7 +1,3 @@
-// What the two description editors (the textarea and the rich one) share for
-// @mentions: the pattern that opens the menu, who it offers, and its markup.
-// Where the menu sits is each editor's own business.
-
 import { useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import clsx from 'clsx'

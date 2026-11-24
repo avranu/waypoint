@@ -45,14 +45,13 @@ func (s *Service) batchOrTell(ctx context.Context, sessionID, babysitID int64, b
 	moving := len(s.movingSiblings(ctx, sessionID, babysitID)) > 0
 	if !blocking || moving {
 		if until := s.batchDeadline(ctx, sessionID, blocking); until.After(s.now()) {
-			// Blocking news held only for this babysit goes now, with this.
 			if err := hold(until.UnixMilli()); err == nil {
 				if moving {
 					return
 				}
 				blocking, herr := s.hasBlockingBatch(ctx, sessionID)
 				if herr != nil {
-					// Unknown is not "nothing is blocked on it": it stays held, to its deadline.
+					// An unknown blocking state is not no blocking: the news stays held to its deadline.
 					if readFault(herr) {
 						s.log.WarnContext(ctx, "read whether a session's batch is blocking", "session", sessionID, "err", herr)
 					}
@@ -108,7 +107,7 @@ func (s *Service) movingSiblings(ctx context.Context, sessionID, except int64) [
 			AND m.step_key LIKE 'babysit:' || b.id || ':%')`,
 		sessionID, except, babysitMoving[0], babysitMoving[1], babysitMoving[2], babysitMoving[3])
 	if err != nil {
-		// Can't tell, so assume one is moving: its news waits for the deadline.
+		// A failed read counts the other babysits as still moving, so news waits for the deadline.
 		return []int64{except}
 	}
 	defer rows.Close()
@@ -155,7 +154,7 @@ func (s *Service) releaseBatchWaiting(ctx context.Context, sessionID int64, wait
 		`UPDATE requests SET batch_until = NULL WHERE session_id = ? AND batch_until IS NOT NULL`,
 	} {
 		if _, err := s.db.W.ExecContext(ctx, q, sessionID); err != nil {
-			// Keep going: the other table's news must not stay batched.
+			// A failed release on one table must not stop the other table's batched news from being released.
 			s.log.WarnContext(ctx, "release batched news", "session", sessionID, "err", err)
 		}
 	}
@@ -187,7 +186,7 @@ func (s *Service) releaseDueBatches(ctx context.Context) {
 			blocking, err := s.hasBlockingBatch(ctx, d.session)
 			if err != nil {
 				if readFault(err) {
-					s.log.WarnContext(ctx, "read whether a session's batch is blocking", "session", d.session, "err", err) // held to its deadline
+					s.log.WarnContext(ctx, "read whether a session's batch is blocking", "session", d.session, "err", err)
 				}
 			}
 			release = err == nil && blocking
@@ -254,8 +253,6 @@ func (s *Service) postToIdleSession(ctx context.Context, sessionID int64) {
 // stopped while its background work runs (stored as working, since that
 // work's report starts its next turn), as news about that work must (WP-605).
 func (s *Service) postToSession(ctx context.Context, sessionID int64, waiting bool) {
-	// Say what held back a post when news is waiting for it (not for every
-	// call: most find nothing to post).
 	skip := func(why string) {
 		var n int
 		if s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM session_messages WHERE session_id = ? AND state = 'queued' AND passive = 0 AND batch_until IS NULL`, sessionID).Scan(&n) == nil && n > 0 {
@@ -277,11 +274,11 @@ func (s *Service) postToSession(ctx context.Context, sessionID int64, waiting bo
 	}
 	if p, err := s.sessionPause(ctx, user, agent); err != nil || p != nil {
 		skip("the agent is paused")
-		return // paused (WP-146): it waits for the person's next prompt, or for Resume
+		return
 	}
 	if sessionLeftAlone(ctx, s.db.R, sessionID) {
 		skip("its person stopped Waypoint in the session")
-		return // its person typed /wp stop there (WP-562): it waits for their next prompt
+		return
 	}
 	if !runnerOnline(ctx, s, user, machine) {
 		skip("no runner is online on " + machine)
@@ -299,7 +296,7 @@ func (s *Service) postToSession(ctx context.Context, sessionID int64, waiting bo
 		}
 	}
 	rows.Close()
-	msgs = slices.DeleteFunc(msgs, func(m *SessionMessage) bool { return s.shipWaits.holds(ctx, s.db.R, s.now(), sessionID, m) }) // a wp ship waits for it (WP-1669)
+	msgs = slices.DeleteFunc(msgs, func(m *SessionMessage) bool { return s.shipWaits.holds(ctx, s.db.R, s.now(), sessionID, m) })
 	reqs, err := s.loadRequests(ctx, SystemActor(), true, `r.session_id = ? AND r.user_id = ? AND r.delivered_at IS NULL AND r.batch_until IS NULL AND r.state IN ('`+strings.Join(decidedStates, "','")+`') ORDER BY r.id`, sessionID, user)
 	if err != nil {
 		return
@@ -374,9 +371,7 @@ func (s *Service) sessionMessageJobFinished(ctx context.Context, e *Event) {
 	case src == sessionBatchSource && done:
 		var sessionID, posted int64
 		_ = s.db.R.QueryRowContext(ctx, `SELECT session_id FROM message_batches WHERE id = ?`, id).Scan(&sessionID)
-		// It reached the agent when the runner started the job (a second or so
-		// before it reported): the agent may already have done that turn and
-		// finished, and that finish counts for a tell_agent step waiting on it.
+		// The batch reached the agent when the job started, so the posted time is the job's start, not its report.
 		_ = s.db.R.QueryRowContext(ctx, `SELECT coalesce(started_at, created_at) FROM runner_jobs WHERE id = ?`, dataInt(e, "job")).Scan(&posted)
 		if posted == 0 {
 			posted = s.nowMS()

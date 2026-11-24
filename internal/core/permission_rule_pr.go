@@ -1,15 +1,6 @@
 package core
 
-// Allow rules for refused calls (WP-233, WP-ADR114). Approving a call
-// Claude Code's auto-mode classifier refused changes nothing auto mode sees,
-// so Waypoint suggests narrow allow rules (permission_rules.go) and the
-// person may pick one, much as /fewer-permission-prompts would: Waypoint
-// adds it to the repo's .claude/settings.json by pull request, so later
-// sessions skip the classifier for that command. A person picks a rule
-// from a refused call in the log (refusals.go, WP-232: the hook logs
-// refusals rather than filing requests), or when approving a permission
-// request an agent filed. Nothing is remembered unless a person picks the
-// rule; no approval is replayed later.
+// Only a person's pick adds a rule, by pull request; an approval without a rule changes nothing and is not replayed later.
 
 import (
 	"context"
@@ -48,7 +39,7 @@ func (s *Service) checkRuleTarget(ctx context.Context, actor *Actor, r *Request,
 type permRuleJob struct {
 	request int64
 	refusal int64
-	at      int64 // the refusal pick's rule_at
+	at      int64
 	repo    *setupRepo
 	rule    string
 }

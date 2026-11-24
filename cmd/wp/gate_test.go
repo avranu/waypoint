@@ -13,7 +13,7 @@ func TestGateProblems(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		f    gateFacts
-		want []string // substrings, one per problem
+		want []string
 	}{
 		{"worker, small context", gateFacts{agent: "sonnet-worker", context: 50_000}, nil},
 		{"fork of a big context", gateFacts{agent: "fork", context: 150_000}, []string{"150k-token context"}},
@@ -122,7 +122,7 @@ func TestGateOutputAndMode(t *testing.T) {
 }
 
 func TestTranscriptTail(t *testing.T) {
-	big := strings.Repeat(`{"type":"user","message":{"content":"`+strings.Repeat("x", 900)+`"}}`+"\n", 400) // > the tail
+	big := strings.Repeat(`{"type":"user","message":{"content":"`+strings.Repeat("x", 900)+`"}}`+"\n", 400) // The test data must be larger than the transcript tail window, so the read sees only the file's end.
 	tr := big +
 		`{"type":"assistant","message":{"model":"claude-opus-4","usage":{"input_tokens":5,"cache_read_input_tokens":60000,"cache_creation_input_tokens":1000}}}` + "\n" +
 		`{"type":"assistant","isSidechain":true,"message":{"model":"x","usage":{"input_tokens":999999}}}` + "\n" +
@@ -148,7 +148,6 @@ func TestHookClaudeGate(t *testing.T) {
 		hookClaudeGate(c, strings.NewReader(in), &out)
 		return out.String()
 	}
-	// Four live agents are no cap: a fifth, main-thread or nested, is let through.
 	if got := run(`{"session_id":"s1","tool_name":"Agent","tool_input":{"subagent_type":"sonnet-worker","model":"sonnet"}}`); got != "" {
 		t.Errorf("fifth agent: %s", got)
 	}
@@ -207,7 +206,6 @@ func TestHookClaudeGateNestedInherits(t *testing.T) {
 		hookClaudeGate(c, bytes.NewReader(in), &out)
 		return out.String()
 	}
-	// The session is Fable, so this passes only by the caller's recorded model.
 	if got := run("w"); got != "" {
 		t.Errorf("sonnet worker starting general-purpose: %s", got)
 	}
@@ -261,7 +259,6 @@ func TestHookClaudeGateNestedParent(t *testing.T) {
 	if got := run("unk", "claude-fable-5-2", `{"subagent_type":"general-purpose","model":"opus"}`); !strings.Contains(got, `"permissionDecision":"deny"`) || !strings.Contains(got, "can't start an agent on Opus") {
 		t.Errorf("nested Opus call: want a deny: %s", got)
 	}
-	// The env model judges an unknown caller, and the call resolves to it.
 	t.Setenv("CLAUDE_CODE_SUBAGENT_MODEL", "sonnet")
 	if got := run("unk", "claude-fable-5-2"); got != "" {
 		t.Errorf("unknown caller under a Fable session, env sonnet: %s", got)
@@ -376,7 +373,6 @@ func TestResolveModel(t *testing.T) {
 			}
 		})
 	}
-	// env falls back to settings.json
 	if err := os.WriteFile(filepath.Join(home, ".claude", "settings.json"), []byte(`{"env":{"CLAUDE_CODE_SUBAGENT_MODEL":"haiku"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +405,6 @@ func TestHookClaudeGateForkIgnoresMode(t *testing.T) {
 	if got := run(opus); got != "" {
 		t.Errorf("off still silences the other rules: %q", got)
 	}
-	// Off drops the other rules from a fork's refusal too.
 	if got := run(`{"session_id":"s1","tool_name":"Agent","tool_input":{"subagent_type":"fork"},"model":"claude-opus-5-5"}`); strings.Contains(got, "would run on") {
 		t.Errorf("off fork names the model rule: %q", got)
 	}

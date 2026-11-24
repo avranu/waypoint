@@ -50,8 +50,6 @@ func (s *Service) shipAuthority(ctx context.Context, r *roundRow, bp *beforePR, 
 		if t.ReadOnly {
 			return nil, "the token the ship came with is read-only", nil
 		}
-		// What the token may do, as the ship it came with could; the agent
-		// and session are the round's.
 		t.Agent, t.Session = actor.Agent, actor.Session
 		actor = t
 	}
@@ -128,8 +126,6 @@ func (s *Service) stopShipWith(ctx context.Context, r *roundRow, in shipRoundIn,
 	if err != nil {
 		return err
 	}
-	// The run and the task's claim are let go: nothing is left that would try
-	// this ship again, and the task is free for a person.
 	if err := s.write(ctx, SystemActor(), func(t *tx) error {
 		var open int
 		if err := t.QueryRowContext(ctx, `SELECT count(*) FROM agent_runs WHERE issue_id = ? AND agent = ? AND ended_at IS NULL`, r.issueID, in.agent).Scan(&open); err != nil {

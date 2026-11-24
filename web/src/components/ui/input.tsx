@@ -278,7 +278,6 @@ export function Select({
     } else if (e.key === 'Tab') {
       pop.close()
     } else if (e.key.length === 1) {
-      // Type-ahead: jump to the next option starting with that letter.
       const k = e.key.toLowerCase()
       const n = enabled.findIndex((o, i) => i > active && o.label.toLowerCase().startsWith(k))
       const m = n >= 0 ? n : enabled.findIndex((o) => o.label.toLowerCase().startsWith(k))

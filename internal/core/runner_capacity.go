@@ -6,10 +6,7 @@ import (
 	"time"
 )
 
-// Runner capacity (WP-366, WP-ADR27): a runner takes fewer jobs while its
-// machine is busy, so the other services there keep running. It watches the
-// machine's load itself; the server only hands out jobs of the lanes a poll
-// asks for and shows what the runner last reported.
+// The runner watches its own machine load; the server hands out only jobs of the lanes a poll asks for.
 
 // Lanes split jobs by what they cost the machine. Light jobs mostly wait on
 // a model (read-only reviews and audits) or are nothing at all (an inbox

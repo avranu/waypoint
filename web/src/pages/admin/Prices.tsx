@@ -1,7 +1,4 @@
-// Admin → AI → Prices (WP-D20): what a model's tokens would cost on the API,
-// per million tokens, matched to a model id by prefix. It turns token counts
-// into the "API-equivalent cost" on Agents → Usage; subscriptions aren't billed
-// per token, so it is a way to compare models, not an invoice.
+// Matched to a model id by prefix; the costs are API-equivalent, not an invoice, since subscriptions aren't billed per token.
 
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'

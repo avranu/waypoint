@@ -12,9 +12,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/sandbox/forward"
 )
 
-// The units' properties (WP-470, PL7 §6.3; contained_props from the
-// Phase 0 spike, WP-X8). Pure, so the tests check them line by line.
-
 // unitPlan is what a Contained unit is made of.
 type unitPlan struct {
 	Run        string // the session's run directory
@@ -123,7 +120,6 @@ func brokerProps(run, state string) []string {
 		"SystemCallArchitectures=native",
 		"SystemCallFilter=@system-service",
 		"SystemCallFilter=~@privileged @resources",
-		// The socket is the session's group's: 0770.
 		"UMask=0007",
 		"MemoryMax=512M",
 		"TasksMax=512",

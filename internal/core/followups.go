@@ -13,17 +13,7 @@ import (
 	"time"
 )
 
-// Follow-ups (WP-D22): steps queued on an agent session that run once, when
-// the agent truly finishes. A follow-up is an automation bound to the
-// session (automations.session_id): the same steps, runs and waits as any
-// automation, hidden from project and admin lists, owned by the session's
-// person and run on their runners.
-//
-// "Finished" is judged at a Stop hook: no background task, cron or wakeup
-// that can wake the agent (Claude Code's background_tasks and
-// session_crons), nothing delivered at that stop, and no open request from
-// the session. Messages for the agent (tell_agent) reach it through the Stop
-// hook, a runner posting to its inbox socket, or its next Stop or start.
+// "Finished" at a Stop hook means no background task, cron or wakeup can wake the agent, nothing is delivered at that stop, and no open request from the session.
 
 const (
 	followUpTrigger = "session_finished"
@@ -42,7 +32,7 @@ const (
 // Message states.
 const (
 	MessageQueued    = "queued"
-	MessageSending   = "sending" // a runner job has it
+	MessageSending   = "sending"
 	MessageDelivered = "delivered"
 )
 
@@ -88,12 +78,10 @@ type SessionMessage struct {
 	AutomationID int64 `json:"automation_id,omitempty"`
 
 	sessionID   int64
-	passive     bool // news, not work: waits for the next prompt or start, never continues a stop (WP-176)
+	passive     bool // news, not work: waits for the next prompt or start, never continues a stop
 	deliveredAt sql.NullInt64
 	stepKey     string
 }
-
-// ---- finished ----
 
 // pendingText says in words what a Stop still runs: "2 background tasks, a
 // wakeup". Empty: nothing that can wake the agent.
@@ -143,7 +131,6 @@ func (s *Service) settleStop(ctx context.Context, t *tx, x *AgentSession, ev *Ho
 	}
 	switch {
 	case delivered:
-		// It carries on with what it was told.
 		return set(`state = 'working', wait_reason = '', pending = '', finished_at = NULL`)
 	case ev.Pending == nil:
 		return set(`pending = '?', finished_at = NULL`)
@@ -174,7 +161,7 @@ func (s *Service) markFinished(ctx context.Context, t *tx, x *AgentSession, at i
 // openSessionRequests counts a session's open requests that aren't snoozed.
 func (s *Service) openSessionRequests(ctx context.Context, q queryer, sessionID int64) (int, error) {
 	var n int
-	err := q.QueryRowContext(ctx, `SELECT count(*) FROM requests WHERE session_id = ? AND state = 'open' AND source != 'auto' AND (snoozed_until IS NULL OR snoozed_until <= ?)`, // a guessed question holds nobody
+	err := q.QueryRowContext(ctx, `SELECT count(*) FROM requests WHERE session_id = ? AND state = 'open' AND source != 'auto' AND (snoozed_until IS NULL OR snoozed_until <= ?)`,
 		sessionID, s.nowMS()).Scan(&n)
 	return n, err
 }
@@ -214,9 +201,7 @@ func (s *Service) followUpEvents(ctx context.Context, e *Event) {
 			}
 		}
 	case EvRequestUpdated:
-		// A request that expired because its session ended doesn't run the
-		// follow-up of a session that never finished: Run now still does
-		// (heldReason says so).
+		// A request that expired because its session ended does not start the follow-up; Run now still does.
 		if ended, _ := e.Data["session_ended"].(bool); ended {
 			return
 		}
@@ -238,7 +223,7 @@ func (s *Service) fireFollowUp(ctx context.Context, sessionID int64, e *Event, f
 		return nil, err
 	}
 	if n == 0 {
-		return nil, nil // spent
+		return nil, nil
 	}
 	owner := cmpID(a.savedBy, a.createdBy)
 	u, err := s.userByID(ctx, s.db.R, owner)
@@ -330,8 +315,6 @@ func (s *Service) followUpTalks(ctx context.Context, sessionID int64) bool {
 	return talks(r.Actions)
 }
 
-// ---- the follow-up, for its person ----
-
 // sessionForFollowUp loads a session whose follow-up the actor may manage:
 // their own, as a person.
 func (s *Service) sessionForFollowUp(ctx context.Context, actor *Actor, id int64) (*AgentSession, error) {
@@ -411,7 +394,7 @@ func heldReason(x *AgentSession) string {
 // SaveFollowUp queues steps on a session (replacing what was queued) and
 // arms them. A session that already finished runs them now.
 func (s *Service) SaveFollowUp(ctx context.Context, actor *Actor, sessionID int64, in FollowUpInput) (*FollowUp, error) {
-	if err := actor.need(PermSessionsStart); err != nil { // WP-111
+	if err := actor.need(PermSessionsStart); err != nil {
 		return nil, err
 	}
 	if err := actor.canWrite(); err != nil {
@@ -462,7 +445,7 @@ func (s *Service) SaveFollowUp(ctx context.Context, actor *Actor, sessionID int6
 
 // RunFollowUpNow runs a session's follow-up at once, whatever the agent is doing.
 func (s *Service) RunFollowUpNow(ctx context.Context, actor *Actor, sessionID int64) (*FollowUp, error) {
-	if err := actor.need(PermSessionsStart); err != nil { // WP-111
+	if err := actor.need(PermSessionsStart); err != nil {
 		return nil, err
 	}
 	if err := actor.canWrite(); err != nil {
@@ -568,8 +551,6 @@ func (s *Service) followUpBriefs(ctx context.Context, actor *Actor, list []*Agen
 	return rows.Err()
 }
 
-// ---- messages ----
-
 // messageFrom is who a queued prompt comes from (WP-560): the person whose
 // token or automation sent it, the agent that wrote its text, and the
 // automation whose step sent it. All empty: Waypoint's own news.
@@ -597,7 +578,7 @@ func (s *Service) storeMessage(ctx context.Context, sessionID int64, body, stepK
 		sessionID, body, stepKey, nullUser(from.by), s.nowMS(), passive, from.agent, nullID(from.automation)); err != nil {
 		return nil, err
 	}
-	s.stopWaits.wakeShip(sessionID) // a wp ship waiting on the round's news looks again
+	s.stopWaits.wakeShip(sessionID)
 	return s.messageByKey(ctx, stepKey)
 }
 
@@ -658,13 +639,13 @@ func (s *Service) takeMessages(ctx context.Context, t *tx, x *AgentSession, via 
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	// The round's news a wp ship waits for is that wait's (WP-1669).
+	// A wp ship waiting on a review round's news holds that news back from this delivery.
 	out = slices.DeleteFunc(out, func(m *SessionMessage) bool { return s.shipWaits.holds(ctx, t, s.now(), x.ID, m) })
 	if len(out) == 0 {
 		return nil, nil
 	}
 	if via == "stop" && !slices.ContainsFunc(out, func(m *SessionMessage) bool { return !m.passive && !heldToWait(ctx, t, m) }) {
-		return nil, nil // news alone never continues a stop
+		return nil, nil
 	}
 	now := s.nowMS()
 	for _, m := range out {
@@ -674,7 +655,6 @@ func (s *Service) takeMessages(ctx context.Context, t *tx, x *AgentSession, via 
 		m.State, m.Via = MessageDelivered, via
 		s.log.InfoContext(ctx, "session message delivered by the hook", "message", m.ID, "session", x.ID, "via", via, "step_key", m.stepKey)
 		m.deliveredAt = sql.NullInt64{Int64: now, Valid: true}
-		// For the step waiting on it.
 		t.emit(sessionEvent(EvSessionMessage, x, map[string]any{"message": m.ID, "via": via}))
 	}
 	_, err = t.ExecContext(ctx, `UPDATE agent_sessions SET state = 'working', wait_reason = '', pending = '', finished_at = NULL WHERE id = ?`, x.ID)
@@ -686,7 +666,6 @@ func MessagesText(list []*SessionMessage) string {
 	var parts []string
 	for _, m := range list {
 		if strings.HasPrefix(m.stepKey, "babysit:") {
-			// News of a pull request it babysits (WP-134), not a task.
 			if m.passive {
 				parts = append(parts, "Waypoint's babysitter (for your information; act only if it changes your plans): "+m.Body)
 				continue
@@ -695,32 +674,26 @@ func MessagesText(list []*SessionMessage) string {
 			continue
 		}
 		if strings.HasPrefix(m.stepKey, "crossrepo:") {
-			// How a task filed from another repo ended (WP-378).
 			parts = append(parts, "Waypoint, news of a task filed from this repo for another (act only if it changes your plans): "+m.Body)
 			continue
 		}
 		if strings.HasPrefix(m.stepKey, "stalled:") {
-			// A background job that made no progress (WP-605, WP-1045).
 			parts = append(parts, "Waypoint, news of your background job (act on it if it is stuck):\n\n"+m.Body)
 			continue
 		}
 		if strings.HasPrefix(m.stepKey, "audit:") {
-			// An audit this session asked for ended (WP-1370): news, not a task.
 			parts = append(parts, "Waypoint, news of an audit you asked for (act on it only if it changes your plans):\n\n"+m.Body)
 			continue
 		}
 		if strings.HasPrefix(m.stepKey, "check:") {
-			// The check of this session's marks on its review's findings.
 			parts = append(parts, "Waypoint, the check of your marks on the adversarial review's findings:\n\n"+m.Body)
 			continue
 		}
 		if strings.HasPrefix(m.stepKey, "shipped:") {
-			// Waypoint opened the session's pull request (WP-1370).
 			parts = append(parts, "Waypoint, news of your task's pull request (for your information; there is nothing to run):\n\n"+m.Body)
 			continue
 		}
 		if head, ok := newsHead(m.stepKey); ok {
-			// News, not tasks (WP-1370).
 			parts = append(parts, head+":\n\n"+m.Body)
 			continue
 		}
@@ -729,8 +702,7 @@ func MessagesText(list []*SessionMessage) string {
 			head = "Waypoint: " + m.From + " queued this for when you finished"
 		}
 		if m.Agent != "" {
-			// Not a person's words, though a person's automation may send
-			// them (WP-560).
+			// Agent-written text is not a person's words, even when a person's automation sends it.
 			head += "; " + agentPhrase(m.Agent) + " wrote it and no person has reviewed it"
 		}
 		parts = append(parts, head+":\n\n"+m.Body)
@@ -742,8 +714,8 @@ func MessagesText(list []*SessionMessage) string {
 type stopWaits struct {
 	mu      sync.Mutex
 	waiting map[int64][]chan struct{}
-	expect  map[int64]time.Time       // told to wait; their call is on its way
-	ship    map[int64][]chan struct{} // wp ship waits on a review round's news (WP-1669)
+	expect  map[int64]time.Time
+	ship    map[int64][]chan struct{}
 }
 
 func (w *stopWaits) add(id int64) chan struct{} {
@@ -841,7 +813,7 @@ func (s *Service) AwaitMessage(ctx context.Context, actor *Actor, cliID, machine
 		if p, err := s.sessionPause(ctx, actor.id(), pausedAgent(actor)); err != nil {
 			return nil, err
 		} else if p != nil {
-			return res, nil // a paused session takes no new messages (WP-146)
+			return res, nil
 		}
 		err := s.write(ctx, actor, func(t *tx) error {
 			x, err := scanSession(t.QueryRowContext(ctx, `SELECT `+sessionCols+` FROM agent_sessions s WHERE s.id = ?`, id), s.nowMS())
@@ -868,8 +840,6 @@ func (s *Service) AwaitMessage(ctx context.Context, actor *Actor, cliID, machine
 		}
 	}
 }
-
-// ---- sessions a follow-up started ----
 
 // linkSpawned links a new session to the start_session runner job that
 // started it (WAYPOINT_FOLLOWUP in its hook's environment): the job must be
@@ -929,7 +899,7 @@ func (s *Service) moveOrphanMessages(ctx context.Context, t *tx, x *AgentSession
 	if err != nil {
 		return err
 	}
-	var mine sql.NullInt64 // the new session's task, if it has one yet
+	var mine sql.NullInt64
 	if err := t.QueryRowContext(ctx, `SELECT issue_id FROM agent_runs WHERE session_id = ? AND ended_at IS NULL ORDER BY started_at DESC, id DESC LIMIT 1`, x.ID).Scan(&mine); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}

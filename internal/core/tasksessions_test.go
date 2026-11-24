@@ -6,8 +6,6 @@ import (
 	"time"
 )
 
-// Task sessions (WP-34).
-
 func TestSplitTaskKeys(t *testing.T) {
 	got := splitTaskKeys(" wp-12, WP-13\tWP-12,not a key,,\nAPP-7 ")
 	if strings.Join(got, ",") != "WP-12,WP-13,APP-7" {
@@ -42,9 +40,7 @@ func TestSessionKindFromTheLauncher(t *testing.T) {
 	if x := kinds[task.Session]; x.Kind != SessionTask || strings.Join(x.Tasks, ",") != "WP-12,WP-13" {
 		t.Errorf("task session: %q %v", x.Kind, x.Tasks)
 	}
-	// The first event decides: a later one with or without WP_TASK (a stale
-	// environment, a one-off command) changes neither kind. The context of
-	// the last call is kept.
+	// The first event sets a session's kind; a later WP_TASK (stale environment, one-off command) doesn't change it.
 	if _, err := e.s.SessionHook(e.ctx, ag, []HookEvent{hook("box", "mine", "Stop", func(h *HookEvent) { h.Task, h.ContextTokens = "WP-9", 42_000 })}); err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +110,6 @@ func TestYourSessionGetsOneNoteAfterAFinishedTask(t *testing.T) {
 	a := te.issue(te.admin, IssueInput{Project: p.Key, Title: "First", Agent: "claude"})
 	b := te.issue(te.admin, IssueInput{Project: p.Key, Title: "Second", Agent: "claude"})
 
-	// Big, but nothing finished yet: nothing to say.
 	if w := te.take(a.Key, SessionHint{ContextTokens: 400_000}); w != "" {
 		t.Errorf("before a finished task: %q", w)
 	}
@@ -124,11 +119,9 @@ func TestYourSessionGetsOneNoteAfterAFinishedTask(t *testing.T) {
 	if _, err := te.s.AgentDone(te.ctx, te.ag, a.Key, AgentDoneInput{}); err != nil {
 		t.Fatal(err)
 	}
-	// Finished, but small: still nothing.
 	if n := te.stop(90_000); n != "" {
 		t.Errorf("note while small: %q", n)
 	}
-	// Over 150k: one note, for the person, once.
 	want := a.Key + " is done and this session holds 180k: the next task is cheaper in a fresh session."
 	if n := te.stop(180_000); n != want {
 		t.Errorf("note = %q", n)
@@ -136,7 +129,6 @@ func TestYourSessionGetsOneNoteAfterAFinishedTask(t *testing.T) {
 	if n := te.stop(190_000); n != "" {
 		t.Errorf("a second note: %q", n)
 	}
-	// wp next still claims, and warns, with the context the CLI read now.
 	w := te.take(b.Key, SessionHint{ContextTokens: 210_000})
 	if !strings.Contains(w, a.Key+" is done and this session holds 210k") || !strings.Contains(w, b.Key+" is claimed anyway") {
 		t.Errorf("warning = %q", w)
@@ -144,7 +136,6 @@ func TestYourSessionGetsOneNoteAfterAFinishedTask(t *testing.T) {
 	if got := te.get(te.admin, b.Key); got.ClaimedBy == "" {
 		t.Error("the task wasn't claimed")
 	}
-	// Without the CLI's figure, the last Stop's.
 	if _, err := te.s.AgentDone(te.ctx, te.ag, b.Key, AgentDoneInput{}); err != nil {
 		t.Fatal(err)
 	}
@@ -152,11 +143,9 @@ func TestYourSessionGetsOneNoteAfterAFinishedTask(t *testing.T) {
 	if w := te.take(c.Key, SessionHint{}); !strings.Contains(w, b.Key+" is done and this session holds 190k") {
 		t.Errorf("warning from the stored context = %q", w)
 	}
-	// Another finished task re-arms the note.
 	if n := te.stop(200_000); !strings.HasPrefix(n, b.Key+" is done") {
 		t.Errorf("note after the next finished task = %q", n)
 	}
-	// A task finished in the same millisecond as that note still gets its own.
 	if _, err := te.s.AgentDone(te.ctx, te.ag, c.Key, AgentDoneInput{}); err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +159,6 @@ func TestTaskSessionWarnsOnUnrelatedWork(t *testing.T) {
 	p := e.project(e.admin, "App", "")
 	story := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Story", Type: "story", Agent: "claude"})
 	sub := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Sub-task", Type: "subtask", Parent: story.Key, Agent: "claude"})
-	// A sub-task's own sub-task is the story's work too: wp next STORY hands it out (WP-730).
 	grand := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Sub-sub-task", Type: "subtask", Parent: sub.Key, Agent: "claude"})
 	rel := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Related", Agent: "claude"})
 	other := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Unrelated", Agent: "claude"})
@@ -199,12 +187,10 @@ func TestTaskSessionWarnsOnUnrelatedWork(t *testing.T) {
 	if got := e.get(e.admin, other.Key); got.ClaimedBy == "" {
 		t.Error("an unrelated task is still claimed")
 	}
-	// Asking again for what it holds says nothing more.
 	if again, _ := e.s.AgentTake(e.ctx, ag, other.Key, ""); e.s.TaskSessionWarning(e.ctx, ag, again, SessionHint{}) != "" {
 		t.Error("warned again for a task already held")
 	}
-	// A task session never gets the size note. (The story's sub-tasks close
-	// first: a parent can't be done over open ones, WP-ADR123.)
+	// A parent can't be done over open sub-tasks, so they close first.
 	for _, k := range []string{grand.Key, sub.Key} {
 		st := "canceled"
 		if _, err := e.s.UpdateIssue(e.ctx, e.admin, k, IssuePatch{Status: &st}); err != nil {
@@ -228,7 +214,6 @@ func TestTaskSessionWarnsOnUnrelatedWork(t *testing.T) {
 	if w := e.s.TaskSessionWarning(e.ctx, plain, task, SessionHint{Task: sub.Key}); !strings.Contains(w, fresh.Key+" isn't part") {
 		t.Errorf("binding from the header: %q", w)
 	}
-	// And nothing at all without a session or a binding.
 	again := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Again", Agent: "claude"})
 	task, _ = e.s.AgentTake(e.ctx, plain, again.Key, "")
 	if w := e.s.TaskSessionWarning(e.ctx, plain, task, SessionHint{ContextTokens: 900_000}); w != "" {

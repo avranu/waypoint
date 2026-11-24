@@ -17,10 +17,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// Each completed hold of a test slot, and each wait that gave up, is kept in
-// an outbox and sent to the server, so the slot policy can be checked and
-// simulated later (WP-1646, WP-ADR150). waits.jsonl is not that: it only
-// feeds the classifier and wp slot ls.
+// waits.jsonl stays local (classifier, wp slot ls); the outbox is what the server receives.
 
 // slotPolicyVersion names the rules a hold ran under. Bump it when the class
 // rule, the slot order or the worktree rule changes (WP-1646).
@@ -87,7 +84,7 @@ func slotSnapshot(dir, name string) ([]core.SlotHolder, []core.SlotWaiter) {
 			continue
 		}
 		if ok, err := slotTryLock(f); err != nil || ok {
-			_ = f.Close() // free (closing drops the lock)
+			_ = f.Close()
 			continue
 		}
 		line := slotHolderLine(f)
@@ -129,7 +126,6 @@ func appendOutbox(dir string, h core.SlotHold) {
 	}
 	_, _ = f.Write(append(b, '\n'))
 	_ = f.Close()
-	// Counting reads the file: skip it while it cannot be over the cap.
 	if st, err := os.Stat(p); err != nil || st.Size() < int64(slotOutboxMax)*slotHoldMinBytes {
 		return
 	}
@@ -249,7 +245,7 @@ func (c *cli) sendSlotHolds(ctx context.Context) (sent, remaining int, err error
 	}
 	defer func() { _ = lf.Close() }()
 	if ok, err := slotTryLock(lf); err != nil || !ok {
-		return 0, len(readOutbox(dir)), err // another wp is sending
+		return 0, len(readOutbox(dir)), err
 	}
 	ctx, cancel := context.WithTimeout(ctx, slotSendBudget)
 	defer cancel()

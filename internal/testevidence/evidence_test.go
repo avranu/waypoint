@@ -15,7 +15,6 @@ import (
 // cut ones is unreadable rather than without evidence.
 func TestEncodeDecode(t *testing.T) {
 	p := &Payload{Shard: "2/4", Tests: []Test{{Package: "internal/core", Name: "TestA", Outcome: Pass, Ms: 1200}}}
-	// Big enough for several lines.
 	for i := range 3000 {
 		p.Cover = append(p.Cover, File{Path: strings.Repeat("x", i%40) + ".go", Stmts: []int{i % 7, 3}, Hit: []byte{byte(i)}})
 	}
@@ -32,7 +31,7 @@ func TestEncodeDecode(t *testing.T) {
 			t.Fatalf("line of %d characters", len(l))
 		}
 	}
-	log := append([]string{"ok  \tpkg\t1s", "wp-evidence v1 1/3 AAAA"}, lines...) // a cut payload first
+	log := append([]string{"ok  \tpkg\t1s", "wp-evidence v1 1/3 AAAA"}, lines...)
 	got, err := Decode(append(log, "done"))
 	if err != nil {
 		t.Fatal(err)

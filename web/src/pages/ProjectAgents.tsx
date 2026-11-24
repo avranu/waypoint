@@ -1,7 +1,3 @@
-// A project's Agents tab (WP-99): what needs a person, which sessions run now,
-// what agents will take next and the pull requests they opened, all for this
-// one project. The global Agents page stays the cross-project view.
-
 import { lazy, Suspense, useState, type ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'

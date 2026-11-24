@@ -1,11 +1,6 @@
 package core
 
-// What a review bot's comment says, without its chrome (WP-413): CodeRabbit
-// wraps each finding in HTML (icons, badges, collapsible sections) and adds
-// sections that repeat it (the AI-agent prompt, a committable copy of the
-// proposed fix) or say nothing to act on (review info, files selected, run
-// configuration, its analysis log and the scripts it ran, tips). A babysitter reads 4000
-// characters of a comment, so the chrome pushed findings out of view.
+// A babysitter's packet shows 4000 characters of a comment, so bot chrome (HTML, repeated sections) is stripped to keep findings in view.
 
 import (
 	"fmt"
@@ -29,7 +24,7 @@ var (
 	pictureRE      = lazyre.New(`(?is)<picture\b.*?</picture\s*>`)
 	blockTagRE     = lazyre.New(`(?i)</?(?:summary|details|blockquote|dl|dd|dt|p|div|br|hr|table|tr|td|th|ul|ol|li|h[1-6])\b[^>]*>`)
 	anyTagRE       = lazyre.New(`</?[a-zA-Z][^<>]*>`)
-	availabilityRE = lazyre.New(`\*\*Included review availability:\*\*(?:[^\n<.]*\.){1,3}`) // its sentences: stored text has no line ends
+	availabilityRE = lazyre.New(`\*\*Included review availability:\*\*(?:[^\n<.]*\.){1,3}`)
 	// receiptRE is the usage receipt CodeRabbit ends a summary with while
 	// on usage-based reviews: what the review cost, with billing links.
 	receiptRE = lazyre.New(`(?s)#{1,6}[ \t]*Usage-based review receipt\b.{0,1000}?Manage usage-based reviews\*\*\]\([^)\s]*\)\.?`)
@@ -59,8 +54,7 @@ func tidyReviewBody(author, body string) string {
 // with nothing to act on. Code (fenced, by CommonMark's rules) keeps its tags.
 func tidyBotText(s string) string {
 	s = strings.ReplaceAll(stripMarkers(s), "\r\n", "\n")
-	// Fenced code is set aside while sections are dropped (a dropped section
-	// may hold code, and code may hold <details>) and tags stripped.
+	// Mask fenced code before dropping sections and stripping tags: code may hold <details> or tags those steps would cut.
 	var code []string
 	var masked strings.Builder
 	for _, sg := range splitFences(s) {
@@ -144,7 +138,7 @@ func splitFences(s string) []textSeg {
 func dropSections(s string) string {
 	var b strings.Builder
 	locs := detailsTagRE.FindAllStringIndex(s, -1)
-	at := 0 // copied up to here
+	at := 0
 	for i := 0; i < len(locs); i++ {
 		open := locs[i]
 		if open[0] < at || strings.HasPrefix(s[open[0]:open[1]], "</") {
@@ -154,7 +148,7 @@ func dropSections(s string) string {
 		if m == nil || !dropSectionRE.MatchString(strings.TrimSpace(anyTagRE.ReplaceAllString(pictureRE.ReplaceAllString(m[1], ""), ""))) {
 			continue
 		}
-		depth, end := 0, len(s) // an unclosed section runs to the end
+		depth, end := 0, len(s)
 		for j := i; j < len(locs); j++ {
 			if strings.HasPrefix(s[locs[j][0]:locs[j][1]], "</") {
 				depth--

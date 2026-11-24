@@ -19,11 +19,6 @@ import (
 	"time"
 )
 
-// wp bench times a command the same way every time, so a claim that
-// something got faster, or a hill climb toward a target ("until this runs in
-// under a second"), rests on a measured number with its noise stated, not on
-// one `time` run on a busy machine (WP-935). No model, no server.
-
 var benchCmd = &command{
 	name: "bench", group: "Code and CI", args: "[-n RUNS] [--base REF] [--setup SH] [--target DURATION] [--by wall|cpu] -- CMD…",
 	summary: "time a command: median of several runs, against a base commit or a target",
@@ -199,7 +194,7 @@ func cmdBench(c *cli, args []string) error {
 		}
 	}
 
-	env, release, err := c.takeSlotFor(ctx, "tests", defaultSlots(), slotRunFor("wp bench", argv)) // the hold is a warm-up and many timed runs
+	env, release, err := c.takeSlotFor(ctx, "tests", defaultSlots(), slotRunFor("wp bench", argv))
 	if err != nil {
 		if ctx.Err() != nil {
 			_, _ = fmt.Fprintln(c.err, "wp bench: stopped while waiting for the slot; nothing was kept")
@@ -208,11 +203,7 @@ func cmdBench(c *cli, args []string) error {
 		return err
 	}
 	defer release()
-	// The tree is read once the slot is ours, not before the wait, which
-	// can be minutes on a shared host: after --setup and the warm-up (whose
-	// outputs aren't edits) and again after the timed runs. A change between
-	// those means no one tree was timed; a read git failed leaves no telling,
-	// so the result isn't kept, as wp testsum's record isn't.
+	// The trees are read after the slot is held and again after the timed runs; a change between the reads sets Moved, so the result says no one tree was timed.
 	var warmTree string
 	if l, ok := hostLoad(); ok {
 		res.Load = append(res.Load, l)
@@ -239,11 +230,11 @@ func cmdBench(c *cli, args []string) error {
 	}
 	for round := -1; round < *runs; round++ {
 		if round == 0 {
-			warmTree = benchTree() // what --setup left, the tree the runs time
+			warmTree = benchTree()
 		}
 		for k := range sides {
 			i := k
-			if (round+1)%2 == 0 && len(sides) == 2 { // the warm-up, round -1, too
+			if (round+1)%2 == 0 && len(sides) == 2 {
 				i = 1 - k
 			}
 			var s benchSample
@@ -545,7 +536,6 @@ func appendBenchRecord(p string, r benchRecord) {
 			b.WriteByte('\n')
 		}
 	}
-	// Replace the file in one step so an interrupted trim never truncates it.
 	tmp := p + "." + strconv.Itoa(os.Getpid()) + ".tmp"
 	if os.WriteFile(tmp, []byte(b.String()), 0o600) != nil {
 		_ = os.Remove(tmp)

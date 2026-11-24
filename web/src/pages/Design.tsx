@@ -1,8 +1,4 @@
-// Design notes (WP-D10): what people intend (goals, principles, features,
-// screens, decisions, requirements, notes), with an audit trail of who
-// wrote what and when. People's edits apply directly; an agent's note is
-// proposed until a person approves it, and on approved notes agents only add
-// (pending additions) or propose edits, which wait in the review queue.
+// An agent's note stays proposed until a person approves it; only a person can approve.
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
@@ -79,8 +75,6 @@ import {
 } from '@/components/knowledge'
 
 const noop = () => {}
-
-// ---- lists ----
 
 /** /design: every note you can see, or one project's (?project=). */
 export function DesignPage() {
@@ -210,7 +204,6 @@ function DesignList({
   })
   const notes = list.data ?? []
   const flat = !!debounced || !!kind
-  // Top-level notes by kind; sub-notes sit under their parent whatever their kind.
   const { roots, children } = useMemo(() => {
     const ids = new Set(notes.map((n) => n.id))
     const children = new Map<number, DesignNote[]>()
@@ -581,8 +574,6 @@ function NewNoteDialog({
   )
 }
 
-// ---- one note ----
-
 /** /design/$id */
 export function DesignNotePage() {
   const { id } = useParams({ from: '/app/design/$id' })
@@ -625,7 +616,6 @@ function useReview(noteId: number) {
       note?: string
     }) => designApi.review(v.rev.id, v.action, v.note),
     onMutate: ({ rev, action }) => {
-      // The verdict shows at once; the server's answer replaces it.
       const prev = qc.getQueryData<DesignNote>(key)
       if (prev) {
         const state =
@@ -660,7 +650,6 @@ function NoteView({ note: n }: { note: DesignNote }) {
   const qc = useQueryClient()
   const navigate = useNavigate()
   const search = useSearch({ strict: false }) as { tab?: string }
-  // The Spec tab is only there when it adds something to the note (WP-1196).
   const specData = useQuery(specQuery(String(n.id), n.project_key)).data
   const specEmpty = !!specData && specIsEmpty(specData)
   const tab = search.tab === 'spec' && !specEmpty ? 'spec' : 'note'
@@ -684,7 +673,6 @@ function NoteView({ note: n }: { note: DesignNote }) {
     },
   })
   const approve = useMutation({
-    // Approve what's on screen: if an agent changed it meanwhile, the server says so.
     mutationFn: () => designApi.approve(n.id, n.updated_at),
     onSuccess: (nn) => {
       afterNoteChange(qc, nn)
@@ -989,7 +977,6 @@ function ParentPicker({
     enabled: pop.open,
   }).data
   const parent = n.ancestors?.[n.ancestors.length - 1]
-  // Not itself or anything beneath it.
   const below = useMemo(() => {
     const out = new Set<number>([n.id])
     let grew = true
@@ -1083,7 +1070,6 @@ function ProvenanceBanner({
       )}
       <span>
         {n.requested && !n.approved_by ? (
-          // Provenance, not a verdict: nobody approved it (WP-409).
           <>
             Written for{' '}
             <Link
@@ -1190,7 +1176,6 @@ function RejectButton({
               setNote('')
               pop.close()
             }
-            // The reason stays in the box if the rejection fails.
             const r = onReject(note.trim())
             if (r instanceof Promise) r.then(done, () => {})
             else done()
@@ -1575,8 +1560,6 @@ function DeleteNoteDialog({
   )
 }
 
-// ---- spec ----
-
 /** What `wp spec` adds to the note: its parts, related notes, terms, tasks, changes and files. */
 function specIsEmpty(s: {
   parts: unknown[]
@@ -1755,8 +1738,6 @@ function ItemList({ items }: { items: KItem[] }) {
   )
 }
 
-// ---- review queue ----
-
 /** /design/review: proposed notes, pending additions and edits, oldest first. */
 export function DesignReviewPage() {
   const search = useSearch({ strict: false }) as { project?: string }
@@ -1773,7 +1754,6 @@ export function DesignReviewPage() {
         ? designApi.review(v.item.revision.id, v.action, v.note)
         : designApi.approve(v.item.note.id, v.item.note_updated_at),
     onMutate: ({ item }) => {
-      // Gone from the queue at once.
       const key = designReviewQuery(project).queryKey
       const prev = qc.getQueryData<ReviewItem[]>(key)
       qc.setQueryData<ReviewItem[]>(key, (old) => old?.filter((x) => x !== item))

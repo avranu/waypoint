@@ -47,7 +47,6 @@ export function useAutosave(
     const t = window.setTimeout(flush, delay)
     return () => window.clearTimeout(t)
   }, [key, saved, ok, delay, flush])
-  // Leaving the page doesn't lose what was typed.
   useEffect(() => flush, [flush])
   useEffect(() => {
     if (!done) return

@@ -25,7 +25,7 @@ type client struct {
 	base  string
 	http  *http.Client
 	token string
-	web   bool // send the CSRF header
+	web   bool
 }
 
 func (c *client) do(method, path string, body any) (int, []byte) {
@@ -115,7 +115,6 @@ func TestAPIFlow(t *testing.T) {
 		t.Fatalf("accept: %d %v", code, me)
 	}
 	web.web = false
-	// Cookie auth works for reads; writes need the CSRF header.
 	if code := web.json("GET", "/api/v1/me", nil, &me); code != 200 || me["username"] != "robin" {
 		t.Fatalf("me: %d %v", code, me)
 	}
@@ -127,11 +126,9 @@ func TestAPIFlow(t *testing.T) {
 	if code := web.json("POST", "/api/v1/projects", map[string]any{"name": "Waypoint", "key": "WAY"}, &proj); code != 200 {
 		t.Fatalf("create project: %d %v", code, proj)
 	}
-	// Unknown fields are rejected so typos surface.
 	if code, b := web.do("POST", "/api/v1/issues", map[string]any{"project": "WAY", "title": "x", "asignee": "me"}); code != 400 || !strings.Contains(string(b), "asignee") {
 		t.Fatalf("typo accepted: %d %s", code, b)
 	}
-	// Agent token.
 	var created map[string]any
 	web.json("POST", "/api/v1/me/tokens", map[string]any{"name": "claude"}, &created)
 	agent := &client{t: t, base: ts.URL, http: http.DefaultClient, token: created["token"].(string)}
@@ -152,12 +149,10 @@ func TestAPIFlow(t *testing.T) {
 	if code := agent.json("POST", "/api/v1/issues/WAY-2/transition", map[string]any{"status": "done", "comment": "done!"}, &issue); code != 200 {
 		t.Fatalf("transition: %d %v", code, issue)
 	}
-	// Parent auto-closed.
 	agent.json("GET", "/api/v1/issues/WAY-1", nil, &issue)
 	if issue["status"].(map[string]any)["category"] != "done" {
 		t.Errorf("parent not closed: %v", issue["status"])
 	}
-	// Errors are JSON with useful codes.
 	if code, b := agent.do("GET", "/api/v1/issues/WAY-99", nil); code != 404 || !strings.Contains(string(b), "WAY-99") {
 		t.Errorf("missing issue: %d %s", code, b)
 	}
@@ -167,7 +162,6 @@ func TestAPIFlow(t *testing.T) {
 	if code, _ := (&client{t: t, base: ts.URL, http: http.DefaultClient, token: "wpt_bogus"}).do("GET", "/api/v1/me", nil); code != 401 {
 		t.Errorf("bad token: %d", code)
 	}
-	// Board and reports render.
 	for _, p := range []string{"/api/v1/projects/WAY/board", "/api/v1/projects/WAY/backlog", "/api/v1/projects/WAY/reports/forecast",
 		"/api/v1/projects/WAY/reports/throughput", "/api/v1/projects/WAY/reports/flow", "/api/v1/projects/WAY/reports/roadmap",
 		"/api/v1/reports/time", "/api/v1/notifications", "/api/v1/automation-templates", "/api/v1/help", "/healthz", "/metrics"} {
@@ -175,7 +169,6 @@ func TestAPIFlow(t *testing.T) {
 			t.Errorf("GET %s: %d %s", p, code, b)
 		}
 	}
-	// Logout ends the session.
 	web.do("POST", "/api/v1/auth/logout", nil)
 	if code, _ := web.do("GET", "/api/v1/me", nil); code != 401 {
 		t.Errorf("after logout: %d", code)
@@ -186,12 +179,11 @@ func TestLoginRateLimit(t *testing.T) {
 	ts, svc := setup(t)
 	svc.CreateUser(context.Background(), core.SystemActor(), core.CreateUserInput{Username: "robin", Email: "j@example.com", Password: "correct horse battery"})
 	c := &client{t: t, base: ts.URL, http: http.DefaultClient}
-	// Without the client header, a cross-site form can't sign anyone in.
 	if code, _ := c.do("POST", "/api/v1/auth/login", map[string]any{"login": "robin", "password": "correct horse battery"}); code != 403 {
 		t.Errorf("login without X-Waypoint-Client: %d", code)
 	}
 	c.web = true
-	// Successful logins don't use up attempts.
+	// Successful logins don't count against the login rate limit.
 	for n := 0; n < 12; n++ {
 		if code, _ := c.do("POST", "/api/v1/auth/login", map[string]any{"login": "robin", "password": "correct horse battery"}); code != 200 {
 			t.Fatalf("login %d: %d", n, code)
@@ -258,14 +250,13 @@ func TestMCP(t *testing.T) {
 	if text(res) != "Timer running on HOUSE-1" {
 		t.Errorf("timer: %s", text(res))
 	}
-	// Unauthenticated MCP is refused.
 	if code, _ := (&client{t: t, base: ts.URL, http: http.DefaultClient}).do("POST", "/mcp", `{"jsonrpc":"2.0","id":1,"method":"ping"}`); code != 401 {
 		t.Errorf("anonymous mcp: %d", code)
 	}
 }
 
 func TestStream(t *testing.T) {
-	// A short ReadTimeout like production's must not end live streams.
+	// Production's ReadTimeout (2 minutes, cmd/waypoint/main.go:378) must not end live streams.
 	ts, svc := setupServer(t, func(s *http.Server) { s.ReadTimeout = 300 * time.Millisecond })
 	ctx := context.Background()
 	u, _ := svc.CreateUser(ctx, core.SystemActor(), core.CreateUserInput{Username: "robin", Email: "j@example.com", Password: "correct horse battery", IsAdmin: true})
@@ -298,7 +289,7 @@ func TestStream(t *testing.T) {
 	theirs, stop2 := listen(other)
 	defer stop2()
 	<-mine
-	<-theirs // hello
+	<-theirs
 	time.Sleep(700 * time.Millisecond)
 	svc.CreateIssue(ctx, a, core.IssueInput{Project: "LIVE", Title: "hi"})
 	select {
@@ -326,12 +317,11 @@ func TestClientIPBehindProxy(t *testing.T) {
 	}{
 		{"10.9.0.1", nil, "10.9.0.1"},
 		{"10.9.0.1", []string{"198.51.100.7"}, "198.51.100.7"},
-		{"10.9.0.1", []string{"1.2.3.4, 198.51.100.7"}, "198.51.100.7"}, // client-forged hop is ignored
+		{"10.9.0.1", []string{"1.2.3.4, 198.51.100.7"}, "198.51.100.7"},
 		{"10.9.0.1", []string{"1.2.3.4", "198.51.100.7"}, "198.51.100.7"},
-		{"127.0.0.1", []string{"198.51.100.7, 10.9.0.1"}, "198.51.100.7"}, // two proxies
-		{"10.9.0.1", []string{"10.9.0.9"}, "10.9.0.9"},                    // a LAN client
+		{"127.0.0.1", []string{"198.51.100.7, 10.9.0.1"}, "198.51.100.7"},
+		{"10.9.0.1", []string{"10.9.0.9"}, "10.9.0.9"},
 		{"10.9.0.1", []string{"not-an-ip"}, "10.9.0.1"},
-		// Straight from the internet: its headers are its own, so ignored.
 		{"203.0.113.5", []string{"1.2.3.4"}, "203.0.113.5"},
 	} {
 		r := httptest.NewRequest("GET", "/", nil)
@@ -343,7 +333,6 @@ func TestClientIPBehindProxy(t *testing.T) {
 			t.Errorf("peer %s xff %q: got %q, want %q", tc.peer, tc.xff, got, tc.want)
 		}
 	}
-	// X-Forwarded-Proto is believed only from a trusted proxy too.
 	r := httptest.NewRequest("GET", "/", nil)
 	r.RemoteAddr = "203.0.113.5:1234"
 	r.Header.Set("X-Forwarded-Proto", "https")
@@ -361,7 +350,6 @@ func TestClientIPBehindProxy(t *testing.T) {
 	if got := untrusted.clientIP(r); got != "10.9.0.1" {
 		t.Errorf("untrusted proxy header honoured: %q", got)
 	}
-	// A list of addresses and CIDRs.
 	list, err := ParseTrustedProxies("203.0.113.0/24, 2001:db8::1")
 	if err != nil || len(list) != 2 {
 		t.Fatalf("parse list: %v %v", list, err)
@@ -453,7 +441,6 @@ func TestAttachments(t *testing.T) {
 		!strings.Contains(r.Header.Get("Content-Security-Policy"), "sandbox") {
 		t.Errorf("html served as %q %q %q", r.Header.Get("Content-Type"), r.Header.Get("Content-Disposition"), r.Header.Get("Content-Security-Policy"))
 	}
-	// Someone who can't see the issue can't fetch or delete its files.
 	if r := get(ztok, img.URL); r.StatusCode != 404 {
 		t.Errorf("outsider fetched attachment: %d", r.StatusCode)
 	}
@@ -481,7 +468,7 @@ func TestConditionalAndCompressed(t *testing.T) {
 		for k, v := range hdr {
 			req.Header.Set(k, v)
 		}
-		resp, err := http.DefaultTransport.RoundTrip(req) // no transparent gzip
+		resp, err := http.DefaultTransport.RoundTrip(req)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -517,7 +504,6 @@ func TestAgentAPIAndDeviceLogin(t *testing.T) {
 	svc.CreateIssue(ctx, &core.Actor{User: u}, core.IssueInput{Project: "AGEN", Title: "Write the parser", Agent: "claude", Workflow: "Agent pipeline"})
 	svc.CreateIssue(ctx, &core.Actor{User: u}, core.IssueInput{Project: "AGEN", Title: "Human chore", Agent: "none"})
 
-	// Device login: start (public), approve (signed in), poll gets a token once.
 	cli := &client{t: t, base: ts.URL, http: http.DefaultClient, web: true}
 	var start core.DeviceLogin
 	if code := cli.json("POST", "/api/v1/cli/login", map[string]string{"name": "laptop", "agent": "anthropic/claude-opus-5-5"}, &start); code != 200 || start.UserCode == "" {
@@ -545,7 +531,6 @@ func TestAgentAPIAndDeviceLogin(t *testing.T) {
 		t.Errorf("token handed out twice: %d", code)
 	}
 
-	// The new token is an agent token: next works with no other setup.
 	agent := &client{t: t, base: ts.URL, http: http.DefaultClient, token: poll["token"]}
 	code, b := agent.do("GET", "/api/v1/agent", nil)
 	if code != 200 || !strings.Contains(string(b), "next") || len(b) > 2500 {
@@ -560,7 +545,6 @@ func TestAgentAPIAndDeviceLogin(t *testing.T) {
 	if code != 200 || !strings.Contains(string(b), "verify") {
 		t.Errorf("done: %d %s", code, b)
 	}
-	// A token without an identity says which model it is per request.
 	plain, _, _ := svc.CreateAPIToken(ctx, &core.Actor{User: u}, "plain", false, 0)
 	req, _ := http.NewRequest("POST", ts.URL+"/api/v1/agent/next?format=json", nil)
 	req.Header.Set("Authorization", "Bearer "+plain)
@@ -575,7 +559,6 @@ func TestAgentAPIAndDeviceLogin(t *testing.T) {
 	if out["task"] != nil {
 		t.Errorf("a non-Claude agent got a task meant for claude: %v", out["task"])
 	}
-	// A read-only token can look (GET) but not claim.
 	ro, _, _ := svc.CreateAPIToken(ctx, &core.Actor{User: u}, "ro", true, 0)
 	look := &client{t: t, base: ts.URL, http: http.DefaultClient, token: ro}
 	if code, b := look.do("GET", "/api/v1/agent/next?agent=anthropic/claude-sonnet-5-5&step=verify", nil); code != 200 || !strings.Contains(string(b), "Write the parser") {
@@ -585,7 +568,6 @@ func TestAgentAPIAndDeviceLogin(t *testing.T) {
 		t.Errorf("read-only claim: %d", code)
 	}
 
-	// The installer names this server.
 	code, b = cli.do("GET", "/cli", nil)
 	if code != 200 || !strings.Contains(string(b), "base='http://wp.test'") {
 		t.Errorf("installer: %d", code)
@@ -593,7 +575,6 @@ func TestAgentAPIAndDeviceLogin(t *testing.T) {
 	if !strings.Contains(string(b), "setup=0") || !strings.Contains(string(b), `exec "$dir/wp" setup`) {
 		t.Errorf("installer can't go on to wp setup:\n%s", b)
 	}
-	// /setup is the installer that goes on to wp setup.
 	code, b = cli.do("GET", "/setup", nil)
 	if code != 200 || !strings.Contains(string(b), "setup=1") || !strings.Contains(string(b), "base='http://wp.test'") {
 		t.Errorf("setup script: %d\n%s", code, b)
@@ -602,6 +583,6 @@ func TestAgentAPIAndDeviceLogin(t *testing.T) {
 		t.Error("cli file path escaped")
 	}
 	if code, _ = cli.do("GET", "/cli/wp-linux-amd64", nil); code != 404 {
-		t.Errorf("missing binary: %d", code) // this test server has no CLI dir
+		t.Errorf("missing binary: %d", code)
 	}
 }

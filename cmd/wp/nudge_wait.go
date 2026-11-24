@@ -10,15 +10,9 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Waiting nudges (WP-191, WP-ADR16): an agent that sleeps and then checks
-// pays a turn per check, its whole context read again each time. Claude Code
-// tells a session when its background command exits, and `wp pr wait` or
-// Monitor block without turns, so the note names those. One case is refused
-// instead of noted: sleeping on a background command of the session's that is
-// still running (a process still holds its output file open), since the
-// notice that it exited is certain to come.
+// Sleeping on a background command of this session that still holds its output file open is refused, not noted: its exit notice is certain to come.
 
-const sleepWaitSecs = 30 // a sleep this long before a check is a wait
+const sleepWaitSecs = 30
 
 var (
 	reSleepFor   = lazyre.New(`\bsleep\s+(\d+(?:\.\d+)?)([smhd]?)(?:[\s;&|)]|$)`)

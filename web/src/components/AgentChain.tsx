@@ -1,6 +1,4 @@
-// A chain of coding-agent CLIs and models (WP-D18): the first is tried, and
-// when it fails for a model reason (rate limited, down, signed out) the next
-// one takes over. Used by the agent_task and fix_ci automation steps.
+// The next agent takes over only when the failure was the model's (limit, outage, sign-in), not the work's.
 
 import { ArrowDown, ArrowUp, Plus, X } from 'lucide-react'
 import { Button, IconButton } from '@/components/ui/button'
@@ -62,7 +60,6 @@ export function AgentChain({
         <ol className="space-y-1">
           {value.map((m, i) => {
             const known = clis.find((c) => c.value === m.cli)
-            // One the list doesn't have still shows as itself, not as the first.
             const offered = known || !m.cli ? clis : [...clis, { value: m.cli, label: m.cli }]
             const list = `agent-models-${i}`
             return (

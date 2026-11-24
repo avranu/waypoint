@@ -15,13 +15,10 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Runner jobs (WP-D17): work queued for a runner, the log it streams back
-// and how it ended. EnqueueRunnerJob is the way in for the rest of Waypoint
-// (requests apply a change, automations run a command or an agent); a job's
-// end emits EvRunnerJobFinished.
+// EnqueueRunnerJob is the way in for queuing a job; a job's end emits EvRunnerJobFinished.
 
 const (
-	runnerLogCap     = 1 << 20 // output kept per job
+	runnerLogCap     = 1 << 20
 	runnerLogEmit    = time.Second
 	runnerQueuedMax  = 200
 	runnerMaxTimeout = 2 * 3600
@@ -200,13 +197,11 @@ func checkRunnerInput(kind string, raw json.RawMessage) (jobNeeds, string, json.
 			return n, "", nil, invalid("json_schema must be JSON, up to 64 KB")
 		}
 		if kind == JobReview {
-			in.ReadOnly, in.Push, in.Branch, in.Permission = true, false, "", AgentRead // a review never changes anything
-			in.Confine = true                                                           // and its prompt is text others wrote
+			in.ReadOnly, in.Push, in.Branch, in.Permission = true, false, "", AgentRead
+			in.Confine = true
 		}
 		if kind == JobAudit {
-			// An audit finds and reports; it never changes anything. The CLIs
-			// that can be confined are (WP-ADR20); cursor can't, and audits
-			// only what the gate lets a runner read.
+			// Only CLIs that can be confined (not cursor) audit on a runner, and only what the gate lets it read.
 			in.ReadOnly, in.Push, in.Branch, in.Permission = true, false, "", AgentRead
 			in.Confine = slices.Contains(reviewCLIs, in.CLI)
 			if gateway {
@@ -280,7 +275,7 @@ func checkRunnerInput(kind string, raw json.RawMessage) (jobNeeds, string, json.
 		}
 		n.cli, v = in.CLI, in
 		if patch {
-			n.cli = "" // git only: no CLI runs
+			n.cli = ""
 		}
 		title = in.CLI + ": " + excerpt(in.Prompt, 90)
 		if patch {
@@ -302,7 +297,6 @@ func checkRunnerInput(kind string, raw json.RawMessage) (jobNeeds, string, json.
 			return n, "", nil, invalid("a session job needs an absolute directory without ..")
 		}
 		if in.Kickoff != "" {
-			// The runner makes the prompt from the task's wp next answer.
 			if in.Prompt != "" || len(splitTaskKeys(in.Task)) != 1 || len(in.Kickoff) > maxAutopilotText || len(in.Title) > 400 {
 				return n, "", nil, invalid("a kickoff session job needs one task, a template of up to %d characters and no prompt", maxAutopilotText)
 			}
@@ -506,7 +500,7 @@ func scanJob(row jobScanner, extra ...any) (*RunnerJobInfo, error) {
 // queue one at all, because what runs on a machine is a person's decision.
 // ErrNoRunner means that person has no runner (with the label).
 func (s *Service) EnqueueRunnerJob(ctx context.Context, a *Actor, in RunnerJobInput) (*RunnerJob, error) {
-	if err := a.need(PermRunnersRun); err != nil { // WP-111
+	if err := a.need(PermRunnersRun); err != nil {
 		return nil, err
 	}
 	if err := a.canWrite(); err != nil {
@@ -583,8 +577,6 @@ func (s *Service) EnqueueRunnerJob(ctx context.Context, a *Actor, in RunnerJobIn
 		return nil, fmt.Errorf("only Waypoint queues a job that pushes a held patch: %w", ErrForbidden)
 	}
 	needs.label = in.Label
-	// Somewhere it could run, now: a directory no runner allows or a CLI no
-	// runner has would wait a day and expire.
 	if !slices.ContainsFunc(candidates, func(r *Runner) bool { return runnerCanTake(r, needs) }) {
 		switch {
 		case needs.dir != "" && !slices.ContainsFunc(candidates, func(r *Runner) bool { return dirAllowed(needs.dir, r.AllowedDirs) }):
@@ -817,8 +809,6 @@ func (s *Service) ListRunnerJobs(ctx context.Context, actor *Actor, f RunnerJobF
 	return out, rows.Err()
 }
 
-// ---- the runner's side ----
-
 // runnerJobFor loads a job a runner reports on, which must be the caller's.
 func (s *Service) runnerJobFor(ctx context.Context, q queryer, actor *Actor, id int64) (owner int64, state string, size int64, cancel bool, kind string, err error) {
 	err = q.QueryRowContext(ctx, `SELECT owner_id, state, log_size, cancel_requested, kind FROM runner_jobs WHERE id = ?`, id).Scan(&owner, &state, &size, &cancel, &kind)
@@ -854,7 +844,7 @@ func (s *Service) AppendRunnerLog(ctx context.Context, actor *Actor, id, offset 
 		}
 		kind, ack.Size, ack.Cancel = k, size, cancel
 		if state != "running" {
-			ack.Cancel = true // finished already (expired, cancelled): the runner should stop
+			ack.Cancel = true
 			return nil
 		}
 		if offset >= 0 && offset < size {
@@ -868,9 +858,9 @@ func (s *Service) AppendRunnerLog(ctx context.Context, actor *Actor, id, offset 
 		if size >= runnerLogCap {
 			ack.Truncated = true
 			if size > runnerLogCap || text == "" {
-				return nil // the marker is there already
+				return nil
 			}
-			text = logTruncated // the output ended exactly at the cap, and more came
+			text = logTruncated
 		} else if room := runnerLogCap - size; int64(len(text)) > room {
 			text = text[:room]
 			for len(text) > 0 && !utf8.ValidString(text) {
@@ -969,10 +959,10 @@ func (s *Service) FinishRunnerJob(ctx context.Context, actor *Actor, id int64, i
 			return nil
 		}
 		if cancel && state == "failed" {
-			state = "cancelled" // killed because it was asked to stop
+			state = "cancelled"
 		}
 		msg := excerpt(in.Error, 2000)
-		if state == "cancelled" { // who asked, and why, not how it died
+		if state == "cancelled" { // a cancelled job's error says who asked and why, not how it died
 			var why string
 			_ = t.QueryRowContext(ctx, `SELECT error FROM runner_jobs WHERE id = ?`, id).Scan(&why)
 			msg = cmp(why, msg)
@@ -1003,7 +993,7 @@ func (t *tx) finishRunnerJob(ctx context.Context, id int64, state string, exit *
 	if err := t.dropJobTokens(ctx, id); err != nil {
 		return err
 	}
-	if source == sandboxDrillSource && sid != 0 { // WP-473
+	if source == sandboxDrillSource && sid != 0 {
 		if err := t.finishSandboxDrill(ctx, sid, state, result, msg); err != nil {
 			return err
 		}
@@ -1011,7 +1001,6 @@ func (t *tx) finishRunnerJob(ctx context.Context, id int64, state string, exit *
 	data := map[string]any{"job": id, "kind": kind, "state": state, "source": source, "source_id": sid}
 	fin := &Event{Kind: EvRunnerJobFinished, UserID: owner, Data: data}
 	if source == "automation_step" && sid != 0 {
-		// The run waiting for the job is in a project, and waits match by it.
 		var pid sql.NullInt64
 		_ = t.QueryRowContext(ctx, `SELECT project_id FROM automation_runs WHERE id = ?`, sid).Scan(&pid)
 		fin.ProjectID = pid.Int64

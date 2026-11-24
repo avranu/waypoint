@@ -290,9 +290,8 @@ func validHost(h string) bool {
 
 // decision is what the rules say about one request.
 type decision struct {
-	ok     bool
-	reason string
-	// gateway: the request goes to the push gateway, not the host.
+	ok      bool
+	reason  string
 	gateway bool
 }
 
@@ -322,8 +321,7 @@ func (r *Rule) check(method, path, query string) decision {
 		}
 	}
 	if restricted && !cleanPath(path) {
-		// Patterns are only as good as the path is plain: refuse what an
-		// upstream might read differently from us.
+		// Patterns hold only for plain paths: refuse anything an upstream might decode differently.
 		return deny("path")
 	}
 	for _, rt := range r.Deny {

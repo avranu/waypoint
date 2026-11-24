@@ -19,35 +19,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Judgements of meaning about goals (WP-1035, WP-ADR133, page WP-PL17).
-// Three questions about pairs of texts:
-//
-//   - overlap: do two goals overlap in meaning (the Goals view suggests
-//     merging them or saying how they differ)? Never asked of a goal and its
-//     ancestor: that is restates.
-//   - restates: does a goal say nothing beyond its parent (the Goals view
-//     suggests saying what it adds)?
-//   - cover: does a task, with the goal it traces to, already convey a
-//     parent goal (the pruned arm of the goal context policy leaves it out,
-//     goal_context.go)?
-//
-// Whether one text conveys another is a judgement of meaning: two texts can
-// mean the same with no word in common and share most words while meaning
-// different things. So several scorers read each pair and are kept by hash
-// of the text they read, so only new or reworded text is scored again:
-// shared words (a feature, never the decider on its own unless it wins on
-// held-out labels), an embedding model's cosine (also with each goal's
-// ancestors before it), an NLI model's entailment both ways (the meaning
-// service, package meaning) and a language model asked about the one pair
-// (graded 0-3, through the gateway's extract/judge purpose when there is one). A
-// decider per question turns the scores into yes or no: a fixed prior until
-// labels from what happened pick one on held-out data
-// (goal_meaning_eval.go), and the labels come from behaviour, never from a
-// person asked to label (goal_meaning_labels.go). Without a judgement
-// nothing is left out or flagged.
-//
-// Everything runs in the background (goal_judge_run.go), outside any read
-// and any write transaction.
+// Scoring runs outside any read or write transaction; with no judgement, nothing is left out or flagged.
 
 const (
 	judgeOverlap  = "overlap"
@@ -73,9 +45,9 @@ const (
 	// meaningAllPairsMax: without vectors, a set of goals larger than this
 	// is not compared all with all.
 	meaningAllPairsMax = 150
-	meaningDesc        = 1500 // characters of a task's description read
-	meaningWhy         = 200  // characters of a model's why kept
-	meaningMaxTries    = 8    // a pair's language model score is given up after
+	meaningDesc        = 1500
+	meaningWhy         = 200
+	meaningMaxTries    = 8
 	meaningRetryBase   = 10 * time.Minute
 	meaningRetryMax    = 24 * time.Hour
 	meaningAskTimeout  = 2 * time.Minute
@@ -117,24 +89,24 @@ func meaningTaskText(title, description, intent, goal string) string {
 // meaningPair is one pair a judgement is about.
 type meaningPair struct {
 	judgement    string
-	a, b         int64 // goal or task ids; 0 for a labelled pair only
+	a, b         int64
 	aText, bText string
 	aHash, bHash string
-	aCtx, bCtx   string // overlap: each goal after its ancestors (root first)
+	aCtx, bCtx   string
 	near         float64
-	todo         bool // cover: the task is queued
+	todo         bool
 }
 
 func (p *meaningPair) key() [3]string { return [3]string{p.judgement, p.aHash, p.bHash} }
 
 // meaningGoal is an active goal.
 type meaningGoal struct {
-	id, parent int64 // parent: 0 when none or not active
+	id, parent int64
 	rawParent  int64 // parent_id as it is, 0 none (a move changes it)
-	project    int64 // 0: global
+	project    int64
 	title      string
 	hash       string
-	ctx        string // its ancestors' titles, root first, then its own
+	ctx        string
 	ancestors  map[int64]bool
 }
 
@@ -181,10 +153,10 @@ func (s *Service) meaningGoals(ctx context.Context) (map[int64]*meaningGoal, []i
 // meaningStore is what the scorers said, read for one pass.
 type meaningStore struct {
 	embedModel, nliModel string
-	texts                map[string]string    // hash → text
-	vec                  map[string][]float32 // hash → unit vector, under embedModel
+	texts                map[string]string
+	vec                  map[string][]float32
 	nli                  map[[2]string]float64
-	llm                  map[[3]string]*meaningLLMScore // judgement, a, b
+	llm                  map[[3]string]*meaningLLMScore
 }
 
 type meaningLLMScore struct {
@@ -381,9 +353,9 @@ func meaningPrior(j string, f map[string]float64) (p float64, yes, ok bool) {
 
 // meaningDecider turns a pair's scores into a yes or no.
 type meaningDecider struct {
-	fit   int64 // meaning_fits id; 0: the prior
+	fit   int64
 	j     string
-	name  string // "prior", a feature, or "combined"
+	name  string
 	line  float64
 	model *relRanker
 }
@@ -467,7 +439,7 @@ type meaningChain struct {
 func (s *Service) meaningChainNow(ctx context.Context) *meaningChain {
 	task, ok := s.goalSuggestChain(ctx)
 	if !ok {
-		return nil // no model for goals or automations: the language model isn't asked
+		return nil
 	}
 	if openID := s.gatewayWith(ctx, GatewayRoutes, GatewayRouting); openID != 0 {
 		var chain []ChainModel
@@ -618,11 +590,11 @@ func meaningBackoff(tries int) time.Duration {
 type meaningPass struct {
 	st       *meaningStore
 	ch       *meaningChain
-	budget   int // language model calls left
+	budget   int
 	progress bool
 	more     bool
-	waiting  bool  // the gateway asked to wait: no more calls this pass
-	retryAt  int64 // the soonest a back-off or a wait ends (ms); 0 none
+	waiting  bool
+	retryAt  int64
 }
 
 func (ps *meaningPass) retry(at int64) {
@@ -660,7 +632,6 @@ func (s *Service) refreshMeaning(ctx context.Context) bool {
 	}
 	fits := s.meaningFitsNow(ctx)
 
-	// Texts: the goals (and each with its ancestors), the tasks, the labels.
 	texts := map[string]string{}
 	for _, id := range order {
 		g := goals[id]
@@ -702,10 +673,7 @@ func (s *Service) refreshMeaning(ctx context.Context) bool {
 	all := append(slices.Clone(pairs), labelled...)
 	s.meaningNLI(ctx, ps, all)
 
-	// The language model: labelled pairs, which the evaluator needs scored,
-	// with up to half the pass's calls; then current pairs whose decider
-	// reads its grade (queued tasks first for coverage, nearest first for
-	// overlaps).
+	// Labelled pairs take up to half the call budget first, because the evaluator needs them scored; the rest goes to current pairs.
 	if ps.ch != nil {
 		rest := ps.budget - ps.budget/2
 		ps.budget /= 2
@@ -733,15 +701,12 @@ func (s *Service) refreshMeaning(ctx context.Context) bool {
 	if err != nil {
 		s.log.WarnContext(ctx, "goal meaning: record the judgements", "err", err)
 	} else if changed {
-		s.Hub.Publish(&Event{Kind: EvGoalsTraced}) // open Goals views read the suggestions again
+		s.Hub.Publish(&Event{Kind: EvGoalsTraced})
 	}
 
-	// Labels from what happened, and cases built from new goals.
 	s.meaningLabels(ctx, ps, goals, order)
-	// The evaluator: only when there is none yet, a scorer changed, or the
-	// labels since show the decider erring more than it did held out.
 	if s.meaningEvaluateDue(ctx, st, ps.ch, goals) {
-		ps.more, ps.progress = true, true // the next pass decides with the new fit
+		ps.more, ps.progress = true, true
 	}
 	s.queueMeaningFeedback(ctx)
 	// A meaning service that is down is tried again when its breaker lets
@@ -1084,9 +1049,6 @@ func (s *Service) meaningOverlapPairs(ctx context.Context, ps *meaningPass, goal
 		if len(set) < 2 {
 			continue
 		}
-		// With an embedding model, each goal is compared with its nearest;
-		// a goal not embedded yet waits for its vector, and the others keep
-		// their pairs. Without one, all with all, up to a size.
 		if ps.st.embedModel == "" {
 			if len(set) > meaningAllPairsMax {
 				s.log.WarnContext(ctx, "goal meaning: too many goals to compare all with all, and no embedding model to shortlist them", "project", r, "goals", len(set))
@@ -1371,7 +1333,7 @@ func (f *meaningFit) decider() *meaningDecider {
 		if json.Unmarshal([]byte(f.Model), &r) == nil && len(r.Features) > 0 && len(r.W) == len(r.Features)+1 {
 			d.model = &r
 		} else {
-			d.name = "prior" // unreadable: the prior decides
+			d.name = "prior"
 		}
 	}
 	return d

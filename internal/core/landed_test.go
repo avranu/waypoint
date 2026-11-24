@@ -18,14 +18,14 @@ type landForge struct {
 	*shipForge
 	lm        sync.Mutex
 	branches  []ForgeBranch
-	contained map[string]bool      // "base...head": head is already in base
-	times     map[string]time.Time // sha → commit time
-	refuse    bool                 // the forge refuses manual merges
-	noRepo    bool                 // the repo is gone: its default branch is a 404
+	contained map[string]bool
+	times     map[string]time.Time
+	refuse    bool
+	noRepo    bool
 	defCalls  int
-	aheadErr  error // Ahead fails with it
+	aheadErr  error
 	deleted   []string
-	marked    []string // "number:sha"
+	marked    []string
 	closed    []int
 }
 
@@ -162,7 +162,6 @@ func landedEnv(t *testing.T, kind string) (*shipEnv, *landForge) {
 	for _, sha := range []string{"1111111aaaa", "2222222bbbb", "3333333cccc"} {
 		lf.times[sha] = old
 	}
-	// #4: stack, merged into main; its head contains the others'.
 	carrier := ForgePR{Number: 4, Title: "Stack", Author: "sam", BaseRef: "main", HeadRef: "stack", HeadSHA: "2222222bbbb", State: "merged", MergeSHA: carrierSHA}
 	se.pullHook("closed", carrier)
 	se.s.Wait()
@@ -185,7 +184,6 @@ func TestLandedPullRequestsAreFinished(t *testing.T) {
 	se, lf := landedEnv(t, "forgejo")
 	se.pushBranch("main")
 	deleted, marked, closed := lf.lists()
-	// Both are marked merged with the commit that carried them, drafts too.
 	if !slices.Equal(marked, []string{"5:" + carrierSHA, "6:" + carrierSHA}) || len(closed) != 0 {
 		t.Fatalf("marked %v closed %v", marked, closed)
 	}
@@ -198,12 +196,10 @@ func TestLandedPullRequestsAreFinished(t *testing.T) {
 	if c := se.comments(5); len(c) != 1 || c[0] != want {
 		t.Errorf("comments on #5 = %q", c)
 	}
-	// Their branches are gone, and the stack's that carried them, and main's is not.
 	slices.Sort(deleted)
 	if !slices.Equal(deleted, []string{"docs", "fix-login", "stack"}) {
 		t.Errorf("deleted %v", deleted)
 	}
-	// Doing it again says nothing more.
 	se.pushBranch("main")
 	se.s.CheckLandedPRs(se.ctx)
 	if c := se.comments(5); len(c) != 1 {
@@ -217,7 +213,7 @@ func TestLandedPullRequestsAreFinished(t *testing.T) {
 func TestLandedPullRequestIsClosedWhenManualMergeIsRefused(t *testing.T) {
 	se, lf := landedEnv(t, "forgejo")
 	lf.refuse = true
-	se.s.CheckLandedPRs(se.ctx) // the sync's safety net, no push needed
+	se.s.CheckLandedPRs(se.ctx)
 	se.s.Wait()
 	_, marked, closed := lf.lists()
 	slices.Sort(closed)
@@ -255,7 +251,6 @@ func TestGitHubGetsTimeToMarkItMerged(t *testing.T) {
 	if _, _, closed := lf.lists(); len(closed) != 0 || len(se.comments(5)) != 0 {
 		t.Fatalf("acted at once: closed %v", closed)
 	}
-	// It marks #5 merged itself; #6 is still open some minutes later.
 	lf.mu.Lock()
 	lf.prs[mk(se.f, "me/app", 5)].State = "merged"
 	lf.mu.Unlock()
@@ -290,7 +285,6 @@ func TestMergedBranchesAreSwept(t *testing.T) {
 		}
 	}
 	lf.setBranches(bs...)
-	// A push seen half an hour ago, and an open pull request stacked on stack-base.
 	se.setClock(now.Add(-30 * time.Minute))
 	se.pushBranch("pushed-now")
 	se.setClock(now)
@@ -316,7 +310,6 @@ func TestMergedBranchesAreSwept(t *testing.T) {
 			t.Errorf("%s = %q, want %q", b, got[b], v)
 		}
 	}
-	// With the setting off nothing is deleted.
 	if err := se.s.SetRepoBranchCleanup(se.ctx, se.admin, se.p.Key, se.repo.ID, false); err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +320,6 @@ func TestMergedBranchesAreSwept(t *testing.T) {
 	if plan, _ = se.s.RemoteTidy(se.ctx, se.admin, "", "me/app"); plan[0].Enabled {
 		t.Error("listing says deleting is on")
 	}
-	// On (the default), only the merged and idle one goes.
 	if err := se.s.SetRepoBranchCleanup(se.ctx, se.admin, se.p.Key, se.repo.ID, true); err != nil {
 		t.Fatal(err)
 	}
@@ -335,7 +327,6 @@ func TestMergedBranchesAreSwept(t *testing.T) {
 	if d, _, _ := lf.lists(); !slices.Equal(d, []string{"old-merged"}) {
 		t.Fatalf("deleted %v", d)
 	}
-	// Swept today: the next hour's sweep leaves it be.
 	se.s.SweepBranches(se.ctx)
 	if d, _, _ := lf.lists(); len(d) != 1 {
 		t.Fatalf("swept twice: %v", d)
@@ -344,7 +335,6 @@ func TestMergedBranchesAreSwept(t *testing.T) {
 
 func TestBranchCallsPerForge(t *testing.T) {
 	ctx := context.Background()
-	// Forgejo: compare counts base...head, deleting goes by name, manual merge says which commit.
 	a, f, c := newAPIFake(t, "forgejo")
 	a.reply["GET /repos/me/app/compare/main...abc"] = map[string]any{"total_commits": 0}
 	a.reply["GET /repos/me/app/branches?limit=100&page=1"] = []map[string]any{{"name": "fix/x", "protected": true, "commit": map[string]any{"id": "abc"}}}
@@ -375,7 +365,7 @@ func TestBranchCallsPerForge(t *testing.T) {
 		t.Errorf("github manual merge: %v", err)
 	}
 	a.reply["GET /repos/me/app/compare/main...abc?per_page=1"] = map[string]any{"ahead_by": 3}
-	a.reply["DELETE /repos/me/app/git/refs/heads/fix/x"] = 422 // already gone
+	a.reply["DELETE /repos/me/app/git/refs/heads/fix/x"] = 422
 	if n, err := c.Ahead(ctx, f, "me/app", "main", "abc"); err != nil || n != 3 {
 		t.Errorf("github ahead %d %v", n, err)
 	}
@@ -392,7 +382,7 @@ func TestBranchCallsPerForge(t *testing.T) {
 func TestPullRequestTheForgeDoesNotHaveIsClosedOnce(t *testing.T) {
 	se, lf := landedEnv(t, "forgejo")
 	lf.mu.Lock()
-	delete(lf.prs, mk(se.f, "me/app", 5)) // deleted on the forge, or its repo is gone
+	delete(lf.prs, mk(se.f, "me/app", 5))
 	delete(lf.prs, mk(se.f, "me/app", 6))
 	lf.mu.Unlock()
 	se.s.CheckLandedPRs(se.ctx)
@@ -405,7 +395,6 @@ func TestPullRequestTheForgeDoesNotHaveIsClosedOnce(t *testing.T) {
 	if _, marked, closed := lf.lists(); len(marked) != 0 || len(closed) != 0 {
 		t.Errorf("acted on the forge: marked %v closed %v", marked, closed)
 	}
-	// Closed pull requests aren't asked about again.
 	var n int
 	if err := se.s.db.R.QueryRow(`SELECT count(*) FROM pull_requests WHERE state IN ('open','draft') AND number IN (5,6)`).Scan(&n); err != nil || n != 0 {
 		t.Errorf("%d still open (%v)", n, err)
@@ -477,9 +466,7 @@ func TestFrontWhoseHeadLandedIsFinishedNotUpdated(t *testing.T) {
 	if n := se.sg.updated(); n != 1 {
 		t.Fatalf("updates before = %d", n)
 	}
-	// Its update is pending when a push moves main to tip-2, which holds
-	// #5's head (the push of 2026-11-02): still "behind" by the forge's
-	// "base has commits the head lacks".
+	// A pull request can stay "behind" after the base moves to a commit that holds its head: the forge counts base commits the head lacks.
 	se.sg.sm.Lock()
 	se.sg.baseTip = "tip-2"
 	se.sg.sm.Unlock()
@@ -510,12 +497,12 @@ func TestFrontWhoseHeadLandedIsFinishedNotUpdated(t *testing.T) {
 // one whose merge changed something is left alone (WP-464).
 func TestHeadAheadOnlyByEmptyMergesHasLanded(t *testing.T) {
 	const (
-		work   = "1111111aaaa" // the branch's own commit, now in main
-		m1     = "cd1b5300000" // main when the branch was brought up to date
-		empty1 = "e0000000001" // Merge branch 'main' into fix-login: nothing new
-		m2     = "f00d0000000" // main since
-		empty2 = "e0000000002" // brought up to date once more
-		evil   = "e0000000003" // a merge of main that changed something
+		work   = "1111111aaaa"
+		m1     = "cd1b5300000"
+		empty1 = "e0000000001"
+		m2     = "f00d0000000"
+		empty2 = "e0000000002"
+		evil   = "e0000000003"
 	)
 	for _, tc := range []struct {
 		name   string

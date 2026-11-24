@@ -58,7 +58,7 @@ export function AddTimeDialog({
     if (mode === 'duration' && durSecs) end = new Date(start.getTime() + durSecs * 1000)
     if (mode === 'end' && endTime) {
       end = new Date(`${date}T${endTime}`)
-      if (end < start) end = addDays(end, 1) // past midnight; equal times stay zero and are rejected
+      if (end < start) end = addDays(end, 1)
     }
   }
   const total = start && end ? (end.getTime() - start.getTime()) / 1000 : 0
@@ -181,7 +181,7 @@ export function AddTimeDialog({
                   aria-label="Duration"
                 />
               </div>
-              {/* Or drag: up to 8 hours in 5-minute steps, kept in sync with the field. */}
+              {}
               <input
                 type="range"
                 min={300}

@@ -1,6 +1,3 @@
-// Runners (WP-D17): `wp runner` on a person's machine, and the work it
-// does there: shell commands, file changes, coding agents.
-
 import { queryOptions, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, qs } from './api'
 import type { UserRef } from './types'

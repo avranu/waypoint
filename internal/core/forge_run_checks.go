@@ -1,11 +1,6 @@
 package core
 
-// The run that counts (WP-593, WP-ADR48). Several Actions runs can sit on
-// one head: a concurrency group cancels an older run when a newer one
-// starts, a label or an edit starts a run whose jobs all skip, and a re-run
-// posts new statuses for an old run. Reading the newest status per check
-// name mixed them up (WP-116, WP-158, WP-424, WP-552, WP-591). Instead, each
-// Actions job's check takes its state from one run per workflow and event.
+// Several Actions runs can share a head, so each job's check takes its state from one run per workflow and event, not the newest status per name.
 
 import (
 	"context"
@@ -91,7 +86,7 @@ func (c *httpForgeClient) fgRunChecks(ctx context.Context, f *Forge, repo, sha s
 	runs, err := c.ActionRunsAt(ctx, f, repo, sha)
 	switch {
 	case errors.Is(err, ErrNotFound) || isStatus(err, http.StatusNotFound):
-		return combined, nil // no Actions runs API: the newest status per name
+		return combined, nil
 	case err != nil:
 		return nil, err // no guessing a green from part of the data
 	}
@@ -100,7 +95,7 @@ func (c *httpForgeClient) fgRunChecks(ctx context.Context, f *Forge, repo, sha s
 		byNumber[r.Index] = r
 	}
 	counting := countingRuns(runs)
-	jobs := map[int64][]ActionJob{} // by run id, sorted by id as status URLs count them
+	jobs := map[int64][]ActionJob{} // Status URLs number jobs by their id order, so jobs are kept sorted by id.
 	var history []CommitCheck
 	historyRead := false
 	out := make([]CommitCheck, 0, len(combined))
@@ -108,7 +103,7 @@ func (c *httpForgeClient) fgRunChecks(ctx context.Context, f *Forge, repo, sha s
 		at, ok := fgStatusRun(ch.URL, repo)
 		run, listed := byNumber[at.run]
 		if !ok || !listed {
-			out = append(out, ch) // another app's status, or a run older than the list
+			out = append(out, ch)
 			continue
 		}
 		cr := counting[runGroup(run)]
@@ -140,7 +135,7 @@ func (c *httpForgeClient) fgRunChecks(ctx context.Context, f *Forge, repo, sha s
 			j = slices.IndexFunc(js, func(x ActionJob) bool { return strings.HasSuffix(ch.Name, " / "+x.Name+" ("+cr.Event+")") })
 		}
 		if j < 0 {
-			continue // the run that counts has no such job
+			continue
 		}
 		state := checkState(js[j].Status)
 		if !posted {
@@ -149,7 +144,7 @@ func (c *httpForgeClient) fgRunChecks(ctx context.Context, f *Forge, repo, sha s
 			st = CommitCheck{ID: ch.ID, Created: ch.Created, Name: ch.Name, Source: ch.Source, URL: fmt.Sprintf("%s/jobs/%d", strings.TrimRight(cr.HTMLURL, "/"), j)}
 		}
 		if !posted || st.State != state {
-			st.Description = jobDescription(js[j].Status) // the job is ahead of its statuses
+			st.Description = jobDescription(js[j].Status)
 		}
 		st.State = state
 		out = append(out, st)

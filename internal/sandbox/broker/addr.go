@@ -19,17 +19,17 @@ var ErrAddress = errors.New("no allowed address for this host")
 var refusedPrefixes = func() []netip.Prefix {
 	var ps []netip.Prefix
 	for _, s := range []string{
-		"0.0.0.0/8",       // "this network"
-		"100.64.0.0/10",   // CGNAT, Tailscale
-		"192.0.0.0/24",    // IETF protocol assignments
-		"192.0.2.0/24",    // documentation
-		"198.18.0.0/15",   // benchmarking
-		"198.51.100.0/24", // documentation
-		"203.0.113.0/24",  // documentation
-		"240.0.0.0/4",     // reserved, broadcast
-		"2001:db8::/32",   // documentation
-		"fec0::/10",       // site-local (deprecated, still routed by some)
-		"100::/64",        // discard
+		"0.0.0.0/8",
+		"100.64.0.0/10", // 100.64.0.0/10 includes the Tailscale tailnet, which the broker must not reach.
+		"192.0.0.0/24",
+		"192.0.2.0/24",
+		"198.18.0.0/15",
+		"198.51.100.0/24",
+		"203.0.113.0/24",
+		"240.0.0.0/4",
+		"2001:db8::/32",
+		"fec0::/10", // fec0::/10 is deprecated site-local, but some networks still route it.
+		"100::/64",
 	} {
 		ps = append(ps, netip.MustParsePrefix(s))
 	}

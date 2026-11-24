@@ -8,21 +8,13 @@ import (
 	"os"
 )
 
-// The review job's own check that the session is compacted (WP-816). The
-// server compacts the session as soon as the review is triggered and tells
-// the job whether that happened (autopilotJob.Compacted), from what the
-// session's hooks reported. The job doesn't take that on trust: just before
-// it types the review, the session's transcript says whether its last
-// compaction is still the last thing it did. A compaction that never
-// happened, or a session that worked again since (a background task
-// reporting back, someone using it), is compacted then. Only without a
-// transcript to read does the server's word stand.
+// The server's compacted flag is checked against the transcript: a session that worked after its compaction is not compacted.
 
 // transcriptCompaction is what a session's transcript says about its last
 // compaction.
 type transcriptCompaction struct {
-	compacted bool // it has compacted at least once
-	replies   int  // replies of the main conversation since the last compaction
+	compacted bool
+	replies   int
 }
 
 // readCompaction reads a Claude Code transcript for its last compaction
@@ -60,7 +52,7 @@ func readCompaction(path string) (transcriptCompaction, error) {
 			out.compacted, out.replies = true, 0
 			clear(seen)
 		case e.Type == "assistant":
-			// One reply is written as one line per content block.
+			// Each content block of one reply is its own transcript line with the same message id: count the reply once.
 			if e.Message.ID == "" || !seen[e.Message.ID] {
 				out.replies++
 				seen[e.Message.ID] = e.Message.ID != ""

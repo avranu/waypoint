@@ -9,8 +9,6 @@ import (
 	"unicode/utf8"
 )
 
-// Haiku helpers around an audit's model (WP-1320, WP-ADR135).
-
 func hasText(s, format string, args ...any) bool {
 	return strings.Contains(s, fmt.Sprintf(format, args...))
 }
@@ -83,8 +81,8 @@ func (fx *helperFixture) helperRun(audit int64, check, state string) {
 // helper runs of that audit.
 type pastRound struct {
 	run    int64
-	kind   string // "" review
-	suffix string // the audit's request key's end: "", ":sonnet", ":other", ":check"
+	kind   string
+	suffix string
 	runs   [][2]string
 }
 
@@ -121,8 +119,6 @@ func done(checks ...string) [][2]string {
 }
 
 func TestPanelChecksShape(t *testing.T) {
-	// The tests below rest on these: some checks run once, some every round,
-	// and every name is a lead id's prefix.
 	if len(onceChecks()) < 2 || len(onceChecks()) >= len(panelChecks) {
 		t.Fatalf("once checks %v of %d", onceChecks(), len(panelChecks))
 	}
@@ -143,9 +139,9 @@ func TestHelpersRanInRun(t *testing.T) {
 	allButOne := once[1:]
 	for _, tc := range []struct {
 		name   string
-		noRun  bool // the reviewed round has no run
+		noRun  bool
 		before []pastRound
-		after  []pastRound // rounds made after the reviewed one
+		after  []pastRound
 		want   bool
 	}{
 		{"an earlier round ran every once-check", false, []pastRound{{run: 5, runs: done(once...)}}, nil, true},
@@ -237,8 +233,6 @@ func TestRoundHelpers(t *testing.T) {
 				t.Errorf("%s: check %s's ask doesn't end with the panel rules", tc.name, p.Name)
 			}
 		}
-		// The order is panelOrder's (TestPanelOrder): which checks run is
-		// this test's.
 		if !slices.Equal(slices.Sorted(slices.Values(names)), slices.Sorted(slices.Values(tc.want))) {
 			t.Errorf("%s: panel = %v, want %v", tc.name, names, tc.want)
 		}
@@ -250,8 +244,6 @@ func TestRoundHelpers(t *testing.T) {
 		}
 	}
 
-	// A round with no run is its own run: every check, even with others
-	// done in an unrelated run.
 	fx := newHelperFixture(t)
 	fx.past(pastRound{run: 3, runs: done(onceChecks()...)})
 	row := &roundRow{id: fx.round(0)}
@@ -269,7 +261,6 @@ func TestAuditHelpersFor(t *testing.T) {
 		}
 	}
 
-	// Nothing set: the findings are checked, nothing else.
 	for _, purpose := range []string{"", AuditReview} {
 		h := auditHelpersFor(AuditInput{purpose: purpose}, "The PR's text")
 		if h == nil || !h.Verify || len(h.Panel) != 0 || h.Context != "" || h.CLI != helperCLI || h.Model != helperModel {
@@ -277,7 +268,6 @@ func TestAuditHelpersFor(t *testing.T) {
 		}
 	}
 
-	// A panel gets the pull request's text appended to its context.
 	in := AuditInput{purpose: AuditReview, helpers: &AuditHelpers{Panel: panel, Context: "round context", CLI: "other", Model: "opus"}}
 	h := auditHelpersFor(in, "PR text")
 	if h.Context != "round context\n\nPR text" {
@@ -289,7 +279,6 @@ func TestAuditHelpersFor(t *testing.T) {
 	if h.Verify {
 		t.Errorf("Verify set on a round's helpers that didn't ask for it")
 	}
-	// The caller's helpers are untouched.
 	if h == in.helpers || in.helpers.Context != "round context" || in.helpers.CLI != "other" || in.helpers.Model != "opus" {
 		t.Errorf("input mutated or shared: %+v", in.helpers)
 	}
@@ -478,7 +467,6 @@ func TestHelperRunsOf(t *testing.T) {
 		}
 	}
 
-	// Unknown names and states are dropped; known ones kept in order.
 	var all []any
 	for _, c := range panelChecks {
 		all = append(all, run(c.name, "done", nil))
@@ -487,7 +475,7 @@ func TestHelperRunsOf(t *testing.T) {
 	all = append(all,
 		run("bogus", "done", nil),
 		run("", "done", nil),
-		run("Goals", "done", nil), // names are exact
+		run("Goals", "done", nil),
 		run(name, "running", nil),
 		run(name, "DONE", nil),
 		run(name, "", nil),
@@ -511,13 +499,10 @@ func TestHelperRunsOf(t *testing.T) {
 		}
 	}
 
-	// A run with only bad entries is nothing.
 	if r := helperRunsOf(result(run("bogus", "done", nil), run(name, "weird", nil))); len(r) != 0 {
 		t.Errorf("only bad entries kept: %+v", r)
 	}
 
-	// Leads: every one a runner reports is kept, to the sanity bound, with
-	// its id up to three digits; cut leads keep their why and lose any id.
 	var many []any
 	for i := 1; i <= helperLeadsKeep+20; i++ {
 		many = append(many, lead(fmt.Sprintf("goals.%d", i), "high", "a.go", i))
@@ -528,8 +513,6 @@ func TestHelperRunsOf(t *testing.T) {
 	if len(r) != 1 || len(r[0].Leads) != helperLeadsKeep || r[0].Dropped != 3 || !strings.Contains(r[0].Error, "20 that became findings and 0 cut past that weren't kept") {
 		t.Fatalf("leads: %d, dropped %d, error %q", len(r[0].Leads), r[0].Dropped, r[0].Error)
 	}
-	// Cut leads past the bound: counted in Dropped and the error, however
-	// few the runner said it dropped.
 	var cuts []any
 	for i := 1; i <= helperLeadsKeep+5; i++ {
 		c := lead("", "low", "a.go", i)
@@ -659,9 +642,7 @@ func TestEndAuditKeepsHelperResults(t *testing.T) {
 		t.Errorf("answered = %v", got)
 	}
 
-	// An attempt sent on to the next model, or ending the audit unanswered:
-	// its helpers ran and cost, so they're kept, unanswered (WP-1320's live
-	// round 6); the next attempt's runs go alongside.
+	// An attempt that ends unanswered keeps its helper runs, which ran and cost money.
 	c := fx.exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, owner_id, created_at, request_key, status) VALUES (0, 0, '', 'repo', 0, 1, 'z', 'running')`)
 	fx.s.requeueAudit(fx.ctx, &CodeAudit{ID: c, Status: AuditRunning, HelperRuns: a.HelperRuns}, 1, 0, nil)
 	fx.exec(`UPDATE code_audits SET status = 'running' WHERE id = ?`, c)
@@ -673,7 +654,6 @@ func TestEndAuditKeepsHelperResults(t *testing.T) {
 		t.Errorf("unanswered attempts' runs = %+v", runs)
 	}
 
-	// An audit already ended (cancelled meanwhile) records nothing more.
 	b := fx.exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, owner_id, created_at, request_key, status) VALUES (0, 0, '', 'repo', 0, 1, 'y', 'cancelled')`)
 	fx.s.endAudit(fx.ctx, &CodeAudit{ID: b, Status: AuditRunning, HelperRuns: a.HelperRuns}, AuditDone, "", found)
 	var n int
@@ -727,8 +707,6 @@ func TestDropUncheckedVerdictsPanel(t *testing.T) {
 	if f := a.Findings[0]; f.Lead != "goals.1,tests.2" || f.Verdict != VerdictConfirmed {
 		t.Errorf("panel finding = %+v", f)
 	}
-	// An id no run confirmed (goals.9, or tests.1 the read didn't confirm)
-	// spoils the whole list.
 	for _, i := range []int{1, 2} {
 		if f := a.Findings[i]; f.Lead != "" || f.Verdict != "" {
 			t.Errorf("forged finding %d = %+v", i, f)
@@ -867,7 +845,6 @@ func TestHelperContext(t *testing.T) {
 		t.Errorf("context =\n%s", got)
 	}
 
-	// Past helperPromptsMax the newest are kept.
 	for i := range 10 {
 		prompt(200+int64(i), fmt.Sprintf("long %d %s", i, strings.Repeat("x", 2000)))
 	}
@@ -875,7 +852,6 @@ func TestHelperContext(t *testing.T) {
 	if len(got) > helperPromptsMax || !strings.Contains(got, "long 9 ") || strings.Contains(got, "- first") {
 		t.Errorf("past the bound: %d bytes, newest kept %v, oldest dropped %v", len(got), strings.Contains(got, "long 9 "), !strings.Contains(got, "- first"))
 	}
-	// No session: no prompts, the goals still.
 	if got := fx.s.helperContext(fx.ctx, &roundRow{issueID: issue.ID}, ""); strings.Contains(got, "<prompts>") || !strings.Contains(got, "Own goal") {
 		t.Errorf("no session =\n%s", got)
 	}

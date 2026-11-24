@@ -77,7 +77,7 @@ func defaultSlots() int { return max(1, runtime.NumCPU()/2) }
 // slotHold is a held slot.
 type slotHold struct {
 	f   *os.File
-	idx int // which slot (NAME.IDX.lock)
+	idx int
 }
 
 func (h *slotHold) release() { _ = h.f.Close() }
@@ -106,7 +106,7 @@ func acquireSlotIn(ctx context.Context, name string, order []int, notify, firstM
 	}
 	start := time.Now()
 	notified := false
-	var remove func() // leaves the queue
+	var remove func()
 	defer func() {
 		if remove != nil {
 			remove()
@@ -236,7 +236,7 @@ func slotHeld(name string) bool {
 func (c *cli) runInSlotThen(name string, n int, argv []string, out, errw io.Writer, started func(), envf func([]string) []string) (int, error) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	own := !slotHeld(name) // a nested run is inside someone's slot and time
+	own := !slotHeld(name)
 	cmd := ""
 	if own {
 		cmd = slotRunKey(os.Args, argv)
@@ -261,8 +261,6 @@ func (c *cli) runInSlotThen(name string, n int, argv []string, out, errw io.Writ
 	begun := time.Now()
 	code, err := runSlotCmd(ctx, env, argv, os.Stdin, out, errw)
 	if err == nil {
-		// A command that could not start, or whose wait failed, has no exit
-		// code: the hold's exit stays unknown (WP-1646).
 		setExit(code)
 	}
 	if err == nil && code == 0 && cmd != "" && derr == nil {
@@ -336,7 +334,6 @@ func cmdSlotRun(c *cli, args []string) error {
 	if len(keep) > 0 && pos[0] != "tests" {
 		return c.usage("--keep-env is for the tests slot; other slots run with the whole environment")
 	}
-	// Tests run without the caller's secrets, as under wp testsum (WP-1065).
 	var envf func([]string) []string
 	var dropped []string
 	if pos[0] == "tests" {
@@ -443,7 +440,6 @@ func (c *cli) takeSlotExit(ctx context.Context, name string, n int, run slotRun,
 	if prev := os.Getenv(slotHeldEnv); prev != "" {
 		held = prev + "," + held
 	}
-	// Replace the inherited value rather than add a second entry.
 	kept := make([]string, 0, len(env)+1)
 	for _, e := range env {
 		if !strings.HasPrefix(e, slotHeldEnv+"=") {

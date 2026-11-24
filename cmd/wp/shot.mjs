@@ -19,7 +19,7 @@ const job = JSON.parse(readFileSync(0, "utf8"));
 const tokens = Object.fromEntries(
   Object.entries(JSON.parse(process.env.WP_SHOT_TOKENS || "{}")).map(([o, t]) => [new URL(o).origin, t]),
 );
-const maxHeight = 3; // screens of a long page kept
+const maxHeight = 3;
 
 function slug(u) {
   const x = new URL(u);
@@ -66,7 +66,6 @@ try {
           }
           const top = req.frame().page()?.mainFrame().url() || "";
           if (top && top !== "about:blank" && new URL(top).origin !== server) return route.continue();
-          // A cross-origin iframe inside a server page must not get it either.
           const furl = req.frame().url();
           const opaque = !furl || furl === "about:blank" || furl.startsWith("data:");
           if (!opaque && new URL(furl).origin !== server) return route.continue();
@@ -85,7 +84,6 @@ try {
       const r = { url: t.url, size: size.name, file: "", status: 0, title: "", error: "" };
       const origin = t.auth ? new URL(t.url).origin : "";
       if (origin && !tokens[origin]) {
-        // A picture of a login page would be attached as if it were the page.
         out.push({ ...r, error: "no token for " + origin + ", so the page would be taken signed out" });
         continue;
       }

@@ -5,8 +5,6 @@ import (
 	"testing"
 )
 
-// Not waking an agent that has nothing left to do (WP-176).
-
 func (be *bsEnv) hookAs(event string) *HookResult {
 	be.t.Helper()
 	res, err := be.s.SessionHook(be.ctx, be.agent, []HookEvent{{Event: event, SessionID: "cli-1", Machine: "m1", CLI: "claude"}})
@@ -27,7 +25,6 @@ func TestBabysitMergeDoesNotWakeTheAgent(t *testing.T) {
 	if !be.notified("merged") {
 		t.Error("its person wasn't notified")
 	}
-	// It reaches the agent with the next thing it does.
 	res := be.hookAs("UserPromptSubmit")
 	if len(res.Messages) != 1 || !strings.Contains(res.Text, "for your information") || !strings.Contains(res.Text, "merged") {
 		t.Fatalf("bundled with the next prompt: %q", res.Text)
@@ -41,13 +38,11 @@ func TestBabysitNotifyAndFailuresStillWake(t *testing.T) {
 	be := newBabysitEnv(t)
 	pr := be.open()
 	b := be.start(pr)
-	// What the agent must act on keeps waking it.
 	be.s.babysitTell(be.ctx, b, pr, "gave_up", "Waypoint gave up babysitting o/r#7: it failed.")
 	if res := be.hookAs("Stop"); len(res.Messages) != 1 || !strings.HasPrefix(res.Text, "Waypoint's babysitter: Waypoint gave up") {
 		t.Fatalf("a failure didn't reach the stop: %q", res.Text)
 	}
-	// Asked for with notify, a merge wakes it too, though not at once: just
-	// before its prompt cache cools (WP-209).
+	// A merge notice asked for with notify is delivered just before the agent's prompt cache cools, not at once.
 	b2, err := be.s.StartBabysit(be.ctx, be.agent, pr.ID, BabysitInput{Notify: true})
 	if err != nil || !b2.Notify || b2.ID != b.ID {
 		t.Fatalf("start with notify = %+v %v", b2, err)
@@ -87,13 +82,11 @@ func TestRequestFollowupWake(t *testing.T) {
 	if got, err := r.s.GetRequest(r.ctx, r.agent, never.Ref, 0); err != nil || got.State != RequestDone {
 		t.Fatalf("the agent can look: %+v %v", got, err)
 	}
-	// Reading counted as being told; the other waits for the next prompt.
 	res, err := r.s.SessionHook(r.ctx, agentActor(r.ana, "anthropic/claude-code"), []HookEvent{hook("box", "cli-1", "UserPromptSubmit", nil)})
 	if err != nil || len(res.Deliver) != 1 || res.Deliver[0].ID != on.ID {
 		t.Fatalf("bundled with the next prompt: %+v %v", res, err)
 	}
 
-	// The choice it named wakes it at a stop.
 	wake := r.ask(RequestInput{Kind: RequestQuestion, Title: "Which cache?", Questions: []Question{{Question: "Which cache?", Choices: []Choice{{Label: "redis"}, {Label: "none"}}}}, FollowupOn: []string{"Redis"}})
 	if _, err := r.s.DecideRequest(r.ctx, r.ana, wake.Ref, RequestDecision{Decision: "answer", Answers: []Answer{{Choices: []string{"redis"}}}}); err != nil {
 		t.Fatal(err)
@@ -133,7 +126,6 @@ func TestPlainDismissalIsNotTold(t *testing.T) {
 		t.Errorf("a plain dismissal was told: %q", res.Text)
 	}
 
-	// Nor is one told with the next prompt, "not a question" included.
 	auto := r.ask(RequestInput{Kind: RequestQuestion, Title: "Shall I?", Questions: []Question{{Question: "Shall I?"}}})
 	if _, err := r.s.DecideRequest(r.ctx, r.ana, auto.Ref, RequestDecision{Decision: "dismiss", NotAQuestion: true}); err != nil {
 		t.Fatal(err)

@@ -15,12 +15,8 @@ func prsOpened(g *shipForge) int { return len(g.created) }
 func TestRoundBeforePRHasADeadlineWhileSessionWorks(t *testing.T) {
 	a, g, _ := heldEnv(t)
 	a.stopWith("Waiting for the review.")
-	// A background task reports back and the session works from there, with
-	// no Stop: the session reads as working, and no prompt is the person's.
 	a.prompt(HarnessPromptMarks[0] + " a task finished")
-	// Every try to type into it finds the screen held: the session never
-	// reads free. (A job nobody answers is a runner that failed, which ends
-	// the round for another reason: the reason below must be the deadline's.)
+	// Every typing try finds the screen held; otherwise a job nobody answers fails its runner first and the round ends for another reason.
 	answered := 0
 	for range int(heldScreenWait/(5*time.Minute)) + 3 {
 		a.tickAll(5 * time.Minute)
@@ -50,7 +46,7 @@ func TestRoundBeforePRDeadlineWithFindings(t *testing.T) {
 	round := a.heldRound()
 	a.tickAll(61 * time.Second)
 	a.endAudit(box, "done", "Off by one", "Missing test")
-	a.prompt("one more thing") // the person takes the session before the review is typed
+	a.prompt("one more thing")
 	a.tickAll(heldScreenWait + 10*time.Minute)
 	a.s.Wait()
 	a.s.sweepRounds(a.ctx)
@@ -61,7 +57,6 @@ func TestRoundBeforePRDeadlineWithFindings(t *testing.T) {
 	if why := a.roundReason(round); !strings.Contains(why, "2 findings") && !strings.Contains(why, "2 hours") {
 		t.Errorf("reason says nothing true: %q", why)
 	}
-	// Its findings are the pull request's, so the gate holds on them.
 	ra, au := a.roundAuditRow(round)
 	if au == nil || au.Purpose != "" || ra.id == 0 {
 		t.Fatalf("round audit = %+v %+v", ra, au)

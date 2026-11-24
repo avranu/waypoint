@@ -15,22 +15,18 @@ import (
 	"unicode/utf8"
 )
 
-// Who typed a prompt (WP-1370). Waypoint tells its own typed prompts from a
-// person's by record, never by how a prompt begins: every text it has a
-// runner type into a session is written to typed_prompts in the same write
-// that hands it over, and a hook's prompt is Waypoint's iff its normalised
-// text is one of those records, unexpired and not yet used.
+// Waypoint's typed prompts are recognised by their stored record of normalised text, never by a prefix mark.
 
 // Kinds of text Waypoint types into a session.
 const (
-	TypedReview   = "review"    // an adversarial review's prompt
-	TypedCompact  = "compact"   // /compact
-	TypedKeepWarm = "keep_warm" // a keep-warm ping
-	TypedMessage  = "message"   // a message body typed instead of posted to the inbox
-	TypedInbox    = "inbox"     // a batch of decisions and messages posted to an idle session (cache_warm markPosted)
-	TypedKickoff  = "kickoff"   // the prompt autopilot gives a session it starts
-	TypedStart    = "start"     // the text a session was started with (argv), which a person may have composed
-	TypedExit     = "exit"      // /exit, typed before a restart
+	TypedReview   = "review"
+	TypedCompact  = "compact"
+	TypedKeepWarm = "keep_warm"
+	TypedMessage  = "message"
+	TypedInbox    = "inbox"
+	TypedKickoff  = "kickoff"
+	TypedStart    = "start" // the text a session was started with (argv), which a person may have composed
+	TypedExit     = "exit"
 )
 
 // typedSlack is how long after its job's own timeout a typed prompt may
@@ -70,8 +66,6 @@ func TypedWaypointAlone(kind string) bool {
 	carries, known := typedKinds[kind]
 	return known && !carries
 }
-
-// ---- normalisation ----
 
 var (
 	pasteOpen  = regexp.MustCompile(`^<pasted_content(?:\s[^>]*)?>`)
@@ -172,8 +166,6 @@ func PromptSums(text string) []string {
 	}
 }
 
-// ---- records ----
-
 // recordTyped notes that text is being handed to a runner to type into
 // session, good until now+ttl. Call it in the write that hands it over.
 func recordTyped(ctx context.Context, q queryer, sessionID int64, kind, text string, now int64, ttl time.Duration) error {
@@ -202,7 +194,6 @@ func recordTypedUnbound(ctx context.Context, q queryer, userID int64, kind, text
 // RecordTypedStart records the text a session is about to be started with on
 // the command line, for the actor's user, before the session exists (WP-1370).
 func (s *Service) RecordTypedStart(ctx context.Context, a *Actor, text string) error {
-	// The permission of its route, as the sibling session hooks ask for it.
 	if err := a.need(PermSessionsReport); err != nil {
 		return err
 	}
@@ -248,10 +239,7 @@ func (s *Service) recordHandedOver(ctx context.Context, q queryer, kind string, 
 			}
 			texts = append(texts, typed{kind, m.Body})
 		default:
-			// A batch posted to the inbox, which the session reads by its own
-			// prompt: decisions and messages people wrote (wakeups.go), so it
-			// carries a person's words. Claude Code may wrap what it shows
-			// (a peer note's heading); only an exact body is recognised.
+			// Claude Code may wrap an inbox batch's heading, so only its exact body is recognised.
 			texts = append(texts, typed{TypedInbox, m.Body})
 		}
 	case JobSession:
@@ -269,8 +257,6 @@ func (s *Service) recordHandedOver(ctx context.Context, q queryer, kind string, 
 		}
 		cli = a.CLIID
 		if a.ReviewOf == "" {
-			// A restart types /exit into the old session; its kickoff is made
-			// on the runner: AutopilotTyped.
 			if cli == "" {
 				return nil
 			}
@@ -280,7 +266,6 @@ func (s *Service) recordHandedOver(ctx context.Context, q queryer, kind string, 
 			}
 			return recordTyped(ctx, q, sid, TypedExit, "/exit", s.nowMS(), time.Duration(timeoutSec)*time.Second+typedSlack)
 		}
-		// The runner compacts first unless the transcript says it needn't.
 		texts = append(texts, typed{TypedCompact, "/compact"}, typed{TypedReview, a.Review})
 	}
 	if cli == "" || len(texts) == 0 {
@@ -304,7 +289,6 @@ func (s *Service) recordHandedOver(ctx context.Context, q queryer, kind string, 
 // wp next's answer) just before it types it into session cliID (WP-1370).
 // The step must be waiting for this job, as AutopilotStepWanted asks.
 func (s *Service) AutopilotTyped(ctx context.Context, a *Actor, step, job int64, cliID, text string) error {
-	// Only a runner types for autopilot, as its route says (runners.host).
 	if err := a.need(PermRunnersHost); err != nil {
 		return err
 	}
@@ -362,8 +346,7 @@ func (s *Service) recogniseTyped(ctx context.Context, t *tx, sessionID int64, ev
 	// used up, or from the tombstone it left when it matched none, and it uses
 	// no other. A resend with no key is a new prompt and takes the next record.
 	if ev.Key != "" {
-		// On the same text: a key is one invocation's, so it is no answer for
-		// other text. (A hook that sent an id has no text to compare.)
+		// A key answers only for the same text, unless the hook sent no text or digest to compare.
 		q, args := `SELECT kind FROM typed_prompts WHERE session_id = ? AND consumed_key = ?`, []any{sessionID, ev.Key}
 		if len(sums) > 0 {
 			q += ` AND hash IN (?` + strings.Repeat(`,?`, len(sums)-1) + `)`
@@ -379,11 +362,7 @@ func (s *Service) recogniseTyped(ctx context.Context, t *tx, sessionID int64, ev
 			return "", err
 		}
 	}
-	// What could match at all: the session's own unused records, and those
-	// held for the user's session not started yet. Most prompts are a
-	// person's, with none of either, and are answered by this one read
-	// rather than an UPDATE per digest (a hook's outbox can bring 200 prompts
-	// in one write, which must finish inside the hook's timeout).
+	// One read decides whether anything can match: a hook's outbox can bring 200 prompts in one write, which must finish inside the hook's timeout.
 	var pending, held int
 	if err := t.QueryRowContext(ctx, `SELECT coalesce(sum(session_id IS NOT NULL), 0), coalesce(sum(session_id IS NULL), 0) FROM typed_prompts
 		WHERE consumed_at IS NULL AND expires_at > ? AND (session_id = ? OR (session_id IS NULL AND user_id = (SELECT user_id FROM agent_sessions WHERE id = ?)))`,
@@ -392,11 +371,9 @@ func (s *Service) recogniseTyped(ctx context.Context, t *tx, sessionID int64, ev
 	}
 	err = sql.ErrNoRows
 	if pending+held == 0 {
-		sums = nil // nothing to match: the loop below has no record to find
+		sums = nil
 	} else if ev.TypedID != 0 {
-		// The hook matched a record itself (a --no-prompts hook sends no text
-		// or digest): the record is that one, and only if it is this
-		// session's, or held for this user's session not yet started.
+		// A --no-prompts hook sends no text or digest, so the record is matched by its id alone.
 		err = t.QueryRowContext(ctx, `UPDATE typed_prompts SET consumed_at = ?, consumed_key = ?, session_id = ? WHERE consumed_at IS NULL AND id = ? AND expires_at > ? AND (
 			session_id = ? OR (session_id IS NULL AND user_id = (SELECT user_id FROM agent_sessions WHERE id = ?)
 			  AND NOT EXISTS (SELECT 1 FROM session_events WHERE session_id = ? AND kind = 'prompt'))) RETURNING kind`,
@@ -410,8 +387,6 @@ func (s *Service) recogniseTyped(ctx context.Context, t *tx, sessionID int64, ev
 		SELECT id FROM typed_prompts WHERE session_id = ? AND hash = ? AND consumed_at IS NULL AND expires_at > ? ORDER BY id LIMIT 1) RETURNING kind`,
 			s.nowMS(), ev.Key, sessionID, sm, at).Scan(&kind)
 		if errors.Is(err, sql.ErrNoRows) {
-			// A text held for a session not started yet: only the first prompt of
-			// one of the same user's sessions can be it.
 			err = t.QueryRowContext(ctx, `UPDATE typed_prompts SET consumed_at = ?, consumed_key = ?, session_id = ? WHERE consumed_at IS NULL AND id = (
 			SELECT id FROM typed_prompts WHERE session_id IS NULL AND hash = ? AND consumed_at IS NULL AND expires_at > ?
 			  AND user_id = (SELECT user_id FROM agent_sessions WHERE id = ?)
@@ -421,7 +396,7 @@ func (s *Service) recogniseTyped(ctx context.Context, t *tx, sessionID int64, ev
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		n := NormalisePrompt(ev.Prompt)
-		// pending, as read above: no match consumed one since.
+		// The UPDATEs above matched nothing, so the pending count read before them still holds.
 		if strings.HasPrefix(n, AutopilotPromptMark) || pending > 0 {
 			// Every prompt that matches nothing while Waypoint has text pending
 			// for the session is logged, not only one with the mark: a Waypoint

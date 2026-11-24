@@ -179,7 +179,6 @@ func (s *Server) assistantLive(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	sseClients.Inc()
 	defer sseClients.Dec()
-	// A write that fails means the browser has gone: stop at once.
 	frame := func(f hermes.Frame) bool {
 		_, err := fmt.Fprintf(w, "id: %d\ndata: %s\n\n", f.Seq, f.Msg)
 		return err == nil
@@ -216,7 +215,6 @@ func (s *Server) assistantLive(w http.ResponseWriter, r *http.Request) {
 			if !frame(f) {
 				return
 			}
-			// Send what else is queued in the same flush (token deltas).
 		more:
 			for n := 0; n < 64; n++ {
 				select {

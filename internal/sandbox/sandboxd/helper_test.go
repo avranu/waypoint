@@ -24,8 +24,8 @@ type fakeSys struct {
 	fakeUnits
 	users, groups map[string]int
 	sub           map[string]bool
-	failAddUser   int // fail this many AddUser calls
-	failDelUser   int // and DelUser calls
+	failAddUser   int
+	failDelUser   int
 	adds, dels    []string
 }
 
@@ -203,7 +203,6 @@ func TestEnsureUsers(t *testing.T) {
 		}
 	}
 
-	// The same spec twice is a replay.
 	sd := r.spec(3, waypointRepo)
 	if resp := ensure(h, sd); resp.Error != "" {
 		t.Fatal(resp.Error)
@@ -212,8 +211,6 @@ func TestEnsureUsers(t *testing.T) {
 		t.Errorf("replay: %+v", resp)
 	}
 
-	// A renamed repo keeps its user; a new repo of the same owner gets a
-	// repo user and shares the org user.
 	r.now = r.now.Add(time.Hour)
 	resp = ensure(h, r.spec(3, &sandbox.Repo{ID: "1/42", Slug: "Robin/waypoint2", Owner: "1/robin"}))
 	if resp.Error != "" || resp.Users[0].Name != repo.Name || resp.Users[0].Slug != "Robin/waypoint2" || resp.Users[0].LastUsed != r.now.Unix() {
@@ -227,8 +224,6 @@ func TestEnsureUsers(t *testing.T) {
 		t.Errorf("useradd ran for %v", r.sys.adds)
 	}
 
-	// The ledger survives a restart, and a removed account comes back
-	// with its uid.
 	delete(r.sys.users, repo.Name)
 	h.Close()
 	h2 := r.open()
@@ -266,7 +261,6 @@ func TestEnsureUsersRefuses(t *testing.T) {
 		t.Errorf("unknown op: %+v", resp)
 	}
 
-	// A user or group that exists outside the ledger isn't taken over.
 	name := sandbox.RepoUser(waypointRepo.Slug, waypointRepo.ID, 0)
 	r.sys.users[name] = 1234
 	if resp := ensure(h, r.spec(3, waypointRepo)); !strings.Contains(resp.Error, "won't take it over") {
@@ -301,12 +295,10 @@ func TestReconcile(t *testing.T) {
 	if resp := ensure(h, r.spec(3, waypointRepo)); !strings.Contains(resp.Error, "killed") {
 		t.Fatalf("%+v", resp)
 	}
-	// The group exists, the user doesn't, and the intent says so.
 	st := h.Handle(sandbox.Request{Op: sandbox.OpStatus}).Status
 	if st.Pending != 1 || len(st.Users) != 0 {
 		t.Fatalf("%+v", st)
 	}
-	// The uid stays reserved meanwhile.
 	if uid, _ := h.freeUID(); uid != firstUID+1 {
 		t.Errorf("free uid %d", uid)
 	}
@@ -329,7 +321,6 @@ func TestStorePin(t *testing.T) {
 	r.cfg.RepinStore = true
 	r.open()
 
-	// A store others can write isn't one.
 	bad := t.TempDir()
 	if err := os.Chmod(bad, 0o777); err != nil {
 		t.Fatal(err)
@@ -478,7 +469,6 @@ func TestRemoveUser(t *testing.T) {
 		t.Fatalf("status %+v", st)
 	}
 
-	// Removing it again is done already; a name that isn't the key's is refused.
 	if resp := r.remove(h, repo); resp.Error != "" {
 		t.Errorf("again: %+v", resp)
 	}
@@ -487,12 +477,10 @@ func TestRemoveUser(t *testing.T) {
 	if resp := r.remove(h, wrong); !strings.Contains(resp.Error, "isn't a machine user") {
 		t.Errorf("wrong key: %+v", resp)
 	}
-	// An ensure_users spec doesn't remove.
 	if resp := h.Handle(sandbox.Request{Op: sandbox.OpRemoveUser, Spec: r.spec(3, waypointRepo)}); !strings.Contains(resp.Error, "is for ensure_users") {
 		t.Errorf("wrong op: %+v", resp)
 	}
 
-	// The repo's next job gets a fresh user with a new uid.
 	resp = ensure(h, r.spec(3, waypointRepo))
 	if resp.Error != "" || resp.Users[0].Name != repo.Name || resp.Users[0].UID == repo.UID || resp.Users[1].UID != org.UID {
 		t.Errorf("again: %+v", resp)
@@ -512,12 +500,10 @@ func TestRemoveUserFails(t *testing.T) {
 	if st.Pending != 1 || len(st.Users) != 1 || len(st.Drift) != 1 {
 		t.Fatalf("status %+v", st)
 	}
-	// Meanwhile the repo's jobs get another user, not the one going away.
 	resp = ensure(h, r.spec(3, waypointRepo))
 	if resp.Error != "" || resp.Users[0].Name == repo.Name || resp.Users[0].UID == repo.UID {
 		t.Errorf("while removing: %+v", resp)
 	}
-	// A signed reconcile finishes it.
 	if resp := h.Handle(sandbox.Request{Op: sandbox.OpReconcile}); !strings.Contains(resp.Error, "no spec") {
 		t.Errorf("unsigned reconcile: %+v", resp)
 	}

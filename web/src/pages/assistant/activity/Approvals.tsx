@@ -1,6 +1,4 @@
-// Activity → Approvals: the gate's approvals, pending first, then the
-// recent ones with what came of them. Deciding is Signal's alone (the gate
-// keeps it off its API), so this only shows.
+// Deciding is Signal's alone: the gate keeps it off its API, so this view only shows.
 
 import { useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'

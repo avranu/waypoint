@@ -9,22 +9,7 @@ import (
 	"time"
 )
 
-// Scoring picks without showing them (WP-250, WP-ADR104). An arm's picks
-// can be judged before any agent is given them, two ways:
-//
-//   - against the files the task's merged work changed (prep_scores), on
-//     the same tasks as the chat prep's picks, and
-//   - against what an agent that was shown no pointers opened and edited
-//     (the none arm's navigation traces): what the picks would have named
-//     of the files it went looking for.
-//
-// An arm other than the chat prep is drawn for agents only once it has been
-// scored on prepOfflineMin tasks beside the chat prep, and not while it
-// names credibly fewer of the changed files than the chat prep does on the
-// same tasks. Agentic picks for that are made at surplus on tasks already
-// done (a backtest, prep_agent.go): from the repository at the prep's
-// commit and the task's text as it was, so they say what the arm would have
-// picked, and no agent's task is spent finding out.
+// an arm is drawn for agents only after prepOfflineMin tasks scored beside the chat prep; agentic offline picks use the prep's commit and the task's text as it was
 
 const (
 	// prepOfflineMin: tasks scored beside the chat prep before an arm is
@@ -203,12 +188,11 @@ func (s *Service) prepOffline(ctx context.Context, rows []*prepRow) ([]PrepOffli
 		opened, edited := map[string]bool{}, map[string]bool{}
 		for _, f := range files {
 			if !mistakeFile(f.Path) || f.Created {
-				continue // a file the agent made is nothing a pointer could name
+				continue
 			}
 			key := f.Path
 			if f.Repo != "" && repo != "" && !strings.EqualFold(f.Repo, repo) {
-				// a file of a repository the prep didn't read: the agent
-				// needed it and no pick can be it, whatever its path
+				// a file in a repository the prep didn't read is keyed by repo: no pick of this prep can name it
 				key = f.Repo + "\x00" + f.Path
 			}
 			opened[key] = true

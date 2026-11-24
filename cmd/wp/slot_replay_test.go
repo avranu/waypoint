@@ -79,12 +79,9 @@ func TestReplayLongShareDecidesWhetherShortsWait(t *testing.T) {
 		rj(1000, 600, "long", ""), rj(1001, 600, "long", ""),
 		rj(1002, 10, "short", ""), rj(1020, 10, "short", ""), rj(1040, 10, "short", ""),
 	}
-	// long 1 holds slot 0 from 1000 to 1600 and long 2 waits for it: 599 s
 	if got, want := waitsOf(replayRun(replayHist(), jobs, 2, recordedPolicy)), []int64{0, 599, 0, 0, 0}; !eq(got, want) {
 		t.Errorf("share 0.5: waits %v, want %v", got, want)
 	}
-	// the longs take slots 0 and 1 until 1600 and 1601: the shorts go as slots free
-	// (1002 at 1600: 598; 1020 at 1601: 581; 1040 at 1610: 570)
 	if got, want := waitsOf(replayRun(replayHist(), jobs, 2, replayParams{Threshold: 5 * time.Minute, LongShare: 1})), []int64{0, 0, 598, 581, 570}; !eq(got, want) {
 		t.Errorf("share 1.0: waits %v, want %v", got, want)
 	}
@@ -127,7 +124,6 @@ func TestReplayOneLongRunPerTree(t *testing.T) {
 }
 
 func TestReplayFirstComeAmongEligible(t *testing.T) {
-	// one slot, three runs of 100 s queued 10 s apart: each goes in turn
 	jobs := []core.SlotHold{rj(1000, 100, "short", ""), rj(1010, 100, "short", ""), rj(1020, 100, "short", "")}
 	if got, want := waitsOf(replaySim(jobs, nil, 1, recordedPolicy)), []int64{0, 90, 180}; !eq(got, want) {
 		t.Errorf("waits %v, want %v", got, want)
@@ -165,16 +161,14 @@ func TestReplayRowsRecordedAndModel(t *testing.T) {
 	if rec.Jobs != len(g.Jobs) || len(rec.Long) != 2 || rec.Long[1] != 599000 {
 		t.Errorf("recorded %+v", rec)
 	}
-	// recorded policy: one long slot, so the second long waits 599 s and the shorts, in slot 1, do not wait
 	if model.ClassedLong != 2 || len(model.Short) != 3 || slotPct(model.Short, 0.5) != 0 || slotPct(model.Short, 0.95) != 0 ||
 		len(model.Long) != 2 || slotPct(model.Long, 0.95) != 599000 {
 		t.Errorf("model %+v", model)
 	}
-	// share 1: both longs take a slot each and the shorts wait for them (598, 581, 570 s)
 	if len(asked.Short) != 3 || slotPct(asked.Short, 0.5) != 581000 || slotPct(asked.Short, 0.95) != 598000 || slotPct(asked.Long, 0.95) != 0 {
 		t.Errorf("asked %+v", asked)
 	}
-	// the model uses the group's recorded threshold, not today's: at 11 minutes the 600 s runs are short
+	// The model uses the group's recorded threshold, not today's.
 	g.ThresholdSecs = 660
 	if _, other, _ := replayRows(g, recordedPolicy); other.ClassedLong != 0 {
 		t.Errorf("model at the recorded threshold of 11m: %+v", other)
@@ -233,8 +227,7 @@ func TestSlotReplayLocalCommand(t *testing.T) {
 // from; one that had ended is.
 func TestReplayClassesIgnoreSameKeyRunStillGoing(t *testing.T) {
 	hist := []core.SlotHold{rj(-9000, 10, "c", ""), rj(-8000, 10, "c", ""), rj(-7000, 600, "c", "")}
-	// without the 600 s run of job A, B has runs [600 10 10]: median 10, short;
-	// counting A (ends 1600, after B queued at 1100; B ends 1700, so the third job sees both) would make it [600 600 10 10]: 305 s, long
+	// A same-key run still going is not in the class history: counting it would flip the class.
 	jobs := []core.SlotHold{rj(1000, 600, "c", ""), rj(1100, 600, "c", ""), rj(1701, 10, "c", "")}
 	if got := replayClasses(jobs[:2], hist, 5*time.Minute); got[0] != "short" || got[1] != "short" {
 		t.Errorf("classes %v, want short short", got)
@@ -283,8 +276,8 @@ func TestReplayGroupsHistoryAndRecordedPolicy(t *testing.T) {
 		return h
 	}
 	holds := []core.SlotHold{
-		mk(10_000, nil), // before the window: history
-		mk(20_000, func(h *core.SlotHold) { h.GaveUp = true }), // gave up before the window: ignored
+		mk(10_000, nil),
+		mk(20_000, func(h *core.SlotHold) { h.GaveUp = true }),
 		mk(1_000_000, nil),
 		mk(1_100_000, func(h *core.SlotHold) { h.Slots, h.LongSlots = 8, 3 }),
 		mk(1_200_000, func(h *core.SlotHold) { h.Policy = "p2"; h.ThresholdSecs = 0; h.LongSlots = 0 }),
@@ -314,7 +307,6 @@ func TestReplayGroupsHistoryAndRecordedPolicy(t *testing.T) {
 	if none.GaveUp != 1 || len(none.Jobs) != 0 {
 		t.Errorf("no policy %+v", none)
 	}
-	// --slots overrides the count, and the long slots follow the rule
 	g6 := replayGroups(holds, 6, since)
 	if len(g6) != len(gs) {
 		t.Fatalf("--slots 6: %d groups, want %d", len(g6), len(gs))
@@ -329,7 +321,6 @@ func TestReplayGroupsHistoryAndRecordedPolicy(t *testing.T) {
 			t.Errorf("--slots 5: %+v", g)
 		}
 	}
-	// a group with only history is not printed
 	if g := replayGroups(holds[:1], 0, since); len(g) != 0 {
 		t.Errorf("history alone made a group: %+v", g)
 	}
@@ -356,7 +347,7 @@ func TestSlotReplayServerPath(t *testing.T) {
 			ThresholdSecs: 600, Slots: 6, LongSlots: 3, QueuedAt: time.Now().Add(-time.Hour).UnixMilli() + int64(i)*1000, HoldMS: 5000})
 	}
 	holds = append(holds, core.SlotHold{ID: "old", Machine: "box", Name: "tests", Policy: "adr150-1", Repo: "/r", Cmd: "c", Class: "short",
-		Slots: 6, LongSlots: 3, QueuedAt: time.Now().Add(-10 * 24 * time.Hour).UnixMilli(), HoldMS: 5000}) // before the 7-day window
+		Slots: 6, LongSlots: 3, QueuedAt: time.Now().Add(-10 * 24 * time.Hour).UnixMilli(), HoldMS: 5000})
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotQuery = r.URL.Query()
 		_ = json.NewEncoder(w).Encode(holds)
@@ -386,7 +377,6 @@ func TestSlotReplayServerPath(t *testing.T) {
 			t.Errorf("output lacks %q:\n%s", want, out.String())
 		}
 	}
-	// under the limit: no warning
 	slotReplayLimit = 1000
 	c, _, errb = sqCLI()
 	if err := cmdSlotReplay(c, nil); err != nil || errb.Len() != 0 {

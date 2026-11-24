@@ -41,9 +41,6 @@ func TestPictureReadAllowed(t *testing.T) {
 		must(os.WriteFile(p, []byte("x"), 0o600))
 		return p
 	}
-	// The user's own directories, private whatever the umask: t.TempDir makes
-	// them 0777 less it, and a umask of 0 leaves them open to everyone, where
-	// rightly nothing is let through (pathPrivate).
 	must(os.Chmod(tmp, 0o700))
 	must(os.Chmod(base, 0o700))
 	if d := notPrivateDir(write(filepath.Join(tmp, "probe.png"))); d != "" {
@@ -71,9 +68,6 @@ func TestPictureReadAllowed(t *testing.T) {
 	must(os.Symlink(outside, link3))
 	dirPic := filepath.Join(repo, "dir.png")
 	must(os.MkdirAll(dirPic, 0o750))
-	// "..": taken where a link led, as the Read will. Written out,
-	// wp-files/WP-4/up/../a.png is wp-files/WP-4/a.png; the Read opens
-	// base/a.png.
 	up := filepath.Join(tmp, filesDirName, "WP-4", "up")
 	must(os.MkdirAll(filepath.Dir(up), 0o750))
 	must(os.Symlink(filepath.Dir(outside), up))
@@ -86,40 +80,38 @@ func TestPictureReadAllowed(t *testing.T) {
 		cwd, path string
 		want      bool
 	}{
-		{wt, write(filepath.Join(repo, "e2e", "out", "a.png")), true}, // the main checkout, from a worktree
-		{repo, write(filepath.Join(wt, "e2e", "out", "b.PNG")), true}, // a worktree, from the main checkout
-		{wt, write(filepath.Join(wt, "c.png")), true},                 // the session's own checkout
-		{wt, write(filepath.Join(repo, "notes.txt")), false},          // not a picture
-		{wt, write(filepath.Join(other, "c.png")), false},             // another repository
+		{wt, write(filepath.Join(repo, "e2e", "out", "a.png")), true},
+		{repo, write(filepath.Join(wt, "e2e", "out", "b.PNG")), true},
+		{wt, write(filepath.Join(wt, "c.png")), true},
+		{wt, write(filepath.Join(repo, "notes.txt")), false},
+		{wt, write(filepath.Join(other, "c.png")), false},
 		{wt, outside, false},
-		{wt, link3, false},  // a link in the repository to a picture outside it
-		{wt, dirPic, false}, // a directory with a picture's name
+		{wt, link3, false},
+		{wt, dirPic, false},
 		{wt, write(filepath.Join(tmp, filesDirName, "WP-1", "d.jpg")), true},
 		{wt, write(filepath.Join(tmp, shotsDirName, "wp-1-x", "e.webp")), true},
-		{wt, write(filepath.Join(wt, "out", shotsDirName, "e.png")), true},     // wp shot --out in the project
-		{wt, write(filepath.Join(base, "out", shotsDirName, "e2.png")), false}, // wp shot --out elsewhere: left to Claude Code
-		{wt, write(filepath.Join(other, shotsDirName, "e3.png")), false},       // another project's wp-shots
+		{wt, write(filepath.Join(wt, "out", shotsDirName, "e.png")), true},
+		{wt, write(filepath.Join(base, "out", shotsDirName, "e2.png")), false},
+		{wt, write(filepath.Join(other, shotsDirName, "e3.png")), false},
 		{wt, write(filepath.Join(other, filesDirName, "WP-1", "e4.png")), false},
 		{wt, filepath.Join(tmp, filesDirName) + "/../f.png", false},
 		{wt, up + "/../a.png", false},
 		{wt, write(filepath.Join(tmp, "f.png")), false},
-		{wt, write(filepath.Join(tmp, "else", filesDirName, "g.png")), false},      // a wp-files of no one's making
-		{outside, write(filepath.Join(tmp, filesDirName, "WP-3", "g2.png")), true}, // outside a repository too
+		{wt, write(filepath.Join(tmp, "else", filesDirName, "g.png")), false},
+		{outside, write(filepath.Join(tmp, filesDirName, "WP-3", "g2.png")), true},
 		{wt, pad(repo, "h.png"), true},
-		{repo, pad(wt, "i.png"), true}, // a scratchpad of a worktree, from the main checkout
+		{repo, pad(wt, "i.png"), true},
 		{wt, pad(other, "j.png"), false},
-		{wt, pad(repo+"-old", "j2.png"), false},                                        // a project whose name starts with this one's
-		{wt, pad(filepath.Join(repo, "web"), "j3.png"), false},                         // a session started in a subdirectory: left to Claude Code
-		{filepath.Join(repo, "web"), pad(filepath.Join(repo, "web"), "j4.png"), false}, // even from that subdirectory
-		{outside, pad(filepath.Dir(outside), "j5.png"), false},                         // or outside any repository
+		{wt, pad(repo+"-old", "j2.png"), false},
+		{wt, pad(filepath.Join(repo, "web"), "j3.png"), false},
+		{filepath.Join(repo, "web"), pad(filepath.Join(repo, "web"), "j4.png"), false},
+		{outside, pad(filepath.Dir(outside), "j5.png"), false},
 		{wt, write(filepath.Join(tmp, uid, projectDirName(repo), "s1", "tasks", "k.png")), false},
-		{wt, write(filepath.Join(tmp, "claude-"+strconv.Itoa(os.Getuid()+1), projectDirName(repo), "s1", "scratchpad", "l.png")), false}, // another user's
+		{wt, write(filepath.Join(tmp, "claude-"+strconv.Itoa(os.Getuid()+1), projectDirName(repo), "s1", "scratchpad", "l.png")), false},
 		{wt, filepath.Join(tmp, filesDirName, "WP-1", "missing.png"), false},
-		{wt, link, false},  // a picture's name on another file
-		{wt, link2, false}, // a link out of the temp directory
+		{wt, link, false},
+		{wt, link2, false},
 		{wt, "rel/a.png", false},
-		// Outside any repository, Claude Code's own rules already cover the
-		// session's directory; nothing else of it is let through.
 		{outside, outside, false},
 		{"/", outside, false},
 	} {
@@ -128,9 +120,7 @@ func TestPictureReadAllowed(t *testing.T) {
 		}
 	}
 
-	// Through the user's own links: the temp directory as os.TempDir names it
-	// (macOS's /var/folders is /private/var/folders) and a checkout reached
-	// through one. Not through a link someone else could re-point.
+	// Paths resolve through the user's own symlinks (macOS /var is one), never through a link another user could re-point.
 	tmpLink := filepath.Join(base, "tmplink")
 	must(os.Symlink(tmp, tmpLink))
 	repoLink := filepath.Join(base, "repolink")
@@ -148,7 +138,7 @@ func TestPictureReadAllowed(t *testing.T) {
 		{wt, filepath.Join(tmpLink, shotsDirName, "wp-1-x", "e.webp"), true},
 		{repoLink, filepath.Join(repoLink, "e2e", "out", "a.png"), true},
 		{wt, filepath.Join(repoLink, "e2e", "out", "a.png"), true},
-		{repoLink, pad(repoLink, "p.png"), true}, // the scratchpad of a session started through the link
+		{repoLink, pad(repoLink, "p.png"), true},
 		{wt, filepath.Join(open, "t", filesDirName, "WP-1", "d.jpg"), false},
 	} {
 		if got := pictureReadAllowed(c.cwd, c.path); got != c.want {
@@ -158,9 +148,6 @@ func TestPictureReadAllowed(t *testing.T) {
 	must(os.Chmod(open, 0o700))
 	guardTempDirs = func() []string { return []string{tmp} }
 
-	// Only where no one else can swap the picture for another file before the
-	// Read: not in a directory others may write in, unless it is sticky and
-	// what the path goes through in it is the user's.
 	must(os.MkdirAll(filepath.Join(repo, "web"), 0o750))
 	shared := filepath.Join(tmp, shotsDirName, "shared")
 	sharedPic := write(filepath.Join(shared, "m.png"))
@@ -182,8 +169,6 @@ func TestPictureReadAllowed(t *testing.T) {
 	}
 	must(os.Chmod(shared, 0o700))
 
-	// A repository that holds the home directory (dotfiles) is not a project:
-	// the pictures under home are not let through.
 	home := filepath.Join(base, "home")
 	must(os.MkdirAll(filepath.Join(home, ".git"), 0o750))
 	proj := filepath.Join(home, "work", "proj")
@@ -192,7 +177,6 @@ func TestPictureReadAllowed(t *testing.T) {
 		t.Error("a picture under home was let through for a repository at home")
 	}
 
-	// The hook answers allow, and only that, for one of them.
 	t.Setenv("WAYPOINT_CONFIG_DIR", t.TempDir())
 	t.Setenv(runnerJobEnv, "")
 	hc := &cli{}
@@ -218,13 +202,11 @@ func TestPictureReadAllowed(t *testing.T) {
 	if out := run("Read", "default", pic); !allowed(out) {
 		t.Errorf("allowed picture: %q", out)
 	}
-	// A big picture is a picture, not a file of many lines to grep.
 	big := filepath.Join(tmp, shotsDirName, "big.png")
 	must(os.WriteFile(big, bytes.Repeat([]byte("\n"), 5000), 0o600))
 	if out := run("Read", "default", big); !allowed(out) {
 		t.Errorf("big picture: %q", out)
 	}
-	// A note and the allow together: a person's pause told on a picture Read.
 	c := &cli{dir: t.TempDir()}
 	c.savePause(json.RawMessage(testPause))
 	in, _ := json.Marshal(map[string]any{"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "Read", "cwd": repo,
@@ -243,15 +225,13 @@ func TestPictureReadAllowed(t *testing.T) {
 	for name, out := range map[string]string{
 		"a picture elsewhere":           run("Read", "default", filepath.Join(tmp, "f.png")),
 		"a Bash call naming a picture":  run("Bash", "default", pic),
-		"a session told not to ask":     run("Read", "dontAsk", pic), // a read-only runner job: only what it was granted
+		"a session told not to ask":     run("Read", "dontAsk", pic),
 		"a session that skips the asks": run("Read", "bypassPermissions", pic),
 	} {
 		if out != "" {
 			t.Errorf("%s was answered: %q", name, out)
 		}
 	}
-	// A runner's job reads only what its job grants: other jobs' checkouts
-	// and attachments share its machine.
 	t.Setenv(runnerJobEnv, "1")
 	if out := run("Read", "default", pic); out != "" {
 		t.Errorf("a runner job was answered: %q", out)
@@ -283,14 +263,14 @@ func (f fakeOwned) Sys() any           { return &syscall.Stat_t{Uid: f.uid} }
 // notPrivateDir: the highest directory above p that pathPrivate refuses,
 // with its mode and owner; empty if none does.
 func notPrivateDir(p string) string {
-	var chain []string // p and the directories above it, the root last
+	var chain []string
 	for d := p; ; d = filepath.Dir(d) {
 		chain = append(chain, d)
 		if d == filepath.Dir(d) {
 			break
 		}
 	}
-	for i := len(chain) - 2; i >= 0; i-- { // from the root's child down: pathPrivate checks what is above it
+	for i := len(chain) - 2; i >= 0; i-- {
 		fi, err := os.Lstat(chain[i])
 		if err != nil {
 			return err.Error()

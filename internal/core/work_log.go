@@ -15,34 +15,26 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Work log (WP-285, WP-ADR38): per task, what was found and fixed while it
-// was worked on. Autopilot's adversarial review rounds and notes are stored
-// in work_log; the rest of the log is read from where it already lives:
-// the task's agent runs, its pull requests, Waypoint's review findings on
-// them with every change of state, and the verdicts agents gave other
-// reviewers' comments (wp pr ack / fixed / dismiss). Nothing here needs an
-// agent's tokens: the round's report is the session's own last message, and
-// counting the issues in it is fixed rules or, when they can't tell, the
-// free model of the work_log AI task.
+// Costs no agent tokens: round reports are the session's last message, counted by fixed rules, with the free work_log AI task only where those can't tell.
 
 // Work log entry kinds: stored (review, note) and read from elsewhere.
 const (
-	WorkReview  = "review"  // an adversarial review round (stored)
-	WorkNote    = "note"    // a line someone added (stored)
-	WorkRun     = "run"     // an agent took or finished the task
-	WorkPR      = "pr"      // a pull request of the task
-	WorkFinding = "finding" // Waypoint's review of a pull request found something
-	WorkComment = "comment" // another reviewer's comment, and its verdicts
+	WorkReview  = "review"
+	WorkNote    = "note"
+	WorkRun     = "run"
+	WorkPR      = "pr"
+	WorkFinding = "finding"
+	WorkComment = "comment"
 )
 
 // Review round states.
 const (
-	RoundPending     = "pending"     // asked for: the session is moved on once it ran
-	RoundRunning     = "running"     // its prompt went in
-	RoundDone        = "done"        // the session stopped after it: body is its report
-	RoundSkipped     = "skipped"     // never ran
-	RoundInterrupted = "interrupted" // someone took the session mid-review
-	RoundFailed      = "failed"      // the runner couldn't run it, or no report came back
+	RoundPending     = "pending"
+	RoundRunning     = "running"
+	RoundDone        = "done" // The body holds the session's report.
+	RoundSkipped     = "skipped"
+	RoundInterrupted = "interrupted"
+	RoundFailed      = "failed" // Also covers a round whose session returned no report.
 )
 
 // Note tags: a note may count as an issue found, fixed or rejected.
@@ -210,13 +202,11 @@ type WorkIssue struct {
 	Outcome string `json:"outcome"` // fixed, rejected, open
 }
 
-// ---- rounds ----
-
 type roundRow struct {
 	id, issueID       int64
 	state, readState  string
 	createdAt         int64
-	updatedAt         int64 // roundByID only
+	updatedAt         int64 // Only roundByID fills this field.
 	startedAt, ended  sql.NullInt64
 	sessionID, runID  sql.NullInt64
 	body, prompt, key string
@@ -393,14 +383,11 @@ func (s *Service) roundAtStop(ctx context.Context, t *tx, x *AgentSession, issue
 	seen := map[string]int64{}
 	if raw != "" {
 		if err := json.Unmarshal([]byte(raw), &seen); err != nil {
-			// What the session's background agents did can't be read: the
-			// round isn't ended on a guess; the next Stop decides.
+			// An unreadable background record leaves the round open; the next Stop decides rather than guessing.
 			s.log.WarnContext(ctx, "round at stop: unreadable background record", "x", x.ID, "round", r.id, "err", err)
 			return false, nil
 		}
 	}
-	// What the round needs comes from decideRound over what is recorded,
-	// its check included, as everywhere else.
 	in, err := s.roundInOf(ctx, r.id)
 	if err != nil {
 		return false, err
@@ -414,8 +401,7 @@ func (s *Service) roundAtStop(ctx context.Context, t *tx, x *AgentSession, issue
 	if body == "" {
 		read, reason = readFailed, "the session stopped without a report"
 	}
-	// A round the session reviewed and reported (ReportReview) is counted
-	// from that report, whatever this Stop's message says or leaves out.
+	// A round reported through ReportReview is counted from that report, whatever the Stop message says.
 	own, total, fixed, rejected, err := s.ownReportCounts(ctx, t, r.id)
 	if err != nil {
 		return false, err
@@ -511,15 +497,12 @@ func askAgainAfterInterrupt(ctx context.Context, q queryer, sessionID, issueID i
 // that has run longer than autopilot waits for it.
 func (s *Service) sweepRounds(ctx context.Context) {
 	s.reviveHeldRounds(ctx)
-	s.shipSettledRounds(ctx) // a ship of Waypoint's that failed or was lost (WP-1370)
+	s.shipSettledRounds(ctx)
 	s.repostQueuedNews(ctx)
 	s.expireOrphanNews(ctx)
-	// What ends a round is decideRound's (doEnd); a round whose check
-	// Waypoint is on, in an open run, is shipped or released by
-	// shipSettledRounds, not ended here.
+	// decideRound decides whether this sweep ends a round; a round whose check is still on waits.
 	rows, err := s.db.R.QueryContext(ctx, `SELECT id FROM work_log WHERE kind = 'review' AND state IN ('pending', 'running') LIMIT 200`)
 	if err != nil {
-		// The rounds below don't depend on this read: they still run.
 		s.log.WarnContext(ctx, "review rounds to end", "err", err)
 		s.cancelOrphanReviewAudits(ctx)
 		s.handOverRoundAudits(ctx)
@@ -536,7 +519,7 @@ func (s *Service) sweepRounds(ctx context.Context) {
 			s.log.WarnContext(ctx, "review rounds to end: read one", "round", id, "err", err)
 			continue
 		}
-		if out := decideRound(in); out.Do == doEnd && out.Told == "" { // a told end is advanceRound's: it is the person's notice too
+		if out := decideRound(in); out.Do == doEnd && out.Told == "" { // A told end is advanceRound's, which also gives the person the notice; this sweep leaves it alone.
 			s.setRoundNow(ctx, id, []string{in.State}, out.To, out.Why)
 		}
 	}
@@ -551,8 +534,6 @@ func reviewStarted(ctx context.Context, q queryer, sessionID, issueID int64) boo
 	_ = q.QueryRowContext(ctx, `SELECT count(*) FROM work_log WHERE kind = 'review' AND session_id = ? AND issue_id = ? AND started_at IS NOT NULL`, sessionID, issueID).Scan(&n)
 	return n > 0
 }
-
-// ---- the merge hold ----
 
 // reviewHold: a round on one of the pull request's tasks still to run, or
 // running, holds its merge, so the fixes it pushes go in with it; only for
@@ -582,13 +563,10 @@ func (s *Service) reviewHold(ctx context.Context, pr *PullRequest) (reason strin
 		}
 		end := created + reviewHoldPending.Milliseconds()
 		if auditAt > 0 {
-			// Waiting for another model's audit first (WP-687): as long as it may, then
-			// the compaction and the start.
 			end = max(end, auditAt+reviewAuditWait.Milliseconds()+reviewHoldAfterAudit.Milliseconds())
 		}
 		if state == RoundPending {
-			// However long the queue is (WP-820): the review still comes, so
-			// the time counts from where the audit got to, not from asking.
+			// The review still comes however long the audit queue is: its time counts from where the audit got to, not from asking.
 			if auditQueued {
 				end = max(end, now+reviewAuditWait.Milliseconds()+reviewHoldAfterAudit.Milliseconds())
 			} else if auditStarted > 0 {
@@ -654,8 +632,6 @@ func workLogEndsRound(e *Event) bool {
 	return !slices.Contains([]string{"counted", "note", WorkTested, WorkMismatch, WorkOwnReview}, st)
 }
 
-// ---- counting a report ----
-
 // noIssuesRE: a short report that says it found nothing, in the words
 // agents use; such a report needs no model.
 var noIssuesRE = lazyre.New(`(?i)\b(no (real |actual |new |further |significant )?(issues|problems|bugs|defects|findings)( were| was)? (found|discovered|turned up|to fix)|found no (real |actual |new |further |significant )?(issues|problems|bugs|defects)|(did not|didn't) (find|turn up|discover) any (issues|problems|bugs|defects)|nothing (needed|to fix|needed fixing|needs fixing)|no changes (were )?(needed|required))\b`)
@@ -683,7 +659,7 @@ var reviewCountSchema = map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"claim":   map[string]any{"type": "string"},
-					"file":    map[string]any{"type": []string{"string", "null"}}, // null when the item names no file
+					"file":    map[string]any{"type": []string{"string", "null"}},
 					"outcome": map[string]any{"type": "string", "enum": []string{"fixed", "rejected", "open"}},
 				},
 				"required":             []string{"claim", "file", "outcome"},
@@ -911,8 +887,6 @@ func clipText(s string, n int) string {
 	return string(r[:n-1]) + "…"
 }
 
-// ---- notes ----
-
 // WorkNoteInput adds a line to a task's work log.
 type WorkNoteInput struct {
 	Body string `json:"body"`
@@ -991,8 +965,6 @@ func workTitle(s string) string {
 	return clipLine(strings.TrimSpace(line), 200)
 }
 
-// ---- reading the log ----
-
 // GetWorkLog reads a task's work log, oldest first.
 func (s *Service) GetWorkLog(ctx context.Context, actor *Actor, ref string) (*WorkLog, error) {
 	i, _, err := s.getIssueFor(ctx, s.db.R, actor, ref, RoleViewer, false)
@@ -1009,7 +981,7 @@ func (s *Service) GetWorkLog(ctx context.Context, actor *Actor, ref string) (*Wo
 	if err := s.prWorkLog(ctx, wl, i.ID); err != nil {
 		return nil, err
 	}
-	if err := s.testedWorkLog(ctx, wl, i.ID); err != nil { // WP-715
+	if err := s.testedWorkLog(ctx, wl, i.ID); err != nil {
 		return nil, err
 	}
 	sort.SliceStable(wl.Entries, func(a, b int) bool { return wl.Entries[a].At.Before(wl.Entries[b].At) })
@@ -1037,7 +1009,7 @@ func (s *Service) storedWorkLog(ctx context.Context, wl *WorkLog, issueID int64)
 			return err
 		}
 		if e.State == RoundPending || e.State == RoundRunning {
-			e.Reason = cmp(e.Reason, waiting) // what it is waiting on right now (WP-752)
+			e.Reason = cmp(e.Reason, waiting)
 		}
 		e.At = msTime(created)
 		e.StartedAt, e.EndedAt = msTimePtr(started), msTimePtr(ended)
@@ -1248,7 +1220,7 @@ func (s *Service) findingsWorkLog(ctx context.Context, wl *WorkLog, prID int64, 
 			wl.Summary.PROpen++
 		case "fixed":
 			wl.Summary.PRFixed++
-		default: // withdrawn: the finding wasn't real
+		default:
 			wl.Summary.PRRejected++
 		}
 		wl.Entries = append(wl.Entries, e)
@@ -1322,8 +1294,6 @@ func (s *Service) commentsWorkLog(ctx context.Context, wl *WorkLog, prID int64, 
 	}
 	return evs.Err()
 }
-
-// ---- analytics ----
 
 // WorkLogStats sums adversarial review rounds over a span.
 type WorkLogStats struct {
@@ -1433,7 +1403,7 @@ func (s *Service) GetWorkLogStats(ctx context.Context, actor *Actor, projectRef 
 	tasks := map[int64]bool{}
 	for _, p := range projects {
 		if p.Role == "guest" {
-			continue // a guest sees shared issues, not the project's numbers
+			continue
 		}
 		rows, err := s.db.R.QueryContext(ctx, `SELECT w.issue_id, w.state, w.found, w.fixed, w.rejected, w.heads, w.read_by FROM work_log w JOIN issues i ON i.id = w.issue_id
 			WHERE i.project_id = ? AND w.kind = 'review' AND w.created_at >= ?`, p.ID, since)
@@ -1472,7 +1442,7 @@ func (s *Service) GetWorkLogStats(ctx context.Context, actor *Actor, projectRef 
 		}
 	}
 	var err error
-	if out.Evidence, err = s.evidenceWeeks(ctx, ids, since); err != nil { // WP-715
+	if out.Evidence, err = s.evidenceWeeks(ctx, ids, since); err != nil {
 		return nil, err
 	}
 	return out, nil

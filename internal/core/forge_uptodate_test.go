@@ -78,18 +78,15 @@ func TestArmedMergeWaitsForUpToDateHead(t *testing.T) {
 	if n := se.pr(5).armedNote; !strings.Contains(n, "updated the branch") {
 		t.Errorf("note = %q", n)
 	}
-	// Looking again for the same tip updates nothing more.
 	se.inLine(id)
 	if len(se.sg.merged()) != 0 || se.sg.updated() != 1 {
 		t.Fatalf("looped: merges %+v, updates %d", se.sg.merged(), se.sg.updated())
 	}
-	// The base moved again: one more update.
 	se.sg.baseTip = "tip-2"
 	se.inLine(id)
 	if se.sg.updated() != 2 {
 		t.Fatalf("updates = %d", se.sg.updated())
 	}
-	// The head now contains the tip: it merges.
 	delete(se.sg.behind, head)
 	se.s.maybeAutoMerge(se.ctx, id)
 	if len(se.sg.merged()) != 1 || se.sg.updated() != 2 {
@@ -119,8 +116,7 @@ func TestUpdateBranchConflict(t *testing.T) {
 	if n := se.pr(5).armedNote; !strings.Contains(n, "has conflicts with main") {
 		t.Errorf("note = %q", n)
 	}
-	// The forge's mergeable flag still says yes; the round sent for the
-	// conflict must see it in its work packet (WP-430).
+	// The forge's mergeable flag can still say yes while the branch conflicts with main; the work packet must report the conflict anyway.
 	if todo, err := se.s.PRWorkPacket(se.ctx, SystemActor(), id); err != nil || !todo.Conflict || !strings.Contains(todo.Text, "Conflicts with main") {
 		t.Errorf("work packet = %+v, %v", todo, err)
 	}
@@ -141,11 +137,9 @@ func TestUpdateBranchFailureIsSaid(t *testing.T) {
 	se.poll()
 	id := se.pr(5).ID
 	se.s.Wait()
-	before := se.sg.updated() // what the poll's own look at the line did
+	before := se.sg.updated()
 	se.inLine(id)
 	se.inLine(id)
-	// Joining the line steps it once, the look asked for is another, and the
-	// second inLine one more: each asks the forge, which fails.
 	if n := se.sg.updated() - before; n != 3 || len(se.sg.merged()) != 0 {
 		t.Fatalf("updates %d since the poll, merges %+v", n, se.sg.merged())
 	}

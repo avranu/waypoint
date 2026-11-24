@@ -27,7 +27,7 @@ const (
 	slotWaitsFile    = "waits.jsonl"
 	slotWaitsMaxSize = 512 << 10
 	slotWaitsKeep    = 2000
-	slotClassRuns    = 5 // the latest runs a class is decided from
+	slotClassRuns    = 5
 	slotClassShort   = "short"
 	slotClassLong    = "long"
 )
@@ -64,9 +64,8 @@ type queuedHold struct {
 	dir      string
 	rec      waitRec
 	acquired time.Time
-	// full is the record sent to the server (WP-1646), nil when none is kept.
-	full *core.SlotHold
-	exit *int
+	full     *core.SlotHold
+	exit     *int
 }
 
 // setExit says what the command run in the slot exited with; release
@@ -255,7 +254,7 @@ func appendWaitRecFull(dir string, r waitRec, hold *core.SlotHold) {
 	}
 	p := filepath.Join(dir, slotWaitsFile)
 	if lf, err := os.OpenFile(p+".flock", os.O_CREATE|os.O_RDWR, 0o600); err == nil { // #nosec G304 -- our own directory
-		defer func() { _ = lf.Close() }() // closing drops the lock too
+		defer func() { _ = lf.Close() }()
 		if unlock, err := fileLock(lf); err == nil {
 			defer unlock()
 		}
@@ -327,8 +326,6 @@ func (c *cli) acquireQueued(ctx context.Context, name string, n int, run slotRun
 	cmdKey := slotField(run.key)
 	class, median, runs := classifyRunStats(readWaitRecs(dir), name, repo, cmdKey)
 	waited := func() int64 { return int64(time.Since(start).Round(time.Second) / time.Second) }
-	// What the server is told of this hold (WP-1646): what was known when it
-	// queued; the rest is filled in as it goes.
 	var full *core.SlotHold
 	if slotSendOn(c) {
 		// The command goes to the server with secrets blanked per argument,
@@ -345,7 +342,6 @@ func (c *cli) acquireQueued(ctx context.Context, name string, n int, run slotRun
 		}
 		return treeEnd.Sub(treeStart).Milliseconds()
 	}
-	// A wait that gives up is recorded: those are the worst waits.
 	defer func() {
 		if err != nil {
 			var gave *core.SlotHold
@@ -375,7 +371,6 @@ func (c *cli) acquireQueued(ctx context.Context, name string, n int, run slotRun
 
 	var tf *os.File
 	if long {
-		// One long run per worktree: wait behind this worktree's own earlier one.
 		sum := sha256.Sum256([]byte(tree))
 		tf, err = os.OpenFile(filepath.Join(dir, fmt.Sprintf("tree-%s.%s.treelock", hex.EncodeToString(sum[:])[:12], name)), os.O_RDWR|os.O_CREATE, 0o600) // #nosec G304 -- name is validated
 		if err != nil {
@@ -575,7 +570,7 @@ func (c *cli) slotQueueLs(dir string) bool {
 		if keys[i].label != keys[j].label {
 			return keys[i].label < keys[j].label
 		}
-		return keys[i].class > keys[j].class // short before long
+		return keys[i].class > keys[j].class
 	})
 	_, _ = fmt.Fprintln(c.out, "waits over the last 24h (p50 / p95, runs):")
 	for _, k := range keys {

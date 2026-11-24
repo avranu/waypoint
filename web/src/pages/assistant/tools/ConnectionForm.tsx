@@ -1,6 +1,4 @@
-// Adding or changing one of the gate's connections, and giving one new
-// credentials. The gate never hands header values back, so a change sends
-// the whole header set again: the form asks for every value.
+// The gate never hands header values back, so a change sends the whole header set again: every value must be asked for.
 
 import { useId, useMemo, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
@@ -45,7 +43,6 @@ export function usePutConnection(assistantId: number) {
     onSuccess: (r, { name }) => {
       qc.invalidateQueries({ queryKey: connectionsQuery(assistantId).queryKey })
       qc.invalidateQueries({ queryKey: ['assistant', assistantId, 'gate', 'approvals'] })
-      // A pending save shows on its row (and Waypoint's own banner says so).
       if (r?.status !== 'pending') toast(`Saved ${name}`, { kind: 'success' })
     },
   })
@@ -85,7 +82,6 @@ export function ConnectionDialog(props: {
   open: boolean
   onClose: () => void
 }) {
-  // Mounted only while open, so each opening starts from the saved connection.
   return props.open ? <ConnectionForm {...props} /> : null
 }
 

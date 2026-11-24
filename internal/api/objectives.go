@@ -8,9 +8,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// Objectives (WP-927, WP-ADR111, WP-ADR142): a task worked in rounds until a check is
-// met or a judge finds nothing left, by an amount every round, or as a loop.
-// Waypoint reads every round itself; what a worker reports never decides.
+// Waypoint reads every round itself; a worker's report never decides whether the objective is met.
 
 func (s *Server) getObjective(w http.ResponseWriter, r *http.Request) (any, error) {
 	o, err := s.svc.GetObjective(r.Context(), actorFrom(r), r.PathValue("key"))
@@ -115,7 +113,6 @@ func objectivesText(l []*core.Objective) string {
 		}
 		fmt.Fprintf(&b, "%s %q, %s: %s", o.Key, o.Title, state, o.Summary)
 		if o.State == core.ObjectiveActive {
-			// What Waypoint itself last read, not what a worker reported.
 			if o.Verdict != nil {
 				b.WriteString(". Last reading: " + o.Verdict.Line)
 			}

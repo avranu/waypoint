@@ -5,9 +5,6 @@ import (
 	"strconv"
 )
 
-// What agents did (WP-D15), in a few lines: the same numbers as the Agents
-// page's Activity tab.
-
 var activityCmd = &command{
 	name: "activity", group: "Tasks", args: "[SPEC] [--days N]",
 	summary: "what agents did lately: tasks, time, cost, PRs",

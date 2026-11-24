@@ -14,8 +14,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// Words that promised more than the code does (WP-1370): each says only what
-// holds, and a number in them comes from the constant that sets it.
+// Messages must not hardcode a number that a constant sets.
 
 // The refusal names the limits wp audit really has, from the constants, not
 // one number that the default (gateway) audit does not have.

@@ -13,24 +13,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// The live quota guard's session half (WP-932, WP-ADR112). The burn hook
-// (PostToolUse, local, at every tool call) judges a session against the
-// person's policy, a copy of which every hook reply and pulse keeps in
-// paused.json:
-//
-//   - A session automation drives (a task session, a follow-up's, one whose
-//     last prompt autopilot pasted): spend since its last change (churn),
-//     since automation gave it its work (session), hours since, spend on a
-//     main model priced above every one automation usually uses (model),
-//     and a hold the server's sweep set (hold).
-//   - A person's own session: spend since their last typed prompt, once that
-//     is IdleHours old (idle) — what runs on with nobody watching.
-//
-// At a line the session is told to hand off; at 1.5 times it (3 times for
-// the model rule; 10 minutes or $2 after a hold's tell) the hook stops it
-// (continue: false), ends a task session, and queues a trip the next pulse
-// reports. A stopped session takes no more prompts from automation; a prompt
-// the person types carries on, and starts the counts again.
+// The policy is read from a local copy in paused.json, which every hook reply and pulse keeps current.
 
 // guardPolicyCopy is the server's GuardPolicy.
 type guardPolicyCopy struct {
@@ -170,14 +153,14 @@ func guardProgress(in *hookEventInput) bool {
 // guardLook is what the burn hook knows at a tool call.
 type guardLook struct {
 	now      time.Time
-	cost     float64 // the tree's total
+	cost     float64
 	auto     bool
-	model    string // the main session's
+	model    string
 	progress bool
 	policy   *guardPolicyCopy
 	hold     *guardHoldCopy
 	prices   []burnPrice
-	task     string // the task key, for the hand-off line
+	task     string
 }
 
 // guardRuleText says where a line came from.
@@ -206,8 +189,7 @@ func (g *guardLocal) decide(l guardLook) (text, stop string, trip *guardTrip) {
 	delta := max(0, l.cost-g.LastCost)
 	g.LastCost = l.cost
 	if g.Stopped != "" {
-		// It went on after a stop (a background task's report, a hook
-		// that didn't take): stop it again, report nothing new.
+		// A stopped session can keep running (a background task's report, a hook that didn't take), so it is stopped again.
 		if g.stopStands(l.policy, l.hold, l.now, l.cost) {
 			return "", "Quota guard: this session was stopped (" + g.Stopped + ") and stays stopped." + guardStopTail, nil
 		}
@@ -226,7 +208,7 @@ func (g *guardLocal) decide(l guardLook) (text, stop string, trip *guardTrip) {
 	p := l.policy
 	type rule struct {
 		name       string
-		v, line, x float64 // the figure, its line, the stop's multiple
+		v, line, x float64
 		tell, halt string
 	}
 	var rules []rule
@@ -266,8 +248,7 @@ func (g *guardLocal) decide(l guardLook) (text, stop string, trip *guardTrip) {
 			return "", r.halt + guardStopTail, &guardTrip{Rule: r.name, Action: "stopped", Cost: l.cost, Detail: r.halt, At: l.now}
 		}
 	}
-	// A hold: automation as a whole is held back; told once, stopped 10
-	// minutes or $2 later so the step in hand can be put down.
+	// A hold tells the session once, then stops it 10 minutes or $2 later so the step in hand can be put down.
 	if h := l.hold; h != nil {
 		if g.HoldAt.IsZero() || g.HoldAt.Before(h.Since) {
 			g.HoldAt, g.HoldTold, g.HoldCost = h.Since, l.now, l.cost
@@ -562,8 +543,7 @@ func (c *cli) guardPrompt(session string, byAutomation bool) (refusal string) {
 				}
 				g.Stopped, g.StopModel = "", ""
 			}
-			// Automation's counts run from when it took the session over:
-			// a review round's prompt doesn't start them again.
+			// Automation's counts start when it takes the session over; its later prompts do not restart them.
 			if g.AutoAt.IsZero() || g.Person {
 				g.AutoAt, g.AutoCost, g.ProgAt, g.ProgCost, g.ModelCost, g.Told = now, cost, now, cost, 0, nil
 			}

@@ -1,6 +1,3 @@
-// A Gantt-style timeline: issues with dates as bars you can drag to move or
-// resize; epics show the span of their work.
-
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
@@ -39,7 +36,7 @@ interface Row {
   depth: number
   start: string | null
   end: string | null
-  derived: boolean // span computed from children
+  derived: boolean
   hasKids: boolean
 }
 
@@ -64,7 +61,6 @@ export function TimelinePage() {
   const issues = res?.issues ?? []
   const { rows, unscheduled } = useMemo(() => buildRows(issues, collapsed), [issues, collapsed])
 
-  // Visible range: from a little before the earliest date to a little after the latest.
   const today = parse(localISO(new Date()))
   const range = useMemo(() => {
     const dates = rows
@@ -80,7 +76,7 @@ export function TimelinePage() {
     const max = new Date(Math.max(...dates.map((d) => d.getTime())))
     const pad = zoom === 'week' ? 7 : zoom === 'month' ? 21 : 45
     const start = addDays(min, -pad)
-    start.setDate(start.getDate() - ((start.getDay() + 6) % 7)) // Monday
+    start.setDate(start.getDate() - ((start.getDay() + 6) % 7))
     return { start, days: diffDays(max, start) + pad * 2 }
   }, [rows, project.sprints, zoom]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -175,7 +171,7 @@ export function TimelinePage() {
                 className="relative isolate"
                 style={{ width: width + label, '--label': `${label}px` } as React.CSSProperties}
               >
-                {/* Header: sticky labels column + date ticks */}
+                {}
                 <div className="sticky top-0 z-[3] flex border-b border-line bg-panel/95 backdrop-blur">
                   <div className="sticky left-0 z-[2] w-[var(--label)] shrink-0 border-r border-line bg-panel px-3 py-2 text-xs font-semibold text-subtle">
                     Issue
@@ -221,7 +217,7 @@ export function TimelinePage() {
                     )}
                   </div>
                 </div>
-                {/* Grid lines and today */}
+                {}
                 <div
                   className="pointer-events-none absolute bottom-0 left-[var(--label)] top-12"
                   style={{ width }}
@@ -283,7 +279,7 @@ export function TimelinePage() {
 // Issues this one blocks, when the API includes them.
 const blocksOf = (i: Issue) => i.blocks ?? []
 
-const HEADER_H = 49 // the date header, border included
+const HEADER_H = 49 // Matches the rendered date header's height, border included; it is the sticky top offset.
 const ROW_H = 40
 
 /** A bar's days (from the timeline's origin) while it's being dragged. */
@@ -385,7 +381,6 @@ function DependencyLines({
       const x2 = edges(to, into, px)[0]
       const y1 = n * ROW_H + ROW_H / 2
       const y2 = m * ROW_H + ROW_H / 2
-      // Forward links curve gently; backward ones loop out and back.
       const bend = Math.max(14, Math.min(48, Math.abs(x2 - x1) / 2))
       lines.push({
         key: `${r.issue.key}>${k}`,
@@ -396,7 +391,6 @@ function DependencyLines({
     }
   })
   if (!lines.length) return null
-  // Hot lines last, so they draw over the rest.
   lines.sort((a, b) => Number(a.hot) - Number(b.hot))
   const dim = focus !== null && lines.some((l) => l.hot)
   const color = (l: (typeof lines)[number]) =>
@@ -505,8 +499,6 @@ function buildTicks(start: Date, days: number, zoom: Zoom) {
     else if (zoom === 'quarter' && d.getDay() === 1 && d.getDate() <= 7)
       minor.push({ x: n, label: '' })
   }
-  // The leading partial month gets a label too; drop it if the next month's
-  // label starts too close to read both.
   if (major.length > 1 && (major[1].x - major[0].x) * DAY_PX[zoom] < 110) major.shift()
   return { major, minor }
 }
@@ -581,8 +573,7 @@ function TimelineRow({
     if (milestone) edit.due(ne)
     else if (mode === 'start') edit.start(ns)
     else if (mode === 'end') edit.due(ne)
-    else if (!issue.due_date)
-      edit.start(ns) // a start-only issue stays start-only
+    else if (!issue.due_date) edit.start(ns)
     else edit.patch({ start_date: ns, due_date: ne }, { start_date: ns, due_date: ne })
   }
 

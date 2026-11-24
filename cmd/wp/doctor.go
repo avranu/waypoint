@@ -13,10 +13,7 @@ import (
 	"time"
 )
 
-// wp doctor (WP-797): one path to every health check. Each tool stays with
-// the command it belongs to (wp ci doctor) and addDoctorTools gives it its
-// second name (wp doctor ci), so an agent's first guess works either way and
-// a new doctor needs no registering here.
+// Each doctor lives with its command; addDoctorTools adds the `wp doctor NAME` spelling, so a new doctor needs no registering here.
 
 var doctorCmd = &command{
 	name: "doctor", group: "Setup", args: "[TOOL] [FLAGS]",

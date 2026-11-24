@@ -11,18 +11,12 @@ import (
 	"strings"
 )
 
-// Proven fixes (WP-709): a regression test that passes on the buggy code
-// proves nothing. Runners run the Go tests a traced bug fix added or changed
-// with and without the fix (internal/codeindex ProveFix) and upload what
-// happened. Proofs ride on traces: only a fix the ledger has an escape for
-// is due, so the due list never repeats the trace's own search for bug
-// links. A proof that ran on the blamed change confirms or refutes it, which
-// outranks the blame's line share (WP-ADR68's bisect method).
+// A regression test that passes on the buggy code proves nothing, so a proof runs it with and without the fix; only a proof on the blamed change confirms or refutes the blame.
 
 const (
 	proofsDueMax   = 10
 	proofNoteMax   = 2000
-	proofTestsMax  = 240 // codeindex runs at most 6 packages of 40 tests
+	proofTestsMax  = 240 // Sized to codeindex's proof limits, 6 packages of 40 tests (maxProvePackages, maxProveTests).
 	proofTestMax   = 300
 	proofConfirmed = 1.0
 )
@@ -210,7 +204,6 @@ func (s *Service) RecordFixProof(ctx context.Context, a *Actor, in FixProofInput
 			return err
 		}
 		if in.Commit != traced {
-			// Re-traced while the runner proved the old commit.
 			return invalid("the fix is traced to %s now, not %s", shortSHA(traced), shortSHA(in.Commit))
 		}
 		if in.IntroCheck != "" {

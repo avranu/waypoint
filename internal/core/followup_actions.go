@@ -12,9 +12,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Steps for follow-ups (WP-D22), usable in any automation: tell an agent
-// something, start a fresh agent where one worked, run another automation.
-
 func init() {
 	sessionParam := ParamDef{Name: "session", Label: "Session", Type: PTemplate, Advanced: true, Default: "{{.Trigger.Data.session}}",
 		Help: "Which agent session: a follow-up's own, or the one the trigger is about. It must be yours (the person who last saved this)."}
@@ -131,8 +128,6 @@ func (c *StepCtx) waitFinished(slot int, sessionID, since int64) error {
 	return nil
 }
 
-// ---- tell_agent ----
-
 func runTellAgent(c *StepCtx) error {
 	x, err := c.agentSession()
 	if err != nil {
@@ -147,8 +142,7 @@ func runTellAgent(c *StepCtx) error {
 	}
 	from := messageFrom{by: automationRunnerOwner(c.Automation)}
 	if a := c.Automation; a != nil {
-		// The rule's author wrote the message (WP-560); a stored
-		// automation is named, built-in helpers aren't.
+		// Only a stored automation (ID > 0) is named in the message; built-in helpers are not.
 		from.agent = a.RuleAgent
 		if a.ID > 0 {
 			from.automation = a.ID
@@ -165,7 +159,6 @@ func runTellAgent(c *StepCtx) error {
 		}
 		return &Event{Kind: EvSessionMessage, Data: map[string]any{"message": m.ID, "via": cur.Via}}, true
 	}
-	// 1. A Stop hook waiting right now (the follow-up just fired at a stop).
 	if m.State == MessageQueued {
 		waiting := c.S.hookAwaiting(x.ID)
 		if !waiting {
@@ -184,9 +177,7 @@ func runTellAgent(c *StepCtx) error {
 			}
 		}
 	}
-	// 2. With the session's batch (WP-209): an idle agent's inbox socket,
-	// through its person's runner on its machine, at once or, unless the
-	// step is blocking, with the agent's next wake-up.
+	// 2. With the session's batch: an idle agent's inbox socket, via its person's runner on its machine, at once or, unless the step is blocking, with the agent's next wake-up.
 	d2, derr := c.WaitDeadline(2)
 	if derr != nil {
 		return derr
@@ -201,8 +192,6 @@ func runTellAgent(c *StepCtx) error {
 			return err
 		}
 	}
-	// It went, but not to an idle agent: the person's runner posts it to
-	// the inbox socket of one that works on (its own job).
 	if m.State == MessageQueued || m.State == MessageSending {
 		var held bool
 		_ = c.S.db.R.QueryRowContext(c.Ctx, `SELECT batch_until IS NOT NULL OR sent_with IS NOT NULL FROM session_messages WHERE id = ?`, m.ID).Scan(&held)
@@ -215,7 +204,6 @@ func runTellAgent(c *StepCtx) error {
 			}
 		}
 	}
-	// 3. Its next Stop or start.
 	if m.State == MessageQueued || m.State == MessageSending {
 		var held int64
 		_ = c.S.db.R.QueryRowContext(c.Ctx, `SELECT coalesce(batch_until, 0) FROM session_messages WHERE id = ?`, m.ID).Scan(&held)
@@ -267,7 +255,7 @@ func (c *StepCtx) tellBySocket(x *AgentSession, m *SessionMessage) error {
 			return err
 		}
 		if n, _ := res.RowsAffected(); n == 0 {
-			return nil // a hook took it meanwhile
+			return nil // Zero rows: a hook took the message meanwhile, which is not an error.
 		}
 		c.Logf("posting it through the runner %s", r.Name)
 	}
@@ -319,8 +307,6 @@ func (c *StepCtx) tellBySocket(x *AgentSession, m *SessionMessage) error {
 		return nil
 	})
 }
-
-// ---- start_session ----
 
 // attachIDRE finds the id `claude --bg` prints ("backgrounded · b50893f0").
 var attachIDRE = lazyre.New(`backgrounded\W+(` + AttachIDShape + `)`)
@@ -407,8 +393,6 @@ func runStartSession(c *StepCtx) error {
 	}
 	return c.waitFinished(2, id, 0)
 }
-
-// ---- run_automation ----
 
 func runRunAutomation(c *StepCtx) error {
 	ref := strings.TrimSpace(c.Str("automation"))

@@ -36,8 +36,6 @@ type tplData struct {
 	Inputs   map[string]any
 	Run      tplRun
 
-	// comments reads the issue's comments when a template first asks
-	// (nil without an issue).
 	comments func() (string, error)
 }
 
@@ -99,8 +97,7 @@ var templateFuncs = template.FuncMap{
 		}
 		return string(b)
 	},
-	// untrusted marks text that came from outside (forge comments, webhook
-	// bodies, issue text) as data for a model to read, never instructions.
+	// Text from outside (forge comments, webhooks, issues) is data a model reads, never instructions; its closing tags are stripped so it cannot end the wrapper.
 	"untrusted": func(v any) string { return untrustedText(anyString(v)) },
 	"truncate": func(n int, v any) string {
 		r := []rune(anyString(v))
@@ -153,7 +150,6 @@ func renderTemplate(tpl string, d tplData) (string, error) {
 	if err := t.Execute(&b, d); err != nil {
 		return "", err
 	}
-	// An output a step didn't set is empty, not "<no value>".
 	return strings.ReplaceAll(b.String(), noValue, ""), nil
 }
 

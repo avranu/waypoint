@@ -65,7 +65,7 @@ func sqlText(pass *analysis.Pass, locals map[types.Object]ast.Expr, e ast.Expr) 
 		if isPkgFunc(callee(pass, e), "fmt", "Sprintf") && len(e.Args) > 0 {
 			format, ok := constString(pass, e.Args[0])
 			if !ok {
-				return "", false // a format not known here: nothing of it is known
+				return "", false
 			}
 			if i := strings.IndexByte(format, '%'); i >= 0 {
 				return format[:i], false
@@ -93,7 +93,6 @@ func countColumns(sql string, complete bool) (int, bool) {
 		if first == "" {
 			first = u
 		}
-		// A WITH's statement is the first top-level verb after its CTEs.
 		if first == "WITH" {
 			switch u {
 			case "SELECT", "INSERT", "UPDATE", "DELETE", "REPLACE":
@@ -232,7 +231,6 @@ func countList(list string) (int, bool) {
 	if last == "" || star(last) {
 		return 0, false
 	}
-	// "DISTINCT *" and the like.
 	if f := strings.Fields(last); star(f[len(f)-1]) {
 		return 0, false
 	}
@@ -321,7 +319,7 @@ func helperScans(pass *analysis.Pass, decls map[*types.Func]*ast.FuncDecl) map[*
 			if n, ok := scanCount(call); ok {
 				counts[idx] = n
 			} else {
-				seen[idx] = 2 // a spread can't be counted
+				seen[idx] = 2 // 2 is a sentinel: a spread's count is unknown, so the parameter is skipped below.
 			}
 			return true
 		})
@@ -342,7 +340,7 @@ type queryBind struct {
 	pos   token.Pos
 	known bool
 	n     int
-	scope ast.Node // the block holding the assignment
+	scope ast.Node
 }
 
 func runSQLScan(pass *analysis.Pass) (any, error) {
@@ -398,7 +396,6 @@ func checkScans(pass *analysis.Pass, r *reporter, helpers map[*types.Func]map[in
 		r.report(pos, "the query selects %d column%s but %d %s scanned", sel, plural(sel), scanned, map[bool]string{true: "is", false: "are"}[scanned == 1])
 	}
 
-	// First pass: what each variable was assigned from, and in which block.
 	var stack []ast.Node
 	ast.Inspect(fd.Body, func(n ast.Node) bool {
 		if n == nil {
@@ -553,8 +550,6 @@ func runSchemaChain(pass *analysis.Pass) (any, error) {
 		})
 	}
 
-	// Which function parameters are schemas sent to a model: runChain's
-	// own, and any that are forwarded to one.
 	type slot struct {
 		fn  *types.Func
 		idx int

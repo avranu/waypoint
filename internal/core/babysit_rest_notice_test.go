@@ -111,7 +111,6 @@ func TestRestNoticeIgnoresKeysInTheWait(t *testing.T) {
 	be.rested(7 * time.Hour)
 	be.revive()
 	got := be.restNotices()
-	// Read by the key, the claimed task would have said "moving": no notice.
 	if len(got) != 1 || !strings.Contains(got[0], "No task was filed") {
 		t.Fatalf("notices %q", got)
 	}
@@ -129,7 +128,6 @@ func TestRestNoticeOtherWaits(t *testing.T) {
 		{"parked", BabysitNeedsPerson, parkWait + " on the assessor's question", 30 * time.Hour, false},
 		{"review gate", BabysitNeedsPerson, "review gate: audit #3 found something", 30 * time.Hour, false},
 		{"change request", BabysitNeedsPerson, "carol asked for changes", 30 * time.Hour, false},
-		// Told when it began, or the assessor's.
 		{"other needs person", BabysitNeedsPerson, "couldn't merge: the forge said no", 30 * time.Hour, false},
 		{"outside pull request", BabysitWatching, "waiting for a person to approve this pull request from outside (WP-281)", 30 * time.Hour, false},
 	} {

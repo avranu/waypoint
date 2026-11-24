@@ -7,16 +7,7 @@ import (
 	"time"
 )
 
-// Reading a session's screen for what the registry can't say (WP-1325).
-//
-// Claude Code's registry (sessions/PID.json) keeps status "busy" for as long
-// as the session has background agents or tasks, though its main thread sits
-// at the empty prompt and takes input: a session that delegates and waits
-// was never idle to the runner, so a review typed beside its work was held
-// for hours. The screen tells the two apart: while a turn runs Claude Code
-// shows its "esc to interrupt" hint (with the spinner above the input box
-// and in the footer), and at rest it doesn't, whatever list of agents or
-// tasks hangs under the footer.
+// The registry stays busy while background agents run, so idleness is read from the screen: esc to interrupt shows only while a turn runs.
 
 // inputBox is where Claude Code's input box sits on a captured screen:
 // lines as captured (escapes removed), plain the same trimmed, top the
@@ -87,7 +78,7 @@ func turnShown(screen string) bool {
 		}
 		first := firstRune(b.lines[i])
 		if strings.TrimSpace(first) == "" {
-			continue // indented: the spinner's block, or a message's continuation
+			continue
 		}
 		if spinnerLine.MatchString(b.lines[i]) {
 			return true
@@ -99,11 +90,10 @@ func turnShown(screen string) bool {
 			break
 		}
 	}
-	// Under the box (past its bottom edge): the footer's hint.
 	for i := b.bottom + 1; i < len(b.plain); i++ {
 		low := strings.ToLower(b.plain[i])
 		if strings.ContainsAny(firstRune(low), agentMarks) {
-			continue // an agent's line: its words, not Claude Code's
+			continue // An agent's line carries its own words; skip it so they can't read as Claude Code's 'esc to interrupt'.
 		}
 		if strings.Contains(low, "esc to interrupt") {
 			return true

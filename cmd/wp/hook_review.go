@@ -11,13 +11,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// A session's own review (WP-1089): when an adversarial-review subagent
-// finishes, the SubagentStop hook reads its report and what it was asked
-// from the subagent's transcript and sends them with the event, and the
-// server keeps them in the work log of the task the session is on. The agent
-// spends nothing on it and needs no command; wp ship then takes the review
-// as the task's.
-
 // ownReviewDescribed: a subagent of another type started to review
 // adversarially says so in its description ("Adversarial review of
 // WP-9"); adversarial alone ("Adversarial test cases") is other work.
@@ -109,7 +102,7 @@ func readSubagent(path string) subagentRead {
 		raw, rerr := rd.ReadBytes('\n')
 		if len(bytes.TrimSpace(raw)) > 0 && json.Unmarshal(raw, &line) == nil {
 			out = readSubagentLine(out, line.Type, line.Message.Model, line.Message.Content)
-		} // else a corrupt, partial or other-shaped line: skipped
+		}
 		if rerr != nil {
 			return out
 		}

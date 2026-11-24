@@ -1,7 +1,3 @@
-// Goals (WP-382, WP-ADR50): how work traces back to what people intend.
-// The chips, the coverage bar, and the one-line trace an issue shows under
-// its title.
-
 import { useRef, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -411,7 +407,6 @@ function GoalPick({
   const busy = link.isPending || suggest.isPending || notThis.isPending
   const small =
     'inline-flex items-center gap-0.5 rounded px-1 text-subtle hover:bg-hover hover:text-fg disabled:opacity-60'
-  // what the server counts as a goal: approved, or asked for by a person
   const approved = (goals.data ?? []).filter(
     (n) => n.status === 'active' && (n.approved || !!n.requested) && !linked?.includes(n.id),
   )

@@ -45,7 +45,7 @@ func TestBabysitCancelledOnlyNoRound(t *testing.T) {
 	if b = be.babysit(); !slices.Equal(be.retries(), []string{"7777777aaaa"}) || !strings.Contains(b.Wait, "re-ran 1 job (1 of 2)") || len(be.jobs()) != 0 {
 		t.Fatalf("first re-run: retries %v wait %q", be.retries(), b.Wait)
 	}
-	be.step() // still cancelled, before the new results
+	be.step()
 	if len(be.retries()) != 1 {
 		t.Fatalf("re-ran while the first re-run settles: %v", be.retries())
 	}
@@ -63,7 +63,6 @@ func TestBabysitCancelledOnlyNoRound(t *testing.T) {
 	if m := lastOf(be.told()); !strings.Contains(m, "every failed check was cancelled") || !strings.Contains(m, "started no round") {
 		t.Errorf("told %q", m)
 	}
-	// A new head starts over.
 	be.push("8888888bbbb")
 	be.checks("8888888bbbb", cancelledJob("ci / test"))
 	be.step()
@@ -112,7 +111,7 @@ func TestBabysitCancelledMixedRound(t *testing.T) {
 	if got := b.Rounds[0].Checks; !slices.Equal(got, []string{"ci / lint"}) {
 		t.Errorf("the round's checks: %v", got)
 	}
-	if len(be.retries()) != 1 { // once to rule out a flaky lint (WP-392), not for the cancelled test
+	if len(be.retries()) != 1 { // The one retry is for a flaky lint check, not the cancelled one.
 		t.Errorf("re-ran: %v", be.retries())
 	}
 }
@@ -129,8 +128,6 @@ func TestBabysitCancelledThenPasses(t *testing.T) {
 	if b := be.babysit(); b.State != BabysitWatching || !strings.Contains(b.Wait, "waiting for a newer run's results") {
 		t.Fatalf("waiting: %+v", b)
 	}
-	// The webhook for the new run's result is missed: the head is read again
-	// when the wait is over.
 	be.sg.setChecks("7777777aaaa", CommitCheck{Name: "ci / test", State: CheckSuccess, URL: "https://ci.example.com/run/2"})
 	be.setClock(be.clockNow().Add(faultRerunSettle))
 	be.step()

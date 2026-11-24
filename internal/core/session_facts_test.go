@@ -13,8 +13,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/transcript"
 )
 
-// Fixtures are synthetic lines in the shape Claude Code writes.
-
 type fm = map[string]any
 
 func fj(v any) string {
@@ -169,7 +167,7 @@ func TestFactsDedupedAcrossFilesAndGenerations(t *testing.T) {
 	e.putFile(jo, "s1", "main", 0, call)
 	e.putFile(jo, "s1", "subagents/agent-x.jsonl", 0, call+fAssistant("m9", 3, 1))
 	in := piece("s1", "main", 0, call)
-	in.FP = "fp0#1" // the file was rewritten: the next generation holds the same call
+	in.FP = "fp0#1"
 	e.put(jo, in, call)
 	e.quiet()
 	if run := e.derive(); run.Derived != 3 || run.Failed != 0 {
@@ -178,7 +176,6 @@ func TestFactsDedupedAcrossFilesAndGenerations(t *testing.T) {
 	if e.rowCount("fact_model_calls") != 2 || e.rowCount("fact_tool_calls") != 1 {
 		t.Errorf("calls %d tools %d, want 2 and 1", e.rowCount("fact_model_calls"), e.rowCount("fact_tool_calls"))
 	}
-	// deriving again keeps it that way
 	e.exec(`UPDATE session_fact_files SET parser_version = 0`)
 	e.derive()
 	if e.rowCount("fact_model_calls") != 2 || e.rowCount("fact_tool_calls") != 1 {
@@ -208,7 +205,6 @@ func TestFactsRunByteBudget(t *testing.T) {
 	if e.rowCount("fact_model_calls") != 3 {
 		t.Errorf("calls %d", e.rowCount("fact_model_calls"))
 	}
-	// the newest session came first
 	if got := e.one(`SELECT session FROM fact_model_calls ORDER BY id LIMIT 1`); got != "s2" {
 		t.Errorf("first derived %q, want the newest, s2", got)
 	}
@@ -221,11 +217,11 @@ func TestFactsRunBudgetSkipsTheFileThatDoesNotFit(t *testing.T) {
 	jo := e.user("jo", false)
 	small := fAssistant("ma", 2, 5)
 	big := fAssistant("mb", 2, 5, fm{"type": "text", "text": strings.Repeat("x", 4000)})
-	e.putFile(jo, "c", "main", 0, small) // oldest
+	e.putFile(jo, "c", "main", 0, small)
 	e.setClock(e.clockNow().Add(time.Second))
 	e.putFile(jo, "b", "main", 0, big)
 	e.setClock(e.clockNow().Add(time.Second))
-	e.putFile(jo, "a", "main", 0, small) // newest, so first
+	e.putFile(jo, "a", "main", 0, small)
 	e.quiet()
 	old := factsRunBytes
 	factsRunBytes = int64(2*len(small) + 10)
@@ -326,14 +322,13 @@ func factsEnv(t *testing.T) (e *env, jo *Actor) {
 		fAssistant("m1", 2, 10, fTool("t1", "Edit", fm{"file_path": "/r/a.go"}), fTool("t2", "Read", fm{"file_path": "/r/docs/guide.md"})) +
 		fResult("t1", 2, false, fm{"type": "update", "structuredPatch": []fm{{"lines": []string{"+x", "+y", "-z"}}}}) +
 		fResult("t2", 2, false, nil) +
-		// second task's stretch: starts at minute 20
 		fPrompt("b", 20, "") +
 		fAssistant("m2", 21, 20, fTool("t3", "Write", fm{"file_path": "/r/a_test.go"}), fTool("t4", "Read", fm{"file_path": "/r/docs/guide.md"})) +
 		fResult("t3", 21, false, fm{"type": "create", "content": "a\nb\n"}) +
 		fResult("t4", 21, false, nil) +
 		fAssistant("m3", 22, 30, fTool("t5", "Read", fm{"file_path": "/r/docs/guide.md"})) +
-		fj(fm{"type": "permission-mode", "permissionMode": "plan", "sessionId": "s1"}) + // no timestamp; a setting, which the untimed count leaves out
-		fj(fm{"type": "system", "subtype": "compact_boundary", "uuid": "cb1", "compactMetadata": fm{"trigger": "auto"}}) + // no timestamp
+		fj(fm{"type": "permission-mode", "permissionMode": "plan", "sessionId": "s1"}) +
+		fj(fm{"type": "system", "subtype": "compact_boundary", "uuid": "cb1", "compactMetadata": fm{"trigger": "auto"}}) +
 		fj(fm{"type": "attachment", "uuid": "i1", "timestamp": fat(1, 0), "attachment": fm{"type": "instructions",
 			"files": []fm{{"path": "/r/AGENTS.md", "type": "Project", "content": "12345678"}}}})
 	e.putFile(jo, "s1", "main", 0, lines)
@@ -384,7 +379,6 @@ func TestFactsReadTaskByWindows(t *testing.T) {
 	i1 := e.issue(jo, IssueInput{Project: p.Key, Title: "first"})
 	i2 := e.issue(jo, IssueInput{Project: p.Key, Title: "second"})
 	uid := jo.User.ID
-	// task 1 ran from minute 0 to minute 19; task 2 took over at minute 20
 	e.exec(`INSERT INTO task_traces(user_id, machine, session, seq, issue_id, started_at, last_at, ended, updated_at) VALUES (?, 'box', 's1', 1, ?, ?, ?, 'next', 1)`,
 		uid, i1.ID, fatMS(0, 0), fatMS(19, 0))
 	e.exec(`INSERT INTO task_traces(user_id, machine, session, seq, issue_id, started_at, last_at, ended, updated_at) VALUES (?, 'box', 's1', 2, ?, ?, ?, '', 1)`,
@@ -398,19 +392,16 @@ func TestFactsReadTaskByWindows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// task 1: the first prompt, its call, its edit, the sub-agent's call at minute 3, the instruction file
 	if f1.Turns.Total != 1 || f1.ModelCalls.Total != 2 || f1.Changes.FilesChanged != 1 || f1.Changes.TestEdits != 0 || f1.Injected.Count != 1 {
 		t.Errorf("task 1: turns %d calls %d changes %+v injected %d", f1.Turns.Total, f1.ModelCalls.Total, f1.Changes, f1.Injected.Count)
 	}
-	// task 2 (open-ended): the second prompt and the calls after it
 	if f2.Turns.Total != 1 || f2.ModelCalls.Total != 2 || f2.Changes.TestEdits != 1 || f2.DocsRead.Calls != 2 || f2.Injected.Count != 0 {
 		t.Errorf("task 2: turns %d calls %d changes %+v docs %d injected %d", f2.Turns.Total, f2.ModelCalls.Total, f2.Changes, f2.DocsRead.Calls, f2.Injected.Count)
 	}
 	if f1.Scope != "task" || len(f1.Sources) != 1 || f1.Sources[0].To == nil || f2.Sources[0].To != nil {
 		t.Errorf("windows: %+v %+v", f1.Sources, f2.Sources)
 	}
-	// the status is the sessions' files, not the windows, and says so; the
-	// row with no timestamp is in no window, and the answer says how many
+	// A task's status counts its sessions' whole files, not its window, and says so.
 	if !f1.Status.WholeSession || !f2.Status.WholeSession || f1.Status.FilesArchived != 2 {
 		t.Errorf("a task's status must be named whole-session: %+v", f1.Status)
 	}
@@ -420,7 +411,6 @@ func TestFactsReadTaskByWindows(t *testing.T) {
 	if sf, err := e.s.SessionFacts(e.ctx, jo, FactsQuery{Session: "s1"}); err != nil || sf.Status.WholeSession || sf.UntimedLeftOut != 0 {
 		t.Errorf("a session read is not whole-session-labelled and leaves nothing out: %v %+v", err, sf)
 	}
-	// nothing is counted twice across the two tasks
 	if f1.ModelCalls.Total+f2.ModelCalls.Total != 4 {
 		t.Errorf("the tasks' calls do not add up to the session's")
 	}
@@ -450,7 +440,6 @@ func TestFactsReadAccess(t *testing.T) {
 	if _, err := e.s.SessionFacts(e.ctx, jo, FactsQuery{Session: "s1", Task: "X-1"}); !IsInvalid(err) {
 		t.Errorf("both: %v", err)
 	}
-	// a task whose traces are another person's is not readable by you
 	p := e.project(e.admin, "Acme", "")
 	i := e.issue(e.admin, IssueInput{Project: p.Key, Title: "t"})
 	e.exec(`INSERT INTO task_traces(user_id, machine, session, seq, issue_id, started_at, last_at, ended, updated_at) VALUES (?, 'box', 's1', 1, ?, ?, ?, '', 1)`,
@@ -461,9 +450,6 @@ func TestFactsReadAccess(t *testing.T) {
 	if f, err := e.s.SessionFacts(e.ctx, e.admin, FactsQuery{Task: i.Key, User: "jo"}); err != nil || f.ModelCalls.Total == 0 {
 		t.Errorf("admin with --user: %v", err)
 	}
-	// a person whose own session traced a task in a project they cannot view
-	// is told it is not found: the facts of a task are not a way around the
-	// project's access
 	priv := e.project(e.admin, "Priv", "")
 	pi := e.issue(e.admin, IssueInput{Project: priv.Key, Title: "hidden"})
 	e.exec(`INSERT INTO task_traces(user_id, machine, session, seq, issue_id, started_at, last_at, ended, updated_at) VALUES (?, 'box', 's1', 2, ?, ?, ?, '', 1)`,

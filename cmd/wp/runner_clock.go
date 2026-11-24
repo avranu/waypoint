@@ -10,13 +10,7 @@ import (
 	"time"
 )
 
-// An agent job's clock (WP-1618, WP-ADR149). The claim's timeout is the
-// limit on the whole run. When the server also sends work_timeout, the agent
-// may work that long not counting the time its commands spent waiting for a
-// machine-wide slot (wp slot run, wp testsum), which they note in a file
-// named by WAYPOINT_SLOT_WAITS (slot_waits.go). The same file tells the
-// runner when the job has been waiting for a slot, so it can give up its
-// heavy place meanwhile (runner_load.go running).
+// The wall timeout caps the whole run; work_timeout excludes slot waits recorded in the WAYPOINT_SLOT_WAITS file.
 
 // clockEvery is how often the clock looks at the waits file.
 var clockEvery = 5 * time.Second
@@ -40,10 +34,10 @@ func (c clockCtx) Err() error {
 type jobClock struct {
 	start time.Time
 	wall  time.Duration
-	work  time.Duration // 0: no limit on work apart from wall
-	path  string        // the waits file
+	work  time.Duration
+	path  string
 	r     *slotWaitReader
-	ctx   context.Context // ends at the wall limit, the work limit or a cancel
+	ctx   context.Context
 	stop  context.CancelCauseFunc
 	now   func() time.Time
 }
@@ -62,7 +56,7 @@ func (p *runnerProc) jobClock(ctx context.Context, run *jobRun, workTimeout int)
 	}
 	err := os.MkdirAll(filepath.Join(p.cacheDir(), "work"), 0o750)
 	if err == nil {
-		// Beside the work tree, not in it; any user may append to it.
+		// outside the job's checkout, so a job that could write its own wait record couldn't credit itself time against its work limit
 		c.path = filepath.Join(p.cacheDir(), "work", fmt.Sprintf("job%d.slotwaits", run.id))
 		if err = os.WriteFile(c.path, nil, 0o600); err == nil {
 			_ = os.Chmod(c.path, 0o666) // #nosec G302 -- holds only wait and got lines
@@ -144,8 +138,6 @@ func (c *jobClock) watch(p *runnerProc, run *jobRun, end <-chan struct{}) {
 		if y := !since.IsZero() && now.Sub(since) >= slotWaitYield; y != yielded {
 			yielded = y
 			if y {
-				// So the times a second heavy job ran beside this one
-				// can be counted from the logs (yieldingJobs).
 				fmt.Fprintf(run.out, "Waiting for a test slot since %s UTC: the runner may take another heavy job meanwhile.\n", since.UTC().Format("15:04:05"))
 			}
 			p.wake()

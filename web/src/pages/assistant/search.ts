@@ -1,5 +1,4 @@
-// The assistant page's URL state (WP-ADR1), apart from the page so the
-// router can validate it without loading it.
+// Kept out of the page module: the router imports this validator eagerly, and the page is code-split.
 
 export type AssistantTab =
   'chat' | 'activity' | 'schedules' | 'skills' | 'memory' | 'tools' | 'files' | 'usage' | 'settings'

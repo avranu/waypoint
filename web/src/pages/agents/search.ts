@@ -1,5 +1,4 @@
-// The Agents page's URL state (WP-D15), kept apart from the page so the
-// router can validate it without loading the page.
+// Kept apart from the page so the router can validate URL state without loading the page.
 
 export type AgentsTab =
   | 'overview'

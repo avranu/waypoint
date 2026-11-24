@@ -6,12 +6,7 @@ import (
 	"strings"
 )
 
-// Protected paths (WP-D18): an agent job may carry globs of files its
-// commits must not touch (CI config, lockfiles, secrets). The runner checks
-// the commits before it pushes and refuses the push when one of them does,
-// so a model told to fix a failing test can't also change the pipeline that
-// judges it. A glob that starts with "!" exempts the files it matches
-// (committed templates like .env.example under a **/.env.* rule).
+// A model told to fix a test must not also change the CI config or lockfiles that judge it, so the commits are checked before the push.
 
 // protectRE turns a glob into a pattern over a repository path: `**/` is any
 // directories, `**` anything, `*` and `?` stay within one segment.

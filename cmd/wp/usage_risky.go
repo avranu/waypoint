@@ -8,17 +8,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Risky commands (WP-647, under WP-100): shell commands an agent ran that
-// delete, discard or overwrite what can't be had back, or that reach
-// production. Plain patterns over the words shellWords splits out, no
-// model; `wp usage sync` sends each one found (redacted, clipped) with
-// whether it ran, so a person can audit them under Agents → Audit. Every
-// other command still leaves the machine as its head alone.
-//
-// Levels: high reaches production, another machine, a cluster or a disk,
-// rewrites shared history, or deletes outside any checkout (Waypoint tells
-// the person when one ran); medium loses local work or state that a person
-// might want back.
+// levels: high reaches production, another machine, a cluster or a disk, rewrites shared history, or deletes outside any checkout; medium loses local work or state a person might want back
 
 // riskyHit is one risky command in a shell line.
 type riskyHit struct {
@@ -116,7 +106,7 @@ func riskyWalk(cmd string, depth int, remote bool, hit func(riskyHit)) {
 		if remote {
 			h.Label += " on another machine"
 			if !localKinds[h.Kind] {
-				h.Level = riskHigh // a server's services, data or containers
+				h.Level = riskHigh
 			}
 		}
 		h.Segment = strings.Join(words, " ")
@@ -126,7 +116,7 @@ func riskyWalk(cmd string, depth int, remote bool, hit func(riskyHit)) {
 
 // sshCommand is the command `ssh [opts] host CMD…` runs there, "" for a login.
 func sshCommand(args []string) string {
-	valued := "BbcDEeFIiJLlmOoPpQRSWw" // ssh's flags that take a value
+	valued := "BbcDEeFIiJLlmOoPpQRSWw"
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if strings.HasPrefix(a, "-") && len(a) >= 2 {
@@ -197,7 +187,7 @@ func riskySegment(prog string, args []string, root bool, vars map[string]string)
 				}
 			}
 			if n > 0 && allScratch {
-				return riskyHit{}, false // emptying a cache or scratch space
+				return riskyHit{}, false
 			}
 			return riskyHit{Kind: "delete", Level: riskMedium, Label: "find -delete"}, true
 		}
@@ -288,7 +278,7 @@ func systemPath(p string) bool {
 	case "etc", "usr", "bin", "sbin", "lib", "lib64", "boot", "root", "opt", "srv", "var":
 		return true
 	case "home", "Users", "projects", "mnt", "media":
-		return len(parts) <= 2 // a home, a whole repo or disk, not something inside one
+		return len(parts) <= 2
 	}
 	return false
 }
@@ -311,7 +301,7 @@ func riskyRm(args []string, root bool, vars map[string]string) (riskyHit, bool) 
 		}
 	}
 	if scratch && !root {
-		return riskyHit{}, false // a scratch or build directory: what it held is made again
+		return riskyHit{}, false
 	}
 	label := "recursive delete"
 	if root {
@@ -388,7 +378,7 @@ func rebuildable(p string) bool {
 				}
 			}
 		}
-		return !strings.HasPrefix(p, "/") || strings.Count(p, "/") > 2 // inside a project, not ~/build
+		return !strings.HasPrefix(p, "/") || strings.Count(p, "/") > 2 // only build output inside a project counts; a build directory directly under home does not
 	}
 	return false
 }
@@ -413,7 +403,7 @@ func riskyGit(args []string) (riskyHit, bool) {
 		main := false
 		for j, p := range pos {
 			if j == 0 && len(pos) > 1 {
-				continue // the remote
+				continue
 			}
 			if strings.HasPrefix(p, "+") {
 				force = true
@@ -548,7 +538,7 @@ func riskyDocker(prog string, args []string) (riskyHit, bool) {
 	for i, a := range args {
 		if a == sub {
 			rest := args[i+1:]
-			if sub == "compose" { // compose's own -f/-p take a value; drop them so the verb is first
+			if sub == "compose" {
 				rest = composeArgs(rest)
 			}
 			_, _, pos = flags(rest)
@@ -558,7 +548,7 @@ func riskyDocker(prog string, args []string) (riskyHit, bool) {
 	short, long, _ := flags(args)
 	switch {
 	case sub == "volume" && len(pos) > 0 && (pos[0] == "prune" || pos[0] == "rm"):
-		return riskyHit{Kind: "docker", Level: riskHigh, Label: prog + " volume " + pos[0]}, true // volumes hold databases
+		return riskyHit{Kind: "docker", Level: riskHigh, Label: prog + " volume " + pos[0]}, true
 	case sub == "system" && len(pos) > 0 && pos[0] == "prune":
 		if long["volumes"] {
 			return riskyHit{Kind: "docker", Level: riskHigh, Label: prog + " system prune --volumes"}, true

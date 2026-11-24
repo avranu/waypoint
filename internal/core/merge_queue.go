@@ -1,10 +1,5 @@
 package core
 
-// The merge line's parts that other code still asks about (WP-222, WP-1659,
-// WP-ADR152): which pull requests hold a place, in what order, and what a
-// pull request waits for. Deciding what the line does is merge_line_plan.go;
-// carrying it out is merge_line.go.
-
 import (
 	"context"
 	"fmt"
@@ -29,7 +24,7 @@ func queueable(pr *PullRequest, reasons []string) bool {
 		case reasonBehind(pr.BaseRef):
 		case reasonDraft:
 			if !pr.WipAuto {
-				return false // a person's draft: theirs to mark ready
+				return false // Only a draft Waypoint itself opened (WipAuto) is one the line may mark ready.
 			}
 		default:
 			return false
@@ -207,7 +202,7 @@ const rereadQueueMax = 20
 // candidate's run.
 func (s *Service) rereadQueue(ctx context.Context, pr *PullRequest) {
 	if pr.State != "merged" {
-		return // the base didn't move
+		return
 	}
 	if f, err := s.forgeByID(ctx, pr.ForgeID); err != nil || f.Kind == "forgejo" || f.Kind == "gitea" {
 		return

@@ -1,26 +1,6 @@
 package core
 
-// Per-event session facts (WP-1467, ADR145 point 2): a scheduled job derives
-// one row per model call, tool call, turn, compaction, injected file, sub-agent
-// spawn and settings change from each archived transcript file (the archive's
-// pieces, internal/transcript parses them) and stores them in fact_* tables.
-//
-// A file is derived when its newest piece is at least factsQuiet old (a session
-// still writing is not parsed on every piece) and either it grew since the last
-// attempt or the parser that derived it is older than transcript.ParserVersion.
-// Deriving reads the whole file and replaces that file's rows in one
-// transaction, so a run twice or a bumped parser never duplicates a row. An
-// event that appears in two generations of a file, or in a sub-agent's file and
-// the main thread's, is stored once per session (a unique uid).
-//
-// A failure about the file itself (no pieces, a hole, a damaged or mismatched
-// piece) is recorded on its progress row and not retried until
-// the file grows, the parser changes or factsRetry has passed: a file the parser
-// cannot read does not loop. A failure that says nothing about the file (a read
-// error on the disk, a database error) is not recorded: the run counts it
-// (FactsRun.Errored), logs it, and the file is tried again next run. Records the
-// parser does not understand are counted by type on the file's row and reported
-// through the collector health.
+// a file-level failure (no pieces, a hole, a damaged piece) is recorded and not retried until the file grows, the parser changes or factsRetry passes; a read or database error is not recorded and is retried next run
 
 import (
 	"context"
@@ -131,11 +111,7 @@ func (s *Service) DeriveSessionFacts(ctx context.Context) (FactsRun, error) {
 			return run, ctx.Err()
 		}
 		if run.Bytes > 0 && run.Bytes+f.raw > factsRunBytes {
-			// Skip the file that does not fit and go on: a break would let
-			// one large file defer every smaller due file behind it, run
-			// after run. The first file is always taken (above), so a file
-			// larger than the budget still gets its run when it leads the list; the order (never
-			// derived first, then newest) keeps the skipped one due next time.
+			// continue, not break: a large file must not hold back the smaller due files behind it
 			continue
 		}
 		run.Bytes += f.raw
@@ -217,11 +193,9 @@ func (s *Service) deriveFactFile(ctx context.Context, f factFile) (int, error) {
 		if errors.As(cerr, &pf) {
 			return 0, &factFault{cerr}
 		}
-		return 0, cerr // a read error: not about the file
+		return 0, cerr
 	}
 	if err != nil {
-		// Parse fails only on the reader, whose error was classified above, so
-		// this is not reached; if it ever is, it says nothing about the file.
 		return 0, err
 	}
 	parseMS := time.Since(start).Milliseconds()
@@ -398,8 +372,6 @@ func (w *factWriter) store(r *transcript.Result) (produced, kept int, err error)
 	}
 	return produced, kept, nil
 }
-
-// ---- health ----
 
 // factsProblem is the collector health's plain-words problem: files that
 // failed, and records and fields the parser did not understand or decode, by

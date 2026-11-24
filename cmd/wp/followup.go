@@ -13,9 +13,7 @@ import (
 	"time"
 )
 
-// Follow-ups (WP-D22): steps queued on an agent session that run once, when
-// the agent truly finishes. Only the session's person, as a person: agents
-// can't read, queue, run or clear them.
+// Follow-ups run once when the agent truly finishes; only the session's person can read, queue, run or clear them.
 
 var followupCmd = &command{
 	name: "followup", aliases: []string{"follow-up", "followups"}, group: "Tasks", args: "[show|set|run|clear] [SESSION]",
@@ -232,7 +230,7 @@ func stepText(s map[string]any) string {
 // come.
 type stepList struct {
 	steps []map[string]any
-	fresh map[string]any // the latest --fresh, for the flags that follow it
+	fresh map[string]any
 }
 
 func (l *stepList) last(flag string) (map[string]any, error) {

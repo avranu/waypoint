@@ -1,5 +1,3 @@
-// The "new issue" dialog, opened from anywhere with C or the + buttons.
-
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
@@ -85,8 +83,6 @@ function Form({ defaults, onClose }: { defaults: Defaults; onClose: () => void }
   const create = useCreateIssue()
   const [more, setMore] = useState(false)
 
-  // Opened with text of its own (a glossary term, a suggestion), it starts
-  // from that; otherwise from what was left here last time.
   const [stored] = useState(() =>
     defaults.title || defaults.description ? null : readDraft<Draft>(DRAFT),
   )

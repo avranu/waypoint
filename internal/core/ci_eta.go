@@ -1,9 +1,6 @@
 package core
 
-// The CI board's arithmetic (WP-225): how long each job usually takes, and
-// when what is running and queued will finish, by playing the queue
-// forward over the runner pool. Pure functions of what was read, so they
-// are tested without a forge.
+// Arithmetic over what was read; only keptDurations queries the database.
 
 import (
 	"context"
@@ -26,9 +23,9 @@ type CIPoolRunner struct {
 // only runs in full (a shard of e2e) ends in seconds, so mixed with full runs
 // its usual time said 10s and a full run of it showed as 14m overrun.
 type ciDurations struct {
-	byTier map[string][]float64 // repo|workflow|job|tier → seconds
-	byJob  map[string][]float64 // repo|workflow|job → seconds
-	byName map[string][]float64 // job name, any repo
+	byTier map[string][]float64
+	byJob  map[string][]float64
+	byName map[string][]float64
 	byRepo map[string][]float64
 	all    []float64
 }
@@ -102,8 +99,7 @@ func (s *Service) keptDurations(ctx context.Context, durs *ciDurations, repos []
 				failed := rows.Err() != nil
 				_ = rows.Close()
 				if failed {
-					// A read that broke partway would time the job from a
-					// skewed sample: leave it to the fallback estimates.
+					// A read that broke partway gives a skewed sample, so the job falls back to the estimates.
 					continue
 				}
 				for i, tier := range tiers {
@@ -182,16 +178,15 @@ func remaining(elapsed, typical, slow time.Duration) (rem time.Duration, overrun
 // simJob is a job the simulation places: running ones have a fixed end,
 // the rest wait for their needs and a free slot.
 type simJob struct {
-	id      int64
-	runsOn  []string
-	running bool
-	end     time.Time     // running: when it should end
-	dur     time.Duration // waiting: how long it will run
-	deps    []int         // indexes of unfinished jobs it needs
-	// results
+	id            int64
+	runsOn        []string
+	running       bool
+	end           time.Time
+	dur           time.Duration
+	deps          []int
 	start, finish time.Time
 	placed        bool
-	noRunner      bool // no runner of the pool offers its labels
+	noRunner      bool
 }
 
 type simSlot struct {
@@ -238,7 +233,6 @@ func simulate(now time.Time, pool []CIPoolRunner, jobs []simJob) {
 			slots = append(slots, simSlot{labels: r.Labels, free: now})
 		}
 	}
-	// running jobs first, the pickiest (fewest runners can take it) first
 	order := make([]int, 0, len(jobs))
 	for i := range jobs {
 		if jobs[i].running {
@@ -264,7 +258,7 @@ func simulate(now time.Time, pool []CIPoolRunner, jobs []simJob) {
 				best = k
 			}
 		}
-		if best >= 0 { // else more is running than the pool model holds
+		if best >= 0 { // No free slot means more is running than the pool model holds, so nothing is booked.
 			slots[best].free = j.end
 		}
 	}
@@ -337,7 +331,7 @@ func peakConcurrency(spans [][2]time.Time) int {
 		if c := a.at.Compare(b.at); c != 0 {
 			return c
 		}
-		return cmpInt64(int64(a.d), int64(b.d)) // ends before starts at the same instant
+		return cmpInt64(int64(a.d), int64(b.d)) // Ends sort before starts at one instant, so back-to-back jobs do not count as overlapping.
 	})
 	n, peak := 0, 0
 	for _, e := range evs {

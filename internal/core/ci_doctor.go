@@ -1,22 +1,6 @@
 package core
 
-// The CI doctor (WP-483). Each check of CI began with "what is the
-// bottleneck, is anything stuck?" and an agent spent tokens reading the
-// board, the merge lines and the babysits to answer it. wp ci doctor
-// answers it from the same data in one call, with no model: a verdict, the
-// bottleneck, what is stuck or broken and what to do about it, and the
-// numbers behind each, so the answer needs no investigating.
-//
-// The bottleneck is, in order: the runner, when the pull request at the
-// front of a line has had a round queued over doctorRunnerQueued that no
-// runner took (kind "runner", WP-1618); a merge line that stopped moving;
-// the runners, when jobs wait for them (kind "runners"); else the line that takes longest to
-// drain, and the step of its merges that costs most. A merge is the front's
-// time from the merge before it (or from its babysit's start, when the line
-// was empty) to its own merge, in steps read from its final head and that
-// head's full-tier CI run: bringing it up to date and its rounds, waiting
-// for the full run to be started (the draft tier, marking it ready), waiting
-// for a runner, the full run, and the review gate and merge after green.
+// Bottleneck order: a front's round queued past doctorRunnerQueued with no runner, then a stalled merge line, then jobs waiting for runners, else the line taking longest to drain.
 
 import (
 	stdcmp "cmp"
@@ -33,31 +17,31 @@ import (
 )
 
 const (
-	doctorRecent      = 3 * time.Hour // "now" for the pool
-	doctorTrend       = 6 * time.Hour // "lately" for merges
+	doctorRecent      = 3 * time.Hour
+	doctorTrend       = 6 * time.Hour
 	doctorWeek        = 7 * 24 * time.Hour
-	doctorStallMin    = time.Hour        // a line that merged nothing for less isn't stalled
-	doctorStallTimes  = 3                // … nor for less than this many usual merges
-	doctorFrontWait   = 45 * time.Minute // a front waiting on one thing longer is looked at
-	doctorRoundLong   = time.Hour        // a round's agent at work longer
-	doctorQueueLong   = 20 * time.Minute // a job waiting for a runner longer
-	doctorJobMinRuns  = 4                // fewer runs say nothing of a job's reliability
-	doctorSlowPerRepo = 3                // the slowest full-tier jobs listed per repo
+	doctorStallMin    = time.Hour
+	doctorStallTimes  = 3
+	doctorFrontWait   = 45 * time.Minute
+	doctorRoundLong   = time.Hour
+	doctorQueueLong   = 20 * time.Minute
+	doctorJobMinRuns  = 4
+	doctorSlowPerRepo = 3
 	doctorMergesShown = 8
 	// A line's per-merge cost falls back to the week's median only with this
 	// many merges in it: one or two merges that waited days for a person
 	// would make a quiet line look like the slowest.
 	doctorWeekMinMerges = 3
-	doctorStacksFailing = 3 // stacks ended in the trend window, none passing, before it's a finding
+	doctorStacksFailing = 3
 )
 
 // Merge steps, in the order they happen.
 const (
-	StepUpdate     = "update"      // brought up to date with its base, and its rounds
-	StepBeforeFull = "before_full" // the draft tier and marking it ready
-	StepRunnerWait = "runner_wait" // its full run waiting for a runner
+	StepUpdate     = "update"
+	StepBeforeFull = "before_full"
+	StepRunnerWait = "runner_wait"
 	StepFullRun    = "full_run"
-	StepAfterGreen = "after_green" // the review gate and the merge
+	StepAfterGreen = "after_green"
 )
 
 // CIDoctor is wp ci doctor.
@@ -107,7 +91,7 @@ type CIFinding struct {
 	Detail string `json:"detail,omitempty"`
 	Next   string `json:"next,omitempty"` // the command or click that deals with it
 	URL    string `json:"url,omitempty"`
-	key    string // the same trouble from one sweep to the next, whatever its numbers (sweepCIHealth)
+	key    string // identifies the same trouble across sweeps, whatever its numbers.
 }
 
 // CIDoctorPool is how the shared runners keep up.
@@ -328,8 +312,7 @@ type CIDoctorJob struct {
 	// unreliable ran with this pull request's head (its own run, or merge
 	// queue stacks and batches with it): the pull request's failure, not
 	// the job's, so it isn't marked unreliable for them (WP-586).
-	OnePR int `json:"one_pr,omitempty"`
-	// lastFail is LastBad's own failure, to read its log.
+	OnePR    int `json:"one_pr,omitempty"`
 	lastFail failRef
 	// FailedAfter counts failures that came after another job of their run
 	// failed (an aggregate of shards, a job that needs another): not its own.
@@ -406,7 +389,7 @@ func (s *Service) CIDoctor(ctx context.Context, actor *Actor) (*CIDoctor, error)
 	doctorJobs(d, b, snap, s.selfStoppedJobs(ctx, window), s.conflictedStacks(ctx, window), s.commitHeads(ctx, window), now, visible)
 	s.doctorTests(ctx, d, hist)
 	doctorMains(d, snap, now, visible)
-	s.doctorLimits(ctx, d, snap, visible) // WP-922
+	s.doctorLimits(ctx, d, snap, visible)
 	if err := s.doctorCIWork(ctx, actor, d, now); err != nil {
 		s.log.WarnContext(ctx, "ci doctor: CI work", "err", err)
 	}
@@ -471,11 +454,9 @@ func poolSaturated(p CIDoctorPool) bool {
 	return false
 }
 
-// ---- merge lines ----
-
 type doctorPR struct {
 	pr         *PullRequest
-	b          *Babysit // active, else the latest
+	b          *Babysit
 	firstStart time.Time
 }
 
@@ -511,7 +492,7 @@ func (s *Service) doctorLines(ctx context.Context, d *CIDoctor, now time.Time, v
 			return err
 		}
 		if l.Armed == 0 && l.Merges24h == 0 {
-			continue // a week-old line, quiet now
+			continue
 		}
 		d.Lines = append(d.Lines, *l)
 	}
@@ -526,7 +507,6 @@ func (s *Service) doctorLines(ctx context.Context, d *CIDoctor, now time.Time, v
 
 func (s *Service) doctorLine(ctx context.Context, ref lineRef, project string, now time.Time, repo *ciRepoData) (*CILine, error) {
 	l := &CILine{ForgeID: ref.forge, Repo: ref.repo, Base: ref.base, Project: project, Merged: []CIMergeTiming{}}
-	// The merges of the week, and the one before them.
 	rows, err := s.db.R.QueryContext(ctx, `SELECT p.id, p.number, p.title, p.head_sha, p.merged_at, coalesce(p.head_at, 0),
 		  coalesce((SELECT min(b.created_at) FROM babysits b WHERE b.pr_id = p.id), 0), coalesce(p.opened_at, p.updated_at)
 		FROM pull_requests p WHERE p.forge_id = ? AND p.repo = ? COLLATE NOCASE AND p.base_ref = ? AND p.state = 'merged' AND p.merged_at >= ?
@@ -555,7 +535,7 @@ func (s *Service) doctorLine(ctx context.Context, ref lineRef, project string, n
 	if err != nil {
 		return nil, err
 	}
-	var holdsSince int64 // when Waypoint began keeping holds
+	var holdsSince int64
 	_ = s.db.R.QueryRowContext(ctx, `SELECT coalesce(min(first_at), 0) FROM merge_holds`).Scan(&holdsSince)
 	var tot6, tot24, tot7 []float64
 	var timed []CIMergeTiming
@@ -564,8 +544,6 @@ func (s *Service) doctorLine(ctx context.Context, ref lineRef, project string, n
 		if merged.Before(now.Add(-doctorWeek)) {
 			continue
 		}
-		// It could start once the merge before it was done, and once it was
-		// babysat (or opened, when it never was).
 		from := msTime(stdcmp.Or(m.start, m.opened))
 		if i > 0 && msTime(merges[i-1].merged).After(from) {
 			from = msTime(merges[i-1].merged)
@@ -688,7 +666,6 @@ func (s *Service) doctorLine(ctx context.Context, ref lineRef, project string, n
 		moving = append(moving, doctorPR{pr: p, b: b, firstStart: msTime(first)})
 	}
 	l.Moving = len(moving)
-	// The front: one Waypoint marked ready, else the first queued (queueAhead's order).
 	slices.SortStableFunc(moving, func(x, y doctorPR) int {
 		hx, hy := queueHolder(x.pr), queueHolder(y.pr)
 		switch {
@@ -717,9 +694,7 @@ func (s *Service) doctorLine(ctx context.Context, ref lineRef, project string, n
 		lp.Position = 1
 		lp.Queued = s.queuedRound(ctx, f.b.JobID, now)
 		l.Front = &lp
-		// The later of its first babysit, its arming (wp ship starts a
-		// babysit when the pull request opens, maybe days before it's
-		// armed), and the line's last merge.
+		// Waiting since the later of its first babysit, its arming (a babysit starts at open, days before arming), and the line's last merge.
 		since := f.firstStart
 		if a := f.pr.ArmedAt; a != nil && a.After(since) {
 			since = *a
@@ -766,7 +741,7 @@ func (s *Service) lineStacks(ctx context.Context, ref lineRef, since time.Time) 
 			st.LastFail, st.LastRun = note, run
 		case state == stackCancelled:
 			st.Cancelled++
-		default: // failed, refused
+		default:
 			st.Failed++
 			st.LastFail, st.LastRun = note, run
 		}
@@ -884,9 +859,9 @@ type ciFullRun struct {
 	ok                  bool
 	trigger, start, end time.Time
 	reruns              int
-	last                string // the job it ended on
-	lastTook            int64  // that job's seconds
-	passed              bool   // each job's last try passed (or was skipped)
+	last                string
+	lastTook            int64
+	passed              bool
 }
 
 // fullRunOf finds the full-tier run of a pull request's head: its jobs'
@@ -1016,8 +991,6 @@ func StepWords(step string) string {
 	}
 	return step
 }
-
-// ---- jobs and main ----
 
 // selfStoppedJobs are the jobs the forge calls cancelled whose own log
 // shows a step failed first: the job failed and stopped its run (WP-424),
@@ -1162,9 +1135,9 @@ func (s *Service) readDoctorTests(ctx context.Context, cl jobLogReader, d *CIDoc
 		}
 		aj, found, err := readers[rk].job(ctx, lf.run, lf.task, j.Name)
 		if err != nil {
-			continue // the forge failing: the next call tries again
+			continue // A forge error skips this job; the next call tries again.
 		}
-		if found { // else a re-run replaced it: no log to read
+		if found { // not found: a re-run replaced the job, so there is no log to read.
 			log, err := cl.ActionJobLog(ctx, r.ref.forge, r.ref.repo, aj.ID)
 			if err != nil {
 				continue
@@ -1204,8 +1177,8 @@ type jobFates struct {
 	after       map[string]int
 	afterBy     map[string]map[string]int
 	queue       map[string]int
-	conflicts   map[string]int // failed
-	conflictsC  map[string]int // the forge says cancelled: failed and stopped its run
+	conflicts   map[string]int
+	conflictsC  map[string]int // the forge reports cancelled, but the job failed and stopped its run.
 	streak      map[string]int
 	recovered   map[string]bool
 	onePR       map[string]int
@@ -1218,7 +1191,7 @@ type failRef struct {
 	run   int64
 	task  int64
 	at    time.Time
-	// stopped: the forge says cancelled; the job failed and stopped its run.
+	// the forge reports cancelled, but the job failed and stopped its run.
 	stopped bool
 }
 
@@ -1273,7 +1246,7 @@ func fatesOf(r *ciRepoData, selfStopped, conflicted map[string]bool, contains ma
 	self := func(t ActionTask) bool {
 		return t.Status == "cancelled" && selfStopped[selfStoppedKey(r.ref.forge.ID, r.ref.repo, t.SHA, t.Name)]
 	}
-	notOwn := map[int64]bool{} // failed on another job's account
+	notOwn := map[int64]bool{}
 	for _, t := range r.hist.tasks {
 		if !validTime(t.Started) || t.Updated.Before(since) {
 			continue
@@ -1291,8 +1264,7 @@ func fatesOf(r *ciRepoData, selfStopped, conflicted map[string]bool, contains ma
 			}
 		}
 		if t.Status == "failure" {
-			// Another job of its run failed before it started: it failed
-			// on that one's account (it needs it, or sums its shards).
+			// Another job of its run failed before this one started: it failed on that job's account (it needs it, or sums its shards).
 			for _, o := range byRun[t.RunNumber] {
 				if o.ID != t.ID && o.Name != t.Name && (o.Status == "failure" || self(o)) && validTime(o.Updated) && !o.Updated.After(t.Started) {
 					f.after[k]++
@@ -1313,7 +1285,6 @@ func fatesOf(r *ciRepoData, selfStopped, conflicted map[string]bool, contains ma
 			f.selfStopped[k]++
 			continue
 		}
-		// Another job of its run (the same try) failed before it was stopped.
 		var by string
 		for _, o := range byRun[t.RunNumber] {
 			if o.ID != t.ID && o.Name != t.Name && (o.Status == "failure" || self(o)) && !o.Updated.After(t.Updated.Add(time.Minute)) {
@@ -1331,15 +1302,14 @@ func fatesOf(r *ciRepoData, selfStopped, conflicted map[string]bool, contains ma
 			f.queue[k]++
 		}
 	}
-	// Each job's finished runs, newest first: passed, or failed on its own.
 	type outcome struct {
 		at   time.Time
 		pass bool
 	}
 	runs := map[string][]outcome{}
-	own := map[string]int{}                 // own failures
-	withPR := map[string]map[int]int{}      // of those, the ones each pull request's head ran in
-	passedWith := map[string]map[int]bool{} // the pull requests a pass ran with
+	own := map[string]int{}
+	withPR := map[string]map[int]int{}
+	passedWith := map[string]map[int]bool{}
 	for _, t := range r.hist.tasks {
 		if !validTime(t.Started) || t.Updated.Before(since) || notOwn[t.ID] {
 			continue
@@ -1371,12 +1341,7 @@ func fatesOf(r *ciRepoData, selfStopped, conflicted map[string]bool, contains ma
 		}
 	}
 	for k, n := range own {
-		// The one pull request every failure ran with and no pass did. A
-		// pull request at the queue's front is in every stack behind it,
-		// so a flaky job fails with it too, but passes with it as well.
-		// One failure alone proves nothing: a flaky job fails once
-		// somewhere. Nor do two that fit: every failure held both, so
-		// naming either is a guess, and the job stays as it reads.
+		// A queue-front pull request is in every stack, so it can fail a flaky job too; name one only when every failure held it and no pass did.
 		if n < 2 {
 			continue
 		}
@@ -1397,8 +1362,6 @@ func fatesOf(r *ciRepoData, selfStopped, conflicted map[string]bool, contains ma
 			n++
 		}
 		f.streak[k] = n
-		// Fixed, not flaky: three passes in a row, or two after nothing but
-		// failures.
 		failedBefore := n < len(os)
 		passedBefore := slices.ContainsFunc(os[n:], func(o outcome) bool { return o.pass })
 		f.recovered[k] = failedBefore && (n >= 3 || (n >= 2 && !passedBefore))
@@ -1409,7 +1372,7 @@ func fatesOf(r *ciRepoData, selfStopped, conflicted map[string]bool, contains ma
 func doctorJobs(d *CIDoctor, b *CIBoard, snap *ciSnapshot, selfStopped, conflicted map[string]bool, contains map[string][]int, now time.Time, visible func(int64, string) (string, bool)) {
 	since := now.Add(-ciHistoryWindow)
 	lastBad := map[string]int64{}
-	for _, j := range b.Recent { // newest first
+	for _, j := range b.Recent { // Newest first: the first failing or cancelled run seen for a job is its last bad one.
 		if j.Hidden || (j.Status != "failure" && j.Status != "cancelled") {
 			continue
 		}
@@ -1418,8 +1381,6 @@ func doctorJobs(d *CIDoctor, b *CIBoard, snap *ciSnapshot, selfStopped, conflict
 			lastBad[k] = j.RunNumber
 		}
 	}
-	// The full tier's run times of the last day, passed runs only, and
-	// what stopped the cancelled ones.
 	full := map[string][]float64{}
 	fates := newJobFates()
 	for _, r := range snap.repos {
@@ -1475,8 +1436,7 @@ func doctorJobs(d *CIDoctor, b *CIBoard, snap *ciSnapshot, selfStopped, conflict
 		}
 		j.Unreliable = unreliableJob(j.Runs, j.Failure, j.Cancelled)
 		if pr := fates.onePR[k]; pr > 0 && j.Unreliable {
-			// One pull request's own failure, repeated across its stacks:
-			// not the job's. Its unexplained cancels still count.
+			// A failure repeated across one pull request's stacks is not the job's own failure; its unexplained cancels still count.
 			j.OnePR, j.Unreliable = pr, unreliableJob(j.Runs, 0, j.Cancelled)
 		}
 		jobs[k] = j
@@ -1568,7 +1528,7 @@ func doctorMains(d *CIDoctor, snap *ciSnapshot, now time.Time, visible func(int6
 		for branch := range want {
 			m := CIMain{Repo: r.ref.repo, Branch: branch}
 			found := false
-			var sched ActionRun // newest finished schedule or workflow_dispatch run
+			var sched ActionRun
 			for _, run := range r.hist.runs {
 				if run.PrettyRef == branch && (run.Event == "schedule" || run.Event == "workflow_dispatch") &&
 					(run.Status == "success" || run.Status == "failure") && run.Index > sched.Index {
@@ -1702,7 +1662,6 @@ func (s *Service) doctorCIWork(ctx context.Context, actor *Actor, d *CIDoctor, n
 			}
 		}
 	}
-	// Places in line, from the moving order the lines worked out.
 	for i := range d.CIWork {
 		w := &d.CIWork[i]
 		if p, err := s.linePosition(ctx, d, w.Repo, w.Number); err == nil {
@@ -1763,8 +1722,6 @@ func (s *Service) inQueueOrMoving(ctx context.Context, pr *PullRequest) bool {
 	}
 	return b != nil && slices.Contains(queueStates, b.State)
 }
-
-// ---- findings and the bottleneck ----
 
 func doctorFindings(d *CIDoctor, b *CIBoard, now time.Time, extra ...CIFinding) {
 	add := func(f CIFinding) { d.Findings = append(d.Findings, f) }
@@ -1935,8 +1892,7 @@ func doctorFindings(d *CIDoctor, b *CIBoard, now time.Time, extra ...CIFinding) 
 
 func doctorBottleneck(d *CIDoctor) {
 	dur := func(sec int64) string { return ShortDuration(secs(float64(sec))) }
-	// A front whose round no runner has taken holds its whole line, whatever
-	// else is wrong with it: the one that has waited longest first.
+	// A front no runner has taken holds its whole line, so it is the bottleneck before any other line.
 	var queued *CILine
 	for i := range d.Lines {
 		if l := &d.Lines[i]; l.Front != nil && l.Front.Queued != nil && l.Front.Queued.For > int64(doctorRunnerQueued.Seconds()) &&
@@ -1947,9 +1903,6 @@ func doctorBottleneck(d *CIDoctor) {
 	if queued != nil {
 		f, q := queued.Front, queued.Front.Queued
 		sum := fmt.Sprintf("The runner: %s's front #%d has had a round queued since %s UTC (%s)", queued.Repo, f.Number, q.Since.UTC().Format("15:04"), dur(q.For))
-		// Why the runner hasn't taken it (it runs one job at a time, what
-		// it is running, how many jobs are ahead) is in the one line: the
-		// evidence shows only with -v.
 		switch {
 		case q.Why != "":
 			sum += ": " + strings.TrimSuffix(q.Why, ".")
@@ -1965,7 +1918,7 @@ func doctorBottleneck(d *CIDoctor) {
 		d.Bottleneck = bn
 		return
 	}
-	// A stalled line holds everything behind it: the one holding most first.
+	// A stalled line holds everything behind it, so the one holding most goes first.
 	var stalled *CILine
 	for i := range d.Lines {
 		if l := &d.Lines[i]; l.Stalled && (stalled == nil || l.Moving > stalled.Moving) {
@@ -1988,8 +1941,7 @@ func doctorBottleneck(d *CIDoctor) {
 				fmt.Sprintf("%.1f jobs waited on average over the last 3h (peak %.1f)", p.AvgWaiting3h, p.PeakWaiting3h)}}
 		return
 	}
-	// The line that takes longest to drain; a queue (two or more moving)
-	// before a lone pull request, which holds nothing behind it.
+	// A queue goes before a lone pull request, which holds nothing behind it.
 	var worst *CILine
 	queue := func(l *CILine) bool { return l.Moving > 1 }
 	for i := range d.Lines {

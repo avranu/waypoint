@@ -13,10 +13,6 @@ import (
 	"time"
 )
 
-// Scheduled jobs' health on disk, and telling the admins (WP-999,
-// WP-ADR139). job_runs.go counts; this file saves the counts once a minute,
-// decides what is persistent, stuck or silent, and sends one digest.
-
 // NotifyJobs is the notification kind for scheduled jobs that keep failing,
 // are stuck or have stopped running.
 const NotifyJobs = "server"
@@ -139,17 +135,14 @@ type jobSnapshot struct {
 	periods  map[string]time.Duration
 	problems map[problemKey]*problemSeen
 	hours    map[hourKey]*hourCount
-	// running is the jobs whose running_since changed since the last save:
-	// the oldest run's start in ms, 0 for none.
+	// Jobs whose running_since changed since the last save: the oldest run's start in ms, 0 for none.
 	running map[string]int64
-	// busy is the same for busy_since.
-	busy map[string]int64
+	busy    map[string]int64
 	// wasRunning and wasBusy are what the ledger took those to be saved as
 	// before: put back if this snapshot is not saved, so the next save sees
 	// the change again.
 	wasRunning, wasBusy map[string]int64
-	// learned is how many secrets the ledger knew when this was taken.
-	learned int
+	learned             int
 }
 
 func (sn *jobSnapshot) empty() bool {
@@ -201,7 +194,7 @@ func (l *jobLedger) giveBack(sn *jobSnapshot) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for name, was := range sn.wasRunning {
-		l.savedRunning[name] = was // what is in the database: the change is written with the next save
+		l.savedRunning[name] = was
 	}
 	for name, was := range sn.wasBusy {
 		l.savedBusy[name] = was
@@ -245,7 +238,7 @@ func (l *jobLedger) giveBack(sn *jobSnapshot) {
 		st.runs += old.runs
 		st.skips += old.skips
 		st.cleanRun = st.cleanRun || old.cleanRun
-		if !st.ended && old.ended { // nothing ended since: the old last run is still the last
+		if !st.ended && old.ended {
 			st.ended = true
 		}
 	}
@@ -270,7 +263,7 @@ func (s *Service) saveJobHealth(ctx context.Context) {
 		for k := range sn.problems {
 			keys = append(keys, k)
 		}
-		// In a fixed order, so the ids are the same however the map ranges.
+		// Sorted: capProblem admits new problems in order until the cap, so the same ones fold into the catch-all each save.
 		slices.SortFunc(keys, func(a, b problemKey) int {
 			if c := strings.Compare(a.source, b.source); c != 0 {
 				return c
@@ -342,8 +335,6 @@ func saveJob(ctx context.Context, t *tx, j jobState) error {
 	if j.cleanRun {
 		clean = j.lastClean.UnixMilli()
 	}
-	// A run that ended since the last save replaces the last run's fields
-	// and ends a stuck or silent spell; a job only declared leaves them.
 	if _, err := t.ExecContext(ctx, `INSERT INTO job_health(name, period_ms, runs, skips, last_start, last_end, last_ms, max_ms, last_result, last_note, last_clean_at)
 		VALUES (?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(name) DO UPDATE SET period_ms = excluded.period_ms, runs = runs + excluded.runs, skips = skips + excluded.skips,
@@ -589,8 +580,8 @@ func jobsBack(ctx context.Context, t *tx, state map[string]string) ([]string, er
 
 // Job states.
 const (
-	jobStuck  = "stuck"  // a run has gone on too long, or every run finds the last still going
-	jobSilent = "silent" // it should have started and hasn't
+	jobStuck  = "stuck"
+	jobSilent = "silent"
 )
 
 // jobTrouble finds the jobs whose run has gone on too long and the ones
@@ -599,7 +590,7 @@ const (
 func (s *Service) jobTrouble(now time.Time, running []JobStatus, declared []jobDecl, lastActive map[string]int64, busy map[string]time.Time) (state, line, behind map[string]string) {
 	state, line, behind = map[string]string{}, map[string]string{}, map[string]string{}
 	isRunning := map[string]bool{}
-	stuckIn := map[string]string{} // lane → its stuck job
+	stuckIn := map[string]string{}
 	for _, j := range running {
 		isRunning[j.Name] = true
 		if took := now.Sub(*j.RunningSince); took > jobOverdue(time.Duration(j.PeriodMS)*time.Millisecond) {
@@ -673,7 +664,6 @@ func (s *Service) jobsStuck(ctx context.Context, t *tx, now time.Time, running [
 	for name := range state {
 		names = append(names, name)
 	}
-	// stuck before silent, then by name
 	sort.Slice(names, func(a, b int) bool {
 		if sa, sb := state[names[a]], state[names[b]]; sa != sb {
 			return sa == jobStuck
@@ -682,8 +672,6 @@ func (s *Service) jobsStuck(ctx context.Context, t *tx, now time.Time, running [
 	})
 	waiting := map[string]int{}
 	for _, name := range names {
-		// Told again when it goes from silent to stuck or back, and each
-		// problemRemind while it lasts.
 		res, err := t.ExecContext(ctx, `UPDATE job_health SET alerted_at = ?1, alerted_for = ?2
 			WHERE name = ?3 AND (alerted_at IS NULL OR alerted_for != ?2 OR alerted_at <= ?4)`,
 			now.UnixMilli(), state[name], name, now.Add(-problemRemind).UnixMilli())
@@ -691,7 +679,7 @@ func (s *Service) jobsStuck(ctx context.Context, t *tx, now time.Time, running [
 			return nil, nil, err
 		}
 		if n, _ := res.RowsAffected(); n == 0 {
-			continue // told already, or a job with no row yet: the next check has it
+			continue // A job with no row yet is told by a later check.
 		}
 		if by := behind[name]; by != "" {
 			waiting[by]++
@@ -747,7 +735,6 @@ func problemsToTell(ctx context.Context, t *tx, now time.Time) ([]string, error)
 				return err
 			}
 			ids = append(ids, p.ID)
-			// The label is cut, never the count after it.
 			l := fmt.Sprintf("#%d %s: %d× over %s", p.ID, excerpt(p.label(), 60), p.StreakCount, spanText(time.Duration(max(up, 0))*time.Millisecond))
 			if again {
 				l += ", still unacknowledged"
@@ -790,7 +777,6 @@ func jobDigest(bad, good []string) (title, body string) {
 		short := make([]string, 0, most+1)
 		for i, l := range lines {
 			if i == most {
-				// All are marked told: say where the rest are.
 				short = append(short, fmt.Sprintf("and %d more (`wp server problems --all` lists them)", len(lines)-most))
 				break
 			}
@@ -847,8 +833,7 @@ func (s *Service) pruneJobHealth(ctx context.Context, now time.Time, declared []
 				return err
 			}
 		}
-		// A job renamed or removed: nothing runs it, so nothing would end
-		// its problems or its row.
+		// A job renamed or removed never runs again, so nothing else deletes its row.
 		var gone []string
 		err := rowsOf(ctx, t, `SELECT name FROM job_health WHERE coalesce(last_end, last_start, 0) < ?`, []any{now.Add(-jobRowKeep).UnixMilli()}, func(rows *sql.Rows) error {
 			var name string
@@ -1204,11 +1189,6 @@ func blankProblems(ctx context.Context, t *tx, sec string) error {
 		case err != nil:
 			return err
 		default:
-			// Merged into the row it now equals: this row's counts and
-			// times are added to it, its latest record's detail kept if
-			// later, and it is open if either was. It stays told if either
-			// was, away time is the larger, and the streak's away time is
-			// that of the streak kept.
 			if _, err := t.ExecContext(ctx, `UPDATE job_problems AS o SET
 					count = o.count + m.count,
 					streak_count = o.streak_count + m.streak_count,

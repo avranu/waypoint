@@ -14,15 +14,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// What a babysitting round's agent changes in a protected file (WP-D14,
-// WP-D18) is held back by the runner, not refused with the rest of its push
-// (WP-ADR138): the round's other changes land, and the held change comes
-// here as a patch. It lands without a person when another model, asked
-// whether it could weaken what CI checks or reach secrets, says it could
-// not, and only for a file the pull request already changes. Otherwise one
-// request shows the person the change, and approving it pushes it. Waypoint
-// runs no agent for either: the patch goes to a runner job that applies it
-// and pushes (AgentJob.Patch).
+// Protected-file changes are held, not refused, so the round's other changes still land; the held change is applied later by a runner job.
 
 const (
 	// heldRequestKey is the start of the key of the request a held change
@@ -32,13 +24,13 @@ const (
 	// change, apart from the babysit's rounds.
 	babysitHeldSource = "babysit_held"
 
-	heldJudging  = "judging"  // another model is checking it
-	heldApplying = "applying" // a runner job applies and pushes it
-	heldAsked    = "asked"    // a person was asked
-	heldUnasked  = "unasked"  // a person is to be asked: filing the request failed, so the next step tries again
+	heldJudging  = "judging"
+	heldApplying = "applying"
+	heldAsked    = "asked"
+	heldUnasked  = "unasked"
 	heldApplied  = "applied"
-	heldDeclined = "declined" // the person left it out
-	heldFailed   = "failed"   // it didn't apply or push
+	heldDeclined = "declined"
+	heldFailed   = "failed"
 
 	// heldPush is the choice that approves a held change.
 	heldPush  = "Push it"
@@ -89,7 +81,7 @@ func (s *Service) heldWait(ctx context.Context, b *Babysit, pr *PullRequest, r *
 	files := strings.Join(h.Files, ", ")
 	switch h.State {
 	case heldJudging:
-		s.goBG(func() { s.judgeHeld(context.WithoutCancel(ctx), pr.ID) }) // a step after a restart starts the check again
+		s.goBG(func() { s.judgeHeld(context.WithoutCancel(ctx), pr.ID) })
 		s.setState(ctx, b, pr, BabysitWatching, fmt.Sprintf("round %d's change to protected files (%s) is being checked", r.N, files))
 	case heldApplying:
 		// Its job's end may have come while no one listened (a restart):
@@ -174,7 +166,7 @@ func (s *Service) weakens(ctx context.Context, pr *PullRequest, h *HeldEdit) (bo
 		merge := untrustedClose.ReplaceAllString(strings.TrimRight(h.Merge, "\n"), `<\/untrusted>`)
 		prompt += fmt.Sprintf("\nThe round merged the pull request's target, and the files conflicted. How the agent settled each conflict, from the file as the merge left it (conflict markers and all); a side's line removed here is gone from the result:\n<untrusted>\n```diff\n%s\n```\n</untrusted>\n", merge)
 	}
-	// A pointer: an answer without the key is no answer, not a "no".
+	// An absent weakens key is no answer, not a 'no': a plain bool would read it as false.
 	var ans struct {
 		Weakens *bool  `json:"weakens"`
 		Reason  string `json:"reason"`
@@ -303,7 +295,6 @@ func (s *Service) askHeld(ctx context.Context, b *Babysit, pr *PullRequest, r *B
 		tail.WriteString("It settles a merge conflict otherwise than by keeping both sides' lines, so nothing else of the round was pushed either: pushing it pushes the round's whole change.\n\n")
 	}
 	if m := strings.TrimRight(h.Merge, "\n"); m != "" {
-		// At most a third of the request, so the change itself has room.
 		shown := strings.TrimSuffix(capText(m, maxRequestBody/3), "\n…")
 		fmt.Fprintf(&head, "How the agent settled each conflict, from the file as the merge left it (markers and all); a side's line removed here is dropped:\n\n```diff\n%s\n```\n\n", shown)
 		if len(shown) < len(m) {
@@ -311,8 +302,6 @@ func (s *Service) askHeld(ctx context.Context, b *Babysit, pr *PullRequest, r *B
 		}
 	}
 	patch := strings.TrimRight(h.Patch, "\n")
-	// The details hold at most maxRequestBody: a change that doesn't fit is
-	// shown in part, and the request says so rather than "exactly this".
 	room := maxRequestBody - head.Len() - tail.Len() - 1200 - len(pr.URL)
 	if len(patch) <= room {
 		fmt.Fprintf(&head, "The change:\n\n```diff\n%s\n```\n\n", patch)
@@ -407,7 +396,7 @@ func (s *Service) applyHeld(ctx context.Context, b *Babysit, pr *PullRequest, r 
 	raw, _ := json.Marshal(in)
 	projectID, err := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo)
 	if readFault(err) {
-		// Not a reason to fail an approved change (the approval is not asked for twice): it is pushed without a project.
+		// A project read fault doesn't fail an approved change: it is pushed without a project, since the approval isn't asked for again.
 		s.log.WarnContext(ctx, "read the project to push a held change", "repo", pr.Repo, "number", pr.Number, "err", err)
 		projectID = 0
 	}
@@ -532,7 +521,6 @@ func (s *Service) onHeldAnswered(ctx context.Context, e *Event) {
 		}
 		for i := range b.Rounds {
 			r := &b.Rounds[i]
-			// Only the request askHeld filed decides it.
 			if r.N != n || r.Held == nil || r.Held.State != heldAsked || r.Held.Request != id {
 				continue
 			}

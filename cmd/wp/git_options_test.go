@@ -57,8 +57,6 @@ func TestWorktreeAddRefusesAnOptionAsBranchOrFrom(t *testing.T) {
 		}
 	}
 	noGitRan(t, log)
-	// Control: a legal branch and base do get as far as git (the shim fails
-	// it), so a mutant that refuses everything fails here.
 	c := &cli{err: &bytes.Buffer{}, out: &bytes.Buffer{}}
 	_ = cmdWorktreeAdd(c, []string{"--branch=feature/ok", "--from=main", "some-name"})
 	if gitRanFor(t, log) == "" {
@@ -87,7 +85,6 @@ func TestRunnerRefusesAnOptionAsTarget(t *testing.T) {
 			t.Errorf("target %q was accepted", bad)
 		}
 	}
-	// Control: names git accepts pass.
 	if err := p.checkJobRefs(context.Background(), agentJob{Target: "main", Base: "main", DiffFrom: "abc1234"}); err != nil {
 		t.Errorf("legal refs were refused: %v", err)
 	}
@@ -160,7 +157,6 @@ func TestMakeWorktreeRefusesAnOptionAsBranchOrFrom(t *testing.T) {
 		}
 	}
 	noGitRan(t, log)
-	// Control: a legal branch and base reach git (the shim fails it).
 	_, _ = makeWorktree(context.Background(), repo, "slug", "feature/ok", "main", false, func(string, ...any) {})
 	if gitRanFor(t, log) == "" {
 		t.Error("a legal branch and from never reached git: the refusal refuses everything")
@@ -202,9 +198,6 @@ func TestPRFilesRefusesABaseThatIsAnOptionOnceTheHeadIsFetched(t *testing.T) {
 	}
 	b, _ := os.ReadFile(log)
 	for _, line := range strings.Split(string(b), "\n") {
-		// The shim logs one line per command, its arguments joined by spaces:
-		// an argument with a space in it (--upload-pack=touch /tmp/y) can't be
-		// found by splitting the line, so look for it as a whole between spaces.
 		padded := " " + line + " "
 		for _, bad := range optionLike[:3] {
 			if strings.Contains(padded, " "+bad+" ") || strings.Contains(padded, " origin/"+bad+" ") {

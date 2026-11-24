@@ -30,12 +30,10 @@ func TestServerDiagnosticsCLI(t *testing.T) {
 	if out, code := e.run("server", "log", "--since", "soon"); code == 0 || !strings.Contains(out, "soon") {
 		t.Errorf("bad --since: exit %d\n%s", code, out)
 	}
-	// This test server keeps no log ring: it says so.
 	if out, code := e.run("server", "log"); code == 0 || !strings.Contains(out, "keeps no log records") {
 		t.Errorf("log without a ring: exit %d\n%s", code, out)
 	}
 
-	// Someone who isn't an admin is refused every report.
 	ctx := context.Background()
 	u, err := e.svc.CreateUser(ctx, core.SystemActor(), core.CreateUserInput{Username: "sam", Email: "s@example.com", Password: "correct horse battery"})
 	if err != nil {
@@ -57,7 +55,7 @@ func TestServerDiagnosticsCLI(t *testing.T) {
 func TestServerProblemsCLI(t *testing.T) {
 	e := newEnv(t)
 	t.Chdir(t.TempDir())
-	robin := e.login() // an agent's token: it reads, and may not acknowledge
+	robin := e.login()
 	ctx := context.Background()
 
 	if out := e.wp("server", "problems"); !strings.Contains(out, "Nothing is going wrong") {
@@ -71,7 +69,6 @@ func TestServerProblemsCLI(t *testing.T) {
 	}
 	e.svc.Log().Warn("slow write", "ms", 900)
 
-	// Which problem gets which number is the save's business: read it.
 	var listed []struct {
 		ID      int64  `json:"id"`
 		Message string `json:"message"`
@@ -102,7 +99,6 @@ func TestServerProblemsCLI(t *testing.T) {
 	if out := e.wp("server", "status"); !strings.Contains(out, "Problems: 2 open, none persistent and unacknowledged (wp server problems).") {
 		t.Errorf("status:\n%s", out)
 	}
-	// A name of several words needs no quotes; a source is not a job.
 	if out := e.wp("server", "job", "background", "--since", "2h"); !strings.Contains(out, "background: what is logged there, not a scheduled job") || !strings.Contains(out, "By hour (UTC)") || !strings.Contains(out, "#"+id+" error background: repo sync failed (acme/app)") {
 		t.Errorf("job background:\n%s", out)
 	}
@@ -113,8 +109,6 @@ func TestServerProblemsCLI(t *testing.T) {
 		t.Errorf("job with no name: exit %d\n%s", code, out)
 	}
 
-	// Acknowledging is a person's: the agent's token is refused, and so is
-	// a person's token in an agent's shell.
 	if out, code := e.run("server", "ack", id, "-m", "known"); code == 0 || !strings.Contains(out, "acknowledging a server problem") {
 		t.Errorf("ack by an agent: exit %d\n%s", code, out)
 	}
@@ -127,7 +121,7 @@ func TestServerProblemsCLI(t *testing.T) {
 	if out, code := e.run("server", "ack", id, "-m", "known"); code == 0 || !strings.Contains(out, "is for people, not agents") {
 		t.Errorf("ack from Claude Code: exit %d\n%s", code, out)
 	}
-	t.Setenv("WAYPOINT_AGENT", "none") // "I'm a person", said in the agent's shell
+	t.Setenv("WAYPOINT_AGENT", "none") // WAYPOINT_AGENT=none marks a person's shell.
 	if out, code := e.run("server", "ack", id, "-m", "known"); code == 0 || !strings.Contains(out, "not in an agent's shell") {
 		t.Errorf("ack in an agent's shell: exit %d\n%s", code, out)
 	}
@@ -157,7 +151,6 @@ func TestServerProblemsCLI(t *testing.T) {
 		t.Errorf("after unack:\n%s", out)
 	}
 
-	// Someone who isn't an admin reads none of it and acknowledges nothing.
 	u, err := e.svc.CreateUser(ctx, core.SystemActor(), core.CreateUserInput{Username: "sam", Email: "s@example.com", Password: "correct horse battery"})
 	if err != nil {
 		t.Fatal(err)

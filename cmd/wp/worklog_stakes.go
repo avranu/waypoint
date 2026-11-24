@@ -107,8 +107,6 @@ func cmdWorklogStakes(c *cli, args []string) error {
 		if recomputed > 0 {
 			fmt.Fprintf(&b, "%d rounds from before tiers were stored are put in tiers by %s.\n", recomputed, st.Rule)
 		}
-		// The tasks' measures: one row a measure, one column a tier, each
-		// cell the median over the tasks it applies to (how many).
 		var labels []string
 		for _, t := range st.Tiers {
 			if len(t.Outcomes) > len(labels) {

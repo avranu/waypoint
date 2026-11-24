@@ -26,7 +26,7 @@ type event struct {
 // that isn't JSON (a toolchain message) is passed through.
 func GoTest(r io.Reader, text io.Writer, module string) ([]Test, error) {
 	var tests []Test
-	held := map[string][]string{} // pkg\x00top-level test → its output
+	held := map[string][]string{}
 	key := func(pkg, test string) string {
 		top, _, _ := strings.Cut(test, "/")
 		return pkg + "\x00" + top
@@ -74,7 +74,7 @@ func GoTest(r io.Reader, text io.Writer, module string) ([]Test, error) {
 			}
 		case e.Action == Pass || e.Action == Fail || e.Action == Skip:
 			if strings.Contains(e.Test, "/") {
-				continue // the top-level test ends after it, and says
+				continue // Subtest results are skipped: the top-level test's own event, which comes after them, gives the outcome.
 			}
 			k := key(e.Package, e.Test)
 			if e.Action == Fail {
@@ -84,7 +84,7 @@ func GoTest(r io.Reader, text io.Writer, module string) ([]Test, error) {
 			tests = append(tests, Test{Package: trimModule(e.Package, module), Name: e.Test, Outcome: e.Action, Ms: int64(e.Elapsed*1000 + 0.5)})
 		}
 	}
-	for _, k := range sortedKeys(held) { // the stream was cut short
+	for _, k := range sortedKeys(held) {
 		write(strings.Join(held[k], ""))
 	}
 	if serr := sc.Err(); serr != nil {

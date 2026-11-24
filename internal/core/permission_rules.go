@@ -1,18 +1,6 @@
 package core
 
-// Permission rules a person can add when approving a refused tool call
-// (WP-233, WP-ADR114). Approving a permission request used to tell the
-// agent only that the person allowed it: Claude Code's auto-mode classifier
-// judged the retry afresh and often refused it again. Now the person can
-// pick a narrow allow rule to add to the repo's .claude/settings.json, so
-// the same command (and ones like it) skip the classifier in later sessions.
-// Nothing else is remembered: an approval without a rule changes nothing.
-//
-// The rules offered are worked out here without a model: the exact command,
-// and at most one prefix rule that stops before the first argument that
-// looks like data (a path, a number, a quoted message). Programs that run
-// arbitrary code, reach other machines or delete things only get exact
-// rules: a prefix rule for them grants more than the call the person read.
+// Programs that run code, reach other machines or delete get only exact rules: a prefix would grant more than the call the person read.
 
 import (
 	"bytes"
@@ -95,9 +83,9 @@ var gitReadOnly = map[string]bool{"status": true, "ls-files": true, "rev-parse":
 	"merge-base": true, "cat-file": true, "check-ignore": true, "name-rev": true}
 
 var (
-	ruleWordRE = lazyre.New(`^[a-z][a-z0-9_-]*$`)         // a subcommand or plain word
-	ruleFlagRE = lazyre.New(`^--?[a-z][a-z0-9-]*$`)       // a flag without a value
-	ruleProgRE = lazyre.New(`^[A-Za-z][A-Za-z0-9_.+-]*$`) // a program on the PATH, no path
+	ruleWordRE = lazyre.New(`^[a-z][a-z0-9_-]*$`)
+	ruleFlagRE = lazyre.New(`^--?[a-z][a-z0-9-]*$`)
+	ruleProgRE = lazyre.New(`^[A-Za-z][A-Za-z0-9_.+-]*$`)
 	mcpToolRE  = lazyre.New(`^mcp__[A-Za-z0-9_-]+__[A-Za-z0-9_-]+$`)
 	// hostRE: a domain name. Its last label starts with a letter, so an
 	// address (169.254.169.254, 127.1) is no host a rule names.
@@ -176,7 +164,7 @@ func splitShell(cmd string) (parts [][]shellWord, ok bool) {
 			}
 			lit := cmd[i+1 : i+1+j]
 			if c == '"' && (strings.Contains(lit, "$") || strings.Contains(lit, "\\")) {
-				return nil, false // expansions inside double quotes
+				return nil, false
 			}
 			w.WriteString(lit)
 			inWord, plain = true, false
@@ -184,7 +172,7 @@ func splitShell(cmd string) (parts [][]shellWord, ok bool) {
 		case '\\':
 			return nil, false
 		case '$':
-			return nil, false // variables and substitutions: the rule can't see what runs
+			return nil, false
 		case ' ', '\t':
 			endWord()
 		case ';':
@@ -210,7 +198,7 @@ func splitShell(cmd string) (parts [][]shellWord, ok bool) {
 				return nil, false
 			}
 		case '(', ')', '{', '}', '<':
-			return nil, false // subshells, groups, input redirects, process substitution
+			return nil, false
 		default:
 			if c == '>' || (c == '#' && !inWord) {
 				meta = true
@@ -235,9 +223,7 @@ func bashRules(cmd string) []PermissionRule {
 	if !ok {
 		return nil
 	}
-	// A cd into a folder first is how agents run a command elsewhere;
-	// Claude Code judges it on its own. Any other chain needs one rule a
-	// command, which a single approval shouldn't grow into.
+	// A leading cd is dropped, since Claude Code judges it on its own; any other chain gets no rules, so one approval can't grow into several.
 	var words []shellWord
 	for _, p := range parts {
 		if p[0].text == "cd" && p[0].plain {
@@ -257,7 +243,7 @@ func bashRules(cmd string) []PermissionRule {
 	}
 	prog := words[0].text
 	if !words[0].plain || !ruleProgRE.MatchString(prog) {
-		return nil // ./script, /usr/bin/x, VAR=value first, a quoted program
+		return nil
 	}
 	var out []PermissionRule
 	exact := joinWords(words)
@@ -267,15 +253,13 @@ func bashRules(cmd string) []PermissionRule {
 	if exact != "" {
 		out = append(out, PermissionRule{Rule: "Bash(" + exact + ")", Covers: "only this exact command"})
 	}
-	// The prefix: the program and the plain words and flags after it, up to
-	// the first that looks like data.
 	n := 1
 	for n < len(words) && words[n].plain && (ruleWordRE.MatchString(words[n].text) || ruleFlagRE.MatchString(words[n].text)) {
 		n++
 	}
 	switch {
 	case n == len(words), n < 2:
-		return out // nothing to widen, or only "prog *"
+		return out
 	case isRiskyProgram(prog) && (prog != "git" || !gitReadOnly[words[1].text]):
 		return out
 	}
@@ -425,7 +409,7 @@ func addAllowRule(content, rule string) (string, error) {
 		} else {
 			out = content[:at] + ", " + q + content[at:]
 		}
-	case sp.allowOpen >= 0: // an empty array
+	case sp.allowOpen >= 0:
 		ind := lineIndent(content, sp.allowOpen)
 		out = content[:sp.allowOpen] + "\n" + ind + unit + q + "\n" + ind + content[sp.allowClose-1:]
 	case sp.permOpen >= 0:
@@ -447,7 +431,6 @@ func addAllowRule(content, rule string) (string, error) {
 		}
 		out = content[:sp.rootOpen] + entry + content[sp.rootOpen:]
 	}
-	// What was written must read back as the same settings plus the rule.
 	check, err := scanSettings(out)
 	if err != nil || !slices.Contains(check.allow, rule) || len(check.allow) != len(sp.allow)+1 {
 		return "", fmt.Errorf("adding the rule to the settings didn't give valid JSON with it in permissions.allow")
@@ -530,7 +513,7 @@ func scanSettings(content string) (*settingsSpots, error) {
 		return bad()
 	}
 	if _, err := dec.Token(); err == nil {
-		return bad() // more after the object
+		return bad()
 	}
 	return sp, nil
 }

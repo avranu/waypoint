@@ -1,8 +1,4 @@
-// A plan's user story (WP-190): a few lines read first, like an abstract.
-// When an agent wrote the plan, approving it keeps the story as the
-// person's intent and nothing else of it; the plan stays the agent's text.
-// Until a person keeps or writes the story, it is the story model's
-// suggestion and no one's intent.
+// Until a person keeps or writes the story it is a model's suggestion, not anyone's intent.
 
 import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'

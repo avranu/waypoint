@@ -1,8 +1,6 @@
 package core
 
-// A pull request's job logs (WP-132, WP-ADR2 §1): `wp pr log` and `wp pr
-// wait` read a failed check's log through Waypoint, which holds the forge
-// token, cut to the failing part (ci_excerpt.go), or whole with full.
+// Job logs are fetched through Waypoint, which holds the forge token.
 
 import (
 	"context"

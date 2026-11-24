@@ -20,11 +20,11 @@ import (
 // server; everything else (projects, the pull request) is the real one.
 type waitFake struct {
 	mu       sync.Mutex
-	verdicts []string     // one wait answer each; the last repeats
-	fail     map[int]bool // the waits (1st, 2nd, …) answered 502
-	waits    []string     // the queries waits were sent with
-	merged   []string     // the heads merges were asked for
-	refuse   string       // the merge's error
+	verdicts []string
+	fail     map[int]bool
+	waits    []string
+	merged   []string
+	refuse   string
 	logQuery string
 }
 
@@ -135,7 +135,6 @@ func TestCLIPRWait(t *testing.T) {
 	defer func(r []time.Duration) { waitRetry = r }(waitRetry)
 	waitRetry = []time.Duration{time.Millisecond, time.Millisecond}
 
-	// Each verdict: one line, and its exit code.
 	for _, c := range []struct {
 		verdict string
 		code    int
@@ -158,8 +157,7 @@ func TestCLIPRWait(t *testing.T) {
 		}
 	}
 
-	// It waits on the server, quietly: one line when it starts. A 502 (a
-	// proxy, a restart) is asked again.
+	// A 502 from a proxy or a restart is retried, not reported.
 	fake.set(func(f *waitFake) {
 		f.verdicts, f.fail, f.waits = []string{"waiting", "waiting", "ready"}, map[int]bool{2: true}, nil
 	})
@@ -177,7 +175,6 @@ func TestCLIPRWait(t *testing.T) {
 		t.Errorf("quiet: exit %d %q", code, out)
 	}
 
-	// --merge merges the head it waited on; a refusal is exit 3.
 	fake.set(func(f *waitFake) { f.verdicts = []string{"ready"} })
 	if out, code := e.run("pr", "wait", "3", "--merge"); code != 0 || out != "merged 4e7ced0  robin/waypoint#3\n" {
 		t.Errorf("merge: exit %d %q", code, out)
@@ -191,7 +188,6 @@ func TestCLIPRWait(t *testing.T) {
 			t.Errorf("merged heads: %q", f.merged)
 		}
 	})
-	// --json: the wait, the logs and the merge as they came.
 	fake.set(func(f *waitFake) { f.verdicts = []string{"failed"} })
 	out, code = e.run("pr", "wait", "3", "--json")
 	var j struct {
@@ -206,7 +202,6 @@ func TestCLIPRWait(t *testing.T) {
 		t.Errorf("json: exit %d %s", code, out)
 	}
 
-	// Without N: the pull request of the branch checked out here.
 	for _, args := range [][]string{{"-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "x"}, {"checkout", "-q", "-b", "b3"}} {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
@@ -218,7 +213,6 @@ func TestCLIPRWait(t *testing.T) {
 	if out, code := e.run("pr", "wait", "--timeout", "0"); code != 0 || !strings.Contains(out, "ready robin/waypoint#3") {
 		t.Errorf("this branch's: exit %d %q", code, out)
 	}
-	// wp pr log: every failed check's failing part; --check and --full go along.
 	if out := e.wp("pr", "log"); !strings.HasPrefix(out, "== ci / backend (pull_request)  [3 of 412 lines;") || !strings.Contains(out, "login_test.go:41") {
 		t.Errorf("log:\n%s", out)
 	}

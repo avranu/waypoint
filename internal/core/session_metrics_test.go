@@ -5,9 +5,6 @@ import (
 	"testing"
 )
 
-// WP-1470: session metrics that were guesses are labelled, and every drop is
-// counted.
-
 func dropCount(t *testing.T, e *env, reason string) int64 {
 	t.Helper()
 	ds, err := e.s.HookDrops(e.ctx, e.admin)
@@ -113,7 +110,7 @@ func TestUnregisteredSessionWriteIsCounted(t *testing.T) {
 	e := newEnv(t)
 	e.s.CountUnregisteredWrite(e.ctx, e.admin.User.ID, "box")
 	e.s.CountUnregisteredWrite(e.ctx, e.admin.User.ID, "box")
-	e.s.CountUnregisteredWrite(e.ctx, 0, "box") // no person: nothing to count against
+	e.s.CountUnregisteredWrite(e.ctx, 0, "box")
 	if n := dropCount(t, e, DropUnregisteredWrite); n != 2 {
 		t.Errorf("counted %d, want 2", n)
 	}
@@ -125,9 +122,9 @@ func TestUsageIngestSkipsAreCounted(t *testing.T) {
 	h := e.hour(-1)
 	c := UsageChunk{
 		Messages: []UsageMessageRow{
-			msg(h, "s1", "a/b", "claude-opus-5-5", "main", 1, 1, 1, 0, 0, 0), // kept
-			msg(h, "", "a/b", "claude-opus-5-5", "main", 1, 1, 1, 0, 0, 0),   // no session
-			msg(h, "s1", "a/b", "", "main", 1, 1, 1, 0, 0, 0),                // no model
+			msg(h, "s1", "a/b", "claude-opus-5-5", "main", 1, 1, 1, 0, 0, 0),
+			msg(h, "", "a/b", "claude-opus-5-5", "main", 1, 1, 1, 0, 0, 0),
+			msg(h, "s1", "a/b", "", "main", 1, 1, 1, 0, 0, 0),
 			msg(e.hour(24*400), "s1", "a/b", "claude-opus-5-5", "main", 1, 1, 1, 0, 0, 0),
 		},
 		Tools: []UsageToolRow{{Hour: h, Session: "s1", Kind: "", Tool: "Bash", Calls: 1}},
@@ -165,7 +162,7 @@ func TestAgentLabelHasOneSource(t *testing.T) {
 		{"", "gemini", "google/gemini-cli"},
 		{"", "Codex", "openai/codex"},
 		{"", "unheard-of", "unheard-of"},
-		{"acme/own-agent", "gemini", "acme/own-agent"}, // identity beats the cli
+		{"acme/own-agent", "gemini", "acme/own-agent"},
 	} {
 		if got := agentLabel(&Actor{Agent: c.agent}, c.cli); got != c.want {
 			t.Errorf("agentLabel(%q, %q) = %q, want %q", c.agent, c.cli, got, c.want)
@@ -209,7 +206,7 @@ func TestServerStatusCountsAgentEventsWithASession(t *testing.T) {
 		`{"via":"anthropic/claude-code","session":5}`,
 		`{"via":"anthropic/claude-code"}`,
 		`{"via":"mcp","session":0}`,
-		`{"session":9}`, // not agent-written: no via
+		`{"session":9}`,
 	} {
 		if _, err := e.s.db.W.Exec(`INSERT INTO events(actor_id, kind, data, created_at) VALUES (?, 'issue.updated', ?, ?)`, e.admin.User.ID, data, now); err != nil {
 			t.Fatal(err)

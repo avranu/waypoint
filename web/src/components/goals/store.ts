@@ -1,6 +1,4 @@
-// Small memory for the Goals page: which goals are folded (per browser, a
-// view choice), and which wording warnings a person dismissed (on their
-// profile, so a warning waved off stays gone on every device).
+// Dismissed warnings live on the profile so they stay gone on every device; folded goals stay per browser.
 
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
@@ -30,9 +28,7 @@ export function useStoredSet(key: string) {
       f(next)
       try {
         localStorage.setItem(key, JSON.stringify([...next]))
-      } catch {
-        /* private mode: it holds until the page closes */
-      }
+      } catch {}
       return { key, set: next }
     })
   return {
@@ -72,9 +68,7 @@ export function useDismissedWarnings(project: string) {
     })
     try {
       localStorage.removeItem(old)
-    } catch {
-      /* private mode */
-    }
+    } catch {}
     if (!kept.length) return
     save.mutate({ dismissed_warnings: merge(list, kept) })
   }, [loaded, project]) // eslint-disable-line react-hooks/exhaustive-deps

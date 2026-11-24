@@ -10,12 +10,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Navigation traces (WP-250): what an agent did between taking a task and
-// finishing it, as `wp usage sync` measured it from the session's transcript.
-// One row per take; the row is sent again as the segment grows and replaces
-// the last. Rows belong to the issue and go with it (ON DELETE CASCADE), not
-// on usage_hours's schedule, which has none: usage_hours is never pruned
-// either, and a trace is small (one row per task, at most 80 file names).
+// Trace rows go with their issue (ON DELETE CASCADE) and are never pruned on a schedule; one small row per task.
 
 // UsageTrace is one task segment of one session, as uploaded.
 type UsageTrace struct {
@@ -111,7 +106,6 @@ func cleanTrace(r *UsageTrace, maxMS int64) bool {
 	files := make([]TraceFile, 0, min(len(r.Files), traceMaxFiles))
 	for _, f := range r.Files {
 		f.Path = clip(f.Path, traceMaxPath)
-		// repo-relative only: nothing absolute or outside the repo is kept
 		if f.Path == "" || strings.HasPrefix(f.Path, "/") || strings.HasPrefix(f.Path, "~") || f.Path == ".." || strings.HasPrefix(f.Path, "../") || strings.Contains(f.Path, "/../") {
 			continue
 		}
@@ -160,9 +154,7 @@ func (t *tx) applyTraces(ctx context.Context, uid int64, machine string, traces 
 			uid, machine, r.Session, r.Seq).Scan(&oldID, &oldLast, &oldCalls, &oldEnded, &oldPre, &oldEdits, &oldFirst, &oldFiles)
 		switch {
 		case err == nil:
-			// An older copy of what is stored, or the same one. A copy read
-			// again by a later parser has the same end and may class its
-			// calls otherwise: it replaces what is stored.
+			// A copy read again by a later parser may class calls differently, so it replaces what is stored.
 			first := int64(0)
 			if r.FirstEditAt != nil {
 				first = *r.FirstEditAt
@@ -201,8 +193,6 @@ func (t *tx) applyTraces(ctx context.Context, uid int64, machine string, traces 
 // taskTracesLanded runs after an upload's traces are stored, with the tasks
 // whose traces were inserted or changed. The prep policy hooks in here (WP-250).
 func (s *Service) taskTracesLanded(ctx context.Context, issueIDs []int64) {
-	// What the prep policy has learned is out of date for these tasks; it
-	// is worked out again the next time it is asked (prep_policy.go).
 	s.prepPolicyTouch(ctx, issueIDs)
 	if s.tracesLanded != nil {
 		s.tracesLanded(issueIDs)

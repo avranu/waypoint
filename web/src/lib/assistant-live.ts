@@ -1,10 +1,4 @@
-// The assistant's live chat stream (WP-ADR1). Waypoint's server holds the
-// one connection to Hermes's gateway; each tab subscribes to it over
-// server-sent events (/assistants/{id}/live) and calls it with POST /rpc.
-// Frames are numbered, so a tab that drops catches up (Last-Event-ID).
-//
-// One Live per assistant, shared by every component that uses it, closed
-// when the last one leaves.
+// The server holds the one gateway connection; each tab subscribes to it over SSE.
 
 import { useEffect, useSyncExternalStore } from 'react'
 import { useQueryClient, type QueryClient } from '@tanstack/react-query'
@@ -104,7 +98,7 @@ class Live {
     es.onmessage = (m) => this.frame(JSON.parse(m.data))
     es.onerror = () => {
       if (es.readyState === EventSource.CLOSED) {
-        // The server refused (signed out, not found): try again later.
+        // EventSource stops retrying once the server refuses (CLOSED), so retry by hand.
         this.es = null
         this.set({ state: 'down', error: 'Lost the connection to Waypoint' })
         window.setTimeout(() => this.refs > 0 && this.open(), 5000)
@@ -123,7 +117,6 @@ class Live {
         const e = msg.params as unknown as GatewayEvent
         this.signal(e.type)
         if (e.type === 'message.complete') attention()
-        // A question withdrawn (the turn was stopped, or it timed out).
         if (e.type === 'request.cancel') {
           const id = String((e.payload as { id?: string } | null)?.id ?? '')
           this.set({ open: this.snap.open.filter((r) => r.id !== id) })
@@ -171,7 +164,6 @@ class Live {
     }
   }
 
-  // Hermes's change signals: refetch what they cover, batched.
   signal(type: string) {
     const keys: Record<string, string[]> = {
       'sessions.changed': ['sessions', 'messages'],

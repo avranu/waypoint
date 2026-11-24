@@ -6,8 +6,6 @@ import (
 	"time"
 )
 
-// Tasks an agent files for another repo (WP-378).
-
 type crossEnv struct {
 	*env
 	a, b *Project
@@ -97,7 +95,6 @@ func TestCrossFiledTaskIsMarkedAndDeclined(t *testing.T) {
 		t.Error("declined twice")
 	}
 
-	// The filer hears with its next turn, not by being woken at a stop.
 	if res := ce.hookOn(inA, "cli-a", HookEvent{Event: "Stop"}); res.Text != "" {
 		t.Fatalf("a decline woke the filer: %q", res.Text)
 	}
@@ -118,13 +115,12 @@ func TestCrossFiledDeclineWaitsForTheNextSessionThere(t *testing.T) {
 	inA := ce.session("cli-a", "me/a")
 	filed := ce.issue(inA, IssueInput{Project: ce.b.Key, Title: "Add a dashboard"})
 	ce.s.Wait()
-	ce.setClock(ce.clockNow().Add(25 * time.Hour)) // the filer is long gone
+	ce.setClock(ce.clockNow().Add(25 * time.Hour))
 	inB := ce.session("cli-b", "me/b")
 	if _, err := ce.s.DeclineIssue(ce.ctx, inB, filed.Key, "", "belongs in A"); err != nil {
 		t.Fatal(err)
 	}
 	ce.s.Wait()
-	// The next agent in A's repo hears it once; one in B doesn't.
 	if _, res := ce.start("cli-b2", "me/b"); strings.Contains(res.Text, filed.Key) {
 		t.Errorf("told in B: %q", res.Text)
 	}
@@ -145,7 +141,6 @@ func TestCrossFiledNewsReachesWhoNamedIt(t *testing.T) {
 	inA := ce.session("cli-a", "me/a")
 	filed := ce.issue(inA, IssueInput{Project: ce.b.Key, Title: "Add a dashboard"})
 	ce.s.Wait()
-	// Another session in A says it waits on it; the filer's ended.
 	ce.setClock(ce.clockNow().Add(25 * time.Hour))
 	waiter := ce.session("cli-w", "me/a")
 	ce.hookOn(waiter, "cli-w", HookEvent{Event: "UserPromptSubmit", Prompt: "carry on once " + strings.ToLower(filed.Key) + " is in, i mean " + filed.Key})
@@ -159,7 +154,6 @@ func TestCrossFiledNewsReachesWhoNamedIt(t *testing.T) {
 	if !strings.Contains(res.Text, filed.Key) || !strings.Contains(res.Text, "is done") {
 		t.Fatalf("the session that named it wasn't told: %q", res.Text)
 	}
-	// Done is news only for who still runs: nothing left for later.
 	if _, res := ce.start("cli-a2", "me/a"); strings.Contains(res.Text, filed.Key) {
 		t.Errorf("done left as a notice: %q", res.Text)
 	}
@@ -173,7 +167,6 @@ func TestCrossFiledDeclineReachesWhatItBlocks(t *testing.T) {
 	if err := ce.s.AddRelation(ce.ctx, inA, filed.Key, "blocks", mine.Key); err != nil {
 		t.Fatal(err)
 	}
-	// The filer holds the task that waits on it.
 	if _, err := ce.s.db.W.ExecContext(ce.ctx, `UPDATE agent_sessions SET issue_id = ? WHERE id = ?`, mine.ID, inA.Session); err != nil {
 		t.Fatal(err)
 	}

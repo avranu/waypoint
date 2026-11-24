@@ -5,19 +5,15 @@ import (
 	"strings"
 )
 
-// The audit log (WP-D15): what people decided about agents' work and about
-// Waypoint itself: reviews and approvals, delegating work to agents,
-// pausing and ordering agents, settings and access. Issue history keeps
-// every field change; this keeps the decisions, across projects, in one
-// place a person can read.
+// The audit log keeps decisions (reviews, delegations, control, settings, access) across projects; issue history keeps field changes.
 
 // Audit categories.
 const (
-	AuditApproval   = "approval"   // reviews of agent-written text, design decisions, PR approvals and merges
-	AuditDelegation = "delegation" // work handed to agents or taken back
-	AuditControl    = "control"    // pausing agents, the queue's order, releasing claims, bot runs
-	AuditSettings   = "settings"   // automations, AI models, forges, the review note
-	AuditAccess     = "access"     // tokens, device logins, members
+	AuditApproval   = "approval"
+	AuditDelegation = "delegation"
+	AuditControl    = "control"
+	AuditSettings   = "settings"
+	AuditAccess     = "access"
 )
 
 // AuditEntry is one decision.

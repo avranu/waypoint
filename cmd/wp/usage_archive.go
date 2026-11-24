@@ -24,59 +24,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// The transcript archive upload (WP-1466, ADR145): `wp usage sync` also
-// sends each Claude Code transcript's bytes, main thread and sub-agents, so
-// the server keeps the full record that every metric can be derived from.
-//
-// What goes: the file's complete lines from where the server's copy ends,
-// in pieces of about 8 MiB, each redacted line by line and gzip-compressed.
-// Offsets are the file's own, so a retry, a crash between upload and saving
-// state, or two wp running at once cannot store a byte twice or skip one:
-// every answer says where the server's copy now ends (and which generation)
-// and that is where the next piece starts. A half-written last line waits
-// until it is whole.
-//
-// A file that was rewritten or truncated is noticed and sent again from the
-// start as a new generation; the server keeps both. What is checked, on every
-// pass, for a file already partly sent: that its first line (at most 256
-// bytes) is the same, that it is not shorter than the offset, and that the 64
-// bytes before the offset are the same. Claude Code appends to its
-// transcripts, so that is enough; a change in the middle that keeps all three
-// is not seen (hashing the whole prefix on every pass is not worth it).
-//
-// Which files: every pass, from a hook or by hand, considers every transcript
-// modified in the last 30 days (all with --all) and any file in the state
-// with bytes not yet sent; the hook's session only goes first. So the totals
-// reported to the server are the machine's, for those files. A transcript
-// older than the window that was never uploaded is not pending: a manual pass
-// that is not --all counts them (older_files, older_bytes) and says so, and
-// --all archives them. A hook pass does not look for them.
-//
-// Nothing is dropped silently: a failed upload, a refusal, a line replaced by
-// a stub (too large to send, or one redaction could not make safe), the
-// unsent bytes of a file that was deleted (deleted_unsent) and the bytes still
-// waiting are counted, kept in usage-archive.json and reported to the server
-// after each pass. `wp usage machines` shows every reason; the server's
-// collector health totals the ones that need someone to act (line_too_large,
-// redaction_failed, refused, deleted_unsent) and leaves out the others, which
-// the next pass settles (core.transcriptDroppedReasons).
-//
-// The status the server is told after a pass (collector health and
-// `wp usage machines` show it): what waits, what was dropped, how long the last
-// hook pass took and the longest hook pass (a manual pass, a backfill that may
-// run ten minutes, is neither), why it stopped early ("" ran to the end), how
-// many passes were cut short, and whether the archive is off
-// (WP_USAGE_ARCHIVE=off, the machine's own opt-out; a pass with --no-archive
-// says so too). It is posted when something but the pass's duration changed or
-// the longest grew, and again every archiveRefresh (12h) so the server can
-// tell a machine that stopped reporting from one with nothing new; so the
-// pass_ms the server holds can be up to archiveRefresh old. A 507 from the server (its
-// size cap, WAYPOINT_TRANSCRIPT_MAX_MB) is a hold, not a refusal: the pass
-// stops with that reason, nothing is dropped, and the files go next time.
-// Each piece also carries how many values redaction blanked, and by which rule.
-//
-// Redaction (what it does and does not cover): redactTranscriptLineWith.
-// WP_USAGE_ARCHIVE=off keeps a machine's transcripts out of the archive.
+// Archive offsets are the file's own, so a retry or a crash between upload and saving state never stores a byte twice or skips one.
 
 const (
 	archiveStateFile = "usage-archive.json"
@@ -84,7 +32,7 @@ const (
 	// pass. Chosen, not measured: enough to tell a different ending, cheap to
 	// read for every file.
 	archiveTailLen  = 64
-	archiveBackfill = 30 * 24 * time.Hour // transcripts older than this are archived only with --all
+	archiveBackfill = 30 * 24 * time.Hour
 	// archiveRetryHeld: chosen, not measured. A refusal that will not change
 	// is not worth a request on every hook; a day finds a fixed server, and
 	// is how long a learned piece cap is kept.
@@ -127,7 +75,7 @@ var (
 	// measured: only a bound so one file cannot hold a pass for ever (about
 	// 8 GiB at archivePieceSize); the rest goes next time.
 	archiveMaxPieces = 1000
-	archiveGzipCap   = core.TranscriptMaxUpload // derived: what the server takes as a request body
+	archiveGzipCap   = core.TranscriptMaxUpload
 	// archiveHookLimit is how long after a hook's sync began its archive pass
 	// may start new uploads. Derived from the hook's timeout
 	// (usageHookTimeout, 30 s): this, archiveHookFloor and
@@ -147,12 +95,12 @@ var (
 	// archiveReportHookTimeout bounds the status post of a hook's pass (a
 	// manual pass uses archiveReportTimeout); derived like archiveHookLimit.
 	archiveReportHookTimeout = 5 * time.Second
-	archiveReportTimeout     = 30 * time.Second // chosen, not measured: the status is small
+	archiveReportTimeout     = 30 * time.Second
 	// archiveHookMargin is kept clear of the hook's timeout when the status post
 	// is bounded by what is left of it. Chosen, not measured.
 	archiveHookMargin = 500 * time.Millisecond
 	archiveRedact     = redactTranscriptLineCounted
-	archiveNow        = time.Now // tests set the clock
+	archiveNow        = time.Now
 	// archivePassDuration is how long a pass that began at start took.
 	archivePassDuration = func(start time.Time) time.Duration { return time.Since(start) }
 )
@@ -198,7 +146,7 @@ type archiveState struct {
 	Cut int64 `json:"cut,omitempty"`
 	// PassMax is the longest hook pass (ms) this machine has run.
 	PassMax int64 `json:"pass_max_ms,omitempty"`
-	reset   bool  // the file could not be read as JSON and was started over
+	reset   bool
 }
 
 // loadArchiveState reads the state. The file is scratch data (the server
@@ -279,22 +227,22 @@ func archiveFileOfPath(p string) usageFile {
 }
 
 type archiver struct {
-	ctx      context.Context // the caller's bound on the pass (usageSyncOptions.Ctx)
+	ctx      context.Context
 	c        *cli
 	st       archiveState
 	res      *archiveResult
 	dry      bool
 	deadline time.Time
 	fails    int
-	known    []string // this machine's own secrets, blanked wherever they appear
+	known    []string
 	stop     string
-	full     bool // the archive said full lately: nothing was tried this pass
+	full     bool
 	quiet    bool // the server does not take this token's uploads, or keeps none: say nothing more
 	hook     bool // a hook's pass: shorter floor and report timeout, to end inside the hook's timeout
 	// syncStart is when the whole sync began; a hook's status post ends before
 	// syncStart + usageHookTimeout.
 	syncStart time.Time
-	pieceCap  int // a 413 taught this: the most raw bytes of a piece (0: none known)
+	pieceCap  int // most raw bytes per piece the server takes, lowered by a 413; 0 means none known
 }
 
 // bound is the caller's context for the pass, or the background one.
@@ -330,11 +278,11 @@ func usageArchive(c *cli, o usageSyncOptions, root string, syncStart time.Time) 
 			// the holder listed its files before this pass's bytes were written:
 			// leave it a note to look once more before it ends
 			_ = os.WriteFile(again, nil, 0o600)
-			res.Stopped = archiveBusy // it will get this too
+			res.Stopped = archiveBusy
 			return res, nil
 		}
 		defer unlock()
-		_ = os.Remove(again) // a note from a pass that is gone: this pass lists the files now
+		_ = os.Remove(again)
 	}
 	st, err := loadArchiveState(c.dir) // under the lock: no other pass writes it meanwhile
 	if err != nil {
@@ -347,7 +295,6 @@ func usageArchive(c *cli, o usageSyncOptions, root string, syncStart time.Time) 
 	if o.Hook && !o.DryRun {
 		switch {
 		case st.FullAt > 0 && archiveNow().Sub(time.UnixMilli(st.FullAt)) < archiveFullHold:
-			// the archive said full a short while ago: the files stay pending, and this pass is not another cut
 			a.stop, a.full = archiveFullStop, true
 		case st.NoneAt > 0 && archiveNow().Sub(time.UnixMilli(st.NoneAt)) < archiveFullHold:
 			a.stop, a.quiet = archiveNoneStop, true
@@ -368,11 +315,7 @@ func usageArchive(c *cli, o usageSyncOptions, root string, syncStart time.Time) 
 	if d, ok := a.bound().Deadline(); ok && d.Before(a.deadline) {
 		a.deadline = d
 	}
-	// more: a pass that found the lock taken left a note, so bytes came after
-	// the files were listed. Another pass runs while there is a note and the
-	// deadline allows (at most archiveAgainRounds), and the note is taken
-	// then. When the deadline does not allow, the note stays and the next
-	// pass removes it at its start, when it lists everything anyway.
+	// a pass that found the lock busy leaves a note: bytes written after the listing get another round while time allows
 	more := func() bool {
 		if o.DryRun || a.stop != "" || a.bound().Err() != nil || !time.Now().Before(a.deadline) {
 			return false
@@ -397,13 +340,11 @@ func usageArchive(c *cli, o usageSyncOptions, root string, syncStart time.Time) 
 			return res, nil
 		}
 		if a.stop != "" && !a.quiet && !a.full {
-			a.st.Cut++ // a pass that ended early is counted, with the reason in the status
+			a.st.Cut++
 		}
 		saveErr := a.save()
 		if a.quiet || o.OnlyFiles {
-			// A pass over the named files has the backlog of those files only:
-			// posting it as the machine's would zero the server's figure, so the
-			// timer's full pass reports.
+			// A pass over named files holds only their backlog; posting it as the machine's would zero the server's figure, so only the full pass reports.
 			return res, saveErr
 		}
 		if err := a.report(c, res); err != nil {
@@ -425,9 +366,7 @@ func usageArchive(c *cli, o usageSyncOptions, root string, syncStart time.Time) 
 func (a *archiver) pass(o usageSyncOptions, root string) error {
 	res := a.res
 	res.PendingBytes, res.PendingFiles = 0, 0
-	// the hour counts' window (7 days by default) is shorter than what is worth
-	// keeping: a transcript modified in the last 30 days is archived, and --all
-	// (no window) archives everything on the machine
+	// The usage counts use a 7-day window (defaultSyncSince), but the archive reaches back 30 days, so it keeps transcripts the counts drop.
 	since := o.Since
 	if o.All && since == 0 {
 		since = 0
@@ -435,7 +374,7 @@ func (a *archiver) pass(o usageSyncOptions, root string) error {
 		since = archiveBackfill
 	}
 	var files []usageFile
-	if o.OnlyFiles { // the named sessions, whatever their age; none named is none
+	if o.OnlyFiles {
 		if len(o.Files) > 0 {
 			var err error
 			if files, err = discoverTranscripts(root, 0, o.Files); err != nil {
@@ -464,7 +403,7 @@ func (a *archiver) pass(o usageSyncOptions, root string) error {
 		if seen[f.Path] {
 			return
 		}
-		if fi, err := os.Lstat(f.Path); err == nil { // a link or other odd file is counted unreadable when opened
+		if fi, err := os.Lstat(f.Path); err == nil {
 			seen[f.Path] = true
 			todo = append(todo, sized{f, fi.Size(), fi.ModTime(), hooked[f.Session]})
 		}
@@ -472,14 +411,11 @@ func (a *archiver) pass(o usageSyncOptions, root string) error {
 	for _, f := range files {
 		add(f)
 	}
-	// a file with unsent bytes stays in the pass however old it is; state for a
-	// file that is gone is dropped, and the bytes it had not sent are counted
-	// (an entry from before sizes were kept says nothing of them)
 	for p, fs := range a.st.Files {
 		if seen[p] || o.OnlyFiles {
 			continue
 		}
-		fi, err := os.Lstat(p) // a link is not followed: it is counted unreadable when opened
+		fi, err := os.Lstat(p) // a link is not followed: it is listed, then refused when opened and counted unreadable
 		switch {
 		case errors.Is(err, os.ErrNotExist):
 			if fs.Size > fs.Off {
@@ -490,7 +426,7 @@ func (a *archiver) pass(o usageSyncOptions, root string) error {
 			add(archiveFileOfPath(p))
 		}
 	}
-	// the hook's session first, then the newest, so live sessions are archived before an old backfill
+	// a hook's pass may start uploads only within archiveHookLimit, so its own session goes first
 	sort.SliceStable(todo, func(i, j int) bool {
 		if todo[i].first != todo[j].first {
 			return todo[i].first
@@ -623,7 +559,7 @@ func archiveReportOff(c *cli, o usageSyncOptions) error {
 	}
 	timeout := archiveReportTimeout
 	if o.Hook {
-		timeout = archiveReportHookTimeout // the hook's timeout covers the whole pass (WP-1466)
+		timeout = archiveReportHookTimeout
 	}
 	ctx, cancel := context.WithTimeout(o.ctx(), timeout)
 	_, err = c.callCtx(ctx, "POST", "/api/v1/usage/transcript/status", body)
@@ -697,7 +633,7 @@ func (a *archiver) file(f usageFile, size int64) {
 		return
 	}
 	if st.Held != "" && time.Since(time.UnixMilli(st.HeldAt)) < archiveRetryHeld {
-		return // the server refused it; it is tried again once a day
+		return
 	}
 	fh, err := openRegularTranscript(key)
 	if err != nil {
@@ -711,20 +647,20 @@ func (a *archiver) file(f usageFile, size int64) {
 		return
 	}
 	if fp == "" {
-		return // no whole first line yet
+		return
 	}
 	if st.Off > 0 {
 		changed := size < st.Off || st.FP != fp
 		if !changed && st.Tail != "" {
 			tail, err := tailHash(fh, st.Off)
 			if err != nil {
-				a.drop("unreadable_file") // not knowing is not a rewrite
+				a.drop("unreadable_file") // an unreadable tail is not a rewrite: the file is not restarted from byte 0
 				return
 			}
 			changed = tail != st.Tail
 		}
 		if changed {
-			st.Gen, st.Off, st.Tail, st.Held = st.Gen+1, 0, "", "" // rewritten or truncated: the next generation, from the start
+			st.Gen, st.Off, st.Tail, st.Held = st.Gen+1, 0, "", ""
 			a.res.Rewritten++
 		}
 	}
@@ -746,7 +682,6 @@ func (a *archiver) file(f usageFile, size int64) {
 			return
 		}
 		if err := a.bound().Err(); err != nil && !errors.Is(err, context.DeadlineExceeded) && !time.Now().After(a.deadline) {
-			// a runner stop or a cancel, not the clock (c6196)
 			a.stop = "stopped before the end; the rest goes next time"
 			return
 		}
@@ -760,10 +695,10 @@ func (a *archiver) file(f usageFile, size int64) {
 			return
 		}
 		if len(piece.lines) == 0 {
-			return // no whole line yet
+			return
 		}
 		gz := gzipBytes(piece.data)
-		for len(gz) > archiveGzipCap { // the server would always refuse this
+		for len(gz) > archiveGzipCap {
 			if len(piece.lines) == 1 {
 				piece.stubOnly(lineTooLargeStub(piece.end(st.Off)-st.Off), "line_too_large", piece.end(st.Off)-st.Off)
 			} else {
@@ -798,14 +733,10 @@ func (a *archiver) file(f usageFile, size int64) {
 				a.quiet = true
 				return
 			case errors.As(err, &ae) && ae.status == http.StatusInsufficientStorage && (ae.code == "transcript_full" || ae.msg == core.TranscriptQuotaRefusal || ae.msg == core.TranscriptDiskLowRefusal):
-				// the server's archive is at its size cap: held, not refused. Nothing is
-				// dropped or marked, the file stays pending, and asking again is for later
 				a.stop = archiveFullStop
 				a.st.FullAt = archiveNow().UnixMilli()
 				return
 			case errors.As(err, &ae) && ae.status == http.StatusNotImplemented:
-				// the server keeps no archive (WAYPOINT_TRANSCRIPT_DIR=off): not a drop
-				// and not a hold of this file; a hook's passes leave it for a while
 				a.stop, a.quiet = archiveNoneStop, true
 				a.st.NoneAt = archiveNow().UnixMilli()
 				return
@@ -822,7 +753,7 @@ func (a *archiver) file(f usageFile, size int64) {
 				return
 			case errors.As(err, &ae) && refusedForGood(ae.status):
 				if len(piece.lines) > 1 && !shrunk {
-					shrunk, maxLines = true, (len(piece.lines)+1)/2 // a smaller piece, once
+					shrunk, maxLines = true, (len(piece.lines)+1)/2
 					continue
 				}
 				a.drop("refused")
@@ -844,7 +775,7 @@ func (a *archiver) file(f usageFile, size int64) {
 			a.res.SentBytes += int64(len(gz))
 			for _, l := range piece.lines {
 				if l.reason != "" {
-					a.drop(l.reason) // counted when stored, not when read
+					a.drop(l.reason)
 				}
 			}
 			st.Off, st.Last, st.Held, st.Tail, shrunk, maxLines = to, time.Now().UnixMilli(), "", "", false, 0
@@ -861,9 +792,8 @@ func (a *archiver) file(f usageFile, size int64) {
 			}
 			continue
 		}
-		// duplicate, behind or gap: resume where the server's copy ends
 		switch {
-		case ans.Have > size: // the server holds more than the file does: rewritten
+		case ans.Have > size:
 			st.Gen, st.Off, st.Tail = max(st.Gen, ans.Gen)+1, 0, ""
 			a.res.Rewritten++
 		case ans.Have == st.Off && ans.Gen <= st.Gen:
@@ -887,10 +817,10 @@ type archivePiece struct {
 }
 
 type pieceLine struct {
-	end     int    // in data, after the line
-	to      int64  // in the file, after the line
-	reason  string // set when the line is a stub: what is counted when the piece is stored
-	dropped int64  // the file bytes a stub stands for
+	end     int
+	to      int64
+	reason  string
+	dropped int64
 	redact  redactCount
 }
 
@@ -944,8 +874,8 @@ func lineTooLargeStub(n int64) []byte {
 func readArchivePiece(fh *os.File, off, size int64, known []string, maxLines, maxBytes int) (archivePiece, int64, error) {
 	var p archivePiece
 	br := bufio.NewReaderSize(io.NewSectionReader(fh, off, size-off), 1<<20)
-	var long []byte // the start of a line longer than the buffer
-	longN := 0      // its length so far, kept or not
+	var long []byte
+	longN := 0
 	pos := off
 	for len(p.data) < archivePieceSize && (maxLines <= 0 || len(p.lines) < maxLines) {
 		line, err := br.ReadSlice('\n')
@@ -954,7 +884,7 @@ func readArchivePiece(fh *os.File, off, size int64, known []string, maxLines, ma
 			if longN <= archiveMaxLine {
 				long = append(long, line...)
 			} else {
-				long = nil // over the limit: counted, not kept
+				long = nil
 			}
 			continue
 		}
@@ -962,7 +892,7 @@ func readArchivePiece(fh *os.File, off, size int64, known []string, maxLines, ma
 			return archivePiece{}, off, err
 		}
 		if err != nil {
-			break // EOF: a half-written last line is read when it is whole
+			break
 		}
 		n := int64(longN + len(line))
 		data := line
@@ -976,11 +906,11 @@ func readArchivePiece(fh *os.File, off, size int64, known []string, maxLines, ma
 		var rc redactCount
 		if !over {
 			out, ok, rc = archiveRedact(data, known)
-			over = len(out) > archiveMaxLine // redaction can lengthen a line
+			over = len(out) > archiveMaxLine
 		}
 		if over {
 			if len(p.lines) > 0 {
-				break // what came before goes first; the next piece starts with the stub
+				break
 			}
 			p.add(lineTooLargeStub(n), pos+n, "line_too_large", n, redactCount{})
 			pos += n
@@ -991,7 +921,7 @@ func readArchivePiece(fh *os.File, off, size int64, known []string, maxLines, ma
 			reason = "redaction_failed"
 		}
 		if maxBytes > 0 && len(p.lines) > 0 && len(p.data)+len(out) > maxBytes {
-			break // the learned cap: the next piece starts with this line
+			break
 		}
 		p.add(out, pos+n, reason, n, rc)
 		pos += n
@@ -1002,7 +932,7 @@ func readArchivePiece(fh *os.File, off, size int64, known []string, maxLines, ma
 func gzipBytes(b []byte) []byte {
 	var buf bytes.Buffer
 	zw := gzip.NewWriter(&buf)
-	_, _ = zw.Write(b) // a buffer does not fail
+	_, _ = zw.Write(b)
 	_ = zw.Close()
 	return buf.Bytes()
 }
@@ -1155,10 +1085,10 @@ func redactTranscriptLineCounted(line []byte, known []string) ([]byte, bool, red
 		}
 		return append([]byte(r), end...), true, cnt
 	}
-	var out []byte         // allocated at the first change
-	copied := 0            // line[:copied] is already in out
-	pendingSecret := false // the next value follows a secret-named key
-	depth := 0             // inside an array or object that does
+	var out []byte
+	copied := 0
+	pendingSecret := false
+	depth := 0
 	for i := 0; i < len(line); {
 		c := line[i]
 		if c != '"' {
@@ -1167,7 +1097,7 @@ func redactTranscriptLineCounted(line []byte, known []string) ([]byte, bool, red
 			case pendingSecret && (c == '[' || c == '{'):
 				pendingSecret, depth = false, 1
 			case pendingSecret:
-				pendingSecret = false // a number, true, false or null: left as it is
+				pendingSecret = false // numbers, booleans and null are left: a usage count such as input_tokens matches the secret key pattern
 			case depth > 0 && (c == '[' || c == '{'):
 				depth++
 			case depth > 0 && (c == ']' || c == '}'):
@@ -1186,14 +1116,14 @@ func redactTranscriptLineCounted(line []byte, known []string) ([]byte, bool, red
 		if j >= len(line) {
 			return stubLine(), false, redactCount{}
 		}
-		lit := line[i+1 : j] // the string's text, still escaped
+		lit := line[i+1 : j]
 		k := j + 1
 		for k < len(line) && (line[k] == ' ' || line[k] == '\t' || line[k] == '\n' || line[k] == '\r') {
 			k++
 		}
 		var repl []byte
 		switch {
-		case k < len(line) && line[k] == ':': // an object key
+		case k < len(line) && line[k] == ':':
 			if depth == 0 {
 				pendingSecret = secretKeyRE.Match(lit)
 			}

@@ -20,9 +20,9 @@ const testSecret = "wp-token-7f3a9c2e5b1d"
 type env struct {
 	t      *testing.T
 	dir    string
-	forge  string // bare repo standing in for the forge
-	work   string // the session's clone
-	url    string // the gateway, as the session's remote
+	forge  string
+	work   string
+	url    string
 	g      *Gateway
 	mu     sync.Mutex
 	events []Event
@@ -188,7 +188,6 @@ func TestPushNewBranchThenUpdateForceAndDelete(t *testing.T) {
 		t.Fatalf("forge has %q, want %s", got, c2)
 	}
 
-	// The session made this branch, so it may rewrite it and delete it.
 	mustGit(t, e.work, "commit", "--quiet", "--amend", "-m", "more, reworded")
 	c3 := mustGit(t, e.work, "rev-parse", "HEAD")
 	if out, err := e.push("--force", "agent/fix"); err != nil {
@@ -223,8 +222,6 @@ func TestRefRulesRefuse(t *testing.T) {
 	out, err = e.push("HEAD:refs/pull/1/head")
 	wantRefused(t, out, err, "only branches can be pushed")
 
-	// A branch the session didn't create: fast-forward is fine, rewriting
-	// or deleting it isn't.
 	mustGit(t, e.work, "checkout", "--quiet", "-b", "theirs", "origin/someone-else")
 	e.commit("rewrite theirs", map[string]string{"b.txt": "b\n"})
 	mustGit(t, e.work, "reset", "--quiet", "--soft", "HEAD~1")
@@ -311,7 +308,6 @@ func TestOtherRepoNotServed(t *testing.T) {
 	if err == nil {
 		t.Fatalf("push to another repo went through:\n%s", out)
 	}
-	// Same repo, other case: the forge would take it, the gateway doesn't.
 	out, err = gitIn(t, e.work, "push", strings.Replace(e.url, "Robin/demo", "robin/demo", 1), "agent/x")
 	if err == nil {
 		t.Fatalf("push with another case went through:\n%s", out)
@@ -328,7 +324,7 @@ func TestOtherRepoNotServed(t *testing.T) {
 func TestProtectedPushIsHeldThenForwarded(t *testing.T) {
 	e := newEnv(t)
 	mustGit(t, e.work, "checkout", "--quiet", "-b", "agent/ci")
-	// Renaming the workflow away counts as touching it (WP-415).
+	// A rename away from a protected path counts as touching it.
 	mustGit(t, e.work, "mv", ".forgejo/workflows/ci.yml", "notes.txt")
 	c := e.commit("move ci away", nil)
 	out, err := e.push("agent/ci")
@@ -378,7 +374,6 @@ func TestHeldPushGoesStaleWhenTheBranchMoves(t *testing.T) {
 	out, err := e.push("agent/sum")
 	wantRefused(t, out, err, "held for a person's approval")
 	id := e.held[0].ID
-	// Meanwhile the branch appears on the forge from elsewhere.
 	seed := filepath.Join(e.dir, "seed")
 	mustGit(t, seed, "push", "--quiet", "origin", "main:refs/heads/agent/sum")
 	if err := e.g.Forward(context.Background(), id); err == nil {
@@ -416,7 +411,6 @@ func TestMergingMainIsNotAProtectedChange(t *testing.T) {
 	if out, err := e.push("agent/feature"); err != nil {
 		t.Fatalf("push: %v\n%s", err, out)
 	}
-	// A person changes CI on main; the session merges main in.
 	seed := filepath.Join(e.dir, "seed")
 	writeFile(t, filepath.Join(seed, ".forgejo/workflows/ci.yml"), "on: [push]\n")
 	mustGit(t, seed, "commit", "--quiet", "-am", "ci on main")
@@ -427,8 +421,6 @@ func TestMergingMainIsNotAProtectedChange(t *testing.T) {
 		t.Fatalf("merge of main was held or refused: %v\n%s", err, out)
 	}
 
-	// An evil merge, which changes the protected file in the merge commit
-	// itself, is caught.
 	writeFile(t, filepath.Join(seed, "other.txt"), "o\n")
 	mustGit(t, seed, "add", "other.txt")
 	mustGit(t, seed, "commit", "--quiet", "-m", "other")
@@ -466,7 +458,7 @@ func TestSecretsRefused(t *testing.T) {
 	wantRefused(t, out, err, "a known secret value (forge_token) in a file name")
 
 	mustGit(t, e.work, "reset", "--quiet", "--hard", "origin/main")
-	e.commit("fine", map[string]string{"ok.txt": "abc abc\n"}) // the 3-byte "secret" is ignored
+	e.commit("fine", map[string]string{"ok.txt": "abc abc\n"})
 	out, err = e.push("HEAD:refs/heads/x-" + testSecret)
 	wantRefused(t, out, err, "a known secret value (forge_token) in the ref name")
 	if out, err := e.push("agent/leak"); err != nil {
@@ -516,8 +508,6 @@ func TestMirrorIgnoresPlantedConfig(t *testing.T) {
 	if out, err := e.push("agent/one"); err != nil {
 		t.Fatalf("push: %v\n%s", err, out)
 	}
-	// Someone writes a hook and a config into the mirror; the next push
-	// neither runs nor reads them.
 	mirror := filepath.Join(e.dir, "gateway", "repos", "Robin", "demo.git")
 	marker := filepath.Join(e.dir, "ran")
 	writeFile(t, filepath.Join(mirror, "hooks", "pre-receive"), "#!/bin/sh\ntouch "+marker+"\n")

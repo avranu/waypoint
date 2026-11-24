@@ -48,8 +48,7 @@ async function run(width, scheme) {
       )),
       `${tag} no sideways scroll (${where})`,
     );
-  // The page scrolls inside its own panel: back to its top, and let
-  // animations settle, so screenshots show the whole tab.
+  // The app scrolls inside its own panel, not the window, so the helper resets that panel to the top.
   const shot = async (name, top = true) => {
     if (top)
       await page.evaluate(() =>
@@ -70,7 +69,6 @@ async function run(width, scheme) {
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL(base + "/");
 
-  // A project with delegated work in every state.
   const key = `Q${width === 1440 ? "W" : "N"}${scheme === "dark" ? "D" : "L"}`;
   await api("POST", "/projects", { name: `Queue ${tag}`, key });
   const mk = (title, extra = {}) =>
@@ -106,7 +104,6 @@ async function run(width, scheme) {
     issue: blocked.key,
   });
   await mk("Call the plumber", { priority: "urgent", agent: "none" });
-  // Shipped: out on a pull request, so it waits on the merge (WP-246).
   const shipped = await mk("Speed up the search index", {
     agent: "claude",
     priority: "medium",
@@ -130,7 +127,6 @@ async function run(width, scheme) {
     })
   ).token;
   const as = (tok) => ({ Authorization: `Bearer ${tok}` });
-  // Haiku takes the most urgent one: it's working now.
   const took = await api(
     "POST",
     "/agent/next?format=json",
@@ -139,7 +135,6 @@ async function run(width, scheme) {
   );
   ok(took.task?.key === flaky.key, `${tag} haiku took the urgent task`);
 
-  // The queue for every agent.
   await page.goto(`${base}/agents?tab=queue&project=${key}`);
   await page.getByRole("heading", { name: "Every agent’s queue" }).waitFor();
   await page.getByText("Working now · 1").waitFor();
@@ -183,10 +178,7 @@ async function run(width, scheme) {
   await shot("queue-all");
   await overflow("queue");
 
-  // The order is automatic until a person places a task (WP-87): placing one
-  // pins only that one, and everything else keeps following the automatic
-  // order around it. Move the last task to the top in one click (WP-753):
-  // the row's own button, or its menu on a phone.
+  // Automatic order holds until a person places a task; placing one pins only that task and the rest keep the automatic order.
   const keys = async () =>
     (await api("GET", `/agents/queue?project=${key}`)).next.map(
       (i) => i.issue.key,
@@ -244,10 +236,7 @@ async function run(width, scheme) {
     `${tag} pinning one task leaves the others in the automatic order: ${await keys()}`,
   );
 
-  // Desktop drags the parser task (second) below ${mid} (third). Only the
-  // parser is pinned: ${mid}, which it passed, keeps the automatic order.
-  // Prioritizing it puts it right after the pin at the top, which is where
-  // the automatic order puts it, so it lets go.
+  // A task moved to the spot the automatic order would already give it is unpinned.
   if (width >= 1024) {
     const from = await rows
       .filter({ hasText: parser.key })
@@ -279,7 +268,6 @@ async function run(width, scheme) {
     );
   }
 
-  // Prioritize: ${mid} goes right after the pins at the top, pinned there.
   await page.getByRole("button", { name: `More for ${mid}` }).click();
   const prio = page.getByRole("menuitem", { name: /Prioritize/ });
   ok(
@@ -300,12 +288,9 @@ async function run(width, scheme) {
     (await keys()).join() === [last, parser.key, mid].join(),
     `${tag} unpinned, it goes back to the automatic order: ${await keys()}`,
   );
-  // Clicking a pin lets that task go too.
   await page.getByRole("button", { name: `Unpin ${last}` }).click();
   await settle("");
   ok((await pinnedKeys()).length === 0, `${tag} the pin button unpins`);
-  // The first task, with no pins, can be held at the top too: Prioritize
-  // pins it where it is.
   await page.getByRole("button", { name: `More for ${parser.key}` }).click();
   await page.getByRole("menuitem", { name: /Prioritize/ }).click();
   await settle(parser.key);
@@ -319,7 +304,6 @@ async function run(width, scheme) {
   await moveTop(last);
   await page.getByText("Pinned at #1 by").first().waitFor();
 
-  // One agent's queue is exactly what wp next gives it, and next agrees.
   await page.goto(
     `${base}/agents?tab=queue&project=${key}&agent=anthropic/claude-opus-5-5`,
   );
@@ -337,7 +321,6 @@ async function run(width, scheme) {
     `${tag} wp next agrees: ${peek.task?.key} (${peek.why})`,
   );
 
-  // Pause Claude agents with a note; next tells the agent.
   await page.goto(`${base}/agents?tab=queue&project=${key}&agent=claude`);
   await page.getByRole("heading", { name: "Queue for claude" }).waitFor();
   await page.getByRole("button", { name: "Pause", exact: true }).click();
@@ -363,7 +346,6 @@ async function run(width, scheme) {
   await page.getByRole("button", { name: "Pause", exact: true }).waitFor();
   ok(true, `${tag} resumed`);
 
-  // Add work: delegate a humans-only issue, pinned to the top.
   await page.getByRole("button", { name: "Add work" }).first().click();
   await page.getByLabel("Find an issue").fill("plumber");
   const dialog = page.getByRole("dialog", { name: "Add work for agents" });
@@ -390,7 +372,6 @@ async function run(width, scheme) {
     `${tag} added work is first`,
   );
 
-  // Take the held task back from haiku.
   await page.goto(`${base}/agents?tab=queue&project=${key}`);
   await page.getByRole("button", { name: "Take back" }).first().click();
   await page
@@ -400,9 +381,6 @@ async function run(width, scheme) {
   await page.getByText(`${flaky.key} is back in the queue`).waitFor();
   ok(true, `${tag} a person took the task back`);
 
-  // Start a fresh task session from the queue (WP-71): off, saying why,
-  // until a runner of yours can take it; then a session job on that runner,
-  // bound to the task, in the checkout you last worked in there.
   const box = `qbox-${key.toLowerCase()}`;
   const start = (k) =>
     page.getByRole("button", { name: `Start a session for ${k}` });
@@ -417,7 +395,6 @@ async function run(width, scheme) {
     ),
     `${tag} the off Start says why`,
   );
-  // A session of robin's on box took a task here; her runner on box allows /work.
   const sTok = (
     await api("POST", "/me/tokens", {
       name: `session ${tag}`,
@@ -502,9 +479,6 @@ async function run(width, scheme) {
       await api("POST", `/agents/release/${held.task.key}`).catch(() => {});
   }
 
-  // Work anyone may take (the default) is in the queue, and wp next hands it
-  // out (WP-93); an urgent one comes before delegated work that matters less
-  // (WP-997); humans-only work never shows.
   const anyone = await mk("Sweep the changelog", { priority: "urgent" });
   ok(!anyone.agent, `${tag} a new issue is open to anyone`);
   const qn = (await api("GET", `/agents/queue?project=${key}`)).next;
@@ -532,8 +506,6 @@ async function run(width, scheme) {
   );
   await shot("queue-anyone");
 
-  // A task with open sub-issues for agents waits for them (WP-494): the
-  // sub-issue is up next, the parent under "Sub-issues first".
   const epic = await mk("Rework the importer", {
     agent: "claude",
     type: "epic",
@@ -564,8 +536,6 @@ async function run(width, scheme) {
   await shot("queue-sub-issues");
   await overflow("sub-issues");
 
-  // The assignee list says how many seen agents each spec reaches, and
-  // lists the agents seen (WP-D15; agents moved into it in WP-1196).
   await page.goto(`${base}/issue/${someday.key}`);
   await page
     .getByTitle(/^For agents: any/)
@@ -585,7 +555,6 @@ async function run(width, scheme) {
   await shot("agent-picker", false);
   await page.keyboard.press("Escape");
 
-  // A project's own pause.
   await page.goto(`${base}/p/${key}/settings`);
   await page
     .getByRole("switch", { name: "Agents may take new work here" })
@@ -601,8 +570,7 @@ async function run(width, scheme) {
   ok(true, `${tag} a paused project's work waits`);
   await shot("queue-project-paused");
   await overflow("paused project");
-  // Moving a task keeps the page where it was (WP-753): the browser used to
-  // follow the moved task up to the top of a long queue.
+  // Moving a task must keep the page's scroll position, not follow the moved task.
   const long = key + "L";
   await api("POST", "/projects", { name: `Long queue ${tag}`, key: long });
   for (let n = 0; n < 12; n++)

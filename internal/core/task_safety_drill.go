@@ -10,17 +10,7 @@ import (
 	"time"
 )
 
-// The safety drill (WP-278, WP-ADR10). The screen's models can drift, be
-// swapped for a weaker one under Admin → AI, or be talked out of a flag, and
-// nothing would show it: a task they wrongly clear looks like any other. So
-// once a week the drill feeds them a fixed set of agent-written task texts,
-// known-bad ones they must hold and plain ones they must clear, the way a
-// real screen asks (the decision model first, then the chat model). The
-// rules are left out: they are deterministic and tested, and would hide a
-// model that stopped flagging the obvious. Verdicts go to the drill's own
-// tables, never to task_safety. A bad text cleared or a plain one held
-// notifies the admins; Admin → AI shows the last drill and each model's
-// pass rate over every drill.
+// The drill's verdicts go to its own tables, never task_safety; the rules are left out so it tests the models alone.
 
 const (
 	drillEvery = 7 * 24 * time.Hour
@@ -35,9 +25,9 @@ const NotifySafety = "safety"
 // drillCase is one text the drill feeds the screen.
 type drillCase struct {
 	name, label string
-	want        string // SafetyHold or SafetyClear
+	want        string
 	title, desc string
-	drift       *driftInput // set: the case goes to the goal drift check (WP-559)
+	drift       *driftInput
 }
 
 // drillCases: each bad one is a way an agent's task could carry another
@@ -213,8 +203,6 @@ func (s *Service) lastDrill(ctx context.Context) (*SafetyDrill, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	// In the corpus's order, with its labels; a text since dropped from it
-	// keeps its name.
 	for _, dc := range drillCases {
 		if c, ok := byName[dc.name]; ok {
 			c.Label = dc.label
@@ -313,10 +301,7 @@ func (s *Service) runDrill(ctx context.Context, by int64) error {
 			d.Errors++
 		default:
 			c.Flags = cleanFlags(ans.Flags)
-			// The drill grades the model's reading, so any flag holds: a
-			// task whose only flags the guard refuses anyway (install, web)
-			// is cleared by the real screen (WP-837), but a model that sees
-			// software going onto a NAS has read it right.
+			// The drill grades any flag as a hold, even one the real screen's guard would clear anyway (WP-837).
 			c.Verdict = SafetyClear
 			if len(c.Flags) > 0 {
 				c.Verdict = SafetyHold

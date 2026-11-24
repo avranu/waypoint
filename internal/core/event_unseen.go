@@ -31,7 +31,7 @@ func (s *Service) hideUnseen(ctx context.Context, q queryer, actor *Actor, e *Ev
 		}
 		return !s.canSee(ctx, q, actor, o.ID, o.ProjectID)
 	}
-	// "relates KEY": the key is the last word.
+	// The event text ends with the key, as in "relates KEY".
 	mask := func(text string) (string, bool) {
 		f := strings.Fields(text)
 		if len(f) < 2 || !unseen(f[len(f)-1]) {

@@ -11,12 +11,6 @@ import (
 	"strings"
 )
 
-// Committing files through a forge's API (WP-D16): an approved change
-// request becomes a new branch with one commit holding all its files, and a
-// pull request, without a checkout. httpForgeClient implements it for
-// GitHub (git data API), Forgejo (the contents API's multi-file commit) and
-// GitLab (the commits API).
-
 // CommitInput is one commit of several files on a new branch.
 type CommitInput struct {
 	Base    string       // the branch to start from
@@ -103,7 +97,6 @@ func (c *httpForgeClient) FileBlobSHA(ctx context.Context, f *Forge, repo, path,
 		return "", nil
 	}
 	if err != nil {
-		// A directory answers with a list.
 		if strings.Contains(err.Error(), "cannot unmarshal array") {
 			return "", fmt.Errorf("%s is a directory", path)
 		}
@@ -154,7 +147,7 @@ func (c *httpForgeClient) fjCommit(ctx context.Context, f *Forge, repo string, i
 		} `json:"commit"`
 	}
 	body := map[string]any{"branch": in.Base, "message": in.Message, "files": files}
-	if in.Branch != "" { // none: the commit goes on in.Base itself (commitToBranch)
+	if in.Branch != "" {
 		body["new_branch"] = in.Branch
 	}
 	err := c.do(ctx, f, http.MethodPost, "/repos/"+repo+"/contents", body, &out)
@@ -183,7 +176,6 @@ func (c *httpForgeClient) ghCommit(ctx context.Context, f *Forge, repo string, i
 	if err := c.do(ctx, f, http.MethodGet, "/repos/"+repo+"/git/commits/"+ref.Object.SHA, nil, &base); err != nil {
 		return nil, err
 	}
-	// Keep the mode of files that are replaced (an executable stays one).
 	modes := map[string]string{}
 	var tree struct {
 		Tree []struct {

@@ -11,12 +11,7 @@ import (
 	"time"
 )
 
-// Token permissions (WP-111): an API token can carry a list of permissions,
-// and then does only what they allow. A token without one is unrestricted
-// (or read-only), as tokens always were. The API maps every route and MCP
-// tool to one permission (internal/api/permissions.go) and refuses the ones
-// a token lacks; core re-checks the dangerous ones with Actor.need, so a
-// route mapped too loosely still can't start a session or run a command.
+// The API maps each route and MCP tool to a permission, but core re-checks the dangerous ones with Actor.need, so a route mapped too loosely still can't start a session or run a command.
 
 // Permission names one thing a permission token may do, e.g. "issues.edit".
 type Permission string
@@ -26,9 +21,9 @@ type Permission string
 type Risk string
 
 const (
-	RiskSafe      Risk = "safe"      // reads, and ordinary edits a person can review and undo
-	RiskCareful   Risk = "careful"   // acts for you or reaches other people, but runs nothing
-	RiskDangerous Risk = "dangerous" // runs code or agents, deletes, ships, or changes who can do what
+	RiskSafe      Risk = "safe"
+	RiskCareful   Risk = "careful"
+	RiskDangerous Risk = "dangerous"
 )
 
 const (

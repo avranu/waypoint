@@ -10,19 +10,7 @@ import (
 	"time"
 )
 
-// The review loop's own health (WP-1320, WP-ADR135): whenever the loop's
-// record of a project changes (a round's decision, an audit with Haiku
-// helpers ending, or a ship held again with nothing marked since:
-// EvReviewLoopRecorded), the rounds', the helpers' and the ship holds'
-// records of that project are read against the decision's reopen
-// conditions, and a condition that trips files a task in the project
-// (once: an open task of the same title stands for it). Nobody has to
-// remember to look at `wp pr rounds`.
-//
-// Not a poll: every figure the conditions read changes only when one of
-// those records is written, or when a session marks a finding, and a
-// run's marks come before its next decision. Marks made after a run's last
-// decision are read at the project's next one.
+// Not a poll: figures change only when a loop record is written or a finding is marked; marks made after a run's last decision are read at the project's next decision.
 
 // EvReviewLoopRecorded: the review loop's record of a project changed. Not
 // recorded in history; it sets off the health check.
@@ -39,13 +27,13 @@ type reviewHealthIssue struct {
 
 // The least record each condition reads before it can trip.
 const (
-	healthMinFollowed = 20 // judged rounds after an again at an index
-	healthMinProbes   = 10 // judged rounds after a probe at an index
-	healthMinAgree    = 50 // findings scored both ways
-	healthMinRuns     = 20 // a helper's runs
-	healthMinLeads    = 20 // a panel check's leads
-	healthMinVerdicts = 10 // verdicts of one kind
-	healthMinReasked  = 10 // refuted findings asked about again
+	healthMinFollowed = 20
+	healthMinProbes   = 10
+	healthMinAgree    = 50
+	healthMinRuns     = 20
+	healthMinLeads    = 20
+	healthMinVerdicts = 10
+	healthMinReasked  = 10
 	// healthMinNeverOverturned: re-asked refutations, none overturned,
 	// before the second ask is called useless. With none of n overturned
 	// the 95% upper bound on the overturn rate is about 3/n (the rule of
@@ -95,16 +83,13 @@ func reviewHealthIssues(byRound []AgainRoundStat, agree *AgainAgreement, helpers
 				"%d decision(s) at round %s in the last %d days stopped at the cap of %d rounds. Rounds that run that long mean the repeat detection missed churn or the floor is too low; read those runs' rounds (wp pr rounds, wp worklog --review).",
 				r.Arms[AgainCap], idx, reviewHealthDays, reviewRoundsCap)
 		}
-		// Probes that found nothing say nothing of the bar, however little
-		// the again rounds found (that's the condition above).
+		// A probe round with no useful finds says nothing of the bar: without the > 0 guard, 0 >= 0 fires when the again rounds found nothing too.
 		if r.ProbeFollowed >= healthMinProbes && r.Followed >= healthMinFollowed && r.ProbeUseful > 0 && r.ProbeUseful*r.Followed*5 >= r.Useful*r.ProbeFollowed*4 {
 			add("Review loop: probes at round "+idx+" find as much as again rounds",
 				"At round %s in the last %d days, %d of %d judged probe rounds were useful (%.0f%%) against %d of %d after again decisions (%.0f%%). Rounds the scores turned down find about as much as the ones they chose: the bar there is too high.",
 				idx, reviewHealthDays, r.ProbeUseful, r.ProbeFollowed, pct(r.ProbeUseful, r.ProbeFollowed), r.Useful, r.Followed, pct(r.Useful, r.Followed))
 		}
 	}
-	// Rounds a signal sent on count too: their findings were still sent to
-	// be scored (Scoring), so the model failing there is the same failure.
 	var checks, passed, unchecked, scoring, unscored int
 	for _, r := range byRound {
 		checks, passed, unchecked = checks+r.Checks, passed+r.Passed, unchecked+r.Unchecked
@@ -120,8 +105,6 @@ func reviewHealthIssues(byRound []AgainRoundStat, agree *AgainAgreement, helpers
 			"Of %d rounds whose marks were sent to the Haiku check in the last %d days, it was passed over in %d (%.0f%%): it couldn't be asked, failed, or ran past its 30 minutes. Those rounds' marks stood on the sessions' word, and %d of them went on to another round only because rejections were left unchecked. Read the check audits' errors (purpose check) and the runners' claude sign-in.",
 			checks, reviewHealthDays, passed, pct(passed, checks), unchecked)
 	}
-	// Filing ends a round as a fix does (WP-1547), so a rise in it is read
-	// as a drop in fixing: most of what stood filed, not fixed.
 	var standing, filed int
 	for _, r := range byRound {
 		standing, filed = standing+r.Standing, filed+r.Filed
@@ -145,7 +128,6 @@ func reviewHealthIssues(byRound []AgainRoundStat, agree *AgainAgreement, helpers
 			"Over %d findings scored both ways in the last %d days, the reviewers' labels and the decision model's scores are %.1f points apart on average (the condition is over 3); %d are within two points. One of them should get more weight in the decision, or be dropped.",
 			agree.Findings, reviewHealthDays, agree.MeanGap, agree.Within2)
 	}
-	// The title names the task: another task looping is another task to file.
 	for _, h := range holds {
 		if h.Repeats >= healthMinRepeats {
 			add("Review loop: "+h.Issue+"'s ship held again and again with nothing marked",
@@ -155,7 +137,6 @@ func reviewHealthIssues(byRound []AgainRoundStat, agree *AgainAgreement, helpers
 	}
 	for _, h := range helpers {
 		if h.Check == helperVerify {
-			// A refuted finding a session filed was held by it as real too.
 			if held := h.RefutedHeld + h.RefutedFiled; h.Refuted >= healthMinVerdicts && held*2 > h.Refuted {
 				add("Review loop: the check of findings refutes findings sessions fix",
 					"Of %d findings Haiku refuted against the code in the last %d days, sessions fixed or confirmed %d anyway (%.0f%%; %d of them filed as issues, not fixed). A refuted finding doesn't count toward another round, so the check is costing real findings: read those findings' verdict notes.",
@@ -177,7 +158,6 @@ func reviewHealthIssues(byRound []AgainRoundStat, agree *AgainAgreement, helpers
 					h.Confirmed, reviewHealthDays, h.ConfirmedRejected, pct(h.ConfirmedRejected, h.Confirmed))
 			}
 		}
-		// Runs stopped with their job (cancelled) say nothing of the check.
 		if ran := h.Runs - h.Stopped; ran >= healthMinRuns && (h.Failed+h.Skipped+h.Partial)*2 > ran {
 			add("Review loop: Haiku check "+h.Check+" mostly doesn't run",
 				"Of %d runs of the %s check in the last %d days that weren't stopped with their job, %d failed, %d failed in part and %d were skipped. Skipped runs are runners without a signed-in claude (a gateway audit's runner needs it too); failed ones say why in audit_helper_runs.error.",
@@ -188,7 +168,6 @@ func reviewHealthIssues(byRound []AgainRoundStat, agree *AgainAgreement, helpers
 				"The %s check raised %d problems in %d runs over the last %d days, and a second read confirmed %d (%.0f%%; the condition is under 5%%). It costs $%.2f there: its question or its pruning needs changing, or it should go.",
 				h.Check, h.Raised, h.Answered, reviewHealthDays, h.Confirmed, pct(h.Confirmed, h.Raised), h.CostUSD)
 		}
-		// A filed finding held as real: it counts with the fixed ones.
 		if held := h.Fixed + h.Filed; h.Check != helperVerify && h.Check != helperCombine && held+h.Rejected >= healthMinVerdicts && held*4 < held+h.Rejected {
 			add("Review loop: findings from Haiku check "+h.Check+" are mostly rejected by sessions",
 				"Of %d findings from the %s check's problems that sessions marked in the last %d days, they fixed or confirmed %d (%.0f%%; the condition is under 25%%; %d of them filed as issues) and rejected %d. The second read passes what a session then finds doesn't hold.",
@@ -253,10 +232,8 @@ func (s *Service) fileReviewHealth(ctx context.Context, projectID int64, h revie
 		return nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		return err // a failed lookup isn't "no open task": don't file a duplicate
+		return err
 	}
-	// A tripped condition nobody can be given is an error, so the sweep
-	// logs it: the alarm mustn't go quiet.
 	ownerID := s.leftoverOwner(ctx, s.db.R, projectID)
 	if ownerID == 0 {
 		return errors.New("the project has no owner or editor to file it as")
@@ -310,10 +287,9 @@ func (s *Service) againHolds(ctx context.Context, ivis string, iargs []any, sinc
 	}
 	defer rows.Close()
 	var out []AgainHoldStat
-	var repeats []int64 // the current task's repeats' times, in order
+	var repeats []int64
 	day := healthHoldDay.Milliseconds()
 	settle := func() {
-		// The most repeats inside any day, counted from each repeat on.
 		for i, j := 0, 0; j < len(repeats); j++ {
 			for repeats[j]-repeats[i] >= day {
 				i++

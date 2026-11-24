@@ -8,10 +8,7 @@ import (
 	"time"
 )
 
-// A wp ship held for its review round waits on the server for the round's next
-// step and prints it, instead of exiting so that every step costs the agent a
-// turn end, a reply and a typed prompt (WP-1669). Run in the background (Claude
-// Code moves a long command there itself), the agent is woken when it exits.
+// A held wp ship waits for the review round's next step and prints it, rather than exiting (each exit costs the agent a turn end and a prompt); run it in the background so the agent is woken when it exits.
 
 // shipWaitDefault bounds the wait. shipWaitMax is the longest it may run
 // from the start of the wp ship process: it stays under shipBgFresh so a
@@ -63,9 +60,9 @@ func (c *cli) canWaitShip(so shipOpts, o *openedPR) bool {
 type waitStop int
 
 const (
-	stopQuiet waitStop = iota // an older server, or no round: nothing to say
-	stopBound                 // the bound passed
-	stopLost                  // retries ran out, or a request failed for good
+	stopQuiet waitStop = iota
+	stopBound
+	stopLost
 )
 
 // waitShipNews holds until the task's round has something for the agent, or
@@ -74,7 +71,6 @@ const (
 // waiting.
 func (c *cli) waitShipNews(task string, bound time.Duration, announce func()) (*shipNews, waitStop, error) {
 	announced := false
-	// quit is how a stop reads: silent until the wait was announced.
 	quit := func(why waitStop, err error) (*shipNews, waitStop, error) {
 		if !announced {
 			why = stopQuiet
@@ -101,7 +97,6 @@ func (c *cli) waitShipNews(task string, bound time.Duration, announce func()) (*
 			}
 			return false, nil
 		}
-		// "none", or one this client doesn't know: stop
 		return true, nil
 	})
 	switch {

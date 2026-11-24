@@ -13,10 +13,6 @@ import (
 	"time"
 )
 
-// wp testsum --repeat: is a test flaky, and did the fix for a flake hold?
-// One run can't say; N runs give a failure count per test and the range the
-// true rate likely lies in (WP-935).
-
 const testsumMaxRepeat = 1000
 
 // repeatTally is one failing test across the runs.
@@ -29,7 +25,7 @@ type repeatTally struct {
 func (c *cli) testsumRepeat(argv []string, format string, n int, untilFail bool, keep []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	rec := newTestRunRecorder(argv)                // as typed
+	rec := newTestRunRecorder(argv)
 	key := slotRunFor("wp testsum --repeat", argv) // the hold is N runs, so not the command's own history
 	argv = goTestCount1(goTestJSON(argv))
 	env, release, err := c.takeSlotFor(ctx, "tests", defaultSlots(), key)
@@ -60,8 +56,6 @@ func (c *cli) testsumRepeat(argv []string, format string, n int, untilFail bool,
 			return err
 		}
 		if ctx.Err() != nil {
-			// The run the stop cut short says nothing; the finished ones
-			// are still reported and kept.
 			stopped = true
 			break
 		}
@@ -84,7 +78,6 @@ func (c *cli) testsumRepeat(argv []string, format string, n int, untilFail bool,
 			}
 		}
 		if !failed && res != nil && res.outcome() == runEmpty {
-			// No test ran (a -run that matches nothing): not a pass.
 			empty++
 			lastEmpty = res
 			continue

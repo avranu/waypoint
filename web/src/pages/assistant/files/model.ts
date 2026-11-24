@@ -1,7 +1,4 @@
-// The assistant's files (WP-ADR1): Hermes's managed files under its root
-// (/api/files*), with text read and written through its raw fs routes
-// (/api/fs/read-text, /api/fs/write-text). Paths are absolute, as Hermes
-// gives them. Everything here is the agent's: names and contents are text.
+// Names and contents are the agent's text: render as text, never HTML.
 
 import { queryOptions, type QueryClient } from '@tanstack/react-query'
 import { hget, hermesQuery } from '@/lib/assistant'
@@ -88,8 +85,6 @@ export const downloadURL = (id: number, path: string) => `${api(id)}/files/downl
 /** Audio and video, served inline with ranges. */
 export const streamURL = (id: number, path: string) => `${api(id)}/files/stream${qs({ path })}`
 
-// ---- paths ----
-
 export const trimSlash = (p: string) => (p.length > 1 ? p.replace(/\/+$/, '') : p)
 
 export function parentOf(p: string): string {
@@ -118,8 +113,6 @@ export function numbered(name: string, n: number): string {
   if (dot <= 0) return `${name} (${n})`
   return `${name.slice(0, dot)} (${n})${name.slice(dot)}`
 }
-
-// ---- kinds ----
 
 export type Kind =
   | 'folder'
@@ -177,8 +170,6 @@ export function kindOf(e: Pick<FileEntry, 'name' | 'is_directory' | 'mime_type'>
 /** Whether to ask Hermes for the text at all (it says when a file turns out binary). */
 export const readsAsText = (k: Kind) =>
   k === 'markdown' || k === 'json' || k === 'code' || k === 'text' || k === 'sheet' || k === 'other'
-
-// ---- sorting ----
 
 export type SortKey = 'name' | 'modified' | 'size'
 export interface Sort {

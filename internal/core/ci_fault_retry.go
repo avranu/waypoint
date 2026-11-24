@@ -1,22 +1,6 @@
 package core
 
-// When to re-run a runner fault (WP-838, WP-ADR82). Until then a head got two
-// re-runs and then stopped for good, whatever the failures were: a runner
-// fault usually ends by itself (a host cleaned, Docker back, DNS answering), and
-// stopping left work waiting for a person who had nothing to do with it.
-//
-// A fault is re-run until it passes or the head moves on, spaced out:
-//
-//   - the failures' kinds decide the count: kinds the streak has already
-//     failed with keep it, and each step of it waits twice as long
-//     (faultBackoff); a kind it hasn't seen means a new problem (the last may
-//     have cleared), so the streak starts over. Checks that pass end it.
-//   - a host that reports itself unfit is waited for first (faultHosts), so
-//     a full disk is retried when it has been cleaned, not before.
-//   - what outlasts faultReportAfter re-runs, or a host sick for faultSickFor,
-//     is tracked once in a task (ci_fault_task.go), and the re-runs go on.
-//   - a job's own time limit stops after faultTimeLimitReruns: re-runs can
-//     beat a slow host, but only the job's owner can fix a suite that grew.
+// A runner fault is re-run until its checks pass or the head moves on, backing off, with a host waited for first and a job's own time limit stopping after 3 re-runs.
 
 import (
 	stdcmp "cmp"
@@ -30,14 +14,14 @@ import (
 )
 
 const (
-	faultRerunAfter      = 2 * time.Minute  // a host that doesn't report gets this long to come back
-	faultRerunSettle     = 3 * time.Minute  // after a re-run, its jobs' new results are awaited this long
-	faultSickFor         = 30 * time.Minute // a host still sick this long is worth tracking in a task
-	faultBackoffBase     = 5 * time.Minute  // the wait after the first failed re-run; doubles each time
-	faultBackoffMax      = 2 * time.Hour    // the longest wait between re-runs
-	faultReportAfter     = 3                // re-runs before a fault is tracked in a task
-	faultTimeLimitReruns = 3                // re-runs of a job that only ran out of its own time
-	cancelledReruns      = 2                // a head's cancelled checks are re-run at most this often
+	faultRerunAfter      = 2 * time.Minute
+	faultRerunSettle     = 3 * time.Minute
+	faultSickFor         = 30 * time.Minute
+	faultBackoffBase     = 5 * time.Minute
+	faultBackoffMax      = 2 * time.Hour
+	faultReportAfter     = 3
+	faultTimeLimitReruns = 3
+	cancelledReruns      = 2
 )
 
 // faultRerun is a head's runner-fault re-runs, kept as "sha n first last
@@ -188,7 +172,7 @@ func (s *Service) timeLimitRerunning(ctx context.Context, pr *PullRequest, fault
 	st := parseFaultRerun(b.faultReruns)
 	switch {
 	case st.sha != pr.HeadSHA, !st.coversKinds(faultKinds(faults)):
-		return true // not re-run for these failures yet: the streak starts over
+		return true
 	case st.last > 0 && s.now().Sub(msTime(st.last)) < faultRerunSettle:
 		return true
 	}
@@ -266,8 +250,7 @@ func (s *Service) rerunRunnerFaults(ctx context.Context, b *Babysit, pr *PullReq
 	if limit && st.streak >= faultTimeLimitReruns {
 		return "", false
 	}
-	// A job's own time limit is no runner's fault: nothing to track in a task,
-	// whatever the head's earlier re-runs were for.
+	// A job's own time limit is no runner's fault, so it is never tracked in a task.
 	if !limit && st.n >= faultReportAfter {
 		report = faultReportWhy(st, now)
 	}
@@ -287,9 +270,7 @@ func (s *Service) rerunRunnerFaults(ctx context.Context, b *Babysit, pr *PullReq
 		wait("Waypoint re-runs it shortly")
 		return report, true
 	}
-	// The attempt is recorded before the forge is asked: a re-run whose
-	// back-off went unrecorded would be asked for again every pass, the load
-	// on a sick runner the back-off is for.
+	// Record the attempt before asking the forge: an unrecorded back-off gets re-asked every pass, loading the sick runner it protects.
 	st.n++
 	st.streak++
 	st.last = now.UnixMilli()
@@ -303,9 +284,7 @@ func (s *Service) rerunRunnerFaults(ctx context.Context, b *Babysit, pr *PullReq
 		s.log.WarnContext(ctx, "re-run a head's runner-fault jobs", "repo", pr.Repo, "pr", pr.Number, "err", err)
 		wait(fmt.Sprintf("the forge refused the re-run; Waypoint tries again at %s", st.nextTry().UTC().Format("15:04 UTC")))
 	case n == 0:
-		// The forge has nothing failed to re-run (any more): its new results
-		// should be on the way. It counts, so a forge that never posts them
-		// backs off too.
+		// Nothing left to re-run still counts as an attempt, so a forge that never posts results backs off.
 		wait(fmt.Sprintf("waiting for the forge's new results (attempt %d)", st.n))
 	default:
 		wait(fmt.Sprintf("Waypoint re-ran %d job%s (attempt %d)", n, plural(n), st.n))

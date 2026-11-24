@@ -20,9 +20,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/sandbox"
 )
 
-// wp sandbox install and wp sandbox doctor (WP-418, WP-ADR28, PL7 §5.3,
-// §10.2): the root helper is installed by a person, who reads the script
-// first; wp only writes it and checks the result.
+// The root helper is installed by a person, who reads the script first; wp only writes it and checks the result.
 
 var sandboxInstallCmd = &command{
 	name: "install", args: "[--store-from DIR] [--runner-uid N] [--runner-id N]",

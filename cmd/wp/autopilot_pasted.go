@@ -6,11 +6,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// Autopilot's prompt is worded by people (WP-308), so it needn't start with
-// autopilotPromptMark, which is how the server tells autopilot's own prompts
-// from a person's. The runner notes each prompt it pastes, by the session it
-// goes to; that session's UserPromptSubmit hook, on this machine, finds it
-// there and sends it marked.
+// The runner notes each prompt it pastes by session; the UserPromptSubmit hook on this machine finds the note and marks the prompt, so it needn't start with autopilotPromptMark.
 
 // pastedPrompt is one prompt autopilot pasted: the task, and a digest of
 // its words (so the state file never holds the task's text).
@@ -64,9 +60,9 @@ func (c *cli) pastedPromptKey(session, prompt string) (string, bool) {
 	if session == "" {
 		return "", false
 	}
-	st := c.state // a test's bare cli keeps it in memory
+	st := c.state
 	if c.dir != "" {
-		st = c.loadState() // no lock or write for the prompts that aren't autopilot's
+		st = c.loadState()
 	}
 	if st.Pasted[session] == nil {
 		return "", false

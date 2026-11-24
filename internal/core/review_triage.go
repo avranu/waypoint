@@ -15,24 +15,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Review triage (WP-692, WP-ADR79): at wp ship, before a task's adversarial review is
-// scheduled, deterministic rules look at the change and skip the review of
-// the few kinds nobody needs reviewed. Every assessment is recorded, with
-// the features a later model can be trained on.
-//
-//   - Floors always review, whatever the rules or a model say: a change too
-//     big to judge, binary files, a high-risk task, sensitive paths, risky
-//     code. No facts (an older wp) reviews too.
-//   - Rules name the low-risk kinds. An active rule skips; a shadow rule
-//     records what it would have skipped and the review still runs, so the
-//     rule gathers evidence before anyone trusts it. Making a rule active is
-//     one word in triageRules.
-//   - A holdout of the active rules' changes is reviewed anyway, picked by
-//     hash, so the rules' misses can be measured from what the reviews found.
-//
-// The decision is pure (assessChange's facts in, triageDecision out), which
-// is what the tests hold it to. wp ship --review always reviews and
-// --skip-review always skips; both are recorded as such.
+// Floors always review; active rules skip; a shadow rule only records; a hash-picked holdout of the active rules' skips is reviewed anyway, to measure their misses.
 
 // TriageVersion names the rules that decided, stored on each row so results
 // can be split when the rules change.
@@ -46,13 +29,13 @@ const (
 
 // Why a change the rules would skip was reviewed, or why one was skipped.
 const (
-	triageWhyAsked      = "asked"       // wp ship --review
-	triageWhyAgentSkip  = "agent_skip"  // wp ship --skip-review
-	triageWhyOwnReview  = "own_review"  // the session ran its own review (WP-1089)
-	triageWhyModeOff    = "mode_off"    // review_skip is off
-	triageWhyModeShadow = "mode_shadow" // review_skip is shadow
-	triageWhyShadowRule = "shadow_rule" // the rule isn't active yet
-	triageWhyHoldout    = "holdout"     // picked to be reviewed anyway
+	triageWhyAsked      = "asked"
+	triageWhyAgentSkip  = "agent_skip"
+	triageWhyOwnReview  = "own_review"
+	triageWhyModeOff    = "mode_off"
+	triageWhyModeShadow = "mode_shadow"
+	triageWhyShadowRule = "shadow_rule"
+	triageWhyHoldout    = "holdout"
 
 	// triageWhySuperseded is a rule's skip of a branch assessed again: the
 	// later row says what became of the branch, and reports leave this out.
@@ -61,9 +44,9 @@ const (
 
 // Review skip modes (AutopilotLimits.ReviewSkip).
 const (
-	ReviewSkipOn     = "on"     // active rules skip the review
-	ReviewSkipShadow = "shadow" // assess and record only
-	ReviewSkipOff    = "off"    // no rule ever skips (still recorded)
+	ReviewSkipOn     = "on"
+	ReviewSkipShadow = "shadow"
+	ReviewSkipOff    = "off"
 )
 
 // DefaultReviewSkip is Waypoint's default.
@@ -130,7 +113,6 @@ type TriageFeatures struct {
 	TaskType     string `json:"task_type,omitempty"`
 	Priority     int    `json:"priority,omitempty"`
 
-	// paths is every changed file, for the code index lookup; not stored.
 	paths []string
 	class map[string]string
 }
@@ -230,7 +212,7 @@ func triageFeatures(c *ChangeFacts) *TriageFeatures {
 	for _, l := range strings.Split(strings.TrimSpace(c.Numstat), "\n") {
 		p := strings.SplitN(l, "\t", 3)
 		if len(p) != 3 {
-			f.Clipped = true // not numstat: don't judge what can't be read
+			f.Clipped = true
 			continue
 		}
 		name := diffPath(p[2])
@@ -269,11 +251,9 @@ func triageFeatures(c *ChangeFacts) *TriageFeatures {
 		total[name] = a + d
 		f.MaxFileLines = max(f.MaxFileLines, a+d)
 		if a+d == 0 && cl != fileDoc {
-			f.CodeLines++ // a mode change or an empty file: no lines, but not a comment
+			f.CodeLines++ // Sort by stakes before the cut to ten, so many loose matches can't hide a high-stakes file.
 		}
 	}
-	// The first few, those that make a change high-stakes first, so many
-	// loose matches can't hide one (WP-1250).
 	slices.SortStableFunc(f.Sensitive, func(a, b string) int { return stakesRank(a) - stakesRank(b) })
 	f.Sensitive = f.Sensitive[:min(len(f.Sensitive), 10)]
 	seen := parseUnifiedDiff(c.Diff, f)
@@ -336,7 +316,7 @@ func parseUnifiedDiff(diff string, f *TriageFeatures) map[string]int {
 			case strings.HasPrefix(l, "+") && wantAdd > 0:
 				added = append(added, l[1:])
 				wantAdd--
-			default: // a hunk that doesn't add up: stop trusting it
+			default:
 				wantDel, wantAdd = 0, 0
 			}
 			if wantDel+wantAdd == 0 {
@@ -456,7 +436,6 @@ func isComment(ext, line string) bool {
 		return false
 	}
 	rest = strings.ToLower(strings.TrimSpace(rest))
-	// A generated-code header takes the file out of linters and scanners.
 	if strings.Contains(rest, "generated") || strings.Contains(rest, "do not edit") {
 		return false
 	}
@@ -551,7 +530,7 @@ func triageFloor(f *TriageFeatures) string {
 // triageRule names a kind of low-risk change. Rules are tried in order.
 type triageRule struct {
 	name   string
-	active bool // false: shadow, records what it would have skipped
+	active bool
 	says   string
 	match  func(f *TriageFeatures) bool
 }
@@ -725,7 +704,7 @@ func (s *Service) addTriageFacts(ctx context.Context, actor *Actor, f *TriageFea
 	var forgeID, repoID int64
 	err = s.db.R.QueryRowContext(ctx, `SELECT forge_id, forge_repo_id FROM project_repos WHERE project_id = ? AND repo = ? COLLATE NOCASE LIMIT 1`, projectID, repo).Scan(&forgeID, &repoID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return // not indexed: the code floors have nothing to say
+		return
 	}
 	if err != nil {
 		f.RiskErr = true

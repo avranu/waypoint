@@ -1,6 +1,4 @@
-// Picks a project's icon: a grid of common emoji, plus a field that takes
-// any emoji typed or pasted (the last whole emoji wins, so 👩‍💻 and flags
-// stay intact).
+// The typed field keeps the last whole emoji, so ZWJ sequences and flags stay intact.
 
 import { useState } from 'react'
 import clsx from 'clsx'

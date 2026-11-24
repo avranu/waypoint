@@ -9,10 +9,7 @@ import (
 	"strings"
 )
 
-// Where a runner may act. The server checks a job's directory against the
-// directories the runner reported, but the runner has the last word: it
-// resolves symlinks (a link inside an allowed directory that points out of
-// it is outside) and refuses anything with "..".
+// The runner has the last word on where a job may act: it resolves symlinks and refuses "..".
 
 // parseAllowed turns --allow values into absolute, symlink-resolved
 // directories that exist. "~" is the home directory.
@@ -106,7 +103,6 @@ func withinDir(root, rel string) (string, error) {
 	if !inside(full, root) {
 		return "", fmt.Errorf("%q is outside the repository", rel)
 	}
-	// The deepest parent that exists must resolve inside root.
 	parent := filepath.Dir(full)
 	for {
 		if _, err := os.Lstat(parent); err == nil {

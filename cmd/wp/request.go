@@ -19,8 +19,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core/udiff"
 )
 
-// Requests (WP-D16): what an agent asks a person while it keeps working.
-
 var requestCmd = &command{
 	name: "request", aliases: []string{"requests", "req"}, group: "Tasks", args: "ask|change|run|todo|ls|show|wait|withdraw …",
 	summary: "ask a person something and keep working",
@@ -104,8 +102,6 @@ one holds (wp ask, run, todo and change take them as --closes-when):
 		{name: "snooze", args: "CODE... [--for 2h]", summary: "(people) hide an open request for a while", examples: []string{"wp request snooze R-12 --for 2h"}, run: requestSnooze},
 	}
 }
-
-// ---- JSON shapes ----
 
 type reqView struct {
 	ID       int64  `json:"id"`
@@ -290,7 +286,7 @@ func (r *reqView) text(diffs bool) string {
 		case r.Result.Rule != "":
 			fmt.Fprintf(&b, "Rule %s: %s\n", r.Result.Rule, r.Result.Reason)
 		case r.Kind == "permission" && r.Result.Reason != "":
-			fmt.Fprintf(&b, "%s\n", r.Result.Reason) // the rule picked wasn't added
+			fmt.Fprintf(&b, "%s\n", r.Result.Reason)
 		}
 	case "applied":
 		switch {
@@ -316,7 +312,7 @@ func (c *cli) requestProject(sf scopeFlags) string {
 		return *sf.project
 	}
 	if c.hasSession() {
-		return "" // the server uses the session's project
+		return ""
 	}
 	sc, err := c.scopeFor(sf)
 	if err != nil || sc.all() {
@@ -342,7 +338,7 @@ func (c *cli) hasSession() bool {
 
 func (c *cli) fileRequest(body map[string]any) error {
 	if body["kind"] == "command" {
-		c.watchSession(c.sessionID()) // a person may approve it in the terminal (WP-126)
+		c.watchSession(c.sessionID()) // A command request can be approved by a person in the terminal, so the session's Bash calls are watched while it waits.
 	}
 	raw, err := c.call("POST", "/api/v1/requests", body)
 	if err != nil {
@@ -363,8 +359,6 @@ func (c *cli) fileRequest(body map[string]any) error {
 func shortTitle(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
-
-// ---- ask, change, run, todo ----
 
 // followupFlags are the flags that say whether an answer wakes the agent
 // (WP-176).
@@ -399,7 +393,7 @@ func (f followupFlags) apply(body map[string]any) error {
 		return fmt.Errorf("--followup is any, never or on, not %q", mode)
 	}
 	if mode == "" && len(*f.on) > 0 {
-		mode = "on" // --followup-on says it
+		mode = "on"
 	}
 	if mode == "on" && len(*f.on) == 0 {
 		return errors.New("--followup on needs --followup-on CHOICE")
@@ -504,7 +498,6 @@ func requestCells(c *cli, args []string, kind, name string) error {
 	}
 	var t string
 	if kind == "command" {
-		// wp request run "make migrate": the positional is the first command.
 		if len(pos) > 0 {
 			cmds = append(multiFlag{joinArgs(pos)}, cmds...)
 		}
@@ -571,7 +564,7 @@ func requestChange(c *cli, args []string) error {
 	root, err := gitOutput("", "rev-parse", "--show-toplevel")
 	inRepo := err == nil
 	var files []changeFile
-	var notice string // said once the request is filed
+	var notice string
 	organization := false
 	switch {
 	case *patch != "":
@@ -587,7 +580,7 @@ func requestChange(c *cli, args []string) error {
 		for _, p := range pos {
 			path, src, hasSrc := strings.Cut(p, "=")
 			if hasSrc && !fileExists(src) {
-				path, src, hasSrc = p, "", false // a path that happens to contain "="
+				path, src, hasSrc = p, "", false
 			}
 			rel, outside, above, err := changePath(root, inRepo, path)
 			if err != nil {
@@ -611,10 +604,9 @@ func requestChange(c *cli, args []string) error {
 					cf.Content, err = readChangeSource(*from)
 				default:
 					if outside {
-						// Edited in place there is no HEAD to tell old from new.
 						return c.usage("%s is outside a git repo, so give its new content: --from FILE or PATH=FILE", rel)
 					} else {
-						cf.Content, err = readChangeSource(filepath.Join(root, rel)) // already edited in place
+						cf.Content, err = readChangeSource(filepath.Join(root, rel))
 					}
 				}
 				if err != nil {
@@ -627,7 +619,6 @@ func requestChange(c *cli, args []string) error {
 	if len(files) == 0 {
 		return errors.New("the change touches no files")
 	}
-	// A file whose new content is its base isn't a change (WP-948).
 	kept := files[:0:0]
 	var same []string
 	for _, f := range files {
@@ -723,7 +714,6 @@ func repoRel(root, p string) (string, error) {
 	if r, err := filepath.EvalSymlinks(root); err == nil {
 		root = r
 	}
-	// The file may not exist yet: resolve its directory.
 	dir, base := filepath.Split(abs)
 	if d, err := filepath.EvalSymlinks(dir); err == nil {
 		abs = filepath.Join(d, base)
@@ -918,7 +908,6 @@ func patchModes(root, patch string) (map[string]bool, error) {
 		f := strings.Fields(line)
 		switch {
 		case len(f) >= 6 && f[0] == "mode" && f[1] == "change" && f[3] == "=>":
-			// mode change 100644 => 100755 PATH
 			modes[strings.TrimSpace(strings.SplitN(line, f[4], 2)[1])] = f[4] == "100755"
 		case len(f) >= 4 && f[0] == "create" && f[1] == "mode" && f[2] == "100755":
 			modes[strings.TrimSpace(strings.SplitN(line, f[2], 2)[1])] = true
@@ -951,7 +940,7 @@ func chmodCommand(modes map[string]bool, paths []string) string {
 // patchPaths are the files a patch touches (git apply --numstat -z).
 func patchPaths(root, patch string) ([]string, error) {
 	cmd := exec.Command("git", "apply", "--numstat", "-z", patch) // #nosec G204 -- fixed arguments
-	// From a subdirectory git leaves out the paths outside it.
+	// Run from the repo root: from a subdirectory, git apply --numstat leaves out paths outside it.
 	cmd.Dir = root
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
@@ -972,12 +961,8 @@ func patchPaths(root, patch string) ([]string, error) {
 	return paths, nil
 }
 
-// ---- ls, show, wait, withdraw ----
-
 func requestLs(c *cli, args []string) error {
 	fs := c.flags()
-	// --all already means every state here, so -A (every project) is
-	// --all-projects.
 	sf := scopeFlags{
 		project: fs.String("project", "", "work in `PROJECT` (key, name or repo; me for personal requests)"),
 		all:     fs.Bool("all-projects", false, "every project, not just this one"),
@@ -1009,10 +994,8 @@ func requestLs(c *cli, args []string) error {
 	if *mine || c.agentHeader() != "" {
 		q.Set("mine", "1")
 	}
-	// The project of the repo here; -p KEY for another one (-p me for
-	// personal requests), -A for every project.
-	// One call each: the server filters on a single project.
-	var refs []string // "" is every project
+	// The server filters on one project, so each project needs its own call.
+	var refs []string
 	switch {
 	case sf.project != nil && strings.EqualFold(*sf.project, "me"):
 		refs = []string{"me"}
@@ -1065,7 +1048,7 @@ func requestLs(c *cli, args []string) error {
 		for _, r := range l.Requests {
 			where := ""
 			if r.Project != nil && len(refs) == 1 && refs[0] == "" {
-				where = "  [" + r.Project.Key + "]" // only when it isn't obvious which project
+				where = "  [" + r.Project.Key + "]"
 			}
 			fmt.Fprintf(&b, "%-10s %-9s %-10s %s%s\n", r.Ref, r.State, r.Kind, strings.ReplaceAll(r.Title, "…?", "…"), where)
 		}
@@ -1231,8 +1214,6 @@ func requestWithdraw(c *cli, args []string) error {
 	})
 }
 
-// ---- deciding (people) ----
-
 func requestDecide(verb string) func(c *cli, args []string) error {
 	return func(c *cli, args []string) error {
 		fs := c.flags()
@@ -1263,7 +1244,7 @@ func requestDecide(verb string) func(c *cli, args []string) error {
 				return c.usage("answer with text or --choice")
 			}
 		} else {
-			codes = requestCodes(pos) // the same decision on several
+			codes = requestCodes(pos)
 		}
 		if apply != nil && *apply != "" {
 			body["apply_path"] = *apply
@@ -1280,7 +1261,6 @@ func requestDecide(verb string) func(c *cli, args []string) error {
 				var r reqView
 				_ = json.Unmarshal(raw, &r)
 				if r.State == "withdrawn" && (verb == "done" || verb == "dismiss") {
-					// WP-198: an agent's done or dismiss takes back its own request.
 					return "Withdrew " + r.Ref + " (deciding is for people; an agent's " + verb + " takes back its own request, with -m kept as the reason)."
 				}
 				return r.Ref + " is now " + r.State + "."
@@ -1301,7 +1281,7 @@ func requestSnooze(c *cli, args []string) error {
 	}
 	body := map[string]any{}
 	if *d > 0 {
-		body["minutes"] = int(math.Ceil(d.Minutes())) // under a minute still snoozes
+		body["minutes"] = int(math.Ceil(d.Minutes()))
 	}
 	return c.each(requestCodes(pos), false, func(code string) error {
 		raw, err := c.call("POST", "/api/v1/requests/"+esc(code)+"/snooze", body)

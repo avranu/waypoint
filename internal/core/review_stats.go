@@ -1,19 +1,6 @@
 package core
 
-// Review stats (WP-371, under WP-362): how the review bot's findings held
-// up, per reviewer model × context strategy × prompt version and per
-// verifier model, from what WP-363 records on each run and finding. Arms
-// (review_arms.go) weigh the same judgments to draw a review's arm; this
-// reads them unweighted, for people and for wp pr review-stats.
-//
-// A finding is useful when it held up (findingUseful: fixed, or open or
-// resolved with its thread's verdict saying an agent took it) and false
-// when it was dismissed or withdrawn. One moved to an audit when its pull
-// request merged (WP-367) counts by the audit's verdict once it has one:
-// confirmed or fixed is useful, rejected false. A finding left out before
-// posting is never judged: the evidence check dropped it (its quote isn't
-// in the file), or the verifier did and it wasn't among the drops posted
-// anyway to check the verifier.
+// Findings dropped before posting are never judged; a leftover audit's verdict decides the rest (confirmed or fixed useful, rejected false).
 
 import (
 	"context"
@@ -25,8 +12,8 @@ import (
 )
 
 const (
-	reviewStatsDays    = 30  // the default window
-	reviewStatsMaxDays = 730 // the longest
+	reviewStatsDays    = 30
+	reviewStatsMaxDays = 730
 	// statsQ: the interval is the 5% to 95% quantiles of Beta(1+useful,
 	// 1+false), a 90% interval with a uniform prior, as arms bound theirs.
 	statsQ = 0.05
@@ -159,8 +146,8 @@ type statFinding struct {
 	model, verifier       string
 	strategy, version     string
 	state, verify, reason string
-	taken                 bool   // its thread's verdict says an agent took it
-	audit                 string // its leftover audit finding's state, "" none
+	taken                 bool
+	audit                 string
 }
 
 // statRun is one review run as stats read it.
@@ -170,11 +157,10 @@ type statRun struct {
 	arm               string
 	verified          bool
 	reviewers         []string
-	review, verify    int64 // tokens
+	review, verify    int64
 }
 
 func (s *Service) reviewStatRows(ctx context.Context, projectID, since int64) ([]statFinding, []statRun, error) {
-	// One project, or every one when projectID is 0.
 	const where = `r.kind = 'review' AND r.status = 'done' AND r.created_at >= ? AND (? = 0 OR r.project_id = ?)`
 	args := []any{since, projectID, projectID}
 	rows, err := s.db.R.QueryContext(ctx, `
@@ -335,13 +321,12 @@ func tallyReviewStats(fs []statFinding, runs []statRun) *ReviewStats {
 		}
 		return vers[m]
 	}
-	// what each run's findings say of it
 	type runSeen struct {
-		models    []string        // raw reviewer ids, first seen first
-		keys      map[string]rkey // by normalized reviewer
-		verifiers []string        // normalized verifier models
-		skipped   bool            // its findings had no verifier by its arm
-		trusted   bool            // some had none because of who wrote them
+		models    []string
+		keys      map[string]rkey
+		verifiers []string
+		skipped   bool
+		trusted   bool
 	}
 	seen := map[int64]*runSeen{}
 	for _, f := range fs {
@@ -411,7 +396,7 @@ func tallyReviewStats(fs []statFinding, runs []statRun) *ReviewStats {
 		if len(reviewers) == 0 {
 			reviewers = rs.models
 		}
-		var names, raw []string // normalized once each, and the id it came from
+		var names, raw []string
 		for _, m := range reviewers {
 			if n := normalizeModel(m); n != "" && !slices.Contains(names, n) {
 				names, raw = append(names, n), append(raw, m)

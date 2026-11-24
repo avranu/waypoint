@@ -42,7 +42,7 @@ func TestCLIEnvReadVouch(t *testing.T) {
 	defer srv.Close()
 
 	e := newEnv(t)
-	me := e.login() // an agent's token: anthropic/claude-opus-5-5
+	me := e.login()
 	ctx := context.Background()
 	name := "Harbor"
 	p, err := e.svc.CreateProject(ctx, me, core.ProjectInput{Name: &name})
@@ -82,7 +82,7 @@ func TestCLIEnvReadVouch(t *testing.T) {
 		{[]string{"/nope"}, "HTTP 404"},
 		{[]string{"/admin/health"}, "HTTP 401"},
 		{[]string{"http://elsewhere.example.test/x"}, "isn't one of production's addresses"},
-		{[]string{"/x", "--bearer", secret}, "isn't a variable name"}, // and doesn't echo it
+		{[]string{"/x", "--bearer", secret}, "isn't a variable name"},
 		{[]string{"/x", "--bearer", "HARBOR_UNSET_KEY"}, "isn't set"},
 		{[]string{"/x", "-H", "X-HTTP-Method-Override: DELETE"}, "only reads"},
 		{[]string{"/x", "-H", "X-HTTP-Method-Override=HARBOR_ADMIN_KEY"}, "only reads"},
@@ -96,15 +96,12 @@ func TestCLIEnvReadVouch(t *testing.T) {
 		}
 	}
 
-	// In an agent's shell, only the repo's own projects' environments
-	// (as the guard's env_hosts); the test's repo isn't attached to Harbor.
 	t.Setenv("CLAUDECODE", "1")
 	if out, code := e.run("env", "read", "production", "health", "-p", p.Key); code == 0 || !strings.Contains(out, "a person runs it with -p "+p.Key) {
 		t.Errorf("agent outside the repo's projects: exit %d: %s", code, out)
 	}
 	t.Setenv("CLAUDECODE", "")
 
-	// An environment an agent recorded isn't read; vouching asks a person.
 	staging, surl := "staging", srv.URL+"/s"
 	agent := &core.Actor{User: me.User, Agent: "anthropic/claude-opus-5-5"}
 	if _, err := e.svc.CreateEnvironment(ctx, agent, p.Key, core.EnvironmentInput{Name: &staging, URL: &surl}); err != nil {

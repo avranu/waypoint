@@ -17,10 +17,7 @@ import (
 	"unicode"
 )
 
-// Task sessions (WP-34): a session Waypoint starts for a task is bound to it
-// from birth by WP_TASK=KEY[,KEY…] in its environment, which its hooks and
-// every wp it runs see. wp start launches one here; the runner's
-// start_session job (and the queue, later) use the same launcher.
+// A task session's WP_TASK=KEY[,KEY...] is set from birth, so its hooks and every wp it runs see the binding.
 
 var startCmd = &command{
 	name: "start", group: "Tasks", args: "KEY [--bg] [FLAGS]",
@@ -40,20 +37,18 @@ in what the flags leave out.`,
 
 // taskLaunch is how a task session (or a follow-up's fresh session) starts.
 type taskLaunch struct {
-	tasks          []string // WP_TASK; none: not a task session
+	tasks          []string
 	prompt         string
 	name           string
 	model          string
 	permissionMode string
 	effort         string
 	bg             bool
-	fanout         int64   // WP_FANOUT: the fan-out this package's session belongs to (WP-148)
-	budget         float64 // WP_BUDGET_USD: its budget
-	// From the person's session settings (WP-1265): --rc, --chrome or
-	// --no-chrome, and variables for its environment (Code Mode).
-	remoteControl bool
-	chrome        *bool
-	env           []string
+	fanout         int64
+	budget         float64
+	remoteControl  bool
+	chrome         *bool
+	env            []string
 }
 
 // unattendedSettings is the --settings a session nobody is driving starts
@@ -239,11 +234,9 @@ func cmdStart(c *cli, args []string) error {
 		return c.usage("%q isn't an issue key like APP-12", pos[0])
 	}
 	if !*bg && os.Getenv("CLAUDECODE") == "1" {
-		// wp start used to mean wp next: an agent that still reaches for it
-		// mustn't open a nested claude in its Bash tool.
+		// Inside Claude Code, wp start without --bg would open a nested claude in the Bash tool, so it refuses.
 		return errors.New("inside a Claude Code session: `wp next KEY` takes it here; `wp start KEY --bg` runs it in a fresh session")
 	}
-	// The server's spelling (APP-12), and a task that exists and that you can see.
 	var issue struct {
 		Key   string `json:"key"`
 		Title string `json:"title"`
@@ -278,7 +271,7 @@ func cmdStart(c *cli, args []string) error {
 	c.mySessionPrefs().forDir(where).fill(&l)
 	if strings.TrimSpace(l.prompt) == "" {
 		l.prompt = startKickoff(context.Background(), where, l.sessionEnv(os.Environ()), key, issue.Title, c.kickoffTemplate(key))
-		warnTypedStart(c.err, c.noteTypedStart(context.Background(), l.prompt)) // Waypoint's words, not the person's
+		warnTypedStart(c.err, c.noteTypedStart(context.Background(), l.prompt))
 	}
 	if l.bg {
 		return c.startBackground(bin, where, l, key)
@@ -322,7 +315,7 @@ func (c *cli) startBackground(bin, dir string, l taskLaunch, key string) error {
 	if c.asJSON {
 		res := map[string]any{"task": key, "attach_id": id, "dir": dir}
 		if id == "" {
-			res["output"] = text // no id found: what claude said instead
+			res["output"] = text
 		}
 		b, _ := json.Marshal(res)
 		return c.emit(b, nil)

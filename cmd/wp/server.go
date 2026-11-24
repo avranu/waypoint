@@ -8,8 +8,7 @@ import (
 	"strings"
 )
 
-// Production diagnostics through the API, not ssh (WP-375). Admins only; a
-// permission token also needs server.read.
+// Admins only; a permission token also needs server.read.
 
 var serverCmd = &command{
 	name: "server", group: "Agent work", args: "[status|problems|job|log|metrics …]",
@@ -269,7 +268,6 @@ func cmdServerJob(c *cli, args []string) error {
 	if len(pos) == 0 {
 		return c.usage("say which job: wp server status lists them")
 	}
-	// A name of several words needs no quotes: wp server job forge sync.
 	name := strings.Join(pos, " ")
 	q := url.Values{}
 	setIf(q, "since", *since)

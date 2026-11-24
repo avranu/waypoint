@@ -7,11 +7,7 @@ import (
 	"time"
 )
 
-// What a model's tokens would cost on the API (WP-D20). Subscriptions are
-// not billed per token, so this is "API-equivalent": a way to compare
-// models and sessions, not an invoice. Prices are per million tokens,
-// matched to a model id by prefix (the longest wins), and editable by
-// admins. A price of 0 means unknown.
+// Cost is API-equivalent, not an invoice: subscriptions are not billed per token. Prices are per million tokens, matched to a model id by longest prefix; a price of 0 means unknown.
 
 // ModelPrice is one row of the price table.
 type ModelPrice struct {
@@ -32,7 +28,7 @@ func (p ModelPrice) Cost(input, output, cw5, cw1, cr int64) float64 {
 
 // priceBook finds the price of a model id.
 type priceBook struct {
-	list []ModelPrice // longest model first
+	list []ModelPrice
 }
 
 func newPriceBook(list []ModelPrice) *priceBook {

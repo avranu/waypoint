@@ -24,24 +24,21 @@ func TestNextShowsKeylessDoneForTheOnlyTask(t *testing.T) {
 	if out = s.wp("next", first, "--no-brief"); !strings.Contains(out, "`wp ship -m") {
 		t.Errorf("asked again, still the one:\n%s", out)
 	}
-	// Another while it holds one: keys, so neither is finished by mistake.
+	// While a session holds more than one task, commands name the key, so neither is finished by mistake.
 	if out = s.wp("next", second, "--no-brief"); !strings.Contains(out, "`wp ship "+second+" -m") {
 		t.Errorf("second task:\n%s", out)
 	}
-	// The first answer's keyless wp done can't mean the second now: it asks.
 	if out, code := s.run("done", "-m", "x"); code == 0 || !strings.Contains(out, "you hold "+second+", "+first) {
 		t.Errorf("two held, no KEY: exit %d\n%s", code, out)
 	}
 	s.wp("done", first, "-m", "x")
 	s.wp("done", "-m", "x")
 
-	// From a directory outside the checkout (a worktree), the session's task.
 	s.wp("next", third, "--no-brief")
 	t.Chdir(t.TempDir())
 	if out = s.wp("done", "-m", "finished"); !strings.Contains(out, third) {
 		t.Errorf("done elsewhere in the session:\n%s", out)
 	}
-	// Taken in another directory of the session too: both held, so it asks.
 	fourth := s.task("Fourth")
 	if out = s.wp("next", fourth, "-p", claimProject(fourth), "--no-brief"); !strings.Contains(out, "`wp ship -m") {
 		t.Errorf("the only one left:\n%s", out)
@@ -54,8 +51,6 @@ func TestNextShowsKeylessDoneForTheOnlyTask(t *testing.T) {
 	if out, code := s.run("release", "-m", "x"); code == 0 || !strings.Contains(out, "you hold ") {
 		t.Errorf("one here, one in the worktree: exit %d\n%s", code, out)
 	}
-	// Finished on the board instead: no longer held, for the server's
-	// answer and for wp done.
 	s.asHuman()
 	s.wp("edit", fourth, "--status", "Done")
 	s.asAgent()

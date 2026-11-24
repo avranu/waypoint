@@ -22,9 +22,9 @@ const lineDepth = 3
 const (
 	candRunning  = "running"
 	candPassed   = "passed"
-	candFailed   = "failed"   // its checks failed
-	candConflict = "conflict" // one of its heads didn't merge
-	candLost     = "lost"     // no run came, or it never ended: not the heads' fault
+	candFailed   = "failed"
+	candConflict = "conflict"
+	candLost     = "lost" // no run came, or it never ended: not the heads' fault
 )
 
 // lineEntry is a settled pull request in the line.
@@ -99,19 +99,19 @@ const (
 	endRefused     = "refused"
 	endDuplicate   = "duplicate"
 	endBatchSplit  = "batch_split"
-	endUnreadable  = "unreadable" // a live row that could not be read (WP-1700): not evidence about the forge
+	endUnreadable  = "unreadable" // a live row that could not be read; it says nothing about the forge
 	endBaseRed     = "base_red"   // failed only what the base's tip fails: not the heads' account, tried again once the tip moves or turns green
 )
 
 type lineActionKind string
 
 const (
-	lineStart  lineActionKind = "start"  // a candidate for Heads
-	lineEnd    lineActionKind = "end"    // cancel candidate Cand
-	lineRerun  lineActionKind = "rerun"  // run candidate Cand's failed jobs again
-	lineMerge  lineActionKind = "merge"  // merge PR, on Cand when it has one
-	lineEject  lineActionKind = "eject"  // PR leaves the line: Cand failed or conflicted on it
-	lineUpdate lineActionKind = "update" // bring PR's own branch up to date (lineEntry.Branch)
+	lineStart  lineActionKind = "start"
+	lineEnd    lineActionKind = "end"
+	lineRerun  lineActionKind = "rerun"
+	lineMerge  lineActionKind = "merge"
+	lineEject  lineActionKind = "eject"
+	lineUpdate lineActionKind = "update"
 )
 
 type lineAction struct {
@@ -212,7 +212,7 @@ func planLine(s lineSnap) []lineAction {
 	// A candidate that failed or didn't merge says who leaves. Only the
 	// lowest one is read: those above it tested the same heads and more.
 	ejected := false
-	redEnded := map[string]bool{} // heads that ended base_red now: not started again in this plan
+	redEnded := map[string]bool{}
 	for n := 1; n <= len(s.Entries) && !ejected; n++ {
 		c, ok := by[n]
 		if !ok || c.State == candRunning {
@@ -243,8 +243,6 @@ func planLine(s lineSnap) []lineAction {
 				acts = append(acts, lineAction{Kind: lineEject, PR: s.Entries[n-1].PRID, Cand: c.ID, Why: "the line's candidate failed on the base's tip with only its head merged"})
 				ejected = true
 			case has:
-				// The one below is still going: it says whether this failure
-				// is the last head's or an earlier one's.
 			default:
 				// A batch: nothing says which head failed it. It ends, and
 				// each place gets a candidate of its own (Tried keeps the
@@ -255,12 +253,9 @@ func planLine(s lineSnap) []lineAction {
 		}
 	}
 	if ejected {
-		return acts // the line is read again without it
+		return acts
 	}
 
-	// The front on its own branch: brought up to date, then its run. A draft
-	// Waypoint holds that already holds the tip is marked ready by the same
-	// action, which runs the full tier.
 	if front.Branch {
 		if !front.OnTip || !front.FullRunning {
 			acts = append(acts, lineAction{Kind: lineUpdate, PR: front.PRID})
@@ -268,8 +263,6 @@ func planLine(s lineSnap) []lineAction {
 		return acts
 	}
 
-	// Candidates for the first places that have none. Places end at the
-	// first pull request that can't ride one.
 	places := min(len(s.Entries), lineDepth)
 	for i, e := range s.Entries[:places] {
 		if e.Branch {
@@ -278,7 +271,7 @@ func planLine(s lineSnap) []lineAction {
 		}
 	}
 	if s.BaseRed {
-		places = min(places, 1) // one place at a time while the base is red (a batch is the front alone)
+		places = min(places, 1) // while the base is red only the front gets a candidate: a batch is the front alone
 	}
 	start := func(n int) bool {
 		heads := entryHeads(s.Entries, n)
@@ -289,11 +282,10 @@ func planLine(s lineSnap) []lineAction {
 		return true
 	}
 	if s.Saturated {
-		// One run for the first places together, while none is going.
 		if len(by) == 0 {
 			n := min(places, max(s.BatchDepth, 1))
 			if n < 1 || !start(n) {
-				start(1) // that batch failed before: the front alone
+				start(1)
 			}
 		}
 		return acts

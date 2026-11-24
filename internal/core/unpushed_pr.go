@@ -10,27 +10,7 @@ import (
 	"time"
 )
 
-// Commits left unpushed on a pull request's branch (WP-599). WP-567 recovers
-// a task's unfinished work when its session ends, but a task out on a pull
-// request counts as shipped, so a commit made after the push (a review fix,
-// a late change a person asked for) and never pushed stayed in the checkout
-// while the pull request went on, and merged, without it. Now:
-//
-//   - when a session ends with them, the pull request's tasks get a comment
-//     saying where the commits are and how they reach it (their watchers
-//     are notified; with no task, the session's person is), and the
-//     session's timeline says so;
-//   - a session starting in the checkout hears of them in one line;
-//   - the hourly sweep does the same for a session that went away with no
-//     SessionEnd, once unpushedGrace has passed with nothing pushed to the
-//     pull request.
-//
-// Waypoint tells; it doesn't push. Pushing onto a pull request changes what
-// it merges and sets off its CI and reviews, and WP-843's push of what a
-// session let go of stops short of a branch with an open pull request for
-// that reason. What a session left is known from its last Stop
-// (work_state); each session's branch is told of once (a session_events
-// row of kind unpushed).
+// Waypoint tells, it doesn't push: a push onto a pull request changes what it merges and sets off its CI and reviews.
 
 // EvUnpushedLeft: a session went away leaving commits its pull request
 // hasn't got. UserID is the session's person.
@@ -54,7 +34,7 @@ type unpushedPR struct {
 	pr     int64
 	number int
 	url    string
-	merged bool // it merged without them
+	merged bool
 	issues []int64
 }
 
@@ -93,7 +73,6 @@ func (s *Service) unpushedOnPRs(ctx context.Context, q queryer, repo string, lis
 			return nil, err
 		}
 		if len(ids) == 0 {
-			// No task links it: the one its branch names.
 			for _, r := range branchRefs(c.Branch) {
 				if id, err := s.resolveIssueID(ctx, q, r.Key); err == nil && !slices.Contains(ids, id) {
 					ids = append(ids, id)
@@ -120,9 +99,6 @@ func (u unpushedPR) comment(machine, how string, at time.Time) string {
 		fmt.Fprintf(&b, "They need a pull request of their own: from that checkout, put them on a new branch off the default branch and `wp ship`. `git -C %s log @{u}..HEAD` lists them.", u.c.Top)
 		return b.String()
 	}
-	// What Waypoint knows is the checkout at the session's last Stop and the
-	// pushes the forge has reported since: a push it hasn't heard of yet is
-	// possible, so the comment says what was seen.
 	fmt.Fprintf(&b, "Pull request #%d hadn't got commits its session left: %s, when %s (last seen %s), and no push has reached it since.\n\n", u.number, u.what(machine), how, strandedTime(at))
 	fmt.Fprintf(&b, "It merges without them unless they are pushed: `git -C %s push` (nothing to do if they already were).", u.c.Top)
 	return b.String()
@@ -151,15 +127,14 @@ func (s *Service) tellUnpushed(ctx context.Context, t *tx, x *AgentSession, ws w
 			return err
 		}
 		body := u.comment(x.Machine, how, msTime(ws.At))
-		// heard is the tasks whose watchers hear of the comment: a draft's
-		// sets nothing off until a person publishes it (WP-42).
+		// A draft comment notifies no watchers until a person publishes it.
 		var keys []string
 		var heard []int64
 		var first *Issue
 		for _, id := range u.issues {
 			i, err := s.issueByID(ctx, t, id, false)
 			if errors.Is(err, ErrNotFound) {
-				continue // deleted since it was linked
+				continue
 			}
 			if err != nil {
 				return err

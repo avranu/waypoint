@@ -29,12 +29,9 @@ func TestIssueRiskLevels(t *testing.T) {
 		{"agent close", issueRiskFacts{CloseAgent: "a"}, RiskMedium, []string{riskAgentClose}},
 		{"held", issueRiskFacts{Held: true, HeldReason: "asks for a key.", TextAgent: "a"}, RiskHigh, []string{riskHeld, riskAgentText}},
 		{"outside", issueRiskFacts{Outside: true, OutsideBy: "eve", CloseAgent: "a"}, RiskHigh, []string{riskOutside, riskAgentClose}},
-		// A person's login, text a watermark detector reads as AI-written:
-		// unreviewed agent text.
 		{"person's text detected", issueRiskFacts{AIDetected: detected}, RiskMedium, []string{riskAIDetected}},
 		{"person confirmed it", issueRiskFacts{AIDetected: &AIDetection{Detected: true, Confirmed: true}}, RiskLow, nil},
 		{"no mark found", issueRiskFacts{AIDetected: &AIDetection{Detector: "synthid", Confidence: 0.1}}, RiskLow, nil},
-		// Text known to be an agent's says so; the detector adds nothing.
 		{"agent text detected", issueRiskFacts{TextAgent: "a", AIDetected: detected}, RiskMedium, []string{riskAgentText}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -47,7 +44,6 @@ func TestIssueRiskLevels(t *testing.T) {
 					t.Errorf("reason %+v has no text or level", x)
 				}
 			}
-			// Stable: the same facts give the same answer.
 			if again := issueRisk(c.f); again.Summary() != r.Summary() {
 				t.Errorf("unstable: %q then %q", r.Summary(), again.Summary())
 			}
@@ -207,8 +203,6 @@ func TestIssueRiskMatchesSearch(t *testing.T) {
 	}
 	check(e.admin, want)
 
-	// An agent never reads a stranger's text, so it isn't a factor for one;
-	// the rest read the same.
 	agentWant := map[string]string{}
 	for k, v := range want {
 		agentWant[k] = v
@@ -216,7 +210,6 @@ func TestIssueRiskMatchesSearch(t *testing.T) {
 	agentWant[outside] = RiskLow
 	check(agent, agentWant)
 
-	// A person's review clears what it covers.
 	for _, key := range []string{agentTask, commented, closed, held} {
 		if _, err := e.s.Review(e.ctx, e.admin, ReviewIssue, key, ""); err != nil {
 			t.Fatal(err)
@@ -391,7 +384,6 @@ func TestPromptAndAutomationRisk(t *testing.T) {
 		return res.Messages[0]
 	}
 
-	// The person's own follow-up.
 	f.queue(step("tell_agent", map[string]any{"message": "Write the tests.", "wait": false}))
 	if _, err := f.s.RunFollowUpNow(f.ctx, f.admin, f.sid); err != nil {
 		t.Fatal(err)
@@ -404,8 +396,6 @@ func TestPromptAndAutomationRisk(t *testing.T) {
 		t.Errorf("a person's prompt = %s", r.Summary())
 	}
 
-	// An agent writes an automation; a person turns it on without
-	// touching the rule, so its runs use their sessions.
 	off, on := false, true
 	rule := Rule{Trigger: Trigger{Event: "manual"}, Actions: []Action{
 		step("tell_agent", map[string]any{"message": "Delete the old branches.", "session": itoa64(f.sid), "wait": false})}}
@@ -437,8 +427,6 @@ func TestPromptAndAutomationRisk(t *testing.T) {
 		t.Errorf("an agent's prompt = %+v", r)
 	}
 
-	// A person saving the rule makes it theirs; the prompt already sent
-	// keeps who wrote it.
 	if a, err = f.s.UpdateAutomation(f.ctx, f.admin, a.ID, AutomationInput{Rule: &rule}); err != nil {
 		t.Fatal(err)
 	}
@@ -448,12 +436,10 @@ func TestPromptAndAutomationRisk(t *testing.T) {
 	if l := level(RiskKindPrompt, theirs.ID).Level; l != RiskMedium {
 		t.Errorf("the sent prompt became %s", l)
 	}
-	// An agent turning it off doesn't make the rule its own.
 	if a, err = f.s.UpdateAutomation(f.ctx, agent, a.ID, AutomationInput{Enabled: &off}); err != nil || a.RuleAgent != "" {
 		t.Errorf("an agent's toggle: %v %q", err, a.RuleAgent)
 	}
 
-	// Someone else sees neither the prompt nor the automation.
 	other := f.user("rory", false)
 	if _, err := f.s.RiskOf(f.ctx, other, RiskKindPrompt, itoa64(theirs.ID), ""); !errors.Is(err, ErrNotFound) {
 		t.Errorf("another person's prompt: %v", err)

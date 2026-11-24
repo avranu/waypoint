@@ -1,8 +1,3 @@
-// The one-line "add an issue" boxes (board column, backlog, home, sub-issues)
-// share this (WP-68): what's typed is kept as a draft until the server has
-// the issue, a failed create leaves the text where it was and says why, and
-// text too long for a title is flagged before it's sent.
-
 import { useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { q, useCreateIssue, type IssueInput } from '@/lib/queries'
@@ -46,7 +41,6 @@ export function useQuickAdd(draftKey: string | null) {
     sending.current = true
     try {
       const d = await create.mutateAsync(input)
-      // Runs even if the box has gone meanwhile, so the draft is cleared.
       latest.current = ''
       setDraft('')
       return d

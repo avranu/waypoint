@@ -1,8 +1,4 @@
-// What the assistant remembers, from Hermes: its two built-in memory files
-// (<HERMES_HOME>/memories/MEMORY.md and USER.md, read and written as files),
-// each file's entries as Hermes's learning graph names them (to edit or
-// delete one entry under Hermes's own lock), its persona (the profile's
-// SOUL.md), and which memory provider is active.
+// Entry edits and deletes go through Hermes's own lock.
 
 import { queryOptions, useMutation, useQueryClient } from '@tanstack/react-query'
 import { ApiError, enc } from '@/lib/api'

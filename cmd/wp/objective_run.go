@@ -110,8 +110,7 @@ func (p *runnerProc) execObjective(ctx context.Context, run *jobRun, in core.Obj
 	if budget <= 0 || budget > run.timeout {
 		budget = run.timeout / 2
 	}
-	// One command may use the whole budget; a read of a time plans its runs
-	// within it, and the job's own timeout is the backstop.
+	// A command may use the whole budget; the job's own timeout is the backstop.
 	spec := measureSpec{Check: in.Check, Setup: in.Setup, Measure: in.Measure, Unit: in.Unit, Timeout: budget, Budget: budget, MinRuns: objectiveMinTimed,
 		Env: append(jobEnv(os.Environ(), nil, false), "GIT_TERMINAL_PROMPT=0")}
 
@@ -143,7 +142,6 @@ func (p *runnerProc) execObjective(ctx context.Context, run *jobRun, in core.Obj
 		return failed("%v", err)
 	}
 	defer func() {
-		// Even after a cancel or a timeout: the checkouts go.
 		bg, stop := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
 		defer stop()
 		for _, d := range []string{"head", "base"} {
@@ -167,8 +165,6 @@ func (p *runnerProc) execObjective(ctx context.Context, run *jobRun, in core.Obj
 	res := &core.ObjectiveJobResult{Head: head}
 
 	headDir, err := objectiveDir(headRoot, in.Dir)
-	// Every command runs in the folder: keep-passing ones too, which run in
-	// it without a check.
 	if err != nil && (in.Check != "" || in.Setup != "" || len(in.KeepPassing) > 0) {
 		return p.objectiveError(ctx, run, "%v (at %s)", err, head[:12])
 	}
@@ -177,7 +173,7 @@ func (p *runnerProc) execObjective(ctx context.Context, run *jobRun, in core.Obj
 	}
 	sides := []measureSide{{"the branch (" + head[:12] + ")", headDir}}
 	var baseRoot string
-	var baseGone string // why the base can't be read, when it can't
+	var baseGone string
 	if both {
 		if baseRoot, err = checkout("base", base); err != nil {
 			return p.objectiveError(ctx, run, "can't check out %s: %v", base[:12], err)
@@ -225,7 +221,6 @@ func (p *runnerProc) execObjective(ctx context.Context, run *jobRun, in core.Obj
 			return p.objectiveStopped(ctx, run, stopf("the setup (%s) failed with exit %d: %s", excerpt(in.Setup, 80), r.Code, excerpt(strings.TrimSpace(trimOutput(r.All, 1<<30)), 400)))
 		}
 	}
-	// The keep-passing commands: each at the head, whatever the check read.
 	for _, h := range in.KeepPassing {
 		say("Keeping passing: %s", excerpt(h, 100))
 		r, err := runCheck(ctx, headDir, spec.Env, h, budget)
@@ -301,8 +296,6 @@ func (p *runnerProc) objectiveTouched(ctx context.Context, bare, base, head stri
 		return nil, err
 	}
 	cmds := strings.Join(append([]string{in.Check, in.Setup}, in.KeepPassing...), "\n")
-	// The folder as git names it: "./bench/" and "bench//" are "bench",
-	// and "." is the root.
 	dir := strings.Trim(path.Clean(filepath.ToSlash(in.Dir)), "/")
 	if dir == "." {
 		dir = ""

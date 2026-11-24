@@ -67,8 +67,7 @@ export function NotificationsTab({ me }: { me: User }) {
   const [url, setUrl] = useState(me.prefs.gotify_url ?? '')
   const [token, setToken] = useState(me.prefs.gotify_token ?? '')
   const [show, setShow] = useState(false)
-  // What was typed stays until it is saved: a refetch, or the revert after a
-  // failed save, mustn't put the old value back under the person's hands.
+  // A refetch, or a failed save's revert, must not overwrite text the person has typed.
   const edited = useRef(false)
   useEffect(() => {
     if (edited.current) return

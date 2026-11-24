@@ -16,18 +16,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Fan-outs (WP-148, X6): parallel work as budgeted task sessions instead of
-// ad-hoc agents inside one session. wp fanout PLAN.toml files one task per
-// work package, each with a model, a dollar budget and a worktree branch;
-// they start as task sessions on the coordinator's machine, a few at a time
-// (each session's wp done starts the next); each stops at its budget after
-// handing off; the coordinator hears one line per finish. Before anything
-// starts Waypoint estimates the cost, and over fanoutAskPct of a week it asks
-// the person first (WP-ADR46).
-//
-// Sessions start on the coordinator's own machine (the CLI launches them),
-// not through runner jobs: runners refuse jobs from agents, and the
-// coordinator's repo and its worktrees are there.
+// Sessions start on the coordinator's machine, not through runner jobs: runners refuse jobs from agents, and the coordinator's repo and worktrees are there.
 
 // Events (kept off the issue history; UserID scopes them to the owner).
 const (
@@ -41,22 +30,22 @@ const (
 
 // Fan-out states.
 const (
-	FanoutAsked    = "asked"    // over the line: waiting on the person's answer
-	FanoutRunning  = "running"  // packages start as slots free up
-	FanoutFinished = "finished" // every package ended
-	FanoutStopped  = "stopped"  // wp fanout stop: no more start
-	FanoutDeclined = "declined" // the person said don't start
+	FanoutAsked    = "asked"
+	FanoutRunning  = "running"
+	FanoutFinished = "finished"
+	FanoutStopped  = "stopped"
+	FanoutDeclined = "declined"
 )
 
 // Package (item) states.
 const (
 	ItemQueued    = "queued"
-	ItemStarting  = "starting" // claimed; its session is being launched
+	ItemStarting  = "starting"
 	ItemRunning   = "running"
-	ItemDone      = "done"      // its session ran wp done
-	ItemStopped   = "stopped"   // at its budget, or its session ended without finishing
-	ItemFailed    = "failed"    // its session didn't start
-	ItemCancelled = "cancelled" // stopped or closed before it started
+	ItemDone      = "done"
+	ItemStopped   = "stopped"
+	ItemFailed    = "failed"
+	ItemCancelled = "cancelled"
 )
 
 // Item outcomes a client reports (EndFanoutItem).
@@ -206,8 +195,6 @@ type FanoutClaim struct {
 	Waiting string        `json:"waiting,omitempty"`
 }
 
-// ---- the estimate ----
-
 // fanoutRates are what the estimate multiplies: cost per call by model
 // family, calls per package, and dollars per percent of a week.
 type fanoutRates struct {
@@ -233,7 +220,7 @@ func (r *fanoutRates) perCallFor(model string) float64 {
 	if c, ok := r.perCall[modelFamily(model)]; ok {
 		return c
 	}
-	return fanoutDearest() // unknown: assume the dearest
+	return fanoutDearest()
 }
 
 // usageCost prices usage_hours rows (grouped by model) with the price book:
@@ -376,8 +363,6 @@ func (s *Service) usdPerWeekPct(ctx context.Context, book *priceBook, userID, no
 	return spend / pct, true
 }
 
-// ---- making one ----
-
 // fanoutBranch is a package's default branch: its key and title.
 func fanoutBranch(key, title string) string {
 	return strings.ToLower(key) + "-" + slug(title, 40)
@@ -488,7 +473,6 @@ func (s *Service) CreateFanout(ctx context.Context, actor *Actor, in FanoutInput
 	if err := actor.need(PermSessionsStart); err != nil {
 		return nil, err
 	}
-	// It files the packages as tasks (and may ask), so it needs those too.
 	if err := actor.need(PermIssuesCreate); err != nil {
 		return nil, err
 	}
@@ -545,7 +529,6 @@ func (s *Service) CreateFanout(ctx context.Context, actor *Actor, in FanoutInput
 		}
 	}
 
-	// The fan-out first, so each task can say which one it belongs to.
 	now := s.nowMS()
 	err = s.write(ctx, actor, func(t *tx) error {
 		res, err := t.ExecContext(ctx, `INSERT INTO fanouts(user_id, project_id, session_id, agent, machine, dir, base, parallel, estimate_usd, week_pct, basis, state, created_at)
@@ -559,8 +542,7 @@ func (s *Service) CreateFanout(ctx context.Context, actor *Actor, in FanoutInput
 	if err != nil {
 		return nil, err
 	}
-	// Packages wait in the Backlog, where nothing else hands them out; the
-	// fan-out starts them (and agentCanTake leaves them to it).
+	// Backlog packages are handed out only by the fan-out: agentCanTake leaves them alone.
 	status := ""
 	if st, err := s.firstStatusIn(ctx, s.db.R, p.ID, CatBacklog); err == nil {
 		status = st.Name
@@ -610,8 +592,7 @@ func (s *Service) CreateFanout(ctx context.Context, actor *Actor, in FanoutInput
 		return nil
 	})
 	if err != nil {
-		// Its tasks are filed: cancel them, or they sit in the Backlog as
-		// ordinary tasks and a second wp fanout files them again (WP-579).
+		// Cancel the filed tasks on failure: left in the Backlog they are ordinary tasks, and a retried fan-out files them again.
 		s.abandonFanout(ctx, f.ID, items)
 		if requestID != 0 {
 			if _, werr := s.db.W.ExecContext(ctx, `UPDATE requests SET state = ?, updated_at = ? WHERE id = ? AND state = ?`, RequestWithdrawn, s.nowMS(), requestID, RequestOpen); werr != nil {
@@ -673,7 +654,6 @@ func (s *Service) fanoutAsk(f *Fanout, p *Project) RequestInput {
 			{Label: fanoutStart, Description: fmt.Sprintf("Run them, %d at a time, each stopping at its budget", f.Parallel)},
 			{Label: fanoutDontStart, Description: "Nothing runs; the tasks stay in the Backlog"},
 		}}},
-		// Waypoint tells the agent itself, with what to run (onFanoutEvent).
 		Followup: "never",
 	}
 }
@@ -682,8 +662,6 @@ const (
 	fanoutStart     = "Start"
 	fanoutDontStart = "Don't start"
 )
-
-// ---- reading ----
 
 const fanoutCols = `f.id, p.key, f.state, f.parallel, f.machine, f.dir, f.base, f.agent, f.estimate_usd, f.week_pct, f.basis,
 	coalesce('R-' || r.number, ''), f.created_at, f.ended_at, f.user_id, coalesce(f.session_id, 0), coalesce(f.request_id, 0), f.told`
@@ -818,12 +796,10 @@ func (s *Service) fanoutOf(ctx context.Context, issueID int64) int64 {
 	err := s.db.R.QueryRowContext(ctx, `SELECT f.id FROM fanout_items it JOIN fanouts f ON f.id = it.fanout_id
 		WHERE it.issue_id = ? AND it.state IN ('queued', 'starting') AND f.state IN ('asked', 'running') LIMIT 1`, issueID).Scan(&id)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return -1 // unsure means it is one
+		return -1 // On a read error return -1 (counts as a package), so agentCanTake holds the task back.
 	}
 	return id
 }
-
-// ---- the ask ----
 
 // settleAsk applies the person's answer to an asked fan-out: Start runs it,
 // anything else (Don't start, a dismissal) declines it. Returns the new
@@ -868,8 +844,6 @@ func (s *Service) settleAsk(ctx context.Context, t *tx, f *Fanout) (string, erro
 	f.State = state
 	return state, nil
 }
-
-// ---- starting packages ----
 
 // ClaimFanout reserves the packages to start now on machine, as many as
 // the fan-out's free slots, in plan order: each is leased to the fan-out's
@@ -1036,8 +1010,6 @@ func (s *Service) maybeFinishFanout(ctx context.Context, t *tx, f *Fanout) error
 	if f.State != FanoutRunning && f.State != FanoutStopped {
 		return nil
 	}
-	// A failed package stays open to a retry (wp fanout start) until the
-	// fan-out is stopped.
 	live := false
 	failedToo := 0
 	if f.State == FanoutRunning {
@@ -1096,7 +1068,7 @@ func (s *Service) FanoutItemStarted(ctx context.Context, actor *Actor, id int64,
 			return notFound(key + " in fan-out #" + itoa64(id))
 		}
 		if it.State != ItemStarting {
-			return nil // already running, or ended (the sweep gave up on it)
+			return nil
 		}
 		_, err = t.ExecContext(ctx, `UPDATE fanout_items SET state = ?, attach_id = ? WHERE id = ?`, ItemRunning, attach, it.ID)
 		return err
@@ -1151,7 +1123,7 @@ func (s *Service) releaseFanoutTask(ctx context.Context, t *tx, f *Fanout, it *F
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return nil // handed off already, or someone else's now
+		return nil
 	}
 	if err := s.endRun(ctx, t, it.issueID, f.Agent, "released", nil); err != nil {
 		return err
@@ -1201,7 +1173,7 @@ func (s *Service) EndFanoutItem(ctx context.Context, actor *Actor, id int64, key
 		switch it.State {
 		case ItemStarting, ItemRunning:
 		case ItemStopped:
-			if state == ItemDone { // its wp done came after all
+			if state == ItemDone { // A wp done arriving after the item was marked stopped still counts as done.
 				if _, err := t.ExecContext(ctx, `UPDATE fanout_items SET state = ?, note = ?, spent_usd = max(spent_usd, ?) WHERE id = ?`, ItemDone, note, spent, it.ID); err != nil {
 					return err
 				}
@@ -1249,7 +1221,6 @@ func (s *Service) StopFanout(ctx context.Context, actor *Actor, id int64) (*Fano
 			return err
 		}
 		if f.State == FanoutAsked && f.requestID != 0 {
-			// Nothing left to decide.
 			if _, err := t.ExecContext(ctx, `UPDATE requests SET state = ?, updated_at = ? WHERE id = ? AND state = ?`, RequestWithdrawn, now, f.requestID, RequestOpen); err != nil {
 				return err
 			}
@@ -1266,15 +1237,12 @@ func (s *Service) StopFanout(ctx context.Context, actor *Actor, id int64) (*Fano
 	return s.GetFanout(ctx, actor, id)
 }
 
-// ---- news for the coordinator ----
-
 // onFanoutEvent tells a fan-out's coordinator how its packages end, and
 // settles an asked fan-out when the person answers.
 func (s *Service) onFanoutEvent(ctx context.Context, e *Event) {
 	switch e.Kind {
 	case EvFanoutCreated:
-		// Packages wait in the Backlog, which the screen doesn't read ahead
-		// of time: screen them now, so they can start.
+		// Backlog packages are not screened ahead of time, so screen them now for them to start.
 		if f, err := s.fanoutByID(ctx, s.db.R, eventInt(e, "fanout")); err == nil {
 			for _, it := range f.Items {
 				s.queueScreenIf(it.issueID, false)
@@ -1350,7 +1318,7 @@ func (s *Service) tellCoordinator(ctx context.Context, f *Fanout, key string, pa
 		return
 	}
 	if passive {
-		return // the summary at the end says it
+		return
 	}
 	res, err := s.db.W.ExecContext(ctx, `UPDATE fanouts SET told = ? WHERE id = ? AND told != ?`, key, f.ID, key)
 	if err != nil {
@@ -1415,7 +1383,7 @@ func (s *Service) tellFanoutFinished(ctx context.Context, e *Event) {
 		return
 	}
 	if f.State == FanoutDeclined {
-		return // the answer said it
+		return
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Fan-out #%d %s: %s; spent $%.2f of an estimated $%.2f.", f.ID, f.State, fanoutProgress(f), f.Spent, f.Estimate)
@@ -1424,8 +1392,6 @@ func (s *Service) tellFanoutFinished(ctx context.Context, e *Event) {
 	}
 	s.tellCoordinator(ctx, f, fmt.Sprintf("fanout:%d:finished", f.ID), false, b.String())
 }
-
-// ---- the sweep ----
 
 // CheckFanouts (every minute) gives up on packages whose sessions never
 // started or ended unseen, screens packages waiting for the screen, tells
@@ -1530,7 +1496,7 @@ func (s *Service) screenDue(ctx context.Context, q queryer, issueID, now int64) 
 	var at int64
 	err := q.QueryRowContext(ctx, `SELECT verdict, attempts, updated_at FROM task_safety WHERE issue_id = ?`, issueID).Scan(&verdict, &attempts, &at)
 	if err != nil {
-		return true // none yet
+		return true
 	}
 	return verdict != SafetyPending || now-at > screenBackoff(max(attempts, 1)).Milliseconds()
 }

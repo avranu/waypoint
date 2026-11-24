@@ -240,15 +240,13 @@ func TestTestsumRunsCommandThroughSlot(t *testing.T) {
 	if code := run([]string{"testsum", "--", "sh", "-c", "echo boom; exit 3"}, &out, &errb); code != 1 || !strings.Contains(out.String(), "exited 3") {
 		t.Errorf("unrecognized failure: %d %q", code, out.String())
 	}
-	// Tests passed, then a type check failed: say both, exit 1.
 	out.Reset()
 	cmd = `printf '{"Action":"pass","Package":"p","Test":"T","Elapsed":0}\n{"Action":"pass","Package":"p","Elapsed":1}\nmypy: 2 errors\n'; exit 2`
 	if code := run([]string{"testsum", "--", "sh", "-c", cmd}, &out, &errb); code != 1 || !strings.HasPrefix(out.String(), "PASS: 1 tests") ||
 		!strings.Contains(out.String(), "but the command exited 2") || !strings.Contains(out.String(), "mypy: 2 errors") {
 		t.Errorf("pass then failure: %d %q", code, out.String())
 	}
-	// The command without -- (WP-1080): flags before it are testsum's, and
-	// everything from it on, flags and -- included, is the command's.
+	// without --, testsum takes flags before the command and the command gets everything from its first word, -- included
 	out.Reset()
 	errb.Reset()
 	cmd = `printf '{"Action":"pass","Package":"p","Test":"T","Elapsed":0}\n{"Action":"pass","Package":"p","Elapsed":1}\n'; [ "$*" = "--format x -- -y" ] || exit 9`

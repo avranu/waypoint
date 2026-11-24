@@ -1,11 +1,6 @@
 package core
 
-// A forge that doesn't answer (WP-265). When the forge stopped
-// answering for a quarter of an hour, wp ship and wp pr open printed only
-// "internal error": the transport failure came back unwrapped and the API
-// couldn't tell it from a bug. forgeUnanswered names the forge and what
-// happened, and wraps ErrUnavailable, so the API answers 502 and the CLI
-// tries again.
+// A forge's transport failure names the forge and wraps ErrUnavailable, so the API answers 502 and the CLI retries instead of reporting an internal error.
 
 import (
 	"context"
@@ -80,7 +75,6 @@ func forgeDown(f *Forge, waited time.Duration, err error) error {
 	if errors.As(err, &down) {
 		return err
 	}
-	// A setup fault is no outage: it is said as what it is and not tried again.
 	if cause := forgeSetupFault(err); cause != "" {
 		return &forgeSetupError{cause: forgeHost(f) + ": " + cause, err: err}
 	}

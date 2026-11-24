@@ -13,10 +13,6 @@ import (
 	"time"
 )
 
-// wp usage subagents (WP-1443): how much of what subagents do is waiting and
-// retrying, read from this machine's Claude Code transcripts. Re-runnable, so
-// a change meant to cut that waste can be measured before and after.
-
 var usageSubagentsCmd = &command{
 	name: "subagents", args: "[--since 3d] [--session ID[,ID]] [--dir CLAUDE_CONFIG_DIR] [--all-projects] [--spans FILE] [-v] [--json]",
 	summary: "how much subagent work is waiting and retrying",
@@ -78,7 +74,7 @@ func cmdUsageSubagents(c *cli, args []string) error {
 			only = append(only, s)
 		}
 	}
-	var names []string // project folder names, nil for all
+	var names []string
 	if !*all {
 		top, err := gitOutput("", "rev-parse", "--show-toplevel")
 		if err != nil {
@@ -171,7 +167,7 @@ func saDiscover(projects string, names, only []string, since time.Duration) []sa
 				if have[key] && gz {
 					return nil
 				}
-				if !gz && have[key] { // replace the gz one already listed
+				if !gz && have[key] { // a plain transcript replaces a .gz copy of the same subagent
 					for i := range out {
 						if filepath.Join(filepath.Dir(out[i].Path), saStem(out[i].Path)) == key {
 							out[i] = saFile{p, s.Name(), false}
@@ -234,8 +230,6 @@ func saMeta(path string) (typ, desc string) {
 	}
 	return truncRunes(m.AgentType, 60), truncRunes(m.Description, 100)
 }
-
-// ---- report ----
 
 type saRow struct {
 	Key         string  `json:"key"`
@@ -441,7 +435,7 @@ func measureSubagents(files []saFile) (*saReport, error) {
 			}
 			rep.spans = append(rep.spans, saSpan{a.Session, a.ID, c.Pattern, c.Sub, c.Name, c.Cmd, a.Path, c.Line, c.TS, c.Mins})
 		}
-		// the whole after-hand-back picture, whatever else a call was counted as
+		// post-handback work is counted even when the call was also counted as another pattern
 		for k, s := range a.PostHandbackByKind {
 			r := rows["post:"+k]
 			r.agentSet[key] = true

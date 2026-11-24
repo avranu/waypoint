@@ -11,16 +11,13 @@ import (
 // suggestion waits for a person (WP-382, WP-ADR50).
 func TestSuggestGoals(t *testing.T) {
 	e := newEnv(t)
-	// The model is in place before any task: the agent's task below is
-	// screened in the background, and that screen may read s.LLM once AI
-	// is set up, past any point quiesceGoals waits for (audit 1117.1).
+	// s.LLM is set before any task: a background screen reads it, and quiesceGoals does not wait for that read.
 	llm := &fakeLLM{}
 	e.s.LLM = llm
 	p := e.project(e.admin, "Atlas", "")
 	agent := *e.admin
 	agent.Agent = "anthropic/claude-opus-5-5"
 
-	// No model: a person hears why.
 	if _, err := e.s.SuggestGoals(e.ctx, e.admin, p.Key); !IsInvalid(err) || !strings.Contains(err.Error(), "Admin → AI") {
 		t.Fatalf("no model: %v", err)
 	}
@@ -51,13 +48,12 @@ func TestSuggestGoals(t *testing.T) {
 		},
 	}
 	raw, _ := json.Marshal(ans)
-	e.s.quiesceGoals(t) // the goals' background passes, before the swap
+	e.s.quiesceGoals(t) // Let background goal passes finish first, so they do not take the canned answer set below.
 	llm.set(string(raw))
 	if err := e.s.EnsureDefaultAI(e.ctx, "http://opencode:4096", "", "opencode/big-pickle"); err != nil {
 		t.Fatal(err)
 	}
 
-	// Agents can't ask: what it proposes waits for people.
 	if _, err := e.s.SuggestGoals(e.ctx, &agent, p.Key); err == nil {
 		t.Fatal("an agent asked for goal suggestions")
 	}
@@ -65,9 +61,7 @@ func TestSuggestGoals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The goals prompt, not a safety screen's that the agent's task started
-	// in the background: that screen may ask the model at any point in this
-	// test, so every count below is of goals prompts only (WP-869).
+	// A background safety screen can ask the model at any point here, so the counts below cover only the goals prompt.
 	const goalsPrompt = "Tasks people wrote that no goal covers yet"
 	prompt := ""
 	if asked := llm.with(goalsPrompt); len(asked) > 0 {
@@ -89,8 +83,6 @@ func TestSuggestGoals(t *testing.T) {
 		t.Fatalf("suggested goal = %+v", g)
 	}
 
-	// The tasks it came from point at it as Waypoint's guess, not waiting
-	// apart from the goal; the rewording waits on the person's goal.
 	o := e.goals(e.admin, p.Key)
 	for _, l := range o.Links {
 		if l.Goal.ID == g.ID {
@@ -119,7 +111,6 @@ func TestSuggestGoals(t *testing.T) {
 		t.Errorf("the rewording changed the goal without a person: %q", n.Title)
 	}
 
-	// One click approves the goal and stands behind its tasks' links.
 	if _, err := e.s.ApproveDesign(e.ctx, e.admin, g.ID, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -129,17 +120,13 @@ func TestSuggestGoals(t *testing.T) {
 			t.Errorf("%s after approval = %s, want %s", k, got, GroundPersonGoal)
 		}
 	}
-	// Taking the words applies them; a second run proposes nothing again
-	// for that goal, and with nothing untraced it doesn't ask the model.
 	if _, err := e.s.ReviewDesign(e.ctx, e.admin, rw.RevisionID, "approve", ""); err != nil {
 		t.Fatal(err)
 	}
 	if n, _ := e.s.GetDesign(e.ctx, e.admin, how.ID); n.Title != "Travellers find any route as they type" {
 		t.Errorf("after approve: %q", n.Title)
 	}
-	// Any model call but a safety screen's counts: with nothing untraced,
-	// SuggestGoals must not ask the model at all, in any wording.
-	// The judgements of meaning ask in the background, on their own.
+	// The count leaves out safety screens and the background meaning judgements, which ask the model on their own.
 	const screenPrompt = "Screen task "
 	asked := func() int {
 		n := 0

@@ -58,8 +58,6 @@ func TestRoundAuditStartsBeforeTheStop(t *testing.T) {
 	if _, au := a.roundAuditRow(round); au == nil {
 		t.Fatalf("no audit was asked for while the turn was ending; step = %+v", a.step())
 	}
-	// The Stop doesn't put an audit under way back to due: it only
-	// records when the session stopped.
 	st := a.step()
 	if st.state != StepWaiting || st.reason != WaitAudit {
 		t.Fatalf("step = %+v", st)
@@ -108,8 +106,7 @@ func TestRoundInterruptedForTheLastTimeIsReleased(t *testing.T) {
 		var in AutopilotJob
 		_ = json.Unmarshal(a.jobs[before].Input, &in)
 		a.prompt(in.Review)
-		// The session leaves the review for another task: a person's prompt
-		// alone doesn't end it any more (WP-1320).
+		// A person's prompt alone does not end a review; the session has to leave it for another task.
 		if err := a.s.write(a.ctx, SystemActor(), func(t *tx) error {
 			return a.s.stopStep(a.ctx, t, a.session, "working", "it took another task itself")
 		}); err != nil {

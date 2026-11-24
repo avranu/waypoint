@@ -1,5 +1,3 @@
-// Property pickers shared by the issue page, cards, rows and the create dialog.
-
 import { useMemo, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
@@ -44,7 +42,6 @@ export function useAgentItems(value: string, enabled: boolean): PickItem<string>
   const delegated = isDelegated(value)
   const known = useQuery({ ...knownAgentsQuery(), enabled: enabled || delegated }).data ?? []
   return useMemo(() => {
-    // Each spec says how many of the agents seen so far it reaches (WP-D15).
     const reach = (spec: string) => {
       if (!known.length) return 'agent'
       const n = known.filter((a) => agentMatches(spec, a.identity)).length
@@ -166,8 +163,7 @@ export function StatusPicker({
     value: s.id,
     label: s.name,
     icon: <StatusIcon category={s.category} color={s.color} />,
-    // A parent can't be done while a sub-task is open (WP-1196); the server
-    // refuses and names them, and the picker says so before the click.
+    // The server refuses to finish a parent while a sub-task is open; this hint only warns before the click.
     hint:
       s.category === 'done' && openChildren > 0 && value.category !== 'done'
         ? `${openChildren} sub-task${openChildren === 1 ? '' : 's'} open`
@@ -410,7 +406,6 @@ export function LabelPicker({
 }) {
   const p = usePopover(autoOpen)
   const selected = value.map((l) => l.name)
-  // This project's tags first, then ones used in your other projects.
   const others = useQuery({ ...q.tags(), enabled: p.open }).data ?? []
   const items: PickItem<string>[] = useMemo(() => {
     const seen = new Set(labels.map((l) => l.name.toLowerCase()))
@@ -504,7 +499,6 @@ export function SprintPicker({
 }) {
   const p = usePopover(autoOpen)
   const open = sprints.filter((s) => s.state !== 'closed')
-  // Closed sprints aren't in the project's list; fall back to the issue's own sprint name.
   const label = sprints.find((s) => s.id === value)?.name ?? (value ? valueName : undefined)
   const items: PickItem<number | null>[] = [
     {
@@ -567,7 +561,6 @@ export function ParentPicker({
       project: projectKey,
       limit: 30 + (exclude?.length ?? 0),
     })
-  // Ready before the first click.
   usePrefetch(parentSearch(''), !disabled)
   const search = useQuery({
     ...parentSearch(debounced.trim()),

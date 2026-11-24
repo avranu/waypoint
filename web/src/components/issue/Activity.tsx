@@ -72,7 +72,6 @@ function Comments({ issue, comments }: { issue: IssueDetail; comments: Comment[]
     onError: toastError,
   })
   const submit = () => body.trim() && !add.isPending && add.mutate(body.trim())
-  // One /refs call for every comment on the page, not one per comment (WP-184).
   const all = useMemo(() => comments.map((c) => c.body).join('\n\n'), [comments])
   const refs = useQuery({
     ...refsQuery(all, issue.key.replace(/-\d+$/, '')),
@@ -146,7 +145,7 @@ function CommentItem({
   const [editing, setEditing] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const refresh = () => qc.invalidateQueries({ queryKey: ['comments', issueKey] })
-  // Show the edit at once; on failure refetch, and rethrow so the editor reopens with the text.
+  // Rethrow after a failed save, so the editor reopens with the typed text.
   const save = (body: string) => {
     qc.setQueryData<Comment[]>(['comments', issueKey], (l) =>
       l?.map((x) => (x.id === c.id ? { ...x, body } : x)),

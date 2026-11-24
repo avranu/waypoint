@@ -73,9 +73,8 @@ func (s *Service) SessionOutstanding(ctx context.Context, actor *Actor, via stri
 	}
 	out := &SessionOutstanding{}
 	if actor.Session == 0 {
-		return out, nil // not a session: nothing is its own
+		return out, nil
 	}
-	// The newest round whose prompt went in with findings still to do.
 	rows, err := s.db.R.QueryContext(ctx, `SELECT id FROM work_log WHERE kind = 'review' AND session_id = ? AND state = ? ORDER BY id DESC`,
 		actor.Session, RoundRunning)
 	if err != nil {
@@ -117,10 +116,7 @@ func (s *Service) SessionOutstanding(ctx context.Context, actor *Actor, via stri
 			break
 		}
 	}
-	// Each finding is named to a session once at each of via, so an agent
-	// that holds findings while a worker fixes them isn't re-prompted with
-	// them at every stop (session_events, kind outstandingKind, ref_type via,
-	// label the finding's code).
+	// named once per via, so an agent holding findings while a worker fixes them is not re-prompted at each stop
 	fresh := 0
 	err = s.write(ctx, actor, func(t *tx) error {
 		for _, it := range out.Findings {

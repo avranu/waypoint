@@ -38,9 +38,9 @@ var errOutsideByPerson = forbidden("text from outside is for a person to read an
 
 // Kinds of outside text waiting for a person.
 const (
-	OutsideComment     = "comment"      // a new comment
-	OutsideCommentEdit = "comment_edit" // a new text for an approved comment
-	OutsideIssueEdit   = "issue_edit"   // a new title and description for an approved issue
+	OutsideComment     = "comment"
+	OutsideCommentEdit = "comment_edit"
+	OutsideIssueEdit   = "issue_edit"
 )
 
 // OutsideText is text from outside waiting for a person (WP-279).
@@ -167,8 +167,8 @@ func forgeSyncActor(f *Forge, author, agent string) *Actor {
 // heldText is outside text to keep for a person.
 type heldText struct {
 	issue      *Issue
-	commentID  int64  // an approved comment it would replace (0: none)
-	externalID string // the forge comment's id; "" for the issue's own text
+	commentID  int64
+	externalID string
 	url        string
 	author     string
 	title      string
@@ -195,7 +195,6 @@ func (s *Service) holdOutside(ctx context.Context, t *tx, f *Forge, h heldText) 
 		return err
 	}
 	if n, _ := res.RowsAffected(); n > 0 {
-		// People looking at the issue see it arrive; what arrived isn't said.
 		t.emit(&Event{Kind: EvProjectUpdated, ProjectID: h.issue.ProjectID, IssueID: h.issue.ID, IssueKey: h.issue.Key})
 	}
 	return nil
@@ -434,7 +433,6 @@ func (s *Service) letInOutside(ctx context.Context, by *Actor, o *outsideRow, qu
 		}
 	}
 	return s.write(ctx, by, func(t *tx) error {
-		// Only the text that was read: a newer one that came meanwhile waits.
 		res, err := t.ExecContext(ctx, `DELETE FROM outside_text WHERE id = ? AND updated_at = ?`, o.id, o.updated)
 		if err != nil {
 			return err
@@ -706,7 +704,7 @@ func (s *Service) seedForgePeople(ctx context.Context) {
 		login, err := w.Whoami(ctx, f)
 		if err != nil {
 			s.log.Info("forge token login", "forge", f.Name, "err", err)
-			continue // tried again next sync
+			continue
 		}
 		if _, err := s.db.W.ExecContext(ctx, `UPDATE forges SET people_seeded = 1 WHERE id = ?`, f.ID); err != nil {
 			continue

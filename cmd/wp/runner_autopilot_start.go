@@ -13,10 +13,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// A session of autopilot's own (WP-799, WP-ADR72): no one's session is
-// involved. The runner starts Claude Code in a new tmux session, in a worktree
-// of the task's, and gives it its task as a restart does. The session then
-// goes on like any other: at its Stop autopilot can move it on.
+// No person's session is involved: at its Stop, autopilot can move this session on.
 
 // autopilotStartWait is how long a new session has to show up.
 var autopilotStartWait = time.Minute
@@ -110,7 +107,7 @@ func autopilotStartingPrefix(runner int64) string {
 func (p *runnerProc) reapInterruptedStarts(ctx context.Context) {
 	out, err := runTmux(ctx, "", nil, "list-sessions", "-F", "#{session_name}")
 	if err != nil {
-		return // no tmux, or no server: nothing to end
+		return
 	}
 	for _, name := range strings.Fields(out) {
 		if strings.HasPrefix(name, autopilotStartingPrefix(p.id)) {
@@ -128,10 +125,10 @@ func runnerFeatureList() []string {
 		out = append(out, "autopilot_start")
 	}
 	if objectiveFeature() {
-		out = append(out, core.FeatureObjective) // reads an objective's round (WP-927)
+		out = append(out, core.FeatureObjective)
 	}
 	if runtime.GOOS == "linux" {
-		out = append(out, "sandbox_drill") // the escape drill (WP-473)
+		out = append(out, "sandbox_drill")
 	}
 	return out
 }
@@ -153,14 +150,13 @@ func (p *runnerProc) execAutopilotStart(ctx context.Context, run *jobRun, in aut
 	if _, err := exec.LookPath("tmux"); err != nil {
 		return held("no_tmux", "%v", errNoTmux)
 	}
-	// Never in the person's checkout: a worktree, or not at all.
 	rl := &relaunch{dir: dir, respawn: true}
 	if w := p.planWorktree(ctx, rl); w != "" {
 		return held("no_worktree", "%s", w)
 	} else if !rl.worktree {
 		return held("no_worktree", "no worktree can be made in %s", dir)
 	}
-	rl.ended = "" // the checkout isn't a session that ended
+	rl.ended = "" // A new checkout clears the old session's end mark, so tidy won't remove a worktree it is using.
 	name := worktreeName(ctx, rl.root, in.Key)
 	if name == "" {
 		return held("no_worktree", "no worktree for this session: every name for %s is taken", in.Key)
@@ -175,7 +171,7 @@ func (p *runnerProc) execAutopilotStart(ctx context.Context, run *jobRun, in aut
 	tmuxName := fmt.Sprintf("%s%s-%d", autopilotStartingPrefix(p.id), name, run.id)
 	args := []string{"new-session", "-d", "-P", "-F", "#{pane_id}", "-s", tmuxName, "-c", rl.root, "-x", "200", "-y", "50"}
 	args = append(args, "--", "/bin/sh", "-c", autopilotStartShell, "sh")
-	set := run.launch.forDir(rl.root) // the person's session settings (WP-1265)
+	set := run.launch.forDir(rl.root)
 	args = append(args, autopilotStartEnv()...)
 	args = append(args, set.env()...)
 	args = append(args, claudeOnPath("claude"))
@@ -191,7 +187,6 @@ func (p *runnerProc) execAutopilotStart(ctx context.Context, run *jobRun, in aut
 		return failed("tmux didn't name the new pane (%q)", pane)
 	}
 	say("started Claude Code in tmux session %s, pane %s", tmuxName, pane)
-	// A start that doesn't get as far as its prompt leaves nothing behind.
 	giveUp := func(res autopilotResult) outcome {
 		bg := context.WithoutCancel(ctx)
 		if screen, err := runTmux(bg, "", nil, "capture-pane", "-p", "-t", pane); err == nil {
@@ -226,7 +221,7 @@ func (p *runnerProc) execAutopilotStart(ctx context.Context, run *jobRun, in aut
 	o := p.promptSession(ctx, run, in, worktree, "", pane, next.PID, next.SessionID, base)
 	r, ok := o.Result.(autopilotResult)
 	if ok && (r.Outcome == "cleared" || r.Outcome == "unwanted") {
-		return giveUp(r) // no one would ever give it the task
+		return giveUp(r)
 	}
 	if _, err := runTmux(context.WithoutCancel(ctx), "", nil, "rename-session", "-t", tmuxName, fmt.Sprintf("wp-%s-%d", name, run.id)); err != nil && ok {
 		r.Warning = strings.TrimSpace(r.Warning + fmt.Sprintf(" couldn't rename tmux session %s, so the runner's next restart ends it: %v", tmuxName, err))

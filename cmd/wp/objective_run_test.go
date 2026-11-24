@@ -257,8 +257,6 @@ func TestObjectiveJobHungCommandIsKilledAtTheTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// alive, not signal 0: under CI's PID 1, which never reaps orphans, the
-	// killed child stays a zombie that signal 0 still reaches.
 	child, _ := strconv.Atoi(strings.TrimSpace(string(raw)))
 	for deadline := time.Now().Add(8 * time.Second); alive(child); time.Sleep(100 * time.Millisecond) {
 		if time.Now().After(deadline) {
@@ -342,7 +340,6 @@ func TestObjectiveJobTimeTooSlowToRepeatFails(t *testing.T) {
 	if l := leftover(p); len(l) != 0 {
 		t.Errorf("checkouts left: %v", l)
 	}
-	// The same check as a value is read once, and is an answer.
 	j.Measure, j.Check = core.MeasureValue, "sleep 1.2; echo 5"
 	if o, res := readObjective(t, p, newRun(time.Minute), j); res == nil || res.Reading.Value == nil {
 		t.Errorf("a value of the slow check: %+v", o)

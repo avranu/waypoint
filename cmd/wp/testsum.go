@@ -101,9 +101,7 @@ func cmdTestsum(c *cli, args []string) error {
 	if err != nil {
 		return err
 	}
-	// An argument naming saved output is a FILE, and flags may follow it;
-	// anything else is the command (WP-1080: a leading -- is still taken,
-	// and needed for a command that is also the path of a plain file).
+	// A saved-output file may be followed by flags; otherwise the argument is the command, and -- is needed when the command's name is also a file path.
 	if dashed && len(rest) == 0 {
 		return c.usage("-- ends the flags; give the command after it")
 	}
@@ -145,7 +143,7 @@ func cmdTestsum(c *cli, args []string) error {
 	}
 	if len(rest) > 0 {
 		var buf bytes.Buffer
-		rec := newTestRunRecorder(rest) // as typed, without the -json
+		rec := newTestRunRecorder(rest)
 		note := rec.unchanged(time.Now())
 		sayUnchanged(c.err, note)
 		argv := goTestJSON(rest)
@@ -180,7 +178,6 @@ func cmdTestsum(c *cli, args []string) error {
 	}
 	res, err := c.testsumReport(data, *format, 0, nil)
 	if res == nil && err != nil && file != "" && file != "-" {
-		// It may have been meant as a command (audit 1000.2).
 		return fmt.Errorf("%w (read %s as saved test output; to run it: wp testsum -- sh %s)", err, file, shellJoin([]string{file}))
 	}
 	return err
@@ -271,8 +268,6 @@ func (c *cli) testsumReport(data []byte, format string, cmdFailed int, rec *test
 		return res, exitCode(1)
 	}
 	if cmdFailed != 0 {
-		// The tests passed, but something else in CMD (a lint, a type
-		// check, a second suite that didn't start) failed: show its end.
 		_, _ = fmt.Fprintf(c.out, "but the command exited %d; last lines:\n%s\n", cmdFailed, lastLines(data, 20))
 		return res, exitCode(1)
 	}
@@ -356,7 +351,7 @@ func (r *testResult) render() string {
 		switch {
 		case r.NoneRan:
 			return fmt.Sprintf("NO TESTS RAN in %s%s: if you gave -run, it matched nothing\n", secs, units)
-		case total == 0 && r.Units > 0: // go test's plain output doesn't count tests (WP-592)
+		case total == 0 && r.Units > 0: // go test's plain output doesn't count tests, so total is 0 with units
 			return fmt.Sprintf("PASS: %d %s in %s\n", r.Units, r.UnitName, secs)
 		}
 		return fmt.Sprintf("PASS: %d tests in %s%s\n", total, secs, units)
@@ -377,8 +372,6 @@ func (r *testResult) render() string {
 	}
 	return strings.Join(out, "\n") + "\n"
 }
-
-// ---- go ----
 
 var reGoLoc = lazyre.New(`(?:^|\s)((?:[\w./-]+/)?[\w.-]+\.go):(\d+)`)
 
@@ -435,13 +428,13 @@ func parseGoTest(data []byte) *testResult {
 
 func parseGoJSON(data []byte) (*testResult, bool) {
 	res := &testResult{UnitName: "packages", Ran: map[string]bool{}, Skips: map[string]bool{}}
-	out := map[string][]string{}       // pkg\x00test -> output lines of its current run
-	firstFail := map[string][]string{} // pkg\x00test -> the output of its first failing run
+	out := map[string][]string{}
+	firstFail := map[string][]string{}
 	runs, fails := map[string]int{}, map[string]int{}
-	running := map[string]bool{}   // started and not ended: what a timeout or crash cut short
-	build := map[string][]string{} // ImportPath -> the compiler's output (go1.24+)
+	running := map[string]bool{}
+	build := map[string][]string{} // go test -json reports a build's compiler output as build-output events, keyed by ImportPath
 	pkgs := map[string]bool{}
-	timeouts := map[string][]string{} // pkg -> its output from go test's timeout panic on
+	timeouts := map[string][]string{}
 	var failed []string
 	failedSeen := map[string]bool{}
 	seen := 0
@@ -467,15 +460,14 @@ func parseGoJSON(data []byte) (*testResult, bool) {
 		case "output":
 			l := strings.TrimRight(e.Output, "\n")
 			out[key] = append(out[key], l)
-			// The panic lands in whichever test was running, which never
-			// gets a fail of its own: keep it for the package (WP-883).
+			// A timeout panic lands in whichever test was running, which gets no fail of its own; its output belongs to the package.
 			if timeouts[e.Package] != nil || reGoTimeout.MatchString(l) {
 				timeouts[e.Package] = append(timeouts[e.Package], l)
 			}
 		case "pass", "fail", "skip":
 			delete(running, key)
 			if e.Test == "" {
-				if e.Action != "skip" { // skip: the package has no test files
+				if e.Action != "skip" {
 					pkgs[e.Package] = true
 				}
 				res.Seconds += e.Elapsed
@@ -484,11 +476,11 @@ func parseGoJSON(data []byte) (*testResult, bool) {
 				// -timeout then stopped another test: that hang is a failure
 				// too, and the one --base must not wave through.
 				if e.Action == "fail" && (timeouts[e.Package] != nil || !pkgHasFailedTest(failed, e.Package) || timedOut(cut)) {
-					failed = append(failed, key) // build error, timeout or crash, no test of its own
+					failed = append(failed, key)
 					if lines := build[e.FailedBuild]; e.FailedBuild != "" && len(lines) > 0 {
-						out[key] = lines // what didn't compile, not "FAIL x [build failed]"
+						out[key] = lines
 					} else if len(cut) > 0 {
-						out[key] = cut // a timeout or a crash: the tests it stopped
+						out[key] = cut
 					}
 				}
 				continue
@@ -675,8 +667,8 @@ func parseGoText(data []byte, res *testResult) *testResult {
 	var cur *testFailure
 	var curLines []string
 	var curIndent int
-	matchedNone := 0     // packages that said [no tests to run]
-	var timeout []string // the output from a timeout panic on, until its package's FAIL line
+	matchedNone := 0
+	var timeout []string
 	flush := func() {
 		if cur != nil {
 			cur.Loc, cur.Msg = goMessage(curLines)
@@ -737,8 +729,6 @@ func parseGoText(data []byte, res *testResult) *testResult {
 	return res
 }
 
-// ---- pytest ----
-
 var (
 	rePySummary = lazyre.New(`(\d+) (passed|failed|errors?|skipped|xfailed|xpassed|deselected|warnings?)`)
 	rePyTime    = lazyre.New(`in ([\d.]+)s`)
@@ -753,7 +743,6 @@ func parsePytest(data []byte) *testResult {
 	res := &testResult{UnitName: "files"}
 	files := map[string]bool{}
 	lines := strings.Split(string(data), "\n")
-	// Sections of the long failure report, keyed by the test's short name.
 	type section struct {
 		loc     string
 		e, body []string
@@ -770,7 +759,6 @@ func parsePytest(data []byte) *testResult {
 			continue
 		}
 		if strings.HasPrefix(l, "=") {
-			// A banner ends the current section; the final one carries the totals.
 			cur = nil
 			inReport = strings.Contains(l, "FAILURES") || strings.Contains(l, "ERRORS")
 			if strings.Contains(l, " in ") && rePySummary.MatchString(l) {
@@ -793,7 +781,7 @@ func parsePytest(data []byte) *testResult {
 			cur.body = append(cur.body, l)
 		}
 		if res.Passed+res.Failed == 0 && !strings.HasPrefix(l, "FAILED") && strings.Contains(l, " in ") && rePyTime.MatchString(l) && rePySummary.MatchString(l) && !strings.Contains(l, "::") {
-			parsePyTotals(l, res) // -q prints the totals without a banner
+			parsePyTotals(l, res)
 		}
 	}
 	res.Units = len(files)
@@ -852,8 +840,6 @@ func parsePyTotals(l string, res *testResult) {
 	}
 }
 
-// ---- unittest ----
-
 var (
 	reUtRan    = lazyre.New(`^Ran (\d+) tests? in ([\d.]+)s$`)
 	reUtStatus = lazyre.New(`^(OK|FAILED)(?: \((.*)\))?$`)
@@ -902,7 +888,7 @@ func parseUnittest(data []byte) *testResult {
 			f.Name = m[3] + "." + m[2]
 		}
 		if strings.HasPrefix(m[3], "unittest.loader._FailedTest") {
-			f.Name = m[2] + " (didn't load)" // an import error in the test module
+			f.Name = m[2] + " (didn't load)"
 		}
 		// A test with a docstring has its first line between the header and
 		// the dashes. The body runs from below the dashes to the next banner
@@ -941,12 +927,11 @@ func parseUnittest(data []byte) *testResult {
 		if last >= 0 {
 			rest = body[last+1:]
 			if len(rest) > 0 && strings.HasPrefix(rest[0], "    ") {
-				rest = rest[1:] // the frame's source line
+				rest = rest[1:]
 			}
 		}
 		for _, b := range rest {
 			b = strings.TrimSpace(b)
-			// Skip blank lines, 3.11's ^^^ carets and difflib's "?   ^" hints.
 			if b == "" || strings.HasPrefix(b, "^") || strings.HasPrefix(b, "~") || b == "?" || strings.HasPrefix(b, "? ") {
 				continue
 			}
@@ -963,8 +948,6 @@ func parseUnittest(data []byte) *testResult {
 	res.Passed = max(0, ran-res.Failed-res.Skipped)
 	return res
 }
-
-// ---- junit ----
 
 type junitSuite struct {
 	Name   string       `xml:"name,attr"`

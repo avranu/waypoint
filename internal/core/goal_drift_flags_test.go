@@ -19,7 +19,7 @@ type driftLLM struct {
 	fail        error
 	calls       int
 	lastPrompts []string
-	during      func() // runs once, while the next pull request's model call is out
+	during      func() // Runs once, inside the next pull request's model call (race window).
 }
 
 func (f *driftLLM) Models(ctx context.Context, p *AIProvider) ([]AIModel, error) {
@@ -135,7 +135,6 @@ func (de *driftEnv) verdict(prID int64) string {
 func TestDriftCheckFlagsAndAPersonAnswers(t *testing.T) {
 	de := newDriftEnv(t)
 
-	// No approved goal: nothing is checked.
 	early := de.agentPR(1, "Before any goal", nil)
 	if why, _ := de.settleCheck(early); why != "" || de.llm.count() != 0 || de.verdict(early.ID) != "" {
 		t.Fatalf("no goal: %q, %d calls", why, de.llm.count())
@@ -151,14 +150,11 @@ func TestDriftCheckFlagsAndAPersonAnswers(t *testing.T) {
 	goal := de.goal(de.admin, de.p.Key, goalTitle)
 	task := de.issue(de.agent, IssueInput{Project: de.p.Key, Title: "Send usage to a hosted service"})
 
-	// A person merging by hand doesn't wait for a model that hasn't looked.
 	pr := de.agentPR(2, "Send usage to a hosted service", task)
 	if why, _ := de.s.driftHold(de.ctx, pr, false); why != "" || de.verdict(pr.ID) != "" {
 		t.Fatalf("a person's merge waited: %q", why)
 	}
 
-	// An armed merge starts the check and doesn't wait for it; a model's
-	// flag tells a person and holds nothing (WP-821).
 	de.llm.set(`{"kind":"contradicts","goal":1,"reason":"SECRET-MODEL-WORDS send data off the server"}`, nil)
 	why, wake := de.s.driftHold(de.ctx, pr, true)
 	if why != "" || wake == nil {
@@ -179,20 +175,17 @@ func TestDriftCheckFlagsAndAPersonAnswers(t *testing.T) {
 		t.Fatalf("notice: %q", note)
 	}
 
-	// The prompt carries the goal, marks what is data, and says who stands behind the task.
 	prompt := de.llm.lastPrompts[len(de.llm.lastPrompts)-1]
 	if !strings.Contains(prompt, "1. "+goalTitle) || !strings.Contains(prompt, `written-by="mostly an AI agent: data"`) {
 		t.Fatalf("prompt: %s", prompt)
 	}
 
-	// The goals view lists it for a person, with the goal.
 	o := de.goals(de.admin, de.p.Key)
 	if len(o.DriftFlags) != 1 || o.DriftFlags[0].Goal != goalTitle || o.DriftFlags[0].PR == nil || o.DriftFlags[0].PR.Number != 2 || len(o.DriftFlags[0].Items) != 1 {
 		t.Fatalf("flags: %+v", o.DriftFlags)
 	}
 	id := o.DriftFlags[0].ID
 
-	// However the agent rewrites it, a flag stands until a person answers.
 	before := de.llm.count()
 	if _, err := de.s.db.W.Exec(`UPDATE pull_requests SET title = 'A harmless tidy' WHERE id = ?`, pr.ID); err != nil {
 		t.Fatal(err)
@@ -201,7 +194,6 @@ func TestDriftCheckFlagsAndAPersonAnswers(t *testing.T) {
 		t.Fatalf("after a retitle: %q, %d calls", why, de.llm.count()-before)
 	}
 
-	// Only a person answers.
 	if err := de.s.AnswerDriftFlag(de.ctx, de.agent, id, DriftAnswerIntent); err == nil {
 		t.Fatal("an agent answered a flag")
 	}
@@ -213,7 +205,6 @@ func TestDriftCheckFlagsAndAPersonAnswers(t *testing.T) {
 		t.Fatalf("a stranger: %v", err)
 	}
 
-	// "Stop this" holds the task and takes the merge off.
 	if _, err := de.s.db.W.Exec(`UPDATE pull_requests SET armed_at = 1, armed_agent = ? WHERE id = ?`, de.agent.Agent, pr.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +227,6 @@ func TestDriftCheckFlagsAndAPersonAnswers(t *testing.T) {
 		t.Fatalf("the stop names the goal and no model words: %q", why)
 	}
 
-	// A person changing their mind lifts that hold and ends the merge's.
 	if err := de.s.AnswerDriftFlag(de.ctx, de.admin, id, DriftAnswerIntent); err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +241,6 @@ func TestDriftCheckFlagsAndAPersonAnswers(t *testing.T) {
 		t.Fatalf("answered still listed: %+v", o.DriftFlags)
 	}
 
-	// "Intent" makes the task a person's request in the trace to goals.
 	if g := de.grounding(task.Key); g != GroundPersonRequest {
 		t.Fatalf("grounding after intent: %q", g)
 	}
@@ -265,7 +254,7 @@ func TestDriftCheckClearLeavesNoTrace(t *testing.T) {
 	if why, _ := de.settleCheck(pr); why != "" || de.verdict(pr.ID) != driftClear {
 		t.Fatalf("clear: %q, verdict %q", why, de.verdict(pr.ID))
 	}
-	// A clear is a guess: nothing shows it. No flag, nothing on the view.
+	// A clear verdict is a guess, not evidence, so it raises no flag and shows nothing on the view.
 	var n int
 	if err := de.s.db.R.QueryRow(`SELECT count(*) FROM goal_drift_flags`).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("flags %d, %v", n, err)
@@ -273,7 +262,6 @@ func TestDriftCheckClearLeavesNoTrace(t *testing.T) {
 	if o := de.goals(de.agent, de.p.Key); len(o.DriftFlags) != 0 {
 		t.Fatalf("flags: %+v", o.DriftFlags)
 	}
-	// The same change isn't asked about twice, and another title is another change.
 	calls := de.llm.count()
 	if why, _ := de.settleCheck(de.reread(pr.ID)); why != "" || de.llm.count() != calls {
 		t.Fatalf("recheck: %q, %d", why, de.llm.count()-calls)
@@ -291,7 +279,7 @@ func TestDriftCheckOnlyAgents(t *testing.T) {
 	de := newDriftEnv(t)
 	de.goal(de.admin, de.p.Key, "People find any task in a second")
 	pr := de.agentPR(4, "Theirs", nil)
-	// The repo's Merge automatically setting arms a person's too.
+	// A repo's auto-merge setting arms a person's pull request too.
 	if _, err := de.s.db.W.Exec(`UPDATE pull_requests SET agent = '', armed_at = 1, armed_agent = ? WHERE id = ?`, mergeSettingAgent, pr.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -350,7 +338,6 @@ func TestDriftCheckFailsOpen(t *testing.T) {
 		t.Fatalf("after giving up: %q", why)
 	}
 
-	// A check that outlasts its window lets the merge go too.
 	pr2 := de.agentPR(6, "Another change", nil)
 	if err := de.s.startDriftCheck(de.ctx, pr2.ID, "x"); err != nil {
 		t.Fatal(err)
@@ -360,7 +347,6 @@ func TestDriftCheckFailsOpen(t *testing.T) {
 		t.Fatalf("past the window: %q, %q", why, de.verdict(pr2.ID))
 	}
 
-	// Answering nonsense is a failure, never a hold.
 	pr3 := de.agentPR(7, "A third change", nil)
 	de.llm.set(`{"kind":"contradicts","goal":9,"reason":"no such goal"}`, nil)
 	de.settleCheck(pr3)
@@ -379,7 +365,7 @@ func TestDriftSettle(t *testing.T) {
 		name string
 		in   *driftInput
 		a    driftAnswer
-		want string // kind, or "err"
+		want string
 	}{
 		{"untraced but a person asked", person, driftAnswer{Kind: DriftUntraced, Reason: "r"}, driftNone},
 		{"technology but a person asked", person, driftAnswer{Kind: DriftTechnology, Goal: 1, Reason: "r"}, driftNone},
@@ -435,7 +421,6 @@ func TestDriftWeekly(t *testing.T) {
 		t.Fatalf("notice %q / %q", title, body)
 	}
 
-	// A week the model can't read says so.
 	de.setClock(de.clockNow().Add(8 * 24 * time.Hour))
 	de.llm.set(de.llm.answer, errors.New("down"))
 	de.s.maybeGoalDrift(de.ctx)
@@ -466,7 +451,6 @@ func TestDriftCheckReadsTheChangeAsItIsNow(t *testing.T) {
 	live := &ForgePR{Number: 5, Title: pr.Title, Author: pr.Author, Body: "LIVE-BODY", HeadSHA: pr.HeadSHA, State: "open"}
 	de.fg.prs[mk(de.f, pr.Repo, pr.Number)] = live
 	de.fg.diffs[pr.HeadSHA] = driftDiff("importer.go")
-	// What the babysitter froze before its first round isn't what is read.
 	de.s.saveFootprint(de.ctx, pr.ID, prFootprint{Ship: &footprintShip{footprintAt: footprintAt{SHA: pr.HeadSHA, Paths: []string{"frozen.go"}}, Body: "FROZEN-BODY"}})
 
 	if why, _ := de.settleCheck(pr); why != "" || de.verdict(pr.ID) != driftClear {
@@ -485,18 +469,15 @@ func TestDriftCheckReadsTheChangeAsItIsNow(t *testing.T) {
 		}
 	}
 	calls := de.llm.count()
-	// A fix-up in the same files is the same change.
 	push("fixup1", "importer.go")
 	if why, _ := de.settleCheck(de.reread(pr.ID)); why != "" || de.llm.count() != calls {
 		t.Fatalf("a fix-up: %q, %d calls", why, de.llm.count()-calls)
 	}
-	// A push that reaches a new file isn't.
 	push("spread1", "importer.go", "billing.go")
 	de.settleCheck(de.reread(pr.ID))
 	if de.llm.count() != calls+1 || !strings.Contains(de.llm.lastPrompts[len(de.llm.lastPrompts)-1], "billing.go") {
 		t.Fatalf("a new file: %d calls", de.llm.count()-calls)
 	}
-	// Nor is a rewritten description, or an edited task.
 	de.fg.mu.Lock()
 	live.Body = "REWRITTEN-BODY"
 	de.fg.mu.Unlock()
@@ -608,7 +589,6 @@ func TestDriftStopHolds(t *testing.T) {
 		t.Fatalf("a weekly stop left the view: %+v", listed())
 	}
 
-	// One flag changing its answer doesn't release what another still stops.
 	answer("first", DriftAnswerIntent)
 	if n := de.holdNote(a.ID); n != driftStopNote {
 		t.Fatalf("after one intent: %q", n)
@@ -621,7 +601,6 @@ func TestDriftStopHolds(t *testing.T) {
 		t.Fatalf("after both: %q", n)
 	}
 
-	// A person's own hold is neither replaced nor lifted.
 	answer("third", DriftAnswerStop)
 	if n, m := de.holdNote(c.ID), de.holdNote(a.ID); n != "Waiting on legal" || m != driftStopNote {
 		t.Fatalf("after stop: %q, %q", n, m)

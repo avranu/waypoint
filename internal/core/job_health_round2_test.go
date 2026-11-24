@@ -16,12 +16,12 @@ func TestPersistenceRule(t *testing.T) {
 	const h = time.Hour
 	for _, c := range []struct {
 		name   string
-		source string        // "" a job of the period
-		period time.Duration // of the job
-		step   time.Duration // between its failures
-		fails  int           // how many times it fails
-		until  time.Duration // how long the test watches
-		told   time.Duration // when it is told; -1 never
+		source string
+		period time.Duration
+		step   time.Duration
+		fails  int
+		until  time.Duration
+		told   time.Duration
 	}{
 		{"hourly job failing every run", "sync", h, h, 100, 40 * h, 24 * h},
 		{"three records in one hour, then quiet", "sync", h, 10 * time.Minute, 3, 60 * h, -1},
@@ -102,7 +102,7 @@ func TestGatedJobSkipsWhenOff(t *testing.T) {
 		t.Fatal("a run that did nothing wrong is clean")
 	}
 	e.pass(time.Hour)
-	e.runJob("estimates", time.Hour, e.s.sweepEstimates) // no estimate model is set up
+	e.runJob("estimates", time.Hour, e.s.sweepEstimates)
 	j := e.jobOf("estimates")
 	if j.LastResult != jobSkipped || !strings.Contains(j.LastNote, "no AI model") || j.LastCleanAt == nil || !j.LastCleanAt.Equal(*clean) {
 		t.Errorf("after a gated run: %+v", j)
@@ -124,7 +124,6 @@ func TestJobHealthWithNoAdmin(t *testing.T) {
 	if n := e.one(`SELECT count(*) FROM job_problems WHERE alerted_at IS NOT NULL`); n != "0" {
 		t.Fatalf("marked told with nobody told: %s", n)
 	}
-	// Said once, not each minute.
 	e.s.saveJobHealth(e.ctx)
 	if p := e.problemOf(sourceBackground, "job health: there is no admin to tell", ""); p == nil || p.Count != 1 {
 		t.Errorf("the warning: %+v", p)
@@ -224,7 +223,7 @@ func TestUncleanStopIsFound(t *testing.T) {
 			e.quietLog()
 			e.s.beginServerRun(e.ctx)
 			e.s.jobs.declare("slow job", time.Hour, "")
-			e.runJob("slow job", time.Hour, nil) // its row exists
+			e.runJob("slow job", time.Hour, nil)
 			started := make(chan struct{})
 			release := make(chan struct{})
 			done := make(chan struct{})
@@ -234,7 +233,7 @@ func TestUncleanStopIsFound(t *testing.T) {
 			}()
 			<-started
 			e.pass(time.Minute)
-			e.s.CheckJobHealth(e.ctx) // saves running_since and checked_at
+			e.s.CheckJobHealth(e.ctx)
 			if clean {
 				e.s.jobs.stop()
 				e.s.saveJobHealth(e.ctx)

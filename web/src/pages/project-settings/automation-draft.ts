@@ -1,7 +1,4 @@
-// What the automation editor edits: a draft of the rule, turned back into a
-// rule when saved. The catalog says which settings each trigger and action
-// has, so a draft keeps whatever it was given (old rules load and save
-// unchanged) and saving drops only the settings that no longer apply.
+// Settings the catalog doesn't list are kept as given, so rules from other versions save unchanged.
 
 import {
   paramShown,
@@ -103,8 +100,6 @@ export const draftFromRule = (name: string, enabled: boolean, rule: Rule): Draft
 export const draftFromAutomation = (a: Automation): Draft =>
   draftFromRule(a.name, a.enabled, a.rule)
 
-// ---- defaults ----
-
 /** What a new trigger starts with: the catalog's defaults for the settings it shows. */
 export function defaultTrigger(def: TriggerDef): Trigger {
   const t: Trigger = { event: def.name }
@@ -162,8 +157,6 @@ export function defaultAction(def: ActionDef): Action {
   return a
 }
 
-// ---- cleaning ----
-
 function cleanValue(p: ParamDef, v: unknown): unknown {
   switch (p.type) {
     case 'number':
@@ -200,7 +193,6 @@ function cleanValue(p: ParamDef, v: unknown): unknown {
     case 'select':
     case 'field': {
       const s = typeof v === 'string' ? v.trim() : ''
-      // "Anyone" is no filter at all.
       return s === '' || (p.name === 'by' && s === 'any') ? undefined : s
     }
     default: {
@@ -239,7 +231,6 @@ export function cleanStep(s: DStep, cat: Catalog): Action {
   }
   const def = cat.actions.find((d) => d.name === a.type)
   if (!def) {
-    // Not in the catalog (an action from a newer version): leave it as it was.
     for (const [k, v] of Object.entries(a)) if (!(k in out) && v !== undefined) out[k] = v
   } else {
     Object.assign(out, cleanParams(def.params ?? [], a))
@@ -303,8 +294,6 @@ export function toRule(d: Draft, cat: Catalog): Rule {
   return rule
 }
 
-// ---- step ids ----
-
 const usableID = /^[a-z][a-z0-9_]*$/
 
 /** Every step's name in templates: its own id, or s1, s2 … (2.1, 2.2 … inside the repeat that is step 2). */
@@ -320,8 +309,6 @@ export function stepIDs(steps: DStep[]): Map<number, string> {
 
 /** Whether templates can name a step by this id (ids with a dot can't be written as .Steps.x). */
 export const nameableID = (id: string) => usableID.test(id)
-
-// ---- problems ----
 
 const ID_RE = /^[a-z][a-z0-9_]{0,31}$/
 
@@ -436,8 +423,6 @@ export function draftProblems(d: Draft, cat: Catalog) {
   }
 }
 
-// ---- names ----
-
 export function autoName(rule: Rule, statuses: Status[], cat: Catalog): string {
   const t = rule.trigger
   const st = (v: string) =>
@@ -455,8 +440,6 @@ export function autoName(rule: Rule, statuses: Status[], cat: Catalog): string {
     : ''
   return first ? `${when}: ${label.toLowerCase()}` : when
 }
-
-// ---- editing the draft's steps ----
 
 export const mapSteps = (list: DStep[], id: number, fn: (s: DStep) => DStep): DStep[] =>
   list.map((s) => (s.uid === id ? fn(s) : { ...s, kids: mapSteps(s.kids, id, fn) }))
@@ -490,7 +473,6 @@ export function reorder(
 export function dropOn(list: DStep[], active: number, over: number): DStep[] {
   const from = list.findIndex((s) => s.uid === active)
   let at = list.findIndex((s) => s.uid === over)
-  // Dropped on a step inside a repeat: it lands by the repeat.
   if (from >= 0 && at < 0) at = list.findIndex((s) => s.kids.some((k) => k.uid === over))
   if (from >= 0 && at >= 0) return arrayMove(list, from, at)
   if (from >= 0 || at >= 0) return list

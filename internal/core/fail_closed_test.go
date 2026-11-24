@@ -6,9 +6,7 @@ import (
 	"testing"
 )
 
-// A read that fails is not an answer (WP-1406): each of these breaks the
-// table a check reads, and asks that the outcome be "not now": merge held,
-// gate not posted, nothing marked, so the next look decides.
+// A failed read is not an answer: the outcome is "not now" (merge held, gate not posted, nothing marked), so the next look decides.
 
 func (pe *prEnv) breakTable(name string) func() {
 	pe.t.Helper()
@@ -167,7 +165,6 @@ func TestScreenPullErrorMarksNothing(t *testing.T) {
 	if got := se.pr(5); got.Outside {
 		t.Error("a failed read marked the pull request outside")
 	}
-	// Showing text still treats doubt as outside.
 	if !v.outside(se.ctx, se.s.db.R, "stranger") {
 		t.Error("an unreadable login was shown as a person's")
 	}

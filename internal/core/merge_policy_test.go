@@ -30,7 +30,7 @@ func (se *shipEnv) prHook(action string, pr ForgePR) {
 	se.t.Helper()
 	se.fg.setPR(se.f, "me/app", pr, sampleDiff)
 	head := map[string]any{"ref": pr.HeadRef, "sha": pr.HeadSHA, "repo": map[string]any{"full_name": cmp(pr.HeadRepo, "me/app")}}
-	if pr.HeadRepo == "-" { // the forge doesn't say (GitHub, once a fork is deleted)
+	if pr.HeadRepo == "-" { // a HeadRepo of "-" makes the forge omit the head's repository
 		delete(head, "repo")
 	}
 	labels := []map[string]string{}
@@ -65,7 +65,6 @@ func TestMergeAutomaticallyArms(t *testing.T) {
 	}
 	armed := func(n int) bool { return se.pr(n).ArmedAt != nil }
 
-	// An ordinary pull request is armed as soon as Waypoint sees it, as the setting.
 	se.prHook("opened", pr(5, "Fix the thing", "fix"))
 	p5 := se.pr(5)
 	if p5.ArmedAt == nil || p5.ArmedAgent != mergeSettingAgent || p5.armedBy != nil {
@@ -80,7 +79,6 @@ func TestMergeAutomaticallyArms(t *testing.T) {
 		t.Errorf("no audit entry for the setting's arming: %+v", page.Entries)
 	}
 
-	// A draft is armed when it leaves draft.
 	draft := pr(6, "Draft", "d")
 	draft.State = "draft"
 	se.prHook("opened", draft)
@@ -93,7 +91,6 @@ func TestMergeAutomaticallyArms(t *testing.T) {
 		t.Error("not armed when it left draft")
 	}
 
-	// Never: forks, do-not-merge and wip labels, release pull requests.
 	fork := pr(7, "From a fork", "f")
 	fork.HeadRepo = "someone/app"
 	same := pr(14, "From its own repo", "s")
@@ -111,7 +108,6 @@ func TestMergeAutomaticallyArms(t *testing.T) {
 		}
 	}
 
-	// A do-not-merge label later takes the setting's arming off; taking it off arms again.
 	held := pr(13, "Releases page: fix the table", "rp", "do-not-merge")
 	se.prHook("labeled", held)
 	if armed(13) {
@@ -123,7 +119,6 @@ func TestMergeAutomaticallyArms(t *testing.T) {
 		t.Error("not armed again once the label came off")
 	}
 
-	// A person taking it off sticks, through pushes.
 	if err := se.s.DisarmMerge(se.ctx, se.admin, p5.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -134,8 +129,7 @@ func TestMergeAutomaticallyArms(t *testing.T) {
 		t.Error("the setting armed again what a person disarmed")
 	}
 
-	// Open before the setting existed (the migration marks them): an edit
-	// doesn't arm it, its next push does; turning the setting on does too.
+	// Pull requests open before the setting existed are marked by the migration, so an edit doesn't arm them and their next push does.
 	se.prHook("opened", pr(16, "Old work", "o"))
 	se.prHook("opened", pr(17, "Older work", "o2"))
 	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE pull_requests SET armed_at = NULL, armed_agent = '', arm_declined = 2 WHERE number IN (16, 17)`); err != nil {
@@ -151,7 +145,6 @@ func TestMergeAutomaticallyArms(t *testing.T) {
 	if !armed(16) || armed(17) {
 		t.Errorf("after a push: #16 %v (want armed), #17 %v", armed(16), armed(17))
 	}
-	// One recorded without its head (its webhook never came) getting it isn't a push.
 	se.prHook("opened", pr(19, "Headless", "h19"))
 	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE pull_requests SET armed_at = NULL, armed_agent = '', head_sha = '', arm_declined = 2 WHERE number = 19`); err != nil {
 		t.Fatal(err)
@@ -161,7 +154,6 @@ func TestMergeAutomaticallyArms(t *testing.T) {
 		t.Errorf("a headless pull request from before the setting, now with its head: armed %v", armed(19))
 	}
 
-	// Turned off: the setting's own arming comes off, a person's stays.
 	if _, err := se.s.MergePR(se.ctx, se.admin, se.pr(14).ID, MergeInput{WhenReady: true}); err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +165,6 @@ func TestMergeAutomaticallyArms(t *testing.T) {
 	if armed(15) {
 		t.Error("armed while the setting is off")
 	}
-	// On again: armed, except what a person disarmed.
 	se.policy(MergePolicyInput{AutoMerge: ptr(true)})
 	if !armed(6) || !armed(13) || !armed(15) || !armed(17) || armed(5) {
 		t.Errorf("after turning it on: #6 %v, #13 %v, #15 %v, #17 (open since before) %v, #5 (disarmed by a person) %v", armed(6), armed(13), armed(15), armed(17), armed(5))
@@ -182,7 +173,6 @@ func TestMergeAutomaticallyArms(t *testing.T) {
 	if len(repos) != 1 || !repos[0].AutoMerge || repos[0].ReviewWaitMinutes != 30 || repos[0].QuietMinutes != 10 || len(repos[0].ExternalReviewers) != 0 {
 		t.Errorf("repo policy = %+v", repos[0].MergePolicy)
 	}
-	// Only owners set it; minutes are bounded.
 	if err := se.s.SetRepoMergePolicy(se.ctx, se.admin, se.p.Key, se.repo.ID, MergePolicyInput{QuietMinutes: ptr(-1)}); !IsInvalid(err) {
 		t.Errorf("negative quiet: %v", err)
 	}
@@ -215,7 +205,7 @@ func TestDisarmStopsAnArmedMerge(t *testing.T) {
 	se.sg.setChecks("1111111aaaa", CommitCheck{Name: "ci / backend (pull_request)", State: CheckSuccess})
 	se.poll()
 	pr := se.pr(5)
-	// As if the armed merge had read it armed, and a person disarmed it since.
+	// The armed merge acted on a read taken before a person disarmed it, so the merge must re-read and refuse.
 	_, err := se.s.mergeNow(se.ctx, se.admin, pr, MergeInput{armed: true}, "armed by test")
 	if !IsInvalid(err) || !strings.Contains(err.Error(), "taken off") || len(se.sg.merged()) != 0 {
 		t.Fatalf("merged a disarmed pull request: %v %+v", err, se.sg.merged())
@@ -245,10 +235,9 @@ func TestReviewsSettle(t *testing.T) {
 	se.llm.answers["opencode/muse-spark-1.3-contributor-free"] = noFindings
 	se.policy(MergePolicyInput{RequiredChecks: &[]string{"local-ci"}, ExternalReviewers: &[]string{"llm-review", "forge-checks/codeql"}})
 	seen := se.clockNow()
-	se.pullHook("opened", testPR) // armed by the setting
+	se.pullHook("opened", testPR)
 	waitEnd := se.s.clock(seen.Add(30 * time.Minute))
 
-	// It waits for Waypoint's review rule, the external reviewers and the required check.
 	r := se.reasons(5)
 	if want := "waiting for Waypoint's “Review pull requests”, llm-review and forge-checks/codeql on 1111111 until " + waitEnd; !strings.Contains(r, want) {
 		t.Errorf("reasons lack %q: %s", want, r)
@@ -258,10 +247,9 @@ func TestReviewsSettle(t *testing.T) {
 	if r := se.reasons(5); !strings.Contains(r, "required check local-ci hasn't reported on 1111111") {
 		t.Errorf("reasons = %s", r)
 	}
-	// The checks report, CodeQL among them; Waypoint's review runs (a run for this head counts).
 	se.sg.setChecks("1111111aaaa", CommitCheck{Name: "ci / backend (pull_request)", State: CheckSuccess},
 		CommitCheck{Name: "local-ci", State: CheckSuccess}, CommitCheck{Name: "forge-checks/codeql", State: CheckSuccess})
-	se.s.refreshPRChecks(se.ctx, se.pr(5).ID) // the head's checks had settled: no more polling
+	se.s.refreshPRChecks(se.ctx, se.pr(5).ID)
 	se.s.Wait()
 	se.drain()
 	r = se.reasons(5)
@@ -269,7 +257,6 @@ func TestReviewsSettle(t *testing.T) {
 		!strings.Contains(r, "waiting for llm-review on 1111111 until "+waitEnd) {
 		t.Errorf("after the review and checks: %s", r)
 	}
-	// Waypoint's review was posted: quiet for ten minutes from it.
 	if want := "quiet until " + se.s.clock(se.clockNow().Add(10*time.Minute)) + " (last: Waypoint's review)"; !strings.Contains(r, want) {
 		t.Errorf("reasons lack %q: %s", want, r)
 	}
@@ -277,7 +264,6 @@ func TestReviewsSettle(t *testing.T) {
 		t.Fatal("merged before reviews settled")
 	}
 
-	// llm-review reviews this head: reviewers settled, and the quiet period restarts.
 	se.setClock(se.clockNow().Add(5 * time.Minute))
 	err := se.hook(se.f, "pull_request_review", map[string]any{"action": "submitted", "repository": map[string]any{"full_name": "me/app"},
 		"pull_request": map[string]any{"number": 5}, "sender": map[string]any{"login": "llm-review"},
@@ -297,7 +283,6 @@ func TestReviewsSettle(t *testing.T) {
 		t.Error("only waiting, but not said so")
 	}
 
-	// A comment by anyone starts the quiet period again.
 	se.setClock(se.clockNow().Add(8 * time.Minute))
 	err = se.hook(se.f, "issue_comment", map[string]any{"action": "created", "repository": map[string]any{"full_name": "me/app"},
 		"issue":   map[string]any{"number": 5, "pull_request": map[string]any{}},
@@ -310,14 +295,12 @@ func TestReviewsSettle(t *testing.T) {
 	if r := se.reasons(5); !strings.Contains(r, "quiet until "+se.s.clock(commented.Add(10*time.Minute))+" (last: comment by bob)") {
 		t.Errorf("after bob's comment: %s", r)
 	}
-	// Nothing merges before then, even on the scheduler's tick.
 	se.setClock(se.clockNow().Add(9 * time.Minute))
 	se.s.CheckArmedMerges(se.ctx)
 	se.s.Wait()
 	if len(se.sg.merged()) != 0 {
 		t.Fatal("merged during the quiet period")
 	}
-	// The tick after the quiet period merges it, on the head it checked.
 	se.setClock(se.clockNow().Add(90 * time.Second))
 	se.s.CheckArmedMerges(se.ctx)
 	se.s.Wait()
@@ -348,7 +331,7 @@ func TestReviewWaitTimesOut(t *testing.T) {
 	if err := se.s.db.R.QueryRowContext(se.ctx, `SELECT merge_wake_at FROM pull_requests WHERE id = ?`, se.pr(5).ID).Scan(&wake); err != nil || wake == 0 {
 		t.Fatalf("no wake time: %v", err)
 	}
-	se.setClock(se.clockNow().Add(27 * time.Minute)) // 28 since the head was seen
+	se.setClock(se.clockNow().Add(27 * time.Minute))
 	se.s.CheckArmedMerges(se.ctx)
 	se.s.Wait()
 	if len(se.sg.merged()) != 0 {
@@ -398,7 +381,6 @@ func TestMergeAutomaticallyByBase(t *testing.T) {
 		}
 	}
 
-	// Every branch but the default (main, as the forge says).
 	se.policy(MergePolicyInput{AutoMergeInto: ptr(IntoOthers)})
 	open(1, "main")
 	open(2, "release/v_0_9_0")
@@ -413,7 +395,6 @@ func TestMergeAutomaticallyByBase(t *testing.T) {
 		t.Errorf("armed = %+v %v", d.Shipping.Armed, err)
 	}
 
-	// An agent's wp ship into the default branch merges by hand; a person still arms it.
 	claude := agentActorFor(se.admin, "anthropic/claude-opus-5-5")
 	res, err := se.s.MergePR(se.ctx, claude, se.pr(1).ID, MergeInput{WhenReady: true})
 	if err != nil || res.Armed || !res.ByHand || len(res.Reasons) != 1 || !strings.Contains(res.Reasons[0], "into the default branch (main) by hand") {
@@ -423,7 +404,6 @@ func TestMergeAutomaticallyByBase(t *testing.T) {
 		t.Error("an agent armed a pull request into the default branch")
 	}
 
-	// Branches matching globs: the setting's arming comes off the others.
 	se.policy(MergePolicyInput{AutoMergeInto: ptr(IntoMatch), AutoMergeBases: &[]string{"release/**"}})
 	want("match", map[int]bool{1: false, 2: true, 3: false})
 	if d, _ := se.s.GetPullRequest(se.ctx, se.admin, se.pr(2).ID); d == nil || d.Shipping.Armed == nil || d.Shipping.Armed.Scope != "into release/**" {
@@ -433,7 +413,6 @@ func TestMergeAutomaticallyByBase(t *testing.T) {
 		t.Errorf("an agent arming into develop: %+v %v", res, err)
 	}
 
-	// The default branch only, then any branch again.
 	se.policy(MergePolicyInput{AutoMergeInto: ptr(IntoDefault)})
 	want("default", map[int]bool{1: true, 2: false, 3: false})
 	se.policy(MergePolicyInput{AutoMergeInto: ptr(IntoAny)})
@@ -462,7 +441,6 @@ func TestMergePolicyBaseScopesCombine(t *testing.T) {
 	if (MergePolicy{AutoMergeInto: IntoAny}).scopeText("main") != "" {
 		t.Error("any branch has a scope text")
 	}
-	// A base the forge didn't name is in no scope; branch names have case.
 	if (MergePolicy{AutoMergeInto: IntoOthers}).baseSkip("", "main") == "" {
 		t.Error("others let in an unknown base")
 	}
@@ -499,14 +477,12 @@ func TestMergeAutomaticallyByBaseArms(t *testing.T) {
 		se.sg.sm.Unlock()
 	}
 
-	// Any branch: the agent arms into main; narrowing to the others takes it off.
 	se.prHook("opened", pr(1, "main"))
 	agentArms(1)
 	se.policy(MergePolicyInput{AutoMergeInto: ptr(IntoOthers)})
 	if armed(1) {
 		t.Error("an agent's arming into the default branch stayed after narrowing")
 	}
-	// Retargeted from develop to main: the agent's arming comes off.
 	se.prHook("opened", pr(3, "develop"))
 	agentArms(3)
 	se.prHook("edited", pr(3, "main"))
@@ -514,9 +490,7 @@ func TestMergeAutomaticallyByBaseArms(t *testing.T) {
 		t.Error("an agent's arming stayed after a retarget into the default branch")
 	}
 
-	// The default branch renamed to trunk while main is remembered: a pull
-	// request into trunk is armed on the stale word, but the merge asks
-	// afresh and takes the arming off; one into a release branch merges.
+	// The default branch remembered as main may be stale: arming uses it, but the merge asks the forge afresh and takes the arming off.
 	setDefault("trunk")
 	se.prHook("opened", pr(5, "trunk"))
 	se.prHook("opened", pr(6, "release/v1"))
@@ -533,8 +507,6 @@ func TestMergeAutomaticallyByBaseArms(t *testing.T) {
 		t.Errorf("merges = %+v, #5 armed %v (%s)", m, armed(5), se.reasons(5))
 	}
 
-	// The forge can't say which is the default branch: a do-not-merge label
-	// still takes the setting's arming off; nothing new is armed.
 	se.prHook("opened", pr(7, "release/v2"))
 	if !armed(7) {
 		t.Fatal("#7 not armed")

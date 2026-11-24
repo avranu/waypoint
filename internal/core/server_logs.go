@@ -16,24 +16,15 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Production diagnostics through wp, not ssh (WP-375). Agents used to read
-// the server's log with `ssh prodhost docker logs`, which needs a shell on
-// the host. The server keeps its recent log records in memory instead, and
-// `wp server log` reads them through the API, for admins.
-//
-// Secrets are blanked as a record is written, never on the way out: an
-// Authorization or token=… value, a key-looking attribute, a token of a
-// known shape, and the configured secrets themselves (the environment's
-// tokens and keys, the AI providers' keys, forge and webhook secrets). Text
-// quoted from a forge stays what it is: data, shown as written.
+// Secrets are blanked as a record is written, not on the way out; a secret learnt later also blanks the records already in the ring.
 
 // Bounds of the log ring: whichever is reached first drops the oldest.
 const (
 	DefaultLogRecords = 50000
 	DefaultLogAge     = 48 * time.Hour
-	logMsgMax         = 2000 // bytes of a message kept, about
-	logAttrsMax       = 4000 // bytes of a record's attributes kept, about
-	minSecretLen      = 8    // shorter values are too likely to be words
+	logMsgMax         = 2000
+	logAttrsMax       = 4000
+	minSecretLen      = 8 // shorter values are too likely to be words
 )
 
 // LogRecord is one log record as the ring keeps it.
@@ -49,12 +40,12 @@ type LogRecord struct {
 type LogRing struct {
 	mu      sync.Mutex
 	buf     []LogRecord
-	next    int  // where the next record goes
-	full    bool // buf has wrapped
+	next    int
+	full    bool
 	maxAge  time.Duration
 	secrets map[string]bool
-	sorted  []string  // secrets, longest first
-	store   *logStore // the day files, when Persist was called (WP-893)
+	sorted  []string
+	store   *logStore
 	now     func() time.Time
 	// onSecret is told of each secret added, after the ring's lock is
 	// released: what job health holds in memory blanks it too.
@@ -157,8 +148,8 @@ var logKeyRE = lazyre.New(`(?i)(token|secret|password|passwd|api[_-]?key|apikey|
 var logValueREs = []*lazyre.Regexp{
 	lazyre.New(`(?i)\b((?:bearer|basic)\s+)[A-Za-z0-9._~+/=:-]{8,}`),
 	lazyre.New(`(?i)\b(authorization:\s*(?:[A-Za-z]+\s+)?)[A-Za-z0-9._~+/=:-]{8,}`),
-	lazyre.New(`(?i)\b(token\s+)[0-9a-f]{20,}\b`), // Forgejo: "Authorization: token <hex>"
-	lazyre.New(`()\bwp[dst]_[A-Za-z0-9_-]{8,}`),   // Waypoint's own tokens
+	lazyre.New(`(?i)\b(token\s+)[0-9a-f]{20,}\b`), // Forgejo's bare 'token <hex>' form, which the Authorization pattern above does not match
+	lazyre.New(`()\bwp[dst]_[A-Za-z0-9_-]{8,}`),
 	lazyre.New(`()\bsk-[A-Za-z0-9_-]{16,}`),
 	lazyre.New(`()\b(?:gh[opsu]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{16,})`),
 	lazyre.New(`(?i)()\bxox[abpr]-[A-Za-z0-9-]{10,}`),
@@ -279,7 +270,6 @@ func (r *LogRing) query(q LogQuery) ([]LogRecord, int, time.Time) {
 	var out []LogRecord
 	matched := 0
 	var oldest time.Time
-	// Newest first, so the limit keeps the latest.
 	for i := len(recs) - 1; i >= 0; i-- {
 		rec := recs[i]
 		if oldest.IsZero() || rec.At.Before(oldest) {
@@ -301,7 +291,7 @@ func (r *LogRing) query(q LogQuery) ([]LogRecord, int, time.Time) {
 		return out, matched, oldest
 	}
 	if !oldest.IsZero() && !q.Until.IsZero() && q.Until.Before(oldest) {
-		oldest = time.Time{} // all of it from the files
+		oldest = time.Time{}
 	}
 	older := st.read(q, oldest, limit, secrets)
 	matched += older.matched
@@ -388,8 +378,8 @@ func clipBytes(s string, n int) string {
 type ringHandler struct {
 	ring  *LogRing
 	next  slog.Handler
-	attrs string // from WithAttrs, formatted and redacted
-	group string // from WithGroup, dotted
+	attrs string
+	group string
 }
 
 func (h *ringHandler) Enabled(ctx context.Context, l slog.Level) bool { return h.next.Enabled(ctx, l) }
@@ -447,7 +437,7 @@ func (r *LogRing) appendAttr(b *strings.Builder, prefix string, a slog.Attr) {
 		return
 	}
 	val := attrText(a.Value)
-	if val != "" && logKeyRE.MatchString(key) { // a group's name counts: password.value
+	if val != "" && logKeyRE.MatchString(key) {
 		val = redacted
 	} else {
 		val = r.redact(val)

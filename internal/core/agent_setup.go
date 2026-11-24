@@ -1,13 +1,6 @@
 package core
 
-// Agent setup (WP-208, WP-ADR44): the files agents read, in every attached
-// repo (read through the forge) and on every machine (reported by wp), what
-// they add up to — instructions, agents, skills, commands, hooks, MCP
-// servers, settings — and the shared instructions Waypoint keeps in each
-// repo's root instruction file.
-//
-// This file holds the parts that need no database: which paths are agent
-// files, what a set of files holds, and the shared block.
+// Holds only the DB-free parts of agent setup: agent-file paths, what a file set holds, and the shared block.
 
 import (
 	"encoding/json"
@@ -23,13 +16,13 @@ import (
 
 // Kinds of agent file.
 const (
-	fileInstructions = "instructions" // CLAUDE.md, AGENTS.md
-	fileSettings     = "settings"     // .claude/settings.json
-	fileAgent        = "agent"        // .claude/agents/*.md
-	fileCommand      = "command"      // .claude/commands/**/*.md
-	fileSkill        = "skill"        // .claude/skills/*/SKILL.md
-	fileMCP          = "mcp"          // .mcp.json
-	fileHookScript   = "hook_script"  // .claude/hooks/*
+	fileInstructions = "instructions"
+	fileSettings     = "settings"
+	fileAgent        = "agent"
+	fileCommand      = "command"
+	fileSkill        = "skill"
+	fileMCP          = "mcp"
+	fileHookScript   = "hook_script"
 )
 
 // Limits on what is kept of a repo's or machine's agent files.
@@ -79,7 +72,7 @@ func machineFileKind(p string) string {
 	case ".claude/CLAUDE.md", ".codex/AGENTS.md":
 		return fileInstructions
 	case ".claude.json":
-		return fileMCP // only its MCP servers are reported
+		return fileMCP
 	}
 	return agentFileKind(p)
 }
@@ -209,7 +202,7 @@ func settingsHooks(raw string) []AgentComponent {
 func hookCommandName(cmd string) string {
 	words := strings.Fields(strings.TrimSpace(cmd))
 	for len(words) > 0 && strings.Contains(words[0], "=") && !strings.Contains(words[0], "/") {
-		words = words[1:] // VAR=value before the program
+		words = words[1:]
 	}
 	if len(words) == 0 {
 		return "command"
@@ -224,7 +217,7 @@ func hookCommandName(cmd string) string {
 			return strings.Join(out, " ")
 		case strings.Contains(w, "/"):
 			if slices.Contains(interp, prog) && len(out) == 1 {
-				out = append(out, path.Base(w)) // bash ~/.claude/hooks/guard.sh → bash guard.sh
+				out = append(out, path.Base(w))
 				continue
 			}
 			return strings.Join(out, " ")
@@ -236,8 +229,6 @@ func hookCommandName(cmd string) string {
 	}
 	return strings.Join(out, " ")
 }
-
-// ---- the shared block ----
 
 const (
 	sharedOpen  = "<!-- waypoint:shared"
@@ -329,8 +320,6 @@ func rootInstructionFile(claude string, hasClaude bool, agents string, hasAgents
 	}
 	return "CLAUDE.md"
 }
-
-// ---- machines' secrets ----
 
 // redacted stands in for a value a machine's settings keep secret.
 const redacted = "•••"
@@ -438,7 +427,7 @@ func redactArgs(args []any) []any {
 		s, ok := a.(string)
 		if !ok {
 			if hide {
-				args[i], hide = redacted, false // a number or object after a secret flag
+				args[i], hide = redacted, false
 			}
 			continue
 		}
@@ -446,7 +435,7 @@ func redactArgs(args []any) []any {
 		case hide:
 			args[i], hide = redacted, false
 		case strings.HasPrefix(s, "-H") && len(s) > 2 && !strings.HasPrefix(s, "--"):
-			args[i] = "-H" + redacted // an attached header: -HAuthorization: Bearer x
+			args[i] = "-H" + redacted
 		case strings.HasPrefix(s, "-") && strings.Contains(s, "="):
 			k, v, _ := strings.Cut(s, "=")
 			switch {
@@ -460,7 +449,6 @@ func redactArgs(args []any) []any {
 		case strings.Contains(s, "://"):
 			args[i] = redactSetupURL(s)
 		case strings.Contains(s, "="):
-			// A bare NAME=value (docker run -e KEY=secret).
 			if k, _, _ := strings.Cut(s, "="); secretKeyRE.MatchString(k) {
 				args[i] = k + "=" + redacted
 			}
@@ -502,7 +490,6 @@ func mcpOnly(raw string) string {
 	for n := range cj.Servers {
 		names[n] = map[string]string{}
 	}
-	// Servers set up for single projects count as the machine's too.
 	for _, p := range cj.Projects {
 		for n := range p.Servers {
 			names[n] = map[string]string{}

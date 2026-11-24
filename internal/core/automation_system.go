@@ -14,10 +14,7 @@ import (
 	"time"
 )
 
-// System checks for admin automations (WP-D18): free disk, database size
-// and free memory, sampled every minute against limits set in Admin →
-// Automations. A resource that crosses into "low" fires system.resources_low
-// once, and not again within the hour however it flaps.
+// A resource crossing into low fires system.resources_low once, not again within an hour however it flaps.
 
 // ResourceLimits are the thresholds; zero turns a check off.
 type ResourceLimits struct {

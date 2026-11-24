@@ -10,20 +10,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/semantic"
 )
 
-// Relating things by what they mean, not only the words they share
-// (WP-779, WP-ADR91). Two signals, both learned from the server's own
-// text with no model to download and no LLM:
-//
-//   - Boilerplate: runs of words repeated across many issues (the
-//     templates agents and automations file) say nothing about what an
-//     issue is about, so they are left out of the similarity counts.
-//   - Concepts: a latent semantic model (internal/semantic) trained on
-//     issues and the glossary, so "deploy" sits near "release" and a
-//     window of text can be compared with what a glossary term means.
-//
-// The model trains in the background once there is enough text and again
-// a day later if the text changed; until then everything works as it did,
-// on words alone.
+// Boilerplate runs are left out of similarity counts; the latent model trains in the background and is retrained at most daily.
 
 // boilerShingle words in a row, in boilerMinDocs issues or more, are
 // boilerplate. Measured on 3,115 issues (WP-779): with these, pairs
@@ -142,8 +129,6 @@ func (b boilerplate) strip(toks []string, sh []uint64) []string {
 	return out
 }
 
-// ---- the concept model ----
-
 const (
 	// conceptMinDocs: fewer issues than this teach a model nothing
 	// trustworthy; similarity stays on words alone.
@@ -158,11 +143,11 @@ const (
 type conceptState struct {
 	mu       sync.Mutex
 	model    *semantic.Model
-	gen      int    // bumped on each new model, for caches built on one
-	key      string // corpus key the model was trained on
-	docs     int64  // issues it was trained on
+	gen      int
+	key      string
+	docs     int64
 	at       time.Time
-	tried    time.Time // the last start, so a failing corpus isn't retried on every request
+	tried    time.Time
 	training bool
 }
 
@@ -267,8 +252,6 @@ func (s *Service) trainConcepts(ctx context.Context, key string, minDocs int) er
 	s.log.Info("concept model trained", "issues", len(texts), "glossary", len(docs)-len(texts), "terms", m.Terms(), "took", time.Since(start).Round(time.Millisecond))
 	return nil
 }
-
-// ---- glossary senses ----
 
 // A glossary word is linked where it's used in the sense its entry
 // defines (WP-779): the words around it (senseWindow either side) must

@@ -53,7 +53,6 @@ func TestLineStartsCandidatesTogether(t *testing.T) {
 	if w := se.babysitOf(8).Wait; !strings.Contains(w, "tested on a candidate (main + #7 + #8): its run is going") {
 		t.Errorf("#8 waits %q", w)
 	}
-	// Another look changes nothing.
 	se.line()
 	if len(se.made) != 3 {
 		t.Errorf("candidates made again: %d", len(se.made))
@@ -138,11 +137,9 @@ func TestLineFrontFailsTwiceIsEjected(t *testing.T) {
 	if st := se.sg.lastStatus(head7s); st.State != "failure" || !strings.Contains(st.Context, "backend") {
 		t.Errorf("#7's head status: %+v", st)
 	}
-	// The flake rerun comes before a round for the ejected PR's failed check.
 	if b := se.babysitOf(7); b.JobID == 0 && !strings.Contains(b.Wait, "re-ran") {
 		t.Errorf("#7 got no round or rerun: %q", b.Wait)
 	}
-	// The round that follows is told the failure was seen on the candidate.
 	if todo, err := se.s.PRWorkPacket(se.ctx, SystemActor(), se.pr(7).ID); err != nil ||
 		!strings.Contains(todo.Text, "merged onto main at tip-1") || !strings.Contains(todo.Text, "Merge main into the branch first") {
 		t.Errorf("packet of #7: %v %+v", err, todo)
@@ -301,7 +298,6 @@ func TestLineArmedWithoutBabysitJoins(t *testing.T) {
 	se.sg.setChecks(head, CommitCheck{Name: "ci / backend (pull_request)", State: CheckSuccess})
 	se.poll()
 	id := se.pr(5).ID
-	// Its babysit ends (a person stopped it) and none is started again.
 	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE babysits SET ended_at = ?, state = ? WHERE pr_id = ? AND ended_at IS NULL`, se.s.nowMS(), BabysitStopped, id); err != nil {
 		t.Fatal(err)
 	}
@@ -347,8 +343,6 @@ func TestLineNeedsPersonStaysOut(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A member of the line while it waits its turn; only the state below
-	// takes it out.
 	if members, err := se.s.lineMembers(se.ctx, lineOf(pr)); err != nil || len(members) != 1 || members[0].ID != id {
 		t.Fatalf("members before it needs a person: %v, %v", members, err)
 	}
@@ -381,8 +375,6 @@ func TestLineCandidateWithNoRunIsEnded(t *testing.T) {
 	if sts[0].EndReason != endNoRun || sts[1].EndReason != endNoRun {
 		t.Fatalf("ended %q and %q, want no_run", sts[0].EndReason, sts[1].EndReason)
 	}
-	// The two are the step's places 1 and 2: the end turned the fallback on,
-	// so nothing replaced them in the same step.
 	if len(sts) != 2 || len(se.made) != 2 {
 		t.Errorf("candidates: %d stacks, %d made", len(sts), len(se.made))
 	}
@@ -432,7 +424,7 @@ func TestLineFallbackAfterNoMergeAndRefused(t *testing.T) {
 			}
 			se.draftGreen(head7s, 5)
 			se.draftGreen(head8s, 7)
-			se.step() // the sweep looks at the line too
+			se.step()
 			se.line()
 			if len(se.made) != 0 {
 				t.Fatalf("a candidate in the fallback: %v", se.madeHeads())
@@ -501,7 +493,7 @@ func TestLineBaseRedTestsTheFrontAlone(t *testing.T) {
 // that tip, and the wait names the job.
 func TestLineBaseRedFailureOfTheBaseOnly(t *testing.T) {
 	se := newStackEnv(t)
-	se.redBase("ci / lint (push)") // no pull request job of that name: nothing fixes it
+	se.redBase("ci / lint (push)")
 	se.draftGreen(head7s, 5)
 	se.draftGreen(head8s, 7)
 	se.step()
@@ -514,7 +506,7 @@ func TestLineBaseRedFailureOfTheBaseOnly(t *testing.T) {
 	for j, name := range []string{"ci / backend (push)", "ci / lint (push)", "ci / e2e (push)"} {
 		st := CheckSuccess
 		if j == 1 {
-			st = CheckFailed // the job that fails on main, and only it
+			st = CheckFailed
 		}
 		checks = append(checks, CommitCheck{Name: name, State: st, ID: int64(700 + j), Description: "x"})
 	}
@@ -626,9 +618,9 @@ func TestLineGatherReadsTheForgesTip(t *testing.T) {
 	}
 	t.Run("stored tip red, forge tip green", func(t *testing.T) {
 		se := newStackEnv(t)
-		se.redBase("ci / lint (push)") // on tip-1, which the database still holds
+		se.redBase("ci / lint (push)")
 		se.draftGreen(head7s, 5)
-		se.sg.baseTip = "tip-2" // green: no failed check stored for it
+		se.sg.baseTip = "tip-2"
 		if ls := gather(se); ls.snap.BaseRed || len(ls.failing) != 0 {
 			t.Errorf("red on the old tip: %+v %v", ls.snap.BaseRed, ls.failing)
 		}
@@ -652,7 +644,7 @@ func TestLineGatherReadsTheForgesTip(t *testing.T) {
 // tip's, the one the candidates are built on (audit 1507.1).
 func TestLineGatherFailingIsOfTheTipItBuildsOn(t *testing.T) {
 	se := newStackEnv(t)
-	se.redBase("ci / lint (push)") // tip-1
+	se.redBase("ci / lint (push)")
 	se.draftGreen(head7s, 5)
 	se.sg.setChecks(head8s,
 		CommitCheck{Name: "ci / backend (pull_request)", State: CheckSuccess, ID: 7, Description: "Successful in 4m"},
@@ -670,7 +662,7 @@ func TestLineGatherFailingIsOfTheTipItBuildsOn(t *testing.T) {
 		t.Fatalf("#8 fixes the red base and goes first: %+v %+v", ls.order, ls.snap)
 	}
 	se.sg.sm.Lock()
-	se.sg.tipReads, se.sg.tipThen = 0, "tip-2" // green: no failed check stored for it
+	se.sg.tipReads, se.sg.tipThen = 0, "tip-2"
 	se.sg.sm.Unlock()
 	ls, err = se.s.lineGather(se.ctx, ref)
 	if err != nil {
@@ -746,7 +738,6 @@ func TestCandLineByCommit(t *testing.T) {
 	if _, ok := se.s.candLineByCommit(se.ctx, pr.ForgeID, pr.Repo, head7s); ok {
 		t.Error("a pull request's head isn't a candidate")
 	}
-	// The webhook for the commit: the run passed, so the line records it.
 	se.stackRun(0, CheckSuccess, treeA, "7 "+head7s)
 	se.sg.trees = map[string]string{"3e7000000": treeA}
 	se.s.onForgeCI(se.ctx, se.f, pr.Repo, st.CommitSHA)
@@ -754,7 +745,6 @@ func TestCandLineByCommit(t *testing.T) {
 	if got := se.stacks()[0]; got.State == stackRunning {
 		t.Errorf("the line didn't step on its candidate's webhook: %+v", got)
 	}
-	// An ended candidate is no longer one.
 	se.s.candEnd(se.ctx, se.f, se.stacks()[0], stackFailed, endFailed, "x")
 	if _, ok := se.s.candLineByCommit(se.ctx, pr.ForgeID, pr.Repo, st.CommitSHA); ok {
 		t.Error("an ended candidate's commit")
@@ -795,7 +785,6 @@ func TestMarkReadyOnACandidateForAnOpenPR(t *testing.T) {
 	if err := se.s.db.R.QueryRowContext(se.ctx, `SELECT ready_cand FROM pull_requests WHERE number = 7`).Scan(&cand); err != nil || cand != st.ID {
 		t.Errorf("ready_cand %d (%v), want the candidate %d", cand, err, st.ID)
 	}
-	// Marked at an earlier head: the time stays, the head is this one's.
 	se.setClock(se.clockNow().Add(time.Hour))
 	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE pull_requests SET ready_sha = 'old' WHERE number = 7`); err != nil {
 		t.Fatal(err)
@@ -875,12 +864,11 @@ func TestLineRejectedRerunIsNotARerun(t *testing.T) {
 	se.sg.sm.Lock()
 	se.sg.retryErr = nil
 	se.sg.sm.Unlock()
-	se.setClock(se.clockNow().Add(lineRerunRetry)) // the forge is asked again this long after it refused
+	se.setClock(se.clockNow().Add(lineRerunRetry))
 	se.line()
 	if sts := se.stacks(); sts[0].RerunAt == 0 || sts[0].Ended {
 		t.Fatalf("not run again once the forge took it: %+v", sts[0])
 	}
-	// A forge that goes on refusing: after stackRunMax the failure counts.
 	se2 := newStackEnv(t)
 	se2.draftGreen(head7s, 5)
 	se2.step()
@@ -954,9 +942,8 @@ func TestLineUpdateActSkipsAFrontThatLeft(t *testing.T) {
 			if len(acts) != 1 || acts[0].Kind != lineUpdate {
 				t.Fatalf("plan: %+v", acts)
 			}
-			before := len(se.sg.updatedPRs()) // the step that read its checks updated it once
-			// The base moved again, so an act that runs updates it (an update is
-			// tried once per tip).
+			before := len(se.sg.updatedPRs())
+			// an update is tried once per base tip
 			se.sg.baseTip = "tip-9"
 			se.sg.behind = map[string]bool{head7s: true}
 			stateBefore := se.pr(7).State
@@ -1046,7 +1033,7 @@ func TestLineMergeActSkipsAFrontThatLeft(t *testing.T) {
 				t.Fatalf("plan: %+v", acts)
 			}
 			if leaves {
-				se.s.leaveQueue(se.ctx, pr.ID) // as heldWait does, outside the line's lock
+				se.s.leaveQueue(se.ctx, pr.ID)
 			}
 			se.s.lineAct(se.ctx, ls, acts[0])
 			se.s.Wait()
@@ -1096,8 +1083,6 @@ func TestLineBaseRedIsRecordedOnTheTipItEndedOn(t *testing.T) {
 	if both == nil {
 		t.Fatalf("no candidate for #7 and #8: %q", se.madeHeads())
 	}
-	// #7 merged on its own candidate: the base's tip is a merge of #7's head on
-	// the candidate's base, and the gather counts it from that.
 	se.sg.baseTip = "3e7000000"
 	se.sg.parents["3e7000000"] = []string{both.BaseSHA, head7s}
 	if ls, err = se.s.lineGather(se.ctx, ref); err != nil {
@@ -1339,7 +1324,7 @@ func TestFixesBaseErrorsOnUnreadChecks(t *testing.T) {
 	se.s.Wait()
 	pr := se.pr(8)
 	failing := map[string]bool{checkJob("ci / lint (push)"): true}
-	se.s.baseRed.Clear() // the poll may have asked already
+	se.s.baseRed.Clear()
 	logs := &lockedBuf{}
 	se.s.log = slog.New(slog.NewTextHandler(logs, nil))
 	se.sg.sm.Lock()

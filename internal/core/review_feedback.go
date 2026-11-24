@@ -1,24 +1,6 @@
 package core
 
-// Feedback to the gateway on the review models it picks (WP-514, under WP-362).
-// A review asks the gateway's review purpose for a model; the gateway ranks
-// that purpose's models by benchmarks plus what clients report of how their
-// answers' findings fared (POST /v1/feedback). So each
-// review request carries an X-Request-ID of Waypoint's own and asks for
-// paid models ranked with the free ones (the owner agreed to the spend
-// 2026-11-03); each finding remembers the requests whose answers raised it;
-// and a sweep reports each request's findings as they are judged, again
-// whenever the count changes, which the gateway takes as a replacement.
-//
-// What counts, from the finding's state and its thread's verdict:
-//   - verified: fixed (a later push removed the problem, or an audit
-//     agreed), or still open or resolved with its thread's verdict saying
-//     an agent took it (accepted, fixing, fixed, verified);
-//   - false positive: dismissed (by a person or an agent, with a note),
-//     withdrawn (the bot agreed it was wrong), or dropped before posting
-//     because the code it quoted is not in the file.
-// Anything else is not judged yet. What the verifier model dropped is its
-// opinion, not a judgment of the finding, and is not reported.
+// Counts only judged findings: verified if fixed or taken by an agent in its thread; false positive if dismissed, withdrawn, or quoting code not in the file; the verifier's drops are not reported.
 
 import (
 	"context"
@@ -36,10 +18,10 @@ import (
 // routing.priority and a routing.weakest minimum. runChainAt turns it into a gatewayAsk for each request
 // to the gateway, and never sends it to another provider.
 type gatewayRouting struct {
-	prefix   string // token characters, short
-	paid     string // never, fallback, allowed; "" leaves the gateway's default
-	priority string // "" (the gateway's default) or prioritySurplus (WP-906)
-	weakest  string // the weakest model it accepts, by a name the gateway rates; "" sets no minimum (WP-1440)
+	prefix   string
+	paid     string
+	priority string
+	weakest  string
 }
 
 type gatewayRoutingKey struct{}
@@ -195,12 +177,10 @@ type reviewFeedbackDue struct {
 	id                   string
 	createdAt            int64
 	tries                int
-	verified, falsePos   int // now
-	sentVerified, sentFP int // as last reported
+	verified, falsePos   int
+	sentVerified, sentFP int
 	everReported         bool
-	// noFindings: the answer raised no findings at all; reported once, as
-	// no_findings.
-	noFindings bool
+	noFindings           bool
 }
 
 // feedbackDue says whether a report on d is to be sent: one never sent
@@ -245,11 +225,8 @@ func (s *Service) ReportReviewFeedback(ctx context.Context) {
 	if !s.sendFeedback(ctx, fl, p, due, reviewRequestReports) {
 		return
 	}
-	// The audits the gateway ran as agent tasks (WP-617), by task id.
 	s.reportAuditFeedback(ctx, fl, p)
-	// How preps' and prep trials' file picks fared (WP-906).
 	s.reportPrepFeedback(ctx, fl, p)
-	// How the judge purpose's grades of meaning fared (WP-1035).
 	s.reportMeaningFeedback(ctx, fl, p)
 }
 
@@ -291,7 +268,7 @@ func (s *Service) sendFeedback(ctx context.Context, fl feedbackLLM, p *AIProvide
 		unknown := errors.As(err, &le) && le.status == http.StatusNotFound && strings.Contains(le.body, "request_not_found")
 		next := s.now().Add(min(feedbackRetryMin<<min(d.tries, 10), feedbackRetryMax)).UnixMilli()
 		if unknown && s.now().Sub(msTime(d.createdAt)) > feedbackUnknownAfter {
-			// Never to be known: try again only past the window, i.e. never.
+			// A request the gateway still doesn't know is retried only until its window closes (created_at + feedbackWindow), then never.
 			window := st.window
 			if window == 0 {
 				window = feedbackWindow

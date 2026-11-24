@@ -1,10 +1,6 @@
 package core
 
-// Run features (WP-256, WP-ADR76): what an agent had while it worked on a task,
-// recorded as it happened. A release's date can't answer that: the change
-// may have merged and not deployed, wp on that machine may be older, or the
-// session may have started before it and still hold the old hooks and
-// instructions. Recording never gets in the way of the work it describes.
+// Features are recorded per run as it happens, since a release date cannot say what an agent had (merged but undeployed, an older wp, or a session still holding old hooks); recording never blocks the work.
 
 import (
 	"context"
@@ -20,17 +16,17 @@ import (
 // What is recorded on a run: what it began with, and what it had last where
 // that changed. Whether hooks ran is read from the run when asked for.
 const (
-	featureServer        = "server"         // this server's version
-	featureWP            = "wp"             // the wp that claimed it (the first seen, if a web claim)
-	featureSessionServer = "session_server" // what its session started on: hooks and
-	featureSessionWP     = "session_wp"     // instructions stay as they were then
-	featureKit           = "kit"            // the agent kit commit synced to that checkout
-	featureKitDrift      = "kit_drift"      // files that differ from the kit there
-	featureCLIVersion    = "cli_version"    // Claude Code's, as far as the session had reported
+	featureServer        = "server"
+	featureWP            = "wp"
+	featureSessionServer = "session_server" // the server this session started on; its hooks and instructions stay as they were then
+	featureSessionWP     = "session_wp"
+	featureKit           = "kit"
+	featureKitDrift      = "kit_drift"
+	featureCLIVersion    = "cli_version" // Claude Code's, as far as the session had reported
 
 	featureServerEnd        = "server_end"
 	featureWPEnd            = "wp_end"
-	featureSessionServerEnd = "session_server_end" // the run moved to a later session
+	featureSessionServerEnd = "session_server_end"
 	featureSessionWPEnd     = "session_wp_end"
 )
 
@@ -133,7 +129,7 @@ func (s *Service) recordRunChanges(ctx context.Context, q queryer, actor *Actor,
 	for name, value := range s.runNow(ctx, q, actor, session) {
 		end, tracked := runEndOf[name]
 		switch {
-		case have[name] == "": // its session, or a wp, only showed up now
+		case have[name] == "":
 			first[name] = value
 		case tracked && value != "" && value != have[name]:
 			last[end] = value

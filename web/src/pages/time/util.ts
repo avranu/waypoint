@@ -1,5 +1,3 @@
-// Date and duration helpers for the timesheet.
-
 import { useQueryClient } from '@tanstack/react-query'
 
 /** Local midnight at the start of the week containing d. */

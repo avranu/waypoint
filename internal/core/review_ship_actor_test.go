@@ -91,7 +91,7 @@ func TestServerShipStopsWhenAuthorityIsGone(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newLoopEnv(t, map[string]string{"": "critical", "fixes": "complete"})
 			e.reviewedUntilShip()
-			// Someone to tell when the person who shipped can't be.
+			// When the person who shipped can't be told, the notice goes to the issue's reporter.
 			reporter := e.user("pat", true)
 			e.exec(`UPDATE issues SET reporter_id = ? WHERE id = ?`, reporter.User.ID, e.task.ID)
 			tc.do(e)

@@ -27,7 +27,6 @@ func TestDecisionNotesAPI(t *testing.T) {
 		t.Fatalf("project: %d %s", code, b)
 	}
 
-	// An agent proposes a decision: unapproved, with a code.
 	var note map[string]any
 	if code := agent.json("POST", "/api/v1/design", map[string]any{"title": "ADR-0007: Use SQLite", "kind": "decision", "project": "WID",
 		"body": "One file to back up."}, &note); code != 200 || note["code"] != "ADR7" || note["title"] != "Use SQLite" || note["approved"] != false {
@@ -38,11 +37,9 @@ func TestDecisionNotesAPI(t *testing.T) {
 		t.Errorf("proposed decision text:\n%s", s)
 	}
 
-	// A person approves it; the approval is stated.
 	if code, b := human.do("POST", "/api/v1/design/adr-0007/approve?project=WID", nil); code != 200 {
 		t.Fatalf("approve by code: %d %s", code, b)
 	}
-	// The agent edits the approved decision and adds to it.
 	if code, b := agent.do("PATCH", "/api/v1/design/ADR7?project=WID", map[string]any{"body": "Use Postgres instead."}); code != 200 || !strings.Contains(string(b), "proposed edit") {
 		t.Fatalf("agent edit: %d %s", code, b)
 	}
@@ -71,12 +68,10 @@ func TestDecisionNotesAPI(t *testing.T) {
 				t.Errorf("%s lacks %q:\n%s", path, want, s)
 			}
 		}
-		// The proposed text comes after, and apart from, the approved text.
 		if prop := strings.Index(s, "Use Postgres instead."); approvedAt < 0 || prop < approvedAt || strings.Index(s, "UNAPPROVED agent edits") > prop {
 			t.Errorf("%s: proposal not kept apart from the approved text:\n%s", path, s)
 		}
 	}
-	// A person's note says who wrote it, too.
 	var plain map[string]any
 	human.json("POST", "/api/v1/design", map[string]any{"title": "Board", "kind": "feature", "project": "WID", "body": "Columns."}, &plain)
 	_, b = agent.do("GET", "/api/v1/design/"+itoa(int(plain["id"].(float64)))+"?format=text", nil)
@@ -84,7 +79,6 @@ func TestDecisionNotesAPI(t *testing.T) {
 		t.Errorf("person's note text:\n%s", s)
 	}
 
-	// Listing, search and links by code.
 	_, b = agent.do("GET", "/api/v1/design?project=WID&format=text&q=adr7", nil)
 	if !strings.Contains(string(b), "WID-ADR7 #") {
 		t.Errorf("list by code:\n%s", b)
@@ -104,7 +98,6 @@ func TestDecisionNotesAPI(t *testing.T) {
 		t.Errorf("unknown code: %d", code)
 	}
 
-	// MCP takes codes where it takes a note id.
 	if text := callMCPTool(t, ts.URL, tok, "get_spec", map[string]any{"topic": "ADR7", "project": "WID"}); !strings.Contains(text, "WID-ADR7") || !strings.Contains(text, "NOT APPROVED") {
 		t.Errorf("mcp get_spec:\n%s", text)
 	}
@@ -115,7 +108,6 @@ func TestDecisionNotesAPI(t *testing.T) {
 		t.Errorf("mcp save_design: %s", text)
 	}
 
-	// A decision page still works, with a notice (API and MCP).
 	var pg map[string]any
 	if code := human.json("POST", "/api/v1/pages", map[string]any{"title": "Use Go", "category": "decision", "project": "WID"}, &pg); code != 200 ||
 		!strings.Contains(pg["notice"].(string), "wp design new decision") {

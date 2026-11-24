@@ -19,19 +19,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Reading a project's own deployments (WP-1087, WP-ADR109 amending WP-ADR90).
-//
-// wp env vouch: a person records an environment's addresses as theirs, so
-// unattended agent sessions may read from them; an agent asks a person to
-// (one question, "Allow reads", which records exactly what it showed).
-//
-// wp env read: one GET to an environment's own address, with the repo's
-// credentials named by variable and read from the shell or the checkout's
-// .env, so an agent never sees, prints or quotes them. Redirects stay on
-// the host, the body is capped, and an agent may only read environments a
-// person vouched for. It is the plain way to do what the guard lets curl
-// do, without curl's quoting traps ($VAR unquoted, -L) that the guard
-// refuses.
+// Credentials are named by variable and never printed; redirects stay on the environment's host; agents read only environments a person vouched for.
 
 var envVouchCmd = &command{
 	name: "vouch", args: "NAME [--url ADDRESS] [FLAGS]", aliases: []string{"allow"},
@@ -67,7 +55,7 @@ Then: wp env read NAME PATH.`,
 			return err
 		}
 		body := map[string]any{"reason": *why, "issue": *issue}
-		fs.Visit(func(f *flag.Flag) { // only the addresses given replace the environment's
+		fs.Visit(func(f *flag.Flag) {
 			switch f.Name {
 			case "url":
 				body["url"] = *addr
@@ -176,7 +164,6 @@ func envRead(c *cli, args []string) error {
 		return fmt.Errorf("%s/%s is stopped", project, e.Name)
 	}
 	if e.AddressAgent != "" {
-		// Credentials go only to addresses a person vouched for, whoever runs it.
 		return fmt.Errorf("%s/%s's addresses were set by %s, not a person, so wp env read doesn't send anything there; `wp env vouch %s -d \"why\"` vouches for them (run by a person) or asks a person to (run by an agent)", project, e.Name, e.AddressAgent, e.Name)
 	}
 	what := ""
@@ -205,7 +192,7 @@ func envRead(c *cli, args []string) error {
 		if err != nil {
 			return err
 		}
-		defer func() { _ = f.Close() }() // closed and checked below; this is for early returns
+		defer func() { _ = f.Close() }()
 		file, w, limit = f, f, envReadFileMax
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
@@ -262,7 +249,7 @@ func (c *cli) envReadHere(project string) error {
 	repo, inRepo := gitRepoHere()
 	if inRepo && repo != "" {
 		if sc, err := c.repoScope(repo); err == nil && !sc.all() {
-			for _, p := range sc.direct() { // the repo's own projects, as the guard's
+			for _, p := range sc.direct() { // Same scope as the guard's env_hosts: only the repo's own projects.
 				if strings.EqualFold(p.Key, project) {
 					return nil
 				}
@@ -391,9 +378,7 @@ func envReadRequest(u *url.URL, bearer string, headers []string, getenv func(str
 		req.Header.Set("Authorization", "Bearer "+v)
 	}
 	for _, h := range headers {
-		// Any header naming a method (X-HTTP-Method-Override, X-HTTP-Method,
-		// X-Original-Method…) is refused in either form, as the guard
-		// refuses it on curl (methodHeader).
+		// Some servers honor method-override headers and turn a GET into a write, so any header naming a method is refused.
 		if name, val, ok := strings.Cut(h, ":"); ok {
 			if methodHeader(strings.TrimSpace(name)) {
 				return nil, nil, errors.New("wp env read only reads (GET): no header naming a method")
@@ -477,9 +462,9 @@ func dotenvValue(files []string, name string) string {
 			} else if i := strings.Index(v, " #"); i >= 0 {
 				v = strings.TrimSpace(v[:i])
 			}
-			val, found = v, true // the last one wins, as in a shell
+			val, found = v, true
 		}
-		_ = f.Close() // read only
+		_ = f.Close()
 		if found && val != "" {
 			return val
 		}

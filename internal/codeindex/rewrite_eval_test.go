@@ -75,7 +75,6 @@ func TestRewriteEvalOffline(t *testing.T) {
 		prTask[pr] = task
 		merges = append(merges, m{f[0], at, pr, task})
 	}
-	// older PRs: map from all history
 	all, _ := gitOut(root, "log", "--first-parent", "origin/main", "--format=%s")
 	for _, l := range strings.Split(all, "\n") {
 		if s := subj.FindStringSubmatch(l); s != nil {

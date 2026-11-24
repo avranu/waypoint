@@ -9,9 +9,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// The glossary, design notes, specs and search across everything (WP-D10).
-// Lookups, specs and search print the server's compact text.
-
 var designKinds = []string{"goal", "principle", "feature", "screen", "decision", "requirement", "note"}
 
 // knowledgeScope is the project a glossary or design command works in:
@@ -42,8 +39,6 @@ func (c *cli) textCall(path string, q url.Values) error {
 	}
 	return c.emit(raw, func() string { return string(raw) })
 }
-
-// ---- search ----
 
 var searchCmd = &command{
 	name: "search", group: "Knowledge", args: "WORDS... [FLAGS]",
@@ -99,8 +94,6 @@ func cmdSearch(c *cli, args []string) error {
 	}
 	return c.textCall("/api/v1/search/all", q)
 }
-
-// ---- glossary ----
 
 var defineCmd = &command{
 	name: "define", group: "Knowledge", args: "TERM[, TERM...] [FLAGS]",
@@ -632,8 +625,6 @@ forge link; as wp pr unlink does, it puts back an issue moved to In Review.`,
 	},
 }
 
-// ---- design notes ----
-
 var specCmd = &command{
 	name: "spec", group: "Knowledge", args: "[TOPIC] [FLAGS]",
 	summary: "what people intend for a feature, screen or decision",
@@ -981,7 +972,6 @@ func designEdit(c *cli, args []string) error {
 		var d designInfo
 		_ = jsonInto(raw, &d)
 		if d.Notice != "" {
-			// An agent's edit to an approved note was only proposed.
 			return fmt.Sprintf("Proposed an edit to design #%d %s.\n%s", d.ID, d.Title, d.Notice)
 		}
 		return "Saved " + d.line()

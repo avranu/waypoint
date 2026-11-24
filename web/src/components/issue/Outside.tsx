@@ -1,7 +1,4 @@
-// Text from outside (WP-279): comments, and new text for what a person
-// approved, that a forge user who isn't a Waypoint person wrote. It waits
-// here, unseen by agents and models, until a person approves or discards it.
-// Shown as plain text: nothing in it renders, loads or links by itself.
+// Outside text is untrusted: agents and models don't see it until a person approves it, and it is shown as plain text only.
 
 import { useQuery } from '@tanstack/react-query'
 import { ExternalLink, Globe } from 'lucide-react'

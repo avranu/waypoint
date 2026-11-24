@@ -8,13 +8,7 @@ import (
 	"strings"
 )
 
-// Several targets in one call (WP-221): every tool call re-reads an agent's
-// whole context, so the commands that act on one issue, request, finding or
-// page take a list, separated by spaces or commas:
-//
-//	wp show WP-12 WP-15
-//	wp request done R-5, 6, 7
-//	wp pr dismiss 280,281 -m "the caller validates it"
+// Batching several targets per call exists because each tool call re-reads an agent's whole context.
 
 // listArgs splits arguments on commas as well as spaces, and gives a bare
 // number the prefix of the code before it: "R-5," "6" is R-5 and R-6,
@@ -58,8 +52,7 @@ func (c *cli) each(targets []string, gap bool, do func(target string) error) err
 		return do(targets[0])
 	}
 	failed := 0
-	// --json: one document for the batch, a JSON array with an element per
-	// target that succeeded, not adjacent top-level values.
+	// With --json the batch is one JSON array, one element per target that printed output, whether it failed or not.
 	var results []json.RawMessage
 	realOut := c.out
 	if c.asJSON {
@@ -92,7 +85,7 @@ func (c *cli) each(targets []string, gap bool, do func(target string) error) err
 		}
 		failed++
 		var ec exitCode
-		if !errors.As(err, &ec) { // an exit code means the command said why
+		if !errors.As(err, &ec) {
 			fmt.Fprintf(c.err, "wp %s: %s: %v\n", c.cur.path(), t, err)
 		}
 	}

@@ -5,11 +5,7 @@ import (
 	"slices"
 )
 
-// A task session (WP_TASK, WP-97) ends itself once its tasks are done: wp
-// done reports that nothing follows, and the Stop hook then ends it (the
-// server checks no bound task is left). A fan-out package session tells its
-// coordinator instead, which starts the next package (WP-148). wp done no
-// longer starts the next task itself (WP-271): autopilot does that.
+// A task session ends once wp done reports nothing follows and the server confirms no bound task is left; a fan-out package session tells its coordinator instead.
 
 // reportHandoff tells the server what this task session's wp done did about
 // the next task: only "started" and "none" let it end the session (WP-97).

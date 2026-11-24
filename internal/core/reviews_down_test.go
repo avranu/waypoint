@@ -69,14 +69,14 @@ func TestReviewsDownNotifies(t *testing.T) {
 		t.Fatalf("three failures in a row: told %d, want 1", n)
 	}
 	end("failed", down)
-	end("failed", errAllModelsFailed) // another kind of failure doesn't split the outage in two
+	end("failed", errAllModelsFailed)
 	end("failed", down)
 	end("failed", down)
 	end("failed", down)
 	if n := told("Reviews in " + pe.p.Key + " keep failing"); n != 1 {
 		t.Fatalf("more failures told again: %d", n)
 	}
-	end("failed", errAllModelsFailed) // nor hide that it ended
+	end("failed", errAllModelsFailed)
 	end("done", nil)
 	if n := told("Reviews in " + pe.p.Key + " answer again"); n != 1 {
 		t.Fatalf("recovery: told %d, want 1", n)

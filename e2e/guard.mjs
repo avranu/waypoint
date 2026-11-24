@@ -20,7 +20,10 @@ const wrap = (proto) => {
       return await orig.call(this, opts);
     } catch (e) {
       if (e?.name !== "TimeoutError") throw e;
-      const name = String(opts?.path ?? "").split("/").pop() || "(unnamed)";
+      const name =
+        String(opts?.path ?? "")
+          .split("/")
+          .pop() || "(unnamed)";
       console.log(`shot skipped (timeout): ${name}`);
     }
   };
@@ -49,9 +52,7 @@ const detailsFirst = (browser) => {
       try {
         if (localStorage.getItem("wp:issue-tab") === null)
           localStorage.setItem("wp:issue-tab", '"details"');
-      } catch {
-        /* no storage on this page */
-      }
+      } catch {}
     });
     return ctx;
   };

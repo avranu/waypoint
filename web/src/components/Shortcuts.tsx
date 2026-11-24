@@ -1,5 +1,3 @@
-// The keyboard shortcut sheet: press ? anywhere (outside a field).
-
 import { useEffect, useState } from 'react'
 import { useHotkey } from '@/lib/hooks'
 import { Dialog } from '@/components/ui/dialog'

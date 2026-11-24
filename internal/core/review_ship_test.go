@@ -88,7 +88,6 @@ func TestShipReviewedCheckAgrees(t *testing.T) {
 	if arm, _, _, _, _ := e.decision(r1); arm != AgainRejected {
 		t.Errorf("arm = %s", arm)
 	}
-	// Exactly one ship: one message, one decision, one pull request row.
 	if n := e.told("shipped:"); n != 1 {
 		t.Errorf("the session got %d shipped messages", n)
 	}
@@ -173,9 +172,7 @@ func TestShipReviewedCheckPatience(t *testing.T) {
 	if arm == "" {
 		t.Error("no arm recorded")
 	}
-	// The unchecked rejection is what asks for another round, so the pull
-	// request waits for it (or opens, when the arm says enough): either way
-	// the check was cancelled and the round carried on without the session.
+	// An unchecked rejection asks for another round, so the pull request waits for it unless the arm says enough.
 	got := e.rounds()
 	t.Logf("arm %s next %d rounds %q opened %d", arm, next, got, len(e.g.created))
 	if arm == AgainReview && (next == 0 || len(got) != 2 || got[1] != RoundPending) {
@@ -256,7 +253,6 @@ func TestShipReviewedForgeDownRetried(t *testing.T) {
 	if len(e.g.created) != 0 {
 		t.Fatalf("opened %d with the forge down", len(e.g.created))
 	}
-	// Inside the heldShipRetry window the sweep tries again.
 	e.g.createErr = nil
 	e.tick(5 * time.Minute)
 	e.s.Wait()
@@ -277,8 +273,6 @@ func TestShipRacesTheSessionsOwnShip(t *testing.T) {
 	e.g.createErr = errors.New("forge unavailable")
 	e.shipAndCheck(r1, []string{"rejected"})
 	e.g.createErr = nil
-	// The pull request isn't recorded until every contender has entered its
-	// ship, so each of them meets the others in flight.
 	var entered sync.WaitGroup
 	entered.Add(6)
 	e.g.afterCreate = func(ForgePR) error { entered.Wait(); return nil }
@@ -330,8 +324,6 @@ func TestShipResumesAfterTheProcessDiedWithThePROpen(t *testing.T) {
 	if _, err := e.s.db.W.Exec(`UPDATE agent_runs SET ended_at = NULL WHERE id = (SELECT run_id FROM work_log WHERE id = ?)`, r1); err != nil {
 		t.Fatal(err)
 	}
-	// ... and before it armed the pull request, babysat it, moved the task
-	// or told the session: only the open had happened.
 	e.exec(`UPDATE pull_requests SET armed_at = NULL WHERE head_ref = 'wp-1-first'`)
 	e.exec(`DELETE FROM babysits`)
 	e.exec(`UPDATE issues SET status_id = (SELECT id FROM statuses WHERE name <> 'In Review' AND project_id = issues.project_id ORDER BY position LIMIT 1) WHERE id = (SELECT issue_id FROM work_log WHERE id = ?)`, r1)

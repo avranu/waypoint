@@ -1,14 +1,10 @@
-# Waypoint: one static binary with the web app embedded.
-# Build from the repo root:  docker build -f deploy/Dockerfile -t waypoint .
-# (or `make docker` / `make deploy`). Base images float on patch releases;
-# Renovate proposes digest pins (renovate.json).
+# Base images float on patch releases; Renovate proposes digest pins (renovate.json).
 
 FROM node:24-alpine AS web
 WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci --no-audit --no-fund
 COPY web/ ./
-# Fail here, not at runtime, if the build produced no app to embed.
 RUN npm run build && test -s dist/index.html
 
 FROM golang:1.27-alpine AS server
@@ -22,7 +18,6 @@ COPY --from=web /src/web/dist ./web/dist
 ARG VERSION=dev
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /waypoint ./cmd/waypoint
-# The wp CLI for every platform, served at /cli (curl -fsSL <server>/cli | sh).
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
     sh cmd/wp/build-all.sh /out/cli "${VERSION}"
 # Distroless has no shell, so prepare a /data the nonroot user can write.

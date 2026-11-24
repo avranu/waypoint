@@ -31,9 +31,6 @@ func TestSimulateCIQueue(t *testing.T) {
 		{id: 14, runsOn: []string{"forgejo-ci"}, dur: time.Minute, deps: []int{4}},
 	}
 	simulate(now, pool, jobs)
-	// The heavy job holds runner2; the plain one takes runner1 at once; the
-	// second heavy one waits for runner2; the one needing the running job
-	// starts when it ends, on runner1 (runner2 is kept for heavy work).
 	want := map[int][2]time.Time{1: {{}, m(10)}, 2: {m(0), m(5)}, 3: {m(10), m(15)}, 4: {m(10), m(15)}}
 	for i, w := range want {
 		j := jobs[i-1]
@@ -67,7 +64,7 @@ func TestCIEstimates(t *testing.T) {
 	}
 	at := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
 	spans := [][2]time.Time{{at, at.Add(time.Hour)}, {at.Add(30 * time.Minute), at.Add(2 * time.Hour)}, {at.Add(time.Hour), at.Add(3 * time.Hour)}}
-	if p := peakConcurrency(spans); p != 2 { // the first ends as the third starts
+	if p := peakConcurrency(spans); p != 2 { // a span ending as another starts is not concurrent with it.
 		t.Errorf("peak = %d", p)
 	}
 	d := newCIDurations()
@@ -83,8 +80,7 @@ func TestCIEstimates(t *testing.T) {
 		t.Errorf("by repo: %s", p50)
 	}
 
-	// The draft tier's run of a full-run-only shard ends in seconds; a full
-	// run of it isn't measured by those (WP-392).
+	// Draft-tier runs of a full-run-only shard end in seconds, so they don't measure its full run.
 	for range 6 {
 		d.add("a/b", "ci.yml", "e2e 1", ciDraftTier, 10)
 	}
@@ -97,7 +93,6 @@ func TestCIEstimates(t *testing.T) {
 	if p50, _ := d.estimate("a/b", "ci.yml", "e2e 1", "draft"); p50 != 10*time.Second {
 		t.Errorf("draft tier: %s", p50)
 	}
-	// A job running past most of its runs is measured by the long ones.
 	d2 := newCIDurations()
 	for _, s := range []float64{10, 10, 10, 10, 10, 10, 1200, 1320, 1500} {
 		d2.add("a/b", "ci.yml", "e2e 1", "", s)
@@ -158,32 +153,24 @@ func TestCIBoard(t *testing.T) {
 	}}
 	a.reply["GET /admin/actions/runners?page=1&limit=50"] = 403
 	none := map[string]any{"workflow_runs": []map[string]any{}}
-	// acme/vanished lists run 300, whose jobs then 404 (unmatched paths do).
 	a.reply["GET /repos/acme/vanished/actions/runs?page=1&limit=50&status=waiting&status=running&status=blocked"] = map[string]any{"workflow_runs": []map[string]any{
 		{"id": 300, "index_in_repo": 3, "workflow_id": "ci.yml", "status": "running", "created": "2026-10-28T11:50:00Z", "started": "2026-10-28T11:55:00Z",
 			"stopped": "1970-01-01T00:00:00Z", "commit_sha": "abc", "prettyref": "main", "trigger_event": "push", "title": "Gone"}}}
 	a.reply["GET /repos/acme/vanished/actions/tasks?page=1&limit=50&status=running"] = none
 	a.reply["GET /repos/acme/vanished/actions/tasks?page=1&limit=50"] = none
 	a.reply["GET /repos/acme/vanished/actions/runs?page=1&limit=50"] = none
-	// acme/switched lists no runs, then its tasks 404.
 	a.reply["GET /repos/acme/switched/actions/runs?page=1&limit=50&status=waiting&status=running&status=blocked"] = none
 
 	b, err := e.s.CIBoard(e.ctx, e.admin)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// No pool set and no runners to read: one runner as busy as the
-	// busiest moment (1 job), so everything queues behind the backend.
 	if len(b.Pools) != 1 || b.Pools[0].Source != "observed" || b.Pools[0].Capacity != 1 {
 		t.Fatalf("pools = %+v", b.Pools)
 	}
 	if b.Summary.Running != 1 || b.Summary.Waiting != 2 || b.Summary.Blocked != 1 || b.Summary.Stuck != 0 {
 		t.Errorf("summary = %+v", b.Summary)
 	}
-	// backend: 5 minutes in, usually 12 (10, 12, 14) → 12:07; then lint
-	// (2m, its one success) 12:07–12:09; then deploy, whose needs are done
-	// and whose id is older than gpu's, 12:09–12:20 (the repo's usual:
-	// 11m); then gpu 12:20–12:31.
 	if r := b.Running[0]; r.Name != "backend" || r.Typical != 720 || r.EstFinish.Format("15:04") != "12:07" || r.Duration != 300 || r.PR != nil {
 		t.Errorf("running = %+v", r)
 	}
@@ -194,8 +181,6 @@ func TestCIBoard(t *testing.T) {
 	if b.Summary.AllDoneAt == nil || b.Summary.AllDoneAt.Format("15:04") != "12:31" {
 		t.Errorf("all done = %v", b.Summary.AllDoneAt)
 	}
-	// History: four finished, one failed; lint in run 6 waited from the end
-	// of the backend before it (10:19 → 10:31).
 	if b.Summary.Finished24h != 5 || b.Summary.Failed24h != 1 || len(b.Recent) != 5 || b.Recent[0].Name != "lint" || *b.Recent[0].Wait != 12*60 {
 		t.Errorf("history: %+v, recent[0] = %+v", b.Summary, b.Recent[0])
 	}
@@ -206,8 +191,6 @@ func TestCIBoard(t *testing.T) {
 		t.Errorf("alerts = %+v", b.Alerts)
 	}
 
-	// The real pool: runner2 takes heavy jobs, runner1 only plain ones. gpu has
-	// no runner, so nothing can say when it will all be done.
 	err = e.s.SetCIPool(e.ctx, e.admin, f.ID, []CIPoolRunner{
 		{Name: "runner1", Labels: []string{"forgejo-ci"}, Capacity: 1},
 		{Name: "runner2", Labels: []string{"forgejo-ci", " forgejo-ci-heavy "}, Capacity: 1}})
@@ -228,7 +211,6 @@ func TestCIBoard(t *testing.T) {
 		t.Errorf("alerts = %+v, run = %+v", b.Alerts, b.Runs[0])
 	}
 
-	// Someone who can't see the project sees the timing, not the repo.
 	vera := e.user("vera", false)
 	b, err = e.s.CIBoard(e.ctx, vera)
 	if err != nil {
@@ -271,14 +253,12 @@ func TestCIBoardActionsOff(t *testing.T) {
 	a.reply["GET /repos/acme/broken/actions/runs?page=1&limit=50&status=waiting&status=running&status=blocked"] = 500
 	a.reply["GET /admin/actions/runners?page=1&limit=50"] = 403
 	none := map[string]any{"workflow_runs": []map[string]any{}}
-	// acme/vanished lists run 300, whose jobs then 404 (unmatched paths do).
 	a.reply["GET /repos/acme/vanished/actions/runs?page=1&limit=50&status=waiting&status=running&status=blocked"] = map[string]any{"workflow_runs": []map[string]any{
 		{"id": 300, "index_in_repo": 3, "workflow_id": "ci.yml", "status": "running", "created": "2026-10-28T11:50:00Z", "started": "2026-10-28T11:55:00Z",
 			"stopped": "1970-01-01T00:00:00Z", "commit_sha": "abc", "prettyref": "main", "trigger_event": "push", "title": "Gone"}}}
 	a.reply["GET /repos/acme/vanished/actions/tasks?page=1&limit=50&status=running"] = none
 	a.reply["GET /repos/acme/vanished/actions/tasks?page=1&limit=50"] = none
 	a.reply["GET /repos/acme/vanished/actions/runs?page=1&limit=50"] = none
-	// acme/switched lists no runs, then its tasks 404.
 	a.reply["GET /repos/acme/switched/actions/runs?page=1&limit=50&status=waiting&status=running&status=blocked"] = none
 
 	b, err := e.s.CIBoard(e.ctx, e.admin)
@@ -317,8 +297,6 @@ func hasAlert(b *CIBoard, s string) bool {
 // the figures say how far back they go instead of counting short (WP-508).
 func TestCIBoardDayBeyondPageCap(t *testing.T) {
 	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
-	// 480 jobs, one starting every 2 minutes for 16h, 10 minutes each: the
-	// read pages through the newest 300 (10h).
 	var tasks []map[string]any
 	for i := range 480 {
 		st := now.Add(-time.Duration(i*2+12) * time.Minute)
@@ -349,8 +327,6 @@ func TestCIBoardDayBeyondPageCap(t *testing.T) {
 		if err := e.s.SetCIPool(e.ctx, e.admin, f.ID, []CIPoolRunner{{Name: "pool", Labels: []string{"forgejo-ci"}, Capacity: 10}}); err != nil {
 			t.Fatal(err)
 		}
-		// what the scheduled reads kept before: every job, each having
-		// waited a minute
 		for i := range 480 {
 			st := now.Add(-time.Duration(i*2+12) * time.Minute)
 			if _, err := e.s.db.W.ExecContext(e.ctx, `INSERT INTO ci_jobs(forge_id, repo, task_id, run_number, workflow, name, status, started_at, ended_at, wait_s)
@@ -363,7 +339,6 @@ func TestCIBoardDayBeyondPageCap(t *testing.T) {
 
 	t.Run("whole day kept", func(t *testing.T) {
 		e, f := setup(t)
-		// backfilled to the first job and read since: the kept jobs are whole
 		if _, err := e.s.db.W.ExecContext(e.ctx, `INSERT INTO server_settings(key, value) VALUES (?, ?)`,
 			fmt.Sprintf("%s%d|acme/app", ciWholeKey, f.ID), fmt.Sprintf("0|%d", now.Add(-time.Minute).UnixMilli())); err != nil {
 			t.Fatal(err)
@@ -373,7 +348,6 @@ func TestCIBoardDayBeyondPageCap(t *testing.T) {
 			t.Fatal(err)
 		}
 		sm := b.Summary
-		// 480 × 10m of 10 slots × 24h = 1/3 (the page cap read 300: 21%)
 		if sm.Finished24h != 480 || sm.BusySeconds24h != 480*600 || sm.Utilization24h < 0.333 || sm.Utilization24h > 0.334 || sm.WaitP50 != 60 || sm.WaitP90 != 60 {
 			t.Errorf("summary = %+v", sm)
 		}
@@ -401,8 +375,7 @@ func TestCIBoardDayBeyondPageCap(t *testing.T) {
 
 	t.Run("hole in the kept jobs", func(t *testing.T) {
 		e, f := setup(t)
-		// last read two days ago: Waypoint was down longer than a read
-		// reaches, so only what this read covers counts
+		// Last read two days ago: a gap longer than a read reaches, so only this read's jobs count.
 		if _, err := e.s.db.W.ExecContext(e.ctx, `INSERT INTO server_settings(key, value) VALUES (?, ?)`,
 			fmt.Sprintf("%s%d|acme/app", ciWholeKey, f.ID), fmt.Sprintf("0|%d", now.Add(-48*time.Hour).UnixMilli())); err != nil {
 			t.Fatal(err)
@@ -417,11 +390,9 @@ func TestCIBoardDayBeyondPageCap(t *testing.T) {
 			t.Fatalf("since %s, want %s (%q)", sm.Since, oldest, CIDayLabel(sm.Since, now))
 		}
 		span := now.Sub(oldest).Seconds()
-		// the 300 read, and the five kept ones that ran into the span
 		if sm.Finished24h != 305 || sm.Utilization24h < float64(sm.BusySeconds24h)/(10*span)-0.001 || sm.Utilization24h > float64(sm.BusySeconds24h)/(10*span)+0.001 {
 			t.Errorf("summary = %+v", sm)
 		}
-		// the next read reaches back to this one: whole from here on
 		var v string
 		if err := e.s.db.R.QueryRowContext(e.ctx, `SELECT value FROM server_settings WHERE key = ?`, fmt.Sprintf("%s%d|acme/app", ciWholeKey, f.ID)).Scan(&v); err != nil {
 			t.Fatal(err)
@@ -442,8 +413,6 @@ func TestCIBoardWaits3hBeyondRecentCap(t *testing.T) {
 			Started: started, Updated: started.Add(time.Minute)}, wait: &wait}
 	}
 	var kept []ciKeptJob
-	// 300 jobs over the last 2.5h: the newest 200 waited a minute, the
-	// 100 before them 15 minutes
 	for i := range 300 {
 		w := int64(60)
 		if i >= ciRecentMax {
@@ -451,7 +420,6 @@ func TestCIBoardWaits3hBeyondRecentCap(t *testing.T) {
 		}
 		kept = append(kept, job(int64(1000+i), now.Add(-time.Minute-time.Duration(i)*30*time.Second), w))
 	}
-	// and 50 from before the 3h, which don't count
 	for i := range 50 {
 		kept = append(kept, job(int64(2000+i), now.Add(-4*time.Hour-time.Duration(i)*time.Minute), 5))
 	}
@@ -516,7 +484,6 @@ func TestCIBoardSlowJobKeptHistory(t *testing.T) {
 		t.Fatalf("with no history of its own the job looks stuck: %+v", b.Alerts)
 	}
 
-	// Its passing runs two days ago took 50m, 70m and 90m.
 	for i, m := range []int{50, 70, 90} {
 		st := now.Add(-48*time.Hour + time.Duration(i)*2*time.Hour)
 		if _, err := e.s.db.W.ExecContext(e.ctx, `INSERT INTO ci_jobs(forge_id, repo, task_id, run_number, workflow, name, status, started_at, ended_at)

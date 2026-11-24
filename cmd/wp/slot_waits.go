@@ -11,10 +11,7 @@ import (
 	"time"
 )
 
-// Slot waits (WP-1618, WP-ADR149): a command that waits for a machine-wide
-// slot inside an agent job says so in the file the runner named in
-// WAYPOINT_SLOT_WAITS, so the runner can leave that time out of the job's
-// work clock and let the waiting job give up its heavy place.
+// The runner leaves these waits out of the job's work clock, so a job queued for a slot can give up its heavy place.
 
 // slotWaitsEnv names the file an agent job's commands note their slot waits in.
 const slotWaitsEnv = "WAYPOINT_SLOT_WAITS"
@@ -70,7 +67,7 @@ type slotWaitReader struct {
 	mu      sync.Mutex
 	start   time.Time
 	dead    map[deadWait]time.Time
-	seen    map[deadWait]string // the waiter's start, when first seen alive
+	seen    map[deadWait]string // the waiter's start time when first seen alive; a later, different start means its pid was reused
 }
 
 func newSlotWaitReader(path string) *slotWaitReader {
@@ -99,12 +96,12 @@ func procStarted(pid int) string {
 type deadWait struct {
 	pid  int
 	name string
-	from int64 // unix ms, as its line gave it
+	from int64
 }
 
 type waitSpan struct {
 	from, to time.Time
-	live     bool // open, and its process is alive
+	live     bool
 }
 
 // read returns how long slot waits took in all (several commands may wait at
@@ -161,7 +158,7 @@ func (r *slotWaitReader) read(now time.Time) (total time.Duration, waitingSince 
 			if was, ok := r.seen[d]; !ok {
 				r.seen[d] = at
 			} else if was != "" && at != was {
-				gone = true // the pid is another process's now
+				gone = true
 			}
 		}
 		if gone {

@@ -1,14 +1,6 @@
 package core
 
-// Fix the base first (WP-428, WP-ADR29). When a job fails on a base's tip, every pull
-// request brought up to date with it fails that job too: the front's full
-// run fails, it gets a round to fix what isn't its own, and so does the next
-// one, while the pull request that fixes the base waits its turn behind
-// them. On 2026-11-02 one repo's main failed its browser tests and the pull
-// request that fixed them was tenth in line. So a queued pull request whose
-// head holds the base's tip, passes a job that fails there and fails none
-// of them goes to the front of the queue, behind only one already marked
-// ready. One per base tip: a second that passes too waits its turn.
+// Only one pull request per base tip jumps the queue: one whose head holds that tip and passes every job that fails there.
 
 import (
 	"context"
@@ -44,8 +36,7 @@ func (s *Service) baseFailingAt(ctx context.Context, pr *PullRequest, tip string
 	}
 	failing := map[string]bool{}
 	for _, c := range dropSuperseded(checks) {
-		// The advisories job runs only on the base: no pull request can pass it,
-		// so it can't make one fix the base (WP-1660).
+		// The advisories job runs only on main, so no pull request can pass it and none can fix the base.
 		if c.State == CheckFailed && !ownCheck(c.Name) && checkJobName(c.Name) != advisoriesJob {
 			failing[checkJob(c.Name)] = true
 		}

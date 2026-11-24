@@ -8,9 +8,6 @@ import (
 	"time"
 )
 
-// wp pr review [cancel|retry] (WP-217): the review bot's runs on a pull
-// request, and cancelling or retrying them, without raw API calls.
-
 var prReviewCmd = &command{
 	name: "review", aliases: []string{"reviews"}, args: "[cancel|retry] [N...] [--run ID]",
 	summary: "the review bot's runs on a pull request; cancel or retry them",
@@ -232,7 +229,7 @@ func cmdPRReviewRetry(c *cli, args []string) error {
 		}
 		name := fmt.Sprintf("%s#%d", d.Repo, d.Number)
 		var rules []int64
-		newest := map[int64]*botRun{} // the rule's live review run, else its newest
+		newest := map[int64]*botRun{}
 		for _, r := range runs {
 			if r.Kind != "review" {
 				continue

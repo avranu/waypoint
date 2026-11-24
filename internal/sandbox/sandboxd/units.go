@@ -65,7 +65,7 @@ func (OS) StopUnits(units ...string) error {
 	for _, u := range units { // one at a time: a unit that isn't loaded fails the whole call
 		err := runFor(3*time.Minute, systemctl, "stop", "--", u)
 		var ee *exec.ExitError
-		if errors.As(err, &ee) && ee.ExitCode() == 5 { // not loaded
+		if errors.As(err, &ee) && ee.ExitCode() == 5 {
 			continue
 		}
 		if err != nil {

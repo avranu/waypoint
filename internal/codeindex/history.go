@@ -19,12 +19,12 @@ import (
 // by commit: a new HEAD reads only the commits since the last one, then the
 // per-file numbers are recomputed from the stored commits (cheap, in memory).
 const (
-	maxCommits        = 3000 // newest commits kept
-	maxFilesPerCommit = 200  // bigger commits (mass renames, vendoring) are ignored
-	coMaxFiles        = 30   // co-change ignores commits touching more files than this
-	coMinSupport      = 3    // a pair must have changed together this often
-	coKeep            = 12   // partners kept per file
-	churnHalfLife     = 90.0 // days
+	maxCommits        = 3000
+	maxFilesPerCommit = 200
+	coMaxFiles        = 30
+	coMinSupport      = 3
+	coKeep            = 12
+	churnHalfLife     = 90.0
 	coHalfLife        = 180.0
 	fixMaxFiles       = 25
 )
@@ -158,7 +158,6 @@ func (ix *Index) updateHistory(ctx context.Context, tx *sql.Tx, head string, st 
 		}
 	}
 	trace("commit rows written", t0)
-	// keep the newest maxCommits
 	if _, err := tx.Exec(`DELETE FROM commits WHERE id IN (SELECT id FROM commits ORDER BY ts DESC, id DESC LIMIT -1 OFFSET ?)`, maxCommits); err != nil {
 		return err
 	}
@@ -303,7 +302,6 @@ func (ix *Index) computeSignals(tx *sql.Tx) error {
 	_ = rows.Close()
 	flush()
 
-	// hotspot: the top tenth by decayed churn among files changed a few times
 	var churns []float64
 	for _, a := range acc {
 		if a.commits >= 3 {
@@ -344,7 +342,6 @@ func (ix *Index) computeSignals(tx *sql.Tx) error {
 			return err
 		}
 	}
-	// co-change: keep the strongest partners per file, both directions
 	type partner struct {
 		other   int
 		weight  float64

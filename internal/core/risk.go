@@ -10,13 +10,7 @@ import (
 	"strings"
 )
 
-// Provenance risk (WP-554, WP-ADR41). Every object agents or people act
-// on gets a level, low, medium or high, from the records Waypoint keeps
-// about who wrote it and who checked it: no model is asked, so the same
-// records give the same answer. The level is the highest of its factors'
-// (none is low), and each factor says in a sentence why it applies. The
-// action classifier (WP-555) reads it; the safety screen is one of its
-// inputs, so it doesn't read it back.
+// Risk comes from provenance records only, never a model; the level is the highest factor, and the safety screen feeds the risk but never reads it back.
 
 // Risk levels, lowest first.
 const (
@@ -32,18 +26,18 @@ func riskRank(level string) int { return slices.Index(riskLevels, level) }
 // Risk factors. Each has a fixed level (riskFactorLevel), except
 // riskTask, which carries the level of the task behind a pull request.
 const (
-	riskOutside       = "outside"        // text from a forge stranger no person has approved (WP-279)
-	riskHeld          = "held"           // the safety screen held the text for a person (WP-ADR10)
-	riskOutsidePR     = "outside_pr"     // a forge stranger's pull request (WP-281)
-	riskAgentText     = "agent_text"     // agent-written text no person has reviewed (WP-D11)
-	riskAgentComments = "agent_comments" // agents' comments no person has reviewed
-	riskAgentClose    = "agent_close"    // an agent's close no person has reviewed (WP-272)
-	riskAIDetected    = "ai_detected"    // a person's login, text that reads as AI-written (WP-553)
-	riskAgentProposal = "agent_proposal" // an agent's design note no person approved or asked for (WP-D10)
-	riskNoTask        = "no_task"        // an agent's pull request no task asked for
-	riskTask          = "task"           // a pull request's task, at that task's level
-	riskNoGoal        = "no_goal"        // agent work that traces to no goal, where the project has one (WP-ADR50)
-	riskLooseGoal     = "loose_goal"     // agent work that traces to a goal only by a guess, or to no person's goal
+	riskOutside       = "outside"
+	riskHeld          = "held"
+	riskOutsidePR     = "outside_pr"
+	riskAgentText     = "agent_text"
+	riskAgentComments = "agent_comments"
+	riskAgentClose    = "agent_close"
+	riskAIDetected    = "ai_detected"
+	riskAgentProposal = "agent_proposal"
+	riskNoTask        = "no_task"
+	riskTask          = "task"
+	riskNoGoal        = "no_goal"
+	riskLooseGoal     = "loose_goal"
 )
 
 var riskFactorLevel = map[string]string{
@@ -162,8 +156,6 @@ func agentPhrase(agent string) string {
 // unnamedAgent is what an agent's work records when it gave no name.
 const unnamedAgent = "agent"
 
-// ---- prompts and automations (WP-560) ----
-
 // promptRisk is the risk of a prompt Waypoint queued for a session: an
 // agent wrote it, itself or as an automation's rule, and no person has
 // read it before the session does. automation names the automation whose
@@ -186,8 +178,6 @@ func automationRisk(a *Automation) *ProvenanceRisk {
 	}
 	return riskOf([]RiskReason{riskReason(riskAgentText, agentPhrase(a.RuleAgent)+" wrote its rule and no person has saved it since")})
 }
-
-// ---- issues ----
 
 // issueRiskFacts is what an issue's risk is computed from.
 type issueRiskFacts struct {
@@ -295,7 +285,7 @@ func (s *Service) projectHasGoal(ctx context.Context, q queryer, projectID int64
 func issueRiskConds(actor *Actor) [][2]string {
 	outside := "(i.outside = 1 OR EXISTS (SELECT 1 FROM outside_text o WHERE o.issue_id = i.id AND o.discarded = 0))"
 	if actor.HidesDrafts() {
-		outside = "0" // agents never read it
+		outside = "0"
 	}
 	return [][2]string{
 		{riskOutside, outside},
@@ -440,8 +430,6 @@ func (s *Service) issueRiskByID(ctx context.Context, q queryer, actor *Actor, is
 	}
 	return issueRisk(f), nil
 }
-
-// ---- the other kinds ----
 
 // Kinds of object a risk is asked for.
 const (
@@ -609,7 +597,6 @@ func (s *Service) pullRisk(ctx context.Context, actor *Actor, id int64) (*Proven
 	} else if err != nil {
 		return nil, err
 	}
-	// The tasks it carries that the actor can see.
 	links, err := s.prLinks(ctx, actor, []any{id})
 	if err != nil {
 		return nil, err

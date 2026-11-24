@@ -311,7 +311,7 @@ func (t *tx) applyOTLP(ctx context.Context, uid int64, machine, session, name st
 		keys := otlpToolKeys(tool, a)
 		detail := keys[len(keys)-1].det
 		if parts := strings.SplitN(tool, "__", 3); len(parts) == 3 && parts[0] == "mcp" {
-			detail = parts[2] // the transcript path names the tool, the row names the server
+			detail = parts[2]
 		}
 		for _, k := range keys {
 			// the call never ran, so it counts as a refusal, not a call

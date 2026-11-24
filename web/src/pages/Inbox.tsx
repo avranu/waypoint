@@ -421,7 +421,6 @@ export function InboxPage() {
   const [staleOpen, setStaleOpen] = useState(false)
   const [earlierOpen, setEarlierOpen] = useState(false)
   const waiting = useQuery(waitingQuery()).data
-  // Requests the agent moved on from are noise unless asked for (WP-66, WP-96).
   const [showExpired, setShowExpired] = useState(false)
   const expired = useQuery(requestsQuery({ state: 'expired', limit: 200 })).data
   const expiredRefs = useMemo(() => new Set((expired?.requests ?? []).map((r) => r.ref)), [expired])
@@ -434,7 +433,6 @@ export function InboxPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['notifications'] }),
     onError: toastError,
   })
-  // Marking a group (or every stale item) read takes it out of the list at once.
   const read = useMutation({
     // Only what was on screen is marked: the server stops at the newest id this
     // view saw, so a notification that arrives meanwhile stays unread.
@@ -477,8 +475,6 @@ export function InboxPage() {
     onError: toastError,
   })
 
-  // Opening a row marks it read, but only when there is something to open: an
-  // alert with no link (quota, say) stays until it is marked or acted on.
   const open = (g: InboxGroup, section: Section | 'earlier') => {
     const opens = !!g.issue_key || !!g.url?.startsWith('/requests/')
     if (opens && g.unread > 0 && section !== 'earlier') read.mutate({ section, group: g.key })

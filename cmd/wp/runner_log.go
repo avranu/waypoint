@@ -14,17 +14,17 @@ import (
 // the server can't be reached the job goes on and the output catches up.
 type logSink struct {
 	mu      sync.Mutex
-	raw     []byte // not yet acknowledged
-	sent    int64  // bytes (after replacing invalid UTF-8) the server has
-	total   int64  // everything the job wrote
-	tail    []byte // the last of it, for a result when the output was cut
+	raw     []byte
+	sent    int64 // Counted after invalid UTF-8 is replaced, so it is not an offset into the raw bytes.
+	total   int64
+	tail    []byte
 	closed  bool
-	stopped bool // the server's cap was reached: the rest is dropped
+	stopped bool
 	wake    chan struct{}
 }
 
 const (
-	logPending = 1536 << 10 // most output held back for sending
+	logPending = 1536 << 10
 	logChunk   = 256 << 10
 	logTail    = 4 << 10
 )
@@ -87,7 +87,7 @@ func (l *logSink) chunk() (offset int64, text string, n int, closed bool) {
 	defer l.mu.Unlock()
 	b := l.raw[:min(len(l.raw), logChunk)]
 	if !l.closed || len(b) < len(l.raw) {
-		b = trimIncomplete(b) // wait for the rest of a character
+		b = trimIncomplete(b)
 	}
 	return l.sent, strings.ToValidUTF8(string(b), "�"), len(b), l.closed && len(l.raw) == len(b)
 }
@@ -154,8 +154,6 @@ func (l *logSink) run(ctx context.Context, send func(ctx context.Context, offset
 		case <-ctx.Done():
 			return
 		case <-l.wake:
-			// Batch what arrives in the next moment into one request, unless
-			// the job is over.
 			l.mu.Lock()
 			done := l.closed
 			big := len(l.raw) >= logChunk

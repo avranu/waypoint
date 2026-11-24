@@ -13,11 +13,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// A round whose agent stopped at its owner's usage limit did no work on
-// the pull request, so it isn't one of its rounds (WP-683): counted, it
-// took the next rung, and an assessor round that hit the limit parked the
-// pull request for a person. It is dropped, and the next round waits until
-// the limit lifts, out of the merge line meanwhile.
+// A round stopped at the owner's usage limit did no work, so it is not counted: counting it would climb a rung or park the PR for a person.
 
 // limitRetry is how long a round waits when nothing says when the limit
 // lifts: a rate limit is over by then, and a spent plan costs one quick
@@ -92,7 +88,7 @@ func restoreStreaks(b *Babysit, r BabysitRound) {
 		}
 	}
 	if sameSHA(b.RoundSHA, r.SHA) {
-		return // a round on the same head again didn't add to them
+		return
 	}
 	for _, c := range r.Checks {
 		if b.streaks[c]--; b.streaks[c] <= 0 {
@@ -166,7 +162,6 @@ func takeBackRound(b *Babysit, i int) BabysitRound {
 // has taken is never touched. It reports whether the round was withdrawn; b
 // is changed only when it was.
 func (s *Service) withdrawQueuedRound(ctx context.Context, b *Babysit, pr *PullRequest, jobID int64) bool {
-	// Most jobs a step asks about are running: no write for those.
 	var state string
 	if err := s.db.R.QueryRowContext(ctx, `SELECT state FROM runner_jobs WHERE id = ?`, jobID).Scan(&state); err != nil || state != "queued" {
 		return false
@@ -193,7 +188,7 @@ func (s *Service) withdrawQueuedRound(ctx context.Context, b *Babysit, pr *PullR
 			return err
 		}
 		if n, _ := res.RowsAffected(); n == 0 {
-			return nil // no longer this babysit's job
+			return nil
 		}
 		cancelled = true
 		projectID, err := s.attachedProject(wctx, t, pr.ForgeID, pr.Repo)

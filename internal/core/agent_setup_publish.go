@@ -1,9 +1,6 @@
 package core
 
-// The shared instructions (WP-ADR44 §3) and editing repos' agent files
-// (§4): Waypoint writes both through pull requests. The shared block's are
-// labelled automerge, so they land like any change once CI and the review
-// gate pass; so are a person's edits, which are theirs.
+// Shared-block and non-.claude/ pull requests automerge once CI and review pass; agent-run files (hooks, settings, MCP, agents, skills) wait for a person to merge.
 
 import (
 	"context"
@@ -220,19 +217,19 @@ func (s *Service) autoPublishShared(ctx context.Context) error {
 
 // States of a repo's shared block.
 const (
-	sharedCurrent = "current" // the block holds the current text
-	sharedMissing = "missing" // no block
-	sharedBehind  = "behind"  // an older saved version
-	sharedEdited  = "edited"  // text no version had: someone edited it
-	sharedUnread  = "unread"  // the repo hasn't been read yet
-	sharedNone    = "none"    // nothing is shared
+	sharedCurrent = "current"
+	sharedMissing = "missing"
+	sharedBehind  = "behind"
+	sharedEdited  = "edited" // Edited: the block's text matches no saved version.
+	sharedUnread  = "unread"
+	sharedNone    = "none"
 )
 
 type sharedStatus struct {
 	state       string
-	file        string // the root instruction file the block is (or goes) in
-	version     int    // the version the block holds (current or behind)
-	openPR      int    // the open shared pull request, if one is
+	file        string
+	version     int
+	openPR      int
 	openURL     string
 	openVersion int
 	// triedVersion: the newest version a pull request was opened (or
@@ -414,7 +411,7 @@ func (s *Service) publishSharedTo(ctx context.Context, actor *Actor, r setupRepo
 	}
 	for _, p := range prs {
 		if p.Version == v.Version && (p.State == "open" || actor.id() == 0) {
-			return nil // already opened (or tried) while this waited
+			return nil
 		}
 	}
 	rec := &agentPRRecord{forgeID: r.forgeID, repo: r.repo, kind: agentPRShared, version: v.Version, by: actor.id()}
@@ -446,7 +443,7 @@ func (s *Service) publishSharedTo(ctx context.Context, actor *Actor, r setupRepo
 		}
 		changes := []FileChange{}
 		if target == "AGENTS.md" && hasC {
-			if _, has := sharedBlock(claude); has { // one block per repo
+			if _, has := sharedBlock(claude); has {
 				changes = append(changes, FileChange{Path: "CLAUDE.md", Content: withSharedBlock(claude, "")})
 			}
 		}
@@ -454,7 +451,7 @@ func (s *Service) publishSharedTo(ctx context.Context, actor *Actor, r setupRepo
 			changes = append(changes, FileChange{Path: target, Content: next})
 		}
 		if len(changes) == 0 {
-			rec.skip = true // already there: the next read shows it
+			rec.skip = true
 			return nil
 		}
 		for i := range changes {
@@ -521,7 +518,6 @@ func (s *Service) closeOlderSharedPRs(ctx context.Context, r setupRepo, newest i
 			continue
 		}
 		if cl == nil {
-			// Can't close it on the forge: leave it recorded as open.
 			continue
 		}
 		if err := cl.ClosePR(ctx, f, r.repo, p.Number); err != nil {
@@ -574,8 +570,6 @@ func (s *Service) recordAgentPR(ctx context.Context, r *agentPRRecord) error {
 		return nil
 	})
 }
-
-// ---- editing a repo's file ----
 
 // AgentFileEdit is a person's change to one agent file of a repo.
 type AgentFileEdit struct {
@@ -647,8 +641,6 @@ func (s *Service) EditAgentFile(ctx context.Context, actor *Actor, in AgentFileE
 	if cur == "" {
 		verb = "Add"
 	}
-	// What the person said changed is the title (its first line); the
-	// rest, and which file, the body.
 	what := verb + " " + in.Path
 	title, rest := what, ""
 	if m := strings.TrimSpace(in.Message); m != "" {
@@ -673,7 +665,6 @@ func (s *Service) EditAgentFile(ctx context.Context, actor *Actor, in AgentFileE
 		// These run commands on agents' machines (agents and skills can carry
 		// hooks in their frontmatter): a person merges them.
 	default:
-		// Nothing under .claude/ is automerged, whatever it is called.
 		if !strings.Contains("/"+strings.TrimPrefix(in.Path, "./"), "/.claude/") {
 			labels = []string{automergeLabel}
 		}
@@ -685,7 +676,7 @@ func (s *Service) EditAgentFile(ctx context.Context, actor *Actor, in AgentFileE
 // agentFilePR is one file's change for openAgentFilePR.
 type agentFilePR struct {
 	base, path, baseSHA, content string
-	branch                       string // the name's middle part: waypoint/BRANCH-xxxxx
+	branch                       string
 	message, title, body         string
 	labels                       []string
 }
@@ -695,9 +686,7 @@ type agentFilePR struct {
 // permission request approved with a rule, WP-233).
 func (s *Service) openAgentFilePR(ctx context.Context, actor *Actor, r *setupRepo, af *agentForge, in agentFilePR) (*AgentFileEditResult, error) {
 	rec := &agentPRRecord{forgeID: r.forgeID, repo: r.repo, kind: agentPREdit, paths: []string{in.path}, by: actor.id()}
-	// The branch's suffix hashes the change and its message too: two rules
-	// whose names slug alike (or to "change"), approved in the same
-	// millisecond, still get branches of their own.
+	// The branch suffix hashes the change and message, so rules whose names slug alike still get separate branches.
 	sum := sha256.Sum256(fmt.Appendf(nil, "%d:%s:%s:%d:%s:%s", actor.id(), r.repo, in.path, s.nowMS(), in.message, in.content))
 	rec.branch = fmt.Sprintf("waypoint/%s-%s", in.branch, hex.EncodeToString(sum[:])[:5])
 	if _, err := af.commit.CommitFiles(ctx, af.f, r.repo, CommitInput{Base: in.base, Branch: rec.branch, Message: in.message,

@@ -16,9 +16,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Follow-up jobs (WP-D22): start a fresh background Claude Code session where
-// an agent worked, and post a prompt to a running session's inbox socket.
-
 type sessionJob struct {
 	Dir            string `json:"dir"`
 	Prompt         string `json:"prompt"`
@@ -71,16 +68,14 @@ func (p *runnerProc) execSession(ctx context.Context, run *jobRun, in sessionJob
 	if c := p.cliInfo("claude"); c == nil {
 		return failed("Claude Code isn't installed on this runner")
 	}
-	// The launcher wp start uses too (WP-34).
+	// taskLaunch is built the same way by wp start (tasksession.go) and fanout, so a field change reaches them all.
 	l := taskLaunch{bg: true, prompt: in.Prompt, model: in.Model, permissionMode: in.PermissionMode, effort: in.Effort, tasks: tasks, name: in.Name}
 	run.launch.forDir(dir).fill(&l)
 	ctx, cancel := context.WithTimeout(ctx, run.timeout)
 	defer cancel()
 	env := l.sessionEnv(bgSessionEnv(os.Environ()))
 	if kickoff {
-		// Like autopilot's take (WP-418): wp next runs as the job's own
-		// token and server, not the runner machine's config. The session
-		// itself keeps env.
+		// wp next in the kickoff runs with the job's own token and server; the session keeps the runner's environment.
 		kenv := slices.Clip(env)
 		if run.token != "" {
 			kenv = append(kenv, "WAYPOINT_SERVER="+p.c.server(), "WAYPOINT_TOKEN="+run.token)

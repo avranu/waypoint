@@ -1,8 +1,3 @@
-// Files on anything (WP-D16): the same panel on issues, pages and design
-// notes (and, later, requests and sessions). Upload by button, drop or paste;
-// images are thumbnails that open a lightbox, video plays in place, text,
-// Markdown, JSON, CSV and logs preview, everything else downloads.
-
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'
@@ -73,7 +68,6 @@ export function Attachments({
   const [preview, setPreview] = useState<Attachment | null>(null)
   const upload = useMutation({
     mutationFn: async (list: File[]) => {
-      // One at a time, so a failure names its file and the rest still go up.
       for (const f of list) {
         try {
           await uploadAttachment(target, f)
@@ -306,7 +300,6 @@ function CaptionDialog({
 }) {
   const [value, setValue] = useState('')
   const [seen, setSeen] = useState<number | null>(null)
-  // Start from the file's own caption each time the dialog opens for a file.
   if (file && file.id !== seen) {
     setSeen(file.id)
     setValue(file.caption ?? '')

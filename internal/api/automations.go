@@ -130,8 +130,6 @@ func (s *Server) rerunAutomation(w http.ResponseWriter, r *http.Request) (any, e
 	return s.svc.RerunAutomation(r.Context(), actorFrom(r), id)
 }
 
-// ---- admin ----
-
 func (s *Server) adminAutomations(w http.ResponseWriter, r *http.Request) (any, error) {
 	return s.svc.ListAdminAutomations(r.Context(), actorFrom(r))
 }
@@ -164,8 +162,6 @@ func (s *Server) setSystemLimits(w http.ResponseWriter, r *http.Request) (any, e
 	}
 	return s.svc.SetResourceLimits(r.Context(), actorFrom(r), in)
 }
-
-// ---- the incoming webhook ----
 
 var (
 	// hookLimiter caps requests per webhook address; hookMisses caps wrong
@@ -213,14 +209,12 @@ func (s *Server) automationHook(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
-	if run == nil { // the trigger's filters turned it away
+	if run == nil {
 		writeJSON(w, http.StatusAccepted, map[string]any{"run": nil})
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"run": run.ID, "status": run.Status})
 }
-
-// ---- MCP ----
 
 var automationTools = []mcpTool{
 	{Name: "list_automations", Title: "List a project's automations", Annotations: readOnly,

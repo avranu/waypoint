@@ -17,10 +17,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core/meaning"
 )
 
-// `wp server status|log|metrics` (WP-375): what agents read from production
-// by ssh before, through the API. Admins only, read-only; a permission token
-// also needs server.read. There is no SQL endpoint: a question that needed a
-// copy of the database becomes a report like these.
+// Admins only and read-only; a permission token also needs server.read.
 
 // canReadServer is the access check of every server read.
 func (a *Actor) canReadServer() error {
@@ -141,7 +138,6 @@ func (s *Service) ServerStatus(ctx context.Context, actor *Actor) (*ServerStatus
 	}
 	out.Previous = s.jobs.prev
 	s.jobs.mu.Unlock()
-	// What the jobs did in the last minute is counted and not yet saved.
 	s.saveJobHealth(ctx)
 	var err error
 	if out.Jobs, err = s.jobHealth(ctx); err != nil {
@@ -174,8 +170,6 @@ func (s *Service) ServerStatus(ctx context.Context, actor *Actor) (*ServerStatus
 		}
 		out.Queues = append(out.Queues, d)
 	}
-	// The collector section is optional: a failure to read it is logged, not
-	// the status's (WP-999).
 	if out.Collectors, err = s.CollectorHealthList(ctx); err != nil {
 		s.log.WarnContext(ctx, "server status: collectors", "err", err)
 		out.Collectors = nil
@@ -380,7 +374,7 @@ func (s *Service) ServerMetrics(ctx context.Context, actor *Actor, grep string) 
 // lines of their metrics.
 func grepMetrics(text string, re *regexp.Regexp) string {
 	var out strings.Builder
-	var head []string // the current family's comment lines
+	var head []string
 	for line := range strings.SplitSeq(text, "\n") {
 		if line == "" {
 			continue

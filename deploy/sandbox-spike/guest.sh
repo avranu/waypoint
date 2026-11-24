@@ -1,18 +1,11 @@
 #!/usr/bin/env bash
-# guest.sh: runs at boot inside the spike's VM guest (WP-417), as root, from
-# spike-guest.service. The job comes from the kernel command line
-# (spike.job=...). Lines starting SPIKE_ go to the serial console, where
-# spike.sh on the host reads them:
-#   SPIKE_READY uptime     the guest is up (cold start ends here)
-#   SPIKE_MARK label       the host samples QEMU's memory now
-#   SPIKE_RESULT key value a measurement
-#   SPIKE_DONE             the job finished; the guest powers off
+# Lines starting SPIKE_ on the serial console are the protocol that spike.sh on the host parses.
 set -u
 
 tty=/dev/ttyS0
 out() { printf '%s\n' "$*" >"$tty"; }
 param() { tr ' ' '\n' </proc/cmdline | sed -n "s/^spike\.$1=//p"; }
-mark() { # let the host sample, then carry on
+mark() { # Pause so the host can sample QEMU memory before the guest goes on.
 	out "SPIKE_MARK $1"
 	sleep 8
 }
@@ -41,19 +34,16 @@ modprobe vmw_vsock_virtio_transport 2>/dev/null || true
 case "$job" in
 idle)
 	sleep 60
-	# Where the boot time goes, and what the guest itself thinks it uses.
 	out "SPIKE_RESULT guest_boot $(systemd-analyze time 2>&1 | head -1 | tr -s ' ')"
 	out "SPIKE_RESULT guest_blame $(systemd-analyze blame 2>/dev/null | head -6 | tr -s ' ' | paste -sd ';')"
 	out "SPIKE_RESULT guest_first_kmsg_to_init $(dmesg 2>/dev/null | grep -m1 'Run /sbin/init' | cut -d']' -f1 | tr -d '[ ')"
-	# The kernel's slow spots: each gap of 0.2 s or more between two messages,
-	# with the message that ended it.
 	out "SPIKE_RESULT guest_kernel_gaps $(dmesg 2>/dev/null | awk '{
 		t = $0; sub(/^\[ */, "", t); sub(/\].*/, "", t); t += 0
 		m = $0; sub(/^\[[^]]*\] /, "", m)
 		if (NR > 1 && t - p >= 0.2) printf "%.2fs>%s; ", t - p, substr(m, 1, 70)
 		p = t
 	}' | head -c 900)"
-	# With initcall_debug on the kernel command line: initcalls over 0.1 s.
+	# Needs initcall_debug on the kernel command line.
 	out "SPIKE_RESULT guest_slow_initcalls $(dmesg 2>/dev/null | awk '/initcall .* returned .* after [0-9]+ usecs/ {
 		for (i = 1; i <= NF; i++) if ($i == "after") u = $(i + 1)
 		for (i = 1; i <= NF; i++) if ($i == "initcall") f = $(i + 1)
@@ -69,9 +59,7 @@ idle)
 	;;
 
 hold)
-	# An idle interactive VM for the load test: settles, drops its cache the
-	# way the guest agent will after 5 idle minutes, then waits until the host
-	# stops it.
+	# Drops its cache as the guest agent will after 5 idle minutes, so the idle state matches the real one.
 	sleep 60
 	drop_caches
 	mark held
@@ -99,8 +87,6 @@ bench)
 	;;
 
 vsock)
-	# 1. An unprivileged guest process connects to the host (CID 2), where a
-	#    listener runs as an unrelated host user (nobody).
 	if as_agent python3 -c '
 import socket
 s = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
@@ -112,7 +98,6 @@ s.sendall(b"from-guest-user\n")
 	else
 		out "SPIKE_RESULT vsock_guest_user_to_host refused"
 	fi
-	# 2. Guest root listens; the host side tries to connect as nobody.
 	python3 -c '
 import socket
 s = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
@@ -136,10 +121,7 @@ virtiofs)
 		for where in /mnt/share/waypoint /home/agent/waypoint; do
 			label=$([ "$where" = /home/agent/waypoint ] && echo disk || echo virtiofs)
 			start=$(date +%s.%N)
-			# The minimal image has no git (the bench VM installs it over its NIC),
-			# so this is a walk of the tree plus a build. Each build gets its own
-			# empty GOCACHE on the VM disk, so the second isn't served from the
-			# first's cache and only where the sources live differs.
+			# Each build gets its own empty GOCACHE, so only where the sources live differs between builds.
 			as_agent bash -c "rm -rf ~/.cache/go-build-$label && cd $where && find . -type f | wc -l >/dev/null && GOCACHE=~/.cache/go-build-$label GOTOOLCHAIN=local GOFLAGS=-mod=readonly go build -o /dev/null ./cmd/... ./internal/..." >/dev/null 2>&1
 			rc=$?
 			out "SPIKE_RESULT virtiofs_build_${label}_rc $rc"

@@ -9,10 +9,7 @@ import (
 	"unicode/utf8"
 )
 
-// Test slot holds (WP-1646): each wp that runs tests in a per-machine slot
-// sends what every completed hold looked like (the class it was given and
-// why, who held and awaited the slots when it queued, how long it waited and
-// held), so the slot policy (WP-ADR150) can be checked and simulated.
+// Completed slot holds are reported so the slot policy can be checked and simulated.
 
 const (
 	// SlotHoldsMax is the most holds one request may carry.

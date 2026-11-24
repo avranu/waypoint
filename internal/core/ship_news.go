@@ -10,20 +10,15 @@ import (
 	"time"
 )
 
-// A wp ship held for a review round waits on the server for the round's next
-// step and prints it, instead of ending the agent's turn so that each step
-// costs a turn end, a reply and a typed prompt (WP-1669). AwaitShipNews is
-// that wait. While one is open the round's audit and check news stays queued
-// for it; when the wait goes away without taking it (the CLI was killed), the
-// news is delivered the usual way.
+// While a wait is open the round's news stays queued for it (read, not taken, until AckShipNews); a wait that ends untaken leaves it to the usual delivery.
 
 // What a wait returns (ShipNews.Outcome).
 const (
-	ShipNewsFindings = "findings" // the round's news: Text, IDs
-	ShipNewsPull     = "pull"     // Waypoint shipped the round's pull request: Pull
-	ShipNewsEnded    = "ended"    // the round is over and Waypoint does nothing more: Text says why
-	ShipNewsWaiting  = "waiting"  // nothing yet: ask again
-	ShipNewsNone     = "none"     // the session has no round for the task
+	ShipNewsFindings = "findings"
+	ShipNewsPull     = "pull"
+	ShipNewsEnded    = "ended"
+	ShipNewsWaiting  = "waiting"
+	ShipNewsNone     = "none"
 )
 
 const (
@@ -62,7 +57,7 @@ type shipWaits struct {
 
 type shipWaitEntry struct {
 	open  int
-	until time.Time // registered until, once the last call returned
+	until time.Time
 }
 
 // holds: a wp ship waits for m (audit or check news of its task).
@@ -197,8 +192,6 @@ func (s *Service) shipWaitTarget(ctx context.Context, actor *Actor, cliID, machi
 	if session == 0 {
 		return 0, 0, notFound("session")
 	}
-	// The actor must be able to read both: the session (its own:
-	// SessionForHeader) and the task, whose round and pull request a wait tells.
 	if _, err := s.sessionByID(ctx, s.db.R, actor, session); err != nil {
 		return 0, 0, err
 	}
@@ -364,7 +357,7 @@ func (s *Service) AckShipNews(ctx context.Context, actor *Actor, cliID, machine,
 				return err
 			}
 			if n, _ := res.RowsAffected(); n == 0 {
-				continue // another path took it
+				continue
 			}
 			delivered = true
 			s.log.InfoContext(ctx, "session message delivered to a waiting ship", "message", id, "session", session, "step_key", key)

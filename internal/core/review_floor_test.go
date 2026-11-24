@@ -9,8 +9,7 @@ import (
 	"time"
 )
 
-// WP-1440: Waypoint sends code-review work a minimum (reviewFloorBar) and
-// every other task none. These tests read the request bodies the gateway got.
+// Code-review work is sent a minimum bar (reviewFloorBar); every other task none.
 
 func floorEnv(t *testing.T, g *fakeGateway) (*env, []ChainModel) {
 	t.Helper()
@@ -41,15 +40,12 @@ func TestFloorGoesOnReviewVerifyFixCheckReplyAndHeldRequests(t *testing.T) {
 	var out struct {
 		Points int `json:"points"`
 	}
-	// A reviewer's request and its folded fallbacks carry the floor.
 	rctx := withGatewayRouting(aiContext(e.ctx, "review"), reviewRouting(7))
 	if _, at, err := e.s.runChain(rctx, chain, estimateSystem, "x", estimateSchema, &out, time.Minute); err != nil {
 		t.Fatal(err, at)
 	} else if len(at) != 1 || at[0].Bar != g.bar {
 		t.Errorf("attempt's bar = %+v", at)
 	}
-	// The verifier, fix check, thread reply and held-edit check too, each
-	// under its own request id.
 	withFloor := []struct{ task, prefix string }{{"verify_review", "wp-verify-7-"}, {"fix_check", "wp-fixcheck-7-"}, {"reply", "wp-reply-7-"}, {"held_edit", "wp-held-7-"}}
 	routings := []*gatewayRouting{verifyRouting(7), fixCheckRouting(7), replyRouting(7), heldRouting(7)}
 	for i, c := range withFloor {
@@ -57,7 +53,6 @@ func TestFloorGoesOnReviewVerifyFixCheckReplyAndHeldRequests(t *testing.T) {
 			t.Fatal(c.task, err)
 		}
 	}
-	// Other work sends none: no routing at all, or no weakest in it.
 	none := []string{"task_safety", "prep", "title", "pr_body", "estimate", "work_log", "automation", "goal"}
 	for _, task := range none {
 		if _, _, err := e.s.runChain(aiContext(e.ctx, task), chain, estimateSystem, "x", estimateSchema, &out, time.Minute); err != nil {
@@ -90,7 +85,6 @@ func TestFloorGoesOnReviewVerifyFixCheckReplyAndHeldRequests(t *testing.T) {
 			t.Errorf("request %d (no minimum) sent weakest %v", i, got)
 		}
 	}
-	// The bar the gateway applied is kept on the record, and groups by model.
 	var bar string
 	if err := e.s.db.R.QueryRow(`SELECT bar FROM ai_calls WHERE task = 'review'`).Scan(&bar); err != nil || bar != g.bar {
 		t.Errorf("ai_calls.bar = %q (%v)", bar, err)
@@ -103,15 +97,12 @@ func TestFloorGoesOnReviewVerifyFixCheckReplyAndHeldRequests(t *testing.T) {
 	for _, r := range u.Rows {
 		got[r.Key] = r.Requests
 	}
-	// The fake gateway puts the header on every answer, so every request groups under it.
 	if len(got) != 1 || got[reviewFloorBar] != floored+len(none) {
 		t.Errorf("--by bar = %v", got)
 	}
 }
 
 func TestOnlyTheGatewayGetsRouting(t *testing.T) {
-	// A provider that is not the declared gateway is never handed a
-	// routing object, whatever the context holds.
 	e := newEnv(t)
 	g := &fakeGateway{answer: `{"points": 5, "confidence": "medium", "reason": "fine"}`}
 	srv := httptest.NewServer(g)
@@ -232,7 +223,6 @@ func TestRequestAuditFloor(t *testing.T) {
 			t.Errorf("%s: weakest = %q, want %q", c.name, a.Weakest, c.want)
 		}
 	}
-	// A rerun keeps what the audit was held to.
 	a := ask(AuditInput{})
 	if again, err := ae.s.RerunAudit(ae.ctx, ae.admin, a.ID, "cli"); err != nil || again.Weakest != reviewFloorBar {
 		t.Errorf("rerun = %+v %v", again, err)

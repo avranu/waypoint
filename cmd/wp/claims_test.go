@@ -47,7 +47,7 @@ func TestClaimForCheckoutBoundary(t *testing.T) {
 	plain := mkdir(t, root, "parent", "plain", "deeper")
 	parent := filepath.Join(root, "parent")
 
-	for _, recorded := range []bool{false, true} { // an old claim (no checkout recorded), then new ones
+	for _, recorded := range []bool{false, true} { // Claims from before checkouts were recorded must still resolve.
 		mk := func(key, dir string) *claim {
 			cl := &claim{Key: key}
 			if recorded {
@@ -74,7 +74,6 @@ func TestClaimForCheckoutBoundary(t *testing.T) {
 				t.Errorf("recorded=%v: %s: claimFor(%s) = %q, want %q", recorded, name, c.dir, got, c.want)
 			}
 		}
-		// Without the worktree's own claim it doesn't fall back to main's.
 		delete(s.Claims, wt)
 		if got := claimKey(s, wt); got != "" {
 			t.Errorf("recorded=%v: worktree inherited %q from the main checkout", recorded, got)
@@ -119,7 +118,7 @@ func TestCLIClaimsAndPrune(t *testing.T) {
 	if _, err := e.svc.Transition(ctx, me, done.Key, "Done", ""); err != nil {
 		t.Fatal(err)
 	}
-	e.wp("take", old.Key, "-p", p.Key) // held on the server, so there is something to give back
+	e.wp("take", old.Key, "-p", p.Key)
 	base := t.TempDir()
 	dOpen, dDone, dOld := mkdir(t, base, "open"), mkdir(t, base, "done"), mkdir(t, base, "old")
 	dGone := filepath.Join(base, "gone")
@@ -134,7 +133,6 @@ func TestCLIClaimsAndPrune(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// A claim for a directory that has since gone (written without the pruning).
 	cc.state.Claims[dGone] = &claim{Key: open.Key, ClaimedAt: now}
 	if err := writeJSON(filepath.Join(cc.dir, "state.json"), cc.state); err != nil {
 		t.Fatal(err)

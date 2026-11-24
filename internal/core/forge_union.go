@@ -1,13 +1,6 @@
 package core
 
-// Merging files that grow by appended lines as a union (WP-594). The repo's
-// .gitattributes marks such a file `merge=union` (e2e/weights.txt: every
-// pull request that adds a suite appends a line, so any two conflict). Git
-// honours that; Forgejo's server-side update and merge never do. When the
-// forge refuses a branch update for a conflict that is only in union files,
-// Waypoint makes the update itself: a commit that takes the base's version of
-// each file, the forge's update (which now has nothing to conflict on), and a
-// commit that puts back the branch's own added lines at the end.
+// Forgejo's update and merge ignore merge=union, so Waypoint does the union itself: base's version of union files, forge update, then the branch's own added lines put back.
 
 import (
 	"bufio"
@@ -62,7 +55,7 @@ func (c *httpForgeClient) ChangedBetween(ctx context.Context, f *Forge, repo, fr
 		return nil, err
 	}
 	var out []string
-	for _, x := range r.Files { // listed once per commit
+	for _, x := range r.Files {
 		if x.Filename != "" && !slices.Contains(out, x.Filename) {
 			out = append(out, x.Filename)
 		}
@@ -160,7 +153,7 @@ func (s *Service) unionUpdate(ctx context.Context, f *Forge, pr *PullRequest, ti
 		FileAt(ctx context.Context, f *Forge, repo, path, ref string) (string, error)
 	})
 	if !ok1 || !ok2 || !ok3 || !ok4 || pr.HeadRef == "" || pr.headRepo == "" || !strings.EqualFold(pr.headRepo, pr.Repo) {
-		return "", nil // no branch of this repo to commit on
+		return "", nil
 	}
 	attrs, err := rd.FileAt(ctx, f, pr.Repo, ".gitattributes", tip)
 	if err != nil {
@@ -186,7 +179,7 @@ func (s *Service) unionUpdate(ctx context.Context, f *Forge, pr *PullRequest, ti
 	for _, p := range pr.files {
 		if slices.Contains(changed, p) {
 			if !isUnionPath(pats, p) {
-				return "", nil // a real conflict may be among them
+				return "", nil
 			}
 			both = append(both, p)
 		}
@@ -202,7 +195,7 @@ func (s *Service) unionUpdate(ctx context.Context, f *Forge, pr *PullRequest, ti
 		now, err3 := rd.FileAt(ctx, f, pr.Repo, p, tip)
 		hsha, err4 := cm.FileBlobSHA(ctx, f, pr.Repo, p, pr.HeadRef)
 		if err1 != nil || err2 != nil || err3 != nil || err4 != nil || hsha == "" {
-			return "", nil // not a file all three have: nothing to union
+			return "", nil
 		}
 		drop = append(drop, FileChange{Path: p, BaseSHA: hsha, Content: now})
 		orig = append(orig, FileChange{Path: p, Content: head})
@@ -210,7 +203,6 @@ func (s *Service) unionUpdate(ctx context.Context, f *Forge, pr *PullRequest, ti
 	}
 	names := strings.Join(both, ", ")
 	baseName := cmp(pr.BaseRef, "the base")
-	// commit puts files on the head branch, with the blob ids it has now.
 	commit := func(msg string, files []FileChange) error {
 		fs := slices.Clone(files)
 		for i := range fs {
@@ -227,8 +219,7 @@ func (s *Service) unionUpdate(ctx context.Context, f *Forge, pr *PullRequest, ti
 		s.log.WarnContext(ctx, "union update: drop commit", "repo", pr.Repo, "number", pr.Number, "err", err)
 		return "", nil
 	}
-	// retry commits again after a short wait: a failure here leaves the branch
-	// without its own lines, and nothing later notices (the conflict is gone).
+	// A failed put-back drops this branch's own lines for good and nothing later notices, so the commit is retried.
 	retry := func(msg string, files []FileChange) error {
 		var err error
 		for try := 0; try < 5; try++ {
@@ -247,7 +238,6 @@ func (s *Service) unionUpdate(ctx context.Context, f *Forge, pr *PullRequest, ti
 	}
 	uerr := up.UpdateBranch(ctx, f, pr.Repo, pr.Number)
 	if uerr != nil {
-		// Still refused: put the branch's own files back as they were.
 		if err := retry(fmt.Sprintf("Merge queue: put back this branch's %s (union merge failed, WP-594)", names), orig); err != nil {
 			s.log.ErrorContext(ctx, "union update: the branch's own files weren't put back", "repo", pr.Repo, "number", pr.Number, "files", names, "err", err)
 			return "", fmt.Errorf("%w (and the branch's own %s could not be restored: %v)", uerr, names, err)

@@ -1,21 +1,5 @@
 #!/usr/bin/env bash
-# One-time setup of Waypoint's continuous delivery (WP-D21, pull-based deploys
-# WP-406, WP-ADR45). Run it by hand from a checkout, as the person who administers the forge:
-#
-#   deploy/setup-cd.sh [--dry-run]
-#
-# Each step says what it does and asks before doing it. Run it again whenever
-# you like: every step checks first and skips what is already in place.
-# --dry-run asks nothing and changes nothing: it prints each action, with the
-# JSON it would send (secrets redacted).
-#
-# Settings (environment): FORGE_URL and REPO (owner/name; both default to
-# this checkout's https origin), DEPLOY_HOST_ALIAS (the ssh name you use for
-# the production host; default DEPLOY_HOST in deploy/site.mk), DEPLOY_USER
-# (the user the deployer runs as there; default the ssh user), WAYPOINT_URL
-# (the Waypoint that records deployments), FORGEJO_ADMIN_TOKEN (otherwise
-# asked for; never written anywhere). The deployer keeps FORGE_URL, REPO and
-# WAYPOINT_URL in ~/.config/waypoint-deployer/settings on the host.
+# Run by hand as the forge administrator; each step checks first and skips what is already in place.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -64,7 +48,6 @@ fail() {
 }
 dry() { printf '%s  [dry-run]%s %s\n' "$Y" "$Z" "$*"; }
 
-# ask PROMPT [default y|n]: true on yes. Dry runs never ask and never act.
 ask() {
   local def=${2:-n} hint ans
   hint='[y/N]'
@@ -83,13 +66,13 @@ for v in FORGE_URL REPO DEPLOY_HOST_ALIAS WAYPOINT_URL; do
 done
 [[ -n $DEPLOY_USER ]] || DEPLOY_USER=$(ssh -n -G "$DEPLOY_HOST_ALIAS" 2>/dev/null | sed -n 's/^user //p')
 
-# ---- forge API (token via a curl config on stdin, never argv) ----
+# Token goes to curl via a config on stdin, never argv (process lists).
 TOKEN=${FORGEJO_ADMIN_TOKEN:-}
 SIGNED=0
 BODY=$(mktemp)
 PAYLOAD=$(mktemp)
 trap 'rm -f "$BODY" "$PAYLOAD"' EXIT
-forge() { # forge METHOD PATH [JSON]: prints the HTTP status, body in $BODY
+forge() {
   local method=$1 path=$2 json=${3:-}
   local -a args=(-sS -K - -o "$BODY" -w '%{http_code}' -X "$method" -H 'Accept: application/json')
   if [[ -n $json ]]; then
@@ -115,7 +98,6 @@ need_token() {
   SIGNED=1
   ok "signed in to $FORGE_URL as $(jq -r .login "$BODY")"
 }
-# set_secret NAME VALUE: PUT the repo Actions secret.
 set_secret() {
   local name=$1 value=$2 json code
   json=$(jq -n --arg d "$value" '{data: $d}')
@@ -133,7 +115,6 @@ note "What this sets up: a deployer on the production host that pulls each relea
 note "main (CI keeps no key to production), and (if you say yes) the branch rules that"
 note "make every change go through a pull request."
 
-# ---------------------------------------------------------------- 1
 step "A read-only forge token for the deployer"
 say "  Production pulls its releases (WP-406): a deployer on $DEPLOY_HOST_ALIAS fetches main and the release"
 say "  tags from the forge every two minutes, so CI holds no key to production."
@@ -161,7 +142,6 @@ else
   fail "the deployer can't read releases without it"
 fi
 
-# ---------------------------------------------------------------- 2
 step "Let the deployer record deployments in Waypoint (optional)"
 say "  After each deploy the deployer tells Waypoint (project WP, environment production) what shipped."
 say "  It needs an API token with write access to project WP:"
@@ -182,7 +162,6 @@ else
   warn "skipped"
 fi
 
-# ---------------------------------------------------------------- 3
 step "Install the deployer on the production host"
 say "  Copies deploy/pull-deploy.sh to ~/bin/waypoint-deployer, deploy/remote-deploy.sh to ~/bin/waypoint-deploy"
 say "  and deploy/record-deployment.sh to ~/bin/waypoint-record-deployment on $DEPLOY_HOST_ALIAS, and adds the"
@@ -192,8 +171,7 @@ say "  remote-deploy.sh builds, checks health and rolls back by itself, touching
 for f in pull-deploy.sh remote-deploy.sh record-deployment.sh systemd/waypoint-deployer.service systemd/waypoint-deployer.timer; do
   [[ -f $HERE/$f ]] || fail "$HERE/$f is missing"
 done
-# put LOCAL REMOTE MODE: copy a file to the host (REMOTE is relative to the home
-# directory) by rename, so a running copy keeps its file.
+# Copies by rename (write .new, then mv), so a running copy keeps its file.
 put() {
   # shellcheck disable=SC2029 # the paths are ours and expand on the host on purpose
   ssh "$DEPLOY_HOST_ALIAS" "set -eu; mkdir -p \"\$(dirname $2)\"; cat > $2.new; chmod $3 $2.new; mv $2.new $2" <"$HERE/$1"
@@ -222,7 +200,6 @@ else
   fail "the next steps need the deployer"
 fi
 
-# ---------------------------------------------------------------- 4
 step "Retire CI's deploy key"
 say "  CI used to deploy over ssh with DEPLOY_SSH_KEY, which any job on the runner pool could read (WP-406)."
 say "  This deletes the repo secrets DEPLOY_SSH_KEY, DEPLOY_KNOWN_HOSTS and WAYPOINT_DEPLOY_TOKEN (CI's deploy job"
@@ -263,7 +240,6 @@ else
   warn "skipped: CI can still deploy, and a pool job can still read its key. Don't start the timer while it can (step 5)."
 fi
 
-# ---------------------------------------------------------------- 5
 step "Start the deployer"
 say "  Enables waypoint-deployer.timer on $DEPLOY_HOST_ALIAS: every two minutes it deploys a new release if there is one."
 say "  Pause it in an incident with: ssh $DEPLOY_HOST_ALIAS bin/waypoint-deployer pause WHY (and later: ... resume)."
@@ -276,7 +252,6 @@ else
   warn "skipped; nothing deploys until it runs"
 fi
 
-# ---------------------------------------------------------------- 6
 step "A release token, only if CI's own token may not publish releases (optional)"
 say "  CI first tries its automatic token to tag and publish releases. If the first run says it was"
 say "  refused (403), create a token for a user with write access (scope write:repository) and"
@@ -294,7 +269,6 @@ else
   warn "skipped"
 fi
 
-# ---------------------------------------------------------------- 7
 step "Protect main (optional)"
 say "  Changes reach main only by pull request: no direct pushes (admins included), the CI checks"
 say "  must pass, no approvals required (the review gate stands in), rejected reviews block."
@@ -329,7 +303,6 @@ else
   warn "skipped; main stays open to direct pushes"
 fi
 
-# ---------------------------------------------------------------- 8
 step "Delete merged branches by default (optional)"
 say "  Turns on 'delete branch after merge' as the repo default, so merged PR branches disappear."
 edit='{"default_delete_branch_after_merge": true}'

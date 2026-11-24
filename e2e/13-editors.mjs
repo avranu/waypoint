@@ -57,7 +57,6 @@ async function run(width, scheme) {
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL(base + "/");
 
-  // ---- automations: one per trigger family ----
   const addAction = async (first, label) => {
     await dialog
       .getByRole("button", { name: first ? "choose an action" : "and then…" })
@@ -93,7 +92,8 @@ async function run(width, scheme) {
       },
       check: async () =>
         (await combo("To status")) === "any done status" &&
-        (await dialog.getByLabel("Condition", { exact: true }).inputValue()) === "type:bug" &&
+        (await dialog.getByLabel("Condition", { exact: true }).inputValue()) ===
+          "type:bug" &&
         (await combo("Who")) === "the reporter",
     },
     {
@@ -106,8 +106,13 @@ async function run(width, scheme) {
         await dialog.getByLabel("Time", { exact: true }).fill("08:30");
         await addAction(true, "Create an issue");
         await dialog.getByLabel("Title", { exact: true }).fill("Weekly review");
-        await dialog.getByRole("button", { name: "More options" }).first().click();
-        await dialog.getByLabel("Tags", { exact: true }).fill("planning, weekly");
+        await dialog
+          .getByRole("button", { name: "More options" })
+          .first()
+          .click();
+        await dialog
+          .getByLabel("Tags", { exact: true })
+          .fill("planning, weekly");
       },
       want: {
         trigger: { event: "schedule", every: "week", at: "08:30", weekday: 5 },
@@ -121,7 +126,8 @@ async function run(width, scheme) {
       },
       check: async () =>
         (await combo("Weekday")) === "Friday" &&
-        (await dialog.getByLabel("Title", { exact: true }).inputValue()) === "Weekly review",
+        (await dialog.getByLabel("Title", { exact: true }).inputValue()) ===
+          "Weekly review",
     },
     {
       family: "Code",
@@ -129,7 +135,9 @@ async function run(width, scheme) {
       build: async () => {
         await choose("Trigger", "a linked pull request is merged");
         await addAction(true, "Add a comment");
-        await dialog.getByLabel("Comment", { exact: true }).fill("Merged, thanks!");
+        await dialog
+          .getByLabel("Comment", { exact: true })
+          .fill("Merged, thanks!");
         await addAction(false, "Set a field");
         await choose("Field", "due date");
         await dialog.getByLabel("Value", { exact: true }).fill("+3d");
@@ -143,7 +151,8 @@ async function run(width, scheme) {
       },
       check: async () =>
         (await combo("Trigger")) === "a linked pull request is merged" &&
-        (await dialog.getByLabel("Value", { exact: true }).inputValue()) === "+3d",
+        (await dialog.getByLabel("Value", { exact: true }).inputValue()) ===
+          "+3d",
     },
     {
       family: "Sprints",
@@ -181,7 +190,6 @@ async function run(width, scheme) {
       );
     const a = await find();
     same(a?.rule, c.want, `${tag} ${c.family}: saved as built`);
-    // Reopen: the sentence shows what was saved, and saving changes nothing.
     await page.getByRole("button", { name, exact: true }).click();
     await dialog.waitFor();
     ok(await c.check(), `${tag} ${c.family}: reopens with its values`);
@@ -198,7 +206,6 @@ async function run(width, scheme) {
     if (a) await api("DELETE", `/automations/${a.id}`);
   }
 
-  // ---- workflow step agents ----
   await page.goto(base + "/p/WAYP/settings?tab=workflows");
   await page.getByRole("button", { name: "New workflow" }).click();
   const wfName = `Agents ${tag}`;
@@ -225,7 +232,11 @@ async function run(width, scheme) {
     );
   const wf = await wfFind();
   const agents = (w) => w?.steps.map((s) => s.agent ?? "");
-  same(agents(wf), ["", "different", "same", "haiku 5.5"], `${tag} agents saved`);
+  same(
+    agents(wf),
+    ["", "different", "same", "haiku 5.5"],
+    `${tag} agents saved`,
+  );
   await page.getByRole("button", { name: `Edit ${wfName}` }).click();
   await dialog.waitFor();
   ok(

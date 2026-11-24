@@ -16,9 +16,9 @@ const Socket = "/run/waypoint-sandboxd.sock"
 
 // Default places, which wp sandbox install sets up.
 const (
-	StoreDir = "/var/lib/waypoint/store"    // all sandbox state (PL7 §5.2)
-	StateDir = "/var/lib/waypoint/sandboxd" // the helper's ledger
-	KeyFile  = "/etc/waypoint/sandboxd.pub" // the pinned spec key
+	StoreDir = "/var/lib/waypoint/store"
+	StateDir = "/var/lib/waypoint/sandboxd"
+	KeyFile  = "/etc/waypoint/sandboxd.pub"
 	Binary   = "/usr/local/libexec/waypoint/waypoint-sandboxd"
 	Unit     = "waypoint-sandboxd.service"
 	StoreMnt = "var-lib-waypoint-store.mount" // systemd's name for StoreDir's mount

@@ -7,12 +7,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Session settings (WP-1265, WP-ADR126): how Waypoint starts the Claude Code
-// sessions it starts for a person (autopilot's starts and restarts, wp
-// start, follow-ups' fresh sessions, fan-outs). One set for all their
-// sessions, and sets for single repos that override it field by field. They
-// are the person's own, in their preferences, not a project's: what runs on
-// a person's machine is that person's decision.
+// settings are the person's own, not a project's: what runs on a person's machine is that person's decision; a repo set overrides field by field
 
 // SessionSettings are the Claude Code options a session starts with. Unset
 // (nil, "") leaves the choice to the launch, then to Claude Code.

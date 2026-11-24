@@ -27,7 +27,6 @@ export function WeekStrip({
   })
   const max = Math.max(8 * 3600, ...days.map((x) => x.secs))
   const today = localISO(new Date())
-  // An empty week has nothing to chart; the entry list explains instead.
   if (!report || report.total_seconds === 0) return null
   return (
     <div className="rounded-xl border border-line bg-panel p-3 sm:p-4">

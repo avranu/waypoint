@@ -1,6 +1,3 @@
-// Usage → Suggestions: plain rules over the numbers (no model involved), each
-// with the evidence behind it and what to do about it.
-
 import { Lightbulb, TriangleAlert } from 'lucide-react'
 import type { UsageAdvice } from '@/lib/usage-analytics'
 import { Section } from '@/components/ui/misc'

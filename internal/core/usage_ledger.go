@@ -9,13 +9,7 @@ import (
 	"time"
 )
 
-// The token ledger (WP-35): the numbers every optimization is judged by.
-// Context per call (and how often it passes 200k and 300k), forks against
-// fresh subagents, cold cache starts, and what a closed task or a merged
-// pull request cost, by model. Per call measures come from ledger_hours;
-// tokens and cost from usage_hours. Sessions join to tasks through the
-// session the hooks registered (agent_sessions.issue_id) and to pull
-// requests through repo and branch.
+// Per-call measures come from ledger_hours; tokens and cost from usage_hours. Sessions join to tasks via agent_sessions.issue_id and to pull requests via repo and branch.
 
 // LedgerStats is what a set of calls looked like.
 type LedgerStats struct {
@@ -181,7 +175,6 @@ func (s *Service) UsageLedger(ctx context.Context, actor *Actor, q UsageQuery) (
 		Sessions: []LedgerRow{}, Machines: []LedgerRow{}, Tasks: []LedgerRow{}}
 	out.Closed.Models, out.Merged.Models, out.Prep = []LedgerYieldModel{}, []LedgerYieldModel{}, []LedgerPrepGroup{}
 
-	// every ledger row of the period, by session, kind and model
 	where, args := sc.where("hour")
 	// #nosec G202 -- where is built from fixed conditions; values are bound
 	rows, err := s.db.R.QueryContext(ctx, `SELECT machine, session, kind, model, sum(calls), sum(ctx), sum(over_200k), sum(over_300k), sum(cr_300k),
@@ -217,8 +210,6 @@ func (s *Service) UsageLedger(ctx context.Context, actor *Actor, q UsageQuery) (
 		return nil, err
 	}
 
-	// tokens and cost of the same period: cache reads (the share of them made
-	// by long contexts) and the cost per session, machine and model
 	period, err := s.sessionModelUsage(ctx, sc, book)
 	if err != nil {
 		return nil, err
@@ -241,7 +232,6 @@ func (s *Service) UsageLedger(ctx context.Context, actor *Actor, q UsageQuery) (
 		all.cost += cost
 	}
 	out.Overall = all.stats()
-	// usage from before the ledger: messages with no measured call
 	var msgs int64
 	// #nosec G202 -- as above
 	if err := s.db.R.QueryRowContext(ctx, `SELECT coalesce(sum(messages), 0) FROM usage_hours WHERE `+where, args...).Scan(&msgs); err != nil {
@@ -255,7 +245,6 @@ func (s *Service) UsageLedger(ctx context.Context, actor *Actor, q UsageQuery) (
 
 	out.Spawns = ledgerSpawns(&all, byKind)
 
-	// what sessions are: their titles, repo, and the task they hold
 	tasks, err := s.ledgerTasks(ctx, actor, sc)
 	if err != nil {
 		return nil, err
@@ -297,7 +286,6 @@ func (s *Service) UsageLedger(ctx context.Context, actor *Actor, q UsageQuery) (
 	}
 	sort.Slice(out.Machines, func(i, j int) bool { return out.Machines[i].Label < out.Machines[j].Label })
 
-	// per task: sessions that hold a task, summed
 	perTask := map[int64]*ledgerAcc{}
 	for k, a := range bySess {
 		if t, ok := tasks.bySession[k]; ok {
@@ -325,8 +313,7 @@ func (s *Service) UsageLedger(ctx context.Context, actor *Actor, q UsageQuery) (
 		out.Tasks, out.Truncated = out.Tasks[:usageTopSessions], true
 	}
 
-	// yields: everything the sessions of a closed task or merged PR used,
-	// whenever it was used
+	// Yields count everything a closed task's or merged pull request's sessions used, whenever it was used, not just the period.
 	allTime := *sc
 	allTime.from = 0
 	life, err := s.sessionModelUsage(ctx, &allTime, book)
@@ -520,7 +507,7 @@ type ledgerTask struct {
 type ledgerTaskSet struct {
 	bySession map[sessKeyAt]ledgerTask
 	byID      map[int64]ledgerTask
-	closedIDs map[int64]bool // resolved in the period (and the actor can see)
+	closedIDs map[int64]bool
 }
 
 // ledgerTasks joins sessions to the tasks they hold. Only tasks in projects

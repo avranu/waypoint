@@ -105,7 +105,7 @@ func TestTestsumRepeatAllPass(t *testing.T) {
 
 func TestTestsumRepeatUsage(t *testing.T) {
 	slotEnv(t)
-	saved := filepath.Join(t.TempDir(), "out.txt") // saved output, not a command
+	saved := filepath.Join(t.TempDir(), "out.txt")
 	if err := os.WriteFile(saved, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}

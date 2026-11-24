@@ -13,11 +13,6 @@ import (
 	"time"
 )
 
-// Screenshots an agent looks at go to its task (WP-263): agents test their
-// work by saving a screenshot and reading it, so the PostToolUse hook on
-// Read uploads each image made since the task was taken to that task. The
-// agent neither runs nor reasons about anything; WP_SHOTS=off stops it.
-
 const (
 	// maxAutoShots per task: an issue holds 100 files, so people's own
 	// attachments keep room.
@@ -42,8 +37,6 @@ func (c *cli) keepScreenshot(in hookEventInput) {
 	if json.Unmarshal(in.ToolInput, &ti) != nil || !filepath.IsAbs(ti.FilePath) || !shotExts[strings.ToLower(filepath.Ext(ti.FilePath))] {
 		return
 	}
-	// Someone's attachment fetched with wp files, or a picture wp shot
-	// attached already (WP-245).
 	if wpPictureDir(ti.FilePath) {
 		return
 	}
@@ -83,7 +76,6 @@ func (c *cli) keepScreenshot(in hookEventInput) {
 	q := url.Values{"target": {"issue:" + key}, "name": {filepath.Base(ti.FilePath)}, "caption": {autoShotCaption}}
 	_, err = c.callRaw("POST", "/api/v1/attachments?"+q.Encode(), "application/octet-stream", bytes.NewReader(data))
 	if err != nil && !serverRefused(err) {
-		// Unreachable: the next Read of it tries again.
 		_ = c.updateState(func(s *State) {
 			if cur := s.sessionClaim(in.Cwd, in.SessionID); cur != nil {
 				cur.Shots = slices.DeleteFunc(cur.Shots, func(s string) bool { return s == id })

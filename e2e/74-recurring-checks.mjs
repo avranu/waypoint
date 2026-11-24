@@ -27,38 +27,53 @@ for (const width of [1280, 390]) {
   await page.waitForURL(base + "/");
 
   const saved = async () => {
-    const r = await page.request.get(`${base}/api/v1/projects/WAYP`, { headers: H });
+    const r = await page.request.get(`${base}/api/v1/projects/WAYP`, {
+      headers: H,
+    });
     return (await r.json()).settings?.no_recurring_checks === true;
   };
 
   await page.goto(base + "/p/WAYP/settings");
   const toggle = page.getByRole("switch", { name: NAME });
   await toggle.waitFor();
-  ok((await toggle.getAttribute("aria-checked")) === "true", `${tag}: on by default`);
+  ok(
+    (await toggle.getAttribute("aria-checked")) === "true",
+    `${tag}: on by default`,
+  );
   ok(!(await saved()), `${tag}: nothing saved yet`);
 
   await toggle.scrollIntoViewIfNeeded();
   await toggle.click();
   await page.getByRole("button", { name: "Save changes" }).click();
   await page.waitForFunction(
-    () => ![...document.querySelectorAll("button")].some((b) => b.textContent === "Save changes"),
+    () =>
+      ![...document.querySelectorAll("button")].some(
+        (b) => b.textContent === "Save changes",
+      ),
   );
   ok(await saved(), `${tag}: off is saved`);
   await page.reload();
   await toggle.waitFor();
-  ok((await toggle.getAttribute("aria-checked")) === "false", `${tag}: off after a reload`);
   ok(
-    await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+    (await toggle.getAttribute("aria-checked")) === "false",
+    `${tag}: off after a reload`,
+  );
+  ok(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
     `${tag}: no sideways scroll`,
   );
   await toggle.scrollIntoViewIfNeeded();
   await page.screenshot({ path: `${out}/settings-${tag}.png` });
 
-  // Back on, for the next width.
   await toggle.click();
   await page.getByRole("button", { name: "Save changes" }).click();
   await page.waitForFunction(
-    () => ![...document.querySelectorAll("button")].some((b) => b.textContent === "Save changes"),
+    () =>
+      ![...document.querySelectorAll("button")].some(
+        (b) => b.textContent === "Save changes",
+      ),
   );
   ok(!(await saved()), `${tag}: back on is saved`);
   await ctx.close();

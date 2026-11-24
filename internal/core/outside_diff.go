@@ -65,7 +65,6 @@ func mentionsPath(text, name string) bool {
 			return false
 		}
 		start, end := off+i, off+i+len(name)
-		// "./pkg/a.go" names pkg/a.go; "x/pkg/a.go" doesn't.
 		rel := start >= 2 && text[start-1] == '/' && text[start-2] == '.' && (start == 2 || !isName(text[start-3]))
 		if (start == 0 || rel || !isName(text[start-1])) && (end == len(text) || (!isName(text[end]) || text[end] == '.' && (end+1 == len(text) || !isName(text[end+1])))) {
 			return true

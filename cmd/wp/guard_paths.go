@@ -6,15 +6,13 @@ import (
 	"strings"
 )
 
-// Where the guard (WP-270, WP-ADR10) lets an unattended session write: its
-// own repository, any worktree of it, temp directories, and Claude Code's
-// memory for the project. Everything here reads files and runs nothing.
+// Decides what an unattended session may write; nothing here runs a command.
 
 // guardRepo is a repository found from a directory: its top-level and the git
 // directory it shares with its worktrees.
 type guardRepo struct {
-	root   string // the working tree's top-level
-	common string // the common git directory
+	root   string
+	common string
 }
 
 // findRepo is the repository dir is in, found by walking up to a .git.
@@ -166,9 +164,7 @@ func isWaypointState(p string) bool {
 	if abs, err := filepath.Abs(d); err == nil {
 		d = abs
 	}
-	// The quota guard's copy of its policy and holds, each session's counts
-	// and stops, and the trips waiting to be reported (WP-ADR112): the
-	// sessions it judges can't turn it off or start their counts again.
+	// Judged sessions must not write the quota guard's state, so they cannot turn it off or restart its counts.
 	for _, f := range []string{"state.json", pauseFile, "guard_trips.json"} {
 		if p == realPath(filepath.Join(d, f)) {
 			return true
@@ -195,7 +191,7 @@ type guardSite struct {
 	cwd  string
 	home string
 	repo guardRepo
-	has  bool // cwd is in a repository
+	has  bool
 }
 
 func newGuardSite(cwd string) guardSite {
@@ -266,7 +262,6 @@ func (s guardSite) confined(p string) bool {
 			return true
 		}
 	}
-	// Claude's own memory: ~/.claude/projects/*/memory
 	if ch := claudeHome(); ch != "" {
 		if rel, ok := strings.CutPrefix(p, realPath(filepath.Join(ch, "projects"))+"/"); ok {
 			parts := strings.Split(rel, "/")

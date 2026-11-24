@@ -13,11 +13,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// wp slot replay (WP-1646): the recorded holds of a window, run through the
-// slot policy again (WP-ADR150) as a queue, under the recorded settings and
-// under others, to see how far the model is from what happened and what a
-// different threshold or share would have done.
-
 // replayHistory is how far before the window the holds are read: a run's
 // class comes from the latest runs of its command, which may be older than
 // the window.
@@ -68,8 +63,7 @@ func replayClasses(jobs, hist []core.SlotHold, threshold time.Duration) []string
 			if i < len(hist) {
 				continue
 			}
-			// the holds are sorted by end: find the first that ended after
-			// the job queued, and walk back from the one before it
+			// idx is sorted by end, so sort.Search finds the first hold that ended after the job queued.
 			queued := all[i].QueuedAt
 			pos := sort.Search(len(idx), func(k int) bool { return replayEnd(all[idx[k]]) > queued })
 			var secs []int64
@@ -105,8 +99,8 @@ func replaySim(jobs, hist []core.SlotHold, n int, p replayParams) []replayOut {
 	}
 	sort.SliceStable(order, func(a, b int) bool { return jobs[order[a]].QueuedAt < jobs[order[b]].QueuedAt })
 	out := make([]replayOut, len(jobs))
-	busyUntil := make([]int64, n) // 0: free
-	slotTree := make([]string, n) // the tree of a long job running in the slot
+	busyUntil := make([]int64, n)
+	slotTree := make([]string, n)
 	slotJob := make([]int, n)
 	for i := range slotJob {
 		slotJob[i] = -1
@@ -118,7 +112,6 @@ func replaySim(jobs, hist []core.SlotHold, n int, p replayParams) []replayOut {
 		now = jobs[order[0]].QueuedAt
 	}
 	for done < len(jobs) {
-		// finish what ended, take in what arrived
 		for s := range busyUntil {
 			if slotJob[s] >= 0 && busyUntil[s] <= now {
 				slotJob[s], slotTree[s] = -1, ""
@@ -128,7 +121,6 @@ func replaySim(jobs, hist []core.SlotHold, n int, p replayParams) []replayOut {
 			waiting = append(waiting, order[next])
 			next++
 		}
-		// start every waiting job that can, first come first served
 		for w := 0; w < len(waiting); {
 			j := waiting[w]
 			long := classes[j] == slotClassLong
@@ -152,7 +144,6 @@ func replaySim(jobs, hist []core.SlotHold, n int, p replayParams) []replayOut {
 			done++
 			waiting = append(waiting[:w], waiting[w+1:]...)
 		}
-		// the next moment something changes
 		t := int64(math.MaxInt64)
 		if next < len(order) {
 			t = jobs[order[next]].QueuedAt
@@ -379,7 +370,7 @@ func cmdSlotReplay(c *cli, args []string) error {
 		return c.usage("--local reads this machine's waits only")
 	}
 	since := time.Now().Add(-time.Duration(*days) * 24 * time.Hour)
-	from := since.Add(-replayHistory) // earlier holds, for the classes
+	from := since.Add(-replayHistory)
 	var holds []core.SlotHold
 	if *local {
 		dir, err := slotDir()

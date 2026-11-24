@@ -1,6 +1,4 @@
-// Project settings → Sandbox (WP-418, WP-ADR28): how strongly the project's
-// agent work is walled off. Owners change it here, and only here: no token,
-// agent or automation can. Loosening asks for the password and a reason.
+// Only a person signed in to the Waypoint UI changes a project's sandbox: no token, agent or automation can.
 
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'

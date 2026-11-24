@@ -60,11 +60,9 @@ export function BoardPage() {
   const { key } = useParams({ from: '/app/p/$key/board' })
   const search = useSearch({ from: '/app/p/$key/board' })
   const agentQ = useAgentFilter(key, search.q ?? '')
-  // Keep showing the last board while a new filter loads, instead of blanking the page.
   const board = useQuery({ ...q.board(key, agentQ), placeholderData: (p) => p }).data
   const [group, setGroup] = useLocal<Group>(`board-lanes:${key}`, 'none')
   const [nest, setNest] = useLocal(`board-nest:${key}`, true)
-  // Parents whose subtasks are showing (the rest are folded away).
   const [unfolded, setUnfolded] = useLocal<string[]>(`board-subtasks-open:${key}`, [])
   const folds: Folds = {
     nest,
@@ -224,7 +222,6 @@ function buildLanes(board: Board, group: Group): Lane[] {
     }
   const list = [...lanes.values()]
   if (group === 'priority') return list.sort((x, y) => Number(y.id) - Number(x.id))
-  // Named lanes first (alphabetically for people, board order for epics), the "none" lane last.
   return list.sort((x, y) =>
     !x.id !== !y.id
       ? x.id
@@ -301,8 +298,6 @@ function Columns({
     [],
   )
   const { nest } = useContext(NestContext)
-  // A card dropped in another column snaps into place: animating the overlay
-  // would fly it back toward where the drag started first.
   const [crossed, setCrossed] = useState(false)
   const dragOrigin = useRef<string | null>(null)
   const throttle = useMoveThrottle()
@@ -351,7 +346,6 @@ function Columns({
     )
   }
 
-  // What crossing into another lane changes on the issue.
   const lanePatch = (laneID: string): { patch: IssuePatch; optimistic: Partial<Issue> } => {
     switch (group) {
       case 'assignee': {
@@ -416,7 +410,7 @@ function Columns({
     const statusChanged = from.status !== to.status
     const laneChanged = from.lane !== to.lane
     const lane = laneChanged ? lanePatch(to.lane) : { patch: {}, optimistic: {} }
-    // Rank against neighbours in the same column (any lane), as the server sees one order.
+    // Before and after keys come from the list the server also orders.
     const before = list[idx + 1]?.key
     const after = list[idx - 1]?.key
     const moved = statusChanged || laneChanged || oldIdx !== idx
@@ -426,7 +420,6 @@ function Columns({
     }
     setCells(next)
     if (!moved) return
-    // Reflect immediately in the cache so the board doesn't flicker back.
     qc.setQueryData<Board>(['board', project.key, filter], (b) =>
       b
         ? {
@@ -625,7 +618,6 @@ function Column({
   const { setNodeRef, isOver } = useDroppable({ id })
   const pts = issues.reduce((s, i) => s + (i.points ?? 0), 0)
   const { top, kids } = useNested(issues)
-  // A column with unsent text opens with it.
   const [adding, setAdding] = useState(() => !!readDraft(quickAddKey(project.key, status.id)))
   return (
     <section
@@ -675,7 +667,6 @@ function Column({
         </SortableContext>
         {issues.length === 0 && !adding && (
           <div
-            // The empty area is as good as "Add issue" for starting a new one.
             onClick={editable ? () => setAdding(true) : undefined}
             className={clsx(
               'flex flex-1 items-center justify-center py-6 text-xs text-subtle',
@@ -749,7 +740,6 @@ function useNested(issues: Issue[]): { top: Issue[]; kids: Kids } {
     const top: Issue[] = []
     for (const i of issues) {
       const p = i.parent
-      // An epic's stories are grouped by the Epic lanes, not folded away.
       if (p && p.type !== 'epic' && here.has(p.key))
         kids.set(p.key, [...(kids.get(p.key) ?? []), i])
       else top.push(i)
@@ -897,7 +887,6 @@ function QuickAdd({
             e.preventDefault()
             submit()
           } else if (e.key === 'Escape') {
-            // Esc is the one way to throw the text away.
             add.setText('')
             onDone()
           }

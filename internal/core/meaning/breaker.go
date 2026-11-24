@@ -14,15 +14,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core/kernel"
 )
 
-// The meaning service's circuit breaker (WP-1602). A wedged service took
-// every call the full client timeout, hundreds of times a day, each logged
-// as its own warning by whichever pass made it. After trips calls in
-// a row that got no answer (no connection, a timeout, a 5xx), calls fail at
-// once with ErrDown for a cooldown; then one call goes through as a
-// probe. A failed probe doubles the cooldown, up to cooldownMax. The
-// breaker logs "meaning service: not answering" when it opens and after
-// each failed probe, so the outage is one problem in `wp server problems`
-// with its start in the record, and "answering again" when it closes.
+// Logs once when the breaker opens and after each failed probe, not per call, so an outage is one problem in wp server problems.
 
 // ErrDown wraps every failure to reach the meaning service; the
 // breaker reports those, so callers log them below a warning.

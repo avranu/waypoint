@@ -1,6 +1,4 @@
-// What the agent is waiting on you for, in the chat (WP-ADR1): Hermes's
-// own approval of a command, and its clarify questions. (The gate's
-// approvals are different: those are answered on Signal.)
+// The gate's approvals are answered on Signal, not in this view.
 
 import { useState } from 'react'
 import clsx from 'clsx'

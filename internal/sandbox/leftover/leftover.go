@@ -63,8 +63,7 @@ func Bundle(ctx context.Context, o Options, out io.Writer) (*Result, error) {
 		}
 	}
 	git := func(stdin []byte, w io.Writer, args ...string) (string, error) {
-		// The sandbox's own hooks don't run: a hook that waits would stall
-		// the job's end, and its checks were the agent's to run.
+		// hooks are off: a hook that waited would stall the job's end, and checks are the agent's to run.
 		cmd := exec.CommandContext(ctx, bin, append([]string{"-c", "core.hooksPath=/dev/null"}, args...)...) // #nosec G204 -- fixed binary; args are ours or a checked commit id
 		cmd.Dir = o.Dir
 		var buf, errb bytes.Buffer
@@ -100,8 +99,6 @@ func Bundle(ctx context.Context, o Options, out io.Writer) (*Result, error) {
 			msg = DefaultMessage
 		}
 		args := []string{"commit", "--quiet", "--no-verify", "-F", "-"}
-		// The runner's identity where the work tree names none (the
-		// runner's own leftover commit does the same).
 		if email, _ := git(nil, nil, "config", "user.email"); email == "" {
 			args = append([]string{"-c", "user.name=Waypoint runner", "-c", "user.email=runner@waypoint.invalid"}, args...)
 		}
@@ -110,9 +107,7 @@ func Bundle(ctx context.Context, o Options, out io.Writer) (*Result, error) {
 		}
 		res.Committed = true
 	}
-	// The bundle is Base..HEAD, and the host reports it as what the job
-	// added after Base: a HEAD that doesn't build on Base would be a
-	// different range (the host refuses it too).
+	// HEAD must descend from Base, or the Base..HEAD bundle range is a different one.
 	if _, err := git(nil, nil, "merge-base", "--is-ancestor", o.Base, "HEAD"); err != nil {
 		return nil, fmt.Errorf("HEAD doesn't build on the base %.12s: %w", o.Base, err)
 	}

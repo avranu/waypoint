@@ -1,8 +1,4 @@
-// Runners → Sandbox (WP-418, WP-ADR28): each machine's default sandbox level
-// and its kill switch, for the runner's owner and admins, and the log of
-// changes. Pausing loosens, so it asks for the password and a reason. The
-// helper's machine users can be removed here, and work it left half done
-// finished (WP-448).
+// Pausing a machine's sandboxing loosens it, so it needs the password and a reason.
 
 import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
@@ -378,8 +374,6 @@ function DrillLine({ m }: { m: SandboxMachine }) {
   })
   const d = m.drill
   const blocked = m.drill_blocked
-  // Before the first drill, say nothing until the helper is ready: the
-  // helper line already says what's missing.
   if (!d && !m.helper?.ready) return null
   const busy = d?.state === 'queued' || d?.state === 'running'
   const button = m.can_edit && !blocked && (

@@ -20,7 +20,7 @@ func TestOpenPullRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.forgePeople(f, "wp-bot") // the token's login is its connector's (WP-279)
+	e.forgePeople(f, "wp-bot")
 	in := OpenPRInput{Project: p.Key, Head: "feature", Title: "Do it", Body: "Because."}
 
 	if _, err := e.s.OpenPullRequest(e.ctx, e.admin, in); err == nil || !strings.Contains(err.Error(), "no repository attached") {
@@ -36,7 +36,6 @@ func TestOpenPullRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Someone who can't edit the project can't open pull requests in it.
 	outsider := e.user("sam", false)
 	if _, err := e.s.OpenPullRequest(e.ctx, outsider, in); err == nil {
 		t.Error("an outsider opened a pull request")
@@ -48,8 +47,6 @@ func TestOpenPullRequest(t *testing.T) {
 		t.Errorf("no title: %v", err)
 	}
 
-	// An agent opens one: it is the agent's, linked to the issue, and a
-	// second call finds the same pull request.
 	agent := &Actor{User: e.admin.User, Agent: "anthropic/claude-opus-5-5"}
 	iss, err := e.s.CreateIssue(e.ctx, e.admin, IssueInput{Project: p.Key, Title: "Do it"})
 	if err != nil {
@@ -87,7 +84,6 @@ func TestOpenPullRequest(t *testing.T) {
 	if pr, err := e.s.prByID(e.ctx, e.s.db.R, res.Pull.ID); err != nil || pr.Agent != "anthropic/claude-opus-5-5" {
 		t.Errorf("the pull request's agent: %+v %v", pr, err)
 	}
-	// The agent may arm what it opened.
 	if _, err := e.s.MergePR(e.ctx, agent, res.Pull.ID, MergeInput{WhenReady: true}); err != nil {
 		t.Errorf("arming its own: %v", err)
 	}
@@ -134,7 +130,7 @@ func TestMergeMovesStackedPullRequestsOff(t *testing.T) {
 		se.pullHook("opened", parent)
 		se.pullHook("opened", child)
 		se.drain()
-		if _, err := se.s.recordPR(se.ctx, se.f, "me/app", &child, false); err != nil { // the hook says main
+		if _, err := se.s.recordPR(se.ctx, se.f, "me/app", &child, false); err != nil {
 			t.Fatal(err)
 		}
 		se.sg.setChecks(parent.HeadSHA, CommitCheck{Name: "ci / web", State: CheckSuccess})
@@ -213,8 +209,6 @@ func TestOpenPullRequestStackAndBase(t *testing.T) {
 	if parent.Pull.BaseRef != "main" || parent.Notice != "" {
 		t.Fatalf("parent: base %q notice %q", parent.Pull.BaseRef, parent.Notice)
 	}
-	// Built on a branch with no pull request, then on gate-go: the nearest
-	// with one open is the base, and the notice says how to ship it all.
 	child := open(OpenPRInput{Head: "upgrade", StackedOn: []string{"scratch", "gate-go"}})
 	if child.Pull.BaseRef != "gate-go" || !strings.Contains(child.Notice, "#"+fmt.Sprint(parent.Pull.Number)) || !strings.Contains(child.Notice, "--base main") {
 		t.Errorf("stacked: base %q notice %q", child.Pull.BaseRef, child.Notice)
@@ -227,11 +221,9 @@ func TestOpenPullRequestStackAndBase(t *testing.T) {
 	if err := e.s.db.R.QueryRowContext(e.ctx, `SELECT detail FROM audit_log WHERE action = 'pr.open' AND target_id = ?`, parent.Pull.ID).Scan(&detail); err != nil || detail != "opened “gate-go” into main" {
 		t.Errorf("audit detail %q %v", detail, err)
 	}
-	// Given a base, it is used as given.
 	if all := open(OpenPRInput{Head: "together", Base: "main", StackedOn: []string{"gate-go"}}); all.Pull.BaseRef != "main" || all.Notice != "" {
 		t.Errorf("--base main: base %q notice %q", all.Pull.BaseRef, all.Notice)
 	}
-	// Its parent merged: nothing to stack on, the default branch it is.
 	g.setForgeState(f, "acme/app", parent.Pull.Number, "merged")
 	if late := open(OpenPRInput{Head: "late", StackedOn: []string{"gate-go"}}); late.Pull.BaseRef != "main" || late.Notice != "" {
 		t.Errorf("parent merged: base %q notice %q", late.Pull.BaseRef, late.Notice)
@@ -239,13 +231,11 @@ func TestOpenPullRequestStackAndBase(t *testing.T) {
 	if pr, _ := e.s.prByID(e.ctx, e.s.db.R, parent.Pull.ID); pr.State != "merged" {
 		t.Errorf("the merged parent is recorded %q", pr.State)
 	}
-	// Seeing the parent merged moves its open child onto its base (WP-760).
 	e.s.bg.Wait()
 	if pr, _ := e.s.prByID(e.ctx, e.s.db.R, child.Pull.ID); pr.BaseRef != "main" {
 		t.Errorf("the child of the merged parent is into %q", pr.BaseRef)
 	}
 
-	// --base on the one already open moves it, and says so.
 	g.sm.Lock()
 	g.baseEdits = nil
 	g.sm.Unlock()
@@ -268,7 +258,6 @@ func TestOpenPullRequestStackAndBase(t *testing.T) {
 		t.Errorf("same base again: notice %q edits %v", again.Notice, g.baseEdits)
 	}
 
-	// Closed on the forge seconds ago: not reused (nor armed), a new one opens.
 	g.setForgeState(f, "acme/app", child.Pull.Number, "closed")
 	reopened := open(OpenPRInput{Head: "upgrade"})
 	if reopened.Existing || reopened.Pull.ID == child.Pull.ID {
@@ -278,7 +267,6 @@ func TestOpenPullRequestStackAndBase(t *testing.T) {
 		t.Error("armed the closed pull request")
 	}
 
-	// wp pr edit --base: an empty or same base, and the head itself.
 	if err := e.s.EditPullRequest(e.ctx, agent, reopened.Pull.ID, EditPRInput{Base: str(" ")}); !IsInvalid(err) {
 		t.Errorf("empty base: %v", err)
 	}
@@ -290,8 +278,6 @@ func TestOpenPullRequestStackAndBase(t *testing.T) {
 		t.Errorf("same base: %v, edits %v", err, g.baseEdits)
 	}
 
-	// Moved on the forge only: seen by the next open, and out of the old
-	// base's queue as wp pr edit --base would have it.
 	if _, err := e.s.db.W.ExecContext(e.ctx, `UPDATE pull_requests SET queued_at = 1 WHERE id = ?`, reopened.Pull.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +291,6 @@ func TestOpenPullRequestStackAndBase(t *testing.T) {
 		t.Errorf("moved on the forge: base %q queued %v", pr.BaseRef, pr.QueuedAt)
 	}
 
-	// A fork's branch of the same name isn't what this was built on.
 	fork := ForgePR{Number: 900, Title: "Fork", Author: "wp-bot", URL: "https://git.example.com/acme/app/pulls/900", State: "open", BaseRef: "main", HeadRef: "shared", HeadSHA: "abcdef0", HeadRepo: "sam/app"}
 	g.setPR(f, "acme/app", fork, sampleDiff)
 	if _, err := e.s.recordPR(e.ctx, f, "acme/app", &fork, false); err != nil {
@@ -315,7 +300,6 @@ func TestOpenPullRequestStackAndBase(t *testing.T) {
 		t.Errorf("stacked on a fork's branch name: base %q notice %q", onFork.Pull.BaseRef, onFork.Notice)
 	}
 
-	// Another task's pull request stays where it is, and the notice says so.
 	mine, theirs := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Mine"}), e.issue(e.admin, IssueInput{Project: p.Key, Title: "Theirs"})
 	open(OpenPRInput{Head: "theirs", Issue: theirs.Key})
 	before = len(g.baseEdits)
@@ -342,7 +326,7 @@ func (b *branchyForge) Branches(context.Context, *Forge, string) ([]ForgeBranch,
 func TestStackedChildrenMoveWhenParentMergesOutside(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
-		head     string // the parent's branch
+		head     string
 		branches []ForgeBranch
 		moved    bool
 	}{
@@ -402,7 +386,6 @@ func TestStackedChildrenMoveWhenParentMergesOutside(t *testing.T) {
 			if tc.moved != (len(g.baseEdits) == 1) {
 				t.Errorf("base edits %v", g.baseEdits)
 			}
-			// Seen merged again (a repeat webhook): nothing more happens.
 			if _, err := e.s.recordPR(e.ctx, f, "acme/app", fp, true); err != nil {
 				t.Fatal(err)
 			}
@@ -468,7 +451,7 @@ func stackedPairWith(t *testing.T, state string, arm bool) (se *shipEnv, parent,
 	se.pullHook("opened", parent)
 	se.pullHook("opened", child)
 	se.drain()
-	if _, err := se.s.recordPR(se.ctx, se.f, "me/app", &child, false); err != nil { // the hook says main
+	if _, err := se.s.recordPR(se.ctx, se.f, "me/app", &child, false); err != nil {
 		t.Fatal(err)
 	}
 	se.sg.setChecks(parent.HeadSHA, CommitCheck{Name: "ci / web", State: CheckSuccess})
@@ -505,7 +488,6 @@ func TestStackedChildWaitsForParent(t *testing.T) {
 	if rd.Ready {
 		t.Error("ready while its parent is open")
 	}
-	// Not set, so it can't be dropped like a set wait: the way out is --base.
 	if _, err := se.s.SetPRMergeAfter(se.ctx, se.admin, se.pr(6).ID, "", 5, false); err == nil || !strings.Contains(err.Error(), "wp pr edit 6 --base main") {
 		t.Errorf("off: %v", err)
 	}
@@ -514,7 +496,7 @@ func TestStackedChildWaitsForParent(t *testing.T) {
 	// may land it before Wait returns: only ever onto main, after the move.
 	var childMergedOnto []string
 	se.sg.sm.Lock()
-	se.sg.onMergeN = func(n int) { // sm is held
+	se.sg.onMergeN = func(n int) { // onMergeN runs inside MergePR with sm held, so it must not lock sm.
 		if n == 6 {
 			childMergedOnto = slices.Clone(se.sg.baseEdits)
 		}
@@ -536,7 +518,6 @@ func TestStackedChildWaitsForParent(t *testing.T) {
 			t.Errorf("still waits: %+v %v", rd, err)
 		}
 	}
-	// The move was made on the forge and audited.
 	if !slices.Equal(se.sg.baseEdits, []string{"6:main"}) {
 		t.Errorf("base edits %v", se.sg.baseEdits)
 	}
@@ -576,7 +557,6 @@ func TestArmClosedPullRequestFails(t *testing.T) {
 	se.llm.answers["opencode/muse-spark-1.3-contributor-free"] = noFindings
 	se.pullHook("opened", testPR)
 	se.drain()
-	// Closed on the forge, its webhook not in yet: the record says open.
 	se.sg.setForgeState(se.f, "me/app", 5, "closed")
 	if res, err := se.s.MergePR(se.ctx, se.admin, se.pr(5).ID, MergeInput{WhenReady: true}); err == nil || !strings.Contains(err.Error(), "this pull request is closed") {
 		t.Fatalf("armed a closed pull request: %+v %v", res, err)
@@ -631,7 +611,6 @@ func TestAskedBaseRound(t *testing.T) {
 		}
 		return res
 	}
-	// The task's own parent, open: a branch of another task would be left alone.
 	if _, err := e.s.OpenPullRequest(e.ctx, agent, OpenPRInput{Project: p.Key, Ready: true, Head: "gate-go", Title: "gate-go", Base: "main"}); err != nil {
 		t.Fatal(err)
 	}

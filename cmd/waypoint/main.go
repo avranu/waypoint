@@ -59,7 +59,7 @@ func main() {
 func newLogger() *slog.Logger {
 	var lvl slog.Level
 	if err := lvl.UnmarshalText([]byte(env("WAYPOINT_LOG_LEVEL", "info"))); err != nil {
-		lvl = slog.LevelInfo // invalid levels fall back to info (zero value)
+		lvl = slog.LevelInfo
 	}
 	opts := &slog.HandlerOptions{Level: lvl}
 	if env("WAYPOINT_LOG_FORMAT", "json") == "text" {
@@ -84,7 +84,7 @@ func open(ctx context.Context, log *slog.Logger, logs *core.LogRing) (*core.Serv
 		log.Warn("WAYPOINT_BACKUP_KEEP must be a positive number; keeping 14", "value", os.Getenv("WAYPOINT_BACKUP_KEEP"))
 		keep = 14
 	}
-	go core.WarmLogin() // the dummy login hash, off the start path (WP-1398)
+	go core.WarmLogin() // Warms the dummy password hash, so logins for unknown users cost as much as real ones
 	svc := core.New(d, core.Config{
 		BaseURL:         env("WAYPOINT_BASE_URL", "http://localhost:8080"),
 		BackupDir:       backupDir(path),
@@ -96,12 +96,11 @@ func open(ctx context.Context, log *slog.Logger, logs *core.LogRing) (*core.Serv
 		MaxAttachmentMB: maxAttachmentMB(log),
 		Logs:            logs,
 		Version:         version,
-		// Each assistant may set its own in Admin → Assistants.
+		// Env values are the site's defaults; an assistant's own settings override them
 		Assistant: core.AssistantDefaults{
 			KeyHeader: env("WAYPOINT_ASSISTANT_KEY_HEADER", ""),
 			AgentURL:  env("WAYPOINT_ASSISTANT_AGENT_URL", ""),
 		},
-		// The meaning service deploy/meaning runs (WP-1035); empty goes without.
 		MeaningURL:   env("WAYPOINT_AI_MEANING_URL", ""),
 		MeaningToken: os.Getenv("WAYPOINT_AI_MEANING_TOKEN"),
 	}, log)
@@ -272,7 +271,6 @@ func healthcheck(ctx context.Context) error {
 }
 
 func serve(ctx context.Context, log *slog.Logger) error {
-	// Before anything else, so the service's outbound clients get traced.
 	stopTracing, err := tracing.Setup(ctx, version, log)
 	if err != nil {
 		return fmt.Errorf("tracing: %w", err)
@@ -288,10 +286,8 @@ func serve(ctx context.Context, log *slog.Logger) error {
 		log = slog.New(tracing.LogHandler(log.Handler()))
 		log.Info("tracing on (OTLP over HTTP)")
 	}
-	// The recent log, secrets blanked, for `wp server log` (WP-375).
 	logs := core.NewLogRing(core.DefaultLogRecords, core.DefaultLogAge)
 	logs.AddEnvSecrets(os.Environ())
-	// Kept on disk too, so a restart or a deploy doesn't lose it (WP-893).
 	if dir := logDir(env("WAYPOINT_DB", "data/waypoint.db")); dir != "" {
 		days, err := strconv.Atoi(env("WAYPOINT_LOG_DAYS", strconv.Itoa(core.DefaultLogDays)))
 		if err != nil || days < 1 {
@@ -310,19 +306,15 @@ func serve(ctx context.Context, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	// From here everything logs through the service, which counts each
-	// warning and error by where it was logged (WP-ADR139).
 	log = svc.Log()
 	slog.SetDefault(log)
 	defer func() { _ = d.Close() }()
 	svc.LoadLogSecrets(ctx)
 	svc.StartHub()
-	// Pages from before codes (WP-D11) get theirs, adopting codes their
-	// imported titles carry.
+	// Pages without a number get one; a code in an imported title (e.g. "PL2: …") is adopted first
 	if err := svc.AssignPageCodes(ctx); err != nil {
 		log.Warn("page codes not assigned", "err", err)
 	}
-	// Likewise decision notes get their ADR codes (WP-113).
 	if err := svc.AssignDesignCodes(ctx); err != nil {
 		log.Warn("decision codes not assigned", "err", err)
 	}
@@ -334,16 +326,11 @@ func serve(ctx context.Context, log *slog.Logger) error {
 		fmt.Fprintf(os.Stderr, "\n  Create your admin account: %s\n\n", link.URL)
 		log.Warn("no users yet: open the admin link printed on stderr (valid 24h), or run `waypoint invite --admin`")
 	}
-	// An opencode server deployed alongside (see deploy/compose.yaml) becomes
-	// the default AI provider until an admin configures something else.
 	if u := env("WAYPOINT_AI_OPENCODE_URL", ""); u != "" {
 		if err := svc.EnsureDefaultAI(ctx, u, os.Getenv("WAYPOINT_AI_OPENCODE_PASSWORD"), env("WAYPOINT_AI_MODEL", "opencode/big-pickle")); err != nil {
 			log.Warn("default AI provider not set up", "err", err)
 		}
 	}
-	// An LLM gateway, when given a key, goes first for every AI task; what
-	// was set up before stays as its fallbacks. Without LLM_GATEWAY_URL it
-	// keeps the URL saved by an earlier start.
 	if g, notices, err := gatewayFromEnv(os.Getenv); err != nil {
 		log.Warn("LLM gateway not set up", "err", err)
 	} else if g != nil {
@@ -354,7 +341,6 @@ func serve(ctx context.Context, log *slog.Logger) error {
 			log.Warn("LLM gateway not set up", "err", err)
 		}
 	}
-	// Pull request reviews start with the free models, Muse Spark first (WP-D14).
 	if err := svc.EnsureReviewModels(ctx); err != nil {
 		log.Warn("review models not set up", "err", err)
 	}
@@ -375,7 +361,7 @@ func serve(ctx context.Context, log *slog.Logger) error {
 		Addr:              env("WAYPOINT_ADDR", ":8080"),
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       2 * time.Minute, // bodies are small; this bounds slow uploads
+		ReadTimeout:       2 * time.Minute, // Bounds slow request-body reads; attachment uploads can be large (WAYPOINT_MAX_ATTACHMENT_MB, default 25)
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    64 << 10,
 		// No WriteTimeout: live updates (SSE) hold responses open.

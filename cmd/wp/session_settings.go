@@ -4,11 +4,7 @@ import (
 	"strings"
 )
 
-// The person's session settings (WP-1265): how the Claude Code sessions
-// Waypoint starts for them start, for all sessions and per repo. The server
-// keeps them in the person's preferences (core.SessionPrefs); a runner gets
-// them with each job that starts a session, wp start and wp fanout read them
-// from /me.
+// Stored in core.SessionPrefs on the server; a runner gets them with each job that starts a session.
 
 // sessionSettings mirrors core.SessionSettings.
 type sessionSettings struct {

@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-// Environments and deployments (WP-D19): where a project's code runs.
-
 var envCmd = &command{
 	name: "env", group: "Projects and time", args: "SUBCOMMAND",
 	aliases: []string{"envs", "environment", "environments"},
@@ -229,7 +227,7 @@ func envLs(c *cli, args []string) error {
 		}
 	}
 	if c.asJSON {
-		merged := []json.RawMessage{} // [] rather than null when empty
+		merged := []json.RawMessage{}
 		for _, r := range raws {
 			var part []json.RawMessage
 			if json.Unmarshal(r, &part) == nil {
@@ -250,7 +248,7 @@ func envLs(c *cli, args []string) error {
 }
 
 func sortEnvs(all []cliEnv, rank map[string]int) {
-	// Down first, then by kind order, then name; a stable insertion sort keeps the server's order otherwise.
+	// Insertion sort is stable, so environments that tie keep the server's order.
 	kind := map[string]int{"production": 0, "staging": 1, "preview": 2, "dev": 3}
 	less := func(a, b cliEnv) bool {
 		if a.Stopped != b.Stopped {
@@ -360,7 +358,6 @@ func envDetailText(e *cliEnv, deploys []cliDeploy) string {
 	}
 	if e.URL != "" {
 		fmt.Fprintf(&b, "URL:     %s\n", e.URL)
-		// Whether unattended agent sessions may read from it (WP-749).
 		switch {
 		case e.Stopped:
 		case e.AddressAgent == "":

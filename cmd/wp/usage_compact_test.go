@@ -38,7 +38,6 @@ func (c *cmpTranscript) call(written, read int64, tool string, input map[string]
 	msg := func(block map[string]any) map[string]any {
 		return map[string]any{"type": "assistant", "message": map[string]any{"id": id, "model": "claude-opus-5-5", "usage": usage, "content": []any{block}}}
 	}
-	// Claude Code writes a line per content block, each with the call's usage
 	c.add(time.Second, msg(map[string]any{"type": "text", "text": "on it"}))
 	use := msg(map[string]any{"type": "tool_use", "id": tid, "name": tool, "input": input})
 	use["uuid"] = "line_" + tid
@@ -71,13 +70,11 @@ func TestCompactReport(t *testing.T) {
 	s.call(20000, 0, "Read", map[string]any{"file_path": "/r/a.go"}, strings.Repeat("a", 3600), false)
 	s.call(1000, 20000, "Bash", map[string]any{"command": "cd /r && cat internal/b.go"}, strings.Repeat("b", 3600), false)
 	s.call(1000, 99000, "Edit", map[string]any{"file_path": "/r/a.go"}, "ok", false)
-	// ten minutes idle, then a manual compaction that took 30 s
 	s.compact(10*time.Minute+30*time.Second, "manual", 100000, 30*time.Second, strings.Repeat("s", 7200))
 	s.prompt("now the next part")
 	s.call(30000, 20000, "Bash", map[string]any{"command": "sed -n 1,5p internal/b.go"}, strings.Repeat("b", 3600), false)
 	s.call(500, 50000, "Read", map[string]any{"file_path": "/r/c.go"}, "no such file", true)
 	s.call(500, 50500, "Bash", map[string]any{"command": "sed -i s/x/y/ a.go"}, "", false)
-	// an automatic one nothing followed
 	s.compact(time.Second, "auto", 60000, 20*time.Second, strings.Repeat("s", 3600))
 	s.write(t, root, "one")
 
@@ -99,7 +96,6 @@ func TestCompactReport(t *testing.T) {
 	if manual.First.N != 1 || manual.First.Written != 30000 || manual.First.Read != 20000 {
 		t.Errorf("first call after: %+v", manual.First)
 	}
-	// Opus 5.5: read $0.2, 1h write $8, output $20 per million
 	for name, got := range map[string][2]float64{
 		"read":        {manual.ReadUSD, 100000 * 0.2 / 1e6},
 		"summary":     {manual.SummaryUSD, 2000 * 1.35 * 20 / 1e6},
@@ -140,7 +136,6 @@ func TestCompactColdAndControls(t *testing.T) {
 	}
 	s.prompt("carry on")
 	s.call(500, 95000, "Read", map[string]any{"file_path": "/r/f1.go"}, strings.Repeat("x", 360), false)
-	// the cache died before this compaction began, and before the next call
 	s.compact(2*time.Hour, "manual", 120000, 10*time.Second, strings.Repeat("s", 3600))
 	s.call(30000, 0, "Grep", map[string]any{"pattern": "x"}, "", false)
 	s.write(t, root, "two")
@@ -153,7 +148,7 @@ func TestCompactColdAndControls(t *testing.T) {
 	if manual.Cold != 1 || manual.First.NoRead != 1 {
 		t.Errorf("manual: %+v", manual)
 	}
-	// cold: the history at the input price ($4); the restart it spared at the write price ($8)
+	// a cold compaction re-reads the history at the input price; the restart it spared would have cost the write price
 	if want := 120000 * 4 / 1e6; math.Abs(manual.ReadUSD-want) > 1e-9 {
 		t.Errorf("cold read $%.4f, want $%.4f", manual.ReadUSD, want)
 	}
@@ -163,7 +158,6 @@ func TestCompactColdAndControls(t *testing.T) {
 	if len(rep.Idle) != 1 || rep.Idle[0].Idle != "over 60m" || rep.Idle[0].Late != 1 {
 		t.Errorf("idle: %+v", rep.Idle)
 	}
-	// the 30 calls before it: 29 files for the second time, then f1 again
 	before := rep.Follows[cmpBeforeManual]
 	if before.N != 1 || before.Calls != 30 || before.FileLookups != 30 || before.SeenBefore != 30 {
 		t.Errorf("before manual: %+v", before)
@@ -195,7 +189,6 @@ func TestCompactToolKinds(t *testing.T) {
 		{"sed -i s/a/b/ cmd/x.go", true, false, false, ""},
 		{"go test ./...", false, false, false, ""},
 		{"pwd", false, true, true, ""},
-		// output sent to a file writes it; a here-document's text is no file read
 		{"cat > /r/notes/a.go <<'EOF'\npackage x // see foo.bar\nEOF", true, false, false, "a.go"},
 		{"cat <<'EOF' >> notes.md\nsee main.go\nEOF", true, false, false, "notes.md"},
 		{"cat <<EOF | wp comment WP-1 -f -\nsee main.go\nEOF", false, false, false, ""},
@@ -241,7 +234,7 @@ func TestCompactCarryAndReviewRounds(t *testing.T) {
 	s.call(500, 51000, "Read", map[string]any{"file_path": "/r/d.go"}, strings.Repeat("d", 1800), false)
 	s.call(500, 51500, "Edit", map[string]any{"file_path": "/r/d.go"}, "ok", false)
 	s.call(500, 52000, "Agent", map[string]any{"prompt": "look"}, "done", false)
-	s.prompt("\n\n<pasted_content id=\"x\">\n" + cmpReviewPrompt + "WP-1: once more\n</pasted_content id=\"x\">\n") // as Claude Code wraps a paste (WP-1562)
+	s.prompt("\n\n<pasted_content id=\"x\">\n" + cmpReviewPrompt + "WP-1: once more\n</pasted_content id=\"x\">\n")
 	s.call(500, 52500, "Read", map[string]any{"file_path": "/r/a.go"}, strings.Repeat("a", 3600), false)
 	s.write(t, root, "one")
 
@@ -251,12 +244,10 @@ func TestCompactCarryAndReviewRounds(t *testing.T) {
 	}
 	manual := rep.Compactions[1]
 	c := manual.Carry
-	// b.go (shown through the shell, only named by Claude Code), d.go (edited
-	// before, read and edited again) and a.go (restored, read again anyway)
 	if c.Windows != 1 || c.Files != 3 || c.Restored != 1 || c.Referenced != 1 || c.ShellOnly != 1 || c.ThenEdited != 1 || c.Tokens != 2500 {
 		t.Errorf("looked up again: %+v", c)
 	}
-	for set, want := range map[string][2]int{ // files carried, files covered
+	for set, want := range map[string][2]int{
 		"restored": {1, 1}, "restored_or_named": {2, 2}, "last_5": {3, 3}, "edited": {1, 1}, "prompt_names": {1, 1}, "edited_or_prompt_names": {1, 1},
 	} {
 		found := false
@@ -272,8 +263,6 @@ func TestCompactCarryAndReviewRounds(t *testing.T) {
 			t.Errorf("no set %s in %+v", set, c.Sets)
 		}
 	}
-	// what a summariser of ours would read: the four calls before it, the
-	// tool results in full and cut
 	if manual.HistoryTokens < 3000 || manual.HistoryCut >= manual.HistoryTokens || manual.HistoryCut == 0 {
 		t.Errorf("history: %d, cut %d", manual.HistoryTokens, manual.HistoryCut)
 	}
@@ -281,7 +270,6 @@ func TestCompactCarryAndReviewRounds(t *testing.T) {
 	if f.N != 1 || f.Calls != 7 || f.AskedAgain != 1 || f.OwnTranscript != 1 || f.Subagents != 1 {
 		t.Errorf("after manual: %+v", f)
 	}
-	// seven calls of 100 output tokens at $20 a million; the first wrote 30,000 at $8
 	if want := 7 * 100 * 20 / 1e6; math.Abs(f.USDOut-want) > 1e-9 {
 		t.Errorf("output $%.6f, want $%.6f", f.USDOut, want)
 	}
@@ -317,7 +305,6 @@ func TestCompactAdversarialReviews(t *testing.T) {
 	}
 	adversarial := map[string]any{"subagent_type": "adversarial-review", "prompt": "break it"}
 
-	// An adversarial review far from any compaction, then one just after it.
 	s := &cmpTranscript{at: time.Now().Add(-5 * time.Hour)}
 	s.prompt("start")
 	read(s, 2)
@@ -346,8 +333,6 @@ func TestCompactAdversarialReviews(t *testing.T) {
 	if near.N != 1 || near.Point != "compacted" || near.Calls != 3 || near.Another != 0 {
 		t.Errorf("an adversarial review just after a compaction: %+v", near)
 	}
-	// the one far from a compaction: its window is the 30 calls after it,
-	// and another followed
 	if far.N != 1 || far.Calls != 30 || far.Another != 1 || far.ContextBefore != 20510 || rep.Signals[2].N != 0 {
 		t.Errorf("an adversarial review with no compaction near: %+v\nbig: %+v", far, rep.Signals[2])
 	}
@@ -390,14 +375,12 @@ func TestCompactNoticesFullWindowsAndKept(t *testing.T) {
 	s.call(500, 40000, "Read", map[string]any{"file_path": "/r/f3.go"}, strings.Repeat("x", 360), false)
 	s.call(500, 40000, "Bash", map[string]any{"command": "cat internal/kept.go"}, strings.Repeat("k", 360), false)
 	kept := fmt.Sprint("line_toolu_", s.n)
-	// automatic, its last tool call kept, then 32 calls: a full window
 	s.compactKeeping("auto", 150000, strings.Repeat("s", 3600), kept)
 	s.call(30000, 20000, "Bash", map[string]any{"command": "cat internal/kept.go"}, strings.Repeat("k", 360), false)
 	s.call(500, 50000, "Read", map[string]any{"file_path": "/r/f3.go"}, strings.Repeat("x", 360), false)
 	for range 30 {
 		s.call(500, 50000, "Grep", map[string]any{"pattern": "x"}, "", false)
 	}
-	// manual, then three calls: a window cut short
 	s.compactKeeping("manual", 100000, strings.Repeat("s", 3600))
 	for range 3 {
 		s.call(500, 50000, "Grep", map[string]any{"pattern": "y"}, "", false)
@@ -408,7 +391,6 @@ func TestCompactNoticesFullWindowsAndKept(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// the typed prompt's window runs on to the compaction; the report's too
 	prompt, notice := rep.Follows[cmpPrompt], rep.Follows[cmpNotice]
 	if prompt.N != 1 || prompt.Calls != 2 || notice.N != 1 || notice.Calls != 4 || notice.SeenBefore != 3 {
 		t.Errorf("typed prompt: %+v\nreport: %+v", prompt, notice)
@@ -421,8 +403,6 @@ func TestCompactNoticesFullWindowsAndKept(t *testing.T) {
 	if manual.N != 1 || manual.Calls != 3 || manualFull.N != 0 {
 		t.Errorf("after manual: %+v\nfull: %+v", manual, manualFull)
 	}
-	// kept.go and f3.go were looked up again; kept.go was still in context,
-	// so no set holds it and the last five cover f3.go alone
 	c := rep.Compactions[0].Carry
 	if c.Files != 2 || c.Kept != 1 {
 		t.Errorf("looked up again: %+v", c)
@@ -454,9 +434,8 @@ func TestCompactPricesDuplicatesAndUnreadable(t *testing.T) {
 	root := t.TempDir()
 	s := &cmpTranscript{at: time.Now().Add(-2 * time.Hour)}
 	s.prompt("start")
-	s.call(1000, 0, "Read", map[string]any{"file_path": "/r/a.go"}, "a", false) // the one-hour cache
+	s.call(1000, 0, "Read", map[string]any{"file_path": "/r/a.go"}, "a", false)
 	s.compactKeeping("manual", 50000, "sum")
-	// one call, logged twice, writing a million tokens to the five-minute cache
 	line := map[string]any{"type": "assistant", "message": map[string]any{"id": "msg_five", "model": "claude-opus-5-5",
 		"usage": map[string]any{"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 1000000, "cache_read_input_tokens": 0,
 			"cache_creation": map[string]any{"ephemeral_5m_input_tokens": 1000000, "ephemeral_1h_input_tokens": 0}},
@@ -479,11 +458,11 @@ func TestCompactPricesDuplicatesAndUnreadable(t *testing.T) {
 	if f.N != 1 || f.Calls != 1 || f.Tools != 1 || f.FileLookups != 1 {
 		t.Errorf("after manual: %+v", f)
 	}
-	// $5 a million for the five-minute cache, not the hour's $8
+	// Cache writes price at the 5-minute tier, not the 1-hour tier.
 	if math.Abs(f.USDWrite-5) > 1e-9 || math.Abs(rep.Compactions[1].RewriteUSD-5) > 1e-9 {
 		t.Errorf("write $%.4f, rewrite $%.4f, want $5", f.USDWrite, rep.Compactions[1].RewriteUSD)
 	}
-	// its text, too, counts once
+	// a message's text block counts once when the message is logged twice
 	ev, err := readCompactFile(filepath.Join(root, "projects", "-r", "four.jsonl"))
 	if err != nil {
 		t.Fatal(err)

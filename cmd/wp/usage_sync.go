@@ -19,10 +19,6 @@ import (
 	"time"
 )
 
-// `wp usage sync` (WP-D20): reads Claude Code's transcripts, counts what
-// the sessions used, and uploads compact hour-bucketed records to the
-// server. The model is never involved and nothing is asked of it.
-
 // usageSyncOptions says what to sync. The runner (WP-D17) calls usageSync
 // with these too.
 type usageSyncOptions struct {
@@ -120,7 +116,7 @@ type usageState struct {
 func loadUsageState(dir string) usageState {
 	var s usageState
 	if err := readJSON(filepath.Join(dir, usageStateFile), &s); err != nil {
-		return usageState{Files: map[string]*usageFileState{}} // scratch data: start over
+		return usageState{Files: map[string]*usageFileState{}} // state is a cache: an unreadable file starts over, which is safe because the server counts re-sent ranges once
 	}
 	if s.Files == nil {
 		s.Files = map[string]*usageFileState{}
@@ -181,8 +177,7 @@ func discoverTranscripts(root string, since time.Duration, only []string) ([]usa
 		cut = time.Now().Add(-since)
 	}
 	add := func(f usageFile) {
-		// Lstat: a link named x.jsonl is not a transcript, whatever it points at
-		// (a link in a directory above the file is fine; the path is followed to there)
+		// a symlink named as a transcript is skipped, since what is read from it is sent to the server
 		if fi, err := os.Lstat(f.Path); err == nil && fi.Mode().IsRegular() && (cut.IsZero() || fi.ModTime().After(cut)) {
 			files = append(files, f)
 		}
@@ -211,7 +206,6 @@ func discoverTranscripts(root string, since time.Duration, only []string) ([]usa
 	for _, p := range mains {
 		addSession(p)
 	}
-	// sessions whose main file is gone still have subagent files
 	known := map[string]bool{}
 	for _, f := range files {
 		known[f.Path] = true
@@ -239,7 +233,7 @@ func outdatedTranscripts(root string, st *usageState, have []usageFile) []usageF
 	old := map[string]bool{}
 	for p, s := range st.Files {
 		if s != nil && s.outdated() && strings.HasPrefix(p, under) {
-			if fi, err := os.Lstat(p); err == nil && fi.Mode().IsRegular() { // so deleted ones don't cost a walk per hook
+			if fi, err := os.Lstat(p); err == nil && fi.Mode().IsRegular() { // a deleted file is left out so it does not force a full transcript walk on every hook
 				old[p] = true
 			}
 		}
@@ -279,11 +273,11 @@ func subagentFiles(dir string) []string {
 // subagentType reads agent-<id>.meta.json beside a subagent transcript.
 func subagentType(path string) string {
 	meta := strings.TrimSuffix(path, ".jsonl") + ".meta.json"
-	fh, err := openRegularTranscript(meta) // not a symlink: this text is uploaded
+	fh, err := openRegularTranscript(meta) // the agent type is sent to the server, so a symlinked meta file is refused
 	if err != nil {
 		return "subagent"
 	}
-	defer func() { _ = fh.Close() }() // read only
+	defer func() { _ = fh.Close() }()
 	b, err := io.ReadAll(io.LimitReader(fh, 1<<16))
 	if err != nil {
 		return "subagent"
@@ -318,7 +312,7 @@ func tryLock(path string, stale time.Duration) (unlock func(), ok bool) {
 		if serr != nil || time.Since(fi.ModTime()) <= stale {
 			return nil, false
 		}
-		_ = os.Remove(path) // a crashed sync's lock
+		_ = os.Remove(path)
 	}
 	return nil, false
 }
@@ -365,7 +359,7 @@ func usageSync(c *cli, o usageSyncOptions) (*usageSyncResult, error) {
 		if !ok {
 			return nil, errUsageBusy
 		}
-		release = sync.OnceFunc(unlock) // one release: early, before the archive pass, or on return
+		release = sync.OnceFunc(unlock)
 		defer release()
 	}
 	var files []usageFile
@@ -380,7 +374,7 @@ func usageSync(c *cli, o usageSyncOptions) (*usageSyncResult, error) {
 		files = append(files, outdatedTranscripts(root, &st, files)...)
 	}
 	res.Files = len(files)
-	if o.DryRun { // look at the state, never change it
+	if o.DryRun {
 		cp := usageState{Files: map[string]*usageFileState{}, InventoryAt: st.InventoryAt, InventorySum: st.InventorySum}
 		for k, v := range st.Files {
 			cv := *v
@@ -411,7 +405,6 @@ func usageSync(c *cli, o usageSyncOptions) (*usageSyncResult, error) {
 			defer wg.Done()
 			for f := range jobs {
 				prev := prevs[f.Path]
-				// a file that hasn't grown needs no reading
 				if fi, err := os.Stat(f.Path); err == nil && prev.FP != "" && prev.Off == fi.Size() && prev.Size == fi.Size() && !prev.outdated() {
 					results <- &usageParsed{File: f, State: prev, From: prev.Off, To: prev.Off}
 					continue
@@ -436,7 +429,7 @@ func usageSync(c *cli, o usageSyncOptions) (*usageSyncResult, error) {
 
 	var pending []*usageParsed
 	pendingRows := 0
-	var health usageStats // parser health since the last upload
+	var health usageStats
 	sessions := map[string]bool{}
 	var flushErr error
 	flush := func(inv *[]usageInventoryItem, final bool) {
@@ -466,10 +459,7 @@ func usageSync(c *cli, o usageSyncOptions) (*usageSyncResult, error) {
 			}
 			ctx, cancel := o.ctx(), context.CancelFunc(func() {})
 			if o.Hook {
-				// part of the hook pass's bound (usageHookUploadTimeout, within
-				// usageHookUploadBudget); a
-				// timed-out upload is a failed one: the state below is not
-				// saved, so the next pass offers these hours again
+				// A failed upload leaves the state unsaved, so the next pass offers these hours again.
 				left := usageHookUploadBudget - time.Since(started)
 				if left <= 0 {
 					flushErr = fmt.Errorf("the hook's %v budget for the hour counts' upload is spent; the rest goes next time", usageHookUploadBudget)
@@ -550,7 +540,6 @@ func usageSync(c *cli, o usageSyncOptions) (*usageSyncResult, error) {
 		res.SharedIDs = shared.n
 	}
 
-	// what is configured on this machine
 	var inv *[]usageInventoryItem
 	if o.Inventory {
 		cwds := map[string]bool{}
@@ -574,10 +563,9 @@ func usageSync(c *cli, o usageSyncOptions) (*usageSyncResult, error) {
 	}
 	flush(inv, true)
 	if flushErr != nil && inv != nil {
-		// the inventory didn't land, so offer it again next time
 		st.InventorySum, st.InventoryAt = "", 0
 	}
-	release() // the archive has its own lock: a long backfill must not hold up the next hook's counts
+	release() // release before the archive pass: it has its own lock, and a long backfill must not hold up the next hook's counts
 	if !o.NoArchive && archiveEnabled() {
 		ar, aerr := usageArchive(c, o, root, started)
 		res.Archive = ar
@@ -632,7 +620,7 @@ func cloneFileState(s usageFileState) usageFileState {
 func chunkID(machine string, p *usageParsed) string {
 	key := fmt.Sprintf("%s|%s|%s|%d-%d", machine, p.File.Path, p.State.FP, p.From, p.To)
 	if p.LedgerOnly {
-		key += "|ledger" // the same range was sent before, without these rows
+		key += "|ledger" // without this suffix the server would count these rows as a duplicate of the earlier range
 	}
 	if p.RiskyOnly {
 		key += "|risky"
@@ -641,7 +629,7 @@ func chunkID(machine string, p *usageParsed) string {
 		key += "|cli"
 	}
 	if p.TraceOnly {
-		key += fmt.Sprintf("|trace%d", usageTraceVersion) // each version's reading is sent
+		key += fmt.Sprintf("|trace%d", usageTraceVersion) // a new trace version must send the range under a new id, or the server drops it as a duplicate
 	}
 	sum := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(sum[:12])

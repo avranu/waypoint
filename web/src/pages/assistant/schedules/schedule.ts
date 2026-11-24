@@ -1,9 +1,4 @@
-// Hermes schedules, read the way Hermes reads them (cron/jobs.py
-// parse_schedule), so the editor can say what a schedule means and when it
-// will next run before it is saved. Times in a schedule are wall-clock times
-// in Hermes's own timezone, which need not be the browser's.
-
-// ---- Hermes's timezone ----
+// Schedule times are wall-clock in Hermes's own timezone, which need not be the browser's; parsing mirrors Hermes's parse_schedule.
 
 /** Hermes's timezone: an IANA name from its config, else a fixed offset (minutes east of UTC) read off a job's timestamps, else the browser's. */
 export interface Zone {
@@ -13,11 +8,11 @@ export interface Zone {
 
 interface Wall {
   y: number
-  mo: number // 1-12
+  mo: number
   d: number
   h: number
   mi: number
-  dow: number // 0 = Sunday
+  dow: number
 }
 
 const WEEKDAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
@@ -70,7 +65,7 @@ function fromWall(y: number, mo: number, d: number, h: number, mi: number, z: Zo
   if (z.offset !== undefined && !z.iana)
     return new Date(Date.UTC(y, mo - 1, d, h, mi) - z.offset * 60_000)
   if (!z.iana) return new Date(y, mo - 1, d, h, mi)
-  // Guess as UTC, see how far the zone's clock is off, correct; twice covers DST edges.
+  // One correction can land on the wrong side of a DST edge; the second pass settles it.
   const want = Date.UTC(y, mo - 1, d, h, mi)
   let t = want
   for (let i = 0; i < 2; i++) {
@@ -98,9 +93,7 @@ export function hermesZone(
     try {
       new Intl.DateTimeFormat('en-US', { timeZone: configTz })
       return { iana: configTz }
-    } catch {
-      /* not a zone the browser knows */
-    }
+    } catch {}
   }
   for (const s of stamps) {
     const m = s && /([+-])(\d{2}):?(\d{2})$/.exec(s)
@@ -149,8 +142,6 @@ export function wallLabel(at: Date, z: Zone, withDay = true): string {
     minute: '2-digit',
   })
 }
-
-// ---- parsing (a port of parse_schedule) ----
 
 export type Parsed =
   | { kind: 'interval'; minutes: number }
@@ -285,8 +276,6 @@ export function parseSchedule(input: string, z: Zone, now = new Date()): Parsed 
   return { kind: 'error', error: `Hermes can't read “${s}”` }
 }
 
-// ---- cron expressions ----
-
 const MONTH_NAMES = [
   'jan',
   'feb',
@@ -371,7 +360,7 @@ export function cronNext(expr: string, z: Zone, from = new Date(), n = 3): Date[
   const start = wall(from, z)
   const hours = [...c.hour.values].sort((a, b) => a - b)
   const minutes = [...c.minute.values].sort((a, b) => a - b)
-  // Walk the days of the next five years (a 29 February needs a while); stop at n.
+  // The search stops five years out, so a 29 February eight years away (2096 to 2104) can return fewer than n.
   const day = new Date(Date.UTC(start.y, start.mo - 1, start.d))
   for (let i = 0; i < 366 * 5 && out.length < n; i++, day.setUTCDate(day.getUTCDate() + 1)) {
     const y = day.getUTCFullYear()
@@ -394,8 +383,6 @@ export function cronNext(expr: string, z: Zone, from = new Date(), n = 3): Date[
   }
   return out
 }
-
-// ---- in words ----
 
 const DAY_LONG = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 /** Monday first, as a week reads. */
@@ -485,18 +472,16 @@ export function upcoming(p: Parsed, z: Zone, now = new Date(), n = 3): Date[] {
   }
 }
 
-// ---- the editor's builder ----
-
 export type Mode = 'interval' | 'daily' | 'weekdays' | 'weekly' | 'monthly' | 'once' | 'custom'
 
 export interface Builder {
   mode: Mode
   every: number
   unit: 'm' | 'h' | 'd'
-  time: string // HH:MM
-  days: number[] // 0 = Sunday
+  time: string
+  days: number[]
   dom: number
-  at: string // YYYY-MM-DDTHH:MM, Hermes's clock
+  at: string
   raw: string
 }
 
@@ -577,7 +562,6 @@ export function builderFrom(s: StoredSchedule | undefined, display: string, z: Z
       }
     if (t && /^\d+$/.test(p[2]) && p[4] === '*')
       return { ...b, mode: 'monthly', time: t, dom: +p[2] }
-    // A phrase ("weekdays at 9am") stays as it was written.
     return { ...b, mode: 'custom', raw: s.display && s.display !== s.expr ? s.display : s.expr }
   }
   return { ...b, mode: 'custom', raw: s.display || display }

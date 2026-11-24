@@ -16,10 +16,10 @@ var (
 
 // pyLine is one physical line after string/comment masking.
 type pyLine struct {
-	code     string // strings and comments blanked out
-	startsIn bool   // began inside a triple-quoted string or open bracket
-	depth0   int    // bracket depth at the start of the line
-	blank    bool   // nothing but whitespace/comment (outside a string)
+	code     string
+	startsIn bool
+	depth0   int
+	blank    bool
 	indent   int
 }
 
@@ -28,7 +28,7 @@ type pyLine struct {
 // that continues in brackets doesn't end a block early.
 func pyMask(lines []string) []pyLine {
 	out := make([]pyLine, len(lines))
-	var triple string // the open triple-quote delimiter, "" when outside
+	var triple string
 	depth := 0
 	for i, l := range lines {
 		pl := pyLine{depth0: depth, startsIn: triple != "" || depth > 0}
@@ -101,7 +101,7 @@ func scanPython(src []byte) Parsed {
 	var out Parsed
 	type open struct {
 		indent int
-		idx    int // index into out.Symbols
+		idx    int
 	}
 	var stack []open
 	closeTo := func(last, indent int) {
@@ -110,8 +110,6 @@ func scanPython(src []byte) Parsed {
 			stack = stack[:len(stack)-1]
 		}
 	}
-	// mk builds a def/class symbol for the statement on lines i..stmtEnd:
-	// decorators above it extend its start, a docstring below gives its doc.
 	mk := func(name, kind string, i, stmtEnd int) Symbol {
 		s := Symbol{Name: name, Kind: kind, Start: i + 1, Decl: i + 1, Exported: !strings.HasPrefix(name, "_")}
 		for j := i - 1; j >= 0 && !ml[j].blank && strings.HasPrefix(strings.TrimSpace(lines[j]), "@") && ml[j].indent == ml[i].indent; j-- {
@@ -140,7 +138,7 @@ func scanPython(src []byte) Parsed {
 		}
 		return s
 	}
-	lastCode := 0 // last line (1-based) that held code or string content
+	lastCode := 0
 	for i := 0; i < len(lines); i++ {
 		m := ml[i]
 		if m.startsIn || m.blank {
@@ -149,11 +147,9 @@ func scanPython(src []byte) Parsed {
 			}
 			continue
 		}
-		// A real statement starts here: blocks at or below its indent end at
-		// the last code line before it.
 		closeTo(lastCode, m.indent)
 		lastCode = i + 1
-		endStmt := i // statements may continue across lines in brackets or strings
+		endStmt := i
 		for endStmt+1 < len(lines) && ml[endStmt+1].startsIn {
 			endStmt++
 			lastCode = endStmt + 1

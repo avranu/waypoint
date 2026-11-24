@@ -1,9 +1,6 @@
 package core
 
-// Organisation webhooks. One webhook on a forge organisation (a GitLab
-// group) brings every repo in it to Waypoint, including repos nobody has
-// linked yet, which is what automatic projects need. Repos it covers get no
-// repo webhook of their own, so nothing arrives twice.
+// Repos covered by an organisation webhook get no repo webhook of their own, so no delivery arrives twice.
 
 import (
 	"context"
@@ -174,7 +171,7 @@ func (s *Service) installOrgHook(ctx context.Context, id int64) {
 	var forgeID int64
 	var org string
 	if err := s.db.R.QueryRowContext(ctx, `SELECT forge_id, org FROM forge_org_hooks WHERE id = ?`, id).Scan(&forgeID, &org); err != nil {
-		return // removed meanwhile
+		return
 	}
 	f, err := s.forgeByID(ctx, forgeID)
 	if err != nil {

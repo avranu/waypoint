@@ -74,7 +74,7 @@ func (h *Helper) serveConn(c net.Conn) {
 		writeResponse(c, sandbox.Response{Error: err.Error()})
 		return
 	}
-	// A session lasts as long as it lasts; the runner hanging up ends it.
+	// Clear the deadline: a session runs until the runner hangs up.
 	_ = c.SetDeadline(time.Time{})
 	hangup := make(chan struct{})
 	go func() {
@@ -140,7 +140,7 @@ func (r *fdReader) keep(oob []byte) {
 		}
 		for _, fd := range fds {
 			f := os.NewFile(uintptr(fd), "passed") // #nosec G115 -- a descriptor the kernel gave us
-			if r.closed {                          // after the request: not ours to keep
+			if r.closed {
 				_ = f.Close()
 				continue
 			}

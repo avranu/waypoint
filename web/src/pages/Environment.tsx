@@ -1,6 +1,3 @@
-// One environment (WP-D19): what it runs, its last 48 hours, uptime by day,
-// deployments and settings.
-
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -337,8 +334,6 @@ function WarningBar({ env }: { env: EnvironmentDetail }) {
   )
 }
 
-// ---- charts ----
-
 const okColor = 'var(--wp-ok)'
 const warnColor = 'var(--wp-warn)'
 const badColor = 'var(--wp-danger)'
@@ -473,8 +468,6 @@ function DayStrip({ days }: { days: UptimeDay[] }) {
   )
 }
 
-// ---- deployments ----
-
 const DEPLOY: Record<Deployment['status'], { label: string; color: string; icon: ReactNode }> = {
   started: {
     label: 'Deploying',
@@ -543,8 +536,6 @@ function DeploymentRow({ d }: { d: Deployment }) {
   )
 }
 
-// ---- settings ----
-
 function SettingsForm({ env, canEdit }: { env: EnvironmentDetail; canEdit: boolean }) {
   const navigate = useNavigate()
   const update = useUpdateEnv(env.id)
@@ -591,8 +582,7 @@ function SettingsForm({ env, canEdit }: { env: EnvironmentDetail; canEdit: boole
       branch_field: f.branch_field.trim(),
       version_field: f.version_field.trim(),
       ephemeral: f.ephemeral,
-      // Left alone, it follows a change of kind (production and staging
-      // start at 45 minutes).
+      // An unchanged lag limit is left out of the request, so the server moves it with a change of kind.
       lag_alert_m: f.lag_alert_m === env.lag_alert_m ? undefined : f.lag_alert_m,
     }
     update.mutate(body, {

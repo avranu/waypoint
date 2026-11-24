@@ -11,10 +11,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// The checks of wp usage suggest (WP-193): plain rules over what this
-// repository's sessions did, each with its evidence and what to change. No
-// model is involved.
-
 // sugAdvice is one suggestion.
 type sugAdvice struct {
 	ID       string   `json:"id"`
@@ -50,16 +46,16 @@ func (in *sugInput) mains() []*sugSession {
 }
 
 const (
-	sugDocTokens      = 2_500 // one instruction file worth a look
+	sugDocTokens      = 2_500
 	sugDocTotal       = 5_000
-	sugDocWarn        = 10_000 // Claude Code itself warns at about 40k characters
-	sugMinSessions    = 3      // a habit, not a one-off
+	sugDocWarn        = 10_000 // Claude Code itself warns at about 40k characters, which is 10k tokens at 4 bytes per token
+	sugMinSessions    = 3
 	sugCommentShare   = 0.25
 	sugCommentTokens  = 400
 	sugCommentReads   = 3
 	sugReadShare      = 0.3
-	sugReadRun        = 12     // calls in a row that only read or search
-	sugReadRunBytes   = 60_000 // and what they brought into the context
+	sugReadRun        = 12
+	sugReadRunBytes   = 60_000
 	sugNoWPMessages   = 20
 	sugPremiumSearchN = 3
 	sugCompactions    = 3
@@ -80,8 +76,6 @@ func runSuggestChecks(in *sugInput) []sugAdvice {
 }
 
 func tokOf(bytes int64) int64 { return bytes / approxTokenOf }
-
-// ---- instruction files ----
 
 func adviceDocs(in *sugInput) *sugAdvice {
 	var total int64
@@ -135,8 +129,6 @@ func adviceDocs(in *sugInput) *sugAdvice {
 		Action: "Keep in them what every session needs (how to build, test and ship; rules that are easy to break) and move the rest to docs an agent opens when a task needs them, behind a one-line pointer. Keep MEMORY.md to one short line per memory, with the detail in the memory's own file."}
 }
 
-// ---- context growth ----
-
 func adviceContext(in *sugInput) *sugAdvice {
 	var over []*sugSession
 	var overMsgs, overTok, last int64
@@ -187,8 +179,6 @@ func adviceContext(in *sugInput) *sugAdvice {
 }
 
 func shortID(id string) string { return id[:min(8, len(id))] }
-
-// ---- repeated lookups ----
 
 var notHelpH = map[string]bool{"df": true, "du": true, "ls": true, "free": true, "sort": true, "grep": true, "rg": true, "head": true,
 	"tail": true, "numfmt": true, "ssh": true, "nl": true, "fold": true, "zgrep": true, "egrep": true, "fgrep": true}
@@ -488,8 +478,6 @@ func adviceRereads(in *sugInput) *sugAdvice {
 		Action: "If sessions read these to find their way around, put the few facts they need in the instruction file and point to the rest; if they read them to change them, a smaller file (or one split by concern) costs less to read each time."}
 }
 
-// ---- comments ----
-
 func adviceComments(in *sugInput) *sugAdvice {
 	if len(in.Sources) == 0 {
 		return nil
@@ -544,8 +532,6 @@ func adviceComments(in *sugInput) *sugAdvice {
 	return &sugAdvice{ID: "comments", Level: "info", Title: "Long comments in files agents read often", Evidence: ev,
 		Action: "Comments are read with the code every time an agent opens the file. Keep the why in a line or two; move history, alternatives and long explanations to the decision record or doc and cite it."}
 }
-
-// ---- Waypoint's own tools ----
 
 var forgeAPIRE = lazyre.New(`/api/v1/repos/|api\.github\.com|/api/v4/projects/|/api/v1/user\b`)
 
@@ -608,8 +594,6 @@ func adviceWaypointTools(in *sugInput) *sugAdvice {
 		Action: "Raw API calls and polling loops return whole JSON documents or burn turns waiting. wp's commands answer in a few lines, and wp ship / wp pr wait wake the agent only when it matters. Install the agent kit (wp kit sync) so sessions start with its syntax."}
 }
 
-// ---- MCP servers and skills ----
-
 func adviceMCP(in *sugInput) *sugAdvice {
 	mains := in.mains()
 	if len(mains) < 5 {
@@ -627,7 +611,7 @@ func adviceMCP(in *sugInput) *sugAdvice {
 		for _, call := range s.Calls {
 			if call.Tool == "Skill" {
 				usedSkill[call.Skill] = true
-				if _, short, ok := strings.Cut(call.Skill, ":"); ok { // plugin:skill
+				if _, short, ok := strings.Cut(call.Skill, ":"); ok {
 					usedSkill[short] = true
 				}
 			}
@@ -729,8 +713,6 @@ func median(v []int64) int64 {
 	return c[len(c)/2]
 }
 
-// ---- which agent does the work ----
-
 func premiumModel(m string) bool { return premiumFamily(m) != "" }
 
 // premiumFamily names the premium family of model m ("Opus", "Fable",
@@ -774,7 +756,6 @@ func readOnlyCall(c sugCall) bool {
 
 func adviceAgents(in *sugInput) *sugAdvice {
 	var ev []string
-	// search subagents on a premium model
 	var n int
 	var t sugTokens
 	kinds, models := map[string]bool{}, map[string]bool{}
@@ -793,7 +774,6 @@ func adviceAgents(in *sugInput) *sugAdvice {
 		ev = append(ev, fmt.Sprintf("%s of search-only subagents (%s) ran on %s: %s tokens in, %s out, %s written to and %s read from the cache.",
 			plural1(n, "run"), joinSet(kinds), joinSet(models), tok(t.In), tok(t.Out), tok(t.CW), tok(t.CR)))
 	}
-	// long runs of reading in the main thread
 	var runs int
 	var runBytes int64
 	sessions := map[string]bool{}

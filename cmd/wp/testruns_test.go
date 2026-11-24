@@ -97,7 +97,6 @@ func TestTestsumKeepsTheRunAgainstItsTree(t *testing.T) {
 		t.Errorf("run: %+v", r)
 	}
 
-	// A command that fails with nothing to parse is still a failed run.
 	if code := run([]string{"testsum", "--", "sh", "-c", "echo boom; exit 3"}, &out, &errb); code != 1 {
 		t.Errorf("exit %d", code)
 	}
@@ -106,7 +105,6 @@ func TestTestsumKeepsTheRunAgainstItsTree(t *testing.T) {
 		t.Errorf("failed run: %+v", r)
 	}
 
-	// Editing during the run means it can't vouch for either tree.
 	cmd := ok + `; echo changed > a.txt`
 	if code := run([]string{"testsum", "--", "sh", "-c", cmd}, &out, &errb); code != 0 {
 		t.Fatalf("%d", code)
@@ -116,7 +114,6 @@ func TestTestsumKeepsTheRunAgainstItsTree(t *testing.T) {
 		t.Errorf("edited during the run: %+v", r)
 	}
 
-	// Output from stdin or a file isn't kept.
 	n := len(runs)
 	in := filepath.Join(t.TempDir(), "o.json")
 	write(t, in, `{"Action":"pass","Package":"p","Test":"T","Elapsed":0}`+"\n")
@@ -183,13 +180,11 @@ func TestGoTestJSON(t *testing.T) {
 }
 
 func TestTestsumOutcomes(t *testing.T) {
-	// -run that matched nothing: ok in go's words, but no test ran (WP-592).
 	empty := `{"Action":"start","Package":"p"}` + "\n" + `{"Action":"pass","Package":"p","Elapsed":0.1}` + "\n"
 	res, ok := parseGoJSON([]byte(empty))
 	if !ok || !res.NoneRan || res.outcome() != runEmpty || !strings.HasPrefix(res.render(), "NO TESTS RAN") {
 		t.Errorf("empty: %+v %q", res, res.render())
 	}
-	// The compiler's own words, not "[build failed]".
 	broken := `{"ImportPath":"p [p.test]","Action":"build-output","Output":"p/a.go:1:1: undefined: x\n"}
 {"Action":"start","Package":"p"}
 {"Action":"output","Package":"p","Output":"FAIL\tp [build failed]\n"}
@@ -199,7 +194,6 @@ func TestTestsumOutcomes(t *testing.T) {
 	if !ok || res.outcome() != runFail || !strings.Contains(res.render(), "undefined: x") {
 		t.Errorf("build: %+v %q", res, res.render())
 	}
-	// Plain go test: cached packages count, none claim a number of tests.
 	text := parseGoText([]byte("ok  \ta\t(cached)\nok  \tb\t1.0s [no tests to run]\n"), &testResult{UnitName: "packages"})
 	if text.Units != 2 || text.NoneRan || text.outcome() != runPass {
 		t.Errorf("text: %+v", text)
@@ -238,7 +232,7 @@ func TestRunsToSendKeepsFailures(t *testing.T) {
 	for i := range testRunsSend + 1 {
 		on = append(on, testRun{At: int64(i), Command: fmt.Sprint("c", i), Outcome: runPass})
 	}
-	on[testRunsSend].Outcome = runFail // the oldest
+	on[testRunsSend].Outcome = runFail
 	got := runsToSend(on)
 	if len(got) != testRunsSend || got[0].Outcome != runFail || got[1].At != 0 {
 		t.Errorf("sent: %+v", got)
@@ -332,7 +326,6 @@ func TestSendTestEvidenceReachesTheServer(t *testing.T) {
 		appendTestRun(r)
 	}
 
-	// The nearest run, a file away.
 	keep(gitDo(t, "rev-parse", "HEAD^{tree}"), false)
 	write(t, "a.txt", "two\n")
 	gitDo(t, "add", "-A")
@@ -341,7 +334,6 @@ func TestSendTestEvidenceReachesTheServer(t *testing.T) {
 		t.Errorf("near: %+v", ev)
 	}
 
-	// The nearest run, on a tree that changed under it.
 	tree := gitDo(t, "rev-parse", "HEAD^{tree}")
 	keep(tree, true)
 	if ev := send(); ev.Outcome != core.EvidenceNone || !strings.Contains(ev.Line, "while its files were changing") {
@@ -356,7 +348,6 @@ func TestSendTestEvidenceReachesTheServer(t *testing.T) {
 	appendTestRun(full)
 	send()
 
-	// A run on the shipped tree, kept against the commit and the task.
 	keep(tree, false)
 	if ev := send(); ev.Outcome != core.EvidencePass || !strings.Contains(ev.Line, "3 passed") {
 		t.Errorf("on tree: %+v", ev)
@@ -369,25 +360,19 @@ func TestSendTestEvidenceReachesTheServer(t *testing.T) {
 		t.Errorf("kept: %+v", d.Tested)
 	}
 
-	// A "faster" with nothing timed on the tree gets the command that would
-	// time it; the server has nothing to say about it.
 	ev := c.sendTestEvidence(p.Key, "acme/app", issue.Key, "Search is 20% faster.")
 	if ev == nil || len(ev.Notices) != 1 || !strings.Contains(ev.Notices[0], "wp bench --base origin/main") {
 		t.Fatalf("nudge: %+v %s", ev, errb.String())
 	}
 
-	// Every bench field reaches the server, and a timing against a base that
-	// found no change contradicts the "faster".
 	full2 := benchRecord{}
 	fillEveryField(t, reflect.ValueOf(&full2).Elem())
-	full2.Tree, full2.Runs, full2.Moved = tree, 5, false // a moved timing is never sent
+	full2.Tree, full2.Runs, full2.Moved = tree, 5, false
 	appendBenchRecord(benchPath(), full2)
 	ev = c.sendTestEvidence(p.Key, "acme/app", issue.Key, "Search is now 20% faster.")
 	if ev == nil || len(ev.BenchLines) != 1 || len(ev.Notices) != 1 || !strings.Contains(ev.Notices[0], "wp bench at") {
 		t.Fatalf("bench: %+v %s", ev, errb.String())
 	}
-	// wp ship says what the records contradict, not the timing the agent
-	// saw itself (WP-1080); the pull request's description has it.
 	if txt := ev.text(); strings.Contains(txt, ev.BenchLines[0]) || !strings.Contains(txt, "Notice: "+ev.Notices[0]) {
 		t.Errorf("text:\n%s", txt)
 	}
@@ -399,7 +384,7 @@ func TestBenchToSendAndNudge(t *testing.T) {
 		{Command: "a", Tree: "other", At: 2},
 		{Command: "a", Tree: "t", At: 3, BaseRef: "main"},
 		{Command: "a", Tree: "t", At: 4, Dir: "sub"},
-		{Command: "a", Tree: "t", At: 5}, // a quick re-time after the comparison
+		{Command: "a", Tree: "t", At: 5},
 	}
 	got := benchToSend(recs, "t")
 	if len(got) != 3 || got[0].At != 5 || got[1].At != 4 || got[2].At != 3 {
@@ -457,7 +442,7 @@ func TestGuessTestCommand(t *testing.T) {
 		{"package.json", `{"scripts": {"test": "vitest"}}`, "npm test"},
 		{"package.json", `{}`, ""},
 		{"package.json", `{"keywords": ["test"]}`, ""},
-		{"package.json", `{"scripts": {"test": "echo \"Error: no test specified\" && exit 1"}}`, ""}, // npm init's stub (audit 1000.5)
+		{"package.json", `{"scripts": {"test": "echo \"Error: no test specified\" && exit 1"}}`, ""}, // npm init's default test script is an error stub, not a test command.
 		{"package.json", `{"jest": {"test": 1}}`, ""},
 		{"makefile", "test:\n\ttrue\n", "make test"},
 		{"GNUmakefile", "test:\n\ttrue\n", "make test"},

@@ -14,10 +14,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/sandbox"
 )
 
-// The ledger (PL7 §5.1, §5.3) is the helper's record of every machine user
-// it made, every uid it retired, the store it pinned, the operations in
-// flight and the spec nonces it has seen. Paths and users come from here,
-// never from a tree a sandbox could write.
+// Paths and users come from the ledger, never from a tree a sandbox could write.
 
 // UIDs come from sandbox.FirstUID..LastUID and are never handed out twice.
 const (

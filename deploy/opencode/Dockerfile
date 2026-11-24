@@ -1,12 +1,4 @@
-# opencode as Waypoint's AI provider: `opencode serve` on the compose network
-# only (no published port). It brings opencode's free models; sign in to
-# more providers with:
-#   docker compose -p waypoint -f deploy/compose.yaml exec opencode opencode auth login
-# Waypoint refuses every tool permission the agent asks for, and the agent's
-# tools could only touch this container anyway.
-# opencode-ai's own dependencies aren't locked, so --before keeps each of them
-# at a version published at least 7 days before the build (WP-844; the pin
-# itself is checked by cmd/dep-age through renovate.json).
+# Waypoint refuses every tool permission the agent asks for; the agent's tools can only reach this container.
 FROM node:24-slim
 ARG OPENCODE_VERSION=1.18.32
 RUN npm install -g --no-audit --no-fund --before="$(date -u -d '-7 days' +%Y-%m-%dT%H:%M:%SZ)" "opencode-ai@${OPENCODE_VERSION}" \

@@ -191,9 +191,7 @@ func TestReviewMarkers(t *testing.T) {
 		{Author: "waypoint-bot", Body: "x <!-- waypoint-review sha=aaaaaaa rule=3 -->"},
 		{Author: "llm-review", Body: "<!-- llm-review:v1 sha=bbbbbbb model=m -->"},
 		{Author: "waypoint-bot", Body: "<!-- waypoint-review sha=ccccccc -->"},
-		// A person who types the marker doesn't skip the review (WP-934).
 		{Author: "eve", Body: "<!-- waypoint-review sha=ddddddd rule=3 --> <!-- llm-review:v1 sha=eeeeeee -->"},
-		// Nor does any app named [bot]: Waypoint's marker needs its accounts.
 		{Author: "rogue[bot]", Body: "<!-- waypoint-review sha=fffffff rule=3 -->"},
 	}
 	ours := posters{logins: []string{"waypoint-bot"}}
@@ -267,19 +265,17 @@ func TestPRHelpers(t *testing.T) {
 type prForge struct {
 	*memForge
 	mu        sync.Mutex
-	prs       map[string]*ForgePR       // forgeID|repo|number
-	diffs     map[string]string         // head sha → diff
-	files     map[string]string         // path → content
-	reviews   map[string][]ForgeComment // forgeID|repo|number → reviews posted
+	prs       map[string]*ForgePR
+	diffs     map[string]string
+	files     map[string]string
+	reviews   map[string][]ForgeComment
 	lines     [][]LineComment
-	reactions []string   // "+eyes" / "-eyes" on "pr" or a comment id
-	refuse    bool       // refuse line comments once
-	tokens    []string   // tokens reviews were posted with
-	listed    []*ForgePR // what ListPRs returns
-	listErr   error      // ListPRs fails with it
-	// ownLogin is the forge token's account when set (TokenLogin); else
-	// every token is the bot account's.
-	ownLogin string
+	reactions []string
+	refuse    bool
+	tokens    []string
+	listed    []*ForgePR
+	listErr   error
+	ownLogin  string
 }
 
 func newPRForge() *prForge {
@@ -391,14 +387,14 @@ func (p *prForge) reviewsOn(f *Forge, repo string, n int) []string {
 // scriptLLM answers with each model's scripted reply, or fails as told.
 type scriptLLM struct {
 	mu      sync.Mutex
-	answers map[string]string // model → JSON answer, or "!429", "!timeout"
+	answers map[string]string
 	calls   []string
 	prompts []string
-	asks    []gatewayAsk   // what each call carried for the gateway (WP-514), zero when nothing
-	exclude [][]string     // the models each call asked the gateway to leave out (WP-365)
-	windows map[string]int // model → context_length Models reports
+	asks    []gatewayAsk
+	exclude [][]string
+	windows map[string]int
 	reports []feedbackReport
-	report  error // what Feedback answers
+	report  error
 }
 
 func (l *scriptLLM) Feedback(ctx context.Context, p *AIProvider, r feedbackReport) error {
@@ -466,12 +462,10 @@ func newPREnv(t *testing.T, kind string) *prEnv {
 	// Arms draw their posterior mean: untried arms tie, and the first wins
 	// (diff+files, verified when a verifier is set up).
 	e.s.beta = func(a, b float64) float64 { return a / (a + b) }
-	// No reviewer starts out trusted, so a review still asks its verifier.
 	e.s.trustSeeds = []string{}
 	if err := e.s.EnsureDefaultAI(e.ctx, "http://opencode:4096", "", "opencode/big-pickle"); err != nil {
 		t.Fatal(err)
 	}
-	// Reviews post unverified here; review_pipeline_test.go turns it on.
 	if err := e.s.SetAITask(e.ctx, e.admin, "verify_review", 0, "", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -491,7 +485,7 @@ func newPREnv(t *testing.T, kind string) *prEnv {
 func (pe *prEnv) pullHook(action string, pr ForgePR) {
 	pe.t.Helper()
 	pe.fg.setPR(pe.f, "me/app", pr, sampleDiff)
-	headRepo := cmp(pr.HeadRepo, "me/app") // forges name it; a fork's differs
+	headRepo := cmp(pr.HeadRepo, "me/app")
 	payload := map[string]any{
 		"action": action,
 		"pull_request": map[string]any{
@@ -547,7 +541,6 @@ func TestReviewPullRequests(t *testing.T) {
 		t.Fatalf("runs = %+v", done)
 	}
 	run := done[0]
-	// Muse Spark first (the newest of the family), then the next on a rate limit.
 	if len(run.Log) != 2 || run.Log[0].Model != "opencode/muse-spark-1.3-contributor-free" || run.Log[0].Outcome != "rate_limit" || run.Log[1].Outcome != "ok" {
 		t.Errorf("log = %+v", run.Log)
 	}
@@ -564,25 +557,20 @@ func TestReviewPullRequests(t *testing.T) {
 	if len(run.Findings) != 1 || run.Findings[0].Placement != "inline" || run.ReviewURL == "" {
 		t.Errorf("run = %+v", run)
 	}
-	// The prompt carries the numbered diff and treats the PR as data.
 	if p := pe.llm.prompts[0]; !strings.Contains(p, "+ 11| \tif user != nil {") || strings.Contains(p, "a v2") {
 		t.Errorf("prompt:\n%s", p)
 	}
 
-	// A repeat delivery or an edit is not a new head: nothing queued.
 	pe.pullHook("edited", pr)
 	if len(pe.drain()) != 0 {
 		t.Error("an edit queued a review")
 	}
-	// A push: reviewed again, and the same finding isn't posted twice.
 	pr.HeadSHA = "2222222bbbb"
 	pe.pullHook("synchronize", pr)
 	done = pe.drain()
 	if len(done) != 1 || done[0].Status != "done" || !strings.Contains(done[0].Summary, "1 already raised") {
 		t.Fatalf("second review: %+v", done)
 	}
-	// No issues found: 👍 on the pull request and the run's record, no
-	// review with nothing in it to read (WP-234).
 	if r := pe.fg.reviewsOn(pe.f, "me/app", 5); len(r) != 1 {
 		t.Errorf("a review with nothing to say was posted: %q", r)
 	}
@@ -592,8 +580,6 @@ func TestReviewPullRequests(t *testing.T) {
 	if done[0].ReviewURL != "" || !strings.HasPrefix(done[0].Summary, "No issues found") {
 		t.Errorf("signed-off run = %+v", done[0])
 	}
-	// That head counts as reviewed though nothing is on the forge: asking
-	// for a review is answered "already reviewed".
 	if err := pe.hook(pe.f, "issue_comment", map[string]any{"action": "created",
 		"issue":      map[string]any{"number": 5, "pull_request": map[string]any{}},
 		"comment":    map[string]any{"id": 77, "body": "@waypoint review", "user": map[string]string{"login": "sam"}},
@@ -604,7 +590,6 @@ func TestReviewPullRequests(t *testing.T) {
 		t.Fatalf("review at a signed-off head: %+v", again)
 	}
 
-	// Drafts wait until they're ready.
 	draft := ForgePR{Number: 6, Title: "WIP", Author: "sam", HeadRef: "wip", HeadSHA: "3333333cccc", State: "draft"}
 	pe.pullHook("opened", draft)
 	if len(pe.drain()) != 0 {
@@ -615,12 +600,10 @@ func TestReviewPullRequests(t *testing.T) {
 	if done := pe.drain(); len(done) != 1 || done[0].Reason != "ready" {
 		t.Errorf("ready: %+v", done)
 	}
-	// Bots' pull requests are left alone.
 	pe.pullHook("opened", ForgePR{Number: 7, Title: "Bump x", Author: "renovate[bot]", HeadRef: "renovate/x", HeadSHA: "4444444dddd", State: "open"})
 	if len(pe.drain()) != 0 {
 		t.Error("a bot's pull request was reviewed")
 	}
-	// Bots off for the repo: nothing.
 	off := false
 	if err := pe.s.UpdateProjectRepo(pe.ctx, pe.admin, pe.p.Key, pe.repo.ID, nil, nil, &off); err != nil {
 		t.Fatal(err)
@@ -645,7 +628,6 @@ func TestPushSeenFirstByReread(t *testing.T) {
 	if err != nil || rec == nil {
 		t.Fatal(rec, err)
 	}
-	// Armed, as PR #56 and #58 were.
 	if _, err := pe.s.db.W.ExecContext(pe.ctx, `UPDATE pull_requests SET armed_at = ? WHERE id = ?`, pe.s.nowMS(), rec.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -655,14 +637,12 @@ func TestPushSeenFirstByReread(t *testing.T) {
 		t.Fatal(err)
 	}
 	pe.s.bg.Wait()
-	// The push webhook comes after: the head is known, nothing new.
 	pe.pullHook("synchronize", pr)
 	pe.s.bg.Wait()
 	done := pe.drain()
 	if len(done) != 1 || done[0].HeadSHA != "2222222bbbb" || done[0].Reason != "pushed" {
 		t.Fatalf("runs after the push = %+v", done)
 	}
-	// A re-read at the same head is no push.
 	if _, err := pe.s.CheckPullRequest(pe.ctx, pe.admin, rec.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -670,9 +650,6 @@ func TestPushSeenFirstByReread(t *testing.T) {
 	if again := pe.drain(); len(again) != 0 {
 		t.Errorf("a re-read at the same head queued %+v", again)
 	}
-	// A read that started before the push and lands after its webhook
-	// brings the old head back: not a push, and neither is the next read
-	// finding the new head again.
 	stale := pr
 	stale.HeadSHA = "1111111aaaa"
 	if _, err := pe.s.recordPR(pe.ctx, pe.f, "me/app", &stale, false); err != nil {
@@ -703,7 +680,6 @@ func TestReviewCommandsAndRetries(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Asking again at a reviewed head: the marker says it's done.
 	comment(1, "@waypoint review please")
 	done := pe.drain()
 	if len(done) != 1 || done[0].Status != "skipped" || !strings.Contains(done[0].Summary, "already reviewed") {
@@ -712,7 +688,6 @@ func TestReviewCommandsAndRetries(t *testing.T) {
 	if posted := pe.fg.postedTo(pe.f); len(posted) != 1 || !strings.Contains(posted[0], "full review") {
 		t.Errorf("a skipped request should say why: %v", posted)
 	}
-	// A full review reviews again, and marks the comment that asked.
 	pe.fg.reactions = nil
 	comment(2, "Thanks!\n@waypoint full review")
 	done = pe.drain()
@@ -722,7 +697,6 @@ func TestReviewCommandsAndRetries(t *testing.T) {
 	if got := strings.Join(pe.fg.reactions, " "); !strings.Contains(got, "+eyes@2") || !strings.Contains(got, "-eyes@2") || !strings.Contains(got, "++1@2") {
 		t.Errorf("comment reactions = %s", got)
 	}
-	// Paused: pushes aren't reviewed; resumed: they are.
 	comment(3, "@waypoint pause")
 	pr.HeadSHA = "bbbbbbb2222"
 	pe.pullHook("synchronize", pr)
@@ -735,14 +709,11 @@ func TestReviewCommandsAndRetries(t *testing.T) {
 	if len(pe.drain()) != 1 {
 		t.Error("not reviewed after resume")
 	}
-	// Help answers with the commands.
 	comment(5, "@waypoint help")
 	if posted := pe.fg.postedTo(pe.f); len(posted) == 0 || !strings.Contains(posted[len(posted)-1], "@waypoint full review") {
 		t.Errorf("help: %v", posted)
 	}
 
-	// Every model failing with provider errors: one pass, then given up
-	// with 😕, not walked again later.
 	for m := range pe.llm.answers {
 		pe.llm.answers[m] = "!timeout"
 	}
@@ -763,7 +734,6 @@ func TestReviewCommandsAndRetries(t *testing.T) {
 	if got := pe.fg.reactions[len(pe.fg.reactions)-1]; got != "+confused@pr" {
 		t.Errorf("last reaction = %s", got)
 	}
-	// Retry queues it again, forced.
 	pe.llm.answers["opencode/muse-spark-1.3-contributor-free"] = `{"findings":[]}`
 	again, err := pe.s.RetryBotRun(pe.ctx, pe.admin, runs[0].ID)
 	if err != nil || again.Status != "queued" {
@@ -773,9 +743,7 @@ func TestReviewCommandsAndRetries(t *testing.T) {
 		t.Errorf("retried: %+v", done)
 	}
 
-	// Agents (WP-217): the head's review isn't theirs to cancel (a
-	// cancelled review counts as done), and a run on a pull request from
-	// outside isn't theirs to touch.
+	// Agents can't cancel the head's review, since a cancelled review counts as done.
 	agent := &Actor{User: pe.admin.User, Agent: "anthropic/claude-opus-5-5"}
 	pr.HeadSHA = "eeeeeee5555"
 	pe.pullHook("synchronize", pr)
@@ -786,7 +754,7 @@ func TestReviewCommandsAndRetries(t *testing.T) {
 	if _, err := pe.s.CancelBotRun(pe.ctx, agent, live.ID); err == nil || !strings.Contains(err.Error(), "agents can't cancel the review of a pull request's head") {
 		t.Errorf("an agent cancelled the head's review: %v", err)
 	}
-	// The head is the head however its commit is written.
+	// Head SHAs compare case-insensitively and by prefix, so abbreviations match.
 	if _, err := pe.s.db.W.ExecContext(pe.ctx, `UPDATE bot_runs SET head_sha = 'EEEEEEE' WHERE id = ?`, live.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -802,7 +770,6 @@ func TestReviewCommandsAndRetries(t *testing.T) {
 	if got, err := pe.s.CancelBotRun(pe.ctx, pe.admin, live.ID); err != nil || got.Status != "cancelled" {
 		t.Errorf("a person cancels the head's review: %+v %v", got, err)
 	}
-	// A run that finished after it was read isn't cancelled, nor said to be.
 	cancels := func() (n int) {
 		_ = pe.s.db.R.QueryRowContext(pe.ctx, `SELECT COUNT(*) FROM audit_log WHERE action = 'bot.cancel'`).Scan(&n)
 		return n
@@ -822,7 +789,7 @@ func TestReviewPrivatePaths(t *testing.T) {
 	pe.llm.answers["opencode/muse-spark-1.3-contributor-free"] = `{"findings":[
 		{"file":"deploy/secret.yaml","line":50,"severity":"critical","claim":"Password committed in plain text.","suggestion":""},
 		{"file":"app/login.go","line":99,"severity":"low","claim":"Unused result.","suggestion":""}]}`
-	pe.fg.refuse = true // the forge refuses the line comments once
+	pe.fg.refuse = true
 	pe.pullHook("opened", ForgePR{Number: 3, Title: "x", Author: "sam", HeadRef: "x", HeadSHA: "eeeeeee5555", State: "open"})
 	done := pe.drain()
 	if len(done) != 1 || done[0].Status != "done" {
@@ -835,7 +802,6 @@ func TestReviewPrivatePaths(t *testing.T) {
 	if !strings.Contains(body, "`app/login.go:99`") || !strings.Contains(body, "1 finding on private files left out") {
 		t.Errorf("body:\n%s", body)
 	}
-	// A sync.toml it can't read: nothing is posted.
 	pe.fg.files[".forgejo/sync.toml"] = `private = "deploy/**"`
 	pe.pullHook("opened", ForgePR{Number: 4, Title: "y", Author: "sam", HeadRef: "y", HeadSHA: "fffffff6666", State: "open"})
 	done = pe.drain()
@@ -859,7 +825,7 @@ func TestReviewMirrorPrivate(t *testing.T) {
 		{"file":"deploy/secret.yaml","line":50,"severity":"critical","claim":"Password committed in plain text.","suggestion":""},
 		{"file":"app/login.go","line":99,"severity":"low","claim":"Unused result.","suggestion":""}]}`
 	pe.llm.answers["opencode/muse-spark-1.3-contributor-free"] = findings
-	pe.fg.refuse = true // the forge refuses the line comments once, so findings go in the body
+	pe.fg.refuse = true
 	pe.pullHook("opened", ForgePR{Number: 2, Title: "w", Author: "sam", HeadRef: "w", HeadSHA: "ddddddd4444", State: "open"})
 	if done := pe.drain(); len(done) != 1 || done[0].Status != "done" {
 		t.Fatalf("runs = %+v", done)
@@ -892,7 +858,7 @@ func TestReviewBotToken(t *testing.T) {
 	if _, err := pe.s.UpdateForge(pe.ctx, pe.admin, pe.f.ID, ForgeInput{BotToken: str("bot-tok")}); err != nil {
 		t.Fatal(err)
 	}
-	pe.llm.answers["opencode/muse-spark-1.3-contributor-free"] = oneFinding // a review with nothing to say isn't posted
+	pe.llm.answers["opencode/muse-spark-1.3-contributor-free"] = oneFinding
 	pe.pullHook("opened", ForgePR{Number: 1, Title: "x", Author: "sam", HeadRef: "x", HeadSHA: "abcdef01234", State: "open"})
 	pe.drain()
 	if len(pe.fg.tokens) != 1 || pe.fg.tokens[0] != "bot-tok" {

@@ -10,12 +10,7 @@ import (
 	"time"
 )
 
-// Waypoint runs the ship the session would have run whenever the run can go
-// on without the session (WP-1370): after a round whose audit left nothing
-// to do (shipReviewed, called from planFromFindings' step), and after a
-// check of the session's marks that found none of them wrong (here). A check
-// that found marks wrong is the session's to answer, with all its findings
-// in one message (tellCheck).
+// Waypoint ships when the run can go on without the session; a check that finds marks wrong goes to the session instead (tellCheck).
 
 // checkRound is the round a check audit belongs to (0: not a round's check).
 func (s *Service) checkRound(ctx context.Context, a *CodeAudit) int64 {
@@ -62,9 +57,7 @@ func (s *Service) continueAfterCheck(ctx context.Context, auditID int64) {
 	if round == 0 {
 		return
 	}
-	// What the round needs now, from what is recorded (decideRound): a check
-	// that agreed or didn't run ships it, one nobody can take is released with
-	// its marks carried, one a live session can take waits for it (tellCheck).
+	// A check that agreed or didn't run ships; a round nobody can take is released with its marks carried; one a live session can take waits for it.
 	r, err := roundByID(ctx, s.db.R, round)
 	if err != nil || r == nil || r.state != RoundRunning {
 		return // a Done round is the sweep's (shipSettledRounds)
@@ -105,12 +98,7 @@ func (s *Service) tellCheck(ctx context.Context, a *CodeAudit) {
 	if err != nil || len(todo) == 0 {
 		return
 	}
-	// Only a round in a session that can take it is the session's to answer
-	// (decideRound says so, for a running round and for a done one: a ship
-	// ends its round Done while the check runs); any other waits on Waypoint:
-	// continueAfterCheck releases a running round at once, the sweep a done
-	// one, each opening its pull request with the marks carried and telling
-	// the person.
+	// Only a round in a session that can take it goes to the session; otherwise Waypoint ships it: continueAfterCheck for a running round, the sweep for a done one.
 	round := s.checkRound(ctx, a)
 	r, err := roundByID(ctx, s.db.R, round)
 	if err != nil || r == nil || (r.state != RoundRunning && r.state != RoundDone) || a.sessionID == 0 {
@@ -163,7 +151,7 @@ func forgeSaid(err error) string {
 		return ""
 	}
 	if cause := forgeSetupFault(err); cause != "" {
-		return clipText(strings.Join(strings.Fields(cause), " "), 400) // ours, not the forge's words
+		return clipText(strings.Join(strings.Fields(cause), " "), 400)
 	}
 	return forgeWords(err.Error(), 300)
 }
@@ -212,12 +200,7 @@ func scanIDs(rows *sql.Rows) ([]int64, error) {
 // its step's (advanceStep), unless the step has stopped.
 func (s *Service) shipSettledRounds(ctx context.Context) {
 	now := s.nowMS()
-	// Two kinds of round: one in an open run that nothing carries (or whose
-	// check settled), and one whose run ended (or whose session ended or moved
-	// on) with the branch unshipped, done or not. The second kind is
-	// pre-filtered the way decideRound decides it (newest round, no pull
-	// request linked, in the window) so the batch isn't spent on rounds it
-	// leaves alone; decideRound is the one that says.
+	// The SQL pre-filter must match decideRound's rules, or the batch is spent on rounds decideRound then leaves alone.
 	rows, err := s.db.R.QueryContext(ctx, `SELECT w.id FROM work_log w JOIN agent_runs r ON r.id = w.run_id
 		JOIN agent_sessions x ON x.id = w.session_id JOIN issues i ON i.id = w.issue_id
 		WHERE w.kind = 'review' AND w.before_pr != '' AND (
@@ -285,8 +268,6 @@ func (s *Service) shipTried(ctx context.Context, round int64, key string, now in
 	// ship ran out of time.
 	ctx = context.WithoutCancel(ctx)
 	var tries int
-	// What the round did, as it was recorded: the notice says no more of the
-	// review than that (it may not have run at all).
 	did, _ := s.factsOfRound(ctx, round)
 	if did == "" {
 		did = "no result of its review is recorded"
@@ -395,8 +376,6 @@ func (s *Service) shipEnds(ctx context.Context, id int64, err error, last bool) 
 		body = fmt.Sprintf("Waypoint gave up opening the pull request after trying for %d hours (%d tries). The last error: %s.", int(shipGiveUp.Hours()), bp.ShipTries, why)
 		title = "pull request not opened: gave up"
 	} else if !refused {
-		// The round's window closed before the give-up did: say what
-		// happened, not a give-up it wasn't.
 		body = fmt.Sprintf("Waypoint stopped trying to open the pull request: the round ended after %d tries. The last error: %s.", bp.ShipTries, why)
 		title = "pull request not opened: stopped trying"
 	}

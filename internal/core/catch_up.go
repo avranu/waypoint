@@ -1,17 +1,6 @@
 package core
 
-// Catch up (WP-245, WP-ADR43): agents finish many tasks while their person
-// is away, and days later nobody remembers what to check. Catch up is the
-// finished work a person hasn't reviewed yet (an agent's close, or an
-// automation's close of an agent's work, WP-500), one task at a time: what
-// changed in a line or two, the screenshots of it, where to try it and
-// whether it is live there. The person says Looks good (the close is
-// reviewed), Not finished (the task reopens with their note) or reports a
-// problem (a new bug, related to it, with their screenshot).
-//
-// Where to try it comes from wp shot: each page an agent screenshots is
-// recorded as a try link, a full URL or, for a page shot on a local server,
-// its path, completed with the project's deployed environment's URL.
+// A try link is a page's full URL, or its path for a page shot on a local server, completed with the project's deployed environment URL.
 
 import (
 	"context"
@@ -24,14 +13,14 @@ import (
 )
 
 const (
-	catchUpMax        = 100  // tasks one Catch up lists
-	catchUpShots      = 12   // screenshots per task
-	catchUpSummaryMax = 400  // characters of the agent's summary shown
-	tryLinkMax        = 2000 // characters of a try link
+	catchUpMax        = 100
+	catchUpShots      = 12
+	catchUpSummaryMax = 400
+	tryLinkMax        = 2000
 	tryLinksPerIssue  = 20
 	problemTitleMax   = 100
-	notFinishedMax    = 20000 // characters of a person's note
-	catchUpLiveDays   = 30    // how far back delivery is asked about
+	notFinishedMax    = 20000
+	catchUpLiveDays   = 30
 )
 
 // CatchUp is the finished work waiting for a person's look.
@@ -187,8 +176,6 @@ func (s *Service) fillCatchUp(ctx context.Context, q queryer, it *CatchUpItem, b
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	// Screenshots taken for the reviewer (wp shot) come first, then what
-	// the agent looked at while working; each in the order taken.
 	sort.SliceStable(it.Shots, func(a, b int) bool {
 		x, y := it.Shots[a], it.Shots[b]
 		if x.Review != y.Review {
@@ -238,7 +225,7 @@ func (s *Service) tryBases(ctx context.Context, actor *Actor, project string) ma
 	if err != nil {
 		return out
 	}
-	for _, kind := range []string{EnvStaging, EnvProduction} { // production wins
+	for _, kind := range []string{EnvStaging, EnvProduction} { // Later kinds overwrite earlier ones, so production (listed last) takes precedence over staging.
 		for _, e := range envs {
 			if e.Kind == kind && webURL(e.URL) {
 				out[e.Project] = strings.TrimRight(e.URL, "/")

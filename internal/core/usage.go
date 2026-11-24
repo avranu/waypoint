@@ -15,14 +15,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Knowledge use (WP-D15): when glossary entries, pages and design notes
-// are used. A tool reading one (the CLI, MCP, an agent) is a lookup. Text
-// that names one (a [[link]], a page code like WP-D11, a term or one of its
-// aliases) is a mention, counted once per source: editing the text again
-// doesn't repeat it, and taking the word out doesn't erase that it was
-// used. A glossary entry's word to avoid, written where its term belongs,
-// is recorded against the entry, since that's the language drifting.
-// Browser views aren't recorded: what people browse isn't the question.
+// A mention counts once per source: re-editing the text doesn't repeat it, and removing the word doesn't erase it. Browser views aren't recorded.
 
 // Kinds of use.
 const (
@@ -51,9 +44,6 @@ func (s *Service) NoteLookup(ctx context.Context, actor *Actor, typ string, id i
 	now := s.nowMS()
 	agent := actor.agentName()
 	sessID, sessTask := sessionStamp(ctx, s.db.R, actor)
-	// The same reader reading the same item again this soon is one read
-	// (the reader is a session when the request names one, else the person
-	// and agent), but the row counts the repeats, so a reread isn't hidden.
 	who, whoArg := `user_id = ? AND agent = ? AND session_id IS NULL`, []any{actor.User.ID, agent}
 	if sessID != nil {
 		who, whoArg = `session_id = ?`, []any{sessID}
@@ -85,7 +75,6 @@ func (s *Service) NoteLookup(ctx context.Context, actor *Actor, typ string, id i
 		if n, _ := res.RowsAffected(); n > 0 {
 			return
 		}
-		// Another read inserted between the two statements: count this one as its repeat.
 	}
 }
 
@@ -134,17 +123,15 @@ func (s *Service) NoteShown(ctx context.Context, actor *Actor, via string, refs 
 	return recorded, unknown, nil
 }
 
-// ---- mentions ----
-
 // mentionSource is text that was written: where it lives and who wrote it.
 type mentionSource struct {
-	typ     string // issue, comment, page, design, glossary, pr
+	typ     string
 	id      int64
-	project *int64 // where the text lives; names resolve in its scope
+	project *int64
 	text    string
 	user    int64
 	agent   string
-	at      int64 // when it was written; 0 is now
+	at      int64
 }
 
 // codeMentionRE finds page codes written with their project, as code
@@ -164,14 +151,13 @@ type useKey struct {
 // recordMentions records what a text names. Saving the text never fails
 // over it: problems are logged.
 func (s *Service) recordMentions(ctx context.Context, t *tx, src mentionSource) {
-	// A personal page is its author's alone: what it names stays private.
 	if strings.TrimSpace(src.text) == "" || (src.typ == KPage && src.project == nil) {
 		return
 	}
-	found := map[useKey]string{} // → the word that named it
+	found := map[useKey]string{}
 	add := func(typ string, id int64, kind, word string) {
 		if typ == src.typ && id == src.id {
-			return // an entry's own name in its definition
+			return
 		}
 		k := useKey{typ, id, kind}
 		if _, ok := found[k]; !ok {
@@ -211,7 +197,6 @@ func (s *Service) recordMentions(ctx context.Context, t *tx, src mentionSource) 
 				}
 			}
 			for _, h := range idx.find(unscannedRE.ReplaceAllString(src.text, " "), chain, s.senseGate(idx)) {
-				// A definition saying which words to avoid isn't using them.
 				if h.kind == UseAvoided && src.typ == KGlossary {
 					continue
 				}
@@ -271,15 +256,13 @@ func (s *Service) recordPRMentions(ctx context.Context, t *tx, forgeID int64, re
 	}
 }
 
-// ---- glossary words in text ----
-
 // termWord is a term, alias or word to avoid, as the words it's made of.
 type termWord struct {
 	tokens  []string
 	entry   int64
-	project int64  // 0: global
-	word    string // as the entry writes it
-	kind    string // mention, or avoided for a word to avoid
+	project int64
+	word    string
+	kind    string
 }
 
 // termIndex finds every glossary word in text in one pass: words by their
@@ -287,10 +270,10 @@ type termWord struct {
 type termIndex struct {
 	key   string
 	first map[string][]*termWord
-	sense map[int64]map[string]int // each entry's term, aliases and definition, counted (WP-779)
+	sense map[int64]map[string]int
 
 	senseMu  sync.Mutex
-	senses   map[int64][]float64 // sense under concept model senseGen
+	senses   map[int64][]float64
 	senseGen int
 }
 
@@ -377,13 +360,13 @@ func (idx *termIndex) find(text string, chain []int64, keep senseGate) []termHit
 		if n := slices.Index(chain, project); n >= 0 {
 			return n
 		}
-		return -1 // another project's entry: not meant here
+		return -1
 	}
 	type pick struct {
 		w    *termWord
 		rank int
 	}
-	best := map[string]pick{} // kind + the word's tokens → nearest entry
+	best := map[string]pick{}
 	toks := wordTokens(text)
 	for i, tok := range toks {
 		cands := []string{tok}
@@ -436,8 +419,6 @@ func matchAt(toks []string, i int, want []string) bool {
 	}
 	return true
 }
-
-// ---- backfill ----
 
 // BackfillKnowledgeUses records the mentions in text written before use
 // was recorded, dated when the text was written. It runs once, in the
@@ -509,8 +490,6 @@ func (s *Service) mentionBatch(ctx context.Context, typ, query string, after int
 	}
 	return out, rows.Err()
 }
-
-// ---- reading use ----
 
 // KnowledgeUse is one use of an item.
 type KnowledgeUse struct {
@@ -645,7 +624,7 @@ func (s *Service) ItemUsage(ctx context.Context, actor *Actor, typ string, id in
 		if u.srcType != "" {
 			k := u.kind + ":" + u.srcType + ":" + strconv.FormatInt(u.srcID, 10)
 			if seen[k] {
-				continue // named twice in one text ([[Term]] and Term)
+				continue
 			}
 			seen[k] = true
 		}
@@ -663,8 +642,8 @@ type useReader struct {
 	ctx     context.Context
 	actor   *Actor
 	users   map[int64]*UserRef
-	items   map[string]*KItem // type:id → item, nil if not visible
-	issueOf map[int64]int64   // comment → issue
+	items   map[string]*KItem
+	issueOf map[int64]int64
 }
 
 func (s *Service) newUseReader(ctx context.Context, actor *Actor) *useReader {
@@ -733,8 +712,6 @@ func (s *Service) prItem(ctx context.Context, actor *Actor, id int64) *KItem {
 	}
 	return &KItem{Type: KURL, Kind: "pull", Ref: url, Title: title, Repo: repo, Number: &number}
 }
-
-// ---- the overview ----
 
 // KnowledgeQuery narrows the overview.
 type KnowledgeQuery struct {
@@ -881,7 +858,6 @@ func (s *Service) KnowledgeOverview(ctx context.Context, actor *Actor, q Knowled
 	}
 	out.Totals.ItemsUsed = len(byItem)
 
-	// The most used, by lookups and the places that name them.
 	slices.SortStableFunc(order, func(a, b string) int {
 		ta, tb := byItem[a], byItem[b]
 		return (tb.lookups + len(tb.sources) + tb.avoided) - (ta.lookups + len(ta.sources) + ta.avoided)
@@ -898,7 +874,6 @@ func (s *Service) KnowledgeOverview(ctx context.Context, actor *Actor, q Knowled
 		out.Top = append(out.Top, UsedItem{Item: *it, Lookups: tl.lookups, Mentions: len(tl.sources), Avoided: tl.avoided, LastUsedAt: msTime(tl.lastUsed)})
 	}
 
-	// Words to avoid that were written, latest first: these call for a fix.
 	for _, ak := range avoidOrder {
 		if len(out.Avoided) == overviewList {
 			break
@@ -924,7 +899,6 @@ func (s *Service) KnowledgeOverview(ctx context.Context, actor *Actor, q Knowled
 		}
 	}
 
-	// What agents read lately.
 	for _, u := range list {
 		if len(out.Lookups) == overviewList {
 			break
@@ -1080,7 +1054,7 @@ func (s *Service) NoteGlossaryLookup(ctx context.Context, actor *Actor, res *Glo
 	case len(res.Matches) > 0:
 		g, word := res.Matches[0], ""
 		if !strings.EqualFold(g.Term, res.Term) {
-			word = res.Term // found by an alias
+			word = res.Term
 		}
 		s.NoteLookup(ctx, actor, KGlossary, g.ID, word)
 	case len(res.Instead) > 0:

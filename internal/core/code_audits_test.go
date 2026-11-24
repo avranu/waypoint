@@ -39,7 +39,6 @@ func TestAuditOfAPullRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Dispatch starts it in the background, so it may already be running.
 	if a.Target != "pr" || (a.Status != AuditQueued && a.Status != AuditRunning) || !a.PostComment || a.Fix || a.Instructions != DefaultAuditInstructions ||
 		strings.Join(a.Models, ",") != "cursor/grok-4.7-high,cursor/grok-4.7-medium" {
 		t.Fatalf("audit = %+v", a)
@@ -101,11 +100,9 @@ func TestAuditOfAPullRequest(t *testing.T) {
 		t.Errorf("notifications = %+v", ns)
 	}
 
-	// Verdicts, then Claude's task for what is still open.
 	if _, err := ae.s.MarkAuditFindings(ae.ctx, ae.admin, MarkFindings{IDs: []string{f[0].ID}, State: "rejected", Note: "outside the repository"}); err != nil {
 		t.Fatal(err)
 	}
-	// A confirmed finding is still to do: real, not yet fixed.
 	if _, err := ae.s.MarkAuditFindings(ae.ctx, ae.admin, MarkFindings{IDs: []string{f[1].ID}, State: "confirmed"}); err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +238,6 @@ func TestRequestAuditRefusals(t *testing.T) {
 			t.Errorf("%+v: %v, want %q", tc.in, err, tc.want)
 		}
 	}
-	// A runner whose wp predates audits is named.
 	sam := ae.user("sam", true)
 	ae.runner(sam, "old", func(r *RunnerRegistration) { r.CLIs = []RunnerCLI{{Name: "cursor"}} })
 	if _, err := ae.s.RequestAudit(ae.ctx, sam, AuditInput{Project: ae.p.Key}); err == nil || !strings.Contains(err.Error(), "old runs an older wp") {
@@ -263,9 +259,7 @@ func TestParseAuditAnswer(t *testing.T) {
 			t.Errorf("%q = %+v %v", text, a, err)
 		}
 	}
-	// An answer that says nothing about the change is no answer: an object
-	// with no findings list, words around "no findings", nothing at all.
-	// Read as "found nothing" it ended a review round clean (WP-1320).
+	// A reply with no findings list is an error, never a clean review.
 	for _, text := range []string{`{}`, `{"summary": "I can't review this."}`, `{"findings": null}`, "", "I found no findings in a.go, but b.go has a nil deref.",
 		"There were NO FINDINGS because the diff could not be read."} {
 		a, err := parseAuditAnswer(map[string]any{"answer": text})
@@ -276,9 +270,6 @@ func TestParseAuditAnswer(t *testing.T) {
 	if _, err := parseAuditAnswer(map[string]any{"answer": `{}`}); !errors.Is(err, errNoFindingsList) {
 		t.Errorf("{} = %v", err)
 	}
-	// The words reviewers write for "barely matters" are low, not the
-	// medium an unknown label gets; the worst are kept when there are more
-	// than the cap, wherever the model wrote them.
 	var many []string
 	for i := range 30 + 5 {
 		many = append(many, fmt.Sprintf(`{"title": "Nit %d", "problem": "A small thing.", "severity": "trivial"}`, i))
@@ -420,7 +411,6 @@ func TestAuditNewsWithdrawnOnceDecided(t *testing.T) {
 		ae.work()
 	}
 	mark := func(id, state string) { t.Helper(); markOn(id, state, "") }
-	// high and low are an audit's high and low findings.
 	high := func(a *CodeAudit) string {
 		return a.Findings[slices.IndexFunc(a.Findings, func(f CodeAuditFinding) bool { return f.Severity == "high" })].ID
 	}
@@ -441,7 +431,6 @@ func TestAuditNewsWithdrawnOnceDecided(t *testing.T) {
 		t.Fatalf("with every finding decided the news is %q", st)
 	}
 
-	// Confirmed is still to do: the news stays.
 	b := audit()
 	mark(b.Findings[0].ID, "rejected")
 	mark(b.Findings[1].ID, "confirmed")
@@ -449,8 +438,7 @@ func TestAuditNewsWithdrawnOnceDecided(t *testing.T) {
 		t.Fatalf("with a finding confirmed the news is %q", st)
 	}
 
-	// Filed (confirmed with an issue) is decided below high; a high one
-	// filed is still to do.
+	// A filed finding counts as decided below high; a filed high one is still to do.
 	later := ae.issue(ae.admin, IssueInput{Project: ae.p.Key, Title: "Fix the log typo later"})
 	c := audit()
 	mark(high(c), "fixed")
@@ -465,8 +453,7 @@ func TestAuditNewsWithdrawnOnceDecided(t *testing.T) {
 		t.Fatalf("with the high finding filed the news is %q", st)
 	}
 
-	// Findings decided before the news is stored (marked while the audit's
-	// comment posts): the news is withdrawn as it is stored.
+	// A finding decided before its news is stored withdraws that news as it is stored.
 	e := audit()
 	mark(high(e), "fixed")
 	mark(low(e), "rejected")
@@ -477,7 +464,6 @@ func TestAuditNewsWithdrawnOnceDecided(t *testing.T) {
 	if st := news(e.ID); st != "cancelled" {
 		t.Fatalf("news stored after every finding was decided is %q", st)
 	}
-	// News delivered already is left as it is.
 	if _, err := ae.s.db.W.Exec(`UPDATE session_messages SET state = ? WHERE step_key = ?`, MessageDelivered, auditNewsKey(b.ID, AuditDone)); err != nil {
 		t.Fatal(err)
 	}
@@ -486,8 +472,6 @@ func TestAuditNewsWithdrawnOnceDecided(t *testing.T) {
 		t.Fatalf("delivered news became %q", st)
 	}
 
-	// News being posted in a batch when its findings are decided, whose
-	// post then fails: it is withdrawn as it goes back to the queue.
 	g := audit()
 	res, err = ae.s.db.W.Exec(`INSERT INTO message_batches(session_id, created_at) VALUES (?, 5)`, session)
 	if err != nil {

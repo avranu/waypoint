@@ -21,7 +21,7 @@ const H = { "X-Waypoint-Client": "web" };
 
 // A fake GitHub API under /api/v3. `refuse` answers every call with 403.
 function fakeGitHub(refuse, orgs = []) {
-  const hooks = new Map(); // repo (or "orgs/name") → Map(id → body)
+  const hooks = new Map();
   const seen = { calls: 0 };
   let next = 1;
   const srv = http.createServer((req, res) => {
@@ -48,7 +48,7 @@ function fakeGitHub(refuse, orgs = []) {
         ) ||
         req.url.match(/^\/api\/v3\/(orgs\/[^/]+)\/hooks(?:\/(\d+))?(\/pings)?/);
       if (!m) return send(404, { message: "Not Found" });
-      const [, repo, id, pings] = m; // repo is "owner/name" or "orgs/name"
+      const [, repo, id, pings] = m;
       if (pings) return send(204);
       if (!hooks.has(repo)) hooks.set(repo, new Map());
       const list = hooks.get(repo);
@@ -65,7 +65,6 @@ function fakeGitHub(refuse, orgs = []) {
         const hid = next++;
         list.set(String(hid), body);
         send(201, { id: hid });
-        // GitHub pings a new webhook, signed with its secret.
         const org = repo.startsWith("orgs/") && repo.slice(5);
         const ping = JSON.stringify(
           org
@@ -207,8 +206,6 @@ async function run(width, scheme) {
   await page.getByText("Webhook not added.").waitFor();
   ok(bad.seen.calls > before, `${tag} try again asks the forge again`);
 
-  // The broken webhook waits on its owner, on the Agents overview and in
-  // the Inbox, and leads back to Integrations (WP-31).
   for (const where of ["/agents", "/inbox"]) {
     await page.goto(base + where);
     const row = page.getByRole("link", { name: /Webhooks? not working on/ });
@@ -235,7 +232,6 @@ async function run(width, scheme) {
   await page.goto(`${base}/p/${key}/settings?tab=integrations`);
   await page.getByText("Webhook not added.").waitFor();
 
-  // Detaching removes the webhook Waypoint added.
   await page.getByRole("button", { name: `Remove acme/app${tag}` }).click();
   await page.getByRole("button", { name: "Disconnect" }).click();
   for (let i = 0; i < 50 && made.size > 0; i++)
@@ -251,7 +247,6 @@ async function run(width, scheme) {
     );
   await overflow("integrations");
 
-  // An organisation webhook, added in Admin → Forges.
   const org = `org${tag}`;
   await page.goto(`${base}/admin?tab=forges`);
   const row = page
@@ -279,7 +274,6 @@ async function run(width, scheme) {
   });
   await overflow("forges");
 
-  // A repo in that organisation needs no webhook of its own.
   await page.goto(`${base}/p/${key}/settings?tab=integrations`);
   await link(`Good ${tag}`, `${org}/svc`);
   await page
@@ -291,7 +285,6 @@ async function run(width, scheme) {
     `${tag} the covered repo got no repo webhook`,
   );
 
-  // Removing the org webhook gives the repo its own.
   await page.goto(`${base}/admin?tab=forges`);
   await row.getByRole("button", { name: `Remove the ${org} webhook` }).click();
   for (let i = 0; i < 50 && !good.hooks.get(`${org}/svc`)?.size; i++)
@@ -302,7 +295,6 @@ async function run(width, scheme) {
     `${tag} removing the org webhook moved the repo onto its own`,
   );
 
-  // An outbound webhook's delivery log, and sending one again.
   if (!lan) return ctx.close();
   receiver.status = 418;
   const sent = receiver.bodies.length;
@@ -343,7 +335,13 @@ async function run(width, scheme) {
   await ctx.close();
 }
 
-for (const [w, s] of looks([[1440, "light"], [390, "light"], [1440, "dark"], [390, "dark"]])) await run(w, s);
+for (const [w, s] of looks([
+  [1440, "light"],
+  [390, "light"],
+  [1440, "dark"],
+  [390, "dark"],
+]))
+  await run(w, s);
 await browser.close();
 good.srv.close();
 bad.srv.close();

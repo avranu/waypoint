@@ -1,29 +1,5 @@
 #!/usr/bin/env bash
-# spike.sh: Phase 0 measurements for sandboxed sessions (WP-287, WP-417; plan
-# PL7 §14 phase 0, decisions ADR28). Measurement only: it changes nothing that
-# Waypoint, its runner or any service uses.
-#
-# Run as root, by a person (it installs packages and creates a throwaway user):
-#   sudo deploy/sandbox-spike/spike.sh all       # prepare + every test (1-3 h)
-#   sudo deploy/sandbox-spike/spike.sh TEST...   # prepare, contained, vm-start,
-#                                                # vm-tuned, vm-q35, vsock,
-#                                                # virtiofs, bench, load
-#   sudo deploy/sandbox-spike/spike.sh start TEST...  # the same, detached as unit
-#                                                # waypoint-spike-run (log in
-#                                                # results/spike.log)
-#   deploy/sandbox-spike/spike.sh report         # results as a table (no root)
-#   sudo deploy/sandbox-spike/spike.sh cleanup   # remove the user, units, images
-#
-# It creates (and cleanup removes):
-#   - user and group wpspike (uid 39990, outside the plan's 40000-49999 range),
-#     nologin, locked, in no groups;
-#   - $SPIKE_ROOT (default /srv/waypoint-spike): images, workspaces,
-#     results; transient units wpspike-*.service in waypoint-spike.slice.
-# Results: $SPIKE_ROOT/results/results.jsonl (owned by $SUDO_USER), kept by
-# cleanup. Packages it installs (qemu-system-x86 qemu-utils virtiofsd) stay.
-#
-# The bench VM has user-mode networking so apt, npm and govulncheck work; that
-# VM runs only this harness's scripts. Every other VM runs with no NIC.
+# Every VM except the bench VM runs with no NIC; the bench VM has user-mode networking and runs only this harness's scripts.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -49,7 +25,7 @@ die() {
 }
 need_root() { [ "$(id -u)" = 0 ] || die "run as root (sudo $0 $*)"; }
 
-rec() { # test key value [note]
+rec() {
 	python3 -c '
 import json, sys, time
 a = sys.argv[1:] + [""]
@@ -58,12 +34,12 @@ print(json.dumps({"t": time.strftime("%Y-%m-%dT%H:%M:%S"), "test": a[0], "key": 
 }
 now() { date +%s.%N; }
 since() { awk -v a="$1" -v b="$(now)" 'BEGIN{printf "%.2f", b-a}'; }
-as_owner() { # also under a unit with no HOME, so the owner's login profile is read
+as_owner() { # The unit has no HOME, so HOME is set to the owner's to read the owner's login profile.
 	runuser -u "$OWNER" -- env HOME="$(getent passwd "$OWNER" | cut -d: -f6)" "$@"
 }
 owner_go() { as_owner bash -lc "go env $1"; }
 
-record_load() { # label
+record_load() {
 	rec load "$1_loadavg" "$(cut -d' ' -f1-3 /proc/loadavg)"
 	rec load "$1_cpu_psi_some_avg60" "$(awk '/some/{sub("avg60=","",$3); print $3}' /proc/pressure/cpu)"
 	rec load "$1_mem_psi_some_avg60" "$(awk '/some/{sub("avg60=","",$3); print $3}' /proc/pressure/memory)"
@@ -76,8 +52,6 @@ record_load() { # label
 finish() {
 	if [ -d "$RES" ]; then chown -R "$OWNER" "$RES" 2>/dev/null || true; fi
 }
-
-# ---------------------------------------------------------------- prepare
 
 prepare() {
 	need_root prepare
@@ -130,14 +104,10 @@ stage_sources() {
 	stage_go
 }
 
-# The toolchain waypoint's go.mod asks for, which can be newer than the
-# owner's installed go: resolved inside the staged repo with GOTOOLCHAIN=auto,
-# so go switches to (and if need be downloads) that version. Every later go
-# command uses this copy with GOTOOLCHAIN=local.
+# go.mod may ask for a newer Go than the owner's installed one, so the toolchain is resolved with GOTOOLCHAIN=auto.
 stage_go() {
 	local goroot
 	if [ ! -x "$ROOT/stage/go/bin/go" ]; then
-		# A module cache from before this toolchain was staged is redone too.
 		rm -rf "$ROOT/stage/go" "$ROOT/stage/go.tmp" "$ROOT/stage/gobin" "$ROOT/stage/gobin.tmp" "$ROOT/stage/gomod"
 		goroot=$(as_owner bash -lc "cd '$ROOT/stage/waypoint' && GOTOOLCHAIN=auto go env GOROOT") ||
 			die "could not resolve the Go toolchain for waypoint's go.mod"
@@ -146,7 +116,7 @@ stage_go() {
 		chmod -R u+w "$ROOT/stage/go.tmp"
 		install -d "$ROOT/stage/gobin.tmp"
 		cp -a "$(owner_go GOPATH)/bin/." "$ROOT/stage/gobin.tmp/"
-		# go last: the guard above tests it.
+		# Move go last: the -x guard above tests only that binary, so an interrupted copy must not leave it in place.
 		mv "$ROOT/stage/gobin.tmp" "$ROOT/stage/gobin"
 		mv "$ROOT/stage/go.tmp" "$ROOT/stage/go"
 	fi
@@ -169,11 +139,7 @@ stage_bare() {
 	fi
 }
 
-# fresh_home DIR: a bare run's home as a runner VM's fresh disk has it: the
-# staged sources, module cache and tools, and no build or npm caches. Every
-# bare run gets a new one; a home kept between runs gave the bare side a warm
-# Go build cache (cover-instrumented test packages included) that the VM never
-# has, which made the VM look twice as slow.
+# Each bare run gets a fresh home: a kept Go build cache would make bare runs faster than a VM's fresh disk.
 fresh_home() {
 	local h=$1
 	rm -rf "$h"
@@ -186,7 +152,6 @@ fresh_home() {
 
 stage_image() {
 	local raw=$ROOT/vm/base.raw dl=$ROOT/dl/$IMG_FILE loop mnt=$ROOT/mnt stamp
-	# The image is rebuilt when the guest-side scripts or this recipe change.
 	stamp="r$IMAGE_REV-$KVER-$(cat "$HERE/guest.sh" "$HERE/bench.sh" "$HERE/probes.sh" | sha256sum | cut -c1-16)"
 	[ -f "$raw" ] && [ "$(cat "$raw.stamp" 2>/dev/null)" = "$stamp" ] && return 0
 	rm -f "$raw" "$raw.stamp" "$raw.tmp"
@@ -266,9 +231,7 @@ EOF
 	rec prepare image "$IMG_FILE $(du -h --apparent-size "$raw" | cut -f1) apparent, $(du -h "$raw" | cut -f1) used"
 }
 
-# ---------------------------------------------------------------- Contained
-
-contained_props() { # workspace dir -> systemd-run arguments, one per line
+contained_props() {
 	local base=$ROOT/contained
 	printf '%s\n' --uid="$SU" --gid="$SU" --collect --wait --pipe --quiet \
 		-p TemporaryFileSystem=/:ro -p MountAPIVFS=yes \
@@ -313,7 +276,6 @@ t_contained() {
 	touch /dev/shm/wpspike-host-marker
 	mapfile -t props < <(contained_props "$base/ws")
 
-	# Start latency: a no-op unit with the full property set.
 	for i in 1 2 3 4 5; do
 		t0=$(now)
 		if systemd-run "${props[@]}" -- /bin/true; then
@@ -379,8 +341,6 @@ t_rename_ancestor() {
 	rm -rf "$ROOT/rename" /var/lib/waypoint-spike
 }
 
-# ---------------------------------------------------------------- VMs
-
 CID=100
 firmware_args() {
 	if [ ! -e /usr/share/qemu/qboot.rom ] && [ -e /usr/share/seabios/bios-microvm.bin ]; then
@@ -388,9 +348,6 @@ firmware_args() {
 	fi
 }
 
-# vm_start NAME MACHINE JOB NET [extra qemu args...]: boots a VM from a reflink
-# copy of the base image in a hardened unit as the spike user, and returns once
-# the guest prints SPIKE_READY (or after 120 s).
 vm_start() {
 	local name=$1 mach=$2 job=$3 net=$4 d t0 qemu=() props=() dev
 	shift 4
@@ -405,7 +362,7 @@ vm_start() {
 
 	dev=device
 	[ "$mach" = q35 ] && dev=pci
-	# The firmware args are zero or two plain words; QEMU options take commas.
+	# firmware_args output is word-split unquoted, so it must print plain words with no spaces.
 	# shellcheck disable=SC2207,SC2054
 	qemu=(qemu-system-x86_64 -M "$mach" $(firmware_args) -enable-kvm -cpu host -smp "$VM_CPUS" -m "$VM_MEM"
 		-nodefaults -no-user-config -display none -no-reboot
@@ -460,7 +417,7 @@ vm_start() {
 	rec "vm_$name" guest_uptime_at_ready "$(grep -ao 'SPIKE_READY [0-9.]*' "$d/serial.log" | head -1 | cut -d' ' -f2)"
 }
 
-mem_sample() { # name label
+mem_sample() {
 	local unit=wpspike-$1 pid cg
 	pid=$(systemctl show -p MainPID --value "$unit" 2>/dev/null || echo 0)
 	[ "${pid:-0}" != 0 ] || return 0
@@ -471,10 +428,8 @@ mem_sample() { # name label
 	return 0
 }
 
-# vm_follow NAME TIMEOUT: relays the guest's SPIKE_ lines into results until the
-# VM powers off, sampling memory at each SPIKE_MARK.
 SEEN=0
-vm_relay() { # name: records SPIKE_ lines not yet seen
+vm_relay() {
 	local name=$1 line key val i lines=()
 	mapfile -t lines < <(grep -a 'SPIKE_' "$ROOT/vm/run-$name/serial.log" 2>/dev/null)
 	for ((i = SEEN; i < ${#lines[@]}; i++)); do
@@ -528,12 +483,7 @@ t_vm_start() {
 	done
 }
 
-# The microvm again with the fixes the vm-start breakdown points at: an RTC
-# (without one the kernel spends about 5 s failing to read the time), the
-# guest's AppArmor and snap units masked (2-3 s of the userspace critical
-# path; the wall is the VM, not the guest's own MAC), and initcall_debug so
-# guest_slow_initcalls names what is left. Override with TUNED_MACHINE and
-# TUNED_APPEND.
+# Without an RTC the guest kernel spends about 5 s failing to read the time, so rtc=on.
 TUNED_MACHINE=${TUNED_MACHINE:-microvm,rtc=on}
 TUNED_APPEND=${TUNED_APPEND:-initcall_debug systemd.mask=apparmor.service systemd.mask=snapd.apparmor.service systemd.mask=lxd-installer.socket systemd.mask=apport.service systemd.mask=pollinate.service }
 t_vm_tuned() {
@@ -562,7 +512,6 @@ t_vsock() {
 	log "vsock: identity across users"
 	install -d -m 0700 -o "$SU" -g "$SU" "$ROOT/vm"
 	: >"$lfile"
-	# A listener as nobody: does a guest reach an unrelated host user?
 	setpriv --reuid=nobody --regid=nogroup --clear-groups python3 -c '
 import socket, sys
 s = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
@@ -577,13 +526,11 @@ except OSError as e:
 		kill "$hpid" 2>/dev/null
 		return 0
 	}
-	# Wait for the guest's listener (it starts after the guest's own 5 s connect attempt).
 	t0=$(now)
 	until grep -aq SPIKE_LISTENING "$ROOT/vm/run-vsock/serial.log" 2>/dev/null; do
 		if [ "$(awk -v a="$t0" -v b="$(now)" 'BEGIN{print (b-a>60)}')" = 1 ]; then break; fi
 		sleep 0.5
 	done
-	# Host side as nobody connects to the guest's root listener.
 	if setpriv --reuid=nobody --regid=nogroup --clear-groups python3 -c '
 import socket, sys
 s = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM); s.settimeout(5); s.connect((int(sys.argv[1]), 5001))
@@ -625,11 +572,7 @@ t_virtiofs() {
 	systemctl stop wpspike-virtiofsd 2>/dev/null || true
 }
 
-# bare_job NAME HOME: the bench workloads bare, as the spike user, capped to
-# the VM's CPUs and memory. Prints the SPIKE_RESULT lines, and a runner_rc one
-# if the unit itself failed. Each job gets its
-# own /tmp, as each VM has: golangci-lint locks /tmp/golangci-lint.lock, so
-# parallel jobs sharing one /tmp failed with "parallel golangci-lint is running".
+# Each job gets its own /tmp: golangci-lint locks /tmp/golangci-lint.lock, and parallel jobs sharing one /tmp fail.
 bare_job() {
 	systemd-run --unit="wpspike-$1" --uid="$SU" --gid="$SU" --collect --wait --pipe --quiet \
 		-p "Slice=$SLICE" -p "CPUQuota=$((VM_CPUS * 100))%" -p "MemoryMax=${VM_MEM}M" -p PrivateTmp=yes \
@@ -637,8 +580,7 @@ bare_job() {
 		-- /bin/bash -c "for w in waypoint node; do bash $ROOT/bare/bench.sh \$w warmup; bash $ROOT/bare/bench.sh \$w timed; done" 2>&1 || echo "SPIKE_RESULT bench_runner_rc $?"
 }
 
-# Bare and VM alternate (bare, VM, VM, bare with BENCH_ROUNDS=2), so a change
-# in the host's load during the run weighs on both sides alike.
+# Alternating bare and VM rounds spreads any drift in host load across both sides.
 BENCH_ROUNDS=${BENCH_ROUNDS:-2}
 t_bench() {
 	need_root bench
@@ -664,22 +606,12 @@ t_bench() {
 	done
 }
 
-# ---------------------------------------------------------------- load test
-
-# The load test (PL7 §6.7): the same build work twice, bare and then sandboxed,
-# with the services watched throughout by loadwatch.py.
-#   bare:      3 bench jobs as plain processes in the sandbox slice;
-#   sandboxed: 3 runner VMs doing the same, plus 16 idle Contained sessions and
-#              4 idle 2 GB VMs.
-# The slice gets the plan's limits for the run (runtime only, undone after):
-# waypoint-spike.slice MemoryHigh=20G MemoryMax=22G CPUWeight=50 CPUQuota=600%,
-# and system.slice MemoryLow=20G.
 LOAD_JOBS=${LOAD_JOBS:-3}
 LOAD_IDLE_CT=${LOAD_IDLE_CT:-16}
 LOAD_IDLE_VMS=${LOAD_IDLE_VMS:-4}
 LOAD_IDLE_MEM=${LOAD_IDLE_MEM:-2048}
 
-load_limits() { # on|off
+load_limits() {
 	if [ "$1" = on ]; then
 		systemctl start "$SLICE" # an implicit slice must be loaded to take properties
 		systemctl set-property --runtime "$SLICE" MemoryHigh=20G MemoryMax=22G CPUWeight=50 CPUQuota=600% TasksMax=16384
@@ -697,7 +629,7 @@ load_stop_units() {
 	done
 }
 
-load_watch() { # pass: runs until the pass's units end; returns 1 if aborted
+load_watch() {
 	local pass=$1 abort=$ROOT/load/abort
 	while systemctl list-units --plain --no-legend --state=active 'wpspike-load-run-*' 'wpspike-load-bare-*' | grep -q .; do
 		if [ -s "$abort" ]; then
@@ -710,13 +642,13 @@ load_watch() { # pass: runs until the pass's units end; returns 1 if aborted
 	done
 }
 
-load_pass() { # bare|sandboxed
+load_pass() {
 	local pass=$1 i h t0 pids=() ok=0
 	log "load: $pass pass"
 	: >"$ROOT/load/abort"
 	python3 -I "$HERE/loadwatch.py" "$RES/load-$pass.jsonl" "$ROOT/load/abort" 2>>"$RES/spike.log" &
 	local watch=$!
-	sleep 30 # a baseline before any work starts
+	sleep 30
 	t0=$(now)
 	rec "load_$pass" started "$(date -u +%FT%TZ)"
 	if [ "$pass" = bare ]; then
@@ -750,7 +682,7 @@ load_pass() { # bare|sandboxed
 	rec "load_$pass" wall_secs "$(since "$t0")"
 	for i in $(seq 1 "$LOAD_IDLE_VMS"); do mem_sample "load-idle-$i" end; done
 	load_stop_units
-	sleep 30 # the tail after the work ends
+	sleep 30 # Let the load watch run 30 seconds past the work to record the recovery tail.
 	kill "$watch" 2>/dev/null || true
 	wait "$watch" 2>/dev/null || true
 	return "$ok"
@@ -771,7 +703,7 @@ t_load() {
 	rec load limits "$(systemctl show "$SLICE" -p MemoryHigh -p MemoryMax -p CPUWeight -p CPUQuotaPerSecUSec | paste -sd ' ')" \
 		"system.slice $(systemctl show system.slice -p MemoryLow)"
 	if load_pass bare; then
-		sleep 120 # let the host settle between the passes
+		sleep 120
 		load_pass sandboxed || true
 	fi
 	load_limits off
@@ -780,8 +712,6 @@ t_load() {
 		rec "$test" "$key" "$val" "$note"
 	done
 }
-
-# ---------------------------------------------------------------- report, cleanup
 
 report() {
 	python3 - "$RES/results.jsonl" <<'EOF'
@@ -815,10 +745,7 @@ cleanup() {
 	log "cleanup: done (results kept in $RES; packages kept)"
 }
 
-# start [steps]: runs "all" (or the steps given) in a transient system unit and
-# returns at once, so the run outlives the shell that started it (a Waypoint
-# request's command is stopped after 10 minutes). Follow it with
-# "journalctl -fu waypoint-spike-run" or the log in $RES.
+# Runs as a transient unit so it outlives the shell: a Waypoint request's command is stopped after 10 minutes.
 start() {
 	need_root start
 	[ $# -gt 0 ] || set -- all
@@ -857,7 +784,6 @@ main() {
 	local cmd
 	if [ "$1" = all ]; then
 		set -- prepare contained vm-start vm-tuned vm-q35 vsock virtiofs bench
-		# Each full run starts a fresh results file; earlier ones are kept.
 		if [ -s "$RES/results.jsonl" ]; then
 			mv "$RES/results.jsonl" "$RES/results-$(date +%Y%m%d-%H%M%S).jsonl"
 		fi

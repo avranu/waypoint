@@ -128,7 +128,7 @@ func take(c *cli, which string, args []string) error {
 				return err
 			}
 			if q := sc.query(); q != "" {
-				terms = append(terms, q) // unsaid: the agent's instructions name its repo (WP-242)
+				terms = append(terms, q) // The agent's instructions name its repo, which the query lacks, so it is added as a term.
 			}
 		}
 	}
@@ -142,14 +142,14 @@ func take(c *cli, which string, args []string) error {
 			within = b.query()
 		}
 		if *repo != "" && within != "" {
-			terms = append(terms, within) // --repo also finds tasks of other projects that link to it
+			terms = append(terms, within)
 		}
 	}
 	if *query != "" {
 		terms = append(terms, *query)
 	}
 	if crossing != "" || *repo != "" && !c.repoHere(*repo) {
-		c.noOwnWorktree = true // the task's work is likely another repo's: no worktree of this one (WP-200)
+		c.noOwnWorktree = true
 	}
 	body := map[string]any{"step": *step, "query": strings.Join(terms, " "), "repo": *repo, "peek": *peek, "delegated": *delegated}
 	if crossing != "" {
@@ -187,7 +187,7 @@ func take(c *cli, which string, args []string) error {
 	}
 	var fetched func() error
 	if !*peek {
-		c.contextTokens = currentContext() // the server warns about a big session (WP-34)
+		c.contextTokens = currentContext()
 		c.claims = c.heldHere()
 		fetched = c.fetchHere(!*noGit)
 	}
@@ -390,7 +390,7 @@ func (c *cli) crossingForNext(sf scopeFlags, verb, repo, reason string) (string,
 			return "", err
 		}
 	default:
-		return "", nil // the scope here
+		return "", nil
 	}
 	if !everywhere && (home == nil || home.covers(asked)) {
 		return "", nil
@@ -425,7 +425,7 @@ func (c *cli) takeKey(sf scopeFlags, ref, crossProject string, brief, gitState b
 		return err
 	}
 	if crossing != "" {
-		c.noOwnWorktree = true // another project's task: likely another repo's work (WP-200)
+		c.noOwnWorktree = true
 	}
 	body := map[string]any{}
 	if crossing != "" {
@@ -434,7 +434,7 @@ func (c *cli) takeKey(sf scopeFlags, ref, crossProject string, brief, gitState b
 	if a := c.agentID(); a != "" {
 		body["agent"] = a
 	}
-	c.contextTokens = currentContext() // the server warns about a big session (WP-34)
+	c.contextTokens = currentContext()
 	c.claims = c.heldHere()
 	fetched := c.fetchHere(gitState)
 	params := url.Values{}
@@ -452,9 +452,7 @@ func (c *cli) takeKey(sf scopeFlags, ref, crossProject string, brief, gitState b
 	if err != nil {
 		return err
 	}
-	// The server's spelling (APP-12), whatever was typed (app12), and the
-	// sub-task an epic's key hands out (WP-730). An assigned answer opens
-	// with a sentence naming it.
+	// The key is the server's spelling (APP-12 for app12), and an epic can hand out a sub-task key.
 	if k := claimedKey(raw, c.asJSON); k != "" && assigned == "" {
 		key = k
 	} else if k := assignedKey(raw, c.asJSON); k != "" && assigned != "" {
@@ -590,9 +588,7 @@ func (c *cli) currentKey(pos []string) (string, []string, error) {
 			return "", pos, c.usage("%s looks like a code for %s, but this command works on an issue: give its KEY (like APP-12); it won't use the task taken here instead%s", pos[0], what, codeHint(pos[0]))
 		}
 	}
-	// The task taken here, or elsewhere in the session that took it (a
-	// worktree): only when that is one task, so a keyless wp done never
-	// finishes a different one than the agent was told (WP-242).
+	// a keyless done finishes only the one task held, so it never closes a task the agent was not told to finish
 	keys := c.heldKeys()
 	if len(keys) > 1 {
 		keys = c.stillHeld(keys)
@@ -779,7 +775,7 @@ func cmdRelease(c *cli, args []string) error {
 			return err
 		}
 		c.forgetClaim(key)
-		c.releasePush(key, top) // WP-843: its commits don't stay on this machine only
+		c.releasePush(key, top) // push the checkout on release, so its commits do not stay on this machine only
 		return c.emit(raw, func() string { return string(raw) })
 	})
 }
@@ -883,7 +879,6 @@ func (c *cli) forgetClaim(key string) {
 			if !cl.has(key) {
 				continue
 			}
-			// The one taken before it here becomes the task here.
 			keys := slices.DeleteFunc(cl.keys(), func(k string) bool { return sameKey(k, key) })
 			if len(keys) == 0 {
 				delete(s.Claims, dir)

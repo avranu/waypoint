@@ -1,6 +1,3 @@
-// Pieces for showing agent sessions (WP-D16) on the Agents overview, the
-// Sessions tab and a session's own page.
-
 import clsx from 'clsx'
 import { BIG_CONTEXT, type AgentSession, type SessionState } from '@/lib/sessions'
 import { agentLabel } from '@/lib/agents'

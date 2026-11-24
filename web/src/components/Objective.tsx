@@ -1,9 +1,4 @@
-// Objectives (WP-927): a task worked in rounds until a check is met ("until
-// this runs in under a second"), by an amount every round, until a reviewer
-// finds nothing, or as a loop with no check. A round ends where the task
-// would close. Waypoint reads every round itself (the commands on the
-// confirming person's runner, then a judge's audit); what the worker
-// measures along the way is shown, and decides nothing.
+// Waypoint reads each round itself; what the worker measures is shown and decides nothing.
 
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
@@ -105,8 +100,6 @@ function roundsText(n: number) {
 
 /** A diagnosis in the round list: collapsed, since it can run long (WP-1449). */
 function DiagnosisText({ text, by, latest }: { text: string; by?: string; latest?: boolean }) {
-  // The latest one is shown whole under "Latest diagnosis"; repeating it here
-  // would show the same text twice on the page.
   if (latest)
     return (
       <span className="block text-subtle" data-testid="round-diagnosis">
@@ -610,8 +603,7 @@ export function ObjectiveDialog({
       pace,
       max_rounds: Math.max(0, parseInt(rounds, 10) || 0),
     }
-    // Blank sends nothing (the server keeps the current value, or takes its
-    // default of 2 for a new objective), and a loop has no rounds to read.
+    // A blank diagnose-after is left out so the server's default of 2 applies; a loop sends none.
     if (verified && diagnoseAfter.trim()) {
       const diagnoseN = Number(diagnoseAfter)
       if (!Number.isInteger(diagnoseN) || diagnoseN < 0 || diagnoseN > 20) {
@@ -620,8 +612,7 @@ export function ObjectiveDialog({
       }
       set.diagnose_after = diagnoseN
     }
-    // Blank, or left as it was, keeps the kind's own gap: a day for one
-    // that never ends, none for one with a fixed target.
+    // Blank or unchanged every is left out so the server gives each kind its own default gap.
     if (every.trim() && !(o && every.trim() === everyText(o.every))) set.every = every.trim()
     // A change of an agent's proposal builds on the one that was read.
     if (proposed) set.rev = o!.rev

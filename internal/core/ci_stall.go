@@ -1,28 +1,6 @@
 package core
 
-// How long a ready pull request's full run may take before it is called
-// stalled (WP-317). A fixed 45 minutes was right for one repo's one week:
-// Waypoint's own full run took 45m at p90 and so was flagged while healthy,
-// and once it takes 12 minutes 45 is far too late to notice a run that never
-// started. The threshold now follows each repo's measured full runs.
-//
-// The signal is the forge's task history that the CI board already keeps
-// (ciRepoHistory: the last day, at most 300 tasks). A pull request's draft
-// tier and its full run are runs of the same workflow for the same event
-// (`pull_request`), so neither the event nor a job's name tells them apart:
-// the draft tier's e2e job is skipped, and its other jobs share names with
-// the full run's. What does tell them apart is which jobs ran. A draft run
-// runs a subset of a full run's jobs, so among the successful pull request
-// runs the full tier is the largest set of jobs that at least stallMinRuns
-// runs ran. Each such run's wall time (first job start to last job end) is
-// one sample, and the threshold is stallFactor × their p90, never below
-// stallFloor. Runs where a job failed or was cancelled are left out (they
-// end early or are superseded), and so are runs that didn't produce the full
-// set (a docs-only change, say). A repo whose CI has no tiers has one set of
-// jobs, and all its runs count.
-//
-// Too few samples, a forge that can't be read, or a forge client without
-// Actions (GitHub, GitLab) leave the old fixed fullRunStall.
+// Full tier = the largest job set that stallMinRuns successful pull request runs ran (draft runs are subsets); stall = stallFactor x their p90, never below stallFloor.
 
 import (
 	"context"
@@ -74,7 +52,6 @@ func (s *Service) fullRunStallAfter(ctx context.Context, pr *PullRequest) (time.
 		}
 	}
 	if !read {
-		// look again soon, not at every babysit step
 		v.at = s.now().Add(ciStallRetry - ciStallFresh)
 	}
 	c.mu.Lock()
@@ -90,8 +67,8 @@ func (s *Service) fullRunStallAfter(ctx context.Context, pr *PullRequest) (time.
 // (and why) when there is too little to go on.
 func stallFromHistory(tasks []ActionTask) (time.Duration, string) {
 	type run struct {
-		jobs       []string // the successful jobs
-		all        []string // every job that ran, whatever came of it
+		jobs       []string
+		all        []string
 		start, end time.Time
 		clean      bool
 	}
@@ -122,11 +99,10 @@ func stallFromHistory(tasks []ActionTask) (time.Duration, string) {
 				r.end = t.Updated
 			}
 		case "skipped":
-		default: // failed, cancelled, still going
+		default:
 			r.clean = false
 		}
 	}
-	// group the clean runs by the jobs they ran
 	type group struct {
 		jobs  []string
 		walls []float64
@@ -155,9 +131,7 @@ func stallFromHistory(tasks []ActionTask) (time.Duration, string) {
 	if full == nil {
 		return fullRunStall, fmt.Sprintf("the default; fewer than %d recent full runs to go by", stallMinRuns)
 	}
-	// A run that ran more than the chosen set is a bigger tier that has too
-	// few complete runs to go by yet (the chosen set is the draft tier, or a
-	// full run keeps failing): the default is safer than a draft run's time.
+	// A run bigger than the chosen set is understated by its times, so the default applies until enough full runs exist.
 	for _, r := range runs {
 		if len(r.all) > len(full.jobs) && !slices.ContainsFunc(full.jobs, func(j string) bool { return !slices.Contains(r.all, j) }) {
 			return fullRunStall, fmt.Sprintf("the default; fewer than %d recent full runs to go by", stallMinRuns)

@@ -12,11 +12,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Page codes (WP-D11): a categorised page is known by its category's
-// prefix and a number, PL13 for plan 13, numbered per project (or per
-// person, for personal pages). Other projects' pages are APP-PL13. Codes
-// stay with a page when it changes category or project (the new code is
-// added) and are never reused, even after a page is deleted.
+// Codes are never reused, even after a page is deleted; a page that moves keeps its old codes, which still find it.
 
 // PagePrefixes are the code prefixes of the page categories, as an
 // earlier set of repos numbered their documents.
@@ -130,10 +126,10 @@ func (s *Service) codePage(ctx context.Context, t *tx, id, want int64) error {
 	}
 	scope := pageScope(project, owner)
 	if scope == 0 {
-		return nil // a personal page whose owner is gone: nothing to number it in
+		return nil
 	}
 	prefix := PagePrefixes[category]
-	// Is the current number this scope's? (A move leaves the old one behind.)
+	// A move leaves the page's old number behind, so its current number may belong to another scope.
 	if number.Valid && prefix != "" && want == 0 {
 		if holder, ok, err := codeTaken(ctx, t, scope, prefix, number.Int64); err != nil {
 			return err
@@ -149,7 +145,6 @@ func (s *Service) codePage(ctx context.Context, t *tx, id, want int64) error {
 		}
 		switch {
 		case taken && holder != id:
-			// Someone else's: leave the title alone.
 		case m[1] == prefix && (want == 0 || want == n):
 			want = n
 			if _, err := t.ExecContext(ctx, `UPDATE pages SET title = ? WHERE id = ?`, m[3], id); err != nil {
@@ -181,7 +176,6 @@ func (s *Service) codePage(ctx context.Context, t *tx, id, want int64) error {
 			return invalid("%s%d is already page #%d", prefix, n, holder)
 		}
 	} else {
-		// Back to a category it had here: its old code.
 		err := t.QueryRowContext(ctx, `SELECT number FROM page_codes WHERE scope = ? AND prefix = ? AND page_id = ? ORDER BY rowid LIMIT 1`, scope, prefix, id).Scan(&n)
 		if errors.Is(err, sql.ErrNoRows) {
 			if err := t.QueryRowContext(ctx, `SELECT coalesce(max(number), 0) + 1 FROM page_codes WHERE scope = ? AND prefix = ?`, scope, prefix).Scan(&n); err != nil {
@@ -294,7 +288,6 @@ func (s *Service) pageByCode(ctx context.Context, actor *Actor, c PageCode, proj
 			return 0, notFound("page " + c.String() + " in " + strings.ToUpper(project))
 		}
 	}
-	// Elsewhere: their personal pages, and other projects' (if unambiguous).
 	rows, err := s.db.R.QueryContext(ctx, `SELECT pc.page_id, coalesce(p.key, '') FROM page_codes pc
 		JOIN pages pg ON pg.id = pc.page_id LEFT JOIN projects p ON p.id = pg.project_id
 		WHERE pc.prefix = ? AND pc.number = ? ORDER BY pc.scope < 0 DESC, pc.page_id`, c.Prefix, c.Number)

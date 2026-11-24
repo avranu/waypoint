@@ -25,9 +25,9 @@ for (const vp of looks([
   page.on(
     "console",
     (m) =>
-      m.type() === "error" && fail(`console (${tag}): ` + m.text().slice(0, 300)),
+      m.type() === "error" &&
+      fail(`console (${tag}): ` + m.text().slice(0, 300)),
   );
-  // A model is "set up" for estimates, and it always answers 5.
   await page.route("**/api/v1/ai/tasks", (r) =>
     r.fulfill({
       json: [
@@ -44,7 +44,12 @@ for (const vp of looks([
   );
   await page.route("**/api/v1/issues/*/ai/estimate", (r) =>
     r.fulfill({
-      json: { points: 5, confidence: "medium", reason: "Mocked.", model: "mock" },
+      json: {
+        points: 5,
+        confidence: "medium",
+        reason: "Mocked.",
+        model: "mock",
+      },
     }),
   );
   await page.goto(base + "/login");
@@ -64,12 +69,13 @@ for (const vp of looks([
   const key = "PT" + vp.width;
   if (!(await api.get("/projects")).some((p) => p.key === key))
     await api.post("/projects", { name: "Points " + vp.width, key });
-  const issue = await api.post("/issues", { project: key, title: "Points label" });
+  const issue = await api.post("/issues", {
+    project: key,
+    title: "Points label",
+  });
 
   await page.goto(`${base}/issue/${issue.key}`);
-  // Unset optional fields wait behind "More" (WP-680).
-  // Picking it there opens its picker at once (WP-1196); close that, to check the face first.
-  // The wide side panel lists every field, with no More button.
+  // Picking a field from More opens its picker at once; this closes it before the face is checked.
   const more = page.locator('[aria-label="More fields"]:visible');
   if (await more.count()) {
     await more.first().click();
@@ -81,13 +87,17 @@ for (const vp of looks([
   await points.waitFor();
   const estimate = page.getByRole("button", { name: /Estimate with AI/ });
 
-  // Unset: reads "Points", and no estimate button beside it.
-  // On the strip it reads "Points"; in the side panel's labelled row, "None".
+  // The strip reads "Points"; the side panel's labelled row reads "None".
   const face = (await points.textContent()).trim();
-  ok(face === "Points" || face === "None", `${tag}: unset reads short (${face})`);
-  ok((await estimate.count()) === 0, `${tag}: no Estimate button beside the control`);
+  ok(
+    face === "Points" || face === "None",
+    `${tag}: unset reads short (${face})`,
+  );
+  ok(
+    (await estimate.count()) === 0,
+    `${tag}: no Estimate button beside the control`,
+  );
 
-  // Opening the picker offers the estimate; use it.
   await points.click();
   await estimate.waitFor();
   await page.screenshot({ path: `${out}/${tag}-picker-offer.png` });
@@ -96,8 +106,11 @@ for (const vp of looks([
   await use.waitFor();
   await page.screenshot({ path: `${out}/${tag}-picker-result.png` });
   await use.click();
-  await page.locator('[title="Story points"]:visible').getByText("5 pts").waitFor();
-  // The label updates optimistically; give the save a moment to land.
+  await page
+    .locator('[title="Story points"]:visible')
+    .getByText("5 pts")
+    .waitFor();
+  // The label updates before the save lands, so the stored value is polled.
   let saved = null;
   for (let i = 0; i < 20; i++) {
     saved = (await api.get("/issues/" + issue.key)).points;
@@ -107,11 +120,16 @@ for (const vp of looks([
   if (saved !== 5) saved = (await api.get("/issues/" + issue.key)).points;
   ok(saved === 5, `${tag}: estimate applied`);
 
-  // Set: still no button beside the points, but the picker has it.
-  ok((await estimate.count()) === 0, `${tag}: set points show no Estimate button`);
+  ok(
+    (await estimate.count()) === 0,
+    `${tag}: set points show no Estimate button`,
+  );
   await points.click();
   await estimate.waitFor();
-  ok(await estimate.isVisible(), `${tag}: the picker still offers Estimate with AI`);
+  ok(
+    await estimate.isVisible(),
+    `${tag}: the picker still offers Estimate with AI`,
+  );
   await page.screenshot({ path: `${out}/${tag}-picker-set.png` });
   await ctx.close();
 }

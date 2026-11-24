@@ -23,49 +23,121 @@ let task;
 async function seed(api, call) {
   if ((await api("GET", "/projects")).some((p) => p.key === KEY)) return;
   await api("POST", "/projects", { name: "References", key: KEY });
-  const { token } = await api("POST", "/me/tokens", { name: "refs agent", agent: "anthropic/claude-code" });
-  const agent = { ...H, Authorization: `Bearer ${token}`, "X-Waypoint-Machine": "box" };
-  const db = new (await import("node:sqlite")).DatabaseSync(`${process.env.DIR}/wp.db`);
+  const { token } = await api("POST", "/me/tokens", {
+    name: "refs agent",
+    agent: "anthropic/claude-code",
+  });
+  const agent = {
+    ...H,
+    Authorization: `Bearer ${token}`,
+    "X-Waypoint-Machine": "box",
+  };
+  const db = new (await import("node:sqlite")).DatabaseSync(
+    `${process.env.DIR}/wp.db`,
+  );
   db.exec("PRAGMA busy_timeout = 5000");
-  const forge = db.prepare(`INSERT INTO forges(kind, name, base_url, created_at) VALUES ('forgejo', 'Forge', 'http://127.0.0.1:1', ?) RETURNING id`).get(Date.now()).id;
-  const project = db.prepare("SELECT id FROM projects WHERE key = ?").get(KEY).id;
-  db.prepare("INSERT INTO project_repos(project_id, forge_id, repo, created_at) VALUES (?, ?, 'refs/app', ?)").run(project, forge, Date.now());
+  const forge = db
+    .prepare(
+      `INSERT INTO forges(kind, name, base_url, created_at) VALUES ('forgejo', 'Forge', 'http://127.0.0.1:1', ?) RETURNING id`,
+    )
+    .get(Date.now()).id;
+  const project = db
+    .prepare("SELECT id FROM projects WHERE key = ?")
+    .get(KEY).id;
+  db.prepare(
+    "INSERT INTO project_repos(project_id, forge_id, repo, created_at) VALUES (?, ?, 'refs/app', ?)",
+  ).run(project, forge, Date.now());
   db.close();
-  await call("POST", "/sessions/hook", { events: [{ event: "SessionStart", session_id: "refs-session", machine: "box", cwd: "/work/refs", repo: "refs/app", branch: "main" }] }, agent);
-  const r = await call("POST", "/requests", { kind: "action", title: "Deploy Quarry 0.3.22 to production", body: "Auto mode blocked me; the exact command is here." }, { ...agent, "X-Waypoint-Session": "refs-session" });
+  await call(
+    "POST",
+    "/sessions/hook",
+    {
+      events: [
+        {
+          event: "SessionStart",
+          session_id: "refs-session",
+          machine: "box",
+          cwd: "/work/refs",
+          repo: "refs/app",
+          branch: "main",
+        },
+      ],
+    },
+    agent,
+  );
+  const r = await call(
+    "POST",
+    "/requests",
+    {
+      kind: "action",
+      title: "Deploy Quarry 0.3.22 to production",
+      body: "Auto mode blocked me; the exact command is here.",
+    },
+    { ...agent, "X-Waypoint-Session": "refs-session" },
+  );
   if (!r.ok()) throw new Error(`ask: ${r.status()} ${await r.text()}`);
-  await api("POST", "/design", { title: "Use sqlite", kind: "decision", project: KEY, body: "Because." });
+  await api("POST", "/design", {
+    title: "Use sqlite",
+    kind: "decision",
+    project: KEY,
+    body: "Because.",
+  });
   await api("POST", "/projects", { name: "Second", key: "RG" });
-  await api("POST", "/design", { title: "Use postgres", kind: "decision", project: "RG", body: "Because." });
+  await api("POST", "/design", {
+    title: "Use postgres",
+    kind: "decision",
+    project: "RG",
+    body: "Because.",
+  });
   await api("POST", "/issues", { project: KEY, title: "ADR10 follow up" });
-  const other = await api("POST", "/issues", { project: KEY, title: "Release notes" });
+  const other = await api("POST", "/issues", {
+    project: KEY,
+    title: "Release notes",
+  });
   task = await api("POST", "/issues", {
     project: KEY,
     title: "Follow up on the deploy",
     description: `RF:R-1: deploy Quarry. Also R-1 and R-99 (nothing), see ${other.key}, ADR1, ZZ-5.`,
   });
-  await api("POST", `/issues/${task.key}/comments`, { body: "Still waiting on R1 before the release." });
-  await api("POST", `/issues/${task.key}/comments`, { body: "Second note: ADR1 and RF:R-1 again." });
-  await api("POST", `/issues/${task.key}/comments`, { body: "Third note: nothing to see, ZZ-5." });
+  await api("POST", `/issues/${task.key}/comments`, {
+    body: "Still waiting on R1 before the release.",
+  });
+  await api("POST", `/issues/${task.key}/comments`, {
+    body: "Second note: ADR1 and RF:R-1 again.",
+  });
+  await api("POST", `/issues/${task.key}/comments`, {
+    body: "Third note: nothing to see, ZZ-5.",
+  });
 }
 
 async function run(width, scheme) {
   const tag = `${width}/${scheme}`;
-  const ctx = await browser.newContext({ viewport: { width, height: 900 }, colorScheme: scheme });
+  const ctx = await browser.newContext({
+    viewport: { width, height: 900 },
+    colorScheme: scheme,
+  });
   const page = await ctx.newPage();
   page.setDefaultTimeout(10000);
   page.on("pageerror", (e) => fail(`${tag} pageerror: ${e.message}`));
   page.on("console", (m) => {
-    if (m.type() === "error" && !/Failed to load resource/.test(m.text())) fail(`${tag} console: ${m.text().slice(0, 300)}`);
+    if (m.type() === "error" && !/Failed to load resource/.test(m.text()))
+      fail(`${tag} console: ${m.text().slice(0, 300)}`);
   });
-  const call = (m, p, d, headers = H) => page.request.fetch(base + "/api/v1" + p, { method: m, headers, data: d });
-  const api = (m, p, d) => call(m, p, d).then((r) => (r.status() === 204 ? null : r.json()));
+  const call = (m, p, d, headers = H) =>
+    page.request.fetch(base + "/api/v1" + p, { method: m, headers, data: d });
+  const api = (m, p, d) =>
+    call(m, p, d).then((r) => (r.status() === 204 ? null : r.json()));
   const shot = async (name) => {
     await page.waitForTimeout(300);
     await page.screenshot({ path: `${out}/${name}-${width}-${scheme}.png` });
   };
   const overflow = async (where) =>
-    ok(!(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)), `${tag} no sideways scroll (${where})`);
+    ok(
+      !(await page.evaluate(
+        () => document.documentElement.scrollWidth > window.innerWidth,
+      )),
+      `${tag} no sideways scroll (${where})`,
+    );
 
   await page.goto(base + "/login");
   await page.getByLabel("Username or email").fill("robin");
@@ -74,60 +146,110 @@ async function run(width, scheme) {
   await page.waitForURL((u) => !u.pathname.startsWith("/login"));
   await seed(api, call);
 
-  // ---- the task's text links what exists ----
   let refCalls = 0;
-  page.on("request", (r) => r.method() === "POST" && new URL(r.url()).pathname === "/api/v1/refs" && refCalls++);
+  page.on(
+    "request",
+    (r) =>
+      r.method() === "POST" &&
+      new URL(r.url()).pathname === "/api/v1/refs" &&
+      refCalls++,
+  );
   await page.goto(base + `/issue/${task.key}`);
   const desc = page.locator(".prose-wp").first();
   await desc.getByText("Also", { exact: false }).waitFor();
-  await page.waitForFunction(() => document.querySelectorAll(".prose-wp a.ref").length >= 3);
-  const hrefs = await desc.locator("a.ref").evaluateAll((as) => as.map((a) => [a.textContent, a.getAttribute("href")]));
+  await page.waitForFunction(
+    () => document.querySelectorAll(".prose-wp a.ref").length >= 3,
+  );
+  const hrefs = await desc
+    .locator("a.ref")
+    .evaluateAll((as) =>
+      as.map((a) => [a.textContent, a.getAttribute("href")]),
+    );
   const byText = Object.fromEntries(hrefs);
-  ok(byText["RF:R-1"] === "/requests/RF:R-1", `${tag} RF:R-1 links the request (${JSON.stringify(hrefs)})`);
-  ok(byText["R-1"] === "/requests/RF:R-1", `${tag} a bare R-1 resolves in the task's own project`);
+  ok(
+    byText["RF:R-1"] === "/requests/RF:R-1",
+    `${tag} RF:R-1 links the request (${JSON.stringify(hrefs)})`,
+  );
+  ok(
+    byText["R-1"] === "/requests/RF:R-1",
+    `${tag} a bare R-1 resolves in the task's own project`,
+  );
   ok(byText["ADR1"]?.startsWith("/design/"), `${tag} ADR1 links the decision`);
-  ok(Object.keys(byText).some((k) => /^RF-\d+$/.test(k)), `${tag} the other task is linked`);
-  ok(!("R-99" in byText) && !("ZZ-5" in byText), `${tag} codes nothing has stay plain text`);
+  ok(
+    Object.keys(byText).some((k) => /^RF-\d+$/.test(k)),
+    `${tag} the other task is linked`,
+  );
+  ok(
+    !("R-99" in byText) && !("ZZ-5" in byText),
+    `${tag} codes nothing has stay plain text`,
+  );
   await page.getByText("Still waiting on").waitFor();
-  const note = await page.locator("a.ref", { hasText: /^R1$/ }).first().getAttribute("href");
-  ok(note === "/requests/RF:R-1", `${tag} R1 in a comment links the request (${note})`);
+  const note = await page
+    .locator("a.ref", { hasText: /^R1$/ })
+    .first()
+    .getAttribute("href");
+  ok(
+    note === "/requests/RF:R-1",
+    `${tag} R1 in a comment links the request (${note})`,
+  );
   await page.getByText("Third note").waitFor();
   await page.waitForLoadState("networkidle");
-  // the description asks once and the three comments together once (WP-184)
-  ok(refCalls === 2, `${tag} /refs is called once for the description and once for all comments (${refCalls})`);
+  ok(
+    refCalls === 2,
+    `${tag} /refs is called once for the description and once for all comments (${refCalls})`,
+  );
   await shot("task");
   await overflow("task");
   await desc.locator("a.ref", { hasText: "RF:R-1" }).first().click();
-  await page.getByRole("heading", { name: "Deploy Quarry 0.3.22 to production" }).waitFor();
+  await page
+    .getByRole("heading", { name: "Deploy Quarry 0.3.22 to production" })
+    .waitFor();
   ok(true, `${tag} the link opens the request`);
 
-  // ---- searching by code, any spelling ----
   for (const q of ["R-1", "R1", "RF:R-1"]) {
     await page.goto(base + `/search?q=${encodeURIComponent(q)}`);
     const best = page.locator("section", { hasText: "Best match" }).first();
     await best.waitFor();
-    ok(await best.getByText("Deploy Quarry 0.3.22 to production").isVisible(), `${tag} ${q}: the request is the best match`);
+    ok(
+      await best.getByText("Deploy Quarry 0.3.22 to production").isVisible(),
+      `${tag} ${q}: the request is the best match`,
+    );
     await page.getByText("Follow up on the deploy").first().waitFor();
-    ok(await page.getByText("mentions it").first().isVisible() || (await page.getByText("Follow up on the deploy").count()) > 0, `${tag} ${q}: the task that writes it follows`);
+    ok(
+      (await page.getByText("mentions it").first().isVisible()) ||
+        (await page.getByText("Follow up on the deploy").count()) > 0,
+      `${tag} ${q}: the task that writes it follows`,
+    );
     if (q === "R-1") {
       await shot("search");
       await overflow("search");
     }
   }
-  // ---- a decision by its code: first on the page, and in the palette, the one in view first ----
   for (const q of ["ADR1", "ADR-0001"]) {
     await page.goto(base + `/search?q=${encodeURIComponent(q)}`);
     const heads = page.locator("section h2");
     await heads.first().waitFor();
-    ok((await heads.first().innerText()).includes("Best match"), `${tag} ${q}: best match leads`);
-    ok((await heads.nth(1).innerText()).includes("Design notes"), `${tag} ${q}: decisions are the first group`);
-    ok(await page.locator("section").first().getByText("Use sqlite").isVisible(), `${tag} ${q}: the decision is the best match`);
+    ok(
+      (await heads.first().innerText()).includes("Best match"),
+      `${tag} ${q}: best match leads`,
+    );
+    ok(
+      (await heads.nth(1).innerText()).includes("Design notes"),
+      `${tag} ${q}: decisions are the first group`,
+    );
+    ok(
+      await page.locator("section").first().getByText("Use sqlite").isVisible(),
+      `${tag} ${q}: the decision is the best match`,
+    );
     if (q === "ADR1") {
       await shot("search-adr");
       await overflow("search adr");
     }
   }
-  for (const [proj, first] of [["RG", "Use postgres"], ["RF", "Use sqlite"]]) {
+  for (const [proj, first] of [
+    ["RG", "Use postgres"],
+    ["RF", "Use sqlite"],
+  ]) {
     await page.goto(base + `/p/${proj}/board`);
     await page.waitForLoadState("networkidle");
     await page.keyboard.press("Control+k");
@@ -135,17 +257,31 @@ async function run(width, scheme) {
     await input.fill("ADR1");
     const rows = page.locator("[data-idx]");
     await page.getByText("Matches", { exact: true }).waitFor();
-    await page.waitForFunction(() => document.querySelectorAll("[data-idx]").length >= 2);
-    ok((await rows.first().innerText()).includes(first), `${tag} palette in ${proj}: ${first} comes first (${(await rows.first().innerText()).replace(/\n/g, " ")})`);
+    await page.waitForFunction(
+      () => document.querySelectorAll("[data-idx]").length >= 2,
+    );
+    ok(
+      (await rows.first().innerText()).includes(first),
+      `${tag} palette in ${proj}: ${first} comes first (${(await rows.first().innerText()).replace(/\n/g, " ")})`,
+    );
     const texts = await rows.allInnerTexts();
-    ok(texts.filter((t) => t.includes("Use sqlite")).length === 1, `${tag} palette in ${proj}: no duplicates`);
+    ok(
+      texts.filter((t) => t.includes("Use sqlite")).length === 1,
+      `${tag} palette in ${proj}: no duplicates`,
+    );
     if (proj === "RG") await shot("palette-adr");
     await page.keyboard.press("Escape");
   }
   const only = await api("GET", "/search?q=" + encodeURIComponent("RF:R-1"));
-  ok(only.issues?.some((i) => i.key === task.key), `${tag} issues-only search reads RF:R-1 as a code`);
+  ok(
+    only.issues?.some((i) => i.key === task.key),
+    `${tag} issues-only search reads RF:R-1 as a code`,
+  );
   const words = await api("GET", "/search/all?q=production&kinds=requests");
-  ok(words.groups[0]?.hits?.[0]?.key === "RF:R-1", `${tag} a request is found by its words`);
+  ok(
+    words.groups[0]?.hits?.[0]?.key === "RF:R-1",
+    `${tag} a request is found by its words`,
+  );
   await ctx.close();
 }
 

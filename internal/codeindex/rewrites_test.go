@@ -12,7 +12,6 @@ func TestTraceRewritesBlamesTheBaseAsMergedNow(t *testing.T) {
 	r := newRepo(t)
 	r.write("core/a.go", "package core\n\nfunc A() int {\n\treturn 1\n}\n")
 	r.commit("start", 40)
-	// The branch starts before PR #5 lands, as WP-232 did before WP-233.
 	r.git("checkout", "-q", "-b", "later")
 	r.write("core/a.go", "package core\n\nfunc A() int {\n\treturn 3\n}\n")
 	r.commit("A is three", 2)
@@ -121,7 +120,6 @@ func TestTraceRewritesRefusesRefsThatAreOptions(t *testing.T) {
 	if _, err := os.Stat(out); err == nil {
 		t.Errorf("git ran the option: %s exists", out)
 	}
-	// A real ref still works.
 	if _, err := TraceRewrites(r.dir, "main", "HEAD", time.Now()); err != nil {
 		t.Errorf("main..HEAD: %v", err)
 	}

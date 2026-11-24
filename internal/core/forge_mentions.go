@@ -12,18 +12,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Forge mentions (WP-379, WP-ADR24): a pull request, commit or forge issue
-// that names an issue key is evidence of a relationship, and every such
-// place is recorded (forge_mentions), with what the text says the
-// relationship is. Only an item that is the issue's own work becomes a link
-// (external_links), because a link has effects that belong to that work: a
-// pull request link puts an in-progress task In Review and out of the
-// agents' queue, makes wp done wait for it, closes the issue's open
-// requests when it merges, and drives the "PR opened/merged" automations.
-// Own work is named in the branch or the title (or a commit's subject),
-// or anywhere with a closing verb ("Fixes WP-12", the "Issue: WP-12" line
-// wp ship writes). A key in a body or comment otherwise ("follow-up to
-// WP-12", a commit body listing related tasks) is a mention only.
+// Only own work (a branch or title naming the key, a commit subject, or a closing verb) becomes a link; any other key is recorded as a mention only.
 
 // keyRef is one issue key found in a piece of forge text.
 type keyRef struct {
@@ -103,7 +92,7 @@ func ownRef(kind, place, verb string) bool {
 	case "body", "message":
 		return kind != "issue" && ownVerbs[verb]
 	}
-	return false // comments and reviews talk about work; they aren't it
+	return false
 }
 
 // scanKeyRefs finds the issue keys in one place of an item's text.
@@ -143,7 +132,7 @@ func around(line string, start, n int) string {
 	if len(r) <= n {
 		return line
 	}
-	// The trim may have moved start a little: close enough for a window.
+	// start is a byte offset into the untrimmed line, so after TrimSpace the window is approximate.
 	s := len([]rune(line[:min(start, len(line))]))
 	from := max(0, s-n/2)
 	to := min(len(r), from+n)
@@ -160,20 +149,15 @@ func around(line string, start, n int) string {
 
 // forgeText is one piece of forge text to record the mentions of.
 type forgeText struct {
-	f    *Forge
-	repo string
-	kind string // pull, commit, issue: the item's
-	// item is the forge item as a link shows it (no title for outside
-	// text, WP-281).
+	f         *Forge
+	repo      string
+	kind      string
 	item      *ForgeItem
-	sourceURL string   // the item's URL, or the comment's
-	places    []string // the places this text has: rows there it no longer names are gone
-	trusted   bool     // a Waypoint person (or Waypoint) wrote it: lines may be quoted
+	sourceURL string
+	places    []string // Rows at these places that this text no longer names are marked gone; rows at other places are left alone.
+	trusted   bool     // Only text a Waypoint person wrote keeps its quoted line (excerpt); outside text stores none.
 	author    string
-	// link: own work becomes a link (an open pull request's text, a
-	// forge issue's or a pushed commit's; not a closed pull request read
-	// by a sync). takeBack: links this text made and no longer makes are
-	// removed.
+	// Only live text (an open pull request, a forge issue, a pushed commit) links own work and removes links it no longer makes; a sync reading a closed pull request does neither.
 	link, takeBack bool
 }
 
@@ -191,15 +175,13 @@ func (s *Service) recordForgeMentions(ctx context.Context, src forgeText, refs [
 		return res, nil
 	}
 	defer forgeLocks.lock("mentions|" + src.sourceURL)()
-	// One row per issue and place: the own reference, else the first that
-	// states a relationship, else the first.
 	type ip struct {
 		issue int64
 		place string
 	}
 	byPlace := map[ip]*mentionHit{}
 	var order []ip
-	issues := map[string]*mentionHit{} // key → resolved issue (nil: not one here)
+	issues := map[string]*mentionHit{}
 	attached := map[int64]bool{}
 	for _, r := range refs {
 		hit, seen := issues[r.Key]
@@ -259,7 +241,7 @@ func (s *Service) recordForgeMentions(ctx context.Context, src forgeText, refs [
 			project int64
 			key     string
 		}
-		touched := map[int64]ref{} // one event per issue
+		touched := map[int64]ref{}
 		owned := map[int64]*mentionHit{}
 		for _, k := range order {
 			m := byPlace[k]
@@ -295,7 +277,6 @@ func (s *Service) recordForgeMentions(ctx context.Context, src forgeText, refs [
 			}
 			delete(have, k)
 		}
-		// What this text no longer names.
 		for k, o := range have {
 			if o.gone || !slices.Contains(src.places, k.place) {
 				continue
@@ -333,7 +314,7 @@ func (s *Service) recordForgeMentions(ctx context.Context, src forgeText, refs [
 // mentionHit is an issue a key resolved to, and the reference recorded.
 type mentionHit struct {
 	issueID, projectID int64
-	key                string // the issue's key now
+	key                string
 	ref                keyRef
 }
 
@@ -401,7 +382,6 @@ func (s *Service) linkOwnWork(ctx context.Context, t *tx, src forgeText, owned m
 			t.emit(ev)
 			continue
 		}
-		// Linked before forge mentions were recorded: say how.
 		if _, err := t.ExecContext(ctx, `UPDATE external_links SET via = ? WHERE issue_id = ? AND url = ? AND via = ''`, m.ref.Place, issueID, src.item.URL); err != nil {
 			return n, err
 		}
@@ -440,8 +420,6 @@ func (s *Service) takeBackLinks(ctx context.Context, t *tx, src forgeText, owned
 	return len(list), nil
 }
 
-// ---- the texts ----
-
 // scanPull records a pull request's mentions: its branch, title and body.
 // raw is the item as the forge sent it (whose text is scanned), shown as a
 // link may show it. link: its own work becomes links (an open pull request).
@@ -472,7 +450,7 @@ func (s *Service) scanCommit(ctx context.Context, f *Forge, repo string, c forge
 	trusted := !s.prVoice(ctx, f).outside(ctx, s.db.R, c.author)
 	title := ""
 	if trusted {
-		title = excerpt(subject, 200) // a stranger's message, merged by a person, shows as the commit alone (WP-281)
+		title = excerpt(subject, 200) // Text from outside the team never supplies the title, so a stranger's commit subject is not shown.
 	}
 	refs := append(scanKeyRefs("commit", "subject", subject), scanKeyRefs("commit", "message", body)...)
 	return s.recordForgeMentions(ctx, forgeText{f: f, repo: repo, kind: "commit", item: &ForgeItem{Title: title, URL: c.url, State: "pushed"},
@@ -492,7 +470,6 @@ func (s *Service) scanComment(ctx context.Context, f *Forge, repo string, onPR b
 	}
 	itemURL, _, _ := strings.Cut(c.URL, "#")
 	item := &ForgeItem{Number: number, URL: itemURL, IsPR: onPR}
-	// The item's title and state as its other mentions and links show it.
 	_ = s.db.R.QueryRowContext(ctx, `SELECT title, state FROM (
 			SELECT title, state, 0 AS o FROM external_links WHERE url = ?
 			UNION ALL SELECT title, state, 1 FROM forge_mentions WHERE item_url = ?) ORDER BY o LIMIT 1`, itemURL, itemURL).Scan(&item.Title, &item.State)
@@ -506,8 +483,6 @@ func (s *Service) scanComment(ctx context.Context, f *Forge, repo string, onPR b
 		s.log.WarnContext(ctx, "record forge mentions", "url", c.URL, "err", err)
 	}
 }
-
-// ---- reading ----
 
 // ForgeMention is a forge item that names an issue, with where and how.
 type ForgeMention struct {
@@ -565,7 +540,6 @@ func (s *Service) forgeMentions(ctx context.Context, q queryer, issueID int64, a
 			}
 			o.Own = o.Own || m.Own
 			o.Gone = o.Gone && m.Gone
-			// The verb, excerpt and link come from one text.
 			if o.Verb == "" && m.Verb != "" {
 				o.Verb, o.Excerpt, o.SourceURL = m.Verb, m.Excerpt, m.SourceURL
 			} else if o.Excerpt == "" && m.Excerpt != "" {
@@ -592,8 +566,6 @@ func (s *Service) ForgeMentions(ctx context.Context, actor *Actor, ref string, a
 	}
 	return s.forgeMentions(ctx, s.db.R, i.ID, all)
 }
-
-// ---- before WP-379 ----
 
 const forgeMentionsSetting = "forge_mentions_v1"
 
@@ -649,7 +621,7 @@ func (s *Service) BackfillForgeMentions(ctx context.Context, force bool) (ForgeM
 		}
 		raw, err := s.Forges.GetItem(ctx, f, it.repo, it.number, it.kind == "pull")
 		if isStatus(err, http.StatusNotFound) || isStatus(err, http.StatusGone) {
-			continue // gone for good: retrying at every start would not read it
+			continue
 		}
 		if err != nil || raw == nil || raw.URL == "" {
 			res.Failed++
@@ -657,7 +629,7 @@ func (s *Service) BackfillForgeMentions(ctx context.Context, force bool) (ForgeM
 		}
 		if raw.URL != it.url {
 			c := *raw
-			c.URL = it.url // as linked: the forge may spell it differently
+			c.URL = it.url // Keep the linked URL, not the forge's spelling: external_links and forge_mentions match rows on that URL.
 			raw = &c
 		}
 		res.Items++

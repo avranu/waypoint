@@ -9,9 +9,7 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-// These checks guard the files GitHub's hosted runners run on the public
-// mirror (WP-1624). They apply to .github/ only, so they are not rules of
-// Lint and `wp ci lint` does not run them; TestRepoGitHubWorkflows does.
+// These checks apply to .github/ only: wp ci lint does not run them; TestRepoGitHubWorkflows does.
 
 var (
 	// GitHub reads context names in any case, so SECRETS.X is a secret too.

@@ -23,7 +23,6 @@ func (s *Server) sessionRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/sessions/outstanding", a(s.sessionOutstanding))
 	mux.HandleFunc("POST /api/v1/sessions/outstanding/told", a(s.sessionOutstandingTold))
 	mux.HandleFunc("GET /api/v1/sessions/{id}", a(s.getAgentSession))
-	// Follow-ups (WP-D22): steps that run when the agent truly finishes.
 	mux.HandleFunc("GET /api/v1/sessions/{id}/follow-up", a(s.getFollowUp))
 	mux.HandleFunc("PUT /api/v1/sessions/{id}/follow-up", a(s.saveFollowUp))
 	mux.HandleFunc("DELETE /api/v1/sessions/{id}/follow-up", a(s.clearFollowUp))

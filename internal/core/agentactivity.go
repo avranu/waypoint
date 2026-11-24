@@ -9,11 +9,6 @@ import (
 	"time"
 )
 
-// What agents did (WP-D15): their runs on issues people can see, the time
-// and tokens those took, the tasks they finished, the pull requests that
-// came of the work, the issues and comments they wrote, and what the review
-// bots did, over a period, for one agent spec or all of them.
-
 // ActivityQuery narrows the activity shown.
 type ActivityQuery struct {
 	Agent   string // an agent spec, matched against each run's identity and model
@@ -145,7 +140,7 @@ func (s *Service) AgentActivity(ctx context.Context, actor *Actor, q ActivityQue
 	q.Agent = strings.TrimSpace(q.Agent)
 	now := s.nowMS()
 	loc := s.actorLocation(actor)
-	// The period is whole days: from the start of the first day.
+	// The period is whole calendar days in the viewer's time zone, not N×24 hours.
 	today := time.UnixMilli(now).In(loc)
 	first := time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, loc).AddDate(0, 0, -(q.Days - 1))
 	from := first.UnixMilli()
@@ -187,10 +182,10 @@ type activityBuilder struct {
 	totals   ActivityTotals
 	agents   map[string]*AgentActivity
 	order    []string
-	spans    map[string][][2]int64 // per agent: its runs' time inside the period
+	spans    map[string][][2]int64
 	days     map[string]*ActivityDay
 	runList  []ActivityRun
-	issueIDs map[int64][]string // issue → the agents that ran on it (for PR credit)
+	issueIDs map[int64][]string
 	bots     []*BotActivity
 }
 
@@ -431,7 +426,7 @@ func (a *activityBuilder) pulls(ctx context.Context, where string, args []any) e
 		case mergedAt[url] > 0:
 			p.merged = mergedAt[url]
 		case state == "merged" && p.merged == 0:
-			p.merged = -1 // merged, but not in the period as far as anyone recorded
+			p.merged = -1 // -1 marks a PR merged with no recorded merge time.
 		}
 		add := func(ag string) {
 			if ag != "" && !slices.ContainsFunc(p.agents, func(x string) bool { return normalizeAgent(x) == normalizeAgent(ag) }) {
@@ -444,7 +439,7 @@ func (a *activityBuilder) pulls(ctx context.Context, where string, args []any) e
 			}
 		}
 		for _, ag := range a.issueIDs[issueID] {
-			add(ag) // its runs matched already (perhaps by model)
+			add(ag)
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -453,7 +448,7 @@ func (a *activityBuilder) pulls(ctx context.Context, where string, args []any) e
 	for _, url := range urls {
 		p := byURL[url]
 		if len(p.agents) == 0 {
-			continue // not agents' work (or not the agents asked about)
+			continue
 		}
 		if p.opened >= a.from {
 			a.totals.PRsOpened++
@@ -541,7 +536,7 @@ func (a *activityBuilder) result() *Activity {
 	}
 	for _, k := range a.order {
 		x := a.agents[k]
-		// One agent on several tasks at once (a batch) is one span of time.
+		// An agent's time is the union of its runs' spans, so concurrent tasks count once.
 		for _, sp := range mergeSpans(a.spans[k]) {
 			x.Seconds += (sp[1] - sp[0]) / 1000
 			a.splitDays(sp[0], sp[1])

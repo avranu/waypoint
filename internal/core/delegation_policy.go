@@ -14,26 +14,7 @@ import (
 	"time"
 )
 
-// The delegation policy (WP-1262, WP-ADR129): how an agent that takes a task
-// is told to split its work between models. Its arms:
-//
-//   - none: nothing is said, so the agent works its own way (the control;
-//     agents' sessions measured before this was built gave Haiku 0.1% of
-//     their cost and Sonnet subagents 7.5%, page X21).
-//   - scouts: Haiku workers search, read, summarize logs and test output and
-//     review slices of the diff; the agent designs, edits and fixes.
-//   - manager: Haiku scouts, and one Sonnet worker implements, tests and
-//     fixes what reviews find; the agent decides, briefs, checks claims and
-//     reads the final diff.
-//
-// Each task an agent takes is given an arm once, and keeps it (the review
-// rounds' prompts say the same). Shares are Thompson draws over what earlier
-// tasks' arms cost, with covariates (project, type, risk, the text's length,
-// when) taken out, as the prep policy does (prep_policy_stats.go); an arm
-// worse than none on a guard (undone, review findings, follow-up fixes,
-// escapes) by more than its margin, surely, gets no tasks. A task whose
-// risk is high is given none and is no evidence; so is the best arm given
-// to an agent whose usage Waypoint can't see.
+// A task keeps the arm it was first given; high-risk tasks get none and count as no evidence.
 
 const (
 	delegArmNone    = "none"
@@ -131,11 +112,11 @@ type delegRow struct {
 	usage        UsageTrendTask
 	prs          int
 	findings     float64
-	severity     map[string]int // review findings by severity
-	audit        map[string]int // review rounds' audit findings by verdict
-	fixes, filed float64        // follow-up fix tasks; tasks filed from it
+	severity     map[string]int
+	audit        map[string]int
+	fixes, filed float64
 	escapes      float64
-	tier         string // the highest review stakes tier of its rounds
+	tier         string
 }
 
 func (r *delegRow) cost() float64 { return r.usage.CostUSD }
@@ -150,13 +131,13 @@ type delegGuardFit struct {
 // delegPolicy is the estimate as last worked out.
 type delegPolicy struct {
 	at       time.Time
-	arms     []string // every arm but none, the drawn ones first
+	arms     []string
 	primary  *prepMix
 	guards   []delegGuardFit
 	blocked  map[string]string
 	rows     []*delegRow
 	measured int
-	byArm    map[string]int // measured tasks of the drawn ones, by arm
+	byArm    map[string]int
 }
 
 // delegPolicyNow is the estimate, worked out again when older than
@@ -170,7 +151,6 @@ func (s *Service) delegPolicyNow(ctx context.Context) (*delegPolicy, error) {
 	}
 	s.delegPolComp.Lock()
 	defer s.delegPolComp.Unlock()
-	// Another take may have worked it out while this one waited.
 	if pol, ok, err := s.delegPolicyCached(true); ok {
 		return pol, err
 	}
@@ -246,8 +226,7 @@ func (s *Service) delegRows(ctx context.Context, now time.Time) ([]*delegRow, er
 	if err := rows.Err(); err != nil || len(out) == 0 {
 		return out, err
 	}
-	// What each task cost, by model, from the usage Waypoint has, from a
-	// day before the oldest draw (a task's earlier sessions count too).
+	// Usage starts a day before the oldest draw, since a task's earlier sessions count too.
 	days := int((now.UnixMilli()-oldest)/(24*time.Hour).Milliseconds()) + 2
 	tr, err := s.UsageTrends(ctx, SystemActor(), UsageQuery{Days: min(days, 365), User: "all", allTasks: true})
 	if err != nil {
@@ -258,8 +237,6 @@ func (s *Service) delegRows(ctx context.Context, now time.Time) ([]*delegRow, er
 			r.usage, r.measured = t, t.CostUSD > 0
 		}
 	}
-	// Review findings (not withdrawn) by severity, and escapes, on the
-	// task's pull requests.
 	rows, err = s.db.R.QueryContext(ctx, `WITH x AS (SELECT DISTINCT el.issue_id, p.id AS pid
 				FROM external_links el JOIN pull_requests p ON el.kind = 'pull' AND (el.url = p.url OR (el.repo = p.repo COLLATE NOCASE AND el.number = p.number))
 				WHERE el.issue_id IN `+delegIn+`)
@@ -296,7 +273,6 @@ func (s *Service) delegRows(ctx context.Context, now time.Time) ([]*delegRow, er
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	// The review rounds' audits' findings, by verdict.
 	if err := s.delegCount(ctx, `SELECT issue_id, state, count(*) FROM (SELECT DISTINCT w.issue_id, f.id, f.state
 			FROM work_log w JOIN code_audit_findings f ON f.audit_id = w.audit_id
 			WHERE w.kind = 'review' AND w.issue_id IN `+delegIn+`) GROUP BY issue_id, state`, func(id int64, k string, n int) {
@@ -306,7 +282,6 @@ func (s *Service) delegRows(ctx context.Context, now time.Time) ([]*delegRow, er
 	}); err != nil {
 		return nil, err
 	}
-	// Follow-up fixes filed against it, and the tasks filed from it.
 	if err := s.delegCount(ctx, `SELECT target_id, 'fix', count(*) FROM issue_relations
 		WHERE kind = 'follows' AND subkind = 'fix' AND target_id IN `+delegIn+` GROUP BY target_id
 		UNION ALL SELECT origin_issue_id, 'filed', count(*) FROM issues WHERE origin_issue_id IN `+delegIn+` GROUP BY origin_issue_id`,
@@ -321,7 +296,6 @@ func (s *Service) delegRows(ctx context.Context, now time.Time) ([]*delegRow, er
 		}); err != nil {
 		return nil, err
 	}
-	// The highest stakes tier its review rounds had.
 	if err := s.delegCount(ctx, `SELECT issue_id, tier, count(*) FROM review_stakes WHERE issue_id IN `+delegIn+` GROUP BY issue_id, tier`,
 		func(id int64, k string, _ int) {
 			if r := by[id]; r != nil && delegTierRank(k) > delegTierRank(r.tier) {
@@ -378,7 +352,6 @@ func delegValue(o *prepOutcome, r *delegRow, now time.Time) (float64, bool) {
 	since := now.UnixMilli() - r.resolved
 	switch o.Key {
 	case "cost":
-		// Final when done, or (not done) what it cost by delegWithin.
 		return math.Log(r.cost()), r.done || age > delegWithin.Milliseconds()
 	case "undone":
 		if r.done && r.resolved > 0 && r.resolved-r.assigned <= delegWithin.Milliseconds() {
@@ -493,8 +466,7 @@ func delegPolicyFrom(rows []*delegRow, now time.Time) *delegPolicy {
 			}
 		}
 	}
-	// The draws are made now: the policy is shared by concurrent takes and
-	// reports, and sample fills them in lazily.
+	// Draws happen here, before the policy is shared: concurrent takes and reports read it, and sample fills draws lazily.
 	fits := slices.Clone(pol.primary.Fits)
 	for _, g := range pol.guards {
 		fits = append(fits, g.fit.Fits...)
@@ -591,14 +563,11 @@ func (s *Service) delegationArm(ctx context.Context, a *Actor, i *Issue, via str
 	if got, err := s.delegAssignmentOf(ctx, s.db.R, i.ID); err != nil || got != nil {
 		return got, err
 	}
-	// Only a fresh claim draws: a task taken without the text (--json) or
-	// resumed long after has work done before any arm, so it stays out.
+	// An arm drawn after work has started is not a randomized assignment, so only a fresh claim draws.
 	if i.ClaimedAt == nil || s.now().Sub(*i.ClaimedAt) > delegClaimFresh {
 		return nil, nil
 	}
-	// The task's own risk, outside text an agent never reads included: the
-	// caller already holds the task.
-	// Unknown risk draws nothing: no arm, no row.
+	// Risk is read as the system, since the caller already holds the task; unknown risk draws nothing.
 	r, err := s.issueRiskByID(ctx, s.db.R, SystemActor(), i.ID)
 	if err != nil {
 		return nil, err
@@ -633,7 +602,6 @@ func (s *Service) delegationArm(ctx context.Context, a *Actor, i *Issue, via str
 		i.ID, arm, policy, propensity, string(raw), risk, prepTextLen(i), via, s.nowMS()); err != nil {
 		return nil, err
 	}
-	// Whichever request drew first is the task's arm.
 	return s.delegAssignmentOf(ctx, s.db.W, i.ID)
 }
 

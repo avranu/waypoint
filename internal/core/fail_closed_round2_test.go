@@ -8,9 +8,6 @@ import (
 	"testing"
 )
 
-// The normal answer of a read (no row, nothing set up) holds nothing, and is
-// not a problem worth a Warn (WP-1406).
-
 // With none of the rows a hold looks for (no babysit, no audit, no merge
 // policy row), reviewHolds holds nothing for them and schedules no recheck.
 func TestReviewHoldsNoRowsHoldNothing(t *testing.T) {
@@ -40,7 +37,7 @@ func TestReviewHoldsNoRowsHoldNothing(t *testing.T) {
 		t.Errorf("auditGoingErr with no audits: %v", err)
 	}
 	for _, l := range strings.Split(logs.String(), "\n") {
-		// The fake forge has no webhooks to manage: that is the fixture's, not a hold's.
+		// Forge-webhook warnings come from the fake forge fixture, not from a hold.
 		if strings.Contains(l, "WARN") && !strings.Contains(l, "forge webhook") {
 			t.Errorf("a normal outcome was logged as a warning: %s", l)
 		}

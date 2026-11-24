@@ -63,7 +63,7 @@ func Report(w io.Writer, results []Result, minAge time.Duration, verbose, annota
 		return true
 	}
 	if retry > 0 {
-		// A waiver would land a version whose age was never read, for good.
+		// UNKNOWN versions must not take a waiver: it would land a version whose age was never read.
 		_, _ = fmt.Fprintf(w, "\n%d version(s) UNKNOWN because a registry or Go service didn't answer: run it again (in CI, re-run the job) once it does.\n", retry)
 		if retry == len(bad) {
 			return false

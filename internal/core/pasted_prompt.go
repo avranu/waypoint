@@ -82,7 +82,6 @@ func unwrapPasted(text string) (inner string, ok bool) {
 // that still has one, a paste with typed text after it, stays as it is).
 func pasteText(prompt string) string {
 	p := strings.TrimSpace(UnwrapPasted(prompt))
-	// A closing tag left means text came after the paste: not a truncation.
 	if open := pastedOpenRE.FindString(p); open != "" && !strings.Contains(p, "</pasted_content") {
 		return strings.TrimSpace(p[len(open):])
 	}

@@ -19,7 +19,6 @@ import (
 // quiet on the shapes main uses on purpose (testdata/src/RULE).
 func TestAnalyzers(t *testing.T) {
 	dir := analysistest.TestData()
-	// The corelayers fixture's domains, bottom-up.
 	defer wplint.SetCoreOrder("forge", "pr", "merge", "top")()
 	cases := map[string][]string{
 		"apidb":         {"apidb/internal/api", "apidb/internal/core"},
@@ -75,7 +74,7 @@ var patRE = regexp.MustCompile("`([^`]*)`")
 // comments, and that the plain variant reports nothing.
 func runTestVariant(t *testing.T, dir string, a *analysis.Analyzer, pkgs ...string) {
 	t.Helper()
-	got := map[string][]string{} // "file:line" → messages
+	got := map[string][]string{}
 	for _, res := range analysistest.Run(quiet{t}, dir, a, pkgs...) {
 		if res.Err != nil {
 			t.Fatalf("%s: %v", res.Pass.Pkg.Path(), res.Err)

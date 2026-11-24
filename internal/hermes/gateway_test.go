@@ -102,8 +102,7 @@ func TestGatewayCallsAndEvents(t *testing.T) {
 		t.Error("not watched with a subscriber")
 	}
 	waitOpen(t, gw)
-	// Hermes's ready event and the bridge's "open" both reach the tab
-	// (ready comes first: "open" waits for client.capabilities).
+	// the bridge's "open" waits for client.capabilities, so Hermes's ready event arrives first.
 	next(t, sub, func(m frameMsg) bool { return m.Method == "event" && m.Params.Type == "gateway.ready" })
 	_, m := next(t, sub, func(m frameMsg) bool { return m.Method == "bridge" && m.Params.State == "open" })
 	if m.Params.Reconnected {
@@ -120,7 +119,6 @@ func TestGatewayCallsAndEvents(t *testing.T) {
 		t.Errorf("error reply: %v", err)
 	}
 
-	// Events go to every subscriber, numbered, and to OnEvent.
 	fh.push(t, map[string]any{"jsonrpc": "2.0", "method": "event", "params": map[string]any{"type": "message.delta", "session_id": "s1", "payload": map[string]any{"text": "Hel"}}})
 	fh.push(t, map[string]any{"jsonrpc": "2.0", "method": "event", "params": map[string]any{"type": "message.complete", "session_id": "s1", "payload": map[string]any{"text": "Hello"}}})
 	f1, _ := next(t, sub, func(m frameMsg) bool { return m.Params.Type == "message.delta" })
@@ -138,7 +136,6 @@ func TestGatewayCallsAndEvents(t *testing.T) {
 		return got["message.delta@s1"] && got["message.complete@s1"]
 	})
 
-	// A tab that reconnects after f1 catches up from the ring.
 	sub2, h2, replay2 := gw.Subscribe(f1.Seq - 1)
 	defer gw.Unsubscribe(sub2)
 	if h2.Reset || len(replay2) < 2 || replay2[0].Seq != f1.Seq || replay2[1].Seq != f2.Seq {
@@ -154,7 +151,6 @@ func TestGatewayServerRequests(t *testing.T) {
 	sub, _, _ := gw.Subscribe(0)
 	waitOpen(t, gw)
 
-	// An approval reaches the owner's tabs and stays open until answered.
 	fh.push(t, map[string]any{"jsonrpc": "2.0", "id": "a1", "method": "approval", "params": map[string]any{"command": "rm -rf /tmp/x", "description": "delete"}})
 	fa, _ := next(t, sub, func(m frameMsg) bool { return m.Method == "approval" })
 	select {
@@ -185,7 +181,6 @@ func TestGatewayServerRequests(t *testing.T) {
 	if m.Params.ID != "a1" {
 		t.Errorf("answered frame = %+v", m.Params)
 	}
-	// Once only.
 	if err := gw.Answer("a1", nil); err == nil {
 		t.Error("answered twice")
 	}
@@ -198,8 +193,6 @@ func TestGatewayServerRequests(t *testing.T) {
 		gw.Unsubscribe(s)
 	}
 
-	// Secrets, passwords and logins are declined by Waypoint itself; the
-	// tabs hear that it happened, the owner isn't asked.
 	for i, method := range []string{"secret", "sudo", "vault.code", "vault.save_login"} {
 		id := "x" + string(rune('0'+i))
 		fh.push(t, map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": map[string]any{"prompt": "API key?"}})
@@ -216,7 +209,6 @@ func TestGatewayServerRequests(t *testing.T) {
 			t.Errorf("%s: a declined request could still be answered", method)
 		}
 	}
-	// Anything else unknown is declined quietly.
 	fh.push(t, map[string]any{"jsonrpc": "2.0", "id": "u1", "method": "window.open", "params": map[string]any{}})
 	if r := fh.reply(t); r["id"] != "u1" || r["error"] == nil {
 		t.Errorf("unknown request reply = %v", r)
@@ -227,7 +219,6 @@ func TestGatewayServerRequests(t *testing.T) {
 	default:
 	}
 
-	// Hermes withdrawing a question closes it.
 	fh.push(t, map[string]any{"jsonrpc": "2.0", "id": "a2", "method": "clarify", "params": map[string]any{"questions": []any{map[string]any{"question": "Which day?"}}}})
 	next(t, sub, func(m frameMsg) bool { return m.Method == "clarify" })
 	<-reqs
@@ -237,7 +228,6 @@ func TestGatewayServerRequests(t *testing.T) {
 		t.Error("answered a withdrawn question")
 	}
 
-	// Nobody watching: OnRequest says so (the owner gets a notification).
 	gw.Unsubscribe(sub)
 	if gw.Watched() {
 		t.Fatal("still watched")
@@ -283,8 +273,6 @@ func TestGatewayDisconnect(t *testing.T) {
 	fh.push(t, map[string]any{"jsonrpc": "2.0", "id": "a1", "method": "approval", "params": map[string]any{}})
 	<-reqs
 
-	// Hermes drops the connection: open questions can't be answered on the
-	// next one, and the tabs are told; then it reconnects by itself.
 	fh.mu.Lock()
 	fh.conn.CloseNow()
 	fh.mu.Unlock()
@@ -333,10 +321,10 @@ func TestGatewayReplayAndReset(t *testing.T) {
 		reset bool
 		want  []int64
 	}{
-		{0, false, []int64{}},               // only new frames
-		{5, false, []int64{6, 7, 8, 9, 10}}, // catch up
-		{10, false, []int64{}},              // up to date
-		{11, true, []int64{}},               // the server restarted since
+		{0, false, []int64{}},
+		{5, false, []int64{6, 7, 8, 9, 10}},
+		{10, false, []int64{}},
+		{11, true, []int64{}},
 		{500, true, []int64{}},
 	} {
 		s, h, replay := g.Subscribe(c.after)
@@ -351,7 +339,6 @@ func TestGatewayReplayAndReset(t *testing.T) {
 		}
 		g.Unsubscribe(s)
 	}
-	// Past the ring's end, a catch-up is a reset.
 	for range ringSize {
 		g.publish(json.RawMessage(`{}`))
 	}
@@ -394,13 +381,12 @@ func TestGatewaySlowSubscriber(t *testing.T) {
 		t.Fatal("a subscriber that kept up was dropped")
 	default:
 	}
-	g.Unsubscribe(slow) // after the drop: no double close
+	g.Unsubscribe(slow)
 	g.Unsubscribe(fast)
 	<-done
 	if g.Watched() {
 		t.Error("still watched")
 	}
-	// close() ends every stream.
 	s, _, _ := g.Subscribe(0)
 	g.close()
 	select {
@@ -412,7 +398,7 @@ func TestGatewaySlowSubscriber(t *testing.T) {
 
 func TestGatewayCallWhileDown(t *testing.T) {
 	g := bare()
-	g.state = "open" // claims open, no connection
+	g.state = "open" // state says open with no connection behind it; the call must report ErrUnreachable.
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	if _, err := g.Call(ctx, "ping", nil); !errors.Is(err, ErrUnreachable) {

@@ -49,7 +49,6 @@ func TestCLIAudit(t *testing.T) {
 	if out, code := e.run("audit", "nonsense"); code != 2 || !strings.Contains(out, "say what") {
 		t.Errorf("a bare word: %d %s", code, out)
 	}
-	// No pull request for the branch here: the branch against the default.
 	out := e.wp("audit", "-m", "Look at the cache.")
 	if !strings.Contains(out, "Audit #1 of robin/waypoint cache-fix against main asked of cursor/grok-4.7-high, then cursor/grok-4.7-medium") ||
 		!strings.Contains(out, "you'll hear when it ends") {
@@ -59,7 +58,6 @@ func TestCLIAudit(t *testing.T) {
 		t.Errorf("wp audit ls:\n%s", out)
 	}
 
-	// The runner answers.
 	e.svc.Wait()
 	zero := 0.0
 	w, err := e.svc.RunnerPoll(ctx, me, core.RunnerPoll{Runner: box.ID, Wait: &zero})
@@ -99,7 +97,6 @@ func TestCLIAudit(t *testing.T) {
 		t.Errorf("cancel two, both refused: %d %s", code, out)
 	}
 
-	// Recent changes, with criteria (WP-548).
 	out = e.wp("audit", "--since", "2w", "--focus", "security,data", "--path", "internal", "--exclude", "*_test.go", "--min-severity", "high", "--show", "5")
 	if !strings.Contains(out, "Audit #2 of robin/waypoint main, the last 2 weeks (internal) asked of") {
 		t.Errorf("wp audit --since:\n%s", out)
@@ -108,7 +105,6 @@ func TestCLIAudit(t *testing.T) {
 		t.Errorf("wp audit show 2:\n%s", out)
 	}
 
-	// Shown at a time (WP-1421): asked to show 5, a model that reports 12 keeps 12.
 	e.svc.Wait()
 	if w, err := e.svc.RunnerPoll(ctx, me, core.RunnerPoll{Runner: box.ID, Wait: &zero}); err != nil || w.Job == nil {
 		t.Fatalf("poll for audit 2: %v %+v", err, w)
@@ -133,7 +129,6 @@ func TestCLIAudit(t *testing.T) {
 	if out := e.wp("audit", "show", "2", "--json"); strings.Count(out, "Hole ") != 12 {
 		t.Errorf("wp audit show 2 --json holds %d findings", strings.Count(out, "Hole "))
 	}
-	// The old name of the flag still works.
 	if out := e.wp("audit", "recent", "--max-findings", "7"); !strings.Contains(out, "Audit #3 ") {
 		t.Errorf("wp audit recent --max-findings:\n%s", out)
 	} else if out := e.wp("audit", "show", "3"); !strings.Contains(out, "shows 7 findings at a time") {
@@ -162,14 +157,12 @@ func TestAuditShowListsWhatTheServerSaysIsShown(t *testing.T) {
 	if out := check.text(); !strings.Contains(out, "Mark 5") || strings.Contains(out, "more: wp audit show") {
 		t.Errorf("a check with max_findings 3 and 5 findings:\n%s", out)
 	}
-	// At exactly the number shown, and under it, there is no line for more.
 	for _, n := range []int{5, 4} {
 		exact := auditView{ID: 9, Status: "done", Shown: 5, Findings: fs[:n]}
 		if out := exact.text(); strings.Contains(out, "more: wp audit show") || !strings.Contains(out, fmt.Sprintf("Mark %d", n)) {
 			t.Errorf("%d findings, shown 5:\n%s", n, out)
 		}
 	}
-	// The criteria line names the number only when it is the one in use (1255.6).
 	if out := check.text(); strings.Contains(out, "shows 3 findings at a time") {
 		t.Errorf("a check that lists every finding says it shows 3:\n%s", out)
 	}
@@ -177,7 +170,6 @@ func TestAuditShowListsWhatTheServerSaysIsShown(t *testing.T) {
 	if out := set.text(); !strings.Contains(out, "shows 4 findings at a time") || !strings.Contains(out, "1 more: wp audit show 9 --all") {
 		t.Errorf("an audit set to show 4:\n%s", out)
 	}
-	// A server that sends neither number: the default (1255.22).
 	var many []auditFinding
 	for i := 1; i <= core.AuditDefaultShown+2; i++ {
 		many = append(many, auditFinding{ID: fmt.Sprintf("9.%d", i), Title: fmt.Sprintf("Mark %d", i), Severity: "low", State: "open"})
@@ -243,7 +235,7 @@ func TestAuditJobText(t *testing.T) {
 // of it; what it can tell is wrong without asking, it says as usage.
 func TestCLIAuditReport(t *testing.T) {
 	var faked atomic.Bool
-	var got atomic.Value // the body the faked route was sent
+	var got atomic.Value
 	e := newEnvServing(t, nil, func(h http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if faked.Load() && r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/review-report") {
@@ -268,7 +260,7 @@ func TestCLIAuditReport(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	t.Chdir(dir) // outside any git repo: the task is named
+	t.Chdir(dir)
 	file := filepath.Join(dir, "review.json")
 	report := `{"findings": [{"title": "Merge loses an update", "severity": "high", "problem": "p", "outcome": "fixed", "note": "locked"}]}`
 	if err := os.WriteFile(file, []byte(report), 0o600); err != nil {
@@ -292,7 +284,6 @@ func TestCLIAuditReport(t *testing.T) {
 			t.Errorf("wp audit report %v: %d %s (want %q)", tc.args, code, out, tc.want)
 		}
 	}
-	// The server's word reaches the agent: here, that no session asked.
 	if out, code := e.run("audit", "report", i.Key, "--none", "-m", "Read the diff."); code == 0 || !strings.Contains(out, "run it in that session") {
 		t.Errorf("outside a session: %d %s", code, out)
 	}

@@ -1,22 +1,6 @@
 package core
 
-// Handling a pull request's review comments end to end through Waypoint
-// (WP-130): list them (the bot's findings, other bots', people's, with who
-// wrote them and where they stand), reply, react, resolve and reopen.
-//
-// The review bot and the agents share one forge account, so who resolved or
-// answered a comment is Waypoint's record (review_comment_events), never
-// the forge user. Forgejo 16 (Gitea 1.22) has no API to resolve a
-// conversation, so there a resolution is kept in Waypoint only: the verdict
-// "resolved" counts as dealt with for readiness, and a finding it settles
-// stops blocking the review gate. GitHub and GitLab threads are resolved on
-// the forge too.
-//
-// The rule for agents: an agent may resolve any comment, a person's
-// included, once it has said what it did, by replying first (wp pr reply, or
-// a verdict with a note) or with the note that resolving takes. It can't
-// overrule a person's own call (a verdict a person gave, or a comment a
-// person dismissed or resolved).
+// Forgejo has no API to resolve a thread, so there a resolution lives only in Waypoint (review_comment_events).
 
 import (
 	"context"
@@ -84,7 +68,7 @@ func (s *Service) postReply(ctx context.Context, pr *PullRequest, rc *PRReviewCo
 		body = replyLead(rc, "") + body
 	}
 	if rc.relayID != "" {
-		body = relayMarker(rc.relayID, "reply", "") + body // into its GitHub thread
+		body = relayMarker(rc.relayID, "reply", "") + body
 	}
 	id := s.replyToComment(ctx, f, botForge(f), pr, rc, body)
 	if id == "" {

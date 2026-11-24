@@ -45,16 +45,16 @@ const (
 const (
 	warmClassPaused       = "paused"
 	warmClassClearable    = "clearable"
-	warmClassWork         = "work"     // its own background work or babysits
-	warmClassWorkCap      = "work_cap" // … for longer than warmWorkFor
+	warmClassWork         = "work"
+	warmClassWorkCap      = "work_cap"
 	warmClassUnattended   = "unattended"
-	warmClassRequests     = "requests" // open requests, its person active
+	warmClassRequests     = "requests"
 	warmClassRequestsAway = "requests_away"
 	warmClassRequestsCap  = "requests_cap"
-	warmClassChat         = "chat" // its person was working with it
+	warmClassChat         = "chat"
 	warmClassChatCap      = "chat_cap"
 	warmClassFinished     = "finished"
-	warmClassUnmerged     = "unmerged" // its task isn't merged yet (WP-1306)
+	warmClassUnmerged     = "unmerged"
 	warmClassOther        = "other"
 )
 
@@ -233,8 +233,6 @@ func pctText(x float64) string {
 	}
 	return fmt.Sprintf("%.0f%%", x*100)
 }
-
-// ---- the report (wp usage warm) ----
 
 // WarmReport is what keep-warm decided and what became of the sessions,
 // per class, with the shares a ping and a compaction need (WP-1000).

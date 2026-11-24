@@ -13,12 +13,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/tracing"
 )
 
-// Outbound requests to user-supplied URLs (webhooks, Gotify, automation
-// actions) go through an egress policy, so a project owner can't use
-// Waypoint to reach the server itself or a cloud metadata endpoint.
-//
-// Private networks stay reachable by default: self-hosted Gotify and Kestra
-// usually live on the LAN. WAYPOINT_EGRESS_BLOCK_PRIVATE turns that off.
+// Outbound requests to user-supplied URLs go through this policy, so a project owner can't reach the server itself or cloud metadata.
 
 // EgressPolicy says which addresses outbound requests may reach.
 type EgressPolicy struct {
@@ -64,7 +59,6 @@ func (p EgressPolicy) allowed(ip netip.Addr) bool {
 		return p.AllowLoopback
 	case ip.IsUnspecified(), ip.IsLinkLocalUnicast(), ip.IsLinkLocalMulticast(),
 		ip.IsInterfaceLocalMulticast(), ip.IsMulticast():
-		// Link-local covers 169.254.169.254, the cloud metadata service.
 		return false
 	case ip.IsPrivate(), cgnat.Contains(ip):
 		return !p.BlockPrivate
@@ -100,7 +94,7 @@ func (p EgressPolicy) newClient(timeout, headers time.Duration) *http.Client {
 		},
 	}
 	tr := &http.Transport{
-		Proxy:                 nil, // a proxy would hide the real destination from Control
+		Proxy:                 nil, // A proxy would dial the destination outside Control's view, so the transport must not use one.
 		DialContext:           d.DialContext,
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          20,

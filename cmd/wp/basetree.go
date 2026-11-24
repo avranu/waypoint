@@ -8,10 +8,6 @@ import (
 	"strings"
 )
 
-// A temporary checkout of another commit, for comparing this tree with it:
-// wp bench --base times both, wp testsum --base asks whether failures were
-// already there.
-
 // baseTmpPrefix names the checkouts, so a later run can sweep the ones a
 // killed run left.
 const baseTmpPrefix = "wp-base-"
@@ -72,7 +68,7 @@ func sweepBaseWorktrees() {
 		pidText, _, _ := strings.Cut(rest, "-")
 		pid, err := strconv.Atoi(pidText)
 		if err != nil || pid <= 0 || pid == os.Getpid() || processAlive(pid) {
-			continue // not ours by name, or its wp bench is still running
+			continue
 		}
 		_, _ = localGit("worktree", "remove", "--force", path)
 		_ = os.RemoveAll(path)

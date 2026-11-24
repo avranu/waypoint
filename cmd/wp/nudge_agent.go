@@ -4,22 +4,11 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Notes at the moment they matter (WP-1443): how a subagent waits, which is
-// not how the main thread does, and not the same for every subagent.
-//
-// A subagent started in the background that has a background Bash of its own
-// running is kept open by Claude Code and woken when that exits, so it waits
-// by running the wait in the background and ending its turn. A subagent
-// started in the foreground (or one we don't know the start of) has its shells
-// reaped when it gives its final answer: for it, ending the turn ends the run
-// and stops what it started, so it waits in ONE foreground call, whose Bash
-// timeout is set to the longest there is (600000 ms). A Monitor keeps neither
-// kind open. These are notes, never refusals; the once-per-run ones are told
-// once per agent run (tellOnce).
+// Claude Code reaps a foreground subagent's shells when it gives its final answer, so it waits in one foreground call; a background one is woken when its background Bash exits.
 
 const (
-	noteAgentWait = "agent-wait" // a subagent's first background Agent start
-	noteMonitor   = "monitor"    // a subagent's first Monitor call
+	noteAgentWait = "agent-wait"
+	noteMonitor   = "monitor"
 
 	sleepWaitMainText = "Sleeping before a check wastes turns: run the work in the background (you're told when it exits), or wait in one call (`wp pr wait N`, Monitor with an until-loop)."
 	sleepWaitBgText   = "Sleeping before a check wastes turns: run the work with run_in_background: true and end your turn (you are woken when it exits), or run the wait itself as a background Bash (`timeout N bash -c 'until CHECK; do sleep 5; done'`) and end your turn."

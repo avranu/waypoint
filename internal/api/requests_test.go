@@ -59,7 +59,7 @@ type reqEnv struct {
 	svc     *core.Service
 	robin   *core.Actor
 	person  *reqClient
-	agent   *reqClient // robin's agent token, in a session
+	agent   *reqClient
 	project *core.Project
 }
 
@@ -84,7 +84,6 @@ func newReqEnv(t *testing.T) *reqEnv {
 	e := &reqEnv{t: t, ts: ts.URL, svc: svc, robin: robin, project: p}
 	e.person = &reqClient{t: t, base: ts.URL, token: human}
 	e.agent = &reqClient{t: t, base: ts.URL, token: agentTok, headers: map[string]string{"X-Waypoint-Machine": "box"}}
-	// The agent's hooks register its session; its commands then carry it.
 	var res core.HookResult
 	if code := e.agent.json("POST", "/api/v1/sessions/hook", map[string]any{"events": []map[string]any{
 		{"event": "SessionStart", "session_id": "cli-1", "machine": "box", "cwd": "/work/app", "repo": "acme/app", "branch": "main", "model": "claude-opus-5"},
@@ -119,7 +118,6 @@ func TestSessionsAPI(t *testing.T) {
 		t.Fatalf("bad state: %d", code)
 	}
 
-	// What the agent does (with its session header) lands in the summary.
 	var created map[string]any
 	if code := e.agent.json("POST", "/api/v1/issues", map[string]any{"project": e.project.Key, "title": "Follow up", "status": "Backlog"}, &created); code != 200 && code != 201 {
 		t.Fatalf("create issue: %d %v", code, created)
@@ -164,7 +162,6 @@ func TestRequestsAPI(t *testing.T) {
 	}
 	ref := q.Ref
 
-	// A permission request repeated is the same one.
 	perm := map[string]any{"kind": "permission", "title": "Allow Bash?", "tool": "Bash", "tool_input": map[string]any{"command": "make"}}
 	var p1, p2 struct {
 		ID  int64 `json:"id"`
@@ -176,7 +173,6 @@ func TestRequestsAPI(t *testing.T) {
 		t.Fatalf("dedupe: %+v %+v", p1, p2)
 	}
 
-	// Lists: the agent sees its own; the open and answered states.
 	var page core.RequestPage
 	if code := e.agent.json("GET", "/api/v1/requests?mine=1", nil, &page); code != 200 || page.Total != 2 {
 		t.Fatalf("list: %d %d", code, page.Total)
@@ -192,7 +188,6 @@ func TestRequestsAPI(t *testing.T) {
 		t.Fatalf("waiting: %d %+v", code, w)
 	}
 
-	// Agents can't decide, snooze or run; people can.
 	for _, c := range []struct {
 		path string
 		body any
@@ -205,7 +200,6 @@ func TestRequestsAPI(t *testing.T) {
 			t.Fatalf("agent %s: %d %s", c.path, code, b)
 		}
 	}
-	// A read-only token can't either.
 	ro, _, _ := e.svc.CreateAPIToken(context.Background(), e.robin, "ro", true, 0)
 	if code, _ := (&reqClient{t: t, base: e.ts, token: ro}).do("POST", "/api/v1/requests/"+ref+"/decide", map[string]any{"decision": "dismiss"}); code != 403 {
 		t.Fatalf("read-only decided: %d", code)
@@ -217,7 +211,6 @@ func TestRequestsAPI(t *testing.T) {
 		t.Fatalf("unknown field: %d", code)
 	}
 
-	// The agent waits; the person answers meanwhile.
 	go func() {
 		time.Sleep(300 * time.Millisecond)
 		e.person.do("POST", "/api/v1/requests/"+ref+"/decide", map[string]any{"decision": "answer", "answers": []map[string]any{{"choices": []string{"postgres"}}}, "note": "go on"})
@@ -230,13 +223,12 @@ func TestRequestsAPI(t *testing.T) {
 	if time.Since(start) > 8*time.Second {
 		t.Fatal("wait took the whole time")
 	}
-	// Reading it counted as being told: next says nothing about it.
+	// Reading a request counts as being told, so next omits it.
 	code, b := e.agent.do("POST", "/api/v1/agent/next", nil)
 	if code != 200 || strings.Contains(string(b), "answered request") {
 		t.Fatalf("next after reading: %d %s", code, b)
 	}
 
-	// Snooze and withdraw.
 	var sn core.Request
 	if code := e.person.json("POST", "/api/v1/requests/"+itoaJSON(int(p1.ID))+"/snooze", map[string]any{"minutes": 30}, &sn); code != 200 || sn.SnoozedUntil == nil {
 		t.Fatalf("snooze: %d %+v", code, sn)
@@ -249,8 +241,7 @@ func TestRequestsAPI(t *testing.T) {
 		t.Fatalf("missing: %d", code)
 	}
 
-	// An agent's done on its own request withdraws it, keeping the note
-	// (WP-198); so does withdraw with a note.
+	// An agent's done on its own request withdraws it, keeping the note.
 	var act, own core.Request
 	e.agent.json("POST", "/api/v1/requests", map[string]any{"kind": "action", "title": "Create the repo"}, &act)
 	if code := e.agent.json("POST", "/api/v1/requests/"+act.Ref+"/decide", map[string]any{"decision": "done", "note": "main is pushed"}, &own); code != 200 || own.State != "withdrawn" || own.Note != "main is pushed" {
@@ -276,7 +267,6 @@ func TestNextMentionsAnsweredRequests(t *testing.T) {
 	if js["answered_requests"] != float64(1) {
 		t.Fatalf("json: %v", js)
 	}
-	// Listing what was answered shows it, and the Stop hook then has it too.
 	var page core.RequestPage
 	e.agent.json("GET", "/api/v1/requests?mine=1&state=answered", nil, &page)
 	if page.Total != 1 {
@@ -329,7 +319,6 @@ func TestRequestMCPTools(t *testing.T) {
 			t.Fatalf("list_requests lacks %s: %s", want, text)
 		}
 	}
-	// Over MCP an agent can't decide (there is no tool), and what is read is as text.
 	e.person.do("POST", "/api/v1/requests/me:R-1/decide", map[string]any{"decision": "answer", "answers": []map[string]any{{"choices": []string{"spaces"}}}})
 	text, _ = call("get_request", map[string]any{"ref": "R-1"})
 	if !strings.Contains(text, "answered") || !strings.Contains(text, "spaces") {

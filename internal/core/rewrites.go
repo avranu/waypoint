@@ -15,16 +15,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Rewritten work (WP-782, WP-ADR131): when a change replaces lines another
-// task's pull request put on the base branch days before, the two tasks may
-// pull against each other (WP-232 rewrote half of what WP-233 had merged
-// hours earlier) or the later one may supersede the earlier. Which it is
-// takes reading both; that it happened is a fact git blame gives for free.
-// wp ship blames the lines the branch replaces and asks here which tasks
-// those pull requests were for; the agent is told, and records supersedes or
-// tension when that is what it did. Words alone don't say it reliably: a
-// lexical stance reader and "filed together" both measured too weak to show
-// (the decision note has the figures).
+// Whether a rewrite supersedes the earlier task or pulls against it takes reading both; git blame finds the overlap, and the agent records which.
 
 const (
 	// rewriteMaxAge: work merged longer ago than this is the base the change
@@ -39,7 +30,7 @@ const (
 	rewriteMinLines = 15
 	rewriteMinShare = 0.25
 	rewriteBigLines = 60
-	rewriteMaxPRs   = 50 // read from one ship
+	rewriteMaxPRs   = 50
 	rewriteMaxShown = 5
 )
 
@@ -169,7 +160,7 @@ func (s *Service) RewrittenWork(ctx context.Context, actor *Actor, ref, repo str
 	}
 	now := s.now()
 	byTask := map[int64]*RewrittenTask{}
-	top := map[int64]int{} // lines of the pull request each task is named by
+	top := map[int64]int{}
 	for i, p := range prs {
 		if i == rewriteMaxPRs {
 			break
@@ -186,8 +177,6 @@ func (s *Service) RewrittenWork(ctx context.Context, actor *Actor, ref, repo str
 				continue
 			}
 			if t := byTask[id]; t != nil {
-				// One task's work spread over several pull requests is
-				// judged whole; the one named is the largest.
 				if p.Lines > top[id] {
 					t.PR, t.At, top[id] = p.Number, p.At, p.Lines
 				}
@@ -322,7 +311,7 @@ func (s *Service) recordRewrites(ctx context.Context, actor *Actor, d *IssueDeta
 		if err := s.requireProjectRole(ctx, t, actor, d.ProjectID, RoleEditor); err != nil {
 			return nil
 		}
-		have := map[int64]bool{} // pairs Waypoint's own relation already stands for
+		have := map[int64]bool{}
 		gone, err := s.rewriteDismissed(ctx, t, d.ID)
 		if err != nil {
 			return err
@@ -362,14 +351,7 @@ func (s *Service) recordRewrites(ctx context.Context, actor *Actor, d *IssueDeta
 			}
 			got = append(got, r)
 		}
-		// The round is told what the latest ship saw: evidence for a pair
-		// this ship's change no longer replaces goes (the relation stays;
-		// a dismissal is kept). Only what this call can speak for goes: the
-		// same repo (evidence for another repo's lines is not this call's to
-		// judge), and, without a commit to say which change was read, not on
-		// an empty reading (an older wp, or a call that says too little);
-		// and never the evidence for a task the actor can't see, which
-		// another shipper recorded and this one has no view of.
+		// A call drops only evidence it can speak for: the same repo, and, when it names no commit, only if it found something (an empty reading without a commit drops nothing); never a task the actor cannot see.
 		keep := map[int64]bool{}
 		for _, r := range got {
 			id, err := s.resolveIssueID(ctx, t, r.Key)
@@ -426,7 +408,7 @@ func (s *Service) recordRewrites(ctx context.Context, actor *Actor, d *IssueDeta
 				}
 				if inserted {
 					r.Recorded = true
-					// Where relate puts it: a draft's key stays out of this task's history.
+					// A relation to a draft is recorded on the draft (relationEventHome), so the draft's key stays out of this task's history.
 					o, err := s.issueByID(ctx, t, otherID, false)
 					if err != nil {
 						return err
@@ -492,7 +474,7 @@ func (s *Service) rewriteDismissed(ctx context.Context, q queryer, id int64) ([]
 // reach a model's prompt and from there the session.
 func (s *Service) rewriteLeads(ctx context.Context, actor *Actor, issueID int64) []string {
 	if actor == nil {
-		return nil // nobody it acts as: no task's title leaves its project
+		return nil
 	}
 	rows, err := s.db.R.QueryContext(ctx, `SELECT o.id, o.project_id, e.pr, e.lines, e.merged_at, e.updated_at, e.head FROM rewrite_evidence e
 		JOIN issues o ON o.id = e.other_id
@@ -522,11 +504,11 @@ func (s *Service) rewriteLeads(ctx context.Context, actor *Actor, issueID int64)
 	var out []string
 	for _, r := range got {
 		if len(out) == rewriteMaxShown {
-			break // evidence piles up over repos and ships; the prompt gets the largest few
+			break // Evidence piles up over repos and ships; the query orders by size, so the prompt gets the largest few.
 		}
 		o, err := s.issueByID(ctx, s.db.R, r.id, false)
 		if err != nil || !s.canSee(ctx, s.db.R, actor, o.ID, o.ProjectID) {
-			continue // a task the round's actor can't see contributes nothing
+			continue
 		}
 		ago := "today"
 		switch days := int(time.UnixMilli(r.updatedAt).Sub(time.UnixMilli(r.mergedAt)) / (24 * time.Hour)); {
@@ -539,8 +521,6 @@ func (s *Service) rewriteLeads(ctx context.Context, actor *Actor, issueID int64)
 		// leaves nothing that closes the wrapper the lead goes into.
 		lead := untrusted(fmt.Sprintf("this change replaces %d lines that %s (%q) added in PR %d, %s: does it undo what %s did, on purpose?", r.lines, o.Key, clipText(strings.TrimSpace(o.Title), 120), r.pr, ago, o.Key))
 		if r.head == "" {
-			// An older wp sent no commit: the round can't tell which change
-			// the lines were traced for.
 			lead += " (traced by an older wp without the commit it read, so this may be out of date)"
 		}
 		out = append(out, lead)

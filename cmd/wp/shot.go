@@ -18,13 +18,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// wp shot (WP-245): screenshots of a finished change, for the person who
-// checks it on the Catch up page. One command opens each page in a headless
-// browser at a desktop and a phone width, attaches the pictures to the task
-// as review screenshots, and records the page as the task's try link. The
-// browser is Playwright's: from the checkout's node_modules when it has
-// one, else a copy wp installs once in its cache.
-
 // shotPlaywright is the Playwright wp installs when no checkout has one.
 const shotPlaywright = "1.62.1"
 
@@ -161,8 +154,6 @@ func (c *cli) shoot(key string, urls []string, o shotOpts) error {
 	if t := c.token(); t != "" && server != nil && server.Host != "" {
 		tokens[webOrigin(server)] = t
 	}
-	// A path is a page of this checkout's preview (WP-1226): its own build,
-	// signed in, rebuilt first so the picture shows the change.
 	var preview *previewState
 	local := map[string]bool{}
 	for _, raw := range urls {
@@ -182,7 +173,6 @@ func (c *cli) shoot(key string, urls []string, o shotOpts) error {
 		}
 		auth := sameOrigin(u, c.server())
 		if !auth && preview == nil && privateHost(u.Hostname()) {
-			// A preview URL given in full is rebuilt first too.
 			if running := runningPreview(); running != nil && sameOrigin(u, running.URL) {
 				st, err := startPreview(c)
 				if err != nil {
@@ -207,8 +197,6 @@ func (c *cli) shoot(key string, urls []string, o shotOpts) error {
 	}
 	dir := o.out
 	if dir == "" {
-		// Under a "wp-shots" directory, so looking at them doesn't attach
-		// them again as screenshots seen while working (hook_shots.go).
 		base := filepath.Join(os.TempDir(), shotsDirName)
 		if err := os.MkdirAll(base, 0o700); err != nil {
 			return err
@@ -219,7 +207,7 @@ func (c *cli) shoot(key string, urls []string, o shotOpts) error {
 		}
 		dir = d
 	} else {
-		dir = filepath.Join(dir, shotsDirName) // still not attached again when looked at
+		dir = filepath.Join(dir, shotsDirName)
 		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return err
 		}

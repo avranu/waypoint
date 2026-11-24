@@ -11,10 +11,7 @@ import (
 	"time"
 )
 
-// The glossary (WP-D10): terms per project or global. A project's full
-// glossary is its own terms, its ancestors' and the global ones; a nearer
-// definition shadows a further one. People can lock an entry so agents
-// can't change it.
+// A project's full glossary is its own terms, its ancestors' and the global ones; a nearer definition shadows a further one, and a locked entry can't be changed by agents.
 
 // GlossaryEntry is one term.
 type GlossaryEntry struct {
@@ -156,7 +153,7 @@ func (s *Service) ListGlossary(ctx context.Context, actor *Actor, q GlossaryQuer
 	}
 	var where []string
 	var args []any
-	rank := "g.project_id IS NULL" // project terms before global ones
+	rank := "g.project_id IS NULL"
 	chained := false
 	switch {
 	case strings.EqualFold(q.Project, "global"):
@@ -186,7 +183,6 @@ func (s *Service) ListGlossary(ctx context.Context, actor *Actor, q GlossaryQuer
 		if m == "" {
 			return []*GlossaryEntry{}, nil
 		}
-		// Exact terms and aliases first, then the best full-text matches.
 		from = strings.Replace(glossarySelect, "SELECT g.id,", "SELECT snippet(glossary_search, 2, '⟦', '⟧', '…', 12), g.id,", 1) +
 			` JOIN glossary_search fs ON fs.rowid = g.id`
 		where, args = append(where, "glossary_search MATCH ?"), append(args, m)
@@ -233,7 +229,7 @@ func (s *Service) ListGlossary(ctx context.Context, actor *Actor, q GlossaryQuer
 			own = &p.ID
 		}
 	}
-	nearest := map[string]*int64{} // lower(term) → the nearest scope defining it
+	nearest := map[string]*int64{}
 	for _, g := range out {
 		s.fillGlossaryPeople(ctx, cache, g)
 		key := int64(0)
@@ -260,7 +256,6 @@ func (s *Service) ListGlossary(ctx context.Context, actor *Actor, q GlossaryQuer
 		return nil, err
 	}
 	if chained && !snippet {
-		// Rows come nearest-first within each term.
 		for _, g := range out {
 			t := strings.ToLower(g.Term)
 			if _, seen := nearest[t]; seen {
@@ -601,7 +596,6 @@ func (s *Service) afterGlossaryChange(ctx context.Context, t *tx, id int64) erro
 		VALUES (?,?,?,?,?,?,?,?,?)`, id, term, aliases, avoid, def, locked, nullUser(t.actor.id()), t.actor.agentName(), s.nowMS()); err != nil {
 		return err
 	}
-	// Words to avoid are searchable too: searching one finds the term to use.
 	var list, avoided []string
 	_ = json.Unmarshal([]byte(aliases), &list)
 	_ = json.Unmarshal([]byte(avoid), &avoided)

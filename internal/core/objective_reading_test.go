@@ -46,9 +46,7 @@ func TestObjectiveStaleReadingUnderAChangedTargetIsDropped(t *testing.T) {
 	if j.Check != "./bench" || j.Base != shaA {
 		t.Fatalf("the reading's job = %+v", j)
 	}
-	// The person tightens the target and changes the check while it runs.
 	o.set(task.Key, ObjectiveInput{Check: ptrOf("./bench2"), Until: ptrOf("< 0.1s")})
-	// The runner answers the old job all the same: met under the old target.
 	raw, _ := json.Marshal(ObjectiveJobResult{Head: shaB, Base: shaA, Reading: timed(0.5), BaseReading: timed(3), P: ptrOf(0.001)})
 	_, _ = o.s.FinishRunnerJob(o.ctx, o.admin, c.ID, RunnerFinish{State: "done", Result: raw})
 	o.s.Wait()
@@ -62,7 +60,6 @@ func TestObjectiveStaleReadingUnderAChangedTargetIsDropped(t *testing.T) {
 	if told := o.told(NotifyObjective); len(told) != 0 {
 		t.Errorf("told of a reading that was dropped: %q", told)
 	}
-	// The new objective is read with its own check, and its own target.
 	j2 := o.read(ObjectiveJobResult{Head: shaB, Base: shaA, Reading: timed(0.5), BaseReading: timed(3), P: ptrOf(0.001)})
 	if j2.Check != "./bench2" {
 		t.Fatalf("the new reading's job = %+v", j2)
@@ -90,14 +87,12 @@ func TestObjectiveJudgesAuditIsSweptNotCancelledByAgents(t *testing.T) {
 	if ob := o.obj(task.Key); ob.verifyAudit == nil || *ob.verifyAudit != audit || ob.Phase != PhaseBaseline {
 		t.Fatalf("the objective lost its judge: %+v", ob)
 	}
-	// Ending it calls the judge off.
 	if _, err := o.s.ObjectiveGo(o.ctx, o.admin, task.Key, ObjectiveEnd); err != nil {
 		t.Fatal(err)
 	}
 	if st := o.auditStatus(audit); st != AuditCancelled {
 		t.Errorf("the judge's audit after the objective ended: %s", st)
 	}
-	// So does taking it off.
 	other, audit2 := o.judgeAsked("Import the board")
 	if err := o.s.ClearObjective(o.ctx, o.admin, other.Key); err != nil {
 		t.Fatal(err)
@@ -170,7 +165,6 @@ func TestObjectiveSetAgainAfterMetStartsAfresh(t *testing.T) {
 	if ob := o.obj(task.Key); ob.State != ObjectiveMet {
 		t.Fatalf("not met: %s", ob.State)
 	}
-	// A task its objective closed is opened by a person first.
 	todo := "To Do"
 	if _, err := o.s.UpdateIssue(o.ctx, o.admin, task.Key, IssuePatch{Status: &todo}); err != nil {
 		t.Fatal(err)
@@ -183,7 +177,6 @@ func TestObjectiveSetAgainAfterMetStartsAfresh(t *testing.T) {
 	if o.status(task.Key) == "Done" {
 		t.Error("the task stays closed under an objective in effect")
 	}
-	// Read afresh: the old judge's nothing doesn't count; this one's finding does.
 	o.read(ObjectiveJobResult{Head: shaB})
 	o.judged("No JSON export.", finding("high", "There is no JSON export"))
 	ob = o.obj(task.Key)
@@ -222,11 +215,9 @@ func TestObjectiveBlockedWhenItsPersonIsGone(t *testing.T) {
 	if next, _ := o.queued(task.Key); next {
 		t.Error("a round is handed out on an objective nothing can read")
 	}
-	// Moving on without a reading isn't an answer to this.
 	if _, err := o.s.ObjectiveGo(o.ctx, o.admin, task.Key, ObjectiveNext); !IsInvalid(err) {
 		t.Errorf("next on an objective nothing can read: %v", err)
 	}
-	// Another person retries it: it is theirs, and read on their runner.
 	ob, err := o.s.ObjectiveGo(o.ctx, o.admin, task.Key, ObjectiveRetry)
 	if err != nil {
 		t.Fatal(err)
@@ -312,9 +303,7 @@ func TestObjectiveJudgeThatEndsWithoutAnAnswerIsRetried(t *testing.T) {
 			var retryAt int64
 			for try := 1; try <= objectiveReadTries; try++ {
 				if try > 1 {
-					// Not before its wait is over; then asked again.
-					// The wait doubles from when the failure was noticed (at
-					// once for a cancel, at the next look otherwise).
+					// The wait doubles from when the failure was noticed (at once for a cancel, at the next look otherwise).
 					left := time.Duration(retryAt-o.clockNow().UnixMilli()) * time.Millisecond
 					if want := c.wait << (try - 2); left > want || left < want-time.Minute {
 						t.Fatalf("try %d is %v away, want %v", try, left, want)
@@ -328,7 +317,7 @@ func TestObjectiveJudgeThatEndsWithoutAnAnswerIsRetried(t *testing.T) {
 					}
 					audit = *ob.verifyAudit
 				}
-				o.judgeJob() // taken by the runner, never answered
+				o.judgeJob()
 				c.end(o, audit)
 				o.tick(time.Minute)
 				ob := o.obj(task.Key)
@@ -337,7 +326,6 @@ func TestObjectiveJudgeThatEndsWithoutAnAnswerIsRetried(t *testing.T) {
 						t.Fatalf("after try %d: phase %q tries %d note %q", try, ob.Phase, ob.verifyTry, ob.PhaseNote)
 					}
 					retryAt = ob.verifyAt
-					// A try that failed is waiting to be tried again, as a failed job is.
 					if ob.Health != "reading" || ob.StuckSince != nil {
 						t.Errorf("after try %d: health %q (stuck since %v: %s)", try, ob.Health, ob.StuckSince, ob.StuckWhy)
 					}
@@ -354,7 +342,6 @@ func TestObjectiveJudgeThatEndsWithoutAnAnswerIsRetried(t *testing.T) {
 			if told := o.told(NotifyObjective); len(told) != 1 || !strings.Contains(told[0], "needs you") {
 				t.Errorf("told = %q", told)
 			}
-			// Retried by a person, the judge is asked once more and answers.
 			if _, err := o.s.ObjectiveGo(o.ctx, o.admin, task.Key, ObjectiveRetry); err != nil {
 				t.Fatal(err)
 			}
@@ -382,26 +369,22 @@ func TestObjectiveRunnerAnswersThatCantBeUsedAreFailedTries(t *testing.T) {
 		}
 		o.s.Wait()
 	}
-	// No reading of the check.
 	answer(ObjectiveJobResult{Head: shaA, Kept: []ObjectiveKept{{Command: "go test ./...", OK: true}}})
 	ob := o.obj(task.Key)
 	if ob.Phase != PhaseBaseline || ob.verifyTry != 1 || !strings.Contains(ob.PhaseNote, "it has no reading of the check") || ob.Health != "reading" {
 		t.Fatalf("after no reading: phase %q tries %d note %q", ob.Phase, ob.verifyTry, ob.PhaseNote)
 	}
-	// A keep-passing command left out.
 	o.tick(objectiveReadRetry + time.Minute)
 	answer(ObjectiveJobResult{Head: shaA, Reading: timed(3)})
 	ob = o.obj(task.Key)
 	if ob.verifyTry != 2 || !strings.Contains(ob.PhaseNote, "which must keep passing") {
 		t.Fatalf("after a command left out: tries %d note %q", ob.verifyTry, ob.PhaseNote)
 	}
-	// A reading of a command nobody asked for.
 	o.tick(2*objectiveReadRetry + time.Minute)
 	answer(ObjectiveJobResult{Head: shaA, Reading: timed(3), Kept: []ObjectiveKept{{Command: "go test ./...", OK: true}, {Command: "rm -rf /", OK: true}}})
 	ob = o.obj(task.Key)
 	if ob.Phase != PhaseBlocked || ob.PhaseWhy != BlockedReading || ob.State != ObjectiveActive {
-		// An extra command is dropped, not rejected: it is the third try
-		// only if it is refused.
+		// An extra command is dropped, not rejected; a rejection would make this the third try.
 		t.Logf("an extra command: phase %q tries %d note %q", ob.Phase, ob.verifyTry, ob.PhaseNote)
 	}
 	if ob.Phase == PhaseBlocked {
@@ -431,7 +414,6 @@ func TestObjectiveReadingJobThatFailsOrTimesOut(t *testing.T) {
 	}
 	o.noJob()
 	o.tick(objectiveReadRetry + time.Minute)
-	// Taken, and never answered: it expires past its timeout.
 	o.job()
 	o.setClock(o.clockNow().Add(time.Duration(objectiveJobTimeout)*time.Second + 6*time.Minute))
 	o.s.CheckRunners(o.ctx)
@@ -467,7 +449,6 @@ func TestObjectiveRunnerLosingTheFeatureTakesNoReading(t *testing.T) {
 			}
 		})
 	}
-	// Queued, and not yet taken.
 	withFeature(false)
 	o.noJob()
 	ob := o.obj(task.Key)
@@ -475,7 +456,7 @@ func TestObjectiveRunnerLosingTheFeatureTakesNoReading(t *testing.T) {
 		t.Fatalf("a runner that can't read it: phase %q tries %d health %q", ob.Phase, ob.verifyTry, ob.Health)
 	}
 	withFeature(true)
-	// Taken, and the runner loses the feature before it answers: the answer counts.
+	// An answer from a runner that lost the feature before answering still counts.
 	c, _ := o.job()
 	withFeature(false)
 	raw, _ := json.Marshal(ObjectiveJobResult{Head: shaA, Reading: timed(3)})
@@ -486,7 +467,6 @@ func TestObjectiveRunnerLosingTheFeatureTakesNoReading(t *testing.T) {
 	if ob = o.obj(task.Key); ob.Phase != PhaseWork || ob.BaseSHA != shaA || ob.verifyTry != 0 {
 		t.Fatalf("answered by a runner that lost the feature: phase %q base %q", ob.Phase, ob.BaseSHA)
 	}
-	// The next reading has no runner that can take it, and it waits.
 	o.worked(task.Key)
 	o.noJob()
 	ob = o.obj(task.Key)
@@ -494,7 +474,7 @@ func TestObjectiveRunnerLosingTheFeatureTakesNoReading(t *testing.T) {
 		t.Fatalf("round 1 read by nobody: phase %q tries %d health %q", ob.Phase, ob.verifyTry, ob.Health)
 	}
 	withFeature(true)
-	o.tick(6 * time.Minute) // Waypoint looks again every few minutes
+	o.tick(6 * time.Minute)
 	o.read(ObjectiveJobResult{Head: shaB, Base: shaA, Reading: timed(0.5), BaseReading: timed(3), P: ptrOf(0.001)})
 	if ob = o.obj(task.Key); ob.State != ObjectiveMet {
 		t.Fatalf("read by a runner that can: %s", ob.State)
@@ -527,7 +507,6 @@ func TestObjectiveRacingPumpsGiveOneJobAndOneVerdict(t *testing.T) {
 		return n
 	}
 	o.set(task.Key, ObjectiveInput{Check: ptrOf("./bench"), Until: ptrOf("< 1s")})
-	// Nothing asked yet: put it back to where Waypoint has asked for nothing.
 	if _, err := o.s.db.W.ExecContext(o.ctx, `UPDATE runner_jobs SET state = 'cancelled' WHERE kind = ? AND source_id = ?`, JobObjective, id); err != nil {
 		t.Fatal(err)
 	}
@@ -538,7 +517,6 @@ func TestObjectiveRacingPumpsGiveOneJobAndOneVerdict(t *testing.T) {
 	if n := count(`SELECT count(*) FROM runner_jobs WHERE kind = ? AND source_id = ? AND state = 'queued'`, JobObjective, id); n != 1 {
 		t.Fatalf("jobs queued by racing steps: %d", n)
 	}
-	// An answer that is in and not yet applied is applied once.
 	c, _ := o.job()
 	raw, _ := json.Marshal(ObjectiveJobResult{Head: shaA, Reading: timed(3)})
 	if _, err := o.s.db.W.ExecContext(o.ctx, `UPDATE runner_jobs SET state = 'done', result = ? WHERE id = ?`, string(raw), c.ID); err != nil {
@@ -551,7 +529,6 @@ func TestObjectiveRacingPumpsGiveOneJobAndOneVerdict(t *testing.T) {
 	if ob := o.obj(task.Key); ob.Phase != PhaseWork || ob.BaseSHA != shaA || ob.Round != 1 {
 		t.Fatalf("after the race: phase %q base %q round %d", ob.Phase, ob.BaseSHA, ob.Round)
 	}
-	// And the same for a round's verdict: one reading, one round ended.
 	o.worked(task.Key)
 	c, _ = o.job()
 	raw, _ = json.Marshal(ObjectiveJobResult{Head: shaB, Base: shaA, Reading: timed(3), BaseReading: timed(3), P: ptrOf(0.9)})

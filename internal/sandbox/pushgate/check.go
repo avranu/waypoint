@@ -16,10 +16,10 @@ import (
 // verdict is what the checks say about a push.
 type verdict struct {
 	err        error
-	refused    map[string]string // ref → why
-	protected  []string          // protected files the new commits touch
-	secret     bool              // refused for a known secret value
-	secretName string            // which one; where it was is not kept for callers that return the reason
+	refused    map[string]string
+	protected  []string
+	secret     bool
+	secretName string
 }
 
 func (v *verdict) refuse(ref, why string) {
@@ -221,9 +221,7 @@ func (g *Gateway) changedFiles(ctx context.Context, m *mirror, env []string, com
 	if err != nil {
 		return nil, err
 	}
-	// The output interleaves each commit's id with its paths. The ids are
-	// kept as paths too: a file named like a commit id must still be
-	// checked, and an id matches no glob a person would write.
+	// Commit ids are also kept as paths, so a file named like a commit id is still checked.
 	seen := map[string]bool{}
 	var files []string
 	for _, f := range bytes.Split(out, []byte{0}) {
@@ -296,8 +294,6 @@ func validBranch(name string) bool {
 	}
 	return true
 }
-
-// Secret scan.
 
 type secret struct {
 	name  string

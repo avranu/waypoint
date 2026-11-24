@@ -1,9 +1,5 @@
 package core
 
-// Labels and reviewers on a pull request, for automations (WP-D18): the
-// pr_label and request_reviewers actions. GitHub, Forgejo and GitLab differ
-// in what they take (names or ids), so each does what its API needs.
-
 import (
 	"context"
 	"fmt"
@@ -30,7 +26,7 @@ const defaultLabelColor = "ededed"
 // madeLabels are the labels Waypoint makes with a colour and description of
 // their own; any other gets defaultLabelColor and no description.
 var madeLabels = map[string]struct{ color, description string }{
-	// infrastructure's bin/ci-urgent.py makes it the same way.
+	// Same label, colour and description as infrastructure's bin/ci-urgent.py gives it.
 	CIUrgentLabel: {"#d93f0b", "CI runs on the urgent lane, ahead of the queue (infrastructure docs/runbooks/forgejo-runner.md)"},
 }
 
@@ -100,7 +96,6 @@ func (c *httpForgeClient) ChangePRLabels(ctx context.Context, f *Forge, repo str
 		}
 		return nil
 	}
-	// Forgejo and Gitea take label ids.
 	if len(add) > 0 {
 		ids, err := c.fjLabelIDs(ctx, f, repo, add)
 		if err != nil {
@@ -133,7 +128,7 @@ func (c *httpForgeClient) RequestReviewers(ctx context.Context, f *Forge, repo s
 	if f.Kind != "gitlab" {
 		return c.do(ctx, f, http.MethodPost, fmt.Sprintf("/repos/%s/pulls/%d/requested_reviewers", repo, number), map[string]any{"reviewers": users}, nil)
 	}
-	// GitLab sets the whole list, by user id.
+	// GitLab replaces the whole reviewer list, so the reviewers already there go in the request too.
 	var mr struct {
 		Reviewers []struct {
 			ID int64 `json:"id"`
@@ -163,8 +158,6 @@ func (c *httpForgeClient) RequestReviewers(ctx context.Context, f *Forge, repo s
 	}
 	return c.do(ctx, f, http.MethodPut, path, map[string]any{"reviewer_ids": ids}, nil)
 }
-
-// ---- re-running CI ----
 
 // ForgeCIRetry is the optional part of a ForgeClient that re-runs the
 // failed checks of a commit. Forgejo has an API for it from 17 on.
@@ -224,12 +217,11 @@ func (c *httpForgeClient) retryForgejo(ctx context.Context, f *Forge, repo, sha 
 	}
 	counting := countingRuns(runs.Runs)
 	n := 0
-	for _, r := range runs.Runs { // in the forge's order, each counting run once
+	for _, r := range runs.Runs {
 		if cr, ok := counting[runGroup(r)]; !ok || cr.ID != r.ID {
 			continue
 		}
-		// A fail-fast run ends "cancelled": its first failure cancelled the
-		// rest. Its failed and cancelled jobs both go again.
+		// A fail-fast run ends cancelled after its first failure, so cancelled runs are retried as well as failed ones.
 		if r.Status != "failure" && r.Status != "cancelled" {
 			continue
 		}
@@ -276,10 +268,7 @@ func (c *httpForgeClient) rerunForgejoJobs(ctx context.Context, f *Forge, repo s
 		}
 		posted[j.ID] = true
 		n++
-		// The re-run reopened the job's dependents. needs names their
-		// workflow keys, which the API doesn't give (a matrix job's name
-		// is not its key), so the jobs are read again rather than
-		// matched: re-running a reopened job is refused.
+		// A re-run reopens dependent jobs whose needs use workflow keys the API doesn't give (a matrix job's name differs), so jobs are read again, not matched; re-running a reopened job is refused.
 		if jobs, err = c.ActionJobs(ctx, f, repo, runID); err != nil {
 			return n, err
 		}

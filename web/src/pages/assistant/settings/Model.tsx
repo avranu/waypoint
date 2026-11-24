@@ -1,7 +1,4 @@
-// The assistant's model: the main one every new conversation uses, and the
-// models of Hermes's auxiliary tasks (titles, compression, vision, …).
-// The provider and its endpoint are the deploy's (they point at the gate),
-// so the picker offers the current provider's models, or any name typed in.
+// The deploy pins the provider and its endpoint (both point at the gate); the picker disables every other provider.
 
 import { useId, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -350,7 +347,6 @@ function ModelPicker({
         })
       if (choices.length) out.push({ name: p.name, slug: p.slug, choices })
     }
-    // Locked: the deploy's provider first.
     out.sort((a, b) => Number(b.slug === locked) - Number(a.slug === locked))
     return out
   }, [opts.data, text, locked])

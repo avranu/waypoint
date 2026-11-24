@@ -15,39 +15,34 @@ import (
 	"git.jmann.me/claude/waypoint/internal/wql"
 )
 
-// The automation catalog (WP-D18): every trigger and action is a definition
-// with typed parameters, registered once. Validation, the sentence editor
-// (GET /api/v1/automation-catalog), run recording and dry runs all read it,
-// so a new trigger or action is one definition plus its code, nowhere else.
-//
-// Another file adds one with registerTrigger/registerAction from an init().
+// Validation, the sentence editor, run recording and dry runs all read these definitions, so a new trigger or action needs only its definition and code.
 
 // Parameter types. The editor has a field for each; hand-made renderers
 // (status pickers, the PR filter) stay as renderers for their type.
 const (
-	PText     = "text"     // one line
-	PLong     = "long"     // several lines, not templated
-	PTemplate = "template" // text with {{ }} fields from the trigger and earlier steps
+	PText     = "text"
+	PLong     = "long"
+	PTemplate = "template"
 	PNumber   = "number"
-	PDuration = "duration" // 90s, 15m, 2h, 3d
+	PDuration = "duration"
 	PSelect   = "select"
 	PBool     = "bool"
-	PUser     = "user"   // a username, or actor, reporter, assignees, watchers
-	PStatus   = "status" // status names or categories, comma separated
-	PQuery    = "query"  // an issue query
+	PUser     = "user"
+	PStatus   = "status"
+	PQuery    = "query"
 	PRepo     = "repo"
-	PGlob     = "glob"  // a branch glob
-	PGlobs    = "globs" // path globs, one per line
+	PGlob     = "glob"
+	PGlobs    = "globs"
 	PModels   = "models"
 	PRunner   = "runner"
 	PCron     = "cron"
-	PJSON     = "json" // JSON text (or a JSON template for bodies)
+	PJSON     = "json"
 	PURL      = "url"
 	PSecret   = "secret"
-	PField    = "field" // a field that can change
-	PTime     = "time"  // HH:MM
+	PField    = "field"
+	PTime     = "time"
 	PWeekday  = "weekday"
-	PList     = "list" // several templates, one per line
+	PList     = "list"
 )
 
 // ParamOption is one choice of a select parameter.
@@ -291,11 +286,9 @@ func (s *Service) AutomationCatalog(ctx context.Context, actor *Actor) Catalog {
 	return c
 }
 
-// ---- parameter values ----
-
 // flatKeys caches the JSON field names of a struct that also carries
 // free-form parameters.
-var flatKeys sync.Map // reflect.Type -> map[string]bool
+var flatKeys sync.Map
 
 func knownKeys(t reflect.Type) map[string]bool {
 	if m, ok := flatKeys.Load(t); ok {
@@ -622,7 +615,6 @@ func checkParam(name string, d ParamDef, v any) error {
 			return invalid("%s: %v", name, err)
 		}
 	case PJSON:
-		// A JSON body is a template; it is checked once rendered.
 		if _, err := newTemplate(s); err != nil {
 			return invalid("%s: template: %v", name, err)
 		}
@@ -664,8 +656,6 @@ func anyStrings2(v any) []string {
 func newTemplate(tpl string) (*template.Template, error) {
 	return template.New("").Option("missingkey=zero").Funcs(templateFuncs).Parse(tpl)
 }
-
-// ---- trigger and action validation ----
 
 // validateTrigger checks a trigger against its definition.
 func (tr *Trigger) validateDef(admin bool) error {

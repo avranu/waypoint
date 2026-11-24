@@ -56,7 +56,6 @@ async function run(width, scheme) {
     agent: "anthropic/claude-haiku-5-5",
   });
   const AG = { ...H, Authorization: `Bearer ${token}` };
-  // A real picture to stand in for what wp shot would take.
   await page.goto(`${base}/p/${key}/board`);
   await page.waitForLoadState("networkidle");
   await page.waitForTimeout(300);
@@ -101,7 +100,6 @@ async function run(width, scheme) {
     ok(r.ok(), `${tag} API: try link ${url} (${r.status()})`);
   }
 
-  // ---- the slideshow ----
   await page.goto(`${base}/catch-up?project=${key}`);
   const item = page.getByTestId("catch-up-item");
   await item.getByText(`Add the page ${tag}`).waitFor();
@@ -141,7 +139,6 @@ async function run(width, scheme) {
   await page.keyboard.press("ArrowLeft");
   await item.getByText(`Add the page ${tag}`).waitFor();
 
-  // Looks good reviews the close; the next one shows in its place.
   await page.getByRole("button", { name: "Looks good" }).click();
   await item.getByText(`Fix the button ${tag}`).waitFor();
   ok(await page.getByText("1 of 2").isVisible(), `${tag} one fewer to see`);
@@ -150,7 +147,6 @@ async function run(width, scheme) {
     `${tag} Looks good reviewed the close`,
   );
 
-  // Not finished sends it back with a note.
   await page.getByRole("button", { name: "Not finished" }).click();
   const back = page.getByRole("dialog", { name: `Send ${k2} back` });
   await back.getByLabel("What’s missing").fill("The button is still blue.");
@@ -166,17 +162,14 @@ async function run(width, scheme) {
     `${tag} with the note as a comment`,
   );
 
-  // Report a problem: a related bug with a picture; the task stays to review.
   await page.getByRole("button", { name: "Report a problem" }).click();
   const rep = page.getByRole("dialog", { name: `Report a problem with ${k3}` });
   await rep.getByLabel("What’s wrong").fill(`Rows overlap ${tag}\nOn a phone.`);
-  await rep
-    .locator("input[type=file]")
-    .setInputFiles({
-      name: "rows.png",
-      mimeType: "image/png",
-      buffer: picture,
-    });
+  await rep.locator("input[type=file]").setInputFiles({
+    name: "rows.png",
+    mimeType: "image/png",
+    buffer: picture,
+  });
   await rep.getByRole("list", { name: "Pictures" }).getByRole("img").waitFor();
   await page.waitForTimeout(300);
   await shot("problem");
@@ -207,7 +200,6 @@ async function run(width, scheme) {
   await page.getByText("All caught up").waitFor();
   await shot("caught-up");
 
-  // ---- the way in: Waiting on you and the nav ----
   await call("POST", `/issues/${k2}/transition`, { status: "Done" }, AG);
   await page.goto(base + "/inbox");
   const row = page

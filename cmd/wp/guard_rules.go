@@ -10,12 +10,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// The guard's rules (WP-270, WP-ADR10): what an unattended session may not
-// do with a Bash command. A rule looks at a simple command's name and
-// arguments, after assignments and wrappers (env, nohup, timeout, xargs...),
-// and at the commands inside `bash -c`, eval, find -exec and substitutions.
-// It is a seatbelt against an agent following bad instructions, not a
-// sandbox: Bash can always be phrased past a pattern.
+// A seatbelt against an agent following bad instructions, not a sandbox: Bash can always be phrased past a pattern.
 
 // Rule ids, as they appear in guard.log.
 const (
@@ -34,10 +29,10 @@ const (
 // guardHit is a refused call.
 type guardHit struct {
 	rule   string
-	reason string // what it is, in a few words: "installing software"
-	what   string // the part of the call that matched
-	ask    bool   // the way out is a question, not a command for a person to run
-	way    string // the way out, when the agent can take it itself
+	reason string
+	what   string
+	ask    bool
+	way    string
 }
 
 func hit(rule, reason string, words ...string) *guardHit {
@@ -49,7 +44,7 @@ func hit(rule, reason string, words ...string) *guardHit {
 type guard struct {
 	site   guardSite
 	dir    string
-	server string // the Waypoint server's host
+	server string
 	origin func() string
 	orig   *string
 	lost   bool
@@ -62,12 +57,8 @@ type guard struct {
 	// contained: the session runs in a Contained sandbox (WP-473), whose
 	// walls already stop what the walled rules guard against.
 	contained bool
-	// envHosts are the hosts of the repo's environments a person set
-	// (WP-749): reads from them are fine, changes need a person.
-	envHosts func() []string
-	// open is, for the command being checked, which of its arguments the
-	// shell may make other words of (guardCmd.open).
-	open []bool
+	envHosts  func() []string
+	open      []bool
 }
 
 // walled are the rules a Contained sandbox enforces itself (PL7 §3): it has
@@ -130,7 +121,7 @@ func (g *guard) script(cmds []*guardCmd, depth int) *guardHit {
 	if depth > guardMaxDepth {
 		return nil
 	}
-	fetch := false // an earlier command of this pipeline downloads
+	fetch := false
 	for i, c := range cmds {
 		first := i == 0
 		if !c.pipeIn {
@@ -236,7 +227,7 @@ func runsSub(name string, args []string) bool {
 // readsStdinAsCode: the interpreter would run what is piped into it (no
 // script, no -c): `curl … | sh`, not `curl … | python3 -m json.tool`.
 func readsStdinAsCode(name string, args []string) bool {
-	inline := "" // the letters of the flags that give it code to run
+	inline := ""
 	switch {
 	case shellNames[name]:
 		inline = "c"
@@ -283,7 +274,7 @@ func (g *guard) assignHit(w string) *guardHit {
 	case guardMarkers[name] && (val == "" || val == "0" || val == "false"):
 		return hit(ruleGuard, "clearing what marks the session as unattended", w)
 	case strings.EqualFold(name, "npm_config_package") || strings.EqualFold(name, "npm_config_yes") && val != "false":
-		return hit(ruleInstall, "installing software", w) // npx's --package and --yes, read from the environment
+		return hit(ruleInstall, "installing software", w)
 	case fetchSettingsVar(name):
 		return hit(ruleDownload, "pointing fetches at settings or a proxy the guard can't read", w)
 	}
@@ -347,7 +338,7 @@ func (g *guard) unwrap(words []string) ([]string, *guardHit) {
 		case "timeout":
 			words = dropFlags(args, "-s", "-k", "--signal", "--kill-after")
 			if len(words) > 0 {
-				words = words[1:] // the duration
+				words = words[1:]
 			}
 		case "xargs":
 			words = dropFlags(args, "-n", "-I", "-L", "-P", "-s", "-d", "-E", "-a", "--max-args", "--max-procs", "--delimiter", "--arg-file")
@@ -421,8 +412,8 @@ func (g *guard) unwrapEnv(args []string) ([]string, *guardHit) {
 // argScan is a command line split into positional words and flags.
 type argScan struct {
 	pos   []string
-	flags map[string]bool     // -x and --long, as given
-	val   map[string][]string // values of flags that take one
+	flags map[string]bool
+	val   map[string][]string
 }
 
 // values are the values given to any of the flags named.
@@ -487,13 +478,12 @@ func (g *guard) simple(c *guardCmd, name string, args []string, depth int) *guar
 	if name == "" {
 		return nil
 	}
-	// A heredoc given to a shell is a script; text given to anything else is data.
+	// Only a shell's heredoc is read as code here; an interpreter given a heredoc on stdin (python3 <<EOF) is not.
 	if shellNames[name] && c.heredoc != "" {
 		if h := g.child(parseShell(c.heredoc), depth+1); h != nil {
 			return h
 		}
 	}
-	// Code made of a download: bash <(curl …), sh -c "$(curl …)", eval "$(curl …)".
 	if (codeRunners[name] || rePython.MatchString(name)) && runsSub(name, args) {
 		for _, sub := range c.subs {
 			if g.hasFetcher(sub) {
@@ -736,7 +726,7 @@ func (g *guard) installHit(name string, args []string) *guardHit {
 		if first == "run" || first == "tool" {
 			for _, p := range scanArgs(args, "").pos[1:] {
 				if strings.Contains(p, "@") {
-					return h() // go run pkg@version
+					return h()
 				}
 			}
 		}
@@ -849,7 +839,7 @@ func pmExec(name string, args []string) (rest, where []string, ok bool) {
 	if name != "npm" && name != "bun" {
 		return nil, nil, false
 	}
-	value := false // this word may be the value of the option before it
+	value := false
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		maybeValue := value
@@ -902,13 +892,13 @@ var npmOptNames = map[string]string{"package": "package=", "yes": "yes", "ye": "
 
 // npmOpt is an option word as npm reads it.
 type npmOpt struct {
-	names  []string // the options it sets that the guard follows: package, yes, no, prefix, workspace, call
-	val    string   // the value after =, which goes to the last of them
+	names  []string
+	val    string
 	hasVal bool
-	takes  bool // its last option takes a value: the next word, without =
-	follow bool // it sets one of names
-	known  bool // npm knows the spelling, so takes is sure
-	split  bool // an option before the last takes a value it can't have (-Cy DIR)
+	takes  bool
+	follow bool
+	known  bool
+	split  bool
 }
 
 // readNpmOpt reads an option word the way npm's parser does: one dash or
@@ -938,7 +928,7 @@ func readNpmOpt(a string, cli string) npmOpt {
 	name, ok := npmOptNames[key]
 	if !ok && strings.HasPrefix(key, "no-") {
 		if n, isOpt := npmOptNames[strings.TrimPrefix(key, "no-")]; isOpt && strings.HasSuffix(n, "=") {
-			name, ok = n, true // npm --no-package X: --package X
+			name, ok = n, true
 		}
 	}
 	if npx && key == "no-install" {
@@ -955,7 +945,7 @@ func readNpmOpt(a string, cli string) npmOpt {
 		for i := 0; i < len(key); i++ {
 			l := npmOptLetters[key[i]]
 			if npx && key[i] == 'p' {
-				l = "package=" // npx -p, bun x -p
+				l = "package="
 			}
 			parts = append(parts, l)
 		}
@@ -997,7 +987,7 @@ func lockfileInstall(name string, args []string) bool {
 		switch a {
 		case "--frozen-lockfile", "--immutable", "--no-audit", "--no-fund", "--prefer-offline", "--silent", "--quiet", "--ignore-scripts":
 		default:
-			return false // --dry-run, --prefix DIR, -w web, a package
+			return false
 		}
 	}
 	return true
@@ -1041,7 +1031,7 @@ func (g *guard) npxHit(name string, args []string) *guardHit {
 			case contains(pmValueFlags, flag) && !hasVal:
 				i++
 			case !strings.HasPrefix(a, "--") && strings.ContainsAny(a[1:], "yp"):
-				return h // a word npm doesn't take as -y or -p: refused all the same
+				return h // npm may read a short-option cluster holding y or p as -y or -p, so an unknown one is refused, not skipped.
 			}
 			continue
 		}
@@ -1050,7 +1040,7 @@ func (g *guard) npxHit(name string, args []string) *guardHit {
 		}
 		for j, n := range o.names {
 			last := j == len(o.names)-1
-			off := last && o.hasVal && val == "false" // --yes=false, --no=false
+			off := last && o.hasVal && val == "false"
 			switch {
 			case n == "package", n == "yes" && !off, n == "no" && off:
 				return h
@@ -1065,9 +1055,9 @@ func (g *guard) npxHit(name string, args []string) *guardHit {
 	}
 	switch {
 	case cmd == "":
-		return nil // npx -c "…", npx --version
+		return nil
 	case reVersioned.MatchString(cmd):
-		return h // npx prettier@3
+		return h
 	case no || g.lost || g.installs || strings.ContainsAny(cmd, "$`") || strings.Contains(cmd, subPlaceholder) ||
 		strings.HasPrefix(cmd, ".") || strings.HasPrefix(cmd, "~") || filepath.IsAbs(cmd):
 		return nil
@@ -1459,7 +1449,7 @@ func (g *guard) gitHit(args []string) *guardHit {
 			if p := g.site.resolve(dir, v); p != "" {
 				dir = p
 				if strings.HasPrefix(a, "--git-dir=") {
-					dir = filepath.Dir(p) // the repository whose .git it is
+					dir = filepath.Dir(p)
 				}
 			}
 		case strings.HasPrefix(a, "-"):
@@ -1543,7 +1533,7 @@ func writeTargets(name string, args []string) []string {
 			return nil
 		}
 		if len(sc.val["-e"])+len(sc.val["-f"])+len(sc.val["--expression"])+len(sc.val["--file"]) == 0 && len(sc.pos) > 0 {
-			return sc.pos[1:] // the first word is the script
+			return sc.pos[1:]
 		}
 		return sc.pos
 	case "dd":

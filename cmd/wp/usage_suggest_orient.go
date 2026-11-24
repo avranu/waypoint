@@ -6,11 +6,7 @@ import (
 	"strings"
 )
 
-// Orientation (WP-183, WP-ADR3 §6): what agents do before their first
-// edit, the numbers page X7 measured once by script, so that adoption of
-// wp code and wp brief, and of the search-chain nudge, can be read again
-// before and after a change: `wp usage suggest --since 14d --until 7d`
-// against `--since 7d`.
+// Counts what agents do before their first edit (wp code, wp brief, search nudge), to compare adoption across time windows.
 
 // sugOrientation counts transcripts (main threads and subagents) with at
 // least one call.
@@ -71,13 +67,13 @@ func chainPoint(calls []sugCall, end int) int {
 			if i < end {
 				return i
 			}
-			return -1 // told after the first edit: neither arm
+			return -1
 		}
 	}
 	finds, steps := 0, 0
 	for i := range end {
 		if calls[i].Tool == "Grep" {
-			continue // the hook sees only Bash and Read
+			continue // Grep is never nudged: the nudge hook matches only Bash, Read and Monitor (hook.go:106)
 		}
 		switch callStep(calls[i]) {
 		case stepWP:
@@ -334,7 +330,7 @@ func adviceOrientation(in *sugInput) *sugAdvice {
 // read letter by letter, stopping at one that takes a value (perl -Ilib is
 // not -i).
 func inPlaceFlag(prog string, args []string) bool {
-	valued := "efl" // sed
+	valued := "efl"
 	if prog == "perl" {
 		valued = "IeEMmxdDCFV"
 	}
@@ -352,7 +348,7 @@ func inPlaceFlag(prog string, args []string) bool {
 			}
 			if strings.IndexByte(valued, a[j]) >= 0 {
 				if j == len(a)-1 {
-					k++ // the value is the next word
+					k++
 				}
 				break
 			}

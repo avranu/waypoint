@@ -10,26 +10,16 @@ import (
 	"unicode/utf8"
 )
 
-// How an objective's rounds end and begin (WP-927, WP-ADR111, WP-ADR142). A round's
-// work ends where the task would close (objectiveClose); Waypoint then
-// reads it (objective_verify.go) and settles it here (objectiveSettle): the
-// objective is met and the task closes, or the next round opens, or it
-// needs a person. A person steers one with ObjectiveGo. A diagnose round
-// (WP-1449, WP-ADR142) ends otherwise: only with a recorded diagnosis
-// (ObjectiveDiagnose), since wp done, opening a pull request, wp ship and an
-// agent's merge are refused in it; nothing is read, and the same round
-// reopens as a work round.
+// A diagnose round ends only with a recorded diagnosis: wp done, opening a pull request, wp ship and merges are refused in it, and nothing is read.
 
 // roundEnd is what a round came to.
 type roundEnd struct {
 	outcome string
-	m       *ObjectiveMeasurement // the reading that decided it; nil: none
-	// read: the commands' reading, when the judge's (m) decided it.
-	read *ObjectiveMeasurement
-	head string // the commit read; "": not known
-	note string
-	// moved: a person moved it on, so no back-off follows.
-	moved bool
+	m       *ObjectiveMeasurement
+	read    *ObjectiveMeasurement
+	head    string
+	note    string
+	moved   bool
 }
 
 func nullBoolP(b *bool) any {
@@ -108,8 +98,7 @@ func (s *Service) objectiveOpenRound(ctx context.Context, t *tx, o *Objective, r
 	if baseline {
 		phase = PhaseBaseline
 	}
-	// The round is a diagnose round when the rounds before it came no
-	// nearer, enough in a row (WP-1449). A loop reads nothing, so it never is.
+	// A loop reads nothing, so it is never a diagnose round.
 	kind := ""
 	if o.diagnosisDue(o.NoBetter) {
 		kind = RoundKindDiagnose
@@ -173,8 +162,6 @@ func (s *Service) objectiveCloseTask(ctx context.Context, t *tx, o *Objective, s
 	}
 	var st *Status
 	if statusID != nil {
-		// The status asked for, if it is still one of the project's that
-		// closes a task.
 		var c Status
 		err := t.QueryRowContext(ctx, `SELECT id, name, category, color, position FROM statuses WHERE id = ? AND project_id = ?`, *statusID, i.ProjectID).
 			Scan(&c.ID, &c.Name, &c.Category, &c.Color, &c.Position)
@@ -210,7 +197,6 @@ func objectiveOutcome(o *Objective, m *ObjectiveMeasurement) string {
 	case improved:
 		return RoundProgress
 	case m.Source == SourceJudge || o.Measure == MeasurePass:
-		// A pass and a judge say met or not, not how much nearer.
 		return RoundWorked
 	}
 	return RoundNone
@@ -237,12 +223,7 @@ func (s *Service) objectiveSettle(ctx context.Context, t *tx, o *Objective, e ro
 			return err
 		}
 	}
-	// Rounds in a row that came no nearer: what makes a round a diagnose
-	// round. A round that landed nothing (RoundEmpty) neither counts nor
-	// clears: nothing was tried, so it is no evidence either way, and the
-	// rounds around it are still in a row. A person moving the objective on
-	// skips the diagnose round that was owed, and a diagnosis recorded stands
-	// until a round makes progress or what is measured changes (WP-1449).
+	// RoundEmpty neither counts toward nor clears the rounds-in-a-row count; a diagnosis stands until a round makes progress or the measurement changes.
 	switch {
 	case e.outcome == RoundMet || e.outcome == RoundProgress:
 		o.NoBetter, o.diagnosisID = 0, 0
@@ -272,7 +253,6 @@ func (s *Service) objectiveSettle(ctx context.Context, t *tx, o *Objective, e ro
 	}
 	old := fmt.Sprintf("round %d", o.Round)
 	closeAs := o.closeStatus
-	// What was read is where the next round starts from.
 	if e.head != "" {
 		o.BaseSHA = e.head
 		o.baseOK, o.baseValue = nil, nil
@@ -308,7 +288,6 @@ func (s *Service) objectiveSettle(ctx context.Context, t *tx, o *Objective, e ro
 		said += "; the objective is met"
 		return over(ObjectiveMet, why, "met")
 	case e.outcome == RoundEmpty:
-		// Nothing landed, so nothing was read and the round is still owed.
 		stalled := o.Stalled + 1
 		wait := max(time.Duration(o.everyMS)*time.Millisecond, objectiveBackoff(stalled))
 		if e.moved {
@@ -347,9 +326,7 @@ func (s *Service) objectiveSettle(ctx context.Context, t *tx, o *Objective, e ro
 	case e.outcome == RoundNone:
 		wait = max(wait, objectiveBackoff(stalled))
 	case e.outcome == RoundWorked && stalled > 2:
-		// Work landed and the reading can't say it is nearer (a pass/fail
-		// check, a judge that finds as much as before): the next round
-		// follows at once, twice, and waits from the third in a row.
+		// Work landed that the reading can't call nearer (a pass/fail check, a judge) follows at once twice, then waits from the third in a row.
 		wait = max(wait, objectiveBackoff(stalled-2))
 	}
 	if e.moved {
@@ -375,15 +352,10 @@ func (s *Service) objectiveSettle(ctx context.Context, t *tx, o *Objective, e ro
 // workEnd is something that would end a round's work: the task closing, or
 // a pull request of the task merging.
 type workEnd struct {
-	// direct: an agent's own act on the task (wp done, an edit), which is
-	// told why when it ends nothing; anything else is noted and left.
 	direct bool
-	// merged is the pull request whose merge it is; "": a close.
 	merged string
 	agent  string
-	// closeAs is the status the close asked for: where the task goes when
-	// the objective is met. nil: nothing asked for one (a merge in a
-	// project with no rule closing tasks on merge).
+	// nil: the close asked for no status (a merge in a project with no rule closing tasks on merge).
 	closeAs *Status
 }
 
@@ -404,7 +376,6 @@ func (s *Service) objectiveClose(ctx context.Context, t *tx, actor *Actor, i *Is
 	// person's close.
 	if objectivePerson(actor) && (!actor.forgeSync || actor.textAgent == "") {
 		why := "closed as " + st.Name + " by " + cmp(actor.User.DisplayName, actor.User.Username)
-		// The round it ended on is recorded when there was one to record.
 		res, err := t.ExecContext(ctx, `UPDATE objective_rounds SET outcome = ?, note = ? WHERE issue_id = ? AND outcome = ?`, RoundUnmeasured, why+" before it was read", i.ID, RoundReading)
 		if err != nil {
 			return nil, err
@@ -469,15 +440,12 @@ func (s *Service) objectiveWorkEnded(ctx context.Context, t *tx, o *Objective, i
 	old := fmt.Sprintf("round %d", o.Round)
 	note := func(text string) { t.emit(objectiveEvent(o, "note", old, text)) }
 	if w.merged != "" {
-		// A pull request merges once. Waypoint reads the merge itself
-		// (objectiveMerged); a rule that then closes the task on the same
-		// merge ends nothing more.
+		// A pull request merges once: a rule that closes the task on the same merge ends nothing more.
 		res, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO objective_merges (issue_id, url, round_no, at) VALUES (?, ?, ?, ?)`, i.ID, w.merged, o.Round, now)
 		if err != nil {
 			return nil, err
 		}
 		if n, _ := res.RowsAffected(); n == 0 {
-			// The rule's close says where the task goes if this round is met.
 			if w.closeAs != nil && o.Phase == PhaseVerdict && o.closeStatus == nil {
 				return nil, s.objSet(ctx, t, i.ID, "close_status_id", w.closeAs.ID)
 			}
@@ -501,8 +469,6 @@ func (s *Service) objectiveWorkEnded(ctx context.Context, t *tx, o *Objective, i
 			}
 			return nil, nil
 		}
-		// More landed while the round was being read: it is read again from
-		// the start, so the reading is of everything the round did.
 		if err := s.objectiveReread(ctx, t, o, PhaseVerdict, "more landed while the round was read"); err != nil {
 			return nil, err
 		}
@@ -513,9 +479,7 @@ func (s *Service) objectiveWorkEnded(ctx context.Context, t *tx, o *Objective, i
 		t.emit(objectiveEvent(o, "verdict", old, fmt.Sprintf("another pull request merged while round %d was being read: it is read again", o.Round)))
 		return nil, nil
 	case o.RoundKind == RoundKindDiagnose && w.merged == "":
-		// A diagnose round ships nothing, so it isn't finished like a work
-		// round: it ends with a diagnosis (WP-1449). A merge can't be
-		// refused, and is read as any round's end (below).
+		// A merge can't be refused in a diagnose round, so it is read as that round's end; a close is not.
 		if w.direct {
 			held := i.ClaimedBy != "" && i.ClaimedUntil != nil && i.ClaimedUntil.UnixMilli() > now
 			return nil, o.diagnoseDoneError(i.Key, inProgress && held)
@@ -523,8 +487,6 @@ func (s *Service) objectiveWorkEnded(ctx context.Context, t *tx, o *Objective, i
 		note(fmt.Sprintf("something other than a person tried to close the task in round %d, a diagnose round: it stays open until a diagnosis is recorded (wp objective diagnose %s)", o.Round, i.Key))
 		return nil, nil
 	case !inProgress && w.merged == "":
-		// A round ends only if it was taken up. A task still waiting in To
-		// Do or the backlog has no round under way for a close to end.
 		if w.direct && o.Phase == PhaseBaseline {
 			return nil, invalid("%s's objective hasn't started: Waypoint is reading where it starts from, and round %d is handed out once it has", i.Key, o.Round)
 		}
@@ -536,18 +498,13 @@ func (s *Service) objectiveWorkEnded(ctx context.Context, t *tx, o *Objective, i
 		note(fmt.Sprintf("a pull request merged while round %d waited to be taken up: it ends no round", o.Round))
 		return nil, nil
 	case !inProgress:
-		// The round's starting point moved before anyone took the round up.
 		if err := s.objectiveReread(ctx, t, o, PhaseBaseline, "more landed before the round was taken up"); err != nil {
 			return nil, err
 		}
 		t.emit(objectiveEvent(o, "baseline", old, fmt.Sprintf("a pull request merged while round %d waited to be taken up: Waypoint reads where the round now starts from", o.Round)))
 		return nil, nil
 	case w.merged != "":
-		// A pull request linked before this round began, merging while
-		// someone holds the round, doesn't cut their work short: they end
-		// the round, and what it landed is read with their own work. With
-		// nobody holding it (the round's own pull request, opened in an
-		// earlier try and shipped again), the merge is the round's end.
+		// A merge while someone holds the round doesn't cut their work short: they end it and it is read with their own work; with nobody holding it, the merge ends the round.
 		var made int64
 		err := t.QueryRowContext(ctx, `SELECT created_at FROM external_links WHERE issue_id = ? AND url = ? AND kind = 'pull'`, i.ID, w.merged).Scan(&made)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -586,9 +543,6 @@ func (s *Service) objectiveWorkEnded(ctx context.Context, t *tx, o *Objective, i
 		return nil, err
 	}
 	if w.merged != "" && i.ClaimedBy != "" {
-		// The merge ended the round, so whoever held it holds it no longer:
-		// their run is done, and the next round is anyone's to take once
-		// this one is read.
 		if err := s.endRun(ctx, t, i.ID, i.ClaimedBy, "done", nil); err != nil {
 			return nil, err
 		}
@@ -597,9 +551,7 @@ func (s *Service) objectiveWorkEnded(ctx context.Context, t *tx, o *Objective, i
 		}
 	}
 	if noTodo {
-		// Nowhere for the task to wait for its next round (the workflow
-		// lost its To Do status since the objective was set): the objective
-		// is over, said plainly, rather than a task that never opens again.
+		// With no To Do status to wait in, the objective ends rather than leaving a task that never reopens.
 		if _, err := t.ExecContext(ctx, `UPDATE objective_rounds SET outcome = ? WHERE issue_id = ? AND outcome = ?`, RoundLoop, i.ID, RoundReading); err != nil {
 			return nil, err
 		}
@@ -613,12 +565,9 @@ func (s *Service) objectiveWorkEnded(ctx context.Context, t *tx, o *Objective, i
 		return s.objectiveDone(ctx, t, i.ProjectID)
 	}
 	if !o.verified() {
-		// A loop: nothing reads it. The round is done and the next opens.
 		if o.MaxRounds == 0 || o.Round < o.MaxRounds {
 			return todo, s.objectiveSettle(ctx, t, o, roundEnd{outcome: RoundLoop})
 		}
-		// Its last round: the objective is over and the task closes, as
-		// the close that ended it asked, or as Done.
 		if _, err := t.ExecContext(ctx, `UPDATE objective_rounds SET outcome = ? WHERE issue_id = ? AND outcome = ?`, RoundLoop, i.ID, RoundReading); err != nil {
 			return nil, err
 		}
@@ -631,8 +580,6 @@ func (s *Service) objectiveWorkEnded(ctx context.Context, t *tx, o *Objective, i
 		}
 		return s.objectiveDone(ctx, t, i.ProjectID)
 	}
-	// Waypoint reads it. A starting point still being read is overtaken by
-	// the round itself.
 	if err := s.objectiveReread(ctx, t, o, PhaseVerdict, "the round ended before its starting point was read"); err != nil {
 		return nil, err
 	}
@@ -809,10 +756,7 @@ func (s *Service) ObjectiveDiagnose(ctx context.Context, actor *Actor, ref strin
 		if err != nil {
 			return err
 		}
-		// The diagnosis ends the run as a merge-ended round does: whoever
-		// held the round holds it no more. Its outcome isn't "done": no
-		// workflow step was finished, and a step's same/different-agent rule
-		// reads the latest done run as whoever did the step before.
+		// The run ends as diagnosed, not done: no workflow step was finished, and a step's same/different-agent rule reads the latest done run.
 		if i.ClaimedBy != "" {
 			if err := s.endRun(ctx, t, i.ID, i.ClaimedBy, RunDiagnosed, nil); err != nil {
 				return err
@@ -821,7 +765,6 @@ func (s *Service) ObjectiveDiagnose(ctx context.Context, actor *Actor, ref strin
 				return err
 			}
 		}
-		// The latest diagnosis stands whichever way the round goes on.
 		if err := s.objSet(ctx, t, i.ID, "diagnosis_id", rid); err != nil {
 			return err
 		}
@@ -832,9 +775,6 @@ func (s *Service) ObjectiveDiagnose(ctx context.Context, actor *Actor, ref strin
 		}
 		said := fmt.Sprintf("round %d: diagnosed by %s (it shipped no code): %s", o.Round, by, excerpt(strings.Join(strings.Fields(text), " "), 300))
 		if todo == nil {
-			// Nowhere for the task to wait (the workflow lost its To Do
-			// status since the objective was set): it ends, said plainly,
-			// as when a round's work ends there.
 			if err := s.objectiveEnd(ctx, t, o, ObjectiveEnded, "the workflow has no To Do status to open the task again in"); err != nil {
 				return err
 			}
@@ -881,10 +821,10 @@ func (s *Service) ObjectiveDiagnose(ctx context.Context, actor *Actor, ref strin
 
 // Objective actions a person steers one with (ObjectiveGo).
 const (
-	ObjectiveRetry  = "retry"  // read again what couldn't be read
-	ObjectiveNext   = "next"   // move on: hand the round out now, or leave an unread round behind
-	ObjectiveAccept = "accept" // count a reading that waits because the round changed what the check runs
-	ObjectiveEnd    = "end"    // end it; the task stays as it is, an ordinary task
+	ObjectiveRetry  = "retry"
+	ObjectiveNext   = "next"
+	ObjectiveAccept = "accept"
+	ObjectiveEnd    = "end"
 )
 
 // ObjectiveGo is a person steering an objective in effect: their own act,
@@ -961,8 +901,6 @@ func (s *Service) ObjectiveGo(ctx context.Context, actor *Actor, ref, action str
 			return nil
 		case ObjectiveAccept:
 			if o.Phase == PhaseBlocked && o.PhaseWhy == BlockedDiagnosis {
-				// The person has read the diagnosis: the round goes on as it
-				// was, handed out when its own wait is over.
 				if err := s.objSet(ctx, t, i.ID, "phase", from, "phase_at", now, "phase_why", "", "phase_note", "", "blocked_from", ""); err != nil {
 					return err
 				}
@@ -985,21 +923,18 @@ func (s *Service) ObjectiveGo(ctx context.Context, actor *Actor, ref, action str
 			case o.Phase == PhaseBlocked && (o.PhaseWhy == BlockedRepo || o.PhaseWhy == BlockedPerson):
 				return invalid("%s's objective can't be read at all until that is put right: %s Then wp objective retry %s", i.Key, o.PhaseNote, i.Key)
 			case o.Phase == PhaseBlocked && o.PhaseWhy == BlockedDiagnosis:
-				// Round N goes on as a work round, handed out now.
 				if err := s.objSet(ctx, t, i.ID, "phase", from, "phase_at", now, "phase_why", "", "phase_note", "", "blocked_from", "", "next_at", nil, "no_better", 0, "round_kind", ""); err != nil {
 					return err
 				}
 				t.emit(objectiveEvent(o, "next", old, fmt.Sprintf("%s read round %d's diagnosis and sent the round ahead: it is handed out now", who, o.Round)))
 				return nil
 			case o.Phase == PhaseWork && o.RoundKind == RoundKindDiagnose:
-				// Skip the diagnosis: a work round, handed out now.
 				if err := s.objSet(ctx, t, i.ID, "round_kind", "", "no_better", 0, "next_at", nil); err != nil {
 					return err
 				}
 				t.emit(objectiveEvent(o, "next", old, fmt.Sprintf("%s skipped round %d's diagnosis: it is a work round, handed out now", who, o.Round)))
 				return nil
 			case from == PhaseVerdict:
-				// The round's work ended and isn't read: it is left behind.
 				if err := s.objectiveDropJob(ctx, t, o, "moved on by "+who); err != nil {
 					return err
 				}
@@ -1007,12 +942,10 @@ func (s *Service) ObjectiveGo(ctx context.Context, actor *Actor, ref, action str
 				if o.Phase == PhaseBlocked && o.PhaseWhy == BlockedTouched {
 					e.note = who + " set its reading aside: the round changed what the check runs"
 				}
-				// No reading, so the commit the next round starts from isn't
-				// known: it is read before the round is handed out.
+				// Without a reading the commit the next round starts from is unknown, so it is read before the round is handed out.
 				o.BaseSHA, o.baseOK, o.baseValue = "", nil, nil
 				return s.objectiveSettle(ctx, t, o, e)
 			case from == PhaseBaseline:
-				// Round 1 goes ahead without a starting point.
 				if err := s.objectiveDropJob(ctx, t, o, "moved on by "+who); err != nil {
 					return err
 				}

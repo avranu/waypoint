@@ -45,7 +45,6 @@ func TestBriefRanking(t *testing.T) {
 	ix := r.open()
 	update(t, ix)
 
-	// a path beats a symbol beats a text match; a named symbol gets its body read
 	b := brief(t, ix, "Handle readiness", "Look at api/handler.go and MergeReady, and exponential backoff.", BriefOptions{})
 	var order []string
 	for _, f := range b.Files {
@@ -67,7 +66,6 @@ func TestBriefRanking(t *testing.T) {
 		t.Errorf("merge.go signals = %+v", s)
 	}
 
-	// the body of the named symbol, the real lines, comes out within budget
 	text := ix.RenderBrief(b, 2000)
 	for _, want := range []string{"Code: files this points at", "Symbols the text names:", "core/merge.go:3-6  method Service.MergeReady", "return checksPassed(id), nil", "2 fixes", "Tests: core/merge_test.go (go test ./core/)"} {
 		if !strings.Contains(text, want) {
@@ -80,12 +78,10 @@ func TestBriefPrecedentAndOwnCommits(t *testing.T) {
 	r := seed(t)
 	ix := r.open()
 	update(t, ix)
-	// an earlier "Fix merge readiness ..." touched merge.go and handler.go
 	b := brief(t, ix, "Fix merge readiness again", "", BriefOptions{})
 	if len(b.Files) == 0 || !slices.ContainsFunc(b.Files[0].Why, func(w string) bool { return strings.HasPrefix(w, "past commits") }) {
 		t.Fatalf("no precedent: %+v", b.Files)
 	}
-	// a commit that names the task's key is its own work, not precedent
 	r.write("tools/run.py", "def other():\n    pass\n")
 	r.commit("Fix zebra mobility (ZZ-9)", 1)
 	update(t, ix)
@@ -137,7 +133,6 @@ func TestBriefBudgetAndOmission(t *testing.T) {
 		t.Errorf("the ranked files go first even when tight:\n%s", small)
 	}
 
-	// sections with nothing to say are left out; no match at all is empty
 	if strings.Contains(full, "Docs:") {
 		t.Errorf("no doc heading matches, but:\n%s", full)
 	}
@@ -146,7 +141,6 @@ func TestBriefBudgetAndOmission(t *testing.T) {
 		t.Errorf("expected an empty brief: %+v", nothing.Files)
 	}
 
-	// compact: no bodies, a pointer to the symbol instead
 	c := brief(t, ix, "MergeReady", "MergeReady", BriefOptions{Compact: true})
 	ct := ix.RenderBrief(c, 0)
 	if strings.Contains(ct, "return checksPassed") || !strings.Contains(ct, "Named symbols:") || !strings.Contains(ct, "More: wp brief") {
@@ -160,7 +154,7 @@ func TestBriefQuestionMode(t *testing.T) {
 	update(t, ix)
 	for _, q := range []string{"how does merging work", "where does the handler check merge readiness", "why does run_all use os.system", "where do retries back off", "where does the babysitter mark a draft ready"} {
 		b := brief(t, ix, "", q, BriefOptions{})
-		_ = ix.RenderBrief(b, 1500) // prose whose words never share a line must not hang or crash
+		_ = ix.RenderBrief(b, 1500) // Prose queries whose words never share a line must not make RenderBrief hang or panic.
 	}
 	b := brief(t, ix, "", "where do retries back off", BriefOptions{})
 	if len(b.Files) == 0 || b.Files[0].Path != "README.md" {

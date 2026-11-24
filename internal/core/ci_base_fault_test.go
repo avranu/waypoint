@@ -14,12 +14,11 @@ import (
 // re-runs one run's jobs.
 type baseFaultForge struct {
 	*shipForge
-	mu     sync.Mutex
-	runs   []ActionRun
-	jobs   map[int64][]ActionJob // by run id
-	logs   map[int64]string      // by job id
-	reruns []int64               // run ids
-	// jobReads counts ActionJobs calls.
+	mu       sync.Mutex
+	runs     []ActionRun
+	jobs     map[int64][]ActionJob
+	logs     map[int64]string
+	reruns   []int64
 	jobReads int
 }
 
@@ -120,14 +119,14 @@ func TestBaseFaultsRerun(t *testing.T) {
 	af := &baseFaultForge{shipForge: se.sg, jobs: map[int64][]ActionJob{}, logs: map[int64]string{}}
 	se.s.Forges = af
 	failedAt := se.clockNow().Add(-5 * time.Minute)
-	af.add(9, "main", "9999999", "failure", dnsCheckoutLog, failedAt.Add(-time.Hour)) // replaced by #10
+	af.add(9, "main", "9999999", "failure", dnsCheckoutLog, failedAt.Add(-time.Hour))
 	af.add(10, "main", "aaaaaaa", "failure", dnsCheckoutLog, failedAt)
 	af.add(11, "release/v_0_9_0", "bbbbbbb", "failure", dnsCheckoutLog, failedAt)
 	af.add(12, "wip", "ccccccc", "failure", dnsCheckoutLog, failedAt)
 	sweep := func() {
 		t.Helper()
-		se.s.Wait()                                      // background work (task screening) reads the clock; let it finish first
-		se.setClock(se.clockNow().Add(10 * time.Minute)) // the scheduler's pace; the history read is stale by then
+		se.s.Wait() // background work (task screening) reads the clock; let it finish first
+		se.setClock(se.clockNow().Add(10 * time.Minute))
 		se.s.RecordCIHistory(se.ctx)
 	}
 	tasks := func() []faultTask {
@@ -146,13 +145,10 @@ func TestBaseFaultsRerun(t *testing.T) {
 	if st := state("main"); st.sha != "aaaaaaa" || st.n != 1 || st.ended != "" {
 		t.Fatalf("main state: %+v", st)
 	}
-	// Running again: nothing to do, and the count stays.
 	sweep()
 	if got := af.rerun(); len(got) != 2 || state("main").n != 1 {
 		t.Fatalf("while running: %v %+v", got, state("main"))
 	}
-	// Failed on the runner again: the second re-run; the release branch
-	// passes this time and is forgotten.
 	af.end(10, "failure")
 	af.end(11, "success")
 	sweep()
@@ -162,8 +158,6 @@ func TestBaseFaultsRerun(t *testing.T) {
 	if _, kept := se.s.baseFaults(se.ctx, se.f.ID, "me/app")["release/v_0_9_0"]; kept {
 		t.Error("a passed branch's state is kept")
 	}
-	// The third re-run, then one task that keeps the count going, and no more
-	// filings: the fault is tracked and Waypoint goes on re-running it.
 	af.end(10, "failure")
 	sweep()
 	if got := af.rerun(); !slices.Equal(got, []int64{110, 111, 110, 110}) || len(tasks()) != 0 {
@@ -186,8 +180,6 @@ func TestBaseFaultsRerun(t *testing.T) {
 	if got := af.rerun(); len(got) != 5 || len(tasks()) != 1 || strings.Contains(tasks()[0].text, "Seen again") {
 		t.Fatalf("after the back-off: %v tasks %+v", got, tasks())
 	}
-	// A newer push that fails in its code: not re-run, and the older
-	// commit's runner fault is no longer looked at.
 	af.add(13, "main", "ddddddd", "failure", "--- FAIL: TestExport (0.01s)\n    export_test.go:12: got 1, want 2\nFAIL\tapp\n[runner]: exitcode '1': failure\n", se.clockNow())
 	sweep()
 	if got := af.rerun(); len(got) != 5 {
@@ -196,8 +188,6 @@ func TestBaseFaultsRerun(t *testing.T) {
 	if st := state("main"); st.sha != "ddddddd" || st.ended != baseFaultOther {
 		t.Fatalf("main state after a code failure: %+v", st)
 	}
-	// A red run the forge lists no jobs or stop time for is waited on for a
-	// while, then ended rather than read on every pass.
 	af.add(14, "release/v_0_9_0", "eeeeeee", "failure", dnsCheckoutLog, se.clockNow())
 	af.mu.Lock()
 	af.runs[len(af.runs)-1].Stopped = time.Time{}
@@ -211,8 +201,6 @@ func TestBaseFaultsRerun(t *testing.T) {
 	if st := state("release/v_0_9_0"); st.ended != baseFaultOther || len(af.rerun()) != 5 {
 		t.Fatalf("release state with no jobs after the wait: %+v %v", st, af.rerun())
 	}
-	// Another workflow of the tip that stopped long ago doesn't cut short the
-	// wait for a run with no jobs or stop time yet.
 	af.add(15, "release/v_0_8_0", "fffffff", "failure", dnsCheckoutLog, se.clockNow())
 	af.add(16, "release/v_0_8_0", "fffffff", "failure", dnsCheckoutLog, se.clockNow().Add(-time.Hour))
 	af.mu.Lock()
@@ -225,7 +213,6 @@ func TestBaseFaultsRerun(t *testing.T) {
 	if st := state("release/v_0_8_0"); st.sha != "fffffff" || st.ended != "" || len(af.rerun()) != reruns {
 		t.Fatalf("release state with one workflow's jobs not listed yet: %+v %v", st, af.rerun())
 	}
-	// The board lists the faults it acted on.
 	if fs := se.s.runnerFaults.since(se.clockNow().Add(-time.Hour)); len(fs) == 0 || !strings.HasPrefix(fs[len(fs)-1].check, "main ") {
 		t.Errorf("board faults: %+v", fs)
 	}
@@ -240,7 +227,6 @@ func TestRedTip(t *testing.T) {
 	if running || len(red) != 1 || red[0].Index != 3 {
 		t.Fatalf("red %+v running %v", red, running)
 	}
-	// A workflow's newer run of the tip replaces its older one.
 	if red, _ = redTip([]ActionRun{run(3, "ci.yml", "b", "failure"), run(5, "ci.yml", "b", "success")}); len(red) != 0 {
 		t.Fatalf("re-run passed: %+v", red)
 	}
@@ -324,8 +310,6 @@ func TestBaseAdvisoriesFileOneTask(t *testing.T) {
 		se.s.RecordCIHistory(se.ctx)
 	}
 
-	// A job that failed for its code, listed before advisories, ends the
-	// pass for the tip; the task is filed all the same (1479.1).
 	af.add(10, "main", "aaaaaaa", "failure", "", se.clockNow().Add(-10*time.Minute))
 	af.mu.Lock()
 	af.jobs[110] = []ActionJob{{ID: 2010, RunID: 110, Name: "backend shard 1", Status: "failure"}, {ID: 1010, RunID: 110, Name: advisoriesJob, Status: "failure"}}
@@ -340,13 +324,11 @@ func TestBaseAdvisoriesFileOneTask(t *testing.T) {
 	if r := af.rerun(); len(r) != 0 {
 		t.Fatalf("an advisories failure was re-run as a runner fault: %v", r)
 	}
-	// The next push fails the same way: the open task stands, alone.
 	advisories(11, "bbbbbbb")
 	sweep()
 	if got := tasks(); len(got) != 1 {
 		t.Fatalf("tasks after a second failure: %q", got)
 	}
-	// With a runner fault beside it, the fault's job is still re-run.
 	advisories(12, "ccccccc", ActionJob{ID: 2012, RunID: 112, Name: "validate", Status: "failure"})
 	af.mu.Lock()
 	af.logs[2012] = dnsCheckoutLog
@@ -366,8 +348,6 @@ func TestBaseAdvisoriesScheduledRuns(t *testing.T) {
 	se := newShipEnv(t, "forgejo")
 	af := &baseFaultForge{shipForge: se.sg, jobs: map[int64][]ActionJob{}, logs: map[int64]string{}}
 	se.s.Forges = af
-	// run puts a finished run of main on the forge with the advisories job in
-	// advisories status, then any others.
 	run := func(n int64, event, status, advisories string, others ...ActionJob) {
 		t.Helper()
 		af.add(n, "main", fmt.Sprintf("%07d", n), status, "", se.clockNow().Add(-10*time.Minute))
@@ -412,27 +392,23 @@ func TestBaseAdvisoriesScheduledRuns(t *testing.T) {
 		return n
 	}
 
-	// A scheduled run fails in advisories; no push run is red.
 	run(5, "push", "success", "success")
 	run(6, "schedule", "failure", "failure")
 	sweep()
 	if open() != 1 {
 		t.Fatalf("a failed scheduled run filed %d tasks", open())
 	}
-	// Looked at again: nothing more, also once the task is closed.
 	sweep()
 	closeTasks()
 	sweep()
 	if total() != 1 {
 		t.Fatalf("the same run filed again: %d tasks", total())
 	}
-	// A newer failed run, the next day's, files the next task.
 	run(7, "schedule", "failure", "failure")
 	sweep()
 	if total() != 2 || open() != 1 {
 		t.Fatalf("a newer failed run: %d tasks, %d open", total(), open())
 	}
-	// A push where another job failed too, in either job order: one task.
 	closeTasks()
 	run(8, "push", "failure", "failure", ActionJob{ID: 2008, RunID: 108, Name: "backend shard 1", Status: "failure"})
 	af.mu.Lock()
@@ -452,7 +428,6 @@ func TestBaseAdvisoriesScheduledRuns(t *testing.T) {
 	if open() != 1 || total() != 4 {
 		t.Fatalf("after run 9: %d open, %d total", open(), total())
 	}
-	// A cancelled advisories job found nothing; a passing run makes no read.
 	closeTasks()
 	run(10, "schedule", "failure", "cancelled")
 	sweep()
@@ -463,8 +438,6 @@ func TestBaseAdvisoriesScheduledRuns(t *testing.T) {
 		t.Fatalf("cancelled or passing run: %d tasks, %d job reads (was %d)", total(), af.jobReads, reads)
 	}
 
-	// Nobody to ask: nothing filed and the run is not looked at again; the
-	// next failed run files.
 	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE users SET disabled = 1`); err != nil {
 		t.Fatal(err)
 	}
@@ -483,7 +456,6 @@ func TestBaseAdvisoriesScheduledRuns(t *testing.T) {
 		t.Fatalf("the next run after a no-owner one: %d tasks, %d open", total(), open())
 	}
 
-	// A filing that fails is tried again on the next pass.
 	closeTasks()
 	if _, err := se.s.db.W.ExecContext(se.ctx, `CREATE TRIGGER no_advisories_task BEFORE INSERT ON issues
 		WHEN NEW.title LIKE 'Fix the advisories on %' BEGIN SELECT RAISE(ABORT, 'disk full'); END`); err != nil {

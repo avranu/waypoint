@@ -37,7 +37,6 @@ func TestCIIsKnown(t *testing.T) {
 	if len(ci.all()) != 0 {
 		t.Error("announced CI before it settled")
 	}
-	// Failed: pr.ci once, with the failed names and links, and the log tail kept.
 	se.sg.logs[backend] = "step\nFAIL: TestX\n"
 	se.sg.setChecks("1111111aaaa", CommitCheck{Name: backend, State: CheckFailed, URL: "https://x/b"}, CommitCheck{Name: web, State: CheckSuccess})
 	se.poll()
@@ -55,14 +54,12 @@ func TestCIIsKnown(t *testing.T) {
 	if err != nil || len(fc) != 1 || fc[0].Name != backend || fc[0].Log != "step\nFAIL: TestX\n" {
 		t.Errorf("failed checks = %+v %v", fc, err)
 	}
-	// Waypoint's own status doesn't count, and isn't listed.
 	checks, _ = se.s.prChecks(se.ctx, se.pr(5))
 	for _, c := range checks {
 		if ownCheck(c.Name) {
 			t.Errorf("own check listed: %+v", c)
 		}
 	}
-	// A webhook says checks changed: read at once. Passed now, but this head was announced.
 	se.sg.setChecks("1111111aaaa", CommitCheck{Name: backend, State: CheckSuccess}, CommitCheck{Name: web, State: CheckSuccess})
 	if err := se.hook(se.f, "status", map[string]any{"sha": "1111111aaaa", "repository": map[string]any{"full_name": "me/app"}}); err != nil {
 		t.Fatal(err)
@@ -73,7 +70,6 @@ func TestCIIsKnown(t *testing.T) {
 	if len(ci.all()) != 1 {
 		t.Error("announced one head twice")
 	}
-	// A new head has its own announcement.
 	next := testPR
 	next.HeadSHA = "2222222bbbb"
 	se.sg.setChecks("2222222bbbb", CommitCheck{Name: backend, State: CheckSuccess}, CommitCheck{Name: web, State: CheckSuccess})
@@ -83,7 +79,6 @@ func TestCIIsKnown(t *testing.T) {
 	if len(got) != 2 || got[1].Data["state"] != "passed" || got[1].Data["sha"] != "2222222bbbb" {
 		t.Fatalf("events = %+v", got)
 	}
-	// A repo with no CI: no checks for five minutes means none, not passed or failed.
 	other := ForgePR{Number: 6, Title: "Docs", Author: "sam", HeadRef: "docs", HeadSHA: "3333333cccc", State: "open"}
 	se.pullHook("opened", other)
 	se.s.Wait()
@@ -97,7 +92,6 @@ func TestCIIsKnown(t *testing.T) {
 	if pr := se.pr(6); pr.CIState != CINone || len(ci.all()) != 2 {
 		t.Errorf("no checks: %q, %d events", pr.CIState, len(ci.all()))
 	}
-	// Heads are polled for two hours at most.
 	stuck := ForgePR{Number: 7, Title: "Slow", Author: "sam", HeadRef: "slow", HeadSHA: "4444444dddd", State: "open"}
 	se.sg.setChecks("4444444dddd", CommitCheck{Name: backend, State: CheckPending})
 	se.pullHook("opened", stuck)
@@ -120,7 +114,6 @@ func TestCICancelledPushRunIsSuperseded(t *testing.T) {
 	cancelled := func(name string) CommitCheck {
 		return CommitCheck{Name: name, State: CheckFailed, Description: "Has been cancelled"}
 	}
-	// Forgejo cancelled the branch's push run when the pull request run started.
 	se.sg.setChecks("1111111aaaa",
 		cancelled("ci / backend (push)"), cancelled("ci / e2e (push)"),
 		CommitCheck{Name: "ci / backend (pull_request)", State: CheckSuccess},
@@ -138,8 +131,6 @@ func TestCICancelledPushRunIsSuperseded(t *testing.T) {
 	if pr := se.pr(5); pr.CIState != CIPassed {
 		t.Errorf("every job passed under pull_request: %q", pr.CIState)
 	}
-	// A cancellation with no run of the same job that didn't fail still fails,
-	// and so does a real failure next to a passing sibling.
 	next := testPR
 	next.HeadSHA = "2222222bbbb"
 	se.sg.setChecks("2222222bbbb",
@@ -181,12 +172,10 @@ func TestMergeWhenReady(t *testing.T) {
 	se.s.Wait()
 	id := se.pr(5).ID
 
-	// Not ready yet, so merging now is refused with the reasons.
 	_, err := se.s.MergePR(se.ctx, se.admin, id, MergeInput{})
 	if !IsInvalid(err) || !strings.Contains(err.Error(), "not ready to merge") {
 		t.Fatalf("merge now: %v", err)
 	}
-	// Arming waits.
 	res, err := se.s.MergePR(se.ctx, se.admin, id, MergeInput{WhenReady: true, Style: "squash"})
 	if err != nil || !res.Armed || res.Merged || len(res.Reasons) == 0 {
 		t.Fatalf("arm: %+v %v", res, err)
@@ -199,7 +188,6 @@ func TestMergeWhenReady(t *testing.T) {
 	if err != nil || d.Shipping.Armed == nil || d.Shipping.Armed.By != "robin" || d.Shipping.Armed.Style != "squash" || !d.Shipping.CanMerge || d.Shipping.Readiness.Ready {
 		t.Fatalf("detail shipping = %+v %v", d.Shipping, err)
 	}
-	// The review passes (the gate goes green), then CI passes: merged.
 	se.drain()
 	if len(se.sg.merged()) != 0 {
 		t.Fatal("merged before CI passed")
@@ -233,7 +221,6 @@ func TestSyncRefreshesMergeable(t *testing.T) {
 	se.pullHook("opened", testPR)
 	se.drain()
 	id := se.pr(5).ID
-	// The forge said "conflicts" while it was still working it out after the push.
 	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE pull_requests SET mergeable = 0 WHERE id = ?`, id); err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +236,6 @@ func TestSyncRefreshesMergeable(t *testing.T) {
 	if !strings.Contains(strings.Join(rd.Reasons, "|"), "still checking") {
 		t.Fatalf("reasons = %v", rd.Reasons)
 	}
-	// No webhook says it changed; the sync's list does, and it merges.
 	listed := testPR
 	listed.Mergeable = ptr(true)
 	se.sg.mu.Lock()
@@ -266,7 +252,7 @@ func TestMergeReadinessReasons(t *testing.T) {
 	se := newShipEnv(t, "github")
 	se.gate("P2")
 	se.pullHook("opened", testPR)
-	se.drain() // one finding: the gate fails
+	se.drain()
 	se.sg.setChecks("1111111aaaa", CommitCheck{Name: "ci / web", State: CheckFailed})
 	se.poll()
 	pr := se.pr(5)
@@ -280,7 +266,6 @@ func TestMergeReadinessReasons(t *testing.T) {
 			t.Errorf("reasons lack %q: %s", want, all)
 		}
 	}
-	// A person's request for changes blocks; their later approval doesn't.
 	insert := func(kind string, at int64) {
 		if _, err := se.s.db.W.ExecContext(se.ctx, `INSERT INTO pr_events(pr_id, kind, actor, bot, sha, created_at) VALUES (?,?,?,?,?,?)`, pr.ID, kind, "ann", 0, "", at); err != nil {
 			t.Fatal(err)
@@ -296,7 +281,6 @@ func TestMergeReadinessReasons(t *testing.T) {
 	if strings.Contains(strings.Join(rd.Reasons, "|"), "ann") {
 		t.Errorf("approved later but still blocked: %v", rd.Reasons)
 	}
-	// Draft, conflicts.
 	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE pull_requests SET state = 'draft', mergeable = 0 WHERE id = ?`, pr.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +289,6 @@ func TestMergeReadinessReasons(t *testing.T) {
 	if !strings.Contains(all, "still a draft") && !strings.Contains(all, "conflicts") {
 		t.Errorf("reasons = %v", rd.Reasons)
 	}
-	// A viewer sees readiness but can't merge; strangers can't see the pull request.
 	viewer := se.user("vera", false)
 	if err := se.s.SetMember(se.ctx, se.admin, se.p.Key, "vera", "viewer"); err != nil {
 		t.Fatal(err)
@@ -353,8 +336,6 @@ func TestMergeAgentsAndLabels(t *testing.T) {
 		t.Error("still armed")
 	}
 
-	// A repo that merges by hand: an agent's arm (wp ship) is declined and
-	// leaves it out of the merge line; a person still arms it (WP-520).
 	se.policy(MergePolicyInput{AutoMerge: ptr(false)})
 	if res, err := se.s.MergePR(se.ctx, claude, se.pr(5).ID, MergeInput{WhenReady: true}); err != nil || res.Armed || !res.ByHand || len(res.Reasons) != 1 {
 		t.Fatalf("an agent arming on a merge-by-hand repo: %+v %v", res, err)
@@ -370,7 +351,6 @@ func TestMergeAgentsAndLabels(t *testing.T) {
 	}
 	se.policy(MergePolicyInput{AutoMerge: ptr(true)})
 
-	// The automerge label arms; taking it off disarms; a person's disarming sticks while it is on.
 	labelled := ForgePR{Number: 8, Title: "Labelled", Author: "sam", HeadRef: "l", HeadSHA: "5555555eeee", State: "open"}
 	hook := func(labels ...string) {
 		t.Helper()
@@ -412,8 +392,7 @@ func TestMergeAgentsAndLabels(t *testing.T) {
 	if pr := se.pr(8); pr.ArmedAt == nil {
 		t.Error("a new label doesn't arm")
 	}
-	// The label alone merges once it's ready, audited as such (the merge
-	// reads the pull request afresh: the forge has the label).
+	// The merge reads the pull request afresh from the forge, so the label has to be set there.
 	labelled.Labels = []string{"automerge"}
 	se.fg.setPR(se.f, "me/app", labelled, sampleDiff)
 	se.sg.setChecks("5555555eeee", CommitCheck{Name: "ci / web", State: CheckSuccess})
@@ -435,7 +414,7 @@ func TestMergeAgentsAndLabels(t *testing.T) {
 
 func TestMergeRefusedByForge(t *testing.T) {
 	se := newShipEnv(t, "forgejo")
-	se.policy(MergePolicyInput{AutoMerge: ptr(false), ReviewWaitMinutes: ptr(0), QuietMinutes: ptr(0)}) // merged by hand first
+	se.policy(MergePolicyInput{AutoMerge: ptr(false), ReviewWaitMinutes: ptr(0), QuietMinutes: ptr(0)})
 	se.llm.answers["opencode/muse-spark-1.3-contributor-free"] = noFindings
 	se.pullHook("opened", testPR)
 	se.drain()
@@ -446,7 +425,6 @@ func TestMergeRefusedByForge(t *testing.T) {
 	if !IsInvalid(err) || !strings.Contains(err.Error(), "can't be merged") {
 		t.Fatalf("refused: %v", err)
 	}
-	// Armed, it keeps the reason for the page and stays armed.
 	res, err := se.s.MergePR(se.ctx, se.admin, se.pr(5).ID, MergeInput{WhenReady: true})
 	if err != nil || !res.Armed {
 		t.Fatalf("arm: %+v %v", res, err)
@@ -455,7 +433,6 @@ func TestMergeRefusedByForge(t *testing.T) {
 	if !strings.Contains(pr.armedNote, "can't be merged") {
 		t.Errorf("note = %q", pr.armedNote)
 	}
-	// A moved head is what the forge decides: Waypoint passes the head it checked.
 	se.sg.mergeErr = nil
 	if _, err := se.s.MergePR(se.ctx, se.admin, se.pr(5).ID, MergeInput{Style: "rebase", DeleteBranch: new(bool)}); err != nil {
 		t.Fatal(err)
@@ -496,7 +473,6 @@ func TestPushesAndBranches(t *testing.T) {
 	if len(events.all()) != 2 {
 		t.Errorf("a tag push was announced (or main not): %d events", len(events.all()))
 	}
-	// A branch with a pull request shows it; main is not "in work".
 	se.sg.setChecks("aaaaaaa1", CommitCheck{Name: "ci / web", State: CheckPending})
 	pr := ForgePR{Number: 5, Title: "Fix", Author: "sam", HeadRef: "feat-x", HeadSHA: "aaaaaaa1", State: "open"}
 	se.pullHook("opened", pr)
@@ -509,7 +485,6 @@ func TestPushesAndBranches(t *testing.T) {
 	if b.Branch != "feat-x" || b.Repo != "me/app" || b.Pusher != "sam" || b.PR == nil || b.PR.Number != 5 || b.CI != CIPending || b.HeadSHA != "aaaaaaa1" || b.Forge != "github" {
 		t.Errorf("branch = %+v", b)
 	}
-	// Once its pull request is merged and nothing was pushed since, the work is done.
 	merged := pr
 	merged.State = "merged"
 	se.pullHook("closed", merged)
@@ -517,13 +492,11 @@ func TestPushesAndBranches(t *testing.T) {
 	if branches, _ := se.s.ListBranches(se.ctx, se.admin, se.p.Key); len(branches) != 0 {
 		t.Errorf("a merged branch is still in work: %+v", branches)
 	}
-	// A new push to it, with no pull request open, is work again.
 	se.setClock(se.clockNow().Add(time.Hour))
 	push("refs/heads/feat-x", "aaaaaaa1", "aaaaaaa2", "x.go")
 	if branches, _ := se.s.ListBranches(se.ctx, se.admin, se.p.Key); len(branches) != 1 || branches[0].PR != nil {
 		t.Errorf("branches = %+v", branches)
 	}
-	// Deleting the branch ends it.
 	if err := se.hook(se.f, "push", map[string]any{"ref": "refs/heads/feat-x", "before": "aaaaaaa2", "after": zero, "deleted": true,
 		"repository": map[string]any{"full_name": "me/app"}}); err != nil {
 		t.Fatal(err)
@@ -534,7 +507,6 @@ func TestPushesAndBranches(t *testing.T) {
 	if _, err := se.s.ListBranches(se.ctx, se.user("stan", false), se.p.Key); err == nil {
 		t.Error("a stranger listed a project's branches")
 	}
-	// A release.
 	err = se.hook(se.f, "release", map[string]any{"action": "published", "release": map[string]any{"tag_name": "v1.4.0", "name": "1.4", "html_url": "https://x/r"},
 		"repository": map[string]any{"full_name": "me/app"}})
 	if err != nil {
@@ -548,7 +520,6 @@ func TestPushesAndBranches(t *testing.T) {
 }
 
 func TestRepliesToWaypointHistoryEvent(t *testing.T) {
-	// A submitted review reaches automations as pr.review.
 	se := newShipEnv(t, "github")
 	reviews := se.watch(EvPRReview)
 	se.pullHook("opened", testPR)

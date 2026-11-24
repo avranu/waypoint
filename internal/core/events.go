@@ -44,7 +44,7 @@ const (
 	EvScheduled      = "schedule.tick"
 	EvProjectUpdated = "project.updated"
 	EvProjectMember  = "project.member_changed"
-	EvRepoHook       = "project.repo_hook" // a repo's forge webhook to add or remove
+	EvRepoHook       = "project.repo_hook"
 	EvTimer          = "timer.changed"
 	EvNotification   = "notification"
 )
@@ -59,7 +59,7 @@ var persisted = map[string]bool{
 	EvIssueUnassigned: true, EvIssueCommented: true, EvIssueLinked: true, EvIssueShared: true,
 	EvExternalPROpened: true, EvExternalPRMerged: true, EvExternalPRClosed: true, EvExternalIssueClose: true,
 	EvSprintStarted: true, EvSprintClosed: true,
-	EvProjectMember: true, // who was given or lost access, for the record
+	EvProjectMember: true,
 	EvIssueStep:     true,
 }
 
@@ -89,35 +89,21 @@ type Event struct {
 	// UserID scopes an event to one user (timers, notifications).
 	UserID int64 `json:"-"`
 	// AdminOnly keeps an event of an admin automation from other people.
-	AdminOnly bool `json:"-"`
-	// forgeComment: a comment with copies on forges was edited or deleted.
+	AdminOnly    bool `json:"-"`
 	forgeComment *forgeCommentChange
-	// repoHook: a forge webhook to add or remove.
-	repoHook *repoHookJob
-	// pullLinked: a pull request's own text made this link (WP-697).
-	pullLinked *pullRef
-	// stackParent: this pull request (id) merged, so those open into its
-	// branch move onto its base (WP-ADR153, WP-760).
+	repoHook     *repoHookJob
+	pullLinked   *pullRef
+	// The pull request that merged; open pull requests stacked on it move onto its base.
 	stackParent int64
-	// permRule: an approved permission request's allow rule to add by pull
-	// request (WP-233).
-	permRule *permRuleJob
-	// retitle: the new issue's title is text a model should shorten (WP-67).
-	retitle bool
-	// draft: the event is about a draft (WP-42), so it only goes live to
-	// people and sets nothing else off.
-	draft bool
-	// coalesce: another save of the same text by the same actor within
-	// coalesceWindow folds into the history entry before it (WP-81).
-	coalesce bool
-	// merged: it did fold in, so it's live but not recorded or fanned out.
+	permRule    *permRuleJob
+	retitle     bool
+	draft       bool
+	coalesce    bool
+	// Folded into a prior event: live, but not recorded or fanned out.
 	merged bool
-	// stored: a notification this write stored, to send on once it commits
-	// (tx.storeNotice). The event is only its carrier: it is not published,
-	// recorded or fanned out.
+	// A notification this write stored, sent once it commits; the event only carries it and is not published, recorded or fanned out.
 	stored *storedNotice
-	// quiet: recorded and live, but not news, so it sets nothing off:
-	// outside text let in once its author turned out to be a person (WP-279).
+	// Recorded and live, but sets nothing off.
 	quiet bool
 }
 
@@ -164,7 +150,7 @@ func (t *tx) noteSession(e *Event) {
 		e.Data["session"] = t.actor.Session
 	}
 	if e.IssueID == 0 {
-		return // page, project and system events belong to no task
+		return
 	}
 	var held sql.NullInt64
 	if err := t.QueryRowContext(context.Background(), `SELECT issue_id FROM agent_sessions WHERE id = ?`, t.actor.Session).Scan(&held); err != nil || !held.Valid || held.Int64 == e.IssueID {
@@ -194,7 +180,6 @@ func (t *tx) emit(e *Event) {
 	if t.actor != nil && t.actor.Automation != nil {
 		e.ViaAutomation = t.actor.Automation.Name
 	}
-	// Agents act through a person's token; history says which agent.
 	if agent := t.actor.agentName(); agent != "" && t.actor.viaAutomation() == nil {
 		if e.Data == nil {
 			e.Data = map[string]any{}
@@ -203,8 +188,6 @@ func (t *tx) emit(e *Event) {
 		e.ViaAutomation = agent
 	}
 	t.noteSession(e)
-	// Changes made by Waypoint itself on behalf of something (an AI model, a
-	// forge sync) keep that name in history.
 	if t.actor != nil && t.actor.User != nil && t.actor.User.ID == 0 && t.actor.viaAutomation() == nil {
 		if via := t.actor.User.DisplayName; via != "" && via != SystemActor().User.DisplayName {
 			if e.Data == nil {
@@ -214,8 +197,7 @@ func (t *tx) emit(e *Event) {
 			e.ViaAutomation = via
 		}
 	}
-	// Is it about a draft (WP-42)? A deletion says so itself (the row is
-	// gone); otherwise, when the issue can't be read, keep it quiet.
+	// Deleted issues have no row to read, so the draft check skips them; an unreadable issue counts as a draft.
 	if e.IssueID != 0 && e.Kind != EvIssueDeleted {
 		if err := t.QueryRowContext(context.Background(), `SELECT draft FROM issues WHERE id = ?`, e.IssueID).Scan(&e.draft); err != nil {
 			e.draft = true
@@ -277,7 +259,6 @@ func (t *tx) mergesIntoLast(e *Event) bool {
 		return false
 	}
 	if _, err := t.ExecContext(context.Background(), `UPDATE events SET new_value = ?, created_at = ? WHERE id = ?`, e.New, e.At.UnixMilli(), id); err != nil {
-		// Record the save as its own event rather than lose it.
 		t.s.log.ErrorContext(t.ctx, "merge event", "kind", e.Kind, "err", err)
 		return false
 	}
@@ -293,9 +274,7 @@ func (s *Service) dispatch(ctx context.Context, actor *Actor, events []*Event) {
 	if len(events) == 0 {
 		return
 	}
-	// Detach from the request: deliveries must not die with the client.
-	// What they log is the events' own, not the request's or the job's
-	// whose write set them off (WP-ADR139).
+	// Detach from the request so deliveries outlive the client; they log the events' own source, not the writer's.
 	ctx = WithLogSource(context.WithoutCancel(ctx), sourceEvents)
 	if tracing.Enabled() {
 		kinds := make([]string, len(events))
@@ -306,8 +285,7 @@ func (s *Service) dispatch(ctx context.Context, actor *Actor, events []*Event) {
 		ctx, span = tracing.Start(ctx, "dispatch", attribute.StringSlice("waypoint.events", kinds))
 		defer span.End()
 	}
-	// Notifications the write stored go out first, and are no event of their
-	// own to anything else.
+	// Stored notifications go out first and are not events to anything else.
 	for _, e := range events {
 		if e.stored != nil {
 			s.deliverNotification(ctx, e.stored)
@@ -319,13 +297,10 @@ func (s *Service) dispatch(ctx context.Context, actor *Actor, events []*Event) {
 	}
 	for _, e := range events {
 		s.Hub.Publish(e)
-		s.prWait.wake(e) // wp pr wait (WP-132)
+		s.prWait.wake(e)
 		s.onStackParentMerged(ctx, e)
 	}
-	// An autosave folded into the history entry before it sets nothing off.
 	events = slices.DeleteFunc(slices.Clone(events), func(e *Event) bool { return e.merged || e.quiet })
-	// A draft sets nothing off until a person publishes it: no
-	// notifications, webhooks, AI helpers, forge pushes or automations.
 	events = slices.DeleteFunc(slices.Clone(events), func(e *Event) bool { return e.draft })
 	if len(events) == 0 {
 		return
@@ -336,7 +311,7 @@ func (s *Service) dispatch(ctx context.Context, actor *Actor, events []*Event) {
 	for _, e := range events {
 		if e.Kind == EvRepoPushed {
 			s.onRepoPushed(ctx, e)
-			s.onKitPush(ctx, e) // the agent kit's default branch moved (WP-ADR2)
+			s.onKitPush(ctx, e)
 		}
 		if e.Kind == EvAgentsResumed {
 			if uid, ok := e.Data["user"].(int64); ok {
@@ -344,7 +319,7 @@ func (s *Service) dispatch(ctx context.Context, actor *Actor, events []*Event) {
 			}
 		}
 		if e.Kind == EvUserDeleted {
-			s.dropUserTranscripts(e) // their archive's files: the rows went with the account
+			s.dropUserTranscripts(e) // The account's rows are gone, so its archive files are removed here.
 		}
 		if e.Kind == EvKitSourceSet {
 			s.goBG(func() { s.RefreshKit(ctx) })
@@ -356,32 +331,31 @@ func (s *Service) dispatch(ctx context.Context, actor *Actor, events []*Event) {
 			s.goBG(func() { s.urgentFromLink(ctx, e) })
 		}
 		if j := e.permRule; j != nil {
-			s.addPermissionRule(ctx, actor, j) // before DecideRequest tells the agent, so it hears of the PR
+			s.addPermissionRule(ctx, actor, j) // The rule must exist before the agent is told of the decision.
 		}
 		if e.Kind == EvProjectUpdated && e.Field == "auto_estimate" && e.New == "on" {
 			if p, err := s.projectByID(ctx, s.db.R, e.ProjectID); err == nil && p.Settings.AutoEstimate {
 				s.backfillEstimates(ctx, p)
 			}
 		}
-		// AI helpers spend credit and may queue a runner job: not for a
-		// permission token without ai.use (WP-111).
+		// AI helpers spend credit and may queue a runner job, so they need ai.use.
 		if e.Kind == EvIssueCreated && (actor == nil || actor.Automation == nil || actor.Automation.ID > 0) && actor.Allows(PermAIUse) {
 			s.autoEstimate(ctx, e)
 			s.autoTitle(ctx, e)
 		}
 		if e.Kind == EvIssueCreated {
-			s.autoRelate(ctx, e) // no model: the issues' own words (WP-296)
+			s.autoRelate(ctx, e) // No model here, so no ai.use gate: it relates the issues' own words.
 		}
 		if e.Kind == EvExternalPRMerged {
-			s.goBG(func() { s.followUpsByFiles(ctx, e) }) // what this work continues (WP-255)
+			s.goBG(func() { s.followUpsByFiles(ctx, e) })
 		}
-		s.autoScreen(e) // agent-written text, before an agent takes it (WP-ADR10)
+		s.autoScreen(e) // Agent-written text is screened before any agent takes it.
 		s.deliverWebhooks(ctx, e)
 		if e.Kind == EvIssueStatus && (actor == nil || !actor.forgeSync) {
 			s.pushIssueState(ctx, e)
 		}
 		if e.Kind == EvIssueCommented {
-			s.pushComment(ctx, e) // skips the forge a comment came from
+			s.pushComment(ctx, e)
 		}
 		if e.forgeComment != nil && (actor == nil || !actor.forgeSync) {
 			s.pushCommentChange(ctx, e)
@@ -389,21 +363,21 @@ func (s *Service) dispatch(ctx context.Context, actor *Actor, events []*Event) {
 		if j := e.repoHook; j != nil {
 			s.goBG(func() { s.runRepoHook(ctx, j) })
 		}
-		s.onPRAudit(ctx, e)         // an audit of a pull request, asked for or ended (WP-355)
-		s.onBabysitEvent(ctx, e)    // news of a babysat pull request (WP-134)
-		s.onParkAnswered(ctx, e)    // a person answered a parked babysit (WP-439)
-		s.onHeldAnswered(ctx, e)    // a person answered about a held protected-file change (WP-ADR138)
-		s.crossFiledEvent(ctx, e)   // a task filed from another repo ended (WP-378)
-		s.onLeftoverEvent(ctx, e)   // what a review left open at merge (WP-367)
-		s.onWorkLogEvent(ctx, e)    // an adversarial review ended: its hold on the merge goes (WP-285)
-		s.onCheckSettled(ctx, e)    // a round's check of its marks settled: the round goes on (WP-1370)
-		s.onReviewAudit(ctx, e)     // another model's audit a review round waits for settled (WP-687)
-		s.onFanoutEvent(ctx, e)     // a fan-out's packages end; its ask is answered (WP-148)
-		s.onGoalDriftEvent(ctx, e)  // a drift flag raised or answered (WP-559)
-		s.onMergeOrderEvent(ctx, e) // a task change may end or start a merge wait (WP-912)
-		s.onObjectiveEvent(ctx, e)  // an objective's reading moves on; a merge is read (WP-ADR111)
+		s.onPRAudit(ctx, e)
+		s.onBabysitEvent(ctx, e)
+		s.onParkAnswered(ctx, e)
+		s.onHeldAnswered(ctx, e)
+		s.crossFiledEvent(ctx, e)
+		s.onLeftoverEvent(ctx, e)
+		s.onWorkLogEvent(ctx, e)
+		s.onCheckSettled(ctx, e)
+		s.onReviewAudit(ctx, e)
+		s.onFanoutEvent(ctx, e)
+		s.onGoalDriftEvent(ctx, e)
+		s.onMergeOrderEvent(ctx, e)
+		s.onObjectiveEvent(ctx, e)
 	}
-	s.afterDispatch(ctx, actor, events) // agent sessions and requests (WP-D16)
+	s.afterDispatch(ctx, actor, events)
 	depth := 0
 	if actor != nil {
 		depth = actor.depth
@@ -417,22 +391,15 @@ func (s *Service) dispatch(ctx context.Context, actor *Actor, events []*Event) {
 	}
 }
 
-// ---- live updates ----
-
 // Hub fans events out to connected clients (server-sent events). Each
 // subscriber only receives events about projects it can see.
 type Hub struct {
-	mu   sync.Mutex
-	subs map[*Subscription]struct{}
-	// visible decides whether a user may see a project-level event; set by
-	// the Service so the hub stays free of database code.
+	mu      sync.Mutex
+	subs    map[*Subscription]struct{}
 	visible func(userID, projectID, issueID int64) bool
-	// admin says whether a user is an admin, for AdminOnly events.
-	admin func(userID int64) bool
-	// hide returns the event as a user may read it: a task they can't see
-	// is not named (WP-1370).
-	hide func(userID int64, e *Event) *Event
-	// observe sees every event first (the goal traces, WP-382).
+	admin   func(userID int64) bool
+	// a task the user can't see must not be named in the event it returns
+	hide    func(userID int64, e *Event) *Event
 	observe func(e *Event)
 }
 
@@ -521,7 +488,7 @@ func (s *Service) StartHub() {
 		ctx := context.Background()
 		u, err := s.userByID(ctx, s.db.R, userID)
 		if err != nil {
-			// Not an admin to the hub: a user that can't be read sees what any other does not.
+			// A user that can't be read is not an admin here.
 			if !errors.Is(err, ErrNotFound) {
 				if readFault(err) {
 					s.log.WarnContext(ctx, "read a user for the hub's admin check", "user", userID, "err", err)

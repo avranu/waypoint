@@ -36,23 +36,18 @@ func fullAndDraft(drafts int, fulls ...int) []ActionTask {
 
 func TestStallFromHistory(t *testing.T) {
 	min := time.Minute
-	// Plenty of fast draft runs don't pull the estimate down: only the runs
-	// with the full job set count. Walls 10..14 → p90 13.6m → 1.5× = 20.4m.
 	after, basis := stallFromHistory(fullAndDraft(30, 10, 11, 12, 13, 14))
 	if after != 20*min || !strings.Contains(basis, "last 5 full runs") {
 		t.Errorf("fast repo: %s %q", after, basis)
 	}
-	// Waypoint on 2026-10-30: e2e p50 37m, p90 45m, about 67m, not 45m.
 	after, basis = stallFromHistory(fullAndDraft(40, 33, 36, 37, 38, 40, 44, 45, 46))
 	if after < 60*min || after > 72*min || !strings.Contains(basis, "1.5 ×") {
 		t.Errorf("slow repo: %s %q", after, basis)
 	}
-	// Quick full runs fall to the floor and say so.
 	after, basis = stallFromHistory(fullAndDraft(10, 5, 6, 6, 7, 7, 8))
 	if after != stallFloor || !strings.Contains(basis, "20m minimum") {
 		t.Errorf("floor: %s %q", after, basis)
 	}
-	// Too few full runs: the default, even with lots of draft runs.
 	after, basis = stallFromHistory(fullAndDraft(30, 30, 31))
 	if after != fullRunStall || !strings.Contains(basis, "fewer than 5") {
 		t.Errorf("too few: %s %q", after, basis)
@@ -60,7 +55,6 @@ func TestStallFromHistory(t *testing.T) {
 	if after, _ = stallFromHistory(nil); after != fullRunStall {
 		t.Errorf("no history: %s", after)
 	}
-	// A repo without tiers has one job set: all its runs count.
 	var plain []ActionTask
 	for i := int64(1); i <= 6; i++ {
 		plain = append(plain, histTask(i, "test", "success", int(i)*100, 30))
@@ -68,8 +62,6 @@ func TestStallFromHistory(t *testing.T) {
 	if after, _ = stallFromHistory(plain); after != 45*min {
 		t.Errorf("plain repo: %s", after)
 	}
-	// Failed runs, a push run and a deploy don't count: four clean full
-	// runs are too few.
 	odd := fullAndDraft(0, 10, 10, 10, 10)
 	for i := int64(50); i < 60; i++ {
 		odd = append(odd, histTask(i, "lint", "success", int(i)*100, 5), histTask(i, "backend", "success", int(i)*100, 90),
@@ -144,18 +136,15 @@ func TestDraftFirstStallFollowsMeasuredRuns(t *testing.T) {
 	if m := be.s.fullRunStalled(be.ctx, be.pr(7)); m != "" {
 		t.Fatalf("stalled the moment it was ready: %s", m)
 	}
-	// Before 1.5 × this repo's 16.5m p90 (25m): not stalled.
 	be.setClock(be.clockNow().Add(22 * time.Minute))
 	if m := be.s.fullRunStalled(be.ctx, be.pr(7)); m != "" {
 		t.Fatalf("stalled at 22m: %s", m)
 	}
-	// Past it, though well short of the old 45.
 	be.setClock(be.clockNow().Add(4 * time.Minute))
 	m := be.s.fullRunStalled(be.ctx, be.pr(7))
 	if !strings.Contains(m, "full run hasn't finished") || !strings.Contains(m, " in 25m (1.5 × the 17m p90 of its last 6 full runs)") {
 		t.Fatalf("message %q", m)
 	}
-	// The threshold is read once, however many steps ask.
 	reads := af.reads
 	be.s.fullRunStalled(be.ctx, be.pr(7))
 	if af.reads != reads {
@@ -167,8 +156,6 @@ func TestDraftFirstStallFollowsMeasuredRuns(t *testing.T) {
 		t.Fatalf("%+v", b)
 	}
 
-	// A forge whose history can't be read keeps the 45 minutes, and the read
-	// is tried again soon, not at every step.
 	af.fail = true
 	be.setClock(be.clockNow().Add(ciStallFresh + time.Minute))
 	if m := be.s.fullRunStalled(be.ctx, be.pr(7)); m != "" {

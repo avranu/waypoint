@@ -76,8 +76,6 @@ func ScriptModes(name string, src []byte, mode ModeFunc) []Finding {
 		if yaml.Unmarshal(src, &root) != nil {
 			return nil
 		}
-		// wd is the directory a run block starts in: the step's
-		// working-directory, else the nearest defaults.run.working-directory.
 		var walk func(n *yaml.Node, wd string)
 		walk = func(n *yaml.Node, wd string) {
 			if n.Kind == yaml.MappingNode {
@@ -206,7 +204,7 @@ func ParseLsFiles(out string) ModeFunc {
 			continue
 		}
 		if f := strings.Fields(meta); len(f) > 0 {
-			if strings.HasPrefix(p, `"`) { // git C-quotes unusual paths
+			if strings.HasPrefix(p, `"`) {
 				if u, err := strconv.Unquote(p); err == nil {
 					p = u
 				}

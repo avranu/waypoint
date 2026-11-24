@@ -41,7 +41,6 @@ async function run(width, scheme) {
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL(base + "/");
 
-  // ---- quick capture: D opens the dialog as a draft ----
   await page.goto(`${base}/p/WAYP/list`);
   // D is bound once the app shell has mounted; on a slow runner a key
   // pressed straight after goto lands before that.
@@ -61,7 +60,6 @@ async function run(width, scheme) {
   await dialog.getByRole("button", { name: "Save draft" }).click();
   await dialog.waitFor({ state: "detached" });
 
-  // ---- marked in the list and on the board ----
   const row = page.locator("[data-nav-key]", { hasText: title });
   await row.waitFor();
   ok(
@@ -70,7 +68,6 @@ async function run(width, scheme) {
   );
   const key = await row.getAttribute("data-nav-key");
   await shot("list");
-  // The board shows the active sprint; a draft there shows on it.
   const boardTitle = `Board draft ${tag}`;
   await page.request.post(base + "/api/v1/issues", {
     headers: { "X-Waypoint-Client": "web" },
@@ -84,7 +81,6 @@ async function run(width, scheme) {
     `${tag} board marks the draft`,
   );
 
-  // ---- the issue: banner, then publish ----
   await page.goto(`${base}/issue/${key}`);
   const note = page
     .getByRole("note")
@@ -95,7 +91,6 @@ async function run(width, scheme) {
   await note.waitFor({ state: "detached" });
   ok(true, `${tag} published ${key}`);
 
-  // ---- a draft page from the Pages tree ----
   await page.goto(`${base}/pages`);
   await page.getByRole("button", { name: "Draft", exact: true }).click();
   await page.waitForURL(/\/pages\/\d+/);

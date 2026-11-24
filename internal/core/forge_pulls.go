@@ -44,13 +44,10 @@ type ForgePR struct {
 	baseSHA, startSHA string
 	// sameRepo: the forge says the head is in the repo itself without
 	// naming it (GitLab's project ids).
-	sameRepo bool
-	// actor is who caused a webhook (pushed, closed it), when it says.
-	actor string
-	// requested: who a webhook says was just asked to review (WP-D14).
+	sameRepo  bool
+	actor     string
 	requested []string
-	wipAuto   bool // opened by Waypoint as a draft it will mark ready (WP-158)
-	// mergeMute: the forge's mergeable says nothing about this one (WP-171).
+	wipAuto   bool
 	mergeMute bool
 }
 
@@ -261,7 +258,7 @@ func (a apiPR) pr() *ForgePR {
 		p.Mergeable, p.mergeMute = nil, true
 	}
 	if p.State == "merged" {
-		p.MergeSHA = a.MergeCommitSHA // GitHub fills it before the merge too, with a test merge
+		p.MergeSHA = a.MergeCommitSHA // GitHub fills merge_commit_sha before the merge too (a test merge), so it is read only once merged.
 	}
 	if a.Head.Repo != nil {
 		p.HeadRepo = a.Head.Repo.FullName
@@ -342,7 +339,7 @@ func (c *httpForgeClient) ReviewBodies(ctx context.Context, f *Forge, repo strin
 	}
 	for _, r := range reviews {
 		if strings.EqualFold(r.State, "PENDING") {
-			continue // a draft review nobody submitted
+			continue
 		}
 		out = append(out, ForgeComment{Author: cmp(r.User.Login, r.User.Username), Body: r.Body})
 	}
@@ -396,10 +393,7 @@ func (c *httpForgeClient) React(ctx context.Context, f *Forge, repo string, numb
 		}
 		return strconv.FormatInt(res.ID, 10), nil
 	}
-	// Forgejo answers a 500 to a reaction this account has already made (its
-	// "already exists" answer reads a nil reaction), which failed every
-	// review signing off a pull request a second time: clear it first
-	// (WP-847). GitHub answers a repeat itself.
+	// Forgejo answers 500 to a reaction this account already made, so clear it before reacting again (GitHub answers a repeat itself).
 	if f.Kind != "github" {
 		_ = c.Unreact(ctx, f, repo, number, commentID, emoji, "")
 	}
@@ -452,8 +446,6 @@ func glEmoji(e string) string {
 	}
 	return e
 }
-
-// ---- GitLab merge requests ----
 
 type glMR struct {
 	// The projects the source and target branches live in (a fork's differ).

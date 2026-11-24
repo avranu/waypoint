@@ -65,7 +65,6 @@ func TestCommandJobTimeoutKillsTheProcessGroup(t *testing.T) {
 	dir := t.TempDir()
 	p := newTestProc(t, dir)
 	start := time.Now()
-	// A shell that starts a child and waits for it: both must die.
 	o := p.execCommand(context.Background(), newRun(500*time.Millisecond), commandJob{Command: "sleep 60 & echo $! > child.pid; wait", Dir: dir})
 	if o.State != "failed" || !strings.Contains(o.Error, "timed out") {
 		t.Fatalf("outcome = %+v", o)
@@ -228,8 +227,6 @@ func TestParseAllowed(t *testing.T) {
 	}
 }
 
-// ---- apply ----
-
 func newGitRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -302,12 +299,10 @@ func TestApplyJobWritesStagesAndCommits(t *testing.T) {
 	if got := gitOut(t, repo, "status", "--porcelain"); got != "" {
 		t.Errorf("work tree not clean: %q", got)
 	}
-	// Applying the same change again changes nothing and doesn't fail.
 	o = p.execApply(context.Background(), newRun(time.Minute), applyJob{Dir: repo, Files: []fileChange{{Path: "a.txt", BaseSHA: "0000000000000000000000000000000000000000", Content: "uno\n"}}})
 	if o.State != "done" {
 		t.Errorf("re-apply = %+v", o)
 	}
-	// Nor with a commit asked for: a satisfied retry has nothing to commit.
 	head := gitOut(t, repo, "rev-parse", "HEAD")
 	o = p.execApply(context.Background(), newRun(time.Minute), applyJob{Dir: repo, Commit: "Change a again", Files: []fileChange{{Path: "a.txt", BaseSHA: blob(t, repo, "a.txt"), Content: "uno\n"}}})
 	if o.State != "done" || gitOut(t, repo, "rev-parse", "HEAD") != head {
@@ -384,7 +379,6 @@ func TestApplyJobRefusesWhenAFileChanged(t *testing.T) {
 	if len(conflicts) != 2 || conflicts[0].Path != "a.txt" || conflicts[1].Reason != "was deleted" {
 		t.Errorf("conflicts = %+v", conflicts)
 	}
-	// Nothing was written, not even the file that was fine.
 	if b, _ := os.ReadFile(filepath.Join(repo, "src", "b.txt")); string(b) != "bee\n" {
 		t.Errorf("b.txt was written: %q", b)
 	}
@@ -394,7 +388,6 @@ func TestApplyJobRefusesWhenAFileChanged(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(repo, "src", "b.txt.new")); err == nil {
 		t.Error("a new file was written")
 	}
-	// A new file where one exists is a conflict too.
 	o = p.execApply(context.Background(), newRun(time.Minute), applyJob{Dir: repo, Files: []fileChange{{Path: "src/b.txt", Content: "overwrite"}}})
 	if o.State != "failed" || !strings.Contains(o.Error, "exists already") {
 		t.Errorf("new over existing = %+v", o)
@@ -434,7 +427,6 @@ func TestApplyJobRefusesPathsOutsideTheDirectory(t *testing.T) {
 	if len(entries) != 0 {
 		t.Errorf("files appeared outside: %v", entries)
 	}
-	// And the directory itself must be allowed.
 	other := newGitRepo(t)
 	if o := p.execApply(context.Background(), newRun(time.Minute), applyJob{Dir: other, Files: []fileChange{{Path: "z.txt", Content: "z"}}}); o.State != "failed" {
 		t.Errorf("applied in a directory the runner doesn't allow: %+v", o)
@@ -459,12 +451,10 @@ func TestApplyJobInAPlainAllowedDirectory(t *testing.T) {
 	if b, _ := os.ReadFile(filepath.Join(dir, "CLAUDE.md")); string(b) != "# Org\nbe nice\n" {
 		t.Errorf("file: %q", b)
 	}
-	// Changed since: not written.
 	o = p.execApply(context.Background(), newRun(time.Minute), applyJob{Dir: dir, Files: []fileChange{{Path: "CLAUDE.md", BaseSHA: base, Content: "other\n"}}})
 	if o.State != "failed" {
 		t.Errorf("stale base applied: %+v", o)
 	}
-	// Not an allowed directory, and not above the named file.
 	elsewhere := t.TempDir()
 	if o := p.execApply(context.Background(), newRun(time.Minute), applyJob{Dir: elsewhere, Files: []fileChange{{Path: "x.md", Content: "x"}}}); o.State != "failed" {
 		t.Errorf("applied in a directory the runner doesn't allow: %+v", o)
@@ -517,8 +507,6 @@ func TestApplyJobPushes(t *testing.T) {
 		t.Errorf("remote head = %q", got)
 	}
 }
-
-// ---- agent ----
 
 const fakeClaude = `#!/bin/sh
 # A stand-in for claude: records how it was run, edits the checkout, answers.
@@ -598,7 +586,6 @@ func TestAgentJobWithClaude(t *testing.T) {
 	if tok.Input != 110 || tok.Output != 5 || tok.CacheRead != 1000 || tok.CostUSD != 0.0123 {
 		t.Errorf("tokens = %+v", tok)
 	}
-	// The CLI was run as designed.
 	args, _ := os.ReadFile(filepath.Join(rec, "args"))
 	for _, want := range []string{"-p", "--output-format stream-json", "--model sonnet", "--json-schema", "--permission-mode acceptEdits", "--setting-sources user", "--strict-mcp-config", "--settings " + unattendedSettings} {
 		if !strings.Contains(string(args), want) {
@@ -611,14 +598,12 @@ func TestAgentJobWithClaude(t *testing.T) {
 	if b, _ := os.ReadFile(filepath.Join(rec, "key")); strings.TrimSpace(string(b)) != "0" {
 		t.Error("ANTHROPIC_API_KEY reached claude")
 	}
-	// What it left was committed on the branch and pushed.
 	if got := gitOut(t, remote, "log", "-1", "--format=%s", "agent/add-file"); got != "Add the file" {
 		t.Errorf("pushed commit = %q", got)
 	}
 	if got := gitOut(t, remote, "show", "agent/add-file:made-by-claude.txt"); got != "made by claude" {
 		t.Errorf("pushed file = %q", got)
 	}
-	// The log shows what it did, and the work tree is gone.
 	if l := run.out.text(); !strings.Contains(l, "Writing the file") || !strings.Contains(l, "→ Write made-by-claude.txt") || strings.Contains(l, "tool_result") {
 		t.Errorf("log = %q", l)
 	}
@@ -634,7 +619,6 @@ func TestReviewJobIsReadOnly(t *testing.T) {
 	rec := fakeCLI(t, "claude", fakeClaude)
 	remote := newGitRepo(t)
 	p := newTestProc(t)
-	// Even a job that asks for a branch and a push gets neither.
 	o := p.execAgent(context.Background(), newRun(time.Minute), "review", agentJob{CLI: "claude", Prompt: "Review it.", Repo: remote, Branch: "x", Push: true, JSONSchema: `{"type":"object"}`})
 	if o.State != "done" {
 		t.Fatalf("outcome = %+v", o)
@@ -655,13 +639,11 @@ func TestReviewJobIsReadOnly(t *testing.T) {
 func TestAgentJobFailures(t *testing.T) {
 	p := newTestProc(t)
 	remote := newGitRepo(t)
-	// Not installed.
 	gitPath, _ := exec.LookPath("git")
-	t.Setenv("PATH", t.TempDir()+string(os.PathListSeparator)+filepath.Dir(gitPath)) // git, but no claude
+	t.Setenv("PATH", t.TempDir()+string(os.PathListSeparator)+filepath.Dir(gitPath))
 	if o := p.execAgent(context.Background(), newRun(time.Minute), "agent", agentJob{CLI: "claude", Prompt: "x", Repo: remote}); o.State != "failed" || !strings.Contains(o.Error, "isn't installed") {
 		t.Errorf("not installed: %+v", o)
 	}
-	// Signed out (as the last detection found).
 	fakeCLI(t, "claude", fakeClaude)
 	no := false
 	p.clis = []runnerCLI{{Name: "claude", SignedIn: &no}}
@@ -669,7 +651,6 @@ func TestAgentJobFailures(t *testing.T) {
 		t.Errorf("signed out: %+v", o)
 	}
 	p.clis = nil
-	// Clone URLs git would run commands for, local paths in production.
 	prod := newTestProc(t)
 	prod.opts.AllowLocalRepos = false
 	for _, repo := range []string{"ext::sh -c touch /tmp/pwned", "--upload-pack=x", remote, "file:///etc"} {
@@ -677,7 +658,6 @@ func TestAgentJobFailures(t *testing.T) {
 			t.Errorf("cloned %q: %+v", repo, o)
 		}
 	}
-	// A base that isn't there.
 	if o := p.execAgent(context.Background(), newRun(time.Minute), "agent", agentJob{CLI: "claude", Prompt: "x", Repo: remote, Base: "no-such-branch"}); o.State != "failed" || !strings.Contains(o.Error, "no-such-branch") {
 		t.Errorf("missing base: %+v", o)
 	}
@@ -702,7 +682,6 @@ func TestAgentJobStartsFromTheBaseRef(t *testing.T) {
 	if o.Result.(map[string]any)["base"] != gitOut(t, remote, "rev-parse", "feature") {
 		t.Errorf("base = %v", o.Result.(map[string]any)["base"])
 	}
-	// A second job fetches rather than cloning again, and sees new commits.
 	if err := os.WriteFile(filepath.Join(remote, "later.txt"), []byte("l"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -748,8 +727,8 @@ exec sleep 60
 func TestOpencodeOutOfUsage(t *testing.T) {
 	for line, want := range map[string]bool{
 		`level=ERROR message="stream error" small=false error.error="AI_APICallError: Free usage limit reached. Subscribe."`: true,
-		`level=ERROR message="stream error" small=true error.error="AI_RetryError: Free usage limit reached."`:               false, // the title call
-		`level=ERROR message="stream error" small=false error.error="AI_APICallError: 429 Too Many Requests"`:                false, // opencode retries
+		`level=ERROR message="stream error" small=true error.error="AI_RetryError: Free usage limit reached."`:               false, // small=true is opencode's small-model call, so its quota error is not the job's own model refusing
+		`level=ERROR message="stream error" small=false error.error="AI_APICallError: 429 Too Many Requests"`:                false,
 		`level=WARN message="stream error" small=false error.error="quota exceeded"`:                                         false,
 		`level=ERROR message="stream error" small=false error.error="You exceeded your current quota"`:                       true,
 	} {
@@ -811,7 +790,6 @@ echo '{"type":"turn.completed","usage":{"input_tokens":50,"cached_input_tokens":
 
 func TestCursorOutput(t *testing.T) {
 	remote := newGitRepo(t)
-	// The repository's own permissions, which a read-only job must not keep.
 	if err := os.MkdirAll(filepath.Join(remote, ".cursor"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -835,12 +813,9 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"### 1. A f
 		t.Errorf("cursor result = %v", res)
 	}
 	a, _ := os.ReadFile(filepath.Join(os.Getenv("FAKE_OUT"), "args"))
-	// Read-only is Cursor's ask mode; the fresh checkout is trusted, or print
-	// mode stops to ask.
 	if !strings.Contains(string(a), "-p --output-format json --trust --model grok-4.7-high --mode ask -- Audit") || strings.Contains(string(a), "--force") {
 		t.Errorf("cursor args = %s", a)
 	}
-	// Reading is all it may do: the checkout's tool rules are replaced.
 	c, _ := os.ReadFile(filepath.Join(os.Getenv("FAKE_OUT"), "cli.json"))
 	if !strings.Contains(string(c), `"Shell(*)"`) || !strings.Contains(string(c), `"deny":[`) {
 		t.Errorf("cursor tool rules do not deny Shell: %s", c)
@@ -867,7 +842,7 @@ echo '{"type":"result","subtype":"error","is_error":true,"result":"You have hit 
 func TestLogSinkBatchesAndKeepsOffsets(t *testing.T) {
 	l := newLogSink()
 	_, _ = l.Write([]byte("héllo "))
-	_, _ = l.Write([]byte{0xe2, 0x82}) // half of a euro sign
+	_, _ = l.Write([]byte{0xe2, 0x82})
 	off, text, n, _ := l.chunk()
 	if off != 0 || text != "héllo " || n != 7 {
 		t.Errorf("first chunk = %d %q %d (the half character waits)", off, text, n)
@@ -920,7 +895,7 @@ func TestInstallWritesTheUnitAndStartsIt(t *testing.T) {
 	}
 	cfg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", cfg)
-	t.Setenv("XDG_RUNTIME_DIR", cfg) // set, so ensureUserBus leaves it
+	t.Setenv("XDG_RUNTIME_DIR", cfg) // set so ensureUserBus returns early; otherwise it would look at this host's /run/user bus and the test would depend on the host
 	var calls []string
 	old, oldWait := sysRun, onlineWait
 	sysRun = func(name string, args ...string) (string, error) {
@@ -970,9 +945,9 @@ func alive(pid int) bool {
 	}
 	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
 	if err != nil {
-		return true // no /proc (macOS): signal 0 is all there is
+		return true
 	}
-	// The state follows the command name in parentheses: "pid (comm) Z …".
+	// the command name can contain ')', so the state follows the last one
 	if i := strings.LastIndexByte(string(b), ')'); i >= 0 && i+2 < len(b) {
 		return b[i+2] != 'Z'
 	}
@@ -1012,7 +987,6 @@ func TestInstallKeepsTheInstalledRunnersSettings(t *testing.T) {
 		t.Errorf("said %q", out.String())
 	}
 
-	// Saved settings come first; given flags win; --allow none clears.
 	c.state.Runner = &runnerInstalled{Name: "saved", Allow: []string{"/a"}, MaxJobs: 2}
 	o = runnerOpts{MaxJobs: 1, Name: "new", Allow: []string{"none"}, given: map[string]bool{"name": true, "allow": true}}
 	keepInstalled(c, &o)

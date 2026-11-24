@@ -1,6 +1,3 @@
-// Holds (WP-269): a task no one takes, from wp next or by name, until a
-// date or until someone lifts the hold.
-
 import { useEffect, useState } from 'react'
 import { Hourglass } from 'lucide-react'
 import clsx from 'clsx'

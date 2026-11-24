@@ -10,16 +10,11 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Questions filed from the end of a turn (WP-96). When an agent's last
-// message of a turn ends on a question or decision and it didn't use
-// wp request or AskUserQuestion, the Stop hook files the question for it.
-// The person is usually at the terminal and answers within a minute or two,
-// which expires the request (expireOnPrompt), so they are told only if it
-// is still open after autoQuestionDelay.
+// Guesses at a question from a turn's end are announced only if still open after autoQuestionDelay, since the person usually answers in the terminal first.
 
 const (
 	requestAuto     = "auto"
-	notAQuestion    = "not a question" // the note of a dismissal that marks a false positive
+	notAQuestion    = "not a question"
 	autoQuestionFmt = "Filed automatically from the end of the agent's turn."
 )
 
@@ -115,7 +110,7 @@ func (s *Service) autoFileQuestion(ctx context.Context, t *tx, actor *Actor, x *
 		Questions: []Question{{Question: title}},
 	}, at)
 	if IsInvalid(err) {
-		return nil // e.g. too many requests open already: the Stop hook still has to succeed
+		return nil // An invalid filing (e.g. too many open requests) is dropped so the Stop hook still succeeds.
 	}
 	return err
 }
@@ -156,7 +151,7 @@ func (s *Service) NotifyAutoQuestions(ctx context.Context) {
 	rows.Close()
 	for _, d := range list {
 		err := s.write(ctx, SystemActor(), func(t *tx) error {
-			// Claim it first, so two sweeps never announce it twice.
+			// Clearing notify_at first is the claim: two sweeps must not announce one request twice.
 			res, err := t.ExecContext(ctx, `UPDATE requests SET notify_at = NULL WHERE id = ? AND notify_at IS NOT NULL AND state = 'open'`, d.id)
 			if err != nil {
 				return err
@@ -174,8 +169,6 @@ func (s *Service) NotifyAutoQuestions(ctx context.Context) {
 	}
 }
 
-// ---- telling an idle agent ----
-
 // tellDecision hands a decision made in the web to the agent's session
 // (WP-D22) by way of its batch (WP-209): when it sits idle and its person's
 // runner on that machine can post to its inbox socket, the agent starts a
@@ -191,7 +184,7 @@ func (s *Service) tellDecision(ctx context.Context, id int64) {
 	}
 	r := list[0]
 	if !r.sessionID.Valid || r.DeliveredAt != nil || !slices.Contains(decidedStates, r.State) || r.Via != "" || !r.wakes() {
-		return // one that needs no follow-up waits for the agent's next prompt (WP-176)
+		return // A decision that needs no follow-up waits for the agent's next prompt instead of waking it.
 	}
 	s.batchOrTell(ctx, r.sessionID.Int64, 0, r.Blocking, func(until int64) error {
 		_, err := s.db.W.ExecContext(ctx, `UPDATE requests SET batch_until = ? WHERE id = ? AND delivered_at IS NULL`, until, id)

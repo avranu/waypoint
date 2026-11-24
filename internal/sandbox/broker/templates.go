@@ -5,9 +5,7 @@ import (
 	"strings"
 )
 
-// Built-in templates (PL7 §7.1). Each returns the rules for one service;
-// the server picks templates for a session from the project's policy and
-// adds a person's exceptions.
+// the server, not this file, picks a session's templates and adds a person's exceptions.
 
 var readOnly = []string{"GET", "HEAD"}
 

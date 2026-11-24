@@ -1,11 +1,6 @@
 package core
 
-// Any CI job's log (WP-315): `wp ci log` reads the logs of a commit's or a
-// run's Forgejo Actions jobs through Waypoint, which holds the forge token.
-// `wp pr log` (ci_logs.go) only reads a pull request's head checks; a
-// push to main has no pull request, so its jobs (the ones that decide
-// whether a merge is released) could not be looked at by an agent at all.
-// The extraction is the same: the failing part, or all of it with full.
+// Waypoint holds the forge token, so agents read job logs through it, including for pushes to main, which have no pull request.
 
 import (
 	"context"

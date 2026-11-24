@@ -6,16 +6,7 @@ import (
 	"strings"
 )
 
-// Tests run without the caller's secrets (WP-1065). An agent's shell holds
-// its forge token, Waypoint's token and whatever API keys the person
-// exported; a test that finds one can reach the real service, spend its
-// quota and pass for the wrong reason. wp testsum CMD (and wp slot run
-// tests) drops the
-// variables whose names say they hold a credential before CMD starts, and
-// --keep-env NAME passes one through for a suite that really needs it. A
-// failing run names what it ran without, so a test that broke for want of
-// one is plain to see. A .env file in the checkout is the repo's own
-// business: what its test setup loads is fixed in that repo.
+// Drops credential-named variables before a test command starts; a checkout's .env is the repo's own business.
 
 // testSecretSuffixes and testSecretParts are the name shapes of credentials.
 var (

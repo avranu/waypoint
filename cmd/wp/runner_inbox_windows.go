@@ -42,8 +42,7 @@ func postInbox(ctx context.Context, path string, lines [][]byte) (string, error)
 			return "", fmt.Errorf("can't post to the session: %w", err)
 		}
 	}
-	// Flushing a pipe waits until the session has read everything; close
-	// after it, or after a while if it doesn't read.
+	// Sync on a pipe blocks until the session has read it all, so it runs in a goroutine with a timeout.
 	done := make(chan struct{})
 	go func() {
 		_ = f.Sync()

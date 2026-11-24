@@ -8,10 +8,7 @@ import (
 	"strings"
 )
 
-// What review triage decided and how it turned out (WP-692). The labels are
-// read from where they live when asked for, so they keep arriving after the
-// row is written: what the round found, the findings on the task's pull
-// requests that were accepted or fixed, and escapes traced back to them.
+// Outcome labels are read from where they live when asked for, so they keep arriving after the row is written.
 
 // TriageRuleStats is one floor or rule's record.
 type TriageRuleStats struct {

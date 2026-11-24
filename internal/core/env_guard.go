@@ -8,13 +8,7 @@ import (
 	"strings"
 )
 
-// The hosts of a repo's environments that the guard lets an unattended
-// agent session read from (WP-749, WP-ADR10 as amended by the decision
-// filed for it): the hosts of the addresses (url, health_url, version_url)
-// a person set on the environments of the projects the repo is attached to.
-// An address an agent, an agent's shell, an automation or a token set
-// doesn't count, so an agent can't open the guard by recording one. A
-// stopped environment doesn't count either.
+// Addresses an agent, an agent's shell, an automation or a token set don't count, so an agent can't open the guard by recording one.
 
 // maxGuardHosts bounds the list one SessionStart carries.
 const maxGuardHosts = 50

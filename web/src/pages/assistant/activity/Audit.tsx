@@ -1,7 +1,3 @@
-// Activity → Audit: the gate's own record, as it wrote it, newest first:
-// every tool call, approval, freeze, connection change and call through
-// the door. Filter by kind (asked of the gate) and search (in the browser).
-
 import { useDeferredValue, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'

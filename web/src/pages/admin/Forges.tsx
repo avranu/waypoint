@@ -47,8 +47,7 @@ const DEFAULT_URL: Partial<Record<Kind, string>> = {
 export function ForgesTab() {
   const qc = useQueryClient()
   const forges = useQuery(q.forges())
-  // Discovery, and turning on automatic projects, look first: more than a
-  // few new projects and the admin picks which repos get one.
+  // Turning on automatic projects runs discovery first: with more than a few new projects, the admin picks which repos get one.
   const [picking, setPicking] = useState<{
     forge: Forge
     repos: DiscoveredRepo[]
@@ -352,7 +351,6 @@ function ForgePeople({ forge: f }: { forge: Forge }) {
         })),
       }),
     onSuccess: () => {
-      // The form stays for the next login; Cancel closes it.
       setLogin('')
       box.current?.focus()
     },
@@ -531,7 +529,6 @@ function OrgHooks({
   const [org, setOrg] = useState('')
   const box = useRef<HTMLInputElement>(null)
   const listId = useId()
-  // Asks the forge, so only once someone starts adding one.
   const orgs = useQuery({ ...q.forgeOrgs(f.id), enabled: adding && f.has_token })
   const word = ORG_WORD[f.kind] ?? 'organisation'
   const invalidate = () => qc.invalidateQueries({ queryKey: ['orgHooks', f.id] })
@@ -552,8 +549,6 @@ function OrgHooks({
       qc.invalidateQueries({ queryKey: ['repos'] })
     },
   })
-  // Shown when there's one, while adding, and for automatic projects
-  // (which need one); otherwise "Add … webhook" waits in the forge's menu.
   if (hooks.length === 0 && !adding && !(f.auto_projects && f.has_token)) return null
   const taken = new Set(hooks.map((h) => h.org.toLowerCase()))
   const offered = (orgs.data ?? []).filter((o) => !taken.has(o.toLowerCase()))

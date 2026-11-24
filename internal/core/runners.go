@@ -17,24 +17,21 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Runners (WP-D17): `wp runner` on a person's machine registers here, long
-// polls for jobs and reports what happened. Waypoint never runs a command
-// itself and never holds a subscription credential; a runner belongs to the
-// person who registered it, and only that person's work runs on it.
+// Waypoint never runs a command itself or holds a subscription credential; a runner runs only its owner's work.
 
 const (
-	runnerOnlineFor = 90 * time.Second // a runner that polled this recently is online
-	runnerMaxWait   = 30 * time.Second // how long a poll is held
-	runnerLostGrace = 20 * time.Second // a job a runner doesn't list as running is lost after this
+	runnerOnlineFor = 90 * time.Second
+	runnerMaxWait   = 30 * time.Second
+	runnerLostGrace = 20 * time.Second
 	// A job Waypoint ended that its runner still lists as running is one the
 	// runner wasn't told about (it prints nothing, so no log upload carried the
 	// word): it is told to stop after this. Longer than a held poll, whose
 	// list is as old as the poll, so a job that ended in the meantime isn't
 	// taken for one (WP-870).
 	runnerEndedGrace  = runnerMaxWait + 15*time.Second
-	runnerEndedMax    = 200             // of the jobs a poll lists, how many are looked up
-	runnerExpireAfter = 5 * time.Minute // a running job past its timeout plus this is expired
-	runnerQueuedFor   = 24 * time.Hour  // a queued job nobody took in this long is expired
+	runnerEndedMax    = 200
+	runnerExpireAfter = 5 * time.Minute
+	runnerQueuedFor   = 24 * time.Hour
 	runnerKeepJobs    = 30 * 24 * time.Hour
 	maxRunnersPerUser = 50
 )
@@ -70,7 +67,7 @@ type Runner struct {
 	// Capacity is what it last said about its machine's load (WP-366).
 	Capacity  *RunnerCapacity `json:"capacity,omitempty"`
 	CreatedAt time.Time       `json:"created_at"`
-	online    bool            // as last announced
+	online    bool
 }
 
 // RunnerRegistration is what a runner reports about itself.
@@ -148,7 +145,7 @@ type runnerState struct {
 	wake     chan struct{}
 	lastEmit map[int64]time.Time
 	pruned   time.Time
-	capacity map[int64]RunnerCapacity // each runner's last report (WP-366)
+	capacity map[int64]RunnerCapacity
 }
 
 // kickRunners wakes every held poll to look for work again.
@@ -170,8 +167,6 @@ func (s *Service) runnerWake() <-chan struct{} {
 	}
 	return s.runners.wake
 }
-
-// ---- paths ----
 
 var winDrive = lazyre.New(`^[A-Za-z]:[\\/]`)
 
@@ -225,8 +220,6 @@ func dirInside(dir, allowed string) bool {
 func dirAllowed(dir string, allowed []string) bool {
 	return slices.ContainsFunc(allowed, func(a string) bool { return dirInside(dir, a) })
 }
-
-// ---- registration ----
 
 var labelRE = lazyre.New(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,39}$`)
 
@@ -364,7 +357,7 @@ func (s *Service) runnerByID(ctx context.Context, q queryer, id int64) (*Runner,
 // RegisterRunner records the machine the caller's `wp runner` runs on (the
 // same name for the same person is the same runner) and marks it online.
 func (s *Service) RegisterRunner(ctx context.Context, actor *Actor, reg RunnerRegistration) (*Runner, error) {
-	if err := actor.need(PermRunnersHost); err != nil { // WP-111
+	if err := actor.need(PermRunnersHost); err != nil {
 		return nil, err
 	}
 	if err := runnerActor(actor); err != nil {
@@ -413,7 +406,7 @@ func (s *Service) RegisterRunner(ctx context.Context, actor *Actor, reg RunnerRe
 	if err != nil {
 		return nil, err
 	}
-	s.kickRunners() // new dirs or CLIs may make a waiting job eligible
+	s.kickRunners()
 	return s.runnerByID(ctx, s.db.R, id)
 }
 
@@ -515,11 +508,9 @@ func (s *Service) DeleteRunner(ctx context.Context, actor *Actor, id int64) erro
 		t.audit(AuditEntry{Action: "runner.remove", Category: AuditSettings, TargetType: "runner", TargetID: id, Target: r.Name, Detail: "removed the runner " + r.Name + " of " + r.Owner.Username})
 		return nil
 	})
-	s.kickRunners() // its held poll should end now, not in 30 seconds
+	s.kickRunners()
 	return err
 }
-
-// ---- polling ----
 
 // RunnerPoll is a runner asking for work (and saying it's alive).
 type RunnerPoll struct {
@@ -588,7 +579,7 @@ func launchesSession(kind string) bool {
 // Poll holds up to 30 seconds for a job this runner may take. It is also
 // the heartbeat: a runner that polled in the last 90 seconds is online.
 func (s *Service) RunnerPoll(ctx context.Context, actor *Actor, in RunnerPoll) (*RunnerWork, error) {
-	if err := actor.need(PermRunnersHost); err != nil { // WP-111
+	if err := actor.need(PermRunnersHost); err != nil {
 		return nil, err
 	}
 	if err := runnerActor(actor); err != nil {
@@ -628,7 +619,7 @@ func (s *Service) RunnerPoll(ctx context.Context, actor *Actor, in RunnerPoll) (
 			// Fresh each time round: a re-register may have narrowed the
 			// directories, labels or CLIs while the poll was held.
 			if r, err = s.runnerByID(ctx, s.db.R, r.ID); err != nil {
-				return nil, err // removed while the poll was held
+				return nil, err
 			}
 		}
 		cancel, err := s.cancelsFor(ctx, r.ID, in.Running)
@@ -645,8 +636,6 @@ func (s *Service) RunnerPoll(ctx context.Context, actor *Actor, in RunnerPoll) (
 				return nil, err
 			}
 		}
-		// A full runner (free 0) polls only as a heartbeat that listens for
-		// cancels, so it is held like any other.
 		if claim != nil || len(cancel) > 0 || len(ops) > 0 || wait == 0 {
 			return &RunnerWork{Job: claim, Cancel: cancel, Sandbox: ops}, nil
 		}
@@ -756,9 +745,9 @@ func (s *Service) cancelsFor(ctx context.Context, runnerID int64, running []int6
 // jobNeeds is what a job asks of a runner.
 type jobNeeds struct {
 	kind, label, dir, cli string
-	source                string // what queued it: decides LaneRequest
-	feature               string // what the runner's wp must be able to do, beyond what kind needs
-	patch                 bool   // an agent job that pushes a held patch, no agent run
+	source                string
+	feature               string
+	patch                 bool
 }
 
 // runnerCanTake: labels match, the directory is allowed, the CLI is there
@@ -774,19 +763,19 @@ func runnerCanTake(r *Runner, n jobNeeds) bool {
 		return false
 	}
 	if n.kind == JobAutopilot && !slices.Contains(r.Features, FeatureAutopilot) {
-		return false // an older wp would fail it
+		return false
 	}
 	if n.kind == JobAudit && !slices.Contains(r.Features, FeatureAudit) {
 		return false
 	}
 	if n.kind == JobObjective && !slices.Contains(r.Features, FeatureObjective) {
-		return false // its wp predates objective readings (WP-ADR142)
+		return false
 	}
 	if n.kind == JobSandboxDrill && !slices.Contains(r.Features, FeatureSandboxDrill) {
 		return false
 	}
 	if n.feature != "" && !slices.Contains(r.Features, n.feature) {
-		return false // an older wp would do the job the old way, or fail it
+		return false
 	}
 	if n.label != "" && !slices.Contains(r.Labels, n.label) {
 		return false
@@ -815,7 +804,7 @@ func runnerCanTake(r *Runner, n jobNeeds) bool {
 // requests, then the other audits. Each lists its jobs oldest first; the
 // parameters are the owner, the runner, JobAudit, auditSource, the id to
 // start after and a page size.
-const claimUrgent = 0 // claimOrder's first: the rounds of urgent pull requests
+const claimUrgent = 0
 
 var claimOrder = []string{
 	claimUrgent: `SELECT id, kind, source, label, dir, cli, ` + jobFeatureCol + ` FROM runner_jobs WHERE owner_id = ?1 AND state = 'queued' AND (target_runner_id IS NULL OR target_runner_id = ?2)
@@ -847,7 +836,6 @@ func (s *Service) claimable(ctx context.Context, r *Runner, q string, lanes []st
 	if err != nil {
 		return nil, err
 	}
-	// A prep trial (WP-ADR104) leaves the gateway's last places to audits.
 	gatewayFull, prepFull := inGateway >= GatewayTasksInFlight, inGateway >= GatewayTasksInFlight-prepAgentReserve
 	for after := int64(0); len(ids) < 10; {
 		rows, err := s.db.R.QueryContext(ctx, q, r.Owner.ID, r.ID, JobAudit, auditSource, after, page)
@@ -961,7 +949,7 @@ func (s *Service) claimRunnerJob(ctx context.Context, actor *Actor, r *Runner, l
 	var ids []int64
 	var err error
 	for i, q := range claimOrder {
-		if i == claimUrgent+1 { // the fronts' rounds come right after the urgent ones
+		if i == claimUrgent+1 {
 			if ids, err = s.frontRounds(ctx, r, lanes); err != nil || len(ids) > 0 {
 				break
 			}
@@ -987,7 +975,7 @@ func (s *Service) claimRunnerJob(ctx context.Context, actor *Actor, r *Runner, l
 			err := t.QueryRowContext(ctx, `UPDATE runner_jobs SET state = 'running', runner_id = ?, runner_name = ?, started_at = ?, attempts = attempts + 1
 				WHERE id = ? AND state = 'queued' RETURNING id, kind, title, input, timeout, source, source_id, project_id, cli`, r.ID, r.Name, s.nowMS(), id).Scan(&c.ID, &c.Kind, &c.Title, &input, &c.Timeout, &source, &sid, &project, &cli)
 			if errors.Is(err, sql.ErrNoRows) {
-				continue // another poll of this runner got it first
+				continue
 			}
 			if err != nil {
 				return err
@@ -1001,7 +989,6 @@ func (s *Service) claimRunnerJob(ctx context.Context, actor *Actor, r *Runner, l
 					c.Timeout = in.WorkTimeout
 				}
 			}
-			// What the runner will type goes on record in this write (WP-1370).
 			if err := s.recordHandedOver(ctx, t, c.Kind, c.Input, source, c.Timeout, r.Owner.ID); err != nil {
 				return err
 			}
@@ -1010,8 +997,7 @@ func (s *Service) claimRunnerJob(ctx context.Context, actor *Actor, r *Runner, l
 				if c.Token, err = t.mintJobToken(ctx, c.ID, r.Owner.ID, agent, c.Timeout); err != nil {
 					return err
 				}
-				// An agent job on a machine whose helper is ready gets its
-				// users made first. Phase 1 never holds a job up for it.
+				// Sign after the job's users are minted above; a failed signing is logged and the job goes out with no sandbox spec.
 				if signer != nil && project.Valid {
 					if c.Sandbox, err = signer.sign(ctx, t, s.now(), &c, project.Int64); err != nil {
 						s.log.WarnContext(ctx, "sandbox spec", "job", c.ID, "err", err)
@@ -1067,8 +1053,7 @@ func (s *Service) withPriorPanel(ctx context.Context, input json.RawMessage, aud
 	if json.Unmarshal(h["panel"], &panel) != nil || len(panel) == 0 {
 		return input
 	}
-	// The stored input keeps no prior runs; one a job queued before this
-	// change carries is dropped unless the read finds it still reusable.
+	// The stored input keeps no prior runs: the prior panel is read when a runner takes the job, replacing any a legacy input carries, and dropped when none is reusable.
 	s.settleRoundSiblings(ctx, auditID)
 	prior := s.priorPanel(ctx, auditID)
 	if len(prior) == 0 {
@@ -1100,8 +1085,6 @@ func jobUpdated(c *RunnerClaim, state string, runner, owner, size int64) *Event 
 	return &Event{Kind: EvRunnerJobUpdated, UserID: owner, Data: map[string]any{"job": c.ID, "kind": c.Kind, "state": state, "runner": runner, "size": size}}
 }
 
-// ---- scheduler ----
-
 // CheckRunners (every 30 s from the scheduler) announces runners that went
 // quiet, expires jobs nobody finished or took, and forgets old finished ones.
 func (s *Service) CheckRunners(ctx context.Context) {
@@ -1127,7 +1110,6 @@ func (s *Service) CheckRunners(ctx context.Context) {
 			}
 			t.emit(runnerStatus(r.ID, r.Name, r.Owner.ID, false))
 		}
-		// Running past timeout + 5 minutes; queued for a day.
 		rows, err = t.QueryContext(ctx, `SELECT id, state FROM runner_jobs WHERE (state = 'running' AND started_at + (timeout + ?) * 1000 < ?) OR (state = 'queued' AND created_at < ?)`,
 			int(runnerExpireAfter.Seconds()), now, now-runnerQueuedFor.Milliseconds())
 		if err != nil {

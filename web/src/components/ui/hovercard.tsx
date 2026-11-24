@@ -1,8 +1,3 @@
-// A card of details beside a row the pointer rests on (WP-610). It waits
-// before showing, so sweeping the pointer across a list doesn't flash cards;
-// once one is up, moving to the next row swaps it sooner. Only on devices
-// that hover.
-
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useMediaQuery } from '@/lib/hooks'
@@ -39,7 +34,6 @@ export function useHoverCard<T>() {
   // (which may have scrolled the list into view) still gets its card.
   const drop = useCallback(() => setShown(null), [])
   useEffect(() => () => window.clearTimeout(timer.current), [])
-  // Typing, clicking or scrolling means the person moved on.
   useEffect(() => {
     if (!shown) return
     window.addEventListener('keydown', hide, true)
@@ -86,8 +80,6 @@ function Card({ rect, children }: { rect: DOMRect; children: ReactNode }) {
     const h = el.offsetHeight
     const vw = window.innerWidth
     const vh = window.innerHeight
-    // Beside the row, so the list stays readable: right if it fits, else
-    // left, else below or above it.
     let left: number
     let top = Math.max(GAP, Math.min(rect.top, vh - h - GAP))
     if (rect.right + GAP + w <= vw - GAP) left = rect.right + GAP

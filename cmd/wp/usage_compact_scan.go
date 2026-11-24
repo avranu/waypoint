@@ -16,49 +16,40 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// The transcript reader behind wp usage compact (WP-1097): one session's
-// calls, tool calls, prompts and compactions in file order, and what
-// followed a point in it.
-
 // cmpEvent is one thing in a session's main conversation.
 type cmpEvent struct {
-	kind byte // 'c' a call, 't' a tool call, 'p' a prompt, 'b' a compaction
+	kind byte
 	ts   int64
 
-	// a call
 	model           string
 	in, out, cw, cr int64
-	cw1h            int64 // of cw, what went to the one-hour cache
-	split           bool  // the transcript says which cache its writes went to
+	cw1h            int64
+	split           bool
 
-	// a call: the text it wrote; a prompt: its text
 	chars int
 
-	// a prompt
-	pk     byte     // 0 typed (a person or Waypoint), 'n' a background task's or subagent's report, 'x' no prompt to work on (a keep-warm ping, an interruption)
-	review bool     // Waypoint's prompt for a review round
-	names  []string // the file names its text has
+	pk     byte
+	review bool
+	names  []string
 
-	// a tool call
 	edit, lookup, orient bool
-	paths                []string // the files it put in context, by base name
-	shell                bool     // it named them in a shell command, not the Read tool
-	key                  string   // what a lookup that names no file asked
-	own                  bool     // it read a Claude Code transcript
-	agent                bool     // it started a subagent
-	adversarial          bool     // an adversarial review, by the subagent's type
+	paths                []string
+	shell                bool
+	key                  string
+	own                  bool
+	agent                bool
+	adversarial          bool
 	failed               bool
 	inChars, resultChars int
 
-	// a compaction
 	trigger      string
 	pre          int64
 	durMs        int64
 	summaryChars int
-	usd          float64  // its call, estimated
-	restored     []string // the files Claude Code put back in full, by base name
-	referenced   []string // those it only named
-	kept         []int    // the tool calls in the last messages it left in place
+	usd          float64
+	restored     []string
+	referenced   []string
+	kept         []int
 }
 
 func (e *cmpEvent) ctx() int64 { return e.in + e.cw + e.cr }
@@ -114,7 +105,7 @@ func cmpRedirect(s string) (target string, heredoc bool) {
 			quote = ch
 		case ch == '\\':
 			i++
-		case ch == '&' && i+1 < len(s) && s[i+1] == '>': // &> FILE, &>> FILE
+		case ch == '&' && i+1 < len(s) && s[i+1] == '>':
 			continue
 		case ch == '|' || ch == ';' || ch == '&':
 			return target, heredoc
@@ -131,7 +122,7 @@ func cmpRedirect(s string) (target string, heredoc bool) {
 			if j < len(s) && s[j] == '>' {
 				j++
 			}
-			if j < len(s) && s[j] == '&' { // >&2, 2>&1
+			if j < len(s) && s[j] == '&' {
 				i = j
 				continue
 			}
@@ -204,9 +195,7 @@ func cmpTool(name string, input json.RawMessage) cmpEvent {
 			for _, m := range cmpPathRE.FindAllStringSubmatch(cmd, -1) {
 				e.paths = append(e.paths, filepath.Base(m[1]))
 			}
-			// Bare names only up to the first pipe or separator: after one,
-			// a word with a dot (grep foo.bar) is no file it printed. Spaces
-			// doubled so two names side by side each have one on both sides.
+			// Bare names count only before the first pipe or separator; spaces are doubled so adjacent names each get a space on both sides.
 			first := cmd
 			if i := strings.IndexAny(first, "|;&"); i >= 0 {
 				first = first[:i]
@@ -266,10 +255,10 @@ func readCompactFile(path string) ([]cmpEvent, error) {
 	}
 	defer func() { _ = fh.Close() }()
 	var ev []cmpEvent
-	calls := map[string]int{}    // message id → its call
-	tools := map[string]int{}    // tool_use id → its tool call
-	texts := map[string]bool{}   // message id and text of a text block counted
-	byLine := map[string][]int{} // an assistant line's uuid → its tool calls, since the last compaction
+	calls := map[string]int{}
+	tools := map[string]int{}
+	texts := map[string]bool{}
+	byLine := map[string][]int{}
 	lastBoundary, pendingSummary := -1, 0
 	br := bufio.NewReaderSize(fh, 1<<20)
 	var long []byte
@@ -308,14 +297,14 @@ func readCompactFile(path string) ([]cmpEvent, error) {
 						case "text":
 							if k := l.Message.ID + "\x00" + b.Text; l.Message.ID != "" {
 								if texts[k] {
-									continue // a message logged twice
+									continue
 								}
 								texts[k] = true
 							}
 							ev[i].chars += len(b.Text)
 						case "tool_use":
 							if _, dup := tools[b.ID]; dup && b.ID != "" {
-								continue // a message logged twice
+								continue
 							}
 							t := cmpTool(b.Name, b.Input)
 							t.ts = ev[i].ts
@@ -348,7 +337,7 @@ func readCompactFile(path string) ([]cmpEvent, error) {
 						ev = append(ev, p)
 					}
 				case l.Type == "attachment" && l.Attachment != nil:
-					// what Claude Code puts back after a compaction, before the next call
+					// Claude Code's restored-file attachments come after a compaction and before the next call
 					if lastBoundary < 0 || lastBoundary != lastOfKind(ev, "cb") || l.Attachment.Filename == "" {
 						break
 					}
@@ -544,14 +533,14 @@ func cmpFirstSeen(ev []cmpEvent) map[string]int {
 // The sets of files a compaction could carry over, replayed against what
 // the agent looked up again (WP-1097).
 const (
-	carryRestored   = iota // what Claude Code put back in full
-	carryReferenced        // those and the ones it only named
-	carryLast5             // the last 5 files the session read, showed or edited
+	carryRestored = iota
+	carryReferenced
+	carryLast5
 	carryLast10
 	carryLast20
-	carryEdited       // every file the session had edited
-	carryPrompt       // the files the prompt that followed names
-	carryEditedPrompt // both
+	carryEdited
+	carryPrompt
+	carryEditedPrompt
 	carrySets
 )
 
@@ -583,7 +572,7 @@ func cmpReplay(ev []cmpEvent, at, end int) cmpCarry {
 		edited, tool   bool
 		again, edited2 bool
 		againChars     int
-		kept           bool // a lookup of it is in the messages Claude Code left in place
+		kept           bool
 	}
 	files := map[string]*file{}
 	for i := 0; i < at; i++ {
@@ -659,7 +648,7 @@ func cmpReplay(ev []cmpEvent, at, end int) cmpCarry {
 		if a, b := files[names[i]].last, files[names[j]].last; a != b {
 			return a > b
 		}
-		return names[i] < names[j] // one command naming several files
+		return names[i] < names[j]
 	})
 	for i, p := range names {
 		if i < 5 {
@@ -692,7 +681,7 @@ func cmpReplay(ev []cmpEvent, at, end int) cmpCarry {
 			}
 		}
 		if f.kept {
-			continue // still in context: nothing to carry, nothing a carry would have saved
+			continue
 		}
 		for s := range sets {
 			if !sets[s][p] {

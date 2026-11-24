@@ -1,9 +1,3 @@
-// A task's life so far, at a glance (WP-1196): one track from when it was
-// written to now, coloured by the status it was in, with marks where
-// something happened (relations found, follow-ups filed, pull requests,
-// edits, comments). It replaces a three-step bar that only repeated the
-// status picker, and holds the "Created … · Written on v…" line.
-
 import { useMemo, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
@@ -187,7 +181,6 @@ export function Lifecycle({ issue, project }: { issue: IssueDetail; project: Pro
         .sort((a, b) => a.at - b.at),
     [events],
   )
-  // Marks close together share one spot, so the track never turns into a smear.
   const SLOTS = 32
   const slots = new Map<number, Mark[]>()
   for (const m of marks) {
@@ -197,7 +190,6 @@ export function Lifecycle({ issue, project }: { issue: IssueDetail; project: Pro
   const counts = ORDER.map((k) => [k, marks.filter((m) => m.kind === k).length] as const).filter(
     ([, n]) => n > 0,
   )
-  // Time spent in each status, in the order first reached.
   const spent: { name: string; category: Category; ms: number }[] = []
   for (const s of segs) {
     const row = spent.find((x) => x.name === s.name)
@@ -238,7 +230,6 @@ export function Lifecycle({ issue, project }: { issue: IssueDetail; project: Pro
                 .join('\n')}
               className={clsx(
                 'absolute top-0 flex items-center gap-px text-[10px] leading-none [&>svg]:size-3',
-                // The ends stay inside the track instead of hanging over it.
                 slot === 0 ? '' : slot === SLOTS ? '-translate-x-full' : '-translate-x-1/2',
                 m.tone,
               )}

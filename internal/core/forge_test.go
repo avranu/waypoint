@@ -18,13 +18,13 @@ import (
 // memForge is an in-memory forge for every kind: issues, comments, repos.
 type memForge struct {
 	mu       sync.Mutex
-	issues   map[string][]ForgeItem    // forgeID|repo
-	comments map[string][]ForgeComment // forgeID|repo|number
-	closed   map[string]bool           // forgeID|repo|number
+	issues   map[string][]ForgeItem
+	comments map[string][]ForgeComment
+	closed   map[string]bool
 	repos    map[int64][]ForgeRepo
 	groups   map[string]bool
-	posted   []string // bodies Waypoint posted
-	tokens   []string // the token each GetItem used
+	posted   []string
+	tokens   []string
 	nextID   int
 }
 
@@ -59,7 +59,7 @@ func (m *memForge) ListIssues(ctx context.Context, f *Forge, repo string, since 
 	defer m.mu.Unlock()
 	out := append([]ForgeItem(nil), m.issues[mk(f, repo)]...)
 	for n := range out {
-		out[n].Author = cmp(out[n].Author, "me") // issues without one are the forge owner's
+		out[n].Author = cmp(out[n].Author, "me")
 	}
 	return out, nil
 }
@@ -164,8 +164,6 @@ func (e *env) forge(kind, base string, auto bool) *Forge {
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	// These tests' forge users (and the bots they meet) are people here;
-	// outside_test.go and outside_pulls_test.go have strangers.
 	e.forgePeople(f, "me", "alice", "bob", "carol", "dana", "sam", "robin", "ann", "alex", "agent", "claude", "erin", "dave", "person", "x",
 		"llm-review", "waypoint-bot", "wp-bot", "bot", "copilot-reviewer", "coderabbitai[bot]", "renovate[bot]")
 	return f
@@ -244,7 +242,6 @@ func TestGitLabForge(t *testing.T) {
 	if got.Type != "bug" || got.Title != "Broken search" || len(got.Links) != 1 || got.Links[0].Provider != "gitlab" {
 		t.Errorf("imported issue: %s %q %+v", got.Type, got.Title, got.Links)
 	}
-	// Confidential issues stay on GitLab.
 	conf := strings.Replace(strings.Replace(issue, `"iid":4`, `"iid":5,"confidential":true`, 1), "issues/4", "issues/5", 1)
 	if err := send(secret, conf); err != nil {
 		t.Fatal(err)
@@ -252,7 +249,6 @@ func TestGitLabForge(t *testing.T) {
 	if n := len(e.search(e.admin, "project:"+p.Key)); n != 1 {
 		t.Errorf("confidential issue imported: %d issues", n)
 	}
-	// Notes become comments by their author.
 	note := `{"object_kind":"note","user":{"username":"alice"},"project":{"path_with_namespace":"grp/sub/app"},
 		"object_attributes":{"id":77,"note":"Happens on page 2","noteable_type":"Issue","url":"https://gitlab.com/grp/sub/app/-/issues/4#note_77"},
 		"issue":{"iid":4}}`
@@ -263,7 +259,6 @@ func TestGitLabForge(t *testing.T) {
 	if len(cs) != 1 || cs[0].Author == nil || cs[0].Author.DisplayName != "alice" || cs[0].Via != "GitLab" {
 		t.Fatalf("note: %+v", cs)
 	}
-	// Merge requests mentioning the key link up.
 	mr := fmt.Sprintf(`{"object_kind":"merge_request","project":{"path_with_namespace":"grp/sub/app"},
 		"object_attributes":{"iid":9,"title":"Fix %s","state":"merged","url":"https://gitlab.com/grp/sub/app/-/merge_requests/9","source_branch":"fix"}}`, keys[0])
 	if err := send(secret, mr); err != nil {
@@ -272,7 +267,6 @@ func TestGitLabForge(t *testing.T) {
 	if links := e.get(e.admin, keys[0]).Links; len(links) != 2 {
 		t.Errorf("MR not linked: %+v", links)
 	}
-	// Links from pasted URLs.
 	l, err := e.s.parseLink(e.ctx, "https://gitlab.com/grp/sub/app/-/merge_requests/3")
 	if err != nil || l.Kind != "pull" || l.Repo != "grp/sub/app" || l.Number == nil || *l.Number != 3 {
 		t.Errorf("parseLink = %+v %v", l, err)
@@ -300,7 +294,6 @@ func TestForgeCommentSync(t *testing.T) {
 			"issue":   map[string]any{"number": 3, "title": "Login loops", "html_url": "https://github.com/me/web/issues/3"},
 			"comment": map[string]any{"id": id, "body": body, "html_url": "https://github.com/me/web/issues/3#c", "user": map[string]any{"login": "bob"}}}
 	}
-	// Forge → Waypoint, once, then edited.
 	for range 2 {
 		if err := e.hook(f, "issue_comment", comment("created", 501, "Seen on Safari")); err != nil {
 			t.Fatal(err)
@@ -319,7 +312,6 @@ func TestForgeCommentSync(t *testing.T) {
 	if cs := e.comments(key); cs[0].Body != "Seen on Safari 18" {
 		t.Errorf("edit not mirrored: %q", cs[0].Body)
 	}
-	// Waypoint → forge, and the echo doesn't come back as a copy.
 	if _, err := e.s.AddComment(e.ctx, e.admin, key, "Fixed in the next release"); err != nil {
 		t.Fatal(err)
 	}
@@ -335,8 +327,6 @@ func TestForgeCommentSync(t *testing.T) {
 	if cs := e.comments(key); len(cs) != 2 {
 		t.Errorf("echo duplicated the comment: %d comments", len(cs))
 	}
-	// The webhook can also beat the post's reply (no link yet): still
-	// recognised as ours.
 	if _, err := e.s.AddComment(e.ctx, e.admin, key, "Racing the webhook"); err != nil {
 		t.Fatal(err)
 	}
@@ -350,14 +340,12 @@ func TestForgeCommentSync(t *testing.T) {
 	if cs := e.comments(key); len(cs) != 3 {
 		t.Errorf("racing echo duplicated: %d comments", len(cs))
 	}
-	// A comment deleted on the forge goes here too.
 	if err := e.hook(f, "issue_comment", comment("deleted", 501, "")); err != nil {
 		t.Fatal(err)
 	}
 	if cs := e.comments(key); len(cs) != 2 || cs[0].Body != "Fixed in the next release" {
 		t.Errorf("after delete: %+v", cs)
 	}
-	// A sync pulls comments the webhooks missed, without duplicating.
 	mem.mu.Lock()
 	mem.issues[mk(f, "me/web")] = []ForgeItem{{Number: 3, Title: "Login loops", State: "open", URL: "https://github.com/me/web/issues/3"}}
 	mem.comments[mk(f, "me/web", 3)] = append(mem.comments[mk(f, "me/web", 3)], ForgeComment{ID: "900", Author: "carol", Body: "Missed one"})
@@ -408,7 +396,6 @@ func TestForgeAutoProjectsAndMirrors(t *testing.T) {
 	if keys := e.search(e.admin, "project:"+web.Key); len(keys) != 1 {
 		t.Fatalf("web issues = %v", keys)
 	}
-	// A webhook from a repo nobody attached yet: a new project under acme.
 	if err := e.hook(fj, "ping", map[string]any{"repository": map[string]any{"full_name": "acme/api"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -420,8 +407,6 @@ func TestForgeAutoProjectsAndMirrors(t *testing.T) {
 		}
 	}
 
-	// The GitHub mirror of acme/web joins the same project, and its copy of
-	// issue #5 joins the same task.
 	mem.repos[gh.ID] = []ForgeRepo{{Path: "acme/web", Group: true}}
 	if n, err := e.s.DiscoverRepos(e.ctx, e.admin, gh.ID, nil); err != nil || n != 1 {
 		t.Fatalf("mirror discover = %d, %v", n, err)
@@ -430,8 +415,6 @@ func TestForgeAutoProjectsAndMirrors(t *testing.T) {
 	if after, _ := e.s.ListProjects(e.ctx, e.admin, false); len(after) != len(projects) {
 		t.Errorf("mirror made a new project: %d → %d", len(projects), len(after))
 	}
-	// Same name isn't proof of the same repo: it joins with sync and
-	// posting off until a project owner turns them on.
 	keys := e.search(e.admin, "project:"+web.Key)
 	if links := e.get(e.admin, keys[0]).Links; len(keys) != 1 || len(links) != 1 {
 		t.Fatalf("mirror synced before anyone said so: %v, %d links", keys, len(links))
@@ -460,7 +443,6 @@ func TestForgeAutoProjectsAndMirrors(t *testing.T) {
 		t.Errorf("task has %d links, want both forges", len(links))
 	}
 
-	// Closing on GitHub closes the task and the Forgejo copy.
 	closed := map[string]any{"action": "closed", "repository": map[string]any{"full_name": "acme/web"},
 		"issue": map[string]any{"number": 5, "title": "Fix login", "state": "closed", "html_url": "https://github.com/acme/web/issues/5", "user": map[string]any{"login": "me"}}}
 	if err := e.hook(gh, "issues", closed); err != nil {
@@ -476,7 +458,6 @@ func TestForgeAutoProjectsAndMirrors(t *testing.T) {
 	if !fjClosed || ghPushed {
 		t.Errorf("forgejo closed=%v, pushed back to github=%v", fjClosed, ghPushed)
 	}
-	// A GitHub comment reaches the Forgejo copy, not GitHub again.
 	if err := e.hook(gh, "issue_comment", map[string]any{"action": "created", "repository": map[string]any{"full_name": "acme/web"},
 		"issue":   map[string]any{"number": 5, "title": "Fix login"},
 		"comment": map[string]any{"id": 42, "body": "Done here", "user": map[string]any{"login": "dana"}}}); err != nil {

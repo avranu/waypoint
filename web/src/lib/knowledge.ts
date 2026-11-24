@@ -1,7 +1,4 @@
-// Knowledge (WP-D10): the glossary, design notes and specs, links between
-// anything, and search across everything. Glossary entries and design notes
-// belong to a project or are global; a project's full set is its own plus
-// its ancestors' plus the global ones.
+// A project's glossary and design notes are its own plus its ancestors' plus the global ones.
 
 import { queryOptions, type QueryClient } from '@tanstack/react-query'
 import { api, enc, qs } from './api'
@@ -187,8 +184,6 @@ export function invalidateKnowledge(qc: QueryClient) {
     qc.invalidateQueries({ queryKey: [k] })
 }
 
-// ---- mutations (plain functions; components wrap them in useMutation) ----
-
 export const glossaryApi = {
   create: (body: {
     term: string
@@ -264,8 +259,6 @@ export const goalWorkQuery = (goal: number, project: string, q: string) =>
     staleTime: 15_000,
   })
 
-// ---- display helpers ----
-
 export const DESIGN_KIND_LABEL: Record<DesignKind, string> = {
   goal: 'Goal',
   principle: 'Principle',
@@ -301,8 +294,7 @@ export const REL_LABEL: Record<LinkRel, { out: string; in: string }> = {
 /** Groundings in a person's words, short enough for a chip. */
 export const GROUNDING_LABEL: Record<Grounding, string> = {
   person_goal: 'Approved goal',
-  // The three agent-made kinds read alike: the Goals page groups them as
-  // "Agent", and a chip elsewhere says the same (WP-1196).
+  // The three agent-made groundings share the label 'Agent' on purpose; the Goals page groups them too.
   agent_goal: 'Agent',
   inferred_goal: 'Agent',
   proposed_goal: 'Agent',
@@ -457,7 +449,6 @@ export interface DiffLine {
 export function lineDiff(a: string, b: string): DiffLine[] {
   const x = a.split('\n')
   const y = b.split('\n')
-  // Trim the common head and tail; the middle is usually small.
   let head = 0
   while (head < x.length && head < y.length && x[head] === y[head]) head++
   let tail = 0

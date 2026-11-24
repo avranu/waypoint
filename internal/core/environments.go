@@ -1,10 +1,5 @@
 package core
 
-// Environments (WP-D19): where a project's code runs. Each has a URL that is
-// checked on a schedule (env_checks.go), a record of what it runs, and its
-// deployments (env_deploy.go). Dev environments come and go: `wp env up`
-// and `down`, or an automation, make and stop them.
-
 import (
 	"context"
 	"database/sql"
@@ -131,8 +126,8 @@ type Environment struct {
 	nextCheckAt  *time.Time
 	lastOKAt     *time.Time
 	createdByID  *int64
-	lagSet       bool       // LagAlertM was given, not left to the kind's default
-	lagAlertedAt *time.Time // when the owners were last told it runs behind
+	lagSet       bool
+	lagAlertedAt *time.Time
 }
 
 // addresses are the environment's addresses, as one comparable value.
@@ -219,8 +214,6 @@ func scanEnv(sc interface{ Scan(...any) error }) (*Environment, error) {
 	e.Spark = []float64{}
 	return &e, nil
 }
-
-// ---- validation ----
 
 // cleanEnvName normalises a name; names are lower case (they end up in URLs
 // and CI configs).
@@ -374,8 +367,6 @@ func (in *EnvironmentInput) apply(e *Environment) error {
 	return validEnvSettings(e)
 }
 
-// ---- reading ----
-
 // envRow loads one environment without the derived fields, for access
 // checks and updates.
 func (s *Service) envRow(ctx context.Context, q queryer, id int64) (*Environment, error) {
@@ -477,7 +468,7 @@ type envRepo struct {
 	id        int64
 	projectID int64
 	repo      string
-	kind, url string // the forge's
+	kind, url string
 }
 
 // commitURL links a commit on its forge.
@@ -511,7 +502,6 @@ func (s *Service) decorateEnvs(ctx context.Context, list []*Environment) error {
 		pids = append(pids, id)
 	}
 
-	// Repos: the one it names, else its project's only one.
 	repos := map[int64][]envRepo{}
 	// #nosec G202 -- marks are placeholders; values are bound
 	rows, err := s.db.R.QueryContext(ctx, `SELECT r.id, r.project_id, r.repo, f.kind, f.base_url FROM project_repos r JOIN forges f ON f.id = r.forge_id
@@ -553,7 +543,6 @@ func (s *Service) decorateEnvs(ctx context.Context, list []*Environment) error {
 		}
 	}
 
-	// Branch heads, for "behind".
 	if len(repoNames) > 0 {
 		names := make([]any, 0, len(repoNames))
 		for n := range repoNames {
@@ -588,7 +577,6 @@ func (s *Service) decorateEnvs(ctx context.Context, list []*Environment) error {
 		}
 	}
 
-	// Uptime: 30 days of hourly counts, and the last 24 hours one by one.
 	idx := map[int64]*Environment{}
 	for _, e := range list {
 		idx[e.ID] = e
@@ -864,8 +852,6 @@ func (s *Service) envHistory(ctx context.Context, id int64, span time.Duration) 
 	return out, rows.Err()
 }
 
-// ---- changing ----
-
 func envEventData(e *Environment, extra map[string]any) map[string]any {
 	d := map[string]any{"environment": e.ID, "name": e.Name, "kind": e.Kind, "url": e.URL, "project": e.Project}
 	for k, v := range extra {
@@ -940,7 +926,7 @@ func isUnique(err error) bool {
 
 // CreateEnvironment adds an environment to a project. Editors may.
 func (s *Service) CreateEnvironment(ctx context.Context, actor *Actor, projectRef string, in EnvironmentInput) (*EnvironmentDetail, error) {
-	if err := actor.need(PermEnvironmentsWrite); err != nil { // WP-111
+	if err := actor.need(PermEnvironmentsWrite); err != nil {
 		return nil, err
 	}
 	p, err := s.projectByRef(ctx, s.db.R, projectRef)
@@ -982,7 +968,7 @@ func (s *Service) CreateEnvironment(ctx context.Context, actor *Actor, projectRe
 
 // UpdateEnvironment changes an environment's settings. Editors may.
 func (s *Service) UpdateEnvironment(ctx context.Context, actor *Actor, id int64, in EnvironmentInput) (*EnvironmentDetail, error) {
-	if err := actor.need(PermEnvironmentsWrite); err != nil { // WP-111
+	if err := actor.need(PermEnvironmentsWrite); err != nil {
 		return nil, err
 	}
 	e, err := s.envFor(ctx, s.db.R, actor, id, RoleEditor)
@@ -994,7 +980,7 @@ func (s *Service) UpdateEnvironment(ctx context.Context, actor *Actor, id int64,
 		return nil, err
 	}
 	if !e.lagSet && e.Kind != old.Kind && old.LagAlertM == envDefaultLag(&old) {
-		e.LagAlertM = envDefaultLag(e) // a lag limit left at its default follows the kind
+		e.LagAlertM = envDefaultLag(e)
 	}
 	if in.URL != nil || in.HealthURL != nil || in.VersionURL != nil {
 		all := (in.URL != nil || e.URL == "") && (in.HealthURL != nil || e.HealthURL == "") && (in.VersionURL != nil || e.VersionURL == "")
@@ -1009,8 +995,6 @@ func (s *Service) UpdateEnvironment(ctx context.Context, actor *Actor, id int64,
 			e.RepoID = nil
 		}
 	}
-	// A different address starts afresh: checked soon, and what the old one
-	// said no longer counts.
 	moved := e.target() != old.target() || e.VersionURL != old.VersionURL || e.ExpectedStatus != old.ExpectedStatus
 	err = s.write(ctx, actor, func(t *tx) error {
 		var expires any
@@ -1048,7 +1032,7 @@ func (s *Service) UpdateEnvironment(ctx context.Context, actor *Actor, id int64,
 // is listed folded. Dev and preview ones go after a week; others stay until
 // deleted. Editors (and their agents) may.
 func (s *Service) StopEnvironment(ctx context.Context, actor *Actor, id int64) (*EnvironmentDetail, error) {
-	if err := actor.need(PermEnvironmentsWrite); err != nil { // WP-111
+	if err := actor.need(PermEnvironmentsWrite); err != nil {
 		return nil, err
 	}
 	e, err := s.envFor(ctx, s.db.R, actor, id, RoleEditor)
@@ -1086,7 +1070,7 @@ func (s *Service) stopEnvTx(t *tx, e *Environment, reason string) error {
 // DeleteEnvironment removes an environment and its history. Editors may,
 // people only: agents stop environments, they don't erase them.
 func (s *Service) DeleteEnvironment(ctx context.Context, actor *Actor, id int64) error {
-	if err := actor.need(PermEnvironmentsWrite); err != nil { // WP-111
+	if err := actor.need(PermEnvironmentsWrite); err != nil {
 		return err
 	}
 	if err := actor.requireHuman("deleting an environment"); err != nil {
@@ -1122,7 +1106,7 @@ type EnvUpInput struct {
 // the one with that name. The address comes from in.URL or the project's
 // dev environment pattern. Editors may; agents too.
 func (s *Service) UpEnvironment(ctx context.Context, actor *Actor, projectRef string, in EnvUpInput) (*EnvironmentDetail, error) {
-	if err := actor.need(PermEnvironmentsWrite); err != nil { // WP-111
+	if err := actor.need(PermEnvironmentsWrite); err != nil {
 		return nil, err
 	}
 	p, err := s.projectByRef(ctx, s.db.R, projectRef)
@@ -1164,8 +1148,6 @@ func (s *Service) UpEnvironment(ctx context.Context, actor *Actor, projectRef st
 		created := false
 		switch {
 		case errors.Is(err, ErrNotFound):
-			// Only dev and preview environments are made this way; production
-			// and staging are added in the project's Environments.
 			if kind != EnvDev && kind != EnvPreview {
 				return invalid("only dev and preview environments can be brought up; add %s in the project's Environments", name)
 			}
@@ -1188,7 +1170,6 @@ func (s *Service) UpEnvironment(ctx context.Context, actor *Actor, projectRef st
 		case err != nil:
 			return err
 		default:
-			// Bring it back, with the address and lease it was given.
 			if addr != "" && addr != cur.URL {
 				cur.URL = addr
 				cur.AddressAgent = nextAddressAgent(cur.AddressAgent, actor, true, cur.HealthURL == "" && cur.VersionURL == "")
@@ -1210,7 +1191,7 @@ func (s *Service) UpEnvironment(ctx context.Context, actor *Actor, projectRef st
 			}
 			if revived {
 				t.emit(envEvent(EvEnvCreated, cur, map[string]any{"restarted": true}))
-				cur.Stopped = false // so a deployment below doesn't announce the revival again
+				cur.Stopped = false // Clear Stopped on the in-memory copy so the deployment recorded below doesn't announce the revival a second time.
 			} else {
 				t.emit(envEvent(EvEnvUpdated, cur, nil))
 			}
@@ -1219,7 +1200,6 @@ func (s *Service) UpEnvironment(ctx context.Context, actor *Actor, projectRef st
 		if created {
 			t.emit(envEvent(EvEnvCreated, cur, nil))
 		}
-		// What it runs: a commit is a deployment.
 		if commit != "" && !sameCommit(commit, cur.Commit) {
 			if _, err := s.recordDeployTx(t, cur, DeployInput{Commit: commit, Branch: branch, Status: DeploySucceeded}); err != nil {
 				return err
@@ -1240,7 +1220,7 @@ func (s *Service) UpEnvironment(ctx context.Context, actor *Actor, projectRef st
 
 // DownEnvironment is `wp env down`: stop an environment by name.
 func (s *Service) DownEnvironment(ctx context.Context, actor *Actor, projectRef, name string) (*EnvironmentDetail, error) {
-	if err := actor.need(PermEnvironmentsWrite); err != nil { // WP-111
+	if err := actor.need(PermEnvironmentsWrite); err != nil {
 		return nil, err
 	}
 	e, err := s.envByRef(ctx, actor, projectRef, name, RoleEditor)
@@ -1263,8 +1243,6 @@ var commitRE = lazyre.New(`^[0-9a-f]{7,64}$`)
 // maxEnvCommitLookups is how many commits one EnvironmentsForCommits call
 // looks up (up to 58 bound abbreviations each).
 const maxEnvCommitLookups = 100
-
-// ---- summary and "where does this commit run" ----
 
 // EnvironmentCounts are how many of a project's environments are in each
 // state (stopped ones aren't counted).
@@ -1379,7 +1357,6 @@ func (s *Service) EnvironmentsForCommits(ctx context.Context, actor *Actor, repo
 	if len(ids) == 0 {
 		return out, nil
 	}
-	// The ids and their abbreviations (7 characters up).
 	cands := map[string]bool{}
 	for _, c := range want {
 		cands[c] = true
@@ -1415,7 +1392,6 @@ func (s *Service) EnvironmentsForCommits(ctx context.Context, actor *Actor, repo
 			if !sameCommit(c, commit) {
 				continue
 			}
-			// Redeploying a commit moves "since" to the latest run.
 			latest[key{c, id}] = EnvironmentAt{Environment: id, Project: e.Project, Name: e.Name, Kind: e.Kind, Status: e.Status, Commit: commit, At: msTime(at),
 				Current: !e.Stopped && sameCommit(e.Commit, c)}
 		}

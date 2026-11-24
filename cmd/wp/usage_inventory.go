@@ -11,11 +11,7 @@ import (
 	"strings"
 )
 
-// The inventory (WP-D20): what is configured for Claude Code on this
-// machine, by name only (MCP servers, skills, slash commands, subagent
-// definitions, plugins, hooks), so the Usage tab can say which were never
-// used. No file contents leave the machine: not a skill's text, not a
-// hook's command line, not an MCP server's URL or arguments.
+// only names leave this machine: no skill text, hook command lines, or MCP server URLs or arguments
 
 type usageInventoryItem struct {
 	Kind   string `json:"kind"` // mcp, skill, command, agent, plugin, hook
@@ -124,7 +120,6 @@ func projectRoots(cwds []string) map[string]bool {
 			d = p
 		}
 	}
-	// the user's own folder is not a project
 	if home, err := os.UserHomeDir(); err == nil {
 		delete(out, home)
 	}
@@ -225,7 +220,7 @@ func collectPlugins(b *inventoryBuilder, root string, enabled map[string]any) {
 			}
 			_ = readJSON(filepath.Join(p, ".mcp.json"), &mcp)
 			if mcp.Servers == nil {
-				var flat map[string]any // .mcp.json without the wrapper key
+				var flat map[string]any
 				if readJSON(filepath.Join(p, ".mcp.json"), &flat) == nil {
 					mcp.Servers = flat
 				}

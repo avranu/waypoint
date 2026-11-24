@@ -1,18 +1,4 @@
-# Single-replica Waypoint for k3s. SQLite needs one writer, so this is a
-# StatefulSet with one pod and a persistent volume. A StatefulSet rolling
-# update deletes the old pod before starting its replacement, so two writers
-# never share the volume.
-#
-#   1. Build and push the image:  make docker && docker tag waypoint:<ver> \
-#        registry.example.com/waypoint:<ver> && docker push ...
-#   2. Edit the three CHANGE-ME values below (image, base URL, host).
-#   3. kubectl apply -f deploy/k8s/waypoint.yaml
-#   4. kubectl -n waypoint logs sts/waypoint | grep -i invite
-#
-# Optional metrics token: kubectl -n waypoint create secret generic waypoint \
-#   --from-literal=metrics-token=$(openssl rand -hex 24)
-# Without it /metrics is open to anything that can reach the pod (the
-# Ingress below does not need to expose it; scrape in-cluster).
+# SQLite needs one writer: the StatefulSet's rolling update deletes the old pod before its replacement starts, so two writers never share the volume.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -46,12 +32,12 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: waypoint
-          image: registry.example.com/waypoint:latest # CHANGE-ME: your registry, a pinned version tag
+          image: registry.example.com/waypoint:latest
           imagePullPolicy: IfNotPresent
           ports:
             - { name: http, containerPort: 8080 }
           env:
-            - { name: WAYPOINT_BASE_URL, value: "https://waypoint.example.com" } # CHANGE-ME
+            - { name: WAYPOINT_BASE_URL, value: "https://waypoint.example.com" }
             - { name: WAYPOINT_TRUST_PROXY, value: "1" }
             - name: WAYPOINT_METRICS_TOKEN
               valueFrom:
@@ -101,18 +87,15 @@ spec:
   ports:
     - { name: http, port: 80, targetPort: http }
 ---
-# TLS: add a cert-manager annotation (or terminate TLS at an outer proxy).
 # Traefik (k3s default) streams server-sent events without extra settings.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: waypoint
   namespace: waypoint
-  # annotations:
-  #   cert-manager.io/cluster-issuer: letsencrypt
 spec:
   rules:
-    - host: waypoint.example.com # CHANGE-ME
+    - host: waypoint.example.com
       http:
         paths:
           - path: /
@@ -120,5 +103,5 @@ spec:
             backend:
               service: { name: waypoint, port: { name: http } }
   tls:
-    - hosts: [waypoint.example.com] # CHANGE-ME
+    - hosts: [waypoint.example.com]
       secretName: waypoint-tls

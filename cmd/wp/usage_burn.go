@@ -1,10 +1,6 @@
 package main
 
-// Burn meter (WP-144, X6): what a Claude Code session tree has spent, from
-// the transcripts on disk and Waypoint's price table. `wp burn` prints it;
-// the PostToolUse hook (hook claude-burn) keeps the same numbers
-// incrementally and puts one line into the agent's context only when the
-// last 10 minutes burn irregularly fast. Local only: no network in the hook.
+// the burn meter reads local transcripts and the price table only: no network
 
 import (
 	"bufio"
@@ -38,7 +34,7 @@ var burnFallbackPrices = []burnPrice{
 	{"claude-opus-5-5", 4, 20, 5, 8, 0.2},
 	{"claude-sonnet-5-5", 2, 10, 2.5, 4, 0.2},
 	{"claude-haiku-5-5", 0.1, 0.5, 0.125, 0.2, 0.01},
-	{"claude-fable-5", 10, 50, 12.5, 20, 1}, // as seeded (0026_usage.sql); 5.2's own rows are WP-1417
+	{"claude-fable-5", 10, 50, 12.5, 20, 1}, // prices are seeded in internal/db/migrations/0026_usage.sql; keep the two in step
 	{"claude-mythos-5", 10, 50, 12.5, 20, 1},
 }
 
@@ -115,8 +111,6 @@ func (c *cli) loadBurnPrices(fetch bool) []burnPrice {
 	return append(append([]burnPrice{}, f.Prices...), burnFallbackPrices...)
 }
 
-// ---- the tree ----
-
 // burnAgent is one transcript of the tree: the main session or a subagent.
 type burnAgent struct {
 	Kind    string  `json:"kind"` // main, an agent type, or fork
@@ -149,7 +143,7 @@ type burnTree struct {
 	Agents  map[string]*burnAgent `json:"agents"`  // by agent id; "main" for the session itself
 	Minutes map[int64]float64     `json:"minutes"` // cost by minute (unix/60), for the recent rate
 
-	bounded bool // the hook limits each update to budget bytes
+	bounded bool
 	budget  int64
 }
 
@@ -168,7 +162,7 @@ type burnMeta struct {
 
 // burnFile is one transcript to read.
 type burnFile struct {
-	path, id string // id: "main" or the agent id
+	path, id string
 }
 
 // burnFiles lists the transcripts of a session: the main one first, then
@@ -251,11 +245,11 @@ func (t *burnTree) read(f burnFile, prices []burnPrice) bool {
 			t.budget -= int64(len(line))
 			t.add(a, line, prices)
 			if t.bounded && t.budget < 0 {
-				break // out of budget: the rest next time
+				break
 			}
 		}
 		if err != nil {
-			break // a partial last line is read next time
+			break
 		}
 	}
 	t.Offsets[f.id] = off
@@ -359,8 +353,6 @@ func (t *burnTree) recentRate(now time.Time) float64 {
 	return sum * 6
 }
 
-// ---- finding the session ----
-
 // transcriptOfSession finds <config>/projects/*/<id>.jsonl.
 func transcriptOfSession(id string) string {
 	m, _ := filepath.Glob(filepath.Join(claudeConfigDir(), "projects", "*", id+".jsonl"))
@@ -421,8 +413,6 @@ func (c *cli) currentTranscript(session, cwd string) (string, error) {
 	}
 	return best, nil
 }
-
-// ---- wp burn ----
 
 var burnCmd = &command{
 	name: "burn", group: "Code and CI", args: "[--session ID]",
@@ -522,8 +512,6 @@ func kTokens(n int64) string {
 	return fmt.Sprintf("%dk", (n+500)/1000)
 }
 
-// ---- the PostToolUse hook ----
-
 // burnHookBudget is how many bytes of transcript one hook call may read, so
 // a session with 100 MB behind it catches up over a few calls and never
 // runs into the hook's timeout.
@@ -540,7 +528,7 @@ func (t *burnTree) behind(files []burnFile) bool {
 }
 
 const (
-	burnAlertDefault = 100.0 // $/h over the last 10 minutes; a normal Opus session is $10-25/h
+	burnAlertDefault = 100.0 // Alerts above $100/h over 10 minutes; a normal Opus session burns $10-25/h.
 	burnAlertRepeat  = 30 * time.Minute
 )
 
@@ -615,11 +603,9 @@ func hookClaudeBurn(c *cli, stdin io.Reader, stdout io.Writer) {
 	if json.NewDecoder(io.LimitReader(stdin, 4<<20)).Decode(&in) != nil {
 		return
 	}
-	// Edit-time CI feedback rides on this hook: no new hook row (WP-161).
+	// CI lint feedback rides on this hook, not a separate hook row
 	burn, stop := c.burnText(&in)
 	if stop != "" {
-		// Past 1.5 times a fan-out package's budget, or a quota guard line
-		// (WP-932): stop it, and let the next package start (WP-148).
 		_, _ = stdout.Write(promptStop(stop))
 		endBackgroundSession(in.SessionID)
 		fanoutEnded("budget", in.TranscriptPath, c.sessionCost(in.SessionID))
@@ -627,12 +613,10 @@ func hookClaudeBurn(c *cli, stdin io.Reader, stdout io.Writer) {
 	}
 	text := strings.TrimSpace(c.hookCILint(&in) + "\n" + burn)
 	if in.AgentID == "" { // a subagent's tool result never reaches the agent the note is for
-		text = strings.TrimSpace(text + "\n\n" + c.takeNotes(in.SessionID, in.TranscriptPath)) // WP-562
+		text = strings.TrimSpace(text + "\n\n" + c.takeNotes(in.SessionID, in.TranscriptPath))
 	}
 	if in.AgentID == "" && in.ToolName == "Bash" && isShipCall(bashCommand(in.ToolInput)) {
-		// wp ship with --summary may end the turn (WP-1093): not with a
-		// note for the agent to read, and later for one Claude Code moved
-		// to the background.
+		// wp ship with --summary may end the turn, so its result gets no note; a ship Claude Code moved to the background is noted for later
 		if id := bashBackground(in.ToolResponse); id != "" {
 			c.noteShipBackground(in.SessionID, id)
 		} else if text == "" {
@@ -644,7 +628,7 @@ func hookClaudeBurn(c *cli, stdin io.Reader, stdout io.Writer) {
 			text = more
 		}
 	} else if in.AgentID == "" {
-		c.dropUnusedShipEnd(in.SessionID) // the turn went on past the ship
+		c.dropUnusedShipEnd(in.SessionID)
 	}
 	if text != "" {
 		_, _ = stdout.Write(hookContext("PostToolUse", text))
@@ -666,7 +650,7 @@ func (c *cli) burnText(in *hookEventInput) (text, stop string) {
 		changed := st.Tree.update(files, prices)
 		st.Tree.bounded = false
 		if st.Tree.behind(files) {
-			return changed // still catching up: silent until the totals are whole
+			return changed
 		}
 		var mutated bool
 		if !quiet {
@@ -677,8 +661,7 @@ func (c *cli) burnText(in *hookEventInput) (text, stop string) {
 			text = strings.TrimSpace(text + "\n" + said)
 		}
 		stop = halt
-		// The live quota guard (WP-932); WAYPOINT_NO_BURN quiets only the
-		// rate alert above.
+		// WAYPOINT_NO_BURN quiets only the rate alert above, never the live quota guard below.
 		guardText, guardStop, guardChanged := c.guardBurn(in, st, prices)
 		if stop == "" {
 			stop = guardStop

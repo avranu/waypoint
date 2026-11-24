@@ -1,9 +1,3 @@
-// Dashboards (WP-780): a project, or every project, at a glance for a
-// person: what it's for, how work moves and how fast, and what may be
-// going wrong, each with a way to see the tasks behind it and, where an
-// agent can help, one click to hand it one. Everything shown is counted
-// (internal/core/dashboard.go); technical details are opt-in.
-
 import { useMemo, useState, type ReactNode } from 'react'
 import { Link, Navigate } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -47,8 +41,6 @@ import { BarChart, DataTable, fmtNum, Legend, Sparkbars, viz, vizClass } from '@
 import { GroundingBar } from '@/components/goals'
 import { ProjectIcon } from '@/components/issue/icons'
 import { useProject } from './Project'
-
-// ---- one project ----
 
 type CardID = 'attention' | 'goals' | 'flow' | 'pace'
 const CARDS: { id: CardID; label: string }[] = [
@@ -262,8 +254,6 @@ function LoadError({ message, retry }: { message: string; retry: () => void }) {
   )
 }
 
-// ---- tiles ----
-
 function Tile({
   label,
   value,
@@ -362,8 +352,6 @@ function Tiles({ d }: { d: Dashboard }) {
 }
 
 const days = (n: number) => (n < 1 ? 'under a day' : `${fmtNum(n, 0)} ${n < 1.5 ? 'day' : 'days'}`)
-
-// ---- needs attention ----
 
 const TONE: Record<DashTone, { icon: typeof Info; className: string; label: string }> = {
   bad: { icon: CircleAlert, className: 'text-danger', label: 'Problem' },
@@ -528,8 +516,6 @@ function FixButton({ s, d }: { s: DashSignal; d: Dashboard }) {
   return null
 }
 
-// ---- goals ----
-
 function GoalsCard({ d }: { d: Dashboard }) {
   const g = d.goals
   if (!g) return null
@@ -676,8 +662,6 @@ function GoalBar({
   )
 }
 
-// ---- how work moves ----
-
 function FlowCard({ d, details }: { d: Dashboard; details: boolean }) {
   const max = Math.max(1, ...d.stages.map((s) => s.count))
   return (
@@ -743,8 +727,6 @@ function StageRow({
   )
 }
 
-// ---- pace ----
-
 function PaceCard({ d, details }: { d: Dashboard; details: boolean }) {
   const weeks = d.pace.weeks
   const done = weeks.map((w) => w.done)
@@ -780,8 +762,6 @@ function PaceCard({ d, details }: { d: Dashboard; details: boolean }) {
     </Section>
   )
 }
-
-// ---- every project ----
 
 type Sort = 'attention' | 'pace' | 'name'
 

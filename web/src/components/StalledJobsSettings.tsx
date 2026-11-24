@@ -1,7 +1,3 @@
-// When a session is told that its agent's background job has made no progress
-// (WP-1045). Admin → AI sets it for every project; a project's settings can
-// set its own.
-
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { RotateCcw } from 'lucide-react'
@@ -181,7 +177,6 @@ function StallForm({
   onSave: (v: StallPolicy | null) => Promise<unknown>
 }) {
   const [v, setV] = useState<Draft>(() => toDraft(current))
-  // A change from elsewhere replaces what is typed, but not what this form just saved.
   const [seen, setSeen] = useState(canon(current))
   const sent = useSent()
   if (seen !== canon(current)) {

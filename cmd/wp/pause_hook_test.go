@@ -35,7 +35,7 @@ func TestSessionPauseHooks(t *testing.T) {
 		t.Fatal("hooks spoke with no pause")
 	}
 
-	c.savePause(json.RawMessage(nil)) // an older server: nothing changes
+	c.savePause(json.RawMessage(nil))
 	c.savePause(json.RawMessage(testPause))
 	if g := gate(); !strings.Contains(g, `"permissionDecision":"deny"`) || !strings.Contains(g, "Robin paused agents") || !strings.Contains(g, "41% of the week") {
 		t.Errorf("gate while paused: %s", g)
@@ -56,7 +56,6 @@ func TestSessionPauseHooks(t *testing.T) {
 		t.Errorf("told again later: %s", n)
 	}
 
-	// The same pause again keeps who was told; a new one tells again.
 	c.savePause(json.RawMessage(testPause))
 	if n := nudge("s1"); n != "" {
 		t.Errorf("the same pause told again: %s", n)
@@ -66,7 +65,6 @@ func TestSessionPauseHooks(t *testing.T) {
 		t.Error("a new pause wasn't told")
 	}
 
-	// A copy nobody refreshed for long is ignored: fail open.
 	p = c.readPause()
 	p.Checked = time.Now().Add(-pauseFresh - time.Minute)
 	c.writePause(p)
@@ -99,7 +97,7 @@ func TestPullPause(t *testing.T) {
 	if p := c.activePause(); p == nil || p.ID != 3 {
 		t.Fatalf("pulled %+v", p)
 	}
-	hookClaudePause(c, strings.NewReader(`{}`), false) // within pausePullEvery: no call
+	hookClaudePause(c, strings.NewReader(`{}`), false)
 	if n := asked.Load(); n != 1 {
 		t.Errorf("asked %d times", n)
 	}

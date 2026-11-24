@@ -35,11 +35,12 @@ async function run(width, scheme) {
   const ctx = await browser.newContext({
     viewport: { width, height: 900 },
     colorScheme: scheme,
-    // A touch device has no hover: Copy must always be showing.
     hasTouch: phone,
     isMobile: phone,
   });
-  await ctx.grantPermissions(["clipboard-read", "clipboard-write"], { origin: base });
+  await ctx.grantPermissions(["clipboard-read", "clipboard-write"], {
+    origin: base,
+  });
   const page = await ctx.newPage();
   page.setDefaultTimeout(10000);
   page.on("pageerror", (e) => fail(`${tag} pageerror: ${e.message}`));
@@ -48,22 +49,42 @@ async function run(width, scheme) {
       fail(`${tag} console: ${m.text().slice(0, 300)}`);
   });
   const call = (m, p, d, extra = {}) =>
-    page.request.fetch(base + "/api/v1" + p, { method: m, headers: H, data: d, ...extra });
-  const api = (m, p, d) => call(m, p, d).then((r) => (r.status() === 204 ? null : r.json()));
+    page.request.fetch(base + "/api/v1" + p, {
+      method: m,
+      headers: H,
+      data: d,
+      ...extra,
+    });
+  const api = (m, p, d) =>
+    call(m, p, d).then((r) => (r.status() === 204 ? null : r.json()));
   const upload = (target, name, buffer, mimeType, caption) =>
-    call("POST", `/attachments?target=${encodeURIComponent(target)}`, undefined, {
-      multipart: { file: { name, mimeType, buffer }, ...(caption ? { caption } : {}) },
-    }).then(async (r) => {
-      if (!r.ok()) throw new Error(`upload ${name}: ${r.status()} ${await r.text()}`);
+    call(
+      "POST",
+      `/attachments?target=${encodeURIComponent(target)}`,
+      undefined,
+      {
+        multipart: {
+          file: { name, mimeType, buffer },
+          ...(caption ? { caption } : {}),
+        },
+      },
+    ).then(async (r) => {
+      if (!r.ok())
+        throw new Error(`upload ${name}: ${r.status()} ${await r.text()}`);
       return r.json();
     });
   const shot = async (name) => {
     await page.waitForTimeout(300);
-    await page.screenshot({ path: `${out}/${name}-${width}-${scheme}.png`, fullPage: false });
+    await page.screenshot({
+      path: `${out}/${name}-${width}-${scheme}.png`,
+      fullPage: false,
+    });
   };
   const overflow = async (where) =>
     ok(
-      !(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)),
+      !(await page.evaluate(
+        () => document.documentElement.scrollWidth > window.innerWidth,
+      )),
       `${tag} no sideways scroll (${where})`,
     );
 
@@ -73,7 +94,6 @@ async function run(width, scheme) {
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL(base + "/");
 
-  // ---- seed (once): a project, an issue and a page with code, a design note ----
   const projects = await api("GET", "/projects");
   if (!projects.some((p) => p.key === KEY)) {
     await api("POST", "/projects", { name: "Files", key: KEY });
@@ -88,33 +108,46 @@ async function run(width, scheme) {
       project: KEY,
       body: "The plan.",
     });
-    await api("POST", "/design", { title: "Board screen", kind: "screen", body: "The board.", project: KEY });
+    await api("POST", "/design", {
+      title: "Board screen",
+      kind: "screen",
+      body: "The board.",
+      project: KEY,
+    });
   }
   const pages = await api("GET", `/pages?project=${KEY}`);
   const planPage = pages.find((p) => p.title === "Layout plan");
   const notes = await api("GET", `/design?project=${KEY}`);
   const note = notes.find((n) => n.title === "Board screen");
 
-  // ---- Copy buttons ----
   await page.goto(`${base}/issue/${KEY}-1`);
   const desc = page.locator(".prose-wp").first();
   await desc.getByText("Then inline").waitFor();
-  // The editor shows a Save button (the comment box below is always a textarea).
-  const editing = () => page.getByRole("button", { name: /^(Save|Done)$/ }).count();
+  const editing = () =>
+    page.getByRole("button", { name: /^(Save|Done)$/ }).count();
   const copy = desc.getByRole("button", { name: "Copy code" });
-  ok((await copy.count()) === 1, `${tag} one fenced block, one Copy button (inline code has none)`);
+  ok(
+    (await copy.count()) === 1,
+    `${tag} one fenced block, one Copy button (inline code has none)`,
+  );
   const opacity = () => copy.evaluate((b) => getComputedStyle(b).opacity);
   if (phone) {
-    ok((await opacity()) === "1", `${tag} Copy is always visible on a touch screen`);
+    ok(
+      (await opacity()) === "1",
+      `${tag} Copy is always visible on a touch screen`,
+    );
   } else {
-    ok((await opacity()) === "0", `${tag} Copy is hidden until you point at the block`);
+    ok(
+      (await opacity()) === "0",
+      `${tag} Copy is hidden until you point at the block`,
+    );
     await desc.locator("pre").hover();
-    // Wait for the fade-in rather than reading once after a fixed pause: on a
-    // loaded CI runner the 0.12s transition (or the hover itself) can land
-    // after 250ms (WP-570).
+    // On a loaded CI runner the fade-in can land after a fixed pause, so wait for the opacity instead of reading it once.
     const copyHandle = await copy.elementHandle();
     const shown = await page
-      .waitForFunction((b) => getComputedStyle(b).opacity === "1", copyHandle, { timeout: 3000 })
+      .waitForFunction((b) => getComputedStyle(b).opacity === "1", copyHandle, {
+        timeout: 3000,
+      })
       .then(
         () => true,
         () => false,
@@ -124,20 +157,16 @@ async function run(width, scheme) {
   }
   await shot("copy-button");
   await copy.click();
-  await page.waitForFunction(
-    () => document.querySelector(".code-copy")?.textContent?.includes("Copied"),
+  await page.waitForFunction(() =>
+    document.querySelector(".code-copy")?.textContent?.includes("Copied"),
   );
   ok(true, `${tag} the button says Copied`);
   ok(
     (await page.evaluate(() => navigator.clipboard.readText())) === CODE,
     `${tag} the code, without its trailing newline, is on the clipboard`,
   );
-  ok(
-    (await editing()) === 0,
-    `${tag} clicking Copy didn't open the editor`,
-  );
+  ok((await editing()) === 0, `${tag} clicking Copy didn't open the editor`);
   await shot("copied");
-  // Keyboard: Enter and Space on the focused button copy and don't edit.
   for (const key of ["Enter", "Space"]) {
     await page.evaluate(() => navigator.clipboard.writeText("something else"));
     await copy.focus();
@@ -146,7 +175,9 @@ async function run(width, scheme) {
       `${tag} the button takes focus`,
     );
     await page.keyboard.press(key);
-    await page.waitForFunction(async () => (await navigator.clipboard.readText()).includes("answer"));
+    await page.waitForFunction(async () =>
+      (await navigator.clipboard.readText()).includes("answer"),
+    );
     ok(
       (await editing()) === 0,
       `${tag} ${key} on Copy copies without opening the editor`,
@@ -159,32 +190,51 @@ async function run(width, scheme) {
       `${tag} the Copied message goes away by itself`,
     );
   }
-  // The rest of the text still edits on click.
   await desc.getByText("Click this text to edit.").click();
   await page.getByRole("button", { name: "Done", exact: true }).waitFor();
   ok(true, `${tag} clicking the text still opens the editor`);
   await page.keyboard.press("Escape");
   await overflow("code block");
 
-  // ---- Attachments on a page ----
   const target = `page:${planPage.id}`;
-  const existing = await api("GET", `/attachments?target=${encodeURIComponent(target)}`);
+  const existing = await api(
+    "GET",
+    `/attachments?target=${encodeURIComponent(target)}`,
+  );
   if (existing.length === 0) {
     await upload(target, "before.png", PNG1, "image/png", "Before the change");
     await upload(target, "after.png", PNG2, "image/png");
-    await upload(target, "run.log", Buffer.from("started\nrow 1 ok\nfinished\n"), "text/plain");
+    await upload(
+      target,
+      "run.log",
+      Buffer.from("started\nrow 1 ok\nfinished\n"),
+      "text/plain",
+    );
     await upload(
       target,
       "NOTES.md",
       Buffer.from("# Findings\n\nIt **works**.\n\n```\nwp attach\n```\n"),
       "text/markdown",
     );
-    await upload(target, "data.json", Buffer.from('{"rows":[1,2,3]}'), "application/json");
-    await upload(target, "report.zip", Buffer.from("PK\x03\x04zipbytes"), "application/zip");
+    await upload(
+      target,
+      "data.json",
+      Buffer.from('{"rows":[1,2,3]}'),
+      "application/json",
+    );
+    await upload(
+      target,
+      "report.zip",
+      Buffer.from("PK\x03\x04zipbytes"),
+      "application/zip",
+    );
     await upload(
       target,
       "demo.webm",
-      Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 0x9f, 0x42, 0x86, 0x81, 0x01, 0x42, 0xf7, 0x81, 0x01]),
+      Buffer.from([
+        0x1a, 0x45, 0xdf, 0xa3, 0x9f, 0x42, 0x86, 0x81, 0x01, 0x42, 0xf7, 0x81,
+        0x01,
+      ]),
       "video/webm",
       "A recording",
     );
@@ -192,20 +242,30 @@ async function run(width, scheme) {
     await upload(
       target,
       "logo.svg",
-      Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'),
+      Buffer.from(
+        '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>',
+      ),
       "image/svg+xml",
     );
   }
   await api("PATCH", `/pages/${planPage.id}`, { body: "The plan." });
-  const files = await api("GET", `/attachments?target=${encodeURIComponent(target)}`);
+  const files = await api(
+    "GET",
+    `/attachments?target=${encodeURIComponent(target)}`,
+  );
   await page.goto(`${base}/pages/${planPage.id}`);
   const panel = page.locator(`[data-attachments="${target}"]`);
   await panel.waitFor();
   await page.getByText(new RegExp(`^Attachments · ${files.length}$`)).waitFor();
   ok(files.length >= 8, `${tag} the page lists its ${files.length} files`);
-  ok((await panel.locator("video").count()) === 1, `${tag} the recording is a video player`);
   ok(
-    (await panel.locator("video").getAttribute("src")).startsWith("/api/v1/attachments/"),
+    (await panel.locator("video").count()) === 1,
+    `${tag} the recording is a video player`,
+  );
+  ok(
+    (await panel.locator("video").getAttribute("src")).startsWith(
+      "/api/v1/attachments/",
+    ),
     `${tag} the player loads from the attachment URL`,
   );
   ok(
@@ -215,7 +275,6 @@ async function run(width, scheme) {
   await shot("page-attachments");
   await overflow("attachments");
 
-  // Lightbox: open, step with the arrow keys, close with Escape.
   await panel.getByRole("button", { name: /View Before the change/ }).click();
   const lb = page.getByRole("dialog", { name: "Before the change" });
   await lb.waitFor();
@@ -227,20 +286,27 @@ async function run(width, scheme) {
   await page.getByRole("dialog").waitFor({ state: "detached" });
   ok(true, `${tag} Escape closes the lightbox`);
 
-  // Text previews: a log in monospace, Markdown rendered, JSON pretty.
   await panel.getByRole("button", { name: "run.log", exact: true }).click();
   const dlg = page.getByRole("dialog", { name: "run.log" });
   await dlg.getByText("row 1 ok").waitFor();
-  ok((await dlg.locator("pre").count()) === 1, `${tag} a log previews as plain text`);
   ok(
-    (await dlg.getByRole("link", { name: /Download/ }).getAttribute("href")).endsWith("?download=1"),
+    (await dlg.locator("pre").count()) === 1,
+    `${tag} a log previews as plain text`,
+  );
+  ok(
+    (
+      await dlg.getByRole("link", { name: /Download/ }).getAttribute("href")
+    ).endsWith("?download=1"),
     `${tag} the preview offers a download`,
   );
   await page.keyboard.press("Escape");
   await panel.getByRole("button", { name: "NOTES.md", exact: true }).click();
   const md = page.getByRole("dialog", { name: "NOTES.md" });
   await md.getByRole("heading", { name: "Findings" }).waitFor();
-  ok((await md.locator("strong").innerText()) === "works", `${tag} Markdown previews rendered`);
+  ok(
+    (await md.locator("strong").innerText()) === "works",
+    `${tag} Markdown previews rendered`,
+  );
   ok(
     (await md.getByRole("button", { name: "Copy code" }).count()) === 1,
     `${tag} a code block in the preview has its Copy button`,
@@ -250,11 +316,15 @@ async function run(width, scheme) {
   await panel.getByRole("button", { name: "data.json", exact: true }).click();
   const js = page.getByRole("dialog", { name: "data.json" });
   await js.locator("pre").waitFor();
-  ok((await js.locator("pre").innerText()).includes('"rows": [\n'), `${tag} JSON is pretty-printed`);
+  ok(
+    (await js.locator("pre").innerText()).includes('"rows": [\n'),
+    `${tag} JSON is pretty-printed`,
+  );
   await page.keyboard.press("Escape");
-  // Downloads: a zip and the SVG are links with ?download, never opened in place.
   for (const name of ["report.zip", "logo.svg"]) {
-    const href = await panel.getByRole("link", { name, exact: true }).getAttribute("href");
+    const href = await panel
+      .getByRole("link", { name, exact: true })
+      .getAttribute("href");
     ok(href.endsWith("?download=1"), `${tag} ${name} is a download link`);
   }
   const svg = files.find((f) => f.name === "logo.svg");
@@ -265,8 +335,9 @@ async function run(width, scheme) {
     `${tag} the SVG is served as a download, not as an image`,
   );
 
-  // Add a file with the button, caption it, remove it.
-  const before = (await api("GET", `/attachments?target=${encodeURIComponent(target)}`)).length;
+  const before = (
+    await api("GET", `/attachments?target=${encodeURIComponent(target)}`)
+  ).length;
   await page.getByLabel("Choose files to attach").setInputFiles({
     name: `extra-${tag.replace("/", "-")}.txt`,
     mimeType: "text/plain",
@@ -274,18 +345,27 @@ async function run(width, scheme) {
   });
   await page.getByText(new RegExp(`^Attachments · ${before + 1}$`)).waitFor();
   ok(true, `${tag} Add file uploads to the page`);
-  const row = panel.locator("li", { hasText: `extra-${tag.replace("/", "-")}.txt` });
-  await row.getByRole("button", { name: /Edit caption/ }).dispatchEvent("click"); // not .click(): on a phone a floating button can sit over the row
-  await page.getByRole("dialog", { name: "Caption" }).getByLabel("Caption").fill("Extra notes");
+  const row = panel.locator("li", {
+    hasText: `extra-${tag.replace("/", "-")}.txt`,
+  });
+  await row
+    .getByRole("button", { name: /Edit caption/ })
+    .dispatchEvent("click"); // not .click(): on a phone a floating button can sit over the row
+  await page
+    .getByRole("dialog", { name: "Caption" })
+    .getByLabel("Caption")
+    .fill("Extra notes");
   await page.keyboard.press("Enter");
   await panel.getByText("Extra notes").waitFor();
   ok(true, `${tag} a caption can be added`);
   await row.getByRole("button", { name: /^Remove / }).dispatchEvent("click");
-  await page.getByRole("dialog").getByRole("button", { name: "Remove", exact: true }).click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Remove", exact: true })
+    .click();
   await page.getByText(new RegExp(`^Attachments · ${before}$`)).waitFor();
   ok(true, `${tag} a file can be removed`);
 
-  // Paste into the editor: the file uploads and its Markdown lands in the text.
   await page.getByText("The plan.").click();
   const ta = page.locator("textarea:visible").first();
   await ta.waitFor();
@@ -293,7 +373,13 @@ async function run(width, scheme) {
     const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
     const dt = new DataTransfer();
     dt.items.add(new File([bin], "pasted.png", { type: "image/png" }));
-    el.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+    el.dispatchEvent(
+      new ClipboardEvent("paste", {
+        clipboardData: dt,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
   }, PNG1.toString("base64"));
   await page.waitForFunction(() =>
     /!\[pasted\.png\]\(\/api\/v1\/attachments\/\d+\/pasted\.png\)/.test(
@@ -306,14 +392,14 @@ async function run(width, scheme) {
   ok(true, `${tag} the saved page shows the pasted image`);
   await shot("page-pasted");
 
-  // ---- a design note has the same panel ----
   const dTarget = `design:${note.id}`;
   await page.goto(`${base}/design/${note.id}`);
   const dPanel = page.locator(`[data-attachments="${dTarget}"]`);
   await dPanel.waitFor();
   ok(
-    (await dPanel.getByRole("button", { name: "Drop files here or click to attach" }).count()) === 1 ||
-      (await dPanel.locator("img").count()) > 0,
+    (await dPanel
+      .getByRole("button", { name: "Drop files here or click to attach" })
+      .count()) === 1 || (await dPanel.locator("img").count()) > 0,
     `${tag} the design note has an Attachments panel`,
   );
   if ((await dPanel.locator("img").count()) === 0) {
@@ -328,21 +414,25 @@ async function run(width, scheme) {
   await shot("design-attachments");
   await overflow("design note");
 
-  // ---- video in Markdown plays in place ----
   const demo = files.find((f) => f.name === "demo.webm");
-  await api("PATCH", `/pages/${planPage.id}`, { body: `Watch:\n\n${demo.markdown}\n` });
+  await api("PATCH", `/pages/${planPage.id}`, {
+    body: `Watch:\n\n${demo.markdown}\n`,
+  });
   await page.goto(`${base}/pages/${planPage.id}`);
   await page.locator(".prose-wp video").first().waitFor();
   ok(true, `${tag} an attached video in Markdown becomes a player`);
   await ctx.close();
 }
 
-for (const [w, s] of looks([
-  [1280, "light"],
-  [1280, "dark"],
-  [390, "light"],
-  [390, "dark"],
-], [0, 2])) { // a touch screen shows Copy always
+for (const [w, s] of looks(
+  [
+    [1280, "light"],
+    [1280, "dark"],
+    [390, "light"],
+    [390, "dark"],
+  ],
+  [0, 2],
+)) {
   try {
     await run(w, s);
   } catch (e) {

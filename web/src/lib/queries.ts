@@ -1,5 +1,4 @@
-// Query definitions and mutations. Every read goes through a queryOptions
-// factory so route loaders can prefetch exactly what components render.
+// Every read is a queryOptions factory so route loaders can prefetch what components render.
 
 import {
   infiniteQueryOptions,
@@ -219,14 +218,12 @@ export const q = {
       queryKey: ['time', from, to],
       queryFn: () => api.get<TimeEntry[]>(`/time${qs({ from, to })}`),
     }),
-  // The Inbox sorted and grouped (WP-1141); under the notifications key so
-  // whatever refreshes notifications refreshes it.
+  // Under the notifications key, so whatever refreshes notifications also refreshes the inbox.
   inbox: () =>
     queryOptions({
       queryKey: ['notifications', 'inbox'],
       queryFn: () => api.get<InboxView>('/inbox'),
     }),
-  // The badge needs the counts, not every group: a fraction of the payload.
   inboxCounts: () =>
     queryOptions({
       queryKey: ['notifications', 'inbox-counts'],
@@ -414,7 +411,6 @@ export const q = {
     queryOptions({
       queryKey: ['sandbox', 'machines'],
       queryFn: () => api.get<SandboxMachine[]>('/sandbox/machines'),
-      // while a helper action someone asked for is on its way, watch it land
       refetchInterval: (query) =>
         query.state.data?.some((m) =>
           m.ops?.some((o) => o.state === 'waiting' || o.state === 'sent'),
@@ -574,8 +570,6 @@ export const pageQ = {
 /** Open work nobody has touched in a month (the "coming back after a break" nudge). */
 export const STALE_QUERY = 'is:open updated:<-30d order:updated'
 
-// ---- issue list helpers for optimistic updates ----
-
 type IssueLike = Issue | IssueDetail
 
 /** Apply f to every cached copy of an issue (detail, boards, lists). */
@@ -726,15 +720,13 @@ function stripDetail(d: IssueDetail): Issue {
 export function useCreateIssue() {
   const qc = useQueryClient()
   return useMutation({
-    // Text too long for a title is split, not refused (WP-68): every create
-    // box in the app goes through here.
     mutationFn: (in_: IssueInput) => {
       const { title, description } = splitLongTitle(in_.title)
       const body = description
         ? {
             ...in_,
             title,
-            title_is_text: true, // the server's title model may write a better one (WP-67)
+            title_is_text: true, // The server may replace a typed title with a shorter one and keep the typed text as the description.
             description: in_.description?.trim()
               ? `${description}\n\n${in_.description}`
               : description,
@@ -756,7 +748,7 @@ export function usePublishIssue() {
     mutationFn: (key: string) => api.post<IssueDetail>(`/issues/${enc(key)}/publish`),
     onSuccess: (d) => {
       qc.setQueryData(['issue', d.key], d)
-      qc.invalidateQueries({ queryKey: ['issue'] }) // its sub-issues were published too
+      qc.invalidateQueries({ queryKey: ['issue'] }) // Publishing also publishes sub-issues, so every cached issue is refreshed.
       invalidateProject(qc, d.project_key)
     },
   })
@@ -960,7 +952,7 @@ export function useTimer() {
     qc.invalidateQueries({ queryKey: ['time'] })
     qc.invalidateQueries({ queryKey: ['issueTime'] })
     qc.invalidateQueries({ queryKey: ['timeReport'] })
-    qc.invalidateQueries({ queryKey: ['issue'] }) // time spent on the issue page
+    qc.invalidateQueries({ queryKey: ['issue'] })
   }
   const start = useMutation({
     mutationFn: (v: { issue?: string; note?: string }) =>

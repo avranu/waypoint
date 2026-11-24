@@ -20,12 +20,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Session commands (WP-562, WP-ADR108): /wp SUB typed in a Claude Code session ends at
-// its UserPromptSubmit hooks, so no model call runs and the person sees one
-// line. The event hook sends the server's commands (next, stop, continue,
-// status, keep: what Waypoint does with the session); this hook answers the
-// rest on this machine: help, btw (a note for the agent's next prompt or
-// tool result) and exe (a command run in the session's directory).
+// A /wp command ends at UserPromptSubmit, so no model call runs; this hook answers the ones the server's wpServerCommand does not.
 
 // wpCommands maps what may be typed after /wp to the command it is. The
 // server's (core.SessionCommand) are the ones wpServerCommand names.
@@ -296,12 +291,12 @@ func hookClaudeSlash(c *cli, stdin io.Reader, stdout io.Writer) {
 	if err := json.NewDecoder(io.LimitReader(stdin, 4<<20)).Decode(&in); err != nil || in.SessionID == "" {
 		return
 	}
-	in.Prompt = core.UnwrapPasted(in.Prompt) // a paste's text (WP-1562)
+	in.Prompt = core.UnwrapPasted(in.Prompt)
 	p := strings.TrimSpace(in.Prompt)
 	cmd, word, rest, ok := parseWpCommand(p)
 	if !ok {
 		if strings.EqualFold(p, "/keep") || core.IsKeepWarmPing(p) || p == "/compact" {
-			return // a note waits for the agent's next real prompt
+			return // Keep-warm pings and /compact leave pending notes for the next real prompt.
 		}
 		if note := c.takeNotes(in.SessionID, in.TranscriptPath); note != "" {
 			_, _ = stdout.Write(hookContext("UserPromptSubmit", note))
@@ -309,7 +304,7 @@ func hookClaudeSlash(c *cli, stdin io.Reader, stdout io.Writer) {
 		return
 	}
 	if wpServerCommand(cmd) {
-		return // the event hook sends it to Waypoint
+		return
 	}
 	_, _ = stdout.Write(promptStop(c.slashAnswer(in, p, cmd, word, rest)))
 }

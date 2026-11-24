@@ -11,12 +11,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// References (WP-122): text names things by the codes Waypoint hands out,
-// without any markup: issues (APP-12), requests (R-28, API:R-28, request #28), decision
-// notes (ADR7, WP-ADR7, ADR-0007), pages (PL3, X6, WP-D15, page #60), pull
-// requests (acme/waypoint#91, #91 in a repo's project) and glossary terms.
-// ResolveRefs is the one place that reads them; every frontend asks it what
-// a text names and links exactly those, so a code nothing has stays text.
+// Frontends link only the codes ResolveRefs returns (POST /refs); a code it does not resolve stays text.
 
 // Reference kinds beyond the knowledge kinds.
 const (
@@ -36,7 +31,7 @@ type Ref struct {
 	URL        string `json:"url"` // an app path, or the forge's page for a pull request
 	External   bool   `json:"external,omitempty"`
 
-	sub string // the issue type, request or page kind
+	sub string
 }
 
 // refMaxTokens bounds the codes one text may ask about.
@@ -45,14 +40,14 @@ const refMaxTokens = 400
 var (
 	refProj = `[A-Z][A-Z0-9]{1,9}`
 	refRE   = lazyre.New(`(?:^|[^A-Za-z0-9_/:#@.\-])(` + strings.Join([]string{
-		`(?:` + refProj + `|me):R-?\d{1,9}`,         // API:R-28
-		`R-\d{1,9}`,                                 // R-28
-		`[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+#\d{1,9}`, // acme/waypoint#91
-		`(?i:page|design note|design|decision|request|pull request|pr|pull) ?#\d{1,9}`, // page #60
-		`#\d{1,9}`,                               // #91
-		`(?:` + refProj + `-)?ADR-?\d{1,9}`,      // ADR7, WP-ADR-0007
-		refProj + `-\d{1,9}`,                     // APP-12
-		`(?:` + refProj + `-)?[A-Z]{1,2}\d{1,9}`, // PL3, APP-X6
+		`(?:` + refProj + `|me):R-?\d{1,9}`,
+		`R-\d{1,9}`,
+		`[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+#\d{1,9}`,
+		`(?i:page|design note|design|decision|request|pull request|pr|pull) ?#\d{1,9}`,
+		`#\d{1,9}`,
+		`(?:` + refProj + `-)?ADR-?\d{1,9}`,
+		refProj + `-\d{1,9}`,
+		`(?:` + refProj + `-)?[A-Z]{1,2}\d{1,9}`,
 	}, "|") + `)\b`)
 	refNumberedRE   = lazyre.New(`(?i)^(page|design note|design|decision|request|pull request|pr|pull) ?#(\d+)$`)
 	refPullRE       = lazyre.New(`^([A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+)#(\d+)$`)
@@ -114,16 +109,14 @@ func (s *Service) ResolveRefs(ctx context.Context, actor *Actor, text, project s
 // resolveRef is what one code-shaped word means, if anything.
 func (s *Service) resolveRef(ctx context.Context, actor *Actor, tok string, sc refScope) *Ref {
 	if m := refNumberedRE.FindStringSubmatch(tok); m != nil {
-		n, _ := strconv.ParseInt(m[2], 10, 32) // fits int for pullRef
+		n, _ := strconv.ParseInt(m[2], 10, 32)
 		switch strings.ToLower(m[1]) {
 		case "page":
 			return s.itemRef(ctx, actor, KPage, n)
 		case "design note", "design", "decision":
 			return s.itemRef(ctx, actor, KDesign, n)
 		case "request":
-			// #N is the request's number (R-N), the same sequence R-N uses.
-			// A bare integer in resolveRequestID is the database id, which
-			// is not that number once another project has filed a request.
+			// A bare integer in resolveRequestID is the database id, not the request number (R-N), once other projects have filed requests.
 			return s.requestByCode(ctx, actor, "R-"+m[2], sc)
 		default:
 			return s.pullRef(ctx, actor, "", int(min(max(n, 0), math.MaxInt32)), sc)
@@ -154,7 +147,6 @@ func (s *Service) resolveRef(ctx context.Context, actor *Actor, tok string, sc r
 	if id, err := s.ResolvePage(ctx, actor, tok, sc.key); err == nil {
 		return s.itemRef(ctx, actor, KPage, id)
 	}
-	// R28 is a reference page's code; with no such page, the request R-28.
 	if refBareNoDashRE.MatchString(tok) {
 		return s.requestByCode(ctx, actor, "R-"+tok[1:], sc)
 	}

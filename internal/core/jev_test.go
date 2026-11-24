@@ -108,7 +108,6 @@ func TestSafetyScreenAsksTheDecisionModelFirst(t *testing.T) {
 		return e.get(e.admin, i.Key).Safety
 	}
 
-	// Sure: cleared by the decision model alone.
 	ts := screen("Tidy the queue code", "Split queue.go's long function.")
 	if ts == nil || ts.Verdict != SafetyClear || ts.Model != "LLM gateway · jev-1.14.0" || g.screens() != 0 || j.asked() != 1 {
 		t.Fatalf("plain task: %+v, chat screens %d, decisions %d", ts, g.screens(), j.asked())
@@ -121,16 +120,13 @@ func TestSafetyScreenAsksTheDecisionModelFirst(t *testing.T) {
 		t.Errorf("questions %v", qs)
 	}
 
-	// Unsure about one flag: the chat model decides, and gives the reason.
 	j.yes = map[string]float64{"other_hosts": 0.3}
 	ts = screen("Restart the runner", "Restart the runner on farhost.")
 	if ts == nil || ts.Verdict != SafetyHold || ts.Reason != "acts on farhost" || g.screens() != 1 {
 		t.Fatalf("unsure: %+v, chat screens %d", ts, g.screens())
 	}
 
-	// Unsure only about a guarded flag: the chat model still reads it, so
-	// the flag stays on the screen (and the drill grades it), but alone it
-	// doesn't hold the task (WP-837, audit 468.2).
+	// A guarded flag the decision model is unsure of stays on the screen but alone doesn't hold the task.
 	j.yes = map[string]float64{"install": 0.4}
 	g.answer = `{"flags": ["install"], "reason": "adds a dev dependency"}`
 	ts = screen("Add a linter", "Add eslint-plugin-react as a dev dependency.")
@@ -138,7 +134,6 @@ func TestSafetyScreenAsksTheDecisionModelFirst(t *testing.T) {
 		t.Fatalf("guarded doubt: %+v, chat screens %d", ts, g.screens())
 	}
 
-	// A key not allowed the decision model: the chat model screens.
 	j.yes, j.status = nil, 403
 	g.answer = `{"flags": [], "reason": ""}`
 	ts = screen("Rename a helper", "Rename fooBar to foo.")

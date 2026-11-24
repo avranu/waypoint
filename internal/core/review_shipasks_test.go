@@ -102,8 +102,8 @@ func shipAuditedEnv(t *testing.T) (a *apEnv, box *Runner, g *shipForge, key stri
 func TestShipAuditedAsksDecideRoundWithTheAuditsStatus(t *testing.T) {
 	for _, c := range []struct {
 		name   string
-		status string // the audit's status when the ship comes ("" done, with findings)
-		marks  int    // findings the session marked before shipping
+		status string // "" stands for an audit that endAudit ended as done with findings.
+		marks  int
 		ends   bool
 		notice string
 	}{

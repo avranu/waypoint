@@ -16,33 +16,15 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Pushed by itself (WP-843). Commits left only on one machine are how work
-// gets lost track of: WP-707's agent committed and released, and the commit
-// sat on one disk. So when a session lets go of a task, the committed work
-// of a branch that is the task's own goes to the forge by itself, and the
-// task says where:
-//
-//   - wp release pushes the task's checkout (the agent said it's done there);
-//   - a session that ends by /clear, logout or exit starts a detached
-//     `wp hook claude-push` (SessionEnd has 1.5 s), which pushes once no other
-//     process is in the checkout;
-//   - autopilot's sweep pushes the worktree of the session it just ended, and
-//     any other branch whose commits no remote has once its checkout has sat
-//     unused for autoPushIdle with nothing running there.
-//
-// Only committed work, never the default branch or a shared one, never
-// forced, never onto a branch with an open pull request (that would change
-// what it merges), and with the repository's pre-push hooks run as for any
-// push. A detached head's commits go to a new branch named for the task
-// (wp-rescue/KEY), since nothing else names them and gc can prune them.
+// Pushes only a task's own committed work, on release, session end or the autopilot sweep: never forced, never the default or a shared branch, never onto a branch with an open pull request; a detached head goes to wp-rescue/KEY.
 
 const (
-	autoPushLimit  = 10 * time.Minute // a push with its pre-push hooks
-	autoPushIdle   = 4 * time.Hour    // the server's strandedIdle
+	autoPushLimit  = 10 * time.Minute
+	autoPushIdle   = 4 * time.Hour // must equal the server's strandedIdle (internal/core/stranded.go)
 	rescuePrefix   = "wp-rescue/"
 	autoPushRemote = "origin"
-	autoAskLimit   = time.Minute      // ls-remote: a forge that stalls doesn't hold the push slot
-	autoSlotLimit  = 30 * time.Minute // a detached push waiting for the one before it
+	autoAskLimit   = time.Minute // ls-remote: a forge that stalls doesn't hold the push slot
+	autoSlotLimit  = 30 * time.Minute
 )
 
 // Seams for tests.
@@ -81,8 +63,8 @@ func (p autoPushed) tried() bool { return p.Skip == "" && p.Branch != "" }
 // already on the forge isn't pushed to.
 type autoPushPRs struct {
 	open  []string
-	done  []string // merged or closed: the branch isn't made again on the forge
-	known bool     // Waypoint knows of the repository's pull requests
+	done  []string
+	known bool
 	err   error
 }
 
@@ -200,7 +182,7 @@ func (p *runnerProc) sweepPushEnded(ctx context.Context, run *jobRun, rl *relaun
 	}
 	cwds, err := procCwds()
 	if err != nil {
-		return // the idle push has another go later
+		return
 	}
 	if slices.ContainsFunc(cwds, func(d string) bool { return inside(tidyReal(d), rl.ended) }) {
 		fmt.Fprintf(run.out, "auto-push: %s has a process in it; not pushed\n", rl.ended)
@@ -209,7 +191,7 @@ func (p *runnerProc) sweepPushEnded(ctx context.Context, run *jobRun, rl *relaun
 	branch, _ := tidyGit(ctx, rl.ended, "symbolic-ref", "-q", "--short", "HEAD")
 	key := taskOf(branch, filepath.Base(rl.ended))
 	if !p.c.taskExists(key) {
-		key = "" // autoPush then pushes nothing: the branch is nobody's task
+		key = ""
 	}
 	pushed := autoPush(ctx, rl.ended, "", key, p.c.autoPushPRs(rl.root))
 	p.sayPushed(run, pushed, key, "ended")
@@ -245,11 +227,11 @@ func (p *runnerProc) pushIdle(ctx context.Context, run *jobRun, root string, ite
 	known := map[string]bool{}
 	return slices.DeleteFunc(items, func(it unshippedItem) bool {
 		if it.Kind != unshippedUnpushed || it.InUse || it.Task == "" || it.Branch == "" {
-			return false // a branch that names no task is a person's: told, not pushed
+			return false
 		}
 		top, ref := it.Path, ""
 		if top == "" {
-			top, ref = root, it.Branch // a branch checked out nowhere
+			top, ref = root, it.Branch
 		}
 		if q := quietFor(ctx, top, ref, now); q < autoPushIdle {
 			return false
@@ -258,14 +240,14 @@ func (p *runnerProc) pushIdle(ctx context.Context, run *jobRun, root string, ite
 			known[it.Task] = p.c.taskExists(it.Task)
 		}
 		if !known[it.Task] {
-			return false // named like a task, but Waypoint has none: a person's
+			return false
 		}
 		pushed := autoPush(ctx, top, ref, it.Task, ap)
 		if !pushed.tried() {
 			return false
 		}
 		p.sayPushed(run, pushed, it.Task, "idle")
-		return pushed.Err == "" // pushed: nothing left to tell
+		return pushed.Err == ""
 	})
 }
 
@@ -346,8 +328,7 @@ func autoPush(ctx context.Context, top, ref, key string, prs autoPushPRs) autoPu
 	case why != "":
 		target, out.Rescue = rescuePrefix+key, true
 	case key == "" || !branchCarries(branch, []string{key}):
-		// The task's own branch only: a person's branch in the same
-		// checkout, or one whose default isn't known here, stays put.
+		// Only the task's own branch: a person's branch in the same checkout stays put.
 		out.Skip = "branch " + branch + " isn't a task's"
 		if key != "" {
 			out.Skip = "branch " + branch + " doesn't name " + key
@@ -382,9 +363,7 @@ func autoPush(ctx context.Context, top, ref, key string, prs autoPushPRs) autoPu
 		return out
 	}
 	out.Branch = target
-	// No --force and no "+": git refuses anything but a fast-forward or a
-	// new branch. The pre-push hooks run, given their own time whatever is
-	// left of the caller's (a sweep's few minutes would kill them midway).
+	// The pre-push hooks get their own time, not what is left of the caller's: a sweep's few minutes would kill them midway.
 	push, cancel := context.WithTimeout(context.WithoutCancel(ctx), autoPushLimit)
 	defer cancel()
 	if _, err := tidyGit(push, top, "push", "--quiet", autoPushRemote, head+":refs/heads/"+target); err != nil {
@@ -524,13 +503,13 @@ func sessionEndPushes(reason string) bool {
 // pushOnSessionEnd starts the detached push for a session that ended
 // holding tasks. It returns at once: SessionEnd has 1.5 s.
 func (c *cli) pushOnSessionEnd(session, cwd, reason string) {
-	defer func() { _ = recover() }() // a hook must never fail the session
+	defer func() { _ = recover() }()
 	if !sessionEndPushes(reason) || !filepath.IsAbs(cwd) {
 		return
 	}
 	keys := c.state.sessionClaims(session)
 	if len(keys) == 0 {
-		return // it held no task: nothing says the work is one's
+		return
 	}
 	var tops []string
 	for d, cl := range c.state.Claims {
@@ -677,22 +656,20 @@ func hookClaudePush(c *cli, args []string) error {
 	hold, err := acquireSlot(wait, "autopush", 1, nil)
 	stop()
 	if err != nil {
-		return nil // the sweep pushes it later
+		return nil
 	}
 	defer hold.release()
 	// Read after the slot: a push before this one may have taken minutes,
 	// and a session may have started in the checkout meanwhile.
 	procs, err := procList()
 	if err != nil {
-		return nil // no view of what runs where: the sweep pushes it later
+		return nil
 	}
 	prs := map[string]autoPushPRs{}
 	for _, top := range tops {
 		if !dirExists(top) || othersIn(procs, top, os.Getpid(), *pid) != "" {
-			continue // another session or process is there: the sweep decides later
+			continue
 		}
-		// The branch names the task it is for; a detached head's commits go
-		// to wp-rescue/KEY only when the session held that one task.
 		mine := keys
 		if b, err := gitIn(top, "symbolic-ref", "--short", "-q", "HEAD"); err == nil {
 			mine = slices.DeleteFunc(slices.Clone(keys), func(k string) bool { return !branchCarries(b, []string{k}) })
@@ -700,7 +677,7 @@ func hookClaudePush(c *cli, args []string) error {
 			mine = nil
 		}
 		if len(mine) == 0 {
-			continue // a branch that isn't the session's task's
+			continue
 		}
 		key := mine[0]
 		common, _ := gitIn(top, "rev-parse", "--path-format=absolute", "--git-common-dir")

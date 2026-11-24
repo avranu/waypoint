@@ -8,10 +8,7 @@ import (
 	"time"
 )
 
-// Hand-off (WP-97): older clients' wp done --next asks the server for the next task and
-// reserves it for the session it will start, in one write, so two hand-offs
-// can't pick the same task and the live-session limit sees the launch before
-// the session exists.
+// Reserve the task and the launch in one write, so two hand-offs can't take the same task and the live-session limit counts a launch before its session exists.
 
 const (
 	// MaxTaskSessions is how many task sessions a person has at once from
@@ -24,17 +21,17 @@ const (
 
 // Hand-off statuses.
 const (
-	HandoffReserved = "reserved" // Task (and Related) are held for the new session
-	HandoffNone     = "none"     // nothing is ready
-	HandoffLimit    = "limit"    // too many task sessions are live or about to be
-	HandoffBusy     = "busy"     // this session still has bound tasks to finish (Remaining)
+	HandoffReserved = "reserved"
+	HandoffNone     = "none"
+	HandoffLimit    = "limit"
+	HandoffBusy     = "busy"
 )
 
 // Outcomes a task session's wp done reports (RecordHandoff).
 const (
-	OutcomeStarted = "started" // the next task runs in a new session
-	OutcomeNone    = "none"    // nothing was ready
-	OutcomeFailed  = "failed"  // a task was ready and couldn't be started
+	OutcomeStarted = "started"
+	OutcomeNone    = "none"
+	OutcomeFailed  = "failed"
 	OutcomeSkipped = "skipped" // older clients: wp done --no-next
 )
 
@@ -53,7 +50,7 @@ type HandoffResult struct {
 func (s *Service) liveTaskSessions(ctx context.Context, q queryer, userID, except int64, agent string) (int, error) {
 	now := s.nowMS()
 	var n, pending int
-	// Only sessions heard from lately: idle (30 min) and crashed ones don't count.
+	// A crashed session never sets ended_at, so only a recent heartbeat keeps it counting against the limit.
 	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM agent_sessions WHERE user_id = ? AND kind = 'task' AND finished_at IS NULL AND ended_at IS NULL AND id != ?
 		AND last_seen_at > ?`, userID, except, now-sessionIdleAfter.Milliseconds()).Scan(&n); err != nil {
 		return 0, err
@@ -69,7 +66,7 @@ func (s *Service) liveTaskSessions(ctx context.Context, q queryer, userID, excep
 // leased (by this agent's other sessions too), and reserves it, plus with
 // batch the related ones wp batch would take, for a session about to start.
 func (s *Service) Handoff(ctx context.Context, actor *Actor, q AgentQuery, batch bool) (*HandoffResult, error) {
-	if err := actor.need(PermSessionsStart); err != nil { // WP-111
+	if err := actor.need(PermSessionsStart); err != nil {
 		return nil, err
 	}
 	id, err := agentIdentity(actor, q.Agent)
@@ -84,7 +81,6 @@ func (s *Service) Handoff(ctx context.Context, actor *Actor, q AgentQuery, batch
 	} else if p != nil {
 		return nil, &ErrAgentsPaused{Pause: p, Agent: id}
 	}
-	// A batch session finishes all its tasks before it hands off.
 	if actor.Session != 0 {
 		if rem, err := s.boundRemaining(ctx, s.db.R, actor.Session); err != nil {
 			return nil, err
@@ -273,7 +269,7 @@ func (s *Service) boundRemaining(ctx context.Context, q queryer, sessionID int64
 	for _, k := range splitTaskKeys(keys) {
 		iid, err := s.resolveIssueID(ctx, q, k)
 		if err != nil {
-			continue // gone: nothing to finish
+			continue
 		}
 		i, err := s.issueByID(ctx, q, iid, false)
 		if err != nil {

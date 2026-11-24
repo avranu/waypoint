@@ -34,7 +34,7 @@ async function run(width, scheme) {
     if (
       r.status() >= 400 &&
       r.url().includes("/api/") &&
-      !r.request().headers()["authorization"] // the agent's refusals are checked below
+      !r.request().headers()["authorization"]
     )
       fail(`${tag} http ${r.status()} ${r.request().method()} ${r.url()}`);
   });
@@ -52,7 +52,6 @@ async function run(width, scheme) {
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL(base + "/");
 
-  // An organisation with a repo project under it, and an agent token.
   const n = `${width}${scheme[0]}`.toUpperCase();
   const org = `KO${n}`;
   const repo = `KR${n}`;
@@ -69,9 +68,8 @@ async function run(width, scheme) {
     project: repo,
     title: `Lease work ${tag}`,
   });
-  const word = `zephyr${n.toLowerCase()}`; // unique, for search
+  const word = `zephyr${n.toLowerCase()}`;
 
-  // ---- glossary: quick add in the project tab ----
   await api("POST", "/glossary", {
     term: "Claim",
     definition: "Org-wide meaning.",
@@ -95,19 +93,20 @@ async function run(width, scheme) {
     full.some((e) => e.term === "Claim" && e.inherited),
     `${tag} full glossary includes the org's terms`,
   );
-  // The tab shows the project's own terms until the switch is turned off.
   await page.getByRole("switch", { name: "Only this project's terms" }).click();
-  await page.getByText(org, { exact: true }).first().waitFor({ timeout: 5000 }).catch(() => {});
+  await page
+    .getByText(org, { exact: true })
+    .first()
+    .waitFor({ timeout: 5000 })
+    .catch(() => {});
   ok(
     await page.getByText(org, { exact: true }).first().isVisible(),
     `${tag} inherited term shows its scope`,
   );
   await shot("glossary");
 
-  // ---- glossary entry: alias, lock ----
   await page.getByRole("link", { name: /Lease/ }).first().click();
   await page.waitForURL(/\/glossary\/\d+$/);
-  // No alias yet: only an add button, no list.
   await page.getByRole("button", { name: "Add an alias" }).click();
   // Both changes show at once (optimistically); wait for the server to have
   // taken each before reading it back or asking as the agent.
@@ -140,7 +139,6 @@ async function run(width, scheme) {
   ok((e.history?.length ?? 0) >= 2, `${tag} entry history kept`);
   await shot("glossary-entry");
 
-  // ---- design: a note with wikilinks, and agents' work on it ----
   const note = await api("POST", "/design", {
     title: `Leases ${tag}`,
     kind: "feature",
@@ -175,14 +173,13 @@ async function run(width, scheme) {
     `${tag} pending additions are marked`,
   );
   await shot("design-note");
-  // Approve the edit: the new title and body apply.
   await page.getByRole("button", { name: "Approve edit" }).click();
   await page.waitForFunction(
     (want) =>
-      document.querySelector('textarea[aria-label="Note title"]')?.value === want,
+      document.querySelector('textarea[aria-label="Note title"]')?.value ===
+      want,
     `Leases ${tag} (renewable)`,
   );
-  // Reject the first addition with a note; merge the second.
   await page
     .getByRole("button", { name: "Reject", exact: true })
     .first()
@@ -195,7 +192,6 @@ async function run(width, scheme) {
   await settle();
   await page.getByRole("button", { name: "Merge into body" }).first().click();
   await settle();
-  // The merge answers asynchronously: poll rather than trust one sleep.
   let d = await api("GET", `/design/${note.id}`);
   for (let i = 0; i < 25 && d.pending !== 0; i++) {
     await page.waitForTimeout(200);
@@ -215,9 +211,13 @@ async function run(width, scheme) {
   await page.getByRole("heading", { name: "History" }).scrollIntoViewIfNeeded();
   await shot("design-history");
 
-  // Spec tab
   await page.getByRole("tab", { name: "Spec" }).click();
-  await page.getByText(`Retry claims ${tag}`).locator("visible=true").first().waitFor({ timeout: 5000 }).catch(() => {});
+  await page
+    .getByText(`Retry claims ${tag}`)
+    .locator("visible=true")
+    .first()
+    .waitFor({ timeout: 5000 })
+    .catch(() => {});
   ok(
     await page.getByText(`Retry claims ${tag}`).first().isVisible(),
     `${tag} spec lists the parts`,
@@ -225,7 +225,6 @@ async function run(width, scheme) {
   await shot("design-spec");
   await page.getByRole("tab", { name: "Note" }).click();
 
-  // ---- links: add an issue, a PR URL; remove one ----
   await page.getByRole("button", { name: "Add a link" }).click();
   await page.getByLabel("Find something to link").fill(issue.key);
   await page.getByRole("option", { name: `Link ${issue.key}` }).click();
@@ -235,7 +234,7 @@ async function run(width, scheme) {
     .fill("https://github.com/acme/rocket/pull/7");
   await page.getByRole("option", { name: /Link https/ }).click();
   await page.getByText("acme/rocket PR #7").waitFor();
-  await page.keyboard.press("Escape"); // the link box stays open after an add (WP-1196)
+  await page.keyboard.press("Escape"); // The link box stays open after an add, so Escape closes it.
   let links = await api("GET", `/links?type=design&id=${note.id}`);
   ok(
     links.some((l) => l.item.key === issue.key) &&
@@ -249,7 +248,6 @@ async function run(width, scheme) {
   await settle();
   links = await api("GET", `/links?type=design&id=${note.id}`);
   ok(!links.some((l) => l.item.type === "url"), `${tag} link removed`);
-  // The issue shows the note from its end.
   await page.goto(`${base}/issue/${issue.key}`);
   await page.getByRole("heading", { name: "Knowledge" }).waitFor();
   await page
@@ -258,7 +256,6 @@ async function run(width, scheme) {
     .waitFor();
   ok(true, `${tag} the issue lists the note linked to it`);
 
-  // ---- proposed note: approve from its page ----
   await page.goto(`${base}/design/${proposed.id}`);
   await page.getByText(/not approved yet/).waitFor();
   await shot("design-proposed");
@@ -269,7 +266,6 @@ async function run(width, scheme) {
     `${tag} proposed note approved`,
   );
 
-  // ---- review queue ----
   await agent("POST", `/design/${note.id}/additions`, {
     body: `Queue item ${tag}`,
   });
@@ -290,7 +286,6 @@ async function run(width, scheme) {
   }
   ok(approved, `${tag} approved from the review queue`);
 
-  // ---- wikilinks: one resolves, one offers to create ----
   await page.goto(`${base}/design/${note.id}`);
   await page.locator("a.wikilink", { hasText: "Lease" }).first().click();
   await page.waitForURL(new RegExp(`/glossary/${lease.id}$`));
@@ -315,7 +310,6 @@ async function run(width, scheme) {
     `${tag} term deleted`,
   );
 
-  // ---- search everything ----
   await page.goto(`${base}/search?q=${word}`);
   await page.getByRole("heading", { name: "Design notes" }).waitFor();
   ok(
@@ -325,7 +319,6 @@ async function run(width, scheme) {
   ok((await page.locator("mark").count()) > 0, `${tag} matches highlighted`);
   await shot("search");
 
-  // ---- ⌘K finds terms and notes; the nav has Design and Glossary ----
   if (!mobile) {
     await page.goto(base + "/");
     await page.keyboard.press("Control+k");
@@ -352,7 +345,6 @@ async function run(width, scheme) {
     await shot("project-design");
   }
 
-  // ---- delete: a person can; it suggests retiring ----
   await page.goto(`${base}/design/${proposed.id}`);
   await page.getByRole("button", { name: "Note actions" }).click();
   await page.getByRole("menuitem", { name: "Delete…" }).click();

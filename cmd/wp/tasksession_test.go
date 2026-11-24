@@ -15,8 +15,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// Task sessions (WP-34).
-
 // transcriptLine is one assistant message as Claude Code writes it.
 func transcriptLine(id string, read, write, input int64, sidechain bool) string {
 	b, _ := json.Marshal(map[string]any{"type": "assistant", "timestamp": "2026-10-14T10:00:00Z", "isSidechain": sidechain,
@@ -38,7 +36,7 @@ func TestTranscriptContextIsTheLastMainCall(t *testing.T) {
 	path := writeTranscript(t,
 		transcriptLine("m1", 100_000, 2_000, 5, false),
 		transcriptLine("m2", 170_000, 9_000, 1_000, false),
-		transcriptLine("sub", 20_000, 0, 5, true), // a subagent's call is not this context
+		transcriptLine("sub", 20_000, 0, 5, true),
 		`{"type":"user","message":{"role":"user","content":"hi"}}`+"\n",
 	)
 	t.Setenv("WAYPOINT_TRANSCRIPT", path)
@@ -76,7 +74,6 @@ func TestLaunchArgsAndEnvironment(t *testing.T) {
 	if got := strings.Join(l.claudeArgs(), "|"); got != "--bg|--settings|"+unattendedSettings+"|--name|WP-12 Fix|--model|opus|--|--do it" {
 		t.Errorf("args = %s", got)
 	}
-	// A person's foreground wp start keeps every tool.
 	l.bg = false
 	if got := strings.Join(l.claudeArgs(), "|"); got != "--name|WP-12 Fix|--model|opus|--|--do it" {
 		t.Errorf("foreground args = %s", got)
@@ -86,7 +83,6 @@ func TestLaunchArgsAndEnvironment(t *testing.T) {
 	if env != "PATH=/bin HOME=/h WP_TASK=WP-12" {
 		t.Errorf("env = %s", env)
 	}
-	// An unattended runner's marker reaches the sessions it starts (WP-270).
 	if got := l.sessionEnv([]string{"PATH=/bin", "WAYPOINT_UNATTENDED=1"}); strings.Join(got, " ") != "PATH=/bin WAYPOINT_UNATTENDED=1 WP_TASK=WP-12" {
 		t.Errorf("unattended env = %v", got)
 	}
@@ -133,7 +129,7 @@ func TestTaskSessionWarnsOnUnrelatedWorkEndToEnd(t *testing.T) {
 	if !strings.HasPrefix(out, other) {
 		t.Errorf("the answer should still start with the task: %s", out)
 	}
-	// Stops record the context and never show a task session the note.
+	// Stop records the context but never shows the context note to a task session.
 	s.wp("done", bound)
 	big := writeTranscript(t, transcriptLine("m1", 300_000, 0, 10, false))
 	if out := s.hook(in("task-1", "Stop", s.repo, map[string]any{"transcript_path": big})); out != "" {
@@ -172,7 +168,6 @@ func TestYourSessionNoteEndToEnd(t *testing.T) {
 		t.Errorf("a small session's Stop printed %q", out)
 	}
 	write(181_000)
-	// Still working (a subagent runs): "done" would mislead, so not yet.
 	running := map[string]any{"transcript_path": tr, "background_tasks": []any{map[string]any{"type": "local_agent", "status": "running", "description": "Sweep text"}}, "session_crons": []any{}}
 	if out := s.hook(in("mine", "Stop", s.repo, running)); strings.Contains(out, "is done") {
 		t.Errorf("a Stop with work running printed %q", out)
@@ -186,7 +181,6 @@ func TestYourSessionNoteEndToEnd(t *testing.T) {
 	if out := s.hook(in("mine", "Stop", s.repo, map[string]any{"transcript_path": tr})); out != "" {
 		t.Errorf("the note came twice: %q", out)
 	}
-	// wp next warns with the context it reads now, and still claims.
 	write(260_000)
 	out = s.wp("next", second)
 	if !strings.HasPrefix(out, second) || !strings.Contains(out, "Note: "+first+" is done and this session holds 260k") {
@@ -214,8 +208,6 @@ func TestStartLaunchesATaskSession(t *testing.T) {
 	if !strings.Contains(out, "claude attach c24e7b58") {
 		t.Errorf("output: %s", out)
 	}
-	// The first prompt is what wp next said, taken for the session the way
-	// autopilot takes it (WP-1037): no order to go and take it.
 	args, _ := os.ReadFile(filepath.Join(rec, "args"))
 	prompt, ok := strings.CutPrefix(string(args), "--bg\n--settings\n"+unattendedSettings+"\n--name\n"+key+" Fix the parser\n--model\nopus\n--\n")
 	if !ok || len(*nexts) != 1 || strings.TrimSpace(prompt) != strings.TrimSpace((*nexts)[0]) ||
@@ -231,7 +223,6 @@ func TestStartLaunchesATaskSession(t *testing.T) {
 		t.Errorf("ran in %s", pwd)
 	}
 
-	// Attached needs a terminal.
 	old := stdinIsTerminal
 	t.Cleanup(func() { stdinIsTerminal = old })
 	stdinIsTerminal = func() bool { return false }
@@ -245,8 +236,6 @@ func TestStartLaunchesATaskSession(t *testing.T) {
 	if args, _ := os.ReadFile(filepath.Join(rec, "args")); strings.Contains(string(args), "--bg") || !strings.HasSuffix(string(args), "--\njust look\n") {
 		t.Errorf("attached args = %q", args)
 	}
-	// Inside Claude Code (an agent that still means wp next), attached is
-	// refused, so no nested claude starts; --bg still works.
 	_ = os.Remove(filepath.Join(rec, "args"))
 	t.Setenv("CLAUDECODE", "1")
 	out, code := s.run("start", key)
@@ -260,7 +249,6 @@ func TestStartLaunchesATaskSession(t *testing.T) {
 		t.Errorf("--bg inside Claude Code: %s", out)
 	}
 	t.Setenv("CLAUDECODE", "")
-	// An unknown task starts nothing.
 	if _, code := s.run("start", s.project.Key+"-999", "--bg"); code == 0 {
 		t.Error("started a session for a task that doesn't exist")
 	}
@@ -309,7 +297,6 @@ func TestStartedSessionHoldsItsTask(t *testing.T) {
 	fakeCLI(t, "claude", fakeClaudeStart)
 	t.Setenv("WAYPOINT_SESSION", "")
 	t.Setenv("WP_TASK", "")
-	// Another session started here lately: the launcher's take isn't its.
 	s.hook(in("bystander-1", "SessionStart", s.repo, map[string]any{"source": "startup"}))
 	nexts := stubStartNext(s)
 	s.wp("start", key, "--bg")

@@ -11,34 +11,7 @@ import (
 	"unicode/utf8"
 )
 
-// A review the session ran itself, reported (WP-1320). A round's findings
-// come from another model's audit or the round's Claude reviewer when one
-// can be had (review_audit.go); otherwise the session reviews its own
-// change: the person's review setting says so ("the same session"), no
-// reviewer could be started, or the session ran an adversarial review of
-// its own before any round was scheduled (own_review.go). Until the
-// audit of 11/2026 those rounds ended on the session's word: nothing it
-// found was recorded as findings, so nothing was scored, no mark was
-// checked against the code, and no further round could follow, and
-// they were most of the rounds that ran.
-//
-// wp audit report closes that: the session records what its review found
-// as an audit of its own (request key ownReportKey, model ownReportModel),
-// each finding with what became of it. From there the round is any
-// round: wp ship holds for findings left open, Waypoint checks the marks
-// against the code (checkMarks), and the findings are scored and decide
-// whether another round comes (reviewAgain). A ship of such a round with
-// no report is held and told to make one, so the session's own review
-// can't open a pull request unrecorded.
-//
-// The report is the session's account of its reviewer's findings, and
-// the session is the author of the change they are about. Where the work
-// log kept the reviewer's own words (own_review.go), the check of the
-// marks reads them too and reports what the account leaves out or makes
-// milder (ownReviewSaid, checkLeftOut); those findings are the session's
-// to mark and are scored with the round. Where no words were kept (the
-// session reviewed inline, or its harness has no SubagentStop hook), the
-// report is the session's word, held only to the check of its marks.
+// A round the session reviewed itself is held without its recorded report, so it cannot open a pull request unrecorded.
 
 const (
 	// ownReportKey is the request key of a round's own report.
@@ -97,7 +70,6 @@ func parseReviewReport(text string) (summary string, findings []reportedFinding,
 	if len(text) > ownReportMax {
 		return "", nil, 0, invalid("the report is over %d KB: report each finding once, in a few sentences", ownReportMax>>10)
 	}
-	// (An agent may fence it.)
 	if strings.HasPrefix(text, "```") {
 		if i := strings.IndexByte(text, '\n'); i >= 0 {
 			text = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(text[i+1:]), "```"))
@@ -176,7 +148,6 @@ func parseReviewReport(text string) (summary string, findings []reportedFinding,
 		findings = append(findings, reportedFinding{CodeAuditFinding: CodeAuditFinding{Title: excerpt(title, 200), Path: p, Line: line, Severity: sev,
 			Problem: excerpt(problem, 4000), Confirm: excerpt(strings.TrimSpace(f.Confirm), 2000)}, outcome: outcome, note: note})
 	}
-	// Worst first, then the cap, as an audit's answer is read.
 	slices.SortStableFunc(findings, func(x, y reportedFinding) int {
 		return slices.Index(auditSeverities, x.Severity) - slices.Index(auditSeverities, y.Severity)
 	})
@@ -194,10 +165,10 @@ type reportRound struct {
 	started  bool
 	beforePR string
 	note     string
-	reviewer int64 // the audit whose findings the round handed the session (0: none)
-	own      int64 // its report so far (0: none)
+	reviewer int64
+	own      int64
 	decided  int
-	checks   int // checks of its marks asked for
+	checks   int
 	owner    sql.NullInt64
 }
 
@@ -243,11 +214,6 @@ func (s *Service) ReportReview(ctx context.Context, actor *Actor, ref string, in
 		return nil, err
 	}
 	if len(findings) == 0 {
-		// "Nothing" is read against what the work log holds of the
-		// session's reviews: with none, there is nothing to read it against
-		// (a review whose report Waypoint never kept is attached by hand);
-		// and a reviewer's report counted as raising issues isn't a review
-		// that raised none. A report with findings isn't held to this.
 		reviews, raised, err := s.ownReviewRaised(ctx, actor.Session, i.ID, r.id)
 		if err != nil {
 			return nil, err
@@ -430,7 +396,6 @@ func (s *Service) ownReviewSaid(ctx context.Context, session, issueID, round int
 				return nil, err
 			}
 			counted = counted && read
-			// Every one is counted; the first few are read.
 			if body = strings.TrimSpace(body); body != "" {
 				out = append(out, body)
 			}

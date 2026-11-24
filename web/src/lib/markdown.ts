@@ -103,14 +103,14 @@ function linkify(root: DocumentFragment, keys: boolean) {
       let el: HTMLElement
       let len: number
       if (m[2] && !keys) {
-        continue // the server decides which codes are references
+        continue
       } else if (m[2]) {
         el = document.createElement('a')
         el.setAttribute('href', `/issue/${m[2]}`)
         el.textContent = m[2]
         len = m[2].length
       } else {
-        const user = m[3].replace(/[.-]+$/, '') // trailing punctuation isn't part of the name
+        const user = m[3].replace(/[.-]+$/, '')
         el = document.createElement('span')
         el.className = 'mention'
         el.textContent = '@' + user

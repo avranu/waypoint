@@ -8,12 +8,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Benchmark evidence (WP-935). wp bench keeps each result against the exact
-// tree it timed; wp ship sends the ones on the tree it ships beside the test
-// runs, so "23% faster" in a task rests on a measurement anyone can read,
-// and a "faster" the measurement doesn't bear out is a mismatch like a
-// "tests pass" over a failing run. Like test evidence it is the CLI's
-// report: a fact check for readers, not something a gate may rely on.
+// Bench evidence is a fact check for readers, not something a gate may rely on.
 
 const maxEvidenceBench = 5
 

@@ -1,8 +1,5 @@
 package core
 
-// Updates behind the front of a merge queue: a pull request whose head forks
-// from its base at more than one commit (WP-467). See mergeBaseBehindFront.
-
 import (
 	"context"
 	"errors"
@@ -103,7 +100,7 @@ func (s *Service) forkedTwice(ctx context.Context, f *Forge, pr *PullRequest, ti
 	}
 	twice, err := cl.ForkedTwice(ctx, f, pr.Repo, tip, pr.HeadSHA)
 	if err != nil {
-		// A forge that can't say (GitHub, GitLab) or no longer has it is "not forked twice".
+		// An error here counts as not forked twice: GitHub and GitLab cannot say, and a read fault is logged, not returned.
 		if readFault(err) && !errors.Is(err, ErrUnsupported) && !isStatus(err, http.StatusNotFound) {
 			s.log.WarnContext(ctx, "tell whether a head forks from its base twice", "repo", pr.Repo, "number", pr.Number, "err", err)
 		}
@@ -132,7 +129,7 @@ func (s *Service) mergeBaseCandidate(ctx context.Context, id int64) *PullRequest
 		}
 	}
 	if s.inCandidate(ctx, pr.ID) {
-		return nil // an update would change the head a candidate tests
+		return nil
 	}
 	return pr
 }

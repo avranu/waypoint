@@ -1,5 +1,3 @@
-// Project settings: one page, a tab per area, everything saved where you see it.
-
 import { useEffect, useRef } from 'react'
 import { useNavigate, useSearch } from '@tanstack/react-router'
 import clsx from 'clsx'
@@ -99,7 +97,7 @@ export function ProjectSettingsPage() {
             </button>
           ))}
         </nav>
-        {/* On a project background, the whole tab sits on a panel so text stays readable. */}
+        {}
         <main
           role="tabpanel"
           className="wp-surface wp-pad-lg min-w-0 max-w-3xl flex-1 px-3 py-4 sm:px-5 lg:p-0"

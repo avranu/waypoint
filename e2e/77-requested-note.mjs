@@ -58,7 +58,6 @@ for (const [width, scheme] of looks([
   });
   const agent = { ...H, Authorization: `Bearer ${token}` };
 
-  // Robin files a task; the agent writes a decision for it and adds to it.
   const task = await api("POST", "/issues", {
     project: KEY,
     title: "Pick the export format",
@@ -96,7 +95,8 @@ for (const [width, scheme] of looks([
   ok(added.ok(), `${tag} the agent's addition applies: ${added.status()}`);
 
   const specResp = page.waitForResponse(
-    (r) => r.url().includes("/api/v1/spec?") && !r.url().includes("format=text"),
+    (r) =>
+      r.url().includes("/api/v1/spec?") && !r.url().includes("format=text"),
   );
   await page.goto(`${base}/design/${note.id}`);
   const spec = await (await specResp).json();
@@ -129,14 +129,16 @@ for (const [width, scheme] of looks([
   );
   await shot("requested");
 
-  // The Spec tab no longer repeats the note and its additions (WP-680), and
-  // still never says "approved".
-  // The tab is hidden when the spec would only repeat the note (WP-1196),
-  // and shown, without the note's additions, when it adds something.
   const specTab = page.getByRole("tab", { name: "Spec" });
-  const specAdds = ["parts", "related", "terms", "issues", "changes", "files", "others"].some(
-    (k) => (spec[k] ?? []).length > 0,
-  );
+  const specAdds = [
+    "parts",
+    "related",
+    "terms",
+    "issues",
+    "changes",
+    "files",
+    "others",
+  ].some((k) => (spec[k] ?? []).length > 0);
   if (!specAdds) {
     ok(
       (await specTab.count()) === 0,
@@ -145,7 +147,9 @@ for (const [width, scheme] of looks([
   } else {
     await specTab.click();
     await page
-      .getByText(/^(Parts|Related|Terms|Tasks|Some PRs and commits|Files|Other notes that matched)$/)
+      .getByText(
+        /^(Parts|Related|Terms|Tasks|Some PRs and commits|Files|Other notes that matched)$/,
+      )
       .first()
       .waitFor();
     ok(

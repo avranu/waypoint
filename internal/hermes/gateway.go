@@ -33,19 +33,19 @@ type Gateway struct {
 	mu      sync.Mutex
 	conn    *websocket.Conn
 	running bool
-	state   string // connecting, open, down
+	state   string
 	lastErr string
 	ids     int64
 	calls   map[string]chan rpcReply
 	subs    map[*Sub]struct{}
 	ring    []Frame
 	seq     int64
-	open    map[string]Frame           // the agent's questions not yet answered, by request id
-	rawIDs  map[string]json.RawMessage // their ids as Hermes sent them (string or number)
+	open    map[string]Frame
+	rawIDs  map[string]json.RawMessage // Hermes sends request ids as strings or numbers; a reply must echo the form it sent.
 	used    time.Time
-	quiet   map[string]bool // conversations whose replies notify nobody
+	quiet   map[string]bool
 	stop    context.CancelFunc
-	conns   int // successful connections, to tell a reconnect apart
+	conns   int
 }
 
 // Frame is one message from Hermes (or the bridge itself), numbered.
@@ -82,7 +82,7 @@ func (e *RPCError) Error() string { return e.Message }
 
 const (
 	ringSize      = 4000
-	idleAfter     = 15 * time.Minute // close a connection nobody uses
+	idleAfter     = 15 * time.Minute
 	heartbeat     = 15 * time.Second
 	silentTooLong = 45 * time.Second
 )
@@ -251,7 +251,6 @@ func (g *Gateway) session(ctx context.Context) error {
 			ch <- rpcReply{Error: &RPCError{Code: -32000, Message: "the connection to the assistant dropped"}}
 			delete(g.calls, id)
 		}
-		// Questions asked on this connection can't be answered on the next.
 		for id := range g.open {
 			delete(g.open, id)
 			delete(g.rawIDs, id)
@@ -339,7 +338,7 @@ func (g *Gateway) handle(data []byte) {
 	}
 	id := strings.Trim(string(m.ID), `"`)
 	switch {
-	case m.Method == "" && len(m.ID) > 0: // a reply
+	case m.Method == "" && len(m.ID) > 0:
 		if strings.HasPrefix(id, "heartbeat-") {
 			return
 		}
@@ -371,7 +370,7 @@ func (g *Gateway) handle(data []byte) {
 		if g.OnEvent != nil {
 			g.OnEvent(ev.Type, ev.SessionID, ev.Payload)
 		}
-	case len(m.ID) > 0: // a question from the agent
+	case len(m.ID) > 0:
 		g.request(id, m.ID, m.Method, m.Params, data)
 	}
 }
@@ -444,7 +443,7 @@ func (g *Gateway) publishLocked(msg json.RawMessage) Frame {
 		select {
 		case s.C <- f:
 		default:
-			// Too far behind: drop it; it reconnects and catches up.
+			// A subscriber too far behind is dropped; the browser reconnects and catches up.
 			delete(g.subs, s)
 			close(s.gone)
 		}
@@ -496,7 +495,7 @@ func (g *Gateway) subscribe(after int64, quiet bool) (*Sub, Hello, []Frame) {
 			}
 		}
 	} else if after > g.seq {
-		h.Reset = true // the server restarted since
+		h.Reset = true // A cursor past this server's seq means the server restarted, so the client must reload.
 	}
 	return s, h, replay
 }

@@ -82,7 +82,6 @@ func TestPickLookKeywords(t *testing.T) {
 			t.Errorf("%q: %v", c.name, err)
 		}
 	}
-	// Nothing matches: a stable fallback; a taken match is skipped.
 	a := pickLook(&Project{Name: "Qwxz", Key: "QW"}, nil, lookChoice{})
 	if a.Icon == "" || a != pickLook(&Project{Name: "Qwxz", Key: "QW"}, nil, lookChoice{}) {
 		t.Errorf("fallback not stable: %+v", a)
@@ -91,7 +90,6 @@ func TestPickLookKeywords(t *testing.T) {
 	if b.Icon == "🌱" || b.Icon == "" {
 		t.Errorf("a taken icon was chosen: %+v", b)
 	}
-	// Every fallback and rule icon is a valid emoji.
 	for _, ic := range fallbackIcons {
 		if !validEmoji(ic) {
 			t.Errorf("fallback %q is not an emoji", ic)
@@ -105,7 +103,7 @@ func TestPickLookKeywords(t *testing.T) {
 }
 
 func TestProjectLookPickedOnCreate(t *testing.T) {
-	e := newEnv(t) // no AI configured
+	e := newEnv(t)
 	colors, bgs, icons := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, name := range []string{"Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta", "Eta"} {
 		p := e.project(e.admin, name, "")
@@ -117,7 +115,6 @@ func TestProjectLookPickedOnCreate(t *testing.T) {
 	if len(colors) != 7 || len(bgs) != 7 || len(icons) != 7 {
 		t.Errorf("not all different: %d colours, %d backgrounds, %d icons", len(colors), len(bgs), len(icons))
 	}
-	// A project made with its own colour stays the person's.
 	n, c := "Mine", "#ef4444"
 	mine, err := e.s.CreateProject(e.ctx, e.admin, ProjectInput{Name: &n, Color: &c})
 	if err != nil || mine.Look != LookCustom || mine.Icon != "" || mine.Background != "" || mine.Color != c {
@@ -164,7 +161,7 @@ func TestProjectLookCustomRegenerateReset(t *testing.T) {
 	if cur.Look != LookGenerated {
 		t.Fatal("not generated")
 	}
-	// Saving the form unchanged (it sends the look every time) keeps it generated.
+	// the form sends the look on every save, so an unchanged save must keep it generated
 	if got, err := e.s.UpdateProject(e.ctx, e.admin, p.Key, ProjectInput{Icon: &cur.Icon, Color: &cur.Color, Background: &cur.Background}); err != nil || got.Look != LookGenerated {
 		t.Fatalf("resaving the same look: %v %q", err, got.Look)
 	}
@@ -185,7 +182,6 @@ func TestProjectLookCustomRegenerateReset(t *testing.T) {
 	if _, err := e.s.ResetLook(e.ctx, sam, p.Key); err == nil {
 		t.Error("a non-member reset a look")
 	}
-	// Pick another: everything differs from the current look, repeatedly.
 	prev := lookOf(e, p.Key)
 	for i := 0; i < 4; i++ {
 		next, err := e.s.RegenerateLook(e.ctx, e.admin, p.Key)

@@ -148,7 +148,7 @@ func (h *HTTP) NPMPublished(ctx context.Context, name, version string) (time.Tim
 	}
 	h.mu.Unlock()
 	p.once.Do(func() {
-		// The full packument: the abbreviated one npm install reads has no times.
+		// The full packument, not the abbreviated one npm reads: only it has publish times.
 		b, err := h.get(ctx, h.NPM+"/"+url.PathEscape(name), "application/json")
 		if err != nil {
 			p.err = err

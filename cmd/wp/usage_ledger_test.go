@@ -45,11 +45,11 @@ func sumLedger(rows []usageLedgerRow) usageLedgerRow {
 func TestUsageLedgerContextAndColdStarts(t *testing.T) {
 	t0 := time.Date(2026, 10, 5, 10, 0, 0, 0, time.UTC)
 	path := writeLedgerFile(t, "s.jsonl",
-		ledgerLine("m1", t0, 10, 100, 0, 90),                          // context 200, the first call
-		ledgerLine("m2", t0.Add(time.Minute), 10, 0, 0, 250_000),      // 250,010: over 200k; warm
-		ledgerLine("m3", t0.Add(11*time.Minute), 5, 310_000, 0, 1000), // gap over 5 minutes, rewrote the context: cold, over 300k
-		ledgerLine("m4", t0.Add(50*time.Minute), 5, 0, 20, 0),         // gap over 5 minutes, wrote 20 to the 1h cache: cold
-		ledgerLine("m5", t0.Add(90*time.Minute), 5, 0, 30, 0),         // 40 minutes after a 1 hour write: warm
+		ledgerLine("m1", t0, 10, 100, 0, 90),
+		ledgerLine("m2", t0.Add(time.Minute), 10, 0, 0, 250_000),
+		ledgerLine("m3", t0.Add(11*time.Minute), 5, 310_000, 0, 1000),
+		ledgerLine("m4", t0.Add(50*time.Minute), 5, 0, 20, 0),
+		ledgerLine("m5", t0.Add(90*time.Minute), 5, 0, 30, 0), // a one-hour cache write keeps the cache warm for an hour, not five minutes
 	)
 	f := usageFile{Path: path, Session: "s", Kind: "main", Main: true}
 	p, err := readUsageFile(f, usageFileState{}, nil, false)
@@ -91,7 +91,6 @@ func TestUsageLedgerSubagentsForkOrFresh(t *testing.T) {
 	if l := sumLedger(pg.Chunk.Ledger); l.Fresh != 1 || l.FreshCtx != 20_005 || l.Forks != 0 {
 		t.Errorf("fresh: %+v", l)
 	}
-	// resuming adds no second spawn
 	more, err := os.OpenFile(fork, os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		t.Fatal(err)
@@ -118,7 +117,6 @@ func TestUsageLedgerRereadsOldHistoryForLedgerRowsOnly(t *testing.T) {
 	if fresh.LedgerOnly || len(fresh.Chunk.Messages) == 0 {
 		t.Fatalf("a new file is read whole: %+v", fresh.Chunk)
 	}
-	// the state an older wp left behind: read to the end, no ledger version
 	old := fresh.State
 	old.LV = 0
 	again, err := readUsageFile(f, old, nil, false)
@@ -134,7 +132,6 @@ func TestUsageLedgerRereadsOldHistoryForLedgerRowsOnly(t *testing.T) {
 	if chunkID("m", again) == chunkID("m", fresh) {
 		t.Error("the re-read must not reuse the first read's chunk id")
 	}
-	// and now it is current: nothing more to send
 	third, err := readUsageFile(f, again.State, nil, false)
 	if err != nil {
 		t.Fatal(err)

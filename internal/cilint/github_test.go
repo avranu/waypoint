@@ -74,7 +74,6 @@ func TestGitHubWorkflowProblems(t *testing.T) {
 			}
 		})
 	}
-	// the bare condition is fine too
 	bare := sub(" && github.ref == 'refs/heads/main'", "")
 	if got := GitHubWorkflowProblems("w.yml", []byte(bare)); len(got) != 0 {
 		t.Errorf("bare github.server_url condition flagged: %v", got)

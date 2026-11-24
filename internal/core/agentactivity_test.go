@@ -53,8 +53,6 @@ func TestAgentActivity(t *testing.T) {
 	code := tok("code", "anthropic/claude-code")
 	haiku := tok("haiku", "anthropic/claude-haiku-5-5")
 
-	// Claude Code takes a task, works an hour, reports usage with the model
-	// its transcript named, links its PR, and finishes.
 	a := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Parser", Agent: "claude", Priority: "high"})
 	if task, err := e.s.AgentNext(e.ctx, code, AgentQuery{}); err != nil || task == nil || task.Issue.Key != a.Key {
 		t.Fatalf("next = %v, %v", task, err)
@@ -83,7 +81,6 @@ func TestAgentActivity(t *testing.T) {
 	if len(runs) != 1 || runs[0].Model != "claude-opus-5-5" || runs[0].InputTokens != 1000 || runs[0].OutputTokens != 300 {
 		t.Fatalf("the run keeps its model and usage: %+v", runs)
 	}
-	// The PR merged (as the forge sync records it on the linked issue).
 	err := e.s.write(e.ctx, SystemActor(), func(tx *tx) error {
 		tx.emit(&Event{Kind: EvExternalPRMerged, ProjectID: p.ID, IssueID: a.ID, IssueKey: a.Key, New: "https://github.com/acme/widgets/pull/7"})
 		_, err := tx.ExecContext(e.ctx, `UPDATE external_links SET state = 'merged' WHERE issue_id = ?`, a.ID)
@@ -93,8 +90,6 @@ func TestAgentActivity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Haiku works half an hour on another task, still running, and creates
-	// an issue.
 	b := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Docs", Agent: "haiku"})
 	if task, err := e.s.AgentNext(e.ctx, haiku, AgentQuery{}); err != nil || task == nil || task.Issue.Key != b.Key {
 		t.Fatalf("haiku next = %v, %v", task, err)
@@ -105,7 +100,6 @@ func TestAgentActivity(t *testing.T) {
 	e.s.Wait() // background screens read the clock
 	e.setClock(e.clockNow().Add(30 * time.Minute))
 
-	// A review bot run: Muse Spark failed, Nemotron answered with 2 findings.
 	f := e.forge("forgejo", "https://git.example.com", false)
 	if _, err := e.s.db.W.ExecContext(e.ctx, `INSERT INTO pull_requests(forge_id, repo, number, url, state, created_at, updated_at)
 		VALUES (?, 'acme/widgets', 7, 'https://git.example.com/acme/widgets/pulls/7', 'open', 0, 0)`, f.ID); err != nil {
@@ -134,7 +128,6 @@ func TestAgentActivity(t *testing.T) {
 	if tot.TasksDone != 1 || tot.Runs != 2 || tot.InputTokens != 1000 || tot.OutputTokens != 300 || tot.CostUSD != 0.5 {
 		t.Errorf("totals = %+v", tot)
 	}
-	// An hour for Claude Code, half an hour (and counting) for Haiku.
 	if tot.Seconds != 90*60 {
 		t.Errorf("seconds = %d, want %d", tot.Seconds, 90*60)
 	}
@@ -161,7 +154,6 @@ func TestAgentActivity(t *testing.T) {
 		t.Errorf("runs = %+v", act.Runs)
 	}
 
-	// A spec narrows everything to what it covers, models included.
 	opus, err := e.s.AgentActivity(e.ctx, e.admin, ActivityQuery{Agent: "opus"})
 	if err != nil {
 		t.Fatal(err)
@@ -174,7 +166,6 @@ func TestAgentActivity(t *testing.T) {
 		t.Errorf("nemotron = %+v, bots %+v", nemo.Totals, nemo.Bots)
 	}
 
-	// Sam sees none of it, and can't ask about the admin's project.
 	samAct, err := e.s.AgentActivity(e.ctx, other, ActivityQuery{})
 	if err != nil {
 		t.Fatal(err)
@@ -186,7 +177,6 @@ func TestAgentActivity(t *testing.T) {
 		t.Error("sam asked about a project he isn't in")
 	}
 
-	// Later, outside a 7-day window, the done work drops out.
 	e.s.Wait() // background screens read the clock
 	e.setClock(e.clockNow().Add(10 * 24 * time.Hour))
 	week, _ := e.s.AgentActivity(e.ctx, e.admin, ActivityQuery{Days: 7})

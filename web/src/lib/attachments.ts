@@ -1,5 +1,4 @@
-// Files on anything (WP-D16): an issue, page, design note, comment, request
-// or agent session. A target is written "page:12", "design:3", "issue:WP-12".
+// Attachment targets are written 'kind:id', e.g. 'page:12', 'issue:WP-12'.
 
 import { queryOptions, type QueryClient } from '@tanstack/react-query'
 import { api, qs } from './api'

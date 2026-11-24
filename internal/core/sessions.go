@@ -13,16 +13,13 @@ import (
 	"unicode/utf8"
 )
 
-// Agent sessions (WP-D16): one run of a coding agent on one machine. They
-// are filled by the CLI's hooks, never by the model, so they cost no tokens.
-// A session is keyed by (user, machine, the CLI's session id), so a resumed
-// session is the same row.
+// filled by the CLI's hooks, never the model; keyed by (user, machine, CLI session id), so a resumed session is the same row
 
 // Session states. The stored state is what the last hook said; reading it
 // applies the idle and ended rules.
 const (
 	SessionWorking = "working"
-	SessionWaiting = "waiting" // waiting for you
+	SessionWaiting = "waiting"
 	SessionIdle    = "idle"
 	SessionEnded   = "ended"
 
@@ -218,20 +215,12 @@ type HookEvent struct {
 	// one the client sent again after a lost reply is counted once.
 	DropsID string `json:"drops_id,omitempty"`
 
-	// quiet: a keep-warm ping's prompt or stop, or Waypoint's /compact
-	// (WP-192): no turn of the session's work, so it records nothing of one.
-	quiet bool
-	// typed: the kind of text Waypoint typed that this UserPromptSubmit
-	// reports (TypedReview, ...), "" for a person's prompt (recogniseTyped).
-	typed string
-	// kept: this UserPromptSubmit was the person's keep (WP-ADR9) or
-	// another session command (WP-562): it goes no further, and they see
-	// this line instead of a turn.
-	kept string
-	// advance: a step /wp next made due now, moved on after the write.
+	// quiet: a keep-warm ping or Waypoint's /compact; records no turn of the session's work
+	quiet   bool
+	typed   string
+	kept    string
 	advance *stepRow
-	// review: a /wp review, answered after the write.
-	review *reviewAsk
+	review  *reviewAsk
 }
 
 // HookPending is the background work a Stop reports: Claude Code's
@@ -323,7 +312,7 @@ func (s *Service) SessionForHeader(ctx context.Context, userID int64, cliID, mac
 		return 0
 	}
 	if id == 0 {
-		return 0 // not registered yet (or not this person's): ask again next time
+		return 0
 	}
 	s.sessCache.mu.Lock()
 	if s.sessCache.m == nil || len(s.sessCache.m) > 1000 {
@@ -457,7 +446,6 @@ func (s *Service) sessionMeta(ctx context.Context, actor *Actor, list []*AgentSe
 			x.Issue = irefs[x.issueID.Int64]
 		}
 		x.OpenRequests = open[x.ID]
-		// Prompts are the owner's; colleagues in the project see the work.
 		if x.userID != actor.id() && !actor.isAdmin() {
 			x.LastPrompt = ""
 		}
@@ -522,12 +510,9 @@ func (s *Service) ListAgentSessions(ctx context.Context, actor *Actor, q AgentSe
 	}
 	now := s.nowMS()
 	idleCut, endCut := now-sessionIdleAfter.Milliseconds(), now-sessionEndedAfter.Milliseconds()
-	// The state people read, as SQL.
 	stateExpr := `(CASE WHEN s.state = 'ended' OR s.last_seen_at <= ? THEN 'ended' WHEN s.last_seen_at <= ? THEN 'idle' ELSE s.state END)`
 	where, args := []string{"1=1"}, []any{}
 	if !actor.isAdmin() {
-		// A job's token sees its own session while that has no project,
-		// and those of its own project (WP-418), as sessionVisible does.
 		member, margs := actor.memberProjects(RoleViewer)
 		where = append(where, `((s.user_id = ? AND (? OR (s.project_id IS NULL AND s.id = ?))) OR s.project_id IN `+member+`)`)
 		args = append(append(args, actor.id(), actor.scope == nil, actor.Session), margs...)
@@ -649,7 +634,6 @@ func (s *Service) CurrentAgentSession(ctx context.Context, actor *Actor, cliID, 
 	}
 	id := actor.Session
 	if cliID != "" {
-		// Only the actor's own: SessionForHeader matches by person.
 		id = s.SessionForHeader(ctx, actor.id(), cliID, machine)
 	}
 	if id == 0 {
@@ -664,8 +648,6 @@ func (s *Service) CurrentAgentSession(ctx context.Context, actor *Actor, cliID, 
 	}
 	return x, nil
 }
-
-// ---- the summary ----
 
 // SessionItem is a record a session touched.
 type SessionItem struct {
@@ -688,14 +670,14 @@ type TimelineEntry struct {
 	At     time.Time `json:"at"`
 }
 
-const sessionEventsKept = 1500 // newest timeline events a session keeps
+const sessionEventsKept = 1500
 
 // PromptWithheldLine is the timeline line of a prompt whose text was not sent.
 const PromptWithheldLine = "(prompt text not recorded: wp hook --no-prompts)"
 
 const (
-	sessionPromptLine = 300      // of a prompt, on the timeline's line and in last_prompt
-	sessionPromptMax  = 32 << 10 // a prompt is kept whole up to this many characters
+	sessionPromptLine = 300
+	sessionPromptMax  = 32 << 10
 )
 
 // AgentSessionSummary is what a session did, as WP-D16 describes it: what it is
@@ -754,11 +736,7 @@ func (s *Service) GetAgentSession(ctx context.Context, actor *Actor, id int64) (
 	sum.Done.PullRequests, sum.Done.Commits, sum.Deferred.Issues = []SessionItem{}, []SessionItem{}, []SessionItem{}
 	sum.Deferred.Requests, sum.Waiting, sum.Requests, sum.Runs, sum.Timeline = []*Request{}, []*Request{}, []*Request{}, []SessionRun{}, []TimelineEntry{}
 
-	// Prompts are the owner's, as in sessionMeta: a colleague in the project
-	// sees that a prompt came, not what it said.
 	ownPrompts := x.userID == actor.id() || actor.isAdmin()
-	// A refused call's command is read as a request's is: by the session's
-	// person and its project's editors (WP-232).
 	refusedText := ownPrompts
 	if !refusedText && x.projectID.Valid {
 		role, rerr := s.projectRole(ctx, s.db.R, actor, x.projectID.Int64)
@@ -770,8 +748,7 @@ func (s *Service) GetAgentSession(ctx context.Context, actor *Actor, id int64) (
 		refusedText = role >= RoleEditor
 	}
 	refusedText = refusedText && !actor.HidesCommandText()
-	// The latest entries; a long session keeps its newest 1,000. What was
-	// named to it as outstanding (session_outstanding.go) is bookkeeping.
+	// outstanding records are bookkeeping: left out here and not counted in the trim
 	rows, err := s.db.R.QueryContext(ctx, `SELECT id, kind, ref_type, label, url, detail, data, created_at FROM session_events WHERE session_id = ? AND kind != ? ORDER BY id DESC LIMIT 1000`, id, outstandingKind)
 	if err != nil {
 		return nil, err
@@ -841,7 +818,6 @@ func (s *Service) GetAgentSession(ctx context.Context, actor *Actor, id int64) (
 			sum.Done.PullRequests = append(sum.Done.PullRequests, SessionItem{Kind: "pr", Label: r.Result.PRTitle, Detail: r.Title, URL: r.Result.PRURL, At: r.UpdatedAt})
 		}
 	}
-	// Runs on issues from this session.
 	rr, err := s.db.R.QueryContext(ctx, `SELECT p.key || '-' || i.number, i.title, r.started_at, r.ended_at, r.outcome, r.input_tokens, r.output_tokens
 		FROM agent_runs r JOIN issues i ON i.id = r.issue_id JOIN projects p ON p.id = i.project_id WHERE r.session_id = ? ORDER BY r.id DESC LIMIT 50`, id)
 	if err != nil {
@@ -868,8 +844,6 @@ func shortSHA(s string) string {
 	return s
 }
 
-// ---- hooks ----
-
 // SessionHook applies a batch of hook events from an agent's CLI, in order.
 // The last event decides what comes back: at Stop (unless it is a Stop that
 // already continued) and SessionStart, the decisions that arrived since the
@@ -892,30 +866,25 @@ func (s *Service) SessionHook(ctx context.Context, actor *Actor, evs []HookEvent
 			return nil, invalid("machine or cwd too long")
 		}
 	}
-	evs = append([]HookEvent(nil), evs...) // unwrapped below: the caller's stay as sent
+	evs = append([]HookEvent(nil), evs...)
 	for n := range evs {
-		// A prompt pasted whole is its text, so autopilot's own (pasted
-		// into the pane) still reads as autopilot's, whatever wp sent it
-		// (WP-1562). The CLI hook sends a person's prompt as it came and
-		// unwraps it only for its own checks; it is unwrapped here, once,
-		// and recorded so (a paste's text, as the transcript shows it).
+		// unwrapped here, once: a pasted prompt is its text, so autopilot's own still reads as autopilot's, whatever wp sent it
 		if evs[n].Event == "UserPromptSubmit" {
 			evs[n].Prompt = UnwrapPasted(evs[n].Prompt)
 		}
 	}
 	res := &HookResult{}
 	lastQuiet := false
-	// A pause that winds sessions down (WP-146): every reply carries it for
-	// the hooks' local copy, and a Stop isn't carried on.
+	// every reply carries the pause for the hooks' local copy; a Stop under a pause is not carried on
 	var perr error
 	if res.Pause, perr = s.sessionPause(ctx, actor.id(), pausedAgent(actor)); perr != nil {
 		return nil, perr
 	}
 	res.Guard = s.guardState(ctx, actor.id())
 	pausedStop := res.Pause != nil && evs[len(evs)-1].Event == "Stop"
-	var advance *stepRow  // /wp next's step (WP-562)
-	var review *reviewAsk // /wp review's ask
-	leftStop := false     // a Stop in a session its person stopped Waypoint in (WP-562)
+	var advance *stepRow
+	var review *reviewAsk
+	leftStop := false
 	err := s.write(ctx, actor, func(t *tx) error {
 		for n, ev := range evs {
 			x, created, err := s.touchSession(ctx, t, actor, &ev)
@@ -923,8 +892,6 @@ func (s *Service) SessionHook(ctx context.Context, actor *Actor, evs []HookEvent
 				return err
 			}
 			res.Session = x.ID
-			// Observational: a failure here is counted, never a reason to
-			// refuse the batch (WP-1468).
 			if err := s.recordObserved(ctx, t, actor, x, &ev); err != nil {
 				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 					return err
@@ -946,8 +913,6 @@ func (s *Service) SessionHook(ctx context.Context, actor *Actor, evs []HookEvent
 			}
 			last := n == len(evs)-1
 			if last && (ev.Event == "SessionStart" || ev.Event == "SubagentStart") {
-				// What this session is told by what it is (ADR146). Never a
-				// reason to refuse the batch.
 				text, err := s.deliverInstructions(ctx, t, x, &ev)
 				if err != nil {
 					if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -969,9 +934,6 @@ func (s *Service) SessionHook(ctx context.Context, actor *Actor, evs []HookEvent
 				// waits for the stop, which carries the agent on with it (WP-192).
 				continue
 			}
-			// A session its person stopped Waypoint in (/wp stop) is carried on
-			// by nothing of Waypoint's at a Stop, as a paused one: news waits for
-			// their next prompt (WP-562).
 			if last && ev.Event == "Stop" {
 				leftStop = sessionLeftAlone(ctx, t, x.ID)
 			}
@@ -979,8 +941,6 @@ func (s *Service) SessionHook(ctx context.Context, actor *Actor, evs []HookEvent
 			// A person's answer, given in the web while the agent sat idle,
 			// reaches it at the start of its next turn, not at the end of it.
 			if last && (ev.Event == "SessionStart" || ev.Event == "UserPromptSubmit" || (ev.Event == "Stop" && !ev.StopHookActive && !held)) {
-				// Answers that need no follow-up (WP-176) wait for the start of a
-				// turn; a Stop that would continue the agent leaves them.
 				res.Deliver, err = s.takeDecisions(ctx, t, actor, x, ev.Event == "SessionStart", ev.Event != "Stop")
 				if err != nil {
 					return err
@@ -1015,9 +975,7 @@ func (s *Service) SessionHook(ctx context.Context, actor *Actor, evs []HookEvent
 					}
 				}
 				if !ev.StopHookActive && !ev.quiet && len(res.Deliver) == 0 && len(res.Messages) == 0 && len(runningTasks(ev.Pending)) == 0 {
-					// A note for the person only: failing it never fails the Stop.
-					// Not while the session still works (news to read, background
-					// tasks running): "done" would misread there; a later Stop says it.
+					// Only when the session is done: "done" would misread while it still works; a later Stop says it.
 					if note, err := s.bigSessionNote(ctx, t, x.ID); err != nil {
 						s.log.WarnContext(ctx, "big session note", "session", x.ID, "err", err)
 					} else {
@@ -1028,7 +986,6 @@ func (s *Service) SessionHook(ctx context.Context, actor *Actor, evs []HookEvent
 				case pausedStop:
 					res.Note = pausedStopNote(res.Pause)
 				case leftStop:
-					// Like the autopilot branch, it never fails the Stop.
 					if err := s.stopStep(ctx, t, x.ID, "left", "you stopped Waypoint in the session"); err != nil {
 						s.log.WarnContext(ctx, "stop step", "session", x.ID, "err", err)
 					}
@@ -1039,7 +996,7 @@ func (s *Service) SessionHook(ctx context.Context, actor *Actor, evs []HookEvent
 					if note, err := s.autopilotAtStop(ctx, t, x, &ev); err != nil {
 						s.log.WarnContext(ctx, "autopilot at stop", "session", x.ID, "err", err)
 					} else if note != "" {
-						res.Note = note // it says more than the size note: the session is about to be cleared
+						res.Note = note
 					}
 				}
 			}
@@ -1066,11 +1023,7 @@ func (s *Service) SessionHook(ctx context.Context, actor *Actor, evs []HookEvent
 	if evs[len(evs)-1].Event == "SessionStart" && !lastQuiet {
 		res.Text = joinText(res.Text, s.autopilotSessionNote(ctx, res.Session, 0))
 	}
-	// A Stop that leaves a background run going: Claude Code says so, and the
-	// work that doesn't need its result is named once, so the turn doesn't end
-	// idle (WP-1571). The stop it continues is let through, and a follow-up
-	// with something to tell the agent goes first: its wait below needs a
-	// Stop that says nothing.
+	// Send any follow-up with news first: the wait below needs a Stop that says nothing.
 	if last := evs[len(evs)-1]; last.Event == "Stop" && !last.StopHookActive && !lastQuiet && !pausedStop && !leftStop && res.Text == "" && res.Session != 0 {
 		if running := runningTasks(last.Pending); len(running) > 0 && !s.followUpTalks(ctx, res.Session) {
 			ac := *actor
@@ -1092,7 +1045,7 @@ func (s *Service) SessionHook(ctx context.Context, actor *Actor, evs []HookEvent
 		s.expectAwait(res.Session)
 	}
 	if res.Text != "" || res.Await > 0 {
-		res.End = false // it carries on, or waits for a follow-up's message
+		res.End = false
 	}
 	s.publishSession(ctx, res.Session)
 	return res, nil
@@ -1195,7 +1148,6 @@ func agentLabel(actor *Actor, cli string) string {
 		return a
 	}
 	name := strings.ToLower(cmp(strings.TrimSpace(cli), "claude"))
-	// A CLI this map does not know is recorded under its own name, never as "".
 	return cmp(agentOfCLI[name], name)
 }
 
@@ -1209,7 +1161,6 @@ func (s *Service) touchSession(ctx context.Context, t *tx, actor *Actor, ev *Hoo
 	created := false
 	if errors.Is(err, sql.ErrNoRows) {
 		created = true
-		// Who started it decides its kind (WP-34): a launcher sets WP_TASK.
 		kind, keys := SessionYours, ""
 		if tasks := splitTaskKeys(ev.Task); len(tasks) > 0 {
 			kind, keys = SessionTask, strings.Join(tasks, ",")
@@ -1295,7 +1246,7 @@ func (s *Service) adoptLaunchClaims(ctx context.Context, t *tx, actor *Actor, x 
 	for _, key := range x.Tasks {
 		id, err := s.resolveIssueID(ctx, t, key)
 		if err != nil {
-			continue // a binding to a task that isn't there: nothing was taken
+			continue
 		}
 		var run, issue int64
 		err = t.QueryRowContext(ctx, `WITH RECURSIVE d(id) AS (SELECT ? UNION SELECT i.id FROM issues i JOIN d ON i.parent_id = d.id)
@@ -1370,8 +1321,7 @@ func (s *Service) applyHookEvent(ctx context.Context, t *tx, actor *Actor, x *Ag
 		_, err := t.ExecContext(ctx, `UPDATE agent_sessions SET state = ?, wait_reason = ? WHERE id = ? AND last_seen_at <= ?`, state, reason, x.ID, at+1)
 		return err
 	}
-	// The prompt cache (WP-192): a keep-warm ping, or Waypoint's /compact,
-	// is no turn of the session's work, and leaves it as it was.
+	// Keep-warm pings (prompt cache) and /compact are no turn: they leave the session's state as it was.
 	var err error
 	switch ev.Event {
 	case "SessionStart":
@@ -1386,7 +1336,6 @@ func (s *Service) applyHookEvent(ctx context.Context, t *tx, actor *Actor, x *Ag
 	}
 	switch ev.Event {
 	case "SessionStart", "UserPromptSubmit":
-		// Working again: no longer finished (WP-D22).
 		if _, err := t.ExecContext(ctx, `UPDATE agent_sessions SET finished_at = NULL, pending = '' WHERE id = ?`, x.ID); err != nil {
 			return err
 		}
@@ -1397,7 +1346,6 @@ func (s *Service) applyHookEvent(ctx context.Context, t *tx, actor *Actor, x *Ag
 			return err
 		}
 		if x.stored == SessionEnded {
-			// resumed: same row
 			if err := s.sessionTimeline(ctx, t, x.ID, at, "started", "", 0, "", "", "resumed", x.projectID, nil); err != nil {
 				return err
 			}
@@ -1407,14 +1355,14 @@ func (s *Service) applyHookEvent(ctx context.Context, t *tx, actor *Actor, x *Ag
 				return err
 			}
 		}
-		if err := s.takeProjectNotices(ctx, t, x, at); err != nil { // WP-378
+		if err := s.takeProjectNotices(ctx, t, x, at); err != nil {
 			return err
 		}
 		if ev.Source != "compact" {
-			if err := s.noteStrandedHere(ctx, t, actor, x, ev); err != nil { // WP-567: never fails the start
+			if err := s.noteStrandedHere(ctx, t, actor, x, ev); err != nil {
 				s.log.WarnContext(ctx, "stranded work here", "session", x.ID, "err", err)
 			}
-			if line := s.unpushedHere(ctx, t, cmp(ev.Repo, x.Repo), cleanCheckouts(ev.Checkouts), s.nowMS()); line != "" { // WP-599: never fails the start
+			if line := s.unpushedHere(ctx, t, cmp(ev.Repo, x.Repo), cleanCheckouts(ev.Checkouts), s.nowMS()); line != "" {
 				if _, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO session_messages(session_id, body, step_key, created_by, created_at, passive) VALUES (?,?,?,NULL,?,1)`,
 					x.ID, line, "unpushed:"+itoa64(x.ID), s.nowMS()); err != nil {
 					s.log.WarnContext(ctx, "unpushed at session start", "session", x.ID, "err", err)
@@ -1425,9 +1373,9 @@ func (s *Service) applyHookEvent(ctx context.Context, t *tx, actor *Actor, x *Ag
 	case "UserPromptSubmit":
 		if kept, err := s.sessionCommand(ctx, t, x, ev); err != nil {
 			if SessionCommand(ev.Prompt) != "" {
-				return err // nothing half done; the CLI says Waypoint didn't answer
+				return err // A failed session command stops here; its text must not reach the agent as a prompt.
 			}
-			s.log.WarnContext(ctx, "autopilot keep", "session", x.ID, "err", err) // the prompt goes on as any other
+			s.log.WarnContext(ctx, "autopilot keep", "session", x.ID, "err", err)
 		} else if kept != "" {
 			ev.kept = kept
 			// Never a turn. keep is its person taking the session; Waypoint's
@@ -1455,8 +1403,6 @@ func (s *Service) applyHookEvent(ctx context.Context, t *tx, actor *Actor, x *Ag
 			}
 		}
 		if ev.Prompt == "" && ev.PromptWithheld {
-			// A prompt was typed and its text was left out on purpose: the
-			// turn is still on the timeline, and the missing text is counted.
 			if err := s.sessionTimeline(ctx, t, x.ID, at, "prompt", "", 0, "", "", PromptWithheldLine, x.projectID, map[string]any{"withheld": true}); err != nil {
 				return err
 			}
@@ -1465,8 +1411,6 @@ func (s *Service) applyHookEvent(ctx context.Context, t *tx, actor *Actor, x *Ag
 			}
 		}
 		if ev.Prompt != "" {
-			// The line shows the start; a longer prompt is kept whole beside
-			// it (WP-860), as what an agent was asked is part of the record.
 			var data map[string]any
 			if p := strings.TrimSpace(ev.Prompt); utf8.RuneCountInString(p) > sessionPromptLine {
 				data = map[string]any{"text": clipRunes(p, sessionPromptMax)}
@@ -1480,18 +1424,17 @@ func (s *Service) applyHookEvent(ctx context.Context, t *tx, actor *Actor, x *Ag
 				}
 			}
 		}
-		if err := s.noteNamedRefs(ctx, t, x, ev.Prompt, at); err != nil { // WP-378
+		if err := s.noteNamedRefs(ctx, t, x, ev.Prompt, at); err != nil {
 			return err
 		}
 		if err := s.takeProjectNotices(ctx, t, x, at); err != nil {
 			return err
 		}
-		// A new turn: the refused calls and questions of earlier ones are over (WP-66).
 		if err := s.expireOnPrompt(ctx, t, x.ID, at); err != nil {
 			return err
 		}
 		if err := s.autopilotOnPrompt(ctx, t, x, ev); err != nil {
-			s.log.WarnContext(ctx, "autopilot on prompt", "session", x.ID, "err", err) // never fails the prompt
+			s.log.WarnContext(ctx, "autopilot on prompt", "session", x.ID, "err", err)
 		}
 		return setState(SessionWorking, "")
 	case "Notification":
@@ -1507,7 +1450,6 @@ func (s *Service) applyHookEvent(ctx context.Context, t *tx, actor *Actor, x *Ag
 		}
 		return nil
 	case "PermissionDenied":
-		// Logged for audit, not asked (WP-232, WP-ADR115).
 		return s.logRefusal(ctx, t, actor, x, ev, at)
 	case "PreToolUse":
 		if ev.Tool == "AskUserQuestion" {
@@ -1531,7 +1473,7 @@ func (s *Service) applyHookEvent(ctx context.Context, t *tx, actor *Actor, x *Ag
 		if ev.quiet, err = s.warmStop(ctx, t, x, ev, at); err != nil {
 			return err
 		}
-		if err := s.recordWorkState(ctx, t, x, ev, at); err != nil { // WP-567
+		if err := s.recordWorkState(ctx, t, x, ev, at); err != nil {
 			return err
 		}
 		sets, args := []string{}, []any{}
@@ -1552,42 +1494,36 @@ func (s *Service) applyHookEvent(ctx context.Context, t *tx, actor *Actor, x *Ag
 			}
 		}
 		if ev.quiet {
-			// A ping's "ok": nothing the session did.
 			return setState(SessionIdle, "")
 		}
 		if m := strings.TrimSpace(ev.LastMessage); m != "" {
 			var data map[string]any
 			if ev.Reason == StopEndedByShip {
-				// A hook ended the turn at wp ship with its --summary: no
-				// model call wrote this message (WP-1093).
 				data = map[string]any{"ended_by": StopEndedByShip}
 			}
 			if err := s.sessionTimeline(ctx, t, x.ID, at, "update", "", 0, "", "", excerpt(m, 500), x.projectID, data); err != nil {
 				return err
 			}
 		}
-		if err := s.noteNamedRefs(ctx, t, x, ev.LastMessage, at); err != nil { // WP-378
+		if err := s.noteNamedRefs(ctx, t, x, ev.LastMessage, at); err != nil {
 			return err
 		}
-		if err := s.statementsAtStop(ctx, t, x, ev.LastMessage, at); err != nil { // WP-715: never fails the Stop
+		if err := s.statementsAtStop(ctx, t, x, ev.LastMessage, at); err != nil {
 			s.log.WarnContext(ctx, "claim check", "session", x.ID, "err", err)
 		}
-		if err := s.autoFileQuestion(ctx, t, actor, x, ev.LastMessage, at); err != nil { // WP-96
+		if err := s.autoFileQuestion(ctx, t, actor, x, ev.LastMessage, at); err != nil {
 			return err
 		}
-		if err := s.recordTaskSummary(ctx, t, actor, x, ev.LastMessage, at); err != nil { // WP-194: never fails the Stop
+		if err := s.recordTaskSummary(ctx, t, actor, x, ev.LastMessage, at); err != nil {
 			s.log.WarnContext(ctx, "task summary", "session", x.ID, "err", err)
 		}
-		// Keep the timeline bounded. The record of what was named as
-		// outstanding is bookkeeping, one row per item and way: it neither
-		// counts toward the events kept nor goes, or an item would be named
-		// again (session_outstanding.go).
+		// Outstanding rows are left out of this prune and its count: deleting one would let its item be named again.
 		res, err := t.ExecContext(ctx, `DELETE FROM session_events WHERE session_id = ? AND kind != ? AND id < (SELECT id FROM session_events WHERE session_id = ? AND kind != ? ORDER BY id DESC LIMIT 1 OFFSET ?)`,
 			x.ID, outstandingKind, x.ID, outstandingKind, sessionEventsKept)
 		if err != nil {
 			return err
 		}
-		if n, _ := res.RowsAffected(); n > 0 { // counted, not silent (WP-1470)
+		if n, _ := res.RowsAffected(); n > 0 {
 			if err := s.addDrop(ctx, t, actor, cmp(x.Machine, "unknown"), DropSessionEventsTrim, "session_events", n, at); err != nil {
 				return err
 			}
@@ -1599,7 +1535,7 @@ func (s *Service) applyHookEvent(ctx context.Context, t *tx, actor *Actor, x *Ag
 			return err
 		}
 		if ev.Event == "SubagentStop" {
-			return s.recordOwnReview(ctx, t, actor, x, ev, at) // WP-1089
+			return s.recordOwnReview(ctx, t, actor, x, ev, at)
 		}
 		return nil
 	case "SessionEnd":
@@ -1620,13 +1556,13 @@ func (s *Service) applyHookEvent(ctx context.Context, t *tx, actor *Actor, x *Ag
 		if err := s.sessionTimeline(ctx, t, x.ID, at, "ended", "", 0, "", "", ev.EndReason, x.projectID, nil); err != nil {
 			return err
 		}
-		if err := s.expireOnEnd(ctx, t, x.ID, at); err != nil { // WP-66
+		if err := s.expireOnEnd(ctx, t, x.ID, at); err != nil {
 			return err
 		}
-		if _, err := t.ExecContext(ctx, `DELETE FROM typed_prompts WHERE session_id = ?`, x.ID); err != nil { // WP-1370
+		if _, err := t.ExecContext(ctx, `DELETE FROM typed_prompts WHERE session_id = ?`, x.ID); err != nil {
 			return err
 		}
-		if err := warmEnded(ctx, t, x.ID, at, ev.EndReason); err != nil { // WP-1000
+		if err := warmEnded(ctx, t, x.ID, at, ev.EndReason); err != nil {
 			return err
 		}
 		// Autopilot's own /exit or /clear ends it while its step is starting
@@ -1638,8 +1574,6 @@ func (s *Service) applyHookEvent(ctx context.Context, t *tx, actor *Actor, x *Ag
 			return err
 		}
 		if starting == 0 {
-			// A task it leaves unfinished with work in its checkout goes back
-			// to To Do saying where (WP-567), before a /clear hands the rest on.
 			if err := s.strandOnEnd(ctx, t, x, ev, at); err != nil {
 				return err
 			}
@@ -1656,7 +1590,6 @@ func (s *Service) applyHookEvent(ctx context.Context, t *tx, actor *Actor, x *Ag
 				return err
 			}
 		}
-		// A clear takes the session: its step stops (WP-1319).
 		reason, why := "ended", "the session ended"
 		if ev.EndReason == "clear" {
 			reason, why = StopCleared, "you cleared the session"
@@ -1700,14 +1633,14 @@ func (s *Service) carryOverClear(ctx context.Context, t *tx, x *AgentSession, at
 			ORDER BY s.ended_at DESC LIMIT 1`, x.userID, x.Machine, x.Cwd, x.ID, at-clearWindow.Milliseconds(), at+clearWindow.Milliseconds()).Scan(&from)
 	}
 	if errors.Is(err, sql.ErrNoRows) || x.Cwd == "" {
-		return nil // the other half isn't here yet (it will find this one), or no terminal to match
+		return nil
 	} else if err != nil {
 		return err
 	}
 	for _, q := range []string{
 		`UPDATE babysits SET session_id = ? WHERE session_id = ? AND ended_at IS NULL`,
 		`UPDATE session_messages SET session_id = ? WHERE session_id = ? AND state = 'queued' AND step_key LIKE 'babysit:%'`,
-		// Paused tasks too (WP-566): /clear while idle still holds them.
+		// Paused runs move too: a /clear while idle still holds them.
 		`UPDATE agent_runs SET session_id = ? WHERE session_id = ? AND (ended_at IS NULL OR (outcome = 'paused'
 			AND id = (SELECT max(id) FROM agent_runs r WHERE r.issue_id = agent_runs.issue_id AND r.agent = agent_runs.agent)))`,
 	} {
@@ -1718,8 +1651,6 @@ func (s *Service) carryOverClear(ctx context.Context, t *tx, x *AgentSession, at
 	return nil
 }
 
-// ---- what an actor with a session does ----
-
 // afterDispatch runs the parts of dispatch that belong to agent sessions and
 // requests (WP-D16): runner jobs that finish update the requests they ran
 // for, and what an actor does in a session is recorded on it.
@@ -1727,17 +1658,17 @@ func (s *Service) afterDispatch(ctx context.Context, actor *Actor, events []*Eve
 	for _, e := range events {
 		switch e.Kind {
 		case EvPRUpdated, EvPRActivity, EvExternalPRMerged, EvIssueStatus:
-			s.nudgeRequestWatches() // WP-126
+			s.nudgeRequestWatches()
 		case EvRunnerJobFinished:
 			s.watchJobFinished(ctx, e)
 			s.requestJobFinished(ctx, e)
-			s.babysitJobFinished(ctx, e) // WP-134
+			s.babysitJobFinished(ctx, e)
 			s.sessionMessageJobFinished(ctx, e)
-			s.autopilotJobFinished(ctx, e)  // WP-194
-			s.auditJobFinished(ctx, e)      // WP-348
-			s.cacheWarmJobFinished(ctx, e)  // WP-192
-			s.reviewCompactFinished(ctx, e) // WP-761
-			s.prepAgentJobFinished(ctx, e)  // WP-250
+			s.autopilotJobFinished(ctx, e)
+			s.auditJobFinished(ctx, e)
+			s.cacheWarmJobFinished(ctx, e)
+			s.reviewCompactFinished(ctx, e)
+			s.prepAgentJobFinished(ctx, e)
 		case EvCodeAudit:
 			s.codeAuditEvent(ctx, e)
 		case EvRunnerJobUpdated:
@@ -1747,7 +1678,7 @@ func (s *Service) afterDispatch(ctx context.Context, actor *Actor, events []*Eve
 		}
 		switch e.Kind {
 		case EvSessionFinished, EvRequestUpdated:
-			s.followUpEvents(ctx, e) // WP-D22
+			s.followUpEvents(ctx, e)
 		}
 	}
 	if actor != nil && actor.Session != 0 {

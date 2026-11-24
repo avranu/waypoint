@@ -10,12 +10,7 @@ import (
 	"time"
 )
 
-// Code summaries (WP-182, ADR3 point 5). `wp` indexes a checkout of a repo's
-// default branch locally and uploads a summary: per-file history numbers
-// (churn, hotspot, bug fixes, owner), the strongest co-change pairs and
-// totals. The newest one per repo is kept, keyed by the forge's repo id so a
-// rename or transfer (WP-166) keeps it. The review bot and the story-point
-// estimator read it where no checkout is at hand.
+// The newest summary per repo is kept, keyed by the forge's repo id so a rename or transfer keeps it.
 
 const (
 	codeSummaryMaxFiles = 20000

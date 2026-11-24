@@ -1,11 +1,5 @@
 package core
 
-// Repo webhooks. Attaching a repo makes Waypoint add the forge's webhook to
-// it with the forge's token (or reuse one already pointing here), so nobody
-// copies URLs and secrets between tabs. How that went is kept on the
-// project repo, and so is the last signed delivery, so the settings page
-// can say whether the forge is actually getting through.
-
 import (
 	"context"
 	"encoding/json"
@@ -23,7 +17,7 @@ const (
 	hookPending   = "pending"
 	hookInstalled = "installed"
 	hookFailed    = "failed"
-	hookCovered   = "covered" // an organisation hook brings its events
+	hookCovered   = "covered" // covered: an organisation hook sends this repo's events, so the repo gets no hook of its own.
 )
 
 // ForgeHook is a webhook on a forge repo.
@@ -47,11 +41,11 @@ type ForgeHooker interface {
 // (or refresh) the hook for an attached repo or an organisation, or remove
 // one Waypoint added.
 type repoHookJob struct {
-	install    int64 // project_repos.id
-	installOrg int64 // forge_org_hooks.id
+	install    int64
+	installOrg int64
 	remove     *Forge
-	org        bool   // remove: an organisation hook (repo is the organisation)
-	repo       string // remove: the repo or organisation
+	org        bool
+	repo       string
 	hookID     string
 }
 
@@ -110,7 +104,7 @@ func (s *Service) installRepoHook(ctx context.Context, repoID int64) {
 	var forgeID int64
 	var repo string
 	if err := s.db.R.QueryRowContext(ctx, `SELECT forge_id, repo FROM project_repos WHERE id = ?`, repoID).Scan(&forgeID, &repo); err != nil {
-		return // detached meanwhile
+		return
 	}
 	f, err := s.forgeByID(ctx, forgeID)
 	if err != nil {
@@ -546,8 +540,6 @@ func isPrivateHost(h string) bool {
 	return false
 }
 
-// ---- HTTP client ----
-
 // hookEvents are the webhook events Waypoint reads (see parseGitHubHook).
 var hookEvents = []string{"issues", "issue_comment", "pull_request", "push"}
 
@@ -570,7 +562,7 @@ func hookEventsFor(kind string) []string {
 // group).
 type hookOn struct {
 	org  bool
-	name string // owner/name, or the organisation
+	name string
 }
 
 func onRepo(repo string) hookOn { return hookOn{name: repo} }

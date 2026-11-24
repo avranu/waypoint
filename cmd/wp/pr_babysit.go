@@ -8,9 +8,6 @@ import (
 	"strings"
 )
 
-// Babysitting a pull request and its review comments (WP-134, ADR2 §1-2):
-// wp pr babysit, wp pr todo, wp pr ack, wp pr fixed.
-
 var prBabysitCmd = &command{
 	name: "babysit", args: "[N...] [--stop] [--status] [--model M] [--notify | --blocking]",
 	summary: "watch the pull request until it merges, fixing failures and comments",
@@ -342,8 +339,6 @@ func cmdPRFixed(c *cli, args []string) error {
 	if len(pos) == 0 {
 		return c.usage("name the review comments (like c12; wp pr todo lists them)")
 	}
-	// The commit with the fix: until the pull request's head is it, the
-	// comments are being fixed, not fixed. A fix not committed yet isn't one.
 	sha, _ := localGit("rev-parse", "HEAD")
 	if dirty, err := localGit("status", "--porcelain", "--untracked-files=no"); err == nil && strings.TrimSpace(dirty) != "" {
 		return c.usage("commit the fix first: there are uncommitted changes here")
@@ -365,7 +360,7 @@ func commentsDone(raw []byte) string {
 	for _, c := range list {
 		line := fmt.Sprintf("%s %s (%s)", c.ID, strings.ReplaceAll(c.Verdict, "_", " "), verdictMark[c.Verdict])
 		if c.Verdict == "deferred" && c.Note != "" {
-			line += ": " + c.Note // names the follow-up task
+			line += ": " + c.Note
 		}
 		lines = append(lines, line)
 	}

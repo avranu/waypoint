@@ -10,30 +10,7 @@ import (
 	"time"
 )
 
-// Stalled background jobs (WP-605, WP-ADR97; timing WP-1045, WP-ADR118). A
-// runner watches its machine's Claude Code background jobs from /proc and
-// reports each one that has been quiet (no progress) for a few minutes,
-// again while it stays quiet, and once more when it moves again or ends.
-// Waypoint keeps each quiet spell (stalled_jobs) and decides from the
-// project's policy (StallPolicy) and the session's prompt cache whether and
-// how to tell the session, once per spell; it never touches the job: no CPU
-// isn't always stuck (a stalled download that resumes, a lock a person's
-// session holds, a deploy that mustn't be cut short).
-//
-//   - Warm cache: once the job is stalled, the session is woken (its work
-//     waits on its job), or mid-turn reads it at its Stop. And when its
-//     keep-warm ping is due while a job has been quiet a while (Early), the
-//     notice goes then in place of the ping (cache_warm.go): it costs the
-//     ping's turn, not another.
-//   - Cold cache: waking it re-reads its whole context, so the notice waits
-//     for its next turn; once the job has made no progress for ColdWake it
-//     is woken after all, so the work goes on without a person stepping in.
-//   - A notice not yet read when the job moves again or ends is withdrawn:
-//     it is better unsent.
-//
-// How each spell ended is the evidence: a kind of job whose quiet spells
-// often end by themselves gets a longer quiet time, and cold wakes stop
-// while they seldom lead to the job being stopped (stalled_learn.go).
+// Never touches the job (quiet is not stuck: a download may resume); a cold session is not woken for a notice, since waking re-reads its whole context, unless the job stays quiet past ColdWake.
 
 // StalledJob is one quiet background job a runner reports.
 type StalledJob struct {
@@ -99,11 +76,11 @@ const (
 
 // How a session was told (stalled_jobs.told_how).
 const (
-	stallWoke     = "woke"      // warm and idle: woken now
-	stallAtStop   = "at_stop"   // in a turn: read at its Stop
-	stallPassive  = "passive"   // cold (or not to be woken): read at its next turn
-	stallKeepWarm = "keep_warm" // went in place of a keep-warm ping
-	stallColdWake = "cold_wake" // cold, woken after ColdWake
+	stallWoke     = "woke"
+	stallAtStop   = "at_stop"
+	stallPassive  = "passive"
+	stallKeepWarm = "keep_warm"
+	stallColdWake = "cold_wake"
 )
 
 // ReportStalledJobs takes a runner's report: the quiet jobs and the ones
@@ -358,8 +335,7 @@ func (s *Service) tellStalled(ctx context.Context, userID, id int64, sp *stallSp
 		outcome = fmt.Sprintf("its session reads it at its next turn (its prompt cache is cold, so it wasn't woken; it is if there's still no progress after %d min)", max(pol.ColdWake, th.Quiet))
 	case how == stallPassive:
 	case m.State == MessageQueued:
-		// Its work waits on its job, so it hears now (WP-ADR6 blocking news),
-		// though it stopped waiting on that job.
+		// Its work still waits on the job, so this news is posted now as waiting (blocking) news.
 		s.postToSession(ctx, id, true)
 		outcome = "its session reads it at its next turn (its prompt cache is warm, but its runner couldn't wake it)"
 		if how == stallColdWake {
@@ -549,7 +525,6 @@ func (s *Service) tellEarly(ctx context.Context, sessionID, userID int64) string
 		}
 		th := s.stallThreshold(ctx, userID, c.sp.Class, pol)
 		quiet := now.Sub(c.sp.QuietFrom)
-		// Early stretches with the stall time the evidence sets for its kind.
 		early := time.Duration(pol.Early) * time.Minute * time.Duration(th.Quiet) / time.Duration(max(pol.Quiet, 1))
 		if quiet < early || now.Sub(c.sp.StartedAt) < time.Duration(pol.MinAge)*time.Minute {
 			continue

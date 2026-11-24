@@ -199,7 +199,7 @@ var (
 )
 
 const (
-	maxSteps       = 20 // per list
+	maxSteps       = 20
 	maxStepsTotal  = 40
 	maxRepeat      = 20
 	maxRetries     = 5
@@ -376,8 +376,7 @@ func (r *Rule) isDurable() bool {
 		if a.OnError == "retry" {
 			return true
 		}
-		// A review that later steps follow waits for its bot run, so they
-		// can use what it found (WP-D14).
+		// A review followed by later steps must wait for its bot run: those steps read what it found.
 		if a.Type == "review" && n < len(steps)-1 {
 			return true
 		}

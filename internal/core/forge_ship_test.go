@@ -20,7 +20,7 @@ type apiFake struct {
 	mu    sync.Mutex
 	t     *testing.T
 	kind  string
-	reply map[string]any // key → JSON value, or a string for plain text
+	reply map[string]any
 	got   []apiCall
 	srv   *httptest.Server
 }
@@ -100,11 +100,9 @@ func TestForgejoThreads(t *testing.T) {
 	if ths[1].Resolved || len(ths[1].Comments) != 1 {
 		t.Errorf("second thread = %+v", ths[1])
 	}
-	// No resolve API on Forgejo.
 	if err := c.ResolveThread(context.Background(), f, "me/app", &ForgePR{Number: 5}, t0); !errors.Is(err, ErrUnsupported) {
 		t.Errorf("resolve: %v", err)
 	}
-	// A reply is a one-comment review on the same line.
 	a.reply["POST /repos/me/app/pulls/5/reviews"] = map[string]any{"id": 9}
 	a.reply["GET /repos/me/app/pulls/5/reviews/9/comments"] = []map[string]any{{"id": 99}}
 	id, err := c.ReplyToThread(context.Background(), f, "me/app", &ForgePR{Number: 5, HeadSHA: "head"}, t0, "Fixed in `abc`.")
@@ -125,14 +123,13 @@ func TestForgejoThreads(t *testing.T) {
 
 func TestGitHubThreads(t *testing.T) {
 	a, f, c := newAPIFake(t, "github")
-	f.BaseURL = a.srv.URL // a GitHub Enterprise server: GraphQL at /api/graphql
+	f.BaseURL = a.srv.URL
 	a.reply["POST /api/graphql"] = map[string]any{"data": map[string]any{"repository": map[string]any{"pullRequest": map[string]any{"reviewThreads": map[string]any{
 		"pageInfo": map[string]any{"hasNextPage": false},
 		"nodes": []map[string]any{{"id": "PRRT_1", "isResolved": true, "isOutdated": false, "path": "a.go", "line": 11, "resolvedBy": map[string]any{"login": "sam"},
 			"comments": map[string]any{"nodes": []map[string]any{
 				{"databaseId": 501, "author": map[string]any{"login": "bot"}, "body": "P1 bug", "createdAt": "2026-10-13T10:00:00Z", "commit": map[string]any{"oid": "abc"}},
 				{"databaseId": 502, "author": map[string]any{"login": "sam"}, "body": "ok", "createdAt": "2026-10-13T11:00:00Z"}}}}}}}}}}
-	// The apiFake trims /api/v3 only; GraphQL lives beside it.
 	ths, err := c.ReviewThreads(context.Background(), f, "me/app", 5)
 	if err != nil || len(ths) != 1 {
 		t.Fatalf("threads = %+v %v", ths, err)
@@ -199,7 +196,6 @@ func TestGitLabThreads(t *testing.T) {
 
 func TestCommitStatusesAndChecks(t *testing.T) {
 	ctx := context.Background()
-	// Forgejo: the combined status lists the latest of each context.
 	a, f, c := newAPIFake(t, "forgejo")
 	a.reply["GET /repos/me/app/commits/abc/status?limit=50&page=1"] = map[string]any{"state": "failure", "statuses": []map[string]any{
 		{"context": "ci / backend (pull_request)", "status": "success", "target_url": "https://x/1"},
@@ -227,12 +223,10 @@ func TestCommitStatusesAndChecks(t *testing.T) {
 		t.Errorf("status body = %+v", b)
 	}
 
-	// GitHub: statuses and check runs.
 	a, f, c = newAPIFake(t, "github")
 	a.reply["GET /repos/me/app/commits/abc/status?per_page=100&page=1"] = map[string]any{"statuses": []map[string]any{{"context": "legacy/ci", "state": "success", "id": 4},
 		{"context": "waypoint/review", "state": "success", "id": 6}, {"context": "waypoint/tested", "state": "success", "id": 9}}}
-	// The combined status names no creator: the list of statuses does, for
-	// Waypoint's contexts (WP-416).
+	// The combined status names no creator; the statuses list does, for Waypoint's contexts.
 	a.reply["GET /repos/me/app/commits/abc/statuses?per_page=100&page=1"] = []map[string]any{
 		{"id": 9, "context": "waypoint/tested", "creator": map[string]any{"login": "claude"}},
 		{"id": 7, "context": "waypoint/review", "creator": map[string]any{"login": "waypoint"}},
@@ -257,7 +251,6 @@ func TestCommitStatusesAndChecks(t *testing.T) {
 		t.Errorf("states = %v", states)
 	}
 
-	// GitLab: pipeline jobs are commit statuses; failing allowed ones pass.
 	a, f, c = newAPIFake(t, "gitlab")
 	a.reply["GET /projects/me%2Fapp/repository/commits/abc/statuses?per_page=100&page=1"] = []map[string]any{
 		{"id": 31, "name": "test", "status": "failed", "target_url": "https://gl/31", "author": map[string]any{"username": "ann"}},
@@ -268,9 +261,7 @@ func TestCommitStatusesAndChecks(t *testing.T) {
 		t.Fatalf("checks = %+v %v", checks, err)
 	}
 
-	// A job's author is who triggered its pipeline, so a waypoint/* job or
-	// trigger job is no one's own; only a status posted through the API keeps
-	// its author (WP-416). A failed lookup counts as not Waypoint's.
+	// A GitLab job's author is who triggered its pipeline, so no waypoint/* job counts as Waypoint's; only a status posted through the API keeps its author.
 	a, f, c = newAPIFake(t, "gitlab")
 	a.reply["GET /projects/me%2Fapp/repository/commits/abc/statuses?per_page=100&page=1"] = []map[string]any{
 		{"id": 41, "name": "waypoint/review", "status": "success", "pipeline_id": 5, "author": map[string]any{"username": "waypoint"}},
@@ -300,7 +291,6 @@ func TestCommitStatusesAndChecks(t *testing.T) {
 			lookups[g.path]++
 		}
 	}
-	// Known kinds are remembered; the failed one is asked again.
 	if lookups["/projects/me%2Fapp/jobs/41"] != 1 || lookups["/projects/me%2Fapp/jobs/42"] != 1 || lookups["/projects/me%2Fapp/jobs/43"] != 1 || lookups["/projects/me%2Fapp/pipelines/6/bridges"] != 2 || lookups["/projects/me%2Fapp/jobs/45"] != 0 {
 		t.Errorf("gitlab lookups = %v", lookups)
 	}
@@ -317,7 +307,6 @@ func TestCommitStatusesAndChecks(t *testing.T) {
 func TestFailedJobLogs(t *testing.T) {
 	ctx := context.Background()
 	long := strings.Repeat("log line that is long enough to need cutting\n", 3000) + "FAIL: TestSomething\n"
-	// Forgejo Actions: run → job → log, matched to the status by its name.
 	a, f, c := newAPIFake(t, "forgejo")
 	a.reply["GET /repos/me/app/actions/runs?head_sha=abc&limit=50"] = map[string]any{"workflow_runs": []map[string]any{
 		{"id": 70, "status": "failure"}, {"id": 71, "status": "success"}}}
@@ -332,14 +321,12 @@ func TestFailedJobLogs(t *testing.T) {
 	if len(log) > maxLogTail+64 || !strings.HasSuffix(log, "FAIL: TestSomething\n") || !strings.HasPrefix(log, "… (earlier output cut)\n") {
 		t.Errorf("log: %d bytes, starts %q", len(log), log[:30])
 	}
-	// GitHub: Actions jobs by check run id; other apps' check runs have none.
 	a, f, c = newAPIFake(t, "github")
 	a.reply["GET /repos/me/app/actions/jobs/7/logs"] = "step 1\nboom\n"
 	logs, err = c.FailedLogs(ctx, f, "me/app", "abc", []CommitCheck{{Name: "build", Source: "check_run", JobID: "7"}, {Name: "codecov", Source: "check_run", JobID: "8"}})
 	if err != nil || len(logs) != 1 || logs["build"] != "step 1\nboom\n" {
 		t.Errorf("github logs = %v %v", logs, err)
 	}
-	// GitLab: the job's trace.
 	a, f, c = newAPIFake(t, "gitlab")
 	a.reply["GET /projects/me%2Fapp/jobs/31/trace"] = "running tests\nFAILED\n"
 	logs, err = c.FailedLogs(ctx, f, "me/app", "abc", []CommitCheck{{Name: "test", JobID: "31"}})
@@ -356,7 +343,6 @@ func TestForgejoJobLogByTargetURL(t *testing.T) {
 	a, f, c := newAPIFake(t, "forgejo")
 	a.reply["GET /repos/Robin/waypoint/actions/runs?run_number=189&limit=1"] = map[string]any{"total_count": 1, "workflow_runs": []map[string]any{
 		{"id": 1063, "index_in_repo": 189, "status": "failure"}}}
-	// Listed out of order: the index counts jobs by id.
 	a.reply["GET /repos/Robin/waypoint/actions/runs/1063/jobs"] = []map[string]any{
 		{"id": 2478, "name": "e2e", "status": "failure"}, {"id": 2474, "name": "current", "status": "success"},
 		{"id": 2475, "name": "backend", "status": "success"}, {"id": 2476, "name": "lint", "status": "success"},
@@ -368,12 +354,10 @@ func TestForgejoJobLogByTargetURL(t *testing.T) {
 	if err != nil || !strings.Contains(log, "Board is in More") {
 		t.Fatalf("log = %q, %v", log, err)
 	}
-	// The kept tail goes the same way.
 	logs, err := c.FailedLogs(ctx, f, "robin/waypoint", "43469de", []CommitCheck{e2e})
 	if err != nil || !strings.Contains(logs[e2e.Name], "Board is in More") {
 		t.Errorf("failed logs = %v, %v", logs, err)
 	}
-	// A job the run doesn't have, a run that isn't there, another repo's run.
 	for url, want := range map[string]string{
 		"https://git.example.com/Robin/waypoint/actions/runs/189/jobs/9": "no job 9",
 		"/Robin/waypoint/actions/runs/7/jobs/0":                          "no Actions run number 7",
@@ -392,7 +376,6 @@ func TestForgejoJobLogByTargetURL(t *testing.T) {
 func TestMergePRForges(t *testing.T) {
 	ctx := context.Background()
 	pr := &ForgePR{Number: 5, HeadRef: "fix", HeadRepo: "me/app", HeadSHA: "abc"}
-	// Forgejo: Do, the head guard, delete branch, message; default style from the repo.
 	a, f, c := newAPIFake(t, "forgejo")
 	a.reply["GET /repos/me/app"] = map[string]any{"default_merge_style": "squash"}
 	a.reply["POST /repos/me/app/pulls/5/merge"] = map[string]any{}
@@ -409,7 +392,6 @@ func TestMergePRForges(t *testing.T) {
 	if b := a.got[len(a.got)-1].body; b["Do"] != "rebase" {
 		t.Errorf("explicit style = %+v", b)
 	}
-	// A head that moved is a conflict, said in words.
 	a.reply["POST /repos/me/app/pulls/5/merge"] = 409
 	err := c.MergePR(ctx, f, "me/app", pr, MergeOptions{HeadSHA: "old"})
 	if err == nil || !strings.Contains(mergeRefusal(err), "newer push") {
@@ -423,7 +405,6 @@ func TestMergePRForges(t *testing.T) {
 		t.Errorf("bad style: %v", err)
 	}
 
-	// GitHub: sha, merge_method (the repo's first allowed), then delete the branch (not a fork's).
 	a, f, c = newAPIFake(t, "github")
 	a.reply["GET /repos/me/app"] = map[string]any{"allow_merge_commit": false, "allow_squash_merge": true, "allow_rebase_merge": true}
 	a.reply["PUT /repos/me/app/pulls/5/merge"] = map[string]any{"merged": true}
@@ -447,7 +428,6 @@ func TestMergePRForges(t *testing.T) {
 		t.Error("deleted the base repo's branch for a fork's pull request")
 	}
 
-	// GitLab: sha, squash, remove the source branch; rebase is the project's setting.
 	a, f, c = newAPIFake(t, "gitlab")
 	a.reply["PUT /projects/me%2Fapp/merge_requests/5/merge"] = map[string]any{}
 	if err := c.MergePR(ctx, f, "me/app", pr, MergeOptions{Style: "squash", HeadSHA: "abc", DeleteBranch: true, Message: "msg"}); err != nil {
@@ -463,7 +443,6 @@ func TestMergePRForges(t *testing.T) {
 }
 
 func TestWebhookPayloads(t *testing.T) {
-	// A GitHub push: the branch, who pushed, the changed files.
 	ev, err := parseGitHubHook("push", []byte(`{"ref":"refs/heads/feat","before":"0000000000000000000000000000000000000000","after":"abc","created":true,
 		"pusher":{"name":"sam"},"repository":{"full_name":"me/app"},
 		"commits":[{"id":"abc","message":"x","url":"u","added":["a.go"],"modified":["b.go"],"removed":["c.go"]}]}`))
@@ -471,7 +450,6 @@ func TestWebhookPayloads(t *testing.T) {
 		len(ev.commits) != 1 || strings.Join(ev.commits[0].paths, ",") != "a.go,b.go,c.go" {
 		t.Fatalf("push = %+v %v", ev, err)
 	}
-	// Forgejo says nothing of "created": zeros before it say so.
 	ev, _ = parseGitHubHook("push", []byte(`{"ref":"refs/heads/feat","before":"0000000000000000000000000000000000000000","after":"abc","repository":{"full_name":"me/app"},"sender":{"username":"sam"}}`))
 	if !ev.created || ev.pusher != "sam" {
 		t.Errorf("forgejo push = %+v", ev)
@@ -500,7 +478,6 @@ func TestWebhookPayloads(t *testing.T) {
 	if ev, _ := parseGitHubHook("release", []byte(`{"action":"created","release":{"tag_name":"v1","draft":true},"repository":{"full_name":"me/app"}}`)); ev != nil {
 		t.Error("a draft release was announced")
 	}
-	// GitLab.
 	ev, err = parseGitLabHook([]byte(`{"object_kind":"push","ref":"refs/heads/feat","before":"abc","after":"def","user_username":"sam","project":{"path_with_namespace":"g/app"},
 		"commits":[{"id":"def","message":"m","url":"u","added":["x"],"modified":[],"removed":["y"]}]}`))
 	if err != nil || ev.ref != "refs/heads/feat" || ev.pusher != "sam" || ev.created || strings.Join(ev.commits[0].paths, ",") != "x,y" {
@@ -514,7 +491,6 @@ func TestWebhookPayloads(t *testing.T) {
 	if ev == nil || ev.kind != "release" || ev.release.tag != "v2" {
 		t.Errorf("gitlab release = %+v", ev)
 	}
-	// What hooks subscribe to now includes releases and CI.
 	if evs := hookEventsFor("github"); !contains(evs, "status") || !contains(evs, "check_run") || !contains(evs, "release") || !contains(evs, "pull_request_review") {
 		t.Errorf("github events = %v", evs)
 	}
@@ -573,7 +549,7 @@ func TestEditPRBaseCalls(t *testing.T) {
 	if call := a.call("PUT", "/projects/me%2Fapp/merge_requests/7"); call == nil || call.body["target_branch"] != "release" {
 		t.Errorf("gitlab: call %+v", call)
 	}
-	if err := c.EditPRBase(ctx, f, "me/app", 8, "gone"); err == nil { // the fake has no such merge request: 404
+	if err := c.EditPRBase(ctx, f, "me/app", 8, "gone"); err == nil {
 		t.Error("gitlab: a refused move is no error")
 	}
 }

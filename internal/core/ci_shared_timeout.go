@@ -1,19 +1,6 @@
 package core
 
-// A shared timeout holds no merge line (WP-923, WP-ADR from WP-923). When
-// go test's -timeout stops a package that every pull request runs, the
-// front of the merge queue fails after the whole run, gets a flake re-run
-// (another half hour) and then an agent round about code that isn't its
-// own, while the pull request that would speed the suite up waits behind
-// it: on 2026-11-11 shard 1 timed out on #366, #389 and #392 in turn. So a
-// failure that is only go test timeouts, on jobs that timed out on other
-// commits lately too, is the suite's, not the change's: no re-run, no
-// round. An armed pull request gives up its turn at once and waits out of
-// the line; the slow suite goes to the repo's CI limits task (WP-922) for
-// an agent. When its base moves on, as a fix merging moves it, it takes its
-// place in the line again and is tried on the new base when its turn
-// comes, at most sharedTimeoutRetries times: after that its timeouts go the
-// usual way, in case they are its own after all.
+// Go test timeouts that other commits also hit lately are the suite's, not the change's: no re-run, and the pull request waits out of the merge line.
 
 import (
 	"context"
@@ -40,8 +27,8 @@ const (
 
 // sharedTimeoutEvidence is why a head's timeouts are taken as the suite's.
 type sharedTimeoutEvidence struct {
-	checks []string // the head's checks go test timed out in
-	others []string // the other commits that timed out the same jobs: "#366", "main d145047"
+	checks []string
+	others []string
 }
 
 // sharedTimeoutOf reads whether every failed check of pr's head is a go
@@ -63,14 +50,14 @@ func (s *Service) sharedTimeoutOf(ctx context.Context, pr *PullRequest) *sharedT
 		}
 		if !goTimeoutRE.MatchString(log) {
 			if derivedFailure(log) {
-				continue // it failed because a shard did
+				continue
 			}
 			rows.Close()
 			return nil
 		}
 		if !onlyGoTimeouts(cleanLog(log)) {
 			rows.Close()
-			return nil // a test failed too, or a build: that is the change's
+			return nil
 		}
 		ev.checks = append(ev.checks, name)
 		kinds[evidenceKind(checkJobName(name))] = true
@@ -89,7 +76,6 @@ func (s *Service) sharedTimeoutOf(ctx context.Context, pr *PullRequest) *sharedT
 		seen[short(sha)] = true
 		ev.others = append(ev.others, label)
 	}
-	// Other open pull requests' heads, as their checks' kept logs say.
 	other, err := s.db.R.QueryContext(ctx, `SELECT p.number, h.sha, c.name FROM pull_requests p
 		JOIN ci_heads h ON h.forge_id = p.forge_id AND h.repo = p.repo COLLATE NOCASE AND h.sha = p.head_sha
 		JOIN ci_checks c ON c.head_id = h.id
@@ -106,8 +92,6 @@ func (s *Service) sharedTimeoutOf(ctx context.Context, pr *PullRequest) *sharedT
 		}
 		other.Close()
 	}
-	// Any commit's jobs, as their logs' package times say (WP-922): the
-	// base's push runs and pull requests' earlier heads.
 	jobs, err := s.db.R.QueryContext(ctx, `SELECT DISTINCT j.sha, j.event, j.ref, j.name FROM ci_job_packages p
 		JOIN ci_jobs j ON j.forge_id = p.forge_id AND j.repo = p.repo AND j.task_id = p.task_id
 		WHERE p.forge_id = ? AND p.repo = ? AND p.outcome = 'timeout' AND p.at >= ? ORDER BY p.at DESC`,
@@ -120,7 +104,7 @@ func (s *Service) sharedTimeoutOf(ctx context.Context, pr *PullRequest) *sharedT
 				continue
 			}
 			if ref == own || strings.Contains(ref, fmt.Sprintf("pull/%d/", pr.Number)) {
-				continue // its own earlier heads say nothing about the others
+				continue
 			}
 			if strings.Contains(ref, stackPrefix) {
 				continue // a merge-queue stack may hold this very change
@@ -221,26 +205,20 @@ func (s *Service) waitOnSharedTimeout(ctx context.Context, b *Babysit, pr *PullR
 	base := cmp(pr.BaseRef, "its base")
 	tip, behind, stale := s.behindBase(ctx, pr)
 	what := fmt.Sprintf("go test timed out in %s, as it did lately on %s: the suite is slow, not this change", joinAnd(ev.checks), joinAnd(ev.others))
-	// st.Tip is "" until its first hold: then it has not moved since one.
+	// Tip is empty until the first hold, so there is no earlier base to have moved from.
 	if behind && !stale && tip != "" && (st.Retry || st.Tip != "" && !sameSHA(tip, st.Tip)) {
-		// The base moved on since it was held (perhaps with a fix): back in
-		// the line once the one in its full run (perhaps the fix) is
-		// through, and at the front brought up to date and tried again.
+		// Re-entry into the line waits until the run in progress (perhaps the fix) has finished, so the retry is on the new base.
 		if !st.Retry {
 			st.Retry = true
 			s.saveSharedTimeout(ctx, b, st)
 		}
-		// Not while it merges after another: it would hold the line (WP-912).
+		// Not while it waits its turn after another: retrying would hold the merge line.
 		if waits, _ := s.mergeWaitReasons(ctx, pr); len(waits) > 0 {
 			s.setState(ctx, b, pr, BabysitWatching, what+"; "+waits[0])
 			return true
 		}
 		defer s.queueLock(pr)()
-		// Held out of the line it asks for its place as if it were in it, by
-		// when it was armed, so it isn't behind a member armed after it. Out
-		// of the line it holds no front, so it isn't asked as the marked-ready
-		// one either. A copy, so queued_at and ready_at stay as they are
-		// (WP-1700).
+		// A pull request outside the line asks for its place on a copy, by its armed time, so queued_at and ready_at stay as they are.
 		asked := pr
 		if pr.QueuedAt == nil {
 			c := *pr
@@ -250,8 +228,6 @@ func (s *Service) waitOnSharedTimeout(ctx context.Context, b *Babysit, pr *PullR
 		}
 		ahead, err := s.queueAhead(ctx, asked)
 		if err != nil {
-			// Its place unread, it isn't the front's to take: the branch
-			// stays as it is and the next look reads the line again.
 			s.log.WarnContext(ctx, "read the merge line for a shared timeout's retry", "pr", pr.ID, "err", err)
 			s.setState(ctx, b, pr, BabysitWatching, fmt.Sprintf("%s; %s moved on, so it is tried again on it at its turn (its place in the merge line couldn't be read; looking again)", what, base))
 			return true
@@ -260,16 +236,13 @@ func (s *Service) waitOnSharedTimeout(ctx context.Context, b *Babysit, pr *PullR
 			s.setState(ctx, b, pr, BabysitWatching, fmt.Sprintf("%s; %s moved on, so it is tried again on it at its turn, behind #%d", what, base, ahead[0].Number))
 			return true
 		}
-		// Marked ready first, as at the front of the queue, so the update's
-		// push runs the full tier once (WP-456).
+		// Mark it ready before the update, as at the front of the queue, so the push runs the full CI tier once.
 		switch s.updateIfBehindThen(ctx, pr, func() { s.readyForUpdate(ctx, pr) }) {
 		case upUpdated:
 			st.Retry, st.Tip, st.Tries = false, tip, st.Tries+1
 			s.saveSharedTimeout(ctx, b, st)
 			fallthrough
 		case upWaiting:
-			// Its turn in the line comes from the line, not from here: a pull
-			// request held out of the queue isn't "back" in it.
 			if pr.QueuedAt == nil {
 				s.setState(ctx, b, pr, BabysitWatching, what+"; tried again on the new "+base+": merged "+base+" into it")
 				return true
@@ -278,13 +251,10 @@ func (s *Service) waitOnSharedTimeout(ctx context.Context, b *Babysit, pr *PullR
 			return true
 		case upToDate:
 		default:
-			return false // a conflict or a failed update: the usual way
+			return false
 		}
 	}
-	// Held where it is: out of the line, so the one behind (perhaps the fix)
-	// gets its turn.
-	// The tip it is held at: the first hold's even when behind, so only a
-	// later move sends it back into the line.
+	// Held out of the line so the one behind (perhaps the fix) gets its turn; the tip recorded is the first hold's, so only a later move sends it back in.
 	newTip := tip != "" && (st.Tip == "" || !behind && !sameSHA(st.Tip, tip))
 	if !sameSHA(st.SHA, pr.HeadSHA) || st.Retry || newTip {
 		st.SHA, st.Retry = pr.HeadSHA, false
@@ -326,8 +296,6 @@ func (s *Service) waitOnSharedTimeout(ctx context.Context, b *Babysit, pr *PullR
 			if task != "" {
 				tracked = " " + task + " tracks the slow suite."
 			}
-			// The check names and job refs are the forge's text: quoted, as
-			// in the task.
 			text := fmt.Sprintf("%s#%d: go test timed out in %s, as it did lately on %s: the suite is slow, not this change. Waypoint starts no round for it and it waits out of the merge line until %s moves on; don't push to re-run it.%s",
 				pr.Repo, pr.Number, faultCode(joinAnd(ev.checks)), faultCode(joinAnd(ev.others)), base, tracked)
 			if _, err := s.queueMessage(ctx, b.sessionID, text, "babysit:"+strconv.FormatInt(b.ID, 10)+":"+key, messageFrom{}, true); err != nil {

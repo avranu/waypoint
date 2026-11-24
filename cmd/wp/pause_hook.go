@@ -9,16 +9,11 @@ import (
 	"time"
 )
 
-// Session pause (WP-146): a person paused their agents with running
-// sessions included (the quota alert's Pause, or Agents → Sessions). An
-// async hook pulls the pause to a local file, as does every reply to the
-// session hooks; the PreToolUse hooks read only that file (no network):
-// the gate refuses new agents, the nudge tells the session once to finish
-// its step, note what is left and stop.
+// PreToolUse hooks read only the local paused file, never the network; other hooks keep that file current.
 
 const (
 	pauseFile      = "paused.json"
-	pausePullEvery = 30 * time.Second // the pull hook asks the server at most this often
+	pausePullEvery = 30 * time.Second
 	pauseFresh     = 30 * time.Minute // a copy older than this is ignored: fail open
 )
 
@@ -70,7 +65,7 @@ func (c *cli) writePause(p pauseCopy) {
 // different pause (or none) forgets which sessions were told.
 func (c *cli) savePause(raw json.RawMessage) {
 	if len(raw) == 0 {
-		return // a server that predates session pauses: leave the copy alone
+		return
 	}
 	var p *sessionPause
 	if json.Unmarshal(raw, &p) != nil {
@@ -106,7 +101,7 @@ func (c *cli) claimPull() bool {
 	if path := c.pausePath(); path != "" {
 		unlock, err := lockFile(path + ".lock")
 		if err != nil {
-			return false // skip this round; a later hook pulls
+			return false
 		}
 		defer unlock()
 	}
@@ -197,9 +192,7 @@ func (c *cli) pauseTell(session string, lateAfter time.Duration) string {
 	if session == "" {
 		return ""
 	}
-	// Nothing to tell is the common case (no pause, a stale one, or this
-	// session already told): decide that without the lock, which can wait
-	// seconds behind a pull (WP-1398).
+	// Decide the common no-op case without the lock: the lock can wait seconds behind a pull.
 	if c.pauseTold(c.readPause(), session) {
 		return ""
 	}
@@ -234,7 +227,7 @@ func (c *cli) pauseTell(session string, lateAfter time.Duration) string {
 	if cur.Told == nil {
 		cur.Told = map[string]time.Time{}
 	}
-	for sid, t := range cur.Told { // sessions long gone
+	for sid, t := range cur.Told {
 		if now.Sub(t) > 24*time.Hour {
 			delete(cur.Told, sid)
 		}

@@ -9,11 +9,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core/udiff"
 )
 
-// Requests and runners together, with the runner code itself in the loop (no
-// stand-in): a command cell becomes a job on the runner of the person who
-// decides, named like the session's machine; the job's end lands on the
-// cell; an approved change is applied by an apply job. The wp runner's own
-// side of these jobs is tested in cmd/wp.
+// The wp runner's own side of these jobs is tested in cmd/wp.
 
 // runnersFor sets up ana's runner on the session's machine, another of hers
 // on a different machine, and the admin's on the same machine name.
@@ -37,7 +33,6 @@ func TestCommandCellRunsOnTheDecidersRunner(t *testing.T) {
 	if run := got.Cells[0].Runs[0]; run.State != "queued" {
 		t.Fatalf("run after queueing: %+v", run)
 	}
-	// Only the runner of the person who ran it, named like the machine, gets it.
 	if w := r.poll(r.ana, other, RunnerPoll{}); w.Job != nil {
 		t.Fatalf("ana's runner on another machine took it: %+v", w.Job)
 	}
@@ -56,7 +51,6 @@ func TestCommandCellRunsOnTheDecidersRunner(t *testing.T) {
 		t.Errorf("run while the job runs: %+v", mid.Cells[0].Runs[0])
 	}
 
-	// The job prints, takes a while, and fails with code 3.
 	if _, err := r.s.AppendRunnerLog(r.ctx, r.ana, w.Job.ID, 0, "migrating…\nboom\n"); err != nil {
 		t.Fatal(err)
 	}
@@ -73,8 +67,6 @@ func TestCommandCellRunsOnTheDecidersRunner(t *testing.T) {
 	if cr.State != "failed" || cr.ExitCode == nil || *cr.ExitCode != 3 || cr.Output != "migrating…\nboom\n" || cr.DurationMS != 7000 || cr.FinishedAt == nil {
 		t.Fatalf("saved run: %+v", cr)
 	}
-	// The second cell has no directory of its own: the session's. Run again
-	// keeps the history.
 	if _, err := r.s.RunCell(r.ctx, r.ana, q.Ref, 2, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -101,14 +93,12 @@ func TestCommandCellRunsOnTheDecidersRunner(t *testing.T) {
 
 func TestCommandCellNeedsTheDecidersOwnRunner(t *testing.T) {
 	r := newReqEnv(t)
-	// Only someone else has a runner on that machine.
 	r.env.runner(r.admin, "box", nil)
 	q := r.ask(RequestInput{Kind: RequestCommand, Title: "x", Cells: []CellInput{{Command: "ls"}}})
 	_, err := r.s.RunCell(r.ctx, r.ana, q.Ref, 1, "")
 	if !IsInvalid(err) || !strings.Contains(err.Error(), "No runner online on box") {
 		t.Fatalf("ana ran it on the admin's runner: %v", err)
 	}
-	// The failed attempt is kept on the cell.
 	got, _ := r.s.GetRequest(r.ctx, r.ana, q.Ref, 0)
 	if len(got.Cells[0].Runs) != 1 || got.Cells[0].Runs[0].State != "failed" {
 		t.Errorf("runs: %+v", got.Cells[0].Runs)
@@ -138,11 +128,10 @@ func TestApprovedChangeAppliesThroughARealRunnerJob(t *testing.T) {
 	if err := json.Unmarshal(w.Job.Input, &in); err != nil || in.Dir != "/work/app" || in.Commit != "Tighten the rules" || len(in.Files) != 2 || in.Files[0].BaseSHA != udiff.GitBlobSHA(base) {
 		t.Fatalf("apply job: %+v %v", in, err)
 	}
-	// The agent isn't told while it is being applied.
 	if res := r.stop(); len(res.Deliver) != 0 {
 		t.Fatal("told the agent before it was applied")
 	}
-	// The runner reports what its apply executor reports (cmd/wp runner_apply).
+	// Shaped like cmd/wp's apply executor output; the two must stay in step.
 	if _, err := r.s.FinishRunnerJob(r.ctx, r.ana, w.Job.ID, RunnerFinish{State: "done", Result: json.RawMessage(`{"files":["CLAUDE.md","docs/new.md"],"commit":"abcdef0123456789"}`)}); err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +156,6 @@ func TestApplyJobBaseMismatchEndsAsConflict(t *testing.T) {
 	if w.Job == nil {
 		t.Fatal("no job")
 	}
-	// What cmd/wp's apply executor sends when a file isn't as the change expects.
 	result := json.RawMessage(`{"conflicts":[{"path":"CLAUDE.md","reason":"changed"}]}`)
 	if _, err := r.s.FinishRunnerJob(r.ctx, r.ana, w.Job.ID, RunnerFinish{State: "failed", Result: result,
 		Error: "Not applied, nothing was written: CLAUDE.md (changed) differs from what the change was made against."}); err != nil {
@@ -177,11 +165,9 @@ func TestApplyJobBaseMismatchEndsAsConflict(t *testing.T) {
 	if got.State != RequestConflict || len(got.Result.Conflicts) != 1 || got.Result.Conflicts[0] != "CLAUDE.md" || !strings.Contains(got.Result.Reason, "CLAUDE.md (changed)") {
 		t.Fatalf("conflict: %s %+v", got.State, got.Result)
 	}
-	// Told to the agent as a conflict, and can be approved again once settled.
 	if res := r.stop(); len(res.Deliver) != 1 || !strings.Contains(res.Text, "files changed since you made it") {
 		t.Fatalf("delivery: %q", res.Text)
 	}
-	// Any other failure is a failure, not a conflict.
 	q2 := claudeMDChange(r, "# a\n", "# c\n")
 	if _, err := r.s.DecideRequest(r.ctx, r.ana, q2.Ref, RequestDecision{Decision: "approve", ApplyPath: "runner"}); err != nil {
 		t.Fatal(err)

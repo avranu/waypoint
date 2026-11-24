@@ -1,7 +1,5 @@
 package core
 
-// Merging a pull request on its forge (WP-D21).
-
 import (
 	"context"
 	"errors"
@@ -88,7 +86,6 @@ func (c *httpForgeClient) MergePR(ctx context.Context, f *Forge, repo string, pr
 		if err := c.do(ctx, f, http.MethodPut, fmt.Sprintf("/repos/%s/pulls/%d/merge", repo, pr.Number), body, nil); err != nil {
 			return err
 		}
-		// GitHub keeps the branch unless asked; never delete a fork's.
 		if o.DeleteBranch && pr.HeadRef != "" && strings.EqualFold(pr.HeadRepo, repo) {
 			if err := c.do(ctx, f, http.MethodDelete, fmt.Sprintf("/repos/%s/git/refs/heads/%s", repo, escapePath(pr.HeadRef)), nil, nil); err != nil && !isStatus(err, 404) && !isStatus(err, 422) {
 				return &branchNotDeleted{err}
@@ -96,7 +93,6 @@ func (c *httpForgeClient) MergePR(ctx context.Context, f *Forge, repo string, pr
 		}
 		return nil
 	}
-	// Forgejo and Gitea.
 	do := o.Style
 	if do == "" {
 		var r struct {

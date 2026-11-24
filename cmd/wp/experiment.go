@@ -8,14 +8,11 @@ import (
 	"strings"
 )
 
-// Experiments (WP-254, WP-ADR53): A/B tests of how agents work. The server
-// gives each task an arm; wp asks for the arms of the experiments it acts
-// on right after taking a task, keeps them on the claim, and does the arm.
-// No answer (an older server, no run, a person's token) is the control.
+// No answer (an older server, no run, a person's token) means the control arm.
 
 const (
-	expNextBrief   = "next_brief"   // "none": wp next prints no "Where to start" brief
-	expSearchNudge = "search_nudge" // "off": the search-chain note is counted, never told
+	expNextBrief   = "next_brief"
+	expSearchNudge = "search_nudge"
 )
 
 // clientExperiments are the experiments wp itself carries out.

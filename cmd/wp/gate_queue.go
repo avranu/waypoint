@@ -20,10 +20,10 @@ import (
 // with a note and no decision: Claude Code then arbitrates.
 
 const (
-	claudeSubagentLimit = 20              // Claude Code's default
-	gateQueueBound      = 4 * time.Minute // the longest a start waits for a slot
-	gateQueuePoll       = 1 * time.Second // how often the wait re-reads the state
-	gateQueueClaimWait  = 2 * time.Second // the most a claim waits for the state lock
+	claudeSubagentLimit = 20
+	gateQueueBound      = 4 * time.Minute
+	gateQueuePoll       = 1 * time.Second
+	gateQueueClaimWait  = 2 * time.Second
 )
 
 // subagentLimit is the number of agents Claude Code runs at once: the
@@ -54,7 +54,7 @@ func claudeEnvSetting(key string) string {
 type gateWaits struct {
 	now   func() time.Time
 	sleep func(time.Duration)
-	gone  func() bool // the hook's parent (Claude Code) has gone: nobody is waiting for the answer
+	gone  func() bool
 }
 
 // gateWait is the waits a real hook uses.
@@ -69,23 +69,21 @@ var gateBound = gateQueueBound
 // queueResult says how the wait ended.
 type queueResult struct {
 	waited    time.Duration
-	live      int  // the agents counted at the end
-	timedOut  bool // the bound passed with no slot free
-	blocked   bool // the slots are held by agents waiting on this very call: no slot can come free
-	abandoned bool // Claude Code is gone
+	live      int
+	timedOut  bool
+	blocked   bool
+	abandoned bool
 }
 
 // slotQueue holds a call until live agents (and calls admitted but not yet
 // started) are fewer than limit.
 type slotQueue struct {
-	limit int
-	bound time.Duration
-	poll  time.Duration
-	w     gateWaits
-	count func() (n int, ok bool) // a read without the lock; !ok: not readable now
-	admit func() (n int, ok bool) // under the lock: claim a slot if one is free
-	// blocked, when set, says whether every slot in use is held by an agent
-	// that is itself waiting on this call (no lock; false when not readable).
+	limit   int
+	bound   time.Duration
+	poll    time.Duration
+	w       gateWaits
+	count   func() (n int, ok bool)
+	admit   func() (n int, ok bool)
 	blocked func() bool
 }
 
@@ -165,7 +163,7 @@ func (s *State) onlyHeldBy(session string, chain map[string]bool, now time.Time)
 func (s *State) slotsUsed(session string, now time.Time) int {
 	n := 0
 	for _, a := range s.liveIDs(session, now) {
-		if !a.Waiting { // whether Claude Code holds a slot for it is not known: not counted
+		if !a.Waiting { // A waiting agent may not hold a Claude Code slot, so it is not counted.
 			n++
 		}
 	}
@@ -187,7 +185,7 @@ func (c *cli) admitSlot(session string, res reservation, limit int) (int, bool) 
 		n = s.slotsUsed(session, now)
 		for _, r := range s.Reserved[session] {
 			if res.ID != "" && r.ID == res.ID {
-				return // this call is in already (the hook ran twice)
+				return // The hook can run twice for one call; a reservation already made is not added again.
 			}
 		}
 		if n >= limit {

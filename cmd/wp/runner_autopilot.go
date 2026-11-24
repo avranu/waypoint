@@ -19,15 +19,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// Autopilot jobs (WP-ADR9): the session finished its task, so start the next
-// one fresh in its place. Claude Code gives no way to restart a running
-// session from outside, but a session in tmux reads what is typed into its
-// pane: type /exit there and start Claude Code again, in a worktree of its
-// own (runner_autopilot_restart.go, WP-ADR57). Where that can't be done the
-// session is left alone and the person hears why.
-// Then wait until the new session is ready, run wp next for it as the agent,
-// and paste the answer as its prompt, the way the person would. Nothing is typed over a
-// draft, into a busy session, or a dialog.
+// Claude Code has no outside restart, so /exit is typed into its tmux pane; nothing is typed over a draft, into a busy session, or a dialog.
 
 type autopilotJob struct {
 	CLIID string `json:"cli_id"`
@@ -161,7 +153,6 @@ func (p *runnerProc) execAutopilot(ctx context.Context, run *jobRun, in autopilo
 		say("%v", err)
 		return outcome{State: "done", Result: autopilotResult{Outcome: "gone", Detail: err.Error()}}
 	}
-	// The tmux pane of the session, where it runs in one.
 	pane, socket := "", ""
 	if s.Tmux != "" {
 		if pn := s.Tmux[strings.LastIndex(s.Tmux, ".")+1:]; strings.HasPrefix(pn, "%") {
@@ -176,11 +167,7 @@ func (p *runnerProc) execAutopilot(ctx context.Context, run *jobRun, in autopilo
 	// A task's start clears or restarts the session, which would end a shell
 	// it still runs, so only a review is typed beside one.
 	if s.Status != "idle" && (in.ReviewOf == "" || !atPrompt(s.Status)) {
-		// A review waits out the turn (a background task reporting back, a
-		// compaction finishing) and goes on the moment the session is idle,
-		// rather than a retry minutes later (WP-816). A person's turn isn't
-		// waited out here: their prompt took the job off the step, which
-		// brings the review after their Stop.
+		// A review waits for the session's turn to end and goes on once it is idle; a person's turn is not waited out, since their prompt takes the job off the step.
 		if in.ReviewOf != "" && !p.stepWanted(ctx, in.Step, run.id) {
 			say("the step no longer wants this job: nothing typed")
 			return outcome{State: "done", Result: autopilotResult{Outcome: "unwanted"}}
@@ -237,8 +224,7 @@ func (p *runnerProc) execAutopilot(ctx context.Context, run *jobRun, in autopilo
 		rl, why = planRelaunch(ctx, socket, pane, s.PID)
 	}
 	if rl != nil {
-		// The person's session settings now, in place of what the old
-		// session was started with (WP-1265).
+		// Relaunch uses the person's current session settings, not those the old session started with.
 		set := run.launch.forDir(rl.dir)
 		rl.args, rl.env = set.applyTo(rl.args), set.env()
 	}
@@ -279,8 +265,7 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 		return outcome{State: "done", Result: autopilotResult{Outcome: "held", Reason: reason, Detail: d}}
 	}
 	ccDir := claudeConfigDir()
-	// The session's transcript has the last word on whether it is still
-	// compacted (WP-816), whatever the server saw.
+	// The session's transcript, not the server, decides whether it is still compacted.
 	compact, why := reviewCompaction(transcriptOfSession(in.CLIID), in.Compacted)
 	if !compact {
 		say("session %s isn't compacted again before the review of %s: %s", in.CLIID, in.ReviewOf, why)
@@ -354,7 +339,7 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 			return false
 		}
 		if !pastedPlaceholderRE.MatchString(text) {
-			return true // the review's own text, whole
+			return true
 		}
 		if ours == "" {
 			ours = text
@@ -364,10 +349,7 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 	if box, err := readDrawn(); err == nil && box.found && box.text != "" {
 		mine(box.text)
 	}
-	// unpaste takes the review back out of the box when the box holds only
-	// it (C-u), so nothing is left for a person to clear and a retry finds
-	// the box empty; it says whether the box is empty now. An empty box is
-	// given a settle to show a paste drawn late, which is then taken out too.
+	// Takes the review back out only when the box holds nothing else, so a person's typed text is never cleared.
 	unpaste := func() bool {
 		box, err := readDrawn()
 		if err != nil || !box.found || box.text == "" || !mine(box.text) {
@@ -438,9 +420,6 @@ func (p *runnerProc) reviewSession(ctx context.Context, run *jobRun, in autopilo
 		res.Detail = "typed while the registry said busy: the screen showed the main thread at its prompt"
 	}
 	if !waitTook(ctx, ccDir, pid, socket, pane, byScreen, reviewTookWait) {
-		// Say what was looked at: the screen is read only when the registry
-		// can't tell (byScreen); otherwise it is the registry that never
-		// went busy.
 		res.Warning = fmt.Sprintf("the session didn't go busy within %s of the review being typed; check it", reviewTookWait.Round(time.Second))
 		if byScreen {
 			res.Warning = fmt.Sprintf("the session's screen didn't show it starting the review within %s; check it", reviewTookWait.Round(time.Second))
@@ -505,8 +484,6 @@ func pastedOnly(box, review string) bool {
 // what the restart already has to report; dir is where wp next runs.
 func (p *runnerProc) promptSession(ctx context.Context, run *jobRun, in autopilotJob, dir, socket, pane string, pid int, newID string, base autopilotResult) outcome {
 	say := func(format string, a ...any) { fmt.Fprintf(run.out, format+"\n", a...) }
-	// A failure leaves a fresh session without its prompt: say so plainly
-	// ("cleared"), so the person gives it the task.
 	cleared := func(format string, a ...any) outcome {
 		d := fmt.Sprintf(format, a...)
 		say("fresh, but %s", d)
@@ -525,9 +502,7 @@ func (p *runnerProc) promptSession(ctx context.Context, run *jobRun, in autopilo
 		r.Outcome = "unwanted"
 		return outcome{State: "done", Result: r}
 	}
-	// wp next runs as the job's own token (WP-418): the runner's is a
-	// person's and never reaches a job. From a server that sends none, wp
-	// next reads its token from this machine's config as before.
+	// wp next runs with the job's own token, never the runner's (a person's); a server that sends none makes it read the machine config.
 	env := autopilotEnv(os.Environ(), newID, in.Agent, p.c.server(), run.token)
 	nctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	answer, nextErr := runWpNext(nctx, dir, env, in.Key, "--assigned")
@@ -726,7 +701,7 @@ func sgrWalk(s string, dropDim bool) string {
 			i = j
 			continue
 		}
-		i++ // a two-byte escape
+		i++
 	}
 	return b.String()
 }
@@ -862,7 +837,7 @@ func (c *cli) noteTypedStart(ctx context.Context, text string) error {
 			return nil
 		}
 		if serverRefused(err) {
-			return err // sending it again won't change the answer
+			return err
 		}
 	}
 	return err

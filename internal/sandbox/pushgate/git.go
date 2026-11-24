@@ -122,9 +122,8 @@ func firstLine(s string) string {
 // mirror is the host-owned bare repository a push lands in before it goes
 // on to the forge. It mirrors the forge's branches and tags; nothing else.
 type mirror struct {
-	repo *Repo
-	dir  string
-	// scheme is the forge remote's transport: the only one git may use.
+	repo   *Repo
+	dir    string
 	scheme string
 }
 
@@ -170,8 +169,7 @@ func (g *Gateway) open(ctx context.Context, r *Repo) (*mirror, error) {
 	if err := os.WriteFile(filepath.Join(m.dir, "config"), []byte(mirrorConfig), 0o600); err != nil {
 		return nil, err
 	}
-	// Alternates the gateway didn't write could pull in objects from
-	// anywhere; grafts could rewrite history the checks read.
+	// Remove alternates and shallow grafts: either could bring in objects or rewrite history the checks read.
 	_ = os.Remove(filepath.Join(m.dir, "objects", "info", "alternates"))
 	_ = os.Remove(filepath.Join(m.dir, "shallow"))
 	return m, nil

@@ -1,10 +1,3 @@
-// Catch up (WP-245): what agents finished that nobody has looked at yet, one
-// task at a time: the agent's summary, the screenshots it took (wp shot),
-// where to try it and whether it's live. Looks good reviews the close (the
-// same review as WP-272's), Not finished reopens the task with a note, and
-// Report a problem files a bug about it, with a screenshot if you grab one.
-// See internal/core/catch_up.go and WP-ADR43.
-
 import { useEffect, useMemo, useRef, useState, type ClipboardEvent } from 'react'
 import { Link, useSearch } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
@@ -43,7 +36,6 @@ export function CatchUpPage() {
   const [index, setIndex] = useState(0)
   const items = query.data?.items ?? []
   const n = items.length
-  // A reviewed or reopened task leaves the list, so the same index shows the next one.
   const at = Math.min(index, Math.max(n - 1, 0))
   const it = items[at] as CatchUpItem | undefined
   useEffect(() => {
@@ -52,10 +44,7 @@ export function CatchUpPage() {
   const [dialog, setDialog] = useState<'' | 'not-finished' | 'problem'>('')
   const prev = () => setIndex(Math.max(at - 1, 0))
   const next = () => setIndex(Math.min(at + 1, n - 1))
-  // Arrows belong to an open dialog or lightbox. Ask the page when the key
-  // comes rather than keeping that in state: state set as the lightbox closes
-  // re-enables the shortcut a render later, and an arrow pressed in between
-  // was lost.
+  // Ask the DOM whether a dialog is open, not state: state set as a lightbox closes enables the arrow shortcut a render late, dropping keys pressed in between.
   const free = () => !document.querySelector('[role="dialog"]')
   useHotkey('ArrowLeft', () => free() && prev(), { enabled: n > 1 })
   useHotkey('ArrowRight', () => free() && next(), { enabled: n > 1 })
@@ -459,7 +448,6 @@ function ProblemDialog({
       if (file) add([file])
       else toast('The screen had no picture to take yet. Try again.', { kind: 'error' })
     } catch (e) {
-      // Cancelling the browser's picker isn't an error worth showing.
       if (!(e instanceof DOMException && e.name === 'NotAllowedError')) toastError(e)
     } finally {
       setCapturing(false)

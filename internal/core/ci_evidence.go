@@ -81,9 +81,9 @@ type evidenceJob struct {
 	sha, ref  string
 	event     string
 	tier      string
-	at        int64 // ms, the job's end
-	pushed    int64 // ms, its run's creation (0 if unknown): orders scans of the default branch
-	onDefault bool  // a push to the repo's default branch
+	at        int64
+	pushed    int64 // Its run's creation time (0 if unknown) orders scans of the default branch.
+	onDefault bool
 }
 
 type evidenceKindState struct {
@@ -290,7 +290,6 @@ func (s *Service) keepJobEvidence(ctx context.Context, cl ForgeActionLogs, f *Fo
 	}
 	lines := cleanLog(log)
 	p, err := testevidence.Decode(lines)
-	// How long each Go package took, whatever the evidence (WP-922).
 	var known []string
 	if err == nil {
 		for _, t := range p.Tests {
@@ -299,7 +298,6 @@ func (s *Service) keepJobEvidence(ctx context.Context, cl ForgeActionLogs, f *Fo
 			}
 		}
 	}
-	// Best effort: a failed write here doesn't cost the job its evidence.
 	if err := s.keepJobPackages(ctx, f.ID, repo, j, goPackages(lines, known)); err != nil {
 		s.log.WarnContext(ctx, "CI evidence: keep package times", "repo", repo, "job", jobID, "err", err)
 	}
@@ -365,7 +363,7 @@ func (s *Service) keepFailedEvidence(ctx context.Context, f *Forge, repo, sha st
 				continue
 			}
 			if verdict == evidenceKept {
-				// The history pass would read the re-run's log under this task.
+				// Mark it kept first: the history pass would otherwise read the re-run's log under this task.
 				if err := s.setJobEvidence(ctx, f.ID, repo, j.TaskID, evidenceKept); err != nil {
 					s.log.Debug("CI evidence before a re-run: mark", "err", err)
 				}
@@ -429,7 +427,7 @@ func mergeCoverage(ctx context.Context, tx *sql.Tx, forgeID int64, repo string, 
 		return err
 	}
 	if err == nil && len(blob) == 0 {
-		return nil // the per-file detail was pruned; a late shard can't be merged into it
+		return nil // Detail already pruned: a late shard cannot be merged in, so nothing is done.
 	}
 	byPath := map[string]testevidence.File{}
 	if len(blob) > 0 {
@@ -605,7 +603,6 @@ func (s *Service) pruneCIEvidence(ctx context.Context) {
 			s.log.WarnContext(ctx, "best-effort write failed", "err", err)
 		}
 	}
-	// Shared-timeout states of babysits that have ended (WP-923).
 	if _, err := s.db.W.ExecContext(ctx, `DELETE FROM server_settings WHERE key LIKE ? AND NOT EXISTS
 		(SELECT 1 FROM babysits b WHERE b.ended_at IS NULL AND ? || b.id = server_settings.key)`, sharedTimeoutPrefix+"%", sharedTimeoutPrefix); err != nil {
 		s.log.WarnContext(ctx, "best-effort write failed", "err", err)

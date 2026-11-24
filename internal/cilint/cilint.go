@@ -81,17 +81,17 @@ type job struct {
 	needs   []string
 	cond    string
 	timeout bool
-	reuse   bool // a job-level uses: (reusable workflow)
-	env     bool // has environment:
+	reuse   bool
+	env     bool
 }
 
 type workflow struct {
 	file     string
 	root     *yaml.Node
-	events   map[string]*yaml.Node // event name -> its config node (may be nil)
+	events   map[string]*yaml.Node
 	onNode   *yaml.Node
 	jobs     []*job
-	cancelIn bool // any concurrency with cancel-in-progress
+	cancelIn bool
 }
 
 // Lint checks one workflow. name is only used in the findings. A file that
@@ -111,8 +111,6 @@ func Lint(name string, src []byte) []Finding {
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Line < out[j].Line })
 	return out
 }
-
-// ---- parsing helpers ----
 
 func mapGet(n *yaml.Node, key string) (k, v *yaml.Node) {
 	if n == nil || n.Kind != yaml.MappingNode {
@@ -288,8 +286,6 @@ func (j *job) hasLocalGoCache() bool {
 	}
 	return false
 }
-
-// ---- the rules ----
 
 func ruleNoCancel(w *workflow) []Finding {
 	if !w.onPR() || w.cancelIn {
@@ -492,8 +488,6 @@ func ruleNeedsChain(w *workflow) []Finding {
 		byID[j.id] = j
 	}
 	for _, j := range w.jobs {
-		// Fan-in gates, releases and deploys wait on purpose; only a lone
-		// check job waiting on another check job is a serial queue turn.
 		if len(j.needs) != 1 || j.env || reShip.MatchString(j.id) || j.hasAction("actions/download-artifact") {
 			continue
 		}

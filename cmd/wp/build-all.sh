@@ -1,10 +1,5 @@
 #!/bin/sh
-# Cross-compiles wp for every platform the server offers at /cli, the
-# sandbox helper (waypoint-sandboxd, Linux only) for wp sandbox install,
-# plus SHA256SUMS. Used by `make cli` and deploy/Dockerfile.
-#   cmd/wp/build-all.sh OUTDIR [VERSION]
-# WP_TARGETS (os/arch ...) narrows the list: CI's browser checks need only
-# the runner's own, and cross-compiling all five took ~7 minutes a shard.
+# WP_TARGETS narrows the target list; cross-compiling every target is slow.
 set -eu
 out=${1:?usage: build-all.sh OUTDIR [VERSION]}
 version=${2:-dev}

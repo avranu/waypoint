@@ -12,13 +12,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// What an audit reads and looks for, said more exactly than one sentence
-// (WP-548): what landed on a branch over a period, the parts of the
-// repository to read or leave out, the areas to look hardest at, the lowest
-// severity worth reporting and how many findings are shown at a time (not a
-// limit on what is kept, WP-1421). The server turns
-// them into the prompt; the runner finds the period's first commit and
-// limits the diff to the paths (WP-ADR40).
+// max_findings sets how many findings are shown at a time, not how many are kept.
 
 // AuditDefaultShown is how many findings are shown at a time when an audit
 // sets no number.
@@ -97,9 +91,7 @@ func cleanAuditCriteria(in AuditInput) (auditCriteria, error) {
 	default:
 		return c, invalid("the lowest severity to report is one of %s", strings.Join(auditSeverities, ", "))
 	}
-	// Waypoint's check of a round's marks is asked for a finding per mark
-	// that was wrong, and per one a report left out (checkClaimsMax,
-	// checkLeftOutMax), which can pass what a person may ask for.
+	// The check purpose needs a finding per wrong mark plus one per left-out mark, so its cap is the sum of both.
 	most := auditMaxFindings
 	if in.purpose == AuditCheck {
 		most = max(most, checkClaimsMax+checkLeftOutMax)

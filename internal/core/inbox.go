@@ -10,18 +10,13 @@ import (
 	"time"
 )
 
-// The Inbox view (WP-1141). A person with thousands of notifications can't
-// skim a flat list, so the server sorts them: what still needs the person
-// (grouped by the thing it is about), what has gone stale by itself (the
-// issue closed, the request was decided, the alert is days old), and what
-// they already read. Nothing is deleted or marked read by the sorting: stale
-// items wait, collapsed, until the person clears them.
+// Sorting never deletes or marks read: stale items wait, collapsed, until the person clears them.
 
 // Inbox sections.
 const (
-	InboxLive    = "live"    // unread and still relevant
-	InboxStale   = "stale"   // unread, but no longer relevant
-	InboxEarlier = "earlier" // already read
+	InboxLive    = "live"
+	InboxStale   = "stale"
+	InboxEarlier = "earlier"
 )
 
 // Tiers order the live section: asked of you first, then alerts, then updates.
@@ -110,8 +105,7 @@ func groupKey(n *Notification) string {
 	case n.URL != "":
 		return "u:" + n.URL
 	}
-	// Nothing to link to: the same kind with the same title is one thing (400
-	// "Rule: label new bugs" runs), different titles are different things.
+	// Without a link, notifications group by kind and title.
 	return "k:" + n.Kind + ":" + n.Title
 }
 
@@ -144,8 +138,7 @@ func classifyInbox(n *Notification, now time.Time, openReq map[string]bool, cate
 	if ephemeralKinds[n.Kind] && age > inboxEphemeralDays*24*time.Hour {
 		return InboxStale, fmt.Sprintf("Over %d days old", inboxEphemeralDays)
 	}
-	// Something asked of you on an issue that is still open is owed, however
-	// old: only closing the issue, handing it on or reading it clears it.
+	// An ask on an open issue stays owed however old; only closing, handing on or reading clears it.
 	owed := n.IssueKey != "" && tierOf[n.Kind] == TierYou
 	if age > inboxOldDays*24*time.Hour && !owed {
 		return InboxStale, "Over 30 days old"
@@ -178,12 +171,11 @@ func (s *Service) loadInbox(ctx context.Context, actor *Actor) (out []inboxRow, 
 	rr.Close()
 
 	where := "n.user_id = ?"
-	// Notifications about an issue the person can no longer read (removed from
-	// the project) are not shown, whatever they said when they were sent.
+	// Notifications about issues the person can no longer read are hidden, whatever their text.
 	vis, vargs := visibleSQL("i.project_id", actor)
 	where += " AND " + vis
 	if actor.HidesDrafts() {
-		where += " AND coalesce(i.draft, 0) = 0" // WP-42
+		where += " AND coalesce(i.draft, 0) = 0"
 	}
 	rows, err := s.db.R.QueryContext(ctx, `SELECT n.id, n.kind, n.title, substr(n.body, 1, 400), coalesce(p.key || '-' || i.number, ''), n.read_at, n.created_at, n.url,
 		u.id, u.username, u.display_name, u.avatar_version, coalesce(st.category, ''),
@@ -214,7 +206,7 @@ func (s *Service) loadInbox(ctx context.Context, actor *Actor) (out []inboxRow, 
 		n.ReadAt, n.CreatedAt = ptrTime(read), msTime(created)
 		asOf = max(asOf, n.ID)
 		if n.Kind == NotifyRisky && actor.HidesCommandText() {
-			n.Body = "" // it quotes the commands
+			n.Body = ""
 		}
 		if uid.Valid {
 			n.Actor = &UserRef{ID: uid.Int64, Username: uname.String, DisplayName: cmp(dname.String, uname.String), AvatarURL: avatarURL(uid.Int64, av.Int64)}
@@ -252,7 +244,6 @@ func buildGroups(rows []inboxRow, section string) []InboxGroup {
 			g.Unread++
 		}
 		g.OldestAt = r.n.CreatedAt
-		// A thing asked of you outranks the chatter around it.
 		if tierOf[r.n.Kind] == TierYou {
 			g.Tier = TierYou
 		} else if tierOf[r.n.Kind] == TierAlert && g.Tier == TierUpdate {

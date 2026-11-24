@@ -18,12 +18,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// wp worktree (WP-563): a worktree goes under the repo's own
-// .claude/worktrees/, where Claude Code's --worktree and autopilot put theirs
-// (WP-ADR57), and never beside the main checkout, in the folder where people
-// keep their projects. `move` brings the ones already made beside it in,
-// with whatever work they hold: nothing is ever deleted here. Removing a
-// finished one is wp tidy's job.
+// Worktrees go under the repo's .claude/worktrees, never beside the main checkout; nothing is deleted here, removal is wp tidy's job.
 
 var worktreeCmd = &command{
 	name: "worktree", group: "Code and CI", args: "[NAME|KEY] [--branch BRANCH] [--from REF] | ls | move [PATH…]",
@@ -109,7 +104,7 @@ func (r *worktreeRepo) find(path string) *tidyWorktree {
 	for i := range r.wts {
 		if filepath.Base(r.wts[i].path) == path {
 			if hit != nil {
-				return nil // two of that name: give the path
+				return nil
 			}
 			hit = &r.wts[i]
 		}
@@ -159,14 +154,9 @@ func movedName(root, path string) string {
 // freePath is home/name, or home/name-2 and on when that is taken, on disk
 // or in claimed (destinations already handed out in this run).
 func freePath(home, name string, claimed map[string]bool) string {
-	// name is one folder directly under home: a name with a separator or a
-	// "..", from a branch or folder a person named, would be probed (and
-	// returned) outside it.
 	if !filepath.IsLocal(name) || filepath.Base(name) != name {
 		return ""
 	}
-	// The probes go through a root on home, which cannot name anything
-	// outside it. No home yet: nothing there is taken.
 	root, err := os.OpenRoot(home)
 	if err == nil {
 		defer func() { _ = root.Close() }()
@@ -192,7 +182,6 @@ func freePath(home, name string, claimed map[string]bool) string {
 // status: Claude Code excludes it when it makes a worktree, but a repo where
 // it never has would show each worktree as untracked.
 func (r *worktreeRepo) excludeHome(ctx context.Context) error {
-	// check-ignore doesn't look at a path's parents: ask about each.
 	for _, probe := range []string{".claude/", ".claude/worktrees/", ".claude/worktrees/x"} {
 		if _, err := tidyGit(ctx, r.root, "check-ignore", "-q", "--no-index", probe); err == nil {
 			return nil
@@ -220,8 +209,6 @@ func (r *worktreeRepo) excludeHome(ctx context.Context) error {
 	}
 	return err
 }
-
-// ---- wp worktree NAME ----
 
 func cmdWorktreeAdd(c *cli, args []string) error {
 	fs := c.flags()
@@ -302,8 +289,8 @@ type madeWorktree struct {
 	path, made, what string
 	branchOut        bool
 	notes            []string
-	took             []string      // stale locks taken over on the way, one line each
-	cont             *continuation // set when the branch asked for is held by a live lock: this is its continuation
+	took             []string
+	cont             *continuation
 }
 
 // makeWorktree makes the worktree slug (or one for branch) under the repo's
@@ -316,10 +303,6 @@ func makeWorktree(ctx context.Context, repo *worktreeRepo, slug, branch, from st
 			return madeWorktree{}, fmt.Errorf("%s: %w", v.what, err)
 		}
 	}
-	// The one rule for a worktree that holds what is asked for (WP-1370): a
-	// lock whose owner is gone is taken over; a live one (or one that can't be
-	// shown gone) is left, and the work goes on a branch cut from it, named so
-	// Waypoint still maps it.
 	var took []string
 	var cont *continuation
 	if branch != "" {
@@ -339,7 +322,6 @@ func makeWorktree(ctx context.Context, repo *worktreeRepo, slug, branch, from st
 	repo, held = reclaimWhere(ctx, repo, "", func(w tidyWorktree) bool { return tidyReal(w.path) == tidyReal(path) }, "")
 	took = append(took, held.taken...)
 	if held.blocked != nil && !held.blocked.main && cont == nil {
-		// The folder is another's and locked: the next free one is ours.
 		slug = filepath.Base(freePath(repo.home(), slug, nil))
 		note("note: %s is %s; making %s instead", path, held.why, slug)
 	}
@@ -356,8 +338,6 @@ func makeWorktreeIn(ctx context.Context, repo *worktreeRepo, slug, branch, from 
 			}
 		}
 	}
-	// taken: path is a worktree already (answered, and reused) or a folder
-	// that isn't one.
 	taken := func(path string) (*madeWorktree, error) {
 		if w := repo.find(path); w != nil {
 			return &madeWorktree{path: path, what: worktreeBranchText(*w)}, nil
@@ -390,7 +370,7 @@ func makeWorktreeIn(ctx context.Context, repo *worktreeRepo, slug, branch, from 
 	if err != nil {
 		return madeWorktree{}, err
 	}
-	if path != asked { // the next name, its branch free: maybe a worktree already
+	if path != asked {
 		if w, err := taken(path); w != nil || err != nil {
 			return derefMade(w), err
 		}
@@ -570,8 +550,6 @@ func worktreeSetup(ctx context.Context, out io.Writer, path string, env []string
 	return cmd.Run()
 }
 
-// ---- wp worktree ls ----
-
 func cmdWorktreeLs(c *cli, args []string) error {
 	fs := c.flags()
 	pos, err := c.parse(fs, args)
@@ -629,8 +607,6 @@ func cmdWorktreeLs(c *cli, args []string) error {
 	return nil
 }
 
-// ---- wp worktree move ----
-
 func cmdWorktreeMove(c *cli, args []string) error {
 	fs := c.flags()
 	dry := fs.Bool("dry-run", false, "say what would move and what stays, and move nothing")
@@ -670,9 +646,6 @@ func cmdWorktreeMove(c *cli, args []string) error {
 		}
 		picked = append(picked, *w)
 	}
-	// blind: why move can't tell whether something works in a worktree. It
-	// then moves nothing (a dry run still says what would move) and names
-	// the git commands, for a person who has checked.
 	var blind []string
 	cwds, err := procCwds()
 	if err != nil {

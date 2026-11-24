@@ -7,9 +7,7 @@ import (
 	"time"
 )
 
-// Waypoint opens a reviewed round's pull request only for the commit the
-// review read: a push after the audit means the review didn't see what would
-// open (WP-1325, WP-1370).
+// Waypoint opens a reviewed round's pull request only for the commit the review read: a push after the audit means the review didn't see what would open.
 
 const (
 	tipAudited = "aaaaaaa1111111"
@@ -89,7 +87,7 @@ func TestShipRoundHeldToTheReviewedHead(t *testing.T) {
 	t.Run("pushed between the check and the forge opening it: recorded, not armed, round starts over", func(t *testing.T) {
 		e, round := tipRound(t)
 		e.g.tips = map[string]string{"wp-1-first": tipAudited}
-		e.g.heads = map[string]string{"wp-1-first": tipPushed} // the push lands inside CreatePR
+		e.g.heads = map[string]string{"wp-1-first": tipPushed}
 		e.tick(time.Second)
 		e.s.Wait()
 		if len(e.g.created) != 1 {

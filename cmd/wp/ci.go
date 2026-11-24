@@ -481,7 +481,7 @@ func cmdCILint(c *cli, args []string) error {
 		}
 	}
 	found := []cilint.Finding{}
-	var modes cilint.ModeFunc // git index modes, read once; nil outside a git checkout
+	var modes cilint.ModeFunc
 	if out, err := exec.Command("git", "ls-files", "-s").Output(); err == nil {
 		modes = cilint.ParseLsFiles(string(out))
 	}
@@ -511,8 +511,6 @@ func cmdCILint(c *cli, args []string) error {
 	}
 	return nil
 }
-
-// ---- edit-time feedback (inside the claude-burn PostToolUse hook) ----
 
 // ciLintLines is the most lines one hook call adds to the context.
 const ciLintLines = 8

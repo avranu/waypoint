@@ -6,10 +6,6 @@ import (
 	"strings"
 )
 
-// The weekly drift check (WP-382, WP-ADR50): for each project with goals,
-// how the week's finished work traced to them, what traces to none, and
-// what waits for a person, as one notice to the project's owners.
-
 // NotifyGoals is the notification kind of the weekly goals check.
 const NotifyGoals = "goals"
 
@@ -30,8 +26,6 @@ func (s *Service) startGoalDrift(ctx context.Context) {
 	s.goals.mu.Unlock()
 	s.goBG(func() {
 		defer func() {
-			// Closed with the flag cleared, so a wait never sees one
-			// without the other (WP-1372).
 			s.goals.mu.Lock()
 			s.goals.drifting = false
 			close(idle)
@@ -52,8 +46,6 @@ func (s *Service) maybeGoalDrift(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		// Suggestions first, so the week's notice counts them among what
-		// waits for a person.
 		s.suggestGoalsWeekly(ctx, id)
 		if err := s.goalDriftCheck(ctx, id); err != nil {
 			s.log.WarnContext(ctx, "goal drift", "project", id, "err", err)
@@ -95,7 +87,6 @@ func (s *Service) goalDriftCheck(ctx context.Context, projectID int64) error {
 	}
 	owners := s.userIDsWhere(ctx, `SELECT m.user_id FROM project_members m JOIN users u ON u.id = m.user_id
 		WHERE m.project_id = ? AND m.role = 'owner' AND u.disabled = 0 ORDER BY m.user_id`, projectID)
-	// Before the owners' views, so the week's notice lists what it found.
 	var notes []string
 	if note := s.driftWeekly(ctx, projectID); note != "" {
 		notes = append(notes, note)
@@ -168,7 +159,6 @@ func (s *Service) goalDriftCheck(ctx context.Context, projectID int64) error {
 // goalDriftNotice words the week; an empty title means nothing to say.
 func goalDriftNotice(o *GoalsOverview, hadPrev bool, prevGrounded float64, prevFinished int64, notes []string) (string, string) {
 	var lines []string
-	// What the drift check flagged, each naming its goal: one list to answer.
 	flagged := 0
 	for _, f := range o.DriftFlags {
 		if f.Answer != "" {

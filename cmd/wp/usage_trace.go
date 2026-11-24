@@ -14,28 +14,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Navigation traces (WP-250): one row per task a session took, from `wp next`
-// or `wp take` to `wp ship`, `wp done`, `wp release` or the next task, with
-// the calls between sorted into what they were for (finding files, searching
-// inside one, reading, editing, delegating) before and after the first edit,
-// how much context the agent carried at both, and the files it touched with
-// how it came to each. Only classes, counts, token counts, paths from a
-// checkout's root and repository names leave the machine: never command text,
-// file contents or absolute paths. The calls of the main thread count; a
-// subagent's own are not.
-//
-// The first edit is the first call that writes a file of the work: an Edit
-// or Write there, or a Bash call one of whose commands writes one
-// (traceCommand.writes). Agents here make most of their shell edits with a
-// script handed to python (10,471 of 15,829 shell edits in 104,517 Bash
-// calls, page WP-X19), so the script is read for what it writes. A file of
-// the work is a file in a git checkout (traceFile); scratch files are not.
-//
-// A call is counted when its result is read, in the order results arrive, so
-// a run that ends between a call and its result carries the call over (it
-// rides in usageOpenCall.T). The open segment's state is saved with the file's
-// and cloned with it; a segment's row is sent again, whole, whenever a run
-// changed it, and the server replaces the stored one.
+// Only classes, counts, token counts, root-relative paths and repository names leave the machine; never command text, file contents or absolute paths.
 
 // usageTraceVersion: a file read before traces (0) is read again, from the
 // start, for its trace rows alone.
@@ -84,7 +63,7 @@ const (
 	traceMaxSurf    = 1000
 	traceResultCap  = 30000
 	traceMaxCmdPath = 12
-	traceDropTokens = 5000 // a call's context this far under the last one's: a compaction
+	traceDropTokens = 5000
 )
 
 // call classes
@@ -231,8 +210,6 @@ func (t *traceState) clone() *traceState {
 	}
 	return &c
 }
-
-// ---- classification ----
 
 var (
 	traceKeyRE   = lazyre.New(`^([A-Z][A-Z0-9]{1,9}-\d+) "`)
@@ -406,7 +383,7 @@ func traceFile(p, cwd string) (f tracePath, work bool) {
 		rel, repo = p[len(own.root)+1:], own.repo
 	} else {
 		if _, err := os.Stat(path.Dir(p)); err == nil {
-			return f, false // a directory that is there, in no checkout
+			return f, false
 		}
 		root, main := traceMainOf(cwd)
 		repo = main.repo
@@ -416,7 +393,7 @@ func traceFile(p, cwd string) (f tracePath, work bool) {
 		case traceUnder(p, main.root):
 			rel = p[len(main.root)+1:]
 		case path.Dir(main.root) == "/" && strings.HasPrefix(p, "/"), traceUnder(p, path.Dir(main.root)):
-			// the parent of a checkout at /app is "/", which traceUnder can't match
+			// traceUnder never matches under '/', so a checkout at /app is matched through its parent by hand
 			parent := strings.TrimSuffix(path.Dir(main.root), "/")
 			if name, in, ok := strings.Cut(p[len(parent)+1:], "/"); ok && strings.HasPrefix(name, path.Base(main.root)+"-") {
 				rel = in
@@ -426,7 +403,6 @@ func traceFile(p, cwd string) (f tracePath, work bool) {
 			return f, true
 		}
 	}
-	// a worktree inside a checkout holds the checkout's files
 	if m := traceWorktreeRE.FindStringSubmatch("/" + rel); m != nil && m[1] == "" {
 		if rel = strings.TrimPrefix(m[4], "/"); rel == "" {
 			return f, false
@@ -445,11 +421,11 @@ type traceInput struct {
 
 // traceCommand is one command of a Bash call.
 type traceCommand struct {
-	words  []string // the program and its arguments, unquoted, with the variables the line sets filled in
+	words  []string
 	head   string
-	dir    string   // the directory it runs in: the call's, or where a cd before it went
-	redirs []string // the files its output is sent to
-	script string   // the heredoc it is given
+	dir    string
+	redirs []string
+	script string
 	wrote  []traceWrite
 }
 
@@ -500,7 +476,7 @@ func traceCommands(cmd, cwd string, depth int, vars map[string]string, mem *trac
 			assigns = assigns && assignRE.MatchString(w)
 		}
 		if assigns {
-			set(all) // S=/tmp/s: remembered for the words after it
+			set(all)
 			continue
 		}
 		words := stripWords(all)
@@ -540,11 +516,10 @@ func traceCommands(cmd, cwd string, depth int, vars map[string]string, mem *trac
 		}
 		c.wrote = c.writes()
 		for i, w := range c.wrote {
-			if strings.HasPrefix(w.kind, "script") { // an unquoted heredoc is filled in by the shell
+			if strings.HasPrefix(w.kind, "script") { // an unquoted heredoc is expanded by the shell, so its text is filled in before matching
 				c.wrote[i].w = fill(w.w)
 			}
 		}
-		// a script kept in a file (cat > edit.py <<EOF), and one run from it
 		if prog := path.Base(words[0]); c.script != "" && (prog == "cat" || prog == "tee") {
 			for _, w := range c.wrote {
 				mem.keep(traceAt(w.w, c.dir), c.script)
@@ -558,7 +533,7 @@ func traceCommands(cmd, cwd string, depth int, vars map[string]string, mem *trac
 				c.wrote = append(c.wrote, traceWrite{kind: kind, w: w})
 			}
 		}
-		vars["_"] = words[len(words)-1] // mkdir -p /tmp/s && cd $_
+		vars["_"] = words[len(words)-1] // $_ is the last word of the previous command.
 		*out = append(*out, c)
 	}
 	return dir
@@ -662,7 +637,7 @@ const traceMaxScript = 256 << 10
 // listed, and the caller can't tell the written from the read.
 func traceScriptWrites(script string) (paths []string, sure bool) {
 	if len(script) > traceMaxScript {
-		script = script[:traceMaxScript] // the head of a long script, to bound the scan
+		script = script[:traceMaxScript]
 	}
 	if !traceScriptWriteRE.MatchString(script) {
 		return nil, true
@@ -680,7 +655,6 @@ func traceScriptWrites(script string) (paths []string, sure bool) {
 		if !traceFileShape(s) {
 			continue
 		}
-		// open('a.go').read() and Path('a.go').read_text() only read it
 		q := `['"]` + regexp.QuoteMeta(s) + `['"]\s*\)`
 		if read := regexp.MustCompile(`\bopen\(\s*` + q + `|` + q + `\.read_(?:text|bytes)\(`); read.MatchString(script) {
 			continue
@@ -733,9 +707,9 @@ func traceScriptExpr(script, expr string, depth int) []string {
 
 // traceWrite is one file a command writes, as the command spells it.
 type traceWrite struct {
-	kind  string // how: redirect, output (not counted), tee, sed, perl, mv, cp, rm, patch, script, script?
+	kind  string
 	w     string
-	whole bool // the whole file is written, like the Write tool: a heredoc into it, a copy, a move
+	whole bool
 }
 
 // writes lists the files a command writes. What counts: output sent to a
@@ -770,7 +744,7 @@ func (c *traceCommand) writes() []traceWrite {
 			prog, args = "git "+args[0], args[1:]
 		}
 	}
-	plain := func(skip int) (ws []string) { // arguments that aren't flags, after the first skip of them
+	plain := func(skip int) (ws []string) {
 		for _, a := range args {
 			if strings.HasPrefix(a, "-") && a != "-" {
 				continue
@@ -805,7 +779,7 @@ func (c *traceCommand) writes() []traceWrite {
 		}
 	case "sed":
 		if sedInPlace(c.words) {
-			skip := 1 // the script, unless -e or -f gives it
+			skip := 1
 			var files []string
 			for i := 0; i < len(args); i++ {
 				a := args[i]
@@ -833,7 +807,7 @@ func (c *traceCommand) writes() []traceWrite {
 					inPlace = true
 				}
 				if strings.HasSuffix(f, "e") || strings.HasSuffix(f, "E") {
-					i++ // the script
+					i++
 				}
 				continue
 			}
@@ -863,8 +837,7 @@ func (c *traceCommand) writes() []traceWrite {
 	case "git rm":
 		each("rm", plain(0))
 	case "xargs", "find":
-		// sed -i or perl -i run on files the line doesn't name (find -exec,
-		// xargs): an edit of files unknown
+		// sed -i or perl -i under find or xargs edits files the line does not name; record a wildcard write
 		for i, a := range args {
 			if b := path.Base(a); b == "sed" && sedInPlace(args[i:]) || b == "perl" && i+1 < len(args) && perlInPlaceRE.MatchString(args[i+1]) {
 				out = append(out, traceWrite{kind: "patch", w: "*"})
@@ -876,7 +849,6 @@ func (c *traceCommand) writes() []traceWrite {
 			out = append(out, traceWrite{kind: "patch", w: "*"})
 		}
 	}
-	// a script given to an interpreter, as a heredoc or with -c or -e
 	if i := c.interpreter(); i >= 0 {
 		script := c.script
 		for j := i + 1; j+1 < len(c.words) && script == ""; j++ {
@@ -905,7 +877,7 @@ func traceWordPaths(cmds []traceCommand, cwd string) (out []tracePath) {
 					continue
 				}
 			}
-			if i := strings.IndexByte(w, ':'); i > 0 { // file.go:12
+			if i := strings.IndexByte(w, ':'); i > 0 {
 				w = w[:i]
 			}
 			if !traceFileShape(w) {
@@ -953,7 +925,7 @@ func classifyTraceCall(name string, input json.RawMessage, cwd string, at, ctx i
 				tc.Paths = []tracePath{f}
 			}
 		} else if name == "Write" {
-			mem.keep(traceAt(in.FilePath, cwd), in.Content) // a script kept in scratch
+			mem.keep(traceAt(in.FilePath, cwd), in.Content)
 		}
 	case "Agent", "Task":
 		tc.Class, tc.Scan = trDelegated, true
@@ -1212,8 +1184,6 @@ func hashName(s string) uint32 {
 	return h.Sum32()
 }
 
-// ---- the segments ----
-
 func (s *traceSeg) navBefore() int { return int(s.N.Locate + s.N.Infile + s.N.Reads) }
 
 func (s *traceSeg) surfaced(h uint32) bool {
@@ -1322,7 +1292,6 @@ func (p *usageParser) traceResult(tc *traceCall, bl *rawBlock, refused bool) {
 		return
 	}
 	ts := p.st.Trace
-	// names the files a result named, so a later touch of one is not cold
 	surface := func(cur *traceSeg) {
 		for _, h := range namedFiles(resultText(bl.Content, traceResultCap)) {
 			if len(cur.Surf) >= traceMaxSurf {
@@ -1341,7 +1310,6 @@ func (p *usageParser) traceResult(tc *traceCall, bl *rawBlock, refused bool) {
 			}
 			p.traceTouched = true
 			if ts.Cur != nil && ts.Cur.Key == key {
-				// the task read again in its own take: the take goes on
 				surface(ts.Cur)
 				return
 			}
@@ -1350,7 +1318,6 @@ func (p *usageParser) traceResult(tc *traceCall, bl *rawBlock, refused bool) {
 			}
 			ts.Seq++
 			ts.Cur = &traceSeg{Key: key, Seq: ts.Seq, Start: tc.At, Last: tc.At, StartModel: tc.Model, CtxStart: tc.Ctx, PrevCtx: tc.Ctx}
-			// the answer's own pointers are files the agent was named
 			surface(ts.Cur)
 			return
 		}
@@ -1360,15 +1327,12 @@ func (p *usageParser) traceResult(tc *traceCall, bl *rawBlock, refused bool) {
 	}
 	p.traceTouched = true
 	cur := ts.Cur
-	// An end that failed, or that names other tasks only, ends nothing.
 	if tc.End != "" && !bl.IsError && (len(tc.Keys) == 0 || slices.Contains(tc.Keys, cur.Key)) {
 		p.traceClose(tc.End)
 		return
 	}
 	if bl.IsError && tc.Class == trEdit && !tc.Scan {
-		// An Edit or Write the tool refused (the file not read yet, the
-		// text not found) wrote nothing. A failed Bash call stays an edit:
-		// what failed may be a command after the one that wrote.
+		// a refused Edit or Write wrote nothing, but a failed Bash call may have run its write first
 		failed := *tc
 		failed.Class, failed.Paths, failed.Write = trOther, nil, false
 		tc = &failed

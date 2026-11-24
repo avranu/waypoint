@@ -10,10 +10,6 @@ import (
 	"time"
 )
 
-// The agent work loop (WP-D7): an agent asks for the next task it may
-// take, claims it, works, and reports done; Waypoint advances the workflow
-// and records the run's time and tokens.
-
 // ClaimLease is how long a claim lasts without being finished or renewed.
 const ClaimLease = 2 * time.Hour
 
@@ -158,10 +154,8 @@ func (s *Service) AgentNext(ctx context.Context, actor *Actor, q AgentQuery) (*A
 	for _, iid := range held {
 		i, _, err := s.getIssueFor(ctx, s.db.R, actor, itoa64(iid), RoleViewer, false)
 		if err != nil {
-			continue // not visible to this token
+			continue
 		}
-		// Finished, taken off agents, handed elsewhere or put on hold since:
-		// let it go.
 		if i.Closed() || !s.stillDelegated(ctx, i, id) || i.Hold.on(s.now()) {
 			if !q.Peek {
 				if err := s.dropClaim(ctx, actor, i.ID, id, "released"); err != nil {
@@ -170,12 +164,10 @@ func (s *Service) AgentNext(ctx context.Context, actor *Actor, q AgentQuery) (*A
 			}
 			continue
 		}
-		// Shipped: its pull request is open or merged, or it moved on to In
-		// Review, so the agent's part is done and asking again shouldn't hand
-		// it back (WP-246, WP-267).
+		// A task whose pull request is open or merged, or that moved on to In Review, is the agent's done part: asking again must not hand it back.
 		handed, err := s.handedOn(ctx, s.db.R, i)
 		if err != nil {
-			return nil, err // can't tell if it moved on: keep the claim, ask again (WP-1406)
+			return nil, err
 		}
 		if s.outOnPR(ctx, s.db.R, i) != nil || handed {
 			if !q.Peek {
@@ -186,31 +178,30 @@ func (s *Service) AgentNext(ctx context.Context, actor *Actor, q AgentQuery) (*A
 			continue
 		}
 		if (q.Project != "" && !strings.EqualFold(q.Project, i.ProjectKey)) || (q.Step != "" && !strings.EqualFold(q.Step, i.Step)) {
-			continue // the agent asked for something else this time
+			continue
 		}
 		if fits, err := s.heldFits(ctx, actor, i.Key, q); err != nil {
 			return nil, err
 		} else if !fits {
-			continue // outside the repo or query asked for (another checkout's task)
+			continue
 		}
 		if where := s.heldElsewhere(ctx, actor, iid, id); where != "" {
 			skipped = append(skipped, i.Key+" ("+where+")")
-			continue // another live session of this agent is on it (WP-89)
+			continue
 		}
 		if !q.Peek {
 			if err := s.renewClaim(ctx, actor, iid, id); err != nil {
 				return nil, err
 			}
 		}
-		t, err := s.agentTaskWith(ctx, actor, iid, true, "") // a resume draws no arm (WP-1035)
+		t, err := s.agentTaskWith(ctx, actor, iid, true, "")
 		if err != nil {
 			return nil, err
 		}
 		t.Resumed, t.Skipped = true, skipped
 		return t, nil
 	}
-	// A person who paused this agent stops it taking new work (WP-D15);
-	// what it already holds (above) stays its own.
+	// A paused agent still resumes the claims it holds; the pause check only stops new work.
 	if p, err := s.pauseFor(ctx, actor, id); err != nil {
 		return nil, err
 	} else if p != nil {
@@ -221,8 +212,7 @@ func (s *Service) AgentNext(ctx context.Context, actor *Actor, q AgentQuery) (*A
 		return nil, err
 	}
 	today := s.now().UTC().Format(dateLayout)
-	// Work this terminal left stranded (WP-567) comes first, so a /clear
-	// still hands the task on to the session after it (WP-253).
+	// This terminal's stranded work goes first, so a /clear still hands the task on to the next session.
 	resumeHere := s.strandedHere(ctx, actor, id)
 	if n := slices.IndexFunc(ready, func(qi *queuedIssue) bool { return resumeHere[qi.issue.ID] }); n > 0 {
 		first := ready[n]
@@ -247,14 +237,14 @@ func (s *Service) AgentNext(ctx context.Context, actor *Actor, q AgentQuery) (*A
 		if !q.Peek {
 			switch err := s.claim(ctx, actor, i.ID, id); {
 			case errors.Is(err, errAlreadyClaimed), errors.Is(err, ErrForbidden), errors.Is(err, ErrNotFound):
-				continue // someone got there first, it changed since, or this token can only read it
+				continue
 			case err != nil:
 				return nil, err
 			}
 		}
 		via := "next"
 		if q.Peek {
-			via = "" // only the call that makes the claim draws (WP-1035)
+			via = ""
 		}
 		t, err := s.agentTaskWith(ctx, actor, i.ID, true, via)
 		if t != nil {
@@ -297,7 +287,7 @@ func (s *Service) AgentBatch(ctx context.Context, actor *Actor, q AgentQuery) (*
 		}
 		if q.Within != "" && strings.TrimSpace(q.CrossProject) == "" {
 			if fits, err := s.heldFits(ctx, actor, i.Key, AgentQuery{Query: q.Within}); err != nil || !fits {
-				continue // relations cross projects; a claim needs a reason to (WP-117)
+				continue // Relations can cross projects: without CrossProject, a related task must still fit the Within query.
 			}
 		}
 		if !q.Peek {
@@ -375,7 +365,7 @@ func (s *Service) agentCanTake(ctx context.Context, i *Issue, id string, now int
 		return false
 	}
 	if handed, err := s.handedOn(ctx, s.db.R, i); handed || err != nil {
-		return false // moved on, or can't tell: not handed out (WP-1406)
+		return false
 	}
 	if s.fanoutOf(ctx, i.ID) != 0 || !s.agentEligible(ctx, i, id, now) {
 		return false
@@ -543,7 +533,6 @@ func prName(l *ExternalLink) string {
 func (q AgentQuery) filters() []string {
 	var parts []string
 	if q.Repo != "" {
-		// One repo or several (an agent working across a group of repos).
 		var repos []string
 		for _, r := range strings.Split(q.Repo, ",") {
 			if r = strings.TrimSpace(r); r != "" {
@@ -591,7 +580,7 @@ func (s *Service) agentEligible(ctx context.Context, i *Issue, id string, now in
 		return false
 	}
 	if agentHumansOnly(i.Agent) || i.Draft {
-		return false // humans only, whatever a step says; drafts wait for a person (WP-42)
+		return false // A step's spec can't override humans-only or drafts.
 	}
 	spec, rule := s.stepSpec(ctx, i)
 	if !AgentMatches(spec, id) {
@@ -613,7 +602,7 @@ func (s *Service) agentEligible(ctx context.Context, i *Issue, id string, now in
 // stepSpec is the agent spec for an issue's current step: the step's own,
 // or the issue's; rule is "same"/"different" when the step says so.
 func (s *Service) stepSpec(ctx context.Context, i *Issue) (spec, rule string) {
-	spec = issueAgentSpec(i.Agent) // Anyone is open to any agent
+	spec = issueAgentSpec(i.Agent)
 	if i.WorkflowID == nil || i.Step == "" {
 		return spec, ""
 	}
@@ -673,8 +662,7 @@ func (s *Service) claimIssueTx(ctx context.Context, t *tx, actor *Actor, issueID
 		return err
 	}
 	if i.Draft {
-		// Whoever asks (a runner acts as its owner), agents don't work on
-		// drafts (WP-42); one that can't see it hears what a missing issue says.
+		// Actors that hide drafts get the same not-found as for a missing issue; a runner acts as its owner.
 		if actor.HidesDrafts() {
 			return notFound("issue " + itoa64(issueID))
 		}
@@ -714,8 +702,6 @@ func (s *Service) claimIssueTx(ctx context.Context, t *tx, actor *Actor, issueID
 		}
 	}
 	if explicit && !s.stillDelegated(ctx, i, id) {
-		// Taking a task assigns it to the agent: delegated to it from now
-		// on (recorded in its history like any other change).
 		if err := s.applyPatch(ctx, t, actor, i, IssuePatch{Agent: &id}); err != nil {
 			return err
 		}
@@ -723,7 +709,6 @@ func (s *Service) claimIssueTx(ctx context.Context, t *tx, actor *Actor, issueID
 			return err
 		}
 	}
-	// claimed_at only moves for a new claim: renewing keeps the timer.
 	res, err := t.ExecContext(ctx, `UPDATE issues SET claimed_at = CASE WHEN claimed_by = ? AND claimed_until > ? AND claimed_at IS NOT NULL THEN claimed_at ELSE ? END,
 		claimed_by = ?, claimed_until = ?
 		WHERE id = ? AND (claimed_by = '' OR claimed_until IS NULL OR claimed_until < ? OR claimed_by = ?)`,
@@ -734,11 +719,7 @@ func (s *Service) claimIssueTx(ctx context.Context, t *tx, actor *Actor, issueID
 	if n, _ := res.RowsAffected(); n == 0 {
 		return errAlreadyClaimed
 	}
-	// Coming back after its lease lapsed (before the sweep ended the run)
-	// starts a new run: the gap wasn't work. A run held for its review
-	// before the pull request goes on, as the sweep leaves it (WP-752): a
-	// new run has no round, so its wp ship would ask for the review
-	// again.
+	// A run held for its review carries over a lapsed lease; a new run has no review round, so wp ship would ask again.
 	if live := i.ClaimedBy == id && i.ClaimedUntil != nil && i.ClaimedUntil.UnixMilli() > now; !live {
 		var until any
 		if i.ClaimedBy == id && i.ClaimedUntil != nil {
@@ -749,7 +730,6 @@ func (s *Service) claimIssueTx(ctx context.Context, t *tx, actor *Actor, issueID
 			return err
 		}
 	}
-	// Re-claiming what it already holds (batch asked twice) keeps the open run.
 	opened, err := t.ExecContext(ctx, `INSERT INTO agent_runs(issue_id, agent, step, user_id, started_at, session_id) SELECT ?,?,?,?,?,?
 		WHERE NOT EXISTS (SELECT 1 FROM agent_runs WHERE issue_id = ? AND agent = ? AND ended_at IS NULL)`,
 		i.ID, id, i.Step, nullUser(actor.id()), now, nullUser(actor.Session), i.ID, id)
@@ -757,8 +737,7 @@ func (s *Service) claimIssueTx(ctx context.Context, t *tx, actor *Actor, issueID
 		return err
 	}
 	if actor.Session != 0 {
-		// Taken from this session (a person named the task here): its run
-		// is this session's from now on, even if another one had it (WP-89).
+		// A task a person names in this session moves its open run here, even from another session.
 		if _, err := t.ExecContext(ctx, `UPDATE agent_runs SET session_id = ? WHERE issue_id = ? AND agent = ? AND ended_at IS NULL`, actor.Session, i.ID, id); err != nil {
 			return err
 		}
@@ -829,9 +808,7 @@ func (s *Service) renewClaim(ctx context.Context, actor *Actor, issueID int64, i
 	if err != nil || actor.Session == 0 {
 		return err
 	}
-	// Resumed from this session (its own, or one that ended): the run is
-	// this session's now, a paused one too, so the next wp next of another
-	// session sees who holds it.
+	// A resumed run moves to this session, paused or not, so another session's wp next sees who holds it.
 	res, err := s.db.W.ExecContext(ctx, `UPDATE agent_runs SET session_id = ? WHERE id = (`+holdingRun+`) AND coalesce(session_id, 0) != ?`, actor.Session, issueID, id, actor.Session)
 	if err != nil {
 		return err
@@ -1125,9 +1102,6 @@ func (s *Service) AgentDone(ctx context.Context, actor *Actor, ref string, in Ag
 		if o != nil && o.diagnoseRound() {
 			return o.diagnoseDoneError(i.Key, i.ClaimedBy == id && live && i.Status.Category == CatInProgress)
 		}
-		// Out on a pull request that hasn't merged: the merge (or a person)
-		// finishes it, not wp done. The agent's part ends here: its run and
-		// claim do, and the issue stays where it is (WP-246).
 		if pr := s.outOnPR(ctx, t, i); pr != nil && pr.State != "merged" {
 			res.Key, issueID, res.Waiting = i.Key, i.ID, prName(pr)
 			if c := strings.TrimSpace(in.Comment); c != "" {
@@ -1141,11 +1115,7 @@ func (s *Service) AgentDone(ctx context.Context, actor *Actor, ref string, in Ag
 			_, err = t.ExecContext(ctx, `UPDATE issues SET claimed_by = '', claimed_until = NULL, claimed_at = NULL WHERE id = ? AND claimed_by = ?`, i.ID, id)
 			return err
 		}
-		// Finishing work the agent never took is next KEY then done: a person
-		// told it to do the task, so it can always mark it done. The take is
-		// recorded as usual (run, assignment, In Progress), so usage and
-		// activity still count. A workflow step's own rule still holds (a
-		// review by a different agent), and so do drafts.
+		// Finishing a task the agent never took first records the take (run, assignment, In Progress), so usage still counts; workflow step rules and drafts still apply.
 		if held := i.ClaimedBy == id && live; !held {
 			if err := s.claimIssueTx(ctx, t, actor, i.ID, id, true); err != nil {
 				if errors.Is(err, errAlreadyClaimed) {
@@ -1236,7 +1206,6 @@ func (s *Service) AgentReportUsage(ctx context.Context, actor *Actor, ref, agent
 		if err != nil {
 			return err
 		}
-		// Reporting is activity: it keeps the claim alive.
 		now := s.nowMS()
 		if _, err := t.ExecContext(ctx, `UPDATE issues SET claimed_until = ? WHERE id = ? AND claimed_by = ? AND claimed_until > ?`,
 			now+ClaimLease.Milliseconds(), i.ID, id, now); err != nil {
@@ -1249,14 +1218,12 @@ func (s *Service) AgentReportUsage(ctx context.Context, actor *Actor, ref, agent
 				return err
 			}
 			if n, _ := res.RowsAffected(); n == 0 {
-				return nil // already counted
+				return nil // A repeated report id is not counted twice.
 			}
 		}
 		var runID int64
 		err = t.QueryRowContext(ctx, `SELECT id FROM agent_runs WHERE issue_id = ? AND agent = ? ORDER BY id DESC LIMIT 1`, i.ID, id).Scan(&runID)
 		if errors.Is(err, sql.ErrNoRows) {
-			// No run yet (the agent never ran next KEY): a person told it to
-			// work on this, so the usage is recorded like a take would.
 			if err := s.claimableByPerson(ctx, actor, i, id, now); err != nil {
 				return err
 			}
@@ -1302,8 +1269,6 @@ func (s *Service) closeRun(ctx context.Context, t *tx, issueID int64, id, outcom
 		u = &AgentUsage{}
 	}
 	now := s.nowMS()
-	// The session it ends in, if the claim's session wasn't known: a task
-	// finished in a session counts for that session's size note (WP-34).
 	var sess any
 	if t.actor != nil {
 		sess = nullUser(t.actor.Session)
@@ -1328,7 +1293,6 @@ func (s *Service) closeRun(ctx context.Context, t *tx, issueID int64, id, outcom
 	if n, _ := res.RowsAffected(); n > 0 {
 		return nil
 	}
-	// Paused: the latest run takes the outcome and usage.
 	res, err = t.ExecContext(ctx, `UPDATE agent_runs SET outcome = ?,
 		input_tokens = input_tokens + ?, output_tokens = output_tokens + ?, cost_usd = cost_usd + ?,
 		model = CASE WHEN ? != '' THEN ? ELSE model END, session_id = coalesce(session_id, ?)
@@ -1395,8 +1359,6 @@ func (s *Service) expireRuns(ctx context.Context) error {
 	if err := s.stopLongAgentTimers(ctx); err != nil {
 		return err
 	}
-	// A run ends when its lease ran out: the last renewal plus the lease if
-	// the agent still holds the (lapsed) claim, otherwise one lease long.
 	_, err := s.db.W.ExecContext(ctx, `UPDATE agent_runs SET outcome = 'expired', end_inferred = 1, ended_at = min(?, coalesce(
 			(SELECT i.claimed_until FROM issues i WHERE i.id = agent_runs.issue_id AND i.claimed_by = agent_runs.agent),
 			started_at + ?))
@@ -1406,7 +1368,6 @@ func (s *Service) expireRuns(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	// Then the lapsed claims themselves, so nobody shows as working on them.
 	_, err = s.db.W.ExecContext(ctx, `UPDATE issues SET claimed_by = '', claimed_until = NULL, claimed_at = NULL
 		WHERE claimed_by != '' AND claimed_until IS NOT NULL AND claimed_until <= ?
 			AND NOT EXISTS (SELECT 1 FROM agent_runs WHERE agent_runs.issue_id = issues.id AND agent_runs.agent = issues.claimed_by AND agent_runs.ended_at IS NULL AND `+runHeldForReview+`)`, now)
@@ -1434,9 +1395,7 @@ func (s *Service) AgentPause(ctx context.Context, actor *Actor, ref, agent strin
 		if i.ClaimedBy != id || i.ClaimedUntil == nil || i.ClaimedUntil.UnixMilli() <= now {
 			return invalid("%s isn't claimed by %s", i.Key, id)
 		}
-		// A run held for its review before the pull request (WP-688) is
-		// waiting on Waypoint, not its person: it stays open, or the review
-		// has nothing to belong to (WP-752).
+		// A run held for its review before its pull request stays open on pause; the review needs it.
 		res, err := t.ExecContext(ctx, `UPDATE agent_runs SET ended_at = ?, outcome = 'paused' WHERE issue_id = ? AND agent = ? AND ended_at IS NULL
 			AND NOT `+runHeldForReview, now, i.ID, id)
 		if err != nil {
@@ -1450,7 +1409,6 @@ func (s *Service) AgentPause(ctx context.Context, actor *Actor, ref, agent strin
 		if n, _ := pausedTimer.RowsAffected(); n > 0 {
 			timerPaused = &Event{Kind: EvTimerPaused, ProjectID: i.ProjectID, IssueID: i.ID, IssueKey: i.Key, Data: map[string]any{"agent": id}}
 		}
-		// Going idle is activity too: the claim lasts a lease from now.
 		if _, err := t.ExecContext(ctx, `UPDATE issues SET claimed_until = ? WHERE id = ?`, now+ClaimLease.Milliseconds(), i.ID); err != nil {
 			return err
 		}
@@ -1479,7 +1437,6 @@ func (s *Service) AgentPause(ctx context.Context, actor *Actor, ref, agent strin
 // kept autopilot from moving it on).
 func (s *Service) AgentResumeOwn(ctx context.Context, actor *Actor, ref, agent string) (string, error) {
 	if actor == nil || actor.Session == 0 {
-		// Ownership can't be told without a session: leave the task as it is.
 		return "", invalid("no session to resume %s in; wp resume %s takes it on purpose", ref, ref)
 	}
 	id, err := agentIdentity(actor, agent)
@@ -1516,15 +1473,11 @@ func (s *Service) AgentResume(ctx context.Context, actor *Actor, ref, agent stri
 	now := s.nowMS()
 	held := i.ClaimedBy == id && i.ClaimedUntil != nil && i.ClaimedUntil.UnixMilli() > now
 	if held {
-		// Another live session of this agent holds the paused task: resuming
-		// here would take it over (WP-566).
 		if where := s.heldElsewhere(ctx, actor, i.ID, id); where != "" {
 			return "", invalid("%s: %s", i.Key, where)
 		}
 	}
 	if !held {
-		// claimIssue refuses closed tasks and other agents' claims, and
-		// opens a run.
 		if err := s.claimIssue(ctx, actor, i.ID, id, true); err != nil {
 			return "", err
 		}
@@ -1542,8 +1495,6 @@ func (s *Service) AgentResume(ctx context.Context, actor *Actor, ref, agent stri
 		if _, err := t.ExecContext(ctx, `UPDATE issues SET claimed_until = ? WHERE id = ? AND claimed_by = ?`, now+ClaimLease.Milliseconds(), i.ID, id); err != nil {
 			return err
 		}
-		// Its own timer on the task, if pausing stopped it (and it hasn't
-		// started another since).
 		var entry int64
 		err = t.QueryRowContext(ctx, `SELECT id FROM time_entries WHERE user_id = ? AND agent = ? AND issue_id = ? AND paused = 1
 			AND NOT EXISTS (SELECT 1 FROM time_entries r WHERE r.user_id = ? AND r.agent = ? AND r.ended_at IS NULL)

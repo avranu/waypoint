@@ -20,8 +20,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Opening a pull request, and shipping a change, without a model (WP-44).
-
 var prOpenAbout = `Pushes the branch and opens a pull request against the default branch.
 No model is called.
 
@@ -70,11 +68,11 @@ type prOpenFlags struct {
 	draft, ready, noPush, urgent                *bool
 	review, pr, force                           *bool
 	skipReview                                  *string
-	skipGiven                                   *bool  // --skip-review was given, even empty
-	finishing                                   string // the task wp ship finishes, when held (not a flag)
-	summary                                     string // wp ship's -m, checked for claims (not a flag)
-	shipSummary                                 string // wp ship's --summary, kept by the server with a held ship (not a flag)
-	messageGiven, shipSummaryGiven              bool   // -m / --summary were on the command line, even empty (not flags)
+	skipGiven                                   *bool
+	finishing                                   string
+	summary                                     string
+	shipSummary                                 string
+	messageGiven, shipSummaryGiven              bool
 }
 
 func addPROpenFlags(fs *flag.FlagSet) prOpenFlags {
@@ -131,8 +129,8 @@ type openedPR struct {
 	UrgentPR int `json:"urgent_pr"`
 	// ClaimWarning: another session holds this pull request (WP-117).
 	ClaimWarning string `json:"claim_warning"`
-	key          string // the issue it was linked to, if any
-	why          string // how it was chosen: --issue, branch, claim or commit
+	key          string
+	why          string
 	tested       *shipEvidence
 }
 
@@ -232,8 +230,7 @@ func noticed(notice, s string) string {
 // reviewIntent is what the flags say about the task's review before its
 // pull request (core.ShipAuto and the rest).
 func (f prOpenFlags) reviewIntent() (string, error) {
-	// --pr is plain wp ship, kept for older prompts (WP-1370): beside
-	// --skip-review the skip wins, beside --review the review does.
+	// --pr alone means auto; with --skip-review the skip wins, with --review the review does.
 	intent := "auto"
 	if *f.review {
 		intent = "review"
@@ -256,13 +253,10 @@ func (f prOpenFlags) reviewIntent() (string, error) {
 type shipOpts struct {
 	noArm, noMove, noBabysit, notify, blocking, noWait *bool
 	waitTimeout                                        *time.Duration
-	// summary is the agent's final reply to the person (WP-1093); summaryGiven
-	// says --summary was on the command line ("" drops a kept one).
+	// summaryGiven says --summary was on the command line; an empty value drops a kept summary.
 	summary      *string
 	summaryGiven bool
-	// before is why what wp ship printed before the pull request (an
-	// objective's check, a notice) needs the agent to read it.
-	before string
+	before       string
 }
 
 func addShipFlags(fs *flag.FlagSet) shipOpts {
@@ -292,7 +286,7 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 	default: // held: the branch or commits may still name the issue to link
 		f.finishing = key
 	}
-	if _, err := localGit("diff", "--cached", "--quiet"); err != nil && isExit(err, 1) { // something is staged
+	if _, err := localGit("diff", "--cached", "--quiet"); err != nil && isExit(err, 1) {
 		if strings.TrimSpace(msg) == "" {
 			return false, c.usage("changes are staged: say what they are with -m MESSAGE")
 		}
@@ -302,9 +296,7 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 	} else if err != nil {
 		return false, err
 	} else if msgGiven {
-		// -m says there is work to commit. With changes left unstaged,
-		// shipping now would open the pull request from the commits that
-		// are already there, which may be another change's (WP-493).
+		// With -m and unstaged changes left, shipping now would open the pull request from commits that may be another change's.
 		if dirty, _ := localGit("status", "--porcelain"); uncommittedFiles(dirty) > 0 {
 			return false, c.usage("nothing is staged but the tree has changes: git add them and run wp ship -m again, or drop -m to ship the commits as they are")
 		}
@@ -314,7 +306,6 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 		f.shipSummary, f.shipSummaryGiven = *so.summary, true
 	}
 	if (*f.body != "" || *f.file != "") && c.agentHeader() != "" && !c.asJSON {
-		// Writing it costs tokens Waypoint saves (WP-55): say so, use it.
 		c.println("Notice: Waypoint writes the description from -m, the commits, the task and the recorded tests; your -f/--body replaces it. Next time leave it out.")
 	}
 	o, raw, err := reopenPR(c, f)
@@ -333,12 +324,10 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 		o, raw = o2, raw2
 	}
 	if o.Held != "" {
-		// Held for the task's review: nothing to arm, babysit or move yet,
-		// and the task isn't finished (WP-688).
+		// Held for the task's review: nothing is armed, babysat or moved, and the task isn't finished.
 		keptWhy, putOff := "", ""
 		if summary != "" {
-			// Kept until the hook's Stop shows it (WP-1093); the review's
-			// findings start another turn, which ships with its own.
+			// The summary is kept until the hook's Stop shows it; review findings start another turn, which ships its own.
 			c.keepSummary(cmpStr(key, o.key), summary)
 			dirty, _ := localGit("status", "--porcelain", "--untracked-files=no")
 			putOff = putOffPrompt(o.key, o.PutOff)
@@ -352,7 +341,7 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 		}
 		if summary != "" && keptWhy == "" {
 			// Only once the output is written: a failed emit must not end the turn.
-			c.endTurnAfterShip(cmpStr(key, o.key), heldSummary(summary)) // its notice says when it can't
+			c.endTurnAfterShip(cmpStr(key, o.key), heldSummary(summary))
 		}
 		return false, nil
 	}
@@ -367,10 +356,7 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 	}
 	d := o.Pull
 	noteUrgent := (*f.urgent || o.UrgentHeld) && d.Urgent
-	// bits are every note, for --json. The text says the usual in one line
-	// (WP-1080): what happened to the pull request, and its URL; what went
-	// wrong goes on lines of its own. That the task named or held was
-	// linked and moved to In Review goes without saying.
+	// The text output is one line for the usual case, with problems on lines of their own; --json gets every note.
 	var bits, said, wrong []string
 	note := func(s string) { bits, said = append(bits, s), append(said, s) }
 	problem := func(s string) { bits, wrong = append(bits, s), append(wrong, s) }
@@ -422,7 +408,7 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 	if o.key != "" && o.Warning == "" {
 		link := "linked " + o.key + " (" + o.why + ")"
 		if strings.EqualFold(o.key, key) {
-			bits = append(bits, link) // the task being finished: the agent knows
+			bits = append(bits, link)
 		} else {
 			note(link)
 		}
@@ -438,8 +424,6 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 					problem("comment not saved: " + err.Error())
 				}
 			}
-			// Shipping finishes the task: the claim here ends, and a task
-			// or fan-out session hands on.
 			c.forgetClaim(o.key)
 			c.sessionDone(o.key)
 		}
@@ -465,10 +449,7 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 			c.println(putOff)
 		}
 		if summary != "" {
-			// The summary is the reply: the turn ends here when nothing
-			// above needs the agent (WP-1093).
-			// The summary stays kept until the hook's Stop shows it: a
-			// turn that goes on after all can ship again without it.
+			// The summary stays kept until the hook's Stop shows it: a turn that goes on after all can ship again without it.
 			c.keepSummary(cmpStr(key, o.key), summary)
 			why := shipNeedsAgent(o, so.before, wrong, putOff, dirty != "")
 			if why == "" && c.endTurnAfterShip(cmpStr(key, o.key), fillSummary(summary, o.key, d)) {
@@ -658,9 +639,6 @@ func (c *cli) openPR(f prOpenFlags) (*openedPR, []byte, error) {
 	if len(all) == 0 {
 		return nil, nil, c.usage("%s has no commits beyond %s; commit first (wp ship -m does)", branch, base)
 	}
-	// A branch made from another one (a stacked change) carries that
-	// branch's commits too; they are its change, not this one, so they name
-	// neither the title nor the issue (WP-493).
 	parents := stackedOn(base, branch)
 	commits := commitsSince(base, parents...)
 	if len(commits) == 0 {
@@ -669,8 +647,7 @@ func (c *cli) openPR(f prOpenFlags) (*openedPR, []byte, error) {
 	if len(parents) > 0 {
 		fmt.Fprintf(c.err, "Stacked on %s: %d commits beyond %s are its; title, summary and issue use the other %d.\n", strings.Join(parents, ", "), len(all)-len(commits), base, len(commits))
 	}
-	// A held task the commits all name comes before the branch's name, and
-	// still under a claim's rules: open, in this project, not merged (WP-665).
+	// A held task the commits all name comes before the branch name, under the same open, same-project, not-merged checks as a claim.
 	named := branch
 	if f.finishing != "" && commitsOverBranch(*f.base, f.finishing) {
 		named = ""
@@ -706,8 +683,7 @@ func (c *cli) openPR(f prOpenFlags) (*openedPR, []byte, error) {
 		}
 		body = string(b)
 	case body == "":
-		// Waypoint writes it, so the server may have a model reword its
-		// Summary from the same inputs (WP-55).
+		// The server may have a model reword this Summary from the same inputs.
 		summary := summarize(commits, f.summary)
 		body, err = c.renderPRBody(key, text, summary, *f.check, tested)
 		if err != nil {
@@ -727,18 +703,14 @@ func (c *cli) openPR(f prOpenFlags) (*openedPR, []byte, error) {
 	}
 	req := map[string]any{"stacked_on": stacked, "head": branch, "base": *f.base, "title": text, "body": body, "draft": *f.draft, "ready": *f.ready, "issue": key, "for": f.finishing, "repo": repo, "urgent": *f.urgent,
 		"review": intent, "reason": strings.TrimSpace(*f.skipReview), "force": *f.force}
-	// What a pull request Waypoint opens for a held ship carries: the newest
-	// ship's words win (WP-1370). A key is sent only when its flag was given
-	// (given empty clears; left out keeps), which also keeps a ship against a
-	// server from before them working.
+	// A key is sent only when its flag was given: given empty clears it, left out keeps it, so a server from before these keys still works.
 	f.addShipWords(req)
 	if ct, err := localGit("log", "-1", "--format=%ct", "HEAD"); err == nil {
 		if t, err := strconv.ParseInt(strings.TrimSpace(ct), 10, 64); err == nil {
 			req["head_time"] = t
 		}
 	}
-	// The head's commit, which tells two heads committed in the same second
-	// apart (WP-1325).
+	// head_time alone can't order two heads committed in the same second, so the head sha is sent too.
 	if sha, err := localGit("rev-parse", "HEAD"); err == nil {
 		if sha = strings.TrimSpace(sha); sha != "" {
 			req["head_sha"] = sha
@@ -750,7 +722,6 @@ func (c *cli) openPR(f prOpenFlags) (*openedPR, []byte, error) {
 	if bodyInputs != nil {
 		req["body_inputs"] = bodyInputs
 	}
-	// What the server would refuse for size is refused before the push.
 	if b, err := json.Marshal(req); err == nil && len(b) > maxOpenRequest {
 		return nil, nil, c.usage("the pull request is too large to send (%d bytes with its description; the server takes at most %d): shorten the description or leave -f/--body out and let Waypoint write it", len(b), maxOpenRequest)
 	}
@@ -836,7 +807,7 @@ func (c *cli) postOpen(project string, req map[string]any) (raw []byte, oldServe
 		delete(req, "summary")
 		raw, err = send()
 		if err != nil {
-			return raw, false, err // its own failure, not news about the server
+			return raw, false, err
 		}
 		_, _ = fmt.Fprintln(c.err, droppedShipWordsNote(m, sm))
 		return raw, true, nil
@@ -862,8 +833,6 @@ var (
 	prOpenRetries = []time.Duration{5 * time.Second, 20 * time.Second}
 	prOpenSleep   = time.Sleep
 )
-
-// ---- git ----
 
 type commitInfo struct{ subject, body string }
 
@@ -1011,7 +980,7 @@ func stackBranches(refs []string) []string {
 	type near struct {
 		name   string
 		n      int
-		onLine bool // its tip is on HEAD's first-parent line, not merged in from aside
+		onLine bool
 	}
 	line := map[string]bool{}
 	if out, err := localGit("rev-list", "--first-parent", "HEAD"); err == nil {
@@ -1080,7 +1049,7 @@ func (c *cli) issueFor(sc *scope, flag, branch, repo string, commits []commitInf
 		title, project string
 		closed         bool
 		status         string
-		merged         int // a merged pull request of this repo linked to it
+		merged         int
 	}
 	look := func(k string) (found, bool) {
 		raw, err := c.call("GET", "/api/v1/issues/"+esc(strings.ToUpper(k)), nil)
@@ -1117,8 +1086,7 @@ func (c *cli) issueFor(sc *scope, flag, branch, repo string, commits []commitInf
 	skip := func(k, from, reason string) {
 		fmt.Fprintf(c.err, "Not linking %s (%s): %s. Use --issue %s to link it anyway.\n", k, from, reason, k)
 	}
-	// usable looks the key up and applies the rules; needOpen is for sources
-	// that may be stale (a claim, a key in some commit text).
+	// needOpen is for sources that may be stale: a claim, or a key in commit text.
 	usable := func(k, from string, needOpen bool) (string, bool) {
 		f, ok := look(k)
 		if !ok {
@@ -1132,8 +1100,7 @@ func (c *cli) issueFor(sc *scope, flag, branch, repo string, commits []commitInf
 			skip(k, from, "it is "+f.status)
 			return "", false
 		}
-		// Its pull request here already merged: the claim or the key is left
-		// over from that change, and this is another (WP-493).
+		// A claim or key whose pull request here already merged is left over from that change, and this is another.
 		if needOpen && f.merged != 0 {
 			skip(k, from, fmt.Sprintf("its pull request #%d already merged", f.merged))
 			return "", false
@@ -1150,10 +1117,7 @@ func (c *cli) issueFor(sc *scope, flag, branch, repo string, commits []commitInf
 			return strings.ToUpper(m[1]), t, "branch"
 		}
 	}
-	// Keys in the commits come before the claim: a claim can be left over
-	// from another session. When the claim is one of those keys it wins (it
-	// is the same work); otherwise the first usable commit key does. The
-	// claim alone is the fallback, and says so.
+	// A claim can be left over from another session, so keys in the commits come before it; a claim the commits also name still wins.
 	var claimKey string
 	if dir, err := os.Getwd(); err == nil {
 		if _, cl := c.state.claimFor(dir); cl != nil {
@@ -1201,8 +1165,6 @@ func humanBranch(b string) string {
 	r := []rune(b)
 	return strings.ToUpper(string(r[:1])) + string(r[1:])
 }
-
-// ---- the body ----
 
 const defaultPRBody = `## Summary
 
@@ -1253,7 +1215,7 @@ func (c *cli) renderPRBody(key, title, summary, checks string, tested *shipEvide
 		custom = read("pr-checks.md")
 	}
 	d.Checks = cmpStr(custom, defaultPRChecks)
-	if tested != nil && tested.Line != "" { // the record says it, not a box to tick
+	if tested != nil && tested.Line != "" {
 		lines := "- " + tested.Line + "\n"
 		for _, l := range tested.BenchLines {
 			lines += "- " + l + "\n"

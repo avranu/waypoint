@@ -12,8 +12,6 @@ import (
 	"time"
 )
 
-// wp usage guard: the quota guard, live and daily (WP-932, WP-ADR112).
-
 var usageGuardCmd = &command{
 	name: "guard", args: "[--days 14] [--now] [--hours] [--user NAME]",
 	summary: "the quota guard: what stops runaway automation, its lines and trips, and the daily checks",

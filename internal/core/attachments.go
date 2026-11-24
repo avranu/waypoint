@@ -137,7 +137,7 @@ func detectContentType(name string, data []byte) string {
 	}
 	ext := strings.ToLower(path.Ext(name))
 	if ext == ".svg" {
-		return "image/svg+xml" // never shown in place: see fileKind
+		return "image/svg+xml" // SVG keeps its own type but is never shown in place, since it can carry script.
 	}
 	if ct == "text/plain" || ct == "application/octet-stream" {
 		if t, ok := textExts[ext]; ok && looksLikeText(data) {
@@ -241,10 +241,10 @@ func (s *Service) attachments(ctx context.Context, q queryer, t AttachTarget) ([
 // attachTarget is a target the actor has been checked against.
 type attachTarget struct {
 	AttachTarget
-	label     string // for the event
+	label     string
 	projectID *int64
-	issue     *Issue // the issue it is on, for issues and comments
-	author    int64  // comments: who wrote it
+	issue     *Issue
+	author    int64
 }
 
 // targetAccess loads a target and checks the actor has at least min access
@@ -305,8 +305,6 @@ func (s *Service) targetAccess(ctx context.Context, q queryer, actor *Actor, t A
 		p := i.ProjectID
 		out.issue, out.label, out.projectID, out.author = i, i.Key, &p, author
 	case TargetRequest:
-		// Whoever may see a request may decide it (its person, editors of
-		// its project, admins), so the same people may put files on it.
 		vis, vargs := requestVisible(actor, "r")
 		var project sql.NullInt64
 		var number int
@@ -325,8 +323,6 @@ func (s *Service) targetAccess(ctx context.Context, q queryer, actor *Actor, t A
 		}
 		out.label, out.projectID = requestRef(key, number), ptrInt(project)
 	case TargetSession:
-		// A session is its person's, and admins'; members of its project can
-		// read what it made but not add to it.
 		x, err := s.sessionByID(ctx, q, actor, t.ID)
 		if err != nil {
 			return nil, err
@@ -364,7 +360,6 @@ func ParseAttachTarget(spec string) (typ, ref string, err error) {
 	case "note":
 		typ = TargetDesign
 	default:
-		// Not a prefix at all: a bare ref (issue keys have no colon, but be kind).
 		return "", "", invalid("%q isn't something files can be attached to (issue, page, design, comment, request, session)", typ)
 	}
 	ref = strings.TrimSpace(ref)
@@ -603,7 +598,7 @@ func (s *Service) attachmentTarget(ctx context.Context, t *tx, actor *Actor, id 
 	tg, err := s.targetAccess(ctx, t, actor, AttachTarget{typ, tid}, RoleEditor)
 	if err != nil {
 		if errors.Is(err, ErrForbidden) {
-			// Visible but not editable: it exists, they just can't.
+			// A viewer who cannot edit is forbidden; anyone who cannot see the target gets not found, so existence is not leaked.
 			if _, verr := s.targetAccess(ctx, t, actor, AttachTarget{typ, tid}, RoleViewer); verr != nil {
 				return nil, notFound("attachment")
 			}

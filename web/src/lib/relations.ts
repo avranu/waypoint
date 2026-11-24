@@ -1,6 +1,3 @@
-// The words for each kind of relation, one place for the Summary card, the
-// Relations list and the picker (WP-1196, WP-1036).
-
 import type { RelationKind } from './types'
 
 export const relLabel: Record<RelationKind, string> = {

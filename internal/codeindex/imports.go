@@ -17,9 +17,9 @@ type goModule struct{ path, dir string }
 // resolver maps import specs to files in the checkout.
 type resolver struct {
 	root     string
-	paths    map[string]bool     // every indexed path
-	goDirs   map[string]bool     // directories holding Go files
-	suffixes map[string][]string // path suffix (a/b.py) -> paths ending in it, built on demand
+	paths    map[string]bool
+	goDirs   map[string]bool
+	suffixes map[string][]string
 	mods     []goModule
 	modsDone bool
 }

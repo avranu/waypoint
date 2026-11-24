@@ -15,12 +15,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/hermes"
 )
 
-// Assistants (WP-ADR1): a person's own Hermes agent, which Waypoint is the
-// dashboard for. An admin connects one (its gate's door, the door's key and
-// CA, Hermes's login) and names its owner; only the owner, signed in in a
-// browser, uses it. Tokens never reach it: the agent itself works in
-// Waypoint with a token, and nothing that token can do may drive the door
-// that controls it. What the assistant says is untrusted text.
+// Tokens never reach the assistant, and nothing a token can do may drive the door that controls it; what the assistant says is untrusted text.
 
 // EvAssistant is the live event for an assistant's state (owner only).
 const EvAssistant = "assistant.status"
@@ -461,7 +456,7 @@ func (s *Service) FreezeAssistant(ctx context.Context, actor *Actor, id int64) (
 	}
 	s.audit(ctx, actor, AuditEntry{Action: "assistant.freeze", Category: AuditControl, TargetType: "assistant", TargetID: id,
 		Target: a.Name, URL: fmt.Sprintf("/assistant/%d", id), Detail: "frozen from Waypoint"})
-	// Recorded as frozen first: they froze it, they needn't be told.
+	// Save Frozen before checkAssistant runs, so the freezer's own freeze is not reported back to them as a change.
 	st := a.State
 	st.Frozen = true
 	if b, err := json.Marshal(st); err == nil {
@@ -589,7 +584,6 @@ func stateChanged(a, b AssistantState) bool {
 		len(a.Pending) != len(b.Pending) || a.CheckedAt.IsZero() {
 		return true
 	}
-	// An outage crossing the notice threshold is a change too.
 	if !b.Reachable && b.DownSince != nil && b.CheckedAt.Sub(*b.DownSince) >= assistantDownNotice &&
 		a.DownSince != nil && a.CheckedAt.Sub(*a.DownSince) < assistantDownNotice {
 		return true

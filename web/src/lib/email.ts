@@ -1,6 +1,3 @@
-// Admin → Email: the server's SMTP settings (WP-7). The email automation
-// action is offered once they are set.
-
 import { api } from './api'
 
 export type SMTPSecurity = 'starttls' | 'tls' | 'none'

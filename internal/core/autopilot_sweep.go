@@ -9,15 +9,7 @@ import (
 	"time"
 )
 
-// Autopilot's own sessions (WP-799, WP-ADR72). A minute sweep looks at each
-// project a person has turned autopilot on in, and when a task is ready and
-// fewer sessions are under way there than the person's limit (atOnceCount:
-// autopilot's, and the person's own at a task, WP-1079), it queues a new
-// Claude Code session in tmux on that person's runner. A person's own
-// sessions are never used or interrupted.
-//
-// Such a start is a step with no session (session_id NULL): the row is what
-// holds the cap while the task is picked and the job is out.
+// A start is a step with no session (session_id NULL) that holds the cap until its job is out; a person's own sessions are never used or interrupted.
 
 const (
 	// autopilotOwnAgent is who a session of autopilot's own takes tasks as
@@ -59,7 +51,7 @@ func (s *Service) sweepAutopilot(ctx context.Context) {
 			s.log.WarnContext(ctx, "autopilot sweep", "user", o.user, "project", o.project, "err", err)
 		}
 		if spent {
-			plan.Start = false // one such start a sweep, then the readings decide again
+			plan.Start = false // The plan is shared by the user's projects in this sweep, so after one start it allows no more starts.
 		}
 	}
 }
@@ -182,7 +174,6 @@ func (s *Service) sweepProject(ctx context.Context, userID, projectID int64, spe
 	if err != nil || len(running) >= limit && !extra {
 		return false, err
 	}
-	// When only the plan lets this one go, it is a start to use what's left.
 	var spendStart *SpendPlan
 	if paceWait != "" || len(running) >= limit {
 		spendStart = spend
@@ -248,7 +239,7 @@ func (s *Service) claimOwnStart(ctx context.Context, userID, projectID int64, la
 		}
 		if spend == nil {
 			if wait, _, _, err := s.autopilotPace(ctx, t, userID, projectID, lim, now, false); err != nil || wait != "" {
-				return err // the sweep's first look at the pace was before it looked for work
+				return err
 			}
 		}
 		var starting int
@@ -266,7 +257,7 @@ func (s *Service) claimOwnStart(ctx context.Context, userID, projectID int64, la
 		}
 		claim := &stepRow{userID: userID, projectID: projectID, state: StepStarting, stopAt: now, dueAt: now, createdAt: now, updatedAt: now, spend: spend != nil}
 		if last != nil && (last.state == StepFailed || last.state == StepWaiting) {
-			claim.attempts, claim.notified = last.attempts, last.notified // what it has said and tried carries over
+			claim.attempts, claim.notified = last.attempts, last.notified
 		}
 		if _, err := t.ExecContext(ctx, `DELETE FROM autopilot_steps WHERE user_id = ? AND project_id = ? AND session_id IS NULL AND state = ?`, userID, projectID, StepWaiting); err != nil {
 			return err
@@ -288,7 +279,6 @@ func (s *Service) startOwnSession(ctx context.Context, st *stepRow, actor *Actor
 	x := &AgentSession{Machine: place.machine}
 	next, _, err := s.pickAutopilotTask(ctx, actor, st, x, lim)
 	if err != nil || next == nil {
-		// Taken in the meantime, or not readable: nothing happened, so no trace.
 		if _, derr := s.db.W.ExecContext(ctx, `DELETE FROM autopilot_steps WHERE id = ? AND state = ? AND job_id IS NULL`, st.id, StepStarting); derr != nil && err == nil {
 			err = derr
 		}
@@ -297,7 +287,7 @@ func (s *Service) startOwnSession(ctx context.Context, st *stepRow, actor *Actor
 	prompt := s.kickoffTemplate(ctx, st.projectID, next.ID)
 	held, heldErr := s.autopilotHeld(ctx, x)
 	if heldErr != nil {
-		s.log.WarnContext(ctx, "autopilot: what other sessions hold", "step", st.id, "err", heldErr) // the sweep removes nothing this time
+		s.log.WarnContext(ctx, "autopilot: what other sessions hold", "step", st.id, "err", heldErr)
 	}
 	raw, _ := json.Marshal(AutopilotJob{Dir: place.Dir, Key: next.Key, Title: excerpt(next.Title, 200), Agent: actor.Agent, Step: st.id, Prompt: prompt, Held: held, HeldUnknown: heldErr != nil})
 	job, err := enqueueRunnerJob(ctx, s, &Actor{User: user}, RunnerJobInput{Kind: JobAutopilotStart, OwnerID: st.userID, RunnerID: place.RunnerID, Input: raw,
@@ -310,15 +300,13 @@ func (s *Service) startOwnSession(ctx context.Context, st *stepRow, actor *Actor
 	res, err := s.db.W.ExecContext(ctx, `UPDATE autopilot_steps SET reason = '', detail = ?, next_issue = ?, job_id = ?, agent = ?, updated_at = ? WHERE id = ? AND state = ?`,
 		"starting a session of its own for "+next.Key+spendWords(st.spend), next.ID, job.ID, actor.Agent, now, st.id, StepStarting)
 	if err != nil {
-		// Don't leave the step starting with no job: give the task back and end
-		// it, so the sweep tries again later. A job already queued finds the step
-		// unwanted (AutopilotStepWanted).
+		// A job already queued finds the step unwanted (AutopilotStepWanted), so releasing the task here is safe.
 		s.releaseReserved(ctx, next.ID, actor.Agent)
 		s.ownStartFailed(ctx, st, WaitRunner, next.Key, "couldn't record the runner job: "+err.Error())
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		s.releaseReserved(ctx, next.ID, actor.Agent) // stopped while its job was queued: the job finds it unwanted
+		s.releaseReserved(ctx, next.ID, actor.Agent)
 	}
 	return nil
 }

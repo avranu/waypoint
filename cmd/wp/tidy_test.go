@@ -123,12 +123,10 @@ func wantVerdict(t *testing.T, r *tidyRow, verdict, reason string) {
 func TestTidyVerdicts(t *testing.T) {
 	f := newTidyFixture(t)
 
-	// merged by ancestry: a branch alone and one with a clean worktree
 	f.merge(t, "done-alone")
 	f.merge(t, "done-wt")
 	wtDone := f.worktree(t, "wt-done", "done-wt")
 
-	// merged and clean, but the worktree is dirty / has an untracked file / is locked
 	f.merge(t, "done-dirty")
 	wtDirty := f.worktree(t, "wt-dirty", "done-dirty")
 	if err := os.WriteFile(filepath.Join(wtDirty, "scratch.txt"), []byte("x"), 0o600); err != nil {
@@ -138,7 +136,6 @@ func TestTidyVerdicts(t *testing.T) {
 	f.worktree(t, "wt-locked", "done-locked")
 	tgit(t, f.repo, "worktree", "lock", filepath.Join(filepath.Dir(f.repo), "wt-locked"))
 
-	// ignored files don't count as dirty
 	f.merge(t, "done-ignored")
 	wtIgn := f.worktree(t, "wt-ignored", "done-ignored")
 	if err := os.WriteFile(filepath.Join(f.repo, ".git", "info", "exclude"), []byte("node_modules/\n"), 0o600); err != nil {
@@ -151,15 +148,12 @@ func TestTidyVerdicts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// squash-merged: not an ancestor; Waypoint says its PR merged
 	sqTip := f.squash(t, "sq")
-	// squash-merged, then a local commit after: not removable
 	sqMore := f.squash(t, "sq-more")
 	tgit(t, f.repo, "checkout", "-q", "sq-more")
 	tcommit(t, f.repo, "later.txt")
 	tgit(t, f.repo, "checkout", "-q", "main")
 
-	// unpushed work on an unmerged branch; an unmerged pushed one; a stale one
 	tgit(t, f.repo, "checkout", "-q", "-b", "wip", "main")
 	tcommit(t, f.repo, "wip.txt")
 	tgit(t, f.repo, "checkout", "-q", "-b", "pushed", "main")
@@ -177,10 +171,9 @@ func TestTidyVerdicts(t *testing.T) {
 		t.Fatalf("%v %s", err, out)
 	}
 	tgit(t, f.repo, "push", "-q", "origin", "old")
-	tgit(t, f.repo, "branch", "release/1.0", "main") // merged, but protected
+	tgit(t, f.repo, "branch", "release/1.0", "main")
 	tgit(t, f.repo, "checkout", "-q", "main")
 
-	// the current branch: a merged one checked out in the repo you are in
 	f.merge(t, "here")
 	wtHere := f.worktree(t, "wt-here", "here")
 
@@ -212,13 +205,11 @@ func TestTidyVerdicts(t *testing.T) {
 		}
 	}
 
-	// Without Waypoint's answer a squash merge is just unmerged.
+	// A squash merge reads as unmerged unless Waypoint's pull request records say it merged.
 	wantVerdict(t, scanTidy(t, wtHere, nil, later()).row(t, "branch", "sq"), tidyKeep, "unmerged")
 
-	// A fresh branch is "merged" until it commits: not removable for a while.
 	wantVerdict(t, scanTidy(t, wtHere, prs, time.Now()).row(t, "branch", "done-alone"), tidyKeep, "active")
 
-	// --apply removes the removable and nothing else.
 	removable := map[string]bool{}
 	for _, r := range rep.Rows {
 		if r.Verdict == tidyRemovable {
@@ -276,7 +267,6 @@ func TestTidyOnlyFlags(t *testing.T) {
 	f.merge(t, "a")
 	f.merge(t, "b")
 	wt := f.worktree(t, "wt-a", "a")
-	// the CLI, against a server that knows no pull requests
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"pulls":[]}`))
 	}))
@@ -393,8 +383,7 @@ func TestTidyHintThreshold(t *testing.T) {
 // The SessionStart hint counts what is removable, once a day per repo.
 func TestTidyHintCountsAndCaches(t *testing.T) {
 	f := newTidyFixture(t)
-	// Counting 11 branches takes git a few calls each; on a loaded CI runner
-	// that outran the 300ms the real hook allows and read as "-1, try later".
+	// Counting 11 branches can outrun the real 300 ms hook budget on a loaded CI runner, so this test raises it.
 	t.Cleanup(func(b time.Duration) func() { return func() { tidyHintBudget = b } }(tidyHintBudget))
 	tidyHintBudget = time.Minute
 	t.Setenv("WAYPOINT_SERVER", "")
@@ -408,7 +397,6 @@ func TestTidyHintCountsAndCaches(t *testing.T) {
 	if h := tidyHint(c, f.repo, now); h != "" {
 		t.Fatalf("10 removable: %q", h)
 	}
-	// still cached: an 11th doesn't show until the day is over
 	f.merge(t, "mk")
 	if h := tidyHint(c, f.repo, now.Add(time.Hour)); h != "" {
 		t.Errorf("cache ignored: %q", h)
@@ -416,9 +404,7 @@ func TestTidyHintCountsAndCaches(t *testing.T) {
 	if h := tidyHint(c, f.repo, now.Add(25*time.Hour)); h != "11 merged branches/worktrees can go: wp tidy --apply" {
 		t.Errorf("after a day: %q", h)
 	}
-	// the text reaches SessionStart
 	if got := c.withTidyHint("decision arrived", hookEventInput{Cwd: f.repo, Source: "startup"}); got != "decision arrived" {
-		// the real clock is inside the quiet period of the fixture's branches
 		t.Logf("fresh branches are not counted yet: %q", got)
 	}
 	if got := c.withTidyHint("x", hookEventInput{Cwd: f.repo, Source: "compact"}); got != "x" {

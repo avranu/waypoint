@@ -1,15 +1,10 @@
-// Agents in the UI (WP-D7): whether to show issues agents made for their
-// own bookkeeping, and the workflows agents move work through.
-
 import { useSyncExternalStore } from 'react'
 import { queryOptions } from '@tanstack/react-query'
 import { api, enc, qs } from './api'
 import { readLocal } from './hooks'
 import type { Workflow } from './types'
 
-// ---- agent-made visibility, per project ----
-// Issues agents create for their own tracking are hidden from people's
-// views unless they ask to see them. Delegated work (set by people) stays.
+// Issues agents make for their own tracking are hidden unless a viewer asks; work people delegate stays visible.
 
 const subs = new Set<() => void>()
 const storeKey = (project: string) => `agent-made-${project}`
@@ -21,9 +16,7 @@ export function showsAgentMade(project: string) {
 export function setShowAgentMade(project: string, v: boolean) {
   try {
     localStorage.setItem('wp:' + storeKey(project), JSON.stringify(v))
-  } catch {
-    // private mode: the choice lasts until reload
-  }
+  } catch {}
   subs.forEach((f) => f())
 }
 
@@ -51,8 +44,6 @@ export function useShowAgentMade(project: string) {
   )
 }
 
-// ---- agent specs ----
-
 /** Suggestions for the agent picker; any family or model name works. */
 export const AGENT_SUGGESTIONS = [
   'claude',
@@ -66,9 +57,7 @@ export const AGENT_SUGGESTIONS = [
   'gemini',
 ]
 
-// ---- who can pick a task up (WP-93) ----
-// issue.agent: '' (absent) = Anyone, the default; 'none' = Humans only; 'any' or a
-// family/model spec = Agents (delegated).
+// issue.agent: '' is Anyone (default); 'none' is Humans only; 'any' or a family/model spec is Agents.
 
 export type Who = 'anyone' | 'humans' | 'agents'
 
@@ -103,16 +92,12 @@ export function whoLabel(spec?: string) {
 export function agentLabel(spec: string) {
   if (spec === 'any') return 'any agent'
   if (spec === HUMANS_ONLY) return 'humans only'
-  // Text from a forge login agents may write as (WP-282).
   if (spec === 'forge') return 'a forge login'
   if (spec.startsWith('forge/')) return `forge login ${spec.slice(6)}`
-  // Waypoint's own work (its goal suggestions, the babysitter).
   if (spec === 'waypoint' || spec.startsWith('waypoint/')) return 'Waypoint'
   const i = spec.lastIndexOf('/')
   return i >= 0 ? spec.slice(i + 1) : spec
 }
-
-// ---- workflows ----
 
 export const workflowsQuery = (project = '') =>
   queryOptions({
@@ -122,8 +107,6 @@ export const workflowsQuery = (project = '') =>
   })
 
 export const workflowPath = (id: number) => `/workflows/${enc(String(id))}`
-
-// ---- nested projects ----
 
 /**
  * Projects in tree order with their depth; a parent you can't see makes a root.
@@ -140,7 +123,6 @@ export function projectTree<
     kids.set(parent, [...(kids.get(parent) ?? []), p])
   }
   if (order !== 'name') {
-    // A parent is as recent as anything under it.
     const latest = new Map<number, number>()
     const last = (p: P): number => {
       let t = latest.get(p.id)
@@ -156,7 +138,6 @@ export function projectTree<
       list.sort((a, b) => {
         const x = at.get(a.id)
         const y = at.get(b.id)
-        // Custom: the unlisted (new) first, most recent among them, then the list.
         if (order === 'custom' && (x !== undefined || y !== undefined)) {
           if (x === undefined) return -1
           if (y === undefined) return 1
@@ -194,13 +175,10 @@ export function moveProject<P extends { id: number; parent_id?: number | null }>
   const from = group.indexOf(id)
   const to = group.indexOf(over)
   group.splice(to, 0, ...group.splice(from, 1))
-  // Put the reordered siblings back into the slots the group held.
   const slots = new Set(group)
   let n = 0
   return all.map((p) => (slots.has(p.id) ? group[n++] : p.id))
 }
-
-// ---- known agents (WP-D15) ----
 
 /** An agent identity seen at work (runs, claims) or one of your agent tokens. */
 export interface KnownAgent {

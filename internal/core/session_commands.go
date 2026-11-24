@@ -9,11 +9,7 @@ import (
 	"time"
 )
 
-// Session commands (WP-562, WP-ADR108): `/wp SUB` typed in a Claude Code session goes
-// no further than its UserPromptSubmit hook. No model call runs; the person
-// sees one line instead of a turn. The server answers the ones about what
-// Waypoint does with the session (next, stop, continue, status, keep); the
-// CLI answers help, btw and exe itself, on its machine.
+// /wp SUB stops at the UserPromptSubmit hook with no model call: the server answers next, stop, continue, status and keep; the CLI answers help, btw and exe.
 
 // SessionCommandPrefix starts a session command.
 const SessionCommandPrefix = "/wp"
@@ -93,7 +89,6 @@ func (s *Service) sessionCommand(ctx context.Context, t *tx, x *AgentSession, ev
 	case "status":
 		return "Waypoint: " + s.sessionStatus(ctx, t, x, at), nil
 	case "review":
-		// Read after the write, from the database alone (review_progress.go).
 		ev.review = &reviewAsk{session: x, key: reviewKeyArg(p)}
 		return "Waypoint: reading the review…", nil
 	}
@@ -151,7 +146,7 @@ func (s *Service) sessionNext(ctx context.Context, t *tx, x *AgentSession, ev *H
 		case st.reason == WaitReviewing || st.reason == WaitAudit:
 			return "Autopilot: " + cmp(st.detail, "its adversarial review is under way") + "; the next task comes after it.", nil
 		}
-		// Asked for: it moves on even a person's own session (WP-1319).
+		// An explicit ask moves the step on even in a person's own session.
 		if _, err := t.ExecContext(ctx, `UPDATE autopilot_steps SET due_at = ?, created_at = min(created_at, ?), reason = CASE WHEN reason = ? THEN '' ELSE reason END, updated_at = ?, asked = 1
 			WHERE id = ? AND state IN (?, ?)`, at, at-autopilotMergeWaitMax.Milliseconds(), WaitPrompted, s.nowMS(), st.id, StepDue, StepWaiting); err != nil {
 			return "", err
@@ -193,8 +188,7 @@ func (s *Service) sessionNext(ctx context.Context, t *tx, x *AgentSession, ev *H
 	if err := s.putStep(ctx, t, x, pid, run, at, StepDue, "", "you typed /wp next", at, 0); err != nil {
 		return "", err
 	}
-	// Moved on by hand: no grace, no merge wait, as Start, and asked for, so
-	// it moves on a person's own session (WP-1319).
+	// Moved on by hand: no grace or merge wait, as Start, and asked, so it moves on even in a person's own session.
 	if _, err := t.ExecContext(ctx, `UPDATE autopilot_steps SET created_at = ?, attempts = 0, asked = 1 WHERE session_id = ? AND state = ?`, at-autopilotMergeWaitMax.Milliseconds(), x.ID, StepDue); err != nil {
 		return "", err
 	}

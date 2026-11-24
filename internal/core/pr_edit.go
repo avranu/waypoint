@@ -1,7 +1,5 @@
 package core
 
-// wp pr edit: change a pull request's title, description or base on the forge.
-
 import (
 	"context"
 	"fmt"
@@ -54,7 +52,7 @@ func (s *Service) EditPullRequest(ctx context.Context, actor *Actor, prID int64,
 		}
 	}
 	if in.Title == nil && in.Body == nil && rb == nil {
-		return nil // already into that base
+		return nil
 	}
 	var ed ForgePREditor
 	if in.Title != nil || in.Body != nil { // a base alone needs only ForgePRRetargeter
@@ -107,7 +105,7 @@ func (s *Service) EditPullRequest(ctx context.Context, actor *Actor, prID int64,
 		}
 	}
 	werr := s.write(ctx, actor, func(t *tx) error {
-		var parts []string // "retitled", "edited the description", "moved the base from X to Y"
+		var parts []string
 		for _, a := range applied {
 			switch a {
 			case "title":
@@ -124,9 +122,6 @@ func (s *Service) EditPullRequest(ctx context.Context, actor *Actor, prID int64,
 				parts = append(parts, "moved the base from "+pr.BaseRef+" to "+base)
 			}
 		}
-		// One edit reads "retitled “T”" (the description and the base add
-		// "of": "moved the base from X to Y of “T”"); several, "edited “T”:
-		// retitled, edited the description and moved the base from X to Y".
 		name := " “" + excerpt(pr.Title, 120) + "”"
 		detail := ""
 		switch len(parts) {
@@ -145,7 +140,7 @@ func (s *Service) EditPullRequest(ctx context.Context, actor *Actor, prID int64,
 		return nil
 	})
 	if ferr != nil {
-		if werr != nil { // the refusal is what comes back; the record's failure isn't lost
+		if werr != nil {
 			s.log.WarnContext(ctx, "record the edits of a pull request made before the forge refused one", "pr", prID, "err", werr)
 		}
 		return ferr

@@ -10,14 +10,7 @@ import (
 	"time"
 )
 
-// Audits of pull requests (WP-355, WP-ADR21 on WP-ADR20). With a project's "audit pull
-// requests" setting on, Waypoint asks for an audit of an agent's or an
-// editor's pull request when it opens and when it is marked ready at a head
-// no audit has read. The babysitter waits for a running audit like it waits
-// for a review, gives the findings still to do (medium and worse) to a round
-// like review comments, and the worst (high and critical) hold the merge.
-// An audit that ends limited, failed or cancelled holds nothing: the
-// feature fails open.
+// An audit that ends limited, failed or cancelled holds nothing: the feature fails open. Only high and critical findings hold the merge.
 
 const (
 	// auditWaitMax is how long after a runner took it an audit still holds
@@ -64,8 +57,6 @@ func (s *Service) onPRAudit(ctx context.Context, e *Event) {
 		// must exist by then.
 		s.requestPRAudit(context.WithoutCancel(ctx), prID)
 	case e.Kind == EvCodeAudit:
-		// An audit ended or its findings were marked: an armed pull request
-		// that waited for it may merge now.
 		ended := e.Field == "" && e.Old != e.New && slices.Contains([]string{AuditDone, AuditFailed, AuditLimited, AuditCancelled}, e.New)
 		if e.Field != "findings" && !ended {
 			return
@@ -78,11 +69,7 @@ func (s *Service) onPRAudit(ctx context.Context, e *Event) {
 			FROM code_audits WHERE id = ?`, id).Scan(&prID, &handed) != nil || prID == 0 {
 			return
 		}
-		// A review round's audit handed to the pull request was its review;
-		// if it ends without an answer, the pull request asks for its own
-		// (headAudited no longer counts it), before the merge is looked at
-		// (WP-1250). Only that audit: a round's own audit, a footprint check
-		// or the pull request's own audit failing asks for nothing here.
+		// A review round's audit handed to the pull request was its review: if it fails or is limited, the pull request asks for its own audit. Other audits failing ask for nothing here.
 		if ended && handed && (e.New == AuditFailed || e.New == AuditLimited) && e.ProjectID != 0 {
 			if p, err := s.projectByID(ctx, s.db.R, e.ProjectID); err == nil && p.Settings.AuditPRs && !p.Archived {
 				s.requestPRAudit(context.WithoutCancel(ctx), prID)
@@ -109,7 +96,7 @@ func (s *Service) requestPRAudit(ctx context.Context, prID int64) {
 	}
 	owner := s.babysitOwnerFor(ctx, pr)
 	if owner == 0 {
-		return // not a member's pull request: the runner gate would refuse it
+		return
 	}
 	_, err = s.RequestAudit(ctx, SystemActor(), AuditInput{PRID: pr.ID, Via: "system", owner: owner,
 		requestKey: fmt.Sprintf(prAuditKey, pr.ID, strings.ToLower(pr.HeadSHA))})
@@ -205,7 +192,6 @@ func (s *Service) auditKind(ctx context.Context, id int64) string {
 	case AuditReview:
 		return " (for an adversarial review)"
 	}
-	// Only a label: an unread answer (logged by roundsAudit) names no kind.
 	if rounds, err := s.roundsAudit(ctx, id); err == nil && rounds {
 		return " (from an adversarial review)"
 	}
@@ -455,8 +441,6 @@ func (s *Service) auditHolds(ctx context.Context, prID, going int64) ([]string, 
 				id, len(ids), plural(len(ids)), strings.Join(ids, ", ")))
 		}
 	}
-	// What a review round's release carried to the pull request holds it as
-	// its own audit's findings do, whichever audit finished last (WP-1370).
 	id, status, err := s.newestAudit(ctx, prID)
 	if err != nil {
 		return nil, "", err

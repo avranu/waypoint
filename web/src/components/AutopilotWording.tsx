@@ -1,7 +1,3 @@
-// Autopilot's wording (WP-308): the prompt it pastes into a session it starts
-// on a task, and the note at the Stop that finished one. Admin → AI words it
-// for every project; a project's settings can word its own.
-
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { RotateCcw } from 'lucide-react'
@@ -154,7 +150,6 @@ function WordingForm({
   const promptError = promptNamesTask(v.prompt)
     ? undefined
     : 'Name the task with {key} or {next}, or the session isn’t told what to do.'
-  // Empty or equal to the fallback is saved as none.
   const store = (p: string, d: string): Wording => ({
     prompt: p === fallback.prompt ? '' : p,
     done: d === fallback.done ? '' : d,

@@ -48,11 +48,11 @@ func (o Options) withDefaults() Options {
 // Model places terms, and through them any text, in a space where things
 // written about together are near.
 type Model struct {
-	n    int                  // documents trained on
-	df   map[string]int       // documents each known term is in
-	rows map[string][]float64 // a term's fold-in row: V·S^(Scale-1)
-	sing []float64            // singular values
-	back []float64            // S^(2-Scale): a row times this is the term's place, V·S
+	n    int
+	df   map[string]int
+	rows map[string][]float64
+	sing []float64
+	back []float64
 }
 
 // Docs is how many documents the model learned from.
@@ -97,8 +97,7 @@ func Train(ctx context.Context, docs []map[string]int, o Options) (*Model, error
 	for _, t := range vocab {
 		m.df[t] = df[t]
 	}
-	// The doc-term matrix A, as sparse rows of unit tf-idf vectors. The
-	// norm counts every term, the rows keep the known ones.
+	// The norm counts every term; the rows keep only the known ones.
 	type ent struct {
 		j int
 		w float64
@@ -117,7 +116,6 @@ func Train(ctx context.Context, docs []map[string]int, o Options) (*Model, error
 	// every dimension of a small corpus learns no word's neighbours.
 	k := min(o.K, max(1, min(nd, nt)/4))
 	p := min(k+10, nd, nt)
-	// mulAt: Aᵀ·X (nd×p → nt×p); mulA: A·Y (nt×p → nd×p).
 	mulAt := func(X [][]float64) [][]float64 {
 		Y := matrix(nt, p)
 		for i, r := range rows {
@@ -151,8 +149,6 @@ func Train(ctx context.Context, docs []map[string]int, o Options) (*Model, error
 			r[c] = rng.NormFloat64()
 		}
 	}
-	// Randomized range finder (Halko et al.): an orthonormal basis Y of
-	// A's row space, sharpened by power iterations.
 	Y := mulAt(omega)
 	orthonormalize(Y)
 	for it := 0; it < o.Iters; it++ {
@@ -167,7 +163,6 @@ func Train(ctx context.Context, docs []map[string]int, o Options) (*Model, error
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	// The right singular vectors in Y's basis: eigenvectors of (AY)ᵀ(AY).
 	C := mulA(Y)
 	G := matrix(p, p)
 	for _, r := range C {

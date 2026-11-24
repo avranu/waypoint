@@ -113,7 +113,6 @@ func TestReviewRoundsLoopUntilRepeats(t *testing.T) {
 		t.Fatalf("round 1: %s index %d novel %d next %d", arm, index, novel, next)
 	}
 
-	// Round 2 raises the first round's finding again and a new one.
 	e.setClock(e.clockNow().Add(time.Minute))
 	e.j.choice = map[string]string{"": "critical", "fixes": "complete", "r1": "e1", "r2": "new"}
 	r2 := e.review("Merge loses an update", "The cache key leaves out the tenant")
@@ -146,7 +145,6 @@ func TestReviewRoundsLoopUntilRepeats(t *testing.T) {
 		t.Errorf("round 2's decision read %q", asked[len(asked)-1])
 	}
 
-	// Round 3 raises only what earlier rounds did: the loop ends there.
 	e.setClock(e.clockNow().Add(time.Minute))
 	e.j.choice = map[string]string{"": "critical", "fixes": "partial", "r1": "e1"}
 	r3 := e.review("The cache key leaves out the tenant")
@@ -159,8 +157,6 @@ func TestReviewRoundsLoopUntilRepeats(t *testing.T) {
 		t.Fatalf("round 3: %s index %d novel %d repeats %d next %d", arm, index, novel, repeats, next)
 	}
 
-	// The report, once round 3 ended: round 1's next round found something
-	// new and fixed it; round 2's found only a repeat; round 3 led to none.
 	e.stopWith("Opened the pull request.")
 	if r := e.round(r3); r.state != RoundDone {
 		t.Fatalf("round 3 after its Stop: %+v", r)
@@ -180,8 +176,6 @@ func TestReviewRoundsLoopUntilRepeats(t *testing.T) {
 	if agree.Findings != 5 || agree.MeanGap != 2 || agree.Within2 != 5 {
 		t.Errorf("agreement %+v", agree)
 	}
-	// Every round went to the decision model and it scored them all; a
-	// round it scored none of counts in both, whatever its arm.
 	scoring := func() (s, l []int) {
 		byRound, _, err := e.s.againReport(e.ctx, "1 = 1", nil, 0)
 		if err != nil {
@@ -201,10 +195,6 @@ func TestReviewRoundsLoopUntilRepeats(t *testing.T) {
 	if s, l := scoring(); fmt.Sprint(s, l) != "[1 1 1] [1 0 0]" {
 		t.Errorf("with round 1 read by labels: scoring %v, labels %v", s, l)
 	}
-	// The SIGNAL column counts the decisions a signal called (WP-1569): a
-	// high or critical signal, the mediums reaching what the round needed,
-	// any signal on a round read by labels alone, or a decision from before
-	// the weighing (need 0) with any signal.
 	signalled := func(set string) string {
 		for i, round := range []int64{r1, r2, r3} {
 			if _, err := e.s.db.W.Exec(`UPDATE review_again_decisions SET `+strings.Fields(set)[i]+` WHERE round_id = ?`, round); err != nil {
@@ -221,17 +211,12 @@ func TestReviewRoundsLoopUntilRepeats(t *testing.T) {
 		}
 		return fmt.Sprint(got)
 	}
-	// round 1 from before the weighing, round 2 one medium short of its 2,
-	// round 3 one high.
 	if got := signalled("signals=1,need=0,weight=0,serious=0 signals=1,need=2,weight=1,serious=0 signals=1,need=4,weight=0,serious=1"); got != "[1 0 1]" {
 		t.Errorf("signalled by round = %s, want [1 0 1]", got)
 	}
-	// round 2 with its two mediums, round 3 with one medium short of 4.
 	if got := signalled("signals=0,need=1,weight=0,serious=0 signals=2,need=2,weight=2,serious=0 signals=1,need=4,weight=1,serious=0"); got != "[0 1 0]" {
 		t.Errorf("signalled by round = %s, want [0 1 0]", got)
 	}
-	// round 2 read by labels alone, its one medium short of 2: the loop's
-	// one round read that way is called by any signal, as why() says.
 	if got := signalled("signals=0,need=1,weight=0,serious=0,labels=0 signals=1,need=2,weight=1,serious=0,labels=1 signals=1,need=4,weight=1,serious=0,labels=0"); got != "[0 1 0]" {
 		t.Errorf("signalled by round = %s, want [0 1 0]", got)
 	}
@@ -254,7 +239,6 @@ func withFloor(t *testing.T, floor float64) {
 // the scores call for it, but not past a signal (WP-1320).
 func TestReviewRoundsCapAndYield(t *testing.T) {
 	lowYield := func(e *loopEnv, round int64) {
-		// Forty first rounds that led to rounds which found nothing.
 		_, au := e.roundAuditRow(round)
 		var cols []string
 		rows, err := e.s.db.R.Query(`SELECT name FROM pragma_table_info('code_audits') WHERE name NOT IN ('id', 'request_key')`)
@@ -291,10 +275,9 @@ func TestReviewRoundsCapAndYield(t *testing.T) {
 		name  string
 		prep  func(e *loopEnv, round int64)
 		arm   string
-		floor float64 // 0: againFloors as they are
+		floor float64
 	}{
 		{name: "cap", arm: AgainCap, prep: func(e *loopEnv, round int64) {
-			// Earlier rounds of the run, out of the id order's way.
 			for i := 1; i < reviewRoundsCap; i++ {
 				if _, err := e.s.db.W.Exec(`INSERT INTO work_log(id, issue_id, kind, state, body, created_at, updated_at, run_id, before_pr)
 					SELECT ?, issue_id, 'review', 'done', '', created_at, updated_at, run_id, before_pr FROM work_log WHERE id = ?`, -i, round); err != nil {
@@ -337,9 +320,6 @@ func TestReviewRoundsCapAndYield(t *testing.T) {
 // confirmed is held for the session's verdict before anything is decided
 // (WP-1320).
 func TestReviewRoundsProbe(t *testing.T) {
-	// seed records forty probes whose next rounds found nothing ("miss") or
-	// a fixed high finding, scored new ("hit") or never scored, as at the
-	// cap ("unscored").
 	seed := func(e *loopEnv, round int64, next string) {
 		t := e.t
 		_, au := e.roundAuditRow(round)
@@ -387,15 +367,10 @@ func TestReviewRoundsProbe(t *testing.T) {
 		{"rounds after them found nothing", "miss", "fixed", AgainEnough, 40, 0},
 		{"the finding was left open", "hit", "open", "held", 40, 40},
 		{"the finding was only confirmed", "hit", "confirmed", "held", 40, 40},
-		// Rounds whose findings were never judged are no record either way:
-		// the draw is from none.
 		{"rounds after them weren't scored", "unscored", "fixed", "", 0, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			// Only a critical finding is a signal: the high one is left to
-			// the scores, which put it under the bar (the model calls it
-			// cosmetic: 4.5 of the 5.5 a change of unknown stakes needs),
-			// and so to the probe.
+			// With the floor at 9, only a critical finding is a signal: a high one is left to the scores, which put it under the bar, and so to the probe.
 			withFloor(t, 9)
 			e := newLoopEnv(t, map[string]string{"": "cosmetic", "fixes": "complete"})
 			r1 := e.review("Merge loses an update")
@@ -445,8 +420,6 @@ func TestReviewRoundsProbe(t *testing.T) {
 			if arm != AgainProbe {
 				return
 			}
-			// The probe's round scores under the bar too, with a new finding
-			// fixed: the run has had its probe, so the pull request opens.
 			e.setClock(e.clockNow().Add(time.Minute))
 			e.j.choice = map[string]string{"": "cosmetic", "fixes": "complete", "r1": "new"}
 			r2 := e.review("The cache key leaves out the tenant")
@@ -487,8 +460,6 @@ func TestReviewAgainPick(t *testing.T) {
 		{"later round, partial fixes and something new", StakesHigh, 2, 1, 0, 4, 9, 6, ""},
 		{"later round, partial fixes, no repeats", StakesHigh, 2, 0, 0, 0, 2, 6, AgainEnough},
 		{"later round, nothing much", StakesHigh, 2, 1, 0, 4, 4, 2, AgainEnough},
-		// A refuted new finding the session fixed: no severity stands, but
-		// the rework is new code (worst 0, reworked 1).
 		{"later round, partial fixes of a refuted new finding", StakesHigh, 2, 1, 0, 0, 0, 6, ""},
 		{"a tier no bar is set for", "", 1, 1, 0, 7, 7, 1, ""},
 	} {
@@ -512,13 +483,13 @@ func TestReviewAgainScore(t *testing.T) {
 	}
 	earlier := []againFinding{{id: 9, title: "Old"}}
 	ans := map[string]jevAnswer{
-		"f1":    p(map[string]float64{"serious": 0.5, "moderate": 0.5}), // 6.5 → (8+6.5)/2 = 7.25
-		"f2":    p(map[string]float64{"critical": 1}),                   // (10+10)/2 = 10, open: 5
-		"f3":    p(map[string]float64{"critical": 1}),                   // rejected: 0
-		"f4":    p(map[string]float64{"critical": 1}),                   // (3+10)/2 = 6.5, a repeat
+		"f1":    p(map[string]float64{"serious": 0.5, "moderate": 0.5}),
+		"f2":    p(map[string]float64{"critical": 1}),
+		"f3":    p(map[string]float64{"critical": 1}),
+		"f4":    p(map[string]float64{"critical": 1}),
 		"r1":    p(map[string]float64{"new": 0.6, "e1": 0.4}),
 		"r4":    p(map[string]float64{"new": 0.2, "e1": 0.8}),
-		"fixes": p(map[string]float64{"complete": 0.5, "partial": 0.5}), // 3.5
+		"fixes": p(map[string]float64{"complete": 0.5, "partial": 0.5}),
 	}
 	d := againDecision{index: 2}
 	if !d.score(findings, earlier, ans) {
@@ -527,8 +498,7 @@ func TestReviewAgainScore(t *testing.T) {
 	if d.worst != 7.25 || d.worstAll != 7.25 || d.fixesMean != 3.5 || d.novel != 2 || d.reworked != 2 || d.repeats != 1 || d.issues != 7 || d.fixes != 4 {
 		t.Fatalf("decision = %+v", d)
 	}
-	// Refuted, the fixed new finding stands nowhere but is still reworked
-	// ground for the fixes gate.
+	// A refuted finding that was fixed stands nowhere in the worst severity but still counts as reworked ground for the fixes gate.
 	refuted := slices.Clone(findings)
 	refuted[0].verdict = VerdictRefuted
 	d = againDecision{index: 2}
@@ -559,7 +529,6 @@ func TestReviewAgainScore(t *testing.T) {
 	if got := againRepeatOf(jevAnswer{Choice: "e7", Confidence: 1}, 2); got != 0 {
 		t.Errorf("a choice past the earlier findings = %d", got)
 	}
-	// Live round 2's split call is no repeat; a sure one is.
 	for _, tc := range []struct {
 		probs map[string]float64
 		want  int
@@ -633,8 +602,7 @@ func TestReviewRoundsReviewerFindingsLoop(t *testing.T) {
 	if err := e.s.db.R.QueryRow(`SELECT audit_id FROM review_again_decisions WHERE round_id = ?`, r1).Scan(&audit); err != nil || audit != reviewer {
 		t.Fatalf("decided on audit %d (%v), want the reviewer's %d", audit, err, reviewer)
 	}
-	// Round 2's audit is told what the reviewer raised, and the task's
-	// "</task>" stays inside its block.
+	// Reviewer text can't close the task block: a literal </task> is escaped.
 	e.setClock(e.clockNow().Add(time.Minute))
 	if res, err := e.ship(e.task.Key, ShipAuto); err != nil || res.Held == "" {
 		t.Fatalf("round 2's ship = %+v, %v", res, err)
@@ -665,11 +633,11 @@ func TestReviewRoundsCheckMarks(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		marks  []string
-		check  string   // how the check ends: done, failed, "slow", or answered out of form ("unreadable" twice, "unreadable once")
-		found  []string // what it finds
-		mark   string   // the session's mark on what it finds
+		check  string
+		found  []string
+		mark   string
 		arm    string
-		counts [3]int // findings, fixed, rejected
+		counts [3]int
 	}{
 		{"every rejection, the check failed", []string{"rejected", "rejected"}, "failed", nil, "", AgainReview, [3]int{2, 0, 2}},
 		{"every rejection, the check is slow", []string{"rejected"}, "slow", nil, "", AgainReview, [3]int{1, 0, 1}},
@@ -677,9 +645,6 @@ func TestReviewRoundsCheckMarks(t *testing.T) {
 		{"every rejection right", []string{"rejected", "rejected"}, "done", nil, "", AgainRejected, [3]int{2, 0, 2}},
 		{"the only finding overturned", []string{"rejected"}, "done", []string{"[x.1] Merge loses an update"}, "fixed", AgainReview, [3]int{2, 1, 1}},
 		{"a fix that doesn't fix", []string{"fixed"}, "done", []string{"[x.1] The merge still loses an update"}, "fixed", AgainReview, [3]int{2, 2, 0}},
-		// The check found the rejection wrong and the session rejected the
-		// check's finding too: its word against the check's, with nothing
-		// that upheld it, so another reviewer reads the change.
 		{"the session stands by its rejection", []string{"rejected"}, "done", []string{"[x.1] Merge loses an update"}, "rejected", AgainReview, [3]int{2, 0, 2}},
 		{"the check failed", []string{"fixed", "rejected"}, "failed", nil, "", AgainReview, [3]int{2, 1, 1}},
 		{"the check is slow", []string{"fixed", "rejected"}, "slow", nil, "", AgainReview, [3]int{2, 1, 1}},
@@ -715,28 +680,24 @@ func TestReviewRoundsCheckMarks(t *testing.T) {
 					t.Errorf("the check's prompt lacks %q:\n%s", w, prompt)
 				}
 			}
-			// Asked again before it ends, the ship waits on the same check.
 			if res, err := e.ship(e.task.Key, ShipPR); err != nil || !strings.Contains(res.Held, fmt.Sprintf("audit #%d", check)) {
 				t.Fatalf("ship while checking = %+v, %v", res, err)
 			}
-			// The session ends its turn; the check's end is typed into it.
-			// That Stop doesn't end the round: the check's end wakes it.
+			// A Stop while a check runs doesn't end the round; the check's end wakes the session.
 			e.stopWith("Waiting for the check of my marks.")
 			if rs := e.rounds(); !strings.HasPrefix(rs[len(rs)-1], RoundRunning) {
 				t.Fatalf("a Stop while the check runs ended the round: %v", rs)
 			}
 			switch tc.check {
 			case "slow":
-				e.tick(checkPatience + time.Minute) // the runner keeps polling
-				e.s.Wait()                          // the cancel's news is typed in after the tick returns
-				// The sweep cancels it, and that wakes the session to ship.
+				e.tick(checkPatience + time.Minute)
+				e.s.Wait()
 				var told int
 				if err := e.s.db.R.QueryRow(`SELECT count(*) FROM session_messages WHERE session_id = ? AND step_key = ?`, e.ag.Session, fmt.Sprintf("audit:%d:%s", check, AuditCancelled)).Scan(&told); err != nil || told != 0 {
 					t.Errorf("the session was told %d times of the cancelled check, %v", told, err)
 				}
 			case "unreadable", "unreadable once":
-				// Answered in text, the check is asked once more; a
-				// second answer out of form passes it over.
+				// A check answered out of form is asked once more.
 				e.endCheckText(e.box, "**Findings: none.** None of the marks was wrong.")
 				var status string
 				var attempts int
@@ -774,7 +735,7 @@ func TestReviewRoundsCheckMarks(t *testing.T) {
 				t.Fatal(err)
 			}
 			if tc.check == "slow" {
-				// Passed over, it's cancelled, so it doesn't take the runner's next slot.
+				// A slow check that is passed over is cancelled.
 				var status string
 				if err := e.s.db.R.QueryRow(`SELECT status FROM code_audits WHERE id = ?`, check).Scan(&status); err != nil || status != AuditCancelled {
 					t.Errorf("the slow check is %q, %v", status, err)
@@ -789,12 +750,11 @@ func TestReviewRoundsCheckMarks(t *testing.T) {
 			if err := e.s.db.R.QueryRow(`SELECT findings, fixed, rejected, checked, unchecked FROM review_again_decisions WHERE round_id = ?`, r1).Scan(&n[0], &n[1], &n[2], &checked, &unchecked); err != nil || n != tc.counts {
 				t.Errorf("counts %v, want %v (%v)", n, tc.counts, err)
 			}
-			// Passed over, every rejection (all high here) stands unchecked.
 			wantChecked, wantUnchecked := checkScored, 0
 			if tc.check != "done" && tc.check != "unreadable once" {
 				wantChecked, wantUnchecked = checkPassed, tc.counts[2]
 			} else if tc.mark == "rejected" {
-				wantUnchecked = 1 // the check's own finding, rejected in turn
+				wantUnchecked = 1
 			}
 			if checked != wantChecked || unchecked != wantUnchecked {
 				t.Errorf("checked %d unchecked %d, want %d %d", checked, unchecked, wantChecked, wantUnchecked)
@@ -802,7 +762,6 @@ func TestReviewRoundsCheckMarks(t *testing.T) {
 			if arm != AgainReview {
 				return
 			}
-			// The next round's reviewer is told the rejection and its reason.
 			e.setClock(e.clockNow().Add(time.Minute))
 			e.j.choice = map[string]string{"": "minor", "fixes": "complete", "r1": "new"}
 			r2 := e.review("Another")
@@ -840,7 +799,6 @@ func TestReviewRoundsAsksSettleOnTheArm(t *testing.T) {
 	}
 	e.j.mu.Unlock()
 	e.stopWith("Waiting for the check of my marks.")
-	// Waypoint decides and carries on when the check ends: the asks run then.
 	e.endCheck(e.box, "failed")
 	e.s.Wait()
 	if _, err := e.ship(e.task.Key, ShipPR); err != nil {
@@ -875,9 +833,9 @@ func TestReviewRoundsUnscoredLater(t *testing.T) {
 	for _, tc := range []struct {
 		name               string
 		err                error
-		mark               string // round 2's mark on its one finding
-		check              string // how round 2's check of the marks ends
-		arm                string // round 2's arm
+		mark               string
+		check              string
+		arm                string
 		signals, unchecked int
 	}{
 		{"a fix, the model waiting", &aiWaitError{}, "fixed", "done", AgainReview, 1, 0},
@@ -917,7 +875,6 @@ func TestReviewRoundsUnscoredLater(t *testing.T) {
 				t.Fatalf("round 2: %s index %d signals %d unchecked %d; want %s %d %d", arm, index, signals, unchecked, tc.arm, tc.signals, tc.unchecked)
 			}
 			if arm != AgainReview {
-				// Every rejection checked and upheld: no model was needed.
 				if res.Pull == nil || labels != 0 {
 					t.Fatalf("round 2's ship = %+v, labels %d", res, labels)
 				}
@@ -927,8 +884,7 @@ func TestReviewRoundsUnscoredLater(t *testing.T) {
 				t.Fatalf("round 2: labels %d next %d, ship %+v", labels, next, res)
 			}
 
-			// Round 3, the model still out: the run's one round read by labels
-			// is spent, so the pull request opens as it did before.
+			// A run has one round read by labels; once it is spent, the pull request opens.
 			e.setClock(e.clockNow().Add(time.Minute))
 			r3 := e.review("A retry drops the second save")
 			e.mark(r3, "fixed")
@@ -988,7 +944,6 @@ func TestReviewRoundFiledFindingNotHeld(t *testing.T) {
 	if todo, err := e.s.findingsToDo(e.ctx, au.ID, false); err != nil || len(todo) != 0 {
 		t.Fatalf("pull request to do = %v %v", todo, err)
 	}
-	// A footprint check's finding filed is still in the pull request.
 	if todo, err := e.s.findingsToDo(e.ctx, au.ID, true); err != nil || len(todo) != 1 {
 		t.Fatalf("footprint to do = %v %v", todo, err)
 	}
@@ -1011,11 +966,7 @@ func TestReviewRoundFiledFindingNotHeld(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Not held for a decision: the filed finding is a signal at this
-	// change's floor, so another round comes first.
-	// Waypoint carries on from the check's end itself (shipChecked's last
-	// ship only reads where the run has got to), so round 2 is already
-	// started and the pull request not opened.
+	// Waypoint starts the next round from the check's end; the ship after it only reads where the run has got to.
 	var rounds int
 	if err := e.s.db.R.QueryRow(`SELECT count(*) FROM work_log WHERE kind = 'review' AND id <> ? AND issue_id = ?`, r1, e.task.ID).Scan(&rounds); err != nil || rounds != 1 {
 		t.Fatalf("%d later rounds, %v", rounds, err)
@@ -1036,7 +987,7 @@ func TestReviewRoundFiledFindingNotHeld(t *testing.T) {
 // hold asks for it fixed or rejected, so the round does too, and says so.
 func TestReviewRoundFiledHighFindingHeld(t *testing.T) {
 	e := newLoopEnv(t, map[string]string{"": "cosmetic", "fixes": "complete"})
-	r1 := e.review("Merge loses an update") // high
+	r1 := e.review("Merge loses an update")
 	_, au := e.roundAuditRow(r1)
 	id := fmt.Sprintf("%d.1", au.ID)
 	if _, err := e.s.MarkAuditFindings(e.ctx, e.ag, MarkFindings{IDs: []string{id}, State: "confirmed", Issue: e.task.Key}); err != nil {

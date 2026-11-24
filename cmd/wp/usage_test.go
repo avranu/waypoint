@@ -38,7 +38,7 @@ func fixtureDir(t *testing.T) string {
 			return err
 		}
 		if filepath.Base(p) == "sess1.jsonl" {
-			b = bytes.TrimRight(b, "\n") // the last line is cut off
+			b = bytes.TrimRight(b, "\n")
 		}
 		return os.WriteFile(filepath.Join(dst, rel), b, 0o600)
 	})
@@ -84,8 +84,7 @@ func TestUsageParseFixture(t *testing.T) {
 	hour10 := time.Date(2026, 10, 5, 10, 0, 0, 0, time.UTC).UnixMilli()
 	hour11 := hour10 + 3_600_000
 
-	// Messages: one per id however many lines it was written in, with the
-	// last line's usage, the [1m] suffix of the model dropped.
+	// One row per message id, from its last line's usage; the [1m] model suffix is dropped.
 	want := []usageMsgRow{
 		{Hour: hour10, Session: "sess1", Repo: "owner/app", Model: "claude-opus-5-5", Kind: "main", N: 1, Input: 10, Output: 50, CW5: 60, CW1: 40, CR: 1000},
 		{Hour: hour11, Session: "sess1", Repo: "owner/app", Model: "claude-opus-5-5", Kind: "main", N: 1, Input: 3, Output: 20, CR: 1200},
@@ -94,7 +93,6 @@ func TestUsageParseFixture(t *testing.T) {
 		t.Errorf("messages: %+v\nwant %+v", p.Chunk.Messages, want)
 	}
 
-	// Tools: each kind of call, results attached to their call.
 	if r := toolRow(p, "builtin", "Bash", ""); r == nil || r.Calls != 2 || r.Refusals != 1 || r.Errors != 0 || r.Bytes == 0 {
 		t.Errorf("Bash: %+v", r)
 	}
@@ -122,7 +120,7 @@ func TestUsageParseFixture(t *testing.T) {
 		t.Errorf("command: %+v", r)
 	}
 
-	// Refusals: reason, source, a short excerpt with secrets hidden.
+	// Refusal excerpts are stored with secrets redacted.
 	if len(p.Chunk.Refusals) != 2 {
 		t.Fatalf("refusals: %+v", p.Chunk.Refusals)
 	}
@@ -134,7 +132,6 @@ func TestUsageParseFixture(t *testing.T) {
 		t.Errorf("hook refusal: %+v", b)
 	}
 
-	// The session.
 	if len(p.Chunk.Sessions) != 1 {
 		t.Fatalf("sessions: %+v", p.Chunk.Sessions)
 	}
@@ -159,8 +156,7 @@ func TestUsageParseIncremental(t *testing.T) {
 	dir := fixtureDir(t)
 	first := parseMain(t, dir, usageFileState{})
 	path := filepath.Join(dir, "projects", "-work-app", "sess1.jsonl")
-	// The cut-off message is finished, m1 is written again with more output,
-	// and a new tool call is made whose result arrives in the run after.
+	// A message cut off at a run's end is counted again when it finishes; its tool result can arrive in a later run.
 	more := `,"output_tokens":4,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"timestamp":"2026-10-05T12:00:00.000Z"}` + "\n" +
 		`{"type":"assistant","message":{"id":"m1","model":"claude-opus-5-5","content":[],"usage":{"input_tokens":10,"output_tokens":60,"cache_creation_input_tokens":100,"cache_read_input_tokens":1000,"cache_creation":{"ephemeral_5m_input_tokens":60,"ephemeral_1h_input_tokens":40}}},"timestamp":"2026-10-05T10:00:06.500Z"}` + "\n" +
 		`{"type":"assistant","message":{"id":"m4","model":"claude-opus-5-5","content":[{"type":"tool_use","id":"t9","name":"Bash","input":{"command":"make check"}}],"usage":{"input_tokens":2,"output_tokens":2}},"timestamp":"2026-10-05T12:01:00.000Z"}` + "\n"
@@ -178,11 +174,9 @@ func TestUsageParseIncremental(t *testing.T) {
 	}
 	h10 := time.Date(2026, 10, 5, 10, 0, 0, 0, time.UTC).UnixMilli()
 	h12 := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC).UnixMilli()
-	// m1 again: only the 10 more output tokens, and not another message.
 	if m := byModelHour[h10]; m.N != 0 || m.Output != 10 || m.Input != 0 || m.CR != 0 {
 		t.Errorf("m1 delta: %+v", m)
 	}
-	// m3 (finished) and m4 are new messages in hour 12.
 	if m := byModelHour[h12]; m.N != 2 || m.Output != 4+2 || m.Input != 1+2 {
 		t.Errorf("hour 12: %+v", m)
 	}
@@ -196,7 +190,6 @@ func TestUsageParseIncremental(t *testing.T) {
 		t.Fatalf("the unanswered call should stay open: %+v", second.State.Open)
 	}
 
-	// Its result arrives in the next run and lands on the call's own hour.
 	result := `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t9","is_error":true,"content":"make: *** [check] Error 1"}]},"timestamp":"2026-10-05T12:09:00.000Z"}` + "\n"
 	f, _ = os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
 	_, _ = f.WriteString(result)
@@ -208,12 +201,10 @@ func TestUsageParseIncremental(t *testing.T) {
 	if len(third.State.Open) != 0 {
 		t.Errorf("open calls left: %+v", third.State.Open)
 	}
-	// Nothing new: nothing read.
 	fourth := parseMain(t, dir, third.State)
 	if fourth.Changed || fourth.Chunk.rows() != 0 {
 		t.Errorf("idle run: %+v", fourth.Chunk)
 	}
-	// A rewritten file starts over.
 	_ = os.WriteFile(path, []byte(`{"type":"user","message":{"content":"hello"},"timestamp":"2026-10-05T13:00:00.000Z"}`+"\n"), 0o600)
 	fifth := parseMain(t, dir, third.State)
 	if fifth.From != 0 || !fifth.Changed {
@@ -231,7 +222,6 @@ func TestRewrittenMessageWithSmallerTotalsAddsNothingNegative(t *testing.T) {
 			base = m.Out
 		}
 	}
-	// m1 again, with fewer output tokens than were counted, then with more.
 	appendLine := func(out int) {
 		f, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
 		_, _ = f.WriteString(`{"type":"assistant","message":{"id":"m1","model":"claude-opus-5-5","content":[],"usage":{"input_tokens":1,"output_tokens":` + strconv.Itoa(out) + `}},"timestamp":"2026-10-05T10:00:06.500Z"}` + "\n")
@@ -321,7 +311,6 @@ func TestResolveRepo(t *testing.T) {
 	if got := r.of(sub); got != "acme/widgets" {
 		t.Errorf("subdirectory: %q", got)
 	}
-	// a worktree directory that was deleted still finds its checkout
 	if got := r.of(filepath.Join(dir, ".claude", "worktrees", "gone")); got != "acme/widgets" {
 		t.Errorf("deleted worktree: %q", got)
 	}
@@ -329,8 +318,6 @@ func TestResolveRepo(t *testing.T) {
 		t.Errorf("no repository: %q", got)
 	}
 }
-
-// ---- against a server ----
 
 func TestUsageSyncEndToEnd(t *testing.T) {
 	e := newEnv(t)
@@ -350,7 +337,6 @@ func TestUsageSyncEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 3 messages: opus ×2 (m1, m2) and haiku ×1 (the Explore subagent).
 	if ov.Totals.Messages != 3 || ov.Totals.Output != 50+20+9 || ov.Totals.CacheRead != 1000+1200+300 || ov.Totals.CacheWrite != 100 {
 		t.Errorf("totals: %+v", ov.Totals)
 	}
@@ -361,15 +347,12 @@ func TestUsageSyncEndToEnd(t *testing.T) {
 		t.Errorf("machine: %+v", ov.Reported)
 	}
 
-	// Nothing new: nothing is read again.
 	out = e.wp("usage", "sync", "--all", "--dir", dir, "--json")
 	_ = json.Unmarshal([]byte(out), &res)
 	if res.FilesRead != 0 || res.Messages != 0 {
 		t.Errorf("second sync: %+v", res)
 	}
 
-	// Lose wp's memory (a reinstall): the same ranges are sent again, and
-	// the server counts them once.
 	if err := os.Remove(filepath.Join(e.dir, usageStateFile)); err != nil {
 		t.Fatal(err)
 	}
@@ -383,7 +366,6 @@ func TestUsageSyncEndToEnd(t *testing.T) {
 		t.Errorf("counted twice: %+v", ov.Totals)
 	}
 
-	// The hook syncs only the session it names.
 	if err := os.Remove(filepath.Join(e.dir, usageStateFile)); err != nil {
 		t.Fatal(err)
 	}
@@ -394,7 +376,7 @@ func TestUsageSyncEndToEnd(t *testing.T) {
 	if ov, _ = e.svc.UsageOverview(context.Background(), me, e2); ov.Totals.Messages != 3 {
 		t.Errorf("after the hook: %+v", ov.Totals)
 	}
-	usageHook(c, strings.NewReader("not json"), dir) // never fails
+	usageHook(c, strings.NewReader("not json"), dir) // A hook must never fail, even on input that is not JSON.
 }
 
 func TestUsageSyncDryRunChangesNothing(t *testing.T) {
@@ -418,8 +400,6 @@ func TestUsageSyncDryRunChangesNothing(t *testing.T) {
 		t.Errorf("without a login: %d %s", code, out.String())
 	}
 }
-
-// ---- the status line ----
 
 func runStatusline(t *testing.T, c *cli, stdin string, args ...string) string {
 	t.Helper()
@@ -447,19 +427,16 @@ func TestStatusline(t *testing.T) {
 	t.Setenv("WP_TASK", "")
 	c := &cli{dir: dir}
 
-	// Default line; the report is handed off once.
 	if got := runStatusline(t, c, statusJSON); got != "Opus 5.5 · ctx 42% · 5h 81% · 7d 63%\n" {
 		t.Errorf("default line: %q", got)
 	}
 	if len(posts) != 1 {
 		t.Fatalf("posts: %d", len(posts))
 	}
-	// Within a minute: shown, not reported again.
 	runStatusline(t, c, statusJSON)
 	if len(posts) != 1 {
 		t.Errorf("rate limit: %d posts", len(posts))
 	}
-	// A minute later: reported again.
 	stamp := filepath.Join(dir, "statusline.stamp")
 	past := time.Now().Add(-2 * time.Minute)
 	_ = os.Chtimes(stamp, past, past)
@@ -467,7 +444,6 @@ func TestStatusline(t *testing.T) {
 	if len(posts) != 2 {
 		t.Errorf("after a minute: %d posts", len(posts))
 	}
-	// No quota in the JSON (API billing, or before the first response): no report.
 	_ = os.Remove(stamp)
 	if got := runStatusline(t, c, `{"model":{"display_name":"Haiku"}}`); got != "Haiku\n" || len(posts) != 2 {
 		t.Errorf("no quota: %q, %d posts", got, len(posts))
@@ -476,7 +452,6 @@ func TestStatusline(t *testing.T) {
 		t.Errorf("garbage: %q", got)
 	}
 
-	// Wrapping a command: it gets the same stdin and its output is the status line.
 	if got := runStatusline(t, c, statusJSON, "--", "sh", "-c", `printf 'mine: %s' "$(cat | head -c 20)"`); got != `mine: {"session_id":"s1","` {
 		t.Errorf("wrapped (argv): %q", got)
 	}
@@ -508,22 +483,18 @@ func TestStatuslineContextAndTask(t *testing.T) {
 		t.Errorf("context from the total: %q", got)
 	}
 
-	// Taken here by this session, or by one that didn't say: shown.
 	c.state.Claims = map[string]*claim{here: {Key: "WP-7", Also: []string{"WP-8"}, Checked: true, Top: here}}
 	if got := runStatusline(t, c, line("s1", here, usage)); got != "Opus 5.5 · WP-7 +1 · ctx 184k 42%\n" {
 		t.Errorf("claim here: %q", got)
 	}
-	// Another session's claim in this checkout isn't this session's task.
 	c.state.Claims[here].Session = "s2"
 	if got := runStatusline(t, c, line("s1", here, usage)); got != "Opus 5.5 · ctx 184k 42%\n" {
 		t.Errorf("another session's claim: %q", got)
 	}
-	// This session's claim in a worktree elsewhere: shown from anywhere.
 	c.state.Claims[other] = &claim{Key: "WP-9", Session: "s1", Checked: true, Top: other}
 	if got := runStatusline(t, c, line("s1", here, usage)); got != "Opus 5.5 · WP-9 · ctx 184k 42%\n" {
 		t.Errorf("session's claim elsewhere: %q", got)
 	}
-	// A task session's binding comes first.
 	t.Setenv("WP_TASK", "wp-54")
 	if got := runStatusline(t, c, line("s1", here, usage)); got != "Opus 5.5 · WP-54 · ctx 184k 42%\n" {
 		t.Errorf("task session: %q", got)
@@ -557,7 +528,7 @@ func TestStatuslinePostBody(t *testing.T) {
 		seven["percent"] != 63.2 || seven["resets_at"] != float64(time.Date(2026, 10, 17, 15, 0, 0, 0, time.UTC).UnixMilli()) {
 		t.Errorf("windows: %v %v", five, seven)
 	}
-	// Nothing but the quota and the session leaves: no prompt, path or cost.
+	// The report carries only quota and session fields: no prompt, path or cost.
 	for k := range got {
 		switch k {
 		case "machine", "session", "model", "context_pct", "five_hour", "seven_day":
@@ -568,10 +539,7 @@ func TestStatuslinePostBody(t *testing.T) {
 }
 
 func TestStatuslineDoesNotWait(t *testing.T) {
-	// A server that never answers must not hold the status line up: the
-	// report goes through a detached process, and the status line itself
-	// sends nothing. What it sends is counted, not timed: a busy CI runner
-	// can take tens of milliseconds over the local work alone.
+	// The status line must not wait on the server: the report goes to a detached process.
 	var hits atomic.Int32
 	hold := make(chan struct{})
 	ts := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -579,12 +547,12 @@ func TestStatuslineDoesNotWait(t *testing.T) {
 		<-hold
 	}))
 	t.Cleanup(ts.Close)
-	t.Cleanup(func() { close(hold) }) // runs before ts.Close
+	t.Cleanup(func() { close(hold) }) // ts.Close waits for the held handler, so this must run first (Cleanup is last-in, first-out)
 	t.Setenv("WAYPOINT_SERVER", ts.URL)
 	t.Setenv("WAYPOINT_TOKEN", "wpt_x")
 	old := statuslineSpawn
 	var handed atomic.Int32
-	statuslineSpawn = func([]byte) { handed.Add(1) } // the real one returns as soon as the child has started
+	statuslineSpawn = func([]byte) { handed.Add(1) }
 	t.Cleanup(func() { statuslineSpawn = old; statuslineStdin = os.Stdin })
 	start := time.Now()
 	runStatusline(t, &cli{dir: t.TempDir()}, statusJSON)
@@ -595,13 +563,10 @@ func TestStatuslineDoesNotWait(t *testing.T) {
 	if handed.Load() != 1 {
 		t.Errorf("the report was handed off %d times, want 1", handed.Load())
 	}
-	// A post made in line would wait at least statusPostWait for this server.
 	if d >= statusPostWait {
 		t.Errorf("status line took %v", d)
 	}
 }
-
-// ---- installing ----
 
 func TestIsOurStatusLine(t *testing.T) {
 	for cmd, want := range map[string]bool{
@@ -664,13 +629,11 @@ func TestUsageHookAndStatusLineInstall(t *testing.T) {
 	if !strings.Contains(string(raw), `"mine"`) {
 		t.Error("the person's own Stop hook was lost")
 	}
-	// Again: nothing changes.
 	out.Reset()
 	run([]string{"hook", "claude"}, &out, &out)
 	if !strings.Contains(out.String(), "already installed") {
 		t.Errorf("second install: %s", out.String())
 	}
-	// Uninstall puts back what was there.
 	run([]string{"hook", "claude", "--uninstall"}, &out, &out)
 	raw, _ = os.ReadFile(path)
 	s = nil
@@ -682,7 +645,6 @@ func TestUsageHookAndStatusLineInstall(t *testing.T) {
 		t.Errorf("after uninstall: %s", raw)
 	}
 
-	// No status line before: ours is installed, and removed again.
 	_ = os.WriteFile(path, []byte(`{}`), 0o600)
 	run([]string{"hook", "claude"}, &out, &out)
 	raw, _ = os.ReadFile(path)
@@ -726,7 +688,6 @@ func TestUsageSyncFillsInOutdatedTranscripts(t *testing.T) {
 		}
 	}
 
-	// old was read by a wp from before the counters
 	parsed, err := readUsageFile(oldFile, usageFileState{}, func(string) string { return "a/b" }, false)
 	if err != nil {
 		t.Fatal(err)

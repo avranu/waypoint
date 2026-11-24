@@ -1,98 +1,6 @@
 package core
 
-// Review rounds before the pull request that go on while they keep finding
-// what matters (WP-695 and WP-ADR88, WP-1001 and WP-ADR132, WP-1320). A
-// task's review round before its pull request (WP-688) hands the session
-// another model's findings; the session fixes or rejects them and runs wp
-// ship, which opens the pull request. Every ship that would open it is
-// first decided here (reviewAgain): whichever way the round ended (its
-// prompt was answered, the session took its audit itself, or the session
-// stopped and ships later), a round with findings opens no pull request
-// until a decision about it is recorded.
-//
-// The decision is made in three steps, so the rule can be read and tested
-// apart from what it reads:
-//
-//   - gather (reviewAgain, againHistory): the round's findings and the
-//     session's marks on them, checked against the code (checkMarks); the
-//     change's risk tier (roundRisk); the loop's earlier rounds and what
-//     they raised (againLoopOf, againEarlier); the reviewer's record and
-//     the record of what rounds at this point have found (againTrust,
-//     againYield). A read that fails is carried as a fact, not guessed at.
-//   - sample (decideAgain): the decision model scores each finding's
-//     severity, whether it repeats an earlier round's, and how complete the
-//     fixes look, asked several times and averaged.
-//   - settle (againPolicy.settle, review_policy.go): a pure rule over those
-//     facts. Where it needs a fact that couldn't be read, nothing is
-//     decided and the ship is refused, to be run again. That holds but for
-//     one deliberate path: when the decision model fails on a round with
-//     nothing at the floor, the labels decide (AgainUnscored), the decision
-//     records labels = 1, and a pull request may open on a rule applied to
-//     the reviewers' labels alone. The health sweep reports it when that is
-//     more than half of the scoring rounds (review_health.go).
-//
-// The loop is the change's, not a run's (againLoopOf): the rounds of the
-// same task and branch, through a session that stopped and was resumed, so
-// round numbers, repeats, the one probe and the cap count the change's
-// rounds whoever ran them.
-//
-// The rule. Another round comes first while all of these hold:
-//
-//   - The findings stand. Every finding the session rejected, and the
-//     check of its marks agreed: none (arm rejected), and no model is
-//     asked; the pull request's own reviews see the change next. A
-//     rejection nothing upheld (the check couldn't be had, or it found the
-//     rejection wrong and the session rejected that too) is read as the
-//     session's word alone, and at or over the tier's floor sends the
-//     round on (countUnchecked).
-//   - A new finding stands at or over the risk tier's floor (againFloors:
-//     medium for high, elevated or unknown, high for normal): one the
-//     session fixed or confirmed, that no earlier round of the loop raised,
-//     and that the runner's check against the code (the finding's verdict)
-//     didn't refute. That alone is another round (a signal), whatever the
-//     scores, the reviewer's record or the yield record say: it is backed
-//     by the session's own mark and two checks, where the decision model's
-//     scores for the same findings spread by more than a point from one
-//     ask to the next. The round's index weighs it (WP-1569): a new high
-//     or critical signal calls another round at any index; medium signals
-//     are counted, and after the k-th round they must number 1 at k = 1,
-//     else 2^(k-1) (2, 4, 8). Mediums that fall short go on to the scores
-//     below as before, and when nothing else calls the round ends as arm
-//     weighed (probed as enough is).
-//   - Otherwise, what stands is serious enough for the change's risk. Each
-//     finding is scored on its own: its severity is the mean of the
-//     reviewer's own label (critical 10, high 8, medium 5, low 3) and the
-//     decision model's expected score for it (severityScale, probability
-//     weighted), times how far it held (fixed 1, rejected 0; a ship with
-//     any finding still open is held for the session's verdict before any
-//     of this). The worst of those over the new findings must reach the
-//     tier's bar (againBars), set where a finding one label under the floor
-//     reaches it when the model calls it serious; or the fixes, as the
-//     model reads the session's marks, look partial enough (the tier's
-//     fixes bar).
-//   - The round broke new ground. From the second round on, a finding the
-//     decision model judges the same problem as an earlier round's is a
-//     repeat: it counts for nothing toward another round, and a round
-//     whose standing findings are all repeats, or whose new ones fall
-//     under the bar where all of them wouldn't, ends the loop (arm repeat).
-//     That is the guard against churn; only an exceptional count of rounds
-//     (reviewRoundsCap) ends it by number (arm cap).
-//   - For a round the scores call, not a signal: the reviewer's record
-//     backs its claims (againTrust, WP-ADR132), or the fixes alone look
-//     risky (arm untrusted otherwise); and rounds at this point have paid
-//     off. Each round index (1, 2, 3 and on) keeps a record of the rounds it
-//     led to and whether they found a standing finding of medium severity
-//     or worse; with enough of them, a draw from that record under
-//     againYieldFloor ends the loop (arm low_yield). The draw (Thompson
-//     sampling) keeps a bucket that looks poor tried now and then, so the
-//     record keeps up with the reviewers.
-//
-// No round is held out at random (ADR88's arm holdout, ended by WP-1320,
-// WP-ADR135): a round whose findings call for another gets it. The probe
-// arm and the record of what followed rounds found measure the rule
-// instead, and review_health.go files a task when they say it's wrong. Every
-// decision and every finding's score is recorded (review_again_decisions,
-// review_finding_scores).
+// A fact that can't be read refuses the ship; only AgainUnscored decides on the reviewers' labels alone (decision model failed, nothing at the floor).
 
 import (
 	"context"
@@ -288,16 +196,15 @@ type againFinding struct {
 	id, audit                                   int64
 	ordinal                                     int
 	title, severity, problem, state, note, path string
-	verdict                                     string // the runner's check against the code
+	verdict                                     string
 	line                                        int
-	filed                                       bool   // handed to its issue (findingFiled)
-	void                                        bool   // confirmed into an issue that came to nothing (FilingVoid)
-	issue                                       string // the issue linked, WP-12
-	// scored
-	ref                   string // f1, f2, … in the model's state
-	modelScore, sev, hold float64
-	probs                 map[string]float64
-	repeatOf              int64
+	filed                                       bool
+	void                                        bool
+	issue                                       string
+	ref                                         string
+	modelScore, sev, hold                       float64
+	probs                                       map[string]float64
+	repeatOf                                    int64
 }
 
 // standing is how much of the finding stands: its severity, times how far
@@ -444,7 +351,7 @@ func (d *againDecision) labelOnly(findings []againFinding) {
 // repeats against nothing.
 type againLoop struct {
 	earlier []int64
-	in      string // earlier as an SQL list: "(3, 7, 9)"
+	in      string
 }
 
 // roundBranchSQL is, in SQL, the branch of the round alias's change
@@ -520,35 +427,21 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 		return "", "", err
 	}
 	if loop == nil || in.Decisions > 0 || !roundDecidable(in.State, in.Started) {
-		// (no round of a change before its pull request, one that never
-		// ran, or one decided already: a ship asked again after its pull
-		// request failed to open)
+		// A ship asked again after its pull request failed to open does not decide the round again.
 		return "", "", nil
 	}
 	index := len(loop.earlier) + 1
 	p := s.againPolicy()
 	audit, own := in.AuditID, in.OwnID
-	// Whether this round may open its pull request at all is decideRound's,
-	// from the one reader of a round's review (roundInOf): reviewAgain
-	// renders what it answers for this session's ship, and goes on to its own
-	// question only for a round that answers doShip: whether another round
-	// comes first.
-	// A ship is someone present, whatever the round's own session is doing:
-	// what it is asked depends on the wait alone, so a ship a minute after
-	// the review ended is shown the findings, not released past them.
+	// What a ship is asked depends on the wait alone, not on whether the round's session still runs: a late ship is shown the findings, not released past them.
 	in.ShipOpens, in.Session = true, true
 	switch out := decideRound(in); out.Do {
 	case doWait:
-		// The round's review is still going: its findings come to the
-		// session when it ends, and this ship asked before they did (WP-1320).
 		bp.facts.idleHeld()
 		return fmt.Sprintf("audit #%d, %s's adversarial review round, is still going: end your turn, and Waypoint carries the round on when it ends: it opens the pull request itself, or gives you what it found. Nothing more to run.", audit, g.key), "", nil
 	case doTell:
 		if out.Need == needMarks {
-			// A finding still to do (open, or confirmed and not yet fixed)
-			// holds this ship as it holds one whose round came back before
-			// the session's turn ended (shipAudited's roundTodo): the round
-			// asked for a verdict on each (WP-1320).
+			// An open or confirmed-but-unfixed finding holds the ship, as roundTodo holds an audited one.
 			todo, lines, err := s.againTodoLines(ctx, audit)
 			if err != nil || len(todo) == 0 {
 				return "", "", err
@@ -559,16 +452,9 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 		}
 		return reportHold(g.key, index, bp.Base), "", nil
 	case doEnd:
-		// No review was recorded and the deadline is past: this session is
-		// here, so it is asked for the report once more; the sweep ends the round.
 		return reportHold(g.key, index, bp.Base), "", nil
 	case doRelease:
-		// The findings weren't decided in time (or no session is left to
-		// decide them): as the sweep does, the round is released. This ship
-		// opens the pull request, and no further round runs. The round's
-		// record says why, and the open carries its audit to the pull
-		// request (OpenPR, carryAudits), where an open critical or high
-		// finding holds the merge.
+		// A released round carries its audit to the pull request (OpenPR, carryAudits), where an open critical or high finding holds the merge.
 		s.writeLogged(ctx, "record why a round was released at its ship", `UPDATE work_log SET reason = ? WHERE id = ? AND state = ?`, out.Why, round, in.State)
 		if bp.facts != nil {
 			bp.facts.released = round
@@ -576,15 +462,10 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 		return "", "", nil
 	}
 	if audit == 0 {
-		// Its slow audit went on as the pull request's, and the session was
-		// asked for nothing but this ship (planHandedOver): that audit holds
-		// the merge.
+		// A plan handed over to the pull request: its slow audit holds the merge, and no decision is made here.
 		return "", "", nil
 	}
-	// The session's marks are checked before they count: an all-rejected
-	// round would otherwise end the loop with no model asked, and a fix
-	// count as done on the session's word (WP-1320's live review, findings
-	// 4.1 and 5.2). Not at the cap, where nothing it finds changes the arm.
+	// Marks are checked before they count: an all-rejected round would otherwise end the loop with no model asked, and a fix would count as done on the session's word alone; not at the cap.
 	var check int64
 	var passed, unread bool
 	if index < p.cap {
@@ -601,8 +482,6 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 		if own == 0 {
 			return "", "", nil
 		}
-		// The session reported that its review raised nothing: the round
-		// says so, and one given up for want of a report ran after all.
 		return "", "", s.write(ctx, actor, func(t *tx) error {
 			at := s.nowMS()
 			if err := s.roundReported(ctx, t, g.issueID, round, in.State, at); err != nil {
@@ -611,9 +490,7 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 			return s.countOwnRound(ctx, t, g.issueID, round, 0, 0, 0, at)
 		})
 	}
-	// The marks are counted over every finding, past the ones the model reads.
-	// open is neither fixed nor rejected, filed (findingFiled) among them:
-	// a filed finding stands as real, so it is not an all-rejected round.
+	// A filed finding stands as real, so it never makes a round all-rejected; marks count over every finding, not just those the model reads.
 	total, fixed, rejected, filed, err := s.markCounts(ctx, audit, check)
 	if err != nil {
 		return "", "", err
@@ -644,10 +521,7 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 		if !errors.Is(err, errRoundDecided) {
 			return err
 		}
-		// Another ship decided this round first, and its decision stands
-		// (nothing of this one was written). One that ends the loop opens the
-		// pull request here too, as the top of reviewAgain does for a decided
-		// round; one that scheduled another round doesn't.
+		// A ship that loses the race writes nothing; it opens the pull request only if the winning ship ended the loop.
 		var next int64
 		if err := s.db.R.QueryRowContext(ctx, `SELECT coalesce(next_round_id, 0) FROM review_again_decisions WHERE round_id = ?`, round).Scan(&next); err != nil {
 			return err
@@ -659,11 +533,7 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 	}
 	disputed := slices.ContainsFunc(findings, func(f againFinding) bool { return f.audit != audit && f.state == "rejected" })
 	if fixed == 0 && open == 0 && !passed && !disputed {
-		// Every finding was rejected, and the check of the marks found no
-		// rejection wrong: nothing the review found stands, so another
-		// review has nothing to follow up, and no model is asked.
-		// Unchecked, or found wrong by the check and rejected again, the
-		// rejections are read by the rule (countUnchecked).
+		// Every finding rejected and none disputed: nothing the review found stands, so no further review is asked.
 		d.arm = AgainRejected
 		return "", "", record()
 	}
@@ -688,8 +558,6 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 		feats = *f
 	}
 	s.againHistory(ctx, loop, index, round, audit, &facts)
-	// What a set of answers decides, as the arm it gives: decideAgain asks
-	// on while the asks' mean doesn't settle on one.
 	outcome := func(ans map[string]jevAnswer) string {
 		c := d
 		probe, err := p.settle(&c, slices.Clone(findings), earlier, ans, true, false, facts)
@@ -701,16 +569,12 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 		}
 		return cmp(c.arm, AgainReview)
 	}
-	// With no findings (a report of nothing that nothing could read against
-	// its reviewer) there is nothing to ask the model about.
 	var ans map[string]jevAnswer
 	var model string
 	var noModel bool
 	if len(findings) > 0 {
 		ans, model, err = s.decideAgain(ctx, &d, againState(findings, earlier, total, fixed, rejected, filed, open, &feats), againQuestions(findings, earlier), len(earlier), outcome)
 		if ctx.Err() != nil {
-			// The ship was given up while the model was asked: nothing is
-			// decided on what did come back.
 			return "", "", ctx.Err()
 		}
 		var wait *aiWaitError
@@ -761,8 +625,6 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 		}
 		switch state {
 		case RoundRunning, RoundFailed:
-			// This ship is the round's report: of one under way, or one
-			// given up as having brought no report (it brought this one).
 			res, err := t.ExecContext(ctx, `UPDATE work_log SET state = 'done', body = ?, reason = '', ended_at = ?, found = ?, fixed = ?, rejected = ?,
 				read_state = ?, read_by = ?, read_at = ?, updated_at = ? WHERE id = ? AND state = ? AND started_at IS NOT NULL`,
 				body, at, total, fixed, rejected, readDone, readByRules, at, at, round, state)
@@ -774,9 +636,7 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 			}
 			s.emitWorkLog(ctx, t, g.issueID, round, RoundDone)
 		case RoundDone:
-			// It ended with a report of its own (a Stop, or the session's
-			// read of its audit), which stays as it is. One the session
-			// reviewed and reported takes its counts from that report.
+			// The session's own report (a Stop, or its read of the audit) stands; the round's counts are taken from it.
 			if own != 0 {
 				if err := s.countOwnRound(ctx, t, g.issueID, round, total, fixed, rejected, at); err != nil {
 					return err
@@ -796,10 +656,7 @@ func (s *Service) reviewAgain(ctx context.Context, actor *Actor, g *reviewGate, 
 		return d.insertOnce(ctx, t, at)
 	})
 	if errors.Is(err, ErrConflict) || errors.Is(err, errRoundDecided) {
-		// The round moved under this ship: Waypoint's own (the sweep carried it
-		// on, a check's patience ran out) or another ship's. The agent isn't
-		// told to run the same command again: where the round stands is what
-		// it needs, and nothing is left to run.
+		// The losing ship is never told to run its command again: the round's current state is what it needs.
 		s.log.InfoContext(ctx, "ship raced a server-side change of its round", "round", round, "task", g.key, "err", err)
 		bp.facts.idleHeld()
 		return fmt.Sprintf("Pushed %s. Waypoint moved %s's adversarial review on while this ship ran, and carries it from where it stands: it opens the pull request itself, or tells this session what is left. Nothing more to run: end your turn.", head, g.key), "", nil
@@ -950,7 +807,7 @@ func (s *Service) decideAgain(ctx context.Context, d *againDecision, state strin
 	var outcomes, decided []string
 	var model string
 	var first error
-	judged := 0 // answers the last step was judged on
+	judged := 0
 	for asked, want := 0, againSamplesMin; len(got) < want && asked < againSamplesMax; {
 		n := min(want-len(got), againSamplesMax-asked)
 		res, models, errs := make([]map[string]jevAnswer, n), make([]string, n), make([]error, n)
@@ -964,7 +821,7 @@ func (s *Service) decideAgain(ctx context.Context, d *againDecision, state strin
 		}
 		wg.Wait()
 		if err := ctx.Err(); err != nil {
-			return nil, "", err // the ship was called off: no more asks, and nothing decided on those that got through
+			return nil, "", err
 		}
 		asked += n
 		for i := range n {
@@ -981,19 +838,12 @@ func (s *Service) decideAgain(ctx context.Context, d *againDecision, state strin
 		if len(got) == 0 {
 			return nil, "", first
 		}
-		// A step's count is of answers, not tries: while the model answers
-		// some, a failed ask is asked again, to the most asks in all (live
-		// round 8 of WP-1320 decided on 2 when one of 3 failed). Judging a
-		// step short of its answers would put the first step's rule (every
-		// ask alone agrees) on fewer asks and the later rule (the mean held)
-		// on the rest, so the same answers would settle or not by where an
-		// ask failed (the review of that fix). The failures are in the AI
-		// calls' record (recordAICall).
+		// A step counts answers, not tries: a failed ask is asked again, so every rule judges the same number of answers.
 		if len(got) < want && asked < againSamplesMax {
 			continue
 		}
 		if len(got) == judged {
-			break // the most asks were made and the last ones all failed: nothing new to judge
+			break
 		}
 		judged = len(got)
 		decided = append(decided, outcome(meanAnswers(got)))
@@ -1133,7 +983,7 @@ func meanAnswers(answers []map[string]jevAnswer) map[string]jevAnswer {
 // false when it gave nothing usable.
 func (d *againDecision) score(findings []againFinding, earlier []againFinding, ans map[string]jevAnswer) bool {
 	used := 0
-	repeatProbs := map[string]map[string]float64{} // how sure each repeat call was, for the record
+	repeatProbs := map[string]map[string]float64{}
 	for i := range findings {
 		f := &findings[i]
 		f.ref = fmt.Sprintf("f%d", i+1)
@@ -1168,11 +1018,7 @@ func (d *againDecision) score(findings []againFinding, earlier []againFinding, a
 		if f.stands() && (len(earlier) == 0 || st >= againNovelMin) {
 			d.novel++
 		}
-		// The fixes gate's new ground: a new finding the session changed code
-		// for counts there as its severity would have before a refutation, so
-		// a later round's rework for a refuted finding still reaches the
-		// fixes call (the review of live round 8's fix: from round 2 on that
-		// gate read novel, which a refutation now empties).
+		// Reworked counts refuted findings too: code the session changed for one is still unread by any reviewer.
 		if f.hold > 0 && (len(earlier) == 0 || f.sev*f.hold >= againNovelMin) {
 			d.reworked++
 		}
@@ -1630,11 +1476,7 @@ func (s *Service) againTrust(ctx context.Context, audit int64) (bool, error) {
 		return false, err
 	}
 	if model == ownReportModel && strings.HasSuffix(key, ":own") {
-		// The session's own report (ReportReview). The record guards
-		// against a reviewer whose findings sound worse than they are; a
-		// session reporting on its own change errs the other way, so
-		// scores that call for another round despite its labels are
-		// taken at their word.
+		// A session's own report is trusted without the reviewer record; its scores are taken at their word.
 		return true, nil
 	}
 	rt, err := s.reviewerTrust(ctx)
@@ -1689,8 +1531,7 @@ func againRecordOf(rt reviewerTrust, model string) string {
 // againTodoLines is againTodo with a line for each finding: its ID, severity,
 // place and title, so a session sees what to decide without another command.
 func (s *Service) againTodoLines(ctx context.Context, audit int64) (ids []string, lines string, err error) {
-	// The same findings the gate counts as undecided (roundTodo): those the
-	// pull request's babysitter already holds are left out.
+	// Must match roundTodo's undecided findings: the pull request's babysitter's findings are left out.
 	a, err := s.auditRow(ctx, audit)
 	if err != nil {
 		return nil, "", err
@@ -1791,7 +1632,6 @@ func (s *Service) checkMarks(ctx context.Context, actor *Actor, g *reviewGate, b
 			return 0, "", false, false, err
 		}
 		instructions, most, what := checkInstructions, len(ids), "your marks on "+plural1(len(ids), "finding")
-		// due: the report is also to be read against the reviewer's words.
 		due := false
 		if own {
 			said, counted, err := s.ownReviewSaid(ctx, actor.Session, g.issueID, round)
@@ -1799,12 +1639,7 @@ func (s *Service) checkMarks(ctx context.Context, actor *Actor, g *reviewGate, b
 				return 0, "", false, false, err
 			}
 			if len(ids) == 0 && counted {
-				// A report of nothing that the work log's count of
-				// the reviewer's words agrees with (every review read
-				// as raising nothing; ReportReview refused it
-				// otherwise): two readers say nothing was raised, and
-				// a third is asked for nothing. A count that found
-				// something is not agreement, so counted is false.
+				// A report of nothing that the count of the reviewer's words agrees with is not checked: two readers already agree.
 				said = ""
 			}
 			if said != "" {
@@ -1822,8 +1657,6 @@ func (s *Service) checkMarks(ctx context.Context, actor *Actor, g *reviewGate, b
 		if most == 0 {
 			return 0, "", false, false, nil
 		}
-		// Waypoint asks it, on the session's person's runner, and its
-		// result is typed into the session (tellAudit).
 		sys := SystemActor()
 		sys.Session = actor.Session
 		var owner int64
@@ -1869,7 +1702,6 @@ func (s *Service) checkMarks(ctx context.Context, actor *Actor, g *reviewGate, b
 		if s.now().Sub(time.UnixMilli(created)) < checkPatience {
 			n, err := s.checkClaimCount(ctx, audit)
 			if err != nil {
-				// The text is told without the count; it isn't a reason to fail.
 				s.log.WarnContext(ctx, "couldn't count the marks a round's check reads", "round", round, "audit", audit, "err", err)
 			}
 			bp.facts.idleHeld()
@@ -1885,9 +1717,7 @@ func (s *Service) checkMarks(ctx context.Context, actor *Actor, g *reviewGate, b
 	default:
 		s.log.WarnContext(ctx, "a round's check of its marks ended without an answer; they stand unchecked", "round", round, "audit", check, "status", status)
 	}
-	// Passed over, and for an own report the check was also to read it
-	// against the reviewer's words: nothing did (the stored check says
-	// whether it was to).
+	// The last result marks an own report whose check was to read it against the reviewer's words and did not.
 	return 0, "", true, own && strings.Contains(asked, checkLeftOut), nil
 }
 
@@ -1941,8 +1771,6 @@ func (s *Service) expireChecks(ctx context.Context) {
 			s.log.WarnContext(ctx, "cancel a round's check past its patience", "audit", id, "err", err)
 		}
 	}
-	// Cancelled, each is settled (continueAfterCheck carries its round on);
-	// a round whose first try failed gets another (WP-1370).
 	s.shipSettledRounds(ctx)
 }
 
@@ -2036,8 +1864,6 @@ func againState(findings, earlier []againFinding, total, fixed, rejected, filed,
 		}
 		b.WriteString(".\n")
 	}
-	// Where a finding points is shown only beside earlier rounds' findings,
-	// for telling a repeat from a new problem at the same place.
 	at := func(f againFinding) string {
 		if len(earlier) == 0 {
 			return ""
@@ -2108,19 +1934,19 @@ func againQuoted(text string, n int) string {
 type againDecision struct {
 	round, issue, audit, next       int64
 	findings, fixed, rejected, open int
-	filed                           int // of the findings, filed (findingFiled); among open
+	filed                           int
 	issues, fixes                   int
 	probs, model, arm               string
 	index, novel, repeats           int
-	reworked                        int // new findings the session changed code for, refuted or not (pick's fixes gate)
+	reworked                        int // new findings the session changed code for, refuted or not
 	tier                            string
 	signals, signalRepeats          int
-	serious, weight, need           int // high and critical signals (each calls another round); medium signals; the mediums another round needed (againPolicy.needFor)
+	serious, weight, need           int // high and critical signals, each calling another round; medium signals; the mediums another round needed
 	unchecked, checked              int
-	unread                          bool   // the report of its own review was not read against its reviewer's words (counted in unchecked)
-	labels                          int    // 1: read by labels alone, the model unscored
-	samples                         int    // how many of the decision model's asks answered
-	spread                          string // the questions their calls split on, each ask's call (JSON); "" none
+	unread                          bool // own report not read against the reviewer's words; counted in unchecked
+	labels                          int  // 1 when read by labels alone; the model unscored
+	samples                         int
+	spread                          string
 	floor                           float64
 	worst, worstAll, fixesMean      float64
 	yieldP                          float64
@@ -2154,9 +1980,8 @@ func (d *againDecision) insert(ctx context.Context, t *tx, at int64) (inserted b
 		return false, err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return false, nil // another ship decided this round first
+		return false, nil // Zero rows: another ship decided this round first; not an error.
 	}
-	// The loop's record changed: its health is read again (review_health.go).
 	var project int64
 	if err := t.QueryRowContext(ctx, `SELECT project_id FROM issues WHERE id = ?`, d.issue).Scan(&project); err != nil {
 		return false, err

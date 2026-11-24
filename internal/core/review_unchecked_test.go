@@ -30,8 +30,6 @@ func TestUncheckedMarksSurviveALaterRound(t *testing.T) {
 	if _, _, _, _, next := e.decision(r1); next == 0 {
 		t.Fatal("no second round was scheduled after the check failed")
 	}
-	// Round 2 is label-only (no check of its own) and finds nothing: the
-	// server opens the pull request, with no session ship.
 	e.setClock(e.clockNow().Add(time.Minute))
 	var r2 int64
 	if res, err := e.ship(e.task.Key, ShipAuto); err != nil || res.Held == "" {
@@ -165,7 +163,7 @@ func TestRunEndedUnderAHeldShipEndsItsRound(t *testing.T) {
 	if st := e.round(round).state; st != RoundPending {
 		t.Fatalf("setup: round %s", st)
 	}
-	e.exec(`UPDATE autopilot_steps SET state = 'due' WHERE review_id = ?`, round) // a step still carries it
+	e.exec(`UPDATE autopilot_steps SET state = 'due' WHERE review_id = ?`, round)
 	e.exec(`UPDATE agent_runs SET ended_at = ?, outcome = 'done' WHERE id = (SELECT run_id FROM work_log WHERE id = ?)`, e.clockNow().UnixMilli(), round)
 	e.s.sweepRounds(e.ctx)
 	if st := e.round(round).state; st != RoundSkipped {
@@ -183,7 +181,7 @@ func TestRunEndedUnderAHeldShipEndsItsRound(t *testing.T) {
 func TestServerShipForAnEndedSessionRecordsNoDeadSession(t *testing.T) {
 	e := newLoopEnv(t, map[string]string{"": "critical", "fixes": "complete"})
 	r1 := e.review("Merge loses an update")
-	e.shipAndCheck(r1, []string{"rejected"}, "[x.1] Merge loses an update") // the check disagrees: the session decides it
+	e.shipAndCheck(r1, []string{"rejected"}, "[x.1] Merge loses an update")
 	e.endSession()
 	e.tickAll(heldScreenWait + 10*time.Minute)
 	e.s.Wait()
@@ -336,7 +334,7 @@ func TestCheckEndsOnceWhenItsEndAndItsPatienceMeet(t *testing.T) {
 		e, r1, j := aCheckAboutToEnd(t)
 		e.setClock(e.clockNow().Add(checkPatience + time.Minute))
 		e.s.expireChecks(e.ctx)
-		_ = e.endCheckNow(j) // the runner's late answer: refused or ignored
+		_ = e.endCheckNow(j)
 		e.s.Wait()
 		if st := e.checkStatus(r1); st != AuditCancelled {
 			t.Errorf("the check is %q, want cancelled: a late answer took the round back", st)

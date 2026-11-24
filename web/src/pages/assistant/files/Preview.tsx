@@ -1,7 +1,4 @@
-// One of the assistant's files, shown for what it is: images as pictures,
-// audio and video in a player, Markdown rendered (untrusted: no HTML, no
-// remote images) or raw, JSON pretty, and any other text with line numbers.
-// Text can be edited in place. HTML is only ever text here.
+// Markdown is untrusted: render with no HTML and no remote images; HTML is only ever text.
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useBlocker } from '@tanstack/react-router'
@@ -118,7 +115,6 @@ export function FilePreview({
     }
   }
 
-  // Cmd/Ctrl+S saves while editing, wherever the focus is.
   useEffect(() => {
     if (!editing) return
     const onKey = (e: KeyboardEvent) => {
@@ -314,8 +310,6 @@ export function FilePreview({
     </div>
   )
 }
-
-// ---- kinds of preview ----
 
 function DownloadButton({ id, path }: { id: number; path: string }) {
   return (

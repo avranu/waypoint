@@ -16,17 +16,14 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Requests that close themselves (WP-126). A person acts on the thing a
-// request is about (merges the pull request, approves the command in the
-// agent's own session) and Waypoint closes the request, with a note saying
-// why, without a model: the conditions are deterministic and checked here.
+// A request closes itself when a condition it watches holds, checked deterministically with no model.
 
 // Watch kinds.
 const (
-	WatchPRMerged  = "pr-merged"  // a pull request merges
-	WatchIssueDone = "issue-done" // an issue reaches a done (or canceled) status
-	WatchURLOK     = "url-ok"     // a URL answers 2xx
-	WatchCmdOK     = "cmd-ok"     // a command exits 0 on a runner, polled
+	WatchPRMerged  = "pr-merged"
+	WatchIssueDone = "issue-done" // A canceled issue counts as done too.
+	WatchURLOK     = "url-ok"
+	WatchCmdOK     = "cmd-ok"
 )
 
 // WatchKinds in the order help lists them.
@@ -254,12 +251,10 @@ func (s *Service) fillWatches(ctx context.Context, ids []int64, byID map[int64]*
 	return rows.Err()
 }
 
-// ---- closing ----
-
 // Why a request was closed by Waypoint (decision "auto" or "session").
 const (
-	closedByWatch   = "auto"    // a condition it watched held
-	closedInSession = "session" // the person approved it in the agent's session and it ran there
+	closedByWatch   = "auto"
+	closedInSession = "session"
 )
 
 // autoClosed: the state a request closes in, by what it asked.
@@ -330,7 +325,6 @@ func (s *Service) closeRanInSession(ctx context.Context, t *tx, x *AgentSession,
 		return nil
 	}
 	key := toolDedupe(ev.Tool, ev.ToolInput)
-	// A refused call that has now run: the log says so (WP-232).
 	if err := markRefusalRan(ctx, t, x.ID, key, s.nowMS()); err != nil {
 		return err
 	}
@@ -383,8 +377,6 @@ func (s *Service) closeRanInSession(ctx context.Context, t *tx, x *AgentSession,
 	return nil
 }
 
-// ---- checking ----
-
 // nudgeRequestWatches checks the conditions that need no network (a pull
 // request merged, an issue done) soon, after something changed.
 func (s *Service) nudgeRequestWatches() {
@@ -422,7 +414,7 @@ func (s *Service) checkRequestWatches(ctx context.Context, polls bool) {
 	for _, w := range list {
 		ok, note := s.evalWatch(ctx, w)
 		if note == "" && !ok {
-			continue // a command poll in flight: its job reports
+			continue
 		}
 		s.recordCheck(ctx, w, ok, note)
 	}
@@ -546,8 +538,6 @@ func (s *Service) recordCheck(ctx context.Context, w *watchRow, ok bool, note st
 		s.log.WarnContext(ctx, "close a request whose condition holds", "request", w.requestID, "err", err)
 	}
 }
-
-// ---- stale requests ----
 
 // closeStaleRequests closes open requests whose work has landed (WP-126):
 // the pull request for the branch the agent asked from, or for the issue it

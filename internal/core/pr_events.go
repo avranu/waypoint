@@ -8,11 +8,7 @@ import (
 	"time"
 )
 
-// Labels added and reviewers asked for on a pull request (WP-D14 phase 5):
-// pr.labeled comes from comparing the labels a forge reports with those
-// recorded, so it works the same on every forge; pr.review_requested from
-// the webhooks that say who was asked (GitHub's and Forgejo's
-// review_requested, GitLab's reviewer changes).
+// pr.labeled is derived by diffing the labels a forge reports against those recorded, not from label events, so it works the same on every forge.
 
 // addedLabels are cur's labels that old didn't have (all of them for a pull
 // request seen for the first time).
@@ -77,7 +73,6 @@ func (s *Service) tokenLogin(ctx context.Context, f *Forge, bot bool) string {
 	}
 	key := tokenLoginKey{f.ID, bot}
 	if v, ok := s.botLogins.Load(key); ok {
-		// A failed read is kept an hour: callers ask on every CI read.
 		if b := v.(botLogin); b.token == tf.token && (s.now().Sub(b.at) < time.Hour || (b.login != "" && s.now().Sub(b.at) < 24*time.Hour)) {
 			return b.login
 		}
@@ -106,9 +101,7 @@ func (s *Service) tokenLogin(ctx context.Context, f *Forge, bot bool) string {
 // severity, and took their review out of the people's (WP-934).
 type posters struct {
 	logins []string
-	// unknown: a token's account couldn't be read (tokenLogin keeps that an
-	// hour). Its posts then count as a person's, the safe side: a marker
-	// is never trusted from an account that isn't known to be Waypoint's.
+	// If a token's account can't be read, its posts count as a person's: a bot marker is trusted only from an account known to be Waypoint's.
 	unknown bool
 }
 

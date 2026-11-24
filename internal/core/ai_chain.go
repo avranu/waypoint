@@ -56,7 +56,7 @@ type ModelAttempt struct {
 // interface stays as it is.
 type usageSink struct {
 	sent, status atomic.Int64
-	bar          atomic.Value // string: the gateway's barHeader on a response
+	bar          atomic.Value
 }
 
 func (u *usageSink) barSeen() string {
@@ -147,8 +147,7 @@ func classifyModelError(err error) string {
 		case strings.Contains(m, "not found") || strings.Contains(m, "unknown model") || strings.Contains(m, "no such model"),
 			strings.Contains(m, "unavailable"), strings.Contains(m, "overloaded"), strings.Contains(m, "upstream request failed"),
 			strings.Contains(m, "capacity"), strings.Contains(m, "bad gateway"):
-			// The provider's side: the model is gone, full or its upstream
-			// is down. (A bad answer is a badOutputError, not this.)
+			// A bad answer is a badOutputError, not unavailable.
 			return "unavailable"
 		}
 	}
@@ -279,9 +278,7 @@ func (s *Service) runChainAt(ctx context.Context, chain []ChainModel, system, pr
 	if len(chain) == 0 {
 		return none, 0, nil, errNoModel
 	}
-	// gwID is the gateway, whose key may be parked and whose answers may
-	// ask a wait; fbID the same where it takes fallbacks, routeID where it
-	// takes routing and exID where it takes exclude (0 where it doesn't).
+	// The gateway's key may be parked and its answers may ask a wait; an ID of 0 means the gateway doesn't offer that feature.
 	gwID := s.gatewayID(ctx)
 	gw, _ := s.LLM.(gatewayLLM)
 	var fbID, routeID, exID int64
@@ -293,11 +290,7 @@ func (s *Service) runChainAt(ctx context.Context, chain []ChainModel, system, pr
 		exID = s.gatewayWith(ctx, GatewayExclude)
 	}
 	routing := gatewayRoutingOf(ctx)
-	// Surplus work goes to the gateway's free entries only, at the priority
-	// routing gives it: a runner, another provider or a paid model would
-	// spend what the priority keeps (WP-906). It takes routes too, as
-	// surplusAllowed asks: a gateway without them serves a model named in
-	// the chain at normal priority.
+	// Surplus work uses only the gateway's free entries; a runner, another provider or a paid model would spend what normal work needs.
 	surplus := routing != nil && routing.priority == prioritySurplus
 	var surplusID int64
 	if surplus {
@@ -305,7 +298,7 @@ func (s *Service) runChainAt(ctx context.Context, chain []ChainModel, system, pr
 	}
 	var attempts []ModelAttempt
 	var last error
-	var spent *aiWaitError // what the gateway asked to wait for, when a try met it
+	var spent *aiWaitError
 	for i := 0; i < len(chain); i++ {
 		cm := chain[i]
 		if err := ctx.Err(); err != nil {
@@ -350,9 +343,8 @@ func (s *Service) runChainAt(ctx context.Context, chain []ChainModel, system, pr
 			last = err
 			continue
 		}
-		// The gateway's fallbacks, and where each is in chain.
 		var fallbacks []string
-		at := []int{i} // model's, then theirs
+		at := []int{i}
 		var unresolved []ModelAttempt
 		if p.ID == fbID && p.Kind == "openai" && !cm.Paid {
 			for ; i+1 < len(chain) && len(fallbacks) < maxGatewayFallbacks; i++ {
@@ -371,8 +363,6 @@ func (s *Service) runChainAt(ctx context.Context, chain []ChainModel, system, pr
 		asked := append([]string{model}, fallbacks...)
 		names := strings.Join(asked, ",")
 		if p.ID == gwID {
-			// The gateway said when these candidates are back: asking
-			// before then spends a request on the same answer.
 			if w := s.askParked(p.ID, names, priorityOf(ctx)); w != nil {
 				attempts = append(attempts, unresolved...)
 				attempts = append(attempts, ModelAttempt{Model: model, Outcome: "rate_limit", Error: w.Error()})
@@ -381,8 +371,7 @@ func (s *Service) runChainAt(ctx context.Context, chain []ChainModel, system, pr
 			}
 		}
 		start := time.Now()
-		// A gateway walks its fallbacks itself, but a few calls' time is
-		// the most one request may take: 32 candidates must not mean hours.
+		// The gateway walks its fallbacks itself, so the timeout covers at most maxCallsPerRequest calls, not every candidate.
 		cctx, cancel := context.WithTimeout(ctx, perCall*time.Duration(min(len(asked), maxCallsPerRequest)))
 		cctx, usage := withUsageSink(cctx)
 		var requestID string
@@ -391,7 +380,7 @@ func (s *Service) runChainAt(ctx context.Context, chain []ChainModel, system, pr
 			cctx = withGatewayAsk(cctx, &gatewayAsk{requestID: requestID, paid: routing.paid, priority: routing.priority, weakest: routing.weakest})
 		}
 		if exID == 0 || p.ID != exID {
-			cctx = withoutGatewayExclude(cctx) // only a gateway that declares it takes exclude
+			cctx = withoutGatewayExclude(cctx)
 		}
 		var raw json.RawMessage
 		var served string
@@ -410,7 +399,7 @@ func (s *Service) runChainAt(ctx context.Context, chain []ChainModel, system, pr
 			}
 		}
 		if served != "" {
-			model = served // the model behind a gateway's route
+			model = served
 		}
 		a := ModelAttempt{Model: model, Outcome: "ok", MS: time.Since(start).Milliseconds(), RequestID: requestID, Bar: usage.barSeen()}
 		call := aiCall{task: aiTaskOf(ctx), pid: p.ID, model: model, fallbacks: len(fallbacks), paid: cm.Paid, outcome: "ok", err: err,
@@ -431,8 +420,6 @@ func (s *Service) runChainAt(ctx context.Context, chain []ChainModel, system, pr
 			attempts = append(attempts, a)
 			last = err
 			if refused {
-				// No spare capacity: not a model's answer, nor a fault of
-				// the request. Surplus work waits; normal work goes on.
 				w := s.noteSurplusRefusal(p.ID, err)
 				s.log.Info("the gateway refused surplus work", "task", aiTaskOf(ctx), "status", call.status, "until", w.until.UTC().Format(time.RFC3339))
 				return none, len(chain), attempts, w
@@ -443,33 +430,18 @@ func (s *Service) runChainAt(ctx context.Context, chain []ChainModel, system, pr
 				}
 			}
 			s.log.WarnContext(ctx, "model failed; trying the next", "model", model, "outcome", a.Outcome, "err", err)
-			// A fallback that answered badly leaves the ones after it
-			// untried: the next request starts there. Any other failure
-			// was the gateway's last word on them all.
 			var be *badOutputError
 			if k := slices.Index(asked, served); errors.As(err, &be) && k >= 0 && len(fallbacks) > 0 {
 				i = at[k]
 				continue
 			}
-			// The gateway tried every candidate it was given and all were
-			// rate limited or down: the rest of this provider's entries
-			// would meet the same, so skip them and go to another provider,
-			// or to a paid entry: its upstream isn't the free ones'.
+			// Rate limits or outages on the gateway's free entries say nothing about its paid ones, so skip only the free rest of this provider.
 			if len(fallbacks) > 0 && p.ID == gwID && (a.Outcome == "quota" || a.Outcome == "rate_limit" || a.Outcome == "server" || a.Outcome == "unavailable") {
 				for i+1 < len(chain) && chain[i+1].CLI == "" && chain[i+1].ProviderID == p.ID && !chain[i+1].Paid {
 					i++
 				}
 			}
-			// No model meets the request's bar: every later entry on this
-			// gateway carries the same bar (a separate `free` entry as
-			// well as the fallbacks), so its answer would be the same.
-			// Entries on other providers or runner CLIs stay reachable:
-			// they are models a person named in the chain, like a named
-			// reviewer, and no bar of ours holds them out (WP-1440).
-			// A paid entry is kept, as the quota skip above keeps it: it is
-			// asked with its own paid choice, from a pool the free ones'
-			// answer says nothing about. Waypoint never sends the request
-			// again without its bar.
+			// Later free entries on this gateway share the bar, so they are skipped; other providers, CLIs and paid entries stay reachable, and no request goes out without the bar (WP-1440).
 			if a.Outcome == "no_model_at_bar" && p.ID == gwID {
 				for i+1 < len(chain) && chain[i+1].CLI == "" && chain[i+1].ProviderID == p.ID && !chain[i+1].Paid {
 					i++
@@ -479,9 +451,9 @@ func (s *Service) runChainAt(ctx context.Context, chain []ChainModel, system, pr
 		}
 		call.priority = routing.priorityOrNone()
 		s.recordAICall(ctx, call)
-		next := i + 1 // past every model the request named
+		next := i + 1
 		if k := slices.Index(asked, served); k >= 0 {
-			next = at[k] + 1 // past the one that answered
+			next = at[k] + 1
 		}
 		return ChainModel{ProviderID: p.ID, Model: model, Paid: cm.Paid}, next, append(attempts, a), nil
 	}
@@ -489,7 +461,7 @@ func (s *Service) runChainAt(ctx context.Context, chain []ChainModel, system, pr
 		last = spent // what to wait for, whatever the other entries said
 	}
 	if last == nil {
-		return none, len(chain), attempts, errNoModel // surplus work and no gateway entry
+		return none, len(chain), attempts, errNoModel
 	}
 	return none, len(chain), attempts, fmt.Errorf("every model failed; the last: %w", last)
 }
@@ -578,7 +550,7 @@ func (s *Service) resolveModel(ctx context.Context, p *AIProvider, model string)
 			}
 			return 1
 		}
-		return strings.Compare(b.ID, a.ID) // newest version first
+		return strings.Compare(b.ID, a.ID)
 	})
 	return hits[0].ID, nil
 }
@@ -632,12 +604,12 @@ func (s *Service) EnsureReviewModels(ctx context.Context) error {
 		return err
 	}
 	if n > 0 {
-		return s.markReviewModels(ctx) // an install from before the marker
+		return s.markReviewModels(ctx)
 	}
 	var pid int64
 	err = s.db.R.QueryRowContext(ctx, `SELECT id FROM ai_providers WHERE kind = 'opencode' ORDER BY id LIMIT 1`).Scan(&pid)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil // not yet: a later start with one seeds it
+		return nil // No provider yet: return without the marker, so a later start still seeds the chain.
 	} else if err != nil {
 		return err
 	}

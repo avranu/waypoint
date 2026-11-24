@@ -94,7 +94,6 @@ function Palette({
   const navigate = useNavigate()
   const qc = useQueryClient()
   const pathname = useRouterState({ select: (s) => s.location.pathname })
-  // The project in view: /p/KEY/…, or an issue KEY-12.
   const near = pathname.match(/^\/p\/([^/]+)/)?.[1] ?? pathname.match(/^\/issue\/(.+)-\d+$/)?.[1]
   useEscapeLayer(true, onClose)
   const [text, setText] = useState('')
@@ -123,10 +122,8 @@ function Palette({
   })
   const results = search.data
 
-  // Pages by full text, when the query isn't issue filter syntax.
   const pageText = debounced.includes(':') ? '' : debounced
   const pages = useQuery({ ...pagesQuery({ q: pageText }), enabled: !!pageText }).data
-  // Design notes and glossary terms too.
   const knowledgeQ = useQuery({
     ...searchAllQuery({ q: pageText, kinds: 'requests,pages,design,glossary', near, limit: 6 }),
     enabled: pageText.length > 1,
@@ -147,7 +144,6 @@ function Palette({
     const t = text.trim().toLowerCase()
     const match = (s: string) => !t || s.toLowerCase().includes(t)
     const out: Item[] = []
-    // What a code in the text names (ADR3, R-28, PL3) leads, once each.
     const named = new Set<string>()
     for (const h of (pageText && knowledge?.exact) || []) {
       const key = `${h.kind}:${h.id}`
@@ -375,7 +371,6 @@ function Palette({
     for (const a of actions)
       if (match(a.text + ' ' + (typeof a.label === 'string' ? a.label : '')))
         out.push({ ...a, group: 'Actions' })
-    // Your assistants (WP-ADR1): open one, or hand it what you typed.
     for (const a of assistants) {
       const ask = text.trim()
       if (ask && !ask.includes(':'))
@@ -406,7 +401,6 @@ function Palette({
           run: go('/assistant/$id', { id: String(a.id) }),
         })
     }
-    // Issues first only when searching; otherwise actions lead.
     if (!debounced)
       out.sort(
         (a, b) => (a.group === 'Recent issues' ? 1 : 0) - (b.group === 'Recent issues' ? 1 : 0),

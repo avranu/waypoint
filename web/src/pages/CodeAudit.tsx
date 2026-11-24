@@ -1,7 +1,3 @@
-// One audit (WP-348): what was read and asked, how it went (each model
-// tried, and why the next took over), the model's summary and its findings,
-// each with a verdict people and agents record: confirmed, fixed, rejected.
-
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -62,7 +58,6 @@ export function CodeAuditPage() {
   const id = Number(raw)
   const audit = useQuery({
     ...codeAuditQuery(id),
-    // Live events refresh it; this is the fallback while it runs.
     refetchInterval: (q) => (q.state.data && ACTIVE.includes(q.state.data.status) ? 15_000 : false),
   })
   const a = audit.data
@@ -345,9 +340,7 @@ function Findings({ audit: a }: { audit: CodeAudit }) {
   const [all, setAll] = useState(false)
   if (a.status !== 'done') return null
   const list = show === 'open' ? open : findings
-  // The server says how many are listed at a time (shown); the rest are one
-  // click away and counted (WP-1421). The To do tab follows the server's
-  // rule (findingToDo in lib/code-audits.ts, which reads filing_void).
+  // The To do tab must match findingToDo in lib/code-audits.ts, which reads filing_void.
   const listed = all || !a.shown ? list : list.slice(0, a.shown)
   const more = list.length - listed.length
   return (
@@ -576,8 +569,7 @@ function Verdict({
 }
 
 function Asked({ audit: a }: { audit: CodeAudit }) {
-  // The number is named only when it is the one in use: a check of marks and
-  // a review round's audit list every finding whatever max_findings holds.
+  // max_findings is named only when it limited this audit; check and review-round audits list every finding.
   const showsSet = !!a.max_findings && (!a.shown || a.shown === a.max_findings)
   const target = TARGETS.find((t) => t.value === a.target)
   const focusAreas = useQuery({ ...auditDefaultsQuery(), enabled: !!a.focus?.length }).data?.focus

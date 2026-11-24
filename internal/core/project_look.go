@@ -19,10 +19,10 @@ import (
 // projects.look records who decided, so a person's choice is never
 // overwritten on its own.
 const (
-	LookAuto      = "auto"      // nobody yet: Waypoint picks
-	LookGenerated = "generated" // Waypoint picked; "Pick another" may replace it
-	LookCustom    = "custom"    // a person chose it; only "Pick another" replaces it
-	LookPlain     = "plain"     // a person reset it to the default; left alone
+	LookAuto      = "auto"
+	LookGenerated = "generated"
+	LookCustom    = "custom"
+	LookPlain     = "plain"
 )
 
 // lookColors and lookBackgrounds are what Waypoint chooses from: the
@@ -82,7 +82,7 @@ func validEmoji(s string) bool {
 	}
 	for i, r := range []rune(s) {
 		switch {
-		case r == 0x200D || r == 0xFE0F || (r >= 0xE0020 && r <= 0xE007F): // joiner, emoji form, flag tags
+		case r == 0x200D || r == 0xFE0F || (r >= 0xE0020 && r <= 0xE007F):
 			if i == 0 {
 				return false
 			}
@@ -96,12 +96,12 @@ func validEmoji(s string) bool {
 
 func isPictograph(r rune) bool {
 	switch {
-	case r >= 0x1F300 && r <= 0x1FAFF, // symbols, faces, people, skin tones
-		r >= 0x1F1E6 && r <= 0x1F1FF, // regional indicators (flags)
-		r >= 0x1F000 && r <= 0x1F2FF, // cards, enclosed symbols
-		r >= 0x2600 && r <= 0x27BF,   // misc symbols, dingbats
-		r >= 0x2300 && r <= 0x23FF,   // watch, hourglass, media keys
-		r >= 0x2B00 && r <= 0x2BFF:   // stars, big shapes
+	case r >= 0x1F300 && r <= 0x1FAFF,
+		r >= 0x1F1E6 && r <= 0x1F1FF,
+		r >= 0x1F000 && r <= 0x1F2FF,
+		r >= 0x2600 && r <= 0x27BF,
+		r >= 0x2300 && r <= 0x23FF,
+		r >= 0x2B00 && r <= 0x2BFF:
 		return true
 	}
 	return false
@@ -255,8 +255,6 @@ func pickLook(p *Project, taken []lookChoice, avoid lookChoice) lookChoice {
 		pairs[[2]string{t.Color, t.Background}] = true
 	}
 	var l lookChoice
-	// Icon: a keyword match nobody has, else a fallback nobody has, else the
-	// best match, else a fallback by hash.
 	matches := iconCandidates(p)
 	free := func(icon string) bool { return !icons[icon] && icon != avoid.Icon }
 	for _, ic := range matches {
@@ -287,8 +285,6 @@ func pickLook(p *Project, taken []lookChoice, avoid lookChoice) lookChoice {
 		l.Icon = fallbackIcons[hash32(salt)%uint32(len(fallbackIcons))]
 	}
 	l.Color = leastUsed(lookColors, colorUse, avoid.Color, salt)
-	// Background: the least used, and one that doesn't repeat the colour pair
-	// of another project when there is a choice.
 	opts := slices.Clone(lookBackgrounds)
 	if fresh := slices.DeleteFunc(slices.Clone(opts), func(b string) bool { return pairs[[2]string{l.Color, b}] }); len(fresh) > 0 {
 		opts = fresh
@@ -338,8 +334,6 @@ func (s *Service) proposeLook(ctx context.Context, p *Project, avoid lookChoice)
 func (s *Service) saveLook(ctx context.Context, actor *Actor, p *Project, l lookChoice, state, detail string, onlyAuto bool) (bool, error) {
 	changed := false
 	err := s.write(ctx, actor, func(t *tx) error {
-		// A person's choice counts as a change to the project (it moves up in
-		// "recently used"); the automatic pick doesn't.
 		sets, args := "color = ?, icon = ?, background = ?, look = ?", []any{l.Color, l.Icon, l.Background, state}
 		if !onlyAuto {
 			sets, args = sets+", updated_at = ?", append(args, s.nowMS())

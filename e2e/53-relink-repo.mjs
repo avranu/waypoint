@@ -26,8 +26,16 @@ const srv = http.createServer((req, res) => {
     const m = req.url.match(/^\/api\/v3\/repos\/([^/]+\/[^/]+)(?:\/(.*))?$/);
     if (!m) return send(404, { message: "Not Found" });
     const rest = m[2] ?? "";
-    if (rest === "") return IDS[m[1]] ? send(200, { id: IDS[m[1]], full_name: m[1], allow_squash_merge: true }) : send(404, { message: "Not Found" });
-    if (rest.startsWith("hooks")) return req.method === "GET" ? send(200, []) : send(201, { id: 1 });
+    if (rest === "")
+      return IDS[m[1]]
+        ? send(200, {
+            id: IDS[m[1]],
+            full_name: m[1],
+            allow_squash_merge: true,
+          })
+        : send(404, { message: "Not Found" });
+    if (rest.startsWith("hooks"))
+      return req.method === "GET" ? send(200, []) : send(201, { id: 1 });
     return send(404, { message: "Not Found" });
   });
 });
@@ -48,12 +56,27 @@ async function signIn(ctx) {
 
 let api;
 {
-  const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const ctx = await browser.newContext({
+    viewport: { width: 1280, height: 900 },
+  });
   const page = await signIn(ctx);
-  api = (m, p, d) => page.request.fetch(base + "/api/v1" + p, { method: m, headers: H, data: d }).then((r) => (r.status() === 204 ? null : r.json()));
+  api = (m, p, d) =>
+    page.request
+      .fetch(base + "/api/v1" + p, { method: m, headers: H, data: d })
+      .then((r) => (r.status() === 204 ? null : r.json()));
   await api("POST", "/projects", { name: "Relink", key: KEY });
-  const forge = await api("POST", "/forges", { kind: "github", name: "Fake GitHub relink", base_url: fake, token: "tok", webhook_secret: "s" });
-  await api("POST", `/projects/${KEY}/repos`, { forge_id: forge.id, repo: "me/old", sync_issues: false });
+  const forge = await api("POST", "/forges", {
+    kind: "github",
+    name: "Fake GitHub relink",
+    base_url: fake,
+    token: "tok",
+    webhook_secret: "s",
+  });
+  await api("POST", `/projects/${KEY}/repos`, {
+    forge_id: forge.id,
+    repo: "me/old",
+    sync_issues: false,
+  });
 }
 
 async function look(width, target) {
@@ -62,11 +85,18 @@ async function look(width, target) {
   const page = await signIn(ctx);
   page.on("pageerror", (e) => fail(`${tag} pageerror: ${e.message}`));
   const overflow = async (where) =>
-    ok(!(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)), `${tag} no sideways scroll (${where})`);
+    ok(
+      !(await page.evaluate(
+        () => document.documentElement.scrollWidth > window.innerWidth,
+      )),
+      `${tag} no sideways scroll (${where})`,
+    );
   const current = (await api("GET", `/projects/${KEY}/repos`))[0].repo;
   await page.goto(`${base}/p/${KEY}/settings?tab=integrations`);
   await page.getByText(current).first().waitFor();
-  await page.getByRole("button", { name: new RegExp(`Relink ${current}`) }).click();
+  await page
+    .getByRole("button", { name: new RegExp(`Relink ${current}`) })
+    .click();
   const dlg = page.getByRole("dialog");
   await dlg.getByLabel("New repository").fill(target);
   await page.screenshot({ path: `${out}/relink-${width}.png`, fullPage: true });
@@ -74,17 +104,33 @@ async function look(width, target) {
   await dlg.getByRole("button", { name: "Relink" }).click();
   await page.getByText(target, { exact: true }).first().waitFor();
   const repos = await api("GET", `/projects/${KEY}/repos`);
-  ok(repos.length === 1 && repos[0].repo === target, `${tag} relinked to ${target}: ${JSON.stringify(repos.map((r) => r.repo))}`);
-  await page.screenshot({ path: `${out}/relinked-${width}.png`, fullPage: true });
+  ok(
+    repos.length === 1 && repos[0].repo === target,
+    `${tag} relinked to ${target}: ${JSON.stringify(repos.map((r) => r.repo))}`,
+  );
+  await page.screenshot({
+    path: `${out}/relinked-${width}.png`,
+    fullPage: true,
+  });
   await overflow("after");
   await ctx.close();
 }
 
 try {
-  for (const [w, target] of looks([[1280, "me/new"], [390, "me/newer"]])) await look(w, target);
-  // The forge doesn't have it: the error is shown and nothing changes.
-  const bad = await api("POST", `/projects/${KEY}/repos/${(await api("GET", `/projects/${KEY}/repos`))[0].id}/move`, { repo: "me/missing", relink: true });
-  ok(/couldn't find/.test(JSON.stringify(bad)), `a missing repo is refused: ${JSON.stringify(bad)}`);
+  for (const [w, target] of looks([
+    [1280, "me/new"],
+    [390, "me/newer"],
+  ]))
+    await look(w, target);
+  const bad = await api(
+    "POST",
+    `/projects/${KEY}/repos/${(await api("GET", `/projects/${KEY}/repos`))[0].id}/move`,
+    { repo: "me/missing", relink: true },
+  );
+  ok(
+    /couldn't find/.test(JSON.stringify(bad)),
+    `a missing repo is refused: ${JSON.stringify(bad)}`,
+  );
 } catch (e) {
   fail(String(e.stack || e));
 }

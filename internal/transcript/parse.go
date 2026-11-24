@@ -199,9 +199,9 @@ type parser struct {
 	tools      map[string]int
 	spawns     map[string]int
 	reqs       map[string]reqInfo
-	reqRef     map[int]string // model call index -> the requestRef its lines carry
+	reqRef     map[int]string
 	setting    map[string]string
-	settingUID map[string]int // how many changes had this name=value@time, so each change has its own uid
+	settingUID map[string]int
 }
 
 // Parse reads one transcript file. file is where it sits under the session
@@ -380,7 +380,7 @@ func (p *parser) assistant(r *rec, ts *int64, thread string, main bool) {
 		p.unknown("assistant/(no message)")
 		return
 	}
-	if strings.HasPrefix(m.Model, "<") { // <synthetic>: Claude Code's own text, no request
+	if strings.HasPrefix(m.Model, "<") {
 		p.ignored("assistant/synthetic")
 		return
 	}
@@ -440,7 +440,7 @@ func (p *parser) assistant(r *rec, ts *int64, thread string, main bool) {
 	if bytes.Contains(m.Content, []byte(`"tool_use"`)) {
 		var blocks []block
 		if err := json.Unmarshal(m.Content, &blocks); err != nil {
-			p.undecoded("assistant_content") // every tool call in this message is lost
+			p.undecoded("assistant_content")
 		} else {
 			for i := range blocks {
 				switch {
@@ -581,14 +581,14 @@ func (p *parser) user(r *rec, ts *int64, thread string, main bool) {
 	var textBytes int64
 	if len(content) > 0 && content[0] == '"' {
 		if err := json.Unmarshal(content, &text); err != nil {
-			p.undecoded("user_content") // not a prompt we can size: no turn from it
+			p.undecoded("user_content")
 			return
 		}
 		textBytes = int64(len(text))
 	} else if len(content) > 0 && content[0] == '[' {
 		var blocks []block
 		if err := json.Unmarshal(content, &blocks); err != nil {
-			p.undecoded("user_content") // a partial decode must not pass for a human prompt
+			p.undecoded("user_content")
 			return
 		}
 		results := 0
@@ -660,7 +660,7 @@ func (p *parser) resultSize(raw json.RawMessage) (n *int64, text string) {
 		return ptr(int64(len(s))), s
 	}
 	var blocks []block
-	if err := json.Unmarshal(raw, &blocks); err != nil { // neither a string nor a block array: size unknown
+	if err := json.Unmarshal(raw, &blocks); err != nil {
 		p.undecoded("tool_result_content")
 		return nil, ""
 	}
@@ -694,10 +694,7 @@ func (p *parser) results(blocks []block, r *rec, ts *int64, n int) {
 		}
 		t := &p.res.ToolCalls[idx]
 		size, text := p.resultSize(bl.Content)
-		// is_error: the Messages API defines an omitted is_error as false, so
-		// absent is a known success here, not an unknown (WP-1467 audit 1283.6);
-		// a NULL would make most successful calls unknown. result_bytes has no
-		// such default, so it is nil without a content key.
+		// An omitted is_error is false by the Messages API default, so absent is a known success, not NULL; result_bytes has no such default and is nil without a content key.
 		t.ResultAt, t.ResultBytes, t.IsError = ts, size, ptr(bl.IsError)
 		if ts != nil && t.At != nil && *ts >= *t.At {
 			t.DurationMS = ptr(*ts - *t.At)
@@ -884,9 +881,9 @@ func orUID(uuid, file string, seq int) string {
 func (p *parser) finish() {
 	type prev struct {
 		at    int64
-		long  bool  // the call wrote to the 1 hour cache
-		split bool  // its usage said how its cache write split between the two
-		held  int64 // what it left cached: its cache read plus its cache write
+		long  bool
+		split bool
+		held  int64
 	}
 	last := map[string]prev{}
 	for i := range p.res.ModelCalls {
@@ -919,7 +916,7 @@ func (p *parser) finish() {
 		last[c.Thread] = prev{at: at, long: valOr(c.CacheW1h) > 0, split: c.CacheW5m != nil || c.CacheW1h != nil,
 			held: valOr(c.CacheRead) + valOr(c.CacheWrite)}
 	}
-	for range p.reqs { // an api-request no assistant record named
+	for range p.reqs {
 		p.ignored("api-request/unmatched")
 	}
 }

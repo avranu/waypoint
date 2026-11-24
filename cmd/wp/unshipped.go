@@ -12,10 +12,7 @@ import (
 	"time"
 )
 
-// wp unshipped (WP-ADR74, WP-258): work that exists only on this machine or
-// only on a branch nobody will look at again. git and Waypoint's pull request
-// records answer it, never a model. The rules lean on content rather than
-// ancestry, so a squash or rebase merge isn't reported as work left behind.
+// The rules judge content, not ancestry, so a squash or rebase merge is not reported as left behind.
 
 // The kinds of unshipped work.
 const (
@@ -38,7 +35,7 @@ const (
 	// of its lines, one job may fill: what is stored is cut at 1000, and an
 	// item cut off there would count as told. The rest wait for the next sweep.
 	unshippedNoticeRoom = 750
-	unshippedNoticeLine = 300 // what the notice keeps of one item
+	unshippedNoticeLine = 300
 )
 
 var unshippedCmd = &command{
@@ -124,15 +121,12 @@ type unshippedScan struct {
 	dir  string
 	def  string
 	base string
-	// baseCommits: the default branch's commits by identity, read when a
-	// branch has a commit whose patch isn't there.
+	// Default-branch commits keyed by identity (author, time, subject), loaded on first need.
 	baseCommits map[string]string
-	worktreeOf  map[string]string // branch to the folder it is checked out in
-	// mergeEnv sends what git merge-tree writes to a folder deleted after the
-	// scan: a merge per try would otherwise leave thousands of loose objects
-	// in the repository, enough to stop git's automatic gc.
+	worktreeOf  map[string]string
+	// merge-tree writes go to a scratch object dir, so loose objects don't pile up in the repository
 	mergeEnv []string
-	noRemote bool // nothing tells pushed from not, so commits aren't judged
+	noRemote bool
 	prs      unshippedPRs
 	o        unshippedOpts
 	rep      *unshippedReport
@@ -247,7 +241,7 @@ func (s *unshippedScan) judgeUncommitted(r *tidyRow) {
 		case files > 0:
 			what = plural1(files, "uncommitted file")
 		case !strings.HasSuffix(r.dirty, "in progress"):
-			return // only the agent's own files
+			return // Untracked .claude/ files are the agent's own and do not count as unshipped work.
 		}
 	}
 	s.add(unshippedItem{Kind: unshippedUncommitted, Path: r.Path, Branch: r.Branch, What: what, InUse: s.inUse(r.Path)})
@@ -259,7 +253,7 @@ func (s *unshippedScan) judgeCommits(r *tidyRow, kind, what string) {
 	from := ""
 	for _, pr := range s.prs.merged {
 		if pr.Base == s.def && pr.HeadRef == r.Branch && pr.HeadSHA != "" && pr.HeadSHA != r.Tip && s.isAncestor(pr.HeadSHA, r.Tip) {
-			from = pr.HeadSHA // only what came after the merged pull request counts
+			from = pr.HeadSHA
 			what += fmt.Sprintf(" (after merged PR #%d)", pr.Number)
 			break
 		}
@@ -560,8 +554,8 @@ func (s *unshippedScan) stashLanded(sha string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	if len(strings.Fields(parents)) < 4 { // sha + 2 parents
-		return how, true // saved no untracked files
+	if len(strings.Fields(parents)) < 4 {
+		return how, true
 	}
 	listing, err := s.git("ls-tree", "-r", sha+"^3")
 	if err != nil {
@@ -631,7 +625,7 @@ func findRepos(ctx context.Context, dirs []string) []string {
 				return nil
 			}
 			if d.Type()&fs.ModeSymlink != 0 && !strings.HasPrefix(d.Name(), ".") && dirExists(filepath.Join(path, ".git")) {
-				addRepo(path) // not walked: a link can lead back up
+				addRepo(path)
 				return nil
 			}
 			if !d.IsDir() {
@@ -829,8 +823,6 @@ func (p *runnerProc) noteUnshipped(ctx context.Context, run *jobRun, in autopilo
 		say("unshipped work: %v", err)
 		return nil
 	}
-	// Task branches quiet for autoPushIdle go to the forge (WP-843): told
-	// on the task, not here.
 	items := p.pushIdle(ctx, run, rl.root, sweepUnshipped(rep.Items, in.Held), prs, time.Now())
 	return p.c.unshippedOnce(rl.root, items)
 }

@@ -1,19 +1,6 @@
 package core
 
-// Usage trends (WP-196, WP-ADR39): token usage over time, by repo and by task, and
-// what goes with it — tool calls, sessions and subagents, context size —
-// with the moments that may change it (instruction file changes, Claude Code
-// versions, merged pull requests) marked, and a before/after comparison
-// around any of them. Everything is computed from the hourly tables, which
-// are kept for good, so a chart added later reads the whole history.
-//
-// Usage belongs to a task through the session that did it: an hour of a
-// session goes to the task whose run (agent_runs, WP-89) it was in — the
-// latest one that began before the hour ended, unless that run had ended
-// over an hour before; hours before a session's first run go to that run
-// when it began within two hours. Sessions without runs go to the task
-// their agent session holds. Only tasks in projects the reader can see are
-// named; the rest is "no task".
+// An hour of a session goes to the task of its latest run begun before the hour ended, if that run ended no more than an hour earlier (or is still open); hours within two hours before a session's first run go to that run; runless sessions go to the task they hold.
 
 import (
 	"context"
@@ -126,8 +113,6 @@ type UsageTrends struct {
 	Factors  []UsageFactor         `json:"factors"`
 }
 
-// ---- the hourly buckets both views read ----
-
 type trendKey struct {
 	machine, session string
 	hour             int64
@@ -136,10 +121,10 @@ type trendKey struct {
 
 type trendBucket struct {
 	acc                     usageAcc
-	by                      map[string]float64 // cost by usageCostKey
+	by                      map[string]float64
 	tools, errors, subagent int64
-	spawns                  int64 // ledger forks + fresh: subagents, where tool counts lack them
-	calls, ctx, over200     int64 // main-thread calls measured
+	spawns                  int64 // Ledger spawns count subagents that tool counts miss; subagents() takes the larger of the two.
+	calls, ctx, over200     int64
 }
 
 func (b *trendBucket) subagents() int64 { return max(b.subagent, b.spawns) }
@@ -247,8 +232,6 @@ func (s *Service) trendBuckets(ctx context.Context, sc *usageScope, book *priceB
 	return out, rows.Err()
 }
 
-// ---- which task an hour of a session was for ----
-
 type runSpan struct {
 	issue      int64
 	start, end int64 // end 0: still open; start 0: the session's held task, no runs
@@ -267,8 +250,8 @@ type taskAttribution struct {
 }
 
 const (
-	runGrace   = int64(time.Hour / time.Millisecond)     // after a run ended
-	runLead    = int64(2 * time.Hour / time.Millisecond) // before a session's first run
+	runGrace   = int64(time.Hour / time.Millisecond)
+	runLead    = int64(2 * time.Hour / time.Millisecond)
 	hourMillis = int64(time.Hour / time.Millisecond)
 )
 
@@ -404,7 +387,6 @@ func (s *Service) taskAttribution(ctx context.Context, actor *Actor, sc *usageSc
 			return nil, err
 		}
 	}
-	// Runs of tasks the reader can't see count as no task.
 	for k, spans := range a.runs {
 		kept := spans[:0]
 		for _, r := range spans {
@@ -418,8 +400,6 @@ func (s *Service) taskAttribution(ctx context.Context, actor *Actor, sc *usageSc
 	}
 	return a, nil
 }
-
-// ---- the Trends tab ----
 
 // UsageTrends answers the Trends tab.
 func (s *Service) UsageTrends(ctx context.Context, actor *Actor, q UsageQuery) (*UsageTrends, error) {
@@ -462,7 +442,6 @@ func (s *Service) UsageTrends(ctx context.Context, actor *Actor, q UsageQuery) (
 		return nil, err
 	}
 
-	// Per day, per repo, per task.
 	type dayAgg struct {
 		acc                      usageAcc
 		calls, ctx, over200      int64
@@ -550,7 +529,7 @@ func (s *Service) UsageTrends(ctx context.Context, actor *Actor, q UsageQuery) (
 		t.subagents += b.subagents()
 		t.calls += b.calls
 		t.ctx += b.ctx
-		t.sessions[sk] += b.acc.cost + 1e-12*float64(b.acc.n) // a session without prices still counts
+		t.sessions[sk] += b.acc.cost + 1e-12*float64(b.acc.n) // Each call adds 1e-12 per use, so a session with no prices stays above zero and can still be picked as its task's top session.
 		t.hours[k.hour] = true
 		t.first, t.last = min(t.first, k.hour), max(t.last, k.hour)
 		if m, ok := sessMeta[sk]; ok && m.branch != "" {
@@ -580,7 +559,6 @@ func (s *Service) UsageTrends(ctx context.Context, actor *Actor, q UsageQuery) (
 		}
 	}
 
-	// The heaviest repos get their own series, the rest are summed.
 	keys := make([]string, 0, len(repos))
 	for k := range repos {
 		keys = append(keys, k)
@@ -687,13 +665,13 @@ func (s *Service) trendSessionMeta(ctx context.Context, sc *usageScope) (map[ses
 // trendTaskAgg is what one task used.
 type trendTaskAgg struct {
 	acc                      usageAcc
-	by                       map[string]float64 // cost by usageCostKey
+	by                       map[string]float64
 	tools, errors, subagents int64
 	calls, ctx               int64
-	sessions                 map[sessKeyAt]float64 // its cost in each session
+	sessions                 map[sessKeyAt]float64
 	hours                    map[int64]bool
 	first, last              int64
-	branches                 map[sessKeyAt][2]string // each session's repo (lower case) and branch
+	branches                 map[sessKeyAt][2]string // Repo is kept lower-case, as the repo keys are.
 }
 
 type mergedPR struct {
@@ -730,7 +708,6 @@ func (s *Service) trendTasksInto(ctx context.Context, o *UsageTrends, attr *task
 	if err != nil {
 		return err
 	}
-	// A session's compactions go to the task it spent most on.
 	topTask := map[sessKeyAt]int64{}
 	topCost := map[sessKeyAt]float64{}
 	for id, t := range tasks {
@@ -748,8 +725,7 @@ func (s *Service) trendTasksInto(ctx context.Context, o *UsageTrends, attr *task
 		if t.calls > 0 {
 			row.AvgContext = f64p(float64(t.ctx) / float64(t.calls))
 		}
-		// So do its branch's merged pull requests: a session that moved on
-		// to another task worked on one branch.
+		// A session's branch's merged pull requests count toward its task, since a session that moved on still worked on that branch.
 		seen := map[int64]bool{}
 		for sk := range t.sessions {
 			if topTask[sk] != id {
@@ -966,8 +942,6 @@ func (s *Service) trendPRs(ctx context.Context, sc *usageScope, repoKey map[stri
 	}
 	return out, rows.Err()
 }
-
-// ---- statistics ----
 
 // ranks gives each value its rank (1-based), ties the average of theirs.
 func ranks(v []float64) []float64 {

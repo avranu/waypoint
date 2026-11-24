@@ -7,10 +7,7 @@ import (
 	"strings"
 )
 
-// What the hooks measured at the start of the sessions wp usage suggest looks
-// at (the session_snapshots Waypoint keeps), against the instruction files as
-// they are on disk now (WP-1470): the second is only an estimate of what a
-// session read, the first is what its own hook saw on the machine.
+// Session-start snapshots are measured; disk sizes are only an estimate of what a session read.
 
 // sugMeasuredMax is the most sessions looked up (the newest first), so a long
 // window is a bounded number of calls.
@@ -67,7 +64,7 @@ func measuredStart(c *cli, ids []string) (*sugMeasured, string) {
 		if err := c.do("GET", fmt.Sprintf("/api/v1/sessions/%d/snapshots", x.ID), nil, &snaps); err != nil || len(snaps) == 0 {
 			continue
 		}
-		s := snaps[0] // the first, taken as the session started
+		s := snaps[0]
 		var inv struct {
 			Files []struct {
 				Bytes int64 `json:"bytes"`

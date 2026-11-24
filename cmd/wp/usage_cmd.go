@@ -13,8 +13,6 @@ import (
 	"time"
 )
 
-// wp usage sync: the Usage tab's data (WP-D20).
-
 var usageSyncCmd = &command{
 	name: "sync", args: "[--all] [--since 30d] [--dry-run] [--dir CLAUDE_CONFIG_DIR]",
 	summary: "upload what Claude Code sessions used, read from its transcripts",

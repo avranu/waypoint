@@ -11,22 +11,13 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Nudges (ADR2 §5, WP-47): a PreToolUse(Bash|Read|Monitor) hook that names
-// the better tool in one line when an agent reaches for a worse one, and
-// lets a Read of a picture the session may look at through unasked
-// (WP-1137, read_pictures.go). It adds notes and that one "allow", never a
-// refusal: the four refusals that used to
-// live here (task-wait, nudge_wait.go; a Grok review that would be cut short,
-// nudge_grok.go; pgrep-self; worktree-place) are emitted by the guard hook
-// (refuse.go, WP-1411), because Claude Code lets a call through when a hook
-// outlasts its timeout. It needs no network: it must finish in a few
-// milliseconds, since it runs before every Bash call.
+// Notes only, never refusals: Claude Code lets a call through when a hook outlasts its timeout; no network, since it runs before every Bash call.
 
 // nudgeRule is one substitution. match gets the command (and the git remote's
 // host, looked up only by rules that set needsRemote).
 type nudgeRule struct {
 	kind        string
-	needsRemote *lazyre.Regexp // set: the rule reads the remote, looked up only for commands this matches
+	needsRemote *lazyre.Regexp
 	match       func(cmd, remoteHost string) bool
 	text        string
 }
@@ -83,7 +74,7 @@ func forgeAPIPulls(cmd string) bool {
 // nudgeFor returns the rule a Bash command matches (the first), or nil.
 // remote looks up the host of the repo's origin when a rule needs it.
 func nudgeFor(cmd string, remote func() string) *nudgeRule {
-	if len(cmd) > 20000 { // a heredoc of code, not a polling command
+	if len(cmd) > 20000 {
 		return nil
 	}
 	host, looked := "", false
@@ -202,10 +193,7 @@ func hookClaudeNudge(c *cli, stdin io.Reader, stdout io.Writer) {
 		cwd, _ = os.Getwd()
 	}
 	if in.ToolName == "Monitor" {
-		// Registered for Monitor by name: a hook matched on "Bash" alone gets a
-		// Monitor call as a Bash one, with the Monitor's command, and the sleep
-		// rules judged it as a command (WP-1443). Here it is only noted, and
-		// only to a sub-agent, once per run.
+		// The hook is registered for Monitor by name: a matcher on Bash alone would judge a Monitor call as a Bash command.
 		if in.AgentID != "" && c.tellOnce(noteMonitor, in.SessionID, in.AgentID, hookCountWait(hookNudgeTimeout)) {
 			_, _ = stdout.Write(nudgeOutput(noteMonitorText(c.callerOf(in.SessionID, in.AgentID))))
 			c.countNudge(noteMonitor, hookCountWait(hookNudgeTimeout))
@@ -213,16 +201,13 @@ func hookClaudeNudge(c *cli, stdin io.Reader, stdout io.Writer) {
 		return
 	}
 	var r *nudgeRule
-	// A call the guard hook refuses (WP-1411) gets no note here, and does not
-	// use up a pause tell: the refusal is what the agent must read. Its
-	// search step is still counted below.
-	// The task check scans /proc: do it once for the refusal and the note.
+	// A refused call gets no note and uses no pause tell, since the refusal is what the agent must read; the /proc task scan runs once.
 	type taskResult struct {
 		kind, text string
 		deny       bool
 	}
 	var taskRes *taskResult
-	var whoIs *caller // read once, and only by a call that needs it
+	var whoIs *caller
 	who := func() caller {
 		if whoIs == nil {
 			w := c.callerOf(in.SessionID, in.AgentID)
@@ -240,10 +225,7 @@ func hookClaudeNudge(c *cli, stdin io.Reader, stdout io.Writer) {
 	rk, _ := hookRefusalWith(in, task, func() string { return c.noopRefusalText(in) })
 	refused := rk != ""
 	allow := !refused && picturePermit(in, cwd, ti.FilePath)
-	// A person's pause (WP-146): told on the first call it reaches, then
-	// every few minutes, ahead of any other nudge.
-	// Not a subagent's call: it would use up the parent's slot, and the
-	// hand-off instruction is the parent's to follow.
+	// Only the main thread gets a pause tell: a subagent's would use up the parent's slot, and the hand-off is the parent's to follow.
 	if in.AgentID == "" && !refused {
 		if text := c.pauseTell(in.SessionID, hookLateAfter(hookNudgeTimeout)); text != "" {
 			r = &nudgeRule{kind: "paused", text: text}
@@ -257,7 +239,7 @@ func hookClaudeNudge(c *cli, stdin io.Reader, stdout io.Writer) {
 	if r == nil && !refused && in.ToolName == "Bash" {
 		r = nudgeFor(ti.Command, func() string { return originHost(cwd) })
 		if r != nil && ti.Bg && (r.kind == "sleep-poll" || r.kind == "sleep-wait") {
-			r = nil // a waiter in the background costs no turns
+			r = nil
 		}
 		if r != nil && r.kind == "sleep-wait" {
 			r = &nudgeRule{kind: r.kind, text: sleepWaitText(ti.Command, who())}
@@ -268,9 +250,7 @@ func hookClaudeNudge(c *cli, stdin io.Reader, stdout io.Writer) {
 			r = &nudgeRule{kind: kind, text: text}
 		}
 	}
-	// Counted on every search or slice, nudged or not, so the chain is whole;
-	// told only when nothing else was (WP-183).
-	// The search_nudge experiment's "off" arm counts and never tells (WP-254).
+	// Counted on every search or slice, nudged or not, so the chain stays whole; only the tell is conditional.
 	canTell := r == nil && !refused && c.sessionArm(cwd, in.SessionID, expSearchNudge) != "off"
 	if !ti.Bg && c.chainNudge(&in, cwd, chainStep(in.ToolName, ti.Command, ti.FilePath), canTell) {
 		r = &nudgeRule{kind: chainKind, text: chainText}

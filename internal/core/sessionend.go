@@ -6,11 +6,7 @@ import (
 	"strings"
 )
 
-// Task sessions end themselves (WP-97): when a session Waypoint started for
-// tasks has finished them (wp done), and D22 says it truly finished (no
-// background work, no open request), the Stop hook is told to end it. Only
-// task sessions: your own are never ended. The work is in WP, so ending is
-// safe (PL3 rule 3).
+// only sessions Waypoint started for tasks are ended, and only once truly finished (no background work, no open request); a person's own sessions are never ended
 
 // taskSessionDone reports whether a task session is done for good: it truly
 // finished at this Stop, holds no unfinished run, and finished at least one
@@ -106,7 +102,7 @@ func (s *Service) promptedSince(ctx context.Context, q queryer, sessionID, since
 	}
 	for _, pr := range prompts {
 		p := pasteText(strings.TrimSpace(strings.TrimSuffix(pr.text, "…")))
-		own := ownPrompt(p, pr.typed) // autopilot's typed prompt (WP-ADR9), or a background task's report
+		own := ownPrompt(p, pr.typed)
 		for _, b := range bodies {
 			if strings.HasPrefix(b, p) {
 				own = true

@@ -10,11 +10,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// Token permissions (WP-111): what each route needs from a permission
-// token. A permission token may use a route only when it has the route's
-// permission; a route missing from this table is refused (fail closed), and
-// TestEveryRouteHasAPermission fails until it is added. People in the
-// browser and unrestricted tokens are not affected.
+// Fail closed: a route missing from this table is refused for permission tokens.
 
 const (
 	// permAlways: any signed-in token may use the route (who am I, help).
@@ -30,7 +26,6 @@ const (
 var routePermissions = map[string]core.Permission{
 	"POST /mcp": permMCP,
 
-	// You.
 	"GET /api/v1/me":                         permAlways,
 	"GET /api/v1/me/token-permissions":       permAlways,
 	"GET /api/v1/users/{id}/avatar":          permAlways,
@@ -67,8 +62,7 @@ var routePermissions = map[string]core.Permission{
 	"PATCH /api/v1/views/{id}":               core.PermViewsWrite,
 	"DELETE /api/v1/views/{id}":              core.PermViewsWrite,
 
-	// Sandbox policy (WP-418, WP-ADR28): anyone may read it; only a person
-	// in the browser changes it (the personUI routes).
+	// Sandbox policy: anyone may read it; only a person in the browser changes it.
 	"GET /api/v1/projects/{key}/sandbox":       core.PermIssuesRead,
 	"GET /api/v1/sandbox/machines":             core.PermRunnersRead,
 	"GET /api/v1/sandbox/log":                  core.PermIssuesRead,
@@ -81,8 +75,7 @@ var routePermissions = map[string]core.Permission{
 	"POST /api/v1/me/reauth":                   permNever,
 	"GET /api/v1/me/reauth":                    permNever,
 
-	// Assistants (WP-ADR1): their owner, in a browser, only. The agent
-	// works in Waypoint with a token, and no token may drive its door.
+	// Assistants are driven by their owner in a browser only; no token may use these routes.
 	"GET /api/v1/assistants":                                 permNever,
 	"POST /api/v1/assistants":                                permNever,
 	"GET /api/v1/assistants/{id}":                            permNever,
@@ -110,10 +103,8 @@ var routePermissions = map[string]core.Permission{
 	"PATCH /api/v1/assistants/{id}/api/{path...}":            permNever,
 	"DELETE /api/v1/assistants/{id}/api/{path...}":           permNever,
 
-	// Issues.
 	"GET /api/v1/users": core.PermIssuesRead,
-	// Live events span every area (sessions, runners, requests…), so
-	// permission tokens don't get the stream.
+	// The live stream spans every area, so permission tokens do not get it.
 	"GET /api/v1/stream":                            permNever,
 	"GET /api/v1/issues":                            core.PermIssuesRead,
 	"GET /api/v1/search":                            core.PermIssuesRead,
@@ -162,14 +153,11 @@ var routePermissions = map[string]core.Permission{
 	"PUT /api/v1/issues/{key}/objective":            core.PermIssuesEdit,
 	"DELETE /api/v1/issues/{key}/objective":         core.PermIssuesEdit,
 	"POST /api/v1/issues/{key}/objective/checks":    core.PermTasksWork,
-	"POST /api/v1/issues/{key}/objective/diagnose":  core.PermTasksWork, // WP-1449
-	// Confirming an agent's proposed objective puts its command in effect:
-	// a person's own act (WP-ADR111).
+	"POST /api/v1/issues/{key}/objective/diagnose":  core.PermTasksWork,
+	// Confirming a proposed objective puts its command in effect, so only a person may.
 	"POST /api/v1/issues/{key}/objective/confirm": permNever,
-	// So is steering one in effect: retrying a reading, moving a round on,
-	// accepting a reading that waits, ending it.
-	"POST /api/v1/issues/{key}/objective/go": permNever,
-	// Dismissing a suggestion teaches the ranker a person's no (WP-958).
+	"POST /api/v1/issues/{key}/objective/go":      permNever,
+	// Dismissing a suggestion trains the ranker on a person's no, so only a person may.
 	"POST /api/v1/issues/{key}/relations/suggested/dismiss": permNever,
 	"POST /api/v1/issues/{key}/relations":                   core.PermIssuesEdit,
 	"DELETE /api/v1/issues/{key}/relations/{id}":            core.PermIssuesEdit,
@@ -192,17 +180,15 @@ var routePermissions = map[string]core.Permission{
 	"DELETE /api/v1/issues/{key}/shares/{user}":             core.PermIssuesShare,
 	"POST /api/v1/issues/{key}/publish":                     core.PermIssuesPublish,
 	"POST /api/v1/issues/{key}/draft":                       core.PermIssuesPublish,
-	// Text from outside (WP-279) is for people to read and approve.
-	"GET /api/v1/issues/{key}/outside":  permNever,
-	"POST /api/v1/outside/{id}/approve": permNever,
-	"POST /api/v1/outside/{id}/discard": permNever,
-	// and on pull requests (WP-281).
+	// Outside text is for people to read and approve, so agents get no access.
+	"GET /api/v1/issues/{key}/outside":     permNever,
+	"POST /api/v1/outside/{id}/approve":    permNever,
+	"POST /api/v1/outside/{id}/discard":    permNever,
 	"GET /api/v1/pulls/{id}/outside":       permNever,
 	"POST /api/v1/outside-pr/{id}/approve": permNever,
 	"POST /api/v1/outside-pr/{id}/discard": permNever,
 	"DELETE /api/v1/issues/{key}":          core.PermIssuesDelete,
 
-	// Pages, glossary, design notes, links, search.
 	"GET /api/v1/search/all":                 core.PermSearch,
 	"GET /api/v1/resolve":                    core.PermSearch,
 	"GET /api/v1/graph":                      core.PermSearch,
@@ -227,9 +213,7 @@ var routePermissions = map[string]core.Permission{
 	"GET /api/v1/glossary/lookup":            core.PermGlossaryRead,
 	"GET /api/v1/glossary/{id}":              core.PermGlossaryRead,
 	"POST /api/v1/glossary":                  core.PermGlossaryWrite,
-	// What a read of an item already records (a lookup) is recorded here as
-	// shown, so it takes the read permission; it writes usage rows only, never
-	// the items, and read-only tokens are refused before this map.
+	// Recording a shown item writes usage rows only, so it needs just the read permission.
 	"POST /api/v1/knowledge/shown":                 core.PermGlossaryRead,
 	"PATCH /api/v1/glossary/{id}":                  core.PermGlossaryWrite,
 	"DELETE /api/v1/glossary/{id}":                 core.PermGlossaryDelete,
@@ -269,7 +253,6 @@ var routePermissions = map[string]core.Permission{
 	"PATCH /api/v1/attachments/{id}":               core.PermAttachmentsWrite,
 	"DELETE /api/v1/attachments/{id}":              core.PermAttachmentsWrite,
 
-	// Requests.
 	"GET /api/v1/waiting":                       core.PermRequestsRead,
 	"GET /api/v1/requests":                      core.PermRequestsRead,
 	"GET /api/v1/refusals":                      core.PermRequestsRead,
@@ -278,11 +261,10 @@ var routePermissions = map[string]core.Permission{
 	"POST /api/v1/requests":                     core.PermRequestsCreate,
 	"POST /api/v1/requests/{ref}/withdraw":      core.PermRequestsCreate,
 	"POST /api/v1/requests/{ref}/watch":         core.PermRequestsCreate,
-	"POST /api/v1/requests/{ref}/decide":        permAlways, // DecideRequest checks: requests.answer to decide, requests.create for an agent's done or dismiss, which withdraws its own (WP-198)
+	"POST /api/v1/requests/{ref}/decide":        permAlways, // permAlways: DecideRequest checks the real permission (answer to decide; create for an agent's done or dismiss).
 	"POST /api/v1/requests/{ref}/snooze":        core.PermRequestsAnswer,
 	"POST /api/v1/requests/{ref}/cells/{n}/run": core.PermRequestsRun,
 
-	// Projects.
 	"POST /api/v1/projects/{key}/sprints":                core.PermSprintsManage,
 	"PATCH /api/v1/sprints/{id}":                         core.PermSprintsManage,
 	"DELETE /api/v1/sprints/{id}":                        core.PermProjectsManage,
@@ -324,7 +306,6 @@ var routePermissions = map[string]core.Permission{
 	"GET /api/v1/webhooks/{id}/deliveries":               core.PermWebhooksManage,
 	"POST /api/v1/webhooks/{id}/deliveries/{did}/replay": core.PermWebhooksManage,
 
-	// Agents, sessions, runners.
 	"GET /api/v1/agents":                            core.PermAgentsRead,
 	"GET /api/v1/agents/overview":                   core.PermAgentsRead,
 	"GET /api/v1/agents/activity":                   core.PermAgentsRead,
@@ -428,8 +409,7 @@ var routePermissions = map[string]core.Permission{
 	"DELETE /api/v1/runners/{id}":                   core.PermRunnersHost,
 	"POST /api/v1/ci/report":                        core.PermCIReport,
 	"GET /api/v1/ci/usage":                          core.PermCIReport,
-	// The agent kit (WP-ADR2): what a checkout gets is part of a session;
-	// sharing to it opens a pull request; rolling out runs jobs.
+	// Sharing to the kit opens a pull request; rolling out runs jobs.
 	"GET /api/v1/kit":           core.PermAgentsRead,
 	"GET /api/v1/kit/resolve":   core.PermSessionsReport,
 	"POST /api/v1/kit/reports":  core.PermSessionsReport,
@@ -438,12 +418,7 @@ var routePermissions = map[string]core.Permission{
 	"POST /api/v1/kit/add":      core.PermPullsWrite,
 	"POST /api/v1/kit/read":     core.PermAdmin,
 
-	// Agent setup (WP-ADR44): reading is the Agents page; a machine's
-	// report is part of a session, like the kit's; edits open pull requests;
-	// the shared instructions are admins'.
-	// Agent instructions (ADR146). Writing one is a design write: an agent's
-	// is a proposal, as its design notes are; the core keeps approving,
-	// switching and deleting to people.
+	// An agent's instruction edit is a proposal; approving, switching and deleting stay with people.
 	"GET /api/v1/instructions":              core.PermAgentsRead,
 	"GET /api/v1/instructions/preview":      core.PermAgentsRead,
 	"GET /api/v1/instructions/{id}":         core.PermAgentsRead,
@@ -462,7 +437,6 @@ var routePermissions = map[string]core.Permission{
 	"GET /api/v1/admin/kit":                 core.PermAdmin,
 	"PUT /api/v1/admin/kit":                 core.PermAdmin,
 
-	// Code, deploys, automations, AI.
 	"GET /api/v1/pulls":                         core.PermPullsRead,
 	"GET /api/v1/ci":                            core.PermPullsRead,
 	"GET /api/v1/ci/log":                        core.PermPullsRead,
@@ -502,14 +476,13 @@ var routePermissions = map[string]core.Permission{
 	"POST /api/v1/review-comments/resolve":      core.PermPullsWrite,
 	"POST /api/v1/review-comments/unresolve":    core.PermPullsWrite,
 	"GET /api/v1/pulls/{id}/comments":           core.PermPullsRead,
-	// Audits (WP-348): reading them is reading code; asking for one runs a
-	// model on the asker's runner.
+	// Reading audits is reading code; asking for one runs a model on the asker's runner.
 	"GET /api/v1/audits":                                          core.PermPullsRead,
 	"GET /api/v1/audits/defaults":                                 core.PermPullsRead,
 	"GET /api/v1/audits/nitpicks":                                 core.PermPullsRead,
 	"GET /api/v1/audits/{id}":                                     core.PermPullsRead,
 	"POST /api/v1/audits":                                         core.PermAuditsRun,
-	"POST /api/v1/audits/findings":                                permAlways, // MarkAuditFindings: audits.run, or a babysitting round's own pull request (WP-750)
+	"POST /api/v1/audits/findings":                                permAlways, // permAlways: MarkAuditFindings checks audits.run, or that the round's own pull request.
 	"POST /api/v1/audits/{id}/rerun":                              core.PermAuditsRun,
 	"POST /api/v1/audits/{id}/cancel":                             core.PermAuditsRun,
 	"POST /api/v1/audits/{id}/fix":                                core.PermAuditsRun,
@@ -568,33 +541,30 @@ var routePermissions = map[string]core.Permission{
 	"GET /api/v1/ai/tasks":                                        core.PermAIManage,
 	"PUT /api/v1/ai/tasks/{task}":                                 core.PermAIManage,
 	"GET /api/v1/ai/safety-drill":                                 core.PermAIManage,
-	// Production diagnostics (WP-375): admins, read-only.
-	"GET /api/v1/server/status":      core.PermServerRead,
-	"GET /api/v1/server/log":         core.PermServerRead,
-	"GET /api/v1/server/metrics":     core.PermServerRead,
-	"GET /api/v1/server/problems":    core.PermServerRead,
-	"GET /api/v1/server/jobs/{name}": core.PermServerRead,
-	// A person's, directly (core.AckJobProblem): no token carries it.
-	"POST /api/v1/server/problems/{id}/ack":   core.PermAdmin,
-	"DELETE /api/v1/server/problems/{id}/ack": core.PermAdmin,
-	"GET /api/v1/ai/usage":                    core.PermServerRead,
-	"GET /api/v1/ai/surplus":                  core.PermServerRead,
-	"POST /api/v1/ai/safety-drill":            core.PermAIManage,
-	"GET /api/v1/ai/review-arms":              core.PermAIManage,
-	"PUT /api/v1/ai/review-arms/pins":         core.PermAIManage,
-	"GET /api/v1/experiments":                 core.PermAIManage,
-	"POST /api/v1/experiments/{key}/start":    core.PermAIManage,
-	"POST /api/v1/experiments/{key}/stop":     core.PermAIManage,
-	"GET /api/v1/experiments/{key}/results":   core.PermAIManage,
-	"GET /api/v1/reviews/stats":               core.PermPullsRead,
-	"GET /api/v1/mistakes":                    core.PermPullsRead,
-	"GET /api/v1/ai/providers":                core.PermAIManage,
-	"POST /api/v1/ai/providers":               core.PermAIManage,
-	"PATCH /api/v1/ai/providers/{id}":         core.PermAIManage,
-	"DELETE /api/v1/ai/providers/{id}":        core.PermAIManage,
-	"GET /api/v1/ai/providers/{id}/models":    core.PermAIManage,
+	"GET /api/v1/server/status":                                   core.PermServerRead,
+	"GET /api/v1/server/log":                                      core.PermServerRead,
+	"GET /api/v1/server/metrics":                                  core.PermServerRead,
+	"GET /api/v1/server/problems":                                 core.PermServerRead,
+	"GET /api/v1/server/jobs/{name}":                              core.PermServerRead,
+	"POST /api/v1/server/problems/{id}/ack":                       core.PermAdmin,
+	"DELETE /api/v1/server/problems/{id}/ack":                     core.PermAdmin,
+	"GET /api/v1/ai/usage":                                        core.PermServerRead,
+	"GET /api/v1/ai/surplus":                                      core.PermServerRead,
+	"POST /api/v1/ai/safety-drill":                                core.PermAIManage,
+	"GET /api/v1/ai/review-arms":                                  core.PermAIManage,
+	"PUT /api/v1/ai/review-arms/pins":                             core.PermAIManage,
+	"GET /api/v1/experiments":                                     core.PermAIManage,
+	"POST /api/v1/experiments/{key}/start":                        core.PermAIManage,
+	"POST /api/v1/experiments/{key}/stop":                         core.PermAIManage,
+	"GET /api/v1/experiments/{key}/results":                       core.PermAIManage,
+	"GET /api/v1/reviews/stats":                                   core.PermPullsRead,
+	"GET /api/v1/mistakes":                                        core.PermPullsRead,
+	"GET /api/v1/ai/providers":                                    core.PermAIManage,
+	"POST /api/v1/ai/providers":                                   core.PermAIManage,
+	"PATCH /api/v1/ai/providers/{id}":                             core.PermAIManage,
+	"DELETE /api/v1/ai/providers/{id}":                            core.PermAIManage,
+	"GET /api/v1/ai/providers/{id}/models":                        core.PermAIManage,
 
-	// Administration.
 	"GET /api/v1/usage/overview":                 core.PermUsageRead,
 	"GET /api/v1/usage/ledger":                   core.PermUsageRead,
 	"GET /api/v1/usage/trends":                   core.PermUsageRead,
@@ -625,7 +595,7 @@ var routePermissions = map[string]core.Permission{
 	"PATCH /api/v1/forges/{id}":                  core.PermForgesManage,
 	"DELETE /api/v1/forges/{id}":                 core.PermForgesManage,
 	"GET /api/v1/forges/{id}/secret":             core.PermForgesManage,
-	"PUT /api/v1/forges/{id}/people":             permNever, // whose word counts (WP-279)
+	"PUT /api/v1/forges/{id}/people":             permNever, // Choosing whose word counts for a forge is a person's act.
 	"GET /api/v1/forges/{id}/discover":           core.PermForgesManage,
 	"POST /api/v1/forges/{id}/discover":          core.PermForgesManage,
 	"GET /api/v1/forges/{id}/orgs":               core.PermForgesManage,
@@ -809,7 +779,6 @@ func (s *Server) updateToken(w http.ResponseWriter, r *http.Request) (any, error
 				return nil, fmt.Errorf("%w: read_only must be true or false", errBadRequest)
 			}
 		case "permissions":
-			// null: unrestricted; a list: just those.
 			p.SetPermissions = true
 			if err := json.Unmarshal(v, &p.Permissions); err != nil {
 				return nil, fmt.Errorf("%w: permissions must be a list of permission names, or null", errBadRequest)

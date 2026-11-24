@@ -17,11 +17,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/codeindex"
 )
 
-// Objectives (WP-927, WP-ADR111, WP-ADR142): a task worked in rounds until a check is
-// met, an amount better every round, a judge finds nothing left, or as a
-// loop. Waypoint reads every round itself, on a person's runner in fresh
-// checkouts; what wp objective check reads here is the worker's own working
-// reading, kept and shown, and it decides nothing.
+// The worker's own check reading is kept and shown but decides nothing; Waypoint re-reads each round itself on the runner, in fresh checkouts.
 
 var objectiveCmd = &command{
 	name: "objective", group: "Agent work", args: "[set|show|check|diagnose|ls|confirm|clear|retry|next|accept|end …]",
@@ -232,9 +228,8 @@ func (l *cmdList) Set(v string) error {
 // objectiveFlags are the flags that give a task an objective, shared by
 // wp objective set and wp new.
 type objectiveFlags struct {
-	check, until, judge, bar *string
-	keep, models             *cmdList
-	// set only on wp objective set
+	check, until, judge, bar                                    *string
+	keep, models                                                *cmdList
 	dir, setup, measure, better, pace, every, repo, branch, rev *string
 	rounds, diagnoseAfter                                       *int
 }
@@ -577,14 +572,12 @@ func objectiveBase(c *cli, o *objective, headTree string) string {
 	}
 	sha, err := localGit("rev-parse", "--verify", "-q", o.BaseSHA+"^{commit}")
 	if err != nil || sha == "" {
-		// A commit this clone hasn't fetched yet.
 		_, _ = localGit("fetch", "-q", "origin", o.BaseSHA)
 		if sha, err = localGit("rev-parse", "--verify", "-q", o.BaseSHA+"^{commit}"); err != nil || sha == "" {
 			_, _ = fmt.Fprintf(c.err, "Notice: the commit the round started from (%s) isn't in this clone, so this reading has nothing to compare with.\n", shortSHA(o.BaseSHA))
 			return ""
 		}
 	}
-	// With nothing changed since, there is nothing to compare.
 	if tree, err := localGit("rev-parse", sha+"^{tree}"); err == nil && tree == headTree {
 		return ""
 	}
@@ -616,7 +609,6 @@ func measureObjective(c *cli, o *objective, lim objectiveLimits) (*objectiveRead
 	r.Commit, _ = localGit("rev-parse", "HEAD")
 	base := objectiveBase(c, o, r.Tree)
 	if base != "" && o.Dir != "" {
-		// A folder the base doesn't have: the check can't run there.
 		if _, err := localGit("rev-parse", "--verify", "-q", base+":"+o.Dir); err != nil {
 			no := false
 			r.BaseOK, r.BaseSHA, base = &no, base, ""

@@ -1,22 +1,6 @@
 package core
 
-// What each session was actually running with (WP-1468, WP-ADR145 points 3, 4
-// and 5): a snapshot of the machine's inventory at SessionStart, PostCompact
-// and ConfigChange, and a timeline of the values the hook saw change. The CLI
-// reads the machine; this only stores, bounds and counts. Nothing here is
-// guessed: a value the source did not carry is NULL and `missing` says why.
-//
-// A snapshot row is the full state as the hook saw it at SessionStart,
-// PostCompact and ConfigChange. Model, effort and permission-mode changes
-// between snapshots are rows in session_observed, so the state at a moment is
-// the latest snapshot at or before it plus the session_observed changes after
-// that snapshot. A snapshot column is NULL when that hook's payload did not
-// carry it, and `missing` says why.
-//
-// A session keeps its first snapshot and its newest 99. Rows removed between
-// them are counted as server_cap/snapshot in hook_drops, so for a session past
-// the cap the stretch between the first and the oldest kept row has no
-// snapshot.
+// state at a moment is the latest snapshot at or before it plus later session_observed rows; past the cap, the gap between the kept first and oldest snapshots has none
 
 import (
 	"context"
@@ -29,10 +13,10 @@ import (
 )
 
 const (
-	snapshotsPerSession = 100 // the first is always kept
+	snapshotsPerSession = 100
 	dropsIDMax          = 64
 	dropReportKeep      = 30 * 24 * time.Hour
-	observedPerSession  = 400 // instruction_file and config_change rows
+	observedPerSession  = 400
 	snapshotMaxBytes    = 64 << 10
 	dropKeyMax          = 80
 )
@@ -139,7 +123,6 @@ func (s *Service) recordObserved(ctx context.Context, t *tx, actor *Actor, x *Ag
 	switch ev.Event {
 	case "SessionStart", "PostModelSwitch":
 		if ev.Model != "" {
-			// A switch says what it was from and what was asked for.
 			detail := map[string]string{}
 			if ev.Event == "PostModelSwitch" {
 				if ev.FromModel != "" {
@@ -237,10 +220,10 @@ func addDropRow(ctx context.Context, q queryer, uid int64, machine, reason, even
 
 // Reasons the server counts in hook_drops for data it did not keep.
 const (
-	DropSessionEventsTrim  = "session_events_trim"  // events past a session's newest 1500, deleted at its Stop (the outstanding record stays: two rows at most per item named)
-	DropEvidenceRunsCap    = "evidence_cap"         // test runs and bench rows past what one commit keeps
-	DropPromptTextWithheld = "prompt_text_withheld" // a typed prompt recorded without its text (--no-prompts)
-	DropUnregisteredWrite  = "unregistered_session" // a write that named a session the server has not registered
+	DropSessionEventsTrim  = "session_events_trim" // outstanding records are kept: two rows at most per item named
+	DropEvidenceRunsCap    = "evidence_cap"
+	DropPromptTextWithheld = "prompt_text_withheld"
+	DropUnregisteredWrite  = "unregistered_session"
 )
 
 // observeValue puts a change into the session's timeline of that kind. The
@@ -322,7 +305,6 @@ func (s *Service) storeSnapshot(ctx context.Context, t *tx, actor *Actor, machin
 		missing[k] = v
 	}
 	if len(inv) > snapshotMaxBytes || !json.Valid([]byte(inv)) {
-		// Counted, and said on the row: the scalar columns still stand.
 		if err := s.addDrop(ctx, t, actor, machine, "snapshot_inventory_unusable", ev.Event, 1, at); err != nil {
 			return err
 		}
@@ -354,7 +336,6 @@ func (s *Service) storeSnapshot(ctx context.Context, t *tx, actor *Actor, machin
 		inv, string(srcJSON), string(missJSON), nint(sn.BuildMS)); err != nil {
 		return err
 	}
-	// Keep the first and the newest; count what goes.
 	res, err := t.ExecContext(ctx, `DELETE FROM session_snapshots WHERE session_id = ? AND id NOT IN (
 		SELECT min(id) FROM session_snapshots WHERE session_id = ?
 		UNION SELECT id FROM (SELECT id FROM session_snapshots WHERE session_id = ? ORDER BY id DESC LIMIT ?))`, sid, sid, sid, snapshotsPerSession-1)

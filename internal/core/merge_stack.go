@@ -1,20 +1,6 @@
 package core
 
-// Candidates, the branches the merge line tests (WP-404, WP-ADR33, reworked
-// by WP-1659 and WP-ADR152). A candidate is the base's tip with every head
-// ahead of it merged in, then its own, built by the workflow's push run on a
-// branch Waypoint makes for it (wp-queue/...), whose one commit adds a file
-// listing those heads. The line makes one per place for the first few, so the
-// front's full run and the next places' run together. When the front merges,
-// the next one's passed candidate stands in for the update and the full run:
-// it is marked ready with no full run to come and merges as soon as its own
-// per-pull-request conditions (the review gate, comments, audits, the quiet
-// period) are met.
-//
-// A candidate holds only while what it was built on does: the heads ahead of
-// it merged at the heads it merged, or still ahead in the same order at the
-// same heads, and its own head unchanged. Anything else ends it, cancels its
-// run and the candidates built on it, and the line plans again.
+// A candidate holds only while the heads it was built on are unchanged; any other change ends it and the candidates built on it.
 
 import (
 	"context"
@@ -35,14 +21,14 @@ import (
 
 // Stack states. running, passed and ready are live; the rest have ended.
 const (
-	stackRunning   = "running"   // its run is going
-	stackPassed    = "passed"    // its run passed
-	stackReady     = "ready"     // its pull request was marked ready on it
-	stackFailed    = "failed"    // its run failed, or never started
-	stackMerged    = "merged"    // its pull request merged on it
-	stackCancelled = "cancelled" // what it was built on changed
-	stackRefused   = "refused"   // the forge refused the merge it allowed
-	stackConflict  = "conflict"  // its own head doesn't merge onto the heads before it (WP-535)
+	stackRunning   = "running"
+	stackPassed    = "passed"
+	stackReady     = "ready"
+	stackFailed    = "failed"
+	stackMerged    = "merged"
+	stackCancelled = "cancelled"
+	stackRefused   = "refused"
+	stackConflict  = "conflict"
 )
 
 const (
@@ -122,13 +108,13 @@ func scanStack(row interface{ Scan(...any) error }) (*queueStack, error) {
 	var created int64
 	if err := row.Scan(&st.ID, &st.ForgeID, &st.Repo, &st.BaseRef, &st.PRID, &st.BaseSHA, &heads, &st.Pos, &st.Branch, &st.CommitSHA,
 		&st.State, &st.Tree, &st.RunURL, &st.Note, &created, &st.Ended, &st.RerunAt, &st.EndReason, &st.ConflictPR, &st.ConflictAhead); err != nil {
-		return &st, err // what was read before the failure, so the row can be told (st.ID)
+		return &st, err // Returns the row as far as it was read, so the caller can name the stack in its error.
 	}
 	if err := json.Unmarshal([]byte(heads), &st.Heads); err != nil || len(st.Heads) == 0 {
 		return &st, fmt.Errorf("stack %d lists no heads", st.ID)
 	}
 	if st.Pos < 0 || st.Pos >= len(st.Heads) {
-		st.Pos = len(st.Heads) - 1 // a stack of its own
+		st.Pos = len(st.Heads) - 1 // An out-of-range position counts as the stack's last head.
 	}
 	st.CreatedAt = time.UnixMilli(created)
 	return &st, nil
@@ -151,8 +137,6 @@ func (s *Service) candLineByCommit(ctx context.Context, forgeID int64, repo, sha
 func failedOn(pr *PullRequest, sha string) bool {
 	return pr.CIState == CIFailed && sameSHA(pr.ciSHA, sha)
 }
-
-// ---- the forge ----
 
 // ForgeStacks is the optional part of a ForgeClient that stacks need, with
 // ForgeCommitter (to make the branch) and DeleteBranch.
@@ -272,12 +256,10 @@ func (s *Service) stackParents(ctx context.Context, f *Forge, repo, sha string) 
 	return ps, nil
 }
 
-// ---- whether a base gets stacks ----
-
 // stackOpt is what was found about a base's stacks, kept for stackOptTTL.
 type stackOpt struct {
 	on    bool
-	style string // the repo's default merge style
+	style string
 	at    time.Time
 }
 
@@ -379,7 +361,7 @@ func (s *Service) stackable(ctx context.Context, pr *PullRequest, style string) 
 func (s *Service) unsettled(ctx context.Context, pr *PullRequest) string {
 	going, why, err := s.reviewGoingErr(ctx, pr)
 	if err != nil {
-		return "its reviews couldn't be read" // not settled (WP-748, audit 674.2)
+		return "its reviews couldn't be read"
 	}
 	if going {
 		return why
@@ -427,11 +409,9 @@ func touchesCI(p string) bool {
 	})
 }
 
-// ---- a stack's life ----
-
 func (s *Service) deleteStackBranch(ctx context.Context, f *Forge, st *queueStack) {
 	if !strings.HasPrefix(st.Branch, stackPrefix) {
-		return // never anything but a stack's own branch
+		return
 	}
 	if cl, ok := s.Forges.(branchDeleter); ok {
 		if err := cl.DeleteBranch(ctx, f, st.Repo, st.Branch); err != nil {
@@ -466,7 +446,7 @@ func (s *Service) stackTree(ctx context.Context, f *Forge, st *queueStack, check
 			try = append(try, c)
 		}
 	}
-	// lint is one job that builds the stack; any other that ran does too.
+	// Any job that ran builds the stack, so the lint job is tried first.
 	slices.SortStableFunc(try, func(a, b CommitCheck) int {
 		return boolRank(!strings.Contains(a.Name, "lint")) - boolRank(!strings.Contains(b.Name, "lint"))
 	})
@@ -490,7 +470,6 @@ func (s *Service) stackTree(ctx context.Context, f *Forge, st *queueStack, check
 		}
 	}
 	if !read && len(try) > 0 {
-		// A forge error or a log not there yet says nothing about the run.
 		return "", "", ""
 	}
 	return "", "", why
@@ -535,8 +514,6 @@ func parseStackLog(log string, heads []stackHead) (tree, why string) {
 	}
 	return rest, ""
 }
-
-// ---- at the front ----
 
 // stackChainN: tip is st's base with st's first n heads merged onto it, in
 // order, each as a merge commit of that head.

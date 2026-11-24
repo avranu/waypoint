@@ -8,11 +8,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Usage limits in an agent's error (WP-683). Claude Code ends a run on a
-// plan limit with a line like "You've hit your weekly limit · resets 5pm
-// (UTC)", "5-hour limit reached ∙ resets 3am" or, from older releases,
-// "Claude AI usage limit reached|1762534800"; the word lists matched only
-// "hit your limit", so a weekly limit read as the work failing.
+// Claude Code's plan-limit line has several forms ("5-hour limit reached ∙ resets 3am", "Claude AI usage limit reached|1762534800"); match them all, not only "hit your limit".
 
 // limitPhrase matches a plan's usage limit in any of Claude Code's forms,
 // and not its "Context limit reached", which is the conversation's length;
@@ -74,7 +70,7 @@ func limitResetIn(text string, now time.Time) (time.Time, bool) {
 		}
 	case "":
 		if m[4] == "" {
-			return time.Time{}, false // "resets 5" with no minutes or am/pm isn't a time
+			return time.Time{}, false
 		}
 	}
 	if hour > 23 || minute > 59 {
@@ -97,7 +93,7 @@ func limitResetIn(text string, now time.Time) (time.Time, bool) {
 		}
 		t := time.Date(local.Year(), month, day, hour, minute, 0, 0, loc)
 		if t.Before(now.Add(-24 * time.Hour)) {
-			t = t.AddDate(1, 0, 0) // "resets Jan 2" read on Dec 30
+			t = t.AddDate(1, 0, 0) // A reset named by month and day, read late in the year, is next year's date.
 		}
 		if !t.After(now) {
 			// Already past (a wrong zone, a late read): it says nothing of

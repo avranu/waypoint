@@ -49,7 +49,7 @@ var (
 	mu     sync.Mutex
 	tried  = map[string]int{}
 	once   sync.Once
-	search []string // resolv.conf's search domains, which the resolver appends
+	search []string
 )
 
 // Guard takes the process off the network. Run calls it; a TestMain that

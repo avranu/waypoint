@@ -1,8 +1,3 @@
-// A request (WP-D16): what an agent asked a person, with the agent and
-// session behind it, the ask, a diff for file changes, command cells like a
-// notebook, and the buttons that decide it. As a page (/requests/WP:R-12)
-// and as a side sheet over the Inbox.
-
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
@@ -300,8 +295,6 @@ function Context({ r }: { r: WRequest }) {
   )
 }
 
-// ---- questions ----
-
 function Questions({ r }: { r: WRequest }) {
   const qs = r.questions ?? []
   const decide = useDecide(r.ref)
@@ -383,7 +376,6 @@ function QuestionBlock({
       })
     else onChange({ ...answer, choices: picked[0] === label ? [] : [label] })
   }
-  // The question repeats the title when there is one question and no heading of its own.
   const showQuestion = index > 0 || q.header || q.question.trim() !== title.trim()
   return (
     <fieldset className="space-y-2">
@@ -462,8 +454,6 @@ function QuestionBlock({
     </fieldset>
   )
 }
-
-// ---- changes ----
 
 function Change({ r }: { r: WRequest }) {
   const files = r.files ?? []
@@ -576,8 +566,6 @@ function ApplyPath({
   )
 }
 
-// ---- permission ----
-
 function Permission({ r }: { r: WRequest }) {
   const t = r.tool
   if (!t) return null
@@ -628,8 +616,6 @@ function RuleOutcome({ r }: { r: WRequest }) {
   )
 }
 
-// ---- command cells ----
-
 function Cells({ r }: { r: WRequest }) {
   return (
     <section className="space-y-3" aria-label="Commands">
@@ -651,10 +637,8 @@ function Cell({ r, cell }: { r: WRequest; cell: RequestCell }) {
   const [cmd, setCmd] = useState(cell.command)
   const latest = cell.runs[0]
   const busy = latest?.state === 'queued' || latest?.state === 'running' || run.isPending
-  // A command a failed run sent back to the agent can be run again: that reopens it.
   const canRun =
     (r.state === 'open' || (r.state === 'failed' && r.kind === 'command')) && r.can_decide
-  // A reload after a run keeps what the person edited it to.
   const edited = cmd !== cell.command
   return (
     <div className="overflow-hidden rounded-xl border border-line bg-panel">
@@ -715,7 +699,6 @@ function RunOutput({ run }: { run: CellRun }) {
   const ok = run.state === 'done' && (run.exit_code ?? 0) === 0
   const running = run.state === 'queued' || run.state === 'running'
   const ref = useRef<HTMLPreElement>(null)
-  // New output shows its end.
   useEffect(() => {
     const el = ref.current
     if (el) el.scrollTop = el.scrollHeight
@@ -811,8 +794,6 @@ function History({ runs }: { runs: CellRun[] }) {
     </div>
   )
 }
-
-// ---- outcome, decision, actions ----
 
 /** What happened to an approved change. */
 function Outcome({ r }: { r: WRequest }) {
@@ -1048,7 +1029,7 @@ function Actions({ r }: { r: WRequest }) {
   const picked = pickedRule(rule, ownRule)
   const n = note.trim() || undefined
   const pending = (d: string) => decide.isPending && decide.variables?.decision === d
-  if (r.kind === 'question') return null // its buttons sit under the answer
+  if (r.kind === 'question') return null
   return (
     <div className="mt-6 space-y-3">
       {r.kind === 'change' && <ApplyPath r={r} value={path} onChange={setPath} />}

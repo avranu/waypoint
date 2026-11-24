@@ -77,7 +77,6 @@ func TestRegisterRunnerIsIdempotentPerOwnerAndName(t *testing.T) {
 			t.Errorf("accepted %+v: %v", reg, err)
 		}
 	}
-	// A runner is the person's own, not an agent's.
 	agent := &Actor{User: e.admin.User, Agent: "anthropic/claude-code"}
 	if _, err := e.s.RegisterRunner(e.ctx, agent, RunnerRegistration{Name: "agentbox"}); err == nil {
 		t.Error("an agent registered a runner")
@@ -94,15 +93,12 @@ func TestRunnerJobsRunOnlyOnTheirOwnersRunners(t *testing.T) {
 	mine := e.runner(e.admin, "mine", nil)
 	theirs := e.runner(bob, "theirs", nil)
 
-	// Asking for someone else's runner, by id or by owner, is refused.
 	if _, err := e.s.EnqueueRunnerJob(e.ctx, e.admin, RunnerJobInput{Kind: JobCommand, RunnerID: theirs.ID, Input: cmdInput("true", "/work")}); !errors.Is(err, ErrForbidden) {
 		t.Errorf("job on another person's runner by id: %v", err)
 	}
 	if _, err := e.s.EnqueueRunnerJob(e.ctx, e.admin, RunnerJobInput{Kind: JobCommand, OwnerID: bob.User.ID, Input: cmdInput("true", "/work")}); !errors.Is(err, ErrForbidden) {
 		t.Errorf("job for another owner: %v", err)
 	}
-	// An automation runs as whoever triggered it: it may not reach another
-	// person's runner (nor, until automations record who saved them, any).
 	auto := &Actor{User: e.admin.User, Automation: &Automation{ID: 1, Name: "nightly"}}
 	if _, err := e.s.EnqueueRunnerJob(e.ctx, auto, RunnerJobInput{Kind: JobCommand, OwnerID: bob.User.ID, Input: cmdInput("true", "/work"), Source: "automation_step", SourceID: 9}); !errors.Is(err, ErrForbidden) {
 		t.Errorf("automation job on another person's runner: %v", err)
@@ -115,16 +111,13 @@ func TestRunnerJobsRunOnlyOnTheirOwnersRunners(t *testing.T) {
 	if w.Job == nil || w.Job.ID != j.ID || w.Job.Kind != JobCommand {
 		t.Fatalf("bob's runner should take it: %+v", w)
 	}
-	// Only the owner's token polls as a runner.
 	if _, err := e.s.RunnerPoll(e.ctx, bob, RunnerPoll{Runner: mine.ID}); !errors.Is(err, ErrNotFound) {
 		t.Errorf("polling someone else's runner: %v", err)
 	}
-	// Agents queue nothing.
 	agent := &Actor{User: e.admin.User, Agent: "anthropic/claude-code"}
 	if _, err := e.s.EnqueueRunnerJob(e.ctx, agent, RunnerJobInput{Kind: JobCommand, Input: cmdInput("true", "/work")}); !errors.Is(err, ErrForbidden) {
 		t.Errorf("agent enqueued: %v", err)
 	}
-	// No runner at all: ErrNoRunner.
 	carol := e.user("carol", false)
 	if _, err := e.s.EnqueueRunnerJob(e.ctx, carol, RunnerJobInput{Kind: JobCommand, Input: cmdInput("true", "/work")}); !errors.Is(err, ErrNoRunner) {
 		t.Errorf("no runner: %v", err)
@@ -174,7 +167,6 @@ func TestRunnerJobInputIsChecked(t *testing.T) {
 	}
 	e.enqueue(e.admin, RunnerJobInput{Kind: JobCommand, Input: cmdInput("ls", "/work/proj/sub/")})
 	e.enqueue(e.admin, RunnerJobInput{Kind: JobAgent, Input: agent(AgentJob{CLI: "claude", Prompt: "hi", Repo: "git@git.example.com:a/b.git"})})
-	// A review never changes anything, whatever it asks.
 	rv := e.enqueue(e.admin, RunnerJobInput{Kind: JobReview, Input: agent(AgentJob{CLI: "claude", Prompt: "review", Repo: "https://x.test/a/b.git", Branch: "x", Push: true})})
 	info, err := e.s.GetRunnerJob(e.ctx, e.admin, rv.ID, -1)
 	if err != nil || !strings.Contains(string(info.Input), `"read_only":true`) || strings.Contains(string(info.Input), `"push":true`) {
@@ -294,7 +286,7 @@ func TestHeldPollUsesTheRunnerAsItIsNow(t *testing.T) {
 		got <- w
 	}()
 	time.Sleep(150 * time.Millisecond)
-	e.runner(e.admin, "mine", func(r *RunnerRegistration) { r.AllowedDirs = []string{"/elsewhere"} }) // narrowed while the poll is held
+	e.runner(e.admin, "mine", func(r *RunnerRegistration) { r.AllowedDirs = []string{"/elsewhere"} })
 	e.enqueue(e.admin, RunnerJobInput{Kind: JobCommand, Input: cmdInput("true", "/work")})
 	select {
 	case w := <-got:
@@ -342,7 +334,6 @@ func TestPollIsHeldAndWokenByANewJob(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("the held poll was not woken by the new job")
 	}
-	// A short hold ends empty.
 	short := 0.1
 	start := time.Now()
 	w := e.poll(e.admin, r, RunnerPoll{Wait: &short})
@@ -363,7 +354,6 @@ func TestLogFinishAndEvents(t *testing.T) {
 	if err != nil || ack.Size != 6 || ack.Cancel {
 		t.Fatalf("log: %+v %v", ack, err)
 	}
-	// The same chunk again (a lost answer) isn't added twice; an overlapping one adds only the rest.
 	if ack, _ = e.s.AppendRunnerLog(e.ctx, e.admin, j.ID, 0, "hello\n"); ack.Size != 6 {
 		t.Errorf("resent chunk: %+v", ack)
 	}
@@ -377,7 +367,6 @@ func TestLogFinishAndEvents(t *testing.T) {
 	if tail, _ := e.s.GetRunnerJob(e.ctx, e.admin, j.ID, 6); *tail.Log != "world\n" {
 		t.Errorf("tail = %q", *tail.Log)
 	}
-	// Someone else's token can't write to it.
 	bob := e.user("bob", false)
 	if _, err := e.s.AppendRunnerLog(e.ctx, bob, j.ID, 0, "x"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("bob wrote to robin's job: %v", err)
@@ -401,7 +390,6 @@ func TestLogFinishAndEvents(t *testing.T) {
 		finished.Data["source"] != "request_cell" || finished.Data["source_id"] != int64(42) {
 		t.Errorf("finished event = %+v", finished)
 	}
-	// A second report changes nothing.
 	if st, _ := e.s.FinishRunnerJob(e.ctx, e.admin, j.ID, RunnerFinish{State: "failed"}); st != "done" {
 		t.Errorf("late report changed the state to %q", st)
 	}
@@ -409,7 +397,6 @@ func TestLogFinishAndEvents(t *testing.T) {
 	if err != nil || out.State != "done" || out.Output != "hello\nworld\n" || string(out.Result) != `{"exit_code":0}` || *out.ExitCode != 0 {
 		t.Errorf("job for other parts = %+v %v", out, err)
 	}
-	// Output after the end tells the runner to stop.
 	if ack, _ := e.s.AppendRunnerLog(e.ctx, e.admin, j.ID, 12, "more"); !ack.Cancel {
 		t.Error("log after the end should say stop")
 	}
@@ -420,7 +407,7 @@ func TestLogIsCappedAtOneMegabyte(t *testing.T) {
 	r := e.runner(e.admin, "mine", nil)
 	j := e.enqueue(e.admin, RunnerJobInput{Kind: JobCommand, Input: cmdInput("yes", "/work")})
 	e.poll(e.admin, r, RunnerPoll{})
-	chunk := strings.Repeat("é", 1<<18) // 512 KB
+	chunk := strings.Repeat("é", 1<<18)
 	var off int64
 	var ack *LogAck
 	for range 4 {
@@ -464,14 +451,11 @@ func TestPollStopsJobsWaypointEnded(t *testing.T) {
 	if w.Job != nil {
 		t.Errorf("a poll that stops a job hands out none: %+v", w.Job)
 	}
-	// Another person's runner listing the same id is told nothing.
 	bob := e.user("bob", false)
 	theirs := e.runner(bob, "theirs", nil)
 	if w := e.poll(bob, theirs, RunnerPoll{Running: both}); len(w.Cancel) != 0 {
 		t.Errorf("a runner was told about a job that isn't its own: %+v", w.Cancel)
 	}
-	// Once the runner has stopped it, nothing is repeated, and what it
-	// reports doesn't change how the job ended.
 	if st, _ := e.s.FinishRunnerJob(e.ctx, e.admin, silent.ID, RunnerFinish{State: "failed"}); st != "cancelled" {
 		t.Errorf("state = %s", st)
 	}
@@ -492,7 +476,7 @@ func TestPollLooksUpAnyNumberOfRunningJobs(t *testing.T) {
 	for _, n := range []int{1, 2, runnerEndedMax - 1, runnerEndedMax, runnerEndedMax + 1, 3 * runnerEndedMax} {
 		ids := []int64{ended.ID}
 		for i := 1; i < n; i++ {
-			ids = append(ids, ended.ID+int64(i)) // ids of no job
+			ids = append(ids, ended.ID+int64(i))
 		}
 		if w := e.poll(e.admin, r, RunnerPoll{Running: ids}); len(w.Cancel) != 1 || w.Cancel[0] != ended.ID {
 			t.Errorf("%d ids listed: cancel = %+v", n, w.Cancel)
@@ -506,7 +490,7 @@ func TestCancel(t *testing.T) {
 	r := e.runner(e.admin, "mine", nil)
 	first := e.enqueue(e.admin, RunnerJobInput{Kind: JobCommand, Input: cmdInput("a", "/work")})
 	second := e.enqueue(e.admin, RunnerJobInput{Kind: JobCommand, Input: cmdInput("b", "/work")})
-	e.poll(e.admin, r, RunnerPoll{}) // takes the older one; the other still waits
+	e.poll(e.admin, r, RunnerPoll{})
 
 	if _, err := e.s.CancelRunnerJob(e.ctx, bob, second.ID); !errors.Is(err, ErrNotFound) {
 		t.Errorf("bob cancelled robin's job: %v", err)
@@ -519,7 +503,6 @@ func TestCancel(t *testing.T) {
 	if err != nil || j.State != "cancelled" {
 		t.Fatalf("cancel waiting job: %+v %v", j, err)
 	}
-	// The running one is told to stop on the runner's next poll or log upload.
 	j, err = e.s.CancelRunnerJob(e.ctx, e.admin, first.ID)
 	if err != nil || j.State != "running" || !j.CancelRequested {
 		t.Fatalf("cancel running job: %+v %v", j, err)
@@ -530,14 +513,12 @@ func TestCancel(t *testing.T) {
 	if ack, _ := e.s.AppendRunnerLog(e.ctx, e.admin, first.ID, 0, "x"); !ack.Cancel {
 		t.Error("log answer should carry the cancel")
 	}
-	// The runner kills it and reports failure; it counts as cancelled.
 	if st, _ := e.s.FinishRunnerJob(e.ctx, e.admin, first.ID, RunnerFinish{State: "failed"}); st != "cancelled" {
 		t.Errorf("state = %s", st)
 	}
 	if _, err := e.s.CancelRunnerJob(e.ctx, e.admin, first.ID); !IsInvalid(err) {
 		t.Errorf("cancelling a finished job: %v", err)
 	}
-	// A runner that has gone can't be asked; the job is cancelled at once.
 	other := e.enqueue(e.admin, RunnerJobInput{Kind: JobCommand, Input: cmdInput("c", "/work")})
 	e.poll(e.admin, r, RunnerPoll{})
 	e.setClock(e.clockNow().Add(10 * time.Minute))
@@ -567,7 +548,7 @@ func TestOnlineStatusAndExpiry(t *testing.T) {
 	if _, ok := status(); ok {
 		t.Error("announced a change at 60 s")
 	}
-	e.setClock(e.clockNow().Add(40 * time.Second)) // 100 s since the last poll
+	e.setClock(e.clockNow().Add(40 * time.Second))
 	e.s.CheckRunners(e.ctx)
 	if on, ok := status(); !ok || on {
 		t.Errorf("should have gone offline: %v %v", on, ok)
@@ -579,12 +560,11 @@ func TestOnlineStatusAndExpiry(t *testing.T) {
 	if _, ok := status(); ok {
 		t.Error("announced offline twice")
 	}
-	e.poll(e.admin, r, RunnerPoll{}) // polling brings it back
+	e.poll(e.admin, r, RunnerPoll{})
 	if on, ok := status(); !ok || !on {
 		t.Errorf("poll should announce online: %v %v", on, ok)
 	}
 
-	// Running jobs expire at timeout + 5 minutes; waiting ones after a day.
 	running := e.enqueue(e.admin, RunnerJobInput{Kind: JobCommand, Timeout: 60, Input: cmdInput("sleep", "/work")})
 	e.poll(e.admin, r, RunnerPoll{})
 	waiting := e.enqueue(e.admin, RunnerJobInput{Kind: JobCommand, Input: cmdInput("later", "/work")})
@@ -610,7 +590,6 @@ func TestOnlineStatusAndExpiry(t *testing.T) {
 	if state(waiting.ID) != "expired" {
 		t.Errorf("job nobody took in a day: %s", state(waiting.ID))
 	}
-	// The finished event went out for the expiry.
 	n := 0
 	for len(sub.C) > 0 {
 		if ev := <-sub.C; ev.Kind == EvRunnerJobFinished && ev.Data["state"] == "expired" {
@@ -629,7 +608,7 @@ func TestPollFailsJobsTheRunnerLost(t *testing.T) {
 	lost := e.enqueue(e.admin, RunnerJobInput{Kind: JobCommand, Input: cmdInput("b", "/work")})
 	e.poll(e.admin, r, RunnerPoll{})
 	e.poll(e.admin, r, RunnerPoll{})
-	// Right after the claim, a poll built before it arrived doesn't list the job: give it a moment.
+	// A poll built before a claim arrived doesn't list the job, so a job missing from one poll is not lost until the grace period passes.
 	e.poll(e.admin, r, RunnerPoll{Running: []int64{}})
 	if j, _ := e.s.GetRunnerJob(e.ctx, e.admin, lost.ID, -1); j.State != "running" {
 		t.Errorf("failed within the grace period: %s", j.State)
@@ -704,7 +683,6 @@ func TestListingAndAdminView(t *testing.T) {
 	if js, _ := e.s.ListRunnerJobs(e.ctx, carol, RunnerJobFilter{}); len(js) != 0 {
 		t.Errorf("carol sees %d jobs", len(js))
 	}
-	// An admin sees that a job exists, not what it runs.
 	js, err := e.s.ListRunnerJobs(e.ctx, e.admin, RunnerJobFilter{All: true})
 	if err != nil || len(js) != 1 || !js[0].Redacted || js[0].Title != "" {
 		t.Errorf("admin list = %+v %v", js, err)

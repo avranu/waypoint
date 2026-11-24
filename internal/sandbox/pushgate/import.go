@@ -14,15 +14,7 @@ import (
 	"strings"
 )
 
-// A Contained job's work comes back from its sandbox as a git bundle
-// (WP-471, PL7 §8.1): the job's last step commits what the agent left, as
-// the repo user inside the sandbox (internal/sandbox/leftover), and writes
-// the bundle to a descriptor the runner gave it. Import takes that stream
-// into the gateway's own mirror the way a push comes in: the header is
-// read here, the pack is indexed into a quarantine with index-pack
-// --strict by the gateway's git (no system or global config, the mirror's
-// fixed config), and the same checks run on it. The host never runs git
-// in the sandbox's work tree, and never opens a path the sandbox chose.
+// The host never runs git in the sandbox's work tree or opens a path the sandbox chose; the gateway's own git indexes the bundle under the mirror's fixed config.
 
 // ImportRequest is what a job's runner asks of its bundle.
 type ImportRequest struct {
@@ -195,7 +187,7 @@ func (g *Gateway) Import(ctx context.Context, req ImportRequest, bundle io.Reade
 
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	ref := "HEAD" // a check names no branch; the secret scan reads the name
+	ref := "HEAD"
 	if req.Branch != "" {
 		ref = "refs/heads/" + req.Branch
 	}
@@ -208,8 +200,6 @@ func (g *Gateway) Import(ctx context.Context, req ImportRequest, bundle io.Reade
 		g.emit(Event{Repo: st.Path, Refs: refs, Verdict: Failed, Reason: "import: fetch: " + clean(err.Error())})
 		return nil, fmt.Errorf("push gateway: can't reach the forge: %w", err)
 	}
-	// What the bundle builds on, and the base, must be the forge's: the
-	// pack is completed from the mirror and nothing else.
 	if missing, err := g.missingCommits(ctx, m, append([]string{req.Base}, hdr.prereqs...)); err != nil {
 		return nil, err
 	} else if len(missing) > 0 {
@@ -232,9 +222,7 @@ func (g *Gateway) Import(ctx context.Context, req ImportRequest, bundle io.Reade
 		g.emit(Event{Repo: st.Path, Refs: refs, Verdict: Refused, Reason: "import: " + why})
 		return res, nil
 	}
-	// Commits, Files and Diff are Base..Tip: a tip that doesn't build on
-	// Base would report a range that is neither the job's work nor what
-	// would be pushed or held, so nothing of it is reported.
+	// Commits, files and diff are reported only when the tip builds on base; otherwise the range is neither the job's work nor what would be pushed.
 	if _, err := g.git(ctx, m, env, nil, "merge-base", "--is-ancestor", req.Base, hdr.tip); err != nil {
 		if exitCode(err) != 1 {
 			return nil, err
@@ -278,8 +266,6 @@ func (g *Gateway) Import(ctx context.Context, req ImportRequest, bundle io.Reade
 		return refuse(fmt.Sprintf("it carries a known secret value (%s)", v.secretName))
 	}
 	if len(v.refused) > 0 {
-		// Refused before the content checks ran, or for a reason that leaves
-		// its content unscanned: no names, no diff.
 		return refuse(v.summary())
 	}
 	files, err := g.git(ctx, m, env, nil, "diff", "--name-only", "--no-renames", "-z", "--no-ext-diff", "--no-textconv", req.Base, hdr.tip)
@@ -322,7 +308,7 @@ func (g *Gateway) Import(ctx context.Context, req ImportRequest, bundle io.Reade
 		return res, nil
 	}
 	if cur == hdr.tip {
-		res.Verdict = Pushed // the forge has it already
+		res.Verdict = Pushed
 		return res, nil
 	}
 	if r := g.forward(ctx, m, in, st, cmds); r.err != nil {

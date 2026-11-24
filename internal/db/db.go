@@ -83,8 +83,7 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	n := max(4, runtime.NumCPU())
 	r.SetMaxOpenConns(n)
 	r.SetMaxIdleConns(n)
-	// The file holds password hashes and tokens; keep it private. (Best
-	// effort: a mounted volume may not allow it.)
+	// The DB holds password hashes and tokens; the chmod is best effort and its errors are ignored, since a mounted volume may refuse it.
 	for _, f := range []string{path, path + "-wal", path + "-shm"} {
 		_ = os.Chmod(f, 0o600)
 	}
@@ -152,7 +151,6 @@ func apply(ctx context.Context, w *sql.DB, name, body string) error {
 		return fmt.Errorf("migration %s: %w", name, err)
 	}
 	if rebuild {
-		// The rebuilt tables must still satisfy every reference.
 		rows, err := tx.QueryContext(ctx, `PRAGMA foreign_key_check`)
 		if err != nil {
 			_ = tx.Rollback()

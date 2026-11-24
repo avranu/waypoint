@@ -60,7 +60,7 @@ func TestMergeAfterLetsTheOtherGoFirst(t *testing.T) {
 	if m := be.sg.merged(); len(m) != 1 {
 		t.Fatalf("merges %+v", m)
 	}
-	// No sweep: #8's merge looks at #7 again at once.
+	// Merging #8 re-checks #7 directly, with no periodic sweep.
 	be.s.Wait()
 	if rd := be.readinessOf(7); mergeWaitIn(rd.Reasons) != "" {
 		t.Fatalf("#7 still waits: %v", rd.Reasons)
@@ -96,8 +96,6 @@ func TestMergeAfterFromTaskLinks(t *testing.T) {
 		t.Fatalf("detail: %+v %v", d, err)
 	}
 
-	// A link written another way names the same pull request by repo and
-	// number on a forge of its kind; one from another kind of forge doesn't.
 	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE external_links SET url = url || '/files' WHERE kind = 'pull'`); err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +111,6 @@ func TestMergeAfterFromTaskLinks(t *testing.T) {
 	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE external_links SET provider = 'forgejo' WHERE kind = 'pull'`); err != nil {
 		t.Fatal(err)
 	}
-	// Nor one on another forge of the same kind.
 	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE external_links SET url = replace(url, 'https://', 'https://other.') WHERE kind = 'pull' AND number = 8`); err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +124,6 @@ func TestMergeAfterFromTaskLinks(t *testing.T) {
 		t.Fatalf("#7's reasons, links back: %v", rd.Reasons)
 	}
 
-	// Waiting both ways: neither holds, and the readiness says why.
 	if _, err := be.s.SetPRMergeAfter(be.ctx, be.admin, be.pr(8).ID, "", 7, true); err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +137,6 @@ func TestMergeAfterFromTaskLinks(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A cancelled blocker holds nothing.
 	canceled := "Canceled"
 	if _, err := be.s.UpdateIssue(be.ctx, be.admin, b, IssuePatch{Status: &canceled}); err != nil {
 		t.Fatal(err)
@@ -181,7 +176,6 @@ func TestMergeAfterAnotherProject(t *testing.T) {
 	if got := mergeWaitIn(be.readinessOf(7).Reasons); got != "merges after a pull request in another project, which is still open" {
 		t.Fatalf("reason: %q", got)
 	}
-	// Attached to the same project: named.
 	if _, err := be.s.db.W.ExecContext(be.ctx, `INSERT INTO project_repos(project_id, forge_id, repo, created_at) VALUES (?, ?, 'secret/lib', 0)`, be.p.ID, pr.ForgeID); err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +231,6 @@ func TestMergeAfterNotUpdatedWhileWaiting(t *testing.T) {
 	if len(se.sg.merged()) != 0 || se.sg.updated() != 0 {
 		t.Fatalf("merges %+v, updates %d", se.sg.merged(), se.sg.updated())
 	}
-	// The wait dropped: it is brought up to date as before.
 	if _, err := se.s.SetPRMergeAfter(se.ctx, se.admin, id, "", 6, false); err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +262,6 @@ func TestMergeAfterLongerLoop(t *testing.T) {
 	if d, err := be.s.GetPullRequest(be.ctx, be.admin, be.pr(7).ID); err != nil || len(d.MergeAfter) != 1 || !d.MergeAfter[0].Mutual {
 		t.Fatalf("detail: %+v %v", d, err)
 	}
-	// Broken anywhere, the loop holds again.
 	if _, err := be.s.SetPRMergeAfter(be.ctx, be.admin, be.pr(9).ID, "", 7, false); err != nil {
 		t.Fatal(err)
 	}
@@ -336,7 +328,7 @@ func TestMergeAfterTaskChangeWakes(t *testing.T) {
 	if _, err := be.s.UpdateIssue(be.ctx, be.admin, b, IssuePatch{Status: &canceled}); err != nil {
 		t.Fatal(err)
 	}
-	be.s.Wait() // no sweep
+	be.s.Wait()
 	if w := be.babysitOf(7).Wait; strings.HasPrefix(w, mergeWaitPrefix) {
 		t.Fatalf("#7 still waits after its blocker was cancelled: %q", w)
 	}
@@ -375,7 +367,7 @@ func TestSetPRMergeAfterIsRecorded(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	set(false) // nothing set: nothing to clear
+	set(false)
 	if e := next(); e != nil || count() != 0 {
 		t.Fatalf("clearing nothing was recorded: %+v", e)
 	}
@@ -384,7 +376,7 @@ func TestSetPRMergeAfterIsRecorded(t *testing.T) {
 	if e == nil || e.Old != "not set" || !strings.HasPrefix(e.New, "merge after ") || e.Data["on"] != true || e.Data["was_set"] != false || count() != 1 {
 		t.Fatalf("set: %+v (audit rows %d)", e, count())
 	}
-	set(true) // again: no change
+	set(true)
 	if e := next(); e != nil || count() != 1 {
 		t.Fatalf("setting it twice was recorded: %+v", e)
 	}
@@ -407,7 +399,6 @@ func TestSetPRMergeAfterRecordNamesNoHiddenPR(t *testing.T) {
 		t.Fatal(err)
 	}
 	hidden, _ := res.LastInsertId()
-	// The other repo is in another project the actor sees, so they may set the wait.
 	other := be.project(be.admin, "Other", "kanban")
 	if _, err := be.s.db.W.ExecContext(be.ctx, `INSERT INTO project_repos(project_id, forge_id, repo, created_at) VALUES (?, ?, 'secret/lib', 0)`, other.ID, pr.ForgeID); err != nil {
 		t.Fatal(err)
@@ -438,7 +429,6 @@ func TestSetPRMergeAfterRecordNamesNoHiddenPR(t *testing.T) {
 	if strings.Contains(e.Old+e.New, "secret") || e.Data["after"] != nil || e.Data["after_id"] != nil {
 		t.Errorf("event names the hidden pull request: old=%q new=%q data=%v", e.Old, e.New, e.Data)
 	}
-	// Attached to the same project: named, as the merge check names it.
 	if _, err := be.s.SetPRMergeAfter(be.ctx, be.admin, pr.ID, "secret/lib", 3, false); err != nil {
 		t.Fatal(err)
 	}

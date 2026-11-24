@@ -1,7 +1,4 @@
-// Sandbox policy (WP-418, WP-ADR28): how strongly a project's agent work is
-// walled off, each machine's default and kill switch, and the log of
-// changes. Only a person in the browser changes it; loosening asks for the
-// password again (useReauth) and a reason.
+// Only a person in the browser changes sandbox policy; loosening asks for the password again and a reason.
 
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, enc } from './api'

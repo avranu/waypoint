@@ -10,24 +10,20 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// How agents use wp (WP-618): compact counters per wp command, added up by
-// the hour, so "how are agents doing with wp?" no longer takes mining the
-// transcripts. Nothing here carries a prompt, an output or an argument:
-// only command names from wp's own command list, words that have the shape
-// of a flag name, and a fixed set of error classes and labels.
+// Nothing here carries a prompt, an output or an argument: only command names from wp's own list, flag-shaped words, and a fixed set of error classes and labels.
 
 // Row kinds. The server keeps to this list.
 const (
-	usageCLIFile           = "file"            // a transcript began (a session or a subagent)
-	usageCLIBash           = "bash"            // a Bash call
-	usageCLIWP             = "wp"              // head: a wp command run
-	usageCLIHelp           = "help"            // head: its help was looked up
-	usageCLIFlag           = "flag"            // head; detail: a flag name it was given
-	usageCLIError          = "error"           // head; detail: the error's class
-	usageCLIUnknownFlag    = "unknown_flag"    // head; detail: the flag it doesn't have
-	usageCLIUnknownCommand = "unknown_command" // head; detail: the command that doesn't exist
-	usageCLIFollow         = "follow"          // head; detail: what ran within the next calls
-	usageCLISignal         = "signal"          // detail: one of the signals below
+	usageCLIFile           = "file"
+	usageCLIBash           = "bash"
+	usageCLIWP             = "wp"
+	usageCLIHelp           = "help"
+	usageCLIFlag           = "flag"
+	usageCLIError          = "error"
+	usageCLIUnknownFlag    = "unknown_flag"
+	usageCLIUnknownCommand = "unknown_command"
+	usageCLIFollow         = "follow"
+	usageCLISignal         = "signal"
 )
 
 // Error classes.
@@ -40,9 +36,9 @@ const (
 
 // Signals: habits of a Bash call that wp is meant to replace.
 const (
-	cliSignalCurlForge = "curl_forge" // curl against a forge's API
+	cliSignalCurlForge = "curl_forge"
 	cliSignalSleep     = "sleep"
-	cliSignalSleepCI   = "sleep_ci" // a sleep in a call running wp pr or wp ci, or next to one
+	cliSignalSleepCI   = "sleep_ci"
 	cliSignalGhTea     = "gh_tea"
 )
 
@@ -180,7 +176,7 @@ func parseWPInvocation(words []string) cliInvocation {
 			inv.Head = "wp " + a
 			descending = false
 		default:
-			descending = false // an argument of the command found so far
+			descending = false
 		}
 	}
 	return inv
@@ -207,7 +203,6 @@ func isNewBranch(head string, words []string) bool {
 	case "git checkout":
 		return has("-b", "-B")
 	case "git branch":
-		// `git branch NAME [START]`: a bare word, no listing or deleting flag
 		i := slices.Index(words, "branch")
 		return i >= 0 && i+1 < len(words) && !strings.HasPrefix(words[i+1], "-")
 	}
@@ -386,12 +381,12 @@ func classifyCLIErrors(text string, heads []string) []cliError {
 			continue
 		}
 		if !generic && len(heads) == 1 && i >= cliGenericLines {
-			continue // wp show of a task that quotes this very error
+			continue // Past the first lines, a named error is quoted task text (wp show), not this call's failure.
 		}
 		if cm := cliNoCommandRE.FindStringSubmatch(msg); cm != nil {
 			full := head + " " + cm[1]
 			if !cliCommandRE.MatchString(cm[1]) {
-				continue // wp glossary --help: a look at the help, not a name
+				continue
 			}
 			if generic {
 				if !slices.Contains(heads, full) {

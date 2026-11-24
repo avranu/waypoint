@@ -1,8 +1,3 @@
-// Help that stays out of the way. A Tip is a small (?) that shows a hint on
-// hover, focus or tap. An explainer shows its details until the person
-// folds it away, then shrinks into a (?) they can open again; which ones
-// they folded is saved in their preferences, so it holds on every device.
-
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'

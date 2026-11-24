@@ -23,8 +23,6 @@ func issueLine(i *core.Issue) string {
 	var b strings.Builder
 	b.WriteString(issueHead(i))
 	issueAttrs(&b, i, "")
-	// Provenance (WP-D11): text an agent wrote, and whether a person has
-	// reviewed it; who closed it, if an agent did.
 	if i.TextAgent != "" {
 		b.WriteString(" written-by:" + quoteIfSpace(i.TextAgent))
 		if i.Unreviewed {
@@ -34,7 +32,7 @@ func issueLine(i *core.Issue) string {
 	if i.ResolvedAt != nil && i.ResolvedAgent != "" {
 		b.WriteString(" closed-by:" + quoteIfSpace(i.ResolvedAgent))
 		if i.CloseUnreviewed {
-			b.WriteString(" close-unreviewed") // WP-272
+			b.WriteString(" close-unreviewed")
 		}
 	}
 	return b.String()
@@ -52,7 +50,7 @@ func issueHead(i *core.Issue) string {
 	}
 	fmt.Fprintf(&b, " %q", i.Title)
 	if i.Draft {
-		b.WriteString(" draft") // WP-42: agents can't see it until a person publishes it
+		b.WriteString(" draft")
 	}
 	return b.String()
 }
@@ -95,7 +93,6 @@ func issueAttrs(b *strings.Builder, i *core.Issue, author string) {
 		b.WriteString(" claimed:" + quoteIfSpace(i.ClaimedBy))
 	}
 	if h := i.Hold; h != nil {
-		// WP-269: no one takes it until then.
 		if h.Until != nil && h.Waits == "" {
 			b.WriteString(" on-hold-until:" + h.Until.Format(time.RFC3339))
 		} else {
@@ -134,7 +131,7 @@ func issueText(d *core.IssueDetail, comments []core.Comment) string {
 // files and that wp files saves them (for the CLI's wp show).
 func issueTextHint(d *core.IssueDetail, comments []core.Comment, withHint bool) string {
 	var b strings.Builder
-	// WP-224: one line says what it is and who wrote it, each name once.
+	// The reporter goes in as author, so issueAttrs does not repeat that name.
 	b.WriteString(issueHead(d.Issue))
 	issueAttrs(&b, d.Issue, d.ReporterAgent)
 	b.WriteString(" " + provenance(d, true) + "\n")
@@ -165,8 +162,7 @@ func issueTextHint(d *core.IssueDetail, comments []core.Comment, withHint bool) 
 	if n := fileCount(d, comments); withHint && n > 0 {
 		fmt.Fprintf(&b, "Attachments: %d — wp files %s saves them to view\n", n, d.Key)
 	}
-	// WP-1196: what it's for, in the words of the person who asked (an
-	// agent's suggestion says so, since it isn't the person's intent).
+	// An intent an agent suggested is labelled as such; it is not the person's intent.
 	if d.Intent != "" {
 		by := ""
 		if d.IntentAgent != "" {
@@ -177,8 +173,7 @@ func issueTextHint(d *core.IssueDetail, comments []core.Comment, withHint bool) 
 	if d.Description != "" {
 		b.WriteString("\n" + d.Description + "\n")
 	}
-	// WP-449: comments right after the description, ahead of the lists
-	// that can run long, so a reader who stops early still meets them.
+	// Comments come before the lists, which can run long, so a reader who stops early still sees them.
 	if len(comments) > 0 {
 		b.WriteString("\nComments:\n")
 		for _, c := range comments {
@@ -299,7 +294,6 @@ func provenance(d *core.IssueDetail, dated bool) string {
 	}
 	if d.ResolvedAt != nil && (d.ResolvedBy != nil || d.ResolvedAgent != "") {
 		closed := d.Status.Name + " by " + byName(d.ResolvedBy, d.ResolvedAgent)
-		// An agent's close, and whether a person has reviewed it (WP-272).
 		switch {
 		case d.CloseUnreviewed:
 			closed += " (close not yet reviewed by a person)"
@@ -441,8 +435,8 @@ func relationNote(r core.Relation) string {
 }
 
 const (
-	titleLong = 120 // longer titles stop at their first sentence
-	titleMax  = 160 // and no title runs past this, in bytes
+	titleLong = 120
+	titleMax  = 160 // Counted in bytes, not characters.
 	// titleSentenceMin is the shortest first sentence that stands for a title:
 	// a stop before it is a list number or "Dr.", or says too little to keep.
 	titleSentenceMin = 40
@@ -463,8 +457,6 @@ func clipTitle(title string) string {
 	}
 	if len(s) > titleMax {
 		s = core.ClipText(s, titleMax, "")
-		// Only a space in the second half: backing up to an earlier one would
-		// lose most of a long URL or path that fit.
 		if i := strings.LastIndexByte(s, ' '); i > len(s)/2 {
 			s = strings.TrimRight(s[:i], " ,;:")
 		}
@@ -594,7 +586,6 @@ func goalLine(d *core.IssueDetail) string {
 		}
 		return line
 	}
-	// The parent goals the task's arm shows (WP-1035), nearest first.
 	names := make([]string, len(g.Chain))
 	for n, p := range g.Chain {
 		names[n] = itemName(core.KItem{Type: core.KDesign, Kind: "goal", ID: p.ID, Title: p.Title})
@@ -650,7 +641,6 @@ func byName(u *core.UserRef, agent string) string {
 // anthropic/claude-opus-5-5 → opus 5.5, anthropic/claude-code → claude code,
 // openai/gpt-5.1 → gpt-5.1.
 func agentShort(identity string) string {
-	// Text from a forge login agents may write as (WP-282).
 	if identity == "forge" {
 		return "a forge login"
 	}
@@ -671,7 +661,7 @@ func agentShort(identity string) string {
 		switch {
 		case p == "" || strings.Trim(p, "0123456789") != "":
 			numeric = false
-		case len(p) < 6: // not a date stamp: claude-opus-4-1-20250805
+		case len(p) < 6: // A date stamp such as 20250805 is not a version part.
 			ver = append(ver, p)
 		}
 	}
@@ -679,7 +669,7 @@ func agentShort(identity string) string {
 		return parts[0] + " " + strings.Join(ver, ".")
 	}
 	if len(parts) == 2 && strings.Trim(parts[1], "0123456789.") != "" {
-		return parts[0] + " " + parts[1] // claude-code, gemini-cli
+		return parts[0] + " " + parts[1]
 	}
 	return m
 }

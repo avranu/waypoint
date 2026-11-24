@@ -1,7 +1,4 @@
-// Small, dependency-free SVG charts. Every color is a CSS variable so light and
-// dark mode both work; marks follow the dataviz spec (thin lines, 4px rounded
-// bar ends, hairline grid, 2px surface gaps) and every chart has a crosshair or
-// per-band tooltip that works with mouse, touch (tap) and keyboard (arrows).
+// Colors are CSS variables only, so light and dark mode both work.
 
 import {
   useEffect,
@@ -14,8 +11,6 @@ import {
   type ReactNode,
 } from 'react'
 import clsx from 'clsx'
-
-// ---- palette ----
 
 /**
  * Validated categorical slots (blue, orange, aqua, yellow), stepped separately
@@ -32,8 +27,6 @@ export const viz = {
   /** De-emphasised reference series (ideal, scope, committed, backlog). */
   neutral: 'var(--wp-subtle)',
 }
-
-// ---- helpers ----
 
 /** 1,234 · 12.5 */
 export function fmtNum(v: number | null | undefined, digits = 1): string {
@@ -88,8 +81,6 @@ function linePath(pts: ([number, number] | null)[]): string {
   }
   return d
 }
-
-// ---- legend & tooltip ----
 
 export type KeyKind = 'line' | 'dash' | 'box'
 
@@ -184,8 +175,6 @@ function TooltipBox({
   )
 }
 
-// ---- the plot frame ----
-
 export interface Scale {
   /** Plot width/height (inside the axes). */
   w: number
@@ -244,7 +233,6 @@ export function Plot({
   const [active, setActive] = useState<number | null>(null)
   const n = labels.length
 
-  // Dismiss a tapped tooltip when tapping elsewhere.
   useEffect(() => {
     if (active === null) return
     const onDown = (e: globalThis.PointerEvent) => {
@@ -291,7 +279,6 @@ export function Plot({
     }
   }
 
-  // X labels: as many as fit, always including the latest.
   const step = Math.max(1, Math.ceil(n / Math.max(2, Math.floor(w / 62))))
   const scale: Scale = { w, h, x, y, bw, active }
   let tip: ReactNode = null
@@ -452,8 +439,6 @@ export function Plot({
   )
 }
 
-// ---- chart types ----
-
 export interface LineSeries {
   name: string
   color: string
@@ -491,7 +476,6 @@ export function LineChart({
       mode="point"
       yMax={yMax}
       tooltip={(i) =>
-        // Emphasised series are drawn last, so list them first.
         [...series].reverse().map((s) => ({
           name: s.name,
           color: s.color,
@@ -509,7 +493,6 @@ export function LineChart({
             const d = linePath(pts)
             let area = ''
             if (s.area) {
-              // Wash each contiguous run down to the baseline.
               let run: [number, number][] = []
               const flush = () => {
                 if (run.length > 1)

@@ -7,13 +7,7 @@ import (
 	"strings"
 )
 
-// Stranded work (WP-567): a session cleared or ended mid-task leaves its
-// changes in a checkout nobody is told about. Each Stop reports the git
-// state of the checkouts the session works in, so when the session ends
-// Waypoint can say on the task where the work is; a SessionStart reports
-// only the checkout it starts in (a git status of every worktree of a repo
-// with dozens takes seconds), so the new session hears of unfinished work
-// left there.
+// SessionStart reports only its own checkout: a git status of every worktree of a repo with dozens takes seconds
 
 // hookCheckout is core.HookCheckout: one checkout's git state.
 type hookCheckout struct {
@@ -26,8 +20,8 @@ type hookCheckout struct {
 }
 
 const (
-	checkoutFiles = 20 // uncommitted files sent per checkout
-	maxCheckouts  = 6  // checkouts sent per event
+	checkoutFiles = 20
+	maxCheckouts  = 6
 )
 
 // checkoutState is the git state of the work tree whose top is top; nil
@@ -48,9 +42,7 @@ func checkoutState(top string) *hookCheckout {
 		c.FileCount = len(lines)
 		c.Files = lines[:min(len(lines), checkoutFiles)]
 	}
-	// Commits no remote has: lost with the checkout. With no remote, or a
-	// remote never fetched (no remote-tracking branches), there is nothing to
-	// compare with: the whole history would count.
+	// with no remote-tracking refs, skip the count: every commit would read as unpushed
 	if remote := fetchRemote(top); remote != "" {
 		if refs, err := gitIn(top, "for-each-ref", "--count=1", "--format=%(refname)", "refs/remotes"); err == nil && refs != "" {
 			if out, err := gitIn(top, "rev-list", "--count", "HEAD", "--not", "--remotes"); err == nil {

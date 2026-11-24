@@ -9,23 +9,16 @@ import (
 	"time"
 )
 
-// Follow-ups (WP-255, WP-ADR101): "A follows B" says A is more work on what B did.
-// People and agents say so with the relation; Waypoint records three kinds
-// itself: what an agent files while working on a task (issues.go, found
-// "session"), a task whose merged pull request changed mostly the files
-// a recently finished task's did (here, found "files"), and a task someone
-// related to one done before it was filed (relate, found "after"; WP-1003).
-// The data is for telling, later, which follow-ups the first piece of work
-// should have caught.
+// Waypoint's own kinds (session, files, after) are guesses; the data serves later review of what the first work should have caught.
 
 // followFoundAfter is found on a follow-up Waypoint recorded because
 // someone related a task to one done before it was filed (WP-1003).
 const followFoundAfter = "after"
 
 const (
-	followUpWindow    = 60 * 24 * time.Hour // how far back a finished task's pull request counts
-	followUpMinShared = 2                   // files in common, not counting common ones
-	followUpMinShare  = 0.5                 // of this pull request's own (not common) files
+	followUpWindow    = 60 * 24 * time.Hour
+	followUpMinShared = 2
+	followUpMinShare  = 0.5
 	// A file more than one in followUpCommonOf of the window's pull requests
 	// changed (lists, help text, the changelog) says nothing about which
 	// work this continues; with fewer than followUpCommonMin of them

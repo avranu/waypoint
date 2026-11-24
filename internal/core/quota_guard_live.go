@@ -13,33 +13,12 @@ import (
 	"time"
 )
 
-// The live quota guard (WP-932, WP-ADR112). The daily check (quota_guard.go)
-// only reports; this stops what runs away while it runs. Two halves:
-//
-//   - The session hooks (wp's burn hook, local, at every tool call) judge
-//     each session automation drives against the person's policy: spend
-//     with no progress (churn), spend since automation gave it its work
-//     (session), hours, a main model priced above any automation usually
-//     uses (model), and, for a person's own session nobody has typed in for
-//     hours, its spend since (idle). At a line they tell the session to hand
-//     off; at 1.5 times it they stop it, and report the trip here.
-//   - A minute sweep here (RunGuardWatch) watches what no one session shows:
-//     automation's spend over the last hour across every session and runner
-//     job against its usual busiest hours (burst), the week's quota still
-//     rising under automation while the person's own autopilot limits hold
-//     it back (pace), and sessions stopped again and again (trips). Each
-//     sets a hold: autopilot starts nothing, and the hooks wind down every
-//     session automation drives (told, then stopped 10 minutes or $2 later).
-//
-// The lines come from the person's own usage (the baseline, refreshed
-// daily) unless they set them; they can change any, lift a hold or turn the
-// guard off (wp usage guard set|lift). It never touches a session a person
-// is driving, except the idle rule, which a prompt they type lifts.
+// Session hooks tell, then stop, automation's sessions at the policy lines; a minute sweep holds automation; a person's own session is touched only by the idle rule, which their next prompt lifts.
 
 // Live guard events; each reaches only its user.
 const (
-	EvQuotaGuardHold = "usage.quota_guard_hold" // the sweep held automation back
-	EvQuotaGuardStop = "usage.quota_guard_stop" // a session's hooks stopped it
+	EvQuotaGuardHold = "usage.quota_guard_hold"
+	EvQuotaGuardStop = "usage.quota_guard_stop"
 )
 
 // The guard's rules, as trips and holds name them.
@@ -49,7 +28,7 @@ const (
 	GuardRuleHours   = "hours"
 	GuardRuleModel   = "model"
 	GuardRuleIdle    = "idle"
-	GuardRuleHold    = "hold" // a session wound down for a hold
+	GuardRuleHold    = "hold"
 	GuardRuleBurst   = "burst"
 	GuardRulePace    = "pace"
 	GuardRuleTrips   = "trips"
@@ -178,7 +157,6 @@ func guardPolicy(set QuotaGuardSettings, b *GuardBaseline) *GuardPolicy {
 			p.From[name] = "usual"
 			return math.Round(usualV)
 		}
-		// No baseline, or its figure is under the floor: the floor is the line.
 		p.From[name] = "default"
 		return def
 	}
@@ -186,14 +164,11 @@ func guardPolicy(set QuotaGuardSettings, b *GuardBaseline) *GuardPolicy {
 	if b != nil {
 		p50, p90, h95 = b.SessionP50, b.SessionP90, b.HourP95
 	}
-	// Churn: the usual session's whole cost, spent with nothing to show.
 	p.ChurnUSD = pick("churn_usd", set.ChurnUSD, usualSessions, max(p50, p90/2), guardChurnFloor)
-	// A session: three times the usual biggest.
 	p.SessionUSD = pick("session_usd", set.SessionUSD, usualSessions, 3*p90, guardSessionFloor)
 	p.Hours = pick("hours", set.Hours, false, 0, guardHoursDefault)
 	p.IdleHours = pick("idle_hours", set.IdleHours, false, 0, guardIdleDefault)
 	p.ModelUSD = pick("model_usd", set.ModelUSD, false, 0, guardModelDefault)
-	// An hour: three times the usual busy hour.
 	p.BurstUSD = pick("burst_usd", set.BurstUSD, usualHours, 3*h95, guardBurstFloor)
 	p.Pace = set.Pace == nil || *set.Pace
 	switch {
@@ -208,7 +183,7 @@ func guardPolicy(set QuotaGuardSettings, b *GuardBaseline) *GuardPolicy {
 		sort.Strings(p.Models)
 		p.From["models"] = "usual"
 	default:
-		p.From["models"] = "default" // none known: the model rule is off
+		p.From["models"] = "default"
 	}
 	return p
 }
@@ -289,8 +264,6 @@ func (s *Service) guardHoldFor(ctx context.Context, uid int64) *GuardHold {
 	}
 	return w.activeHold(s.now())
 }
-
-// ---- pulses and trips from the hooks ----
 
 // SessionPulse is one session's spend as its hooks last counted it.
 type SessionPulse struct {
@@ -477,8 +450,6 @@ func (s *Service) guardBackOff(ctx context.Context, t *tx, sid int64) ([]string,
 	return keys, nil
 }
 
-// ---- the minute sweep ----
-
 // RunGuardWatch is the minute sweep: for each person whose automation
 // spent anything in the last hour, or who is held, the hour's spend and the
 // week's pace.
@@ -589,7 +560,6 @@ func (s *Service) guardJudge(ctx context.Context, uid int64, now time.Time, w *g
 		w.QuietUntil = nil
 	}
 	var hold *GuardHold
-	// Burst: automation's last hour against its usual busy hour.
 	if pol.BurstUSD > 0 {
 		spent, err := s.automationSpend(ctx, uid, now.Add(-time.Hour), now)
 		if err != nil {
@@ -600,8 +570,6 @@ func (s *Service) guardJudge(ctx context.Context, uid int64, now time.Time, w *g
 				Reason: fmt.Sprintf("automation spent $%.0f in the last hour, over the guard's $%.0f line for an hour (%s)", spent, pol.BurstUSD, guardLineFrom(pol.From["burst_usd"], "three times its usual busy hour"))}
 		}
 	}
-	// Pace: the week's quota still rising, automation still spending, while
-	// the person's own limits hold autopilot back.
 	m, err := s.autopilotMeter(ctx, uid)
 	if err != nil {
 		return nil, err
@@ -617,7 +585,6 @@ func (s *Service) guardJudge(ctx context.Context, uid int64, now time.Time, w *g
 	if why == "" || !pol.Pace {
 		w.OverSince, w.OverFrom = nil, 0
 	} else {
-		// A new week (the reading fell) starts the count again.
 		if w.OverSince == nil || *m.WeekPercent < w.OverFrom {
 			w.OverSince, w.OverFrom = ptrOf(now), *m.WeekPercent
 		}
@@ -626,7 +593,6 @@ func (s *Service) guardJudge(ctx context.Context, uid int64, now time.Time, w *g
 		if err != nil {
 			return nil, err
 		}
-		// Automation's points: the rise, by its share of the spend.
 		points := rose
 		if all > spent {
 			points = rose * spent / all
@@ -635,12 +601,10 @@ func (s *Service) guardJudge(ctx context.Context, uid int64, now time.Time, w *g
 			hold = &GuardHold{Rule: GuardRulePace, Since: now, Until: now.Add(guardPaceFor),
 				Reason: fmt.Sprintf("the week's quota rose %.0f points since %s while your autopilot limits held automation back (%s); automation spent $%.0f of the $%.0f spent, so about %.0f of those points",
 					rose, w.OverSince.UTC().Format("Jan 2 15:04 UTC"), why, spent, all, points)}
-			// The next hold needs points automation spends from here.
 			w.OverSince, w.OverFrom = ptrOf(now), *m.WeekPercent
 		}
 	}
-	// Trips: sessions stopped again and again point at the strategy, not one task.
-	// A hold's own stops and an idle person's session aren't a strategy's.
+	// Repeated stops point at the strategy and hold automation; a hold's own stops and an idle person's session do not count.
 	if hold == nil && !quiet {
 		since := now.Add(-guardTripsSpan)
 		if w.TripsFrom != nil {
@@ -734,8 +698,6 @@ func (s *Service) automationSpend(ctx context.Context, uid int64, from, to time.
 	auto, _, err := s.guardSpend(ctx, uid, from, to)
 	return auto, err
 }
-
-// ---- baselines ----
 
 // refreshGuardBaselines measures each active person's automation over the
 // last 28 days, at most once a day. Called hourly.
@@ -835,8 +797,6 @@ func (s *Service) guardBaseline(ctx context.Context, uid int64, now time.Time) (
 	}
 	return b, nil
 }
-
-// ---- what the person sees and sets ----
 
 // QuotaGuardTrip is one time the guard told, stopped or held.
 type QuotaGuardTrip struct {
@@ -1094,8 +1054,7 @@ func (s *Service) LiftQuotaGuard(ctx context.Context, actor *Actor, quietFor str
 		if w.Hold != nil {
 			rule = w.Hold.Rule
 		}
-		// Stops and the over phase so far led to what was lifted; only
-		// what comes after the quiet counts towards a new hold.
+		// Only stops after a lift count towards a new hold; the lift resets the trips window and the over phase.
 		w.Hold, w.QuietUntil, w.TripsFrom = nil, ptrOf(now.Add(quiet)), ptrOf(now)
 		w.OverSince, w.OverFrom = nil, 0
 		if err := saveGuardWatch(ctx, t, uid, w); err != nil {
@@ -1110,8 +1069,6 @@ func (s *Service) LiftQuotaGuard(ctx context.Context, actor *Actor, quietFor str
 	}
 	return s.QuotaGuardLiveState(ctx, actor, "", 7)
 }
-
-// ---- notifications ----
 
 func (s *Service) notifyQuotaGuardLive(ctx context.Context, e *Event) {
 	switch e.Kind {

@@ -39,7 +39,6 @@ func TestShippingAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// sam is a Waypoint person on the forge: their pull request isn't from outside (WP-281).
 	if _, err := svc.SetForgePeople(ctx, a, f.ID, []core.ForgePersonInput{{Login: "sam", User: "sam", PersonOnly: true}}); err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +51,6 @@ func TestShippingAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A pull request arrives by webhook.
 	secret, _ := svc.ForgeSecret(ctx, a, f.ID)
 	body, _ := json.Marshal(map[string]any{"action": "opened", "repository": map[string]any{"full_name": "me/app"},
 		"pull_request": map[string]any{"number": 7, "title": "Fix it", "state": "open", "html_url": base + "/me/app/pulls/7", "user": map[string]string{"login": "sam"},
@@ -68,7 +66,6 @@ func TestShippingAPI(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	// The review gate is set with the other per-repo switches.
 	if code, b := robin.do("PATCH", fmt.Sprintf("/api/v1/projects/%s/repos/%d", p.Key, repo.ID), map[string]any{"review_gate": true, "gate_severity": "P1"}); code != 200 && code != 204 {
 		t.Fatalf("set the gate: %d %s", code, b)
 	}
@@ -79,14 +76,12 @@ func TestShippingAPI(t *testing.T) {
 	if code, b := robin.do("PATCH", fmt.Sprintf("/api/v1/projects/%s/repos/%d", p.Key, repo.ID), map[string]any{"gate_severity": "urgent"}); code != 400 {
 		t.Errorf("bad severity: %d %s", code, b)
 	}
-	// A refused gate leaves the other switches in the same request unapplied.
 	if code, b := robin.do("PATCH", fmt.Sprintf("/api/v1/projects/%s/repos/%d", p.Key, repo.ID), map[string]any{"sync_issues": true, "bots": false, "gate_severity": "urgent"}); code != 400 {
 		t.Errorf("bad severity with other switches: %d %s", code, b)
 	}
 	if code := robin.json("GET", fmt.Sprintf("/api/v1/projects/%s/repos", p.Key), nil, &repos); code != 200 || repos[0]["sync_issues"] == true || repos[0]["bots"] != true {
 		t.Errorf("a refused request changed the repo: %d %v", code, repos[0])
 	}
-	// So is the merge policy (WP-133): on by default, which armed #7; off takes that off.
 	if repos[0]["auto_merge"] != true || fmt.Sprint(repos[0]["external_reviewers"]) != "[]" {
 		t.Errorf("default policy: %v", repos[0])
 	}
@@ -101,7 +96,6 @@ func TestShippingAPI(t *testing.T) {
 		fmt.Sprint(repos[0]["required_checks"]) != "[local-ci]" || repos[0]["quiet_minutes"] != float64(5) || repos[0]["review_wait_minutes"] != float64(30) {
 		t.Errorf("policy: %d %v", code, repos[0])
 	}
-	// Whether the merge line builds candidates (WP-1659): on by default.
 	if repos[0]["line_candidates"] != true {
 		t.Errorf("line_candidates default: %v", repos[0])
 	}
@@ -114,7 +108,6 @@ func TestShippingAPI(t *testing.T) {
 		}
 	}
 
-	// A pull request by number, with how it stands for merging.
 	var d struct {
 		ID       int64 `json:"id"`
 		Shipping struct {
@@ -145,7 +138,6 @@ func TestShippingAPI(t *testing.T) {
 		t.Errorf("a stranger read it: %d", code)
 	}
 
-	// Arm it; the page says so; disarm.
 	var res map[string]any
 	pull := fmt.Sprintf("/api/v1/pulls/%d", d.ID)
 	if code := robin.json("POST", pull+"/merge", map[string]any{"when_ready": true, "style": "squash"}, &res); code != 200 || res["armed"] != true || res["merged"] == true {
@@ -176,8 +168,6 @@ func TestShippingAPI(t *testing.T) {
 	if code := robin.json("GET", pull+"/failed-checks", nil, &fc); code != 200 || len(fc) != 0 {
 		t.Errorf("failed checks: %d %v", code, fc)
 	}
-	// Logs and the wait (WP-132): no failed checks; checks unread, so a
-	// wait with no time left says it is still waiting.
 	var logs struct {
 		Number int   `json:"number"`
 		Checks []any `json:"checks"`
@@ -200,11 +190,9 @@ func TestShippingAPI(t *testing.T) {
 			t.Errorf("a stranger read %s: %d", p, code)
 		}
 	}
-	// Findings: unknown ones are 404; agents don't decide.
 	if code, _ := robin.do("POST", "/api/v1/findings/99/dismiss", map[string]string{"note": "x"}); code != 404 {
 		t.Errorf("unknown finding: %d", code)
 	}
-	// Branches in work: the one pull request's, listed after a push.
 	push, _ := json.Marshal(map[string]any{"ref": "refs/heads/fix", "before": strings.Repeat("0", 40), "after": "abc1234", "pusher": map[string]string{"username": "sam"},
 		"repository": map[string]any{"full_name": "me/app"}, "commits": []map[string]any{{"id": "abc1234", "message": "x", "added": []string{"a.go"}}}})
 	mac = hmac.New(sha256.New, []byte(secret))
@@ -238,7 +226,7 @@ func TestShippingAPI(t *testing.T) {
 // before they existed is still decoded, and the ones with them are not
 // refused as unknown fields (WP-1370).
 func TestOpenPullShipWordsDecode(t *testing.T) {
-	// Absent stays nil (keep what the round holds); "" is a value (clear it).
+	// Absent keeps the stored value; "" clears it.
 	for name, tc := range map[string]struct {
 		raw          string
 		msg, summary *string
@@ -393,7 +381,6 @@ func TestPullBaseAndStackedOnAPI(t *testing.T) {
 	}
 	pull := fmt.Sprintf("/api/v1/pulls/%d", d.ID)
 
-	// Edits that say nothing, or an empty or own-branch base, are the caller's mistake.
 	for _, in := range []map[string]any{{}, {"base": "  "}, {"base": "fix"}} {
 		if code, b := robin.do("PATCH", pull, in); code != 400 {
 			t.Errorf("edit %v: %d %s", in, code, b)
@@ -411,7 +398,6 @@ func TestPullBaseAndStackedOnAPI(t *testing.T) {
 	}
 	mu.Unlock()
 
-	// stacked_on: open into the nearest parent with a pull request open.
 	if code, b := robin.do("POST", fmt.Sprintf("/api/v1/projects/%s/pulls", p.Key), map[string]any{"repo": "me/app", "head": "child", "title": "child", "ready": true, "stacked_on": []string{"scratch", "fix"}}); code != 200 && code != 201 {
 		t.Fatalf("open: %d %s", code, b)
 	}

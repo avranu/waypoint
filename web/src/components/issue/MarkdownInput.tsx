@@ -1,7 +1,3 @@
-// The textarea behind descriptions, comments and page bodies: @mention
-// autocomplete, and files pasted or dropped in upload to the thing being
-// edited (an issue, page or design note) and become markdown.
-
 import { forwardRef, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'
@@ -47,7 +43,6 @@ export const MarkdownInput = forwardRef<HTMLTextAreaElement, Props>(function Mar
   useEscapeLayer(open, () => setMention(null))
   useEffect(() => setActive(0), [mention?.text])
 
-  // Look for an "@partial" right before the caret.
   const detect = (el: HTMLTextAreaElement) => {
     if (el.selectionStart !== el.selectionEnd) return setMention(null)
     const m = MENTION_RE.exec(el.value.slice(0, el.selectionStart))
@@ -69,7 +64,6 @@ export const MarkdownInput = forwardRef<HTMLTextAreaElement, Props>(function Mar
     })
   }
 
-  // Insert text at the caret (or replace the selection).
   const insertAtCaret = (text: string) => {
     const el = ref.current
     const v = latest.current

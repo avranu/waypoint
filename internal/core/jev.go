@@ -8,14 +8,7 @@ import (
 	"time"
 )
 
-// Decisions (WP-298, WP-ADR15). A question with a fixed set of answers goes
-// to a decision model, TypeSafe's Jev, instead of a chat model: the gateway
-// serves it at /v1/systemone. It answers typed questions about a state with
-// calibrated probabilities, in well under a second and for a fraction of a
-// chat call, and writes no text, so there is nothing to parse or retry. A
-// caller acts on an answer only when it is sure enough, and otherwise asks
-// its chat model as before; any failure (no gateway, a key not allowed Jev,
-// an error) does the same.
+// A caller acts on a decision answer only when it is sure enough; otherwise, and on any failure, it asks the chat model as before.
 
 // jevModel is the decision model asked for; the gateway resolves it.
 const jevModel = "jev-latest"
@@ -77,7 +70,7 @@ func (c *httpLLM) Decide(ctx context.Context, p *AIProvider, model, state string
 // ask failed, as any other malformed reply; nothing is clamped into a
 // number the model didn't give.
 func checkProbabilities(ans map[string]jevAnswer) error {
-	ok := func(p float64) bool { return p >= 0 && p <= 1+1e-9 } // false for NaN
+	ok := func(p float64) bool { return p >= 0 && p <= 1+1e-9 }
 	for q, a := range ans {
 		if !ok(a.Noul) || !ok(a.Confidence) {
 			return fmt.Errorf("the decision model answered %q with a probability out of range", q)
@@ -108,7 +101,7 @@ func (s *Service) decide(ctx context.Context, task, state string, questions map[
 	if err != nil {
 		return nil, "", err
 	}
-	ctx = aiContext(ctx, task+decisionSuffix) // its waits are its own: another model's than the task's chat
+	ctx = aiContext(ctx, task+decisionSuffix)
 	if w := s.aiWait(ctx, id, jevModel); w != nil {
 		return nil, "", w
 	}
@@ -121,7 +114,6 @@ func (s *Service) decide(ctx context.Context, task, state string, questions map[
 		err = checkProbabilities(ans)
 	}
 	aiRequests.WithLabelValues(task+decisionSuffix, resultLabel(err)).Inc()
-	// The decision model reports no tokens.
 	call := aiCall{task: task + decisionSuffix, pid: id, model: model, outcome: "ok", err: err, ms: time.Since(start).Milliseconds(),
 		sent: usage.sent.Load(), status: int(usage.status.Load())}
 	if call.model == "" {

@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-// Who typed a prompt is told by record, never by how it begins (WP-1370).
+// Who typed a prompt is decided by the record Waypoint wrote, never by the prompt's opening text (which is only logged).
 
 const typedTTL = 10 * time.Minute
 
@@ -86,7 +86,6 @@ func TestTypedPromptFullTextPlusWordsIsThePersons(t *testing.T) {
 	if k := a.recognise("please " + r); k != "" {
 		t.Fatalf("words in front read as %q", k)
 	}
-	// The record is untouched by them.
 	if k := a.recognise(r); k != TypedReview {
 		t.Fatalf("the exact text = %q, want review", k)
 	}
@@ -119,7 +118,6 @@ func TestTypedPromptIsRecognisedOnce(t *testing.T) {
 	if k := a.recognise(r); k != "" {
 		t.Fatalf("second identical arrival = %q, want the person's", k)
 	}
-	// A retry hands the text over again: two records, two arrivals.
 	a.record(TypedReview, r)
 	a.record(TypedReview, r)
 	var reads []string
@@ -136,7 +134,7 @@ func TestTypedCompactAfterAKeepWarmPingIsStillWaypoints(t *testing.T) {
 	a.record(TypedKeepWarm, keepWarmBody)
 	a.record(TypedCompact, "/compact")
 	before := a.promptEvents()
-	a.prompt(keepWarmBody) // the ping overwrites warm_state
+	a.prompt(keepWarmBody)
 	a.prompt("/compact")
 	if n := a.promptEvents(); n != before {
 		t.Fatalf("a ping and Waypoint's /compact left %d prompt events (a turn of the session's work)", n-before)
@@ -146,7 +144,6 @@ func TestTypedCompactAfterAKeepWarmPingIsStillWaypoints(t *testing.T) {
 	if left != 0 {
 		t.Fatalf("%d records unused", left)
 	}
-	// Without a record a person's /compact is a prompt like any other.
 	a.prompt("/compact")
 	if n := a.promptEvents(); n != before+1 {
 		t.Fatalf("an unrecorded /compact left %d events, want 1", n-before)
@@ -165,7 +162,7 @@ func TestTypedPromptVariantsOfARecordedText(t *testing.T) {
 		"reflowed":       func(p string) string { return "  " + strings.ReplaceAll(p, "\n", "\n   ") + "\n\n" },
 		"bracketed":      func(p string) string { return "\x1b[200~" + p + "\x1b[201~" },
 		"pasted_content": func(p string) string { return "\n\n<pasted_content id=\"7fe6\">\n" + p + "\n</pasted_content>" },
-		// What Claude Code 2.1.328 sends: the closing tag repeats the id (WP-1562).
+		// Claude Code sends the closing tag with the id repeated.
 		"pasted_content_id_close": func(p string) string {
 			return "\n\n<pasted_content id=\"d29a\">\n" + p + "\n</pasted_content id=\"d29a\">\n"
 		},
@@ -350,7 +347,6 @@ func TestTypedPromptRecordedWhenTheRunnerClaims(t *testing.T) {
 	if kinds != "keep_warm,compact,inbox,compact,review" {
 		t.Fatalf("kinds = %s", kinds)
 	}
-	// The same job claimed again (lease lapsed, retried) is handed over again.
 	if _, err := e.s.db.W.Exec(`UPDATE runner_jobs SET state = 'queued' WHERE kind = ? `, JobAutopilot); err != nil {
 		t.Fatal(err)
 	}
@@ -407,7 +403,6 @@ func FuzzNormalisePrompt(f *testing.F) {
 		if again := NormalisePrompt(n); again != n {
 			t.Fatalf("not idempotent: %q -> %q -> %q", x, n, again)
 		}
-		// Decorations a terminal or the harness adds don't change the text.
 		decorated := map[string]string{
 			"bom":     "\ufeff" + x,
 			"zwsp":    "\u200b\u200d" + x + "\u200b",
@@ -421,9 +416,7 @@ func FuzzNormalisePrompt(f *testing.F) {
 			decorated["wrapped_twice"] = "<pasted_content>\n<pasted_content id=\"2\">" + x + "</pasted_content></pasted_content>"
 		}
 		for name, d := range decorated {
-			// No exclusions. A paste wrapper round text that holds a stray tag
-			// is not one NormalisePrompt can unwrap, so what is compared is
-			// what the recogniser tries (PromptSums), not one normal form.
+			// A paste wrapper round text that holds a stray tag isn't unwrapped by NormalisePrompt, so the check accepts any sum PromptSums tries.
 			if got := NormalisePrompt(d); got != n && !slices.Contains(PromptSums(d), PromptSum(x)) {
 				t.Fatalf("%s: NormalisePrompt(%q) = %q, want %q (x = %q), and %v lacks the sum of x", name, d, got, n, x, PromptSums(d))
 			}
@@ -527,7 +520,6 @@ func TestTypedPromptRepostWithTheSameKeyIsAnsweredTheSame(t *testing.T) {
 	if err := a.s.db.R.QueryRow(`SELECT count(*) FROM typed_prompts WHERE session_id = ? AND consumed_at IS NOT NULL`, a.session).Scan(&used); err != nil || used != 1 {
 		t.Fatalf("records consumed = %d (%v), want 1", used, err)
 	}
-	// The person typing the same text afterwards, in a new invocation, is the person's.
 	if k := a.recogniseKeyed("inv-2", r); k != "" {
 		t.Fatalf("a new invocation with the same text and no record left = %q, want the person's", k)
 	}
@@ -648,8 +640,6 @@ func TestTypedKindsWhoTypedAndWhoseWords(t *testing.T) {
 	}
 }
 
-// ---- prompts of a session that doesn't exist yet, and /exit (WP-1370) ----
-
 // hookPrompt is a UserPromptSubmit for a session by its CLI id, as that
 // session's hook sends it; it returns the typed_kind its event got.
 func (a *taskEnv) hookPrompt(cli, text string) string {
@@ -694,8 +684,6 @@ func TestTypedStartIsRecordedBeforeItsSessionExists(t *testing.T) {
 		t.Fatalf("the same text again = %q, want the person's", k)
 	}
 
-	// Only a session's first prompt can be the one: a session that already
-	// has a prompt, typing the text, is a person.
 	if err := a.s.RecordTypedStart(a.ctx, a.admin, text); err != nil {
 		t.Fatal(err)
 	}
@@ -704,12 +692,10 @@ func TestTypedStartIsRecordedBeforeItsSessionExists(t *testing.T) {
 	if k := a.hookPrompt("old-1", text); k != "" {
 		t.Fatalf("a later prompt of an older session = %q, want the person's", k)
 	}
-	// Other text starting a new session never binds the record.
 	a.startSession("fresh-2")
 	if k := a.hookPrompt("fresh-2", text+" and more words"); k != "" {
 		t.Fatalf("the text with words added = %q, want the person's", k)
 	}
-	// Another user's first prompt, the same text, is theirs.
 	if err := a.s.RecordTypedStart(a.ctx, a.admin, text); err != nil {
 		t.Fatal(err)
 	}
@@ -726,7 +712,6 @@ func TestTypedStartIsRecordedBeforeItsSessionExists(t *testing.T) {
 	if kind != "" {
 		t.Fatalf("another user's first prompt of the same text = %q, want the person's", kind)
 	}
-	// A record expires.
 	a.setClock(a.clockNow().Add(typedKickoffTTL + time.Minute))
 	a.startSession("fresh-3")
 	if k := a.hookPrompt("fresh-3", text); k != "" {
@@ -820,8 +805,6 @@ func TestTypedWritesNeedTheirPermissions(t *testing.T) {
 		t.Errorf("RecordTypedStart with sessions.report: %v", err)
 	}
 }
-
-// ---- review of WP-1370: what is recorded, kept and answered ----
 
 func (a *apEnv) recogniseEv(ev HookEvent) string {
 	a.t.Helper()
@@ -938,7 +921,6 @@ func TestTypedClaimByID(t *testing.T) {
 			t.Errorf("%s: claimed as %q", name, k)
 		}
 	}
-	// Records that must not be claimed by this session.
 	res, err := a.s.db.W.Exec(`INSERT INTO agent_sessions(user_id, machine, cli_id, state, started_at, last_seen_at) VALUES (?, 'box', 'other', 'working', 1, 1)`, a.admin.User.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -954,8 +936,6 @@ func TestTypedClaimByID(t *testing.T) {
 	notClaimed("another user's unbound", lastID())
 	a.recordIn(a.session, TypedReview, "already expired", -time.Minute)
 	notClaimed("expired", lastID())
-	// An unbound record of this user is claimed while the session has no prompt
-	// event, and not once it has one.
 	if err := a.s.write(a.ctx, a.admin, func(t *tx) error {
 		return recordTypedUnbound(a.ctx, t, a.admin.User.ID, TypedStart, "held for this user", a.clockNow().UnixMilli(), typedTTL)
 	}); err != nil {
@@ -967,7 +947,6 @@ func TestTypedClaimByID(t *testing.T) {
 	}
 	notClaimed("unbound, after a prompt", unbound)
 
-	// The session's own records: the ids are the ones the listing gives.
 	a.record(TypedKeepWarm, "ping")
 	a.record(TypedReview, "review text")
 	pend, err := a.s.PendingTypedPrompts(a.ctx, a.admin, cli)

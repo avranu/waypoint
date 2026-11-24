@@ -1,9 +1,6 @@
 package core
 
-// A pull request's review threads, read from and answered on the forge
-// (WP-D21): the review sees the conversation, findings keep the ids of their
-// comment and thread, and a fixed or withdrawn finding gets a reply and,
-// where the forge's API allows, a resolved thread.
+// Findings keep their comment and thread ids, so a fixed or withdrawn one can be replied to and, where the forge allows, resolved.
 
 import (
 	"bytes"
@@ -87,7 +84,7 @@ func (c *httpForgeClient) CommentReactions(ctx context.Context, f *Forge, repo s
 			return nil, err
 		}
 		for _, r := range list {
-			emoji := cmp(map[string]string{"thumbsdown": "-1", "thumbsup": "+1"}[r.Name], r.Name) // other names stay as GitLab gives them
+			emoji := cmp(map[string]string{"thumbsdown": "-1", "thumbsup": "+1"}[r.Name], r.Name)
 			out = append(out, Reaction{Emoji: emoji, User: r.User.Username})
 		}
 		return out, nil
@@ -178,8 +175,6 @@ func (c *httpForgeClient) UnresolveThread(ctx context.Context, f *Forge, repo st
 	return ErrUnsupported
 }
 
-// ---- Forgejo and Gitea ----
-
 type fgReviewComment struct {
 	ID         int64     `json:"id"`
 	Body       string    `json:"body"`
@@ -259,8 +254,6 @@ func (c *httpForgeClient) fgThreads(ctx context.Context, f *Forge, repo string, 
 	}
 	return out, nil
 }
-
-// ---- GitHub ----
 
 // graphql runs a GraphQL query on GitHub (reviewThreads and resolving them
 // have no REST API).
@@ -389,8 +382,6 @@ func (c *httpForgeClient) ghThreads(ctx context.Context, f *Forge, repo string, 
 	return out, nil
 }
 
-// ---- GitLab ----
-
 func (c *httpForgeClient) glThreads(ctx context.Context, f *Forge, repo string, number int) ([]ReviewThread, error) {
 	var out []ReviewThread
 	for page := 1; page <= maxForgePages; page++ {
@@ -424,7 +415,7 @@ func (c *httpForgeClient) glThreads(ctx context.Context, f *Forge, repo string, 
 		}
 		for _, d := range list {
 			if d.IndividualNote || len(d.Notes) == 0 || d.Notes[0].Position == nil {
-				continue // a conversation comment, not a thread on the diff
+				continue
 			}
 			first := d.Notes[0]
 			t := ReviewThread{ID: d.ID, Path: cmp(first.Position.NewPath, first.Position.OldPath), Resolved: first.Resolvable && first.Resolved}
@@ -445,7 +436,7 @@ func (c *httpForgeClient) glThreads(ctx context.Context, f *Forge, repo string, 
 				t.Comments = append(t.Comments, ThreadComment{ID: strconv.FormatInt(n.ID, 10), Author: n.Author.Username, Body: n.Body, At: n.CreatedAt, SHA: sha})
 			}
 			if len(t.Comments) == 0 {
-				continue // only system notes
+				continue
 			}
 			out = append(out, t)
 		}

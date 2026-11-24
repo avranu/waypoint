@@ -19,14 +19,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// The automation engine (WP-D18). A firing makes an AutomationRun that walks
-// the rule's steps. Runs of instant steps finish inside the request that
-// triggered them and are written once, afterwards. A run with long steps is
-// durable: it is stored first, a worker carries it on, and a step that has
-// to wait (wait_for, delay, a retry's pause) parks it until the dispatcher
-// or the clock resolves the wait. A parked or interrupted run is resumed by
-// walking the steps again: finished steps are read back from their rows, the
-// rest run, so every step must be safe to run twice.
+// A parked or interrupted run resumes by walking its steps again, so every step must be safe to run twice.
 
 // Run statuses.
 const (
@@ -149,9 +142,9 @@ type execution struct {
 	budget  *int
 	trig    *tplTrigger
 
-	steps map[string]map[string]any // outputs by step id
-	prev  map[string]any            // the step before, for presets
-	rows  map[string]*RunStep       // by step id and iteration
+	steps map[string]map[string]any
+	prev  map[string]any
+	rows  map[string]*RunStep
 	order []*RunStep
 }
 
@@ -278,7 +271,7 @@ func (x *execution) step(ctx context.Context, st Action, id string, iter, pos in
 	}
 	if fresh && !x.dry {
 		if x.budget != nil {
-			cost := max(1, len(st.Titles)) // each created sub-task counts
+			cost := max(1, len(st.Titles))
 			if *x.budget < cost {
 				return budgetError{}
 			}
@@ -296,13 +289,10 @@ func (x *execution) step(ctx context.Context, st Action, id string, iter, pos in
 	case row.Attempts == 0:
 		row.Attempts = 1
 	case row.Status == "waiting":
-		// Back from a retry's pause starts a new try; back from a step's own
-		// wait carries on with the same one.
+		// Resuming from a retry's pause starts a new try; resuming from a step's own wait keeps the same try.
 		w, rerr := x.s.stepWait(ctx, x.run.ID, id, iter, retrySeq(row.Attempts))
 		if rerr != nil {
-			// Unread, it can't tell a retry's pause from the step's own
-			// wait, and carrying on would run the step before its pause
-			// was over (WP-1406).
+			// If the wait can't be read, stop: carrying on could run the step before a retry's pause is over.
 			return fail(fmt.Errorf("read what the step was waiting for: %w", rerr))
 		}
 		if w != nil {
@@ -456,8 +446,6 @@ func defLabel(def *ActionDef, typ string) string {
 	}
 	return typ
 }
-
-// ---- step context ----
 
 // StepCtx is what an action sees of its step. Actions read settings with
 // Render/Str/Int/…, leave outputs with Set, and wait with Wait or Sleep.
@@ -637,7 +625,7 @@ func (c *StepCtx) recordedInputs() map[string]any {
 			case p.Type == PURL:
 				out[p.Name] = redactURL(anyString(v))
 			case p.Type == PTemplate || p.Type == PJSON:
-				// Best effort: legacy actions fill their own templates.
+				// A render failure here is not an error: legacy actions fill their own templates, so the raw value is kept.
 				if r, err := renderTemplate(anyString(v), c.data); err == nil {
 					out[p.Name] = r
 				} else {
@@ -696,7 +684,7 @@ func (c *StepCtx) WaitSlot(slot int, kind, key, match string, timeout time.Durat
 	if ready != nil {
 		w, rerr := c.S.stepWait(c.Ctx, c.Run.ID, c.ID, c.Iteration, seq)
 		if rerr != nil {
-			return nil, false, rerr // whether it already waited isn't known: not "ready"
+			return nil, false, rerr
 		}
 		if w == nil {
 			if ev, ok := ready(); ok {
@@ -760,8 +748,6 @@ func (c *StepCtx) waitSeq(seq int, kind, key, match string, timeout time.Duratio
 	return &ev, false, nil
 }
 
-// ---- dry runs ----
-
 func (x *execution) dryStep(c *StepCtx, st Action, id string, row *RunStep) error {
 	desc := ""
 	if c.def.Describe != nil {
@@ -798,8 +784,6 @@ func describeStep(def *ActionDef, in map[string]any) string {
 	r, n := utf8.DecodeRuneInString(out)
 	return string(unicode.ToUpper(r)) + out[n:]
 }
-
-// ---- storage ----
 
 type waitRow struct {
 	id         int64
@@ -1025,8 +1009,6 @@ func (s *Service) longStepsSince(ctx context.Context, projectID int64, t time.Ti
 	return n, err
 }
 
-// ---- trigger data ----
-
 // baseData is the template data an event gives, before steps add theirs. The
 // issue is read afresh, since earlier steps may have changed it.
 func (s *Service) baseData(ctx context.Context, actor *Actor, a *Automation, e *Event) (tplData, error) {
@@ -1045,7 +1027,7 @@ func (s *Service) baseData(ctx context.Context, actor *Actor, a *Automation, e *
 	if pid := cmpID(a.ProjectID, e.ProjectID); pid != 0 {
 		var rerr error
 		project, rerr = s.projectByID(ctx, s.db.R, pid)
-		if readFault(rerr) && !errors.Is(rerr, ErrNotFound) { // a project removed since: the template has none
+		if readFault(rerr) && !errors.Is(rerr, ErrNotFound) {
 			s.log.WarnContext(ctx, "read the project of an automation's event", "project", pid, "automation", a.ID, "err", rerr)
 		}
 	}

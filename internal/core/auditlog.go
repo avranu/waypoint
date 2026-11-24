@@ -10,9 +10,6 @@ import (
 	"time"
 )
 
-// Reading the audit log (WP-D15): newest first, filtered, paged by id, and
-// as a spreadsheet.
-
 // AuditQuery narrows the log.
 type AuditQuery struct {
 	Project  string // a project key
@@ -193,10 +190,9 @@ func (s *Service) ListAudit(ctx context.Context, actor *Actor, q AuditQuery) (*A
 			page.Entries = append(page.Entries, &r.AuditRecord)
 		}
 		if len(got) < size {
-			return page, nil // the start of the log
+			return page, nil
 		}
 	}
-	// Read as far as one page may: more may match further back.
 	page.NextBefore = before
 	return page, nil
 }

@@ -1,9 +1,6 @@
 package core
 
-// Forgejo Actions as the CI board reads it (WP-225): runs, their jobs, the
-// tasks runners took (a task is one attempt of a job on a runner, with its
-// start and end) and the runners. Shapes are Forgejo 16's
-// (services/convert/action.go and convert.go, v16.0.5).
+// Field shapes follow Forgejo 16 (services/convert/action.go, convert.go, v16.0.5); other versions may differ.
 
 import (
 	"context"

@@ -1,9 +1,4 @@
-// Assistants (WP-ADR1): a person's own Hermes agent, behind its gate. The
-// browser reaches it only through Waypoint: /assistants/{id}/api/* is
-// Hermes's own REST API, /assistants/{id}/gate/* the gate's, and the chat
-// goes through the server's one gateway connection (assistant-live.ts).
-// Everything that comes back is the agent's text: render it as text or
-// with renderMarkdown(…, { untrusted: true }), never as HTML.
+// Everything from the assistant is untrusted agent text: render it as text or with renderMarkdown(…, { untrusted: true }), never as HTML.
 
 import { queryOptions, useMutation, useQueryClient } from '@tanstack/react-query'
 import { ApiError, api, enc, qs } from './api'
@@ -118,8 +113,6 @@ export const HEALTH_LABEL: Record<Health, string> = {
   unknown: 'Checking…',
 }
 
-// ---- Waypoint's own routes ----
-
 export const assistantsQuery = () =>
   queryOptions({
     queryKey: ['assistants'],
@@ -215,8 +208,6 @@ export function useAssistantMutations(id?: number) {
   }
 }
 
-// ---- Hermes's own REST API, through Waypoint ----
-
 /**
  * A request to Hermes's API (`path` is under /api/, without it). Hermes
  * reports errors as {detail}; Waypoint as {error}.
@@ -288,8 +279,6 @@ export const hermesQuery = <T>(
     queryFn: () => hget<T>(id, path, params),
     staleTime,
   })
-
-// ---- Sessions and transcripts ----
 
 export interface HermesSession {
   id: string

@@ -83,7 +83,7 @@ func flakyRepro(f core.CIFlakyTest) string {
 	}
 	pkg := f.Package
 	if !strings.HasPrefix(pkg, ".") && !strings.Contains(strings.SplitN(pkg, "/", 2)[0], ".") {
-		pkg = "./" + pkg // module-relative, as CI reports it
+		pkg = "./" + pkg
 	}
 	// Both names are CI's, read from a log: quoted, so the line runs as one
 	// command whatever they hold.

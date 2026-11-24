@@ -358,7 +358,7 @@ func (s *Service) CloseSprint(ctx context.Context, actor *Actor, id int64, moveT
 			return err
 		}
 		if n, _ := res.RowsAffected(); n == 0 {
-			return invalid("only the active sprint can be closed") // closed meanwhile
+			return invalid("only the active sprint can be closed")
 		}
 		newName := ""
 		if target != nil {
@@ -366,7 +366,6 @@ func (s *Service) CloseSprint(ctx context.Context, actor *Actor, id int64, moveT
 				return err
 			}
 		}
-		// Record which issues carried over, then move them.
 		open, err := queryIDs(ctx, t, `SELECT i.id FROM issues i JOIN statuses st ON st.id = i.status_id WHERE i.sprint_id = ? AND st.category NOT IN ('done','canceled')`, id)
 		if err != nil {
 			return err

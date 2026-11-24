@@ -1,9 +1,6 @@
 package core
 
-// Answering replies (WP-D21): a person's reply in a bot's thread gets one
-// answer: the bot stands by the finding with evidence, withdraws it
-// (resolving the thread where the forge allows), or agrees it is minor. A
-// thread a person resolved is never argued again.
+// A thread a person resolved is never argued again.
 
 import (
 	"context"
@@ -105,7 +102,7 @@ func (s *Service) replyRun(ctx context.Context, r *BotRun) (botResult, error) {
 	fmt.Fprintf(&p, "Your finding (%s %s) at %s:\n%s\n\nThe thread:\n", priority(fnd.Severity), fnd.Severity, findingPlace(fnd), fnd.Claim)
 	for n, c := range th.Comments {
 		if n == 0 {
-			continue // the finding itself
+			continue
 		}
 		who := c.Author
 		if isWaypointText(c.Body) {

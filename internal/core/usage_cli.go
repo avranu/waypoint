@@ -1,9 +1,6 @@
 package core
 
-// How agents use wp (WP-618): the counters `wp usage sync` reads from the
-// transcripts, by week and by repo, for Agents → wp CLI and `wp usage cli`.
-// The upload holds command names, flag names and fixed labels only, and
-// ingest keeps to those shapes whatever a client sends.
+// The upload holds command names, flag names and fixed labels only; ingest keeps to those shapes whatever a client sends.
 
 import (
 	"context"
@@ -251,7 +248,6 @@ func (s *Service) UsageCLI(ctx context.Context, actor *Actor, q UsageQuery, repo
 		return nil, err
 	}
 	if repo != "" {
-		// Inside the project's repos, when a project is chosen too.
 		inScope := !sc.repoFilter || slices.ContainsFunc(sc.repos, func(r string) bool { return strings.EqualFold(r, repo) })
 		sc.repos, sc.repoFilter = nil, true
 		if inScope {
@@ -317,7 +313,7 @@ func (s *Service) cliRepos(ctx context.Context, sc *usageScope) ([]UsageCLIRepo,
 	out := make([]UsageCLIRepo, 0, len(by))
 	for _, r := range by {
 		if r.WP == 0 {
-			continue // somewhere agents worked without wp says nothing about it
+			continue
 		}
 		r.WPPerSession, r.HelpRate, r.ErrorRate = cliRatio(r.WP, r.Sessions), cliRatio(r.Help, r.WP), cliRatio(r.Errors, r.WP)
 		out = append(out, *r)

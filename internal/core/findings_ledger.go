@@ -15,12 +15,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// The findings ledger (WP-438, WP-ADR47): every babysitting round records what it was
-// given, each item with a fingerprint (its file, the function or type it is
-// in, and the gist of what it says) and a class, and the round takes the
-// class of its weightiest item. The classes say why rounds keep coming: a
-// reviewer's new point, the same point again after a fix that didn't hold,
-// a point on what the last round itself changed, or the build and the base.
+// A fingerprint (file, enclosing symbol, gist of the text) is how a finding is matched across rounds.
 
 // Round classes.
 const (
@@ -125,11 +120,9 @@ func classifyRound(in ledgerInput) ([]LedgerEntry, string) {
 }
 
 type ledger struct {
-	in   ledgerInput
-	last int // index in in.Rounds of the last round that pushed a fix, -1 for none
-	syms map[string][]codeindex.Symbol
-	// touched: what the last round's push changed, by file: the symbols, and
-	// the changed lines of the ones outside any.
+	in      ledgerInput
+	last    int
+	syms    map[string][]codeindex.Symbol
 	touched map[string]map[string]bool
 	lines   map[string][]int
 }
@@ -235,13 +228,12 @@ func (l *ledger) repeatOf(it ledgerItem, e LedgerEntry) (ledgerItem, int, bool) 
 		return ledgerItem{}, 0, false
 	}
 	for _, p := range l.in.Earlier {
-		// A re-post keeps the time the forge gave the first one.
 		if p.ID == it.ID || (!p.At.IsZero() && !it.At.IsZero() && p.At.After(it.At)) || l.inPacket(p.ID) {
 			continue
 		}
 		pg := gistOf(p.Body)
 		if (p.Dealt || l.pushedWith(p.ID) > 0) && len(words) >= 5 && pg == e.Gist {
-			return p, l.fixedIn(p), true // the same text under a new id
+			return p, l.fixedIn(p), true // A re-post under a new id with the same text is the same finding: match on the gist.
 		}
 		if !p.Fixed && l.pushedWith(p.ID) == 0 {
 			continue
@@ -256,8 +248,7 @@ func (l *ledger) repeatOf(it ledgerItem, e LedgerEntry) (ledgerItem, int, bool) 
 		}
 		return p, l.fixedIn(p), true
 	}
-	// An audit finding of an earlier round, fixed by it: the ledger kept its
-	// fingerprint.
+	// An audit finding fixed in an earlier round keeps its fingerprint across rounds.
 	for _, r := range l.in.Rounds {
 		if !r.Pushed {
 			continue
@@ -304,7 +295,7 @@ func (l *ledger) causedBy(it ledgerItem, sym string) (int, bool) {
 	}
 	r := l.in.Rounds[l.last]
 	if (!it.At.IsZero() && it.At.Before(r.At)) || sameSHA(it.SHA, r.SHA) {
-		return 0, false // made before the round's push
+		return 0, false
 	}
 	l.readTouched()
 	if sym != "" {
@@ -427,8 +418,6 @@ func diffNewLines(diff string) map[string][]int {
 	file, n := "", 0
 	prev := ""
 	for _, line := range strings.Split(diff, "\n") {
-		// A "+++ " line is a header only right after its "--- " line; an
-		// added line whose text begins "++ " is content.
 		header := strings.HasPrefix(line, "+++ ") && strings.HasPrefix(prev, "--- ")
 		prev = line
 		switch {
@@ -480,7 +469,7 @@ func itemPlace(it ledgerItem) (string, int) {
 			f, n = m[3], m[4]
 		}
 		if file != "" && f != file && path.Base(f) != path.Base(file) {
-			return "", 0 // several places: none of them is its own
+			return "", 0
 		}
 		if file == "" || len(f) > len(file) {
 			file = f
@@ -571,8 +560,6 @@ func absInt(n int) int {
 	return n
 }
 
-// ---- live ----
-
 // classifyLiveRound fills a round's ledger from its work packet, reading
 // files from the forge at the commits the comments were made on.
 func (s *Service) classifyLiveRound(ctx context.Context, b *Babysit, pr *PullRequest, t *PRTodo, round *BabysitRound) {
@@ -593,8 +580,7 @@ func (s *Service) classifyLiveRound(ctx context.Context, b *Babysit, pr *PullReq
 	}
 	in.Earlier = append(in.Earlier, s.earlierFindings(ctx, pr.ID, t.Findings)...)
 	if len(t.Checks) > 0 {
-		// Unread, the round is classified without the base's failures: the
-		// ledger only describes the round, and the line decides for itself.
+		// If the base's failures can't be read, leave them out: the ledger describes only the round.
 		_, red, err := s.baseFailing(ctx, pr)
 		if err != nil {
 			s.log.WarnContext(ctx, "read what fails on the base for a round's ledger", "pr", pr.ID, "err", err)

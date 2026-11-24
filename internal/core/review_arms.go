@@ -1,24 +1,6 @@
 package core
 
-// Review arms (WP-365; WP-ADR22 as narrowed by the owner's answer to a request).
-// An arm is a way to review: a context strategy (what code the reviewer
-// sees besides the diff) and the verifier on or off. Which model reviews is
-// The gateway's choice, never Waypoint's: a review asks for the gateway's review
-// purpose, and the feedback sweep (review_feedback.go) tells the gateway how
-// each answer's findings fared, which moves that purpose's ranking.
-//
-// Each run draws a precision sample per arm from Beta(1+useful, 1+false),
-// divides it by the arm's relative token cost (precision per token, so the
-// verifier or the files' text is used only while it pays for itself), and
-// the best score reviews. Findings count by age (half after 30 days, none
-// after 90) and prompt version (the current one fully, the previous one
-// half). An arm whose 90% upper bound is under 20% after 15 judged findings
-// is benched, but still drawn on 1 run in 20. An admin can pin an arm on
-// (every review uses it) or off (none does). A second or third reviewer goes
-// to the best draw among arms still exploring (under 15 judged findings),
-// and asks the gateway to exclude the first reviewer's model, so the gateway
-// picks another one; what one reviewer found and another missed on the same
-// head is the first recall signal.
+// Which model reviews is the gateway's choice, never Waypoint's; a review asks the gateway's review purpose.
 
 import (
 	"context"
@@ -36,15 +18,15 @@ import (
 
 // The rules arms are drawn by.
 const (
-	armWindow       = 90 * 24 * time.Hour // findings older than this don't count
-	armHalfAfter    = 30 * 24 * time.Hour // older than this count half
-	armExploreUnder = 15.0                // judged findings an arm explores under (weighted)
-	armBenchBound   = 0.20                // benched when its upper bound is under this
-	armBenchQ       = 0.90                // … at this quantile of the posterior
-	armBenchedOdds  = 1.0 / 20            // a benched arm takes part in this share of draws
-	armCostWindow   = 30 * 24 * time.Hour // the runs an arm's token cost comes from
-	armCostRuns     = 5                   // runs an arm needs before its cost counts
-	settingArmPins  = "review_arm_pins"   // server setting: {"diff/verify": "on", …}
+	armWindow       = 90 * 24 * time.Hour
+	armHalfAfter    = 30 * 24 * time.Hour
+	armExploreUnder = 15.0
+	armBenchBound   = 0.20
+	armBenchQ       = 0.90
+	armBenchedOdds  = 1.0 / 20
+	armCostWindow   = 30 * 24 * time.Hour
+	armCostRuns     = 5
+	settingArmPins  = "review_arm_pins"
 )
 
 // Arm states, as Admin → AI shows them.
@@ -53,7 +35,7 @@ const (
 	ArmInUse       = "in_use"
 	ArmBenched     = "benched"
 	ArmPinned      = "pinned"
-	ArmUnavailable = "unavailable" // the verifier half when no verifier model is set up
+	ArmUnavailable = "unavailable"
 )
 
 // reviewArm is one way to review.
@@ -102,17 +84,17 @@ func armByKey(k string) (reviewArm, bool) {
 // armTally is what an arm's findings and runs say about it.
 type armTally struct {
 	useful, falsePos     float64 // weighted by age and prompt version
-	rawUseful, rawFalse  int     // judged in the window, unweighted
+	rawUseful, rawFalse  int
 	models               map[string]*ArmModel
 	tokens               float64 // mean tokens a one-reviewer run spent; 0 until armCostRuns
-	runs                 int     // runs that drew it in the cost window
+	runs                 int
 	lastRun              int64
 	cost                 float64 // tokens relative to the cheapest arm measured; 1 unknown
-	pin                  string  // on, off, ""
+	pin                  string
 	available, explore   bool
 	benched              bool
 	upper, mean          float64
-	draw                 float64 // this run's sample, divided by cost
+	draw                 float64
 	drawnIn, benchedDraw bool
 }
 
@@ -376,8 +358,6 @@ func (s *Service) chooseArms(tallies map[string]*armTally, slots int) []reviewAr
 			pinned = append(pinned, a)
 		}
 	}
-	// The candidates: pinned on ones if any, else every usable arm, a
-	// benched one on armBenchedOdds of runs.
 	var cands []reviewArm
 	if len(pinned) > 0 {
 		cands = pinned
@@ -395,7 +375,7 @@ func (s *Service) chooseArms(tallies map[string]*armTally, slots int) []reviewAr
 			}
 			cands = append(cands, a)
 		}
-		if len(cands) == 0 { // all benched and none drawn back: the draw decides among them
+		if len(cands) == 0 {
 			for _, a := range arms {
 				if usable(a) {
 					cands = append(cands, a)
@@ -403,7 +383,7 @@ func (s *Service) chooseArms(tallies map[string]*armTally, slots int) []reviewAr
 			}
 		}
 	}
-	if len(cands) == 0 { // pinned off, every one: no verifier then, the first strategy
+	if len(cands) == 0 {
 		return slices.Repeat([]reviewArm{{reviewStrategies[0], false}}, max(slots, 1))
 	}
 	best := -1
@@ -416,9 +396,7 @@ func (s *Service) chooseArms(tallies map[string]*armTally, slots int) []reviewAr
 		}
 	}
 	out := []reviewArm{cands[best]}
-	// More reviewers explore: the best draw among arms still exploring with
-	// the same verifier half (the verifier checks the run's findings
-	// together), else the first arm again.
+	// Extra reviewers must share the first's verifier half: the verifier checks a run's findings together.
 	for len(out) < slots {
 		next := out[0]
 		if len(pinned) == 0 {
@@ -544,8 +522,6 @@ func betaCF(x, a, b float64) float64 {
 	return h
 }
 
-// ---- excluding models at the gateway ----
-
 type gatewayExcludeKey struct{}
 
 // withGatewayExclude asks the gateway to leave models out of the requests made
@@ -600,8 +576,6 @@ func excludePatterns(model string) []string {
 	return []string{model, "*/" + last}
 }
 
-// ---- the diff+files budget ----
-
 // The file text diff+files may add, scaled to the context window of the
 // model the gateway last answered a review with: the window in characters
 // (charsPerToken a token, conservatively for code), half of it for the
@@ -610,7 +584,7 @@ const (
 	reviewBudgetMin   = 8000
 	reviewBudgetMax   = 160000
 	charsPerToken     = 3
-	reviewPromptOther = 8000 // title, description, rules, conversation, history
+	reviewPromptOther = 8000
 )
 
 // ReviewBudget is how much file text diff+files adds, and why.
@@ -677,8 +651,6 @@ func (s *Service) lastReviewModel(ctx context.Context) string {
 	_ = s.db.R.QueryRowContext(ctx, `SELECT model FROM bot_findings WHERE model != '' ORDER BY id DESC LIMIT 1`).Scan(&m)
 	return m
 }
-
-// ---- Admin → AI ----
 
 // ReviewArms is each arm's state and why, for Admin → AI.
 type ReviewArms struct {

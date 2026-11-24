@@ -7,12 +7,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// wp show takes any code (WP-237): an issue KEY, a request, a decision
-// note, a page or a pull request, and shows it as that thing's own show
-// command would. Agents reach for wp show first; refusing R-12 there only
-// cost a second call. A code written so it could name two things (R1:
-// request R-1 or reference page R1; PL3: page PL3 or issue PL-3) is looked
-// up as each, and only when more than one exists does wp show ask which.
+// A code that could name two things (R1: request R-1 or page R1) is looked up as each; wp show asks which only when more than one exists.
 
 // showTarget is one thing a code could name: its kind and the code as
 // that kind's command takes it.
@@ -157,7 +152,7 @@ func (c *cli) showExists(t showTarget) string {
 			return "wp show " + i.Key
 		}
 	case "request":
-		var r reqView // peek: looking isn't telling the agent its answer
+		var r reqView
 		if c.do("GET", "/api/v1/requests/"+esc(t.ref)+"?peek=1", nil, &r) == nil && r.Code != "" {
 			return "wp request show " + r.Code
 		}
@@ -190,7 +185,7 @@ func (c *cli) showOne(t showTarget) error {
 	if args == nil {
 		args = []string{t.ref}
 	}
-	if c.asJSON { // the command's own flags reset it
+	if c.asJSON {
 		args = append(args, "--json")
 	}
 	return run(c, args)

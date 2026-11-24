@@ -21,8 +21,7 @@ func TestProtectedPathsEnvTemplates(t *testing.T) {
 	if got := protectedTouched(protectedPaths, []string{".github/.env.example", ".github/workflows/x.yml", "secrets/.env.example"}); len(got) != 3 {
 		t.Errorf("directory protections lost to an exemption: %v", got)
 	}
-	// Source code in a package called secrets isn't a secret; what else is
-	// there is, and the same name under .github/ stays protected (WP-750).
+	// Source code in a package called secrets is not protected; other files there, and the same name under .github/, are.
 	if got := protectedTouched(protectedPaths, []string{"gate/internal/secrets/secrets.go", "secrets/a/b.py", "main.go"}); got != nil {
 		t.Errorf("source in a secrets package is protected: %v", got)
 	}

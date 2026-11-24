@@ -106,10 +106,8 @@ func (s *Service) urgentRound(ctx context.Context, b *Babysit, pr *PullRequest) 
 	}
 	findings := s.auditRoundWork(ctx, b, pr.ID)
 	if len(findings) == 0 && !slices.ContainsFunc(comments, func(rc *PRReviewComment) bool { return !rc.Dealt }) {
-		return false // nothing to do: the usual reads below are spared
+		return false
 	}
-	// A read that fails can't show the reviews settled: no round (WP-748),
-	// and the log says so (audit 674.3).
 	going, _, err := s.reviewGoingErr(ctx, pr)
 	if err != nil {
 		s.log.WarnContext(ctx, "read whether its reviews settled", "pr", pr.ID, "err", err)

@@ -15,9 +15,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/codeindex"
 )
 
-// wp escapes (WP-705, WP-ADR68): the ledger of bug fixes, what introduced
-// each bug, what found it and how long it lived. Runners trace merged fixes
-// here because only they have the repositories.
+// Runners trace merged fixes here because only they have the repositories.
 
 const traceEvery = 15 * time.Minute
 
@@ -222,7 +220,7 @@ func (p *runnerProc) traceFixes(ctx context.Context) {
 		var due []escapeDue
 		err := p.c.callInto(ctx, "GET", "/api/v1/escapes/due?machine="+url.QueryEscape(p.opts.Name), nil, &due)
 		if err != nil && isNotFound(err) {
-			continue // an older server
+			continue
 		}
 		if err == nil && len(due) > 0 {
 			var sent int
@@ -242,9 +240,7 @@ func (p *runnerProc) traceFixes(ctx context.Context) {
 	}
 }
 
-// Proving fixes (WP-709): a runner runs a traced fix's Go tests with and
-// without it and says whether one fails without it. A proof runs tests for
-// minutes, so a round proves only a couple and holds a test slot each.
+// A proof runs tests for minutes and holds a test slot, so each round proves only a couple of fixes.
 
 const (
 	proveEvery = 15 * time.Minute

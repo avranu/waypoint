@@ -20,7 +20,6 @@ func TestDismissalHoldsFromTheOtherSide(t *testing.T) {
 	if got, err := f.s.NoteRewrites(f.ctx, f.admin, f.b.Key, "o/r", "h", f.prs); err != nil || len(got) != 1 {
 		t.Fatalf("b's ship: %+v, %v", got, err)
 	}
-	// Removed from a's side.
 	rels := f.relations(t, f.a.Key)
 	if len(rels) != 1 {
 		t.Fatalf("a's relations = %+v", rels)
@@ -35,7 +34,6 @@ func TestDismissalHoldsFromTheOtherSide(t *testing.T) {
 	if rels := f.relations(t, f.a.Key); len(rels) != 0 {
 		t.Errorf("the removed relation came back from the other side: %+v", rels)
 	}
-	// And the read (RewrittenWork) leaves it out too.
 	if read, err := f.s.RewrittenWork(f.ctx, f.admin, f.a.Key, "o/r", f.bigPR(500)); err != nil || len(read) != 0 {
 		t.Errorf("RewrittenWork read %+v, %v", read, err)
 	}
@@ -129,7 +127,6 @@ func TestNoteRewritesEmptyAndMalformedCalls(t *testing.T) {
 			t.Errorf("%s: %d evidence rows, want the one kept", c.name, n)
 		}
 	}
-	// Well-formed, same repo, nothing replaced: the evidence goes, the relation stays.
 	if _, err := f.s.NoteRewrites(f.ctx, f.admin, f.b.Key, " o/r ", "def5678", []RewrittenPR{}); err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +145,6 @@ func TestNoteRewritesKeepsEvidenceForTasksTheActorCannotSee(t *testing.T) {
 	if _, err := f.s.NoteRewrites(f.ctx, f.admin, f.b.Key, "o/r", "abc1234", f.prs); err != nil {
 		t.Fatal(err)
 	}
-	// The task moves to a project the second shipper can't see.
 	sam := f.user("sam", false)
 	sp := f.project(sam, "Sam", "kanban")
 	if _, err := f.s.db.W.ExecContext(f.ctx, `UPDATE issues SET project_id = ? WHERE id = ?`, sp.ID, f.a.ID); err != nil {
@@ -205,8 +201,7 @@ func TestNoteRewritesBoundsItsInput(t *testing.T) {
 	if f.evidenceRows(t) != 0 || f.relationRows(t) != 0 {
 		t.Error("a refused call wrote something")
 	}
-	// The bounds themselves are allowed, as are a commit hash of either
-	// length and HEAD (what wp sends when it can't read the commit).
+	// wp sends HEAD when it cannot read the commit (cmd/wp/rewrites.go:93-95), so core must accept it.
 	for _, head := range []string{"", "HEAD", strings.Repeat("f", 40), strings.Repeat("F", 64), "refs/heads/x"} {
 		if _, err := f.s.NoteRewrites(f.ctx, f.admin, f.b.Key, "o/r", head, f.prs); err != nil {
 			t.Errorf("head %q: %v", head, err)
@@ -292,8 +287,7 @@ func TestInsertRelationIsIdempotent(t *testing.T) {
 			t.Errorf("%s: inserted = %v, %v; want %v, nil", st.name, got, err, st.want)
 		}
 	}
-	// A kind with an inverse said the other way round contradicts what stands
-	// (A blocks B, B blocks A): refused, not a second row (WP-1370).
+	// A relation whose kind has an inverse, said the other way round, is refused: it contradicts the one that stands.
 	if got, err := put(f.b.ID, f.a.ID, "blocks", false); got || !IsInvalid(err) {
 		t.Errorf("blocks the other way: inserted = %v, %v; want refused as invalid", got, err)
 	}

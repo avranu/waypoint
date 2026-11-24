@@ -20,10 +20,8 @@ func newGuardEnv(t *testing.T) *guardEnv {
 	e := newEnv(t)
 	g := &guardEnv{env: e, me: e.user("pat", false)}
 	g.p = e.project(g.me, "App", "")
-	// now is half past the hour; the window is the 24 hours to an hour ago
 	e.setClock(time.Date(2026, 11, 10, 12, 30, 0, 0, time.UTC))
 	g.from = time.Date(2026, 11, 9, 11, 0, 0, 0, time.UTC)
-	// the week started 30% of a week before the window: an even pace is 30% at its start
 	g.reset = g.from.Add(-time.Duration(0.3 * float64(quotaWeek))).Add(quotaWeek).UnixMilli()
 	return g
 }
@@ -52,7 +50,7 @@ func (g *guardEnv) session(cli string, prompts ...any) int64 {
 	for i := 0; i+1 < len(prompts); i += 2 {
 		typed := ""
 		if strings.HasPrefix(prompts[i+1].(string), AutopilotPromptMark) {
-			typed = TypedKickoff // what Waypoint typed, as the recogniser records it
+			typed = TypedKickoff
 		}
 		g.exec(`INSERT INTO session_events(session_id, kind, detail, typed_kind, created_at) VALUES (?,?,?,?,?)`, id, "prompt", prompts[i+1], typed, g.h(prompts[i].(time.Duration)))
 	}
@@ -97,7 +95,7 @@ func (g *guardEnv) lay(base float64) (auto int64) {
 
 func TestQuotaGuardBreach(t *testing.T) {
 	g := newGuardEnv(t)
-	auto := g.lay(50) // 50% at 30% even: 20 ahead, over the default 15
+	auto := g.lay(50)
 	c := g.check()
 	if c.Points != 11 || c.Automation != 7 || c.Person != 4 || c.Unexplained != 0 {
 		t.Fatalf("points %v automation %v person %v unexplained %v", c.Points, c.Automation, c.Person, c.Unexplained)
@@ -120,7 +118,6 @@ func TestQuotaGuardBreach(t *testing.T) {
 		t.Errorf("week %v %v", c.WeekPercent, c.ResetsAt)
 	}
 
-	// The scheduler stores it once a day and tells the person.
 	g.s.RunQuotaGuard(g.ctx)
 	g.s.RunQuotaGuard(g.ctx)
 	var n, breach int
@@ -134,7 +131,6 @@ func TestQuotaGuardBreach(t *testing.T) {
 	if n != 1 || !strings.Contains(title, "Automation used quota") || !strings.Contains(body, "7.0 points") || !strings.Contains(link, "tab=autopilot") {
 		t.Errorf("notifications %d %q %q %q", n, title, body, link)
 	}
-	// A day later the next window follows on from the last.
 	g.setClock(g.clockNow().Add(24 * time.Hour))
 	g.s.RunQuotaGuard(g.ctx)
 	_ = g.s.db.R.QueryRow(`SELECT count(*), max(to_at) FROM quota_guard_checks WHERE user_id = ?`, g.me.User.ID).Scan(&n, &to)
@@ -157,21 +153,19 @@ func TestQuotaGuardBreach(t *testing.T) {
 
 func TestQuotaGuardWithinLimits(t *testing.T) {
 	g := newGuardEnv(t)
-	g.lay(20) // behind an even pace all day
+	g.lay(20)
 	c := g.check()
 	if c.Breach || c.Automation != 7 || c.ByPhase[GuardPhaseUnder] != 7 {
 		t.Errorf("under: breach %v, %v by phase %v", c.Breach, c.Automation, c.ByPhase)
 	}
 
-	// Ahead of pace but within week_ahead.
 	g = newGuardEnv(t)
 	g.lay(40)
 	if c := g.check(); c.Breach || c.ByPhase[GuardPhaseAhead] != 7 {
 		t.Errorf("ahead: breach %v by phase %v", c.Breach, c.ByPhase)
 	}
 
-	// Over, but the person raised week_ahead in the only project autopilot
-	// is on in: the loosest limit is the one that counts.
+	// The loosest limit among the projects autopilot is on in is the one that counts.
 	g = newGuardEnv(t)
 	g.lay(50)
 	g.exec(`INSERT INTO autopilot_settings(user_id, project_id, enabled, limits, updated_at) VALUES (?,?,1,?,0)`, g.me.User.ID, g.p.ID, `{"week_ahead":30}`)
@@ -179,7 +173,6 @@ func TestQuotaGuardWithinLimits(t *testing.T) {
 		t.Errorf("raised: breach %v limits %+v by phase %v", c.Breach, c.Limits, c.ByPhase)
 	}
 
-	// Over, with the quota limits off.
 	g = newGuardEnv(t)
 	g.lay(50)
 	g.exec(`INSERT INTO autopilot_settings(user_id, project_id, enabled, limits, quota_off_until, updated_at) VALUES (?,NULL,0,'{}',?,0)`, g.me.User.ID, g.h(30*time.Hour))
@@ -187,7 +180,6 @@ func TestQuotaGuardWithinLimits(t *testing.T) {
 		t.Errorf("off: breach %v by phase %v", c.Breach, c.ByPhase)
 	}
 
-	// The person typed into autopilot's session: from then it is theirs.
 	g = newGuardEnv(t)
 	g.lay(50)
 	var sid int64
@@ -202,7 +194,7 @@ func TestQuotaGuardUnexplainedAndEarlySpend(t *testing.T) {
 	g := newGuardEnv(t)
 	g.reading(-time.Hour, 50)
 	g.reading(5*time.Hour, 50)
-	g.reading(7*time.Hour, 54) // no usage reported: nobody's
+	g.reading(7*time.Hour, 54)
 	g.exec(`INSERT INTO autopilot_steps(user_id, project_id, stop_at, state, due_at, created_at, updated_at, spend) VALUES (?,?,?,?,?,?,?,1)`,
 		g.me.User.ID, g.p.ID, g.h(6*time.Hour), "started", g.h(6*time.Hour), g.h(6*time.Hour), g.h(6*time.Hour))
 	c := g.check()
@@ -212,7 +204,6 @@ func TestQuotaGuardUnexplainedAndEarlySpend(t *testing.T) {
 	if !c.Breach || len(c.EarlySpend) != 1 || !strings.Contains(c.Reasons[0], "use-what's-left start came") {
 		t.Errorf("early spend: %v %+v %q", c.Breach, c.EarlySpend, c.Reasons)
 	}
-	// In the week's last week_end_hours it is what it is for.
 	g = newGuardEnv(t)
 	g.reset = g.h(16 * time.Hour)
 	g.reading(-time.Hour, 80)
@@ -234,7 +225,7 @@ func TestPromptOwner(t *testing.T) {
 		{KeepWarmMark + " ping", TypedKeepWarm, false, false},
 		{"/compact", TypedCompact, false, false},
 		{"please fix it", "", false, true},
-		{"Waypoint autopilot: a person wrote this", "", false, true}, // the mark alone says nothing
+		{"Waypoint autopilot: a person wrote this", "", false, true}, // The prompt mark alone does not make a prompt automation's; the recogniser's typed kind decides.
 	} {
 		if auto, ok := promptOwner(tc.detail, tc.typed); auto != tc.auto || ok != tc.ok {
 			t.Errorf("%q (%q): %v %v", tc.detail, tc.typed, auto, ok)
@@ -251,7 +242,7 @@ func TestQuotaGuardLateReading(t *testing.T) {
 	g := newGuardEnv(t)
 	g.reading(-time.Hour, 20)
 	g.reading(23*time.Hour, 20)
-	g.reading(25*time.Hour, 22) // after the window, before now
+	g.reading(25*time.Hour, 22)
 	g.session("auto-1", 23*time.Hour, "Waypoint autopilot: work on WP-1")
 	g.used("auto-1", 23*time.Hour)
 	if c := g.check(); c.Points != 2 || c.Automation != 2 || c.Unexplained != 0 {
@@ -263,8 +254,6 @@ func TestQuotaGuardLateReading(t *testing.T) {
 // hour, the five-hour window too, and the limits off only from when the
 // person turned them off.
 func TestQuotaGuardPhaseAsGatesSaw(t *testing.T) {
-	// 10 points ahead at the window's start, 30 ahead at the next reading:
-	// in hours 2 and 3 the gates still read 40%, within the +15 line.
 	g := newGuardEnv(t)
 	g.reading(-time.Hour, 40)
 	g.reading(4*time.Hour, 60)
@@ -275,7 +264,6 @@ func TestQuotaGuardPhaseAsGatesSaw(t *testing.T) {
 		t.Errorf("between readings: breach %v by phase %v", c.Breach, c.ByPhase)
 	}
 
-	// Under pace, but the five-hour window was at 95% (the limit is 90).
 	g = newGuardEnv(t)
 	g.lay(20)
 	g.exec(`INSERT INTO quota_samples(user_id, at, span, percent, resets_at, machine) VALUES (?,?,?,?,?,?)`, g.me.User.ID, g.h(time.Hour), "five_hour", 95, g.h(6*time.Hour), "box")
@@ -283,8 +271,6 @@ func TestQuotaGuardPhaseAsGatesSaw(t *testing.T) {
 		t.Errorf("five-hour: breach %v by phase %v", c.Breach, c.ByPhase)
 	}
 
-	// The limits went off at hour 5: hours 2 and 3 were over, the review
-	// job at hour 12 ran with them off.
 	g = newGuardEnv(t)
 	g.lay(50)
 	g.exec(`INSERT INTO autopilot_settings(user_id, project_id, enabled, limits, quota_off_until, quota_off_at, updated_at) VALUES (?,NULL,0,'{}',?,?,0)`, g.me.User.ID, g.h(30*time.Hour), g.h(5*time.Hour))

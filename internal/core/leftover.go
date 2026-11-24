@@ -12,25 +12,7 @@ import (
 	"time"
 )
 
-// What a review left open at merge (WP-367, story 4 of WP-362).
-//
-// Our own review's findings that nobody judged before the pull request
-// merged would otherwise sit open forever on a closed pull request, and
-// nothing would ever look at them again. At merge they become one audit
-// (WP-ADR20): its findings are the review's claims, in the audit's own
-// words, each linked back to the bot finding it came from. An audit with a
-// finding of medium severity or worse gets a fix task for Claude, the same
-// one `wp audit fix` makes; otherwise the audit waits in `wp audit ls` for a
-// person. Marking an audit's finding fixed or rejected settles the bot
-// finding the same way.
-//
-// Other people's review comments still open at merge are only counted
-// (pull_requests.open_others_at_merge) and shown on `wp pr show`. They are
-// never a task and never read by a model as instructions: whoever wrote them
-// may be a stranger (WP-ADR13, WP-ADR14). The exception is comments by bots
-// Waypoint can vouch for (nitpickBot) that didn't hold the merge, waived nitpicks and late minor findings: they
-// go into the pull request's nitpick log (WP-695, nitpicks.go), whose
-// findings wp next lists, as a bot's words, to the next agent on their file.
+// Other people's review comments left open at merge are only counted, never made into work or read by a model as instructions: their writers may be strangers.
 
 const (
 	// leftoverAgent is the requesting agent of the audits made at merge.
@@ -118,7 +100,6 @@ func (s *Service) onLeftoverEvent(ctx context.Context, e *Event) {
 	s.goBG(func() {
 		bg := context.Background()
 		if merged {
-			// The comments as they stand at merge, if the forge answers.
 			if pr, err := s.prByID(bg, s.db.R, prID); err == nil && !pr.Outside {
 				c, cancel := context.WithTimeout(bg, 30*time.Second)
 				if _, err := s.syncReviewComments(c, pr); err != nil {
@@ -151,7 +132,7 @@ func (s *Service) nitpicksDue(ctx context.Context, prID int64) bool {
 			SELECT 1 FROM review_comment_scores c WHERE c.pr_id = p.id AND c.waived_at IS NOT NULL)
 		FROM pull_requests p WHERE p.id = ?`, prID).Scan(&due)
 	if err != nil {
-		if readFault(err) && !errors.Is(err, sql.ErrNoRows) { // no such pull request: nothing due
+		if readFault(err) && !errors.Is(err, sql.ErrNoRows) {
 			s.log.WarnContext(ctx, "read whether a merged pull request's nitpicks are due", "pr", prID, "err", err)
 		}
 		return false
@@ -168,7 +149,7 @@ func (s *Service) leftoverDue(ctx context.Context, prID int64) bool {
 			SELECT 1 FROM bot_findings f WHERE f.pr_id = p.id AND f.state = 'open' AND f.audit_finding_id IS NULL AND f.placement != 'withheld'))
 		FROM pull_requests p WHERE p.id = ?`, prID).Scan(&due)
 	if err != nil {
-		if readFault(err) && !errors.Is(err, sql.ErrNoRows) { // no such pull request: nothing due
+		if readFault(err) && !errors.Is(err, sql.ErrNoRows) {
 			s.log.WarnContext(ctx, "read whether a merged pull request's leftovers are due", "pr", prID, "err", err)
 		}
 		return false
@@ -316,7 +297,6 @@ func (s *Service) sweepLeftover(ctx context.Context, prID int64, fixSince time.T
 		if len(found) == 0 {
 			return nil
 		}
-		// Worst first, as an audit lists them.
 		slices.SortStableFunc(found, func(a, b leftoverFinding) int { return severityRank(a.severity) - severityRank(b.severity) })
 		var models []string
 		var chain []AgentModel
@@ -373,14 +353,12 @@ func (s *Service) sweepLeftover(ctx context.Context, prID int64, fixSince time.T
 			if err != nil {
 				return err
 			}
-			// The bot finding stays open until the audit's verdict.
 			if _, err := t.ExecContext(ctx, `UPDATE bot_findings SET audit_finding_id = ? WHERE id = ?`, fid, f.id); err != nil {
 				return err
 			}
 		}
 		moved = len(found)
-		// An audit that ended: its fix task, if asked for, comes from the
-		// same code as for any audit. Made done, never queued: no Old.
+		// Made done, never queued: the event carries no previous state.
 		t.emit(&Event{Kind: EvCodeAudit, ProjectID: projectID, New: AuditDone, Data: map[string]any{"audit": auditID, "title": title}})
 		return nil
 	})

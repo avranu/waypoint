@@ -1,6 +1,3 @@
-// Popovers, menus and searchable pickers. On small screens they become
-// bottom sheets, which are far easier to use with a thumb.
-
 import {
   createContext,
   useCallback,
@@ -94,7 +91,6 @@ export function Popover({
     const onDown = (e: PointerEvent) => {
       const t = e.target as Node
       if (ref.current?.contains(t) || anchor.current?.contains(t)) return
-      // Clicks inside a nested popover belong to it.
       if ((t as HTMLElement).closest?.('[data-popover]')) {
         const level = Number(
           (t as HTMLElement).closest('[data-popover]')?.getAttribute('data-popover'),
@@ -172,7 +168,6 @@ export function MenuList({ items, onClose }: { items: MenuItem[]; onClose: () =>
     Array.from(
       ref.current?.querySelectorAll<HTMLButtonElement>('[role^=menuitem]:not(:disabled)') ?? [],
     )
-  // Keyboard users land on the first item; arrows move between items.
   useEffect(() => {
     if (!mobile && !ref.current?.contains(document.activeElement))
       enabled()[0]?.focus({ preventScroll: true })
@@ -314,7 +309,6 @@ export function Picker<V extends string | number | null>({
       if (!multi) onClose?.()
     }
   }
-  // Enter pressed while searching picks once the answer is in.
   useEffect(() => {
     if (searching || !enterLater.current) return
     enterLater.current = false

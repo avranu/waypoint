@@ -9,13 +9,7 @@ import (
 	"unicode/utf8"
 )
 
-// Goal suggestions (WP-382, WP-ADR50): people won't write goals up front
-// and word the ones they do write as implementation, so a model reads what
-// people wrote in a project that no goal covers yet and proposes goals in
-// plain words, each linked to the tasks it came from, and better wording
-// for goals the wording check flags. Everything it makes is a proposal: a
-// suggested goal waits for a person's Approve, a rewording of an approved
-// goal is a pending edit. The model only proposes; the click is the intent.
+// Model output is only a proposal: a suggested goal waits for a person's Approve, and a rewording of an approved goal is a pending edit.
 
 // goalSuggestTask is the AI task; without a model of its own it uses the
 // automations' model.
@@ -25,9 +19,9 @@ const goalSuggestTask = "goals"
 const goalSuggestAgent = "waypoint/goals"
 
 const (
-	goalSuggestTexts = 40  // people's tasks the model reads at most
-	goalSuggestMax   = 3   // goals it may propose in one run
-	goalSuggestDesc  = 300 // characters of each task's description
+	goalSuggestTexts = 40
+	goalSuggestMax   = 3
+	goalSuggestDesc  = 300
 
 	goalSuggestTimeout = 5 * time.Minute
 	// goalSuggestNote is the note on a link from a task to the goal
@@ -78,8 +72,7 @@ func (s *Service) SuggestGoals(ctx context.Context, actor *Actor, project string
 	if role < RoleEditor || actor.IsAgent() {
 		return nil, forbidden("only a person with edit rights on %s asks for goal suggestions", p.Key)
 	}
-	// The run finishes when the person leaves the page; the suggestions
-	// show on the Goals tab.
+	// The run is detached from the request so it finishes after the person leaves the page; its timeout still bounds it.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), goalSuggestTimeout)
 	defer cancel()
 	return s.suggestGoals(ctx, p.ID)
@@ -150,8 +143,8 @@ type goalSuggestFlagged struct {
 }
 
 type goalSuggestInputs struct {
-	goals   []string // the project's goals, active
-	retired []string // goals people turned down or retired: never again
+	goals   []string
+	retired []string
 	texts   []goalSuggestText
 	flagged []goalSuggestFlagged
 }
@@ -166,8 +159,6 @@ func (s *Service) goalSuggestInput(ctx context.Context, p *Project) (*goalSugges
 		return nil, err
 	}
 	in := &goalSuggestInputs{}
-	// The goals people see on the project's Goals view: its own and its
-	// ancestors' and the global ones.
 	rows, err := s.db.R.QueryContext(ctx, `SELECT g.id, g.title, g.status, coalesce(g.project_id, 0)
 		FROM design_notes g WHERE g.kind = 'goal' AND (g.project_id IS NULL OR g.project_id = ?
 			OR g.project_id IN (WITH RECURSIVE up(id) AS (SELECT parent_id FROM projects WHERE id = ? UNION SELECT p.parent_id FROM projects p JOIN up ON p.id = up.id) SELECT id FROM up WHERE id IS NOT NULL))
@@ -188,8 +179,7 @@ func (s *Service) goalSuggestInput(ctx context.Context, p *Project) (*goalSugges
 			continue
 		}
 		in.goals = append(in.goals, title)
-		// Rewordings for the project's own goals: a parent's or a global
-		// goal is reworded from where it lives.
+		// Each goal is reworded once, from the project it lives in (a global goal from a root project), not from every child.
 		if w := goalWording(title); len(w) > 0 && (pid == p.ID || (pid == 0 && p.ParentID == nil)) {
 			in.flagged = append(in.flagged, goalSuggestFlagged{id, title, w})
 		}
@@ -198,8 +188,6 @@ func (s *Service) goalSuggestInput(ctx context.Context, p *Project) (*goalSugges
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	// A flagged goal gets one rewording from Waypoint: none while one waits,
-	// none again once a person turned one down.
 	if len(in.flagged) > 0 {
 		rejected = map[int64]bool{}
 		ids := make([]any, 0, len(in.flagged))
@@ -420,7 +408,7 @@ func (s *Service) applyGoalSuggestions(ctx context.Context, p *Project, in *goal
 		if !ok {
 			continue
 		}
-		delete(flagged, r.Goal) // one each
+		delete(flagged, r.Goal)
 		title := cleanGoalTitle(r.Title)
 		if title == "" || strings.EqualFold(title, f.title) || len(goalWording(title)) > 0 {
 			continue
@@ -463,7 +451,6 @@ func cleanGoalTitle(t string) string {
 // goalRepeats: the title says what one of these says, word for word or
 // nearly (most of its words shared).
 func goalRepeats(title string, goals []string) bool {
-	// Plurals and verbs' -s count as the same word.
 	stem := func(w string) string {
 		if len(w) > 3 {
 			return strings.TrimSuffix(w, "s")

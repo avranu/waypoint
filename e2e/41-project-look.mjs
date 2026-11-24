@@ -54,7 +54,6 @@ async function run(width, scheme, key) {
       `${tag} no sideways scroll (${where})`,
     );
   const project = () => api("GET", `/projects/${key}`);
-  // Waits until the project's look is something else than `was`.
   const lookAfter = async (was) => {
     for (let i = 0; i < 50; i++) {
       const p = await project();
@@ -71,7 +70,6 @@ async function run(width, scheme, key) {
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL(base + "/");
 
-  // ---- a new project is styled as it is created ----
   const created = await api("POST", "/projects", { name: `Look ${key}`, key });
   const first = created;
   ok(
@@ -82,7 +80,6 @@ async function run(width, scheme, key) {
     `${tag} it was styled (${first.icon} ${first.color} ${first.background})`,
   );
 
-  // A project that comes with its own color is a person's choice.
   const mine = await api("POST", "/projects", {
     name: `Own ${key}`,
     key: key + "X",
@@ -97,7 +94,6 @@ async function run(width, scheme, key) {
     `${tag} a project with its own color is left alone`,
   );
 
-  // ---- the settings: who chose, and the two buttons ----
   await page.goto(`${base}/p/${key}/settings`);
   await state.waitFor();
   ok(
@@ -114,7 +110,6 @@ async function run(width, scheme, key) {
   await overflow("settings");
   await shot("settings-generated");
 
-  // Pick another: a different look, still automatic, no confirmation needed.
   await page.getByRole("button", { name: "Pick another" }).click();
   let again = await lookAfter(first);
   ok(
@@ -130,12 +125,13 @@ async function run(width, scheme, key) {
     `${tag} Pick another over an automatic look asks nothing`,
   );
 
-  // A person's change makes it theirs; Pick another then asks first.
   // The generated color can itself be #ef4444, which would change nothing.
   const swatch = (await project()).color === "#ef4444" ? "#f97316" : "#ef4444";
   await page.getByRole("button", { name: swatch }).first().click();
   ok(
-    await page.getByText("Save or discard your changes below first.").isVisible(),
+    await page
+      .getByText("Save or discard your changes below first.")
+      .isVisible(),
     `${tag} look buttons wait for unsaved edits`,
   );
   await page.getByRole("button", { name: "Save changes" }).click();
@@ -157,7 +153,10 @@ async function run(width, scheme, key) {
     `${tag} cancelling keeps the person's look`,
   );
   await page.getByRole("button", { name: "Pick another" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Pick another" }).click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Pick another" })
+    .click();
   again = await lookAfter(custom);
   ok(
     again.look === "generated" && again.color !== "#ef4444",
@@ -165,7 +164,6 @@ async function run(width, scheme, key) {
   );
   await state.getByText(/Picked automatically/).waitFor();
 
-  // ---- reset to default ----
   await page.getByRole("button", { name: "Reset to default" }).click();
   await state.getByText(/default look/i).waitFor();
   const plain = await project();
@@ -173,14 +171,10 @@ async function run(width, scheme, key) {
     plain.look === "plain" && plain.icon === "" && plain.background === "",
     `${tag} Reset to default clears icon and background`,
   );
-  ok(
-    (await project()).look === "plain",
-    `${tag} a reset look stays reset`,
-  );
+  ok((await project()).look === "plain", `${tag} a reset look stays reset`);
   await overflow("settings after reset");
   await shot("settings-reset");
 
-  // ---- the new project dialog leaves color and icon to Waypoint ----
   if (desktop) {
     await page.goto(base + "/");
     await page.getByRole("button", { name: "New project" }).first().click();

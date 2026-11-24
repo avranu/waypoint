@@ -12,8 +12,6 @@ import (
 	"time"
 )
 
-// Reviews held before the pull request can't go quiet (WP-752).
-
 // heldEnv is a task shipped and held for its review, with no Cursor, so
 // the round is typed from its own prompt.
 func heldEnv(t *testing.T, more ...func(*OpenPRInput)) (*apEnv, *shipForge, *IssueDetail) {
@@ -79,8 +77,6 @@ func TestHeldReviewSurvivesThePause(t *testing.T) {
 	if r := a.round(id); r.state != RoundPending {
 		t.Fatalf("swept: %+v", r)
 	}
-	// Its wp ship, in the same run, opens it instead of asking for
-	// another review.
 	a.tick(61 * time.Second)
 	if len(a.jobs) != 1 {
 		t.Fatalf("jobs = %+v", a.jobs)
@@ -88,7 +84,7 @@ func TestHeldReviewSurvivesThePause(t *testing.T) {
 	var in AutopilotJob
 	_ = json.Unmarshal(a.jobs[0].Input, &in)
 	a.prompt(in.Review)
-	a.reported(first.Key) // its own review: what it found, on the record (WP-1320)
+	a.reported(first.Key)
 	res, err := a.ship(first.Key, ShipPR)
 	if err != nil || res.Pull == nil || res.Held != "" {
 		t.Fatalf("ship = %+v, %v", res, err)
@@ -118,7 +114,7 @@ func TestHeldReviewWatchdog(t *testing.T) {
 	a.stopWith("Waiting for the review.")
 	id := a.heldRound()
 	_, _ = a.s.db.W.Exec(`DELETE FROM autopilot_steps`)
-	a.s.sweepRounds(a.ctx) // too soon
+	a.s.sweepRounds(a.ctx)
 	var n int
 	_ = a.s.db.R.QueryRow(`SELECT count(*) FROM autopilot_steps`).Scan(&n)
 	if n != 0 {
@@ -140,8 +136,7 @@ func TestHeldReviewWatchdogLeavesAWorkingSession(t *testing.T) {
 	a.prompt("one more thing")
 	a.setClock(a.clockNow().Add(heldStopLost + time.Minute))
 	a.s.sweepRounds(a.ctx)
-	// The step is made at ship (WP-1370), so one exists; the watchdog must
-	// not make a second or start the review under a working session.
+	// The watchdog must not add a second step or start the review under a working session.
 	var n, started int
 	_ = a.s.db.R.QueryRow(`SELECT count(*), count(CASE WHEN state IN ('starting','started') THEN 1 END) FROM autopilot_steps WHERE session_id = ?`, a.session).Scan(&n, &started)
 	if n != 1 || started != 0 {
@@ -215,7 +210,7 @@ func TestHeldShipKeepsUrgent(t *testing.T) {
 		t.Fatalf("jobs = %+v", a.jobs)
 	}
 	a.prompt(job.Review)
-	a.reported(first.Key) // its own review: what it found, on the record (WP-1320)
+	a.reported(first.Key)
 	res, err := a.ship(first.Key, ShipPR)
 	if err != nil {
 		t.Fatal(err)
@@ -242,7 +237,7 @@ func TestHeldShipNotUrgent(t *testing.T) {
 		t.Fatalf("jobs = %+v", a.jobs)
 	}
 	a.prompt(job.Review)
-	a.reported(first.Key) // its own review: what it found, on the record (WP-1320)
+	a.reported(first.Key)
 	res, err := a.ship(first.Key, ShipPR)
 	created, _, _, _ := g.snapshot()
 	if err != nil || res.UrgentHeld || res.Pull == nil || res.Pull.Urgent || len(created) != 1 || len(created[0].Labels) != 0 {
@@ -335,7 +330,6 @@ func TestHeldReviewOpenFails(t *testing.T) {
 	if n := a.lastNotice(); !strings.Contains(n, "forge unavailable") {
 		t.Errorf("notice = %q", n)
 	}
-	// Back up: the session's own ship still works.
 	g.createErr = nil
 	if res, err := a.ship(a.heldKey(), ShipSkip, func(in *OpenPRInput) { in.Reason = "forge was down" }); err != nil || res.Pull == nil {
 		t.Fatalf("ship = %+v, %v", res, err)
@@ -426,7 +420,7 @@ func TestHeldReviewAutopilotOff(t *testing.T) {
 	_ = json.Unmarshal(a.jobs[0].Input, &in)
 	a.jobDone(1, AutopilotJobResult{Outcome: "reviewing"})
 	a.prompt(in.Review)
-	a.reported(first.Key) // its own review: what it found, on the record (WP-1320)
+	a.reported(first.Key)
 	if res, err := a.ship(first.Key, ShipPR); err != nil || res.Pull == nil {
 		t.Fatalf("ship = %+v, %v", res, err)
 	}
@@ -523,8 +517,7 @@ func TestHeldReviewWaitsCountFromTheTrouble(t *testing.T) {
 			t.Fatalf("opened %+v", created)
 		}
 	})
-	// A long queue for the audit isn't time the session's screen was busy
-	// (WP-820).
+	// Time an audit spent queued doesn't count as the session's screen being busy.
 	t.Run("a busy screen after a long audit queue", func(t *testing.T) {
 		a, box, _ := firstEnv(t)
 		first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude"})
@@ -546,11 +539,7 @@ func TestHeldReviewWaitsCountFromTheTrouble(t *testing.T) {
 			t.Fatalf("the queue used up the screen's wait: %+v %q", r, a.reason(id))
 		}
 	})
-	// Nor is the round's wait for an audit it outwaited: the screen's wait
-	// counts from when the round stopped waiting.
-	// A review that ended, whose findings the busy screen never took, is not
-	// reported as one that couldn't be started: the reason names the audit
-	// that ended, and the task's comment says the findings weren't given.
+	// The screen's wait counts from when the round stopped waiting; a review that ended with findings the screen never took is reported as ended, not unstarted.
 	t.Run("a busy screen after the review ended", func(t *testing.T) {
 		a, box, g := firstEnv(t)
 		first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude"})
@@ -595,13 +584,12 @@ func TestHeldReviewWaitsCountFromTheTrouble(t *testing.T) {
 		}
 		a.stopWith("Waiting for the review.")
 		id := a.heldRound()
-		// High stakes, so a slow audit gets the Sonnet reviewer (WP-1231).
+		// A high-provenance round gets the Sonnet reviewer when its audit is slow.
 		if _, err := a.s.db.W.Exec(`UPDATE review_triage SET features = json_set(features, '$.provenance', 'high') WHERE round_id = ?`, id); err != nil {
 			t.Fatal(err)
 		}
 		a.tick(61 * time.Second)
 		a.tick(reviewAuditPatience)
-		// A runner takes the slow audit; the Sonnet reviewer ends first.
 		a.s.Wait()
 		if w := a.poll(a.admin, box, RunnerPoll{}); w.Job == nil || agentJobOf(t, w.Job).CLI != GatewayCLI {
 			t.Fatalf("no audit job: %+v", w.Job)
@@ -611,7 +599,6 @@ func TestHeldReviewWaitsCountFromTheTrouble(t *testing.T) {
 		if len(a.jobs) != 1 {
 			t.Fatalf("jobs = %+v", a.jobs)
 		}
-		// The screen stayed busy (the job's answer comes late here).
 		a.s.Wait()
 		a.setClock(a.clockNow().Add(heldScreenWait - 10*time.Minute))
 		a.jobDone(1, AutopilotJobResult{Outcome: "held", Detail: "a draft is on the screen"})
@@ -778,7 +765,7 @@ func TestHeldReviewSurvivesALapsedClaim(t *testing.T) {
 		t.Fatalf("coming back ended the held run (%s)", outcome)
 	}
 	a.gateOpen(first.Key)
-	a.reported(first.Key) // its own review: what it found, on the record (WP-1320)
+	a.reported(first.Key)
 	res, err := a.ship(first.Key, ShipPR)
 	if err != nil || res.Pull == nil || res.Held != "" {
 		t.Fatalf("ship = %+v, %v", res, err)
@@ -817,7 +804,7 @@ func TestHeldReviewDoneThenResumedShips(t *testing.T) {
 		t.Fatalf("runs = %d: the test wants a new run", runs)
 	}
 	a.gateOpen(first.Key)
-	a.reported(first.Key) // its own review: what it found, on the record (WP-1320)
+	a.reported(first.Key)
 	res, err := a.ship(first.Key, ShipPR)
 	if err != nil || res.Pull == nil || res.Held != "" {
 		t.Fatalf("ship = %+v, %v", res, err)
@@ -869,13 +856,10 @@ func TestReviewRoundAfterPRAutopilotOff(t *testing.T) {
 	if st := a.step(); st.state != StepDue || st.reviewID.Int64 != id {
 		t.Fatalf("the switch stopped the round's step: %+v", st)
 	}
-	// Its pull request is open already: none is held for it (audit #883.4).
 	if n := a.lastNotice(); !strings.Contains(n, first.Key+"'s adversarial review") || !strings.Contains(n, "still runs") ||
 		strings.Contains(n, "held") || !strings.Contains(n, "no pull request waits") {
 		t.Errorf("notice = %q", n)
 	}
-	// A Stop that isn't the round's report (the person used the session)
-	// doesn't end it either.
 	a.stopWith("Answered a question.")
 	if st := a.step(); st.state == StepStopped || st.reviewID.Int64 != id {
 		t.Fatalf("a Stop with autopilot off stopped the round's step: %+v", st)
@@ -894,7 +878,6 @@ func TestReviewRoundAfterPRAutopilotOff(t *testing.T) {
 	if r := a.round(id); r.state != RoundRunning {
 		t.Fatalf("round = %+v", r)
 	}
-	// Its step's look while it runs doesn't stop it.
 	a.tick(10 * time.Minute)
 	if r := a.round(id); r.state != RoundRunning {
 		t.Fatalf("round after a look = %+v", r)
@@ -929,7 +912,6 @@ func TestReviewOwedAutopilotOffOtherTaskStop(t *testing.T) {
 	if _, err := a.s.SetAutopilot(a.ctx, a.admin, a.p.Key, AutopilotSettingInput{Enabled: ptrOf(false), Merge: true}); err != nil {
 		t.Fatal(err)
 	}
-	// The person has the session do another task by hand.
 	if _, err := a.s.AgentTake(a.ctx, a.ag, second.Key, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -959,8 +941,7 @@ func TestReviewOwedAutopilotOffOtherTaskStop(t *testing.T) {
 	if in.ReviewOf != first.Key {
 		t.Fatalf("job reviews %q, want %s", in.ReviewOf, first.Key)
 	}
-	// Its report is the session's next Stop, though the last task it
-	// finished is the second one (adversarial review of WP-1159).
+	// The report is the session's next Stop, though the last task it finished is the second one.
 	a.prompt(in.Review)
 	a.jobDone(1, AutopilotJobResult{Outcome: "reviewing"})
 	a.stopWith("Reviewed: nothing to fix.")

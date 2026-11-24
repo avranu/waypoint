@@ -20,10 +20,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// How each coding-agent CLI is run headless and its output read. The
-// repository's own project settings, hooks and MCP servers are left out
-// where the CLI allows (the code may be someone's pull request), and the
-// prompt goes in on standard input where the CLI reads it there.
+// The repo's project settings, hooks and MCP servers are left out, since the code may be someone's pull request.
 
 func (p *runnerProc) buildDriver(ctx context.Context, in agentJob, path, work string) (*cliDriver, error) {
 	prompt := in.Prompt
@@ -74,8 +71,7 @@ func removeEscapingLinks(work string) ([]string, error) {
 		if rerr == nil && (target == root || strings.HasPrefix(target, root+string(filepath.Separator))) {
 			return nil
 		}
-		// Removes the link itself, never what it points to; nothing is running in
-		// the checkout yet, so there is no one to swap a directory for a link.
+		// nothing runs in the checkout yet, so no process can swap a directory for a link during the walk; os.Remove takes the link, not its target
 		if err := os.Remove(path); err != nil { // #nosec G122
 			return err
 		}
@@ -97,7 +93,7 @@ func claudeReadArgs(work string) ([]string, error) {
 	if strings.ContainsAny(dir, "()*?[]{}!\\") {
 		return nil, fmt.Errorf("the checkout's path %q has characters Claude Code's permission rules treat as patterns", dir)
 	}
-	rule := func(tool string) string { return tool + "(/" + dir + "/**)" } // "//abs/path": an absolute path
+	rule := func(tool string) string { return tool + "(/" + dir + "/**)" } // Claude Code reads a leading // as an absolute path; a single / is relative to the project
 	return []string{"--tools", "Read,Grep,Glob", "--permission-mode", "dontAsk",
 		"--allowedTools", rule("Read"), rule("Grep"), rule("Glob")}, nil
 }
@@ -158,9 +154,9 @@ func excerpt(s string, n int) string {
 // slot and an hour spent on the work call for different fixes, and the log
 // alone has no times in it.
 type callClock struct {
-	mu   sync.Mutex // the CLI's output is read on its own goroutine, which can outlive Wait
+	mu   sync.Mutex
 	open map[string]timedCall
-	done []timedCall // the slowest few that ended, slowest first
+	done []timedCall
 	now  func() time.Time
 }
 
@@ -193,7 +189,6 @@ func (c *callClock) begin(id, what string) {
 	if c.open == nil {
 		c.open = map[string]timedCall{}
 	}
-	// Cut here, not when named: a call that never returns stays in the map.
 	c.open[id] = timedCall{what: excerpt(what, 120), start: c.clock()}
 }
 
@@ -252,8 +247,6 @@ func (c *callClock) spent() string {
 	return strings.Join(parts, " ")
 }
 
-// ---- Claude Code ----
-
 type claudeEvent struct {
 	Type      string `json:"type"`
 	Subtype   string `json:"subtype"`
@@ -282,9 +275,7 @@ type claudeEvent struct {
 }
 
 func claudeDriver(in agentJob, prompt, work string) (*cliDriver, error) {
-	// No --no-session-persistence: with it Claude Code writes no transcript,
-	// and nothing of the job survives it (the transcript archive, WP-1466,
-	// has nothing to read, and a round that timed out leaves no trace).
+	// Don't add --no-session-persistence: it leaves no transcript for the archive or for a timed-out round.
 	args := []string{"-p", "--output-format", "stream-json", "--verbose",
 		"--setting-sources", "user", "--strict-mcp-config", "--settings", unattendedSettings}
 	if in.Model != "" {
@@ -304,14 +295,11 @@ func claudeDriver(in agentJob, prompt, work string) (*cliDriver, error) {
 		}
 		args = append(args, more...)
 	case "edit_run":
-		// Edits are accepted; commands (the tests, a build) are allowed by name.
 		args = append(args, "--permission-mode", "acceptEdits", "--allowedTools", "Read,Grep,Glob,Edit,Write,Bash")
 	default:
 		args = append(args, "--permission-mode", "acceptEdits")
 	}
 	var res *claudeEvent
-	// Marked so the nudge hook lets no picture through for it (WP-1137): a
-	// job reads what its grants allow, and other jobs share the machine.
 	d := &cliDriver{args: args, stdin: prompt, isStream: true, calls: &callClock{}, env: map[string]string{runnerJobEnv: "1"}}
 	d.line = func(line []byte, out *logSink) {
 		var ev claudeEvent
@@ -320,7 +308,7 @@ func claudeDriver(in agentJob, prompt, work string) (*cliDriver, error) {
 			return
 		}
 		if ev.SessionID != "" {
-			d.sessionID = ev.SessionID // the transcript's name, which the job's result carries
+			d.sessionID = ev.SessionID
 		}
 		switch ev.Type {
 		case "assistant":
@@ -365,8 +353,6 @@ func claudeDriver(in agentJob, prompt, work string) (*cliDriver, error) {
 	return d, nil
 }
 
-// ---- Codex ----
-
 func codexDriver(in agentJob, prompt, work string) (*cliDriver, error) {
 	args := []string{"exec", "--json", "--skip-git-repo-check", "-C", work}
 	sandbox := "workspace-write"
@@ -375,7 +361,6 @@ func codexDriver(in agentJob, prompt, work string) (*cliDriver, error) {
 	}
 	args = append(args, "--sandbox", sandbox)
 	if in.perm() == "edit_run" {
-		// Tests often need to fetch dependencies.
 		args = append(args, "-c", "sandbox_workspace_write.network_access=true")
 	}
 	if in.Model != "" {
@@ -388,7 +373,7 @@ func codexDriver(in agentJob, prompt, work string) (*cliDriver, error) {
 		}
 		args = append(args, "--output-schema", f)
 	}
-	args = append(args, "-") // the prompt, from standard input
+	args = append(args, "-")
 	var answer string
 	var tokens tokenUse
 	var failure string
@@ -437,8 +422,8 @@ func codexDriver(in agentJob, prompt, work string) (*cliDriver, error) {
 			tokens.add(tokenUse{Input: ev.Usage.Input - ev.Usage.Cached, Output: ev.Usage.Output, CacheRead: ev.Usage.Cached})
 		case "turn.failed", "error":
 			msg := orStr(ev.Error.Message, ev.Message)
-			if msg != "" && msg != failure { // codex may send an error and turn.failed alike
-				fmt.Fprintf(out, "error: %s\n", msg) // whole; the job's error keeps the start
+			if msg != "" && msg != failure { // codex can send an error and a turn.failed event for one failure, so the same message can arrive twice
+				fmt.Fprintf(out, "error: %s\n", msg)
 			}
 			failure = orStr(msg, failure)
 		}
@@ -454,8 +439,6 @@ func codexDriver(in agentJob, prompt, work string) (*cliDriver, error) {
 	}
 	return d, nil
 }
-
-// ---- opencode ----
 
 // opencodeFlags: whether this version can print JSON events (--format) and
 // its own log on standard error (--print-logs).
@@ -507,9 +490,7 @@ func opencodeOutOfUsage(line []byte) error {
 var opencodeUsageWords = []string{"usage limit", "quota", "out of usage", "spend limit", "credit balance", "insufficient balance", "insufficient credits"}
 
 func (p *runnerProc) opencodeDriver(ctx context.Context, in agentJob, prompt, path, work string) *cliDriver {
-	// --dir: opencode does not take its directory from the one the runner
-	// started it in (seen: it worked in the runner's own), and a review is
-	// confined to the checkout only if that is where it works.
+	// opencode doesn't take its directory from the process's working directory, so --dir is what keeps a review in the checkout
 	args := []string{"run", "--dir", work}
 	if in.Model != "" {
 		args = append(args, "--model", in.Model)
@@ -519,13 +500,8 @@ func (p *runnerProc) opencodeDriver(ctx context.Context, in agentJob, prompt, pa
 	}
 	prompt = askForJSON(prompt, in.JSONSchema)
 	d := &cliDriver{args: args, stdin: prompt, keepKeys: true}
-	// opencode reads its tool permissions from this variable: reading and
-	// editing, with commands only when the job may run them.
 	switch in.perm() {
 	case "read":
-		// Nothing but reading, and not beyond the checkout (a link out of it
-		// is removed before this runs, because the path rule doesn't look
-		// through one).
 		d.env = map[string]string{"OPENCODE_PERMISSION": `{"external_directory":"deny","edit":"deny","bash":"deny","webfetch":"deny"}`}
 	case "edit":
 		d.env = map[string]string{"OPENCODE_PERMISSION": `{"edit":"allow","bash":"deny","webfetch":"deny"}`}
@@ -534,12 +510,10 @@ func (p *runnerProc) opencodeDriver(ctx context.Context, in agentJob, prompt, pa
 	}
 	format, logs := p.opencodeFlags(ctx, path)
 	if logs {
-		// WARN and up only: the stream errors, not the start-up chatter.
 		d.args = append(d.args, "--print-logs", "--log-level", "WARN")
 		d.errLine = opencodeOutOfUsage
 	}
 	if !format {
-		// An older opencode: plain text out; the whole of it is the answer.
 		d.finish = func(stdout []byte) (string, json.RawMessage, tokenUse, error) {
 			text := strings.TrimSpace(ansiRE.ReplaceAllString(string(stdout), ""))
 			if text == "" {
@@ -551,7 +525,7 @@ func (p *runnerProc) opencodeDriver(ctx context.Context, in agentJob, prompt, pa
 	}
 	d.args = append(d.args, "--format", "json")
 	d.isStream = true
-	var texts []string // text parts since the last tool call
+	var texts []string
 	var tokens tokenUse
 	d.line = func(line []byte, out *logSink) {
 		var ev struct {
@@ -603,8 +577,6 @@ func (p *runnerProc) opencodeDriver(ctx context.Context, in agentJob, prompt, pa
 	}
 	return d
 }
-
-// ---- Cursor ----
 
 // cursorReadRules is the .cursor/cli.json a read-only job's checkout gets:
 // reading the checkout is all an audit needs, so every other tool is refused,
@@ -715,13 +687,11 @@ func cursorDriver(in agentJob, prompt, work string) (*cliDriver, error) {
 		args = append(args, "--model", in.Model)
 	}
 	if in.ReadOnly {
-		args = append(args, "--mode", "ask") // Cursor's read-only Q&A mode
+		args = append(args, "--mode", "ask")
 	} else {
-		args = append(args, "--force") // without it changes are only proposed
+		args = append(args, "--force")
 	}
-	// "--" ends the options: a prompt that starts with a dash ("--force",
-	// "--version") is the prompt, not a flag (cursor-agent takes it, as it
-	// takes other positionals; the other drivers pass theirs on stdin).
+	// -- ends the options, so a prompt that starts with a dash is not read as a flag
 	args = append(args, "--", prompt)
 	d := &cliDriver{args: args}
 	d.finish = func(stdout []byte) (string, json.RawMessage, tokenUse, error) {
@@ -736,7 +706,6 @@ func cursorDriver(in agentJob, prompt, work string) (*cliDriver, error) {
 				CacheWrite int64 `json:"cacheWriteTokens"`
 			} `json:"usage"`
 		}
-		// The last JSON object printed is the result.
 		lines := bytes.Split(bytes.TrimSpace(stdout), []byte("\n"))
 		for i := len(lines) - 1; i >= 0; i-- {
 			if json.Unmarshal(lines[i], &res) == nil && (res.Result != "" || res.IsError) {

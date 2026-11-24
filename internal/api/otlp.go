@@ -33,8 +33,8 @@ func (s *Server) otlpRoutes(mux *http.ServeMux) {
 }
 
 const (
-	otlpMaxBody    = 8 << 20  // as sent
-	otlpMaxDecoded = 64 << 20 // after gunzip
+	otlpMaxBody    = 8 << 20
+	otlpMaxDecoded = 64 << 20
 )
 
 // handled marks a response the handler wrote itself.
@@ -145,8 +145,7 @@ func (s *Server) otlpMetrics(w http.ResponseWriter, r *http.Request) (any, error
 		s.otlpFail(w, r, otlpBadRequest("invalid OTLP JSON"))
 		return handled{}, nil
 	}
-	// Nothing in the usage tables is a metric; the same tokens, costs and
-	// tool calls arrive as log events. Accepted and dropped.
+	// Metrics duplicate data that arrives as log events, so they are accepted and dropped.
 	otlpReply(w, isProto, "", 0)
 	return handled{}, nil
 }
@@ -171,8 +170,6 @@ func otlpReply(w http.ResponseWriter, isProto bool, field string, rejected int64
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"partialSuccess": ps})
 }
-
-// ---- JSON ----
 
 type flexNum string
 
@@ -278,8 +275,6 @@ func nanosToMS(ns int64, attrs map[string]string) int64 {
 	}
 	return 0
 }
-
-// ---- protobuf ----
 
 func pbText(v *commonpb.AnyValue) string {
 	switch x := v.GetValue().(type) {

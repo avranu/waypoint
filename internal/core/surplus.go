@@ -10,21 +10,7 @@ import (
 	"time"
 )
 
-// Surplus work (WP-906, WP-ADR89): the gateway's "surplus" priority
-// serves a request only with capacity that would
-// otherwise go unused, and refuses it rather than take quota other work
-// needs. Waypoint sends it optional work only, work worth having on its own
-// that nothing stronger checks:
-//
-//   - prep ahead: tasks behind the front of an agent queue are prepared too,
-//     so a prep is ready when one reaches the front (prep_ahead.go);
-//   - prep trials: another model's picks on a prep's bundle, never shown,
-//     scored when the task's work merges and reported to the gateway, so
-//     models untested at prep get rated there (prep_models.go).
-//
-// A refusal is no model's answer and nobody's fault: the request isn't
-// counted against a model, surplus work waits for the gateway's
-// Retry-After (or surplusRetry), and normal work goes on as before.
+// A surplus refusal is no model's answer: it is not counted against a model, and the work waits for the gateway's Retry-After.
 
 const (
 	prioritySurplus = "surplus"
@@ -84,7 +70,7 @@ func (s *Service) noteSurplusRefusal(pid int64, err error) *aiWaitError {
 func (s *Service) surplusAllowed(ctx context.Context) bool {
 	ok, _, err := s.surplusState(ctx)
 	if err != nil {
-		return false // logged there: surplus work is held while the gateway can't be read
+		return false
 	}
 	return ok
 }
@@ -252,8 +238,6 @@ func (r *SurplusReport) String() string {
 	}
 	return b.String()
 }
-
-// ---- confidence ----
 
 // wilsonUpper is the upper end of the 95% Wilson interval of k successes in
 // n tries (1 when n is 0).

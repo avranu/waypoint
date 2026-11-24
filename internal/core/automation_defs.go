@@ -5,11 +5,6 @@ import (
 	"strings"
 )
 
-// The triggers and actions Waypoint ships with (WP-D18). Each is a
-// definition (see automation_catalog.go) plus, for triggers, how an event is
-// matched and, for actions, the function that does the work. Adding one is
-// one more registerTrigger/registerAction here or in another file.
-
 func f64(v float64) *float64 { return &v }
 
 func opts(pairs ...string) []ParamOption {
@@ -55,7 +50,6 @@ func eventTrigger(d TriggerDef, want map[string]string) {
 }
 
 func init() {
-	// ---- issues ----
 	registerTrigger(TriggerDef{Name: "created", Label: "Issue created", Group: "Issues", Phrase: "an issue is created", Event: EvIssueCreated, Issue: true, Params: []ParamDef{byParam}})
 	registerTrigger(TriggerDef{Name: "status_changed", Label: "Status changes", Group: "Issues", Phrase: "the status changes", Event: EvIssueStatus, Issue: true,
 		Params: []ParamDef{
@@ -66,10 +60,7 @@ func init() {
 		Match: func(tr Trigger, e *Event) bool {
 			oc, _ := e.Data["old_category"].(string)
 			nc, _ := e.Data["new_category"].(string)
-			// A status name matches that status. A category matches only when
-			// the issue actually leaves (From) or enters (To) it, so moving
-			// between two in-progress statuses doesn't count as starting or
-			// stopping work.
+			// A category matches only when the issue leaves (From) or enters (To) it; moving within one doesn't count.
 			match := func(want, name, cat string) bool {
 				if want == "" {
 					return true
@@ -93,7 +84,7 @@ func init() {
 	registerTrigger(TriggerDef{Name: "field_changed", Label: "A field changes", Group: "Issues", Phrase: "a field changes", Event: EvIssueUpdated, Issue: true,
 		Params: []ParamDef{{Name: "field", Label: "Field", Type: PField, Options: opts("title", "Title", "description", "Description", "type", "Type", "priority", "Priority", "points", "Points",
 			"sprint", "Sprint", "parent", "Parent", "labels", "Tags", "start_date", "Start date", "due_date", "Due date"), Help: "Empty is any field."}},
-		Match: func(tr Trigger, e *Event) bool { // "Any field" predates objectives, whose events are named by field.
+		Match: func(tr Trigger, e *Event) bool { // Objective events are named by field, so the any-field trigger skips them.
 			if tr.Field == "" {
 				return e.Field != "objective"
 			}
@@ -107,7 +98,6 @@ func init() {
 			return (tr.From == "" || strings.EqualFold(tr.From, e.Old)) && (tr.To == "" || strings.EqualFold(tr.To, e.New))
 		}})
 
-	// ---- counts ----
 	registerTrigger(TriggerDef{Name: "count_crossed", Label: "A count crosses a limit", Group: "Counts", Phrase: "the number of issues matching {query} is {op} {n}",
 		Event: EvCountCrossed, Timed: true,
 		Doc: "Checked half a minute after issues change and every five minutes; fires when the count crosses the limit, not while it stays there.",
@@ -118,7 +108,6 @@ func init() {
 		},
 		Provides: []OutputDef{{Name: "Trigger.Data.count", Type: "number", Doc: "the count now"}, {Name: "Trigger.Data.n", Type: "number"}, {Name: "Trigger.Data.query", Type: "text"}}})
 
-	// ---- pull requests ----
 	registerTrigger(TriggerDef{Name: "pr_updated", Label: "Pull request opened or pushed to", Group: "Pull requests", Event: EvPRUpdated, PR: true,
 		Phrase: "a pull request is opened, pushed to, marked ready or reopened",
 		Params: []ParamDef{{Name: "on", Label: "Changes", Type: PSelect, Advanced: true, Default: "",
@@ -132,7 +121,7 @@ func init() {
 			return tr.Command == "" || strings.EqualFold(tr.Command, e.New) || (strings.EqualFold(tr.Command, "review") && strings.EqualFold(e.New, "full review"))
 		}})
 	registerTrigger(TriggerDef{Name: "pr_comment", Label: "Reply to a bot", Group: "Pull requests", Event: EvPRComment, PR: true,
-		Phrase: "a person replies in a bot's review thread"}) // WP-D21
+		Phrase: "a person replies in a bot's review thread"})
 	registerTrigger(TriggerDef{Name: "pr_labeled", Label: "Pull request labelled", Group: "Pull requests", Event: EvPRLabeled, PR: true,
 		Phrase:   "a pull request is labelled {label}",
 		Params:   []ParamDef{{Name: "label", Label: "Label", Type: PText, Placeholder: "any label", Help: "Empty is any label."}},
@@ -178,7 +167,6 @@ func init() {
 			return v == "" || dataStr(e, "state") == v
 		}})
 
-	// ---- code ----
 	registerTrigger(TriggerDef{Name: "repo_pushed", Label: "Pushed to a branch", Group: "Code", Phrase: "someone pushes to {branch}", Event: EvRepoPushed, Params: []ParamDef{branchParam},
 		Match: func(tr Trigger, e *Event) bool { return matchGlob(tr.str("branch"), dataStr(e, "branch")) }})
 	registerTrigger(TriggerDef{Name: "files_changed", Label: "Files changed", Group: "Code", Phrase: "a push changes files matching {paths}", Event: EvRepoPushed,
@@ -200,7 +188,6 @@ func init() {
 	registerTrigger(TriggerDef{Name: "release_published", Label: "Tag or release published", Group: "Code", Phrase: "a release is published", Event: EvRepoRelease})
 	registerTrigger(TriggerDef{Name: "linked_issue_closed", Label: "Linked forge issue closed", Group: "Code", Phrase: "a linked forge issue is closed", Event: EvExternalIssueClose, Issue: true})
 
-	// ---- deployments and environments ----
 	registerTrigger(TriggerDef{Name: "env_deployed", Label: "Deployed", Group: "Deployments", Phrase: "something is deployed to {environment}", Event: EvEnvDeployed, Params: []ParamDef{envParam},
 		Match: func(tr Trigger, e *Event) bool { return matchGlob(tr.str("environment"), dataStr(e, "name")) }})
 	registerTrigger(TriggerDef{Name: "env_deploy_failed", Label: "Deploy failed", Group: "Deployments", Phrase: "a deploy to {environment} fails", Event: EvEnvDeployFailed, Params: []ParamDef{envParam},
@@ -218,7 +205,6 @@ func init() {
 	registerTrigger(TriggerDef{Name: "env_created", Label: "Environment created", Group: "Deployments", Phrase: "an environment is created", Event: EvEnvCreated})
 	registerTrigger(TriggerDef{Name: "env_stopped", Label: "Environment stopped", Group: "Deployments", Phrase: "an environment is stopped", Event: EvEnvStopped})
 
-	// ---- agents ----
 	registerTrigger(TriggerDef{Name: "session_started", Label: "Agent session started", Group: "Agents", Phrase: "an agent session starts", Event: EvSessionStarted})
 	registerTrigger(TriggerDef{Name: "session_ended", Label: "Agent session ended", Group: "Agents", Phrase: "an agent session ends", Event: EvSessionEnded})
 	registerTrigger(TriggerDef{Name: followUpTrigger, Label: "An agent finishes", Group: "Agents", Phrase: "an agent finishes", Event: EvSessionFinished,
@@ -245,12 +231,10 @@ func init() {
 			return "request:" + cmp(dataStr(e, "request"), dataStr(e, "code"))
 		}}})
 
-	// ---- sprints ----
 	registerTrigger(TriggerDef{Name: "sprint_created", Label: "Sprint created", Group: "Sprints", Phrase: "a sprint is created", Event: EvSprintCreated})
 	registerTrigger(TriggerDef{Name: "sprint_started", Label: "Sprint started", Group: "Sprints", Phrase: "a sprint starts", Event: EvSprintStarted})
 	registerTrigger(TriggerDef{Name: "sprint_closed", Label: "Sprint closed", Group: "Sprints", Phrase: "a sprint is closed", Event: EvSprintClosed})
 
-	// ---- knowledge ----
 	registerTrigger(TriggerDef{Name: "glossary_changed", Label: "Glossary term added or changed", Group: "Knowledge", Phrase: "a glossary term is {change}", Event: EvGlossaryChanged,
 		Params: []ParamDef{{Name: "change", Label: "Change", Type: PSelect, Options: opts("", "Added or changed", "added", "Added", "changed", "Changed")}},
 		Match: func(tr Trigger, e *Event) bool {
@@ -271,16 +255,13 @@ func init() {
 	registerTrigger(TriggerDef{Name: "page_created", Label: "Page created", Group: "Knowledge", Phrase: "a page is created", Event: EvPageCreated})
 	registerTrigger(TriggerDef{Name: "page_updated", Label: "Page updated", Group: "Knowledge", Phrase: "a page is updated", Event: EvPageUpdated})
 
-	// ---- projects ----
 	registerTrigger(TriggerDef{Name: "project_created", Label: "Project created", Group: "Projects", Phrase: "a project is created", Event: EvProjectCreated, Admin: true})
 	registerTrigger(TriggerDef{Name: "repo_attached", Label: "Repo attached", Group: "Projects", Phrase: "a repo is attached to a project", Event: EvRepoAttached})
 
-	// ---- timers ----
 	registerTrigger(TriggerDef{Name: "timer_started", Label: "Timer started", Group: "Timers", Phrase: "a timer is started", Event: EvTimerStarted, Issue: true})
 	registerTrigger(TriggerDef{Name: "timer_stopped", Label: "Timer stopped", Group: "Timers", Phrase: "a timer is stopped", Event: EvTimerStopped, Issue: true})
 	registerTrigger(TriggerDef{Name: "timer_paused", Label: "Timer paused", Group: "Timers", Phrase: "an agent's timer is paused", Event: EvTimerPaused, Issue: true})
 
-	// ---- automations ----
 	registerTrigger(TriggerDef{Name: "automation_finished", Label: "An automation's run finished", Group: "Automations", Phrase: "an automation's run finishes ({status})", Event: EvAutomationRunFinished,
 		Params: []ParamDef{
 			{Name: "automation", Label: "Automation", Type: PText, Help: "Its name or id; empty is any."},
@@ -292,7 +273,7 @@ func init() {
 				return false
 			}
 			if st := dataStr(e, "status"); st != RunSucceeded && st != RunFailed && st != RunCancelled {
-				return false // queued and waiting aren't finishing
+				return false
 			}
 			if want := tr.str("automation"); want != "" && !strings.EqualFold(want, dataStr(e, "name")) && want != dataStr(e, "automation") {
 				return false
@@ -300,7 +281,6 @@ func init() {
 			return true
 		}})
 
-	// ---- time ----
 	registerTrigger(TriggerDef{Name: "due_soon", Label: "Due date is near", Group: "Time", Phrase: "an issue is due", Event: EvDueSoon, Issue: true, Timed: true,
 		Params: []ParamDef{{Name: "days", Label: "Days before", Type: PNumber, Default: 0, Min: f64(0), Max: f64(60), Help: "0 fires on the day."}},
 		Check: func(tr *Trigger) error {
@@ -348,7 +328,6 @@ func init() {
 			return nil
 		}})
 
-	// ---- manual and incoming ----
 	registerTrigger(TriggerDef{Name: "manual", Label: "Run now", Group: "Manual and incoming", Phrase: "I press Run now", Event: EvManual,
 		Doc:      "A button on the automation, wp automation run NAME, or POST /api/v1/automations/{id}/run. Add inputs to ask for values.",
 		Provides: []OutputDef{{Name: "Inputs.<name>", Type: "text", Doc: "what the run was given"}}})
@@ -357,7 +336,6 @@ func init() {
 		Params:   []ParamDef{{Name: "secret", Label: "Signing secret", Type: PSecret, Secret: true, Help: "Optional. When set, requests must carry X-Hub-Signature-256: sha256=HMAC of the body."}},
 		Provides: []OutputDef{{Name: "Trigger.Data", Type: "object", Doc: "the JSON body"}}})
 
-	// ---- system (admin automations) ----
 	registerTrigger(TriggerDef{Name: "system_resources", Label: "Disk, database or memory low", Group: "System", Phrase: "a system resource ({resource}) runs low", Event: EvSystemResources, Admin: true,
 		Params: []ParamDef{{Name: "resource", Label: "Resource", Type: PSelect, Options: opts("", "Any", "disk", "Disk space", "database", "Database size", "memory", "Memory", "transcripts", "Transcript archive")}},
 		Match: func(tr Trigger, e *Event) bool {

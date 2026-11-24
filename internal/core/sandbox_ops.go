@@ -12,12 +12,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/sandbox"
 )
 
-// Sandbox helper actions (WP-448, WP-ADR28, PL7 §5.3): from Settings →
-// Runners → Sandbox a person removes a machine user or has the helper
-// finish what a crash left half done. Waypoint queues the action; the
-// machine's runner picks it up on its next poll, with a spec signed then,
-// hands it to its helper and reports the outcome on the poll after. Like
-// the policy, only a person in the browser asks for one.
+// Only a person in the browser can queue one; the runner's spec is signed when it polls, not when queued.
 
 // EvSandboxOp: a person asked a machine's sandbox helper for an action.
 // Data: runner (id), name, runner_owner, op, user.
@@ -130,7 +125,6 @@ func (s *Service) RequestSandboxOp(ctx context.Context, actor *Actor, runnerID i
 	}
 	var id int64
 	err = s.write(ctx, actor, func(t *tx) error {
-		// The same action still pending is the one asked for.
 		err := t.QueryRowContext(ctx, `SELECT id FROM sandbox_ops WHERE runner_id = ? AND op = ? AND user_name = ? AND done_at IS NULL`,
 			r.ID, in.Op, in.User).Scan(&id)
 		if err == nil || !errors.Is(err, sql.ErrNoRows) {

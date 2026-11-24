@@ -32,7 +32,7 @@ func TestReviewHealthIssues(t *testing.T) {
 		by      []AgainRoundStat
 		agree   *AgainAgreement
 		helpers []AgainHelperStat
-		want    string // a title fragment; "" none
+		want    string
 	}{
 		{name: "nothing recorded"},
 		{name: "rounds rarely useful", by: []AgainRoundStat{{Index: 1, Followed: 20, Useful: 4, Arms: map[string]int{}}}, want: "rounds after round 1 rarely find anything"},
@@ -44,17 +44,12 @@ func TestReviewHealthIssues(t *testing.T) {
 		{name: "probes well under again", by: []AgainRoundStat{{Index: 2, Followed: 20, Useful: 10, ProbeFollowed: 10, ProbeUseful: 3, Arms: map[string]int{}}}},
 		{name: "too few probes", by: []AgainRoundStat{{Index: 2, Followed: 20, Useful: 10, ProbeFollowed: 9, ProbeUseful: 9, Arms: map[string]int{}}}},
 		{name: "too few again rounds to compare", by: []AgainRoundStat{{Index: 2, Followed: 19, Useful: 10, ProbeFollowed: 10, ProbeUseful: 9, Arms: map[string]int{}}}},
-		// Live round 4 (WP-1320): nothing found on either side tripped 0 >= 0.
-		// Only the rounds' own condition trips, not the probes'.
 		{name: "neither probes nor again rounds find anything", by: []AgainRoundStat{{Index: 2, Followed: 20, Useful: 0, ProbeFollowed: 10, ProbeUseful: 0, Arms: map[string]int{}}}, want: "rounds after round 2 rarely find anything"},
 		{name: "the check of marks mostly passed over, summed over indexes", by: []AgainRoundStat{{Index: 1, Checks: 12, Passed: 6, Arms: map[string]int{}}, {Index: 2, Checks: 8, Passed: 5, Unchecked: 3, Arms: map[string]int{}}}, want: "check of sessions' marks mostly doesn't answer"},
 		{name: "the check of marks half passed over is fine", by: []AgainRoundStat{{Index: 1, Checks: 20, Passed: 10, Arms: map[string]int{}}}},
 		{name: "too few checks of marks", by: []AgainRoundStat{{Index: 1, Checks: 19, Passed: 19, Arms: map[string]int{}}}},
 		{name: "the decision model mostly missing", by: []AgainRoundStat{{Index: 1, Decided: 12, Scoring: 12, Labels: 6, Arms: map[string]int{AgainNoModel: 6}}, {Index: 2, Decided: 8, Scoring: 8, Labels: 5, Arms: map[string]int{AgainUnscored: 5}}}, want: "decision model mostly can't score"},
-		// Rounds a signal sent on (arm "") were still sent to be scored.
 		{name: "the decision model missing where signals decided", by: []AgainRoundStat{{Index: 1, Decided: 20, Scoring: 20, Labels: 11, Signalled: 20, Arms: map[string]int{"": 20}}}, want: "decision model mostly can't score"},
-		// Rounds that never went to the model (all rejected, the cap) aren't
-		// in the count either way.
 		{name: "rounds the model wasn't asked about don't dilute it", by: []AgainRoundStat{{Index: 1, Decided: 60, Scoring: 20, Labels: 11, Arms: map[string]int{AgainRejected: 40, AgainNoModel: 11}}}, want: "decision model mostly can't score"},
 		{name: "the decision model missing half the time is fine", by: []AgainRoundStat{{Index: 1, Decided: 20, Scoring: 20, Labels: 10, Arms: map[string]int{AgainNoModel: 10}}}},
 		{name: "too few decided to say", by: []AgainRoundStat{{Index: 1, Decided: 19, Scoring: 19, Labels: 19, Arms: map[string]int{AgainNoModel: 19}}}},
@@ -66,7 +61,6 @@ func TestReviewHealthIssues(t *testing.T) {
 		{name: "verify mostly fails", helpers: []AgainHelperStat{{Check: helperVerify, Runs: 20, Done: 5, Failed: 15}}, want: "verify mostly doesn't run"},
 		{name: "problems rarely confirmed", helpers: []AgainHelperStat{{Check: "claims", Runs: 20, Done: 20, Answered: 20, Raised: 100, Confirmed: 4}}, want: "claims's problems are rarely confirmed"},
 		{name: "problems confirmed enough", helpers: []AgainHelperStat{{Check: "claims", Runs: 20, Done: 20, Answered: 20, Raised: 100, Confirmed: 5}}},
-		// Runs whose reviewer didn't answer handed their leads to no one.
 		{name: "too few answered runs to judge leads", helpers: []AgainHelperStat{{Check: "claims", Runs: 30, Done: 30, Answered: 19, Raised: 100}}},
 		{name: "findings mostly rejected by sessions", helpers: []AgainHelperStat{{Check: "tests", Runs: 5, Done: 5, Raised: 20, Confirmed: 12, Fixed: 2, Rejected: 10}}, want: "from Haiku check tests are mostly rejected by sessions"},
 		{name: "findings mostly held by sessions", helpers: []AgainHelperStat{{Check: "tests", Runs: 5, Done: 5, Raised: 20, Confirmed: 12, Fixed: 3, Rejected: 9}}},
@@ -108,7 +102,6 @@ func TestReviewHealthIssues(t *testing.T) {
 func TestReviewHealthOnEvent(t *testing.T) {
 	pe := newPREnv(t, "forgejo")
 	now := pe.s.nowMS()
-	// recorded is what a decision or an audit's end emits for a project.
 	recorded := func(pid int64) error {
 		t.Helper()
 		err := pe.s.write(pe.ctx, SystemActor(), func(tx *tx) error {
@@ -170,7 +163,6 @@ func TestReviewHealthOnEvent(t *testing.T) {
 	if again := open(); len(again) != 1 || again[0] == ids[0] {
 		t.Fatalf("after closing the first, open: %v (first %d)", again, ids[0])
 	}
-	// A run older than the window doesn't count.
 	pe.mexec(`DELETE FROM audit_helper_runs`)
 	old := pe.s.now().AddDate(0, 0, -reviewHealthDays-1).UnixMilli()
 	for range 30 {
@@ -187,9 +179,7 @@ func TestReviewHealthOnEvent(t *testing.T) {
 	if n != 0 || len(open()) != before {
 		t.Fatalf("runs outside the window filed %d", n)
 	}
-	// The event checks only its own project: another project's tripped
-	// record waits for that project's event. A record that can't be read
-	// files nothing and the next event reads it again (live round 5).
+	// The event checks only its own project; a record that can't be read files nothing, and the next event reads it again.
 	other := pe.project(pe.admin, "Other", "")
 	otherAudit := pe.mexec(`INSERT INTO code_audits(project_id, forge_id, repo, target, owner_id, created_at) VALUES (?, ?, 'me/other', 'repo', ?, ?)`, other.ID, pe.f.ID, pe.admin.User.ID, now)
 	for range 20 {
@@ -213,8 +203,6 @@ func TestReviewHealthOnEvent(t *testing.T) {
 	if err := recorded(other.ID); err != nil || claims() != 1 {
 		t.Errorf("Other's own event: %d, %v", n, err)
 	}
-	// A tripped condition with nobody to file it as is an error the check
-	// logs, not a silent nil (live round 4).
 	h := reviewHealthIssue{title: "Review loop: a test condition", body: "Figures."}
 	pe.mexec(`UPDATE users SET disabled = 1 WHERE id = ?`, pe.s.leftoverOwner(pe.ctx, pe.s.db.R, pe.p.ID))
 	if err := pe.s.fileReviewHealth(pe.ctx, pe.p.ID, h); err == nil || !strings.Contains(err.Error(), "disabled") {
@@ -246,13 +234,8 @@ func TestAgainHelperStats(t *testing.T) {
 	}
 	a := audit(p.ID, 100)
 	run(a, "goals", "done", `[{"id":"goals.1","confirmed":true},{"id":"goals.2","confirmed":true}]`, 4, 0.01, 100)
-	// Raised is every lead after pruning: the two that became findings and
-	// the three a second read or the join cut; the pruning's own cut ("repeats")
-	// isn't raised. Confirmed adds the one the join took out as the reviewer's.
 	fx.exec(`UPDATE audit_helper_runs SET cut = '[{"title":"A","why":"repeats"},{"id":"goals.3","title":"B","why":"refuted by a second read of the code: no"},{"id":"goals.4","title":"C","why":"not checked: the check ran out of time"},{"id":"goals.5","title":"D","why":"confirmed, the same defect as the reviewer''s finding R1"}]' WHERE check_name = 'goals'`)
 	run(a, "goals", "skipped", `[]`, 0, 0, 100)
-	// An attempt whose reviewer didn't answer: its run and cost count, its
-	// leads don't.
 	run(a, "goals", "done", `[{"id":"goals.1"},{"id":"goals.2"},{"id":"goals.3"}]`, 0, 0.02, 100)
 	fx.exec(`UPDATE audit_helper_runs SET answered = 0 WHERE id = (SELECT max(id) FROM audit_helper_runs)`)
 	run(a, "tests", "failed", `[]`, 0, 0.002, 100)
@@ -268,18 +251,11 @@ func TestAgainHelperStats(t *testing.T) {
 	finding(a, 8, "open", "unsupported", "")
 	fx.exec(`UPDATE code_audit_findings SET verdict_note = 'Asked twice, refuted both times. no' WHERE audit_id = ? AND ordinal = 7`, a)
 	fx.exec(`UPDATE code_audit_findings SET verdict_note = 'Asked twice, the check answered refuted, then confirmed. First: no Then: yes' WHERE audit_id = ? AND ordinal = 8`, a)
-	// A finding the panel made: its lead column holds the leads' ids. It counts
-	// for each check named, and its verdict is the second read's, not the check
-	// of findings'.
 	fx.exec(`INSERT INTO code_audit_findings(audit_id, ordinal, title, path, line, severity, problem, state, verdict, lead) VALUES (?, 9, 'P', 'a.go', 1, 'high', 'x', 'fixed', 'confirmed', 'goals.3,tests.2')`, a)
-	// A panel finding is the check's own: its lead column says so, and the
-	// check of findings' counts only the reviewer's (WP-1320, G1).
 	finding(a, 10, "fixed", "confirmed", "goals.1")
 	finding(a, 11, "rejected", "confirmed", "goals.2")
 	finding(a, 12, "rejected", "confirmed", "tests.1")
-	// A second ask that failed isn't one asked again.
 	fx.exec(`UPDATE code_audit_findings SET verdict_note = 'Asked twice; the second ask failed, and one answer doesn''t refute. First: no' WHERE audit_id = ? AND ordinal = 3`, a)
-	// Another project's, and this project's before the window: neither counts.
 	b := audit(other.ID, 100)
 	run(b, "goals", "done", `[{"id":"goals.1"}]`, 0, 1, 100)
 	finding(b, 1, "fixed", "refuted", "goals.1")

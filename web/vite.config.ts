@@ -12,13 +12,15 @@ export default defineConfig({
     emptyOutDir: true,
     target: 'es2022',
     sourcemap: false,
-    // Libraries change rarely; keep them in their own long-cached chunks so
-    // an app update only re-downloads app code.
     rolldownOptions: {
       output: {
         codeSplitting: {
           groups: [
-            { name: 'react', test: /node_modules[\\/](react|react-dom|scheduler)[\\/]/, priority: 30 },
+            {
+              name: 'react',
+              test: /node_modules[\\/](react|react-dom|scheduler)[\\/]/,
+              priority: 30,
+            },
             { name: 'tanstack', test: /node_modules[\\/]@tanstack[\\/]/, priority: 20 },
             { name: 'vendor', test: /node_modules[\\/]/, priority: 10 },
           ],

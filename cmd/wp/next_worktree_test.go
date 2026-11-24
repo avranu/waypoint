@@ -34,16 +34,13 @@ func TestNextOwnWorktree(t *testing.T) {
 	repo := tidyReal(s.repo)
 	home := filepath.Join(repo, ".claude", "worktrees")
 
-	// Two finished worktrees (their branches are on main and pushed), one
-	// with a process in it.
 	done, busy := filepath.Join(home, "done"), filepath.Join(home, "busy")
 	for _, p := range []string{done, busy} {
 		b := filepath.Base(p)
 		git(t, s.repo, "worktree", "add", "-q", "-b", b, p, "origin/main")
 		git(t, s.repo, "push", "-q", "origin", b)
 	}
-	// One outside .claude/worktrees/ whose folder is missing (an unmounted
-	// disk): the sweep keeps it, so git worktree prune mustn't drop it.
+	// Outside the worktrees folder a missing folder may be an unmounted disk: it is kept, not pruned.
 	away := filepath.Join(t.TempDir(), "away")
 	git(t, s.repo, "worktree", "add", "-q", "-b", "away", away, "origin/main")
 	git(t, s.repo, "push", "-q", "origin", "away")
@@ -60,7 +57,7 @@ func TestNextOwnWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 	procCwds = func() ([]string, error) { return []string{busyLink}, nil }
-	worktreeNow = func() time.Time { return time.Now().Add(3 * time.Hour) } // past tidy's quiet period
+	worktreeNow = func() time.Time { return time.Now().Add(3 * time.Hour) }
 	t.Cleanup(func() { sessionFolder, procCwds, worktreeNow = oldFolder, oldCwds, oldNow })
 
 	p := s.project.Key
@@ -103,14 +100,11 @@ func TestNextOwnWorktree(t *testing.T) {
 		t.Errorf("claim left in the main checkout: %+v", cl)
 	}
 
-	// A clean worktree is where the next task goes, whatever its branch says.
 	t.Chdir(wt)
 	folder = wt
 	if out := s.wp("next", mk("Next one"), "-p", p); strings.Contains(out, "\nWorktree") || !strings.Contains(out, wt+" on worktree-"+slug) {
 		t.Errorf("clean worktree:\n%s", out)
 	}
-	// With other work in it, and the session's folder that worktree, wp
-	// names the command instead of making one outside the folder.
 	if err := os.WriteFile(filepath.Join(wt, "wip.txt"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +117,6 @@ func TestNextOwnWorktree(t *testing.T) {
 		t.Error("made a worktree outside the session's folder")
 	}
 
-	// --no-worktree keeps it in the main checkout.
 	t.Chdir(s.repo)
 	folder = repo
 	if out := s.wp("next", mk("Here"), "--no-worktree", "-p", p); strings.Contains(out, "\nWorktree") || !strings.Contains(out, repo+" on ") {

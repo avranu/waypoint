@@ -1,5 +1,4 @@
-// Usage analytics (WP-D20): tokens, tools, refusals and quota from Claude
-// Code's transcripts, hooks and status line. (usage.ts is knowledge use.)
+// This is Claude Code usage, not knowledge use (that is usage.ts).
 
 import { infiniteQueryOptions, queryOptions } from '@tanstack/react-query'
 import { api, qs } from './api'
@@ -223,8 +222,6 @@ export const usageRefusalsQuery = (f: UsageFilters, before: number) =>
     staleTime: 30_000,
   })
 
-// ---- risky commands (WP-647) ----
-
 export type RiskyLevel = 'high' | 'medium'
 export type RiskyOutcome = 'ran' | 'error' | 'refused' | 'unknown'
 
@@ -312,8 +309,6 @@ export const usageBreakdownQuery = (f: UsageFilters, by: string, limit: number, 
     staleTime: 30_000,
     enabled,
   })
-
-// ---- trends and before/after (WP-196) ----
 
 export type TrendSum =
   | 'cost'
@@ -405,8 +400,6 @@ export interface UsageTrends {
   no_task: UsageTotals
   factors: UsageFactor[]
 }
-
-// ---- how agents use wp (WP-618) ----
 
 export interface UsageCliPeriod {
   sessions: number
@@ -572,8 +565,6 @@ export const modelPricesQuery = () =>
     queryFn: () => api.get<ModelPrice[]>('/usage/prices'),
   })
 
-// ---- display helpers ----
-
 /** Opus / Sonnet / Haiku / Other: the series of the token charts. */
 export function modelFamily(model: string): 'Opus' | 'Sonnet' | 'Haiku' | 'Other' {
   const m = model.toLowerCase()
@@ -642,8 +633,6 @@ export function paceText(w: QuotaWindow): { text: string; tone: 'ok' | 'warn' | 
       return { text: 'The window has reset since the last report', tone: 'muted' }
   }
 }
-
-// ---- token ledger (WP-35) ----
 
 export interface LedgerStats {
   calls: number

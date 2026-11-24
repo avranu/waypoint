@@ -1,5 +1,3 @@
-// Relations to other issues, external links (PRs, issues, URLs) and shares.
-
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -111,7 +109,7 @@ export function RelationsBlock({
   )
   const actions = (
     <span className="flex items-center gap-0.5">
-      {/* Everything that relates to it, a few steps out (WP-385). */}
+      {}
       <Link
         to="/graph"
         search={{ ref: issue.key }}
@@ -252,7 +250,6 @@ function AddRelation({
   const [pickedSub, setPickedSub] = useState<Relation['subkind'] | ''>('')
   const [text, setText] = useState('')
   const [active, setActive] = useState(0)
-  // Arrows moved the highlight: Enter takes it even over a typed key.
   const [moved, setMoved] = useState(false)
   // Enter before the search answers waits for it, then takes the top match,
   // never a row the list still shows for the words before.
@@ -263,13 +260,10 @@ function AddRelation({
   const subkind = typed.kind ? (typed.subkind ?? '') : pickedSub
   const query = typed.rest.trim()
   const d = useDebounced(query, 150)
-  // Linking these again would say nothing new (WP-778): "Related to" adds nothing
-  // to any relation, but a related pair can still turn out to be a duplicate or a
-  // blocker. The search asks for that many more, so the list doesn't get shorter.
+  // A related pair stays a candidate: it can still become a duplicate or blocker, so the search asks for more.
   const linked = new Set([
     issue.key,
     ...issue.relations
-      // A follow-up picked again with another subkind changes it (WP-1036).
       .filter(
         (r) =>
           kind === 'relates' ||
@@ -294,7 +288,6 @@ function AddRelation({
         subkind: subkinds[kind] ? subkind : '',
       })
       .then(() => {
-        // Keep the relation words, so "fix WP-1, fix WP-2" is one word less each time.
         setText(text.slice(0, text.length - typed.rest.length))
         setActive(0)
         setMoved(false)
@@ -305,14 +298,12 @@ function AddRelation({
   useEffect(() => {
     if (!waiting || !answered) return
     setWaiting(false)
-    // An arrow pick made while waiting still wins over the top row.
     const pick = moved && matches[at] ? matches[at] : matches[0]
     if (pick) add(pick.key)
   }, [waiting, answered])
   const choose = (k: RelationKind) => {
     setPicked(k)
     setPickedSub('')
-    // A word typed for the kind gives way to the one picked.
     if (typed.kind) setText(typed.rest)
   }
   return (
@@ -465,7 +456,6 @@ export function LinksBlock({
   const add = useMutation({
     mutationFn: () => api.post(`/issues/${enc(issue.key)}/links`, { url: url.trim() }),
     onSuccess: () => {
-      // The box stays, focused, for the next one; Esc closes it.
       setUrl('')
       box.current?.focus()
       refresh()

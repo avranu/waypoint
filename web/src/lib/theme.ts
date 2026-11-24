@@ -1,7 +1,5 @@
 import { useSyncExternalStore } from 'react'
 
-// Light/dark theme: an explicit choice, or follow the system.
-
 export type Theme = '' | 'light' | 'dark'
 
 const media = () => matchMedia('(prefers-color-scheme: dark)')
@@ -25,9 +23,7 @@ export function applyTheme(t: Theme) {
 export function setTheme(t: Theme) {
   try {
     localStorage.setItem('wp:theme', t)
-  } catch {
-    /* ignore */
-  }
+  } catch {}
   applyTheme(t)
 }
 

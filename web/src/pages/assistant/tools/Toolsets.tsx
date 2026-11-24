@@ -1,6 +1,4 @@
-// Hermes's built-in toolsets, on and off. A toolset in the assistant's
-// agent.disabled_toolsets stays off whatever its switch says (and the
-// assistant's deploy pins that list), so it shows as off and locked.
+// The deploy pins agent.disabled_toolsets: a toolset on that list stays off and locked whatever its switch says.
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'
@@ -63,7 +61,6 @@ export function ToolsetsSection({ assistant }: { assistant: Assistant }) {
           Couldn't load the toolsets: {sets.error.message}
         </p>
       ) : (
-        // Each row draws its bottom border; the last row's tucks under the panel's.
         <div className="overflow-hidden rounded-b-xl">
           <ul className="-mb-px grid sm:grid-cols-2">
             {list.map((t) => (

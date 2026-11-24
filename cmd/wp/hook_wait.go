@@ -12,19 +12,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// The wait hook (WP-1571): after a Bash call that went to the background, the
-// session is told how long the run is likely to take (when it is wp testsum
-// or wp slot run, from the slot directory's history) and what it can do
-// meanwhile: the findings of its review round still to do, the answers to its
-// requests it hasn't been told of, in full. A foreground call is over by the
-// time a PostToolUse hook runs, so it says nothing for one. The server says
-// what is outstanding (POST /api/v1/sessions/outstanding, which records
-// nothing at the wait); with none, or with no answer, the hook prints only the
-// ETA, if any. Both are worked out at once, and the hook says what it has by
-// waitBudget. Once it has printed answers it says so (POST
-// .../outstanding/told), and only then are they marked told and the findings
-// recorded as named: a hook cut off before it printed loses none, and an answer can come twice (two hooks at
-// once, or a Stop before the hook's word).
+// Answers are marked told only after the hook has printed them: a hook cut off early loses none, and an answer can come twice.
 
 // hookWait is the PostToolUse(Bash) hook's command.
 const hookWait = "hook claude-wait"
@@ -87,13 +75,12 @@ func waitETACommandAt(command string, depth int) (name, cmd string, n int, ok bo
 		if len(rest) < 2 || !isWp(rest[0]) {
 			continue
 		}
-		args := dropRedirections(rest[1:], plain[k][len(words)-len(rest)+1:]) // os.Args[1:] of that wp
+		args := dropRedirections(rest[1:], plain[k][len(words)-len(rest)+1:])
 		if len(args) == 0 {
 			continue
 		}
 		if args[0] == "testsum" {
 			if run, ok := testsumRuns(args[1:]); ok {
-				// As runInSlotThen keys the run it records.
 				return "tests", slotRunKey(append([]string{"wp"}, args...), goTestJSON(run)), 0, true
 			}
 			continue
@@ -140,7 +127,7 @@ func testsumRuns(args []string) ([]string, bool) {
 			return nil, false
 		}
 		if !hasValue {
-			i++ // its value is the next word
+			i++
 		}
 	}
 	return nil, false
@@ -159,7 +146,7 @@ func dropRedirections(words []string, plain []int) []string {
 	for i := 0; i < len(words); i++ {
 		if m := reRedirect.FindStringSubmatch(words[i]); m != nil && len(m[1])+len(m[2])+len(m[3]) <= plain[i] {
 			if m[4] == "" {
-				i++ // the target is the next word
+				i++
 			}
 			continue
 		}
@@ -191,9 +178,7 @@ func waitETA(command, cwd, session string) string {
 		return ""
 	}
 	holders := slotHolders(dir, name)
-	// The command was started a moment ago, so it may already hold a slot: that
-	// is no one else's. It is the holder of the same command that this session's
-	// process started (slotOwn).
+	// Drop our own just-started run from the holders: this wait is not queued behind it.
 	for i, h := range holders {
 		if h.Cmd != cmd {
 			continue
@@ -222,9 +207,7 @@ func hookClaudeWait(c *cli, stdin io.Reader, stdout io.Writer) {
 		Command string `json:"command"`
 	}
 	_ = json.Unmarshal(in.ToolInput, &call)
-	// The ETA reads git and the slot directory, which can be slow: it goes
-	// alongside the server's call, and what isn't ready by the budget is left
-	// out rather than the hook timing out with nothing said (audit #1372.13).
+	// The ETA runs alongside the server call and is left out if late, so the hook never times out with nothing said.
 	start := time.Now()
 	deadline := time.After(waitBudget)
 	eta := make(chan string, 1)
@@ -260,8 +243,7 @@ func hookClaudeWait(c *cli, stdin io.Reader, stdout io.Writer) {
 	if _, err := stdout.Write(hookContext("PostToolUse", text)); err != nil || lines == "" || len(told)+len(named) == 0 {
 		return
 	}
-	// The answers were given: they are told. Within the hook's own timeout,
-	// with a little to spare.
+	// The told call must finish inside the hook's timeout, so it is skipped when little time is left.
 	left := time.Duration(hookWaitTimeout)*time.Second - 500*time.Millisecond - time.Since(start)
 	if left < waitToldMin {
 		return

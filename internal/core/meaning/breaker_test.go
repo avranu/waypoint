@@ -119,7 +119,7 @@ func TestMeaningBreakerOneProbeAndRefused(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
 		if hold.Load() {
-			select { // the server may not see the client hang up
+			select { // a client hang-up may go unseen by the server, so stop must also release the handler
 			case <-r.Context().Done():
 			case <-stop:
 			}
@@ -175,7 +175,6 @@ func TestMeaningBreakerOneProbeAndRefused(t *testing.T) {
 		t.Fatalf("a cancelled probe is no verdict: %+v", h)
 	}
 
-	// The turn came back: the next call probes, and the service is gone.
 	hold.Store(false)
 	releaseHeld()
 	srv.CloseClientConnections()

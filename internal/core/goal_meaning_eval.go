@@ -11,41 +11,19 @@ import (
 	"sort"
 )
 
-// The evaluator of the judgements of meaning (WP-1035, page WP-PL17). It
-// does not run on a calendar: the newest fit of a question decides until
-//
-//   - first: there is none yet and enough labels (meaningEvalMin, and
-//     meaningEvalClass of each answer) to pick one;
-//   - version: a scorer it used changed (another embedding or NLI model, a
-//     new prompt version or a new way of building cases);
-//   - drift: the labels that came after it show its decider erring, on the
-//     yes labels or on the no labels, more than its held-out error rate
-//     for that answer allows (a one-sided binomial test at meaningDriftP,
-//     once meaningDriftMin labels of that answer came in).
-//
-// Then it holds out ~30% of the labels by group (one goal's constructed
-// cases, one suggestion, one task stay together; behaviour labels are the
-// held-out set once there are enough of them, so constructed cases only
-// teach), fits each candidate on the rest (the prior; each scorer alone at
-// its best line; a logistic regression over the scorers most labels have)
-// and scores what each would decide on the held-out labels, falling back
-// to the prior and then to no where it has no score, as it would live.
-// The best by balanced accuracy replaces the incumbent only if it beats it
-// in meaningEvalWins of meaningEvalBoot resamples of the held-out labels;
-// it is then refitted on all labels. Either way the evaluation is recorded
-// with the decider's held-out error rates, which the drift test reads.
+// Drift is judged against the held-out error rates stored with the fit, and only on labels after its LabelThrough.
 
 const (
 	meaningEvalMin   = 40
 	meaningEvalClass = 10
-	meaningHeldClass = 3 // of each answer held out, or nothing is evaluated
-	meaningHeldOut   = 3 // of 10 groups
+	meaningHeldClass = 3
+	meaningHeldOut   = 3
 	meaningDriftMin  = 20
 	meaningDriftP    = 0.01
-	meaningDriftRate = 0.02 // the least error rate a drift test assumes
+	meaningDriftRate = 0.02
 	meaningEvalBoot  = 500
 	meaningEvalWins  = 0.9
-	meaningCombined  = 0.8 // of rows a scorer must have to enter the regression
+	meaningCombined  = 0.8
 	meaningConstruct = "v1"
 )
 
@@ -167,7 +145,7 @@ func (s *Service) meaningEvaluateDue(ctx context.Context, st *meaningStore, ch *
 			continue
 		}
 		if pending {
-			continue // evaluated once the labels' scores are in
+			continue
 		}
 		inc, err := s.meaningFitLatest(ctx, j)
 		if err != nil {
@@ -476,7 +454,6 @@ func meaningEvaluate(j string, rows []meaningRow, inc *meaningFit) *meaningFit {
 			best = i
 		}
 	}
-	// The incumbent as it decides now.
 	incD := &meaningDecider{j: j, name: "prior"}
 	if inc != nil {
 		incD = inc.decider()
@@ -491,7 +468,6 @@ func meaningEvaluate(j string, rows []meaningRow, inc *meaningFit) *meaningFit {
 	wins := meaningWins(b.said, incSaid, y)
 	sameAsInc := b.d.name == incD.name && (b.d.name == "prior" || inc != nil && b.d.name != "combined" && b.d.line == incD.line)
 	if b.c.Balanced > incBA && wins >= meaningEvalWins && !sameAsInc {
-		// Adopted: refitted on every label, with its held-out error rates.
 		d := meaningFitCand(j, b.d.name, rows)
 		if d == nil {
 			d = b.d

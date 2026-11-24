@@ -11,9 +11,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// What a server, a forge or a flag supplies never reaches a command line as
-// an option (WP-1370), outside git too. Each refusal has its accept control.
-
 // cursor-agent takes the prompt as an argument, so it comes after "--"; the
 // other drivers hand theirs over on standard input and never in argv.
 func TestEveryDriverKeepsAPromptThatIsAnOptionOutOfArgv(t *testing.T) {
@@ -95,7 +92,7 @@ func TestAttachIDShape(t *testing.T) {
 func TestCodeqlImageNameIsNotAnOption(t *testing.T) {
 	for _, bad := range []string{"--privileged", "-v", "img --privileged", "img\n", ""} {
 		if bad == "" {
-			continue // no image is its own, separate refusal
+			continue
 		}
 		if checkCodeqlImage(bad) == nil {
 			t.Errorf("image %q accepted", bad)
@@ -128,7 +125,6 @@ func TestHookRemoteNamedLikeAnOptionIsNotGivenToGit(t *testing.T) {
 	if b, _ := os.ReadFile(log); strings.Contains(string(b), "get-url --all") {
 		t.Errorf("git was given the remote as an option: %s", b)
 	}
-	// Control: a legal name is read.
 	t.Setenv("REMOTE", "upstream")
 	if g := gitFactsAt(t.TempDir()); g.Repo != "o/r" {
 		t.Errorf("a legal remote gave the repo %q, want o/r", g.Repo)

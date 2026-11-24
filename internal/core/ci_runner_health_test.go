@@ -43,7 +43,6 @@ func TestFaultRerunState(t *testing.T) {
 	if got := parseFaultRerun(r.String()); got != r {
 		t.Fatalf("round trip: %+v", got)
 	}
-	// State written before WP-838 has four fields and no kinds.
 	if got := parseFaultRerun("abc 2 5 6"); got != (faultRerun{sha: "abc", n: 2, first: 5, last: 6}) {
 		t.Fatalf("old state: %+v", got)
 	}
@@ -66,7 +65,6 @@ func TestFaultBackoff(t *testing.T) {
 			t.Errorf("streak %d: %v, want %v", streak, got, want)
 		}
 	}
-	// A kind the streak hasn't failed with is a new problem: the wait starts over.
 	r := faultRerun{sha: "abc", n: 4, last: 1000, streak: 4, kinds: "disk"}
 	if r.noteKinds("disk") || r.streak != 4 {
 		t.Fatalf("same kinds: %+v", r)
@@ -74,8 +72,7 @@ func TestFaultBackoff(t *testing.T) {
 	if !r.noteKinds("dns") || r.streak != 0 || r.n != 4 || !r.nextTry().IsZero() || r.kinds != "disk,dns" {
 		t.Fatalf("new kinds: %+v", r)
 	}
-	// Back to one it has seen: the same sick runner, so the streak goes on
-	// (#c4874: alternating kinds re-ran every three minutes).
+	// Kinds seen earlier in the streak do not reset it, so alternating kinds cannot re-run every few minutes.
 	r.streak = 2
 	if r.noteKinds("disk") || r.noteKinds("dns,disk") || r.streak != 2 || !r.coversKinds("disk") || r.coversKinds("disk,lost") {
 		t.Fatalf("seen kinds: %+v", r)
@@ -96,7 +93,7 @@ func TestBabysitAlternatingFaultsBackOff(t *testing.T) {
 	lost := "runner2(version:v6.3.1) received task 4322 of job backend, be triggered by event: pull_request\n" +
 		"##[error]The runner has received a shutdown signal. This can happen when the runner service is stopped.\n" + runnerEnd
 	run := 0
-	log := func(l string) { // a run of the job failed, this way
+	log := func(l string) {
 		run++
 		be.sg.sm.Lock()
 		be.sg.logs["ci / test"] = l
@@ -114,7 +111,6 @@ func TestBabysitAlternatingFaultsBackOff(t *testing.T) {
 	if len(be.retries()) != 1 {
 		t.Fatalf("disk: retries %v wait %q", be.retries(), be.babysit().Wait)
 	}
-	// A new kind: the streak starts over, so it is re-run once the first settles.
 	log(lost)
 	be.setClock(be.clockNow().Add(faultRerunSettle))
 	be.runnerOnline()
@@ -122,7 +118,6 @@ func TestBabysitAlternatingFaultsBackOff(t *testing.T) {
 	if len(be.retries()) != 2 {
 		t.Fatalf("lost: retries %v wait %q", be.retries(), be.babysit().Wait)
 	}
-	// Disk again: seen in this streak, so it waits out the back-off.
 	log(enospcLog)
 	be.setClock(be.clockNow().Add(faultRerunSettle))
 	be.runnerOnline()
@@ -139,8 +134,6 @@ func TestBabysitAlternatingFaultsBackOff(t *testing.T) {
 	if st := parseFaultRerun(be.babysit().faultReruns); st.kinds != "disk,lost" || st.streak != 2 {
 		t.Fatalf("one streak: %+v", st)
 	}
-	// Checks that pass end the streak (here the pass would merge #7, so
-	// the step it takes is called directly).
 	b := be.babysit()
 	be.s.faultSpellOver(be.ctx, b, be.pr(7))
 	if st := parseFaultRerun(be.babysit().faultReruns); st.streak != 0 || st.kinds != "" || st.n != 3 || st.first != 0 {
@@ -167,7 +160,7 @@ func TestBabysitTimeLimitGoesToRound(t *testing.T) {
 	}
 	for i := 1; i <= faultTimeLimitReruns; i++ {
 		be.setClock(be.clockNow().Add(faultBackoff(i)))
-		be.runnerOnline() // the clock jumped past its heartbeat
+		be.runnerOnline()
 		be.step()
 	}
 	if got := len(be.retries()); got != faultTimeLimitReruns {
@@ -191,7 +184,6 @@ func TestFaultRerunUnrecordedIsNotAsked(t *testing.T) {
 	be.sg.sm.Unlock()
 	be.ci("7777777aaaa", CheckFailed)
 	be.step()
-	// Writes of a count of re-runs (the second field) other than 0 fail.
 	if _, err := be.s.db.W.ExecContext(be.ctx, `CREATE TRIGGER no_fault_reruns BEFORE UPDATE OF fault_reruns ON babysits
 		WHEN substr(NEW.fault_reruns, instr(NEW.fault_reruns, ' ') + 1, 2) != '0 ' BEGIN SELECT RAISE(ABORT, 'disk full'); END`); err != nil {
 		t.Fatal(err)
@@ -229,40 +221,33 @@ func TestNoProgressFindings(t *testing.T) {
 	if len(got) != 1 || got[0].Kind != "host_no_progress" || got[0].Level != "problem" || !strings.Contains(got[0].Detail, "me/app ci / backend") {
 		t.Fatalf("stuck: %+v", got)
 	}
-	// Hung for days, and still reported: still a clog (WP-838 c4364).
 	days := stuck
 	days.started = at(4 * 24 * time.Hour)
 	if got := noProgressFindings([]ciHostRun{days}, hosts, CIDoctorPool{}, now, allVisible); len(got) != 1 {
 		t.Fatalf("hung for days: %+v", got)
 	}
-	// One the host stopped reporting without an end isn't running.
 	gone := stuck
 	gone.reported = at(time.Hour)
 	if got := noProgressFindings([]ciHostRun{gone, ended("runner2", 2*time.Hour, 10*time.Minute)}, hosts, CIDoctorPool{}, now, allVisible); len(got) != 0 {
 		t.Fatalf("no longer reported: %+v", got)
 	}
-	// Ended something lately: it is moving.
 	if got := noProgressFindings([]ciHostRun{stuck, ended("runner2", 10*time.Minute, 10*time.Minute)}, hosts, CIDoctorPool{}, now, allVisible); len(got) != 0 {
 		t.Fatalf("moving: %+v", got)
 	}
-	// One job still within what that job usually takes clears the host.
 	young := stuck
 	young.job, young.started = "e2e", at(10*time.Minute)
 	if got := noProgressFindings([]ciHostRun{stuck, young, ended("runner2", 2*time.Hour, 10*time.Minute)}, hosts, CIDoctorPool{}, now, allVisible); len(got) != 0 {
 		t.Fatalf("a young job: %+v", got)
 	}
-	// A job that always takes long isn't stuck at an hour.
 	long := stuck
 	long.started = at(time.Hour)
 	if got := noProgressFindings([]ciHostRun{long, ended("runner2", 5*time.Hour, 90*time.Minute)}, hosts, CIDoctorPool{}, now, allVisible); len(got) != 0 {
 		t.Fatalf("a long job: %+v", got)
 	}
-	// Someone else's repo is counted, not named.
 	got = noProgressFindings([]ciHostRun{stuck}, hosts, CIDoctorPool{}, now, func(int64, string) bool { return false })
 	if len(got) != 1 || strings.Contains(got[0].Title+got[0].Detail, "me/app") || !strings.Contains(got[0].Detail, "1 job") {
 		t.Fatalf("hidden: %+v", got)
 	}
-	// Jobs waiting and nothing ending anywhere.
 	pool := CIDoctorPool{Waiting: 3, OldestWait: 3600}
 	got = noProgressFindings([]ciHostRun{ended("runner1", 2*time.Hour, time.Minute)}, nil, pool, now, allVisible)
 	if len(got) != 1 || got[0].Kind != "pool_no_progress" {
@@ -291,7 +276,6 @@ func TestSlowHostFindings(t *testing.T) {
 	if got := slowHostFindings(runs[:6], allVisible); len(got) != 0 {
 		t.Fatalf("too few runs: %+v", got)
 	}
-	// A short job twice as slow is a few seconds: not worth saying.
 	var short []ciHostRun
 	for range 5 {
 		short = append(short, run("runner2", 40), run("runner1", 20))
@@ -325,7 +309,6 @@ func TestNotifyCIHealthOncePerWindow(t *testing.T) {
 	if n := count(); n != 2 {
 		t.Fatalf("still happening after the window: told %d times", n)
 	}
-	// Cleared for a window: the key is dropped.
 	be.setClock(be.clockNow().Add(ciNotifyEvery + time.Minute))
 	be.s.notifyCIHealth(be.ctx, admins, nil)
 	var left int
@@ -382,7 +365,6 @@ func TestTimeLimitRerunningHoldsFixCI(t *testing.T) {
 	if !rerunning() {
 		t.Fatal("a new streak: not held")
 	}
-	// Nobody babysits it: nobody re-runs it either.
 	if _, err := be.s.StopBabysit(be.ctx, be.agent, be.pr(7).ID); err != nil {
 		t.Fatal(err)
 	}

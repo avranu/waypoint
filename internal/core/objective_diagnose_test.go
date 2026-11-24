@@ -46,9 +46,9 @@ func TestObjectiveDiagnoseCounter(t *testing.T) {
 	for _, c := range []struct {
 		name  string
 		after int
-		steps []string // outcomes of the rounds, in order
-		kind  string   // round_kind of the round that opens after them
-		count int      // no_better after them
+		steps []string
+		kind  string
+		count int
 	}{
 		{"default two no better", 2, []string{"none", "none"}, RoundKindDiagnose, 2},
 		{"one no better is not enough", 2, []string{"none"}, "", 1},
@@ -71,7 +71,6 @@ func TestObjectiveDiagnoseCounter(t *testing.T) {
 				o.setClock(o.clockNow().Add(100 * time.Hour))
 				switch step {
 				case "empty":
-					// Taken, finished with nothing landed: owed again, counted by no one.
 					if _, err := o.s.AgentTake(o.ctx, o.ag, task.Key, ""); err != nil {
 						t.Fatal(err)
 					}
@@ -128,12 +127,10 @@ func TestObjectiveDiagnoseRoundBriefAndRecording(t *testing.T) {
 		t.Errorf("person's text lacks the diagnose round:\n%s", people)
 	}
 
-	// Not taken up: an agent can't record it yet.
 	if _, err := o.diagnose(task.Key, ObjectiveDiagnoseInput{Text: "x"}); !IsInvalid(err) || !strings.Contains(err.Error(), "hasn't been taken up by you") {
 		t.Fatalf("not taken: %v", err)
 	}
 	o.take1(task.Key)
-	// The round's text is validated, not truncated.
 	for name, text := range map[string]string{"empty": "  \n ", "long": strings.Repeat("x", maxObjectiveDiagnosis+1)} {
 		if _, err := o.diagnose(task.Key, ObjectiveDiagnoseInput{Text: text}); !IsInvalid(err) {
 			t.Errorf("%s text: %v", name, err)
@@ -166,15 +163,11 @@ func TestObjectiveDiagnoseRecordsAndReopensTheSameRound(t *testing.T) {
 	if got := o.status(task.Key); got != "To Do" {
 		t.Fatalf("status = %s", got)
 	}
-	// The claim is released: it can be taken again, and by anyone (no backoff:
-	// waits only the objective's own pace, which for a target is none).
+	// A released claim has no backoff: it is handed out again at the objective's own pace, which for a target is none.
 	if next, wait := o.queued(task.Key); !next {
 		t.Fatalf("the reopened round isn't handed out: %q", wait)
 	}
-	// Every later round's brief reads it.
 	hasAll(t, "the next brief", ObjectiveText(ob, true, o.clockNow()), "latest diagnosis", "times the build", "anthropic/claude-opus-5-5")
-	// It can't be recorded twice: the round it reopened is a work round, and
-	// the refusal says so. The first diagnosis is left as it was.
 	o.take1(task.Key)
 	if _, err := o.diagnose(task.Key, ObjectiveDiagnoseInput{Text: "again"}); !IsInvalid(err) || !strings.Contains(err.Error(), "is a work round, not a diagnose round") {
 		t.Fatalf("recording twice: %v", err)
@@ -182,7 +175,6 @@ func TestObjectiveDiagnoseRecordsAndReopensTheSameRound(t *testing.T) {
 	if again := o.obj(task.Key); again.Diagnosis == nil || again.Diagnosis.Text != strings.TrimSpace(text) || len(again.Rounds) != len(ob.Rounds) {
 		t.Fatalf("a refused second diagnosis changed it: %+v (%d rounds, was %d)", again.Diagnosis, len(again.Rounds), len(ob.Rounds))
 	}
-	// A met reading clears it.
 	o.setClock(o.clockNow().Add(time.Minute))
 	if _, err := o.s.AgentDone(o.ctx, o.ag, task.Key, AgentDoneInput{}); err != nil {
 		t.Fatal(err)
@@ -230,7 +222,6 @@ func TestObjectiveDiagnoseProgressClearsIt(t *testing.T) {
 func TestObjectiveDiagnoseRunIsNotAStepDone(t *testing.T) {
 	o := newObjEnv(t)
 	task := o.toDiagnose(2, 2, ObjectiveInput{})
-	// Another agent finished the step before.
 	if _, err := o.s.db.W.Exec(`INSERT INTO agent_runs(issue_id, agent, started_at, ended_at, outcome) VALUES (?, 'anthropic/claude-sonnet-5-5', ?, ?, 'done')`,
 		task.ID, o.clockNow().UnixMilli(), o.clockNow().UnixMilli()); err != nil {
 		t.Fatal(err)
@@ -250,8 +241,6 @@ func TestObjectiveDiagnoseRunIsNotAStepDone(t *testing.T) {
 }
 
 func TestObjectiveDiagnoseDoesNotUseUpRounds(t *testing.T) {
-	// MaxRounds 3, diagnose after 2: rounds 1 and 2 come no nearer, round 3 is a
-	// diagnose round, which reopens round 3 as a work round, with the last round still to use.
 	o := newObjEnv(t)
 	task := o.toDiagnose(2, 2, ObjectiveInput{MaxRounds: ptrOf(3)})
 	o.take1(task.Key)
@@ -259,7 +248,6 @@ func TestObjectiveDiagnoseDoesNotUseUpRounds(t *testing.T) {
 	if err != nil || ob.Round != 3 || ob.RoundKind != "" || ob.Phase != PhaseWork {
 		t.Fatalf("diagnosed at MaxRounds-0: %+v, %v", ob, err)
 	}
-	// A work round 3 that comes no nearer uses the last round: out of rounds, no diagnose opens.
 	o.noBetter(task.Key, 3)
 	ob = o.obj(task.Key)
 	if ob.Phase != PhaseBlocked || ob.PhaseWhy != BlockedRounds || ob.RoundKind != "" {
@@ -268,7 +256,6 @@ func TestObjectiveDiagnoseDoesNotUseUpRounds(t *testing.T) {
 }
 
 func TestObjectiveDiagnoseNeverOpensOutOfRounds(t *testing.T) {
-	// MaxRounds 2 and diagnose after 2: after round 2 it is out of rounds, not a diagnose round.
 	o := newObjEnv(t)
 	task := o.toDiagnose(2, 2, ObjectiveInput{MaxRounds: ptrOf(2)})
 	ob := o.obj(task.Key)
@@ -282,7 +269,6 @@ func TestObjectiveDiagnoseAccess(t *testing.T) {
 	task := o.toDiagnose(2, 2, ObjectiveInput{})
 	o.take1(task.Key)
 
-	// Another agent, with no claim.
 	tok, _, err := o.s.CreateToken(o.ctx, o.admin, TokenSpec{Name: "other", Agent: "anthropic/claude-sonnet-5-5"})
 	if err != nil {
 		t.Fatal(err)
@@ -294,7 +280,6 @@ func TestObjectiveDiagnoseAccess(t *testing.T) {
 	if _, err := o.s.ObjectiveDiagnose(o.ctx, other, task.Key, ObjectiveDiagnoseInput{Text: "mine"}); err == nil || !strings.Contains(err.Error(), "is claimed by anthropic/claude-opus-5-5") {
 		t.Fatalf("another agent recorded a diagnosis, or was refused for another reason: %v", err)
 	}
-	// A viewer.
 	viewer := o.user("vera", false)
 	if err := o.s.SetMember(o.ctx, o.admin, o.p.Key, "vera", "viewer"); err != nil {
 		t.Fatal(err)
@@ -305,7 +290,6 @@ func TestObjectiveDiagnoseAccess(t *testing.T) {
 	if ob := o.obj(task.Key); ob.Diagnosis != nil || ob.RoundKind != RoundKindDiagnose {
 		t.Fatalf("a refused diagnosis changed it: %+v", ob)
 	}
-	// A person who may edit the task can, without taking it.
 	if _, err := o.s.ObjectiveDiagnose(o.ctx, o.admin, task.Key, ObjectiveDiagnoseInput{Text: "the person's own"}); err != nil {
 		t.Fatalf("person: %v", err)
 	}
@@ -320,8 +304,6 @@ func TestObjectiveDiagnoseWorkRoundRefuses(t *testing.T) {
 		t.Fatalf("work round: %v", err)
 	}
 }
-
-// The other ways a diagnose round ends (WP-1449 item 6).
 
 func TestObjectiveDiagnoseRefusesWpDone(t *testing.T) {
 	o := newObjEnv(t)
@@ -344,7 +326,6 @@ func TestObjectiveDiagnoseMergedPullRequestIsANormalRound(t *testing.T) {
 	o.linkState(url, "merged")
 	o.read(ObjectiveJobResult{Head: sha(3), Base: sha(2), Reading: passed(false)})
 	ob := o.obj(task.Key)
-	// Read as a normal round, no better: a diagnosis is still owed.
 	if ob.Round != 4 || ob.RoundKind != RoundKindDiagnose || ob.NoBetter != 3 {
 		t.Fatalf("after the merge: round %d kind %q no_better %d", ob.Round, ob.RoundKind, ob.NoBetter)
 	}
@@ -360,7 +341,6 @@ func TestObjectiveDiagnoseMergedPullRequestIsANormalRound(t *testing.T) {
 }
 
 func TestObjectiveDiagnoseGoActions(t *testing.T) {
-	// A person's next skips the diagnosis; retry and end keep their meaning.
 	t.Run("next skips it", func(t *testing.T) {
 		o := newObjEnv(t)
 		task := o.toDiagnose(2, 2, ObjectiveInput{})
@@ -446,7 +426,6 @@ func TestObjectiveDiagnoseHandBackKeepsTheRound(t *testing.T) {
 	if ob = o.obj(task.Key); ob.RoundKind != RoundKindDiagnose {
 		t.Fatalf("after a hand-back: kind %q", ob.RoundKind)
 	}
-	// A release backs the round off like any other; taken by name, it is still the diagnose round.
 	o.take1(task.Key)
 	if _, err := o.diagnose(task.Key, ObjectiveDiagnoseInput{Text: "the next taker's"}); err != nil {
 		t.Fatalf("the next taker can't record it: %v", err)
@@ -511,9 +490,6 @@ func TestObjectiveDiagnoseAsk(t *testing.T) {
 		}
 	})
 }
-
-// Who may not record a diagnosis, and when no round can be diagnosed
-// (WP-1449): each refusal says why.
 
 func TestObjectiveDiagnoseRefusals(t *testing.T) {
 	refused := func(t *testing.T, o *objEnv, key, want string) {
@@ -683,7 +659,6 @@ func TestObjectiveDiagnoseOutOfRoundsThenReSet(t *testing.T) {
 	outOfRounds := func(t *testing.T) (*objEnv, *IssueDetail) {
 		o := newObjEnv(t)
 		task := o.toDiagnose(1, 0, ObjectiveInput{MaxRounds: ptrOf(3)})
-		// Work, diagnose, work, diagnose, work: three counted rounds.
 		for i := 1; i <= 3; i++ {
 			if i > 1 {
 				o.take1(task.Key)
@@ -693,8 +668,6 @@ func TestObjectiveDiagnoseOutOfRoundsThenReSet(t *testing.T) {
 			}
 			o.noBetter(task.Key, i)
 		}
-		// Round 1's no-better made round 2 a diagnose round, and so on; the
-		// last work round is round 3, and round 4 is over the limit.
 		ob := o.obj(task.Key)
 		if ob.PhaseWhy != BlockedRounds || ob.Diagnosis == nil || ob.NoBetter != 1 {
 			t.Fatalf("setup: phase %q why %q no_better %d diagnosis %v", ob.Phase, ob.PhaseWhy, ob.NoBetter, ob.Diagnosis)
@@ -794,9 +767,6 @@ func TestObjectiveDiagnoseRunIsNotAStepCompleted(t *testing.T) {
 		ok, _ := o.s.stepAllows(o.ctx, d.Issue, "any", "different", id)
 		return ok
 	}
-	// Whatever earlier rounds left, the diagnosis must not change the answer
-	// for the agent that recorded it: make that answer "allowed" by dropping
-	// the earlier completions.
 	if _, err := o.s.db.W.ExecContext(o.ctx, `UPDATE agent_runs SET outcome = 'released' WHERE issue_id = ? AND outcome = 'done'`, task.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -865,9 +835,9 @@ func TestObjectiveDiagnoseStallNoticeCountsOnlyReadRounds(t *testing.T) {
 	if _, err := o.diagnose(task.Key, ObjectiveDiagnoseInput{Text: "the check times the build"}); err != nil {
 		t.Fatal(err)
 	}
-	o.noBetter(task.Key, 3) // read, no nearer: stalled 3, told once
+	o.noBetter(task.Key, 3)
 	for range 3 {
-		o.landsNothing(task.Key, 3) // stalled 4, 5, 6: told again at 6
+		o.landsNothing(task.Key, 3)
 	}
 	ob := o.obj(task.Key)
 	if ob.Stalled != 6 || ob.NoBetter != 1 || ob.Round != 4 {
@@ -899,7 +869,6 @@ func TestObjectiveDiagnoseStallNoticeCitesTheDiagnosisOfItsEvent(t *testing.T) {
 	if _, err := o.diagnose(task.Key, ObjectiveDiagnoseInput{Text: "second"}); err != nil {
 		t.Fatal(err)
 	}
-	// Round 4's stall event is delivered only now.
 	if _, err := o.s.db.W.ExecContext(o.ctx, `UPDATE objectives SET stalled_told = 0 WHERE issue_id = ?`, task.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -910,7 +879,7 @@ func TestObjectiveDiagnoseStallNoticeCitesTheDiagnosisOfItsEvent(t *testing.T) {
 	if len(all) != before+1 {
 		t.Fatalf("notices %d -> %d: %q", before, len(all), all)
 	}
-	got := all[0] // newest first
+	got := all[0]
 	if !strings.Contains(got, "recorded in round 3,") {
 		t.Errorf("the notice cites a later diagnosis than its event's: %s", got)
 	}
@@ -936,7 +905,6 @@ func TestObjectiveDiagnoseAgentMergeIsRefused(t *testing.T) {
 			t.Errorf("agent merge (when ready %v): %v", when, err)
 		}
 	}
-	// A person's call: not refused for the round.
 	if _, err := o.s.MergePR(o.ctx, o.admin, prID, MergeInput{Style: "squash", WhenReady: true}); err != nil && strings.Contains(err.Error(), "diagnose round") {
 		t.Errorf("a person's arm was refused for the round: %v", err)
 	}
@@ -957,7 +925,6 @@ func TestObjectiveDiagnoseHeldRoundReadsAnEarlierPullRequest(t *testing.T) {
 	}
 	o.take1(task.Key)
 	url := o.pull(task.Key, 7)
-	// Linked before the round began.
 	if _, err := o.s.db.W.ExecContext(o.ctx, `UPDATE external_links SET created_at = 1 WHERE issue_id = ? AND kind = 'pull'`, task.ID); err != nil {
 		t.Fatal(err)
 	}

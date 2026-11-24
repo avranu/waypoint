@@ -9,24 +9,14 @@ import (
 	"time"
 )
 
-// Sandbox policy (WP-418, WP-ADR28 decision 3, PL7 §12): a project's
-// sandbox levels and a runner machine's default level and kill switch.
-// Only a person signed in to the Waypoint UI changes them: no token of any
-// kind (a job's, an agent's, the person's own from wp auth login), no MCP
-// tool and no automation. A change that loosens the sandbox also needs the
-// person's password from the last ten minutes and a reason. Every change
-// is logged with who, when, before, after and why, and can be reverted.
-//
-// Nothing reads these to start a sandbox yet: Phase 2 (WP-419) does. They
-// exist first so that the edges are a person's before anything enforces
-// them.
+// Only a person signed in to the Waypoint UI may change these, never a token, MCP tool or automation; loosening also needs their password from the last ten minutes and a reason.
 
 // Sandbox levels, strongest first (WP-ADR28 decision 2).
 const (
-	SandboxVM        = "vm"        // a microVM as the repo user
-	SandboxContained = "contained" // an allowlisted systemd unit as the repo user
-	SandboxTool      = "tool"      // the agent CLI's own sandbox, for macOS
-	SandboxOff       = "off"       // the repo user on the host, no walls
+	SandboxVM        = "vm"
+	SandboxContained = "contained"
+	SandboxTool      = "tool"
+	SandboxOff       = "off"
 )
 
 // sandboxRank orders the levels by strength.

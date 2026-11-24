@@ -48,7 +48,7 @@ func (s *Service) checkQuotaJump(ctx context.Context, t *tx, uid, at int64, pct 
 		WHERE user_id = ? AND span = 'seven_day' AND resets_at = ? AND at >= ? AND at <= ?
 		ORDER BY percent ASC, at DESC LIMIT 1`, uid, resetsAt, at-quotaJumpWindow.Milliseconds(), at).Scan(&low, &lowAt)
 	if err != nil {
-		return nil // no earlier reading of this week
+		return nil
 	}
 	rise := pct - low
 	if rise <= 0 || rise < float64(thr) {
@@ -68,8 +68,7 @@ func (s *Service) checkQuotaJump(ctx context.Context, t *tx, uid, at int64, pct 
 		mins = 1
 	}
 	text := fmt.Sprintf("+%.0f%% of your week in %d min", rise, mins)
-	// The busiest machine and repo since the hour the low reading fell in;
-	// usage_hours has hourly rows, so this is the nearest cheap answer.
+	// usage_hours keeps hourly rows, so the busiest machine and repo since the low reading is the nearest cheap answer, not an exact one.
 	var machine, repo string
 	hour := lowAt - lowAt%3_600_000
 	if t.QueryRowContext(ctx, `SELECT machine, repo FROM usage_hours WHERE user_id = ? AND hour >= ?
@@ -86,6 +85,5 @@ func (s *Service) checkQuotaJump(ctx context.Context, t *tx, uid, at int64, pct 
 }
 
 func (s *Service) notifyQuotaJump(ctx context.Context, e *Event) {
-	// Sessions: where Pause is, next to what runs (WP-146).
 	s.notifyURL(ctx, e.UserID, e, NotifyQuota, "Weekly quota is climbing", strings.TrimSpace(e.New), "/agents?tab=sessions")
 }

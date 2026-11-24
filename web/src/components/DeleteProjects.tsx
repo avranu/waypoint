@@ -68,7 +68,6 @@ export function DeleteProjectsDialog({
     const failed: string[] = []
     let err: unknown
     let count = 0
-    // A few at a time: each is a write the server does one by one anyway.
     await Promise.all(
       Array.from({ length: Math.min(4, queue.length) }, async () => {
         for (let p = queue.shift(); p; p = queue.shift()) {

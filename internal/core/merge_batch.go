@@ -1,12 +1,6 @@
 package core
 
-// Candidate batches (WP-509, WP-ADR36, reworked by WP-1659 and WP-ADR152):
-// while a forge's CI runners are saturated, one candidate carries the front
-// of a line and the next few pull requests behind it, so one full run tests
-// them all instead of a run per place. Each riding pull request has a
-// queue_stacks row on the one branch and commit, whose pos says which of the
-// heads is its own; they pass, fail or are cancelled together, and merge in
-// order. With idle runners the line makes a candidate per place.
+// Riding pull requests share one candidate run: they pass, fail or are cancelled together and merge in order (queue_stacks.pos says which head is whose).
 
 import (
 	"context"

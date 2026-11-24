@@ -46,14 +46,12 @@ async function run(width, scheme) {
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL(base + "/");
 
-  // 1. A project made on a new instance has both starter tags.
   const labels = (await api("GET", "/projects/WAYP")).labels.map((l) => l.name);
   ok(
     labels.includes("ui") && labels.includes("backend"),
     `${tag} starter tags ui and backend: ${labels}`,
   );
 
-  // 2. The Statuses explainer folds into a (?), stays folded, and comes back.
   await settings("WAYP", "workflow");
   const note = page.getByRole("note");
   const showHelp = page.getByRole("button", { name: "Show help: Statuses" });
@@ -74,7 +72,7 @@ async function run(width, scheme) {
   await note.getByRole("button", { name: "Hide this help" }).click();
   await showHelp.waitFor();
   ok((await note.count()) === 0, `${tag} explainer folded away`);
-  await page.waitForTimeout(400); // the preference save
+  await page.waitForTimeout(400); // Wait for the preference save before reloading; the reload cancels it.
   await page.reload();
   await showHelp.waitFor();
   ok((await note.count()) === 0, `${tag} still folded after a reload`);
@@ -86,7 +84,6 @@ async function run(width, scheme) {
   await note.waitFor();
   await page.waitForTimeout(400);
 
-  // Status names keep their room next to the controls at every width.
   const nameWidth = await page
     .getByLabel("Status name")
     .first()
@@ -96,7 +93,6 @@ async function run(width, scheme) {
     `${tag} status names are readable (${Math.round(nameWidth)}px)`,
   );
 
-  // 6. New-status controls only after "Add status".
   ok(
     (await page.getByLabel("New status name").count()) === 0,
     `${tag} no new-status field until asked`,
@@ -110,9 +106,8 @@ async function run(width, scheme) {
   await page.getByRole("button", { name: "Cancel" }).click();
   ok((await newStatus.count()) === 0, `${tag} cancel hides the form again`);
 
-  // 4. Dropdowns open at once (no native popup, nothing to fetch).
   const time = async (what, trigger, ready) => {
-    await trigger.waitFor(); // time the dropdown, not the page load
+    await trigger.waitFor();
     await page.waitForTimeout(300);
     const t0 = Date.now();
     await trigger.click();
@@ -142,7 +137,6 @@ async function run(width, scheme) {
     );
   }
 
-  // 7 + 9. Icon picker, and parent "None", on General.
   await settings("WAYP");
   await page.getByRole("button", { name: /^(Choose icon|Icon: )/ }).click();
   await page.getByRole("button", { name: "🚀", exact: true }).click();
@@ -165,7 +159,6 @@ async function run(width, scheme) {
       .isVisible(),
     `${tag} parent project reads "None"`,
   );
-  // Hints wait behind a (?) instead of sitting under each field.
   ok(
     (await page.getByText("Nests this project under another").count()) === 0,
     `${tag} parent hint is not inline`,
@@ -186,7 +179,6 @@ async function run(width, scheme) {
   await shot("general");
   await page.keyboard.press("Escape");
 
-  // 10. Workflow dialog: robot icon inside the agent field, no textarea scrollbar.
   await settings("WAYP", "workflows");
   await page.getByRole("button", { name: "Edit Agent pipeline" }).click();
   const agent = page.getByLabel("Step 4 agent");
@@ -209,7 +201,6 @@ async function run(width, scheme) {
   await shot("workflow-dialog");
   await page.keyboard.press("Escape");
 
-  // 11. Settings stay readable on a project background.
   await settings("BGUA", "integrations");
   const bg = await page
     .getByRole("tabpanel")
@@ -220,7 +211,6 @@ async function run(width, scheme) {
   );
   await shot("integrations-bg");
 
-  // 3. No sideways scrolling on the main pages.
   for (const path of [
     "/",
     "/inbox",

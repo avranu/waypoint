@@ -14,7 +14,6 @@ import (
 // The age comes from field 22 of /proc/self/stat, counted from the last ")":
 // a comm with spaces and parentheses must not shift it.
 func TestAgeFromProc(t *testing.T) {
-	// start time 1000 ticks = 10 s after boot; 12.5 s of uptime: 2.5 s old.
 	tail := " S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 1000 20 21"
 	for _, comm := range []string{"(wp)", "(a b)", "(x) 1 2 (y)", "(w)p)"} {
 		got, ok := ageFromProc("4242 "+comm+tail+"\n", "12.50 99.00\n")
@@ -167,7 +166,6 @@ func TestPauseTellLate(t *testing.T) {
 	if got := c.pauseTell("s1", late); got != "" {
 		t.Errorf("told after the mark: %q", got)
 	}
-	// No limit: marks at once.
 	c.savePause(json.RawMessage(`{"id":4,"spec":"any","note":"n","created_at":"2026-11-05T09:00:00Z"}`))
 	if got := c.pauseTell("s2", 0); got == "" {
 		t.Error("a hook with no limit did not tell")
@@ -175,7 +173,6 @@ func TestPauseTellLate(t *testing.T) {
 	if _, told := c.readPause().Told["s2"]; !told {
 		t.Error("a run with no limit did not mark")
 	}
-	// In time: marks at once.
 	setAge(t, 10*time.Millisecond)
 	if got := c.pauseTell("s3", late); got == "" {
 		t.Error("an in-time run did not tell")
@@ -263,11 +260,11 @@ func TestAgeFallback(t *testing.T) {
 func TestPauseTellNeedsNoLockWhenNothingToTell(t *testing.T) {
 	c := &cli{dir: t.TempDir()}
 	lock := c.pausePath() + ".lock"
-	if err := os.WriteFile(lock, []byte("held"), 0o600); err != nil { // held by someone else
+	if err := os.WriteFile(lock, []byte("held"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	start := time.Now()
-	if got := c.pauseTell("s1", 0); got != "" { // no pause at all
+	if got := c.pauseTell("s1", 0); got != "" {
 		t.Errorf("told with no pause: %q", got)
 	}
 	var sp sessionPause
@@ -275,7 +272,7 @@ func TestPauseTellNeedsNoLockWhenNothingToTell(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.writePause(pauseCopy{Pause: &sp, Checked: time.Now(), Told: map[string]time.Time{"s1": time.Now()}})
-	if got := c.pauseTell("s1", 0); got != "" { // already told
+	if got := c.pauseTell("s1", 0); got != "" {
 		t.Errorf("told twice: %q", got)
 	}
 	if d := time.Since(start); d > time.Second {
@@ -332,9 +329,9 @@ func TestCounterAfterOutputBounded(t *testing.T) {
 		{"guard", hookClaudeGuard, map[string]any{"command": pgrepLoop}, `"permissionDecision":"deny"`},
 		{"nudge", hookClaudeNudge, sleepPoll, "additionalContext"},
 	} {
-		late := 1800 * time.Millisecond // past the nudge's late point
+		late := 1800 * time.Millisecond
 		if tc.name == "guard" {
-			late = 8 * time.Second // past the guard's
+			late = 8 * time.Second
 		}
 		for _, age := range []time.Duration{0, late} {
 			t.Run(tc.name+"/"+age.String(), func(t *testing.T) {

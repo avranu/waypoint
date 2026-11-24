@@ -13,26 +13,21 @@ import (
 	"time"
 )
 
-// The agent queue (WP-D15): the order agents take work in (delegated work,
-// then what anyone may take: WP-93), why other delegated work waits, and the controls people have over it: pins
-// (a place they gave a task; the rest keeps the automatic order), pauses (per person, for all their
-// agents, a family or one model) and a project's own pause. next and the
-// Agents page both read the queue from agentWork, so what the page shows is
-// what an agent gets.
+// next and the Agents page both read the queue from agentWork, so what the page shows is what an agent gets.
 
 // Why delegated work isn't in an agent's queue right now.
 const (
-	WaitStep          = "step"           // the workflow step is for another agent
-	WaitClaimed       = "claimed"        // another agent holds it
-	WaitProjectPaused = "project_paused" // its project stopped agents taking new work
-	WaitBacklog       = "backlog"        // agents start from To Do
-	WaitHold          = "hold"           // on hold until a date or until someone lifts it (WP-269)
-	WaitReleased      = "released"       // an agent gave it back, and it waits a little before going out again (WP-ADR75)
-	WaitBlocked       = "blocked"        // an open issue blocks it
-	WaitReview        = "review"         // its pull request is open or merged, or it moved on to In Review: it waits on the merge or a person
-	WaitSafety        = "safety"         // an agent wrote it, and the safety screen hasn't cleared it (WP-ADR10)
-	WaitObjective     = "objective"      // its objective's next round isn't due, or runs only on quota that would go unused (WP-ADR111)
-	WaitSubtasks      = "subtasks"       // it has open sub-issues handed to agents: they come first (WP-ADR35)
+	WaitStep          = "step"
+	WaitClaimed       = "claimed"
+	WaitProjectPaused = "project_paused"
+	WaitBacklog       = "backlog"
+	WaitHold          = "hold"
+	WaitReleased      = "released"
+	WaitBlocked       = "blocked"
+	WaitReview        = "review"
+	WaitSafety        = "safety"
+	WaitObjective     = "objective"
+	WaitSubtasks      = "subtasks"
 )
 
 // QueueItem is one issue on the Agents page's queue.
@@ -81,15 +76,13 @@ type AgentQueue struct {
 
 // queuedIssue is an issue with the agents that may take it, or why it waits.
 type queuedIssue struct {
-	issue    *Issue
-	takers   []string
-	reason   string
-	detail   string
-	blockers []string
-	held     bool // the safety screen holds it for a person
-	planned  bool // a plan page or a task prep (WP-311)
-	// The automatic order (WP-997): how many open tasks it blocks, the
-	// urgency of the most urgent of them, and its score.
+	issue          *Issue
+	takers         []string
+	reason         string
+	detail         string
+	blockers       []string
+	held           bool
+	planned        bool
 	unblocks       int
 	blockedUrgency float64
 	score          float64
@@ -110,8 +103,6 @@ func (s *Service) agentWork(ctx context.Context, actor *Actor, ids []string, q A
 // agentWorkAuto is agentWork before people's pins: the ready issues in the
 // automatic order (autoOrder), pinned or not.
 func (s *Service) agentWorkAuto(ctx context.Context, actor *Actor, ids []string, q AgentQuery) (ready, waiting []*queuedIssue, err error) {
-	// Delegated work, and unless asked not to (a runner starting work on its
-	// own) what anyone may take. Humans only never. Drafts wait for a person (WP-42).
 	parts := []string{"-is:human is:open is:published"}
 	if q.Delegated {
 		parts[0] = "is:agent is:open is:published"
@@ -174,7 +165,7 @@ func (s *Service) agentWorkAuto(ctx context.Context, actor *Actor, ids []string,
 	for _, i := range all {
 		held := i.ClaimedBy != "" && i.ClaimedUntil != nil && i.ClaimedUntil.UnixMilli() > now
 		if held && (ids == nil || mine(i.ClaimedBy)) {
-			continue // being worked on: the Working list, not the queue
+			continue
 		}
 		qi := &queuedIssue{issue: i}
 		if ids != nil {
@@ -192,7 +183,7 @@ func (s *Service) agentWorkAuto(ctx context.Context, actor *Actor, ids []string,
 				}
 			}
 			if !concerns {
-				continue // someone else's work
+				continue
 			}
 			if len(qi.takers) > 0 {
 				qi.reason, qi.detail = "", ""
@@ -213,8 +204,7 @@ func (s *Service) agentWorkAuto(ctx context.Context, actor *Actor, ids []string,
 		case released[i.ID] != 0:
 			qi.reason, qi.detail = WaitReleased, "An agent gave it back; it goes out again at "+s.clock(msTime(released[i.ID]))+". Only a person can end the wait, with a comment or wp hold "+i.Key+" --off; wp next "+i.Key+" takes it by name."
 		case hasWait(rounds, i.ID):
-			// Whatever status the task is in: a project with no To Do
-			// status leaves it where its round ended.
+			// Checked before the status-based waits, since a project with no To Do status leaves a task where its round ended.
 			qi.reason, qi.detail = WaitObjective, rounds[i.ID].detail()
 		case shipped[i.ID] != nil:
 			pr := shipped[i.ID]
@@ -229,12 +219,9 @@ func (s *Service) agentWorkAuto(ctx context.Context, actor *Actor, ids []string,
 			qi.reason, qi.blockers = WaitBlocked, blockers[i.ID]
 			qi.detail = "Blocked by " + strings.Join(blockers[i.ID], ", ") + "."
 		case children[i.ID] > 0:
-			// The parent and its sub-issues are the same work: agents take the
-			// sub-issues, and the parent once they are done (WP-ADR35).
 			qi.reason = WaitSubtasks
 			qi.detail = fmt.Sprintf("Its sub-issues come first (%d of %d open for agents); it is handed out once they are done.", children[i.ID], i.ChildCount)
 		default:
-			// What an agent wrote waits for the safety screen (WP-ADR10).
 			if d, held := s.safetyWait(ctx, s.db.R, i); d != "" {
 				qi.reason, qi.detail, qi.held = WaitSafety, d, held
 				if !held {
@@ -246,10 +233,9 @@ func (s *Service) agentWorkAuto(ctx context.Context, actor *Actor, ids []string,
 		case qi.reason == "":
 			ready = append(ready, qi)
 		case qi.held:
-			waiting = append(waiting, qi) // a person must look, delegated or not
+			waiting = append(waiting, qi)
 		case !i.Delegated() && qi.reason != WaitReleased && (!q.ScreenWaits || (qi.reason != WaitSafety && qi.reason != WaitHold)):
-			// Work anyone may take shows once it is ready; listing every
-			// backlog or blocked one as waiting would bury the delegated work.
+			// Work anyone may take shows once it is ready; listing every backlog or blocked one as waiting would bury the delegated work.
 		default:
 			waiting = append(waiting, qi)
 		}
@@ -299,23 +285,23 @@ func autoOrder(a, b *queuedIssue, today string, custom bool) int {
 // before a low-priority one handed to agents, and no single quality (being
 // delegated, having a due date) buries everything without it.
 const (
-	scorePriorityStep = 10.0 // per priority level: low 10, medium 20, high 30
-	scoreUrgent       = 45.0 // urgent
-	scoreDueToday     = 30.0 // due today; halves every scoreDueHalfLife days before
+	scorePriorityStep = 10.0
+	scoreUrgent       = 45.0
+	scoreDueToday     = 30.0
 	scoreDueHalfLife  = 3.0
-	scoreOverdue      = 32.0 // past due, plus scoreOverdueDay a day late up to scoreOverdueMax
+	scoreOverdue      = 32.0
 	scoreOverdueDay   = 2.0
 	scoreOverdueMax   = 20.0
-	scoreDelegated    = 8.0  // a person handed it to agents rather than leaving it to anyone
-	scoreBug          = 5.0  // something is broken now
-	scorePlanned      = 4.0  // a plan page or a ready task prep: an agent starts faster
-	scoreUnblocks     = 4.0  // per open task waiting on it, up to scoreUnblocksMax
-	scoreUnblocksMax  = 12.0 //
-	scoreSmall        = 3.0  // an estimate of 2 points or less: done sooner (shortest job first)
-	scoreMedium       = 1.0  // an estimate of 5 points or less
-	scoreAgeWeek      = 1.0  // a week waiting, up to scoreAgeMax: nothing waits forever
-	scoreAgeMax       = 6.0  //
-	scoreAgentText    = -5.0 // an agent wrote it and no person has reviewed it yet
+	scoreDelegated    = 8.0
+	scoreBug          = 5.0
+	scorePlanned      = 4.0
+	scoreUnblocks     = 4.0
+	scoreUnblocksMax  = 12.0
+	scoreSmall        = 3.0
+	scoreMedium       = 1.0
+	scoreAgeWeek      = 1.0
+	scoreAgeMax       = 6.0
+	scoreAgentText    = -5.0
 )
 
 // urgency is what priority and due date say about a task: the part a
@@ -387,7 +373,6 @@ func (s *Service) scoreQueue(ctx context.Context, actor *Actor, ready []*queuedI
 		by[qi.issue.ID] = qi
 		ids = append(ids, qi.issue.ID)
 	}
-	// A blocked task the actor can't see passes nothing on.
 	vis, vargs := visibleSQL("t.project_id", actor)
 	for chunk := range slices.Chunk(ids, 500) {
 		args := append(slices.Clone(vargs), int64Args(chunk)...)
@@ -841,8 +826,6 @@ func oneOrMany(n int, one, many string) string {
 	return many
 }
 
-// ---- the queue, as the Agents page shows it ----
-
 // queueAgents are the agents a spec stands for: the known ones it matches,
 // or the spec itself when none does (what such an agent would get). nil for
 // every agent.
@@ -1116,8 +1099,6 @@ func (s *Service) pinners(ctx context.Context, ids []int64) (map[int64]*UserRef,
 	return out, nil
 }
 
-// ---- the order people set ----
-
 // QueueMove places an issue in the queue. A pin holds the place a person
 // gave a task (1 = next); every other task keeps following the automatic
 // order around the pins, so placing one task moves only that one (and the
@@ -1148,7 +1129,6 @@ func (s *Service) MoveInQueue(ctx context.Context, actor *Actor, m QueueMove) er
 	if m.Position < 0 {
 		return invalid("position must be 1 or more")
 	}
-	// The queue the person is looking at: positions count in it.
 	ids, err := s.queueAgents(ctx, actor, strings.TrimSpace(m.Agent))
 	if err != nil {
 		return err
@@ -1181,8 +1161,6 @@ func (s *Service) MoveInQueue(ctx context.Context, actor *Actor, m QueueMove) er
 				pins[qi.issue.ID] = p
 			}
 		}
-		// A task that waits (backlog, blocked) isn't in the list: it takes
-		// its place after what is, once it is ready.
 		if _, ok := issues[i.ID]; !ok {
 			order = append(order, i.ID)
 			issues[i.ID] = i
@@ -1195,7 +1173,7 @@ func (s *Service) MoveInQueue(ctx context.Context, actor *Actor, m QueueMove) er
 		// The pins it passed keep their places in the order shown, but only
 		// where the person may edit them; the rest stay as they are.
 		shown := slices.SortedFunc(maps.Keys(placed), func(a, b int64) int {
-			return cmpInt(int64(placed[a].rank), int64(placed[b].rank)) // placePin's ranks count 1, 2, 3
+			return cmpInt(int64(placed[a].rank), int64(placed[b].rank))
 		})
 		view := make([]int64, 0, len(shown))
 		var slots []float64
@@ -1242,8 +1220,6 @@ func (s *Service) MoveInQueue(ctx context.Context, actor *Actor, m QueueMove) er
 			return err
 		}
 		slot := slices.Index(mergePins(order, placed), i.ID) + 1
-		// Where the automatic order had it, among the tasks it orders: how
-		// far a person disagreed with it, the measure of WP-997.
 		autoAt := slices.Index(order, i.ID) + 1
 		action := "queue.move"
 		if !wasPinned {
@@ -1286,7 +1262,6 @@ func (s *Service) pinRanksIn(ctx context.Context, t *tx, view []int64, x int64, 
 		if err := renumberPins(ctx, t); err != nil {
 			return nil, err
 		}
-		// The slots are the same pins' ranks, renumbered.
 		slots = slots[:0]
 		for _, id := range view {
 			if id == x {
@@ -1355,8 +1330,6 @@ func (s *Service) ReleaseClaim(ctx context.Context, actor *Actor, ref string) er
 		return nil
 	})
 }
-
-// ---- pauses ----
 
 // AgentPause stops a person's agents matching Spec taking new work.
 type AgentPause struct {

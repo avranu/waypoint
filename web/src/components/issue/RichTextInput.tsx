@@ -1,10 +1,3 @@
-// A what-you-see-is-what-you-get editor for task descriptions (WP-628): the
-// markdown renders in place while it is edited, and goes back to markdown on
-// every change. Opening and closing it leaves the text as it was; an edit
-// writes the whole description in the editor's canonical markdown, which
-// renders the same. @mentions and pasted or dropped files work as they do in
-// the plain textarea.
-
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'
@@ -88,9 +81,7 @@ export function RichTextInput({
   const sync = () => {
     const el = editor.current
     if (!el) return
-    // A browser leaves a <br> or an empty <p> behind when everything is
-    // deleted; that goes. An empty heading, quote or list is the block the
-    // person just asked for, and stays.
+    // A browser leaves a <br> or an empty <p> behind after everything is deleted; clear that residue only.
     if (blank(el) && el.innerHTML !== '') el.innerHTML = ''
     // A ticked box changes the property, not the attribute innerHTML shows.
     for (const box of Array.from(el.querySelectorAll<HTMLInputElement>('input[type=checkbox]')))
@@ -101,17 +92,13 @@ export function RichTextInput({
     onValueChange(md)
   }
 
-  // Render the starting markdown once, and again whenever it changes from
-  // outside (an upload's link put in the draft).
   useLayoutEffect(() => {
     const el = editor.current
     if (!el) return
     try {
       document.execCommand('defaultParagraphSeparator', false, 'p')
       document.execCommand('styleWithCSS', false, 'false')
-    } catch {
-      // Older browsers ignore these; the browser's own blocks still serialize.
-    }
+    } catch {}
     el.innerHTML = renderMarkdownForEdit(value)
     shown.current = value
     if (autoFocus) {
@@ -134,7 +121,6 @@ export function RichTextInput({
     if (caret !== null) placeCaretAt(el, caret)
   }, [value])
 
-  // What the editor last wrote out; the draft's newest text while mounted.
   const latest = useRef(value)
   latest.current = value
   const mounted = useRef(true)
@@ -197,7 +183,6 @@ export function RichTextInput({
     detect()
   }
 
-  // Inline code and strikethrough have no execCommand; wrap the selection.
   const wrap = (tag: 'code' | 's') => {
     const el = editor.current
     if (!el) return

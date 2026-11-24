@@ -1,5 +1,4 @@
-// Hermes's cron jobs, through Waypoint (hermes-api §2.6, §5). Every key is
-// under 'cron/jobs' so the live stream's cron.changed refetches them.
+// Every key sits under 'cron/jobs', the prefix the cron.changed live event refetches by.
 
 import { useSyncExternalStore } from 'react'
 import type { QueryClient } from '@tanstack/react-query'
@@ -146,10 +145,7 @@ export const refreshJobs = (qc: QueryClient, id: number) =>
       String(q.queryKey[2]).startsWith('cron/jobs'),
   })
 
-// ---- Run now ----
-// POST …/trigger runs the job inside the request, which can take minutes.
-// Which jobs are running lives outside React, so leaving the tab and coming
-// back still shows them running.
+// The trigger POST runs the job inside the request, which can take minutes; running jobs are tracked outside React so they still show as running after leaving the tab.
 
 const running = new Map<string, number>()
 let snapshot: ReadonlyMap<string, number> = new Map()
@@ -174,7 +170,6 @@ export async function runNow(qc: QueryClient, id: number, job: CronJob): Promise
   const key = `${id}:${job.id}`
   running.set(key, Date.now())
   emit()
-  // The claim lands in jobs.json at once; show it without waiting for the signal.
   setTimeout(() => refreshJobs(qc, id), 1500)
   try {
     const after = await hermes<CronJob>(id, 'POST', `${jobPath(job.id)}/trigger`)

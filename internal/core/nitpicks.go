@@ -1,26 +1,5 @@
 package core
 
-// Nitpicks (WP-695, WP-ADR88). A babysat pull request whose only work left is bots'
-// review comments got a round for them however small they were: a round
-// costs an agent session, a draft run, another review (which often finds
-// more of the same) and the pull request's place in its merge line. Before
-// such a round, the decision model scores each comment's severity from 1
-// (cosmetic) to 10 (critical), reading only the comment's text (its quoted
-// code left out) and what is known about it: who wrote it, the file, the
-// severity it marks. When every comment scores a nitpick (nitpickMax or
-// less), none starts a round or holds the merge: they ride along with a
-// round given for something else, like late minor findings (WP-428), and
-// those still open at merge go into the pull request's nitpick log, an
-// audit (sweepNitpicks) whose findings wp next shows the next agent that
-// works on their files. One comment above nitpickMax and they all go to a
-// round as before. A person's comment, Waypoint's own finding that the
-// review gate counts, and one marked high or critical are never scored:
-// they hold as they always did.
-//
-// A share of pull requests (nitpickHoldoutPct, by pull request) is scored
-// but keeps its rounds, so `wp pr rounds` can set rounds, time to merge
-// and round tokens of the waived ones against them.
-
 import (
 	"context"
 	"crypto/sha256"
@@ -198,7 +177,7 @@ func (s *Service) nitpickBot(ctx context.Context, q queryer, rc *PRReviewComment
 		}
 		m := relayedAuthorRE.FindStringSubmatch(strings.TrimSpace(rc.Body))
 		if m == nil {
-			return false // the mirror's words, copied from someone unnamed
+			return false // A relayed comment with no named author is never scored.
 		}
 		who = m[1]
 	}
@@ -320,7 +299,7 @@ func (s *Service) waiveNitpicks(ctx context.Context, b *Babysit, pr *PullRequest
 	var last string
 	err = s.db.R.QueryRowContext(ctx, `SELECT arm FROM nitpick_decisions WHERE pr_id = ? AND set_key = ? ORDER BY id DESC LIMIT 1`, pr.ID, setKey).Scan(&last)
 	if err == nil {
-		return false // decided: a waived set is no longer work, so this one went to a round; an edited comment makes another set
+		return false // A set already decided is not decided again; an edited comment makes a new set.
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return false
@@ -351,7 +330,7 @@ func (s *Service) waiveNitpicks(ctx context.Context, b *Babysit, pr *PullRequest
 		var wait *aiWaitError
 		switch {
 		case errors.Is(err, errNoDecider), errors.As(err, &wait):
-			return false // asked again on a later step
+			return false // No decider, or a wait, leaves the set undecided; a later step asks again.
 		case err != nil:
 			s.log.Info("decision model failed; review comments go to a round", "pr", pr.ID, "err", err)
 			arm = NitpickUnscored
@@ -402,8 +381,6 @@ func (s *Service) waiveNitpicks(ctx context.Context, b *Babysit, pr *PullRequest
 					return err
 				}
 			}
-			// The latest decision on a comment says whether it is waived: one
-			// held, held out or unscored since takes back an earlier waiver.
 			waived := sql.NullInt64{Int64: at, Valid: arm == NitpickWaived}
 			if _, err := t.ExecContext(ctx, `UPDATE review_comment_scores SET decision_id = ?, waived_at = ? WHERE comment_id = ?`, id, waived, rc.id); err != nil {
 				return err
@@ -418,8 +395,6 @@ func (s *Service) waiveNitpicks(ctx context.Context, b *Babysit, pr *PullRequest
 	s.log.Info("review comments scored", "pr", pr.ID, "comments", len(set), "max_score", top, "arm", arm)
 	return arm == NitpickWaived
 }
-
-// ---- the nitpick log ----
 
 // sweepNitpicks puts a merged pull request's bots' comments that didn't
 // hold its merge and are still open, waived nitpicks and late minor
@@ -540,7 +515,7 @@ func (s *Service) sweepNitpicks(ctx context.Context, prID int64) (int, error) {
 			}
 		}
 		moved = len(open)
-		// Made done: it was never queued, so no Old (auditEnded still settles it).
+		// Never queued, so there is no old state to report; auditEnded settles it.
 		t.emit(&Event{Kind: EvCodeAudit, ProjectID: projectID, New: AuditDone, Data: map[string]any{"audit": auditID, "title": title}})
 		return nil
 	})
@@ -569,8 +544,6 @@ func stripRelayHeader(body string) string {
 	}
 	return b
 }
-
-// ---- on the files a task touches ----
 
 // OpenNitpick is a nitpick, or a leftover review finding no task was filed
 // for, still open on a file.
@@ -638,8 +611,6 @@ func (s *Service) OpenNitpicks(ctx context.Context, actor *Actor, projectRef str
 	}
 	return out, rows.Err()
 }
-
-// ---- what it changed ----
 
 // NitpickStats is what scoring did over a span: decisions by arm, and for
 // the babysat pull requests that merged after one, by the pull request's

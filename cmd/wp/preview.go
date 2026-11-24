@@ -26,13 +26,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// wp preview (WP-1226): this checkout's own Waypoint, built from the working
-// tree and run on 127.0.0.1 with a throwaway database and an admin signed
-// in, so an agent can screenshot its change (wp shot /PATH) before any
-// server it can sign into runs it. Production runs main; a branch has no
-// server of its own, and a local build's pages need a login the agent
-// didn't have. Waypoint checkouts only: another app's dev server is the
-// agent's to start, and wp shot takes its URL.
+// Production runs main, so a branch is previewed from its own working tree on a throwaway local server.
 
 var previewCmd = &command{
 	name: "preview", group: "Tasks", args: "[start|stop|status]",
@@ -147,7 +141,6 @@ func (st *previewState) alive() bool {
 		return false
 	}
 	defer func() { _ = resp.Body.Close() }()
-	// Another app now on the port may answer anything with a 200.
 	var me struct {
 		Username string `json:"username"`
 	}
@@ -205,7 +198,6 @@ func (c *cli) ensurePreview() (*previewState, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	// One wp at a time per checkout: two shots at once mustn't start two.
 	if lf, err := os.OpenFile(filepath.Join(dir, "lock"), os.O_CREATE|os.O_RDWR, 0o600); err == nil { // #nosec G304 -- our own lock file
 		defer func() { _ = lf.Close() }()
 		if unlock, err := fileLock(lf); err == nil {
@@ -251,7 +243,6 @@ func (c *cli) ensurePreview() (*previewState, error) {
 		c.note("The migrations changed since the preview's data was made: it starts with an empty database.")
 	}
 	if fresh {
-		// No account wp knows of: start from an empty database.
 		for _, f := range []string{"wp.db", "wp.db-wal", "wp.db-shm", "server.log"} {
 			_ = os.Remove(filepath.Join(dir, f))
 		}
@@ -311,8 +302,7 @@ func (c *cli) buildPreview(top, out string) error {
 		return err
 	}
 	defer release()
-	// The checkout's code (npm install scripts, vite's config) runs here:
-	// without the caller's credentials, as tests run (WP-1065).
+	// The checkout's own code (npm install scripts, vite config) runs here, so it gets no caller credentials.
 	env, _ = testEnv(env, nil)
 	web := filepath.Join(top, "web")
 	vite := filepath.Join(web, "node_modules", "vite", "bin", "vite.js")
@@ -326,7 +316,7 @@ func (c *cli) buildPreview(top, out string) error {
 			return err
 		}
 	}
-	// vite empties dist; the placeholder is tracked (package.json's build does the same).
+	// vite empties dist, which deletes the tracked dist/.gitkeep, so it is written back after the build.
 	if err := os.WriteFile(filepath.Join(web, "dist", ".gitkeep"), nil, 0o600); err != nil {
 		return err
 	}
@@ -694,7 +684,7 @@ func cmdPreviewServe(c *cli, args []string) error {
 	tick := time.NewTicker(30 * time.Second)
 	defer tick.Stop()
 	lapsed := false
-	var lockFile *os.File // held while the directory is deleted
+	var lockFile *os.File
 	for !lapsed {
 		select {
 		case err := <-exited:
@@ -754,7 +744,7 @@ func stopServer(srv *exec.Cmd, exited <-chan error) {
 	}
 	select {
 	case err := <-exited:
-		_ = err // the server's exit status after a stop says nothing
+		_ = err
 	case <-time.After(10 * time.Second):
 		_ = srv.Process.Kill()
 		err := <-exited

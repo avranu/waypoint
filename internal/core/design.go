@@ -29,10 +29,10 @@ var DesignStatuses = []string{"active", "superseded", "retired"}
 
 // Revision states.
 const (
-	RevApproved = "approved" // a person wrote or approved it
-	RevPending  = "pending"  // an agent's, waiting for a person
+	RevApproved = "approved"
+	RevPending  = "pending"
 	RevRejected = "rejected"
-	RevMerged   = "merged"  // an addition folded into the body
+	RevMerged   = "merged"
 	RevApplied  = "applied" // an agent's change that took effect without a person: to its unapproved note, or one written on a request
 )
 
@@ -233,7 +233,6 @@ func (s *Service) ListDesign(ctx context.Context, actor *Actor, q DesignQuery) (
 	if actor == nil || actor.User == nil {
 		return nil, ErrUnauthorized
 	}
-	// A code (ADR7, APP-ADR7) names its note.
 	if _, isCode := ParseDesignCode(strings.TrimSpace(q.Text)); isCode {
 		if id, err := s.ResolveDesign(ctx, actor, q.Text, q.Project); err == nil {
 			n, err := scanDesign(s.db.R.QueryRowContext(ctx, designSelect(false)+` WHERE n.id = ?`, id))
@@ -253,7 +252,7 @@ func (s *Service) ListDesign(ctx context.Context, actor *Actor, q DesignQuery) (
 	}
 	var where []string
 	var args []any
-	rank := "n.project_id IS NULL" // project notes before global ones
+	rank := "n.project_id IS NULL"
 	var own *int64
 	switch {
 	case strings.EqualFold(q.Project, "global"):
@@ -422,7 +421,7 @@ func (s *Service) GetDesign(ctx context.Context, actor *Actor, id int64) (*Desig
 	if c := latestEdit(ctx, q, id); c != nil {
 		current = *c
 	}
-	for i := len(revs) - 1; i >= 0; i-- { // oldest first
+	for i := len(revs) - 1; i >= 0; i-- {
 		r := revs[i]
 		switch {
 		case r.Kind == "addition" && r.State != RevRejected:
@@ -606,9 +605,7 @@ func (s *Service) CreateDesign(ctx context.Context, actor *Actor, in DesignInput
 		agent := actor.creditAgent()
 		switch {
 		case goalProposal:
-			// A goal is what people want: only a person's own act makes
-			// one, never an agent's note, even one written for a task a
-			// person filed (WP-ADR50). It waits for a person's Approve.
+			// An agent's goal is never approved, even one written for a person's filed task; this empty case must stay ahead of the request case.
 		case !actor.writesAsAgent():
 			approvedBy, approvedAt, state = nullUser(actor.id()), now, RevApproved
 		case req.accepts():
@@ -629,7 +626,7 @@ func (s *Service) CreateDesign(ctx context.Context, actor *Actor, in DesignInput
 		if err := s.codeDesign(ctx, t, id, want); err != nil {
 			return err
 		}
-		// An imported "ADR7: Title" lost its prefix.
+		// The title is read back after codeDesign, which strips a code prefix from an imported title.
 		if err := t.QueryRowContext(ctx, `SELECT title FROM design_notes WHERE id = ?`, id).Scan(&title); err != nil {
 			return err
 		}
@@ -662,7 +659,7 @@ func (s *Service) CreateDesign(ctx context.Context, actor *Actor, in DesignInput
 	event := "proposed"
 	switch {
 	case accepted:
-		event = "requested" // it counts, but nobody approved it (WP-ADR96)
+		event = "requested"
 	case !goalProposal && !actor.writesAsAgent():
 		event = "approved"
 	}
@@ -795,8 +792,6 @@ func (s *Service) afterDesignChange(ctx context.Context, t *tx, id int64) error 
 	if _, err := t.ExecContext(ctx, `INSERT INTO design_search(rowid, title, body) VALUES (?,?,?)`, id, title, body+" "+adds); err != nil {
 		return err
 	}
-	// Links follow what's intended: the body and the additions that count
-	// (approved, or applied on a request), not agents' pending ones.
 	var approved string
 	if err := t.QueryRowContext(ctx, `SELECT coalesce(group_concat(body, ' '), '') FROM design_revisions
 		WHERE note_id = ? AND kind = 'addition' AND state IN ('approved', 'applied')`, id).Scan(&approved); err != nil {
@@ -863,7 +858,7 @@ func (s *Service) UpdateDesign(ctx context.Context, actor *Actor, id int64, in D
 				sets, args = append(sets, "status = ?"), append(args, st)
 			}
 		}
-		// Where it ends up: its scope, then its parent (which must live there).
+		// Its parent must live in the project it ends up in.
 		to := n.ProjectID
 		if in.Project != nil {
 			if to, err = s.scopeFor(ctx, t, actor, *in.Project); err != nil {
@@ -894,7 +889,7 @@ func (s *Service) UpdateDesign(ctx context.Context, actor *Actor, id int64, in D
 				parentID = &parent.ID
 			}
 		} else if moving {
-			parentID = nil // it leaves a parent in the old place
+			parentID = nil
 		}
 		if !int64PtrEq(parentID, n.ParentID) {
 			sets, args = append(sets, "parent_id = ?"), append(args, nullInt(parentID))
@@ -903,13 +898,12 @@ func (s *Service) UpdateDesign(ctx context.Context, actor *Actor, id int64, in D
 			return forbidden("a person approved this note, so agents can't change its kind, status, place or parent; add your suggestion with an addition")
 		}
 		if moving {
-			// Its sub-notes go with it.
 			if _, err := t.ExecContext(ctx, `WITH RECURSIVE d(id) AS (SELECT id FROM design_notes WHERE id = ?
 				UNION SELECT x.id FROM design_notes x JOIN d ON x.parent_id = d.id)
 				UPDATE design_notes SET project_id = ? WHERE id IN (SELECT id FROM d)`, id, nullInt(to)); err != nil {
 				return err
 			}
-			sets = append(sets, "project_id = project_id") // a change: provenance and reindex below
+			sets = append(sets, "project_id = project_id") // A no-op SET keeps the update from returning early when only the project moves.
 			scope = to
 		}
 		if actor.writesAsAgent() && !n.agentsEdit() {
@@ -998,7 +992,7 @@ func (s *Service) AddDesignAddition(ctx context.Context, actor *Actor, id int64,
 		case actor.writesAsAgent() && req == nil:
 			state = RevPending
 		case actor.writesAsAgent():
-			state = RevApplied // counts on the request; nobody approved it
+			state = RevApplied
 		}
 		if err := s.addRevision(ctx, t, id, "addition", "", body, nil, state); err != nil {
 			return err
@@ -1008,7 +1002,6 @@ func (s *Service) AddDesignAddition(ctx context.Context, actor *Actor, id int64,
 				return err
 			}
 		}
-		// A pending addition doesn't change what's intended (yet).
 		if state != RevPending {
 			if _, err := t.ExecContext(ctx, `UPDATE design_notes SET updated_by = ?, updated_agent = ?, updated_at = ? WHERE id = ?`,
 				nullUser(actor.id()), actor.creditAgent(), s.nowMS(), id); err != nil {
@@ -1058,7 +1051,6 @@ func (s *Service) ReviewDesign(ctx context.Context, actor *Actor, revID int64, a
 		}
 		noteID, scope = n.ID, n.ProjectID
 		mergeable := action == "merge" && r.Kind == "addition" && (r.State == RevPending || r.State == RevApproved || r.State == RevApplied)
-		// An agent's applied addition counts without a person, so a person may reject it too.
 		rejectable := action == "reject" && r.Kind == "addition" && r.State == RevApplied
 		if r.State != RevPending && !mergeable && !rejectable {
 			return invalid("this %s is already %s", r.Kind, r.State)
@@ -1094,7 +1086,6 @@ func (s *Service) ReviewDesign(ctx context.Context, actor *Actor, revID int64, a
 				return err
 			}
 		case action == "approve":
-			// An approved addition is now part of what's intended.
 			if _, err := t.ExecContext(ctx, `UPDATE design_notes SET updated_by = ?, updated_agent = '', updated_at = ? WHERE id = ?`,
 				nullUser(actor.id()), now, n.ID); err != nil {
 				return err
@@ -1159,8 +1150,6 @@ func (s *Service) ApproveDesign(ctx context.Context, actor *Actor, id int64, ver
 		}
 		t.audit(AuditEntry{Action: "design.approve", Category: AuditApproval, ProjectID: derefInt(n.ProjectID), TargetType: "design", TargetID: id,
 			Target: n.Title, URL: fmt.Sprintf("/design/%d", id), Detail: detail, About: n.CreatedAgent})
-		// A goal Waypoint suggested from people's tasks names them; the
-		// approval stands behind those links too (WP-ADR50).
 		if n.Kind == "goal" && n.CreatedAgent == goalSuggestAgent {
 			if _, err := t.ExecContext(ctx, `UPDATE knowledge_links SET confirmed_by = ?, confirmed_at = ? WHERE dst_type = 'design' AND dst_id = ?
 				AND rel = 'serves' AND basis = ? AND confirmed_by IS NULL`, actor.id(), s.nowMS(), id, linkBasisSuggested); err != nil {

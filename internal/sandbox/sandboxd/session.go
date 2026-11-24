@@ -21,15 +21,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/sandbox/forward"
 )
 
-// Contained sessions (WP-470, PL7 §6.3). A start spec names a session; the
-// helper makes its workspace in the store, writes its run directory (the
-// passwd, group, hosts and CA bundle it sees, its launch file and its
-// broker's policy), starts its broker as wp-egress on a unix socket only
-// that session can reach, and runs the session's command as the repo user
-// in a transient unit that sees the machine's /usr and little else. The
-// call lasts as long as the session; when it ends, or the runner hangs up,
-// the units stop and the workspace is cleared, as the repo user, unless
-// the spec keeps it for a next step.
+// The call lasts as long as the session; when it ends or the runner hangs up, the units stop and the workspace is cleared as the repo user, unless the spec keeps it.
 
 // systemCAs is where Debian and Ubuntu keep the machine's CA bundle.
 const systemCAs = "/etc/ssl/certs/ca-certificates.crt"
@@ -60,12 +52,10 @@ type sessionRecord struct {
 // session is a session the helper is running or clearing now.
 type session struct {
 	rec     sessionRecord
-	run     string // its run directory
+	run     string
 	running bool
-	// discard: a stop asked for the workspace to go even if kept.
 	discard bool
-	// done closes when the session's units have stopped and it's cleared.
-	done chan struct{}
+	done    chan struct{}
 }
 
 func sessionUnit(id string) string { return unitPrefix + id + ".service" }
@@ -235,7 +225,7 @@ func (h *Helper) prepare(sd *sandbox.Signed) (*startPlan, error) {
 			_ = h.led.save(h.ledgerPath()) // the nonce is spent either way
 		}
 	}()
-	// These go into unit properties as they are.
+	// These go into unit properties unescaped, so each must pass unitPath.
 	for _, p := range []string{h.cfg.RunPath, h.cfg.StorePath, h.cfg.StatePath, h.cfg.Binary} {
 		if !unitPath(p) {
 			return nil, fmt.Errorf("%q must be a clean absolute path with no spaces, colons, quotes, backslashes, $, ; or %% for sessions to run", p)
@@ -305,7 +295,7 @@ func (h *Helper) prepare(sd *sandbox.Signed) (*startPlan, error) {
 	unattended := ss.Class == sandbox.ClassUnattended
 	dir, err := h.store.sessionDirs(ss.ID, u.UID, unattended)
 	if err == nil && !unattended {
-		err = h.store.userDirs(u.Name, u.UID, u.UID) // the person's home, repaired
+		err = h.store.userDirs(u.Name, u.UID, u.UID)
 	}
 	if err != nil {
 		return p, err
@@ -342,7 +332,7 @@ func (h *Helper) checkPolicy(raw json.RawMessage) error {
 // wp-egress's and the repo user's group's.
 func (h *Helper) writeRunDir(p *startPlan, ss *sandbox.Session, user string) error {
 	run := p.ses.run
-	h.removeRunDir(run) // a crash's leftovers
+	h.removeRunDir(run)
 	if err := os.Mkdir(run, 0o700); err != nil {
 		return err
 	}
@@ -435,7 +425,6 @@ func (h *Helper) sessionEnv(user string, extra map[string]string) []string {
 	proxy := "http://" + forward.Listen
 	bundle := "/etc/ssl/certs/ca-certificates.crt"
 	env := map[string]string{
-		// Defaults a spec may change.
 		"GOTOOLCHAIN": "local",
 		"LANG":        "C.UTF-8",
 	}

@@ -23,30 +23,28 @@ func TestReviewAgainBeforePR(t *testing.T) {
 	const trusted, untrusted = "claude-haiku-5-5", "gateway/unorouter/gemini-3.6-flash:free"
 	type record struct {
 		n       int
-		state   string // what the session marked them
-		model   string // "": the audit's
-		noRound bool   // an audit no review round had
+		state   string
+		model   string
+		noRound bool
 	}
 	for _, tc := range []struct {
 		name          string
 		issues, fixes string
-		arm           string // "": nothing recorded
-		model         string // the audit's
-		record        record // earlier findings
-		allRejected   bool   // the session rejects both findings
-		pastCap       bool   // reviewAgainFindings more, rejected, and one fixed past what the model reads
-		wait          bool   // the model can't answer now
-		refuted       bool   // the check against the code refuted the fixed finding: no signal, and its severity reaches no bar
-		belowFloor    bool   // the fixed finding is labelled low: no signal, the scores decide
-		afterPR       bool   // the run's newest round is one after a pull request
-		trustFails    bool   // the reviewer's record can't be read
+		arm           string
+		model         string
+		record        record
+		allRejected   bool
+		pastCap       bool
+		wait          bool
+		refuted       bool
+		belowFloor    bool
+		afterPR       bool
+		trustFails    bool
 	}{
 		{name: "serious", issues: "critical", fixes: "complete", arm: AgainReview, model: trusted},
 		{name: "partial fixes", issues: "moderate", fixes: "partial", arm: AgainReview, model: trusted},
 		{name: "enough", issues: "minor", fixes: "complete", arm: AgainEnough, model: trusted, belowFloor: true},
 		{name: "a refuted finding's severity reaches no bar", issues: "critical", fixes: "complete", arm: AgainEnough, model: trusted, refuted: true},
-		// What the session changed for a refuted finding is still code no
-		// reviewer has read: the fixes call counts it.
 		{name: "a refuted finding's fixes still count", issues: "critical", fixes: "partial", arm: AgainReview, model: trusted, refuted: true},
 		{name: "a fixed finding over the floor scored minor", issues: "minor", fixes: "complete", arm: AgainReview, model: trusted},
 		{name: "a signal from an untrusted reviewer", issues: "critical", fixes: "complete", arm: AgainReview, model: untrusted},
@@ -85,7 +83,6 @@ func TestReviewAgainBeforePR(t *testing.T) {
 				t.Fatal(err)
 			}
 			a.setClock(a.clockNow().Add(time.Minute))
-			// One review round: wp ship, the Stop, the audit, its prompt.
 			review := func(titles ...string) int64 {
 				t.Helper()
 				if res, err := a.ship(first.Key, ShipAuto); err != nil || res.Held == "" {
@@ -97,8 +94,6 @@ func TestReviewAgainBeforePR(t *testing.T) {
 				a.endAudit(box, "done", titles...)
 				a.tick(time.Second)
 				if len(titles) == 0 {
-					// Nothing found: no prompt is typed, the round is done and
-					// Waypoint opens the pull request itself (heldUnshipped).
 					a.s.Wait()
 					if r := a.round(round); r.state != RoundDone {
 						t.Fatalf("clean round %d: %+v", round, r)
@@ -118,7 +113,7 @@ func TestReviewAgainBeforePR(t *testing.T) {
 				return round
 			}
 			round := review("Merge loses an update", "A comment is out of date")
-			var pastRound int64 // a round made up for the record, out of the way once the ship read it
+			var pastRound int64
 			_, au := a.roundAuditRow(round)
 			full, err := a.s.GetAudit(a.ctx, a.admin, au.ID)
 			if err != nil || len(full.Findings) != 2 {
@@ -128,7 +123,6 @@ func TestReviewAgainBeforePR(t *testing.T) {
 				t.Fatal(err)
 			}
 			if tc.record.n > 0 {
-				// An earlier round's audit, its findings marked.
 				var cols []string
 				rows, err := a.s.db.R.Query(`SELECT name FROM pragma_table_info('code_audits') WHERE name NOT IN ('id', 'request_key')`)
 				if err != nil {
@@ -195,9 +189,7 @@ func TestReviewAgainBeforePR(t *testing.T) {
 			}
 
 			if tc.afterPR {
-				// The run's first round is over, and its newest is one on a
-				// pull request since closed: that round's ship is no first
-				// round's, so nothing is scored (audit 626).
+				// A ship on a round after a closed pull request is not a first round's, so nothing is scored.
 				var cols []string
 				rows, err := a.s.db.R.Query(`SELECT name FROM pragma_table_info('work_log') WHERE name != 'id'`)
 				if err != nil {
@@ -232,8 +224,6 @@ func TestReviewAgainBeforePR(t *testing.T) {
 			if tc.trustFails {
 				a.s.againTrustFault = errors.New("database is locked")
 			}
-			// A decision recorded tells the loop's health check, for the
-			// task's project (review_health.go).
 			var recordedMu sync.Mutex
 			var recorded []int64
 			prev := a.s.Hub.observe
@@ -245,7 +235,6 @@ func TestReviewAgainBeforePR(t *testing.T) {
 					recordedMu.Unlock()
 				}
 			}
-			// The session's rejections are checked first, and found right.
 			res, err := a.shipChecked(box, first.Key)
 			if tc.trustFails && tc.arm == "" {
 				var n int
@@ -255,7 +244,6 @@ func TestReviewAgainBeforePR(t *testing.T) {
 				if !errors.Is(err, errAgainRead) || !strings.Contains(err.Error(), "database is locked") || len(g.created) != 0 || n != 0 {
 					t.Fatalf("record unreadable: %+v, %v (opened %d, %d decisions)", res, err, len(g.created), n)
 				}
-				// Read again once the record can be, the round is decided.
 				a.s.againTrustFault = nil
 				if res, err = a.ship(first.Key, ShipPR); err != nil || res.Pull == nil {
 					t.Fatalf("after the record could be read: %+v, %v", res, err)
@@ -289,8 +277,6 @@ func TestReviewAgainBeforePR(t *testing.T) {
 				t.Fatalf("decision model read %q", asked)
 			}
 			if tc.wait && tc.belowFloor {
-				// No signal, and no model to score: the pull request opens,
-				// and the decision says the model was missing.
 				var arm string
 				var labels int
 				if err := a.s.db.R.QueryRow(`SELECT arm, labels FROM review_again_decisions WHERE round_id = ?`, round).Scan(&arm, &labels); err != nil {
@@ -307,7 +293,6 @@ func TestReviewAgainBeforePR(t *testing.T) {
 			if err := a.s.db.R.QueryRow(`SELECT arm, next_round_id, samples, spread FROM review_again_decisions WHERE round_id = ?`, round).Scan(&arm, &next, &samples, &spread); err != nil {
 				t.Fatal(err)
 			}
-			// The scripted model answers alike every time: the fewest asks.
 			if wantSamples := map[bool]int{true: 0, false: againSamplesMin}[tc.wait]; samples != wantSamples || spread != "{}" {
 				t.Errorf("samples %d, spread %s; want %d, {}", samples, spread, wantSamples)
 			}
@@ -317,17 +302,12 @@ func TestReviewAgainBeforePR(t *testing.T) {
 				}
 				return
 			}
-			// Waypoint scheduled round 2 itself when the check agreed
-			// (shipReviewed), so the session's ship only finds the round
-			// pending: no pull request, and no skip-review advert.
 			if res.Held == "" || strings.Contains(res.Held+res.Notice, "--skip-review") || res.Pull != nil || len(g.created) != 0 {
 				t.Fatalf("held = %+v (opened %d)", res, len(g.created))
 			}
 			if arm != AgainReview || !next.Valid {
 				t.Fatalf("decision %s, next %v", arm, next)
 			}
-			// The next round's step is made at the session's Stop, and its tick
-			// asks the reviewer; the text says nothing more is to be run (WP-1370).
 			a.stopWith("Pushed; the review comes first.")
 			a.tick(61 * time.Second)
 			if n := a.auditsOfRound(next.Int64); n != 1 || !strings.Contains(res.Held, "Nothing more to run") {
@@ -341,7 +321,6 @@ func TestReviewAgainBeforePR(t *testing.T) {
 			}
 			wantFound, wantFixed, wantRejected := 2, 1, 1
 			if tc.pastCap {
-				// Counted over all of them, past the ones the model read.
 				n := reviewAgainFindings + 3
 				wantFound, wantFixed, wantRejected = n, 1, n-1
 				if !strings.Contains(asked[0], fmt.Sprintf("Findings: %d (1 fixed, %d rejected, 0 filed as issues, 0 left open); the %d most serious follow", n, n-1, reviewAgainFindings)) {
@@ -353,8 +332,6 @@ func TestReviewAgainBeforePR(t *testing.T) {
 				t.Errorf("first round counts %d/%d/%d, %v", found, fixed, rejected, err)
 			}
 
-			// The second round's wp ship opens the pull request; nothing
-			// is scored again.
 			a.setClock(a.clockNow().Add(time.Minute))
 			if second := review(); second != next.Int64 {
 				t.Fatalf("second round %d, want %d", second, next.Int64)

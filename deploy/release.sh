@@ -1,27 +1,5 @@
 #!/usr/bin/env bash
-# Versions and releases Waypoint (WP-D21). CI's `release` job runs this on
-# every push to main that passed its checks; run it with --dry-run (or
-# `make release-dry-run`) to see what the next release would be.
-#
-#   deploy/release.sh [--dry-run] [--version-only] [--notes-only]
-#   deploy/release.sh --publish
-#
-# The next version comes from the commits since the last v* tag:
-#   - no tag yet                                        -> v0.1.0
-#   - breaking (`type!:` subject or BREAKING CHANGE)    -> major, or minor while 0.x
-#   - a `feat` commit, or a new file in
-#     internal/db/migrations/                           -> minor
-#   - anything else                                     -> patch
-# Release notes list the commits since that tag (a merged pull request shows as
-# its title), grouped Features / Fixes / Other when conventional prefixes exist.
-#
-# --publish (CI) tags HEAD, creates the Forgejo release with those notes and
-# attaches the `wp` binaries from `make cli`. Environment:
-#   RELEASE_TOKEN (or GITHUB_TOKEN)  a token that may create releases
-#   GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_SHA   set by Forgejo Actions
-#   GITHUB_OUTPUT                    receives version= and released=
-# Re-running on a commit that is already released only completes what is
-# missing (the release record, the binaries).
+# Re-running on an already released commit only completes what is missing (release record, binaries).
 set -euo pipefail
 
 mode=dry
@@ -49,7 +27,6 @@ die() {
   exit 1
 }
 
-# Outside CI (make release-dry-run) the forge and repo come from an https origin.
 origin=$(git remote get-url origin 2>/dev/null || true)
 origin=${origin%.git}
 [[ $origin == https://*/*/* ]] || origin=''
@@ -66,7 +43,6 @@ fi
 # Other runs may have tagged since this checkout.
 [[ $mode != publish ]] || git fetch --quiet --tags --force origin 2>/dev/null || true
 
-# A v* tag already on HEAD means this commit is released; the notes are for it.
 current=$(git tag --points-at HEAD --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)
 describe=(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*')
 [[ -n $current ]] && describe+=(--exclude "$current")
@@ -79,7 +55,6 @@ else
   range=HEAD
 fi
 
-# ---- read the commits ----
 declare -a subjects=() bodies=()
 while IFS= read -r -d $'\x1e' rec; do
   rec=${rec#$'\n'}
@@ -133,9 +108,7 @@ else
   [[ $bump == patch ]] || bump="$bump: ${reason:-}"
 fi
 
-# ---- release notes ----
-# What lands in a release is the first-parent history: direct commits and merges.
-# A merged pull request shows as its title, not as "Merge pull request ...".
+# Release notes walk first-parent history, so a merged PR appears by its title, not its merge commit.
 declare -a feats=() fixes=() others=() breaks=() flat=()
 conventional=0
 while IFS= read -r -d $'\x1e' rec; do
@@ -156,7 +129,6 @@ while IFS= read -r -d $'\x1e' rec; do
     conventional=1
   fi
   grep -qE '^BREAKING[ -]CHANGE:' <<<"$b" && isbreaking=1
-  # A merged PR whose title has no prefix takes its type from its own commits.
   if [[ -z $type ]] && git rev-parse -q --verify "$sha^2" >/dev/null; then
     inner=$(git log --format=%s "$sha^1..$sha^2")
     if grep -qiE '^(feat|feature)(\([^)]*\))?!?:' <<<"$inner"; then
@@ -179,7 +151,7 @@ while IFS= read -r -d $'\x1e' rec; do
 done < <(git log --first-parent --format='%H%x1f%s%x1f%b%x1e' "$range")
 
 notes() {
-  section() { # section TITLE LINES...
+  section() {
     local title=$1
     shift
     (($#)) || return 0
@@ -201,7 +173,6 @@ notes() {
 }
 notes_text=$(notes)
 
-# ---- output ----
 if [[ $only == version ]]; then
   echo "$version"
 elif [[ $only == notes ]]; then
@@ -216,7 +187,6 @@ elif [[ $mode == dry ]]; then
 fi
 [[ $mode == dry ]] && exit 0
 
-# ---- publish ----
 [[ -n $TOKEN ]] || die "no RELEASE_TOKEN or GITHUB_TOKEN in the environment"
 [[ ${GITHUB_SHA:-$HEAD_SHA} == "$HEAD_SHA" ]] || die "HEAD ($HEAD_SHA) is not the commit being built (${GITHUB_SHA})"
 if ((ncommits == 0)) && [[ -z $current ]]; then
@@ -226,15 +196,13 @@ fi
 
 out() { [[ -z ${GITHUB_OUTPUT:-} ]] || echo "$1" >>"$GITHUB_OUTPUT"; }
 
-# api METHOD PATH [curl args...]: the token goes through a curl config on stdin,
-# not argv, so it never shows in a process list.
+# The token goes through a curl config on stdin, so it never shows in a process list.
 api() {
   local method=$1 path=$2
   shift 2
   printf 'header = "Authorization: token %s"\n' "$TOKEN" |
     curl -sS -K - -X "$method" -H 'Accept: application/json' "$@" "$SERVER/api/v1/repos/$REPO$path"
 }
-# api_code is api with only the HTTP status printed (body to a file).
 body=$(mktemp)
 trap 'rm -f "$body"' EXIT
 api_code() {
@@ -274,7 +242,6 @@ else
   die "looking up release $version failed ($code): $(head -c 300 "$body")"
 fi
 
-# Binaries: build with the release version baked in, upload what is missing.
 make --no-print-directory cli VERSION="$version" >/dev/null
 have=$(api GET "/releases/$rel_id/assets" | jq -r '.[].name' 2>/dev/null || true)
 for f in bin/cli/*; do

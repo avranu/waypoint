@@ -9,12 +9,7 @@ import (
 	"time"
 )
 
-// The no-op poll (WP-1443): a Bash call that only prints a literal or
-// succeeds (`echo waiting`) does nothing but cost a turn, with the whole
-// context read again. An agent that has been told not to end its turn (Claude
-// Code asks a subagent for its report the moment it does) answers by running
-// one of these over and over. It is refused, and the text says what to do in
-// the agent's situation.
+// A no-op Bash call costs a turn, and an agent told not to end its turn loops on such calls, so they are refused.
 
 var reSleepArg = regexp.MustCompile(`^\d+(\.\d+)?[smhd]?$`)
 
@@ -34,7 +29,7 @@ func pureNoop(cmd string) bool {
 	printed := 0
 	for _, w := range segs {
 		if len(w) == 0 {
-			continue // `a;;b` or a trailing `;`
+			continue
 		}
 		switch w[0] {
 		case "echo", "printf", "true", ":":
@@ -179,7 +174,7 @@ var bgTaskRunning = func(session string) bool {
 	var fs []f
 	for _, p := range files {
 		fi, err := os.Lstat(p)
-		if err != nil || fi.Mode()&os.ModeSymlink != 0 { // a symlink is a sub-agent's transcript
+		if err != nil || fi.Mode()&os.ModeSymlink != 0 { // A symlink here is a sub-agent's transcript, not a background command's output.
 			continue
 		}
 		fs = append(fs, f{p, fi.ModTime().UnixNano()})

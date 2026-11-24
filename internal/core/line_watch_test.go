@@ -44,19 +44,16 @@ func TestResumeBabysitsAfterRestart(t *testing.T) {
 	be, _ := armedBabysit(t)
 	be.setBabysitState(BabysitGaveUp, "5 rounds and still 1 review comment", true)
 
-	// Waypoint starts: the babysit that gave up starts again, from round 0.
 	be.s.ResumeBabysits(be.ctx)
 	b := be.babysit()
 	if !b.Active || b.Round != 0 || b.Via != viaResume || be.babysitCount() != 2 {
 		t.Fatalf("after a start: %+v", b)
 	}
-	// It gives up again; another start soon after leaves it be.
 	be.setBabysitState(BabysitGaveUp, "5 rounds and still 1 review comment", true)
 	be.s.ResumeBabysits(be.ctx)
 	if n := be.babysitCount(); n != 2 {
 		t.Fatalf("resumed again within %v: %d babysits", resumeEvery, n)
 	}
-	// Six hours on it may; a day after it gave up, no more.
 	be.setClock(be.clockNow().Add(resumeEvery + time.Minute))
 	be.s.ResumeBabysits(be.ctx)
 	if n := be.babysitCount(); n != 3 {
@@ -72,13 +69,11 @@ func TestResumeBabysitsAfterRestart(t *testing.T) {
 
 func TestResumeBabysitsLeavesAPersonsCall(t *testing.T) {
 	be, pr := armedBabysit(t)
-	// Waiting on a person for Waypoint's own reason: started again.
 	be.setBabysitState(BabysitNeedsPerson, "round 4 (done, nothing pushed) left conflicts on 0b8779d", false)
 	be.s.ResumeBabysits(be.ctx)
 	if b := be.babysit(); !b.Active || b.State == BabysitNeedsPerson || be.babysitCount() != 2 {
 		t.Fatalf("a stuck round: %+v", b)
 	}
-	// A review comment waiting for a person: left for them.
 	be.setClock(be.clockNow().Add(resumeEvery + time.Minute))
 	be.setBabysitState(BabysitNeedsPerson, "1 review comment waits for a person: c1", false)
 	if _, err := be.s.db.W.ExecContext(be.ctx, `INSERT INTO review_comments(pr_id, kind, ext_id, body, verdict, created_at, updated_at, seen_at) VALUES (?, 'inline', 'x1', 'b', ?, 0, 0, 0)`,
@@ -93,13 +88,11 @@ func TestResumeBabysitsLeavesAPersonsCall(t *testing.T) {
 
 func TestResumeBabysitsRetriesAFailedStart(t *testing.T) {
 	be, _ := armedBabysit(t)
-	// Ended for a resume whose start then failed: the next start tries again.
 	be.setBabysitState(BabysitStopped, resumeEnded, true)
 	be.s.ResumeBabysits(be.ctx)
 	if b := be.babysit(); !b.Active || be.babysitCount() != 2 {
 		t.Fatalf("a failed resume: %+v", b)
 	}
-	// Stopped by a person: left stopped.
 	be.setClock(be.clockNow().Add(resumeEvery + time.Minute))
 	be.setBabysitState(BabysitStopped, "stopped by Robin", true)
 	be.s.ResumeBabysits(be.ctx)
@@ -127,14 +120,12 @@ func TestStalledLineRequest(t *testing.T) {
 		}
 		return out
 	}
-	// Babysat and moving: nothing to say.
 	be.s.watchLines(be.ctx)
 	be.setClock(be.clockNow().Add(lineStalledAfter + time.Minute))
 	be.s.watchLines(be.ctx)
 	if r := open(); len(r) != 0 {
 		t.Fatalf("a moving line: %q", r)
 	}
-	// It gave up: Waypoint starts it again by itself, and asks nobody.
 	be.setBabysitState(BabysitGaveUp, "5 rounds and still 1 review comment", true)
 	be.s.watchLines(be.ctx)
 	if n := be.babysitCount(); n != 1 {
@@ -148,7 +139,6 @@ func TestStalledLineRequest(t *testing.T) {
 	if r := open(); len(r) != 0 {
 		t.Fatalf("asked while it could free itself: %q", r)
 	}
-	// It gives up again and may not restart yet: hours on, one request.
 	be.setBabysitState(BabysitGaveUp, "5 rounds and still 1 review comment", true)
 	be.setClock(be.clockNow().Add(lineStalledAfter - time.Minute))
 	be.s.watchLines(be.ctx)
@@ -167,7 +157,6 @@ func TestStalledLineRequest(t *testing.T) {
 	if strings.Contains(r[0], "when it next restarts") || strings.Contains(r[0], "A review comment") {
 		t.Fatalf("says what doesn't apply: %q", r)
 	}
-	// Dismissed while the line still stands: not asked again.
 	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE requests SET state = ? WHERE tool_use_id LIKE ?`, RequestDismissed, lineStalledKey+"%"); err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +168,6 @@ func TestStalledLineRequest(t *testing.T) {
 	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE requests SET state = ? WHERE tool_use_id LIKE ?`, RequestOpen, lineStalledKey+"%"); err != nil {
 		t.Fatal(err)
 	}
-	// Started again: the request goes away.
 	be.setClock(be.clockNow().Add(resumeEvery))
 	be.s.ResumeBabysits(be.ctx)
 	be.babysit()
@@ -207,7 +195,6 @@ func TestStalledLineCountsFromTheDatabase(t *testing.T) {
 		}
 		return n
 	}
-	// Armed afresh after the wait began: the count starts there.
 	be.setClock(be.clockNow().Add(lineStalledAfter + time.Minute))
 	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE pull_requests SET armed_at = ? WHERE id = ?`, be.s.nowMS(), pr.ID); err != nil {
 		t.Fatal(err)
@@ -216,7 +203,6 @@ func TestStalledLineCountsFromTheDatabase(t *testing.T) {
 	if n := count(); n != 0 {
 		t.Fatalf("asked at once about a line just armed: %d", n)
 	}
-	// No sweep saw the wait (Waypoint restarted); it counts all the same.
 	be.setClock(be.clockNow().Add(lineStalledAfter + time.Minute))
 	be.s.watchLines(be.ctx)
 	if n := count(); n != 1 {
@@ -384,7 +370,6 @@ func TestStalledLineKeepsCountingARewrittenFullRunWait(t *testing.T) {
 	if got := be.babysit(); got.Wait != wait("1.5 × the 30m p90 of its last 9 full runs") || !got.WaitSince.Equal(since) {
 		t.Fatalf("wait %q since %s, want since %s", got.Wait, got.WaitSince, since)
 	}
-	// A different wait is a change, and starts the count again.
 	be.s.setState(be.ctx, b, pr, BabysitNeedsPerson, "couldn't mark it ready: the forge refused")
 	if got := be.babysit(); !got.WaitSince.Equal(be.clockNow()) {
 		t.Fatalf("a new wait since %s, want %s", got.WaitSince, be.clockNow())

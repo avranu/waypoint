@@ -65,8 +65,7 @@ await page.goto(`${base}/issue/${created.key}`);
 await page.waitForTimeout(800);
 const prose = page.locator(".prose-wp").first();
 ok(
-  // Our own code-block Copy button (button.code-copy) is added after sanitising;
-  // any other <button> would have come from the markdown source.
+  // Copy buttons are added after sanitising, so only the markdown's own buttons count here.
   (await prose
     .locator("style, form, button:not(.code-copy), input:not(.task)")
     .count()) === 0,
@@ -203,7 +202,11 @@ ok(
 );
 
 // Picker: ArrowDown + Enter with no matches doesn't throw.
-await page.getByTitle(/^Priority: /).locator("visible=true").first().click();
+await page
+  .getByTitle(/^Priority: /)
+  .locator("visible=true")
+  .first()
+  .click();
 await page.keyboard.type("zzzz");
 await page.keyboard.press("ArrowDown");
 await page.keyboard.press("Enter");
@@ -298,11 +301,10 @@ await m.close();
 
 // Live updates come back after the server restarts.
 if (restart) {
-  await page.goto(`${base}/p/WAYP/backlog`); // sprint-mode board shows only the sprint; the backlog shows new work
+  await page.goto(`${base}/p/WAYP/backlog`);
   await page.waitForTimeout(800);
-  expectErrors = true; // the stream's own connection errors are expected while the server is down
+  expectErrors = true;
   execSync(`${restart} keep`);
-  // The old process holds open streams for its 10s shutdown grace; then the browser reconnects.
   await page.waitForTimeout(16000);
   expectErrors = false;
   const t = "Arrived live " + Date.now();

@@ -11,21 +11,7 @@ import (
 	"time"
 )
 
-// Refused tool calls are logged for audit, not filed as requests (WP-232,
-// WP-ADR115). When Claude Code's auto-mode classifier refuses a call, the
-// agent usually works on another way and asks for what it still needs
-// itself (wp request), so a request per refusal only added to what a person
-// sorts through. The PermissionDenied hook records the refusal here instead:
-// nothing waits on a person, nothing notifies and the agent isn't told. People
-// read the log under Agents → Audit log → Refused calls, on the session's
-// timeline, and on a request the agent files soon after in the same session.
-//
-// A refusal that is common, repeated or disruptive is better ended by an
-// allow rule than by approvals (WP-233, WP-ADR114): each row offers WP-233's
-// narrow rules, the log ranks the rules that would have let the period's
-// refusals through (RuleSuggestion), and a person who picks one gets it
-// added to the session repo's .claude/settings.json by pull request
-// (AllowRefusedCall).
+// Refusals are audit-only: no request, no notification, and the agent is not told, so nothing waits on a person.
 
 const (
 	// refusalRepeat: the same call refused again in a session this soon
@@ -166,7 +152,6 @@ func (s *Service) logRefusal(ctx context.Context, t *tx, actor *Actor, x *AgentS
 	if len(input) > maxRefusalInput {
 		input = ""
 	}
-	// The session's project, when the person may see it, as for a request.
 	var project sql.NullInt64
 	if x.projectID.Valid {
 		r, rerr := s.projectRole(ctx, t, actor, x.projectID.Int64)
@@ -437,9 +422,7 @@ func (s *Service) ruleSuggestions(ctx context.Context, cond string, args []any) 
 				g = &RuleSuggestion{Rule: r.Rule, Covers: r.Covers, Tool: tool, Repo: repo, rank: rank, sess: map[int64]bool{}}
 				groups[k] = g
 			}
-			// The newest member nobody picked a rule for, or whose pick
-			// failed: AllowRefusedCall refuses one with a rule or a pick
-			// on its way.
+			// Refusal is the newest call in the group with no rule yet, or whose pick failed.
 			if open && g.Refusal == 0 {
 				g.Refusal = id
 			}
@@ -457,7 +440,6 @@ func (s *Service) ruleSuggestions(ctx context.Context, cond string, args []any) 
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	// Of rules covering the same refusals, keep the narrowest.
 	best := map[string]*RuleSuggestion{}
 	for _, g := range groups {
 		if g.Calls < 2 && g.Ran == 0 {
@@ -475,7 +457,7 @@ func (s *Service) ruleSuggestions(ctx context.Context, cond string, args []any) 
 			g.Added, g.PR = true, pr
 		}
 		if !g.Added && g.Refusal == 0 {
-			continue // every call it covers has a rule, or one on its way
+			continue
 		}
 		list = append(list, g)
 	}

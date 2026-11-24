@@ -1,9 +1,6 @@
 package core
 
-// Which pull requests a rule acts on (WP-D14): chips, not WQL. Draft, author
-// (people, bots, named accounts), base branch, labels, paths touched, size
-// and repo. The filter is checked where a PR event starts a run
-// (startRun), before any step.
+// The filter is checked where a PR event starts a run (startRun), before any step.
 
 import (
 	"context"
@@ -58,7 +55,7 @@ func (f *PRFilter) skip(pr *PullRequest, kind string) string {
 		return "closed"
 	case kind == EvPRUpdated && pr.BotsPaused:
 		return "paused with @waypoint pause"
-	case kind == EvPRUpdated && pr.State == "draft" && !flt.Drafts && !pr.WipAuto: // Waypoint's own drafts get the bots (WP-158)
+	case kind == EvPRUpdated && pr.State == "draft" && !flt.Drafts && !pr.WipAuto: // Waypoint's own drafts (WipAuto) still get the bots.
 		return "a draft"
 	case kind == EvPRUpdated && !flt.Bots && len(flt.Authors) == 0 && isBotLogin(pr.Author):
 		return "opened by a bot (" + pr.Author + ")"
@@ -275,7 +272,6 @@ func (s *Service) readPRFiles(ctx context.Context, pr *PullRequest) (prFiles, bo
 func diffFiles(diff string) prFiles {
 	pf := prFiles{Paths: []string{}}
 	for _, fd := range splitDiff(diff) {
-		// A rename touches the old path too: a finding on it is about this change.
 		for _, p := range []string{fd.oldPath, fd.path} {
 			if p != "" && !slices.Contains(pf.Paths, p) {
 				pf.Paths = append(pf.Paths, p)

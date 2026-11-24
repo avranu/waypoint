@@ -60,7 +60,7 @@ func parseRoutes(t *testing.T) (map[string]bool, map[string]bool) {
 			pattern, _ := strconv.Unquote(lit.Value)
 			authed := false
 			switch h := call.Args[1].(type) {
-			case *ast.CallExpr: // a(s.f), s.authed(s.f)
+			case *ast.CallExpr:
 				switch fn := h.Fun.(type) {
 				case *ast.Ident:
 					authed = fn.Name == "a"
@@ -68,7 +68,7 @@ func parseRoutes(t *testing.T) (map[string]bool, map[string]bool) {
 					authed = fn.Sel.Name == "authed" || fn.Sel.Name == "personUI"
 					personUI[pattern] = fn.Sel.Name == "personUI"
 				}
-			case *ast.SelectorExpr: // s.stream
+			case *ast.SelectorExpr:
 				authed = slices.Contains(authedHandlers, h.Sel.Name)
 			}
 			out[pattern] = authed
@@ -97,7 +97,6 @@ func TestEveryRouteHasAPermission(t *testing.T) {
 			t.Errorf("%s needs %q, which is not in the catalog", pattern, p)
 		}
 	}
-	// Changing what tokens may do is never open to a permission token.
 	for _, pattern := range []string{"POST /api/v1/me/tokens", "PATCH /api/v1/me/tokens/{id}", "DELETE /api/v1/me/tokens/{id}",
 		"GET /api/v1/me/tokens", "POST /api/v1/cli/login/{code}/approve", "POST /api/v1/me/password"} {
 		if routePermissions[pattern] != permNever {
@@ -181,7 +180,6 @@ func TestPermissionTokens(t *testing.T) {
 	}
 	hermes := &client{t: t, base: ts.URL, http: http.DefaultClient, token: created.Token}
 
-	// What it was given works.
 	var me map[string]any
 	if code := hermes.json("GET", "/api/v1/me", nil, &me); code != 200 || me["token"] == nil {
 		t.Fatalf("me: %d %v", code, me)
@@ -199,7 +197,6 @@ func TestPermissionTokens(t *testing.T) {
 		t.Errorf("search: %d", code)
 	}
 
-	// What it wasn't is refused, and recorded for Robin.
 	for _, c := range []struct{ method, path string }{
 		{"POST", "/api/v1/agents/start/HOUSE-1"},
 		{"POST", "/api/v1/runner-jobs"},
@@ -211,7 +208,6 @@ func TestPermissionTokens(t *testing.T) {
 			t.Errorf("%s %s: %d %s", c.method, c.path, code, b)
 		}
 	}
-	// Tokens are out of its reach, whatever it holds.
 	for _, c := range []struct {
 		method, path string
 		body         any
@@ -226,7 +222,6 @@ func TestPermissionTokens(t *testing.T) {
 		}
 	}
 
-	// MCP: it sees and calls only its tools.
 	rpc := func(method string, params any) map[string]any {
 		t.Helper()
 		var out map[string]any
@@ -249,7 +244,6 @@ func TestPermissionTokens(t *testing.T) {
 		t.Errorf("save_page: %v", res)
 	}
 
-	// Robin sees what it was refused, and grants one.
 	var list []core.APIToken
 	web.json("GET", "/api/v1/me/tokens", nil, &list)
 	var refused []core.Permission
@@ -273,13 +267,11 @@ func TestPermissionTokens(t *testing.T) {
 		t.Errorf("clear refusals: %d", code)
 	}
 
-	// An agent with a full token can't change what tokens may do.
 	full, _, _ := svc.CreateToken(ctx, mustActor(t, svc, int64(me["id"].(float64))), core.TokenSpec{Name: "claude", Agent: "anthropic/claude"})
 	claude := &client{t: t, base: ts.URL, http: http.DefaultClient, token: full}
 	if code, b := claude.do("PATCH", "/api/v1/me/tokens/"+id, map[string]any{"permissions": nil}); code != 403 {
 		t.Errorf("agent widened a token: %d %s", code, b)
 	}
-	// Robin can lift the limits altogether.
 	if code := web.json("PATCH", "/api/v1/me/tokens/"+id, map[string]any{"permissions": nil}, &updated); code != 200 || updated.Permissions != nil {
 		t.Errorf("unrestrict: %d %+v", code, updated)
 	}
@@ -318,7 +310,6 @@ func TestPermissionTokenLimits(t *testing.T) {
 	}
 	hermes := &client{t: t, base: ts.URL, http: http.DefaultClient, token: tok}
 
-	// No agent identity given: it still proposes design notes rather than approving them.
 	var note map[string]any
 	if code := hermes.json("POST", "/api/v1/design", map[string]any{"title": "Sinks", "body": "Steel.", "project": "HOUSE"}, &note); code != 200 || note["approved"] == true {
 		t.Errorf("design note from a permission token: %d %v", code, note)
@@ -330,7 +321,6 @@ func TestPermissionTokenLimits(t *testing.T) {
 	}
 	me.do("POST", "/api/v1/issues/HOUSE-1/publish", nil)
 
-	// Robin's file is out of its reach; its own is not.
 	var att map[string]any
 	if code := me.json("POST", "/api/v1/issues/HOUSE-1/attachments?name=receipt.txt", "paid", &att); code != 200 {
 		t.Fatalf("upload: %d %v", code, att)
@@ -344,7 +334,6 @@ func TestPermissionTokenLimits(t *testing.T) {
 		t.Errorf("own file: %d %s", code, b)
 	}
 
-	// A request someone else filed can't be withdrawn by it.
 	claudeTok, _, _ := svc.CreateToken(ctx, robin, core.TokenSpec{Name: "claude", Agent: "anthropic/claude"})
 	agent := &client{t: t, base: ts.URL, http: http.DefaultClient, token: claudeTok}
 	var req map[string]any
@@ -355,7 +344,6 @@ func TestPermissionTokenLimits(t *testing.T) {
 		t.Errorf("withdrew someone else's request: %d", code)
 	}
 
-	// No live stream.
 	if code, _ := hermes.do("GET", "/api/v1/stream", nil); code != 403 {
 		t.Errorf("stream: %d", code)
 	}

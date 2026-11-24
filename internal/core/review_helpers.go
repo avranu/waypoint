@@ -15,27 +15,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Helpers around an audit's model (WP-1320, WP-ADR135, WP-ADR141): Claude
-// Haiku runs, started by the runner in the audit's own checkout and job,
-// that Waypoint asks for deterministically, not by asking the model to
-// spawn them (in the live review a Sonnet reviewer told to fan out did so
-// in 2 of 6 runs).
-//
-//   - The panel: fixed checks run beside the model, never read by it, each
-//     asked one question about the change with the task, the person's own
-//     words and the goals in its prompt. Each problem a check raises is read
-//     a second time against the code by its own run, which also sets its
-//     severity; the confirmed ones are merged (one combine run) and added
-//     to the findings the reviewer reported. The model is told nothing of
-//     the panel: handed its leads, a Sonnet reviewer on audit #1135 (73
-//     leads, a 187 KB change) read two files and checked those leads only.
-//   - The check of findings (Verify): after the model, each of its findings
-//     goes to its own Haiku run, which reads the code and answers confirmed,
-//     refuted or unsupported, with its evidence.
-//
-// audit_helper_runs keeps each helper's run (its leads, cost and time), so
-// what each check raises, what the second read confirms and what sessions do
-// with the findings is counted (againHelperStats), not assumed.
+// Helpers are started by the runner, not the model, and the model is told nothing of the panel: handed its leads, it checks only those.
 
 // helperCLI and helperModel run every helper.
 const (
@@ -426,9 +406,6 @@ func (s *Service) currentPanelRuns(ctx context.Context, round int64) (runs []Aud
 	for _, k := range order {
 		r := newest[k]
 		if r.Answered {
-			// A reviewer answered beside the check's newest run: its
-			// problems are in that audit's findings, and an older row of
-			// the same check and range is not put to the session again.
 			continue
 		}
 		runs = append(runs, r.AuditHelperRun)
@@ -639,7 +616,6 @@ func helperRunsOf(result map[string]any) []AuditHelperRun {
 		var lostHanded, lostCut int
 		r.Leads, lostHanded = cleanLeads(r.Leads, true)
 		r.Cut, lostCut = cleanLeads(r.Cut, false)
-		// Dropped stays the count of every lead cut, kept or not.
 		r.Dropped = max(r.Dropped, len(r.Cut)+lostCut)
 		if lostHanded+lostCut > 0 {
 			r.Error = fmt.Sprintf("The record keeps %d problems of each kind: %d that became findings and %d cut past that weren't kept. %s", helperLeadsKeep, lostHanded, lostCut, r.Error)
@@ -766,14 +742,7 @@ func (s *Service) insertHelperRuns(ctx context.Context, t *tx, auditID int64, ru
 				continue
 			}
 			k1, k2, k3 := roundAuditKeys(round)
-			// Two attempts can reuse one run: with the round's runs read at
-			// claim (WP-1481), an attempt's requeue and the round's other
-			// reviewer, queued beside it, both take what it left. A row a
-			// reviewer has answered beside keeps its leads as that answer
-			// left them when an attempt that did not answer reports after
-			// it: that one's are unjoined, and would put back what the
-			// answer was joined to (audit 1245.3). Its reads still cost
-			// what they cost.
+			// An attempt that did not answer must not overwrite the leads of a row a reviewer answered beside, though its reads still cost.
 			res, err := t.ExecContext(ctx, `UPDATE audit_helper_runs SET
 				leads = CASE WHEN answered AND NOT ? THEN leads ELSE ? END,
 				cut = CASE WHEN answered AND NOT ? THEN cut ELSE ? END,
@@ -887,9 +856,6 @@ func dropUncheckedVerdicts(found *auditAnswer, runs []AuditHelperRun) {
 			f.Lead = strings.Join(ids, ",")
 			continue
 		}
-		// Not a panel finding: the reviewer's answer form has no lead, and
-		// what it wrote (or a runner's list with an id no panel run
-		// confirmed) names no problem a panel run confirmed.
 		f.Lead = ""
 		if !checked {
 			f.Verdict, f.VerdictNote = "", ""
@@ -916,8 +882,6 @@ func cleanLead(v string) string {
 	if !leadIDRE.MatchString(v) {
 		return ""
 	}
-	// A lead names one of the panel's checks: any other name came from no
-	// lead, and would count toward no check's record.
 	name, _, _ := strings.Cut(v, ".")
 	for _, c := range panelChecks {
 		if c.name == name {
@@ -1027,7 +991,6 @@ func (s *Service) againHelperStats(ctx context.Context, ivis string, iargs []any
 		return by[name]
 	}
 	var reasked, overturned int
-	// Projects as i, so the issues' condition reads them.
 	from := ` FROM code_audits a JOIN (SELECT id AS project_id FROM projects) i ON i.project_id = a.project_id `
 	args := append(slices.Clone(iargs), since)
 	// A run's problems: those that became findings (leads), and the cut

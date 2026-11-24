@@ -1,13 +1,4 @@
 #!/bin/bash
-# Runs every suite against a fresh server with an empty database.
-#   ./run.sh                 all suites (BIN defaults to ../bin/waypoint; `make build` first)
-#   ./run.sh 05 07           only suites whose names start with these
-#   ./run.sh --shard 2/5     the second of five time-balanced shards (shard.mjs), in two lanes
-#                            side by side (E2E_LANES, below); CI runs one shard per job
-# E2E_LOOKS=one runs each suite's functional checks at one viewport and theme
-# instead of all four looks (looks.mjs); CI does that, and weekly with `all`.
-# Set WAYPOINT_AI_OPENCODE_URL to an `opencode serve` to include the AI checks.
-# Screenshots and the server log land in e2e/out/ (out/laneJ/ for a --shard).
 set -euo pipefail
 cd "$(dirname "$0")"
 # PORT defaults to a free one picked by the OS: CI runners host several jobs at
@@ -21,12 +12,7 @@ rm -rf "$DIR" && mkdir -p "$DIR"
 # into ~/.cache/ms-playwright could race
 [ -n "${E2E_LANE:-}" ] || npx playwright install chromium >/dev/null
 if [ "${1:-}" = --shard ]; then
-  # A shard's suites run in E2E_LANES lanes side by side (default 2). Each
-  # lane is a run.sh of its own: its own server, database, port, out/laneJ
-  # and 01-signup-flow. The suites mostly wait on the browser and the server,
-  # so two lanes take a little over half the time of one (WP-402). Lane J of
-  # shard I/N is shard (I-1)*LANES+J of N*LANES, so shard.mjs balances every
-  # lane of every shard at once. Each output line starts with "[lane J]".
+  # Each lane is its own run.sh with its own server, database and port, so lanes can run side by side.
   lanes=${E2E_LANES:-2}
   [[ $lanes =~ ^[1-9][0-9]*$ ]] || { echo "E2E_LANES=$lanes?" >&2; exit 2; }
   [[ ${2:-} =~ ^([0-9]+)/([0-9]+)$ ]] || { echo "--shard I/N, not '${2:-}'" >&2; exit 2; }
@@ -41,7 +27,6 @@ if [ "${1:-}" = --shard ]; then
     list=$(node shard.mjs "$(((i - 1) * lanes + j))/$((n * lanes))") || { trap '' TERM INT; kill 0 2>/dev/null; exit 2; }
     mapfile -t picked <<<"$list"
     [ -n "$list" ] || picked=()
-    # an empty lane must not turn into "run everything"
     [ ${#picked[@]} -gt 0 ] || { echo "[lane $j] no suites"; continue; }
     port=$(free_port)
     while [[ $ports == *" $port "* ]]; do port=$(free_port); done
@@ -75,7 +60,6 @@ for f in [0-9]*.mjs; do
   esac
   mkdir -p "$DIR/${f%.mjs}"
   start=$SECONDS
-  # pipefail: a failing suite fails the pipeline despite tee.
   if ! node --import ./guard.mjs "$f" "${args[@]}" 2>&1 | tee "$DIR/${f%.mjs}.log"; then
     echo "FAILED: $f"
     fail=1

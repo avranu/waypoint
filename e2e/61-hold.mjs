@@ -54,7 +54,6 @@ async function run(width, scheme) {
   });
   const key = (await res.json()).key;
 
-  // ---- put it on hold from the menu ----
   await page.goto(`${base}/issue/${key}`);
   await page.getByRole("button", { name: "More", exact: true }).click();
   await page.getByText("Put on hold…").click();
@@ -80,7 +79,6 @@ async function run(width, scheme) {
     `${tag} hold saved: ${JSON.stringify(issue.hold)}`,
   );
 
-  // ---- marked in the list ----
   await page.goto(`${base}/p/WAYP/list`);
   const row = page.locator("[data-nav-key]", { hasText: title });
   await row.waitFor();
@@ -90,7 +88,6 @@ async function run(width, scheme) {
   );
   await shot("list");
 
-  // ---- the queue says why it waits, and lifts it ----
   await page.goto(`${base}/agents?tab=queue&project=WAYP`);
   const wait = page.locator("li", { hasText: title });
   await wait.waitFor();
@@ -103,7 +100,6 @@ async function run(width, scheme) {
   await wait.getByRole("button", { name: "Lift hold" }).click();
   await page.getByText(`${key} is off hold`).waitFor();
 
-  // ---- held again, lifted from the banner ----
   await page.request.put(`${base}/api/v1/issues/${key}/hold`, {
     headers: { "X-Waypoint-Client": "web" },
     data: {},
@@ -117,7 +113,6 @@ async function run(width, scheme) {
   await forever.waitFor({ state: "detached" });
   ok(true, `${tag} lifted from the banner`);
 
-  // ---- a hold says what it waits for (WP-776) ----
   const web = { "X-Waypoint-Client": "web" };
   const dep = await (
     await page.request.post(base + "/api/v1/issues", {
@@ -153,7 +148,6 @@ async function run(width, scheme) {
   await waiting.getByRole("button", { name: "Lift hold" }).click();
   await waiting.waitFor({ state: "detached" });
 
-  // ---- given back: the queue says so and a person can end the wait ----
   const token = (
     await (
       await page.request.post(base + "/api/v1/me/tokens", {
@@ -173,7 +167,10 @@ async function run(width, scheme) {
   });
   ok(gave.ok(), `${tag} an agent gave it back`);
   await page.goto(`${base}/agents?tab=queue&project=WAYP`);
-  await page.getByText(/^Given back/).first().waitFor();
+  await page
+    .getByText(/^Given back/)
+    .first()
+    .waitFor();
   const back = page.locator("li", { hasText: title });
   await back.waitFor();
   ok(

@@ -72,7 +72,6 @@ func TestCommitTreeForgejo(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		// 10 a page, to show the pages are put together.
 		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 		lo := min((page-1)*10, len(realTree))
 		hi := min(lo+10, len(realTree))

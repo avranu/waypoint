@@ -10,17 +10,13 @@ import (
 	"time"
 )
 
-// Hermes's own API: a password login whose cookies the client keeps (the
-// access cookie is refreshed in place on any response), and a fresh login
-// whenever Hermes says the session is gone.
-
 // login signs in to Hermes, at most once per few seconds however many
 // requests found the session gone at the same time.
 func (c *Client) login(ctx context.Context, failedAt time.Time) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.loginAt.After(failedAt) {
-		return nil // another request signed in since this one failed
+		return nil
 	}
 	body, _ := json.Marshal(map[string]string{"provider": "basic", "username": c.cfg.Username, "password": c.cfg.Password})
 	req, err := c.newRequest(ctx, http.MethodPost, "/auth/password-login", nil, body, "application/json")

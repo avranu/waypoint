@@ -1,24 +1,6 @@
 package core
 
-// The transcript archive (WP-1466, ADR145): the full transcript of every
-// coding-agent session, main thread and sub-agents, kept raw on the server's
-// disk so any metric can be derived from it again. `wp usage sync` uploads a
-// file's bytes in pieces of whole JSONL lines, in order; the server stores
-// each piece gzip-compressed under Config.TranscriptDir and keeps a row in
-// transcript_pieces. Bytes are never in SQLite.
-//
-// The protocol is offset based, so a retry cannot store a byte twice or
-// leave a hole: a piece says which byte range of the machine's file it
-// covers, and the answer always says where the server's copy of that file
-// now ends (Have). A piece that starts at Have is stored. One that starts
-// earlier (a retry whose answer was lost) or later (a hole) stores nothing
-// and tells the client where to resume. A file Claude Code rewrote or
-// truncated gets a new fingerprint (the client bumps it) and starts the next
-// generation at offset 0; earlier generations stay.
-//
-// Redaction: the client runs it before upload (cmd/wp/usage_archive.go). The
-// server stores what it is sent and records the client's flag; it does not
-// look inside the bytes.
+// Bytes stay on disk, never in SQLite; pieces are stored as sent, offset-checked so retries neither duplicate nor leave holes, and never inspected or redacted server-side.
 
 import (
 	"bytes"
@@ -200,19 +182,15 @@ func decideTranscript(h transcriptHead, in TranscriptPieceIn, shaHex string, sam
 		return nil, true, 0, nil
 	case in.FP == h.fp:
 	case in.From == 0:
-		// A different fingerprint from the start. Either the file was
-		// rewritten (the client bumped its generation past ours), or the client lost its
-		// state and began again at generation 0 or below ours while the
-		// first line is the one we hold: then it is told where our copy
-		// ends and adopts our generation, and nothing is stored twice.
+		// A lower generation on the same base is a client that lost its state, not a rewrite: it is told where our copy ends.
 		hb, hg := fpSplit(h.fp)
 		ib, ig := fpSplit(in.FP)
 		if ib == hb && ig < hg {
 			return &TranscriptPieceResult{Status: "behind", Have: h.to, Gen: h.gen}, false, 0, nil
 		}
-		return nil, true, h.gen + 1, nil // the file was rewritten: the next generation
+		return nil, true, h.gen + 1, nil
 	default:
-		return &TranscriptPieceResult{Status: "gap", Have: 0, Gen: h.gen}, false, 0, nil // a new generation starts at 0
+		return &TranscriptPieceResult{Status: "gap", Have: 0, Gen: h.gen}, false, 0, nil
 	}
 	switch {
 	case in.From == h.to:
@@ -220,7 +198,6 @@ func decideTranscript(h transcriptHead, in TranscriptPieceIn, shaHex string, sam
 	case in.From > h.to:
 		return &TranscriptPieceResult{Status: "gap", Have: h.to, Gen: gen}, false, 0, nil
 	}
-	// from < to: a retry, or a client that lost its place
 	dup, err := same(gen)
 	if err != nil {
 		return nil, false, 0, err
@@ -312,7 +289,6 @@ func (s *Service) IngestTranscript(ctx context.Context, actor *Actor, in Transcr
 		s.countQuotaRefusal(ctx)
 		return nil, err
 	}
-	// The name is fixed by what the piece is, so a retry writes the same file.
 	rel := filepath.Join(strconv.FormatInt(uid, 10), hex16(in.Machine, in.Session),
 		fmt.Sprintf("%s-%d-%d-%d-%s.jsonl.gz", hex16(in.File), gen, in.From, in.To, shaHex[:12]))
 	if err := writeTranscriptFile(s.cfg.TranscriptDir, rel, in.Gzip); err != nil {
@@ -323,7 +299,6 @@ func (s *Service) IngestTranscript(ctx context.Context, actor *Actor, in Transcr
 	}
 	res = &TranscriptPieceResult{}
 	err = s.write(ctx, actor, func(t *tx) error {
-		// the head may have moved since it was read: decide again
 		h, err := transcriptHeadOf(ctx, t, uid, in.Machine, in.Session, in.File)
 		if err != nil {
 			return err
@@ -337,7 +312,7 @@ func (s *Service) IngestTranscript(ctx context.Context, actor *Actor, in Transcr
 			return nil
 		}
 		if g != gen {
-			*res = TranscriptPieceResult{Status: "behind", Have: h.to, Gen: h.gen} // another piece began a generation meanwhile: resume from its answer
+			*res = TranscriptPieceResult{Status: "behind", Have: h.to, Gen: h.gen}
 			return nil
 		}
 		if err := s.transcriptRoom(ctx, t, len(in.Gzip)); err != nil {
@@ -357,7 +332,7 @@ func (s *Service) IngestTranscript(ctx context.Context, actor *Actor, in Transcr
 		return nil
 	})
 	if err != nil || res.Status != "stored" {
-		s.dropUnreferencedPiece(rel) // the row did not commit
+		s.dropUnreferencedPiece(rel)
 		if errors.Is(err, ErrTranscriptQuota) || errors.Is(err, ErrTranscriptDiskLow) {
 			s.countQuotaRefusal(ctx)
 		}
@@ -479,11 +454,11 @@ func (s *Service) dropUserTranscripts(e *Event) {
 			return
 		}
 		s.log.Warn("removing a deleted account's transcripts", "user", uid, "err", err)
-		// the delete entry said removal follows: say that it did not
+		// The user.delete audit entry already said removal would follow; record that it did not.
 		entry := AuditEntry{Action: "user.transcripts.remove_failed", Category: AuditAccess, TargetType: "user", TargetID: uid, Target: name,
 			Detail: "their archived transcripts could not be removed from the disk: " + err.Error()}
 		if by == 0 {
-			entry.Actor = "waypoint" // no person deleted it; an entry needs someone named
+			entry.Actor = "waypoint"
 		}
 		s.audit(context.Background(), &Actor{User: &User{ID: by}}, entry)
 	})
@@ -578,8 +553,6 @@ func (s *Service) ReportTranscriptStatus(ctx context.Context, actor *Actor, in T
 	now := s.nowMS()
 	return s.write(ctx, actor, func(t *tx) error {
 		if in.Off != nil && *in.Off {
-			// Switched off on the machine: it says nothing about what waits,
-			// and what it said before is left as it was.
 			_, err := t.ExecContext(ctx, `INSERT INTO usage_machines(user_id, machine, transcript_off, transcript_status_at) VALUES (?,?,1,?)
 				ON CONFLICT(user_id, machine) DO UPDATE SET transcript_off = 1, transcript_status_at = excluded.transcript_status_at`, uid, in.Machine, now)
 			return err
@@ -594,8 +567,6 @@ func (s *Service) ReportTranscriptStatus(ctx context.Context, actor *Actor, in T
 				passMax = *n
 			}
 		}
-		// A field the client did not send keeps what the row had (NULL until
-		// some report says it); the longest pass only grows.
 		_, err := t.ExecContext(ctx, `INSERT INTO usage_machines(user_id, machine, transcript_pending_bytes, transcript_pending_files,
 				transcript_pending_since, transcript_dropped, transcript_status_at, transcript_pass_ms, transcript_pass_max_ms,
 				transcript_stop, transcript_cut, transcript_off) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
@@ -630,8 +601,6 @@ func ptrBoolInt(p *bool) any {
 	}
 	return boolInt(*p)
 }
-
-// ---- reading back ----
 
 // TranscriptQuery says whose transcript and which.
 type TranscriptQuery struct {
@@ -741,7 +710,7 @@ func (s *Service) transcriptPieces(ctx context.Context, actor *Actor, q Transcri
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	if q.Gen == nil { // the newest generation of each file
+	if q.Gen == nil {
 		newest := map[string]int{}
 		key := func(p transcriptPiece) string { return p.user + "\x00" + p.machine + "\x00" + p.file }
 		for _, p := range out {

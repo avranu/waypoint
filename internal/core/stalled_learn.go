@@ -8,26 +8,7 @@ import (
 	"time"
 )
 
-// What earlier quiet spells say about telling sessions of stalled jobs
-// (WP-1045, WP-ADR118). Each kept spell ended one of three ways that count:
-// its session was told and stopped the job soon after reading it (acted),
-// the job moved again or ended without that (self), or it moved again
-// before its session read the notice, which was withdrawn (withdrawn).
-//
-//   - Quiet time: a notice is worth its turn when the job is stuck. For a
-//     kind of job, the share of spells quiet at least T minutes that were
-//     stuck is the notice's precision at T. Stuck spells are counted at
-//     every T (a stuck job stays quiet until it is stopped); the others at
-//     the length they were quiet. The quiet time is the shortest on the
-//     ladder (1, 1.5, 2, 3, 4 × the setting) whose precision reaches
-//     stallPrecisionNeeds, else the longest: never shorter than the setting.
-//     Spells that end by themselves are measured however long they ran, told
-//     or not, so a longer time keeps its evidence and can shorten again.
-//   - Cold wakes: waking a cold session re-reads its whole context. While
-//     the share of cold wakes that led to the job being stopped is under
-//     stallColdNeeds, cold sessions wait for their next turn instead.
-//
-// Under stallEvidenceMin spells the setting stands. Fixed turns both off.
+// The quiet time is the shortest of 1-4x the setting reaching stallPrecisionNeeds; spells that end by themselves count at any length, so a longer time keeps its evidence.
 
 const (
 	stallEvidenceDays   = 28

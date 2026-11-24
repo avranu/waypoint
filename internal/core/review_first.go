@@ -11,27 +11,7 @@ import (
 	"strings"
 )
 
-// Reviews before the pull request (WP-688, WP-ADR60). When the person's
-// autopilot settings ask for adversarial reviews (whether autopilot is on
-// or off: the switch only starts tasks, WP-1007), wp ship of a task in one of
-// their sessions pushes the branch, but Waypoint holds the pull request:
-// it records the task's review round, with the branch (before_pr), and
-// tells the session to end its turn. At that Stop the round is due in a
-// minute (reviewStartDelay); Grok audits the branch, and the round types
-// another model's findings, or the round's own prompt, which ends with wp ship
-// --pr. That finds the round under way and opens the pull request; the
-// Stop after it ends the round with its report and autopilot moves on as
-// before.
-//
-// wp ship says what it wants (ShipReview, ShipPR, ShipSkip, or ShipAuto
-// for whichever fits), and the answer is the same for the same intent and
-// state: where the intent can't be had, the obvious next step is taken
-// and a notice says what happened and how to override it.
-//
-// Anything the gate can't see through (gateFor) opens the pull request at
-// once, and its round, if any, runs after it as before; where autopilot
-// wanted the review, the agent is told why and the task's work log keeps
-// it (WP-803).
+// Autopilot's wp ship holds the pull request behind an adversarial review round; a ship the gate cannot see through (gateFor) is not held.
 
 // reviewStartDelay: a review starts a minute after the Stop that asks for
 // it, whatever the wait for the next task (WP-689).
@@ -95,8 +75,7 @@ type beforePR struct {
 	// request Waypoint opens later has the authority that token still has
 	// (none, if it was revoked): see shipAuthority (WP-1370).
 	TokenID int64 `json:"token_id,omitempty"`
-	// facts is what the ship's texts need of the agent (not stored).
-	facts *shipFacts
+	facts   *shipFacts
 	// HeadTime is the head's commit time (unix seconds; 0: unknown) at the
 	// ship the round's review reads: the one that scheduled it, or a later
 	// one that came before its audit was asked (noteRoundHead). A ship
@@ -117,9 +96,7 @@ type beforePR struct {
 // Notice, which the table test over every producer pins. Nil-safe.
 type shipFacts struct {
 	heldIdle, noticeAsks bool
-	// released: the round this ship released past findings nobody decided
-	// (reviewAgain): once its pull request is open the round's audit is
-	// carried to it, as the sweep's release carries it (carryAudits).
+	// Set when this ship released a round past findings nobody decided; the round's audit is carried to the pull request once it opens.
 	released int64
 }
 
@@ -240,10 +217,10 @@ func (s *Service) heldUrgent(ctx context.Context, actor *Actor, task, branch str
 // Ship intents: what wp ship says about the task's adversarial review
 // before its pull request (WP-688, WP-ADR60).
 const (
-	ShipAuto   = "auto"   // whichever fits: the review if none ran yet, else the pull request
-	ShipReview = "review" // the review, before (or on) the pull request
-	ShipPR     = "pr"     // the same as ShipAuto, kept for older prompts and wps (WP-1370)
-	ShipSkip   = "skip"   // the pull request without the review; OpenPRInput.Reason says why
+	ShipAuto   = "auto"
+	ShipReview = "review"
+	ShipPR     = "pr"
+	ShipSkip   = "skip"
 )
 
 // reviewGate is the task's run that autopilot reviews before its pull
@@ -251,17 +228,13 @@ const (
 type reviewGate struct {
 	x            *AgentSession
 	run, issueID int64
-	pid          int64 // the session's project, for its autopilot settings
-	taskPID      int64 // the task's own, for what's recorded about the task
+	pid          int64
+	taskPID      int64
 	key          string
 	lim          AutopilotLimits
 	no           string
-	// wanted: autopilot reviews before pull requests in this session, so a
-	// no is a review it wanted and didn't get (WP-803).
-	wanted bool
-	// byWaypoint: the ship is Waypoint's own (shipHeld), not a session's wp
-	// ship, which decides who tries again after an error.
-	byWaypoint bool
+	wanted       bool
+	byWaypoint   bool
 }
 
 // gateFor finds the run a ship's review belongs to. The gate holds only
@@ -316,9 +289,7 @@ func (s *Service) gateFor(ctx context.Context, actor *Actor, task string, take, 
 	if x.projectID.Valid {
 		g.pid = x.projectID.Int64
 	}
-	// Autopilot's switch is about starting the next task, not about the
-	// task shipping now: its review follows the review setting alone, and a
-	// wp ship --review asks for one whatever the setting (WP-1007).
+	// The autopilot switch gates starting the next task, not this ship's review; wp ship --review always asks for one.
 	_, lim, err := s.autopilotFor(ctx, s.db.R, x.userID, g.pid)
 	if err != nil {
 		return nil, err
@@ -397,7 +368,7 @@ func (s *Service) skipRoundsElsewhere(ctx context.Context, actor *Actor, issueID
 				return err
 			}
 			if !moved {
-				continue // it started just now: the review is running
+				continue
 			}
 			if err := s.stopRoundStep(ctx, t, p.session, p.round, skipReviewStep); err != nil {
 				return err
@@ -474,8 +445,6 @@ func (s *Service) retakeForReview(ctx context.Context, actor *Actor, g *reviewGa
 	case IsInvalid(err) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrForbidden):
 		return "this session can't take it again: " + err.Error(), nil
 	case err != nil:
-		// The gate was read-only before WP-803: a failed take opens the
-		// pull request rather than failing the ship.
 		s.log.WarnContext(ctx, "review gate: taking the task again failed", "task", g.key, "err", err)
 		return "taking it again in this session failed: " + err.Error(), nil
 	}
@@ -504,7 +473,7 @@ func (s *Service) ReviewsFirst(ctx context.Context, actor *Actor, task string) b
 func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in OpenPRInput, repo, head, base string, existing bool) (open bool, held, notice string, err error) {
 	intent := cmp(in.Review, ShipAuto)
 	if intent == ShipPR {
-		intent = ShipAuto // --pr is the default, kept for older prompts (WP-1370)
+		intent = ShipAuto
 	}
 	switch intent {
 	case ShipAuto, ShipReview:
@@ -524,15 +493,12 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 	}
 	g.byWaypoint = in.byWaypoint
 	if g.no != "" {
-		// The pull request goes ahead: holding it for a review the session
-		// would do itself costs the session's tokens and ships nothing
-		// sooner (WP-1007).
+		// Holding the pull request for a review the session would run itself costs its tokens and ships nothing sooner.
 		switch {
 		case intent == ShipSkip:
 			issueID := g.issueID
 			if issueID == 0 {
-				// No such task is an answer; a failed read is logged, and the
-				// pull request opens either way (as skipRoundsElsewhere's write).
+				// A failed task lookup is logged, not returned: the pull request opens either way.
 				var rerr error
 				if issueID, rerr = s.resolveIssueID(ctx, s.db.R, cmp(in.For, in.Issue)); readFault(rerr) && !missingOrDenied(rerr) {
 					s.log.WarnContext(ctx, "skip review: find the task whose waiting rounds end", "err", rerr)
@@ -547,7 +513,7 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 		case intent == ShipReview:
 			return true, "", "No adversarial review can be scheduled here: " + g.no + ", so the pull request opens without it.", nil
 		case g.wanted && g.issueID != 0 && s.ownReviewed(ctx, g, in.HeadTime):
-			return true, "", "", nil // the session reviewed it itself (WP-1089)
+			return true, "", "", nil
 		case g.wanted:
 			return true, "", s.noteUnreviewed(ctx, actor, g), nil
 		}
@@ -555,10 +521,8 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 	}
 	var id, ended int64
 	var state string
-	var started bool // its prompt went in
+	var started bool
 	id, state, ended, started, err = s.roundOfShip(ctx, s.db.R, g.x.ID, g.issueID, g.run, head)
-	// seen is the run's own newest round, for scheduleRound (0: none; the
-	// round found may be an earlier run's the session took up again)
 	var seen int64
 	if e := s.db.R.QueryRowContext(ctx, `SELECT coalesce(max(id), 0) FROM work_log WHERE kind = 'review' AND run_id = ?`, g.run).Scan(&seen); e != nil {
 		return false, "", "", e
@@ -575,7 +539,7 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 	if existing {
 		wait = fmt.Sprintf("Pushed %s. Waypoint reviews %s, and its open pull request doesn't merge before the review ends; findings that need you come to this session. Nothing more to run: end your turn.", head, g.key)
 	}
-	// Every round scheduled below is assessed and recorded (WP-692).
+	// Every round scheduled below is assessed and recorded.
 	var assessed *triageRow
 	bp.facts = in.facts
 	waitHeld := func() string { bp.facts.idleHeld(); return wait }
@@ -585,9 +549,7 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 		}
 		return assessed
 	}
-	scheduled := false // this ship scheduled the round it waits on
-	// scheduleFor is schedule with the reason the round it replaces ends
-	// interrupted for (roundReplaced, or roundRestarted).
+	scheduled := false
 	scheduleFor := func(why string, replace int64, skip string) error {
 		err := s.scheduleRound(ctx, actor, g, bp, seen, replace, why, skip, assess())
 		scheduled = scheduled || err == nil
@@ -596,21 +558,14 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 	schedule := func(replace int64, skip string) error {
 		return scheduleFor(roundReplaced, replace, skip)
 	}
-	// startOver replaces a pending round (roundBehind: the head differs
-	// from the one the round's audit reads, and that audit, its own or its
-	// Claude reviewer's, is still going or found nothing): the review starts
-	// again on what is pushed now (WP-1325).
+	// startOver replaces a pending round whose audit read an older head, while that audit is still running or found nothing.
 	startOver := func() (string, error) {
 		if err := scheduleFor(roundRestarted, id, ""); err != nil {
 			return "", err
 		}
-		state = "" // the round waited on is the new one
+		state = ""
 		return "More was committed since " + g.key + "'s adversarial review was asked for, so it starts over on what is pushed now.", nil
 	}
-	// skipRound records the review skipped (why; triageWhy for its triage
-	// row): a new round, skipped, when there is none, else the pending one
-	// marked skipped and its step stood down. Its notice says what becomes
-	// of an audit still running for it.
 	skipRound := func(why, triageWhy, stepWhy string) (string, error) {
 		switch state {
 		case "":
@@ -618,21 +573,17 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 			tr.decision.Action, tr.decision.Why = triageSkip, triageWhy
 			return "", s.scheduleRound(ctx, actor, g, bp, seen, 0, "", why, &tr)
 		case RoundPending, RoundRunning:
-			// One under way is skipped on the record as well: the agent
-			// opens the pull request past it, and until WP-1320's audit
-			// nothing said so (the round stayed running, and its triage
-			// row said it was reviewed).
+			// A round under way is marked skipped too, so the record doesn't show it running after the pull request opens.
 			var moved bool
 			err := s.write(ctx, actor, func(t *tx) error {
 				var err error
 				moved, err = s.setRound(ctx, t, id, []string{RoundPending, RoundRunning}, RoundSkipped, why)
 				if err != nil || !moved {
-					return err // (not moved: it ended just now)
+					return err
 				}
 				if err := s.stopRoundStep(ctx, t, g.x.ID, id, stepWhy); err != nil {
 					return err
 				}
-				// Triage had said review; the record says what happened.
 				res, err := t.ExecContext(ctx, `UPDATE review_triage SET action = ?, why = ? WHERE round_id = ?`, triageSkip, triageWhy, id)
 				if err != nil {
 					return err
@@ -640,7 +591,6 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 				if n, _ := res.RowsAffected(); n > 0 {
 					return nil
 				}
-				// The round was scheduled with no assessment: record one now.
 				tr := *assess()
 				tr.decision.Action, tr.decision.Why = triageSkip, triageWhy
 				return tr.insert(ctx, t, id)
@@ -660,8 +610,7 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 		}
 		notice, err = skipRound(skipWhy, triageWhyAgentSkip, skipReviewStep)
 		if err == nil && roundDecidable(state, started) && state != RoundRunning {
-			// The round ran and ended; what the agent passes over is its
-			// scoring. That is on the record too, when nothing decided it.
+			// Skipping an ended round also passes over its scoring; that is recorded when nothing else decided it.
 			s.noteUnscored(ctx, actor, g, id, in.Reason, in.byWaypoint)
 		}
 		if err == nil && !in.noSweep {
@@ -671,9 +620,7 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 	case ShipAuto:
 		reasked := false
 		if state == RoundSkipped {
-			// A rule's skip holds for the change it read. This ship has no
-			// pull request from it (one failed to open, or it's another
-			// branch), so what's shipped now is assessed for itself.
+			// A rule's skip covers only the change it read: with no pull request from that change, what is shipped now is assessed itself.
 			byRule, err := s.skippedByRule(ctx, id)
 			if err != nil {
 				return false, "", "", err
@@ -683,30 +630,18 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 			}
 		}
 		if (state == RoundPending || state == RoundRunning) && id != 0 {
-			// The newest ship's title, body and summary are the ones a pull
-			// request Waypoint opens for the round carries (WP-1370).
+			// The newest ship's title, body and summary are what the round's pull request carries.
 			s.refreshBeforePR(ctx, actor, id, bp, in.Message, in.Summary)
 		}
 		if roundDecidable(state, started) {
-			// This is its ship: new findings that score serious, or fixes
-			// that look partial, get another round first, round after
-			// round while they keep coming (WP-695, WP-1320). A round that
-			// ended before its ship (the session stopped after it and
-			// ships now) is decided the same: the decision is the ship's,
-			// not the round's state's, and passed over there, stopping
-			// once before wp ship opened the pull request on findings
-			// nothing had scored. So is one given up after its prompt
-			// went in ("no report came back"): this ship is that report,
-			// late. One decided already answers at once.
+			// This ship decides its round, even one that ended before the ship or was given up after its prompt went in: findings that score serious, or fixes that look partial, get another round first.
 			held, notice, err := s.reviewAgain(ctx, actor, g, bp, id, seen, head)
 			if err != nil || held != "" {
 				return false, held, notice, err
 			}
 		}
 		if state == RoundInterrupted {
-			// Taken from the session before it reported: the review didn't
-			// happen, so it runs again before the pull request opens
-			// (WP-823), unless it keeps being interrupted.
+			// A review taken from the session before it reported didn't happen, so it runs again before the pull request, unless it keeps being interrupted.
 			again, err := askAgainAfterInterrupt(ctx, s.db.R, g.x.ID, g.issueID)
 			if err != nil {
 				return false, "", "", err
@@ -717,18 +652,9 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 			state, reasked = "", true
 		}
 		if state != "" && state != RoundPending {
-			return true, "", "", nil // under way (this is its ship), or over
+			return true, "", "", nil
 		}
-		// The session reviewed the change itself since its last round
-		// (WP-1089): that review is the change's round, whether the hook
-		// recorded its reviewer's report or the agent attached one. It is
-		// held to what any round is (reviewAgain): the session reports
-		// what the review found, its marks are checked against the code,
-		// and the findings are scored and may call for another round.
-		// Not when the rules
-		// skip the change anyway, when the round's audit already has
-		// findings for the session (those are the round's: shipAudited),
-		// or when the review found nothing and more was committed since.
+		// A review the session ran itself since the last round is the change's round, held to reviewAgain, unless the rules skip the change, the round's audit has findings, or it found nothing and more was committed since.
 		own, err := s.ownReviewFor(ctx, g)
 		if err != nil {
 			return false, "", "", err
@@ -740,7 +666,7 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 				return false, "", "", err
 			}
 			if !ready {
-				var pending int64 // (id may be a round that is over)
+				var pending int64
 				if state == RoundPending {
 					pending = id
 				}
@@ -768,15 +694,13 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 			}
 		}
 		if state == RoundPending {
-			// The session may have read the round's audit itself (WP-919).
+			// The session may have read the round's audit itself.
 			done, n, err := s.shipAudited(ctx, actor, g, id)
 			if err != nil {
 				return false, "", "", err
 			}
 			if done {
-				// The round ended with this ship, so this ship is the one
-				// that decides it: the session's marks are checked and its
-				// findings scored as any round's (reviewAgain).
+				// The round ended with this ship, so this ship decides it: the session's marks are checked and its findings scored.
 				held, notice, err := s.reviewAgain(ctx, actor, g, bp, id, seen, head)
 				if err != nil || held != "" {
 					return false, held, notice, err
@@ -784,10 +708,7 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 				return true, "", n, nil
 			}
 			auditNotice = n
-			// A round with no audit asked yet has it asked by its step, which
-			// reads what is pushed then: this ship's head (roundBehind). A
-			// head that can't be written fails the ship: the round would
-			// record an older head than its audit reads.
+			// If the head can't be recorded, the ship fails: the round would otherwise record an older head than its audit reads.
 			if err := s.noteRoundHead(ctx, id, in.HeadTime, in.HeadSHA); err != nil {
 				return false, "", "", err
 			}
@@ -812,7 +733,6 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 		}
 		return false, waitHeld(), notice, nil
 	}
-	// ShipReview.
 	switch {
 	case state == RoundPending:
 		if behind, err := s.roundBehind(ctx, id, in.HeadTime, in.HeadSHA); err != nil {
@@ -833,14 +753,11 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 		notice = "The review under way is replaced: another starts after this turn."
 		err = schedule(id, "")
 	case state == RoundDone && !in.Force && in.HeadTime > 0 && (in.HeadTime+1)*1000 <= ended:
-		// (Commit times are whole seconds: one in the round's last second
-		// counts as since, so the doubt reviews again.)
+		// Commit times are whole seconds, so a commit in the round's last second counts as after the review (the +1).
 		notice = "A review already finished on this change and nothing was committed since, so the pull request opens now. To review it again anyway: `wp ship --review --force`."
 		if existing {
 			notice = "A review already finished on this change and nothing was committed since; its pull request is open. To review it again anyway: `wp ship --review --force`."
 		} else if held, n, err := s.reviewAgain(ctx, actor, g, bp, id, seen, head); err != nil || held != "" {
-			// The finished round's findings decide whether another comes,
-			// as at any ship that would open the pull request.
 			return false, held, n, err
 		}
 		return true, "", notice, nil
@@ -850,7 +767,7 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 	case state == RoundDone:
 		notice = "A review already finished on this change; another is scheduled for what was committed since."
 		err = schedule(0, "")
-	default: // none yet, or one that never ran or broke off
+	default:
 		err = schedule(0, "")
 	}
 	if err != nil {
@@ -872,8 +789,6 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 func (s *Service) shipAudited(ctx context.Context, actor *Actor, g *reviewGate, roundID int64) (bool, string, error) {
 	ra, err := s.roundAuditOf(ctx, roundID)
 	if err != nil || ra.id == 0 || ra.note != "" {
-		// No audit yet, or one the round gave up on: the session reviews on
-		// the round's own prompt.
 		return false, "", err
 	}
 	a, err := s.auditRow(ctx, ra.id)
@@ -893,9 +808,7 @@ func (s *Service) shipAudited(ctx context.Context, actor *Actor, g *reviewGate, 
 		todo = s.roundTodo(ctx, a)
 		in.Undecided = len(todo)
 	}
-	// Whether the ship ends the round is decideRound's (WP-1370). An audit
-	// still queued or running is the held text's to say: Waypoint opens the
-	// pull request when the audit leaves nothing for the session.
+	// An audit still queued or running is the held text's to say: the pull request opens once the audit leaves nothing for the session.
 	switch out := decideRound(in); out.Do {
 	case doReport:
 	case doTell:
@@ -923,8 +836,6 @@ func (s *Service) shipAudited(ctx context.Context, actor *Actor, g *reviewGate, 
 	who := cmp(a.Model, "Grok")
 	body := fmt.Sprintf("%s audited the change (audit #%d: %s/audits/%d) and found nothing to fix; the session shipped it with wp ship.", who, a.ID, s.BaseURL(), a.ID)
 	if n := len(a.Findings); n > 0 {
-		// Findings already handed to a babysitter are not the session's to
-		// claim: say only what its own marks were.
 		body = fmt.Sprintf("%s audited the change (audit #%d: %s/audits/%d) and found %d. The session marked %d fixed and %d rejected itself and shipped it with wp ship.",
 			who, a.ID, s.BaseURL(), a.ID, n, fixed, rejected)
 	}
@@ -938,7 +849,7 @@ func (s *Service) shipAudited(ctx context.Context, actor *Actor, g *reviewGate, 
 			return err
 		}
 		if n, _ := res.RowsAffected(); n == 0 {
-			return nil // its prompt went in just now: the round is under way
+			return nil // Zero rows means a concurrent write already moved the round off pending, so it is not an error.
 		}
 		ended = true
 		s.emitWorkLog(ctx, t, g.issueID, roundID, RoundDone)
@@ -1108,10 +1019,7 @@ func (s *Service) scheduleRound(ctx context.Context, actor *Actor, g *reviewGate
 			_, err = s.setRound(ctx, t, id, []string{RoundPending}, RoundSkipped, skip)
 			return err
 		}
-		// The round's step is made now, due at once: its audit starts while the
-		// turn that shipped is still ending, not a minute after the Stop
-		// (WP-1370). The Stop only moves it (reviewFirstAtStop), and where the
-		// Stop never reports, the watchdog makes it again.
+		// The step is due at once so its audit starts while the turn is still ending; the Stop only moves it, and the watchdog makes it again where the Stop never reports.
 		if g.x != nil {
 			if err := s.putStep(ctx, t, g.x, g.pid, g.run, at, StepDue, "", "", at, id); err != nil {
 				return err
@@ -1200,9 +1108,7 @@ func (s *Service) ownReviewRound(ctx context.Context, actor *Actor, g *reviewGat
 		if err := s.stopRoundStep(ctx, t, g.x.ID, id, "the session ran its own adversarial review"); err != nil {
 			return err
 		}
-		// Reviewed, and by whom: the round's triage says so, unless it
-		// already says why the change was reviewed (a holdout, a shadow
-		// rule: what the rules' record is built from).
+		// The round's triage says the session reviewed the change, unless it already says why (a holdout or shadow rule).
 		var assessed bool
 		if err := t.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM review_triage WHERE round_id = ?)`, id).Scan(&assessed); err != nil {
 			return err
@@ -1318,10 +1224,7 @@ func (s *Service) reaskHeldRound(ctx context.Context, t *tx, x *AgentSession, at
 	if again, err := askAgainAfterInterrupt(ctx, t, x.ID, issueID); err != nil {
 		return err
 	} else if !again {
-		// Interrupted for the last time and the session just stopped: nobody
-		// is left to ship it. The step is due at once, and its tick finds the
-		// round over and the task unshipped (heldUnshipped), so Waypoint
-		// opens the pull request (WP-1370).
+		// Interrupted for the last time with the session stopped, nobody is left to ship: the step is due at once, and its tick finds the task unshipped and opens the pull request.
 		pid := x.projectID.Int64
 		if !x.projectID.Valid {
 			if err := t.QueryRowContext(ctx, `SELECT project_id FROM issues WHERE id = ?`, issueID).Scan(&pid); err != nil {
@@ -1377,40 +1280,31 @@ func (s *Service) reviewFirstAtStop(ctx context.Context, t *tx, x *AgentSession,
 		if going {
 			in.Check = checkRunning
 		}
-		// Its background work wakes it again; its ship waits on the check of
-		// its marks, whose end is typed into it (tellAudit): the round goes
-		// on then. Otherwise what it said is the round's report.
+		// Background work wakes the session again, and its ship waits on the check of its marks; otherwise what it said is the round's report.
 		if decideRound(in).Do != doReport {
 			return "", true, nil
 		}
-		// It stopped without shipping: what it said is the round's report,
-		// and the task is the session's (or its person's) to finish.
 		if _, err := s.roundAtStop(ctx, t, x, issueID, ev.LastMessage, at); err != nil {
 			return "", true, err
 		}
 		return "", true, s.stopStep(ctx, t, x.ID, "working", key+" isn't shipped: the session stopped after its adversarial review without wp ship")
 	}
-	// Autopilot off, at the ship or since, doesn't drop the round: the task
-	// is shipped, and the switch is about the next one (heldOwed, WP-1007).
+	// Autopilot off, at the ship or since, doesn't drop the round: the task is shipped, and the switch is about the next one.
 	on, _, err := s.autopilotFor(ctx, t, x.userID, pid)
 	if err != nil {
 		return "", true, err
 	}
-	// Background work doesn't hold it: a session at its prompt can be typed
-	// into whatever runs behind it, and a ship asked for the review now
-	// (WP-1363).
+	// Background work doesn't hold the review: a session at its prompt can be typed into while that runs.
 	note := fmt.Sprintf("Autopilot: %s's adversarial review comes next, before its pull request. Type `keep` to keep the session.", key)
 	if !on {
 		note = fmt.Sprintf("%s's adversarial review comes next, before its pull request. Autopilot is off here, so no task starts after it. Type `keep` to keep the session.", key)
 	}
-	// The step made at the ship is moved on: its audit may be under way
-	// already, and a minute from this Stop is when the review is typed.
+	// The ship's step moves on, since its audit may already be under way and the review is typed a minute after this Stop.
 	var step int64
 	var reason string
 	err = t.QueryRowContext(ctx, `SELECT id, reason FROM autopilot_steps WHERE session_id = ? AND review_id = ? AND state IN (?, ?)`, x.ID, id, StepDue, StepWaiting).Scan(&step, &reason)
 	if err == nil {
 		if reason == WaitAudit {
-			// the audit's own wait stands
 			_, err = t.ExecContext(ctx, `UPDATE autopilot_steps SET stop_at = ?, updated_at = ? WHERE id = ?`, at, at, step)
 		} else {
 			_, err = t.ExecContext(ctx, `UPDATE autopilot_steps SET stop_at = ?, due_at = ?, updated_at = ? WHERE id = ?`, at, at+reviewStartDelay, at, step)
