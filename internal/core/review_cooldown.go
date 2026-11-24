@@ -2,8 +2,8 @@ package core
 
 import (
 	"context"
+	"net/http"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 )
@@ -113,14 +113,30 @@ func (s *Service) coolStalls(ctx context.Context, pid int64, route string, chain
 }
 
 // leftNoModel is whether a request of attempts failed without any model of
-// the route having served, as the gateway answers when every model is left out:
-// no_model_at_bar, or a bare 503 (classified "server" like a 502 or 504, so
-// the attempt's text tells them apart). A 404, 502, 504 or other error is an
+// the route having served, as the gateway answers when the asked-for models are
+// left out: a 400 ("exclude removes every model", whatever its wording) when
+// the exclusions took every model of the route, or no_model_at_bar when they
+// left only models below the bar. Any 400 counts, as the attempt does not say
+// why; it returns at once, so the worst case is one extra quick request. A 404,
+// 502, 504 or a bare 503 (the gateway never answers exhaustion with one) is an
 // ordinary failure, not asked again. Any attempt counts: the chain goes on to
 // other providers after the gateway's answer.
 func leftNoModel(chain []ChainModel, attempts []ModelAttempt) bool {
 	return slices.ContainsFunc(attempts, func(a ModelAttempt) bool {
-		none := a.Outcome == "no_model_at_bar" || (a.Outcome == "server" && strings.HasSuffix(a.Error, "HTTP 503"))
+		none := a.Outcome == "no_model_at_bar" || a.status == http.StatusBadRequest
 		return none && (a.Model == "" || slices.ContainsFunc(chain, func(c ChainModel) bool { return c.Model == a.Model }))
 	})
 }
+
+// reaskKey marks a context whose asks are a plain re-ask after a narrowed one
+// was left without a model.
+type reaskKey struct{}
+
+// asReask is ctx for a plain re-ask that follows leftNoModel. The narrowed
+// ask may have parked the names it shares with this one (a no_model_at_bar
+// that carries Retry-After), though this ask includes models that one never
+// tried; runChain does not stop it for that park. The key's daily-limit
+// park and surplus work's waits still apply.
+func asReask(ctx context.Context) context.Context { return context.WithValue(ctx, reaskKey{}, true) }
+
+func isReask(ctx context.Context) bool { v, _ := ctx.Value(reaskKey{}).(bool); return v }

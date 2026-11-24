@@ -128,7 +128,7 @@ func (s *Service) reviewOnce(ctx context.Context, chain []ChainModel, prompt str
 		var again struct {
 			Findings []Finding `json:"findings"`
 		}
-		u2, more, err2 := s.runChain(ctx, chain, reviewSystem, prompt, reviewSchema, &again, reviewCallTimeout)
+		u2, more, err2 := s.runChain(asReask(ctx), chain, reviewSystem, prompt, reviewSchema, &again, reviewCallTimeout)
 		attempts = append(attempts, more...)
 		s.coolStalls(ctx, gw, gatewayReviewRoute, chain, more)
 		if err2 == nil || prevErr != nil {
@@ -152,7 +152,7 @@ func (s *Service) reviewOnce(ctx context.Context, chain []ChainModel, prompt str
 		if len(cooled) > 0 && err != nil && ctx.Err() == nil && leftNoModel(chain, more) {
 			// Without slow and the cooling models the route had none: ask
 			// as WP-1709 did, without slow alone.
-			used, more, err = s.runChain(withGatewayExclude(plain, without), chain, reviewSystem, prompt, reviewSchema, &ans, reviewCallTimeout)
+			used, more, err = s.runChain(asReask(withGatewayExclude(plain, without)), chain, reviewSystem, prompt, reviewSchema, &ans, reviewCallTimeout)
 			attempts = append(attempts, more...)
 			s.coolStalls(ctx, gw, gatewayReviewRoute, chain, more)
 		}

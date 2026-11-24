@@ -200,9 +200,53 @@ func TestReviewCooldownNeverExcludesAll(t *testing.T) {
 	}
 }
 
-// A bare 503 is what a gateway without a code may answer to an ask with
-// every model left out: asked again too.
-func TestReviewCooldownBare503AsksAgain(t *testing.T) {
+// excludeRemovesAll is the gateway's answer when the exclusions removed every
+// model of the route: a 400, no Retry-After.
+func excludeRemovesAll() error {
+	return &llmError{status: 400, body: `{"error":{"message":"exclude removes every model \"review\" and its fallbacks could use","type":"invalid_request_error","param":null,"code":"invalid_request"}}`}
+}
+
+// The cooling models are all the route has: the gateway answers 400, and the
+// slot is asked again without them, keeping the first reviewer's exclusion.
+func TestReviewCooldownAllCoolingAnswers400(t *testing.T) {
+	const zero = "zero/model-0"
+	re, h, chain, ctx := newHookEnv(t, func(ex []string, _ string, _ int) (string, error) {
+		if slices.Contains(ex, stallA) {
+			return "", excludeRemovesAll()
+		}
+		return "", nil
+	})
+	coolA(re)
+	a := re.s.reviewOnce(withGatewayExclude(ctx, []string{zero}), chain, "the diff")
+	r := h.requests()
+	if a.err != nil || len(a.findings) != 1 || len(r) != 2 || slices.Contains(r[1], stallA) || !slices.Contains(r[1], zero) {
+		t.Fatalf("answer %+v requests %v", a, r)
+	}
+	if len(a.log) != 2 || a.log[0].Outcome != "error" || a.log[1].Outcome != "ok" {
+		t.Errorf("attempts = %+v", a.log)
+	}
+}
+
+// A no_model_at_bar that carries Retry-After parks the names it asked for, but
+// the plain re-ask includes a model it did not try, so it is still sent.
+func TestReviewCooldownRetryAfterDoesNotStopReask(t *testing.T) {
+	re, h, chain, ctx := newHookEnv(t, func(ex []string, _ string, _ int) (string, error) {
+		if slices.Contains(ex, stallA) {
+			e := noModelAtBar().(*llmError)
+			e.retryAfter = 2 * time.Minute
+			return "", e
+		}
+		return "", nil
+	})
+	coolA(re)
+	a := re.s.reviewOnce(ctx, chain, "the diff")
+	if r := h.requests(); a.err != nil || len(a.findings) != 1 || len(r) != 2 {
+		t.Fatalf("answer %+v requests %v", a, r)
+	}
+}
+
+// A bare 503 is not what the gateway answers to exhaustion: not asked again.
+func TestReviewCooldownBare503NotReasked(t *testing.T) {
 	re, h, chain, _ := newHookEnv(t, func(ex []string, _ string, _ int) (string, error) {
 		if slices.Contains(ex, stallA) {
 			return "", &llmError{status: 503, body: "no model left"}
@@ -210,8 +254,41 @@ func TestReviewCooldownBare503AsksAgain(t *testing.T) {
 		return "", nil
 	})
 	coolA(re)
-	if a := re.s.reviewOnce(re.ctx, chain, "the diff"); a.err != nil || len(h.requests()) != 2 {
+	if a := re.s.reviewOnce(re.ctx, chain, "the diff"); a.err == nil || len(h.requests()) != 1 {
 		t.Fatalf("answer %+v requests %v", a, h.requests())
+	}
+}
+
+// The key's daily limit, parked while the cooled ask ran, still stops the
+// re-ask.
+func TestReviewCooldownQuotaParkStopsReask(t *testing.T) {
+	var re *reviewEnv
+	re, h, chain, _ := newHookEnv(t, func([]string, string, int) (string, error) {
+		re.s.parkAI(re.s.gatewayWith(re.ctx, GatewayExclude), re.s.now().Add(time.Hour))
+		return "", excludeRemovesAll()
+	})
+	coolA(re)
+	a := re.s.reviewOnce(re.ctx, chain, "the diff")
+	if a.err == nil || len(h.requests()) != 1 {
+		t.Fatalf("answer %+v requests %v", a, h.requests())
+	}
+}
+
+// The WP-1709 block's last ask, without slow alone, also follows a 400.
+func TestReviewCooldownFinalReaskOn400(t *testing.T) {
+	re, h, chain, _ := newHookEnv(t, func(ex []string, _ string, _ int) (string, error) {
+		switch {
+		case slices.Contains(ex, stallA) && slices.Contains(ex, stallB):
+			return "", excludeRemovesAll()
+		case slices.Contains(ex, stallA):
+			return stallB, context.DeadlineExceeded
+		}
+		return "", nil
+	})
+	coolA(re)
+	a := re.s.reviewOnce(re.ctx, chain, "the diff")
+	if r := h.requests(); a.err != nil || len(a.findings) != 1 || len(r) != 3 {
+		t.Fatalf("answer %+v requests %v", a, r)
 	}
 }
 
@@ -474,5 +551,29 @@ func TestLeftNoModelAnyAttempt(t *testing.T) {
 	}
 	if leftNoModel(chain, []ModelAttempt{{Outcome: "server", Error: "HTTP 504"}}) {
 		t.Fatal("a 504 is not no model")
+	}
+}
+
+// The gateway entry answers 400 and a later chain entry answers in its place:
+// the route is still asked plain, and the answer already had is kept if that
+// fails (WP-1768).
+func TestReviewCooldownReasksAfterLaterEntryAnswered(t *testing.T) {
+	re, h, _, _ := newHookEnv(t, func(ex []string, _ string, n int) (string, error) {
+		if n == 1 {
+			return "", excludeRemovesAll()
+		}
+		return "", nil
+	})
+	full, err := re.s.taskChain(re.ctx, "review")
+	if err != nil || len(full) < 2 {
+		t.Fatalf("chain %v, err %v", full, err)
+	}
+	full = slices.Clone(full)
+	full[0].Model = gatewayReviewRoute
+	coolA(re)
+	a := re.s.reviewOnce(re.ctx, full, "the diff")
+	r := h.requests()
+	if a.err != nil || len(a.findings) != 1 || len(r) < 3 || slices.Contains(r[len(r)-1], stallA) {
+		t.Fatalf("answer %+v requests %v", a, r)
 	}
 }
