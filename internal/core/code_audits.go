@@ -274,6 +274,13 @@ type CodeAuditFinding struct {
 	Verdict     string `json:"verdict,omitempty"`
 	VerdictNote string `json:"verdict_note,omitempty"`
 	Lead        string `json:"lead,omitempty"`
+	// Evidence is what a rejection gave as showing the finding wrong;
+	// DecidedModel and DecidedEffort the model an agent that rejected it ran
+	// as, and DecidedStrength how that compared with the finder's (WP-1825).
+	Evidence        string `json:"evidence,omitempty"`
+	DecidedModel    string `json:"decided_model,omitempty"`
+	DecidedEffort   string `json:"decided_effort,omitempty"`
+	DecidedStrength string `json:"decided_strength,omitempty"`
 }
 
 // AuditAttempt is one model's go at an audit.
@@ -2267,7 +2274,7 @@ func (s *Service) auditCounts(ctx context.Context, id int64) AuditCounts {
 
 func (s *Service) loadFindings(ctx context.Context, a *CodeAudit) error {
 	rows, err := s.db.R.QueryContext(ctx, `SELECT f.ordinal, f.title, f.path, f.line, f.severity, f.problem, f.confirm, f.state, f.note,
-		coalesce(ip.key || '-' || i.number, ''), i.id IS NOT NULL AND `+filingVoidOfIssue+`, coalesce(nullif(u.display_name, ''), u.username, f.decided_agent, ''), f.decided_at, f.verdict, f.verdict_note, f.lead
+		coalesce(ip.key || '-' || i.number, ''), i.id IS NOT NULL AND `+filingVoidOfIssue+`, coalesce(nullif(u.display_name, ''), u.username, f.decided_agent, ''), f.decided_at, f.verdict, f.verdict_note, f.lead, f.evidence, f.decided_model, f.decided_effort, f.decided_strength
 		FROM code_audit_findings f LEFT JOIN issues i ON i.id = f.issue_id LEFT JOIN projects ip ON ip.id = i.project_id
 		LEFT JOIN users u ON u.id = f.decided_by WHERE f.audit_id = ? ORDER BY f.ordinal`, a.ID)
 	if err != nil {
@@ -2278,7 +2285,7 @@ func (s *Service) loadFindings(ctx context.Context, a *CodeAudit) error {
 	for rows.Next() {
 		var f CodeAuditFinding
 		var at sql.NullInt64
-		if err := rows.Scan(&f.Ordinal, &f.Title, &f.Path, &f.Line, &f.Severity, &f.Problem, &f.Confirm, &f.State, &f.Note, &f.Issue, &f.FilingVoid, &f.By, &at, &f.Verdict, &f.VerdictNote, &f.Lead); err != nil {
+		if err := rows.Scan(&f.Ordinal, &f.Title, &f.Path, &f.Line, &f.Severity, &f.Problem, &f.Confirm, &f.State, &f.Note, &f.Issue, &f.FilingVoid, &f.By, &at, &f.Verdict, &f.VerdictNote, &f.Lead, &f.Evidence, &f.DecidedModel, &f.DecidedEffort, &f.DecidedStrength); err != nil {
 			return err
 		}
 		f.ID = fmt.Sprintf("%d.%d", a.ID, f.Ordinal)
@@ -2693,6 +2700,14 @@ type MarkFindings struct {
 	State string   `json:"state"`
 	Note  string   `json:"note"`
 	Issue string   `json:"issue"`
+	// Evidence is what shows a rejected finding wrong; an agent rejecting a
+	// finding of a pull request it isn't working on must give it (WP-1825).
+	Evidence string `json:"evidence"`
+}
+
+type findingRef struct {
+	audit int64
+	n     int
 }
 
 func (s *Service) MarkAuditFindings(ctx context.Context, actor *Actor, in MarkFindings) ([]CodeAuditFinding, error) {
@@ -2715,10 +2730,11 @@ func (s *Service) MarkAuditFindings(ctx context.Context, actor *Actor, in MarkFi
 	if state == "rejected" && note == "" && actor.IsAgent() {
 		return nil, invalid("say why the finding is wrong or not worth fixing (a note)")
 	}
-	type ref struct {
-		audit int64
-		n     int
+	evidence := strings.TrimSpace(in.Evidence)
+	if err := checkEvidence(evidence); err != nil {
+		return nil, err
 	}
+	type ref = findingRef
 	var refs []ref
 	audits := map[int64]*CodeAudit{}
 	for _, raw := range in.IDs {
@@ -2752,6 +2768,13 @@ func (s *Service) MarkAuditFindings(ctx context.Context, actor *Actor, in MarkFi
 			return nil, invalid("%s is canceled and isn't a duplicate of an open issue, so filing into it would drop the finding: fix it, reject it with why (-m), or file it in an open issue", strings.TrimSpace(in.Issue))
 		}
 	}
+	var weights map[ref]rejectionWeight
+	if state == "rejected" && actor.IsAgent() {
+		var err error
+		if weights, err = s.weighRejections(ctx, actor, evidence, refs); err != nil {
+			return nil, err
+		}
+	}
 	var by any
 	if actor.User != nil && actor.User.ID != 0 && !actor.IsAgent() {
 		by = actor.User.ID
@@ -2767,8 +2790,8 @@ func (s *Service) MarkAuditFindings(ctx context.Context, actor *Actor, in MarkFi
 			// confirmed: confirmed with no issue is still to do, so it
 			// unfiles a finding filed before (findingFiled).
 			res, err := t.ExecContext(ctx, `UPDATE code_audit_findings SET state = ?, note = CASE WHEN ? = '' THEN note ELSE ? END, issue_id = CASE WHEN ? IS NOT NULL THEN ? WHEN ? = 'confirmed' THEN NULL ELSE issue_id END,
-				decided_by = ?, decided_agent = ?, decided_at = ? WHERE audit_id = ? AND ordinal = ?`,
-				state, note, note, issueID, issueID, state, by, actor.agentName(), s.nowMS(), r.audit, r.n)
+				decided_by = ?, decided_agent = ?, decided_at = ?, evidence = ?, decided_model = ?, decided_effort = ?, decided_strength = ? WHERE audit_id = ? AND ordinal = ?`,
+				state, note, note, issueID, issueID, state, by, actor.agentName(), s.nowMS(), evidenceOf(state, evidence), weights[r].model, weights[r].effort, weights[r].strength, r.audit, r.n)
 			if err != nil {
 				return err
 			}

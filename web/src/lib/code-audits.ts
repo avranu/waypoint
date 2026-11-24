@@ -39,6 +39,13 @@ export interface AuditFinding {
   filing_void?: boolean
   by?: string
   at?: string
+  /** What a rejection gave as showing the finding wrong. */
+  evidence?: string
+  /** The model an agent that rejected it ran as, and effort. */
+  decided_model?: string
+  decided_effort?: string
+  /** How that compared with the finder: "at_least: why" or "not_compared: why". */
+  decided_strength?: string
   /** The line on the forge. */
   url?: string
 }

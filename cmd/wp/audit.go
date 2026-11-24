@@ -45,7 +45,7 @@ audit 12's third finding). wp audit report records the findings of a review
 you ran yourself, for your task's review round.`,
 	examples: []string{"wp audit", "wp audit pr 12", `wp audit branch feature-x -m "Focus on the new cache's invalidation."`,
 		"wp audit recent --since 2w --focus security --path internal",
-		"wp audit show 12", "wp audit mark 12.1 12.3 confirmed", `wp audit mark 12.2 rejected -m "the lock is held by the caller"`},
+		"wp audit show 12", "wp audit mark 12.1 12.3 confirmed", `wp audit mark 12.2 rejected -m "the lock is held by the caller" --evidence "internal/x.go:40 takes the lock before the call"`},
 	run: auditRun(""),
 }
 
@@ -63,8 +63,14 @@ func init() {
 			examples: []string{"wp audit ls", "wp audit ls --active", "wp audit ls --pr 12"}, run: auditLs},
 		{name: "show", aliases: []string{"view", "get"}, args: "ID...", summary: "an audit: state, models tried, findings",
 			examples: []string{"wp audit show 12", "wp audit show 12 13"}, run: auditShow},
-		{name: "mark", args: "FINDING... open|confirmed|fixed|rejected [-m NOTE] [--issue KEY]", summary: "record your verdict on findings (12.3: audit 12, finding 3)",
-			about: `confirmed is real but unfixed; rejected needs -m why. --issue links the
+		{name: "mark", args: "FINDING... open|confirmed|fixed|rejected [-m NOTE] [--issue KEY] [--evidence TEXT]", summary: "record your verdict on findings (12.3: audit 12, finding 3)",
+			about: `confirmed is real but unfixed; rejected needs -m why. An agent rejecting a
+finding of a pull request it isn't working on (outside its own review round)
+also gives --evidence TEXT (a file and line, or a command's output, up to 4000
+characters), and must run as strong a model as the one that found it: not a
+haiku session for a sonnet's finding, a low effort one for a high effort one's,
+or an older version for a newer one's. If it can't, file it (confirmed --issue
+KEY) or leave it. People are never held to either. --issue links the
 task or bug that deals with it. A finding confirmed with --issue is filed:
 handed to that issue, so a review round, a pull request's babysitter or an
 audit's fix task no longer asks for it (file one with wp new first). An
@@ -75,7 +81,7 @@ round's check of your marks reads each filing, and a critical or high
 finding can't be filed: fix or reject it. Confirmed without an issue is still
 to do, and marking a filed finding confirmed again without --issue unfiles
 it. fixed --issue names the task that fixed it.`,
-			examples: []string{"wp audit mark 12.1 12.3 confirmed", "wp audit mark 12.4 confirmed --issue WP-401", "wp audit mark 12.1 fixed --issue WP-399", `wp audit mark 12.2 rejected -m "the caller holds the lock"`}, run: auditMark},
+			examples: []string{"wp audit mark 12.1 12.3 confirmed", "wp audit mark 12.4 confirmed --issue WP-401", "wp audit mark 12.1 fixed --issue WP-399", `wp audit mark 12.2 rejected -m "the caller holds the lock" --evidence "internal/x.go:40 takes the lock before the call"`}, run: auditMark},
 		{name: "report", args: "[KEY] -f FILE | --none -m SUMMARY", summary: "record what the adversarial review you ran yourself found, as your task's review round",
 			about: `For an agent session whose review round was its own to run (wp ship
 says so, and holds the pull request for this). FILE (- for stdin) is JSON:
@@ -179,6 +185,12 @@ type auditFinding struct {
 	By         string `json:"by"`
 	Lead       string `json:"lead"`
 	Verdict    string `json:"verdict"`
+	Evidence   string `json:"evidence"`
+	// DecidedModel, DecidedEffort and DecidedStrength: what an agent that
+	// rejected it ran as, and how that compared with the finder (WP-1825).
+	DecidedModel    string `json:"decided_model"`
+	DecidedEffort   string `json:"decided_effort"`
+	DecidedStrength string `json:"decided_strength"`
 }
 
 // what names the code an audit reads: "#12", "feature-x against main".
@@ -357,6 +369,12 @@ func (a *auditView) text() string {
 			}
 			if f.Note != "" {
 				fmt.Fprintf(&s, "         Note (%s): %s\n", f.By, indentRest(f.Note, "         "))
+			}
+			if f.Evidence != "" {
+				fmt.Fprintf(&s, "         Evidence: %s\n", indentRest(f.Evidence, "         "))
+			}
+			if f.DecidedModel != "" {
+				fmt.Fprintf(&s, "         Rejected as: %s\n", core.RejectedAs(core.CodeAuditFinding{DecidedModel: f.DecidedModel, DecidedEffort: f.DecidedEffort, DecidedStrength: f.DecidedStrength}))
 			}
 		}
 	}
@@ -790,6 +808,7 @@ func auditMark(c *cli, args []string) error {
 	fs := c.flags()
 	note := fs.String("m", "", "why (`NOTE`); say why for rejected")
 	issue := fs.String("issue", "", "task or bug `KEY` that deals with it")
+	evidence := fs.String("evidence", "", "what shows a rejected finding wrong (`TEXT`); an agent gives it for a pull request it isn't working on")
 	pos, err := c.parse(fs, args)
 	if err != nil {
 		return err
@@ -805,7 +824,7 @@ func auditMark(c *cli, args []string) error {
 	default:
 		return c.usage("the last word is the verdict: open, confirmed, fixed or rejected")
 	}
-	raw, err := c.call("POST", "/api/v1/audits/findings", map[string]any{"ids": ids, "state": state, "note": *note, "issue": *issue})
+	raw, err := c.call("POST", "/api/v1/audits/findings", map[string]any{"ids": ids, "state": state, "note": *note, "issue": *issue, "evidence": *evidence})
 	if err != nil {
 		return err
 	}

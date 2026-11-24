@@ -470,6 +470,14 @@ function FindingItem({ finding: f, audit: a }: { finding: AuditFinding; audit: C
           {f.by && ` by ${f.by}`}
           {f.at && ` ${relativeTime(f.at)}`}
           {f.note && <>: {f.note}</>}
+          {f.evidence && <> · evidence: {f.evidence}</>}
+          {f.decided_model && (
+            <>
+              {' '}
+              · as {f.decided_model}
+              {f.decided_effort && ` (${f.decided_effort})`}
+            </>
+          )}
           {f.filing_void && f.state === 'confirmed' && (
             <> · its issue was canceled, so it is to do again</>
           )}
