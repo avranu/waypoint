@@ -385,8 +385,8 @@ func TestForgeDeleteHandMadeProjectIgnoresRepos(t *testing.T) {
 	if err != nil || len(preview) != 0 {
 		t.Errorf("preview offers %+v, %v", preview, err)
 	}
-	if n, _ := e.s.DiscoverRepos(e.ctx, e.admin, f.ID, nil); n != 0 {
-		t.Errorf("discover attached %d", n)
+	if n, err := e.s.DiscoverRepos(e.ctx, e.admin, f.ID, nil); err != nil || n != 0 {
+		t.Errorf("discover attached %d, %v", n, err)
 	}
 	if _, err := e.s.AddProjectRepo(e.ctx, e.admin, c.Key, f.ID, "me/web", true); err != nil {
 		t.Fatal(err)
