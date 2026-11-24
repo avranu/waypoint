@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -201,6 +202,9 @@ func TestAuditPeriodAndPaths(t *testing.T) {
 	}
 	if !strings.Contains(got, "+export const quokka = 1;") || strings.Contains(got, "var X") || !strings.Contains(got, "only in web") {
 		t.Errorf("web only:\n%s", got)
+	}
+	if !slices.Equal(r.files, []string{"web/b.ts"}) {
+		t.Errorf("files %q", r.files)
 	}
 	r = &auditRange{from: first, to: head, exclude: []string{"web", "*_test.go"}}
 	if got, err = p.auditDiff(ctx, work, r, 1<<20); err != nil || r.commits != 1 || !strings.Contains(got, "var X = 1") || strings.Contains(got, "quokka") || strings.Contains(got, "a_test.go") {

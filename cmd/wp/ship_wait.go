@@ -47,11 +47,13 @@ type shipNews struct {
 
 // canWaitShip: the same conditions under which endTurnAfterShip may write a
 // marker (an agent's ship, in a session with Waypoint's hooks), the wait
-// wasn't switched off, and the held answer asks nothing of the agent: one
-// that does (findings to mark, its own report) is the agent's to act on now,
-// and nothing would come while it waited.
+// wasn't switched off, and neither the held answer nor a notice with it asks
+// anything of the agent: one that does (findings to mark, its own report) is
+// the agent's to act on now, and nothing would come while it waited. A notice
+// from a server that omits notice_needs_agent counts as asking (fail closed,
+// as in shipNeedsAgent): an older server's ship doesn't wait.
 func (c *cli) canWaitShip(so shipOpts, o *openedPR) bool {
-	return !*so.noWait && !factAsks(o.HeldNeedsAgent) && !c.asJSON && c.agentHeader() != "" && c.thisSession() != "" && c.server() != "" && c.token() != ""
+	return !*so.noWait && !factAsks(o.HeldNeedsAgent) && (o.Notice == "" || !factAsks(o.NoticeNeedsAgent)) && !c.asJSON && c.agentHeader() != "" && c.thisSession() != "" && c.server() != "" && c.token() != ""
 }
 
 // Why waitShipNews returned no news.
@@ -76,8 +78,8 @@ func (c *cli) waitShipNews(task string, bound time.Duration, announce func()) (*
 		return nil, why, err
 	}
 	var news *shipNews
-	err := longPoll(shipChunk, time.Second, time.Now().Add(bound), func(hold time.Duration, probe bool) (bool, error) {
-		n, err := c.shipNewsOnce(task, hold)
+	err := longPoll(shipChunk, time.Second, time.Now().Add(bound), func(hold time.Duration, probe bool, limit time.Duration) (bool, error) {
+		n, err := c.shipNewsOnce(task, hold, limit)
 		if err != nil {
 			var ae *apiError
 			if errors.As(err, &ae) && (ae.status == http.StatusNotFound || ae.status == http.StatusMethodNotAllowed) {
@@ -97,7 +99,10 @@ func (c *cli) waitShipNews(task string, bound time.Duration, announce func()) (*
 		}
 		return true, nil
 	})
+	var failed *pollBoundError
 	switch {
+	case errors.As(err, &failed):
+		return quit(stopLost, failed.cause) // the last request failed with no room to ask again
 	case errors.Is(err, errPollBound):
 		return quit(stopBound, nil)
 	case err != nil:
@@ -125,8 +130,10 @@ func (c *cli) ackShipNews(task string, ids []int64) {
 	}
 }
 
-func (c *cli) shipNewsOnce(task string, hold time.Duration) (*shipNews, error) {
-	c.longPoll = hold + 30*time.Second
+// shipNewsOnce asks the server to hold up to hold for the task's news, taking
+// at most limit.
+func (c *cli) shipNewsOnce(task string, hold, limit time.Duration) (*shipNews, error) {
+	c.longPoll = limit
 	defer func() { c.longPoll = 0 }()
 	raw, err := c.call("POST", "/api/v1/sessions/hook/ship-news", map[string]any{
 		"session_id": c.thisSession(), "machine": machineName(), "task": task, "wait": int(hold.Seconds())})

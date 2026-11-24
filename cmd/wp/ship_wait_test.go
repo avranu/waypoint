@@ -84,7 +84,7 @@ func heldFlags() prOpenFlags { return prOpenFlags{review: new(bool), force: new(
 
 func heldShip(t *testing.T, c *cli, noWait bool) (*openedPR, []byte, bool, error) {
 	t.Helper()
-	wait := 5 * time.Second
+	wait := time.Hour // room for every backoff: a failure with none left ends the wait instead
 	so := shipOpts{noWait: &noWait, waitTimeout: &wait}
 	o := &openedPR{Held: "Pushed. Nothing more to run: end your turn.", HeldNeedsAgent: new(bool)}
 	if !c.canWaitShip(so, o) {
@@ -184,6 +184,54 @@ func TestHeldShipGivesUpAtTheBound(t *testing.T) {
 	o2, _, done, err := c.waitHeldShip(heldFlags(), so, o, nil, "WP-9", "")
 	if err != nil || done || o2 != o || !strings.Contains(out.String(), "stopped waiting here") {
 		t.Fatalf("done %v err %v:\n%s", done, err, out.String())
+	}
+}
+
+// recordSleeps records the backoffs a wait would have slept.
+func recordSleeps(t *testing.T) *[]time.Duration {
+	t.Helper()
+	old := pollSleep
+	var slept []time.Duration
+	pollSleep = func(d time.Duration) { slept = append(slept, d) }
+	t.Cleanup(func() { pollSleep = old })
+	return &slept
+}
+
+func badGateway(w http.ResponseWriter) {
+	http.Error(w, `{"error":"bad gateway"}`, http.StatusBadGateway)
+}
+
+// A held request that fails with no room before the bound to ask again: the
+// ship says it lost touch and why, not that the review is still going.
+func TestHeldShipSaysItLostTouchAtTheBound(t *testing.T) {
+	c, out, calls := waitEnv(t, waitingAnswer(), badGateway)
+	slept := recordSleeps(t)
+	so := shipOpts{noWait: new(bool), waitTimeout: new(time.Duration)}
+	*so.waitTimeout = 1500 * time.Millisecond
+	o := &openedPR{Held: "held"}
+	o2, _, done, err := c.waitHeldShip(heldFlags(), so, o, nil, "WP-9", "")
+	s := out.String()
+	if err != nil || done || o2 != o || calls.Load() != 2 || len(*slept) != 0 || !strings.Contains(s, "Lost touch with Waypoint while waiting") || !strings.Contains(s, "bad gateway") || strings.Contains(s, "still going") {
+		t.Fatalf("done %v err %v after %d calls, slept %v:\n%s", done, err, calls.Load(), *slept, s)
+	}
+}
+
+// A first request that keeps failing up to the bound: the ship ends as it
+// did before the wait existed, silently, and never backs off past the bound.
+func TestHeldShipProbeFailingAtTheBoundIsQuiet(t *testing.T) {
+	c, out, _ := waitEnv(t, badGateway)
+	slept := recordSleeps(t)
+	so := shipOpts{noWait: new(bool), waitTimeout: new(time.Duration)}
+	*so.waitTimeout = 1500 * time.Millisecond
+	o := &openedPR{Held: "held"}
+	o2, _, done, err := c.waitHeldShip(heldFlags(), so, o, nil, "WP-9", "")
+	if err != nil || done || o2 != o || out.String() != "" {
+		t.Fatalf("done %v err %v:\n%s", done, err, out.String())
+	}
+	for _, d := range *slept {
+		if d > *so.waitTimeout {
+			t.Errorf("backed off %v with a bound of %v", d, *so.waitTimeout)
+		}
 	}
 }
 
@@ -366,6 +414,20 @@ func TestShipWorkContinuesWithTheReopenedPullRequest(t *testing.T) {
 	}
 }
 
+// A held answer with a notice to act on: shipWork doesn't wait, and prints
+// the notice and the held answer at once.
+func TestShipWorkDoesNotWaitWithANoticeToActOn(t *testing.T) {
+	c, out, calls := waitEnv(t, waitingAnswer())
+	yes := true
+	held := &openedPR{Held: "HELD-TEXT end your turn", HeldNeedsAgent: new(bool), Notice: "act on this", NoticeNeedsAgent: &yes}
+	if _, err := shipWorkHeld(t, c, held); err != nil {
+		t.Fatal(err)
+	}
+	if s := out.String(); calls.Load() != 0 || !strings.Contains(s, "HELD-TEXT") || !strings.Contains(s, "Notice: act on this") || strings.Contains(s, "waiting for") {
+		t.Errorf("output after %d calls:\n%s", calls.Load(), s)
+	}
+}
+
 // printWatch is a stdout that fails the write holding bad, and notes whether
 // the server had been acked by the time anything was written.
 type printWatch struct {
@@ -414,5 +476,27 @@ func TestHeldShipAcksOnlyWhatItPrinted(t *testing.T) {
 	}
 	if acks(reqs) != 0 {
 		t.Errorf("findings that weren't printed were acked: %v", reqs.all())
+	}
+}
+
+// A held answer with a notice that asks the agent to act doesn't wait: the
+// notice is the agent's to act on now.
+func TestHeldShipWithANoticeToActOnDoesNotWait(t *testing.T) {
+	c, _, _ := waitEnv(t, waitingAnswer())
+	no, yes, wait := false, true, 5*time.Second
+	so := shipOpts{noWait: &no, waitTimeout: &wait}
+	for name, tc := range map[string]struct {
+		o    openedPR
+		want bool
+	}{
+		"no notice":              {openedPR{Held: "h", HeldNeedsAgent: &no}, true},
+		"a notice that is news":  {openedPR{Held: "h", HeldNeedsAgent: &no, Notice: "n", NoticeNeedsAgent: &no}, true},
+		"a notice to act on":     {openedPR{Held: "h", HeldNeedsAgent: &no, Notice: "n", NoticeNeedsAgent: &yes}, false},
+		"no notice, flag true":   {openedPR{Held: "h", HeldNeedsAgent: &no, NoticeNeedsAgent: &yes}, true},
+		"an older server's note": {openedPR{Held: "h", HeldNeedsAgent: &no, Notice: "n"}, false},
+	} {
+		if got := c.canWaitShip(so, &tc.o); got != tc.want {
+			t.Errorf("%s: canWaitShip = %v", name, got)
+		}
 	}
 }

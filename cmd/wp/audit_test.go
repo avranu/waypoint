@@ -349,3 +349,31 @@ func TestAuditShowListsThePanelOfAnAuditThatDidNotEndDone(t *testing.T) {
 		t.Errorf("an audit with no runs listed %q", out)
 	}
 }
+
+// An audit that left the gateway for its size says so where it is read, and
+// what the model wasn't given.
+func TestAuditViewTriesAndLeftOut(t *testing.T) {
+	type attempt = struct {
+		Model   string `json:"model"`
+		Round   int    `json:"round"`
+		Outcome string `json:"outcome"`
+		Error   string `json:"error"`
+		LeftOut string `json:"left_out"`
+	}
+	a := auditView{ID: 9, Status: "done", Attempts: []attempt{
+		{Model: "gateway/audit", Outcome: "error", Error: "The checkout packs to more than 20 MiB, the most the gateway takes."},
+		{Model: "claude/opus", Outcome: "answered", LeftOut: "350 binary files (16.9 MiB)"},
+	}}
+	out := a.text()
+	for _, want := range []string{"Tried: gateway/audit error, claude/opus answered", "gateway/audit: The checkout packs to more than 20 MiB", "Not given to claude/opus: 350 binary files (16.9 MiB)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q:\n%s", want, out)
+		}
+	}
+	// The audit's own error isn't told twice.
+	b := auditView{ID: 9, Status: "failed", Attempts: []attempt{{Model: "gateway/audit", Outcome: "error", Error: "too big"}}}
+	b.Error = "too big"
+	if out := b.text(); strings.Count(out, "too big") != 1 {
+		t.Errorf("the error twice:\n%s", out)
+	}
+}

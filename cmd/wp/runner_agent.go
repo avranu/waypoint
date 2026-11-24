@@ -367,7 +367,11 @@ func (p *runnerProc) execAgent(ctx context.Context, run *jobRun, kind string, in
 		if changeCommits >= 0 {
 			result["change_commits"] = changeCommits
 		}
-		out := p.execGatewayAudit(ctx, run, in, work, result)
+		var changed []string
+		if changeRange != nil {
+			changed = changeRange.files
+		}
+		out := p.execGatewayAudit(ctx, run, in, work, changed, result)
 		if hx != nil && out.State == "done" {
 			hx.join(ctx, result)
 		} else if hx != nil {
@@ -660,6 +664,11 @@ type auditRange struct {
 	commits        int
 	landed         int
 	empty          bool
+	// files are the files the diff touches as git lists them, a rename by
+	// its new name: the names themselves, not read back out of the diff,
+	// whose headers can't tell where a path with " b/" in it ends and
+	// follow the runner's git config (diff.noprefix drops a/ and b/).
+	files []string
 }
 
 // spec is the range for git: three dots (what to added since it left from)
@@ -743,6 +752,7 @@ func (p *runnerProc) auditDiff(ctx context.Context, work string, r *auditRange, 
 		return fail(err)
 	}
 	names := strings.FieldsFunc(list, func(r rune) bool { return r == 0 })
+	r.files = names
 	perFile, err := writeAuditChange(work, diff, stat, names)
 	if err != nil {
 		return "", fmt.Errorf("can't put the change in the checkout: %v", err)

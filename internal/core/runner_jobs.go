@@ -221,6 +221,9 @@ func checkRunnerInput(kind string, raw json.RawMessage) (jobNeeds, string, json.
 			} else {
 				in.GatewayExclude, in.GatewayWeakest, in.GatewayPriority, in.GatewayPaid, in.GatewayArm = nil, "", "", "", ""
 			}
+			// The gateway's limits are Waypoint's to write (EnqueueRunnerJob
+			// does, for a job of the gateway's), never the caller's.
+			in.GatewayArchiveMax, in.GatewayFileMax = 0, 0
 			if in.DiffFrom != "" && !gitRefRE.MatchString(in.DiffFrom) {
 				return n, "", nil, invalid("diff_from %q isn't a branch, tag or commit", in.DiffFrom)
 			}
@@ -237,6 +240,7 @@ func checkRunnerInput(kind string, raw json.RawMessage) (jobNeeds, string, json.
 		} else {
 			in.DiffFrom, in.DiffSince, in.DiffPaths, in.DiffExclude, in.GatewayExclude, in.GatewayWeakest = "", 0, nil, nil, nil, ""
 			in.GatewayPriority, in.GatewayPaid, in.GatewayArm = "", "", ""
+			in.GatewayArchiveMax, in.GatewayFileMax = 0, 0
 		}
 		switch in.Permission {
 		case "", AgentRead, AgentEdit, AgentEditRun:
@@ -560,6 +564,11 @@ func (s *Service) EnqueueRunnerJob(ctx context.Context, a *Actor, in RunnerJobIn
 	needs, title, input, err := checkRunnerInput(in.Kind, in.Input)
 	if err != nil {
 		return nil, err
+	}
+	if needs.kind == JobAudit && needs.cli == GatewayCLI {
+		if input, err = s.withGatewayLimits(ctx, input); err != nil {
+			return nil, err
+		}
 	}
 	if needs.patch && (a.User == nil || a.User.ID != 0 || a.IsAgent() || a.Automation != nil || in.Source != babysitHeldSource) {
 		return nil, fmt.Errorf("only Waypoint queues a job that pushes a held patch: %w", ErrForbidden)

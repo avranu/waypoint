@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"git.jmann.me/claude/waypoint/internal/core/kernel"
 )
 
 const (
@@ -263,6 +265,10 @@ type AuditAttempt struct {
 	Round   int    `json:"round"`   // 0, then 1… for each retry of a busy chain
 	Outcome string `json:"outcome"` // answered, unreadable, busy, spent, timeout, model, unavailable, error, cancelled
 	Error   string `json:"error,omitempty"`
+	// LeftOut says what the runner left out of the checkout it sent a
+	// gateway model (binary files, large ones, files out of scope), e.g.
+	// "350 binary files (16.9 MiB)"; "" when nothing, or no gateway model.
+	LeftOut string `json:"left_out,omitempty"`
 	At      int64  `json:"at"`
 }
 
@@ -1066,6 +1072,9 @@ func (s *Service) settleAudit(ctx context.Context, id, jobID int64) {
 		m = a.chain[a.Slot]
 	}
 	att := AuditAttempt{Model: auditModelName(m), Job: jobID, Round: a.Retries, At: s.nowMS()}
+	if m.CLI == GatewayCLI {
+		att.LeftOut = kernel.Excerpt(strings.TrimSpace(anyString(j.Result["left_out"])), 300)
+	}
 	a.readRange(j.Result)
 	a.HelperRuns = helperRunsOf(j.Result)
 	switch j.State {

@@ -51,12 +51,15 @@ func (ae *agentEnv) agentTrial(issueID int64) string {
 // its checked picks are kept as a trial of kind 'agent'.
 func TestPrepAgentTrial(t *testing.T) {
 	ae, gw, box, i := prepAgentEnv(t)
+	gw.limits = GatewayLimits{ArchiveBytes: 10 << 20, FileBytes: 1 << 20}
 	ae.s.queuePrepAgent(ae.ctx)
 	ae.s.queuePrepAgent(ae.ctx)
 	if got := ae.one(`SELECT COUNT(*) FROM runner_jobs WHERE source = ? AND source_id = ?`, prepAgentSource, i.ID); got != "1" {
 		t.Fatalf("jobs = %s", got)
 	}
-
+	if got := ae.one(`SELECT json_extract(input, '$.gateway_archive_max') || ' ' || json_extract(input, '$.gateway_file_max') FROM runner_jobs WHERE source = ?`, prepAgentSource); got != fmt.Sprint(10<<20, " ", 1<<20) {
+		t.Errorf("job's limits = %q", got)
+	}
 	for range GatewayTasksInFlight - prepAgentReserve {
 		if _, err := ae.s.db.W.Exec(`INSERT INTO runner_jobs(owner_id, created_by, label, kind, title, input, timeout, source, source_id, cli, state, created_at)
 			SELECT owner_id, created_by, label, kind, 'an audit', input, timeout, 'audit', 0, cli, 'running', created_at FROM runner_jobs WHERE source = ?`, prepAgentSource); err != nil {

@@ -103,6 +103,7 @@ type Service struct {
 
 	baseUpdated     sync.Map
 	gatewayRefused  sync.Map
+	gatewayLimits   sync.Map
 	staleChecksRead sync.Map
 
 	baseMerged     sync.Map
