@@ -394,6 +394,28 @@ func TestHookTakesAtMostItsCapOfMessages(t *testing.T) {
 	}
 }
 
+// A full take of news on a stop doesn't keep back the task queued behind it:
+// the task takes the newest one's place, so the stop continues, and the news
+// left over waits for a turn (a stop never continues for news alone).
+func TestStopTakesATaskQueuedBehindAFullTakeOfNews(t *testing.T) {
+	a, _, _ := shipNewsEnv(t)
+	for n := range hookTakeMax {
+		if _, err := a.s.storeMessage(a.ctx, a.session, "news "+itoa64(int64(n)), "", messageFrom{}, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := a.s.storeMessage(a.ctx, a.session, "the task", "", messageFrom{}, false); err != nil {
+		t.Fatal(err)
+	}
+	took := a.takeStop(t)
+	if len(took) != hookTakeMax || took[0].Body != "news 0" || took[hookTakeMax-1].Body != "the task" {
+		t.Fatalf("took %d messages: %v", len(took), took)
+	}
+	if rest := a.takeStop(t); len(rest) != 0 {
+		t.Errorf("a stop took %d messages of news alone", len(rest))
+	}
+}
+
 // countingQ counts the single-row lookups made through it.
 type countingQ struct {
 	queryer

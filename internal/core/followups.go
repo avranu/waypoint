@@ -684,8 +684,21 @@ func (s *Service) takeMessages(ctx context.Context, t *tx, x *AgentSession, via 
 	if len(out) == 0 {
 		return nil, nil
 	}
-	if via == "stop" && !slices.ContainsFunc(out, func(m *SessionMessage) bool { return !m.passive && !heldToWait(ctx, t, m) }) {
-		return nil, nil // news alone never continues a stop
+	if via == "stop" {
+		wakes := func(m *SessionMessage) bool { return !m.passive && !heldToWait(ctx, t, m) }
+		if !slices.ContainsFunc(out, wakes) {
+			// News alone never continues a stop. But a full take of news
+			// mustn't keep what would continue it back either: then that
+			// takes the newest one's place.
+			if len(out) < hookTakeMax {
+				return nil, nil
+			}
+			m, err := s.firstWake(ctx, t, x.ID, out[len(out)-1].ID, func(m *SessionMessage) bool { return !held(m) && wakes(m) })
+			if err != nil || m == nil {
+				return nil, err
+			}
+			out[len(out)-1] = m
+		}
 	}
 	now := s.nowMS()
 	for _, m := range out {
@@ -700,6 +713,40 @@ func (s *Service) takeMessages(ctx context.Context, t *tx, x *AgentSession, via 
 	}
 	_, err := t.ExecContext(ctx, `UPDATE agent_sessions SET state = 'working', wait_reason = '', pending = '', finished_at = NULL WHERE id = ?`, x.ID)
 	return out, err
+}
+
+// firstWake is the session's first queued message after id that isn't news
+// and that wakes says may continue a stop, or nil. Only rows that aren't
+// passive are read, a page at a time.
+func (s *Service) firstWake(ctx context.Context, t *tx, sessionID, after int64, wakes func(*SessionMessage) bool) (*SessionMessage, error) {
+	for {
+		rows, err := t.QueryContext(ctx, `SELECT `+messageCols+` FROM session_messages m LEFT JOIN users u ON u.id = m.created_by
+			WHERE m.session_id = ? AND m.state = 'queued' AND m.passive = 0 AND m.id > ? ORDER BY m.id LIMIT ?`, sessionID, after, hookTakePage)
+		if err != nil {
+			return nil, err
+		}
+		var page []*SessionMessage
+		for rows.Next() {
+			m, err := scanMessage(rows)
+			if err != nil {
+				rows.Close()
+				return nil, err
+			}
+			page = append(page, m)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		for _, m := range page {
+			if after = m.ID; wakes(m) {
+				return m, nil
+			}
+		}
+		if len(page) < hookTakePage {
+			return nil, nil
+		}
+	}
 }
 
 // MessagesText is what an agent is told of messages queued for it.
