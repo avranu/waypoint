@@ -1763,7 +1763,8 @@ func (s *Service) reviewIntent(ctx context.Context, prID int64) string {
 		if err := s.db.R.QueryRowContext(ctx, `SELECT project_id, outside FROM issues WHERE id = ?`, l.issue.ID).Scan(&project, &outside); err != nil {
 			outside = true
 		}
-		title := excerpt(oneLine(l.issue.Title), 160)
+		// Quoted, so a title can't pass for the goal or risk clause after it.
+		title := fmt.Sprintf("%q", excerpt(oneLine(l.issue.Title), 160))
 		if outside {
 			title = outsideTitleInPrompt
 		}

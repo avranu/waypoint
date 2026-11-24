@@ -416,7 +416,7 @@ func reviewPrompt(pr *ForgePR, rules, focus, conversation, intent, history strin
 		fmt.Fprintf(&b, promptFocus, focus)
 	}
 	if conversation != "" {
-		fmt.Fprintf(&b, promptConversation, conversation, conversationRules)
+		fmt.Fprintf(&b, promptConversation, untrusted(conversation), conversationRules)
 	}
 	if intent != "" {
 		fmt.Fprintf(&b, promptIntent, untrusted(intent))

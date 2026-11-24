@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"git.jmann.me/claude/waypoint/internal/lazyre"
@@ -1564,6 +1565,14 @@ var untrustedTagRE = lazyre.New(`(?i)<\s*/?\s*untrusted\s*>`)
 // untrusted makes text safe to put between <untrusted> tags: it can't
 // close them, however it nests the tag ("</untru</untrusted>sted>").
 func untrusted(s string) string {
+	// Format characters (zero-width and the like) can hide a closing mark
+	// from the match but not from a reader that drops them.
+	s = strings.Map(func(r rune) rune {
+		if unicode.Is(unicode.Cf, r) {
+			return -1
+		}
+		return r
+	}, s)
 	for {
 		t := untrustedTagRE.ReplaceAllString(s, "")
 		if t == s {
