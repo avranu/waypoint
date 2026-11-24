@@ -80,8 +80,7 @@ func (w *shipWaits) holder(ctx context.Context, q queryer, now time.Time, sessio
 		if !strings.HasPrefix(m.stepKey, "audit:") && !strings.HasPrefix(m.stepKey, "check:") {
 			return false
 		}
-		kind, rest, _ := strings.Cut(m.stepKey, ":")
-		id, _, _ := strings.Cut(rest, ":")
+		kind, id := stepKeySource(m.stepKey)
 		task, ok := tasks[kind+":"+id]
 		if !ok {
 			if t, bound := messageTask(ctx, q, m.stepKey); bound {

@@ -231,8 +231,15 @@ func cmdPRWait(c *cli, args []string) error {
 		w, raw = next, nraw
 		return w.Verdict != "waiting", nil
 	})
-	if err != nil && (w == nil || !errors.Is(err, errPollBound)) {
-		return err // no verdict to print without an answer
+	var bound *pollBoundError
+	switch {
+	case err != nil && !errors.Is(err, errPollBound):
+		return err
+	case w == nil && errors.As(err, &bound):
+		// Out of time with no answer: a timeout like any other, with no
+		// verdict to print.
+		_, _ = fmt.Fprintf(c.err, "timed out after %s: no answer from Waypoint: %v\n", *timeout, bound.cause)
+		return exitCode(waitExitTimeout)
 	}
 	return c.waitVerdict(w, raw, *merge, *timeout)
 }

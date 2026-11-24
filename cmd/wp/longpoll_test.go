@@ -33,16 +33,23 @@ func runPoll(t *testing.T, chunk, minHold, bound time.Duration, retry []time.Dur
 	return asks, slept, err
 }
 
-// A probe that failed with no time for another returns its error at once: it
-// doesn't sleep up to the bound first, and the caller, which has no answer
-// yet, is told why (wp pr wait has no verdict to print).
-func TestLongPollProbeFailureAtTheBoundReturnsItsError(t *testing.T) {
-	for _, bound := range []time.Duration{0, 50 * time.Millisecond} {
-		asks, slept, err := runPoll(t, time.Second, time.Second, bound, []time.Duration{5 * time.Second}, func(int) bool { return true })
-		var ae *apiError
-		if !errors.As(err, &ae) || errors.Is(err, errPollBound) || len(asks) != 1 || len(slept) != 0 {
-			t.Errorf("bound %v: err %v after %d requests, slept %v", bound, err, len(asks), slept)
-		}
+// A probe that failed with no time left ends the poll at once, without a
+// sleep: out of time, with the request's error for a caller that has no answer
+// to fall back on (wp pr wait has no verdict to print).
+func TestLongPollProbeFailureAtTheBound(t *testing.T) {
+	asks, slept, err := runPoll(t, time.Second, time.Second, 0, []time.Duration{5 * time.Second}, func(int) bool { return true })
+	var ae *apiError
+	if !errors.Is(err, errPollBound) || !errors.As(err, &ae) || len(asks) != 1 || len(slept) != 0 {
+		t.Errorf("err %v after %d requests, slept %v", err, len(asks), slept)
+	}
+}
+
+// A probe that failed with less time left than the backoff is asked again
+// when that time is up, instead of being given up with time unused.
+func TestLongPollRetriesTheProbeWithLessThanTheBackoffLeft(t *testing.T) {
+	asks, slept, err := runPoll(t, time.Second, time.Second, 3*time.Second, []time.Duration{5 * time.Second, 5 * time.Second}, func(n int) bool { return n == 1 })
+	if len(asks) < 2 || !asks[1].probe || len(slept) != 1 || slept[0] > 3*time.Second || slept[0] < 2*time.Second {
+		t.Errorf("err %v, asks %+v, slept %v", err, asks, slept)
 	}
 }
 
@@ -56,10 +63,12 @@ func TestLongPollRetriesTheProbeWithLessThanMinHoldLeft(t *testing.T) {
 }
 
 // A held request that failed with no room for the backoff and another hold
-// ends at the bound without sleeping; the caller keeps its last answer.
+// ends at the bound without sleeping; the caller keeps its last answer, and
+// can read why the last request failed.
 func TestLongPollHeldFailureAtTheBound(t *testing.T) {
 	asks, slept, err := runPoll(t, time.Second, time.Second, 1500*time.Millisecond, []time.Duration{time.Second}, func(n int) bool { return n == 2 })
-	if !errors.Is(err, errPollBound) || len(asks) != 2 || asks[1].probe || asks[1].hold != time.Second || len(slept) != 0 {
+	var ae *apiError
+	if !errors.Is(err, errPollBound) || !errors.As(err, &ae) || len(asks) != 2 || asks[1].probe || asks[1].hold != time.Second || len(slept) != 0 {
 		t.Errorf("err %v, asks %+v, slept %v", err, asks, slept)
 	}
 }

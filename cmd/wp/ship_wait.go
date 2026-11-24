@@ -65,7 +65,7 @@ type waitStop int
 const (
 	stopQuiet waitStop = iota // an older server, or no round: nothing to say
 	stopBound                 // the bound passed
-	stopLost                  // retries ran out, or a request failed for good
+	stopLost                  // retries or the time for them ran out, or a request failed for good
 )
 
 // waitShipNews holds until the task's round has something for the agent, or
@@ -104,7 +104,10 @@ func (c *cli) waitShipNews(task string, bound time.Duration, announce func()) (*
 		// "none", or one this client doesn't know: stop
 		return true, nil
 	})
+	var failed *pollBoundError
 	switch {
+	case errors.As(err, &failed):
+		return quit(stopLost, failed.cause) // the last request failed with no room to ask again
 	case errors.Is(err, errPollBound):
 		return quit(stopBound, nil)
 	case err != nil:

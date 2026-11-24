@@ -1,6 +1,8 @@
 package core
 
 import (
+	"context"
+	"database/sql"
 	"strings"
 	"testing"
 	"time"
@@ -389,5 +391,79 @@ func TestHookTakesAtMostItsCapOfMessages(t *testing.T) {
 	}
 	if rest := a.takeStop(t); len(rest) != 5 || rest[0].Body != "message "+itoa64(hookTakeMax) {
 		t.Fatalf("took %d messages next", len(rest))
+	}
+}
+
+// countingQ counts the single-row lookups made through it.
+type countingQ struct {
+	queryer
+	rows int
+}
+
+func (c *countingQ) QueryRowContext(ctx context.Context, q string, args ...any) *sql.Row {
+	c.rows++
+	return c.queryer.QueryRowContext(ctx, q, args...)
+}
+
+// The hold check looks an audit's task up once for all of its messages, an
+// audit of no task included, and holds only the waited task's.
+func TestShipWaitHolderLooksAnAuditUpOnce(t *testing.T) {
+	a, held, round := shipNewsEnv(t)
+	defer a.s.openShipWait(a.session, held.ID)()
+	key := strings.TrimSuffix(newsKey(t, a, "audit:", round), "done")
+	q := &countingQ{queryer: a.s.db.R}
+	holds := a.s.shipWaits.holder(a.ctx, q, a.s.now(), a.session)
+	if !holds(&SessionMessage{stepKey: key + "1"}) || q.rows == 0 {
+		t.Fatalf("the round's audit news isn't held (%d lookups)", q.rows)
+	}
+	first := q.rows
+	if !holds(&SessionMessage{stepKey: key + "2"}) || q.rows != first {
+		t.Errorf("a second message of the audit: %d lookups after %d", q.rows, first)
+	}
+	if holds(&SessionMessage{stepKey: "audit:987654:1"}) {
+		t.Error("news of an audit with no task is held")
+	}
+	none := q.rows
+	if holds(&SessionMessage{stepKey: "audit:987654:2"}) || q.rows != none {
+		t.Errorf("a second message of an audit with no task: %d lookups after %d", q.rows, none)
+	}
+	if holds(&SessionMessage{stepKey: ""}) || holds(&SessionMessage{stepKey: "shipped:" + itoa64(round)}) || q.rows != none {
+		t.Errorf("a message that is no audit's or check's news was looked up or held (%d lookups after %d)", q.rows, none)
+	}
+}
+
+// Messages on both sides of a read's end, behind held news, go oldest first
+// and none is skipped or taken twice.
+func TestHookTakesMessagesAcrossReadsOfTheQueue(t *testing.T) {
+	a, held, round := shipNewsEnv(t)
+	defer a.s.openShipWait(a.session, held.ID)()
+	key := strings.TrimSuffix(newsKey(t, a, "audit:", round), "done")
+	store := func(body, stepKey string) {
+		t.Helper()
+		if _, err := a.s.storeMessage(a.ctx, a.session, body, stepKey, messageFrom{}, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 195 held, then 25 to take: 5 end the first read of 200, 20 follow it.
+	for n := range 195 {
+		store("held findings", key+itoa64(int64(n)))
+	}
+	for n := range 25 {
+		store("message "+itoa64(int64(n)), "")
+	}
+	var got []string
+	for _, m := range append(a.takeStop(t), a.takeStop(t)...) {
+		got = append(got, m.Body)
+	}
+	if len(got) != 25 {
+		t.Fatalf("took %d messages: %v", len(got), got)
+	}
+	for n, body := range got {
+		if body != "message "+itoa64(int64(n)) {
+			t.Fatalf("message %d taken is %q: %v", n, body, got)
+		}
+	}
+	if rest := a.takeStop(t); len(rest) != 0 {
+		t.Errorf("took %d more", len(rest))
 	}
 }

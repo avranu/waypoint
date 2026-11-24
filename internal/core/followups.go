@@ -625,9 +625,10 @@ func (s *Service) messageByID(ctx context.Context, id int64) (*SessionMessage, e
 // ended undelivered waits for the next session in its worktree.
 const orphanMessageAge = 24 * time.Hour
 
-// hookTakeMax is how many messages one hook call hands the agent;
-// hookTakePage is how many queued rows takeMessages reads at a time while it
-// looks for them.
+// hookTakeMax is how many messages one hook call hands the agent (the limit
+// the take always had); hookTakePage is how many queued rows takeMessages
+// reads at a time while it looks for them: ten takes' worth, so held news
+// rarely costs a second read. Neither was measured.
 const (
 	hookTakeMax  = 20
 	hookTakePage = 200
@@ -966,12 +967,21 @@ func (s *Service) moveOrphanMessages(ctx context.Context, t *tx, x *AgentSession
 	return nil
 }
 
+// stepKeySource is what a message's step key says it is news of: the kind
+// ("shipped", "audit", "check") and that row's id. messageTask reads nothing
+// else of the key, which is what lets shipWaits.holder keep one answer per
+// source.
+func stepKeySource(stepKey string) (kind, id string) {
+	kind, rest, _ := strings.Cut(stepKey, ":")
+	id, _, _ = strings.Cut(rest, ":")
+	return kind, id
+}
+
 // messageTask is the task a message is news of: bound is whether the
 // message is about a task at all (an audit's, a check's, a ship's), and task
 // the issue it is about (0: it can't be told).
 func messageTask(ctx context.Context, q queryer, stepKey string) (task int64, bound bool) {
-	kind, rest, _ := strings.Cut(stepKey, ":")
-	id, _, _ := strings.Cut(rest, ":")
+	kind, id := stepKeySource(stepKey)
 	n, err := strconv.ParseInt(id, 10, 64)
 	switch kind {
 	case "shipped":

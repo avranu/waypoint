@@ -187,6 +187,54 @@ func TestHeldShipGivesUpAtTheBound(t *testing.T) {
 	}
 }
 
+// recordSleeps records the backoffs a wait would have slept.
+func recordSleeps(t *testing.T) *[]time.Duration {
+	t.Helper()
+	old := pollSleep
+	var slept []time.Duration
+	pollSleep = func(d time.Duration) { slept = append(slept, d) }
+	t.Cleanup(func() { pollSleep = old })
+	return &slept
+}
+
+func badGateway(w http.ResponseWriter) {
+	http.Error(w, `{"error":"bad gateway"}`, http.StatusBadGateway)
+}
+
+// A held request that fails with no room before the bound to ask again: the
+// ship says it lost touch and why, not that the review is still going.
+func TestHeldShipSaysItLostTouchAtTheBound(t *testing.T) {
+	c, out, calls := waitEnv(t, waitingAnswer(), badGateway)
+	slept := recordSleeps(t)
+	so := shipOpts{noWait: new(bool), waitTimeout: new(time.Duration)}
+	*so.waitTimeout = 1500 * time.Millisecond
+	o := &openedPR{Held: "held"}
+	o2, _, done, err := c.waitHeldShip(heldFlags(), so, o, nil, "WP-9", "")
+	s := out.String()
+	if err != nil || done || o2 != o || calls.Load() != 2 || len(*slept) != 0 || !strings.Contains(s, "Lost touch with Waypoint while waiting") || !strings.Contains(s, "bad gateway") || strings.Contains(s, "still going") {
+		t.Fatalf("done %v err %v after %d calls, slept %v:\n%s", done, err, calls.Load(), *slept, s)
+	}
+}
+
+// A first request that keeps failing up to the bound: the ship ends as it
+// did before the wait existed, silently, and never backs off past the bound.
+func TestHeldShipProbeFailingAtTheBoundIsQuiet(t *testing.T) {
+	c, out, _ := waitEnv(t, badGateway)
+	slept := recordSleeps(t)
+	so := shipOpts{noWait: new(bool), waitTimeout: new(time.Duration)}
+	*so.waitTimeout = 1500 * time.Millisecond
+	o := &openedPR{Held: "held"}
+	o2, _, done, err := c.waitHeldShip(heldFlags(), so, o, nil, "WP-9", "")
+	if err != nil || done || o2 != o || out.String() != "" {
+		t.Fatalf("done %v err %v:\n%s", done, err, out.String())
+	}
+	for _, d := range *slept {
+		if d > *so.waitTimeout {
+			t.Errorf("backed off %v with a bound of %v", d, *so.waitTimeout)
+		}
+	}
+}
+
 func shipLeftIs(t *testing.T, d time.Duration) {
 	t.Helper()
 	old := shipLeft
