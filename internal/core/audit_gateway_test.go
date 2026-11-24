@@ -1371,17 +1371,18 @@ func TestGatewayUploadUsesJobsLimit(t *testing.T) {
 	if got := ae.s.GatewayTaskLimits(ae.ctx).ArchiveBytes; got != GatewayArchiveMax {
 		t.Fatalf("live figure = %d", got)
 	}
-	if got := ae.s.GatewayUploadMax(ae.ctx, ae.admin, claim.ID); got != 64<<20 {
-		t.Errorf("upload max = %d, want the job's 64 MiB", got)
+	if got, err := ae.s.GatewayUploadMax(ae.ctx, ae.admin, claim.ID); got != 64<<20 || err != nil {
+		t.Errorf("upload max = %d, %v, want the job's 64 MiB", got, err)
 	}
 	const size = 30 << 20
 	v, err := ae.s.StartGatewayTask(ae.ctx, ae.admin, claim.ID, "Audit.", zeros(size), size)
 	if err != nil || v.Status != "queued" {
 		t.Fatalf("%d bytes: %+v, %v", size, v, err)
 	}
-	// Not a job of this person's, or not an audit: the live figure.
-	if got := ae.s.GatewayUploadMax(ae.ctx, ae.admin, 999999); got != GatewayArchiveMax {
-		t.Errorf("no such job: %d", got)
+	// Not a job of this person's, or not an audit: turned away before the
+	// upload is read.
+	if got, err := ae.s.GatewayUploadMax(ae.ctx, ae.admin, 999999); !errors.Is(err, ErrNotFound) {
+		t.Errorf("no such job: %d, %v", got, err)
 	}
 }
 

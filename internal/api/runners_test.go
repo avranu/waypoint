@@ -354,9 +354,6 @@ func TestRunnerGatewayRoutes(t *testing.T) {
 	if code, b := jc.do("POST", path, map[string]any{"prompt": "Audit it."}); code != 400 || !strings.Contains(string(b), "multipart/form-data") {
 		t.Errorf("a JSON body: %d %s", code, b)
 	}
-	if code, b := upload(jc, path, map[string]string{"prompt": "Audit it."}); code != 400 || !strings.Contains(b, "repo") {
-		t.Errorf("no repo: %d %s", code, b)
-	}
 	// The job is a CLI's: nothing of it goes to the gateway.
 	if code, b := upload(jc, path, whole); code != 400 || !strings.Contains(b, "isn't an audit through the gateway") {
 		t.Errorf("an agent job: %d %s", code, b)
@@ -374,14 +371,11 @@ func TestRunnerGatewayRoutes(t *testing.T) {
 	if code, b := sam.do("GET", path, nil); code != 404 {
 		t.Errorf("another person's job: %d %s", code, b)
 	}
-	// A body past the archive limit (the default, 20 MiB, with no gateway to
-	// say otherwise) and the prompt's room is cut off before it is read.
+	// A job that isn't a gateway audit is turned away before its body is
+	// read, however large.
 	limit := int(svc.GatewayTaskLimits(ctx).ArchiveBytes)
-	if code, b := upload(jc, path, map[string]string{"prompt": "Audit it.", "repo": strings.Repeat("x", limit+core.GatewayPromptMax+2<<20)}); code != 400 || !strings.Contains(b, "too large") {
+	if code, b := upload(jc, path, map[string]string{"prompt": "Audit it.", "repo": strings.Repeat("x", limit+core.GatewayPromptMax+2<<20)}); code != 400 || !strings.Contains(b, "isn't an audit through the gateway") {
 		t.Errorf("a body past the limit: %d %.200s", code, b)
-	}
-	if code, b := upload(jc, path, map[string]string{"prompt": "Audit it.", "repo": strings.Repeat("x", limit)}); code != 400 || !strings.Contains(b, "isn't an audit through the gateway") {
-		t.Errorf("a body at the limit: %d %.200s", code, b)
 	}
 	if code, b := upload(jc, "/api/v1/runner/jobs/99999/gateway", whole); code != 404 {
 		t.Errorf("no such job: %d %s", code, b)
@@ -424,23 +418,36 @@ func TestRunnerGatewayBodyCapIsTheJobs(t *testing.T) {
 	if err != nil || w.Job == nil {
 		t.Fatalf("poll: %v %+v", err, w)
 	}
-	var body bytes.Buffer
-	mw := multipart.NewWriter(&body)
-	_ = mw.WriteField("prompt", "Audit it.")
-	f, _ := mw.CreateFormFile("repo", "repo.tar.gz")
-	_, _ = f.Write(bytes.Repeat([]byte("x"), 25<<20))
-	_ = mw.Close()
-	req, _ := http.NewRequest("POST", ts.URL+"/api/v1/runner/jobs/"+rid(w.Job.ID)+"/gateway", &body)
-	req.Header.Set("Authorization", "Bearer "+jc.token)
-	req.Header.Set("Content-Type", mw.FormDataContentType())
-	resp, err := jc.http.Do(req)
-	if err != nil {
-		t.Fatal(err)
+	upload := func(repo int) (int, string) {
+		t.Helper()
+		var body bytes.Buffer
+		mw := multipart.NewWriter(&body)
+		_ = mw.WriteField("prompt", "Audit it.")
+		if repo >= 0 {
+			f, _ := mw.CreateFormFile("repo", "repo.tar.gz")
+			_, _ = f.Write(bytes.Repeat([]byte("x"), repo))
+		}
+		_ = mw.Close()
+		req, _ := http.NewRequest("POST", ts.URL+"/api/v1/runner/jobs/"+rid(w.Job.ID)+"/gateway", &body)
+		req.Header.Set("Authorization", "Bearer "+jc.token)
+		req.Header.Set("Content-Type", mw.FormDataContentType())
+		resp, err := jc.http.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(b)
 	}
-	defer resp.Body.Close()
-	b, _ := io.ReadAll(resp.Body)
+	if code, b := upload(-1); code != 400 || !strings.Contains(b, "repo") {
+		t.Errorf("no repo: %d %s", code, b)
+	}
 	// No gateway is set up here, so the task is refused: after the body was read.
-	if resp.StatusCode != 200 || !strings.Contains(string(b), "no_gateway") {
-		t.Errorf("a 25 MiB archive for a 64 MiB job: %d %.200s", resp.StatusCode, b)
+	if code, b := upload(25 << 20); code != 200 || !strings.Contains(b, "no_gateway") {
+		t.Errorf("a 25 MiB archive for a 64 MiB job: %d %.200s", code, b)
+	}
+	// Past the job's limit and the prompt's room: cut off before it is read.
+	if code, b := upload(64<<20 + core.GatewayPromptMax + 2<<20); code != 400 || !strings.Contains(b, "too large") {
+		t.Errorf("a body past the job's limit: %d %.200s", code, b)
 	}
 }

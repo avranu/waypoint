@@ -586,14 +586,15 @@ func (s *Service) archiveMax(ctx context.Context, j *gatewayJob) int64 {
 }
 
 // GatewayUploadMax is the most archive StartGatewayTask takes for the job:
-// the figure the job carries, or the gateway's current one when it has none
-// or isn't this runner's gateway job (StartGatewayTask then says why).
-func (s *Service) GatewayUploadMax(ctx context.Context, actor *Actor, jobID int64) int64 {
+// the figure the job carries, or the gateway's current one when it has none.
+// A job that isn't this runner's gateway job is the error StartGatewayTask
+// would give, so the upload is turned away before any of it is read.
+func (s *Service) GatewayUploadMax(ctx context.Context, actor *Actor, jobID int64) (int64, error) {
 	j, err := s.gatewayJobFor(ctx, actor, jobID)
 	if err != nil {
-		j = nil
+		return 0, err
 	}
-	return s.archiveMax(ctx, j)
+	return s.archiveMax(ctx, j), nil
 }
 
 // gatewayTasksLLM is the gateway and its provider, or why audits can't go
