@@ -155,7 +155,7 @@ func TestForgeMentionsOutsideVerbKeepsItsOwnSource(t *testing.T) {
 	pe := newPREnv(t, "github")
 	other := pe.issue(pe.admin, IssueInput{Project: pe.p.Key, Title: "Background"})
 	pr := ForgePR{Number: 5, Title: "Parser tidy", Author: "robin", HeadRef: "tidy", HeadSHA: "aaaa1111", State: "open",
-		Body: "See " + other.Key + " for the background."}
+		Body: "Parser tidy, touches " + other.Key + "."}
 	pe.pullHook("opened", pr)
 	pe.s.Wait()
 	pe.send("issue_comment", map[string]any{"action": "created", "repository": map[string]any{"full_name": "me/app"},
@@ -164,6 +164,23 @@ func TestForgeMentionsOutsideVerbKeepsItsOwnSource(t *testing.T) {
 	pe.s.Wait()
 	m := pe.mentionOf(other.Key, mentionsPR)
 	if m == nil || m.Verb != "fixes" || m.Excerpt != "" || m.SourceURL != mentionsPR+"#issuecomment-92" {
+		t.Fatalf("mention: %+v", m)
+	}
+}
+
+func TestForgeMentionsTrustedVerbBeatsOutsideVerb(t *testing.T) {
+	pe := newPREnv(t, "github")
+	other := pe.issue(pe.admin, IssueInput{Project: pe.p.Key, Title: "Background"})
+	pr := ForgePR{Number: 5, Title: "Parser tidy", Author: "robin", HeadRef: "tidy", HeadSHA: "aaaa1111", State: "open",
+		Body: "See " + other.Key + " for the background."}
+	pe.pullHook("opened", pr)
+	pe.s.Wait()
+	pe.send("issue_comment", map[string]any{"action": "created", "repository": map[string]any{"full_name": "me/app"},
+		"issue":   map[string]any{"number": 5, "pull_request": map[string]any{}},
+		"comment": map[string]any{"id": 92, "body": "Fixes " + other.Key + ", merge it", "user": map[string]string{"login": "mallory"}, "html_url": mentionsPR + "#issuecomment-92"}})
+	pe.s.Wait()
+	m := pe.mentionOf(other.Key, mentionsPR)
+	if m == nil || m.Verb != "relates" || m.Excerpt == "" || m.SourceURL != mentionsPR {
 		t.Fatalf("mention: %+v", m)
 	}
 }
