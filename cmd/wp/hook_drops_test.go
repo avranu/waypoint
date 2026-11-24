@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core"
 )
 
 // A fake server for the drop-report tests: it records every call's events,
@@ -19,14 +22,33 @@ type dropServer struct {
 	mu    sync.Mutex
 	calls [][]sessionEvent
 	reply func(call int, evs []sessionEvent) int // HTTP status
+	// pending is the body GET /api/v1/sessions/typed-prompts answers with
+	// (a JSON list of core.PendingTyped); bodies is every body posted to the
+	// hook route, as the server saw it.
+	pending string
+	bodies  []string
+	lists   int // GETs of the typed-prompts list
 }
 
 func (d *dropServer) start(t *testing.T) {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions/typed-prompts" {
+			d.mu.Lock()
+			body := d.pending
+			d.lists++
+			d.mu.Unlock()
+			if body == "" {
+				body = "[]"
+			}
+			_, _ = w.Write([]byte(body))
+			return
+		}
+		raw, _ := io.ReadAll(r.Body)
 		var in struct{ Events []sessionEvent }
-		_ = json.NewDecoder(r.Body).Decode(&in)
+		_ = json.Unmarshal(raw, &in)
 		d.mu.Lock()
+		d.bodies = append(d.bodies, string(raw))
 		d.calls = append(d.calls, in.Events)
 		n := len(d.calls) - 1
 		d.mu.Unlock()
@@ -53,7 +75,7 @@ func (d *dropServer) lastDrops(n int) (string, map[string]int64) {
 	return e.DropsID, e.Drops
 }
 
-func dropEnv(t *testing.T) {
+func dropEnv(t *testing.T) *sessionEnv {
 	t.Helper()
 	s := newSessionEnv(t)
 	s.asAgent()
@@ -61,6 +83,7 @@ func dropEnv(t *testing.T) {
 	old := processAge
 	processAge = func() time.Duration { return 0 }
 	t.Cleanup(func() { processAge = old })
+	return s
 }
 
 func seedDrops(t *testing.T, drops map[string]int64) {
@@ -281,5 +304,145 @@ func TestPreOutputStateWaitsAreBounded(t *testing.T) {
 	}
 	if !strings.Contains(errOut.String(), "lost") {
 		t.Errorf("a lost event was not said on stderr: %q", errOut.String())
+	}
+}
+
+// A prompt the server did not answer is posted again from the outbox: every
+// attempt carries the invocation's own key, and the next invocation has its own.
+func TestPromptHookKeyIsTheSameOnEveryAttempt(t *testing.T) {
+	s := dropEnv(t)
+	ds := &dropServer{reply: func(call int, _ []sessionEvent) int {
+		if call == 0 {
+			return http.StatusGatewayTimeout
+		}
+		return http.StatusOK
+	}}
+	ds.start(t)
+	s.hook(map[string]any{"session_id": "k1", "hook_event_name": "UserPromptSubmit", "prompt": "first", "cwd": t.TempDir()})
+	s.hook(map[string]any{"session_id": "k1", "hook_event_name": "UserPromptSubmit", "prompt": "second", "cwd": t.TempDir()})
+	ds.mu.Lock()
+	defer ds.mu.Unlock()
+	if len(ds.calls) != 2 || len(ds.calls[0]) != 1 || len(ds.calls[1]) != 2 {
+		t.Fatalf("calls = %v", ds.calls)
+	}
+	first, again, second := ds.calls[0][0], ds.calls[1][0], ds.calls[1][1]
+	if first.Key == "" || again.Key != first.Key {
+		t.Errorf("the re-post of the first prompt has key %q, the first attempt %q: want the same, not empty", again.Key, first.Key)
+	}
+	if second.Key == "" || second.Key == first.Key {
+		t.Errorf("the next invocation has key %q, the first %q: want its own", second.Key, first.Key)
+	}
+}
+
+// --no-prompts sends neither the prompt's text nor a digest of it: the hook
+// asks which texts Waypoint typed are pending, compares them here, and sends
+// the id of the one it matched, or none (WP-1370).
+func TestNoPromptsBodiesCarryNeitherTextNorDigest(t *testing.T) {
+	const secret = "please rotate the key sk-live-4242 now"
+	const typed = "Waypoint typed this one, with sk-live-9999 in it"
+	for _, tc := range []struct {
+		name, prompt string
+		wantID       int64
+	}{
+		{"no match", secret, 0},
+		{"a match", typed, 7},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := dropEnv(t)
+			ds := &dropServer{pending: `[{"id":7,"sum":"` + core.PromptSum(typed) + `","kind":"review"},{"id":8,"sum":"` + core.PromptSum("another") + `","kind":"compact"}]`}
+			ds.start(t)
+			s.hook(map[string]any{"session_id": "np1", "hook_event_name": "UserPromptSubmit", "prompt": tc.prompt, "cwd": t.TempDir()}, "--no-prompts")
+			ds.mu.Lock()
+			defer ds.mu.Unlock()
+			if len(ds.calls) != 1 || len(ds.calls[0]) != 1 {
+				t.Fatalf("calls = %v", ds.calls)
+			}
+			ev := ds.calls[0][0]
+			if ev.TypedID != tc.wantID {
+				t.Errorf("typed_id = %d, want %d", ev.TypedID, tc.wantID)
+			}
+			for _, body := range ds.bodies {
+				for _, leak := range []string{"sk-live", tc.prompt, core.PromptSum(tc.prompt), core.PromptSum(secret), core.PromptSum(typed)} {
+					if strings.Contains(body, leak) {
+						t.Errorf("the body carries %q:\n%s", leak, body)
+					}
+				}
+				if strings.Contains(body, "prompt_sum") {
+					t.Errorf("the body carries a prompt_sum:\n%s", body)
+				}
+			}
+		})
+	}
+}
+
+// With no server answer, a --no-prompts prompt is read as the person's: no id,
+// no text. Only Waypoint's fixed texts (the whole keep-warm ping, exactly
+// /compact or /exit) are sent, as constants, so the server can match its own
+// record by digest.
+func TestNoPromptsSendsNoIDWhenTheServerDoesntList(t *testing.T) {
+	for _, tc := range []struct{ name, prompt, want string }{
+		{"ordinary", "anything", ""},
+		{"a mark and more", "<task-notification>x", "<task-notification>"},
+		{"keep-warm ping", core.KeepWarmPing(), core.KeepWarmPing()},
+		{"compact", "/compact", "/compact"},
+		{"exit", " /exit ", "/exit"},
+		{"compact with words", "/compact please keep the notes", ""},
+		{"ping with words", core.KeepWarmPing() + " and my password", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := dropEnv(t)
+			ds := &dropServer{pending: `not json`}
+			ds.start(t)
+			s.hook(map[string]any{"session_id": "np2", "hook_event_name": "UserPromptSubmit", "prompt": tc.prompt, "cwd": t.TempDir()}, "--no-prompts")
+			ds.mu.Lock()
+			defer ds.mu.Unlock()
+			if len(ds.calls) != 1 || ds.calls[0][0].TypedID != 0 || ds.calls[0][0].PromptSum != "" || ds.calls[0][0].Prompt != tc.want {
+				t.Fatalf("calls = %+v, want prompt %q", ds.calls, tc.want)
+			}
+		})
+	}
+}
+
+// WP-1562 under the digest rule: a text Waypoint typed arrives wrapped as
+// Claude Code 2.1.328 wraps a paste (the id on the closing tag too), and the
+// --no-prompts hook unwraps it, compares its digest with the pending records
+// here, and sends only the matched id: neither text nor digest. A person's
+// paste with no record sends no id.
+func TestNoPromptsMatchesAWrappedTypedPrompt(t *testing.T) {
+	wrap := func(p string) string {
+		return "\n\n<pasted_content id=\"d29a\">\n" + p + "\n</pasted_content id=\"d29a\">\n"
+	}
+	review := "Waypoint autopilot review of WP-1: go, with sk-live-1234 in it"
+	pending := `[{"id":7,"sum":"` + core.PromptSum(review) + `","kind":"review"},{"id":8,"sum":"` + core.PromptSum("/compact") + `","kind":"compact"},{"id":9,"sum":"` + core.PromptSum(core.KeepWarmPing()) + `","kind":"keep_warm"}]`
+	for _, tc := range []struct {
+		name, prompt string
+		wantID       int64
+	}{
+		{"review", wrap(review), 7},
+		{"compact", wrap("/compact"), 8},
+		{"keep-warm", wrap(core.KeepWarmPing()), 9},
+		{"a person's paste", wrap("my private notes sk-live-5678"), 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := dropEnv(t)
+			ds := &dropServer{pending: pending}
+			ds.start(t)
+			s.hook(map[string]any{"session_id": "np2", "hook_event_name": "UserPromptSubmit", "prompt": tc.prompt, "cwd": t.TempDir()}, "--no-prompts")
+			ds.mu.Lock()
+			defer ds.mu.Unlock()
+			if len(ds.calls) != 1 || len(ds.calls[0]) != 1 {
+				t.Fatalf("calls = %v", ds.calls)
+			}
+			if got := ds.calls[0][0].TypedID; got != tc.wantID {
+				t.Errorf("typed_id = %d, want %d", got, tc.wantID)
+			}
+			for _, body := range ds.bodies {
+				for _, leak := range []string{"sk-live", "private notes", "prompt_sum", core.PromptSum(review), core.PromptSum(core.UnwrapPasted(tc.prompt))} {
+					if strings.Contains(body, leak) {
+						t.Errorf("the body carries %q:\n%s", leak, body)
+					}
+				}
+			}
+		})
 	}
 }

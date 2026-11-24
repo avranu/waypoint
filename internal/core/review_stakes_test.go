@@ -41,7 +41,7 @@ func TestChangeStakes(t *testing.T) {
 		}
 	}
 	if tierBar(StakesHigh) != trustedAuditBar || tierBar(StakesElevated) != elevatedAuditBar || tierBar(StakesNormal) != reviewFloorBar || tierBar(StakesUnknown) != reviewFloorBar {
-		t.Error("bars: high Sonnet or better, elevated Haiku or better, else the floor")
+		t.Error("bars: high Grok 4.7 or better, elevated Haiku or better, else the floor")
 	}
 	r := roundStakes{tier: StakesElevated, bar: elevatedAuditBar}
 	if r.barFor(reviewAuditKey) != elevatedAuditBar || r.barFor(reviewOtherAuditKey) != reviewFloorBar || r.reviewer().Model != "haiku" {
@@ -365,7 +365,7 @@ func TestReviewRoundStakes(t *testing.T) {
 	})
 
 	t.Run("before the pull request the session opens it", func(t *testing.T) {
-		if p := handOverPrompt(12); !strings.Contains(p, "Run `wp ship --pr`") || !strings.Contains(p, "Audit #12") {
+		if p := handOverPrompt(12); !strings.Contains(p, "Run `wp ship`") || !strings.Contains(p, "Audit #12") {
 			t.Errorf("prompt = %q", p)
 		}
 	})

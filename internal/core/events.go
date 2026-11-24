@@ -96,6 +96,9 @@ type Event struct {
 	repoHook *repoHookJob
 	// pullLinked: a pull request's own text made this link (WP-697).
 	pullLinked *pullRef
+	// stackParent: this pull request (id) merged, so those open into its
+	// branch move onto its base (WP-ADR153, WP-760).
+	stackParent int64
 	// permRule: an approved permission request's allow rule to add by pull
 	// request (WP-233).
 	permRule *permRuleJob
@@ -317,6 +320,7 @@ func (s *Service) dispatch(ctx context.Context, actor *Actor, events []*Event) {
 	for _, e := range events {
 		s.Hub.Publish(e)
 		s.prWait.wake(e) // wp pr wait (WP-132)
+		s.onStackParentMerged(ctx, e)
 	}
 	// An autosave folded into the history entry before it sets nothing off.
 	events = slices.DeleteFunc(slices.Clone(events), func(e *Event) bool { return e.merged || e.quiet })
@@ -392,6 +396,7 @@ func (s *Service) dispatch(ctx context.Context, actor *Actor, events []*Event) {
 		s.crossFiledEvent(ctx, e)   // a task filed from another repo ended (WP-378)
 		s.onLeftoverEvent(ctx, e)   // what a review left open at merge (WP-367)
 		s.onWorkLogEvent(ctx, e)    // an adversarial review ended: its hold on the merge goes (WP-285)
+		s.onCheckSettled(ctx, e)    // a round's check of its marks settled: the round goes on (WP-1370)
 		s.onReviewAudit(ctx, e)     // another model's audit a review round waits for settled (WP-687)
 		s.onFanoutEvent(ctx, e)     // a fan-out's packages end; its ask is answered (WP-148)
 		s.onGoalDriftEvent(ctx, e)  // a drift flag raised or answered (WP-559)
@@ -424,6 +429,9 @@ type Hub struct {
 	visible func(userID, projectID, issueID int64) bool
 	// admin says whether a user is an admin, for AdminOnly events.
 	admin func(userID int64) bool
+	// hide returns the event as a user may read it: a task they can't see
+	// is not named (WP-1370).
+	hide func(userID int64, e *Event) *Event
 	// observe sees every event first (the goal traces, WP-382).
 	observe func(e *Event)
 }
@@ -496,8 +504,12 @@ func (h *Hub) Publish(e *Event) {
 				continue
 			}
 		}
+		out := e
+		if h.hide != nil {
+			out = h.hide(sub.UserID, e)
+		}
 		select {
-		case sub.C <- e:
+		case sub.C <- out:
 		default:
 		}
 	}
@@ -518,6 +530,17 @@ func (s *Service) StartHub() {
 			return false
 		}
 		return u.IsAdmin && !u.Disabled
+	}
+	s.Hub.hide = func(userID int64, e *Event) *Event {
+		if e.Field != "relation" {
+			return e
+		}
+		ctx := context.Background()
+		u, err := s.userByID(ctx, s.db.R, userID)
+		if err != nil {
+			return &Event{Kind: e.Kind, ProjectID: e.ProjectID, IssueID: e.IssueID, IssueKey: e.IssueKey, Field: e.Field, At: e.At, Actor: e.Actor}
+		}
+		return s.hideUnseen(ctx, s.db.R, &Actor{User: u}, e)
 	}
 	s.Hub.visible = func(userID, projectID, issueID int64) bool {
 		ctx := context.Background()

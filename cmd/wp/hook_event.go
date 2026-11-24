@@ -1,21 +1,27 @@
 package main
 
 import (
+	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"git.jmann.me/claude/waypoint/internal/codeindex"
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
@@ -93,9 +99,20 @@ func (in hookEventInput) effortPresent() bool {
 	return raw != "" && raw != "null"
 }
 
-// sessionEvent is core.HookEvent as the CLI sends it (the CLI doesn't link
-// the server's packages).
+// sessionEvent is core.HookEvent as the CLI sends it (the CLI imports
+// internal/core, but sends only these fields).
 type sessionEvent struct {
+	// PromptSum: UserPromptSubmit: the digest of the whole prompt (core.PromptSum),
+	// for the server to tell what Waypoint typed from what a person did
+	// (WP-1370). Not sent under --no-prompts: see TypedID.
+	PromptSum string `json:"prompt_sum,omitempty"`
+	// TypedID: under --no-prompts, the id of the pending record the hook matched
+	// itself (matchTyped); in place of the digest and the text, which stay here.
+	TypedID int64 `json:"typed_id,omitempty"`
+	// Key: set on UserPromptSubmit only: one id per hook invocation, made once
+	// and kept in the outbox, so every attempt to post this event carries it
+	// and the server answers a repeat as it answered the first (WP-1370).
+	Key              string           `json:"key,omitempty"`
 	Event            string           `json:"event"`
 	At               int64            `json:"at,omitempty"`
 	SessionID        string           `json:"session_id"`
@@ -207,6 +224,91 @@ type cwdSession struct {
 	Session string    `json:"session"`
 	Machine string    `json:"machine"`
 	At      time.Time `json:"at"`
+	// Pid and PidStart name the harness process that started the session
+	// (PidStart is its start time, so a reused pid isn't taken for it): the
+	// session is alive while that process is. Entries from before they were
+	// kept have neither, and are held to their age alone.
+	Pid      int    `json:"pid,omitempty"`
+	PidStart string `json:"pid_start,omitempty"`
+	// Cwd is the directory the session started in. State.Cwds is keyed by
+	// session; an entry from before that (Cwd empty) is keyed by its directory.
+	Cwd string `json:"cwd,omitempty"`
+}
+
+// alive says whether the session's harness process still runs (true when
+// the entry doesn't say, or the system can't tell).
+func (cs *cwdSession) alive() bool {
+	if cs.Pid == 0 || cs.PidStart == "" {
+		return true
+	}
+	start := procStart(cs.Pid)
+	if start == "" {
+		return !procFSExists() // no such process, or no /proc to ask
+	}
+	return start == cs.PidStart
+}
+
+// procFSExists: this system has /proc to ask about processes.
+func procFSExists() bool {
+	_, err := os.Stat("/proc/self/stat")
+	return err == nil
+}
+
+// procStart is the start time (in clock ticks since boot) of process pid, as
+// /proc says; "" when there is no such process, it has exited and is only
+// waiting to be reaped (a zombie is gone here as on the lock side, readLockProc),
+// or there is no /proc.
+func procStart(pid int) string {
+	b, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat")) // #nosec G304 -- /proc
+	if err != nil {
+		return ""
+	}
+	// The command's name is in parentheses and may hold spaces: fields count
+	// from after the last ")".
+	i := bytes.LastIndexByte(b, ')')
+	if i < 0 {
+		return ""
+	}
+	f := strings.Fields(string(b[i+1:]))
+	if len(f) < 20 {
+		return ""
+	}
+	if f[0] == "Z" || f[0] == "X" {
+		return ""
+	}
+	return f[19] // field 22 of the line: starttime
+}
+
+// harnessPid is the process the hook runs under that Claude Code started: the
+// nearest ancestor that isn't a shell, else the parent.
+func harnessPid() int {
+	parent := os.Getppid()
+	pid := parent
+	for range 6 {
+		b, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat")) // #nosec G304 -- /proc
+		if err != nil {
+			return parent
+		}
+		i, j := bytes.IndexByte(b, '('), bytes.LastIndexByte(b, ')')
+		if i < 0 || j < i {
+			return parent
+		}
+		switch comm := string(b[i+1 : j]); comm {
+		case "sh", "bash", "zsh", "dash", "fish":
+			f := strings.Fields(string(b[j+1:]))
+			if len(f) < 2 {
+				return parent
+			}
+			next, err := strconv.Atoi(f[1])
+			if err != nil || next <= 1 {
+				return parent
+			}
+			pid = next
+		default:
+			return pid
+		}
+	}
+	return parent
 }
 
 // machineName is what Waypoint calls this computer: WAYPOINT_MACHINE, else
@@ -265,17 +367,82 @@ func (c *cli) addSessionHeaders(req *http.Request) {
 	req.Header.Set("X-Waypoint-Machine", cmpStr(os.Getenv("WAYPOINT_MACHINE"), machineName()))
 }
 
-// sessionIn is the session that started in dir or a directory above it
-// (within a day).
+// sessionIn is the session a command run in dir belongs to: the one that
+// started in the nearest directory at or above dir that any session started
+// in. That directory decides: when no session there can be used (it ended, or
+// its entry is over a day old and its process can't be shown to be the one
+// still running), or two live ones share it so the directory can't say which,
+// the answer is "" and never a farther ancestor's session, which is another
+// session's. The CLI then sends no session header, so the call is recorded
+// with no session rather than another's (WP-1370).
 func (s *State) sessionIn(dir string) string {
-	for d := filepath.Clean(dir); ; d = filepath.Dir(d) {
-		if cs := s.Cwds[d]; cs != nil && time.Since(cs.At) < 24*time.Hour {
-			return cs.Session
+	for d := realDir(dir); ; d = filepath.Dir(d) {
+		if here := s.sessionsAt(d); len(here) > 0 {
+			var usable []*cwdSession
+			for _, cs := range here {
+				if cs.usable() {
+					usable = append(usable, cs)
+				}
+			}
+			if len(usable) == 1 {
+				return usable[0].Session
+			}
+			return ""
 		}
 		if p := filepath.Dir(d); p == d {
 			return ""
 		}
 	}
+}
+
+// realDir is dir with its symlinks resolved, so a session that started in a
+// directory by one path and a command run in it by another are the same place.
+// A path that can't be resolved (it is gone) stays as cleaned.
+func realDir(dir string) string {
+	d := filepath.Clean(dir)
+	if r, err := filepath.EvalSymlinks(d); err == nil {
+		return r
+	}
+	return d
+}
+
+// sessionsAt are the entries of sessions that started in dir, newest first.
+// Both sides are compared with their symlinks resolved.
+func (s *State) sessionsAt(dir string) []*cwdSession {
+	var out []*cwdSession
+	want := realDir(dir)
+	for k, cs := range s.Cwds {
+		if cs != nil && realDir(cs.dir(k)) == want {
+			out = append(out, cs)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].At.After(out[j].At) })
+	return out
+}
+
+// dir is the directory the entry started in; key is its key in State.Cwds.
+func (cs *cwdSession) dir(key string) string {
+	if cs.Cwd != "" {
+		return filepath.Clean(cs.Cwd)
+	}
+	return filepath.Clean(key) // an entry from before sessions were the key
+}
+
+// provablyAlive: the entry names the harness process and it is still running
+// with the start time recorded (so not a reused pid).
+func (cs *cwdSession) provablyAlive() bool {
+	return cs.Pid != 0 && cs.PidStart != "" && procStart(cs.Pid) == cs.PidStart
+}
+
+// usable says whether a command may be bound to the entry's session: its
+// process is shown running, however long ago it started (a session can run for
+// days and At is written only at its start); an entry that can't be shown
+// alive or gone is used only within a day of its start.
+func (cs *cwdSession) usable() bool {
+	if cs.provablyAlive() {
+		return true
+	}
+	return time.Since(cs.At) < 24*time.Hour && cs.alive()
 }
 
 // gitFacts is what gitInfo found about the git work tree at a directory.
@@ -315,7 +482,9 @@ func gitFactsAt(dir string) gitFacts {
 	}
 	remote := git("remote", "get-url", "origin")
 	if remote == "" {
-		if first := strings.Fields(git("remote")); len(first) > 0 {
+		// A remote named like an option (a config's [remote "--all"]) is no
+		// remote git is told about: get-url would read it as one.
+		if first := strings.Fields(git("remote")); len(first) > 0 && codeindex.CheckRef(first[0]) == nil {
 			remote = git("remote", "get-url", first[0])
 		}
 	}
@@ -348,11 +517,28 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 	// A session command (WP-562): the server's go to it as only the command,
 	// prompts or not; the slash hook answers the rest on this machine.
 	slash, slashArg, shipText := "", "", ""
+	// A hook that sends no prompt text asks which text Waypoint typed is
+	// pending and compares it here, so the server learns only the id of the
+	// match, or that there was none (matchTyped).
+	var typedID int64
+	var typedKind string
+	typedAnswered := false // the server answered the lookup (matchTyped)
 	if in.HookEventName == "UserPromptSubmit" {
+		// Under --no-prompts the lookup is how the server learns what the
+		// prompt was. Otherwise it is made only for the two texts Waypoint
+		// types with no visible mark, to tell them from a person typing the
+		// same words (noteAttendanceKind). The server's record is used up by
+		// the event, by digest, not by this lookup.
+		if p := strings.TrimSpace(in.Prompt); c.server() != "" && c.token() != "" && (noPrompts || p == "/compact" || p == "/exit") {
+			typedID, typedKind, typedAnswered = c.matchTyped(in)
+			if !typedAnswered {
+				c.countDrop("typed_lookup", "UserPromptSubmit", 1) // reported with the next event
+			}
+		}
 		// local, so the guard knows even with no server (WP-277); a prompt
 		// automation pastes into a session the quota guard stopped goes no
 		// further (WP-932)
-		if refusal := c.noteAttendance(in); refusal != "" {
+		if refusal := c.noteAttendanceKind(in, typedKind, typedAnswered); refusal != "" {
 			_, _ = stdout.Write(promptStop(refusal))
 			return
 		}
@@ -430,10 +616,17 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 		rememberSession(c, in)
 		c.autoUpdateInBackground() // at most daily, detached: never slows the hook
 	case "UserPromptSubmit":
-		// Waypoint's own prompts (a keep-warm ping, a bare /compact) still
-		// reach the core under --no-prompts, so it can tell them from typing.
-		prompt := in.Prompt
+		// Waypoint's own fixed prompts (a keep-warm ping, a bare /compact or
+		// /exit) are sent as their text under --no-prompts when the lookup
+		// found no record, so the server can match its record by digest.
+		prompt := in.Prompt // unwrapped above, so the digest is of what was typed
 		p := strings.TrimSpace(prompt)
+		if noPrompts {
+			ev.TypedID = typedID // neither the text nor a digest of it leaves this machine
+		} else {
+			ev.PromptSum = core.PromptSum(prompt)
+		}
+		ev.Key = newHookKey()
 		if slash != "" {
 			ev.Prompt = strings.TrimSpace("/wp " + slash + " " + slashArg) // nothing else typed after it rides along
 			if slash == "keep" && strings.EqualFold(p, "/keep") {
@@ -446,17 +639,17 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 			switch {
 			case noPrompts:
 			case strings.HasPrefix(p, autopilotPromptMark):
-				ev.Prompt = prompt
+				ev.Prompt = raw
 			default:
 				ev.Prompt += "\n\n" + prompt
 			}
-		} else if !noPrompts || strings.HasPrefix(p, keepWarmMark) || p == "/compact" {
-			ev.Prompt = raw
-			if noPrompts && strings.HasPrefix(p, keepWarmMark) {
-				ev.Prompt = keepWarmMark // nothing the person wrote rides along
-			}
-		} else if key, ok := reviewPromptKey(p); ok {
-			ev.Prompt = autopilotReviewMark + key // autopilot's review prompt (WP-285): only whose review it is
+		} else if !noPrompts {
+			ev.Prompt = raw // the server unwraps it, once
+		} else if fixed := fixedWaypointPrompt(p); fixed != "" && !typedAnswered {
+			// The lookup did not answer. These texts are Waypoint's own
+			// constants, not a person's words, so sending them leaks nothing
+			// and lets the server match its record by digest.
+			ev.Prompt = fixed
 		} else if mark := harnessPromptMark(p); mark != "" {
 			ev.Prompt = mark // a background task reporting back is no person's prompt; only that much is sent
 		}
@@ -746,10 +939,44 @@ func rememberSession(c *cli, in hookEventInput) {
 			if s.Cwds == nil {
 				s.Cwds = map[string]*cwdSession{}
 			}
-			s.Cwds[filepath.Clean(in.Cwd)] = &cwdSession{Session: in.SessionID, Machine: machineName(), At: time.Now()}
-			for d, cs := range s.Cwds { // forget old ones
-				if time.Since(cs.At) > 7*24*time.Hour {
-					delete(s.Cwds, d)
+			// Entries are keyed by session, so one starting in a directory
+			// doesn't take another's there. Those from before are keyed by
+			// directory: moved under their session.
+			moved := map[string]*cwdSession{}
+			for k, old := range s.Cwds {
+				if old != nil && old.Cwd == "" && old.Session != "" {
+					old.Cwd = filepath.Clean(k)
+					delete(s.Cwds, k)
+					if prev := moved[old.Session]; prev == nil || old.At.After(prev.At) {
+						moved[old.Session] = old
+					}
+				}
+			}
+			for sid, old := range moved {
+				// An entry already keyed by the session is the newer layout: keep it.
+				if _, ok := s.Cwds[sid]; !ok {
+					s.Cwds[sid] = old
+				}
+			}
+			cs := &cwdSession{Session: in.SessionID, Machine: machineName(), At: time.Now(), Cwd: filepath.Clean(in.Cwd)}
+			if pid := harnessPid(); pid > 1 {
+				if start := procStart(pid); start != "" {
+					cs.Pid, cs.PidStart = pid, start
+				}
+			}
+			// One harness process has one session at a time: a /clear or a
+			// resume in the same process replaced the one it had.
+			if cs.Pid != 0 && cs.PidStart != "" {
+				for k, other := range s.Cwds {
+					if other != nil && k != in.SessionID && other.Pid == cs.Pid && other.PidStart == cs.PidStart {
+						delete(s.Cwds, k)
+					}
+				}
+			}
+			s.Cwds[in.SessionID] = cs
+			for k, cs := range s.Cwds { // forget old ones, but not a session still running
+				if cs == nil || (time.Since(cs.At) > 7*24*time.Hour && !cs.provablyAlive()) {
+					delete(s.Cwds, k)
 				}
 			}
 		})
@@ -1168,12 +1395,54 @@ func (c *cli) sessionID() string {
 // AutopilotReviewMark), followed by the task's key.
 const autopilotReviewMark = autopilotPromptMark + " review of "
 
-// reviewPromptKey: the task whose review prompt p is, if it is one.
-func reviewPromptKey(p string) (string, bool) {
-	rest, ok := strings.CutPrefix(p, autopilotReviewMark)
-	if !ok {
-		return "", false
+// fixedWaypointPrompt is p when it is one of the texts Waypoint types with no
+// visible mark, the whole keep-warm ping or exactly /compact or /exit, else "".
+// The ping is returned as core's text. They are constants, never a person's words.
+func fixedWaypointPrompt(p string) string {
+	switch {
+	case core.IsKeepWarmPing(p):
+		return core.KeepWarmPing()
+	case p == "/compact" || p == "/exit":
+		return p
 	}
-	key, _, _ := strings.Cut(rest, ":")
-	return key, keyRE.MatchString(key)
+	return ""
+}
+
+// newHookKey is a fresh id for one hook invocation (sessionEvent.Key).
+func newHookKey() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// matchTyped asks the server for the texts it typed into this session that no
+// prompt has used, and compares the prompt with their digests here
+// (core.PromptSum), so a hook that sends no prompt text can still tell
+// Waypoint's own prompt: the id of the record it matched, and its kind, are
+// all that is reported. Three outcomes: matched (id, kind, answered); the
+// server answered and none matched (0, "", answered); it did not answer, by a
+// failed call or a body that isn't a list (0, "", not answered). A prompt with
+// no digest has nothing to look up and counts as answered with no match.
+func (c *cli) matchTyped(in hookEventInput) (id int64, kind string, answered bool) {
+	sums := core.PromptSums(in.Prompt)
+	if len(sums) == 0 {
+		return 0, "", true
+	}
+	c.hookTimeout = hookHTTPTimeout
+	b, err := c.call("GET", "/api/v1/sessions/typed-prompts?cli="+url.QueryEscape(in.SessionID), nil)
+	if err != nil {
+		return 0, "", false
+	}
+	var pending []core.PendingTyped
+	if json.Unmarshal(b, &pending) != nil {
+		return 0, "", false
+	}
+	for _, sum := range sums { // its own digest first, as the server tries them
+		for _, p := range pending {
+			if p.Sum == sum {
+				return p.ID, p.Kind, true
+			}
+		}
+	}
+	return 0, "", true
 }

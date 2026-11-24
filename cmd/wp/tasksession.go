@@ -278,6 +278,7 @@ func cmdStart(c *cli, args []string) error {
 	c.mySessionPrefs().forDir(where).fill(&l)
 	if strings.TrimSpace(l.prompt) == "" {
 		l.prompt = startKickoff(context.Background(), where, l.sessionEnv(os.Environ()), key, issue.Title, c.kickoffTemplate(key))
+		warnTypedStart(c.err, c.noteTypedStart(context.Background(), l.prompt)) // Waypoint's words, not the person's
 	}
 	if l.bg {
 		return c.startBackground(bin, where, l, key)

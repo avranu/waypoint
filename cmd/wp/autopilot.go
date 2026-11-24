@@ -36,17 +36,19 @@ at a time across your sessions, 1 by default), and --hours and --days to
 start them in. Start and now skip the hours, the spacing and --at-once.
 
 With --review on, a session is first asked for an adversarial review of its
-change (wp worklog KEY), a minute after it stops; on and off only decide whether
-the next task starts, so reviews run either way. In your own agent sessions the
-review comes before the pull request: wp ship pushes the branch and says to end
-the turn; the review's prompt asks for wp ship --pr, which opens the pull
-request (wp ship -h: --review, --pr, --skip-review). A pull request already open
-waits for its review before merging. If the review can't run (no runner, a
-failed job), Waypoint opens the pull request without it and says so. A round's
-reviewer works from your brief (--review-text-file; wp autopilot reviewer
---brief prints the default) and is who --review-model names: auto (the
-stakes-tiered chain), session (the session reviews itself), or a model such as
-gateway/MODEL or claude/sonnet (wp autopilot reviewer lists them). Each round's
+change (wp worklog KEY), a minute after it stops; on and off only decide
+whether the next task starts, so reviews run either way. In your own agent sessions
+the review comes before the pull request: wp ship pushes the branch and says
+to end the turn. Where the review leaves nothing for the session to do,
+Waypoint opens the pull request itself; where it leaves findings, the
+review's prompt asks for wp ship, which opens it (wp ship -h: --review,
+--skip-review). A pull request already open waits for its review before
+merging. If the review can't run (no runner, a failed job), Waypoint opens the pull
+request without it and says so. A round's reviewer works from your brief
+(--review-text-file; wp autopilot reviewer --brief prints the default) and is
+who --review-model names: auto (the stakes-tiered chain), session (the
+session reviews itself), or a model such as gateway/MODEL or claude/sonnet
+(wp autopilot reviewer lists them). Each round's
 findings are scored. Another round follows a change whose stakes call for it
 when the round found a new, standing finding the session fixed or confirmed and
 that was not refuted: a high or critical one always calls another round; mediums

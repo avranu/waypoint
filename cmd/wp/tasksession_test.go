@@ -370,3 +370,32 @@ func TestUnattendedSettings(t *testing.T) {
 		}
 	}
 }
+
+// The kickoff wp start makes is Waypoint's words: the server is told them
+// before the session exists, so the session's first prompt is known as
+// Waypoint's. A person's own --prompt is theirs, and is not noted (WP-1370).
+func TestStartNotesItsKickoffButNotAPersonsPrompt(t *testing.T) {
+	s := newSessionEnv(t)
+	s.asAgent()
+	key := s.task("Fix the parser")
+	rec := fakeCLI(t, "claude", fakeClaudeStart)
+	t.Setenv("WAYPOINT_SESSION", "")
+	t.Setenv("WP_TASK", "")
+	bodies := recordRequests(t)
+	nexts := stubStartNext(s)
+
+	s.wp("start", key, "--bg", "--prompt", "my own words, typed by me")
+	if got := bodies(); strings.Contains(got, "my own words") {
+		t.Fatalf("a person's --prompt was sent to the server as Waypoint's:\n%s", got)
+	}
+	s.wp("start", key, "--bg")
+	args, _ := os.ReadFile(filepath.Join(rec, "args"))
+	_, prompt, _ := strings.Cut(string(args), "--\n")
+	if len(*nexts) != 1 || strings.TrimSpace(prompt) == "" {
+		t.Fatalf("no kickoff made: args %q", args)
+	}
+	noted, _ := json.Marshal(map[string]string{"text": strings.TrimRight(prompt, "\n")})
+	if !strings.Contains(bodies(), strings.TrimSuffix(strings.TrimPrefix(string(noted), `{"text":`), `}`)) {
+		t.Errorf("the kickoff the session was started with was not sent:\nprompt %q\nbodies %s", prompt, bodies())
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"git.jmann.me/claude/waypoint/internal/codeindex"
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
@@ -260,6 +261,9 @@ func runsToSend(on []testRun) []testRun {
 }
 
 func filesBetween(a, b string) int {
+	if codeindex.CheckRef(a) != nil || codeindex.CheckRef(b) != nil { // read from a file: never an option
+		return -1
+	}
 	out, err := localGit("diff", "--name-only", a, b)
 	if err != nil {
 		return -1

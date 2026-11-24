@@ -198,6 +198,11 @@ var protectedPaths = []string{
 // ---- open_pr ----
 
 func openPR(c *StepCtx) error {
+	// The run keeps its caller's permissions, so opening a pull request asks
+	// for the one the ship path asks for (OpenPR, shipActor).
+	if err := c.Actor.need(PermPullsWrite); err != nil {
+		return fmt.Errorf("open_pr: %w", err)
+	}
 	repo, err := c.Repo("repo")
 	if err != nil {
 		return err

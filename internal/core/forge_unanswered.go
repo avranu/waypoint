@@ -80,6 +80,10 @@ func forgeDown(f *Forge, waited time.Duration, err error) error {
 	if errors.As(err, &down) {
 		return err
 	}
+	// A setup fault is no outage: it is said as what it is and not tried again.
+	if cause := forgeSetupFault(err); cause != "" {
+		return &forgeSetupError{cause: forgeHost(f) + ": " + cause, err: err}
+	}
 	host := forgeHost(f)
 	var ae *forgeAPIError
 	if errors.As(err, &ae) {

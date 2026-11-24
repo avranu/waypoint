@@ -1,6 +1,7 @@
 package core
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -297,5 +298,55 @@ func TestSharedTimeoutRetryWaitsOnAnUnreadableLine(t *testing.T) {
 	}
 	if st := be.s.sharedTimeoutState(be.ctx, be.babysitOf(7)); st.Tries != 0 {
 		t.Fatalf("a try counted: %+v", st)
+	}
+}
+
+// A held pull request takes its place in the line by when it was armed, as if
+// it were in it: a member armed after it is behind it, one armed before it is
+// ahead (WP-1700).
+func TestSharedTimeoutRetryTakesItsPlaceByArming(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		armed8  int64
+		updated bool
+		waits   string
+	}{
+		{"member armed after", 2000, true, ""},
+		{"member armed before", 500, false, "behind #8"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			be, head7, _ := timeoutAtFront(t, func(be *bsEnv) {
+				be.otherTimeout(100, "d145047aaaa", "main", 2*time.Hour)
+				be.otherTimeout(101, "5555555bbbb", "#5", time.Hour)
+			})
+			if pr := be.pr(7); pr.QueuedAt != nil {
+				t.Fatalf("#7 still holds the line: %+v", pr)
+			}
+			// #8 is a plain member, not the one marked ready.
+			for _, q := range []struct {
+				sql string
+				id  int64
+			}{
+				{`UPDATE pull_requests SET armed_at = 1000 WHERE id = ?`, be.pr(7).ID},
+				{`UPDATE pull_requests SET ready_at = NULL, wip_auto = 0, armed_at = ` + fmt.Sprint(tc.armed8) + ` WHERE id = ?`, be.pr(8).ID},
+			} {
+				if _, err := be.s.db.W.ExecContext(be.ctx, q.sql, q.id); err != nil {
+					t.Fatal(err)
+				}
+			}
+			be.sg.baseTip = "tip-2"
+			be.sg.behind = map[string]bool{head7: true}
+			be.step()
+			u := be.sg.updatedPRs()
+			if tc.updated {
+				if len(u) != 1 || u[0] != 7 {
+					t.Fatalf("updates %v, wait %q", u, be.babysitOf(7).Wait)
+				}
+				return
+			}
+			if len(u) != 0 || !strings.Contains(be.babysitOf(7).Wait, tc.waits) {
+				t.Fatalf("updates %v, wait %q", u, be.babysitOf(7).Wait)
+			}
+		})
 	}
 }

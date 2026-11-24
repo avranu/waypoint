@@ -96,7 +96,7 @@ func cmdWorklogStakes(c *cli, args []string) error {
 				t.Tier, t.Rounds, t.Barred, t.BarFailed, t.FreeReasks, t.SlowHandOvers, t.Reviewers, t.ReviewersUsed, t.ReviewerMinutes, t.OwnReviews,
 				t.Answered, t.Empty, t.Found, t.Fixed, t.Useful, t.Escapes)
 		}
-		b.WriteString("\nBARRED: first audits held above the floor to their tier's bar (high: Claude Sonnet or better; elevated: Claude Haiku or better); BARFAIL: of those, ended with no answer. REASK: asked again at the floor (deepseek-v4.1-flash) after that.\n")
+		b.WriteString("\nBARRED: first audits held above the floor to their tier's bar (high: Grok 4.7 or better, Claude Sonnet before WP-1752; elevated: Claude Haiku or better); BARFAIL: of those, ended with no answer. REASK: asked again at the floor (deepseek-v4.1-flash) after that.\n")
 		b.WriteString("SLOW: slow audits handed to the pull request with no Claude review. CLAUDE: Claude reviews started (Sonnet for high stakes, Haiku below since WP-1306; USED: theirs were the round's findings; CL-MIN: their minutes).\n")
 		b.WriteString("OWN: rounds the working session reviewed itself. ANSWER/EMPTY: free audits that answered, and of those, with no findings.\n")
 		b.WriteString("FOUND/FIXED: the rounds' findings. USEFUL: useful findings on the branch's pull request after the round. ESCAPES: bugs traced back to it.\n")
