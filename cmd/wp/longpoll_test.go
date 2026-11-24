@@ -81,3 +81,31 @@ func TestLongPollRetriesAHeldRequest(t *testing.T) {
 		t.Errorf("err %v, asks %+v, slept %v", err, asks, slept)
 	}
 }
+
+// A request that fails with an error asking again can't fix ends the poll with
+// that error, not errPollBound, and without a sleep.
+func TestLongPollNonTransientErrorEnds(t *testing.T) {
+	oldSleep := pollSleep
+	var slept int
+	pollSleep = func(time.Duration) { slept++ }
+	t.Cleanup(func() { pollSleep = oldSleep })
+	bad := &apiError{status: http.StatusBadRequest}
+	n := 0
+	err := longPoll(time.Second, time.Second, time.Now().Add(time.Hour), func(time.Duration, bool) (bool, error) {
+		n++
+		return false, bad
+	})
+	if err != error(bad) || n != 1 || slept != 0 {
+		t.Errorf("err %v after %d requests, slept %d", err, n, slept)
+	}
+}
+
+// After len(waitRetry) failures in a row the poll gives up with the error even
+// with time left.
+func TestLongPollGivesUpAfterTheRetriesAreUsed(t *testing.T) {
+	asks, slept, err := runPoll(t, time.Second, time.Second, time.Hour, []time.Duration{time.Millisecond, time.Millisecond}, func(int) bool { return true })
+	var ae *apiError
+	if errors.Is(err, errPollBound) || !errors.As(err, &ae) || len(asks) != 3 || len(slept) != 2 {
+		t.Errorf("err %v after %d requests, slept %v", err, len(asks), slept)
+	}
+}

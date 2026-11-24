@@ -492,6 +492,7 @@ func TestHeldShipWithANoticeToActOnDoesNotWait(t *testing.T) {
 		"no notice":              {openedPR{Held: "h", HeldNeedsAgent: &no}, true},
 		"a notice that is news":  {openedPR{Held: "h", HeldNeedsAgent: &no, Notice: "n", NoticeNeedsAgent: &no}, true},
 		"a notice to act on":     {openedPR{Held: "h", HeldNeedsAgent: &no, Notice: "n", NoticeNeedsAgent: &yes}, false},
+		"no notice, flag true":   {openedPR{Held: "h", HeldNeedsAgent: &no, NoticeNeedsAgent: &yes}, true},
 		"an older server's note": {openedPR{Held: "h", HeldNeedsAgent: &no, Notice: "n"}, false},
 	} {
 		if got := c.canWaitShip(so, &tc.o); got != tc.want {

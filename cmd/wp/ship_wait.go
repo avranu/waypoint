@@ -54,7 +54,9 @@ type shipNews struct {
 // marker (an agent's ship, in a session with Waypoint's hooks), the wait
 // wasn't switched off, and neither the held answer nor a notice with it asks
 // anything of the agent: one that does (findings to mark, its own report) is
-// the agent's to act on now, and nothing would come while it waited.
+// the agent's to act on now, and nothing would come while it waited. A notice
+// from a server that omits notice_needs_agent counts as asking (fail closed,
+// as in shipNeedsAgent): an older server's ship doesn't wait.
 func (c *cli) canWaitShip(so shipOpts, o *openedPR) bool {
 	return !*so.noWait && !factAsks(o.HeldNeedsAgent) && (o.Notice == "" || !factAsks(o.NoticeNeedsAgent)) && !c.asJSON && c.agentHeader() != "" && c.thisSession() != "" && c.server() != "" && c.token() != ""
 }
