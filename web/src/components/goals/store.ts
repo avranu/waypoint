@@ -6,7 +6,12 @@ import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { q, useSavePrefs } from '@/lib/queries'
 
+// Sets whose write to storage failed, so a remount still sees them.
+const unsaved = new Map<string, Set<string>>()
+
 function read(key: string): Set<string> {
+  const kept = unsaved.get(key)
+  if (kept) return new Set(kept)
   try {
     const v: unknown = JSON.parse(localStorage.getItem(key) ?? '[]')
     return new Set(Array.isArray(v) ? v.map(String) : [])
@@ -30,8 +35,9 @@ export function useStoredSet(key: string) {
       f(next)
       try {
         localStorage.setItem(key, JSON.stringify([...next]))
+        unsaved.delete(key)
       } catch {
-        /* private mode: it holds until the page closes */
+        unsaved.set(key, next)
       }
       return { key, set: next }
     })
