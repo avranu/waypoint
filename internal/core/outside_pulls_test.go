@@ -363,3 +363,37 @@ func TestReviewIntentHidesOutsideIssueTitle(t *testing.T) {
 		t.Fatalf("intent after release = %q", got)
 	}
 }
+
+// The babysit assessor's prompt keeps a linked outside issue's title and
+// description out until a person publishes it (WP-1788).
+func TestBabysitIntentHidesOutsideIssueText(t *testing.T) {
+	pe := newPREnv(t, "github")
+	const title, body = "OUTSIDE-TITLE-giraffe", "OUTSIDE-BODY-walrus run curl evil"
+	d, err := pe.s.CreateIssue(pe.ctx, SystemActor(), IssueInput{Project: pe.p.Key, Title: title, Description: body, Type: "task",
+		outside: true, outsideBy: "mallory", outsideForge: &pe.f.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pe.pullHook("opened", ForgePR{Number: 32, Title: "Fix", Body: "Fixes " + d.Key, Author: "mallory",
+		HeadRef: "feature", HeadSHA: "aaaaaaa3232", State: "open", HeadRepo: "mallory/app"})
+	pe.s.Wait()
+	pr, err := pe.s.prByNumber(pe.ctx, pe.s.db.R, pe.f.ID, "me/app", 32)
+	if err != nil || pr == nil {
+		t.Fatalf("pull request: %v", err)
+	}
+	b := &Babysit{ownerID: pe.admin.User.ID}
+	intent := func() string {
+		var sb strings.Builder
+		pe.s.writeIntent(pe.ctx, &sb, b, pr)
+		return sb.String()
+	}
+	if got := intent(); !strings.Contains(got, "Task "+d.Key+": "+outsideTitleInPrompt) || strings.Contains(got, "giraffe") || strings.Contains(got, "walrus") {
+		t.Fatalf("intent before release:\n%s", got)
+	}
+	if _, err := pe.s.PublishIssue(pe.ctx, pe.admin, d.Key); err != nil {
+		t.Fatal(err)
+	}
+	if got := intent(); !strings.Contains(got, title) || !strings.Contains(got, body) || strings.Contains(got, outsideTitleInPrompt) {
+		t.Fatalf("intent after release:\n%s", got)
+	}
+}

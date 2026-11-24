@@ -1154,6 +1154,11 @@ func (s *Service) writeIntent(ctx context.Context, p *strings.Builder, b *Babysi
 				continue
 			}
 			issueIDs = append(issueIDs, l.issue.ID)
+			var outside bool
+			if err := s.db.R.QueryRowContext(ctx, `SELECT outside FROM issues WHERE id = ?`, l.issue.ID).Scan(&outside); err != nil || outside {
+				fmt.Fprintf(p, "\nTask %s: %s\n", l.issue.Key, outsideTitleInPrompt)
+				continue
+			}
 			fmt.Fprintf(p, "\nTask %s: %s\n<untrusted>\n%s\n</untrusted>\n", l.issue.Key, is.Title, capText(is.Description, assessorIssueChars))
 		}
 	}
