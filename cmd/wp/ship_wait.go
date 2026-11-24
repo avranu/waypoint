@@ -84,8 +84,8 @@ func (c *cli) waitShipNews(task string, bound time.Duration, announce func()) (*
 		return nil, why, err
 	}
 	var news *shipNews
-	err := longPoll(shipChunk, time.Second, time.Now().Add(bound), func(hold time.Duration, probe bool) (bool, error) {
-		n, err := c.shipNewsOnce(task, hold)
+	err := longPoll(shipChunk, time.Second, time.Now().Add(bound), func(hold time.Duration, probe bool, limit time.Duration) (bool, error) {
+		n, err := c.shipNewsOnce(task, hold, limit)
 		if err != nil {
 			var ae *apiError
 			if errors.As(err, &ae) && (ae.status == http.StatusNotFound || ae.status == http.StatusMethodNotAllowed) {
@@ -137,8 +137,10 @@ func (c *cli) ackShipNews(task string, ids []int64) {
 	}
 }
 
-func (c *cli) shipNewsOnce(task string, hold time.Duration) (*shipNews, error) {
-	c.longPoll = hold + 30*time.Second
+// shipNewsOnce asks the server to hold up to hold for the task's news, taking
+// at most limit.
+func (c *cli) shipNewsOnce(task string, hold, limit time.Duration) (*shipNews, error) {
+	c.longPoll = limit
 	defer func() { c.longPoll = 0 }()
 	raw, err := c.call("POST", "/api/v1/sessions/hook/ship-news", map[string]any{
 		"session_id": c.thisSession(), "machine": machineName(), "task": task, "wait": int(hold.Seconds())})

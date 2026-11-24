@@ -23,7 +23,7 @@ func runPoll(t *testing.T, chunk, minHold, bound time.Duration, retry []time.Dur
 	waitRetry = retry
 	t.Cleanup(func() { pollSleep, waitRetry = oldSleep, oldRetry })
 	var asks []pollAsk
-	err := longPoll(chunk, minHold, time.Now().Add(bound), func(hold time.Duration, probe bool) (bool, error) {
+	err := longPoll(chunk, minHold, time.Now().Add(bound), func(hold time.Duration, probe bool, _ time.Duration) (bool, error) {
 		asks = append(asks, pollAsk{hold, probe})
 		if fail(len(asks)) {
 			return false, &apiError{status: http.StatusServiceUnavailable}
@@ -91,7 +91,7 @@ func TestLongPollNonTransientErrorEnds(t *testing.T) {
 	t.Cleanup(func() { pollSleep = oldSleep })
 	bad := &apiError{status: http.StatusBadRequest}
 	n := 0
-	err := longPoll(time.Second, time.Second, time.Now().Add(time.Hour), func(time.Duration, bool) (bool, error) {
+	err := longPoll(time.Second, time.Second, time.Now().Add(time.Hour), func(time.Duration, bool, time.Duration) (bool, error) {
 		n++
 		return false, bad
 	})
@@ -107,5 +107,42 @@ func TestLongPollGivesUpAfterTheRetriesAreUsed(t *testing.T) {
 	var ae *apiError
 	if errors.Is(err, errPollBound) || !errors.As(err, &ae) || len(asks) != 3 || len(slept) != 2 {
 		t.Errorf("err %v after %d requests, slept %v", err, len(asks), slept)
+	}
+}
+
+// Only the first request may take pollSlack past its hold. A probe asked again
+// after a failure, and every held request, ends by pollGrace after the
+// deadline, so a request that stalls can't keep the caller 30s past its bound.
+func TestLongPollLaterRequestsEndNearTheDeadline(t *testing.T) {
+	oldSleep, oldRetry := pollSleep, waitRetry
+	pollSleep, waitRetry = func(time.Duration) {}, []time.Duration{time.Millisecond, time.Millisecond}
+	t.Cleanup(func() { pollSleep, waitRetry = oldSleep, oldRetry })
+	for name, tc := range map[string]struct {
+		bound time.Duration
+		fail  func(n int) bool
+	}{
+		"a retried probe":   {300 * time.Millisecond, func(n int) bool { return n == 1 }},
+		"held requests":     {3 * time.Second, func(int) bool { return false }},
+		"a retried request": {3 * time.Second, func(n int) bool { return n == 2 }},
+	} {
+		deadline := time.Now().Add(tc.bound)
+		var limits []time.Duration
+		var whens []time.Time
+		_ = longPoll(time.Second, time.Nanosecond, deadline, func(hold time.Duration, _ bool, limit time.Duration) (bool, error) {
+			limits, whens = append(limits, limit), append(whens, time.Now())
+			if tc.fail(len(limits)) {
+				return false, &apiError{status: http.StatusServiceUnavailable}
+			}
+			return len(limits) >= 3, nil
+		})
+		if len(limits) < 2 || limits[0] != pollSlack {
+			t.Errorf("%s: limits %v", name, limits)
+			continue
+		}
+		for i := 1; i < len(limits); i++ {
+			if end := whens[i].Add(limits[i]); end.After(deadline.Add(pollGrace + 100*time.Millisecond)) {
+				t.Errorf("%s: request %d may run until %v past the deadline", name, i+1, end.Sub(deadline))
+			}
+		}
 	}
 }

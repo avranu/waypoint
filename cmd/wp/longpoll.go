@@ -8,6 +8,15 @@ import (
 // pollSleep waits between retries of a long poll (replaced in tests).
 var pollSleep = time.Sleep
 
+// pollSlack is how long the first request may take beyond what it asks the
+// server to hold: it must get one answer, whatever the bound. pollGrace is how
+// far past the deadline any later request may run: a held request needs a
+// moment after its hold for the answer to arrive.
+const (
+	pollSlack = 30 * time.Second
+	pollGrace = 5 * time.Second
+)
+
 // errPollBound: the deadline is too close to hold another request.
 var errPollBound = errors.New("long poll: out of time")
 
@@ -31,15 +40,18 @@ func (e *pollBoundError) Unwrap() error        { return e.cause }
 // without that room ends the poll at once, without sleeping up to the deadline
 // first.
 //
-// ask makes one request and says whether the poll is over (true, or an error
-// it handled itself). longPoll returns nil then, the error that was not
+// ask makes one request, taking at most limit (the client's timeout): the
+// first request may take hold+pollSlack; every later one, a retried probe
+// included, ends by pollGrace after the deadline, so a request that stalls
+// can't keep the caller past its bound for long. It says whether the poll is
+// over (true, or an error it handled itself). longPoll returns nil then, the error that was not
 // retried, or errPollBound when time ran out: less than minHold is left (a
 // server counts whole seconds: ship's wait wants one, pr wait holds whatever is
 // left), or a failed request had no room to be asked again, which
 // pollBoundError says with the request's error. That can be the probe's, so a
 // caller may get errPollBound with no answer at all.
-func longPoll(chunk, minHold time.Duration, deadline time.Time, ask func(hold time.Duration, probe bool) (done bool, err error)) error {
-	failures := 0
+func longPoll(chunk, minHold time.Duration, deadline time.Time, ask func(hold time.Duration, probe bool, limit time.Duration) (done bool, err error)) error {
+	failures, first := 0, true
 	probe := true
 	for {
 		hold := min(chunk, time.Until(deadline))
@@ -49,7 +61,12 @@ func longPoll(chunk, minHold time.Duration, deadline time.Time, ask func(hold ti
 		case hold < minHold:
 			return errPollBound
 		}
-		done, err := ask(hold, probe)
+		limit := hold + pollSlack
+		if !first {
+			limit = min(limit, max(time.Until(deadline), 0)+pollGrace)
+		}
+		first = false
+		done, err := ask(hold, probe, limit)
 		if err != nil {
 			if !transientErr(err) || failures >= len(waitRetry) {
 				return err
