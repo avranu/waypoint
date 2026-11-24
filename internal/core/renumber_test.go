@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // renumberBase is what DirAt says the base's migrations directory holds, and
@@ -140,7 +141,13 @@ func TestRenumberHeadMoved(t *testing.T) {
 	if len(se.sg.union.log) != 0 {
 		t.Fatalf("committed on a moved head: %q", se.sg.union.log)
 	}
-	se.sg.tips["fix-login"] = rnHead // not remembered as done: the next pass tries again
+	se.sg.tips["fix-login"] = rnHead
+	se.renumber()
+	if len(se.sg.union.log) != 0 {
+		t.Fatalf("an unfinished pass was tried again at once: %q", se.sg.union.log)
+	}
+	later := se.s.now().Add(6 * time.Minute)
+	se.s.now = func() time.Time { return later }
 	se.renumber()
 	if len(se.sg.union.log) != 1 {
 		t.Fatalf("calls after the head came back = %q", se.sg.union.log)

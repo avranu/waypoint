@@ -24,9 +24,18 @@ type renumberReader interface {
 	FileAt(ctx context.Context, f *Forge, repo, path, ref string) (string, error)
 }
 
-// renumberSeen: per line, the key (base tip, open heads, line order) of the
-// last pass that found nothing more to do, so the forge isn't asked again.
+// renumberSeen: per line, the last pass's state, so the forge isn't asked
+// again while nothing changed. A pass that couldn't finish is tried again
+// after renumberRetry, not on every step.
 var renumberSeen sync.Map
+
+type renumberMemo struct {
+	tip   string
+	rest  string // open heads and line order
+	until int64  // ms; 0: finished, good until the state changes
+}
+
+const renumberRetry = 5 * 60 * 1000
 
 // numberedPatterns are the marked patterns of the form dir/glob, whose
 // directory can be listed.
@@ -106,14 +115,8 @@ func (s *Service) renumberPass(ctx context.Context, ref lineRef, tip string, ord
 	if err != nil || len(prs) == 0 {
 		return
 	}
-	if tip == "" {
-		if tip, err = kit.BranchHead(ctx, f, ref.repo, ref.base); err != nil || tip == "" {
-			return
-		}
-	}
 	place := map[int64]int{}
 	var key strings.Builder
-	key.WriteString(tip)
 	for i, p := range order {
 		place[p.ID] = i
 		fmt.Fprintf(&key, "|o%d", p.ID)
@@ -122,14 +125,26 @@ func (s *Service) renumberPass(ctx context.Context, ref lineRef, tip string, ord
 		fmt.Fprintf(&key, "|%d@%s", p.ID, p.HeadSHA)
 	}
 	seenKey := s.lineRunKey(ref)
-	if v, ok := renumberSeen.Load(seenKey); ok && v == key.String() {
-		return
+	// With no tip in hand (a pull request's own event), the last pass's tip
+	// stands: a moved base reaches the pass through the line's step.
+	if v, ok := renumberSeen.Load(seenKey); ok {
+		m := v.(renumberMemo)
+		if m.rest == key.String() && (tip == "" || tip == m.tip) && (m.until == 0 || s.nowMS() < m.until) {
+			return
+		}
+	}
+	if tip == "" {
+		if tip, err = kit.BranchHead(ctx, f, ref.repo, ref.base); err != nil || tip == "" {
+			return
+		}
 	}
 	complete := true
 	defer func() {
-		if complete {
-			renumberSeen.Store(seenKey, key.String())
+		m := renumberMemo{tip: tip, rest: key.String()}
+		if !complete {
+			m.until = s.nowMS() + renumberRetry
 		}
+		renumberSeen.Store(seenKey, m)
 	}()
 	attrs, err := kit.FileAt(ctx, f, ref.repo, ".gitattributes", tip)
 	if errors.Is(err, ErrNotFound) {
