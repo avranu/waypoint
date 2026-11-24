@@ -110,13 +110,18 @@ func (s *Service) newGoalMatcher(ctx context.Context) (*goalMatcher, error) {
 		for t, c := range counts {
 			counts[t] = 2 * c // the goal's own words count most
 		}
-		// The notes under it, to a few levels.
+		// The notes under it, to a few levels, only down places a person
+		// chose: what an agent put under a goal, and what sits below that,
+		// isn't under it by a person (WP-1790).
 		queue := slices.Clone(children[n.id])
 		for depth := 0; len(queue) > 0 && depth < 6; depth++ {
 			var next []int
 			for _, ci := range queue {
 				c := notes[ci]
-				if c.approved && c.parentPerson {
+				if !c.parentPerson {
+					continue
+				}
+				if c.approved {
 					for t, k := range simCounts(c.title, c.body, nil) {
 						counts[t] += k
 					}
