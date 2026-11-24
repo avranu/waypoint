@@ -163,6 +163,7 @@ func TestAuditFallsBackAndWaitsOutBusyModels(t *testing.T) {
 		t.Fatal("a retry started before its time")
 	}
 	ae.setClock(ae.clockNow().Add(16 * time.Minute))
+	ae.runnerSeen(ae.box, true) // it kept polling; an offline runner's Cursor entry is passed over
 	ae.s.CheckAudits(ae.ctx)
 	ae.work()
 	for range 2 {

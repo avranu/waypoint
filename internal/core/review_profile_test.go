@@ -72,6 +72,7 @@ func TestReviewProfileLimits(t *testing.T) {
 // runners' CLIs and the default brief.
 func TestReviewProfileSettings(t *testing.T) {
 	a, _ := auditAPEnv(t)
+	a.runner(a.admin, "cursorbox", func(r *RunnerRegistration) { r.CLIs = []RunnerCLI{{Name: "cursor"}} })
 	if _, err := a.s.SetAutopilot(a.ctx, a.admin, "", AutopilotSettingInput{Merge: true,
 		Limits: AutopilotLimits{ReviewText: ptrOf("My brief."), ReviewModel: ptrOf("claude/sonnet")}}); err != nil {
 		t.Fatal(err)
@@ -196,6 +197,10 @@ func TestReviewModelSession(t *testing.T) {
 // no stakes bar; when it fails the round goes on as an automatic one.
 func TestReviewModelNamed(t *testing.T) {
 	e := newLoopEnv(t, map[string]string{"": "critical", "fixes": "complete"})
+	cursor := e.runner(e.admin, "cursorbox", func(r *RunnerRegistration) {
+		r.CLIs = []RunnerCLI{{Name: "cursor"}}
+		r.Features = []string{FeatureConfine, FeatureAudit}
+	})
 	if _, err := e.s.SetAutopilot(e.ctx, e.admin, e.p.Key, AutopilotSettingInput{Merge: true,
 		Limits: AutopilotLimits{ReviewModel: ptrOf("cursor/grok-4.7-high"), ReviewText: ptrOf("Check every lock twice.")}}); err != nil {
 		t.Fatal(err)
@@ -217,7 +222,7 @@ func TestReviewModelNamed(t *testing.T) {
 	if !strings.Contains(prompt, "<brief>\nCheck every lock twice.\n</brief>") || strings.Contains(prompt, "Burden of proof") || !strings.Contains(prompt, "Keep the merge from losing updates") {
 		t.Fatalf("prompt:\n%s", prompt)
 	}
-	e.endAudit(e.box, "failed")
+	e.endAudit(cursor, "failed")
 	e.tick(time.Second)
 	ra, next := e.roundAuditRow(round)
 	if next == nil || next.ID == au.ID || ra.alt == "" || slices.Equal(next.Models, au.Models) {

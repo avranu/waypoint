@@ -36,7 +36,7 @@ func TestChangeStakes(t *testing.T) {
 		}
 	}
 	if tierBar(StakesHigh) != trustedAuditBar || tierBar(StakesElevated) != elevatedAuditBar || tierBar(StakesNormal) != reviewFloorBar || tierBar(StakesUnknown) != reviewFloorBar {
-		t.Error("bars: high Sonnet or better, elevated Haiku or better, else the floor")
+		t.Error("bars: high Grok 4.7 or better, elevated Haiku or better, else the floor")
 	}
 	r := roundStakes{tier: StakesElevated, bar: elevatedAuditBar}
 	if r.barFor(reviewAuditKey) != elevatedAuditBar || r.barFor(reviewOtherAuditKey) != reviewFloorBar || r.reviewer().Model != "haiku" {

@@ -7,6 +7,9 @@ import (
 	"time"
 )
 
+// The drift guard (WP-440): the intent anchor, deferrals and the footprint
+// check.
+
 // task links a new task in the repo's project to the pull request.
 func (be *bsEnv) task(title, desc string) *IssueDetail {
 	be.t.Helper()
@@ -44,6 +47,8 @@ func TestDriftGuardIntentInThePacket(t *testing.T) {
 	if i, j := strings.Index(p, "## What the PR is for"), strings.Index(p, "## Failed checks"); j >= 0 && i > j {
 		t.Errorf("the intent comes after the work:\n%s", p)
 	}
+	// The description it shipped with is kept: a later edit doesn't move
+	// the anchor.
 	if fp := be.s.footprintOf(be.ctx, pr.ID); fp.Ship == nil || fp.Ship.SHA != "7777777aaaa" || !strings.Contains(fp.Ship.Body, "Adds export.") || !fp.Ship.Known {
 		t.Errorf("ship footprint = %+v", fp.Ship)
 	}
@@ -137,7 +142,7 @@ func TestFootprintGrowth(t *testing.T) {
 		added int
 		grew  bool
 	}{
-		{[]string{"a.go", "b.go"}, 140, 0, false},
+		{[]string{"a.go", "b.go"}, 140, 0, false}, // under half again
 		{[]string{"a.go", "b.go"}, 151, 0, true},
 		{[]string{"a.go"}, 90, 0, false},
 		{[]string{"a.go", "c.go"}, 100, 1, false},
@@ -147,6 +152,7 @@ func TestFootprintGrowth(t *testing.T) {
 			t.Errorf("%v %d: added %v grew %v", c.paths, c.lines, added, grew)
 		}
 	}
+	// Small diffs need more than footprintMinLines more to grow.
 	if _, grew := footprintGrowth(footprintAt{Lines: 4}, nil, 20); grew {
 		t.Error("4 → 20 lines counted as growth")
 	}
@@ -170,7 +176,8 @@ func TestDriftGuardFootprintCheck(t *testing.T) {
 	if err != nil || a.Purpose != AuditFootprint || a.Target != "pr" {
 		t.Fatalf("audit = %+v %v", a, err)
 	}
-	if !slices.Equal(a.Models, auditModelNames([]AgentModel{{CLI: GatewayCLI, Model: gatewayAuditModel}})) {
+	// The default chain (Grok through Cursor, then the gateway's audit model), not Claude Opus (WP-867).
+	if !slices.Equal(a.Models, auditModelNames([]AgentModel{{CLI: "cursor", Model: "grok-4.7-high"}, {CLI: "cursor", Model: "grok-4.7-medium"}, {CLI: GatewayCLI, Model: gatewayAuditModel}})) {
 		t.Errorf("the check's models = %v", a.Models)
 	}
 	for _, want := range []string{"Check this pull request's footprint", "app/xlsx.go", "Task " + be.p.Key + "-", "+bounded the table", "only scope"} {
@@ -184,10 +191,12 @@ func TestDriftGuardFootprintCheck(t *testing.T) {
 	if be.s.headAudited(be.ctx, be.pr(7)) {
 		t.Error("a footprint check stood in for the head's audit")
 	}
+	// Asked once for the head.
 	be.step()
 	if n := len(be.audits()); n != 1 {
 		t.Errorf("%d checks", n)
 	}
+	// Its finding, medium, starts a round to undo or split out.
 	be.endAudit(box, "done", [2]string{"medium", "XLSX export is beyond the task"})
 	b = be.babysit()
 	jobs := be.jobs()
@@ -228,6 +237,7 @@ func footprintEnv(t *testing.T) (*bsEnv, *Runner, *PullRequest) {
 		t.Fatalf("no round: %+v", be.babysit())
 	}
 	be.finish(jobs[0], true)
+	// The round's push brings in two files the pull request didn't touch.
 	be.pushMine("8888888bbbb")
 	be.changes("8888888bbbb", "app/xlsx.go", "app/xlsx_test.go")
 	return be, box, pr
@@ -268,7 +278,7 @@ func TestDriftGuardFootprintNotForSmallRounds(t *testing.T) {
 	be.ci("7777777aaaa", CheckFailed)
 	be.finish(be.jobs()[0], true)
 	be.pushMine("8888888bbbb")
-	be.changes("8888888bbbb")
+	be.changes("8888888bbbb") // the same files
 	be.ci("8888888bbbb", CheckSuccess)
 	be.step()
 	if n := len(be.audits()); n != 0 {

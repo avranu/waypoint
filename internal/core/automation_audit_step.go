@@ -20,7 +20,7 @@ var auditSeverityOptions = opts("", "Everything", "medium", "Medium and worse", 
 func init() {
 	registerAction(ActionDef{Name: "audit", Label: "Audit the code", Group: "Agents", Phrase: "audit {target}", Long: true, Runner: true,
 		Doc: "Ask a model to audit the code adversarially, read-only, from a checkout on a runner of the person who last saved the automation, and wait for its findings. " +
-			"Unless `models` says otherwise the model is the gateway's audit model (`gateway/audit`), or Grok 4.7 through Cursor on a Waypoint with no LLM gateway. " +
+			"Unless `models` says otherwise the model is Grok 4.7 through Cursor on a runner first, then the gateway's audit model (`gateway/audit`); on a Waypoint with no LLM gateway, Grok 4.7 through Cursor alone. " +
 			"`target` is repo, branch, commit, range, recent or pr (empty: the trigger's pull request, else the repository); `ref` the branch, commit, FROM..TO range or pull request number; `instructions` what to look for. " +
 			"For recent, `since` is the period (7d, 2w, 1mo or a date; on a schedule, 7d each Monday audits the week), and `ref` the branch (empty: the default branch). " +
 			"`focus` names areas to look hardest at (security, data, concurrency, errors, logic, performance, compat, tests); `paths` and `exclude` the parts of the repository to read and to leave out; " +
@@ -42,7 +42,7 @@ func init() {
 			{Name: "base", Label: "Against", Type: PTemplate, Advanced: true, Placeholder: "main", Help: "What a branch is compared with (empty: the default branch)."},
 			{Name: "repo", Label: "Repository", Type: PRepo, Advanced: true, Placeholder: "owner/name", Help: "Leave empty for the project's repository."},
 			{Name: "instructions", Label: "Look for", Type: PTemplate, Default: DefaultAuditInstructions, Help: "A sentence is plenty. Wrap outside text in {{untrusted …}}."},
-			{Name: "models", Label: "CLI and model", Type: PAgents, Advanced: true, Help: "Tried in order when one is busy, out of usage or down. Empty: the model the gateway picks for audits (Grok 4.7 high, then medium, through Cursor on a Waypoint with no LLM gateway)."},
+			{Name: "models", Label: "CLI and model", Type: PAgents, Advanced: true, Help: "Tried in order when one is busy, out of usage or down. Empty: Grok 4.7 (high, then medium) through Cursor on a runner, then the model the gateway picks for audits; Grok through Cursor alone on a Waypoint with no LLM gateway."},
 			{Name: "comment", Label: "Post a pull request's audit on it", Type: PBool, Default: true},
 			{Name: "fix", Label: "Have Claude check and fix the findings", Type: PBool, Default: false,
 				Help: "Makes a low-priority task for Claude to check each finding against the code and fix the real ones."},
