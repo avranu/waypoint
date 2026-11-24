@@ -374,6 +374,15 @@ func TestRunnerGatewayRoutes(t *testing.T) {
 	if code, b := sam.do("GET", path, nil); code != 404 {
 		t.Errorf("another person's job: %d %s", code, b)
 	}
+	// A body past the archive limit (the default, 20 MiB, with no gateway to
+	// say otherwise) and the prompt's room is cut off before it is read.
+	limit := int(svc.GatewayTaskLimits(ctx).ArchiveBytes)
+	if code, b := upload(jc, path, map[string]string{"prompt": "Audit it.", "repo": strings.Repeat("x", limit+core.GatewayPromptMax+2<<20)}); code != 400 || !strings.Contains(b, "too large") {
+		t.Errorf("a body past the limit: %d %.200s", code, b)
+	}
+	if code, b := upload(jc, path, map[string]string{"prompt": "Audit it.", "repo": strings.Repeat("x", limit)}); code != 400 || !strings.Contains(b, "isn't an audit through the gateway") {
+		t.Errorf("a body at the limit: %d %.200s", code, b)
+	}
 	if code, b := upload(jc, "/api/v1/runner/jobs/99999/gateway", whole); code != 404 {
 		t.Errorf("no such job: %d %s", code, b)
 	}

@@ -31,6 +31,18 @@ type taskLLM struct {
 	cancels []string
 	reports []feedbackReport
 	report  error
+	// limits and limitsErr are what the key's task_limits answer;
+	// limitsCalls counts the asks.
+	limits      GatewayLimits
+	limitsErr   error
+	limitsCalls int
+}
+
+func (l *taskLLM) TaskLimits(ctx context.Context, p *AIProvider) (GatewayLimits, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.limitsCalls++
+	return l.limits, l.limitsErr
 }
 
 func (l *taskLLM) CreateTask(ctx context.Context, p *AIProvider, spec gatewayTaskSpec, archive io.Reader, size int64) (*gatewayTask, error) {
@@ -213,7 +225,7 @@ func TestAuditThroughGateway(t *testing.T) {
 	in := agentJobOf(t, claim)
 	// The job's time is the gateway's four hours and more, and the
 	// helpers' own (their panel runs beside the model, in the runner).
-	if claim.Kind != JobAudit || claim.Timeout <= gatewayAuditTimeout || claim.Timeout > runnerAuditMaxTimeout || in.CLI != GatewayCLI || in.Model != "audit" || in.JSONSchema == "" || len(in.GatewayExclude) != 0 || !in.ReadOnly {
+	if claim.Kind != JobAudit || claim.Timeout <= gatewayAuditTimeout || claim.Timeout > runnerAuditMaxTimeout || in.CLI != GatewayCLI || in.Model != "audit" || in.JSONSchema == "" || len(in.GatewayExclude) != 0 || !in.ReadOnly || in.GatewayArchiveMax != GatewayArchiveMax || in.GatewayFileMax != GatewayFileMax {
 		t.Fatalf("job = %s %ds %+v", claim.Kind, claim.Timeout, in)
 	}
 
@@ -1230,4 +1242,128 @@ func TestWpReviewProgress(t *testing.T) {
 		t.Errorf("by key: %q", by)
 	}
 	has(a.command("/wp review ZZ-9").Block, "no adversarial review of ZZ-9")
+}
+
+// zeros is an archive of n bytes that is never held.
+func zeros(n int64) io.Reader { return io.LimitReader(zeroReader{}, n) }
+
+type zeroReader struct{}
+
+func (zeroReader) Read(b []byte) (int, error) { clear(b); return len(b), nil }
+
+// The gateway's key says how much of an upload its tasks take (task_limits);
+// Waypoint believes it for ten minutes, within sense, and otherwise goes by
+// the defaults.
+func TestGatewayTaskLimits(t *testing.T) {
+	ae := newAgentEnv(t)
+	def := GatewayLimits{ArchiveBytes: GatewayArchiveMax, FileBytes: GatewayFileMax}
+	if got := ae.s.GatewayTaskLimits(ae.ctx); got != def {
+		t.Fatalf("no gateway: %+v", got)
+	}
+	gw := taskGateway(t, ae.s)
+	now := time.Now()
+	ae.s.now = func() time.Time { return now }
+	const MiB = 1 << 20
+	for name, c := range map[string]struct {
+		says GatewayLimits
+		err  error
+		want GatewayLimits
+	}{
+		"raised":                {GatewayLimits{64 * MiB, 8 * MiB}, nil, GatewayLimits{64 * MiB, 8 * MiB}},
+		"absent":                {GatewayLimits{}, nil, def},
+		"error":                 {GatewayLimits{64 * MiB, 8 * MiB}, errors.New("down"), def},
+		"archive too small":     {GatewayLimits{MiB - 1, 64 << 10}, nil, def},
+		"archive too large":     {GatewayLimits{512*MiB + 1, 8 * MiB}, nil, def},
+		"at the edges":          {GatewayLimits{512 * MiB, 512 * MiB}, nil, GatewayLimits{512 * MiB, 512 * MiB}},
+		"file only":             {GatewayLimits{0, 2 * MiB}, nil, GatewayLimits{GatewayArchiveMax, 2 * MiB}},
+		"file too small":        {GatewayLimits{64 * MiB, 64<<10 - 1}, nil, GatewayLimits{64 * MiB, GatewayFileMax}},
+		"file past the archive": {GatewayLimits{2 * MiB, 3 * MiB}, nil, GatewayLimits{2 * MiB, 2 * MiB}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ae.s.gatewayLimits.Clear()
+			gw.limits, gw.limitsErr = c.says, c.err
+			if got := ae.s.GatewayTaskLimits(ae.ctx); got != c.want {
+				t.Errorf("%+v said, got %+v, want %+v", c.says, got, c.want)
+			}
+		})
+	}
+
+	// Asked once for ten minutes, then again.
+	ae.s.gatewayLimits.Clear()
+	gw.limits, gw.limitsErr = GatewayLimits{64 * MiB, 8 * MiB}, nil
+	gw.limitsCalls = 0
+	ae.s.GatewayTaskLimits(ae.ctx)
+	gw.limits = GatewayLimits{128 * MiB, 8 * MiB}
+	now = now.Add(9 * time.Minute)
+	if got := ae.s.GatewayTaskLimits(ae.ctx); got.ArchiveBytes != 64*MiB || gw.limitsCalls != 1 {
+		t.Errorf("cached: %+v after %d asks", got, gw.limitsCalls)
+	}
+	now = now.Add(2 * time.Minute)
+	if got := ae.s.GatewayTaskLimits(ae.ctx); got.ArchiveBytes != 128*MiB || gw.limitsCalls != 2 {
+		t.Errorf("after ten minutes: %+v after %d asks", got, gw.limitsCalls)
+	}
+	// A failed ask is cached too: no second /key request per audit.
+	gw.limitsErr = errors.New("down")
+	now = now.Add(11 * time.Minute)
+	ae.s.GatewayTaskLimits(ae.ctx)
+	ae.s.GatewayTaskLimits(ae.ctx)
+	if gw.limitsCalls != 3 {
+		t.Errorf("%d asks", gw.limitsCalls)
+	}
+}
+
+// The gateway raising its limit lets a larger archive through; the job
+// carries the figures to the runner.
+func TestGatewayRaisedArchiveLimit(t *testing.T) {
+	ae := newAgentEnv(t)
+	gw := taskGateway(t, ae.s)
+	gw.limits = GatewayLimits{ArchiveBytes: 64 << 20, FileBytes: 8 << 20}
+	box := ae.gatewayBox()
+	if _, err := ae.s.RequestAudit(ae.ctx, ae.admin, AuditInput{Project: ae.p.Key, Models: []string{"gateway"}}); err != nil {
+		t.Fatal(err)
+	}
+	claim := ae.takeOn(box)
+	if in := agentJobOf(t, claim); in.GatewayArchiveMax != 64<<20 || in.GatewayFileMax != 8<<20 {
+		t.Errorf("the job's limits: %d, %d", in.GatewayArchiveMax, in.GatewayFileMax)
+	}
+	var inv *InvalidError
+	if _, err := ae.s.StartGatewayTask(ae.ctx, ae.admin, claim.ID, "Audit.", zeros(64<<20+1), 64<<20+1); !errors.As(err, &inv) || !strings.Contains(err.Error(), "64") {
+		t.Errorf("past the raised limit: %v", err)
+	}
+	const size = 30 << 20 // over the default
+	v, err := ae.s.StartGatewayTask(ae.ctx, ae.admin, claim.ID, "Audit.", zeros(size), size)
+	if err != nil || v.Status != "queued" || gw.sizes[0] != size {
+		t.Fatalf("%d bytes: %+v, %v (sent %v)", size, v, err, gw.sizes)
+	}
+}
+
+// What the runner left out of a checkout lands on the attempt, whether the
+// model answered or not.
+func TestAuditAttemptLeftOut(t *testing.T) {
+	ae := newAgentEnv(t)
+	taskGateway(t, ae.s)
+	box := ae.gatewayBox()
+	const left = "350 binary files (16.9 MiB), 5 files over 256 KiB (2.1 MiB)"
+
+	a, err := ae.s.RequestAudit(ae.ctx, ae.admin, AuditInput{Project: ae.p.Key, Models: []string{"gateway"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := ae.takeOn(box)
+	ae.finish(claim.ID, "done", map[string]any{"answer": "Read it.", "left_out": left, "structured": map[string]any{"summary": "Read the merge.", "findings": []any{gatewayFinding}}}, "")
+	got := ae.audit(a.ID)
+	if got.Status != AuditDone || len(got.Attempts) != 1 || got.Attempts[0].Outcome != "answered" || got.Attempts[0].LeftOut != left {
+		t.Fatalf("answered: %s %+v", got.Status, got.Attempts)
+	}
+
+	a, err = ae.s.RequestAudit(ae.ctx, ae.admin, AuditInput{Project: ae.p.Key, Models: []string{"gateway"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim = ae.takeOn(box)
+	ae.finish(claim.ID, "failed", map[string]any{"gateway_error": "body_too_large", "left_out": left}, "The checkout packs to more than 20 MiB.")
+	got = ae.audit(a.ID)
+	if len(got.Attempts) == 0 || got.Attempts[0].LeftOut != left || got.Attempts[0].Error == "" {
+		t.Fatalf("failed: %s %+v", got.Status, got.Attempts)
+	}
 }

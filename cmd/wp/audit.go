@@ -138,6 +138,7 @@ type auditView struct {
 		Round   int    `json:"round"`
 		Outcome string `json:"outcome"`
 		Error   string `json:"error"`
+		LeftOut string `json:"left_out"`
 	} `json:"attempts"`
 	RetryAt    *time.Time `json:"retry_at"`
 	Model      string     `json:"model"`
@@ -295,6 +296,17 @@ func (a *auditView) text() string {
 			tried = append(tried, x)
 		}
 		fmt.Fprintf(&s, "  Tried: %s\n", strings.Join(tried, ", "))
+		for _, t := range a.Attempts {
+			if t.LeftOut != "" {
+				fmt.Fprintf(&s, "  Not given to %s: %s\n", t.Model, t.LeftOut)
+			}
+			// The audit's own error (above) is the last attempt's; the ones
+			// before it are told here, e.g. a gateway that took no archive
+			// this large.
+			if t.Outcome != "answered" && t.Error != "" && t.Error != a.Error {
+				fmt.Fprintf(&s, "  %s: %s\n", t.Model, excerpt(t.Error, 200))
+			}
+		}
 	} else if len(a.Models) > 0 {
 		fmt.Fprintf(&s, "  Models: %s\n", strings.Join(a.Models, ", then "))
 	}

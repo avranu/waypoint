@@ -251,6 +251,11 @@ type AgentJob struct {
 	// GatewayCLI): globs of the models it must not run on, which are the
 	// family of the model that wrote the code (WP-617).
 	GatewayExclude []string `json:"gateway_exclude,omitempty"`
+	// GatewayArchiveMax and GatewayFileMax, for such an audit, are what the
+	// gateway takes of the packed checkout and of one file in it, bytes
+	// (GatewayTaskLimits); 0 (an older Waypoint): the runner's own figures.
+	GatewayArchiveMax int64 `json:"gateway_archive_max,omitempty"`
+	GatewayFileMax    int64 `json:"gateway_file_max,omitempty"`
 	// GatewayWeakest, for such an audit: the weakest model the gateway may
 	// run it on, its quality bar (WP-916); "": none.
 	GatewayWeakest string `json:"gateway_weakest,omitempty"`

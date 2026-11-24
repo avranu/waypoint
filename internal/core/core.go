@@ -139,6 +139,9 @@ type Service struct {
 	// Waypoint's key an audit task on: model → a gatewayRefusedModel, so the
 	// next audits skip it for an hour (audit_gateway.go).
 	gatewayRefused sync.Map
+	// gatewayLimits caches the gateway's task limits by provider
+	// (GatewayTaskLimits).
+	gatewayLimits sync.Map
 	// staleChecksRead holds prID → when the watchdog last re-read the checks
 	// of a babysit whose checks seem to have stopped (WP-750).
 	staleChecksRead sync.Map

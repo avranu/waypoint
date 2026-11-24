@@ -1193,7 +1193,8 @@ an agent). Only the owner's work runs on a runner. Jobs: `command`, `apply`, `ag
         cancel true = stop the job
     POST /runner/jobs/{id}/finish  {state: done|failed|cancelled, exit_code, result, error}
     POST /runner/jobs/{id}/gateway  multipart/form-data: prompt (text), repo (the checkout as
-        .tar.gz, 20 MiB at most) → the task. An audit job whose model is gateway/…: Waypoint
+        .tar.gz, up to the gateway's limit: 20 MiB, or what its key says; a proxy in front
+        of Waypoint should allow that plus about 2 MB) → the task. An audit job whose model is gateway/…: Waypoint
         starts a gateway agent task over the checkout with its own key (WP-617)
     GET /runner/jobs/{id}/gateway   → {id, status, model, text, json, error_kind, error,
         retry_after, input_tokens, output_tokens, cost_usd}: the job's task now; model is the
