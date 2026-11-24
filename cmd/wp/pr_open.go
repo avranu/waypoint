@@ -844,7 +844,7 @@ var (
 type commitInfo struct{ subject, body string }
 
 func localGit(args ...string) (string, error) {
-	cmd := exec.Command("git", args...) // #nosec G204 -- fixed git subcommands; values are arguments, not a shell
+	cmd := exec.Command("git", args...) // #nosec G204 G702 -- fixed git subcommands; values are arguments, not a shell
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
