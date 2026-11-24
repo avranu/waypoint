@@ -228,7 +228,9 @@ func (s *Service) screenPull(ctx context.Context, t *tx, v *prVoice, pr *PullReq
 		return err
 	}
 	shown := ""
-	if approved && okTitle == title {
+	if approved && okTitle == title && (fp.Body == "" || okHash == textHash(fp.Body)) {
+		// An edited description waits with the title: neither shows, so
+		// nothing of the new text is read as approved.
 		shown = title
 	}
 	body, hash := fp.Body, textHash(fp.Body)
@@ -249,6 +251,14 @@ func (s *Service) screenPull(ctx context.Context, t *tx, v *prVoice, pr *PullReq
 	return err
 }
 
+// approvedBodyChanged: a pull request has an approved description that
+// differs from body.
+func (s *Service) approvedBodyChanged(ctx context.Context, prID int64, body string) bool {
+	var hash string
+	err := s.db.R.QueryRowContext(ctx, `SELECT body_hash FROM outside_pr_text WHERE pr_id = ? AND external_id = '' AND state = 'approved'`, prID).Scan(&hash)
+	return err == nil && hash != textHash(body)
+}
+
 // approvedBody is a pull request's description as a person approved it
 // ("" when they didn't): the review prompt reads no other.
 func (s *Service) approvedBody(ctx context.Context, f *Forge, pr *PullRequest, fp *ForgePR) string {
@@ -258,7 +268,8 @@ func (s *Service) approvedBody(ctx context.Context, f *Forge, pr *PullRequest, f
 	}
 	var hash string
 	_ = s.db.R.QueryRowContext(ctx, `SELECT body_hash FROM outside_pr_text WHERE pr_id = ? AND external_id = '' AND state = 'approved'`, pr.ID).Scan(&hash)
-	if hash != "" && hash == textHash(fp.Body) {
+	// A description cut when held was approved only as far as it was shown.
+	if hash != "" && hash == textHash(fp.Body) && !strings.HasSuffix(excerpt(fp.Body, 20000), "…") {
 		return fp.Body
 	}
 	return ""

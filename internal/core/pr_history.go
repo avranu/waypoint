@@ -501,6 +501,11 @@ func (s *Service) refreshPR(ctx context.Context, f *Forge, repo string, fp *Forg
 		// as that webhook, or it never gets reviewed, followed or merged.
 		s.onForgePull(ctx, f, repo, fp)
 		return nil
+	case old != nil && !settled && fp.Body != "" && s.approvedBodyChanged(ctx, old.ID, fp.Body):
+		// An approved outside pull request's description changed and its
+		// webhook never came: screen it as that webhook would.
+		s.onForgePull(ctx, f, repo, fp)
+		return nil
 	case old == nil && !settled:
 		c := *fp
 		c.HeadSHA = ""
@@ -510,7 +515,7 @@ func (s *Service) refreshPR(ctx context.Context, f *Forge, repo string, fp *Forg
 		_, err = s.recordPR(ctx, f, repo, fp, false)
 		return err
 	}
-	_, err = s.db.W.ExecContext(ctx, `UPDATE pull_requests SET title = ?, opened_at = coalesce(?, opened_at), merged_at = coalesce(?, merged_at),
+	_, err = s.db.W.ExecContext(ctx, `UPDATE pull_requests SET title = CASE WHEN outside = 1 THEN title ELSE ? END, opened_at = coalesce(?, opened_at), merged_at = coalesce(?, merged_at),
 		closed_at = coalesce(?, closed_at), merged_by = CASE WHEN ? != '' THEN ? ELSE merged_by END,
 		merge_sha = CASE WHEN ? != '' THEN ? ELSE merge_sha END,
 		agent = CASE WHEN ? != '' THEN ? ELSE agent END,

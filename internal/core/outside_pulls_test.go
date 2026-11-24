@@ -324,6 +324,14 @@ func TestPullRequestFromOutsideLeaksNothing(t *testing.T) {
 		if err != nil || len(held) != 1 || held[0].Body != pr.Body {
 			t.Fatalf("held = %+v %v", held, err)
 		}
+		if got := se.pr(42).Title; got != "" {
+			t.Fatalf("title %q shown while the edited description waits", got)
+		}
+		se.pullHook("labeled", pr)
+		se.s.Wait()
+		if got := se.pr(42).Title; got != "" || !se.pr(42).Outside {
+			t.Fatalf("a later event changed it: title %q", got)
+		}
 	})
 
 	t.Run("agents see no bot runs or branches of one that became outside", func(t *testing.T) {
