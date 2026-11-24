@@ -149,13 +149,14 @@ func (s *Server) reauth(w http.ResponseWriter, r *http.Request) (any, error) {
 	}
 	a := actorFrom(r)
 	ip := s.clientIP(r)
-	done, ok := s.loginBegin(r.Context(), userAcct(a.User.ID), ip)
-	if !ok {
+	if s.loginBlocked(r.Context(), a.User.Username, ip) {
 		return nil, errTooMany
 	}
 	until, err := s.svc.Reauth(r.Context(), a, in.Password)
 	var ie *core.InvalidError
-	done(errors.As(err, &ie))
+	if errors.As(err, &ie) {
+		s.loginFailed(a.User.Username, ip)
+	}
 	if err != nil {
 		return nil, err
 	}

@@ -327,35 +327,19 @@ func (s *Service) Login(ctx context.Context, login, password, userAgent, ip stri
 		return "", nil, ErrUnauthorized
 	}
 	tok, err := s.createSession(ctx, u.ID, userAgent, ip)
-	if err != nil {
-		// The password was right: not ErrUnauthorized, so no lockout counts it.
-		return "", nil, fmt.Errorf("starting a session: %w", err)
-	}
-	return tok, u, nil
+	return tok, u, err
 }
 
-// LoginAccountID is the id of the account a sign-in login (username or
-// email) names, or 0 when none does, so lockout counts one account once
-// however it is written.
-func (s *Service) LoginAccountID(ctx context.Context, login string) (int64, error) {
-	var id int64
-	err := s.db.R.QueryRowContext(ctx, `SELECT id FROM users WHERE username = ? OR email = ? ORDER BY username = ? DESC LIMIT 1`,
-		strings.TrimSpace(login), strings.TrimSpace(login), strings.TrimSpace(login)).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, nil
-	}
-	return id, err
-}
-
-// SignedInFrom reports whether the account has a live session started
+// SignedInFrom reports whether login's account has a live session started
 // from ip, so a sign-in lockout can spare the owner's own address.
-func (s *Service) SignedInFrom(ctx context.Context, userID int64, ip string) (bool, error) {
-	if ip == "" || userID == 0 {
+func (s *Service) SignedInFrom(ctx context.Context, login, ip string) (bool, error) {
+	if ip == "" {
 		return false, nil
 	}
 	var found bool
-	err := s.db.R.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sessions WHERE user_id = ? AND ip = ? AND expires_at > ?)`,
-		userID, ip, s.nowMS()).Scan(&found)
+	err := s.db.R.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sessions s JOIN users u ON u.id = s.user_id
+		WHERE (u.username = ? OR u.email = ?) AND s.ip = ? AND s.expires_at > ?)`,
+		strings.TrimSpace(login), strings.TrimSpace(login), ip, s.nowMS()).Scan(&found)
 	return found, err
 }
 
