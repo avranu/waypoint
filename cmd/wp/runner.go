@@ -201,7 +201,10 @@ type runnerProc struct {
 	updatedAt             time.Time
 	drainLoggedFor        string
 	draining              bool             // takes no new jobs until idle, then restarts
-	now                   func() time.Time // tests swap it; nil: time.Now
+	now                   func() time.Time // tests swap it; nil: runnerClock
+	updating              bool             // a download runs beside the loop
+	updateDone            chan updateResult
+	downloadFn            func(ctx context.Context, want string) (got, exe string, err error) // nil: c.selfUpdate
 
 	reportCtx context.Context // ends when the runner has stopped waiting to report
 	// stopCtx ends when a runner stop begins (stopAll); nil in a runner built by hand
@@ -484,7 +487,7 @@ func (p *runnerProc) run(ctx context.Context, reportStop context.CancelFunc) err
 	for ctx.Err() == nil {
 		// The binary is replaced at once; the process restarts on it when
 		// idle, and a runner that stays busy drains to get there.
-		if exe, _ := p.updateStep(ctx); exe != "" {
+		if exe := p.updateStep(ctx); exe != "" {
 			err = &restartError{exe: exe}
 			break
 		}
@@ -569,22 +572,32 @@ func (p *runnerProc) run(ctx context.Context, reportStop context.CancelFunc) err
 // keeps taking jobs while it waits for idle, before it stops taking them.
 const runnerDrainAfter = 15 * time.Minute
 
-// updateRetryEvery is how long a runner waits after a failed update before
-// it tries for the same server version again.
-const updateRetryEvery = 6 * time.Hour
+// runnerClock is the runner's time source (tests move it).
+var runnerClock = time.Now
 
 func (p *runnerProc) clock() time.Time {
 	if p.now != nil {
 		return p.now()
 	}
-	return time.Now()
+	return runnerClock()
 }
 
-// updateAllowed: the server runs another release than this wp, which is a
-// release build too, and the runner may update itself.
+// updateAllowed: the server runs another release than this wp (older too: wp
+// follows the server, so a rollback reaches runners), which is a release
+// build, and the runner may update itself.
 func (p *runnerProc) updateAllowed() bool {
 	sv := p.serverVersion
 	return !p.opts.NoAutoUpdate && !p.opts.Once && !autoUpdateOff() && sv != version && isRelease(sv) && isRelease(version)
+}
+
+// updateOptOutEnv is what a job's environment carries when this runner
+// doesn't update (--no-auto-update, --once or WAYPOINT_NO_AUTO_UPDATE): the
+// wp the job runs must not either.
+func (p *runnerProc) updateOptOutEnv() []string {
+	if p.opts.NoAutoUpdate || p.opts.Once || autoUpdateOff() {
+		return []string{"WAYPOINT_NO_AUTO_UPDATE=1"}
+	}
+	return nil
 }
 
 // updateDue: updateAllowed, and the binary isn't updated to it yet (a failed
@@ -594,22 +607,31 @@ func (p *runnerProc) updateDue() bool {
 	return p.updateAllowed() && p.updatedTo != sv && (p.updateTriedFor != sv || p.clock().Sub(p.updateTriedAt) >= updateRetryEvery)
 }
 
+// updateResult is what a download that ran beside the poll loop came to.
+type updateResult struct {
+	sv, got, exe string
+	err          error
+}
+
 // updateStep is the runner's update logic, once per loop. It replaces the
-// binary on disk as soon as the server runs another release, at once even
-// with jobs running. It returns the path to restart on when idle, and drain
-// when the runner has waited for idle longer than runnerDrainAfter and
-// should take no new jobs until the running ones finish.
-func (p *runnerProc) updateStep(ctx context.Context) (restart string, drain bool) {
+// binary on disk as soon as the server runs another release, with jobs
+// running too: that download runs beside the loop, which goes on polling
+// and applying cancels, and a later pass collects it. It returns the path to
+// restart on once idle. A runner that has waited for idle longer than
+// runnerDrainAfter sets p.draining: lanesNow then asks for no jobs, until
+// the running ones finish.
+func (p *runnerProc) updateStep(ctx context.Context) (restart string) {
 	p.draining = false
+	p.collectUpdate()
 	if !p.updateAllowed() {
-		return "", false
+		return ""
 	}
 	sv := p.serverVersion
 	active := len(p.activeIDs())
 	if p.updatedTo == sv {
 		if active == 0 {
 			p.logf("Restarting on wp %s at %s.", sv, p.updatedExe)
-			return p.updatedExe, false
+			return p.updatedExe
 		}
 		if p.clock().Sub(p.updatedAt) >= runnerDrainAfter {
 			p.draining = true
@@ -618,45 +640,78 @@ func (p *runnerProc) updateStep(ctx context.Context) (restart string, drain bool
 				p.logf("Waiting to restart on wp %s since %s: taking no new jobs until the %d running finish, then restarting on wp %s.", sv, p.updatedAt.Format("15:04"), active, sv)
 			}
 		}
-		return "", p.draining
+		return ""
 	}
-	if !p.updateDue() {
-		return "", false
+	if p.updating || !p.updateDue() {
+		return ""
 	}
-	if active == 0 {
-		return p.updateSelf(ctx)
+	p.beginUpdate(sv)
+	if active > 0 {
+		if p.updateDone == nil {
+			p.updateDone = make(chan updateResult, 1)
+		}
+		p.updating = true
+		go func() { p.updateDone <- p.download(ctx, sv) }()
+		return ""
 	}
-	if exe, ok := p.replaceBinary(ctx); ok {
-		p.updatedTo, p.updatedExe, p.updatedAt = sv, exe, p.clock()
-		p.logf("Updated %s to wp %s; this runner restarts on it when its %d job%s finish%s.", exe, sv, active, pluralS(active), map[bool]string{true: "es", false: ""}[active == 1])
+	// Idle: nothing to poll for meanwhile, so wait for it here.
+	res := p.download(ctx, sv)
+	p.finishUpdate(res)
+	if res.err != nil {
+		return ""
 	}
-	return "", false
+	p.logf("Updated %s to wp %s; restarting on it.", res.exe, sv)
+	return res.exe
 }
 
-// updateSelf replaces this wp with the server's and, once it has, says to
-// restart on it.
-func (p *runnerProc) updateSelf(ctx context.Context) (string, bool) {
-	exe, ok := p.replaceBinary(ctx)
-	if !ok {
-		return "", false
+// collectUpdate takes the result of a download that ran beside the loop.
+func (p *runnerProc) collectUpdate() {
+	if !p.updating {
+		return
 	}
-	p.logf("Updated %s to wp %s; restarting on it.", exe, p.serverVersion)
-	return exe, false
+	select {
+	case res := <-p.updateDone:
+		p.updating = false
+		p.finishUpdate(res)
+		if res.err == nil {
+			p.updatedTo, p.updatedExe, p.updatedAt = res.sv, res.exe, p.clock()
+			n := len(p.activeIDs())
+			p.logf("Updated %s to wp %s; this runner restarts on it when its %d job%s %s.", res.exe, res.sv, n, pluralS(n), pluralWord(n, "finishes", "finish"))
+		}
+	default:
+	}
 }
 
-// replaceBinary downloads the server's wp over this one, noting the try.
-func (p *runnerProc) replaceBinary(ctx context.Context) (string, bool) {
-	sv := p.serverVersion
+// beginUpdate notes the try (a failed one is repeated after 6 hours) and
+// claims it in the shared record, so a wp command that sees the same version
+// doesn't start a second download.
+func (p *runnerProc) beginUpdate(sv string) {
 	p.updateTriedFor, p.updateTriedAt = sv, p.clock()
 	p.logf("Waypoint runs %s and this runner wp %s: updating wp (--no-auto-update turns this off)", sv, version)
-	_, exe, err := p.c.selfUpdate(ctx, sv)
-	if err != nil {
-		if ctx.Err() == nil {
-			p.logf("Couldn't update wp: %v. Carrying on with %s; trying again in 6 hours.", err, version)
-		}
-		return "", false
+	p.c.recordUpdate(sv, "started", true)
+}
+
+// download puts the server's wp over this one. It only downloads: the loop's
+// goroutine does the logging and the record.
+func (p *runnerProc) download(ctx context.Context, sv string) updateResult {
+	fn := p.downloadFn
+	if fn == nil {
+		fn = p.c.selfUpdate
 	}
-	return exe, true
+	got, exe, err := fn(ctx, sv)
+	return updateResult{sv: sv, got: got, exe: exe, err: err}
+}
+
+// finishUpdate records how a download ended.
+func (p *runnerProc) finishUpdate(res updateResult) {
+	if res.err != nil {
+		if p.stopCtx == nil || p.stopCtx.Err() == nil {
+			p.logf("Couldn't update wp: %v. Carrying on with %s; trying again in 6 hours.", res.err, version)
+		}
+		p.c.recordUpdate(res.sv, "failed: "+res.err.Error(), false)
+		return
+	}
+	p.c.recordUpdate(res.sv, "updated from "+version+" to "+res.got, false)
 }
 
 // lanesNow is slotsNow, except that a draining runner has no lane or slot

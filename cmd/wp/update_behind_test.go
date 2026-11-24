@@ -1,12 +1,20 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core"
 )
 
 // behindEnv: an installed wp, a recorder in place of the detached upgrade,
@@ -162,3 +170,196 @@ func TestAutoUpdateIfBehindEndToEnd(t *testing.T) {
 
 // someCmd stands for any ordinary command.
 var someCmd = &command{name: "ls"}
+
+// A job's wp must not upgrade on a runner that opted out (WP-1773): the
+// runner's own switches reach the job as WAYPOINT_NO_AUTO_UPDATE.
+func TestJobEnvCarriesTheRunnersUpdateOptOut(t *testing.T) {
+	has := func(env []string) bool { return slices.Contains(env, "WAYPOINT_NO_AUTO_UPDATE=1") }
+	for name, tc := range map[string]struct {
+		opts runnerOpts
+		env  string
+		want bool
+	}{
+		"updating":         {runnerOpts{}, "", false},
+		"--no-auto-update": {runnerOpts{NoAutoUpdate: true}, "", true},
+		"--once":           {runnerOpts{Once: true}, "", true},
+		"the runner's env": {runnerOpts{}, "1", true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("WAYPOINT_NO_AUTO_UPDATE", tc.env)
+			p := &runnerProc{opts: tc.opts}
+			if got := has(p.updateOptOutEnv()); got != tc.want {
+				t.Fatalf("opt-out env = %v, want %v", p.updateOptOutEnv(), tc.want)
+			}
+			if got := has(runnerSelfEnv(nil, p.updateOptOutEnv()...)); got != tc.want {
+				t.Fatalf("command job env lacks it: %v", runnerSelfEnv(nil, p.updateOptOutEnv()...))
+			}
+		})
+	}
+	// With it set, the job's wp stays quiet.
+	cliServer(t, "v1.2.0", "v1.2.0", false)
+	b := newBehindEnv(t)
+	setVersion(t, "v1.1.0")
+	t.Setenv("WAYPOINT_NO_AUTO_UPDATE", "1")
+	b.finish("v1.2.0", someCmd)
+	if b.count() != 0 {
+		t.Fatalf("started %v", b.started)
+	}
+}
+
+// Runner and wp commands see each other's work: a failed server check keeps
+// the claimed version's backoff, and the on-disk binary counts.
+func TestAutoUpdateKeepsTheClaimedVersionWhenTheServerCheckFails(t *testing.T) {
+	cliServer(t, "v1.2.0", "v1.2.0", false)
+	b := newBehindEnv(t)
+	setVersion(t, "v1.1.0")
+	b.finish("v1.2.0", someCmd)
+	c, _ := newCLI(io.Discard, io.Discard)
+	c.autoUpdate(context.Background(), "", errors.New("down"))
+	if c.state.Update == nil || c.state.Update.Server != "v1.2.0" || !strings.Contains(c.state.Update.Result, "couldn't ask the server") {
+		t.Fatalf("record = %+v", c.state.Update)
+	}
+	b.finish("v1.2.0", someCmd)
+	if b.count() != 1 {
+		t.Fatalf("started again: %v", b.started)
+	}
+}
+
+func TestSelfUpdateSkipsTheDownloadWhenTheDiskHasIt(t *testing.T) {
+	setVersion(t, "v1.1.0")
+	exe := installedWP(t)
+	// Another process already put v1.2.0 here; this cli has no server to download from.
+	_ = os.WriteFile(exe, []byte("#!/bin/sh\necho 'wp v1.2.0'\n"), 0o755)
+	c := &cli{dir: t.TempDir(), out: io.Discard, err: io.Discard}
+	got, path, err := c.selfUpdate(context.Background(), "v1.2.0")
+	if err != nil || got != "v1.2.0" || path != exe {
+		t.Fatalf("got %q %q %v", got, path, err)
+	}
+	// --force with the running version still downloads (here: fails for want of a server).
+	setVersion(t, "v1.2.0")
+	if _, _, err := c.selfUpdate(context.Background(), "v1.2.0"); err == nil {
+		t.Fatal("a binary equal to the running one was taken as already updated")
+	}
+}
+
+func TestRunnerRecordsItsUpdateInTheSharedState(t *testing.T) {
+	e := cliServer(t, "v1.2.0", "v1.2.0", false)
+	u := newUpdRunner(t, e, "v1.2.0")
+	b := &behindEnv{t: t, exe: u.exe}
+	old := backgroundStart
+	backgroundStart = func(bin string, args ...string) { b.started = append(b.started, bin) }
+	t.Cleanup(func() { backgroundStart = old })
+	started := make(chan struct{})
+	release := make(chan struct{})
+	u.p.downloadFn = func(ctx context.Context, want string) (string, string, error) {
+		close(started)
+		<-release
+		return want, u.exe, nil
+	}
+	u.busy(1)
+	u.step()
+	<-started
+	c, _ := newCLI(io.Discard, io.Discard)
+	if c.state.Update == nil || c.state.Update.Server != "v1.2.0" || c.state.Update.Result != "started" {
+		t.Fatalf("claim = %+v", c.state.Update)
+	}
+	c.seeServerVersion("v1.2.0")
+	c.autoUpdateIfBehind() // a wp command during the runner's download
+	if len(b.started) != 0 {
+		t.Fatalf("a second download started: %v", b.started)
+	}
+	close(release)
+	waitFor(t, "the result", 5*time.Second, func() bool { u.step(); return u.p.updatedTo == "v1.2.0" })
+	c, _ = newCLI(io.Discard, io.Discard)
+	if !strings.Contains(c.state.Update.Result, "updated from v1.1.0 to v1.2.0") {
+		t.Fatalf("result = %+v", c.state.Update)
+	}
+}
+
+func TestFetchPublicAndStreamGetRecordTheServerVersion(t *testing.T) {
+	e := cliServer(t, "v1.2.0", "v1.2.0", false)
+	_ = e
+	c, _ := newCLI(io.Discard, io.Discard)
+	if _, err := c.serverVersion(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := c.sawVersion.Load().(string); v != "v1.2.0" {
+		t.Errorf("fetchPublic saw %q", v)
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Waypoint-Version", " v1.4.0 ")
+		_, _ = w.Write([]byte("body"))
+	}))
+	defer ts.Close()
+	t.Setenv("WAYPOINT_SERVER", ts.URL)
+	c2, _ := newCLI(io.Discard, io.Discard)
+	var sink bytes.Buffer
+	if err := c2.streamGet("/x", &sink); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := c2.sawVersion.Load().(string); v != "v1.4.0" {
+		t.Errorf("streamGet saw %q", v)
+	}
+}
+
+func TestSeeServerVersionIgnoresBlankAndTrims(t *testing.T) {
+	c := &cli{}
+	c.seeServerVersion("   ")
+	c.seeServerVersion("")
+	if v, _ := c.sawVersion.Load().(string); v != "" {
+		t.Fatalf("saw %q", v)
+	}
+	c.seeServerVersion("  v1.2.0\n")
+	c.seeServerVersion("") // a later answer without it keeps what was seen
+	if v, _ := c.sawVersion.Load().(string); v != "v1.2.0" {
+		t.Fatalf("saw %q", v)
+	}
+}
+
+// A cli that loaded its state before another one claimed must not start a
+// second upgrade: the claim re-checks under the lock.
+func TestClaimRechecksUnderTheLock(t *testing.T) {
+	cliServer(t, "v1.2.0", "v1.2.0", false)
+	b := newBehindEnv(t)
+	setVersion(t, "v1.1.0")
+	a, _ := newCLI(io.Discard, io.Discard)
+	stale, _ := newCLI(io.Discard, io.Discard) // loaded before a claims
+	a.seeServerVersion("v1.2.0")
+	stale.seeServerVersion("v1.2.0")
+	a.cur, stale.cur = someCmd, someCmd
+	a.autoUpdateIfBehind()
+	stale.autoUpdateIfBehind()
+	if b.count() != 1 {
+		t.Fatalf("started %v", b.started)
+	}
+}
+
+// wp follows the server, down as well as up (a rollback).
+func TestAutoUpdateFollowsAnOlderServer(t *testing.T) {
+	cliServer(t, "v1.0.0", "v1.0.0", false)
+	b := newBehindEnv(t)
+	setVersion(t, "v1.1.0")
+	b.finish("v1.0.0", someCmd)
+	if b.count() != 1 {
+		t.Fatalf("an older server release: %v", b.started)
+	}
+}
+
+func TestRunnerStatusSaysWhenAnotherReleaseRuns(t *testing.T) {
+	e := cliServer(t, "v1.2.0", "v1.2.0", false)
+	me := e.runnerUser("robin")
+	newBehindEnv(t)
+	setVersion(t, "v1.1.0")
+	for name, v := range map[string]string{"old": "v0.149.0", "same": "v1.2.0", "dev": "dev"} {
+		if _, err := e.svc.RegisterRunner(context.Background(), me, core.RunnerRegistration{Name: name, Version: v}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, _ := e.run("runner", "status")
+	if !strings.Contains(out, "wp v0.149.0, server is v1.2.0)") {
+		t.Errorf("no mark on the old runner:\n%s", out)
+	}
+	if strings.Contains(out, "wp v1.2.0, server") || strings.Contains(out, "wp dev, server") {
+		t.Errorf("marked a runner that doesn't differ:\n%s", out)
+	}
+}

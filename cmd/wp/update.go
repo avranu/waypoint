@@ -108,6 +108,7 @@ func (c *cli) fetchPublic(ctx context.Context, path string, w io.Writer, limit i
 		return fmt.Errorf("can't reach %s: %w", server, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	c.seeServerVersion(resp.Header.Get(serverVersionHeader))
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("%s%s: HTTP %d", server, path, resp.StatusCode)
 	}
@@ -147,6 +148,13 @@ func (c *cli) selfUpdate(ctx context.Context, want string) (got, exe string, err
 	}
 	if throwawayBuild(exe) {
 		return "", exe, errors.New("this wp is a temporary build (go run, go test); install one with curl -fsSL " + orDash(c.server()) + "/cli | sh")
+	}
+	// Another process may have replaced it since this one started: a binary
+	// that already is the server's release needs no download.
+	if want != "" && want != version {
+		if on, err := binaryVersion(ctx, exe); err == nil && on == want {
+			return on, exe, nil
+		}
 	}
 	name := cliAsset()
 	var sums bytes.Buffer
@@ -307,7 +315,18 @@ func (c *cli) autoUpdate(ctx context.Context, sv string, err error) {
 			result = "updated from " + version + " to " + got
 		}
 	}
+	c.recordUpdate(sv, result, false)
+}
+
+// recordUpdate writes the state file's record of an update: now, for server
+// version sv, with result. A check that couldn't ask the server (sv empty)
+// keeps the version a claim named, so its 6-hour backoff stands. A claim
+// (the try begins) replaces the record whatever it said.
+func (c *cli) recordUpdate(sv, result string, claim bool) {
 	_ = c.updateState(func(s *State) {
+		if sv == "" && !claim && s.Update != nil {
+			sv = s.Update.Server
+		}
 		s.Update = &updateCheck{Checked: time.Now(), Server: sv, Result: result}
 	})
 }
@@ -324,9 +343,13 @@ func (c *cli) autoUpdateInBackground() {
 	c.claimAutoUpdate("", func(u *updateCheck) bool { return u == nil || time.Since(u.Checked) >= autoUpdateEvery })
 }
 
-// autoUpdateBehindEvery is how long after a try wp waits before trying for
-// the same server version again.
-const autoUpdateBehindEvery = 6 * time.Hour
+// updateRetryEvery is how long after a try (a wp command's, or a runner's)
+// wp waits before trying for the same server version again.
+const updateRetryEvery = 6 * time.Hour
+
+// serverVersionHeader is the header the server names its version in on every
+// answer.
+const serverVersionHeader = "X-Waypoint-Version"
 
 // seeServerVersion remembers the version a server answer named.
 func (c *cli) seeServerVersion(v string) {
@@ -339,8 +362,11 @@ func (c *cli) seeServerVersion(v string) {
 // included): if any answer it got showed the server on another release than
 // this wp, it starts `wp upgrade --auto` detached, once per server version
 // and again after 6 hours. It prints nothing and never fails the command.
-// The foreground runner updates itself (runnerProc.updateSelf) and wp
-// upgrade is the update.
+// The foreground runner updates itself (runnerProc.updateStep, idle or busy)
+// and wp upgrade is the update.
+//
+// Any other release than this wp's counts, an older one too: wp follows the
+// server, so a rollback of the server rolls wp back with it.
 func (c *cli) autoUpdateIfBehind() {
 	defer func() { _ = recover() }()
 	seen, _ := c.sawVersion.Load().(string)
@@ -351,7 +377,7 @@ func (c *cli) autoUpdateIfBehind() {
 		return
 	}
 	c.claimAutoUpdate(seen, func(u *updateCheck) bool {
-		return u == nil || u.Server != seen || time.Since(u.Checked) >= autoUpdateBehindEvery
+		return u == nil || u.Server != seen || time.Since(u.Checked) >= updateRetryEvery
 	})
 }
 

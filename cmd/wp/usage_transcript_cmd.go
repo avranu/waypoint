@@ -85,7 +85,7 @@ func (c *cli) streamGet(path string, w io.Writer) error {
 		return fmt.Errorf("can't reach %s: %w", c.server(), err)
 	}
 	defer resp.Body.Close()
-	c.seeServerVersion(resp.Header.Get("X-Waypoint-Version"))
+	c.seeServerVersion(resp.Header.Get(serverVersionHeader))
 	if resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		var e struct {

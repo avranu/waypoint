@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
 )
@@ -108,8 +109,8 @@ func failed(format string, a ...any) outcome {
 // runnerSelfEnv tells a command job where this runner's wp is and which
 // directories it allows, so `wp kit sync --all` (the Kit page's Roll out)
 // runs the same wp over the same folders.
-func runnerSelfEnv(allowed []string) []string {
-	var out []string
+func runnerSelfEnv(allowed []string, extra ...string) []string {
+	out := slices.Clone(extra)
 	if exe, err := os.Executable(); err == nil {
 		out = append(out, "WAYPOINT_WP="+exe)
 	}
@@ -133,7 +134,7 @@ func (p *runnerProc) execCommand(ctx context.Context, run *jobRun, in commandJob
 	defer cancel()
 	cmd := shellCommand(ctx, in.Command)
 	cmd.Dir = dir
-	cmd.Env = append(jobEnv(os.Environ(), in.Env, in.KeepKeys), runnerSelfEnv(p.allowed)...)
+	cmd.Env = append(jobEnv(os.Environ(), in.Env, in.KeepKeys), runnerSelfEnv(p.allowed, p.updateOptOutEnv()...)...)
 	cmd.Stdout, cmd.Stderr = run.out, run.out // one writer: output stays in order
 	cmd.Stdin = nil
 	setProcGroup(cmd)

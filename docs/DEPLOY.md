@@ -595,6 +595,11 @@ and runners built from a release follow it:
   runner process restarts on it when no job is running. If it has waited 15
   minutes, it takes no new jobs until the running ones finish, then restarts.
 
+This applies only to release builds (`vX.Y.Z`) on both sides; a runner started
+with `--once` never updates. A runner started on a `wp` from before this
+change keeps the old rule (it updates only when no job is running), so run
+`wp upgrade` and restart the runner once on each machine.
+
 `WAYPOINT_NO_AUTO_UPDATE=1` stops all of this, and `wp runner --no-auto-update`
 stops it for one runner.
 

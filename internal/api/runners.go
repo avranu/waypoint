@@ -77,7 +77,8 @@ func (s *Server) runnerPoll(w http.ResponseWriter, r *http.Request) (any, error)
 		return nil, err
 	}
 	// The server's version: a runner on a release build that differs
-	// updates itself to it, between jobs (wp upgrade).
+	// replaces its binary with it at once, restarts on it when no job is
+	// running, and takes no new jobs after 15 minutes of waiting (wp upgrade).
 	return struct {
 		*core.RunnerWork
 		ServerVersion string `json:"server_version"`
