@@ -132,6 +132,7 @@ func TestLineLateUrgentLabelOrder(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// lineOrder sorts ms in place (lineSort); the result is read from ms.
 		if _, _, err := se.s.lineOrder(se.ctx, ms, ""); err != nil {
 			t.Fatal(err)
 		}

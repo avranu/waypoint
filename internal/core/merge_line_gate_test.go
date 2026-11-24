@@ -67,6 +67,7 @@ func TestLineLeftReasons(t *testing.T) {
 		{"settled", func(p *PullRequest) {}, ""},
 		{"head unknown", func(p *PullRequest) { p.HeadSHA = "" }, "its head isn't known"},
 		{"checks failed", func(p *PullRequest) { p.CIState = CIFailed }, "its checks failed"},
+		// the holder (marked ready by Waypoint) stays in the line when its checks fail: its own run decides
 		{"checks failed on the holder", func(p *PullRequest) {
 			p.CIState, p.WipAuto, p.State, p.ReadyAt = CIFailed, true, "open", &ready
 		}, ""},
