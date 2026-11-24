@@ -93,7 +93,7 @@ export function ForgesTab() {
       return
     }
     const offered = repos.filter((r) => !r.ignored)
-    if (projectsMade(offered) > ASK_ABOVE || offered.length < repos.length)
+    if (projectsMade(offered) > ASK_ABOVE || (!enable && offered.length < repos.length))
       setPicking({ forge, repos, enable })
     else attach.mutate({ forge, repos: offered.map((r) => r.repo), skip: [], enable })
   }
