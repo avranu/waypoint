@@ -38,9 +38,11 @@ func (se *stackEnv) frontWithRunBehind() {
 }
 
 // WP-316 (catchUpFront before #569): a front that fell behind its base while
-// its checks run is brought up to date, in branch mode (planLine: a branch
-// front is updated when !OnTip || !FullRunning). Once, not on every step:
-// after the push the new head holds the tip and its full run is going.
+// its checks run is brought up to date, in branch mode, and not again once
+// its push is in. This checks what the service does: the planner's rule
+// (!OnTip || !FullRunning) is in TestPlanLine, and lineUpdateAct only pushes
+// when the forge says the head is behind, so a planner that asked for an
+// update of an up-to-date head would not show here.
 func TestLineBranchFrontBehindWithPendingChecksIsUpdatedOnce(t *testing.T) {
 	se := newStackEnv(t)
 	se.branchMode()
@@ -73,7 +75,9 @@ func TestLineBranchFrontBehindWithPendingChecksIsUpdatedOnce(t *testing.T) {
 }
 
 // A front on the tip whose full run is going is left alone in branch mode:
-// that run is its test (planLine's rule needs !OnTip || !FullRunning).
+// that run is its test. The service reads nothing but the forge's answer
+// here (lineUpdateAct is a no-op on an up-to-date head); the rule itself is
+// guarded by TestPlanLine's branch front cases.
 func TestLineBranchFrontOnTipWithRunGoingIsNotUpdated(t *testing.T) {
 	se := newStackEnv(t)
 	se.branchMode()
