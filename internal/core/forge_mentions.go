@@ -568,7 +568,7 @@ func (s *Service) forgeMentions(ctx context.Context, q queryer, issueID int64, a
 			// The verb, excerpt and link come from one text.
 			if o.Verb == "" && m.Verb != "" {
 				o.Verb, o.Excerpt, o.SourceURL = m.Verb, m.Excerpt, m.SourceURL
-			} else if o.Excerpt == "" && m.Excerpt != "" {
+			} else if o.Verb == "" && o.Excerpt == "" && m.Excerpt != "" {
 				o.Excerpt, o.SourceURL = m.Excerpt, m.SourceURL
 			}
 			if m.At.Before(o.At) {
