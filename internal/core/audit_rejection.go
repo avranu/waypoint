@@ -45,15 +45,16 @@ func (s *Service) rejectsOwnRound(ctx context.Context, actor *Actor, audit int64
 }
 
 // findingFinder is the model that found a finding: the helper panel's for a
-// finding made of its leads, else the model that answered the audit. Audits
-// don't record an effort.
+// finding made of its leads (as PanelFinding reads the lead column: a value
+// naming no panel check is no panel finding), else the model that answered
+// the audit. Audits don't record an effort.
 func (s *Service) findingFinder(ctx context.Context, audit int64, n int) (strength.Model, error) {
 	var model, key, lead string
 	err := s.db.R.QueryRowContext(ctx, `SELECT a.model, a.request_key, f.lead FROM code_audit_findings f JOIN code_audits a ON a.id = f.audit_id WHERE f.audit_id = ? AND f.ordinal = ?`, audit, n).Scan(&model, &key, &lead)
 	if err != nil {
 		return strength.Model{}, err
 	}
-	if lead != "" {
+	if PanelFinding(CodeAuditFinding{Lead: lead}) {
 		model = helperModel
 	}
 	if model == ownReportModel {

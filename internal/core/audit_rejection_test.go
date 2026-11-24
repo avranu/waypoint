@@ -181,12 +181,14 @@ func TestSessionRejectsItsOwnRoundsFindings(t *testing.T) {
 
 func TestHelperPanelFindingCountsAsHaikus(t *testing.T) {
 	re := newRejectionEnv(t, "claude/opus")
-	re.exec(`UPDATE code_audit_findings SET lead = 'check.1' WHERE audit_id = ? AND ordinal = 1`, re.audit)
+	re.exec(`UPDATE code_audit_findings SET lead = 'tests.1' WHERE audit_id = ? AND ordinal = 1`, re.audit)
+	// A lead naming no panel check is no panel finding, as PanelFinding reads it.
+	re.exec(`UPDATE code_audit_findings SET lead = 'check.1' WHERE audit_id = ? AND ordinal = 2`, re.audit)
 	if err := re.reject(re.session("claude-haiku-5-5", ""), 1, "a.go:1"); err != nil {
 		t.Fatalf("haiku against the panel's finding: %v", err)
 	}
 	if err := re.reject(re.session("claude-haiku-5-5", ""), 2, "b.go:2"); err == nil || !strings.Contains(err.Error(), "found by opus") {
-		t.Fatalf("haiku against opus's finding: %v", err)
+		t.Fatalf("haiku against opus's finding with a lead naming no check: %v", err)
 	}
 }
 
