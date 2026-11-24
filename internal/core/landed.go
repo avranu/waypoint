@@ -37,7 +37,7 @@ func (s *Service) onBaseMoved(ctx context.Context, f *Forge, repo, branch string
 		f.ID, repo, branch).Scan(&n); err != nil || n == 0 {
 		return
 	}
-	bg := context.WithoutCancel(ctx)
+	bg := withoutLineLocks(context.WithoutCancel(ctx))
 	s.goBG(func() {
 		s.checkLanded(bg, f, repo, branch)
 		s.lineChanged(bg, lineRef{forge: f.ID, repo: repo, base: branch}) // the base moved: candidates on the old tip end, the line reads the new one (WP-1659)

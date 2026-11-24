@@ -214,7 +214,7 @@ func (s *Service) evalGate(ctx context.Context, prID int64) error {
 		return nil
 	})
 	if err == nil && state == GateSuccess {
-		s.goBG(func() { s.maybeAutoMerge(context.WithoutCancel(ctx), pr.ID) })
+		s.goBG(func() { s.maybeAutoMerge(withoutLineLocks(context.WithoutCancel(ctx)), pr.ID) })
 	}
 	return err
 }
@@ -382,7 +382,7 @@ func (s *Service) SetRepoGate(ctx context.Context, actor *Actor, projectRef stri
 	if err != nil {
 		return err
 	}
-	s.goBG(func() { s.regate(context.WithoutCancel(ctx), forgeID, repo) })
+	s.goBG(func() { s.regate(withoutLineLocks(context.WithoutCancel(ctx)), forgeID, repo) })
 	return nil
 }
 

@@ -477,12 +477,12 @@ func (s *Service) recordPR(ctx context.Context, f *Forge, repo string, fp *Forge
 		for _, e := range later {
 			e.At = at
 		}
-		bg := context.WithoutCancel(ctx)
+		bg := withoutLineLocks(context.WithoutCancel(ctx))
 		s.goBG(func() { s.dispatch(bg, SystemActor(), later) })
 	}
 	if err == nil && ended && out != nil {
 		// What merges after it may merge now (WP-912).
-		bg, merged := context.WithoutCancel(ctx), out
+		bg, merged := withoutLineLocks(context.WithoutCancel(ctx)), out
 		s.goBG(func() { s.nudgeMergeWaiters(bg, merged) })
 	}
 	return out, err

@@ -544,7 +544,7 @@ func TestNudgeLineWhileHoldingTheQueueLock(t *testing.T) {
 	se := newStackEnv(t)
 	se.draftGreen(head7s, 5)
 	pr := se.pr(7)
-	unlock := se.s.queueLock(pr)
+	_, unlock := se.s.queueLockCtx(se.ctx, pr)
 	done := make(chan struct{})
 	go func() {
 		se.s.nudgeLine(se.ctx, pr)
@@ -961,7 +961,7 @@ func TestLineUpdateActSkipsAFrontThatLeft(t *testing.T) {
 			se.sg.behind = map[string]bool{head7s: true}
 			stateBefore := se.pr(7).State
 			if leaves {
-				se.s.leaveQueue(se.ctx, pr.ID)
+				se.s.leaveQueue(se.ctx, pr)
 			}
 			se.s.lineAct(se.ctx, ls, acts[0])
 			se.s.Wait()
@@ -1046,7 +1046,7 @@ func TestLineMergeActSkipsAFrontThatLeft(t *testing.T) {
 				t.Fatalf("plan: %+v", acts)
 			}
 			if leaves {
-				se.s.leaveQueue(se.ctx, pr.ID) // as heldWait does, outside the line's lock
+				se.s.leaveQueue(se.ctx, pr) // as heldWait does, outside the line's lock
 			}
 			se.s.lineAct(se.ctx, ls, acts[0])
 			se.s.Wait()
