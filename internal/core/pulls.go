@@ -1695,6 +1695,7 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 	}
 	if err := s.saveFindings(ctx, r, fp.HeadSHA, o.placed, append(slices.Clone(o.verifyDropped), noEvidence...), o.emptyRequests, private); err != nil {
 		s.log.ErrorContext(ctx, "save findings", "run", r.ID, "err", err)
+		o.unsaved = true
 	} else if _, err := s.syncFindings(ctx, f, pr, false); err != nil {
 		s.log.WarnContext(ctx, "link findings to their threads", "run", r.ID, "err", err) // the next sync does
 	}

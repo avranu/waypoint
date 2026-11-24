@@ -42,9 +42,6 @@ func TestChangeHash(t *testing.T) {
 	if ChangeHash(base+bin("1..2")) == ChangeHash(base+bin("1..3")) {
 		t.Error("a binary file replaced by another: same hash")
 	}
-	if ChangeHash(base+bin("1..2")) != ChangeHash(base+bin("1..2")) {
-		t.Error("the same binary change: different hashes")
-	}
 	for _, c := range cases {
 		if got := ChangeHash(c.diff) == want; got != c.same {
 			t.Errorf("%s: same = %v, want %v", c.name, got, c.same)

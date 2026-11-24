@@ -86,9 +86,10 @@ func ruleID(id *int64) int64 {
 // fit, or an answer cut off at its length limit leaves something no one has
 // reviewed, and the next head is reviewed instead. Lockfiles, generated files
 // and a rule's skip_files are left out of every review of the rule, so they
-// don't count.
+// don't count. Nor is a review carried whose findings could not be saved: the
+// gate has not seen them, and the next head's review saves them again.
 func reviewedWhole(o reviewOutcome) bool {
-	return len(o.dropped) == 0 && !o.cut && o.salvagedAnswers == 0
+	return len(o.dropped) == 0 && !o.cut && o.salvagedAnswers == 0 && !o.unsaved
 }
 
 // noteReviewedHead records that rule's review finished on head, for later

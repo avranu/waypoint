@@ -51,11 +51,12 @@ func TestReviewedWhole(t *testing.T) {
 		o    reviewOutcome
 		want bool
 	}{
-		"all of it":         {reviewOutcome{}, true},
-		"noise left out":    {reviewOutcome{noise: 2}, true},
-		"a file not read":   {reviewOutcome{dropped: []string{"a.go"}}, false},
-		"a file cut":        {reviewOutcome{cut: true}, false},
-		"an answer cut off": {reviewOutcome{salvagedAnswers: 1}, false},
+		"all of it":          {reviewOutcome{}, true},
+		"noise left out":     {reviewOutcome{noise: 2}, true},
+		"a file not read":    {reviewOutcome{dropped: []string{"a.go"}}, false},
+		"a file cut":         {reviewOutcome{cut: true}, false},
+		"an answer cut off":  {reviewOutcome{salvagedAnswers: 1}, false},
+		"findings not saved": {reviewOutcome{unsaved: true}, false},
 	} {
 		if got := reviewedWhole(c.o); got != c.want {
 			t.Errorf("%s: %v, want %v", name, got, c.want)
