@@ -38,6 +38,21 @@ func (a *apEnv) ship(key, review string, more ...func(*OpenPRInput)) (*OpenPRRes
 	for _, f := range more {
 		f(&in)
 	}
+	// A ship that says nothing of its head pushed the commit every test's forge
+	// has the branch at; one that names a time (a test of commits made after a
+	// review) names its own head and has no sha.
+	if in.HeadTime == 0 && in.HeadSHA == "" {
+		in.HeadTime, in.HeadSHA = shippedHeadTime, shippedHead
+	}
+	// The pull request the forge opens from the branch starts at the commit
+	// wp ship pushed unless the test says where the branch is.
+	if g, ok := a.s.Forges.(*shipForge); ok && in.Head != "" {
+		g.sm.Lock()
+		if _, set := g.heads[in.Head]; !set {
+			g.heads[in.Head] = in.HeadSHA
+		}
+		g.sm.Unlock()
+	}
 	return a.s.OpenPullRequest(a.ctx, a.ag, in)
 }
 
@@ -59,16 +74,14 @@ func TestReviewBeforePR(t *testing.T) {
 	a.setClock(a.clockNow().Add(time.Minute))
 
 	// An older wp gets the text as an error; this one as the reply.
-	if _, err := a.ship(first.Key, ""); !IsInvalid(err) || !strings.Contains(err.Error(), "End your turn") {
+	if _, err := a.ship(first.Key, ""); !IsInvalid(err) || !strings.Contains(err.Error(), "end your turn") {
 		t.Fatalf("old CLI: %v", err)
 	}
 	res, err := a.ship(first.Key, ShipAuto)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The audit started with the first ship (WP-1325), so the second one
-	// says it is under way.
-	if !strings.Contains(res.Held, "End your turn") || !strings.Contains(res.Notice, "still under way") || res.Pull != nil || len(g.created) != 0 {
+	if !strings.Contains(res.Held, "end your turn") || res.Notice != "" || res.Pull != nil || len(g.created) != 0 {
 		t.Fatalf("held = %+v (opened %d)", res, len(g.created))
 	}
 	var roundID int64
@@ -100,32 +113,27 @@ func TestReviewBeforePR(t *testing.T) {
 	}
 	a.endAudit(box, "done")
 	a.tick(time.Second)
-	if len(a.jobs) != 1 {
-		t.Fatalf("jobs = %+v", a.jobs)
+	a.s.Wait()
+	// Nothing found: no prompt is typed, and Waypoint opens the pull
+	// request itself, as the session's second ship would have.
+	for _, j := range a.jobs {
+		var in AutopilotJob
+		_ = json.Unmarshal(j.Input, &in)
+		if in.ReviewOf != "" {
+			t.Fatalf("a review prompt was typed: %+v", in)
+		}
 	}
-	var in AutopilotJob
-	_ = json.Unmarshal(a.jobs[0].Input, &in)
-	if in.ReviewOf != first.Key || !strings.Contains(in.Review, "found nothing to fix") || !strings.Contains(in.Review, "wp ship --pr") {
-		t.Fatalf("review job = %+v", in)
+	if len(g.created) != 1 {
+		t.Fatalf("opened %d", len(g.created))
 	}
-	a.prompt(in.Review)
-	if r := a.round(roundID); r.state != RoundRunning {
-		t.Fatalf("after the prompt: %+v", r)
-	}
-
-	// Its wp ship --pr opens the pull request.
-	res, err = a.ship(first.Key, ShipPR)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Held != "" || res.Notice != "" || res.Pull == nil || len(g.created) != 1 {
-		t.Fatalf("after the review = %+v (opened %d)", res, len(g.created))
+	if r := a.round(roundID); r.state != RoundDone {
+		t.Fatalf("after the review: %+v", r)
 	}
 	if _, err := a.s.AgentDone(a.ctx, a.ag, first.Key, AgentDoneInput{Comment: "done"}); err != nil {
 		t.Fatal(err)
 	}
 	a.stopWith("Grok found nothing; shipped as #101.")
-	if r := a.round(roundID); r.state != RoundDone || !strings.Contains(r.body, "shipped as #101") {
+	if r := a.round(roundID); r.state != RoundDone {
 		t.Fatalf("round = %+v", r)
 	}
 }
@@ -155,7 +163,7 @@ func TestReviewBeforePRAuditTakenBySession(t *testing.T) {
 	a.stopWith("Pushed; the review comes first.")
 	a.tick(61 * time.Second)
 	res, err := a.ship(first.Key, ShipPR)
-	if err != nil || res.Pull != nil || !strings.Contains(res.Notice, "still under way") {
+	if err != nil || res.Pull != nil || !strings.Contains(res.Held, "end your turn") {
 		t.Fatalf("while auditing = %+v, %v", res, err)
 	}
 	a.endAudit(box, "done", "Off by one", "Missing test")
@@ -170,7 +178,7 @@ func TestReviewBeforePRAuditTakenBySession(t *testing.T) {
 	}
 	// One left: held, and told which.
 	res, err = a.ship(first.Key, ShipPR)
-	if err != nil || res.Pull != nil || len(g.created) != 0 || !strings.Contains(res.Notice, "1 finding still to decide: "+id2) {
+	if err != nil || res.Pull != nil || len(g.created) != 0 || !strings.Contains(res.Notice, "1 finding still to decide:") || !strings.Contains(res.Notice, "- "+id2+" [high] at internal/merge.go") || !strings.Contains(res.Notice, "then run `wp ship`") {
 		t.Fatalf("one left = %+v, %v", res, err)
 	}
 	if r := a.round(roundID); r.state != RoundPending {
@@ -205,9 +213,9 @@ func TestReviewBeforePRAuditTakenBySession(t *testing.T) {
 	// is followed up: round 2 comes before the pull request.
 	a.stopWith("Waiting for the check of my marks.")
 	a.endCheck(box, "done")
-	a.deliverNews()
+	a.s.Wait()
 	res, err = a.ship(first.Key, ShipPR)
-	if err != nil || res.Pull != nil || len(g.created) != 0 || !strings.Contains(res.Held, "adversarial review round 2") {
+	if err != nil || res.Pull != nil || len(g.created) != 0 || !strings.Contains(res.Held, "review round 2 of") {
 		t.Fatalf("after the check = %+v, %v (opened %d)", res, err, len(g.created))
 	}
 	var arm string
@@ -224,6 +232,37 @@ func (a *apEnv) newestRoundID() int64 {
 		a.t.Fatal(err)
 	}
 	return id
+}
+
+// The --base of a ship held for its review counts: the wp ship that follows
+// the review doesn't repeat it, and a pull request already open moves
+// before the hold (WP-1670).
+func TestReviewBeforePRKeepsBase(t *testing.T) {
+	a, _, g := firstEnv(t)
+	if _, err := a.s.SetAutopilot(a.ctx, a.admin, a.p.Key, AutopilotSettingInput{Merge: true,
+		Limits: AutopilotLimits{Review: ptrOf(true), SpacingMinutes: ptrOf(120)}}); err != nil {
+		t.Fatal(err)
+	}
+	first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude", Priority: "urgent"})
+	if _, err := a.s.AgentTake(a.ctx, a.ag, first.Key, ""); err != nil {
+		t.Fatal(err)
+	}
+	a.clock = a.clock.Add(time.Minute)
+	res, err := a.ship(first.Key, ShipReview, func(in *OpenPRInput) { in.Base = "release" })
+	if err != nil || res.Held == "" || len(g.created) != 0 {
+		t.Fatalf("held: %+v %v (opened %d)", res, err, len(g.created))
+	}
+	res, err = a.ship(first.Key, ShipSkip, func(in *OpenPRInput) { in.Reason = "not needed" })
+	if err != nil || res.Pull == nil || res.Pull.BaseRef != "release" {
+		t.Fatalf("after the review: %+v %v", res, err)
+	}
+	res, err = a.ship(first.Key, ShipReview, func(in *OpenPRInput) { in.Base = "main" })
+	if err != nil || res.Held == "" || !strings.Contains(res.Notice, "is now open into main") {
+		t.Fatalf("held on an open pull request: %+v %v", res, err)
+	}
+	if !slices.Equal(g.baseEdits, []string{"101:main"}) {
+		t.Errorf("base edits %v", g.baseEdits)
+	}
 }
 
 // A session that stops after its review without wp ship: the round ends
@@ -264,7 +303,7 @@ func TestReviewBeforePRNotShipped(t *testing.T) {
 	}
 }
 
-// With a runner there, the unshipped round's audit starts at the ship, is
+// With a runner there, the unshipped round's audit starts at its step's first tick, is
 // recorded on the round (audit_id, audit_at), and is keyed by the round.
 func TestReviewBeforePRNotShippedAuditStarts(t *testing.T) {
 	a, _, _ := firstEnv(t)
@@ -272,7 +311,7 @@ func TestReviewBeforePRNotShippedAuditStarts(t *testing.T) {
 	if _, err := a.s.AgentTake(a.ctx, a.ag, first.Key, ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.ship(first.Key, ShipAuto); err != nil {
+	if _, err := a.shipStarted(first.Key, ShipAuto); err != nil {
 		t.Fatal(err)
 	}
 	round := a.newestRoundID()
@@ -288,7 +327,7 @@ func TestReviewBeforePRNotShippedAuditStarts(t *testing.T) {
 
 // A review held before its pull request that a person's prompt cut short
 // before it reported runs again: the Stop after asks for it, and so does
-// the session's own wp ship --pr. Past reviewInterruptsMax interruptions,
+// the session's own wp ship. Past reviewInterruptsMax interruptions,
 // the pull request goes ahead without it (WP-823).
 func TestReviewBeforePRInterrupted(t *testing.T) {
 	start := func(t *testing.T) (*apEnv, *shipForge, *IssueDetail) {
@@ -354,7 +393,7 @@ func TestReviewBeforePRInterrupted(t *testing.T) {
 		}
 	})
 
-	t.Run("its wp ship --pr asks for it again", func(t *testing.T) {
+	t.Run("its wp ship asks for it again", func(t *testing.T) {
 		a, g, first := start(t)
 		interrupt(a)
 		res, err := a.ship(first.Key, ShipPR)
@@ -362,7 +401,7 @@ func TestReviewBeforePRInterrupted(t *testing.T) {
 			t.Fatal(err)
 		}
 		if res.Held == "" || !strings.Contains(res.Notice, "interrupted before it reported") || len(g.created) != 0 {
-			t.Fatalf("ship --pr = %+v (opened %d)", res, len(g.created))
+			t.Fatalf("ship = %+v (opened %d)", res, len(g.created))
 		}
 		a.stopWith("Waiting for the review again.")
 		if got := a.rounds(); len(got) != 2 || got[1] != RoundPending {
@@ -403,7 +442,7 @@ func TestReviewBeforePRInterrupted(t *testing.T) {
 			t.Fatal(err)
 		}
 		if res.Pull == nil || len(g.created) != 1 || !strings.Contains(res.Notice, "goes ahead without it") {
-			t.Fatalf("ship --pr = %+v (opened %d)", res, len(g.created))
+			t.Fatalf("ship = %+v (opened %d)", res, len(g.created))
 		}
 	})
 }
@@ -411,7 +450,7 @@ func TestReviewBeforePRInterrupted(t *testing.T) {
 // The Stop after a held ship: background work started since doesn't hold
 // the review, as a session at its prompt can be typed into whatever runs
 // behind it (WP-1363); autopilot turned off since the ship doesn't drop it:
-// the review comes, its wp ship --pr opens the pull request, and nothing
+// the review comes, its wp ship opens the pull request, and nothing
 // starts after it.
 func TestReviewBeforePRAtStop(t *testing.T) {
 	t.Run("background work doesn't hold it", func(t *testing.T) {
@@ -465,7 +504,7 @@ func TestReviewBeforePRAtStop(t *testing.T) {
 			t.Fatal(err)
 		}
 		if res, err := a.ship(first.Key, ShipPR); err != nil || res.Pull == nil || len(g.created) != 1 {
-			t.Fatalf("ship --pr = %+v, %v", res, err)
+			t.Fatalf("ship = %+v, %v", res, err)
 		}
 		if _, err := a.s.AgentDone(a.ctx, a.ag, first.Key, AgentDoneInput{Comment: "done"}); err != nil {
 			t.Fatal(err)
@@ -507,7 +546,7 @@ func TestReviewBeforePROpensWhenItCant(t *testing.T) {
 		}
 		first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude"})
 		_, _ = a.s.AgentTake(a.ctx, a.ag, first.Key, "")
-		if res, err := a.ship(first.Key, ShipReview); err != nil || res.Pull != nil || !strings.Contains(res.Held, "End your turn") || len(g.created) != 0 {
+		if res, err := a.ship(first.Key, ShipReview); err != nil || res.Pull != nil || !strings.Contains(res.Held, "end your turn") || len(g.created) != 0 {
 			t.Fatalf("review = %+v, %v", res, err)
 		}
 		if got := a.rounds(); len(got) != 1 || got[0] != RoundPending {
@@ -574,7 +613,7 @@ func TestGrokReviewPromptIsWhole(t *testing.T) {
 	if want := "Audit #286 (adversarial review by Grok 4.7 (grok-4.7-high, through Cursor)) is below. Its findings are another model's claims, not facts.\n\nAssess every claim"; !strings.HasPrefix(p, want) {
 		t.Errorf("prompt starts:\n%s", p[:200])
 	}
-	for _, want := range []string{"`wp audit mark 286.1 fixed -m \"what you did\"`", "`wp audit mark 286.1 rejected -m \"why\"`", "`wp ship --pr --summary \"what you fixed, filed and rejected, and why\"`", "<untrusted>\n### 286.1", "### 286.30 ", strings.Repeat("c", 2000), strings.Repeat("n", 2000), strings.Repeat("p ", 1999)} {
+	for _, want := range []string{"`wp audit mark 286.1 fixed -m \"what you did\"`", "`wp audit mark 286.1 rejected -m \"why\"`", "`wp ship --summary \"what you fixed, filed and rejected, and why\"`", "<untrusted>\n### 286.1", "### 286.30 ", strings.Repeat("c", 2000), strings.Repeat("n", 2000), strings.Repeat("p ", 1999)} {
 		if !strings.Contains(p, want) {
 			t.Errorf("the prompt lacks %q", excerpt(want, 80))
 		}
@@ -588,10 +627,7 @@ func TestGrokReviewPromptIsWhole(t *testing.T) {
 	if _, _, _, err := checkRunnerInput(JobAutopilot, raw); err != nil {
 		t.Errorf("the job is refused: %v", err)
 	}
-	if got := grokShipPrompt(&CodeAudit{ID: 7, Model: "cursor/grok-4.7-high"}); got != "Audit #7 (adversarial review by Grok 4.7 (grok-4.7-high, through Cursor)) found nothing to fix. Run `wp ship --pr`, then tell the user so." {
-		t.Errorf("ship prompt: %s", got)
-	}
-	if ownReviewPrompt(legacyReviewPrompt) != DefaultReviewPrompt || ownReviewPrompt(wp689ReviewPrompt) != DefaultReviewPrompt || ownReviewPrompt("") != DefaultReviewPrompt || ownReviewPrompt("Mine.") != "Mine." {
+	if ownReviewPrompt(legacyReviewPrompt) != DefaultReviewPrompt || ownReviewPrompt(wp689ReviewPrompt) != DefaultReviewPrompt || ownReviewPrompt(wp688ReviewPrompt) != DefaultReviewPrompt || ownReviewPrompt("") != DefaultReviewPrompt || ownReviewPrompt("Mine.") != "Mine." {
 		t.Error("ownReviewPrompt")
 	}
 }
@@ -659,11 +695,11 @@ func TestShipIntents(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(res.Held, "End your turn") || !strings.Contains(res.Notice, "wp ship --skip-review") || len(g.created) != 0 {
+			if !strings.Contains(res.Held, "end your turn") || strings.Contains(res.Notice, "--skip-review") || len(g.created) != 0 {
 				t.Fatalf("pr = %+v", res)
 			}
 		}
-		if res, err := a.ship(key, ShipReview); err != nil || !strings.Contains(res.Held, "End your turn") || res.Notice != "" {
+		if res, err := a.ship(key, ShipReview); err != nil || !strings.Contains(res.Held, "end your turn") || res.Notice != "" {
 			t.Fatalf("review = %+v, %v", res, err)
 		}
 		if got := a.rounds(); len(got) != 1 || got[0] != RoundPending {
@@ -687,7 +723,7 @@ func TestShipIntents(t *testing.T) {
 	// /clear ended it as "you cleared the session".
 	t.Run("skip from another session", func(t *testing.T) {
 		a, g, key := introEnv(t)
-		if res, err := a.ship(key, ShipPR); err != nil || !strings.Contains(res.Held, "End your turn") {
+		if res, err := a.ship(key, ShipPR); err != nil || !strings.Contains(res.Held, "end your turn") {
 			t.Fatalf("pr = %+v, %v", res, err)
 		}
 		a.stopWith("Pushed; the review comes first.")
@@ -722,7 +758,7 @@ func TestShipIntents(t *testing.T) {
 	// skip, with the branch its wp ship named.
 	t.Run("skip from another session records triage without a row", func(t *testing.T) {
 		a, _, key := introEnv(t)
-		if res, err := a.ship(key, ShipPR); err != nil || !strings.Contains(res.Held, "End your turn") {
+		if res, err := a.ship(key, ShipPR); err != nil || !strings.Contains(res.Held, "end your turn") {
 			t.Fatalf("pr = %+v, %v", res, err)
 		}
 		a.stopWith("Pushed; the review comes first.")
@@ -750,7 +786,7 @@ func TestShipIntents(t *testing.T) {
 	// task's run isn't the agent's: no other round is swept.
 	t.Run("waypoint's skip from another session leaves the round", func(t *testing.T) {
 		a, _, key := introEnv(t)
-		if res, err := a.ship(key, ShipPR); err != nil || !strings.Contains(res.Held, "End your turn") {
+		if res, err := a.ship(key, ShipPR); err != nil || !strings.Contains(res.Held, "end your turn") {
 			t.Fatalf("pr = %+v, %v", res, err)
 		}
 		a.stopWith("Pushed; the review comes first.")
@@ -769,7 +805,7 @@ func TestShipIntents(t *testing.T) {
 	})
 	t.Run("pr from another session leaves the round", func(t *testing.T) {
 		a, _, key := introEnv(t)
-		if res, err := a.ship(key, ShipPR); err != nil || !strings.Contains(res.Held, "End your turn") {
+		if res, err := a.ship(key, ShipPR); err != nil || !strings.Contains(res.Held, "end your turn") {
 			t.Fatalf("pr = %+v, %v", res, err)
 		}
 		a.stopWith("Pushed; the review comes first.")
@@ -814,7 +850,7 @@ func TestShipIntents(t *testing.T) {
 			t.Fatalf("rounds = %q", got)
 		}
 		res, err = a.ship(key, ShipReview, func(in *OpenPRInput) { in.Force = true })
-		if err != nil || !strings.Contains(res.Held, "End your turn") || !strings.Contains(res.Notice, "replaced") || len(g.created) != 0 {
+		if err != nil || !strings.Contains(res.Held, "end your turn") || !strings.Contains(res.Notice, "replaced") || len(g.created) != 0 {
 			t.Fatalf("force = %+v, %v", res, err)
 		}
 		if got := a.rounds(); len(got) != 2 || got[0] != "interrupted replaced by another review the agent asked for" || got[1] != RoundPending {
@@ -837,7 +873,7 @@ func TestShipIntents(t *testing.T) {
 		// Committed since: another round, on the open pull request.
 		res, err = a.ship(key, ShipReview, func(in *OpenPRInput) { in.HeadTime = ended/1000 + 60 })
 		if err != nil || !res.Existing || res.Pull != nil || !strings.Contains(res.Held, "doesn't merge before the review ends") ||
-			!strings.Contains(res.Notice, "another is scheduled for what was committed since") || !strings.Contains(res.Notice, "--skip-review") {
+			!strings.Contains(res.Notice, "another is scheduled for what was committed since") || strings.Contains(res.Notice, "--skip-review") {
 			t.Fatalf("committed since = %+v, %v", res, err)
 		}
 		if got := a.rounds(); len(got) != 2 || got[0] != RoundDone || got[1] != RoundPending {
@@ -948,7 +984,7 @@ func TestReviewBeforePRUnshipped(t *testing.T) {
 			t.Fatal(err)
 		}
 		st := &stepRow{runID: sql.NullInt64{Int64: run, Valid: true}}
-		if why, _, err := a.s.heldUnshipped(a.ctx, st); err != nil || why != "" {
+		if why, err := a.s.heldUnshipped(a.ctx, st); err != nil || why != "" {
 			t.Fatalf("no round: %q, %v", why, err)
 		}
 		// A round after the pull request, over, with the run open.
@@ -961,7 +997,7 @@ func TestReviewBeforePRUnshipped(t *testing.T) {
 		}
 		id, _ := res.LastInsertId()
 		st.reviewID = sql.NullInt64{Int64: id, Valid: true}
-		if why, _, err := a.s.heldUnshipped(a.ctx, st); err != nil || why != "" {
+		if why, err := a.s.heldUnshipped(a.ctx, st); err != nil || why != "" {
 			t.Fatalf("round after the pull request: %q, %v", why, err)
 		}
 	})
@@ -997,7 +1033,7 @@ func TestReviewBeforePRAfterTheRunEnded(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(res.Held, "End your turn") || res.Notice != "" || res.Pull != nil || len(g.created) != 0 {
+		if !strings.Contains(res.Held, "end your turn") || res.Notice != "" || res.Pull != nil || len(g.created) != 0 {
 			t.Fatalf("ship = %+v (opened %d)", res, len(g.created))
 		}
 		if got := a.rounds(); len(got) != 1 || got[0] != RoundPending {
@@ -1124,7 +1160,7 @@ func TestReviewBeforePRSaysWhyNot(t *testing.T) {
 			t.Error("wp next says no review comes first")
 		}
 		res, err := a.ship(key, ShipAuto)
-		if err != nil || res.Pull != nil || !strings.Contains(res.Held, "End your turn") || len(g.created) != 0 {
+		if err != nil || res.Pull != nil || !strings.Contains(res.Held, "end your turn") || len(g.created) != 0 {
 			t.Fatalf("ship = %+v, %v", res, err)
 		}
 		if got := a.rounds(); len(got) != 1 || got[0] != RoundPending {

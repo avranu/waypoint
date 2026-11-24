@@ -19,11 +19,12 @@ var auditCmd = &command{
 	name: "audit", aliases: []string{"audits"}, group: "Code and CI",
 	args:    "[pr|branch|commit|range|recent|repo] [TARGET] [FLAGS]",
 	summary: "have a model on your runner audit a PR, branch, commit or the repo",
-	about: `By default, where the Waypoint has an LLM gateway, the model it picks
-for audits (gateway/audit; spends no coding plan's quota), else Grok through
-Cursor on your runner, from a checkout your runner sends. Reads only; findings are recorded
-(wp audit show), posted on a pull request, and your session is told when it
-ends.
+	about: `By default, where the Waypoint has an LLM gateway, Grok 4.7 through Cursor
+on your runner first, then the model the gateway picks for audits
+(gateway/audit); with no gateway, Grok through Cursor alone. Runs on a
+checkout your runner sends. Reads only; findings are recorded
+(wp audit show), posted on a pull request, and your session is told the
+result when it ends, findings or none.
 
   wp audit                  the branch's pull request, else the branch against
                             the default branch (on it: the whole repository)
@@ -88,7 +89,7 @@ says so, and holds the pull request for this). FILE (- for stdin) is JSON:
 Give every issue the review raised, the ones you rejected too (those need a
 note). --none says it raised nothing; -m then says who reviewed what, and
 how. The findings become an audit: change a verdict with wp audit mark, and
-wp ship --pr then has Waypoint check your marks against the code and score
+wp ship then has Waypoint check your marks against the code and score
 the findings, which decides whether another round comes. Reporting again
 replaces the report until that check starts.`,
 			examples: []string{"wp audit report -f review.json", "wp audit report WP-12 -f -", `wp audit report --none -m "adversarial-review agent read the whole diff against main; nothing stood"`}, run: auditReport},
@@ -431,9 +432,9 @@ func indentRest(text, pad string) string {
 // asked is what asking for one tells the agent: when it hears back.
 func (a *auditView) asked(blocking bool) string {
 	chain := strings.Join(a.Models, ", then ")
-	when := "carry on; you'll hear when it ends."
+	when := "carry on; you'll hear when it ends, even if it finds nothing."
 	if blocking {
-		when = "you'll be woken within minutes when it ends."
+		when = "when it ends you'll be told, within five minutes if one of your pull requests is still being watched (if your session is still running), even if it finds nothing."
 	}
 	return fmt.Sprintf("Audit #%d of %s asked of %s; %s\n%s", a.ID, a.what(), chain, when, a.URL)
 }
@@ -451,10 +452,10 @@ func auditRun(target string) func(c *cli, args []string) error {
 		short(fs, "m", "instructions")
 		file := fs.String("f", "", "read the instructions from `FILE` (- for stdin)")
 		var models multiFlag
-		fs.Var(&models, "model", "`MODEL` to try, in order (repeatable; default gateway/audit, or cursor/grok-4.7-high with no LLM gateway)")
+		fs.Var(&models, "model", "`MODEL` to try, in order (repeatable; default cursor/grok-4.7-high, cursor/grok-4.7-medium, then gateway/audit; the Cursor ones alone with no LLM gateway)")
 		fix := fs.Bool("fix", false, "also make a task to check and fix the findings")
 		noComment := fs.Bool("no-comment", false, "don't post findings on the pull request")
-		blocking := fs.Bool("blocking", false, "wake me within minutes when it ends")
+		blocking := fs.Bool("blocking", false, "tell me when it ends, or within five minutes if one of my pull requests is still being watched")
 		since := fs.String("since", "", "recent: what landed in this `PERIOD` (7d, 2w, a date; default 7d)")
 		focus := fs.String("focus", "", "`AREAS`, comma separated: security, data, concurrency, errors, logic, performance, compat, tests")
 		var paths, exclude multiFlag

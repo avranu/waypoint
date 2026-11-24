@@ -164,12 +164,15 @@ func TestSessionHooksEndToEnd(t *testing.T) {
 	if x = s.sessions()[0]; strings.Contains(x.LastPrompt, "secret") {
 		t.Fatal("--no-prompts sent the prompt")
 	}
-	// Waypoint's own prompts still reach the core under --no-prompts, so a
-	// keep-warm ping stays quiet; a typed /compact with arguments does not.
-	before := s.sessions()[0].LastPrompt
-	s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": keepWarmMark + ": still here"}), "--no-prompts")
-	if x = s.sessions()[0]; x.LastPrompt != before {
-		t.Fatalf("a keep-warm ping under --no-prompts counted as typed: %q", x.LastPrompt)
+	// Under --no-prompts a keep-warm-looking prompt sends neither its text nor a
+	// digest of it (WP-1370): nothing the person wrote rides along. The hook
+	// compares it with the pending prompts Waypoint typed, here and locally,
+	// and sends only the id of the one it matches; with none it is the
+	// person's (the quiet ping with a record is core's test,
+	// TestKeepWarmPingsASessionWaitingOnWork).
+	s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": keepWarmMark + ": still here, and secret"}), "--no-prompts")
+	if x = s.sessions()[0]; strings.Contains(x.LastPrompt, "secret") || strings.Contains(x.LastPrompt, keepWarmMark) {
+		t.Fatalf("a keep-warm-looking prompt under --no-prompts: %q", x.LastPrompt)
 	}
 	// So does a background task reporting back, as its mark alone: an empty
 	// prompt would read as a person's (WP-700).
@@ -212,9 +215,15 @@ func TestSessionHooksEndToEnd(t *testing.T) {
 	wrap := func(p string) string {
 		return "\n\n<pasted_content id=\"d29a\">\n" + p + "\n</pasted_content id=\"d29a\">\n"
 	}
-	s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": wrap(autopilotReviewMark + "APP-9: secret findings")}), "--no-prompts")
-	if x = s.sessions()[0]; x.LastPrompt != core.AutopilotReviewMark+"APP-9" {
-		t.Fatalf("autopilot's pasted review prompt: %q", x.LastPrompt)
+	// (The same prompt with a record is Waypoint's: hook_drops_test.go's
+	// TestNoPromptsMatchesAWrappedTypedPrompt.)
+	// A review prompt is known by its recorded digest (WP-1370), never its
+	// visible words: with no record, wrapped or not, it is a person's prompt,
+	// and --no-prompts sends none of it.
+	seen := s.sessions()[0].LastPrompt
+	s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": wrap(core.AutopilotReviewMark + "APP-9: secret findings")}), "--no-prompts")
+	if x = s.sessions()[0]; x.LastPrompt != seen {
+		t.Fatalf("a review-looking paste under --no-prompts: %q", x.LastPrompt)
 	}
 	c.notePastedPrompt("sess-1", "APP-9", "Handle APP-9.\n\nsecret steps")
 	s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": wrap("Handle APP-9.\n\nsecret steps")}), "--no-prompts")
@@ -233,7 +242,7 @@ func TestSessionHooksEndToEnd(t *testing.T) {
 	}
 	// Every check reads a paste's text: a keep-warm ping, a background
 	// task's report, a /wp command or /keep, wrapped, are what they are.
-	before = s.sessions()[0].LastPrompt
+	before := s.sessions()[0].LastPrompt
 	s.hook(in("sess-1", "UserPromptSubmit", s.repo, map[string]any{"prompt": wrap(keepWarmMark + ": still here")}), "--no-prompts")
 	if x = s.sessions()[0]; x.LastPrompt != before {
 		t.Fatalf("a wrapped keep-warm ping under --no-prompts counted as typed: %q", x.LastPrompt)

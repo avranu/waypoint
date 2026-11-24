@@ -2,7 +2,10 @@ package core
 
 import (
 	"context"
+	"crypto/tls"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -181,5 +184,33 @@ func TestArmedMergeForgeDownIsRetried(t *testing.T) {
 	se.s.Wait()
 	if m := se.sg.merged(); len(m) != 1 {
 		t.Fatalf("merges = %+v", m)
+	}
+}
+
+// A certificate that doesn't verify, a redirect where the API should be and
+// a 200 login page are the forge's setup, not an outage: not ErrUnavailable
+// (so not retried as one), an InvalidError saying the cause, with the host
+// (WP-1370).
+func TestForgeDownSetupFaultsAreRefusals(t *testing.T) {
+	f := &Forge{BaseURL: "https://git.example.com"}
+	jerr := json.Unmarshal([]byte("<html>"), new(map[string]any))
+	for name, c := range map[string]struct {
+		err  error
+		want string
+	}{
+		"certificate": {&url.Error{Op: "Get", URL: "https://git.example.com/", Err: &tls.CertificateVerificationError{}}, "certificate"},
+		"redirect":    {&forgeAPIError{method: "GET", path: "/repos/a/b", status: 302}, "redirect"},
+		"login page":  {fmt.Errorf("decode: %w", jerr), "isn't its API"},
+	} {
+		got := forgeDown(f, time.Second, c.err)
+		if errors.Is(got, ErrUnavailable) {
+			t.Errorf("%s: treated as an outage", name)
+		}
+		if !IsInvalid(got) || !strings.Contains(got.Error(), c.want) || !strings.Contains(got.Error(), "git.example.com") {
+			t.Errorf("%s: %v", name, got)
+		}
+		if forgeSetupFault(got) == "" || !shipRefused(got) {
+			t.Errorf("%s: the ship's classifier disagrees", name)
+		}
 	}
 }

@@ -79,7 +79,7 @@ func TestPastedKeepWarmIsNoWork(t *testing.T) {
 	dir := t.TempDir()
 	c := &cli{dir: t.TempDir()}
 	c.state.Claims = map[string]*claim{dir: {Key: "WP-688", Session: "s1", Checked: true}}
-	in, _ := json.Marshal(map[string]string{"session_id": "s1", "cwd": dir, "prompt": wrapPaste(keepWarmMark + " ping: reply ok")})
+	in, _ := json.Marshal(map[string]string{"session_id": "s1", "cwd": dir, "prompt": wrapPaste(core.KeepWarmPing())})
 	hookClaudeResume(c, strings.NewReader(string(in)))
 	if calls != 0 {
 		t.Fatalf("a wrapped keep-warm ping restarted the task's clock: %d calls", calls)
@@ -88,7 +88,7 @@ func TestPastedKeepWarmIsNoWork(t *testing.T) {
 	if got := stopReason(t, slashHook(t, c, "s1", "/x", wrapPaste("/wp btw use the v2 API"))); !strings.Contains(got, "noted") {
 		t.Fatalf("a wrapped /wp btw said %q", got)
 	}
-	if out := slashHook(t, c, "s1", "/x", wrapPaste(keepWarmMark+" ping: reply ok")); out != "" {
+	if out := slashHook(t, c, "s1", "/x", wrapPaste(core.KeepWarmPing())); out != "" {
 		t.Fatalf("a wrapped keep-warm ping took the note: %q", out)
 	}
 	if out := slashHook(t, c, "s1", "/x", "hello"); !strings.Contains(out, "use the v2 API") {

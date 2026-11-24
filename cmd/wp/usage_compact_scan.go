@@ -79,7 +79,9 @@ var (
 	cmpNameRE = lazyre.New(`[\w@-][\w.@-]*\.[A-Za-z]\w{0,5}\b`)
 )
 
-// cmpReviewPrompt starts the prompt Waypoint types for a review round.
+// cmpReviewPrompt starts the prompt Waypoint types for a review round. Read by
+// its visible words, the one exception to WP-1370's digest rule: this is a
+// local report over transcripts, where no typed record exists to ask.
 const cmpReviewPrompt = "Waypoint autopilot review of "
 
 // cmpPromptKind tells a prompt someone typed (0) from a report Claude Code

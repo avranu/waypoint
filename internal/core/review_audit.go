@@ -19,13 +19,12 @@ import (
 // that model's findings to check and fix instead of asking it for a review of
 // its own, which spends Claude tokens on a Sonnet reviewer.
 //
-// The audit is the gateway's to run (WP-617, WP-ADR84; WP-871): the
-// round asks its audit purpose and nothing else (defaultAuditChain). The
-// gateway chooses the model, moves to its next when one fails, knows which of
-// its upstreams has usage left, and leaves out the session's family. A round
-// calls no coding plan's CLI itself and keeps no order of models behind the
-// gateway: Grok is the gateway's to serve as the audit purpose's first
-// choice.
+// The round asks the default audit (defaultAuditChain): Grok through Cursor
+// on a runner first (WP-1725, WP-ADR155), then the gateway's audit purpose
+// (WP-617, WP-ADR84; WP-871). Behind its purpose the gateway chooses the
+// model, moves to its next when one fails, knows which of its upstreams has
+// usage left, and leaves out the session's family; a round keeps no order of
+// models behind the gateway.
 //
 // When the gateway's audit can't be had (it failed, no runner that could
 // send it was online for reviewAuditQueueWait, or it ran past
@@ -88,8 +87,10 @@ const (
 	// reviewerOdds: the reviewer starts when the audit is more likely to end
 	// after the round's patience than before it.
 	reviewerOdds = 0.5
-	// reviewerMinRuns: how many recent runs like the audit's it takes to
-	// tell its chance; with fewer, the round waits out its patience.
+	// reviewerMinRuns: how many recent runs like the audit's that went as
+	// long as it has it takes to tell its chance (WP-ADR117's "at least 8
+	// such runs"); with fewer, and so with fewer recent runs at all, the
+	// round waits out its patience.
 	reviewerMinRuns = 8
 	// reviewerAuditKey makes a round's Sonnet reviewer once (roundReviewer).
 	reviewerAuditKey = "review-round:%d:sonnet"
@@ -132,57 +133,6 @@ func (s *Service) roundAuditOf(ctx context.Context, roundID int64) (roundAudit, 
 	return ra, err
 }
 
-// startRoundReview asks for a scheduled round's audit when the review is
-// asked (wp ship), not when the session's Stop makes the round due: the
-// other model reads the pushed branch, so only giving its findings to the
-// session needs the session (WP-1325). It does what planReview does first
-// and no more: the request is keyed (reviewAuditKey), so the step's
-// planning later finds this audit under way or done, and nothing here
-// marks the round started or writes a note that decides its plan. A refusal
-// (no gateway model, nothing to review) is left for that planning to meet
-// and say, as it always has; an error is logged, never failing the ship.
-// It says whether an audit was started or found.
-func (s *Service) startRoundReview(ctx context.Context, g *reviewGate, roundID int64) bool {
-	if g == nil || g.x == nil || roundID == 0 || g.lim.reviewModel() == ReviewModelSession {
-		return false // the session reviews its own change: nothing to start
-	}
-	g.auditAsked = false
-	st := &stepRow{userID: g.x.userID, projectID: g.pid, sessionID: g.x.ID}
-	if m, err := s.autopilotMeter(ctx, st.userID); err == nil {
-		if why, _ := autopilotPaused(m, g.lim, s.now()); why != "" && pauseReason(why) != PauseWeek {
-			return false // as the step's planning holds off while paused
-		}
-	}
-	review, err := roundByID(ctx, s.db.R, roundID)
-	if err != nil || review == nil || review.state != RoundPending {
-		return false
-	}
-	ra, err := s.roundAuditOf(ctx, roundID)
-	if err != nil || ra.id != 0 || ra.note != "" {
-		g.auditAsked = err == nil && ra.id != 0
-		return g.auditAsked
-	}
-	id, err := s.auditForRound(ctx, st, review, roundBeforePR(ctx, s.db.R, roundID), reviewAuditKey)
-	if err != nil {
-		if errors.As(err, &auditRefused{}) || errors.Is(err, errNoRoundPR) {
-			s.log.Info("review round: its audit wasn't started at the ship", "round", roundID, "err", err)
-		} else {
-			s.log.WarnContext(ctx, "review round: its audit wasn't started at the ship", "round", roundID, "err", err)
-		}
-		return false
-	}
-	// What planReview writes after asking, so the audit's wait counts from
-	// here; it only fills a round that has no audit yet.
-	if ok, err := s.noteRoundAudit(ctx, roundID, id); err != nil || !ok {
-		// Not the round's audit on record: the step's planning finds it by
-		// its key, or meets the note that was written first.
-		s.log.Info("review round: its audit isn't recorded on the round", "round", roundID, "recorded", ok, "err", err)
-		return false
-	}
-	g.auditAsked = true
-	return true
-}
-
 // noteRoundAudit records the audit asked for a round that has none, so its
 // wait counts from now. The guard on the note is right for both callers:
 // each has just read the round with no note, and a note written since (its
@@ -190,11 +140,9 @@ func (s *Service) startRoundReview(ctx context.Context, g *reviewGate, roundID i
 // round took it.
 func (s *Service) noteRoundAudit(ctx context.Context, roundID, auditID int64) (bool, error) {
 	now := s.nowMS()
-	res, err := s.db.W.ExecContext(ctx, `UPDATE work_log SET audit_id = ?, audit_at = ?, updated_at = ? WHERE id = ? AND audit_id IS NULL AND audit_note = ''`, auditID, now, now, roundID)
-	if err != nil {
-		return false, err
-	}
-	n, err := res.RowsAffected()
+	// No event: which audit a round waits on is read by the sweep, and no
+	// reader is shown it live.
+	n, err := s.writeRows(ctx, `UPDATE work_log SET audit_id = ?, audit_at = ?, updated_at = ? WHERE id = ? AND audit_id IS NULL AND audit_note = ''`, auditID, now, now, roundID)
 	return n > 0, err
 }
 
@@ -300,7 +248,7 @@ func (s *Service) noteRoundHead(ctx context.Context, roundID, headTime int64, he
 	if roundID == 0 || headTime <= 0 {
 		return nil
 	}
-	if _, err := s.db.W.ExecContext(ctx, `UPDATE work_log SET before_pr = json_set(before_pr, '$.head_time', ?, '$.head_sha', ?)
+	if _, err := s.writeRows(ctx, `UPDATE work_log SET before_pr = json_set(before_pr, '$.head_time', ?, '$.head_sha', ?)
 		WHERE id = ? AND kind = 'review' AND state = 'pending' AND audit_id IS NULL AND before_pr != ''`, headTime, headSHA, roundID); err != nil {
 		s.log.Info("review round: recording the head its audit reads", "round", roundID, "err", err)
 		return err
@@ -353,10 +301,10 @@ func (s *Service) cancelAuditRows(ctx context.Context, rows *sql.Rows, err error
 func (s *Service) planReview(ctx context.Context, st *stepRow, review *roundRow, now int64) (reviewPlan, error) {
 	own := reviewPlan{prompt: ownReviewPrompt(review.prompt)}
 	// A round before its pull request reviews the task's branch, and the
-	// pull request opens at the session's wp ship --pr (WP-688).
+	// pull request opens at the session's wp ship (WP-688).
 	first := roundBeforePR(ctx, s.db.R, review.id)
 	if first != nil && !strings.Contains(own.prompt, "wp ship") {
-		own.prompt += " When you're done, run `wp ship --pr --summary \"what you fixed, filed and rejected\"` to open the pull request; the summary is your reply."
+		own.prompt += " When you're done, run `wp ship --summary \"what you fixed, filed and rejected\"`: it opens the pull request, or Waypoint does once the findings are decided; the summary is your reply."
 	}
 	ra, err := s.roundAuditOf(ctx, review.id)
 	if err != nil {
@@ -378,7 +326,7 @@ func (s *Service) planReview(ctx context.Context, st *stepRow, review *roundRow,
 		own.prompt += ownReportAsk
 	}
 	if ra.id == 0 && ra.note == "" && rv == nil && lim.reviewModel() == ReviewModelSession {
-		if _, err := s.db.W.ExecContext(ctx, `UPDATE work_log SET audit_note = ?, updated_at = ? WHERE id = ? AND audit_note = ''`,
+		if _, err := s.writeRows(ctx, `UPDATE work_log SET audit_note = ?, updated_at = ? WHERE id = ? AND audit_note = ''`,
 			reviewBySession, s.nowMS(), review.id); err != nil {
 			return reviewPlan{}, err
 		}
@@ -396,7 +344,7 @@ func (s *Service) planReview(ctx context.Context, st *stepRow, review *roundRow,
 		return s.planByReviewer(ctx, review, rv, first, own, now)
 	}
 	note := func(why string) error {
-		_, err := s.db.W.ExecContext(ctx, `UPDATE work_log SET audit_note = ?, updated_at = ? WHERE id = ? AND audit_note = ''`, clipText(why, 300), s.nowMS(), review.id)
+		_, err := s.writeRows(ctx, `UPDATE work_log SET audit_note = ?, updated_at = ? WHERE id = ? AND audit_note = ''`, clipText(why, 300), s.nowMS(), review.id)
 		return err
 	}
 	// askReviewer starts the round's Sonnet reviewer once; refused says why
@@ -462,7 +410,7 @@ func (s *Service) planReview(ctx context.Context, st *stepRow, review *roundRow,
 		if cancel {
 			cancelAudit()
 		}
-		if _, err := s.db.W.ExecContext(ctx, `UPDATE work_log SET audit_id = ?, audit_at = ?, audit_alt = ?, updated_at = ? WHERE id = ? AND audit_alt = ''`,
+		if _, err := s.writeRows(ctx, `UPDATE work_log SET audit_id = ?, audit_at = ?, audit_alt = ?, updated_at = ? WHERE id = ? AND audit_alt = ''`,
 			id, now, clipText(why, 300), now, review.id); err != nil {
 			return reviewPlan{}, err
 		}
@@ -506,7 +454,9 @@ func (s *Service) planReview(ctx context.Context, st *stepRow, review *roundRow,
 	if err != nil {
 		return reviewPlan{}, err
 	}
-	tried := slices.Equal(a.Models, auditModelNames(s.defaultAuditChain(ctx))) && a.Weakest == stakes.barFor(reviewOtherAuditKey)
+	// (Every model of today's default among the audit's, in whatever company:
+	// one a person named the gateway and another model for hasn't asked Grok.)
+	tried := a.Weakest == stakes.barFor(reviewOtherAuditKey) && !slices.ContainsFunc(auditModelNames(s.defaultAuditChain(ctx)), func(m string) bool { return !slices.Contains(a.Models, m) })
 	who := reviewAuditWho(a)
 	switch a.Status {
 	case AuditDone:
@@ -561,8 +511,11 @@ func (s *Service) planReview(ctx context.Context, st *stepRow, review *roundRow,
 				}
 				return own, nil
 			}
+			// odds_known false: started at the patience with too few runs
+			// that went as long to tell (in of runs, fewer than
+			// reviewerMinRuns), so chance is unset, not 0% (audit 1575.3).
 			s.log.Info("review round: Claude review started beside its audit", "round", review.id, "audit", a.ID, "reviewer", rv.ID,
-				"model", stakes.reviewer().Model, "stakes", cmp(stakes.tier, StakesUnknown), "chance", odds.chance, "runs", odds.runs, "past_patience", now >= patience)
+				"model", stakes.reviewer().Model, "stakes", cmp(stakes.tier, StakesUnknown), "odds_known", odds.known, "chance", odds.chance, "in", odds.in, "runs", odds.runs, "past_patience", now >= patience)
 		}
 		what := "waiting for a runner to take"
 		if running {
@@ -608,7 +561,7 @@ func (s *Service) planReview(ctx context.Context, st *stepRow, review *roundRow,
 		why := fmt.Sprintf("%s audit #%d ended %s", upperFirst(who), a.ID, a.Status)
 		if a.Status == AuditLimited {
 			why = fmt.Sprintf("%s audit #%d stopped at a usage limit", upperFirst(who), a.ID)
-			if grokAudit(a) {
+			if cursorSpent(a) {
 				why += " (the Cursor plan's pool)"
 			}
 		}
@@ -626,8 +579,8 @@ func (s *Service) planReview(ctx context.Context, st *stepRow, review *roundRow,
 
 // planFromFindings is the plan of a round whose audit a (the round's, or
 // its Sonnet reviewer's) ended with findings: they are its prompt, or, with
-// nothing left to do, the round ends (or asks only for the session's wp
-// ship before its pull request).
+// nothing left to do, the round ends (and Waypoint opens its pull request,
+// when it waits for one).
 func (s *Service) planFromFindings(ctx context.Context, review *roundRow, a *CodeAudit, first *beforePR, now int64) (reviewPlan, error) {
 	todo := s.roundTodo(ctx, a)
 	var prompt string
@@ -638,15 +591,20 @@ func (s *Service) planFromFindings(ctx context.Context, review *roundRow, a *Cod
 			// The task's delegation arm holds in its rounds too (WP-1262).
 			prompt = promptText(prompt + "\n\n" + line)
 		}
-	case first != nil:
-		// Nothing to fix, but the pull request still waits for the
-		// session's wp ship.
-		prompt = grokShipPrompt(a)
 	default:
+		// Nothing to fix: the round ends without the session, and when the
+		// pull request still waits for it, Waypoint opens it (shipReviewed,
+		// WP-1370).
 		return reviewPlan{done: true}, s.endRoundNothing(ctx, review, a, now)
 	}
-	_, err := s.db.W.ExecContext(ctx, `UPDATE work_log SET prompt = ?, updated_at = ? WHERE id = ?`, prompt, s.nowMS(), review.id)
-	return reviewPlan{prompt: prompt}, err
+	return reviewPlan{prompt: prompt}, s.setRoundPrompt(ctx, review.id, prompt)
+}
+
+// setRoundPrompt stores what the session is told for a round. No event: the
+// session reads it when it asks for its next step.
+func (s *Service) setRoundPrompt(ctx context.Context, roundID int64, prompt string) error {
+	_, err := s.writeRows(ctx, `UPDATE work_log SET prompt = ?, updated_at = ? WHERE id = ?`, prompt, s.nowMS(), roundID)
+	return err
 }
 
 // The Claude reviewer (WP-1206, WP-ADR117): when a round's audit can't be
@@ -893,7 +851,7 @@ func (s *Service) dropReviewer(ctx context.Context, rv *CodeAudit) {
 // landingOdds is how likely a round's audit is to end with findings by
 // the round's patience.
 type landingOdds struct {
-	known       bool    // enough recent runs to tell (reviewerMinRuns)
+	known       bool    // enough recent runs that went as long as it has to tell (reviewerMinRuns; never with fewer recent runs at all)
 	chance      float64 // the share of runs like it that would have
 	in, runs    int     // of how many runs that had gone as long as it has
 	start       int64   // when it likely starts running (now, for one running)
@@ -918,9 +876,10 @@ func (o landingOdds) late(now, patience int64) string {
 
 // auditLandingChance is how likely the audit a (its job job, nil between
 // attempts) is to end with findings by deadline, by the recent runs of
-// jobs like it (audits through the same CLI, the gateway's mostly, of the
-// last reviewStatsSpan): of those that had gone as long as it has, the
-// share that ended done by then. One queued starts after a median run for
+// jobs like it (audits through the same CLI, the gateway's mostly: the 40
+// newest of the last reviewStatsSpan): of those that had gone as long as it has, the
+// share that ended done by then, when at least reviewerMinRuns had (with
+// fewer the odds aren't known). One queued starts after a median run for
 // each wave of the gateway's slots ahead of it, as /wp review estimates
 // (auditProgress); one between attempts at its retry. A failed run never
 // ended in time; one a person or a round cancelled says nothing, and so
@@ -962,6 +921,7 @@ func (s *Service) auditLandingChance(ctx context.Context, a *CodeAudit, job *Run
 	_ = rows.Close()
 	o := landingOdds{start: now}
 	if len(runs) < reviewerMinRuns {
+		// Fewer recent runs at all than it takes of those that went as long.
 		return o
 	}
 	var ran int64
@@ -1001,9 +961,15 @@ func (s *Service) auditLandingChance(ctx context.Context, a *CodeAudit, job *Run
 			o.in++
 		}
 	}
-	if o.runs > 0 {
-		o.chance = float64(o.in) / float64(o.runs)
+	if o.runs < reviewerMinRuns {
+		// Too few runs went as long as this one has to tell (none, for one
+		// that has outlasted them all): the share of so few isn't odds, and
+		// no evidence isn't "unlikely", so the round waits out its patience
+		// as it does with too few runs at all (WP-ADR117, WP-1711).
+		o.known = false
+		return o
 	}
+	o.chance = float64(o.in) / float64(o.runs)
 	return o
 }
 
@@ -1012,6 +978,19 @@ func (s *Service) auditLandingChance(ctx context.Context, a *CodeAudit, job *Run
 // have gone to its babysitter already: those stay with it (auditRoundWork
 // leaves the rest to the round while it is live).
 func (s *Service) roundTodo(ctx context.Context, a *CodeAudit) []CodeAuditFinding {
+	given := s.babysitHolds(ctx, a)
+	var todo []CodeAuditFinding
+	for _, f := range a.Findings {
+		if findingToDo(f) && !given[f.ID] {
+			todo = append(todo, f)
+		}
+	}
+	return todo
+}
+
+// babysitHolds is the ids of the audit's findings the pull request's
+// babysitter was given (none for the round's own audit).
+func (s *Service) babysitHolds(ctx context.Context, a *CodeAudit) map[string]bool {
 	given := map[string]bool{}
 	if a.Purpose != AuditReview && a.PRID != nil {
 		if b, err := s.latestBabysit(ctx, s.db.R, *a.PRID); err == nil && b != nil {
@@ -1022,13 +1001,7 @@ func (s *Service) roundTodo(ctx context.Context, a *CodeAudit) []CodeAuditFindin
 			}
 		}
 	}
-	var todo []CodeAuditFinding
-	for _, f := range a.Findings {
-		if findingToDo(f) && !given[f.ID] {
-			todo = append(todo, f)
-		}
-	}
-	return todo
+	return given
 }
 
 // roundEndedAudit is the audit whose findings the round was waiting to give
@@ -1075,12 +1048,32 @@ func reviewAuditWho(a *CodeAudit) string {
 }
 
 // grokAudit: the audit is one Cursor runs or ran: one a person named Cursor
-// for, one asked before WP-871, or any on a Waypoint with no gateway.
+// for, one asked before WP-871, or a default one on a Waypoint with no
+// gateway. One not answered yet is judged by the model of its chain it is at,
+// so a default audit the gateway took after Cursor was passed over is
+// another model's.
 func grokAudit(a *CodeAudit) bool {
 	if a.Model != "" {
 		return strings.HasPrefix(a.Model, "cursor/")
 	}
-	return len(a.Models) > 0 && strings.HasPrefix(a.Models[0], "cursor/")
+	if len(a.Models) == 0 {
+		return false
+	}
+	return strings.HasPrefix(a.Models[min(max(a.Slot, 0), len(a.Models)-1)], "cursor/")
+}
+
+// cursorSpent: a Cursor model of the audit's last pass of its chain hit a
+// usage limit, so the limit was the Cursor plan's pool. A chain that also
+// went through the gateway (the default) says nothing of the pool when only
+// the gateway was spent. An audit with no attempts recorded is judged by
+// grokAudit.
+func cursorSpent(a *CodeAudit) bool {
+	if len(a.Attempts) == 0 {
+		return grokAudit(a)
+	}
+	return slices.ContainsFunc(a.Attempts, func(x AuditAttempt) bool {
+		return x.Round == a.Retries && x.Outcome == "spent" && strings.HasPrefix(x.Model, "cursor/")
+	})
 }
 
 // auditJobInfo is the runner job of an audit; nil when it has none (or the
@@ -1269,15 +1262,15 @@ func roundAsks(reviewText, roundContext string) []string {
 // prAuditAtHead is the pull request's own audit at its head (0: none) when
 // its reviewer isn't of the family of sessionModel, the model of the session
 // the findings go to: the model that answered, for an audit that is done;
-// every model it may still ask, for one that isn't (otherFamilyChain). A
-// round with a quality bar (weakest) takes only an audit held to the same
-// or, at the floor, to a higher one,
+// every model it may still ask, for one that isn't (otherFamilyChain). An
+// audit held to the high-stakes bar is taken from any family, as it was
+// asked (auditFamilyExclude, WP-1752). A round with a quality bar (weakest)
+// takes only an audit held to the same or, at the floor, to a higher one,
 // and only one whose prompt asked each of asks (roundAsks): WP-1320's live
 // review found a round taking the pull request's own audit, which asks
 // neither the brief nor the task, in place of its own. (A round of a task
 // asks the task, so it never takes one: its own audit runs its panel.)
 func (s *Service) prAuditAtHead(ctx context.Context, pr *PullRequest, sessionModel, weakest string, asks []string) (int64, error) {
-	own := gatewayExcludeFor(sessionModel)
 	// The floor is what every audit on the gateway's choice asks (WP-1440),
 	// so a round at the floor takes an audit held to it or to a tier's bar
 	// above it, never one from before the floor (weakest ''). Any other bar
@@ -1290,7 +1283,7 @@ func (s *Service) prAuditAtHead(ctx context.Context, pr *PullRequest, sessionMod
 		held = append(held, elevatedAuditBar, trustedAuditBar)
 		named = 1
 	}
-	q := `SELECT id, ref, status, models, model, author_model FROM code_audits WHERE pr_id = ? AND purpose = '' AND status IN ('queued','running','done')
+	q := `SELECT id, ref, status, models, model, author_model, weakest FROM code_audits WHERE pr_id = ? AND purpose = '' AND status IN ('queued','running','done')
 		AND (? = '' OR weakest IN (` + strings.TrimSuffix(strings.Repeat("?,", len(held)), ",") + `)
 			OR (? = 1 AND weakest = '' AND models != '' AND instr(models, '"cli":"gateway"') = 0))`
 	args := []any{pr.ID, weakest}
@@ -1309,10 +1302,11 @@ func (s *Service) prAuditAtHead(ctx context.Context, pr *PullRequest, sessionMod
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var id int64
-		var ref, status, models, model, author string
-		if rows.Scan(&id, &ref, &status, &models, &model, &author) != nil || !sameSHA(ref, pr.HeadSHA) {
+		var ref, status, models, model, author, bar string
+		if rows.Scan(&id, &ref, &status, &models, &model, &author, &bar) != nil || !sameSHA(ref, pr.HeadSHA) {
 			continue
 		}
+		own := auditFamilyExclude(bar, sessionModel)
 		if status == AuditDone {
 			if model != "" && !gatewayExcludes(own, model) {
 				return id, nil
@@ -1362,6 +1356,10 @@ func gatewayExcludes(globs []string, name string) bool {
 func (s *Service) requestRoundAudit(ctx context.Context, review *roundRow, in AuditInput) (int64, error) {
 	a, err := s.RequestAudit(ctx, SystemActor(), in)
 	if err == nil {
+		// Started now, not when the event is handled: which model of its chain
+		// it is at (Cursor's, or the gateway's after Cursor was passed over)
+		// is what the round's wait says and reads the odds of.
+		s.advanceAudit(ctx, a.ID)
 		return a.ID, nil
 	}
 	var id int64
@@ -1375,10 +1373,68 @@ func (s *Service) requestRoundAudit(ctx context.Context, review *roundRow, in Au
 // report says so, counted as nothing found, and the session isn't asked.
 func (s *Service) endRoundNothing(ctx context.Context, review *roundRow, a *CodeAudit, now int64) error {
 	body := fmt.Sprintf("%s audited the change (audit #%d: %s/audits/%d) and found nothing to fix.", cmp(a.Model, "Grok"), a.ID, s.BaseURL(), a.ID)
-	if n := len(a.Findings); n > 0 {
-		body = fmt.Sprintf("%s audited the change (audit #%d: %s/audits/%d): its %d finding%s were all decided already or with the pull request's babysitter, so the session wasn't asked to review it.",
-			cmp(a.Model, "Grok"), a.ID, s.BaseURL(), a.ID, n, plural(n))
+	if len(a.Findings) > 0 {
+		body = fmt.Sprintf("%s audited the change (audit #%d: %s/audits/%d): %s The session wasn't asked to review it.",
+			cmp(a.Model, "Grok"), a.ID, s.BaseURL(), a.ID, s.nothingLeftFacts(ctx, a))
 	}
+	return s.endPendingRoundDone(ctx, review, body, now)
+}
+
+// nothingLeftFacts says what became of an audit's findings when none is left
+// for the session: how many were marked and how, by whom, and which the pull
+// request's babysitter holds.
+func (s *Service) nothingLeftFacts(ctx context.Context, a *CodeAudit) string {
+	given := s.babysitHolds(ctx, a)
+	counts := map[string]int{}
+	var order, by, held []string
+	for _, f := range a.Findings {
+		switch {
+		case findingToDo(f) && given[f.ID]:
+			held = append(held, "#"+f.ID)
+			continue
+		case findingFiled(f):
+			counts["filed"]++
+			if counts["filed"] == 1 {
+				order = append(order, "filed")
+			}
+		default:
+			counts[f.State]++
+			if counts[f.State] == 1 {
+				order = append(order, f.State)
+			}
+		}
+		if f.By != "" && !slices.Contains(by, f.By) {
+			by = append(by, f.By)
+		}
+	}
+	var parts []string
+	marked := 0
+	for _, st := range order {
+		marked += counts[st]
+		parts = append(parts, fmt.Sprintf("%d %s", counts[st], st))
+	}
+	var out []string
+	if marked > 0 {
+		were := "were"
+		if marked == 1 {
+			were = "was"
+		}
+		o := fmt.Sprintf("%d of its %s %s marked already (%s)", marked, plural1(len(a.Findings), "finding"), were, strings.Join(parts, ", "))
+		if len(by) > 0 {
+			o += " by " + strings.Join(by, ", ")
+		}
+		out = append(out, o)
+	}
+	if len(held) > 0 {
+		out = append(out, fmt.Sprintf("%s with the pull request's babysitter", strings.Join(held, ", ")))
+	}
+	return strings.Join(out, "; ") + "."
+}
+
+// endPendingRoundDone ends a pending round as reviewed by the rules, with
+// nothing found and nothing asked of the session, and says so on the task's
+// log; a round no longer pending is left as it is.
+func (s *Service) endPendingRoundDone(ctx context.Context, review *roundRow, body string, now int64) error {
 	return s.write(ctx, SystemActor(), func(t *tx) error {
 		res, err := t.ExecContext(ctx, `UPDATE work_log SET state = 'done', body = ?, started_at = ?, ended_at = ?, found = 0, fixed = 0, rejected = 0, items = '[]',
 			read_state = ?, read_by = ?, read_at = ?, updated_at = ? WHERE id = ? AND state = 'pending'`,
@@ -1393,6 +1449,36 @@ func (s *Service) endRoundNothing(ctx context.Context, review *roundRow, a *Code
 	})
 }
 
+// findingLine is one line about a finding: ID, severity, place, title.
+func findingLine(id, severity, path string, line int, title string) string {
+	at := path
+	if path != "" && line > 0 {
+		at = fmt.Sprintf("%s:%d", path, line)
+	}
+	if at != "" {
+		at = " at " + at
+	}
+	return fmt.Sprintf("%s [%s]%s: %s", id, severity, untrusted(at), clipText(untrusted(strings.TrimSpace(title)), 200))
+}
+
+// untrustedBlock puts model-written lines where a session reads them as
+// data: between untrusted tags the text can't close (empty stays empty).
+func untrustedBlock(lines string) string {
+	if strings.TrimSpace(lines) == "" {
+		return ""
+	}
+	return "<untrusted>\n" + untrusted(lines) + "\n</untrusted>"
+}
+
+// findingLines lists findings one to a line (findingLine).
+func findingLines(list []CodeAuditFinding) string {
+	var b strings.Builder
+	for _, f := range list {
+		fmt.Fprintf(&b, "- %s\n", findingLine(f.ID, f.Severity, f.Path, f.Line, f.Title))
+	}
+	return untrustedBlock(strings.TrimRight(b.String(), "\n"))
+}
+
 // grokReviewPrompt is the round's prompt when the audit has findings to
 // check: the round's instructions (WP-689) with every finding in full, since
 // a session told to look the rest up always does, at the price of a turn on
@@ -1405,20 +1491,9 @@ func grokReviewPrompt(a *CodeAudit, todo []CodeAuditFinding) string {
 		"Follow TDD to write tests for any failures before you produce a fix, so we ensure no future regressions. "+
 		"If there are any findings, comments, data, or unrelated issues you don't fix here, file them in waypoint so they aren't lost when the session is over (`wp new task \"description\"`, `wp comment \"message\"`, etc). "+
 		"Record each verdict: %s. "+
-		"When you're done, run `wp ship --pr --summary \"what you fixed, filed and rejected, and why\"`: the summary is your reply to the user.\n\n", markHint(id, "why"))
+		"When you're done, run `wp ship --summary \"what you fixed, filed and rejected, and why\"`: the summary is your reply to the user.\n\n", markHint(id, "why"))
 	writeAuditFindings(&b, todo)
 	return promptText(b.String())
-}
-
-// grokShipPrompt is the prompt of a round before its pull request when
-// the audit left nothing to fix: the pull request still waits for the
-// session's wp ship.
-func grokShipPrompt(a *CodeAudit) string {
-	what := "found nothing to fix"
-	if n := len(a.Findings); n > 0 {
-		what = fmt.Sprintf("had %d finding%s, all decided already", n, plural(n))
-	}
-	return promptText(fmt.Sprintf("Audit #%d (adversarial review by %s) %s. Run `wp ship --pr`, then tell the user so.", a.ID, auditModelLabel(a.Model), what))
 }
 
 // auditModelLabel names the audit's model for a round's prompt.
@@ -1471,7 +1546,7 @@ func ownReviewBrief(prompt string, lim AutopilotLimits) string {
 
 // ownReportAsk tells a session reviewing its own change, up front, to
 // record what the review finds (ReportReview): its ship waits for that.
-const ownReportAsk = "\n\nBefore `wp ship --pr`, record what the review found, so it can be checked and scored: `wp audit report -f FILE` (- for stdin), FILE being JSON as " + reviewReportForm +
+const ownReportAsk = "\n\nBefore `wp ship`, record what the review found, so it can be checked and scored: `wp audit report -f FILE` (- for stdin), FILE being JSON as " + reviewReportForm +
 	". Give every issue the review raised, the ones you rejected too, with what you did about each. If it raised nothing: `wp audit report --none -m \"who reviewed what, and how\"`. " +
 	"Waypoint checks your marks against the code, and your report against what your reviewer said where it kept that, then scores the findings; the pull request opens after that, or another round comes first."
 
@@ -1479,7 +1554,7 @@ const ownReportAsk = "\n\nBefore `wp ship --pr`, record what the review found, s
 // where a round made before WP-689 with the old default gets the new one.
 func ownReviewPrompt(p string) string {
 	p = strings.TrimSpace(p)
-	if p == legacyReviewPrompt || p == wp689ReviewPrompt {
+	if p == legacyReviewPrompt || p == wp689ReviewPrompt || p == wp688ReviewPrompt {
 		return DefaultReviewPrompt
 	}
 	return cmp(p, DefaultReviewPrompt)
@@ -1497,9 +1572,11 @@ func (s *Service) onReviewAudit(ctx context.Context, e *Event) {
 		return
 	}
 	now := s.nowMS()
-	_, _ = s.db.W.ExecContext(ctx, `UPDATE autopilot_steps SET due_at = ?, updated_at = ? WHERE state = ? AND reason = ? AND due_at > ?
+	if _, err := s.writeRows(ctx, `UPDATE autopilot_steps SET due_at = ?, updated_at = ? WHERE state = ? AND reason = ? AND due_at > ?
 		AND review_id IN (SELECT id FROM work_log WHERE kind = 'review' AND audit_id = ?
-			UNION SELECT `+reviewerRoundSQL+` FROM code_audits a WHERE a.id = ? AND a.request_key LIKE ?)`, now, now, StepWaiting, WaitAudit, now, id, id, reviewerKeyLike)
+			UNION SELECT `+reviewerRoundSQL+` FROM code_audits a WHERE a.id = ? AND a.request_key LIKE ?)`, now, now, StepWaiting, WaitAudit, now, id, id, reviewerKeyLike); err != nil {
+		s.log.WarnContext(ctx, "wake the rounds waiting on a settled audit; the sweep does", "audit", id, "err", err)
+	}
 }
 
 // roundHoldsAudit: a review round that hasn't ended uses the audit, so

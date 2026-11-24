@@ -3,7 +3,8 @@ package core
 // Stakes tiers (WP-1231, WP-1248, WP-ADR121, narrowing WP-ADR102): how
 // hard a review round's audit is held to a quality bar, and which rounds
 // may spend Claude quota on their review. A round's audit is free: the
-// LLM gateway runs it on a model outside the author's family. A
+// LLM gateway runs it on a model outside the author's family, or at the
+// high-stakes bar on any model it rates that well (WP-1752). A
 // review on Claude (the reviewer of WP-ADR117 in a new session, or the
 // working session's own) spends the quota other work needs, so the tier
 // decides which Claude model reviews when the free audit can't be had in
@@ -13,7 +14,7 @@ package core
 //     credentials, data migrations, deploys or CI (stakesPathRE), the
 //     change is very large (over stakesHugeLines), or a large one (over
 //     triageMaxLines) touches risky files. Its audit is held to
-//     trustedAuditBar (Claude Sonnet or better), and a slow or failed audit
+//     trustedAuditBar (Grok 4.7 or better), and a slow or failed audit
 //     starts the Sonnet reviewer (WP-ADR117).
 //   - elevated: a large change (over triageMaxLines), ADR102's other signs
 //     (risky files in a smaller change, the looser sensitive names: token,
@@ -270,12 +271,15 @@ func (s *Service) decideStakes(ctx context.Context, roundID int64) (roundStakes,
 		}
 	}
 	r.bar = tierBar(r.tier)
-	if _, err := s.db.W.ExecContext(ctx, `INSERT OR IGNORE INTO review_stakes(round_id, issue_id, rule, tier, why, bar, source, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, roundID, issueID, StakesRule, r.tier, r.why, r.bar, source, s.nowMS()); err != nil {
-		return roundStakes{}, err
-	}
-	// Two callers at once: the first's stands.
-	err = s.db.W.QueryRowContext(ctx, `SELECT tier, why, bar FROM review_stakes WHERE round_id = ?`, roundID).Scan(&r.tier, &r.why, &r.bar)
+	// No event: the stakes are read when the round plans its review.
+	err = s.write(ctx, SystemActor(), func(t *tx) error {
+		if _, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO review_stakes(round_id, issue_id, rule, tier, why, bar, source, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, roundID, issueID, StakesRule, r.tier, r.why, r.bar, source, s.nowMS()); err != nil {
+			return err
+		}
+		// Two callers at once: the first's stands.
+		return t.QueryRowContext(ctx, `SELECT tier, why, bar FROM review_stakes WHERE round_id = ?`, roundID).Scan(&r.tier, &r.why, &r.bar)
+	})
 	return r, err
 }
 
@@ -312,30 +316,18 @@ const stakesNoClaude = "no Claude review starts"
 func (s *Service) planHandedOver(ctx context.Context, review *roundRow, auditID int64, first *beforePR, now int64) (reviewPlan, error) {
 	if first != nil {
 		prompt := handOverPrompt(auditID)
-		_, err := s.db.W.ExecContext(ctx, `UPDATE work_log SET prompt = ?, updated_at = ? WHERE id = ?`, prompt, s.nowMS(), review.id)
-		return reviewPlan{prompt: prompt}, err
+		return reviewPlan{prompt: prompt}, s.setRoundPrompt(ctx, review.id, prompt)
 	}
 	body := fmt.Sprintf("Audit #%d (%s/audits/%d) was still going, and the change's stakes don't call for a Claude review in its place: it goes on as the pull request's audit, which holds the merge until it ends.",
 		auditID, s.BaseURL(), auditID)
-	return reviewPlan{done: true}, s.write(ctx, SystemActor(), func(t *tx) error {
-		res, err := t.ExecContext(ctx, `UPDATE work_log SET state = 'done', body = ?, started_at = ?, ended_at = ?, found = 0, fixed = 0, rejected = 0, items = '[]',
-			read_state = ?, read_by = ?, read_at = ?, updated_at = ? WHERE id = ? AND state = 'pending'`,
-			body, now, now, readDone, readByRules, now, now, review.id)
-		if err != nil {
-			return err
-		}
-		if n, _ := res.RowsAffected(); n > 0 {
-			s.emitWorkLog(ctx, t, review.issueID, review.id, RoundDone)
-		}
-		return nil
-	})
+	return reviewPlan{done: true}, s.endPendingRoundDone(ctx, review, body, now)
 }
 
 // handOverPrompt is the prompt of a round before its pull request whose
 // slow audit goes on as the pull request's.
 func handOverPrompt(auditID int64) string {
 	return promptText(fmt.Sprintf("Audit #%d (adversarial review by another model) hasn't ended, and this change's stakes don't call for a Claude review in its place. "+
-		"Run `wp ship --pr`, then tell the user so: the audit goes on as the pull request's and holds its merge until it ends.", auditID))
+		"Run `wp ship`, then tell the user so: the audit goes on as the pull request's and holds its merge until it ends.", auditID))
 }
 
 // ---- the stakes report (wp worklog stakes) ----

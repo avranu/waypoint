@@ -499,7 +499,9 @@ func (c *httpLLM) openaiComplete(ctx context.Context, p *AIProvider, model strin
 		text, served, err = c.openaiChat(ctx, p, body)
 	}
 	if err != nil {
-		return nil, "", err
+		// served says whose failure it was when the stream had started: a
+		// route's slow model is recorded by its name, not the route's (WP-1709).
+		return nil, served, err
 	}
 	if strings.TrimSpace(text) == "" {
 		return nil, served, errors.New("the model gave no answer")

@@ -41,6 +41,7 @@ func TestStrandedRoundOpensItsPR(t *testing.T) {
 				}
 			}
 			a.setClock(a.clockNow().Add(heldStopLost + time.Minute))
+			a.s.sweepRounds(a.ctx) // a pending round ends first (decideRound: doEnd)
 			a.s.sweepRounds(a.ctx)
 			created, _, _, _ := g.snapshot()
 			if len(created) != 1 || !strings.Contains(created[0].Body, "without an adversarial review") || !strings.Contains(created[0].Body, "What changed.") {
@@ -137,12 +138,10 @@ func TestStrandedRoundWithNoReason(t *testing.T) {
 	}
 }
 
-// A pull request that can't be opened is tried again after the back-off,
-// not on every tick, and doesn't keep a later round from being opened.
+// A pull request that can't be opened is tried again after the back-off the
+// round's ship tries keep (shipTried), not on every tick, and doesn't keep a
+// later round from being opened.
 func TestStrandedRoundBacksOff(t *testing.T) {
-	old := strandedBatch
-	strandedBatch = 1
-	t.Cleanup(func() { strandedBatch = old })
 	a, g, first := strandedEnv(t)
 	if _, err := a.s.db.W.Exec(`UPDATE work_log SET state = ?, reason = 'no report came back', ended_at = ?, before_pr = ? WHERE id = ?`,
 		RoundFailed, a.clockNow().UnixMilli(), `{"project":"APP","repo":"acme/missing","branch":"gone"}`, first); err != nil {
@@ -164,25 +163,27 @@ func TestStrandedRoundBacksOff(t *testing.T) {
 	}
 	a.lapse(heldStopLost + time.Minute)
 
-	a.s.sweepRounds(a.ctx) // tries the first, which fails
-	if n := a.opened(g); n != 0 {
+	a.s.sweepRounds(a.ctx) // the later round, pending, ends first
+	a.s.sweepRounds(a.ctx) // then it opens; the first fails
+	if n := a.opened(g); n != 1 {
 		t.Fatalf("opened %d on the first sweep", n)
 	}
-	next, ok := a.s.strandedRetry.Load(first)
-	if !ok {
-		t.Fatal("no back-off recorded")
+	tries := func() (int, int64) {
+		bp := roundBeforePR(a.ctx, a.s.db.R, first)
+		return bp.ShipTries, bp.ShipNext
 	}
-	a.s.sweepRounds(a.ctx) // backing off: the later round gets the batch
-	if n := a.opened(g); n != 1 {
-		t.Fatalf("opened %d with the first backing off", n)
+	n1, next := tries()
+	if n1 != 1 || next <= a.clockNow().UnixMilli() {
+		t.Fatalf("no back-off recorded: %d tries, next %d", n1, next)
 	}
-	if again, _ := a.s.strandedRetry.Load(first); again != next {
-		t.Errorf("the first was tried again inside its back-off: %v then %v", next, again)
+	a.s.sweepRounds(a.ctx) // backing off: not tried again
+	if n2, again := tries(); n2 != 1 || again != next {
+		t.Errorf("tried again inside its back-off: %d tries, next %d then %d", n2, next, again)
 	}
-	a.lapse(strandedBackoff + time.Minute)
-	a.s.sweepRounds(a.ctx) // after it: tried again, fails again, later back-off
-	if again, _ := a.s.strandedRetry.Load(first); again == next {
-		t.Errorf("the first wasn't tried again after its back-off: %v", again)
+	a.lapse(shipBackoff(1) + time.Minute)
+	a.s.sweepRounds(a.ctx) // after it: tried again
+	if n3, _ := tries(); n3 != 2 {
+		t.Errorf("not tried again after its back-off: %d tries", n3)
 	}
 }
 
@@ -205,6 +206,7 @@ func TestStrandedRoundOfASessionThatMovedOn(t *testing.T) {
 		t.Fatalf("round = %+v, opened %d", r, a.opened(g))
 	}
 	a.lapse(heldStopLost + time.Minute)
+	a.s.sweepRounds(a.ctx) // the pending round ends first
 	a.s.sweepRounds(a.ctx)
 	if n := a.opened(g); n != 1 {
 		t.Fatalf("opened %d", n)
@@ -252,47 +254,6 @@ func TestStrandedRoundLeftAloneWhenRestarted(t *testing.T) {
 	a.s.sweepRounds(a.ctx)
 	if n := a.opened(g); n != 0 {
 		t.Fatalf("opened %d", n)
-	}
-}
-
-// A failed attempt backs off for twice as long each time, and the memory of
-// it is dropped once the round is no longer a candidate.
-func TestStrandedRoundBackoffDoublesAndIsPruned(t *testing.T) {
-	a, g, id := strandedEnv(t)
-	if _, err := a.s.db.W.Exec(`UPDATE work_log SET state = ?, reason = 'no report came back', ended_at = ?, before_pr = ? WHERE id = ?`,
-		RoundFailed, a.clockNow().UnixMilli(), `{"project":"APP","repo":"acme/missing","branch":"gone"}`, id); err != nil {
-		t.Fatal(err)
-	}
-	a.lapse(heldStopLost + time.Minute)
-	load := func() strandedTry {
-		t.Helper()
-		v, ok := a.s.strandedRetry.Load(id)
-		if !ok {
-			t.Fatal("no back-off recorded")
-		}
-		return v.(strandedTry)
-	}
-	a.s.sweepRounds(a.ctx)
-	first := load()
-	if first.tries != 1 || first.next != a.clockNow().Add(strandedBackoff).UnixMilli() {
-		t.Fatalf("first = %+v", first)
-	}
-	a.lapse(strandedBackoff + time.Minute)
-	a.s.sweepRounds(a.ctx)
-	second := load()
-	if second.tries != 2 || second.next != a.clockNow().Add(2*strandedBackoff).UnixMilli() {
-		t.Fatalf("second = %+v", second)
-	}
-	if n := a.opened(g); n != 0 {
-		t.Fatalf("opened %d", n)
-	}
-	// The round is cancelled by a person: no longer a candidate, so dropped.
-	if _, err := a.s.db.W.Exec(`UPDATE work_log SET reason = 'Cancelled by Robin.' WHERE id = ?`, id); err != nil {
-		t.Fatal(err)
-	}
-	a.s.sweepRounds(a.ctx)
-	if _, ok := a.s.strandedRetry.Load(id); ok {
-		t.Error("the back-off of a round that is no longer a candidate was kept")
 	}
 }
 

@@ -83,8 +83,18 @@ func (s *Service) relationHolder(ctx context.Context, t *tx, i *Issue, id int64)
 	if err != nil {
 		return nil, err
 	}
+	holder, _ := relationEventHome(i, o)
+	return holder, nil
+}
+
+// relationEventHome is where the event of a relation between i and o is
+// recorded and which one it names: on i naming o, unless o is a draft and i
+// isn't, when it goes on the draft naming i. A draft's key stays out of a
+// published issue's history (WP-42). Every path that records a relation event
+// (relate, a removal, NoteRewrites) asks this, so none can differ.
+func relationEventHome(i, o *Issue) (holder, named *Issue) {
 	if o.Draft && !i.Draft {
-		return o, nil
+		return o, i
 	}
-	return i, nil
+	return i, o
 }

@@ -211,8 +211,8 @@ func (s *Service) markReadyOn(ctx context.Context, pr *PullRequest, st *queueSta
 		// Already ready (marked at an earlier head, or by hand): its title
 		// stays, and the candidate's run is the full run at this head.
 		return s.write(ctx, SystemActor(), func(t *tx) error {
-			_, err := t.ExecContext(ctx, `UPDATE pull_requests SET ready_at = coalesce(ready_at, ?), ready_sha = ?, ready_status_id = 0, ready_checks = '[]', ready_skipped = '[]' WHERE id = ? AND state = 'open'`,
-				s.nowMS(), pr.HeadSHA, pr.ID)
+			_, err := t.ExecContext(ctx, `UPDATE pull_requests SET ready_at = coalesce(ready_at, ?), ready_sha = ?, ready_status_id = 0, ready_checks = '[]', ready_skipped = '[]', ready_cand = ? WHERE id = ? AND state = 'open'`,
+				s.nowMS(), pr.HeadSHA, st.ID, pr.ID)
 			return err
 		})
 	}
@@ -258,19 +258,23 @@ func (s *Service) markReadyOn(ctx context.Context, pr *PullRequest, st *queueSta
 	}
 	nm, _ := json.Marshal(names)
 	now := s.nowMS()
+	var cand int64 // the candidate it is marked ready on (ready_cand), if any
+	if st != nil {
+		cand = st.ID
+	}
 	// The marker goes in before the edit: the forge's webhook for the edit can
 	// be recorded first, and an open pull request without it merged on the
 	// draft tier's checks (#94).
 	if err := s.write(ctx, SystemActor(), func(t *tx) error {
-		_, err := t.ExecContext(ctx, `UPDATE pull_requests SET ready_at = ?, ready_sha = ?, ready_status_id = ?, ready_checks = ?, ready_skipped = '[]' WHERE id = ? AND state = 'draft'`,
-			now, pr.HeadSHA, maxID, string(nm), pr.ID)
+		_, err := t.ExecContext(ctx, `UPDATE pull_requests SET ready_at = ?, ready_sha = ?, ready_status_id = ?, ready_checks = ?, ready_skipped = '[]', ready_cand = ? WHERE id = ? AND state = 'draft'`,
+			now, pr.HeadSHA, maxID, string(nm), cand, pr.ID)
 		return err
 	}); err != nil {
 		return err
 	}
 	if err := ed.EditPRTitle(ctx, f, pr.Repo, pr.Number, stripWIP(pr.Title)); err != nil {
 		if err := s.write(ctx, SystemActor(), func(t *tx) error {
-			_, err := t.ExecContext(ctx, `UPDATE pull_requests SET ready_at = NULL, ready_sha = '', ready_status_id = 0, ready_checks = '[]', ready_skipped = '[]' WHERE id = ? AND state = 'draft'`, pr.ID)
+			_, err := t.ExecContext(ctx, `UPDATE pull_requests SET ready_at = NULL, ready_sha = '', ready_status_id = 0, ready_checks = '[]', ready_skipped = '[]', ready_cand = 0 WHERE id = ? AND state = 'draft'`, pr.ID)
 			return err
 		}); err != nil {
 			if readFault(err) {

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"git.jmann.me/claude/waypoint/internal/core"
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
@@ -50,7 +51,7 @@ type messageJob struct {
 }
 
 // bgIDRE finds the id `claude --bg` prints: "backgrounded · b50893f0".
-var bgIDRE = lazyre.New(`backgrounded\W+([0-9a-f]{6,36})`)
+var bgIDRE = lazyre.New(`backgrounded\W+(` + core.AttachIDShape + `)`)
 
 // execSession runs `claude --bg` in an allowed directory. The new session's
 // hooks see WAYPOINT_FOLLOWUP (this job) and link it in Waypoint.
@@ -85,6 +86,7 @@ func (p *runnerProc) execSession(ctx context.Context, run *jobRun, in sessionJob
 			kenv = append(kenv, "WAYPOINT_SERVER="+p.c.server(), "WAYPOINT_TOKEN="+run.token)
 		}
 		l.prompt = startKickoff(ctx, dir, kenv, tasks[0], in.Title, in.Kickoff)
+		warnTypedStart(p.c.err, p.c.noteTypedStart(ctx, l.prompt))
 	}
 	args := l.claudeArgs()
 	cmd := procCommand(ctx, cliBinaries["claude"], args...)

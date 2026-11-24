@@ -6,6 +6,7 @@
 // it (WP-560). Desktop and phone widths.
 // Needs user robin (run 01-signup-flow first).
 import { chromium } from "playwright";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { looks } from "./looks.mjs";
@@ -48,8 +49,15 @@ let mine, agents, held, auto;
   const db = new DatabaseSync(`${process.env.DIR}/wp.db`);
   db.exec("PRAGMA busy_timeout = 5000");
   db.prepare(`UPDATE issues SET text_agent = 'anthropic/claude-opus-5-5', reporter_agent = 'anthropic/claude-opus-5-5', reviewed_at = NULL WHERE id IN (${agents.id}, ${held.id})`).run();
-  db.prepare(`INSERT INTO task_safety(issue_id, text_hash, verdict, reason, created_at, updated_at) VALUES (?, 'h', 'hold', 'Asks for the deploy key.', 0, 0)
-    ON CONFLICT(issue_id) DO UPDATE SET verdict = 'hold', reason = excluded.reason`).run(held.id);
+  // The hold is for the text as the screen reads it (core.screenText: the
+  // title and description an agent wrote, no comments, no held lineage), so
+  // the screen's sweep, which runs every minute, finds the text unchanged and
+  // keeps the verdict. Any other hash reads as changed text: the sweep
+  // screens it afresh and the hold is gone before the page is read.
+  const t = db.prepare(`SELECT title, description FROM issues WHERE id = ?`).get(held.id);
+  const sum = crypto.createHash("sha256").update(`${t.title}\0${t.description}`).digest("hex").slice(0, 24);
+  db.prepare(`INSERT INTO task_safety(issue_id, text_hash, verdict, reason, created_at, updated_at) VALUES (?, ?, 'hold', 'Asks for the deploy key.', 0, 0)
+    ON CONFLICT(issue_id) DO UPDATE SET text_hash = excluded.text_hash, verdict = 'hold', reason = excluded.reason, flags = '[]', rules = '[]', error = '', attempts = 0`).run(held.id, sum);
   db.prepare(`UPDATE automations SET rule_agent = 'anthropic/claude-opus-5-5' WHERE id = ?`).run(auto.id);
   db.close();
 

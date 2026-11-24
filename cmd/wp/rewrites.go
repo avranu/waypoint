@@ -8,17 +8,20 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"git.jmann.me/claude/waypoint/internal/codeindex"
+	"git.jmann.me/claude/waypoint/internal/core"
 
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Rewritten work at ship time (WP-782, WP-ADR131): git blame says which pull
-// requests put the lines this change replaces on the base; the server says
-// which of their tasks this one has no relation to yet. The agent who made
-// the change is the one who knows whether it meant to undo that work, so it
-// is told, with the commands that record each answer. Nothing is held.
+// Rewritten work at ship time (WP-782, WP-ADR131, WP-1370): git blame says
+// which pull requests put the lines this change replaces on the base; the
+// server relates the tasks itself (inferred, with what it saw), and the
+// review round's check of earlier work undone reads that. The agent gets one
+// informational line, with the commands that say what the relation is when
+// it knows. Nothing is held and no turn is kept open for it.
 
 type rewrittenPR struct {
 	Number int     `json:"number"`
@@ -35,79 +38,122 @@ type rewrittenTask struct {
 	Lines int     `json:"lines"`
 	Share float64 `json:"share"`
 	At    int64   `json:"at"`
+	// Recorded: the server recorded the relation on this call.
+	Recorded bool `json:"recorded"`
 }
 
 // rewriteTimeout bounds the blame: a notice isn't worth a slow ship.
 const rewriteTimeout = 90 * time.Second
 
-// rewritesNotice is the notice for a change to task key whose merge into the
-// base would replace other tasks' recent lines, or "" (nothing found, or
-// anything in the way: an old git, an old server, no origin).
-func (c *cli) rewritesNotice(key, baseFlag string) string {
+// rewrittenTasksFn is c.rewrittenTasks; tests put theirs in its place.
+var rewrittenTasksFn = (*cli).rewrittenTasks
+
+// noteRewrites tells the agent, once per pair of tasks in this checkout,
+// which other tasks' recent work the change to key replaces and that
+// Waypoint related them. It is information: it keeps no turn open
+// (shipNeedsAgent doesn't hear of it) and asks for no tool call.
+func (c *cli) noteRewrites(key, baseFlag string) {
+	s := rewritesText(key, rewrittenTasksFn(c, key, baseFlag))
+	// Recorded even when empty, so tasks that return after a ship that
+	// named nobody are news again.
+	if rewritesSeen(key, s) || s == "" {
+		return
+	}
+	_, _ = fmt.Fprintln(c.err, s) // stderr: --json keeps stdout for the response
+}
+
+// rewrittenTasks are the tasks whose recent lines a change to task key
+// replaces, as the server related them, or nil (nothing found, or anything
+// in the way: an old git, an old server, no origin).
+func (c *cli) rewrittenTasks(key, baseFlag string) []rewrittenTask {
 	if key == "" {
-		return ""
+		return nil
+	}
+	// A --base git would read as an option is refused before git runs.
+	if err := codeindex.CheckRef(baseFlag); err != nil {
+		_, _ = fmt.Fprintf(c.err, "wp: not noting rewritten work: base: %v\n", err)
+		return nil
 	}
 	root, err := localGit("rev-parse", "--show-toplevel")
 	if err != nil {
-		return ""
+		return nil
 	}
 	base := baseRef(baseFlag)
 	repo := originRepo(root)
 	if base == "" || repo == "" {
-		return ""
+		return nil
 	}
 	type traced struct {
-		tr  *codeindex.FixTrace
-		err error
+		tr   *codeindex.FixTrace
+		head string
+		err  error
 	}
 	done := make(chan traced, 1)
 	go func() {
 		head := "HEAD"
+		if sha, err := localGit("rev-parse", "HEAD"); err == nil && sha != "" {
+			head = sha // the commit the evidence is for
+		}
 		// wp ship commits what is staged only after this: blame that too.
 		if _, err := localGit("diff", "--cached", "--quiet"); err != nil && isExit(err, 1) {
 			c, err := codeindex.IndexCommit(root, "HEAD")
 			if err != nil {
-				done <- traced{nil, err}
+				done <- traced{err: err}
 				return
 			}
 			head = c
 		}
 		tr, err := codeindex.TraceRewrites(root, base, head, time.Now())
-		done <- traced{tr, err}
+		done <- traced{tr, head, err}
 	}()
 	var tr *codeindex.FixTrace
+	var head string
 	select {
 	case t := <-done:
 		if t.err != nil {
-			return ""
+			return nil
 		}
-		tr = t.tr
+		tr, head = t.tr, t.head
 	case <-time.After(rewriteTimeout):
-		return ""
+		return nil
 	}
-	var prs []rewrittenPR
+	prs := []rewrittenPR{} // sent even when empty: the server drops what an earlier ship found
 	for _, in := range tr.Introducers {
 		if in.PR > 0 {
 			prs = append(prs, rewrittenPR{Number: in.PR, Lines: in.Lines, Share: in.Share, At: in.At})
 		}
 	}
-	if len(prs) == 0 {
-		return ""
+	// Refused here, before it is sent, with the field and limit the server
+	// would name: a repo or commit this long is not one git handed us.
+	if err := checkRewriteSend(repo, head, prs); err != nil {
+		_, _ = fmt.Fprintf(c.err, "wp: not noting rewritten work: %v\n", err)
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	var got []rewrittenTask
-	body := map[string]any{"repo": repo, "prs": prs}
+	body := map[string]any{"repo": repo, "prs": prs, "head": head}
 	if err := c.callInto(ctx, "POST", "/api/v1/issues/"+url.PathEscape(key)+"/rewritten", body, &got); err != nil {
-		return ""
+		return nil
 	}
-	return rewritesText(key, got, time.Now())
+	return got
+}
+
+// checkRewriteSend is the server's check of the call (core.ValidateRewriteCall)
+// made before the call is sent.
+func checkRewriteSend(repo, head string, prs []rewrittenPR) error {
+	in := make([]core.RewrittenPR, len(prs))
+	for i, p := range prs {
+		in[i] = core.RewrittenPR{Number: p.Number, Lines: p.Lines, Share: p.Share, At: p.At}
+	}
+	return core.ValidateRewriteCall(repo, head, in)
 }
 
 // rewritesSeen says whether this checkout's last ship of key already named
-// the tasks in notice, and records them (an empty notice clears the record). A repeat is still printed but
-// doesn't keep the turn open again: an agent that judged the first one a
-// passing edit has answered it, and only wp relate would silence it.
+// the tasks in notice, and records them (an empty notice clears the record). A
+// repeat is not printed and doesn't keep the turn open again: an agent that
+// judged the first one a passing edit has answered it, and only wp relate would
+// silence it.
 func rewritesSeen(key, notice string) bool {
 	dir, err := localGit("rev-parse", "--absolute-git-dir")
 	if err != nil || key == "" {
@@ -124,8 +170,8 @@ func rewritesSeen(key, notice string) bool {
 	return string(old) == keys
 }
 
-// rewriteKeysRE finds the task lines' keys in a notice.
-var rewriteKeysRE = lazyre.New(`(?m)^  [A-Z][A-Z0-9]*-\d+`)
+// rewriteKeysRE finds the pairs the lines of a notice name.
+var rewriteKeysRE = lazyre.New(`(?m)^Related [A-Z][A-Z0-9]*-\d+ to [A-Z][A-Z0-9]*-\d+`)
 
 // shipKey is the task wp ship ships: the one named or taken, else the one
 // the branch names.
@@ -143,54 +189,30 @@ func shipKey(keys []string) string {
 	return ""
 }
 
-// rewritesText says which tasks' recent work the change replaces and how to
-// record what that was, with the commands as they would be run.
-func rewritesText(key string, got []rewrittenTask, now time.Time) string {
-	if len(got) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	b.WriteString("this change replaces recent work of ")
-	if len(got) == 1 {
-		b.WriteString("another task")
-	} else {
-		b.WriteString("other tasks")
-	}
-	b.WriteString(", which nothing relates to " + key + ":")
+// rewritesText says which tasks Waypoint related to key because the change
+// replaces their recent work, one line each, and how to say what the
+// relation is when the agent knows: information, with the commands as they
+// would be run. A pair is only named while Waypoint's own relation stands
+// (the server leaves out a pair someone has related since).
+func rewritesText(key string, got []rewrittenTask) string {
+	var lines []string
 	for _, t := range got {
-		more := ""
-		if t.PRs > 1 {
-			more = fmt.Sprintf(" and %d more", t.PRs-1)
-		}
-		fmt.Fprintf(&b, "\n  %s %q: %d lines from PR %d%s, merged %s (%.0f%% of the lines this replaces)",
-			t.Key, excerptLine(t.Title, 70), t.Lines, t.PR, more, agoText(now, time.UnixMilli(t.At)), 100*t.Share)
+		lines = append(lines, fmt.Sprintf("Related %s to %s (%s): this change replaces %s. If it replaces that work on purpose or carries it further, say which: `wp relate %s supersedes %s` or `wp relate %s follows %s`.",
+			key, t.Key, excerptLine(t.Title, 70), core.RewriteSpan(t.Lines, t.PR, t.PRs), key, t.Key, key, t.Key))
 	}
-	others := make([]string, len(got))
-	for i, t := range got {
-		others[i] = t.Key
-	}
-	other := strings.Join(others, " ") // wp relate takes several
-	fmt.Fprintf(&b, "\nIf %s meant to replace that work, record it: wp relate %s supersedes %s. If the two pull different ways, so the next agent should weigh both: wp relate %s tension %s. If it carries that work further: wp relate %s follows %s. A passing edit of those lines needs nothing.", key, key, other, key, other, key, other)
-	if len(got) > 1 {
-		b.WriteString(" Leave out of each command the tasks it isn't true of.")
-	}
-	return b.String()
-}
-
-// agoText is "today", "yesterday" or "N days ago".
-func agoText(now, t time.Time) string {
-	switch d := int(now.Sub(t).Hours() / 24); {
-	case d <= 0:
-		return "today"
-	case d == 1:
-		return "yesterday"
-	default:
-		return fmt.Sprintf("%d days ago", d)
-	}
+	return strings.Join(lines, "\n")
 }
 
 // excerptLine shortens s to n runes on one line.
 func excerptLine(s string, n int) string {
+	// A control character (an escape sequence) is not text: it would act on
+	// the terminal that prints another task's title.
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
+			return ' '
+		}
+		return r
+	}, s)
 	s = strings.Join(strings.Fields(s), " ")
 	if r := []rune(s); len(r) > n {
 		return strings.TrimSpace(string(r[:n-1])) + "…"

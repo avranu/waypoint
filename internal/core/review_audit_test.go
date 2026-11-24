@@ -2,23 +2,29 @@ package core
 
 import (
 	"encoding/json"
+	"fmt"
+	"log/slog"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
 
-// Another model's audit first in adversarial review rounds (WP-687), through
-// the LLM gateway alone and never a coding plan's CLI (WP-871).
+// Another model's audit first in adversarial review rounds (WP-687): the
+// default audit, which is Grok through Cursor on a runner and then the LLM
+// gateway (WP-871, WP-1725). Most rounds here have no runner with Cursor, so
+// the gateway runs theirs.
 
 // auditAPEnv is reviewAPEnv with the LLM gateway set up and a runner of
-// the person's that sends audits to it. The runner has Claude Code and
-// Cursor signed in too, which a round never asks.
+// the person's that sends audits to it. The runner has Claude Code signed in
+// too, which a round never asks; it has no Cursor, so a round's audit goes to
+// the gateway (with Cursor online it would go to Grok first, WP-1725).
 func auditAPEnv(t *testing.T) (*apEnv, *Runner) {
 	t.Helper()
 	a := reviewAPEnv(t)
 	taskGateway(t, a.s)
 	box := a.runner(a.admin, "auditbox", func(r *RunnerRegistration) {
-		r.CLIs = []RunnerCLI{{Name: "claude"}, {Name: "cursor"}}
+		r.CLIs = []RunnerCLI{{Name: "claude"}}
 		r.Features = []string{FeatureConfine, FeatureAudit, FeatureGatewayAudit}
 	})
 	a.s.Forges = newPRForge()
@@ -127,9 +133,11 @@ func (a *apEnv) finishAudit(j *RunnerClaim, state string, titles ...string) {
 // own prompt; the merge stays held meanwhile.
 func TestReviewRoundAuditFirst(t *testing.T) {
 	a, box := auditAPEnv(t)
-	// Cursor is signed in on a runner too: the round doesn't call it.
+	// Cursor is on a runner too, but signed out: the round's Grok entries have
+	// nowhere to run, so its audit goes to the gateway, and Cursor isn't called.
 	cursor := a.runner(a.admin, "cursorbox", func(r *RunnerRegistration) {
-		r.CLIs = []RunnerCLI{{Name: "cursor"}}
+		out := false
+		r.CLIs = []RunnerCLI{{Name: "cursor", SignedIn: &out}}
 		r.Features = []string{FeatureConfine, FeatureAudit}
 	})
 	first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude", Priority: "urgent"})
@@ -149,7 +157,7 @@ func TestReviewRoundAuditFirst(t *testing.T) {
 		t.Fatalf("step = %+v", st)
 	}
 	ra, au := a.roundAuditRow(roundID)
-	if got := strings.Join(au.Models, " "); got != "gateway/audit" {
+	if got := strings.Join(au.Models, " "); got != "cursor/grok-4.7-high cursor/grok-4.7-medium gateway/audit" {
 		t.Fatalf("the round's audit asks %s", got)
 	}
 	a.s.Wait()
@@ -387,7 +395,8 @@ func TestReviewRoundGatewayFails(t *testing.T) {
 	}
 	a.tick(time.Second)
 	ra, au := a.roundAuditRow(id)
-	if au.Status != AuditFailed || len(au.Attempts) != 1 || ra.alt != "" || !strings.Contains(ra.note, "Another model's audit #") {
+	// Attempts: the two Cursor entries passed over (no runner with it), then the gateway's.
+	if au.Status != AuditFailed || len(au.Attempts) != 3 || ra.alt != "" || !strings.Contains(ra.note, "Another model's audit #") {
 		t.Fatalf("round = %+v, audit = %s %+v", ra, au.Status, au.Attempts)
 	}
 	if len(a.jobs) != 0 {
@@ -633,6 +642,114 @@ func TestReviewRoundFallsBack(t *testing.T) {
 			}
 		}
 	})
+	// WP-1711: an audit that has run longer than every recent run like it
+	// has no runs to read its odds from. That isn't "unlikely": no reviewer
+	// starts on it, and the round waits out its patience (WP-ADR117: "given
+	// at least 8 such runs; with fewer it waits out the hour").
+	t.Run("no runs went as long", func(t *testing.T) {
+		a, box := auditAPEnv(t)
+		logs := &lockedBuf{}
+		a.s.log = slog.New(slog.NewTextHandler(logs, nil))
+		at := a.clockNow().UnixMilli()
+		for i := range reviewerMinRuns + 2 {
+			end := at - int64(i)*int64(time.Hour/time.Millisecond)
+			if _, err := a.s.db.W.Exec(`INSERT INTO runner_jobs(owner_id, kind, title, cli, input, state, timeout, source, result, created_at, started_at, finished_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+				a.admin.User.ID, JobAudit, "an audit", GatewayCLI, "{}", "done", 3600, "audit", "{}", end-(30*time.Minute).Milliseconds(), end-(30*time.Minute).Milliseconds(), end); err != nil {
+				t.Fatal(err)
+			}
+		}
+		id := start(a)
+		a.tick(61 * time.Second)
+		a.s.Wait()
+		if audit := a.poll(a.admin, box, RunnerPoll{}).Job; audit == nil || agentJobOf(t, audit).CLI != GatewayCLI {
+			t.Fatalf("no audit job: %+v", audit)
+		}
+		for range 4 {
+			a.tick(10 * time.Minute)
+		}
+		if rv, err := a.s.roundReviewer(a.ctx, id); err != nil || rv != nil {
+			t.Fatalf("a reviewer started at 41m on no runs that went as long: %+v (%v); step %q", rv, err, a.step().detail)
+		}
+		if d := a.step().detail; !strings.Contains(d, "waiting for") || !strings.Contains(d, "starts beside it in") || strings.Contains(d, "recent runs") {
+			t.Errorf("the step should say it waits for the audit until the reviewer's time, with no odds: %q", d)
+		}
+		for range 2 {
+			a.tick(10 * time.Minute)
+		}
+		if rv, err := a.s.roundReviewer(a.ctx, id); err != nil || rv == nil {
+			t.Errorf("no reviewer once the hour had passed: %+v (%v); step %q", rv, err, a.step().detail)
+		}
+		// The start's log line says the odds weren't known, so a chance of 0
+		// there isn't read as "0%" (audit 1575.3).
+		if l := logs.String(); !strings.Contains(l, "Claude review started beside its audit") || !strings.Contains(l, "odds_known=false") || !strings.Contains(l, "past_patience=true") {
+			t.Errorf("the reviewer's start isn't logged as past the patience with odds unknown: %s", l)
+		}
+	})
+	// The same with a few runs that went as long, short of reviewerMinRuns:
+	// the share of so few isn't odds (WP-ADR117 counts the runs that went as
+	// long, not all recent ones), so 0 of 7 waits out the hour and 0 of 8
+	// starts the reviewer (audit 1575.4).
+	for _, c := range []struct {
+		long  int
+		early bool
+	}{{reviewerMinRuns - 1, false}, {reviewerMinRuns, true}} {
+		t.Run(fmt.Sprintf("%d runs went as long", c.long), func(t *testing.T) {
+			a, box := auditAPEnv(t)
+			logs := &lockedBuf{}
+			a.s.log = slog.New(slog.NewTextHandler(logs, nil))
+			at := a.clockNow().UnixMilli()
+			add := func(i int, took time.Duration) {
+				end := at - int64(i)*int64(10*time.Minute/time.Millisecond)
+				if _, err := a.s.db.W.Exec(`INSERT INTO runner_jobs(owner_id, kind, title, cli, input, state, timeout, source, result, created_at, started_at, finished_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+					a.admin.User.ID, JobAudit, "an audit", GatewayCLI, "{}", "done", 3600, "audit", "{}", end-took.Milliseconds(), end-took.Milliseconds(), end); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Twelve quick runs keep the odds above one half while the audit
+			// is young; once it has outlasted them, only the slow ones (none
+			// of which ended within the hour) are left to read.
+			for i := range 12 {
+				add(i, 5*time.Minute)
+			}
+			for i := range c.long {
+				add(12+i, 90*time.Minute)
+			}
+			id := start(a)
+			a.tick(61 * time.Second)
+			a.s.Wait()
+			if audit := a.poll(a.admin, box, RunnerPoll{}).Job; audit == nil || agentJobOf(t, audit).CLI != GatewayCLI {
+				t.Fatalf("no audit job: %+v", audit)
+			}
+			if rv, err := a.s.roundReviewer(a.ctx, id); err != nil || rv != nil {
+				t.Fatalf("a reviewer started beside a young audit: %+v (%v); step %q", rv, err, a.step().detail)
+			}
+			for range 2 {
+				a.tick(10 * time.Minute)
+			}
+			rv, err := a.s.roundReviewer(a.ctx, id)
+			if err != nil || (rv != nil) != c.early {
+				t.Fatalf("at 21m with 0 of %d runs that went as long ending in time: reviewer %+v (%v), want one %v; step %q", c.long, rv, err, c.early, a.step().detail)
+			}
+			if c.early {
+				if l := logs.String(); !strings.Contains(l, "odds_known=true") || !strings.Contains(l, fmt.Sprintf("in=0 runs=%d", c.long)) || !strings.Contains(l, "past_patience=false") {
+					t.Errorf("the early start's log doesn't give its odds: %s", l)
+				}
+				return
+			}
+			if d := a.step().detail; !strings.Contains(d, "waiting for") || strings.Contains(d, "recent runs") {
+				t.Errorf("the step should say it waits for the audit, with no odds: %q", d)
+			}
+			for range 4 {
+				a.tick(10 * time.Minute)
+			}
+			if rv, err := a.s.roundReviewer(a.ctx, id); err != nil || rv == nil {
+				t.Errorf("no reviewer once the hour had passed: %+v (%v); step %q", rv, err, a.step().detail)
+			}
+			if l := logs.String(); !strings.Contains(l, "odds_known=false") || !strings.Contains(l, fmt.Sprintf("in=0 runs=%d", c.long)) || !strings.Contains(l, "past_patience=true") {
+				t.Errorf("the late start's log doesn't say what the odds had to go on: %s", l)
+			}
+		})
+	}
 	// WP-1306: audits the gateway refused (no model at the bar) say nothing
 	// of how long one that runs takes: they don't lower the odds, so the
 	// round still waits for an audit that likely lands. Other quick failures
@@ -851,7 +968,7 @@ func TestReviewRoundAfterACursorAudit(t *testing.T) {
 	a.tick(reviewAuditRecheck + time.Second)
 	ra, au := a.roundAuditRow(id)
 	if ra.id == grok || ra.note != "" || !strings.Contains(ra.alt, "Grok's audit #") || !strings.Contains(ra.alt, "the Cursor plan's pool") ||
-		au == nil || au.Purpose != AuditReview || au.Models[0] != "gateway/audit" {
+		au == nil || au.Purpose != AuditReview || au.Models[len(au.Models)-1] != "gateway/audit" {
 		t.Fatalf("round = %+v, audit = %+v", ra, au)
 	}
 	// That one failing too is the end of it: the session reviews.
@@ -859,6 +976,103 @@ func TestReviewRoundAfterACursorAudit(t *testing.T) {
 	a.tick(time.Second)
 	if ra2, _ := a.roundAuditRow(id); ra2.id != ra.id || !strings.Contains(ra2.note, "Another model's audit #") {
 		t.Fatalf("round = %+v", ra2)
+	}
+}
+
+// todaysDefaultModels is a stored audit's models when nobody named any, on a
+// Waypoint with a gateway (WP-1725).
+const todaysDefaultModels = `[{"cli":"cursor","model":"grok-4.7-high"},{"cli":"cursor","model":"grok-4.7-medium"},{"cli":"gateway","model":"audit"}]`
+
+// Whether a pull request's own audit that failed is followed by the round's
+// own: not when it asked every model the round's would, at the round's bar;
+// it is when a person named other models beside the gateway (Grok wasn't
+// asked).
+func TestReviewRoundAsksItsOwnAuditAfterAnother(t *testing.T) {
+	for name, c := range map[string]struct {
+		models, weakest string
+		again           bool
+	}{
+		"today's default at the round's bar": {todaysDefaultModels, reviewFloorBar, false},
+		"the gateway beside a named model":   {`[{"cli":"claude","model":"sonnet"},{"cli":"gateway","model":"audit"}]`, reviewFloorBar, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			a, _ := auditAPEnv(t)
+			first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude", Priority: "urgent"})
+			a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "Second", Agent: "claude"})
+			a.finish(first.Key)
+			a.grokPR(first.ID, 7, "aaa")
+			var prID, forge int64
+			if err := a.s.db.R.QueryRow(`SELECT id, forge_id FROM pull_requests WHERE number = 7`).Scan(&prID, &forge); err != nil {
+				t.Fatal(err)
+			}
+			res, err := a.s.db.W.Exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, pr_id, pr_number, ref, status, model, models, author_model, title, owner_id, created_at, weakest)
+				VALUES (?, ?, 'acme/app', 'pr', ?, 7, 'aaa', 'queued', '', ?, 'anthropic/claude-code', 'acme/app#7', ?, ?, ?)`, a.p.ID, forge, prID, c.models, a.admin.User.ID, a.clockNow().UnixMilli(), c.weakest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			theirs, _ := res.LastInsertId()
+			a.stopWith("Shipped as #7.")
+			id := a.step().reviewID.Int64
+			a.askedAsRound(theirs)
+			a.tick(61 * time.Second)
+			if ra, _ := a.roundAuditRow(id); ra.id != theirs {
+				t.Fatalf("the pull request's audit isn't the round's: %+v", ra)
+			}
+			if _, err := a.s.db.W.Exec(`UPDATE code_audits SET status = 'failed', error = 'no model could take the task' WHERE id = ?`, theirs); err != nil {
+				t.Fatal(err)
+			}
+			a.tick(reviewAuditRecheck + time.Second)
+			ra, au := a.roundAuditRow(id)
+			if again := ra.id != theirs; again != c.again {
+				t.Fatalf("the round's own audit asked: %v, want %v (round %+v)", again, c.again, ra)
+			}
+			if c.again && (au == nil || au.Purpose != AuditReview || strings.Join(au.Models, " ") != "cursor/grok-4.7-high cursor/grok-4.7-medium gateway/audit") {
+				t.Fatalf("the round's own audit = %+v", au)
+			}
+		})
+	}
+}
+
+// With a gateway and a runner with Cursor online, a round's audit is Grok's
+// through Cursor first, and the gateway's when the Cursor plan is out of usage
+// (WP-1725).
+func TestReviewRoundAsksCursorFirst(t *testing.T) {
+	a, box := auditAPEnv(t)
+	cursor := a.runner(a.admin, "cursorbox", func(r *RunnerRegistration) {
+		r.CLIs = []RunnerCLI{{Name: "cursor"}}
+		r.Features = []string{FeatureConfine, FeatureAudit}
+	})
+	first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude", Priority: "urgent"})
+	a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "Second", Agent: "claude"})
+	a.finish(first.Key)
+	a.grokPR(first.ID, 7, "aaa")
+	a.stopWith("Shipped as #7.")
+	id := a.step().reviewID.Int64
+	a.tick(61 * time.Second)
+	a.s.Wait()
+	if st := a.step(); st.reason != WaitAudit || !strings.Contains(st.detail, "Grok's audit") {
+		t.Fatalf("step = %+v", st)
+	}
+	for _, want := range []string{"grok-4.7-high", "grok-4.7-medium"} {
+		w := a.poll(a.admin, cursor, RunnerPoll{})
+		if w.Job == nil || w.Job.Kind != JobAudit {
+			t.Fatalf("no audit job for Cursor (%s): %+v", want, w.Job)
+		}
+		if job := agentJobOf(t, w.Job); job.CLI != "cursor" || job.Model != want {
+			t.Fatalf("the round's job = %s/%s, want cursor/%s", job.CLI, job.Model, want)
+		}
+		if _, err := a.s.FinishRunnerJob(a.ctx, a.admin, w.Job.ID, RunnerFinish{State: "failed", Error: "You've hit your usage limit"}); err != nil {
+			t.Fatal(err)
+		}
+		a.s.Wait()
+		a.s.Wait()
+	}
+	w := a.poll(a.admin, box, RunnerPoll{})
+	if w.Job == nil || agentJobOf(t, w.Job).CLI != GatewayCLI {
+		t.Fatalf("the gateway wasn't asked after Cursor: %+v", w.Job)
+	}
+	if _, au := a.roundAuditRow(id); au.Status != AuditRunning || len(au.Attempts) != 2 || au.Attempts[0].Outcome != "spent" {
+		t.Fatalf("audit = %s %+v", au.Status, au.Attempts)
 	}
 }
 
@@ -875,7 +1089,7 @@ func TestReviewRoundAfterThePRsGatewayAudit(t *testing.T) {
 		t.Fatal(err)
 	}
 	res, err := a.s.db.W.Exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, pr_id, pr_number, ref, status, model, models, author_model, title, owner_id, created_at, weakest)
-		VALUES (?, ?, 'acme/app', 'pr', ?, 7, 'aaa', 'queued', '', '[{"cli":"gateway","model":"audit"}]', 'anthropic/claude-code', 'acme/app#7', ?, ?, 'deepseek-v4.1-flash')`, a.p.ID, forge, prID, a.admin.User.ID, a.clockNow().UnixMilli())
+		VALUES (?, ?, 'acme/app', 'pr', ?, 7, 'aaa', 'queued', '', ?, 'anthropic/claude-code', 'acme/app#7', ?, ?, 'deepseek-v4.1-flash')`, a.p.ID, forge, prID, todaysDefaultModels, a.admin.User.ID, a.clockNow().UnixMilli())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1034,6 +1248,102 @@ func TestReviewRoundSharesPRAuditWithBabysitter(t *testing.T) {
 	}
 }
 
+// The findings a held ship lists are the ones the gate counts as undecided: a
+// finding the pull request's babysitter holds is in neither.
+func TestAgainTodoLinesMatchTheGateWithABabysitter(t *testing.T) {
+	a, _ := auditAPEnv(t)
+	first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude", Priority: "urgent"})
+	a.finish(first.Key)
+	a.linkPR(first.ID, 7, "aaa")
+	var prID, forge int64
+	if err := a.s.db.R.QueryRow(`SELECT id, forge_id FROM pull_requests WHERE number = 7`).Scan(&prID, &forge); err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.s.db.W.Exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, pr_id, pr_number, ref, status, model, models, title, owner_id, created_at)
+		VALUES (?, ?, 'acme/app', 'pr', ?, 7, 'aaa', 'done', 'cursor/grok-4.7-high', '[]', 'acme/app#7', ?, 0)`, a.p.ID, forge, prID, a.admin.User.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	audit, _ := res.LastInsertId()
+	for i, title := range []string{"Babysitter has it", "Left one", "Left two"} {
+		if _, err := a.s.db.W.Exec(`INSERT INTO code_audit_findings(audit_id, ordinal, title, severity, problem) VALUES (?, ?, ?, 'high', 'p')`, audit, i+1, title); err != nil {
+			t.Fatal(err)
+		}
+	}
+	given := mustJSON([]BabysitRound{{N: 1, Findings: []string{itoa64(audit) + ".1"}}})
+	if _, err := a.s.db.W.Exec(`INSERT INTO babysits(pr_id, round, owner_id, rounds, created_at, updated_at) VALUES (?, 1, ?, ?, 0, 0)`, prID, a.admin.User.ID, given); err != nil {
+		t.Fatal(err)
+	}
+	ids, lines, err := a.s.againTodoLines(a.ctx, audit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	au, err := a.s.auditRow(a.ctx, audit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.s.loadFindings(a.ctx, au); err != nil {
+		t.Fatal(err)
+	}
+	if want := len(a.s.roundTodo(a.ctx, au)); len(ids) != 2 || len(ids) != want {
+		t.Errorf("listed %v, the gate counts %d", ids, want)
+	}
+	if strings.Contains(lines, "Babysitter has it") || !strings.Contains(lines, "Left one") || !strings.Contains(lines, "Left two") {
+		t.Errorf("lines:\n%s", lines)
+	}
+}
+
+// An audit whose findings are all decided or the babysitter's ends its round
+// with a body that says how many were marked, how, by whom, and which the
+// babysitter holds.
+func TestEndRoundNothingBodySaysWhatBecameOfTheFindings(t *testing.T) {
+	a, _ := auditAPEnv(t)
+	first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude", Priority: "urgent"})
+	a.finish(first.Key)
+	a.linkPR(first.ID, 7, "aaa")
+	var prID, forge int64
+	if err := a.s.db.R.QueryRow(`SELECT id, forge_id FROM pull_requests WHERE number = 7`).Scan(&prID, &forge); err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.s.db.W.Exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, pr_id, pr_number, ref, status, model, models, title, owner_id, created_at)
+		VALUES (?, ?, 'acme/app', 'pr', ?, 7, 'aaa', 'done', 'cursor/grok-4.7-high', '[]', 'acme/app#7', ?, 0)`, a.p.ID, forge, prID, a.admin.User.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	audit, _ := res.LastInsertId()
+	for i, title := range []string{"Fixed one", "Rejected one", "Babysitter has it"} {
+		if _, err := a.s.db.W.Exec(`INSERT INTO code_audit_findings(audit_id, ordinal, title, severity, problem) VALUES (?, ?, ?, 'high', 'p')`, audit, i+1, title); err != nil {
+			t.Fatal(err)
+		}
+	}
+	id := func(n int) string { return itoa64(audit) + "." + strconv.Itoa(n) }
+	for _, m := range []MarkFindings{{IDs: []string{id(1)}, State: "fixed", Note: "done"}, {IDs: []string{id(2)}, State: "rejected", Note: "not real"}} {
+		if _, err := a.s.MarkAuditFindings(a.ctx, a.admin, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	given := mustJSON([]BabysitRound{{N: 1, Findings: []string{id(3)}}})
+	if _, err := a.s.db.W.Exec(`INSERT INTO babysits(pr_id, round, owner_id, rounds, created_at, updated_at) VALUES (?, 1, ?, ?, 0, 0)`, prID, a.admin.User.ID, given); err != nil {
+		t.Fatal(err)
+	}
+	au, err := a.s.auditRow(a.ctx, audit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.s.loadFindings(a.ctx, au); err != nil {
+		t.Fatal(err)
+	}
+	got := a.s.nothingLeftFacts(a.ctx, au)
+	for _, want := range []string{"2 of its 3 findings were marked already", "1 fixed", "1 rejected", "#" + id(3) + " with the pull request's babysitter"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the body lacks %q: %s", want, got)
+		}
+	}
+	if strings.Contains(got, "#"+id(1)) || strings.Contains(got, "#"+id(2)) {
+		t.Errorf("the body names a finding that was marked: %s", got)
+	}
+}
+
 // A high-stakes change's round holds its audit to the trusted bar (WP-916):
 // the pull request's own audit without that bar isn't reused, the job and the
 // gateway's task carry it, and when the gateway has no model at the bar
@@ -1078,7 +1388,7 @@ func TestReviewRoundHighStakesBar(t *testing.T) {
 		t.Fatalf("no audit job: %+v", w.Job)
 	}
 	job := agentJobOf(t, w.Job)
-	if job.CLI != GatewayCLI || job.GatewayWeakest != trustedAuditBar || strings.Join(job.GatewayExclude, ",") != "*claude*" {
+	if job.CLI != GatewayCLI || job.GatewayWeakest != trustedAuditBar || len(job.GatewayExclude) != 0 {
 		t.Fatalf("job = %s/%s weakest %q exclude %v", job.CLI, job.Model, job.GatewayWeakest, job.GatewayExclude)
 	}
 	v, err := a.s.StartGatewayTask(a.ctx, a.admin, w.Job.ID, "Audit this.", strings.NewReader("tar"), 3)
@@ -1088,8 +1398,8 @@ func TestReviewRoundHighStakesBar(t *testing.T) {
 	if _, spec := gw.sent(); spec.Weakest != trustedAuditBar {
 		t.Fatalf("spec = %+v", spec)
 	}
-	// Nothing outside the author's family is that good: the gateway says
-	// so, and the session's own reviewer reviews.
+	// Every model the gateway rates at the bar is busy or spent: it answers
+	// no_model_at_bar, and the session's own reviewer reviews.
 	result := map[string]any{"gateway_error": gatewayNoModelAtBar, "gateway_task": v.ID}
 	if _, err := a.s.FinishRunnerJob(a.ctx, a.admin, w.Job.ID, RunnerFinish{State: "failed", Error: "The gateway has no model at the bar", Result: []byte(mustJSON(result))}); err != nil {
 		t.Fatal(err)
@@ -1104,8 +1414,8 @@ func TestReviewRoundHighStakesBar(t *testing.T) {
 	if au.Status != AuditFailed || ra.alt != "" || ra.note == "" {
 		t.Fatalf("round = %+v, audit = %s %+v", ra, au.Status, au.Attempts)
 	}
-	// Sonnet, the bar itself, reviews it in a new session; its job asks the
-	// gateway nothing.
+	// The high-stakes reviewer, Sonnet, reviews it in a new session; its job
+	// asks the gateway nothing.
 	a.endReviewer(box, "done", "Login skips the lockout")
 	a.tick(time.Second)
 	var in AutopilotJob
@@ -1237,5 +1547,37 @@ func TestReviewRoundPanelWithoutReviewer(t *testing.T) {
 	said, _, _ := a.s.ownReviewSaid(a.ctx, r.sessionID.Int64, r.issueID, id)
 	if !strings.Contains(said, "Reads a nil map") {
 		t.Errorf("the check of the session's report wouldn't read them: %q", said)
+	}
+}
+
+// With autopilot off, a person's Stop while the round waits for its audit
+// keeps the step waiting, and moves the step's stop to this Stop: a prompt
+// the person typed before it is the turn this Stop ended, not a prompt after
+// it that ends the step as "prompted".
+func TestReviewAuditWaitAutopilotOffStopMovesTheStop(t *testing.T) {
+	a, _ := auditAPEnv(t)
+	first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude", Priority: "urgent"})
+	a.finish(first.Key)
+	a.grokPR(first.ID, 7, "aaa")
+	a.stopWith("Shipped as #7.")
+	a.tick(61 * time.Second)
+	if st := a.step(); st.state != StepWaiting || st.reason != WaitAudit {
+		t.Fatalf("step = %+v", st)
+	}
+	if _, err := a.s.SetAutopilot(a.ctx, a.admin, a.p.Key, AutopilotSettingInput{Enabled: ptrOf(false), Merge: true, Limits: AutopilotLimits{Review: ptrOf(true)}}); err != nil {
+		t.Fatal(err)
+	}
+	a.setClock(a.clockNow().Add(time.Second))
+	a.prompt("and the lexer?")
+	a.setClock(a.clockNow().Add(time.Second))
+	prompted := a.clockNow().UnixMilli()
+	a.stopWith("Here's what you asked.")
+	st := a.step()
+	if st.state != StepWaiting || st.reason != WaitAudit || st.stopAt <= prompted-1 {
+		t.Fatalf("step = %+v, want waiting on the audit with its stop at or after %d", st, prompted)
+	}
+	a.tick(5 * time.Second)
+	if st := a.step(); st.state != StepWaiting || st.reason != WaitAudit {
+		t.Fatalf("after a tick, step = %+v", st)
 	}
 }

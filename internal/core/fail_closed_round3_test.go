@@ -78,6 +78,10 @@ func TestArmedMergeHeldWhenBaseUnreadable(t *testing.T) {
 	se.sg.behindErr = &forgeAPIError{method: "GET", path: "/branches/main", status: 502, body: "bad gateway"}
 	se.pullHook("opened", testPR)
 	se.drain()
+	// The hook's own follow-ups (a checks read, a merge attempt) run in the
+	// background; one that ran after the checks below would merge the pull
+	// request before the table is broken.
+	se.s.Wait()
 	se.sg.setChecks(head, CommitCheck{Name: "ci / backend (pull_request)", State: CheckSuccess})
 	se.poll()
 	id := se.pr(5).ID
@@ -176,6 +180,10 @@ func TestMergeNowReadFaultRetries(t *testing.T) {
 	const head = "1111111aaaa"
 	se.pullHook("opened", testPR)
 	se.drain()
+	// The hook's own follow-ups (a checks read, a merge attempt) run in the
+	// background; one that ran after the checks below would merge the pull
+	// request before the table is broken.
+	se.s.Wait()
 	se.sg.setChecks(head, CommitCheck{Name: "ci / backend (pull_request)", State: CheckSuccess})
 	pr := se.pr(5)
 	se.s.Wait()

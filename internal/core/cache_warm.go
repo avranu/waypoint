@@ -123,11 +123,6 @@ type SessionCache struct {
 	At       *time.Time `json:"at,omitempty"`
 }
 
-// isKeepWarmPing: the prompt is a keep-warm ping.
-func isKeepWarmPing(prompt string) bool {
-	return strings.HasPrefix(strings.TrimSpace(prompt), KeepWarmMark)
-}
-
 // warmFacts is what the keep-warm decision looks at.
 type warmFacts struct {
 	Now, WarmSince time.Time
@@ -431,13 +426,9 @@ func (s *Service) holdsUnmerged(ctx context.Context, id int64) bool {
 func (s *Service) unattendedSession(ctx context.Context, id int64) bool {
 	var prompted, typed sql.NullInt64
 	var started bool
-	// A row written before WP-1562 kept Claude Code's wrapper, its whitespace
-	// collapsed by excerpt: "<pasted_content id=…> Waypoint autopilot…". Its
-	// text starts after the opening tag's '>' (the tag holds no other).
-	if err := s.db.R.QueryRowContext(ctx, `SELECT (SELECT max(created_at) FROM session_events WHERE session_id = ? AND kind = 'prompt'
-			AND (detail LIKE ? OR (detail LIKE '<pasted_content%' AND ltrim(substr(detail, instr(detail, '>') + 1)) LIKE ?))),
+	if err := s.db.R.QueryRowContext(ctx, `SELECT (SELECT max(created_at) FROM session_events WHERE session_id = ? AND kind = 'prompt' AND typed_kind IN (?, ?)),
 		(SELECT typed_at FROM agent_sessions WHERE id = ?), EXISTS (SELECT 1 FROM autopilot_steps WHERE next_session = ?)`,
-		id, AutopilotPromptMark+"%", AutopilotPromptMark+"%", id, id).Scan(&prompted, &typed, &started); err != nil {
+		id, TypedReview, TypedKickoff, id, id).Scan(&prompted, &typed, &started); err != nil {
 		s.log.WarnContext(ctx, "is it autopilot's session", "session", id, "err", err)
 		return false
 	}
@@ -628,10 +619,9 @@ func (s *Service) warmQuietPrompt(ctx context.Context, t *tx, x *AgentSession, e
 	if err := t.QueryRowContext(ctx, `SELECT warm_state FROM agent_sessions WHERE id = ?`, x.ID).Scan(&state); err != nil {
 		return false, err
 	}
-	p := strings.TrimSpace(ev.Prompt)
-	switch {
-	case (state == warmCompacting || state == warmReview) && strings.HasPrefix(p, "/compact"):
-	case isKeepWarmPing(p):
+	switch ev.typed {
+	case TypedCompact:
+	case TypedKeepWarm:
 		state = warmInPing
 	default:
 		return false, nil
@@ -654,7 +644,7 @@ func (s *Service) warmPromptStarted(ctx context.Context, t *tx, x *AgentSession,
 	if err := warmUsed(ctx, t, x.ID, at); err != nil { // WP-1000
 		return err
 	}
-	typed := !isOwnPrompt(ev.Prompt) && x.Kind != SessionTask &&
+	typed := (ev.typed == "" || typedCarriesPerson(ev.typed)) && !isHarnessPrompt(ev.Prompt) && x.Kind != SessionTask &&
 		(!posted.Valid || at-posted.Int64 > postedEcho.Milliseconds())
 	_, err := t.ExecContext(ctx, `UPDATE agent_sessions SET stopped_at = NULL, warm_state = CASE WHEN ? AND warm_state = ? THEN warm_state ELSE '' END, prompt_typed = ?,
 		typed_at = CASE WHEN ? THEN max(coalesce(typed_at, 0), ?) ELSE typed_at END WHERE id = ?`, isHarnessPrompt(ev.Prompt), warmReview, typed, typed, at, x.ID)
