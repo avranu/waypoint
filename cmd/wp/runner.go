@@ -793,24 +793,24 @@ func (p *runnerProc) endDownload(res updateResult) {
 }
 
 // beginUpdate claims the try for sv in the shared record, unless another wp
-// holds a fresh claim on it or failed it inside its backoff (a runner that
-// restarted keeps that backoff too): then it says false and the runner
-// waits that out. A claimed try is noted here (a failed one is repeated
-// after 6 hours).
+// holds a fresh claim (on any release, as claimAutoUpdate's due says: the
+// SessionStart hook's daily one names none, and wp upgrade --auto downloads
+// what the server serves when it runs) or failed sv inside its backoff (a
+// runner that restarted keeps that backoff too): then it says false and the
+// runner waits that out. A claimed try is noted here (a failed one is
+// repeated after 6 hours).
 func (p *runnerProc) beginUpdate(sv string) bool {
 	var held time.Time
 	claimed := false // held by a download in flight, not a failure
 	ownTry := p.updateTriedFor == sv
 	_ = p.c.updateState(func(s *State) {
-		if u := s.Update; u != nil && u.Server == sv {
-			switch {
-			case u.Result == "started" && time.Since(u.Checked) < updateClaimFresh:
-				held, claimed = u.Checked.Add(updateClaimFresh), true
-				return
-			case !ownTry && strings.HasPrefix(u.Result, "failed") && time.Since(u.Checked) < updateRetryEvery:
-				held = u.Checked.Add(updateRetryEvery)
-				return
-			}
+		switch u := s.Update; {
+		case claimLive(u):
+			held, claimed = u.Checked.Add(updateClaimFresh), true
+			return
+		case !ownTry && u != nil && u.Server == sv && strings.HasPrefix(u.Result, "failed") && time.Since(u.Checked) < updateRetryEvery:
+			held = u.Checked.Add(updateRetryEvery)
+			return
 		}
 		s.Update = &updateCheck{Checked: time.Now(), Server: sv, Result: "started"}
 	})

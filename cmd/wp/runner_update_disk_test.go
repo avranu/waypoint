@@ -254,7 +254,7 @@ func TestUnstartedUpgradeGivesTheClaimBack(t *testing.T) {
 	cliServer(t, "v1.2.0", "v1.2.0", false)
 	b := newBehindEnv(t)
 	setVersion(t, "v1.1.0")
-	backgroundStart = func(string, ...string) bool { return false }
+	backgroundStart = func(string, ...string) bool { return false } // newBehindEnv's cleanup puts the original back
 	b.finish("v1.2.0", someCmd)
 	if c, _ := newCLI(io.Discard, io.Discard); c.state.Update != nil {
 		t.Fatalf("record = %+v, want none", c.state.Update)
@@ -300,5 +300,33 @@ func TestReplaceExeIsOneAtATime(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(exe); string(b) != "new" {
 		t.Fatalf("exe = %q", b)
+	}
+}
+
+// c6732 (c6697 again): any live claim holds the runner's download back, as it
+// holds back every wp command's: the SessionStart hook's daily one, which
+// names no release, and one on another release (its wp upgrade --auto
+// downloads what the server serves when it runs, the same binary).
+func TestRunnerWaitsForAnyLiveClaim(t *testing.T) {
+	for name, claimed := range map[string]string{"daily hook": "", "another release": "v1.2.0"} {
+		t.Run(name, func(t *testing.T) {
+			e := cliServer(t, "v1.3.0", "v1.3.0", false)
+			u := newUpdRunner(t, e, "v1.3.0")
+			c, _ := newCLI(io.Discard, io.Discard)
+			c.recordUpdate(claimed, "started", true)
+			u.p.downloadFn = func(context.Context, string) (string, string, error) {
+				t.Error("downloaded beside another wp's claim")
+				return "", "", errors.New("x")
+			}
+			if exe, _ := u.step(); exe != "" {
+				t.Fatalf("restart %q", exe)
+			}
+			if rec := u.record(); rec == nil || rec.Server != claimed || rec.Result != "started" {
+				t.Fatalf("the claim was overwritten: %+v", rec)
+			}
+			if !u.p.updateHeldByClaim || !u.p.heldBack("v1.3.0") {
+				t.Fatalf("not held: for %q until %v", u.p.updateHeldFor, u.p.updateHeldUntil)
+			}
+		})
 	}
 }
