@@ -100,10 +100,22 @@ export function ForgesTab() {
   const unignore = useMutation({
     mutationFn: async (v: { forge: Forge; repo: string }) => {
       await api.post(`/forges/${v.forge.id}/discover/unignore`, { repo: v.repo })
-      return qc.fetchQuery(q.discoverPreview(v.forge.id))
+      // The ignore is already cleared: if the reload fails, still show the repo as offered.
+      return qc.fetchQuery(q.discoverPreview(v.forge.id)).catch((e) => {
+        toastError(e)
+        return null
+      })
     },
     onSuccess: (repos, v) =>
-      setPicking((p) => (p && p.forge.id === v.forge.id ? { ...p, repos } : p)),
+      setPicking((p) =>
+        p && p.forge.id === v.forge.id
+          ? {
+              ...p,
+              repos:
+                repos ?? p.repos.map((r) => (r.repo === v.repo ? { ...r, ignored: false } : r)),
+            }
+          : p,
+      ),
     onError: toastError,
   })
   const [editing, setEditing] = useState<Forge | 'new' | null>(null)
@@ -218,7 +230,10 @@ export function ForgesTab() {
           setPicking(null)
         }}
         onConfirm={(repos, skip) =>
-          picking && attach.mutate({ forge: picking.forge, repos, skip, enable: picking.enable })
+          picking &&
+          (repos.length || skip.length || picking.enable
+            ? attach.mutate({ forge: picking.forge, repos, skip, enable: picking.enable })
+            : setPicking(null))
         }
       />
       <Confirm

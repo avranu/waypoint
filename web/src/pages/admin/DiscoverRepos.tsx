@@ -141,7 +141,11 @@ export function DiscoverPicker({
       <div className="space-y-2 p-1.5">
         {shown.length === 0 && (
           <p className="p-2.5 text-[13px] text-muted">
-            {offered.length === 0 ? 'Nothing new to offer.' : 'No repositories match.'}
+            {offered.length === 0
+              ? 'Nothing new to offer.'
+              : shownIgnored.length > 0
+                ? 'No offered repositories match.'
+                : 'No repositories match.'}
           </p>
         )}
         {shown.map(([g, list]) => (

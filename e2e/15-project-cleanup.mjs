@@ -111,7 +111,10 @@ async function run(width) {
   );
   // Discovering again offers nothing: skipped repos stay skipped.
   const again = await api("GET", `/forges/${forge.id}/discover`);
-  ok(again.length === 0, `${tag} skipped repos aren't offered again`);
+  ok(
+    again.every((r) => r.ignored),
+    `${tag} skipped repos aren't offered again (only listed as ignored)`,
+  );
 
   // ---- recent first ----
   const proj = await api("POST", "/projects", { name: `Fresh ${tag}` });
@@ -181,7 +184,10 @@ async function run(width) {
   );
   // Deleted projects' repos don't come back.
   const after = await api("GET", `/forges/${forge.id}/discover`);
-  ok(after.length === 0, `${tag} deleted projects' repos aren't offered again`);
+  ok(
+    after.every((r) => r.ignored),
+    `${tag} deleted projects' repos aren't offered again (only listed as ignored)`,
+  );
   ok(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= innerWidth,
