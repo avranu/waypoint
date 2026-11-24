@@ -1906,8 +1906,8 @@ func doctorFindings(d *CIDoctor, b *CIBoard, now time.Time, extra ...CIFinding) 
 			// the cause and what to do are this one's.
 			for _, l := range d.Lines {
 				if n := l.Stacks.Reasons[endBaseRed]; n > 0 && l.ForgeID == m.ForgeID && strings.EqualFold(l.Repo, m.Repo) && l.Base == m.Branch {
-					detail += fmt.Sprintf("\nMerge line: %d candidate%s started in the last %s failed only what %s fails, a full run each; the line tests one place at a time and the front waits until %s is fixed.",
-						n, plural(n), ShortDuration(doctorTrend), m.Branch, m.Branch)
+					detail += fmt.Sprintf("\nMerge line: %d candidate%s started in the last %s ended because %s was red, a full run each.",
+						n, plural(n), ShortDuration(doctorTrend), m.Branch)
 					break
 				}
 			}
@@ -2197,10 +2197,10 @@ func StackFates(st CIStackStats) string {
 	}
 	if st.Failed > 0 {
 		// "failed" itself adds nothing to "N failed": only the others.
-		parts = append(parts, fmt.Sprintf("%d failed", st.Failed)+endReasons(st.FailedBy, endFailed))
+		parts = append(parts, fmt.Sprintf("%d failed", st.Failed)+endReasons(st.FailedBy, endFailed, st.Failed))
 	}
 	if st.Cancelled > 0 {
-		parts = append(parts, fmt.Sprintf("%d cancelled", st.Cancelled)+endReasons(st.CancelledBy, ""))
+		parts = append(parts, fmt.Sprintf("%d cancelled", st.Cancelled)+endReasons(st.CancelledBy, "", st.Cancelled))
 	}
 	if len(parts) == 0 {
 		return "none failed"
@@ -2210,9 +2210,18 @@ func StackFates(st CIStackStats) string {
 
 // endReasons words counts by end_reason, most frequent first, leaving skip
 // out: " (2 base moved, 1 base red)", "" when there are none (WP-1707).
-func endReasons(by map[string]int, skip string) string {
+// total is every row of the state: rows with no end_reason (from before
+// it was stored) are the "unrecorded" rest, so the parts add up.
+func endReasons(by map[string]int, skip string, total int) string {
 	why := slices.DeleteFunc(slices.Collect(maps.Keys(by)), func(r string) bool { return r == skip })
-	if len(why) == 0 {
+	rest := total
+	for _, n := range by {
+		rest -= n
+	}
+	if len(by) == 0 {
+		rest = 0 // none has a reason: nothing to add up
+	}
+	if len(why) == 0 && rest <= 0 {
 		return ""
 	}
 	slices.SortFunc(why, func(a, b string) int {
@@ -2220,6 +2229,9 @@ func endReasons(by map[string]int, skip string) string {
 	})
 	for i, r := range why {
 		why[i] = fmt.Sprintf("%d %s", by[r], endReasonWords(r))
+	}
+	if rest > 0 {
+		why = append(why, fmt.Sprintf("%d unrecorded", rest))
 	}
 	return " (" + strings.Join(why, ", ") + ")"
 }

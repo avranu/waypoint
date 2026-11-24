@@ -274,7 +274,7 @@ func TestCIDoctorStackEndReasons(t *testing.T) {
 		!reflect.DeepEqual(st.CancelledBy, map[string]int{endBaseMoved: 3, endBaseRed: 1, endNoRun: 1}) {
 		t.Errorf("failed by %v, cancelled by %v", st.FailedBy, st.CancelledBy)
 	}
-	if got := StackFates(st); got != "1 conflict, 4 failed (1 no merge, 1 refused), 6 cancelled (3 base moved, 1 base red, 1 no run)" {
+	if got := StackFates(st); got != "1 conflict, 4 failed (1 no merge, 1 refused), 6 cancelled (3 base moved, 1 base red, 1 no run, 1 unrecorded)" {
 		t.Errorf("fates = %q", got)
 	}
 	// The JSON form carries the same breakdown the text prints (audit 1671.19).
@@ -497,7 +497,7 @@ func TestDoctorMainAdvisories(t *testing.T) {
 		return d.Findings[i].Detail
 	}
 	ended := CIStackStats{Reasons: map[string]int{endBaseRed: 2, endBaseMoved: 4}}
-	if got := red(CILine{Repo: "o/a", Base: "main", Stacks: ended}); !strings.Contains(got, "Merge line: 2 candidates started in the last "+ShortDuration(doctorTrend)+" failed only what main fails") {
+	if got := red(CILine{Repo: "o/a", Base: "main", Stacks: ended}); !strings.Contains(got, "Merge line: 2 candidates started in the last "+ShortDuration(doctorTrend)+" ended because main was red") {
 		t.Errorf("detail = %q", got)
 	}
 	// Two forges can hold a repo of one name: each main counts its own line (audit 1671.4).
