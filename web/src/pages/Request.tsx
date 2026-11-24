@@ -649,20 +649,8 @@ function Cells({ r }: { r: WRequest }) {
 function Cell({ r, cell }: { r: WRequest; cell: RequestCell }) {
   const run = useRunCell(r.ref)
   const latest = cell.runs[0]
+  // A reload shows the command last run, which is what the person edited it to.
   const [cmd, setCmd] = useState(latest?.command ?? cell.command)
-  // A run that appears after the page loaded (another tab, another editor, or this one) is what
-  // the editor shows, unless the person has typed over what it showed: their unsent text stays.
-  const latestId = latest?.id
-  const seenRun = useRef(latestId)
-  const shown = useRef(latest?.command ?? cell.command)
-  useEffect(() => {
-    if (latestId === seenRun.current) return
-    seenRun.current = latestId
-    if (!latest) return
-    const was = shown.current
-    shown.current = latest.command
-    setCmd((c) => (c === was ? latest.command : c))
-  }, [latestId, latest])
   const busy = latest?.state === 'queued' || latest?.state === 'running' || run.isPending
   // A command a failed run sent back to the agent can be run again: that reopens it.
   const canRun =
@@ -716,6 +704,7 @@ function Cell({ r, cell }: { r: WRequest; cell: RequestCell }) {
             Reset to the agent’s command
           </button>
         )}
+        {/* Read-only, the editor shows the command that ran: the agent's is still said. */}
         {edited && !canRun && (
           <span className="font-mono" title="The agent’s command">
             agent’s: {cell.command}
