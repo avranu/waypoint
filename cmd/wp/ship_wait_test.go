@@ -416,3 +416,44 @@ func TestHeldShipAcksOnlyWhatItPrinted(t *testing.T) {
 		t.Errorf("findings that weren't printed were acked: %v", reqs.all())
 	}
 }
+
+// A held answer with a notice that asks the agent to act doesn't wait: the
+// notice is the agent's to act on now.
+func TestHeldShipWithANoticeToActOnDoesNotWait(t *testing.T) {
+	c, _, calls := waitEnv(t, waitingAnswer())
+	no, yes, wait := false, true, 5*time.Second
+	so := shipOpts{noWait: &no, waitTimeout: &wait}
+	for name, tc := range map[string]struct {
+		o    openedPR
+		want bool
+	}{
+		"no notice":              {openedPR{Held: "h", HeldNeedsAgent: &no}, true},
+		"a notice that is news":  {openedPR{Held: "h", HeldNeedsAgent: &no, Notice: "n", NoticeNeedsAgent: &no}, true},
+		"a notice to act on":     {openedPR{Held: "h", HeldNeedsAgent: &no, Notice: "n", NoticeNeedsAgent: &yes}, false},
+		"an older server's note": {openedPR{Held: "h", HeldNeedsAgent: &no, Notice: "n"}, false},
+	} {
+		if got := c.canWaitShip(so, &tc.o); got != tc.want {
+			t.Errorf("%s: canWaitShip = %v", name, got)
+		}
+	}
+	if calls.Load() != 0 {
+		t.Errorf("%d requests", calls.Load())
+	}
+}
+
+// A probe that failed is not sent again once the bound has passed, and the
+// backoff doesn't sleep past it.
+func TestLongPollStopsRetryingTheProbeAtTheBound(t *testing.T) {
+	old := pollSleep
+	var slept []time.Duration
+	pollSleep = func(d time.Duration) { slept = append(slept, d); time.Sleep(d) }
+	t.Cleanup(func() { pollSleep = old })
+	asks := 0
+	err := longPoll(time.Second, time.Second, time.Now().Add(50*time.Millisecond), func(time.Duration, bool) (bool, error) {
+		asks++
+		return false, &apiError{status: http.StatusServiceUnavailable}
+	})
+	if !errors.Is(err, errPollBound) || asks != 1 || len(slept) != 1 || slept[0] > 50*time.Millisecond {
+		t.Errorf("err %v after %d requests, slept %v", err, asks, slept)
+	}
+}

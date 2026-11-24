@@ -335,3 +335,34 @@ func TestShipNewsNeedsTheTaskToBeReadable(t *testing.T) {
 		t.Errorf("the task's own agent got %+v", got)
 	}
 }
+
+// What a wait holds doesn't use up the 20 a hook takes at once: a message
+// queued behind 20 held ones still goes.
+func TestHeldShipNewsDoesNotCrowdOutOtherMessages(t *testing.T) {
+	a, held, round := shipNewsEnv(t)
+	defer a.s.openShipWait(a.session, held.ID)()
+	key := strings.TrimSuffix(newsKey(t, a, "audit:", round), "done")
+	for n := range 20 {
+		if _, err := a.s.storeMessage(a.ctx, a.session, "held findings", key+itoa64(int64(n)), messageFrom{}, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := a.s.storeMessage(a.ctx, a.session, "do this next", "", messageFrom{}, false); err != nil {
+		t.Fatal(err)
+	}
+	var taken []*SessionMessage
+	err := a.s.write(a.ctx, a.ag, func(tx *tx) error {
+		x, err := scanSession(tx.QueryRowContext(a.ctx, `SELECT `+sessionCols+` FROM agent_sessions s WHERE s.id = ?`, a.session), a.s.nowMS())
+		if err != nil {
+			return err
+		}
+		taken, err = a.s.takeMessages(a.ctx, tx, x, "stop")
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(taken) != 1 || taken[0].Body != "do this next" {
+		t.Fatalf("took %d messages: %+v", len(taken), taken)
+	}
+}

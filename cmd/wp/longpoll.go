@@ -17,6 +17,8 @@ var errPollBound = errors.New("long poll: out of time")
 // min(chunk, time left). A transient failure is retried after waitRetry's
 // backoff, up to len(waitRetry) times in a row, and once a held request has
 // failed the chunk drops to waitShortChunk (a proxy may have cut it short).
+// The backoff never sleeps past the deadline, and a probe is not sent again
+// once the deadline has no hold left.
 //
 // ask makes one request and says whether the poll is over (true, or an error
 // it handled itself). longPoll returns nil then, errPollBound when less than
@@ -26,10 +28,14 @@ func longPoll(chunk, minHold time.Duration, deadline time.Time, ask func(hold ti
 	failures := 0
 	probe := true
 	for {
-		hold := min(chunk, time.Until(deadline))
-		if probe {
+		left := time.Until(deadline)
+		hold := min(chunk, left)
+		switch {
+		case probe && failures > 0 && (left <= 0 || left < minHold):
+			return errPollBound
+		case probe:
 			hold = 0
-		} else if hold < minHold {
+		case hold < minHold:
 			return errPollBound
 		}
 		done, err := ask(hold, probe)
@@ -40,7 +46,7 @@ func longPoll(chunk, minHold time.Duration, deadline time.Time, ask func(hold ti
 			if hold > 0 {
 				chunk = min(chunk, waitShortChunk)
 			}
-			pollSleep(waitRetry[failures])
+			pollSleep(min(waitRetry[failures], max(time.Until(deadline), 0)))
 			failures++
 			continue
 		}
