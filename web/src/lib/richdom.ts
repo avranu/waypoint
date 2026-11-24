@@ -204,7 +204,7 @@ export function inputRules(el: HTMLElement, e: InputEvent): boolean {
   if (e.isComposing) return false
   if (e.inputType === 'insertCompositionText') return composedRules(el, e.data ?? '')
   if (e.inputType !== 'insertText' || !e.data || e.data.length !== 1) return false
-  return typedRules(el, e.data, false)
+  return typedRules(el, e.data, 0)
 }
 
 /**
@@ -217,10 +217,12 @@ export function inputRules(el: HTMLElement, e: InputEvent): boolean {
  */
 export function composedRules(el: HTMLElement, data: string): boolean {
   if (!SUPPORTED || !data) return false
-  return typedRules(el, data.slice(-1).replace(/\u00a0/g, ' '), true)
+  return typedRules(el, data.slice(-1).replace(/\u00a0/g, ' '), data.length)
 }
 
-function typedRules(el: HTMLElement, ch: string, composed: boolean): boolean {
+// `committed` is the length of the text a composition committed, 0 when typed.
+function typedRules(el: HTMLElement, ch: string, committed: number): boolean {
+  const composed = committed > 0
   const caret = caretIn(el)
   if (!caret) return false
   const at = elementOf(caret.startContainer)
@@ -243,6 +245,10 @@ function typedRules(el: HTMLElement, ch: string, composed: boolean): boolean {
     return rule ? convert(el, b, caret, rule) : false
   }
   const m = inlineRule(s.before, s.after)
+  // Text committed in one piece closes only what was already open before it:
+  // "snake_case and _x_" arriving at once is not emphasis (a single character
+  // is typing). The opener must lie before the commit.
+  if (m && committed > 1 && m.from >= s.before.length - committed) return false
   return m ? inline(s, caret, m) : false
 }
 
@@ -269,6 +275,23 @@ export function insertPiece(html: string) {
   }
   exec('insertHTML', html)
   looseSpaces()
+}
+
+// Firefox puts a caret moved by End or the arrows inside a piece's text, where
+// typing goes nowhere. Put it after the piece, on a parking character when
+// the piece ends its block, where typing is text.
+export function leavePiece(el: HTMLElement) {
+  if (!GECKO) return
+  const sel = window.getSelection()
+  if (!sel || sel.rangeCount === 0 || !sel.isCollapsed || !sel.anchorNode) return
+  const p = sel.anchorNode.parentElement?.closest(`[${PIECE_SRC}]`)
+  if (!p || !el.contains(p)) return
+  let next = p.nextSibling
+  if (!next || next.nodeType !== Node.TEXT_NODE) {
+    next = document.createTextNode(PARK)
+    p.after(next)
+  }
+  sel.collapse(next, (next as Text).data === PARK ? 1 : 0)
 }
 
 // Chromium turns the spaces beside the new piece into no-break ones, which the

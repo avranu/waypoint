@@ -303,9 +303,9 @@ for (const [width, scheme] of looks(
     await press("End");
     await type(" @ro");
     const menu = page.getByRole("listbox", { name: "Mention someone" });
-    await menu.waitFor();
-    ok((await menu.getByRole("option").count()) >= 1, `${tag} the mention menu opens after a piece`);
-    await press("Enter");
+    const opened = await menu.waitFor({ timeout: 5000 }).then(() => true, () => false);
+    ok(opened && (await menu.getByRole("option").count()) >= 1, `${tag} the mention menu opens after a piece`);
+    if (opened) await press("Enter");
     await done.click();
     const want = "x [[Some Page]] @robin";
     const got = await waitDesc(i.key, want);

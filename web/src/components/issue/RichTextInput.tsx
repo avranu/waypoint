@@ -33,7 +33,14 @@ import { issueTarget, refreshAttachments, uploadAttachment } from '@/lib/attachm
 import { pieceHtml, renderMarkdownForEdit } from '@/lib/markdown'
 import { htmlToMarkdown } from '@/lib/richtext'
 import { PARK } from '@/lib/richinput'
-import { beforeInputRules, composedRules, inputRules, insertPiece, keyRules } from '@/lib/richdom'
+import {
+  beforeInputRules,
+  composedRules,
+  inputRules,
+  insertPiece,
+  keyRules,
+  leavePiece,
+} from '@/lib/richdom'
 import type { UserRef } from '@/lib/types'
 import { MENTION_RE, MentionList, useMentionMatches } from './userMention'
 
@@ -630,7 +637,10 @@ export function RichTextInput({
         }}
         onKeyUp={(e) => {
           keyed.current = false
-          if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) detect()
+          if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) {
+            if (editor.current) leavePiece(editor.current)
+            detect()
+          }
         }}
         onKeyDown={(e) => {
           keyed.current = e.key === 'Enter' || e.key === 'Backspace'
