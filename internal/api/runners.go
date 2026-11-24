@@ -232,7 +232,14 @@ func (s *Server) runnerGatewayStart(w http.ResponseWriter, r *http.Request) (any
 	if ct, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); ct != "multipart/form-data" {
 		return nil, fmt.Errorf("%w: send multipart/form-data with a prompt field and a repo file", errBadRequest)
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, core.GatewayArchiveMax+core.GatewayPromptMax+1<<20)
+	// The archive limit the job was packed against, not the gateway's figure
+	// as it is now; another person's job, or one that isn't a gateway audit,
+	// is turned away before the body is read.
+	max, err := s.svc.GatewayUploadMax(r.Context(), actorFrom(r), id)
+	if err != nil {
+		return nil, err
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, max+core.GatewayPromptMax+1<<20)
 	// #nosec G120 -- the body is capped by MaxBytesReader above
 	if err := r.ParseMultipartForm(2 << 20); err != nil {
 		return nil, fmt.Errorf("%w: %v", errBadRequest, err)

@@ -734,8 +734,10 @@ Any proxy works. Requirements:
   more saves the retries.
 - Allow request bodies up to 5 MB (forge webhooks; avatars are 3 MB, JSON
   2 MB). If runners reach Waypoint through the proxy and audits may run
-  through an LLM gateway (`gateway/audit`, WP design note 342), allow 22 MB: the runner uploads its packed checkout, 20 MiB at
-  most, and it must arrive within Waypoint's two-minute read timeout. A
+  through an LLM gateway (`gateway/audit`, WP-ADR84), allow the gateway's archive limit plus about 2 MB: the runner uploads
+  its packed checkout, up to what the gateway takes (20 MiB today, 64 MiB
+  once the gateway raises it; Waypoint reads the figure from the gateway),
+  and it must arrive within Waypoint's two-minute read timeout. A
   proxy that refuses the upload only fails that try (the audit goes on to
   its next model).
 - The transcript archive (`POST /api/v1/usage/transcript`, WP-1466) sends
