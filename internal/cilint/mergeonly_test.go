@@ -155,9 +155,20 @@ func (r *fakeRepo) push(t *testing.T, sha string) {
 	git(t, r.work, "push", "-q", "-f", "origin", sha+":refs/pull/5/head")
 }
 
-// forgeServer answers the API: statuses by commit, and commits' parents from
-// the fake repo's work tree.
-func forgeServer(t *testing.T, r *fakeRepo, statuses map[string][]map[string]any) *httptest.Server {
+// fakeRun is an Actions run of ci.yml: the commit it ran on and its jobs' states.
+type fakeRun struct {
+	sha  string
+	jobs map[string]string
+}
+
+// passedRun is a run on sha whose backend and lint passed.
+func passedRun(sha string) fakeRun {
+	return fakeRun{sha, map[string]string{"backend": "success", "lint": "success", "e2e": "skipped"}}
+}
+
+// forgeServer answers the API: statuses by commit, Actions runs by number, and
+// commits' parents from the fake repo's work tree.
+func forgeServer(t *testing.T, r *fakeRepo, statuses map[string][]map[string]any, runs map[int]fakeRun) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		const root = "/api/v1/repos/o/r/"
@@ -177,6 +188,31 @@ func forgeServer(t *testing.T, r *fakeRepo, statuses map[string][]map[string]any
 				parents = append(parents, map[string]string{"sha": p})
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"sha": sha, "parents": parents})
+			return
+		}
+		if path == "actions/runs" {
+			n, _ := strconv.Atoi(req.URL.Query().Get("run_number"))
+			list := []map[string]any{}
+			if run, ok := runs[n]; ok {
+				list = append(list, map[string]any{"id": 1000 + n, "index_in_repo": n, "workflow_id": "ci.yml", "commit_sha": run.sha})
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"workflow_runs": list})
+			return
+		}
+		if id, ok := strings.CutSuffix(strings.TrimPrefix(path, "actions/runs/"), "/jobs"); ok && strings.HasPrefix(path, "actions/runs/") {
+			n, _ := strconv.Atoi(id)
+			run, ok := runs[n-1000]
+			if !ok {
+				http.Error(w, "no run", 404)
+				return
+			}
+			jobs := []map[string]any{}
+			for i, name := range []string{"backend", "lint", "e2e"} {
+				if st, ok := run.jobs[name]; ok {
+					jobs = append(jobs, map[string]any{"id": i + 1, "name": name, "status": st})
+				}
+			}
+			_ = json.NewEncoder(w).Encode(jobs)
 			return
 		}
 		if sha, ok := strings.CutSuffix(strings.TrimPrefix(path, "commits/"), "/statuses"); ok && strings.HasPrefix(path, "commits/") {
@@ -275,12 +311,13 @@ func TestMergeOnlyStep(t *testing.T) {
 	type result struct {
 		head     string
 		statuses map[string][]map[string]any
+		runs     map[int]fakeRun // nil: run 1 passed on p1, which the statuses point at
 	}
 	// merged: the head merges main into the feature branch's f1 (p1), whose statuses are list.
 	merged := func(t *testing.T, r *fakeRepo, list []map[string]any, edit func()) result {
 		h := r.mergeInto(t, r.p1, r.p2, edit)
 		r.push(t, h)
-		return result{h, map[string][]map[string]any{r.p1: list}}
+		return result{h, map[string][]map[string]any{r.p1: list}, nil}
 	}
 	// chain: n merge-only commits over p1, each skipped, then the head over them.
 	chain := func(t *testing.T, r *fakeRepo, n int, root []map[string]any) result {
@@ -293,7 +330,7 @@ func TestMergeOnlyStep(t *testing.T) {
 		}
 		h := r.mergeInto(t, cur, base, nil)
 		r.push(t, h)
-		return result{h, st}
+		return result{h, st, nil}
 	}
 	failed := append(green(false), map[string]any{"id": 9, "context": "ci / lint (pull_request)", "status": "failure", "target_url": "/actions/runs/1/jobs/2"})
 	cases := []struct {
@@ -305,6 +342,23 @@ func TestMergeOnlyStep(t *testing.T) {
 		{"a clean merge of the base over passed checks", func(t *testing.T, r *fakeRepo) result {
 			return merged(t, r, green(false), nil)
 		}, "true", "the checks skip"},
+		{"the first parent's passed statuses were posted with no Actions run behind them", func(t *testing.T, r *fakeRepo) result {
+			res := merged(t, r, green(false), nil)
+			res.runs = map[int]fakeRun{}
+			return res
+		}, "false", "Actions has no run 1 of ci.yml"},
+		{"the first parent's statuses point at a run on another commit", func(t *testing.T, r *fakeRepo) result {
+			res := merged(t, r, green(false), nil)
+			res.runs = map[int]fakeRun{1: passedRun(r.p2)}
+			return res
+		}, "false", "Actions has no run 1 of ci.yml"},
+		{"the first parent's backend status says success over a failed job", func(t *testing.T, r *fakeRepo) result {
+			res := merged(t, r, green(false), nil)
+			run := passedRun(r.p1)
+			run.jobs["backend"] = "failure"
+			res.runs = map[int]fakeRun{1: run}
+			return res
+		}, "false", "its job in run 1 is failure"},
 		{"the first parent was a skipped run and not a merge", func(t *testing.T, r *fakeRepo) result {
 			return merged(t, r, green(true), nil)
 		}, "false", "no real checks and"},
@@ -345,7 +399,7 @@ func TestMergeOnlyStep(t *testing.T) {
 			if err := os.RemoveAll(r.bare); err != nil {
 				t.Fatal(err)
 			}
-			return result{r.p1, map[string][]map[string]any{r.p1: green(false)}}
+			return result{r.p1, map[string][]map[string]any{r.p1: green(false)}, nil}
 		}, "false", "not the two of a merge"},
 		{"the second parent is a branch commit, not on the base", func(t *testing.T, r *fakeRepo) result {
 			git(t, r.work, "checkout", "-q", "-b", "other", r.p2)
@@ -355,7 +409,7 @@ func TestMergeOnlyStep(t *testing.T) {
 			other := git(t, r.work, "rev-parse", "HEAD")
 			h := r.mergeInto(t, r.p1, other, nil)
 			r.push(t, h)
-			return result{h, map[string][]map[string]any{r.p1: green(false)}}
+			return result{h, map[string][]map[string]any{r.p1: green(false)}, nil}
 		}, "false", "is not on main"},
 		{"the pull request moved on", func(t *testing.T, r *fakeRepo) result {
 			res := merged(t, r, green(false), nil)
@@ -374,7 +428,11 @@ func TestMergeOnlyStep(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			r := newFakeRepo(t)
 			res := c.setup(t, r)
-			srv := forgeServer(t, r, res.statuses)
+			runs := res.runs
+			if runs == nil {
+				runs = map[int]fakeRun{1: passedRun(r.p1)}
+			}
+			srv := forgeServer(t, r, res.statuses, runs)
 			got, log := runStep(t, script, r, res.head, srv)
 			t.Logf("%s", log)
 			if got != c.want || !strings.Contains(log, c.log) {

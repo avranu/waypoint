@@ -12,7 +12,7 @@ import (
 // removed lines, the run itself, the unchanged line just before and just after
 // it (a marker where the hunk starts or ends there) and its hunk's heading (the
 // function git names after the "@@" line numbers). Left out: the line numbers,
-// "index" and "similarity" lines and the rest of the context. A merge of the
+// "similarity" lines, "index" lines (but a binary file's, its only content) and the rest of the context. A merge of the
 // base that moves a change down the file leaves the hash alone; one that edits
 // the lines beside a change or the function it is in, or resolves a conflict,
 // changes it (WP-1808 then reviews the head: the conservative side). Line
@@ -30,6 +30,7 @@ func ChangeHash(diff string) string {
 	}
 	const start, end = "\x00hunk-start", "\x00hunk-end"
 	inHunk, inBinary := false, false
+	index := "" // the file's index line, kept for a binary
 	before, heading := start, ""
 	var run []string
 	flush := func(after string) {
@@ -52,7 +53,12 @@ func ChangeHash(diff string) string {
 		switch {
 		case strings.HasPrefix(l, "diff --git "):
 			flush(end)
-			inHunk, inBinary, before, heading = false, false, start, ""
+			inHunk, inBinary, before, heading, index = false, false, start, "", ""
+			put(l)
+		case !inHunk && strings.HasPrefix(l, "Binary files "):
+			// A binary's only content in the diff is its blob ids, on the
+			// index line: another blob is another change.
+			put(index)
 			put(l)
 		case inBinary:
 			put(l)
@@ -73,7 +79,9 @@ func ChangeHash(diff string) string {
 		case inHunk: // an unchanged line
 			flush(l)
 			before = l
-		case strings.HasPrefix(l, "index "), strings.HasPrefix(l, "similarity index "), strings.HasPrefix(l, "dissimilarity index "):
+		case strings.HasPrefix(l, "index "):
+			index = l
+		case strings.HasPrefix(l, "similarity index "), strings.HasPrefix(l, "dissimilarity index "):
 		default:
 			put(l)
 		}

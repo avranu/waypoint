@@ -158,6 +158,12 @@ func (s *Service) carryDecision(ctx context.Context, f *Forge, repo string, old 
 		}
 		c.rules = append(c.rules, carriedRule{a.ID, summary})
 	}
+	// The diff is read by pull request, not by commit: the forge must have the
+	// pull request at the new head before the read too, or the diff may be the
+	// old head's, which hashes like the reviewed one.
+	if cur, err := cl.GetPR(ctx, f, repo, fp.Number); err != nil || cur == nil || !sameSHA(cur.HeadSHA, fp.HeadSHA) {
+		return nil
+	}
 	diff, err := cl.PRDiff(ctx, f, repo, fp)
 	if err != nil {
 		s.log.InfoContext(ctx, "no carry: the diff couldn't be read", "pr", old.ID, "head", short(fp.HeadSHA), "err", err)

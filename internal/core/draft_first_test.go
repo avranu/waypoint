@@ -101,10 +101,16 @@ func TestFullRunReasons(t *testing.T) {
 	if got := fullRunReasons(&other, []PRCheck{ran(b, 9), ran(e, 8)}); len(got) != 1 {
 		t.Errorf("only skips and draft statuses: %v", got)
 	}
+	// A person's: held only when their own edit marked it at this head
+	// (markReadyByEdit, WP-1808).
 	other = *pr
 	other.WipAuto = false
+	if got := fullRunReasons(&other, []PRCheck{ran(b, 9), ran(e, 8)}); len(got) != 1 {
+		t.Errorf("a person's, marked by their edit: %v", got)
+	}
+	other.readySHA = "def5678"
 	if got := fullRunReasons(&other, nil); len(got) != 0 {
-		t.Errorf("a person's: %v", got)
+		t.Errorf("a person's, not marked at this head: %v", got)
 	}
 }
 
@@ -926,5 +932,48 @@ func TestFullRunSkipped(t *testing.T) {
 		if err != nil || !slices.Equal(got, c.want) {
 			t.Errorf("%s: %v %v, want %v", c.name, got, err, c.want)
 		}
+	}
+}
+
+// A person's draft made ready by their own title edit: the head's statuses
+// are the draft run's, whose jobs all skipped on a merge-only push (WP-1808),
+// so it is held, as markReady holds Waypoint's own, until the edit's run has
+// posted newer statuses, and nothing merges on those skips.
+func TestPersonsReadyEditPutsCIBackToPending(t *testing.T) {
+	be := newBabysitEnvOn(t, "forgejo")
+	be.sg.files[".forgejo/workflows/ci.yml"] = ciOnEdit
+	const head = "7777777aaaa"
+	p := bsPR
+	p.Title = "WIP: Add export"
+	be.pullHook("opened", p)
+	be.s.Wait()
+	be.drain()
+	be.draftChecks(head, CommitCheck{State: CheckSuccess, ID: 5, Description: "Has been skipped"}, CommitCheck{State: CheckSuccess, ID: 6, Description: "Has been skipped"})
+	pr := be.pr(7)
+	if pr.State != "draft" || pr.WipAuto || pr.CIState != CIPassed {
+		t.Fatalf("the draft: state %q wip_auto %v ci %q", pr.State, pr.WipAuto, pr.CIState)
+	}
+	p.Title = "Add export"
+	be.pullHook("edited", p)
+	be.s.Wait()
+	pr = be.pr(7)
+	if pr.State != "open" || pr.readyStatusID != 6 || !sameSHA(pr.readySHA, head) {
+		t.Fatalf("after the edit: state %q ready at %q status %d", pr.State, pr.readySHA, pr.readyStatusID)
+	}
+	rd, err := be.s.readiness(be.ctx, pr)
+	if err != nil || rd.Ready || !strings.Contains(strings.Join(rd.Reasons, ";"), "full run hasn't finished") {
+		t.Fatalf("ready on the draft run's skips: %+v %v", rd, err)
+	}
+	be.draftChecks(head, CommitCheck{State: CheckSuccess, ID: 9, Description: "Successful in 4m"}, CommitCheck{State: CheckSuccess, ID: 10, Description: "Successful in 9m"})
+	pr = be.pr(7)
+	if rd, err = be.s.readiness(be.ctx, pr); err != nil || strings.Contains(strings.Join(rd.Reasons, ";"), "full run") || pr.CIState != CIPassed {
+		t.Fatalf("after the full run: %+v %v ci %q", rd, err, pr.CIState)
+	}
+	// An edit that keeps it open changes nothing.
+	p.Body = "more words"
+	be.pullHook("edited", p)
+	be.s.Wait()
+	if pr = be.pr(7); pr.readyStatusID != 6 {
+		t.Fatalf("a body edit of an open pull request marked it again: %d", pr.readyStatusID)
 	}
 }

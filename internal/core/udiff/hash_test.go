@@ -13,6 +13,9 @@ func TestChangeHash(t *testing.T) {
 	hunk := func(start string, lines ...string) string {
 		return "@@ -" + start + " +" + start + " @@ func f() {\n" + strings.Join(lines, "\n") + "\n"
 	}
+	bin := func(index string) string {
+		return "diff --git a/b.bin b/b.bin\nindex " + index + " 100644\nBinary files a/b.bin and b/b.bin differ\n"
+	}
 	base := file(hunk("10,6", " one", " two", "+guard()", " three", " four", " five"))
 	cases := []struct {
 		name string
@@ -32,8 +35,16 @@ func TestChangeHash(t *testing.T) {
 		{"a file is added", base + file(hunk("1,1", "+x"))[len("diff --git a/a.go"):], false},
 		{"a mode changes", strings.Replace(base, "index 1..2 100644", "new file mode 100755", 1), false},
 		{"a file is renamed", strings.Replace(base, "b/a.go", "b/c.go", 1), false},
+		{"a binary file is added", base + bin("1..2"), false},
 	}
 	want := ChangeHash(base)
+	// A binary's diff is its blob ids: another blob is another change.
+	if ChangeHash(base+bin("1..2")) == ChangeHash(base+bin("1..3")) {
+		t.Error("a binary file replaced by another: same hash")
+	}
+	if ChangeHash(base+bin("1..2")) != ChangeHash(base+bin("1..2")) {
+		t.Error("the same binary change: different hashes")
+	}
 	for _, c := range cases {
 		if got := ChangeHash(c.diff) == want; got != c.same {
 			t.Errorf("%s: same = %v, want %v", c.name, got, c.same)

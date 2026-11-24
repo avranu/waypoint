@@ -298,8 +298,14 @@ func (s *Service) recordPR(ctx context.Context, f *Forge, repo string, fp *Forge
 	// the head, so no read sees the new head with its waits restarted and then
 	// not.
 	var carry *headCarry
+	// A draft someone made ready by editing its title (not markReady): does
+	// the edit start a run of the checks? Asked before the transaction.
+	var readyEditRuns bool
 	if fp.HeadSHA != "" && (fp.State == "open" || fp.State == "draft") {
 		if prev, perr := s.prByNumber(ctx, s.db.R, f.ID, repo, fp.Number); perr == nil {
+			if prev != nil && prev.State == "draft" && fp.State == "open" && prev.HeadSHA == fp.HeadSHA && !sameSHA(prev.readySHA, fp.HeadSHA) {
+				readyEditRuns, _ = s.ciRunsOnEdit(ctx, f, repo, fp.HeadSHA)
+			}
 			carry = s.carryDecision(ctx, f, repo, prev, fp)
 		}
 	}
@@ -395,6 +401,19 @@ func (s *Service) recordPR(ctx context.Context, f *Forge, repo string, fp *Forge
 				return err
 			}
 			pr.WipAuto = true
+		}
+		// A draft made ready by someone else's edit (a person dropping "WIP: "),
+		// not by markReady, which marks it itself: the head's statuses are the
+		// draft run's, whose skipped jobs post success (e2e always, and every
+		// check on a merge-only push, WP-1808), and the edit's run is about to
+		// run the checks. It is marked as markReady marks it (the newest status
+		// id and the checks it has), so fullRunReasons holds it until that run
+		// has posted newer statuses, and a re-read that still sees the draft
+		// run's skips merges nothing on them.
+		if readyEditRuns && old != nil && old.State == "draft" && pr.State == "open" && old.HeadSHA == pr.HeadSHA && !sameSHA(pr.readySHA, pr.HeadSHA) {
+			if err := s.markReadyByEdit(ctx, t, pr, now); err != nil {
+				return err
+			}
 		}
 		// What the forge says about merging, and when (WP-138).
 		headChanged := fp.HeadSHA != "" && (old == nil || old.HeadSHA != fp.HeadSHA)
