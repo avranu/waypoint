@@ -197,15 +197,16 @@ func (s *Service) shipWaitTarget(ctx context.Context, actor *Actor, cliID, machi
 	if session == 0 {
 		return 0, 0, notFound("session")
 	}
-	task, err = s.resolveIssueID(ctx, s.db.R, taskKey)
-	if err != nil {
-		return 0, 0, err
-	}
-	// Reading the task is the access check (the session is the actor's: SessionForHeader).
+	// The actor must be able to read both: the session (its own:
+	// SessionForHeader) and the task, whose round and pull request a wait tells.
 	if _, err := s.sessionByID(ctx, s.db.R, actor, session); err != nil {
 		return 0, 0, err
 	}
-	return session, task, nil
+	i, _, err := s.getIssueFor(ctx, s.db.R, actor, taskKey, RoleViewer, false)
+	if err != nil {
+		return 0, 0, err
+	}
+	return session, i.ID, nil
 }
 
 // AwaitShipNews holds a wp ship that was held for its task's review round
@@ -330,8 +331,10 @@ func (s *Service) shipNewsNow(ctx context.Context, session, task int64) (*ShipNe
 	return nil, nil // Waypoint is still acting: what it does next produces news
 }
 
-// AckShipNews says the client has the findings AwaitShipNews returned: they
-// are delivered (via 'ship') so nothing types them again.
+// AckShipNews says the client has printed the findings AwaitShipNews returned:
+// they are delivered (via 'ship') so nothing types them again. Only what a
+// wait on this task returns can be acked (the task's queued audit and check
+// news); any other id is left as it is.
 func (s *Service) AckShipNews(ctx context.Context, actor *Actor, cliID, machine, taskKey string, ids []int64) error {
 	session, task, err := s.shipWaitTarget(ctx, actor, cliID, machine, taskKey)
 	if err != nil {
@@ -347,7 +350,13 @@ func (s *Service) AckShipNews(ctx context.Context, actor *Actor, cliID, machine,
 		now := s.nowMS()
 		for _, id := range ids {
 			var key string
-			if t.QueryRowContext(ctx, `SELECT step_key FROM session_messages WHERE id = ? AND session_id = ?`, id, session).Scan(&key) != nil {
+			if t.QueryRowContext(ctx, `SELECT step_key FROM session_messages WHERE id = ? AND session_id = ? AND state = 'queued'`, id, session).Scan(&key) != nil {
+				continue
+			}
+			if !strings.HasPrefix(key, "audit:") && !strings.HasPrefix(key, "check:") {
+				continue
+			}
+			if of, bound := messageTask(ctx, t, key); !bound || of != task {
 				continue
 			}
 			res, err := t.ExecContext(ctx, `UPDATE session_messages SET state = 'delivered', via = 'ship', delivered_at = ?, batch_until = NULL WHERE id = ? AND session_id = ? AND state = 'queued'`, now, id, session)

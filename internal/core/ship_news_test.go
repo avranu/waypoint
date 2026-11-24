@@ -269,3 +269,69 @@ func TestShipNewsDeliveredWhenTheWaiterLapses(t *testing.T) {
 		t.Fatalf("after the lapse the news is %s", st)
 	}
 }
+
+// An ack delivers only what a wait on the task returns: another task's
+// audit news and a message that is no round's news stay queued.
+func TestAckShipNewsLeavesOtherMessagesQueued(t *testing.T) {
+	a, held, round := shipNewsEnv(t)
+	other := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "Other", Agent: "claude"})
+	res, err := a.s.db.W.Exec(`INSERT INTO work_log(issue_id, kind, state, body, created_at, updated_at) VALUES (?, 'review', 'done', '', ?, ?)`, other.ID, a.clockNow().UnixMilli(), a.clockNow().UnixMilli())
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherRound, _ := res.LastInsertId()
+	keys := []string{
+		a.queueNews(t, "audit:", round, "this task's findings"),
+		a.queueNews(t, "audit:", otherRound, "another task's audit"),
+		a.queueNews(t, "shipped:", round, "not a round's findings"),
+	}
+	var ids []int64
+	for _, k := range keys {
+		var id int64
+		if err := a.s.db.R.QueryRow(`SELECT id FROM session_messages WHERE step_key = ?`, k).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	if err := a.s.AckShipNews(a.ctx, a.ag, a.cli, "box", held.Key, ids); err != nil {
+		t.Fatal(err)
+	}
+	if st, via := a.messageState(keys[0]); st != MessageDelivered || via != "ship" {
+		t.Errorf("the task's findings: %s via %q", st, via)
+	}
+	for _, k := range keys[1:] {
+		if st, _ := a.messageState(k); st != MessageQueued {
+			t.Errorf("%s was acked: %s", k, st)
+		}
+	}
+}
+
+// A wait tells a task's round and pull request, so the actor must be able to
+// read the task: its own session is not enough.
+func TestShipNewsNeedsTheTaskToBeReadable(t *testing.T) {
+	a, held, round := shipNewsEnv(t)
+	a.openPull(t, round, "open")
+	a.shipDone(t, round)
+	zed := a.user("zed", false)
+	tok, _, err := a.s.CreateToken(a.ctx, zed, TokenSpec{Name: "zed", Agent: "anthropic/claude-opus-5-5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ag, err := a.s.TokenActor(a.ctx, tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.s.SessionHook(a.ctx, ag, []HookEvent{hook("box", "cli-z", "SessionStart", func(*HookEvent) {})}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := a.s.AwaitShipNews(a.ctx, ag, "cli-z", "box", held.Key, 0); err == nil {
+		t.Errorf("a wait on a task the actor can't read answered: %+v", got)
+	}
+	if err := a.s.AckShipNews(a.ctx, ag, "cli-z", "box", held.Key, nil); err == nil {
+		t.Error("an ack on a task the actor can't read was taken")
+	}
+	// Its own session and a task it can read: answered.
+	if got := a.await(held.Key, 0); got.Outcome != ShipNewsPull {
+		t.Errorf("the task's own agent got %+v", got)
+	}
+}

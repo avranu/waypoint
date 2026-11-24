@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"flag"
 	"net/http"
 	"net/http/httptest"
@@ -362,5 +363,56 @@ func TestShipWorkContinuesWithTheReopenedPullRequest(t *testing.T) {
 	s := out.String()
 	if strings.Contains(s, "HELD-TEXT") || !strings.Contains(s, "https://git.example/a/b/pulls/5") {
 		t.Errorf("output:\n%s", s)
+	}
+}
+
+// printWatch is a stdout that fails the write holding bad, and notes whether
+// the server had been acked by the time anything was written.
+type printWatch struct {
+	bad   string
+	reqs  *waitReqs
+	acked bool
+}
+
+func (w *printWatch) Write(p []byte) (int, error) {
+	for _, r := range w.reqs.all() {
+		if _, ack := r["ack"]; ack {
+			w.acked = true
+		}
+	}
+	if w.bad != "" && strings.Contains(string(p), w.bad) {
+		return 0, errors.New("broken pipe")
+	}
+	return len(p), nil
+}
+
+// The findings are acked only after they were printed, and not at all when
+// printing them failed: they stay queued and are typed as before.
+func TestHeldShipAcksOnlyWhatItPrinted(t *testing.T) {
+	findings := say(map[string]any{"outcome": "findings", "text": "fix it", "ids": []int{4}})
+	acks := func(reqs *waitReqs) (n int) {
+		for _, r := range reqs.all() {
+			if _, ack := r["ack"]; ack {
+				n++
+			}
+		}
+		return n
+	}
+	c, _, _, reqs := waitEnvReqs(t, findings)
+	w := &printWatch{reqs: reqs}
+	c.out = w
+	if _, _, done, err := heldShip(t, c, false); err != nil || !done {
+		t.Fatalf("done %v err %v", done, err)
+	}
+	if w.acked || acks(reqs) != 1 {
+		t.Errorf("acked before the print: %v; acks %d", w.acked, acks(reqs))
+	}
+	c, _, _, reqs = waitEnvReqs(t, findings)
+	c.out = &printWatch{reqs: reqs, bad: "fix it"}
+	if _, _, done, err := heldShip(t, c, false); err == nil || !done {
+		t.Fatalf("done %v err %v", done, err)
+	}
+	if acks(reqs) != 0 {
+		t.Errorf("findings that weren't printed were acked: %v", reqs.all())
 	}
 }

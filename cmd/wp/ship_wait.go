@@ -41,7 +41,7 @@ var shipChunk = waitChunk
 type shipNews struct {
 	Outcome string  `json:"outcome"` // findings, pull, ended, waiting, none
 	Text    string  `json:"text"`
-	IDs     []int64 `json:"ids"` // the messages of findings, acked once printed
+	IDs     []int64 `json:"ids"` // the messages of findings: waitHeldShip acks them once printed
 	Pull    *struct {
 		Repo   string `json:"repo"`
 		Number int    `json:"number"`
@@ -92,10 +92,7 @@ func (c *cli) waitShipNews(task string, bound time.Duration, announce func()) (*
 			return false, err
 		}
 		switch n.Outcome {
-		case "findings":
-			c.ackShipNews(task, n.IDs)
-			news = n
-		case "pull", "ended":
+		case "findings", "pull", "ended":
 			news = n
 		case "waiting":
 			if probe {
@@ -116,7 +113,7 @@ func (c *cli) waitShipNews(task string, bound time.Duration, announce func()) (*
 	return news, stopQuiet, nil
 }
 
-// ackShipNews tells the server the findings were received, so it delivers
+// ackShipNews tells the server the findings were printed, so it delivers
 // them and nothing types them again. A failure is ignored: the news then
 // reaches the agent the usual way as well.
 func (c *cli) ackShipNews(task string, ids []int64) {
@@ -194,6 +191,11 @@ func (c *cli) waitHeldShip(f prOpenFlags, so shipOpts, o *openedPR, raw []byte, 
 	if notes := o.heldNotes(); notes != "" {
 		c.println(notes)
 	}
-	c.println(n.Text)
+	// Acked only once written: a ship that dies or can't write before this
+	// leaves the findings queued, and they are typed as before.
+	if _, err := fmt.Fprintln(c.out, n.Text); err != nil {
+		return nil, nil, true, fmt.Errorf("printing the review's findings: %w", err)
+	}
+	c.ackShipNews(task, n.IDs)
 	return o, raw, true, nil
 }
