@@ -444,6 +444,17 @@ func TestGatewayTaskRelay(t *testing.T) {
 	if in := agentJobOf(t, claim); strings.Join(in.GatewayExclude, ",") != "*claude*" {
 		t.Fatalf("exclude = %v", in.GatewayExclude)
 	}
+	// An audit held to the high-stakes bar sends no exclude (WP-1752); one
+	// held to the elevated bar still keeps the author's family out.
+	for _, c := range []struct{ weakest, want string }{{trustedAuditBar, ""}, {elevatedAuditBar, "*claude*"}} {
+		if _, err := ae.s.RequestAudit(ae.ctx, ae.admin, AuditInput{Project: ae.p.Key, Via: "system", purpose: AuditReview, weakest: c.weakest,
+			chain: []AgentModel{{CLI: GatewayCLI, Model: gatewayAuditModel}}, authorModel: "claude-opus-5-5"}); err != nil {
+			t.Fatal(err)
+		}
+		if in := agentJobOf(t, ae.takeOn(box)); strings.Join(in.GatewayExclude, ",") != c.want {
+			t.Fatalf("bar %q: exclude = %v, want %q", c.weakest, in.GatewayExclude, c.want)
+		}
+	}
 	// A job of another kind isn't the gateway's.
 	other, err := ae.s.RequestAudit(ae.ctx, ae.admin, AuditInput{Project: ae.p.Key, Models: []string{"claude/opus"}})
 	if err != nil {

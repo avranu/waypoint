@@ -303,6 +303,46 @@ func TestPRAuditAtHeadByBar(t *testing.T) {
 	}
 }
 
+// The family check on reuse (the session's family can't have reviewed) does
+// not apply to a round at the high-stakes bar (WP-1752): an audit held to it
+// is taken whoever answered. A round at another bar keeps the check.
+func TestPRAuditAtHeadFamilyCheckSkippedAtTrustedBar(t *testing.T) {
+	a, _ := auditAPEnv(t)
+	first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude", Priority: "urgent"})
+	a.finish(first.Key)
+	a.linkPR(first.ID, 7, "aaa")
+	var prID, forge int64
+	if err := a.s.db.R.QueryRow(`SELECT id, forge_id FROM pull_requests WHERE number = 7`).Scan(&prID, &forge); err != nil {
+		t.Fatal(err)
+	}
+	pr := &PullRequest{ID: prID, HeadSHA: "aaa"}
+	for _, c := range []struct {
+		name, round string
+		reused      bool
+	}{
+		{"trusted round, Claude answered", trustedAuditBar, true},
+		{"elevated round, Claude answered", elevatedAuditBar, false},
+	} {
+		weakest := c.round
+		res, err := a.s.db.W.Exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, pr_id, pr_number, ref, status, model, models, author_model, title, owner_id, created_at, weakest)
+			VALUES (?, ?, 'acme/app', 'pr', ?, 7, 'aaa', 'done', 'gateway/anthropic/claude-sonnet-5-5', '[{"cli":"gateway","model":"audit"}]', 'claude-opus-5-5', 'acme/app#7', ?, 0, ?)`, a.p.ID, forge, prID, a.admin.User.ID, weakest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, _ := res.LastInsertId()
+		got, err := a.s.prAuditAtHead(a.ctx, pr, "claude-opus-5-5", c.round, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if (got == id) != c.reused {
+			t.Errorf("%s: reused = %v, want %v", c.name, got == id, c.reused)
+		}
+		if _, err := a.s.db.W.Exec(`DELETE FROM code_audits WHERE id = ?`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 // A round's stakes are one thing whether or not a gateway was set when they
 // were decided: the floor is stored for a normal change and read back as the
 // same bar; a row from before the floor reads as the floor.

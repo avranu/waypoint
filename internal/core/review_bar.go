@@ -30,8 +30,8 @@ import (
 // reviewer, a CLI chain entry, a gateway model named for an audit) is not
 // held to it.
 //
-// When no model at the bar can take the audit (none is that good outside
-// the author's family, or they are all spent), the gateway says
+// When no model at the bar can take the audit (or they are all spent), the
+// gateway says
 // no_model_at_bar and the audit ends. What the round does then depends on
 // its stakes tier (review_stakes.go, WP-1231): a high-stakes round goes to
 // the Sonnet reviewer; an elevated one asks the gateway again at the floor;
@@ -43,18 +43,16 @@ import (
 // (see the trustedAuditBar comment about routes getting a 400).
 const reviewFloorBar = "deepseek-v4.1-flash"
 
-// trustedAuditBar is the weakest model a high-stakes change's audit accepts,
-// by the loose name the gateway rates (its best model of that name, so a
-// newer Sonnet raises the bar with it). Grok 4.7 through Cursor is trusted
-// as much, but the gateway can't run it as a task yet, and a
-// request names one model as its bar.
+// trustedAuditBar is the weakest model a high-stakes change's audit accepts:
+// Grok 4.7 (WP-1752), by the upstream id of Cursor's cursor/grok-4.7-medium,
+// which the gateway resolves exactly. The bar, not the author's family, is
+// what makes the reviewer trusted, so an audit held to it sends no
+// exclude (code_audits.go); few models outside Claude rated at Sonnet's
+// level, so with that bar and the family exclusion these audits mostly failed.
 //
-// Not "sonnet": that is one of the gateway's routes (the cheapest way to
-// reach Sonnet), and routing.weakest refuses a route with a 400, so every
-// high-stakes audit failed before it started (WP-1134). "claude sonnet"
-// names no route, purpose or provider, so the gateway matches it loosely:
-// every model with both words in its name, the bar at the best of them.
-const trustedAuditBar = "claude sonnet"
+// Not "grok": that is one of the gateway's routes, and routing.weakest
+// refuses a route with a 400 (the same failure "sonnet" gave, WP-1134).
+const trustedAuditBar = "grok-4.7-medium"
 
 // elevatedAuditBar is the bar of an elevated change's audit (WP-1248): a
 // medium-sized or medium-risk change asks for Claude Haiku or better, which

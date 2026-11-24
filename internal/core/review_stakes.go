@@ -13,7 +13,7 @@ package core
 //     credentials, data migrations, deploys or CI (stakesPathRE), the
 //     change is very large (over stakesHugeLines), or a large one (over
 //     triageMaxLines) touches risky files. Its audit is held to
-//     trustedAuditBar (Claude Sonnet or better), and a slow or failed audit
+//     trustedAuditBar (Grok 4.7 or better), and a slow or failed audit
 //     starts the Sonnet reviewer (WP-ADR117).
 //   - elevated: a large change (over triageMaxLines), ADR102's other signs
 //     (risky files in a smaller change, the looser sensitive names: token,

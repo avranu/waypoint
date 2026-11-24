@@ -1237,6 +1237,9 @@ func roundAsks(reviewText, roundContext string) []string {
 // asks the task, so it never takes one: its own audit runs its panel.)
 func (s *Service) prAuditAtHead(ctx context.Context, pr *PullRequest, sessionModel, weakest string, asks []string) (int64, error) {
 	own := gatewayExcludeFor(sessionModel)
+	if weakest == trustedAuditBar {
+		own = nil // an audit at the high-stakes bar is acceptable from any family (WP-1752)
+	}
 	// The floor is what every audit on the gateway's choice asks (WP-1440),
 	// so a round at the floor takes an audit held to it or to a tier's bar
 	// above it, never one from before the floor (weakest ''). Any other bar
