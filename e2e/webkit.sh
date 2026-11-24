@@ -8,12 +8,18 @@
 # Needs docker and a built bin/waypoint (`make build`); `make e2e-webkit` does both.
 set -euo pipefail
 cd "$(dirname "$0")"
-# A suite that launches Chromium itself (no launchEngine, e.g. one that needs a
-# CDP session) would run on Chromium and be reported as a WebKit run: refuse it.
+# A suite that launches Chromium itself (no launchEngine, or one that needs a
+# CDP session, which only Chromium has) would run on Chromium and be reported
+# as a WebKit run: refuse it. 01-signup-flow, which run.sh always runs first,
+# is the setup that makes the account, not a check of the editor.
 for a in "${@:-85-rich-typing}"; do
   for f in "$a"*.mjs; do
     [ -e "$f" ] || { echo "webkit.sh: no suite $a" >&2; exit 1; }
-    grep -q launchEngine "$f" || { echo "webkit.sh: $f does not use launchEngine, so it cannot run under WebKit" >&2; exit 1; }
+    [ "$f" != 01-signup-flow.mjs ] || continue
+    if ! grep -q 'await launchEngine()' "$f" || grep -Eq '\bchromium\b|newCDPSession' "$f"; then
+      echo "webkit.sh: $f does not run on launchEngine's browser alone, so it cannot run under WebKit" >&2
+      exit 1
+    fi
   done
 done
 [ -d node_modules/playwright ] || npm ci --no-audit --no-fund

@@ -5,7 +5,10 @@
 import { chromium, firefox, webkit } from "playwright";
 
 export const launchEngine = () => {
-  const engine = { firefox, webkit }[process.env.RICH_TYPING_BROWSER ?? ""] ?? chromium;
+  const name = process.env.RICH_TYPING_BROWSER || "chromium";
+  // A name misspelt must not quietly run Chromium in its place.
+  const engine = { chromium, firefox, webkit }[name];
+  if (!engine) throw new Error(`RICH_TYPING_BROWSER=${name}: chromium, firefox or webkit`);
   return process.env.RICH_TYPING_WS
     ? engine.connect(process.env.RICH_TYPING_WS)
     : engine.launch();
