@@ -446,3 +446,33 @@ func TestReviewCooldownConcurrent(t *testing.T) {
 		t.Errorf("cooling = %v", m)
 	}
 }
+
+// A stall is remembered when a later entry went on to answer or time out, and
+// only for the gateway's own choice (WP-1768).
+func TestCoolStallsEarlierAttemptsOnly(t *testing.T) {
+	re, _, chain, _ := newStallEnv(t)
+	const gw, other = 7, 8
+	attempts := []ModelAttempt{
+		{Model: stallA, Outcome: "timeout", providerID: gw},
+		{Model: "opencode/muse-spark-1", Outcome: "timeout", providerID: other}, // a pattern resolved elsewhere
+		{Model: stallB, Outcome: "bad_output", providerID: gw},                  // not a stall
+		{Model: gatewayReviewRoute, Outcome: "timeout", providerID: gw},         // the chain's own name
+		{Model: "x/ok", Outcome: "ok", providerID: other},
+	}
+	re.s.coolStalls(re.ctx, gw, gatewayReviewRoute, chain, attempts)
+	if got, _ := re.s.coolingModels(gw, gatewayReviewRoute); !slices.Equal(got, []string{stallA}) {
+		t.Fatalf("cooling = %v", got)
+	}
+}
+
+// A no-model answer anywhere in the attempts is seen, not only the last.
+func TestLeftNoModelAnyAttempt(t *testing.T) {
+	_, _, chain, _ := newStallEnv(t)
+	a := []ModelAttempt{{Outcome: "no_model_at_bar"}, {Model: "x/y", Outcome: "ok"}}
+	if !leftNoModel(chain, a) {
+		t.Fatal("not seen")
+	}
+	if leftNoModel(chain, []ModelAttempt{{Outcome: "server", Error: "HTTP 504"}}) {
+		t.Fatal("a 504 is not no model")
+	}
+}

@@ -92,26 +92,35 @@ func (s *Service) asksReviewRoute(ctx context.Context, chain []ChainModel) bool 
 	})
 }
 
-// stalledModel is failedMidStream's model when the last request timed out:
-// only a stall is remembered, not an empty, too long or unreadable answer.
-func stalledModel(chain []ChainModel, attempts []ModelAttempt) string {
-	m := failedMidStream(chain, attempts)
-	if m == "" || attempts[len(attempts)-1].Outcome != "timeout" {
-		return ""
+// coolStalls remembers every model of the gateway pid that a request in
+// attempts timed out on, the last or an earlier one (the chain goes on after a
+// timeout): only a stall is remembered, not an empty, too long or unreadable
+// answer. A model the chain names itself, and one another provider served
+// (a family pattern resolved to its id), is not the route's choice.
+func (s *Service) coolStalls(ctx context.Context, pid int64, route string, chain []ChainModel, attempts []ModelAttempt) {
+	if pid == 0 {
+		return
 	}
-	return m
+	for _, a := range attempts {
+		if a.Outcome != "timeout" || a.Model == "" || a.providerID != pid {
+			continue
+		}
+		if slices.ContainsFunc(chain, func(c ChainModel) bool { return c.Model == a.Model }) {
+			continue
+		}
+		s.coolModel(ctx, pid, route, a.Model)
+	}
 }
 
-// leftNoModel is whether the last request failed without any model of the
-// route having served, as the gateway answers when every model is left out:
+// leftNoModel is whether a request of attempts failed without any model of
+// the route having served, as the gateway answers when every model is left out:
 // no_model_at_bar, or a bare 503 (classified "server" like a 502 or 504, so
 // the attempt's text tells them apart). A 404, 502, 504 or other error is an
-// ordinary failure, not asked again.
+// ordinary failure, not asked again. Any attempt counts: the chain goes on to
+// other providers after the gateway's answer.
 func leftNoModel(chain []ChainModel, attempts []ModelAttempt) bool {
-	if len(attempts) == 0 {
-		return false
-	}
-	a := attempts[len(attempts)-1]
-	none := a.Outcome == "no_model_at_bar" || (a.Outcome == "server" && strings.HasSuffix(a.Error, "HTTP 503"))
-	return none && (a.Model == "" || slices.ContainsFunc(chain, func(c ChainModel) bool { return c.Model == a.Model }))
+	return slices.ContainsFunc(attempts, func(a ModelAttempt) bool {
+		none := a.Outcome == "no_model_at_bar" || (a.Outcome == "server" && strings.HasSuffix(a.Error, "HTTP 503"))
+		return none && (a.Model == "" || slices.ContainsFunc(chain, func(c ChainModel) bool { return c.Model == a.Model }))
+	})
 }

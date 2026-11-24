@@ -48,6 +48,8 @@ type ModelAttempt struct {
 	// minimum model it held the request to, and what it chose (WP-1440).
 	// Next to RequestID, it lets a weaker model's answer be reported.
 	Bar string `json:"bar,omitempty"`
+	// providerID is the provider the attempt asked; not part of the log.
+	providerID int64
 }
 
 // usageSink collects the HTTP requests one chain call took (a client retries some: a 429 with Retry-After, a schema
@@ -412,7 +414,7 @@ func (s *Service) runChainAt(ctx context.Context, chain []ChainModel, system, pr
 		if served != "" {
 			model = served // the model behind a gateway's route
 		}
-		a := ModelAttempt{Model: model, Outcome: "ok", MS: time.Since(start).Milliseconds(), RequestID: requestID, Bar: usage.barSeen()}
+		a := ModelAttempt{Model: model, Outcome: "ok", MS: time.Since(start).Milliseconds(), RequestID: requestID, Bar: usage.barSeen(), providerID: p.ID}
 		call := aiCall{task: aiTaskOf(ctx), pid: p.ID, model: model, fallbacks: len(fallbacks), paid: cm.Paid, outcome: "ok", err: err,
 			ms: a.MS, sent: usage.sent.Load(), status: int(usage.status.Load()), bar: a.Bar}
 		if err != nil {
