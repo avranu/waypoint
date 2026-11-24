@@ -59,17 +59,16 @@ func TestLeaveQueueWaitsForTheStepsForgeCalls(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the leave never finished after the step (deadlock?)")
 	}
-	// The step's own marking is read from what it posted, not from the pull
-	// request: once the leave lands, the line ends the candidate and puts the
-	// draft back, which can happen before this reads it.
-	posted := false
-	f.sm.Lock()
-	for _, st := range f.statuses[head7s] {
-		posted = posted || st.Context == stackContext && st.State == "success"
+	// The step's marking is read from the forge's record of the title edit
+	// that makes the draft ready, a call after the status post: once the
+	// leave lands the line puts the draft back, which can happen before the
+	// pull request is read here.
+	marked := false
+	for _, title := range f.edits() {
+		marked = marked || !draftTitle(title)
 	}
-	f.sm.Unlock()
-	if !posted {
-		t.Error("the step didn't post its candidate's success on the front's head")
+	if !marked {
+		t.Error("the step didn't mark the front ready on its candidate after posting its status")
 	}
 	if p := se.pr(7); p.QueuedAt != nil {
 		t.Errorf("the leave didn't take effect after the step: queued_at %v", p.QueuedAt)
