@@ -21,7 +21,7 @@ import (
 
 const (
 	summaryMax     = 20000 // characters of a summary kept
-	summaryAsksMax = 10
+	summaryAsksMax = maxRequestQuestions
 )
 
 // TaskSummary is one finished task's summary.
@@ -147,7 +147,7 @@ func (s *Service) fileSummaryAsks(ctx context.Context, t *tx, actor *Actor, x *A
 		title = excerpt(fmt.Sprintf("%s: %s (and %d more)", key, asks[0], len(asks)-1), 200)
 	}
 	reqID, _, err := s.createRequestTx(ctx, t, actor, x, RequestInput{Kind: RequestQuestion, Title: title, Source: requestAuto, Body: b.String(), Questions: qs}, at)
-	if IsInvalid(err) {
+	if errors.Is(err, errRequestsFull) {
 		return nil // too many open already: the Stop must still succeed
 	}
 	if err != nil {

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -129,5 +130,77 @@ func TestTaskSummariesAndUnfiledAsks(t *testing.T) {
 	}
 	if page, _ = te.s.TaskSummaries(te.ctx, te.admin, TaskSummaryQuery{All: true}); len(page.Summaries) != 1 || page.Summaries[0].ReviewedAt == nil {
 		t.Errorf("all = %+v", page.Summaries)
+	}
+}
+
+// stopWithSummary finishes a task and reports a Stop whose last message is msg.
+func stopWithSummary(t *testing.T, te *taskEnv, msg string) {
+	t.Helper()
+	p := te.project(te.admin, "App", "")
+	a := te.issue(te.admin, IssueInput{Project: p.Key, Title: "First", Agent: "claude"})
+	if _, err := te.s.AgentTake(te.ctx, te.ag, a.Key, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := te.s.AgentDone(te.ctx, te.ag, a.Key, AgentDoneInput{}); err != nil {
+		t.Fatal(err)
+	}
+	te.setClock(te.clockNow().Add(time.Minute))
+	if _, err := te.s.SessionHook(te.ctx, te.ag, []HookEvent{hook("box", te.cli, "Stop", func(h *HookEvent) { h.LastMessage = msg })}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// More asks than a request holds are filed as one request of the most it
+// holds, not dropped. (A Stop's own trailing-question rule can file first, so
+// this calls the filing step itself.)
+func TestTaskSummaryWithMoreAsksThanARequestHolds(t *testing.T) {
+	te := newTaskEnv(t, "")
+	var msg string
+	for _, ask := range []string{"The runner install on runner1", "The forge token rotation before Friday", "A name for the new tab", "The production deploy window", "How long audit logs are retained", "A billing contact for the invoices", "The mirror host for backups", "The license key renewal", "The domain registration renewal"} {
+		msg += "- " + ask + "\n"
+	}
+	asks := summaryAsks("Waiting on you:\n" + msg)
+	if len(asks) != maxRequestQuestions {
+		t.Fatalf("a summary with 9 asks keeps %d, want %d", len(asks), maxRequestQuestions)
+	}
+	err := te.s.write(te.ctx, te.ag, func(tx *tx) error {
+		x, err := te.s.sessionByID(te.ctx, tx, te.ag, te.session)
+		if err != nil {
+			return err
+		}
+		return te.s.fileSummaryAsks(te.ctx, tx, te.ag, x, 0, "WP-1", asks, te.s.nowMS())
+	})
+	if err != nil {
+		t.Fatalf("filing a summary's asks: %v", err)
+	}
+	var n, questions int
+	if err := te.s.db.R.QueryRow(`SELECT count(*), coalesce(max(json_array_length(json_extract(payload, '$.questions'))), 0) FROM requests WHERE source = ?`, requestAuto).Scan(&n, &questions); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 || questions != maxRequestQuestions {
+		t.Errorf("auto requests = %d with %d questions, want 1 with %d", n, questions, maxRequestQuestions)
+	}
+}
+
+// A person with the most requests open gets no auto request from a summary,
+// and the Stop still succeeds.
+func TestTaskSummaryAsksAtTheOpenRequestCap(t *testing.T) {
+	te := newTaskEnv(t, "")
+	for i := range maxRequestsOpenIn {
+		title := fmt.Sprintf("Open question number %d zq%dx", i, i*7919)
+		if _, _, err := te.s.CreateRequest(te.ctx, te.ag, RequestInput{Kind: RequestQuestion, Title: title, Questions: []Question{{Question: title}}}); err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+	}
+	stopWithSummary(t, te, "Shipped it.\n\nWaiting on you:\n- Rotate the forge token before Friday\n")
+	var n int
+	_ = te.s.db.R.QueryRow(`SELECT count(*) FROM requests WHERE source = ?`, requestAuto).Scan(&n)
+	if n != 0 {
+		t.Errorf("auto requests = %d at the cap, want 0", n)
+	}
+	var summaries int
+	_ = te.s.db.R.QueryRow(`SELECT count(*) FROM task_summaries`).Scan(&summaries)
+	if summaries != 1 {
+		t.Errorf("summaries = %d, want 1", summaries)
 	}
 }

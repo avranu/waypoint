@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"slices"
 	"strings"
 	"time"
@@ -114,8 +115,12 @@ func (s *Service) autoFileQuestion(ctx context.Context, t *tx, actor *Actor, x *
 		Body:      messageTail(msg) + "\n\n_" + autoQuestionFmt + "_",
 		Questions: []Question{{Question: title}},
 	}, at)
+	if errors.Is(err, errRequestsFull) {
+		return nil // too many requests open already: the Stop hook still has to succeed
+	}
 	if IsInvalid(err) {
-		return nil // e.g. too many requests open already: the Stop hook still has to succeed
+		s.log.WarnContext(ctx, "auto question refused", "session", x.ID, "err", err)
+		return nil // the Stop hook still has to succeed
 	}
 	return err
 }

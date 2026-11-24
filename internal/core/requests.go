@@ -61,7 +61,19 @@ const (
 	maxCellOutput     = 256 << 10
 	permissionDedupe  = 10 * time.Minute
 	maxRequestsOpenIn = 200 // per person, so a runaway agent can't bury the inbox
+	// maxRequestQuestions is the most questions one request holds; what files
+	// questions on its own (a summary's asks) stops at it too.
+	maxRequestQuestions = 8
 )
+
+// errRequestsFull is what a request refused for the open cap matches (errors.Is),
+// so a caller that must not fail on that can tell it from any other invalid input.
+var errRequestsFull = errors.New("too many open requests")
+
+type requestsFullError struct{ invalid error }
+
+func (e *requestsFullError) Error() string   { return e.invalid.Error() }
+func (e *requestsFullError) Unwrap() []error { return []error{errRequestsFull, e.invalid} }
 
 // Question is one thing asked: free text, or one or several choices.
 type Question struct {
@@ -1063,7 +1075,7 @@ func (s *Service) createRequestTx(ctx context.Context, t *tx, actor *Actor, sess
 		return 0, false, err
 	}
 	if open >= maxRequestsOpenIn {
-		return 0, false, invalid("%d requests are already waiting; decide or dismiss some first", open)
+		return 0, false, &requestsFullError{invalid("%d requests are already waiting; decide or dismiss some first", open)}
 	}
 	var number int
 	scope := actor.id()
@@ -1175,8 +1187,8 @@ func checkQuestions(in []Question) ([]Question, error) {
 	if len(in) == 0 {
 		return nil, invalid("a question request needs at least one question")
 	}
-	if len(in) > 8 {
-		return nil, invalid("at most 8 questions in one request")
+	if len(in) > maxRequestQuestions {
+		return nil, invalid("at most %d questions in one request", maxRequestQuestions)
 	}
 	out := make([]Question, 0, len(in))
 	for _, q := range in {
