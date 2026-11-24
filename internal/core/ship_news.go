@@ -335,6 +335,8 @@ func (s *Service) shipNewsNow(ctx context.Context, session, task int64) (*ShipNe
 	switch out := decideRound(in); {
 	case out.Do == doSettle || out.Do == doHold:
 		return ended(out.Why), nil
+	case out.Do == doNothing && out.Settled == takenWhy:
+		return &ShipNews{Outcome: ShipNewsEnded, Text: s.takenText(ctx, r)}, nil
 	case out.Do == doNothing:
 		return ended(out.Settled), nil
 	case out.Do == doEnd && out.Told != "":

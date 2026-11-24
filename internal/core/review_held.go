@@ -234,8 +234,8 @@ func (s *Service) shipRead(ctx context.Context, in shipRoundIn) (*shipRun, error
 	if reviewed {
 		// The run must still be open: a ship of the session's own ends it,
 		// and then there is nothing left for Waypoint to do.
-		var open bool
-		if err := s.db.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM agent_runs WHERE id = ? AND ended_at IS NULL)`, r.runID.Int64).Scan(&open); err != nil {
+		open, err := roundRunOpen(ctx, s.db.R, r.id)
+		if err != nil {
 			return nil, err
 		}
 		if !open {

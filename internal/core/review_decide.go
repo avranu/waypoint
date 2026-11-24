@@ -409,7 +409,7 @@ func decideEnded(in roundIn) roundOut {
 	case in.Newer:
 		return left("a newer round carries the task")
 	case in.Taken:
-		return left("another session holds the task")
+		return left(takenWhy)
 	case in.ShipSpent:
 		return roundOut{Do: doEnd, To: RoundFailed, Why: "Waypoint gave up opening its pull request"}
 	case in.SinceEnd > strandedShipWindow:
@@ -444,10 +444,8 @@ func (s *Service) roundInOf(ctx context.Context, id int64) (roundIn, error) {
 	in.SinceStart = time.Duration(max(now-started, 0)) * time.Millisecond
 	in.SinceChange = time.Duration(max(now-nonzero(r.ended.Int64, started), 0)) * time.Millisecond
 	in.Read = r.readState
-	if r.runID.Valid {
-		if err := s.db.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM agent_runs WHERE id = ? AND ended_at IS NULL)`, r.runID.Int64).Scan(&in.RunOpen); err != nil {
-			return in, err
-		}
+	if in.RunOpen, err = roundRunOpen(ctx, s.db.R, id); err != nil {
+		return in, err
 	}
 	if err := s.db.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM review_again_decisions WHERE round_id = ? AND coalesce(next_round_id, 0) != 0)`, id).Scan(&in.Superseded); err != nil {
 		return in, err
@@ -596,22 +594,66 @@ func (s *Service) reviewFacts(ctx context.Context, id int64, in *roundIn) error 
 	return nil
 }
 
-// endedFacts reads what leaves a round alone once its run has ended
-// (roundIn: Resolved ... SinceEnd).
+// roundRunOpen: the round's own run is open, or its session holds the task
+// in another open run. A session that took the task again after its claim
+// expired carries the round in that run, as if the first had never ended
+// (WP-1828): the round waits on its marks and ships by the session's ship,
+// and is not released behind a session still working.
+func roundRunOpen(ctx context.Context, q queryer, round int64) (open bool, err error) {
+	err = q.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM work_log w JOIN agent_runs o ON o.ended_at IS NULL
+		AND (o.id = w.run_id OR (o.issue_id = w.issue_id AND o.session_id = w.session_id))
+		WHERE w.id = ? AND w.run_id IS NOT NULL)`, round).Scan(&open)
+	return open, err
+}
+
+// takenRun is the open run o that makes round w Taken: one on its task that
+// is neither the round's own run nor a run of the round's session
+// (roundRunOpen has those). A run with no session is somebody else's work,
+// and a round with no session compares runs alone.
+const takenRun = `o.issue_id = w.issue_id AND o.ended_at IS NULL AND o.id != coalesce(w.run_id, 0)
+	AND (w.session_id IS NULL OR o.session_id IS NOT w.session_id)`
+
+// takenWhy is decideEnded's reason for a Taken round.
+const takenWhy = "another session holds the task"
+
+// takenText is what a ship is told of a Taken round: who holds the task, and
+// what the caller can do about it.
+func (s *Service) takenText(ctx context.Context, r *roundRow) string {
+	var cwd, machine, agent string
+	var seen int64
+	var sess sql.NullInt64
+	err := s.db.R.QueryRowContext(ctx, `SELECT o.session_id, o.agent, coalesce(x.cwd, ''), coalesce(x.machine, ''), coalesce(x.last_seen_at, 0)
+		FROM work_log w JOIN agent_runs o ON `+takenRun+` LEFT JOIN agent_sessions x ON x.id = o.session_id
+		WHERE w.id = ? ORDER BY o.id DESC LIMIT 1`, r.id).Scan(&sess, &agent, &cwd, &machine, &seen)
+	who := takenWhy
+	switch {
+	case err != nil:
+	case !sess.Valid:
+		who = "a run of " + agent + " with no session holds it"
+	default:
+		who = sessionHoldsText("another session", cwd, machine, seen, s.nowMS())
+	}
+	return fmt.Sprintf("Waypoint's review round for this task is over (%s): %s, so Waypoint opens no pull request for this round. That session's own `wp ship %s` ships the task. To ship it from this session instead, run `wp ship %s --review`: it starts a new review round.",
+		r.state, who, r.key, r.key)
+}
+
+// endedFacts reads what decides a round with no end of its own once its run
+// has ended (roundIn: Resolved ... SinceEnd), and whether its session moved
+// on to another task. roundInOf reads it for every round before a pull
+// request, whether its run is open or not.
 func (s *Service) endedFacts(ctx context.Context, r *roundRow, in *roundIn) error {
 	now := s.nowMS()
 	var updated, runEnd, sessEnd, moved int64
-	// Taken: an open run of another session. The round's own session taking
-	// the task again after its claim expired is a new run of the same session,
-	// not another holder (WP-1828); a round with no session compares runs.
+	// moved: the session's first run on another task after the run that
+	// carries the round (its newest open one on this task, else the round's).
 	err := s.db.R.QueryRowContext(ctx, `SELECT w.updated_at, coalesce((SELECT ended_at FROM agent_runs WHERE id = w.run_id), 0),
 			coalesce((SELECT ended_at FROM agent_sessions WHERE id = w.session_id), 0),
-			coalesce((SELECT min(o.started_at) FROM agent_runs o WHERE o.session_id = w.session_id AND o.id > w.run_id AND o.issue_id != w.issue_id), 0),
+			coalesce((SELECT min(o.started_at) FROM agent_runs o WHERE o.session_id = w.session_id AND o.issue_id != w.issue_id AND o.id > coalesce(
+				(SELECT max(h.id) FROM agent_runs h WHERE h.issue_id = w.issue_id AND h.session_id = w.session_id AND h.ended_at IS NULL), w.run_id)), 0),
 			i.resolved_at IS NOT NULL,
 			EXISTS (SELECT 1 FROM external_links l WHERE l.issue_id = w.issue_id AND l.kind = 'pull'),
 			w.id != (SELECT max(m.id) FROM work_log m WHERE m.kind = 'review' AND m.issue_id = w.issue_id),
-			EXISTS (SELECT 1 FROM agent_runs o WHERE o.issue_id = w.issue_id AND o.ended_at IS NULL AND
-				CASE WHEN w.session_id IS NULL THEN o.id != coalesce(w.run_id, 0) ELSE o.session_id IS NOT w.session_id END)
+			EXISTS (SELECT 1 FROM agent_runs o WHERE `+takenRun+`)
 		FROM work_log w JOIN issues i ON i.id = w.issue_id WHERE w.id = ?`, r.id).Scan(&updated, &runEnd, &sessEnd, &moved, &in.Resolved, &in.Linked, &in.Newer, &in.Taken)
 	if err != nil {
 		return err
