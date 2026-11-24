@@ -70,7 +70,7 @@ func (s *Service) continueAfterCheck(ctx context.Context, auditID int64) {
 		return // a Done round is the sweep's (shipSettledRounds)
 	}
 	out, err := s.advanceRound(ctx, round)
-	s.log.InfoContext(ctx, "round advanced after its check", "round", round, "audit", auditID, "do", out.Do, "why", out.Why, "err", err)
+	s.log.InfoContext(ctx, "round advanced after its check", "round", round, "audit", auditID, "do", out.Do, "why", out.Why, "left", out.Settled, "err", err)
 	if err != nil {
 		s.log.WarnContext(ctx, "autopilot: carry a round on after its check", "round", round, "audit", auditID, "err", err)
 	}

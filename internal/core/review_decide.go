@@ -609,7 +609,9 @@ func roundRunOpen(ctx context.Context, q queryer, round int64) (open bool, err e
 // takenRun is the open run o that makes round w Taken: one on its task that
 // is neither the round's own run nor a run of the round's session
 // (roundRunOpen has those). A run with no session is somebody else's work,
-// and a round with no session compares runs alone.
+// and a round with no session compares runs alone. The round keeps its own
+// run_id when its session takes the task again: that session's new run carries
+// it (roundRunOpen) rather than the round moving onto the new run.
 const takenRun = `o.issue_id = w.issue_id AND o.ended_at IS NULL AND o.id != coalesce(w.run_id, 0)
 	AND (w.session_id IS NULL OR o.session_id IS NOT w.session_id)`
 
