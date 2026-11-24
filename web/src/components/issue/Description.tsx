@@ -257,6 +257,9 @@ export function MarkdownEditor({
   }
 
   const editorKeyDown = (e: React.KeyboardEvent) => {
+    // Enter or Escape in an IME composition confirms or clears a candidate, in
+    // either editor: it neither saves nor closes. Safari reports it as 229.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
       e.preventDefault()
       if (autosave) void settle()

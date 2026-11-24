@@ -89,6 +89,11 @@ const markEmpty = (el: HTMLElement) =>
 
 type Mention = { node: Text; start: number; end: number; text: string }
 
+// Whether a mention still means "@text" in the editor's own text: a draft
+// refresh replaces the nodes, and an upload's placeholder splits them.
+const liveMention = (el: HTMLElement, m: Mention) =>
+  el.contains(m.node) && m.node.data.slice(m.start, m.end) === `@${m.text}`
+
 /**
  * The box a description is shown in, as rendered text and as this editor: the
  * same padding, font and line height, so opening the editor moves nothing.
@@ -227,6 +232,8 @@ export function RichTextInput({
     el.innerHTML = renderMarkdownForEdit(value) || EMPTY
     shown.current = value
     markEmpty(el)
+    // An open mention's text node is gone with the old content.
+    setMention(null)
     if (caret !== null) placeCaretAt(el, caret)
   }, [value])
 
@@ -242,7 +249,8 @@ export function RichTextInput({
     const el = editor.current
     if (!el) return
     const onBefore = (e: Event) => {
-      if (keyed.current) return
+      // Text in a composition is the IME's: not the menu's, not the rules'.
+      if (keyed.current || composing.current || (e as InputEvent).isComposing) return
       // Enter from a soft keyboard with the mention menu open picks the
       // highlighted person, as the keydown branch does on a desktop.
       const t = (e as InputEvent).inputType
@@ -251,7 +259,6 @@ export function RichTextInput({
         pick(matches[active])
         return
       }
-      if (composing.current) return
       try {
         if (beforeInputRules(el, e as InputEvent)) {
           sync()
@@ -303,7 +310,7 @@ export function RichTextInput({
     const { node, start, end } = mention
     // The text may have been replaced since the menu opened (a draft
     // refresh): a range into a detached node no longer means the trigger.
-    if (!editor.current?.contains(node) || end > node.data.length || node.data[start] !== '@') {
+    if (!editor.current || !liveMention(editor.current, mention)) {
       setMention(null)
       return
     }
@@ -663,6 +670,8 @@ export function RichTextInput({
         }}
         onKeyUp={(e) => {
           keyed.current = false
+          // Arrows in a composition move among its candidates.
+          if (e.nativeEvent.isComposing || e.keyCode === 229) return
           if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) {
             if (editor.current) leavePiece(editor.current)
             detect()
@@ -727,7 +736,9 @@ export function RichTextInput({
             upload(files)
             return
           }
-          const text = e.clipboardData.getData('text/plain')
+          // A pasted U+FEFF would be taken for a parked caret and dropped on
+          // save; the word joiner is the character Unicode has in its place.
+          const text = e.clipboardData.getData('text/plain').replaceAll(PARK, '\u2060')
           if (text) {
             e.preventDefault()
             document.execCommand('insertText', false, text)
@@ -915,6 +926,8 @@ function MentionMenu({
 }) {
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null)
   useLayoutEffect(() => {
+    // A stale range would throw, or measure nothing; the menu stays where it was.
+    if (!liveMention(anchor, mention)) return
     const range = document.createRange()
     range.setStart(mention.node, mention.start)
     range.setEnd(mention.node, mention.end)
