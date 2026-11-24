@@ -416,16 +416,21 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) (any, error) {
 	if err := decode(r, &in); err != nil {
 		return nil, err
 	}
-	// Only failures count: per address, per account and address, and per
-	// account. Someone else's guessing can't lock the owner's address out.
+	// Only wrong passwords stay counted: per address, per account and
+	// address, and per account. Someone else's guessing can't lock the
+	// owner's address out.
 	ip := s.clientIP(r)
-	if s.loginBlocked(r.Context(), in.Login, ip) {
+	done, ok := s.loginBegin(r.Context(), s.loginAccount(r.Context(), in.Login), ip)
+	if !ok {
 		return nil, errTooMany
 	}
 	tok, u, err := s.svc.Login(r.Context(), in.Login, in.Password, r.UserAgent(), ip)
-	if err != nil {
-		s.loginFailed(in.Login, ip)
+	done(errors.Is(err, core.ErrUnauthorized))
+	if errors.Is(err, core.ErrUnauthorized) {
 		return nil, fmt.Errorf("%w: wrong username or password", errBadRequest)
+	}
+	if err != nil {
+		return nil, err
 	}
 	s.setSession(w, r, tok)
 	return u, nil

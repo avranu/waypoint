@@ -346,7 +346,7 @@ func peerIP(r *http.Request) string {
 func (s *Server) clientIP(r *http.Request) string {
 	peer := peerIP(r)
 	if !s.trusted(peer) {
-		return peer
+		return canonicalIP(peer)
 	}
 	var hops []string
 	for _, v := range r.Header.Values("X-Forwarded-For") {
@@ -361,10 +361,19 @@ func (s *Server) clientIP(r *http.Request) string {
 			return peer // garbage from a proxy we trust: don't guess
 		}
 		if !s.trusted(hops[i]) || i == 0 {
-			return hops[i]
+			return canonicalIP(hops[i])
 		}
 	}
 	return peer
+}
+
+// canonicalIP writes an address one way (lowercase, IPv4-mapped unmapped), so
+// one address is one lockout bucket and matches its session's address.
+func canonicalIP(ip string) string {
+	if a, err := netip.ParseAddr(ip); err == nil {
+		return a.Unmap().String()
+	}
+	return ip
 }
 
 const sessionCookie = "wp_session"
@@ -578,7 +587,7 @@ var (
 	errBadRequest = errors.New("bad request")
 	// errBodyTooLarge: a request body over what its route reads (413).
 	errBodyTooLarge = errors.New("request body too large")
-	errTooMany      = errors.New("too many attempts, try again in a minute")
+	errTooMany      = errors.New("too many attempts, try again later")
 	errJobTooMany   = fmt.Errorf("this runner job's token made too many requests; try again in a minute: %w", errTooMany)
 )
 
@@ -722,22 +731,56 @@ func queryBool(r *http.Request, name string) bool {
 
 // ---- rate limiting ----
 
-// loginBlocked reports whether a password attempt for login from ip is
-// refused. The account-wide limit guards against a guesser rotating
-// addresses; it spares an address the account already signed in from.
-func (s *Server) loginBlocked(ctx context.Context, login, ip string) bool {
-	login = strings.ToLower(strings.TrimSpace(login))
-	if s.limiter.blocked("login:"+ip) || s.userAddrLimiter.blocked("login-user:"+login+"|"+ip) {
-		return true
-	}
-	return s.userLimiter.blocked("login-user:"+login) && !s.svc.SignedInFrom(ctx, login, ip)
+// loginAcct names the account a password attempt is for. key is the id when
+// the login names an account, so username and email count together; an
+// unknown login keeps its own bounded key.
+type loginAcct struct {
+	key string
+	id  int64
 }
 
-func (s *Server) loginFailed(login, ip string) {
-	login = strings.ToLower(strings.TrimSpace(login))
-	s.limiter.hit("login:" + ip)
-	s.userLimiter.hit("login-user:" + login)
-	s.userAddrLimiter.hit("login-user:" + login + "|" + ip)
+func (s *Server) loginAccount(ctx context.Context, login string) loginAcct {
+	if id, err := s.svc.LoginAccountID(ctx, login); err == nil && id != 0 {
+		return loginAcct{key: "id:" + strconv.FormatInt(id, 10), id: id}
+	}
+	return loginAcct{key: "name:" + strings.ToLower(strings.TrimSpace(login))}
+}
+
+func userAcct(id int64) loginAcct { return loginAcct{key: "id:" + strconv.FormatInt(id, 10), id: id} }
+
+// loginBegin counts a password attempt up front, so a burst of concurrent
+// guesses can't all pass a check made before any is counted. It reports
+// false when the attempt is refused. The caller calls the returned func with
+// whether the password was wrong; anything else gives the count back. The
+// account-wide limit guards against a guesser rotating addresses; it spares
+// an address the account already signed in from. A full table refuses.
+func (s *Server) loginBegin(ctx context.Context, acct loginAcct, ip string) (func(wrong bool), bool) {
+	ipKey, pairKey, acctKey := "login:"+ip, "login-user:"+acct.key+"|"+ip, "login-user:"+acct.key
+	if !s.limiter.allow(ipKey) {
+		return nil, false
+	}
+	if !s.userAddrLimiter.allow(pairKey) {
+		s.limiter.refund(ipKey)
+		return nil, false
+	}
+	counted := s.userLimiter.allow(acctKey)
+	if !counted {
+		if spared, err := s.svc.SignedInFrom(ctx, acct.id, ip); err != nil || !spared {
+			s.limiter.refund(ipKey)
+			s.userAddrLimiter.refund(pairKey)
+			return nil, false
+		}
+	}
+	return func(wrong bool) {
+		if wrong {
+			return
+		}
+		s.limiter.refund(ipKey)
+		s.userAddrLimiter.refund(pairKey)
+		if counted {
+			s.userLimiter.refund(acctKey)
+		}
+	}, true
 }
 
 type rateLimiter struct {
@@ -760,6 +803,15 @@ func (l *rateLimiter) allow(key string) bool {
 		return false
 	}
 	return l.hitLocked(key)
+}
+
+// refund takes back the latest attempt counted for key.
+func (l *rateLimiter) refund(key string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if h := l.recent(key, time.Now()); len(h) > 0 {
+		l.hits[key] = h[:len(h)-1]
+	}
 }
 
 // blocked reports whether key has used up its attempts, without counting one.

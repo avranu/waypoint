@@ -243,19 +243,69 @@ func loginFrom(t *testing.T, ts *httptest.Server, ip, password string) int {
 }
 
 func TestLoginLockoutIsPerAddress(t *testing.T) {
-	ts := loginServer(t, nil)
-	var last int
-	for n := 0; n < 40; n++ {
-		last = loginFrom(t, ts, "198.51.100.7", "wrong password")
+	// Raise the per-minute address limit so the account-and-address count of
+	// 30 is what stops address A.
+	ts := loginServer(t, func(s *Server) { s.limiter = newRateLimiter(1000, time.Minute) })
+	for n := 0; n < 30; n++ {
+		if code := loginFrom(t, ts, "198.51.100.7", "wrong password"); code != 400 {
+			t.Fatalf("guess %d: %d", n, code)
+		}
 	}
-	if last != 429 {
-		t.Fatalf("address A not locked out: %d", last)
+	if code := loginFrom(t, ts, "198.51.100.7", "wrong password"); code != 429 {
+		t.Fatalf("address A not locked out: %d", code)
 	}
 	if code := loginFrom(t, ts, "198.51.100.7", "correct horse battery"); code != 429 {
 		t.Errorf("right password from locked address A: %d", code)
 	}
 	if code := loginFrom(t, ts, "203.0.113.9", "correct horse battery"); code != 200 {
 		t.Errorf("right password from address B after A's failures: %d", code)
+	}
+}
+
+func TestLoginUsernameAndEmailShareOneCount(t *testing.T) {
+	ts := loginServer(t, func(s *Server) { s.userAddrLimiter = newRateLimiter(4, 10*time.Minute) })
+	post := func(login string) int {
+		c := &client{t: t, base: ts.URL, web: true, http: &http.Client{Transport: &fromAddr{"198.51.100.7"}}}
+		code, _ := c.do("POST", "/api/v1/auth/login", map[string]any{"login": login, "password": "wrong password"})
+		return code
+	}
+	for _, l := range []string{"robin", "j@example.com", "ROBIN", "J@Example.com"} {
+		if code := post(l); code != 400 {
+			t.Fatalf("%s: %d", l, code)
+		}
+	}
+	if code := post("robin"); code != 429 {
+		t.Errorf("username after four wrong tries by either name: %d", code)
+	}
+}
+
+func TestLoginBurstIsCountedBeforeItIsChecked(t *testing.T) {
+	ts := loginServer(t, nil)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	checked := 0
+	for n := 0; n < 30; n++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if loginFrom(t, ts, "198.51.100.7", "wrong password") == 400 {
+				mu.Lock()
+				checked++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	if checked != 10 {
+		t.Errorf("%d concurrent guesses were checked, want 10", checked)
+	}
+}
+
+func TestCanonicalIP(t *testing.T) {
+	for in, want := range map[string]string{"::ffff:192.0.2.1": "192.0.2.1", "2001:DB8::1": "2001:db8::1", "192.0.2.1": "192.0.2.1", "junk": "junk"} {
+		if got := canonicalIP(in); got != want {
+			t.Errorf("canonicalIP(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 
