@@ -70,7 +70,7 @@ func (s *Service) continueAfterCheck(ctx context.Context, auditID int64) {
 		return // a Done round is the sweep's (shipSettledRounds)
 	}
 	out, err := s.advanceRound(ctx, round)
-	s.log.InfoContext(ctx, "round advanced after its check", "round", round, "audit", auditID, "do", out.Do, "why", out.Why, "err", err)
+	s.log.InfoContext(ctx, "round advanced after its check", "round", round, "audit", auditID, "do", out.Do, "why", out.Why, "left", out.Settled, "err", err)
 	if err != nil {
 		s.log.WarnContext(ctx, "autopilot: carry a round on after its check", "round", round, "audit", auditID, "err", err)
 	}
@@ -227,11 +227,11 @@ func (s *Service) shipSettledRounds(ctx context.Context) {
 					AND c.settled_at IS NOT NULL))))
 			OR (w.state IN ('skipped', 'failed', 'interrupted', 'done') AND i.resolved_at IS NULL
 				AND (r.ended_at IS NOT NULL OR x.ended_at IS NOT NULL
-					OR EXISTS (SELECT 1 FROM agent_runs o WHERE o.session_id = w.session_id AND o.id > w.run_id AND o.issue_id != w.issue_id))
+					OR `+movedOnAt+` > 0)
 				AND w.id = (SELECT max(m.id) FROM work_log m WHERE m.kind = 'review' AND m.issue_id = w.issue_id)
 				AND NOT EXISTS (SELECT 1 FROM external_links l WHERE l.issue_id = w.issue_id AND l.kind = 'pull')
-				AND (max(w.updated_at, coalesce(r.ended_at, 0), coalesce(x.ended_at, 0),
-					coalesce((SELECT min(o.started_at) FROM agent_runs o WHERE o.session_id = w.session_id AND o.id > w.run_id AND o.issue_id != w.issue_id), 0)) > ?
+				AND (max(w.updated_at, coalesce(r.ended_at, 0), coalesce(x.ended_at, 0), `+laterRunEnd+`,
+					`+movedOnAt+`) > ?
 					OR coalesce(json_extract(w.before_pr, '$.ship_first'), 0) > 0)))
 		ORDER BY w.id DESC LIMIT 50`, now-strandedShipWindow.Milliseconds())
 	if err != nil {

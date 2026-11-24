@@ -65,7 +65,7 @@ func (s *Service) reviveHeldRounds(ctx context.Context) {
 		FROM work_log w JOIN issues i ON i.id = w.issue_id JOIN agent_sessions x ON x.id = w.session_id JOIN agent_runs r ON r.id = w.run_id
 		WHERE w.kind = 'review' AND w.state = 'pending' AND w.before_pr != '' AND w.created_at < ? AND x.ended_at IS NULL AND r.ended_at IS NULL
 			AND NOT EXISTS (SELECT 1 FROM autopilot_steps st WHERE st.review_id = w.id AND (st.state IN ('due', 'waiting', 'starting') OR st.updated_at > ?))
-			AND NOT EXISTS (SELECT 1 FROM agent_runs o WHERE o.session_id = w.session_id AND o.id > w.run_id AND o.issue_id != w.issue_id)
+			AND `+movedOnAt+` = 0
 		LIMIT 50`, now-heldStopLost.Milliseconds(), now-heldReviveEvery.Milliseconds())
 	if err != nil {
 		return
@@ -234,8 +234,8 @@ func (s *Service) shipRead(ctx context.Context, in shipRoundIn) (*shipRun, error
 	if reviewed {
 		// The run must still be open: a ship of the session's own ends it,
 		// and then there is nothing left for Waypoint to do.
-		var open bool
-		if err := s.db.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM agent_runs WHERE id = ? AND ended_at IS NULL)`, r.runID.Int64).Scan(&open); err != nil {
+		open, err := roundRunOpen(ctx, s.db.R, r.id)
+		if err != nil {
 			return nil, err
 		}
 		if !open {
