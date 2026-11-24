@@ -613,6 +613,12 @@ func roundRunOpen(ctx context.Context, q queryer, round int64) (open bool, err e
 const takenRun = `o.issue_id = w.issue_id AND o.ended_at IS NULL AND o.id != coalesce(w.run_id, 0)
 	AND (w.session_id IS NULL OR o.session_id IS NOT w.session_id)`
 
+// laterRunEnd is when the last later run on round w's task ended: a session
+// that held the task after the round and left without a ship. The round's
+// window counts from there too, so a hold that outlasts the window doesn't
+// drop the round unseen (shipSettledRounds filters by the same time).
+const laterRunEnd = `coalesce((SELECT max(o.ended_at) FROM agent_runs o WHERE o.issue_id = w.issue_id AND o.id > w.run_id), 0)`
+
 // takenWhy is decideEnded's reason for a Taken round.
 const takenWhy = "another session holds the task"
 
@@ -643,22 +649,23 @@ func (s *Service) takenText(ctx context.Context, r *roundRow) string {
 // request, whether its run is open or not.
 func (s *Service) endedFacts(ctx context.Context, r *roundRow, in *roundIn) error {
 	now := s.nowMS()
-	var updated, runEnd, sessEnd, moved int64
+	var updated, runEnd, sessEnd, moved, heldEnd int64
 	// moved: the session's first run on another task after the run that
 	// carries the round (its newest open one on this task, else the round's).
 	err := s.db.R.QueryRowContext(ctx, `SELECT w.updated_at, coalesce((SELECT ended_at FROM agent_runs WHERE id = w.run_id), 0),
 			coalesce((SELECT ended_at FROM agent_sessions WHERE id = w.session_id), 0),
 			coalesce((SELECT min(o.started_at) FROM agent_runs o WHERE o.session_id = w.session_id AND o.issue_id != w.issue_id AND o.id > coalesce(
 				(SELECT max(h.id) FROM agent_runs h WHERE h.issue_id = w.issue_id AND h.session_id = w.session_id AND h.ended_at IS NULL), w.run_id)), 0),
+			`+laterRunEnd+`,
 			i.resolved_at IS NOT NULL,
 			EXISTS (SELECT 1 FROM external_links l WHERE l.issue_id = w.issue_id AND l.kind = 'pull'),
 			w.id != (SELECT max(m.id) FROM work_log m WHERE m.kind = 'review' AND m.issue_id = w.issue_id),
 			EXISTS (SELECT 1 FROM agent_runs o WHERE `+takenRun+`)
-		FROM work_log w JOIN issues i ON i.id = w.issue_id WHERE w.id = ?`, r.id).Scan(&updated, &runEnd, &sessEnd, &moved, &in.Resolved, &in.Linked, &in.Newer, &in.Taken)
+		FROM work_log w JOIN issues i ON i.id = w.issue_id WHERE w.id = ?`, r.id).Scan(&updated, &runEnd, &sessEnd, &moved, &heldEnd, &in.Resolved, &in.Linked, &in.Newer, &in.Taken)
 	if err != nil {
 		return err
 	}
-	in.SinceEnd = time.Duration(max(now-max(updated, runEnd, sessEnd, moved), 0)) * time.Millisecond
+	in.SinceEnd = time.Duration(max(now-max(updated, runEnd, sessEnd, moved, heldEnd), 0)) * time.Millisecond
 	// A ship that has been failing counts its window from its first try:
 	// the end of the run says nothing of how long Waypoint has kept at it.
 	if bp := roundBeforePR(ctx, s.db.R, r.id); bp != nil && bp.ShipFirst != 0 && bp.ShipStop == "" {

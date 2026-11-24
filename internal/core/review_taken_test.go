@@ -3,6 +3,7 @@ package core
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 const takenWant = "another session holds the task"
@@ -221,5 +222,28 @@ func TestOpenRunOnAnotherTaskDoesNotTakeThisOne(t *testing.T) {
 	e.openRun(other.ID, e.otherSession())
 	if in := e.factsOf(r1); in.Taken || in.RunOpen {
 		t.Fatalf("Taken = %v, RunOpen = %v: a run on another task is not a holder of this one", in.Taken, in.RunOpen)
+	}
+}
+
+// Another session held the task for longer than Waypoint keeps trying, then
+// its run ended with no ship: the round's time counts from that end, so the
+// sweep still opens its pull request instead of dropping it unseen.
+func TestRoundHeldPastTheWindowShipsWhenTheHolderLeaves(t *testing.T) {
+	e := newLoopEnv(t, map[string]string{"": "critical", "fixes": "complete"})
+	r1 := e.fixedRound()
+	e.expireRun(r1)
+	e.openRun(e.task.ID, e.otherSession())
+	e.setClock(e.clockNow().Add(strandedShipWindow + time.Hour))
+	if out := decideRound(e.factsOf(r1)); out.Do != doNothing || out.Settled != takenWant {
+		t.Fatalf("decideRound = %+v: want the round left while the other session holds the task", out)
+	}
+	e.exec(`UPDATE agent_runs SET ended_at = ?, outcome = 'expired' WHERE issue_id = ? AND ended_at IS NULL`, e.clockNow().UnixMilli(), e.task.ID)
+	if out := decideRound(e.factsOf(r1)); out.Do != doReleaseAfterRunEnded {
+		t.Fatalf("decideRound = %+v: want the round opened once its holder left", out)
+	}
+	e.s.shipSettledRounds(e.ctx)
+	e.s.Wait()
+	if bp := e.bpOf(r1); bp == nil || !bp.ShipDone {
+		t.Fatalf("before_pr = %+v: want the sweep to have shipped the round", bp)
 	}
 }
