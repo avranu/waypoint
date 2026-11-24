@@ -92,7 +92,7 @@ export function BacklogPage() {
             )
           }
         />
-        <Sections project={project} data={data} filter={search.q ?? ''} editable={editable} />
+        <Sections project={project} data={data} filter={agentQ} editable={editable} />
       </div>
       <SprintDialog project={project} open={creating} onClose={() => setCreating(false)} />
     </div>
@@ -317,13 +317,13 @@ function Sections({
     }
     const idx = list.findIndex((i) => i.key === e.active.id)
     const issue = list[idx]
-    const moved = from !== sec || idx !== oldIdx
+    const moved = from !== sec || (data.manual_order && idx !== oldIdx)
+    if (!moved) return setLists(server)
     setLists({ ...base, [sec]: list })
-    if (!moved) return
     const sprint =
       sec === BACKLOG ? null : data.sprints.find((s) => sectionId(s.sprint) === sec)!.sprint
-    const after = list[idx - 1]?.key
-    const before = list[idx + 1]?.key
+    const after = data.manual_order ? list[idx - 1]?.key : undefined
+    const before = data.manual_order ? list[idx + 1]?.key : undefined
     qc.setQueryData<Backlog>(['backlog', project.key, filter], (b) =>
       b
         ? {

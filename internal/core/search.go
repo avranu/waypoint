@@ -838,9 +838,19 @@ type BoardColumn struct {
 
 // Board is a project's kanban board.
 type Board struct {
-	Mode    string        `json:"mode"`
-	Sprint  *Sprint       `json:"sprint"`
-	Columns []BoardColumn `json:"columns"`
+	Mode string `json:"mode"`
+	// ManualOrder is true when the cards are listed in manual rank, so a
+	// drop position says where the card's rank goes; under any other order:
+	// term it says nothing about rank.
+	ManualOrder bool          `json:"manual_order"`
+	Sprint      *Sprint       `json:"sprint"`
+	Columns     []BoardColumn `json:"columns"`
+}
+
+// manualOrder reports whether q lists issues in manual rank: no order: term,
+// or order:rank alone.
+func manualOrder(q wql.Query) bool {
+	return len(q.Order) == 0 || (len(q.Order) == 1 && q.Order[0].Field == "rank" && !q.Order[0].Desc)
 }
 
 // GetBoard returns the board: in sprint mode the active sprint's issues, in
@@ -856,6 +866,7 @@ func (s *Service) GetBoard(ctx context.Context, actor *Actor, projectRef, filter
 	if err != nil {
 		return nil, invalid("%s", err.Error())
 	}
+	b.ManualOrder = manualOrder(q)
 	c, err := s.compileQuery(ctx, actor, q, p.ID)
 	if err != nil {
 		return nil, err
@@ -932,10 +943,11 @@ type SprintIssues struct {
 
 // Backlog is the planning view.
 type Backlog struct {
-	Mode    string         `json:"mode"`
-	Sprints []SprintIssues `json:"sprints"`
-	Backlog []*Issue       `json:"backlog"`
-	Epics   []*Issue       `json:"epics"`
+	Mode        string         `json:"mode"`
+	ManualOrder bool           `json:"manual_order"`
+	Sprints     []SprintIssues `json:"sprints"`
+	Backlog     []*Issue       `json:"backlog"`
+	Epics       []*Issue       `json:"epics"`
 }
 
 // GetBacklog returns planned sprints and the unscheduled backlog. In kanban
@@ -949,7 +961,7 @@ func (s *Service) GetBacklog(ctx context.Context, actor *Actor, projectRef, filt
 	if err != nil {
 		return nil, invalid("%s", err.Error())
 	}
-	out := &Backlog{Mode: p.Settings.Mode, Sprints: []SprintIssues{}}
+	out := &Backlog{Mode: p.Settings.Mode, ManualOrder: manualOrder(q), Sprints: []SprintIssues{}}
 	run := func(extra string, args ...any) ([]*Issue, error) {
 		c, err := s.compileQuery(ctx, actor, q, p.ID)
 		if err != nil {

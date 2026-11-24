@@ -110,7 +110,7 @@ export function BoardPage() {
         </Empty>
       ) : (
         <NestContext.Provider value={folds}>
-          <Columns project={project} board={board} filter={search.q ?? ''} group={group} />
+          <Columns project={project} board={board} filter={agentQ} group={group} />
         </NestContext.Provider>
       )}
     </>
@@ -417,15 +417,15 @@ function Columns({
     const laneChanged = from.lane !== to.lane
     const lane = laneChanged ? lanePatch(to.lane) : { patch: {}, optimistic: {} }
     // Rank against neighbours in the same column (any lane), as the server sees one order.
-    const before = list[idx + 1]?.key
-    const after = list[idx - 1]?.key
-    const moved = statusChanged || laneChanged || oldIdx !== idx
+    const before = board.manual_order ? list[idx + 1]?.key : undefined
+    const after = board.manual_order ? list[idx - 1]?.key : undefined
+    const moved = statusChanged || laneChanged || (board.manual_order && oldIdx !== idx)
     const next = {
       ...base,
       [cell]: list.map((i) => (i.key === issue.key ? { ...i, status, ...lane.optimistic } : i)),
     }
+    if (!moved) return setCells(fromServer)
     setCells(next)
-    if (!moved) return
     // Reflect immediately in the cache so the board doesn't flicker back.
     qc.setQueryData<Board>(['board', project.key, filter], (b) =>
       b

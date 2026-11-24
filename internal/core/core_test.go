@@ -1473,3 +1473,24 @@ func TestFindProjects(t *testing.T) {
 		t.Errorf("repo-only: %v", ps)
 	}
 }
+
+func TestBoardManualOrder(t *testing.T) {
+	e := newEnv(t)
+	p, err := e.s.CreateProject(e.ctx, e.admin, ProjectInput{Name: str("Order"), Key: str("ORD")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for q, want := range map[string]bool{
+		"": true, "label:x": true, "order:rank": true,
+		"order:-rank": false, "order:-priority": false, "sort:priority": false, "order:rank,priority": false,
+	} {
+		b, err := e.s.GetBoard(e.ctx, e.admin, p.Key, q)
+		if err != nil || b.ManualOrder != want {
+			t.Errorf("board %q: manual order = %v, %v; want %v", q, b != nil && b.ManualOrder, err, want)
+		}
+		bl, err := e.s.GetBacklog(e.ctx, e.admin, p.Key, q)
+		if err != nil || bl.ManualOrder != want {
+			t.Errorf("backlog %q: manual order = %v, %v; want %v", q, bl != nil && bl.ManualOrder, err, want)
+		}
+	}
+}

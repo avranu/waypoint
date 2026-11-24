@@ -828,12 +828,15 @@ export interface BoardColumn {
 
 export interface Board {
   mode: 'kanban' | 'sprints'
+  /** False under an order: term other than rank: drop positions say nothing about rank. */
+  manual_order: boolean
   sprint: Sprint | null
   columns: BoardColumn[]
 }
 
 export interface Backlog {
   mode: 'kanban' | 'sprints'
+  manual_order: boolean
   sprints: { sprint: Sprint; issues: Issue[] }[]
   backlog: Issue[]
   epics: Issue[]
