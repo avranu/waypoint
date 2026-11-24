@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"slices"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -171,32 +171,9 @@ func TestAutoUpdateIfBehindEndToEnd(t *testing.T) {
 // someCmd stands for any ordinary command.
 var someCmd = &command{name: "ls"}
 
-// A job's wp must not upgrade on a runner that opted out (WP-1773): the
-// runner's own switches reach the job as WAYPOINT_NO_AUTO_UPDATE.
-func TestJobEnvCarriesTheRunnersUpdateOptOut(t *testing.T) {
-	has := func(env []string) bool { return slices.Contains(env, "WAYPOINT_NO_AUTO_UPDATE=1") }
-	for name, tc := range map[string]struct {
-		opts runnerOpts
-		env  string
-		want bool
-	}{
-		"updating":         {runnerOpts{}, "", false},
-		"--no-auto-update": {runnerOpts{NoAutoUpdate: true}, "", true},
-		"--once":           {runnerOpts{Once: true}, "", true},
-		"the runner's env": {runnerOpts{}, "1", true},
-	} {
-		t.Run(name, func(t *testing.T) {
-			t.Setenv("WAYPOINT_NO_AUTO_UPDATE", tc.env)
-			p := &runnerProc{opts: tc.opts}
-			if got := has(p.updateOptOutEnv()); got != tc.want {
-				t.Fatalf("opt-out env = %v, want %v", p.updateOptOutEnv(), tc.want)
-			}
-			if got := has(runnerSelfEnv(nil, p.updateOptOutEnv()...)); got != tc.want {
-				t.Fatalf("command job env lacks it: %v", runnerSelfEnv(nil, p.updateOptOutEnv()...))
-			}
-		})
-	}
-	// With it set, the job's wp stays quiet.
+// A wp that has the opt-out in its environment (a runner's child gets it, see
+// update_optout_test.go) stays quiet.
+func TestOptOutEnvKeepsAWpCommandQuiet(t *testing.T) {
 	cliServer(t, "v1.2.0", "v1.2.0", false)
 	b := newBehindEnv(t)
 	setVersion(t, "v1.1.0")
@@ -237,8 +214,80 @@ func TestSelfUpdateSkipsTheDownloadWhenTheDiskHasIt(t *testing.T) {
 	}
 	// --force with the running version still downloads (here: fails for want of a server).
 	setVersion(t, "v1.2.0")
-	if _, _, err := c.selfUpdate(context.Background(), "v1.2.0"); err == nil {
-		t.Fatal("a binary equal to the running one was taken as already updated")
+	// The error must be the missing download, not any other.
+	if _, _, err := c.selfUpdate(context.Background(), "v1.2.0"); err == nil || !strings.Contains(err.Error(), "no server set") {
+		t.Fatalf("a binary equal to the running one was taken as already updated, or failed otherwise: %v", err)
+	}
+}
+
+// A runnable binary on disk that reports another release than the wanted one
+// is replaced: only the wanted release skips the download.
+func TestSelfUpdateDownloadsWhenTheDiskHasAnotherRelease(t *testing.T) {
+	cliServer(t, "v1.2.0", "v1.2.0", false)
+	setVersion(t, "v1.1.0")
+	exe := installedWP(t)
+	_ = os.WriteFile(exe, []byte("#!/bin/sh\necho 'wp v1.0.5'\n"), 0o755)
+	c, _ := newCLI(io.Discard, io.Discard)
+	got, path, err := c.selfUpdate(context.Background(), "v1.2.0")
+	if err != nil || got != "v1.2.0" || path != exe {
+		t.Fatalf("got %q %q %v", got, path, err)
+	}
+	if b, _ := os.ReadFile(exe); !strings.Contains(string(b), "wp v1.2.0") {
+		t.Fatalf("not downloaded: %q", b)
+	}
+}
+
+// An error answer names the server's version too, and a command that fails
+// still starts the upgrade.
+func TestErrorAnswerCarryingTheVersionStartsTheUpgrade(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Waypoint-Version", "v1.2.0")
+		http.Error(w, `{"error":"boom"}`, http.StatusInternalServerError)
+	}))
+	defer ts.Close()
+	t.Setenv("WAYPOINT_CONFIG_DIR", t.TempDir())
+	t.Setenv("WAYPOINT_SERVER", ts.URL)
+	t.Setenv("WAYPOINT_TOKEN", "tok")
+	t.Setenv("WAYPOINT_NO_AUTO_UPDATE", "")
+	b := newBehindEnv(t)
+	setVersion(t, "v1.1.0")
+	c, _ := newCLI(io.Discard, io.Discard)
+	if _, err := c.call("GET", "/api/v1/whoami", nil); err == nil {
+		t.Fatal("no error")
+	}
+	if v, _ := c.sawVersion.Load().(string); v != "v1.2.0" {
+		t.Fatalf("a 500 answer's version wasn't seen: %q", v)
+	}
+	var out bytes.Buffer
+	if code := run([]string{"ls"}, &out, &out); code == 0 {
+		t.Fatalf("the command should fail:\n%s", out.String())
+	}
+	if b.count() != 1 {
+		t.Fatalf("a failing command started %v", b.started)
+	}
+}
+
+// A hook must not wait for the state lock for long: a claim that can't be
+// taken in time is dropped (the next command tries again).
+func TestClaimDoesNotWaitLongForTheStateLock(t *testing.T) {
+	cliServer(t, "v1.2.0", "v1.2.0", false)
+	b := newBehindEnv(t)
+	setVersion(t, "v1.1.0")
+	c, _ := newCLI(io.Discard, io.Discard)
+	unlock, err := lockFileWithin(filepath.Join(c.dir, "state.lock"), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	c.seeServerVersion("v1.2.0")
+	c.cur = someCmd
+	start := time.Now()
+	c.autoUpdateIfBehind()
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("waited %v for the lock", d)
+	}
+	if b.count() != 0 {
+		t.Fatalf("started without the claim: %v", b.started)
 	}
 }
 

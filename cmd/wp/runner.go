@@ -168,6 +168,10 @@ func runRunner(ctx context.Context, c *cli, o runnerOpts) error {
 	if err := passJobEnv(o.Env); err != nil {
 		return c.usage("%v", err)
 	}
+	if o.NoAutoUpdate || o.Once {
+		// Every child gets it through jobEnvKeeps, so its wp stays as it is too.
+		_ = os.Setenv(updateOptOutVar, "1")
+	}
 	host, _ := os.Hostname()
 	if o.Name == "" {
 		o.Name = machineName() // what sessions report, so requests find this runner
@@ -482,6 +486,7 @@ func (p *runnerProc) run(ctx context.Context, reportStop context.CancelFunc) err
 		p.watchLoad(ctx)
 	}
 
+	defer p.stopUpdate()
 	delay := time.Second
 	var err error
 	for ctx.Err() == nil {
@@ -590,16 +595,6 @@ func (p *runnerProc) updateAllowed() bool {
 	return !p.opts.NoAutoUpdate && !p.opts.Once && !autoUpdateOff() && sv != version && isRelease(sv) && isRelease(version)
 }
 
-// updateOptOutEnv is what a job's environment carries when this runner
-// doesn't update (--no-auto-update, --once or WAYPOINT_NO_AUTO_UPDATE): the
-// wp the job runs must not either.
-func (p *runnerProc) updateOptOutEnv() []string {
-	if p.opts.NoAutoUpdate || p.opts.Once || autoUpdateOff() {
-		return []string{"WAYPOINT_NO_AUTO_UPDATE=1"}
-	}
-	return nil
-}
-
 // updateDue: updateAllowed, and the binary isn't updated to it yet (a failed
 // try is repeated after 6 hours).
 func (p *runnerProc) updateDue() bool {
@@ -611,6 +606,7 @@ func (p *runnerProc) updateDue() bool {
 type updateResult struct {
 	sv, got, exe string
 	err          error
+	interrupted  bool // the runner was stopping: not a failure
 }
 
 // updateStep is the runner's update logic, once per loop. It replaces the
@@ -628,16 +624,18 @@ func (p *runnerProc) updateStep(ctx context.Context) (restart string) {
 	}
 	sv := p.serverVersion
 	active := len(p.activeIDs())
-	if p.updatedTo == sv {
+	// The wp on disk is ready to restart on when it is the server's, or when
+	// a newer download isn't running or due (it failed, inside its backoff).
+	if ready := p.updatedTo; ready == sv || (ready != "" && !p.updating && !p.updateDue()) {
 		if active == 0 {
-			p.logf("Restarting on wp %s at %s.", sv, p.updatedExe)
+			p.logf("Restarting on wp %s at %s.", ready, p.updatedExe)
 			return p.updatedExe
 		}
 		if p.clock().Sub(p.updatedAt) >= runnerDrainAfter {
 			p.draining = true
-			if p.drainLoggedFor != sv {
-				p.drainLoggedFor = sv
-				p.logf("Waiting to restart on wp %s since %s: taking no new jobs until the %d running finish, then restarting on wp %s.", sv, p.updatedAt.Format("15:04"), active, sv)
+			if p.drainLoggedFor != ready {
+				p.drainLoggedFor = ready
+				p.logf("Waiting to restart on wp %s since %s: taking no new jobs until the %d running finish, then restarting on wp %s.", ready, p.updatedAt.Format("15:04"), active, ready)
 			}
 		}
 		return ""
@@ -675,8 +673,11 @@ func (p *runnerProc) collectUpdate() {
 		p.finishUpdate(res)
 		if res.err == nil {
 			p.updatedTo, p.updatedExe, p.updatedAt = res.sv, res.exe, p.clock()
-			n := len(p.activeIDs())
-			p.logf("Updated %s to wp %s; this runner restarts on it when its %d job%s %s.", res.exe, res.sv, n, pluralS(n), pluralWord(n, "finishes", "finish"))
+			if n := len(p.activeIDs()); n == 0 {
+				p.logf("Updated %s to wp %s; this runner restarts on it now.", res.exe, res.sv)
+			} else {
+				p.logf("Updated %s to wp %s; this runner restarts on it when its %d job%s %s.", res.exe, res.sv, n, pluralS(n), pluralWord(n, "finishes", "finish"))
+			}
 		}
 	default:
 	}
@@ -699,15 +700,18 @@ func (p *runnerProc) download(ctx context.Context, sv string) updateResult {
 		fn = p.c.selfUpdate
 	}
 	got, exe, err := fn(ctx, sv)
-	return updateResult{sv: sv, got: got, exe: exe, err: err}
+	return updateResult{sv: sv, got: got, exe: exe, err: err, interrupted: err != nil && ctx.Err() != nil}
 }
 
-// finishUpdate records how a download ended.
+// finishUpdate records how a download ended. One cut short by the runner
+// stopping is no failure: it only gives up its claim.
 func (p *runnerProc) finishUpdate(res updateResult) {
+	if res.interrupted {
+		p.c.releaseUpdateClaim(res.sv)
+		return
+	}
 	if res.err != nil {
-		if p.stopCtx == nil || p.stopCtx.Err() == nil {
-			p.logf("Couldn't update wp: %v. Carrying on with %s; trying again in 6 hours.", res.err, version)
-		}
+		p.logf("Couldn't update wp: %v. Carrying on with %s; trying again in 6 hours.", res.err, version)
 		p.c.recordUpdate(res.sv, "failed: "+res.err.Error(), false)
 		return
 	}
@@ -1035,5 +1039,13 @@ func (p *runnerProc) finish(id int64, o outcome) {
 			return
 		}
 		delay = min(delay*2, 30*time.Second)
+	}
+}
+
+// stopUpdate runs when the loop ends: a download still running was cut
+// short, so its claim in the shared record goes, and wp commands may try.
+func (p *runnerProc) stopUpdate() {
+	if p.updating {
+		p.c.releaseUpdateClaim(p.updateTriedFor)
 	}
 }

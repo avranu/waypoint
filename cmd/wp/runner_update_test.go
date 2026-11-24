@@ -356,3 +356,238 @@ func TestRunLoopUpdatesDrainsAndRestarts(t *testing.T) {
 		t.Fatalf("no restart after the job ended\n%s", out.String())
 	}
 }
+
+// record is the shared state file's update record, as another wp would read it.
+func (u *updRunner) record() *updateCheck {
+	u.t.Helper()
+	c, err := newCLI(io.Discard, io.Discard)
+	if err != nil {
+		u.t.Fatal(err)
+	}
+	return c.state.Update
+}
+
+// The newer binary on disk is used even when the download for a still newer
+// release fails (1642.1): the runner restarts on what it has.
+func TestFailedFollowUpDownloadStillRestartsOnTheBinaryOnDisk(t *testing.T) {
+	e := cliServer(t, "v1.3.0", "v1.3.0", false)
+	u := newUpdRunner(t, e, "v1.3.0")
+	u.p.updatedTo, u.p.updatedExe, u.p.updatedAt = "v1.2.0", u.exe, u.now // installed earlier
+	u.p.downloadFn = func(ctx context.Context, want string) (string, string, error) {
+		return "", "", errors.New("no route")
+	}
+	u.busy(1)
+	if exe, drain := u.step(); exe != "" || drain {
+		t.Fatalf("busy: restart %q drain %v", exe, drain)
+	}
+	if !strings.Contains(u.out.String(), "Couldn't update wp") {
+		t.Fatalf("log:\n%s", u.out.String())
+	}
+	// Failed try inside the backoff: no new download, but v1.2.0 is on disk.
+	u.p.downloadFn = func(context.Context, string) (string, string, error) {
+		t.Error("downloaded again inside the backoff")
+		return "", "", errors.New("again")
+	}
+	u.now = u.now.Add(runnerDrainAfter + time.Minute)
+	if exe, drain := u.step(); exe != "" || !drain {
+		t.Fatalf("after the limit: restart %q drain %v", exe, drain)
+	}
+	if !strings.Contains(u.out.String(), "restarting on wp v1.2.0") || strings.Contains(u.out.String(), "wp v1.3.0 since") {
+		t.Errorf("the drain line must name the version on disk:\n%s", u.out.String())
+	}
+	u.busy(0)
+	if exe, _ := u.step(); exe != u.exe {
+		t.Fatalf("idle: restart %q", exe)
+	}
+	if !strings.Contains(u.out.String(), "Restarting on wp v1.2.0 at "+u.exe) {
+		t.Errorf("log:\n%s", u.out.String())
+	}
+}
+
+// Idle, the failed follow-up download is followed at once by the restart.
+func TestIdleFailedFollowUpDownloadThenRestartsOnDisk(t *testing.T) {
+	e := cliServer(t, "v1.3.0", "v1.3.0", false)
+	u := newUpdRunner(t, e, "v1.3.0")
+	u.p.updatedTo, u.p.updatedExe, u.p.updatedAt = "v1.2.0", u.exe, u.now
+	u.p.downloadFn = func(context.Context, string) (string, string, error) { return "", "", errors.New("no route") }
+	if exe, _ := u.step(); exe != "" {
+		t.Fatalf("the failed pass restarted on %q", exe)
+	}
+	if exe, _ := u.step(); exe != u.exe {
+		t.Fatalf("next pass: restart %q", exe)
+	}
+}
+
+// A download that finishes after the server moved on is followed by another.
+func TestDownloadThatFinishesAfterTheServerMovedOnIsFollowedByAnother(t *testing.T) {
+	e := cliServer(t, "v1.2.0", "v1.2.0", false)
+	u := newUpdRunner(t, e, "v1.2.0")
+	release := make(chan struct{})
+	var wants []string
+	var mu sync.Mutex
+	u.p.downloadFn = func(ctx context.Context, want string) (string, string, error) {
+		mu.Lock()
+		wants = append(wants, want)
+		first := len(wants) == 1
+		mu.Unlock()
+		if first {
+			<-release
+		}
+		return want, u.exe, nil
+	}
+	u.busy(1)
+	u.p.updateStep(context.Background())
+	u.p.serverVersion = "v1.3.0" // the server moves on mid-download
+	close(release)
+	waitFor(t, "the second download", 5*time.Second, func() bool {
+		u.p.updateStep(context.Background())
+		mu.Lock()
+		defer mu.Unlock()
+		return len(wants) == 2
+	})
+	if wants[1] != "v1.3.0" {
+		t.Fatalf("downloads %v", wants)
+	}
+}
+
+func TestInterruptedIdleDownloadIsNoFailureAndReleasesTheClaim(t *testing.T) {
+	e := cliServer(t, "v1.2.0", "v1.2.0", false)
+	u := newUpdRunner(t, e, "v1.2.0")
+	ctx, cancel := context.WithCancel(context.Background())
+	u.p.downloadFn = func(ctx context.Context, want string) (string, string, error) {
+		if rec := u.record(); rec == nil || rec.Result != "started" {
+			t.Errorf("no claim during the download: %+v", rec)
+		}
+		cancel() // the runner is stopping
+		return "", "", context.Canceled
+	}
+	if exe := u.p.updateStep(ctx); exe != "" {
+		t.Fatalf("restart %q", exe)
+	}
+	if strings.Contains(u.out.String(), "Couldn't update") || strings.Contains(u.out.String(), "6 hours") {
+		t.Errorf("an interrupted download was reported as a failure:\n%s", u.out.String())
+	}
+	if rec := u.record(); rec != nil {
+		t.Errorf("the record = %+v, want the claim released", rec)
+	}
+}
+
+func TestIdleDownloadFailureIsLoggedAndRecorded(t *testing.T) {
+	e := cliServer(t, "v1.2.0", "v1.2.0", false)
+	u := newUpdRunner(t, e, "v1.2.0")
+	u.p.downloadFn = func(context.Context, string) (string, string, error) { return "", "", errors.New("bad checksum") }
+	if exe := u.p.updateStep(context.Background()); exe != "" {
+		t.Fatalf("restart %q", exe)
+	}
+	if !strings.Contains(u.out.String(), "Couldn't update wp: bad checksum. Carrying on with v1.1.0; trying again in 6 hours.") {
+		t.Errorf("log:\n%s", u.out.String())
+	}
+	if rec := u.record(); rec == nil || rec.Server != "v1.2.0" || rec.Result != "failed: bad checksum" {
+		t.Errorf("record = %+v", rec)
+	}
+}
+
+func TestIdleDownloadSuccessIsRecorded(t *testing.T) {
+	e := cliServer(t, "v1.2.0", "v1.2.0", false)
+	u := newUpdRunner(t, e, "v1.2.0")
+	if exe := u.p.updateStep(context.Background()); exe != u.exe {
+		t.Fatalf("restart %q", exe)
+	}
+	if rec := u.record(); rec == nil || rec.Result != "updated from v1.1.0 to v1.2.0" {
+		t.Errorf("record = %+v", rec)
+	}
+}
+
+// A runner that stops while a busy download runs leaves no claim that would
+// keep every wp command from updating for 6 hours.
+func TestStoppingDuringABusyDownloadReleasesTheClaim(t *testing.T) {
+	e := cliServer(t, "v1.2.0", "v1.2.0", false)
+	u := newUpdRunner(t, e, "v1.2.0")
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	u.p.downloadFn = func(ctx context.Context, want string) (string, string, error) {
+		close(started)
+		<-ctx.Done()
+		return "", "", ctx.Err()
+	}
+	u.busy(1)
+	u.p.updateStep(ctx)
+	<-started
+	if rec := u.record(); rec == nil || rec.Result != "started" {
+		t.Fatalf("no claim: %+v", rec)
+	}
+	cancel()
+	u.p.stopUpdate()
+	if rec := u.record(); rec != nil {
+		t.Errorf("record = %+v, want the claim released", rec)
+	}
+	if strings.Contains(u.out.String(), "Couldn't update") {
+		t.Errorf("log:\n%s", u.out.String())
+	}
+}
+
+func TestReleaseUpdateClaimLeavesOtherRecordsAlone(t *testing.T) {
+	cliServer(t, "v1.2.0", "v1.2.0", false)
+	c, _ := newCLI(io.Discard, io.Discard)
+	for name, rec := range map[string]*updateCheck{
+		"another version": {Server: "v1.3.0", Result: "started"},
+		"a result":        {Server: "v1.2.0", Result: "failed: x"},
+	} {
+		c.recordUpdate(rec.Server, rec.Result, true)
+		c.releaseUpdateClaim("v1.2.0")
+		if c.state.Update == nil {
+			t.Errorf("%s: released", name)
+		}
+	}
+	c.recordUpdate("v1.2.0", "started", true)
+	c.releaseUpdateClaim("v1.2.0")
+	if c.state.Update != nil {
+		t.Errorf("claim kept: %+v", c.state.Update)
+	}
+}
+
+func TestCollectUpdateWithNoJobsSaysItRestartsNow(t *testing.T) {
+	e := cliServer(t, "v1.2.0", "v1.2.0", false)
+	u := newUpdRunner(t, e, "v1.2.0")
+	u.p.updating = true
+	u.p.updateDone = make(chan updateResult, 1)
+	u.p.updateDone <- updateResult{sv: "v1.2.0", got: "v1.2.0", exe: u.exe}
+	u.p.collectUpdate()
+	out := u.out.String()
+	if strings.Contains(out, "0 jobs") || !strings.Contains(out, "restarts on it now.") {
+		t.Errorf("log:\n%s", out)
+	}
+}
+
+func TestUpdateAllowed(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		local, server string
+		opts          runnerOpts
+		env           string
+		want          bool
+	}{
+		{"a newer release", "v1.1.0", "v1.2.0", runnerOpts{}, "", true},
+		{"an older release", "v1.1.0", "v1.0.0", runnerOpts{}, "", true},
+		{"equal versions", "v1.1.0", "v1.1.0", runnerOpts{}, "", false},
+		{"dev build", "dev", "v1.2.0", runnerOpts{}, "", false},
+		{"dirty build", "v1.1.0-dirty", "v1.2.0", runnerOpts{}, "", false},
+		{"between tags", "v1.1.0-3-gabc1234", "v1.2.0", runnerOpts{}, "", false},
+		{"no server version", "v1.1.0", "", runnerOpts{}, "", false},
+		{"a dev server", "v1.1.0", "dev", runnerOpts{}, "", false},
+		{"a non-release server", "v1.1.0", "v1.2.0-1-gabc1234", runnerOpts{}, "", false},
+		{"--no-auto-update", "v1.1.0", "v1.2.0", runnerOpts{NoAutoUpdate: true}, "", false},
+		{"--once", "v1.1.0", "v1.2.0", runnerOpts{Once: true}, "", false},
+		{"WAYPOINT_NO_AUTO_UPDATE", "v1.1.0", "v1.2.0", runnerOpts{}, "1", false},
+		{"WAYPOINT_NO_AUTO_UPDATE=0", "v1.1.0", "v1.2.0", runnerOpts{}, "0", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setVersion(t, tc.local)
+			t.Setenv("WAYPOINT_NO_AUTO_UPDATE", tc.env)
+			p := &runnerProc{opts: tc.opts, serverVersion: tc.server}
+			if got := p.updateAllowed(); got != tc.want {
+				t.Fatalf("updateAllowed = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

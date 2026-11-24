@@ -140,7 +140,9 @@ func (c *cli) serverVersion(ctx context.Context) (string, error) {
 // selfUpdate puts the server's wp for this computer in place of this one,
 // once it has checked the download against SHA256SUMS and run it, and it
 // said it is version want (when want isn't empty). It returns the new
-// version and the path it replaced.
+// version and the path it replaced. When the binary at that path already
+// reports version want (another process replaced it), it returns at once,
+// without downloading or checking SHA256SUMS.
 func (c *cli) selfUpdate(ctx context.Context, want string) (got, exe string, err error) {
 	exe, err = selfExe()
 	if err != nil {
@@ -381,6 +383,9 @@ func (c *cli) autoUpdateIfBehind() {
 	})
 }
 
+// claimWait is how long a claim waits for the state lock.
+const claimWait = 500 * time.Millisecond
+
 // claimAutoUpdate starts the background upgrade when due says so of the
 // state file's record, which is claimed (checked now, Result "started", for
 // server version seen when it is known) so wp processes that run during the
@@ -394,7 +399,9 @@ func (c *cli) claimAutoUpdate(seen string, due func(*updateCheck) bool) {
 		return
 	}
 	claimed := false
-	_ = c.updateState(func(s *State) {
+	// A hook may be cut short (SessionEnd gets 2 s): a missed claim is
+	// harmless, the next command tries again.
+	_ = c.updateStateWithin(claimWait, func(s *State) {
 		if !due(s.Update) {
 			return
 		}
@@ -419,4 +426,15 @@ var backgroundStart = func(exe string, args ...string) {
 	if cmd.Start() == nil {
 		_ = cmd.Process.Release()
 	}
+}
+
+// releaseUpdateClaim removes the claim of a try for server version sv that
+// was cut short (the runner stopped), so a wp command may start it again at
+// once. A record of any other version, or with a result, stays.
+func (c *cli) releaseUpdateClaim(sv string) {
+	_ = c.updateState(func(s *State) {
+		if u := s.Update; u != nil && u.Server == sv && u.Result == "started" {
+			s.Update = nil
+		}
+	})
 }

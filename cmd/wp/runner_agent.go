@@ -419,7 +419,7 @@ func (p *runnerProc) execAgent(ctx context.Context, run *jobRun, kind string, in
 	defer stop(nil)
 	cmd := procCommand(runCtx, path, drv.args...)
 	cmd.Dir = work
-	cmd.Env = append(append(jobEnv(os.Environ(), drv.env, drv.keepKeys), p.jobTokenEnv(run, in)...), p.updateOptOutEnv()...)
+	cmd.Env = append(jobEnv(os.Environ(), drv.env, drv.keepKeys), p.jobTokenEnv(run, in)...)
 	cmd.Env = append(cmd.Env, clock.env()...)
 	if drv.stdin != "" {
 		cmd.Stdin = strings.NewReader(drv.stdin)
