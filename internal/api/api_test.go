@@ -262,6 +262,35 @@ func TestLoginLockoutIsPerAddress(t *testing.T) {
 	}
 }
 
+// Username, email and any capitalisation of them are one account, in both
+// the per-address count and the account-wide one.
+func TestLoginNamesShareOneCount(t *testing.T) {
+	names := []string{"robin", "j@example.com", "ROBIN", "J@Example.com"}
+	post := func(ts *httptest.Server, ip, login string) int {
+		c := &client{t: t, base: ts.URL, web: true, http: &http.Client{Transport: &fromAddr{ip}}}
+		code, _ := c.do("POST", "/api/v1/auth/login", map[string]any{"login": login, "password": "wrong password"})
+		return code
+	}
+	pair := loginServer(t, func(s *Server) { s.userAddrLimiter = newRateLimiter(4, 10*time.Minute) })
+	for _, l := range names {
+		if code := post(pair, "198.51.100.7", l); code != 400 {
+			t.Fatalf("%s: %d", l, code)
+		}
+	}
+	if code := post(pair, "198.51.100.7", "robin"); code != 429 {
+		t.Errorf("one address after four wrong tries by either name: %d", code)
+	}
+	wide := loginServer(t, func(s *Server) { s.userLimiter = newRateLimiter(4, 10*time.Minute) })
+	for n, l := range names {
+		if code := post(wide, fmt.Sprintf("192.0.2.%d", n+1), l); code != 400 {
+			t.Fatalf("%s: %d", l, code)
+		}
+	}
+	if code := post(wide, "192.0.2.99", "j@example.com"); code != 429 {
+		t.Errorf("a new address after four wrong tries by either name: %d", code)
+	}
+}
+
 func TestCanonicalIP(t *testing.T) {
 	for in, want := range map[string]string{"::ffff:192.0.2.1": "192.0.2.1", "2001:DB8::1": "2001:db8::1", "192.0.2.1": "192.0.2.1", "junk": "junk"} {
 		if got := canonicalIP(in); got != want {

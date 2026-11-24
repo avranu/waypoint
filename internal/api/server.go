@@ -731,30 +731,50 @@ func queryBool(r *http.Request, name string) bool {
 
 // ---- rate limiting ----
 
-// loginBlocked reports whether a password attempt for login from ip is
+// loginAcct is the account a password attempt counts against: its id when
+// the login names one, so username, email and any capitalisation share one
+// count, or else the lowercased login itself.
+type loginAcct struct {
+	key string
+	id  int64
+}
+
+func userAcct(id int64) loginAcct { return loginAcct{key: "id:" + strconv.FormatInt(id, 10), id: id} }
+
+// loginAccount resolves a sign-in login to the account it counts against.
+func (s *Server) loginAccount(ctx context.Context, login string) (loginAcct, error) {
+	id, err := s.svc.LoginAccountID(ctx, login)
+	if err != nil {
+		return loginAcct{}, fmt.Errorf("looking up the account: %w", err)
+	}
+	if id != 0 {
+		return userAcct(id), nil
+	}
+	return loginAcct{key: "name:" + strings.ToLower(strings.TrimSpace(login))}, nil
+}
+
+// loginBlocked reports whether a password attempt for acct from ip is
 // refused. The account-wide limit guards against a guesser rotating
 // addresses; it spares an address the account already signed in from.
 // An error looking for that session is returned, not taken as a yes or no.
-func (s *Server) loginBlocked(ctx context.Context, login, ip string) (bool, error) {
-	login = strings.ToLower(strings.TrimSpace(login))
-	if s.limiter.blocked("login:"+ip) || s.userAddrLimiter.blocked("login-user:"+login+"|"+ip) {
+func (s *Server) loginBlocked(ctx context.Context, acct loginAcct, ip string) (bool, error) {
+	if s.limiter.blocked("login:"+ip) || s.userAddrLimiter.blocked("login-user:"+acct.key+"|"+ip) {
 		return true, nil
 	}
-	if !s.userLimiter.blocked("login-user:" + login) {
+	if !s.userLimiter.blocked("login-user:" + acct.key) {
 		return false, nil
 	}
-	spared, err := s.svc.SignedInFrom(ctx, login, ip)
+	spared, err := s.svc.SignedInFrom(ctx, acct.id, ip)
 	if err != nil {
 		return false, fmt.Errorf("checking for a session from this address: %w", err)
 	}
 	return !spared, nil
 }
 
-func (s *Server) loginFailed(login, ip string) {
-	login = strings.ToLower(strings.TrimSpace(login))
+func (s *Server) loginFailed(acct loginAcct, ip string) {
 	s.limiter.hit("login:" + ip)
-	s.userLimiter.hit("login-user:" + login)
-	s.userAddrLimiter.hit("login-user:" + login + "|" + ip)
+	s.userLimiter.hit("login-user:" + acct.key)
+	s.userAddrLimiter.hit("login-user:" + acct.key + "|" + ip)
 }
 
 type rateLimiter struct {
