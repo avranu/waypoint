@@ -176,8 +176,8 @@ func TestDriftGuardFootprintCheck(t *testing.T) {
 	if err != nil || a.Purpose != AuditFootprint || a.Target != "pr" {
 		t.Fatalf("audit = %+v %v", a, err)
 	}
-	// The default chain (the gateway's audit model), not Claude Opus (WP-867).
-	if !slices.Equal(a.Models, auditModelNames([]AgentModel{{CLI: GatewayCLI, Model: gatewayAuditModel}})) {
+	// The default chain (Grok through Cursor, then the gateway's audit model), not Claude Opus (WP-867).
+	if !slices.Equal(a.Models, auditModelNames([]AgentModel{{CLI: "cursor", Model: "grok-4.7-high"}, {CLI: "cursor", Model: "grok-4.7-medium"}, {CLI: GatewayCLI, Model: gatewayAuditModel}})) {
 		t.Errorf("the check's models = %v", a.Models)
 	}
 	for _, want := range []string{"Check this pull request's footprint", "app/xlsx.go", "Task " + be.p.Key + "-", "+bounded the table", "only scope"} {

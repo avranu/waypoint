@@ -19,13 +19,12 @@ import (
 // that model's findings to check and fix instead of asking it for a review of
 // its own, which spends Claude tokens on a Sonnet reviewer.
 //
-// The audit is the gateway's to run (WP-617, WP-ADR84; WP-871): the
-// round asks its audit purpose and nothing else (defaultAuditChain). The
-// gateway chooses the model, moves to its next when one fails, knows which of
-// its upstreams has usage left, and leaves out the session's family. A round
-// calls no coding plan's CLI itself and keeps no order of models behind the
-// gateway: Grok is the gateway's to serve as the audit purpose's first
-// choice.
+// The round asks the default audit (defaultAuditChain): Grok through Cursor
+// on a runner first (WP-1725, WP-ADR155), then the gateway's audit purpose
+// (WP-617, WP-ADR84; WP-871). Behind its purpose the gateway chooses the
+// model, moves to its next when one fails, knows which of its upstreams has
+// usage left, and leaves out the session's family; a round keeps no order of
+// models behind the gateway.
 //
 // When the gateway's audit can't be had (it failed, no runner that could
 // send it was online for reviewAuditQueueWait, or it ran past
@@ -455,7 +454,9 @@ func (s *Service) planReview(ctx context.Context, st *stepRow, review *roundRow,
 	if err != nil {
 		return reviewPlan{}, err
 	}
-	tried := slices.Equal(a.Models, auditModelNames(s.defaultAuditChain(ctx))) && a.Weakest == stakes.barFor(reviewOtherAuditKey)
+	// (Every model of today's default among the audit's, in whatever company:
+	// one a person named the gateway and another model for hasn't asked Grok.)
+	tried := a.Weakest == stakes.barFor(reviewOtherAuditKey) && !slices.ContainsFunc(auditModelNames(s.defaultAuditChain(ctx)), func(m string) bool { return !slices.Contains(a.Models, m) })
 	who := reviewAuditWho(a)
 	switch a.Status {
 	case AuditDone:
@@ -560,7 +561,7 @@ func (s *Service) planReview(ctx context.Context, st *stepRow, review *roundRow,
 		why := fmt.Sprintf("%s audit #%d ended %s", upperFirst(who), a.ID, a.Status)
 		if a.Status == AuditLimited {
 			why = fmt.Sprintf("%s audit #%d stopped at a usage limit", upperFirst(who), a.ID)
-			if grokAudit(a) {
+			if cursorSpent(a) {
 				why += " (the Cursor plan's pool)"
 			}
 		}
@@ -1047,12 +1048,32 @@ func reviewAuditWho(a *CodeAudit) string {
 }
 
 // grokAudit: the audit is one Cursor runs or ran: one a person named Cursor
-// for, one asked before WP-871, or any on a Waypoint with no gateway.
+// for, one asked before WP-871, or a default one on a Waypoint with no
+// gateway. One not answered yet is judged by the model of its chain it is at,
+// so a default audit the gateway took after Cursor was passed over is
+// another model's.
 func grokAudit(a *CodeAudit) bool {
 	if a.Model != "" {
 		return strings.HasPrefix(a.Model, "cursor/")
 	}
-	return len(a.Models) > 0 && strings.HasPrefix(a.Models[0], "cursor/")
+	if len(a.Models) == 0 {
+		return false
+	}
+	return strings.HasPrefix(a.Models[min(max(a.Slot, 0), len(a.Models)-1)], "cursor/")
+}
+
+// cursorSpent: a Cursor model of the audit's last pass of its chain hit a
+// usage limit, so the limit was the Cursor plan's pool. A chain that also
+// went through the gateway (the default) says nothing of the pool when only
+// the gateway was spent. An audit with no attempts recorded is judged by
+// grokAudit.
+func cursorSpent(a *CodeAudit) bool {
+	if len(a.Attempts) == 0 {
+		return grokAudit(a)
+	}
+	return slices.ContainsFunc(a.Attempts, func(x AuditAttempt) bool {
+		return x.Round == a.Retries && x.Outcome == "spent" && strings.HasPrefix(x.Model, "cursor/")
+	})
 }
 
 // auditJobInfo is the runner job of an audit; nil when it has none (or the
@@ -1334,6 +1355,10 @@ func gatewayExcludes(globs []string, name string) bool {
 func (s *Service) requestRoundAudit(ctx context.Context, review *roundRow, in AuditInput) (int64, error) {
 	a, err := s.RequestAudit(ctx, SystemActor(), in)
 	if err == nil {
+		// Started now, not when the event is handled: which model of its chain
+		// it is at (Cursor's, or the gateway's after Cursor was passed over)
+		// is what the round's wait says and reads the odds of.
+		s.advanceAudit(ctx, a.ID)
 		return a.ID, nil
 	}
 	var id int64

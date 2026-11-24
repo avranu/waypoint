@@ -145,6 +145,19 @@ func taskGateway(t *testing.T, s *Service) *taskLLM {
 	return l
 }
 
+// runnerSeen sets when a runner last polled: the clock's now (online) or the
+// beginning of time (registered, offline).
+func (e *env) runnerSeen(r *Runner, online bool) {
+	e.t.Helper()
+	at := int64(0)
+	if online {
+		at = e.s.nowMS()
+	}
+	if _, err := e.s.db.W.Exec(`UPDATE runners SET last_seen_at = ? WHERE id = ?`, at, r.ID); err != nil {
+		e.t.Fatal(err)
+	}
+}
+
 // gatewayBox is a runner of the admin's whose wp can send an audit to the
 // gateway, and has no CLI.
 func (ae *agentEnv) gatewayBox() *Runner {
@@ -883,7 +896,7 @@ func TestReviewRoundThroughGateway(t *testing.T) {
 	a, relay := auditAPEnv(t)
 	gw := taskGateway(t, a.s)
 	box := a.runner(a.admin, "clibox", func(r *RunnerRegistration) {
-		r.CLIs = []RunnerCLI{{Name: "cursor"}, {Name: "claude"}, {Name: "opencode"}}
+		r.CLIs = []RunnerCLI{{Name: "claude"}, {Name: "opencode"}}
 		r.Features = []string{FeatureConfine, FeatureAudit}
 	})
 	first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude", Priority: "urgent"})
@@ -1031,13 +1044,14 @@ func TestGatewayAuditNoFindings(t *testing.T) {
 // (WP-871): asked by hand and by an automation saved from a Grok template
 // alike. The gateway has its own failover, so its failing ends the audit and
 // no CLI on a runner is asked behind it.
-func TestAuditDefaultIsTheGateway(t *testing.T) {
+func TestAuditDefaultIsCursorThenTheGateway(t *testing.T) {
 	ae := newAgentEnv(t)
 	if d := ae.s.AuditDefaults(ae.ctx); strings.Join(d.Models, " ") != "cursor/grok-4.7-high cursor/grok-4.7-medium" || d.Gateway {
 		t.Fatalf("with no gateway the default is %s (gateway offered: %v)", d.Models, d.Gateway)
 	}
 	taskGateway(t, ae.s)
-	if d := ae.s.AuditDefaults(ae.ctx); strings.Join(d.Models, " ") != "gateway/audit" || !d.Gateway {
+	const withGateway = "cursor/grok-4.7-high cursor/grok-4.7-medium gateway/audit"
+	if d := ae.s.AuditDefaults(ae.ctx); strings.Join(d.Models, " ") != withGateway || !d.Gateway {
 		t.Fatalf("with the gateway the default is %s (gateway offered: %v)", d.Models, d.Gateway)
 	}
 	// The runner has every CLI signed in as well.
@@ -1046,24 +1060,36 @@ func TestAuditDefaultIsTheGateway(t *testing.T) {
 		r.Features = []string{FeatureConfine, FeatureAudit, FeatureGatewayAudit}
 	})
 	a, err := ae.s.RequestAudit(ae.ctx, ae.admin, AuditInput{Project: ae.p.Key})
-	if err != nil || strings.Join(a.Models, " ") != "gateway/audit" {
+	if err != nil || strings.Join(a.Models, " ") != withGateway {
 		t.Fatalf("audit = %+v %v", a, err)
 	}
 	claim := ae.takeOn(box)
-	if job := agentJobOf(t, claim); claim.Kind != JobAudit || job.CLI != GatewayCLI || job.Model != gatewayAuditModel {
+	if job := agentJobOf(t, claim); claim.Kind != JobAudit || job.CLI != "cursor" || job.Model != "grok-4.7-high" {
 		t.Fatalf("job = %s %+v", claim.Kind, job)
 	}
-	ae.finish(claim.ID, "failed", map[string]any{}, "502 Bad Gateway")
+	// A failure that isn't about the model still leaves the gateway to ask
+	// (TestDefaultAuditReachesTheGatewayAfterACursorError); the gateway failing
+	// that way ends the audit.
+	ae.finish(claim.ID, "failed", map[string]any{}, "the checkout could not be read")
+	ae.finish(ae.takeOn(box).ID, "failed", map[string]any{}, "the checkout could not be read")
+	last := ae.takeOn(box)
+	if job := agentJobOf(t, last); job.CLI != GatewayCLI {
+		t.Fatalf("job = %+v", job)
+	}
+	ae.finish(last.ID, "failed", map[string]any{}, "the checkout could not be read")
 	ae.work()
 	for _, r := range []*Runner{box, ae.box} {
 		if w := ae.rpoll(ae.admin, r); w.Job != nil {
-			t.Fatalf("%s was asked behind the gateway: %+v", r.Name, agentJobOf(t, w.Job))
+			t.Fatalf("%s was asked after the work failed: %+v", r.Name, agentJobOf(t, w.Job))
 		}
 	}
-	if got, err := ae.s.GetAudit(ae.ctx, ae.admin, a.ID); err != nil || got.Status != AuditFailed || len(got.Attempts) != 1 {
+	if got, err := ae.s.GetAudit(ae.ctx, ae.admin, a.ID); err != nil || got.Status != AuditFailed || len(got.Attempts) != 3 || got.Attempts[2].Outcome != "error" {
 		t.Fatalf("audit = %+v %v", got, err)
 	}
 
+	// With no runner online that has Cursor, the template's audit is the gateway's.
+	ae.runnerSeen(box, false)
+	ae.runnerSeen(ae.box, false)
 	card := ae.addAuto(ae.p, "Ask Grok", templateRule(t, "Ask Grok to audit"))
 	if _, err := ae.s.RunAutomationNow(ae.ctx, ae.admin, card.ID, map[string]any{"focus": "races in the merge queue", "branch": "wp-222-queue"}, ""); err != nil {
 		t.Fatal(err)
@@ -1075,7 +1101,7 @@ func TestAuditDefaultIsTheGateway(t *testing.T) {
 }
 
 // Running again an audit that had the default of before the gateway (Grok
-// through Cursor) asks today's default, not Cursor on the runner; one a
+// through Cursor alone) asks today's default (Cursor, then the gateway); one a
 // person named a Cursor model for keeps it.
 func TestRerunOfAnOldDefaultAudit(t *testing.T) {
 	ae := newAgentEnv(t)
@@ -1093,7 +1119,7 @@ func TestRerunOfAnOldDefaultAudit(t *testing.T) {
 	}
 	taskGateway(t, ae.s)
 	again, err := ae.s.RerunAudit(ae.ctx, ae.admin, old.ID, "cli")
-	if err != nil || strings.Join(again.Models, " ") != "gateway/audit" {
+	if err != nil || strings.Join(again.Models, " ") != "cursor/grok-4.7-high cursor/grok-4.7-medium gateway/audit" {
 		t.Fatalf("the rerun of the old default asks %+v %v", again, err)
 	}
 	again, err = ae.s.RerunAudit(ae.ctx, ae.admin, named.ID, "cli")
@@ -1109,13 +1135,13 @@ func TestPRAuditThroughTheGateway(t *testing.T) {
 	be := newBabysitEnv(t)
 	taskGateway(t, be.s)
 	box := be.runner(be.admin, "auditbox", func(r *RunnerRegistration) {
-		r.CLIs = []RunnerCLI{{Name: "cursor"}}
+		r.CLIs = []RunnerCLI{{Name: "claude"}}
 		r.Features = []string{FeatureConfine, FeatureAudit, FeatureGatewayAudit}
 	})
 	be.auditOn()
 	pr := be.openMine()
 	a, err := be.s.GetAudit(be.ctx, be.admin, be.auditID())
-	if err != nil || strings.Join(a.Models, " ") != "gateway/audit" {
+	if err != nil || strings.Join(a.Models, " ") != "cursor/grok-4.7-high cursor/grok-4.7-medium gateway/audit" {
 		t.Fatalf("audit = %+v %v", a, err)
 	}
 	be.s.Wait()
@@ -1175,14 +1201,14 @@ func TestWpReviewProgress(t *testing.T) {
 			}
 		}
 	}
-	has(a.command("/wp review").Block, first.Key+"'s adversarial review: stage 1 of 2", "Audit #1: queued", "the gateway runs 6 of Waypoint's audits at once, 0 running now, 0 queued ahead", "no recent runs to compare with")
+	has(a.command("/wp review").Block, first.Key+"'s adversarial review: stage 1 of 2", "Audit #1 (model 3 of 3 in its chain): queued", "Earlier tries: cursor/grok-4.7-high unavailable, cursor/grok-4.7-medium unavailable.", "the gateway runs 6 of Waypoint's audits at once, 0 running now, 0 queued ahead", "no recent runs to compare with")
 
 	w := a.poll(a.admin, relay, RunnerPoll{})
 	if w.Job == nil || w.Job.Kind != JobAudit {
 		t.Fatalf("no audit job: %+v", w.Job)
 	}
 	job := agentJobOf(t, w.Job)
-	has(a.command("/wp review").Block, "Audit #1: running", "still cloning and packing")
+	has(a.command("/wp review").Block, "Audit #1 (model 3 of 3 in its chain): running", "still cloning and packing")
 	v, err := a.s.StartGatewayTask(a.ctx, a.admin, w.Job.ID, job.Prompt, strings.NewReader("tar"), 3)
 	if err != nil {
 		t.Fatal(err)
@@ -1223,11 +1249,250 @@ func TestWpReviewProgress(t *testing.T) {
 	}
 	a.tick(time.Minute) // a minute into the audit
 	got := a.command("/wp review").Block
-	has(got, "Audit #1: running 1m", "At the gateway: sent 1m ago, running; 41k tokens in, 1k out, last grew 1m ago; the runner last asked 1m ago",
+	has(got, "Audit #1 (model 3 of 3 in its chain): running 1m", "At the gateway: sent 1m ago, running; 41k tokens in, 1k out, last grew 1m ago; the runner last asked 1m ago",
 		"Audits like it: median 10m", "The session's part, once it starts: median 15m",
 		"Likely done in about 8m (the median)", "Findings back in roughly 23m")
 	if by := a.command("/wp review " + strings.ToLower(first.Key)).Block; !strings.HasPrefix(by, "Waypoint: "+first.Key+"'s adversarial review") {
 		t.Errorf("by key: %q", by)
 	}
 	has(a.command("/wp review ZZ-9").Block, "no adversarial review of ZZ-9")
+}
+
+// With a gateway, a default audit goes to Grok through Cursor first and falls
+// through its medium effort to the gateway when each is spent (WP-1725).
+func TestDefaultAuditRunsOnCursorFirst(t *testing.T) {
+	ae := newAgentEnv(t)
+	taskGateway(t, ae.s)
+	gw := ae.gatewayBox()
+	a, err := ae.s.RequestAudit(ae.ctx, ae.admin, AuditInput{Project: ae.p.Key})
+	if err != nil || strings.Join(a.Models, " ") != "cursor/grok-4.7-high cursor/grok-4.7-medium gateway/audit" {
+		t.Fatalf("audit = %+v %v", a, err)
+	}
+	for _, want := range []string{"grok-4.7-high", "grok-4.7-medium"} {
+		claim := ae.takeOn(ae.box)
+		if job := agentJobOf(t, claim); job.CLI != "cursor" || job.Model != want {
+			t.Fatalf("job = %+v, want cursor/%s", job, want)
+		}
+		ae.finish(claim.ID, "failed", map[string]any{}, "You've hit your usage limit")
+	}
+	claim := ae.takeOn(gw)
+	if job := agentJobOf(t, claim); job.CLI != GatewayCLI || job.Model != gatewayAuditModel {
+		t.Fatalf("the last job = %+v", job)
+	}
+	got := ae.audit(a.ID)
+	if len(got.Attempts) != 2 || got.Attempts[0].Outcome != "spent" || got.Attempts[1].Outcome != "spent" {
+		t.Fatalf("attempts = %+v", got.Attempts)
+	}
+}
+
+// A runner that is registered but offline would hold a Cursor job for a day:
+// both Cursor entries are passed over and the gateway runs the audit.
+func TestDefaultAuditSkipsCursorWithNoRunnerOnline(t *testing.T) {
+	ae := newAgentEnv(t)
+	taskGateway(t, ae.s)
+	gw := ae.gatewayBox()
+	ae.runnerSeen(ae.box, false)
+	a, err := ae.s.RequestAudit(ae.ctx, ae.admin, AuditInput{Project: ae.p.Key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := ae.takeOn(gw)
+	if job := agentJobOf(t, claim); job.CLI != GatewayCLI {
+		t.Fatalf("job = %+v", job)
+	}
+	got := ae.audit(a.ID)
+	if len(got.Attempts) != 2 {
+		t.Fatalf("attempts = %+v", got.Attempts)
+	}
+	for _, x := range got.Attempts {
+		if x.Outcome != "unavailable" || !strings.Contains(x.Error, "no runner with cursor is online") || !strings.HasPrefix(x.Model, "cursor/") {
+			t.Fatalf("attempt = %+v", x)
+		}
+	}
+}
+
+// The last entry of a chain waits for its runner as it always has.
+func TestAuditsLastCursorEntryQueuesWithTheRunnerOffline(t *testing.T) {
+	ae := newAgentEnv(t)
+	ae.runnerSeen(ae.box, false)
+	a, err := ae.s.RequestAudit(ae.ctx, ae.admin, AuditInput{Project: ae.p.Key, Models: []string{"cursor/grok-4.7-high", "cursor/grok-4.7-medium"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ae.work()
+	got := ae.audit(a.ID)
+	if got.Status != AuditRunning || got.JobID == nil || got.Slot != 1 || len(got.Attempts) != 1 || got.Attempts[0].Outcome != "unavailable" {
+		t.Fatalf("audit = %+v", got)
+	}
+	if lone, err := ae.s.RequestAudit(ae.ctx, ae.admin, AuditInput{Project: ae.p.Key, Target: "branch", Ref: "wp-1", Models: []string{"cursor/grok-4.7-high"}}); err != nil {
+		t.Fatal(err)
+	} else if ae.work(); ae.audit(lone.ID).JobID == nil || len(ae.audit(lone.ID).Attempts) != 0 {
+		t.Fatalf("a chain of one waits for its runner: %+v", ae.audit(lone.ID))
+	}
+}
+
+// A Cursor entry failing in a way that says nothing of the model doesn't end
+// a default audit nobody's round asked for: the gateway is still asked
+// (WP-1725). A chain of a runner's CLIs alone ends there as before.
+func TestDefaultAuditReachesTheGatewayAfterACursorError(t *testing.T) {
+	ae := newAgentEnv(t)
+	taskGateway(t, ae.s)
+	gw := ae.gatewayBox()
+	a, err := ae.s.RequestAudit(ae.ctx, ae.admin, AuditInput{Project: ae.p.Key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"grok-4.7-high", "grok-4.7-medium"} {
+		claim := ae.takeOn(ae.box)
+		if job := agentJobOf(t, claim); job.CLI != "cursor" || job.Model != want {
+			t.Fatalf("job = %+v, want cursor/%s", job, want)
+		}
+		ae.finish(claim.ID, "failed", map[string]any{}, "cursor-agent exited 1")
+	}
+	if job := agentJobOf(t, ae.takeOn(gw)); job.CLI != GatewayCLI {
+		t.Fatalf("the last job = %+v", job)
+	}
+	if got := ae.audit(a.ID); got.Status != AuditRunning || len(got.Attempts) != 2 || got.Attempts[0].Outcome != "error" {
+		t.Fatalf("audit = %s %+v", got.Status, got.Attempts)
+	}
+
+	named, err := ae.s.RequestAudit(ae.ctx, ae.admin, AuditInput{Project: ae.p.Key, Target: "branch", Ref: "wp-1", Models: []string{"cursor/grok-4.7-high", "cursor/grok-4.7-medium"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ae.finish(ae.takeOn(ae.box).ID, "failed", map[string]any{}, "cursor-agent exited 1")
+	ae.work()
+	if got := ae.audit(named.ID); got.Status != AuditFailed || len(got.Attempts) != 1 {
+		t.Fatalf("the named audit = %s %+v", got.Status, got.Attempts)
+	}
+}
+
+// A Cursor job no runner takes doesn't hold a default audit: after
+// auditRunnerWait the next model is asked, and a job that expired all the
+// same goes on to the gateway instead of failing the audit.
+func TestDefaultAuditDoesNotWaitOnCursorsRunner(t *testing.T) {
+	ae := newAgentEnv(t)
+	taskGateway(t, ae.s)
+	gw := ae.gatewayBox()
+	a, err := ae.s.RequestAudit(ae.ctx, ae.admin, AuditInput{Project: ae.p.Key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ae.work()
+	first := ae.audit(a.ID)
+	if first.Status != AuditRunning || first.JobID == nil {
+		t.Fatalf("audit = %+v", first)
+	}
+	ae.setClock(ae.clockNow().Add(auditRunnerWait - time.Minute))
+	ae.s.CheckAudits(ae.ctx)
+	if got := ae.audit(a.ID); got.JobID == nil || *got.JobID != *first.JobID {
+		t.Fatalf("moved on before the wait was over: %+v", got)
+	}
+	ae.setClock(ae.clockNow().Add(2 * time.Minute))
+	ae.s.CheckAudits(ae.ctx)
+	// By now the runner with Cursor hasn't polled for 20 minutes: medium is passed over too.
+	if job := agentJobOf(t, ae.takeOn(gw)); job.CLI != GatewayCLI {
+		t.Fatalf("job = %+v", job)
+	}
+	got := ae.audit(a.ID)
+	if len(got.Attempts) != 2 || got.Attempts[0].Outcome != "unavailable" || !strings.Contains(got.Attempts[0].Error, "no runner took it in") ||
+		!strings.Contains(got.Attempts[1].Error, "no runner with cursor is online") {
+		t.Fatalf("attempts = %+v", got.Attempts)
+	}
+	if info, err := ae.s.GetRunnerJob(ae.ctx, ae.admin, *first.JobID, -1); err != nil || info.State != "cancelled" {
+		t.Fatalf("Cursor's job = %+v %v", info, err)
+	}
+	// The gateway's job is the chain's last: it waits.
+	ae.setClock(ae.clockNow().Add(2 * auditRunnerWait))
+	ae.s.CheckAudits(ae.ctx)
+	if got := ae.audit(a.ID); got.Status != AuditRunning || len(got.Attempts) != 2 {
+		t.Fatalf("the last entry didn't wait: %s %+v", got.Status, got.Attempts)
+	}
+
+	ae.runnerSeen(ae.box, true)
+	b, err := ae.s.RequestAudit(ae.ctx, ae.admin, AuditInput{Project: ae.p.Key, Target: "branch", Ref: "wp-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ae.work()
+	job := ae.audit(b.ID).JobID
+	if job == nil {
+		t.Fatal("no Cursor job")
+	}
+	if _, err := ae.s.db.W.Exec(`UPDATE runner_jobs SET state = 'expired' WHERE id = ?`, *job); err != nil {
+		t.Fatal(err)
+	}
+	ae.s.CheckAudits(ae.ctx)
+	ae.work()
+	if got := ae.audit(b.ID); got.Status != AuditRunning || len(got.Attempts) != 1 || got.Attempts[0].Model != "cursor/grok-4.7-high" || got.Attempts[0].Error != "no runner took it within a day" {
+		t.Fatalf("after the expiry: %s %+v", got.Status, got.Attempts)
+	}
+}
+
+// A Cursor job a runner claimed just as its wait ran out isn't passed over:
+// the job runs on as the audit's, uncancelled, and the audit waits for it.
+func TestPassQueuedAuditLeavesAClaimedJob(t *testing.T) {
+	ae := newAgentEnv(t)
+	taskGateway(t, ae.s)
+	a, err := ae.s.RequestAudit(ae.ctx, ae.admin, AuditInput{Project: ae.p.Key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ae.work()
+	first := ae.audit(a.ID)
+	if first.Status != AuditRunning || first.JobID == nil {
+		t.Fatalf("audit = %+v", first)
+	}
+	ae.setClock(ae.clockNow().Add(auditRunnerWait + time.Minute))
+	// CheckAudits read the job as queued; the claim lands before the pass.
+	if _, err := ae.s.db.W.Exec(`UPDATE runner_jobs SET state = 'running', started_at = ? WHERE id = ?`, ae.clockNow().UnixMilli(), *first.JobID); err != nil {
+		t.Fatal(err)
+	}
+	ae.s.passQueuedAudit(ae.ctx, a.ID, *first.JobID)
+	if got := ae.audit(a.ID); got.Status != AuditRunning || got.JobID == nil || *got.JobID != *first.JobID || len(got.Attempts) != 0 {
+		t.Fatalf("audit = %s %v %+v", got.Status, got.JobID, got.Attempts)
+	}
+	if info, err := ae.s.GetRunnerJob(ae.ctx, ae.admin, *first.JobID, -1); err != nil || info.State != "running" {
+		t.Fatalf("Cursor's job = %+v %v", info, err)
+	}
+}
+
+// A default audit stored with today's three names is a default still when it
+// is run again: with the gateway gone it asks Cursor alone instead of being
+// refused for naming a gateway.
+func TestRerunOfTodaysDefaultAudit(t *testing.T) {
+	ae := newAgentEnv(t)
+	taskGateway(t, ae.s)
+	old, err := ae.s.RequestAudit(ae.ctx, ae.admin, AuditInput{Project: ae.p.Key})
+	if err != nil || len(old.Models) != 3 {
+		t.Fatalf("audit = %+v %v", old, err)
+	}
+	if _, err := ae.s.db.W.Exec(`DELETE FROM server_settings WHERE key = ?`, settingGatewayProvider); err != nil {
+		t.Fatal(err)
+	}
+	again, err := ae.s.RerunAudit(ae.ctx, ae.admin, old.ID, "cli")
+	if err != nil || strings.Join(again.Models, " ") != "cursor/grok-4.7-high cursor/grok-4.7-medium" {
+		t.Fatalf("the rerun asks %+v %v", again, err)
+	}
+}
+
+func TestCursorSpent(t *testing.T) {
+	def := []string{"cursor/grok-4.7-high", "cursor/grok-4.7-medium", "gateway/audit"}
+	for name, c := range map[string]struct {
+		a    CodeAudit
+		want bool
+	}{
+		"Cursor passed over, the gateway spent": {CodeAudit{Models: def, Slot: 3, Attempts: []AuditAttempt{
+			{Model: def[0], Outcome: "unavailable"}, {Model: def[1], Outcome: "unavailable"}, {Model: def[2], Outcome: "spent"}}}, false},
+		"Cursor spent, the gateway failed": {CodeAudit{Models: def, Slot: 3, Attempts: []AuditAttempt{
+			{Model: def[0], Outcome: "spent"}, {Model: def[1], Outcome: "spent"}, {Model: def[2], Outcome: "busy"}}}, true},
+		"Cursor spent in an earlier pass only": {CodeAudit{Models: def, Slot: 3, Retries: 1, Attempts: []AuditAttempt{
+			{Model: def[0], Outcome: "spent"}, {Model: def[2], Outcome: "spent", Round: 1}}}, false},
+		"no attempts, a Cursor chain": {CodeAudit{Models: def[:1]}, true},
+		"no attempts, the gateway":    {CodeAudit{Models: def[2:]}, false},
+	} {
+		if got := cursorSpent(&c.a); got != c.want {
+			t.Errorf("%s: cursorSpent = %v", name, got)
+		}
+	}
 }
