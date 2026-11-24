@@ -13,21 +13,28 @@ import { clearDraft, readDraft, tracked, useUnsaved, writeDraft } from '@/lib/dr
 
 // The editor a description opens in is remembered (WP-628).
 const MODE_KEY = 'wp.editor.mode'
-let chosen: 'rich' | 'md' | null = null
-const readMode = (): 'rich' | 'md' => {
-  if (chosen) return chosen
+// A choice whose write failed, with what storage held then: it applies only
+// while storage still holds that, so another tab's later choice shows.
+let chosen: { mode: 'rich' | 'md'; stored: string | null } | null = null
+const stored = (): string | null => {
   try {
-    return localStorage.getItem(MODE_KEY) === 'md' ? 'md' : 'rich'
+    return localStorage.getItem(MODE_KEY)
   } catch {
-    return 'rich'
+    return null
   }
+}
+const readMode = (): 'rich' | 'md' => {
+  const now = stored()
+  if (chosen && chosen.stored === now) return chosen.mode
+  chosen = null
+  return now === 'md' ? 'md' : 'rich'
 }
 const writeMode = (m: 'rich' | 'md') => {
   try {
     localStorage.setItem(MODE_KEY, m)
     chosen = null
   } catch {
-    chosen = m
+    chosen = { mode: m, stored: stored() }
   }
 }
 
