@@ -186,9 +186,11 @@ func (s *Service) landPR(ctx context.Context, f *Forge, pr *PullRequest) (bool, 
 		return false, err
 	}
 	if landed == nil {
-		if _, err := prc.PostPRComment(ctx, f, pr.Repo, pr.Number, text); err != nil {
+		c, err := prc.PostPRComment(ctx, f, pr.Repo, pr.Number, text)
+		if err != nil {
 			return false, fmt.Errorf("comment: %w", err)
 		}
+		s.noteOwnComment(ctx, pr.ID, c, 0, "", "")
 		s.setLanded(ctx, pr.ID, fmt.Sprintf("landed_at = %d", now))
 	}
 	how := "marked it merged"

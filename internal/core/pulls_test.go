@@ -454,6 +454,9 @@ type prEnv struct {
 	f    *Forge
 	p    *Project
 	repo *ProjectRepo
+	// diffs: the diff a head's pull request has, where not sampleDiff.
+	diffs map[string]string
+	seen  map[int]string // PR number → the head pullHook last sent
 }
 
 func newPREnv(t *testing.T, kind string) *prEnv {
@@ -487,10 +490,30 @@ func newPREnv(t *testing.T, kind string) *prEnv {
 	return &prEnv{env: e, fg: fg, llm: llm, f: f, p: p, repo: r}
 }
 
+// diffPlus is sampleDiff with one more file, so a head carrying it changes
+// something the earlier head did not (a head with the same diff carries the
+// earlier review, WP-1808).
+func diffPlus(name string) string {
+	return sampleDiff + "diff --git a/" + name + " b/" + name + "\nnew file mode 100644\n--- /dev/null\n+++ b/" + name + "\n@@ -0,0 +1 @@\n+x\n"
+}
+
 // pullHook sends a pull_request webhook for pr.
 func (pe *prEnv) pullHook(action string, pr ForgePR) {
 	pe.t.Helper()
-	pe.fg.setPR(pe.f, "me/app", pr, sampleDiff)
+	// A head after the first changes something, unless the test says its diff
+	// is the earlier one's (pe.diffs): a merge-only push carries the review.
+	diff, ok := pe.diffs[pr.HeadSHA]
+	if !ok {
+		diff = sampleDiff
+		if pe.seen == nil {
+			pe.seen = map[int]string{}
+		}
+		if h := pe.seen[pr.Number]; h != "" && h != pr.HeadSHA {
+			diff = diffPlus("head-" + pr.HeadSHA + ".txt")
+		}
+		pe.seen[pr.Number] = pr.HeadSHA
+	}
+	pe.fg.setPR(pe.f, "me/app", pr, diff)
 	headRepo := cmp(pr.HeadRepo, "me/app") // forges name it; a fork's differs
 	payload := map[string]any{
 		"action": action,
@@ -576,6 +599,7 @@ func TestReviewPullRequests(t *testing.T) {
 	}
 	// A push: reviewed again, and the same finding isn't posted twice.
 	pr.HeadSHA = "2222222bbbb"
+	pe.diffs = map[string]string{"2222222bbbb": diffPlus("two.txt")}
 	pe.pullHook("synchronize", pr)
 	done = pe.drain()
 	if len(done) != 1 || done[0].Status != "done" || !strings.Contains(done[0].Summary, "1 already raised") {
@@ -747,6 +771,7 @@ func TestReviewCommandsAndRetries(t *testing.T) {
 		pe.llm.answers[m] = "!timeout"
 	}
 	pr.HeadSHA = "ddddddd4444"
+	pe.diffs = map[string]string{"ddddddd4444": diffPlus("four.txt")}
 	pe.pullHook("synchronize", pr)
 	done = pe.drain()
 	if len(done) != 1 || done[0].Status != "failed" || !strings.Contains(done[0].Error, "unavailable") {

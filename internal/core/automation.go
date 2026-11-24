@@ -106,7 +106,7 @@ var AutomationTemplates = []AutomationTemplate{
 		Name:        "Ask CodeRabbit to review",
 		Description: "Each new pull request, or draft marked ready, gets \"@coderabbitai review\" from the bot account, once, not on pushes. For repos a mirror copies to GitHub, where CodeRabbit reviews the twin: forge-sync passes the command on when the bot account is one of its command_authors. Added on, by migration, to projects with a repo on a forge that has a mirror account.",
 		Rule: Rule{Trigger: Trigger{Event: "pr_updated", Extra: map[string]any{"on": "new"}}, PR: reviewFilter,
-			Actions: []Action{{Type: "pr_comment", Message: "@coderabbitai review"}}},
+			Actions: []Action{{Type: "pr_comment", Message: askCodeRabbit}}},
 	},
 	{
 		Name:        "Security review of pull requests",
@@ -237,7 +237,15 @@ func (s *Service) runAction(c *StepCtx) error {
 		if err != nil || strings.TrimSpace(msg) == "" {
 			return cmpErr(err, invalid("pr_comment needs a message"))
 		}
-		_, err = cl.PostPRComment(ctx, botForge(f), data.PR.Repo, data.PR.Number, msg)
+		// Not again on a head it was asked on (WP-1808, WP-1732): "once" holds
+		// across a draft marked ready twice.
+		if asked, err := s.askedOnHead(ctx, data.PR.ID, a.ID, data.PR.HeadSHA, msg); err != nil || asked {
+			return err
+		}
+		c, err := cl.PostPRComment(ctx, botForge(f), data.PR.Repo, data.PR.Number, msg)
+		if err == nil {
+			s.noteOwnComment(ctx, data.PR.ID, c, a.ID, data.PR.HeadSHA, msg)
+		}
 		return err
 	case "set_status":
 		if err := needIssue(); err != nil {

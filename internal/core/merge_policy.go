@@ -610,8 +610,8 @@ func (s *Service) settleWaits(ctx context.Context, pr *PullRequest, pol MergePol
 	}
 	if pol.ReviewWaitMinutes > 0 {
 		since := pr.UpdatedAt
-		if pr.headAt != nil {
-			since = *pr.headAt
+		if t := pr.contentSince(); t != nil {
+			since = *t
 		}
 		deadline := since.Add(time.Duration(pol.ReviewWaitMinutes) * time.Minute)
 		if now.Before(deadline) {
@@ -679,8 +679,8 @@ func (s *Service) reviewersMissing(ctx context.Context, pr *PullRequest, pol Mer
 		}
 		var n int
 		if err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM pr_events WHERE pr_id = ? AND actor = ? COLLATE NOCASE
-			AND kind IN ('commented','reviewed','approved','changes_requested') AND (sha = ? OR (sha = '' AND created_at >= ?))`,
-			pr.ID, who, pr.HeadSHA, since.UnixMilli()).Scan(&n); err != nil {
+			AND kind IN ('commented','reviewed','approved','changes_requested') AND (sha IN (?, ?) OR (created_at >= ? AND (sha = '' OR ?)))`,
+			pr.ID, who, pr.HeadSHA, pr.contentHeadSHA(), since.UnixMilli(), pr.contentHeadSHA() != pr.HeadSHA).Scan(&n); err != nil {
 			return nil, err
 		}
 		if n == 0 {

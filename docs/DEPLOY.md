@@ -171,8 +171,11 @@ deploy key in a CI job is readable by whatever runs beside it.
    cancel the run still testing the one before, so a busy afternoon of merges
    released nothing, WP-62). A queued run whose commit is no longer main's tip
    when it starts skips everything (its `current` job says so in a notice):
-   the newer push's own run releases both changes. On a pull request
-   `current` is skipped and the three checks queue at once (WP-156).
+   the newer push's own run releases both changes. On a ready pull request
+   `current` is skipped and the three checks queue at once (WP-156). On a push to a
+   draft ("WIP: ") it runs once, light, and skips the checks when the push only merged
+   the base in over a head whose checks passed (its notice says why not otherwise, WP-1808);
+   that is a skipped draft run, never a full one: dropping "WIP: " still runs the full suite.
    `backend` and `e2e` are the statuses branch protection and Waypoint read,
    but each is a small job that waits for parallel shard jobs (`backend shard
    1`..`4`, `e2e shard 1`..`4`, WP-313, WP-314) and fails unless every shard
