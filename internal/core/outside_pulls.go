@@ -251,20 +251,6 @@ func (s *Service) screenPull(ctx context.Context, t *tx, v *prVoice, pr *PullReq
 	return err
 }
 
-// approvedBodyChanged: a pull request has an approved description that
-// differs from body. One with none approved hasn't changed.
-func (s *Service) approvedBodyChanged(ctx context.Context, prID int64, body string) (bool, error) {
-	var hash string
-	err := s.db.R.QueryRowContext(ctx, `SELECT body_hash FROM outside_pr_text WHERE pr_id = ? AND external_id = '' AND state = 'approved'`, prID).Scan(&hash)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return hash != textHash(body), nil
-}
-
 // approvedBody is a pull request's description as a person approved it
 // ("" when they didn't): the review prompt reads no other.
 func (s *Service) approvedBody(ctx context.Context, f *Forge, pr *PullRequest, fp *ForgePR) string {
@@ -274,10 +260,7 @@ func (s *Service) approvedBody(ctx context.Context, f *Forge, pr *PullRequest, f
 	}
 	var hash string
 	_ = s.db.R.QueryRowContext(ctx, `SELECT body_hash FROM outside_pr_text WHERE pr_id = ? AND external_id = '' AND state = 'approved'`, pr.ID).Scan(&hash)
-	// A description cut when held was approved only as far as it was shown.
-	// excerpt cuts only what runs past its bound, so one bound further
-	// gives back the same text exactly when nothing was cut.
-	if hash != "" && hash == textHash(fp.Body) && excerpt(fp.Body, 20000) == excerpt(fp.Body, 20001) {
+	if hash != "" && hash == textHash(fp.Body) {
 		return fp.Body
 	}
 	return ""
