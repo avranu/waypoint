@@ -1269,15 +1269,16 @@ func TestGatewayTaskLimits(t *testing.T) {
 		err  error
 		want GatewayLimits
 	}{
-		"raised":                {GatewayLimits{64 * MiB, 8 * MiB}, nil, GatewayLimits{64 * MiB, 8 * MiB}},
-		"absent":                {GatewayLimits{}, nil, def},
-		"error":                 {GatewayLimits{64 * MiB, 8 * MiB}, errors.New("down"), def},
-		"archive too small":     {GatewayLimits{MiB - 1, 64 << 10}, nil, def},
-		"archive too large":     {GatewayLimits{512*MiB + 1, 8 * MiB}, nil, def},
-		"at the edges":          {GatewayLimits{512 * MiB, 512 * MiB}, nil, GatewayLimits{512 * MiB, 512 * MiB}},
-		"file only":             {GatewayLimits{0, 2 * MiB}, nil, GatewayLimits{GatewayArchiveMax, 2 * MiB}},
-		"file too small":        {GatewayLimits{64 * MiB, 64<<10 - 1}, nil, GatewayLimits{64 * MiB, GatewayFileMax}},
-		"file past the archive": {GatewayLimits{2 * MiB, 3 * MiB}, nil, GatewayLimits{2 * MiB, 2 * MiB}},
+		"raised": {GatewayLimits{64 * MiB, 8 * MiB}, nil, GatewayLimits{64 * MiB, 8 * MiB}},
+		"absent": {GatewayLimits{}, nil, def},
+		"error":  {GatewayLimits{64 * MiB, 8 * MiB}, errors.New("down"), def},
+		"file above the default archive, none for it": {GatewayLimits{0, GatewayArchiveMax + 1}, nil, def},
+		"archive too small":                           {GatewayLimits{MiB - 1, 64 << 10}, nil, def},
+		"archive too large":                           {GatewayLimits{512*MiB + 1, 8 * MiB}, nil, def},
+		"at the edges":                                {GatewayLimits{512 * MiB, 512 * MiB}, nil, GatewayLimits{512 * MiB, 512 * MiB}},
+		"file only":                                   {GatewayLimits{0, 2 * MiB}, nil, GatewayLimits{GatewayArchiveMax, 2 * MiB}},
+		"file too small":                              {GatewayLimits{64 * MiB, 64<<10 - 1}, nil, GatewayLimits{64 * MiB, GatewayFileMax}},
+		"file past the archive":                       {GatewayLimits{2 * MiB, 3 * MiB}, nil, GatewayLimits{2 * MiB, 2 * MiB}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			ae.s.gatewayLimits.Clear()
@@ -1302,13 +1303,116 @@ func TestGatewayTaskLimits(t *testing.T) {
 	if got := ae.s.GatewayTaskLimits(ae.ctx); got.ArchiveBytes != 128*MiB || gw.limitsCalls != 2 {
 		t.Errorf("after ten minutes: %+v after %d asks", got, gw.limitsCalls)
 	}
-	// A failed ask is cached too: no second /key request per audit.
+	// A failed ask keeps the last good figure (stale beats the default) and is
+	// asked again after a minute, not ten.
 	gw.limitsErr = errors.New("down")
 	now = now.Add(11 * time.Minute)
+	calls := gw.limitsCalls
+	if got := ae.s.GatewayTaskLimits(ae.ctx); got.ArchiveBytes != 128*MiB || gw.limitsCalls != calls+1 {
+		t.Errorf("failed ask after a good one: %+v after %d asks", got, gw.limitsCalls-calls)
+	}
+	now = now.Add(30 * time.Second)
+	if got := ae.s.GatewayTaskLimits(ae.ctx); got.ArchiveBytes != 128*MiB || gw.limitsCalls != calls+1 {
+		t.Errorf("failed ask cached for a minute: %+v after %d asks", got, gw.limitsCalls-calls)
+	}
+	now = now.Add(31 * time.Second)
+	if got := ae.s.GatewayTaskLimits(ae.ctx); got.ArchiveBytes != 128*MiB || gw.limitsCalls != calls+2 {
+		t.Errorf("failed ask asked again after a minute: %+v after %d asks", got, gw.limitsCalls-calls)
+	}
+	// With none good before, a failed ask is the default, and a minute's.
+	ae.s.gatewayLimits.Clear()
+	calls = gw.limitsCalls
 	ae.s.GatewayTaskLimits(ae.ctx)
 	ae.s.GatewayTaskLimits(ae.ctx)
-	if gw.limitsCalls != 3 {
-		t.Errorf("%d asks", gw.limitsCalls)
+	if got := ae.s.GatewayTaskLimits(ae.ctx); got != def || gw.limitsCalls != calls+1 {
+		t.Errorf("failed ask with none before: %+v after %d asks", got, gw.limitsCalls-calls)
+	}
+	// A successful answer that states nothing is the default, kept ten minutes.
+	ae.s.gatewayLimits.Clear()
+	gw.limitsErr, gw.limits = nil, GatewayLimits{}
+	calls = gw.limitsCalls
+	ae.s.GatewayTaskLimits(ae.ctx)
+	now = now.Add(9 * time.Minute)
+	if got := ae.s.GatewayTaskLimits(ae.ctx); got != def || gw.limitsCalls != calls+1 {
+		t.Errorf("an answer stating nothing: %+v after %d asks", got, gw.limitsCalls-calls)
+	}
+}
+
+// A job packed against the gateway's raised limit is taken at that limit
+// whatever the live figure has become since: the lookup failing or lapsing
+// must not turn a 30 MiB archive away.
+func TestGatewayUploadUsesJobsLimit(t *testing.T) {
+	ae := newAgentEnv(t)
+	gw := taskGateway(t, ae.s)
+	gw.limits = GatewayLimits{ArchiveBytes: 64 << 20, FileBytes: 8 << 20}
+	box := ae.gatewayBox()
+	if _, err := ae.s.RequestAudit(ae.ctx, ae.admin, AuditInput{Project: ae.p.Key, Models: []string{"gateway"}}); err != nil {
+		t.Fatal(err)
+	}
+	claim := ae.takeOn(box)
+	// The lookup now fails and nothing is cached.
+	gw.limits, gw.limitsErr = GatewayLimits{}, errors.New("down")
+	ae.s.gatewayLimits.Clear()
+	if got := ae.s.GatewayTaskLimits(ae.ctx).ArchiveBytes; got != GatewayArchiveMax {
+		t.Fatalf("live figure = %d", got)
+	}
+	if got := ae.s.GatewayUploadMax(ae.ctx, ae.admin, claim.ID); got != 64<<20 {
+		t.Errorf("upload max = %d, want the job's 64 MiB", got)
+	}
+	const size = 30 << 20
+	v, err := ae.s.StartGatewayTask(ae.ctx, ae.admin, claim.ID, "Audit.", zeros(size), size)
+	if err != nil || v.Status != "queued" {
+		t.Fatalf("%d bytes: %+v, %v", size, v, err)
+	}
+	// Not a job of this person's, or not an audit: the live figure.
+	if got := ae.s.GatewayUploadMax(ae.ctx, ae.admin, 999999); got != GatewayArchiveMax {
+		t.Errorf("no such job: %d", got)
+	}
+}
+
+// httpLLM.TaskLimits reads the key's task_limits from GET /key.
+func TestHTTPLLMTaskLimits(t *testing.T) {
+	var path, auth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path, auth = r.Method+" "+r.URL.Path, r.Header.Get("Authorization")
+		_, _ = io.WriteString(w, `{"task_limits":{"archive_bytes":67108864,"file_bytes":8388608}}`)
+	}))
+	defer srv.Close()
+	p := &AIProvider{Kind: "openai", BaseURL: srv.URL + "/v1", apiKey: "olm_test"}
+	got, err := gatewayClient().TaskLimits(context.Background(), p)
+	if err != nil || got != (GatewayLimits{ArchiveBytes: 64 << 20, FileBytes: 8 << 20}) {
+		t.Fatalf("limits %+v: %v", got, err)
+	}
+	if path != "GET /v1/key" || auth != "Bearer olm_test" {
+		t.Errorf("asked %q with %q", path, auth)
+	}
+}
+
+// The runner's left_out is the gateway attempt's alone, and kept short.
+func TestAuditAttemptLeftOutOnlyGateway(t *testing.T) {
+	ae := newAgentEnv(t)
+	a, err := ae.s.RequestAudit(ae.ctx, ae.admin, AuditInput{Project: ae.p.Key, Models: []string{"claude/opus"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ae.work()
+	claim := ae.take()
+	ae.finish(claim.ID, "failed", map[string]any{"left_out": "3 binary files (1 MiB)"}, "boom")
+	if got := ae.audit(a.ID); len(got.Attempts) == 0 || got.Attempts[0].LeftOut != "" {
+		t.Errorf("a CLI attempt's left out: %+v", got.Attempts)
+	}
+
+	taskGateway(t, ae.s)
+	box := ae.gatewayBox()
+	a, err = ae.s.RequestAudit(ae.ctx, ae.admin, AuditInput{Project: ae.p.Key, Models: []string{"gateway"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim = ae.takeOn(box)
+	ae.finish(claim.ID, "failed", map[string]any{"gateway_error": "body_too_large", "left_out": strings.Repeat("x", 500)}, "too big")
+	got := ae.audit(a.ID)
+	if len(got.Attempts) == 0 || len([]rune(got.Attempts[0].LeftOut)) != 300 {
+		t.Fatalf("a long left out: %+v", got.Attempts)
 	}
 }
 

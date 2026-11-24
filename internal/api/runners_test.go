@@ -393,3 +393,54 @@ func TestRunnerGatewayRoutes(t *testing.T) {
 		t.Errorf("no token: %d %s", code, b)
 	}
 }
+
+// The body cap of the gateway route is the archive limit the job was packed
+// against (its input says it), not the default: a body between the default
+// 20 MiB and a raised 64 MiB is read, not cut off.
+func TestRunnerGatewayBodyCapIsTheJobs(t *testing.T) {
+	ts, svc := setup(t)
+	ctx := context.Background()
+	u, err := svc.CreateUser(ctx, core.SystemActor(), core.CreateUserInput{Username: "robin", Email: "robin@example.com", Password: "correct horse battery", IsAdmin: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	robin := &core.Actor{User: u}
+	tok, _, err := svc.CreateToken(ctx, robin, core.TokenSpec{Name: "box"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	jc := &client{t: t, base: ts.URL, http: http.DefaultClient, token: tok}
+	r, err := svc.RegisterRunner(ctx, robin, core.RunnerRegistration{Name: "box", Hostname: "box", OS: "linux", Arch: "amd64", Version: "test",
+		AllowedDirs: []string{"/work"}, CLIs: []core.RunnerCLI{{Name: "claude"}}, Features: []string{core.FeatureAudit, core.FeatureGatewayAudit}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.EnqueueRunnerJob(ctx, robin, core.RunnerJobInput{Kind: core.JobAudit, Source: "audit", SourceID: 1,
+		Input: []byte(`{"cli":"gateway","model":"audit","prompt":"hi","repo":"https://x.test/a/b.git","gateway_archive_max":67108864,"gateway_file_max":8388608}`)}); err != nil {
+		t.Fatal(err)
+	}
+	zero := 0.0
+	w, err := svc.RunnerPoll(ctx, robin, core.RunnerPoll{Runner: r.ID, Wait: &zero})
+	if err != nil || w.Job == nil {
+		t.Fatalf("poll: %v %+v", err, w)
+	}
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	_ = mw.WriteField("prompt", "Audit it.")
+	f, _ := mw.CreateFormFile("repo", "repo.tar.gz")
+	_, _ = f.Write(bytes.Repeat([]byte("x"), 25<<20))
+	_ = mw.Close()
+	req, _ := http.NewRequest("POST", ts.URL+"/api/v1/runner/jobs/"+rid(w.Job.ID)+"/gateway", &body)
+	req.Header.Set("Authorization", "Bearer "+jc.token)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	resp, err := jc.http.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	// No gateway is set up here, so the task is refused: after the body was read.
+	if resp.StatusCode != 200 || !strings.Contains(string(b), "no_gateway") {
+		t.Errorf("a 25 MiB archive for a 64 MiB job: %d %.200s", resp.StatusCode, b)
+	}
+}

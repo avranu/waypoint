@@ -25,6 +25,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core"
 )
 
 const (
@@ -34,9 +36,10 @@ const (
 	// would leave out anyway: leaving it out here keeps it from counting
 	// against the first. The job says the real figures (agentJob.
 	// GatewayArchiveMax, GatewayFileMax: Waypoint reads them from the
-	// gateway); these are for a server that doesn't.
-	gatewayArchiveFallback = 20 << 20
-	gatewayFileFallback    = 5 << 20
+	// gateway); these are for a server that doesn't, the server's own
+	// defaults.
+	gatewayArchiveFallback = core.GatewayArchiveMax
+	gatewayFileFallback    = core.GatewayFileMax
 	// gatewayAdmitWait is how long a job keeps offering its task to a
 	// gateway that says busy (its queue is full, it is restarting) before
 	// the audit goes to its next model.
@@ -114,11 +117,16 @@ func (p *runnerProc) execGatewayAudit(ctx context.Context, run *jobRun, in agent
 		fileMax = gatewayFileFallback
 	}
 	res, tier, err := p.packForGateway(ctx, run, in, work, archive, limit, fileMax)
-	if left := res.leftOutText(); left != "" && err == nil {
+	tooLarge := errors.Is(err, errArchiveTooLarge)
+	if left := res.leftOutText(); left != "" && (err == nil || tooLarge) {
 		result["left_out"] = left
 	}
-	if errors.Is(err, errArchiveTooLarge) {
-		return gave(nil, "body_too_large", "The checkout packs to more than %s, the most the gateway takes for an audit, even with files over %s left out.", fmtMiB(limit), fmtMiB(gatewayTiers[len(gatewayTiers)-1].over))
+	if tooLarge {
+		what := "files over " + fmtMiB(gatewayTiers[len(gatewayTiers)-1].over)
+		if res.Scoped {
+			what += " and files outside the audit's paths"
+		}
+		return gave(nil, "body_too_large", "The checkout packs to more than %s, the most the gateway takes for an audit, even with %s left out.", fmtMiB(limit), what)
 	}
 	if err != nil {
 		return p.agentError(ctx, run, "can't pack the checkout: %v", err)
@@ -289,9 +297,20 @@ func (l *limitWriter) Write(b []byte) (int, error) {
 // of what the checkout leaves out of what the model is given.
 const leftOutName = "left-out.txt"
 
-const leftOutHeader = "These files exist in the repository but are not in this copy of it:\n" +
-	"they are binary, over the size the gateway takes, or left out to fit the archive.\n" +
-	"Their absence is not a finding. Columns: path, bytes, reason.\n"
+// leftOutHeader heads the list of what was left out. Binary files and those
+// over the gateway's per-file limit are always among the reasons; files over
+// a size or outside the audit's paths only when the whole checkout was too
+// big for the gateway, which is when left holds them.
+func leftOutHeader(left []leftOut) string {
+	var b strings.Builder
+	b.WriteString("These files exist in the repository but are not in this copy of it.\n")
+	b.WriteString("Some are binary or over the gateway's per-file limit.\n")
+	if slices.ContainsFunc(left, func(l leftOut) bool { return l.Reason != "binary" && l.Reason != "large" }) {
+		b.WriteString("The whole checkout was too big for the gateway, so files over a size or outside the audit's paths were left out too.\n")
+	}
+	b.WriteString("Their absence is not a finding. Columns: path, bytes, reason.\n")
+	return b.String()
+}
 
 // gatewayTier is one stricter way to pack a checkout that was too large:
 // files over `over` bytes stay out and, with scope, so does every file the
@@ -318,7 +337,9 @@ type packOptions struct {
 	FileMax    int64 // a file over it is left out as "large"
 	// Over, when > 0, leaves out files over that many bytes ("over 256 KiB"),
 	// and Out, when set, those it says are out of scope; Keep names the files
-	// neither applies to (the change's own, and auditChangeDir's).
+	// neither applies to (the change's own, and auditChangeDir's). Keep
+	// protects a file from those two cuts (the fit cuts) only: a binary file
+	// and one over FileMax stay out whatever Keep says.
 	Over int64
 	Out  func(path string) bool
 	Keep func(path string) bool
@@ -328,6 +349,9 @@ type packOptions struct {
 type packResult struct {
 	Files int
 	Left  []leftOut
+	// Scoped: the pass also left out what the audit's paths and exclusions
+	// leave out (set by packForGateway).
+	Scoped bool
 }
 
 func (r packResult) leftBytes() (n int64) {
@@ -357,7 +381,7 @@ func (r packResult) leftOutText() string {
 		case "binary":
 			what = "binary " + files
 		case "large":
-			what = files + " over the gateway's limit for one"
+			what = files + " over the gateway's per-file limit"
 		default:
 			what = files + " " + reason
 		}
@@ -399,7 +423,9 @@ func fmtMiB(n int64) string {
 // large, again with gatewayTiers' stricter ones, the first that fits. tier
 // says which one applied (" (the checkout was over 20 MiB: files over 1 MiB
 // left out)"; "" for a plain pack). Past the last it answers
-// errArchiveTooLarge, and the result is what that last pass left out.
+// errArchiveTooLarge, and the result is what that last pass left out. The
+// change's own files (keep) are protected from the stricter passes' cuts, not
+// from the binary and per-file-limit rules, which apply in every pass.
 func (p *runnerProc) packForGateway(ctx context.Context, run *jobRun, in agentJob, work string, archive *os.File, limit, fileMax int64) (res packResult, tier string, err error) {
 	changed := changedFiles(work)
 	keep := func(path string) bool {
@@ -429,6 +455,7 @@ func (p *runnerProc) packForGateway(ctx context.Context, run *jobRun, in agentJo
 			opt.Out = out
 		}
 		res, err = packCheckout(work, archive, opt)
+		res.Scoped = opt.Out != nil
 		if err == nil {
 			if i > 0 {
 				what := "files over " + fmtMiB(t.over)
@@ -453,14 +480,14 @@ func (p *runnerProc) packForGateway(ctx context.Context, run *jobRun, in agentJo
 }
 
 // scopeOut answers which files the audit's paths and exclusions leave out,
-// by what git lists of them in work (nil when git can't say, which the log
+// by what git lists of them in work, untracked files too (nil when git can't say, which the log
 // notes: the audit then has no scope to go by).
 func (p *runnerProc) scopeOut(ctx context.Context, run *jobRun, work string, in agentJob) func(string) bool {
 	if len(in.DiffPaths) == 0 && len(in.DiffExclude) == 0 {
 		return nil // the audit names no scope
 	}
 	list := func(specs []string) (map[string]bool, error) {
-		raw, err := p.gitRaw(ctx, work, nil, nil, append([]string{"ls-files", "-z", "--"}, specs...)...)
+		raw, err := p.gitRaw(ctx, work, nil, nil, append([]string{"ls-files", "-z", "--cached", "--others", "--"}, specs...)...)
 		if err != nil {
 			return nil, err
 		}
@@ -554,7 +581,9 @@ func diffGitNames(rest string) []string {
 // out, and nothing is followed out of work), no binary file (a NUL in its
 // first 8000 bytes, as git tells them), none over opt.FileMax, those opt
 // asks to leave out, and no more than opt.ArchiveMax bytes in all
-// (errArchiveTooLarge). When something was left out, a list of it goes in as
+// (errArchiveTooLarge). Binary and over-FileMax are checked before opt.Keep
+// on purpose (the gateway refuses a file over its per-file limit, and binary
+// is never sent), so Keep protects a file from opt.Out and opt.Over only. When something was left out, a list of it goes in as
 // auditChangeDir/left-out.txt, last.
 func packCheckout(work string, w io.Writer, opt packOptions) (res packResult, err error) {
 	root, err := os.OpenRoot(work)
@@ -626,7 +655,7 @@ func packCheckout(work string, w io.Writer, opt packOptions) (res packResult, er
 	if err == nil && len(res.Left) > 0 {
 		slices.SortFunc(res.Left, func(a, b leftOut) int { return cmp.Compare(a.Path, b.Path) })
 		var list strings.Builder
-		list.WriteString(leftOutHeader)
+		list.WriteString(leftOutHeader(res.Left))
 		for _, l := range res.Left {
 			fmt.Fprintf(&list, "%s\t%d\t%s\n", l.Path, l.Size, l.Reason)
 		}

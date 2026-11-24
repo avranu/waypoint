@@ -462,7 +462,8 @@ func TestLeftOutText(t *testing.T) {
 		"one binary": {[]leftOut{{"a.npz", 1 << 20, "binary"}}, "1 binary file (1 MiB)"},
 		"two kinds": {[]leftOut{{"a", 3 << 19, "binary"}, {"b", 1 << 19, "binary"}, {"c", 3 << 20, "over 256 KiB"}, {"d", 1 << 20, "over 256 KiB"}},
 			"2 binary files (2 MiB), 2 files over 256 KiB (4 MiB)"},
-		"scope and large": {[]leftOut{{"a", 6 << 20, "large"}, {"b", 100 << 10, "out of scope"}}, "1 file over the gateway's limit for one (6 MiB), 1 file out of scope (100 KiB)"},
+		"scope and large": {[]leftOut{{"a", 6 << 20, "large"}, {"b", 100 << 10, "out of scope"}}, "1 file over the gateway's per-file limit (6 MiB), 1 file out of scope (100 KiB)"},
+		"three large":     {[]leftOut{{"a", 6 << 20, "large"}, {"b", 6 << 20, "large"}, {"c", 6 << 20, "large"}}, "3 files over the gateway's per-file limit (18 MiB)"},
 	} {
 		if got := (packResult{Left: c.left}).leftOutText(); got != c.want {
 			t.Errorf("%s: %q, want %q", name, got, c.want)
@@ -620,7 +621,7 @@ func TestGatewayAuditJobLimits(t *testing.T) {
 	t.Run("the job's file limit", func(t *testing.T) {
 		o, relay, r := run(t, agentJob{GatewayFileMax: 100 << 10}, map[string]string{"a.txt": "one\n", "b.txt": strings.Repeat("b", 100<<10+1)})
 		res, _ := o.Result.(map[string]any)
-		if o.State != "done" || res["left_out"] != "1 file over the gateway's limit for one (100.0 KiB)" {
+		if o.State != "done" || res["left_out"] != "1 file over the gateway's per-file limit (100.0 KiB)" {
 			t.Fatalf("outcome = %+v\n%s", o, r.out.text())
 		}
 		if got := leftList(t, relay.packed[0]); got["b.txt"] != "large" || len(got) != 1 {
@@ -653,5 +654,106 @@ func TestGatewayAuditJobLimits(t *testing.T) {
 		if uploads, _, _ := relay.counts(); o.State != "failed" || res["gateway_error"] != "body_too_large" || !strings.Contains(o.Error, "20 KiB") || !strings.Contains(o.Error, "64 KiB") || uploads != 0 {
 			t.Errorf("outcome = %+v", o)
 		}
+		if strings.Contains(o.Error, "paths") {
+			t.Errorf("no scope, but the error speaks of one: %s", o.Error)
+		}
 	})
+	// The failed attempt says what was left out, and, with a scope, that the
+	// last pass left out what the audit's paths do.
+	t.Run("too large with files left out", func(t *testing.T) {
+		o, relay, _ := run(t, agentJob{GatewayArchiveMax: 20 << 10}, map[string]string{"a.txt": noise(t, 30<<10), "b.bin": "x\x00y"})
+		res, _ := o.Result.(map[string]any)
+		if uploads, _, _ := relay.counts(); o.State != "failed" || res["gateway_error"] != "body_too_large" || res["left_out"] != "1 binary file (3 B)" || uploads != 0 {
+			t.Errorf("outcome = %+v", o)
+		}
+	})
+	t.Run("too large with a scope", func(t *testing.T) {
+		work := t.TempDir()
+		gitOut(t, work, "init", "-q")
+		for name, body := range map[string]string{"src/in.txt": noise(t, 30<<10), "other/out.txt": "outside\n"} {
+			if err := os.MkdirAll(filepath.Dir(filepath.Join(work, name)), 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(work, name), []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		gitOut(t, work, "add", "-A")
+		p := newTestProc(t)
+		if err := os.MkdirAll(p.cacheDir(), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		relay := &fakeRelay{}
+		relay.serve(t)
+		o := p.execGatewayAudit(context.Background(), newRun(time.Minute), agentJob{CLI: gatewayCLI, Model: "audit", Prompt: "Audit it.", GatewayArchiveMax: 20 << 10, DiffPaths: []string{"src"}}, work, map[string]any{})
+		res, _ := o.Result.(map[string]any)
+		if o.State != "failed" || res["gateway_error"] != "body_too_large" || !strings.Contains(o.Error, "outside the audit's paths") || res["left_out"] != "1 file out of scope (8 B)" {
+			t.Errorf("outcome = %+v", o)
+		}
+	})
+}
+
+// An untracked file under the audit's paths is in scope.
+func TestScopeOutCountsUntrackedFiles(t *testing.T) {
+	work := t.TempDir()
+	gitOut(t, work, "init", "-q")
+	for _, name := range []string{"specs/tracked.md", "specs/untracked.md", "gen/tracked.go", "gen/untracked.go", "other/x.go"} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(work, name)), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(work, name), []byte("x\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitOut(t, work, "add", "specs/tracked.md", "gen/tracked.go", "other/x.go")
+	p, run := newTestProc(t), newRun(time.Minute)
+	out := p.scopeOut(context.Background(), run, work, agentJob{DiffPaths: []string{"specs"}, DiffExclude: []string{"gen"}})
+	if out == nil {
+		t.Fatalf("no scope:\n%s", run.out.text())
+	}
+	for path, want := range map[string]bool{"specs/tracked.md": false, "specs/untracked.md": false, "gen/tracked.go": true, "gen/untracked.go": true, "other/x.go": true} {
+		if got := out(path); got != want {
+			t.Errorf("out(%s) = %v, want %v", path, got, want)
+		}
+	}
+}
+
+// git's rule is a NUL in the first 8000 bytes: one later doesn't make a file
+// binary, and with no size limit set it stays.
+func TestPackCheckoutNulAfter8000Stays(t *testing.T) {
+	work := t.TempDir()
+	if err := os.WriteFile(filepath.Join(work, "late.dat"), []byte(strings.Repeat("a", 8000)+"\x00tail"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	res, err := packCheckout(work, &buf, packOptions{ArchiveMax: 1 << 20, FileMax: 1 << 20})
+	if err != nil || res.Files != 1 || len(res.Left) != 0 {
+		t.Fatalf("%+v, %v", res, err)
+	}
+	if got := unpack(t, buf.Bytes()); !strings.HasSuffix(got["late.dat"], "\x00tail") {
+		t.Errorf("packed %d files", len(got))
+	}
+}
+
+// The list's header names the reasons that apply: size and scope only when
+// the whole checkout was too big.
+func TestLeftOutHeader(t *testing.T) {
+	plain := leftOutHeader([]leftOut{{"a", 1, "binary"}, {"b", 1, "large"}})
+	tight := leftOutHeader([]leftOut{{"a", 1, "binary"}, {"b", 1, "over 256 KiB"}, {"c", 1, "out of scope"}})
+	for name, h := range map[string]string{"plain": plain, "tight": tight} {
+		for _, want := range []string{"binary", "per-file limit", "Their absence is not a finding. Columns: path, bytes, reason.\n"} {
+			if !strings.Contains(h, want) {
+				t.Errorf("%s header lacks %q:\n%s", name, want, h)
+			}
+		}
+		if strings.ContainsAny(h, "\u2013\u2014") || strings.Contains(h, " - ") {
+			t.Errorf("%s header has a dash:\n%s", name, h)
+		}
+	}
+	if strings.Contains(plain, "too big") || strings.Contains(plain, "audit's paths") {
+		t.Errorf("plain header speaks of the fit cuts:\n%s", plain)
+	}
+	if !strings.Contains(tight, "too big for the gateway") || !strings.Contains(tight, "audit's paths") {
+		t.Errorf("tight header:\n%s", tight)
+	}
 }

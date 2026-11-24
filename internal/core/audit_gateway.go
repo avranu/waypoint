@@ -446,8 +446,15 @@ type GatewayLimits struct {
 	FileBytes    int64 `json:"file_bytes"`
 }
 
-// gatewayLimitsTTL is how long the gateway's task limits are believed.
-const gatewayLimitsTTL = 10 * time.Minute
+const (
+	// gatewayLimitsTTL is how long the gateway's task limits are believed;
+	// gatewayLimitsRetry how long before a failed ask is made again, and
+	// gatewayLimitsTimeout how long one ask may take (it can hold an audit's
+	// lock or an upload).
+	gatewayLimitsTTL     = 10 * time.Minute
+	gatewayLimitsRetry   = time.Minute
+	gatewayLimitsTimeout = 5 * time.Second
+)
 
 // taskLimitsLLM is a gateway client that can read the key's task limits.
 type taskLimitsLLM interface {
@@ -459,6 +466,8 @@ type taskLimitsLLM interface {
 type cachedGatewayLimits struct {
 	at  time.Time
 	lim GatewayLimits
+	// failed: the ask failed, lim is the last good figure (or the defaults).
+	failed bool
 }
 
 // TaskLimits reads the gateway key's task_limits (GET /key).
@@ -479,7 +488,8 @@ func (c *httpLLM) TaskLimits(ctx context.Context, p *AIProvider) (GatewayLimits,
 // figures its key response states, kept ten minutes, or the defaults
 // (GatewayArchiveMax, GatewayFileMax) where it states none, states one out of
 // range (1 MiB to 512 MiB for the archive, 64 KiB to the archive for a file)
-// or can't be asked.
+// or can't be asked. When it can't be asked, the last figures it did state
+// stay (stale beats the default) and it is asked again after a minute.
 func (s *Service) GatewayTaskLimits(ctx context.Context) GatewayLimits {
 	def := GatewayLimits{ArchiveBytes: GatewayArchiveMax, FileBytes: GatewayFileMax}
 	tl, p, why := s.gatewayTasksLLM(ctx)
@@ -487,16 +497,29 @@ func (s *Service) GatewayTaskLimits(ctx context.Context) GatewayLimits {
 	if why != "" || !ok {
 		return def
 	}
-	if c, ok := s.gatewayLimits.Load(p.ID); ok && s.now().Sub(c.(cachedGatewayLimits).at) <= gatewayLimitsTTL {
-		return c.(cachedGatewayLimits).lim
+	last, had := s.gatewayLimits.Load(p.ID)
+	prev, _ := last.(cachedGatewayLimits)
+	if had {
+		ttl := gatewayLimitsTTL
+		if prev.failed {
+			ttl = gatewayLimitsRetry
+		}
+		if s.now().Sub(prev.at) <= ttl {
+			return prev.lim
+		}
 	}
-	cctx, cancel := context.WithTimeout(ctx, gatewayCallTimeout)
+	cctx, cancel := context.WithTimeout(ctx, gatewayLimitsTimeout)
 	defer cancel()
 	got, err := ll.TaskLimits(cctx, p)
 	lim := def
 	switch {
 	case err != nil:
 		s.log.Debug("read the gateway's task limits", "err", err)
+		if had {
+			lim = prev.lim
+		}
+		s.gatewayLimits.Store(p.ID, cachedGatewayLimits{at: s.now(), lim: lim, failed: true})
+		return lim
 	case got.ArchiveBytes >= 1<<20 && got.ArchiveBytes <= 512<<20:
 		lim.ArchiveBytes = got.ArchiveBytes
 		if got.FileBytes >= 64<<10 && got.FileBytes <= got.ArchiveBytes {
@@ -510,6 +533,27 @@ func (s *Service) GatewayTaskLimits(ctx context.Context) GatewayLimits {
 	}
 	s.gatewayLimits.Store(p.ID, cachedGatewayLimits{at: s.now(), lim: lim})
 	return lim
+}
+
+// archiveMax is the most archive a job's upload may be: what the job was
+// told (the server wrote it into the job's input when it queued it, and the
+// runner packed against it), else the gateway's limit as known now.
+func (s *Service) archiveMax(ctx context.Context, j *gatewayJob) int64 {
+	if j != nil && j.in.GatewayArchiveMax > 0 {
+		return j.in.GatewayArchiveMax
+	}
+	return s.GatewayTaskLimits(ctx).ArchiveBytes
+}
+
+// GatewayUploadMax is the most archive StartGatewayTask takes for the job:
+// the figure the job carries, or the gateway's current one when it has none
+// or isn't this runner's gateway job (StartGatewayTask then says why).
+func (s *Service) GatewayUploadMax(ctx context.Context, actor *Actor, jobID int64) int64 {
+	j, err := s.gatewayJobFor(ctx, actor, jobID)
+	if err != nil {
+		j = nil
+	}
+	return s.archiveMax(ctx, j)
 }
 
 // gatewayTasksLLM is the gateway and its provider, or why audits can't go
@@ -648,8 +692,8 @@ func (s *Service) StartGatewayTask(ctx context.Context, actor *Actor, jobID int6
 	if strings.TrimSpace(prompt) == "" || len(prompt) > GatewayPromptMax {
 		return nil, invalid("the task needs a prompt (up to %d KB)", GatewayPromptMax>>10)
 	}
-	if lim := s.GatewayTaskLimits(ctx); size <= 0 || size > lim.ArchiveBytes {
-		return nil, invalid("the checkout's archive is %s, and the gateway takes up to %s", humanBytes(size), humanBytes(lim.ArchiveBytes))
+	if max := s.archiveMax(ctx, j); size <= 0 || size > max {
+		return nil, invalid("the checkout's archive is %s, and the gateway takes up to %s", humanBytes(size), humanBytes(max))
 	}
 	refused := func(kind, why string) (*GatewayTaskView, error) {
 		return &GatewayTaskView{Status: GatewayTaskRefused, ErrorKind: kind, Error: why}, nil
