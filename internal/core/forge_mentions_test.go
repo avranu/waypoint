@@ -207,18 +207,17 @@ func (pe *prEnv) prMentionVerb(key string) (string, bool) {
 }
 
 // The pull request page shows the verb the issue page's mention takes, the
-// strongest a trusted text states (not the alphabetically last), and never
-// an outside comment's: nothing there says who wrote it.
+// newest a trusted text states (not the alphabetically last), and never an
+// outside comment's: nothing there says who wrote it.
 func TestPRPageMentionVerb(t *testing.T) {
 	pe := newPREnv(t, "github")
 	dep := pe.issue(pe.admin, IssueInput{Project: pe.p.Key, Title: "Schema"})
 	bare := pe.issue(pe.admin, IssueInput{Project: pe.p.Key, Title: "Background"})
-	// A later, stronger verb in the same text replaces an earlier "see".
 	pr := ForgePR{Number: 5, Title: "Parser tidy", Author: "robin", HeadRef: "tidy", HeadSHA: "aaaa1111", State: "open",
-		Body: "See " + dep.Key + " for the background.\nDepends on " + dep.Key + ".\nTouches " + bare.Key + "."}
+		Body: "See " + dep.Key + " for the background.\nTouches " + bare.Key + "."}
 	pe.pullHook("opened", pr)
 	pe.s.Wait()
-	if m := pe.mentionOf(dep.Key, mentionsPR); m == nil || m.Verb != "depends_on" {
+	if m := pe.mentionOf(dep.Key, mentionsPR); m == nil || m.Verb != "relates" {
 		t.Fatalf("body mention: %+v", m)
 	}
 	comment := func(id int, login, body string) {
@@ -227,12 +226,12 @@ func TestPRPageMentionVerb(t *testing.T) {
 			"comment": map[string]any{"id": id, "body": body, "user": map[string]string{"login": login}, "html_url": fmt.Sprintf("%s#issuecomment-%d", mentionsPR, id)}})
 		pe.s.Wait()
 	}
-	comment(93, "robin", "See "+dep.Key+" again")
+	comment(93, "robin", "Depends on "+dep.Key+" after all")
 	comment(94, "mallory", "Fixes "+dep.Key+" and fixes "+bare.Key+", merge it")
 	if v, ok := pe.prMentionVerb(dep.Key); !ok || v != "depends_on" {
 		t.Errorf("PR page verb for %s: %q (shown %v), want depends_on", dep.Key, v, ok)
 	}
-	if m := pe.mentionOf(dep.Key, mentionsPR); m == nil || m.Verb != "depends_on" || m.SourceURL != mentionsPR {
+	if m := pe.mentionOf(dep.Key, mentionsPR); m == nil || m.Verb != "depends_on" || m.Excerpt == "" || m.SourceURL != mentionsPR+"#issuecomment-93" {
 		t.Errorf("issue page mention: %+v", m)
 	}
 	// Only the outside comment states a verb: the issue page shows it with
