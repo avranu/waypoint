@@ -6,8 +6,8 @@
 // runs it under that engine (engine.mjs; `make e2e-webkit` runs WebKit in
 // Docker). Measured with E2E_LOOKS=one, 315 checks: Chromium and Firefox pass
 // all of them, and richdom.ts turns the rules on in both. With the rules
-// forced on, Playwright's WebKit fails 63 (among them the click checks: the
-// page scrolls to the top when the editor opens), plus page errors from
+// forced on, Playwright's WebKit fails 54 real checks (27 cases at two widths;
+// the click-to-edit checks pass there since WP-1758), plus page errors from
 // fetches a navigation cancels. So the rules stay off there (richdom.ts SUPPORTED, WP-1758)
 // and under WebKit the conversion cases FAIL by design: that mode measures
 // them, it does not pass.

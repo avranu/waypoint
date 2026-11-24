@@ -178,12 +178,15 @@ const replaceBlock = (b: Block) => b.node?.tagName === 'P' || b.node?.tagName ==
 
 // On in Blink and Gecko, where e2e/85-rich-typing.mjs passes all its checks
 // (WP-1758). Off in WebKit (Safari, every iOS browser), where typed markdown
-// stays literal text, as before WP-1749: in Playwright's WebKit that suite
-// fails 63 of its checks beyond the "access control checks" page errors WebKit
-// raises when a navigation cancels a fetch (undo takes two steps after a
-// rule, insertHTML at the end of a paragraph adds inline styles and style
-// spans, Enter in code splits the <pre>, the task box loses
-// contenteditable=false, outdent leaves a <font>). Firefox on iOS is WebKit
+// stays literal text, as before WP-1749. With the rules forced on, Playwright's
+// WebKit fails 54 real checks of suite 85 (27 cases at two widths), 10 of
+// suite 86 and none of 87, beyond the "access control checks" page errors
+// WebKit raises for fetches a navigation cancels: undo takes two steps after a
+// rule (heading, bullet, bold, code), insertHTML at the end of a paragraph adds
+// inline styles and style spans (code, emphasis), Enter in code splits the
+// <pre> (fences), the task box loses contenteditable=false (Enter at the start
+// of a task, backspace at the box), outdent leaves a <font> (quote), and the
+// typed [[x]] and @name pieces fail the same ways. Firefox on iOS is WebKit
 // and says "FxiOS", not "Firefox/".
 const SUPPORTED = typeof navigator === 'undefined' || /Chrome\/|Firefox\//.test(navigator.userAgent)
 
