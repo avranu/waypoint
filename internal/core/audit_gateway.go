@@ -34,6 +34,7 @@ import (
 	"strings"
 	"time"
 
+	"git.jmann.me/claude/waypoint/internal/core/kernel"
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
@@ -734,7 +735,7 @@ func (s *Service) StartGatewayTask(ctx context.Context, actor *Actor, jobID int6
 		return nil, invalid("the task needs a prompt (up to %d KB)", GatewayPromptMax>>10)
 	}
 	if max := s.archiveMax(ctx, j); size <= 0 || size > max {
-		return nil, invalid("the checkout's archive is %s, and the gateway takes up to %s", humanBytes(size), humanBytes(max))
+		return nil, kernel.Invalid("the checkout's archive is %s, and the gateway takes up to %s", humanBytes(size), humanBytes(max))
 	}
 	refused := func(kind, why string) (*GatewayTaskView, error) {
 		return &GatewayTaskView{Status: GatewayTaskRefused, ErrorKind: kind, Error: why}, nil

@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"git.jmann.me/claude/waypoint/internal/core/kernel"
 )
 
 // Audits (WP-348, WP-ADR20): an adversarial review a person, an agent or an
@@ -1090,7 +1092,7 @@ func (s *Service) settleAudit(ctx context.Context, id, jobID int64) {
 	}
 	att := AuditAttempt{Model: auditModelName(m), Job: jobID, Round: a.Retries, At: s.nowMS()}
 	if m.CLI == GatewayCLI {
-		att.LeftOut = excerpt(strings.TrimSpace(anyString(j.Result["left_out"])), 300)
+		att.LeftOut = kernel.Excerpt(strings.TrimSpace(anyString(j.Result["left_out"])), 300)
 	}
 	a.readRange(j.Result)
 	a.HelperRuns = helperRunsOf(j.Result)
