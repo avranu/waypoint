@@ -179,18 +179,32 @@ func cmdPROpen(c *cli, args []string) error {
 }
 
 // heldText is what to say about a ship held for its review.
-func (o *openedPR) heldText() string {
-	s := noticed(o.Notice, o.Held)
+func (o *openedPR) heldText() string { return strings.Join(o.heldLines(true), "\n") }
+
+// heldNotes is heldText without the held answer itself: what a ship that goes
+// on to say something else still owes the agent (the tested text is separate).
+func (o *openedPR) heldNotes() string {
+	return strings.TrimSpace(strings.Join(append(o.heldLines(false), o.tested.text()), "\n"))
+}
+
+func (o *openedPR) heldLines(withHeld bool) []string {
+	var l []string
+	if o.Notice != "" {
+		l = append(l, "Notice: "+o.Notice)
+	}
+	if withHeld {
+		l = append(l, o.Held)
+	}
 	if o.UrgentPR != 0 {
-		s += "\n" + urgentNote(o.UrgentPR)
+		l = append(l, urgentNote(o.UrgentPR))
 	}
 	if o.Warning != "" {
-		s += "\nWarning: " + o.Warning
+		l = append(l, "Warning: "+o.Warning)
 	}
 	if o.ClaimWarning != "" {
-		s += "\nWarning: " + o.ClaimWarning
+		l = append(l, "Warning: "+o.ClaimWarning)
 	}
-	return s
+	return l
 }
 
 // withTested adds the test evidence to the server's answer, for --json.
@@ -240,7 +254,8 @@ func (f prOpenFlags) reviewIntent() (string, error) {
 
 // shipOpts are the flags only shipping uses.
 type shipOpts struct {
-	noArm, noMove, noBabysit, notify, blocking *bool
+	noArm, noMove, noBabysit, notify, blocking, noWait *bool
+	waitTimeout                                        *time.Duration
 	// summary is the agent's final reply to the person (WP-1093); summaryGiven
 	// says --summary was on the command line ("" drops a kept one).
 	summary      *string
@@ -252,12 +267,14 @@ type shipOpts struct {
 
 func addShipFlags(fs *flag.FlagSet) shipOpts {
 	return shipOpts{
-		noArm:     fs.Bool("no-arm", false, "don't arm merge when ready"),
-		noMove:    fs.Bool("no-move", false, "don't move the issue to In Review"),
-		noBabysit: fs.Bool("no-babysit", false, "don't babysit it"),
-		notify:    fs.Bool("notify", false, "wake me when it merges (only if work must follow)"),
-		blocking:  fs.Bool("blocking", false, "wake me within minutes (only if other work waits on it)"),
-		summary:   fs.String("summary", "", "your final reply to the person, shown as the turn ends if the ship goes as expected (no reply turn after it); {task}, {pr} and {url} are filled in (`TEXT`)"),
+		noArm:       fs.Bool("no-arm", false, "don't arm merge when ready"),
+		noMove:      fs.Bool("no-move", false, "don't move the issue to In Review"),
+		noBabysit:   fs.Bool("no-babysit", false, "don't babysit it"),
+		notify:      fs.Bool("notify", false, "wake me when it merges (only if work must follow)"),
+		blocking:    fs.Bool("blocking", false, "wake me within minutes (only if other work waits on it)"),
+		noWait:      fs.Bool("no-wait", false, "when the pull request waits on a review round, don't wait for the round's findings: end as before"),
+		waitTimeout: fs.Duration("wait-timeout", shipWaitDefault, "how long to wait on a review round before ending as with --no-wait (at most "+waitMaxText()+"; `DURATION`)"),
+		summary:     fs.String("summary", "", "your final reply to the person, shown as the turn ends if the ship goes as expected (no reply turn after it); {task}, {pr} and {url} are filled in (`TEXT`)"),
 	}
 }
 
@@ -300,13 +317,20 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 		// Writing it costs tokens Waypoint saves (WP-55): say so, use it.
 		c.println("Notice: Waypoint writes the description from -m, the commits, the task and the recorded tests; your -f/--body replaces it. Next time leave it out.")
 	}
-	o, raw, err := c.openPR(f)
+	o, raw, err := reopenPR(c, f)
 	if err != nil {
 		return false, err
 	}
 	summary, kept := c.shipSummary(cmpStr(key, o.key), *so.summary, so.summaryGiven)
 	if kept && !c.asJSON {
 		c.println("Using the --summary you gave this task's last wp ship (--summary \"\" drops it).")
+	}
+	if o.Held != "" && c.canWaitShip(so, o) {
+		o2, raw2, done, err := c.waitHeldShip(f, so, o, raw, cmpStr(key, o.key), summary)
+		if err != nil || done {
+			return false, err
+		}
+		o, raw = o2, raw2
 	}
 	if o.Held != "" {
 		// Held for the task's review: nothing to arm, babysit or move yet,

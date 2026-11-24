@@ -33,13 +33,12 @@ func pendingOf(kind, text string, id int) string {
 func TestNoPromptsMatchedKindsKeepTheUnattendedMark(t *testing.T) {
 	for _, tc := range []struct {
 		name, kind, prompt string
-		pending            func(string) string
 		wantMarked         bool
 	}{
-		{"review", core.TypedReview, "go over the findings", nil, true},
-		{"compact", core.TypedCompact, "squeeze it", nil, true},
-		{"keep_warm", core.TypedKeepWarm, "still there?", nil, true},
-		{"ordinary, no match", "", "fix the typo", func(string) string { return "[]" }, false},
+		{"review", core.TypedReview, "go over the findings", true},
+		{"compact", core.TypedCompact, "squeeze it", true},
+		{"keep_warm", core.TypedKeepWarm, "still there?", true},
+		{"ordinary, no match", "", "fix the typo", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := dropEnv(t)
