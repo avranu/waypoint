@@ -78,6 +78,7 @@ for (const [width, scheme] of looks(
         document.querySelector('[contenteditable="true"][aria-label="Description"]') ??
         document.querySelector('.prose-wp[title="Click or press Enter to edit"]');
       const out = {};
+      const dump = {};
       for (const p of root.querySelectorAll("p")) {
         const m = /mk([a-z]+\d+)x/.exec(p.textContent);
         if (!m) continue;
@@ -93,9 +94,24 @@ for (const [width, scheme] of looks(
           out[m[1]] = [Math.round(q.left * 100) / 100, Math.round((q.top - top) * 100) / 100, Math.round(p.getBoundingClientRect().height * 100) / 100];
           break;
         }
+        // Where each line breaks, to read a shift without guessing.
+        let line = "";
+        let last = null;
+        const w2 = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
+        for (let t = w2.nextNode(); t; t = w2.nextNode())
+          for (const mm of t.data.matchAll(/\S+|\s+/g)) {
+            const rr = document.createRange();
+            rr.setStart(t, mm.index);
+            rr.setEnd(t, mm.index + mm[0].length);
+            const q2 = rr.getClientRects()[0];
+            if (q2 && last !== null && Math.abs(q2.top - last) > 2) line += "|";
+            if (q2) last = q2.top;
+            line += mm[0].replace(/\ufeff/g, "~").replace(/\u00a0/g, "_");
+          }
+        dump[m[1]] = line + "\n      html: " + p.innerHTML.replace(/\u00a0/g, "_").replace(/\ufeff/g, "~").slice(-260);
       }
       const b = root.getBoundingClientRect();
-      return { markers: out, box: [b.left, b.top, b.width, b.height] };
+      return { markers: out, dump, box: [b.left, b.top, b.width, b.height] };
     });
 
   const description = Object.entries(pieces).map(([k, p]) => sweep(k, p)).join("\n\n");
@@ -293,6 +309,127 @@ for (const [width, scheme] of looks(
     const want = "x [[Some Page]] @robin";
     const got = await waitDesc(i.key, want);
     ok(got === want, `${tag} picking from the menu writes the mention: ${JSON.stringify(got)}`);
+  }
+
+  // Saving shifts nothing either: a mention picked from the menu and a
+  // wikilink typed by hand are pieces at once, so the editor and the view
+  // that replaces it put the text after them in the same place.
+  {
+    const N = 12;
+    const kinds = ["menu", "typed"];
+    const text = kinds
+      .flatMap((k) =>
+        Array.from({ length: N }, (_, i) => {
+          const lead = Array.from({ length: 4 + i }, (_, j) => WORDS[(j + i) % WORDS.length]).join(" ");
+          return `${lead} HERE mk${k}${i}x then enough words after it to fill the end of the line and a bit more.`;
+        }),
+      )
+      .join("\n\n");
+    const i = await openSmall("Save shifts nothing", text);
+    const menu = page.getByRole("listbox", { name: "Mention someone" });
+    for (const k of kinds)
+      for (let n = 0; n < N; n++) {
+        await richBox.evaluate(
+          (el, id) => {
+            const p = Array.from(el.querySelectorAll("p")).find((x) => x.textContent.includes(id));
+            const walk = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
+            for (let t = walk.nextNode(); t; t = walk.nextNode()) {
+              const at = t.data.indexOf("HERE");
+              if (at < 0) continue;
+              getSelection().setBaseAndExtent(t, at, t, at + 4);
+              return;
+            }
+          },
+          `mk${k}${n}x`,
+        );
+        if (k === "menu") {
+          await type("@ro");
+          await menu.waitFor();
+          await press("Enter");
+          await menu.waitFor({ state: "hidden" });
+        } else await type("[[Fresh Page]]");
+      }
+    const made = await richBox.evaluate((el) => el.querySelectorAll("[data-md]").length);
+    ok(made === 2 * N, `${tag} every picked mention and typed wikilink is a piece in the editor (${made} of ${2 * N})`);
+    const editing = await markers();
+    await done.click();
+    await richBox.waitFor({ state: "detached" });
+    await page.locator(viewSel).first().waitFor();
+    await page.evaluate(() => document.fonts.ready);
+    const saved = await markers();
+    for (const k of kinds) {
+      const rows = [];
+      for (let n = 0; n < N; n++) {
+        const a = editing.markers[k + n];
+        const b = saved.markers[k + n];
+        if (!a || !b) rows.push(`#${n} missing`);
+        else if (Math.abs(a[0] - b[0]) > 0.5 || Math.abs(a[1] - b[1]) > 0.5 || Math.abs(a[2] - b[2]) > 0.5)
+          {
+            rows.push(`#${n} dx ${(b[0] - a[0]).toFixed(1)} dy ${(b[1] - a[1]).toFixed(1)} dh ${(b[2] - a[2]).toFixed(1)}`);
+            console.log(`info ${tag} #${n} editor: ${editing.dump[k + n]}\ninfo ${tag} #${n} view:   ${saved.dump[k + n]}`);
+          }
+      }
+      ok(rows.length === 0, `${tag} text after a ${k === "menu" ? "picked mention" : "typed wikilink"} stays put when the editor saves: ${rows.length} of ${N} moved${rows.length ? ` (${rows.slice(0, 6).join("; ")})` : ""}`);
+    }
+    const md = await desc(i.key);
+    ok(md.includes("@robin ") && md.includes("[[Fresh Page]] mk"), `${tag} the saved markdown holds them literally (${JSON.stringify(md.slice(0, 120))})`);
+  }
+
+  // Typed [[x]] and @name become pieces as they are completed; undo gives the typed text back.
+  {
+    await openSmall("Typed pieces", "Start");
+    await press("Control+End");
+    await type(" [[Fresh]]");
+    ok((await pieceCount()) === 1, `${tag} typing the closing ]] makes a piece`);
+    await press("Control+z");
+    const lit = await richBox.evaluate((el) => el.textContent.trim());
+    ok((await pieceCount()) === 0 && lit === "Start [[Fresh]]", `${tag} one undo gives back the typed text (${JSON.stringify(lit)})`);
+  }
+  {
+    await openSmall("Typed piece Backspace", "Start");
+    await press("Control+End");
+    await type(" [[Again]]");
+    await press("Backspace");
+    console.log(`info ${tag} Backspace right after a converted wikilink leaves ${JSON.stringify(await richBox.evaluate((el) => el.textContent.trim()))} and ${await pieceCount()} piece(s)`);
+  }
+  {
+    await openSmall("Typed mention", "Start");
+    await press("Control+End");
+    await type(" and @robin.");
+    ok((await pieceCount()) === 0, `${tag} a name followed by "." is not converted yet (it may go on: @a.b)`);
+    await type(" ");
+    ok((await pieceCount()) === 1, `${tag} a space after it converts the mention (${await pieceCount()})`);
+    await press("Control+z");
+    ok((await pieceCount()) === 0, `${tag} one undo gives back the typed mention`);
+  }
+
+  // A piece with a letter typed straight after it, and a piece at the end of a paragraph.
+  {
+    const i = await openSmall("Letter after", "ab @robin cd");
+    await press("Home");
+    for (let k = 0; k < 4; k++) await press("ArrowRight");
+    await type("x");
+    await done.click();
+    const got = await waitDesc(i.key, "ab @robinx cd");
+    console.log(`info ${tag} a letter typed right after @robin saves as ${JSON.stringify(got)}`);
+    await page.goto(`${base}/issue/${i.key}`);
+    await page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {});
+    const v = page.locator(viewSel).first();
+    await v.waitFor();
+    console.log(`info ${tag} the view draws it as ${JSON.stringify(await v.locator(".mention").allTextContents())}`);
+    ok(got === "ab @robinx cd", `${tag} the letter joins the mention's name in the markdown (${JSON.stringify(got)})`);
+  }
+  {
+    const i = await openSmall("Piece at the end", "ab [[Some Page]]");
+    const box = await richBox.locator("[data-md]").boundingBox();
+    await page.mouse.click(box.x + box.width - 2, box.y + box.height / 2);
+    await type("z");
+    await press("Enter");
+    await type("w");
+    await done.click();
+    const want = "ab [[Some Page]]z\n\nw";
+    const got = await waitDesc(i.key, want);
+    ok(got === want, `${tag} click after a piece at the end, type, Enter, type: ${JSON.stringify(got)}`);
   }
   await ctx.close();
 }

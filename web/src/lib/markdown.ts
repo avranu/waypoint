@@ -321,6 +321,28 @@ const PIECE_SRC_OK = /^(?:\[\[[^[\]\n]{1,420}\]\]|@[a-zA-Z0-9][\w.-]{0,38})$/
 // the editor opens), but uneditable: the caret goes before or after one, and
 // Backspace removes it whole. Issue keys are links in the view only, and a
 // link is as wide as its text, so they stay text here.
+function pieceEl(src: string, el: HTMLElement) {
+  el.setAttribute('contenteditable', 'false')
+  el.setAttribute(PIECE_SRC, src)
+  return el
+}
+
+/**
+ * The editor's piece for `src`, a wikilink's or a mention's markdown, as HTML
+ * (null if it is neither). The one place a piece's markup is made, for text
+ * already in the description and for what is typed or picked in the editor.
+ */
+export function pieceHtml(src: string): string | null {
+  const w = new RegExp(`^${WIKILINK.source}$`).exec(src)
+  if (w) {
+    const target = w[1].trim()
+    return target ? pieceEl(src, wikilinkEl(target, w[2])).outerHTML : null
+  }
+  return /^@[a-zA-Z0-9][\w.-]{0,38}$/.test(src)
+    ? pieceEl(src, mentionEl(src.slice(1))).outerHTML
+    : null
+}
+
 function editorPieces(root: DocumentFragment) {
   const re = new RegExp(`${WIKILINK.source}|${TOKEN.source}`, 'g')
   for (const n of textNodes(root)) {
@@ -329,23 +351,18 @@ function editorPieces(root: DocumentFragment) {
     const out = document.createDocumentFragment()
     let last = 0
     for (const m of text.matchAll(re)) {
-      let el: HTMLElement
       let at = m.index
       let src: string
-      if (m[1] !== undefined) {
-        const target = m[1].trim()
-        if (!target) continue
-        el = wikilinkEl(target, m[2])
-        src = m[0]
-      } else if (m[5]) {
-        const user = mentionName(m[5])
-        el = mentionEl(user)
+      if (m[1] !== undefined) src = m[0]
+      else if (m[5]) {
+        src = '@' + mentionName(m[5])
         at += m[3].length
-        src = '@' + user
       } else continue // an issue key
-      el.setAttribute('contenteditable', 'false')
-      el.setAttribute(PIECE_SRC, src)
-      out.append(text.slice(last, at), el)
+      const html = pieceHtml(src)
+      if (!html) continue
+      const holder = document.createElement('template')
+      holder.innerHTML = html
+      out.append(text.slice(last, at), holder.content)
       last = at + src.length
     }
     if (last === 0) continue
