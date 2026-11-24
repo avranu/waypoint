@@ -597,6 +597,7 @@ func (s *Service) storeMessage(ctx context.Context, sessionID int64, body, stepK
 		sessionID, body, stepKey, nullUser(from.by), s.nowMS(), passive, from.agent, nullID(from.automation)); err != nil {
 		return nil, err
 	}
+	s.stopWaits.wakeShip(sessionID) // a wp ship waiting on the round's news looks again
 	return s.messageByKey(ctx, stepKey)
 }
 
@@ -654,8 +655,13 @@ func (s *Service) takeMessages(ctx context.Context, t *tx, x *AgentSession, via 
 		out = append(out, m)
 	}
 	rows.Close()
-	if err := rows.Err(); err != nil || len(out) == 0 {
+	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	// The round's news a wp ship waits for is that wait's (WP-1669).
+	out = slices.DeleteFunc(out, func(m *SessionMessage) bool { return s.shipWaits.holds(ctx, t, s.now(), x.ID, m) })
+	if len(out) == 0 {
+		return nil, nil
 	}
 	if via == "stop" && !slices.ContainsFunc(out, func(m *SessionMessage) bool { return !m.passive && !heldToWait(ctx, t, m) }) {
 		return nil, nil // news alone never continues a stop
@@ -736,7 +742,8 @@ func MessagesText(list []*SessionMessage) string {
 type stopWaits struct {
 	mu      sync.Mutex
 	waiting map[int64][]chan struct{}
-	expect  map[int64]time.Time // told to wait; their call is on its way
+	expect  map[int64]time.Time       // told to wait; their call is on its way
+	ship    map[int64][]chan struct{} // wp ship waits on a review round's news (WP-1669)
 }
 
 func (w *stopWaits) add(id int64) chan struct{} {
@@ -770,10 +777,12 @@ func (w *stopWaits) remove(id int64, ch chan struct{}) {
 func (w *stopWaits) wake(id int64) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	for _, ch := range w.waiting[id] {
-		select {
-		case ch <- struct{}{}:
-		default:
+	for _, list := range [][]chan struct{}{w.waiting[id], w.ship[id]} {
+		for _, ch := range list {
+			select {
+			case ch <- struct{}{}:
+			default:
+			}
 		}
 	}
 }
