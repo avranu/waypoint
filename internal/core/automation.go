@@ -237,10 +237,19 @@ func (s *Service) runAction(c *StepCtx) error {
 		if err != nil || strings.TrimSpace(msg) == "" {
 			return cmpErr(err, invalid("pr_comment needs a message"))
 		}
-		// Not again on a head it was asked on (WP-1808, WP-1732): "once" holds
-		// across a draft marked ready twice.
-		if asked, err := s.askedOnHead(ctx, data.PR.ID, a.ID, data.PR.HeadSHA, msg); err != nil || asked {
-			return err
+		// "Ask CodeRabbit to review" is not repeated on a head it was asked on
+		// (WP-1808, WP-1732): "once" holds across a draft marked ready twice.
+		// Other comments post as they always did.
+		if msg == askCodeRabbit {
+			asked, err := s.askedOnHead(ctx, data.PR.ID, a.ID, data.PR.HeadSHA, msg)
+			if err != nil {
+				return err
+			}
+			if asked {
+				c.note("skipped", "already asked on "+short(data.PR.HeadSHA))
+				s.log.InfoContext(ctx, "not asking again on this head", "pr", data.PR.ID, "head", short(data.PR.HeadSHA), "automation", a.ID)
+				return nil
+			}
 		}
 		c, err := cl.PostPRComment(ctx, botForge(f), data.PR.Repo, data.PR.Number, msg)
 		if err == nil {

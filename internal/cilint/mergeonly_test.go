@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -23,12 +25,15 @@ func mergeOnlyStep(t *testing.T) (script, cond string) {
 	}
 	var wf struct {
 		Jobs map[string]struct {
-			If    string `yaml:"if"`
-			Needs any    `yaml:"needs"`
-			Steps []struct {
-				ID  string `yaml:"id"`
-				If  string `yaml:"if"`
-				Run string `yaml:"run"`
+			If      string `yaml:"if"`
+			Needs   any    `yaml:"needs"`
+			Timeout int    `yaml:"timeout-minutes"`
+			Steps   []struct {
+				ID       string `yaml:"id"`
+				If       string `yaml:"if"`
+				Run      string `yaml:"run"`
+				Timeout  int    `yaml:"timeout-minutes"`
+				Continue bool   `yaml:"continue-on-error"`
 			} `yaml:"steps"`
 		} `yaml:"jobs"`
 	}
@@ -36,6 +41,9 @@ func mergeOnlyStep(t *testing.T) (script, cond string) {
 		t.Fatal(err)
 	}
 	cur := wf.Jobs["current"]
+	if cur.Timeout < 5 {
+		t.Errorf("current needs a timeout-minutes of its own that the main path's one-minute wait fits in: %d", cur.Timeout)
+	}
 	// current runs for a push, an edit of a ready pull request, and a push to a draft.
 	for _, want := range []string{"github.event.action == 'edited' && !startsWith(github.event.pull_request.title, 'WIP:')",
 		"startsWith(github.event.pull_request.title, 'WIP:')", "'synchronized'", "'opened'", "'reopened'"} {
@@ -52,6 +60,16 @@ func mergeOnlyStep(t *testing.T) (script, cond string) {
 			}
 		case "mergeonly":
 			script, cond = st.Run, st.If
+			if st.Timeout == 0 || st.Timeout >= cur.Timeout || !st.Continue {
+				t.Errorf("mergeonly needs its own timeout (%d, under the job's %d) and continue-on-error (%v): a step that dies must mean the checks run", st.Timeout, cur.Timeout, st.Continue)
+			}
+			// The parent count is read from the API before anything is cloned.
+			if i, j := strings.Index(st.Run, "git/commits/$PR_HEAD"), strings.Index(st.Run, "git init"); i < 0 || j < 0 || i > j {
+				t.Error("mergeonly must read the head's parents from the API before git init")
+			}
+			if !strings.Contains(st.Run, "timeout 120 git fetch") || !strings.Contains(st.Run, "timeout 120 git merge-tree") {
+				t.Error("mergeonly's git fetch and merge-tree must be bounded with timeout")
+			}
 		}
 	}
 	if script == "" {
@@ -137,36 +155,72 @@ func (r *fakeRepo) push(t *testing.T, sha string) {
 	git(t, r.work, "push", "-q", "-f", "origin", sha+":refs/pull/5/head")
 }
 
-// statusesServer answers the statuses of sha with list.
-func statusesServer(t *testing.T, sha string, list []map[string]any) *httptest.Server {
+// forgeServer answers the API: statuses by commit, and commits' parents from
+// the fake repo's work tree.
+func forgeServer(t *testing.T, r *fakeRepo, statuses map[string][]map[string]any) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.URL.Path != "/api/v1/repos/o/r/commits/"+sha+"/statuses" {
+		const root = "/api/v1/repos/o/r/"
+		path, ok := strings.CutPrefix(req.URL.Path, root)
+		if !ok {
 			http.Error(w, "no", 404)
 			return
 		}
-		if req.URL.Query().Get("page") != "1" {
-			_, _ = w.Write([]byte("[]"))
+		if sha, ok := strings.CutPrefix(path, "git/commits/"); ok {
+			out, err := exec.Command("git", "-C", r.work, "rev-list", "--parents", "-n", "1", sha).Output()
+			if err != nil {
+				http.Error(w, "no commit", 404)
+				return
+			}
+			parents := []map[string]string{}
+			for _, p := range strings.Fields(string(out))[1:] {
+				parents = append(parents, map[string]string{"sha": p})
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"sha": sha, "parents": parents})
 			return
 		}
-		_ = json.NewEncoder(w).Encode(list)
+		if sha, ok := strings.CutSuffix(strings.TrimPrefix(path, "commits/"), "/statuses"); ok && strings.HasPrefix(path, "commits/") {
+			if req.URL.Query().Get("page") != "1" {
+				_, _ = w.Write([]byte("[]"))
+				return
+			}
+			l := statuses[sha]
+			if l == nil {
+				l = []map[string]any{}
+			}
+			_ = json.NewEncoder(w).Encode(l)
+			return
+		}
+		http.Error(w, "no", 404)
 	}))
 	t.Cleanup(srv.Close)
 	return srv
 }
 
+// green is a head's statuses: a real run's, or a skipped merge-only run's.
 func green(skipped bool) []map[string]any {
 	d := "Successful"
 	if skipped {
 		d = "Has been skipped"
 	}
 	return []map[string]any{
-		{"id": 1, "context": "ci / backend (pull_request)", "status": "pending"},
-		{"id": 2, "context": "ci / backend (pull_request)", "status": "success", "description": d},
-		{"id": 3, "context": "ci / lint (pull_request)", "status": "success", "description": d},
-		{"id": 4, "context": "ci / e2e (pull_request)", "status": "success", "description": "Has been skipped"},
+		{"id": 1, "context": "ci / backend (pull_request)", "status": "pending", "target_url": "/actions/runs/1/jobs/1"},
+		{"id": 2, "context": "ci / backend (pull_request)", "status": "success", "description": d, "target_url": "/actions/runs/1/jobs/1"},
+		{"id": 3, "context": "ci / lint (pull_request)", "status": "success", "description": d, "target_url": "/actions/runs/1/jobs/2"},
+		{"id": 4, "context": "ci / e2e (pull_request)", "status": "success", "description": "Has been skipped", "target_url": "/actions/runs/1/jobs/3"},
 		{"id": 5, "context": "waypoint/review", "status": "failure"},
 	}
+}
+
+// skippedRun is what a later draft run posts on a head: every job skipped,
+// from run n (a different run from the checks').
+func skippedRun(n int) []map[string]any {
+	var l []map[string]any
+	for i, c := range []string{"backend", "lint", "e2e"} {
+		l = append(l, map[string]any{"id": 100*n + i, "context": "ci / " + c + " (pull_request)", "status": "success", "description": "Has been skipped",
+			"target_url": "/actions/runs/" + strconv.Itoa(n) + "/jobs/" + strconv.Itoa(i)})
+	}
+	return l
 }
 
 // runStep runs the script; it returns tested's value and the log.
@@ -185,89 +239,143 @@ func runStep(t *testing.T, script string, r *fakeRepo, head string, srv *httptes
 	return strings.TrimSpace(strings.TrimPrefix(string(b), "tested=")), string(log)
 }
 
+// advance adds a commit to main (changing a.txt) and pushes it.
+func (r *fakeRepo) advance(t *testing.T, n int) string {
+	t.Helper()
+	git(t, r.work, "checkout", "-q", "main")
+	body, err := os.ReadFile(filepath.Join(r.work, "a.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, r.work, "a.txt", string(body)+"more "+strconv.Itoa(n)+"\n")
+	git(t, r.work, "commit", "-qam", "m"+strconv.Itoa(n))
+	git(t, r.work, "push", "-q", "origin", "main")
+	return git(t, r.work, "rev-parse", "HEAD")
+}
+
+// mergeInto merges base into from, optionally changing something in the merge
+// commit itself, and returns the new commit.
+func (r *fakeRepo) mergeInto(t *testing.T, from, base string, edit func()) string {
+	t.Helper()
+	git(t, r.work, "checkout", "-q", "-B", "head", from)
+	if edit == nil {
+		git(t, r.work, "merge", "-q", "--no-ff", "-m", "Merge main", base)
+	} else {
+		git(t, r.work, "merge", "-q", "--no-ff", "--no-commit", base)
+		edit()
+		git(t, r.work, "add", ".")
+		git(t, r.work, "commit", "-qm", "Merge main, with a change")
+	}
+	return git(t, r.work, "rev-parse", "HEAD")
+}
+
 // TestMergeOnlyStep runs the step's shell against a fake origin (WP-1808).
 func TestMergeOnlyStep(t *testing.T) {
 	script, _ := mergeOnlyStep(t)
-	merged := func(t *testing.T, r *fakeRepo, edit func()) string {
-		git(t, r.work, "checkout", "-q", "-B", "head", r.p1)
-		if edit == nil {
-			git(t, r.work, "merge", "-q", "--no-ff", "-m", "Merge main", r.p2)
-		} else {
-			git(t, r.work, "merge", "-q", "--no-ff", "--no-commit", r.p2)
-			edit()
-			git(t, r.work, "add", ".")
-			git(t, r.work, "commit", "-qm", "Merge main, with a change")
-		}
-		h := git(t, r.work, "rev-parse", "HEAD")
-		r.push(t, h)
-		return h
+	type result struct {
+		head     string
+		statuses map[string][]map[string]any
 	}
+	// merged: the head merges main into the feature branch's f1 (p1), whose statuses are list.
+	merged := func(t *testing.T, r *fakeRepo, list []map[string]any, edit func()) result {
+		h := r.mergeInto(t, r.p1, r.p2, edit)
+		r.push(t, h)
+		return result{h, map[string][]map[string]any{r.p1: list}}
+	}
+	// chain: n merge-only commits over p1, each skipped, then the head over them.
+	chain := func(t *testing.T, r *fakeRepo, n int, root []map[string]any) result {
+		st := map[string][]map[string]any{r.p1: root}
+		cur, base := r.p1, r.p2
+		for i := 1; i <= n; i++ {
+			cur = r.mergeInto(t, cur, base, nil)
+			st[cur] = skippedRun(i)
+			base = r.advance(t, i)
+		}
+		h := r.mergeInto(t, cur, base, nil)
+		r.push(t, h)
+		return result{h, st}
+	}
+	failed := append(green(false), map[string]any{"id": 9, "context": "ci / lint (pull_request)", "status": "failure", "target_url": "/actions/runs/1/jobs/2"})
 	cases := []struct {
 		name  string
-		setup func(t *testing.T, r *fakeRepo) (head string, statuses []map[string]any)
+		setup func(t *testing.T, r *fakeRepo) result
 		want  string
 		log   string
 	}{
-		{"a clean merge of the base over passed checks", func(t *testing.T, r *fakeRepo) (string, []map[string]any) {
-			return merged(t, r, nil), green(false)
+		{"a clean merge of the base over passed checks", func(t *testing.T, r *fakeRepo) result {
+			return merged(t, r, green(false), nil)
 		}, "true", "the checks skip"},
-		{"the first parent was itself a skipped merge-only run", func(t *testing.T, r *fakeRepo) (string, []map[string]any) {
-			return merged(t, r, nil), green(true)
-		}, "true", "the checks skip"},
-		{"the merge commit changed a file itself", func(t *testing.T, r *fakeRepo) (string, []map[string]any) {
-			return merged(t, r, func() { write(t, r.work, "b.txt", "feature, edited in the merge\n") }), green(false)
+		{"the first parent was a skipped run and not a merge", func(t *testing.T, r *fakeRepo) result {
+			return merged(t, r, green(true), nil)
+		}, "false", "no real checks and"},
+		{"a real failure, then a later draft run's skipped successes over it", func(t *testing.T, r *fakeRepo) result {
+			return merged(t, r, append(slices.Clone(failed), skippedRun(8)...), nil)
+		}, "false", "have not all passed"},
+		{"a chain of two skipped merges over a root that passed", func(t *testing.T, r *fakeRepo) result {
+			return chain(t, r, 2, green(false))
+		}, "true", "back 2 merge-only"},
+		{"a chain of two skipped merges over a root that failed", func(t *testing.T, r *fakeRepo) result {
+			return chain(t, r, 2, failed)
+		}, "false", "have not all passed"},
+		{"a chain of skipped merges over a root that never ran", func(t *testing.T, r *fakeRepo) result {
+			return chain(t, r, 2, nil)
+		}, "false", "no real checks and"},
+		{"a chain longer than 10", func(t *testing.T, r *fakeRepo) result {
+			return chain(t, r, 11, green(false))
+		}, "false", "10 merge-only commits"},
+		{"the merge commit changed a file itself", func(t *testing.T, r *fakeRepo) result {
+			return merged(t, r, green(false), func() { write(t, r.work, "b.txt", "feature, edited in the merge\n") })
 		}, "false", "changed something itself"},
-		{"the first parent's checks failed", func(t *testing.T, r *fakeRepo) (string, []map[string]any) {
+		{"the first parent's checks failed", func(t *testing.T, r *fakeRepo) result {
+			return merged(t, r, failed, nil)
+		}, "false", "have not all passed"},
+		{"the first parent's checks are still running", func(t *testing.T, r *fakeRepo) result {
 			l := green(false)
-			l = append(l, map[string]any{"id": 9, "context": "ci / lint (pull_request)", "status": "failure"})
-			return merged(t, r, nil), l
+			l = append(l, map[string]any{"id": 9, "context": "ci / backend (pull_request)", "status": "pending", "target_url": "/actions/runs/1/jobs/1"})
+			return merged(t, r, l, nil)
 		}, "false", "have not all passed"},
-		{"the first parent's checks are still running", func(t *testing.T, r *fakeRepo) (string, []map[string]any) {
-			l := green(false)
-			l = append(l, map[string]any{"id": 9, "context": "ci / backend (pull_request)", "status": "pending"})
-			return merged(t, r, nil), l
+		{"the first parent never ran its checks", func(t *testing.T, r *fakeRepo) result {
+			return merged(t, r, nil, nil)
+		}, "false", "no real checks and"},
+		{"the first parent has no lint status", func(t *testing.T, r *fakeRepo) result {
+			return merged(t, r, green(false)[:2], nil)
 		}, "false", "have not all passed"},
-		{"the first parent never ran its checks", func(t *testing.T, r *fakeRepo) (string, []map[string]any) {
-			return merged(t, r, nil), []map[string]any{}
-		}, "false", "have not all passed"},
-		{"the first parent has no lint status", func(t *testing.T, r *fakeRepo) (string, []map[string]any) {
-			return merged(t, r, nil), green(false)[:2]
-		}, "false", "have not all passed"},
-		{"the head is not a merge", func(t *testing.T, r *fakeRepo) (string, []map[string]any) {
+		{"the head is not a merge, and the origin is never read", func(t *testing.T, r *fakeRepo) result {
 			r.push(t, r.p1)
-			return r.p1, green(false)
+			if err := os.RemoveAll(r.bare); err != nil {
+				t.Fatal(err)
+			}
+			return result{r.p1, map[string][]map[string]any{r.p1: green(false)}}
 		}, "false", "not the two of a merge"},
-		{"the second parent is a branch commit, not on the base", func(t *testing.T, r *fakeRepo) (string, []map[string]any) {
+		{"the second parent is a branch commit, not on the base", func(t *testing.T, r *fakeRepo) result {
 			git(t, r.work, "checkout", "-q", "-b", "other", r.p2)
 			write(t, r.work, "c.txt", "other\n")
 			git(t, r.work, "add", ".")
 			git(t, r.work, "commit", "-qm", "other")
 			other := git(t, r.work, "rev-parse", "HEAD")
-			git(t, r.work, "checkout", "-q", "-B", "head", r.p1)
-			git(t, r.work, "merge", "-q", "--no-ff", "-m", "Merge other", other)
-			h := git(t, r.work, "rev-parse", "HEAD")
+			h := r.mergeInto(t, r.p1, other, nil)
 			r.push(t, h)
-			return h, green(false)
+			return result{h, map[string][]map[string]any{r.p1: green(false)}}
 		}, "false", "is not on main"},
-		{"the pull request moved on", func(t *testing.T, r *fakeRepo) (string, []map[string]any) {
-			h := merged(t, r, nil)
+		{"the pull request moved on", func(t *testing.T, r *fakeRepo) result {
+			res := merged(t, r, green(false), nil)
 			r.push(t, r.p1)
-			return h, green(false)
+			return res
 		}, "false", "has moved on"},
-		{"the origin can't be read", func(t *testing.T, r *fakeRepo) (string, []map[string]any) {
-			h := merged(t, r, nil)
+		{"the origin can't be read", func(t *testing.T, r *fakeRepo) result {
+			res := merged(t, r, green(false), nil)
 			if err := os.RemoveAll(r.bare); err != nil {
 				t.Fatal(err)
 			}
-			return h, green(false)
+			return res
 		}, "false", "fetching the base and the head failed"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			r := newFakeRepo(t)
-			head, list := c.setup(t, r)
-			srv := statusesServer(t, r.p1, list)
-			got, log := runStep(t, script, r, head, srv)
+			res := c.setup(t, r)
+			srv := forgeServer(t, r, res.statuses)
+			got, log := runStep(t, script, r, res.head, srv)
 			t.Logf("%s", log)
 			if got != c.want || !strings.Contains(log, c.log) {
 				t.Errorf("tested = %q, want %q, with %q in the log", got, c.want, c.log)

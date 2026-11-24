@@ -16,42 +16,72 @@ import (
 // pull request's diff against its base, normalised below; a head whose diff
 // equals the last reviewed head's carries that review.
 
-// diffHash hashes what a pull request changes and nothing a clean merge of
-// its base moves: the files (paths, renames, modes, binary patches) and the
-// added and removed lines in order. Left out: the "@@" line numbers, "index"
-// and "similarity" lines, hunk boundaries and context lines. A merge that
-// edits only the code around the change moves the context and the numbers,
-// not the change; one that resolves a conflict changes added or removed
-// lines. Context is left out because a base that changed nearby code would
-// otherwise defeat the whole check; what that can hide is an interaction
-// between the change and new neighbouring code, which CI on the merged tree
-// (the full run, the merge line) tests.
+// diffHash hashes what a pull request changes and the lines each change sits
+// between: the files (paths, renames, modes, binary patches) and, for each run
+// of added and removed lines, the run itself and the unchanged line just before
+// and just after it (a marker where the hunk starts or ends there). Left out:
+// the "@@" line numbers, "index" and "similarity" lines and the rest of the
+// context. A merge of the base that moves a change down the file leaves the
+// hash alone; one that edits the lines beside a change, or resolves a conflict,
+// changes it, and the head is reviewed (the conservative side). Line endings
+// are content: "+b" and "+b\r" differ. Without the neighbours, moving an added
+// line from one function to another hashed the same.
 func diffHash(diff string) string {
 	h := sha256.New()
-	inHunk, inBinary := false, false
-	for raw := range strings.SplitSeq(diff, "\n") {
-		l := strings.TrimRight(raw, "\r")
-		switch {
-		case strings.HasPrefix(l, "diff --git "):
-			inHunk, inBinary = false, false
-		case inBinary:
-		case strings.HasPrefix(l, "GIT binary patch"):
-			inBinary = true
-		case inHunk && strings.HasPrefix(l, "@@"):
-			continue
-		case inHunk:
-			if l == "" || l[0] == ' ' {
-				continue // context
-			}
-		case strings.HasPrefix(l, "@@"):
-			inHunk = true
-			continue
-		case strings.HasPrefix(l, "index "), strings.HasPrefix(l, "similarity index "), strings.HasPrefix(l, "dissimilarity index "):
-			continue
-		}
+	put := func(l string) {
+		h.Write([]byte(strconv.Itoa(len(l))))
+		h.Write([]byte{':'})
 		h.Write([]byte(l))
 		h.Write([]byte{'\n'})
 	}
+	const start, end = "\x00hunk-start", "\x00hunk-end"
+	inHunk, inBinary := false, false
+	before := start
+	var run []string
+	flush := func(after string) {
+		if len(run) == 0 {
+			return
+		}
+		put("<" + before)
+		for _, l := range run {
+			put(l)
+		}
+		put(">" + after)
+		run = run[:0]
+	}
+	lines := strings.Split(diff, "\n")
+	for n, l := range lines {
+		if n == len(lines)-1 && l == "" {
+			break
+		}
+		switch {
+		case strings.HasPrefix(l, "diff --git "):
+			flush(end)
+			inHunk, inBinary, before = false, false, start
+			put(l)
+		case inBinary:
+			put(l)
+		case strings.HasPrefix(l, "GIT binary patch"):
+			inBinary = true
+			put(l)
+		case strings.HasPrefix(l, "@@"):
+			flush(end)
+			inHunk, before = true, start
+		case inHunk && (strings.HasPrefix(l, "+") || strings.HasPrefix(l, "-")):
+			run = append(run, l)
+		case inHunk && strings.HasPrefix(l, "\\"):
+			if len(run) > 0 {
+				run = append(run, l) // "\ No newline at end of file" belongs to the line before
+			}
+		case inHunk: // an unchanged line
+			flush(l)
+			before = l
+		case strings.HasPrefix(l, "index "), strings.HasPrefix(l, "similarity index "), strings.HasPrefix(l, "dissimilarity index "):
+		default:
+			put(l)
+		}
+	}
+	flush(end)
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -90,18 +120,40 @@ func (p *PullRequest) contentHeadSHA() string {
 	return p.HeadSHA
 }
 
-// headCarry is the decision to carry a review to a new head.
-type headCarry struct {
-	from, hash, summary, contentSHA string
-	contentAt                       int64
+// commitParenter lists a commit's parents (ForgeStacks has it, httpForgeClient
+// answers it for Forgejo, Gitea and GitHub).
+type commitParenter interface {
+	CommitParents(ctx context.Context, f *Forge, repo, sha string) ([]string, error)
 }
 
-// noteReviewedHead records that a review finished on head, for later heads
-// to carry. since is when the head's content was first seen.
-func (s *Service) noteReviewedHead(ctx context.Context, prID int64, head, hash, summary, contentSHA string, since time.Time) {
+// headCarry is the decision to carry the reviews to a new head: one per
+// review rule that applies to the pull request.
+type headCarry struct {
+	from, hash, contentSHA string
+	contentAt              int64
+	rules                  []carriedRule
+}
+
+type carriedRule struct {
+	automationID int64
+	summary      string
+}
+
+// ruleID is the key a review run's rule has in reviewed_heads: 0 for a run
+// that has none (a manual one).
+func ruleID(id *int64) int64 {
+	if id == nil {
+		return 0
+	}
+	return *id
+}
+
+// noteReviewedHead records that rule's review finished on head, for later
+// heads to carry. since is when the head's content was first seen.
+func (s *Service) noteReviewedHead(ctx context.Context, prID, automationID int64, head, hash, summary, contentSHA string, since time.Time) {
 	err := s.write(ctx, SystemActor(), func(t *tx) error {
-		_, err := t.ExecContext(ctx, `INSERT OR REPLACE INTO reviewed_heads(pr_id, head_sha, diff_hash, summary, content_sha, content_at, carried, from_sha, created_at)
-			VALUES (?,?,?,?,?,?,0,'',?)`, prID, head, hash, summary, contentSHA, since.UnixMilli(), s.nowMS())
+		_, err := t.ExecContext(ctx, `INSERT OR REPLACE INTO reviewed_heads(pr_id, automation_id, head_sha, diff_hash, summary, content_sha, content_at, carried, from_sha, created_at)
+			VALUES (?,?,?,?,?,?,?,0,'',?)`, prID, automationID, head, hash, summary, contentSHA, since.UnixMilli(), s.nowMS())
 		return err
 	})
 	if err != nil {
@@ -110,58 +162,94 @@ func (s *Service) noteReviewedHead(ctx context.Context, prID int64, head, hash, 
 }
 
 // carryDecision says whether the push from old's head to fp's only merged the
-// base in: the head before was reviewed, and the new diff hashes the same.
-// Any doubt (no review, a failed read) is no carry, and the head is reviewed.
+// base in, so the reviews of the head before still hold. All of these:
+//   - the new head is a merge of exactly two parents whose first is the old
+//     head, read from the forge (a rebase or an amend with an equal diff is
+//     reviewed as before: a rebase rewrites the commits the review read, and
+//     a forge that can't list parents, GitLab's, never carries);
+//   - every review rule that applies to the pull request has a review that
+//     finished on the old head (or carried to it), with this diff's hash: one
+//     rule's failed or unfinished review is never taken for another's;
+//   - the diff, read now, hashes the same, and the forge still has the pull
+//     request at the new head after the read (the diff isn't pinned to a head).
+//
+// Any doubt (a failed read) is no carry, and every rule reviews the head.
 func (s *Service) carryDecision(ctx context.Context, f *Forge, repo string, old *PullRequest, fp *ForgePR) *headCarry {
 	cl, ok := s.Forges.(ForgePRs)
-	if !ok || old == nil || old.HeadSHA == "" || fp.HeadSHA == "" || old.HeadSHA == fp.HeadSHA {
+	sc, ok2 := s.Forges.(commitParenter)
+	if !ok || !ok2 || old == nil || old.HeadSHA == "" || fp.HeadSHA == "" || old.HeadSHA == fp.HeadSHA {
 		return nil
 	}
-	var c headCarry
-	var carried int
-	err := s.db.R.QueryRowContext(ctx, `SELECT diff_hash, summary, content_sha, content_at, carried FROM reviewed_heads WHERE pr_id = ? AND head_sha = ?`,
-		old.ID, old.HeadSHA).Scan(&c.hash, &c.summary, &c.contentSHA, &c.contentAt, &carried)
-	if err != nil {
-		if !errors.Is(err, sql.ErrNoRows) {
-			s.log.WarnContext(ctx, "read a reviewed head", "pr", old.ID, "err", err)
-		}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	ps, err := sc.CommitParents(ctx, f, repo, fp.HeadSHA)
+	if err != nil || len(ps) != 2 || !sameSHA(ps[0], old.HeadSHA) {
+		return nil
+	}
+	rules, err := s.reviewRulesFor(ctx, old)
+	if err != nil || len(rules) == 0 {
 		return nil
 	}
 	var n int
 	if s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM reviewed_heads WHERE pr_id = ? AND head_sha = ?`, old.ID, fp.HeadSHA).Scan(&n) != nil || n > 0 {
 		return nil // a stale read bringing back a head it had
 	}
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
+	c := &headCarry{from: old.HeadSHA}
+	for _, a := range rules {
+		var hash, summary, contentSHA string
+		var contentAt int64
+		err := s.db.R.QueryRowContext(ctx, `SELECT diff_hash, summary, content_sha, content_at FROM reviewed_heads WHERE pr_id = ? AND automation_id = ? AND head_sha = ?`,
+			old.ID, a.ID, old.HeadSHA).Scan(&hash, &summary, &contentSHA, &contentAt)
+		if err != nil {
+			if !errors.Is(err, sql.ErrNoRows) {
+				s.log.WarnContext(ctx, "read a reviewed head", "pr", old.ID, "err", err)
+			}
+			return nil
+		}
+		if c.hash != "" && hash != c.hash {
+			return nil
+		}
+		c.hash = hash
+		if c.contentSHA == "" || contentAt > c.contentAt { // the later: the longer wait
+			c.contentSHA, c.contentAt = contentSHA, contentAt
+		}
+		c.rules = append(c.rules, carriedRule{a.ID, summary})
+	}
 	diff, err := cl.PRDiff(ctx, f, repo, fp)
 	if err != nil {
 		s.log.InfoContext(ctx, "no carry: the diff couldn't be read", "pr", old.ID, "head", short(fp.HeadSHA), "err", err)
 		return nil
 	}
+	if cur, err := cl.GetPR(ctx, f, repo, fp.Number); err != nil || cur == nil || !sameSHA(cur.HeadSHA, fp.HeadSHA) {
+		return nil
+	}
 	if diffHash(diff) != c.hash {
 		return nil
 	}
-	c.from = old.HeadSHA
-	return &c
+	return c
 }
 
 // applyCarry records, in the transaction that records the new head, that it
-// carries the earlier review: its waits keep counting from the earlier
+// carries the earlier reviews: its waits keep counting from the earlier
 // content, and a review run for it ends as "same change".
 func (s *Service) applyCarry(ctx context.Context, t *tx, prID int64, head string, c *headCarry) error {
 	if _, err := t.ExecContext(ctx, `UPDATE pull_requests SET carried_sha = ?, carried_from_sha = ?, carried_at = ? WHERE id = ?`,
 		head, c.contentSHA, c.contentAt, prID); err != nil {
 		return err
 	}
-	_, err := t.ExecContext(ctx, `INSERT OR REPLACE INTO reviewed_heads(pr_id, head_sha, diff_hash, summary, content_sha, content_at, carried, from_sha, created_at)
-		VALUES (?,?,?,?,?,?,1,?,?)`, prID, head, c.hash, c.summary, c.contentSHA, c.contentAt, c.from, s.nowMS())
-	return err
+	for _, r := range c.rules {
+		if _, err := t.ExecContext(ctx, `INSERT OR REPLACE INTO reviewed_heads(pr_id, automation_id, head_sha, diff_hash, summary, content_sha, content_at, carried, from_sha, created_at)
+			VALUES (?,?,?,?,?,?,?,1,?,?)`, prID, r.automationID, head, c.hash, r.summary, c.contentSHA, c.contentAt, c.from, s.nowMS()); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-// carriedHead is the earlier review a run's head carries (WP-1808), when the
-// head was recorded as the same change.
-func (s *Service) carriedHead(ctx context.Context, prID int64, head string) (from, summary string, ok bool, err error) {
-	err = s.db.R.QueryRowContext(ctx, `SELECT from_sha, summary FROM reviewed_heads WHERE pr_id = ? AND head_sha = ? AND carried = 1`, prID, head).Scan(&from, &summary)
+// carriedHead is the earlier review a rule's run for head carries (WP-1808),
+// when the head was recorded as the same change.
+func (s *Service) carriedHead(ctx context.Context, prID, automationID int64, head string) (from, summary string, ok bool, err error) {
+	err = s.db.R.QueryRowContext(ctx, `SELECT from_sha, summary FROM reviewed_heads WHERE pr_id = ? AND automation_id = ? AND head_sha = ? AND carried = 1`, prID, automationID, head).Scan(&from, &summary)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", "", false, nil
 	}

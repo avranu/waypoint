@@ -175,6 +175,9 @@ deploy key in a CI job is readable by whatever runs beside it.
    `current` is skipped and the three checks queue at once (WP-156). On a push to a
    draft ("WIP: ") it runs once, light, and skips the checks when the push only merged
    the base in over a head whose checks passed (its notice says why not otherwise, WP-1808);
+   it reads the head's parents from the API first (a push that is not a two-parent merge
+   costs one request), counts only real, non-skipped results, walks back over at most 10
+   merge-only commits to the first with real passed ones, and bounds itself with timeouts;
    that is a skipped draft run, never a full one: dropping "WIP: " still runs the full suite.
    `backend` and `e2e` are the statuses branch protection and Waypoint read,
    but each is a small job that waits for parallel shard jobs (`backend shard

@@ -280,6 +280,19 @@ type prForge struct {
 	// ownLogin is the forge token's account when set (TokenLogin); else
 	// every token is the bot account's.
 	ownLogin string
+	// parents is a commit's parents by sha (CommitParents); a miss is an error.
+	parents map[string][]string
+	// afterDiff runs after PRDiff has read a diff (a push in between).
+	afterDiff func()
+}
+
+func (p *prForge) CommitParents(ctx context.Context, f *Forge, repo, sha string) ([]string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if ps, ok := p.parents[sha]; ok {
+		return append([]string(nil), ps...), nil
+	}
+	return nil, fmt.Errorf("no commit %s", sha)
 }
 
 func newPRForge() *prForge {
@@ -298,8 +311,13 @@ func (p *prForge) GetPR(ctx context.Context, f *Forge, repo string, n int) (*For
 
 func (p *prForge) PRDiff(ctx context.Context, f *Forge, repo string, pr *ForgePR) (string, error) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.diffs[pr.HeadSHA], nil
+	d := p.diffs[pr.HeadSHA]
+	hook := p.afterDiff
+	p.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	return d, nil
 }
 
 func (p *prForge) DirAt(ctx context.Context, f *Forge, repo, path, ref string) ([]string, error) {

@@ -353,6 +353,9 @@ func (s *Service) recordPR(ctx context.Context, f *Forge, repo string, fp *Forge
 				head_sha = CASE WHEN excluded.head_sha = '' THEN head_sha ELSE excluded.head_sha END,
 				head_repo = CASE WHEN excluded.head_repo = '' THEN head_repo ELSE excluded.head_repo END,
 				head_at = CASE WHEN excluded.head_sha != '' AND (excluded.head_sha != head_sha OR head_at IS NULL) THEN excluded.head_at ELSE head_at END,
+				carried_sha = CASE WHEN excluded.head_sha != '' AND excluded.head_sha != head_sha THEN '' ELSE carried_sha END,
+				carried_from_sha = CASE WHEN excluded.head_sha != '' AND excluded.head_sha != head_sha THEN '' ELSE carried_from_sha END,
+				carried_at = CASE WHEN excluded.head_sha != '' AND excluded.head_sha != head_sha THEN NULL ELSE carried_at END,
 				arm_declined = CASE WHEN arm_declined = 2 AND excluded.state = 'open' AND ((head_sha != '' AND excluded.head_sha NOT IN ('', head_sha)) OR state != 'open')
 					THEN 0 ELSE arm_declined END,
 				state = excluded.state, labels = excluded.labels, updated_at = excluded.updated_at,
@@ -1366,7 +1369,7 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 	// The push only merged the base in over a reviewed head: that review
 	// counts, and nothing new is asked of a model (WP-1808).
 	if !opts.Force && r.Reason == "pushed" {
-		from, earlier, ok, err := s.carriedHead(ctx, pr.ID, fp.HeadSHA)
+		from, earlier, ok, err := s.carriedHead(ctx, pr.ID, ruleID(r.AutomationID), fp.HeadSHA)
 		if err != nil {
 			return res, err
 		}
@@ -1724,12 +1727,16 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 	res.summary += verified.summary()
 	// A review that left part of the diff unreviewed isn't one a later head
 	// carries (WP-1808).
+	// The diff read at the start must still be the head's: the forge is asked
+	// again, as the diff isn't pinned to a head.
 	if cur, err := s.prByID(ctx, s.db.R, pr.ID); err == nil && unanswered == 0 && cur.HeadSHA == fp.HeadSHA {
-		since := cur.UpdatedAt
-		if t := cur.contentSince(); t != nil {
-			since = *t
+		if again, err := cl.GetPR(ctx, f, pr.Repo, pr.Number); err == nil && again != nil && sameSHA(again.HeadSHA, fp.HeadSHA) {
+			since := cur.UpdatedAt
+			if t := cur.contentSince(); t != nil {
+				since = *t
+			}
+			s.noteReviewedHead(context.WithoutCancel(ctx), pr.ID, ruleID(r.AutomationID), fp.HeadSHA, diffHash(diff), res.summary, cur.contentHeadSHA(), since)
 		}
-		s.noteReviewedHead(context.WithoutCancel(ctx), pr.ID, fp.HeadSHA, diffHash(diff), res.summary, cur.contentHeadSHA(), since)
 	}
 	return res, nil
 }
