@@ -371,6 +371,12 @@ function editorPieces(root: DocumentFragment) {
   }
 }
 
+/** The text a piece for `src` shows: a wikilink's label or target, a mention's "@name". */
+export function pieceText(src: string): string {
+  const w = new RegExp(`^${WIKILINK.source}$`).exec(src)
+  return w ? (w[2] ?? '').trim() || w[1].trim() : src
+}
+
 /** Whether `src` is what an editor piece may carry (see PIECE_SRC). */
 export const isPieceSrc = (src: string) => PIECE_SRC_OK.test(src)
 

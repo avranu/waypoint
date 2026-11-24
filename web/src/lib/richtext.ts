@@ -2,7 +2,7 @@
 // contenteditable editor makes are handled; anything else falls back to its
 // text, so pasted markup can't smuggle itself into the source.
 
-import { renderMarkdownForEdit, hasRawHtml, isPieceSrc, PIECE_SRC } from '@/lib/markdown'
+import { renderMarkdownForEdit, hasRawHtml, isPieceSrc, pieceText, PIECE_SRC } from '@/lib/markdown'
 import { PARK } from '@/lib/richinput'
 
 // `label`: text inside a link label or image alt, where any bracket would end
@@ -178,14 +178,31 @@ function codeText(node: Node): string {
   return all.endsWith('\n') ? all.slice(0, -1) : all
 }
 
-// The markdown of a wikilink or @mention the editor drew, or null.
+// The markdown of a wikilink or @mention the editor drew, or null. Only one
+// that shows what its markdown shows: markup pasted or dropped in with its own
+// attribute must not save a link or name other than the words on screen.
 function pieceOf(node: Node): string | null {
   if (node.nodeType !== Node.ELEMENT_NODE) return null
   const el = node as HTMLElement
   const piece = el.getAttribute(PIECE_SRC)
-  return piece !== null && el.getAttribute('contenteditable') === 'false' && isPieceSrc(piece)
+  return piece !== null &&
+    el.getAttribute('contenteditable') === 'false' &&
+    isPieceSrc(piece) &&
+    el.textContent?.replaceAll(PARK, '') === pieceText(piece)
     ? piece
     : null
+}
+
+// What follows a wikilink or mention must not become part of it when the
+// markdown is read again: a "(" after "]]" would make the wikilink a link's
+// label and the parenthesis its address, so it is escaped; a letter, digit or
+// "_" (with any "." or "-" before it) after "@name" would lengthen the name,
+// so a space goes between them.
+function afterPiece(a: string, piece: string, b: string) {
+  if (piece.startsWith('[[')) return b.startsWith('(') ? `${a}\\${b}` : a + b
+  const name = (s: string) => s.replace(/[.-]+$/, '')
+  const glued = /^@[a-zA-Z0-9][\w.-]{0,38}/.exec(piece + b.slice(0, 41).replaceAll('\\_', '_'))
+  return glued && name(glued[0]) !== name(piece) ? `${a} ${b}` : a + b
 }
 
 // An element's text for a code span, a piece being its markdown, not its label.
@@ -310,13 +327,12 @@ function oneLine(md: string) {
 
 function children(node: Node, opts: Opts = {}) {
   let out = ''
-  let afterPiece = false
+  let piece: string | null = null
   for (const child of Array.from(node.childNodes)) {
     const md = serialize(child, opts)
-    // A wikilink or mention is whole as it is: what follows it (a "(" after
-    // "]]") is not part of it, so nothing is escaped between them.
-    out = afterPiece ? out + md : join(out, md)
-    afterPiece = pieceOf(child) !== null
+    // A wikilink or mention is whole as it is: no "]" of it is escaped.
+    out = piece !== null ? afterPiece(out, piece, md) : join(out, md)
+    piece = pieceOf(child)
   }
   return out
 }
@@ -348,7 +364,7 @@ function blocksOf(nodes: Node[], opts: Opts = {}) {
   let out = ''
   let run = ''
   let afterBlock = false
-  let afterPiece = false
+  let piece: string | null = null
   // Inline text gets a blank line from a block on either side, so neither
   // joins the other: text right above a rule would become a setext heading,
   // and text right under a paragraph, quote or list would continue it.
@@ -364,11 +380,11 @@ function blocksOf(nodes: Node[], opts: Opts = {}) {
       out += text(true) + serialize(child, opts)
       run = ''
       afterBlock = true
-      afterPiece = false
+      piece = null
     } else {
       const md = serialize(child, opts)
-      run = afterPiece ? run + md : join(run, md)
-      afterPiece = pieceOf(child) !== null
+      run = piece !== null ? afterPiece(run, piece, md) : join(run, md)
+      piece = pieceOf(child)
     }
   }
   return out + text(false)

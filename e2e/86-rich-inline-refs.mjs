@@ -408,15 +408,34 @@ for (const [width, scheme] of looks(
     ok((await pieceCount()) === 0 && back === "Start and @robin.", `${tag} one undo gives back the typed mention as text (${JSON.stringify(back)})`);
   }
 
-  // What follows a piece is not part of it: no "]" is escaped between them.
-  for (const tail of ["(draft)", "[[Bar]]"]) {
+  // What the description view draws for an issue: its wikilinks, mentions and links.
+  const viewed = async (key) => {
+    await page.goto(`${base}/issue/${key}`);
+    await page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {});
+    const v = page.locator(viewSel).first();
+    await v.waitFor();
+    return v.evaluate((el) => ({
+      wikilinks: Array.from(el.querySelectorAll("a.wikilink"), (a) => a.textContent),
+      mentions: Array.from(el.querySelectorAll(".mention"), (m) => m.textContent),
+      links: Array.from(el.querySelectorAll("a:not(.wikilink)"), (a) => a.getAttribute("href")),
+      text: el.textContent.trim(),
+    }));
+  };
+
+  // What follows a piece is not part of it, and stays apart from it when the
+  // markdown is read again: "(" after "]]" would make the wikilink a link.
+  for (const [tail, want] of [
+    ["(draft)", "Start [[Foo]]\\(draft)"],
+    ["[[Bar]]", "Start [[Foo]][[Bar]]"],
+  ]) {
     const i = await openSmall(`Piece then ${tail}`, "Start");
     await press("Control+End");
     await type(` [[Foo]]${tail}`);
     await done.click();
-    const want = `Start [[Foo]]${tail}`;
     const got = await waitDesc(i.key, want);
-    ok(got === want, `${tag} [[Foo]] directly followed by ${tail} saves as typed (${JSON.stringify(got)})`);
+    ok(got === want, `${tag} [[Foo]] directly followed by ${tail} saves as ${JSON.stringify(want)} (${JSON.stringify(got)})`);
+    const v = await viewed(i.key);
+    ok(v.wikilinks[0] === "Foo" && v.links.length === 0 && v.text === `Start Foo${tail.replace("[[Bar]]", "Bar")}`, `${tag} the view draws [[Foo]] then ${tail} as typed (${JSON.stringify(v)})`);
   }
 
   // A piece with a letter typed straight after it, and a piece at the end of a paragraph.
@@ -426,14 +445,23 @@ for (const [width, scheme] of looks(
     for (let k = 0; k < 4; k++) await press("ArrowRight");
     await type("x");
     await done.click();
-    const got = await waitDesc(i.key, "ab @robinx cd");
-    console.log(`info ${tag} a letter typed right after @robin saves as ${JSON.stringify(got)}`);
-    await page.goto(`${base}/issue/${i.key}`);
-    await page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {});
-    const v = page.locator(viewSel).first();
-    await v.waitFor();
-    console.log(`info ${tag} the view draws it as ${JSON.stringify(await v.locator(".mention").allTextContents())}`);
-    ok(got === "ab @robinx cd", `${tag} the letter joins the mention's name in the markdown (${JSON.stringify(got)})`);
+    // "@robinx" would be another person: a space keeps the mention who it was.
+    const want = "ab @robin x cd";
+    const got = await waitDesc(i.key, want);
+    ok(got === want, `${tag} a letter typed right after @robin is kept apart from the name (${JSON.stringify(got)})`);
+    const v = await viewed(i.key);
+    ok(JSON.stringify(v.mentions) === '["@robin"]', `${tag} the view still mentions @robin (${JSON.stringify(v.mentions)})`);
+  }
+  // Markup pasted or dropped in that looks like a piece but shows other words
+  // saves the words shown, not the attribute's link.
+  {
+    const i = await openSmall("Forged piece", "Start");
+    await press("Control+End");
+    await richBox.evaluate(() => document.execCommand("insertHTML", false, ' <span contenteditable="false" data-md="[[Other Page]]">OK</span>'));
+    await done.click();
+    // Chromium may put the inserted span in a block of its own.
+    const got = await waitDesc(i.key, "Start OK");
+    ok(/^Start\s+OK$/.test(got ?? ""), `${tag} a pasted span carrying another wikilink saves its visible text (${JSON.stringify(got)})`);
   }
   {
     const i = await openSmall("Piece at the end", "ab [[Some Page]]");
