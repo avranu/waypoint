@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"git.jmann.me/claude/waypoint/internal/core/udiff"
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
@@ -1506,7 +1507,7 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 			}
 		}
 	}()
-	answered, unanswered := 0, 0
+	answered := 0
 	for n, ch := range chunks {
 		o.cut = o.cut || ch.cut
 		prompts := make([]string, len(chains))
@@ -1573,7 +1574,6 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 			for _, fd := range ch.files {
 				o.dropped = append(o.dropped, fd.path)
 			}
-			unanswered++
 			continue
 		}
 		answered++
@@ -1726,16 +1726,16 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 	}
 	res.summary += verified.summary()
 	// A review that left part of the diff unreviewed isn't one a later head
-	// carries (WP-1808).
+	// carries (WP-1808): see reviewedWhole.
 	// The diff read at the start must still be the head's: the forge is asked
 	// again, as the diff isn't pinned to a head.
-	if cur, err := s.prByID(ctx, s.db.R, pr.ID); err == nil && unanswered == 0 && cur.HeadSHA == fp.HeadSHA {
+	if cur, err := s.prByID(ctx, s.db.R, pr.ID); err == nil && reviewedWhole(o) && cur.HeadSHA == fp.HeadSHA {
 		if again, err := cl.GetPR(ctx, f, pr.Repo, pr.Number); err == nil && again != nil && sameSHA(again.HeadSHA, fp.HeadSHA) {
 			since := cur.UpdatedAt
 			if t := cur.contentSince(); t != nil {
 				since = *t
 			}
-			s.noteReviewedHead(context.WithoutCancel(ctx), pr.ID, ruleID(r.AutomationID), fp.HeadSHA, diffHash(diff), res.summary, cur.contentHeadSHA(), since)
+			s.noteReviewedHead(context.WithoutCancel(ctx), pr.ID, ruleID(r.AutomationID), fp.HeadSHA, udiff.ChangeHash(diff), res.summary, cur.contentHeadSHA(), since)
 		}
 	}
 	return res, nil

@@ -1,43 +1,63 @@
 package core
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
 
-// WP-1808: the diff hash ignores what a clean merge of the base moves.
-func TestDiffHash(t *testing.T) {
-	file := func(hunks ...string) string {
-		return "diff --git a/a.go b/a.go\nindex 1..2 100644\n--- a/a.go\n+++ b/a.go\n" + strings.Join(hunks, "")
+// WP-1808: a review that left part of the diff unreviewed (a file cut to fit,
+// files past the last part) is not carried: the merge-only push after it is
+// reviewed.
+func TestPartialReviewIsNotCarried(t *testing.T) {
+	big := func(name string, n int) string {
+		return "diff --git a/" + name + " b/" + name + "\nnew file mode 100644\n--- /dev/null\n+++ b/" + name +
+			"\n@@ -0,0 +1," + strconv.Itoa(n) + " @@\n" + strings.Repeat("+"+strings.Repeat("x", 99)+"\n", n)
 	}
-	hunk := func(start string, lines ...string) string {
-		return "@@ -" + start + " +" + start + " @@ func f() {\n" + strings.Join(lines, "\n") + "\n"
+	cases := map[string]string{
+		"a file cut to fit": sampleDiff + big("huge.txt", 700),
+		"files past the last part": sampleDiff + big("p1.txt", 340) + big("p2.txt", 340) + big("p3.txt", 340) +
+			big("p4.txt", 340) + big("p5.txt", 340),
 	}
-	base := file(hunk("10,6", " one", " two", "+guard()", " three", " four", " five"))
-	cases := []struct {
-		name string
-		diff string
-		same bool
+	for name, diff := range cases {
+		t.Run(name, func(t *testing.T) {
+			pe := newPREnv(t, "github")
+			pe.llm.answers["opencode/muse-spark-1.3-contributor-free"] = `{"findings":[]}`
+			pe.llm.answers["opencode/nemotron-3-ultra-free"] = `{"findings":[]}`
+			pe.diffs = map[string]string{"1111111aaaa": diff, "2222222bbbb": diff}
+			pe.fg.parents = map[string][]string{"2222222bbbb": {"1111111aaaa", "basebase01"}}
+			pr := ForgePR{Number: 5, Title: "Fix login", Author: "sam", HeadRef: "fix-login", HeadSHA: "1111111aaaa", State: "open"}
+			pe.pullHook("opened", pr)
+			if got := pe.drain(); len(got) != 1 || got[0].Status != "done" {
+				t.Fatalf("first review: %+v", got)
+			}
+			calls := len(pe.llm.calls)
+			pr.HeadSHA = "2222222bbbb"
+			pe.pullHook("synchronize", pr)
+			if got := pe.drain(); len(got) != 1 || got[0].Status != "done" || len(pe.llm.calls) == calls {
+				t.Fatalf("a partial review was carried: %+v, %d model calls", got, len(pe.llm.calls)-calls)
+			}
+			if sha, _ := carriedAt(t, pe); sha != "" {
+				t.Errorf("carried_sha = %q", sha)
+			}
+		})
+	}
+}
+
+func TestReviewedWhole(t *testing.T) {
+	for name, c := range map[string]struct {
+		o    reviewOutcome
+		want bool
 	}{
-		{"identical", base, true},
-		{"hunk numbers and index lines move", strings.NewReplacer("@@ -10,6 +10,6 @@", "@@ -70,6 +71,6 @@", "index 1..2", "index 9..8").Replace(base), true},
-		{"far-away context changes", strings.Replace(base, " five", " 5", 1), true},
-		{"the line before the change changes", strings.Replace(base, " two", " 2", 1), false},
-		{"the line after the change changes", strings.Replace(base, " three", " 3", 1), false},
-		{"an added line moves up", file(hunk("10,6", " one", "+guard()", " two", " three", " four", " five")), false},
-		{"an added line moves to another function", file(hunk("10,6", " one", " two", " three", " four", " five"), hunk("40,2", " other", "+guard()", " tail")), false},
-		{"a block moves", file(hunk("10,7", " one", " two", "+a()", "+b()", " three", " four", " five")), false},
-		{"a line ends with CR", strings.Replace(base, "+guard()", "+guard()\r", 1), false},
-		{"an added line differs", strings.Replace(base, "+guard()", "+other()", 1), false},
-		{"a file is added", base + file(hunk("1,1", "+x"))[len("diff --git a/a.go"):], false},
-		{"a mode changes", strings.Replace(base, "index 1..2 100644", "new file mode 100755", 1), false},
-		{"a file is renamed", strings.Replace(base, "b/a.go", "b/c.go", 1), false},
-	}
-	want := diffHash(base)
-	for _, c := range cases {
-		if got := diffHash(c.diff) == want; got != c.same {
-			t.Errorf("%s: same = %v, want %v", c.name, got, c.same)
+		"all of it":         {reviewOutcome{}, true},
+		"noise left out":    {reviewOutcome{noise: 2}, true},
+		"a file not read":   {reviewOutcome{dropped: []string{"a.go"}}, false},
+		"a file cut":        {reviewOutcome{cut: true}, false},
+		"an answer cut off": {reviewOutcome{salvagedAnswers: 1}, false},
+	} {
+		if got := reviewedWhole(c.o); got != c.want {
+			t.Errorf("%s: %v, want %v", name, got, c.want)
 		}
 	}
 }

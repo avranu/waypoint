@@ -2,88 +2,19 @@ package core
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"errors"
 	"strconv"
 	"strings"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core/udiff"
 )
 
 // A push that only merges the base in, cleanly, changes nothing the review
 // looked at (WP-1808). The server keeps no clone, so "the same change" is the
 // pull request's diff against its base, normalised below; a head whose diff
-// equals the last reviewed head's carries that review.
-
-// diffHash hashes what a pull request changes and the lines each change sits
-// between: the files (paths, renames, modes, binary patches) and, for each run
-// of added and removed lines, the run itself and the unchanged line just before
-// and just after it (a marker where the hunk starts or ends there). Left out:
-// the "@@" line numbers, "index" and "similarity" lines and the rest of the
-// context. A merge of the base that moves a change down the file leaves the
-// hash alone; one that edits the lines beside a change, or resolves a conflict,
-// changes it, and the head is reviewed (the conservative side). Line endings
-// are content: "+b" and "+b\r" differ. Without the neighbours, moving an added
-// line from one function to another hashed the same.
-func diffHash(diff string) string {
-	h := sha256.New()
-	put := func(l string) {
-		h.Write([]byte(strconv.Itoa(len(l))))
-		h.Write([]byte{':'})
-		h.Write([]byte(l))
-		h.Write([]byte{'\n'})
-	}
-	const start, end = "\x00hunk-start", "\x00hunk-end"
-	inHunk, inBinary := false, false
-	before := start
-	var run []string
-	flush := func(after string) {
-		if len(run) == 0 {
-			return
-		}
-		put("<" + before)
-		for _, l := range run {
-			put(l)
-		}
-		put(">" + after)
-		run = run[:0]
-	}
-	lines := strings.Split(diff, "\n")
-	for n, l := range lines {
-		if n == len(lines)-1 && l == "" {
-			break
-		}
-		switch {
-		case strings.HasPrefix(l, "diff --git "):
-			flush(end)
-			inHunk, inBinary, before = false, false, start
-			put(l)
-		case inBinary:
-			put(l)
-		case strings.HasPrefix(l, "GIT binary patch"):
-			inBinary = true
-			put(l)
-		case strings.HasPrefix(l, "@@"):
-			flush(end)
-			inHunk, before = true, start
-		case inHunk && (strings.HasPrefix(l, "+") || strings.HasPrefix(l, "-")):
-			run = append(run, l)
-		case inHunk && strings.HasPrefix(l, "\\"):
-			if len(run) > 0 {
-				run = append(run, l) // "\ No newline at end of file" belongs to the line before
-			}
-		case inHunk: // an unchanged line
-			flush(l)
-			before = l
-		case strings.HasPrefix(l, "index "), strings.HasPrefix(l, "similarity index "), strings.HasPrefix(l, "dissimilarity index "):
-		default:
-			put(l)
-		}
-	}
-	flush(end)
-	return hex.EncodeToString(h.Sum(nil))
-}
+// equals the last reviewed head's carries that review (udiff.ChangeHash).
 
 // carriedPrefix starts the summary of a run that carried an earlier review.
 const carriedPrefix = "Same change as "
@@ -146,6 +77,18 @@ func ruleID(id *int64) int64 {
 		return 0
 	}
 	return *id
+}
+
+// reviewedWhole: a model answered for every part of the diff it was given,
+// read each file whole, and finished its answer. Only such a review is one a
+// later head carries (WP-1808): a file no model answered for (every model
+// failed on its part), one past the last part (chunkDiff drops it), one cut to
+// fit, or an answer cut off at its length limit leaves something no one has
+// reviewed, and the next head is reviewed instead. Lockfiles, generated files
+// and a rule's skip_files are left out of every review of the rule, so they
+// don't count.
+func reviewedWhole(o reviewOutcome) bool {
+	return len(o.dropped) == 0 && !o.cut && o.salvagedAnswers == 0
 }
 
 // noteReviewedHead records that rule's review finished on head, for later
@@ -223,7 +166,7 @@ func (s *Service) carryDecision(ctx context.Context, f *Forge, repo string, old 
 	if cur, err := cl.GetPR(ctx, f, repo, fp.Number); err != nil || cur == nil || !sameSHA(cur.HeadSHA, fp.HeadSHA) {
 		return nil
 	}
-	if diffHash(diff) != c.hash {
+	if udiff.ChangeHash(diff) != c.hash {
 		return nil
 	}
 	return c
