@@ -1412,6 +1412,17 @@ func TestGatewayUploadUsesJobsLimit(t *testing.T) {
 	if err != nil || v.Status != "queued" {
 		t.Fatalf("%d bytes: %+v, %v", size, v, err)
 	}
+	// A figure outside what the gateway could state isn't the job's to set:
+	// the upload is held to the gateway's limit as known now.
+	for _, carried := range []int64{gatewayArchiveCeiling + 1, 1 << 40, gatewayArchiveFloor - 1} {
+		j := &gatewayJob{in: AgentJob{GatewayArchiveMax: carried}}
+		if got := ae.s.archiveMax(ae.ctx, j); got != GatewayArchiveMax {
+			t.Errorf("a job carrying %d: upload max %d, want the live %d", carried, got, GatewayArchiveMax)
+		}
+	}
+	if got := ae.s.archiveMax(ae.ctx, &gatewayJob{in: AgentJob{GatewayArchiveMax: gatewayArchiveCeiling}}); got != gatewayArchiveCeiling {
+		t.Errorf("a job carrying the ceiling: %d", got)
+	}
 	// Not a job of this person's, or not an audit: turned away before the
 	// upload is read.
 	if got, err := ae.s.GatewayUploadMax(ae.ctx, ae.admin, 999999); !errors.Is(err, ErrNotFound) {

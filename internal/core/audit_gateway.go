@@ -76,6 +76,10 @@ const (
 	GatewayArchiveMax     = 20 << 20
 	GatewayFileMax        = 5 << 20
 	gatewayJSONArchiveMax = 14 << 20
+	// gatewayArchiveFloor and gatewayArchiveCeiling bound an archive limit
+	// Waypoint believes, whether the gateway states it or a job carries it.
+	gatewayArchiveFloor   = 1 << 20
+	gatewayArchiveCeiling = 512 << 20
 	// GatewayPromptMax: an audit's prompt (200 KB at most) and the change's
 	// diff the runner adds.
 	GatewayPromptMax = 512 << 10
@@ -555,7 +559,7 @@ func (s *Service) GatewayTaskLimits(ctx context.Context) GatewayLimits {
 			}
 		}
 		return lim
-	case got.ArchiveBytes >= 1<<20 && got.ArchiveBytes <= 512<<20:
+	case got.ArchiveBytes >= gatewayArchiveFloor && got.ArchiveBytes <= gatewayArchiveCeiling:
 		lim.ArchiveBytes = got.ArchiveBytes
 		if got.FileBytes >= 64<<10 && got.FileBytes <= got.ArchiveBytes {
 			lim.FileBytes = got.FileBytes
@@ -595,9 +599,11 @@ func (s *Service) setGatewayLimits(ctx context.Context, in *AgentJob) {
 
 // archiveMax is the most archive a job's upload may be: what the job was
 // told (the server wrote it into the job's input when it queued it, and the
-// runner packed against it), else the gateway's limit as known now.
+// runner packed against it), else the gateway's limit as known now. A
+// figure outside the range GatewayTaskLimits believes is not the job's to
+// set, so the upload's cap never passes gatewayArchiveCeiling.
 func (s *Service) archiveMax(ctx context.Context, j *gatewayJob) int64 {
-	if j != nil && j.in.GatewayArchiveMax > 0 {
+	if j != nil && j.in.GatewayArchiveMax >= gatewayArchiveFloor && j.in.GatewayArchiveMax <= gatewayArchiveCeiling {
 		return j.in.GatewayArchiveMax
 	}
 	return s.GatewayTaskLimits(ctx).ArchiveBytes
