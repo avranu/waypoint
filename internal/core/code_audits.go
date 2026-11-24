@@ -1016,6 +1016,12 @@ func (s *Service) advanceAudit(ctx context.Context, id int64) {
 		a.Attempts = append(a.Attempts, AuditAttempt{Model: auditModelName(m), Round: a.Retries, Outcome: "unavailable", Error: excerpt(why, 300), At: s.nowMS()})
 		a.Slot++
 	}
+	if len(a.Attempts) == 0 {
+		// A chain with no model left to try and none tried: nothing to report
+		// but that (a round now advances its audit at once, WP-1725).
+		s.failAudit(ctx, a, "no model of the chain could be started: its chain names none left to try")
+		return
+	}
 	last := a.Attempts[len(a.Attempts)-1].Error
 	if ran {
 		s.endAuditChain(ctx, a, last)
