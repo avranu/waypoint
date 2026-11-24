@@ -193,7 +193,29 @@ const SUPPORTED = typeof navigator === 'undefined' || /Chrome\/|Firefox\//.test(
  */
 export function inputRules(el: HTMLElement, e: InputEvent): boolean {
   if (!SUPPORTED) return false
-  if (e.isComposing || e.inputType !== 'insertText' || !e.data || e.data.length !== 1) return false
+  // A composition commit that arrives as an input event with isComposing
+  // already false (Safari ends the composition first) is judged like a
+  // composition end; one still composing is left alone.
+  if (e.isComposing) return false
+  if (e.inputType === 'insertCompositionText') return composedRules(el, e.data ?? '')
+  if (e.inputType !== 'insertText' || !e.data || e.data.length !== 1) return false
+  return typedRules(el, e.data, false)
+}
+
+/**
+ * Called when a composition has ended (Android keyboards, IMEs, dictation
+ * send ordinary typing this way) with the text it committed. The DOM is never
+ * changed while a composition is active, so the rules run here, judging from
+ * the text before the caret as ProseMirror does: the trigger is the last
+ * character committed, whatever the length of what was committed. A paste or
+ * autocorrect is not a composition and never comes through here.
+ */
+export function composedRules(el: HTMLElement, data: string): boolean {
+  if (!SUPPORTED || !data) return false
+  return typedRules(el, data.slice(-1).replace(/\u00a0/g, ' '), true)
+}
+
+function typedRules(el: HTMLElement, ch: string, composed: boolean): boolean {
   const caret = caretIn(el)
   if (!caret) return false
   const at = elementOf(caret.startContainer)
@@ -201,7 +223,9 @@ export function inputRules(el: HTMLElement, e: InputEvent): boolean {
   const b = blockAt(el, caret)
   if (!b) return false
   const s = scan(b, caret)
-  if (e.data === ' ') {
+  // The committed text may already have been acted on, or the caret moved on.
+  if (composed && !s.before.endsWith(ch)) return false
+  if (ch === ' ') {
     const bare = b.node ? b.node.tagName === 'P' || b.node.tagName === 'DIV' : true
     const inItem = b.node?.tagName === 'LI'
     if (!bare && !inItem) return false
@@ -368,7 +392,13 @@ function eraseParked(caret: Range) {
   exec('delete')
 }
 
-const plain = (e: KeyboardEvent) => !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey
+/** What the key rules read of an event: a keydown, or a beforeinput standing in for one. */
+type KeyLike = Pick<
+  KeyboardEvent,
+  'key' | 'isComposing' | 'shiftKey' | 'ctrlKey' | 'metaKey' | 'altKey' | 'preventDefault'
+>
+
+const plain = (e: KeyLike) => !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey
 
 /**
  * Keys the browser handles badly in markdown-shaped content: Enter and Tab
@@ -376,7 +406,7 @@ const plain = (e: KeyboardEvent) => !e.shiftKey && !e.ctrlKey && !e.metaKey && !
  * quote, code or task, and arrows past the parking character after an inline
  * conversion. True if it was handled (the event is then cancelled).
  */
-export function keyRules(el: HTMLElement, e: KeyboardEvent): boolean {
+export function keyRules(el: HTMLElement, e: KeyLike): boolean {
   if (!SUPPORTED || e.isComposing) return false
   if (e.key === 'Tab' && !e.ctrlKey && !e.metaKey && !e.altKey && tabInList(el, e)) return true
   const caret = caretIn(el)
@@ -467,7 +497,7 @@ function isNested(li: Element, el: HTMLElement): boolean {
 // undo reverses one press. Where neither can happen in a list the key is still
 // swallowed, or focus would leave the editor mid-list; Escape is the way out.
 // Outside lists, and in code, Tab is the browser's or the code rule's.
-function tabInList(el: HTMLElement, e: KeyboardEvent): boolean {
+function tabInList(el: HTMLElement, e: KeyLike): boolean {
   const sel = window.getSelection()
   if (!sel || sel.rangeCount === 0) return false
   const r = sel.getRangeAt(0)
@@ -488,7 +518,33 @@ function tabInList(el: HTMLElement, e: KeyboardEvent): boolean {
   return true
 }
 
-function inCode(el: HTMLElement, e: KeyboardEvent, caret: Range, pre: Element): boolean {
+/**
+ * Android keyboards send Enter and Backspace as keydown 229 with no key, then
+ * beforeinput insertParagraph / insertLineBreak / deleteContentBackward. This
+ * runs the key rules for those, only when the keydown did not carry the key
+ * (the caller checks), so a desktop press is not handled twice.
+ */
+export function beforeInputRules(el: HTMLElement, e: InputEvent): boolean {
+  if (!SUPPORTED || e.isComposing || !e.cancelable) return false
+  const key =
+    e.inputType === 'insertParagraph' || e.inputType === 'insertLineBreak'
+      ? 'Enter'
+      : e.inputType === 'deleteContentBackward'
+        ? 'Backspace'
+        : ''
+  if (!key) return false
+  return keyRules(el, {
+    key,
+    isComposing: false,
+    shiftKey: false,
+    ctrlKey: false,
+    metaKey: false,
+    altKey: false,
+    preventDefault: () => e.preventDefault(),
+  })
+}
+
+function inCode(el: HTMLElement, e: KeyLike, caret: Range, pre: Element): boolean {
   if (!plain(e)) return false
   const { before, after } = codeSplit(pre, caret)
   if (e.key === 'Tab') {
@@ -518,7 +574,7 @@ function inCode(el: HTMLElement, e: KeyboardEvent, caret: Range, pre: Element): 
   return true
 }
 
-function quoteEnter(el: HTMLElement, e: KeyboardEvent, p: Element): boolean {
+function quoteEnter(el: HTMLElement, e: KeyLike, p: Element): boolean {
   if (p.textContent !== '' || p.parentElement!.lastElementChild !== p) return false
   e.preventDefault()
   // Outdent lifts the empty line out of the quote; with other lines left in
@@ -537,7 +593,7 @@ function quoteEnter(el: HTMLElement, e: KeyboardEvent, p: Element): boolean {
   return true
 }
 
-function taskEnter(el: HTMLElement, e: KeyboardEvent, li: Element, caret: Range): boolean {
+function taskEnter(el: HTMLElement, e: KeyLike, li: Element, caret: Range): boolean {
   const box = Array.from(li.children).find((c) => c.matches('input.task'))
   if (!box) return false
   // Caret before the box: leave it to the browser.
@@ -589,7 +645,7 @@ function removeBox(li: Element) {
   exec('delete')
 }
 
-function backspace(el: HTMLElement, e: KeyboardEvent, caret: Range): boolean {
+function backspace(el: HTMLElement, e: KeyLike, caret: Range): boolean {
   const at = elementOf(caret.startContainer)
   const pre = at?.closest('pre')
   if (pre && el.contains(pre)) {

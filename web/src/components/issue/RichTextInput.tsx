@@ -33,7 +33,7 @@ import { issueTarget, refreshAttachments, uploadAttachment } from '@/lib/attachm
 import { renderMarkdownForEdit } from '@/lib/markdown'
 import { htmlToMarkdown } from '@/lib/richtext'
 import { PARK } from '@/lib/richinput'
-import { inputRules, keyRules } from '@/lib/richdom'
+import { beforeInputRules, composedRules, inputRules, keyRules } from '@/lib/richdom'
 import type { UserRef } from '@/lib/types'
 import { MENTION_RE, MentionList, useMentionMatches } from './userMention'
 
@@ -193,6 +193,32 @@ export function RichTextInput({
     shown.current = value
     if (caret !== null) placeCaretAt(el, caret)
   }, [value])
+
+  // Android keyboards send Enter and Backspace as keydown 229 and then
+  // beforeinput, not as a keydown with the key. `keyed` is set when a keydown
+  // did carry Enter or Backspace (keyRules has had its turn), so the
+  // beforeinput that follows is not handled a second time; `composing` is
+  // true between compositionstart and compositionend, when the DOM is not ours
+  // to change.
+  const keyed = useRef(false)
+  const composing = useRef(false)
+  useEffect(() => {
+    const el = editor.current
+    if (!el) return
+    const onBefore = (e: Event) => {
+      if (keyed.current || composing.current) return
+      try {
+        if (beforeInputRules(el, e as InputEvent)) {
+          sync()
+          detect()
+        }
+      } catch (err) {
+        console.error('typed markdown rule failed', err)
+      }
+    }
+    el.addEventListener('beforeinput', onBefore)
+    return () => el.removeEventListener('beforeinput', onBefore)
+  })
 
   // What the editor last wrote out; the draft's newest text while mounted.
   const latest = useRef(value)
@@ -535,6 +561,22 @@ export function RichTextInput({
           sync()
           detect()
         }}
+        onCompositionStart={() => {
+          composing.current = true
+        }}
+        onCompositionEnd={(e) => {
+          composing.current = false
+          const el = editor.current
+          if (!el) return
+          try {
+            if (composedRules(el, e.data)) {
+              sync()
+              detect()
+            }
+          } catch (err) {
+            console.error('typed markdown rule failed', err)
+          }
+        }}
         onClick={(e) => {
           const t = e.target as HTMLElement
           if (t instanceof HTMLInputElement && t.type === 'checkbox') {
@@ -545,9 +587,11 @@ export function RichTextInput({
           detect()
         }}
         onKeyUp={(e) => {
+          keyed.current = false
           if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) detect()
         }}
         onKeyDown={(e) => {
+          keyed.current = e.key === 'Enter' || e.key === 'Backspace'
           // Markdown has no underline; the shortcut would make one that
           // vanishes on save.
           if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'u') {
