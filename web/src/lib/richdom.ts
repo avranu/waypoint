@@ -398,16 +398,19 @@ function convert(el: HTMLElement, b: Block, caret: Range, rule: BlockRule): bool
 
 // Marks a code block opened here by a typed "```". One opened from the saved
 // text may have had a longer fence or a "~~~" one, inside which a "```" line
-// is code, so only this one ends on a typed closing fence.
-const TYPED_FENCE = 'data-typed-fence'
+// is code, so only this one ends on a typed closing fence. Kept beside the
+// DOM, not in it: a block the browser rebuilds (undo) is one it doesn't know.
+const typedFences = new WeakSet<Element>()
 
 function codeBlock(el: HTMLElement, b: Block, lang: string): boolean {
   select(wholeOrContents(b))
   const cls = lang ? ` class="language-${escAttr(lang)}"` : ''
-  // The block knows its fence: Enter on a matching line ends it (inCode).
-  exec('insertHTML', `<pre ${TYPED_FENCE}><code${cls}>${EMPTY_LINE}</code></pre>`)
+  exec('insertHTML', `<pre><code${cls}>${EMPTY_LINE}</code></pre>`)
   const now = caretIn(el)
-  const code = now && elementOf(now.startContainer)?.closest('pre')?.querySelector('code')
+  const pre = now && elementOf(now.startContainer)?.closest('pre')
+  // The block knows its fence: Enter on a matching line ends it (inCode).
+  if (pre) typedFences.add(pre)
+  const code = pre?.querySelector('code')
   if (code) caretAt(code, 0)
   return true
 }
@@ -723,7 +726,7 @@ function inCode(el: HTMLElement, e: KeyLike, caret: Range, pre: Element): boolea
     // A closing fence, or a second empty line, ends the block. The fence
     // closes the "```" typed to open it: three or more backticks and nothing
     // but spaces after; in a block whose opener is not known it is code.
-    const fence = pre.hasAttribute(TYPED_FENCE) ? /(^|\n)`{3,}[ \t]*$/.exec(before) : null
+    const fence = typedFences.has(pre) ? /(^|\n)`{3,}[ \t]*$/.exec(before) : null
     const gone = fence ? fence[0].length : before.endsWith('\n\n') ? 2 : 0
     if (gone) {
       eraseBack(gone)
