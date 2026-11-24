@@ -1,6 +1,8 @@
 package core
 
 import (
+	"context"
+	"database/sql"
 	"strings"
 	"testing"
 	"time"
@@ -333,5 +335,181 @@ func TestShipNewsNeedsTheTaskToBeReadable(t *testing.T) {
 	// Its own session and a task it can read: answered.
 	if got := a.await(held.Key, 0); got.Outcome != ShipNewsPull {
 		t.Errorf("the task's own agent got %+v", got)
+	}
+}
+
+// takeStop is what a Stop hook takes for the session.
+func (a *apEnv) takeStop(t *testing.T) []*SessionMessage {
+	t.Helper()
+	var taken []*SessionMessage
+	err := a.s.write(a.ctx, a.ag, func(tx *tx) error {
+		x, err := scanSession(tx.QueryRowContext(a.ctx, `SELECT `+sessionCols+` FROM agent_sessions s WHERE s.id = ?`, a.session), a.s.nowMS())
+		if err != nil {
+			return err
+		}
+		taken, err = a.s.takeMessages(a.ctx, tx, x, "stop")
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return taken
+}
+
+// What a wait holds doesn't use up the messages a hook takes at once, however
+// many it holds: a message queued behind more held ones than one read of the
+// queue covers still goes.
+func TestHeldShipNewsDoesNotCrowdOutOtherMessages(t *testing.T) {
+	a, held, round := shipNewsEnv(t)
+	defer a.s.openShipWait(a.session, held.ID)()
+	key := strings.TrimSuffix(newsKey(t, a, "audit:", round), "done")
+	for n := range hookTakePage + 1 {
+		if _, err := a.s.storeMessage(a.ctx, a.session, "held findings", key+itoa64(int64(n)), messageFrom{}, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := a.s.storeMessage(a.ctx, a.session, "do this next", "", messageFrom{}, false); err != nil {
+		t.Fatal(err)
+	}
+	if taken := a.takeStop(t); len(taken) != 1 || taken[0].Body != "do this next" {
+		t.Fatalf("took %d messages: %+v", len(taken), taken)
+	}
+}
+
+// A hook takes hookTakeMax messages at once, oldest first; the rest go with
+// the next.
+func TestHookTakesAtMostItsCapOfMessages(t *testing.T) {
+	a, _, _ := shipNewsEnv(t)
+	for n := range hookTakeMax + 5 {
+		if _, err := a.s.storeMessage(a.ctx, a.session, "message "+itoa64(int64(n)), "", messageFrom{}, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first := a.takeStop(t)
+	if len(first) != hookTakeMax || first[0].Body != "message 0" {
+		t.Fatalf("took %d messages first", len(first))
+	}
+	if rest := a.takeStop(t); len(rest) != 5 || rest[0].Body != "message "+itoa64(hookTakeMax) {
+		t.Fatalf("took %d messages next", len(rest))
+	}
+}
+
+// Behind exactly a page of held news, a hook still takes hookTakeMax others,
+// then the rest: the cap counts only what it hands over.
+func TestHookCapCountsOnlyWhatIsntHeld(t *testing.T) {
+	a, held, round := shipNewsEnv(t)
+	defer a.s.openShipWait(a.session, held.ID)()
+	key := strings.TrimSuffix(newsKey(t, a, "audit:", round), "done")
+	for n := range hookTakePage {
+		if _, err := a.s.storeMessage(a.ctx, a.session, "held findings", key+itoa64(int64(n)), messageFrom{}, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for n := range hookTakeMax + 5 {
+		if _, err := a.s.storeMessage(a.ctx, a.session, "message "+itoa64(int64(n)), "", messageFrom{}, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if first := a.takeStop(t); len(first) != hookTakeMax || first[0].Body != "message 0" || first[hookTakeMax-1].Body != "message "+itoa64(hookTakeMax-1) {
+		t.Fatalf("took %d messages first", len(first))
+	}
+	if rest := a.takeStop(t); len(rest) != 5 || rest[0].Body != "message "+itoa64(hookTakeMax) {
+		t.Fatalf("took %d messages next", len(rest))
+	}
+}
+
+// A full take of news on a stop doesn't keep back the task queued behind it:
+// the task takes the newest one's place, so the stop continues, and the news
+// left over waits for a turn (a stop never continues for news alone).
+func TestStopTakesATaskQueuedBehindAFullTakeOfNews(t *testing.T) {
+	a, _, _ := shipNewsEnv(t)
+	for n := range hookTakeMax {
+		if _, err := a.s.storeMessage(a.ctx, a.session, "news "+itoa64(int64(n)), "", messageFrom{}, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := a.s.storeMessage(a.ctx, a.session, "the task", "", messageFrom{}, false); err != nil {
+		t.Fatal(err)
+	}
+	took := a.takeStop(t)
+	if len(took) != hookTakeMax || took[0].Body != "news 0" || took[hookTakeMax-1].Body != "the task" {
+		t.Fatalf("took %d messages: %v", len(took), took)
+	}
+	if rest := a.takeStop(t); len(rest) != 0 {
+		t.Errorf("a stop took %d messages of news alone", len(rest))
+	}
+}
+
+// countingQ counts the single-row lookups made through it.
+type countingQ struct {
+	queryer
+	rows int
+}
+
+func (c *countingQ) QueryRowContext(ctx context.Context, q string, args ...any) *sql.Row {
+	c.rows++
+	return c.queryer.QueryRowContext(ctx, q, args...)
+}
+
+// The hold check looks an audit's task up once for all of its messages, an
+// audit of no task included, and holds only the waited task's.
+func TestShipWaitHolderLooksAnAuditUpOnce(t *testing.T) {
+	a, held, round := shipNewsEnv(t)
+	defer a.s.openShipWait(a.session, held.ID)()
+	key := strings.TrimSuffix(newsKey(t, a, "audit:", round), "done")
+	q := &countingQ{queryer: a.s.db.R}
+	holds := a.s.shipWaits.holder(a.ctx, q, a.s.now(), a.session)
+	if !holds(&SessionMessage{stepKey: key + "1"}) || q.rows == 0 {
+		t.Fatalf("the round's audit news isn't held (%d lookups)", q.rows)
+	}
+	first := q.rows
+	if !holds(&SessionMessage{stepKey: key + "2"}) || q.rows != first {
+		t.Errorf("a second message of the audit: %d lookups after %d", q.rows, first)
+	}
+	if holds(&SessionMessage{stepKey: "audit:987654:1"}) {
+		t.Error("news of an audit with no task is held")
+	}
+	none := q.rows
+	if holds(&SessionMessage{stepKey: "audit:987654:2"}) || q.rows != none {
+		t.Errorf("a second message of an audit with no task: %d lookups after %d", q.rows, none)
+	}
+	if holds(&SessionMessage{stepKey: ""}) || holds(&SessionMessage{stepKey: "shipped:" + itoa64(round)}) || q.rows != none {
+		t.Errorf("a message that is no audit's or check's news was looked up or held (%d lookups after %d)", q.rows, none)
+	}
+}
+
+// Messages on both sides of a read's end, behind held news, go oldest first
+// and none is skipped or taken twice.
+func TestHookTakesMessagesAcrossReadsOfTheQueue(t *testing.T) {
+	a, held, round := shipNewsEnv(t)
+	defer a.s.openShipWait(a.session, held.ID)()
+	key := strings.TrimSuffix(newsKey(t, a, "audit:", round), "done")
+	store := func(body, stepKey string) {
+		t.Helper()
+		if _, err := a.s.storeMessage(a.ctx, a.session, body, stepKey, messageFrom{}, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 195 held, then 25 to take: 5 end the first read of 200, 20 follow it.
+	for n := range 195 {
+		store("held findings", key+itoa64(int64(n)))
+	}
+	for n := range 25 {
+		store("message "+itoa64(int64(n)), "")
+	}
+	var got []string
+	for _, m := range append(a.takeStop(t), a.takeStop(t)...) {
+		got = append(got, m.Body)
+	}
+	if len(got) != 25 {
+		t.Fatalf("took %d messages: %v", len(got), got)
+	}
+	for n, body := range got {
+		if body != "message "+itoa64(int64(n)) {
+			t.Fatalf("message %d taken is %q: %v", n, body, got)
+		}
+	}
+	if rest := a.takeStop(t); len(rest) != 0 {
+		t.Errorf("took %d more", len(rest))
 	}
 }

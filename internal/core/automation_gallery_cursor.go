@@ -58,22 +58,23 @@ func lensTemplate(field string) string {
 
 // auditSteps: one audit step (WP-348), which keeps the findings in Waypoint
 // and, with fix, hands them to Claude as a low-priority task. The audit
-// tells the saver itself when it fails; a model out of usage ends it
-// quietly, since usage comes back by itself.
+// tells the saver itself when it fails; a Waypoint with no gateway ends it
+// quietly when Cursor is out of usage, since usage comes back by itself.
 func auditSteps(target, ref, focus string, fix bool) []Action {
 	return []Action{{Type: "audit", ID: "audit", OnError: "continue", Extra: map[string]any{"target": target, "ref": ref, "instructions": focus, "fix": fix}}}
 }
 
 // auditTemplateModel says which model a card's audit gets.
-const auditTemplateModel = "The model is the one the gateway picks for audits (Grok 4.7 when it has it), on the gateway from a checkout your runner sends; " +
-	"on a Waypoint with no LLM gateway it is Grok 4.7 through cursor-agent on your runner, on your Cursor plan."
+const auditTemplateModel = "The model is Grok 4.7 through cursor-agent on your runner, on your Cursor plan. " +
+	"When Cursor can't run it (no runner with Cursor online, the plan out of usage, a failure), the model the LLM gateway picks for audits runs it instead, from a checkout your runner sends; " +
+	"a Waypoint with no LLM gateway has Cursor alone."
 
 var cursorTemplates = []AutomationTemplate{
 	{
 		Name: "Daily Grok audit, checked by Claude",
 		Description: "Every working day at 12:30, another model audits the whole repository, one focus a day: security, correctness, failure handling, tests, dead weight. " +
 			"Its findings become a low-priority task for Claude, who checks each against the code, fixes the real ones in one pull request and says why the rest are wrong. " +
-			auditTemplateModel + " Stops for the day when the model is out of usage.",
+			auditTemplateModel,
 		Rule: Rule{Trigger: Trigger{Event: "schedule", Every: "weekday", At: "12:30"}, Concurrency: "skip",
 			Actions: auditSteps("repo", "", "Focus: "+lensTemplate("what")+".", true)},
 	},

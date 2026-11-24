@@ -299,7 +299,7 @@ func (s *Service) postToSession(ctx context.Context, sessionID int64, waiting bo
 		}
 	}
 	rows.Close()
-	msgs = slices.DeleteFunc(msgs, func(m *SessionMessage) bool { return s.shipWaits.holds(ctx, s.db.R, s.now(), sessionID, m) }) // a wp ship waits for it (WP-1669)
+	msgs = slices.DeleteFunc(msgs, s.shipWaits.holder(ctx, s.db.R, s.now(), sessionID)) // a wp ship waits for it (WP-1669)
 	reqs, err := s.loadRequests(ctx, SystemActor(), true, `r.session_id = ? AND r.user_id = ? AND r.delivered_at IS NULL AND r.batch_until IS NULL AND r.state IN ('`+strings.Join(decidedStates, "','")+`') ORDER BY r.id`, sessionID, user)
 	if err != nil {
 		return
