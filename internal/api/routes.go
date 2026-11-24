@@ -419,7 +419,9 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) (any, error) {
 	// Only failures count: per address, per account and address, and per
 	// account. Someone else's guessing can't lock the owner's address out.
 	ip := s.clientIP(r)
-	if s.loginBlocked(r.Context(), in.Login, ip) {
+	if blocked, err := s.loginBlocked(r.Context(), in.Login, ip); err != nil {
+		return nil, err
+	} else if blocked {
 		return nil, errTooMany
 	}
 	tok, u, err := s.svc.Login(r.Context(), in.Login, in.Password, r.UserAgent(), ip)

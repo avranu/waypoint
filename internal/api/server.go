@@ -734,16 +734,20 @@ func queryBool(r *http.Request, name string) bool {
 // loginBlocked reports whether a password attempt for login from ip is
 // refused. The account-wide limit guards against a guesser rotating
 // addresses; it spares an address the account already signed in from.
-func (s *Server) loginBlocked(ctx context.Context, login, ip string) bool {
+// An error looking for that session is returned, not taken as a yes or no.
+func (s *Server) loginBlocked(ctx context.Context, login, ip string) (bool, error) {
 	login = strings.ToLower(strings.TrimSpace(login))
 	if s.limiter.blocked("login:"+ip) || s.userAddrLimiter.blocked("login-user:"+login+"|"+ip) {
-		return true
+		return true, nil
 	}
 	if !s.userLimiter.blocked("login-user:" + login) {
-		return false
+		return false, nil
 	}
 	spared, err := s.svc.SignedInFrom(ctx, login, ip)
-	return err != nil || !spared
+	if err != nil {
+		return false, fmt.Errorf("checking for a session from this address: %w", err)
+	}
+	return !spared, nil
 }
 
 func (s *Server) loginFailed(login, ip string) {
