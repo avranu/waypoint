@@ -1,7 +1,8 @@
-// Checks: on a board whose filter sorts by something other than manual rank (?q=order:-priority),
+// Checks: on a board whose filter sorts by something other than manual rank (?q=order:priority),
 // a drop says nothing about rank (WP-1800): dragging a card within a column leaves every manual
 // rank as it was and the card returns; dragging it to another column changes its status and
 // still leaves manual order alone.
+// The backlog page has the same rules (WP-1800).
 // Needs user robin (run 01-signup-flow first).
 import { chromium } from "playwright";
 import fs from "node:fs";
@@ -19,7 +20,7 @@ for (const vp of looks([
   { width: 1440, height: 900 },
   { width: 390, height: 844 },
 ])) {
-  if (vp.width <= 600) continue; // touch dragging is not exercised by the other board suites either
+  const wide = vp.width > 600; // touch dragging is not exercised by the other board suites either
   const tag = `${vp.width}px`;
   const ctx = await browser.newContext({ viewport: vp });
   const page = await ctx.newPage();
@@ -82,48 +83,131 @@ for (const vp of looks([
   };
 
   await page.goto(
-    `${base}/p/${key}/board?q=${encodeURIComponent("order:-priority")}`,
+    `${base}/p/${key}/board?q=${encodeURIComponent("order:priority")}`,
   );
   await page.waitForSelector("section[data-col]");
   await card(C.key).waitFor();
-  const shown = [C.key, B.key, A.key].join();
+  const shown = [A.key, B.key, C.key].join();
   ok(
     (await keysIn(col(0))).join() === shown,
     `${tag}: the board shows the priority order: ${await keysIn(col(0))}`,
   );
   const before = await manual();
 
-  await drag(card(A.key), card(C.key));
-  ok(
-    (await manual()) === before,
-    `${tag}: a drop within a column leaves manual ranks alone: ${before} -> ${await manual()}`,
-  );
-  ok(
-    (await keysIn(col(0))).join() === shown,
-    `${tag}: the card returns to its sorted place: ${await keysIn(col(0))}`,
-  );
-  await page.reload();
-  await card(C.key).waitFor();
-  ok(
-    (await keysIn(col(0))).join() === shown,
-    `${tag}: still the priority order after a reload`,
-  );
+  if (wide) {
+    await drag(card(A.key), card(C.key));
+    ok(
+      (await manual()) === before,
+      `${tag}: a drop within a column leaves manual ranks alone: ${before} -> ${await manual()}`,
+    );
+    ok(
+      (await keysIn(col(0))).join() === shown,
+      `${tag}: the card returns to its sorted place: ${await keysIn(col(0))}`,
+    );
+    await page.reload();
+    await card(C.key).waitFor();
+    ok(
+      (await keysIn(col(0))).join() === shown,
+      `${tag}: still the priority order after a reload`,
+    );
 
-  await drag(card(B.key), card(D.key));
-  const b = await send("GET", "/issues/" + B.key);
-  ok(
-    b.status.id === c1.id,
-    `${tag}: a drop in another column changes the status (${b.status.name})`,
-  );
-  ok(
-    (await manual()) === before,
-    `${tag}: ...and leaves manual ranks alone: ${await manual()}`,
-  );
-  ok(
-    (await keysIn(col(1))).includes(B.key),
-    `${tag}: it shows in the other column: ${await keysIn(col(1))}`,
-  );
+    await drag(card(B.key), card(D.key));
+    const b = await send("GET", "/issues/" + B.key);
+    ok(
+      b.status.id === c1.id,
+      `${tag}: a drop in another column changes the status (${b.status.name})`,
+    );
+    ok(
+      (await manual()) === before,
+      `${tag}: ...and leaves manual ranks alone: ${await manual()}`,
+    );
+    ok(
+      (await keysIn(col(1))).includes(B.key),
+      `${tag}: it shows in the other column: ${await keysIn(col(1))}`,
+    );
+  }
   await page.screenshot({ path: `${out}/${tag}-sorted-drag.png` });
+
+  // The backlog page: a sprint project with three backlog rows and one in a planned sprint.
+  const bkey = "BL" + vp.width;
+  if (!(await send("GET", "/projects")).some((p) => p.key === bkey))
+    await send("POST", "/projects", {
+      name: "Sorted backlog " + vp.width,
+      key: bkey,
+      settings: { mode: "sprints" },
+    });
+  const sprint = await send("POST", `/projects/${bkey}/sprints`, {
+    name: "Sprint " + vp.width,
+  });
+  const mkb = (title, priority) =>
+    send("POST", "/issues", { project: bkey, title, priority });
+  const [A2, B2, C2, E2] = [
+    await mkb("Rank first", "low"),
+    await mkb("Rank second", "medium"),
+    await mkb("Rank third", "high"),
+    await mkb("In the sprint", "none"),
+  ];
+  await send("PATCH", "/issues/" + E2.key, { sprint: sprint.name });
+  const ranks = async () => {
+    const d = await send("GET", `/projects/${bkey}/backlog?q=order:rank`);
+    return [...d.backlog, ...d.sprints.flatMap((x) => x.issues)]
+      .map((i) => `${i.key}@${i.rank}`)
+      .sort()
+      .join();
+  };
+  const rows = () =>
+    page
+      .locator("[data-nav-key]")
+      .evaluateAll((els) => els.map((e) => e.dataset.navKey))
+      .then((ks) => ks.filter((k) => [A2, B2, C2].some((i) => i.key === k)));
+  const sortedRows = [A2.key, B2.key, C2.key].join();
+  await page.goto(
+    `${base}/p/${bkey}/backlog?q=${encodeURIComponent("order:priority")}`,
+  );
+  await card(C2.key).waitFor();
+  ok(
+    (await rows()).join() === sortedRows,
+    `${tag}: the backlog shows the priority order: ${await rows()}`,
+  );
+  await page.screenshot({ path: `${out}/${tag}-sorted-backlog.png` });
+  if (wide) {
+    const ranked = await ranks();
+    await drag(card(A2.key), card(C2.key));
+    ok(
+      (await ranks()) === ranked,
+      `${tag}: a backlog drop within the section leaves ranks alone: ${await ranks()}`,
+    );
+    ok(
+      (await rows()).join() === sortedRows,
+      `${tag}: the row returns to its sorted place: ${await rows()}`,
+    );
+    await drag(card(B2.key), card(E2.key));
+    const moved = await send("GET", "/issues/" + B2.key);
+    ok(
+      moved.sprint_name === sprint.name,
+      `${tag}: a drop into the sprint moves the issue there (${moved.sprint_name})`,
+    );
+    ok(
+      (await ranks()) === ranked,
+      `${tag}: ...and leaves ranks alone: ${await ranks()}`,
+    );
+    await page.goto(`${base}/p/${bkey}/backlog`);
+    await card(C2.key).waitFor();
+    const unsorted = await ranks();
+    await drag(card(C2.key), card(A2.key));
+    const after = await ranks();
+    const rank = (r, k) =>
+      Number(
+        r
+          .split(",")
+          .find((x) => x.startsWith(k + "@"))
+          .split("@")[1],
+      );
+    ok(
+      after !== unsorted && rank(after, C2.key) > rank(after, A2.key),
+      `${tag}: without order: a drop still moves the rank: ${unsorted} -> ${after}`,
+    );
+  }
   await ctx.close();
 }
 await browser.close();
