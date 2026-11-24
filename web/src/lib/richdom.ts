@@ -799,32 +799,23 @@ function dropStrandedGap(li: Element | null) {
 }
 
 // `keepItem`: Backspace in a task with nothing after its box leaves an empty
-// bullet item, where a plain delete would take the whole item (and the list)
-// with it.
+// bullet item. Taking the box out of an item with nothing else in it takes the
+// whole item (and the list) with it, however it is done, so a parking
+// character goes in front of the box first: the item stays, empty to the eye,
+// and the character is dropped on save. One undo then shows the box again,
+// with nothing typed beside it.
 function removeBox(li: Element, keepItem = false) {
   const box = Array.from(li.children).find((c) => c.matches('input.task'))
   if (!box) return
+  if (keepItem && blank(li)) {
+    caretAt(li, 0)
+    exec('insertText', PARK)
+  }
   const r = document.createRange()
   r.setStartBefore(box)
   const next = box.nextSibling
   if (next?.nodeType === Node.TEXT_NODE && (next as Text).data.startsWith(GAP)) r.setEnd(next, 1)
   else r.setEndAfter(box)
-  if (keepItem && blank(li)) {
-    // Taking the box out of an item with nothing else in it takes the whole
-    // item (and the list). With a placeholder character in it, the item stays;
-    // backspacing that last, visible character leaves the empty item.
-    caretAt(li, 0)
-    exec('insertText', '.')
-    const dot = li.firstChild
-    const gone = document.createRange()
-    gone.setStartAfter(dot!)
-    gone.setEnd(r.endContainer, r.endOffset)
-    select(gone)
-    exec('delete')
-    if (dot?.nodeType === Node.TEXT_NODE) caretAt(dot, 1)
-    exec('delete')
-    return
-  }
   select(r)
   exec('delete')
 }

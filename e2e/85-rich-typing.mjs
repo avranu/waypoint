@@ -524,7 +524,40 @@ for (const [width, scheme] of looks(
       await type("x");
     },
     "- x",
-    /^<ul><li>x<\/li><\/ul>$/,
+    /^<ul><li>\ufeff?x<\/li><\/ul>$/,
+  );
+  await typed(
+    "undo after backspace in an empty task gives the box back, with nothing typed in",
+    async () => {
+      await type("[ ] ");
+      await press("Backspace");
+      await press("Control+z");
+    },
+    null,
+    (h) => /<li>\ufeff?<input[^>]*class="task"/.test(h) && !/\./.test(h.replace(/<[^>]*>/g, "")),
+  );
+  await typed(
+    "a second backspace in an emptied task leaves the empty bullet item",
+    async () => {
+      await type("[ ] ");
+      await press("Backspace");
+      await press("Backspace");
+      await type("y");
+    },
+    "- y",
+    /^<ul><li>\ufeff?y<\/li><\/ul>$/,
+  );
+  // Enter inside a heading splits it in two, a new line of the same level in
+  // the markdown, not a space within one line.
+  await typed(
+    "enter in the middle of an h6",
+    async () => {
+      await type("###### hello world");
+      for (let k = 0; k < 6; k++) await press("ArrowLeft");
+      await press("Enter");
+      await type("next");
+    },
+    "###### hello\n\n###### next world",
   );
   await typed(
     "backspace at a task box",

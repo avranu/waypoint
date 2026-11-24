@@ -415,7 +415,7 @@ for (const [width, scheme] of looks(
     await type("[ ] ");
     await aBack();
     await type("x");
-  }, "- x", /^<ul><li>x<\/li><\/ul>$/);
+  }, "- x", /^<ul><li>\ufeff?x<\/li><\/ul>$/);
   await typed("a plain backspace by beforeinput still deletes a character", async () => {
     await word("abc");
     await aBack();
