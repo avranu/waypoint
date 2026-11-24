@@ -1,7 +1,8 @@
 // Wikilinks, @mentions and issue references look the same in the rich editor
 // as in the description view, so clicking to edit shifts nothing (WP-1763,
-// WP-1749). Run after 01-signup-flow (user robin).
-import { chromium } from "playwright";
+// WP-1749). Run after 01-signup-flow (user robin). RICH_TYPING_BROWSER=
+// firefox|webkit runs it under that engine (engine.mjs).
+import { launchEngine } from "./engine.mjs";
 import fs from "node:fs";
 import { looks } from "./looks.mjs";
 const [base, out] = process.argv.slice(2);
@@ -10,7 +11,7 @@ const errors = [];
 const fail = (m) => (console.log("FAIL", m), errors.push(m));
 const ok = (c, m) => (c ? console.log("ok  ", m) : fail(m));
 const H = { "X-Waypoint-Client": "web" };
-const browser = await chromium.launch();
+const browser = await launchEngine();
 
 async function login(ctx) {
   const page = await ctx.newPage();
