@@ -335,13 +335,7 @@ async function run(width, scheme) {
   await ctx.close();
 }
 
-for (const [w, s] of looks([
-  [1440, "light"],
-  [390, "light"],
-  [1440, "dark"],
-  [390, "dark"],
-]))
-  await run(w, s);
+for (const [w, s] of looks([[1440, "light"], [390, "light"], [1440, "dark"], [390, "dark"]])) await run(w, s);
 await browser.close();
 good.srv.close();
 bad.srv.close();

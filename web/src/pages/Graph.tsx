@@ -259,7 +259,6 @@ function GraphMap({
             onBlur={() => setHover(null)}
           >
             <title>{`${hit.ref} ${hit.title}${hit.state ? ' [' + hit.state + ']' : ''}`}</title>
-            {}
             <circle cx={x} cy={y} r={14} fill="transparent" />
             <circle
               cx={x}

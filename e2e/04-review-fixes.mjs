@@ -202,11 +202,7 @@ ok(
 );
 
 // Picker: ArrowDown + Enter with no matches doesn't throw.
-await page
-  .getByTitle(/^Priority: /)
-  .locator("visible=true")
-  .first()
-  .click();
+await page.getByTitle(/^Priority: /).locator("visible=true").first().click();
 await page.keyboard.type("zzzz");
 await page.keyboard.press("ArrowDown");
 await page.keyboard.press("Enter");

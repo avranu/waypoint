@@ -297,7 +297,6 @@ function Loaded({
             <DeliveryBanner issue={issue} className="mt-3" />
           </div>
           <IssueTabs tab={tab} setTab={setTab} />
-          {}
           <div className="@4xl:hidden">
             <Properties issue={issue} project={project} editable={editable} compact />
           </div>
@@ -1116,7 +1115,6 @@ function Properties({
       </Prop>
       <Prop label="Assignees">
         {assignee}
-        {}
         <div className="px-2 empty:hidden">
           <ClaimedBy issue={issue} />
         </div>

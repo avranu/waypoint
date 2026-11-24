@@ -74,8 +74,7 @@ for (const [width, scheme] of looks([
   await page.reload();
   await field.waitFor();
   ok(
-    (await field.evaluate((el) => (el.textContent ?? "").trim())) ===
-      "First thoughts and more",
+    (await field.evaluate((el) => (el.textContent ?? "").trim())) === "First thoughts and more",
     `${tag} a refresh mid-typing brings the text back`,
   );
   await page.waitForTimeout(2800); // Autosave waits 1800 ms after typing pauses (issue Description AUTOSAVE_MS); a shorter wait races it.
@@ -90,11 +89,10 @@ for (const [width, scheme] of looks([
     await page.waitForTimeout(2800); // Autosave waits 1800 ms after typing pauses (issue Description AUTOSAVE_MS); a shorter wait races it.
   }
   const hist = await api(`/issues/${issue.key}/history`);
-  const edits = (hist.events ?? hist).filter((e) => e.field === "description");
-  ok(
-    edits.length === 1,
-    `${tag} autosaves coalesce into one history entry (${edits.length})`,
+  const edits = (hist.events ?? hist).filter(
+    (e) => e.field === "description",
   );
+  ok(edits.length === 1, `${tag} autosaves coalesce into one history entry (${edits.length})`);
 
   await page.route("**/api/v1/issues/*", (r) =>
     r.request().method() === "PATCH" ? r.abort() : r.continue(),
@@ -103,9 +101,7 @@ for (const [width, scheme] of looks([
   const retry = page.getByRole("button", { name: "Not saved: retry" });
   await retry.waitFor({ timeout: 8000 });
   ok(
-    (await field.evaluate((el) => (el.textContent ?? "").trim())).endsWith(
-      " offline",
-    ),
+    (await field.evaluate((el) => (el.textContent ?? "").trim())).endsWith(" offline"),
     `${tag} a failed save keeps the text: ${JSON.stringify(await field.evaluate((el) => el.textContent ?? ""))}`,
   );
   await page.screenshot({ path: `${out}/failed-${tag}.png` });
@@ -117,15 +113,9 @@ for (const [width, scheme] of looks([
   await field.pressSequentially("!");
   await field.press("Control+Enter");
   await page.waitForFunction(
-    () =>
-      !document.querySelector(
-        '[contenteditable="true"][aria-label="Description"]',
-      ),
+    () => !document.querySelector('[contenteditable="true"][aria-label="Description"]'),
   );
-  ok(
-    (await desc()).endsWith("offline!"),
-    `${tag} Ctrl+Enter saves now and closes`,
-  );
+  ok((await desc()).endsWith("offline!"), `${tag} Ctrl+Enter saves now and closes`);
 
   const box = page.getByLabel("Comment", { exact: true });
   await box.fill(`Half a thought ${tag}`);
@@ -136,15 +126,10 @@ for (const [width, scheme] of looks([
     `${tag} a comment draft survives a refresh`,
   );
   await page.getByRole("button", { name: "Comment", exact: true }).click();
-  await page.waitForFunction(
-    () => document.querySelector("textarea[aria-label=Comment]")?.value === "",
-  );
+  await page.waitForFunction(() => document.querySelector("textarea[aria-label=Comment]")?.value === "");
   await page.reload();
   await box.waitFor();
-  ok(
-    (await box.inputValue()) === "",
-    `${tag} a posted comment leaves no draft: ${JSON.stringify(await box.inputValue())}`,
-  );
+  ok((await box.inputValue()) === "", `${tag} a posted comment leaves no draft: ${JSON.stringify(await box.inputValue())}`);
 
   const body = page.getByPlaceholder(/Markdown supported/);
   const pg = await (
@@ -154,18 +139,12 @@ for (const [width, scheme] of looks([
     })
   ).json();
   await page.goto(`${base}/pages/${pg.id}`);
-  await page
-    .locator(".prose-wp")
-    .first()
-    .click({ position: { x: 5, y: 5 } });
+  await page.locator(".prose-wp").first().click({ position: { x: 5, y: 5 } });
   await body.press("Control+End");
   await body.pressSequentially(" More.", { delay: 10 });
   await page.waitForTimeout(2800); // Autosave waits 1800 ms after typing pauses (issue Description AUTOSAVE_MS); a shorter wait races it.
   const got = await api(`/pages/${pg.id}`);
-  ok(
-    got.body === "Start. More.",
-    `${tag} a page body autosaves: ${JSON.stringify(got.body)}`,
-  );
+  ok(got.body === "Start. More.", `${tag} a page body autosaves: ${JSON.stringify(got.body)}`);
 
   const overflow = await page.evaluate(
     () => document.documentElement.scrollWidth > innerWidth,

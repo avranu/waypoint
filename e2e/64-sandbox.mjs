@@ -31,55 +31,13 @@ let T = {};
 const helperReport = (fp, now) => ({
   installed: true,
   status: {
-    version: "v1",
-    key: fp,
-    runner_uid: 1000,
-    kvm: true,
-    retired: 0,
-    pending: 1,
-    drift: [],
-    store: {
-      path: "/var/lib/waypoint/store",
-      ok: true,
-      mounted: true,
-      fs: "xfs",
-      free: 1e11,
-    },
+    version: "v1", key: fp, runner_uid: 1000, kvm: true, retired: 0, pending: 1, drift: [],
+    store: { path: "/var/lib/waypoint/store", ok: true, mounted: true, fs: "xfs", free: 1e11 },
     users: [
-      {
-        name: "wpr-robin-waypoint-a1b2c3",
-        uid: 40000,
-        kind: "repo",
-        key: "1/7",
-        slug: "robin/waypoint",
-        created: now,
-        last_used: now,
-        present: true,
-      },
-      {
-        name: "wpo-acme-d4e5f6",
-        uid: 40001,
-        kind: "org",
-        key: "1/acme",
-        slug: "acme",
-        created: now,
-        last_used: now - 86400 * 30,
-        present: true,
-      },
+      { name: "wpr-robin-waypoint-a1b2c3", uid: 40000, kind: "repo", key: "1/7", slug: "robin/waypoint", created: now, last_used: now, present: true },
+      { name: "wpo-acme-d4e5f6", uid: 40001, kind: "org", key: "1/acme", slug: "acme", created: now, last_used: now - 86400 * 30, present: true },
     ],
-    removed: [
-      {
-        name: "wpr-old-thing-0a0b0c",
-        uid: 39999,
-        kind: "repo",
-        key: "1/3",
-        slug: "robin/old-thing",
-        created: now - 86400 * 90,
-        last_used: now - 86400 * 60,
-        at: now - 3600,
-        archive: "/var/lib/waypoint/store/trash/wpr-old-thing-0a0b0c-1",
-      },
-    ],
+    removed: [{ name: "wpr-old-thing-0a0b0c", uid: 39999, kind: "repo", key: "1/3", slug: "robin/old-thing", created: now - 86400 * 90, last_used: now - 86400 * 60, at: now - 3600, archive: "/var/lib/waypoint/store/trash/wpr-old-thing-0a0b0c-1" }],
   },
 });
 for (const [width, scheme] of looks([
@@ -88,10 +46,7 @@ for (const [width, scheme] of looks([
 ])) {
   const tag = `${width}/${scheme}`;
   const key = `SBX${++n}`;
-  const ctx = await browser.newContext({
-    viewport: { width, height: 900 },
-    colorScheme: scheme,
-  });
+  const ctx = await browser.newContext({ viewport: { width, height: 900 }, colorScheme: scheme });
   const page = await ctx.newPage();
   page.setDefaultTimeout(15000);
   page.on("pageerror", (e) => fail(`${tag} pageerror: ${e.message}`));
@@ -101,70 +56,30 @@ for (const [width, scheme] of looks([
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL(base + "/");
   const api = (m, p, d) =>
-    page.request
-      .fetch(base + "/api/v1" + p, { method: m, headers: H, data: d })
-      .then(async (r) => ({
-        status: r.status(),
-        body: await r.json().catch(() => null),
-      }));
+    page.request.fetch(base + "/api/v1" + p, { method: m, headers: H, data: d }).then(async (r) => ({ status: r.status(), body: await r.json().catch(() => null) }));
   await api("POST", "/projects", { name: `Sandbox ${n}`, key });
   const overflow = async (what) =>
-    ok(
-      !(await page.evaluate(
-        () => document.documentElement.scrollWidth > window.innerWidth,
-      )),
-      `${tag} ${what}: no sideways scroll`,
-    );
+    ok(!(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)), `${tag} ${what}: no sideways scroll`);
 
-  const tok = (await api("POST", "/me/tokens", { name: `sandbox e2e ${n}` }))
-    .body.token;
+  const tok = (await api("POST", "/me/tokens", { name: `sandbox e2e ${n}` })).body.token;
   if (n === 1) T = { Authorization: `Bearer ${tok}` };
-  ok(
-    (
-      await page.request.get(`${base}/api/v1/projects/${key}/sandbox`, {
-        headers: T,
-      })
-    ).status() === 200,
-    `${tag} a token reads the policy`,
-  );
-  const refused = await page.request.patch(
-    `${base}/api/v1/projects/${key}/sandbox`,
-    { headers: T, data: { level: "off", reason: "x" } },
-  );
-  ok(
-    refused.status() === 403 && (await refused.text()).includes("Waypoint UI"),
-    `${tag} a token can't change it`,
-  );
+  ok((await page.request.get(`${base}/api/v1/projects/${key}/sandbox`, { headers: T })).status() === 200, `${tag} a token reads the policy`);
+  const refused = await page.request.patch(`${base}/api/v1/projects/${key}/sandbox`, { headers: T, data: { level: "off", reason: "x" } });
+  ok(refused.status() === 403 && (await refused.text()).includes("Waypoint UI"), `${tag} a token can't change it`);
 
   await page.goto(`${base}/p/${key}/settings?tab=sandbox`);
-  const section = page.locator("section", {
-    has: page.getByRole("heading", { name: "Sandbox", exact: true }),
-  });
+  const section = page.locator("section", { has: page.getByRole("heading", { name: "Sandbox", exact: true }) });
   await section.waitFor();
-  ok(
-    await section.getByText("doesn’t enforce them yet").isVisible(),
-    `${tag} says levels aren't enforced yet`,
-  );
+  ok(await section.getByText("doesn’t enforce them yet").isVisible(), `${tag} says levels aren't enforced yet`);
   await choose(page, "Runner jobs", "VM");
-  ok(
-    !(await section.getByLabel("Why loosen it?").isVisible()),
-    `${tag} tightening asks no reason`,
-  );
+  ok(!(await section.getByLabel("Why loosen it?").isVisible()), `${tag} tightening asks no reason`);
   await section.getByRole("button", { name: "Save" }).click();
   await page.getByText("Sandbox saved").waitFor();
-  ok(
-    (await api("GET", `/projects/${key}/sandbox`)).body.level === "vm",
-    `${tag} saved VM`,
-  );
+  ok((await api("GET", `/projects/${key}/sandbox`)).body.level === "vm", `${tag} saved VM`);
 
   // Signing in just now counts as entering the password, so make the server ask once.
   await choose(page, "Runner jobs", "Off");
-  ok(
-    await section
-      .getByText("Runs as you: everything you can reach")
-      .isVisible(),
-    `${tag} Off says what it opens up`,
-  );
+  ok(await section.getByText("Runs as you: everything you can reach").isVisible(), `${tag} Off says what it opens up`);
   const loosen = section.getByRole("button", { name: "Loosen sandbox" });
   ok(await loosen.isDisabled(), `${tag} loosening waits for a reason`);
   await section.getByLabel("Why loosen it?").fill("the build needs docker");
@@ -172,14 +87,7 @@ for (const [width, scheme] of looks([
   await page.route(`**/api/v1/projects/${key}/sandbox`, async (route) => {
     if (route.request().method() === "PATCH" && !asked) {
       asked = true;
-      return route.fulfill({
-        status: 403,
-        contentType: "application/json",
-        body: JSON.stringify({
-          error: "enter your password again to loosen the sandbox",
-          code: "reauth",
-        }),
-      });
+      return route.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ error: "enter your password again to loosen the sandbox", code: "reauth" }) });
     }
     return route.continue();
   });
@@ -195,14 +103,9 @@ for (const [width, scheme] of looks([
   await dlg.getByRole("button", { name: "Confirm" }).click();
   await page.getByText("Sandbox loosened; admins are told").waitFor();
   await page.unroute(`**/api/v1/projects/${key}/sandbox`);
-  ok(
-    (await api("GET", `/projects/${key}/sandbox`)).body.level === "off",
-    `${tag} loosened after the password`,
-  );
+  ok((await api("GET", `/projects/${key}/sandbox`)).body.level === "off", `${tag} loosened after the password`);
 
-  const log = page.locator("section", {
-    has: page.getByRole("heading", { name: "Changes" }),
-  });
+  const log = page.locator("section", { has: page.getByRole("heading", { name: "Changes" }) });
   await log.getByText("“the build needs docker”").waitFor();
   await overflow("project tab");
   await section.screenshot({ path: `${out}/project-${width}-${scheme}.png` });
@@ -210,31 +113,16 @@ for (const [width, scheme] of looks([
 
   await log.getByRole("button", { name: "Revert" }).first().click();
   const rd = page.getByRole("dialog", { name: /Revert change/ });
-  ok(
-    await rd.getByText("Why? (optional)").isVisible(),
-    `${tag} reverting a loosening needs no reason`,
-  );
+  ok(await rd.getByText("Why? (optional)").isVisible(), `${tag} reverting a loosening needs no reason`);
   await rd.getByRole("button", { name: "Revert" }).click();
   await page.getByText("Change reverted").waitFor();
-  ok(
-    (await api("GET", `/projects/${key}/sandbox`)).body.level === "vm",
-    `${tag} reverted to VM`,
-  );
+  ok((await api("GET", `/projects/${key}/sandbox`)).body.level === "vm", `${tag} reverted to VM`);
   await log.getByText("revert of #").waitFor();
 
   if (n === 1) {
     const r = await page.request.post(`${base}/api/v1/runner/register`, {
       headers: T,
-      data: {
-        name: "laptop",
-        hostname: "laptop.local",
-        os: "linux",
-        arch: "amd64",
-        version: "v1",
-        labels: [],
-        allowed_dirs: ["/work"],
-        clis: [],
-      },
+      data: { name: "laptop", hostname: "laptop.local", os: "linux", arch: "amd64", version: "v1", labels: [], allowed_dirs: ["/work"], clis: [] },
     });
     ok(r.status() === 200, `register a runner: ${r.status()}`);
     // The helper reports ready through the runner's poll, once it pins this server's key and its store is sound.
@@ -243,63 +131,30 @@ for (const [width, scheme] of looks([
     ok(/^SHA256:/.test(fp), `the server's spec key: ${fp}`);
     const polled = await page.request.post(`${base}/api/v1/runner/poll`, {
       headers: T,
-      data: {
-        runner: runnerId,
-        wait: 0,
-        free: 0,
-        running: [],
-        sandbox: helperReport(fp, Math.floor(Date.now() / 1000)),
-      },
+      data: { runner: runnerId, wait: 0, free: 0, running: [], sandbox: helperReport(fp, Math.floor(Date.now() / 1000)) },
     });
-    ok(
-      polled.status() === 200,
-      `a poll reports the helper: ${polled.status()}`,
-    );
+    ok(polled.status() === 200, `a poll reports the helper: ${polled.status()}`);
   }
   await page.goto(`${base}/settings?tab=runners`);
-  const sb = page.locator("section", {
-    has: page.getByRole("heading", { name: "Sandbox", exact: true }),
-  });
+  const sb = page.locator("section", { has: page.getByRole("heading", { name: "Sandbox", exact: true }) });
   await sb.waitFor();
   await sb.getByText("Sandbox helper ready").click();
   await sb.getByText("wpr-robin-waypoint-a1b2c3").waitFor();
-  ok(
-    await sb.getByText(/repo robin\/waypoint · uid 40000/).isVisible(),
-    `${tag} lists the helper's machine users`,
-  );
+  ok(await sb.getByText(/repo robin\/waypoint · uid 40000/).isVisible(), `${tag} lists the helper's machine users`);
   const showHelp = sb.getByRole("button", { name: "Show help: Sandbox" });
   if (await showHelp.isVisible()) await showHelp.click();
   await sb.getByText(/Helpers pin this server’s key/).waitFor();
-  ok(
-    await sb.locator("code", { hasText: /^SHA256:/ }).isVisible(),
-    `${tag} shows the key's fingerprint`,
-  );
+  ok(await sb.locator("code", { hasText: /^SHA256:/ }).isVisible(), `${tag} shows the key's fingerprint`);
   await sb.screenshot({ path: `${out}/helper-${width}-${scheme}.png` });
 
   // Removing a machine user goes to the runner as a signed spec on its next poll, and is done only once the runner answers.
-  ok(
-    await sb.getByText("wpr-old-thing-0a0b0c", { exact: true }).isVisible(),
-    `${tag} shows the removed history`,
-  );
-  ok(
-    await sb.getByText(/trash\/wpr-old-thing/).isVisible(),
-    `${tag} says where a removed user's files wait`,
-  );
-  ok(
-    (await sb.getByText("no project here uses it now").count()) === 2,
-    `${tag} flags users no project uses`,
-  );
+  ok(await sb.getByText("wpr-old-thing-0a0b0c", { exact: true }).isVisible(), `${tag} shows the removed history`);
+  ok(await sb.getByText(/trash\/wpr-old-thing/).isVisible(), `${tag} says where a removed user's files wait`);
+  ok((await sb.getByText("no project here uses it now").count()) === 2, `${tag} flags users no project uses`);
   await sb.getByRole("button", { name: "Remove wpo-acme-d4e5f6" }).click();
-  const rm = page.getByRole("dialog", {
-    name: "Remove wpo-acme-d4e5f6 from laptop?",
-  });
+  const rm = page.getByRole("dialog", { name: "Remove wpo-acme-d4e5f6 from laptop?" });
   await rm.waitFor();
-  ok(
-    await rm
-      .getByText(/moves its home, work and cache to the store’s trash/)
-      .isVisible(),
-    `${tag} the confirmation says what happens`,
-  );
+  ok(await rm.getByText(/moves its home, work and cache to the store’s trash/).isVisible(), `${tag} the confirmation says what happens`);
   await page.screenshot({ path: `${out}/remove-${width}-${scheme}.png` });
   await rm.getByRole("button", { name: "Remove" }).click();
   await page.getByText("Asked laptop to remove wpo-acme-d4e5f6").waitFor();
@@ -307,39 +162,18 @@ for (const [width, scheme] of looks([
   await sb.getByText("waiting for the runner").first().waitFor();
   await sb.getByRole("button", { name: "Finish interrupted work" }).click();
   await page.getByText("Asked laptop to finish its interrupted work").waitFor();
-  const take = await page.request.post(`${base}/api/v1/runner/poll`, {
-    headers: T,
-    data: { runner: runnerId, wait: 0, free: 0, running: [] },
-  });
+  const take = await page.request.post(`${base}/api/v1/runner/poll`, { headers: T, data: { runner: runnerId, wait: 0, free: 0, running: [] } });
   const work = (await take.json()).sandbox ?? [];
-  ok(
-    work.length === 2 && work.every((o) => o.spec && o.spec.payload),
-    `${tag} the runner's poll carries both, signed: ${JSON.stringify(work.map((o) => o.op))}`,
-  );
+  ok(work.length === 2 && work.every((o) => o.spec && o.spec.payload), `${tag} the runner's poll carries both, signed: ${JSON.stringify(work.map((o) => o.op))}`);
   const rmOp = work.find((o) => o.op === "remove_user");
   await sb.getByText("the runner has it").first().waitFor({ timeout: 20000 });
   ok(true, `${tag} the page follows the action to the runner`);
   await page.request.post(`${base}/api/v1/runner/poll`, {
     headers: T,
-    data: {
-      runner: runnerId,
-      wait: 0,
-      free: 0,
-      running: [],
-      sandbox_done: work.map((o) => ({
-        id: o.id,
-        error: o === rmOp ? "" : `userdel: user is logged in (${n})`,
-      })),
-    },
+    data: { runner: runnerId, wait: 0, free: 0, running: [], sandbox_done: work.map((o) => ({ id: o.id, error: o === rmOp ? "" : `userdel: user is logged in (${n})` })) },
   });
-  await sb
-    .getByText(`userdel: user is logged in (${n})`)
-    .waitFor({ timeout: 20000 });
-  ok(
-    !(await sb.getByText("removing…").isVisible()) &&
-      (await sb.getByText(/^done$/).count()) === n,
-    `${tag} the removal shows done`,
-  );
+  await sb.getByText(`userdel: user is logged in (${n})`).waitFor({ timeout: 20000 });
+  ok(!(await sb.getByText("removing…").isVisible()) && (await sb.getByText(/^done$/).count()) === n, `${tag} the removal shows done`);
   await overflow("helper actions");
   await sb.screenshot({ path: `${out}/helper-ops-${width}-${scheme}.png` });
   const sw = sb.getByRole("switch", { name: "Pause sandboxing on laptop" });
@@ -351,28 +185,18 @@ for (const [width, scheme] of looks([
   await sw.click();
   const pd = page.getByRole("dialog", { name: "Pause sandboxing on laptop?" });
   await pd.waitFor();
-  ok(
-    await pd.getByRole("button", { name: "Pause sandboxing" }).isDisabled(),
-    `${tag} pausing waits for a reason`,
-  );
+  ok(await pd.getByRole("button", { name: "Pause sandboxing" }).isDisabled(), `${tag} pausing waits for a reason`);
   await pd.getByLabel("Why?").fill("jobs fail under the sandbox");
   await pd.getByRole("button", { name: "Pause sandboxing" }).click();
   await page.getByText("Sandboxing paused on laptop").waitFor();
   const ms = (await api("GET", "/sandbox/machines")).body;
-  ok(
-    ms.some((m) => m.runner.name === "laptop" && m.paused),
-    `${tag} the machine is paused`,
-  );
+  ok(ms.some((m) => m.runner.name === "laptop" && m.paused), `${tag} the machine is paused`);
   await sb.getByText("paused", { exact: true }).waitFor();
   await overflow("runners");
   await sb.screenshot({ path: `${out}/machines-${width}-${scheme}.png` });
-  const changes = page.locator("section", {
-    has: page.getByRole("heading", { name: "Sandbox changes" }),
-  });
+  const changes = page.locator("section", { has: page.getByRole("heading", { name: "Sandbox changes" }) });
   await changes.getByText("“jobs fail under the sandbox”").first().waitFor();
-  await changes.screenshot({
-    path: `${out}/machine-log-${width}-${scheme}.png`,
-  });
+  await changes.screenshot({ path: `${out}/machine-log-${width}-${scheme}.png` });
   ok(true, `${tag} the log shows the pause and its reason`);
   await ctx.close();
 }

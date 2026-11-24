@@ -86,7 +86,9 @@ async function run(width) {
   await picker.getByRole("checkbox", { name: "repo6" }).uncheck();
   await picker.getByRole("checkbox", { name: "notes" }).uncheck();
   ok(
-    await picker.getByRole("button", { name: "Create 6 projects" }).isVisible(),
+    await picker
+      .getByRole("button", { name: "Create 6 projects" })
+      .isVisible(),
     `${tag} unchecking three repos leaves 6 projects to make`,
   );
   await page.screenshot({ path: `${out}/picker-${width}.png` });
@@ -96,7 +98,8 @@ async function run(width) {
     (f) => f.name === `Forge ${tag}`,
   );
   ok(forge?.auto_projects, `${tag} automatic projects turned on after picking`);
-  const names = async () => (await api("GET", "/projects")).map((p) => p.name);
+  const names = async () =>
+    (await api("GET", "/projects")).map((p) => p.name);
   let have = await names();
   ok(
     have.includes(org) &&
@@ -156,9 +159,7 @@ async function run(width) {
   }
   const many = page.getByRole("dialog", { name: "Delete projects" });
   await many.waitFor();
-  await many
-    .getByRole("checkbox", { name: new RegExp(`\\b${org}\\b`) })
-    .check();
+  await many.getByRole("checkbox", { name: new RegExp(`\\b${org}\\b`) }).check();
   await many.getByRole("checkbox", { name: /\brepo4\b/ }).uncheck();
   await page.screenshot({ path: `${out}/delete-many-${width}.png` });
   await many.getByRole("button", { name: "Delete 5…" }).click();
@@ -167,7 +168,9 @@ async function run(width) {
   await sure.waitFor({ state: "detached" });
   have = await names();
   ok(
-    !have.includes(org) && !have.includes("repo0") && have.includes("repo4"),
+    !have.includes(org) &&
+      !have.includes("repo0") &&
+      have.includes("repo4"),
     `${tag} deleted the organisation and four of its repos, kept repo4 (${have})`,
   );
   const after = await api("GET", `/forges/${forge.id}/discover`);

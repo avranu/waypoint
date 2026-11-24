@@ -452,7 +452,6 @@ function BulkBar({
           onPick={(v) => apply({ sprint: v || null }, 'Sprint')}
         />
       )}
-      {}
       <BulkPicker
         label="Assign"
         items={[

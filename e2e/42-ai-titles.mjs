@@ -27,8 +27,7 @@ const fake = http.createServer((req, res) => {
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify(obj));
     };
-    if (req.url.endsWith("/models"))
-      return reply({ data: [{ id: "fake-title" }] });
+    if (req.url.endsWith("/models")) return reply({ data: [{ id: "fake-title" }] });
     const msgs = JSON.parse(body || "{}").messages ?? [];
     const prompt = msgs.find((m) => m.role === "user")?.content ?? "";
     let content = '{"points": 3, "confidence": "high", "reason": "Small."}';
@@ -74,16 +73,9 @@ for (const vp of looks([
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL(base + "/");
   const api = {
-    get: async (p) =>
-      (await page.request.get(base + "/api/v1" + p, { headers: H })).json(),
+    get: async (p) => (await page.request.get(base + "/api/v1" + p, { headers: H })).json(),
     send: async (m, p, d) =>
-      (
-        await page.request.fetch(base + "/api/v1" + p, {
-          method: m,
-          headers: H,
-          data: d,
-        })
-      ).json(),
+      (await page.request.fetch(base + "/api/v1" + p, { method: m, headers: H, data: d })).json(),
   };
 
   if (providerId === null) {
@@ -109,10 +101,7 @@ for (const vp of looks([
   if (!(await api.get("/projects")).some((p) => p.key === key))
     await api.send("POST", "/projects", { name: "AI titles " + vp.width, key });
   const proj = await api.get(`/projects/${key}`);
-  ok(
-    proj.settings.auto_title === true,
-    `${tag}: a new project has auto_title on`,
-  );
+  ok(proj.settings.auto_title === true, `${tag}: a new project has auto_title on`);
 
   mode = "ok";
   const t1 = text(tag);
@@ -123,25 +112,19 @@ for (const vp of looks([
   const box = col.getByLabel("New issue title");
   await box.fill(t1);
   await box.press("Enter");
-  const card = col
-    .locator("[data-nav-key]")
-    .filter({ hasText: "Speed up boards with many cards" });
+  const card = col.locator("[data-nav-key]").filter({ hasText: "Speed up boards with many cards" });
   await card.waitFor();
   ok(true, `${tag}: the card got the model's title`);
   const hover = await card.locator("[title]").first().getAttribute("title");
   ok(
-    hover?.includes("Speed up boards with many cards") &&
-      hover.includes("The board gets slow when a column"),
+    hover?.includes("Speed up boards with many cards") && hover.includes("The board gets slow when a column"),
     `${tag}: hovering the card shows the description: ${JSON.stringify(hover?.slice(0, 80))}`,
   );
   await page.screenshot({ path: `${out}/${tag}-board-card.png` });
   const key1 = await card.getAttribute("data-nav-key");
   const issue1 = await api.get(`/issues/${key1}`);
   ok(issue1.description === t1, `${tag}: the typed text is the description`);
-  ok(
-    issue1.title === "Speed up boards with many cards",
-    `${tag}: the title is short: ${issue1.title}`,
-  );
+  ok(issue1.title === "Speed up boards with many cards", `${tag}: the title is short: ${issue1.title}`);
   const hist = await api.get(`/issues/${key1}/history`);
   ok(
     JSON.stringify(hist).includes("AI title"),
@@ -151,9 +134,7 @@ for (const vp of looks([
   await page.goto(`${base}/p/${key}/list`);
   const row = page.locator(`[data-nav-key="${key1}"]`);
   await row.waitFor();
-  const rowTitles = await row
-    .locator("[title]")
-    .evaluateAll((els) => els.map((e) => e.title));
+  const rowTitles = await row.locator("[title]").evaluateAll((els) => els.map((e) => e.title));
   ok(
     rowTitles.some((t) => t.includes("The board gets slow when a column")),
     `${tag}: hovering a list row shows the description`,
@@ -164,26 +145,17 @@ for (const vp of looks([
   const before = titleCalls;
   const t2 = text(tag + " again");
   const made = await api.send("POST", "/issues", { project: key, title: t2 });
-  for (let n = 0; n < 50 && titleCalls === before; n++)
-    await page.waitForTimeout(100);
+  for (let n = 0; n < 50 && titleCalls === before; n++) await page.waitForTimeout(100);
   await page.waitForTimeout(500);
   const kept = await api.get(`/issues/${made.key}`);
   ok(titleCalls > before, `${tag}: the model was asked`);
-  ok(
-    kept.title === t2 && !kept.description,
-    `${tag}: a failed model leaves the text as typed`,
-  );
+  ok(kept.title === t2 && !kept.description, `${tag}: a failed model leaves the text as typed`);
 
   mode = "ok";
   await page.goto(`${base}/p/${key}/settings`);
-  const sw = page.getByRole("switch", {
-    name: "Write titles for long text automatically",
-  });
+  const sw = page.getByRole("switch", { name: "Write titles for long text automatically" });
   await sw.waitFor();
-  ok(
-    (await sw.getAttribute("aria-checked")) === "true",
-    `${tag}: the settings switch is on`,
-  );
+  ok((await sw.getAttribute("aria-checked")) === "true", `${tag}: the settings switch is on`);
   await sw.scrollIntoViewIfNeeded();
   await page.screenshot({ path: `${out}/${tag}-settings.png` });
   await sw.click();
@@ -192,16 +164,10 @@ for (const vp of looks([
   const off = await api.get(`/projects/${key}`);
   ok(off.settings.auto_title === false, `${tag}: turning it off saves`);
   const calls = titleCalls;
-  const quiet = await api.send("POST", "/issues", {
-    project: key,
-    title: text(tag + " quiet"),
-  });
+  const quiet = await api.send("POST", "/issues", { project: key, title: text(tag + " quiet") });
   await page.waitForTimeout(1500);
   ok(
-    titleCalls === calls &&
-      (await api.get(`/issues/${quiet.key}`)).title.startsWith(
-        "The board gets slow",
-      ),
+    titleCalls === calls && (await api.get(`/issues/${quiet.key}`)).title.startsWith("The board gets slow"),
     `${tag}: with it off the model isn't asked`,
   );
   await ctx.close();
@@ -216,9 +182,7 @@ if (providerId !== null) {
   await page.getByLabel("Password").fill("correct horse battery");
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL(base + "/");
-  await page.request.delete(`${base}/api/v1/ai/providers/${providerId}`, {
-    headers: H,
-  });
+  await page.request.delete(`${base}/api/v1/ai/providers/${providerId}`, { headers: H });
   await ctx.close();
 }
 await browser.close();

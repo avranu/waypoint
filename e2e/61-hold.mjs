@@ -167,10 +167,7 @@ async function run(width, scheme) {
   });
   ok(gave.ok(), `${tag} an agent gave it back`);
   await page.goto(`${base}/agents?tab=queue&project=WAYP`);
-  await page
-    .getByText(/^Given back/)
-    .first()
-    .waitFor();
+  await page.getByText(/^Given back/).first().waitFor();
   const back = page.locator("li", { hasText: title });
   await back.waitFor();
   ok(

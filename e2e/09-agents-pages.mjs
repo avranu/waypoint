@@ -67,24 +67,15 @@ async function run(width, scheme) {
   await page.goto(`${base}/issue/${issue.key}`);
   const props = mobile ? page : page.locator("aside");
   await props.getByTitle("Assignees").locator("visible=true").first().click();
-  await page
-    .getByRole("option", { name: /^Any agent/ })
-    .last()
-    .click();
+  await page.getByRole("option", { name: /^Any agent/ }).last().click();
   await page.keyboard.press("Escape");
   const openField = async (name) => {
-    const more = props
-      .getByRole("button", { name: "More fields" })
-      .locator("visible=true");
+    const more = props.getByRole("button", { name: "More fields" }).locator("visible=true");
     if (await more.count()) {
       await more.first().click();
       await page.getByRole("menuitem", { name, exact: true }).click();
     } else {
-      await props
-        .getByTitle(name, { exact: true })
-        .locator("visible=true")
-        .first()
-        .click();
+      await props.getByTitle(name, { exact: true }).locator("visible=true").first().click();
     }
   };
   await openField("Category");

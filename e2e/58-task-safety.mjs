@@ -27,11 +27,7 @@ const login = async (page) => {
 };
 
 // One held task per run (each run reviews its own), and one that clears.
-const runs = looks([
-  [1440, "light"],
-  [390, "light"],
-  [390, "dark"],
-]);
+const runs = looks([[1440, "light"], [390, "light"], [390, "dark"]]);
 const held = [];
 let plain;
 {
@@ -39,79 +35,43 @@ let plain;
   const page = await ctx.newPage();
   await login(page);
   const api = (m, p, d) =>
-    page.request
-      .fetch(base + "/api/v1" + p, { method: m, headers: H, data: d })
-      .then((r) => r.json());
+    page.request.fetch(base + "/api/v1" + p, { method: m, headers: H, data: d }).then((r) => r.json());
   await api("POST", "/projects", { name: "Safety", key: KEY });
   for (const n of runs.keys())
     held.push(
       await api("POST", "/issues", {
         project: KEY,
         title: `Run task containers under gVisor ${n + 1}`,
-        description:
-          "farhost has only runc. Run `sudo apt-get install runsc` there and register it in /etc/docker/daemon.json.",
+        description: "farhost has only runc. Run `sudo apt-get install runsc` there and register it in /etc/docker/daemon.json.",
         agent: "claude",
       }),
     );
-  plain = await api("POST", "/issues", {
-    project: KEY,
-    title: "Tidy the queue code",
-    agent: "claude",
-  });
+  plain = await api("POST", "/issues", { project: KEY, title: "Tidy the queue code", agent: "claude" });
   const db = new DatabaseSync(`${process.env.DIR}/wp.db`);
   db.exec("PRAGMA busy_timeout = 5000");
   const ids = [...held, plain].map((i) => i.id);
-  db.prepare(
-    `UPDATE issues SET text_agent = 'anthropic/claude-opus-5-5', reporter_agent = 'anthropic/claude-opus-5-5', reviewed_at = NULL WHERE id IN (${ids.join(",")})`,
-  ).run();
+  db.prepare(`UPDATE issues SET text_agent = 'anthropic/claude-opus-5-5', reporter_agent = 'anthropic/claude-opus-5-5', reviewed_at = NULL WHERE id IN (${ids.join(",")})`).run();
   db.close();
   const q = await api("GET", `/agents/queue?project=${KEY}`);
-  ok(
-    q.next?.some((it) => it.issue.key === plain.key),
-    "the agent-written task without commands is in the queue",
-  );
+  ok(q.next?.some((it) => it.issue.key === plain.key), "the agent-written task without commands is in the queue");
   const w = q.waiting?.find((it) => it.issue.key === held[0].key);
-  ok(
-    w?.reason === "safety" && /runs as root/.test(w.detail),
-    `the held one waits with why: ${w?.reason} ${w?.detail}`,
-  );
-  const s = await api(
-    "GET",
-    `/search?q=${encodeURIComponent("is:held")}&project=${KEY}`,
-  );
+  ok(w?.reason === "safety" && /runs as root/.test(w.detail), `the held one waits with why: ${w?.reason} ${w?.detail}`);
+  const s = await api("GET", `/search?q=${encodeURIComponent("is:held")}&project=${KEY}`);
   ok(Array.isArray(s.issues), "is:held searches");
   await ctx.close();
 }
 
 for (const [n, [width, scheme]] of runs.entries()) {
   const tag = `${width}/${scheme}`;
-  const ctx = await browser.newContext({
-    viewport: { width, height: 900 },
-    colorScheme: scheme,
-  });
+  const ctx = await browser.newContext({ viewport: { width, height: 900 }, colorScheme: scheme });
   const page = await ctx.newPage();
   page.setDefaultTimeout(15000);
   page.on("pageerror", (e) => fail(`${tag} pageerror: ${e.message}`));
-  page.on(
-    "console",
-    (m) =>
-      m.type() === "error" &&
-      !/Failed to load resource/.test(m.text()) &&
-      fail(`${tag} console: ${m.text().slice(0, 300)}`),
-  );
+  page.on("console", (m) => m.type() === "error" && !/Failed to load resource/.test(m.text()) && fail(`${tag} console: ${m.text().slice(0, 300)}`));
   await login(page);
   const overflow = async (where) =>
-    ok(
-      !(await page.evaluate(
-        () => document.documentElement.scrollWidth > window.innerWidth,
-      )),
-      `${tag} no sideways scroll (${where})`,
-    );
-  const shot = (name) =>
-    page.screenshot({
-      path: `${out}/${name}-${width}-${scheme}.png`,
-      fullPage: true,
-    });
+    ok(!(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)), `${tag} no sideways scroll (${where})`);
+  const shot = (name) => page.screenshot({ path: `${out}/${name}-${width}-${scheme}.png`, fullPage: true });
 
   const task = held[n];
   await page.goto(`${base}/issue/${task.key}`);
@@ -122,15 +82,10 @@ for (const [n, [width, scheme]] of runs.entries()) {
   await shot("issue");
 
   await page.goto(`${base}/agents?tab=queue&project=${KEY}`);
-  const group = page.getByRole("heading", {
-    name: /Agent-written, not cleared/,
-  });
+  const group = page.getByRole("heading", { name: /Agent-written, not cleared/ });
   await group.waitFor();
   const row = page.locator("li", { hasText: task.title });
-  ok(
-    await row.getByText(/Held for a person: runs as root/).isVisible(),
-    `${tag} the queue says what to check`,
-  );
+  ok(await row.getByText(/Held for a person: runs as root/).isVisible(), `${tag} the queue says what to check`);
   await overflow("queue");
   await shot("queue");
   await row.getByRole("button", { name: "Mark reviewed" }).click();

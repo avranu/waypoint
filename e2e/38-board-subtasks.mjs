@@ -26,8 +26,7 @@ for (const vp of looks([
   page.on(
     "console",
     (m) =>
-      m.type() === "error" &&
-      fail(`console (${tag}): ` + m.text().slice(0, 300)),
+      m.type() === "error" && fail(`console (${tag}): ` + m.text().slice(0, 300)),
   );
   await page.goto(base + "/login");
   await page.getByLabel("Username or email").fill("robin");

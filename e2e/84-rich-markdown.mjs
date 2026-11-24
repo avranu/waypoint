@@ -55,11 +55,8 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
       })
     ).json();
   const desc = async (key) =>
-    (
-      await (
-        await page.request.get(base + `/api/v1/issues/${key}`, { headers: H })
-      ).json()
-    ).description;
+    (await (await page.request.get(base + `/api/v1/issues/${key}`, { headers: H })).json())
+      .description;
   const saved = async (key, want) => {
     let got;
     for (let i = 0; i < 40; i++) {
@@ -71,16 +68,12 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
     return got;
   };
   const field = page.getByRole("textbox", { name: "Description" });
-  const richBox = page.locator(
-    '[contenteditable="true"][aria-label="Description"]',
-  );
+  const richBox = page.locator('[contenteditable="true"][aria-label="Description"]');
   const mdBox = page.locator("textarea[aria-label=Description]");
   const note = page.getByText("Opened as markdown: this text has formatting");
   const settleClose = async () => {
     await field.press("Escape");
-    await page.waitForFunction(
-      () => !document.querySelector('[aria-label="Description"]'),
-    );
+    await page.waitForFunction(() => !document.querySelector('[aria-label="Description"]'));
   };
   const open = async (title, description) => {
     const issue = await make(title, description);
@@ -89,10 +82,7 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
       const add = page.getByRole("button", { name: "Add a description…" });
       await add.waitFor().catch(async (e) => {
         await page.screenshot({ path: `${out}/open-${issue.key}.png` });
-        console.log(
-          "page text:",
-          (await page.locator("body").innerText()).slice(0, 600),
-        );
+        console.log("page text:", (await page.locator("body").innerText()).slice(0, 600));
         throw e;
       });
       await add.click();
@@ -108,10 +98,7 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
     await richBox.waitFor();
     await field.pressSequentially(typed);
     const got = await saved(issue.key, want);
-    ok(
-      got === want,
-      `${tag} typed ${JSON.stringify(typed)} saves ${JSON.stringify(want)}: ${JSON.stringify(got)}`,
-    );
+    ok(got === want, `${tag} typed ${JSON.stringify(typed)} saves ${JSON.stringify(want)}: ${JSON.stringify(got)}`);
     await settleClose();
   };
 
@@ -122,16 +109,8 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
   await typeInto("Esc tag", "<div> and 1 < 2", "\\<div> and 1 < 2");
   await typeInto("Esc link", "[x](y) and [a][b]", "[x\\](y) and [a\\][b]");
   await typeInto("Esc image", "![a](b)", "![a\\](b)");
-  await typeInto(
-    "Esc entity",
-    "&amp; and R&D and &#65;",
-    "\\&amp; and R&D and \\&#65;",
-  );
-  await typeInto(
-    "Esc wiki",
-    "see [[Some Page]] and [[A|b]]",
-    "see [[Some Page]] and [[A|b]]",
-  );
+  await typeInto("Esc entity", "&amp; and R&D and &#65;", "\\&amp; and R&D and \\&#65;");
+  await typeInto("Esc wiki", "see [[Some Page]] and [[A|b]]", "see [[Some Page]] and [[A|b]]");
   await typeInto("Esc heading", "# h", "\\# h");
   await typeInto("Esc heading root", "# not a heading", "\\# not a heading");
   await typeInto("Esc number", "1. n", "1\\. n");
@@ -150,27 +129,12 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
       el.dispatchEvent(new InputEvent("input", { bubbles: true }));
     }, html);
     const got = await saved(issue.key, want);
-    ok(
-      got === want,
-      `${tag} ${title} writes ${JSON.stringify(want)}: ${JSON.stringify(got)}`,
-    );
+    ok(got === want, `${tag} ${title} writes ${JSON.stringify(want)}: ${JSON.stringify(got)}`);
     await settleClose();
   };
-  await writes(
-    "Label brackets",
-    '<p><a href="https://example.com/">a]b \\] [c</a></p>',
-    "[a\\]b \\\\\\] \\[c](https://example.com/)",
-  );
-  await writes(
-    "Alt text",
-    '<p><img src="/i.png" alt="a*b [c]"></p>',
-    "![a\\*b \\[c\\]](/i.png)",
-  );
-  await writes(
-    "Def and wiki",
-    "<p>[a]: see [[Page]]</p>",
-    "\\[a]: see [[Page]]",
-  );
+  await writes("Label brackets", '<p><a href="https://example.com/">a]b \\] [c</a></p>', "[a\\]b \\\\\\] \\[c](https://example.com/)");
+  await writes("Alt text", '<p><img src="/i.png" alt="a*b [c]"></p>', "![a\\*b \\[c\\]](/i.png)");
+  await writes("Def and wiki", "<p>[a]: see [[Page]]</p>", "\\[a]: see [[Page]]");
   await writes("Rule under text", "text<hr>", "text\n\n---");
   await writes("Text under paragraph", "<p>a</p>b", "a\n\nb");
   await writes(
@@ -203,31 +167,15 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
     "<table><tbody><tr><th>h</th><th>k</th></tr><tr><td><code>c\\|d</code></td><td>e</td></tr></tbody></table>",
     "| h | k |\n| --- | --- |\n| `c\\|d` | e |",
   );
-  await writes(
-    "Script and style",
-    "<p>a<style>p{}</style><script>x()</script>b</p>",
-    "ab",
-  );
+  await writes("Script and style", "<p>a<style>p{}</style><script>x()</script>b</p>", "ab");
   await writes("Heading break", "<h2>a<br>b</h2>", "## a b");
   await writes("Heading closer", "<h2>Issue #</h2>", "## Issue \\#");
   // At a paragraph's start, escape what would open a block (a code indent, a number and dot, three dashes); a dash-and-pipe row would make a table.
-  await writes(
-    "Indent",
-    "<p>&nbsp;&nbsp;&nbsp;&nbsp;a<br><br>&nbsp;&nbsp;&nbsp;&nbsp;b<br>&nbsp;&nbsp;&nbsp;&nbsp;c</p>",
-    "a\n\nb\n    c",
-  );
-  await writes(
-    "Number after blank",
-    "<p>a<br><br>2. b<br>3. c</p>",
-    "a\n\n2\\. b\n3. c",
-  );
+  await writes("Indent", "<p>&nbsp;&nbsp;&nbsp;&nbsp;a<br><br>&nbsp;&nbsp;&nbsp;&nbsp;b<br>&nbsp;&nbsp;&nbsp;&nbsp;c</p>", "a\n\nb\n    c");
+  await writes("Number after blank", "<p>a<br><br>2. b<br>3. c</p>", "a\n\n2\\. b\n3. c");
   await writes("Spaced rule", "<p>-- -<br><br>---</p>", "\\-- -\n\n\\---");
   await writes("Table row", "<p>a | b<br>--- | ---</p>", "a | b\n--- \\| ---");
-  await writes(
-    "Bang link",
-    '<p><span>wow!</span><a href="https://example.com/">x</a></p>',
-    "wow\\![x](https://example.com/)",
-  );
+  await writes("Bang link", '<p><span>wow!</span><a href="https://example.com/">x</a></p>', "wow\\![x](https://example.com/)");
   await writes("Bracket span", "<p><span>[a]</span>(b)</p>", "[a\\](b)");
   await writes(
     "Item blocks",
@@ -243,10 +191,7 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
     await field.pressSequentially("[ ] foo");
     const want = "- first\n- \\[ ] foo";
     const got = await saved(i.key, want);
-    ok(
-      got === want,
-      `${tag} a typed [ ] in a bullet is escaped: ${JSON.stringify(got)}`,
-    );
+    ok(got === want, `${tag} a typed [ ] in a bullet is escaped: ${JSON.stringify(got)}`);
     await settleClose();
   }
 
@@ -257,39 +202,23 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
   ]) {
     const i = await open(`Html ${name}`, text);
     await mdBox.waitFor();
-    ok(
-      (await note.count()) === 1,
-      `${tag} ${name} opens as markdown with a note`,
-    );
-    ok(
-      (await mdBox.inputValue()) === text,
-      `${tag} ${name} text is held as stored`,
-    );
+    ok((await note.count()) === 1, `${tag} ${name} opens as markdown with a note`);
+    ok((await mdBox.inputValue()) === text, `${tag} ${name} text is held as stored`);
     await settleClose();
-    ok(
-      (await desc(i.key)) === text,
-      `${tag} ${name} is not deleted by opening and closing`,
-    );
+    ok((await desc(i.key)) === text, `${tag} ${name} is not deleted by opening and closing`);
   }
 
   {
     await page.addInitScript(() => {
       window.__pwned = 0;
     });
-    const text =
-      '<img src=x onerror="window.__pwned=1"> <script>window.__pwned=2</script>';
+    const text = '<img src=x onerror="window.__pwned=1"> <script>window.__pwned=2</script>';
     const i = await open("Html script", text);
     await mdBox.waitFor();
     // wplint:ignore e2e-wait polling a value or proving a negative: there is nothing to wait on
     await page.waitForTimeout(500);
-    ok(
-      (await page.evaluate(() => window.__pwned)) === 0,
-      `${tag} script and onerror do not run`,
-    );
-    ok(
-      (await note.count()) === 1,
-      `${tag} script text opens as markdown with a note`,
-    );
+    ok((await page.evaluate(() => window.__pwned)) === 0, `${tag} script and onerror do not run`);
+    ok((await note.count()) === 1, `${tag} script text opens as markdown with a note`);
     await settleClose();
     ok((await desc(i.key)) === text, `${tag} script text is unchanged`);
   }
@@ -303,10 +232,7 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
     await page.getByRole("button", { name: "Bold" }).click();
     const want = "**word** next";
     const got = await saved(i.key, want);
-    ok(
-      got === want,
-      `${tag} bold on "word " saves **word** next: ${JSON.stringify(got)}`,
-    );
+    ok(got === want, `${tag} bold on "word " saves **word** next: ${JSON.stringify(got)}`);
     await settleClose();
   }
 
@@ -326,18 +252,12 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
     const text = "1. one\n   - child\n2. two";
     const i = await open("Nested ol", text);
     await richBox.waitFor();
-    ok(
-      (await note.count()) === 0,
-      `${tag} a list nested under a number opens rich`,
-    );
+    ok((await note.count()) === 0, `${tag} a list nested under a number opens rich`);
     await field.press("Control+End");
     await field.pressSequentially("!");
     const want = "1. one\n   - child\n2. two!";
     const got = await saved(i.key, want);
-    ok(
-      got === want,
-      `${tag} nested indent is the marker width + 1: ${JSON.stringify(got)}`,
-    );
+    ok(got === want, `${tag} nested indent is the marker width + 1: ${JSON.stringify(got)}`);
     await settleClose();
   }
 
@@ -346,18 +266,12 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
     const text = "````\na\n```\nb\n````";
     const i = await open("Fence", text);
     await richBox.waitFor();
-    ok(
-      (await note.count()) === 0,
-      `${tag} a code block holding a fence opens rich`,
-    );
+    ok((await note.count()) === 0, `${tag} a code block holding a fence opens rich`);
     await field.press("Control+Home");
     await field.pressSequentially("z");
     const want = "````\nza\n```\nb\n````";
     const got = await saved(i.key, want);
-    ok(
-      got === want,
-      `${tag} the fence outgrows the body: ${JSON.stringify(got)}`,
-    );
+    ok(got === want, `${tag} the fence outgrows the body: ${JSON.stringify(got)}`);
     await settleClose();
   }
   await ctx.close();

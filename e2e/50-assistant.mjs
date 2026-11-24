@@ -15,12 +15,7 @@ import fs from "node:fs";
 import https from "node:https";
 import { looks } from "./looks.mjs";
 const [base, out] = process.argv.slice(2);
-const NEED = [
-  "ASSISTANT_DOOR",
-  "ASSISTANT_CA",
-  "ASSISTANT_KEY",
-  "ASSISTANT_PASSWORD",
-];
+const NEED = ["ASSISTANT_DOOR", "ASSISTANT_CA", "ASSISTANT_KEY", "ASSISTANT_PASSWORD"];
 const missing = NEED.filter((k) => !process.env[k]);
 if (missing.length === NEED.length) {
   console.log(`skip: set ${NEED.join(", ")} to run it`);
@@ -43,30 +38,16 @@ const errors = [];
 const fail = (m) => (console.log("FAIL", m), errors.push(m));
 const ok = (c, m) => (c ? console.log("ok  ", m) : fail(m));
 const H = { "X-Waypoint-Client": "web" };
-const TABS = [
-  "chat",
-  "activity",
-  "schedules",
-  "skills",
-  "memory",
-  "tools",
-  "files",
-  "usage",
-  "settings",
-];
+const TABS = ["chat", "activity", "schedules", "skills", "memory", "tools", "files", "usage", "settings"];
 
 // The fake gate's own controls, as Signal would act.
 const gate = (path) =>
   new Promise((resolve, reject) => {
-    const req = https.request(
-      new URL(path, door),
-      { method: "POST", ca, headers: { [keyHeader]: key } },
-      (res) => {
-        let body = "";
-        res.on("data", (d) => (body += d));
-        res.on("end", () => resolve(body));
-      },
-    );
+    const req = https.request(new URL(path, door), { method: "POST", ca, headers: { [keyHeader]: key } }, (res) => {
+      let body = "";
+      res.on("data", (d) => (body += d));
+      res.on("end", () => resolve(body));
+    });
     req.on("error", reject);
     req.end();
   });
@@ -75,62 +56,34 @@ const browser = await chromium.launch();
 let id;
 
 async function setup(page) {
-  const call = (m, p, d) =>
-    page.request.fetch(base + "/api/v1" + p, {
-      method: m,
-      headers: H,
-      data: d,
-    });
+  const call = (m, p, d) => page.request.fetch(base + "/api/v1" + p, { method: m, headers: H, data: d });
   const list = await (await call("GET", "/assistants")).json();
   const have = list.find((a) => a.name === "Sage");
   if (have) return have.id;
   const r = await call("POST", "/assistants", {
-    name: "Sage",
-    url: door,
-    ca_pem: ca,
-    key,
-    key_header: process.env.ASSISTANT_KEY_HEADER || "",
-    username: "waypoint",
-    password: process.env.ASSISTANT_PASSWORD,
+    name: "Sage", url: door, ca_pem: ca, key, key_header: process.env.ASSISTANT_KEY_HEADER || "",
+    username: "waypoint", password: process.env.ASSISTANT_PASSWORD,
   });
   ok(r.ok(), `connect: ${r.status()}`);
   const a = await r.json();
   const test = await (await call("POST", `/assistants/${a.id}/test`)).json();
-  ok(
-    test.every((s) => s.ok),
-    `connect: the door, the gate and Hermes answer (${JSON.stringify(test)})`,
-  );
+  ok(test.every((s) => s.ok), `connect: the door, the gate and Hermes answer (${JSON.stringify(test)})`);
   return a.id;
 }
 
 async function run(width, scheme) {
   const tag = `${width}/${scheme}`;
-  const ctx = await browser.newContext({
-    viewport: { width, height: 900 },
-    colorScheme: scheme,
-  });
+  const ctx = await browser.newContext({ viewport: { width, height: 900 }, colorScheme: scheme });
   const page = await ctx.newPage();
   page.setDefaultTimeout(15000);
   page.on("pageerror", (e) => fail(`${tag} pageerror: ${e.message}`));
   page.on("console", (m) => {
-    if (m.type() === "error" && !/Failed to load resource/.test(m.text()))
-      fail(`${tag} console: ${m.text().slice(0, 300)}`);
+    if (m.type() === "error" && !/Failed to load resource/.test(m.text())) fail(`${tag} console: ${m.text().slice(0, 300)}`);
   });
-  const call = (m, p, d) =>
-    page.request.fetch(base + "/api/v1" + p, {
-      method: m,
-      headers: H,
-      data: d,
-    });
-  const shot = (name) =>
-    page.screenshot({ path: `${out}/${name}-${width}-${scheme}.png` });
+  const call = (m, p, d) => page.request.fetch(base + "/api/v1" + p, { method: m, headers: H, data: d });
+  const shot = (name) => page.screenshot({ path: `${out}/${name}-${width}-${scheme}.png` });
   const overflow = async (where) =>
-    ok(
-      !(await page.evaluate(
-        () => document.documentElement.scrollWidth > window.innerWidth,
-      )),
-      `${tag} no sideways scroll (${where})`,
-    );
+    ok(!(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)), `${tag} no sideways scroll (${where})`);
 
   await page.goto(base + "/login");
   await page.getByLabel("Username or email").fill("robin");
@@ -170,10 +123,7 @@ async function run(width, scheme) {
 
   for (const t of TABS.slice(1)) {
     await page.goto(`${base}/assistant/${id}?tab=${t}`);
-    await page
-      .getByRole("tab", { name: new RegExp(t, "i") })
-      .first()
-      .waitFor();
+    await page.getByRole("tab", { name: new RegExp(t, "i") }).first().waitFor();
     await page.waitForTimeout(1200);
     const text = await page.getByRole("tabpanel").innerText();
     ok(text.trim().length > 20, `${tag} the ${t} tab shows something`);
@@ -181,9 +131,7 @@ async function run(width, scheme) {
     await shot(`assistant-${t}`);
   }
 
-  const code = await gate(
-    `/dev/ask?tool=send_email&summary=${encodeURIComponent(`email the plumber (${tag})`)}`,
-  );
+  const code = await gate(`/dev/ask?tool=send_email&summary=${encodeURIComponent(`email the plumber (${tag})`)}`);
   await call("POST", `/assistants/${id}/check`);
   await page.goto(`${base}/assistant/${id}`);
   await page.getByText(code).first().waitFor();
@@ -192,38 +140,20 @@ async function run(width, scheme) {
   await call("POST", `/assistants/${id}/check`);
 
   const projects = await (await call("GET", "/projects")).json();
-  if (!projects.some((p) => p.key === "ASST"))
-    await call("POST", "/projects", { name: "Errands", key: "ASST" });
-  const issue = await (
-    await call("POST", "/issues", {
-      project: "ASST",
-      title: `Book the plumber ${tag}`,
-    })
-  ).json();
+  if (!projects.some((p) => p.key === "ASST")) await call("POST", "/projects", { name: "Errands", key: "ASST" });
+  const issue = await (await call("POST", "/issues", { project: "ASST", title: `Book the plumber ${tag}` })).json();
   await page.goto(`${base}/issue/${issue.key}`);
   await page.getByRole("link", { name: "Ask Sage" }).click();
   await box.waitFor();
-  ok(
-    (await box.inputValue()).includes(issue.key),
-    `${tag} asking from an issue names it`,
-  );
+  ok((await box.inputValue()).includes(issue.key), `${tag} asking from an issue names it`);
   await box.press("End");
   await box.type("please book it");
   await page.keyboard.press("Enter");
   await page.waitForURL(/[?&]s=/);
   await page.getByText("Anything else?").last().waitFor();
   await page.goto(`${base}/issue/${issue.key}`);
-  await page
-    .getByRole("link", { name: new RegExp(issue.key) })
-    .first()
-    .waitFor();
-  ok(
-    (await page
-      .locator("section", { hasText: "Assistant" })
-      .getByRole("link")
-      .count()) >= 2,
-    `${tag} the issue lists its conversation`,
-  );
+  await page.getByRole("link", { name: new RegExp(issue.key) }).first().waitFor();
+  ok((await page.locator("section", { hasText: "Assistant" }).getByRole("link").count()) >= 2, `${tag} the issue lists its conversation`);
 
   await ctx.close();
 }
@@ -236,28 +166,11 @@ async function automation() {
   await page.getByLabel("Password").fill("correct horse battery");
   await page.keyboard.press("Enter");
   await page.waitForURL((u) => !u.pathname.startsWith("/login"));
-  const call = (m, p, d) =>
-    page.request.fetch(base + "/api/v1" + p, {
-      method: m,
-      headers: H,
-      data: d,
-    });
-  const a = await (
-    await call("POST", "/projects/ASST/automations", {
-      name: "Ask Sage",
-      enabled: true,
-      rule: {
-        trigger: { event: "manual" },
-        actions: [
-          {
-            type: "ask_assistant",
-            id: "ask",
-            prompt: "hello from an automation",
-          },
-        ],
-      },
-    })
-  ).json();
+  const call = (m, p, d) => page.request.fetch(base + "/api/v1" + p, { method: m, headers: H, data: d });
+  const a = await (await call("POST", "/projects/ASST/automations", {
+    name: "Ask Sage", enabled: true,
+    rule: { trigger: { event: "manual" }, actions: [{ type: "ask_assistant", id: "ask", prompt: "hello from an automation" }] },
+  })).json();
   await call("POST", `/automations/${a.id}/run`, {});
   let run;
   for (let i = 0; i < 60; i++) {
@@ -268,20 +181,13 @@ async function automation() {
   if (!run) throw new Error("the automation never started a run");
   const detail = await (await call("GET", `/automation-runs/${run.id}`)).json();
   const step = detail.steps?.find((s) => s.step_id === "ask");
-  ok(
-    run.status === "succeeded" &&
-      /hello from an automation/.test(step?.outputs?.Text ?? ""),
-    `an automation asks the assistant and keeps its reply (${run.status})`,
-  );
+  ok(run.status === "succeeded" && /hello from an automation/.test(step?.outputs?.Text ?? ""), `an automation asks the assistant and keeps its reply (${run.status})`);
 
   await page.goto(`${base}/assistant/${id}`);
   await page.getByRole("button", { name: "Freeze" }).click();
   await page.getByRole("button", { name: "Freeze now" }).click();
   await page.getByText("is frozen.").waitFor();
-  ok(
-    await page.getByLabel("Message Sage").isDisabled(),
-    "frozen: the chat can't send",
-  );
+  ok(await page.getByLabel("Message Sage").isDisabled(), "frozen: the chat can't send");
   await page.screenshot({ path: `${out}/assistant-frozen.png` });
   await gate("/dev/thaw");
   await call("POST", `/assistants/${id}/check`);
@@ -289,11 +195,7 @@ async function automation() {
 }
 
 try {
-  for (const [w, s] of looks([
-    [1280, "light"],
-    [390, "dark"],
-  ]))
-    await run(w, s);
+  for (const [w, s] of looks([[1280, "light"], [390, "dark"]])) await run(w, s);
   await automation();
 } finally {
   await browser.close();

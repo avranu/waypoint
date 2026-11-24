@@ -294,9 +294,7 @@ async function run(width) {
   await page.reload();
   await desc.waitFor({ timeout: 5000 }).catch(() => {});
   ok(
-    (await desc
-      .evaluate((el) => (el.textContent ?? "").trim())
-      .catch(() => "")) === `Notes I haven't saved ${tag}`,
+    (await desc.evaluate((el) => (el.textContent ?? "").trim()).catch(() => "")) === `Notes I haven't saved ${tag}`,
     `${tag} an open description edit comes back after a refresh`,
   );
   ok(

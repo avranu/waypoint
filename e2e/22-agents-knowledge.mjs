@@ -33,10 +33,7 @@ async function run(width, scheme) {
   const api = (m, p, d) =>
     call(m, p, d).then((r) => (r.status() === 204 ? null : r.json()));
   const shot = (name) =>
-    page.screenshot({
-      path: `${out}/${name}-${width}-${scheme}.png`,
-      fullPage: true,
-    });
+    page.screenshot({ path: `${out}/${name}-${width}-${scheme}.png`, fullPage: true });
   const settle = () => page.waitForTimeout(500);
   const visible = (text) =>
     page.getByText(text).filter({ visible: true }).first().isVisible();
@@ -85,10 +82,7 @@ async function run(width, scheme) {
 
   await agent("GET", `/glossary/lookup?term=lease&project=${key}`);
   await agent("GET", `/pages/${decision.id}`);
-  await agent(
-    "GET",
-    `/spec?topic=${encodeURIComponent("Agent queue")}&project=${key}`,
-  );
+  await agent("GET", `/spec?topic=${encodeURIComponent("Agent queue")}&project=${key}`);
   const task = await agent("POST", "/issues", {
     project: key,
     title: "Release the claim when a ticket closes",
@@ -128,33 +122,20 @@ async function run(width, scheme) {
 
   await page.goto(`${base}/p/${key}/glossary`);
   await page.getByText("Claim", { exact: true }).first().waitFor();
-  ok(
-    await visible(/used \d+× ·/),
-    `${tag} glossary rows say how much a term is used`,
-  );
+  ok(await visible(/used \d+× ·/), `${tag} glossary rows say how much a term is used`);
   await shot("glossary-list");
 
   await page.goto(`${base}/glossary/${claim.id}`);
   const usage = page.getByRole("region", { name: "Usage" });
   await usage.waitFor();
   const text = await usage.innerText();
+  ok(/Looked up once/.test(text), `${tag} entry usage counts the lookup (${text.slice(0, 80)})`);
+  ok(/as “lease”/.test(text), `${tag} entry usage says the alias it was found by`);
   ok(
-    /Looked up once/.test(text),
-    `${tag} entry usage counts the lookup (${text.slice(0, 80)})`,
-  );
-  ok(
-    /as “lease”/.test(text),
-    `${tag} entry usage says the alias it was found by`,
-  );
-  ok(
-    /“ticket”/.test(text) &&
-      (await usage.getByLabel("Word to avoid", { exact: true }).count()) > 0,
+    /“ticket”/.test(text) && (await usage.getByLabel("Word to avoid", { exact: true }).count()) > 0,
     `${tag} entry usage shows the word to avoid`,
   );
-  ok(
-    /a comment on/.test(text),
-    `${tag} entry usage shows the person's comment`,
-  );
+  ok(/a comment on/.test(text), `${tag} entry usage shows the person's comment`);
   await usage.scrollIntoViewIfNeeded();
   await shot("glossary-entry");
 
@@ -162,11 +143,7 @@ async function run(width, scheme) {
   const pu = page.getByRole("region", { name: "Usage" });
   await pu.waitFor();
   const ptext = await pu.innerText();
-  ok(
-    /Looked up once/.test(ptext) &&
-      /Named in 1 place|named in 1 place/.test(ptext),
-    `${tag} page usage (${ptext.slice(0, 80)})`,
-  );
+  ok(/Looked up once/.test(ptext) && /Named in 1 place|named in 1 place/.test(ptext), `${tag} page usage (${ptext.slice(0, 80)})`);
   ok(ptext.includes(code), `${tag} page usage shows the code it was named by`);
   await pu.scrollIntoViewIfNeeded();
   await shot("page-usage");
@@ -175,10 +152,7 @@ async function run(width, scheme) {
   const nu = page.getByRole("region", { name: "Usage" });
   await nu.waitFor();
   const ntext = await nu.innerText();
-  ok(
-    /Looked up once/.test(ntext) && /named in 1 place/.test(ntext),
-    `${tag} design note usage (${ntext.slice(0, 80)})`,
-  );
+  ok(/Looked up once/.test(ntext) && /named in 1 place/.test(ntext), `${tag} design note usage (${ntext.slice(0, 80)})`);
   await nu.scrollIntoViewIfNeeded();
   await shot("design-usage");
 
@@ -186,9 +160,7 @@ async function run(width, scheme) {
     await page.goto(`${base}/agents?tab=knowledge&project=${key}`);
     await page.getByText("Words to avoid that were written").waitFor();
     const over = await page.evaluate(
-      () =>
-        document.documentElement.scrollWidth -
-        document.documentElement.clientWidth,
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
     );
     ok(over <= 0, `${tag} the Knowledge tab fits the screen (${over}px over)`);
   }

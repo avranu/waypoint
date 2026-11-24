@@ -229,10 +229,7 @@ async function run(width, scheme) {
     ok(text.includes(s), `${tag} feed says "${s}"`);
   ok(!text.includes("queue.move"), `${tag} no raw action names`);
   await shot("feed");
-  await feed
-    .locator("li", { hasText: "paused" })
-    .first()
-    .scrollIntoViewIfNeeded();
+  await feed.locator("li", { hasText: "paused" }).first().scrollIntoViewIfNeeded();
   await shot("feed-more");
 
   const before = await feed.locator("li").count();
@@ -244,9 +241,7 @@ async function run(width, scheme) {
   ok((await feed.locator("li").count()) > before, `${tag} older entries load`);
 
   const rowsText = () =>
-    feed
-      .locator("li")
-      .evaluateAll((els) => els.map((e) => e.innerText).join("\n"));
+    feed.locator("li").evaluateAll((els) => els.map((e) => e.innerText).join("\n"));
   const rowsWithout = (word) =>
     page.waitForFunction(
       (w) =>
@@ -260,8 +255,7 @@ async function run(width, scheme) {
   await feed.locator("li", { hasText: "merged" }).first().waitFor();
   const approvals = await rowsText();
   ok(
-    approvals.includes("claude-opus-5-5 wrote on") &&
-      approvals.includes("merged"),
+    approvals.includes("claude-opus-5-5 wrote on") && approvals.includes("merged"),
     `${tag} Approvals shows approvals only`,
   );
   await shot("approvals");
@@ -301,62 +295,25 @@ async function run(width, scheme) {
   const at0 = Date.now();
   const sess = `risky-${n}`;
   const risky = [
+    { kind: "force_push", level: "high", label: "force push to main", command: "git push --force origin main", outcome: "ran", t: at0 - 60_000 },
+    { kind: "delete", level: "medium", label: "recursive delete of src/old", command: "rm -rf src/old", outcome: "refused", source: "classifier", t: at0 - 120_000 },
     {
-      kind: "force_push",
-      level: "high",
-      label: "force push to main",
-      command: "git push --force origin main",
-      outcome: "ran",
-      t: at0 - 60_000,
-    },
-    {
-      kind: "delete",
-      level: "medium",
-      label: "recursive delete of src/old",
-      command: "rm -rf src/old",
-      outcome: "refused",
-      source: "classifier",
-      t: at0 - 120_000,
-    },
-    {
-      kind: "cluster",
-      level: "high",
-      label: "kubectl delete",
-      outcome: "error",
-      t: at0 - 180_000,
-      command:
-        "cd deploy && ./render.sh --env prod --values values/prod.yaml --out /tmp/out.yaml && kubectl -n prod",
+      kind: "cluster", level: "high", label: "kubectl delete", outcome: "error", t: at0 - 180_000,
+      command: "cd deploy && ./render.sh --env prod --values values/prod.yaml --out /tmp/out.yaml && kubectl -n prod",
       segment: "kubectl -n prod delete pod web-1",
     },
-    {
-      kind: "discard",
-      level: "medium",
-      label: "git reset --hard",
-      command: "git reset --hard origin/main",
-      outcome: "unknown",
-      t: at0 - 240_000,
-    },
+    { kind: "discard", level: "medium", label: "git reset --hard", command: "git reset --hard origin/main", outcome: "unknown", t: at0 - 240_000 },
   ].map((x) => ({ s: sess, repo: "acme/web", model: "claude-opus-5-5", ...x }));
-  const notes0 = db
-    .prepare(
-      "SELECT count(*) AS c FROM notifications WHERE kind = 'risky' AND user_id = ?",
-    )
-    .get(me.id).c;
+  const notes0 = db.prepare("SELECT count(*) AS c FROM notifications WHERE kind = 'risky' AND user_id = ?").get(me.id).c;
   const ing = await call("POST", "/usage/ingest", {
     machine: `m-${n}`,
     version: "test",
     chunks: [{ id: `risky-${n}`, risky }],
   });
   ok(ing.ok(), `${tag} risky commands ingest (${ing.status()})`);
-  const notes = db
-    .prepare(
-      "SELECT title, body FROM notifications WHERE kind = 'risky' AND user_id = ? ORDER BY id DESC",
-    )
-    .all(me.id);
+  const notes = db.prepare("SELECT title, body FROM notifications WHERE kind = 'risky' AND user_id = ? ORDER BY id DESC").all(me.id);
   ok(
-    notes.length === notes0 + 1 &&
-      notes[0].body.includes("force push to main in acme/web") &&
-      !notes[0].body.includes("reset"),
+    notes.length === notes0 + 1 && notes[0].body.includes("force push to main in acme/web") && !notes[0].body.includes("reset"),
     `${tag} one notification, for the high ones that ran`,
   );
 
@@ -364,59 +321,25 @@ async function run(width, scheme) {
   const riskyList = page.locator('[role="tabpanel"] ul').first();
   await riskyList.locator("li").first().waitFor();
   ok(
-    (await page
-      .getByRole("tab", { name: "Risky commands" })
-      .getAttribute("aria-selected")) === "true",
+    (await page.getByRole("tab", { name: "Risky commands" }).getAttribute("aria-selected")) === "true",
     `${tag} the notification's link opens Risky commands`,
   );
   const riskyText = () => riskyList.innerText();
   const all = await riskyText();
   ok(
-    [
-      "force push to main",
-      "ran",
-      "recursive delete of src/old",
-      "refused by the classifier",
-      "ran and failed",
-      "…kubectl -n prod delete pod web-1",
-      "no result",
-      "acme/web",
-      `m-${n}`,
-    ].every((w) => all.includes(w)),
+    ["force push to main", "ran", "recursive delete of src/old", "refused by the classifier", "ran and failed", "…kubectl -n prod delete pod web-1", "no result", "acme/web", `m-${n}`].every((w) => all.includes(w)),
     `${tag} rows show label, outcome, command and where`,
   );
-  ok(
-    /\d+ high, \d+ medium/.test(
-      await page.locator('[role="tabpanel"]').innerText(),
-    ),
-    `${tag} period counts`,
-  );
+  ok(/\d+ high, \d+ medium/.test(await page.locator('[role="tabpanel"]').innerText()), `${tag} period counts`);
   await shot("risky");
   await page.getByRole("radio", { name: "High" }).click();
-  await page.waitForFunction(
-    () =>
-      ![...document.querySelectorAll('[role="tabpanel"] li')].some((e) =>
-        e.innerText.includes("src/old"),
-      ),
-  );
-  ok(
-    !(await riskyText()).includes("Medium") &&
-      (await riskyText()).includes("force push to main"),
-    `${tag} High keeps only high`,
-  );
+  await page.waitForFunction(() => ![...document.querySelectorAll('[role="tabpanel"] li')].some((e) => e.innerText.includes("src/old")));
+  ok(!(await riskyText()).includes("Medium") && (await riskyText()).includes("force push to main"), `${tag} High keeps only high`);
   await page.getByRole("radio", { name: "All" }).click();
   await page.getByLabel("Outcome").click();
   await page.getByRole("option", { name: "Refused", exact: true }).click();
-  await page.waitForFunction(
-    () =>
-      ![...document.querySelectorAll('[role="tabpanel"] li')].some((e) =>
-        e.innerText.includes("force push"),
-      ),
-  );
-  ok(
-    (await riskyText()).includes("src/old"),
-    `${tag} Refused keeps the refused`,
-  );
+  await page.waitForFunction(() => ![...document.querySelectorAll('[role="tabpanel"] li')].some((e) => e.innerText.includes("force push")));
+  ok((await riskyText()).includes("src/old"), `${tag} Refused keeps the refused`);
   await page.getByRole("tab", { name: "Decisions" }).click();
   await page.getByRole("radio", { name: "Approvals" }).waitFor();
   ok(!page.url().includes("view=risky"), `${tag} Decisions goes back`);

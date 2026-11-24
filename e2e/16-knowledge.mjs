@@ -94,11 +94,7 @@ async function run(width, scheme) {
     `${tag} full glossary includes the org's terms`,
   );
   await page.getByRole("switch", { name: "Only this project's terms" }).click();
-  await page
-    .getByText(org, { exact: true })
-    .first()
-    .waitFor({ timeout: 5000 })
-    .catch(() => {});
+  await page.getByText(org, { exact: true }).first().waitFor({ timeout: 5000 }).catch(() => {});
   ok(
     await page.getByText(org, { exact: true }).first().isVisible(),
     `${tag} inherited term shows its scope`,
@@ -176,8 +172,7 @@ async function run(width, scheme) {
   await page.getByRole("button", { name: "Approve edit" }).click();
   await page.waitForFunction(
     (want) =>
-      document.querySelector('textarea[aria-label="Note title"]')?.value ===
-      want,
+      document.querySelector('textarea[aria-label="Note title"]')?.value === want,
     `Leases ${tag} (renewable)`,
   );
   await page
@@ -212,12 +207,7 @@ async function run(width, scheme) {
   await shot("design-history");
 
   await page.getByRole("tab", { name: "Spec" }).click();
-  await page
-    .getByText(`Retry claims ${tag}`)
-    .locator("visible=true")
-    .first()
-    .waitFor({ timeout: 5000 })
-    .catch(() => {});
+  await page.getByText(`Retry claims ${tag}`).locator("visible=true").first().waitFor({ timeout: 5000 }).catch(() => {});
   ok(
     await page.getByText(`Retry claims ${tag}`).first().isVisible(),
     `${tag} spec lists the parts`,

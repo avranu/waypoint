@@ -20,10 +20,7 @@ const browser = await chromium.launch();
 
 async function run(width, scheme, n) {
   const tag = `${width}/${scheme}`;
-  const ctx = await browser.newContext({
-    viewport: { width, height: 900 },
-    colorScheme: scheme,
-  });
+  const ctx = await browser.newContext({ viewport: { width, height: 900 }, colorScheme: scheme });
   const page = await ctx.newPage();
   page.setDefaultTimeout(10000);
   page.on("pageerror", (e) => fail(`${tag} pageerror: ${e.message}`));
@@ -37,16 +34,11 @@ async function run(width, scheme, n) {
     call(m, p, d, headers).then((r) => (r.status() === 204 ? null : r.json()));
   const shot = async (name) => {
     await page.waitForTimeout(250);
-    await page.screenshot({
-      path: `${out}/${name}-${width}-${scheme}.png`,
-      fullPage: true,
-    });
+    await page.screenshot({ path: `${out}/${name}-${width}-${scheme}.png`, fullPage: true });
   };
   const overflow = async (where) =>
     ok(
-      !(await page.evaluate(
-        () => document.documentElement.scrollWidth > window.innerWidth,
-      )),
+      !(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)),
       `${tag} no sideways scroll (${where})`,
     );
   const dialogFits = async (where) =>
@@ -64,32 +56,12 @@ async function run(width, scheme, n) {
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL(base + "/");
 
-  const { token } = await api("POST", "/me/tokens", {
-    name: `haiku ${n}`,
-    agent: "anthropic/claude-haiku-5-5",
-  });
+  const { token } = await api("POST", "/me/tokens", { name: `haiku ${n}`, agent: "anthropic/claude-haiku-5-5" });
   const agent = { ...H, Authorization: `Bearer ${token}` };
-  const where = {
-    session_id: `cli-fu-${n}`,
-    machine: `fu-box-${n}`,
-    cwd: "/work/parser",
-    branch: "feat/parser",
-  };
-  const hook = (event, extra = {}) =>
-    api(
-      "POST",
-      "/sessions/hook",
-      { events: [{ event, ...where, ...extra }] },
-      agent,
-    );
-  const { session } = await hook("SessionStart", {
-    model: "claude-haiku-5-5",
-    source: "startup",
-  });
-  await hook("UserPromptSubmit", {
-    prompt: "Build the parser",
-    title: `Parser ${n}`,
-  });
+  const where = { session_id: `cli-fu-${n}`, machine: `fu-box-${n}`, cwd: "/work/parser", branch: "feat/parser" };
+  const hook = (event, extra = {}) => api("POST", "/sessions/hook", { events: [{ event, ...where, ...extra }] }, agent);
+  const { session } = await hook("SessionStart", { model: "claude-haiku-5-5", source: "startup" });
+  await hook("UserPromptSubmit", { prompt: "Build the parser", title: `Parser ${n}` });
 
   await page.goto(`${base}/agents/sessions/${session}`);
   const panel = page.getByTestId("follow-up");
@@ -104,104 +76,58 @@ async function run(width, scheme, n) {
   await dlg.getByLabel("Model", { exact: true }).fill("opus");
   const prompt = dlg.getByLabel("Prompt", { exact: true });
   await prompt.click();
-  await prompt.fill(
-    "Look over what the Haiku agent did on feat/parser, then add the error recovery.",
-  );
+  await prompt.fill("Look over what the Haiku agent did on feat/parser, then add the error recovery.");
   await shot("editor");
   await dialogFits("editor");
   await dlg.getByRole("button", { name: "Queue" }).click();
   await dlg.waitFor({ state: "hidden" });
   await panel.getByText("Waits for the agent to finish.").waitFor();
-  ok(
-    /fresh agent/i.test(await panel.innerText()),
-    `${tag} the queued step is listed (${(await panel.innerText()).slice(0, 120)})`,
-  );
+  ok(/fresh agent/i.test(await panel.innerText()), `${tag} the queued step is listed (${(await panel.innerText()).slice(0, 120)})`);
   await shot("armed");
   await overflow("armed");
 
   await hook("Stop", {
     last_message: "Started the test suite in the background.",
-    pending: {
-      tasks: [
-        { type: "shell", status: "running", description: "go test ./..." },
-      ],
-      crons: [],
-    },
+    pending: { tasks: [{ type: "shell", status: "running", description: "go test ./..." }], crons: [] },
   });
   await panel.getByText("Still running a background task.").waitFor();
-  await page
-    .getByTestId("session-pending")
-    .getByText("still running a background task")
-    .waitFor();
+  await page.getByTestId("session-pending").getByText("still running a background task").waitFor();
   ok(true, `${tag} a background task holds it, and the header says so`);
   await shot("held");
 
   // No runner is on this machine, so the step runs and fails.
-  const fin = await hook("Stop", {
-    last_message: "The parser is done; tests pass.",
-    pending: { tasks: [], crons: [] },
-  });
-  ok(
-    !fin.await,
-    `${tag} no hook wait for a step that doesn't talk to the agent`,
-  );
+  const fin = await hook("Stop", { last_message: "The parser is done; tests pass.", pending: { tasks: [], crons: [] } });
+  ok(!fin.await, `${tag} no hook wait for a step that doesn't talk to the agent`);
   await panel.getByText("Failed").first().waitFor({ timeout: 20000 });
-  ok(
-    /no runner named fu-box/i.test(await panel.innerText()),
-    `${tag} the run says it needs a runner on that machine`,
-  );
+  ok(/no runner named fu-box/i.test(await panel.innerText()), `${tag} the run says it needs a runner on that machine`);
   await shot("ran");
   await overflow("ran");
 
   await page.getByRole("button", { name: "Queue again" }).click();
   const dlg2 = page.getByRole("dialog", { name: "When this agent finishes" });
   await dlg2.waitFor();
-  await dlg2
-    .getByRole("button", { name: /^Remove/ })
-    .first()
-    .click();
+  await dlg2.getByRole("button", { name: /^Remove/ }).first().click();
   await dlg2.getByRole("button", { name: "Tell it what’s next" }).click();
   const msg = dlg2.getByLabel("Message", { exact: true });
   await msg.click();
   await msg.fill("Now write the README section for the parser.");
   await dlg2.getByRole("button", { name: "Queue" }).click();
   await dlg2.waitFor({ state: "hidden" });
-  await panel
-    .getByText("Waiting for the agent to take it and finish")
-    .first()
-    .waitFor({ timeout: 20000 });
+  await panel.getByText("Waiting for the agent to take it and finish").first().waitFor({ timeout: 20000 });
   ok(true, `${tag} queuing on a finished agent runs at once`);
   await hook("UserPromptSubmit", { prompt: "one more thing" });
-  const told = await hook("Stop", {
-    last_message: "Done with that.",
-    pending: { tasks: [{ type: "subagent", status: "running" }], crons: [] },
-  });
-  ok(
-    /README section/.test(told.text ?? ""),
-    `${tag} the agent's next stop carries the message (${(told.text ?? "").slice(0, 80)})`,
-  );
-  await hook("Stop", {
-    last_message: "README written.",
-    pending: { tasks: [], crons: [] },
-  });
+  const told = await hook("Stop", { last_message: "Done with that.", pending: { tasks: [{ type: "subagent", status: "running" }], crons: [] } });
+  ok(/README section/.test(told.text ?? ""), `${tag} the agent's next stop carries the message (${(told.text ?? "").slice(0, 80)})`);
+  await hook("Stop", { last_message: "README written.", pending: { tasks: [], crons: [] } });
   await panel.getByText("Succeeded").first().waitFor({ timeout: 20000 });
-  ok(
-    /README written/.test(await panel.innerText()),
-    `${tag} the step has the agent's answer`,
-  );
+  ok(/README written/.test(await panel.innerText()), `${tag} the step has the agent's answer`);
   await shot("told");
 
   await page.getByRole("button", { name: "Queue again" }).click();
-  await page
-    .getByRole("dialog", { name: "When this agent finishes" })
-    .getByRole("button", { name: "Queue" })
-    .click();
+  await page.getByRole("dialog", { name: "When this agent finishes" }).getByRole("button", { name: "Queue" }).click();
   await hook("UserPromptSubmit", { prompt: "keep going" });
   await page.goto(`${base}/agents?tab=sessions`);
-  const row = page
-    .getByRole("link")
-    .filter({ hasText: `Parser ${n}` })
-    .first();
+  const row = page.getByRole("link").filter({ hasText: `Parser ${n}` }).first();
   await row.waitFor();
   await row.getByText(/then 1 step|running its follow-up/).waitFor();
   ok(true, `${tag} the sessions list shows the queued step`);

@@ -165,11 +165,13 @@ async function run(width, scheme) {
   await page.getByRole("button", { name: "Report a problem" }).click();
   const rep = page.getByRole("dialog", { name: `Report a problem with ${k3}` });
   await rep.getByLabel("What’s wrong").fill(`Rows overlap ${tag}\nOn a phone.`);
-  await rep.locator("input[type=file]").setInputFiles({
-    name: "rows.png",
-    mimeType: "image/png",
-    buffer: picture,
-  });
+  await rep
+    .locator("input[type=file]")
+    .setInputFiles({
+      name: "rows.png",
+      mimeType: "image/png",
+      buffer: picture,
+    });
   await rep.getByRole("list", { name: "Pictures" }).getByRole("img").waitFor();
   await page.waitForTimeout(300);
   await shot("problem");

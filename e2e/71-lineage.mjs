@@ -31,150 +31,58 @@ let root, t1, t2, t3;
   const page = await ctx.newPage();
   await login(page);
   const api = (m, p, d) =>
-    page.request
-      .fetch(base + "/api/v1" + p, { method: m, headers: H, data: d })
-      .then((r) => r.json());
+    page.request.fetch(base + "/api/v1" + p, { method: m, headers: H, data: d }).then((r) => r.json());
   await api("POST", "/projects", { name: "Lineage", key: KEY });
-  root = await api("POST", "/issues", {
-    project: KEY,
-    title: "Speed up the board",
-  });
-  t1 = await api("POST", "/issues", {
-    project: KEY,
-    title: "Cache the board query",
-  });
-  t2 = await api("POST", "/issues", {
-    project: KEY,
-    title: "Also add an index",
-  });
-  t3 = await api("POST", "/issues", {
-    project: KEY,
-    title: "Vacuum the database after the index",
-  });
+  root = await api("POST", "/issues", { project: KEY, title: "Speed up the board" });
+  t1 = await api("POST", "/issues", { project: KEY, title: "Cache the board query" });
+  t2 = await api("POST", "/issues", { project: KEY, title: "Also add an index" });
+  t3 = await api("POST", "/issues", { project: KEY, title: "Vacuum the database after the index" });
   // Lineage is set straight in the DB: sessions record it in production, and core tests cover that path.
   const db = new DatabaseSync(`${process.env.DIR}/wp.db`);
   db.exec("PRAGMA busy_timeout = 5000");
-  const set = db.prepare(
-    `UPDATE issues SET text_agent = ?, reporter_agent = ?, reviewed_at = NULL, origin_issue_id = ?, origin_depth = ? WHERE id = ?`,
-  );
-  set.run(
-    "anthropic/claude-opus-5-5",
-    "anthropic/claude-opus-5-5",
-    root.id,
-    0,
-    t1.id,
-  );
-  set.run(
-    "anthropic/claude-sonnet-5-5",
-    "anthropic/claude-sonnet-5-5",
-    t1.id,
-    1,
-    t2.id,
-  );
-  set.run(
-    "anthropic/claude-haiku-5-5",
-    "anthropic/claude-haiku-5-5",
-    t2.id,
-    2,
-    t3.id,
-  );
+  const set = db.prepare(`UPDATE issues SET text_agent = ?, reporter_agent = ?, reviewed_at = NULL, origin_issue_id = ?, origin_depth = ? WHERE id = ?`);
+  set.run("anthropic/claude-opus-5-5", "anthropic/claude-opus-5-5", root.id, 0, t1.id);
+  set.run("anthropic/claude-sonnet-5-5", "anthropic/claude-sonnet-5-5", t1.id, 1, t2.id);
+  set.run("anthropic/claude-haiku-5-5", "anthropic/claude-haiku-5-5", t2.id, 2, t3.id);
   db.close();
 
   const d3 = await api("GET", `/issues/${t3.key}`);
-  ok(
-    d3.lineage?.depth === 3 &&
-      d3.lineage.held &&
-      d3.lineage.chain?.[0]?.key === t2.key &&
-      d3.lineage.chain?.[1]?.key === t1.key &&
-      d3.lineage.chain?.[2]?.key === root.key,
-    `t3 is at depth 3, held: ${JSON.stringify(d3.lineage)}`,
-  );
-  ok(
-    d3.safety?.verdict === "hold" && /depth 3/.test(d3.safety.reason ?? ""),
-    `the screen holds t3 by rule: ${JSON.stringify(d3.safety)}`,
-  );
+  ok(d3.lineage?.depth === 3 && d3.lineage.held && d3.lineage.chain?.[0]?.key === t2.key && d3.lineage.chain?.[1]?.key === t1.key && d3.lineage.chain?.[2]?.key === root.key,
+    `t3 is at depth 3, held: ${JSON.stringify(d3.lineage)}`);
+  ok(d3.safety?.verdict === "hold" && /depth 3/.test(d3.safety.reason ?? ""), `the screen holds t3 by rule: ${JSON.stringify(d3.safety)}`);
   const d2 = await api("GET", `/issues/${t2.key}`);
-  ok(
-    d2.lineage?.depth === 2 &&
-      !d2.lineage.held &&
-      d2.lineage.chain?.[0]?.key === t1.key,
-    `t2 is at depth 2, not held: ${JSON.stringify(d2.lineage)}`,
-  );
+  ok(d2.lineage?.depth === 2 && !d2.lineage.held && d2.lineage.chain?.[0]?.key === t1.key, `t2 is at depth 2, not held: ${JSON.stringify(d2.lineage)}`);
   const d1 = await api("GET", `/issues/${t1.key}`);
-  ok(
-    d1.lineage?.depth === 1 && !d1.lineage.held,
-    `t1 is at depth 1: ${JSON.stringify(d1.lineage)}`,
-  );
+  ok(d1.lineage?.depth === 1 && !d1.lineage.held, `t1 is at depth 1: ${JSON.stringify(d1.lineage)}`);
   const dr = await api("GET", `/issues/${root.key}`);
   ok(!dr.lineage, "a person's task has no lineage");
-  const text = await page.request
-    .fetch(`${base}/api/v1/issues/${t3.key}?format=text`, { headers: H })
-    .then((r) => r.text());
-  ok(
-    text.includes(`Written while working on ${t2.key}`) &&
-      text.includes("depth 3"),
-    `wp show names the chain:\n${text}`,
-  );
+  const text = await page.request.fetch(`${base}/api/v1/issues/${t3.key}?format=text`, { headers: H }).then((r) => r.text());
+  ok(text.includes(`Written while working on ${t2.key}`) && text.includes("depth 3"), `wp show names the chain:\n${text}`);
   await ctx.close();
 }
 
-for (const [width, scheme] of looks([
-  [1440, "light"],
-  [390, "light"],
-  [390, "dark"],
-])) {
+for (const [width, scheme] of looks([[1440, "light"], [390, "light"], [390, "dark"]])) {
   const tag = `${width}/${scheme}`;
-  const ctx = await browser.newContext({
-    viewport: { width, height: 900 },
-    colorScheme: scheme,
-  });
+  const ctx = await browser.newContext({ viewport: { width, height: 900 }, colorScheme: scheme });
   const page = await ctx.newPage();
   page.setDefaultTimeout(15000);
   page.on("pageerror", (e) => fail(`${tag} pageerror: ${e.message}`));
-  page.on(
-    "console",
-    (m) =>
-      m.type() === "error" &&
-      !/Failed to load resource/.test(m.text()) &&
-      fail(`${tag} console: ${m.text().slice(0, 300)}`),
-  );
+  page.on("console", (m) => m.type() === "error" && !/Failed to load resource/.test(m.text()) && fail(`${tag} console: ${m.text().slice(0, 300)}`));
   await login(page);
   const overflow = async (where) =>
-    ok(
-      !(await page.evaluate(
-        () => document.documentElement.scrollWidth > window.innerWidth,
-      )),
-      `${tag} no sideways scroll (${where})`,
-    );
-  const shot = (name) =>
-    page.screenshot({
-      path: `${out}/${name}-${width}-${scheme}.png`,
-      fullPage: true,
-    });
+    ok(!(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)), `${tag} no sideways scroll (${where})`);
+  const shot = (name) => page.screenshot({ path: `${out}/${name}-${width}-${scheme}.png`, fullPage: true });
   const note = page.getByTestId("lineage-note");
 
   await page.goto(`${base}/issue/${t3.key}`);
   await note.waitFor();
   const n3 = await note.innerText();
-  ok(
-    /Written while working on/.test(n3) &&
-      n3.includes(t2.key) &&
-      n3.includes(t1.key) &&
-      n3.includes(root.key) &&
-      /depth 3/.test(n3),
-    `${tag} t3 names its chain: ${n3}`,
-  );
+  ok(/Written while working on/.test(n3) && n3.includes(t2.key) && n3.includes(t1.key) && n3.includes(root.key) && /depth 3/.test(n3), `${tag} t3 names its chain: ${n3}`);
   await note.getByRole("link", { name: t1.key }).click();
   await page.waitForURL(`${base}/issue/${t1.key}`);
   // The note re-renders in place, so t3's text can still show until t1's arrives.
-  await note
-    .getByText(/depth 1/)
-    .waitFor()
-    .catch(() => {});
-  ok(
-    /depth 1/.test(await note.innerText()),
-    `${tag} the link opens t1, at depth 1`,
-  );
+  await note.getByText(/depth 1/).waitFor().catch(() => {});
+  ok(/depth 1/.test(await note.innerText()), `${tag} the link opens t1, at depth 1`);
   await page.goto(`${base}/issue/${t3.key}`);
   await note.waitFor();
   await overflow("t3");
@@ -191,23 +99,10 @@ for (const [width, scheme] of looks([
   const ctx = await browser.newContext();
   const page = await ctx.newPage();
   await login(page);
-  await page.request.fetch(`${base}/api/v1/review/issue/${t1.key}`, {
-    method: "POST",
-    headers: H,
-  });
-  const d3 = await page.request
-    .fetch(`${base}/api/v1/issues/${t3.key}`, { headers: H })
-    .then((r) => r.json());
-  ok(
-    d3.lineage?.depth === 2 &&
-      !d3.lineage.held &&
-      d3.lineage.chain?.[1]?.reviewed,
-    `after t1's review t3 is at depth 2: ${JSON.stringify(d3.lineage)}`,
-  );
-  ok(
-    d3.safety?.verdict !== "hold",
-    `and no longer held: ${JSON.stringify(d3.safety)}`,
-  );
+  await page.request.fetch(`${base}/api/v1/review/issue/${t1.key}`, { method: "POST", headers: H });
+  const d3 = await page.request.fetch(`${base}/api/v1/issues/${t3.key}`, { headers: H }).then((r) => r.json());
+  ok(d3.lineage?.depth === 2 && !d3.lineage.held && d3.lineage.chain?.[1]?.reviewed, `after t1's review t3 is at depth 2: ${JSON.stringify(d3.lineage)}`);
+  ok(d3.safety?.verdict !== "hold", `and no longer held: ${JSON.stringify(d3.safety)}`);
   await ctx.close();
 }
 

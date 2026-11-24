@@ -11,29 +11,20 @@ self.addEventListener('activate', (e) => {
   e.waitUntil(
     caches
       .keys()
-      .then((keys) =>
-        Promise.all(keys.filter((k) => k !== SHELL && k !== ASSETS).map((k) => caches.delete(k))),
-      )
+      .then((keys) => Promise.all(keys.filter((k) => k !== SHELL && k !== ASSETS).map((k) => caches.delete(k))))
       .then(() => self.clients.claim()),
   )
 })
 
 async function trim(cache) {
   const keys = await cache.keys() // insertion order: oldest first
-  await Promise.all(
-    keys.slice(0, Math.max(0, keys.length - MAX_ASSETS)).map((k) => cache.delete(k)),
-  )
+  await Promise.all(keys.slice(0, Math.max(0, keys.length - MAX_ASSETS)).map((k) => cache.delete(k)))
 }
 
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url)
   if (e.request.method !== 'GET' || url.origin !== location.origin) return
-  if (
-    url.pathname.startsWith('/api/') ||
-    url.pathname.startsWith('/cal/') ||
-    url.pathname === '/mcp'
-  )
-    return
+  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/cal/') || url.pathname === '/mcp') return
   if (url.pathname.startsWith('/assets/')) {
     e.respondWith(
       caches.open(ASSETS).then(async (c) => {
@@ -60,9 +51,7 @@ self.addEventListener('fetch', (e) => {
         const t = setTimeout(() => fallback().then((hit) => hit && resolve(hit)), NAV_TIMEOUT)
         network
           .then((res) => (clearTimeout(t), resolve(res)))
-          .catch(
-            () => (clearTimeout(t), fallback().then((hit) => resolve(hit ?? Response.error()))),
-          )
+          .catch(() => (clearTimeout(t), fallback().then((hit) => resolve(hit ?? Response.error()))))
       }),
     )
   }
@@ -107,10 +96,7 @@ function pauseSessions(note) {
     })
     .catch((err) =>
       self.registration.showNotification('Pause failed', {
-        body:
-          'Sessions are still running (' +
-          (err && err.message ? err.message : 'network error') +
-          ').',
+        body: 'Sessions are still running (' + (err && err.message ? err.message : 'network error') + ').',
         tag: 'pause-failed',
         icon: '/icon-192.png',
       }),

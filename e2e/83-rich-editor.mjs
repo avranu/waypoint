@@ -79,11 +79,8 @@ for (const [width, scheme] of looks([
       })
     ).json();
   const desc = async (key) =>
-    (
-      await (
-        await page.request.get(base + `/api/v1/issues/${key}`, { headers: H })
-      ).json()
-    ).description;
+    (await (await page.request.get(base + `/api/v1/issues/${key}`, { headers: H })).json())
+      .description;
   const waitDesc = async (key, want, ms = 10000) => {
     const hit = typeof want === "function" ? want : (d) => d === want;
     const end = Date.now() + ms;
@@ -96,9 +93,7 @@ for (const [width, scheme] of looks([
     return d;
   };
   const field = page.getByRole("textbox", { name: "Description" });
-  const richBox = page.locator(
-    '[contenteditable="true"][aria-label="Description"]',
-  );
+  const richBox = page.locator('[contenteditable="true"][aria-label="Description"]');
   const mdBox = page.locator("textarea[aria-label=Description]");
   const note = page.getByText("Opened as markdown: this text has formatting");
   const settleClose = async () => {
@@ -112,18 +107,12 @@ for (const [width, scheme] of looks([
   await page.goto(`${base}/issue/${a.key}`);
   await page.getByText("Intro with snake_case").click();
   await richBox.waitFor();
-  ok(
-    (await note.count()) === 0,
-    `${tag} mixed markdown opens in the rich editor`,
-  );
+  ok((await note.count()) === 0, `${tag} mixed markdown opens in the rich editor`);
   await page.screenshot({ path: `${out}/rich-open-${tag}.png` });
   // wplint:ignore e2e-wait polling a value or proving a negative: there is nothing to wait on
   await page.waitForTimeout(2200); // longer than the autosave pause: it would have gone out
   await settleClose();
-  ok(
-    (await desc(a.key)) === MIXED,
-    `${tag} an untouched open and close keeps the text byte for byte`,
-  );
+  ok((await desc(a.key)) === MIXED, `${tag} an untouched open and close keeps the text byte for byte`);
 
   const b = await make("Bold", "alpha beta_gamma");
   await page.goto(`${base}/issue/${b.key}`);
@@ -137,14 +126,8 @@ for (const [width, scheme] of looks([
   await field.pressSequentially("para");
   await field.press("Control+a");
   await page.getByRole("button", { name: "Bold" }).click();
-  const bd = await waitDesc(
-    b.key,
-    "**alpha beta_gamma word\nnext**\n\n**para**",
-  );
-  ok(
-    bd === "**alpha beta_gamma word\nnext**\n\n**para**",
-    `${tag} toolbar bold and breaks save markdown: ${JSON.stringify(bd)}`,
-  );
+  const bd = await waitDesc(b.key, "**alpha beta_gamma word\nnext**\n\n**para**");
+  ok(bd === "**alpha beta_gamma word\nnext**\n\n**para**", `${tag} toolbar bold and breaks save markdown: ${JSON.stringify(bd)}`);
   await settleClose();
 
   const c = await make("Word", "plain text");
@@ -156,10 +139,7 @@ for (const [width, scheme] of looks([
   await field.press("Shift+Control+ArrowLeft");
   await page.getByRole("button", { name: "Bold" }).click();
   const cd = await waitDesc(c.key, "plain text **word**");
-  ok(
-    cd === "plain text **word**",
-    `${tag} bold on a typed word saves **word**: ${JSON.stringify(cd)}`,
-  );
+  ok(cd === "plain text **word**", `${tag} bold on a typed word saves **word**: ${JSON.stringify(cd)}`);
 
   await settleClose();
   const t = await make("Tasks", "- [ ] first\n- [x] second");
@@ -168,34 +148,21 @@ for (const [width, scheme] of looks([
   await richBox.waitFor();
   await richBox.locator("input[type=checkbox]").first().click();
   const td = await waitDesc(t.key, "- [x] first\n- [x] second");
-  ok(
-    td === "- [x] first\n- [x] second",
-    `${tag} a task box toggles in the editor: ${JSON.stringify(td)}`,
-  );
+  ok(td === "- [x] first\n- [x] second", `${tag} a task box toggles in the editor: ${JSON.stringify(td)}`);
   await settleClose();
 
   const h = await make("Html", HTML);
   await page.goto(`${base}/issue/${h.key}`);
   await page.locator("summary").click();
   await mdBox.waitFor();
-  ok(
-    (await note.count()) === 1,
-    `${tag} raw HTML opens as markdown with a note`,
-  );
-  ok(
-    (await mdBox.inputValue()) === HTML,
-    `${tag} the markdown editor holds the text as stored`,
-  );
+  ok((await note.count()) === 1, `${tag} raw HTML opens as markdown with a note`);
+  ok((await mdBox.inputValue()) === HTML, `${tag} the markdown editor holds the text as stored`);
   await page.screenshot({ path: `${out}/html-note-${tag}.png` });
   await page.getByRole("button", { name: "Edit formatted" }).click();
   await mdBox.waitFor();
+  ok((await note.count()) === 1, `${tag} switching back refuses while the text can't be kept`);
   ok(
-    (await note.count()) === 1,
-    `${tag} switching back refuses while the text can't be kept`,
-  );
-  ok(
-    (await page.evaluate(() => localStorage.getItem("wp.editor.mode"))) !==
-      "rich",
+    (await page.evaluate(() => localStorage.getItem("wp.editor.mode"))) !== "rich",
     `${tag} a refused switch does not change the remembered editor`,
   );
   await settleClose();
@@ -207,38 +174,29 @@ for (const [width, scheme] of looks([
   await richBox.waitFor();
   await page.getByRole("button", { name: "Edit as markdown" }).click();
   await mdBox.waitFor();
-  ok(
-    (await mdBox.inputValue()) === "**bold** text",
-    `${tag} markdown mode shows the source`,
-  );
+  ok((await mdBox.inputValue()) === "**bold** text", `${tag} markdown mode shows the source`);
   await mdBox.press("Control+End");
   await mdBox.pressSequentially(" more");
   await page.getByRole("button", { name: "Edit formatted" }).click();
   await richBox.waitFor();
   ok(
-    (await richBox.evaluate((el) => el.innerHTML)).includes(
-      "<strong>bold</strong>",
-    ) && (await richBox.textContent()).includes("text more"),
+    (await richBox.evaluate((el) => el.innerHTML)).includes("<strong>bold</strong>") &&
+      (await richBox.textContent()).includes("text more"),
     `${tag} switching back keeps the draft`,
   );
   await page.getByRole("button", { name: "Edit as markdown" }).click();
   await mdBox.waitFor();
   const md = await waitDesc(m.key, "**bold** text more");
-  ok(
-    md === "**bold** text more",
-    `${tag} the draft saved: ${JSON.stringify(md)}`,
-  );
+  ok(md === "**bold** text more", `${tag} the draft saved: ${JSON.stringify(md)}`);
   await settleClose();
   const m2 = await make("Remembered", "plain");
   await page.goto(`${base}/issue/${m2.key}`);
   await page.getByText("plain", { exact: true }).click();
   await mdBox.waitFor();
-  ok(
-    (await note.count()) === 0,
-    `${tag} the chosen editor is remembered, without a note`,
-  );
+  ok((await note.count()) === 0, `${tag} the chosen editor is remembered, without a note`);
   await page.getByRole("button", { name: "Edit formatted" }).click();
   await richBox.waitFor();
+
 
   const menu = page.getByRole("listbox", { name: "Mention someone" });
   const openRich = async (key, text) => {
@@ -254,10 +212,7 @@ for (const [width, scheme] of looks([
   ok(await menu.isVisible(), `${tag} typing @rob opens the mention menu`);
   await field.press("Enter");
   const mnd = await waitDesc(mn.key, (d) => d.includes("@robin"));
-  ok(
-    /^hello @robin\s*$/.test(mnd),
-    `${tag} Enter picks the user: ${JSON.stringify(mnd)}`,
-  );
+  ok(/^hello @robin\s*$/.test(mnd), `${tag} Enter picks the user: ${JSON.stringify(mnd)}`);
   await settleClose();
 
   const mc = await make("Mention click", "hello");
@@ -265,17 +220,11 @@ for (const [width, scheme] of looks([
   await field.pressSequentially(" @rob");
   await menu.waitFor();
   await field.press("Escape");
-  ok(
-    !(await menu.isVisible()),
-    `${tag} Escape closes the menu, not the editor`,
-  );
+  ok(!(await menu.isVisible()), `${tag} Escape closes the menu, not the editor`);
   const bb = await richBox.boundingBox();
   await richBox.click({ position: { x: bb.width - 12, y: 14 } });
   await menu.waitFor({ timeout: 3000 }).catch(() => {});
-  ok(
-    await menu.isVisible(),
-    `${tag} clicking the caret into @rob reopens the menu`,
-  );
+  ok(await menu.isVisible(), `${tag} clicking the caret into @rob reopens the menu`);
   await field.press("Escape");
   await settleClose();
 
@@ -286,10 +235,7 @@ for (const [width, scheme] of looks([
   await field.press("Shift+Enter");
   await field.pressSequentially("z");
   const msd = await waitDesc(ms.key, (d) => d.includes("z"));
-  ok(
-    msd === "hello @rob\nz",
-    `${tag} Shift+Enter breaks the line instead of picking: ${JSON.stringify(msd)}`,
-  );
+  ok(msd === "hello @rob\nz", `${tag} Shift+Enter breaks the line instead of picking: ${JSON.stringify(msd)}`);
   await settleClose();
 
   const mo = await make("Mention dot", "hello");
@@ -309,11 +255,7 @@ for (const [width, scheme] of looks([
         const dt = new DataTransfer();
         dt.items.add(new File([bytes], n, { type: "image/png" }));
         el.dispatchEvent(
-          new ClipboardEvent("paste", {
-            clipboardData: dt,
-            bubbles: true,
-            cancelable: true,
-          }),
+          new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }),
         );
       },
       [PNG, name],
@@ -323,22 +265,15 @@ for (const [width, scheme] of looks([
       await new Promise((r) => setTimeout(r, ms));
       await route.continue();
     });
-  const link = (n) =>
-    new RegExp(`!\\[${n}\\]\\(/api/v1/attachments/\\d+/${n}\\)`);
+  const link = (n) => new RegExp(`!\\[${n}\\]\\(/api/v1/attachments/\\d+/${n}\\)`);
 
   const up = await make("Upload", "pic");
   await openRich(up.key, "pic");
   await slow(500);
   await pastePng("shot.png");
-  ok(
-    (await richBox.textContent()).includes("Uploading shot.png"),
-    `${tag} a pasted file shows a placeholder`,
-  );
+  ok((await richBox.textContent()).includes("Uploading shot.png"), `${tag} a pasted file shows a placeholder`);
   const upd = await waitDesc(up.key, (d) => link("shot.png").test(d));
-  ok(
-    link("shot.png").test(upd) && !upd.includes("Uploading"),
-    `${tag} a pasted file ends as an attachment link: ${JSON.stringify(upd)}`,
-  );
+  ok(link("shot.png").test(upd) && !upd.includes("Uploading"), `${tag} a pasted file ends as an attachment link: ${JSON.stringify(upd)}`);
   await page.unrouteAll({ behavior: "ignoreErrors" });
   await settleClose();
 
@@ -348,27 +283,15 @@ for (const [width, scheme] of looks([
   await pastePng("late.png");
   await page.getByRole("button", { name: "Edit as markdown" }).click();
   await mdBox.waitFor();
-  await page
-    .waitForFunction(
-      () =>
-        /late\.png\]\(\/api\/v1\/attachments\/\d+\//.test(
-          document.querySelector("textarea[aria-label=Description]")?.value ??
-            "",
-        ),
-      null,
-      { timeout: 10000 },
-    )
-    .catch(() => {});
+  await page.waitForFunction(
+    () => /late\.png\]\(\/api\/v1\/attachments\/\d+\//.test(document.querySelector("textarea[aria-label=Description]")?.value ?? ""),
+    null,
+    { timeout: 10000 },
+  ).catch(() => {});
   const mv = await mdBox.inputValue();
-  ok(
-    link("late.png").test(mv) && !mv.includes("Uploading"),
-    `${tag} an upload finishing after the switch to markdown lands in the text: ${JSON.stringify(mv)}`,
-  );
+  ok(link("late.png").test(mv) && !mv.includes("Uploading"), `${tag} an upload finishing after the switch to markdown lands in the text: ${JSON.stringify(mv)}`);
   const usd = await waitDesc(us.key, (d) => link("late.png").test(d));
-  ok(
-    link("late.png").test(usd),
-    `${tag} ...and is saved: ${JSON.stringify(usd)}`,
-  );
+  ok(link("late.png").test(usd), `${tag} ...and is saved: ${JSON.stringify(usd)}`);
   await page.unrouteAll({ behavior: "ignoreErrors" });
   await settleClose();
   await page.evaluate(() => localStorage.setItem("wp.editor.mode", "rich"));
@@ -380,19 +303,11 @@ for (const [width, scheme] of looks([
   await pastePng("esc.png");
   await field.press("Escape");
   const ued = await waitDesc(ue.key, (d) => link("esc.png").test(d));
-  ok(
-    link("esc.png").test(ued) && !ued.includes("Uploading"),
-    `${tag} an upload finishing after Escape is saved: ${JSON.stringify(ued)}`,
-  );
+  ok(link("esc.png").test(ued) && !ued.includes("Uploading"), `${tag} an upload finishing after Escape is saved: ${JSON.stringify(ued)}`);
   await page.reload();
-  await page
-    .getByRole("img")
-    .first()
-    .waitFor({ timeout: 8000 })
-    .catch(() => {});
+  await page.getByRole("img").first().waitFor({ timeout: 8000 }).catch(() => {});
   ok(
-    (await page.locator('img[src*="esc.png"]').count()) > 0 &&
-      !(await page.content()).includes("Uploading esc.png"),
+    (await page.locator('img[src*="esc.png"]').count()) > 0 && !(await page.content()).includes("Uploading esc.png"),
     `${tag} ...and shows after a reload`,
   );
   await page.unrouteAll({ behavior: "ignoreErrors" });
@@ -401,21 +316,14 @@ for (const [width, scheme] of looks([
   await openRich(uf.key, "pic");
   await page.route(/\/api\/v1\/attachments\?/, async (route) => {
     await new Promise((r) => setTimeout(r, 1500));
-    await route.fulfill({
-      status: 500,
-      contentType: "application/json",
-      body: '{"error":"nope"}',
-    });
+    await route.fulfill({ status: 500, contentType: "application/json", body: '{"error":"nope"}' });
   });
   await pastePng("bad.png");
   await field.press("Escape");
   // Escape saves the placeholder first, so the failed upload's cleanup has to remove it from what was saved.
   await waitDesc(uf.key, (d) => d.includes("Uploading bad.png"));
   const ufd = await waitDesc(uf.key, (d) => !d.includes("Uploading"));
-  ok(
-    !ufd.includes("Uploading") && !ufd.includes("bad.png"),
-    `${tag} an upload failing after Escape leaves no placeholder saved: ${JSON.stringify(ufd)}`,
-  );
+  ok(!ufd.includes("Uploading") && !ufd.includes("bad.png"), `${tag} an upload failing after Escape leaves no placeholder saved: ${JSON.stringify(ufd)}`);
   await page.unrouteAll({ behavior: "ignoreErrors" });
 
   const ud = await make("Upload deleted", "pic");
@@ -424,10 +332,7 @@ for (const [width, scheme] of looks([
   await pastePng("gone.png");
   await field.press("Control+a");
   await field.press("Delete");
-  await page
-    .getByText(/attached but not inserted/)
-    .waitFor({ timeout: 8000 })
-    .catch(() => {});
+  await page.getByText(/attached but not inserted/).waitFor({ timeout: 8000 }).catch(() => {});
   ok(
     (await page.getByText(/attached but not inserted/).count()) > 0,
     `${tag} a placeholder deleted mid-upload says the file was attached but not inserted`,
@@ -449,30 +354,12 @@ for (const [width, scheme] of looks([
       }
   });
   await page
-    .waitForFunction(
-      () =>
-        !!document.querySelector(
-          '[aria-label="Description"] img[src*="remade.png"]',
-        ),
-      null,
-      { timeout: 10000 },
-    )
+    .waitForFunction(() => !!document.querySelector('[aria-label="Description"] img[src*="remade.png"]'), null, { timeout: 10000 })
     .catch(() => {});
-  ok(
-    await richBox.evaluate(
-      (el) => !!el.querySelector('img[src*="remade.png"]'),
-    ),
-    `${tag} an upload whose placeholder was remade shows in the editor`,
-  );
+  ok(await richBox.evaluate((el) => !!el.querySelector('img[src*="remade.png"]')), `${tag} an upload whose placeholder was remade shows in the editor`);
   await field.pressSequentially("!");
-  const urd = await waitDesc(
-    ur.key,
-    (d) => link("remade.png").test(d) && d.includes("!"),
-  );
-  ok(
-    link("remade.png").test(urd) && !urd.includes("Uploading"),
-    `${tag} ...and keeps its link after the next keystroke: ${JSON.stringify(urd)}`,
-  );
+  const urd = await waitDesc(ur.key, (d) => link("remade.png").test(d) && d.includes("!"));
+  ok(link("remade.png").test(urd) && !urd.includes("Uploading"), `${tag} ...and keeps its link after the next keystroke: ${JSON.stringify(urd)}`);
   await page.unrouteAll({ behavior: "ignoreErrors" });
   await settleClose();
 
@@ -485,13 +372,10 @@ for (const [width, scheme] of looks([
     ["Code block", /^```\nTXT\n```$/],
   ];
   for (const [name, re] of tools) {
-    const want = (d) =>
-      new RegExp(re.source.replace("TXT", "hi")).test(d ?? "");
+    const want = (d) => new RegExp(re.source.replace("TXT", "hi")).test(d ?? "");
     const ei = await make(`Empty ${name}`, undefined);
     await page.goto(`${base}/issue/${ei.key}`);
-    await page
-      .getByRole("button", { name: "Add a description…", exact: true })
-      .click();
+    await page.getByRole("button", { name: "Add a description…", exact: true }).click();
     await richBox.waitFor();
     await page.getByRole("button", { name, exact: true }).click();
     await field.pressSequentially("hi");
@@ -499,17 +383,13 @@ for (const [width, scheme] of looks([
     ok(want(got), `${tag} ${name} in an empty editor: ${JSON.stringify(got)}`);
     await settleClose();
 
-    const wantFull = (d) =>
-      new RegExp(re.source.replace("TXT", "plain")).test(d ?? "");
+    const wantFull = (d) => new RegExp(re.source.replace("TXT", "plain")).test(d ?? "");
     const ni = await make(`Full ${name}`, "plain");
     await openRich(ni.key, "plain");
     await field.press("Control+a");
     await page.getByRole("button", { name, exact: true }).click();
     const got2 = await waitDesc(ni.key, wantFull, 6000);
-    ok(
-      wantFull(got2),
-      `${tag} ${name} on existing text: ${JSON.stringify(got2)}`,
-    );
+    ok(wantFull(got2), `${tag} ${name} on existing text: ${JSON.stringify(got2)}`);
     await settleClose();
   }
 
@@ -517,10 +397,7 @@ for (const [width, scheme] of looks([
   await openRich(un.key, "plain");
   await field.press("Control+a");
   await field.press("Control+u");
-  ok(
-    !(await richBox.evaluate((el) => !!el.querySelector("u"))),
-    `${tag} Ctrl+U adds no underline`,
-  );
+  ok(!(await richBox.evaluate((el) => !!el.querySelector("u"))), `${tag} Ctrl+U adds no underline`);
   await settleClose();
 
   const dr = await make("Drop", "plain");
@@ -531,46 +408,27 @@ for (const [width, scheme] of looks([
     dt.setData("text/plain", "dropped words");
     dt.setData("text/html", "<h1 style='color:red'>dropped words</h1>");
     el.dispatchEvent(
-      new DragEvent("drop", {
-        dataTransfer: dt,
-        clientX: r.right - 8,
-        clientY: r.top + 12,
-        bubbles: true,
-        cancelable: true,
-      }),
+      new DragEvent("drop", { dataTransfer: dt, clientX: r.right - 8, clientY: r.top + 12, bubbles: true, cancelable: true }),
     );
   });
-  ok(
-    !(await richBox.evaluate((el) => !!el.querySelector("h1"))),
-    `${tag} dropped HTML is not inserted as HTML`,
-  );
+  ok(!(await richBox.evaluate((el) => !!el.querySelector("h1"))), `${tag} dropped HTML is not inserted as HTML`);
   const drd = await waitDesc(dr.key, (d) => d.includes("dropped words"));
-  ok(
-    /^plain\s*dropped words$/.test(drd),
-    `${tag} dropped text is inserted as text: ${JSON.stringify(drd)}`,
-  );
+  ok(/^plain\s*dropped words$/.test(drd), `${tag} dropped text is inserted as text: ${JSON.stringify(drd)}`);
   await settleClose();
 
   await settleClose();
   const e = await make("Empty", undefined);
   await page.goto(`${base}/issue/${e.key}`);
-  const emptyBtn = page.getByRole("button", {
-    name: "Add a description…",
-    exact: true,
-  });
+  const emptyBtn = page.getByRole("button", { name: "Add a description…", exact: true });
   await emptyBtn.waitFor();
   ok(
-    (await page.getByRole("button", { name: /^Add a description/ }).count()) ===
-      1 && (await emptyBtn.count()) === 1,
+    (await page.getByRole("button", { name: /^Add a description/ }).count()) === 1 &&
+      (await emptyBtn.count()) === 1,
     `${tag} the empty-state button is just the short label`,
   );
-  await page
-    .getByRole("button", { name: "Add a description…", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Add a description…", exact: true }).click();
   await richBox.waitFor();
-  const prompt = await richBox.evaluate(
-    (el) => getComputedStyle(el, "::before").content,
-  );
+  const prompt = await richBox.evaluate((el) => getComputedStyle(el, "::before").content);
   ok(prompt.length > 2, `${tag} an empty editor shows its prompt: ${prompt}`);
   ok(
     !prompt.replace(/^["']/, "").startsWith("Add a description"),
@@ -581,9 +439,7 @@ for (const [width, scheme] of looks([
     `${tag} the in-field hint mentions @ and files: ${prompt}`,
   );
   await page.screenshot({ path: `${out}/empty-${tag}.png` });
-  const overflow = await page.evaluate(
-    () => document.documentElement.scrollWidth > innerWidth,
-  );
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
   ok(!overflow, `${tag} no horizontal scroll`);
   await ctx.close();
 }

@@ -181,7 +181,6 @@ export function AddTimeDialog({
                   aria-label="Duration"
                 />
               </div>
-              {}
               <input
                 type="range"
                 min={300}

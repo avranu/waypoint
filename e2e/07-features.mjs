@@ -171,11 +171,7 @@ async function run(width, scheme) {
   await ctx.close();
 }
 
-for (const [w, s] of looks([
-  [1440, "dark"],
-  [390, "light"],
-]))
-  await run(w, s);
+for (const [w, s] of looks([[1440, "dark"], [390, "light"]])) await run(w, s);
 await browser.close();
 console.log(errors.length ? `${errors.length} errors` : "no errors");
 process.exit(errors.length ? 1 : 0);

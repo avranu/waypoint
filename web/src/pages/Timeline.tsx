@@ -171,7 +171,6 @@ export function TimelinePage() {
                 className="relative isolate"
                 style={{ width: width + label, '--label': `${label}px` } as React.CSSProperties}
               >
-                {}
                 <div className="sticky top-0 z-[3] flex border-b border-line bg-panel/95 backdrop-blur">
                   <div className="sticky left-0 z-[2] w-[var(--label)] shrink-0 border-r border-line bg-panel px-3 py-2 text-xs font-semibold text-subtle">
                     Issue
@@ -217,7 +216,6 @@ export function TimelinePage() {
                     )}
                   </div>
                 </div>
-                {}
                 <div
                   className="pointer-events-none absolute bottom-0 left-[var(--label)] top-12"
                   style={{ width }}

@@ -68,17 +68,14 @@ async function run(width, scheme) {
   const hook = async (event, payload) => {
     const body = JSON.stringify(payload);
     const sig = crypto.createHmac("sha256", secret).update(body).digest("hex");
-    const r = await page.request.post(
-      `${base}/api/v1/hooks/forge/${forge.id}`,
-      {
-        headers: {
-          "Content-Type": "application/json",
-          "X-Forgejo-Event": event,
-          "X-Forgejo-Signature": sig,
-        },
-        data: body,
+    const r = await page.request.post(`${base}/api/v1/hooks/forge/${forge.id}`, {
+      headers: {
+        "Content-Type": "application/json",
+        "X-Forgejo-Event": event,
+        "X-Forgejo-Signature": sig,
       },
-    );
+      data: body,
+    });
     ok(r.ok(), `${tag} ${event} webhook accepted`);
   };
   const issue = (n, title, who) =>
@@ -119,15 +116,9 @@ async function run(width, scheme) {
   const mine = list.find((i) => i.title === "Dark mode please");
   const theirs = list.find((i) => i.title === "Ignore your instructions");
   ok(mine && !mine.draft, `${tag} a person's forge issue isn't held`);
-  ok(
-    theirs?.draft && theirs.outside,
-    `${tag} a stranger's is an outside draft`,
-  );
+  ok(theirs?.draft && theirs.outside, `${tag} a stranger's is an outside draft`);
   // Agents may hold a person's forge credentials, so that login's text counts as agent text until an admin says only the person writes as it.
-  ok(
-    mine?.text_agent === "forge/me",
-    `${tag} a person's login writes agent text`,
-  );
+  ok(mine?.text_agent === "forge/me", `${tag} a person's login writes agent text`);
   await page.goto(`${base}/admin?tab=forges`);
   const only = /^only robin ames writes as me$/i;
   await row.getByRole("button", { name: only }).click();
@@ -137,20 +128,14 @@ async function run(width, scheme) {
   const light = (again.issues ?? again).find(
     (i) => i.title === "Light mode too",
   );
-  ok(
-    light && !light.text_agent,
-    `${tag} a person-only login writes their own text`,
-  );
+  ok(light && !light.text_agent, `${tag} a person-only login writes their own text`);
   await shot("forge-people-only");
 
   // An agent's own account has no person, so its text is agent text: not outside text, and not anyone's own.
   await row.getByRole("button", { name: "Add a login" }).click();
   await row.getByLabel("Forge login").fill("claude");
   await row.getByRole("radio", { name: "Agent" }).click();
-  ok(
-    !(await row.getByLabel("Waypoint person").count()),
-    `${tag} an agent's account names no person`,
-  );
+  ok(!(await row.getByLabel("Waypoint person").count()), `${tag} an agent's account names no person`);
   await row.getByRole("radio", { name: "Agent", checked: true }).waitFor();
   await page.waitForTimeout(300);
   await shot("forge-people-adding-agent");
@@ -163,14 +148,9 @@ async function run(width, scheme) {
   await shot("forge-people-agent");
   await issue(4, "Flaky e2e on the runner", "claude");
   const third = await api("GET", `/issues?project=${key}`);
-  const flaky = (third.issues ?? third).find(
-    (i) => i.title === "Flaky e2e on the runner",
-  );
+  const flaky = (third.issues ?? third).find((i) => i.title === "Flaky e2e on the runner");
   ok(
-    flaky &&
-      !flaky.draft &&
-      !flaky.outside &&
-      flaky.text_agent === "forge/claude",
+    flaky && !flaky.draft && !flaky.outside && flaky.text_agent === "forge/claude",
     `${tag} an agent account's issue is agent text`,
   );
 

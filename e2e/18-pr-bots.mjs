@@ -374,26 +374,14 @@ async function run(width) {
   {
     const ed = page.getByRole("dialog");
     await ed.getByRole("button", { name: "More conditions…" }).click();
-    await page
-      .getByRole("menuitem", { name: "Touching certain files" })
-      .click();
-    await ed
-      .getByLabel("Touching certain files", { exact: true })
-      .fill("web/**, internal/**");
+    await page.getByRole("menuitem", { name: "Touching certain files" }).click();
+    await ed.getByLabel("Touching certain files", { exact: true }).fill("web/**, internal/**");
     await ed.getByRole("button", { name: "More conditions…" }).click();
-    await page
-      .getByRole("menuitem", {
-        name: "Except when it only touches certain files",
-      })
-      .click();
-    await ed
-      .getByLabel("Except when it only touches certain files", { exact: true })
-      .fill("docs/**");
+    await page.getByRole("menuitem", { name: "Except when it only touches certain files" }).click();
+    await ed.getByLabel("Except when it only touches certain files", { exact: true }).fill("docs/**");
     ok(
       (await ed.getByText("only if", { exact: true }).isVisible()) &&
-        (await ed
-          .getByRole("button", { name: "Remove “Touching certain files”" })
-          .isVisible()),
+        (await ed.getByRole("button", { name: "Remove “Touching certain files”" }).isVisible()),
       `${tag} the files condition shows as a chip under "only if"`,
     );
   }

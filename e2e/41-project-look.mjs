@@ -129,9 +129,7 @@ async function run(width, scheme, key) {
   const swatch = (await project()).color === "#ef4444" ? "#f97316" : "#ef4444";
   await page.getByRole("button", { name: swatch }).first().click();
   ok(
-    await page
-      .getByText("Save or discard your changes below first.")
-      .isVisible(),
+    await page.getByText("Save or discard your changes below first.").isVisible(),
     `${tag} look buttons wait for unsaved edits`,
   );
   await page.getByRole("button", { name: "Save changes" }).click();
@@ -153,10 +151,7 @@ async function run(width, scheme, key) {
     `${tag} cancelling keeps the person's look`,
   );
   await page.getByRole("button", { name: "Pick another" }).click();
-  await page
-    .getByRole("dialog")
-    .getByRole("button", { name: "Pick another" })
-    .click();
+  await page.getByRole("dialog").getByRole("button", { name: "Pick another" }).click();
   again = await lookAfter(custom);
   ok(
     again.look === "generated" && again.color !== "#ef4444",
@@ -171,7 +166,10 @@ async function run(width, scheme, key) {
     plain.look === "plain" && plain.icon === "" && plain.background === "",
     `${tag} Reset to default clears icon and background`,
   );
-  ok((await project()).look === "plain", `${tag} a reset look stays reset`);
+  ok(
+    (await project()).look === "plain",
+    `${tag} a reset look stays reset`,
+  );
   await overflow("settings after reset");
   await shot("settings-reset");
 

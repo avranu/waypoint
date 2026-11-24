@@ -61,10 +61,7 @@ async function run(width, scheme) {
     const b = await page.locator(`aside [data-project=${to}]`).boundingBox();
     await page.mouse.move(a.x + 60, a.y + a.height / 2);
     await page.mouse.down();
-    await page.mouse.move(
-      a.x + 60,
-      a.y + a.height / 2 + (b.y > a.y ? 10 : -10),
-    );
+    await page.mouse.move(a.x + 60, a.y + a.height / 2 + (b.y > a.y ? 10 : -10));
     await page.mouse.move(b.x + 60, b.y + b.height / 2, { steps: 12 });
     return async () => {
       await page.mouse.up();
@@ -91,9 +88,7 @@ async function run(width, scheme) {
     await page.getByRole("button", { name: "Projects" }).click();
     const names = await page
       .locator("a[href^='/p/ZT']")
-      .evaluateAll((els) =>
-        els.map((e) => e.getAttribute("href").split("/")[2]),
-      );
+      .evaluateAll((els) => els.map((e) => e.getAttribute("href").split("/")[2]));
     ok(
       names.join(" ") === want.join(" ") && idOf.ZTD !== undefined,
       `${tag} the menu lists projects in the saved order (${names.join(" ")})`,
@@ -138,7 +133,8 @@ async function run(width, scheme) {
   // before reading the profile or reloading (a reload would cancel it).
   await Promise.all([
     page.waitForResponse(
-      (r) => r.url().endsWith("/api/v1/me") && r.request().method() === "PATCH",
+      (r) =>
+        r.url().endsWith("/api/v1/me") && r.request().method() === "PATCH",
     ),
     drop(),
   ]);
@@ -225,13 +221,10 @@ async function run(width, scheme) {
   await ctx.close();
 }
 
-for (const [w, s] of looks(
-  [
-    [1440, "light"],
-    [390, "dark"],
-  ],
-  [0, 1],
-))
+for (const [w, s] of looks([
+  [1440, "light"],
+  [390, "dark"],
+], [0, 1]))
   try {
     await run(w, s);
   } catch (e) {

@@ -109,7 +109,6 @@ export function RelationsBlock({
   )
   const actions = (
     <span className="flex items-center gap-0.5">
-      {}
       <Link
         to="/graph"
         search={{ ref: issue.key }}

@@ -97,7 +97,6 @@ export function ProjectSettingsPage() {
             </button>
           ))}
         </nav>
-        {}
         <main
           role="tabpanel"
           className="wp-surface wp-pad-lg min-w-0 max-w-3xl flex-1 px-3 py-4 sm:px-5 lg:p-0"
