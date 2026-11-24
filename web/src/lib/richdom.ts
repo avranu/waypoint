@@ -13,6 +13,7 @@ import {
   type BlockRule,
   type InlineMatch,
 } from '@/lib/richinput'
+import { PIECE_SRC, pieceHtml } from '@/lib/markdown'
 
 // A table cell is a block of its own: the caret in one is never in "the table".
 const TEXT_BLOCKS = new Set(['P', 'DIV', 'LI', 'TD', 'TH', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6'])
@@ -95,7 +96,8 @@ function scan(b: Block, caret: Range): Scanned {
     if (node.nodeType !== Node.ELEMENT_NODE) return
     const e = node as Element
     const isBefore = caret.comparePoint(e.parentNode!, indexIn(e)) < 0
-    if (OPAQUE_TAGS.has(e.tagName) || e.tagName === 'BR') {
+    // A wikilink or @mention piece is one character too: no rule reads inside it.
+    if (OPAQUE_TAGS.has(e.tagName) || e.tagName === 'BR' || e.hasAttribute(PIECE_SRC)) {
       const ch = e.tagName === 'BR' ? '\n' : OPAQUE
       if (isBefore) before += ch
       else if (after.length < 2) after += ch
@@ -225,6 +227,7 @@ function typedRules(el: HTMLElement, ch: string, composed: boolean): boolean {
   const s = scan(b, caret)
   // The committed text may already have been acted on, or the caret moved on.
   if (composed && !s.before.endsWith(ch)) return false
+  if (piece(s, caret, ch)) return true
   if (ch === ' ') {
     const bare = b.node ? b.node.tagName === 'P' || b.node.tagName === 'DIV' : true
     const inItem = b.node?.tagName === 'LI'
@@ -238,6 +241,95 @@ function typedRules(el: HTMLElement, ch: string, composed: boolean): boolean {
   }
   const m = inlineRule(s.before, s.after)
   return m ? inline(s, caret, m) : false
+}
+
+// A typed [[wikilink]] becomes the editor's piece when its "]]" is typed, and a
+// typed @name when a space or punctuation ends it, as the pieces already in
+// the description are drawn, so saving moves nothing. Neither '.' nor '-'
+// ends a name (they can be inside one: "@a.b"). The conversion is one
+// insertHTML, so one undo gives back the typed text.
+const NAME_END = /^[ ,;:!?)]$/
+
+// Chromium's insertHTML splits the paragraph when an uneditable element goes in
+// at its very end. A parked caret node after the selection keeps it inline
+// (put in by hand, so it is not an undo step; undo leaves it, unseen).
+export function insertPiece(html: string) {
+  const r = window.getSelection()?.getRangeAt(0)
+  const t = r?.endContainer
+  if (
+    t &&
+    t.nodeType === Node.TEXT_NODE &&
+    r.endOffset === t.textContent?.length &&
+    !t.nextSibling
+  ) {
+    t.parentNode?.appendChild(document.createTextNode(PARK))
+  }
+  exec('insertHTML', html)
+  looseSpaces()
+}
+
+// Chromium turns the spaces beside the new piece into no-break ones, which the
+// saved view (plain spaces) does not have: lines break elsewhere and one at a
+// line's start shows. Put plain ones back where text follows or precedes.
+function looseSpaces() {
+  const sel = window.getSelection()
+  if (!sel?.anchorNode) return
+  const isPiece = (x: Node | null) => x instanceof Element && x.hasAttribute(PIECE_SRC)
+  // Chromium can leave the caret inside the piece's text; the piece is then
+  // an ancestor, else a sibling of the caret's node.
+  const [node, offset] = [sel.anchorNode, sel.anchorOffset]
+  let n: Node | null =
+    node.nodeType === Node.ELEMENT_NODE ? (node.childNodes[offset - 1] ?? null) : node
+  const inside = (node.parentElement?.closest('[data-md]') as Node | null) ?? null
+  if (inside) n = inside
+  const from = n
+  while (n && !isPiece(n)) n = n.previousSibling
+  for (n = n ?? from; n && !isPiece(n);) n = n.nextSibling
+  if (!n) return
+  const before = n.previousSibling
+  if (before?.nodeType === Node.TEXT_NODE) {
+    const d = (before as Text).data
+    if (/[^\s\u00a0]\u00a0$/.test(d)) (before as Text).data = `${d.slice(0, -1)} `
+  }
+  let after = n.nextSibling
+  while (after?.nodeType === Node.TEXT_NODE && (after as Text).data === PARK)
+    after = after.nextSibling
+  let lead = 0
+  if (after?.nodeType === Node.TEXT_NODE) {
+    const t = after as Text
+    const m = /^(\ufeff*)\u00a0(?=[^\s\u00a0])/.exec(t.data)
+    if (m) t.data = `${m[1]} ${t.data.slice(m[0].length)}`
+    lead = /^\ufeff*[ \u00a0]?/.exec(t.data)?.[0].length ?? 0
+  }
+  // Setting text moves a caret inside it; put it back, and a caret left inside
+  // the piece goes after it and the space that follows, where typing is text.
+  if (inside && after) sel.collapse(after, lead)
+  else sel.collapse(node, offset)
+}
+
+function piece(s: Scanned, caret: Range, typed: string): boolean {
+  const done = (from: number, src: string, tail: string, park: boolean) => {
+    const open = pieceHtml(src)
+    const at = pointAt(s, from)
+    if (!open || !at) return false
+    const r = document.createRange()
+    r.setStart(...at)
+    r.setEnd(caret.startContainer, caret.startOffset)
+    select(r)
+    insertPiece(open + tail + (park ? PARK : ''))
+    return true
+  }
+  if (typed === ']') {
+    const w = /\[\[[^[\]|\n\ufffc]{1,200}(?:\|[^[\]\n\ufffc]{0,200})?\]\]$/.exec(s.before)
+    return !!w && done(w.index, w[0], '', true)
+  }
+  if (!NAME_END.test(typed)) return false
+  const body = s.before.slice(0, -1)
+  const m = /(^|[\s(\ufeff])@([a-zA-Z0-9][\w.-]{0,38})$/.exec(body)
+  if (!m) return false
+  const name = m[2].replace(/[.-]+$/, '')
+  const trail = esc(m[2].slice(name.length) + (typed === ' ' ? '\u00a0' : typed))
+  return done(m.index + m[1].length, '@' + name, trail, false)
 }
 
 function convert(el: HTMLElement, b: Block, caret: Range, rule: BlockRule): boolean {
