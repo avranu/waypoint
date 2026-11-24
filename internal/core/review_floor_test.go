@@ -304,9 +304,11 @@ func TestPRAuditAtHeadByBar(t *testing.T) {
 }
 
 // The family check on reuse (the session's family can't have reviewed) does
-// not apply to a round at the high-stakes bar (WP-1752): an audit held to it
-// is taken whoever answered. A round at another bar keeps the check.
-func TestPRAuditAtHeadFamilyCheckSkippedAtTrustedBar(t *testing.T) {
+// not apply to an audit held to the high-stakes bar (WP-1752): it is taken
+// whoever answered or may answer, by a round at that bar or at the floor
+// (which takes audits at the bars above it). An audit at another bar keeps
+// the check.
+func TestPRAuditAtHeadFamilyCheckSkippedForTrustedBarAudits(t *testing.T) {
 	a, _ := auditAPEnv(t)
 	first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude", Priority: "urgent"})
 	a.finish(first.Key)
@@ -317,15 +319,22 @@ func TestPRAuditAtHeadFamilyCheckSkippedAtTrustedBar(t *testing.T) {
 	}
 	pr := &PullRequest{ID: prID, HeadSHA: "aaa"}
 	for _, c := range []struct {
-		name, round string
-		reused      bool
+		name, round, held, status string
+		reused                    bool
 	}{
-		{"trusted round, Claude answered", trustedAuditBar, true},
-		{"elevated round, Claude answered", elevatedAuditBar, false},
+		{"trusted round, Claude answered", trustedAuditBar, trustedAuditBar, "done", true},
+		{"trusted round, still running", trustedAuditBar, trustedAuditBar, "running", true},
+		{"floor round, trusted audit Claude answered", reviewFloorBar, trustedAuditBar, "done", true},
+		{"floor round, trusted audit still running", reviewFloorBar, trustedAuditBar, "running", true},
+		{"floor round, elevated audit Claude answered", reviewFloorBar, elevatedAuditBar, "done", false},
+		{"elevated round, Claude answered", elevatedAuditBar, elevatedAuditBar, "done", false},
 	} {
-		weakest := c.round
+		model := "gateway/anthropic/claude-sonnet-5-5"
+		if c.status != "done" {
+			model = ""
+		}
 		res, err := a.s.db.W.Exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, pr_id, pr_number, ref, status, model, models, author_model, title, owner_id, created_at, weakest)
-			VALUES (?, ?, 'acme/app', 'pr', ?, 7, 'aaa', 'done', 'gateway/anthropic/claude-sonnet-5-5', '[{"cli":"gateway","model":"audit"}]', 'claude-opus-5-5', 'acme/app#7', ?, 0, ?)`, a.p.ID, forge, prID, a.admin.User.ID, weakest)
+			VALUES (?, ?, 'acme/app', 'pr', ?, 7, 'aaa', ?, ?, '[{"cli":"gateway","model":"audit"}]', 'claude-opus-5-5', 'acme/app#7', ?, 0, ?)`, a.p.ID, forge, prID, c.status, model, a.admin.User.ID, c.held)
 		if err != nil {
 			t.Fatal(err)
 		}

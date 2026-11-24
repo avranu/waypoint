@@ -647,7 +647,7 @@ func TestGatewayAuditNames(t *testing.T) {
 	if got, err := job(JobAudit, AgentJob{CLI: GatewayCLI, Model: "audit", GatewayExclude: []string{"*claude*"}}); err != nil || len(got.GatewayExclude) != 1 || !got.ReadOnly {
 		t.Errorf("a gateway audit = %+v %v", got, err)
 	}
-	if got, err := job(JobAudit, AgentJob{CLI: GatewayCLI, Model: "audit", GatewayWeakest: "claude sonnet"}); err != nil || got.GatewayWeakest != "claude sonnet" {
+	if got, err := job(JobAudit, AgentJob{CLI: GatewayCLI, Model: "audit", GatewayWeakest: trustedAuditBar}); err != nil || got.GatewayWeakest != trustedAuditBar {
 		t.Errorf("a barred gateway audit = %+v %v", got, err)
 	}
 	if got, err := job(JobAudit, AgentJob{CLI: "claude", GatewayExclude: []string{"*claude*"}, GatewayWeakest: "sonnet"}); err != nil || got.GatewayExclude != nil || got.GatewayWeakest != "" {

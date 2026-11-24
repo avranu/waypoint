@@ -948,11 +948,7 @@ func (s *Service) advanceAudit(ctx context.Context, id int64) {
 				ran = ran || outcome != "unavailable"
 				continue
 			}
-			// Never the family of the model that wrote the code, except for an
-			// audit held to the high-stakes bar: the bar is what trusts it (WP-1752).
-			if a.Weakest != trustedAuditBar {
-				in.GatewayExclude = gatewayExcludeFor(a.authorModel)
-			}
+			in.GatewayExclude = auditFamilyExclude(a.Weakest, a.authorModel)
 			timeout = gatewayAuditTimeout + a.Helpers.extraTimeout()
 			if a.Weakest != reviewFloorBar || m.Model == gatewayAuditModel {
 				in.GatewayWeakest = a.Weakest // the floor is for the audit purpose, not a model named for the audit

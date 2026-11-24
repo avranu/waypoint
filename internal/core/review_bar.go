@@ -31,8 +31,7 @@ import (
 // held to it.
 //
 // When no model at the bar can take the audit (or they are all spent), the
-// gateway says
-// no_model_at_bar and the audit ends. What the round does then depends on
+// gateway says no_model_at_bar and the audit ends. What the round does then depends on
 // its stakes tier (review_stakes.go, WP-1231): a high-stakes round goes to
 // the Sonnet reviewer; an elevated one asks the gateway again at the floor;
 // a normal one, which asked at the floor already, goes to its Claude
