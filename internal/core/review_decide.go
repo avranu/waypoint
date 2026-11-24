@@ -625,22 +625,25 @@ const takenWhy = "another session holds the task"
 // takenText is what a ship is told of a Taken round: who holds the task, and
 // what the caller can do about it.
 func (s *Service) takenText(ctx context.Context, r *roundRow) string {
-	var cwd, machine, agent string
+	var cwd, machine, agent, key string
 	var seen int64
 	var sess sql.NullInt64
-	err := s.db.R.QueryRowContext(ctx, `SELECT o.session_id, o.agent, coalesce(x.cwd, ''), coalesce(x.machine, ''), coalesce(x.last_seen_at, 0)
-		FROM work_log w JOIN agent_runs o ON `+takenRun+` LEFT JOIN agent_sessions x ON x.id = o.session_id
-		WHERE w.id = ? ORDER BY o.id DESC LIMIT 1`, r.id).Scan(&sess, &agent, &cwd, &machine, &seen)
+	err := s.db.R.QueryRowContext(ctx, `SELECT o.session_id, o.agent, coalesce(x.cwd, ''), coalesce(x.machine, ''), coalesce(x.last_seen_at, 0), p.key || '-' || i.number
+		FROM work_log w JOIN issues i ON i.id = w.issue_id JOIN projects p ON p.id = i.project_id
+		JOIN agent_runs o ON `+takenRun+` LEFT JOIN agent_sessions x ON x.id = o.session_id
+		WHERE w.id = ? ORDER BY o.id DESC LIMIT 1`, r.id).Scan(&sess, &agent, &cwd, &machine, &seen, &key)
 	who := takenWhy
 	switch {
 	case err != nil:
+		// The holder left between the decision and this read: the next ask says what Waypoint does.
+		return fmt.Sprintf("Waypoint's review round for this task is over (%s): %s.", r.state, takenWhy)
 	case !sess.Valid:
 		who = "a run of " + agent + " with no session holds it"
 	default:
 		who = sessionHoldsText("another session", cwd, machine, seen, s.nowMS())
 	}
 	return fmt.Sprintf("Waypoint's review round for this task is over (%s): %s, so Waypoint opens no pull request for this round. That session's own `wp ship %s` ships the task. To ship it from this session instead, run `wp ship %s --review`: it starts a new review round.",
-		r.state, who, r.key, r.key)
+		r.state, who, key, key)
 }
 
 // endedFacts reads what decides a round with no end of its own once its run
