@@ -1162,7 +1162,7 @@ someone checks them. Not the audit log above.
     POST /audits/{id}/rerun          the same audit again as a new one (a pull request's at its head now)
     POST /audits/{id}/cancel         stop one that hasn't ended
     POST /audits/{id}/fix            the task for Claude to check and fix a finished audit's open findings
-    POST /audits/findings {ids: ["12.3"], state: open|confirmed|fixed|rejected, note, issue, evidence}
+    POST /audits/findings {ids: ["12.3"], state: open|confirmed|fixed|rejected, note, issue, evidence (rejected only)}
                                      your verdict on findings
 
 ## Runners (WP-D17)

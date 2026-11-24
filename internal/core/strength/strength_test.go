@@ -46,6 +46,9 @@ func TestCompare(t *testing.T) {
 		{"unknown finder effort counts as equal", Parse("claude-sonnet-5-5", "low"), Parse("claude-sonnet-5-5", ""), AtLeast},
 		{"unknown version counts as equal", Parse("sonnet", "high"), Parse("claude-sonnet-5-5", "high"), AtLeast},
 		{"unknown finder version counts as equal", Parse("claude-sonnet-5", "high"), Parse("sonnet", "high"), AtLeast},
+		{"xhigh can't reject max", Parse("claude-opus-5-5", "xhigh"), Parse("claude-opus-5-5", "max"), Weaker},
+		{"max over xhigh", Parse("claude-opus-5-5", "max"), Parse("claude-opus-5-5", "xhigh"), AtLeast},
+		{"high can't reject xhigh", Parse("claude-opus-5-5", "high"), Parse("claude-opus-5-5", "xhigh"), Weaker},
 		{"version before effort", Parse("claude-sonnet-5", "max"), Parse("claude-sonnet-5-5", "low"), Weaker},
 		{"finder of another family", Parse("haiku", ""), Parse("cursor/grok-4.7-high", ""), NotCompared},
 		{"finder unknown", Parse("opus", ""), Parse("", ""), NotCompared},
@@ -65,6 +68,9 @@ func TestCompare(t *testing.T) {
 
 func TestCompareReason(t *testing.T) {
 	if _, r := Compare(Parse("", ""), Parse("haiku", "")); r != "Waypoint doesn't know which model this session runs" {
+		t.Errorf("reason %q", r)
+	}
+	if _, r := Compare(Parse("deepseek-4.1", ""), Parse("haiku", "")); r != "deepseek-4.1 isn't a model Waypoint ranks" {
 		t.Errorf("reason %q", r)
 	}
 }

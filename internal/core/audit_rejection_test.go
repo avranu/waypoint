@@ -174,8 +174,91 @@ func TestSessionRejectsItsOwnRoundsFindings(t *testing.T) {
 	if err := re.reject(ag, 1, ""); err != nil {
 		t.Fatalf("a session's own round: %v", err)
 	}
-	if err := re.reject(re.session("claude-haiku-5-5", ""), 2, "b.go:2"); err == nil {
-		t.Error("another session rejected the round's finding")
+	if err := re.reject(re.session("claude-haiku-5-5", ""), 2, "b.go:2"); err == nil || !strings.Contains(err.Error(), "haiku 5.5 can't reject "+re.id(2)+", found by opus") {
+		t.Errorf("another session rejected the round's finding: %v", err)
+	}
+}
+
+func TestRejectionOfUnrankedModelSaysWhichModel(t *testing.T) {
+	re := newRejectionEnv(t, "claude/haiku")
+	err := re.reject(re.session("deepseek-4.1", ""), 1, "a.go:1")
+	if err == nil || !strings.Contains(err.Error(), "Waypoint doesn't rank deepseek-4.1, the model this session runs, so it can't reject") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestEvidenceGoesOnlyWithARejection(t *testing.T) {
+	re := newRejectionEnv(t, "claude/sonnet")
+	_, err := re.s.MarkAuditFindings(re.ctx, re.admin, MarkFindings{IDs: []string{re.id(1)}, State: "confirmed", Evidence: "a.go:1"})
+	if err == nil || !strings.Contains(err.Error(), "evidence goes with a rejection") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestEvidenceOfExactlyTheLimit(t *testing.T) {
+	re := newRejectionEnv(t, "claude/sonnet")
+	if err := re.reject(re.session("claude-opus-5-5", ""), 1, strings.Repeat("é", 4000)); err != nil {
+		t.Fatal(err)
+	}
+	if f := re.finding(1); len([]rune(f.Evidence)) != 4000 {
+		t.Errorf("evidence kept %d characters", len([]rune(f.Evidence)))
+	}
+}
+
+func TestRejectingAFindingThatIsNotThere(t *testing.T) {
+	re := newRejectionEnv(t, "claude/sonnet")
+	_, err := re.s.MarkAuditFindings(re.ctx, re.session("claude-opus-5-5", ""), MarkFindings{IDs: []string{re.id(9)}, State: "rejected", Note: "wrong", Evidence: "x.go:1"})
+	if err == nil || !strings.Contains(err.Error(), "finding "+re.id(9)) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestReopeningOrConfirmingClearsTheRejectionsRecord(t *testing.T) {
+	re := newRejectionEnv(t, "claude/sonnet")
+	ag := re.session("claude-opus-5-5", "high")
+	for n, state := range map[int]string{1: "open", 2: "confirmed"} {
+		if err := re.reject(ag, n, "a.go:1 holds the lock"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := re.s.MarkAuditFindings(re.ctx, re.admin, MarkFindings{IDs: []string{re.id(n)}, State: state, Note: "it is real"}); err != nil {
+			t.Fatal(err)
+		}
+		if f := re.finding(n); f.State != state || f.Evidence != "" || f.DecidedModel != "" || f.DecidedEffort != "" || f.DecidedStrength != "" {
+			t.Errorf("%s: finding = %+v", state, f)
+		}
+	}
+}
+
+func TestRunnerJobRejectsAsItsInputsModelAndEffort(t *testing.T) {
+	re := newRejectionEnv(t, "claude-sonnet-5-5")
+	res, err := re.s.db.W.Exec(`INSERT INTO runner_jobs(owner_id, kind, input, timeout, created_at) VALUES (?, 'agent', '{"model":"claude-haiku-5-5","effort":"high"}', 60, 0)`, re.admin.User.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, _ := res.LastInsertId()
+	ag := *re.admin
+	ag.Agent, ag.RunnerJob = "claude", job
+	if err := re.reject(&ag, 1, "a.go:1"); err == nil || !strings.Contains(err.Error(), "haiku 5.5 (high) can't reject") {
+		t.Fatalf("err = %v", err)
+	}
+	re.exec(`UPDATE runner_jobs SET input = '{"model":"claude-opus-5-5","effort":"low"}' WHERE id = ?`, job)
+	if err := re.reject(&ag, 1, "a.go:1"); err != nil {
+		t.Fatal(err)
+	}
+	if f := re.finding(1); f.DecidedModel != "claude-opus-5-5" || f.DecidedEffort != "low" {
+		t.Errorf("finding = %+v", f)
+	}
+}
+
+func TestSessionEffortFallsBackToItsSnapshot(t *testing.T) {
+	re := newRejectionEnv(t, "claude-sonnet-5-5")
+	ag := re.session("claude-sonnet-5-5", "")
+	re.exec(`INSERT INTO session_snapshots(session_id, at, trigger_event, effort) VALUES (?, 7, 'test', 'max')`, ag.Session)
+	if err := re.reject(ag, 1, "a.go:1"); err != nil {
+		t.Fatal(err)
+	}
+	if f := re.finding(1); f.DecidedEffort != "max" {
+		t.Errorf("effort = %q", f.DecidedEffort)
 	}
 }
 
@@ -184,6 +267,15 @@ func TestHelperPanelFindingCountsAsHaikus(t *testing.T) {
 	re.exec(`UPDATE code_audit_findings SET lead = 'tests.1' WHERE audit_id = ? AND ordinal = 1`, re.audit)
 	// A lead naming no panel check is no panel finding, as PanelFinding reads it.
 	re.exec(`UPDATE code_audit_findings SET lead = 'check.1' WHERE audit_id = ? AND ordinal = 2`, re.audit)
+	re.exec(`UPDATE code_audit_findings SET lead = 'goals.2' WHERE audit_id = ? AND ordinal = 3`, re.audit)
+	// One finding it may reject and one it may not: none of the batch is.
+	_, err := re.s.MarkAuditFindings(re.ctx, re.session("claude-haiku-5-5", ""), MarkFindings{IDs: []string{re.id(3), re.id(2)}, State: "rejected", Note: "wrong", Evidence: "c.go:3"})
+	if err == nil || !strings.Contains(err.Error(), "can't reject "+re.id(2)) {
+		t.Fatalf("mixed batch: %v", err)
+	}
+	if f := re.finding(3); f.State != "open" {
+		t.Errorf("the panel's finding of a refused batch is %s", f.State)
+	}
 	if err := re.reject(re.session("claude-haiku-5-5", ""), 1, "a.go:1"); err != nil {
 		t.Fatalf("haiku against the panel's finding: %v", err)
 	}

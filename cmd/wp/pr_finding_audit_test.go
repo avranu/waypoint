@@ -37,12 +37,13 @@ func TestPRDismissReopenAuditFinding(t *testing.T) {
 		return out.String(), err
 	}
 
-	out, err := run("dismiss", cmdPRDismiss, "12.1", "#12.3", "-m", "the caller holds the lock")
+	out, err := run("dismiss", cmdPRDismiss, "12.1", "#12.3", "-m", "the caller holds the lock", "--evidence", "a.go:12 takes mu")
 	if err != nil || !strings.Contains(out, "12.1") {
 		t.Fatalf("dismiss 12.1: %v\n%s", err, out)
 	}
 	if len(calls) != 2 || calls[0].path != "/api/v1/audits/findings" || calls[0].body["state"] != "rejected" ||
-		calls[0].body["note"] != "the caller holds the lock" || !strings.Contains(strings.Join(anyStrings(calls[0].body["ids"]), ","), "12.1") {
+		calls[0].body["note"] != "the caller holds the lock" || calls[0].body["evidence"] != "a.go:12 takes mu" ||
+		!strings.Contains(strings.Join(anyStrings(calls[0].body["ids"]), ","), "12.1") {
 		t.Fatalf("dismiss calls: %+v", calls)
 	}
 
@@ -57,6 +58,14 @@ func TestPRDismissReopenAuditFinding(t *testing.T) {
 	calls = nil
 	if _, err := run("dismiss", cmdPRDismiss, "280", "-m", "n"); err != nil || len(calls) != 1 || calls[0].path != "/api/v1/findings/280/dismiss" {
 		t.Fatalf("integer id: %v %+v", err, calls)
+	}
+	// A bot's finding or a review comment takes no evidence.
+	calls = nil
+	if _, err := run("dismiss", cmdPRDismiss, "c14", "-m", "n", "--evidence", "a.go:1"); err == nil || !strings.Contains(err.Error(), "--evidence is for an audit finding") || len(calls) != 0 {
+		t.Fatalf("review comment with evidence: %v %+v", err, calls)
+	}
+	if _, err := run("dismiss", cmdPRDismiss, "280", "-m", "n", "--evidence", "a.go:1"); err == nil || !strings.Contains(err.Error(), "--evidence is for an audit finding") || len(calls) != 0 {
+		t.Fatalf("integer id with evidence: %v %+v", err, calls)
 	}
 	calls = nil
 	if _, err := run("reopen", cmdPRReopen, "#280"); err != nil || len(calls) != 1 || calls[0].path != "/api/v1/findings/280/reopen" {

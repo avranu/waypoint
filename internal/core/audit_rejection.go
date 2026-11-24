@@ -146,6 +146,9 @@ func (s *Service) weighRejections(ctx context.Context, actor *Actor, evidence st
 			who := rejecter.String() + " can't"
 			if !rejecter.Known() {
 				who = "Waypoint doesn't know which model this session runs, so it can't"
+				if rejecter.Name != "" {
+					who = fmt.Sprintf("Waypoint doesn't rank %s, the model this session runs, so it can't", rejecter.Name)
+				}
 			}
 			return nil, kernel.Forbidden("%s reject %s, found by %s: leave it for a stronger agent or a person (a medium or low one can be filed: wp audit mark %s confirmed --issue KEY)", who, id, finder, id)
 		}
@@ -159,14 +162,6 @@ func checkEvidence(evidence string) error {
 		return kernel.Invalid("evidence is at most %d characters", maxRejectionEvidence)
 	}
 	return nil
-}
-
-// evidenceOf is the evidence kept with a verdict: only a rejection has any.
-func evidenceOf(state, evidence string) string {
-	if state != "rejected" {
-		return ""
-	}
-	return evidence
 }
 
 // RejectedAs says what model and effort rejected a finding and how that

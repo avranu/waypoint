@@ -115,6 +115,9 @@ const (
 // known of it.
 func Compare(rejecter, finder Model) (Verdict, string) {
 	if !rejecter.Known() {
+		if rejecter.Name != "" {
+			return Weaker, fmt.Sprintf("%s isn't a model Waypoint ranks", rejecter.Name)
+		}
 		return Weaker, "Waypoint doesn't know which model this session runs"
 	}
 	if !finder.Known() {

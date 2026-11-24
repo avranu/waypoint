@@ -2734,6 +2734,11 @@ func (s *Service) MarkAuditFindings(ctx context.Context, actor *Actor, in MarkFi
 	if err := checkEvidence(evidence); err != nil {
 		return nil, err
 	}
+	// Evidence is what shows a finding wrong: kept with a rejection only, so
+	// it isn't dropped without a word from another verdict.
+	if evidence != "" && state != "rejected" {
+		return nil, invalid("evidence goes with a rejection (what shows the finding wrong), not with %s", state)
+	}
 	type ref = findingRef
 	var refs []ref
 	audits := map[int64]*CodeAudit{}
@@ -2791,7 +2796,7 @@ func (s *Service) MarkAuditFindings(ctx context.Context, actor *Actor, in MarkFi
 			// unfiles a finding filed before (findingFiled).
 			res, err := t.ExecContext(ctx, `UPDATE code_audit_findings SET state = ?, note = CASE WHEN ? = '' THEN note ELSE ? END, issue_id = CASE WHEN ? IS NOT NULL THEN ? WHEN ? = 'confirmed' THEN NULL ELSE issue_id END,
 				decided_by = ?, decided_agent = ?, decided_at = ?, evidence = ?, decided_model = ?, decided_effort = ?, decided_strength = ? WHERE audit_id = ? AND ordinal = ?`,
-				state, note, note, issueID, issueID, state, by, actor.agentName(), s.nowMS(), evidenceOf(state, evidence), weights[r].model, weights[r].effort, weights[r].strength, r.audit, r.n)
+				state, note, note, issueID, issueID, state, by, actor.agentName(), s.nowMS(), evidence, weights[r].model, weights[r].effort, weights[r].strength, r.audit, r.n)
 			if err != nil {
 				return err
 			}

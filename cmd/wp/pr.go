@@ -558,6 +558,9 @@ func cmdPRDismiss(c *cli, args []string) error {
 	return c.each(listArgs(pos), false, func(arg string) error {
 		if strings.HasPrefix(strings.ToLower(arg), "c") {
 			// A review comment (c12), not a finding's number.
+			if *evidence != "" {
+				return c.usage("--evidence is for an audit finding (AUDIT.N, like 12.1); a review comment (%s) takes only -m", arg)
+			}
 			raw, err := c.call("POST", "/api/v1/review-comments/"+arg+"/dismiss", map[string]string{"note": *note})
 			if err != nil {
 				return err
