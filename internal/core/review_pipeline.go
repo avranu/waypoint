@@ -109,16 +109,35 @@ func (s *Service) reviewOnce(ctx context.Context, chain []ChainModel, prompt str
 		Findings []Finding `json:"findings"`
 	}
 	ctx, note := withSalvage(withMaxTokens(ctx, reviewMaxTokens))
+	// The route's models that stalled lately are left out from the first
+	// request, as WP-1709's second one would (WP-1768).
+	var gw int64
+	if s.asksExcludingGateway(ctx, chain) {
+		gw = s.gatewayWith(ctx, GatewayExclude)
+	}
+	plain := ctx
+	ctx, cooled := s.withCooling(ctx, gw, gatewayReviewRoute)
 	used, attempts, err := s.runChain(ctx, chain, reviewSystem, prompt, reviewSchema, &ans, reviewCallTimeout)
+	if len(cooled) > 0 && err != nil && ctx.Err() == nil && leftNoModel(chain, attempts) {
+		// Maybe the cooling models were all the route had: ask as without.
+		ctx = plain
+		var more []ModelAttempt
+		used, more, err = s.runChain(ctx, chain, reviewSystem, prompt, reviewSchema, &ans, reviewCallTimeout)
+		attempts = append(attempts, more...)
+	}
 	// The gateway can't fall back once a model's stream has started, so one
 	// that then fails or outlasts the call (Grok on Cursor reasons for over
 	// ten minutes on a large diff) ends the request, and the round's retry
 	// may get the same model. Ask once more with it left out (WP-1709).
 	if slow := failedMidStream(chain, attempts); err != nil && ctx.Err() == nil && slow != "" && s.asksExcludingGateway(ctx, chain) {
 		s.log.InfoContext(ctx, "a review's model failed after it started; asking again without it", "model", slow)
+		s.coolModel(ctx, gw, gatewayReviewRoute, slow)
 		var more []ModelAttempt
 		used, more, err = s.runChain(withGatewayExclude(ctx, append(slices.Clone(gatewayExcludeOf(ctx)), slow)), chain, reviewSystem, prompt, reviewSchema, &ans, reviewCallTimeout)
 		attempts = append(attempts, more...)
+		if again := failedMidStream(chain, more); err != nil && ctx.Err() == nil && again != "" {
+			s.coolModel(ctx, gw, gatewayReviewRoute, again) // the replacement stalled too
+		}
 	}
 	out := reviewerAnswer{findings: ans.Findings, model: used.Model, log: attempts, err: err}
 	if err == nil {
