@@ -144,8 +144,16 @@ vuln: ## govulncheck: fails only for called vulnerabilities this tree adds over 
 # non-zero if any failed, and the test step keeps its own wp testsum record.
 # The quick steps go first: lint takes a minute or two and the tests most of an
 # hour, so a lint finding shows before the long wait, not after it (WP-1526).
+# The last line of output names which steps passed and which failed, since the
+# failure can be an hour up the log and wp ship --check keeps only the tail
+# (WP-1797).
 check: ## the full local gate (backend); web: cd web && npm run typecheck && npm run format:check && npm run audit && npm run build (lint dormant, see README)
-	@$(MAKE) --no-print-directory -k lint sast vuln test || { echo 'make check: a step above failed; every step ran' >&2; exit 1; }
+	@failed=; passed=; for s in lint sast vuln test; do \
+	  if $(MAKE) --no-print-directory -k $$s; then passed="$$passed $$s"; else failed="$$failed $$s"; fi; \
+	done; \
+	passed=$$(echo $$passed | sed 's/ /, /g'); failed=$$(echo $$failed | sed 's/ /, /g'); \
+	if [ -n "$$failed" ]; then echo "make check: failed: $$failed; passed: $${passed:-none}" >&2; exit 1; fi; \
+	echo "make check: passed: $$passed" >&2
 
 # Links in invites and notifications point at Vite (:5173), which proxies
 # /api, /mcp and /cal to the Go server. Ctrl-C stops both.
