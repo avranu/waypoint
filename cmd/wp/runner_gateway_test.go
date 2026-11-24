@@ -484,6 +484,48 @@ func TestDiffGitNames(t *testing.T) {
 	}
 }
 
+// The change's files are read from its diff, renames by their own lines
+// where the header is ambiguous.
+func TestChangedFiles(t *testing.T) {
+	work := t.TempDir()
+	diff := "diff --git a/x.go b/x.go\n--- a/x.go\n+++ b/x.go\n" +
+		"diff --git a/old.go b/dir b/new.go\nsimilarity index 100%\nrename from old.go\nrename to dir b/new.go\n" +
+		"diff --git \"a/caf\\303\\251.go\" \"b/t\\303\\251.go\"\nrename from \"caf\\303\\251.go\"\nrename to \"t\\303\\251.go\"\n"
+	if err := os.MkdirAll(filepath.Join(work, auditChangeDir), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(work, auditChangeDir, "change.diff"), []byte(diff), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := changedFiles(work)
+	for _, n := range []string{"x.go", "old.go", "dir b/new.go", "café.go", "té.go"} {
+		if !got[n] {
+			t.Errorf("%q not among %v", n, got)
+		}
+	}
+}
+
+// A file of the repository's at the list's own path is listed as left out,
+// not dropped unsaid.
+func TestPackCheckoutListsItsOwnName(t *testing.T) {
+	work := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(work, auditChangeDir), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(work, auditChangeDir, leftOutName), []byte("the repo's own\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	res, err := packCheckout(work, &buf, packOptions{ArchiveMax: gatewayArchiveFallback, FileMax: gatewayFileFallback})
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := unpack(t, buf.Bytes())[auditChangeDir+"/"+leftOutName]
+	if len(res.Left) != 1 || res.Left[0].Reason != leftListsName || !strings.Contains(list, auditChangeDir+"/"+leftOutName+"\t15\t"+leftListsName) || strings.Contains(list, "too big") {
+		t.Errorf("left %v, list %q", res.Left, list)
+	}
+}
+
 // A checkout too large for the gateway is packed again with stricter limits,
 // each only when the one before didn't fit.
 func TestPackForGatewayTiers(t *testing.T) {

@@ -297,6 +297,10 @@ func (l *limitWriter) Write(b []byte) (int, error) {
 // of what the checkout leaves out of what the model is given.
 const leftOutName = "left-out.txt"
 
+// leftListsName is the reason for a repository's own file at the list's
+// path, which the list replaces.
+const leftListsName = "named as Waypoint's list"
+
 // leftOutHeader heads the list of what was left out. Binary files and those
 // over the gateway's per-file limit are always among the reasons; files over
 // a size or outside the audit's paths only when the whole checkout was too
@@ -305,7 +309,7 @@ func leftOutHeader(left []leftOut) string {
 	var b strings.Builder
 	b.WriteString("These files exist in the repository but are not in this copy of it.\n")
 	b.WriteString("Some are binary or over the gateway's per-file limit.\n")
-	if slices.ContainsFunc(left, func(l leftOut) bool { return l.Reason != "binary" && l.Reason != "large" }) {
+	if slices.ContainsFunc(left, func(l leftOut) bool { return l.Reason != "binary" && l.Reason != "large" && l.Reason != leftListsName }) {
 		b.WriteString("The whole checkout was too big for the gateway, so files over a size or outside the audit's paths were left out too.\n")
 	}
 	b.WriteString("Their absence is not a finding. Columns: path, bytes, reason.\n")
@@ -534,6 +538,19 @@ func changedFiles(work string) map[string]bool {
 			for _, n := range diffGitNames(rest) {
 				names[n] = true
 			}
+			continue
+		}
+		// A rename's or copy's own lines name each side unambiguously, where
+		// the header can't (a path with " b/" in it).
+		for _, p := range []string{"rename from ", "rename to ", "copy from ", "copy to "} {
+			if n, ok := strings.CutPrefix(line, p); ok {
+				if strings.HasPrefix(n, `"`) {
+					if u, err := strconv.Unquote(n); err == nil {
+						n = u
+					}
+				}
+				names[n] = true
+			}
 		}
 	}
 	return names
@@ -604,7 +621,7 @@ func packCheckout(work string, w io.Writer, opt packOptions) (res packResult, er
 			}
 			return nil // a work tree's pointer to its repository
 		}
-		if !d.Type().IsRegular() || path == listName {
+		if !d.Type().IsRegular() {
 			return nil
 		}
 		info, err := d.Info()
@@ -615,6 +632,10 @@ func packCheckout(work string, w io.Writer, opt packOptions) (res packResult, er
 		skip := func(reason string) error {
 			res.Left = append(res.Left, leftOut{Path: path, Size: size, Reason: reason})
 			return nil
+		}
+		if path == listName {
+			// The repository's own file of that name: the list takes its place.
+			return skip(leftListsName)
 		}
 		f, err := root.Open(path)
 		if err != nil {
