@@ -11,10 +11,10 @@ import (
 // change whose triage found strong signs that it matters (highStakes), the
 // round holds its audit to a quality bar instead: the gateway runs it only
 // on a model it rates at least as well for audits as trustedAuditBar
-// (routing.weakest). The gateway rates by benchmarks and
-// by how callers report each model's findings fared (reportAuditFeedback),
-// so the bar follows newer versions of the named model and admits any other
-// model that does as well, with no change here.
+// (routing.weakest). The gateway rates by benchmarks and by how callers
+// report each model's findings fared (reportAuditFeedback), so the bar admits
+// any other model that does as well. It names one version: a newer one
+// raises the bar only when the constant changes.
 //
 // There are three levels (WP-1440). Waypoint picks no model itself: it gives
 // the gateway a purpose and a minimum, and the gateway chooses. High-stakes
@@ -31,10 +31,10 @@ import (
 // held to it.
 //
 // When no model at the bar can take the audit (or they are all spent), the
-// gateway says no_model_at_bar and the audit ends. What the round does then depends on
-// its stakes tier (review_stakes.go, WP-1231): a high-stakes round goes to
-// the Sonnet reviewer; an elevated one asks the gateway again at the floor;
-// a normal one, which asked at the floor already, goes to its Claude
+// gateway says no_model_at_bar and the audit ends. What the round does then
+// depends on its stakes tier (review_stakes.go, WP-1231): a high-stakes round
+// goes to the Sonnet reviewer; an elevated one asks the gateway again at the
+// floor; a normal one, which asked at the floor already, goes to its Claude
 // reviewer. A request is never sent again without its bar.
 
 // reviewFloorBar is the minimum of every code-review request that has no
@@ -46,7 +46,7 @@ const reviewFloorBar = "deepseek-v4.1-flash"
 // Grok 4.7 (WP-1752), by the upstream id of Cursor's cursor/grok-4.7-medium,
 // which the gateway resolves exactly. The bar, not the author's family, is
 // what makes the reviewer trusted, so an audit held to it sends no
-// exclude (code_audits.go); few models outside Claude rated at Sonnet's
+// exclude (auditFamilyExclude); few models outside Claude rated at Sonnet's
 // level, so with that bar and the family exclusion these audits mostly failed.
 //
 // Not "grok": that is one of the gateway's routes, and routing.weakest

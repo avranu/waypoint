@@ -1230,8 +1230,8 @@ func roundAsks(reviewText, roundContext string) []string {
 // the findings go to: the model that answered, for an audit that is done;
 // every model it may still ask, for one that isn't (otherFamilyChain). An
 // audit held to the high-stakes bar is taken from any family, as it was
-// asked (auditFamilyExclude, WP-1752). A round with a quality bar (weakest) takes only an audit held to the same
-// or, at the floor, to a higher one,
+// asked (auditFamilyExclude, WP-1752). A round with a quality bar (weakest)
+// takes only an audit held to the same or, at the floor, to a higher one,
 // and only one whose prompt asked each of asks (roundAsks): WP-1320's live
 // review found a round taking the pull request's own audit, which asks
 // neither the brief nor the task, in place of its own. (A round of a task

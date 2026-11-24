@@ -595,6 +595,21 @@ func TestGatewayAuditNames(t *testing.T) {
 			t.Errorf("exclude for %q = %q, want %q", author, got, want)
 		}
 	}
+	// An audit held to the high-stakes bar excludes no family (WP-1752); at
+	// every other bar, and with none, the author's family is kept out.
+	for _, c := range []struct{ weakest, author, want string }{
+		{trustedAuditBar, "claude-opus-5-5", ""},
+		{trustedAuditBar, "grok-4.7-high", ""},
+		{elevatedAuditBar, "claude-opus-5-5", "*claude*"},
+		{reviewFloorBar, "grok-4.7-high", "*grok*"},
+		{"", "claude-opus-5-5", "*claude*"},
+		{elevatedAuditBar, "", ""},
+		{elevatedAuditBar, "some-new-model", ""},
+	} {
+		if got := strings.Join(auditFamilyExclude(c.weakest, c.author), ","); got != c.want {
+			t.Errorf("audit exclude at %q for %q = %q, want %q", c.weakest, c.author, got, c.want)
+		}
+	}
 	for _, c := range []struct {
 		glob, name string
 		want       bool

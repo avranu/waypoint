@@ -318,23 +318,33 @@ func TestPRAuditAtHeadFamilyCheckSkippedForTrustedBarAudits(t *testing.T) {
 		t.Fatal(err)
 	}
 	pr := &PullRequest{ID: prID, HeadSHA: "aaa"}
+	// A running audit is judged by every model it may still ask: one that
+	// may still ask Claude's own CLI is of the session's family.
+	const gatewayChain = `[{"cli":"gateway","model":"audit"}]`
+	const claudeChain = `[{"cli":"claude","model":"opus"}]`
 	for _, c := range []struct {
-		name, round, held, status string
-		reused                    bool
+		name, round, held, status, chain string
+		reused                           bool
 	}{
-		{"trusted round, Claude answered", trustedAuditBar, trustedAuditBar, "done", true},
-		{"trusted round, still running", trustedAuditBar, trustedAuditBar, "running", true},
-		{"floor round, trusted audit Claude answered", reviewFloorBar, trustedAuditBar, "done", true},
-		{"floor round, trusted audit still running", reviewFloorBar, trustedAuditBar, "running", true},
-		{"floor round, elevated audit Claude answered", reviewFloorBar, elevatedAuditBar, "done", false},
-		{"elevated round, Claude answered", elevatedAuditBar, elevatedAuditBar, "done", false},
+		{"trusted round, Claude answered", trustedAuditBar, trustedAuditBar, "done", gatewayChain, true},
+		{"trusted round, still running", trustedAuditBar, trustedAuditBar, "running", gatewayChain, true},
+		{"trusted round, running on Claude's CLI", trustedAuditBar, trustedAuditBar, "running", claudeChain, true},
+		{"floor round, trusted audit Claude answered", reviewFloorBar, trustedAuditBar, "done", gatewayChain, true},
+		{"floor round, trusted audit still running", reviewFloorBar, trustedAuditBar, "running", gatewayChain, true},
+		{"floor round, trusted audit running on Claude's CLI", reviewFloorBar, trustedAuditBar, "running", claudeChain, true},
+		{"floor round, elevated audit Claude answered", reviewFloorBar, elevatedAuditBar, "done", gatewayChain, false},
+		{"elevated round, Claude answered", elevatedAuditBar, elevatedAuditBar, "done", gatewayChain, false},
+		{"elevated round, running on Claude's CLI", elevatedAuditBar, elevatedAuditBar, "running", claudeChain, false},
+		{"trusted round, floor audit", trustedAuditBar, reviewFloorBar, "done", gatewayChain, false},
+		{"trusted round, audit with no bar", trustedAuditBar, "", "done", gatewayChain, false},
+		{"trusted round, audit failed", trustedAuditBar, trustedAuditBar, "failed", gatewayChain, false},
 	} {
 		model := "gateway/anthropic/claude-sonnet-5-5"
 		if c.status != "done" {
 			model = ""
 		}
 		res, err := a.s.db.W.Exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, pr_id, pr_number, ref, status, model, models, author_model, title, owner_id, created_at, weakest)
-			VALUES (?, ?, 'acme/app', 'pr', ?, 7, 'aaa', ?, ?, '[{"cli":"gateway","model":"audit"}]', 'claude-opus-5-5', 'acme/app#7', ?, 0, ?)`, a.p.ID, forge, prID, c.status, model, a.admin.User.ID, c.held)
+			VALUES (?, ?, 'acme/app', 'pr', ?, 7, 'aaa', ?, ?, ?, 'claude-opus-5-5', 'acme/app#7', ?, 0, ?)`, a.p.ID, forge, prID, c.status, model, c.chain, a.admin.User.ID, c.held)
 		if err != nil {
 			t.Fatal(err)
 		}
