@@ -103,6 +103,9 @@ func (g *shipForge) RetryChecks(ctx context.Context, f *Forge, repo, sha string)
 	g.sm.Lock()
 	defer g.sm.Unlock()
 	g.retries = append(g.retries, sha)
+	if g.retryErr != nil {
+		return g.retryPartial, g.retryErr
+	}
 	if g.retryNone {
 		return 0, nil
 	}
@@ -112,6 +115,9 @@ func (g *shipForge) RetryChecks(ctx context.Context, f *Forge, repo, sha string)
 func (g *shipForge) CanRetryChecks(ctx context.Context, f *Forge) (bool, error) {
 	g.sm.Lock()
 	defer g.sm.Unlock()
+	if g.canRetryErr != nil {
+		return false, g.canRetryErr
+	}
 	return !g.noRetry, nil
 }
 

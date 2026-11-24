@@ -113,6 +113,10 @@ func TestPlanLine(t *testing.T) {
 		{name: "red base saturated: the front alone", snap: lineSnap{BaseRed: true, Saturated: true, BatchDepth: 3, Entries: []lineEntry{e(1), e(2), e(3)}}, want: []lineAction{start(1)}},
 		{name: "red base, a candidate failed only what the base fails: it ends base_red and nothing else", snap: lineSnap{BaseRed: true,
 			Entries: []lineEntry{e(1), e(2)}, Cands: []lineCand{baseOnly(cand(5, candFailed, 1))}}, want: []lineAction{ends(5, endBaseRed)}},
+		// [1,2] was built before #1 merged; on the tip that holds #1 it tests #2,
+		// and #2 alone isn't started again in the plan that ends it (c6389 of #569).
+		{name: "red base, a candidate whose first head merged failed only what the base fails: the head left isn't started again", snap: lineSnap{BaseRed: true,
+			Entries: []lineEntry{e(2), e(3)}, Cands: []lineCand{withMerged(baseOnly(cand(5, candFailed, 1, 2)), 1)}}, want: []lineAction{ends(5, endBaseRed)}},
 		{name: "red base, a candidate failed its own: rerun once", snap: lineSnap{BaseRed: true,
 			Entries: []lineEntry{e(1), e(2)}, Cands: []lineCand{cand(5, candFailed, 1)}}, want: []lineAction{{Kind: lineRerun, Cand: 5}}},
 		{name: "red base, a candidate failed its own again: ejected", snap: lineSnap{BaseRed: true,
@@ -157,8 +161,8 @@ func TestPlanLineBaseRedEndReason(t *testing.T) {
 	}
 }
 
-// F14: the line's one order: the marked-ready holder, ci-urgent ones, the
-// base's fixer, then the time armed, then the number.
+// F14: the line's one order: the marked-ready holder, the
+// base's fixer, ci-urgent ones, then the time armed, then the number.
 func TestLineSortOrder(t *testing.T) {
 	at := func(m int) *time.Time { v := time.Date(2026, 11, 1, 0, m, 0, 0, time.UTC); return &v }
 	mk := func(n int, armed int) *PullRequest {
@@ -178,7 +182,7 @@ func TestLineSortOrder(t *testing.T) {
 	for _, p := range prs {
 		got = append(got, p.Number)
 	}
-	if want := []int{9, 8, 7, 6, 4, 5}; !reflect.DeepEqual(got, want) {
+	if want := []int{9, 7, 8, 6, 4, 5}; !reflect.DeepEqual(got, want) {
 		t.Errorf("order %v, want %v", got, want)
 	}
 	// With no fixer the armed time decides among the rest.

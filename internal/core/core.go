@@ -150,6 +150,9 @@ type Service struct {
 	// baseRed holds what the line's ordering found (WP-428): "holds:tip:head"
 	// → whether the head holds the base's tip.
 	baseRed sync.Map
+	// rerunRefusedAt: when a forge last refused a candidate's re-run, by
+	// candidate id (lineRerunRetry). In memory: a restart asks once more.
+	rerunRefusedAt sync.Map
 	// stackOpt holds baseKey → stackOpt: whether the base gets merge queue
 	// stacks (WP-404), read again after stackOptTTL. stackCommits holds "repo\x00sha" → the commit's
 	// parents (commits don't change).

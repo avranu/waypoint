@@ -47,21 +47,25 @@ type shipForge struct {
 	// tipHang: BranchHead doesn't answer until its context ends.
 	tipHang bool
 
-	created    []NewPR           // pull requests opened through CreatePR
-	heads      map[string]string // head branch → the sha a pull request from it starts at
-	labelOps   []string          // "+name" / "-name" on pull requests
-	reviewers  [][]string
-	retries    []string // shas whose failed checks were run again
-	noRetry    bool     // a forge that can't re-run checks (Forgejo before 17)
-	retryNone  bool     // a forge that finds nothing to re-run
-	notes      []PRNote // review bodies and conversation comments (babysit_test.go)
-	reactedTo  []string // "kind:id:emoji" put on comments
-	titleEdits []string // titles set through EditPRTitle (draft_first_test.go)
-	bodyEdits  []string
-	baseEdits  []string      // "number:base" set through EditPRBase (pr_open_test.go)
-	baseErr    error         // EditPRBase fails with it
-	brs        []ForgeBranch // what Branches lists
-	brErr      error         // Branches fails with it
+	created      []NewPR           // pull requests opened through CreatePR
+	heads        map[string]string // head branch → the sha a pull request from it starts at
+	labelOps     []string          // "+name" / "-name" on pull requests
+	reviewers    [][]string
+	retries      []string // shas whose failed checks were run again
+	noRetry      bool     // a forge that can't re-run checks (Forgejo before 17)
+	retryNone    bool     // a forge that finds nothing to re-run
+	retryErr     error    // a forge that refuses a re-run
+	retryPartial int      // with retryErr: how many it re-ran before failing
+	containsErr  error    // Contains fails with it
+	canRetryErr  error    // CanRetryChecks fails with it
+	notes        []PRNote // review bodies and conversation comments (babysit_test.go)
+	reactedTo    []string // "kind:id:emoji" put on comments
+	titleEdits   []string // titles set through EditPRTitle (draft_first_test.go)
+	bodyEdits    []string
+	baseEdits    []string      // "number:base" set through EditPRBase (pr_open_test.go)
+	baseErr      error         // EditPRBase fails with it
+	brs          []ForgeBranch // what Branches lists
+	brErr        error         // Branches fails with it
 	// afterTitleEdit runs once a title edit is made, as the forge's webhook
 	// for it may arrive before the editor's own write.
 	afterTitleEdit func(title string)

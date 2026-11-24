@@ -523,12 +523,12 @@ func TestBaseFailingSkipsAdvisories(t *testing.T) {
 		}
 	}
 	add("ci / advisories (push)")
-	if _, failing := se.s.baseFailing(se.ctx, pr); len(failing) != 0 {
-		t.Fatalf("advisories alone: failing = %v", failing)
+	if _, failing, err := se.s.baseFailing(se.ctx, pr); err != nil || len(failing) != 0 {
+		t.Fatalf("advisories alone: failing = %v (%v)", failing, err)
 	}
 	add("ci / backend (push)")
-	if _, failing := se.s.baseFailing(se.ctx, pr); len(failing) != 1 {
-		t.Fatalf("advisories and backend: failing = %v", failing)
+	if _, failing, err := se.s.baseFailing(se.ctx, pr); err != nil || len(failing) != 1 {
+		t.Fatalf("advisories and backend: failing = %v (%v)", failing, err)
 	}
 }
 

@@ -236,12 +236,24 @@ func (s *Service) waitOnSharedTimeout(ctx context.Context, b *Babysit, pr *PullR
 			return true
 		}
 		defer s.queueLock(pr)()
-		// Who is ahead unread: wait, as the line's other reads do, rather than
-		// update a head that may be under test behind another front.
-		ahead, err := s.queueAhead(ctx, pr)
+		// Held out of the line it asks for its place as if it were in it, by
+		// when it was armed, so it isn't behind a member armed after it. Out
+		// of the line it holds no front, so it isn't asked as the marked-ready
+		// one either. A copy, so queued_at and ready_at stay as they are
+		// (WP-1700).
+		asked := pr
+		if pr.QueuedAt == nil {
+			c := *pr
+			now := s.now()
+			c.QueuedAt, c.ReadyAt = &now, nil
+			asked = &c
+		}
+		ahead, err := s.queueAhead(ctx, asked)
 		if err != nil {
-			s.log.WarnContext(ctx, "read the merge queue", "pr", pr.ID, "err", err)
-			s.setState(ctx, b, pr, BabysitWatching, fmt.Sprintf("%s; %s moved on, so it is tried again on it at its turn", what, base))
+			// Its place unread, it isn't the front's to take: the branch
+			// stays as it is and the next look reads the line again.
+			s.log.WarnContext(ctx, "read the merge line for a shared timeout's retry", "pr", pr.ID, "err", err)
+			s.setState(ctx, b, pr, BabysitWatching, fmt.Sprintf("%s; %s moved on, so it is tried again on it at its turn (its place in the merge line couldn't be read; looking again)", what, base))
 			return true
 		}
 		if len(ahead) > 0 {
