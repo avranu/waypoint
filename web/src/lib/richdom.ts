@@ -178,12 +178,15 @@ const replaceBlock = (b: Block) => b.node?.tagName === 'P' || b.node?.tagName ==
 
 // On in Blink and Gecko, where e2e/85-rich-typing.mjs passes all its checks
 // (WP-1758). Off in WebKit (Safari, every iOS browser), where typed markdown
-// stays literal text, as before WP-1749: in Playwright's WebKit that suite
-// fails 63 of its checks beyond the "access control checks" page errors WebKit
-// raises when a navigation cancels a fetch (undo takes two steps after a
-// rule, insertHTML at the end of a paragraph adds inline styles and style
-// spans, Enter in code splits the <pre>, the task box loses
-// contenteditable=false, outdent leaves a <font>). Firefox on iOS is WebKit
+// stays literal text, as before WP-1749. With the rules forced on, Playwright's
+// WebKit fails 54 real checks of suite 85 (27 cases at two widths), 10 of
+// suite 86 and none of 87, beyond the "access control checks" page errors
+// WebKit raises for fetches a navigation cancels: undo takes two steps after a
+// rule (heading, bullet, bold, code), insertHTML at the end of a paragraph adds
+// inline styles and style spans (code, emphasis), Enter in code splits the
+// <pre> (fences), the task box loses contenteditable=false (Enter at the start
+// of a task, backspace at the box), outdent leaves a <font> (quote), and the
+// typed [[x]] and @name pieces fail the same ways. Firefox on iOS is WebKit
 // and says "FxiOS", not "Firefox/".
 const SUPPORTED = typeof navigator === 'undefined' || /Chrome\/|Firefox\//.test(navigator.userAgent)
 
@@ -606,7 +609,27 @@ function tabInList(el: HTMLElement, e: KeyLike): boolean {
   }
   // Chromium indents an item with no previous sibling into a list of its own.
   const prev = li.previousElementSibling
-  if (prev && (prev.tagName === 'LI' || isList(prev))) exec('indent')
+  if (!(prev && (prev.tagName === 'LI' || isList(prev)))) return true
+  const end = elementOf(r.endContainer)?.closest('li')
+  if (GECKO && end && end !== li && end.parentElement === li.parentElement) {
+    // Firefox's indent nests only the last item of a selection; one at a time
+    // is what Blink does for all of them.
+    const items: Element[] = []
+    for (let n: Element | null = li; n; n = n.nextElementSibling) {
+      items.push(n)
+      if (n === end) break
+    }
+    for (const item of items) {
+      caretAtStart(item)
+      exec('indent')
+    }
+    const all = document.createRange()
+    all.setStart(items[0], 0)
+    all.setEnd(items[items.length - 1], items[items.length - 1].childNodes.length)
+    select(all)
+    return true
+  }
+  exec('indent')
   return true
 }
 
@@ -775,6 +798,14 @@ function backspace(el: HTMLElement, e: KeyLike, caret: Range): boolean {
     if (isNested(b.node, el) && (s.before === '' || /^\ufffc ?$/.test(s.before))) {
       e.preventDefault()
       exec('outdent')
+      // Firefox leaves the caret in front of a task's box, where typing would
+      // put the text outside the task; Blink leaves it after the box.
+      const now = GECKO ? caretIn(el) : null
+      const li = now && blockAt(el, now)?.node
+      if (li?.tagName === 'LI' && li.querySelector(':scope > input.task')) {
+        const box = li.querySelector(':scope > input.task')!
+        if (now!.comparePoint(box.parentNode!, indexIn(box)) >= 0) caretAtStart(li)
+      }
       return true
     }
     if (!/^\ufffc ?$/.test(s.before) || !b.node.querySelector(':scope > input.task')) return false

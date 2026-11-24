@@ -1,10 +1,11 @@
 // Tab and Shift+Tab nest and un-nest a list item in the rich editor (WP-1765):
 // bullets, numbers and tasks, one level at a time; Enter on an empty nested item
 // and Backspace at its start un-nest it; undo reverses one Tab; and the saved
-// markdown (and a reopened one) shows the same nesting. Chromium only: the
-// rules are off elsewhere (richdom.ts SUPPORTED, WP-1758).
+// markdown (and a reopened one) shows the same nesting. RICH_TYPING_BROWSER=
+// firefox|webkit runs it under that engine (engine.mjs); the rules are on only
+// where richdom.ts SUPPORTED says (WP-1758).
 // Run after 01-signup-flow (user robin).
-import { chromium } from "playwright";
+import { launchEngine } from "./engine.mjs";
 import fs from "node:fs";
 import { looks } from "./looks.mjs";
 const [base, out] = process.argv.slice(2);
@@ -13,7 +14,7 @@ const errors = [];
 const fail = (m) => (console.log("FAIL", m), errors.push(m));
 const ok = (c, m) => (c ? console.log("ok  ", m) : fail(m));
 const H = { "X-Waypoint-Client": "web" };
-const browser = await chromium.launch();
+const browser = await launchEngine();
 // Milliseconds between key presses; the same value 85-rich-typing found.
 const KEY_DELAY = 12;
 
