@@ -46,6 +46,51 @@ func TestPartialReviewIsNotCarried(t *testing.T) {
 	}
 }
 
+// WP-1808: a review whose findings failed to save is not carried: they aren't
+// in the gate, and the merge-only push after it is reviewed, finding them
+// again. One whose findings saved is carried.
+func TestUnsavedFindingsAreNotCarried(t *testing.T) {
+	for name, fail := range map[string]bool{"saved": false, "save failed": true} {
+		t.Run(name, func(t *testing.T) {
+			pe := newPREnv(t, "github")
+			finding := `{"findings":[{"file":"app/login.go","line":21,"severity":"medium","claim":"The nil check is inverted.","suggestion":""}]}`
+			pe.llm.answers["opencode/muse-spark-1.3-contributor-free"] = finding
+			pe.llm.answers["opencode/nemotron-3-ultra-free"] = finding
+			pe.diffs = map[string]string{"1111111aaaa": sampleDiff, "2222222bbbb": sampleDiff}
+			pe.fg.parents = map[string][]string{"2222222bbbb": {"1111111aaaa", "basebase01"}}
+			if fail {
+				if _, err := pe.s.db.W.ExecContext(pe.ctx, `CREATE TRIGGER no_findings BEFORE INSERT ON bot_findings
+					BEGIN SELECT RAISE(ABORT, 'disk full'); END`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			pr := ForgePR{Number: 5, Title: "Fix login", Author: "sam", HeadRef: "fix-login", HeadSHA: "1111111aaaa", State: "open"}
+			pe.pullHook("opened", pr)
+			if got := pe.drain(); len(got) != 1 || got[0].Status != "done" {
+				t.Fatalf("first review: %+v", got)
+			}
+			var n int
+			if err := pe.s.db.R.QueryRow(`SELECT count(*) FROM reviewed_heads WHERE head_sha = '1111111aaaa'`).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			if want := map[bool]int{false: 1, true: 0}[fail]; n != want {
+				t.Fatalf("reviewed_heads rows for the first head = %d, want %d", n, want)
+			}
+			calls := len(pe.llm.calls)
+			pr.HeadSHA = "2222222bbbb"
+			pe.pullHook("synchronize", pr)
+			got := pe.drain()
+			if len(got) != 1 {
+				t.Fatalf("merge-only push: %+v", got)
+			}
+			carried := got[0].Status == "skipped" && strings.HasPrefix(got[0].Summary, carriedPrefix)
+			if carried == fail || (len(pe.llm.calls) == calls) == fail {
+				t.Errorf("merge-only push: %+v, %d model calls; want carried = %v", got[0], len(pe.llm.calls)-calls, !fail)
+			}
+		})
+	}
+}
+
 func TestReviewedWhole(t *testing.T) {
 	for name, c := range map[string]struct {
 		o    reviewOutcome

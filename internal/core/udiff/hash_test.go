@@ -42,6 +42,11 @@ func TestChangeHash(t *testing.T) {
 	if ChangeHash(base+bin("1..2")) == ChangeHash(base+bin("1..3")) {
 		t.Error("a binary file replaced by another: same hash")
 	}
+	// The same binary change beside a text file a merge moved: a text file's
+	// index line still doesn't count.
+	if ChangeHash(base+bin("1..2")) != ChangeHash(strings.Replace(base, "index 1..2", "index 9..8", 1)+bin("1..2")) {
+		t.Error("the same binary change: different hashes")
+	}
 	for _, c := range cases {
 		if got := ChangeHash(c.diff) == want; got != c.same {
 			t.Errorf("%s: same = %v, want %v", c.name, got, c.same)
