@@ -3,4 +3,5 @@
 e2e/weights.txt merge=union
 
 # Waypoint renames a pull request's new migrations when their numbers clash with the base or another open pull request.
+# The pattern must be literal/dir/glob: Waypoint lists the directory.
 internal/db/migrations/*.sql waypoint-numbered

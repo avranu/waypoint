@@ -28,6 +28,7 @@ func (g *shipForge) DefaultBranch(ctx context.Context, f *Forge, repo string) (s
 func (g *shipForge) FileBlobSHA(ctx context.Context, f *Forge, repo, path, ref string) (string, error) {
 	g.sm.Lock()
 	defer g.sm.Unlock()
+	g.union.blobRefs = append(g.union.blobRefs, ref)
 	if g.union.blobs {
 		return "blob-" + ref, nil
 	}

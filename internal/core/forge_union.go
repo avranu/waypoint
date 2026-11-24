@@ -102,9 +102,9 @@ func attrPaths(attrs, attr string) []string {
 	return out
 }
 
-// isUnionPath: p matches one of the patterns (a pattern without a slash
+// matchesAny: p matches one of the patterns (a pattern without a slash
 // matches a file's name in any directory, as in git).
-func isUnionPath(patterns []string, p string) bool {
+func matchesAny(patterns []string, p string) bool {
 	for _, pat := range patterns {
 		target := p
 		if !strings.Contains(pat, "/") {
@@ -189,7 +189,7 @@ func (s *Service) unionUpdate(ctx context.Context, f *Forge, pr *PullRequest, ti
 	var both []string
 	for _, p := range pr.files {
 		if slices.Contains(changed, p) {
-			if !isUnionPath(pats, p) {
+			if !matchesAny(pats, p) {
 				return "", nil // a real conflict may be among them
 			}
 			both = append(both, p)

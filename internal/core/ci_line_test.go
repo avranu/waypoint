@@ -51,11 +51,12 @@ func TestCILine(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	exec(`UPDATE pull_requests SET queued_at = ? WHERE id = ?`, now.Add(-time.Hour).UnixMilli(), se.pr(7).ID)
-	exec(`UPDATE pull_requests SET queued_at = ? WHERE id = ?`, now.Add(-30*time.Minute).UnixMilli(), se.pr(8).ID)
 	// two merged pull requests, yesterday; the first on a stack
 	se.queuedDraft(10, "m-one", "aaaaaaa1")
 	se.queuedDraft(11, "m-two", "bbbbbbb2")
+	se.s.Wait() // their events step the line, which drops members without passing checks
+	exec(`UPDATE pull_requests SET queued_at = ? WHERE id = ?`, now.Add(-time.Hour).UnixMilli(), se.pr(7).ID)
+	exec(`UPDATE pull_requests SET queued_at = ? WHERE id = ?`, now.Add(-30*time.Minute).UnixMilli(), se.pr(8).ID)
 	for n, h := range map[int]int{10: 9, 11: 10} {
 		exec(`UPDATE pull_requests SET state = 'merged', merged_at = ? WHERE id = ?`, day(1, h), se.pr(n).ID)
 	}

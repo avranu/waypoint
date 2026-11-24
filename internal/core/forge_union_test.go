@@ -19,6 +19,9 @@ type unionFake struct {
 	mergeBase         string
 	changed           []string
 	log               []string          // "update", "commit: message", in order
+	blobRefs          []string          // the refs FileBlobSHA was asked with
+	commits           [][]FileChange    // the files of each commit to a branch
+	commitErr         error             // CommitToBranch fails with it
 	head              map[string]string // the head branch's files, as committed
 }
 
@@ -33,11 +36,19 @@ func (g *shipForge) ChangedBetween(ctx context.Context, f *Forge, repo, from, to
 func (g *shipForge) CommitToBranch(ctx context.Context, f *Forge, repo, branch, message string, files []FileChange) (string, error) {
 	g.sm.Lock()
 	defer g.sm.Unlock()
+	if g.union.commitErr != nil {
+		return "", g.union.commitErr
+	}
 	g.union.log = append(g.union.log, "commit: "+message)
+	g.union.commits = append(g.union.commits, files)
 	if g.union.head == nil {
 		g.union.head = map[string]string{}
 	}
 	for _, c := range files {
+		if c.Delete {
+			delete(g.union.head, c.Path)
+			continue
+		}
 		g.union.head[c.Path] = c.Content
 	}
 	if strings.Contains(message, "take ") {
@@ -171,8 +182,8 @@ func TestUnionPaths(t *testing.T) {
 		t.Fatalf("pats = %q", pats)
 	}
 	for p, want := range map[string]bool{"e2e/weights.txt": true, "go.lock": true, "web/yarn.lock": true, "e2e/other.txt": false, "other": false, "a/e2e/weights.txt": false} {
-		if isUnionPath(pats, p) != want {
-			t.Errorf("isUnionPath(%q) = %v", p, !want)
+		if matchesAny(pats, p) != want {
+			t.Errorf("matchesAny(%q) = %v", p, !want)
 		}
 	}
 }
