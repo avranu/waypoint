@@ -488,16 +488,25 @@ func (c *httpLLM) TaskLimits(ctx context.Context, p *AIProvider) (GatewayLimits,
 // figures its key response states, kept ten minutes, or the defaults
 // (GatewayArchiveMax, GatewayFileMax) where it states none, states one out of
 // range (1 MiB to 512 MiB for the archive, 64 KiB to the archive for a file)
-// or can't be asked. When it can't be asked, the last figures it did state
-// stay (stale beats the default) and it is asked again after a minute.
+// or can't be asked. Whatever fails on the way to asking (reading which
+// gateway is set up, reading its provider, the ask itself), the last figures
+// it did state stay (stale beats the default); a failed ask is made again
+// after a minute.
 func (s *Service) GatewayTaskLimits(ctx context.Context) GatewayLimits {
 	def := GatewayLimits{ArchiveBytes: GatewayArchiveMax, FileBytes: GatewayFileMax}
-	tl, p, why := s.gatewayTasksLLM(ctx)
-	ll, ok := tl.(taskLimitsLLM)
-	if why != "" || !ok {
+	ll, ok := s.LLM.(taskLimitsLLM)
+	if _, tasks := s.LLM.(gatewayTaskLLM); !ok || !tasks {
 		return def
 	}
-	last, had := s.gatewayLimits.Load(p.ID)
+	pid, err := s.gatewayWithErr(ctx, GatewayTasks)
+	if err != nil {
+		s.log.Debug("read the gateway setting for its task limits", "err", err)
+		return s.lastGatewayLimits(def)
+	}
+	if pid == 0 {
+		return def
+	}
+	last, had := s.gatewayLimits.Load(pid)
 	prev, _ := last.(cachedGatewayLimits)
 	if had {
 		ttl := gatewayLimitsTTL
@@ -507,6 +516,14 @@ func (s *Service) GatewayTaskLimits(ctx context.Context) GatewayLimits {
 		if s.now().Sub(prev.at) <= ttl {
 			return prev.lim
 		}
+	}
+	p, err := s.aiProvider(ctx, pid)
+	if err != nil {
+		s.log.Debug("read the gateway's provider for its task limits", "err", err)
+		if had {
+			return prev.lim
+		}
+		return def
 	}
 	cctx, cancel := context.WithTimeout(ctx, gatewayLimitsTimeout)
 	defer cancel()
@@ -533,6 +550,29 @@ func (s *Service) GatewayTaskLimits(ctx context.Context) GatewayLimits {
 	}
 	s.gatewayLimits.Store(p.ID, cachedGatewayLimits{at: s.now(), lim: lim})
 	return lim
+}
+
+// lastGatewayLimits is the newest figures any gateway stated (the gateway
+// setting couldn't be read), else def.
+func (s *Service) lastGatewayLimits(def GatewayLimits) GatewayLimits {
+	var newest cachedGatewayLimits
+	s.gatewayLimits.Range(func(_, v any) bool {
+		if c, ok := v.(cachedGatewayLimits); ok && c.at.After(newest.at) {
+			newest = c
+		}
+		return true
+	})
+	if newest.at.IsZero() {
+		return def
+	}
+	return newest.lim
+}
+
+// setGatewayLimits writes the gateway's limits into a job it runs, so the
+// runner packs against them and the upload is held to them (archiveMax).
+func (s *Service) setGatewayLimits(ctx context.Context, in *AgentJob) {
+	lim := s.GatewayTaskLimits(ctx)
+	in.GatewayArchiveMax, in.GatewayFileMax = lim.ArchiveBytes, lim.FileBytes
 }
 
 // archiveMax is the most archive a job's upload may be: what the job was

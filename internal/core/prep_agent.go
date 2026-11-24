@@ -306,6 +306,7 @@ func (s *Service) startPrepAgent(ctx context.Context, issueID, projectID int64, 
 	}
 	in := AgentJob{CLI: GatewayCLI, Model: prepAgentModel, Prompt: prepAgentPrompt(i.Key, i.Type, title, desc, comments, &b), Repo: repo.cloneURL(), Base: commit,
 		ReadOnly: true, Permission: AgentRead, JSONSchema: string(schema), GatewayPriority: prioritySurplus, GatewayPaid: "never", GatewayArm: prepAgentArm}
+	s.setGatewayLimits(ctx, &in)
 	raw2, err := json.Marshal(in)
 	if err != nil {
 		return err

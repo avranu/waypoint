@@ -954,8 +954,7 @@ func (s *Service) advanceAudit(ctx context.Context, id int64) {
 			}
 			// Never the family of the model that wrote the code.
 			in.GatewayExclude, timeout = gatewayExcludeFor(a.authorModel), gatewayAuditTimeout+a.Helpers.extraTimeout()
-			lim := s.GatewayTaskLimits(ctx)
-			in.GatewayArchiveMax, in.GatewayFileMax = lim.ArchiveBytes, lim.FileBytes
+			s.setGatewayLimits(ctx, &in)
 			if a.Weakest != reviewFloorBar || m.Model == gatewayAuditModel {
 				in.GatewayWeakest = a.Weakest // the floor is for the audit purpose, not a model named for the audit
 			}

@@ -1327,6 +1327,21 @@ func TestGatewayTaskLimits(t *testing.T) {
 	if got := ae.s.GatewayTaskLimits(ae.ctx); got != def || gw.limitsCalls != calls+1 {
 		t.Errorf("failed ask with none before: %+v after %d asks", got, gw.limitsCalls-calls)
 	}
+	// Nor does failing to read which gateway is set up, or its provider,
+	// lose the last good figure.
+	ae.s.gatewayLimits.Clear()
+	gw.limitsErr, gw.limits = nil, GatewayLimits{64 * MiB, 8 * MiB}
+	ae.s.GatewayTaskLimits(ae.ctx)
+	now = now.Add(11 * time.Minute)
+	gone, cancel := context.WithCancel(ae.ctx)
+	cancel()
+	if got := ae.s.GatewayTaskLimits(gone); got.ArchiveBytes != 64*MiB {
+		t.Errorf("gateway setting unread: %+v", got)
+	}
+	ae.s.gatewayLimits.Clear()
+	if got := ae.s.GatewayTaskLimits(gone); got != def {
+		t.Errorf("gateway setting unread, none before: %+v", got)
+	}
 	// A successful answer that states nothing is the default, kept ten minutes.
 	ae.s.gatewayLimits.Clear()
 	gw.limitsErr, gw.limits = nil, GatewayLimits{}
