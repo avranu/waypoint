@@ -278,3 +278,70 @@ func TestGoalDrift(t *testing.T) {
 		t.Error("the check didn't run a week later")
 	}
 }
+
+// WP-1790: a request-written note stays editable by agents, so who put it
+// under its parent is whoever last did, not the person who filed the request.
+func TestGoalTraceNoteParentBasis(t *testing.T) {
+	e := newEnv(t)
+	p := e.project(e.admin, "Alpha", "")
+	agent := *e.admin
+	agent.Agent = "anthropic/claude-opus-5-5"
+	a := e.goal(e.admin, p.Key, "People find any task in a second")
+	b := e.goal(e.admin, p.Key, "People take their data with them")
+	task := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Pick the export format"})
+
+	note, err := e.s.CreateDesign(e.ctx, &agent, DesignInput{Title: str("Export as CSV"), Kind: str("decision"), Body: str("CSV."),
+		Project: &p.Key, Parent: Opt[int64]{Set: true, Value: &a.ID}, For: task.Key})
+	if err != nil || note.Requested == nil {
+		t.Fatalf("create = %+v, %v", note, err)
+	}
+	underBasis := func(parent int64) string {
+		t.Helper()
+		e.goals(e.admin, p.Key)
+		tr, err := e.s.Trace(e.ctx, e.admin, TraceQuery{Ref: itoa64(note.ID)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range tr.Routes {
+			for _, h := range r.Hops {
+				if h.Kind == "under" && h.To.ID == parent {
+					return h.Basis
+				}
+			}
+		}
+		t.Fatalf("no route under %d: %+v", parent, tr.Routes)
+		return ""
+	}
+	if got := underBasis(a.ID); got != "agent" {
+		t.Errorf("placed by an agent at creation: basis = %s, want agent", got)
+	}
+	if _, err := e.s.UpdateDesign(e.ctx, &agent, note.ID, DesignInput{Parent: Opt[int64]{Set: true, Value: &b.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := underBasis(b.ID); got != "agent" {
+		t.Errorf("moved by an agent: basis = %s, want agent", got)
+	}
+	if _, err := e.s.UpdateDesign(e.ctx, e.admin, note.ID, DesignInput{Parent: Opt[int64]{Set: true, Value: &a.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := underBasis(a.ID); got != "person" {
+		t.Errorf("moved by a person: basis = %s, want person", got)
+	}
+
+	// A proposal's place counts as a person's once they approve the text.
+	prop, err := e.s.CreateDesign(e.ctx, &agent, DesignInput{Title: str("Export as XLSX"), Kind: str("decision"), Body: str("XLSX."),
+		Project: &p.Key, Parent: Opt[int64]{Set: true, Value: &b.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	note = prop
+	if got := underBasis(b.ID); got != "agent" {
+		t.Errorf("proposal before approval: basis = %s, want agent", got)
+	}
+	if _, err := e.s.ApproveDesign(e.ctx, e.admin, prop.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := underBasis(b.ID); got != "person" {
+		t.Errorf("proposal after approval: basis = %s, want person", got)
+	}
+}

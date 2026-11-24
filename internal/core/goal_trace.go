@@ -150,7 +150,7 @@ func loadGoalGraph(ctx context.Context, q queryer) (*goalGraph, error) {
 		projParent: map[int64]int64{}, goalScopes: map[int64]bool{}}
 	type parentRow struct {
 		child, parent gnode
-		person        bool // a person put it there (issues: parent_by)
+		person        bool // a person put it there (parent_by)
 	}
 	var parents []parentRow
 	rows, err := q.QueryContext(ctx, `SELECT id, project_id, coalesce(parent_id, 0), outside = 0 AND (text_agent = '' OR reviewed_at IS NOT NULL),
@@ -211,15 +211,16 @@ func loadGoalGraph(ctx context.Context, q queryer) (*goalGraph, error) {
 	}
 	var requests []requestRow
 	rows, err = q.QueryContext(ctx, `SELECT id, coalesce(project_id, 0), coalesce(parent_id, 0), kind = 'goal' AND status = 'active',
-		approved_at IS NOT NULL OR requested_by IS NOT NULL, CASE WHEN requested_by IS NOT NULL THEN coalesce(requested_issue_id, 0) ELSE 0 END
+		approved_at IS NOT NULL OR requested_by IS NOT NULL, CASE WHEN requested_by IS NOT NULL THEN coalesce(requested_issue_id, 0) ELSE 0 END,
+		CASE WHEN parent_at IS NULL THEN approved_at IS NOT NULL OR requested_by IS NOT NULL ELSE parent_by IS NOT NULL END
 		FROM design_notes WHERE status != 'retired'`)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		var id, pid, parent, reqIssue int64
-		var goal, approved bool
-		if err := rows.Scan(&id, &pid, &parent, &goal, &approved, &reqIssue); err != nil {
+		var goal, approved, parentByPerson bool
+		if err := rows.Scan(&id, &pid, &parent, &goal, &approved, &reqIssue, &parentByPerson); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -228,8 +229,7 @@ func loadGoalGraph(ctx context.Context, q queryer) (*goalGraph, error) {
 			g.goalScopes[pid] = true
 		}
 		if parent != 0 {
-			// A note's place is part of the text a person approved.
-			parents = append(parents, parentRow{gnode{KDesign, id}, gnode{KDesign, parent}, approved})
+			parents = append(parents, parentRow{gnode{KDesign, id}, gnode{KDesign, parent}, parentByPerson})
 		}
 		if reqIssue != 0 {
 			requests = append(requests, requestRow{id, reqIssue})
