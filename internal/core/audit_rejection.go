@@ -10,6 +10,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"git.jmann.me/claude/waypoint/internal/core/kernel"
 	"git.jmann.me/claude/waypoint/internal/core/strength"
 )
 
@@ -55,7 +56,30 @@ func (s *Service) findingFinder(ctx context.Context, audit int64, n int) (streng
 	if lead != "" {
 		model = helperModel
 	}
-	return strength.Parse(model, ""), nil
+	if model == ownReportModel {
+		// A review's own report: the model is the author session's.
+		var author string
+		if rest, ok := strings.CutPrefix(key, "review-round:"); ok {
+			num, _, _ := strings.Cut(rest, ":")
+			_ = s.db.R.QueryRowContext(ctx, `SELECT s.model FROM work_log w JOIN agent_sessions s ON s.id = w.session_id WHERE w.id = ? AND w.kind = 'review'`, num).Scan(&author)
+		}
+		model = author
+	}
+	return currentVersion(strength.Parse(model, "")), nil
+}
+
+// currentVersion gives a bare haiku, sonnet or opus (the claude CLI's short
+// name, as audits and sessions record it) the version it stands for now, so
+// an older model can't reject what an unversioned name hides.
+func currentVersion(m strength.Model) strength.Model {
+	if m.Major == 0 {
+		if full, ok := runnerAliases[m.Family]; ok {
+			a := strength.Parse(full, m.Effort)
+			a.Name = m.Name
+			return a
+		}
+	}
+	return m
 }
 
 // rejecterModel is the model and effort the actor runs as, as reported: a
@@ -83,7 +107,7 @@ func (s *Service) rejecterModel(ctx context.Context, actor *Actor) strength.Mode
 			}
 		}
 	}
-	return strength.Parse(model, effort)
+	return currentVersion(strength.Parse(model, effort))
 }
 
 // weighRejections holds an agent's rejection of findings to what Jess
@@ -103,7 +127,7 @@ func (s *Service) weighRejections(ctx context.Context, actor *Actor, evidence st
 		}
 		id := fmt.Sprintf("%d.%d", r.audit, r.n)
 		if evidence == "" {
-			return nil, invalid("rejecting a finding of a pull request you aren't working on takes evidence: wp audit mark %s rejected -m WHY --evidence \"the file and line, or the command output, that shows it\"", id)
+			return nil, kernel.Invalid("rejecting a finding of a pull request you aren't working on takes evidence: wp audit mark %s rejected -m WHY --evidence \"the file and line, or the command output, that shows it\"", id)
 		}
 		finder, err := s.findingFinder(ctx, r.audit, r.n)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -122,7 +146,7 @@ func (s *Service) weighRejections(ctx context.Context, actor *Actor, evidence st
 			if !rejecter.Known() {
 				who = "Waypoint doesn't know which model this session runs, so it can't"
 			}
-			return nil, forbidden("%s reject %s, found by %s: leave it for a stronger agent or a person, or file it: wp audit mark %s confirmed --issue KEY", who, id, finder, id)
+			return nil, kernel.Forbidden("%s reject %s, found by %s: leave it for a stronger agent or a person (a medium or low one can be filed: wp audit mark %s confirmed --issue KEY)", who, id, finder, id)
 		}
 		out[r] = rejectionWeight{model: rejecter.Name, effort: rejecter.Effort, strength: string(verdict) + ": " + reason}
 	}
@@ -131,7 +155,7 @@ func (s *Service) weighRejections(ctx context.Context, actor *Actor, evidence st
 
 func checkEvidence(evidence string) error {
 	if utf8.RuneCountInString(evidence) > maxRejectionEvidence {
-		return invalid("evidence is at most %d characters", maxRejectionEvidence)
+		return kernel.Invalid("evidence is at most %d characters", maxRejectionEvidence)
 	}
 	return nil
 }

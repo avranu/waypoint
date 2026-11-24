@@ -575,6 +575,9 @@ func cmdPRDismiss(c *cli, args []string) error {
 		if err != nil {
 			return err
 		}
+		if *evidence != "" {
+			return c.usage("--evidence is for an audit finding (AUDIT.N, like 12.1); a bot's finding (%s) takes only -m", arg)
+		}
 		raw, err := c.call("POST", fmt.Sprintf("/api/v1/findings/%d/dismiss", id), map[string]string{"note": *note})
 		if err != nil {
 			return err

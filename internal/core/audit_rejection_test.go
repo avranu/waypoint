@@ -89,7 +89,7 @@ func TestSessionOfUnknownModelCannotReject(t *testing.T) {
 	}
 }
 
-func TestLowerEffortSonnetCannotRejectHigherEffortSonnet(t *testing.T) {
+func TestRejectingEffortIsComparedOnlyOnceAuditsRecordTheFinders(t *testing.T) {
 	re := newRejectionEnv(t, "claude-sonnet-5-5")
 	// Audits record no effort, so the finder's is unknown and counts as equal:
 	// the effort comparison is in the strength package's tests.

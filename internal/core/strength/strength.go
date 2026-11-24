@@ -33,6 +33,9 @@ type Model struct {
 var (
 	after  = regexp.MustCompile(`^[\s._-]*(\d{1,2})(?:[\s._-](\d{1,2}))?(?:[^\d]|$)`)
 	before = regexp.MustCompile(`(\d+)[._-](\d{1,2})[\s._-]*$`)
+	// lone is a major version alone before the family (claude-3-opus).
+	dated = regexp.MustCompile(`[\s._-]\d{8}$`)
+	lone  = regexp.MustCompile(`(?:^|[^\d])(\d{1,2})[\s._-]*$`)
 )
 
 // Parse reads a model name ("claude-sonnet-5-5", "anthropic/claude-code
@@ -53,12 +56,19 @@ func Parse(name, effort string) Model {
 		return m
 	}
 	m.Family = fam
-	if g := after.FindStringSubmatch(low[at+len(fam):]); g != nil {
+	// A date after the family (claude-3-opus-20240229) isn't a version.
+	tail := low[at+len(fam):]
+	if d := dated.FindString(tail); d != "" {
+		tail = tail[:len(tail)-len(d)]
+	}
+	if g := after.FindStringSubmatch(tail); g != nil {
 		m.Major, _ = strconv.Atoi(g[1])
 		m.Minor, _ = strconv.Atoi(g[2])
 	} else if g := before.FindStringSubmatch(strings.TrimRight(low[:at], " -_.")); g != nil {
 		m.Major, _ = strconv.Atoi(g[1])
 		m.Minor, _ = strconv.Atoi(g[2])
+	} else if g := lone.FindStringSubmatch(strings.TrimRight(low[:at], " -_.")); g != nil {
+		m.Major, _ = strconv.Atoi(g[1])
 	}
 	return m
 }
@@ -116,7 +126,7 @@ func Compare(rejecter, finder Model) (Verdict, string) {
 		}
 		return AtLeast, fmt.Sprintf("%s is a stronger family than %s", rejecter.Family, finder.Family)
 	}
-	if rejecter.Family == finder.Family && rejecter.Major > 0 && finder.Major > 0 {
+	if rejecter.Major > 0 && finder.Major > 0 {
 		r, f := rejecter.Major*100+rejecter.Minor, finder.Major*100+finder.Minor
 		if r < f {
 			return Weaker, fmt.Sprintf("%s is an older version than %s", rejecter, finder)

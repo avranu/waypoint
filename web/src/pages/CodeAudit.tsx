@@ -476,6 +476,8 @@ function FindingItem({ finding: f, audit: a }: { finding: AuditFinding; audit: C
               {' '}
               · as {f.decided_model}
               {f.decided_effort && ` (${f.decided_effort})`}
+              {f.decided_strength &&
+                `, ${f.decided_strength.replace('_', ' ')}`}
             </>
           )}
           {f.filing_void && f.state === 'confirmed' && (
