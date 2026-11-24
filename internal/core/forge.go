@@ -1008,8 +1008,6 @@ func (s *Service) applyLinkState(ctx context.Context, linkURL string, item *Forg
 	if err != nil {
 		return
 	}
-	var held bool
-	_ = s.db.R.QueryRowContext(ctx, `SELECT `+unapprovedOutsidePullSQL("?"), linkURL).Scan(&held)
 	type row struct {
 		id, issueID int64
 		kind, state string
@@ -1038,6 +1036,13 @@ func (s *Service) applyLinkState(ctx context.Context, linkURL string, item *Forg
 			i, err := s.issueByID(ctx, t, r.issueID, false)
 			if err != nil {
 				return err
+			}
+			// Read inside the write, so an approval that committed first is seen,
+			// and a failed read holds: approving replays the open for links
+			// already open (WP-1802).
+			var held bool
+			if err := t.QueryRowContext(ctx, `SELECT `+unapprovedOutsidePullSQL("?"), linkURL).Scan(&held); err != nil {
+				held = true
 			}
 			kind := ""
 			switch {

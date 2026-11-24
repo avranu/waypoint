@@ -229,7 +229,7 @@ func (s *Service) shipSettledRounds(ctx context.Context) {
 				AND (r.ended_at IS NOT NULL OR x.ended_at IS NOT NULL
 					OR EXISTS (SELECT 1 FROM agent_runs o WHERE o.session_id = w.session_id AND o.id > w.run_id AND o.issue_id != w.issue_id))
 				AND w.id = (SELECT max(m.id) FROM work_log m WHERE m.kind = 'review' AND m.issue_id = w.issue_id)
-				AND NOT EXISTS (SELECT 1 FROM external_links l WHERE l.issue_id = w.issue_id AND l.kind = 'pull')
+				AND NOT EXISTS (SELECT 1 FROM external_links l WHERE l.issue_id = w.issue_id AND l.kind = 'pull' AND NOT `+unapprovedOutsidePullSQL("l.url")+`)
 				AND (max(w.updated_at, coalesce(r.ended_at, 0), coalesce(x.ended_at, 0),
 					coalesce((SELECT min(o.started_at) FROM agent_runs o WHERE o.session_id = w.session_id AND o.id > w.run_id AND o.issue_id != w.issue_id), 0)) > ?
 					OR coalesce(json_extract(w.before_pr, '$.ship_first'), 0) > 0)))

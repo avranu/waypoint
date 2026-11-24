@@ -689,7 +689,7 @@ func heldOwed(ctx context.Context, q queryer, roundID int64) (string, error) {
 	err := q.QueryRowContext(ctx, `SELECT p.key || '-' || i.number FROM work_log w JOIN agent_runs r ON r.id = w.run_id
 		JOIN issues i ON i.id = w.issue_id JOIN projects p ON p.id = i.project_id
 		WHERE w.id = ? AND w.before_pr != '' AND r.ended_at IS NULL AND i.resolved_at IS NULL
-		  AND NOT EXISTS (SELECT 1 FROM external_links l WHERE l.issue_id = w.issue_id AND l.kind = 'pull')`, roundID).Scan(&key)
+		  AND NOT EXISTS (SELECT 1 FROM external_links l WHERE l.issue_id = w.issue_id AND l.kind = 'pull' AND NOT `+unapprovedOutsidePullSQL("l.url")+`)`, roundID).Scan(&key)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}

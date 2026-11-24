@@ -383,9 +383,10 @@ func TestUnapprovedOutsideLinkHoldsItsEffects(t *testing.T) {
 	if got := se.get(se.admin, i.Key).Status.Name; got != "In Review" {
 		t.Errorf("status after approval = %q", got)
 	}
-	if out, err := se.s.outOnPRs(se.ctx, se.s.db.R, []*Issue{iss}); err != nil || len(out) != 0 {
-		// the issue now sits In Review, outside the in-progress category
-		t.Logf("out after approval: %+v %v", out, err)
+	if iss, err := se.s.issueByID(se.ctx, se.s.db.R, i.ID, false); err != nil {
+		t.Fatal(err)
+	} else if out, err := se.s.outOnPRs(se.ctx, se.s.db.R, []*Issue{iss}); err != nil || len(out) != 1 {
+		t.Errorf("out on an approved pull request: %+v %v", out, err)
 	}
 	if cm := se.s.forgeCoMentions(se.ctx, i.ID); len(cm) != 1 || cm[0].kind != "blocked_by" {
 		t.Errorf("suggestions after approval: %+v", cm)

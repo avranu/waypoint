@@ -278,7 +278,8 @@ func (s *Service) outsidePullOpened(ctx context.Context, urls ...string) {
 	err := s.write(ctx, SystemActor(), func(t *tx) error {
 		for _, u := range urls {
 			rows, err := t.QueryContext(ctx, `SELECT el.issue_id, el.title, coalesce(el.number, 0) FROM external_links el
-				WHERE el.url = ? AND el.kind = 'pull' AND el.state = 'open'`, u)
+				WHERE el.url = ? AND el.kind = 'pull' AND el.state = 'open'
+				AND NOT EXISTS (SELECT 1 FROM events e WHERE e.issue_id = el.issue_id AND e.kind = ? AND e.new_value = el.url)`, u, EvExternalPROpened)
 			if err != nil {
 				return err
 			}
