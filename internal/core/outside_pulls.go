@@ -194,7 +194,7 @@ func (s *Service) screenNotes(ctx context.Context, f *Forge, pr *PullRequest, no
 }
 
 // screenPull decides, as recordPR stores a pull request, whether it waits
-// for a person: from outside and not approved at this title and head. A
+// for a person: from outside and not approved at this title, head and description. A
 // waiting one keeps an approved title, or none.
 func (s *Service) screenPull(ctx context.Context, t *tx, v *prVoice, pr *PullRequest, fp *ForgePR) error {
 	title := excerpt(stripWIP(fp.Title), 300)
@@ -222,7 +222,7 @@ func (s *Service) screenPull(ctx context.Context, t *tx, v *prVoice, pr *PullReq
 		return err
 	}
 	approved := state == outsideApproved
-	if approved && okTitle == title && okHead == pr.HeadSHA {
+	if approved && okTitle == title && okHead == pr.HeadSHA && (fp.Body == "" || okHash == textHash(fp.Body)) {
 		pr.Outside = false
 		_, err := t.ExecContext(ctx, `UPDATE pull_requests SET outside = 0 WHERE id = ?`, pr.ID)
 		return err
