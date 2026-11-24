@@ -1262,15 +1262,15 @@ func roundAsks(reviewText, roundContext string) []string {
 // prAuditAtHead is the pull request's own audit at its head (0: none) when
 // its reviewer isn't of the family of sessionModel, the model of the session
 // the findings go to: the model that answered, for an audit that is done;
-// every model it may still ask, for one that isn't (otherFamilyChain). A
-// round with a quality bar (weakest) takes only an audit held to the same
-// or, at the floor, to a higher one,
+// every model it may still ask, for one that isn't (otherFamilyChain). An
+// audit held to the high-stakes bar is taken from any family, as it was
+// asked (auditFamilyExclude, WP-1752). A round with a quality bar (weakest)
+// takes only an audit held to the same or, at the floor, to a higher one,
 // and only one whose prompt asked each of asks (roundAsks): WP-1320's live
 // review found a round taking the pull request's own audit, which asks
 // neither the brief nor the task, in place of its own. (A round of a task
 // asks the task, so it never takes one: its own audit runs its panel.)
 func (s *Service) prAuditAtHead(ctx context.Context, pr *PullRequest, sessionModel, weakest string, asks []string) (int64, error) {
-	own := gatewayExcludeFor(sessionModel)
 	// The floor is what every audit on the gateway's choice asks (WP-1440),
 	// so a round at the floor takes an audit held to it or to a tier's bar
 	// above it, never one from before the floor (weakest ''). Any other bar
@@ -1283,7 +1283,7 @@ func (s *Service) prAuditAtHead(ctx context.Context, pr *PullRequest, sessionMod
 		held = append(held, elevatedAuditBar, trustedAuditBar)
 		named = 1
 	}
-	q := `SELECT id, ref, status, models, model, author_model FROM code_audits WHERE pr_id = ? AND purpose = '' AND status IN ('queued','running','done')
+	q := `SELECT id, ref, status, models, model, author_model, weakest FROM code_audits WHERE pr_id = ? AND purpose = '' AND status IN ('queued','running','done')
 		AND (? = '' OR weakest IN (` + strings.TrimSuffix(strings.Repeat("?,", len(held)), ",") + `)
 			OR (? = 1 AND weakest = '' AND models != '' AND instr(models, '"cli":"gateway"') = 0))`
 	args := []any{pr.ID, weakest}
@@ -1302,10 +1302,11 @@ func (s *Service) prAuditAtHead(ctx context.Context, pr *PullRequest, sessionMod
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var id int64
-		var ref, status, models, model, author string
-		if rows.Scan(&id, &ref, &status, &models, &model, &author) != nil || !sameSHA(ref, pr.HeadSHA) {
+		var ref, status, models, model, author, bar string
+		if rows.Scan(&id, &ref, &status, &models, &model, &author, &bar) != nil || !sameSHA(ref, pr.HeadSHA) {
 			continue
 		}
+		own := auditFamilyExclude(bar, sessionModel)
 		if status == AuditDone {
 			if model != "" && !gatewayExcludes(own, model) {
 				return id, nil

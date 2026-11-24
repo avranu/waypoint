@@ -1388,7 +1388,7 @@ func TestReviewRoundHighStakesBar(t *testing.T) {
 		t.Fatalf("no audit job: %+v", w.Job)
 	}
 	job := agentJobOf(t, w.Job)
-	if job.CLI != GatewayCLI || job.GatewayWeakest != trustedAuditBar || strings.Join(job.GatewayExclude, ",") != "*claude*" {
+	if job.CLI != GatewayCLI || job.GatewayWeakest != trustedAuditBar || len(job.GatewayExclude) != 0 {
 		t.Fatalf("job = %s/%s weakest %q exclude %v", job.CLI, job.Model, job.GatewayWeakest, job.GatewayExclude)
 	}
 	v, err := a.s.StartGatewayTask(a.ctx, a.admin, w.Job.ID, "Audit this.", strings.NewReader("tar"), 3)
@@ -1398,8 +1398,8 @@ func TestReviewRoundHighStakesBar(t *testing.T) {
 	if _, spec := gw.sent(); spec.Weakest != trustedAuditBar {
 		t.Fatalf("spec = %+v", spec)
 	}
-	// Nothing outside the author's family is that good: the gateway says
-	// so, and the session's own reviewer reviews.
+	// Every model the gateway rates at the bar is busy or spent: it answers
+	// no_model_at_bar, and the session's own reviewer reviews.
 	result := map[string]any{"gateway_error": gatewayNoModelAtBar, "gateway_task": v.ID}
 	if _, err := a.s.FinishRunnerJob(a.ctx, a.admin, w.Job.ID, RunnerFinish{State: "failed", Error: "The gateway has no model at the bar", Result: []byte(mustJSON(result))}); err != nil {
 		t.Fatal(err)
@@ -1414,8 +1414,8 @@ func TestReviewRoundHighStakesBar(t *testing.T) {
 	if au.Status != AuditFailed || ra.alt != "" || ra.note == "" {
 		t.Fatalf("round = %+v, audit = %s %+v", ra, au.Status, au.Attempts)
 	}
-	// Sonnet, the bar itself, reviews it in a new session; its job asks the
-	// gateway nothing.
+	// The high-stakes reviewer, Sonnet, reviews it in a new session; its job
+	// asks the gateway nothing.
 	a.endReviewer(box, "done", "Login skips the lockout")
 	a.tick(time.Second)
 	var in AutopilotJob

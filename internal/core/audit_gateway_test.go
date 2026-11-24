@@ -457,6 +457,17 @@ func TestGatewayTaskRelay(t *testing.T) {
 	if in := agentJobOf(t, claim); strings.Join(in.GatewayExclude, ",") != "*claude*" {
 		t.Fatalf("exclude = %v", in.GatewayExclude)
 	}
+	// An audit held to the high-stakes bar sends no exclude (WP-1752); one
+	// held to the elevated bar still keeps the author's family out.
+	for _, c := range []struct{ weakest, want string }{{trustedAuditBar, ""}, {elevatedAuditBar, "*claude*"}} {
+		if _, err := ae.s.RequestAudit(ae.ctx, ae.admin, AuditInput{Project: ae.p.Key, Via: "system", purpose: AuditReview, weakest: c.weakest,
+			chain: []AgentModel{{CLI: GatewayCLI, Model: gatewayAuditModel}}, authorModel: "claude-opus-5-5"}); err != nil {
+			t.Fatal(err)
+		}
+		if in := agentJobOf(t, ae.takeOn(box)); strings.Join(in.GatewayExclude, ",") != c.want {
+			t.Fatalf("bar %q: exclude = %v, want %q", c.weakest, in.GatewayExclude, c.want)
+		}
+	}
 	// A job of another kind isn't the gateway's.
 	other, err := ae.s.RequestAudit(ae.ctx, ae.admin, AuditInput{Project: ae.p.Key, Models: []string{"claude/opus"}})
 	if err != nil {
@@ -597,6 +608,21 @@ func TestGatewayAuditNames(t *testing.T) {
 			t.Errorf("exclude for %q = %q, want %q", author, got, want)
 		}
 	}
+	// An audit held to the high-stakes bar excludes no family (WP-1752); at
+	// every other bar, and with none, the author's family is kept out.
+	for _, c := range []struct{ weakest, author, want string }{
+		{trustedAuditBar, "claude-opus-5-5", ""},
+		{trustedAuditBar, "grok-4.7-high", ""},
+		{elevatedAuditBar, "claude-opus-5-5", "*claude*"},
+		{reviewFloorBar, "grok-4.7-high", "*grok*"},
+		{"", "claude-opus-5-5", "*claude*"},
+		{elevatedAuditBar, "", ""},
+		{elevatedAuditBar, "some-new-model", ""},
+	} {
+		if got := strings.Join(auditFamilyExclude(c.weakest, c.author), ","); got != c.want {
+			t.Errorf("audit exclude at %q for %q = %q, want %q", c.weakest, c.author, got, c.want)
+		}
+	}
 	for _, c := range []struct {
 		glob, name string
 		want       bool
@@ -649,7 +675,7 @@ func TestGatewayAuditNames(t *testing.T) {
 	if got, err := job(JobAudit, AgentJob{CLI: GatewayCLI, Model: "audit", GatewayExclude: []string{"*claude*"}}); err != nil || len(got.GatewayExclude) != 1 || !got.ReadOnly {
 		t.Errorf("a gateway audit = %+v %v", got, err)
 	}
-	if got, err := job(JobAudit, AgentJob{CLI: GatewayCLI, Model: "audit", GatewayWeakest: "claude sonnet"}); err != nil || got.GatewayWeakest != "claude sonnet" {
+	if got, err := job(JobAudit, AgentJob{CLI: GatewayCLI, Model: "audit", GatewayWeakest: trustedAuditBar}); err != nil || got.GatewayWeakest != trustedAuditBar {
 		t.Errorf("a barred gateway audit = %+v %v", got, err)
 	}
 	if got, err := job(JobAudit, AgentJob{CLI: "claude", GatewayExclude: []string{"*claude*"}, GatewayWeakest: "sonnet"}); err != nil || got.GatewayExclude != nil || got.GatewayWeakest != "" {
