@@ -206,7 +206,16 @@ export function RichTextInput({
     const el = editor.current
     if (!el) return
     const onBefore = (e: Event) => {
-      if (keyed.current || composing.current) return
+      if (keyed.current) return
+      // Enter from a soft keyboard with the mention menu open picks the
+      // highlighted person, as the keydown branch does on a desktop.
+      const t = (e as InputEvent).inputType
+      if (open && e.cancelable && (t === 'insertParagraph' || t === 'insertLineBreak')) {
+        e.preventDefault()
+        pick(matches[active])
+        return
+      }
+      if (composing.current) return
       try {
         if (beforeInputRules(el, e as InputEvent)) {
           sync()
