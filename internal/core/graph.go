@@ -330,17 +330,18 @@ func loadRelGraph(ctx context.Context, q queryer) (*relGraph, error) {
 		return nil, err
 	}
 	var notes []struct {
-		id, parent, issue int64
-		approved          bool
+		id, parent, issue  int64
+		approved, byPerson bool
 	}
 	if err := each(`SELECT id, coalesce(project_id, 0), kind, number, title, status, approved_at IS NOT NULL, coalesce(parent_id, 0),
-		CASE WHEN requested_by IS NOT NULL THEN coalesce(requested_issue_id, 0) ELSE 0 END
+		CASE WHEN requested_by IS NOT NULL THEN coalesce(requested_issue_id, 0) ELSE 0 END,
+		CASE WHEN parent_at IS NULL THEN approved_at IS NOT NULL OR requested_by IS NOT NULL ELSE parent_by IS NOT NULL END
 		FROM design_notes WHERE status != 'retired'`, func(r *sql.Rows) error {
 		var n gnodeRec
 		var num sql.NullInt64
-		var approved bool
+		var approved, byPerson bool
 		var parent, issue int64
-		if err := r.Scan(&n.id, &n.project, &n.kind, &num, &n.title, &n.state, &approved, &parent, &issue); err != nil {
+		if err := r.Scan(&n.id, &n.project, &n.kind, &num, &n.title, &n.state, &approved, &parent, &issue, &byPerson); err != nil {
 			return err
 		}
 		if !approved {
@@ -354,9 +355,9 @@ func loadRelGraph(ctx context.Context, q queryer) (*relGraph, error) {
 		n.url = "/design/" + itoa64(n.id)
 		g.addNode(n)
 		notes = append(notes, struct {
-			id, parent, issue int64
-			approved          bool
-		}{n.id, parent, issue, approved})
+			id, parent, issue  int64
+			approved, byPerson bool
+		}{n.id, parent, issue, approved, byPerson})
 		return nil
 	}); err != nil {
 		return nil, err
@@ -364,7 +365,7 @@ func loadRelGraph(ctx context.Context, q queryer) (*relGraph, error) {
 	for _, n := range notes {
 		a, _ := g.node(KDesign, n.id)
 		b := basisAgent
-		if n.approved {
+		if n.byPerson {
 			b = basisPerson
 		}
 		if p, ok := g.node(KDesign, n.parent); ok {

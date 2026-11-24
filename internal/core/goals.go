@@ -51,20 +51,22 @@ type goalMatcher struct {
 
 func (s *Service) newGoalMatcher(ctx context.Context) (*goalMatcher, error) {
 	rows, err := s.db.R.QueryContext(ctx, `SELECT id, coalesce(project_id, 0), coalesce(parent_id, 0), kind = 'goal' AND status = 'active',
-		approved_at IS NOT NULL OR requested_by IS NOT NULL, title, body FROM design_notes WHERE status != 'retired' ORDER BY id`)
+		approved_at IS NOT NULL OR requested_by IS NOT NULL,
+		CASE WHEN parent_at IS NULL THEN approved_at IS NOT NULL OR requested_by IS NOT NULL ELSE parent_by IS NOT NULL END, title, body FROM design_notes WHERE status != 'retired' ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
 	type note struct {
 		id, project, parent int64
 		goal, approved      bool
+		parentPerson        bool // a person placed it under its parent (WP-1790)
 		title, body         string
 	}
 	var notes []note
 	children := map[int64][]int{}
 	for rows.Next() {
 		var n note
-		if err := rows.Scan(&n.id, &n.project, &n.parent, &n.goal, &n.approved, &n.title, &n.body); err != nil {
+		if err := rows.Scan(&n.id, &n.project, &n.parent, &n.goal, &n.approved, &n.parentPerson, &n.title, &n.body); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -114,7 +116,7 @@ func (s *Service) newGoalMatcher(ctx context.Context) (*goalMatcher, error) {
 			var next []int
 			for _, ci := range queue {
 				c := notes[ci]
-				if c.approved {
+				if c.approved && c.parentPerson {
 					for t, k := range simCounts(c.title, c.body, nil) {
 						counts[t] += k
 					}
