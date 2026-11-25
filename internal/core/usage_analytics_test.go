@@ -403,7 +403,7 @@ func TestQuotaPace(t *testing.T) {
 		{"at the limit", at(100), 100, "at_limit", 100, at(100)},
 		{"reset since", reset.Add(time.Hour), 40, "reset", 40, time.Time{}},
 	} {
-		status, projected, runsOut, _ := quotaPace(tc.now, tc.now, reset, week, tc.pct)
+		status, projected, runsOut, _ := quotaPace(tc.now, tc.now, reset, time.Time{}, week, tc.pct)
 		if status != tc.status || (tc.projected != 0 && !approx(projected, tc.projected)) {
 			t.Errorf("%s: %s %.1f", tc.name, status, projected)
 		}

@@ -104,11 +104,16 @@ type guardReport struct {
 }
 
 type guardCheck struct {
-	From          time.Time          `json:"from"`
-	To            time.Time          `json:"to"`
-	ResetsAt      *time.Time         `json:"resets_at"`
-	WeekPercent   *float64           `json:"week_percent"`
-	WeekEven      *float64           `json:"week_even"`
+	From        time.Time  `json:"from"`
+	To          time.Time  `json:"to"`
+	ResetsAt    *time.Time `json:"resets_at"`
+	WeekPercent *float64   `json:"week_percent"`
+	WeekEven    *float64   `json:"week_even"`
+	Resets      []struct {
+		At         time.Time `json:"at"`
+		WasPercent float64   `json:"was_percent"`
+	} `json:"resets"`
+	ResetNote     string             `json:"reset_note,omitempty"`
 	Points        float64            `json:"points"`
 	Unexplained   float64            `json:"unexplained"`
 	Automation    float64            `json:"automation"`
@@ -253,6 +258,12 @@ func guardCheckText(b *strings.Builder, c *guardCheck, hours bool, machine strin
 		fmt.Fprintf(b, ": week at %.0f%% (even %.0f%%), resets %s UTC", *c.WeekPercent, *c.WeekEven, c.ResetsAt.UTC().Format("Jan 2 15:04"))
 	}
 	b.WriteString("\n")
+	for _, r := range c.Resets {
+		fmt.Fprintf(b, "  allowance reset at %s UTC (was %.0f%%); the even pace runs from there\n", r.At.UTC().Format("Jan 2 15:04"), r.WasPercent)
+	}
+	if c.ResetNote != "" {
+		fmt.Fprintf(b, "  note: %s\n", c.ResetNote)
+	}
 	fmt.Fprintf(b, "  points %.1f: automation %.1f, person %.1f, nobody's %.1f\n", c.Points, c.Automation, c.Person, c.Unexplained)
 	if c.Automation > 0 {
 		var parts []string

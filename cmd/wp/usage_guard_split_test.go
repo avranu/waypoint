@@ -14,6 +14,21 @@ const guardSplitRaw = `{"who":"pat","days":14,"checks":[{"from":"2026-11-24T03:0
 	"hours":[{"hour":"2026-11-24T03:00:00Z","phase":"under","points":1,"automation":0,"cost_usd":3,"automation_usd":0,
 	"split":[{"source":"cli","machine":"chiron","cost_usd":2},{"source":"runner","cost_usd":1}]}]}]}`
 
+func TestGuardTextNamesAllowanceReset(t *testing.T) {
+	raw := `{"who":"pat","days":14,"checks":[{"from":"2026-11-24T03:00:00Z","to":"2026-11-25T03:00:00Z","by_phase":{},"limits":{},
+		"resets":[{"at":"2026-11-24T16:02:01Z","was_percent":100}],"reset_note":"stored before allowance resets were read"}]}`
+	var r guardReport
+	if err := json.Unmarshal([]byte(raw), &r); err != nil {
+		t.Fatal(err)
+	}
+	out := guardReportText(&r, false, "chiron")
+	for _, want := range []string{"allowance reset at Nov 24 16:02 UTC (was 100%)", "note: stored before allowance resets were read"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+}
+
 func TestGuardSplitText(t *testing.T) {
 	var r guardReport
 	if err := json.Unmarshal([]byte(guardSplitRaw), &r); err != nil {
