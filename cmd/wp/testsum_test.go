@@ -770,7 +770,8 @@ func TestKeptOutputOfEmptyEventsIsEmpty(t *testing.T) {
 }
 
 func TestFailedTailIsRedacted(t *testing.T) {
-	t.Chdir(t.TempDir()) // not a checkout, so no kept file is written
+	t.Chdir(t.TempDir()) // not a checkout, so the kept file goes to TMPDIR
+	t.Setenv("TMPDIR", t.TempDir())
 	got := failedTail([]byte("a\nb\npassword=hunter2secret\nc\n"), 3)
 	if strings.Contains(got, "hunter2secret") {
 		t.Errorf("secret in the printed tail:\n%s", got)
