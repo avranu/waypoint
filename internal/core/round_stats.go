@@ -33,6 +33,11 @@ type RoundStats struct {
 	// Nitpicks: what scoring review comments and review findings did
 	// (WP-695).
 	Nitpicks *NitpickStats `json:"nitpicks,omitempty"`
+	// Failed checks a waiting author took instead of a round (WP-1878): how
+	// many, how many a new head fixed in time, how many fell back to a round.
+	AuthorHandoffs int `json:"author_handoffs"`
+	AuthorFixed    int `json:"author_fixed"`
+	AuthorFellBack int `json:"author_fell_back"`
 }
 
 // maxReplayDays bounds a replay: it reads each pull request's files from
@@ -69,21 +74,22 @@ func (s *Service) GetRoundStats(ctx context.Context, actor *Actor, projectRef st
 	since := s.now().AddDate(0, 0, -days)
 	vis, args := prVisible(actor, projectID)
 	// #nosec G202 -- fixed conditions; values are bound
-	rows, err := s.db.R.QueryContext(ctx, `SELECT b.pr_id, b.rounds, b.state = ? AND coalesce(b.ended_at, 0) >= ? FROM babysits b JOIN pull_requests p ON p.id = b.pr_id
+	rows, err := s.db.R.QueryContext(ctx, `SELECT b.pr_id, b.rounds, b.state = ? AND coalesce(b.ended_at, 0) >= ?, b.author_handoffs FROM babysits b JOIN pull_requests p ON p.id = b.pr_id
 		WHERE `+vis+` AND b.updated_at >= ? ORDER BY b.id`, append([]any{BabysitMerged, since.UnixMilli()}, append(args, since.UnixMilli())...)...)
 	if err != nil {
 		return nil, err
 	}
 	type kept struct {
-		pr     int64
-		rounds []BabysitRound
-		merged bool
+		pr       int64
+		rounds   []BabysitRound
+		merged   bool
+		handoffs string
 	}
 	var all []kept
 	for rows.Next() {
 		var k kept
 		var raw string
-		if err := rows.Scan(&k.pr, &raw, &k.merged); err != nil {
+		if err := rows.Scan(&k.pr, &raw, &k.merged, &k.handoffs); err != nil {
 			_ = rows.Close()
 			return nil, err
 		}
@@ -104,6 +110,8 @@ func (s *Service) GetRoundStats(ctx context.Context, actor *Actor, projectRef st
 			out.Merged++
 			out.MergedRounds += len(k.rounds)
 		}
+		h, f, fb := handoffCounts(k.handoffs, since)
+		out.AuthorHandoffs, out.AuthorFixed, out.AuthorFellBack = out.AuthorHandoffs+h, out.AuthorFixed+f, out.AuthorFellBack+fb
 		var inSpan []BabysitRound
 		for _, r := range k.rounds {
 			if !r.At.Before(since) {

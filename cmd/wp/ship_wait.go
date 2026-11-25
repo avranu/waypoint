@@ -37,7 +37,10 @@ type shipNews struct {
 	Outcome string  `json:"outcome"` // findings, pull, ended, waiting, none
 	Text    string  `json:"text"`
 	IDs     []int64 `json:"ids"` // the messages of findings: waitHeldShip acks them once printed
-	Pull    *struct {
+	// Checks: the answer is to a wait for a pull request's checks. A server
+	// without that wait never sets it (WP-1878).
+	Checks bool `json:"checks"`
+	Pull   *struct {
 		Repo   string `json:"repo"`
 		Number int    `json:"number"`
 		URL    string `json:"url"`
@@ -196,4 +199,93 @@ func (c *cli) waitHeldShip(f prOpenFlags, so shipOpts, o *openedPR, raw []byte, 
 	}
 	c.ackShipNews(task, n.IDs)
 	return o, raw, true, nil
+}
+
+// shipChecksOnce asks the server to hold up to hold for the outcome of the
+// pull request's checks on head, taking at most limit.
+func (c *cli) shipChecksOnce(task string, pull int64, head string, hold, limit time.Duration) (*shipNews, error) {
+	c.longPoll = limit
+	defer func() { c.longPoll = 0 }()
+	raw, err := c.call("POST", "/api/v1/sessions/hook/ship-news", map[string]any{
+		"session_id": c.thisSession(), "machine": machineName(), "task": task, "wait": int(hold.Seconds()), "pull_id": pull, "head": head})
+	if err != nil {
+		return nil, err
+	}
+	var n shipNews
+	if err := jsonInto(raw, &n); err != nil {
+		return nil, err
+	}
+	return &n, nil
+}
+
+// canWaitChecks: wp ship waits on the checks of the pull request it opened
+// when it is the agent's ship in a session with Waypoint's hooks, the wait
+// wasn't switched off, Waypoint babysits the pull request (a failure falls
+// to a round otherwise) and nothing else asks the agent's turn (why).
+func (c *cli) canWaitChecks(so shipOpts, o *openedPR, babysat bool, why string) bool {
+	return babysat && why == "" && !*so.noWait && !c.asJSON && c.agentHeader() != "" && c.thisSession() != "" && c.server() != "" && c.token() != ""
+}
+
+// waitShipChecks is wp ship's wait, after it opened the pull request, for the
+// outcome of the head's first checks (WP-1878). done: a failure was printed
+// for the agent to fix (the ship is over, with no marker, as for review
+// findings). Otherwise the ship goes on: the checks passed, something else
+// has the pull request, the wait ended, or the server doesn't know this wait
+// (it answers without Checks, and the ship stops at "opened" as it did).
+func (c *cli) waitShipChecks(task string, pull int64, number int, head string, bound time.Duration) (done bool, err error) {
+	announced := false
+	var news *shipNews
+	var still string
+	err = longPoll(shipChunk, time.Second, time.Now().Add(bound), func(hold time.Duration, probe bool, limit time.Duration) (bool, error) {
+		n, err := c.shipChecksOnce(task, pull, head, hold, limit)
+		if err != nil {
+			var ae *apiError
+			if errors.As(err, &ae) && (ae.status == http.StatusNotFound || ae.status == http.StatusMethodNotAllowed) {
+				return true, nil
+			}
+			return false, err
+		}
+		if !n.Checks {
+			return true, nil
+		}
+		if n.Outcome == "waiting" {
+			still = n.Text
+			if probe {
+				announced = true
+				c.println(fmt.Sprintf("Waiting for PR %d's checks (a failure comes back here for you to fix; you are woken when this command exits).", number))
+			}
+			return false, nil
+		}
+		news = n
+		return true, nil
+	})
+	var lost *pollBoundError
+	switch {
+	case errors.As(err, &lost):
+		if announced {
+			c.println(fmt.Sprintf("Lost touch with Waypoint while waiting for PR %d's checks (%v); Waypoint's babysitting takes any failure from here.", number, lost.cause))
+		}
+		return false, nil
+	case errors.Is(err, errPollBound):
+		if announced {
+			c.println(cmpStr(still, fmt.Sprintf("PR %d's checks are still running.", number)) + " Stopped waiting here; Waypoint's babysitting takes any failure from here.")
+		}
+		return false, nil
+	case err != nil:
+		if announced {
+			c.println(fmt.Sprintf("Lost touch with Waypoint while waiting for PR %d's checks (%v); Waypoint's babysitting takes any failure from here.", number, err))
+		}
+		return false, nil
+	case news == nil:
+		return false, nil
+	}
+	if news.Outcome == "checks_failed" {
+		if _, err := fmt.Fprintln(c.out, news.Text); err != nil {
+			return true, fmt.Errorf("printing the failed checks: %w", err)
+		}
+		c.ackShipNews(task, news.IDs)
+		return true, nil
+	}
+	c.println(news.Text)
+	return false, nil
 }

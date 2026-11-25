@@ -162,6 +162,10 @@ func TestRoundStatsText(t *testing.T) {
 			t.Errorf("stats lack %q:\n%s", want, got)
 		}
 	}
+	got = (&roundStats{Days: 7, Rounds: 2, PRs: 1, AuthorHandoffs: 3, AuthorFixed: 2, AuthorFellBack: 1}).text()
+	if want := "Failed checks handed to the session that wrote the pull request: 3; it fixed 2 in time, 1 fell back to a round."; !strings.Contains(got, want) {
+		t.Errorf("stats lack %q:\n%s", want, got)
+	}
 	if got := (&roundStats{Days: 7, Rounds: 2, PRs: 1}).text(); !strings.Contains(got, "--replay classifies them") {
 		t.Errorf("unclassified: %s", got)
 	}
