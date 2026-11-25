@@ -1094,10 +1094,12 @@ func (s *Service) assessorPrompt(ctx context.Context, b *Babysit, pr *PullReques
 		"end with two lines, `Question: …` and `Because: …` (why no agent can settle it), in plain words they can answer without reading the pull request, naming any review comment it is about by its ID. "+
 		"Waypoint asks its owner and it waits for their answer. A question with no `Because:` line reaches nobody.\n\n", cmp(pr.BaseRef, "its base"))
 	s.writeIntent(ctx, &p, b, pr)
+	// Parked carries the assessor's own words and Reply a person's (or, for
+	// a rest, check names from the forge): fenced, as writeAllRounds does.
 	if r := lastRound(b); r != nil && r.Reply != "" && !r.RestUntil.IsZero() {
-		fmt.Fprintf(&p, "It rested out of the merge line and its rest is over. %s\n\n", r.Reply)
+		fmt.Fprintf(&p, "It rested out of the merge line and its rest is over:\n<untrusted>\n%s\n</untrusted>\n\n", untrusted(r.Reply))
 	} else if r != nil && r.Reply != "" {
-		fmt.Fprintf(&p, "A person answered the question it was waiting on (%s):\n<untrusted>\n%s\n</untrusted>\n\n", r.Parked, untrusted(r.Reply))
+		fmt.Fprintf(&p, "A person answered the question it was waiting on:\n<untrusted>\nWhy it waited: %s\n\nTheir answer:\n%s\n</untrusted>\n\n", untrusted(r.Parked), untrusted(r.Reply))
 	}
 	writeAllRounds(&p, b)
 	shown := map[int]bool{}
