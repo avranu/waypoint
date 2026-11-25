@@ -25,7 +25,7 @@ var slotWaitNotice = 5 * time.Second
 var slotPoll = 100 * time.Millisecond
 
 var slotCmd = &command{
-	name: "slot", group: "Code and CI", args: "run NAME [-n N] -- CMD… | ls | send | replay",
+	name: "slot", group: "Code and CI", args: "run NAME [-n N] [--all] -- CMD… | ls | send | replay",
 	summary: "run a command once a per-machine slot is free",
 	about: `A per-host semaphore so concurrent test suites take turns. run waits for
 a free slot of NAME, runs CMD holding it and exits with CMD's code. N
@@ -46,6 +46,12 @@ kept (runs.jsonl in the slot directory); a run that has to wait, and again
 one that starts, says on stderr when it expects to finish, from the median
 of the command's recent runs, and says nothing without any (WP-1571).
 
+In the tests slot a go test of a whole heavy package or ./... with no -run,
+in a repository with .waypoint/heavy-tests, runs the tests beside what you
+changed since the base instead, and says so first, with the command that runs
+everything. --all, or WP_TEST_ALL=1, runs it whole. Such a whole run is long
+from its first run. Runs of the two kinds keep separate times (WP-1877).
+
 Waiters are served first come, first served: a run tries a slot only when no
 earlier waiter that may use it is still waiting (WP-1876).
 
@@ -65,7 +71,7 @@ ls shows the bound of each running hold and how many runs of the last 24h had no
 
 func init() {
 	slotCmd.subs = []*command{
-		{name: "run", args: "NAME [-n N] -- CMD…", summary: "wait for a free slot, run CMD, pass its exit code through",
+		{name: "run", args: "NAME [-n N] [--all] -- CMD…", summary: "wait for a free slot, run CMD, pass its exit code through",
 			run: cmdSlotRun},
 		{name: "send", summary: "send the recorded slot holds to the server now",
 			run: cmdSlotSend},
@@ -276,24 +282,6 @@ func slotHeld(name string) bool {
 	return false
 }
 
-// runInSlotThen runs argv holding a slot, with its output going to out and
-// errw, and returns its exit code. It calls started (when not nil) once the
-// slot is held, just before the command starts, and runs the command with
-// envf(env) when envf isn't nil.
-func (c *cli) runInSlotThen(name string, n int, argv []string, out, errw io.Writer, started func(), envf func([]string) []string) (int, error) {
-	own := !slotHeld(name)
-	cmd := ""
-	if own {
-		cmd = slotRunKey(os.Args, argv)
-	}
-	return c.runInSlotDo(name, n, slotRunOf(argv), cmd, started, func(ctx context.Context, env []string) (int, error) {
-		if envf != nil {
-			env = envf(env)
-		}
-		return runSlotCmd(ctx, env, argv, os.Stdin, out, errw)
-	})
-}
-
 // runInSlotDo holds a slot of NAME while do runs, and records the hold and
 // (when do exits 0) the run's time under cmd, the key its history is kept by
 // ("" when this process tree already held the slot). started is called once
@@ -393,6 +381,7 @@ func cmdSlotRun(c *cli, args []string) error {
 	before, argv, found := splitDashes(args)
 	fs := c.flags()
 	n := fs.Int("n", 0, "slots to share (default: half the cores)")
+	all := fs.Bool("all", false, "with the tests slot, run a whole-suite go test whole: without it the slot runs the tests beside your changes (WP-1877)")
 	var keep keepEnvFlag
 	fs.Var(&keep, "keep-env", "with the tests slot, pass the credential-named variable `NAME` through (repeatable)")
 	pos, err := c.parse(fs, before)
@@ -422,7 +411,7 @@ func cmdSlotRun(c *cli, args []string) error {
 			return env
 		}
 	}
-	code, err := c.runInSlotThen(pos[0], *n, argv, c.out, c.err, nil, envf)
+	code, err := c.runInSlotWith(pos[0], *n, argv, c.out, c.err, nil, envf, slotOpts{all: *all, who: "wp slot", allCmd: "wp slot run tests --all --"})
 	if err != nil {
 		return err
 	}

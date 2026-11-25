@@ -443,12 +443,17 @@ func (c *cli) runShipCheck(cmd string) error {
 	var buf bytes.Buffer
 	rec := newTestRunRecorder(argv)
 	start := time.Now()
-	code, err := c.runInSlotThen("tests", defaultSlots(), goTestJSON(argv), &buf, &buf, rec.started, func(env []string) []string {
+	var nothing bool
+	code, err := c.runInSlotWith("tests", defaultSlots(), goTestJSON(argv), &buf, &buf, rec.started, func(env []string) []string {
 		env, _ = testEnv(env, nil)
 		return env
-	})
+	}, slotOpts{who: "wp ship", allCmd: "wp testsum --all --", rec: rec, nothing: &nothing})
 	if err != nil {
 		return fmt.Errorf("--check couldn't run %s: %w (nothing shipped)", cmd, err)
+	}
+	if nothing {
+		c.println("Check: " + cmd + " has nothing to run for what changed; not recorded as a pass.")
+		return nil
 	}
 	res, _, _ := parseTestOutput(buf.Bytes(), "auto")
 	if res == nil {

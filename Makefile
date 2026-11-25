@@ -40,6 +40,9 @@ TESTSUM ?= $(if $(SLOT),$(shell wp testsum -h >/dev/null 2>&1 && echo wp testsum
 
 # check and test run wp test, the scoped check (.waypoint/test, WP-ADR161), when this wp has it;
 # check-all and test-all are the whole tree.
+# WP_TEST_ALL=1 keeps the tests slot from narrowing their go test to the diff (WP-1877).
+check-all test-all: export WP_TEST_ALL = 1
+
 WPTEST = wp test -h >/dev/null 2>&1
 
 test: ## tests of what changed against the base (wp test); test-all is the whole tree
