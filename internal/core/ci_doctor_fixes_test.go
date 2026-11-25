@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -15,7 +16,7 @@ type runsForge struct {
 }
 
 func (g *runsForge) ActionRuns(context.Context, *Forge, string, []string, int, int) ([]ActionRun, error) {
-	return g.runs, nil
+	return slices.Clone(g.runs), nil // the reader deletes from what it gets, zeroing the array
 }
 
 // WP-1851: the mains step reads the merge lines' bases, so it runs after the
@@ -23,10 +24,6 @@ func (g *runsForge) ActionRuns(context.Context, *Forge, string, []string, int, i
 func TestCIDoctorMainsFollowLineBases(t *testing.T) {
 	be := newBabysitEnvOn(t, "forgejo")
 	be.runnerOnline()
-	be.s.Forges = &runsForge{actionsForge: &actionsForge{shipForge: be.sg}, runs: []ActionRun{{
-		ID: 1, Index: 1, WorkflowID: "ci.yml", PrettyRef: "release/1.2", Event: "push", Status: "success",
-		CommitSHA: "abc1234", Created: be.clockNow().Add(-time.Hour),
-	}}}
 	pr := be.open()
 	if _, err := be.s.UpdateForge(be.ctx, be.admin, be.f.ID, ForgeInput{Token: ptr("tok")}); err != nil {
 		t.Fatal(err)
@@ -37,12 +34,12 @@ func TestCIDoctorMainsFollowLineBases(t *testing.T) {
 	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE pull_requests SET base_ref = 'release/1.2', armed_at = ?, armed_by = ?, armed_style = 'merge' WHERE id = ?`, be.s.nowMS(), be.admin.User.ID, pr.ID); err != nil {
 		t.Fatal(err)
 	}
-	if sn, err := be.s.ciSnapshot(be.ctx); err == nil {
-		for _, r := range sn.repos {
-			t.Logf("DEBUG repo %s err %v hist %v token %q", r.ref.repo, r.err, r.hist != nil, r.ref.forge.token)
-		}
-		t.Logf("DEBUG repos %d", len(sn.repos))
-	}
+	// The board caches its reads for a fixed-clock test's whole run: step past them.
+	be.setClock(be.clockNow().Add(time.Hour))
+	be.s.Forges = &runsForge{actionsForge: &actionsForge{shipForge: be.sg}, runs: []ActionRun{{
+		ID: 1, Index: 1, WorkflowID: "ci.yml", PrettyRef: "release/1.2", Event: "push", Status: "success",
+		CommitSHA: "abc1234", Created: be.clockNow().Add(-time.Hour),
+	}}}
 	d, err := be.s.CIDoctor(be.ctx, be.admin)
 	if err != nil {
 		t.Fatal(err)
@@ -51,14 +48,14 @@ func TestCIDoctorMainsFollowLineBases(t *testing.T) {
 		t.Fatalf("lines: %+v", d.Lines)
 	}
 	if len(d.Mains) != 1 || d.Mains[0].Branch != "release/1.2" || d.Mains[0].Run != 1 || d.Mains[0].Runs != 1 {
-		t.Fatalf("mains %+v, want the line base release/1.2 with its run; findings %+v", d.Mains, d.Findings)
+		t.Fatalf("mains %+v, want the line base release/1.2 with its run", d.Mains)
 	}
 }
 
 // WP-1851: when the forge can't be read and the last read stands in, the
 // database steps still read as of now, not as of that read.
 func TestCIDoctorStaleSnapshotKeepsNow(t *testing.T) {
-	doctorBudgetsFor(t)
+	restoreDoctorBudgets(t)
 	be := newBabysitEnvOn(t, "forgejo")
 	be.runnerOnline()
 	pr := be.open()
@@ -88,7 +85,7 @@ func TestCIDoctorStaleSnapshotKeepsNow(t *testing.T) {
 // WP-1851: a partial doctor still tells the admins of a silent host, tells
 // none of its own findings, and forgets nothing it told before.
 func TestSweepCIHealthPartialTellsHostsKeepsKeys(t *testing.T) {
-	doctorBudgetsFor(t)
+	restoreDoctorBudgets(t)
 	be, _ := armedBabysit(t)
 	be.report("runner2", 5<<30)
 	be.setClock(be.clockNow().Add(ciHostSilent + time.Hour))

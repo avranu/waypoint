@@ -367,9 +367,9 @@ type CIWorkPR struct {
 // that, with what was read and a line for what wasn't, because the doctor is
 // asked while CI is busy and the forge slow, which is when a failed answer
 // helps least. A variable so the tests can shorten it.
-var ciDoctorBudgets = struct{ Whole, Snapshot, Lines, Jobs, Tests, Mains, Limits, CIWork, Runners time.Duration }{
+var ciDoctorBudgets = struct{ Whole, Snapshot, Lines, Jobs, Tests, Limits, CIWork, Runners time.Duration }{
 	Whole: 50 * time.Second, Snapshot: 20 * time.Second, Lines: 15 * time.Second, Jobs: 5 * time.Second, Tests: 10 * time.Second,
-	Mains: 5 * time.Second, Limits: 10 * time.Second, CIWork: 10 * time.Second, Runners: 10 * time.Second,
+	Limits: 10 * time.Second, CIWork: 10 * time.Second, Runners: 10 * time.Second,
 }
 
 // doctorSteps times the doctor's steps and keeps what each couldn't read.
@@ -381,7 +381,9 @@ type doctorSteps struct {
 
 // step runs fn within budget (and the whole's time), and says in missing what
 // it couldn't read when it ran out of time or failed. fn gets a context that
-// ends with the budget: what it had computed by then stays.
+// ends with the budget: what it had computed by then stays. A step that
+// returns nil after its budget ended still counts as missing, because the
+// steps swallow read errors, so lateness is the only sign a read was cut short.
 func (t *doctorSteps) step(s *Service, ctx context.Context, name, what string, budget time.Duration, fn func(ctx context.Context) error) {
 	sctx, cancel := context.WithTimeout(ctx, budget)
 	start := time.Now()
@@ -500,10 +502,11 @@ func (s *Service) CIDoctor(ctx context.Context, actor *Actor) (*CIDoctor, error)
 		inner.Add(3)
 		go func() { // after the lines: their bases say which branches to show
 			defer inner.Done()
-			t.step(s, ctx, "mains", "the main branches' runs", bud.Mains, func(context.Context) error {
-				doctorMains(d, snap, now, visible)
-				return nil
-			})
+			start := time.Now() // in memory and given no context: no budget can bound it
+			doctorMains(d, snap, now, visible)
+			t.mu.Lock()
+			t.ms["mains"] = time.Since(start).Milliseconds()
+			t.mu.Unlock()
 		}()
 		go func() {
 			defer inner.Done()

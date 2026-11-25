@@ -22,7 +22,7 @@ func (g *slowRuns) ActionRuns(ctx context.Context, f *Forge, repo string, st []s
 	return g.actionsForge.ActionRuns(ctx, f, repo, st, page, limit)
 }
 
-func doctorBudgetsFor(t *testing.T) {
+func restoreDoctorBudgets(t *testing.T) {
 	t.Helper()
 	was := ciDoctorBudgets
 	t.Cleanup(func() { ciDoctorBudgets = was })
@@ -33,7 +33,7 @@ func doctorBudgetsFor(t *testing.T) {
 // couldn't read, and the sweep that notifies admins doesn't take that for
 // "everything cleared".
 func TestCIDoctorSlowForgePartial(t *testing.T) {
-	doctorBudgetsFor(t)
+	restoreDoctorBudgets(t)
 	ciDoctorBudgets.Snapshot = 300 * time.Millisecond
 	be := newBabysitEnvOn(t, "forgejo")
 	be.s.Forges = &slowRuns{actionsForge: &actionsForge{shipForge: be.sg}, delay: 5 * time.Second}
@@ -65,19 +65,36 @@ func TestCIDoctorSlowForgePartial(t *testing.T) {
 }
 
 // WP-1851: a step that runs out of its own time leaves its part out and says
-// which; the others still answer.
+// which; the others still answer: the main branches' runs, which the lines
+// step doesn't feed when it left nothing, are still read.
 func TestCIDoctorStepOutOfTime(t *testing.T) {
-	doctorBudgetsFor(t)
-	be, _ := armedBabysit(t)
+	restoreDoctorBudgets(t)
+	be := newBabysitEnvOn(t, "forgejo")
+	be.runnerOnline()
+	pr := be.open()
+	if _, err := be.s.UpdateForge(be.ctx, be.admin, be.f.ID, ForgeInput{Token: ptr("tok")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := be.s.db.W.ExecContext(be.ctx, `INSERT OR IGNORE INTO project_repos(project_id, forge_id, repo, created_at) VALUES (?, ?, ?, 0)`, be.p.ID, be.f.ID, pr.Repo); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE pull_requests SET armed_at = ?, armed_by = ?, armed_style = 'merge' WHERE id = ?`, be.s.nowMS(), be.admin.User.ID, pr.ID); err != nil {
+		t.Fatal(err)
+	}
+	be.setClock(be.clockNow().Add(time.Hour)) // past the board's cached reads
+	be.s.Forges = &runsForge{actionsForge: &actionsForge{shipForge: be.sg}, runs: []ActionRun{{
+		ID: 1, Index: 1, WorkflowID: "ci.yml", PrettyRef: "main", Event: "push", Status: "success",
+		CommitSHA: "abc1234", Created: be.clockNow().Add(-time.Hour),
+	}}}
 	ciDoctorBudgets.Lines = time.Nanosecond
 	d, err := be.s.CIDoctor(be.ctx, be.admin)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(d.Missing) != 1 || !strings.Contains(d.Missing[0], "the merge lines") {
-		t.Fatalf("missing %q, want the merge lines", d.Missing)
+		t.Fatalf("missing %q, want only the merge lines", d.Missing)
 	}
-	if d.Pool.Capacity < 0 || d.Findings == nil {
-		t.Errorf("the rest wasn't answered: %+v", d)
+	if len(d.Mains) != 1 || d.Mains[0].Branch != "main" || d.Mains[0].Run != 1 {
+		t.Errorf("the other steps stopped answering: mains %+v", d.Mains)
 	}
 }

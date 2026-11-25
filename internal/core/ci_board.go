@@ -331,7 +331,10 @@ func (s *Service) CIBoard(ctx context.Context, actor *Actor) (*CIBoard, error) {
 // it while the others wait. The read goes on in the background when its
 // caller's context ends first (the caller gets that error), so a viewer who
 // leaves or a deadline doesn't throw away what the others wait for, and a
-// slow forge can't hold a caller past its own time (WP-1851).
+// slow forge can't hold a caller past its own time (WP-1851). Callers waiting
+// on a shared read get its error rather than each retrying: a retry per waiter
+// against a failing forge would multiply minute-long reads, and the next
+// caller starts a new read.
 func (s *Service) ciSnapshot(ctx context.Context) (*ciSnapshot, error) {
 	c := &s.ciBoard
 	for {
@@ -543,8 +546,8 @@ func (s *Service) readCIRepo(ctx context.Context, cl ForgeActions, d *ciRepoData
 	d.jobs = map[int64][]ActionJob{}
 	gone := map[int64]bool{}
 	// A job list a run: read side by side (the semaphore bounds them), not
-	// one after the other, so a busy forge's ten active runs cost one
-	// round-trip's wait, not ten (WP-1851).
+	// one after the other, so a busy forge's ten active runs cost two
+	// round-trips' wait (ciReadParallel at a time), not ten (WP-1851).
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	for _, r := range d.active {
