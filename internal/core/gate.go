@@ -152,7 +152,7 @@ func (s *Service) computeGate(ctx context.Context, pr *PullRequest, sev string) 
 		return GateSuccess, fmt.Sprintf("No blocking findings (%d below %s)", below, priority(sev)), open, below, nil
 	case total > 0:
 		return GateSuccess, fmt.Sprintf("All %d finding%s resolved", total, plural(total)), open, below, nil
-	case last == "done" && strings.HasPrefix(lastSummary, signedOffSummary):
+	case last == "done" && strings.HasPrefix(lastSummary, signedOffSummary), last == "skipped" && carriedSignedOff(lastSummary):
 		// The head's sign-off: a review with nothing to say isn't posted (WP-234).
 		return GateSuccess, "Reviewed: no issues found", open, below, nil
 	}
