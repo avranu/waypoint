@@ -264,8 +264,8 @@ func addShipFlags(fs *flag.FlagSet) shipOpts {
 		noBabysit:   fs.Bool("no-babysit", false, "don't babysit it"),
 		notify:      fs.Bool("notify", false, "wake me when it merges (only if work must follow)"),
 		blocking:    fs.Bool("blocking", false, "wake me within minutes (only if other work waits on it)"),
-		noWait:      fs.Bool("no-wait", false, "when the pull request waits on a review round, don't wait for the round's findings: end as before"),
-		waitTimeout: fs.Duration("wait-timeout", shipWaitDefault, "how long to wait on a review round before ending as with --no-wait (at most "+waitMaxText()+"; `DURATION`)"),
+		noWait:      fs.Bool("no-wait", false, "don't wait for the review round's findings or the pull request's first checks: end as before"),
+		waitTimeout: fs.Duration("wait-timeout", shipWaitDefault, "how long to wait on a review round and the first checks before ending as with --no-wait (at most "+waitMaxText()+"; `DURATION`)"),
 		summary:     fs.String("summary", "", "your final reply to the person, shown as the turn ends if the ship goes as expected (no reply turn after it); {task}, {pr} and {url} are filled in (`TEXT`)"),
 	}
 }
@@ -433,6 +433,16 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 	}
 	if noteUrgent {
 		c.println(urgentNote(d.Number))
+	}
+	if task := cmpStr(key, o.key); task != "" && babysat {
+		dirty, _ := localGit("status", "--porcelain", "--untracked-files=no")
+		why := shipNeedsAgent(o, so.before, wrong, putOffPrompt(o.key, o.PutOff), dirty != "")
+		if c.canWaitChecks(so, o, babysat, why) {
+			head, _ := localGit("rev-parse", "HEAD")
+			if done, err := c.waitShipChecks(task, d.ID, d.Number, strings.TrimSpace(head), min(*so.waitTimeout, shipLeft())); err != nil || done {
+				return false, err
+			}
+		}
 	}
 	if (armed || babysat) && c.agentHeader() != "" {
 		dirty, _ := localGit("status", "--porcelain", "--untracked-files=no")

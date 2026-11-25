@@ -84,6 +84,7 @@ type Babysit struct {
 	limitedUntil int64
 	limitTries   int
 	prevStreaks  string
+	handoffs     string
 }
 
 // BabysitRound is one round: the head it was for, what it was given, who
@@ -179,7 +180,7 @@ type BabysitInput struct {
 
 const babysitCols = `b.id, b.pr_id, b.state, b.round, b.max_rounds, b.max_repeats, b.model, b.owner_id, coalesce(o.username, ''), coalesce(nullif(o.display_name, ''), o.username, ''),
 	coalesce(s.username, ''), b.started_agent, b.started_via, coalesce(b.session_id, 0), b.head_sha, b.round_sha, coalesce(b.job_id, 0), b.wait, b.streaks, b.rounds,
-	b.told, coalesce(b.synced_at, 0), b.end_reason, b.created_at, b.updated_at, b.ended_at, b.notify_end, b.blocking, b.fault_reruns, b.flake_rerun, coalesce(b.wait_at, b.updated_at), b.limited_until, b.limited_tries, coalesce(b.prev_streaks, '')`
+	b.told, coalesce(b.synced_at, 0), b.end_reason, b.created_at, b.updated_at, b.ended_at, b.notify_end, b.blocking, b.fault_reruns, b.flake_rerun, coalesce(b.wait_at, b.updated_at), b.limited_until, b.limited_tries, coalesce(b.prev_streaks, ''), b.author_handoffs`
 
 const babysitFrom = ` FROM babysits b LEFT JOIN users o ON o.id = b.owner_id LEFT JOIN users s ON s.id = b.started_by`
 
@@ -190,7 +191,7 @@ func scanBabysit(sc interface{ Scan(...any) error }) (*Babysit, error) {
 	var ended sql.NullInt64
 	if err := sc.Scan(&b.ID, &b.PRID, &b.State, &b.Round, &b.MaxRounds, &b.MaxRepeats, &b.Model, &b.ownerID, &b.Owner.Username, &b.Owner.DisplayName,
 		&b.StartedBy, &b.Agent, &b.Via, &b.sessionID, &b.HeadSHA, &b.RoundSHA, &b.JobID, &b.Wait, &streaks, &rounds,
-		&b.told, &b.syncedAt, &b.EndReason, &created, &updated, &ended, &b.Notify, &b.Blocking, &b.faultReruns, &b.flakeRerun, &waitAt, &b.limitedUntil, &b.limitTries, &b.prevStreaks); err != nil {
+		&b.told, &b.syncedAt, &b.EndReason, &created, &updated, &ended, &b.Notify, &b.Blocking, &b.faultReruns, &b.flakeRerun, &waitAt, &b.limitedUntil, &b.limitTries, &b.prevStreaks, &b.handoffs); err != nil {
 		return nil, err
 	}
 	b.Owner.ID = b.ownerID
@@ -884,6 +885,7 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 	}
 	switch pr.State {
 	case "merged":
+		s.settleHandoffs(ctx, b, pr, handoffCleared)
 		s.flakeProven(ctx, b, pr)
 		at := cmp(short(s.mergedSHA(ctx, pr)), short(pr.HeadSHA))
 		if err := s.endBabysit(ctx, b, pr, BabysitMerged, "merged as "+at); err == nil {
@@ -906,6 +908,7 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 			}
 		}
 		b.HeadSHA = pr.HeadSHA
+		s.settleHandoffs(ctx, b, pr, "")
 		sync = true
 	}
 	if b.JobID != 0 && pr.HeadSHA != "" && !sameSHA(b.RoundSHA, pr.HeadSHA) {
@@ -976,6 +979,7 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 		return
 	}
 	if pr.CIState == CIPassed {
+		s.settleHandoffs(ctx, b, pr, handoffCleared)
 		s.flakeProven(ctx, b, pr)
 		s.faultSpellOver(ctx, b, pr)
 		s.sharedTimeoutOver(ctx, b)
@@ -1069,7 +1073,11 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 			return
 		}
 	}
+	if len(failed) > 0 && !conflict && len(work) == 0 && len(findings) == 0 && s.handToAuthor(ctx, b, pr, failed) {
+		return
+	}
 	if len(failed) > 0 || conflict || len(work) > 0 || len(findings) > 0 {
+		s.settleHandoffs(ctx, b, pr, handoffFellBack)
 		s.babysitRound(ctx, b, pr, failed, conflict, work, findings)
 		return
 	}
@@ -1898,7 +1906,7 @@ func ledgerWhat(e LedgerEntry) string {
 }
 
 // babysitSetCols are the columns setBabysit writes.
-var babysitSetCols = []string{"head_sha", "synced_at", "round", "round_sha", "rounds", "streaks", "job_id", "told", "fault_reruns", "flake_rerun", "limited_until", "prev_streaks"}
+var babysitSetCols = []string{"head_sha", "synced_at", "round", "round_sha", "rounds", "streaks", "job_id", "told", "fault_reruns", "flake_rerun", "limited_until", "prev_streaks", "author_handoffs"}
 
 // setBabysit writes columns of a babysit.
 func (s *Service) setBabysit(ctx context.Context, b *Babysit, set map[string]any) error {

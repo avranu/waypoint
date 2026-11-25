@@ -45,6 +45,11 @@ Waypoint opened (the turn ends there, as with --summary); or why the round
 ended. Run it with run_in_background: true and end your turn: you are woken
 when it exits. --no-wait returns at once as before, and what the review finds
 comes to you later as a message.
+After it opens the pull request, wp ship also waits, within the same limit,
+for the first checks on your commit: a failure is printed with the command
+that reads each failing part, for you to fix, commit and ship again (Waypoint
+sends a round if no new commit comes in 30 minutes); a pass is printed and the
+ship ends as usual. Babysitting takes any failure after you stop waiting.
 --summary is your final reply to the person, written before you know the
 outcome: when the ship goes as expected (the pull request armed or babysat,
 or held for its review, with no notice or warning), Waypoint ends your turn
