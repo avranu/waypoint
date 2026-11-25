@@ -18,7 +18,7 @@ func TestGuardReportText(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &r); err != nil {
 		t.Fatal(err)
 	}
-	out := guardReportText(&r, true)
+	out := guardReportText(&r, true, "chiron")
 	for _, want := range []string{
 		"Quota guard (pat), last 14 days: 1 check, 1 breach.",
 		"Nov 9 11:00 to Nov 10 11:00 UTC: week at 61% (even 44%), resets Nov 14 00:36 UTC",

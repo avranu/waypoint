@@ -71,8 +71,13 @@ type QuotaGuardCheck struct {
 	EarlySpend    []QuotaGuardStart  `json:"early_spend"`
 	Sources       []QuotaGuardSource `json:"sources"`
 	Hours         []QuotaGuardHour   `json:"hours"`
-	Breach        bool               `json:"breach"`
-	Reasons       []string           `json:"reasons"`
+	// Path says which computation made the figures above: "stored" (the
+	// daily check, kept when it ran) or "now" (computed for this request).
+	Path string `json:"path,omitempty"`
+	// Split is cost_usd by source, recomputed when read (QuotaGuardSplit).
+	Split   *QuotaGuardSplit `json:"split,omitempty"`
+	Breach  bool             `json:"breach"`
+	Reasons []string         `json:"reasons"`
 }
 
 // QuotaGuardLimits is what the check held automation to: the loosest of
@@ -97,6 +102,8 @@ type QuotaGuardHour struct {
 	Automation    float64   `json:"automation"`
 	CostUSD       float64   `json:"cost_usd"`
 	AutomationUSD float64   `json:"automation_usd"`
+	// Split is CostUSD by source, recomputed when read.
+	Split []QuotaGuardPart `json:"split,omitempty"`
 }
 
 // QuotaGuardSource is a session or runner job automation spent through.
@@ -158,6 +165,7 @@ func (s *Service) QuotaGuard(ctx context.Context, actor *Actor, q UsageQuery, fr
 			continue
 		}
 		c.ID = id
+		c.Path = GuardPathStored
 		rep.Checks = append(rep.Checks, c)
 	}
 	if err := rows.Err(); err != nil {
@@ -166,6 +174,15 @@ func (s *Service) QuotaGuard(ctx context.Context, actor *Actor, q UsageQuery, fr
 	if fresh {
 		to := s.now().UTC().Truncate(time.Hour).Add(-quotaGuardLag)
 		if rep.Now, err = s.quotaGuardCheck(ctx, uid, to.Add(-quotaGuardEvery), to); err != nil {
+			return nil, err
+		}
+		rep.Now.Path = GuardPathNow
+	}
+	for _, c := range append(append([]*QuotaGuardCheck{}, rep.Checks...), rep.Now) {
+		if c == nil {
+			continue
+		}
+		if err := s.guardSplitInto(ctx, uid, c); err != nil {
 			return nil, err
 		}
 	}
@@ -331,6 +348,10 @@ type guardHour struct {
 	cost, auto float64
 	sources    map[string]float64
 	models     map[string]float64
+	// machines is the cost of CLI sessions by the machine that reported
+	// them ("" is a row that names none); jobs is the runner jobs' cost.
+	machines map[string]float64
+	jobs     float64
 }
 
 // quotaGuardCheck judges [from, to): whole hours.
@@ -636,7 +657,7 @@ func (s *Service) guardSpending(ctx context.Context, uid, first, before, from, t
 	get := func(h int64) *guardHour {
 		g := out[h]
 		if g == nil {
-			g = &guardHour{sources: map[string]float64{}, models: map[string]float64{}}
+			g = &guardHour{sources: map[string]float64{}, models: map[string]float64{}, machines: map[string]float64{}}
 			out[h] = g
 		}
 		return g
@@ -669,6 +690,7 @@ func (s *Service) guardSpending(ctx context.Context, uid, first, before, from, t
 			continue
 		}
 		get(hour).cost += cost
+		get(hour).machines[machine] += cost
 		if hour < from || hour >= to {
 			continue
 		}
@@ -726,6 +748,7 @@ func (s *Service) guardSpending(ctx context.Context, uid, first, before, from, t
 			g := get(h)
 			g.cost += part
 			g.auto += part
+			g.jobs += part
 			g.sources[key] += part
 		}
 	}
