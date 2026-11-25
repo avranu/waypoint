@@ -42,6 +42,12 @@ func (w *whLines) call(ts, id, req, model string, out int64, blocks ...map[strin
 			"cache_creation": map[string]any{"ephemeral_5m_input_tokens": 100, "ephemeral_1h_input_tokens": 100}}}})
 }
 
+// resultErr writes a tool_result that is an error (a failed command).
+func (w *whLines) resultErr(ts, toolID string) {
+	w.raw(map[string]any{"type": "user", "timestamp": ts, "cwd": "/work/proj", "message": map[string]any{"role": "user", "content": []any{
+		map[string]any{"type": "tool_result", "tool_use_id": toolID, "is_error": true, "content": "check failed"}}}})
+}
+
 func bash(id, cmd string) map[string]any {
 	return map[string]any{"type": "tool_use", "id": id, "name": "Bash", "input": map[string]any{"command": cmd}}
 }
@@ -169,8 +175,10 @@ func TestWherePhaseAroundShip(t *testing.T) {
 	w.call("2026-11-24T10:00:01Z", "m1", "r1", "claude-fable-5", 5, bash("b1", "wp ship -h"))
 	w.call("2026-11-24T10:00:02Z", "m2", "r2", "claude-fable-5", 5, bash("b2", "wp ship --review"))
 	w.call("2026-11-24T10:00:03Z", "m3", "r3", "claude-fable-5", 5, bash("b3", "git add -A && wp ship"))
+	w.result("2026-11-24T10:00:03Z", "b3")
 	w.call("2026-11-24T10:00:04Z", "m4", "r4", "claude-fable-5", 5)
 	w.call("2026-11-24T10:00:05Z", "m5", "r5", "claude-fable-5", 5, bash("b5", "wp ship"))
+	w.result("2026-11-24T10:00:05Z", "b5")
 	whWrite(t, filepath.Join(dir, "projects", "p", "s1.jsonl"), w.b.String())
 	var w2 whLines
 	w2.user("2026-11-24T10:00:00Z", "never ships")
@@ -539,16 +547,44 @@ func TestWhereCostliestCommands(t *testing.T) {
 	}
 }
 
+// A ship whose result is an error (failed check, conflict, hook refusal) is
+// not a ship, and neither is one with no result yet; spend after it is still
+// before the first ship (audit 1907.17).
+func TestWherePhaseFailedShipIsNotAShip(t *testing.T) {
+	dir := t.TempDir()
+	var w whLines
+	w.user("2026-11-24T10:00:00Z", "go")
+	w.call("2026-11-24T10:00:01Z", "m1", "r1", "claude-fable-5", 5, bash("b1", "wp ship"))
+	w.resultErr("2026-11-24T10:00:02Z", "b1")
+	w.call("2026-11-24T10:00:03Z", "m2", "r2", "claude-fable-5", 5)
+	w.call("2026-11-24T10:00:04Z", "m3", "r3", "claude-fable-5", 5, bash("b3", "wp ship"))
+	w.result("2026-11-24T10:00:05Z", "b3")
+	w.call("2026-11-24T10:00:06Z", "m4", "r4", "claude-fable-5", 5)
+	w.call("2026-11-24T10:00:07Z", "m5", "r5", "claude-fable-5", 5, bash("b5", "wp ship"))
+	whWrite(t, filepath.Join(dir, "projects", "p", "s1.jsonl"), w.b.String())
+	r, _ := whRun(t, dir, whWin)
+	ph := r.Phase
+	if ph.Shipped != 1 || ph.Ships != 1 {
+		t.Fatalf("phase %+v: one ship (the second); the failed and the unanswered are not", ph)
+	}
+	one := r.Parts.total() / 5
+	if d := ph.Before - 3*one; d < -1e-9 || d > 1e-9 {
+		t.Errorf("before %v, want 3 calls of %v (the failed ship and the call after it count as before)", ph.Before, one)
+	}
+}
+
 func TestWherePhaseFirstShipBeforeWindow(t *testing.T) {
 	dir := t.TempDir()
 	var w whLines
 	w.user("2026-11-24T08:00:00Z", "go")
 	w.call("2026-11-24T09:00:00Z", "m1", "r1", "claude-fable-5", 5, bash("b1", "wp ship"))
+	w.result("2026-11-24T09:00:01Z", "b1")
 	w.call("2026-11-24T10:30:00Z", "m2", "r2", "claude-fable-5", 5)
 	whWrite(t, filepath.Join(dir, "projects", "p", "s1.jsonl"), w.b.String())
 	var w2 whLines
 	w2.user("2026-11-24T10:10:00Z", "go")
 	w2.call("2026-11-24T10:20:00Z", "n1", "q1", "claude-fable-5", 5, bash("b1", "wp ship"))
+	w2.result("2026-11-24T10:20:01Z", "b1")
 	w2.call("2026-11-24T10:40:00Z", "n2", "q2", "claude-fable-5", 5)
 	whWrite(t, filepath.Join(dir, "projects", "p", "s2.jsonl"), w2.b.String())
 	r, _ := whRun(t, dir, "--since", "2026-11-24T10:00:00Z", "--until", "2026-11-24T12:00:00Z")

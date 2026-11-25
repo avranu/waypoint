@@ -157,3 +157,56 @@ func TestQuotaGuardStoredPreResetCheck(t *testing.T) {
 		t.Errorf("points %v resets %+v note %q: figures kept, reset filled, noted", c.Points, c.Resets, c.ResetNote)
 	}
 }
+
+// Readings under pace early in the week, then a confirmed drop to 0 later:
+// the even pace at each earlier hour is the week's, not the reset's, so the
+// automation's hours are not "over" and nothing breaches (audit 1907.2).
+func TestQuotaGuardEvenPaceBeforeLaterReset(t *testing.T) {
+	g := newGuardEnv(t)
+	g.reading(-time.Hour, 20)
+	g.reading(2*time.Hour, 24)
+	g.reading(4*time.Hour, 34)
+	g.reading(8*time.Hour, 0)
+	g.reading(10*time.Hour, 1)
+	g.reading(12*time.Hour, 2)
+	g.reading(13*time.Hour, 3)
+	g.session("auto-1", 2*time.Hour, "Waypoint autopilot: work on WP-1")
+	g.used("auto-1", 2*time.Hour)
+	g.used("auto-1", 3*time.Hour)
+	c := g.check()
+	if len(c.Resets) != 1 {
+		t.Fatalf("resets %+v: the drop to 0 is confirmed", c.Resets)
+	}
+	if c.ByPhase[GuardPhaseOver] != 0 || c.Breach {
+		t.Errorf("by phase %v breach %v %v: under pace before the reset", c.ByPhase, c.Breach, c.Reasons)
+	}
+	if c.Hours[2].Phase != GuardPhaseUnder {
+		t.Errorf("hour 2 phase %q, want under", c.Hours[2].Phase)
+	}
+	if c.Hours[2].Even == nil || math.Abs(*c.Hours[2].Even-31.2) > 0.2 {
+		t.Errorf("hour 2 even %v, want the week's pace near 31.2", valueOf(c.Hours[2].Even))
+	}
+}
+
+// A window wholly before a later reset gets the week's pace too.
+func TestQuotaGuardWindowBeforeLaterReset(t *testing.T) {
+	g := newGuardEnv(t)
+	g.reading(-time.Hour, 20)
+	g.reading(2*time.Hour, 24)
+	g.reading(13*time.Hour, 34)
+	g.reading(26*time.Hour, 0)
+	g.reading(27*time.Hour, 1)
+	g.reading(28*time.Hour, 2)
+	c := g.check()
+	reset := time.UnixMilli(g.reset)
+	start := reset.Add(-quotaWeek)
+	want := 100 * float64(g.from.Add(24*time.Hour).Sub(start)) / float64(quotaWeek)
+	if c.WeekEven != nil && math.Abs(*c.WeekEven-want) > 0.1 {
+		t.Errorf("window even %v, want %.1f", *c.WeekEven, want)
+	}
+	for i, h := range c.Hours {
+		if h.Phase == GuardPhaseOver {
+			t.Fatalf("hour %d over", i)
+		}
+	}
+}

@@ -37,3 +37,17 @@ func TestGuardReportText(t *testing.T) {
 		t.Errorf("an hour that spent nothing is listed:\n%s", out)
 	}
 }
+
+// The machine name goes into the JSON as a JSON string, whatever bytes it has.
+func TestGuardBothJSONMachineName(t *testing.T) {
+	out := guardBothJSON([]byte(`null`), []byte(`{}`), "box\x01\"é ")
+	var v struct {
+		This string `json:"this_machine"`
+	}
+	if err := json.Unmarshal(out, &v); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	if v.This != "box\x01\"é " {
+		t.Errorf("machine %q", v.This)
+	}
+}
