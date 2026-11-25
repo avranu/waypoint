@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"git.jmann.me/claude/waypoint/internal/core/kernel"
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
@@ -1725,7 +1726,7 @@ func (s *Service) reviewIntent(ctx context.Context, prID int64) string {
 			outside = true
 		}
 		// Quoted, so a title can't pass for the goal or risk clause after it.
-		title := quoteTitle(excerpt(oneLine(l.issue.Title), 160))
+		title := quoteTitle(kernel.Excerpt(oneLine(l.issue.Title), 160))
 		if outside {
 			title = outsideTitleInPrompt
 		}
@@ -1735,7 +1736,7 @@ func (s *Service) reviewIntent(ctx context.Context, prID int64) string {
 		case g.Pending:
 			b.WriteString("; not traced to a goal yet")
 		case g.Goal != nil:
-			fmt.Fprintf(&b, "; serves goal %s, %s", quoteTitle(excerpt(oneLine(g.Goal.Title), 160)), GroundingWords(g.Grounding))
+			fmt.Fprintf(&b, "; serves goal %s, %s", quoteTitle(kernel.Excerpt(oneLine(g.Goal.Title), 160)), GroundingWords(g.Grounding))
 		default:
 			b.WriteString("; " + GroundingWords(g.Grounding))
 		}
