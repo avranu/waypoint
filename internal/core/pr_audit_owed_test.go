@@ -3,6 +3,7 @@ package core
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // A head that owes its audit is not settled, and the audit is asked for
@@ -102,6 +103,58 @@ func TestAuditOwedFailsOpen(t *testing.T) {
 			}
 			if got := be.audits(); len(got) != 0 {
 				t.Fatalf("audits made: %v", got)
+			}
+		})
+	}
+}
+
+// A marked-ready front tested on its own branch gets a head from Waypoint's
+// update (the base merged into the audited head). Its full run goes on past
+// frontGrace: when the line recorded the head as the same change (WP-1808's
+// carry) it owes no audit and keeps the front; when the base merge came from
+// a round that resolved conflicts (not carried) the audit is owed (WP-1852).
+func TestFrontWithABaseMergeHeadOwesNoAudit(t *testing.T) {
+	for name, carried := range map[string]bool{"clean base merge": true, "conflicts resolved by a round": false} {
+		t.Run(name, func(t *testing.T) {
+			be := newBabysitEnv(t)
+			be.auditBox()
+			be.auditOn()
+			pr := be.openMine() // audited at its first head
+			first := pr.HeadSHA
+			if got := be.audits(); len(got) != 1 {
+				t.Fatalf("audits at the first head: %v", got)
+			}
+			if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE code_audits SET status = ? WHERE pr_id = ?`, AuditDone, pr.ID); err != nil {
+				t.Fatal(err)
+			}
+			be.pushMine("8888888bbbb") // the update's merge head
+			now := be.clockNow()
+			if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE pull_requests SET state = 'open', wip_auto = 1, ready_at = ?, ready_sha = head_sha, head_at = ? WHERE id = ?`,
+				now.Add(-45*time.Minute).UnixMilli(), now.Add(-40*time.Minute).UnixMilli(), pr.ID); err != nil {
+				t.Fatal(err)
+			}
+			if carried {
+				if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE pull_requests SET carried_sha = head_sha, carried_from_sha = ?, carried_at = ? WHERE id = ?`,
+					first, now.Add(-60*time.Minute).UnixMilli(), pr.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			p := be.pr(7)
+			why := be.s.lineLeft(be.ctx, p) // its full run is going: 40 minutes past the head's move
+			if carried {
+				if why != "" {
+					t.Fatalf("the front gave way (%q) for a head that only merged the base in", why)
+				}
+				if got := be.audits(); len(got) != 1 {
+					t.Fatalf("audits for a carried head: %v", got)
+				}
+				return
+			}
+			if why != notAudited {
+				t.Fatalf("lineLeft = %q, want %q for a head a round's merge made", why, notAudited)
+			}
+			if got := be.audits(); len(got) != 2 || !strings.Contains(got[1], "8888888bbbb") {
+				t.Fatalf("audits: %v, want one for the new head", got)
 			}
 		})
 	}

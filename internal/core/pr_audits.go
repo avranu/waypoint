@@ -124,7 +124,7 @@ func (s *Service) auditOwed(ctx context.Context, pr *PullRequest) (int64, bool) 
 	if p, err := s.projectByID(ctx, s.db.R, pid); err != nil || !p.Settings.AuditPRs || p.Archived {
 		return 0, false
 	}
-	if s.headAudited(ctx, pr) {
+	if s.headAudited(ctx, pr) || s.auditCarried(ctx, pr) {
 		return 0, false
 	}
 	owner := s.babysitOwnerFor(ctx, pr)
@@ -171,16 +171,33 @@ func (s *Service) prAuthorModel(ctx context.Context, pr *PullRequest) string {
 // request's own audit still counts in any state, even when a round reused
 // it: asking again by its key would only find it.
 func (s *Service) headAudited(ctx context.Context, pr *PullRequest) bool {
+	return s.shaAudited(ctx, pr.ID, pr.HeadSHA)
+}
+
+// auditCarried: pr's head only merged the base into an earlier head, cleanly,
+// and that earlier head was audited: the change the audit read is the same
+// (the base's commits were audited on their own pull requests), so the head
+// owes none. The record is WP-1808's carry, made when the head was first seen
+// (carryDecision: two parents, the first the old head, the diff's hash equal),
+// so a base merge a round made to resolve conflicts changes the diff and is
+// not carried: it stays owed. Without a review rule to carry (a project whose
+// bots are off) nothing is recorded and the head stays owed (WP-1852).
+func (s *Service) auditCarried(ctx context.Context, pr *PullRequest) bool {
+	return pr.carriedSHA != "" && sameSHA(pr.carriedSHA, pr.HeadSHA) && pr.carriedFromSHA != "" && s.shaAudited(ctx, pr.ID, pr.carriedFromSHA)
+}
+
+// shaAudited is headAudited for the head sha of pull request prID.
+func (s *Service) shaAudited(ctx context.Context, prID int64, sha string) bool {
 	rows, err := s.db.R.QueryContext(ctx, `SELECT a.ref FROM code_audits a WHERE a.pr_id = ? AND a.purpose = ''
 		AND NOT (a.status IN (?, ?) AND a.request_key NOT LIKE 'pr-audit:%'
-			AND EXISTS (SELECT 1 FROM work_log w WHERE w.kind = 'review' AND w.audit_id = a.id))`, pr.ID, AuditFailed, AuditLimited)
+			AND EXISTS (SELECT 1 FROM work_log w WHERE w.kind = 'review' AND w.audit_id = a.id))`, prID, AuditFailed, AuditLimited)
 	if err != nil {
 		return true // can't tell: better none than a second one
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var ref string
-		if rows.Scan(&ref) == nil && sameSHA(ref, pr.HeadSHA) {
+		if rows.Scan(&ref) == nil && sameSHA(ref, sha) {
 			return true
 		}
 	}
