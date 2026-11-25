@@ -427,7 +427,7 @@ func TestFactsReadFailedEditAndMachineFilter(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := f.Changes
-	if c.Edits != 2 || c.Failed != 1 || c.FilesChanged != 1 || c.TestEdits != 0 || c.LinesAdded.Sum != 1 || f.ModelCalls.Total != 2 {
+	if c.Edits != 1 || c.Failed != 1 || c.FilesChanged != 1 || c.TestEdits != 0 || c.LinesAdded.Sum != 1 || f.ModelCalls.Total != 2 {
 		t.Errorf("changes %+v calls %d", c, f.ModelCalls.Total)
 	}
 	f, err = e.s.SessionFacts(e.ctx, jo, FactsQuery{Session: "s1", Machine: "laptop"})

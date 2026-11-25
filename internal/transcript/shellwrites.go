@@ -659,3 +659,46 @@ func ReadShell(cmd, cwd string, vars map[string]string, mem *ShellScripts, disk 
 	dir := shellCommands(cmd, cwd, 0, vars, mem, &out, disk)
 	return out, dir
 }
+
+// ShellEdit says a Bash command wrote a file that is the work: a redirect,
+// tee, sed -i, formatter, git apply or a script that writes, to a path that
+// is not scratch. Scratch is /tmp, /var/tmp, /dev (and mktemp results, which
+// live there), a path built from a variable or command substitution, and a
+// relative path after a cd the line does not spell out. A file a tool saves
+// with -o is not a write here. The server cannot see the checkout, so unlike
+// the client's trace this does not ask whether a path is inside the session's
+// repository.
+func ShellEdit(cmd, cwd string) bool {
+	cmds, _ := ReadShell(cmd, cwd, map[string]string{}, &ShellScripts{}, false)
+	for i := range cmds {
+		for _, w := range cmds[i].Wrote {
+			if w.Kind == "output" {
+				continue
+			}
+			p := w.Path
+			switch {
+			case p == "":
+				continue
+			case p == "*": // git apply, patch
+				return true
+			case p[0] == '$' || p[0] == '`':
+				continue
+			case !strings.HasPrefix(p, "/"):
+				d := cmds[i].Dir
+				if d == "" {
+					d = cwd
+				}
+				if d == ShellNowhere || !strings.HasPrefix(d, "/") {
+					continue
+				}
+				p = path.Join(d, p)
+			}
+			p = path.Clean(p)
+			if strings.HasPrefix(p, "/tmp/") || strings.HasPrefix(p, "/var/tmp/") || strings.HasPrefix(p, "/dev/") {
+				continue
+			}
+			return true
+		}
+	}
+	return false
+}

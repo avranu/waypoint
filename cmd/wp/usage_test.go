@@ -777,3 +777,46 @@ func TestUsageParseSyntheticIsToolRowsNotCalls(t *testing.T) {
 		t.Fatalf("Bash rows: model-typed %d, script-run (model <synthetic>) %d, tools %+v", typed, script, got.Chunk.Tools)
 	}
 }
+
+func TestUsageParseBashShellEditRows(t *testing.T) {
+	dir := t.TempDir()
+	tr := `{"type":"assistant","timestamp":"2026-10-05T10:00:01.000Z","message":{"id":"m1","model":"claude-opus-5-5","usage":{"input_tokens":1,"output_tokens":2},"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"echo x > /work/app/out.txt"}},{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"ls"}}]}}
+`
+	p := filepath.Join(dir, "projects", "-work-app", "sess1.jsonl")
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(tr), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := parseMain(t, dir, usageFileState{})
+	var bash, shell int64
+	var marked bool
+	for _, r := range got.Chunk.Tools {
+		switch {
+		case r.Kind == "builtin" && r.Tool == "Bash":
+			bash += r.Calls
+		case r.Kind == shellEditKind:
+			marked = true
+			shell += r.Calls
+		}
+	}
+	if bash != 2 || !marked || shell != 1 {
+		t.Fatalf("Bash calls %d, shell_edit row present %v with %d calls; tools %+v", bash, marked, shell, got.Chunk.Tools)
+	}
+}
+
+func TestEditsText(t *testing.T) {
+	for _, c := range []struct {
+		edits, shell, unc int64
+		want              string
+	}{
+		{11, 193, 0, "edits 11, shell edits 193"},
+		{11, 0, 40, "edits 11, shell edits unknown (40 Bash calls not counted)"},
+		{11, 5, 40, "edits 11, shell edits 5+ (40 Bash calls not counted)"},
+	} {
+		if got := editsText(c.edits, c.shell, c.unc); got != c.want {
+			t.Errorf("editsText(%d,%d,%d) = %q, want %q", c.edits, c.shell, c.unc, got, c.want)
+		}
+	}
+}

@@ -542,3 +542,39 @@ func TestFactsScriptRunToolsAreCountedApart(t *testing.T) {
 		t.Errorf("tools %+v changes %+v: want 1 model-typed call and edit, 2 script-run calls of which 1 edit", f.ToolCalls, f.Changes)
 	}
 }
+
+// Failed Edit calls are not edits; Bash calls count as shell edits when the
+// parser saw them write a non-scratch file, and rows stored before the
+// column read unknown, not zero.
+func TestFactsShellEditsAndFailedEdits(t *testing.T) {
+	e := transcriptEnv(t)
+	jo := e.user("jo", false)
+	e.putFile(jo, "s1", "main", 0, fPrompt("a", 1, "human")+
+		fAssistant("m1", 2, 10,
+			fTool("t1", "Edit", fm{"file_path": "/r/a.go"}), fTool("t2", "Edit", fm{"file_path": "/r/b.go"}),
+			fTool("t3", "Bash", fm{"command": "echo x > /r/out.txt"}), fTool("t4", "Bash", fm{"command": "echo x > /tmp/scratch.txt"}),
+			fTool("t5", "Bash", fm{"command": "ls"}))+
+		fResult("t1", 2, false, nil)+fResult("t2", 2, true, nil)+fResult("t3", 2, false, nil)+fResult("t4", 2, false, nil)+fResult("t5", 2, false, nil))
+	e.quiet()
+	if run := e.derive(); run.Derived != 1 || run.Failed != 0 {
+		t.Fatalf("derive: %+v", run)
+	}
+	f, err := e.s.SessionFacts(e.ctx, jo, FactsQuery{Session: "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := f.Changes
+	if c.Edits != 1 || c.Failed != 1 || c.ShellEdits != 1 || c.ShellUnknown != 0 {
+		t.Errorf("changes %+v: want 1 edit, 1 failed, 1 shell edit (not the /tmp one), 0 unknown", c)
+	}
+	if _, err := e.s.db.W.Exec(`UPDATE fact_tool_calls SET shell_write = NULL`); err != nil {
+		t.Fatal(err)
+	}
+	f, err = e.s.SessionFacts(e.ctx, jo, FactsQuery{Session: "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := f.Changes; c.ShellEdits != 0 || c.ShellUnknown != 3 {
+		t.Errorf("old rows: %+v, want 0 shell edits and 3 unknown Bash calls", c)
+	}
+}

@@ -165,23 +165,25 @@ type taskUsageReport struct {
 		Started  time.Time         `json:"started_at"`
 		Features map[string]string `json:"features"`
 	} `json:"runs"`
-	Arms        map[string]string `json:"arms"`
-	RunMinutes  int64             `json:"run_minutes"`
-	ActiveHours int               `json:"active_hours"`
-	Sessions    int               `json:"sessions"`
-	Subagents   int64             `json:"subagents"`
-	ToolCalls   int64             `json:"tool_calls"`
-	ToolErrors  int64             `json:"tool_errors"`
-	Edits       int64             `json:"edits"`
-	PRs         int64             `json:"prs"`
-	Files       int64             `json:"files"`
-	Lines       int64             `json:"lines"`
-	Input       int64             `json:"input"`
-	Output      int64             `json:"output"`
-	CacheWrite  int64             `json:"cache_write"`
-	CacheRead   int64             `json:"cache_read"`
-	CostUSD     float64           `json:"cost_usd"`
-	Used        []struct {
+	Arms           map[string]string `json:"arms"`
+	RunMinutes     int64             `json:"run_minutes"`
+	ActiveHours    int               `json:"active_hours"`
+	Sessions       int               `json:"sessions"`
+	Subagents      int64             `json:"subagents"`
+	ToolCalls      int64             `json:"tool_calls"`
+	ToolErrors     int64             `json:"tool_errors"`
+	Edits          int64             `json:"edits"`
+	ShellEdits     int64             `json:"shell_edits"`
+	ShellUncounted int64             `json:"shell_edits_uncounted"`
+	PRs            int64             `json:"prs"`
+	Files          int64             `json:"files"`
+	Lines          int64             `json:"lines"`
+	Input          int64             `json:"input"`
+	Output         int64             `json:"output"`
+	CacheWrite     int64             `json:"cache_write"`
+	CacheRead      int64             `json:"cache_read"`
+	CostUSD        float64           `json:"cost_usd"`
+	Used           []struct {
 		Kind  string `json:"kind"`
 		Name  string `json:"name"`
 		Calls int64  `json:"calls"`
@@ -218,8 +220,8 @@ func cmdUsageTask(c *cli, args []string) error {
 func taskUsageText(r *taskUsageReport) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s %s (%s)\n", r.Key, r.Title, r.Who)
-	fmt.Fprintf(&b, "$%.2f, %s tokens (%s cache reads), %s tool calls (%s failed), %s edits, %d subagents, %d sessions, %d active hours, %d run minutes.\n",
-		r.CostUSD, commas(r.Input+r.Output+r.CacheWrite), commas(r.CacheRead), commas(r.ToolCalls), commas(r.ToolErrors), commas(r.Edits), r.Subagents, r.Sessions, r.ActiveHours, r.RunMinutes)
+	fmt.Fprintf(&b, "$%.2f, %s tokens (%s cache reads), %s tool calls (%s failed), %s, %d subagents, %d sessions, %d active hours, %d run minutes.\n",
+		r.CostUSD, commas(r.Input+r.Output+r.CacheWrite), commas(r.CacheRead), commas(r.ToolCalls), commas(r.ToolErrors), editsText(r.Edits, r.ShellEdits, r.ShellUncounted), r.Subagents, r.Sessions, r.ActiveHours, r.RunMinutes)
 	if r.PRs > 0 {
 		fmt.Fprintf(&b, "Merged: %d pull requests, %s files, %s lines.\n", r.PRs, commas(r.Files), commas(r.Lines))
 	}
@@ -250,4 +252,17 @@ func sortedPairs(m map[string]string) string {
 		parts = append(parts, k+"="+m[k])
 	}
 	return strings.Join(parts, " ")
+}
+
+// editsText says the edits of the editing tools beside the Bash calls that
+// wrote files. An hour whose client did not count Bash writes leaves the
+// second figure a floor, or unknown when no hour was counted.
+func editsText(edits, shell, uncounted int64) string {
+	switch {
+	case uncounted == 0:
+		return fmt.Sprintf("edits %s, shell edits %s", commas(edits), commas(shell))
+	case shell == 0:
+		return fmt.Sprintf("edits %s, shell edits unknown (%s Bash calls not counted)", commas(edits), commas(uncounted))
+	}
+	return fmt.Sprintf("edits %s, shell edits %s+ (%s Bash calls not counted)", commas(edits), commas(shell), commas(uncounted))
 }

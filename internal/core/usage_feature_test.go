@@ -473,7 +473,7 @@ func TestUsageForTask(t *testing.T) {
 	if got["server"] != "v0.80.0" || got["session_server"] != "v0.79.0" || got["hooks"] != "on" {
 		t.Errorf("features = %v", got)
 	}
-	if o.Input != 500 || o.ToolCalls != 13 || o.ToolErrors != 1 || o.Edits != 4 || o.ActiveHours != 1 || o.Sessions != 1 || o.RunMinutes != 60 {
+	if o.Input != 500 || o.ToolCalls != 13 || o.ToolErrors != 1 || o.Edits != 3 || o.ActiveHours != 1 || o.Sessions != 1 || o.RunMinutes != 60 {
 		t.Errorf("totals = %+v", o)
 	}
 	if o.PRs != 2 || o.Files != 6 || o.Lines != 72 {
@@ -501,5 +501,29 @@ func TestUsageForTask(t *testing.T) {
 	}
 	if o, err := f.s.UsageForTask(f.ctx, sam, UsageQuery{}, i.Key); err != nil || len(o.Arms) != 0 {
 		t.Errorf("a member: arms %v, %v", o, err)
+	}
+}
+
+// Bash calls that wrote files are counted per hour the client marked; the
+// Bash calls of hours it did not mark leave the figure a floor, not zero.
+func TestUsageForTaskShellEdits(t *testing.T) {
+	f := newFeatureEnv(t)
+	i := f.task(-10, "v0.80.0", "v0.79.0", 500)
+	f.ingest(f.me, "tools", "m1", UsageChunk{Tools: []UsageToolRow{
+		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Kind: "builtin", Tool: "Bash", Calls: 20, Errors: 2},
+		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Kind: "shell_edit", Tool: "Bash", Calls: 7, Errors: 1},
+		{Hour: f.hour(-9), Session: "s1", Repo: "acme/web", Kind: "builtin", Tool: "Bash", Calls: 5},
+	}})
+	o, err := f.s.UsageForTask(f.ctx, f.me, UsageQuery{}, i.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.ShellEdits != 6 || o.ShellEditsUncounted != 5 {
+		t.Errorf("shell edits %d, uncounted Bash calls %d; want 6 and 5 (the unmarked hour)", o.ShellEdits, o.ShellEditsUncounted)
+	}
+	for _, u := range o.Used {
+		if u.Kind == "shell_edit" {
+			t.Errorf("the marker row is listed as a tool: %+v", u)
+		}
 	}
 }

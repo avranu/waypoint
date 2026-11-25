@@ -35,3 +35,44 @@ func TestSyntheticToolBlocksAreScriptRunToolCallsNotModelCalls(t *testing.T) {
 		t.Errorf("the result and the edit facts still join: %+v", e)
 	}
 }
+
+func TestShellEditTable(t *testing.T) {
+	for _, c := range []struct {
+		cmd, cwd string
+		want     bool
+	}{
+		{"echo x > /r/a.txt", "/r", true},
+		{"echo x > a.txt", "/r", true},
+		{"cat > /r/a.go <<'EOF'\nx\nEOF", "/r", true},
+		{"sed -i s/a/b/ main.go", "/r", true},
+		{"printf x | tee /r/a.txt", "/r", true},
+		{"echo x > /tmp/a.txt", "/r", false},
+		{"echo x > /var/tmp/a.txt", "/r", false},
+		{"go test ./... > /dev/null 2>&1", "/r", false},
+		{"f=$(mktemp); echo x > $f", "/r", false},
+		{"echo x > /tmp/a.txt && cat /tmp/a.txt", "/r", false},
+		{"ls -la", "/r", false},
+		{"grep -rn foo .", "/r", false},
+		{"git apply fix.patch", "/r", true},
+	} {
+		if got := ShellEdit(c.cmd, c.cwd); got != c.want {
+			t.Errorf("ShellEdit(%q) = %v, want %v", c.cmd, got, c.want)
+		}
+	}
+}
+
+func TestParserMarksBashShellWrites(t *testing.T) {
+	r := parse(t, "main",
+		assistant("m1", 1, m{"output_tokens": 5},
+			toolUse("b1", "Bash", m{"command": "echo x > /r/a.txt"}),
+			toolUse("b2", "Bash", m{"command": "ls"}),
+			toolUse("e1", "Edit", m{"file_path": "/r/a.go"})),
+	)
+	got := map[string]*bool{}
+	for _, c := range r.ToolCalls {
+		got[c.ToolUseID] = c.ShellWrite
+	}
+	if got["b1"] == nil || !*got["b1"] || got["b2"] == nil || *got["b2"] || got["e1"] != nil {
+		t.Errorf("ShellWrite by call: b1 %v b2 %v e1 %v; want true, false, nil", got["b1"], got["b2"], got["e1"])
+	}
+}

@@ -691,7 +691,7 @@ func (s *Service) ledgerPrep(ctx context.Context, sc *usageScope, closed map[int
 	}
 	where, args := sc.where("hour")
 	// #nosec G202 -- where is built from fixed conditions; values are bound
-	trows, err := s.db.R.QueryContext(ctx, `SELECT machine, session, sum(calls) FROM tool_hours WHERE `+where+` GROUP BY machine, session`, args...)
+	trows, err := s.db.R.QueryContext(ctx, `SELECT machine, session, sum(calls) FROM tool_hours WHERE kind != 'shell_edit' AND `+where+` GROUP BY machine, session`, args...)
 	if err != nil {
 		return nil, err
 	}

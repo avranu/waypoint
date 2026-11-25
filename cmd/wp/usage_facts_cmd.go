@@ -184,7 +184,7 @@ func factsText(f *core.SessionFacts) string {
 		p("  %s x%d", d.URL, d.Times)
 	}
 	c := f.Changes
-	p("changes: %d edits (%d failed; %d more run by REPL scripts), %d files; lines added %s, removed %s", c.Edits, c.Failed, c.ScriptEdits, c.FilesChanged,
+	p("changes: %d edits (%d failed; %d more run by REPL scripts), %s, %d files; lines added %s, removed %s", c.Edits, c.Failed, c.ScriptEdits, shellEditsText(c.ShellEdits, c.ShellUnknown), c.FilesChanged,
 		tallyText(c.LinesAdded, nil), tallyText(c.LinesRemoved, nil))
 	p("  test files edited: %d edits of %d test files, lines added %s", c.TestEdits, c.TestFiles, tallyText(c.TestLinesAdd, nil))
 	r := f.Repeated
@@ -200,4 +200,16 @@ func factsText(f *core.SessionFacts) string {
 	p("cache expiry (inferred from timing, not recorded): %d of %d calls wrote the cache after a gap longer than its life; cache written then %s; %d calls cannot be judged",
 		e.Cold, e.Determinable, tallyText(e.ColdWrite, nil), e.Undeterminable)
 	return b.String()
+}
+
+// shellEditsText says the Bash calls that wrote files, beside the edits of
+// the editing tools; unknown for Bash calls stored before it was recorded.
+func shellEditsText(n, unknown int) string {
+	switch {
+	case unknown == 0:
+		return fmt.Sprintf("%d shell edits", n)
+	case n == 0:
+		return fmt.Sprintf("shell edits unknown (%d Bash calls not classified)", unknown)
+	}
+	return fmt.Sprintf("%d+ shell edits (%d Bash calls not classified)", n, unknown)
 }

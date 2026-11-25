@@ -56,6 +56,7 @@ type rec struct {
 	Effort         string `json:"effort"`
 	PerTurnEffort  string `json:"perTurnEffort"`
 	GitBranch      string `json:"gitBranch"`
+	Cwd            string `json:"cwd"`
 	Version        string `json:"version"`
 	IsMeta         bool   `json:"isMeta"`
 	IsCompact      bool   `json:"isCompactSummary"`
@@ -546,6 +547,9 @@ func (p *parser) toolUse(bl *block, r *rec, ts *int64, thread, msgID string, byS
 	case "Bash", "PowerShell":
 		set("command", commandHead(in.Command))
 		t.Background = in.Background
+		if bl.Name == "Bash" {
+			t.ShellWrite = ptr(ShellEdit(in.Command, r.Cwd))
+		}
 	case "Grep", "Glob":
 		set("pattern", clip(in.Pattern, patternRunes))
 	case "WebFetch":
