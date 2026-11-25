@@ -249,16 +249,19 @@ func (c *httpForgeClient) RetryRun(ctx context.Context, f *Forge, repo string, r
 // rerunForgejoJobs re-runs a run's failed and cancelled jobs and says how
 // many it asked to run again.
 func (c *httpForgeClient) rerunForgejoJobs(ctx context.Context, f *Forge, repo string, runID int64) (int, error) {
-	names, err := c.rerunForgejoNamed(ctx, f, repo, runID, "")
+	names, err := c.rerunForgejoNamed(ctx, f, repo, runID, "", nil)
 	return len(names), err
 }
 
 // rerunForgejoNamed is rerunForgejoJobs for the jobs called only (all of
-// them when it is empty, WP-1661) and says which it asked to run again.
-func (c *httpForgeClient) rerunForgejoNamed(ctx context.Context, f *Forge, repo string, runID int64, only string) ([]string, error) {
-	jobs, err := c.ActionJobs(ctx, f, repo, runID)
-	if err != nil {
-		return nil, err
+// them when it is empty, WP-1661) and says which it asked to run again. jobs
+// are the run's, when the caller has just read them; else they are read here.
+func (c *httpForgeClient) rerunForgejoNamed(ctx context.Context, f *Forge, repo string, runID int64, only string, jobs []ActionJob) ([]string, error) {
+	var err error
+	if jobs == nil {
+		if jobs, err = c.ActionJobs(ctx, f, repo, runID); err != nil {
+			return nil, err
+		}
 	}
 	var names []string
 	posted := map[int64]bool{}

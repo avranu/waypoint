@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -34,6 +35,9 @@ func (g *rerunForge) RerunJobs(ctx context.Context, f *Forge, repo, sha, only st
 	g.calls = append(g.calls, [2]string{sha, only})
 	if g.cancel != nil {
 		g.cancel()
+	}
+	if err := ctx.Err(); err != nil { // as a real client would
+		return nil, err
 	}
 	if g.active > 0 {
 		return &RerunResult{Active: g.active}, nil
@@ -421,5 +425,79 @@ func TestRerunJobsForgejoNeedsChain(t *testing.T) {
 	var ie *InvalidError
 	if !errors.As(err, &ie) || !strings.Contains(ie.Msg, "needs another failed job") || len(g.reruns) != 0 {
 		t.Fatalf("gate: %v reruns %v", err, g.reruns)
+	}
+}
+
+// Some jobs went again and the forge then said it can't do the rest: that is
+// a partial re-run, recorded and counted, not a failed command.
+func TestRerunPullRequestPartialUnsupported(t *testing.T) {
+	be := newBabysitEnv(t)
+	pr := be.open()
+	g := &rerunForge{shipForge: be.sg, failed: []string{"backend"}, err: fmt.Errorf("%w: no more of these", ErrUnsupported)}
+	be.s.Forges = g
+	r, err := be.s.RerunPullRequest(be.ctx, be.agent, pr.ID, "")
+	if err != nil || r.Count != 1 || !strings.Contains(r.Partial, "no more of these") {
+		t.Fatalf("partial: %+v %v", r, err)
+	}
+	if be.rerunItem(pr) == nil || be.manualReruns() != 1 {
+		t.Errorf("not recorded: manual_reruns %d", be.manualReruns())
+	}
+}
+
+// A count that is claimed again after another gave it back still gets its own
+// history item.
+func TestRerunPullRequestReusedCountKeepsHistory(t *testing.T) {
+	be := newBabysitEnv(t)
+	pr := be.open()
+	g := &rerunForge{shipForge: be.sg, failed: []string{"backend"}}
+	be.s.Forges = g
+	for i := 0; i < 2; i++ {
+		if r, err := be.s.RerunPullRequest(be.ctx, be.agent, pr.ID, ""); err != nil || r.Count != 1 || r.Unrecorded {
+			t.Fatalf("re-run %d: %+v %v", i, r, err)
+		}
+		// As an overlapping caller that found nothing to re-run would.
+		if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE ci_heads SET manual_reruns = 0`); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var n int
+	if err := be.s.db.R.QueryRowContext(be.ctx, `SELECT COUNT(*) FROM pr_events WHERE pr_id = ? AND kind = 'ci_rerun'`, pr.ID).Scan(&n); err != nil || n != 2 {
+		t.Errorf("history items %d, %v", n, err)
+	}
+}
+
+// The jobs went again and the record failed: the caller is told.
+func TestRerunPullRequestSaysWhenUnrecorded(t *testing.T) {
+	be := newBabysitEnv(t)
+	pr := be.open()
+	be.s.Forges = &rerunForge{shipForge: be.sg, failed: []string{"backend"}}
+	if _, err := be.s.db.W.ExecContext(be.ctx, `CREATE TRIGGER no_rerun_history BEFORE INSERT ON pr_events WHEN NEW.kind = 'ci_rerun' BEGIN SELECT RAISE(ABORT, 'no history'); END`); err != nil {
+		t.Fatal(err)
+	}
+	r, err := be.s.RerunPullRequest(be.ctx, be.agent, pr.ID, "")
+	if err != nil || !r.Unrecorded || be.manualReruns() != 1 {
+		t.Fatalf("unrecorded: %+v %v, manual_reruns %d", r, err, be.manualReruns())
+	}
+}
+
+// A commit with exactly the most runs read is read whole; one with more still
+// has its newest re-run.
+func TestRerunJobsForgejoManyRuns(t *testing.T) {
+	for _, extra := range []int64{fullSHARunPages*50 - 1, fullSHARunPages * 50} {
+		g := &runForge{repo: "o/r"}
+		g.run(100000, 5000, "failure", job(1, "e2e", "failure"))
+		for i := int64(0); i < extra; i++ {
+			g.run(100+i, 200+i, "skipped")
+		}
+		_, cl, f := g.checks(t)
+		sha := strings.Repeat("a", 40)
+		runs, err := cl.ActionRunsAt(context.Background(), f, g.repo, sha)
+		if over := extra+1 > fullSHARunPages*50; len(runs) != fullSHARunPages*50 || errors.Is(err, errTooManyRuns) != over || (!over && err != nil) {
+			t.Fatalf("%d runs: read %d, %v", extra+1, len(runs), err)
+		}
+		// The failed run is the newest, so among those read.
+		if res, err := cl.RerunJobs(context.Background(), f, g.repo, sha, ""); err != nil || strings.Join(res.Jobs, ",") != "e2e" {
+			t.Fatalf("%d runs: %+v %v", extra+1, res, err)
+		}
 	}
 }

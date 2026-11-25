@@ -172,3 +172,22 @@ func TestRerunPullRequestJobNeedingAnotherIsInvalid(t *testing.T) {
 		t.Errorf("manual_reruns %d, %v, want the attempt given back", n, err)
 	}
 }
+
+// WP-1851: one part of the doctor running out of time doesn't silence what the
+// others found: a stalled line is still told. With the forge unread, the
+// pool's findings are the only ones held back.
+func TestSweepCIHealthPartialStillTellsProblems(t *testing.T) {
+	restoreDoctorBudgets(t)
+	be, pr := armedBabysit(t)
+	be.setClock(be.clockNow().Add(48 * time.Hour)) // long at the front: stalled
+	ciDoctorBudgets.Tests = time.Nanosecond
+	d, err := be.s.CIDoctor(be.ctx, be.admin)
+	if err != nil || len(d.Missing) == 0 || len(d.Lines) != 1 || !d.Lines[0].Stalled {
+		t.Fatalf("want a partial answer with #%d's line stalled: %v %+v", pr.Number, err, d)
+	}
+	be.s.SweepCIHealth(be.ctx)
+	var n int
+	if err := be.s.db.R.QueryRowContext(be.ctx, `SELECT count(*) FROM notifications WHERE kind = ? AND user_id = ? AND title LIKE '%merge line is stalled%'`, NotifyCI, be.admin.User.ID).Scan(&n); err != nil || n != 1 {
+		t.Errorf("stalled line told %d times, %v", n, err)
+	}
+}

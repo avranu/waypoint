@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -12,7 +13,8 @@ import (
 type ForgeJobRerun interface {
 	// RerunJobs re-runs the failed and cancelled jobs of the run that counts
 	// for each workflow on sha, or only the job called only (any case) when
-	// that is set. An error that is a *RerunNoMatch says no failed job has
+	// that is set. GitHub and GitLab take no name, and re-run what
+	// RetryChecks does there (their failed runs, whole). An error that is a *RerunNoMatch says no failed job has
 	// that name. The caller asks CanRetryChecks first; RerunJobs doesn't.
 	RerunJobs(ctx context.Context, f *Forge, repo, sha, only string) (*RerunResult, error)
 	CanRetryChecks(ctx context.Context, f *Forge) (bool, error)
@@ -55,9 +57,9 @@ func (c *httpForgeClient) RerunJobs(ctx context.Context, f *Forge, repo, sha, on
 	res := &RerunResult{Active: active}
 	var failed []string
 	for _, r := range redo {
-		if only != "" { // the failed names, for a name that matches none
-			jobs, err := c.ActionJobs(ctx, f, repo, r.ID)
-			if err != nil {
+		var jobs []ActionJob // read here for a named job, and picked from as read
+		if only != "" {      // the failed names, for a name that matches none
+			if jobs, err = c.ActionJobs(ctx, f, repo, r.ID); err != nil {
 				return res, err
 			}
 			for _, j := range jobs {
@@ -69,7 +71,7 @@ func (c *httpForgeClient) RerunJobs(ctx context.Context, f *Forge, repo, sha, on
 				continue
 			}
 		}
-		names, err := c.rerunForgejoNamed(ctx, f, repo, r.ID, only)
+		names, err := c.rerunForgejoNamed(ctx, f, repo, r.ID, only, jobs)
 		res.Jobs = append(res.Jobs, names...)
 		if len(names) > 0 {
 			res.RunURL = r.HTMLURL
@@ -99,7 +101,8 @@ func (c *httpForgeClient) RerunJobs(ctx context.Context, f *Forge, repo, sha, on
 // again.
 func (c *httpForgeClient) forgejoRunsToRerun(ctx context.Context, f *Forge, repo, sha string) (redo []ActionRun, active int, err error) {
 	runs, err := c.ActionRunsAt(ctx, f, repo, sha)
-	if err != nil {
+	// Past the pages read, the newest runs are the ones that count.
+	if err != nil && !errors.Is(err, errTooManyRuns) {
 		return nil, 0, err
 	}
 	counting := countingRuns(runs)

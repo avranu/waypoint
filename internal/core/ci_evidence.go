@@ -325,16 +325,21 @@ func (s *Service) keepFailedEvidence(ctx context.Context, f *Forge, repo, sha st
 		return
 	}
 	runs, err := cl.ActionRunsAt(ctx, f, repo, sha)
+	if errors.Is(err, ErrNotFound) {
+		return // GitHub and GitLab: no runs to read this way
+	}
 	if err != nil {
-		s.log.Warn("CI evidence before a re-run: list runs", "repo", repo, "sha", short(sha), "err", err)
-		return
+		s.log.WarnContext(ctx, "CI evidence before a re-run: list runs", "repo", repo, "sha", short(sha), "err", err)
+		if !errors.Is(err, errTooManyRuns) {
+			return
+		}
 	}
 	def := ""
 	defKnown := false
 	for _, run := range runs {
 		jobs, err := cl.ActionJobs(ctx, f, repo, run.ID)
 		if err != nil {
-			s.log.Warn("CI evidence before a re-run: list jobs", "repo", repo, "run", run.Index, "err", err)
+			s.log.WarnContext(ctx, "CI evidence before a re-run: list jobs", "repo", repo, "run", run.Index, "err", err)
 			continue
 		}
 		for _, j := range jobs {

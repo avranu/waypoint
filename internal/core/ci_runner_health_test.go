@@ -419,7 +419,10 @@ func TestFaultHostsWithOneReader(t *testing.T) {
 		var n int
 		return be.s.db.R.QueryRowContext(ctx, `SELECT 1`).Scan(&n) == nil
 	}
-	got := be.s.timeLimitFindings(ctx, be.clockNow(), show)
+	got, err := be.s.timeLimitFindings(ctx, be.clockNow(), show)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(got) != 1 || !strings.Contains(got[0].Detail, "On runner2.") {
 		t.Fatalf("time limits: %+v (%v)", got, ctx.Err())
 	}

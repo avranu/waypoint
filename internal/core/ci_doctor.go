@@ -78,6 +78,9 @@ type CIDoctor struct {
 	// UrgentLane: how a fix can cut the line, only where CI is stuck
 	// (WP-544)
 	UrgentLane []CIUrgentLane `json:"urgent_lane,omitempty"`
+	// forgeUnread: the forge's runs and jobs weren't read this time, so
+	// what the pool's numbers say is old or empty.
+	forgeUnread bool
 }
 
 // CIUrgentLane tells how to put a fix for stuck CI on the urgent lane. The
@@ -367,8 +370,8 @@ type CIWorkPR struct {
 // that, with what was read and a line for what wasn't, because the doctor is
 // asked while CI is busy and the forge slow, which is when a failed answer
 // helps least. A variable so the tests can shorten it.
-var ciDoctorBudgets = struct{ Whole, Snapshot, Lines, Jobs, Tests, Limits, CIWork, Runners time.Duration }{
-	Whole: 50 * time.Second, Snapshot: 20 * time.Second, Lines: 15 * time.Second, Jobs: 5 * time.Second, Tests: 10 * time.Second,
+var ciDoctorBudgets = struct{ Whole, Snapshot, Lines, Mains, Jobs, Tests, Limits, CIWork, Runners time.Duration }{
+	Whole: 50 * time.Second, Snapshot: 20 * time.Second, Lines: 15 * time.Second, Mains: 5 * time.Second, Jobs: 5 * time.Second, Tests: 10 * time.Second,
 	Limits: 10 * time.Second, CIWork: 10 * time.Second, Runners: 10 * time.Second,
 }
 
@@ -417,7 +420,7 @@ func (s *Service) CIDoctor(ctx context.Context, actor *Actor) (*CIDoctor, error)
 	began := time.Now()
 
 	var snap *ciSnapshot
-	stale := false
+	stale, unread := false, false
 	{
 		sctx, cancel := context.WithTimeout(ctx, bud.Snapshot)
 		start := time.Now()
@@ -426,6 +429,7 @@ func (s *Service) CIDoctor(ctx context.Context, actor *Actor) (*CIDoctor, error)
 		cancel()
 		t.ms["snapshot"] = time.Since(start).Milliseconds()
 		if err != nil {
+			unread = true
 			why := "failed: " + excerpt(err.Error(), 120)
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 				why = "not read in time"
@@ -452,33 +456,39 @@ func (s *Service) CIDoctor(ctx context.Context, actor *Actor) (*CIDoctor, error)
 	if stale { // the database steps read rows of now, not of the last read
 		now = s.now()
 	}
-	d := &CIDoctor{GeneratedAt: now, Findings: []CIFinding{}, Lines: []CILine{}, Mains: []CIMain{}, Jobs: []CIDoctorJob{}, CIWork: []CIWorkPR{}}
+	d := &CIDoctor{GeneratedAt: now, Findings: []CIFinding{}, Lines: []CILine{}, Mains: []CIMain{}, Jobs: []CIDoctorJob{}, CIWork: []CIWorkPR{}, forgeUnread: unread}
 	d.Pool = doctorPool(b, now)
 
 	var seenMu sync.Mutex
 	seen := map[int64]bool{}
-	visible := func(forgeID int64, repo string) (string, bool) {
-		ids, err := s.projectsOfRepo(ctx, forgeID, repo)
-		if err != nil {
-			return "", false
-		}
-		for _, id := range ids {
-			seenMu.Lock()
-			ok, known := seen[id]
-			seenMu.Unlock()
-			if !known {
-				ok = s.requireProjectRole(ctx, s.db.R, actor, id, RoleViewer) == nil
-				seenMu.Lock()
-				seen[id] = ok
-				seenMu.Unlock()
+	// visibleIn is visible within a step's context: its reads end with the
+	// step's budget.
+	visibleIn := func(c context.Context) func(int64, string) (string, bool) {
+		return func(forgeID int64, repo string) (string, bool) {
+			ids, err := s.projectsOfRepo(c, forgeID, repo)
+			if err != nil {
+				return "", false
 			}
-			if ok {
-				if p, err := s.projectByID(ctx, s.db.R, id); err == nil {
-					return p.Key, true
+			for _, id := range ids {
+				seenMu.Lock()
+				ok, known := seen[id]
+				seenMu.Unlock()
+				if !known {
+					ok = s.requireProjectRole(c, s.db.R, actor, id, RoleViewer) == nil
+					if ok || c.Err() == nil { // a read cut short isn't a "no" for the other steps
+						seenMu.Lock()
+						seen[id] = ok
+						seenMu.Unlock()
+					}
+				}
+				if ok {
+					if p, err := s.projectByID(c, s.db.R, id); err == nil {
+						return p.Key, true
+					}
 				}
 			}
+			return "", false
 		}
-		return "", false
 	}
 	hist := map[string]*ciRepoData{}
 	for _, r := range snap.repos {
@@ -496,23 +506,22 @@ func (s *Service) CIDoctor(ctx context.Context, actor *Actor) (*CIDoctor, error)
 	var runnerFindings []CIFinding
 	side(func() { // lines first: the jobs, the CI work and the mains read them
 		t.step(s, ctx, "lines", "the merge lines", bud.Lines, func(c context.Context) error {
-			return s.doctorLines(c, d, now, visible, hist)
+			return s.doctorLines(c, d, now, visibleIn(c), hist)
 		})
 		var inner sync.WaitGroup
 		inner.Add(3)
 		go func() { // after the lines: their bases say which branches to show
 			defer inner.Done()
-			start := time.Now() // in memory and given no context: no budget can bound it
-			doctorMains(d, snap, now, visible)
-			t.mu.Lock()
-			t.ms["mains"] = time.Since(start).Milliseconds()
-			t.mu.Unlock()
+			t.step(s, ctx, "mains", "the main branches", bud.Mains, func(c context.Context) error {
+				doctorMains(d, snap, now, visibleIn(c))
+				return nil
+			})
 		}()
 		go func() {
 			defer inner.Done()
 			t.step(s, ctx, "jobs", "the unreliable and slow jobs", bud.Jobs, func(c context.Context) error {
 				window := now.Add(-2 * ciHistoryWindow)
-				doctorJobs(d, b, snap, s.selfStoppedJobs(c, window), s.conflictedStacks(c, window), s.commitHeads(c, window), now, visible)
+				doctorJobs(d, b, snap, s.selfStoppedJobs(c, window), s.conflictedStacks(c, window), s.commitHeads(c, window), now, visibleIn(c))
 				return nil
 			})
 			t.step(s, ctx, "tests", "the failing tests of the unreliable jobs", bud.Tests, func(c context.Context) error {
@@ -530,17 +539,18 @@ func (s *Service) CIDoctor(ctx context.Context, actor *Actor) (*CIDoctor, error)
 	})
 	side(func() {
 		t.step(s, ctx, "limits", "the jobs' time limits", bud.Limits, func(c context.Context) error {
-			s.doctorLimits(c, &limits, snap, visible) // WP-922
-			return nil
+			return s.doctorLimits(c, &limits, snap, visibleIn(c)) // WP-922
 		})
 	})
 	side(func() {
 		t.step(s, ctx, "runners", "the hosts' runs", bud.Runners, func(c context.Context) error {
-			runnerFindings = s.doctorRunnerFindings(c, d.Pool, now, func(forgeID int64, repo string) bool {
+			visible := visibleIn(c)
+			var err error
+			runnerFindings, err = s.doctorRunnerFindings(c, d.Pool, now, func(forgeID int64, repo string) bool {
 				_, ok := visible(forgeID, repo)
 				return ok
 			})
-			return nil
+			return err
 		})
 	})
 	wg.Wait()
@@ -550,7 +560,7 @@ func (s *Service) CIDoctor(ctx context.Context, actor *Actor) (*CIDoctor, error)
 	d.Missing = t.missing
 	extra := runnerFindings
 	if len(t.missing) > 0 {
-		extra = append(extra, CIFinding{Level: "warn", Kind: "doctor_partial", Title: "The doctor could not read all of CI in time: " + strings.Join(t.missing, "; "),
+		extra = append(extra, CIFinding{Level: "warn", Kind: "doctor_partial", Title: "The doctor could not read all of CI: " + strings.Join(t.missing, "; "),
 			Detail: "What follows is what was read; what is missing is not reported as fine.", Next: "wp ci doctor, again in a minute"})
 	}
 	doctorFindings(d, b, now, extra...)

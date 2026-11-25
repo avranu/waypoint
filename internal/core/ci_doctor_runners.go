@@ -9,6 +9,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -60,20 +61,20 @@ func (s *Service) ciHostRuns(ctx context.Context, since time.Time) ([]ciHostRun,
 	return out, rows.Err()
 }
 
-func (s *Service) doctorRunnerFindings(ctx context.Context, pool CIDoctorPool, now time.Time, show func(forgeID int64, repo string) bool) []CIFinding {
-	out := s.timeLimitFindings(ctx, now, show)
+// A failed read is returned with what the other reads found, so the answer
+// says it is partial.
+func (s *Service) doctorRunnerFindings(ctx context.Context, pool CIDoctorPool, now time.Time, show func(forgeID int64, repo string) bool) ([]CIFinding, error) {
+	out, limitsErr := s.timeLimitFindings(ctx, now, show)
 	runs, err := s.ciHostRuns(ctx, now.Add(-doctorHostHistory))
 	if err != nil {
-		s.log.WarnContext(ctx, "ci doctor: read the hosts' runs", "err", err)
-		return out
+		return out, errors.Join(limitsErr, fmt.Errorf("read the hosts' runs: %w", err))
 	}
 	hosts, err := s.ciHosts(ctx)
 	if err != nil {
-		s.log.WarnContext(ctx, "ci doctor: read the hosts", "err", err)
-		return out
+		return out, errors.Join(limitsErr, fmt.Errorf("read the hosts: %w", err))
 	}
 	out = append(out, noProgressFindings(runs, hosts, pool, now, show)...)
-	return append(out, slowHostFindings(runs, show)...)
+	return append(out, slowHostFindings(runs, show)...), limitsErr
 }
 
 // noProgressFindings: a host with jobs running where every one of them has
@@ -236,12 +237,11 @@ func slowHostFindings(runs []ciHostRun, show func(int64, string) bool) []CIFindi
 
 // timeLimitFindings are the jobs that ran out of their workflow's
 // timeout-minutes in the last day, from their kept logs.
-func (s *Service) timeLimitFindings(ctx context.Context, now time.Time, show func(int64, string) bool) []CIFinding {
+func (s *Service) timeLimitFindings(ctx context.Context, now time.Time, show func(int64, string) bool) ([]CIFinding, error) {
 	rows, err := s.db.R.QueryContext(ctx, `SELECT h.forge_id, h.repo, c.name, c.url, c.log FROM ci_checks c JOIN ci_heads h ON h.id = c.head_id
 		WHERE c.state = 'failed' AND c.updated_at >= ? AND c.log LIKE '%unable to copy%'`, now.Add(-doctorTimeLimits).UnixMilli())
 	if err != nil {
-		s.log.WarnContext(ctx, "ci doctor: read jobs' time limits", "err", err)
-		return nil
+		return nil, fmt.Errorf("read jobs' time limits: %w", err)
 	}
 	type seen struct {
 		forge      int64
@@ -266,7 +266,11 @@ func (s *Service) timeLimitFindings(ctx context.Context, now time.Time, show fun
 			all = append(all, c)
 		}
 	}
+	err = rows.Err()
 	rows.Close()
+	if err != nil {
+		return nil, fmt.Errorf("read jobs' time limits: %w", err)
+	}
 	// show and nameFaultHost query too, so only once the rows are closed: a
 	// query while they are open holds a second reader, and with every reader
 	// held so, none is left for it.
@@ -308,7 +312,7 @@ func (s *Service) timeLimitFindings(ctx context.Context, now time.Time, show fun
 			Title:  fmt.Sprintf("%s %s hit its time limit %d time%s in the last day", g.repo, g.name, g.n, plural(g.n)),
 			Detail: detail, URL: g.url, key: "job_time_limit:" + k})
 	}
-	return out
+	return out, nil
 }
 
 // ---- telling the admins ----
@@ -344,15 +348,18 @@ func (s *Service) SweepCIHealth(ctx context.Context) {
 		return
 	}
 	// Part of CI wasn't read: findings missing from it haven't cleared, so
-	// nothing is forgotten, and only what doesn't come from the doctor (a
-	// silent host) is told this time (WP-1851).
+	// nothing is forgotten. What was found is still told, but for the pool's
+	// findings when the forge wasn't read (WP-1851).
 	partial := len(d.Missing) > 0
 	if partial {
-		s.log.WarnContext(ctx, "CI health: the doctor was partial; only silent hosts are told this sweep", "missing", d.Missing)
+		s.log.WarnContext(ctx, "CI health: the doctor was partial", "missing", d.Missing)
 	}
 	var due []CIFinding
 	for _, f := range d.Findings {
-		if !partial && f.Level == "problem" && ciNotifyKinds[f.Kind] {
+		if d.forgeUnread && (f.Kind == "pool" || f.Kind == "pool_no_progress") {
+			continue
+		}
+		if f.Level == "problem" && ciNotifyKinds[f.Kind] {
 			due = append(due, f)
 		}
 	}

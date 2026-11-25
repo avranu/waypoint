@@ -545,9 +545,9 @@ func (s *Service) readCIRepo(ctx context.Context, cl ForgeActions, d *ciRepoData
 	d.active = slices.DeleteFunc(d.active, func(r ActionRun) bool { return !ciPending(r.Status) })
 	d.jobs = map[int64][]ActionJob{}
 	gone := map[int64]bool{}
-	// A job list a run: read side by side (the semaphore bounds them), not
-	// one after the other, so a busy forge's ten active runs cost two
-	// round-trips' wait (ciReadParallel at a time), not ten (WP-1851).
+	// Each active run needs its own job list. They are read side by side,
+	// ciReadParallel at a time (the semaphore), not one after the other
+	// (WP-1851).
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	for _, r := range d.active {

@@ -139,7 +139,11 @@ func (s *Server) rerunPull(w http.ResponseWriter, r *http.Request) (any, error) 
 	if err != nil {
 		return nil, err
 	}
-	return s.svc.RerunPullRequest(r.Context(), actorFrom(r), id, strings.TrimSpace(r.URL.Query().Get("job")))
+	job := strings.TrimSpace(r.URL.Query().Get("job"))
+	if job == "" && r.URL.Query().Has("job") { // not "every failed job"
+		return nil, &core.InvalidError{Msg: "job is blank: give a failed job's name, or leave it out to re-run every failed job"}
+	}
+	return s.svc.RerunPullRequest(r.Context(), actorFrom(r), id, job)
 }
 
 func (s *Server) pullReadiness(w http.ResponseWriter, r *http.Request) (any, error) {

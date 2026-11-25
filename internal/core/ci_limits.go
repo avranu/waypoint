@@ -534,14 +534,15 @@ func (s *Service) slowestTests(ctx context.Context, forgeID int64, repo, pkg, ti
 // ---- the doctor and the task ----
 
 // doctorLimits adds a finding for each job or package close to its limit.
-func (s *Service) doctorLimits(ctx context.Context, d *CIDoctor, snap *ciSnapshot, visible func(int64, string) (string, bool)) {
+func (s *Service) doctorLimits(ctx context.Context, d *CIDoctor, snap *ciSnapshot, visible func(int64, string) (string, bool)) error {
+	var unread []error
 	for _, r := range snap.repos {
 		if _, ok := visible(r.ref.forge.ID, r.ref.repo); !ok {
 			continue
 		}
 		ls, err := s.ciLimitsOf(ctx, r.ref.forge, r.ref.repo)
 		if err != nil {
-			s.log.WarnContext(ctx, "ci doctor: limits", "repo", r.ref.repo, "err", err)
+			unread = append(unread, fmt.Errorf("%s: %w", r.ref.repo, err))
 			continue
 		}
 		task := s.ciLimitsTask(ctx, r.ref.forge.ID, r.ref.repo)
@@ -562,6 +563,7 @@ func (s *Service) doctorLimits(ctx context.Context, d *CIDoctor, snap *ciSnapsho
 			d.Findings = append(d.Findings, CIFinding{Level: l.Level, Kind: "near_limit", Repo: r.ref.repo, Title: title, Detail: detail, Next: next})
 		}
 	}
+	return errors.Join(unread...)
 }
 
 // ciLimitTitle is the one task per repo about its CI's time limits.

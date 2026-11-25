@@ -1046,6 +1046,10 @@ steers or clears one in effect.
                                      checks pending|success|failed; ci pending|passed|failed|none
     POST /pulls/{id}/check           read its threads and checks from the forge now, re-evaluate the gate;
                                      returns the detail (editors; what "@waypoint check" does)
+    POST /pulls/{id}/rerun[?job=NAME] re-run the failed and cancelled jobs of the head's runs, without a push
+                                     (whoever may merge it; at most twice per head; job: only that failed job,
+                                     Forgejo only; blank is refused) → {jobs[], runs, run_url, head, count, max,
+                                     partial, unrecorded}
     GET /pulls/{id}/readiness        {ready, reasons[], only_waiting, checking}: open, not a draft, mergeable, every
                                      check passed, the repo's required checks passed, gate green (if on), no
                                      person asked for changes; when armed, also reviews settled and quiet
