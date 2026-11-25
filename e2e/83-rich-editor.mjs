@@ -455,6 +455,38 @@ for (const [width, scheme] of looks([
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
   ok(!overflow, `${tag} no horizontal scroll`);
   await ctx.close();
+
+  // Where storage refuses writes (private mode) the markdown choice still
+  // holds for the next edit (WP-1781).
+  const pctx = await browser.newContext({ viewport: { width, height: 900 }, colorScheme: scheme });
+  await pctx.addInitScript(() => {
+    Storage.prototype.setItem = () => {
+      throw new DOMException("full", "QuotaExceededError");
+    };
+  });
+  const ppage = await login(pctx);
+  ppage.on("pageerror", (e) => fail(`${tag} pageerror: ${e.message}`));
+  const pm = await (
+    await ppage.request.post(base + "/api/v1/issues", {
+      headers: H,
+      data: { project: "RICH", title: `Private ${tag}`, description: "**bold** text" },
+    })
+  ).json();
+  await ppage.goto(`${base}/issue/${pm.key}`);
+  await ppage.locator(".prose-wp strong").click();
+  await ppage.locator('[contenteditable="true"][aria-label="Description"]').waitFor();
+  await ppage.getByRole("button", { name: "Edit as markdown" }).click();
+  await ppage.locator("textarea[aria-label=Description]").waitFor();
+  await ppage.getByRole("textbox", { name: "Description" }).press("Escape");
+  await ppage.waitForFunction(() => !document.querySelector('[aria-label="Description"]'));
+  await ppage.locator(".prose-wp strong").click();
+  await ppage.locator("textarea[aria-label=Description]").waitFor();
+  ok(
+    (await ppage.locator('[contenteditable="true"][aria-label="Description"]').count()) === 0,
+    `${tag} with storage refusing writes, the next edit opens in the markdown editor`,
+  );
+  await ppage.getByRole("textbox", { name: "Description" }).press("Escape");
+  await pctx.close();
 }
 
 if (errors.length) {
