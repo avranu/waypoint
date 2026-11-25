@@ -543,16 +543,12 @@ func TestHeldShipEndedEndsTheTurnWithTheSummary(t *testing.T) {
 	}
 }
 
-// No pull request recorded: the placeholders say so, and there is no
-// trailing paragraph.
-func TestHeldShipEndedWithoutAPullRequest(t *testing.T) {
-	c, _, marked := shipEnded(t, "Shipped {task}: {pr} {url}", nil)
-	if !marked {
-		t.Fatal("no marker was written")
-	}
-	text := c.state.ShipEnds["sess-wait"].Text
-	if !strings.HasPrefix(text, "Shipped this task: (no pull request) (no pull request)\n\nWaypoint's review round") || strings.Contains(text, "after the adversarial review") {
-		t.Errorf("marker %q", text)
+// No pull request recorded (nothing shipped, or Waypoint stopped the ship):
+// the turn goes on, and the news is printed for the agent.
+func TestHeldShipEndedWithoutAPullRequestKeepsTheTurn(t *testing.T) {
+	_, out, marked := shipEnded(t, "Shipped {task}: {pr} {url}", nil)
+	if marked || strings.Contains(out.String(), shipEndsLine) || !strings.Contains(out.String(), "Waypoint's review round") {
+		t.Errorf("marked %v:\n%s", marked, out.String())
 	}
 }
 

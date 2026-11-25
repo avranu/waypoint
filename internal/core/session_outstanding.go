@@ -40,11 +40,13 @@ type SessionOutstanding struct {
 const outstandingKind = "outstanding"
 
 // Where outstanding work is named (the record's ref_type): at the start of a
-// background wait (the PostToolUse hook) or at a Stop while it goes. Each
-// records a finding once, apart: the hook's answer can be lost (it is cut at
-// 3 s, and Claude Code may drop it) and the agent may not act on it, so the
-// Stop still names what is left (WP-1571, audit #1344). A finding already
-// recorded is named again only with a new one, which names the whole list.
+// background wait (the PostToolUse hook, which records it once its answer is
+// written) or at a Stop while it goes. A Stop counts a finding recorded at
+// either as named, so it doesn't spend a turn repeating the wait (WP-1861);
+// a wait counts only its own record, so it still names what a Stop did. A
+// finding already recorded is named again only with a new one, which names
+// the whole list. Claude Code can drop the hook's answer after it is written,
+// and then the Stop stays quiet too: the cost WP-1861 accepts.
 const (
 	OutstandingAtWait = "wait"
 	OutstandingAtStop = "stop"
@@ -60,8 +62,9 @@ func (o *SessionOutstanding) Empty() bool {
 // do in the audit of its review round whose prompt went in (at a Stop, one
 // still running because a subagent it started runs on, roundAtStop), and the
 // decisions on its requests it hasn't been told of. It is not a plain read.
-// Findings are recorded as named, and none are named when all were named at
-// via before; when one is new, all are, so the count is the whole. At the
+// Findings are recorded as named, and none are named when all were named
+// before (at via, or at a Stop anywhere); when one is new, all are, so the
+// count is the whole. At the
 // wait, decisions are given as a bundled Stop would (takeDecisions) but left
 // untold until the hook says it gave them, and only as many as fit the
 // hook's room. A Stop takes them, and gives them only with new findings: one

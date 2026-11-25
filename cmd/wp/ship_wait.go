@@ -200,7 +200,7 @@ func (c *cli) waitHeldShip(f prOpenFlags, so shipOpts, o *openedPR, raw []byte, 
 		return nil, nil, true, fmt.Errorf("printing the review's findings: %w", err)
 	}
 	c.ackShipNews(task, n.IDs)
-	if n.Outcome == "ended" && summary != "" {
+	if n.Outcome == "ended" && summary != "" && n.Pull != nil {
 		dirty, _ := localGit("status", "--porcelain", "--untracked-files=no")
 		putOff := putOffPrompt(o.key, o.PutOff)
 		if putOff != "" {

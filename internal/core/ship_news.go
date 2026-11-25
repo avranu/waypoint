@@ -312,6 +312,9 @@ func (s *Service) shipNewsNow(ctx context.Context, session, task int64) (*ShipNe
 		}
 		return nil, err
 	}
+	// A ship Waypoint stopped (bp.ShipStop) names its pull request in the text
+	// but carries no Pull: the client ends the agent's turn on a Pull, and a
+	// stopped ship is the agent's to read.
 	ended := func(why string) (*ShipNews, error) {
 		p, err := s.branchPull(ctx, bp)
 		if err != nil {
@@ -320,6 +323,9 @@ func (s *Service) shipNewsNow(ctx context.Context, session, task int64) (*ShipNe
 		line := ""
 		if p != nil {
 			line = fmt.Sprintf(" PR %d (%s): %s", p.Number, p.State, p.URL)
+		}
+		if bp.ShipStop != "" {
+			p = nil
 		}
 		return &ShipNews{Outcome: ShipNewsEnded, Pull: p, Text: fmt.Sprintf("Waypoint's review round for this task is over (%s)%s.%s Nothing more is waiting on you here.", in.State, colonIf(why), line)}, nil
 	}

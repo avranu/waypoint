@@ -194,14 +194,9 @@ func heldSummary(text string) string {
 }
 
 // endedSummary is what the person sees when a held ship's wait ends with the
-// round over: the summary, then Waypoint's news (which names the pull request
-// when there is one). pull is the one the server found, nil when none is.
+// round over and a pull request recorded: the summary, then Waypoint's news.
 func endedSummary(text, key string, pull *shipPull, news string) string {
-	pr, url, task := "(no pull request)", "(no pull request)", "this task"
-	if pull != nil {
-		pr, url, task = strconv.Itoa(pull.Number), pull.URL, cmpStr(key, "this task")
-	}
-	s := strings.NewReplacer("{task}", task, "{pr}", pr, "{url}", url).Replace(strings.TrimSpace(text))
+	s := strings.NewReplacer("{task}", cmpStr(key, "this task"), "{pr}", strconv.Itoa(pull.Number), "{url}", pull.URL).Replace(strings.TrimSpace(text))
 	return s + "\n\n" + news
 }
 

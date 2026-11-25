@@ -207,6 +207,20 @@ func TestAwaitShipNewsEndedNamesThePullRequest(t *testing.T) {
 	}
 }
 
+// A ship Waypoint stopped names the pull request in its text but carries no
+// Pull, so the client leaves the turn with the agent.
+func TestAwaitShipNewsStoppedShipCarriesNoPull(t *testing.T) {
+	a, held, round := shipNewsEnv(t)
+	a.openPull(t, round, "open")
+	if _, err := a.s.db.W.Exec(`UPDATE work_log SET before_pr = json_set(before_pr, '$.ship_stop', 'the forge refused the push') WHERE id = ?`, round); err != nil {
+		t.Fatal(err)
+	}
+	got := a.await(held.Key, time.Second)
+	if got.Outcome != ShipNewsEnded || got.Pull != nil || !strings.Contains(got.Text, "the forge refused the push") || !strings.Contains(got.Text, "PR 12 (open)") {
+		t.Fatalf("got %+v", got)
+	}
+}
+
 // A failed round Waypoint will release keeps the wait going for the pull
 // request it opens.
 func TestAwaitShipNewsReleasedRoundKeepsWaiting(t *testing.T) {
