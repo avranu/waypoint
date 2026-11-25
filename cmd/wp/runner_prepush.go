@@ -131,7 +131,9 @@ func (p *runnerProc) prePush(ctx context.Context, run *jobRun, in agentJob, work
 		result["pre_push"] = "passed"
 		return pushable(ctx)
 	}
-	if ctx.Err() == nil && chk.fix != nil {
+	// A check stopped rather than failed (a timeout) reported nothing for
+	// the agent to fix (audit #1748.4).
+	if last.why == "" && ctx.Err() == nil && chk.fix != nil {
 		fmt.Fprintf(run.out, "\nAsking the agent to fix what the check reported\n")
 		tokens, err := chk.fix(ctx, last.output)
 		if err != nil {

@@ -122,14 +122,36 @@ func TestPrePushCheck(t *testing.T) {
 	t.Run("times out", func(t *testing.T) {
 		defer func(l time.Duration) { prePushLimit = l }(prePushLimit)
 		prePushLimit = 300 * time.Millisecond
-		fakeCLI(t, "claude", fakePrePushClaude)
+		rec := fakeCLI(t, "claude", fakePrePushClaude)
 		t.Setenv("FAKE_NOFIX", "1")
 		remote := prePushRepo(t, "sleep 30\n")
 		res, o, log := runPrePushJob(t, remote, nil)
 		if pp, _ := res["pre_push"].(string); o.State != "done" || res["pushed"] != true || !strings.HasPrefix(pp, "failed: timed out after") {
 			t.Fatalf("result = %v\n%s", res, log)
 		}
+		// A timeout is nothing for the agent to fix (audit #1748.4).
+		if _, err := os.Stat(filepath.Join(rec, "fixprompt")); err == nil || strings.Contains(log, "Asking the agent to fix") {
+			t.Errorf("the agent was run to fix a timeout\n%s", log)
+		}
 	})
+	// The script is the agent's copy: only an agent that may run commands
+	// anyway, outside a confined CLI, gets it run (audit #1748.1).
+	for name, mod := range map[string]func(*agentJob){
+		"edit only": func(j *agentJob) { j.Permission = "edit" },
+		"confined":  func(j *agentJob) { j.Confine = true },
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := fakeCLI(t, "claude", fakePrePushClaude)
+			remote := prePushRepo(t, prePushScript)
+			res, o, log := runPrePushJob(t, remote, mod)
+			if o.State == "done" && res["pushed"] != true {
+				t.Fatalf("outcome = %+v\n%s", o, log)
+			}
+			if _, ok := res["pre_push"]; ok || timesRan(t, rec) != 0 {
+				t.Errorf("pre_push = %v, ran %d", res["pre_push"], timesRan(t, rec))
+			}
+		})
+	}
 	t.Run("read only", func(t *testing.T) {
 		rec := fakeCLI(t, "claude", fakePrePushClaude)
 		remote := prePushRepo(t, prePushScript)

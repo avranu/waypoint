@@ -504,8 +504,12 @@ func (p *runnerProc) execAgent(ctx context.Context, run *jobRun, kind string, in
 		hx.join(ctx, result)
 	}
 	if !in.ReadOnly {
+		// Only for an agent that could already run commands, outside a
+		// confined CLI: the script is the agent's copy, so running it for an
+		// edit-only or confined agent would give it the shell it was denied,
+		// with the runner's environment (audit #1748.1).
 		var chk *prePushCheck
-		if in.perm() != "read" && in.Patch == "" {
+		if in.perm() == "edit_run" && !in.Confine && in.Patch == "" {
 			chk = &prePushCheck{env: cmd.Env, fix: p.prePushFix(run, in, path, work, cmd.Env)}
 		}
 		return p.deliver(ctx, run, in, bare, work, env, baseSHA, result, &pushed, chk)
