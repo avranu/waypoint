@@ -357,10 +357,13 @@ func (s *Service) reviewHolds(ctx context.Context, pr *PullRequest, settle bool,
 	}
 	// Fix-up rounds that spread past what it shipped as wait for their
 	// footprint check, which the babysitter asks for (WP-440).
-	if why, err := s.footprintDue(ctx, pr); err != nil {
+	if why, fpWake, err := s.footprintDue(ctx, pr); err != nil {
 		unread("read a pull request's babysit for its footprint check", "its babysit couldn't be read for a footprint check", err)
 	} else if why != "" {
 		no("%s", why)
+		if fpWake != nil && (r.wake == nil || fpWake.Before(*r.wake)) {
+			r.wake = fpWake
+		}
 	}
 	// A person who said to stop an agent's change holds it; a model's flag
 	// only tells them (WP-559, WP-821). An armed merge also starts the check.

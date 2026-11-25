@@ -1,6 +1,8 @@
 package core
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -250,5 +252,163 @@ func TestClassifyRoundOlderHeadIsNotAComeBack(t *testing.T) {
 	}
 	if e := classify("ccc", t0.Add(time.Hour)); e.Class != RoundRepeat || e.Covered != "" {
 		t.Errorf("on a later head: %+v, want repeat", e)
+	}
+}
+
+// coveredByFix refuses what the fix doesn't cover: an audit finding, a fix
+// that is the round's own head, a commitless comment written after the round,
+// and a comment on a file the fix never touched.
+func TestCoveredByFixRefusals(t *testing.T) {
+	round := BabysitRound{N: 5, SHA: "aaa", At: t0.Add(time.Minute), Pushed: true, PushSHA: "bbb",
+		Diff: "--- a/x/x.go\n+++ b/x/x.go\n@@ -1,1 +1,2 @@\n a\n+b\n"}
+	l := func(r BabysitRound) *ledger {
+		return &ledger{in: ledgerInput{Head: "bbb", Rounds: []BabysitRound{r}}}
+	}
+	cm := ledgerItem{ID: "c1", Kind: "comment", Path: "x/x.go", SHA: "aaa", At: t0}
+	if fix, ok := l(round).coveredByFix(cm, 5); !ok || fix != "bbb" {
+		t.Fatalf("the plain case isn't covered: %q %v", fix, ok)
+	}
+	if _, ok := l(round).coveredByFix(ledgerItem{ID: "12.3", Kind: "finding", Path: "x/x.go", SHA: "aaa", At: t0}, 5); ok {
+		t.Error("an audit finding is covered")
+	}
+	own := round
+	own.PushSHA = "aaa" // the fix is the head the round started on
+	if _, ok := l(own).coveredByFix(cm, 5); ok {
+		t.Error("a fix that is the round's own head covers")
+	}
+	late := ledgerItem{ID: "c2", Kind: "comment", Path: "x/x.go", At: t0.Add(time.Hour)}
+	if _, ok := l(round).coveredByFix(late, 5); ok {
+		t.Error("a commitless comment written after the round is covered")
+	}
+	other := cm
+	other.Path = "y/y.go"
+	if _, ok := l(round).coveredByFix(other, 5); ok {
+		t.Error("a fix that never touched the comment's file covers it")
+	}
+	nodiff := round
+	nodiff.Diff = ""
+	if _, ok := l(nodiff).coveredByFix(other, 5); !ok {
+		t.Error("a round whose diff wasn't kept is held to a path it can't show")
+	}
+}
+
+// fileCounter counts the forge's file reads, and can fail them.
+type fileCounter struct {
+	*shipForge
+	n    int
+	fail bool
+}
+
+func (f *fileCounter) FileAt(ctx context.Context, fg *Forge, repo, path, ref string) (string, error) {
+	f.n++
+	if f.fail {
+		return "", errors.New("forge down")
+	}
+	return f.shipForge.FileAt(ctx, fg, repo, path, ref)
+}
+
+const coverBody = "Relayed from coderabbit: on `app/export.go` line 4: the gate reads config before the lock is held so two writers race"
+
+// coverEnv is #7 after round 1 pushed 8888888bbbb: c-old (a bot's) was dealt
+// with in it, and a second comment (by author2) was written about 7777777aaaa.
+func coverEnv(t *testing.T, author2, body2 string) (*bsEnv, *PullRequest, *Babysit, *fileCounter) {
+	t.Helper()
+	be := newBabysitEnv(t)
+	be.sg.threads = []ReviewThread{
+		{ID: "T1", Path: "app/export.go", Line: 4, Comments: []ThreadComment{{ID: "501", Author: "coderabbitai[bot]", Body: coverBody, SHA: "7777777aaaa", At: time.Now()}}},
+		{ID: "T2", Path: "app/export.go", Line: 4, Comments: []ThreadComment{{ID: "502", Author: author2, Body: body2, SHA: "7777777aaaa", At: time.Now()}}},
+	}
+	pr := be.open()
+	be.start(pr)
+	old := be.comment("501")
+	if _, err := be.s.AckReviewComments(be.ctx, be.agent, AckInput{IDs: []string{old.Ref}, Verdict: VerdictRejected, Note: "It builds; the claim doesn't hold."}); err != nil {
+		t.Fatal(err)
+	}
+	be.s.Wait()
+	b := be.babysit()
+	b.Rounds = append(b.Rounds, BabysitRound{N: 1, SHA: "7777777aaaa", At: time.Now(), Comments: []string{old.Ref}, Pushed: true, PushSHA: "8888888bbbb"})
+	head := *pr
+	head.HeadSHA = "8888888bbbb"
+	fc := &fileCounter{shipForge: be.sg}
+	be.s.Forges = fc
+	return be, &head, b, fc
+}
+
+func (be *bsEnv) commentVerdict(ext string) (string, bool) {
+	be.t.Helper()
+	c := be.comment(ext)
+	return c.Verdict, c.Dealt
+}
+
+func TestCloseCoveredClosesABotDuplicateOnly(t *testing.T) {
+	be, pr, b, _ := coverEnv(t, "coderabbitai[bot]", coverBody)
+	be.s.closeCovered(be.ctx, b, pr, be.comments())
+	if v, dealt := be.commentVerdict("502"); v != VerdictFixed || !dealt {
+		t.Fatalf("the bot's duplicate: %s dealt %v", v, dealt)
+	}
+	// A person's comment saying the same is never closed this way.
+	be, pr, b, _ = coverEnv(t, "alice", coverBody)
+	be.s.closeCovered(be.ctx, b, pr, be.comments())
+	if v, dealt := be.commentVerdict("502"); dealt || v == VerdictFixed {
+		t.Fatalf("a person's comment was closed: %s dealt %v", v, dealt)
+	}
+}
+
+func TestCloseCoveredNeedsAPushedRound(t *testing.T) {
+	be, pr, b, _ := coverEnv(t, "coderabbitai[bot]", coverBody)
+	b.Rounds[len(b.Rounds)-1].Pushed = false
+	be.s.closeCovered(be.ctx, b, pr, be.comments())
+	if _, dealt := be.commentVerdict("502"); dealt {
+		t.Fatal("closed with no pushed round")
+	}
+}
+
+// A comment that says something else on the same file is looked at once per
+// head, not every sweep; a failed file read isn't remembered; a failed close
+// is looked at again.
+func TestCloseCoveredLooksOncePerHead(t *testing.T) {
+	other := "Please rename the exported helper so it matches the naming convention elsewhere in the package"
+	be, pr, b, fc := coverEnv(t, "coderabbitai[bot]", other)
+	be.s.closeCovered(be.ctx, b, pr, be.comments())
+	first := fc.n
+	if _, dealt := be.commentVerdict("502"); dealt {
+		t.Fatal("a different point was closed")
+	}
+	if first == 0 {
+		t.Fatal("nothing was read for the first look")
+	}
+	be.s.closeCovered(be.ctx, b, pr, be.comments())
+	if fc.n != first {
+		t.Errorf("read the forge again for the same head: %d then %d", first, fc.n)
+	}
+	// A new head is a new look.
+	pr2 := *pr
+	pr2.HeadSHA = "9999999cccc"
+	be.s.closeCovered(be.ctx, b, &pr2, be.comments())
+	if fc.n == first {
+		t.Error("a new head was not looked at")
+	}
+	// A failing read isn't remembered.
+	be, pr, b, fc = coverEnv(t, "coderabbitai[bot]", other)
+	fc.fail = true
+	be.s.closeCovered(be.ctx, b, pr, be.comments())
+	failed := fc.n
+	be.s.closeCovered(be.ctx, b, pr, be.comments())
+	if failed == 0 || fc.n == failed {
+		t.Errorf("a failed read was remembered: %d then %d", failed, fc.n)
+	}
+}
+
+func TestCloseCoveredRetriesAFailedClose(t *testing.T) {
+	be, pr, b, _ := coverEnv(t, "coderabbitai[bot]", coverBody)
+	bad := *pr
+	bad.ForgeID = 9999 // markComment can't find the forge
+	be.s.closeCovered(be.ctx, b, &bad, be.comments())
+	if _, dealt := be.commentVerdict("502"); dealt {
+		t.Fatal("closed on a forge that isn't there")
+	}
+	be.s.closeCovered(be.ctx, b, pr, be.comments())
+	if v, dealt := be.commentVerdict("502"); v != VerdictFixed || !dealt {
+		t.Errorf("not tried again: %s dealt %v", v, dealt)
 	}
 }

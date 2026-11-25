@@ -281,9 +281,11 @@ type Service struct {
 	shipWaits shipWaits
 	// babysitLocks: one babysit step at a time per pull request (WP-134).
 	babysitLocks keyedLocks
-	// coverLooked: "pr:head:comment" for each open comment closeCovered has
-	// classified on that head, so a sweep doesn't read the forge for it again
-	// (WP-1853). Lost on a restart: one more look each.
+	// coverLooked: by pull request id, a coverMemo: the open comments
+	// closeCovered has classified on a head, with how many comments were dealt
+	// with then, so a sweep doesn't read the forge for them again (WP-1853).
+	// One entry per pull request; a new head or another count replaces it.
+	// Lost on a restart: one more look each.
 	coverLooked sync.Map
 	// shipLocks: one server-side ship at a time per review round (WP-1370).
 	shipLocks keyedLocks

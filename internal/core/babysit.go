@@ -151,7 +151,9 @@ type BabysitRound struct {
 	ParkedOn []string `json:"parked_on,omitempty"`
 	// ParkNamed are the comments and audit findings its park's reason names
 	// (WP-1853), whatever else the round was given: a rest ends once they are
-	// dealt with, not only when the whole round's comments are.
+	// dealt with, not only when the whole round's comments are. Kept only when
+	// the reason names none of the round's failed checks: one that does is
+	// over that check too, and settling a comment doesn't end it.
 	ParkNamed []string `json:"park_named,omitempty"`
 	// ParkedChecks are the failing checks its park was over (WP-914): their
 	// passing on the parked head, with no push, ends the park.
@@ -1001,6 +1003,13 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 		s.parkBabysit(ctx, b, pr, closingWhy(r), r.Question, r.Checks, r.Conflict, r.Comments, r.Findings)
 		return
 	}
+	if r := lastRound(b); r != nil && parkedOn(b, pr.HeadSHA) && resting(r) && len(r.ParkNamed) > 0 {
+		// A rest that named a bot's duplicate of what a fix covers ends with
+		// the duplicate closed, not an hour later (WP-1853).
+		if comments, err := s.reviewComments(ctx, s.db.R, pr.ID); err == nil {
+			s.closeCovered(ctx, b, pr, comments)
+		}
+	}
 	if parkedOn(b, pr.HeadSHA) && !s.settledWhileParked(ctx, b, pr) && !s.restOver(ctx, b, pr) {
 		// Out of the merge line, resting (WP-930) or waiting for a person's
 		// answer; a push, their answer, settling what it asked about, its
@@ -1055,14 +1064,13 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 	// A read that fails can't show the reviews settled: the next sweep
 	// looks again rather than starting a round now (WP-748).
 	// The log says so, so a stall that lasts can be found (audit 674.3).
-	going, why, err := s.reviewGoingErr(ctx, pr)
+	s.cancelStaleFootprints(ctx, pr)
+	going, why, err := s.babysitReviewGoing(ctx, pr)
 	if err != nil {
 		s.log.WarnContext(ctx, "read whether its reviews settled", "pr", pr.ID, "err", err)
 		return
 	}
 	if going {
-		// The footprint check runs beside the reviews, not after them (WP-1853).
-		s.footprintAhead(ctx, b, pr)
 		s.reviewWait(ctx, b, pr, why)
 		return
 	}
@@ -1143,8 +1151,9 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 		late, work = append(late, work...), nil
 	}
 	// What a round would be started for, before late minors ride along: they
-	// have no round of their own, so they don't keep a failed check from its
-	// flake re-run (WP-1853).
+	// have no round of their own, so a failed head with only late minors takes
+	// the runner-fault wait, the shared-timeout wait and the flake re-run below
+	// as one with none (WP-1853).
 	ownWork := len(work)
 	if len(failed) > 0 || len(work) > 0 {
 		work = append(work, late...) // it rides along
@@ -1171,9 +1180,7 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 		// Not the runner: re-run once, in its place in the queue, before a
 		// round; a pass proves a flaky test (WP-392). A job's own time limit
 		// has had its re-runs already.
-		// Not when a round for findings is about to push: the head moves
-		// and CI runs again anyway (WP-1853).
-		if faults == nil && len(findings) == 0 && s.rerunForFlake(ctx, b, pr, failed) {
+		if faults == nil && s.rerunForFlake(ctx, b, pr, failed) {
 			return
 		}
 	}

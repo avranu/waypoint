@@ -374,13 +374,16 @@ func (s *Service) heldComments(ctx context.Context, b *Babysit, pr *PullRequest)
 // the park, so none of them can lift a park over more than its checks:
 // the failing checks passing on the head ends it only when they were its
 // whole subject (parkLifts), and settling the review comments answers it
-// only when they were (parkSubject).
+// only when they were (parkSubject). A rest ends when the comments and
+// findings its reason names are no longer open (ParkNamed), unless that
+// reason also names one of the failed checks.
 //
 // A person isn't asked what they already were (WP-914): when the round named
 // an open request, or another pull request parked over the same check waits
 // on one, it waits on that instead, and its closing is the answer.
 func (s *Service) parkBabysit(ctx context.Context, b *Babysit, pr *PullRequest, why, question string, failed []string, conflict bool, comments, findings []string) {
 	about := parkSubject(failed, conflict, comments, findings)
+	roundFailed := failed
 	failed = parkLifts(failed, conflict, comments, findings)
 	s.leaveQueue(ctx, pr)
 	s.nudgeLine(ctx, pr)
@@ -391,7 +394,10 @@ func (s *Service) parkBabysit(ctx context.Context, b *Babysit, pr *PullRequest, 
 	}
 	r.Parked, r.ParkSHA = why, pr.HeadSHA
 	r.ParkedOn = s.stillOpen(ctx, pr, about)
-	r.ParkNamed = namedIn(why, append(slices.Clone(comments), findings...))
+	r.ParkNamed = nil
+	if !namesAny(why, roundFailed) {
+		r.ParkNamed = namedIn(why, append(slices.Clone(comments), findings...))
+	}
 	r.ParkedChecks = slices.Clone(failed)
 	r.WaitsOn = s.namedRequests(ctx, pr, question+"\n"+r.Answer)
 	if len(r.WaitsOn) == 0 {
@@ -569,7 +575,7 @@ func (s *Service) restOver(ctx context.Context, b *Babysit, pr *PullRequest) boo
 				r.RerunAt = time.Time{}
 				return false
 			}
-			if s.rerunParkedChecks(ctx, pr) {
+			if s.rerunParkedChecks(ctx, b, pr) {
 				return false
 			}
 			r.RerunAt = time.Time{} // the forge re-ran nothing
@@ -619,8 +625,15 @@ func (s *Service) restChange(ctx context.Context, b *Babysit, pr *PullRequest, r
 
 // rerunParkedChecks re-runs what failed on a resting head; false when the
 // forge can't, or re-ran nothing.
-func (s *Service) rerunParkedChecks(ctx context.Context, pr *PullRequest) bool {
+func (s *Service) rerunParkedChecks(ctx context.Context, b *Babysit, pr *PullRequest) bool {
 	if pr.Outside {
+		return false
+	}
+	// The flake gate re-ran this head since the rest began, or found the
+	// forge can't (WP-1853). A re-run from before the rest, the one that
+	// gave the round its failure, is not this one: the rest waited for
+	// something outside the pull request to change.
+	if fr, r := parseFlakeRerun(b.flakeRerun), lastRound(b); sameSHA(fr.SHA, pr.HeadSHA) && r != nil && !msTime(fr.At).Before(r.RestedAt) {
 		return false
 	}
 	f, err := s.forgeByID(ctx, pr.ForgeID)
@@ -707,7 +720,8 @@ func (s *Service) askAboutPark(ctx context.Context, b *Babysit, pr *PullRequest,
 
 // parkSubject are the review comments a park is about: the round's comments,
 // when it had nothing else to do. A park over a failing check is not answered
-// by settling a comment that happens to be open.
+// by settling a comment that happens to be open (and a reason that names a
+// failed check records no ParkNamed, for the same reason).
 func parkSubject(failed []string, conflict bool, comments, findings []string) []string {
 	if len(failed) > 0 || conflict || len(findings) > 0 {
 		return nil
@@ -726,22 +740,29 @@ func parkLifts(failed []string, conflict bool, comments, findings []string) []st
 	return failed
 }
 
-// namedIn are the ids among ids that text names as a word of its own
-// ("c6974 (…) came back": c6974; "12.3." is 12.3), in the order of ids.
+// namedIn are the ids among ids that text names as a word of its own, in any
+// case ("c6974 (…) came back": c6974; "12.3." is 12.3; "c1-c69" names c1 and
+// c69), once each, in the order of ids.
 func namedIn(text string, ids []string) []string {
-	words := strings.FieldsFunc(text, func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '.' && r != '_' && r != '-'
+	words := strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '.' && r != '_'
 	})
 	for i, w := range words {
 		words[i] = strings.TrimRight(w, ".")
 	}
 	var out []string
 	for _, id := range ids {
-		if slices.Contains(words, id) && !slices.Contains(out, id) {
+		if slices.Contains(words, strings.ToLower(id)) && !slices.Contains(out, id) {
 			out = append(out, id)
 		}
 	}
 	return out
+}
+
+// namesAny says whether text names one of the checks, in any case.
+func namesAny(text string, checks []string) bool {
+	text = strings.ToLower(text)
+	return slices.ContainsFunc(checks, func(c string) bool { return c != "" && strings.Contains(text, strings.ToLower(c)) })
 }
 
 // stillOpen are those of refs not dealt with. If they can't be read it is
@@ -902,9 +923,9 @@ func (s *Service) parkCommentsSettled(ctx context.Context, pr *PullRequest, r *B
 
 // parkNamedSettled is the reply when a rest's reason named comments or audit
 // findings and none of them is open any more (fixed, rejected, dismissed,
-// resolved, verified, withdrawn or gone), else "" (WP-1853). #582 rested an
-// hour on "c6974 came back", the comment was rejected with evidence, and it
-// stayed out of the merge line until the hour was up. Only a rest: a park
+// resolved, verified, withdrawn or gone), else "" (WP-1853).  A rest named
+// by a comment that was then rejected with evidence would otherwise stay out
+// of the merge line until its time was up. Only a rest: a park
 // that asked a person waits for the answer or for what parkCommentsSettled
 // reads. A comment or finding that can't be read counts as open.
 func (s *Service) parkNamedSettled(ctx context.Context, pr *PullRequest, r *BabysitRound) string {
@@ -931,7 +952,8 @@ func (s *Service) parkNamedSettled(ctx context.Context, pr *PullRequest, r *Baby
 	if slices.ContainsFunc(r.ParkNamed, func(id string) bool { return open[id] }) {
 		return ""
 	}
-	return "What the rest was over (" + joinAnd(r.ParkNamed) + ") is dealt with: the rest ended."
+	s.log.InfoContext(ctx, "babysit rest ends: what it named is no longer open", "repo", pr.Repo, "number", pr.Number, "named", joinAnd(r.ParkNamed))
+	return "What the rest was over (" + joinAnd(r.ParkNamed) + ") is no longer open: the rest ended."
 }
 
 // parkReread is how often a head parked over failing checks is read from the
@@ -1169,7 +1191,7 @@ func (s *Service) assessorPrompt(ctx context.Context, b *Babysit, pr *PullReques
 		"What the code, its tests and a reviewer can settle is yours to settle: fix it, defer a finding to a follow-up task, reject a comment with a reason, take one side of a conflict. "+
 		"You don't have to settle what you can't or shouldn't, and a change you doubt is worse than none. Two other ways to end:\n"+
 		"- What holds it up is outside the pull request and nothing you can change (a broken CI image, a service that is down, another change that has to land first): "+
-		"end with one line `Wait: …` naming what has to change. Nobody is asked; it rests out of the merge line and is tried again, sooner when that changes.\n"+
+		"end with one line `Wait: …` naming what has to change, and the IDs of the review comments or audit findings it is about, if any. Nobody is asked; it rests out of the merge line and is tried again, sooner when that changes.\n"+
 		"- A person has to settle it (it needs access or authority you don't have, it can't be undone, it would change what the task asks for, or anything else you judge isn't an agent's to decide): "+
 		"end with two lines, `Question: …` and `Because: …` (why no agent can settle it), in plain words they can answer without reading the pull request, naming any review comment it is about by its ID. "+
 		"Waypoint asks its owner and it waits for their answer. A question with no `Because:` line reaches nobody.\n\n", cmp(pr.BaseRef, "its base"))

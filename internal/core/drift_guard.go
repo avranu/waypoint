@@ -386,6 +386,11 @@ type footprintCheck struct {
 	Audit   int64     `json:"audit,omitempty"`
 	Why     string    `json:"why,omitempty"`
 	At      time.Time `json:"at"`
+	// Ahead: asked by footprintAhead, before the pull request was otherwise
+	// ready (WP-1853). Queued: when the babysit first saw its audit still
+	// queued once it was ready; the 15-minute queue wait is counted from there.
+	Ahead  bool      `json:"ahead,omitempty"`
+	Queued time.Time `json:"queued,omitzero"`
 }
 
 const (
@@ -395,6 +400,8 @@ const (
 	// one after the rounds that spread, one more after the rounds that
 	// undid it.
 	footprintMaxChecks = 2
+	// footprintMaxAhead is how many of them footprintAhead may ask for.
+	footprintMaxAhead = 2
 	// A diff grew when it is half again as big and more than this many
 	// lines bigger.
 	footprintMinLines = 30
@@ -465,12 +472,16 @@ func (s *Service) footprintNow(ctx context.Context, b *Babysit, pr *PullRequest)
 	}
 	// Growth is measured from the last check that ran; a skipped one only
 	// marks its head as seen, so the growth since shipping isn't forgotten.
+	// A check asked ahead for a head the pull request has since left doesn't
+	// use up the budget: the late path still asks for the head it ends on.
 	ref, audited, seen := fp.Ship.footprintAt, 0, fp.Ship.SHA
 	for _, c := range fp.Checks {
 		seen = c.SHA
 		if c.Outcome == footprintAudited {
 			ref = c.footprintAt
-			audited++
+			if !c.Ahead || sameSHA(c.SHA, pr.HeadSHA) {
+				audited++
+			}
 		}
 	}
 	if audited >= footprintMaxChecks || sameSHA(seen, pr.HeadSHA) {
@@ -499,24 +510,80 @@ func (s *Service) footprintNow(ctx context.Context, b *Babysit, pr *PullRequest)
 }
 
 // footprintDue: a readiness reason while the check is owed and not asked
-// for yet ("" when none). A babysit that can't be read is an error, not
-// "nothing due".
-func (s *Service) footprintDue(ctx context.Context, pr *PullRequest) (string, error) {
+// for yet, or asked ahead and still queued ("" when none), and when to look
+// again. A babysit that can't be read is an error, not "nothing due".
+func (s *Service) footprintDue(ctx context.Context, pr *PullRequest) (string, *time.Time, error) {
 	b, err := s.activeBabysit(ctx, s.db.R, pr.ID)
 	if err != nil || b == nil {
-		return "", err
+		return "", nil, err
 	}
 	if _, why, due := s.footprintNow(ctx, b, pr); due {
-		return "footprint check due: its fix-up rounds grew it since it shipped (" + why + ")", nil
+		return "footprint check due: its fix-up rounds grew it since it shipped (" + why + ")", nil, nil
 	}
-	return "", nil
+	// A check asked ahead, whose audit no runner has taken: the queue wait
+	// runs from when the babysit first saw it so once the pull request was
+	// otherwise ready (stamped by footprintStep), not from the ask.
+	for _, c := range s.footprintOf(ctx, pr.ID).Checks {
+		if !c.Ahead || c.Outcome != footprintAudited || !sameSHA(c.SHA, pr.HeadSHA) || !s.auditQueued(ctx, c.Audit) {
+			continue
+		}
+		wake := c.Queued.Add(auditQueueWait)
+		if c.Queued.IsZero() {
+			wake = s.now().Add(driftRetry)
+		} else if !s.now().Before(wake) {
+			continue
+		}
+		return fmt.Sprintf("footprint check queued (audit #%d)", c.Audit), &wake, nil
+	}
+	return "", nil, nil
+}
+
+// auditQueued says whether an audit is still queued, no runner having taken it.
+func (s *Service) auditQueued(ctx context.Context, id int64) bool {
+	var n int
+	return s.db.R.QueryRowContext(ctx, `SELECT COUNT(*) FROM code_audits a LEFT JOIN runner_jobs j ON j.id = a.job_id
+		WHERE a.id = ? AND a.status IN ('queued','running') AND coalesce(j.state, 'queued') = 'queued'`, id).Scan(&n) == nil && n > 0
+}
+
+// stampQueuedAhead notes the first time the babysit, with the pull request
+// otherwise ready, sees the check it asked ahead still queued.
+func (s *Service) stampQueuedAhead(ctx context.Context, pr *PullRequest) {
+	fp := s.footprintOf(ctx, pr.ID)
+	changed := false
+	for i, c := range fp.Checks {
+		if c.Ahead && c.Outcome == footprintAudited && c.Queued.IsZero() && sameSHA(c.SHA, pr.HeadSHA) && s.auditQueued(ctx, c.Audit) {
+			fp.Checks[i].Queued, changed = s.now(), true
+		}
+	}
+	if changed {
+		s.saveFootprint(ctx, pr.ID, fp)
+	}
+}
+
+// cancelStaleFootprints stops footprint audits asked for a head the pull
+// request has left: their answer is about code that is gone, and they would
+// hold the merge for it.
+func (s *Service) cancelStaleFootprints(ctx context.Context, pr *PullRequest) {
+	for _, c := range s.footprintOf(ctx, pr.ID).Checks {
+		if c.Outcome != footprintAudited || sameSHA(c.SHA, pr.HeadSHA) {
+			continue
+		}
+		var n int
+		if s.db.R.QueryRowContext(ctx, `SELECT COUNT(*) FROM code_audits WHERE id = ? AND status IN ('queued','running')`, c.Audit).Scan(&n) != nil || n == 0 {
+			continue
+		}
+		if _, err := s.CancelAudit(ctx, SystemActor(), c.Audit); err != nil {
+			s.log.WarnContext(ctx, "cancel a footprint check of an old head", "repo", pr.Repo, "number", pr.Number, "audit", c.Audit, "err", err)
+		}
+	}
 }
 
 // footprintStep asks for the footprint check the head needs, if any, and
 // says whether it did (the babysit then waits for it). A check that can't
 // be asked for is recorded as skipped: it fails open.
 func (s *Service) footprintStep(ctx context.Context, b *Babysit, pr *PullRequest) bool {
-	a, why, asked := s.requestFootprint(ctx, b, pr)
+	s.stampQueuedAhead(ctx, pr)
+	a, why, asked := s.requestFootprint(ctx, b, pr, false)
 	if !asked {
 		return false
 	}
@@ -525,32 +592,42 @@ func (s *Service) footprintStep(ctx context.Context, b *Babysit, pr *PullRequest
 }
 
 // footprintAhead asks for the footprint check as soon as it is due for a head
-// whose checks passed, without taking the step over: it runs beside a review
-// wait, a quiet period or open comments, so it isn't asked only once nothing
-// else holds the pull request and then holds the merge for the whole audit
-// (WP-1853: "footprint check due" held 57 pull requests for 106 hours in a
-// week). The caller says where no round is about to move the head. Asking
-// again for the same head is a no-op (its request key, and the check
-// recorded for the head).
+// whose checks passed, without taking the step over: it runs beside the quiet
+// period or a rest, so it isn't asked only once nothing else holds the pull
+// request and then holds the merge for the whole audit (WP-1853). It isn't
+// asked beside a review that is going: that review's round may move the head.
+// Asking again for the same head is a no-op (its request key, and the check
+// recorded for the head). At most footprintMaxAhead are asked this way, and
+// one that can't be asked for records nothing, so the late path decides.
 func (s *Service) footprintAhead(ctx context.Context, b *Babysit, pr *PullRequest) {
 	if pr.CIState != CIPassed || !sameSHA(pr.ciSHA, pr.HeadSHA) {
 		return // a failed head gets a round, and its push makes a new head
 	}
-	if a, why, asked := s.requestFootprint(ctx, b, pr); asked {
+	n := 0
+	for _, c := range s.footprintOf(ctx, pr.ID).Checks {
+		if c.Ahead {
+			n++
+		}
+	}
+	if n >= footprintMaxAhead {
+		return
+	}
+	if a, why, asked := s.requestFootprint(ctx, b, pr, true); asked {
 		s.log.InfoContext(ctx, "footprint check asked early", "repo", pr.Repo, "number", pr.Number, "audit", a.ID, "why", why)
 	}
 }
 
 // requestFootprint asks for the footprint check the head needs and records
 // it; asked is false when none is due or it could not be asked for (then it
-// is recorded as skipped, so the merge doesn't wait for it).
-func (s *Service) requestFootprint(ctx context.Context, b *Babysit, pr *PullRequest) (a *CodeAudit, why string, asked bool) {
+// is recorded as skipped, so the merge doesn't wait for it; an ahead ask
+// records nothing, and the late path asks again).
+func (s *Service) requestFootprint(ctx context.Context, b *Babysit, pr *PullRequest, ahead bool) (a *CodeAudit, why string, asked bool) {
 	fp, why, due := s.footprintNow(ctx, b, pr)
 	if !due {
 		return nil, "", false
 	}
 	lines, _ := pr.changedLines()
-	check := footprintCheck{footprintAt: footprintAt{SHA: pr.HeadSHA, Paths: pr.files, Lines: lines}, At: s.now()}
+	check := footprintCheck{footprintAt: footprintAt{SHA: pr.HeadSHA, Paths: pr.files, Lines: lines}, At: s.now(), Ahead: ahead}
 	err := errors.New("no member's runner to run it on")
 	if owner := s.babysitOwnerFor(ctx, pr); owner != 0 {
 		// On the default chain, like every audit nobody named models for
@@ -559,6 +636,10 @@ func (s *Service) requestFootprint(ctx context.Context, b *Babysit, pr *PullRequ
 		a, err = s.RequestAudit(ctx, SystemActor(), AuditInput{PRID: pr.ID, Via: "system", owner: owner,
 			requestKey: fmt.Sprintf("pr-footprint:%d:%s", pr.ID, strings.ToLower(pr.HeadSHA)), purpose: AuditFootprint,
 			Instructions: footprintInstructions, prContext: s.footprintContext(ctx, b, pr, fp, why)})
+	}
+	if err != nil && ahead {
+		s.log.Info("footprint check not asked early", "repo", pr.Repo, "number", pr.Number, "err", err)
+		return nil, why, false
 	}
 	if err != nil {
 		check.Outcome, check.Why = footprintSkipped, PublicError(err)
