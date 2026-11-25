@@ -117,7 +117,7 @@ func (s *Service) reviewProgress(ctx context.Context, ask *reviewAsk) string {
 
 	switch r.state {
 	case RoundDone:
-		counts := "its report wasn't counted yet"
+		counts := "no findings were counted for it"
 		if r.found.Valid {
 			counts = fmt.Sprintf("%d found, %d fixed, %d rejected", r.found.Int64, r.fixed.Int64, r.rejected.Int64)
 		}

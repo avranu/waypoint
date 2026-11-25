@@ -218,9 +218,124 @@ func TestReviewRoundAuditFoundNothing(t *testing.T) {
 	if r.state != RoundDone || !strings.Contains(r.body, "found nothing") || r.readState != readDone {
 		t.Fatalf("round = %+v", r)
 	}
+	if got := a.roundCounts(roundID); got != "0/0/0" {
+		t.Errorf("counts = %s, want 0/0/0", got)
+	}
 	var in AutopilotJob
 	if len(a.jobs) != 1 || json.Unmarshal(a.jobs[0].Input, &in) != nil || in.Key != second.Key || in.ReviewOf != "" {
 		t.Fatalf("jobs = %+v", a.jobs)
+	}
+}
+
+// A round whose audit has findings but leaves none to the session records what
+// the audit found and what became of it, unless another review row of the task
+// already holds a count for that audit.
+func TestRoundNothingCountsTheAuditsFindings(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		marks []string
+		held  bool
+		other string
+		want  string
+	}{
+		{name: "marked already", marks: []string{"fixed", "fixed", "rejected"}, want: "3/2/1"},
+		{name: "with the babysitter", held: true, want: "3/0/0"},
+		{name: "counted by an earlier round", held: true, other: "counted", want: "-/-/-"},
+		{name: "an earlier round without a count", held: true, other: "uncounted", want: "3/0/0"},
+		{name: "counted on another task", held: true, other: "another task", want: "3/0/0"},
+		{name: "counted by an own review", held: true, other: "own review", want: "3/0/0"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			a, _ := auditAPEnv(t)
+			first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude", Priority: "urgent"})
+			second := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "Second", Agent: "claude"})
+			a.finish(first.Key)
+			a.linkPR(first.ID, 7, "aaa")
+			var prID, forge int64
+			if err := a.s.db.R.QueryRow(`SELECT id, forge_id FROM pull_requests WHERE number = 7`).Scan(&prID, &forge); err != nil {
+				t.Fatal(err)
+			}
+			res, err := a.s.db.W.Exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, pr_id, pr_number, ref, status, model, models, title, owner_id, created_at)
+				VALUES (?, ?, 'acme/app', 'pr', ?, 7, 'aaa', 'done', 'cursor/grok-4.7-high', '[]', 'acme/app#7', ?, 0)`, a.p.ID, forge, prID, a.admin.User.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			audit, _ := res.LastInsertId()
+			var ids []string
+			for i := range 3 {
+				if _, err := a.s.db.W.Exec(`INSERT INTO code_audit_findings(audit_id, ordinal, title, severity, problem) VALUES (?, ?, 't', 'high', 'p')`, audit, i+1); err != nil {
+					t.Fatal(err)
+				}
+				ids = append(ids, itoa64(audit)+"."+strconv.Itoa(i+1))
+			}
+			for i, state := range c.marks {
+				if _, err := a.s.MarkAuditFindings(a.ctx, a.admin, MarkFindings{IDs: ids[i : i+1], State: state, Note: "checked"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if c.held {
+				given := mustJSON([]BabysitRound{{N: 1, Findings: ids}})
+				if _, err := a.s.db.W.Exec(`INSERT INTO babysits(pr_id, round, owner_id, rounds, created_at, updated_at) VALUES (?, 1, ?, ?, 0, 0)`, prID, a.admin.User.ID, given); err != nil {
+					t.Fatal(err)
+				}
+			}
+			a.stopWith("Shipped as #7.")
+			roundID := a.step().reviewID.Int64
+			a.askedAsRound(audit)
+			if c.other != "" {
+				issue, kind, found := first.ID, "review", any(3)
+				switch c.other {
+				case "uncounted":
+					found = nil
+				case "another task":
+					issue = second.ID
+				case "own review":
+					kind = WorkOwnReview
+				}
+				if _, err := a.s.db.W.Exec(`INSERT INTO work_log(issue_id, kind, state, audit_id, found, created_at, updated_at) VALUES (?, ?, 'done', ?, ?, 0, 0)`, issue, kind, audit, found); err != nil {
+					t.Fatal(err)
+				}
+			}
+			a.tick(61 * time.Second)
+			if ra, _ := a.roundAuditRow(roundID); ra.id != audit {
+				t.Fatalf("round audit = %+v, want %d", ra, audit)
+			}
+			if r := a.round(roundID); r.state != RoundDone || r.readState != readDone || !strings.Contains(r.body, "wasn't asked to review it") {
+				t.Fatalf("round = %+v", r)
+			}
+			if got := a.roundCounts(roundID); got != c.want {
+				t.Errorf("counts = %s, want %s", got, c.want)
+			}
+		})
+	}
+}
+
+// A round that ends because its slow audit went on as the pull request's
+// reviewed nothing: it holds no counts, and /wp review says so.
+func TestRoundHandedOverCountsNothing(t *testing.T) {
+	a, _ := auditAPEnv(t)
+	first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude", Priority: "urgent"})
+	a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "Second", Agent: "claude"})
+	a.finish(first.Key)
+	a.grokPR(first.ID, 7, "aaa")
+	a.stopWith("Shipped as #7.")
+	roundID := a.step().reviewID.Int64
+	a.tick(61 * time.Second)
+	if ra, _ := a.roundAuditRow(roundID); ra.id == 0 {
+		t.Fatal("no audit")
+	}
+	if _, err := a.s.db.W.Exec(`UPDATE work_log SET audit_note = ? WHERE id = ?`, stakesNoClaude, roundID); err != nil {
+		t.Fatal(err)
+	}
+	a.tick(reviewAuditRecheck + time.Second)
+	if r := a.round(roundID); r.state != RoundDone || r.readState != readDone || !strings.Contains(r.body, "was still going") {
+		t.Fatalf("round = %+v", r)
+	}
+	if got := a.roundCounts(roundID); got != "-/-/-" {
+		t.Errorf("counts = %s, want none", got)
+	}
+	if got := a.command("/wp review " + first.Key).Block; !strings.Contains(got, "no findings were counted for it") {
+		t.Errorf("/wp review: %q", got)
 	}
 }
 

@@ -273,7 +273,7 @@ func (s *Service) planHandedOver(ctx context.Context, review *roundRow, auditID 
 	}
 	body := fmt.Sprintf("Audit #%d (%s/audits/%d) was still going, and the change's stakes don't call for a Claude review in its place: it goes on as the pull request's audit, which holds the merge until it ends.",
 		auditID, s.BaseURL(), auditID)
-	return reviewPlan{done: true}, s.endPendingRoundDone(ctx, review, body, now)
+	return reviewPlan{done: true}, s.endPendingRoundDone(ctx, review, body, nil, now)
 }
 
 // handOverPrompt is the prompt of a round before its pull request whose

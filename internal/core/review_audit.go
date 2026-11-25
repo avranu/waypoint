@@ -1226,14 +1226,14 @@ func (s *Service) requestRoundAudit(ctx context.Context, review *roundRow, in Au
 }
 
 // endRoundNothing ends a pending round whose audit left nothing to do: its
-// report says so, counted as nothing found, and the session isn't asked.
+// report says so, it holds the audit's counts, and the session isn't asked.
 func (s *Service) endRoundNothing(ctx context.Context, review *roundRow, a *CodeAudit, now int64) error {
 	body := fmt.Sprintf("%s audited the change (audit #%d: %s/audits/%d) and found nothing to fix.", cmp(a.Model, "Grok"), a.ID, s.BaseURL(), a.ID)
 	if len(a.Findings) > 0 {
 		body = fmt.Sprintf("%s audited the change (audit #%d: %s/audits/%d): %s The session wasn't asked to review it.",
 			cmp(a.Model, "Grok"), a.ID, s.BaseURL(), a.ID, s.nothingLeftFacts(ctx, a))
 	}
-	return s.endPendingRoundDone(ctx, review, body, now)
+	return s.endPendingRoundDone(ctx, review, body, a, now)
 }
 
 // nothingLeftFacts says what became of an audit's findings when none is left
@@ -1288,13 +1288,36 @@ func (s *Service) nothingLeftFacts(ctx context.Context, a *CodeAudit) string {
 }
 
 // endPendingRoundDone ends a pending round as reviewed by the rules, with
-// nothing found and nothing asked of the session, and says so on the task's
-// log; a round no longer pending is left as it is.
-func (s *Service) endPendingRoundDone(ctx context.Context, review *roundRow, body string, now int64) error {
+// nothing asked of the session, and says so on the task's log; a round no
+// longer pending is left as it is. The round holds the counts of a's
+// findings. It holds none when a is nil (nothing was reviewed), or when a
+// has findings that another review row of the task already holds a count
+// for, so they count once (WP-ADR157).
+func (s *Service) endPendingRoundDone(ctx context.Context, review *roundRow, body string, a *CodeAudit, now int64) error {
 	return s.write(ctx, SystemActor(), func(t *tx) error {
-		res, err := t.ExecContext(ctx, `UPDATE work_log SET state = 'done', body = ?, started_at = ?, ended_at = ?, found = 0, fixed = 0, rejected = 0, items = '[]',
+		var found, fixed, rejected sql.NullInt64
+		counted := false
+		if a != nil && len(a.Findings) > 0 {
+			if err := t.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM work_log WHERE issue_id = ? AND kind = 'review' AND audit_id = ? AND id != ? AND found IS NOT NULL)`,
+				review.issueID, a.ID, review.id).Scan(&counted); err != nil {
+				return err
+			}
+		}
+		if a != nil && !counted {
+			found = sql.NullInt64{Int64: int64(len(a.Findings)), Valid: true}
+			fixed, rejected = sql.NullInt64{Valid: true}, sql.NullInt64{Valid: true}
+			for _, f := range a.Findings {
+				switch f.State {
+				case "fixed":
+					fixed.Int64++
+				case "rejected":
+					rejected.Int64++
+				}
+			}
+		}
+		res, err := t.ExecContext(ctx, `UPDATE work_log SET state = 'done', body = ?, started_at = ?, ended_at = ?, found = ?, fixed = ?, rejected = ?, items = '[]',
 			read_state = ?, read_by = ?, read_at = ?, updated_at = ? WHERE id = ? AND state = 'pending'`,
-			body, now, now, readDone, readByRules, now, now, review.id)
+			body, now, now, found, fixed, rejected, readDone, readByRules, now, now, review.id)
 		if err != nil {
 			return err
 		}
