@@ -93,14 +93,18 @@ func shellInClaudeDir(p string) bool {
 }
 
 // workPath says a cleaned absolute path is a file of the work as far as the
-// session can tell: in a directory it has worked in, and not scratch, not
+// session can tell: in a directory it has worked in or the command cd's to, and not scratch, not
 // Claude Code's own directory.
-func (s *ShellSession) workPath(p string) bool {
-	if under(p, "/tmp") || under(p, "/var/tmp") || under(p, "/dev") || shellInClaudeDir(p) {
+func (s *ShellSession) workPath(p, cd string) bool {
+	if under(p, "/tmp") || under(p, "/var/tmp") || under(p, "/dev") {
 		return false
 	}
-	for _, r := range s.Roots {
-		if under(p, r) {
+	// A directory the session itself worked in is the work even under a cache
+	// directory (the runner checks repositories out in ~/.cache); only Claude
+	// Code's own directory stays out.
+	claude := shellInClaudeDir(p)
+	for _, r := range append([]string{cd}, s.Roots...) {
+		if r != "" && under(p, r) && (!claude || strings.Contains(r, "/.cache/") && !strings.Contains(p[len(r):], "/.cache/")) {
 			return true
 		}
 	}
@@ -131,6 +135,13 @@ func (s *ShellSession) Edit(cmd, cwd string) (wrote, known bool) {
 		if dir == "" {
 			dir = cwd
 		}
+		// A directory the command itself cd's into by an absolute path is where
+		// the work is, though no record had it as a working directory (a sibling
+		// checkout). Scratch and Claude's own directory are still excluded.
+		cd := ""
+		if cmds[i].Dir != "" && strings.HasPrefix(cmds[i].Dir, "/") && cmds[i].Dir != ShellNowhere {
+			cd = path.Clean(cmds[i].Dir)
+		}
 		for _, w := range cmds[i].Wrote {
 			if w.Kind == "output" {
 				continue
@@ -151,7 +162,7 @@ func (s *ShellSession) Edit(cmd, cwd string) (wrote, known bool) {
 				}
 				p = path.Join(dir, p)
 			}
-			if s.workPath(path.Clean(p)) {
+			if s.workPath(path.Clean(p), cd) {
 				return true, true
 			}
 		}
