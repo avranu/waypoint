@@ -208,8 +208,14 @@ func goBoundEnv(env []string, quota int) []string {
 // A scope that can't start falls back to the env bound; the command runs once.
 func runSlotBound(ctx context.Context, dir string, env, argv []string, in io.Reader, out, errw io.Writer) (int, string, error) {
 	kind, quota := slotBoundKind()
+	tell := func() {
+		if p, ok := ctx.Value(slotRanKeyT{}).(*string); ok {
+			*p = kind
+		}
+	}
 	if kind == slotBoundScope {
 		if code, started, err := runInScope(ctx, dir, env, argv, quota, in, out, errw); started {
+			tell()
 			return code, kind, err
 		}
 		kind = slotBoundEnv
@@ -217,9 +223,14 @@ func runSlotBound(ctx context.Context, dir string, env, argv []string, in io.Rea
 	if kind == slotBoundEnv || kind == slotBoundRunner {
 		env = goBoundEnv(env, quota)
 	}
+	tell()
 	code, err := runSlotPlain(ctx, dir, env, argv, in, out, errw)
 	return code, kind, err
 }
+
+// slotRanKeyT is the context key of a *string runSlotBound writes the bound
+// to, for a hold whose commands are run by its caller (runInSlotDo).
+type slotRanKeyT struct{}
 
 // runInScope runs argv in a systemd user scope. started false says the scope
 // did not start and argv did not run.

@@ -474,6 +474,7 @@ func TestRecordedCommandReruns(t *testing.T) {
 	for cmd, want := range map[string]string{
 		"go test ./...":                    "go test ./...",
 		"curl -H••• x":                     "",
+		"wp test" + scopedMark:             "wp test",
 		strings.Repeat("a", testRunCmdMax): "",
 	} {
 		if got := rerunnable(cmd); got != want {

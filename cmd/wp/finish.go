@@ -50,9 +50,12 @@ outcome: when the ship goes as expected (the pull request armed or babysat,
 or held for its review, with no notice or warning), Waypoint ends your turn
 there and shows it, so no turn follows just to write the reply. Otherwise
 the turn goes on, and the task's next wp ship uses the summary unless you
-give a new one. --check CMD runs CMD first, in the tests slot and recorded
-as wp testsum records it, and ships only if it passes (or chain it:
-make check && wp ship …).`,
+give a new one. In a repository with an executable .waypoint/test, wp ship
+first runs wp test (the scoped check of what changed; not again on a tree it
+already passed) and ships only if it passes; CI still runs the whole suite
+on the pull request. --check CMD runs CMD instead, in the tests
+slot and recorded as wp testsum records it, and --no-check skips the check
+(or chain it: make check && wp ship …).`,
 	examples: []string{`wp ship -m "Fix the redirect"`, `wp done APP-12 -m "Reviewed: looks good"`, `wp ship -m "Add the page" --shot http://localhost:5173/live`,
 		`wp ship -m "Fix the redirect" --check "make check" --summary "{task} shipped in PR #{pr}: the redirect keeps the query string. Tests: make check."`},
 	run: cmdFinish,
@@ -65,6 +68,7 @@ func cmdFinish(c *cli, args []string) error {
 	short(fs, "m", "message")
 	so := addShipFlags(fs)
 	check := fs.String("check", "", "run `CMD` first, in the tests slot (as wp testsum does), and ship only if it passes")
+	noCheck := fs.Bool("no-check", false, "ship without running wp test first (CI still runs the whole suite on the pull request)")
 	var shots multiFlag
 	fs.Var(&shots, "shot", "first screenshot this page `URL` (or /PATH of this checkout's preview), as wp shot does (repeatable)")
 	shotOpts := addShotFlags(fs)
@@ -161,6 +165,11 @@ func cmdFinish(c *cli, args []string) error {
 		}
 	case checkGiven:
 		if err := c.runShipCheck(*check); err != nil {
+			keepSummary()
+			return err
+		}
+	case shipping && !*noCheck:
+		if err := c.runDefaultShipCheck(); err != nil {
 			keepSummary()
 			return err
 		}
