@@ -166,7 +166,7 @@ func (cl *claim) top(dir string) string {
 		return cl.Top
 	}
 	if _, err := os.Stat(dir); err != nil {
-		return "" // gone: nothing to say it was the same checkout
+		return ""
 	}
 	return checkoutOf(dir)
 }
@@ -328,7 +328,7 @@ func writeJSON(path string, v any) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = os.Remove(tmp.Name()) }() // gone already after a successful rename
+	defer func() { _ = os.Remove(tmp.Name()) }()
 	if _, err := tmp.Write(append(b, '\n')); err != nil {
 		_ = tmp.Close()
 		return err
@@ -345,45 +345,26 @@ func writeJSON(path string, v any) error {
 
 // cli carries settings and output for one invocation.
 type cli struct {
-	dir   string
-	cfg   Config // as saved
-	state State
-	out   io.Writer
-	err   io.Writer
-	// per-invocation overrides (flags and environment)
-	asJSON bool
-	agent  string
-	cur    *command // the command running, for help and usage errors
-	// sawVersion is the X-Waypoint-Version of the latest answer from the server.
-	sawVersion atomic.Value  // string
-	fs         *flag.FlagSet // its flags, once it parsed them: usage errors list them
-	// session is the agent session this process acts for when it isn't in
-	// the environment (a hook knows the id from its input).
-	session string
-	// hookTimeout, when set, bounds every request: hooks must never hold up
-	// the agent.
-	hookTimeout time.Duration
-	hookLimit   time.Duration
-	// longPoll, when set, is how long a request may take: a wait the
-	// server holds (wp pr wait).
-	longPoll time.Duration
-	// contextTokens, when set, is the context the agent session this runs in
-	// holds now; wp next sends it so the server can warn (WP-34).
+	dir           string
+	cfg           Config
+	state         State
+	out           io.Writer
+	err           io.Writer
+	asJSON        bool
+	agent         string
+	cur           *command
+	fs            *flag.FlagSet
+	sawVersion    atomic.Value // string: the X-Waypoint-Version of the latest answer
+	session       string
+	hookTimeout   time.Duration
+	hookLimit     time.Duration
+	longPoll      time.Duration
 	contextTokens int64
-	// claims, when set, is heldHere for a take: the X-Waypoint-Claims header.
-	claims string
-	// noOwnWorktree, when set, keeps a task taken here in this checkout
-	// rather than a worktree of its own (wp next --no-worktree, WP-200).
+	claims        string
 	noOwnWorktree bool
-	// takenKeys are the tasks this take claimed (wp batch takes several):
-	// a worktree made for them takes all their claims along.
-	takenKeys []string
-	// delegation is the task's delegation arm's text (WP-1262), printed
-	// before the closing paragraph of the task just taken.
-	delegation string
-	// sandboxed, when set, says whether this runs in a Contained sandbox
-	// (tests; otherwise sandbox.InContained).
-	sandboxed *bool
+	takenKeys     []string
+	delegation    string
+	sandboxed     *bool
 }
 
 func newCLI(out, errw io.Writer) (*cli, error) {
@@ -404,7 +385,7 @@ func (c *cli) saveConfig() error { return writeJSON(filepath.Join(c.dir, "config
 func (c *cli) loadState() State {
 	var s State
 	if err := readJSON(filepath.Join(c.dir, "state.json"), &s); err != nil {
-		return State{} // scratch data: start over rather than fail
+		return State{}
 	}
 	return s
 }
@@ -418,7 +399,7 @@ func (c *cli) updateState(change func(*State)) error {
 // updateStateWithin is updateState waiting at most wait for the lock; wait <= 0
 // tries once.
 func (c *cli) updateStateWithin(wait time.Duration, change func(*State)) error {
-	if c.dir == "" { // no config directory (a test's bare cli): in memory only
+	if c.dir == "" {
 		change(&c.state)
 		return nil
 	}
@@ -449,8 +430,6 @@ func lockFileWithin(path string, wait time.Duration) (func(), error) {
 	for {
 		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) // #nosec G304 -- our own lock file
 		if err == nil {
-			// A nonce in the lock lets unlock leave alone a lock that was
-			// taken over as stale and now belongs to someone else.
 			nonce := newNonce()
 			_, werr := f.WriteString(nonce)
 			_ = f.Close()
@@ -610,7 +589,7 @@ func configSet(c *cli, args []string) error {
 	}
 	switch len(pos) {
 	case 1:
-		return c.setConfig(pos[0], "") // clears it
+		return c.setConfig(pos[0], "")
 	case 2:
 		return c.setConfig(pos[0], pos[1])
 	}
@@ -640,7 +619,6 @@ func (c *cli) setConfig(key, value string) error {
 			return c.usage("server must start with http:// or https://")
 		}
 		if value != c.cfg.Server && c.cfg.Token != "" {
-			// A token belongs to the server that issued it; never send it elsewhere.
 			c.cfg.Token = ""
 			defer c.println("Forgot the token for the old server; run wp auth login.")
 		}

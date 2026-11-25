@@ -134,11 +134,9 @@ type Gateway struct {
 
 type repoState struct {
 	Repo
-	mu sync.Mutex
-	// forgeHead is the forge's HEAD as of the last fetch.
+	mu        sync.Mutex
 	forgeHead string
-	// owned are the branches this session may force-push and delete.
-	owned map[string]bool
+	owned     map[string]bool
 }
 
 var repoPathRE = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_][A-Za-z0-9_.-]*$`)
@@ -331,8 +329,6 @@ func parseCommands(r *bufio.Reader) (*request, error) {
 		}
 		s := strings.TrimSuffix(string(line), "\n")
 		if strings.HasPrefix(s, "shallow ") {
-			// A shallow client's grafts: the pack is checked against the
-			// mirror regardless.
 			continue
 		}
 		if strings.HasPrefix(s, "push-cert") {
@@ -404,8 +400,6 @@ func (g *Gateway) receive(w http.ResponseWriter, r *http.Request, st *repoState)
 
 	m, err := g.open(ctx, &st.Repo)
 	if err == nil {
-		// The checks read the forge's refs as they are now, not as they
-		// were when the client asked.
 		err = g.sync(ctx, m, st)
 	}
 	if err != nil {

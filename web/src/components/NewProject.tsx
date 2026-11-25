@@ -33,8 +33,6 @@ export function NewProjectDialog({ open, onClose }: { open: boolean; onClose: ()
   const [name, setName] = useState('')
   const [key, setKey] = useState('')
   const [keyEdited, setKeyEdited] = useState(false)
-  // Empty until picked: Waypoint (an AI model, when one is set up) chooses the
-  // color, icon and background of a project that arrives without them.
   const [color, setColor] = useState('')
   const [icon, setIcon] = useState('')
   const [mode, setMode] = useState<'kanban' | 'sprints'>('kanban')
@@ -54,7 +52,6 @@ export function NewProjectDialog({ open, onClose }: { open: boolean; onClose: ()
       api.post<Project>('/projects', {
         name,
         key: keyEdited ? key : undefined,
-        // Left out when not picked, so an AI model can style the project.
         color: color || undefined,
         icon: icon || undefined,
         settings: { mode },

@@ -41,8 +41,6 @@ func TestRedactionCountsByRule(t *testing.T) {
 	}
 }
 
-// ---- the client's side of the second round (audit 1218.10, .33, .34, .35, .50) ----
-
 func machineRecord(t *testing.T, e *env, me *core.Actor) *core.UsageTranscripts {
 	t.Helper()
 	ov, err := e.svc.UsageOverview(context.Background(), me, core.UsageQuery{Days: 3650})
@@ -123,12 +121,12 @@ func TestArchiveStatusPostsOnChangeAndRefresh(t *testing.T) {
 	if _, n := tap.counts(); n != 1 {
 		t.Fatalf("statuses %d", n)
 	}
-	ms = 40 // faster: the same state, nothing to say
+	ms = 40
 	hookSync(t, dir)
 	if _, n := tap.counts(); n != 1 {
 		t.Errorf("a pass that only took a different time posted: %d", n)
 	}
-	ms = 300 // the longest grew
+	ms = 300
 	hookSync(t, dir)
 	if _, n := tap.counts(); n != 2 {
 		t.Errorf("a longer pass did not post: %d", n)
@@ -164,14 +162,14 @@ func TestArchiveStatusCountsCutShortPasses(t *testing.T) {
 		return true
 	}
 	old := archivePassLimit
-	archivePassLimit = -time.Second // already over: stops before the first piece
+	archivePassLimit = -time.Second
 	t.Cleanup(func() { archivePassLimit = old })
 	archiveSync(t, e, dir)
 	rec := machineRecord(t, e, me)
 	if rec.Cut == nil || *rec.Cut != 1 || rec.Stop == nil || !strings.Contains(*rec.Stop, "time limit") {
 		t.Fatalf("record %+v", rec)
 	}
-	archiveSync(t, e, dir) // the same again: counted again
+	archiveSync(t, e, dir)
 	if rec = machineRecord(t, e, me); *rec.Cut != 2 {
 		t.Errorf("cut %d", *rec.Cut)
 	}

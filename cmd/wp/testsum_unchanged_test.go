@@ -27,7 +27,7 @@ func TestUnchangedNote(t *testing.T) {
 		exit   int
 		change func(t *testing.T)
 		argv   []string
-		want   string // substring of the line; "" for no line
+		want   string
 	}{
 		{"unchanged tree", pass12, 0, func(*testing.T) {}, argv, "(less than a minute ago: passed, 12 tests)"},
 		{"earlier failure is reported", failed2, 1, func(*testing.T) {}, argv, ": 2 failed)"},
@@ -77,8 +77,6 @@ func TestUnchangedNoteNoEarlierRunOrStale(t *testing.T) {
 	if got := newTestRunRecorder(argv).unchanged(time.Now().Add(unchangedWithin + time.Minute)); got != "" {
 		t.Errorf("stale: %q", got)
 	}
-	// Only the newest run of the command is compared: after an edit and a
-	// run, going back to the old content isn't "the same as last time".
 	write(t, "a.txt", "two\n")
 	repoRun(t, argv, &testResult{Passed: 2}, 0)
 	write(t, "a.txt", "one\n")

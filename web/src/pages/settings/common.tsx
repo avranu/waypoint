@@ -1,5 +1,3 @@
-// Small building blocks shared by the Settings and Admin pages.
-
 import type { ReactNode } from 'react'
 import clsx from 'clsx'
 import { Copy } from 'lucide-react'

@@ -13,15 +13,11 @@ import (
 	"time"
 )
 
-// Tests for audit 1236 on the transcript archive client.
-
 func answerCode(w http.ResponseWriter, status int, msg, code string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = fmt.Fprintf(w, `{"error":%q,"code":%q}`, msg, code)
 }
-
-// ---- 1236.7: refusals are told by code, not by their words ----
 
 func TestArchiveFullHoldByCodeWhateverTheWords(t *testing.T) {
 	e, tap := tappedEnv(t)
@@ -58,8 +54,6 @@ func TestArchiveJobRefusalByCodeWhateverTheWords(t *testing.T) {
 		t.Errorf("%d status requests", s)
 	}
 }
-
-// ---- 1236.2: unsent bytes of a deleted file are counted ----
 
 func TestArchiveDeletedFileWithUnsentBytesIsDropped(t *testing.T) {
 	e, tap := tappedEnv(t)
@@ -116,8 +110,6 @@ func TestArchiveDeletedFileWithoutRecordedSizeIsNotDropped(t *testing.T) {
 		t.Errorf("entry kept: %+v", st.Files)
 	}
 }
-
-// ---- 1236.4: the hook's hour-count stage has a total budget ----
 
 func usageTranscript(t *testing.T, dir string, i int) string {
 	t.Helper()
@@ -215,15 +207,13 @@ func TestHookReportTimeoutIsWhatIsLeft(t *testing.T) {
 	}
 }
 
-// ---- 1236.5: only a hook pass is the machine's pass time ----
-
 func TestOnlyAHookPassSetsThePassDuration(t *testing.T) {
 	e, tap := tappedEnv(t)
 	e.login()
 	dir := emptyDir(t)
 	putTranscript(t, dir, "s1", userLine("one"))
 	lowerVar(t, &archivePassDuration, func(time.Time) time.Duration { return 9 * time.Minute })
-	archiveSync(t, e, dir) // manual
+	archiveSync(t, e, dir)
 	if st, _ := loadArchiveState(e.dir); st.PassMax != 0 {
 		t.Errorf("a manual pass set PassMax %d", st.PassMax)
 	}
@@ -245,8 +235,6 @@ func TestOnlyAHookPassSetsThePassDuration(t *testing.T) {
 		t.Errorf("hook status: %v", last)
 	}
 }
-
-// ---- 1236.8: old never-uploaded transcripts are counted, not hidden ----
 
 func TestArchiveCountsTranscriptsOutsideTheWindow(t *testing.T) {
 	e := newEnv(t)
@@ -273,11 +261,9 @@ func TestArchiveCountsTranscriptsOutsideTheWindow(t *testing.T) {
 	if !strings.Contains(txt, "1 older transcript") || !strings.Contains(txt, "wp usage sync --all") {
 		t.Errorf("text: %s", txt)
 	}
-	// --all archives it, so nothing is outside any window
 	if res = archiveSync(t, e, dir); res.Archive.OlderFiles != 0 || strings.Contains(usageSyncText(&res), "older transcript") {
 		t.Errorf("--all: %+v", res.Archive)
 	}
-	// a hook pass does not look
 	q := putTranscript(t, dir, "ninety", userLine("ninety"))
 	when = time.Now().Add(-90 * 24 * time.Hour)
 	_ = os.Chtimes(q, when, when)
@@ -286,8 +272,6 @@ func TestArchiveCountsTranscriptsOutsideTheWindow(t *testing.T) {
 		t.Errorf("hook pass: %+v %v", hr, err)
 	}
 }
-
-// ---- 1236.9: a non-JSON line keeps its line end ----
 
 func TestRedactingAKeyLineKeepsItsNewline(t *testing.T) {
 	for _, in := range []string{"-----BEGIN PRIVATE KEY-----\n", "-----BEGIN RSA PRIVATE KEY-----\r\n", "-----BEGIN PRIVATE KEY-----"} {
@@ -313,8 +297,6 @@ func TestRedactingAKeyLineKeepsItsNewline(t *testing.T) {
 		t.Errorf("lines %d, newlines %d, err %v: %q", len(piece.lines), bytes.Count(piece.data, []byte("\n")), err, piece.data)
 	}
 }
-
-// ---- 1236.13: lines longer than the reader's buffer ----
 
 func readAllPieces(t *testing.T, path string) (string, map[string]int) {
 	t.Helper()
@@ -343,7 +325,7 @@ func readAllPieces(t *testing.T, path string) (string, map[string]int) {
 }
 
 func TestArchiveLineLongerThanTheReaderBufferArrivesWhole(t *testing.T) {
-	long := userLine(randomHex(3 << 19)) // 1.5 MiB, over the 1 MiB buffer, under archiveMaxLine
+	long := userLine(randomHex(3 << 19))
 	body := userLine("before") + "\n" + long + "\n" + userLine("after") + "\n"
 	p := filepath.Join(t.TempDir(), "l.jsonl")
 	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {

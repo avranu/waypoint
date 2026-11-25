@@ -10,11 +10,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// Audits (WP-348, WP-ADR20): a model reads a checkout from your runner and
-// reports findings to Waypoint: by default the one the gateway picks for audits
-// (WP-871), or Grok through Cursor on a Waypoint with no LLM gateway. It never
-// changes anything. Not the audit log (wp help: Audit log is on the web).
-
 var auditCmd = &command{
 	name: "audit", aliases: []string{"audits"}, group: "Code and CI",
 	args:    "[pr|branch|commit|range|recent|repo] [TARGET] [FLAGS]",
@@ -99,8 +94,6 @@ replaces the report until that check starts.`,
 	}
 }
 
-// ---- JSON shapes ----
-
 type auditView struct {
 	ID           int64    `json:"id"`
 	Project      string   `json:"project"`
@@ -119,8 +112,8 @@ type auditView struct {
 	MaxFindings  int      `json:"max_findings"` // how many are shown at a time; 0 is the default
 	// Shown is how many findings are listed at a time, as the server works it
 	// out (0 from an older server: shownAtATime falls back to its old rule).
-	Shown int  `json:"shown"`
-	all   bool // wp audit show --all
+	Shown int `json:"shown"`
+	all   bool
 	// HelperRuns: the Haiku checks around the model (core.AuditHelperRun).
 	HelperRuns  []core.AuditHelperRun `json:"helper_runs"`
 	FromSHA     string                `json:"from_sha"`
@@ -159,8 +152,7 @@ type auditView struct {
 	} `json:"counts"`
 	Findings []auditFinding `json:"findings"`
 	URL      string         `json:"url"`
-	// job is how its unfinished job goes (wp audit show only).
-	job string
+	job      string
 }
 
 type auditFinding struct {
@@ -251,7 +243,6 @@ func (a *auditView) shownAtATime() int {
 	if a.Shown > 0 {
 		return a.Shown
 	}
-	// An older server sends no number: the rule it had.
 	if a.MaxFindings > 0 {
 		return a.MaxFindings
 	}
@@ -429,8 +420,6 @@ func (a *auditView) criteria() string {
 	if a.MinSeverity != "" {
 		parts = append(parts, a.MinSeverity+" and worse")
 	}
-	// Only when it is the number in use: a check of marks and a review
-	// round's audit list every finding whatever max_findings holds.
 	if a.MaxFindings > 0 && (a.Shown == 0 || a.Shown == a.MaxFindings) {
 		parts = append(parts, fmt.Sprintf("shows %d findings at a time", a.MaxFindings))
 	}
@@ -451,11 +440,9 @@ func (a *auditView) asked(blocking bool) string {
 	return fmt.Sprintf("Audit #%d of %s asked of %s; %s\n%s", a.ID, a.what(), chain, when, a.URL)
 }
 
-// ---- asking ----
-
 func auditRun(target string) func(c *cli, args []string) error {
 	return func(c *cli, args []string) error {
-		target := target // --since may make it recent, for this call only
+		target := target
 		fs := c.flags()
 		sf := addScopeFlags(fs)
 		repo := fs.String("repo", "", "`REPO` (owner/name), if the project has several")
@@ -553,7 +540,6 @@ func (c *cli) auditTarget(in map[string]any, target string, pos []string, projec
 			}
 			return c.usage("say what %q is: wp audit pr|branch|commit|range|repo %s", arg, arg)
 		}
-		// The branch here: its pull request, else the branch itself.
 		if n, prRepo, err := c.branchPR(project, repo); err == nil && n > 0 {
 			in["target"], in["pr"] = "pr", n
 			if prRepo != "" {
@@ -606,8 +592,6 @@ func (c *cli) auditTarget(in map[string]any, target string, pos []string, projec
 	}
 	return nil
 }
-
-// ---- reading ----
 
 func auditLs(c *cli, args []string) error {
 	fs := c.flags()
@@ -783,8 +767,6 @@ func (j *auditJobView) text(now time.Time) string {
 	}
 	return s.String()
 }
-
-// ---- acting ----
 
 func auditMark(c *cli, args []string) error {
 	fs := c.flags()

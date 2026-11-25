@@ -1,9 +1,3 @@
-// Admin → AI → Review arms (WP-365): the ways a review can run, a context
-// strategy with the verifier on or off, and how each fares. Each review draws
-// one by measured precision per token. With an LLM gateway it picks the
-// model, so models show only as what the gateway chose and how their findings
-// fared.
-
 import { useQuery } from '@tanstack/react-query'
 import { aiq, usePinReviewArm, type ReviewArm, type ReviewArms } from '@/lib/ai'
 import { relativeTime } from '@/lib/format'

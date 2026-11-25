@@ -7,9 +7,6 @@ import (
 	"testing"
 )
 
-// Tests for what the audit of WP-1467 (1283) found: drops and collisions the
-// first tests did not reach. Fixtures are synthetic.
-
 func settingRows(r *Result, name string) []Setting {
 	var out []Setting
 	for _, s := range r.Settings {
@@ -187,7 +184,7 @@ func TestMoreUndecodedFieldsAreCounted(t *testing.T) {
 		result("w", 2, false, "ok", m{"type": "create", "content": 5}),
 		j(m{"type": "attachment", "uuid": "f", "attachment": m{"type": "file", "filename": "/f", "content": "not an object"}}),
 		j(m{"type": "attachment", "uuid": "s", "attachment": m{"type": "skill_listing", "content": 7}}),
-		j(m{"type": "attachment", "uuid": "ok", "attachment": m{"type": "skill_listing"}}), // absent is not undecoded
+		j(m{"type": "attachment", "uuid": "ok", "attachment": m{"type": "skill_listing"}}),
 	)
 	for _, k := range []string{"undecoded/create_result_content", "undecoded/file_attachment", "undecoded/skill_listing"} {
 		if r.Ignored[k] != 1 {
@@ -284,12 +281,12 @@ func TestPromptKindsAndUnmatchedResults(t *testing.T) {
 		return j(r)
 	}
 	r := parse(t, "main",
-		j(m{"type": "system", "subtype": "turn_duration", "timestamp": ts(0), "durationMs": 5}), // no open turn
+		j(m{"type": "system", "subtype": "turn_duration", "timestamp": ts(0), "durationMs": 5}),
 		user("p1", 1, nil, "<command-name>/review</command-name> args"),
 		user("p2", 2, nil, "<local-command-stdout>out</local-command-stdout>"),
 		user("p3", 3, m{"isMeta": true}, "meta text"),
 		user("p4", 4, m{"isMeta": true, "turnOrigin": "peer"}, "meta with an origin"),
-		result("nope", 5, false, "ok", nil), // matches no tool call
+		result("nope", 5, false, "ok", nil),
 	)
 	if len(r.Turns) != 2 {
 		t.Fatalf("turns = %d, want 2 (slash command, meta with an origin)", len(r.Turns))

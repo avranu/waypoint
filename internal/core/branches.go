@@ -1,10 +1,5 @@
 package core
 
-// Pushes and releases (WP-D21). A push to a branch of an attached repo
-// emits repo.pushed with the files it changed, follows the new head's CI and
-// is remembered per branch: "branches in work" are the branches pushed
-// lately that no merged or closed pull request has finished.
-
 import (
 	"context"
 	"slices"
@@ -20,10 +15,10 @@ const maxPushPaths = 500
 func (s *Service) onPush(ctx context.Context, f *Forge, ev *forgeEvent) {
 	branch, ok := strings.CutPrefix(ev.ref, "refs/heads/")
 	if !ok || branch == "" || ev.repo == "" {
-		return // a tag, or a payload that doesn't say
+		return
 	}
 	if strings.HasPrefix(branch, stackPrefix) {
-		return // a merge queue stack Waypoint made (WP-404): nobody's work
+		return
 	}
 	projects, err := s.projectsOfRepo(ctx, f.ID, ev.repo)
 	if err != nil || len(projects) == 0 {
@@ -36,7 +31,7 @@ func (s *Service) onPush(ctx context.Context, f *Forge, ev *forgeEvent) {
 		return
 	}
 	s.recordInstructionMarks(ctx, f, ev, branch)
-	s.onAgentFilesPush(ctx, f, ev, branch) // Agent setup (WP-ADR44)
+	s.onAgentFilesPush(ctx, f, ev, branch)
 	var paths []string
 	seen := map[string]bool{}
 	for _, c := range ev.commits {
@@ -69,10 +64,10 @@ func (s *Service) onPush(ctx context.Context, f *Forge, ev *forgeEvent) {
 		s.log.WarnContext(ctx, "record a push", "repo", ev.repo, "branch", branch, "err", err)
 		return
 	}
-	s.onBaseMoved(ctx, f, ev.repo, branch) // pull requests on it may have nothing left to merge (WP-140)
+	s.onBaseMoved(ctx, f, ev.repo, branch)
 	if _, ok := s.Forges.(ForgeChecks); ok && ev.after != "" && f.token != "" {
 		if _, err := s.trackHead(ctx, f.ID, ev.repo, ev.after); err == nil {
-			bg := context.WithoutCancel(ctx)
+			bg := withoutLineLocks(context.WithoutCancel(ctx))
 			s.goBG(func() {
 				s.refreshHeadLogged(bg, f, ev.repo, ev.after)
 			})
@@ -111,9 +106,8 @@ func (s *Service) checkAfterActivity(ctx context.Context, f *Forge, repo string,
 	if err != nil || pr == nil {
 		return
 	}
-	bg := context.WithoutCancel(ctx)
+	bg := withoutLineLocks(context.WithoutCancel(ctx))
 	if pr.ArmedAt != nil {
-		// A reviewer it waits for posted, or the quiet period starts again (WP-133).
 		s.goBG(func() { s.maybeAutoMerge(bg, pr.ID) })
 	}
 	var findings int
@@ -123,8 +117,6 @@ func (s *Service) checkAfterActivity(ctx context.Context, f *Forge, repo string,
 	}
 	s.goBG(func() { s.checkPR(bg, pr.ID, "review or comment") })
 }
-
-// ---- branches in work ----
 
 // BranchPR is the pull request a branch has.
 type BranchPR struct {
@@ -247,7 +239,7 @@ func (s *Service) ListBranches(ctx context.Context, actor *Actor, projectRef str
 			if pr != nil && (pr.State == "merged" || pr.State == "closed") {
 				end := msOr(pr.MergedAt, msOr(pr.ClosedAt, 0))
 				if at <= end+time.Minute.Milliseconds() {
-					continue // the branch's work is done
+					continue
 				}
 				pr = nil
 			}
@@ -255,7 +247,6 @@ func (s *Service) ListBranches(ctx context.Context, actor *Actor, projectRef str
 			out = append(out, b)
 		}
 		brows.Close()
-		// Open pull requests whose branch Waypoint never saw pushed.
 		for head, pr := range byHead {
 			if have[head] || bases[head] || (pr.State != "open" && pr.State != "draft") {
 				continue

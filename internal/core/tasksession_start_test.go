@@ -8,8 +8,6 @@ import (
 	"time"
 )
 
-// Starting a task session from the queue (WP-71).
-
 func TestTaskSessionPlacesAndStart(t *testing.T) {
 	e := newEnv(t)
 	p := e.project(e.admin, "App", "")
@@ -27,7 +25,6 @@ func TestTaskSessionPlacesAndStart(t *testing.T) {
 		e.setClock(e.clockNow().Add(time.Minute))
 	}
 
-	// No runner yet: nowhere to start, and saying so.
 	session("box", "s1", p.ID, nil)
 	if got, err := e.s.TaskSessionPlaces(e.ctx, e.admin); err != nil || len(got) != 0 {
 		t.Fatalf("no runner: %v %v", got, err)
@@ -39,16 +36,14 @@ func TestTaskSessionPlacesAndStart(t *testing.T) {
 	claude := func(r *RunnerRegistration) {
 		r.CLIs, r.Features = []RunnerCLI{{Name: "claude"}}, []string{FeatureTaskKickoff}
 	}
-	e.runner(e.admin, "old", claude) // goes offline below
-	session("old", "s2", p.ID, nil)  // newer than s1, on the offline runner's machine
+	e.runner(e.admin, "old", claude)
+	session("old", "s2", p.ID, nil)
 	session("box", "s3", p.ID, func(h *HookEvent) { h.Worktree, h.Cwd = true, "/work/app/.claude/worktrees/x" })
-	session("laptop", "s4", p.ID, nil)                                          // no runner there
-	session("box", "s5", other.ID, func(h *HookEvent) { h.Cwd = "/elsewhere" }) // not allowed
+	session("laptop", "s4", p.ID, nil)
+	session("box", "s5", other.ID, func(h *HookEvent) { h.Cwd = "/elsewhere" })
 	e.setClock(e.clockNow().Add(time.Hour))
 	e.runner(e.admin, "box", claude)
 	e.runner(e.admin, "nocli", nil)
-	// A runner too old to take the task for the session isn't a place: it
-	// would need the prompt WP-1037 removed.
 	e.runner(e.admin, "laptop", func(r *RunnerRegistration) { r.CLIs = []RunnerCLI{{Name: "claude"}} })
 
 	places, err := e.s.TaskSessionPlaces(e.ctx, e.admin)
@@ -60,7 +55,6 @@ func TestTaskSessionPlacesAndStart(t *testing.T) {
 		t.Fatalf("places = %s; want App on the online box, in its checkout (not the worktree)", b)
 	}
 
-	// A project without a connected repo: the session took one of its tasks.
 	third := e.project(e.admin, "Third", "")
 	t3 := e.issue(e.admin, IssueInput{Project: third.Key, Title: "Elsewhere"})
 	session("box", "s6", 0, func(h *HookEvent) { h.Cwd = "/work/third" })
@@ -91,8 +85,6 @@ func TestTaskSessionPlacesAndStart(t *testing.T) {
 	if err := json.Unmarshal(job.Input, &in); err != nil {
 		t.Fatal(err)
 	}
-	// The runner takes the task for the session and fills autopilot's
-	// kickoff template with the answer (WP-1037): no prompt of its own.
 	if in.Task != is.Key || in.Dir != "/work/app" || in.Prompt != "" || in.Kickoff != DefaultAutopilotPrompt || in.Title != "Fix the thing" || in.Name != is.Key+" Fix the thing" {
 		t.Errorf("job input = %+v", in)
 	}
@@ -100,7 +92,6 @@ func TestTaskSessionPlacesAndStart(t *testing.T) {
 		t.Errorf("job = %q from %q", job.Title, job.Source)
 	}
 
-	// Agents never start things on a person's machine, and see no places.
 	if _, err := e.s.StartTaskSession(e.ctx, ag, is.Key); !errors.Is(err, ErrForbidden) {
 		t.Errorf("agent start: %v", err)
 	}
@@ -121,8 +112,6 @@ func TestSessionJobTaskIsValidated(t *testing.T) {
 	if err != nil || title != "Task session: WP-3,WP-4" || !strings.Contains(string(out), `"task":"WP-3,WP-4"`) || n.feature != "" {
 		t.Errorf("task kept: %q %s %v", title, out, err)
 	}
-	// A kickoff (WP-1037) is for one task, without a prompt, and only for a
-	// runner that knows how to take the task for the session.
 	for name, j := range map[string]SessionJob{
 		"two tasks":  {Dir: "/work", Kickoff: "{next}", Task: "WP-3,WP-4"},
 		"no task":    {Dir: "/work", Kickoff: "{next}"},

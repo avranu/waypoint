@@ -1,43 +1,5 @@
 package core
 
-// Collector health (WP-999). Some work is collected, not triggered: runners
-// trace merged bug fixes to the change that caused them and prove the fixes,
-// and an hourly job scores what agents were told against what they changed.
-// When one of them stops, nothing errs: the ledger just stops growing, and
-// the escape ledger's due query timing out went unseen for days.
-//
-// A collector is stalled when something has waited for it longer than
-// collectorStallAfter and it has produced nothing newer than that (or ever).
-// Waiting without a stall is a slow queue; output without waiting is idle.
-// Fix traces and proofs are judged per repo: a runner that keeps tracing one
-// repo's fixes says nothing about a repo no runner can reach, so a repo is
-// stalled when its own oldest fix has waited and nothing in it was collected
-// since (a trace that found no cause counts: the collector worked).
-// The transcript archive is judged per machine (user and machine), the same
-// way: a machine is stalled when its own bytes have waited, or it stopped
-// reporting its archive while its usage sync still arrives (silent), and
-// nothing of its own was stored since. A machine that switched the archive
-// off is not waiting, nor is one not heard from for archiveWaitingWindow
-// (Claude Code keeps local transcripts about that long, so nothing more can
-// arrive from a retired machine). A collector may also count what it lost (dropped); the
-// hourly check tells admins when that total grew, at most daily.
-// A fix begins to wait when it can be traced: at the later of its pull
-// request's merge and the link that ties a bug task to it, so a bug linked
-// today to a fix merged last week has not waited a week.
-// Only collectors whose waiting predicate is the one the collector itself
-// works from are listed (a copy that drifted would count the wrong things);
-// each says where that is. Left out: CI evidence (ci_evidence.go) reads
-// jobs only evidenceWindow (48 hours) back and keeps what it read for
-// evidenceKeep (30 days), so what waits longer than the window is simply
-// never read, and it records no time of its own reads.
-//
-// The hourly check keeps one row per collector (collector_health), logs a
-// warning for each stalled one, and tells the admins once a day (and at once
-// when another repo begins to stall) while it
-// lasts, as the deploy lag alert does (env_lag.go). Recovery clears the row
-// and says nothing. stalled_since is the first hourly check that saw the
-// stall, not when the first item began to wait (that is oldest_wait_at).
-
 import (
 	"context"
 	"database/sql"
@@ -77,44 +39,19 @@ const NotifyCollector = "collector"
 // collector is one thing that collects: the query for what waits for it and
 // the query for what it has produced.
 type collector struct {
-	name string
-	// what it is and who does it, for the notice
-	about string
-	// unit names what waiting counts when it is not the items the work is
-	// about (machines, not files); "" says nothing.
-	unit string
-	// waiting selects count(*) and the earliest ms any of it began to wait
-	// (NULL when none does); args are its bound values at a time.
-	waiting string
-	args    func(now time.Time) []any
-	// output selects the ms of the newest thing it produced, NULL for none.
-	output string
-	// group names what the stall is judged by when it is not the repo
-	// ("machine"), groupHelp what to do about one, groupWhere where the last
-	// output may have been ("in any machine").
+	name             string
+	about            string
+	unit             string
+	waiting          string
+	args             func(now time.Time) []any
+	output           string
 	group, groupHelp string
-	// repoWaiting and repoOutput, when set, make the stall per repo (or group).
-	// repoWaiting selects, for each repo with something waiting, (lower(repo),
-	// repo, count, earliest ms it began to wait); it uses the waiting query's
-	// predicate. repoOutput takes one argument, the stall cutoff in ms, and
-	// selects (lower(repo), newest output ms) for repos with output since.
-	repoWaiting string
-	repoOutput  string
-	// dropped, when set, selects one number: the total this collector has
-	// counted as lost, so that data it handled did not arrive whole. The hourly
-	// check tells admins when it grew. off selects how many of its machines
-	// opted out (they are not waiting).
-	dropped, off string
-	// problem, when set, says in plain words what is wrong beyond a stall (a
-	// failing file, a record the collector cannot read); "" for nothing.
-	problem func(s *Service, ctx context.Context) (string, error)
-	// also names the other queries the collector runs, with their bound values,
-	// so TestCollectorQueriesUseIndexes plans them too.
-	also map[string]collectorQuery
-	// scans says, by plan alias, why a query reads a whole table: each hourly
-	// check pays for it, so it is stated (TestCollectorQueriesUseIndexes fails
-	// on any scan of a table not listed here).
-	scans map[string]string
+	repoWaiting      string
+	repoOutput       string
+	dropped, off     string
+	problem          func(s *Service, ctx context.Context) (string, error)
+	also             map[string]collectorQuery
+	scans            map[string]string
 }
 
 // collectorQuery is a query with its bound values.
@@ -147,12 +84,9 @@ const proofsWaitingWhere = `ft.fix_sha != '' AND NOT EXISTS (SELECT 1 FROM fix_p
 
 var collectors = []collector{
 	{
-		name:  "escape traces",
-		about: "a runner with a checkout traces each merged bug fix to the change that caused it (wp code trace; EscapesDue)",
-		// The fixes escapesPendingSQL counts, in every project.
+		name:    "escape traces",
+		about:   "a runner with a checkout traces each merged bug fix to the change that caused it (wp code trace; EscapesDue)",
 		waiting: `SELECT COUNT(DISTINCT p.id), MIN(max(COALESCE(p.merged_at, p.landed_at, p.updated_at), el.created_at)) ` + escapeTracesWaitingFrom,
-		// A repo no runner holds a checkout of stays here for good, whatever
-		// runners trace elsewhere.
 		repoWaiting: `SELECT lower(p.repo), MIN(p.repo), COUNT(DISTINCT p.id), MIN(max(COALESCE(p.merged_at, p.landed_at, p.updated_at), el.created_at)) ` +
 			escapeTracesWaitingFrom + ` GROUP BY lower(p.repo)`,
 		repoOutput: `SELECT lower(p.repo), MAX(ft.traced_at) FROM fix_traces ft CROSS JOIN pull_requests p ON p.id = ft.pr_id
@@ -228,9 +162,7 @@ var collectors = []collector{
 		args: func(now time.Time) []any {
 			return []any{now.Add(-factsQuiet).UnixMilli(), transcript.ParserVersion, now.Add(-factsRetry).UnixMilli()}
 		},
-		output: `SELECT MAX(f.derived_at) FROM session_fact_files f`,
-		// A derive failure is not a drop: the collector lost nothing, the file
-		// waits for the next attempt. Its failures are in the problem line.
+		output:  `SELECT MAX(f.derived_at) FROM session_fact_files f`,
 		problem: (*Service).factsProblem,
 		also: map[string]collectorQuery{
 			"failed":    {factsFailedSQL, nil},
@@ -243,10 +175,6 @@ var collectors = []collector{
 		},
 	},
 	{
-		// Nothing waits for it and it produces nothing of its own: it is the
-		// total of what session data the CLIs' hooks, usage uploads and the
-		// server's caps dropped (hook_drops: which, where and how many is in
-		// wp server status), so that a drop is never silent (WP-1470).
 		name:    "session data",
 		about:   "session hooks, usage uploads and the caps on what a session keeps; what each dropped, by reason, is in wp server status (Hook data dropped)",
 		waiting: `SELECT 0, NULL`,
@@ -306,20 +234,17 @@ type CollectorHealth struct {
 // collectorReading is what one collector's queries said.
 type collectorReading struct {
 	waiting      int
-	oldest, last int64 // ms; 0: none
-	// perRepo: the stall is judged by repo; repos are the stalled ones,
-	// the longest waiting first.
-	perRepo bool
-	repos   []repoWait
-	// dropped and off, for a collector that has the queries (nil: none).
+	oldest, last int64
+	perRepo      bool
+	repos        []repoWait
 	dropped, off *int64
 }
 
 // repoWait is one repo's waiting work.
 type repoWait struct {
-	key, label string // lower-cased and as the pull requests name it
+	key, label string
 	n          int
-	oldest     int64 // ms
+	oldest     int64
 }
 
 func (r collectorReading) stalled(now time.Time) bool {
@@ -488,7 +413,7 @@ func (s *Service) readCollector(ctx context.Context, c collector, now time.Time)
 // admins about the stalled ones. Hourly.
 func (s *Service) CheckCollectorHealth(ctx context.Context) {
 	now := s.now()
-	s.CheckTranscriptFiles(ctx) // daily, and at the start: the files of stored pieces (WP-1466)
+	s.CheckTranscriptFiles(ctx)
 	for _, c := range collectors {
 		if ctx.Err() != nil {
 			return
@@ -551,14 +476,12 @@ func (s *Service) recordCollector(ctx context.Context, c collector, r collectorR
 		stalledN, stalledOldest := r.stalledWaiting()
 		s.log.WarnContext(ctx, "collector stalled", "collector", c.name, "waiting", stalledN,
 			"oldest_wait", ShortDuration(now.Sub(msTime(stalledOldest))), "last_output", lastOutputText(r.last, now), "repos", r.reposText(now))
-		// A repo that began to stall after the last telling is told at once,
-		// not at the next repeat.
 		fresh := r.newRepos(toldRepos)
 		today := told.Valid && now.Sub(msTime(told.Int64)) < collectorRepeat
 		if today && len(fresh) == 0 {
-			return nil // told about this stall today
+			return nil
 		}
-		early := today // told again before the repeat, for the repos in fresh
+		early := today
 		res, err := t.ExecContext(ctx, `UPDATE collector_health SET alerted_at = ?, alerted_repos = ? WHERE name = ? AND coalesce(alerted_at, 0) = ?`,
 			now.UnixMilli(), r.repoKeys(), c.name, told.Int64)
 		if err != nil {
@@ -612,7 +535,6 @@ func (s *Service) noteDropped(ctx context.Context, t *tx, c collector, r collect
 		return err
 	}
 	if *r.dropped < toldTotal.Int64 {
-		// the total fell (a machine's state reset); what grows from here is new
 		if _, err := t.ExecContext(ctx, `UPDATE collector_health SET dropped_told = ? WHERE name = ?`, *r.dropped, c.name); err != nil {
 			return err
 		}

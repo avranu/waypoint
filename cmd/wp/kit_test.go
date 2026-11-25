@@ -112,7 +112,6 @@ func TestMergeSettingsKeepsOtherKeys(t *testing.T) {
 	if got["permissions"].(map[string]any)["allow"].([]any)[0] != "Bash(make check)" || got["env"].(map[string]any)["A"] != "1" || got["extraKnownMarketplaces"] == nil {
 		t.Fatalf("other keys: %s", out)
 	}
-	// A new file; a broken one is an error, not overwritten.
 	if out, err := mergeSettings(nil, map[string]*bool{"a@b": &on}, nil); err != nil || !strings.Contains(string(out), `"a@b": true`) {
 		t.Fatalf("new: %s %v", out, err)
 	}
@@ -129,11 +128,11 @@ func TestMergeSettingsKeepsOtherKeys(t *testing.T) {
 // way the real one does (as checked against 2.1.309).
 type fakePluginCLI struct {
 	t       *testing.T
-	cfg     string // CLAUDE_CONFIG_DIR
-	mktRepo string // the marketplace clone
+	cfg     string
+	mktRepo string
 	commit  string
 	calls   []string
-	fail    string // a call that fails
+	fail    string
 }
 
 func (f *fakePluginCLI) Run(ctx context.Context, dir string, args ...string) error {
@@ -220,7 +219,6 @@ func newKitTestEnv(t *testing.T) *kitTestEnv {
 	t.Setenv("WAYPOINT_CONFIG_DIR", t.TempDir())
 	cfg := t.TempDir()
 	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
-	// The marketplace's clone: a git repo with one commit.
 	mkt := t.TempDir()
 	for _, args := range [][]string{{"init", "-q"}, {"-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q", "--allow-empty", "-m", "kit"}} {
 		cmd := exec.Command("git", args...)
@@ -265,11 +263,9 @@ func (k *kitTestEnv) sync(o kitSyncOpts) *kitSyncResult {
 
 func TestKitSync(t *testing.T) {
 	k := newKitTestEnv(t)
-	// A plugin the person enabled themselves, and other settings, stay.
 	_ = os.MkdirAll(filepath.Join(k.dir, ".claude"), 0o755)
 	_ = os.WriteFile(filepath.Join(k.dir, ".claude", "settings.local.json"), []byte(`{"permissions":{"allow":["Bash(ls)"]},"enabledPlugins":{"mine@agent-kit":true}}`), 0o644)
 
-	// --check plans and changes nothing; --diff shows the settings.
 	res := k.sync(kitSyncOpts{check: true, diff: true})
 	if len(k.claude.calls) != 0 || len(k.srv.reports) != 0 || len(res.Plan.Actions) != 2 {
 		t.Fatalf("check changed something: %v %+v", k.claude.calls, res.Plan)
@@ -291,14 +287,12 @@ func TestKitSync(t *testing.T) {
 		t.Fatalf("settings lost keys: %s", settings)
 	}
 
-	// Again: one request, nothing else.
 	calls, resolves := len(k.claude.calls), k.srv.resolves
 	res = k.sync(kitSyncOpts{})
 	if !res.Skipped || len(k.claude.calls) != calls || len(k.srv.reports) != 1 || k.srv.resolves != resolves+1 {
 		t.Fatalf("second sync wasn't a no-op: %+v %v", res, k.claude.calls[calls:])
 	}
 
-	// The person turns waypoint off here: drift, reported and left alone.
 	_ = k.claude.Run(context.Background(), k.dir, "disable", "waypoint@agent-kit", "--scope", "local")
 	calls = len(k.claude.calls)
 	res = k.sync(kitSyncOpts{})
@@ -313,8 +307,6 @@ func TestKitSync(t *testing.T) {
 		t.Fatalf("--force: %v", got)
 	}
 
-	// The kit sends indexed when the checkout has an index, and stops
-	// sending waypoint: wp disables only what it enabled.
 	_ = os.MkdirAll(filepath.Join(k.dir, ".indexed"), 0o755)
 	k.srv.mu.Lock()
 	k.srv.resolved["plugins"] = []map[string]any{{"name": "indexed", "when": []string{"exists:.indexed"}}}
@@ -329,7 +321,6 @@ func TestKitSync(t *testing.T) {
 		t.Fatalf("state: %+v", st)
 	}
 
-	// A failed install: not recorded as applied, so the next sync tries again.
 	k.srv.mu.Lock()
 	k.srv.resolved["plugins"] = []map[string]any{{"name": "indexed", "when": []string{"exists:.indexed"}}, {"name": "demo"}}
 	k.srv.resolved["commit"] = "f00"
@@ -371,19 +362,16 @@ func TestKitSessionStart(t *testing.T) {
 	if len(started) != 1 || !slices.Equal(started[0], []string{"kit", "sync", "--quiet", k.dir}) {
 		t.Fatalf("background sync: %v", started)
 	}
-	// Within ten minutes: no request, and no second background sync.
 	resolves := k.srv.resolves
 	text = k.c.kitSessionStart(k.dir, "acme/app")
 	if k.srv.resolves != resolves || len(started) != 1 || strings.Contains(text, "updated") || !strings.Contains(text, "Wait on CI") {
 		t.Fatalf("cached: %d requests, %v\n%s", k.srv.resolves-resolves, started, text)
 	}
-	// Synced: just the notes.
 	k.sync(kitSyncOpts{quiet: true})
 	if text = k.c.kitSessionStart(k.dir, "acme/app"); strings.Contains(text, "updated") {
 		t.Fatalf("after a sync:\n%s", text)
 	}
 
-	// The kit's part is cut to fit what Claude Code keeps.
 	out := sessionStartOutput(strings.Repeat("x", 7500), "From the agent kit:\n- "+strings.Repeat("é", 2000))
 	var v struct {
 		H struct {
@@ -406,15 +394,11 @@ func TestPlanCompact(t *testing.T) {
 		}
 		return out
 	}
-	// devhost on 2026-10-26: the top-level window applied to every model but
-	// Opus 5.5, whose "auto" in the same file replaced it.
 	acts, drift := planCompact(200000, compactHave{Files: []compactFile{file("~/.claude/settings.json", 200000, map[string]int{"claude-opus-5-5": compactAuto, "claude-sonnet-5-5": 150000})}})
 	if got := settings(acts); !slices.Equal(got, []string{"modelSettings.claude-opus-5-5.autoCompactWindow"}) || len(drift) != 0 ||
 		!strings.Contains(acts[0].Why, `"auto" in ~/.claude/settings.json`) {
 		t.Fatalf("per-model auto: %+v %+v", acts, drift)
 	}
-	// Nothing set anywhere is the model's own window; a project above the
-	// ceiling beats a user file under it.
 	if got, _ := planCompact(200000, compactHave{}); !slices.Equal(settings(got), []string{"autoCompactWindow"}) {
 		t.Fatalf("unset: %+v", got)
 	}
@@ -422,11 +406,9 @@ func TestPlanCompact(t *testing.T) {
 	if !slices.Equal(settings(acts), []string{"autoCompactWindow"}) || !strings.Contains(acts[0].Why, "600000 in .claude/settings.json") {
 		t.Fatalf("project above: %+v", acts)
 	}
-	// Under the ceiling everywhere: nothing, including what local already caps.
 	if got, _ := planCompact(200000, compactHave{Files: []compactFile{file("~/.claude/settings.json", 600000, map[string]int{"m": compactAuto}), file(".claude/settings.local.json", 200000, map[string]int{"m": 120000})}}); len(got) != 0 {
 		t.Fatalf("capped already: %+v", got)
 	}
-	// No kit window: nothing. The environment beats the files: reported only.
 	if got, _ := planCompact(0, compactHave{}); len(got) != 0 {
 		t.Fatalf("no ceiling: %+v", got)
 	}
@@ -472,7 +454,6 @@ func TestKitSyncCapsCompactWindow(t *testing.T) {
 		t.Fatalf("output:\n%s", k.out)
 	}
 
-	// Capped: the next sync is a no-op; raised again by hand, it caps again.
 	if res := k.sync(kitSyncOpts{}); !res.Skipped {
 		t.Fatalf("second sync: %+v", res.Plan)
 	}
@@ -517,7 +498,6 @@ func TestKitSyncForgetsGoneCheckouts(t *testing.T) {
 		t.Fatalf("mode %v", st.Mode())
 	}
 
-	// Nothing gone: the file isn't rewritten.
 	before, _ := os.Stat(path)
 	k.sync(kitSyncOpts{force: true})
 	if after, _ := os.Stat(path); !after.ModTime().Equal(before.ModTime()) || strings.Contains(k.out.String(), "Forgot") {

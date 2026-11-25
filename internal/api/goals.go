@@ -9,8 +9,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// Goals, gaps and traces (WP-382, WP-ADR50).
-
 func (s *Server) listGoals(w http.ResponseWriter, r *http.Request) (any, error) {
 	o, err := s.svc.ListGoals(r.Context(), actorFrom(r), r.URL.Query().Get("project"))
 	if err != nil || !wantsText(r) {
@@ -129,8 +127,6 @@ func (s *Server) acknowledgeGoalLinks(w http.ResponseWriter, r *http.Request) (a
 	}
 	return map[string]int{"acknowledged": n}, nil
 }
-
-// ---- text ----
 
 // itemName names an item in a line: "WP-3 Title", "goal #4 Title".
 func itemName(it core.KItem) string {
@@ -319,8 +315,6 @@ func goalGapsText(o *core.GoalsOverview) string {
 			b.WriteString("  - " + q + "\n")
 		}
 	}
-	// Tasks that reach a goal only through agents' links or Waypoint's
-	// guesses aren't gaps to fix, but they aren't a person's either.
 	if n := o.Totals[core.GroundAgentGoal] + o.Totals[core.GroundInferredGoal]; n > 0 {
 		fmt.Fprintf(&b, "\nOpen tasks that reach a goal only through links no person made or confirmed: %d (%s).\n", n,
 			groundingCounts(map[string]int{core.GroundAgentGoal: o.Totals[core.GroundAgentGoal], core.GroundInferredGoal: o.Totals[core.GroundInferredGoal]}))

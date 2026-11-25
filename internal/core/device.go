@@ -9,12 +9,6 @@ import (
 	"time"
 )
 
-// Device login lets the `wp` CLI get a token without pasting one: the CLI
-// asks for a code, the person approves it in the browser, and the CLI's
-// polling picks up a fresh token (the OAuth device flow, without OAuth).
-// The token is made when the CLI collects it, so no usable token ever sits
-// in the database waiting.
-
 // EvTokenCreated is a CLI token being handed out; it reaches only its owner.
 const EvTokenCreated = "token.created"
 
@@ -44,7 +38,7 @@ type DeviceRequest struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
-const userCodeLetters = "BCDFGHJKLMNPQRSTVWXZ" // no vowels: no accidental words
+const userCodeLetters = "BCDFGHJKLMNPQRSTVWXZ"
 
 func newUserCode() (string, error) {
 	b := make([]byte, 8)
@@ -84,9 +78,6 @@ func (s *Service) StartDeviceLogin(ctx context.Context, name, agent, ip, userAge
 	if err != nil {
 		return nil, err
 	}
-	// A few waiting logins per address, so one client can't crowd out the
-	// rest. Counting and inserting is one statement, so a burst of
-	// concurrent starts can't all pass the count.
 	now := s.nowMS()
 	res, err := s.db.W.ExecContext(ctx, `INSERT INTO device_logins(device_hash, user_code, name, agent, ip, user_agent, created_at, expires_at)
 		SELECT ?,?,?,?,?,?,?,? WHERE
@@ -128,8 +119,6 @@ const approvedGrace = 2 * time.Minute
 // ApproveDeviceLogin lets the waiting CLI sign in as the actor. Only the
 // first approval counts; the token is made when the CLI collects it.
 func (s *Service) ApproveDeviceLogin(ctx context.Context, actor *Actor, userCode string) error {
-	// Approving hands out a token of the person's own (WP-409, WP-ADR96): an agent's
-	// token, or an agent's shell, must not mint one for itself.
 	if err := actor.requirePersonDirect("approving a sign-in"); err != nil {
 		return err
 	}
@@ -187,11 +176,8 @@ func (s *Service) PollDeviceLogin(ctx context.Context, deviceCode string) (strin
 			return invalid("the login code expired; run `wp auth login` again")
 		}
 		if uid == 0 {
-			return nil // still waiting
+			return nil
 		}
-		// Collected: the login is used up whatever happens next. Reading and
-		// deleting share the one write transaction, so two polls can't both
-		// get here.
 		if _, err := t.ExecContext(ctx, `DELETE FROM device_logins WHERE device_hash = ?`, hash); err != nil {
 			return err
 		}
@@ -204,7 +190,6 @@ func (s *Service) PollDeviceLogin(ctx context.Context, deviceCode string) (strin
 			return err
 		}
 		token = tok
-		// Tell the person, so a login they didn't mean to approve gets noticed.
 		t.emit(&Event{Kind: EvTokenCreated, UserID: uid, New: at.Name, Data: map[string]any{"ip": ip, "agent": agent}})
 		return nil
 	})

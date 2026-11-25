@@ -12,8 +12,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// wp usage transcript (WP-1466): read back what the transcript archive holds.
-
 var usageTranscriptCmd = &command{
 	name: "transcript", args: "SESSION [--file FILE] [--machine M] [--gen N] [--user NAME]",
 	summary: "list or read a session's archived transcript",

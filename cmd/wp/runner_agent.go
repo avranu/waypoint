@@ -25,12 +25,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Agent and review jobs: a coding-agent CLI run headless on a fresh
-// checkout. The runner keeps one bare clone per repository
-// (<cache>/<host>/<owner>/<repo>.git), fetches it, makes a work tree for
-// the job at the base ref, runs the CLI there with the person's own
-// sign-in, commits what it left, pushes if asked and removes the work tree.
-
 // tokenUse is what a CLI reports about its use, when it reports.
 type tokenUse struct {
 	Input     int64   `json:"input"`
@@ -48,22 +42,16 @@ func (t *tokenUse) add(o tokenUse) {
 
 // cliDriver is how one CLI is run and its output read.
 type cliDriver struct {
-	args     []string
-	stdin    string
-	keepKeys bool              // opencode talks to providers with API keys; the others bill a subscription
-	env      map[string]string // extra environment (opencode's permissions)
-	line     func(line []byte, out *logSink)
-	finish   func(stdout []byte) (answer string, structured json.RawMessage, tokens tokenUse, err error)
-	isStream bool
-	// errLine reads a line of standard error while the CLI runs; an error
-	// stops it at once and is the job's failure (opencode's spent model).
-	errLine func(line []byte) error
-	// sessionID is the CLI's own id for the run, once it has said (claude's
-	// session_id), and names the transcript it leaves behind.
+	args      []string
+	stdin     string
+	keepKeys  bool
+	env       map[string]string
+	line      func(line []byte, out *logSink)
+	finish    func(stdout []byte) (answer string, structured json.RawMessage, tokens tokenUse, err error)
+	isStream  bool
+	errLine   func(line []byte) error
 	sessionID string
-	// calls times the CLI's tool calls, where its output tells them apart
-	// (Claude Code); nil otherwise.
-	calls *callClock
+	calls     *callClock
 }
 
 // runnerCacheDir is where clones and work trees live.
@@ -206,7 +194,6 @@ func (p *runnerProc) resolveBase(ctx context.Context, bare, base string, env []s
 			return sha, nil
 		}
 	}
-	// A commit or a ref (refs/pull/N/head) the branch fetch didn't bring.
 	if _, err := p.gitIn(ctx, bare, nil, env, "fetch", "--quiet", "--", "origin", base); err == nil {
 		if sha := try("FETCH_HEAD"); sha != "" {
 			return sha, nil
@@ -227,8 +214,6 @@ func (p *runnerProc) checkJobRefs(ctx context.Context, in agentJob) error {
 			return fmt.Errorf("the %s %q isn't a valid git name", r.what, r.v)
 		}
 	}
-	// An audit's paths become pathspecs: none may carry git's pathspec
-	// magic (":"), look like an option or climb out of the checkout.
 	for _, v := range append(slices.Clone(in.DiffPaths), in.DiffExclude...) {
 		if v == "" || strings.HasPrefix(v, ":") || strings.HasPrefix(v, "-") || strings.HasPrefix(v, "/") || slices.Contains(strings.Split(v, "/"), "..") ||
 			strings.ContainsFunc(v, func(c rune) bool { return c < ' ' || c == 0x7f || c == '\\' }) {
@@ -248,8 +233,6 @@ func (p *runnerProc) checkJobRefs(ctx context.Context, in agentJob) error {
 
 // execAgent runs an agent, review or audit job.
 func (p *runnerProc) execAgent(ctx context.Context, run *jobRun, kind string, in agentJob) (o outcome) {
-	// An audit's Haiku helpers (runner_helpers.go): how each went goes in
-	// the result however the job ends.
 	var hx *helperEnv
 	defer func() {
 		if hx != nil {
@@ -275,8 +258,6 @@ func (p *runnerProc) execAgent(ctx context.Context, run *jobRun, kind string, in
 	if in.Patch != "" {
 		return p.execPatch(ctx, run, in)
 	}
-	// An audit's model may be the gateway's (WP-617): no CLI of
-	// this machine runs it, the gateway does, over the checkout made here.
 	gateway := kind == "audit" && in.CLI == gatewayCLI
 	var bin, path string
 	if !gateway {
@@ -313,22 +294,15 @@ func (p *runnerProc) execAgent(ctx context.Context, run *jobRun, kind string, in
 	}
 	pushed := false
 	defer func() {
-		// Even after a cancel or timeout: the work tree goes, and a pushed
-		// branch's local copy with it.
 		bg := context.WithoutCancel(ctx)
 		_, _ = p.git(bg, bare, "worktree", "remove", "--force", work)
 		_ = os.RemoveAll(work)
-		_ = os.Remove(work + ".schema.json") // the codex driver's sibling file
+		_ = os.Remove(work + ".schema.json")
 		_, _ = p.git(bg, bare, "worktree", "prune")
 		if pushed && in.Branch != "" {
 			_, _ = p.git(bg, bare, "branch", "-D", "--", in.Branch)
 		}
 	}()
-	// keepTranscripts is registered after the removal above and before the
-	// helpers' finish below. Defers run last in, first out, so it runs after
-	// the helpers finish (their sessions are written) and before the checkout
-	// is removed; moving either defer breaks that. The job's transcripts are
-	// kept on every way out, a timeout or a cancel included.
 	started := time.Now()
 	var jobDrv *cliDriver
 	defer func() { o = p.keepTranscripts(ctx, run, in, work, started, jobDrv, o) }()
@@ -343,8 +317,6 @@ func (p *runnerProc) execAgent(ctx context.Context, run *jobRun, kind string, in
 	fmt.Fprintf(run.out, "Checked out %s at %s\n", orStr(in.Base, "the default branch"), baseSHA[:min(len(baseSHA), 12)])
 
 	if in.perm() == "read" {
-		// A pull request can add a link to anywhere on this machine; a read-only
-		// checkout is only ever read, so the ones that leave it go.
 		if gone, err := removeEscapingLinks(work); err != nil {
 			return failed("can't make the checkout safe to read: %v", err)
 		} else if len(gone) > 0 {
@@ -373,7 +345,6 @@ func (p *runnerProc) execAgent(ctx context.Context, run *jobRun, kind string, in
 		}
 		changeCommits = ch.commits
 		if ch.empty {
-			// Nothing to read: no model runs, and none of its quota goes.
 			why := ch.nothing(in.DiffSince > 0)
 			fmt.Fprintf(run.out, "%s\n", why)
 			return outcome{State: "done", Result: map[string]any{"nothing": why, "answer": "", "cli": in.CLI, "base": baseSHA, "diff_from": diffFrom,
@@ -384,9 +355,6 @@ func (p *runnerProc) execAgent(ctx context.Context, run *jobRun, kind string, in
 			ch.commits, map[bool]string{true: "", false: "s"}[ch.commits == 1], len(change))
 	}
 	if in.Helpers != nil {
-		// The panel reads the change beside the model, which is told nothing
-		// of it (runner_helpers.go): finish waits for it and takes its runs on every
-		// return from here, before attach puts its runs in the result.
 		hx = p.newHelpers(run, in.Helpers, work)
 		hx.startPanel(ctx, change, changeRange)
 		defer hx.finish()
@@ -418,7 +386,6 @@ func (p *runnerProc) execAgent(ctx context.Context, run *jobRun, kind string, in
 	jobDrv = drv
 	fmt.Fprintf(run.out, "Running %s%s\n\n", bin, map[string]string{"read": " (read only)", "edit_run": " (may run commands)"}[in.perm()])
 
-	// stop ends the CLI early with a reason (errLine), apart from a timeout or cancel.
 	runCtx, stop := context.WithCancelCause(ctx)
 	defer stop(nil)
 	cmd := procCommand(runCtx, path, drv.args...)
@@ -458,8 +425,6 @@ func (p *runnerProc) execAgent(ctx context.Context, run *jobRun, kind string, in
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		timedOut := outcome{State: "failed", Error: fmt.Sprintf("The %s timed out after %s and was stopped.", bin, clock.timedOutAfter())}
 		if spent := drv.calls.spent(); spent != "" {
-			// Where the time went, for whoever reads the failure and for the
-			// round that takes over.
 			fmt.Fprintf(run.out, "\n%s\n", spent)
 			timedOut.Error += " " + spent
 		}
@@ -504,7 +469,15 @@ func (p *runnerProc) execAgent(ctx context.Context, run *jobRun, kind string, in
 		hx.join(ctx, result)
 	}
 	if !in.ReadOnly {
-		return p.deliver(ctx, run, in, bare, work, env, baseSHA, result, &pushed)
+		// Only for an agent that could already run commands, outside a
+		// confined CLI: the script is the agent's copy, so running it for an
+		// edit-only or confined agent would give it the shell it was denied,
+		// with the runner's environment (audit #1748.1).
+		var chk *prePushCheck
+		if in.perm() == "edit_run" && !in.Confine && in.Patch == "" {
+			chk = &prePushCheck{env: cmd.Env, fix: p.prePushFix(run, in, path, work, cmd.Env)}
+		}
+		return p.deliver(ctx, run, in, bare, work, env, baseSHA, result, &pushed, chk)
 	}
 	return outcome{State: "done", Result: result}
 }
@@ -525,19 +498,16 @@ func (p *runnerProc) salvage(ctx context.Context, run *jobRun, in agentJob, bare
 	defer cancel()
 	result := map[string]any{"answer": "", "cli": in.CLI, "base": baseSHA, "commits": []string{}, "timed_out": true}
 	timedOut.Result = result
-	// The CLI's process group is gone, but one of its git commands may have
-	// left its lock behind.
 	if dir, err := p.git(ctx, work, "rev-parse", "--absolute-git-dir"); err == nil {
 		_ = os.Remove(filepath.Join(dir, "index.lock"))
 	}
 	if left, _ := p.gitPaths(ctx, work, "status", "--porcelain", "--no-renames"); len(left) > 0 {
-		for i, l := range left { // "XY path"
+		for i, l := range left {
 			left[i] = l[min(len(l), 3):]
 		}
 		result["uncommitted"] = left[:min(len(left), 50)]
 		fmt.Fprintf(run.out, "\nThe agent ran out of time with %d file%s changed and not committed; they are dropped\n", len(left), map[bool]string{true: "", false: "s"}[len(left) == 1])
 	}
-	// A rebase it was in the middle of leaves HEAD off the branch: back to it.
 	_, _ = p.git(ctx, work, "rebase", "--abort")
 	if _, err := p.git(ctx, work, "reset", "--hard", "--quiet", "HEAD"); err != nil {
 		fmt.Fprintf(run.out, "\nCouldn't set aside what the agent left uncommitted, so nothing was pushed: %v\n", err)
@@ -551,7 +521,7 @@ func (p *runnerProc) salvage(ctx context.Context, run *jobRun, in agentJob, bare
 		return timedOut
 	}
 	fmt.Fprintf(run.out, "\nThe agent ran out of time; delivering the commits it had made\n")
-	if d := p.deliver(ctx, run, in, bare, work, env, baseSHA, result, pushed); d.State != "done" {
+	if d := p.deliver(ctx, run, in, bare, work, env, baseSHA, result, pushed, nil); d.State != "done" {
 		timedOut.Error += " Its commits weren't pushed: " + excerpt(d.Error, 300)
 	}
 	return timedOut
@@ -561,20 +531,15 @@ func (p *runnerProc) salvage(ctx context.Context, run *jobRun, in agentJob, bare
 // left uncommitted is committed, changes to protected files are held back,
 // and the branch is pushed. result gains what was done; pushed is set once
 // the branch is on the remote.
-func (p *runnerProc) deliver(ctx context.Context, run *jobRun, in agentJob, bare, work string, env []string, baseSHA string, result map[string]any, pushed *bool) outcome {
-	{ // at the depth it had in execAgent, so the lines keep their history
-		if status, _ := p.git(ctx, work, "status", "--porcelain"); status != "" {
-			msg := strings.TrimSpace(in.CommitMessage)
-			if msg == "" {
-				msg = "Agent changes"
-			}
-			fmt.Fprintf(run.out, "\nCommitting the changes the agent left\n")
-			if _, err := p.git(ctx, work, "add", "-A"); err != nil {
-				return p.partial(result, "git add failed: %v", err)
-			}
-			if _, err := p.commit(ctx, work, msg, true); err != nil {
-				return p.partial(result, "committing the agent's changes failed: %v", err)
-			}
+func (p *runnerProc) deliver(ctx context.Context, run *jobRun, in agentJob, bare, work string, env []string, baseSHA string, result map[string]any, pushed *bool, chk *prePushCheck) outcome {
+	{
+		if err := p.commitLeft(ctx, run, in, work); err != nil {
+			return p.partial(result, "%v", err)
+		}
+		ctx, cancel := p.prePush(ctx, run, in, work, baseSHA, chk, result)
+		defer cancel()
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return outcome{State: "cancelled", Error: "Stopped."}
 		}
 		revs, err := p.git(ctx, work, "rev-list", "--reverse", baseSHA+"..HEAD")
 		if err != nil {
@@ -584,16 +549,11 @@ func (p *runnerProc) deliver(ctx context.Context, run *jobRun, in agentJob, bare
 		result["commits"] = commits
 		files := []string{}
 		if len(commits) > 0 {
-			// --no-renames: a rename lists both its paths, so moving a
-			// protected file away counts as changing it (WP-415). -z keeps
-			// names with spaces or odd letters whole and unquoted.
 			names, err := p.gitPaths(ctx, work, "diff", "--name-only", "--no-renames", baseSHA+"..HEAD")
 			if err != nil {
 				return p.partial(result, "%v", err)
 			}
 			files = append(files, names...)
-			// What the agent changed, for whoever takes over from it (a
-			// babysit round on a stronger model reads the earlier rounds').
 			if diff, err := p.git(ctx, work, "diff", baseSHA+"..HEAD"); err == nil {
 				result["diff"] = capDiff(diff, maxResultDiff)
 			}
@@ -621,20 +581,21 @@ func (p *runnerProc) deliver(ctx context.Context, run *jobRun, in agentJob, bare
 			}
 		}
 		if len(bad) > 0 {
-			// Per file (WP-ADR138): what the round's agent changed in a
-			// protected file is held for a check and the rest still goes.
 			h, ok := p.holdProtected(ctx, work, in, baseSHA, bad, mc, result)
 			if !ok {
 				return p.partial(result, "The agent changed protected files (%s), so nothing was pushed.", strings.Join(bad, ", "))
 			}
 			if h == nil {
-				// A conflict settled with a line of its own: nothing of the
-				// round goes, and the server decides the held change.
 				fmt.Fprintf(run.out, "The agent's change to protected files (%s) is held for a check, so nothing was pushed.\n", strings.Join(bad, ", "))
 				return outcome{State: "done", Result: result}
 			}
 			commits, files = h.commits, h.files
 			result["commits"], result["files"] = commits, files
+			// The check ran on the agent's protected changes, which are now
+			// taken out: its verdict is not on what is pushed.
+			if v, ok := result["pre_push"].(string); ok {
+				result["pre_push"] = "not run on the pushed commits: protected files were restored after it (it had " + v + ")"
+			}
 		}
 		if len(commits) > 0 {
 			result["commit"] = commits[len(commits)-1]
@@ -708,8 +669,8 @@ func (p *runnerProc) periodStart(ctx context.Context, work, base string, since i
 type auditRange struct {
 	from, to       string
 	paths, exclude []string
-	commits        int // in the paths asked for
-	landed         int // all of them
+	commits        int
+	landed         int
 	empty          bool
 	// files are the files the diff touches as git lists them, a rename by
 	// its new name: the names themselves, not read back out of the diff,
@@ -786,7 +747,6 @@ func (p *runnerProc) auditDiff(ctx context.Context, work string, r *auditRange, 
 		return fail(err)
 	}
 	if strings.TrimSpace(diff) == "" {
-		// Commits that touched only noise count as landed too.
 		r.empty = true
 		all, err := p.git(ctx, work, "rev-list", "--count", "--no-merges", countRng)
 		if err != nil {
@@ -795,8 +755,6 @@ func (p *runnerProc) auditDiff(ctx context.Context, work string, r *auditRange, 
 		r.landed, _ = strconv.Atoi(strings.TrimSpace(all))
 		return "", nil
 	}
-	// -z goes before the pathspecs (gitPaths puts it last, where it would
-	// be one).
 	list, err := p.gitRaw(ctx, work, nil, nil, append([]string{"diff", "--name-only", "-z", rng, "--"}, spec...)...)
 	if err != nil {
 		return fail(err)
@@ -872,9 +830,6 @@ func writeAuditChange(work, diff, stat string, names []string) (perFile bool, er
 		if !filepath.IsLocal(name) {
 			continue
 		}
-		// Files foo and foo.diff/bar would need diff/foo.diff to be a file
-		// and a directory: then no per-file parts at all, and the audit
-		// goes on with the whole diff.
 		if root.MkdirAll(filepath.Dir(file), 0o750) != nil || root.WriteFile(file, []byte(strings.TrimRight(parts[i], "\n")+"\n"), 0o600) != nil {
 			_ = root.RemoveAll(filepath.Join(auditChangeDir, "diff"))
 			return false, nil
@@ -987,7 +942,6 @@ func (p *runnerProc) notOnBase(ctx context.Context, bare, work string, env []str
 	}
 	var out []string
 	for _, f := range files {
-		// Literal pathspecs: a file named "*" or ":(exclude)x" is just that file.
 		if _, err := p.git(ctx, work, "--literal-pathspecs", "diff", "--quiet", main, "HEAD", "--", f); err != nil {
 			out = append(out, f)
 		}
@@ -1018,8 +972,6 @@ func (p *runnerProc) notMerged(ctx context.Context, bare, work string, env []str
 	if err != nil {
 		return mergeCheck{keep: files}
 	}
-	// A merge with conflicts exits 1, its tree still written and the
-	// conflicted files listed after it.
 	out, err := p.gitRaw(ctx, work, nil, nil, "merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", from, main)
 	fields := strings.Split(out, "\x00")
 	tree := strings.TrimSpace(fields[0])
@@ -1030,11 +982,10 @@ func (p *runnerProc) notMerged(ctx context.Context, bare, work string, env []str
 	mc := mergeCheck{tree: tree, main: main}
 	show := func(rev, f string) string {
 		s, _ := p.gitRaw(ctx, work, nil, nil, "--literal-pathspecs", "show", rev+":"+f)
-		return s // a file that isn't there reads as empty
+		return s
 	}
 	for _, f := range files {
 		if slices.Contains(conflicted, f) {
-			// The merge's tree holds the file as git left it, markers and all.
 			if resolutionIsTheMerge(show("HEAD", f), show(tree, f)) {
 				continue
 			}
@@ -1061,10 +1012,10 @@ func (p *runnerProc) mergeDropped(ctx context.Context, bare, work string, env []
 		return mergeCheck{}
 	}
 	if _, err := p.git(ctx, work, "merge-base", "--is-ancestor", main, "HEAD"); err != nil {
-		return mergeCheck{} // the round didn't merge it
+		return mergeCheck{}
 	}
 	if _, err := p.git(ctx, work, "merge-base", "--is-ancestor", main, from); err == nil {
-		return mergeCheck{} // the branch had it already
+		return mergeCheck{}
 	}
 	names, err := p.gitPaths(ctx, work, "diff", "--name-only", "--no-renames", from+"..."+main)
 	if err != nil {
@@ -1103,9 +1054,6 @@ func (p *runnerProc) holdProtected(ctx context.Context, work string, in agentJob
 			return nil, false
 		}
 		result["held_patch"], result["held_files"], result["held_all"] = patch, bad, true
-		// How each conflict was settled, from the file as the merge left it
-		// (markers and all): a side's line dropped shows here, where the
-		// patch from the branch may not show it at all (audit #1091.1).
 		if mc.tree != "" {
 			margs := append([]string{"--literal-pathspecs", "diff", "--no-renames", mc.tree, "HEAD", "--"}, mc.conflicted...)
 			if m, err := p.gitRaw(ctx, work, nil, nil, margs...); err == nil && m != "" {
@@ -1114,8 +1062,6 @@ func (p *runnerProc) holdProtected(ctx context.Context, work string, in agentJob
 		}
 		return nil, true
 	}
-	// The files as a merge of the target leaves them, where the round merged
-	// it; as the branch had them otherwise.
 	src := baseSHA
 	if mc.tree != "" {
 		if _, err := p.git(ctx, work, "merge-base", "--is-ancestor", mc.main, "HEAD"); err == nil {
@@ -1146,7 +1092,7 @@ func (p *runnerProc) holdProtected(ctx context.Context, work string, in agentJob
 	h := &held{commits: []string{}, files: []string{}}
 	delete(result, "diff")
 	if _, err := p.git(ctx, work, "diff", "--cached", "--quiet"); err == nil {
-		return h, true // nothing but the protected files
+		return h, true
 	}
 	msg := strings.TrimSpace(in.CommitMessage)
 	if msg == "" {
@@ -1230,8 +1176,6 @@ func (p *runnerProc) cliInfo(name string) *runnerCLI {
 	}
 	return nil
 }
-
-// ---- reading CLI output ----
 
 // lineWriter calls fn for each line written; lines past 4 MB are cut.
 type lineWriter struct {

@@ -16,8 +16,6 @@ func TestFitPrepArmsAdjustsForCovariates(t *testing.T) {
 	var count [3]float64
 	for range 900 {
 		inHard := r.float() < 0.5
-		// The chat arm gets most of the hard project's tasks, no pointers
-		// most of the easy one's.
 		u, arm := r.float(), 2
 		switch {
 		case inHard && u < 0.7, !inHard && u < 0.1:
@@ -60,7 +58,6 @@ func TestFitPrepArmsAdjustsForCovariates(t *testing.T) {
 	if got := f.ArmN[0] + f.ArmN[1] + f.ArmN[2]; math.Abs(got-900) > 1e-6 || f.N != 900 {
 		t.Errorf("tasks counted: %v (%v)", f.ArmN, f.N)
 	}
-	// The chat arm is the best one, and the shares say so.
 	p := f.pBest([][]float64{{0, 0}, {1, 0}, {0, 1}})
 	if p[1] < 0.9 || p[2] > 0.01 {
 		t.Errorf("probability of being best: %v", p)
@@ -77,8 +74,6 @@ func TestFitPrepArmsNoData(t *testing.T) {
 	if f.Mean[0] != 0 || math.Abs(math.Sqrt(f.Cov[0][0])-prepEffectSD) > 1e-6 || f.N != 0 {
 		t.Fatalf("the prior: %+v", f)
 	}
-	// No pointers is best when both arms' effects are above zero: a quarter
-	// of the time, with nothing known of either.
 	p := f.pBest([][]float64{{0, 0}, {1, 0}, {0, 1}})
 	if math.Abs(p[0]-0.25) > 0.02 || math.Abs(p[1]-0.375) > 0.02 || math.Abs(p[2]-0.375) > 0.02 {
 		t.Errorf("probability of being best with no data: %v", p)
@@ -86,7 +81,6 @@ func TestFitPrepArmsNoData(t *testing.T) {
 	if p := f.pBest([][]float64{{0, 0}, {1, 0}}); math.Abs(p[0]-0.5) > 0.02 {
 		t.Errorf("with one arm's picks and no data: %v", p)
 	}
-	// A handful of tasks can't claim a tight estimate.
 	obs := []prepObs{{Y: 5, X: []float64{1}, Arm: []float64{1, 0}, W: 1}, {Y: 1, X: []float64{1}, Arm: []float64{0, 0}, W: 1}}
 	f = fitPrepArms([]string{prepArmChat, prepArmAgent}, obs, 0.9)
 	if f.pWorse(0, 0.1) > prepGuardP {
@@ -137,7 +131,6 @@ func TestPrepSharesAndDraw(t *testing.T) {
 			t.Errorf("pick at %v = %d, want %d", u, got, want)
 		}
 	}
-	// A task's place is fixed, and the places are even.
 	var low int
 	for id := int64(1); id <= 4000; id++ {
 		u := prepDraw(id)
@@ -215,7 +208,6 @@ func TestPrepMixFollowsAChange(t *testing.T) {
 	if lo > -0.3 || hi < -0.3 || hi-lo > 0.45 {
 		t.Errorf("steady effect: [%.2f, %.2f], want -0.3 inside", lo, hi)
 	}
-	// A guard's outcome is aged as the primary's forecasts say.
 	g := fitPrepMix(arms, steady, 0.9, m.W)
 	if &g.W[0] != &m.W[0] {
 		t.Error("a guard worked out its own weights")
@@ -243,7 +235,6 @@ func TestPrepGuardFalseBlocks(t *testing.T) {
 	if rate := float64(blocked) / sets; rate > 0.03 {
 		t.Errorf("an arm with no effect was taken out in %.1f%% of sets", rate*100)
 	}
-	// And one that is worse by a half is.
 	obs := prepSeries(r, 30, 12, func(int) float64 { return 0.7 })
 	m := fitPrepMix(arms, obs, 1.0, even)
 	if m.pWorse(0, 0.10) <= prepGuardP {
@@ -269,7 +260,6 @@ func TestInvertSPD(t *testing.T) {
 			}
 		}
 	}
-	// Two columns that say the same thing don't stop it.
 	inv = invertSPD([][]float64{{1, 1}, {1, 1}})
 	if math.IsNaN(inv[0][0]) || math.IsInf(inv[0][0], 0) {
 		t.Errorf("a singular matrix: %v", inv)

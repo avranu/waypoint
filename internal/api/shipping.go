@@ -108,7 +108,7 @@ func (s *Server) openPull(w http.ResponseWriter, r *http.Request) (any, error) {
 // both. Best effort: a task that can't be skimmed just shows nothing.
 func (s *Server) putOffAfterOpen(ctx context.Context, actor *core.Actor, issue string, reviewed bool) *core.PutOffSteps {
 	p, err := s.svc.PutOffSteps(ctx, actor, issue)
-	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, core.ErrNotFound) && !errors.Is(err, core.ErrForbidden) { // not seen: nothing shown
+	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, core.ErrNotFound) && !errors.Is(err, core.ErrForbidden) {
 		s.log.WarnContext(ctx, "read the steps put off in a task", "issue", issue, "err", err)
 	}
 	if p == nil || !reviewed {

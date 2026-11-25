@@ -20,7 +20,6 @@ func TestObjectiveUntilAFixedTarget(t *testing.T) {
 	if want := "until `go test ./internal/core` runs in under 1s"; ob.Summary != want {
 		t.Errorf("summary = %q, want %q", ob.Summary, want)
 	}
-	// Nothing is handed out before Waypoint has read where it starts.
 	if next, wait := o.queued(task.Key); next || !strings.Contains(wait, "reading where its objective starts") {
 		t.Fatalf("before the baseline: next %v, waits %q", next, wait)
 	}
@@ -36,7 +35,6 @@ func TestObjectiveUntilAFixedTarget(t *testing.T) {
 		t.Fatalf("round 1 isn't handed out: %q", wait)
 	}
 
-	// Round 1. The worker says it is met; Waypoint reads 1.4s.
 	if _, err := o.s.AgentTake(o.ctx, o.ag, task.Key, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +72,6 @@ func TestObjectiveUntilAFixedTarget(t *testing.T) {
 	}
 	hasAll(t, "round 1's reading", ob.Verdict.Line, "1.4s", "33% lower")
 
-	// Round 2 meets it: the task closes.
 	o.worked(task.Key)
 	o.read(ObjectiveJobResult{Head: shaC, Base: shaB, Reading: timed(0.8), BaseReading: timed(1.4), P: ptrOf(0.001)})
 	ob = o.obj(task.Key)
@@ -113,7 +110,6 @@ func TestObjectiveIgnoresWhatTheWorkerReports(t *testing.T) {
 	if got := o.status(task.Key); got == "Done" {
 		t.Fatal("the worker's own reading closed the task")
 	}
-	// There is nothing more for the worker to finish while it is read.
 	if _, err := o.s.AgentDone(o.ctx, o.ag, task.Key, AgentDoneInput{}); !IsInvalid(err) {
 		t.Errorf("a second done while it is read: %v", err)
 	}
@@ -149,7 +145,6 @@ func TestObjectiveBacksOffWhenRoundsMoveNothing(t *testing.T) {
 	if next, wait := o.queued(task.Key); next || !strings.HasPrefix(wait, WaitObjective+": Round 2") {
 		t.Fatalf("queue: next %v, %q", next, wait)
 	}
-	// Moving it to In Progress doesn't get it handed out early.
 	ip := "In Progress"
 	if _, err := o.s.UpdateIssue(o.ctx, o.ag, task.Key, IssuePatch{Status: &ip}); err != nil {
 		t.Fatal(err)
@@ -161,20 +156,17 @@ func TestObjectiveBacksOffWhenRoundsMoveNothing(t *testing.T) {
 	if _, err := o.s.UpdateIssue(o.ctx, o.admin, task.Key, IssuePatch{Status: &todo}); err != nil {
 		t.Fatal(err)
 	}
-	// A person naming it in a session they drive takes it early.
 	o.worked(task.Key)
 	o.read(ObjectiveJobResult{Head: shaC, Base: shaB, Reading: val(61), BaseReading: val(61), Exact: true})
 	if ob = o.obj(task.Key); ob.Stalled != 2 || ob.NextAt.Sub(o.clockNow()) != 2*time.Hour {
 		t.Fatalf("after two: stalled %d next %v", ob.Stalled, ob.NextAt)
 	}
-	// A person ends the wait.
 	if ob, err := o.s.ObjectiveGo(o.ctx, o.admin, task.Key, ObjectiveNext); err != nil || ob.NextAt != nil {
 		t.Fatalf("next: %+v, %v", ob, err)
 	}
 	if next, wait := o.queued(task.Key); !next {
 		t.Fatalf("after the person ended the wait: %q", wait)
 	}
-	// A round that gains clears it.
 	o.worked(task.Key)
 	o.read(ObjectiveJobResult{Head: shaD, Base: shaC, Reading: val(70), BaseReading: val(61), Exact: true})
 	if ob = o.obj(task.Key); ob.Stalled != 0 || ob.NextAt != nil || ob.Round != 4 || ob.Rounds[2].Outcome != RoundProgress {
@@ -192,7 +184,6 @@ func TestObjectiveEachRoundNeverEnds(t *testing.T) {
 	if ob.Kind != "each" || ob.Every != 24*3600 {
 		t.Fatalf("objective = %+v", ob)
 	}
-	// Its starting point never meets it: there is nothing to be twice as fast as.
 	o.read(ObjectiveJobResult{Head: shaA, Reading: timed(1.0)})
 	if ob = o.obj(task.Key); ob.State != ObjectiveActive || ob.Phase != PhaseWork {
 		t.Fatalf("after the baseline: %s %s", ob.State, ob.Phase)
@@ -209,7 +200,6 @@ func TestObjectiveEachRoundNeverEnds(t *testing.T) {
 	if ob = o.obj(task.Key); ob.Rounds[1].Outcome != RoundNone || ob.Stalled != 1 {
 		t.Fatalf("noise counted as a gain: %+v", ob.Rounds[1])
 	}
-	// The person closes it themselves: that stands.
 	done := "Done"
 	if _, err := o.s.UpdateIssue(o.ctx, o.admin, task.Key, IssuePatch{Status: &done}); err != nil {
 		t.Fatal(err)
@@ -256,7 +246,6 @@ func TestObjectiveRoundWithNothingLandedIsStillOwed(t *testing.T) {
 	o.read(ObjectiveJobResult{Head: shaA, Reading: passed(false)})
 	for n := 1; n <= 3; n++ {
 		o.worked(task.Key)
-		// The branch is where it was: only the head is read again.
 		if j := o.read(ObjectiveJobResult{Head: shaA, Base: shaA, Reading: passed(false)}); j.Base != shaA {
 			t.Fatalf("job base = %q", j.Base)
 		}
@@ -269,7 +258,6 @@ func TestObjectiveRoundWithNothingLandedIsStillOwed(t *testing.T) {
 		}
 		o.setClock(ob.NextAt.Add(time.Minute))
 	}
-	// Its people hear that it isn't moving.
 	if told := o.told(NotifyObjective); len(told) != 1 || !strings.Contains(told[0], "3 rounds") {
 		t.Errorf("told = %q", told)
 	}

@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// Chain entries that name a coding agent on a runner (WP-6).
-
 const museModel = "opencode/muse-spark-1.3-contributor-free"
 
 type chainResult struct {
@@ -142,8 +140,6 @@ func TestRunChainWithoutARunnerIsUnavailable(t *testing.T) {
 	ae, _ := runnerChainEnv(t)
 	pid := ae.providerID()
 	ae.llm.answers[museModel] = `{"findings":[]}`
-	// Bob's only runner has opencode; the rule is bob's, and claude isn't on it. The admin's
-	// runner (which has claude) never serves it.
 	bob := ae.user("bob", false)
 	ae.runner(bob, "bobbox", func(r *RunnerRegistration) {
 		r.CLIs = []RunnerCLI{{Name: "opencode"}}
@@ -204,12 +200,12 @@ func TestRunnerGate(t *testing.T) {
 		ok           bool
 		why          string
 	}{
-		{"robin", "me/app", true, ""},           // the project's owner
-		{"EDDIE", "ME/app", true, ""},           // an editor, any case
-		{"vic", "me/app", false, "member"},      // a viewer can't edit
-		{"mallory", "me/app", false, "member"},  // a stranger with push access
-		{"robin", "mallory/app", false, "fork"}, // a member's name on a fork
-		{"robin", "", false, "fork"},            // the forge didn't say
+		{"robin", "me/app", true, ""},
+		{"EDDIE", "ME/app", true, ""},
+		{"vic", "me/app", false, "member"},
+		{"mallory", "me/app", false, "member"},
+		{"robin", "mallory/app", false, "fork"},
+		{"robin", "", false, "fork"},
 		{"", "me/app", false, "member"},
 	} {
 		got := gate(c.author, c.head)
@@ -217,7 +213,6 @@ func TestRunnerGate(t *testing.T) {
 			t.Errorf("gate(%q, %q) = %q", c.author, c.head, got)
 		}
 	}
-	// A stranger's comment in a thread keeps it off the runners; a member's or a bot's doesn't.
 	scope := func() *runnerScope { return &runnerScope{owner: ae.admin.User.ID} }
 	thread := func(authors ...string) []ReviewThread {
 		var cs []ThreadComment
@@ -247,7 +242,6 @@ func TestRunChainNeedsAnOwner(t *testing.T) {
 	if r.err != nil || r.attempts[0].Outcome != "unavailable" || !strings.Contains(r.attempts[0].Error, "no owner for runners: save it yourself") || r.attempts[1].Outcome != "ok" {
 		t.Fatalf("result = %+v", r)
 	}
-	// No bot run at all (Admin → AI's tasks): unavailable too.
 	r = ae.result(ae.startChain(ae.ctx, []ChainModel{{CLI: "claude"}}))
 	if r.err == nil || r.attempts[0].Outcome != "unavailable" {
 		t.Fatalf("result = %+v", r)
@@ -278,7 +272,7 @@ func TestRunChainCancelsAJobThatOutlastsItsTime(t *testing.T) {
 	pid := ae.providerID()
 	ae.llm.answers[museModel] = `{"findings":[]}`
 	done := ae.startChain(ctx, []ChainModel{{CLI: "claude"}, {ProviderID: pid, Model: museModel}})
-	claim := ae.takeSoon() // taken, never finished
+	claim := ae.takeSoon()
 	r := ae.result(done)
 	if r.err != nil || r.attempts[0].Outcome != "timeout" || r.attempts[1].Outcome != "ok" {
 		t.Fatalf("result = %+v", r)
@@ -324,7 +318,6 @@ func TestChainEntriesWithACLIAreChecked(t *testing.T) {
 	pe := newPREnv(t, "github")
 	chain, _ := pe.s.taskChain(pe.ctx, "review")
 	pid := chain[0].ProviderID
-	// Admin → AI's tasks have no owner whose runner could serve them.
 	if err := pe.s.SetAITask(pe.ctx, pe.admin, "review", pid, museModel, []ChainModel{{CLI: "claude"}}); err == nil || !strings.Contains(err.Error(), "runner") {
 		t.Errorf("an AI task took a CLI entry: %v", err)
 	}
@@ -369,7 +362,6 @@ func TestChainEntriesWithACLIAreChecked(t *testing.T) {
 			}
 		}
 	}
-	// ask_model has the same editor but no runner scope: refused when saved.
 	ask := Rule{Trigger: Trigger{Event: "manual"}, Actions: []Action{{Type: "ask_model", Extra: map[string]any{"prompt": "hi"},
 		Models: []ChainModel{{CLI: "claude"}}}}}
 	if _, err := pe.s.CreateAutomation(pe.ctx, pe.admin, pe.p.Key, AutomationInput{Name: str("Ask"), Rule: &ask}); err == nil {
@@ -440,10 +432,9 @@ func TestReviewRuleOnARunner(t *testing.T) {
 func TestOldRunnersNeverGetAReview(t *testing.T) {
 	ae, ctx := runnerChainEnv(t)
 	bob := ae.user("bob", false)
-	old := ae.runner(bob, "oldbox", func(r *RunnerRegistration) { r.CLIs = []RunnerCLI{{Name: "claude"}} }) // reports no features
+	old := ae.runner(bob, "oldbox", func(r *RunnerRegistration) { r.CLIs = []RunnerCLI{{Name: "claude"}} })
 	pid := ae.providerID()
 	ae.llm.answers[museModel] = `{"findings":[]}`
-	// The pre-check says why and the chain moves on.
 	bctx := withRunnerScope(ae.ctx, &runnerScope{owner: bob.User.ID, repo: "https://git.example.com/me/app.git", base: "abc", runID: 21, attempt: 1})
 	r := ae.result(ae.startChain(bctx, []ChainModel{{CLI: "claude"}, {ProviderID: pid, Model: museModel}}))
 	if r.err != nil || r.attempts[0].Outcome != "unavailable" ||
@@ -453,7 +444,6 @@ func TestOldRunnersNeverGetAReview(t *testing.T) {
 	if w := ae.rpoll(bob, old); w.Job != nil {
 		t.Fatalf("the old runner was given a job: %+v", w.Job)
 	}
-	// A review job queued anyway (while a confining runner existed) is still withheld from it.
 	newer := ae.runner(bob, "newbox", func(r *RunnerRegistration) {
 		r.CLIs = []RunnerCLI{{Name: "claude"}}
 		r.Features = []string{FeatureConfine}
@@ -470,7 +460,6 @@ func TestOldRunnersNeverGetAReview(t *testing.T) {
 	if in := agentJobOf(t, w.Job); !in.Confine {
 		t.Errorf("the job isn't marked Confine: %+v", in)
 	}
-	// Enqueuing with only the old runner left names the reason.
 	ae.s.DeleteRunner(ae.ctx, bob, newer.ID)
 	_, err := ae.s.EnqueueRunnerJob(ae.ctx, &Actor{User: &User{ID: 0, Username: "system"}}, RunnerJobInput{Kind: JobReview, OwnerID: bob.User.ID, Input: raw})
 	if err == nil || !strings.Contains(err.Error(), "older wp") {

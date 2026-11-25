@@ -136,7 +136,7 @@ func waitForFile(t *testing.T, cfg string) bool {
 	t.Helper()
 	for range 400 {
 		if m, _ := filepath.Glob(filepath.Join(cfg, "projects", "*-job7-*", "s1.jsonl")); len(m) == 1 {
-			time.Sleep(200 * time.Millisecond) // the init line, written first, has been read
+			time.Sleep(200 * time.Millisecond)
 			return true
 		}
 		time.Sleep(25 * time.Millisecond)
@@ -155,7 +155,6 @@ func TestTimedOutAndCancelledAgentJobsKeepTheirTranscripts(t *testing.T) {
 		t.Errorf("sidecar error = %q", meta.Error)
 	}
 
-	// the runner is stopped
 	cfg2, p2, remote2 := keepSetup(t, "hang")
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { waitForFile(t, cfg2); cancel() }()
@@ -165,7 +164,6 @@ func TestTimedOutAndCancelledAgentJobsKeepTheirTranscripts(t *testing.T) {
 		t.Errorf("sidecar error = %q", meta.Error)
 	}
 
-	// a person cancelled it: the sidecar says what the server will be told
 	cfg3, p3, remote3 := keepSetup(t, "hang")
 	ctx, cancel = context.WithCancel(context.Background())
 	run := keepRun(time.Minute)
@@ -211,7 +209,7 @@ func TestAgentJobUploadsItsTranscriptsAtTheEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ov.Totals.Messages != 3 { // the two sessions' main threads and the sub-agent's
+	if ov.Totals.Messages != 3 {
 		t.Errorf("messages on the server = %d\nlog:\n%s", ov.Totals.Messages, run.out.text())
 	}
 	if strings.Contains(run.out.text(), "did not finish") {

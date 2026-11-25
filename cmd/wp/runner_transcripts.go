@@ -11,25 +11,6 @@ import (
 	"time"
 )
 
-// A job's transcripts outlive it. The agent, review and audit jobs run
-// Claude Code in a checkout that is removed when the job ends, and Claude Code
-// files a session under <config>/projects by the directory it ran in (the
-// config directory is CLAUDE_CONFIG_DIR, else ~/.claude). It used to run with
-// --no-session-persistence, so nothing was filed: a job's spend could not be
-// attributed, and what a round did before it timed out could not be read. Now
-// the session is kept, in the layout every other session uses, where `wp usage
-// sync` (the runner's own timer, hooks, by hand) archives it (WP-1466) and
-// Claude Code's retention (cleanupPeriodDays, 30 days unless settings.json in
-// that config directory says otherwise) bounds the copy on this disk.
-// keepTranscripts also writes a sidecar beside the transcripts, puts the main
-// run's session id and the directory in the job's result (the link from the
-// server's record of the job to its archived transcript) and sends the job's
-// sessions to the server at once, before the checkout goes and however the job
-// ended. An audit's helper runs (runner_helpers.go haikuRun) run in the same
-// checkout, so their sessions are filed in the same project directory, listed
-// in the sidecar's `sessions` and uploaded with it; `session_id` names the
-// main run's session only.
-
 // jobSidecarFile is the sidecar's name in the job's project directory. It is
 // not a .jsonl file, so no transcript reader mistakes it for a session.
 const jobSidecarFile = "wp-job.json"
@@ -94,7 +75,6 @@ func withLink(o outcome, link map[string]any) outcome {
 // digits turned into "-">. The checkout's name (job<id>-<number>) is the same
 // either way, and no other job's ends with it.
 func jobProjectDir(configDir, work string) string {
-	// ReadDir, not Glob: a [ in the config directory is a path, not a pattern
 	projects := filepath.Join(configDir, "projects")
 	entries, err := os.ReadDir(projects)
 	if err != nil {
@@ -135,16 +115,15 @@ func (p *runnerProc) keepTranscripts(ctx context.Context, run *jobRun, in agentJ
 	}
 	proj := jobProjectDir(dir, work)
 	if proj == "" {
-		if drv != nil { // silent when the job ended before the CLI was built
+		if drv != nil {
 			fmt.Fprintf(run.out, "No transcript found for this job (session id %q) under %s\n", drv.sessionID, filepath.Join(dir, "projects"))
-			if drv.sessionID != "" { // no directory, so no sidecar, but the link to the session stands
+			if drv.sessionID != "" {
 				o = withLink(o, map[string]any{"session_id": drv.sessionID})
 			}
 		}
 		return o
 	}
 	mains := jobTranscripts(proj)
-	// the words the server will be told, unless a cancel comes during the upload (settled again below)
 	o = settleOutcome(ctx, run.cancelled, o)
 	meta := jobMeta{
 		Job: run.id, Kind: run.kind, Title: run.title, CLI: in.CLI, Model: in.Model, Effort: in.Effort,
@@ -160,16 +139,12 @@ func (p *runnerProc) keepTranscripts(ctx context.Context, run *jobRun, in agentJ
 	}
 	writeSidecar := func() {
 		if b, err := json.MarshalIndent(meta, "", "  "); err == nil {
-			// Through a rename: the job's own claude run can write here, and a
-			// link it left under this name is replaced, never written through (c6135).
 			if err := writeFileAtomic(filepath.Join(proj, jobSidecarFile), append(b, '\n'), 0o600); err != nil {
 				fmt.Fprintf(run.out, "Couldn't write %s beside the transcripts: %v\n", jobSidecarFile, err)
 			}
 		}
 	}
 	writeSidecar()
-	// A cancel can arrive while the upload runs: settle again, and make the
-	// sidecar say what the job reports (locally only; it is not re-sent).
 	resettle := func() {
 		if n := settleOutcome(ctx, run.cancelled, o); n.State != o.State || n.Error != o.Error {
 			o = n
@@ -178,8 +153,6 @@ func (p *runnerProc) keepTranscripts(ctx context.Context, run *jobRun, in agentJ
 			fmt.Fprintf(run.out, "The job was cancelled during the upload; %s on this machine now says %s.\n", jobSidecarFile, o.State)
 		}
 	}
-	// The link from the job's record to its transcripts: the session's id when
-	// claude named one, the directory when it holds a transcript.
 	link := map[string]any{}
 	if meta.SessionID != "" {
 		link["session_id"] = meta.SessionID
@@ -201,11 +174,8 @@ func (p *runnerProc) keepTranscripts(ctx context.Context, run *jobRun, in agentJ
 		fmt.Fprintf(run.out, "Usage sync is off here: the transcripts are kept on this machine only and not uploaded.\n")
 		return o
 	}
-	// Not the job's context: on a timeout or a cancel it is done.
 	uctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), transcriptUploadLimit)
 	defer cancel()
-	// A person's cancel of this job does not cut the upload, but the runner
-	// stopping does: its finish report must not wait for a slow server.
 	if p.stopCtx != nil {
 		defer context.AfterFunc(p.stopCtx, cancel)()
 	}
@@ -242,7 +212,7 @@ func (p *runnerProc) uploadTranscripts(ctx context.Context, dir string, mains []
 			return res, err
 		}
 		if try == transcriptBusyTries-1 {
-			break // no wait after the last look
+			break
 		}
 		if !sleepCtx(ctx, transcriptBusyWait) {
 			return nil, ctx.Err()

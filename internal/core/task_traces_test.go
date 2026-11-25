@@ -30,7 +30,6 @@ func TestTaskTracesIngest(t *testing.T) {
 	e.s.tracesLanded = func(ids []int64) { landed = append(landed, ids) }
 	h := e.hour(-3) + 500
 
-	// a trace lands, its task is reported
 	r := e.ingestTraces(e.me, "c1", "m1", e.trace(i.Key, "s1", 1, h, 3, ""))
 	if r.Traces != 1 || r.TracesDropped != 0 {
 		t.Fatalf("result = %+v", r)
@@ -38,7 +37,6 @@ func TestTaskTracesIngest(t *testing.T) {
 	if want := [][]int64{{i.ID}}; !reflect.DeepEqual(landed, want) {
 		t.Fatalf("landed = %v, want %v", landed, want)
 	}
-	// the same segment grown replaces the row (upsert), an older copy is ignored
 	r = e.ingestTraces(e.me, "c2", "m1", e.trace(i.Key, "s1", 1, h, 5, "ship"))
 	if r.Traces != 1 || len(landed) != 2 {
 		t.Fatalf("grown: %+v landed %v", r, landed)
@@ -58,14 +56,12 @@ func TestTaskTracesIngest(t *testing.T) {
 	if g := got[0]; g.Calls != 5 || g.Ended != "ship" || g.Machine != "m1" || len(g.Files) != 1 || !g.Files[0].Edited || g.Files[0].Repo != "acme/app" || g.CtxFirstEdit == nil {
 		t.Errorf("stored = %+v", g)
 	}
-	// another machine or session is another row; oldest first
 	e.ingestTraces(e.me, "c5", "m2", e.trace(i.Key, "s1", 1, h-5000, 2, ""))
 	got, _ = e.s.taskTraces(e.ctx, i.ID)
 	if len(got) != 2 || got[0].Machine != "m2" {
 		t.Fatalf("two machines, oldest first: %+v", got)
 	}
 
-	// unknown, unreadable and malformed traces are dropped and counted
 	bad := e.trace(i.Key, "s2", 1, h, 1, "")
 	bad.Files = []TraceFile{{Path: "/home/pat/x.go"}, {Path: "../x.go"}, {Path: "ok.go", Repo: "not a repository"}}
 	badEnd := e.trace(i.Key, "s3", 1, h, 1, "bogus")
@@ -87,15 +83,11 @@ func TestTaskTracesIngest(t *testing.T) {
 		}
 	}
 
-	// the same take read again by a parser that classes its calls otherwise
-	// (as many calls, another first edit) replaces the row
 	again := e.trace(i.Key, "s1", 1, h, 5, "ship")
 	again.PreCalls, again.Edits = 2, 1
 	if r = e.ingestTraces(e.me, "c8", "m1", again); r.Traces != 1 {
 		t.Errorf("read again: %+v", r)
 	}
-	// counts no session could reach are held to a bound, and a first edit
-	// outside the take drops the trace
 	huge := e.trace(i.Key, "s4", 1, h, 1, "")
 	huge.Calls, huge.PreCalls, huge.Reads, huge.CtxStart = 1<<62, 1<<62, 1<<62, 1<<62
 	huge.Files[0].Nav = 1 << 62
@@ -112,7 +104,6 @@ func TestTaskTracesIngest(t *testing.T) {
 		}
 	}
 
-	// an old client sends no traces and an old server's answer has no counts
 	r = e.ingest(e.me, "c7", "m1", UsageChunk{Messages: []UsageMessageRow{msg(h, "s9", "a/b", "claude-opus-5-5", "main", 1, 1, 1, 0, 0, 0)}})
 	if r.Traces != 0 || len(landed) != before+3 {
 		t.Errorf("no traces: %+v", r)

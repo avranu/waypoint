@@ -10,11 +10,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Issue text names things without [[ ]]: other issues by key (WP-12), pages
-// by code (D16, APP-PL13) and glossary terms by their words. Saving the
-// text records them as automatic "mentions" links (WP-101), replaced
-// whenever the text is saved, so they stay apart from deliberate links.
-
 // termLinkCap is the most glossary terms one issue's text links on their
 // own; [[term]] is never counted.
 const termLinkCap = 10
@@ -118,8 +113,6 @@ func (idx *termIndex) findLongest(toks []string, chain []int64, keep senseGate) 
 				found = append(found, cand{w, r})
 			}
 		}
-		// Longest first, nearest entry on a tie; a match keep refuses
-		// leaves the shorter ones at this place to try.
 		var best *termWord
 		for len(found) > 0 {
 			bi := 0
@@ -184,10 +177,6 @@ func (s *Service) mentionTargets(ctx context.Context, q queryer, projectID, issu
 			add(typ, id)
 		}
 	}
-	// Glossary terms come from the description alone. syncIssueMentions
-	// calls this once per comment (desc "") on every save, so reading the
-	// glossary and the project chain here anyway made each new comment cost
-	// two queries per comment already on the issue.
 	words := wordTokens(unscannedRE.ReplaceAllString(proseOnly(desc), " "))
 	if len(words) == 0 {
 		return out
@@ -230,9 +219,6 @@ func (s *Service) syncIssueMentions(ctx context.Context, t *tx, actor *Actor, is
 	if err := t.QueryRowContext(ctx, `SELECT project_id, title, description FROM issues WHERE id = ?`, issueID).Scan(&projectID, &title, &desc); err != nil {
 		return 0, 0, err
 	}
-	// Each link is credited to the text that names it: the title and
-	// description to whoever last wrote them, a comment to its author. A
-	// person's text naming a target wins over an agent's (WP-ADR50).
 	want := map[autoEnd]autoCredit{}
 	credit := func(c autoCredit, ends []autoEnd) {
 		for _, e := range ends {
@@ -264,7 +250,6 @@ func (s *Service) syncIssueMentions(ctx context.Context, t *tx, actor *Actor, is
 		c := autoCredit{agent: ag}
 		switch {
 		case ext != "":
-			// Someone on the forge, not a person here.
 			c = autoCredit{agent: "forge:" + ext}
 		case author.Valid:
 			c.by = author.Int64
@@ -284,7 +269,6 @@ func (s *Service) syncIssueMentions(ctx context.Context, t *tx, actor *Actor, is
 			}
 			// #nosec G202 -- the table name comes from knowledgeTables
 			if err := t.QueryRowContext(ctx, `SELECT project_id FROM `+table+` WHERE id = ?`, e.id).Scan(&pid); err != nil {
-				// No link is made on a read that failed; a mention without a row is just not there.
 				if !errors.Is(err, sql.ErrNoRows) {
 					if readFault(err) {
 						s.log.WarnContext(ctx, "read the project of a mentioned item", "type", e.typ, "id", e.id, "err", err)
@@ -295,7 +279,7 @@ func (s *Service) syncIssueMentions(ctx context.Context, t *tx, actor *Actor, is
 			return pid.Valid && pid.Int64 == projectID
 		}
 		ok, rerr := s.kitemTx(ctx, t, actor, e.typ, e.id)
-		if readFault(rerr) && !missingOrDenied(rerr) { // not seeing it is an answer: no link
+		if readFault(rerr) && !missingOrDenied(rerr) {
 			s.log.WarnContext(ctx, "read whether the author may see a mentioned item", "type", e.typ, "id", e.id, "issue", issueID, "err", rerr)
 		}
 		return ok

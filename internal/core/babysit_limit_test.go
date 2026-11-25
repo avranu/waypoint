@@ -56,7 +56,6 @@ func TestBabysitRoundAtUsageLimit(t *testing.T) {
 	if !ok {
 		t.Fatal("no reset read")
 	}
-	// A check that passed on this head had a streak before the round.
 	before := map[string]int{"lint": 2, "test": 1}
 	if _, err := be.s.db.W.Exec(`UPDATE babysits SET prev_streaks = '{"lint":2,"test":1}' WHERE id = ?`, b.ID); err != nil {
 		t.Fatal(err)
@@ -83,14 +82,12 @@ func TestBabysitRoundAtUsageLimit(t *testing.T) {
 	if p := be.pr(7); p.QueuedAt != nil {
 		t.Error("it holds its place in the merge line while it waits")
 	}
-	// Steps before the reset start nothing.
 	be.setClock(reset.Add(-time.Minute))
 	be.runnerOnline()
 	be.step()
 	if n := len(be.jobs()); n != 3 {
 		t.Fatalf("%d jobs before the reset", n)
 	}
-	// After it, the assessor gets its round again.
 	be.setClock(reset.Add(time.Minute))
 	be.runnerOnline()
 	be.step()
@@ -228,9 +225,8 @@ func TestBabysitLimitWithoutResetCounts(t *testing.T) {
 // A transient HTTP 429 is still "busy" for audits; only a spent plan is "spent".
 func TestAuditFailureKindKeeps429Busy(t *testing.T) {
 	for text, want := range map[string]string{
-		"API Error: 429 too many requests":                "busy",
-		"You've hit your weekly limit · resets 5pm (UTC)": "spent",
-		// The runner's opencode driver stops on OpenCode Zen's refusal (WP-861).
+		"API Error: 429 too many requests":                                                                       "busy",
+		"You've hit your weekly limit · resets 5pm (UTC)":                                                        "spent",
 		"opencode's model refused: Free usage limit reached. Free models work in OpenCode (https://opencode.ai)": "spent",
 	} {
 		if got := auditFailureKind(&stepJob{Error: text}); got != want {

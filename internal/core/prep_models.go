@@ -194,7 +194,7 @@ func (s *Service) RunPrepTrials(ctx context.Context) {
 	}()
 	switch ok, why, err := s.surplusState(ctx); {
 	case err != nil:
-		return // logged: a gateway that can't be read is a problem, not nothing to do
+		return
 	case !ok:
 		jobSkip(ctx, why)
 		return
@@ -210,7 +210,7 @@ func (s *Service) RunPrepTrials(ctx context.Context) {
 		return
 	}
 	if _, _, why := s.gatewayTasksLLM(ctx); why == "" {
-		s.queuePrepAgent(ctx) // WP-250, WP-ADR104
+		s.queuePrepAgent(ctx)
 	}
 	stats, err := s.PrepModelStats(ctx)
 	if err != nil {
@@ -219,8 +219,6 @@ func (s *Service) RunPrepTrials(ctx context.Context) {
 		}
 		return
 	}
-	// Tested models are the gateway's to rate already; one with many
-	// trials waiting will be.
 	var skip []string
 	for _, st := range stats {
 		if st.Tested || st.Waiting >= prepTrialPending {
@@ -257,12 +255,9 @@ func (s *Service) RunPrepTrials(ctx context.Context) {
 		ok, err := s.prepTrial(ctx, c.id, c.hash, c.bundle, append([]string{prepModelName(c.model)}, skip...))
 		var wait *aiWaitError
 		if errors.As(err, &wait) {
-			return // no spare capacity: the next sweep asks again after the wait
+			return
 		}
 		if err != nil {
-			// Recorded as a try, so a prep whose trials keep failing
-			// stops being picked (prepTrialsPerTask), not asked again
-			// every sweep.
 			s.log.Info("prep trial failed", "issue", c.id, "err", err)
 			s.notePrepTrialTry(ctx, c.id, "", "", err.Error())
 		}
@@ -279,7 +274,7 @@ func (s *Service) RunPrepTrials(ctx context.Context) {
 func (s *Service) prepTrial(ctx context.Context, issueID int64, hash, raw string, skip []string) (bool, error) {
 	title, desc, comments, cur, err := s.prepText(ctx, issueID)
 	if err != nil || cur != hash {
-		return false, err // the text changed: the prep and a trial would read different tasks
+		return false, err
 	}
 	var b PrepBundle
 	if err := json.Unmarshal([]byte(raw), &b); err != nil {
@@ -299,7 +294,7 @@ func (s *Service) prepTrial(ctx context.Context, issueID int64, hash, raw string
 			trows.Close()
 			return false, err
 		}
-		skip = append([]string{m}, skip...) // this task's own first: excludes are bounded
+		skip = append([]string{m}, skip...)
 	}
 	trows.Close()
 	if err := trows.Err(); err != nil {
@@ -319,8 +314,6 @@ func (s *Service) prepTrial(ctx context.Context, issueID int64, hash, raw string
 	}
 	model := prepModelName(name)
 	if slices.Contains(skip, model) {
-		// The gateway served a model left out (an exclude it didn't
-		// match): the answer adds nothing new, so it isn't kept.
 		s.log.Info("prep trial: served a model left out", "issue", i.Key, "model", model)
 		s.notePrepTrialTry(ctx, issueID, model, requestID, "served a model left out")
 		return true, nil
@@ -411,7 +404,7 @@ func (s *Service) scorePrepNow(ctx context.Context, issueID int64) {
 	var id, merged int64
 	err := s.db.R.QueryRowContext(ctx, prepDoneTask, s.now().Add(-prepScoreWindow).UnixMilli(), issueID, 1).Scan(&id, &merged)
 	if errors.Is(err, sql.ErrNoRows) {
-		return // not done, or nothing unscored
+		return
 	}
 	if err == nil {
 		err = s.scorePrep(ctx, id, merged)
@@ -460,12 +453,8 @@ func (s *Service) ScorePreps(ctx context.Context) {
 func (s *Service) scorePrep(ctx context.Context, issueID, merged int64) error {
 	truth, ok, err := s.prepTruth(ctx, issueID)
 	if err != nil || !ok {
-		return err // files not read yet: a later sweep
+		return err
 	}
-	// at is when the pick was made; basis when what it was made from was
-	// read (the task's text and the repository's commit): the two differ
-	// for an agentic trial, which reads the prep's commit and text whenever
-	// it runs (a backtest runs after the work landed, WP-ADR104).
 	type pick struct {
 		source, priority, model, notes, requestID string
 		at, basis                                 int64
@@ -481,7 +470,7 @@ func (s *Service) scorePrep(ctx context.Context, issueID, merged int64) error {
 	case !errors.Is(err, sql.ErrNoRows):
 		return err
 	}
-	prepAt := p.at // 0 with no ready prep
+	prepAt := p.at
 	rows, err := s.db.R.QueryContext(ctx, `SELECT model, notes, request_id, created_at, kind, text_hash FROM prep_trials WHERE issue_id = ? AND error = ''`, issueID)
 	if err != nil {
 		return err
@@ -496,9 +485,9 @@ func (s *Service) scorePrep(ctx context.Context, issueID, merged int64) error {
 		t.basis = t.at
 		if kind == prepAgentKind {
 			if prepAt == 0 || hash != prepHash {
-				continue // an agent's picks of an earlier text: not what the prep beside it read
+				continue
 			}
-			t.basis = prepAt // made from this prep's commit and text
+			t.basis = prepAt
 		}
 		picks = append(picks, t)
 	}
@@ -511,9 +500,6 @@ func (s *Service) scorePrep(ctx context.Context, issueID, merged int64) error {
 		var n PrepNotes
 		unreadable := json.Unmarshal([]byte(p.notes), &n) != nil
 		if unreadable {
-			// Not scored as no picks: kept with no truth (done, not
-			// counted, nothing reported), so the task's other picks are
-			// scored and it leaves the done tasks.
 			s.log.WarnContext(ctx, "prep scores: notes unreadable, not counted", "issue", issueID, "source", p.source, "model", p.model)
 			n = PrepNotes{}
 		}
@@ -536,15 +522,12 @@ func (s *Service) scorePrep(ctx context.Context, issueID, merged int64) error {
 		}
 		t := len(truth)
 		if p.basis >= merged || truth == nil || unreadable {
-			t, hits = 0, 0 // made from what was there after the work landed, no list, or no picks to read: not counted
+			t, hits = 0, 0
 		}
 		report := p.requestID
 		if t == 0 || len(picked) == 0 || p.at < now-prepFeedbackAge.Milliseconds() {
-			report = "" // nothing to report (a report of 0 and 0 withdraws one), or past the gateway's log
+			report = ""
 		}
-		// Scored again when more of the work merged: a report that would
-		// say something else (hits, or the other picks) is sent again (the
-		// gateway keeps the latest report, however late); otherwise the one sent stands.
 		if _, err := s.db.W.ExecContext(ctx, `INSERT INTO prep_scores(issue_id, source, priority, model, picked, truth, hits, scored_at, request_id, asked_at)
 			VALUES (?,?,?,?,?,?,?,?,?,?)
 			ON CONFLICT(issue_id, source, model) DO UPDATE SET picked = excluded.picked, truth = excluded.truth, hits = excluded.hits,

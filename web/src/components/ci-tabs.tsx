@@ -1,6 +1,3 @@
-// The CI pages' switch (WP-490): what the runners do now, or how CI fared
-// over time.
-
 import { Link } from '@tanstack/react-router'
 import { Activity, History } from 'lucide-react'
 

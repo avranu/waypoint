@@ -31,13 +31,13 @@ var version = "dev"
 type command struct {
 	name     string
 	aliases  []string
-	args     string // what follows the name, e.g. "[SCOPE] [QUERY...]"
-	summary  string // one line, for command lists
-	about    string // what it does, in full
+	args     string
+	summary  string
+	about    string
 	examples []string
-	run      func(c *cli, args []string) error // for a group: what it does without a subcommand
+	run      func(c *cli, args []string) error
 	subs     []*command
-	group    string // top-level heading in `wp help`
+	group    string
 	hidden   bool
 	parent   *command
 }
@@ -115,7 +115,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if args[0] == "--version" {
 		args[0] = "version"
 	}
-	// gh-style "wp issue list" and "wp issues" mean the issue commands.
 	if (args[0] == "issue" || args[0] == "issues" || args[0] == "task" || args[0] == "tasks") && (len(args) == 1 || findCommand(args[1]) != nil) {
 		args = args[1:]
 		if len(args) == 0 {
@@ -135,7 +134,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		var ec exitCode
 		if errors.As(err, &ec) {
-			return int(ec) // the command said why already
+			return int(ec)
 		}
 		var ue usageError
 		if errors.As(err, &ue) {
@@ -158,9 +157,6 @@ func (c *cli) dispatch(cmd *command, args []string) error {
 	if len(args) > 0 {
 		if args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
 			if cmd.run != nil && args[0] != "help" {
-				// A group that also runs by itself lists its own flags too;
-				// one whose run takes no flags (wp design) says it has no
-				// command "-h", so it gets the group's help instead.
 				if err := cmd.run(c, args); !errors.As(err, new(usageError)) {
 					return err
 				}
@@ -213,8 +209,6 @@ func findPath(words []string) *command {
 	}
 	return cmd
 }
-
-// ---- help ----
 
 const scopeHelp = `Scope: which projects a command works in
 
@@ -539,7 +533,7 @@ var versionCmd = &command{
 type usageError struct {
 	msg string
 	cmd *command
-	fs  *flag.FlagSet // its flags, when it got as far as defining them
+	fs  *flag.FlagSet
 }
 
 func (e usageError) Error() string { return e.msg }

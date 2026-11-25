@@ -67,7 +67,6 @@ func TestObjectiveAPIProposeConfirmAndSteer(t *testing.T) {
 	shell := cl(core.TokenSpec{}, &addHeader{"X-Waypoint-Agent-Env", "claude"})
 	readOnly := cl(core.TokenSpec{ReadOnly: true}, nil)
 
-	// The agent proposes it; nothing runs, and what it wrote comes back.
 	var ob core.Objective
 	body := map[string]any{"check": "./parse", "until": "< 1.5ms", "keep_passing": []string{"go test ./..."}, "judge": "Parsing is simple to read.", "judge_bar": "high", "max_rounds": 4, "pace": "spare"}
 	if code := agent.json("PUT", path, body, &ob); code != 200 {
@@ -83,7 +82,6 @@ func TestObjectiveAPIProposeConfirmAndSteer(t *testing.T) {
 		t.Fatalf("reading it back: %d %+v", code, got)
 	}
 
-	// Confirming is a person's, of the proposal they read.
 	for who, c := range map[string]*client{"an agent": agent, "a person's token in an agent's shell": shell, "a read-only token": readOnly} {
 		if code, _ := c.do("POST", path+"/confirm", map[string]any{"rev": rev}); code != 403 {
 			t.Errorf("%s confirming: %d", who, code)
@@ -99,7 +97,6 @@ func TestObjectiveAPIProposeConfirmAndSteer(t *testing.T) {
 		t.Fatalf("confirmed = state %s phase %q health %q by %+v", ob.State, ob.Phase, ob.Health, ob.ConfirmedBy)
 	}
 
-	// Steering it: a person may, an agent may not.
 	goPath := path + "/go"
 	for who, c := range map[string]*client{"an agent": agent, "a person's token in an agent's shell": shell, "a read-only token": readOnly} {
 		for _, act := range []string{core.ObjectiveRetry, core.ObjectiveEnd, core.ObjectiveNext} {
@@ -121,7 +118,6 @@ func TestObjectiveAPIProposeConfirmAndSteer(t *testing.T) {
 	if code := person.json("POST", goPath, map[string]any{"action": core.ObjectiveRetry}, &ob); code != 200 || ob.State != core.ObjectiveActive || ob.Phase != core.PhaseBaseline {
 		t.Fatalf("a person's retry: %d %s %q", code, ob.State, ob.Phase)
 	}
-	// As text, for the terminal.
 	if code, b := person.do("POST", goPath+"?format=text", map[string]any{"action": core.ObjectiveRetry}); code != 200 || !strings.Contains(string(b), task.Key) {
 		t.Logf("text answer: %d %s", code, b)
 	}
@@ -131,15 +127,12 @@ func TestObjectiveAPIProposeConfirmAndSteer(t *testing.T) {
 	if code := person.json("GET", path, nil, &got); code != 200 || got.State != core.ObjectiveEnded || got.Health != "ended" || got.Judge != ob.Judge || got.KeepPassing[0] != "go test ./..." {
 		t.Fatalf("what is left of it: %d %+v", code, got)
 	}
-	// It is over: nothing is left to retry.
 	if code, _ := person.do("POST", goPath, map[string]any{"action": core.ObjectiveRetry}); code != 400 {
 		t.Errorf("retry of an ended objective: %d", code)
 	}
-	// Set again by a person, it starts on a new round and keeps what was written.
 	if code := person.json("PUT", path, map[string]any{"until": "< 1ms"}, &ob); code != 200 || ob.State != core.ObjectiveActive || ob.Round != 2 || ob.Judge != "Parsing is simple to read." || ob.Pace != "spare" {
 		t.Fatalf("set again: %d state %s round %d %+v", code, ob.State, ob.Round, ob)
 	}
-	// Steering what isn't there.
 	if code, _ := person.do("POST", "/api/v1/issues/NOPE-1/objective/go", map[string]any{"action": core.ObjectiveRetry}); code != 404 {
 		t.Errorf("steering a task that isn't there: %d", code)
 	}
@@ -248,11 +241,9 @@ func TestObjectiveAPIDiagnoseRecords(t *testing.T) {
 	if code := person.json("PUT", path, map[string]any{"check": "./parse", "until": "< 1.5ms"}, &ob); code != 200 {
 		t.Fatalf("setting it: %d", code)
 	}
-	// The rounds before this came no nearer: the state the service reaches
-	// over several readings.
 	diagnoseRound := func() {
 		t.Helper()
-		svc.Wait() // what setting it set off has settled
+		svc.Wait()
 		res, err := d.W.ExecContext(ctx, `UPDATE objectives SET phase = '', round_kind = 'diagnose', no_better = 2, base_sha = ? WHERE issue_id = ?`, strings.Repeat("a", 40), task.ID)
 		if err != nil {
 			t.Fatal(err)

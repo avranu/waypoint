@@ -39,19 +39,13 @@ type ForgePR struct {
 	Mergeable *bool  `json:"mergeable,omitempty"`
 	HeadRepo  string `json:"head_repo,omitempty"`
 	// MergeSHA is the commit a merged pull request became (WP-132).
-	MergeSHA string `json:"merge_sha,omitempty"`
-	// GitLab positions line comments against these.
+	MergeSHA          string `json:"merge_sha,omitempty"`
 	baseSHA, startSHA string
-	// sameRepo: the forge says the head is in the repo itself without
-	// naming it (GitLab's project ids).
-	sameRepo bool
-	// actor is who caused a webhook (pushed, closed it), when it says.
-	actor string
-	// requested: who a webhook says was just asked to review (WP-D14).
-	requested []string
-	wipAuto   bool // opened by Waypoint as a draft it will mark ready (WP-158)
-	// mergeMute: the forge's mergeable says nothing about this one (WP-171).
-	mergeMute bool
+	sameRepo          bool
+	actor             string
+	requested         []string
+	wipAuto           bool
+	mergeMute         bool
 }
 
 // LineComment is one line comment of a review, on the new side of the diff.
@@ -240,7 +234,6 @@ func (a apiPR) pr() *ForgePR {
 	p := &ForgePR{Number: a.Number, Title: a.Title, Body: a.Body, URL: a.HTMLURL, State: a.State,
 		Author: cmp(a.User.Login, a.User.Username), BaseRef: a.Base.Ref, HeadRef: a.Head.Ref, HeadSHA: a.Head.SHA}
 	switch {
-	// GitHub's pull request list has merged_at but no merged flag.
 	case a.Merged || (a.State == "closed" && a.MergedAt != nil):
 		p.State = "merged"
 	case a.State == "open" && (a.Draft || draftTitle(a.Title)):
@@ -256,12 +249,10 @@ func (a apiPR) pr() *ForgePR {
 	p.Additions, p.Deletions, p.ChangedFiles, p.Commits = a.Additions, a.Deletions, a.ChangedFiles, a.Commits
 	p.Mergeable = a.Mergeable
 	if draftTitle(a.Title) {
-		// Forgejo and Gitea answer mergeable=false for any pull request
-		// titled work in progress, conflict or not (WP-171).
 		p.Mergeable, p.mergeMute = nil, true
 	}
 	if p.State == "merged" {
-		p.MergeSHA = a.MergeCommitSHA // GitHub fills it before the merge too, with a test merge
+		p.MergeSHA = a.MergeCommitSHA
 	}
 	if a.Head.Repo != nil {
 		p.HeadRepo = a.Head.Repo.FullName
@@ -342,7 +333,7 @@ func (c *httpForgeClient) ReviewBodies(ctx context.Context, f *Forge, repo strin
 	}
 	for _, r := range reviews {
 		if strings.EqualFold(r.State, "PENDING") {
-			continue // a draft review nobody submitted
+			continue
 		}
 		out = append(out, ForgeComment{Author: cmp(r.User.Login, r.User.Username), Body: r.Body})
 	}
@@ -396,10 +387,6 @@ func (c *httpForgeClient) React(ctx context.Context, f *Forge, repo string, numb
 		}
 		return strconv.FormatInt(res.ID, 10), nil
 	}
-	// Forgejo answers a 500 to a reaction this account has already made (its
-	// "already exists" answer reads a nil reaction), which failed every
-	// review signing off a pull request a second time: clear it first
-	// (WP-847). GitHub answers a repeat itself.
 	if f.Kind != "github" {
 		_ = c.Unreact(ctx, f, repo, number, commentID, emoji, "")
 	}
@@ -431,7 +418,6 @@ func (c *httpForgeClient) Unreact(ctx context.Context, f *Forge, repo string, nu
 		}
 		return c.do(ctx, f, http.MethodDelete, path, nil, nil)
 	}
-	// Forgejo removes the caller's reaction by its content.
 	path := fmt.Sprintf("/repos/%s/issues/%d/reactions", repo, number)
 	if commentID != "" {
 		path = fmt.Sprintf("/repos/%s/issues/comments/%s/reactions", repo, url.PathEscape(commentID))
@@ -452,8 +438,6 @@ func glEmoji(e string) string {
 	}
 	return e
 }
-
-// ---- GitLab merge requests ----
 
 type glMR struct {
 	// The projects the source and target branches live in (a fork's differ).

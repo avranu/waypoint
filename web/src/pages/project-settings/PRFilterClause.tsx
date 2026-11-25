@@ -1,9 +1,3 @@
-// Which pull requests a rule acts on (WP-D14): chips, not WQL. "for [ready
-// pull requests] [by people] into [any branch]", then "only if" chips
-// (authors, labels, paths, size, repository) and "except" (labels, head
-// branches, authors, changes that only touch some paths). Conditions that
-// aren't set stay hidden behind "More conditions…".
-
 import { useEffect, useState, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { Plus, X } from 'lucide-react'
@@ -42,7 +36,6 @@ function ListInput({
 }) {
   const [text, setText] = useState(() => (value ?? []).join(', '))
   useEffect(() => {
-    // Follow changes from outside (another rule loaded), not our own.
     if (!sameList(parseList(text), value ?? [])) setText((value ?? []).join(', '))
   }, [value]) // eslint-disable-line react-hooks/exhaustive-deps
   return (

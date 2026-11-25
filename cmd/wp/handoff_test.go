@@ -10,9 +10,6 @@ import (
 	"time"
 )
 
-// Task sessions end themselves once their tasks are done (WP-97); wp done
-// starts nothing itself (WP-271).
-
 func TestDoneStartsNothing(t *testing.T) {
 	s := newSessionEnv(t)
 	s.asAgent()
@@ -50,14 +47,13 @@ func TestTaskSessionEndsWhenFinished(t *testing.T) {
 		s.hook(in(sid, "Stop", s.repo, map[string]any{"background_tasks": []any{}, "session_crons": []any{}}))
 	}
 
-	stop() // nothing done yet
+	stop()
 	s.wp("next", bound)
-	stop()              // holds a task
-	s.wp("done", bound) // nothing else is ready: it may end
+	stop()
+	s.wp("done", bound)
 	if len(stopped) != 0 {
 		t.Fatalf("ended too early: %v", stopped)
 	}
-	// Background work keeps it open.
 	s.hook(in(sid, "Stop", s.repo, map[string]any{"background_tasks": []any{map[string]any{"type": "shell", "status": "running"}}, "session_crons": []any{}}))
 	if len(stopped) != 0 {
 		t.Fatalf("ended with background work: %v", stopped)
@@ -67,7 +63,6 @@ func TestTaskSessionEndsWhenFinished(t *testing.T) {
 		t.Fatalf("stopped = %v", stopped)
 	}
 
-	// Your own session is never ended.
 	stopped = nil
 	t.Setenv("WP_TASK", "")
 	mine := s.task("Mine")
@@ -101,7 +96,6 @@ func TestTaskSessionNotEndedAfterAPersonPromptsOrWithARequestOpen(t *testing.T) 
 		s.wp("next", key)
 	}
 
-	// A person prompts after the done: left alone.
 	a := s.task("A")
 	start("aaaaaaaa-1", a)
 	s.wp("done", a)
@@ -112,7 +106,6 @@ func TestTaskSessionNotEndedAfterAPersonPromptsOrWithARequestOpen(t *testing.T) 
 		t.Fatalf("ended a session a person was using: %v", stopped)
 	}
 
-	// A request left open: not finished, so not ended.
 	b := s.task("B")
 	start("bbbbbbbb-1", b)
 	s.wp("request", "ask", "Which one?", "--choice", "x", "--choice", "y")

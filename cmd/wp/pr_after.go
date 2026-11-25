@@ -63,7 +63,6 @@ func cmdPRAfter(c *cli, args []string) error {
 	if *off {
 		method = "DELETE"
 	}
-	// What was set before, so --off says which it dropped.
 	var dropped, unset []string
 	for _, t := range targets {
 		if !*off {

@@ -18,20 +18,15 @@ import (
 // cancel.
 func (s *Server) runnersRoutes(mux *http.ServeMux) {
 	a := s.authed
-	// The runner's side (the owner's own token).
 	mux.HandleFunc("POST /api/v1/runner/register", a(s.runnerRegister))
 	mux.HandleFunc("POST /api/v1/runner/poll", a(s.runnerPoll))
 	mux.HandleFunc("POST /api/v1/runner/jobs/{id}/log", a(s.runnerJobLog))
 	mux.HandleFunc("POST /api/v1/runner/jobs/{id}/finish", a(s.runnerJobFinish))
 	mux.HandleFunc("POST /api/v1/runner/jobs/{id}/cancel", a(s.runnerJobCancel))
-	// Background jobs on its machine that made no progress (WP-605).
 	mux.HandleFunc("POST /api/v1/runner/stalled-jobs", a(s.runnerStalledJobs))
-	// An audit the LLM gateway runs (WP-617): the runner hands over
-	// its checkout, and Waypoint, which has the gateway's key, sends it on.
 	mux.HandleFunc("POST /api/v1/runner/jobs/{id}/gateway", a(s.runnerGatewayStart))
 	mux.HandleFunc("GET /api/v1/runner/jobs/{id}/gateway", a(s.runnerGatewayTask))
 	mux.HandleFunc("POST /api/v1/runner/jobs/{id}/gateway/cancel", a(s.runnerGatewayCancel))
-	// People.
 	mux.HandleFunc("GET /api/v1/runners", a(s.listRunners))
 	mux.HandleFunc("GET /api/v1/runners/{id}", a(s.getRunner))
 	mux.HandleFunc("DELETE /api/v1/runners/{id}", a(s.deleteRunner))
@@ -76,9 +71,6 @@ func (s *Server) runnerPoll(w http.ResponseWriter, r *http.Request) (any, error)
 	if err != nil {
 		return nil, err
 	}
-	// The server's version: a runner on a release build that differs
-	// replaces its binary with it at once, restarts on it when no job is
-	// running, and takes no new jobs after 15 minutes of waiting (wp upgrade).
 	return struct {
 		*core.RunnerWork
 		ServerVersion string `json:"server_version"`
@@ -118,7 +110,6 @@ func (s *Server) runnerJobFinish(w http.ResponseWriter, r *http.Request) (any, e
 		return nil, err
 	}
 	var in core.RunnerFinish
-	// An audit's result holds its helpers' runs: up to core.RunnerResultMax.
 	if err := decodeBodyLarge(r, &in, core.RunnerFinishBodyMax, core.RunnerResultTooLarge); err != nil {
 		return nil, err
 	}
@@ -244,7 +235,6 @@ func (s *Server) runnerGatewayStart(w http.ResponseWriter, r *http.Request) (any
 	if err := r.ParseMultipartForm(2 << 20); err != nil {
 		return nil, fmt.Errorf("%w: %v", errBadRequest, err)
 	}
-	// What didn't fit in memory is in temporary files.
 	defer func() { _ = r.MultipartForm.RemoveAll() }()
 	f, h, err := r.FormFile("repo")
 	if err != nil {

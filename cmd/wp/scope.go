@@ -13,8 +13,8 @@ import (
 // scope is the projects a command works in (see `wp help scope`). No
 // projects means every project.
 type scope struct {
-	projects []scopeProject // the matches first, then their sub-projects
-	from     string         // how it was chosen, for messages
+	projects []scopeProject
+	from     string
 }
 
 type scopeProject struct {
@@ -246,7 +246,6 @@ func (c *cli) lookupScope(query string) (*scope, error) {
 	if err := c.do("GET", "/api/v1/projects?"+query, nil, &ps); err != nil {
 		return nil, err
 	}
-	// A server older than this wp ignores match and lists everything.
 	for _, p := range ps {
 		if p.MatchedBy == "" {
 			return nil, errors.New("this Waypoint server is older than wp and can't match projects to repos; update the server, or use -A")
@@ -269,10 +268,8 @@ func (c *cli) note(format string, a ...any) {
 func gitRepoHere() (repo string, inRepo bool) {
 	if out, err := exec.Command("git", "rev-parse", "--is-inside-work-tree").Output(); err != nil || strings.TrimSpace(string(out)) != "true" {
 		if _, err := exec.LookPath("git"); err != nil {
-			return "", false // no git: no repo to stay inside
+			return "", false
 		}
-		// Not a work tree, or git refused to say (e.g. "dubious
-		// ownership"): only the first is "not in a repo".
 		if err == nil {
 			return "", false
 		}

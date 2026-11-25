@@ -1,6 +1,3 @@
-// Hermes's messaging channels: each platform's state, on or off, its
-// settings (secrets masked; type a new one to replace it) and a test.
-
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'

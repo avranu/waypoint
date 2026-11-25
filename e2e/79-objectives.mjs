@@ -130,27 +130,22 @@ async function run(width, scheme) {
   const newIssue = async (title) => (await json(await web("POST", "/issues", { project: "WAYP", title, agent: "claude", status: "todo" }))).key;
   const banner = page.getByRole("note", { name: "Objective" });
   const has = async (text, what) => {
-    // A string hasText ignores case ("reading" in a ready banner would pass
-    // for "Reading"); a pattern doesn't.
     const exact = new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
     await banner.filter({ hasText: exact }).waitFor({ timeout: 15000 }).catch(() => {});
     const t = (await banner.textContent().catch(() => "")) ?? "";
     ok(t.includes(text), `${tag} ${what}: ${t.slice(0, 260)}`);
     return t;
   };
-  // The worker takes the task and finishes the round.
   const workRound = async (k, comment) => {
     const t = await page.request.post(`${base}/api/v1/agent/take/${k}`, { headers: agentHdr, data: {} });
     ok(t.ok(), `${tag} the worker takes ${k} (${t.status()} ${t.ok() ? "" : await t.text()})`);
     const d = await page.request.post(`${base}/api/v1/agent/done/${k}`, { headers: agentHdr, data: { comment } });
     ok(d.ok(), `${tag} the worker finishes the round (${d.status()}: ${(await d.text()).slice(0, 160)})`);
   };
-  // What the API says an objective is, for the failure message.
   const state = async (k) => {
     const o = (await json(await web("GET", `/issues/${k}`))).objective ?? {};
     return JSON.stringify({ health: o.health, phase: o.phase, why: o.phase_why, round: o.round, next_at: o.next_at, state: o.state });
   };
-  // The runner answers the next job of this kind.
   const answerJob = async (kind, result, finish = {}) => {
     const job = await wait(async () => {
       const j = await poll();
@@ -167,7 +162,6 @@ async function run(width, scheme) {
     return input;
   };
 
-  // ---- A. a person sets one from the task's menu ----
   const key = await newIssue(`Make the weekly report fast ${tag}`);
   await page.goto(`${base}/issue/${key}`);
   await page.getByRole("button", { name: "More", exact: true }).click();
@@ -190,7 +184,6 @@ async function run(width, scheme) {
   await shot("2-reading");
   await overflow("the reading banner");
 
-  // ---- B. the runner reads where it starts ----
   const input = await answerJob("objective", (i) => ({
     head: HEAD1,
     reading: { ok: true, value: 2.1, low: 2.0, high: 2.2, runs: 5, exit: 0, output: "ok" },
@@ -202,7 +195,6 @@ async function run(width, scheme) {
   await shot("3-ready");
   await overflow("the ready banner");
 
-  // ---- C. the worker's own reading decides nothing ----
   const forged = await fetch(`${base}/api/v1/issues/${key}/objective/checks`, {
     method: "POST",
     headers: { ...H, "Content-Type": "application/json", Cookie: runnerCookie },
@@ -218,7 +210,6 @@ async function run(width, scheme) {
   const issue0 = await json(await web("GET", `/issues/${key}`));
   ok(issue0.status.category !== "done" && issue0.objective.state === "active", `${tag} a worker saying "met" closed nothing`);
 
-  // ---- D. the worker finishes round 1; Waypoint reads it: better, not met ----
   await workRound(key, "Cached the totals");
   console.log(`     api after done: ${await state(key)}`);
   await has("Reading", "round 1 is being read after the worker finishes");
@@ -244,7 +235,6 @@ async function run(width, scheme) {
   await banner.getByRole("button", { name: /Start round 2 now/ }).waitFor({ state: "detached" });
   ok(true, `${tag} "Start round 2 now" ends the wait`);
 
-  // ---- E. round 2 changes what the check runs: it needs the person ----
   await workRound(key, "Rewrote the benchmark");
   await answerJob("objective", (i) => ({
     head: HEAD3,
@@ -263,7 +253,6 @@ async function run(width, scheme) {
   await shot("5-blocked");
   await overflow("the blocked banner");
 
-  // ---- the objectives page lists it first ----
   await page.goto(`${base}/objectives`);
   const rows = page.getByRole("list", { name: "Objectives" }).locator("> li");
   await rows.first().waitFor();
@@ -277,7 +266,6 @@ async function run(width, scheme) {
   await rows.first().getByRole("link").first().click();
   await page.waitForURL(new RegExp(`/issue/${key}`));
 
-  // ---- accepting it meets the objective and closes the task ----
   await banner.getByRole("button", { name: "Accept the reading" }).click();
   console.log(`     api after accept: ${await state(key)}`);
   const t5 = await has("Met", "accepting the reading meets the objective");
@@ -293,7 +281,6 @@ async function run(width, scheme) {
   ok(true, `${tag} "Include met and ended" shows it`);
   await shot("8-list-all");
 
-  // ---- F. a judged objective: findings, then nothing left to find ----
   const jkey = await newIssue(`Review the report package ${tag}`);
   await page.goto(`${base}/issue/${jkey}`);
   await page.getByRole("button", { name: "More", exact: true }).click();
@@ -304,7 +291,6 @@ async function run(width, scheme) {
   await jd.getByRole("button", { name: "Set objective" }).click();
   await jd.waitFor({ state: "detached" });
   await has("Reading", "a judged objective is read too");
-  // Where the work starts is read first: the runner's job (the commit), then the reviewer's audit.
   const findings = [
     {
       title: "Weekly takes the ledger lock twice in one call",
@@ -332,11 +318,9 @@ async function run(width, scheme) {
   ok((await page.locator("img[src='x']").count()) === 0, `${tag} a model's words never become markup`);
   await shot("9-findings");
   await overflow("the findings");
-  // Round 1: read again, one thing left; round 2: nothing left, so it is met.
   await workRound(jkey, "Split the locks");
   await answerJob("objective", () => ({ head: HEAD2, base: HEAD1 }));
   await audit("One thing left.", findings.slice(1));
-  // No time between rounds was set: round 2 is ready at once, with nothing to wait out.
   const t7 = await has("Round 2 waits to be handed out", "one thing left, so round 2 is open");
   ok(!(await banner.getByRole("button", { name: /Start round 2 now/ }).isVisible()), `${tag} nothing to cut short`);
   ok(t7.includes("1 of 2") || t7.includes("helper") || t7.includes("path long enough"), `${tag} the reviewer's remaining finding shows: ${t7.slice(0, 120)}`);
@@ -348,7 +332,6 @@ async function run(width, scheme) {
   await shot("9b-judged-met");
   await overflow("the judged objective met");
 
-  // ---- G. an agent's proposal waits for a person ----
   const pkey = await newIssue(`Tidy the flakiest test ${tag}`);
   const proposed = await json(await page.request.put(`${base}/api/v1/issues/${pkey}/objective`, { headers: agentHdr, data: {} }));
   ok(proposed.state === "proposed", `${tag} an agent's objective is only proposed`);
@@ -367,7 +350,6 @@ async function run(width, scheme) {
   await shot("11-ended");
   await overflow("the ended banner");
 
-  // ---- G2. rounds that come no nearer make the next a diagnose round (WP-1449) ----
   const dkey = await newIssue(`Make the lint pass ${tag}`);
   await page.goto(`${base}/issue/${dkey}`);
   await page.getByRole("button", { name: "More", exact: true }).click();
@@ -394,7 +376,6 @@ async function run(width, scheme) {
   ok(/ships no code/.test(dline), `${tag} the banner says the round ships no code: ${dline.slice(0, 200)}`);
   await shot("14-diagnose-round");
   await overflow("the diagnose round");
-  // The worker takes it; wp done is refused, and the diagnosis is recorded.
   const dt = await page.request.post(`${base}/api/v1/agent/take/${dkey}`, { headers: agentHdr, data: {} });
   ok(dt.ok(), `${tag} the worker takes the diagnose round`);
   const dn = await page.request.post(`${base}/api/v1/agent/done/${dkey}`, { headers: agentHdr, data: { comment: "done" } });
@@ -419,7 +400,6 @@ async function run(width, scheme) {
   await shot("15-diagnosed");
   await overflow("the recorded diagnosis");
 
-  // ---- H. the inbox and the notification settings know objectives ----
   await page.goto(`${base}/settings?tab=notifications`);
   await page.getByRole("checkbox", { name: /Objectives/ }).waitFor().catch(async (e) => {
     await shot("12-notifications-FAILED");

@@ -5,8 +5,6 @@ import (
 	"strconv"
 )
 
-// ---- graph ----
-
 var graphCmd = &command{
 	name: "graph", group: "Knowledge", args: "THING [OTHER] [--hops N] [--limit N] [--sure] [--open] [--types T,…]",
 	aliases: []string{"near"},

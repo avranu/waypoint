@@ -28,7 +28,7 @@ func TestGalleryDigestAndWaitingEntries(t *testing.T) {
 	p := e.project(e.admin, "Gallery", "")
 	e.issue(e.admin, IssueInput{Project: p.Key, Title: "Fix login"})
 	digest := e.addAuto(p, "Digest", templateRule(t, "Daily digest of what changed"))
-	e.s.RunTimedAutomations(e.ctx) // Monday 2026-10-05, 12:00: past 9:00
+	e.s.RunTimedAutomations(e.ctx)
 	e.s.DrainAutomationRuns(e.ctx)
 	runs := e.runs(digest)
 	if len(runs) != 1 || runs[0].Status != RunSucceeded {
@@ -41,7 +41,6 @@ func TestGalleryDigestAndWaitingEntries(t *testing.T) {
 	if len(llm.prompts) != 1 || !strings.Contains(llm.prompts[0], "Fix login") || !strings.Contains(llm.prompts[0], "project Gallery") {
 		t.Errorf("digest prompt = %q", llm.prompts)
 	}
-	// With nothing changed the model isn't asked.
 	e.setClock(e.clockNow().Add(48 * time.Hour))
 	e.s.RunTimedAutomations(e.ctx)
 	e.s.DrainAutomationRuns(e.ctx)
@@ -49,8 +48,6 @@ func TestGalleryDigestAndWaitingEntries(t *testing.T) {
 		t.Errorf("the model was asked about an empty day: %d prompts", len(llm.prompts))
 	}
 
-	// An agent that keeps waiting notifies the owners after 15 minutes; one
-	// that gets going again doesn't.
 	waiting := e.addAuto(p, "Waiting", templateRule(t, "Tell me when an agent waits more than 15 minutes"))
 	fire := func(session string) {
 		e.s.automate(e.ctx, SystemActor(), &Event{Kind: EvSessionWaiting, ProjectID: p.ID, Data: map[string]any{"session": session, "agent": "claude", "repo": "me/app"}})

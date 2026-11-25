@@ -30,7 +30,6 @@ const srv = http.createServer((req, res) => {
     if (req.url === "/v1/chat/completions") {
       let answer;
       if (raw.includes("Check pull request")) {
-        // The goal drift cases (WP-559): flag the ones that drift.
         const drifts = DRIFT.some((b) => raw.includes(b));
         answer = drifts ? { kind: "contradicts", goal: 1, reason: "works against the goal" } : { kind: "none", goal: 0, reason: "" };
       } else {

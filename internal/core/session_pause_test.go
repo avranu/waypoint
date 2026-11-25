@@ -5,15 +5,12 @@ import (
 	"testing"
 )
 
-// A pause with running sessions included (WP-146).
-
 func TestSessionPauseWindsDownSessions(t *testing.T) {
 	be := newBabysitEnv(t)
 	be.runner(be.admin, "m1", nil)
 	if st, err := be.s.SessionPause(be.ctx, be.agent); err != nil || st.Pause != nil {
 		t.Fatalf("no pause yet: %+v %v", st, err)
 	}
-	// A queue-only pause leaves sessions alone.
 	if _, err := be.s.PauseAgents(be.ctx, be.admin, "any", "queue only", false); err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +28,6 @@ func TestSessionPauseWindsDownSessions(t *testing.T) {
 		t.Fatal("the hook reply doesn't carry the pause")
 	}
 
-	// A Stop takes nothing that would carry the session on.
 	be.s.queueMessage(be.ctx, be.agent.Session, "do the next thing", "test:next", messageFrom{}, false)
 	res := be.hookAs("Stop")
 	if len(res.Messages) != 0 || res.Block != "" {
@@ -42,14 +38,12 @@ func TestSessionPauseWindsDownSessions(t *testing.T) {
 	}
 	be.s.Wait()
 
-	// Idle: nothing is posted to it while paused.
 	be.runner(be.admin, "m1", nil)
 	be.s.postToIdleSession(be.ctx, be.agent.Session)
 	if jobs := be.messageJobs(); len(jobs) != 0 {
 		t.Fatalf("posted to a paused session: %v", jobs)
 	}
 
-	// Resume posts what waited.
 	if _, err := be.s.ResumeAgents(be.ctx, be.admin, "any"); err != nil {
 		t.Fatal(err)
 	}

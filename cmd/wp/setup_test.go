@@ -81,7 +81,6 @@ func swapHookExe(t *testing.T, exe string) {
 func TestHooksRefreshThemselves(t *testing.T) {
 	t.Setenv("WAYPOINT_CONFIG_DIR", t.TempDir())
 	t.Setenv("WAYPOINT_NO_HOOK_REFRESH", "")
-	// An old install: two hooks, another wp, prompts off; and someone else's hook.
 	old := map[string]any{"model": "opus", "hooks": map[string]any{
 		"Stop":             []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": "/old/wp hook claude-report", "timeout": 30}}}},
 		"UserPromptSubmit": []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": "/old/wp hook claude-event --no-prompts", "timeout": 30}}}},
@@ -115,28 +114,24 @@ func TestHooksRefreshThemselves(t *testing.T) {
 		t.Fatalf("recorded %+v", h)
 	}
 
-	// Current: nothing is read or written.
 	_ = os.WriteFile(path, []byte(`{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/x/wp hook claude-report"}]}]}}`), 0o600)
 	newCLIq().refreshHooks()
 	if got := readSettings(t, path); !strings.Contains(got, "/x/wp") {
 		t.Errorf("current hooks were rewritten: %s", got)
 	}
 
-	// An older set, tried less than a day ago: left for tomorrow.
 	c := newCLIq()
 	_ = c.updateState(func(s *State) { s.Hooks.Schema, s.Hooks.Tried = hookSchema-1, time.Now() })
 	newCLIq().refreshHooks()
 	if got := readSettings(t, path); !strings.Contains(got, "/x/wp") {
 		t.Errorf("refreshed twice in a day: %s", got)
 	}
-	// A day later it goes.
 	_ = c.updateState(func(s *State) { s.Hooks.Tried = time.Now().Add(-25 * time.Hour) })
 	newCLIq().refreshHooks()
 	if got := readSettings(t, path); strings.Contains(got, "/x/wp") || !strings.Contains(got, "/opt/wp/bin/wp hook claude-report") {
 		t.Errorf("not refreshed a day later: %s", got)
 	}
 
-	// A newer set (a newer wp installed them): left alone.
 	_ = os.WriteFile(path, []byte(`{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/x/wp hook claude-report"}]}]}}`), 0o600)
 	_ = c.updateState(func(s *State) { s.Hooks.Schema, s.Hooks.Tried = hookSchema+1, time.Time{} })
 	newCLIq().refreshHooks()
@@ -144,8 +139,6 @@ func TestHooksRefreshThemselves(t *testing.T) {
 		t.Errorf("went back to an older set: %s", got)
 	}
 
-	// No state at all (hooks from before it was recorded), but no hooks of
-	// ours in the file: nothing is added.
 	_ = c.updateState(func(s *State) { s.Hooks = nil })
 	_ = os.WriteFile(path, []byte(`{"model":"opus"}`), 0o600)
 	newCLIq().refreshHooks()
@@ -153,7 +146,6 @@ func TestHooksRefreshThemselves(t *testing.T) {
 		t.Errorf("hooks were added to a file that had none: %s", got)
 	}
 
-	// A test binary never writes its own path into the settings.
 	_ = c.updateState(func(s *State) { s.Hooks = nil })
 	_ = os.WriteFile(path, []byte(`{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/x/wp hook claude-report"}]}]}}`), 0o600)
 	swapHookExe(t, "/tmp/go-build123/b001/wp.test")
@@ -187,7 +179,6 @@ func TestWorkRoot(t *testing.T) {
 			t.Errorf("workRoot(%s) = %q, want %q", cwd, got, want)
 		}
 	}
-	// A root that holds the home directory is never one.
 	if got := workRoot("/data/other", "/data/me"); got != "" {
 		t.Errorf("a root above home: %q", got)
 	}
@@ -203,7 +194,6 @@ func TestDecodeProjectDir(t *testing.T) {
 	if got := decodeProjectDir(enc); got != want {
 		t.Errorf("decodeProjectDir(%s) = %q, want %q", enc, got, want)
 	}
-	// Gone since: as far as it exists.
 	gone := strings.NewReplacer("/", "-", ".", "-", "_", "-").Replace(filepath.Join(base, "my-app", "deleted"))
 	if got := decodeProjectDir(gone); got != filepath.Join(base, "my-app") {
 		t.Errorf("decodeProjectDir(%s) = %q", gone, got)
@@ -219,9 +209,9 @@ func TestClaudeWorkRoots(t *testing.T) {
 	cwds := map[string]bool{
 		filepath.Join(code, "app"):          true,
 		filepath.Join(code, "lib"):          true,
-		filepath.Join(work, "x-y"):          false, // decoded from the folder name
-		home:                                true,  // the home directory itself: never
-		filepath.Join(home, ".config", "x"): true,  // hidden: never
+		filepath.Join(work, "x-y"):          false,
+		home:                                true,
+		filepath.Join(home, ".config", "x"): true,
 	}
 	for cwd, transcript := range cwds {
 		_ = os.MkdirAll(cwd, 0o700)
@@ -247,7 +237,7 @@ type setupEnv struct {
 	home, settings, units string
 	calls                 []string
 	active                bool
-	answers               string // "" and noTTY: nobody to ask
+	answers               string
 	noTTY                 bool
 }
 
@@ -268,7 +258,6 @@ func newSetupEnv(t *testing.T) *setupEnv {
 	s.units = filepath.Join(s.home, ".config", "systemd", "user")
 	s.settings = filepath.Join(s.home, ".claude", "settings.json")
 	t.Setenv("WP_CLAUDE_SETTINGS", s.settings)
-	// Claude Code worked in ~/code/app.
 	app := filepath.Join(s.home, "code", "app")
 	_ = os.MkdirAll(app, 0o700)
 	proj := filepath.Join(s.home, ".claude", "projects", strings.NewReplacer("/", "-", ".", "-").Replace(app))
@@ -304,7 +293,6 @@ func TestSetupSetsTheMachineUpAndIsSafeToRunAgain(t *testing.T) {
 	s := newSetupEnv(t)
 	code := filepath.Join(s.home, "code")
 
-	// Nobody to ask and no --yes: nothing happens.
 	s.noTTY = true
 	out, exit := s.run("setup")
 	if exit != 2 || !strings.Contains(out, "--yes") {
@@ -313,13 +301,11 @@ func TestSetupSetsTheMachineUpAndIsSafeToRunAgain(t *testing.T) {
 	if _, err := os.Stat(s.settings); err == nil {
 		t.Error("settings written without consent")
 	}
-	// Answered no.
 	s.noTTY, s.answers = false, "n\n"
 	if out := s.wp("setup"); !strings.Contains(out, "Nothing changed") {
 		t.Errorf("answered no:\n%s", out)
 	}
 
-	// Yes: the plan shows what it will do, then it does it.
 	s.answers = "\n"
 	out = s.wp("setup")
 	t.Log(out)
@@ -348,7 +334,6 @@ func TestSetupSetsTheMachineUpAndIsSafeToRunAgain(t *testing.T) {
 		t.Errorf("state: hooks %+v runner %+v", st.Hooks, st.Runner)
 	}
 
-	// Again, with --yes and the runner running: nothing changes or restarts.
 	s.active, s.calls = true, nil
 	out = s.wp("setup", "--yes")
 	if !strings.Contains(out, "are up to date") || !strings.Contains(out, "installed and running already") || strings.Contains(out, "Go ahead") {
@@ -360,8 +345,6 @@ func TestSetupSetsTheMachineUpAndIsSafeToRunAgain(t *testing.T) {
 		}
 	}
 
-	// The runner's settings are kept; --no-prompts is kept once chosen;
-	// --allow replaces the folders.
 	other := filepath.Join(s.home, "work")
 	_ = os.MkdirAll(other, 0o700)
 	s.wp("setup", "--yes", "--no-prompts", "--allow", other, "--name", "box", "--no-hooks")
@@ -461,7 +444,7 @@ func TestUpdateRefusesABadDownload(t *testing.T) {
 	setVersion(t, "v1.1.0")
 	for name, e := range map[string]*env{
 		"checksum": cliServer(t, "v1.2.0", "v1.2.0", true),
-		"version":  cliServer(t, "v1.2.0", "v1.1.9", false), // the binary isn't what the server says
+		"version":  cliServer(t, "v1.2.0", "v1.1.9", false),
 	} {
 		exe := installedWP(t)
 		t.Setenv("WAYPOINT_SERVER", e.url)
@@ -511,7 +494,7 @@ func TestAutoUpdateFromTheHook(t *testing.T) {
 	}
 	t.Setenv("WAYPOINT_NO_AUTO_UPDATE", "")
 	cl().autoUpdateInBackground()
-	cl().autoUpdateInBackground() // the same day: no
+	cl().autoUpdateInBackground()
 	if len(started) != 1 || started[0] != exe+" upgrade --auto" {
 		t.Fatalf("started %v", started)
 	}
@@ -523,7 +506,6 @@ func TestAutoUpdateFromTheHook(t *testing.T) {
 	if u := cl().state.Update; u == nil || u.Server != "v1.2.0" || !strings.Contains(u.Result, "updated from v1.1.0 to v1.2.0") {
 		t.Errorf("recorded %+v", u)
 	}
-	// A dirty build stays as it is.
 	_ = os.WriteFile(exe, []byte("old"), 0o755)
 	setVersion(t, "v1.1.0-dirty")
 	e.wp("upgrade", "--auto")
@@ -555,7 +537,6 @@ func TestRunnerUpdatesItself(t *testing.T) {
 		t.Errorf("log:\n%s", out.String())
 	}
 
-	// --no-auto-update: it keeps serving with the wp it has.
 	_ = os.WriteFile(exe, []byte("old"), 0o755)
 	out = syncBuffer{}
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 1500*time.Millisecond)

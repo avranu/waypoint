@@ -1,8 +1,3 @@
-// The agent kit (WP-ADR2 §4): shared Claude Code plugins from a marketplace
-// repo, kit.toml saying where each goes, and what checkouts report after
-// `wp kit sync`. Reads are factories in queries.ts (q.kit, q.kitCheckouts,
-// q.kitSource); the mutations live here.
-
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from './api'
 import type { UserRef } from './types'

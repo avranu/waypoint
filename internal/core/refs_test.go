@@ -72,7 +72,6 @@ func TestResolveRefs(t *testing.T) {
 			t.Errorf("%s resolved: %v", none, kinds[none])
 		}
 	}
-	// ana can't read the other project's issue, nor can bob see ana's request.
 	if _, ok := kinds[foreign.Key]; ok {
 		t.Errorf("hidden issue linked: %v", kinds[foreign.Key])
 	}
@@ -114,8 +113,6 @@ func TestResolveRequestNumberedRef(t *testing.T) {
 	if len(refs) != 1 || refs[0].Key != req.Ref || refs[0].URL != "/requests/"+req.Ref {
 		t.Fatalf("request #1 = %+v, want %s", refs, req.Ref)
 	}
-	// Searching with no project, it finds what R-1 does: both R-1s ana can
-	// see, though neither is the one R-1 means for her.
 	for _, q := range []string{"R-1", "request #1"} {
 		res, err := r.s.SearchAll(r.ctx, r.ana, AllQuery{Text: q})
 		if err != nil {
@@ -204,7 +201,6 @@ func TestSearchByCode(t *testing.T) {
 		if !slices.Contains(issues, mention.Key) || !slices.Contains(issues, bare.Key) || !slices.Contains(comments, bare.Key) {
 			t.Errorf("%q: mentions missing: issues %v comments %v", qtext, issues, comments)
 		}
-		// R-10 is not R-1.
 		for _, g := range res.Groups {
 			for _, h := range g.Hits {
 				if g.Kind == KIssue && h.Title == "Unrelated" && h.Match != MatchText {
@@ -213,7 +209,6 @@ func TestSearchByCode(t *testing.T) {
 			}
 		}
 	}
-	// Only the request's own words: text matches in requests too, and bob sees nothing.
 	res, err := r.s.SearchAll(r.ctx, r.ana, AllQuery{Text: "production", Kinds: []string{"requests"}})
 	if err != nil || len(res.Groups) != 1 || len(res.Groups[0].Hits) != 1 || res.Groups[0].Hits[0].Key != req.Ref {
 		t.Fatalf("words: %+v %v", res, err)
