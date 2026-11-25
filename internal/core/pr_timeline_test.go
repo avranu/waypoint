@@ -164,8 +164,9 @@ func TestPRTimelineStackRuns(t *testing.T) {
 	}
 }
 
-// Runs and audit rows are read by the pull request's open time, so a run on
-// one of its heads long after it merged (a scheduled one, say) is not its.
+// Runs and audit rows are read from an hour before it opened to an hour after
+// it ended, so a run on one of its heads long after it merged is not its, a
+// pull request run on its own ref included.
 func TestPRTimelineLeavesOutRunsAfterItEnded(t *testing.T) {
 	se, pr, t0 := timelineEnv(t)
 	min := func(m int) int64 { return t0 + int64(m)*60000 }
@@ -174,6 +175,7 @@ func TestPRTimelineLeavesOutRunsAfterItEnded(t *testing.T) {
 	}
 	se.timelineRun(1, "8888888bbbb", "#7", "pull_request", "success", min(62), min(63), min(80))
 	se.timelineRun(2, "8888888bbbb", "refs/heads/main", "schedule", "success", min(100+61), min(100+62), min(100+70))
+	se.timelineRun(3, "8888888bbbb", "#7", "pull_request", "success", min(100+61), min(100+62), min(100+70))
 	tl, err := se.s.PRTimeline(se.ctx, se.admin, se.p.Key, "", 7)
 	if err != nil {
 		t.Fatal(err)
@@ -323,10 +325,186 @@ func TestPRTimelineRefusesWhatThePullRequestRefuses(t *testing.T) {
 		t.Fatal("a stranger read the timeline")
 	}
 	_, want := se.s.FindPullRequest(se.ctx, stranger, se.p.Key, "", 7)
-	if !errors.Is(err, want) && err.Error() != want.Error() {
+	if want == nil {
+		t.Fatal("FindPullRequest let the stranger see it")
+	}
+	if err.Error() != want.Error() {
 		t.Errorf("err = %v, FindPullRequest says %v", err, want)
 	}
 	if _, err := se.s.PRTimeline(se.ctx, nil, se.p.Key, "", 7); !errors.Is(err, ErrUnauthorized) {
 		t.Errorf("no actor: %v", err)
+	}
+}
+
+// timelineHoldEnv is pull request 7 with its CI green at 80m on 8888888bbbb,
+// a hold on it from 70m and no audit rows but what the test adds.
+func timelineHoldEnv(t *testing.T, cleared any) (se *shipEnv, pr *PullRequest, min func(int) int64, exec func(string, ...any)) {
+	t.Helper()
+	se, pr, t0 := timelineEnv(t)
+	min = func(m int) int64 { return t0 + int64(m)*60000 }
+	exec = func(q string, args ...any) {
+		t.Helper()
+		if _, err := se.s.db.W.ExecContext(se.ctx, q, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	se.timelineRun(1, "8888888bbbb", "#7", "pull_request", "success", min(62), min(63), min(80))
+	exec(`DELETE FROM audit_log WHERE target_type = 'pr' AND target_id = ?`, pr.ID)
+	exec(`INSERT INTO merge_holds(pr_id, head_sha, what, first_at, cleared_at) VALUES (?, '8888888bbbb', 'behind main', ?, ?)`, pr.ID, min(70), cleared)
+	return se, pr, min, exec
+}
+
+func (se *shipEnv) timelineAudit(pr *PullRequest, action string, at int64) {
+	se.t.Helper()
+	if _, err := se.s.db.W.ExecContext(se.ctx, `INSERT INTO audit_log(action, category, target_type, target_id, created_at) VALUES (?, 'control', 'pr', ?, ?)`, action, pr.ID, at); err != nil {
+		se.t.Fatal(err)
+	}
+}
+
+// A hold is only time it was armed: a disarm and a re-arm inside it leave
+// the gap out, whether the hold was cleared after the re-arm or still open
+// when it merged.
+func TestPRTimelineHoldLeavesOutTheDisarmedGap(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		cleared bool
+	}{{"open at the merge", false}, {"cleared after the re-arm", true}} {
+		t.Run(c.name, func(t *testing.T) {
+			var cleared any
+			se, pr, min, exec := timelineHoldEnv(t, nil)
+			if c.cleared {
+				cleared = min(100)
+				exec(`UPDATE merge_holds SET cleared_at = ? WHERE pr_id = ?`, cleared, pr.ID)
+			}
+			se.timelineAudit(pr, "pr.disarm", min(85))
+			se.timelineAudit(pr, "pr.arm", min(95))
+			exec(`UPDATE pull_requests SET state = 'merged', merged_at = ?, armed_at = NULL WHERE id = ?`, min(100), pr.ID)
+			tl, err := se.s.PRTimeline(se.ctx, se.admin, se.p.Key, "", 7)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Green at 80m, merged at 100m, disarmed 85m to 95m: 10m held.
+			if tl.Totals.HeldS != 10*60 || tl.Holds[0].AfterGreenS != 10*60 {
+				t.Errorf("held_s = %d, after green %d, want 10m", tl.Totals.HeldS, tl.Holds[0].AfterGreenS)
+			}
+		})
+	}
+}
+
+// The automerge label coming off clears armed_at with no disarm row: an open
+// hold stops counting when it was last seen armed, not at whatever now is.
+func TestPRTimelineHoldStopsWhenTheLabelDisarmed(t *testing.T) {
+	se, pr, min, exec := timelineHoldEnv(t, nil)
+	exec(`INSERT INTO merge_holds(pr_id, head_sha, what, first_at, cleared_at) VALUES (?, '8888888bbbb', 'quiet', ?, ?)`, pr.ID, min(82), min(90))
+	exec(`UPDATE pull_requests SET armed_at = NULL WHERE id = ?`, pr.ID)
+	tl, err := se.s.PRTimeline(se.ctx, se.admin, se.p.Key, "", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tl.Totals.HeldS != 10*60 {
+		t.Errorf("held_s = %d, want 10m: green at 80m, last seen armed at 90m", tl.Totals.HeldS)
+	}
+	if h := tl.Holds[0]; h.Until == nil || !h.Until.Equal(msTime(min(90))) {
+		t.Errorf("the open hold ends %v, want 90m", h.Until)
+	}
+	if tl.AsOf.IsZero() {
+		t.Error("no as_of")
+	}
+}
+
+// A hold cleared after the pull request merged counts only to the merge.
+func TestPRTimelineClearedHoldEndsAtTheMerge(t *testing.T) {
+	se, pr, min, exec := timelineHoldEnv(t, nil)
+	exec(`UPDATE merge_holds SET cleared_at = ? WHERE pr_id = ?`, min(130), pr.ID)
+	exec(`UPDATE pull_requests SET state = 'merged', merged_at = ? WHERE id = ?`, min(100), pr.ID)
+	tl, err := se.s.PRTimeline(se.ctx, se.admin, se.p.Key, "", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tl.Totals.HeldS != 20*60 {
+		t.Errorf("held_s = %d, want 20m (green 80m to the merge at 100m)", tl.Totals.HeldS)
+	}
+}
+
+// Green is a head's first full run to pass: a draft tier's pass leaves the
+// full run to come, and a second pass doesn't move green later. A hold that
+// ended before green is not after it.
+func TestPRTimelineGreen(t *testing.T) {
+	se, pr, min, exec := timelineHoldEnv(t, nil)
+	exec(`UPDATE merge_holds SET cleared_at = ? WHERE pr_id = ?`, min(90), pr.ID)
+	if _, err := se.s.db.W.ExecContext(se.ctx, `INSERT INTO ci_runs(forge_id, repo, number, workflow, event, ref, sha, tier, status, created_at, started_at, stopped_at)
+		VALUES (?, 'me/app', 2, 'ci.yml', 'pull_request', '#7', '8888888bbbb', 'draft', 'success', ?, ?, ?)`, se.f.ID, min(61), min(61), min(66)); err != nil {
+		t.Fatal(err)
+	}
+	se.timelineRun(3, "8888888bbbb", "#7", "pull_request", "success", min(84), min(85), min(95))
+	exec(`INSERT INTO merge_holds(pr_id, head_sha, what, first_at, cleared_at) VALUES (?, '8888888bbbb', 'before', ?, ?)`, pr.ID, min(64), min(68))
+	tl, err := se.s.PRTimeline(se.ctx, se.admin, se.p.Key, "", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tl.Totals.HeldS != 10*60 {
+		t.Errorf("held_s = %d, want 10m: green at 80m (not the draft's 66m, not the rerun's 95m) to 90m", tl.Totals.HeldS)
+	}
+	for _, h := range tl.Holds {
+		if h.What == "before" && h.AfterGreenS != 0 {
+			t.Errorf("a hold before green counts %ds", h.AfterGreenS)
+		}
+	}
+}
+
+// A run stopped before a runner took it waited all its time.
+func TestPRTimelineRunCancelledInTheQueue(t *testing.T) {
+	se, _, t0 := timelineEnv(t)
+	min := func(m int) int64 { return t0 + int64(m)*60000 }
+	se.timelineRun(1, "8888888bbbb", "#7", "pull_request", "cancelled", min(62), nil, min(82))
+	tl, err := se.s.PRTimeline(se.ctx, se.admin, se.p.Key, "", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := tl.Runs[0]; r.WaitS == nil || *r.WaitS != 20*60 || r.RunS != nil || r.StartedAt != nil || tl.Totals.CIWaitS != 20*60 {
+		t.Errorf("run = %+v, totals %+v", r, tl.Totals)
+	}
+}
+
+// A merge done on the forge is audited as pr.merged: it is in the list too.
+func TestPRTimelineForgeMerge(t *testing.T) {
+	se, pr, min, exec := timelineHoldEnv(t, nil)
+	se.timelineAudit(pr, "pr.merged", min(100))
+	exec(`UPDATE pull_requests SET state = 'merged', merged_at = ? WHERE id = ?`, min(100), pr.ID)
+	tl, err := se.s.PRTimeline(se.ctx, se.admin, se.p.Key, "", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tl.Armed) != 1 || tl.Armed[0].What != "merged" {
+		t.Errorf("armed = %+v", tl.Armed)
+	}
+}
+
+func TestDisarmedGaps(t *testing.T) {
+	for _, c := range []struct {
+		name       string
+		marks      []armMark
+		seen       []int64
+		unarmedNow bool
+		want       []prSpan
+	}{
+		{"none", nil, []int64{5}, false, nil},
+		{"disarmed to the end", []armMark{{10, true}, {20, false}}, nil, false, []prSpan{{20, 100}}},
+		{"re-armed", []armMark{{10, true}, {20, false}, {30, true}}, nil, false, []prSpan{{20, 30}}},
+		{"a hold's time re-arms", []armMark{{20, false}}, []int64{25}, false, []prSpan{{20, 25}}},
+		{"two disarms", []armMark{{20, false}, {22, false}, {30, true}}, nil, false, []prSpan{{20, 30}}},
+		{"label off, unaudited", []armMark{{10, true}}, []int64{40}, true, []prSpan{{40, 100}}},
+		{"after the end", []armMark{{120, false}}, nil, false, nil},
+	} {
+		got := disarmedGaps(c.marks, c.seen, 100, c.unarmedNow)
+		if fmt.Sprint(got) != fmt.Sprint(c.want) {
+			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		}
+	}
+	if got := prSpanMinus(prSpan{0, 100}, []prSpan{{10, 20}, {50, 200}}); fmt.Sprint(got) != fmt.Sprint([]prSpan{{0, 10}, {20, 50}}) {
+		t.Errorf("minus = %v", got)
+	}
+	if got := prSpanUnionS([]prSpan{{30000, 60000}, {0, 40000}, {90000, 91000}}); got != 61 {
+		t.Errorf("union = %d, want 61", got)
 	}
 }

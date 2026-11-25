@@ -51,7 +51,7 @@ func (s *Server) findPull(w http.ResponseWriter, r *http.Request) (any, error) {
 	return s.svc.GetPullRequest(r.Context(), actor, id)
 }
 
-// pullTimeline is wp pr timeline: one pull request's ship-to-merge timeline (WP-1806).
+// pullTimeline is wp pr timeline: one pull request's ship-to-merge timeline.
 func (s *Server) pullTimeline(w http.ResponseWriter, r *http.Request) (any, error) {
 	n, err := strconv.Atoi(r.PathValue("number"))
 	if err != nil {

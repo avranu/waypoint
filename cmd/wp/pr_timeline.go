@@ -11,8 +11,8 @@ import (
 var prTimelineCmd = &command{
 	name: "timeline", args: "[N] [--repo REPO]",
 	summary: "a pull request's ship-to-merge timeline: runner waits, CI runs, holds after green",
-	about: `Every push, arming, CI run and hold of one pull request in time order, and
-first three totals: waiting for a CI runner and running CI, each added over all
+	about: `Every push, arming, CI run and hold of one pull request in time order,
+after three totals: waiting for a CI runner and running CI, each added over all
 its runs (reruns and failed ones too, and runs at the same time each count),
 and held after green (the union of its holds from when their head's CI passed,
 however short). They are not parts of the time it was open: runs overlap, and
@@ -22,9 +22,10 @@ re-run.`,
 	run:      cmdPRTimeline,
 }
 
-// prTimeline is the response of GET /projects/{key}/pulls/{number}/timeline (WP-1806).
+// prTimeline is the response of GET /projects/{key}/pulls/{number}/timeline.
 type prTimeline struct {
 	State    string     `json:"state"`
+	AsOf     time.Time  `json:"as_of"`
 	OpenedAt time.Time  `json:"opened_at"`
 	MergedAt *time.Time `json:"merged_at"`
 	ClosedAt *time.Time `json:"closed_at"`
@@ -38,16 +39,18 @@ type prTimeline struct {
 		By   string    `json:"by"`
 	} `json:"armed"`
 	Runs []struct {
-		Number   int64     `json:"number"`
-		Workflow string    `json:"workflow"`
-		Event    string    `json:"event"`
-		Tier     string    `json:"tier"`
-		Stack    bool      `json:"stack"`
-		Head     string    `json:"head"`
-		Status   string    `json:"status"`
-		QueuedAt time.Time `json:"queued_at"`
-		WaitS    *int64    `json:"wait_s"`
-		RunS     *int64    `json:"run_s"`
+		Number    int64      `json:"number"`
+		Workflow  string     `json:"workflow"`
+		Event     string     `json:"event"`
+		Tier      string     `json:"tier"`
+		Stack     bool       `json:"stack"`
+		Head      string     `json:"head"`
+		Status    string     `json:"status"`
+		QueuedAt  time.Time  `json:"queued_at"`
+		StartedAt *time.Time `json:"started_at"`
+		StoppedAt *time.Time `json:"stopped_at"`
+		WaitS     *int64     `json:"wait_s"`
+		RunS      *int64     `json:"run_s"`
 	} `json:"runs"`
 	Holds []struct {
 		What        string     `json:"what"`
@@ -91,7 +94,8 @@ func cmdPRTimeline(c *cli, args []string) error {
 	return c.emit(raw, func() string { return t.text(time.Now()) })
 }
 
-// timelineDur is seconds as 3m12s under an hour and 4h37m above.
+// timelineDur is seconds as 3m12s under an hour, and as holdTook has longer
+// ones (4h37m, 2d5h).
 func timelineDur(s int64) string {
 	d := time.Duration(s) * time.Second
 	if d >= time.Hour {
@@ -100,7 +104,12 @@ func timelineDur(s int64) string {
 	return shortDuration(d)
 }
 
+// text is the timeline; an open pull request's time so far runs to the
+// server's as_of, and to now only from a server that sends none.
 func (t *prTimeline) text(now time.Time) string {
+	if !t.AsOf.IsZero() {
+		now = t.AsOf
+	}
 	var b strings.Builder
 	end := now
 	head := "open for"
@@ -132,19 +141,26 @@ func (t *prTimeline) text(now time.Time) string {
 		if r.Stack {
 			s += " on the merge queue's stack"
 		}
-		if r.WaitS != nil {
-			s += ": waited " + timelineDur(*r.WaitS)
-		} else {
+		switch {
+		case r.StartedAt != nil && r.WaitS != nil:
+			s += ": started " + clock(*r.StartedAt) + " after waiting " + timelineDur(*r.WaitS)
+		case r.WaitS != nil:
+			s += ": never started, waited " + timelineDur(*r.WaitS)
+		default:
 			s += ": never started"
 		}
-		if r.RunS != nil {
-			s += ", ran " + timelineDur(*r.RunS)
+		if r.StoppedAt != nil {
+			s += ", finished " + clock(*r.StoppedAt)
+			if r.RunS != nil {
+				s += " after running " + timelineDur(*r.RunS)
+			}
 		}
 		lines = append(lines, line{r.QueuedAt, s + ", " + r.Status})
 	}
 	for _, a := range t.Armed {
-		// merged_at has the merge's own line; this one is when it was asked for.
-		s := map[string]string{"arm": "armed", "disarm": "disarmed", "merge": "merge started"}[a.What]
+		// Waypoint audits its merge once the forge took it, about when
+		// merged_at is: this line says who merged it and from where.
+		s := map[string]string{"arm": "armed", "disarm": "disarmed", "merge": "merged from Waypoint", "merged": "merged on the forge"}[a.What]
 		if s == "" {
 			s = a.What
 		}
@@ -178,3 +194,6 @@ func (t *prTimeline) text(now time.Time) string {
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
+
+// clock is a time of day here, for a line that already has the date.
+func clock(t time.Time) string { return t.Local().Format("15:04:05") }
