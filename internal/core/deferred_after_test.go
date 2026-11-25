@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -23,11 +24,35 @@ func newAfterEnv(t *testing.T) *afterEnv {
 // started (ended, so it doesn't hold the sweep), after which time moves on.
 func (a *afterEnv) shipped() {
 	a.t.Helper()
-	a.sql(`PRAGMA foreign_keys = OFF`)
-	a.sql(`INSERT INTO babysits (pr_id, state, owner_id, session_id, created_at, updated_at, ended_at) VALUES (?, 'merged', ?, ?, ?, ?, ?)`,
-		a.clockNow().UnixMilli(), a.admin.User.ID, a.session, a.clockNow().UnixMilli(), a.clockNow().UnixMilli(), a.clockNow().UnixMilli())
-	a.sql(`PRAGMA foreign_keys = ON`)
+	shipRow(a.t, a.s, a.admin.User.ID, a.session, a.main.ID, a.clockNow().UnixMilli(), "merged")
 	a.setClock(a.clockNow().Add(time.Second))
+}
+
+// shipRow is what a session's wp ship leaves: a pull request (state) linked
+// to the task, and the babysit the session started on it (ended once the
+// pull request is merged or closed).
+func shipRow(t *testing.T, s *Service, owner, session, issue, at int64, state string) {
+	t.Helper()
+	exec := func(q string, args ...any) sql.Result {
+		t.Helper()
+		res, err := s.db.W.Exec(q, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	exec(`PRAGMA foreign_keys = OFF`)
+	defer exec(`PRAGMA foreign_keys = ON`)
+	n := at % 1000000
+	url := fmt.Sprintf("https://git.example.com/acme/app/pulls/%d", n)
+	pr, _ := exec(`INSERT INTO pull_requests(forge_id, repo, number, url, state, created_at, updated_at) VALUES (1, 'acme/app', ?, ?, ?, ?, ?)`, n, url, state, at, at).LastInsertId()
+	exec(`INSERT INTO external_links(issue_id, provider, kind, url, repo, number, state, created_at) VALUES (?, 'forgejo', 'pull', ?, 'acme/app', ?, ?, ?)`, issue, url, n, state, at)
+	var ended any
+	bstate := "watching"
+	if state == "merged" || state == "closed" {
+		ended, bstate = at, "merged"
+	}
+	exec(`INSERT INTO babysits (pr_id, state, owner_id, session_id, created_at, updated_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, pr, bstate, owner, session, at, at, ended)
 }
 
 // newBareAfterEnv is a session that has not shipped.
@@ -103,7 +128,9 @@ func (a *afterEnv) sweep() {
 }
 
 func TestDeferredBundleRidesAlongWithAMessageOnly(t *testing.T) {
-	a := newAfterEnv(t)
+	a := newBareAfterEnv(t)
+	shipRow(t, a.s, a.admin.User.ID, a.session, a.main.ID, a.clockNow().UnixMilli(), "open")
+	a.setClock(a.clockNow().Add(time.Second))
 	late := a.file("Filed after the ship")
 	a.setClock(a.clockNow().Add(time.Minute))
 	// a stop with nothing for the session takes nothing, so nothing is offered
@@ -371,7 +398,7 @@ func TestAutopilotOffersDeferredTasksBeforeTheNextTask(t *testing.T) {
 	if _, err := a.s.AgentTake(a.ctx, a.ag, first.Key, ""); err != nil {
 		t.Fatal(err)
 	}
-	a.shipEvidence()
+	a.shipEvidence(first.ID)
 	extra := a.issue(a.ag, IssueInput{Project: a.p.Key, Title: "Filed after the ship"})
 	a.setClock(a.clockNow().Add(time.Minute))
 	if _, err := a.s.AgentDone(a.ctx, a.ag, first.Key, AgentDoneInput{Comment: "done"}); err != nil {
@@ -410,12 +437,41 @@ func (a *apEnv) sql(q string, args ...any) {
 	}
 }
 
-// shipEvidence is a babysit the session started, after which time moves on.
-func (a *apEnv) shipEvidence() {
+// shipEvidence is the ship of the task: a pull request linked to it that the
+// session babysat, after which time moves on.
+func (a *apEnv) shipEvidence(issue int64) {
 	a.t.Helper()
-	a.sql(`PRAGMA foreign_keys = OFF`)
-	a.sql(`INSERT INTO babysits (pr_id, state, owner_id, session_id, created_at, updated_at, ended_at) VALUES (?, 'merged', ?, ?, ?, ?, ?)`,
-		a.clockNow().UnixMilli(), a.admin.User.ID, a.session, a.clockNow().UnixMilli(), a.clockNow().UnixMilli(), a.clockNow().UnixMilli())
-	a.sql(`PRAGMA foreign_keys = ON`)
+	shipRow(a.t, a.s, a.admin.User.ID, a.session, issue, a.clockNow().UnixMilli(), "merged")
 	a.setClock(a.clockNow().Add(time.Second))
+}
+
+// After the shipped pull request merged, the offer says to ship the task
+// from a new branch, not with the shipped task onto a pull request that is
+// gone; and a task filed while the session works on a task it hasn't shipped
+// is that task's ship's to offer, not this one's.
+func TestDeferredAfterAMergeOffersANewBranch(t *testing.T) {
+	a := newAfterEnv(t)
+	late := a.file("Filed after the ship")
+	next := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "Next", Agent: "any"})
+	if _, err := a.s.AgentTake(a.ctx, a.ag, next.Key, ""); err != nil {
+		t.Fatal(err)
+	}
+	during := a.file("Filed while on the next task")
+	a.idle()
+	a.setClock(a.clockNow().Add(time.Minute))
+	a.sweep()
+	q := a.queued()
+	if len(q) != 1 {
+		t.Fatalf("queued = %q", q)
+	}
+	for _, want := range []string{"after the ship of " + a.main.Key + " ", "new branch from the default branch", "(wp ship " + late.Key + " -m", "opens a new one"} {
+		if !strings.Contains(q[0], want) {
+			t.Errorf("text lacks %q:\n%s", want, q[0])
+		}
+	}
+	for _, not := range []string{next.Key, during.Key, "open pull request"} {
+		if strings.Contains(q[0], not) {
+			t.Errorf("text has %q:\n%s", not, q[0])
+		}
+	}
 }

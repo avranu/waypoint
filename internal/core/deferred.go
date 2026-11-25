@@ -152,7 +152,7 @@ func (s *Service) OfferDeferred(ctx context.Context, actor *Actor, in DeferredIn
 		if compact {
 			out.Compact = true
 		} else {
-			out.Text = deferredText(deferredKeys(shipped, shippedIDs), out, false)
+			out.Text = deferredText(deferredKeys(shipped, shippedIDs), out, false, nil)
 		}
 	}
 	return out, nil
@@ -342,8 +342,10 @@ func deferredDo(shipping []string, o *DeferredOffer, where string) string {
 }
 
 // deferredText is what wp ship prints in place of shipping (after false), or
-// what a session is told of tasks it filed after the ship (after true).
-func deferredText(shipping []string, o *DeferredOffer, after bool) string {
+// what a session is told of tasks it filed after the ship (after true). onto
+// is the shipped keys whose pull request is still open, for after: with none
+// the tasks go on a new branch and pull request of their own.
+func deferredText(shipping []string, o *DeferredOffer, after bool, onto []string) string {
 	n := len(o.Tasks) + o.More
 	var b strings.Builder
 	if after {
@@ -364,8 +366,14 @@ func deferredText(shipping []string, o *DeferredOffer, after bool) string {
 	b.WriteString(oneOrMany(n, " that is open, unblocked and not waiting on a person:\n", " that are open, unblocked and not waiting on a person:\n"))
 	b.WriteString(deferredList(o))
 	if after {
-		b.WriteString(deferredDo(shipping, o, " on the same branch"))
-		b.WriteString("Running wp ship again pushes to the open pull request. Waypoint won't mention " + oneOrMany(n, "this task", "these tasks") + " again.")
+		if len(onto) > 0 {
+			b.WriteString(deferredDo(onto, o, " on the same branch"))
+			b.WriteString("Running wp ship again pushes to the open pull request. ")
+		} else {
+			b.WriteString(deferredDo(nil, o, " on a new branch from the default branch"))
+			b.WriteString("The shipped pull request is closed, so this opens a new one. ")
+		}
+		b.WriteString("Waypoint won't mention " + oneOrMany(n, "this task", "these tasks") + " again.")
 		return b.String()
 	}
 	b.WriteString(deferredDo(shipping, o, ""))

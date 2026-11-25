@@ -94,6 +94,7 @@ type deferredFound struct {
 	cands []*Issue
 	task  int64
 	keys  []string
+	onto  []string
 }
 
 // deferredBusy: the session's person is typing in it (the gate keep-warm
@@ -108,6 +109,48 @@ func (s *Service) deferredShipTime(ctx context.Context, id int64) (int64, bool, 
 	var at sql.NullInt64
 	err := s.db.R.QueryRowContext(ctx, `SELECT max(created_at) FROM babysits WHERE session_id = ?`, id).Scan(&at)
 	return at.Int64, at.Valid, err
+}
+
+// deferredShipped is what the session shipped, newest ship first: the tasks
+// linked to a pull request it babysat (wp ship starts the babysit), not every
+// task it worked on. onto is the keys among them whose pull request is still
+// open, which a later wp ship pushes to.
+func (s *Service) deferredShipped(ctx context.Context, id int64) (ids []int64, keys map[int64]string, onto []string, err error) {
+	rows, err := s.db.R.QueryContext(ctx, `SELECT el.issue_id, max(p.state NOT IN ('merged', 'closed')) FROM babysits b
+		JOIN pull_requests p ON p.id = b.pr_id JOIN external_links el ON `+pullLinkSQL+`
+		WHERE b.session_id = ? GROUP BY el.issue_id ORDER BY max(b.created_at) DESC, el.issue_id`, id)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	open := map[int64]bool{}
+	for rows.Next() {
+		var i int64
+		var o bool
+		if err := rows.Scan(&i, &o); err != nil {
+			rows.Close()
+			return nil, nil, nil, err
+		}
+		ids, open[i] = append(ids, i), o
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil || len(ids) == 0 {
+		return nil, nil, nil, err
+	}
+	issues, err := s.issuesByIDs(ctx, ids, false)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	keys = map[int64]string{}
+	for _, i := range issues {
+		keys[i.ID] = i.Key
+	}
+	ids = slices.DeleteFunc(ids, func(i int64) bool { return keys[i] == "" })
+	for _, i := range ids {
+		if open[i] {
+			onto = append(onto, keys[i])
+		}
+	}
+	return ids, keys, onto, nil
 }
 
 // deferredFind finds the tasks the session filed after its ship that it
@@ -132,19 +175,11 @@ func (s *Service) deferredFind(ctx context.Context, x *deferredSess) (*deferredF
 		return nil, nil
 	}
 	actor := &Actor{User: user, Session: x.id}
-	ids, err := s.sessionTasks(ctx, s.db.R, actor)
-	if err != nil || len(ids) == 0 {
+	// only what it shipped: a task it is still working on is the next ship's
+	// to offer from, and isn't named as shipped
+	taskIDs, keys, onto, err := s.deferredShipped(ctx, x.id)
+	if err != nil || len(taskIDs) == 0 {
 		return nil, err
-	}
-	tasks, err := s.issuesByIDs(ctx, ids, false)
-	if err != nil || len(tasks) == 0 {
-		return nil, err
-	}
-	keys := map[int64]string{}
-	var taskIDs []int64
-	for _, i := range tasks {
-		keys[i.ID] = i.Key
-		taskIDs = append(taskIDs, i.ID)
 	}
 	projects, err := queryIDs(ctx, s.db.R, `SELECT DISTINCT i.project_id FROM issues i JOIN statuses st ON st.id = i.status_id
 		WHERE i.session_id = ? AND st.category NOT IN ('done','canceled') AND i.created_at >= ?
@@ -152,7 +187,7 @@ func (s *Service) deferredFind(ctx context.Context, x *deferredSess) (*deferredF
 	if err != nil || len(projects) == 0 {
 		return nil, err
 	}
-	f := &deferredFound{task: taskIDs[0]}
+	f := &deferredFound{task: taskIDs[0], onto: onto}
 	for _, id := range taskIDs[:min(len(taskIDs), 3)] {
 		f.keys = append(f.keys, keys[id])
 	}
@@ -232,7 +267,7 @@ func (s *Service) deferredBundle(ctx context.Context, t *tx, x *AgentSession) (*
 	if err != nil || f == nil {
 		return nil, err
 	}
-	m := &SessionMessage{sessionID: x.ID, Body: deferredText(f.keys, deferredOfferOf(f.cands), true), State: MessageDelivered, stepKey: deferredStepKey(x.ID, f.cands[0].ID)}
+	m := &SessionMessage{sessionID: x.ID, Body: deferredText(f.keys, deferredOfferOf(f.cands), true, f.onto), State: MessageDelivered, stepKey: deferredStepKey(x.ID, f.cands[0].ID)}
 	now := s.nowMS()
 	res, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO session_messages(session_id, body, step_key, created_at, passive, state, via, delivered_at) VALUES (?,?,?,?,0,'delivered','bundle',?)`,
 		x.ID, m.Body, m.stepKey, now, now)
@@ -384,7 +419,7 @@ func (s *Service) deferredIdle(ctx context.Context, id int64) bool {
 	if len(offered) == 0 {
 		return false
 	}
-	return s.deferredSend(ctx, id, offered, deferredText(f.keys, deferredOfferOf(offered), true), true) == nil
+	return s.deferredSend(ctx, id, offered, deferredText(f.keys, deferredOfferOf(offered), true, f.onto), true) == nil
 }
 
 // deferredSweep is the minute pass: sessions whose offer waits (for its
@@ -518,12 +553,7 @@ func (s *Service) deferredUntold(ctx context.Context, id int64) {
 			warn("mark them compacted", err)
 		}
 	}
-	var keys []string
-	if task.Valid {
-		if t, err := s.issuesByIDs(ctx, []int64{task.Int64}, false); err == nil && len(t) > 0 {
-			keys = append(keys, t[0].Key)
-		}
-	}
+	var keys, onto []string
 	after := shippedAt.Valid
 	if !after {
 		_, after, err = s.deferredShipSince(ctx, id, offered.Int64)
@@ -532,7 +562,24 @@ func (s *Service) deferredUntold(ctx context.Context, id int64) {
 			return
 		}
 	}
-	if s.deferredSend(ctx, id, issues, deferredText(keys, deferredOfferOf(issues), after), !late) != nil {
+	if after {
+		// named as what it shipped, every task of it, and pushed onto only
+		// while its pull request is open
+		ids, byID, open, err := s.deferredShipped(ctx, id)
+		if err != nil {
+			warn("read its ships", err)
+			return
+		}
+		for _, i := range ids[:min(len(ids), 3)] {
+			keys = append(keys, byID[i])
+		}
+		onto = open
+	} else if task.Valid {
+		if t, err := s.issuesByIDs(ctx, []int64{task.Int64}, false); err == nil && len(t) > 0 {
+			keys = append(keys, t[0].Key)
+		}
+	}
+	if s.deferredSend(ctx, id, issues, deferredText(keys, deferredOfferOf(issues), after, onto), !late) != nil {
 		return
 	}
 	told()
