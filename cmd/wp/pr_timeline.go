@@ -143,7 +143,8 @@ func (t *prTimeline) text(now time.Time) string {
 		lines = append(lines, line{r.QueuedAt, s + ", " + r.Status})
 	}
 	for _, a := range t.Armed {
-		s := map[string]string{"arm": "armed", "disarm": "disarmed", "merge": "merge"}[a.What]
+		// merged_at has the merge's own line; this one is when it was asked for.
+		s := map[string]string{"arm": "armed", "disarm": "disarmed", "merge": "merge started"}[a.What]
 		if s == "" {
 			s = a.What
 		}

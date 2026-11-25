@@ -43,6 +43,26 @@ func TestPRTimelineText(t *testing.T) {
 	}
 }
 
+// A merge Waypoint did is in the audit log when it was asked for and in
+// merged_at when it landed: two lines that say different things.
+func TestPRTimelineTextMergeStartedAndMerged(t *testing.T) {
+	var tl prTimeline
+	if err := json.Unmarshal([]byte(`{"state":"merged","opened_at":"2026-11-25T08:00:00Z","merged_at":"2026-11-25T10:05:00Z",
+	 "pushes":[],"armed":[{"at":"2026-11-25T10:00:00Z","what":"merge","by":"robin"},{"at":"2026-11-25T11:00:00Z","what":"merge"}],
+	 "runs":[],"holds":[],"totals":{"ci_wait_s":0,"ci_run_s":0,"held_s":0}}`), &tl); err != nil {
+		t.Fatal(err)
+	}
+	got := tl.text(time.Date(2026, 11, 26, 0, 0, 0, 0, time.UTC))
+	for _, want := range []string{"  merge started by robin\n", "  merge started\n", "  merged\n"} {
+		if !strings.Contains(got+"\n", want) {
+			t.Errorf("no %q in\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "merge by") {
+		t.Errorf("a merge is said twice in\n%s", got)
+	}
+}
+
 // A pull request closed without merging is not "open for" a time that grows.
 func TestPRTimelineTextClosedUnmerged(t *testing.T) {
 	var tl prTimeline

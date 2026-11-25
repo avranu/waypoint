@@ -79,6 +79,48 @@ func TestPRTimelineRuns(t *testing.T) {
 	}
 }
 
+// Only a pull request event on a head is the pull request's own: a scheduled
+// or dispatched run of the default branch can sit on a commit that is one of
+// its heads, and so can another repo's run of the same number.
+func TestPRTimelineRunsOfOtherEventsAndRepos(t *testing.T) {
+	se, _, t0 := timelineEnv(t)
+	min := func(m int) int64 { return t0 + int64(m)*60000 }
+	se.timelineRun(1, "8888888bbbb", "#7", "pull_request", "success", min(62), min(63), min(80))
+	se.timelineRun(2, "8888888bbbb", "refs/heads/main", "schedule", "success", min(70), min(71), min(75))
+	se.timelineRun(3, "8888888bbbb", "refs/heads/main", "workflow_dispatch", "success", min(72), min(73), min(76))
+	se.timelineRun(4, "8888888bbbb", "refs/heads/add-export", "pull_request_target", "success", min(74), min(75), min(78))
+	if _, err := se.s.db.W.ExecContext(se.ctx, `INSERT INTO ci_runs(forge_id, repo, number, workflow, event, ref, sha, tier, status, created_at, started_at, stopped_at)
+		VALUES (?, 'other/app', 5, 'ci.yml', 'pull_request', '#7', '8888888bbbb', '', 'success', ?, ?, ?)`, se.f.ID, min(62), min(63), min(80)); err != nil {
+		t.Fatal(err)
+	}
+	tl, err := se.s.PRTimeline(se.ctx, se.admin, se.p.Key, "", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, r := range tl.Runs {
+		got = append(got, fmt.Sprint(r.Number))
+	}
+	if strings.Join(got, ",") != "1,4" {
+		t.Errorf("runs = %v, want 1,4 (no schedule or dispatch run, no other repo's)", got)
+	}
+}
+
+// A merge before the open time, from clocks that differ, is not a negative time.
+func TestPRTimelineOpenToMergedNotNegative(t *testing.T) {
+	se, pr, t0 := timelineEnv(t)
+	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE pull_requests SET state = 'merged', merged_at = ? WHERE id = ?`, t0-60000, pr.ID); err != nil {
+		t.Fatal(err)
+	}
+	tl, err := se.s.PRTimeline(se.ctx, se.admin, se.p.Key, "", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tl.Totals.OpenToMergedS == nil || *tl.Totals.OpenToMergedS != 0 {
+		t.Errorf("open_to_merged_s = %v, want 0", tl.Totals.OpenToMergedS)
+	}
+}
+
 // The merge queue's run of a stack the pull request rode is one of its runs,
 // though it is a push to a wp-queue/ branch on a commit that is no head of it.
 func TestPRTimelineStackRuns(t *testing.T) {

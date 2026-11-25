@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -106,10 +107,11 @@ func (s *Service) PRTimeline(ctx context.Context, actor *Actor, projectKey, repo
 	// differ: the audit log and a repo's runs are read by time, not whole.
 	lo, hi := opened.Int64-prTimelineSlackMS, over+prTimelineSlackMS
 
-	// A run belongs to the pull request when it ran on one of the heads the
-	// pull request had (opened or pushed events keep each) or on its own ref,
-	// as ci_doctor's fullRunOf matches by head and leaves branch pushes out,
-	// or on the commit of a merge queue stack it rode (a push to a wp-queue/
+	// A run belongs to the pull request when a pull request event ran on one
+	// of the heads the pull request had (opened or pushed events keep each),
+	// or on its own ref; a push, schedule or dispatch on a commit that is one
+	// of its heads is the branch's, not its. A run also belongs to it when it
+	// ran on the commit of a merge queue stack it rode (a push to a wp-queue/
 	// branch): a stack's row is its last pull request's and names the others
 	// of a batch in heads.
 	heads := map[string]bool{}
@@ -205,7 +207,7 @@ func (s *Service) PRTimeline(ctx context.Context, actor *Actor, projectKey, repo
 			return nil, err
 		}
 		r.Stack = stacks[sha]
-		own := heads[sha] && r.Event != "push" || prRunRef(ref, number)
+		own := heads[sha] && strings.HasPrefix(r.Event, "pull_request") || prRunRef(ref, number)
 		if !r.Stack && !own {
 			continue
 		}
