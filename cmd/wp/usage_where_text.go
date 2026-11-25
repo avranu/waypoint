@@ -97,7 +97,7 @@ func whereText(r *whReport) string {
 
 	p("\nTop %d sessions", len(r.Top))
 	for _, s := range r.Top {
-		p("  %s %-12s %9s (main %s) %5d calls %2d ships  %s", s.Session, truncRunes(s.Project, 12), whMoney(s.Cost), whMoney(s.Main), s.Calls, s.Ships, s.Prompt)
+		p("  %s %-20s %9s (main %s) %5d calls %2d ships  %s %s ctx  %s", s.Session, truncRunes(s.Project, 20), whMoney(s.Cost), whMoney(s.Main), s.Calls, s.Ships, s.Model, whTokens(s.AvgCtx), s.Prompt)
 	}
 
 	p("\nLimit events")
@@ -116,6 +116,9 @@ func whereText(r *whReport) string {
 	p("  %d <synthetic> records (no usage) left out; they ran %s", n.Synthetic, whClassCounts(n.ScriptTools))
 	p("  %d compaction boundaries: their model calls carry no usage in transcripts", n.Compactions)
 	p("  %d of %d files unreadable", n.UnreadableCnt, n.FilesRead)
+	if len(n.AssumedPrices) > 0 {
+		p("  no price is known for %s: costed at the dearest model's", strings.Join(n.AssumedPrices, ", "))
+	}
 	for _, line := range n.Notes {
 		if !strings.HasPrefix(line, "<synthetic>") && !strings.HasPrefix(line, "compaction") {
 			p("  %s", line)
@@ -132,7 +135,9 @@ func whClassCounts(m map[string]int) string {
 	for k := range m {
 		ks = append(ks, k)
 	}
-	sort.Slice(ks, func(i, j int) bool { return m[ks[i]] > m[ks[j]] })
+	sort.Slice(ks, func(i, j int) bool {
+		return m[ks[i]] > m[ks[j]] || m[ks[i]] == m[ks[j]] && ks[i] < ks[j]
+	})
 	var parts []string
 	for _, k := range ks {
 		parts = append(parts, fmt.Sprintf("%d %s", m[k], k))
