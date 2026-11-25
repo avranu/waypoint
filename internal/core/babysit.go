@@ -1009,6 +1009,9 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 		if r := lastRound(b); resting(r) {
 			// A first failure on the head is ruled out as a flake while it
 			// rests too: no round runs on it meanwhile (WP-1853).
+			// A re-run that passed is filed as the flake it was; the rest
+			// ends by its own rules, not by that.
+			s.flakeProven(ctx, b, pr)
 			if s.restFlakeRerun(ctx, b, pr) {
 				return
 			}

@@ -206,10 +206,23 @@ func TestShellWordQuotes(t *testing.T) {
 }
 
 // A resting babysit's head that failed for the first time is re-run once to
-// rule out a flake, though no round can run on it meanwhile (WP-1853).
+// rule out a flake, though no round can run on it meanwhile (WP-1853). The
+// rest is the park's: same round, same end, still resting, whatever the
+// re-run says.
 func TestFlakeRerunWhileResting(t *testing.T) {
 	be, pr, _ := parkedOnNamedComment(t)
-	be.checks(pr.HeadSHA, CommitCheck{Name: "ci / test", State: CheckFailed, Description: "Failing after 9m", URL: "https://ci.example.com/run/1"})
+	before := lastRound(be.babysit())
+	until := before.RestUntil
+	failing := CommitCheck{Name: "ci / test", State: CheckFailed, Description: "Failing after 9m", URL: "https://ci.example.com/run/1"}
+	restStill := func(when string) {
+		t.Helper()
+		b := be.babysit()
+		r := lastRound(b)
+		if b.State != BabysitResting || !parkedOn(b, pr.HeadSHA) || !resting(r) || !r.RestUntil.Equal(until) || r.N != before.N || b.Round != 0 || len(be.jobs()) != 0 {
+			t.Fatalf("%s: the rest didn't survive: %s %q round %d jobs %v %+v", when, b.State, b.Wait, b.Round, be.jobs(), r)
+		}
+	}
+	be.checks(pr.HeadSHA, failing)
 	be.step()
 	if n := len(be.retries()); n != 1 {
 		t.Fatalf("retries = %v, want the one re-run; %+v", be.retries(), be.babysit())
@@ -217,9 +230,45 @@ func TestFlakeRerunWhileResting(t *testing.T) {
 	if fr := parseFlakeRerun(be.babysit().flakeRerun); !sameSHA(fr.SHA, pr.HeadSHA) {
 		t.Errorf("no marker for the head: %+v", fr)
 	}
-	// Once only: the next sweep waits for its results, and starts nothing.
+	restStill("re-run asked")
+	if w := be.babysit().Wait; !strings.Contains(w, "re-ran") || !strings.HasPrefix(w, restWait) {
+		t.Errorf("wait = %q", w)
+	}
+	// Pending, then failing again: once only, and the rest goes on.
 	be.step()
-	if n := len(be.retries()); n != 1 || len(be.jobs()) != 0 {
-		t.Errorf("retries %v jobs %v", be.retries(), be.jobs())
+	restStill("re-run pending")
+	be.setClock(be.clockNow().Add(faultRerunSettle))
+	be.step()
+	be.step()
+	if n := len(be.retries()); n != 1 {
+		t.Errorf("retries %v", be.retries())
+	}
+	restStill("re-run failed again")
+}
+
+// A re-run that passes while the babysit rests files the flake; the rest goes
+// on by its own rules, not by that.
+func TestFlakeRerunWhileRestingPasses(t *testing.T) {
+	be, pr, _ := parkedOnNamedComment(t)
+	be.sg.sm.Lock()
+	be.sg.logs["ci / test"] = flakyLog
+	be.sg.sm.Unlock()
+	be.checks(pr.HeadSHA, CommitCheck{Name: "ci / test", State: CheckFailed, Description: "Failing after 9m", URL: "https://ci.example.com/run/1"})
+	be.step()
+	if n := len(be.retries()); n != 1 || be.babysit().State != BabysitResting {
+		t.Fatalf("retries %v: %+v", be.retries(), be.babysit())
+	}
+	be.setClock(be.clockNow().Add(faultRerunSettle))
+	be.runnerOnline()
+	be.sg.setChecks(pr.HeadSHA, CommitCheck{Name: "ci / test", State: CheckSuccess, Description: "Successful in 9m"})
+	be.step() // reads the re-run's result once it settled
+	be.step() // sees it passed
+	if bugs := be.flakeBugs(); len(bugs) != 1 {
+		t.Fatalf("flake not filed: %v; %+v", bugs, be.babysit())
+	}
+	// Its rules, not the re-run, end the rest: this one rested over a comment
+	// as well as the check, so the passing check leaves it resting.
+	if b := be.babysit(); b.State != BabysitResting || lastRound(b).Reply != "" {
+		t.Errorf("a passed re-run ended the rest: %s %+v", b.State, lastRound(b))
 	}
 }

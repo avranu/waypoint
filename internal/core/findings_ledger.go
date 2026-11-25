@@ -340,6 +340,19 @@ func (l *ledger) coveredByFix(it ledgerItem, n int) (string, bool) {
 	return "", false
 }
 
+// olderThanAFix is the cheap precondition of coveredByFix: the comment was
+// written before some pushed round's fix. No forge read.
+func (l *ledger) olderThanAFix(it ledgerItem) bool {
+	for _, r := range l.in.Rounds {
+		if r.Pushed {
+			if _, ok := l.coveredByFix(it, r.N); ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // causedBy: the item came after the last round's push and is on what that
 // push changed.
 func (l *ledger) causedBy(it ledgerItem, sym string) (int, bool) {
@@ -659,13 +672,23 @@ func (s *Service) closeCovered(ctx context.Context, b *Babysit, pr *PullRequest,
 	if !slices.ContainsFunc(b.Rounds, func(r BabysitRound) bool { return r.Pushed }) {
 		return
 	}
+	// Only a comment written before some round's fix can be covered by it, and
+	// each is looked at once per head: classifying reads files from the forge
+	// for every item, so the sweep that runs every minute must not do that
+	// for comments that can't qualify (#582 sat on six "seen" ones for hours).
 	var open []*PRReviewComment
+	probe := &ledger{in: ledgerInput{Head: pr.HeadSHA, Rounds: b.Rounds}}
 	in := ledgerInput{At: s.now(), Head: pr.HeadSHA, Rounds: b.Rounds}
 	for _, rc := range comments {
-		if !rc.Dealt && !rc.Gone && (rc.Verdict == VerdictNew || rc.Verdict == VerdictSeen) {
-			open = append(open, rc)
-			in.Items = append(in.Items, commentItem(rc))
+		if rc.Dealt || rc.Gone || (rc.Verdict != VerdictNew && rc.Verdict != VerdictSeen) {
+			continue
 		}
+		key := fmt.Sprintf("%d:%s:%s", pr.ID, strings.ToLower(pr.HeadSHA), rc.Ref)
+		if _, seen := s.coverLooked.Load(key); seen || !probe.olderThanAFix(commentItem(rc)) {
+			continue
+		}
+		open = append(open, rc)
+		in.Items = append(in.Items, commentItem(rc))
 	}
 	if len(open) == 0 {
 		return
@@ -675,6 +698,9 @@ func (s *Service) closeCovered(ctx context.Context, b *Babysit, pr *PullRequest,
 		in.Earlier = append(in.Earlier, commentItem(rc))
 	}
 	entries, _ := classifyRound(in)
+	for _, rc := range open {
+		s.coverLooked.Store(fmt.Sprintf("%d:%s:%s", pr.ID, strings.ToLower(pr.HeadSHA), rc.Ref), true)
+	}
 	for _, e := range entries {
 		if e.Covered == "" {
 			continue
@@ -687,6 +713,7 @@ func (s *Service) closeCovered(ctx context.Context, b *Babysit, pr *PullRequest,
 				cmp(short(rc.SHA), "an earlier head"), e.Round, short(e.Covered), e.Of)
 			if err := s.markComment(ctx, pr, rc, VerdictFixed, note, e.Covered, rcBy{kind: "babysitter", name: "waypoint"}, b.Round); err != nil {
 				s.log.WarnContext(ctx, "close a comment a fix covers", "pr", pr.ID, "comment", rc.Ref, "err", err)
+				s.coverLooked.Delete(fmt.Sprintf("%d:%s:%s", pr.ID, strings.ToLower(pr.HeadSHA), rc.Ref))
 				continue
 			}
 			rc.Dealt = true

@@ -83,7 +83,7 @@ func (s *Service) rerunForFlake(ctx context.Context, b *Babysit, pr *PullRequest
 	if sameSHA(fr.SHA, pr.HeadSHA) {
 		if now.Sub(msTime(fr.At)) < faultRerunSettle {
 			// The forge may not have posted the re-run's pending statuses yet.
-			s.setState(ctx, b, pr, BabysitWatching, fmt.Sprintf("re-ran %s on %s to rule out a flaky test; waiting for the results", joinAnd(failed), short(pr.HeadSHA)))
+			s.flakeState(ctx, b, pr, fmt.Sprintf("re-ran %s on %s to rule out a flaky test; waiting for the results", joinAnd(failed), short(pr.HeadSHA)))
 			return true
 		}
 		if !fr.Read {
@@ -139,8 +139,20 @@ func (s *Service) rerunForFlake(ctx context.Context, b *Babysit, pr *PullRequest
 		}
 		return false // nothing the forge can re-run
 	}
-	s.setState(ctx, b, pr, BabysitWatching, fmt.Sprintf("%s failed on %s; Waypoint re-ran %d job%s once to rule out a flaky test before a round", joinAnd(failed), short(pr.HeadSHA), n, plural(n)))
+	s.flakeState(ctx, b, pr, fmt.Sprintf("%s failed on %s; Waypoint re-ran %d job%s once to rule out a flaky test before a round", joinAnd(failed), short(pr.HeadSHA), n, plural(n)))
 	return true
+}
+
+// flakeState is what a babysit says while its flake re-run is out. A resting
+// babysit stays resting, with the re-run added to its wait: the rest's round,
+// end time and rules are the park's, and a re-run's result changes none of
+// them (WP-1853).
+func (s *Service) flakeState(ctx context.Context, b *Babysit, pr *PullRequest, text string) {
+	if r := lastRound(b); resting(r) && parkedOn(b, pr.HeadSHA) {
+		s.setState(ctx, b, pr, BabysitResting, restWaitText(r)+"; "+text)
+		return
+	}
+	s.setState(ctx, b, pr, BabysitWatching, text)
 }
 
 // restFlakeRerun is the flake re-run of a resting babysit's head (WP-1853):
