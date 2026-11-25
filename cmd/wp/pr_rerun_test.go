@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http"
+	"os"
 	"strings"
 	"testing"
 
@@ -91,5 +94,33 @@ func TestCLIPRRerun(t *testing.T) {
 	}
 	if !strings.Contains(e.wp("help", "--all"), "rerun") {
 		t.Error("wp help --all doesn't list rerun")
+	}
+}
+
+// A blank --job (an unset shell variable) re-runs nothing, from the CLI and
+// from the API.
+func TestCLIPRRerunBlankJob(t *testing.T) {
+	e, fg := rerunEnv(t)
+	for _, job := range []string{"", " "} {
+		if out, code := e.run("pr", "rerun", "3", "--job", job); code == 0 || !strings.Contains(out, "--job needs a job's name") {
+			t.Errorf("--job %q: %d %s", job, code, out)
+		}
+	}
+	req, err := http.NewRequest(http.MethodPost, e.url+"/api/v1/pulls/1/rerun?job=+", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+os.Getenv("WAYPOINT_TOKEN"))
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(res.Body)
+	if err != nil || res.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), "job is blank") {
+		t.Errorf("?job=+: %d %s %v", res.StatusCode, body, err)
+	}
+	if len(fg.calls) != 0 {
+		t.Errorf("forge calls %q", fg.calls)
 	}
 }
