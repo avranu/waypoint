@@ -396,11 +396,13 @@ type coMention struct {
 // forge issue as this one (WP-379). When the item is this issue's own work
 // and its text says it depends on or blocks the other, that's a stated
 // dependency (high); otherwise working on the same thing is a hint
-// (medium, never linked by itself). Items naming many issues (a release,
+// (medium, never linked by itself). Only trusted text states one: an
+// outside row has no excerpt, and its "depends on" stays a hint, since a
+// high one is added unasked (WP-1785). Items naming many issues (a release,
 // a sweep) say little and are left out.
 func (s *Service) forgeCoMentions(ctx context.Context, issueID int64) []coMention {
 	// #nosec G202 -- unapprovedOutsidePullSQL splices a column name, no value (WP-1802)
-	rows, err := s.db.R.QueryContext(ctx, `SELECT o.issue_id, max(me.own), group_concat(DISTINCT o.verb), coalesce(nullif(me.title, ''), me.repo), coalesce(me.number, 0), me.item_kind
+	rows, err := s.db.R.QueryContext(ctx, `SELECT o.issue_id, max(me.own), coalesce(group_concat(DISTINCT CASE WHEN o.excerpt != '' THEN o.verb END), ''), coalesce(nullif(me.title, ''), me.repo), coalesce(me.number, 0), me.item_kind
 		FROM forge_mentions me
 		JOIN forge_mentions o ON o.item_url = me.item_url AND o.issue_id != me.issue_id AND o.gone_at IS NULL
 		WHERE me.issue_id = ? AND me.gone_at IS NULL AND NOT `+unapprovedOutsidePullSQL("me.item_url")+`

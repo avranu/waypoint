@@ -394,6 +394,10 @@ func TestUnapprovedOutsideLinkHoldsItsEffects(t *testing.T) {
 	} else if out, err := se.s.outOnPRs(se.ctx, se.s.db.R, []*Issue{iss}); err != nil || len(out) != 1 {
 		t.Errorf("out on an approved pull request: %+v %v", out, err)
 	}
+	// Its verb counts once a read of the approved text keeps its line
+	// (WP-1785).
+	se.pullHook("synchronized", pr)
+	se.s.Wait()
 	if cm := se.s.forgeCoMentions(se.ctx, i.ID); len(cm) != 1 || cm[0].kind != "blocked_by" {
 		t.Errorf("suggestions after approval: %+v", cm)
 	}

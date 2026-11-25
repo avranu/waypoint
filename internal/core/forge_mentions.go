@@ -221,7 +221,7 @@ func (s *Service) recordForgeMentions(ctx context.Context, src forgeText, refs [
 			f.ref = r
 			byPlace[k] = &f
 			order = append(order, k)
-		case !cur.ref.Own && (r.Own || verbRank(r.Verb) > verbRank(cur.ref.Verb)):
+		case !cur.ref.Own && (r.Own || (cur.ref.Verb == "" && r.Verb != "")):
 			cur.ref = r
 		}
 	}
@@ -638,9 +638,9 @@ func (s *Service) forgeMentions(ctx context.Context, q queryer, issueID int64, a
 			}
 			o.Own = o.Own || m.Own
 			// The verb, excerpt and link come from one text: the best row's. A
-			// live text beats one that no longer names the issue, a trusted one
-			// (it has its excerpt) beats an outside one, then the stronger verb;
-			// a tie keeps the newer.
+			// live text beats one that no longer names the issue, then a trusted
+			// verb (it has its excerpt) beats an outside one; a tie keeps the
+			// newer.
 			if r := mentionRank(m); r > best[m.URL] {
 				o.Verb, o.Excerpt, o.SourceURL = m.Verb, m.Excerpt, m.SourceURL
 				best[m.URL] = r
@@ -659,32 +659,21 @@ func (s *Service) forgeMentions(ctx context.Context, q queryer, issueID int64, a
 	return out, rows.Err()
 }
 
-// verbRank orders verbs by how much they claim: an own-work verb, another
-// relationship, a bare "see", none.
-func verbRank(verb string) int {
-	switch verb {
-	case "":
-		return 0
-	case "relates":
-		return 1
-	case "fixes", "closes", "resolves", "implements", "issue":
-		return 3
-	}
-	return 2
-}
-
-// mentionRank is how well a row's text states the mention (see forgeMentions).
+// mentionRank is how well a row's text states the mention (see
+// forgeMentions): live text first, then a trusted verb (with its line), an
+// outside verb (no line), a trusted line that names it without one.
 func mentionRank(m ForgeMention) int {
-	r := verbRank(m.Verb) * 2
-	if m.Excerpt != "" {
-		if m.Verb == "" {
-			r++ // no verb to give, but the line that names it
-		} else {
-			r += 20
-		}
+	r := 0
+	switch {
+	case m.Verb != "" && m.Excerpt != "":
+		r = 3
+	case m.Verb != "":
+		r = 2
+	case m.Excerpt != "":
+		r = 1
 	}
 	if !m.Gone {
-		r += 1000
+		r += 4
 	}
 	return r
 }
