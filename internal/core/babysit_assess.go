@@ -1120,7 +1120,7 @@ func (s *Service) assessorPrompt(ctx context.Context, b *Babysit, pr *PullReques
 	if r := lastRound(b); r != nil && r.Reply != "" && !r.RestUntil.IsZero() {
 		fmt.Fprintf(&p, "It rested out of the merge line and its rest is over. %s\n\n", r.Reply)
 	} else if r != nil && r.Reply != "" {
-		fmt.Fprintf(&p, "A person answered the question it was waiting on (%s):\n<untrusted>\n%s\n</untrusted>\n\n", r.Parked, r.Reply)
+		fmt.Fprintf(&p, "A person answered the question it was waiting on (%s):\n<untrusted>\n%s\n</untrusted>\n\n", r.Parked, untrusted(r.Reply))
 	}
 	writeAllRounds(&p, b)
 	shown := map[int]bool{}
@@ -1158,7 +1158,7 @@ func (s *Service) writeIntent(ctx context.Context, p *strings.Builder, b *Babysi
 				fmt.Fprintf(p, "\nTask %s: %s\n", l.issue.Key, outsideTitleInPrompt)
 				continue
 			}
-			fmt.Fprintf(p, "\nTask %s: %s\n<untrusted>\n%s\n</untrusted>\n", l.issue.Key, is.Title, capText(is.Description, assessorIssueChars))
+			writeFenced(p, "Task "+l.issue.Key, is.Title, capText(is.Description, assessorIssueChars))
 		}
 	}
 	// The description it shipped with, the drift guard's anchor (WP-440):
@@ -1187,11 +1187,19 @@ func (s *Service) writeIntent(ctx context.Context, p *strings.Builder, b *Babysi
 			}
 			rows.Close()
 			for _, n := range notes {
-				fmt.Fprintf(p, "\nDecision %s: %s\n<untrusted>\n%s\n</untrusted>\n", n.Code, n.Title, capText(n.Body, assessorDecisionCap))
+				writeFenced(p, "Decision "+n.Code, n.Title, capText(n.Body, assessorDecisionCap))
 			}
 		}
 	}
 	p.WriteString("\n")
+}
+
+// writeFenced writes a task or decision under its key: the title and its
+// text are whoever wrote them (an issue a person published from outside
+// keeps its stranger's words), so both sit inside the <untrusted> wrapper
+// and neither can close it or add a line of the prompt.
+func writeFenced(p *strings.Builder, key, title, text string) {
+	fmt.Fprintf(p, "\n%s:\n<untrusted>\n%s\n\n%s\n</untrusted>\n", key, untrusted(excerpt(oneLine(title), 300)), untrusted(text))
 }
 
 // writeAllRounds is every round so far: what it was given, who took it,
@@ -1221,35 +1229,37 @@ func writeAllRounds(p *strings.Builder, b *Babysit) {
 		if r.Answer == "" && !withDiff[r.N] && r.Reply == "" {
 			continue
 		}
-		p.WriteString("<untrusted>\n")
+		// A round's diff, answer and the person's reply are others' words,
+		// fenced whole so none of them can close the wrapper.
+		var w strings.Builder
 		if withDiff[r.N] {
-			p.WriteString("```diff\n" + strings.TrimRight(r.Diff, "\n") + "\n```\n")
+			w.WriteString("```diff\n" + strings.TrimRight(r.Diff, "\n") + "\n```\n")
 		} else if r.Diff != "" {
-			p.WriteString("(its diff is left out for length)\n")
+			w.WriteString("(its diff is left out for length)\n")
 		}
 		if r.Answer != "" {
-			p.WriteString(r.Answer + "\n")
+			w.WriteString(r.Answer + "\n")
 		}
 		// The answer is shortened, and its closing lines are at its end.
 		if r.Question != "" {
-			p.WriteString("It ended asking a person: " + r.Question + "\n")
+			w.WriteString("It ended asking a person: " + r.Question + "\n")
 		}
 		if r.Because != "" {
-			p.WriteString("Its reason no agent can settle that: " + r.Because + "\n")
+			w.WriteString("Its reason no agent can settle that: " + r.Because + "\n")
 		}
 		if r.Waiting != "" {
-			p.WriteString("It ended waiting for: " + r.Waiting + "\n")
+			w.WriteString("It ended waiting for: " + r.Waiting + "\n")
 		}
 		switch {
 		case r.Parked != "" && !r.RestUntil.IsZero():
-			p.WriteString("Waypoint rested it, asking nobody: " + r.Parked + "\n")
+			w.WriteString("Waypoint rested it, asking nobody: " + r.Parked + "\n")
 		case r.Parked != "":
-			p.WriteString("Waypoint parked it for a person: " + r.Parked + "\n")
+			w.WriteString("Waypoint parked it for a person: " + r.Parked + "\n")
 		}
 		if r.Reply != "" && r.RestUntil.IsZero() {
-			p.WriteString("The person answered: " + r.Reply + "\n")
+			w.WriteString("The person answered: " + r.Reply + "\n")
 		}
-		p.WriteString("</untrusted>\n")
+		p.WriteString("<untrusted>\n" + untrusted(w.String()) + "</untrusted>\n")
 	}
 	p.WriteString("\n")
 }
