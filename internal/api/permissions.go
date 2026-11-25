@@ -514,6 +514,7 @@ var routePermissions = map[string]core.Permission{
 	"POST /api/v1/audits/{id}/cancel":                             core.PermAuditsRun,
 	"POST /api/v1/audits/{id}/fix":                                core.PermAuditsRun,
 	"POST /api/v1/pulls/{id}/merge":                               core.PermPullsMerge,
+	"POST /api/v1/pulls/{id}/rerun":                               core.PermPullsMerge,
 	"DELETE /api/v1/pulls/{id}/merge":                             core.PermPullsMerge,
 	"GET /api/v1/environments":                                    core.PermEnvironmentsRead,
 	"GET /api/v1/environments/summary":                            core.PermEnvironmentsRead,

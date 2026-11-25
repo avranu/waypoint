@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"git.jmann.me/claude/waypoint/internal/core"
@@ -19,6 +20,7 @@ func (s *Server) shippingRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/projects/{key}/pulls/{number}", a(s.findPull))
 	mux.HandleFunc("POST /api/v1/projects/{key}/pulls", a(s.openPull))
 	mux.HandleFunc("POST /api/v1/pulls/{id}/check", a(s.checkPull))
+	mux.HandleFunc("POST /api/v1/pulls/{id}/rerun", a(s.rerunPull))
 	mux.HandleFunc("GET /api/v1/pulls/{id}/readiness", a(s.pullReadiness))
 	mux.HandleFunc("GET /api/v1/pulls/{id}/failed-checks", a(s.failedChecks))
 	mux.HandleFunc("GET /api/v1/pulls/{id}/logs", a(s.pullLogs))
@@ -127,6 +129,16 @@ func (s *Server) checkPull(w http.ResponseWriter, r *http.Request) (any, error) 
 		return nil, err
 	}
 	return s.svc.CheckPullRequest(r.Context(), actorFrom(r), id)
+}
+
+// rerunPull re-runs the failed jobs of the head's newest run, or with ?job=
+// only that one, without a push (WP-1661).
+func (s *Server) rerunPull(w http.ResponseWriter, r *http.Request) (any, error) {
+	id, err := pathID(r, "id")
+	if err != nil {
+		return nil, err
+	}
+	return s.svc.RerunPullRequest(r.Context(), actorFrom(r), id, strings.TrimSpace(r.URL.Query().Get("job")))
 }
 
 func (s *Server) pullReadiness(w http.ResponseWriter, r *http.Request) (any, error) {

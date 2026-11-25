@@ -260,37 +260,46 @@ func (c *httpForgeClient) RetryRun(ctx context.Context, f *Forge, repo string, r
 // rerunForgejoJobs re-runs a run's failed and cancelled jobs and says how
 // many it asked to run again.
 func (c *httpForgeClient) rerunForgejoJobs(ctx context.Context, f *Forge, repo string, runID int64) (int, error) {
+	names, err := c.rerunForgejoNamed(ctx, f, repo, runID, "")
+	return len(names), err
+}
+
+// rerunForgejoNamed is rerunForgejoJobs for the jobs called only (all of
+// them when it is empty, WP-1661) and says which it asked to run again.
+func (c *httpForgeClient) rerunForgejoNamed(ctx context.Context, f *Forge, repo string, runID int64, only string) ([]string, error) {
 	jobs, err := c.ActionJobs(ctx, f, repo, runID)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	n := 0
+	var names []string
 	posted := map[int64]bool{}
 	for {
-		j, ok := nextRerun(jobs, posted)
+		j, ok := nextRerun(jobs, posted, only)
 		if !ok {
 			break
 		}
 		if err := c.do(ctx, f, http.MethodPost, fmt.Sprintf("/repos/%s/actions/jobs/%d/rerun", repo, j.ID), nil, nil); err != nil {
-			return n, err
+			return names, err
 		}
 		posted[j.ID] = true
-		n++
+		names = append(names, j.Name)
 		// The re-run reopened the job's dependents. needs names their
 		// workflow keys, which the API doesn't give (a matrix job's name
 		// is not its key), so the jobs are read again rather than
 		// matched: re-running a reopened job is refused.
 		if jobs, err = c.ActionJobs(ctx, f, repo, runID); err != nil {
-			return n, err
+			return names, err
 		}
 	}
-	return n, nil
+	return names, nil
 }
 
 // nextRerun picks the next failed or cancelled job of a run to re-run,
 // leaving one that needs another such job (by a name that is also its key)
-// to that one's re-run.
-func nextRerun(jobs []ActionJob, posted map[int64]bool) (ActionJob, bool) {
+// to that one's re-run. only, when set, is the one job name to re-run
+// (any case): a job it doesn't name is neither picked nor left out of the
+// needs check (WP-1661).
+func nextRerun(jobs []ActionJob, posted map[int64]bool, only string) (ActionJob, bool) {
 	redo := func(j ActionJob) bool { return j.Status == "failure" || j.Status == "cancelled" }
 	failed := map[string]bool{}
 	for _, j := range jobs {
@@ -299,7 +308,7 @@ func nextRerun(jobs []ActionJob, posted map[int64]bool) (ActionJob, bool) {
 		}
 	}
 	for _, j := range jobs {
-		if redo(j) && !posted[j.ID] && !slices.ContainsFunc(j.Needs, func(need string) bool { return failed[strings.ToLower(need)] }) {
+		if redo(j) && !posted[j.ID] && (only == "" || strings.EqualFold(j.Name, only)) && !slices.ContainsFunc(j.Needs, func(need string) bool { return failed[strings.ToLower(need)] }) {
 			return j, true
 		}
 	}
