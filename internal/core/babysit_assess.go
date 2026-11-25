@@ -1079,7 +1079,9 @@ const (
 // for, every round and how it ended, and the work packet.
 func (s *Service) assessorPrompt(ctx context.Context, b *Babysit, pr *PullRequest, round *BabysitRound, t *PRTodo, why string) string {
 	var p strings.Builder
-	fmt.Fprintf(&p, "PR %d %s, branch %s at %s. Its babysitting rounds haven't settled it: %s.\n\n", pr.Number, promptPRTitle(pr.Title), pr.HeadRef, short(pr.HeadSHA), why)
+	// why is Waypoint's account, but it quotes check names, how a round
+	// ended and what it waited for: fenced, as the rounds are below.
+	fmt.Fprintf(&p, "PR %d %s, branch %s at %s. Its babysitting rounds haven't settled it:\n<untrusted>\n%s\n</untrusted>\n\n", pr.Number, promptPRTitle(pr.Title), oneLine(pr.HeadRef), short(pr.HeadSHA), untrusted(why))
 	fmt.Fprintf(&p, "Assess what is really wrong and fix it properly, with evidence: reproduce failures and run the tests that cover your change. "+
 		"You may redo what earlier rounds did, or rebuild the change from %s, in new commits (the push isn't forced). "+
 		"A review comment that is wrong or belongs in later work: `wp pr ack ID --reject -m WHY` (file the later work with `wp new`); an audit finding that is wrong: `wp audit mark ID rejected -m WHY`, "+
@@ -1199,15 +1201,19 @@ func writeAllRounds(p *strings.Builder, b *Babysit) {
 			who += ", the assessor"
 		}
 		if r.To == "session" {
-			who = "handed to a person: " + r.Why
+			who = "handed to a person"
 		}
-		fmt.Fprintf(p, "\nRound %d on %s (%s), given %s; %s.\n", r.N, short(r.SHA), who, cmp(roundWork(r.Checks, r.Conflict, r.Comments, r.Findings), "nothing"), cmp(r.Outcome, "no outcome"))
-		if r.Answer == "" && !withDiff[r.N] && r.Reply == "" {
-			continue
-		}
-		// A round's diff, answer and the person's reply are others' words,
-		// fenced whole so none of them can close the wrapper.
+		fmt.Fprintf(p, "\nRound %d on %s (%s):\n", r.N, short(r.SHA), who)
+		// Everything else is others' words, fenced whole so none of it can
+		// close the wrapper: the check names (the branch's workflows), how
+		// it ended (the runner's account, with the branch's pre-push output
+		// and the commands its agent ran), why it was handed over, its diff,
+		// its answer and the person's reply.
 		var w strings.Builder
+		if r.To == "session" && r.Why != "" {
+			w.WriteString("Why it was handed to a person: " + r.Why + "\n")
+		}
+		fmt.Fprintf(&w, "Given %s; %s.\n", cmp(roundWork(r.Checks, r.Conflict, r.Comments, r.Findings), "nothing"), cmp(r.Outcome, "no outcome"))
 		if withDiff[r.N] {
 			w.WriteString("```diff\n" + strings.TrimRight(r.Diff, "\n") + "\n```\n")
 		} else if r.Diff != "" {

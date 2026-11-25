@@ -572,9 +572,16 @@ func (s *Service) RequestAudit(ctx context.Context, actor *Actor, in AuditInput)
 				in.authorModel = s.prAuthorModel(ctx, known)
 			}
 		}
-		prContext = fmt.Sprintf("This is pull request %s#%d, %q, by %s, at its %s %s. Its description, as its author wrote it:\n\n<untrusted>\n%s\n</untrusted>",
-			repo.Repo, fp.Number, fp.Title, cmp(fp.Author, "someone"), map[bool]string{true: "merge commit", false: "head"}[fp.State == "merged" && fp.MergeSHA != ""],
-			short(cmp(fp.MergeSHA, fp.HeadSHA)), excerpt(untrusted(cmp(strings.TrimSpace(fp.Body), "(none)")), 4000))
+		// The title and description as a person approved them when the
+		// author is from outside (WP-281, WP-1788), as the review reads them;
+		// the title in quotes it can't end, the description in the wrapper.
+		title, body := fp.Title, fp.Body
+		if known != nil {
+			title, body = s.approvedTitle(ctx, repo.Forge, known, fp), s.approvedBody(ctx, repo.Forge, known, fp)
+		}
+		prContext = fmt.Sprintf("This is pull request %s#%d, %s, by %s, at its %s %s. Its description, as its author wrote it:\n\n<untrusted>\n%s\n</untrusted>",
+			repo.Repo, fp.Number, promptPRTitle(title), cmp(fp.Author, "someone"), map[bool]string{true: "merge commit", false: "head"}[fp.State == "merged" && fp.MergeSHA != ""],
+			short(cmp(fp.MergeSHA, fp.HeadSHA)), untrusted(excerpt(cmp(strings.TrimSpace(body), "(none)"), 4000)))
 		if in.prContext != "" {
 			prContext = in.prContext
 		}
